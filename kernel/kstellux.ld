@@ -3,8 +3,12 @@ ENTRY(_kentry)
 
 SECTIONS
 {
+    . = 0xffff800000000000;
+
     /* Align to 4KB page */
     . = ALIGN(0x1000);
+
+    __ksymstart = .;
 
     /* Text Section */
     .text :
@@ -38,4 +42,6 @@ SECTIONS
         *(COMMON)
         . = ALIGN(0x1000);
     }
+
+    __ksymend = .;
 }

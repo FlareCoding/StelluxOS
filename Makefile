@@ -79,7 +79,7 @@ run-debug-headless: $(DISK_IMG)
 
 # Connects GDB to a running qemu instance
 connect-gdb:
-	gdb -ex "source ./gdb_setup.gdb" -ex "target remote localhost:1234" -ex "add-symbol-file kernel/kernel.elf 0x7E5FB000 -y" -ex "b _kentry"
+	gdb -ex "source ./gdb_setup.gdb" -ex "target remote localhost:1234" -ex "add-symbol-file kernel/kernel.elf" -ex "b _kentry"
 
 # Clean target
 clean:

@@ -126,6 +126,8 @@ EFI_STATUS LoadSegments(EFI_FILE* KernelFile, Elf64_Phdr* ProgramHeaders, UINT16
             return Status;
         }
 
+        Print(L"Segment p_addr: 0x%llx  v_addr: 0x%llx  loaded_at: 0x%llx\n\r", phdr->p_paddr, phdr->p_vaddr, Segment);
+
         // Zero out the remaining memory (if any)
         if (phdr->p_memsz > phdr->p_filesz) {
             SetMem(Segment + phdr->p_filesz, phdr->p_memsz - phdr->p_filesz, 0);
@@ -174,8 +176,8 @@ EFI_STATUS LoadElfKernel(EFI_FILE* RootDir, CHAR16* FileName, VOID** EntryPoint,
         return Status;
     }
 
-    Print(L"Kernel Base: 0x%x  ElfHeader.e_entry: 0x%x\n\r", *KernelBase, (UINTN)ElfHeader.e_entry);
-    *EntryPoint = (VOID*)((UINTN)(*KernelBase) + (UINTN)ElfHeader.e_entry);
+    Print(L"Kernel Loaded Base: 0x%llx ElfHeader.e_entry: 0x%llx\n\r", *KernelBase, (UINTN)ElfHeader.e_entry);
+    *EntryPoint = (VOID*)ElfHeader.e_entry;
 
     Print(L"Successfully loaded the kernel into memory!\n\r");
 

@@ -1,4 +1,4 @@
-CFLAGS = -m64 -g -ffreestanding -O2 -Wall -Wextra
+CFLAGS = -m64 -g -ffreestanding -O0 -Wall -Wextra
 LDFLAGS = -nostdlib -T kstellux.ld -o kernel.elf
 
 kernel.elf: entry/kernel_entry.o
