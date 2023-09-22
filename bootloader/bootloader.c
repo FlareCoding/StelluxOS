@@ -11,33 +11,6 @@ struct KernelEntryParams {
     unsigned int GopPixelsPerScanLine;
 };
 
-struct page_table* create_pml4(UINT64 TotalSystemMemory, VOID* KernelPhysicalBase, VOID* KernelVirtualBase, UINT64 KernelSize, VOID* GopBufferBase, UINTN GopBufferSize) {
-    // Allocate page tables
-    struct page_table *pml4 = (struct page_table*)krequest_page();
-    kmemset(pml4, 0, PAGE_SIZE);
-
-    // Identity map the first 2GB of memory
-    for (UINT64 i = 0; i < TotalSystemMemory; i += PAGE_SIZE) {
-        MapPages((void*)i, (void*)i, pml4);
-    }
-
-    // Map the kernel to a higher half
-    for (UINT64 i = 0; i < KernelSize; i += PAGE_SIZE) {
-        void* paddr = (void*)(i + (UINT64)KernelPhysicalBase);
-        void* vaddr = (void*)(i + (UINT64)KernelVirtualBase);
-
-        MapPages(vaddr, paddr, pml4);
-        Print(L"Mapping 0x%llx --> 0x%llx\n\r", vaddr, paddr);
-    }
-
-    // Identity mapping the GOP buffer
-    for (UINT64 i = (UINT64)GopBufferBase; i < (UINT64)GopBufferBase + GopBufferSize; i += PAGE_SIZE) {
-        MapPages((void*)i, (void*)i, pml4);
-    }
-
-    return pml4;
-}
-
 EFI_STATUS LoadKernel(
     VOID** KernelPhysicalBase,
     VOID** KernelVirtualBase,
@@ -132,14 +105,22 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     //     2) Identity map the graphics output buffer
     //     3) Map the kernel to a higher half of the address space (base at 0xffff800000000000...)
     //
-    struct page_table* pml4 = create_pml4(TotalSystemMemory, KernelPhysicalBase, KernelVirtualBase, KernelSize, (void*)GraphicsOutputProtocol->Mode->FrameBufferBase, (UINTN)GraphicsOutputProtocol->Mode->FrameBufferSize);
-    if (pml4 == NULL) {
-        Print(L"Error occured while creating page table\n\r");
-        return -1;
+    struct PageTable* PML4 = CreateIdentityMappedPageTable(
+        TotalSystemMemory,
+        (VOID*)GraphicsOutputProtocol->Mode->FrameBufferBase,
+        (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize
+    );
+    if (PML4 == NULL) {
+        Print(L"Error occured while creating initial page table\n\r");
+        return EFIERR(-1);
     }
-    Print(L"Page Table PML4 Created\n\r");
-    Print(L"%llu pages allocated for the page table\n\r", GetAllocatedPageCount());
-    Print(L"Page table size: %llu KB\n\r", GetAllocatedMemoryCount() / 1024);
+
+    // Map the kernel to the higher half
+    MapKernelToHigherHalf(PML4, KernelPhysicalBase, KernelVirtualBase, KernelSize);
+
+    Print(L"\n\r------ Page Table PML4 Created ------\n\r");
+    Print(L"    Pages Allocated  : %llu\n\r", GetAllocatedPageCount());
+    Print(L"    Page Table Size  : %llu KB\n\r\n\r", GetAllocatedMemoryCount() / 1024);
 
     // Read the memory map one more time to acquire the final memory map key
     Status = ReadMemoryMap(
@@ -163,7 +144,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
 
     // Load PML4 address into CR3
-    asm volatile ("mov %0, %%cr3" : : "r"((UINT64)pml4));
+    __asm__ volatile("mov %0, %%cr3" : : "r"((UINT64)PML4));
 
     // Initialize params
     struct KernelEntryParams params;
