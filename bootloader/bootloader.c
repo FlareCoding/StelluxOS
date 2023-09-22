@@ -4,11 +4,20 @@
 #include "paging.h"
 
 struct KernelEntryParams {
-    void* GopFramebufferBase;
-    void* GopFramebufferSize;
-    unsigned int GopFramebufferWidth;
-    unsigned int GopFramebufferHeight;
-    unsigned int GopPixelsPerScanLine;
+    struct {
+        VOID*   Base;
+        UINT64  Size;
+        UINT32  Width;
+        UINT32  Height;
+        UINT32  PixelsPerScanline;
+    } GraphicsFramebuffer;
+
+    struct {
+        VOID*   Base;
+        UINT64  Size;
+        UINT64  DescriptorSize;
+        UINT64  DescriptorCount;
+    } EfiMemoryMap;
 };
 
 EFI_STATUS LoadKernel(
@@ -148,11 +157,16 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     // Initialize params
     struct KernelEntryParams params;
-    params.GopFramebufferBase = (void*)GraphicsOutputProtocol->Mode->FrameBufferBase;
-    params.GopFramebufferSize = (void*)GraphicsOutputProtocol->Mode->FrameBufferSize;
-    params.GopFramebufferWidth = GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
-    params.GopFramebufferHeight = GraphicsOutputProtocol->Mode->Info->VerticalResolution;
-    params.GopPixelsPerScanLine = GraphicsOutputProtocol->Mode->Info->PixelsPerScanLine;
+    params.GraphicsFramebuffer.Base = (VOID*)GraphicsOutputProtocol->Mode->FrameBufferBase;
+    params.GraphicsFramebuffer.Size = (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize;
+    params.GraphicsFramebuffer.Width = (UINT64)GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
+    params.GraphicsFramebuffer.Height = (UINT64)GraphicsOutputProtocol->Mode->Info->VerticalResolution;
+    params.GraphicsFramebuffer.PixelsPerScanline = (UINT64)GraphicsOutputProtocol->Mode->Info->PixelsPerScanLine;
+
+    params.EfiMemoryMap.Base = (VOID*)EfiMemoryMap;
+    params.EfiMemoryMap.Size = MemoryMapSize;
+    params.EfiMemoryMap.DescriptorSize = DescriptorSize;
+    params.EfiMemoryMap.DescriptorCount = MemoryMapSize / DescriptorSize;
 
     // Cast the physical entry point to a function pointer
     void (*KernelEntryPoint)(struct KernelEntryParams*) =

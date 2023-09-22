@@ -1,12 +1,22 @@
 #ifndef KERNEL_PARAMS_H
 #define KERNEL_PARAMS_H
+#include <stdint.h>
 
 struct kernel_entry_params {
-    void* gop_framebuffer_base;
-    void* gop_framebuffer_size;
-    unsigned int framebuffer_width;
-    unsigned int framebuffer_height;
-    unsigned int framebuffer_pixels_per_scanline;
+    struct {
+        void*     base;
+        uint64_t  size;
+        uint32_t  width;
+        uint32_t  height;
+        uint32_t  pixels_per_scanline;
+    } graphics_framebuffer;
+
+    struct {
+        void*     base;
+        uint64_t  size;
+        uint64_t  descriptor_size;
+        uint64_t  descriptor_count;
+    } efi_memory_map;
 };
 
 #endif // KERNEL_PARAMS_H
