@@ -13,43 +13,43 @@ struct KernelEntryParams {
     unsigned int GopPixelsPerScanLine;
 };
 
-struct page_table* create_pml4(uint64_t TotalSystemMemory, VOID* KernelPhysicalBase, uint64_t KernelSize, VOID* GopBufferBase, UINTN GopBufferSize) {
+struct page_table* create_pml4(UINT64 TotalSystemMemory, VOID* KernelPhysicalBase, UINT64 KernelSize, VOID* GopBufferBase, UINTN GopBufferSize) {
     // Allocate page tables
     struct page_table *pml4 = (struct page_table*)krequest_page();
     kmemset(pml4, 0, PAGE_SIZE);
 
     // Identity map the first 2GB of memory
-    for (uint64_t i = 0; i < TotalSystemMemory; i += PAGE_SIZE) {
+    for (UINT64 i = 0; i < TotalSystemMemory; i += PAGE_SIZE) {
         MapPages((void*)i, (void*)i, pml4);
     }
 
     // Map the kernel to a higher half
-    for (uint64_t i = 0; i < KernelSize; i += PAGE_SIZE) {
-        void* paddr = (void*)(i + (uint64_t)KernelPhysicalBase);
-        void* vaddr = (void*)(i + (uint64_t)KERNEL_VIRTUAL_BASE);
+    for (UINT64 i = 0; i < KernelSize; i += PAGE_SIZE) {
+        void* paddr = (void*)(i + (UINT64)KernelPhysicalBase);
+        void* vaddr = (void*)(i + (UINT64)KERNEL_VIRTUAL_BASE);
 
         MapPages(vaddr, paddr, pml4);
         Print(L"Mapping 0x%llx --> 0x%llx\n\r", vaddr, paddr);
     }
 
     // Identity mapping the GOP buffer
-    for (uint64_t i = (uint64_t)GopBufferBase; i < (uint64_t)GopBufferBase + GopBufferSize; i += PAGE_SIZE) {
+    for (UINT64 i = (UINT64)GopBufferBase; i < (UINT64)GopBufferBase + GopBufferSize; i += PAGE_SIZE) {
         MapPages((void*)i, (void*)i, pml4);
     }
 
     return pml4;
 }
 
-uint64_t GetTotalSystemMemory(
+UINT64 GetTotalSystemMemory(
     EFI_MEMORY_DESCRIPTOR* MemoryMap,
-    uint64_t Entries,
-    uint64_t DescriptorSize
+    UINT64 Entries,
+    UINT64 DescriptorSize
 ) {
-    uint64_t TotalMemory = 0;
+    UINT64 TotalMemory = 0;
 
-    for (uint64_t i = 0; i < Entries; ++i) {
+    for (UINT64 i = 0; i < Entries; ++i) {
         EFI_MEMORY_DESCRIPTOR* desc =
-            (EFI_MEMORY_DESCRIPTOR*)((uint64_t)MemoryMap + (i * DescriptorSize));
+            (EFI_MEMORY_DESCRIPTOR*)((UINT64)MemoryMap + (i * DescriptorSize));
 
         TotalMemory += desc->NumberOfPages * PAGE_SIZE;
     }
@@ -57,47 +57,58 @@ uint64_t GetTotalSystemMemory(
     return TotalMemory;
 }
 
-EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
-    InitializeLib(ImageHandle, SystemTable);
-    Print(L"Stellux Bootloader - V%u.%u DEBUG ON\n\r", 0, 1);
-
+EFI_STATUS LoadKernel(
+    VOID** KernelPhysicalBase,
+    VOID** KernelVirtualBase,
+    UINT64* KernelSize,
+    VOID** KernelEntry
+) {
     EFI_STATUS Status;
-    EFI_HANDLE* Handles;
-    UINTN HandleCount;
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* FileSystem;
+    EFI_FILE* KernelRootDir;
 
-    // Locate handle(s) that support EFI_SIMPLE_FILE_SYSTEM_PROTOCOL
-    Status = uefi_call_wrapper(BS->LocateHandleBuffer, 5, ByProtocol,
-                &FileSystemProtocol, NULL, &HandleCount, &Handles);
-
+    // Open the root directory of the volume
+    Status = OpenRootDirectory(&KernelRootDir);
     if (EFI_ERROR(Status)) {
-        Print(L"Error locating file system: %r\n\r", Status);
+        Print(L"Failed to open volume root directory\n\r");
         return Status;
     }
 
-    // Usually, the file system is on the first handle, additional error checking is advised for production
-    Status = uefi_call_wrapper(BS->HandleProtocol, 3, Handles[0],
-                &FileSystemProtocol, (VOID**)&FileSystem);
+    // Load the ELF kernel into memory
+    Status = LoadElfFile(
+        KernelRootDir,
+        L"kernel.elf",
+        KernelEntry,
+        KernelPhysicalBase,
+        KernelVirtualBase,
+        KernelSize
+    );
 
     if (EFI_ERROR(Status)) {
-        Print(L"Error obtaining file system: %r\n\r", Status);
+        Print(L"Failed to load kernel into memory\n\r");
         return Status;
     }
 
-    // Open the root volume
-    EFI_FILE* RootDir;
-    Status = uefi_call_wrapper(FileSystem->OpenVolume, 2, FileSystem, &RootDir);
-    if (EFI_ERROR(Status)) {
-        Print(L"Error opening root volume: %r\n\r", Status);
-        return Status;
-    }
+    Print(L"Kernel Loaded:\n\r");
+    Print(L"    Physical Base : 0x%llx\n\r", *KernelPhysicalBase);
+    Print(L"    Virtual Base  : 0x%llx\n\r", *KernelVirtualBase);
+    Print(L"    Size          : 0x%llx (%llu pages)\n\r", *KernelSize, *KernelSize / PAGE_SIZE);
+    Print(L"    Entry         : 0x%llx\n\r\n\r", *KernelEntry);
+
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
+    EFI_STATUS Status;    
+
+    InitializeLib(ImageHandle, SystemTable);
+    Print(L"Stellux Bootloader - V%u.%u DEBUG ON\n\r\n\r", 0, 1);
 
     VOID* EntryPoint = NULL;
     VOID* KernelBase = NULL;
-    uint64_t KernelSize;
-    Status = LoadElfKernel(RootDir, L"kernel.elf", &EntryPoint, &KernelBase, &KernelSize);
+    VOID* KernelVirtualBase = NULL;
+    UINT64 KernelSize;
+    Status = LoadKernel(&KernelBase, &KernelVirtualBase, &KernelSize, &EntryPoint);
     if (EFI_ERROR(Status)) {
-        Print(L"Failed to load kernel.\n\r");
         return Status;
     }
     
@@ -117,7 +128,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     params.GopPixelsPerScanLine = Gop->Mode->Info->PixelsPerScanLine;
 
     // Cast the physical entry point to a function pointer
-    void (*KernelEntryPoint)(struct KernelEntryParams*) = ((__attribute__((sysv_abi)) void(*)(struct KernelEntryParams*))((uint64_t)EntryPoint));
+    void (*KernelEntryPoint)(struct KernelEntryParams*) = ((__attribute__((sysv_abi)) void(*)(struct KernelEntryParams*))((UINT64)EntryPoint));
     
     // Check if kernel load was successful
     if (KernelEntryPoint == NULL) {
@@ -158,8 +169,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         &DescriptorVersion
     );
 
-    uint64_t DescriptorCount = MMapSize / DescriptorSize;
-    uint64_t TotalSystemMemory = GetTotalSystemMemory(MemoryMap, DescriptorCount, DescriptorSize);
+    UINT64 DescriptorCount = MMapSize / DescriptorSize;
+    UINT64 TotalSystemMemory = GetTotalSystemMemory(MemoryMap, DescriptorCount, DescriptorSize);
     Print(L"Total System Memory: 0x%llx\n\r", TotalSystemMemory);
 
     struct page_table* pml4 = create_pml4(TotalSystemMemory, KernelBase, KernelSize, (void*)Gop->Mode->FrameBufferBase, (UINTN)Gop->Mode->FrameBufferSize);
@@ -190,7 +201,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
 
     // Load PML4 address into CR3
-    asm volatile ("mov %0, %%cr3" : : "r"((uint64_t)pml4));
+    asm volatile ("mov %0, %%cr3" : : "r"((UINT64)pml4));
 
     // Transfer control to the kernel
     KernelEntryPoint(&params);

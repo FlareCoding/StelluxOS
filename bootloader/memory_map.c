@@ -1,7 +1,5 @@
 #include "memory_map.h"
 
-#define PAGE_SIZE 4096
-
 EFI_STATUS RetrieveMemoryMap(StelluxMemoryDescriptor** CustomMap, UINTN* MapSize, UINTN* MapKey) {
     EFI_STATUS Status;
     EFI_MEMORY_DESCRIPTOR* UefiMemoryMap = NULL;

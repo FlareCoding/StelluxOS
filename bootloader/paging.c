@@ -1,13 +1,13 @@
 #include "paging.h"
 
-uint64_t GlobalAllocatedMemory = 0;
-uint64_t GlobalAllocatedPageCount = 0;
+UINT64 GlobalAllocatedMemory = 0;
+UINT64 GlobalAllocatedPageCount = 0;
 
-uint64_t GetAllocatedMemoryCount() {
+UINT64 GetAllocatedMemoryCount() {
 	return GlobalAllocatedMemory;
 }
 
-uint64_t GetAllocatedPageCount() {
+UINT64 GetAllocatedPageCount() {
 	return GlobalAllocatedPageCount;
 }
 
@@ -32,7 +32,7 @@ void* krequest_page() {
 }
 
 void _kvaddr_to_page_offsets(
-    uint64_t addr,
+    UINT64 addr,
     struct page_index_dict* dict
 ) {
     addr >>= 12;
@@ -45,7 +45,7 @@ void _kvaddr_to_page_offsets(
     dict->pt_lvl_4 = addr & 0x1ff;
 }
 
-void kmemset(void* base, uint8_t val, uint64_t size) {
+void kmemset(void* base, uint8_t val, UINT64 size) {
     unsigned char* start = base;
     unsigned char* end = start + size;
 
@@ -56,7 +56,7 @@ void kmemset(void* base, uint8_t val, uint64_t size) {
 
 void MapPages(void* vaddr, void* paddr, struct page_table* pml4) {
     struct page_index_dict pdict;
-	_kvaddr_to_page_offsets((uint64_t)vaddr, &pdict);
+	_kvaddr_to_page_offsets((UINT64)vaddr, &pdict);
 
 	struct page_table *PDL3 = NULL, *PDL2 = NULL, *PageTable = NULL;
 
@@ -68,9 +68,9 @@ void MapPages(void* vaddr, void* paddr, struct page_table* pml4) {
 
 		PTE_L4->present = 1;
 		PTE_L4->read_write = 1;
-		PTE_L4->page_frame_number = (uint64_t)PDL3 >> 12;
+		PTE_L4->page_frame_number = (UINT64)PDL3 >> 12;
 	} else {
-		PDL3 = (struct page_table*)((uint64_t)PTE_L4->page_frame_number << 12);
+		PDL3 = (struct page_table*)((UINT64)PTE_L4->page_frame_number << 12);
 	}
 
 	struct page_table_entry* PTE_L3 = &PDL3->entries[pdict.pt_lvl_3];
@@ -81,9 +81,9 @@ void MapPages(void* vaddr, void* paddr, struct page_table* pml4) {
 
 		PTE_L3->present = 1;
 		PTE_L3->read_write = 1;
-		PTE_L3->page_frame_number = (uint64_t)PDL2 >> 12;
+		PTE_L3->page_frame_number = (UINT64)PDL2 >> 12;
 	} else {
-		PDL2 = (struct page_table*)((uint64_t)PTE_L3->page_frame_number << 12);
+		PDL2 = (struct page_table*)((UINT64)PTE_L3->page_frame_number << 12);
 	}
 
 	struct page_table_entry* PTE_L2 = &PDL2->entries[pdict.pt_lvl_2];
@@ -94,13 +94,13 @@ void MapPages(void* vaddr, void* paddr, struct page_table* pml4) {
 
 		PTE_L2->present = 1;
 		PTE_L2->read_write = 1;
-		PTE_L2->page_frame_number = (uint64_t)PageTable >> 12;
+		PTE_L2->page_frame_number = (UINT64)PageTable >> 12;
 	} else {
-		PageTable = (struct page_table*)((uint64_t)PTE_L2->page_frame_number << 12);
+		PageTable = (struct page_table*)((UINT64)PTE_L2->page_frame_number << 12);
 	}
 
 	struct page_table_entry* PTE_L1 = &PageTable->entries[pdict.pt_lvl_1];
 	PTE_L1->present = 1;
 	PTE_L1->read_write = 1;
-	PTE_L1->page_frame_number = (uint64_t)paddr >> 12;
+	PTE_L1->page_frame_number = (UINT64)paddr >> 12;
 }
