@@ -13,13 +13,13 @@ struct KernelEntryParams {
     unsigned int GopPixelsPerScanLine;
 };
 
-struct page_table* create_pml4(VOID* KernelBase, VOID* GopBufferBase, UINTN GopBufferSize) {
+struct page_table* create_pml4(uint64_t TotalSystemMemory, VOID* KernelBase, VOID* GopBufferBase, UINTN GopBufferSize) {
     // Allocate page tables
     struct page_table *pml4 = (struct page_table*)krequest_page();
     kmemset(pml4, 0, PAGE_SIZE);
 
     // Identity map the first 2GB of memory
-    for (uint64_t i = 0; i < 0x80000000; i += PAGE_SIZE) {
+    for (uint64_t i = 0; i < TotalSystemMemory; i += PAGE_SIZE) {
         MapPages((void*)i, (void*)i, pml4);
     }
 
@@ -38,6 +38,23 @@ struct page_table* create_pml4(VOID* KernelBase, VOID* GopBufferBase, UINTN GopB
     }
 
     return pml4;
+}
+
+uint64_t GetTotalSystemMemory(
+    EFI_MEMORY_DESCRIPTOR* MemoryMap,
+    uint64_t Entries,
+    uint64_t DescriptorSize
+) {
+    uint64_t TotalMemory = 0;
+
+    for (uint64_t i = 0; i < Entries; ++i) {
+        EFI_MEMORY_DESCRIPTOR* desc =
+            (EFI_MEMORY_DESCRIPTOR*)((uint64_t)MemoryMap + (i * DescriptorSize));
+
+        TotalMemory += desc->NumberOfPages * PAGE_SIZE;
+    }
+
+    return TotalMemory;
 }
 
 EFI_STATUS ExitUEFIBootServices(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
@@ -151,54 +168,63 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     Print(L"Kernel entry is at 0x%llx\n\r", KernelEntryPoint);
 
-    struct page_table* pml4 = create_pml4(KernelBase, (void*)Gop->Mode->FrameBufferBase, (UINTN)Gop->Mode->FrameBufferSize);
+    // Read system memory map
+    EFI_MEMORY_DESCRIPTOR* MemoryMap = NULL;
+    UINTN MMapSize, MMapKey;
+    UINTN DescriptorSize;
+    UINT32 DescriptorVersion;
+
+    // First call will just give us the map size
+    uefi_call_wrapper(
+        SystemTable->BootServices->GetMemoryMap,
+        5,
+        &MMapSize,
+        MemoryMap,
+        &MMapKey,
+        &DescriptorSize,
+        &DescriptorVersion
+    );
+
+    // Allocate enough space for the memory map
+    MemoryMap = AllocateZeroPool(MMapSize);
+
+    // Actually read in the memory map
+    uefi_call_wrapper(
+        SystemTable->BootServices->GetMemoryMap,
+        5,
+        &MMapSize,
+        MemoryMap,
+        &MMapKey,
+        &DescriptorSize,
+        &DescriptorVersion
+    );
+
+    uint64_t DescriptorCount = MMapSize / DescriptorSize;
+    uint64_t TotalSystemMemory = GetTotalSystemMemory(MemoryMap, DescriptorCount, DescriptorSize);
+    Print(L"Total System Memory: 0x%llx\n\r", TotalSystemMemory);
+
+    struct page_table* pml4 = create_pml4(TotalSystemMemory, KernelBase, (void*)Gop->Mode->FrameBufferBase, (UINTN)Gop->Mode->FrameBufferSize);
     if (pml4 == NULL) {
         Print(L"Error occured while creating page table\n\r");
         return -1;
     }
     Print(L"Page Table PML4 Created\n\r");
-    
-    UINTN MemoryMapSize = 0;
-    EFI_MEMORY_DESCRIPTOR *MemoryMap = NULL;
-    UINTN MapKey = 0;
-    UINTN DescriptorSize = 0;
-    UINTN DescriptorCount = 0;
-    UINT32 DescriptorVersion = 0;
-    UINT64 TotalMemory = 0;
+    Print(L"%llu pages allocated for the page table\n\r", GetAllocatedPageCount());
+    Print(L"Page table size: %llu KB\n\r", GetAllocatedMemoryCount() / 1024);
 
-    // Get the required buffer size for the memory map.
-    Status = gBS->GetMemoryMap(&MemoryMapSize, MemoryMap, &MapKey, &DescriptorSize, &DescriptorVersion);
-
-    // Actually allocate the buffer for the memory map.
-    MemoryMapSize += 8 * DescriptorSize;
-    Status = gBS->AllocatePool(EfiLoaderData, MemoryMapSize, (void**)&MemoryMap);
-
-    DescriptorCount = MemoryMapSize / DescriptorSize;
-    for (uint64_t i = 0; i < DescriptorCount; ++i) {
-        EFI_MEMORY_DESCRIPTOR* Descriptor =
-            (EFI_MEMORY_DESCRIPTOR*)((uint64_t)MemoryMap + (i * DescriptorSize));
-
-        TotalMemory += Descriptor->NumberOfPages * PAGE_SIZE;
-    }
-
-    // Get the actual memory map.
-    Status = gBS->GetMemoryMap(&MemoryMapSize, MemoryMap, &MapKey, &DescriptorSize, &DescriptorVersion);
-    if (EFI_ERROR(Status)) {
-        // Handle error
-        return Status;
-    }
-
-    // StelluxMemoryDescriptor* MemoryMap;
-    // UINTN MemoryMapSize = 0;
-    // UINTN MapKey = 0;
-    // Status = RetrieveMemoryMap(&MemoryMap, &MemoryMapSize, &MapKey);
-    // if (EFI_ERROR(Status)) {
-    //     Print(L"Failed to read memory map: %r\n\r", Status);
-    //     return Status;
-    // }
+    // Actually read in the memory map
+    uefi_call_wrapper(
+        SystemTable->BootServices->GetMemoryMap,
+        5,
+        &MMapSize,
+        MemoryMap,
+        &MMapKey,
+        &DescriptorSize,
+        &DescriptorVersion
+    );
 
     // Exit boot services.
-    Status = gBS->ExitBootServices(ImageHandle, MapKey);
+    Status = gBS->ExitBootServices(ImageHandle, MMapKey);
     if (EFI_ERROR(Status)) {
         Print(L"Failed to exit boot services\n\r");
         return Status;

@@ -1,5 +1,16 @@
 #include "paging.h"
 
+uint64_t GlobalAllocatedMemory = 0;
+uint64_t GlobalAllocatedPageCount = 0;
+
+uint64_t GetAllocatedMemoryCount() {
+	return GlobalAllocatedMemory;
+}
+
+uint64_t GetAllocatedPageCount() {
+	return GlobalAllocatedPageCount;
+}
+
 void* krequest_page() {
     EFI_PHYSICAL_ADDRESS page;
     EFI_STATUS status = uefi_call_wrapper(
@@ -15,6 +26,8 @@ void* krequest_page() {
         return NULL;
     }
 
+	GlobalAllocatedMemory += PAGE_SIZE;
+	GlobalAllocatedPageCount++;
     return (void*)page;
 }
 

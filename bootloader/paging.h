@@ -1,8 +1,6 @@
 #ifndef PAGING_H
 #define PAGING_H
-
-#include <efi.h>
-#include <efilib.h>
+#include "common.h"
 
 #define PAGE_SIZE 0x1000
 
@@ -41,6 +39,9 @@ struct page_table_entry {
 struct page_table {
     struct page_table_entry entries[512];
 } __attribute__((aligned(PAGE_SIZE)));
+
+uint64_t GetAllocatedMemoryCount();
+uint64_t GetAllocatedPageCount();
 
 void* krequest_page();
 

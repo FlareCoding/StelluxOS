@@ -1,8 +1,6 @@
 #ifndef MEMORY_MAP_H
 #define MEMORY_MAP_H
-
-#include <efi.h>
-#include <efilib.h>
+#include "common.h"
 
 typedef struct {
     UINT64 BaseAddress;
