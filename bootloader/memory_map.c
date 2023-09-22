@@ -18,7 +18,6 @@ UINT64 GetTotalSystemMemory(
 }
 
 EFI_STATUS ReadMemoryMap(
-    EFI_SYSTEM_TABLE* SystemTable,
     EFI_MEMORY_DESCRIPTOR** EfiMemoryMap,
     UINTN* MemoryMapSize,
     UINTN* MemoryMapKey,
@@ -30,7 +29,7 @@ EFI_STATUS ReadMemoryMap(
 
     // First call will just give us the map size
     uefi_call_wrapper(
-        SystemTable->BootServices->GetMemoryMap,
+        gBS->GetMemoryMap,
         5,
         MemoryMapSize,
         *EfiMemoryMap,
@@ -44,7 +43,7 @@ EFI_STATUS ReadMemoryMap(
 
     // Actually read in the memory map
     Status = uefi_call_wrapper(
-        SystemTable->BootServices->GetMemoryMap,
+        gBS->GetMemoryMap,
         5,
         MemoryMapSize,
         *EfiMemoryMap,

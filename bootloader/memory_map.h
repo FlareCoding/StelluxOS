@@ -3,7 +3,6 @@
 #include "common.h"
 
 EFI_STATUS ReadMemoryMap(
-    EFI_SYSTEM_TABLE* SystemTable,
     EFI_MEMORY_DESCRIPTOR** EfiMemoryMap,
     UINTN* MemoryMapSize,
     UINTN* MemoryMapKey,

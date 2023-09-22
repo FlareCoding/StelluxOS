@@ -115,7 +115,6 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     UINTN MemoryMapSize, MemoryMapKey, DescriptorSize;
     UINT64 TotalSystemMemory;
     Status = ReadMemoryMap(
-        SystemTable,
         &EfiMemoryMap,
         &MemoryMapSize,
         &MemoryMapKey,
@@ -127,6 +126,12 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         return Status;
     }
 
+    //
+    // Now we have to create our own page table and do the following:
+    //     1) Identity map all of the system memory
+    //     2) Identity map the graphics output buffer
+    //     3) Map the kernel to a higher half of the address space (base at 0xffff800000000000...)
+    //
     struct page_table* pml4 = create_pml4(TotalSystemMemory, KernelPhysicalBase, KernelVirtualBase, KernelSize, (void*)GraphicsOutputProtocol->Mode->FrameBufferBase, (UINTN)GraphicsOutputProtocol->Mode->FrameBufferSize);
     if (pml4 == NULL) {
         Print(L"Error occured while creating page table\n\r");
@@ -137,14 +142,15 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     Print(L"Page table size: %llu KB\n\r", GetAllocatedMemoryCount() / 1024);
 
     // Read the memory map one more time to acquire the final memory map key
-    if (EFI_ERROR(ReadMemoryMap(
-        SystemTable,
+    Status = ReadMemoryMap(
         &EfiMemoryMap,
         &MemoryMapSize,
         &MemoryMapKey,
         &DescriptorSize,
         &TotalSystemMemory
-    ))) {
+    );
+    
+    if (EFI_ERROR(Status)) {
         Print(L"Failed to acquire final memory map key: %r\n\r", Status);
         return EFIERR(1);
     }
