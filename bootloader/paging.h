@@ -2,8 +2,6 @@
 #define PAGING_H
 #include "common.h"
 
-#define PAGE_SIZE 0x1000
-
 struct page_index_dict {
     uint64_t pt_lvl_4;      // Page Directory Pointer table index
     uint64_t pt_lvl_3;      // Page Directory table index

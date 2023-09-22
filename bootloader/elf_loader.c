@@ -91,8 +91,9 @@ EFI_STATUS ReadProgramHeaders(EFI_FILE* KernelFile, Elf64_Ehdr* ElfHeader, Elf64
     return EFI_SUCCESS;
 }
 
-EFI_STATUS LoadSegments(EFI_FILE* KernelFile, Elf64_Phdr* ProgramHeaders, UINT16 NumHeaders, VOID** KernelBase) {
+EFI_STATUS LoadSegments(EFI_FILE* KernelFile, Elf64_Phdr* ProgramHeaders, UINT16 NumHeaders, VOID** KernelBase, uint64_t* KernelSize) {
     EFI_STATUS Status;
+    *KernelSize = 0;
 
     for (UINT16 i = 0; i < NumHeaders; ++i) {
         Elf64_Phdr* phdr = &ProgramHeaders[i];
@@ -126,6 +127,8 @@ EFI_STATUS LoadSegments(EFI_FILE* KernelFile, Elf64_Phdr* ProgramHeaders, UINT16
             return Status;
         }
 
+        *KernelSize += phdr->p_memsz;
+
         Print(L"Segment p_addr: 0x%llx  v_addr: 0x%llx  loaded_at: 0x%llx\n\r", phdr->p_paddr, phdr->p_vaddr, Segment);
 
         // Zero out the remaining memory (if any)
@@ -142,7 +145,7 @@ EFI_STATUS LoadSegments(EFI_FILE* KernelFile, Elf64_Phdr* ProgramHeaders, UINT16
 }
 
 
-EFI_STATUS LoadElfKernel(EFI_FILE* RootDir, CHAR16* FileName, VOID** EntryPoint, VOID** KernelBase) {
+EFI_STATUS LoadElfKernel(EFI_FILE* RootDir, CHAR16* FileName, VOID** EntryPoint, VOID** KernelBase, uint64_t* KernelSize) {
     EFI_FILE* KernelFile;
     Elf64_Ehdr ElfHeader;
     Elf64_Phdr* ProgramHeaders;
@@ -168,7 +171,7 @@ EFI_STATUS LoadElfKernel(EFI_FILE* RootDir, CHAR16* FileName, VOID** EntryPoint,
         return Status;
     }
 
-    Status = LoadSegments(KernelFile, ProgramHeaders, ElfHeader.e_phnum, KernelBase);
+    Status = LoadSegments(KernelFile, ProgramHeaders, ElfHeader.e_phnum, KernelBase, KernelSize);
     if (EFI_ERROR(Status)) {
         Print(L"Failed to load ELF segments.\n\r");
         FreePool(ProgramHeaders);
@@ -177,6 +180,7 @@ EFI_STATUS LoadElfKernel(EFI_FILE* RootDir, CHAR16* FileName, VOID** EntryPoint,
     }
 
     Print(L"Kernel Loaded Base: 0x%llx ElfHeader.e_entry: 0x%llx\n\r", *KernelBase, (UINTN)ElfHeader.e_entry);
+    Print(L"Kernel Size: 0x%llx (%llu pages)\n\r", *KernelSize, *KernelSize / PAGE_SIZE);
     *EntryPoint = (VOID*)ElfHeader.e_entry;
 
     Print(L"Successfully loaded the kernel into memory!\n\r");

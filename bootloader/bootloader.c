@@ -13,7 +13,7 @@ struct KernelEntryParams {
     unsigned int GopPixelsPerScanLine;
 };
 
-struct page_table* create_pml4(uint64_t TotalSystemMemory, VOID* KernelBase, VOID* GopBufferBase, UINTN GopBufferSize) {
+struct page_table* create_pml4(uint64_t TotalSystemMemory, VOID* KernelPhysicalBase, uint64_t KernelSize, VOID* GopBufferBase, UINTN GopBufferSize) {
     // Allocate page tables
     struct page_table *pml4 = (struct page_table*)krequest_page();
     kmemset(pml4, 0, PAGE_SIZE);
@@ -24,8 +24,8 @@ struct page_table* create_pml4(uint64_t TotalSystemMemory, VOID* KernelBase, VOI
     }
 
     // Map the kernel to a higher half
-    for (uint64_t i = 0; i < 10 * PAGE_SIZE; i += PAGE_SIZE) {
-        void* paddr = (void*)(i + (uint64_t)KernelBase);
+    for (uint64_t i = 0; i < KernelSize; i += PAGE_SIZE) {
+        void* paddr = (void*)(i + (uint64_t)KernelPhysicalBase);
         void* vaddr = (void*)(i + (uint64_t)KERNEL_VIRTUAL_BASE);
 
         MapPages(vaddr, paddr, pml4);
@@ -55,48 +55,6 @@ uint64_t GetTotalSystemMemory(
     }
 
     return TotalMemory;
-}
-
-EFI_STATUS ExitUEFIBootServices(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
-    EFI_STATUS status;
-    EFI_MEMORY_DESCRIPTOR *memoryMap = NULL;
-    UINTN mapSize = 0, mapKey = 0, descriptorSize = 0;
-    UINT32 descriptorVersion = 0;
-
-    // Step 1: Get the memory map size
-    status = uefi_call_wrapper(SystemTable->BootServices->GetMemoryMap, 5,
-                               &mapSize, memoryMap, &mapKey, &descriptorSize, &descriptorVersion);
-
-    if (status == EFI_BUFFER_TOO_SMALL) {
-        // Allocate buffer for the memory map
-        mapSize += 2 * descriptorSize;  // Add some extra space to be sure
-        status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3,
-                                   EfiLoaderData, mapSize, (void**)&memoryMap);
-
-        if (EFI_ERROR(status)) {
-            Print(L"Failed to allocate memory for memory map: %r\n", status);
-            return status;
-        }
-
-        // Step 2: Get the memory map
-        status = uefi_call_wrapper(SystemTable->BootServices->GetMemoryMap, 5,
-                                   &mapSize, memoryMap, &mapKey, &descriptorSize, &descriptorVersion);
-
-        if (EFI_ERROR(status)) {
-            Print(L"Failed to get memory map: %r\n", status);
-            return status;
-        }
-    }
-
-    // Step 3: Exit Boot Services
-    status = uefi_call_wrapper(SystemTable->BootServices->ExitBootServices, 2, ImageHandle, mapKey);
-
-    if (EFI_ERROR(status)) {
-        Print(L"Failed to exit boot services: %r\n", status);
-        return status;
-    }
-
-    return EFI_SUCCESS;
 }
 
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
@@ -136,7 +94,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     VOID* EntryPoint = NULL;
     VOID* KernelBase = NULL;
-    Status = LoadElfKernel(RootDir, L"kernel.elf", &EntryPoint, &KernelBase);
+    uint64_t KernelSize;
+    Status = LoadElfKernel(RootDir, L"kernel.elf", &EntryPoint, &KernelBase, &KernelSize);
     if (EFI_ERROR(Status)) {
         Print(L"Failed to load kernel.\n\r");
         return Status;
@@ -203,7 +162,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     uint64_t TotalSystemMemory = GetTotalSystemMemory(MemoryMap, DescriptorCount, DescriptorSize);
     Print(L"Total System Memory: 0x%llx\n\r", TotalSystemMemory);
 
-    struct page_table* pml4 = create_pml4(TotalSystemMemory, KernelBase, (void*)Gop->Mode->FrameBufferBase, (UINTN)Gop->Mode->FrameBufferSize);
+    struct page_table* pml4 = create_pml4(TotalSystemMemory, KernelBase, KernelSize, (void*)Gop->Mode->FrameBufferBase, (UINTN)Gop->Mode->FrameBufferSize);
     if (pml4 == NULL) {
         Print(L"Error occured while creating page table\n\r");
         return -1;

@@ -2,6 +2,6 @@
 #define ELF_LOADER_H
 #include "common.h"
 
-EFI_STATUS LoadElfKernel(EFI_FILE* RootDir, CHAR16* FileName, VOID** EntryPoint, VOID** KernelBase);
+EFI_STATUS LoadElfKernel(EFI_FILE* RootDir, CHAR16* FileName, VOID** EntryPoint, VOID** KernelBase, uint64_t* KernelSize);
 
 #endif // ELF_LOADER_H
