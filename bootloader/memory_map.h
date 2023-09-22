@@ -2,12 +2,13 @@
 #define MEMORY_MAP_H
 #include "common.h"
 
-typedef struct {
-    UINT64 BaseAddress;
-    UINT64 Size;
-    UINT32 Type;
-} StelluxMemoryDescriptor;
-
-EFI_STATUS RetrieveMemoryMap(StelluxMemoryDescriptor** CustomMap, UINTN* MapSize, UINTN* MapKey);
+EFI_STATUS ReadMemoryMap(
+    EFI_SYSTEM_TABLE* SystemTable,
+    EFI_MEMORY_DESCRIPTOR** EfiMemoryMap,
+    UINTN* MemoryMapSize,
+    UINTN* MemoryMapKey,
+    UINTN* DescriptorSize,
+    UINT64* TotalSystemMemory
+);
 
 #endif // MEMORY_MAP_H

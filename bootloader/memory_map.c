@@ -1,64 +1,65 @@
 #include "memory_map.h"
 
-EFI_STATUS RetrieveMemoryMap(StelluxMemoryDescriptor** CustomMap, UINTN* MapSize, UINTN* MapKey) {
+UINT64 GetTotalSystemMemory(
+    EFI_MEMORY_DESCRIPTOR* MemoryMap,
+    UINT64 Entries,
+    UINT64 DescriptorSize
+) {
+    UINT64 TotalMemory = 0;
+
+    for (UINT64 i = 0; i < Entries; ++i) {
+        EFI_MEMORY_DESCRIPTOR* desc =
+            (EFI_MEMORY_DESCRIPTOR*)((UINT64)MemoryMap + (i * DescriptorSize));
+
+        TotalMemory += desc->NumberOfPages * PAGE_SIZE;
+    }
+
+    return TotalMemory;
+}
+
+EFI_STATUS ReadMemoryMap(
+    EFI_SYSTEM_TABLE* SystemTable,
+    EFI_MEMORY_DESCRIPTOR** EfiMemoryMap,
+    UINTN* MemoryMapSize,
+    UINTN* MemoryMapKey,
+    UINTN* DescriptorSize,
+    UINT64* TotalSystemMemory
+) {
     EFI_STATUS Status;
-    EFI_MEMORY_DESCRIPTOR* UefiMemoryMap = NULL;
-    UINTN MemoryMapSize = 0;
-    UINTN MKey;
-    UINTN DescriptorSize;
     UINT32 DescriptorVersion;
-    UINTN DescriptorCount;
 
-    // Get Memory Map size first
-    Status = uefi_call_wrapper(BS->GetMemoryMap, 5, &MemoryMapSize, UefiMemoryMap, &MKey, &DescriptorSize, &DescriptorVersion);
-    if (Status != EFI_BUFFER_TOO_SMALL) {
-        Print(L"Error fetching memory map size: %r\n", Status);
-        return Status;
-    }
+    // First call will just give us the map size
+    uefi_call_wrapper(
+        SystemTable->BootServices->GetMemoryMap,
+        5,
+        MemoryMapSize,
+        *EfiMemoryMap,
+        MemoryMapKey,
+        DescriptorSize,
+        &DescriptorVersion
+    );
 
-    // Add some extra size for potential inaccuracy
-    MemoryMapSize += 8 * DescriptorSize;
+    // Allocate enough space for the memory map
+    *EfiMemoryMap = AllocateZeroPool(*MemoryMapSize);
 
-    // Allocate pool for UEFI's memory map
-    Status = uefi_call_wrapper(BS->AllocatePool, 3, EfiLoaderData, MemoryMapSize, (void**)&UefiMemoryMap);
+    // Actually read in the memory map
+    Status = uefi_call_wrapper(
+        SystemTable->BootServices->GetMemoryMap,
+        5,
+        MemoryMapSize,
+        *EfiMemoryMap,
+        MemoryMapKey,
+        DescriptorSize,
+        &DescriptorVersion
+    );
+
     if (EFI_ERROR(Status)) {
-        Print(L"Error allocating memory for UEFI memory map: %r\n", Status);
+        Print(L"Failed to read memory map: %r\n\r", Status);
         return Status;
     }
 
-    // Get the actual memory map
-    Status = uefi_call_wrapper(BS->GetMemoryMap, 5, &MemoryMapSize, UefiMemoryMap, &MKey, &DescriptorSize, &DescriptorVersion);
-    if (EFI_ERROR(Status)) {
-        Print(L"Error fetching memory map: %r\n", Status);
-        return Status;
-    }
-
-    // Calculate the number of descriptors
-    DescriptorCount = MemoryMapSize / DescriptorSize;
-
-    // Allocate memory for custom map
-    Status = uefi_call_wrapper(BS->AllocatePool, 3, EfiLoaderData, DescriptorCount * sizeof(StelluxMemoryDescriptor), (void**)CustomMap);
-    if (EFI_ERROR(Status)) {
-        Print(L"Error allocating memory for custom memory map: %r\n", Status);
-        return Status;
-    }
-
-    // Fill in custom map
-    for (UINTN i = 0; i < DescriptorCount; ++i) {
-        EFI_MEMORY_DESCRIPTOR* Descriptor = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)UefiMemoryMap + (i * DescriptorSize));
-        StelluxMemoryDescriptor* CustomDescriptor = &(*CustomMap)[i];
-
-        CustomDescriptor->BaseAddress = Descriptor->PhysicalStart;
-        CustomDescriptor->Size = Descriptor->NumberOfPages * 4096;  // Assuming 4KB page size
-        CustomDescriptor->Type = Descriptor->Type;
-    }
-
-    // Save the size for later use
-    *MapSize = DescriptorCount;
-    *MapKey = MKey;
-
-    // Free UEFI memory map as we no longer need it
-    uefi_call_wrapper(BS->FreePool, 1, UefiMemoryMap);
+    UINT64 DescriptorCount = *MemoryMapSize / *DescriptorSize;
+    *TotalSystemMemory = GetTotalSystemMemory(*EfiMemoryMap, DescriptorCount, *DescriptorSize);
 
     return EFI_SUCCESS;
 }
