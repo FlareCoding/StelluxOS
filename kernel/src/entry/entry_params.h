@@ -2,21 +2,21 @@
 #define KERNEL_PARAMS_H
 #include "ktypes.h"
 
-struct kernel_entry_params {
+struct KernelEntryParams {
     struct {
         void*     base;
         uint64_t  size;
         uint32_t  width;
         uint32_t  height;
-        uint32_t  pixels_per_scanline;
-    } graphics_framebuffer;
+        uint32_t  pixelsPerScanline;
+    } graphicsFramebuffer;
 
     struct {
         void*     base;
         uint64_t  size;
-        uint64_t  descriptor_size;
-        uint64_t  descriptor_count;
-    } efi_memory_map;
+        uint64_t  descriptorSize;
+        uint64_t  descriptorCount;
+    } efiMemoryMap;
 };
 
 #endif // KERNEL_PARAMS_H

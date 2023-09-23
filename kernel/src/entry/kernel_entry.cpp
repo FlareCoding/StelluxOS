@@ -1,22 +1,22 @@
 #include "entry_params.h"
 #include "kmemory.h"
 
-extern "C" void _kentry(kernel_entry_params* params);
+extern "C" void _kentry(KernelEntryParams* params);
 
-void set_pixel(int x, int y, int color, kernel_entry_params* params) {
-    unsigned int* framebuffer = (unsigned int*) params->graphics_framebuffer.base;
-    framebuffer[x + (y * params->graphics_framebuffer.width)] = color;
+void setPixel(int x, int y, int color, KernelEntryParams* params) {
+    uint32_t* framebuffer = static_cast<uint32_t*>(params->graphicsFramebuffer.base);
+    framebuffer[x + (y * params->graphicsFramebuffer.width)] = color;
 }
 
-void _kentry(kernel_entry_params* params) {
+void _kentry(KernelEntryParams* params) {
     // Draw a colored square in the top left corner
     for (int x = 0; x < 100; ++x) {
         for (int y = 0; y < 100; ++y) {
-            set_pixel(x, y, 0xFFEFFFFF, params);
+            setPixel(x, y, 0xFFEFFFFF, params);
         }
     }
 
     while (1) {
-        __asm__ __volatile__ ("hlt");
+        __asm__ volatile("hlt");
     }
 }
