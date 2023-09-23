@@ -39,9 +39,45 @@ int memcmp(void* dest, void* src, size_t size) {
     uint8_t* d = static_cast<uint8_t*>(dest);
     uint8_t* s = static_cast<uint8_t*>(src);
 
-    for (size_t i = 0; i < size; ++i) {
-        if (d[i] < s[i]) return -1;
-        if (d[i] > s[i]) return 1;
+    // Handle initial bytes until d and s are 8-byte aligned
+    while (size && (reinterpret_cast<size_t>(d) & 0x7)) {
+        if (*d != *s) {
+            return *d - *s;
+        }
+        ++d;
+        ++s;
+        --size;
+    }
+
+    // Use 64-bit comparisons for as long as possible
+    uint64_t* d64 = reinterpret_cast<uint64_t*>(d);
+    uint64_t* s64 = reinterpret_cast<uint64_t*>(s);
+
+    while (size >= 8) {
+        if (*d64 != *s64) {
+            d = reinterpret_cast<uint8_t*>(d64);
+            s = reinterpret_cast<uint8_t*>(s64);
+            for (int i = 0; i < 8; ++i) {
+                if (d[i] != s[i]) {
+                    return d[i] - s[i];
+                }
+            }
+        }
+        ++d64;
+        ++s64;
+        size -= 8;
+    }
+
+    // Handle remaining bytes
+    d = reinterpret_cast<uint8_t*>(d64);
+    s = reinterpret_cast<uint8_t*>(s64);
+
+    while (size--) {
+        if (*d != *s) {
+            return *d - *s;
+        }
+        ++d;
+        ++s;
     }
 
     return 0;
