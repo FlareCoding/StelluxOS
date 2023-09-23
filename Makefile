@@ -9,7 +9,9 @@ export
 # Compiler and Linker
 CC  := gcc
 CXX := g++
+ASMC:= nasm
 LD  := ld
+export
 
 # Subdirectories
 BOOTLOADER_DIR := bootloader
@@ -58,7 +60,7 @@ $(DISK_IMG): bootloader kernel
 	mmd -i $(DISK_IMG) ::/EFI/BOOT
 	mcopy -i $(DISK_IMG) $(BOOTLOADER_DIR)/bootloader.efi ::/EFI/BOOT
 	mcopy -i $(DISK_IMG) efi/startup.nsh ::
-	mcopy -i $(DISK_IMG) $(KERNEL_DIR)/kernel.elf ::
+	mcopy -i $(DISK_IMG) $(KERNEL_DIR)/bin/kernel.elf ::
 	mcopy -i $(DISK_IMG) $(RESOURCE_DIR)/zap-light16.psf ::
 
 # Run target
@@ -79,7 +81,7 @@ run-debug-headless: $(DISK_IMG)
 
 # Connects GDB to a running qemu instance
 connect-gdb:
-	gdb -ex "source ./gdb_setup.gdb" -ex "target remote localhost:1234" -ex "add-symbol-file kernel/kernel.elf" -ex "b _kentry"
+	gdb -ex "source ./gdb_setup.gdb" -ex "target remote localhost:1234" -ex "add-symbol-file kernel/bin/kernel.elf" -ex "b _kentry"
 
 # Clean target
 clean:

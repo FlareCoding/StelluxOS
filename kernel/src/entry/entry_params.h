@@ -1,6 +1,6 @@
 #ifndef KERNEL_PARAMS_H
 #define KERNEL_PARAMS_H
-#include <stdint.h>
+#include "ktypes.h"
 
 struct kernel_entry_params {
     struct {
