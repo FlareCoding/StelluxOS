@@ -1,4 +1,5 @@
 #include "elf_loader.h"
+#include "font_loader.h"
 #include "memory_map.h"
 #include "gop_setup.h"
 #include "paging.h"
@@ -12,6 +13,8 @@ struct KernelEntryParams {
         UINT32  Width;
         UINT32  Height;
         UINT32  PixelsPerScanline;
+
+        struct PSF1_Font* TextRenderingFont;
     } GraphicsFramebuffer;
 
     struct {
@@ -94,6 +97,15 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         return Status;
     }
 
+    // Load the text font file
+    struct PSF1_Font* ZapLightFont = LoadPSF1Font(L"zap-light16.psf", ImageHandle, SystemTable);
+    if (ZapLightFont == NULL) {
+        Print(L"Failed to load zap-light16.psf font file\n\r");
+        return EFIERR(-1);
+    }
+    
+    Print(L"Loaded zap-light16.psf\n\rChar size: %u\n\r\n\r", ZapLightFont->Header->CharSize);
+
     // Acquire information from the memory map
     EFI_MEMORY_DESCRIPTOR* EfiMemoryMap;
     UINTN MemoryMapSize, MemoryMapKey, DescriptorSize;
@@ -166,6 +178,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     params.GraphicsFramebuffer.Width = (UINT64)GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
     params.GraphicsFramebuffer.Height = (UINT64)GraphicsOutputProtocol->Mode->Info->VerticalResolution;
     params.GraphicsFramebuffer.PixelsPerScanline = (UINT64)GraphicsOutputProtocol->Mode->Info->PixelsPerScanLine;
+    params.GraphicsFramebuffer.TextRenderingFont = ZapLightFont;
 
     params.EfiMemoryMap.Base = (VOID*)EfiMemoryMap;
     params.EfiMemoryMap.Size = MemoryMapSize;

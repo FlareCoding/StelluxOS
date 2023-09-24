@@ -1,17 +1,7 @@
 #ifndef ELF_LOADER_H
 #define ELF_LOADER_H
-#include "common.h"
+#include "file_loader.h"
 #include "elf.h"
-
-EFI_STATUS OpenRootDirectory(
-    EFI_FILE** RootDir
-);
-
-EFI_STATUS OpenFile(
-    EFI_FILE* RootDir,
-    CHAR16* FileName,
-    EFI_FILE** File
-);
 
 EFI_STATUS ValidateElfHeader(
     Elf64_Ehdr* ElfHeader
