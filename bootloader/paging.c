@@ -124,16 +124,24 @@ struct PageTable* CreateIdentityMappedPageTable(
 
 void MapKernelToHigherHalf(
     struct PageTable* PML4,
-    VOID* KernelPhysicalBase,
-    VOID* KernelVirtualBase,
-    UINT64 KernelSize
+    struct ElfSegmentInfo* KernelElfSegments
 ) {
-    for (UINT64 i = 0; i < KernelSize; i += PAGE_SIZE) {
-        VOID* paddr = (VOID*)(i + (UINT64)KernelPhysicalBase);
-        VOID* vaddr = (VOID*)(i + (UINT64)KernelVirtualBase);
+	// Loop over each loaded kernel segment
+    for (UINT64 i = 0; i < MAX_LOADED_ELF_SEGMENTS; i++) {
+		struct ElfSegmentInfo SegmentInfo = KernelElfSegments[i];
 
-        MapPages(vaddr, paddr, PML4);
-        Print(L"Mapping kernel page 0x%llx --> 0x%llx\n\r", vaddr, paddr);
+		// Stop at the first invalid segment
+		if (SegmentInfo.VirtualBase == 0) {
+			break;
+		}
+
+		// Map all the pages inside the segment
+		for (UINT64 i = 0; i < SegmentInfo.VirtualSize; i += PAGE_SIZE) {
+			VOID* paddr = (VOID*)(i + (UINT64)SegmentInfo.PhysicalBase);
+			VOID* vaddr = (VOID*)(i + (UINT64)SegmentInfo.VirtualBase);
+
+			MapPages(vaddr, paddr, PML4);
+			Print(L"Mapping kernel page 0x%llx --> 0x%llx\n\r", vaddr, paddr);
+		}
     }
-
 }

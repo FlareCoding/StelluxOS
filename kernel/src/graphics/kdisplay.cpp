@@ -1,29 +1,60 @@
 #include "kdisplay.h"
 #include <kmemory.h>
 
-struct Psf1Hdr {
-    uint8_t magic[2];
-    uint8_t mode;
-    uint8_t charSize;
-};
-
-struct Psf1Font {
-    Psf1Hdr* header;
-    void* glyphBuffer;
-};
+#define CHAR_PIXEL_WIDTH 8
 
 Framebuffer Display::s_framebuffer;
-void* Display::s_font = nullptr;
+Psf1Font* Display::s_font = nullptr;
 
 void Display::initialize(void* framebuffer, void* font) {
     memcpy(&s_framebuffer, framebuffer, sizeof(Framebuffer));
 
-    s_font = font;
+    s_font = static_cast<Psf1Font*>(font);
 }
 
 void Display::fillPixel(uint32_t x, uint32_t y, uint32_t color) {
-    uint32_t* base = (uint32_t*)s_framebuffer.base;
+    uint32_t* base = static_cast<uint32_t*>(s_framebuffer.base);
     uint32_t* pixelPtr = base + x + (y * s_framebuffer.pixelsPerScanline);
 
     *pixelPtr = color;
+}
+
+void Display::renderTextGlyph(char chr, uint32_t x, uint32_t y, uint32_t color) {
+    uint8_t charPixelHeight = s_font->header->charSize;
+
+    char* fontBuffer = static_cast<char*>(s_font->glyphBuffer) + (chr * charPixelHeight);
+
+    // Detect overflow and implement text buffer scrolling
+    if (y + charPixelHeight > s_framebuffer.height) {
+        for (unsigned long offy = charPixelHeight; offy < s_framebuffer.height + charPixelHeight; offy++) {
+            for (unsigned long offx = 0; offx < s_framebuffer.width; offx++) {
+                // Get the color of the current filled pixel
+                uint32_t* crntPx = static_cast<uint32_t*>(s_framebuffer.base) + offx + (offy * s_framebuffer.pixelsPerScanline);
+
+                // Fill the previous line with the current
+                // line's color creating a "copy-up" effect.
+                fillPixel(offx, offy - charPixelHeight, *crntPx);
+            }
+        }
+
+        y -= charPixelHeight;
+    }
+
+    // First we clear the character slot in case something is already there
+    for (unsigned long yOffset = y; yOffset < y + charPixelHeight; yOffset++) {
+		for (unsigned long xOffset = x; xOffset < x + CHAR_PIXEL_WIDTH; xOffset++) {
+			fillPixel(xOffset, yOffset, 0);
+		}
+	}
+
+	// Stellux kernel currently only supports the psf1 font that's 8xCHAR_PIXEL_HEIGHT px.
+	for (unsigned long yOffset = y; yOffset < y + charPixelHeight; yOffset++) {
+		for (unsigned long xOffset = x; xOffset < x + CHAR_PIXEL_WIDTH; xOffset++) {
+			if ((*fontBuffer & (0b10000000 >> (xOffset - x))) > 0) {
+				fillPixel(xOffset, yOffset, color);
+			}
+		}
+
+		++fontBuffer;
+	}
 }

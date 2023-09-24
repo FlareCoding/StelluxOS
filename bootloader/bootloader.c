@@ -4,8 +4,10 @@
 #include "gop_setup.h"
 #include "paging.h"
 
+struct ElfSegmentInfo KernelElfSegments[MAX_LOADED_ELF_SEGMENTS] = { 0 };
+
 struct KernelEntryParams {
-    UINT64 KernelPhysicalBase;
+    struct ElfSegmentInfo* KernelElfSegments;
 
     struct {
         VOID*   Base;
@@ -48,7 +50,8 @@ EFI_STATUS LoadKernel(
         KernelEntry,
         KernelPhysicalBase,
         KernelVirtualBase,
-        KernelSize
+        KernelSize,
+        KernelElfSegments
     );
 
     if (EFI_ERROR(Status)) {
@@ -139,7 +142,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
 
     // Map the kernel to the higher half
-    MapKernelToHigherHalf(PML4, KernelPhysicalBase, KernelVirtualBase, KernelSize);
+    MapKernelToHigherHalf(PML4, KernelElfSegments);
 
     Print(L"\n\r------ Page Table PML4 Created ------\n\r");
     Print(L"    Pages Allocated  : %llu\n\r", GetAllocatedPageCount());
@@ -171,7 +174,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     // Initialize params
     struct KernelEntryParams params;
-    params.KernelPhysicalBase = (UINT64)KernelPhysicalBase;
+    params.KernelElfSegments = KernelElfSegments;
     
     params.GraphicsFramebuffer.Base = (VOID*)GraphicsOutputProtocol->Mode->FrameBufferBase;
     params.GraphicsFramebuffer.Size = (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize;

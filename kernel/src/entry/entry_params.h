@@ -1,9 +1,9 @@
 #ifndef KERNEL_PARAMS_H
 #define KERNEL_PARAMS_H
-#include <ktypes.h>
+#include "elf_segment_info.h"
 
 struct KernelEntryParams {
-    uint64_t kernelPhysicalBase;
+    ElfSegmentInfo* kernelElfSegments;
 
     struct {
         void*     base;

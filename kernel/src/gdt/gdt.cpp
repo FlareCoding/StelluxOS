@@ -11,7 +11,10 @@ GdtSegmentDescriptor userNullDescriptor;
 GdtSegmentDescriptor userCodeDescriptor;
 GdtSegmentDescriptor userDataDescriptor;
 
-GdtDescriptor g_gdtDescriptor;
+GdtDescriptor g_gdtDescriptor = {
+    .limit = sizeof(GDT) - 1,
+    .base = (uint64_t)&g_globalDescriptorTable
+};
 
 void setSegmentDescriptorBase(
     GdtSegmentDescriptor* descriptor,
@@ -93,10 +96,6 @@ void intializeAndInstallGDT() {
     g_globalDescriptorTable.userNull = userNullDescriptor;
     g_globalDescriptorTable.userCode = userCodeDescriptor;
     g_globalDescriptorTable.userData = userDataDescriptor;
-
-    // Update the GDT descriptor
-    g_gdtDescriptor.limit = sizeof(GDT) - 1;
-    g_gdtDescriptor.base = (uint64_t)&g_globalDescriptorTable;
 
     // Install the GDT
     __kinstall_gdt_asm(&g_gdtDescriptor);

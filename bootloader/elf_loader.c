@@ -92,11 +92,13 @@ EFI_STATUS LoadElfSegments(
     UINT16 NumHeaders,
     VOID** PhysicalBase,
     VOID** VirtualBase,
-    UINT64* TotalSize
+    UINT64* TotalSize,
+    struct ElfSegmentInfo* ElfSegmentList
 ) {
     EFI_STATUS Status;
     *TotalSize = 0;
 
+    UINT64 SegmentIndex = 0;
     for (UINT16 i = 0; i < NumHeaders; ++i) {
         Elf64_Phdr* phdr = &ProgramHeaders[i];
 
@@ -147,8 +149,17 @@ EFI_STATUS LoadElfSegments(
 
         if (i == 0) {  // Assuming the first segment is the lowest
             *PhysicalBase = Segment;
-            *VirtualBase = (void*)phdr->p_vaddr;
+            *VirtualBase = (VOID*)phdr->p_vaddr;
         }
+
+        struct ElfSegmentInfo SegInfo;
+        SegInfo.PhysicalBase = Segment;
+        SegInfo.PhysicalSize = (UINT64)phdr->p_memsz;
+        SegInfo.VirtualBase = (VOID*)phdr->p_vaddr;
+        SegInfo.VirtualSize = (UINT64)phdr->p_memsz;
+        SegInfo.Flags = 0;
+
+        ElfSegmentList[SegmentIndex++] = SegInfo;
     }
 
     return EFI_SUCCESS;
@@ -161,7 +172,8 @@ EFI_STATUS LoadElfFile(
     VOID** EntryPoint,
     VOID** ElfPhysicalBase,
     VOID** ElfVirtualBase,
-    UINT64* ElfSize
+    UINT64* ElfSize,
+    struct ElfSegmentInfo* ElfSegmentList
 ) {
     EFI_STATUS Status;
     EFI_FILE* ElfFile;
@@ -194,7 +206,8 @@ EFI_STATUS LoadElfFile(
         ElfHeader.e_phnum,
         ElfPhysicalBase,
         ElfVirtualBase,
-        ElfSize
+        ElfSize,
+        ElfSegmentList
     );
     if (EFI_ERROR(Status)) {
         Print(L"Failed to load ELF segments.\n\r");

@@ -3,6 +3,16 @@
 #include "file_loader.h"
 #include "elf.h"
 
+#define MAX_LOADED_ELF_SEGMENTS 0x1C520
+
+struct ElfSegmentInfo {
+    VOID*  PhysicalBase;
+    UINT64 PhysicalSize;
+    VOID*  VirtualBase;
+    UINT64 VirtualSize;
+    UINT32 Flags;
+};
+
 EFI_STATUS ValidateElfHeader(
     Elf64_Ehdr* ElfHeader
 );
@@ -24,7 +34,8 @@ EFI_STATUS LoadElfSegments(
     UINT16 NumHeaders,
     VOID** PhysicalBase,
     VOID** VirtualBase,
-    UINT64* TotalSize
+    UINT64* TotalSize,
+    struct ElfSegmentInfo* ElfSegmentList
 );
 
 EFI_STATUS LoadElfFile(
@@ -33,7 +44,8 @@ EFI_STATUS LoadElfFile(
     VOID** EntryPoint,
     VOID** ElfPhysicalBase,
     VOID** ElfVirtualBase,
-    UINT64* ElfSize
+    UINT64* ElfSize,
+    struct ElfSegmentInfo* ElfSegmentList
 );
 
 #endif // ELF_LOADER_H

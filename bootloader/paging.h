@@ -1,6 +1,7 @@
 #ifndef PAGING_H
 #define PAGING_H
 #include "common.h"
+#include "elf_loader.h"
 
 struct PageLevelDictionary {
     UINT64 PTLevel4;      // Page Directory Pointer table index
@@ -59,9 +60,7 @@ struct PageTable* CreateIdentityMappedPageTable(
 
 void MapKernelToHigherHalf(
     struct PageTable* PML4,
-    VOID* KernelPhysicalBase,
-    VOID* KernelVirtualBase,
-    UINT64 KernelSize
+    struct ElfSegmentInfo* KernelElfSegments
 );
 
 #endif
