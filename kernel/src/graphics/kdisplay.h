@@ -1,6 +1,6 @@
 #ifndef KDISPLAY_H
 #define KDISPLAY_H
-#include "ktypes.h"
+#include <ktypes.h>
 
 struct Point {
     uint32_t x;

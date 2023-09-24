@@ -1,7 +1,7 @@
-#include "entry_params.h"
-#include "kmemory.h"
-#include "graphics/kdisplay.h"
-#include "gdt/gdt.h"
+#include <entry_params.h>
+#include <kmemory.h>
+#include <graphics/kdisplay.h>
+#include <gdt/gdt.h>
 
 extern "C" void _kentry(KernelEntryParams* params);
 

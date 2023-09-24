@@ -1,6 +1,6 @@
 #ifndef GDT_H
 #define GDT_H
-#include "ktypes.h"
+#include <ktypes.h>
 
 /*
     Struct definitions and field descriptions taken

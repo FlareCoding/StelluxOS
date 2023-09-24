@@ -1,5 +1,5 @@
 #include "kdisplay.h"
-#include "kmemory.h"
+#include <kmemory.h>
 
 struct Psf1Hdr {
     uint8_t magic[2];

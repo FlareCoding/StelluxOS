@@ -1,6 +1,6 @@
 #ifndef KERNEL_PARAMS_H
 #define KERNEL_PARAMS_H
-#include "ktypes.h"
+#include <ktypes.h>
 
 struct KernelEntryParams {
     uint64_t kernelPhysicalBase;
