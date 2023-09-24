@@ -18,6 +18,7 @@ void _kentry(KernelEntryParams* params) {
     kprintWarn("This is a warning (warning:%i)\n", 34);
     kprintError("This is an error [errcode:0x%x]\n", 0x02);
     kprint("This is a normal print statement\n");
+    kprintInfo("_kentry is at: 0x%llx\n\n", &_kentry);
 
     while (1) {
         __asm__ volatile("hlt");

@@ -7,9 +7,14 @@ Framebuffer Display::s_framebuffer;
 Psf1Font* Display::s_font = nullptr;
 
 void Display::initialize(void* framebuffer, void* font) {
+    // Copy framebuffer info
     memcpy(&s_framebuffer, framebuffer, sizeof(Framebuffer));
 
+    // Set the font pointer
     s_font = static_cast<Psf1Font*>(font);
+
+    // Clear the framebuffer
+    zeromem(s_framebuffer.base, s_framebuffer.size);
 }
 
 void Display::fillPixel(uint32_t x, uint32_t y, uint32_t color) {
