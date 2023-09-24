@@ -3,6 +3,8 @@
 #include "ktypes.h"
 
 struct KernelEntryParams {
+    uint64_t kernelPhysicalBase;
+
     struct {
         void*     base;
         uint64_t  size;

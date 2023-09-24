@@ -4,6 +4,8 @@
 #include "paging.h"
 
 struct KernelEntryParams {
+    UINT64 KernelPhysicalBase;
+
     struct {
         VOID*   Base;
         UINT64  Size;
@@ -157,6 +159,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     // Initialize params
     struct KernelEntryParams params;
+    params.KernelPhysicalBase = (UINT64)KernelPhysicalBase;
+    
     params.GraphicsFramebuffer.Base = (VOID*)GraphicsOutputProtocol->Mode->FrameBufferBase;
     params.GraphicsFramebuffer.Size = (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize;
     params.GraphicsFramebuffer.Width = (UINT64)GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
