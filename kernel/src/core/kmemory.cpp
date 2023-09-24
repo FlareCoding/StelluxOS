@@ -116,3 +116,7 @@ void memset(void* vaddr, uint8_t val, size_t size) {
         --size;
     }
 }
+
+void zeromem(void* vaddr, size_t size) {
+    memset(vaddr, 0, size);
+}

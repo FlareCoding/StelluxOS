@@ -2,6 +2,7 @@ KERNEL_INCLUDES = -I./src -I./src/core
 
 CFLAGS = -m64 -g -ffreestanding -O0 -Wall -Werror -Wextra $(KERNEL_INCLUDES)
 CXXFLAGS = $(CFLAGS) -std=c++17
+ASMC	 = nasm
 ASMFLAGS = -g
 LDFLAGS = -nostdlib -T kstellux.ld -o kernel.elf
 

@@ -9,7 +9,6 @@ export
 # Compiler and Linker
 CC  := gcc
 CXX := g++
-ASMC:= nasm
 LD  := ld
 export
 

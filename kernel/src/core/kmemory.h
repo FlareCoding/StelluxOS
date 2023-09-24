@@ -8,4 +8,6 @@ int memcmp(void* dest, void* src, size_t size);
 
 void memset(void* vaddr, uint8_t val, size_t size);
 
+void zeromem(void* vaddr, size_t size);
+
 #endif
