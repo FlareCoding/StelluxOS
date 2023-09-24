@@ -13,9 +13,9 @@ struct KernelEntryParams {
         UINT32  Width;
         UINT32  Height;
         UINT32  PixelsPerScanline;
-
-        struct PSF1_Font* TextRenderingFont;
     } GraphicsFramebuffer;
+
+    struct PSF1_Font* TextRenderingFont;
 
     struct {
         VOID*   Base;
@@ -178,7 +178,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     params.GraphicsFramebuffer.Width = (UINT64)GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
     params.GraphicsFramebuffer.Height = (UINT64)GraphicsOutputProtocol->Mode->Info->VerticalResolution;
     params.GraphicsFramebuffer.PixelsPerScanline = (UINT64)GraphicsOutputProtocol->Mode->Info->PixelsPerScanLine;
-    params.GraphicsFramebuffer.TextRenderingFont = ZapLightFont;
+    params.TextRenderingFont = ZapLightFont;
 
     params.EfiMemoryMap.Base = (VOID*)EfiMemoryMap;
     params.EfiMemoryMap.Size = MemoryMapSize;
