@@ -112,7 +112,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     // Now we have to create our own page table and do the following:
     //     1) Identity map all of the system memory
     //     2) Identity map the graphics output buffer
-    //     3) Map the kernel to a higher half of the address space (base at 0xffff800000000000...)
+    //     3) Map the kernel to a higher half of the address space (base at 0xffffffff80000000...)
     //
     struct PageTable* PML4 = CreateIdentityMappedPageTable(
         TotalSystemMemory,

@@ -3,7 +3,7 @@ ENTRY(_kentry)
 
 SECTIONS
 {
-    . = 0xffff800000000000;
+    . = 0xffffffff80000000;
 
     /* Align to 4KB page */
     . = ALIGN(0x1000);
