@@ -1,6 +1,6 @@
 #include "kstring.h"
 
-const char g_hexAlphabet[17] = "0123456789ABCDEF";
+const char g_hexAlphabet[17] = "0123456789abcdef";
 
 int lltoa(
     uint64_t val,
