@@ -3,9 +3,10 @@
 #include <graphics/kdisplay.h>
 #include <gdt/gdt.h>
 #include <paging/phys_addr_translation.h>
-#include <paging/page_frame_allocator.h>
+#include <paging/page.h>
 #include <ports/serial.h>
 #include <arch/x86/cpuid.h>
+#include <paging/tlb.h>
 #include <kprint.h>
 
 EXTERN_C void _kentry(KernelEntryParams* params);
@@ -38,17 +39,16 @@ void _kentry(KernelEntryParams* params) {
 
     // Lock pages with used resources
     globalPageFrameAllocator.lockPhysicalPage(params);
-    globalPageFrameAllocator.lockPage(&g_gdtDescriptor);
-    globalPageFrameAllocator.lockPage(&g_globalDescriptorTable);
-    globalPageFrameAllocator.lockPage(&g_cursorLocation);
-    globalPageFrameAllocator.lockPage(&__kern_phys_base);
+    globalPageFrameAllocator.lockPages(&__ksymstart, (&__ksymend - &__ksymstart) / PAGE_SIZE + 1);
     globalPageFrameAllocator.lockPage(&params->textRenderingFont);
     globalPageFrameAllocator.lockPages(&params->kernelElfSegments, (&__ksymend - &__ksymstart) / PAGE_SIZE + 1);
-    globalPageFrameAllocator.lockPages(&__ksymstart, (&__ksymend - &__ksymstart) / PAGE_SIZE + 1);
     globalPageFrameAllocator.lockPages(
         params->graphicsFramebuffer.base,
         params->graphicsFramebuffer.size / PAGE_SIZE + 1
     );
+
+    // Update the root pml4 page table
+    paging::g_kernelRootPageTable = paging::getCurrentTopLevelPageTable();
 
     kprintInfo("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
     kprintInfo("System free memory  : %llu MB\n", globalPageFrameAllocator.getFreeSystemMemory() / 1024 / 1024);
@@ -57,6 +57,9 @@ void _kentry(KernelEntryParams* params) {
     kprintInfo("The kernel is loaded at:\n");
     kprintInfo("    Physical : 0x%llx\n", (uint64_t)params->kernelElfSegments[0].physicalBase);
     kprintInfo("    Virtual  : 0x%llx\n\n", (uint64_t)params->kernelElfSegments[0].virtualBase);
+
+    kprint("paging::g_kernelRootPageTable    : 0x%llx\n", paging::g_kernelRootPageTable);
+    kprint("cr3                              : 0x%llx\n\n", paging::getCurrentTopLevelPageTable());
 
     for (int i = 0; i < 162; i++) {
         void* page = globalPageFrameAllocator.requestFreePage();
@@ -73,9 +76,10 @@ void _kentry(KernelEntryParams* params) {
     kprint("Reading 0x%llx --> %i\n", testPage, *testPage);
     kprint("Reading 0x%llx --> %i\n\n", __pa(testPage), *((uint64_t*)__pa(testPage)));
 
-    char vendor[13] = { 0 };
-    cpuid_readVendorId(vendor);
-    kprintInfo("Vendor: %s\n", vendor);
+    char vendorName[13];
+    cpuid_readVendorId(vendorName);
+    kprintInfo("CPU Vendor: %s\n", vendorName);
+    kprintWarn("is 5-level paging supported? %i\n", cpuid_isLa57Supported());
 
     while (1) {
         __asm__ volatile("hlt");

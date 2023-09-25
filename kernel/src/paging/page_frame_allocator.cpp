@@ -251,4 +251,11 @@ namespace paging {
         kprintError("Out of RAM! Disk page frame not yet implemented\n");
         return NULL;
     }
+
+    void* PageFrameAllocator::requestFreePageZeroed() {
+        void* page = requestFreePage();
+        zeromem(page, PAGE_SIZE);
+
+        return page;
+    }
 } // namespace paging

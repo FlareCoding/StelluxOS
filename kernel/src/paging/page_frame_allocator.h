@@ -50,6 +50,7 @@ public:
     void lockPages(void* vaddr, uint64_t pages);
 
     void* requestFreePage();
+    void* requestFreePageZeroed();
 
     inline uint64_t getTotalSystemMemory() const { return m_totalSystemMemory; }
     inline uint64_t getFreeSystemMemory() const { return m_freeSystemMemory; }
