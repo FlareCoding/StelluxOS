@@ -129,7 +129,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     // Now we have to create our own page table and do the following:
     //     1) Identity map all of the system memory
     //     2) Identity map the graphics output buffer
-    //     3) Map the kernel to a higher half of the address space (base at 0xffffffff80000000...)
+    //     3) Map the kernel and the rest of physical memory to a higher
+    //        half of the address space (kernel base at 0xffffffff80000000...)
     //
     struct PageTable* PML4 = CreateIdentityMappedPageTable(
         TotalSystemMemory,
@@ -141,8 +142,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         return EFIERR(-1);
     }
 
-    // Map the kernel to the higher half
-    MapKernelToHigherHalf(PML4, KernelElfSegments);
+    // Map the kernel and other memory to the higher half
+    CreateHigherHalfMapping(PML4, KernelElfSegments, TotalSystemMemory);
 
     Print(L"\n\r------ Page Table PML4 Created ------\n\r");
     Print(L"    Pages Allocated  : %llu\n\r", GetAllocatedPageCount());

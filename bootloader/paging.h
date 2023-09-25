@@ -58,9 +58,10 @@ struct PageTable* CreateIdentityMappedPageTable(
     UINT64 GraphicsOutputBufferSize
 );
 
-void MapKernelToHigherHalf(
+void CreateHigherHalfMapping(
     struct PageTable* PML4,
-    struct ElfSegmentInfo* KernelElfSegments
+    struct ElfSegmentInfo* KernelElfSegments,
+    UINT64 TotalSystemMemory
 );
 
 #endif

@@ -1,8 +1,8 @@
 #include "entry_params.h"
-#include <kmemory.h>
-#include <memory/phys_addr_translation.h>
+#include <memory/kmemory.h>
 #include <graphics/kdisplay.h>
 #include <gdt/gdt.h>
+#include <paging/phys_addr_translation.h>
 #include <paging/page_frame_allocator.h>
 #include <kprint.h>
 
@@ -30,6 +30,17 @@ void _kentry(KernelEntryParams* params) {
         params->efiMemoryMap.descriptorSize,
         params->efiMemoryMap.descriptorCount
     );
+
+    for (int i = 0; i < 11; i++) {
+        void* page = globalPageFrameAllocator.requestFreePage();
+        kprint("requested page: 0x%llx  (backed by 0x%llx)\n", page, __pa(page));
+    }
+
+    uint64_t* testPage = (uint64_t*)globalPageFrameAllocator.requestFreePage();
+    *testPage = 4554;
+
+    kprint("Reading 0x%llx --> %i\n", testPage, *testPage);
+    kprint("Reading 0x%llx --> %i\n", __pa(testPage), *((uint64_t*)__pa(testPage)));
 
     while (1) {
         __asm__ volatile("hlt");

@@ -1,5 +1,5 @@
 #include "gdt.h"
-#include <kmemory.h>
+#include <memory/kmemory.h>
 
 EXTERN_C void __kinstall_gdt_asm(GdtDescriptor* descriptor);
 

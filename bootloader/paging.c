@@ -122,26 +122,22 @@ struct PageTable* CreateIdentityMappedPageTable(
     return PML4;
 }
 
-void MapKernelToHigherHalf(
+void CreateHigherHalfMapping(
     struct PageTable* PML4,
-    struct ElfSegmentInfo* KernelElfSegments
+    struct ElfSegmentInfo* KernelElfSegments,
+	UINT64 TotalSystemMemory
 ) {
-	// Loop over each loaded kernel segment
-    for (UINT64 i = 0; i < MAX_LOADED_ELF_SEGMENTS; i++) {
-		struct ElfSegmentInfo SegmentInfo = KernelElfSegments[i];
+	UINT64 KernelPhysicalBase = (UINT64)KernelElfSegments[0].PhysicalBase;
+	UINT64 KernelVirtualBase = (UINT64)KernelElfSegments[0].VirtualBase;
+	
+	// Calculate the offset between virtual and physical addresses for kernel
+    UINT64 Offset = KernelVirtualBase - KernelPhysicalBase;
 
-		// Stop at the first invalid segment
-		if (SegmentInfo.VirtualBase == 0) {
-			break;
-		}
+    for (UINT64 i = 0; i < TotalSystemMemory; i += PAGE_SIZE) {
+		// Calculate the corresponding higher-half virtual address
+		UINT64 paddr = i;
+		UINT64 vaddr = paddr + Offset;
 
-		// Map all the pages inside the segment
-		for (UINT64 i = 0; i < SegmentInfo.VirtualSize; i += PAGE_SIZE) {
-			VOID* paddr = (VOID*)(i + (UINT64)SegmentInfo.PhysicalBase);
-			VOID* vaddr = (VOID*)(i + (UINT64)SegmentInfo.VirtualBase);
-
-			MapPages(vaddr, paddr, PML4);
-			Print(L"Mapping kernel page 0x%llx --> 0x%llx\n\r", vaddr, paddr);
-		}
+		MapPages((VOID*)vaddr, (VOID*)paddr, PML4);
     }
 }

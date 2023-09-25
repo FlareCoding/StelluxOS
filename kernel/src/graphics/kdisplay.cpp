@@ -1,5 +1,5 @@
 #include "kdisplay.h"
-#include <kmemory.h>
+#include <memory/kmemory.h>
 
 #define CHAR_PIXEL_WIDTH 8
 
