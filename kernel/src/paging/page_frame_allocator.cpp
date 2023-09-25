@@ -11,7 +11,8 @@ namespace paging {
         m_size = size;
         m_buffer = buffer;
 
-        zeromem(buffer, size);
+        // Initially mark all pages as used
+        memset(buffer, 0xff, size);
     }
 
     int PageFrameBitmap::markPageFree(void* addr) {
@@ -39,7 +40,7 @@ namespace paging {
 
         uint64_t byteIdx = index / 8;
         uint8_t bitIdx = index % 8;
-        uint8_t mask = 0b10000000 >> bitIdx;
+        uint8_t mask = 0b00000001 << bitIdx;
 
         // First disable the bit
         m_buffer[byteIdx] &= ~mask;
@@ -56,9 +57,9 @@ namespace paging {
         uint64_t index = _addrToIndex(addr);
         uint64_t byteIdx = index / 8;
         uint8_t bitIdx = index % 8;
-        uint8_t mask = 0b10000000 >> bitIdx;
+        uint8_t mask = 0b00000001 << bitIdx;
 
-        return ((m_buffer[byteIdx] & mask) > 0);
+        return (m_buffer[byteIdx] & mask) > 0;
     }
 
     uint64_t PageFrameBitmap::_addrToIndex(void* addr) {
@@ -115,24 +116,20 @@ namespace paging {
         uint8_t* pageBitmapBase = static_cast<uint8_t*>(largestFreeMemorySegment);
         m_pageFrameBitmap.initialize(pageBitmapSize, pageBitmapBase);
 
-        // Lock pages belonging to the page bitmap
-        lockPhysicalPages(largestFreeMemorySegment, pageBitmapSize / PAGE_SIZE + 1);
-
-        // Mark all non-EfiConventionalMemory pages as used
+        // Mark all EfiConventionalMemory pages as free
         for (uint64_t i = 0; i < memoryDescriptorCount; ++i) {
             EFI_MEMORY_DESCRIPTOR* desc =
                 (EFI_MEMORY_DESCRIPTOR*)((uint64_t)memoryMap + (i * memoryDescriptorSize));
 
             // Only track EfiConventionalMemory
-            if (desc->type == 7)
+            if (desc->type != 7)
                 continue;
 
             uint8_t* frameStart = reinterpret_cast<uint8_t*>(desc->paddr);
             uint8_t* frameEnd = reinterpret_cast<uint8_t*>(desc->paddr) + desc->pageCount * PAGE_SIZE;
+
             for (uint8_t* usedPagePtr = frameStart; usedPagePtr < frameEnd; usedPagePtr += PAGE_SIZE) {
-                m_pageFrameBitmap.markPageUsed(usedPagePtr);
-                m_freeSystemMemory -= PAGE_SIZE;
-                m_usedSystemMemory += PAGE_SIZE;
+                m_pageFrameBitmap.markPageFree(usedPagePtr);
             }
         }
 
@@ -148,9 +145,7 @@ namespace paging {
             }
         }
 
-        kprintInfo("System total memory : %llu MB\n", m_totalSystemMemory / 1024 / 1024);
-        kprintInfo("System free memory  : %llu MB\n", m_freeSystemMemory / 1024 / 1024);
-        kprintInfo("System used memory  : %llu MB\n", m_usedSystemMemory / 1024 / 1024);
+        m_usedSystemMemory = m_totalSystemMemory - m_freeSystemMemory;
     }
 
     void PageFrameAllocator::freePhysicalPage(void* paddr) {

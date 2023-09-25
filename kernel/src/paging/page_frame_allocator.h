@@ -51,6 +51,10 @@ public:
 
     void* requestFreePage();
 
+    inline uint64_t getTotalSystemMemory() const { return m_totalSystemMemory; }
+    inline uint64_t getFreeSystemMemory() const { return m_freeSystemMemory; }
+    inline uint64_t getUsedSystemMemory() const { return m_usedSystemMemory; }
+
 private:
     uint64_t m_totalSystemMemory = 0;
     uint64_t m_freeSystemMemory = 0;

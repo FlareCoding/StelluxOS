@@ -34,7 +34,7 @@ public:
     );
 
     static void fillPixel(uint32_t x, uint32_t y, uint32_t color);
-    static void renderTextGlyph(char chr, uint32_t x, uint32_t y, uint32_t color);
+    static void renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color);
 
     static inline Framebuffer& getFramebuffer() { return s_framebuffer; }
     static inline Psf1Font* getTextFontInfo() { return s_font; }

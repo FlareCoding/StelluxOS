@@ -24,7 +24,7 @@ void Display::fillPixel(uint32_t x, uint32_t y, uint32_t color) {
     *pixelPtr = color;
 }
 
-void Display::renderTextGlyph(char chr, uint32_t x, uint32_t y, uint32_t color) {
+void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color) {
     uint8_t charPixelHeight = s_font->header->charSize;
 
     char* fontBuffer = static_cast<char*>(s_font->glyphBuffer) + (chr * charPixelHeight);
