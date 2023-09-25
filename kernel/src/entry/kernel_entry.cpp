@@ -59,7 +59,7 @@ void _kentry(KernelEntryParams* params) {
     kprintInfo("    Virtual  : 0x%llx\n\n", (uint64_t)params->kernelElfSegments[0].virtualBase);
 
     kprint("paging::g_kernelRootPageTable    : 0x%llx\n", paging::g_kernelRootPageTable);
-    kprint("cr3                              : 0x%llx\n\n", paging::getCurrentTopLevelPageTable());
+    kprint("cr3                              : 0x%llx\n\n", __pa(paging::getCurrentTopLevelPageTable()));
 
     for (int i = 0; i < 162; i++) {
         void* page = globalPageFrameAllocator.requestFreePage();

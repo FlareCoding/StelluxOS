@@ -1,4 +1,5 @@
 #include "page.h"
+#include "phys_addr_translation.h"
 
 namespace paging {
 PageTable* g_kernelRootPageTable;
@@ -84,10 +85,12 @@ PageTable* getCurrentTopLevelPageTable() {
         :                 // No input operand
         :                 // No clobbered register
     );
-    return reinterpret_cast<PageTable*>(cr3_value);
+    
+	void* pml4Vaddr = __va(reinterpret_cast<void*>(cr3_value));
+	return static_cast<PageTable*>(pml4Vaddr);
 }
 
 void setCurrentTopLevelPageTable(PageTable* pml4) {
-    __asm__ volatile("mov %0, %%cr3" : : "r"(reinterpret_cast<uint64_t>(pml4)));
+    __asm__ volatile("mov %0, %%cr3" : : "r"(reinterpret_cast<uint64_t>(__pa(pml4))));
 }
 } // namespace paging
