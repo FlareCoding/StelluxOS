@@ -5,6 +5,7 @@
 #include <paging/phys_addr_translation.h>
 #include <paging/page_frame_allocator.h>
 #include <ports/serial.h>
+#include <arch/x86/cpuid.h>
 #include <kprint.h>
 
 EXTERN_C void _kentry(KernelEntryParams* params);
@@ -70,7 +71,11 @@ void _kentry(KernelEntryParams* params) {
     *testPage = 4554;
 
     kprint("Reading 0x%llx --> %i\n", testPage, *testPage);
-    kprint("Reading 0x%llx --> %i\n", __pa(testPage), *((uint64_t*)__pa(testPage)));
+    kprint("Reading 0x%llx --> %i\n\n", __pa(testPage), *((uint64_t*)__pa(testPage)));
+
+    char vendor[13] = { 0 };
+    cpuid_readVendorId(vendor);
+    kprintInfo("Vendor: %s\n", vendor);
 
     while (1) {
         __asm__ volatile("hlt");
