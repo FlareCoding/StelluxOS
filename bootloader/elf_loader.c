@@ -98,7 +98,29 @@ EFI_STATUS LoadElfSegments(
     EFI_STATUS Status;
     *TotalSize = 0;
 
+    // Calculate total size required for a contiguous block
+    for (UINT16 i = 0; i < NumHeaders; ++i) {
+        Elf64_Phdr* phdr = &ProgramHeaders[i];
+        if (phdr->p_type == PT_LOAD) {
+            *TotalSize += phdr->p_memsz;
+        }
+    }
+
+    // Allocate contiguous memory block
+    VOID* ContiguousBase = NULL;
+    UINTN TotalPages = EFI_SIZE_TO_PAGES(*TotalSize);
+    Status = uefi_call_wrapper(BS->AllocatePages, 4, AllocateAnyPages, EfiLoaderData, TotalPages, (EFI_PHYSICAL_ADDRESS*)&ContiguousBase);
+    if (EFI_ERROR(Status)) {
+        Print(L"Error allocating contiguous pages: %r\n\r", Status);
+        return Status;
+    }
+
+    *PhysicalBase = ContiguousBase;
+
+    UINT64 Offset = 0;
     UINT64 SegmentIndex = 0;
+
+    // Load each segment
     for (UINT16 i = 0; i < NumHeaders; ++i) {
         Elf64_Phdr* phdr = &ProgramHeaders[i];
 
@@ -106,29 +128,8 @@ EFI_STATUS LoadElfSegments(
             continue;  // Skip non-loadable segments
         }
 
-        // Attempt to allocate memory at the desired physical address first
-        VOID* Segment = (VOID*)(UINTN)phdr->p_paddr;
-        UINTN Pages = EFI_SIZE_TO_PAGES(phdr->p_memsz);
-
-        Status = uefi_call_wrapper(
-            BS->AllocatePages,
-            4,
-            AllocateAddress,
-            EfiLoaderData,
-            Pages,
-            (EFI_PHYSICAL_ADDRESS*)&Segment
-        );
-
-        // If that fails, try allocating anywhere
-        if (EFI_ERROR(Status)) {
-            Segment = NULL; // Reset Segment pointer
-            Status = uefi_call_wrapper(BS->AllocatePages, 4, AllocateAnyPages, EfiLoaderData, Pages, (EFI_PHYSICAL_ADDRESS*)&Segment);
-        }
-
-        if (EFI_ERROR(Status)) {
-            Print(L"Error allocating pages: %r\n\r", Status);
-            return Status;
-        }
+        // Calculate destination pointer within the contiguous block
+        VOID* Segment = ContiguousBase + Offset;
 
         // Read the segment from the file into the allocated memory
         Status = uefi_call_wrapper(File->SetPosition, 2, File, phdr->p_offset);
@@ -140,15 +141,13 @@ EFI_STATUS LoadElfSegments(
             return Status;
         }
 
-        *TotalSize += phdr->p_memsz;
-
         // Zero out the remaining memory (if any)
         if (phdr->p_memsz > phdr->p_filesz) {
             SetMem(Segment + phdr->p_filesz, phdr->p_memsz - phdr->p_filesz, 0);
         }
 
-        if (i == 0) {  // Assuming the first segment is the lowest
-            *PhysicalBase = Segment;
+        // Assuming the first segment is the lowest
+        if (i == 0) {
             *VirtualBase = (VOID*)phdr->p_vaddr;
         }
 
@@ -160,11 +159,13 @@ EFI_STATUS LoadElfSegments(
         SegInfo.Flags = 0;
 
         ElfSegmentList[SegmentIndex++] = SegInfo;
+
+        // Update the offset for the next segment
+        Offset += phdr->p_memsz;
     }
 
     return EFI_SUCCESS;
 }
-
 
 EFI_STATUS LoadElfFile(
     EFI_FILE* RootDir,
