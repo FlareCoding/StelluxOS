@@ -30,4 +30,10 @@ typedef __UINT64_TYPE__ size_t;
 typedef void* uintptr_t;
 #define NULL    0
 
+#if defined(__cplusplus)
+    #define EXTERN_C extern "C"
+#else
+    #define EXTERN_C extern
+#endif
+
 #endif

@@ -140,6 +140,6 @@ void setSegmentDescriptorLimit(
 extern GDT g_globalDescriptorTable;
 extern GdtDescriptor g_gdtDescriptor;
 
-extern "C" void intializeAndInstallGDT();
+EXTERN_C void intializeAndInstallGDT();
 
 #endif

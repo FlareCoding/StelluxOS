@@ -1,7 +1,7 @@
 #include "gdt.h"
 #include <kmemory.h>
 
-extern "C" void __kinstall_gdt_asm(GdtDescriptor* descriptor);
+EXTERN_C void __kinstall_gdt_asm(GdtDescriptor* descriptor);
 
 GDT g_globalDescriptorTable;
 GdtSegmentDescriptor kernelNullDescriptor;
