@@ -44,6 +44,8 @@ void mapPage(
 PageTable* getCurrentTopLevelPageTable();
 void setCurrentTopLevelPageTable(PageTable* pml4);
 
+PageTableEntry* getPteForAddr(void* vaddr, PageTable* pml4);
+
 extern PageTable* g_kernelRootPageTable;
 } // namespace paging
 #endif

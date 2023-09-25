@@ -77,6 +77,42 @@ void mapPage(
 	pte->pageFrameNumber = reinterpret_cast<uint64_t>(paddr) >> 12;
 }
 
+PageTableEntry* getPteForAddr(void* vaddr, PageTable* pml4) {
+	uint64_t pml4Index, pdptIndex, pdtIndex, ptIndex;
+	getPageTableIndicesFromVirtualAddress(
+        reinterpret_cast<uint64_t>(vaddr),
+        &pml4Index, &pdptIndex, &pdtIndex, &ptIndex
+    );
+
+	PageTable *pdpt = nullptr, *pdt = nullptr, *pt = nullptr;
+
+	pte_t* pml4_entry = &pml4->entries[pml4Index];
+
+	if (pml4_entry->present == 0) {
+		return nullptr;
+	} else {
+		pdpt = (PageTable*)((uint64_t)pml4_entry->pageFrameNumber << 12);
+	}
+
+	pte_t* pdpt_entry = &pdpt->entries[pdptIndex];
+	
+	if (pdpt_entry->present == 0) {
+		return nullptr;
+	} else {
+		pdt = (PageTable*)((uint64_t)pdpt_entry->pageFrameNumber << 12);
+	}
+
+	pte_t* pdt_entry = &pdt->entries[pdtIndex];
+	
+	if (pdt_entry->present == 0) {
+		return nullptr;
+	} else {
+		pt = (PageTable*)((uint64_t)pdt_entry->pageFrameNumber << 12);
+	}
+
+	return &pt->entries[ptIndex];
+}
+
 PageTable* getCurrentTopLevelPageTable() {
     uint64_t cr3_value;
     __asm__ volatile(

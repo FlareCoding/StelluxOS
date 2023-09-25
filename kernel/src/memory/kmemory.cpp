@@ -1,4 +1,5 @@
 #include "kmemory.h"
+#include <paging/page_frame_allocator.h>
 
 // Optimized version
 void memcpy(void* dest, void* src, size_t size) {
@@ -119,4 +120,14 @@ void memset(void* vaddr, uint8_t val, size_t size) {
 
 void zeromem(void* vaddr, size_t size) {
     memset(vaddr, 0, size);
+}
+
+void* allocPage() {
+    auto& allocator = paging::getGlobalPageFrameAllocator();
+    return allocator.requestFreePage();
+}
+
+void* zallocPage() {
+    auto& allocator = paging::getGlobalPageFrameAllocator();
+    return allocator.requestFreePageZeroed();
 }

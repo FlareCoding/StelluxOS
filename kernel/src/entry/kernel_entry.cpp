@@ -7,6 +7,7 @@
 #include <ports/serial.h>
 #include <arch/x86/cpuid.h>
 #include <paging/tlb.h>
+#include <interrupts/idt.h>
 #include <kprint.h>
 
 EXTERN_C void _kentry(KernelEntryParams* params);
@@ -49,6 +50,10 @@ void _kentry(KernelEntryParams* params) {
 
     // Update the root pml4 page table
     paging::g_kernelRootPageTable = paging::getCurrentTopLevelPageTable();
+    
+    // Set up the interrupt descriptor table and enable interrupts
+    initializeAndInstallIdt();
+    enableInterrupts();
 
     kprintInfo("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
     kprintInfo("System free memory  : %llu MB\n", globalPageFrameAllocator.getFreeSystemMemory() / 1024 / 1024);
@@ -79,7 +84,20 @@ void _kentry(KernelEntryParams* params) {
     char vendorName[13];
     cpuid_readVendorId(vendorName);
     kprintInfo("CPU Vendor: %s\n", vendorName);
-    kprintWarn("is 5-level paging supported? %i\n", cpuid_isLa57Supported());
+    kprintWarn("is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
+
+    int* scratchpad = (int*)zallocPage();
+    kprint("scratchpad is at 0x%llx\n", scratchpad);
+
+    *scratchpad = 8;
+    kprint("Value of scratchpad: %i\n", *scratchpad);
+
+    paging::pte_t* scratchpad_pte = paging::getPteForAddr(scratchpad, paging::g_kernelRootPageTable);
+    kprint("scratchpad PTE: 0x%llx\n", scratchpad_pte);
+    kprint("scratchpad page attribs:\n    present: %i\n    read/write: %i\n\n", scratchpad_pte->present, scratchpad_pte->readWrite);
+
+    scratchpad_pte->present = 0;
+    kprint("Value of scratchpad: %i\n", *scratchpad);
 
     while (1) {
         __asm__ volatile("hlt");
