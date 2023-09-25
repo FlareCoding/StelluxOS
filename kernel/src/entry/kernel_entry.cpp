@@ -4,6 +4,7 @@
 #include <gdt/gdt.h>
 #include <paging/phys_addr_translation.h>
 #include <paging/page_frame_allocator.h>
+#include <ports/serial.h>
 #include <kprint.h>
 
 EXTERN_C void _kentry(KernelEntryParams* params);
@@ -20,6 +21,9 @@ void _kentry(KernelEntryParams* params) {
 
     // Immediately update the kernel physical base
     __kern_phys_base = reinterpret_cast<uint64_t>(params->kernelElfSegments[0].physicalBase);
+
+    // Initialize serial port (for headless output)
+    initializeSerialPort(SERIAL_PORT_BASE_COM1);
 
     // Initialize display and graphics context
     Display::initialize(&params->graphicsFramebuffer, params->textRenderingFont);

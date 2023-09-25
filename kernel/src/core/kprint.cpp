@@ -1,6 +1,7 @@
 #include "kprint.h"
 #include "kstring.h"
 #include <graphics/kdisplay.h>
+#include <ports/serial.h>
 #include <stdarg.h>
 
 #define CHAR_PIXEL_WIDTH 8
@@ -18,6 +19,10 @@ void kprintCharColored(
     char chr,
 	unsigned int color
 ) {
+    // Log the character to the serial port in 
+    // addition to committing it to VGA memory.
+    writeToSerialPort(SERIAL_PORT_BASE_COM1, chr);
+
     uint8_t charPixelHeight = Display::getTextFontInfo()->header->charSize;
     
     switch (chr) {
