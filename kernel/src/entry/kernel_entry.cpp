@@ -89,7 +89,7 @@ void _kentry(KernelEntryParams* params) {
     char vendorName[13];
     cpuid_readVendorId(vendorName);
     kprintInfo("CPU Vendor: %s\n", vendorName);
-    kprintWarn("is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
+    kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
 
     int* scratchpad = (int*)zallocPage();
     kprint("scratchpad is at 0x%llx\n", scratchpad);
@@ -97,11 +97,11 @@ void _kentry(KernelEntryParams* params) {
     *scratchpad = 8;
     kprint("Value of scratchpad: %i\n", *scratchpad);
 
-    paging::pte_t* scratchpad_pte = paging::getPteForAddr(scratchpad, paging::g_kernelRootPageTable);
-    kprint("scratchpad PTE: 0x%llx\n", scratchpad_pte);
-    kprint("scratchpad page attribs:\n    present: %i\n    read/write: %i\n\n", scratchpad_pte->present, scratchpad_pte->readWrite);
+    paging::pte_t* scratchpadPte = paging::getPteForAddr(scratchpad, paging::g_kernelRootPageTable);
+    paging::dbgPrintPte(scratchpadPte);
+    kprint("\n");
 
-    scratchpad_pte->present = 0;
+    scratchpadPte->present = 0;
     paging::flushTlbAll();
 
     uint64_t val = *scratchpad;
