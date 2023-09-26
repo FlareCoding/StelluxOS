@@ -50,6 +50,11 @@ void _kentry(KernelEntryParams* params) {
 
     // Update the root pml4 page table
     paging::g_kernelRootPageTable = paging::getCurrentTopLevelPageTable();
+
+    // Setup kernel stack
+    void* _globalKernelStack = zallocPage();
+    uint64_t _kernelStackTop = reinterpret_cast<uint64_t>(_globalKernelStack) + PAGE_SIZE;
+    asm volatile ("mov %0, %%rsp" :: "r"(_kernelStackTop));
     
     // Set up the interrupt descriptor table and enable interrupts
     initializeAndInstallIdt();
@@ -97,7 +102,10 @@ void _kentry(KernelEntryParams* params) {
     kprint("scratchpad page attribs:\n    present: %i\n    read/write: %i\n\n", scratchpad_pte->present, scratchpad_pte->readWrite);
 
     scratchpad_pte->present = 0;
-    kprint("Value of scratchpad: %i\n", *scratchpad);
+    paging::flushTlbAll();
+
+    uint64_t val = *scratchpad;
+    (void)val;
 
     while (1) {
         __asm__ volatile("hlt");
