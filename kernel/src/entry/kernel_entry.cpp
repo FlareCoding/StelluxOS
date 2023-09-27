@@ -101,11 +101,11 @@ void _kentry(KernelEntryParams* params) {
     paging::dbgPrintPte(scratchpadPte);
     kprint("\n");
 
-    scratchpadPte->present = 0;
+    scratchpadPte->readWrite = 0;
     paging::flushTlbAll();
 
-    uint64_t val = *scratchpad;
-    (void)val;
+    *scratchpad = 14;
+    kprint("Value of scratchpad: %i\n", *scratchpad);
 
     while (1) {
         __asm__ volatile("hlt");

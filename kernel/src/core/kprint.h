@@ -8,7 +8,7 @@
 #define TEXT_COLOR_GREEN    0xff00ff00
 #define TEXT_COLOR_BLUE     0xff0000ff
 #define TEXT_COLOR_YELLOW   0xffffff00
-#define TEXT_COLOR_COOL     0xff05ff74
+#define TEXT_COLOR_COOL     0xff05ffa4
 
 #define DEFAULT_TEXT_COLOR  TEXT_COLOR_COOL
 

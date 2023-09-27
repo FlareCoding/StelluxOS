@@ -31,18 +31,29 @@ void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color
 
     // Detect overflow and implement text buffer scrolling
     if (y + charPixelHeight > s_framebuffer.height) {
-        for (unsigned long offy = charPixelHeight; offy < s_framebuffer.height + charPixelHeight; offy++) {
-            for (unsigned long offx = 0; offx < s_framebuffer.width; offx++) {
-                // Get the color of the current filled pixel
-                uint32_t* crntPx = static_cast<uint32_t*>(s_framebuffer.base) + offx + (offy * s_framebuffer.pixelsPerScanline);
+        // Calculate the size of a full line in bytes
+        const unsigned long fullLineWidth = s_framebuffer.pixelsPerScanline * sizeof(uint32_t); 
 
-                // Fill the previous line with the current
-                // line's color creating a "copy-up" effect.
-                fillPixel(offx, offy - charPixelHeight, *crntPx);
+        // Pointers to the source and destination lines for copying
+        uint8_t* dstLine = static_cast<uint8_t*>(s_framebuffer.base);
+        uint8_t* srcLine = dstLine + (charPixelHeight * fullLineWidth);
+
+        // Shift each line up by 'charPixelHeight' lines
+        for (unsigned long offy = charPixelHeight; offy < s_framebuffer.height; ++offy) {
+            memcpy(dstLine, srcLine, fullLineWidth);
+            dstLine += fullLineWidth;
+            srcLine += fullLineWidth;
+        }
+
+        // Clear the last line
+        for (unsigned long offy = s_framebuffer.height - charPixelHeight; offy < s_framebuffer.height; ++offy) {
+            for (unsigned long offx = 0; offx < s_framebuffer.pixelsPerScanline; ++offx) {
+                fillPixel(offx, offy, 0);  // Assuming 0 is the 'clear' color
             }
         }
 
-        y -= charPixelHeight;
+        // Update the y-coordinate for the next character to be printed
+        y -= charPixelHeight;  
     }
 
     // First we clear the character slot in case something is already there

@@ -12,7 +12,7 @@ Point g_cursorLocation = { .x = CHAR_LEFT_BORDER_OFFSET, .y = CHAR_TOP_BORDER_OF
 
 void kprintSetCursorLocation(uint32_t x, uint32_t y) {
     g_cursorLocation.x = (x == static_cast<uint32_t>(-1)) ? CHAR_LEFT_BORDER_OFFSET : x;
-    g_cursorLocation.y = (y == static_cast<uint32_t>(-1)) ? CHAR_LEFT_BORDER_OFFSET : y;
+    g_cursorLocation.y = (y == static_cast<uint32_t>(-1)) ? CHAR_TOP_BORDER_OFFSET : y;
 }
 
 void kprintCharColored(
@@ -29,6 +29,15 @@ void kprintCharColored(
         case '\n': {
             g_cursorLocation.x = CHAR_LEFT_BORDER_OFFSET;
             g_cursorLocation.y += charPixelHeight;
+
+            //
+            // I haven't figured out fully why whenever there was a double newline ('\n')
+            // character printed, it caused the next line's first character to get erased,
+            // so this line pre-writes an empty space with an absent color to fix this issue.
+            //
+            // *Note* a proper fix should be implemented later.
+            //
+            Display::renderTextGlyph(' ', g_cursorLocation.x, g_cursorLocation.y, NULL);
             break;
         }
         case '\r': {
