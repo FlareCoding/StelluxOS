@@ -46,12 +46,8 @@ pte_t* getPteFromPageTable(void* vaddr, PageTable* pt) {
 	return static_cast<pte_t*>(__va(&pt->entries[index]));
 }
 
-PageTable* getNextLevelPageTable(pte_t* pml4Entry) {
-	// uint64_t pageTablePhysicalAddr = static_cast<uint64_t>(pml4Entry->pageFrameNumber) << 12;
-	// void* pageTableVirtualAddress = __va(reinterpret_cast<void*>(pageTablePhysicalAddr));
-
-	// return static_cast<PageTable*>(pageTableVirtualAddress);
-	uint64_t pageTablePhysicalAddr = static_cast<uint64_t>(pml4Entry->pageFrameNumber) << 12;
+PageTable* getNextLevelPageTable(pte_t* entry) {
+	uint64_t pageTablePhysicalAddr = static_cast<uint64_t>(entry->pageFrameNumber) << 12;
 	return reinterpret_cast<PageTable*>(pageTablePhysicalAddr);
 }
 
@@ -72,7 +68,7 @@ void mapPage(
 	pte_t* pml4_entry = &pml4->entries[pml4Index];
 
 	if (pml4_entry->present == 0) {
-		pdpt = (PageTable*)pageFrameAllocator.requestFreePageZeroed();
+		pdpt = (PageTable*)__pa(pageFrameAllocator.requestFreePageZeroed());
 
 		pml4_entry->present = 1;
 		pml4_entry->readWrite = 1;
@@ -84,7 +80,7 @@ void mapPage(
 	pte_t* pdpt_entry = &pdpt->entries[pdptIndex];
 	
 	if (pdpt_entry->present == 0) {
-		pdt = (PageTable*)pageFrameAllocator.requestFreePageZeroed();
+		pdt = (PageTable*)__pa(pageFrameAllocator.requestFreePageZeroed());
 
 		pdpt_entry->present = 1;
 		pdpt_entry->readWrite = 1;
@@ -96,7 +92,7 @@ void mapPage(
 	pte_t* pdt_entry = &pdt->entries[pdtIndex];
 	
 	if (pdt_entry->present == 0) {
-		pt = (PageTable*)pageFrameAllocator.requestFreePageZeroed();
+		pt = (PageTable*)__pa(pageFrameAllocator.requestFreePageZeroed());
 
 		pdt_entry->present = 1;
 		pdt_entry->readWrite = 1;

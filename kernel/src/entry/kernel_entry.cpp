@@ -5,9 +5,10 @@
 #include <paging/phys_addr_translation.h>
 #include <paging/page.h>
 #include <ports/serial.h>
-#include <arch/x86/cpuid.h>
 #include <paging/tlb.h>
 #include <interrupts/idt.h>
+#include <arch/x86/cpuid.h>
+#include <arch/x86/apic.h>
 #include <kprint.h>
 
 EXTERN_C void _kentry(KernelEntryParams* params);
@@ -51,6 +52,23 @@ void _kentry(KernelEntryParams* params) {
     // Update the root pml4 page table
     paging::g_kernelRootPageTable = paging::getCurrentTopLevelPageTable();
 
+    // // Initialize and identity mapping the base address of Local APIC
+	// initializeApic();
+    //void* apicBase = getApicBase();
+
+    // Map LAPIC into kernel address space
+	// for (uint64_t i = (uint64_t)apicBase; i < (uint64_t)apicBase + PAGE_SIZE; i += PAGE_SIZE) {
+    //     void* apicPhysicalAddr = __pa(apicBase);
+    //     kprint("Mapping LAPIC 0x%llx --> 0x%llx\n", apicBase, apicPhysicalAddr);
+	// 	paging::mapPage(apicBase, apicPhysicalAddr, paging::g_kernelRootPageTable, globalPageFrameAllocator);
+	// }
+
+    // Lock the LAPIC page
+    //globalPageFrameAllocator.lockPage(apicBase);
+
+    // Final LAPIC vector configuration
+    //configureApicVector();
+
     // Setup kernel stack
     void* _globalKernelStack = zallocPage();
     uint64_t _kernelStackTop = reinterpret_cast<uint64_t>(_globalKernelStack) + PAGE_SIZE;
@@ -72,6 +90,10 @@ void _kentry(KernelEntryParams* params) {
     cpuid_readVendorId(vendorName);
     kprintInfo("CPU Vendor: %s\n", vendorName);
     kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
+
+    // Initialize and identity mapping the base address of Local APIC
+	initializeApic();
+    configureApicTimerIrq(IRQ0);
 
     while (1) {
         __asm__ volatile("hlt");

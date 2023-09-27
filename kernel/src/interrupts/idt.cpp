@@ -100,11 +100,11 @@ InterruptDescriptorTable g_kernelIdt;
 
 // Common entry point for texceptions
 void __common_exc_entry(InterruptFrame* frame) {
+    disableInterrupts();
+
     if (g_int_exc_handlers[frame->intno] != NULL) {
         return g_int_exc_handlers[frame->intno](frame);
     }
-
-    disableInterrupts();
 
     kprint("KERNEL EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
     kprintError("This is a stub for an panic screen\n");

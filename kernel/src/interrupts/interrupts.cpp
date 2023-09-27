@@ -1,4 +1,5 @@
 #include "interrupts.h"
+#include <arch/x86/apic.h>
 #include <kprint.h>
 
 #define PF_PRESENT  0x1  // Bit 0
@@ -14,8 +15,6 @@ void disableInterrupts() {
 }
 
 DEFINE_INT_HANDLER(_exc_handler_div) {
-    disableInterrupts();
-
     kprintColoredEx("#DIV", TEXT_COLOR_RED);
     kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->rip);
     kprintColoredEx("#DIV ", TEXT_COLOR_RED);
@@ -26,8 +25,6 @@ DEFINE_INT_HANDLER(_exc_handler_div) {
 }
 
 DEFINE_INT_HANDLER(_exc_handler_pf) {
-    disableInterrupts();
-
     kprintColoredEx("#PF", TEXT_COLOR_RED);
     kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->rip);
     kprintColoredEx("#PF", TEXT_COLOR_RED);
@@ -50,10 +47,14 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
     } else {
         kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in supervisor mode");
     }
+    
+    kprintChar('\n');
+
+    uint64_t cr2;
+    __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
+    kprintWarn("Faulting address: 0x%llx\n", cr2);
 
     kprintChar('\n');
-    kprintChar('\n');
-
     kprintError("This is a stub for a panic screen!\n");
     while (true);
 }
@@ -64,6 +65,8 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
     static uint64_t count = 0;
     ++count;
 
-    kprintFmtColored(TEXT_COLOR_YELLOW, "Timer went off! Time: %lli\r", count);
+    //kprintFmtColored(TEXT_COLOR_YELLOW, "Timer went off! Time: %lli\r", count);
+    completeApicIrq();
+    enableInterrupts();
 }
 
