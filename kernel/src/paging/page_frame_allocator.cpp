@@ -92,19 +92,19 @@ namespace paging {
 
             m_freeSystemMemory += desc->pageCount * PAGE_SIZE;
 
-            kprintInfo("0x%llx - 0x%llx (%llu pages) [%s]\n",
-                (uint64_t)desc->paddr,
-                (uint64_t)desc->paddr + desc->pageCount * PAGE_SIZE,
-                desc->pageCount,
-                EFI_MEMORY_TYPE_STRINGS[desc->type]
-            );
+            // kprintInfo("0x%llx - 0x%llx (%llu pages) [%s]\n",
+            //     (uint64_t)desc->paddr,
+            //     (uint64_t)desc->paddr + desc->pageCount * PAGE_SIZE,
+            //     desc->pageCount,
+            //     EFI_MEMORY_TYPE_STRINGS[desc->type]
+            // );
 
-            kprintInfo("0x%llx - 0x%llx (%llu pages) [%s]\n\n",
-                __va(desc->paddr),
-                __va((uint8_t*)desc->paddr + desc->pageCount * PAGE_SIZE),
-                desc->pageCount,
-                EFI_MEMORY_TYPE_STRINGS[desc->type]
-            );
+            // kprintInfo("0x%llx - 0x%llx (%llu pages) [%s]\n\n",
+            //     __va(desc->paddr),
+            //     __va((uint8_t*)desc->paddr + desc->pageCount * PAGE_SIZE),
+            //     desc->pageCount,
+            //     EFI_MEMORY_TYPE_STRINGS[desc->type]
+            // );
 
             if (desc->pageCount * PAGE_SIZE > largestFreeMemorySegmentSize) {
                 largestFreeMemorySegment = desc->paddr;

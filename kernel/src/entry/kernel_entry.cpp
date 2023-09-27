@@ -68,44 +68,10 @@ void _kentry(KernelEntryParams* params) {
     kprintInfo("    Physical : 0x%llx\n", (uint64_t)params->kernelElfSegments[0].physicalBase);
     kprintInfo("    Virtual  : 0x%llx\n\n", (uint64_t)params->kernelElfSegments[0].virtualBase);
 
-    kprint("paging::g_kernelRootPageTable    : 0x%llx\n", paging::g_kernelRootPageTable);
-    kprint("cr3                              : 0x%llx\n\n", __pa(paging::getCurrentTopLevelPageTable()));
-
-    for (int i = 0; i < 162; i++) {
-        void* page = globalPageFrameAllocator.requestFreePage();
-
-        if (i > 156) {
-            kprint("requested page [%i]: 0x%llx  (backed by 0x%llx)\n", i, page, __pa(page));
-        }
-    }
-
-    uint64_t* testPage = (uint64_t*)globalPageFrameAllocator.requestFreePage();
-    kprint("testPage: 0x%llx backed by 0x%llx\n", testPage, __pa(testPage));
-    *testPage = 4554;
-
-    kprint("Reading 0x%llx --> %i\n", testPage, *testPage);
-    kprint("Reading 0x%llx --> %i\n\n", __pa(testPage), *((uint64_t*)__pa(testPage)));
-
     char vendorName[13];
     cpuid_readVendorId(vendorName);
     kprintInfo("CPU Vendor: %s\n", vendorName);
     kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
-
-    int* scratchpad = (int*)zallocPage();
-    kprint("scratchpad is at 0x%llx\n", scratchpad);
-
-    *scratchpad = 8;
-    kprint("Value of scratchpad: %i\n", *scratchpad);
-
-    paging::pte_t* scratchpadPte = paging::getPteForAddr(scratchpad, paging::g_kernelRootPageTable);
-    paging::dbgPrintPte(scratchpadPte);
-    kprint("\n");
-
-    scratchpadPte->readWrite = 0;
-    paging::flushTlbAll();
-
-    *scratchpad = 14;
-    kprint("Value of scratchpad: %i\n", *scratchpad);
 
     while (1) {
         __asm__ volatile("hlt");
