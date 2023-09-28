@@ -43,12 +43,26 @@ PCB createTask(task_function_t task_function, uint64_t pid) {
     return newTask;
 }
 
-void simple_function() {
-    // This fixed the problem for some reason
-    //asm volatile("cli");
+int fibb(int n) {
+    if (n == 0 || n == 1) {
+        return n;
+    }
 
+    if (n == 30) {
+        for (volatile int i = 0; i < 100000000; i++) {
+            i = i + 1;
+            i = i - 1;
+        }
+    }
+
+    return fibb(n - 1) + fibb(n - 2);
+}
+
+// use recursive function to exercise context switch (fibb)
+void simple_function() {
     while(1) {
-        kprint("simple_function executed\n");
+        int result = fibb(36);
+        kprint("simple_function> fibb(36): %i\n", result);
     }
 }
 
@@ -136,7 +150,8 @@ void _kentry(KernelEntryParams* params) {
     configureApicTimerIrq(IRQ0);
 
     while(1) {
-        kprint("_kentry executed\n");
+        int result = fibb(34);
+        kprint("_kentry> fibb(34): %i\n", result);
     }
 
     while (1) {

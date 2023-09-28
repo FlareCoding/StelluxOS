@@ -66,18 +66,17 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
     ++count;
 
     if (count % 1000 == 0) {
-        kprint("count: %llu\n", count);
         auto& sched = Scheduler::get();
         PCB* prevTask = sched.getCurrentTask();
         PCB* nextTask = sched.getNextTask();
 
         if (nextTask) {
             switchContext(prevTask, nextTask, frame);
-            kprintInfo("PID:%llu DESCHEDULED\n", prevTask->pid);
-            kprintInfo("PID:%llu SCHEDULED\n", nextTask->pid);
+            // kprintInfo("PID:%llu DESCHEDULED\n", prevTask->pid);
+            // kprintInfo("PID:%llu SCHEDULED\n", nextTask->pid);
         }
     }
 
-    completeApicIrq();
+    completeApicIrq(); // ack in the beginning
     enableInterrupts();
 }
