@@ -70,7 +70,11 @@
 
 struct InterruptFrame {
     uint64_t ds;            // Data segment selector
-    uint64_t rdi, rsi, rbp; // General purpose registers
+
+    // General purpose registers
+    uint64_t r15, r14, r13, r12;
+    uint64_t r11, r10, r9, r8;
+    uint64_t rdi, rsi, rbp;
     uint64_t rbx, rdx, rcx;
     uint64_t rax;
     uint64_t intno;         // Interrupt number

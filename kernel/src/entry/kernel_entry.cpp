@@ -9,6 +9,7 @@
 #include <interrupts/idt.h>
 #include <arch/x86/cpuid.h>
 #include <arch/x86/apic.h>
+#include <sched/sched.h>
 #include <kprint.h>
 
 EXTERN_C void _kentry(KernelEntryParams* params);
@@ -17,6 +18,56 @@ extern Point g_cursorLocation;
 
 extern uint64_t __ksymstart;
 extern uint64_t __ksymend;
+
+// Function prototype for the task function
+typedef void (*task_function_t)();
+
+// Function to create a task
+PCB createTask(task_function_t task_function, uint64_t pid) {
+    PCB newTask;
+
+    // Initialize the PCB
+    memset(&newTask, 0, sizeof(PCB));
+    newTask.state = ProcessState::READY;
+    newTask.pid = pid;
+
+    // Allocate and initialize the stack
+    void* stack = zallocPage();
+
+    // Initialize the CPU context
+    newTask.context.rsp = (uint64_t)((char*)stack + PAGE_SIZE);  // Point to the top of the stack
+    newTask.context.rbp = newTask.context.rsp;                   // Point to the top of the stack
+    newTask.context.rip = (uint64_t)task_function;               // Set instruction pointer to the task function
+    newTask.context.rflags = 0x200;  // Enable interrupts
+
+    return newTask;
+}
+
+void simple_function() {
+    // This fixed the problem for some reason
+    //asm volatile("cli");
+
+    while(1) {
+        kprint("simple_function executed\n");
+    }
+}
+
+void test_task_execution_and_preemption() {
+    auto& sched = Scheduler::get();
+
+    // Create some tasks and add them to the scheduler
+    PCB task1, task2;
+
+    task1.state = ProcessState::RUNNING;
+    task1.pid = 1;
+    zeromem(&task1.context, sizeof(CpuContext));
+    task1.context.rflags |= 0x200;
+
+    task2 = createTask(simple_function, 2);
+
+    sched.addTask(task1);
+    sched.addTask(task2);
+}
 
 void _kentry(KernelEntryParams* params) {
     // First thing we have to take care of
@@ -52,23 +103,6 @@ void _kentry(KernelEntryParams* params) {
     // Update the root pml4 page table
     paging::g_kernelRootPageTable = paging::getCurrentTopLevelPageTable();
 
-    // // Initialize and identity mapping the base address of Local APIC
-	// initializeApic();
-    //void* apicBase = getApicBase();
-
-    // Map LAPIC into kernel address space
-	// for (uint64_t i = (uint64_t)apicBase; i < (uint64_t)apicBase + PAGE_SIZE; i += PAGE_SIZE) {
-    //     void* apicPhysicalAddr = __pa(apicBase);
-    //     kprint("Mapping LAPIC 0x%llx --> 0x%llx\n", apicBase, apicPhysicalAddr);
-	// 	paging::mapPage(apicBase, apicPhysicalAddr, paging::g_kernelRootPageTable, globalPageFrameAllocator);
-	// }
-
-    // Lock the LAPIC page
-    //globalPageFrameAllocator.lockPage(apicBase);
-
-    // Final LAPIC vector configuration
-    //configureApicVector();
-
     // Setup kernel stack
     void* _globalKernelStack = zallocPage();
     uint64_t _kernelStackTop = reinterpret_cast<uint64_t>(_globalKernelStack) + PAGE_SIZE;
@@ -91,9 +125,19 @@ void _kentry(KernelEntryParams* params) {
     kprintInfo("CPU Vendor: %s\n", vendorName);
     kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
 
+    // Initialize the scheduler
+    auto& sched = Scheduler::get();
+    sched.init();
+
+    test_task_execution_and_preemption();
+
     // Initialize and identity mapping the base address of Local APIC
 	initializeApic();
     configureApicTimerIrq(IRQ0);
+
+    while(1) {
+        kprint("_kentry executed\n");
+    }
 
     while (1) {
         __asm__ volatile("hlt");

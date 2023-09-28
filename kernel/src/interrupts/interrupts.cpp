@@ -1,5 +1,7 @@
 #include "interrupts.h"
 #include <arch/x86/apic.h>
+#include <sched/sched.h>
+#include <paging/tlb.h>
 #include <kprint.h>
 
 #define PF_PRESENT  0x1  // Bit 0
@@ -60,13 +62,22 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
-    (void)frame;
-
     static uint64_t count = 0;
     ++count;
 
-    //kprintFmtColored(TEXT_COLOR_YELLOW, "Timer went off! Time: %lli\r", count);
+    if (count % 1000 == 0) {
+        kprint("count: %llu\n", count);
+        auto& sched = Scheduler::get();
+        PCB* prevTask = sched.getCurrentTask();
+        PCB* nextTask = sched.getNextTask();
+
+        if (nextTask) {
+            switchContext(prevTask, nextTask, frame);
+            kprintInfo("PID:%llu DESCHEDULED\n", prevTask->pid);
+            kprintInfo("PID:%llu SCHEDULED\n", nextTask->pid);
+        }
+    }
+
     completeApicIrq();
     enableInterrupts();
 }
-
