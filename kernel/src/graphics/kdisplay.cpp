@@ -1,5 +1,6 @@
 #include "kdisplay.h"
 #include <memory/kmemory.h>
+#include <interrupts/interrupts.h>
 
 #define CHAR_PIXEL_WIDTH 8
 
@@ -25,6 +26,10 @@ void Display::fillPixel(uint32_t x, uint32_t y, uint32_t color) {
 }
 
 void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color) {
+    // Interrupts have to be disabled between writing
+    // to an I/O device to avoid race conditions.
+    disableInterrupts();
+
     uint8_t charPixelHeight = s_font->header->charSize;
 
     char* fontBuffer = static_cast<char*>(s_font->glyphBuffer) + (chr * charPixelHeight);
@@ -73,4 +78,7 @@ void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color
 
 		++fontBuffer;
 	}
+
+    // Re-enable interrupts
+    enableInterrupts();
 }

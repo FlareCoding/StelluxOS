@@ -19,8 +19,6 @@ void kprintCharColored(
     char chr,
 	unsigned int color
 ) {
-    __asm__ volatile("cli");
-
     // Log the character to the serial port in 
     // addition to committing it to VGA memory.
     writeToSerialPort(SERIAL_PORT_BASE_COM1, chr);
@@ -57,8 +55,6 @@ void kprintCharColored(
             break;
         }
     }
-
-    __asm__ volatile("sti");
 }
 
 void kprintChar(

@@ -62,6 +62,8 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
+    completeApicIrq();
+
     static uint64_t count = 0;
     ++count;
 
@@ -77,6 +79,5 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
         }
     }
 
-    completeApicIrq(); // ack in the beginning
     enableInterrupts();
 }
