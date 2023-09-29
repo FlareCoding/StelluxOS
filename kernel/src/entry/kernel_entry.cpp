@@ -84,10 +84,6 @@ void test_task_execution_and_preemption() {
 }
 
 void _kentry(KernelEntryParams* params) {
-    while (1) {
-        __asm__ volatile("hlt");
-    }
-
     // First thing we have to take care of
     // is setting up the Global Descriptor Table.
     intializeAndInstallGDT();

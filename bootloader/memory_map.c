@@ -17,57 +17,49 @@ UINT64 GetTotalSystemMemory(
     return TotalMemory;
 }
 
-EFI_STATUS ReadMemoryMap(
-    EFI_MEMORY_DESCRIPTOR** xEfiMemoryMap,
-    UINTN* xMemoryMapSize,
-    UINTN* xMemoryMapKey,
-    UINTN* xDescriptorSize,
-    UINT64* xTotalSystemMemory
+EFI_MEMORY_DESCRIPTOR* ReadMemoryMap(
+    UINTN* MemoryMapSize,
+    UINTN* MemoryMapKey,
+    UINTN* DescriptorSize,
+    UINT64* TotalSystemMemory
 ) {
     EFI_STATUS                  Status;
     EFI_MEMORY_DESCRIPTOR       *EfiMemoryMap;
-    UINTN                       EfiMemoryMapSize;
-    UINTN                       EfiMapKey;
-    UINTN                       EfiDescriptorSize;
     UINT32                      EfiDescriptorVersion;
 
     //
     // Get the EFI memory map.
     //
-    EfiMemoryMapSize  = 0;
     EfiMemoryMap      = NULL;
     Status = gBS->GetMemoryMap (
-        &EfiMemoryMapSize,
+        MemoryMapSize,
         EfiMemoryMap,
-        &EfiMapKey,
-        &EfiDescriptorSize,
+        MemoryMapKey,
+        DescriptorSize,
         &EfiDescriptorVersion
     );
-    ASSERT (Status == EFI_BUFFER_TOO_SMALL);
+    ASSERT(Status == EFI_BUFFER_TOO_SMALL);
 
     //
     // Use size returned for the AllocatePool.
     //
-    EfiMemoryMap = (EFI_MEMORY_DESCRIPTOR *) AllocatePool (EfiMemoryMapSize + 2 * EfiDescriptorSize);
-    ASSERT (EfiMemoryMap != NULL);
+    EfiMemoryMap = (EFI_MEMORY_DESCRIPTOR*)AllocatePool(*MemoryMapSize + 2 * *DescriptorSize);
+    ASSERT(EfiMemoryMap != NULL);
     Status = gBS->GetMemoryMap (
-        &EfiMemoryMapSize,
+        MemoryMapSize,
         EfiMemoryMap,
-        &EfiMapKey,
-        &EfiDescriptorSize,
+        MemoryMapKey,
+        DescriptorSize,
         &EfiDescriptorVersion
     );
     
-    if (EFI_ERROR (Status)) {
-        FreePool (EfiMemoryMap);
+    if (EFI_ERROR(Status)) {
+        FreePool(EfiMemoryMap);
+        return NULL;
     }
 
-    Print(L"Acquired Memory Map!\n");
+    UINT64 DescriptorCount = *MemoryMapSize / *DescriptorSize;
+    *TotalSystemMemory = GetTotalSystemMemory(EfiMemoryMap, DescriptorCount, *DescriptorSize);
 
-    UINT64 DescriptorCount = EfiMemoryMapSize / EfiDescriptorSize;
-    UINT64 TotalSystemMemory = GetTotalSystemMemory(EfiMemoryMap, DescriptorCount, EfiDescriptorSize);
-
-    Print(L"Total system memory: 0x%llx (%llu GB)\n", TotalSystemMemory, TotalSystemMemory / 1024 / 1024 / 1024);
-
-    return EFI_SUCCESS;
+    return EfiMemoryMap;
 }

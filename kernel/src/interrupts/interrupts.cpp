@@ -65,7 +65,7 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
     static uint64_t count = 0;
     ++count;
 
-    if (count % 1000 == 0) {
+    if (count % 100 == 0) {
         auto& sched = Scheduler::get();
         PCB* prevTask = sched.getCurrentTask();
         PCB* nextTask = sched.getNextTask();

@@ -2,8 +2,7 @@
 #define MEMORY_MAP_H
 #include "common.h"
 
-EFI_STATUS ReadMemoryMap(
-    EFI_MEMORY_DESCRIPTOR** EfiMemoryMap,
+EFI_MEMORY_DESCRIPTOR* ReadMemoryMap(
     UINTN* MemoryMapSize,
     UINTN* MemoryMapKey,
     UINTN* DescriptorSize,
