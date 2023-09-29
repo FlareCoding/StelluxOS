@@ -100,6 +100,13 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         return Status;
     }
 
+    Print(L"------- GOP Framebuffer -------\n");
+    Print(L"  Base: 0x%llx\n", (UINT64)GraphicsOutputProtocol->Mode->FrameBufferBase);
+    Print(L"  Size: 0x%llx\n", (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize);
+    Print(L"  Resolution: %llux%llu\n", (UINT64)GraphicsOutputProtocol->Mode->Info->HorizontalResolution, (UINT64)GraphicsOutputProtocol->Mode->Info->VerticalResolution);
+    Print(L"  PixelsPerScanline: %llu\n", (UINT64)GraphicsOutputProtocol->Mode->Info->PixelsPerScanLine);
+    Print(L"\n");
+
     // Load the text font file
     struct PSF1_Font* ZapLightFont = LoadPSF1Font(L"zap-light16.psf", ImageHandle, SystemTable);
     if (ZapLightFont == NULL) {
@@ -122,79 +129,13 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     );
 
     if (EFI_ERROR(Status)) {
-        return Status;
+        Print(L"Error: %r\n", Status);
     }
 
-    //
-    // Now we have to create our own page table and do the following:
-    //     1) Identity map all of the system memory
-    //     2) Identity map the graphics output buffer
-    //     3) Map the kernel and the rest of physical memory to a higher
-    //        half of the address space (kernel base at 0xffffffff80000000...)
-    //
-    struct PageTable* PML4 = CreateIdentityMappedPageTable(
-        TotalSystemMemory,
-        (VOID*)GraphicsOutputProtocol->Mode->FrameBufferBase,
-        (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize
-    );
-    if (PML4 == NULL) {
-        Print(L"Error occured while creating initial page table\n\r");
-        return EFIERR(-1);
+    while (1) {
+        int i = 0;
+        i = i - 1;
+        i = i * i;
     }
-
-    // Map the kernel and other memory to the higher half
-    CreateHigherHalfMapping(PML4, KernelElfSegments, TotalSystemMemory);
-
-    Print(L"\n\r------ Page Table PML4 Created ------\n\r");
-    Print(L"    Pages Allocated  : %llu\n\r", GetAllocatedPageCount());
-    Print(L"    Page Table Size  : %llu KB\n\r\n\r", GetAllocatedMemoryCount() / 1024);
-
-    // Read the memory map one more time to acquire the final memory map key
-    Status = ReadMemoryMap(
-        &EfiMemoryMap,
-        &MemoryMapSize,
-        &MemoryMapKey,
-        &DescriptorSize,
-        &TotalSystemMemory
-    );
-    
-    if (EFI_ERROR(Status)) {
-        Print(L"Failed to acquire final memory map key: %r\n\r", Status);
-        return EFIERR(1);
-    }
-
-    // Exit boot services
-    Status = ExitBootServices(ImageHandle, MemoryMapKey);
-    if (EFI_ERROR(Status)) {
-        Print(L"Failed to exit boot services\n\r");
-        return Status;
-    }
-
-    // Load PML4 address into CR3
-    __asm__ volatile("mov %0, %%cr3" : : "r"((UINT64)PML4));
-
-    // Initialize params
-    struct KernelEntryParams params;
-    params.KernelElfSegments = KernelElfSegments;
-    
-    params.GraphicsFramebuffer.Base = (VOID*)GraphicsOutputProtocol->Mode->FrameBufferBase;
-    params.GraphicsFramebuffer.Size = (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize;
-    params.GraphicsFramebuffer.Width = (UINT64)GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
-    params.GraphicsFramebuffer.Height = (UINT64)GraphicsOutputProtocol->Mode->Info->VerticalResolution;
-    params.GraphicsFramebuffer.PixelsPerScanline = (UINT64)GraphicsOutputProtocol->Mode->Info->PixelsPerScanLine;
-    params.TextRenderingFont = ZapLightFont;
-
-    params.EfiMemoryMap.Base = (VOID*)EfiMemoryMap;
-    params.EfiMemoryMap.Size = MemoryMapSize;
-    params.EfiMemoryMap.DescriptorSize = DescriptorSize;
-    params.EfiMemoryMap.DescriptorCount = MemoryMapSize / DescriptorSize;
-
-    // Cast the physical entry point to a function pointer
-    void (*KernelEntryPoint)(struct KernelEntryParams*) =
-        ((__attribute__((sysv_abi)) void(*)(struct KernelEntryParams*))((UINT64)KernelEntry));
-
-    // Transfer control to the kernel
-    KernelEntryPoint(&params);
-
     return EFI_SUCCESS;
 }
