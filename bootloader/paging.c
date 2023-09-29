@@ -138,6 +138,11 @@ void CreateHigherHalfMapping(
 		UINT64 paddr = i;
 		UINT64 vaddr = paddr + Offset;
 
+		// Check virtual address overflows
+		if (vaddr == 0x0) {
+			break;
+		}
+
 		MapPages((VOID*)vaddr, (VOID*)paddr, PML4);
     }
 }
