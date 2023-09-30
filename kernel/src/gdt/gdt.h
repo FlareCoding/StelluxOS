@@ -1,6 +1,6 @@
 #ifndef GDT_H
 #define GDT_H
-#include <ktypes.h>
+#include "tss.h"
 
 /*
     Struct definitions and field descriptions taken
@@ -122,9 +122,9 @@ struct GDT {
     GdtSegmentDescriptor kernelNull;    // 0x00
     GdtSegmentDescriptor kernelCode;    // 0x08
     GdtSegmentDescriptor kernelData;    // 0x10
-    GdtSegmentDescriptor userNull;      // 0x18
-    GdtSegmentDescriptor userCode;      // 0x20
-    GdtSegmentDescriptor userData;      // 0x28
+    GdtSegmentDescriptor userCode;      // 0x18
+    GdtSegmentDescriptor userData;      // 0x20
+    TSSDescriptor        tss;           // 0x28
 };
 
 void setSegmentDescriptorBase(
@@ -140,6 +140,11 @@ void setSegmentDescriptorLimit(
 extern GDT g_globalDescriptorTable;
 extern GdtDescriptor g_gdtDescriptor;
 
-EXTERN_C void intializeAndInstallGDT();
+EXTERN_C void initializeAndInstallGDT(void* kernelStack);
+
+#define __KERNEL_CS 0x08
+#define __KERNEL_DS 0x10
+#define __USER_CS   0x18
+#define __USER_DS   0x20
 
 #endif

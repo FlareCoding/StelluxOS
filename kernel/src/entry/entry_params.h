@@ -22,6 +22,8 @@ struct KernelEntryParams {
         uint64_t  descriptorSize;
         uint64_t  descriptorCount;
     } efiMemoryMap;
+
+    void* kernelStack;
 };
 
 #endif // KERNEL_PARAMS_H

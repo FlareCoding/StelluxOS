@@ -14,9 +14,27 @@
     push r13
     push r14
     push r15
+    
+    mov rax, ds
+    push rax
+    mov rax, es
+    push rax
+    mov rax, fs
+    push rax
+    mov rax, gs
+    push rax
 %endmacro
 
 %macro POPALL 0
+    pop rax
+    mov gs, ax
+    pop rax
+    mov fs, ax
+    pop rax
+    mov es, ax
+    pop rax
+    mov ds, ax
+
     pop r15
     pop r14
     pop r13
@@ -39,28 +57,22 @@
 ; Common entry point for all exceptions and IRQs
 __asm_common_isr_entry:
     ; Save CPU state
-	PUSHALL             ; pushes rdi,rsi,rbp,rsp,rbx,rdx,rcx,rax
-	mov     ax, ds      ; lower 16-bits of eax = ds.
-	push    rax         ; save the data segment descriptor
-	mov     ax, 0x10    ; kernel data segment descriptor
+    PUSHALL             ; pushes segment registers and general purpose registers
+    
+    mov     ax, 0x10    ; kernel data segment descriptor
 	mov     ds, ax
 	mov     es, ax
 	mov     fs, ax
 	mov     gs, ax
-	
+    
     ; Call C handler
-	call __common_isr_entry
-	
-    ; Restore state
-	pop rax 
-	mov ds, ax
-	mov es, ax
-	mov fs, ax
-	mov gs, ax
-	POPALL
+    call __common_isr_entry
 
-	add rsp, 16         ; clean up the pushed error code and interrupt number
-	iretq               ; interrupt return
+    ; Restore state
+    POPALL              ; pops segment registers and general purpose registers
+
+    add rsp, 16         ; clean up the pushed error code and interrupt number
+    iretq               ; Interrupt return
 
 ; Exception entry points
 global __asm_exc_handler_div

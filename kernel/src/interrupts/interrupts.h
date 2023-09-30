@@ -69,7 +69,11 @@
 // ...
 
 struct InterruptFrame {
-    uint64_t ds;            // Data segment selector
+    // Segment selectors
+    uint64_t gs;
+    uint64_t fs;
+    uint64_t es;
+    uint64_t ds;
 
     // General purpose registers
     uint64_t r15, r14, r13, r12;
@@ -88,6 +92,7 @@ struct InterruptFrame {
 
 void enableInterrupts();
 void disableInterrupts();
+bool areInterruptsEnabled();
 
 typedef void (*InterruptHandler_t)(struct InterruptFrame* frame);
 

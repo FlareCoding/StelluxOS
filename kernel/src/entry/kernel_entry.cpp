@@ -40,7 +40,54 @@ PCB createTask(task_function_t task_function, uint64_t pid) {
     newTask.context.rip = (uint64_t)task_function;               // Set instruction pointer to the task function
     newTask.context.rflags = 0x200;  // Enable interrupts
 
+    // Setup segment registers
+    newTask.context.cs = __KERNEL_CS;
+    newTask.context.ds = __KERNEL_DS;
+    newTask.context.ss = newTask.context.ds;
+    newTask.context.es = newTask.context.ds;
+    newTask.context.fs = newTask.context.ds;
+    newTask.context.gs = newTask.context.ds;
+
     return newTask;
+}
+
+PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
+    PCB newTask;
+
+    // Initialize the PCB
+    memset(&newTask, 0, sizeof(PCB));
+    newTask.state = ProcessState::READY;
+    newTask.pid = pid;
+
+    // Allocate and initialize the stack
+    void* stack = zallocPage();  // Assuming this returns a page of memory
+
+    // Initialize the CPU context
+    newTask.context.rsp = (uint64_t)((char*)stack + PAGE_SIZE);  // Point to the top of the stack
+    newTask.context.rbp = newTask.context.rsp;  // Point to the top of the stack
+    newTask.context.rip = (uint64_t)task_function;  // Set instruction pointer to the task function
+    newTask.context.rflags = 0x200;  // Enable interrupts
+
+    // Set up segment registers for user space. These values correspond to the selectors in the GDT.
+    newTask.context.cs = __USER_CS | 0x3;  // 0x18 = user code segment selector, 0x3 = user-mode privilege level
+    newTask.context.ds = __USER_DS | 0x3;  // 0x20 = user data segment selector, 0x3 = user-mode privilege level
+    newTask.context.es = newTask.context.ds;
+    newTask.context.fs = newTask.context.ds;
+    newTask.context.gs = newTask.context.ds;
+    newTask.context.ss = newTask.context.ds;
+    
+    paging::pte_t* pte = paging::getPteForAddr(stack, paging::g_kernelRootPageTable);
+    pte->userSupervisor = 1;
+    paging::flushTlbAll();
+
+    return newTask;
+}
+
+EXTERN_C void userspace_function() {
+    volatile int a = 1, b = 1;
+    while (1) {
+        a = a + b;
+    }
 }
 
 int fibb(int n) {
@@ -77,16 +124,21 @@ void test_task_execution_and_preemption() {
     zeromem(&task1.context, sizeof(CpuContext));
     task1.context.rflags |= 0x200;
 
-    task2 = createTask(simple_function, 2);
+    //task2 = createTask(simple_function, 2);
+    task2 = createUserspaceTask(userspace_function, 2);
 
     sched.addTask(task1);
     sched.addTask(task2);
 }
 
 void _kentry(KernelEntryParams* params) {
+    // Setup kernel stack
+    uint64_t kernelStackTop = reinterpret_cast<uint64_t>(params->kernelStack) + PAGE_SIZE;
+    asm volatile ("mov %0, %%rsp" :: "r"(kernelStackTop));
+
     // First thing we have to take care of
     // is setting up the Global Descriptor Table.
-    intializeAndInstallGDT();
+    initializeAndInstallGDT(params->kernelStack);
 
     // Immediately update the kernel physical base
     __kern_phys_base = reinterpret_cast<uint64_t>(params->kernelElfSegments[0].physicalBase);
@@ -116,11 +168,6 @@ void _kentry(KernelEntryParams* params) {
 
     // Update the root pml4 page table
     paging::g_kernelRootPageTable = paging::getCurrentTopLevelPageTable();
-
-    // Setup kernel stack
-    void* _globalKernelStack = zallocPage();
-    uint64_t _kernelStackTop = reinterpret_cast<uint64_t>(_globalKernelStack) + PAGE_SIZE;
-    asm volatile ("mov %0, %%rsp" :: "r"(_kernelStackTop));
     
     // Set up the interrupt descriptor table and enable interrupts
     initializeAndInstallIdt();
@@ -133,6 +180,7 @@ void _kentry(KernelEntryParams* params) {
     kprintInfo("The kernel is loaded at:\n");
     kprintInfo("    Physical : 0x%llx\n", (uint64_t)params->kernelElfSegments[0].physicalBase);
     kprintInfo("    Virtual  : 0x%llx\n\n", (uint64_t)params->kernelElfSegments[0].virtualBase);
+    kprintInfo("KernelStack  : 0x%llx\n\n", (uint64_t)params->kernelStack);
 
     char vendorName[13];
     cpuid_readVendorId(vendorName);

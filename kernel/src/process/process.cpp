@@ -19,6 +19,12 @@ void saveCpuContext(CpuContext* context, InterruptFrame* frame) {
     context->rip = frame->rip;
     context->rsp = frame->rsp;
     context->rflags = frame->rflags;
+    context->cs = frame->cs;
+    context->ss = frame->ss;
+    context->ds = frame->ds;
+    context->es = frame->es;
+    context->fs = frame->fs;
+    context->gs = frame->gs;
 }
 
 void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
@@ -40,6 +46,12 @@ void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
     frame->rip = context->rip;
     frame->rsp = context->rsp;
     frame->rflags = context->rflags;
+    frame->cs = context->cs;
+    frame->ss = context->ss;
+    frame->ds = context->ds;
+    frame->es = context->es;
+    frame->fs = context->fs;
+    frame->gs = context->gs;
 }
 
 void switchContext(PCB* from, PCB* to, InterruptFrame *frame) {

@@ -25,6 +25,8 @@ struct KernelEntryParams {
         UINT64  DescriptorSize;
         UINT64  DescriptorCount;
     } EfiMemoryMap;
+
+    VOID* KernelStack;
 };
 
 EFI_STATUS LoadKernel(
@@ -92,6 +94,11 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         return Status;
     }
     
+    EFI_PHYSICAL_ADDRESS KernelStackPhysicalAddress;
+    gBS->AllocatePages(AllocateAnyPages, EfiBootServicesData, 1, &KernelStackPhysicalAddress);
+
+    VOID* KernelStack = (VOID*)KernelStackPhysicalAddress;
+
     // Retrieve the graphics output protocol buffer
     EFI_GRAPHICS_OUTPUT_PROTOCOL* GraphicsOutputProtocol;
     Status = RetrieveGraphicsOutputProtocol(ImageHandle, &GraphicsOutputProtocol);
@@ -154,7 +161,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
 
     // Map the kernel and other memory to the higher half
-    CreateHigherHalfMapping(PML4, KernelElfSegments, TotalSystemMemory);
+    CreateHigherHalfMapping(PML4, KernelElfSegments, &KernelStack, TotalSystemMemory);
 
     Print(L"\n\r------ Page Table PML4 Created ------\n\r");
     Print(L"    Pages Allocated  : %llu\n\r", GetAllocatedPageCount());
@@ -198,6 +205,8 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     params.EfiMemoryMap.Size = MemoryMapSize;
     params.EfiMemoryMap.DescriptorSize = DescriptorSize;
     params.EfiMemoryMap.DescriptorCount = MemoryMapSize / DescriptorSize;
+
+    params.KernelStack = KernelStack;
 
     // Cast the physical entry point to a function pointer
     void (*KernelEntryPoint)(struct KernelEntryParams*) =

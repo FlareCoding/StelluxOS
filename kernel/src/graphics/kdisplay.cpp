@@ -28,7 +28,10 @@ void Display::fillPixel(uint32_t x, uint32_t y, uint32_t color) {
 void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color) {
     // Interrupts have to be disabled between writing
     // to an I/O device to avoid race conditions.
-    disableInterrupts();
+    bool initialIrqFlag = areInterruptsEnabled();
+    if (initialIrqFlag) {
+        disableInterrupts();
+    }
 
     uint8_t charPixelHeight = s_font->header->charSize;
 
@@ -79,6 +82,8 @@ void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color
 		++fontBuffer;
 	}
 
-    // Re-enable interrupts
-    enableInterrupts();
+    // Re-enable interrupts if we entered this code path with IF=1
+    if (initialIrqFlag) {
+        enableInterrupts();
+    }
 }

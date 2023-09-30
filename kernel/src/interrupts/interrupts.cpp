@@ -16,6 +16,13 @@ void disableInterrupts() {
     __asm__ volatile("cli");
 }
 
+bool areInterruptsEnabled() {
+    unsigned long eflags;
+    asm volatile("pushf\n""pop %0": "=rm"(eflags));
+
+    return (eflags >> 9) & 1;
+}
+
 DEFINE_INT_HANDLER(_exc_handler_div) {
     kprintColoredEx("#DIV", TEXT_COLOR_RED);
     kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->rip);
@@ -74,8 +81,8 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
 
         if (nextTask) {
             switchContext(prevTask, nextTask, frame);
-            // kprintInfo("PID:%llu DESCHEDULED\n", prevTask->pid);
-            // kprintInfo("PID:%llu SCHEDULED\n", nextTask->pid);
+            kprintInfo("PID:%llu DESCHEDULED\n", prevTask->pid);
+            kprintInfo("PID:%llu SCHEDULED\n", nextTask->pid);
         }
     }
 

@@ -3,13 +3,15 @@
 
 EXTERN_C void __kinstall_gdt_asm(GdtDescriptor* descriptor);
 
+TaskStateSegment g_tss;
+
 GDT g_globalDescriptorTable;
 GdtSegmentDescriptor kernelNullDescriptor;
 GdtSegmentDescriptor kernelCodeDescriptor;
 GdtSegmentDescriptor kernelDataDescriptor;
-GdtSegmentDescriptor userNullDescriptor;
 GdtSegmentDescriptor userCodeDescriptor;
 GdtSegmentDescriptor userDataDescriptor;
+TSSDescriptor        tssDescriptor;
 
 GdtDescriptor g_gdtDescriptor = {
     .limit = sizeof(GDT) - 1,
@@ -36,12 +38,23 @@ void setSegmentDescriptorLimit(
     descriptor->limitHigh = (uint8_t)((limit >> 16) & 0xF);
 }
 
-void intializeAndInstallGDT() {
+void setTSSDescriptorBase(TSSDescriptor* desc, uint64_t base) {
+    desc->baseLow  = (uint16_t)(base & 0xFFFF);
+    desc->baseMid  = (uint8_t)((base >> 16) & 0xFF);
+    desc->baseHigh = (uint8_t)((base >> 24) & 0xFF);
+    desc->baseUpper = (uint32_t)((base >> 32) & 0xFFFFFFFF);
+}
+
+void setTSSDescriptorLimit(TSSDescriptor* desc, uint32_t limit) {
+    desc->limitLow = (uint16_t)(limit & 0xFFFF);
+    desc->limitHigh = (uint8_t)((limit >> 16) & 0x0F);
+}
+
+void initializeAndInstallGDT(void* kernelStack) {
     // Zero out all descriptors initially
     zeromem(&kernelNullDescriptor, sizeof(GdtSegmentDescriptor));
     zeromem(&kernelCodeDescriptor, sizeof(GdtSegmentDescriptor));
     zeromem(&kernelDataDescriptor, sizeof(GdtSegmentDescriptor));
-    zeromem(&userNullDescriptor, sizeof(GdtSegmentDescriptor));
     zeromem(&userCodeDescriptor, sizeof(GdtSegmentDescriptor));
     zeromem(&userDataDescriptor, sizeof(GdtSegmentDescriptor));
     
@@ -50,6 +63,7 @@ void intializeAndInstallGDT() {
     setSegmentDescriptorLimit(&kernelCodeDescriptor, 0xFFFFF);
     kernelCodeDescriptor.longMode = 1;
     kernelCodeDescriptor.granularity = 1;
+    kernelCodeDescriptor.available = 1;
     kernelCodeDescriptor.accessByte.present = 1;
     kernelCodeDescriptor.accessByte.descriptorPrivilegeLvl = 0; // Kernel privilege level
     kernelCodeDescriptor.accessByte.executable = 1; // Code segment
@@ -61,6 +75,7 @@ void intializeAndInstallGDT() {
     setSegmentDescriptorLimit(&kernelDataDescriptor, 0xFFFFF);
     kernelDataDescriptor.longMode = 1;
     kernelDataDescriptor.granularity = 1;
+    kernelDataDescriptor.available = 1;
     kernelDataDescriptor.accessByte.present = 1;
     kernelDataDescriptor.accessByte.descriptorPrivilegeLvl = 0; // Kernel privilege level
     kernelDataDescriptor.accessByte.executable = 0; // Data segment
@@ -72,6 +87,7 @@ void intializeAndInstallGDT() {
     setSegmentDescriptorLimit(&userCodeDescriptor, 0xFFFFF);
     userCodeDescriptor.longMode = 1;
     userCodeDescriptor.granularity = 1;
+    userCodeDescriptor.available = 1;
     userCodeDescriptor.accessByte.present = 1;
     userCodeDescriptor.accessByte.descriptorPrivilegeLvl = 3; // Usermode privilege level
     userCodeDescriptor.accessByte.executable = 1; // Code segment
@@ -83,20 +99,42 @@ void intializeAndInstallGDT() {
     setSegmentDescriptorLimit(&userDataDescriptor, 0xFFFFF);
     userDataDescriptor.longMode = 1;
     userDataDescriptor.granularity = 1;
+    userDataDescriptor.available = 1;
     userDataDescriptor.accessByte.present = 1;
     userDataDescriptor.accessByte.descriptorPrivilegeLvl = 3; // Usermode privilege level
     userDataDescriptor.accessByte.executable = 0; // Data segment
     userDataDescriptor.accessByte.readWrite = 1;
     userDataDescriptor.accessByte.descriptorType = 1;
 
+    // Initialize TSS
+    zeromem(&g_tss, sizeof(TaskStateSegment));
+    g_tss.rsp0 = reinterpret_cast<uint64_t>(kernelStack);
+    g_tss.ioMapBase = sizeof(TaskStateSegment);
+
+    // Initialize TSS descriptor
+    setTSSDescriptorBase(&tssDescriptor, (uint64_t)&g_tss);
+    setTSSDescriptorLimit(&tssDescriptor, sizeof(TaskStateSegment) - 1);
+    tssDescriptor.accessByte.type = 0x9;  // 0b1001 for 64-bit TSS (Available)
+    tssDescriptor.accessByte.present = 1;
+    tssDescriptor.accessByte.dpl = 0; // Kernel privilege level
+    tssDescriptor.accessByte.zero = 0; // Should be zero
+    tssDescriptor.limitHigh = 0; // 64-bit TSS doesn't use limitHigh, set it to 0
+    tssDescriptor.available = 1; // If you use this field, set it to 1
+    tssDescriptor.granularity = 0; // No granularity for TSS
+    tssDescriptor.zero = 0; // Should be zero
+    tssDescriptor.zeroAgain = 0; // Should be zero
+
     // Update the GDT with initialized descriptors
     g_globalDescriptorTable.kernelNull = kernelNullDescriptor;
     g_globalDescriptorTable.kernelCode = kernelCodeDescriptor;
     g_globalDescriptorTable.kernelData = kernelDataDescriptor;
-    g_globalDescriptorTable.userNull = userNullDescriptor;
     g_globalDescriptorTable.userCode = userCodeDescriptor;
     g_globalDescriptorTable.userData = userDataDescriptor;
+    g_globalDescriptorTable.tss = tssDescriptor;
 
     // Install the GDT
     __kinstall_gdt_asm(&g_gdtDescriptor);
+
+    // Load the Task Register (TR)
+    __asm__("ltr %%ax" : : "a" (0x28));
 }
