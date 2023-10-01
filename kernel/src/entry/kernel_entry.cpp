@@ -39,6 +39,7 @@ PCB createTask(task_function_t task_function, uint64_t pid) {
     newTask.context.rbp = newTask.context.rsp;                   // Point to the top of the stack
     newTask.context.rip = (uint64_t)task_function;               // Set instruction pointer to the task function
     newTask.context.rflags = 0x200;  // Enable interrupts
+    newTask.context.cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 
     // Setup segment registers
     newTask.context.cs = __KERNEL_CS;
@@ -62,10 +63,14 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     // Allocate and initialize the stack
     void* stack = zallocPage();  // Assuming this returns a page of memory
 
+    // Allocate a separate page for the function to run on
+    void* functionPage = zallocPage();
+    memcpy(functionPage, (void*)task_function, 200);
+
     // Initialize the CPU context
-    newTask.context.rsp = (uint64_t)((char*)stack + PAGE_SIZE);  // Point to the top of the stack
+    newTask.context.rsp = (uint64_t)0x00007fffffffe000 + PAGE_SIZE;  // Point to the top of the stack
     newTask.context.rbp = newTask.context.rsp;  // Point to the top of the stack
-    newTask.context.rip = (uint64_t)task_function;  // Set instruction pointer to the task function
+    newTask.context.rip = 0x400000;  // Set instruction pointer to the task function
     newTask.context.rflags = 0x200;  // Enable interrupts
 
     // Set up segment registers for user space. These values correspond to the selectors in the GDT.
@@ -75,10 +80,13 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     newTask.context.fs = newTask.context.ds;
     newTask.context.gs = newTask.context.ds;
     newTask.context.ss = newTask.context.ds;
-    
-    paging::pte_t* pte = paging::getPteForAddr(stack, paging::g_kernelRootPageTable);
-    pte->userSupervisor = 1;
-    paging::flushTlbAll();
+
+    // Create a userspace page table
+    paging::PageTable* userPml4 = paging::createUserspacePml4(paging::getCurrentTopLevelPageTable());
+    paging::mapPage((void*)0x00007fffffffe000, (void*)__pa(stack), USERSPACE_PAGE, userPml4, paging::getGlobalPageFrameAllocator());
+    paging::mapPage((void*)0x0000000000400000, (void*)__pa(functionPage), USERSPACE_PAGE, userPml4, paging::getGlobalPageFrameAllocator());
+
+    newTask.context.cr3 = reinterpret_cast<uint64_t>(userPml4);
 
     return newTask;
 }
@@ -87,6 +95,7 @@ EXTERN_C void userspace_function() {
     volatile int a = 1, b = 1;
     while (1) {
         a = a + b;
+        kprint("userspace: %i\n", a);
     }
 }
 
@@ -129,6 +138,23 @@ void test_task_execution_and_preemption() {
 
     sched.addTask(task1);
     sched.addTask(task2);
+}
+
+void getPageTableIndicesFromVirtualAddress(
+    uint64_t vaddr,
+    uint64_t* ipml4,
+    uint64_t* ipdpt,
+    uint64_t* ipdt,
+    uint64_t* ipt
+) {
+    vaddr >>= 12;
+    *ipt = vaddr & 0x1ff;
+    vaddr >>= 9;
+    *ipdt = vaddr & 0x1ff;
+    vaddr >>= 9;
+    *ipdpt = vaddr & 0x1ff;
+    vaddr >>= 9;
+    *ipml4 = vaddr & 0x1ff;
 }
 
 void _kentry(KernelEntryParams* params) {

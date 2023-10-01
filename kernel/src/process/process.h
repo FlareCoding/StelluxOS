@@ -13,6 +13,9 @@ struct CpuContext {
 
     // Segment registers
     uint64_t cs, ds, es, fs, gs, ss;
+
+    // Top level page table pointer
+    uint64_t cr3;
 } __attribute__((packed));
 
 enum class ProcessState {

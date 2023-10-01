@@ -161,7 +161,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
 
     // Map the kernel and other memory to the higher half
-    CreateHigherHalfMapping(PML4, KernelElfSegments, &KernelStack, TotalSystemMemory);
+    CreateHigherHalfMapping(PML4, KernelElfSegments, TotalSystemMemory);
 
     Print(L"\n\r------ Page Table PML4 Created ------\n\r");
     Print(L"    Pages Allocated  : %llu\n\r", GetAllocatedPageCount());
@@ -190,23 +190,26 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     // Load PML4 address into CR3
     __asm__ volatile("mov %0, %%cr3" : : "r"((UINT64)PML4));
 
+    // Calculate kernel's higher half offset to convert physical addresses to virtual
+    UINT64 KernelAddressSpaceOffset = (UINT64)KernelVirtualBase - (UINT64)KernelPhysicalBase;
+
     // Initialize params
     struct KernelEntryParams params;
-    params.KernelElfSegments = KernelElfSegments;
+    params.KernelElfSegments = (VOID*)((UINT64)KernelElfSegments + KernelAddressSpaceOffset);
     
-    params.GraphicsFramebuffer.Base = (VOID*)GraphicsOutputProtocol->Mode->FrameBufferBase;
+    params.GraphicsFramebuffer.Base = (VOID*)(GraphicsOutputProtocol->Mode->FrameBufferBase + KernelAddressSpaceOffset);
     params.GraphicsFramebuffer.Size = (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize;
     params.GraphicsFramebuffer.Width = (UINT64)GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
     params.GraphicsFramebuffer.Height = (UINT64)GraphicsOutputProtocol->Mode->Info->VerticalResolution;
     params.GraphicsFramebuffer.PixelsPerScanline = (UINT64)GraphicsOutputProtocol->Mode->Info->PixelsPerScanLine;
-    params.TextRenderingFont = ZapLightFont;
+    params.TextRenderingFont = (VOID*)((UINT64)ZapLightFont + KernelAddressSpaceOffset);
 
-    params.EfiMemoryMap.Base = (VOID*)EfiMemoryMap;
+    params.EfiMemoryMap.Base = (VOID*)((UINT64)EfiMemoryMap + KernelAddressSpaceOffset);
     params.EfiMemoryMap.Size = MemoryMapSize;
     params.EfiMemoryMap.DescriptorSize = DescriptorSize;
     params.EfiMemoryMap.DescriptorCount = MemoryMapSize / DescriptorSize;
 
-    params.KernelStack = KernelStack;
+    params.KernelStack = (VOID*)((UINT64)KernelStack + KernelAddressSpaceOffset);
 
     // Cast the physical entry point to a function pointer
     void (*KernelEntryPoint)(struct KernelEntryParams*) =

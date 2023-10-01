@@ -61,7 +61,6 @@ struct PageTable* CreateIdentityMappedPageTable(
 void CreateHigherHalfMapping(
     struct PageTable* PML4,
     struct ElfSegmentInfo* KernelElfSegments,
-    VOID** KernelStack,
     UINT64 TotalSystemMemory
 );
 

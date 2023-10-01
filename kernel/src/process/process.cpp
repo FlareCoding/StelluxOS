@@ -1,4 +1,5 @@
 #include "process.h"
+#include <paging/page.h>
 
 void saveCpuContext(CpuContext* context, InterruptFrame* frame) {
     context->rax = frame->rax;
@@ -25,6 +26,9 @@ void saveCpuContext(CpuContext* context, InterruptFrame* frame) {
     context->es = frame->es;
     context->fs = frame->fs;
     context->gs = frame->gs;
+
+    // Read top level page table pointer from cr3
+    context->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 }
 
 void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
@@ -52,6 +56,9 @@ void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
     frame->es = context->es;
     frame->fs = context->fs;
     frame->gs = context->gs;
+
+    // Read top level page table pointer from cr3
+    paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(context->cr3));
 }
 
 void switchContext(PCB* from, PCB* to, InterruptFrame *frame) {

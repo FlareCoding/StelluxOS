@@ -1,6 +1,7 @@
 #include "kdisplay.h"
 #include <memory/kmemory.h>
 #include <interrupts/interrupts.h>
+#include <paging/phys_addr_translation.h>
 
 #define CHAR_PIXEL_WIDTH 8
 
@@ -13,6 +14,8 @@ void Display::initialize(void* framebuffer, void* font) {
 
     // Set the font pointer
     s_font = static_cast<Psf1Font*>(font);
+    s_font->header = static_cast<Psf1Hdr*>(__va(s_font->header));
+    s_font->glyphBuffer = __va(s_font->glyphBuffer);
 
     // Clear the framebuffer
     zeromem(s_framebuffer.base, s_framebuffer.size);

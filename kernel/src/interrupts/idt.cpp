@@ -107,6 +107,8 @@ void __common_exc_entry(InterruptFrame* frame) {
     }
 
     kprint("KERNEL EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
+    kprintWarn("Occured in: %s mode\n", (frame->cs & 0x3) == 0x3 ? "user" : "supervisor");
+    kprintWarn("Faulting instruction: 0x%llx\n", frame->rip);
     kprintError("This is a stub for an panic screen\n");
     while (true);
 }

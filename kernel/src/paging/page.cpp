@@ -22,6 +22,23 @@ void getPageTableIndicesFromVirtualAddress(
     *ipml4 = vaddr & 0x1ff;
 }
 
+PageTable* getCurrentTopLevelPageTable() {
+    uint64_t cr3_value;
+    __asm__ volatile(
+        "mov %%cr3, %0"
+        : "=r"(cr3_value) // Output operand
+        :                 // No input operand
+        :                 // No clobbered register
+    );
+    
+	void* pml4Vaddr = __va(reinterpret_cast<void*>(cr3_value));
+	return static_cast<PageTable*>(pml4Vaddr);
+}
+
+void setCurrentTopLevelPageTable(PageTable* pml4) {
+    __asm__ volatile("mov %0, %%cr3" : : "r"(reinterpret_cast<uint64_t>(__pa(pml4))));
+}
+
 pte_t* getPml4Entry(void* vaddr, PageTable* pml4) {
 	uint64_t index = (reinterpret_cast<uint64_t>(vaddr) >> 39) & 0x1ff;
 
@@ -54,6 +71,7 @@ PageTable* getNextLevelPageTable(pte_t* entry) {
 void mapPage(
     void* vaddr,
     void* paddr,
+	int privilegeLevel,
     PageTable* pml4,
     PageFrameAllocator& pageFrameAllocator
 ) {
@@ -72,6 +90,7 @@ void mapPage(
 
 		pml4_entry->present = 1;
 		pml4_entry->readWrite = 1;
+		pml4_entry->userSupervisor = privilegeLevel;
 		pml4_entry->pageFrameNumber = reinterpret_cast<uint64_t>(pdpt) >> 12;
 	} else {
 		pdpt = (PageTable*)((uint64_t)pml4_entry->pageFrameNumber << 12);
@@ -84,6 +103,7 @@ void mapPage(
 
 		pdpt_entry->present = 1;
 		pdpt_entry->readWrite = 1;
+		pdpt_entry->userSupervisor = privilegeLevel;
 		pdpt_entry->pageFrameNumber = reinterpret_cast<uint64_t>(pdt) >> 12;
 	} else {
 		pdt = (PageTable*)((uint64_t)pdpt_entry->pageFrameNumber << 12);
@@ -96,6 +116,7 @@ void mapPage(
 
 		pdt_entry->present = 1;
 		pdt_entry->readWrite = 1;
+		pdt_entry->userSupervisor = privilegeLevel;
 		pdt_entry->pageFrameNumber = reinterpret_cast<uint64_t>(pt) >> 12;
 	} else {
 		pt = (PageTable*)((uint64_t)pdt_entry->pageFrameNumber << 12);
@@ -104,6 +125,7 @@ void mapPage(
 	pte_t* pte = &pt->entries[ptIndex];
 	pte->present = 1;
 	pte->readWrite = 1;
+	pte->userSupervisor = privilegeLevel;
 	pte->pageFrameNumber = reinterpret_cast<uint64_t>(paddr) >> 12;
 }
 
@@ -147,20 +169,15 @@ void dbgPrintPte(pte_t* pte) {
     kprint("    execute_disable     : %i\n", (int)pte->executeDisable);
 }
 
-PageTable* getCurrentTopLevelPageTable() {
-    uint64_t cr3_value;
-    __asm__ volatile(
-        "mov %%cr3, %0"
-        : "=r"(cr3_value) // Output operand
-        :                 // No input operand
-        :                 // No clobbered register
-    );
-    
-	void* pml4Vaddr = __va(reinterpret_cast<void*>(cr3_value));
-	return static_cast<PageTable*>(pml4Vaddr);
-}
+PageTable* createUserspacePml4(
+    PageTable* kernelPml4,
+    PageFrameAllocator& allocator
+) {
+	PageTable* userPml4 = reinterpret_cast<PageTable*>(allocator.requestFreePageZeroed());
+	
+	// Copy only the kernel mappings
+	userPml4->entries[511] = kernelPml4->entries[511];
 
-void setCurrentTopLevelPageTable(PageTable* pml4) {
-    __asm__ volatile("mov %0, %%cr3" : : "r"(reinterpret_cast<uint64_t>(__pa(pml4))));
+	return userPml4;
 }
 } // namespace paging

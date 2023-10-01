@@ -1,6 +1,8 @@
 #include "apic.h"
 #include "msr.h"
 #include <paging/page.h>
+#include <memory/kmemory.h>
+#include <paging/tlb.h>
 
 volatile uint32_t* g_lapicBase = NULL;
 
@@ -18,12 +20,18 @@ void initializeApic() {
     g_lapicBase = (uint32_t*)(apicBaseMsr & ~0xFFF);
 
     // Map the LAPIC base into the kernel's address space
+    void* lapicVirtualBase = zallocPage(); // this will lock a kernel page for our use
+
     paging::mapPage(
+        lapicVirtualBase,
         (void*)g_lapicBase,
-        (void*)g_lapicBase,
+        KERNEL_PAGE,
         paging::g_kernelRootPageTable,
         paging::getGlobalPageFrameAllocator()
     );
+    paging::flushTlbAll();
+
+    g_lapicBase = (uint32_t*)lapicVirtualBase;
 
     // Set the spurious interrupt vector and enable the APIC
     uint32_t spurious_vector = readApicRegister(0xF0);

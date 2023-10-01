@@ -4,6 +4,9 @@
 
 #define PAGE_TABLE_ENTRIES 512
 
+#define USERSPACE_PAGE  1
+#define KERNEL_PAGE     0
+
 namespace paging {
 typedef struct PageTableEntry {
     union
@@ -34,11 +37,16 @@ struct PageTable {
     pte_t entries[PAGE_TABLE_ENTRIES];
 } __attribute__((aligned(PAGE_SIZE)));
 
+static inline void* pageAlignAddress(void* addr) {
+    return (void*)((reinterpret_cast<uint64_t>(addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
+}
+
 void mapPage(
     void* vaddr,
     void* paddr,
+    int privilegeLevel,
     PageTable* pml4,
-    PageFrameAllocator& pageFrameAllocator
+    PageFrameAllocator& pageFrameAllocator = getGlobalPageFrameAllocator()
 );
 
 PageTable* getCurrentTopLevelPageTable();
@@ -54,6 +62,11 @@ PageTable* getNextLevelPageTable(pte_t* entry);
 PageTableEntry* getPteForAddr(void* vaddr, PageTable* pml4);
 
 void dbgPrintPte(pte_t* pte);
+
+PageTable* createUserspacePml4(
+    PageTable* kernelPml4,
+    PageFrameAllocator& allocator = getGlobalPageFrameAllocator()
+);
 
 extern PageTable* g_kernelRootPageTable;
 } // namespace paging

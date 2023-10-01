@@ -125,7 +125,6 @@ struct PageTable* CreateIdentityMappedPageTable(
 void CreateHigherHalfMapping(
     struct PageTable* PML4,
     struct ElfSegmentInfo* KernelElfSegments,
-	VOID** KernelStack,
 	UINT64 TotalSystemMemory
 ) {
 	UINT64 KernelPhysicalBase = (UINT64)KernelElfSegments[0].PhysicalBase;
@@ -146,10 +145,4 @@ void CreateHigherHalfMapping(
 
 		MapPages((VOID*)vaddr, (VOID*)paddr, PML4);
     }
-
-	// Map the kernel stack
-	MapPages((VOID*)((UINT64)*KernelStack + Offset), KernelStack, PML4);
-
-	// Update the caller's kernel stack address to be in the kernel's address space
-	*KernelStack = (VOID*)((UINT64)*KernelStack + Offset);
 }
