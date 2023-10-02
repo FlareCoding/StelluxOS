@@ -11,6 +11,7 @@
 #include <arch/x86/msr.h>
 #include <arch/x86/apic.h>
 #include <sched/sched.h>
+#include <syscall/syscalls.h>
 #include <kprint.h>
 
 EXTERN_C void _kentry(KernelEntryParams* params);
@@ -96,21 +97,63 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     return newTask;
 }
 
+// unsigned long __syscall(
+//     uint64_t syscallnum,
+//     uint64_t arg1,
+//     uint64_t arg2,
+//     uint64_t arg3,
+//     uint64_t arg4,
+//     uint64_t arg5
+// ) {
+//     long ret;
+
+//     asm volatile(
+//         "mov %1, %%rax\n"  // syscall number
+//         "mov %2, %%rdi\n"  // arg1
+//         "mov %3, %%rsi\n"  // arg2
+//         "mov %4, %%rdx\n"  // arg3
+//         "mov %5, %%r10\n"  // arg4
+//         "mov %6, %%r8\n"   // arg5
+//         "syscall\n"
+//         "mov %%rax, %0\n"  // Capture return value
+//         : "=r"(ret)
+//         : "r"(syscallnum), "r"(arg1), "r"(arg2), "r"(arg3), "r"(arg4), "r"(arg5)
+//         : "rax", "rdi", "rsi", "rdx", "r10", "r8"
+//     );
+
+//     return ret;
+// }
+
 EXTERN_C void userspace_function() {
-    int64_t a = 1, b = 1;
-    unsigned long syscallRetVal;
+    int64_t a = 1;
+    char userStringBuffer[29] = { "This is a userspace message\n" };
+    userStringBuffer[28] = '\0';
+    uint64_t length = 29;
 
     while (1) {
-        a = a + b;
+        ++a;
 
         if (a > 300000000) {
-            asm volatile (
-                "mov $0, %%rax\n"
+            unsigned long syscallNumber = SYSCALL_SYS_WRITE;
+            unsigned long fd = 0;
+            unsigned long _unused = 0;
+
+            long ret;
+
+            asm volatile(
+                "mov %1, %%rax\n"  // syscall number
+                "mov %2, %%rdi\n"  // arg1
+                "mov %3, %%rsi\n"  // arg2
+                "mov %4, %%rdx\n"  // arg3
+                "mov %5, %%r10\n"  // arg4
+                "mov %6, %%r8\n"   // arg5
                 "syscall\n"
-                : "=a" (syscallRetVal)
-                : /* no input */
-                : "rcx", "r11"
+                "mov %%rax, %0\n"  // Capture return value
+                : "=r"(ret)
+                : "r"(syscallNumber), "r"(fd), "r"((uint64_t)userStringBuffer), "r"(length), "r"(_unused), "r"(_unused)
+                : "rax", "rdi", "rsi", "rdx", "r10", "r8"
             );
+            (void)ret;
 
             a = 0;
         }

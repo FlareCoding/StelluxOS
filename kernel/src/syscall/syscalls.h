@@ -2,7 +2,7 @@
 #define SYSCALLS_H
 #include <ktypes.h>
 
-#define ENOSYS static_cast<long>(-1)
+#define ENOSYS 1
 
 #define SYSCALL_SYS_WRITE   0
 #define SYSCALL_SYS_READ    1

@@ -20,7 +20,7 @@ EXTERN_C long __syscall_handler(
     switch (syscallnum) {
     case SYSCALL_SYS_WRITE: {
         // Handle write syscall
-        kprint("SYSCALL_SYS_WRITE called!!\n");
+        kprint((const char*)arg2);
         break;
     }
     case SYSCALL_SYS_READ: {
@@ -33,7 +33,7 @@ EXTERN_C long __syscall_handler(
     }
     default: {
         kprintError("Unknown syscall number %llu\n", syscallnum);
-        returnVal = ENOSYS;
+        returnVal = -ENOSYS;
         break;
     }
     }
