@@ -71,7 +71,7 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
         PCB* nextTask = sched.getNextTask();
 
         if (nextTask) {
-            switchContext(prevTask, nextTask, frame);
+            switchContextInIrq(prevTask, nextTask, frame);
             // kprintInfo("PID:%llu DESCHEDULED\n", prevTask->pid);
             // kprintInfo("PID:%llu SCHEDULED\n", nextTask->pid);
         }

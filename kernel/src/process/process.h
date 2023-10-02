@@ -40,7 +40,10 @@ void saveCpuContext(CpuContext* to_save, InterruptFrame* frame);
 // Saves context registers from the CPU context struct into an interrupt frame
 void restoreCpuContext(CpuContext* context, InterruptFrame* frame);
 
-// Saves and restores necessary registers into the appropriate process control blocks
-void switchContext(PCB* from, PCB* to, InterruptFrame *frame);
+// Saves and restores necessary registers into the appropriate
+// process control blocks using an interrupt frame.
+// *Note* Meant to be called from within an interrupt handler
+// and context would get switched upon interrupt return.
+void switchContextInIrq(PCB* from, PCB* to, InterruptFrame *frame);
 
 #endif

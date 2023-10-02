@@ -62,7 +62,7 @@ void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
     paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(context->cr3));
 }
 
-void switchContext(PCB* from, PCB* to, InterruptFrame *frame) {
+void switchContextInIrq(PCB* from, PCB* to, InterruptFrame *frame) {
     // Get the pointer to the active TSS
     TaskStateSegment* tss = getActiveTSS();
     
