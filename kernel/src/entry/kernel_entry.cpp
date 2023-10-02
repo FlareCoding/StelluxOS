@@ -97,33 +97,6 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     return newTask;
 }
 
-// unsigned long __syscall(
-//     uint64_t syscallnum,
-//     uint64_t arg1,
-//     uint64_t arg2,
-//     uint64_t arg3,
-//     uint64_t arg4,
-//     uint64_t arg5
-// ) {
-//     long ret;
-
-//     asm volatile(
-//         "mov %1, %%rax\n"  // syscall number
-//         "mov %2, %%rdi\n"  // arg1
-//         "mov %3, %%rsi\n"  // arg2
-//         "mov %4, %%rdx\n"  // arg3
-//         "mov %5, %%r10\n"  // arg4
-//         "mov %6, %%r8\n"   // arg5
-//         "syscall\n"
-//         "mov %%rax, %0\n"  // Capture return value
-//         : "=r"(ret)
-//         : "r"(syscallnum), "r"(arg1), "r"(arg2), "r"(arg3), "r"(arg4), "r"(arg5)
-//         : "rax", "rdi", "rsi", "rdx", "r10", "r8"
-//     );
-
-//     return ret;
-// }
-
 EXTERN_C void userspace_function() {
     int64_t a = 1;
     char userStringBuffer[29] = { "This is a userspace message\n" };
@@ -187,18 +160,19 @@ void test_task_execution_and_preemption() {
     auto& sched = Scheduler::get();
 
     // Create some tasks and add them to the scheduler
-    PCB task1, task2;
+    PCB task1, task2, task3;
 
     task1.state = ProcessState::RUNNING;
     task1.pid = 1;
     zeromem(&task1.context, sizeof(CpuContext));
     task1.context.rflags |= 0x200;
 
-    //task2 = createTask(simple_function, 2);
-    task2 = createUserspaceTask(userspace_function, 2);
+    task2 = createTask(simple_function, 2);
+    task3 = createUserspaceTask(userspace_function, 3);
 
     sched.addTask(task1);
     sched.addTask(task2);
+    sched.addTask(task3);
 }
 
 void getPageTableIndicesFromVirtualAddress(
