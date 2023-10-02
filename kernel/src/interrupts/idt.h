@@ -44,7 +44,7 @@ extern InterruptDescriptorTable g_kernelIdt;
 #define USER_DPL   3  // User-level
 
 // Selector
-#define KERNEL_CS 0x08  // Code segment selector for kernel, assuming it's the second entry in the GDT
+#define KERNEL_CS   0x08  // Code segment selector for kernel
 
 // Macro to set the IDT gate
 // entryIndex: Index of the IDT entry

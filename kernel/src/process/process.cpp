@@ -1,5 +1,6 @@
 #include "process.h"
 #include <paging/page.h>
+#include <gdt/gdt.h>
 
 void saveCpuContext(CpuContext* context, InterruptFrame* frame) {
     context->rax = frame->rax;
@@ -62,12 +63,21 @@ void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
 }
 
 void switchContext(PCB* from, PCB* to, InterruptFrame *frame) {
+    // Get the pointer to the active TSS
+    TaskStateSegment* tss = getActiveTSS();
+    
     // Save the current context into the 'from' PCB
     saveCpuContext(&from->context, frame);
+
+    // Save the current kernel stack
+    from->kernelStack = tss->rsp0;
 
     // Update the state of the processes
     from->state = ProcessState::READY;
     to->state = ProcessState::RUNNING;
+
+    // Set the new kernel stack
+    tss->rsp0 = to->kernelStack;
 
     // Restore the context from the 'to' PCB
     restoreCpuContext(&to->context, frame);

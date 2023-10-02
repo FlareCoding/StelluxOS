@@ -8,6 +8,7 @@
 #include <paging/tlb.h>
 #include <interrupts/idt.h>
 #include <arch/x86/cpuid.h>
+#include <arch/x86/msr.h>
 #include <arch/x86/apic.h>
 #include <sched/sched.h>
 #include <kprint.h>
@@ -60,8 +61,9 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     newTask.state = ProcessState::READY;
     newTask.pid = pid;
 
-    // Allocate and initialize the stack
-    void* stack = zallocPage();  // Assuming this returns a page of memory
+    // Allocate both user and kernel stacks
+    void* stack = zallocPage();
+    void* kernelStack = zallocPage();
 
     // Allocate a separate page for the function to run on
     void* functionPage = zallocPage();
@@ -74,12 +76,15 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     newTask.context.rflags = 0x200;  // Enable interrupts
 
     // Set up segment registers for user space. These values correspond to the selectors in the GDT.
-    newTask.context.cs = __USER_CS | 0x3;  // 0x18 = user code segment selector, 0x3 = user-mode privilege level
-    newTask.context.ds = __USER_DS | 0x3;  // 0x20 = user data segment selector, 0x3 = user-mode privilege level
+    newTask.context.cs = __USER_CS | 0x3;
+    newTask.context.ds = __USER_DS | 0x3;
     newTask.context.es = newTask.context.ds;
     newTask.context.fs = newTask.context.ds;
     newTask.context.gs = newTask.context.ds;
     newTask.context.ss = newTask.context.ds;
+
+    // Save the kernel stack
+    newTask.kernelStack = (uint64_t)kernelStack + PAGE_SIZE;
 
     // Create a userspace page table
     paging::PageTable* userPml4 = paging::createUserspacePml4(paging::getCurrentTopLevelPageTable());
@@ -92,10 +97,23 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
 }
 
 EXTERN_C void userspace_function() {
-    volatile int a = 1, b = 1;
+    int64_t a = 1, b = 1;
+    unsigned long syscallRetVal;
+
     while (1) {
         a = a + b;
-        kprint("userspace: %i\n", a);
+
+        if (a > 300000000) {
+            asm volatile (
+                "mov $0, %%rax\n"
+                "syscall\n"
+                : "=a" (syscallRetVal)
+                : /* no input */
+                : "rcx", "r11"
+            );
+
+            a = 0;
+        }
     }
 }
 
@@ -198,6 +216,9 @@ void _kentry(KernelEntryParams* params) {
     // Set up the interrupt descriptor table and enable interrupts
     initializeAndInstallIdt();
     enableInterrupts();
+
+    // Setup and enable syscalls
+    enableSyscallInterface();
 
     kprintInfo("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
     kprintInfo("System free memory  : %llu MB\n", globalPageFrameAllocator.getFreeSystemMemory() / 1024 / 1024);

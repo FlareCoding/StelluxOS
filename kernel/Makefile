@@ -2,8 +2,8 @@ KERNEL_INCLUDES = -I./src -I./src/core
 
 CFLAGS = -m64 -g -ffreestanding -O0 -Wall -Werror -Wextra $(KERNEL_INCLUDES)
 CXXFLAGS = $(CFLAGS) -std=c++17
-ASMC	 = nasm
-ASMFLAGS = -g
+ASMC	 = as
+ASMFLAGS = -g --64
 LDFLAGS = -nostdlib -T kstellux.ld -o kernel.elf
 
 SRCDIR	:=src
@@ -13,10 +13,10 @@ rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(
 
 CPPSOURCES 	:= $(call rwildcard,$(SRCDIR),*.cpp)
 CSOURCES    := $(call rwildcard,$(SRCDIR),*.c)
-ASMSOURCES 	:= $(call rwildcard,$(SRCDIR),*.asm)  
+ASMSOURCES 	:= $(call rwildcard,$(SRCDIR),*.s)  
 OBJECTS 	:= $(patsubst $(SRCDIR)/%.cpp, $(OBJDIR)/%.o, $(CPPSOURCES))
 OBJECTS 	+= $(patsubst $(SRCDIR)/%.c, $(OBJDIR)/%.o, $(CSOURCES))
-OBJECTS 	+= $(patsubst $(SRCDIR)/%.asm, $(OBJDIR)/%_asm.o, $(ASMSOURCES))
+OBJECTS 	+= $(patsubst $(SRCDIR)/%.s, $(OBJDIR)/%_asm.o, $(ASMSOURCES))
 
 all: kernel.elf
 
@@ -28,9 +28,9 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c $^ -o $@
 
-$(OBJDIR)/%_asm.o: $(SRCDIR)/%.asm
+$(OBJDIR)/%_asm.o: $(SRCDIR)/%.s
 	@mkdir -p $(@D)
-	$(ASMC) $(ASMFLAGS) $^ -f elf64 -o $@
+	$(ASMC) $(ASMFLAGS) $^ -o $@
 
 kernel.elf: $(OBJECTS)
 	@mkdir -p bin

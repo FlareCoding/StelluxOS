@@ -1,4 +1,9 @@
-%macro PUSHALL 0
+.intel_syntax noprefix
+.code64
+
+.extern __common_isr_entry
+
+.macro PUSHALL
     push rax
     push rcx
     push rdx
@@ -23,9 +28,9 @@
     push rax
     mov rax, gs
     push rax
-%endmacro
+.endm
 
-%macro POPALL 0
+.macro POPALL
     pop rax
     mov gs, ax
     pop rax
@@ -50,78 +55,79 @@
     pop rdx
     pop rcx
     pop rax
-%endmacro
+.endm
 
-[extern __common_isr_entry]
+.global __asm_common_isr_entry
+.text
 
-; Common entry point for all exceptions and IRQs
+# Common entry point for all exceptions and IRQs
 __asm_common_isr_entry:
-    ; Save CPU state
-    PUSHALL             ; pushes segment registers and general purpose registers
+    # Save CPU state
+    PUSHALL             # pushes segment registers and general purpose registers
     
-    mov     ax, 0x10    ; kernel data segment descriptor
+    mov     ax, 0x10    # kernel data segment descriptor
 	mov     ds, ax
 	mov     es, ax
 	mov     fs, ax
 	mov     gs, ax
     
-    ; Call C handler
+    # Call C handler
     call __common_isr_entry
 
-    ; Restore state
-    POPALL              ; pops segment registers and general purpose registers
+    # Restore state
+    POPALL              # pops segment registers and general purpose registers
 
-    add rsp, 16         ; clean up the pushed error code and interrupt number
-    iretq               ; Interrupt return
+    add rsp, 16         # clean up the pushed error code and interrupt number
+    iretq               # Interrupt return
 
-; Exception entry points
-global __asm_exc_handler_div
-global __asm_exc_handler_db
-global __asm_exc_handler_nmi
-global __asm_exc_handler_bp
-global __asm_exc_handler_of
-global __asm_exc_handler_br
-global __asm_exc_handler_ud
-global __asm_exc_handler_nm
-global __asm_exc_handler_df
-global __asm_exc_handler_cso
-global __asm_exc_handler_ts
-global __asm_exc_handler_np
-global __asm_exc_handler_ss
-global __asm_exc_handler_gp
-global __asm_exc_handler_pf
-global __asm_exc_handler_mf
-global __asm_exc_handler_ac
-global __asm_exc_handler_mc
-global __asm_exc_handler_xm
-global __asm_exc_handler_ve
-global __asm_exc_handler_cp
-global __asm_exc_handler_hv
-global __asm_exc_handler_vc
-global __asm_exc_handler_sx
+# Exception entry points
+.global __asm_exc_handler_div
+.global __asm_exc_handler_db
+.global __asm_exc_handler_nmi
+.global __asm_exc_handler_bp
+.global __asm_exc_handler_of
+.global __asm_exc_handler_br
+.global __asm_exc_handler_ud
+.global __asm_exc_handler_nm
+.global __asm_exc_handler_df
+.global __asm_exc_handler_cso
+.global __asm_exc_handler_ts
+.global __asm_exc_handler_np
+.global __asm_exc_handler_ss
+.global __asm_exc_handler_gp
+.global __asm_exc_handler_pf
+.global __asm_exc_handler_mf
+.global __asm_exc_handler_ac
+.global __asm_exc_handler_mc
+.global __asm_exc_handler_xm
+.global __asm_exc_handler_ve
+.global __asm_exc_handler_cp
+.global __asm_exc_handler_hv
+.global __asm_exc_handler_vc
+.global __asm_exc_handler_sx
 
-; IRQ entry points
-global __asm_irq_handler_0
-global __asm_irq_handler_1
-global __asm_irq_handler_2
-global __asm_irq_handler_3
-global __asm_irq_handler_4
-global __asm_irq_handler_5
-global __asm_irq_handler_6
-global __asm_irq_handler_7
-global __asm_irq_handler_8
-global __asm_irq_handler_9
-global __asm_irq_handler_10
-global __asm_irq_handler_11
-global __asm_irq_handler_12
-global __asm_irq_handler_13
-global __asm_irq_handler_14
-global __asm_irq_handler_15
+# IRQ entry points
+.global __asm_irq_handler_0
+.global __asm_irq_handler_1
+.global __asm_irq_handler_2
+.global __asm_irq_handler_3
+.global __asm_irq_handler_4
+.global __asm_irq_handler_5
+.global __asm_irq_handler_6
+.global __asm_irq_handler_7
+.global __asm_irq_handler_8
+.global __asm_irq_handler_9
+.global __asm_irq_handler_10
+.global __asm_irq_handler_11
+.global __asm_irq_handler_12
+.global __asm_irq_handler_13
+.global __asm_irq_handler_14
+.global __asm_irq_handler_15
 
-; ----------- EXCEPTIONS ----------- ;
+# ----------- EXCEPTIONS ----------- #
 __asm_exc_handler_div:
-    push 0      ; error code
-    push 0      ; interrupt number
+    push 0      # error code
+    push 0      # interrupt number
     jmp __asm_common_isr_entry
 
 __asm_exc_handler_db:
@@ -229,7 +235,7 @@ __asm_exc_handler_sx:
     push 30
     jmp __asm_common_isr_entry
 
-; ------------- IRQS ------------- ;
+# ------------- IRQS ------------- #
 __asm_irq_handler_0:
     push 0
     push 32
@@ -310,4 +316,4 @@ __asm_irq_handler_15:
     push 47
     jmp __asm_common_isr_entry
 
-section .note.GNU-stack progbits
+.section .note.GNU-stack,"",@progbits

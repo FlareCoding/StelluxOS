@@ -3,18 +3,11 @@
 #include <sched/sched.h>
 #include <paging/tlb.h>
 #include <kprint.h>
+#include "panic.h"
 
 #define PF_PRESENT  0x1  // Bit 0
 #define PF_WRITE    0x2  // Bit 1
 #define PF_USER     0x4  // Bit 2
-
-void enableInterrupts() {
-    __asm__ volatile("sti");
-}
-
-void disableInterrupts() {
-    __asm__ volatile("cli");
-}
 
 bool areInterruptsEnabled() {
     unsigned long eflags;
@@ -29,8 +22,7 @@ DEFINE_INT_HANDLER(_exc_handler_div) {
     kprintColoredEx("#DIV ", TEXT_COLOR_RED);
     kprintColoredEx("Your goomba code tried to divide by 0\n", TEXT_COLOR_WHITE);
 
-    kprintError("This is a stub for a panic screen!\n");
-    while (true);
+    kpanic(frame);
 }
 
 DEFINE_INT_HANDLER(_exc_handler_pf) {
@@ -64,8 +56,7 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
     kprintWarn("Faulting address: 0x%llx\n", cr2);
 
     kprintChar('\n');
-    kprintError("This is a stub for a panic screen!\n");
-    while (true);
+    kpanic(frame);
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
@@ -81,8 +72,8 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
 
         if (nextTask) {
             switchContext(prevTask, nextTask, frame);
-            kprintInfo("PID:%llu DESCHEDULED\n", prevTask->pid);
-            kprintInfo("PID:%llu SCHEDULED\n", nextTask->pid);
+            // kprintInfo("PID:%llu DESCHEDULED\n", prevTask->pid);
+            // kprintInfo("PID:%llu SCHEDULED\n", nextTask->pid);
         }
     }
 

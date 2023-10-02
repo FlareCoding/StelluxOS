@@ -90,8 +90,14 @@ struct InterruptFrame {
     uint64_t ss;            // Stack segment selector
 } __attribute__((packed));
 
-void enableInterrupts();
-void disableInterrupts();
+inline void enableInterrupts() {
+    __asm__ volatile("sti");
+}
+
+inline void disableInterrupts() {
+    __asm__ volatile("cli");
+}
+
 bool areInterruptsEnabled();
 
 typedef void (*InterruptHandler_t)(struct InterruptFrame* frame);
