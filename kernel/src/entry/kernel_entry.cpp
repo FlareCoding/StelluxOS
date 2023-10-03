@@ -32,6 +32,7 @@ PCB createTask(task_function_t task_function, uint64_t pid) {
     memset(&newTask, 0, sizeof(PCB));
     newTask.state = ProcessState::READY;
     newTask.pid = pid;
+    newTask.priority = 0;
 
     // Allocate and initialize the stack
     void* stack = zallocPage();
@@ -41,7 +42,7 @@ PCB createTask(task_function_t task_function, uint64_t pid) {
     newTask.context.rbp = newTask.context.rsp;                   // Point to the top of the stack
     newTask.context.rip = (uint64_t)task_function;               // Set instruction pointer to the task function
     newTask.context.rflags = 0x200;  // Enable interrupts
-    newTask.context.cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
+    newTask.cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 
     // Setup segment registers
     newTask.context.cs = __KERNEL_CS;
@@ -61,6 +62,7 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     memset(&newTask, 0, sizeof(PCB));
     newTask.state = ProcessState::READY;
     newTask.pid = pid;
+    newTask.priority = 0;
 
     // Allocate both user and kernel stacks
     void* stack = zallocPage();
@@ -68,7 +70,7 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
 
     // Allocate a separate page for the function to run on
     void* functionPage = zallocPage();
-    memcpy(functionPage, (void*)task_function, 200);
+    memcpy(functionPage, (void*)task_function, PAGE_SIZE);
 
     // Initialize the CPU context
     newTask.context.rsp = (uint64_t)0x00007fffffffe000 + PAGE_SIZE;  // Point to the top of the stack
@@ -92,7 +94,7 @@ PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     paging::mapPage((void*)0x00007fffffffe000, (void*)__pa(stack), USERSPACE_PAGE, userPml4, paging::getGlobalPageFrameAllocator());
     paging::mapPage((void*)0x0000000000400000, (void*)__pa(functionPage), USERSPACE_PAGE, userPml4, paging::getGlobalPageFrameAllocator());
 
-    newTask.context.cr3 = reinterpret_cast<uint64_t>(userPml4);
+    newTask.cr3 = reinterpret_cast<uint64_t>(userPml4);
 
     return newTask;
 }
@@ -103,10 +105,10 @@ EXTERN_C void userspace_function() {
     userStringBuffer[28] = '\0';
     uint64_t length = 29;
 
-    while (1) {
+    while (a <= 1000000000) {
         ++a;
 
-        if (a > 300000000) {
+        if (a % 200000000 == 0) {
             unsigned long syscallNumber = SYSCALL_SYS_WRITE;
             unsigned long fd = 0;
             unsigned long _unused = 0;
@@ -127,10 +129,28 @@ EXTERN_C void userspace_function() {
                 : "rax", "rdi", "rsi", "rdx", "r10", "r8"
             );
             (void)ret;
-
-            a = 0;
         }
     }
+
+    unsigned long syscallNumber = SYSCALL_SYS_EXIT;
+    unsigned long _unused = 0;
+
+    long ret;
+
+    asm volatile(
+        "mov %1, %%rax\n"  // syscall number
+        "mov %2, %%rdi\n"  // arg1
+        "mov %3, %%rsi\n"  // arg2
+        "mov %4, %%rdx\n"  // arg3
+        "mov %5, %%r10\n"  // arg4
+        "mov %6, %%r8\n"   // arg5
+        "syscall\n"
+        "mov %%rax, %0\n"  // Capture return value
+        : "=r"(ret)
+        : "r"(syscallNumber), "r"(_unused), "r"(_unused), "r"(_unused), "r"(_unused), "r"(_unused)
+        : "rax", "rdi", "rsi", "rdx", "r10", "r8"
+    );
+    (void)ret;
 }
 
 int fibb(int n) {

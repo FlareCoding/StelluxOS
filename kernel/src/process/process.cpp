@@ -2,6 +2,9 @@
 #include <paging/page.h>
 #include <gdt/gdt.h>
 
+EXTERN_C void __asm_save_cpu_context(CpuContext* ctx);
+EXTERN_C void __asm_restore_cpu_context_and_iret(CpuContext* ctx);
+
 void saveCpuContext(CpuContext* context, InterruptFrame* frame) {
     context->rax = frame->rax;
     context->rbx = frame->rbx;
@@ -27,9 +30,6 @@ void saveCpuContext(CpuContext* context, InterruptFrame* frame) {
     context->es = frame->es;
     context->fs = frame->fs;
     context->gs = frame->gs;
-
-    // Read top level page table pointer from cr3
-    context->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 }
 
 void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
@@ -57,17 +57,21 @@ void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
     frame->es = context->es;
     frame->fs = context->fs;
     frame->gs = context->gs;
-
-    // Read top level page table pointer from cr3
-    paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(context->cr3));
 }
 
+// Saves and restores necessary registers into the appropriate
+// process control blocks using an interrupt frame.
+// *Note* Meant to be called from within an interrupt handler
+// and context would get switched upon interrupt return.
 void switchContextInIrq(PCB* from, PCB* to, InterruptFrame *frame) {
     // Get the pointer to the active TSS
     TaskStateSegment* tss = getActiveTSS();
     
     // Save the current context into the 'from' PCB
     saveCpuContext(&from->context, frame);
+
+    // Read top level page table pointer from cr3
+    from->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 
     // Save the current kernel stack
     from->kernelStack = tss->rsp0;
@@ -81,4 +85,37 @@ void switchContextInIrq(PCB* from, PCB* to, InterruptFrame *frame) {
 
     // Restore the context from the 'to' PCB
     restoreCpuContext(&to->context, frame);
+
+    // Read top level page table pointer from cr3
+    paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
+}
+
+//
+// More low level context switch that only switches the CPU context in-place.
+//
+void switchTo(PCB* from, PCB* to) {
+    // Get the pointer to the active TSS
+    TaskStateSegment* tss = getActiveTSS();
+
+    // Read top level page table pointer from cr3
+    from->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
+
+    // Save the current kernel stack
+    from->kernelStack = tss->rsp0;
+
+    //
+    // Save the current context into the 'from' PCB
+    //
+    // TO-DO: implement saving the correct segment selectors, rsp, rip, and flags
+    //
+    __asm_save_cpu_context(&from->context);
+
+    // Set the new kernel stack
+    tss->rsp0 = to->kernelStack;
+
+    // Read top level page table pointer from cr3
+    paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
+
+    // Restore the cpu context from the 'to' PCB and perform an iretq
+    __asm_restore_cpu_context_and_iret(&to->context);
 }

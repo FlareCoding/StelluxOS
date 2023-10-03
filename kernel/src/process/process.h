@@ -13,9 +13,6 @@ struct CpuContext {
 
     // Segment registers
     uint64_t cs, ds, es, fs, gs, ss;
-
-    // Top level page table pointer
-    uint64_t cr3;
 } __attribute__((packed));
 
 enum class ProcessState {
@@ -31,6 +28,7 @@ typedef struct ProcessControlBlock {
     ProcessState    state;
     uint64_t        pid;
     uint64_t        priority;
+    uint64_t        cr3;
     uint64_t        kernelStack;
 } __attribute__((packed)) PCB;
 
@@ -45,5 +43,10 @@ void restoreCpuContext(CpuContext* context, InterruptFrame* frame);
 // *Note* Meant to be called from within an interrupt handler
 // and context would get switched upon interrupt return.
 void switchContextInIrq(PCB* from, PCB* to, InterruptFrame *frame);
+
+//
+// More low level context switch that only switches the CPU context in-place.
+//
+void switchTo(PCB* from, PCB* to);
 
 #endif

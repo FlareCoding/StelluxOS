@@ -1,5 +1,6 @@
 #include "syscalls.h"
 #include <process/process.h>
+#include <sched/sched.h>
 #include <kprint.h>
 
 EXTERN_C long __syscall_handler(
@@ -28,7 +29,22 @@ EXTERN_C long __syscall_handler(
         break;
     }
     case SYSCALL_SYS_EXIT: {
-        // Handle exit syscall
+        auto& sched = Scheduler::get();
+
+        // Get the current task
+        PCB* currentTask = sched.getCurrentTask();
+        PCB* nextTask = sched.getNextTask();
+
+        // Remove the current task from the scheduler task queue
+        sched.removeTask(currentTask->pid);
+
+        // Switch to the next task
+        switchTo(currentTask, nextTask);
+       
+        // ------------------------------------------------ //
+        // This part should never be reached since switchTo //
+        // should take an iretq path to the next process.   //
+        // ------------------------------------------------ //
         break;
     }
     default: {
