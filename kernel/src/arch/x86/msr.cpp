@@ -21,7 +21,7 @@ void writeMsr(
 EXTERN_C void __asm_syscall_entry64();
 
 void enableSyscallInterface() {
-    uint64_t starRegValue = ((uint64_t)__TSS_PT2_SELECTOR << 48) | ((uint64_t)__KERNEL_CS << 32);
+    uint64_t starRegValue = (((uint64_t)__TSS_PT2_SELECTOR | 3) << 48) | ((uint64_t)__KERNEL_CS << 32);
 
     // Setup syscall related MSRs
     writeMsr(IA32_STAR, starRegValue);
