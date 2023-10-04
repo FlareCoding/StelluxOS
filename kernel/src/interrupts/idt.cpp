@@ -100,7 +100,7 @@ IdtDescriptor g_kernelIdtDescriptor = {
 InterruptDescriptorTable g_kernelIdt;
 
 // Common entry point for texceptions
-void __common_exc_entry(InterruptFrame* frame) {
+void __common_exc_entry(PtRegs* frame) {
     disableInterrupts();
 
     if (g_int_exc_handlers[frame->intno] != NULL) {
@@ -108,20 +108,20 @@ void __common_exc_entry(InterruptFrame* frame) {
     }
 
     kprint("KERNEL EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
-    kprintWarn("Occured in: %s mode\n", (frame->cs & 0x3) == 0x3 ? "user" : "supervisor");
-    kprintWarn("Faulting instruction: 0x%llx\n", frame->rip);
+    kprintWarn("Occured in: %s mode\n", (frame->hwframe.cs & 0x3) == 0x3 ? "user" : "supervisor");
+    kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
     kpanic(frame);
 }
 
 // Common entry point for IRQs
-void __common_irq_entry(InterruptFrame* frame) {
+void __common_irq_entry(PtRegs* frame) {
     if (g_int_irq_handlers[frame->intno - IRQ0] != NULL) {
         g_int_irq_handlers[frame->intno - IRQ0](frame);
     }
 }
 
 // Common entry point for all interrupt service routines
-EXTERN_C void __common_isr_entry(InterruptFrame frame) {
+EXTERN_C void __common_isr_entry(PtRegs frame) {
     // Check whether the interrupt is an IRQ or a trap/exception
     if (frame.intno >= IRQ0) {
         __common_irq_entry(&frame);

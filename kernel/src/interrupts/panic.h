@@ -2,6 +2,6 @@
 #define PANIC_H
 #include "interrupts.h"
 
-void kpanic(InterruptFrame* frame);
+void kpanic(PtRegs* frame);
 
 #endif

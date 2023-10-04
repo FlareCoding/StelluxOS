@@ -2,10 +2,9 @@
 #include <paging/page.h>
 #include <gdt/gdt.h>
 
-EXTERN_C void __asm_save_cpu_context(CpuContext* ctx);
-EXTERN_C void __asm_restore_cpu_context_and_iret(CpuContext* ctx);
+EXTERN_C void __asm_switch_cpu_context_and_iret(CpuContext* ctx);
 
-void saveCpuContext(CpuContext* context, InterruptFrame* frame) {
+void saveCpuContext(CpuContext* context, PtRegs* frame) {
     context->rax = frame->rax;
     context->rbx = frame->rbx;
     context->rcx = frame->rcx;
@@ -21,18 +20,18 @@ void saveCpuContext(CpuContext* context, InterruptFrame* frame) {
     context->r13 = frame->r13;
     context->r14 = frame->r14;
     context->r15 = frame->r15;
-    context->rip = frame->rip;
-    context->rsp = frame->rsp;
-    context->rflags = frame->rflags;
-    context->cs = frame->cs;
-    context->ss = frame->ss;
+    context->rip = frame->hwframe.rip;
+    context->rsp = frame->hwframe.rsp;
+    context->rflags = frame->hwframe.rflags;
+    context->cs = frame->hwframe.cs;
+    context->ss = frame->hwframe.ss;
     context->ds = frame->ds;
     context->es = frame->es;
     context->fs = frame->fs;
     context->gs = frame->gs;
 }
 
-void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
+void restoreCpuContext(CpuContext* context, PtRegs* frame) {
     frame->rax = context->rax;
     frame->rbx = context->rbx;
     frame->rcx = context->rcx;
@@ -48,11 +47,11 @@ void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
     frame->r13 = context->r13;
     frame->r14 = context->r14;
     frame->r15 = context->r15;
-    frame->rip = context->rip;
-    frame->rsp = context->rsp;
-    frame->rflags = context->rflags;
-    frame->cs = context->cs;
-    frame->ss = context->ss;
+    frame->hwframe.rip = context->rip;
+    frame->hwframe.rsp = context->rsp;
+    frame->hwframe.rflags = context->rflags;
+    frame->hwframe.cs = context->cs;
+    frame->hwframe.ss = context->ss;
     frame->ds = context->ds;
     frame->es = context->es;
     frame->fs = context->fs;
@@ -63,7 +62,7 @@ void restoreCpuContext(CpuContext* context, InterruptFrame* frame) {
 // process control blocks using an interrupt frame.
 // *Note* Meant to be called from within an interrupt handler
 // and context would get switched upon interrupt return.
-void switchContextInIrq(PCB* from, PCB* to, InterruptFrame *frame) {
+void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     // Get the pointer to the active TSS
     TaskStateSegment* tss = getActiveTSS();
     
@@ -104,11 +103,9 @@ void switchTo(PCB* from, PCB* to) {
     from->kernelStack = tss->rsp0;
 
     //
-    // Save the current context into the 'from' PCB
+    // =================== TO-DO ===================
+    //   implement saving the current cpu context
     //
-    // TO-DO: implement saving the correct segment selectors, rsp, rip, and flags
-    //
-    __asm_save_cpu_context(&from->context);
 
     // Set the new kernel stack
     tss->rsp0 = to->kernelStack;
@@ -116,6 +113,6 @@ void switchTo(PCB* from, PCB* to) {
     // Read top level page table pointer from cr3
     paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
 
-    // Restore the cpu context from the 'to' PCB and perform an iretq
-    __asm_restore_cpu_context_and_iret(&to->context);
+    // Switch to the new context and jump to it using iret
+    __asm_switch_cpu_context_and_iret(&to->context);
 }

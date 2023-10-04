@@ -35,6 +35,8 @@ EXTERN_C long __syscall_handler(
         PCB* currentTask = sched.getCurrentTask();
         PCB* nextTask = sched.getNextTask();
 
+        kprint("Exiting userspace process with pid:%i...\n", currentTask->pid);
+
         // Remove the current task from the scheduler task queue
         sched.removeTask(currentTask->pid);
 

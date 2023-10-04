@@ -1,8 +1,15 @@
 .intel_syntax noprefix
 .code64
 
-.extern __syscall_handler
+.equ tss_offset_rsp0,  0x04
+.equ tss_offset_rsp1,  0x0C
+.equ tss_offset_rsp2,  0x14
 
+.equ __KERNEL_CS,   0x08
+.equ __USER_CS,     0x33
+.equ __USER_DS,     0x2b
+
+.extern __syscall_handler
 .global __asm_syscall_entry64
 
 .text
@@ -10,16 +17,21 @@ __asm_syscall_entry64:
     # Switch to kernel gs
     swapgs
 
-    # Save the user stack in a temp register
-    mov r14, rsp
-
     # Switch to kernel stack
-    mov r15, gs:[0x4]  # rsp0 is at offset 0x4 in the TSS
-    mov rsp, r15
+    mov gs:[tss_offset_rsp2], rsp # rsp2 is at offset 0x14 in the TSS (store the user stack)
+    mov rsp, gs:[tss_offset_rsp0]  # rsp0 is at offset 0x04 in the TSS (retrieve the kernel stack)
 
-    # Store the current user stack
-    push r14
+    # Comment this out to take the iret path
+    jmp _ignored_iret_construction_path
 
+    # Construct an interrupt frame on stack
+	push	__USER_DS				# regs.hwframe->ss
+	push    gs:[tss_offset_rsp2]    # regs.hwframe->rsp
+	push	r11					    # regs.hwframe->rflags
+	push	__USER_CS				# regs.hwframe->cs
+	push	rcx					    # regs.hwframe->rip
+
+_ignored_iret_construction_path:
     # Save volatile registers that we are going to modify
     push rdi
     push rsi
@@ -51,14 +63,19 @@ __asm_syscall_entry64:
     pop rsi
     pop rdi
 
-    # Switch back to user stack
-    pop r15
-    mov rsp, r15
+    # Uncomment this to take the iret path
+    # jmp __syscall_exit_swapgs_and_iret
 
-    // Switch back to user gs
+__syscall_exit_swapgs_and_sysret:
+    mov rsp, gs:[tss_offset_rsp2]
     swapgs
 
-    # Return to caller with SYSRET
     sysretq
+
+__syscall_exit_swapgs_and_iret:
+    # Switch back to user gs
+    swapgs
+
+    iretq
 
 .section .note.GNU-stack, "", @progbits

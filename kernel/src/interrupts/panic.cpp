@@ -1,7 +1,7 @@
 #include "panic.h"
 #include <kprint.h>
 
-void kpanic(InterruptFrame* frame) {
+void kpanic(PtRegs* frame) {
     uint64_t cr0, cr2, cr3, cr4;
 
     // Read the control registers using inline assembly
@@ -19,21 +19,21 @@ void kpanic(InterruptFrame* frame) {
 
     // Display registers in rows of 3
     kprintInfo("RAX: %llx  RCX: %llx  RDX: %llx\n", frame->rax, frame->rcx, frame->rdx);
-    kprintInfo("RBX: %llx  RSP: %llx  RBP: %llx\n", frame->rbx, frame->rsp, frame->rbp);
+    kprintInfo("RBX: %llx  RSP: %llx  RBP: %llx\n", frame->rbx, frame->hwframe.rsp, frame->rbp);
     kprintInfo("RSI: %llx  RDI: %llx  R8 : %llx\n", frame->rsi, frame->rdi, frame->r8);
     kprintInfo("R9 : %llx  R10: %llx  R11: %llx\n", frame->r9, frame->r10, frame->r11);
     kprintInfo("R12: %llx  R13: %llx  R14: %llx\n", frame->r12, frame->r13, frame->r14);
     kprintInfo("R15: %llx\n", frame->r15);
 
     kprint("======= SEGMENT REGISTERS =======\n");
-    kprintInfo("CS : %llx  DS : %llx  ES : %llx\n", frame->cs, frame->ds, frame->es);
-    kprintInfo("FS : %llx  GS : %llx  SS : %llx\n", frame->fs, frame->gs, frame->ss);
+    kprintInfo("CS : %llx  DS : %llx  ES : %llx\n", frame->hwframe.cs, frame->ds, frame->es);
+    kprintInfo("FS : %llx  GS : %llx  SS : %llx\n", frame->fs, frame->gs, frame->hwframe.ss);
 
     kprint("======= CONTROL REGISTERS =======\n");
     kprintInfo("CR0: %llx  CR2: %llx  CR3: %llx  CR4: %llx\n", cr0, cr2, cr3, cr4);
 
     kprint("======= SPECIAL REGISTERS =======\n");
-    kprintInfo("RIP: %llx  RFLAGS: %llx\n", frame->rip, frame->rflags);
+    kprintInfo("RIP: %llx  RFLAGS: %llx\n", frame->hwframe.rip, frame->hwframe.rflags);
 
     kprintError("======= SYSTEM HALTED =======\n");
     for (;;) {

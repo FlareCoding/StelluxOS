@@ -33,16 +33,16 @@ typedef struct ProcessControlBlock {
 } __attribute__((packed)) PCB;
 
 // Saves context registers from the interrupt frame into a CPU context struct
-void saveCpuContext(CpuContext* to_save, InterruptFrame* frame);
+void saveCpuContext(CpuContext* to_save, PtRegs* frame);
 
 // Saves context registers from the CPU context struct into an interrupt frame
-void restoreCpuContext(CpuContext* context, InterruptFrame* frame);
+void restoreCpuContext(CpuContext* context, PtRegs* frame);
 
 // Saves and restores necessary registers into the appropriate
 // process control blocks using an interrupt frame.
 // *Note* Meant to be called from within an interrupt handler
 // and context would get switched upon interrupt return.
-void switchContextInIrq(PCB* from, PCB* to, InterruptFrame *frame);
+void switchContextInIrq(PCB* from, PCB* to, PtRegs *frame);
 
 //
 // More low level context switch that only switches the CPU context in-place.

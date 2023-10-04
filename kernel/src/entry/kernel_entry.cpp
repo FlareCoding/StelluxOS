@@ -191,7 +191,7 @@ void test_task_execution_and_preemption() {
     task3 = createUserspaceTask(userspace_function, 3);
 
     sched.addTask(task1);
-    //sched.addTask(task2);
+    sched.addTask(task2);
     sched.addTask(task3);
 }
 

@@ -1,145 +1,102 @@
 .intel_syntax noprefix
 .code64
 
-.macro PUSHALL
-    push rax
-    push rcx
-    push rdx
-    push rbx
-    push rbp
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
-    
-    mov rax, ds
-    push rax
-    mov rax, es
-    push rax
-    mov rax, fs
-    push rax
-    mov rax, gs
-    push rax
-.endm
-
-.macro POPALL
-    pop rax
-    mov gs, ax
-    pop rax
-    mov fs, ax
-    pop rax
-    mov es, ax
-    pop rax
-    mov ds, ax
-
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rbp
-    pop rbx
-    pop rdx
-    pop rcx
-    pop rax
-.endm
-
-#
-# Saves the current CPU state into a cpu context structure
-# C function signature:
-#      void __asm_save_context(CpuContext* ctx)
-# $rdi holds ctx
-.global __asm_save_cpu_context
-
 #
 # Sets the current CPU state to the given context and uses iret to switch context 
 # C function signature:
-#      void __asm_restore_cpu_context_and_iret(CpuContext* ctx)
+#      void __asm_switch_cpu_context_and_iret(CpuContext* ctx)
 #
-.global __asm_restore_cpu_context_and_iret
+.global __asm_switch_cpu_context_and_iret
+
+# PtRegs Struct:
+# struct CpuContext {
+#     // General purpose registers
+#     uint64_t rax, rbx, rcx, rdx;
+#     uint64_t rsi, rdi, rbp;
+#     uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+
+#     // Stack pointer, instruction pointer, and flags register
+#     uint64_t rip, rsp, rflags;
+
+#     // Segment registers
+#     uint64_t cs, ds, es, fs, gs, ss;
+# } __attribute__((packed));
+
+.equ cpu_context_rax_offset, 0x00
+.equ cpu_context_rbx_offset, 0x08
+.equ cpu_context_rcx_offset, 0x10
+.equ cpu_context_rdx_offset, 0x18
+.equ cpu_context_rsi_offset, 0x20
+.equ cpu_context_rdi_offset, 0x28
+.equ cpu_context_rbp_offset, 0x30
+.equ cpu_context_r8_offset,  0x38
+.equ cpu_context_r9_offset,  0x40
+.equ cpu_context_r10_offset, 0x48
+.equ cpu_context_r11_offset, 0x50
+.equ cpu_context_r12_offset, 0x58
+.equ cpu_context_r13_offset, 0x60
+.equ cpu_context_r14_offset, 0x68
+.equ cpu_context_r15_offset, 0x70
+.equ cpu_context_rip_offset, 0x78
+.equ cpu_context_rsp_offset, 0x80
+.equ cpu_context_rflags_offset, 0x88
+.equ cpu_context_cs_offset,  0x90
+.equ cpu_context_ds_offset,  0x98
+.equ cpu_context_es_offset,  0xA0
+.equ cpu_context_fs_offset,  0xA8
+.equ cpu_context_gs_offset,  0xB0
+.equ cpu_context_ss_offset,  0xB8
 
 #
 # rdi --> CpuContext* ctx
 #
-__asm_save_cpu_context:
-    # General purpose registers
-    mov [rdi], rax        # rax
-    mov [rdi + 8], rbx    # rbx
-    mov [rdi + 16], rcx   # rcx
-    mov [rdi + 24], rdx   # rdx
-    mov [rdi + 32], rsi   # rsi
-    mov [rdi + 40], rdi   # rdi
-    mov [rdi + 48], rbp   # rbp
-    mov [rdi + 56], r8    # r8
-    mov [rdi + 64], r9    # r9
-    mov [rdi + 72], r10   # r10
-    mov [rdi + 80], r11   # r11
-    mov [rdi + 88], r12   # r12
-    mov [rdi + 96], r13   # r13
-    mov [rdi + 104], r14  # r14
-    mov [rdi + 112], r15  # r15
-
-    ret
-
-#
-# rdi --> CpuContext* ctx
-#
-__asm_restore_cpu_context_and_iret:
-    # Save rdi from ctx
-    mov rax, [rdi + 40]
+__asm_switch_cpu_context_and_iret:
+    # Preserve rdi and rbp
+    mov rax, [rdi + cpu_context_rdi_offset]
     push rax
 
-    # Save rbp from ctx
-    mov rax, [rdi + 48]
+    mov rax, [rdi + cpu_context_rbp_offset]
     push rax
 
-    # Restore general-purpose registers first
-    mov rax, [rdi]       # Load rax from ctx
-    mov rbx, [rdi + 8]   # Load rbx from ctx
-    mov rcx, [rdi + 16]  # Load rcx from ctx
-    mov rdx, [rdi + 24]  # Load rdx from ctx
-    mov rsi, [rdi + 32]  # Load rsi from ctx
-
-    mov r8, [rdi + 56]   # Load r8 from ctx
-    mov r9, [rdi + 64]   # Load r9 from ctx
-    mov r10, [rdi + 72]  # Load r10 from ctx
-    mov r11, [rdi + 80]  # Load r11 from ctx
-    mov r12, [rdi + 88]  # Load r12 from ctx
-    mov r13, [rdi + 96]  # Load r13 from ctx
-    mov r14, [rdi + 104] # Load r14 from ctx
-    mov r15, [rdi + 112] # Load r15 from ctx
-
-    # Restore Segment Registers
-    mov ax, [rdi + 152] # Load ds from ctx
+    # Load general purpose registers
+    xor rax, rax
+    mov rax, [rdi + cpu_context_ds_offset]
     mov ds, ax
-    mov ax, [rdi + 160] # Load es from ctx
-    mov es, ax
-    mov ax, [rdi + 168] # Load fs from ctx
-    mov fs, ax
-    mov ax, [rdi + 176] # Load gs from ctx
+
+    mov rax, [rdi + cpu_context_gs_offset]
     mov gs, ax
 
-    # Pop the saved value of rbp and rdi from ctx off the stack
+    mov rax, [rdi + cpu_context_fs_offset]
+    mov fs, ax
+
+    mov rax, [rdi + cpu_context_es_offset]
+    mov es, ax
+
+    mov rax, [rdi + cpu_context_rax_offset]
+    mov rbx, [rdi + cpu_context_rbx_offset]
+    mov rcx, [rdi + cpu_context_rcx_offset]
+    mov rdx, [rdi + cpu_context_rdx_offset]
+
+    mov rsi, [rdi + cpu_context_rsi_offset]
+
+    mov r8,  [rdi + cpu_context_r8_offset]
+    mov r9,  [rdi + cpu_context_r9_offset]
+    mov r10, [rdi + cpu_context_r10_offset]
+    mov r11, [rdi + cpu_context_r11_offset]
+    mov r12, [rdi + cpu_context_r12_offset]
+    mov r13, [rdi + cpu_context_r13_offset]
+    mov r14, [rdi + cpu_context_r14_offset]
+    mov r15, [rdi + cpu_context_r15_offset]
+
+    # Restore the correct rbp value from the stack
     pop rbp
 
-    # Push SS, RSP, RFLAGS, CS, RIP onto the stack
-    # Order matters because iretq will pop them off in reverse order
-    push [rdi + 184]  # Push ss
-    push [rdi + 128]  # Push rsp
-    push [rdi + 136]  # Push rflags
-    push [rdi + 144]   # Push cs
-    push [rdi + 120]       # Push rip
+    # Construct an interrupt frame on stack
+	push	[rdi + cpu_context_ss_offset]       # regs.hwframe->ss
+	push    [rdi + cpu_context_rsp_offset]      # regs.hwframe->rsp
+	push	[rdi + cpu_context_rflags_offset]   # regs.hwframe->rflags
+	push	[rdi + cpu_context_cs_offset]	    # regs.hwframe->cs
+	push	[rdi + cpu_context_rip_offset]	    # regs.hwframe->rip
 
     # Restore the new context's rdi
     mov rdi, [rsp + 0x28]

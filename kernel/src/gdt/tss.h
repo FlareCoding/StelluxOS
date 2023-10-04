@@ -3,10 +3,10 @@
 #include <ktypes.h>
 
 struct TaskStateSegment {
-    uint32_t reserved0;
-    uint64_t rsp0;
-    uint64_t rsp1;
-    uint64_t rsp2;
+    uint32_t reserved0;  // 0x00
+    uint64_t rsp0;       // 0x04
+    uint64_t rsp1;       // 0x0C
+    uint64_t rsp2;       // 0x14
     uint64_t reserved1;
     uint64_t ist1;
     uint64_t ist2;

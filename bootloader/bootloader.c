@@ -197,7 +197,14 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     struct KernelEntryParams params;
     params.KernelElfSegments = (VOID*)((UINT64)KernelElfSegments + KernelAddressSpaceOffset);
     
-    params.GraphicsFramebuffer.Base = (VOID*)(GraphicsOutputProtocol->Mode->FrameBufferBase + KernelAddressSpaceOffset);
+    params.GraphicsFramebuffer.Base = (VOID*)(GraphicsOutputProtocol->Mode->FrameBufferBase);
+    // Since the graphics buffer can get placed too high up in memory on high RAM systems,
+    // it cannot be properly mapped to the higher half, so we convert its base to a higher half
+    // address only if the conversion is possible and successful.
+    if (((UINT64)params.GraphicsFramebuffer.Base + KernelAddressSpaceOffset) > (UINT64)KernelVirtualBase) {
+        params.GraphicsFramebuffer.Base = (VOID*)((UINT64)params.GraphicsFramebuffer.Base + KernelAddressSpaceOffset);
+    }
+
     params.GraphicsFramebuffer.Size = (UINT64)GraphicsOutputProtocol->Mode->FrameBufferSize;
     params.GraphicsFramebuffer.Width = (UINT64)GraphicsOutputProtocol->Mode->Info->HorizontalResolution;
     params.GraphicsFramebuffer.Height = (UINT64)GraphicsOutputProtocol->Mode->Info->VerticalResolution;

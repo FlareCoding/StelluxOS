@@ -69,6 +69,14 @@
 // ...
 
 struct InterruptFrame {
+    uint64_t rip;           // Instruction pointer (address of the instruction that was interrupted)
+    uint64_t cs;            // Code segment selector
+    uint64_t rflags;        // RFLAGS register (contains status and control flags)
+    uint64_t rsp;           // Stack pointer (points to the top of the stack)
+    uint64_t ss;            // Stack segment selector
+} __attribute__((packed));
+
+struct PtRegs {
     // Segment selectors
     uint64_t gs;
     uint64_t fs;
@@ -81,13 +89,9 @@ struct InterruptFrame {
     uint64_t rdi, rsi, rbp;
     uint64_t rbx, rdx, rcx;
     uint64_t rax;
-    uint64_t intno;         // Interrupt number
-    uint64_t error;         // Error code (0 if no error code needed)
-    uint64_t rip;           // Instruction pointer (address of the instruction that was interrupted)
-    uint64_t cs;            // Code segment selector
-    uint64_t rflags;        // RFLAGS register (contains status and control flags)
-    uint64_t rsp;           // Stack pointer (points to the top of the stack)
-    uint64_t ss;            // Stack segment selector
+    uint64_t intno;         // Interrupt number in case of an interrupt context
+    uint64_t error;         // Error code in case of a CPU exception (0 if no error code needed)
+    InterruptFrame hwframe; // Hardware interrupt frame
 } __attribute__((packed));
 
 inline void enableInterrupts() {
@@ -100,11 +104,11 @@ inline void disableInterrupts() {
 
 bool areInterruptsEnabled();
 
-typedef void (*InterruptHandler_t)(struct InterruptFrame* frame);
+typedef void (*InterruptHandler_t)(struct PtRegs* frame);
 
 #define DEFINE_INT_HANDLER(name) \
     void name( \
-        struct InterruptFrame* frame \
+        struct PtRegs* frame \
     )
 
 DEFINE_INT_HANDLER(_exc_handler_div);

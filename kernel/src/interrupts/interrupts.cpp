@@ -18,7 +18,7 @@ bool areInterruptsEnabled() {
 
 DEFINE_INT_HANDLER(_exc_handler_div) {
     kprintColoredEx("#DIV", TEXT_COLOR_RED);
-    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->rip);
+    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->hwframe.rip);
     kprintColoredEx("#DIV ", TEXT_COLOR_RED);
     kprintColoredEx("Your goomba code tried to divide by 0\n", TEXT_COLOR_WHITE);
 
@@ -27,7 +27,7 @@ DEFINE_INT_HANDLER(_exc_handler_div) {
 
 DEFINE_INT_HANDLER(_exc_handler_pf) {
     kprintColoredEx("#PF", TEXT_COLOR_RED);
-    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->rip);
+    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->hwframe.rip);
     kprintColoredEx("#PF", TEXT_COLOR_RED);
     kprintFmtColored(TEXT_COLOR_WHITE, " error_code: (0x%llx)", frame->error);
 
