@@ -111,6 +111,8 @@ typedef void (*InterruptHandler_t)(struct PtRegs* frame);
         struct PtRegs* frame \
     )
 
+DEFINE_INT_HANDLER(_userspace_common_exc_handler);
+
 DEFINE_INT_HANDLER(_exc_handler_div);
 DEFINE_INT_HANDLER(_exc_handler_pf);
 

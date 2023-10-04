@@ -75,10 +75,6 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     // Save the current kernel stack
     from->kernelStack = tss->rsp0;
 
-    // Update the state of the processes
-    from->state = ProcessState::READY;
-    to->state = ProcessState::RUNNING;
-
     // Set the new kernel stack
     tss->rsp0 = to->kernelStack;
 

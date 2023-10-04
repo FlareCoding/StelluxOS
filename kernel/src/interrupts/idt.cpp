@@ -107,10 +107,14 @@ void __common_exc_entry(PtRegs* frame) {
         return g_int_exc_handlers[frame->intno](frame);
     }
 
-    kprint("KERNEL EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
-    kprintWarn("Occured in: %s mode\n", (frame->hwframe.cs & 0x3) == 0x3 ? "user" : "supervisor");
-    kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
-    kpanic(frame);
+    if (frame->hwframe.cs & USER_DPL) {
+        // Usermode exceptions should get handled gracefully
+        _userspace_common_exc_handler(frame);
+    } else {
+        kprint("KERNEL SUPERVISOR EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
+        kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
+        kpanic(frame);
+    }
 }
 
 // Common entry point for IRQs

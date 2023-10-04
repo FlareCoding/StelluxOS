@@ -129,6 +129,14 @@ EXTERN_C void userspace_function() {
                 : "rax", "rdi", "rsi", "rdx", "r10", "r8"
             );
             (void)ret;
+
+            uint64_t cr3_value;
+            __asm__ volatile(
+                "mov %%cr3, %0"
+                : "=r"(cr3_value) // Output operand
+                :                 // No input operand
+                :                 // No clobbered register
+            );
         }
     }
 
