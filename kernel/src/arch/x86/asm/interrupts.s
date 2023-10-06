@@ -57,11 +57,22 @@
     pop rax
 .endm
 
+.extern __check_current_elevate_status
+
 .global __asm_common_isr_entry
 .text
 
 # Common entry point for all exceptions and IRQs
 __asm_common_isr_entry:
+    #
+    # Check if the process is user-elevated,
+    # if so, switch onto a good kernel stack.
+    #
+    # push rax                                # preserve syscall return value
+    # call __check_current_elevate_status     # check the elevate status
+    # testb al, 0x1                           # if the result is non-zero, then task is elevated
+    # pop rax                                 # restore syscall return value
+
     # Save CPU state
     PUSHALL             # pushes segment registers and general purpose registers
     

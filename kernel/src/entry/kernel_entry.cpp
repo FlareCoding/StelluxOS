@@ -27,9 +27,9 @@ typedef void (*task_function_t)();
 // Function to create a task
 PCB createTask(task_function_t task_function, uint64_t pid) {
     PCB newTask;
+    zeromem(&newTask, sizeof(PCB));
 
     // Initialize the PCB
-    memset(&newTask, 0, sizeof(PCB));
     newTask.state = ProcessState::READY;
     newTask.pid = pid;
     newTask.priority = 0;
@@ -57,6 +57,7 @@ PCB createTask(task_function_t task_function, uint64_t pid) {
 
 PCB createUserspaceTask(task_function_t task_function, uint64_t pid) {
     PCB newTask;
+    zeromem(&newTask, sizeof(PCB));
 
     // Initialize the PCB
     memset(&newTask, 0, sizeof(PCB));
@@ -109,7 +110,7 @@ EXTERN_C void userspace_function() {
         ++a;
 
         if (a % 200000000 == 0) {
-            unsigned long syscallNumber = SYSCALL_SYS_WRITE;
+            unsigned long syscallNumber = SYSCALL_SYS_ELEVATE;
             unsigned long fd = 0;
             unsigned long _unused = 0;
 
@@ -137,6 +138,27 @@ EXTERN_C void userspace_function() {
                 :                 // No input operand
                 :                 // No clobbered register
             );
+
+            typedef void (*kprintChar_t)(char chr);
+            kprintChar_t fn = (kprintChar_t)0xffffffff80000378;
+            fn('X');
+            fn('\n');
+
+            syscallNumber = SYSCALL_SYS_LOWER;
+            asm volatile(
+                "mov %1, %%rax\n"  // syscall number
+                "mov %2, %%rdi\n"  // arg1
+                "mov %3, %%rsi\n"  // arg2
+                "mov %4, %%rdx\n"  // arg3
+                "mov %5, %%r10\n"  // arg4
+                "mov %6, %%r8\n"   // arg5
+                "syscall\n"
+                "mov %%rax, %0\n"  // Capture return value
+                : "=r"(ret)
+                : "r"(syscallNumber), "r"(fd), "r"((uint64_t)userStringBuffer), "r"(length), "r"(_unused), "r"(_unused)
+                : "rax", "rdi", "rsi", "rdx", "r10", "r8"
+            );
+            (void)ret;
         }
     }
 
@@ -194,30 +216,14 @@ void test_task_execution_and_preemption() {
     task1.pid = 1;
     zeromem(&task1.context, sizeof(CpuContext));
     task1.context.rflags |= 0x200;
+    task1.elevated = 0;
 
     task2 = createTask(simple_function, 2);
     task3 = createUserspaceTask(userspace_function, 3);
 
     sched.addTask(task1);
-    sched.addTask(task2);
+    //sched.addTask(task2);
     sched.addTask(task3);
-}
-
-void getPageTableIndicesFromVirtualAddress(
-    uint64_t vaddr,
-    uint64_t* ipml4,
-    uint64_t* ipdpt,
-    uint64_t* ipdt,
-    uint64_t* ipt
-) {
-    vaddr >>= 12;
-    *ipt = vaddr & 0x1ff;
-    vaddr >>= 9;
-    *ipdt = vaddr & 0x1ff;
-    vaddr >>= 9;
-    *ipdpt = vaddr & 0x1ff;
-    vaddr >>= 9;
-    *ipml4 = vaddr & 0x1ff;
 }
 
 void _kentry(KernelEntryParams* params) {

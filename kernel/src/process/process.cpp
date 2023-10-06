@@ -1,6 +1,6 @@
 #include "process.h"
 #include <paging/page.h>
-#include <gdt/gdt.h>
+#include <arch/x86/per_cpu_data.h>
 
 EXTERN_C void __asm_switch_cpu_context_and_iret(CpuContext* ctx);
 
@@ -63,9 +63,6 @@ void restoreCpuContext(CpuContext* context, PtRegs* frame) {
 // *Note* Meant to be called from within an interrupt handler
 // and context would get switched upon interrupt return.
 void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
-    // Get the pointer to the active TSS
-    TaskStateSegment* tss = getActiveTSS();
-    
     // Save the current context into the 'from' PCB
     saveCpuContext(&from->context, frame);
 
@@ -73,10 +70,10 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     from->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 
     // Save the current kernel stack
-    from->kernelStack = tss->rsp0;
+    from->kernelStack = __per_cpu_data.__cpu[0].currentKernelStack;
 
     // Set the new kernel stack
-    tss->rsp0 = to->kernelStack;
+    __per_cpu_data.__cpu[0].currentKernelStack = to->kernelStack;
 
     // Restore the context from the 'to' PCB
     restoreCpuContext(&to->context, frame);
@@ -89,14 +86,11 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
 // More low level context switch that only switches the CPU context in-place.
 //
 void switchTo(PCB* from, PCB* to) {
-    // Get the pointer to the active TSS
-    TaskStateSegment* tss = getActiveTSS();
-
     // Read top level page table pointer from cr3
     from->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 
     // Save the current kernel stack
-    from->kernelStack = tss->rsp0;
+    from->kernelStack = __per_cpu_data.__cpu[0].currentKernelStack;
 
     //
     // =================== TO-DO ===================
@@ -104,7 +98,7 @@ void switchTo(PCB* from, PCB* to) {
     //
 
     // Set the new kernel stack
-    tss->rsp0 = to->kernelStack;
+    __per_cpu_data.__cpu[0].currentKernelStack = to->kernelStack;
 
     // Read top level page table pointer from cr3
     paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));

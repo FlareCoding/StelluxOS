@@ -30,6 +30,7 @@ typedef struct ProcessControlBlock {
     uint64_t        priority;
     uint64_t        cr3;
     uint64_t        kernelStack;
+    int8_t          elevated;
 } __attribute__((packed)) PCB;
 
 // Saves context registers from the interrupt frame into a CPU context struct

@@ -1,6 +1,7 @@
 #include "gdt.h"
 #include <memory/kmemory.h>
 #include <arch/x86/msr.h>
+#include <arch/x86/per_cpu_data.h>
 
 EXTERN_C void __kinstall_gdt_asm(GdtDescriptor* descriptor);
 
@@ -139,8 +140,10 @@ void initializeAndInstallGDT(void* kernelStack) {
     // Load the Task Register (TR)
     __asm__("ltr %%ax" : : "a" (__TSS_PT1_SELECTOR));
 
+    __per_cpu_data.__cpu[0].defaultKernelStack = reinterpret_cast<uint64_t>(kernelStack);
+
     // Store the address of the tss in gsbase
-    writeMsr(IA32_KERNEL_GS_BASE, (uint64_t)&g_tss);
+    writeMsr(IA32_KERNEL_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[0]);
 }
 
 TaskStateSegment* getActiveTSS() {

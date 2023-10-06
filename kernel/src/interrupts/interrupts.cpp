@@ -68,9 +68,15 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
     }
 
     if (frame->error & PF_USER) {
-        kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in user mode");
+        if (frame->ds & 3)
+            kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in user mode");
+        else
+            kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in lowered-supervisor mode");
     } else {
-        kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in supervisor mode");
+        if (frame->ds & 3)
+            kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in user-elevated mode");
+        else
+            kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in supervisor mode");
     }
     
     kprintChar('\n');
@@ -94,12 +100,18 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
         PCB* prevTask = sched.getCurrentTask();
         PCB* nextTask = sched.getNextTask();
 
-        // Update the state of the processes
-        prevTask->state = ProcessState::READY;
-        nextTask->state = ProcessState::RUNNING;
+        if (nextTask && prevTask != nextTask) {
+            // Update the state of the processes
+            prevTask->state = ProcessState::READY;
+            nextTask->state = ProcessState::RUNNING;
 
-        if (nextTask) {
+            if (prevTask->elevated) {
+                kprint("Switching away from an elevated task\n");
+            }
+
             switchContextInIrq(prevTask, nextTask, frame);
+
+            kprint("Switched!\n");
         }
     }
 

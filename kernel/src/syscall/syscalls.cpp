@@ -3,6 +3,13 @@
 #include <sched/sched.h>
 #include <kprint.h>
 
+EXTERN_C long __check_current_elevate_status() {
+    auto& sched = Scheduler::get();
+    PCB* currentTask = sched.getCurrentTask();
+    
+    return static_cast<long>(currentTask->elevated);
+}
+
 EXTERN_C long __syscall_handler(
     uint64_t syscallnum,
     uint64_t arg1,
@@ -42,11 +49,33 @@ EXTERN_C long __syscall_handler(
 
         // Switch to the next task
         switchTo(currentTask, nextTask);
-       
+
         // ------------------------------------------------ //
         // This part should never be reached since switchTo //
         // should take an iretq path to the next process.   //
         // ------------------------------------------------ //
+        break;
+    }
+    case SYSCALL_SYS_ELEVATE: {
+        auto& sched = Scheduler::get();
+        PCB* currentTask = sched.getCurrentTask();
+
+        if (currentTask->elevated) {
+            kprint("[*] Already elevated\n");
+        } else {
+            currentTask->elevated = 1;
+        }
+        break;
+    }
+    case SYSCALL_SYS_LOWER: {
+        auto& sched = Scheduler::get();
+        PCB* currentTask = sched.getCurrentTask();
+
+        if (!currentTask->elevated) {
+            kprint("[*] Already lowered\n");
+        } else {
+            currentTask->elevated = 0;
+        }
         break;
     }
     default: {

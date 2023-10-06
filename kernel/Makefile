@@ -1,9 +1,9 @@
 KERNEL_INCLUDES = -I./src -I./src/core
 
-CFLAGS = -m64 -g -ffreestanding -O0 -Wall -Werror -Wextra $(KERNEL_INCLUDES)
+CFLAGS = -m64 -g -ffreestanding -O0 -Wall -Werror -Wextra -mno-red-zone $(KERNEL_INCLUDES)
 CXXFLAGS = $(CFLAGS) -std=c++17
 ASMC	 = as
-ASMFLAGS = -g --64
+ASMFLAGS = -g --64 -I./src
 LDFLAGS = -nostdlib -T kstellux.ld -o kernel.elf
 
 SRCDIR	:=src

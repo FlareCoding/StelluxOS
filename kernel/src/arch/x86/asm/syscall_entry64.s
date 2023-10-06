@@ -1,15 +1,10 @@
 .intel_syntax noprefix
 .code64
-
-.equ tss_offset_rsp0,  0x04
-.equ tss_offset_rsp1,  0x0C
-.equ tss_offset_rsp2,  0x14
-
-.equ __KERNEL_CS,   0x08
-.equ __USER_CS,     0x33
-.equ __USER_DS,     0x2b
+.include "arch/x86/asm/common.s"
 
 .extern __syscall_handler
+.extern __check_current_elevate_status
+
 .global __asm_syscall_entry64
 
 .text
@@ -18,18 +13,18 @@ __asm_syscall_entry64:
     swapgs
 
     # Switch to kernel stack
-    mov gs:[tss_offset_rsp2], rsp # rsp2 is at offset 0x14 in the TSS (store the user stack)
-    mov rsp, gs:[tss_offset_rsp0]  # rsp0 is at offset 0x04 in the TSS (retrieve the kernel stack)
+    mov gs:[per_cpu_offset_current_user_stack], rsp
+    mov rsp, gs:[per_cpu_offset_current_kernel_stack]
 
     # Comment this out to take the iret path
     jmp _ignored_iret_construction_path
 
     # Construct an interrupt frame on stack
-	push	__USER_DS				# regs.hwframe->ss
-	push    gs:[tss_offset_rsp2]    # regs.hwframe->rsp
-	push	r11					    # regs.hwframe->rflags
-	push	__USER_CS				# regs.hwframe->cs
-	push	rcx					    # regs.hwframe->rip
+    push	__USER_DS				                    # regs.hwframe->ss
+    push    gs:[per_cpu_offset_current_user_stack]      # regs.hwframe->rsp
+    push	r11					                        # regs.hwframe->rflags
+    push	__USER_CS				                    # regs.hwframe->cs
+    push	rcx					                        # regs.hwframe->rip
 
 _ignored_iret_construction_path:
     # Save volatile registers that we are going to modify
@@ -63,11 +58,23 @@ _ignored_iret_construction_path:
     pop rsi
     pop rdi
 
+    #
+    # Check if the process is elevated,
+    # if so, take a special retq path.
+    #
+    push rax                                # preserve syscall return value
+    call __check_current_elevate_status     # check the elevate status
+    testb al, 0x1                           # if the result is non-zero, then task is elevated
+    pop rax                                 # restore syscall return value
+
+    # Take a retq path if we are elevated
+    jnz	__syscall_exit_swapgs_and_elevated_ret
+
     # Uncomment this to take the iret path
     # jmp __syscall_exit_swapgs_and_iret
 
 __syscall_exit_swapgs_and_sysret:
-    mov rsp, gs:[tss_offset_rsp2]
+    mov rsp, gs:[per_cpu_offset_current_user_stack]
     swapgs
 
     sysretq
@@ -77,5 +84,20 @@ __syscall_exit_swapgs_and_iret:
     swapgs
 
     iretq
+
+__syscall_exit_swapgs_and_elevated_ret:
+    # Switch back to user gs and user stack
+    mov rsp, gs:[per_cpu_offset_current_user_stack]
+    swapgs
+
+    # Restore the flags
+    push r11
+    popfq
+
+    # Push the return address onto the stack
+    push rcx
+
+    # Return with the same privilege level (kernel)
+    retq
 
 .section .note.GNU-stack, "", @progbits
