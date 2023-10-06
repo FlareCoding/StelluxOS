@@ -105,13 +105,7 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
             prevTask->state = ProcessState::READY;
             nextTask->state = ProcessState::RUNNING;
 
-            if (prevTask->elevated) {
-                kprint("Switching away from an elevated task\n");
-            }
-
             switchContextInIrq(prevTask, nextTask, frame);
-
-            kprint("Switched!\n");
         }
     }
 

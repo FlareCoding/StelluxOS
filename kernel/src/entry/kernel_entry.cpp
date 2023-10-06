@@ -143,22 +143,6 @@ EXTERN_C void userspace_function() {
             kprintChar_t fn = (kprintChar_t)0xffffffff80000378;
             fn('X');
             fn('\n');
-
-            syscallNumber = SYSCALL_SYS_LOWER;
-            asm volatile(
-                "mov %1, %%rax\n"  // syscall number
-                "mov %2, %%rdi\n"  // arg1
-                "mov %3, %%rsi\n"  // arg2
-                "mov %4, %%rdx\n"  // arg3
-                "mov %5, %%r10\n"  // arg4
-                "mov %6, %%r8\n"   // arg5
-                "syscall\n"
-                "mov %%rax, %0\n"  // Capture return value
-                : "=r"(ret)
-                : "r"(syscallNumber), "r"(fd), "r"((uint64_t)userStringBuffer), "r"(length), "r"(_unused), "r"(_unused)
-                : "rax", "rdi", "rsi", "rdx", "r10", "r8"
-            );
-            (void)ret;
         }
     }
 
@@ -222,7 +206,7 @@ void test_task_execution_and_preemption() {
     task3 = createUserspaceTask(userspace_function, 3);
 
     sched.addTask(task1);
-    //sched.addTask(task2);
+    sched.addTask(task2);
     sched.addTask(task3);
 }
 

@@ -72,14 +72,23 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     // Save the current kernel stack
     from->kernelStack = __per_cpu_data.__cpu[0].currentKernelStack;
 
+    // Save the elevated flag
+    from->elevated = __per_cpu_data.__cpu[0].elevated;
+
     // Set the new kernel stack
     __per_cpu_data.__cpu[0].currentKernelStack = to->kernelStack;
+
+    // Set elevated flag
+    __per_cpu_data.__cpu[0].elevated = to->elevated;
 
     // Restore the context from the 'to' PCB
     restoreCpuContext(&to->context, frame);
 
     // Read top level page table pointer from cr3
     paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
+
+    // Set the new value of currentTask
+    __per_cpu_data.__cpu[0].currentTask = to;
 }
 
 //
@@ -92,6 +101,9 @@ void switchTo(PCB* from, PCB* to) {
     // Save the current kernel stack
     from->kernelStack = __per_cpu_data.__cpu[0].currentKernelStack;
 
+    // Save the elevated flag
+    from->elevated = __per_cpu_data.__cpu[0].elevated;
+
     //
     // =================== TO-DO ===================
     //   implement saving the current cpu context
@@ -100,8 +112,14 @@ void switchTo(PCB* from, PCB* to) {
     // Set the new kernel stack
     __per_cpu_data.__cpu[0].currentKernelStack = to->kernelStack;
 
+    // Set elevated flag
+    __per_cpu_data.__cpu[0].elevated = to->elevated;
+
     // Read top level page table pointer from cr3
     paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
+
+    // Set the new value of currentTask
+    __per_cpu_data.__cpu[0].currentTask = to;
 
     // Switch to the new context and jump to it using iret
     __asm_switch_cpu_context_and_iret(&to->context);

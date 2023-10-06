@@ -1,6 +1,6 @@
 .intel_syntax noprefix
 .code64
-.include "arch/x86/asm/common.s"
+.include "common.s"
 
 .extern __syscall_handler
 .extern __check_current_elevate_status

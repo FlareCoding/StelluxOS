@@ -1,6 +1,8 @@
 .intel_syntax noprefix
 .code64
 
+.include "common.s"
+
 .extern __common_isr_entry
 
 .macro PUSHALL
@@ -57,8 +59,6 @@
     pop rax
 .endm
 
-.extern __check_current_elevate_status
-
 .global __asm_common_isr_entry
 .text
 
@@ -67,12 +67,68 @@ __asm_common_isr_entry:
     #
     # Check if the process is user-elevated,
     # if so, switch onto a good kernel stack.
-    #
-    # push rax                                # preserve syscall return value
-    # call __check_current_elevate_status     # check the elevate status
-    # testb al, 0x1                           # if the result is non-zero, then task is elevated
-    # pop rax                                 # restore syscall return value
+    #                 
+    testq [rsp + 0x8], 0x03
+    jnz __isr_entry_post_stack_switch
 
+    swapgs
+    testq gs:[per_cpu_offset_elevate_status], 1
+    swapgs
+
+    jz __isr_entry_post_stack_switch
+
+    #
+    # We need to copy the existing hardware-pushed exception
+    # frame onto the kernel stack and then switch to it.
+    #
+    swapgs
+
+    # Clobber rax and r15
+    push rax
+    push r15
+
+    # Move the top of the kernel stack into rax
+    mov rax, gs:[per_cpu_offset_current_kernel_stack]
+
+    # Copy interrupt number (+0x10 offset is due to rax being pushed)
+    mov r15, [rsp + 0x10]
+    mov [rax], r15
+
+    # Copy error code
+    mov r15, [rsp + 0x18]
+    mov [rax + 0x08], r15
+
+    # Copy rip
+    mov r15, [rsp + 0x20]
+    mov [rax + 0x10], r15
+
+    # Copy cs
+    mov r15, [rsp + 0x28]
+    mov [rax + 0x18], r15
+
+    # Copy rflags
+    mov r15, [rsp + 0x30]
+    mov [rax + 0x20], r15
+
+    # Copy rsp
+    mov r15, [rsp + 0x38]
+    mov [rax + 0x28], r15
+
+    # Copy ss
+    mov r15, [rsp + 0x40]
+    mov [rax + 0x30], r15
+
+    # Restore rax and r15
+    pop r15
+    pop rax
+
+    # Switch onto the kernel stack
+    mov rsp, gs:[per_cpu_offset_current_kernel_stack]
+
+    # Restore original gs
+    swapgs
+
+__isr_entry_post_stack_switch:
     # Save CPU state
     PUSHALL             # pushes segment registers and general purpose registers
     

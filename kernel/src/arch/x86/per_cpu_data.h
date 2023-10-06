@@ -9,6 +9,7 @@ struct CpuData {
     uint64_t defaultKernelStack;    // 0x08
     uint64_t currentKernelStack;    // 0x10
     uint64_t currentUserStack;      // 0x18
+    uint64_t elevated;              // 0x20
 } __attribute__((packed));
 
 struct PerCpuData {

@@ -1,6 +1,7 @@
 #include "syscalls.h"
 #include <process/process.h>
 #include <sched/sched.h>
+#include <arch/x86/per_cpu_data.h>
 #include <kprint.h>
 
 EXTERN_C long __check_current_elevate_status() {
@@ -64,6 +65,7 @@ EXTERN_C long __syscall_handler(
             kprint("[*] Already elevated\n");
         } else {
             currentTask->elevated = 1;
+            __per_cpu_data.__cpu[0].elevated = 1;
         }
         break;
     }
@@ -75,6 +77,7 @@ EXTERN_C long __syscall_handler(
             kprint("[*] Already lowered\n");
         } else {
             currentTask->elevated = 0;
+            __per_cpu_data.__cpu[0].elevated = 0;
         }
         break;
     }
