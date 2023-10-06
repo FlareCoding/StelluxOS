@@ -59,6 +59,8 @@
     pop rax
 .endm
 
+.extern __check_current_elevate_status
+
 .global __asm_common_isr_entry
 .text
 
@@ -67,14 +69,11 @@ __asm_common_isr_entry:
     #
     # Check if the process is user-elevated,
     # if so, switch onto a good kernel stack.
-    #                 
-    testq [rsp + 0x8], 0x03
-    jnz __isr_entry_post_stack_switch
-
-    swapgs
-    testq gs:[per_cpu_offset_elevate_status], 1
-    swapgs
-
+    #
+    push rax
+    call __check_current_elevate_status
+    testb al, 1
+    pop rax
     jz __isr_entry_post_stack_switch
 
     #
