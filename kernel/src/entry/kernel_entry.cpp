@@ -172,12 +172,12 @@ int fibb(int n) {
         return n;
     }
 
-    if (n == 30) {
-        for (volatile int i = 0; i < 100000000; i++) {
-            i = i + 1;
-            i = i - 1;
-        }
-    }
+    // if (n == 30) {
+    //     for (volatile int i = 0; i < 100000000; i++) {
+    //         i = i + 1;
+    //         i = i - 1;
+    //     }
+    // }
 
     return fibb(n - 1) + fibb(n - 2);
 }
