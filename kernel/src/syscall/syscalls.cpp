@@ -5,10 +5,7 @@
 #include <kprint.h>
 
 EXTERN_C long __check_current_elevate_status() {
-    auto& sched = Scheduler::get();
-    PCB* currentTask = sched.getCurrentTask();
-    
-    return static_cast<long>(currentTask->elevated);
+    return static_cast<long>(current->elevated);
 }
 
 EXTERN_C long __syscall_handler(
