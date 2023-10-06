@@ -55,25 +55,19 @@ EXTERN_C long __syscall_handler(
         break;
     }
     case SYSCALL_SYS_ELEVATE: {
-        auto& sched = Scheduler::get();
-        PCB* currentTask = sched.getCurrentTask();
-
-        if (currentTask->elevated) {
+        if (current->elevated) {
             kprint("[*] Already elevated\n");
         } else {
-            currentTask->elevated = 1;
+            current->elevated = 1;
             __per_cpu_data.__cpu[0].elevated = 1;
         }
         break;
     }
     case SYSCALL_SYS_LOWER: {
-        auto& sched = Scheduler::get();
-        PCB* currentTask = sched.getCurrentTask();
-
-        if (!currentTask->elevated) {
+        if (!current->elevated) {
             kprint("[*] Already lowered\n");
         } else {
-            currentTask->elevated = 0;
+            current->elevated = 0;
             __per_cpu_data.__cpu[0].elevated = 0;
         }
         break;
