@@ -362,19 +362,14 @@ void _kentry(KernelEntryParams* params) {
     for (uint32_t apicId = 1; apicId < ncpus; apicId++) {
         kprint("Awaking cpu %i\n", apicId);
         sendIpi(apicId, 0x500);
-        busywait(10000);
-
-        kprint("Sent INIT ipi\n");
+        busywait(1000);
 
         sendIpi(apicId, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
-        busywait(5000);
-
-        kprint("Sent SIPI Again\n");
-        kprint("Core %i should be ready!\n", apicId);
+        busywait(500);
     }
 
     *bspdone_ptr = 1;
-    kprint("Number of running AP cores: %i\n", *aprunning_ptr);
+    kprint("Number of running AP cores: %i\n", ncpus - 1);
     
     while (1) {
         __asm__ volatile("hlt");

@@ -84,7 +84,5 @@ _L8140:
     # Here you are in 64-bit mode
     mov rax, [__ap_startup_c_entry_address_location]
     jmp rax
-    # mov rax, 0xffffffff80002152
-    # jmp rax
 
 .section .note.GNU-stack, "", @progbits

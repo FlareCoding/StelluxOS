@@ -3,6 +3,7 @@
 #include <graphics/kdisplay.h>
 #include <ports/serial.h>
 #include <stdarg.h>
+#include <sync.h>
 
 #define CHAR_PIXEL_WIDTH 8
 #define CHAR_TOP_BORDER_OFFSET 8
@@ -14,6 +15,8 @@ void kprintSetCursorLocation(uint32_t x, uint32_t y) {
     g_cursorLocation.x = (x == static_cast<uint32_t>(-1)) ? CHAR_LEFT_BORDER_OFFSET : x;
     g_cursorLocation.y = (y == static_cast<uint32_t>(-1)) ? CHAR_TOP_BORDER_OFFSET : y;
 }
+
+DECLARE_SPINLOCK(__kprint_spinlock);
 
 void kprintCharColored(
     char chr,
@@ -79,6 +82,7 @@ void kprintFmtColoredEx(
     const char* fmt,
     va_list args
 ) {
+    acquireSpinlock(&__kprint_spinlock);
     bool fmtDiscovered = false;
 
     while (*fmt)
@@ -173,6 +177,8 @@ void kprintFmtColoredEx(
         fmtDiscovered = false;
         ++fmt;
     }
+
+    releaseSpinlock(&__kprint_spinlock);
 }
 
 void kprintFmtColored(
