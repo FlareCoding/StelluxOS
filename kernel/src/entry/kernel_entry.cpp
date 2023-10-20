@@ -10,6 +10,7 @@
 #include <arch/x86/cpuid.h>
 #include <arch/x86/msr.h>
 #include <arch/x86/apic.h>
+#include <arch/x86/xsdt.h>
 #include <sched/sched.h>
 #include <syscall/syscalls.h>
 #include <kprint.h>
@@ -210,6 +211,28 @@ void test_task_execution_and_preemption() {
     sched.addTask(task3);
 }
 
+static inline uint64_t rdtsc() {
+    unsigned int low, high;
+    asm volatile("rdtsc" : "=a" (low), "=d" (high));
+    return (uint64_t)high << 32 | low;
+}
+
+void busywait(uint64_t ms) {
+    volatile uint64_t start = rdtsc();
+    while (rdtsc() < start + ms * 1000000);
+}
+
+EXTERN_C void __ap_startup_asm();
+
+// this C code can be anywhere you want it, no relocation needed
+EXTERN_C void __ap_startup(int apicid) {
+    (void)apicid;
+
+    kprint("Hello from core %i!\n", apicid);
+	// do what you want to do on the AP
+	while(1);
+}
+
 void _kentry(KernelEntryParams* params) {
     // Setup kernel stack
     uint64_t kernelStackTop = reinterpret_cast<uint64_t>(params->kernelStack) + PAGE_SIZE;
@@ -273,17 +296,86 @@ void _kentry(KernelEntryParams* params) {
     auto& sched = Scheduler::get();
     sched.init();
 
-    test_task_execution_and_preemption();
+    //test_task_execution_and_preemption();
 
     // Initialize and identity mapping the base address of Local APIC
 	initializeApic();
     configureApicTimerIrq(IRQ0);
 
-    while(1) {
-        int result = fibb(34);
-        kprint("_kentry> fibb(34): %i\n", result);
+    // while(1) {
+    //     int result = fibb(34);
+    //     kprint("_kentry> fibb(34): %i\n", result);
+    // }
+
+    rsdp_t* rsdp = (rsdp_t*)params->rsdp;
+    Xsdt* xsdt = (Xsdt*)rsdp->XsdtAddress;
+
+    kprint("RSDP is at 0x%llx\n", rsdp);
+    kprint("XSDT is at 0x%llx\n", xsdt);
+
+    uint64_t entries = (xsdt->Header.Length - sizeof(AcpiTableHeader)) / sizeof(uint64_t);
+    Madt* madt = nullptr;
+
+    for (uint64_t i = 0; i < entries; ++i) {
+        AcpiTableHeader* table = (AcpiTableHeader *)xsdt->TablePointers[i];
+        if (memcmp(table->Signature, (void*)"APIC", 4) == 0) {
+            madt = (Madt*)table;
+            kprint("Found MADT at 0x%llx\n", madt);
+            break;
+        }
     }
 
+    uint32_t ncpus = 1;
+    if (madt) {
+        ncpus = get_cpu_count(madt);
+    }
+
+    kprint("System has detected %i cpu cores\n", ncpus);
+
+    void* __ap_startup_code_real_mode_address = (void*)0x8000;
+
+    // Copy the AP startup code to a 16bit address
+    globalPageFrameAllocator.lockPage(__ap_startup_code_real_mode_address);
+    globalPageFrameAllocator.lockPage((void*)0x9000);
+    globalPageFrameAllocator.lockPage((void*)0x11000);
+    globalPageFrameAllocator.lockPage((void*)0x15000);
+    memcpy(__ap_startup_code_real_mode_address, (void*)__ap_startup_asm, PAGE_SIZE);
+    
+    uint64_t __ap_startup_c_entry_address = (uint64_t)__ap_startup;
+    memcpy((void*)0x9000, &__ap_startup_c_entry_address, sizeof(uint64_t));
+
+    kprint("AP startup vector: 0x%llx\n", 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
+
+    volatile uint8_t* aprunning_ptr = (volatile uint8_t*)0x11000;  // count how many APs have started
+    uint8_t* bspid_ptr = (uint8_t*)0x11008; // BSP id
+    uint8_t* bspdone_ptr = (uint8_t*)0x11010; // Spinlock flag
+
+    memcpy((void*)0x15000, paging::g_kernelRootPageTable, PAGE_SIZE);
+
+    *aprunning_ptr = 0;
+    *bspid_ptr = 0;
+    *bspdone_ptr = 0;
+
+    // get the BSP's Local APIC ID
+    __asm__ __volatile__ ("mov $1, %%eax; cpuid; shrl $24, %%ebx;": "=b"(*bspid_ptr) : :);
+
+    for (uint32_t apicId = 1; apicId < ncpus; apicId++) {
+        kprint("Awaking cpu %i\n", apicId);
+        sendIpi(apicId, 0x500);
+        busywait(10000);
+
+        kprint("Sent INIT ipi\n");
+
+        sendIpi(apicId, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
+        busywait(5000);
+
+        kprint("Sent SIPI Again\n");
+        kprint("Core %i should be ready!\n", apicId);
+    }
+
+    *bspdone_ptr = 1;
+    kprint("Number of running AP cores: %i\n", *aprunning_ptr);
+    
     while (1) {
         __asm__ volatile("hlt");
     }

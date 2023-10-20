@@ -24,6 +24,7 @@ struct KernelEntryParams {
     } efiMemoryMap;
 
     void* kernelStack;
+    void* rsdp;
 };
 
 #endif // KERNEL_PARAMS_H

@@ -22,8 +22,9 @@ RESOURCE_DIR := resources
 DISK_IMG := $(BIN_DIR)/$(OSNAME).elf
 
 # QEMU
+QEMU_CORES := 2
 QEMU_EMULATOR := qemu-system-x86_64
-COMMON_QEMU_FLAGS := -drive file=$(DISK_IMG),format=raw -m 2G -net none
+COMMON_QEMU_FLAGS := -drive file=$(DISK_IMG),format=raw -m 2G -net none -smp $(QEMU_CORES)
 QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/OVMF_CODE.fd",readonly=on -drive if=pflash,format=raw,unit=1,file="efi/OVMF_VARS.fd"
 
 # Architecture Specifics

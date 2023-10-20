@@ -73,3 +73,8 @@ uint32_t readApicRegister(
 ) {
     return g_lapicBase[reg / 4];
 }
+
+void sendIpi(uint8_t apic_id, uint32_t vector) {
+    writeApicRegister(APIC_ICR_HI, apic_id << 24);
+    writeApicRegister(APIC_ICR_LO, vector | (1 << 14));
+}

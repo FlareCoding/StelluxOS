@@ -27,6 +27,7 @@ struct KernelEntryParams {
     } EfiMemoryMap;
 
     VOID* KernelStack;
+    VOID* RSDP;
 };
 
 EFI_STATUS LoadKernel(
@@ -77,6 +78,52 @@ EFI_STATUS ExitBootServices(
     return gBS->ExitBootServices(ImageHandle, MemoryMapKey);
 }
 
+#pragma pack(1)
+typedef struct {
+    CHAR8  Signature[8];
+    UINT8  Checksum;
+    CHAR8  OemId[6];
+    UINT8  Revision;
+    UINT32 RsdtAddress;
+    UINT32 Length;
+    UINT64 XsdtAddress;
+    UINT8  ExtendedChecksum;
+    UINT8  Reserved[3];
+} EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER;
+#pragma pack()
+
+int strncmp(const char *s1, const char *s2, UINT64 n) {
+    for (UINT64 i = 0; i < n; i++) {
+        if (s1[i] != s2[i]) {
+            return (unsigned char)s1[i] - (unsigned char)s2[i];
+        }
+        if (s1[i] == '\0') {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+void PrintGuid(EFI_GUID *guid) {
+    if (guid == NULL) {
+        Print(L"NULL GUID pointer\n");
+        return;
+    }
+
+    Print(L"%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x\n",
+          guid->Data1,
+          guid->Data2,
+          guid->Data3,
+          guid->Data4[0],
+          guid->Data4[1],
+          guid->Data4[2],
+          guid->Data4[3],
+          guid->Data4[4],
+          guid->Data4[5],
+          guid->Data4[6],
+          guid->Data4[7]);
+}
+
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     EFI_STATUS Status;    
 
@@ -122,6 +169,19 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
     
     Print(L"Loaded zap-light16.psf\n\rChar size: %u\n\r\n\r", ZapLightFont->Header->CharSize);
+
+    EFI_GUID Acpi2TableGuid = ACPI_20_TABLE_GUID;
+    EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER* Rsdp = NULL;
+
+    EFI_CONFIGURATION_TABLE* configTable = SystemTable->ConfigurationTable;
+    for (UINTN index = 0; index < SystemTable->NumberOfTableEntries; index++) {
+        if (CompareGuid(&configTable[index].VendorGuid, &Acpi2TableGuid) == 0) {
+            if (strncmp("RSD PTR ", (char*)configTable[index].VendorTable, 8) == 0) {
+                Rsdp = (EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER*)configTable[index].VendorTable;
+                break;
+            }
+        }
+    }
 
     // Acquire information from the memory map
     UINTN MemoryMapSize, MemoryMapKey, DescriptorSize;
@@ -217,6 +277,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     params.EfiMemoryMap.DescriptorCount = MemoryMapSize / DescriptorSize;
 
     params.KernelStack = (VOID*)((UINT64)KernelStack + KernelAddressSpaceOffset);
+    params.RSDP = (VOID*)((UINT64)Rsdp + KernelAddressSpaceOffset);
 
     // Cast the physical entry point to a function pointer
     void (*KernelEntryPoint)(struct KernelEntryParams*) =

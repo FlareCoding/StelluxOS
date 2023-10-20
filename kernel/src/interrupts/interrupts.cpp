@@ -9,6 +9,8 @@
 #define PF_WRITE    0x2  // Bit 1
 #define PF_USER     0x4  // Bit 2
 
+uint64_t _g_system_tick_count = 0;
+
 bool areInterruptsEnabled() {
     unsigned long eflags;
     asm volatile("pushf\n""pop %0": "=rm"(eflags));
@@ -92,10 +94,9 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 DEFINE_INT_HANDLER(_irq_handler_timer) {
     completeApicIrq();
 
-    static uint64_t count = 0;
-    ++count;
+    ++_g_system_tick_count;
 
-    if (count % 100 == 0) {
+    if (_g_system_tick_count % 100 == 0) {
         auto& sched = Scheduler::get();
         PCB* prevTask = sched.getCurrentTask();
         PCB* nextTask = sched.getNextTask();

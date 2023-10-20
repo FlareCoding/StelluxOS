@@ -7,6 +7,10 @@
 #define APIC_TIMER_DIVIDE_CONFIG    0x3
 #define APIC_TIMER_INTERVAL_VALUE   0x10000
 
+// The offset of the ICR (Interrupt Command Register) in the Local APIC
+#define APIC_ICR_LO 0x300  
+#define APIC_ICR_HI 0x310
+
 // Initializes and enables the APIC base address
 void initializeApic();
 
@@ -30,5 +34,6 @@ uint32_t readApicRegister(
     uint32_t reg
 );
 
+void sendIpi(uint8_t apic_id, uint32_t vector);
 
 #endif
