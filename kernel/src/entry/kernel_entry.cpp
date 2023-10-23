@@ -74,11 +74,15 @@ void _kuser_entry() {
     paging::PageFrameAllocator& globalPageFrameAllocator = paging::getGlobalPageFrameAllocator();
     
     RUN_ELEVATED({
+        // Initialize the global page frame allocator
         globalPageFrameAllocator.initializeFromMemoryMap(
             g_entry_params.efiMemoryMap.base,
             g_entry_params.efiMemoryMap.descriptorSize,
             g_entry_params.efiMemoryMap.descriptorCount
         );
+
+        // Update the root pml4 page table
+        paging::g_kernelRootPageTable = paging::getCurrentTopLevelPageTable();
     });
 
     globalPageFrameAllocator.lockPage(&g_entry_params);
@@ -90,18 +94,9 @@ void _kuser_entry() {
         g_entry_params.graphicsFramebuffer.size / PAGE_SIZE + 1
     );
 
-    uint64_t* addr = (uint64_t*)zallocPage();
-    *addr = 4554;
+    initializeApic();
+    configureApicTimerIrq(IRQ0); 
 
-    uint64_t cr3;
-    RUN_ELEVATED({
-        asm ("mov %%cr3, %0" : "=r"(cr3));
-    });
-
-    kuPrint("cr3: 0x%llx\n", cr3);
-    kuPrint("Value at addr (0x%llx) is %llu\n\n", addr, *addr);
-
-    while (1) {
-        __asm__ volatile("nop");
-    }
+    // Infinite loop
+    while (1) { __asm__ volatile("nop"); }
 }
