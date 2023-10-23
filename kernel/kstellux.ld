@@ -10,6 +10,30 @@ SECTIONS
 
     __ksymstart = .;
 
+    /* Privileged Text Section */
+    .ktext :
+    {
+        *(.ktext)
+        *(.ktext.*)
+        . = ALIGN(0x1000);
+    }
+
+    /* Privileged Data Section */
+    .kdata :
+    {
+        *(.kdata)
+        *(.kdata.*)
+        . = ALIGN(0x1000);
+    }
+
+    /* Privileged Read-Only Data Section */
+    .krodata :
+    {
+        *(.krodata)
+        *(.krodata.*)
+        . = ALIGN(0x1000);
+    }
+
     /* Text Section */
     .text :
     {

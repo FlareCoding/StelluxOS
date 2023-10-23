@@ -2,6 +2,8 @@
 #include <memory/kmemory.h>
 #include <memory/efimem.h>
 #include "phys_addr_translation.h"
+#include "page.h"
+#include "tlb.h"
 #include <kprint.h>
 
 paging::PageFrameAllocator g_globalAllocator;
@@ -70,6 +72,7 @@ namespace paging {
         return g_globalAllocator;
     }
 
+    __PRIVILEGED_CODE
     void PageFrameAllocator::initializeFromMemoryMap(
         void* memoryMap,
         uint64_t memoryDescriptorSize,
@@ -114,7 +117,12 @@ namespace paging {
 
         uint64_t pageBitmapSize = m_totalSystemMemory / PAGE_SIZE / 8 + 1;
         uint8_t* pageBitmapBase = static_cast<uint8_t*>(largestFreeMemorySegment);
-        m_pageFrameBitmap.initialize(pageBitmapSize, pageBitmapBase);
+        uint8_t* pageBitmapVirtualBase = (uint8_t*)__va(pageBitmapBase);
+
+        m_pageFrameBitmap.initialize(pageBitmapSize, pageBitmapVirtualBase);
+
+        // Get the address of PML4 table from cr3
+        auto pml4 = getCurrentTopLevelPageTable();
 
         // Mark all EfiConventionalMemory pages as free
         for (uint64_t i = 0; i < memoryDescriptorCount; ++i) {
@@ -128,10 +136,24 @@ namespace paging {
             uint8_t* frameStart = reinterpret_cast<uint8_t*>(desc->paddr);
             uint8_t* frameEnd = reinterpret_cast<uint8_t*>(desc->paddr) + desc->pageCount * PAGE_SIZE;
 
-            for (uint8_t* usedPagePtr = frameStart; usedPagePtr < frameEnd; usedPagePtr += PAGE_SIZE) {
-                m_pageFrameBitmap.markPageFree(usedPagePtr);
+            for (uint8_t* freePagePtr = frameStart; freePagePtr < frameEnd; freePagePtr += PAGE_SIZE) {
+                m_pageFrameBitmap.markPageFree(freePagePtr);
+
+                // Mark free page's higher half virtual address with usermode permissions
+                auto pte = getPteForAddr(__va(freePagePtr), pml4);
+                pte->userSupervisor = USERSPACE_PAGE;
             }
         }
+
+        // Mark higher-half pages where bitmap lives as accessible to usermode code
+        for (uint8_t* bitmapPage = pageBitmapVirtualBase; bitmapPage < pageBitmapVirtualBase + pageBitmapSize; bitmapPage += PAGE_SIZE) {
+            // Mark free page with usermode permissions
+            auto pte = getPteForAddr(bitmapPage, pml4);
+            pte->userSupervisor = USERSPACE_PAGE;
+        }
+
+        // Flush the TLB to activate new usermode permissions
+        flushTlbAll();
 
         // Identify the first usable page index
         for (
@@ -146,6 +168,10 @@ namespace paging {
         }
 
         m_usedSystemMemory = m_totalSystemMemory - m_freeSystemMemory;
+
+        // Lock the pages used for the bitmap
+        lockPhysicalPages(pageBitmapBase, pageBitmapSize / PAGE_SIZE + 1);
+        lockPages(pageBitmapVirtualBase, pageBitmapSize / PAGE_SIZE + 1);
     }
 
     void PageFrameAllocator::freePhysicalPage(void* paddr) {

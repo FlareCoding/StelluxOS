@@ -39,10 +39,13 @@
 // Enable IRQs, and set RTS and DSR
 #define SERIAL_MCR_ENABLE_IRQ_RTS_DSR 0x0B
 
+__PRIVILEGED_CODE
 void initializeSerialPort(uint16_t base);
 
+__PRIVILEGED_CODE
 bool isTransmitQueueEmpty(uint16_t base);
 
+__PRIVILEGED_CODE
 void writeToSerialPort(uint16_t base, char chr);
 
 #endif

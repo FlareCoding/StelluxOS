@@ -1,9 +1,10 @@
 .intel_syntax noprefix
 .code64
 
+.section .ktext
+
 .global __kinstall_gdt_asm
 
-.text
 __kinstall_gdt_asm:
     lgdt [rdi]      # GDT will be passed in from C as a parameter
 

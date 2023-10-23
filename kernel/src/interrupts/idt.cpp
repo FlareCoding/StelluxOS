@@ -45,6 +45,7 @@ EXTERN_C void __asm_irq_handler_13();
 EXTERN_C void __asm_irq_handler_14();
 EXTERN_C void __asm_irq_handler_15();
 
+__PRIVILEGED_DATA
 const char* g_cpuExceptionMessages[] = {
     "Division By Zero",
     "Debug",
@@ -100,6 +101,7 @@ IdtDescriptor g_kernelIdtDescriptor = {
 InterruptDescriptorTable g_kernelIdt;
 
 // Common entry point for texceptions
+__PRIVILEGED_CODE
 void __common_exc_entry(PtRegs* frame) {
     disableInterrupts();
 
@@ -108,8 +110,12 @@ void __common_exc_entry(PtRegs* frame) {
     }
 
     if (frame->hwframe.cs & USER_DPL) {
+        kprint("USERMODE EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
+
         // Usermode exceptions should get handled gracefully
-        _userspace_common_exc_handler(frame);
+        //_userspace_common_exc_handler(frame);
+        kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
+        kpanic(frame);
     } else {
         kprint("KERNEL SUPERVISOR EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
         kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
@@ -118,6 +124,7 @@ void __common_exc_entry(PtRegs* frame) {
 }
 
 // Common entry point for IRQs
+__PRIVILEGED_CODE
 void __common_irq_entry(PtRegs* frame) {
     if (g_int_irq_handlers[frame->intno - IRQ0] != NULL) {
         g_int_irq_handlers[frame->intno - IRQ0](frame);
@@ -125,7 +132,7 @@ void __common_irq_entry(PtRegs* frame) {
 }
 
 // Common entry point for all interrupt service routines
-EXTERN_C void __common_isr_entry(PtRegs frame) {
+EXTERN_C __PRIVILEGED_CODE void __common_isr_entry(PtRegs frame) {
     // Check whether the interrupt is an IRQ or a trap/exception
     if (frame.intno >= IRQ0) {
         __common_irq_entry(&frame);
@@ -134,7 +141,7 @@ EXTERN_C void __common_isr_entry(PtRegs frame) {
     }
 }
 
-void initializeAndInstallIdt() {
+void setup_interrupt_descriptor_table() {
     g_kernelIdtDescriptor.limit = sizeof(g_kernelIdt) - 1;
     g_kernelIdtDescriptor.base = reinterpret_cast<uint64_t>(&g_kernelIdt);
 
@@ -181,7 +188,10 @@ void initializeAndInstallIdt() {
     SET_KERNEL_TRAP_GATE(IRQ13, __asm_irq_handler_13);
     SET_KERNEL_TRAP_GATE(IRQ14, __asm_irq_handler_14);
     SET_KERNEL_TRAP_GATE(IRQ15, __asm_irq_handler_15);
+}
 
+__PRIVILEGED_CODE
+void load_idtr() {
     // Load the IDT
     __asm__("lidt %0" : : "m"(g_kernelIdtDescriptor));
 }

@@ -86,6 +86,74 @@ EFI_STATUS ReadProgramHeaders(
     return EFI_SUCCESS;
 }
 
+EFI_STATUS LoadElfSections(
+    EFI_FILE* File,
+    Elf64_Ehdr* elfHeader,
+    struct ElfSectionInfo* SectionInfoList,
+    UINT64* SectionCount
+) {
+    EFI_STATUS Status;
+    UINT64 offset = elfHeader->e_shoff;
+    UINT16 numSections = elfHeader->e_shnum;
+    UINT16 stringTableIndex = elfHeader->e_shstrndx;
+    Elf64_Shdr* sectionHeaders = NULL;
+    CHAR8* stringTable = NULL;
+
+    // Allocate memory for section headers
+    Status = uefi_call_wrapper(BS->AllocatePool, 3, EfiLoaderData, numSections * sizeof(Elf64_Shdr), (VOID**)&sectionHeaders);
+    if (EFI_ERROR(Status)) {
+        Print(L"Error allocating memory for section headers: %r\n\r", Status);
+        return Status;
+    }
+
+    // Read section headers
+    Status = uefi_call_wrapper(File->SetPosition, 2, File, offset);
+    UINTN size = numSections * sizeof(Elf64_Shdr);
+    Status = uefi_call_wrapper(File->Read, 3, File, &size, sectionHeaders);
+    if (EFI_ERROR(Status)) {
+        Print(L"Error reading section headers: %r\n\r", Status);
+        return Status;
+    }
+
+    // Read string table section header
+    Elf64_Shdr* stringTableHeader = &sectionHeaders[stringTableIndex];
+    
+    // Allocate and read string table
+    Status = uefi_call_wrapper(BS->AllocatePool, 3, EfiLoaderData, stringTableHeader->sh_size, (VOID**)&stringTable);
+    Status = uefi_call_wrapper(File->SetPosition, 2, File, stringTableHeader->sh_offset);
+    size = stringTableHeader->sh_size;
+    Status = uefi_call_wrapper(File->Read, 3, File, &size, stringTable);
+    if (EFI_ERROR(Status)) {
+        Print(L"Error reading string table: %r\n\r", Status);
+        return Status;
+    }
+
+    // Now, we can start populating the SectionInfoList
+    *SectionCount = (UINT64)numSections;
+
+    for (UINT16 i = 0; i < numSections; ++i) {
+        Elf64_Shdr* shdr = &sectionHeaders[i];
+        CHAR8* sectionName = stringTable + shdr->sh_name;
+
+        SectionInfoList[i].Name = sectionName;
+        SectionInfoList[i].VirtualBase = shdr->sh_addr;
+        SectionInfoList[i].VirtualSize = shdr->sh_size;
+        SectionInfoList[i].Flags = shdr->sh_flags;
+
+        if (
+            strncmp(sectionName, ".ktext", 6) == 0 ||
+            strncmp(sectionName, ".kdata", 6) == 0 ||
+            strncmp(sectionName, ".krodata", 8) == 0
+        ) {
+            SectionInfoList[i].Privileged = 1;
+        } else {
+            SectionInfoList[i].Privileged = 0;
+        }
+    }
+
+    return EFI_SUCCESS;
+}
+
 EFI_STATUS LoadElfSegments(
     EFI_FILE* File,
     Elf64_Phdr* ProgramHeaders,
@@ -93,7 +161,8 @@ EFI_STATUS LoadElfSegments(
     VOID** PhysicalBase,
     VOID** VirtualBase,
     UINT64* TotalSize,
-    struct ElfSegmentInfo* ElfSegmentList
+    struct ElfSegmentInfo* ElfSegmentList,
+    UINT64* ElfSegmentCount
 ) {
     EFI_STATUS Status;
     *TotalSize = 0;
@@ -160,6 +229,8 @@ EFI_STATUS LoadElfSegments(
 
         ElfSegmentList[SegmentIndex++] = SegInfo;
 
+        (*ElfSegmentCount)++;
+
         // Update the offset for the next segment
         Offset += phdr->p_memsz;
     }
@@ -174,7 +245,10 @@ EFI_STATUS LoadElfFile(
     VOID** ElfPhysicalBase,
     VOID** ElfVirtualBase,
     UINT64* ElfSize,
-    struct ElfSegmentInfo* ElfSegmentList
+    struct ElfSegmentInfo* ElfSegmentList,
+    UINT64* ElfSegmentCount,
+    struct ElfSectionInfo* ElfSectionList,
+    UINT64* ElfSectionCount
 ) {
     EFI_STATUS Status;
     EFI_FILE* ElfFile;
@@ -201,6 +275,13 @@ EFI_STATUS LoadElfFile(
         return Status;
     }
 
+    Status = LoadElfSections(ElfFile, &ElfHeader, ElfSectionList, ElfSectionCount);
+    if (EFI_ERROR(Status)) {
+        Print(L"Failed to read ELF program headers.\n\r");
+        uefi_call_wrapper(ElfFile->Close, 1, ElfFile);
+        return Status;
+    }
+
     Status = LoadElfSegments(
         ElfFile,
         ProgramHeaders,
@@ -208,7 +289,8 @@ EFI_STATUS LoadElfFile(
         ElfPhysicalBase,
         ElfVirtualBase,
         ElfSize,
-        ElfSegmentList
+        ElfSegmentList,
+        ElfSegmentCount
     );
     if (EFI_ERROR(Status)) {
         Print(L"Failed to load ELF segments.\n\r");

@@ -5,21 +5,24 @@
 
 EXTERN_C void __kinstall_gdt_asm(GdtDescriptor* descriptor);
 
-TaskStateSegment g_tss;
+__PRIVILEGED_DATA TaskStateSegment g_tss;
+__PRIVILEGED_DATA GDT g_globalDescriptorTable;
 
-GDT g_globalDescriptorTable;
-GdtSegmentDescriptor kernelNullDescriptor;
-GdtSegmentDescriptor kernelCodeDescriptor;
-GdtSegmentDescriptor kernelDataDescriptor;
-GdtSegmentDescriptor userCodeDescriptor;
-GdtSegmentDescriptor userDataDescriptor;
-TSSDescriptor        tssDescriptor;
+__PRIVILEGED_DATA GdtSegmentDescriptor kernelNullDescriptor;
+__PRIVILEGED_DATA GdtSegmentDescriptor kernelCodeDescriptor;
+__PRIVILEGED_DATA GdtSegmentDescriptor kernelDataDescriptor;
+__PRIVILEGED_DATA GdtSegmentDescriptor userCodeDescriptor;
+__PRIVILEGED_DATA GdtSegmentDescriptor userDataDescriptor;
 
+__PRIVILEGED_DATA TSSDescriptor        tssDescriptor;
+
+__PRIVILEGED_DATA 
 GdtDescriptor g_gdtDescriptor = {
     .limit = sizeof(GDT) - 1,
     .base = (uint64_t)&g_globalDescriptorTable
 };
 
+__PRIVILEGED_CODE
 void setSegmentDescriptorBase(
     GdtSegmentDescriptor* descriptor,
     uint64_t base
@@ -29,6 +32,7 @@ void setSegmentDescriptorBase(
     descriptor->baseHigh = (base >> 24) & 0xFF;
 }
 
+__PRIVILEGED_CODE
 void setSegmentDescriptorLimit(
     GdtSegmentDescriptor* descriptor,
     uint64_t limit
@@ -40,6 +44,7 @@ void setSegmentDescriptorLimit(
     descriptor->limitHigh = (uint8_t)((limit >> 16) & 0xF);
 }
 
+__PRIVILEGED_CODE
 void setTSSDescriptorBase(TSSDescriptor* desc, uint64_t base) {
     desc->baseLow  = (uint16_t)(base & 0xFFFF);
     desc->baseMid  = (uint8_t)((base >> 16) & 0xFF);
@@ -47,11 +52,13 @@ void setTSSDescriptorBase(TSSDescriptor* desc, uint64_t base) {
     desc->baseUpper = (uint32_t)((base >> 32) & 0xFFFFFFFF);
 }
 
+__PRIVILEGED_CODE
 void setTSSDescriptorLimit(TSSDescriptor* desc, uint32_t limit) {
     desc->limitLow = (uint16_t)(limit & 0xFFFF);
     desc->limitHigh = (uint8_t)((limit >> 16) & 0x0F);
 }
 
+__PRIVILEGED_CODE
 void initializeAndInstallGDT(void* kernelStack) {
     // Zero out all descriptors initially
     zeromem(&kernelNullDescriptor, sizeof(GdtSegmentDescriptor));
@@ -146,6 +153,7 @@ void initializeAndInstallGDT(void* kernelStack) {
     writeMsr(IA32_KERNEL_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[0]);
 }
 
+__PRIVILEGED_CODE
 TaskStateSegment* getActiveTSS() {
     return &g_tss;
 }

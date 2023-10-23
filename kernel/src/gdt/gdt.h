@@ -127,21 +127,28 @@ struct GDT {
     GdtSegmentDescriptor userCode;      // 0x30
 };
 
+
+__PRIVILEGED_CODE
 void setSegmentDescriptorBase(
     GdtSegmentDescriptor* descriptor,
     uint64_t base
 );
 
+__PRIVILEGED_CODE
 void setSegmentDescriptorLimit(
     GdtSegmentDescriptor* descriptor,
     uint64_t limit
 );
 
+__PRIVILEGED_DATA
 extern GDT g_globalDescriptorTable;
+
+__PRIVILEGED_DATA
 extern GdtDescriptor g_gdtDescriptor;
 
-EXTERN_C void initializeAndInstallGDT(void* kernelStack);
+EXTERN_C __PRIVILEGED_CODE void initializeAndInstallGDT(void* kernelStack);
 
+__PRIVILEGED_CODE
 TaskStateSegment* getActiveTSS();
 
 #define __KERNEL_CS         0x08

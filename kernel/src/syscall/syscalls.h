@@ -11,4 +11,14 @@
 #define SYSCALL_SYS_ELEVATE     91
 #define SYSCALL_SYS_LOWER       92
 
+EXTERN_C long do_syscall_64(
+    uint64_t syscallNumber,
+    uint64_t arg1,
+    uint64_t arg2,
+    uint64_t arg3,
+    uint64_t arg4,
+    uint64_t arg5,
+    uint64_t arg6
+);
+
 #endif

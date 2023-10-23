@@ -81,6 +81,8 @@ extern InterruptDescriptorTable g_kernelIdt;
 #define SET_USER_TRAP_GATE(entryIndex, isr) \
     SET_IDT_GATE(entryIndex, isr, 0, TRAP_GATE, USER_DPL, KERNEL_CS)
 
-EXTERN_C void initializeAndInstallIdt();
+EXTERN_C void setup_interrupt_descriptor_table();
+
+EXTERN_C __PRIVILEGED_CODE void load_idtr();
 
 #endif

@@ -12,44 +12,58 @@
 
 #define DEFAULT_TEXT_COLOR  TEXT_COLOR_COOL
 
+__PRIVILEGED_CODE
 void kprintSetCursorLocation(uint32_t x, uint32_t y);
 
+__PRIVILEGED_CODE
 void kprintCharColored(
     char chr,
 	unsigned int color
 );
 
+__PRIVILEGED_CODE
 void kprintChar(
     char chr
 );
 
+__PRIVILEGED_CODE
 void kprintColoredEx(
     const char* str,
     uint32_t color
 );
 
+__PRIVILEGED_CODE
 void kprintFmtColored(
     uint32_t color,
     const char* fmt,
     ...
 );
 
+__PRIVILEGED_CODE
 void kprint(
     const char* fmt,
     ...
 );
 
+__PRIVILEGED_CODE
 void kprintError(
     const char* fmt,
     ...
 );
 
+__PRIVILEGED_CODE
 void kprintWarn(
     const char* fmt,
     ...
 );
 
+__PRIVILEGED_CODE
 void kprintInfo(
+    const char* fmt,
+    ...
+);
+
+void kuPrint(
     const char* fmt,
     ...
 );

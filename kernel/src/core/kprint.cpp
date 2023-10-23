@@ -4,13 +4,16 @@
 #include <ports/serial.h>
 #include <stdarg.h>
 #include <sync.h>
+#include <kelevate/kelevate.h>
 
 #define CHAR_PIXEL_WIDTH 8
 #define CHAR_TOP_BORDER_OFFSET 8
 #define CHAR_LEFT_BORDER_OFFSET 8
 
+__PRIVILEGED_DATA
 Point g_cursorLocation = { .x = CHAR_LEFT_BORDER_OFFSET, .y = CHAR_TOP_BORDER_OFFSET };
 
+__PRIVILEGED_CODE
 void kprintSetCursorLocation(uint32_t x, uint32_t y) {
     g_cursorLocation.x = (x == static_cast<uint32_t>(-1)) ? CHAR_LEFT_BORDER_OFFSET : x;
     g_cursorLocation.y = (y == static_cast<uint32_t>(-1)) ? CHAR_TOP_BORDER_OFFSET : y;
@@ -18,6 +21,7 @@ void kprintSetCursorLocation(uint32_t x, uint32_t y) {
 
 DECLARE_SPINLOCK(__kprint_spinlock);
 
+__PRIVILEGED_CODE
 void kprintCharColored(
     char chr,
 	unsigned int color
@@ -60,12 +64,14 @@ void kprintCharColored(
     }
 }
 
+__PRIVILEGED_CODE
 void kprintChar(
     char chr
 ) {
     kprintCharColored(chr, DEFAULT_TEXT_COLOR);
 }
 
+__PRIVILEGED_CODE
 void kprintColoredEx(
     const char* str,
     uint32_t color
@@ -77,6 +83,7 @@ void kprintColoredEx(
     }
 }
 
+__PRIVILEGED_CODE
 void kprintFmtColoredEx(
     uint32_t color,
     const char* fmt,
@@ -181,6 +188,7 @@ void kprintFmtColoredEx(
     releaseSpinlock(&__kprint_spinlock);
 }
 
+__PRIVILEGED_CODE
 void kprintFmtColored(
     uint32_t color,
     const char* fmt,
@@ -194,6 +202,7 @@ void kprintFmtColored(
     va_end(args);
 }
 
+__PRIVILEGED_CODE
 void kprint(
     const char* fmt,
     ...
@@ -206,6 +215,7 @@ void kprint(
     va_end(args);
 }
 
+__PRIVILEGED_CODE
 void kprintError(
     const char* fmt,
     ...
@@ -222,6 +232,7 @@ void kprintError(
     va_end(args);
 }
 
+__PRIVILEGED_CODE
 void kprintWarn(
     const char* fmt,
     ...
@@ -238,6 +249,7 @@ void kprintWarn(
     va_end(args);
 }
 
+__PRIVILEGED_CODE
 void kprintInfo(
     const char* fmt,
     ...
@@ -251,5 +263,19 @@ void kprintInfo(
     // Print the actual message
     kprintFmtColoredEx(TEXT_COLOR_WHITE, fmt, args);
     
+    va_end(args);
+}
+
+void kuPrint(
+    const char* fmt,
+    ...
+) {
+    va_list args;
+    va_start(args, fmt);
+
+    RUN_ELEVATED({
+        kprintFmtColoredEx(DEFAULT_TEXT_COLOR, fmt, args);
+    });
+
     va_end(args);
 }

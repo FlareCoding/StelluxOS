@@ -1,5 +1,6 @@
 #include "serial.h"
 
+__PRIVILEGED_CODE
 void initializeSerialPort(uint16_t base) {
     outByte(SERIAL_LINE_COMMAND_PORT(base), SERIAL_LCR_DISABLE_ALL_INTERRUPTS);
     outByte(SERIAL_LINE_COMMAND_PORT(base), SERIAL_LINE_ENABLE_DLAB);
@@ -10,10 +11,12 @@ void initializeSerialPort(uint16_t base) {
     outByte(SERIAL_MODEM_COMMAND_PORT(base), SERIAL_MCR_ENABLE_IRQ_RTS_DSR);
 }
 
+__PRIVILEGED_CODE
 bool isTransmitQueueEmpty(uint16_t base) {
     return inByte(SERIAL_LINE_STATUS_PORT(base)) & SERIAL_LINE_STATUS_THR_EMPTY;
 }
 
+__PRIVILEGED_CODE
 void writeToSerialPort(uint16_t base, char chr) {
     // Wait for the transmit queue to be empty
     while (!isTransmitQueueEmpty(base));
