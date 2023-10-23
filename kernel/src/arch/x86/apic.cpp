@@ -3,33 +3,43 @@
 #include <paging/page.h>
 #include <memory/kmemory.h>
 #include <paging/tlb.h>
+#include <kelevate/kelevate.h>
 
 volatile uint32_t* g_lapicBase = NULL;
 
 void initializeApic() {
+    uint64_t apicBaseMsr;
+
     if (g_lapicBase != NULL) {
         return;
     }
 
-    uint64_t apicBaseMsr = readMsr(IA32_APIC_BASE_MSR);
+    RUN_ELEVATED({
+        apicBaseMsr = readMsr(IA32_APIC_BASE_MSR);
+    });
 
     // Enable APIC by setting the 11th bit
     apicBaseMsr |= (1 << 11);
-    writeMsr(IA32_APIC_BASE_MSR, apicBaseMsr);
+
+    RUN_ELEVATED({
+        writeMsr(IA32_APIC_BASE_MSR, apicBaseMsr);
+    });
 
     g_lapicBase = (uint32_t*)(apicBaseMsr & ~0xFFF);
 
     // Map the LAPIC base into the kernel's address space
     void* lapicVirtualBase = zallocPage(); // this will lock a kernel page for our use
 
-    paging::mapPage(
-        lapicVirtualBase,
-        (void*)g_lapicBase,
-        KERNEL_PAGE,
-        paging::g_kernelRootPageTable,
-        paging::getGlobalPageFrameAllocator()
-    );
-    paging::flushTlbAll();
+    RUN_ELEVATED({
+        paging::mapPage(
+            lapicVirtualBase,
+            (void*)g_lapicBase,
+            USERSPACE_PAGE,
+            paging::g_kernelRootPageTable,
+            paging::getGlobalPageFrameAllocator()
+        );
+        paging::flushTlbAll();
+    });
 
     g_lapicBase = (uint32_t*)lapicVirtualBase;
 
