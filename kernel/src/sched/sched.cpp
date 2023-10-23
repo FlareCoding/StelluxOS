@@ -13,8 +13,6 @@ void Scheduler::init() {
         zeromem(&pcb, sizeof(PCB));
 
         pcb.state = ProcessState::TERMINATED;
-        int x = 0;
-        (void)x;
     }
 }
 
