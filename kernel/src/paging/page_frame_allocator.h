@@ -31,6 +31,7 @@ private:
 
 class PageFrameAllocator {
 public:
+    __PRIVILEGED_CODE
     void initializeFromMemoryMap(
         void* memoryMap,
         uint64_t memoryDescriptorSize,

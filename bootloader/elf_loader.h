@@ -13,6 +13,14 @@ struct ElfSegmentInfo {
     UINT32 Flags;
 };
 
+struct ElfSectionInfo {
+    UINT64 VirtualBase;
+    UINT64 VirtualSize;
+    CHAR8* Name;
+    UINT32 Flags;
+    UINT8  Privileged;
+};
+
 EFI_STATUS ValidateElfHeader(
     Elf64_Ehdr* ElfHeader
 );
@@ -28,6 +36,13 @@ EFI_STATUS ReadProgramHeaders(
     Elf64_Phdr** ProgramHeaders
 );
 
+EFI_STATUS LoadElfSections(
+    EFI_FILE* File,
+    Elf64_Ehdr* elfHeader,
+    struct ElfSectionInfo* SectionInfoList,
+    UINT64* SectionCount
+);
+
 EFI_STATUS LoadElfSegments(
     EFI_FILE* File,
     Elf64_Phdr* ProgramHeaders,
@@ -35,7 +50,8 @@ EFI_STATUS LoadElfSegments(
     VOID** PhysicalBase,
     VOID** VirtualBase,
     UINT64* TotalSize,
-    struct ElfSegmentInfo* ElfSegmentList
+    struct ElfSegmentInfo* ElfSegmentList,
+    UINT64* ElfSegmentCount
 );
 
 EFI_STATUS LoadElfFile(
@@ -45,7 +61,10 @@ EFI_STATUS LoadElfFile(
     VOID** ElfPhysicalBase,
     VOID** ElfVirtualBase,
     UINT64* ElfSize,
-    struct ElfSegmentInfo* ElfSegmentList
+    struct ElfSegmentInfo* ElfSegmentList,
+    UINT64* ElfSegmentCount,
+    struct ElfSectionInfo* ElfSectionList,
+    UINT64* ElfSectionCount
 );
 
 #endif // ELF_LOADER_H

@@ -49,7 +49,7 @@ void VirtualAddressToPageLevels(
     struct PageLevelDictionary* dict
 );
 
-void MapPages(VOID* vaddr, VOID* paddr, struct PageTable* pml4);
+void MapPage(VOID* vaddr, VOID* paddr, UINT8 leafpriv, struct PageTable* pml4);
 
 // Returns PML4 (top level page table)
 struct PageTable* CreateIdentityMappedPageTable(
@@ -61,6 +61,8 @@ struct PageTable* CreateIdentityMappedPageTable(
 void CreateHigherHalfMapping(
     struct PageTable* PML4,
     struct ElfSegmentInfo* KernelElfSegments,
+    struct ElfSectionInfo* KernelElfSections,
+	UINT64 KernelElfSectionCount,
     UINT64 TotalSystemMemory
 );
 

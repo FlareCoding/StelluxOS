@@ -19,27 +19,14 @@ bool areInterruptsEnabled() {
 }
 
 DEFINE_INT_HANDLER(_userspace_common_exc_handler) {
-    auto& sched = Scheduler::get();
-    PCB* currentTask = sched.getCurrentTask();
-    PCB* nextTask = sched.getNextTask();
+    (void)frame;
 
-    kprint("----- USERMODE EXCEPTION -----\n");
-    kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
-    kprintWarn("Killing PID: %i\n\n", currentTask->pid);
-    
-    // Remove current task from the scheduler
-    sched.removeTaskWithPid(currentTask->pid);
-
-    if (nextTask) {
-        // Update the state of the processes
-        nextTask->state = ProcessState::RUNNING;
-
-        // Switch context into the new task
-        switchContextInIrq(currentTask, nextTask, frame); 
-    } else {
-        kprintWarn("----- FAILED TO FIND NEW TASK TO SWITCH TO -----\n");
-        kpanic(frame);
+    while (1) {
+        asm volatile ("hlt");
     }
+
+    // kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
+    // kpanic(frame);
 }
 
 DEFINE_INT_HANDLER(_exc_handler_div) {
@@ -92,23 +79,11 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
+    (void)frame;
+
     completeApicIrq();
 
     ++_g_system_tick_count;
-
-    if (_g_system_tick_count % 100 == 0) {
-        auto& sched = Scheduler::get();
-        PCB* prevTask = sched.getCurrentTask();
-        PCB* nextTask = sched.getNextTask();
-
-        if (nextTask && prevTask != nextTask) {
-            // Update the state of the processes
-            prevTask->state = ProcessState::READY;
-            nextTask->state = ProcessState::RUNNING;
-
-            switchContextInIrq(prevTask, nextTask, frame);
-        }
-    }
 
     enableInterrupts();
 }

@@ -5,9 +5,13 @@
 
 #define CHAR_PIXEL_WIDTH 8
 
+__PRIVILEGED_DATA
 Framebuffer Display::s_framebuffer;
+
+__PRIVILEGED_DATA
 Psf1Font* Display::s_font = nullptr;
 
+__PRIVILEGED_CODE
 void Display::initialize(void* framebuffer, void* font) {
     // Copy framebuffer info
     memcpy(&s_framebuffer, framebuffer, sizeof(Framebuffer));
@@ -18,9 +22,10 @@ void Display::initialize(void* framebuffer, void* font) {
     s_font->glyphBuffer = __va(s_font->glyphBuffer);
 
     // Clear the framebuffer
-    zeromem(s_framebuffer.base, s_framebuffer.size);
+    //zeromem(s_framebuffer.base, s_framebuffer.size);
 }
 
+__PRIVILEGED_CODE
 void Display::fillPixel(uint32_t x, uint32_t y, uint32_t color) {
     uint32_t* base = static_cast<uint32_t*>(s_framebuffer.base);
     uint32_t* pixelPtr = base + x + (y * s_framebuffer.pixelsPerScanline);
@@ -28,6 +33,7 @@ void Display::fillPixel(uint32_t x, uint32_t y, uint32_t color) {
     *pixelPtr = color;
 }
 
+__PRIVILEGED_CODE
 void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color) {
     // Interrupts have to be disabled between writing
     // to an I/O device to avoid race conditions.

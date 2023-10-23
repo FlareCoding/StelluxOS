@@ -5,6 +5,10 @@
 #include "paging.h"
 
 struct ElfSegmentInfo KernelElfSegments[MAX_LOADED_ELF_SEGMENTS] = { 0 };
+UINT64 KernelElfSegmentCount = 0;
+
+struct ElfSectionInfo KernelElfSections[MAX_LOADED_ELF_SEGMENTS] = { 0 };
+UINT64 KernelElfSectionCount = 0;
 
 struct KernelEntryParams {
     struct ElfSegmentInfo* KernelElfSegments;
@@ -54,7 +58,10 @@ EFI_STATUS LoadKernel(
         KernelPhysicalBase,
         KernelVirtualBase,
         KernelSize,
-        KernelElfSegments
+        KernelElfSegments,
+        &KernelElfSegmentCount,
+        KernelElfSections,
+        &KernelElfSectionCount
     );
 
     if (EFI_ERROR(Status)) {
@@ -91,18 +98,6 @@ typedef struct {
     UINT8  Reserved[3];
 } EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER;
 #pragma pack()
-
-int strncmp(const char *s1, const char *s2, UINT64 n) {
-    for (UINT64 i = 0; i < n; i++) {
-        if (s1[i] != s2[i]) {
-            return (unsigned char)s1[i] - (unsigned char)s2[i];
-        }
-        if (s1[i] == '\0') {
-            return 0;
-        }
-    }
-    return 0;
-}
 
 void PrintGuid(EFI_GUID *guid) {
     if (guid == NULL) {
@@ -221,7 +216,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
 
     // Map the kernel and other memory to the higher half
-    CreateHigherHalfMapping(PML4, KernelElfSegments, TotalSystemMemory);
+    CreateHigherHalfMapping(PML4, KernelElfSegments, KernelElfSections, KernelElfSectionCount, TotalSystemMemory);
 
     Print(L"\n\r------ Page Table PML4 Created ------\n\r");
     Print(L"    Pages Allocated  : %llu\n\r", GetAllocatedPageCount());

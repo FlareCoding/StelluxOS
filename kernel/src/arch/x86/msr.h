@@ -11,10 +11,12 @@
 #define IA32_GS_BASE        0xC0000101
 #define IA32_KERNEL_GS_BASE 0xC0000102
 
+__PRIVILEGED_CODE
 uint64_t readMsr(
     uint32_t msr
 );
 
+__PRIVILEGED_CODE
 void writeMsr(
     uint32_t msr,
     uint64_t value

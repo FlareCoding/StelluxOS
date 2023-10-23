@@ -1,6 +1,7 @@
 #include "msr.h"
 #include <gdt/gdt.h>
 
+__PRIVILEGED_CODE
 uint64_t readMsr(
     uint32_t msr
 ) {
@@ -9,6 +10,7 @@ uint64_t readMsr(
     return ((uint64_t)low | ((uint64_t)high << 32));
 }
 
+__PRIVILEGED_CODE
 void writeMsr(
     uint32_t msr,
     uint64_t value
@@ -20,6 +22,7 @@ void writeMsr(
 
 EXTERN_C void __asm_syscall_entry64();
 
+__PRIVILEGED_CODE
 void enableSyscallInterface() {
     uint64_t starRegValue = (((uint64_t)__TSS_PT2_SELECTOR | 3) << 48) | ((uint64_t)__KERNEL_CS << 32);
 

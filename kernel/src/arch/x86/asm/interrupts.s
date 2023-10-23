@@ -61,8 +61,9 @@
 
 .extern __check_current_elevate_status
 
+.section .ktext
+
 .global __asm_common_isr_entry
-.text
 
 # Common entry point for all exceptions and IRQs
 __asm_common_isr_entry:
