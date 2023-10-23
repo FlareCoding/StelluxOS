@@ -22,7 +22,7 @@ void Display::initialize(void* framebuffer, void* font) {
     s_font->glyphBuffer = __va(s_font->glyphBuffer);
 
     // Clear the framebuffer
-    //zeromem(s_framebuffer.base, s_framebuffer.size);
+    zeromem(s_framebuffer.base, s_framebuffer.size);
 }
 
 __PRIVILEGED_CODE

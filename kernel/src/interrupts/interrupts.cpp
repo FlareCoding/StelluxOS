@@ -84,8 +84,19 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
     completeApicIrq();
 
     ++_g_system_tick_count;
+
     if (_g_system_tick_count % 100 == 0) {
-        kprint("System ticked: %llu\n", _g_system_tick_count);
+        auto& sched = Scheduler::get();
+        PCB* prevTask = sched.getCurrentTask();
+        PCB* nextTask = sched.getNextTask();
+
+        if (nextTask && prevTask != nextTask) {
+            // Update the state of the processes
+            prevTask->state = ProcessState::READY;
+            nextTask->state = ProcessState::RUNNING;
+
+            switchContextInIrq(prevTask, nextTask, frame);
+        }
     }
 
     enableInterrupts();

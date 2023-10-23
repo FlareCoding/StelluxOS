@@ -20,7 +20,6 @@ public:
     // Removes the task from the queue with a given PID
     void removeTaskWithPid(uint64_t pid);
 
-
     // Returns the state of a given task at index
     ProcessState getTaskState(int32_t index);
 
