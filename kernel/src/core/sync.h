@@ -12,6 +12,7 @@ typedef struct {
 
 // Acquire the lock
 static inline void acquireSpinlock(Spinlock* lock) {
+    asm volatile ("cli");
     (void)lock;
     // while (__sync_lock_test_and_set(&lock->lockVar, 1)) {
     //     asm volatile("pause");
@@ -21,6 +22,7 @@ static inline void acquireSpinlock(Spinlock* lock) {
 // Release the lock
 static inline void releaseSpinlock(Spinlock* lock) {
     (void)lock;
+    asm volatile ("sti");
     //__sync_lock_release(&lock->lockVar);
 }
 
