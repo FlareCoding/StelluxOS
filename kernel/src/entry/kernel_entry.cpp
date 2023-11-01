@@ -37,15 +37,15 @@ int fibb(int n);
 // use recursive function to exercise context switch (fibb)
 void simple_function() {
     while(1) {
-        int result = fibb(40);
-        kuPrint("simple_function>  fibb(40): %i\n", result);
+        int result = fibb(30);
+        kuPrint("simple_function>  fibb(30): %i\n", result);
     }
 }
 
 void simple_function2() {
     while(1) {
-        int result = fibb(38);
-        kuPrint("simple_function2> fibb(38): %i\n", result);
+        int result = fibb(28);
+        kuPrint("simple_function2> fibb(28): %i\n", result);
     }
 }
 
