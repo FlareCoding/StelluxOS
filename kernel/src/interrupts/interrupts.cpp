@@ -99,5 +99,7 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
         }
     }
 
-    enableInterrupts();
+    // There happens a bug where if an interrupt occurs on the ISR
+    // exit path, it will cause a weird memory corruption state.
+    // enableInterrupts();
 }
