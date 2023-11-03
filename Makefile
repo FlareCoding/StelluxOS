@@ -24,7 +24,7 @@ DISK_IMG := $(BIN_DIR)/$(OSNAME).elf
 # QEMU
 QEMU_CORES := 6
 QEMU_EMULATOR := qemu-system-x86_64
-COMMON_QEMU_FLAGS := -drive file=$(DISK_IMG),format=raw -m 2G -net none -smp $(QEMU_CORES)
+COMMON_QEMU_FLAGS := -drive file=$(DISK_IMG),format=raw -m 2G -net none -smp $(QEMU_CORES) -serial mon:stdio -serial file:com2.serial
 QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/OVMF_CODE.fd",readonly=on -drive if=pflash,format=raw,unit=1,file="efi/OVMF_VARS.fd"
 
 # Architecture Specifics
@@ -77,14 +77,15 @@ run-debug: $(DISK_IMG)
 
 # Run target with GDB support
 run-debug-headless: $(DISK_IMG)
-	$(QEMU_EMULATOR) -s -S $(QEMU_FLAGS) -nographic
+	$(QEMU_EMULATOR) -gdb tcp::4554 -S $(QEMU_FLAGS) -nographic
 
 # Connects GDB to a running qemu instance
 connect-gdb:
-	gdb -ex "source ./gdb_setup.gdb" -ex "target remote localhost:1234" -ex "add-symbol-file kernel/bin/kernel.elf" -ex "b _kentry"
+	gdb -ex "source ./gdb_setup.gdb" -ex "target remote localhost:4554" -ex "add-symbol-file kernel/bin/kernel.elf" -ex "b _kentry"
 
 # Clean target
 clean:
 	rm -rf $(BIN_DIR)
 	$(MAKE) -C $(BOOTLOADER_DIR) clean
 	$(MAKE) -C $(KERNEL_DIR) clean
+	rm -rf com2.serial

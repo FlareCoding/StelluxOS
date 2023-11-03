@@ -12,10 +12,12 @@
 #include <arch/x86/apic.h>
 #include <arch/x86/xsdt.h>
 #include <arch/x86/per_cpu_data.h>
+#include <arch/x86/gsfsbase.h>
 #include <sched/sched.h>
 #include <syscall/syscalls.h>
 #include <kelevate/kelevate.h>
 #include <kprint.h>
+#include <kstring.h>
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
@@ -30,28 +32,35 @@ char __usermode_kernel_entry_stack[0x8000];
 typedef void (*task_function_t)();
 
 void _kuser_entry();
-PCB createUserspaceTask(task_function_t task_function, uint64_t pid);
 void testTaskExecutionAndPreemption();
 int fibb(int n);
 
 // use recursive function to exercise context switch (fibb)
 void simple_function() {
+    __kelevate();
     while(1) {
-        int result = fibb(30);
-        kuPrint("simple_function>  fibb(30): %i\n", result);
+        int result = fibb(20);
+        (void)result;
+        // kuPrint("simple_function>  fibb(20): %i\n", result);
+        //do_syscall_64(SYSCALL_SYS_WRITE, 0, (uint64_t)"simple_function> one\n", strlen("simple_function> one\n"), 0, 0, 0);
+        kprint("simple_function> one\n");
     }
 }
 
 void simple_function2() {
+    //__kelevate();
     while(1) {
-        int result = fibb(28);
-        kuPrint("simple_function2> fibb(28): %i\n", result);
+        int result = fibb(18);
+        (void)result;
+        // kuPrint("simple_function2> fibb(18): %i\n", result);
+        do_syscall_64(SYSCALL_SYS_WRITE, 0, (uint64_t)"simple_function2> two\n", strlen("simple_function2> two\n"), 0, 0, 0);
+        //kprint("simple_function2> two\n");
     }
 }
 
 __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Setup kernel stack
-    uint64_t kernelStackTop = reinterpret_cast<uint64_t>(params->kernelStack) + PAGE_SIZE;
+    uint64_t kernelStackTop = reinterpret_cast<uint64_t>(params->kernelStack) + PAGE_SIZE - 1;
     asm volatile ("mov %0, %%rsp" :: "r"(kernelStackTop));
 
     // Copy the kernel parameters to an unprivileged region
@@ -59,7 +68,7 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
 
     // First thing we have to take care of
     // is setting up the Global Descriptor Table.
-    initializeAndInstallGDT(params->kernelStack);
+    initializeAndInstallGDT((void*)kernelStackTop);
     
     // Enable the syscall functionality
     enableSyscallInterface();
@@ -67,8 +76,11 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Immediately update the kernel physical base
     __kern_phys_base = reinterpret_cast<uint64_t>(params->kernelElfSegments[0].physicalBase);
 
-    // Initialize serial port (for headless output)
+    // Initialize serial ports (for headless output)
     initializeSerialPort(SERIAL_PORT_BASE_COM1);
+    initializeSerialPort(SERIAL_PORT_BASE_COM2);
+    initializeSerialPort(SERIAL_PORT_BASE_COM3);
+    initializeSerialPort(SERIAL_PORT_BASE_COM4);
 
     // Initialize display and graphics context
     Display::initialize(&params->graphicsFramebuffer, params->textRenderingFont);
@@ -79,11 +91,6 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     kprintInfo("CPU Vendor: %s\n", vendorName);
     kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
 
-    __call_lowered_entry(_kuser_entry, __usermode_kernel_entry_stack);
-}
-
-void _kuser_entry() {
-    // Setup interrupts
     setup_interrupt_descriptor_table();
 
     RUN_ELEVATED({
@@ -122,10 +129,13 @@ void _kuser_entry() {
     kuPrint("The kernel is loaded at:\n");
     kuPrint("    Physical : 0x%llx\n", (uint64_t)__kern_phys_base);
     kuPrint("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
-    kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_entry_params.kernelStack);
+    kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)kernelStackTop);
 
     initializeApic();
     configureApicTimerIrq(IRQ0);
+
+    auto pte = paging::getPteForAddr((void*)kernelStackTop, paging::g_kernelRootPageTable);
+    paging::dbgPrintPte(pte);
 
     auto& sched = Scheduler::get();
     sched.init();
@@ -143,6 +153,11 @@ void _kuser_entry() {
     // Add some sample tasks to test the scheduler code
     testTaskExecutionAndPreemption();
 
+    __call_lowered_entry(_kuser_entry, __usermode_kernel_entry_stack);
+    //_kuser_entry();
+}
+
+void _kuser_entry() {
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
 }
@@ -161,8 +176,11 @@ PCB createKernelTask(task_function_t task_function, uint64_t pid) {
     void* stack = zallocPage();
     void* kernelStack = zallocPage();
 
+    auto pte = paging::getPteForAddr(kernelStack, paging::g_kernelRootPageTable);
+    pte->userSupervisor = 0;
+
     // Initialize the CPU context
-    newTask.context.rsp = (uint64_t)stack + PAGE_SIZE;  // Point to the top of the stack
+    newTask.context.rsp = (uint64_t)stack + PAGE_SIZE - 1;  // Point to the top of the stack
     newTask.context.rbp = newTask.context.rsp;          // Point to the top of the stack
     newTask.context.rip = (uint64_t)task_function;      // Set instruction pointer to the task function
     newTask.context.rflags = 0x200;                     // Enable interrupts
@@ -176,7 +194,7 @@ PCB createKernelTask(task_function_t task_function, uint64_t pid) {
     newTask.context.ss = newTask.context.ds;
 
     // Save the kernel stack
-    newTask.kernelStack = (uint64_t)kernelStack + PAGE_SIZE;
+    newTask.kernelStack = (uint64_t)kernelStack + PAGE_SIZE - 1;
 
     // Setup the task's page table
     newTask.cr3 = reinterpret_cast<uint64_t>(paging::g_kernelRootPageTable);
@@ -185,16 +203,16 @@ PCB createKernelTask(task_function_t task_function, uint64_t pid) {
 }
 
 void testTaskExecutionAndPreemption() {
-    auto& sched = Scheduler::get();
+    // auto& sched = Scheduler::get();
 
-    // Create some tasks and add them to the scheduler
-    PCB task1, task2;
+    // // Create some tasks and add them to the scheduler
+    // PCB task1, task2;
 
-    task1 = createKernelTask(simple_function, 2);
-    task2 = createKernelTask(simple_function2, 3);
+    // task1 = createKernelTask(simple_function, 2);
+    // task2 = createKernelTask(simple_function2, 3);
 
-    sched.addTask(task1);
-    sched.addTask(task2);
+    // sched.addTask(task1);
+    // sched.addTask(task2);
 }
 
 int fibb(int n) {

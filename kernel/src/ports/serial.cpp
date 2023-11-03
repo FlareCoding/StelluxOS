@@ -24,3 +24,11 @@ void writeToSerialPort(uint16_t base, char chr) {
     // Write the byte to the serial port
     outByte(base, chr);
 }
+
+__PRIVILEGED_CODE
+void writeToSerialPort(uint16_t base, const char* str) {
+    while (*str != '\0') {
+        writeToSerialPort(base, *str);
+        ++str;
+    }
+}

@@ -89,7 +89,6 @@ void kprintFmtColoredEx(
     const char* fmt,
     va_list args
 ) {
-    acquireSpinlock(&__kprint_spinlock);
     bool fmtDiscovered = false;
 
     while (*fmt)
@@ -184,7 +183,15 @@ void kprintFmtColoredEx(
         fmtDiscovered = false;
         ++fmt;
     }
+}
 
+void kprintFmtColoredExLocked(
+    uint32_t color,
+    const char* fmt,
+    va_list args
+) {
+    acquireSpinlock(&__kprint_spinlock);
+    kprintFmtColoredEx(color, fmt, args);
     releaseSpinlock(&__kprint_spinlock);
 }
 
@@ -274,7 +281,7 @@ void kuPrint(
     va_start(args, fmt);
 
     RUN_ELEVATED({
-        kprintFmtColoredEx(DEFAULT_TEXT_COLOR, fmt, args);
+        kprintFmtColoredExLocked(DEFAULT_TEXT_COLOR, fmt, args);
     });
 
     va_end(args);

@@ -10,15 +10,18 @@
 #
 # rdi - entry
 # rsi - stack
-# rdx = rflags
+# rdx - rflags
 #
 __call_lowered_entry_asm:
-    # Switch to kernel stack
+    # Save current stack values
     mov gs:[per_cpu_offset_current_kernel_stack], rsp
     mov gs:[per_cpu_offset_current_user_stack], rsi
 
     mov ax, __USER_DS | 0x3
     mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
 
     # Construct an interrupt frame on stack
     push    __USER_DS       # regs.hwframe->ss
