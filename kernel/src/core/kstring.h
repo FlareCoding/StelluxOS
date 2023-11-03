@@ -23,4 +23,6 @@ int htoa(
     uint64_t bufsize
 );
 
+uint64_t strlen(const char *str);
+
 #endif

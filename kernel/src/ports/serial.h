@@ -48,4 +48,7 @@ bool isTransmitQueueEmpty(uint16_t base);
 __PRIVILEGED_CODE
 void writeToSerialPort(uint16_t base, char chr);
 
+__PRIVILEGED_CODE
+void writeToSerialPort(uint16_t base, const char* str);
+
 #endif

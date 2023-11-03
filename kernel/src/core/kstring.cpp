@@ -102,3 +102,36 @@ int htoa(
     buffer[idx * 2] = 0;
     return 0;
 }
+
+uint64_t strlen(const char *str) {
+    const char *s = str;
+
+    // Process bytes until aligned to 8 bytes
+    while ((uint64_t)s % 8 != 0) {
+        if (*s == '\0') {
+            return s - str;
+        }
+        s++;
+    }
+
+    // Use 64-bit integers to process 8 bytes at a time
+    const uint64_t *w = (const uint64_t *)s;
+    while (1) {
+        uint64_t v = *w;
+
+        // Test if any of the bytes is zero
+        if ((v - 0x0101010101010101) & ~v & 0x8080808080808080) {
+            // Find the exact position of the null-terminator
+            const char *p = (const char *)(w);
+            for (int i = 0; i < 8; i++) {
+                if (p[i] == '\0') {
+                    return (p - str) + i;
+                }
+            }
+        }
+        w++;
+    }
+
+    // This line should never be reached.
+    return 0;
+}

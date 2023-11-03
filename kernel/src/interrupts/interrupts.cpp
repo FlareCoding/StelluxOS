@@ -3,6 +3,9 @@
 #include <sched/sched.h>
 #include <paging/tlb.h>
 #include <kprint.h>
+#include <kstring.h>
+#include <memory/kmemory.h>
+#include <ports/serial.h>
 #include "panic.h"
 
 #define PF_PRESENT  0x1  // Bit 0
@@ -79,8 +82,6 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
-    (void)frame;
-
     completeApicIrq();
 
     ++_g_system_tick_count;
@@ -90,16 +91,41 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
         PCB* prevTask = sched.getCurrentTask();
         PCB* nextTask = sched.getNextTask();
 
-        if (nextTask && prevTask != nextTask) {
+        //if (nextTask && prevTask != nextTask) {
+        if (true) {
             // Update the state of the processes
             prevTask->state = ProcessState::READY;
             nextTask->state = ProcessState::RUNNING;
 
-            switchContextInIrq(prevTask, nextTask, frame);
+            // if (nextTask->context.rip == prevTask->context.rip) {
+            //     writeToSerialPort(SERIAL_PORT_BASE_COM2, "MEMORY CORRUPTION CAUGHT\n");
+            // }
+
+            //char buf[256] = { 0 };
+            //itoa(_g_system_tick_count, buf, 256);
+            //writeToSerialPort(SERIAL_PORT_BASE_COM2, "Switching task at tick ");
+            //writeToSerialPort(SERIAL_PORT_BASE_COM2, buf);
+            //writeToSerialPort(SERIAL_PORT_BASE_COM2, ' ');
+
+            // memset(buf, 0, 256);
+            // htoa(prevTask->context.rip, buf, 256);
+            // writeToSerialPort(SERIAL_PORT_BASE_COM2, buf);
+            // writeToSerialPort(SERIAL_PORT_BASE_COM2, "-->");
+
+            // memset(buf, 0, 256);
+            // htoa(nextTask->context.rip, buf, 256);
+            // writeToSerialPort(SERIAL_PORT_BASE_COM2, buf);
+            // writeToSerialPort(SERIAL_PORT_BASE_COM2, "  frame->rip:");
+
+            // memset(buf, 0, 256);
+            // htoa(frame->hwframe.rip, buf, 256);
+            // writeToSerialPort(SERIAL_PORT_BASE_COM2, buf);
+            // writeToSerialPort(SERIAL_PORT_BASE_COM2, "\n");
+
+            //switchContextInIrq(prevTask, nextTask, frame);
+            (void)frame;
         }
     }
 
-    // There happens a bug where if an interrupt occurs on the ISR
-    // exit path, it will cause a weird memory corruption state.
-    // enableInterrupts();
+    enableInterrupts();
 }

@@ -40,6 +40,13 @@ void kprintFmtColored(
 );
 
 __PRIVILEGED_CODE
+void kprintFmtColoredLocked(
+    uint32_t color,
+    const char* fmt,
+    ...
+);
+
+__PRIVILEGED_CODE
 void kprint(
     const char* fmt,
     ...
