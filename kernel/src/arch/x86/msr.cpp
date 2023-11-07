@@ -16,7 +16,6 @@ int isPowerOf2(uint64_t x) {
     return (x != 0) && ((x & (x - 1)) == 0);
 }
 
-
 __PRIVILEGED_CODE
 uint64_t readMsr(
     uint32_t msr

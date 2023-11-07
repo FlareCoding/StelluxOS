@@ -50,9 +50,9 @@ extern InterruptDescriptorTable g_kernelIdt;
 // entryIndex: Index of the IDT entry
 // isr: Address of the interrupt service routine
 // istIndex: Index into the Interrupt Stack Table
-// type: Type of the gate (e.g., INTERRUPT_GATE_64)
-// dpl: Descriptor privilege level (e.g., KERNEL_DPL)
-// selector: Selector to load (e.g., KERNEL_CS)
+// _type: Type of the gate (e.g., INTERRUPT_GATE_64)
+// _dpl: Descriptor privilege level (e.g., KERNEL_DPL)
+// _selector: Selector to load (e.g., KERNEL_CS)
 #define SET_IDT_GATE(entryIndex, isr, istIndex, _type, _dpl, _selector)                        \
     do {                                                                                       \
         g_kernelIdt.entries[entryIndex].offsetLow  = (uint16_t)(uint64_t)(isr);                \
@@ -81,8 +81,8 @@ extern InterruptDescriptorTable g_kernelIdt;
 #define SET_USER_TRAP_GATE(entryIndex, isr) \
     SET_IDT_GATE(entryIndex, isr, 0, TRAP_GATE, USER_DPL, KERNEL_CS)
 
-EXTERN_C void setup_interrupt_descriptor_table();
+EXTERN_C void setupInterruptDescriptorTable();
 
-EXTERN_C __PRIVILEGED_CODE void load_idtr();
+EXTERN_C __PRIVILEGED_CODE void loadIdtr();
 
 #endif

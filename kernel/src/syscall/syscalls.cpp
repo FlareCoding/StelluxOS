@@ -38,7 +38,6 @@ EXTERN_C long __syscall_handler(
             kprint("[*] Already elevated\n");
         } else {
             current->elevated = 1;
-            //__per_cpu_data.__cpu[0].elevated = 1;
         }
         break;
     }
@@ -47,7 +46,6 @@ EXTERN_C long __syscall_handler(
             kprint("[*] Already lowered\n");
         } else {
             current->elevated = 0;
-            //__per_cpu_data.__cpu[0].elevated = 0;
         }
         break;
     }
@@ -61,7 +59,7 @@ EXTERN_C long __syscall_handler(
     return returnVal;
 }
 
-EXTERN_C long do_syscall_64(
+EXTERN_C long __syscall(
     uint64_t syscallNumber,
     uint64_t arg1,
     uint64_t arg2,
@@ -69,8 +67,7 @@ EXTERN_C long do_syscall_64(
     uint64_t arg4,
     uint64_t arg5,
     uint64_t arg6
-)
-{
+) {
     long ret;
 
     asm volatile(
