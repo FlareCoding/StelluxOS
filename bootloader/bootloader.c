@@ -221,10 +221,6 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     // Map the kernel and other memory to the higher half
     CreateHigherHalfMapping(PML4, KernelElfSegments, KernelElfSections, KernelElfSectionCount, TotalSystemMemory);
 
-    // Change the page permissions for a kernel stack to be supervisor
-    MapPage(KernelStack, KernelStack, 0, PML4);
-    MapPage((void*)((UINT64)KernelStack + KernelAddressSpaceOffset), KernelStack, 0, PML4);
-
     Print(L"\n\r------ Page Table PML4 Created ------\n\r");
     Print(L"    Pages Allocated  : %llu\n\r", GetAllocatedPageCount());
     Print(L"    Page Table Size  : %llu KB\n\r", GetAllocatedMemoryCount() / 1024);

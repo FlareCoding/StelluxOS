@@ -12,5 +12,5 @@ void __klower() {
 }
 
 void __call_lowered_entry(lowered_entry_fn_t entry, void* user_stack) {
-    __call_lowered_entry_asm((void*)entry, (void*)((uint64_t)user_stack + 0x1000), 0x200);
+    __call_lowered_entry_asm((void*)entry, (void*)((uint64_t)user_stack), 0x200);
 }

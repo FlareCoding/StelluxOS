@@ -103,8 +103,6 @@ InterruptDescriptorTable g_kernelIdt;
 // Common entry point for texceptions
 __PRIVILEGED_CODE
 void __common_exc_entry(PtRegs* frame) {
-    disableInterrupts();
-
     if (g_int_exc_handlers[frame->intno] != NULL) {
         return g_int_exc_handlers[frame->intno](frame);
     }

@@ -33,27 +33,6 @@ EXTERN_C long __syscall_handler(
         // Handle read syscall
         break;
     }
-    case SYSCALL_SYS_EXIT: {
-        auto& sched = Scheduler::get();
-
-        // Get the current task
-        PCB* currentTask = sched.getCurrentTask();
-        PCB* nextTask = sched.getNextTask();
-
-        kprint("Exiting userspace process with pid:%i...\n", currentTask->pid);
-
-        // Remove the current task from the scheduler task queue
-        sched.removeTask(currentTask->pid);
-
-        // Switch to the next task
-        switchTo(currentTask, nextTask);
-
-        // ------------------------------------------------ //
-        // This part should never be reached since switchTo //
-        // should take an iretq path to the next process.   //
-        // ------------------------------------------------ //
-        break;
-    }
     case SYSCALL_SYS_ELEVATE: {
         if (current->elevated) {
             kprint("[*] Already elevated\n");

@@ -150,7 +150,7 @@ void initializeAndInstallGDT(void* kernelStack) {
     __per_cpu_data.__cpu[0].defaultKernelStack = reinterpret_cast<uint64_t>(kernelStack);
 
     // Store the address of the tss in gsbase
-    writeMsr(IA32_KERNEL_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[0]);
+    writeMsr(IA32_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[0]);
 }
 
 __PRIVILEGED_CODE

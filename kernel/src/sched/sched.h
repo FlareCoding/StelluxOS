@@ -2,38 +2,33 @@
 #define SCHED_H
 #include <process/process.h>
 
-#define MAX_QUEUED_PROCESSES 64
+#define MAX_QUEUED_PROCESSES 128
 
-class Scheduler {
+class RoundRobinScheduler {
 public:
-    Scheduler() = default;
-    static Scheduler& get();
+    RoundRobinScheduler();
+    ~RoundRobinScheduler() = default;
 
-    void init();
+    static RoundRobinScheduler& get();
 
-    // Returns the index of the task in the queue
-    int32_t addTask(PCB task);
+    inline PCB* getCurrentTask() { return &m_runQueue[m_currentTaskIndex]; }
+    PCB* peekNextTask();
+    
+    inline size_t getQueuedTaskCount() const { return m_tasksInQueue; }
 
-    // Removes the task from the queue with a given index
-    void removeTask(int32_t index);
+    bool switchToNextTask();
 
-    // Removes the task from the queue with a given PID
-    void removeTaskWithPid(uint64_t pid);
-
-    // Returns the state of a given task at index
-    ProcessState getTaskState(int32_t index);
-
-    // Uses a simple Round-Robin algorithm
-    // Returns nullptr if no next task is available to run
-    PCB* getNextTask();
-
-    // Returns the current task in the queue (could be inactive)
-    inline PCB* getCurrentTask() { return &m_taskQueue[m_currentTaskIndex]; }
+    size_t addTask(const PCB& task);
+    PCB* getTask(size_t idx);
+    PCB* findTaskByPid(pid_t pid);
 
 private:
-    PCB m_taskQueue[MAX_QUEUED_PROCESSES];
-    uint64_t m_taskCount = 0;
-    uint64_t m_currentTaskIndex = 0;
+    PCB m_runQueue[MAX_QUEUED_PROCESSES];
+
+    size_t m_tasksInQueue = 0;
+    
+    size_t m_currentTaskIndex = 0;
+    size_t m_nextTaskIndex = 0;
 };
 
 #endif

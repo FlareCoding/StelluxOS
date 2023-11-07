@@ -1,6 +1,7 @@
 #include "process.h"
 #include <paging/page.h>
 #include <arch/x86/per_cpu_data.h>
+#include <sched/sched.h>
 
 EXTERN_C void __asm_switch_cpu_context_and_iret(CpuContext* ctx);
 

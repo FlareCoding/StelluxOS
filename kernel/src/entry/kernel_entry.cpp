@@ -36,31 +36,36 @@ void testTaskExecutionAndPreemption();
 int fibb(int n);
 
 // use recursive function to exercise context switch (fibb)
-void simple_function() {
+void simple_function_elev_kprint() {
     __kelevate();
     while(1) {
-        int result = fibb(20);
-        (void)result;
-        // kuPrint("simple_function>  fibb(20): %i\n", result);
-        //do_syscall_64(SYSCALL_SYS_WRITE, 0, (uint64_t)"simple_function> one\n", strlen("simple_function> one\n"), 0, 0, 0);
-        kprint("simple_function> one\n");
+        int result = fibb(32);
+        kprint("simple_function_elev_kprint>  fibb(32): %i\n", result);
     }
 }
 
-void simple_function2() {
-    //__kelevate();
+void simple_function_syscall_print() {
+    __kelevate();
     while(1) {
-        int result = fibb(18);
+        int result = fibb(36);
         (void)result;
-        // kuPrint("simple_function2> fibb(18): %i\n", result);
-        do_syscall_64(SYSCALL_SYS_WRITE, 0, (uint64_t)"simple_function2> two\n", strlen("simple_function2> two\n"), 0, 0, 0);
-        //kprint("simple_function2> two\n");
+
+        const char* msg = "simple_function_syscall_print> Calculated fibb(36)! Ignoring result...\n";
+        do_syscall_64(SYSCALL_SYS_WRITE, 0, (uint64_t)msg, strlen(msg), 0, 0, 0);
+    }
+}
+
+void simple_function_kuprint() {
+    __kelevate();
+    while(1) {
+        int result = fibb(34);
+        kuPrint("simple_function_kuprint> fibb(34): %i\n", result);
     }
 }
 
 __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Setup kernel stack
-    uint64_t kernelStackTop = reinterpret_cast<uint64_t>(params->kernelStack) + PAGE_SIZE - 1;
+    uint64_t kernelStackTop = reinterpret_cast<uint64_t>(params->kernelStack) + PAGE_SIZE - 0x10;
     asm volatile ("mov %0, %%rsp" :: "r"(kernelStackTop));
 
     // Copy the kernel parameters to an unprivileged region
@@ -83,6 +88,7 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     initializeSerialPort(SERIAL_PORT_BASE_COM4);
 
     // Initialize display and graphics context
+    // Display::initialize(&params->graphicsFramebuffer, params->textRenderingFont);
     Display::initialize(&params->graphicsFramebuffer, params->textRenderingFont);
 
     char vendorName[13];
@@ -91,6 +97,12 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     kprintInfo("CPU Vendor: %s\n", vendorName);
     kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
 
+    uint64_t rsp;
+    asm volatile("mov %%rsp, %0" : "=r"(rsp));
+    __call_lowered_entry(_kuser_entry, (void*)rsp);
+}
+
+void _kuser_entry() {
     setup_interrupt_descriptor_table();
 
     RUN_ELEVATED({
@@ -122,6 +134,10 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
         g_entry_params.graphicsFramebuffer.size / PAGE_SIZE + 1
     );
 
+    RUN_ELEVATED({
+        setMtrrWriteCombining((uint64_t)__pa(g_entry_params.graphicsFramebuffer.base), g_entry_params.graphicsFramebuffer.size);
+    });
+
     kuPrint("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
     kuPrint("System free memory  : %llu MB\n", globalPageFrameAllocator.getFreeSystemMemory() / 1024 / 1024);
     kuPrint("System used memory  : %llu MB\n", globalPageFrameAllocator.getUsedSystemMemory() / 1024 / 1024);
@@ -129,17 +145,13 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     kuPrint("The kernel is loaded at:\n");
     kuPrint("    Physical : 0x%llx\n", (uint64_t)__kern_phys_base);
     kuPrint("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
-    kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)kernelStackTop);
+    kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_entry_params.kernelStack + PAGE_SIZE - 0x10);
 
     initializeApic();
     configureApicTimerIrq(IRQ0);
 
-    auto pte = paging::getPteForAddr((void*)kernelStackTop, paging::g_kernelRootPageTable);
-    paging::dbgPrintPte(pte);
-
-    auto& sched = Scheduler::get();
-    sched.init();
-
+    auto& sched = RoundRobinScheduler::get();
+ 
     // Initialize the default root kernel swapper task (this thread).
     // The CPU context should get properly filled upon the first context switch.
     PCB rootKernelSwapperTask;
@@ -153,11 +165,6 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Add some sample tasks to test the scheduler code
     testTaskExecutionAndPreemption();
 
-    __call_lowered_entry(_kuser_entry, __usermode_kernel_entry_stack);
-    //_kuser_entry();
-}
-
-void _kuser_entry() {
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
 }
@@ -176,11 +183,8 @@ PCB createKernelTask(task_function_t task_function, uint64_t pid) {
     void* stack = zallocPage();
     void* kernelStack = zallocPage();
 
-    auto pte = paging::getPteForAddr(kernelStack, paging::g_kernelRootPageTable);
-    pte->userSupervisor = 0;
-
     // Initialize the CPU context
-    newTask.context.rsp = (uint64_t)stack + PAGE_SIZE - 1;  // Point to the top of the stack
+    newTask.context.rsp = (uint64_t)stack + PAGE_SIZE - 0x10;  // Point to the top of the stack
     newTask.context.rbp = newTask.context.rsp;          // Point to the top of the stack
     newTask.context.rip = (uint64_t)task_function;      // Set instruction pointer to the task function
     newTask.context.rflags = 0x200;                     // Enable interrupts
@@ -189,12 +193,10 @@ PCB createKernelTask(task_function_t task_function, uint64_t pid) {
     newTask.context.cs = __USER_CS | 0x3;
     newTask.context.ds = __USER_DS | 0x3;
     newTask.context.es = newTask.context.ds;
-    newTask.context.fs = newTask.context.ds;
-    newTask.context.gs = newTask.context.ds;
     newTask.context.ss = newTask.context.ds;
 
     // Save the kernel stack
-    newTask.kernelStack = (uint64_t)kernelStack + PAGE_SIZE - 1;
+    newTask.kernelStack = (uint64_t)kernelStack + PAGE_SIZE - 0x10;
 
     // Setup the task's page table
     newTask.cr3 = reinterpret_cast<uint64_t>(paging::g_kernelRootPageTable);
@@ -203,30 +205,24 @@ PCB createKernelTask(task_function_t task_function, uint64_t pid) {
 }
 
 void testTaskExecutionAndPreemption() {
-    // auto& sched = Scheduler::get();
+    auto& sched = RoundRobinScheduler::get();
 
-    // // Create some tasks and add them to the scheduler
-    // PCB task1, task2;
+    // Create some tasks and add them to the scheduler
+    PCB task1, task2, task3;
 
-    // task1 = createKernelTask(simple_function, 2);
-    // task2 = createKernelTask(simple_function2, 3);
+    task1 = createKernelTask(simple_function_elev_kprint, 2);
+    task2 = createKernelTask(simple_function_syscall_print, 3);
+    task3 = createKernelTask(simple_function_kuprint, 4);
 
-    // sched.addTask(task1);
-    // sched.addTask(task2);
+    sched.addTask(task1);
+    sched.addTask(task2);
+    sched.addTask(task3);
 }
 
 int fibb(int n) {
     if (n == 0 || n == 1) {
         return n;
     }
-
-    // Extra time-consuming work
-    // if (n == 30) {
-    //     for (volatile int i = 0; i < 100000000; i++) {
-    //         i = i + 1;
-    //         i = i - 1;
-    //     }
-    // }
 
     return fibb(n - 1) + fibb(n - 2);
 }
