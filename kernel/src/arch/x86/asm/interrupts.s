@@ -67,6 +67,9 @@
 
 # Common entry point for all exceptions and IRQs
 __asm_common_isr_entry:
+    # Disable interrupts
+    cli
+
     #
     # Check if the process is user-elevated,
     # if so, switch onto a good kernel stack.
@@ -145,6 +148,7 @@ __isr_entry_post_stack_switch:
     POPALL              # pops segment registers and general purpose registers
 
     add rsp, 16         # clean up the pushed error code and interrupt number
+    sti                 # Re-enable interrupts
     iretq               # Interrupt return
 
 # Exception entry points

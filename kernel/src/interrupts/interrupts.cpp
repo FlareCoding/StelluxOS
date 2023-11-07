@@ -84,48 +84,19 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 DEFINE_INT_HANDLER(_irq_handler_timer) {
     completeApicIrq();
 
-    ++_g_system_tick_count;
+    _g_system_tick_count++;
 
     if (_g_system_tick_count % 100 == 0) {
-        auto& sched = Scheduler::get();
+        auto& sched = RoundRobinScheduler::get();
         PCB* prevTask = sched.getCurrentTask();
-        PCB* nextTask = sched.getNextTask();
+        PCB* nextTask = sched.peekNextTask();
 
-        //if (nextTask && prevTask != nextTask) {
-        if (true) {
-            // Update the state of the processes
-            prevTask->state = ProcessState::READY;
-            nextTask->state = ProcessState::RUNNING;
-
-            // if (nextTask->context.rip == prevTask->context.rip) {
-            //     writeToSerialPort(SERIAL_PORT_BASE_COM2, "MEMORY CORRUPTION CAUGHT\n");
-            // }
-
-            //char buf[256] = { 0 };
-            //itoa(_g_system_tick_count, buf, 256);
-            //writeToSerialPort(SERIAL_PORT_BASE_COM2, "Switching task at tick ");
-            //writeToSerialPort(SERIAL_PORT_BASE_COM2, buf);
-            //writeToSerialPort(SERIAL_PORT_BASE_COM2, ' ');
-
-            // memset(buf, 0, 256);
-            // htoa(prevTask->context.rip, buf, 256);
-            // writeToSerialPort(SERIAL_PORT_BASE_COM2, buf);
-            // writeToSerialPort(SERIAL_PORT_BASE_COM2, "-->");
-
-            // memset(buf, 0, 256);
-            // htoa(nextTask->context.rip, buf, 256);
-            // writeToSerialPort(SERIAL_PORT_BASE_COM2, buf);
-            // writeToSerialPort(SERIAL_PORT_BASE_COM2, "  frame->rip:");
-
-            // memset(buf, 0, 256);
-            // htoa(frame->hwframe.rip, buf, 256);
-            // writeToSerialPort(SERIAL_PORT_BASE_COM2, buf);
-            // writeToSerialPort(SERIAL_PORT_BASE_COM2, "\n");
-
-            //switchContextInIrq(prevTask, nextTask, frame);
-            (void)frame;
+        if (nextTask && prevTask != nextTask) {
+            // Switch the CPU context
+            switchContextInIrq(prevTask, nextTask, frame);
+            
+            // Tell the scheduler that the context switch has been accepted
+            sched.switchToNextTask();
         }
     }
-
-    enableInterrupts();
 }

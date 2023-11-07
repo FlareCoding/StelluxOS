@@ -20,8 +20,6 @@ __call_lowered_entry_asm:
     mov ax, __USER_DS | 0x3
     mov ds, ax
     mov es, ax
-    mov fs, ax
-    mov gs, ax
 
     # Construct an interrupt frame on stack
     push    __USER_DS       # regs.hwframe->ss

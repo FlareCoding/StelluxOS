@@ -16,6 +16,7 @@ struct CpuContext {
 } __attribute__((packed));
 
 enum class ProcessState {
+    INVALID = 0, // Process doesn't exist
     NEW,        // Process created but not yet ready to run
     READY,      // Ready to be scheduled
     RUNNING,    // Currently executing
@@ -26,12 +27,14 @@ enum class ProcessState {
 typedef struct ProcessControlBlock {
     CpuContext      context;
     ProcessState    state;
-    uint64_t        pid;
+    int64_t         pid;
     uint64_t        priority;
     uint64_t        cr3;
     uint64_t        kernelStack;
     int8_t          elevated;
-} __attribute__((packed)) PCB;
+} PCB;
+
+typedef int64_t pid_t;
 
 // Saves context registers from the interrupt frame into a CPU context struct
 void saveCpuContext(CpuContext* to_save, PtRegs* frame);

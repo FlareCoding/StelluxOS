@@ -1,70 +1,88 @@
 #include "sched.h"
 #include <memory/kmemory.h>
 
-Scheduler s_globalScheduler;
+RoundRobinScheduler s_globalRRScheduler;
 
-Scheduler& Scheduler::get() {
-    return s_globalScheduler;
+RoundRobinScheduler& RoundRobinScheduler::get() {
+    return s_globalRRScheduler;
 }
 
-void Scheduler::init() {
-    for (uint64_t i = 0; i < MAX_QUEUED_PROCESSES; i++) {
-        auto& pcb = m_taskQueue[i];
-        zeromem(&pcb, sizeof(PCB));
-
-        pcb.state = ProcessState::TERMINATED;
+RoundRobinScheduler::RoundRobinScheduler() {
+    for (size_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
+        memset(&m_runQueue[i], 0, sizeof(PCB));
+        m_runQueue[i].state = ProcessState::INVALID;
     }
 }
 
-int32_t Scheduler::addTask(PCB task) {
-    if (m_taskCount >= MAX_QUEUED_PROCESSES) {
-        return -1; // Scheduler is full
+PCB* RoundRobinScheduler::peekNextTask() {
+    if (m_tasksInQueue == 0) {
+        return nullptr;
     }
-    for (uint64_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
-        if (m_taskQueue[i].state == ProcessState::TERMINATED) {
-            m_taskQueue[i] = task;
-            m_taskCount++;
-            return i; // Return the index where the task was placed
+
+    if (m_tasksInQueue == 1) {
+        return getCurrentTask();
+    }
+
+    size_t index = m_currentTaskIndex;
+    do {
+        index = (index + 1) % MAX_QUEUED_PROCESSES;
+        if (m_runQueue[index].state == ProcessState::READY) {
+            return &m_runQueue[index];
         }
-    }
+    } while (m_currentTaskIndex != index);
 
-    return -1;
+    return nullptr;
 }
 
-void Scheduler::removeTask(int32_t index) {
-    if (index < 0 || index >= MAX_QUEUED_PROCESSES) {
-        return;
+bool RoundRobinScheduler::switchToNextTask() {
+    // If there is only a single task in the queue
+    if (m_tasksInQueue < 2) {
+        return false;
     }
 
-    m_taskQueue[index].state = ProcessState::TERMINATED;
-    m_taskCount--;
-}
-
-void Scheduler::removeTaskWithPid(uint64_t pid) {
-    for (uint64_t i = 0; i < MAX_QUEUED_PROCESSES; i++) {
-        if (m_taskQueue[i].pid == pid) {
-            removeTask(i);
-            break;
-        }
-    }
-}
-
-ProcessState Scheduler::getTaskState(int32_t index) {
-    if (index < 0 || index >= MAX_QUEUED_PROCESSES) {
-        return ProcessState::TERMINATED;
-    }
-
-    return m_taskQueue[index].state;
-}
-
-PCB* Scheduler::getNextTask() {
-    uint64_t startingIndex = m_currentTaskIndex;
+    size_t startingIndex = m_currentTaskIndex;
     do {
         m_currentTaskIndex = (m_currentTaskIndex + 1) % MAX_QUEUED_PROCESSES;
-        if (m_taskQueue[m_currentTaskIndex].state == ProcessState::READY) {
-            return &m_taskQueue[m_currentTaskIndex];
+        if (m_runQueue[m_currentTaskIndex].state == ProcessState::READY) {
+            // Update the state of the processes
+            m_runQueue[startingIndex].state = ProcessState::READY;
+            m_runQueue[m_currentTaskIndex].state = ProcessState::RUNNING;
+
+            return true;
         }
     } while (m_currentTaskIndex != startingIndex);
 
-    return nullptr; // No task is ready to run
+    return false;
+}
+
+size_t RoundRobinScheduler::addTask(const PCB& task) {
+    for (size_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
+        if (m_runQueue[i].state == ProcessState::INVALID) {
+            m_runQueue[i] = task;
+            ++m_tasksInQueue;
+            return i; // Return the index where the task was placed
+        }
+    }
+    
+    return -1;
+}
+
+PCB* RoundRobinScheduler::getTask(size_t idx) {
+    if (idx >= MAX_QUEUED_PROCESSES) {
+        return nullptr;
+    }
+
+    return &m_runQueue[idx];
+
+    return nullptr;
+}
+
+PCB* RoundRobinScheduler::findTaskByPid(pid_t pid) {
+    for (size_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
+        if (m_runQueue[i].pid == pid) {
+            return &m_runQueue[i];
+        }
+    }
+
+    return nullptr;
 }
