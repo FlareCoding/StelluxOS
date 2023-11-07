@@ -139,7 +139,7 @@ EXTERN_C __PRIVILEGED_CODE void __common_isr_entry(PtRegs frame) {
     }
 }
 
-void setup_interrupt_descriptor_table() {
+void setupInterruptDescriptorTable() {
     g_kernelIdtDescriptor.limit = sizeof(g_kernelIdt) - 1;
     g_kernelIdtDescriptor.base = reinterpret_cast<uint64_t>(&g_kernelIdt);
 
@@ -189,7 +189,7 @@ void setup_interrupt_descriptor_table() {
 }
 
 __PRIVILEGED_CODE
-void load_idtr() {
+void loadIdtr() {
     // Load the IDT
     __asm__("lidt %0" : : "m"(g_kernelIdtDescriptor));
 }

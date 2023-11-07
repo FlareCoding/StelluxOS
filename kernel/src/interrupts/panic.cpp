@@ -4,6 +4,9 @@
 void kpanic(PtRegs* frame) {
     uint64_t cr0, cr2, cr3, cr4;
 
+    // Disable interrupts
+    disableInterrupts();
+
     // Read the control registers using inline assembly
     __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
     __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));

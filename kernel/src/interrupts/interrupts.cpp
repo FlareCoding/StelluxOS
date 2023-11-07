@@ -22,14 +22,8 @@ bool areInterruptsEnabled() {
 }
 
 DEFINE_INT_HANDLER(_userspace_common_exc_handler) {
-    (void)frame;
-
-    while (1) {
-        asm volatile ("hlt");
-    }
-
-    // kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
-    // kpanic(frame);
+    kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
+    kpanic(frame);
 }
 
 DEFINE_INT_HANDLER(_exc_handler_div) {

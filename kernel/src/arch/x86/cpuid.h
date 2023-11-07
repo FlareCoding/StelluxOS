@@ -41,7 +41,7 @@
 
 // Read basic CPUID information
 __PRIVILEGED_CODE
-static inline void read_cpuid(int code, uint32_t *a, uint32_t *d) {
+static inline void readCpuid(int code, uint32_t *a, uint32_t *d) {
     __asm__ volatile("cpuid"
         : "=a"(*a), "=d"(*d)  // Output operands
         : "0"(code)           // Input operands
@@ -51,7 +51,7 @@ static inline void read_cpuid(int code, uint32_t *a, uint32_t *d) {
 
 // Read extended CPUID information
 __PRIVILEGED_CODE
-static inline void read_cpuid_extended(int code, uint32_t *a, uint32_t *d) {
+static inline void readCpuidExtended(int code, uint32_t *a, uint32_t *d) {
     __asm__ volatile("cpuid"
         : "=a"(*a), "=d"(*d)  // Output operands
         : "0"(code)           // Input operands
@@ -63,7 +63,7 @@ static inline void read_cpuid_extended(int code, uint32_t *a, uint32_t *d) {
 __PRIVILEGED_CODE
 static inline int cpuid_isLa57Supported() {
     uint32_t a, d;
-    read_cpuid(7, &a, &d);
+    readCpuid(7, &a, &d);
     return (a & CPUID_FEAT_ECX_LA57) != 0;
 }
 
@@ -82,35 +82,35 @@ static inline void cpuid_readVendorId(char* vendor) {
 __PRIVILEGED_CODE
 static inline bool cpuid_isSSESupported() {
     uint32_t eax, edx;
-    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    readCpuid(CPUID_FEATURES, &eax, &edx);
     return (edx & CPUID_EDX_SSE) != 0;
 }
 
 __PRIVILEGED_CODE
 static inline bool cpuid_isSSE2Supported() {
     uint32_t eax, edx;
-    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    readCpuid(CPUID_FEATURES, &eax, &edx);
     return (edx & CPUID_EDX_SSE2) != 0;
 }
 
 __PRIVILEGED_CODE
 static inline bool cpuid_isSSE3Supported() {
     uint32_t eax, edx;
-    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    readCpuid(CPUID_FEATURES, &eax, &edx);
     return (eax & CPUID_ECX_SSE3) != 0;
 }
 
 __PRIVILEGED_CODE
 static inline bool cpuid_isAVXSupported() {
     uint32_t eax, edx;
-    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    readCpuid(CPUID_FEATURES, &eax, &edx);
     return (eax & CPUID_ECX_AVX) != 0;
 }
 
 __PRIVILEGED_CODE
 static inline bool cpuid_isFMASupported() {
     uint32_t eax, edx;
-    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    readCpuid(CPUID_FEATURES, &eax, &edx);
     return (eax & CPUID_ECX_FMA) != 0;
 }
 

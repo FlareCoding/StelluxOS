@@ -25,8 +25,10 @@ extern uint64_t __kern_phys_base;
 extern uint64_t __ksymstart;
 extern uint64_t __ksymend;
 
-KernelEntryParams g_entry_params;
-char __usermode_kernel_entry_stack[0x8000];
+KernelEntryParams g_kernelEntryParameters;
+
+#define USERMODE_KERNEL_ENTRY_STACK_SIZE 0x8000
+char __usermodeKernelEntryStack[USERMODE_KERNEL_ENTRY_STACK_SIZE];
 
 // Function prototype for the task function
 typedef void (*task_function_t)();
@@ -36,40 +38,40 @@ void testTaskExecutionAndPreemption();
 int fibb(int n);
 
 // use recursive function to exercise context switch (fibb)
-void simple_function_elev_kprint() {
+void simpleFunctionElevKprint() {
     __kelevate();
     while(1) {
         int result = fibb(32);
-        kprint("simple_function_elev_kprint>  fibb(32): %i\n", result);
+        kprint("simpleFunctionElevKprint>  fibb(32): %i\n", result);
     }
 }
 
-void simple_function_syscall_print() {
+void simpleFunctionSyscallPrint() {
     __kelevate();
     while(1) {
         int result = fibb(36);
         (void)result;
 
-        const char* msg = "simple_function_syscall_print> Calculated fibb(36)! Ignoring result...\n";
-        do_syscall_64(SYSCALL_SYS_WRITE, 0, (uint64_t)msg, strlen(msg), 0, 0, 0);
+        const char* msg = "simpleFunctionSyscallPrint> Calculated fibb(36)! Ignoring result...\n";
+        __syscall(SYSCALL_SYS_WRITE, 0, (uint64_t)msg, strlen(msg), 0, 0, 0);
     }
 }
 
-void simple_function_kuprint() {
+void simpleFunctionKuprint() {
     __kelevate();
     while(1) {
         int result = fibb(34);
-        kuPrint("simple_function_kuprint> fibb(34): %i\n", result);
+        kuPrint("simpleFunctionKuprint> fibb(34): %i\n", result);
     }
 }
 
 __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Setup kernel stack
-    uint64_t kernelStackTop = reinterpret_cast<uint64_t>(params->kernelStack) + PAGE_SIZE - 0x10;
+    uint64_t kernelStackTop = reinterpret_cast<uint64_t>(params->kernelStack) + PAGE_SIZE;
     asm volatile ("mov %0, %%rsp" :: "r"(kernelStackTop));
 
     // Copy the kernel parameters to an unprivileged region
-    memcpy(&g_entry_params, params, sizeof(KernelEntryParams));
+    memcpy(&g_kernelEntryParameters, params, sizeof(KernelEntryParams));
 
     // First thing we have to take care of
     // is setting up the Global Descriptor Table.
@@ -97,16 +99,14 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     kprintInfo("CPU Vendor: %s\n", vendorName);
     kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
 
-    uint64_t rsp;
-    asm volatile("mov %%rsp, %0" : "=r"(rsp));
-    __call_lowered_entry(_kuser_entry, (void*)rsp);
+    __call_lowered_entry(_kuser_entry, __usermodeKernelEntryStack + USERMODE_KERNEL_ENTRY_STACK_SIZE);
 }
 
 void _kuser_entry() {
-    setup_interrupt_descriptor_table();
+    setupInterruptDescriptorTable();
 
     RUN_ELEVATED({
-        load_idtr();
+        loadIdtr();
         enableInterrupts();
     });
 
@@ -116,26 +116,26 @@ void _kuser_entry() {
     RUN_ELEVATED({
         // Initialize the global page frame allocator
         globalPageFrameAllocator.initializeFromMemoryMap(
-            g_entry_params.efiMemoryMap.base,
-            g_entry_params.efiMemoryMap.descriptorSize,
-            g_entry_params.efiMemoryMap.descriptorCount
+            g_kernelEntryParameters.efiMemoryMap.base,
+            g_kernelEntryParameters.efiMemoryMap.descriptorSize,
+            g_kernelEntryParameters.efiMemoryMap.descriptorCount
         );
 
         // Update the root pml4 page table
         paging::g_kernelRootPageTable = paging::getCurrentTopLevelPageTable();
     });
 
-    globalPageFrameAllocator.lockPage(&g_entry_params);
+    globalPageFrameAllocator.lockPage(&g_kernelEntryParameters);
     globalPageFrameAllocator.lockPages(&__ksymstart, (&__ksymend - &__ksymstart) / PAGE_SIZE + 1);
-    globalPageFrameAllocator.lockPage(g_entry_params.textRenderingFont);
-    globalPageFrameAllocator.lockPages(g_entry_params.kernelElfSegments, (&__ksymend - &__ksymstart) / PAGE_SIZE + 1);
+    globalPageFrameAllocator.lockPage(g_kernelEntryParameters.textRenderingFont);
+    globalPageFrameAllocator.lockPages(g_kernelEntryParameters.kernelElfSegments, (&__ksymend - &__ksymstart) / PAGE_SIZE + 1);
     globalPageFrameAllocator.lockPages(
-        g_entry_params.graphicsFramebuffer.base,
-        g_entry_params.graphicsFramebuffer.size / PAGE_SIZE + 1
+        g_kernelEntryParameters.graphicsFramebuffer.base,
+        g_kernelEntryParameters.graphicsFramebuffer.size / PAGE_SIZE + 1
     );
 
     RUN_ELEVATED({
-        setMtrrWriteCombining((uint64_t)__pa(g_entry_params.graphicsFramebuffer.base), g_entry_params.graphicsFramebuffer.size);
+        setMtrrWriteCombining((uint64_t)__pa(g_kernelEntryParameters.graphicsFramebuffer.base), g_kernelEntryParameters.graphicsFramebuffer.size);
     });
 
     kuPrint("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
@@ -145,7 +145,7 @@ void _kuser_entry() {
     kuPrint("The kernel is loaded at:\n");
     kuPrint("    Physical : 0x%llx\n", (uint64_t)__kern_phys_base);
     kuPrint("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
-    kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_entry_params.kernelStack + PAGE_SIZE - 0x10);
+    kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_kernelEntryParameters.kernelStack + PAGE_SIZE);
 
     initializeApic();
     configureApicTimerIrq(IRQ0);
@@ -169,7 +169,7 @@ void _kuser_entry() {
     while (1) { __asm__ volatile("nop"); }
 }
 
-PCB createKernelTask(task_function_t task_function, uint64_t pid) {
+PCB createKernelTask(task_function_t taskFunction, uint64_t pid) {
     PCB newTask;
     zeromem(&newTask, sizeof(PCB));
 
@@ -184,9 +184,9 @@ PCB createKernelTask(task_function_t task_function, uint64_t pid) {
     void* kernelStack = zallocPage();
 
     // Initialize the CPU context
-    newTask.context.rsp = (uint64_t)stack + PAGE_SIZE - 0x10;  // Point to the top of the stack
+    newTask.context.rsp = (uint64_t)stack + PAGE_SIZE;  // Point to the top of the stack
     newTask.context.rbp = newTask.context.rsp;          // Point to the top of the stack
-    newTask.context.rip = (uint64_t)task_function;      // Set instruction pointer to the task function
+    newTask.context.rip = (uint64_t)taskFunction;      // Set instruction pointer to the task function
     newTask.context.rflags = 0x200;                     // Enable interrupts
 
     // Set up segment registers for user space. These values correspond to the selectors in the GDT.
@@ -196,7 +196,7 @@ PCB createKernelTask(task_function_t task_function, uint64_t pid) {
     newTask.context.ss = newTask.context.ds;
 
     // Save the kernel stack
-    newTask.kernelStack = (uint64_t)kernelStack + PAGE_SIZE - 0x10;
+    newTask.kernelStack = (uint64_t)kernelStack + PAGE_SIZE;
 
     // Setup the task's page table
     newTask.cr3 = reinterpret_cast<uint64_t>(paging::g_kernelRootPageTable);
@@ -210,9 +210,9 @@ void testTaskExecutionAndPreemption() {
     // Create some tasks and add them to the scheduler
     PCB task1, task2, task3;
 
-    task1 = createKernelTask(simple_function_elev_kprint, 2);
-    task2 = createKernelTask(simple_function_syscall_print, 3);
-    task3 = createKernelTask(simple_function_kuprint, 4);
+    task1 = createKernelTask(simpleFunctionElevKprint, 2);
+    task2 = createKernelTask(simpleFunctionSyscallPrint, 3);
+    task3 = createKernelTask(simpleFunctionKuprint, 4);
 
     sched.addTask(task1);
     sched.addTask(task2);

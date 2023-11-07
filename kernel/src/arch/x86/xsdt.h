@@ -3,54 +3,54 @@
 #include <ktypes.h>
 
 // ACPI RSDP (Root System Description Pointer)
-typedef struct {
-    char     Signature[8];
-    uint8_t  Checksum;
-    char     OemId[6];
-    uint8_t  Revision;
-    uint32_t RsdtAddress;
-    uint32_t Length;
-    uint64_t XsdtAddress;
-    uint8_t  ExtendedChecksum;
-    uint8_t  Reserved[3];
-} __attribute__((packed)) rsdp_t;
+struct ACPIRsdp {
+    char     signature[8];
+    uint8_t  checksum;
+    char     oemId[6];
+    uint8_t  revision;
+    uint32_t rsdtAddress;
+    uint32_t length;
+    uint64_t xsdtAddress;
+    uint8_t  extendedChecksum;
+    uint8_t  reserved[3];
+} __attribute__((packed));
 
 // ACPI table header
-typedef struct {
-    char Signature[4];
-    uint32_t Length;
-    uint8_t Revision;
-    uint8_t Checksum;
-    char OemId[6];
-    char OemTableId[8];
-    uint32_t OemRevision;
-    uint32_t CreatorId;
-    uint32_t CreatorRevision;
-} __attribute__((packed)) AcpiTableHeader;
+struct AcpiTableHeader {
+    char signature[4];
+    uint32_t length;
+    uint8_t revision;
+    uint8_t checksum;
+    char oemId[6];
+    char oemTableId[8];
+    uint32_t oemRevision;
+    uint32_t creatorId;
+    uint32_t creatorRevision;
+} __attribute__((packed));
 
-// XSDT structure
-typedef struct {
-    AcpiTableHeader Header;
-    uint64_t TablePointers[];  // Variable-length field of pointers
-} __attribute__((packed)) Xsdt;
+// ACPI XSDT structure
+struct ACPIXsdt {
+    AcpiTableHeader header;
+    uint64_t tablePointers[];  // Variable-length field of pointers
+} __attribute__((packed));
 
 // MADT structure
-typedef struct {
-    AcpiTableHeader Header;
-    uint32_t LocalApicAddress;
-    uint32_t Flags;
-    uint8_t TableEntries[];  // Variable-length
-} __attribute__((packed)) Madt;
+struct Madt {
+    AcpiTableHeader header;
+    uint32_t localApicAddress;
+    uint32_t flags;
+    uint8_t tableEntries[];  // Variable-length
+} __attribute__((packed));
 
 // Local APIC entry in MADT
-typedef struct {
-    uint8_t Type; // should be 0 for Local APIC
-    uint8_t Length; // should be 8 for Local APIC
-    uint8_t AcpiProcessorId;
-    uint8_t ApicId;
-    uint32_t Flags;
-} __attribute__((packed)) MadtLocalApic;
+struct MadtLocalApic {
+    uint8_t type; // should be 0 for Local APIC
+    uint8_t length; // should be 8 for Local APIC
+    uint8_t acpiProcessorId;
+    uint8_t apicId;
+    uint32_t flags;
+} __attribute__((packed));
 
-uint32_t get_cpu_count(Madt* madt);
+uint32_t queryCpuCount(Madt* madt);
 
 #endif
