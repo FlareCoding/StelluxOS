@@ -16,6 +16,7 @@
 #include <sched/sched.h>
 #include <syscall/syscalls.h>
 #include <kelevate/kelevate.h>
+#include <acpi/acpi_controller.h>
 #include <kprint.h>
 #include <kstring.h>
 
@@ -163,7 +164,12 @@ void _kuser_entry() {
     sched.addTask(rootKernelSwapperTask);
 
     // Add some sample tasks to test the scheduler code
-    testTaskExecutionAndPreemption();
+    //testTaskExecutionAndPreemption();
+
+    RUN_ELEVATED({
+        auto& acpiController = AcpiController::get();
+        acpiController.init(g_kernelEntryParameters.rsdp);
+    });
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
