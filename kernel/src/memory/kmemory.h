@@ -13,4 +13,7 @@ void zeromem(void* vaddr, size_t size);
 void* allocPage();
 void* zallocPage();
 
+void* allocPages(size_t pages);
+void* zallocPages(size_t pages);
+
 #endif

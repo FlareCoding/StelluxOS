@@ -53,6 +53,9 @@ public:
     void* requestFreePage();
     void* requestFreePageZeroed();
 
+    void* requestFreePages(size_t pages);
+    void* requestFreePagesZeroed(size_t pages);
+
     inline uint64_t getTotalSystemMemory() const { return m_totalSystemMemory; }
     inline uint64_t getFreeSystemMemory() const { return m_freeSystemMemory; }
     inline uint64_t getUsedSystemMemory() const { return m_usedSystemMemory; }

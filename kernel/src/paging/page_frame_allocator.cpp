@@ -274,13 +274,57 @@ namespace paging {
         // If there are no more pages in RAM to give out,
         // a disk page frame swap is required to request more pages,
         // but Stellux kernel doesn't support it yet.
-        kprintError("Out of RAM! Disk page frame not yet implemented\n");
+        kprintError("Out of RAM! Disk page frame swap is not yet implemented\n");
         return NULL;
     }
 
     void* PageFrameAllocator::requestFreePageZeroed() {
         void* page = requestFreePage();
         zeromem(page, PAGE_SIZE);
+
+        return page;
+    }
+
+    void* PageFrameAllocator::requestFreePages(size_t pages) {
+        for (
+            uint8_t* page = reinterpret_cast<uint8_t*>(m_lastTrackedFreePage);
+            page < reinterpret_cast<uint8_t*>(m_totalSystemMemory);
+            page += PAGE_SIZE
+        ) {
+            bool freeContiguousBlockFound = true;
+
+            // Skip contiguous page blocks that are already in use
+            for (uint8_t* pageBlockPtr = page; pageBlockPtr < (page + PAGE_SIZE * pages); pageBlockPtr += PAGE_SIZE) {
+                if (m_pageFrameBitmap.isPageUsed(pageBlockPtr)) {
+                    freeContiguousBlockFound = false;
+                    break;
+                }
+            }
+
+            // Skip this page if the free contiguous block of memory wasn't found
+            if (!freeContiguousBlockFound) {
+                continue;
+            }
+
+            // Lock all pages in the contiguous region
+            for (uint8_t* pageBlockPtr = page; pageBlockPtr < (page + PAGE_SIZE * pages); pageBlockPtr += PAGE_SIZE) {
+                lockPage(pageBlockPtr);
+            }
+
+            m_lastTrackedFreePage = page + PAGE_SIZE * pages;
+            return __va(page);
+        }
+
+        // If there are no more pages in RAM to give out,
+        // a disk page frame swap is required to request more pages,
+        // but Stellux kernel doesn't support it yet.
+        kprintError("Out of RAM! Disk page frame swap is not yet implemented\n");
+        return NULL;
+    }
+
+    void* PageFrameAllocator::requestFreePagesZeroed(size_t pages) {
+        void* page = requestFreePages(pages);
+        zeromem(page, PAGE_SIZE * pages);
 
         return page;
     }

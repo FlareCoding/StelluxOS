@@ -170,6 +170,11 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
+    for (size_t i = 0; i < 10; i++) {
+        void* page = zallocPages(i);
+        kuPrint("Allocated %lli pages: 0x%llx\n", i, page);
+    }
+
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
 }

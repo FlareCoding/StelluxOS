@@ -131,3 +131,13 @@ void* zallocPage() {
     auto& allocator = paging::getGlobalPageFrameAllocator();
     return allocator.requestFreePageZeroed();
 }
+
+void* allocPages(size_t pages) {
+    auto& allocator = paging::getGlobalPageFrameAllocator();
+    return allocator.requestFreePages(pages);
+}
+
+void* zallocPages(size_t pages) {
+    auto& allocator = paging::getGlobalPageFrameAllocator();
+    return allocator.requestFreePagesZeroed(pages);
+}
