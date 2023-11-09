@@ -183,6 +183,8 @@ void kprintFmtColoredEx(
         fmtDiscovered = false;
         ++fmt;
     }
+
+    Display::swapBuffers();
 }
 
 void kprintFmtColoredExLocked(
