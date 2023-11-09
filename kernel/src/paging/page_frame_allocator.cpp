@@ -265,7 +265,7 @@ namespace paging {
                 continue;
             }
 
-            lockPage(page);
+            lockPhysicalPage(page);
 
             m_lastTrackedFreePage = page + PAGE_SIZE;
             return __va(page);
@@ -308,10 +308,22 @@ namespace paging {
 
             // Lock all pages in the contiguous region
             for (uint8_t* pageBlockPtr = page; pageBlockPtr < (page + PAGE_SIZE * pages); pageBlockPtr += PAGE_SIZE) {
-                lockPage(pageBlockPtr);
+                lockPhysicalPage(pageBlockPtr);
             }
 
-            m_lastTrackedFreePage = page + PAGE_SIZE * pages;
+            // Check if we skipped over a free page in search for a
+            // contiguous block and assign the last tracked free page to it.
+            for (
+                uint8_t* pg = reinterpret_cast<uint8_t*>(m_lastTrackedFreePage);
+                pg < reinterpret_cast<uint8_t*>(m_totalSystemMemory);
+                pg += PAGE_SIZE
+            ) {
+                if (m_pageFrameBitmap.isPageFree(pg)) {
+                    m_lastTrackedFreePage = pg;
+                    break;
+                }
+            }
+
             return __va(page);
         }
 
