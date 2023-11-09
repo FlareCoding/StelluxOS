@@ -190,9 +190,9 @@ void CreateHigherHalfMapping(
 				LeafPrivilegeLevel = !section.Privileged;
 				
 				// Logging
-				if (section.Privileged) {
-					Print(L"Mapping privileged kernel segment p:%llx -> v:%llx section:%a\n", paddr, vaddr, section.Name);
-				}
+				// if (section.Privileged) {
+				// 	Print(L"Mapping privileged kernel segment p:%llx -> v:%llx section:%a\n", paddr, vaddr, section.Name);
+				// }
 			}
 		}
 

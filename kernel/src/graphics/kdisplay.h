@@ -28,19 +28,29 @@ struct Framebuffer {
 
 class Display {
 public:
+    __PRIVILEGED_CODE
     static void initialize(
         void* framebuffer,
         void* font
     );
 
+    __PRIVILEGED_CODE
     static void fillPixel(uint32_t x, uint32_t y, uint32_t color);
+    
+    __PRIVILEGED_CODE
     static void renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color);
 
-    static inline Framebuffer& getFramebuffer() { return s_framebuffer; }
+    static Framebuffer& getFramebuffer() { return s_framebuffer; }
     static inline Psf1Font* getTextFontInfo() { return s_font; }
 
+    __PRIVILEGED_CODE
+    static void swapBuffers();
+
 private:
+    __PRIVILEGED_DATA
     static Framebuffer s_framebuffer;
+
+    __PRIVILEGED_DATA
     static Psf1Font*   s_font;
 };
 

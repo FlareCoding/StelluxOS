@@ -171,6 +171,14 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
+    uint64_t tick = 0;
+    while (true) {
+        tick++;
+        kuPrint("Tick: %lli\n", tick);
+
+        (void)fibb(20);
+    }
+    
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
 }
