@@ -91,7 +91,6 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     initializeSerialPort(SERIAL_PORT_BASE_COM4);
 
     // Initialize display and graphics context
-    // Display::initialize(&params->graphicsFramebuffer, params->textRenderingFont);
     Display::initialize(&params->graphicsFramebuffer, params->textRenderingFont);
 
     char vendorName[13];

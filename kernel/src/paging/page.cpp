@@ -90,7 +90,7 @@ void mapPage(
 
 		pml4_entry->present = 1;
 		pml4_entry->readWrite = 1;
-		pml4_entry->userSupervisor = privilegeLevel;
+		pml4_entry->userSupervisor = USERSPACE_PAGE;
 		pml4_entry->pageFrameNumber = reinterpret_cast<uint64_t>(pdpt) >> 12;
 	} else {
 		pdpt = (PageTable*)((uint64_t)pml4_entry->pageFrameNumber << 12);
@@ -103,7 +103,7 @@ void mapPage(
 
 		pdpt_entry->present = 1;
 		pdpt_entry->readWrite = 1;
-		pdpt_entry->userSupervisor = privilegeLevel;
+		pdpt_entry->userSupervisor = USERSPACE_PAGE;
 		pdpt_entry->pageFrameNumber = reinterpret_cast<uint64_t>(pdt) >> 12;
 	} else {
 		pdt = (PageTable*)((uint64_t)pdpt_entry->pageFrameNumber << 12);
@@ -116,7 +116,7 @@ void mapPage(
 
 		pdt_entry->present = 1;
 		pdt_entry->readWrite = 1;
-		pdt_entry->userSupervisor = privilegeLevel;
+		pdt_entry->userSupervisor = USERSPACE_PAGE;
 		pdt_entry->pageFrameNumber = reinterpret_cast<uint64_t>(pt) >> 12;
 	} else {
 		pt = (PageTable*)((uint64_t)pdt_entry->pageFrameNumber << 12);

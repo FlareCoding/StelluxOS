@@ -2,6 +2,7 @@
 #include <paging/phys_addr_translation.h>
 #include <kstring.h>
 #include <memory/kmemory.h>
+#include <pci/pci.h>
 #include <kprint.h>
 
 __PRIVILEGED_DATA
@@ -15,17 +16,35 @@ AcpiController& AcpiController::get() {
 #define AML_OPCODE_DEVICE 0x82  // Device opcode
 #define AML_OPCODE_NAME 0x08    // Name opcode
 
+#define ACPI_AML_OPCODE_SCOPE 0x10
+
 __PRIVILEGED_CODE
-uint32_t decodePkgLength(uint8_t** pointer) {
-    uint8_t byte0 = *(*pointer)++;
-    uint32_t pkgLength = byte0 & 0x3F; // Lower 6 bits
-    uint32_t bytesAdditional = (byte0 >> 6) & 0x03; // Upper 2 bits
-
-    for (uint32_t i = 0; i < bytesAdditional; ++i) {
-        pkgLength |= ((uint32_t)(*(*pointer)++) << (6 + i * 8));
-    }
-
-    return pkgLength;
+uint32_t parsePkgLength(uint8_t*& amlPointer) {
+    uint32_t package_length = 0;
+	uint32_t byte_count;
+	uint8_t  byte_zero_mask = 0x3F;	/* Default [0:5] */
+	/*
+	 * Byte 0 bits [6:7] contain the number of additional bytes
+	 * used to encode the package length, either 0,1,2, or 3
+	 */
+	byte_count = (amlPointer[0] >> 6);
+	amlPointer += (byte_count + 1);
+	/* Get bytes 3, 2, 1 as needed */
+	while (byte_count) {
+		/*
+		 * Final bit positions for the package length bytes:
+		 *      Byte3->[20:27]
+		 *      Byte2->[12:19]
+		 *      Byte1->[04:11]
+		 *      Byte0->[00:03]
+		 */
+		package_length |= (amlPointer[byte_count] << ((byte_count << 3) - 4));
+		byte_zero_mask = 0x0F;	/* Use bits [0:3] of byte 0 */
+		byte_count--;
+	}
+	/* Byte 0 is a special case, either bits [0:3] or [0:5] are used */
+	package_length |= (amlPointer[0] & byte_zero_mask);
+	return package_length;      
 }
 
 __PRIVILEGED_CODE
@@ -53,7 +72,7 @@ void parseNameObject(uint8_t** amlPointer) {
                 (*amlPointer)++;
             }
             buffer[i] = '\0'; // Correctly null-terminate the string
-            kprint("             _HID String Found: %s\n", buffer);
+            kprint("             Device String Found: %s\n", buffer);
             
             // Check for common XHCI _HID strings
             if (memcmp(buffer, (char*)"PNP0D10", 7) == 0 ||
@@ -79,7 +98,7 @@ void parseDsdt(AcpiTableHeader* dsdt) {
 
         switch (opcode) {
             case AML_OPCODE_DEVICE: {
-                uint32_t pkgLength = decodePkgLength(&amlPointer);
+                uint32_t pkgLength = parsePkgLength(amlPointer);
                 uint8_t* deviceEnd = amlPointer + pkgLength;
 
                 // Now process the contents of the device package
@@ -109,6 +128,84 @@ void parseDsdt(AcpiTableHeader* dsdt) {
     }
 }
 
+// __PRIVILEGED_CODE
+// char* parseAmlNamestring(uint8_t*& amlPointer) {
+//     uint8_t* start = amlPointer;
+// 	uint8_t* end = amlPointer;
+
+// 	/* Point past any namestring prefix characters (backslash or carat) */
+// 	while (*end == '\\' || *end == '^') {
+// 		end++;
+// 	}
+
+// 	/* Decode the path prefix character */
+// 	switch (*end) {
+// 	case 0:
+// 		/* null_name */
+// 		if (end == start) {
+// 			start = NULL;
+// 		}
+// 		end++;
+// 		break;
+// 	case 0x2E:
+// 		/* Two name segments */
+// 		end += 1 + (2 * 4);
+// 		break;
+// 	case 0x2F:
+// 		/* Multiple name segments, 4 chars each, count in next byte */
+// 		end += 2 + (*(end + 1) * 4);
+// 		break;
+// 	default:
+// 		/* Single name segment */
+// 		end += 4;
+// 		break;
+// 	}
+// 	amlPointer = end;
+// 	return (char*)start;
+// }
+
+// __PRIVILEGED_CODE
+// void parseAmlTable(AcpiTableHeader* table) {
+//     uint8_t* amlStart = (uint8_t*)(table + 1);
+//     uint8_t* amlEnd = (uint8_t*)table + table->length;
+//     uint8_t* amlPointer = amlStart;
+
+//     while (amlPointer < amlEnd) {
+//         uint8_t opcode = *amlPointer;
+
+//         switch (opcode) {
+//         case ACPI_AML_OPCODE_SCOPE: {
+//             //kprint("            Opcode: ACPI_AML_OPCODE_SCOPE\n");
+//             ++amlPointer;
+
+//             uint32_t pkgLength = parsePkgLength(amlPointer);
+//             uint8_t* endPtr = amlPointer + pkgLength;
+//             (void)pkgLength;
+//             //kprint("               pkgLength: %i\n", pkgLength);
+
+//             char* name = parseAmlNamestring(amlPointer);
+
+//             if (*name != '\0')
+//                 kprint("                  -- namestring: %s\n", name);
+
+//             ++amlPointer;
+//             break;
+//         }
+//         default:
+//             //kprint("            Opcode: 0x%llx\n", opcode);
+//             //kprint("              next: 0x%llx\n", *(amlPointer++));
+//             //return; // REMOVE LATER!!!!!!!!!!!
+//             ++amlPointer;
+//             break;
+//         }
+//     }
+// }
+
+__PRIVILEGED_CODE
+void parseMcfg(McfgHeader* mcfg) {
+    enumeratePciDevices(mcfg);
+}
+
 __PRIVILEGED_CODE
 void AcpiController::init(void* rsdp) {
     uint64_t xsdtAddr = static_cast<AcpiRsdp*>(rsdp)->xsdtAddress;
@@ -134,9 +231,14 @@ void AcpiController::init(void* rsdp) {
             AcpiTableHeader* dsdt = reinterpret_cast<AcpiTableHeader*>(__va((void*)dsdtAddress));
             
             kprint("       DSDT Address: 0x%llx\n", (unsigned long long)dsdt);
-            //parseDsdt(dsdt);
+            parseDsdt(dsdt);
+            //parseAmlTable(dsdt);
         } else if (memcmp(table->signature, (char*)"SSDT", 4) == 0) {
-            parseDsdt(table);
+            //parseAmlTable(table);
+        } else if (memcmp(table->signature, (char*)"MCFG", 4) == 0) {
+            McfgHeader* mcfg = reinterpret_cast<McfgHeader*>(__va(table));
+            parseMcfg(mcfg);
+            break;
         }
     }
     kprint("\n");

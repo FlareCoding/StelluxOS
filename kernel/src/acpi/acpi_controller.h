@@ -110,6 +110,19 @@ struct AcpiFacp {
     GenericAddressStructure x_gpe1Block;
 } __attribute__((packed));
 
+struct McfgHeader{
+    AcpiTableHeader header;
+    uint64_t reserved;
+}__attribute__((packed));
+
+struct PciDeviceConfig {
+    uint64_t base;
+    uint16_t pciSegGroup;
+    uint8_t startBus;
+    uint8_t endBus;
+    uint32_t reserved;
+}__attribute__((packed));
+
 class AcpiController {
 public:
     __PRIVILEGED_CODE
