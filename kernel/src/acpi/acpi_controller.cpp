@@ -42,23 +42,26 @@ void parseNameObject(uint8_t** amlPointer) {
             // Handle integer (you'll need to read the appropriate number of bytes for each type)
             break;
         case 0x0D: // StringPrefix
-            {
-                char buffer[256]; // Ensure this buffer is large enough for your string
-                int i = 0;
-                while ((buffer[i] = (char)*(*amlPointer)) != '\0') {
+        {
+            char buffer[256] = {0};
+            uint64_t i = 0;
+            while ((buffer[i] = (char)*(*amlPointer)) != '\0') {
+                // Bounds checking to prevent buffer overflow
+                if (i < sizeof(buffer) - 2) {
                     i++;
-                    (*amlPointer)++;
                 }
-                buffer[++i] = '\0'; // Null-terminate the string
-                kprint("             _HID String Found: %s\n", buffer);
-                
-                // Check for common XHCI _HID strings
-                if (memcmp(buffer, (char*)"PNP0D10", 7) == 0 ||
-                    memcmp(buffer, (char*)"ACPI\\80860F35", 13) == 0) {
-                    kprint("              XHCI Controller Found: %s\n", buffer);
-                }
-                break;
+                (*amlPointer)++;
             }
+            buffer[i] = '\0'; // Correctly null-terminate the string
+            kprint("             _HID String Found: %s\n", buffer);
+            
+            // Check for common XHCI _HID strings
+            if (memcmp(buffer, (char*)"PNP0D10", 7) == 0 ||
+                memcmp(buffer, (char*)"ACPI\\80860F35", 13) == 0) {
+                kprint("              XHCI Controller Found: %s\n", buffer);
+            }
+            break;
+        }
         // Add cases for other data types as necessary
         default:
             break;
@@ -131,7 +134,9 @@ void AcpiController::init(void* rsdp) {
             AcpiTableHeader* dsdt = reinterpret_cast<AcpiTableHeader*>(__va((void*)dsdtAddress));
             
             kprint("       DSDT Address: 0x%llx\n", (unsigned long long)dsdt);
-            parseDsdt(dsdt);
+            //parseDsdt(dsdt);
+        } else if (memcmp(table->signature, (char*)"SSDT", 4) == 0) {
+            //parseDsdt(table);
         }
     }
     kprint("\n");
