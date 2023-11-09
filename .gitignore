@@ -34,3 +34,4 @@ bin/
 *.exe
 *.out
 *.app
+*.efi
