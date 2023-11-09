@@ -103,7 +103,7 @@ void Display::swapBuffers() {
     }
     
     for (size_t i = 0; i < BACK_BUFFER_HEIGHT; ++i) {
-        char* dest = (char*)s_framebuffer.base + (i * s_framebuffer.width * sizeof(uint32_t));
+        char* dest = (char*)s_framebuffer.base + (i * s_framebuffer.pixelsPerScanline * sizeof(uint32_t));
         char* src = (char*)s_backBuffer + (i * BACK_BUFFER_WIDTH * sizeof(uint32_t));
         memcpy(dest, src, BACK_BUFFER_WIDTH * sizeof(uint32_t));
     }
