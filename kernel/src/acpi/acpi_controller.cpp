@@ -136,7 +136,7 @@ void AcpiController::init(void* rsdp) {
             kprint("       DSDT Address: 0x%llx\n", (unsigned long long)dsdt);
             //parseDsdt(dsdt);
         } else if (memcmp(table->signature, (char*)"SSDT", 4) == 0) {
-            //parseDsdt(table);
+            parseDsdt(table);
         }
     }
     kprint("\n");
