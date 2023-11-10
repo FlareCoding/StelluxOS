@@ -1,5 +1,6 @@
 #include "kheap.h"
 #include "kmemory.h"
+#include <paging/page_frame_allocator.h>
 #include <kprint.h>
 
 #define MIN_HEAP_SEGMENT_CAPACITY 1
@@ -18,10 +19,12 @@ DynamicMemoryAllocator& DynamicMemoryAllocator::get() {
 void DynamicMemoryAllocator::init(uint64_t base, size_t size) {
     m_heapSize = size;
 
-    // m_firstSegment = reinterpret_cast<HeapSegmentHeader*>(base);
-    (void)base;
-    m_firstSegment = reinterpret_cast<HeapSegmentHeader*>(zallocPage());
+    m_firstSegment = reinterpret_cast<HeapSegmentHeader*>(base);
 
+    // Lock the pages pertaining to the heap
+    paging::getGlobalPageFrameAllocator().lockPages(reinterpret_cast<void*>(base), size / PAGE_SIZE);
+
+    // Setup the root segment
     WRITE_SEGMENT_MAGIC_FIELD(m_firstSegment);
     m_firstSegment->flags = {
         .free = true,
@@ -161,12 +164,12 @@ void DynamicMemoryAllocator::__debugHeap() {
     kuPrint("---------------------------------------------\n");
     while (seg) {
         kuPrint("Segment %llu:\n", segId);
-        kuPrint("    base         : %llu\n", ((uint64_t)seg) - (uint64_t)getHeapBase());
-        kuPrint("    total size   : %llu\n", seg->size);
-        kuPrint("    usable size  : %llu\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
+        kuPrint("    base         : %llx\n", (uint64_t)seg);
+        kuPrint("    total size   : %llx\n", seg->size);
+        kuPrint("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
         kuPrint("    status       : %s\n", seg->flags.free ? "free" : "used");
-        kuPrint("    next         : %llu\n", ((uint64_t)seg->next) - (uint64_t)getHeapBase());
-        kuPrint("    prev         : %llu\n\n", ((uint64_t)seg->prev) - (uint64_t)getHeapBase());
+        kuPrint("    next         : %llx\n", (uint64_t)seg->next);
+        kuPrint("    prev         : %llx\n\n", (uint64_t)seg->prev);
         
         segId++;
         seg = seg->next;

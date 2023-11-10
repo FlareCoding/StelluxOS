@@ -171,7 +171,6 @@ void _kuser_entry() {
     });
 
     auto& heapAllocator = DynamicMemoryAllocator::get();
-    heapAllocator.init(0, 1000);
 
     void *alpha, *beta, *gamma;
 

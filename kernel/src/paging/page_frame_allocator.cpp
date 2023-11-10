@@ -1,6 +1,7 @@
 #include "page_frame_allocator.h"
 #include <memory/kmemory.h>
 #include <memory/efimem.h>
+#include <memory/kheap.h>
 #include "phys_addr_translation.h"
 #include "page.h"
 #include "tlb.h"
@@ -78,6 +79,8 @@ namespace paging {
         uint64_t memoryDescriptorSize,
         uint64_t memoryDescriptorCount
     ) {
+        auto& heapAllocator = DynamicMemoryAllocator::get();
+
         void*       largestFreeMemorySegment = nullptr;
         uint64_t    largestFreeMemorySegmentSize = 0;
 
@@ -120,6 +123,10 @@ namespace paging {
         uint8_t* pageBitmapVirtualBase = (uint8_t*)__va(pageBitmapBase);
 
         m_pageFrameBitmap.initialize(pageBitmapSize, pageBitmapVirtualBase);
+
+        // Initialize the kernel heap
+        uint64_t kernelHeapBase = reinterpret_cast<uint64_t>(pageBitmapVirtualBase) + pageBitmapSize;
+        heapAllocator.init(kernelHeapBase, KERNEL_HEAP_INIT_SIZE);
 
         // Get the address of PML4 table from cr3
         auto pml4 = getCurrentTopLevelPageTable();
