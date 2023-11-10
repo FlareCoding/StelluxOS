@@ -1,6 +1,6 @@
 #ifndef KMEMORY_H
 #define KMEMORY_H
-#include <ktypes.h>
+#include "kheap.h"
 
 void memcpy(void* dest, void* src, size_t size);
 

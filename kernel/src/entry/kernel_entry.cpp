@@ -170,10 +170,32 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
-    for (size_t i = 10; i > 0; i--) {
-        void* page = zallocPage();
-        kuPrint("Allocated page: 0x%llx\n", page);
+    auto& heapAllocator = DynamicMemoryAllocator::get();
+    heapAllocator.init(0, 1000);
+
+    void *alpha, *beta, *gamma;
+
+    alpha = heapAllocator.allocate(400);
+    if (alpha == nullptr) {
+        kuPrint("Failed to allocate 400 bytes!\n");
     }
+
+    beta = heapAllocator.allocate(100);
+    if (beta == nullptr) {
+        kuPrint("Failed to allocate 100 bytes!\n");
+    }
+
+    gamma = heapAllocator.allocate(200);
+    if (gamma == nullptr) {
+        kuPrint("Failed to allocate 200 bytes!\n");
+    }
+    heapAllocator.__debugHeap();
+    kuPrint("\n\n");
+
+    heapAllocator.free(gamma);
+    heapAllocator.free(beta);
+    heapAllocator.__debugHeap();
+    kuPrint("\n\n");
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
