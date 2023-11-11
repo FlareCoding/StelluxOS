@@ -205,12 +205,12 @@ void* krealloc(void* ptr, size_t size) {
 }
 
 // Placement new operator
-inline void* operator new(size_t, void* ptr) noexcept {
+void* operator new(size_t, void* ptr) noexcept {
     return ptr;
 }
 
 // Placement delete operator (optional but recommended for symmetry)
-inline void operator delete(void*, void*) noexcept {
+void operator delete(void*, void*) noexcept {
     // No operation
 }
 
