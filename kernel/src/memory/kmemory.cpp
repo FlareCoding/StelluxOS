@@ -141,3 +141,18 @@ void* zallocPages(size_t pages) {
     auto& allocator = paging::getGlobalPageFrameAllocator();
     return allocator.requestFreePagesZeroed(pages);
 }
+
+void* kmalloc(size_t size) {
+    auto& heapAllocator = DynamicMemoryAllocator::get();
+    return heapAllocator.allocate(size);
+}
+
+void kfree(void* ptr) {
+    auto& heapAllocator = DynamicMemoryAllocator::get();
+    heapAllocator.free(ptr);
+}
+
+void* krealloc(void* ptr, size_t size) {
+    auto& heapAllocator = DynamicMemoryAllocator::get();
+    return heapAllocator.reallocate(ptr, size);
+}

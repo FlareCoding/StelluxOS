@@ -170,30 +170,19 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
-    auto& heapAllocator = DynamicMemoryAllocator::get();
-
-    void *alpha, *beta, *gamma;
-
-    alpha = heapAllocator.allocate(400);
-    if (alpha == nullptr) {
-        kuPrint("Failed to allocate 400 bytes!\n");
-    }
-
-    beta = heapAllocator.allocate(100);
-    if (beta == nullptr) {
-        kuPrint("Failed to allocate 100 bytes!\n");
-    }
-
-    gamma = heapAllocator.allocate(200);
-    if (gamma == nullptr) {
-        kuPrint("Failed to allocate 200 bytes!\n");
-    }
-    heapAllocator.__debugHeap();
+    DynamicMemoryAllocator::get().__debugHeap();
     kuPrint("\n\n");
 
-    heapAllocator.free(gamma);
-    heapAllocator.free(beta);
-    heapAllocator.__debugHeap();
+    void* ptr = kmalloc(0x1000);
+    kuPrint("ptr  : %llx\n", ptr);
+    
+    DynamicMemoryAllocator::get().__debugHeap();
+    kuPrint("\n\n");
+
+    void* ptr2 = krealloc(ptr, 0x2000);
+    kuPrint("ptr2 : %llx\n", ptr2);
+
+    DynamicMemoryAllocator::get().__debugHeap();
     kuPrint("\n\n");
 
     // Infinite loop

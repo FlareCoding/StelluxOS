@@ -77,6 +77,47 @@ void DynamicMemoryAllocator::free(void* ptr) {
     }
 }
 
+void* DynamicMemoryAllocator::reallocate(void* ptr, size_t newSize) {
+    // If the given pointer is null, just allocate new memory.
+    if (ptr == nullptr) {
+        return allocate(newSize);
+    }
+
+    HeapSegmentHeader* segment = reinterpret_cast<HeapSegmentHeader*>(
+        reinterpret_cast<uint8_t*>(ptr) - sizeof(HeapSegmentHeader)
+    );
+
+    // Verify the given pointer to be a heap segment header
+    if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
+        kuPrint("Invalid pointer provided to realloc()!\n");
+        return nullptr;
+    }
+
+    // If the current segment is big enough to hold the new size,
+    // potentially resize (shrink) it and return the same pointer.
+    if (segment->size >= newSize + sizeof(HeapSegmentHeader)) {
+        _splitSegment(segment, newSize + sizeof(HeapSegmentHeader));
+        return ptr;
+    } else {
+        // Allocate new memory, and check if allocation was successful
+        void* newPtr = allocate(newSize);
+        if (!newPtr) {
+            return nullptr;
+        }
+
+        // Copy the old data to the new location
+        memcpy(newPtr, ptr, segment->size - sizeof(HeapSegmentHeader));
+
+        // Free the old segment
+        free(ptr);
+
+        return newPtr;
+    }
+
+    // Should never get here
+    return nullptr;
+}
+
 HeapSegmentHeader* DynamicMemoryAllocator::_findFreeSegment(size_t minSize) {
     HeapSegmentHeader* seg = m_firstSegment;
 

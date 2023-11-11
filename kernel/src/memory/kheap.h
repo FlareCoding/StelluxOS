@@ -30,6 +30,7 @@ public:
 
     void* allocate(size_t size);
     void free(void* ptr);
+    void* reallocate(void* ptr, size_t newSize);
 
     void __debugHeap();
 
