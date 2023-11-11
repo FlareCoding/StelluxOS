@@ -71,10 +71,10 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     from->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 
     // Save the current kernel stack
-    from->kernelStack = __per_cpu_data.__cpu[0].currentKernelStack;
+    from->kernelStack = __per_cpu_data.__cpu[BSP_CPU_ID].currentKernelStack;
 
     // Set the new kernel stack
-    __per_cpu_data.__cpu[0].currentKernelStack = to->kernelStack;
+    __per_cpu_data.__cpu[BSP_CPU_ID].currentKernelStack = to->kernelStack;
 
     // Restore the context from the 'to' PCB
     restoreCpuContext(&to->context, frame);
@@ -83,7 +83,7 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
 
     // Set the new value of currentTask
-    __per_cpu_data.__cpu[0].currentTask = to;
+    __per_cpu_data.__cpu[BSP_CPU_ID].currentTask = to;
 }
 
 //

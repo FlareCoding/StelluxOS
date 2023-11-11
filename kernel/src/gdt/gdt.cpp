@@ -147,10 +147,10 @@ void initializeAndInstallGDT(void* kernelStack) {
     // Load the Task Register (TR)
     __asm__("ltr %%ax" : : "a" (__TSS_PT1_SELECTOR));
 
-    __per_cpu_data.__cpu[0].defaultKernelStack = reinterpret_cast<uint64_t>(kernelStack);
+    __per_cpu_data.__cpu[BSP_CPU_ID].defaultKernelStack = reinterpret_cast<uint64_t>(kernelStack);
 
     // Store the address of the tss in gsbase
-    writeMsr(IA32_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[0]);
+    writeMsr(IA32_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[BSP_CPU_ID]);
 }
 
 __PRIVILEGED_CODE
