@@ -2,7 +2,7 @@
 #define KMEMORY_H
 #include "kheap.h"
 
-void memcpy(void* dest, void* src, size_t size);
+void memcpy(void* dest, const void* src, size_t size);
 
 int memcmp(void* dest, void* src, size_t size);
 

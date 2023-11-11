@@ -170,20 +170,15 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
-    DynamicMemoryAllocator::get().__debugHeap();
-    kuPrint("\n\n");
+    kstl::string str = "This is cool!";
+    auto substr = str.substring(4, 6);
 
-    void* ptr = kmalloc(0x1000);
-    kuPrint("ptr  : %llx\n", ptr);
-    
-    DynamicMemoryAllocator::get().__debugHeap();
-    kuPrint("\n\n");
-
-    void* ptr2 = krealloc(ptr, 0x2000);
-    kuPrint("ptr2 : %llx\n", ptr2);
-
-    DynamicMemoryAllocator::get().__debugHeap();
-    kuPrint("\n\n");
+    kuPrint("str        : %s\n", str.c_str());
+    kuPrint("length     : %lli\n", str.length());
+    kuPrint("capacity   : %lli\n", str.capacity());
+    kuPrint("substring  : %s\n", substr.c_str());
+    kuPrint("find('co') : %lli\n", str.find("co"));
+    kuPrint("find('zo') : %lli\n", str.find("zo"));
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }

@@ -2,9 +2,9 @@
 #include <paging/page_frame_allocator.h>
 
 // Optimized version
-void memcpy(void* dest, void* src, size_t size) {
+void memcpy(void* dest, const void* src, size_t size) {
     uint8_t* d = static_cast<uint8_t*>(dest);
-    uint8_t* s = static_cast<uint8_t*>(src);
+    const uint8_t* s = static_cast<const uint8_t*>(src);
 
     // Handle initial bytes until d is 8-byte aligned
     while (size && (reinterpret_cast<size_t>(d) & 0x7)) {
@@ -20,7 +20,7 @@ void memcpy(void* dest, void* src, size_t size) {
 
     // Use 64-bit loads and stores for as long as possible
     uint64_t* d64 = reinterpret_cast<uint64_t*>(d);
-    uint64_t* s64 = reinterpret_cast<uint64_t*>(s);
+    const uint64_t* s64 = reinterpret_cast<const uint64_t*>(s);
 
     while (size >= 8) {
         *d64++ = *s64++;
@@ -29,7 +29,7 @@ void memcpy(void* dest, void* src, size_t size) {
 
     // Handle remaining bytes
     d = reinterpret_cast<uint8_t*>(d64);
-    s = reinterpret_cast<uint8_t*>(s64);
+    s = reinterpret_cast<const uint8_t*>(s64);
     
     while (size--) {
         *d++ = *s++;
