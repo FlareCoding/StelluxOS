@@ -110,14 +110,14 @@ public:
     void init(void* rsdp);
 
     inline uint64_t getAcpiTableEntryCount() const { return m_acpiTableEntries; }
-    inline bool hasApicTable() const { return (m_madt != nullptr); }
+    inline bool hasApicTable() const { return (m_madt.get() != nullptr); }
 
-    Madt* getApicTable() { return m_madt; }
+    Madt* getApicTable() { return m_madt.get(); }
 
 private:
-    AcpiXsdt*   m_xsdt;
-    Madt*       m_madt;
-    uint64_t    m_acpiTableEntries;
+    AcpiXsdt*               m_xsdt;
+    kstl::SharedPtr<Madt>   m_madt;
+    uint64_t                m_acpiTableEntries;
 };
 
 #endif

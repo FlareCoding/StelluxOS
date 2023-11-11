@@ -1,6 +1,18 @@
 #include "kmemory.h"
 #include <paging/page_frame_allocator.h>
 
+    EXTERN_C {
+    int __cxa_atexit(void (*destructor) (void *), void *arg, void *dso_handle) {
+        (void)destructor;
+        (void)arg;
+        (void)dso_handle;
+        // We don't need to handle global object destruction right now
+        return 0;
+    }
+
+    void *__dso_handle;
+}
+
 // Optimized version
 void memcpy(void* dest, const void* src, size_t size) {
     uint8_t* d = static_cast<uint8_t*>(dest);

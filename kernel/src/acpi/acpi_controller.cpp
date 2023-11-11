@@ -223,7 +223,7 @@ void AcpiController::init(void* rsdp) {
         kprint("   ACPI Table Entry Found: %s\n", tableName);
 
         if (memcmp(table->signature, (char*)"APIC", 4) == 0) {
-            m_madt = new Madt((MadtDescriptor*)table);
+            m_madt = kstl::SharedPtr<Madt>(new Madt((MadtDescriptor*)table));
         } else if (memcmp(table->signature, (char*)"FACP", 4) == 0) {
             // We've found the FACP, now let's get the DSDT
             AcpiFacp* facp = (AcpiFacp*)table;
