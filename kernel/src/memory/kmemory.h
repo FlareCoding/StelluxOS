@@ -22,4 +22,18 @@ void* kmalloc(size_t size);
 void kfree(void* ptr);
 void* krealloc(void* ptr, size_t size);
 
+// Placement new operator
+inline void* operator new(size_t, void* ptr) noexcept;
+
+// Placement delete operator (optional but recommended for symmetry)
+inline void operator delete(void*, void*) noexcept;
+
+// Global new ooperator
+void* operator new(size_t size);
+
+// Global delete operator
+void operator delete(void* ptr) noexcept;
+
+void operator delete(void* ptr, size_t) noexcept;
+
 #endif

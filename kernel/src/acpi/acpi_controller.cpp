@@ -224,7 +224,9 @@ void AcpiController::init(void* rsdp) {
 
         kprint("   ACPI Table Entry Found: %s\n", tableName);
 
-        if (memcmp(table->signature, (char*)"FACP", 4) == 0) {
+        if (memcmp(table->signature, (char*)"APIC", 4) == 0) {
+            m_madt = new Madt((MadtDescriptor*)table);
+        } else if (memcmp(table->signature, (char*)"FACP", 4) == 0) {
             // We've found the FACP, now let's get the DSDT
             AcpiFacp* facp = (AcpiFacp*)table;
             uint64_t dsdtAddress = facp->x_dsdt;  // Use the 64-bit address for ACPI 2.0+

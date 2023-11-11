@@ -10,8 +10,6 @@
 #include <arch/x86/cpuid.h>
 #include <arch/x86/msr.h>
 #include <arch/x86/apic.h>
-#include <arch/x86/xsdt.h>
-#include <arch/x86/per_cpu_data.h>
 #include <arch/x86/gsfsbase.h>
 #include <sched/sched.h>
 #include <syscall/syscalls.h>
@@ -31,6 +29,8 @@ KernelEntryParams g_kernelEntryParameters;
 
 #define USERMODE_KERNEL_ENTRY_STACK_SIZE 0x8000
 char __usermodeKernelEntryStack[USERMODE_KERNEL_ENTRY_STACK_SIZE];
+
+PCB g_rootKernelInitTask;
 
 struct TestStruct {
     int x;
@@ -105,6 +105,16 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     kprintInfo("===== Stellux Kernel =====\n");
     kprintInfo("CPU Vendor: %s\n", vendorName);
     kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
+    
+    // Initialize the default root kernel swapper task (this thread).
+    g_rootKernelInitTask.state = ProcessState::RUNNING;
+    g_rootKernelInitTask.pid = 1;
+    zeromem(&g_rootKernelInitTask.context, sizeof(CpuContext));
+    g_rootKernelInitTask.context.rflags |= 0x200;
+    g_rootKernelInitTask.elevated = 0;
+
+    // Set the current task in the per cpu region
+    __per_cpu_data.__cpu[BSP_CPU_ID].currentTask = &g_rootKernelInitTask;
 
     __call_lowered_entry(_kuser_entry, __usermodeKernelEntryStack + USERMODE_KERNEL_ENTRY_STACK_SIZE);
 }
@@ -159,15 +169,14 @@ void _kuser_entry() {
 
     auto& sched = RoundRobinScheduler::get();
  
-    // Initialize the default root kernel swapper task (this thread).
-    // The CPU context should get properly filled upon the first context switch.
-    PCB rootKernelSwapperTask;
-    rootKernelSwapperTask.state = ProcessState::RUNNING;
-    rootKernelSwapperTask.pid = 1;
-    zeromem(&rootKernelSwapperTask.context, sizeof(CpuContext));
-    rootKernelSwapperTask.context.rflags |= 0x200;
-    rootKernelSwapperTask.elevated = 0;
-    sched.addTask(rootKernelSwapperTask);
+    // Add the root kernel swapper task to the scheduler. The CPU context
+    // should get properly filled upon the first context switch.
+    sched.addTask(g_rootKernelInitTask);
+
+    __kelevate();
+    bool isTaskElevated = current->elevated;
+    kuPrint("IS TASK ELEVATED: %i\n", isTaskElevated);
+    __klower();
 
     // Add some sample tasks to test the scheduler code
     //testTaskExecutionAndPreemption();
@@ -176,25 +185,6 @@ void _kuser_entry() {
         auto& acpiController = AcpiController::get();
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
-
-    kstl::vector<kstl::string> vec;
-    kuPrint("vec.size()     : %lli\n", vec.size());
-    kuPrint("vec.capacity() : %lli\n\n", vec.capacity());
-
-    DynamicMemoryAllocator::get().__debugHeap();
-
-    for (size_t i = 0; i < 10000; i++) {
-        kstl::string s = "hello!\n";
-        vec.pushBack(s);
-    }
-
-    kuPrint("vec[6000] is %s\n", vec[6000]);
-    vec.clear();
-
-    kuPrint("vec.size()     : %lli\n", vec.size());
-    kuPrint("vec.capacity() : %lli\n\n", vec.capacity());
-
-    DynamicMemoryAllocator::get().__debugHeap();
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }

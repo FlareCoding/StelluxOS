@@ -4,6 +4,8 @@
 
 #define MAX_CPUS 64
 
+#define BSP_CPU_ID 0
+
 struct CpuData {
     PCB* currentTask;               // 0x00
     uint64_t defaultKernelStack;    // 0x08
@@ -17,6 +19,6 @@ struct PerCpuData {
 
 EXTERN_C PerCpuData __per_cpu_data;
 
-#define current __per_cpu_data.__cpu[0].currentTask
+#define current __per_cpu_data.__cpu[BSP_CPU_ID].currentTask
 
 #endif

@@ -203,3 +203,28 @@ void* krealloc(void* ptr, size_t size) {
     auto& heapAllocator = DynamicMemoryAllocator::get();
     return heapAllocator.reallocate(ptr, size);
 }
+
+// Placement new operator
+inline void* operator new(size_t, void* ptr) noexcept {
+    return ptr;
+}
+
+// Placement delete operator (optional but recommended for symmetry)
+inline void operator delete(void*, void*) noexcept {
+    // No operation
+}
+
+// Global new ooperator
+void* operator new(size_t size) {
+    return kmalloc(size);
+}
+
+// Global delete operator
+void operator delete(void* ptr) noexcept {
+    kfree(ptr);
+}
+
+void operator delete(void* ptr, size_t) noexcept {
+    kfree(ptr);
+}
+
