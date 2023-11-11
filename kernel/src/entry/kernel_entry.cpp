@@ -32,6 +32,12 @@ KernelEntryParams g_kernelEntryParameters;
 #define USERMODE_KERNEL_ENTRY_STACK_SIZE 0x8000
 char __usermodeKernelEntryStack[USERMODE_KERNEL_ENTRY_STACK_SIZE];
 
+struct TestStruct {
+    int x;
+    int y;
+    int z;
+};
+
 // Function prototype for the task function
 typedef void (*task_function_t)();
 
@@ -171,27 +177,24 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
-    kstl::vector<size_t> vec;
+    kstl::vector<kstl::string> vec;
     kuPrint("vec.size()     : %lli\n", vec.size());
     kuPrint("vec.capacity() : %lli\n\n", vec.capacity());
 
-    vec.pushBack(12);
-    vec.pushBack(18);
-    vec.pushBack(17);
-    vec.erase(1);
-    vec.pushBack(4);
-    vec.pushBack(3);
-    vec.popBack();
-    vec.pushBack(6);
-    vec.pushBack(19);
-    vec.insert(vec.find(17), 45);
+    DynamicMemoryAllocator::get().__debugHeap();
 
-    kuPrint("vec.size()     : %lli\n", vec.size());
-    kuPrint("vec.capacity() : %lli\n\n", vec.capacity());
-
-    for (size_t i = 0; i < vec.size(); ++i) {
-        kuPrint("vec[%lli] == %lli\n", i, vec[i]);
+    for (size_t i = 0; i < 10000; i++) {
+        kstl::string s = "hello!\n";
+        vec.pushBack(s);
     }
+
+    kuPrint("vec[6000] is %s\n", vec[6000]);
+    vec.clear();
+
+    kuPrint("vec.size()     : %lli\n", vec.size());
+    kuPrint("vec.capacity() : %lli\n\n", vec.capacity());
+
+    DynamicMemoryAllocator::get().__debugHeap();
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }

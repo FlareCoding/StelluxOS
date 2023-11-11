@@ -35,6 +35,7 @@ public:
 
     string(const char* str);
     string(const string& other);
+    string(string&& other);
 
     string& operator=(const string& other);
     char& operator[](size_t index);

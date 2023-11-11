@@ -36,6 +36,53 @@ void memcpy(void* dest, const void* src, size_t size) {
     }
 }
 
+void memmove(void* dest, const void* src, size_t size) {
+    uint8_t* d = static_cast<uint8_t*>(dest);
+    const uint8_t* s = static_cast<const uint8_t*>(src);
+
+    // If the buffers do not overlap, or the destination is in front, use memcpy logic
+    if (d < s || d >= s + size) {
+        memcpy(dest, src, size);
+        return;
+    }
+
+    // If the destination is behind the source, we need to copy in reverse
+    // Start from the end of the buffers
+
+    // Handle initial bytes until d + size is 8-byte aligned
+    while (size && (reinterpret_cast<size_t>(d + size - 1) & 0x7)) {
+        size--;
+        d[size] = s[size];
+    }
+
+    // Handle initial bytes until s + size is 8-byte aligned
+    while (size && (reinterpret_cast<size_t>(s + size - 1) & 0x7)) {
+        size--;
+        d[size] = s[size];
+    }
+
+    // Use 64-bit loads and stores for as long as possible
+    uint64_t* d64 = reinterpret_cast<uint64_t*>(d + size);
+    const uint64_t* s64 = reinterpret_cast<const uint64_t*>(s + size);
+
+    while (size >= 8) {
+        d64--;
+        s64--;
+        size -= 8;
+        *d64 = *s64;
+    }
+
+    // Handle remaining bytes in reverse
+    d = reinterpret_cast<uint8_t*>(d64);
+    s = reinterpret_cast<const uint8_t*>(s64);
+
+    while (size--) {
+        d--;
+        s--;
+        *d = *s;
+    }
+}
+
 int memcmp(void* dest, void* src, size_t size) {
     uint8_t* d = static_cast<uint8_t*>(dest);
     uint8_t* s = static_cast<uint8_t*>(src);

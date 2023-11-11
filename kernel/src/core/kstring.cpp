@@ -188,6 +188,33 @@ namespace kstl {
         }
     }
 
+    string::string(string&& other) {
+        // Check if the other string is using SSO buffer
+        if (other.m_isUsingSSOBuffer) {
+            // Copy the SSO buffer manually
+            for (size_t i = 0; i <= SSO_SIZE; ++i) {
+                m_ssoBuffer[i] = other.m_ssoBuffer[i];
+            }
+
+            m_isUsingSSOBuffer = true;
+        } else {
+            // Transfer ownership of resources
+            m_data = other.m_data;
+            m_size = other.m_size;
+            m_capacity = other.m_capacity;
+            m_isUsingSSOBuffer = false;
+
+            // Leave the other object's dynamic resources in a valid state
+            other.m_data = nullptr;
+            other.m_size = 0;
+            other.m_capacity = 0;
+        }
+
+        // Null-terminate the SSO buffer of the other string
+        other.m_ssoBuffer[0] = '\0';
+        other.m_isUsingSSOBuffer = true;
+    }
+
     string& string::operator=(const string& other) {
         if (this == &other) {
             // Self-assignment check

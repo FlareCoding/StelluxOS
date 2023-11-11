@@ -37,7 +37,9 @@ void DynamicMemoryAllocator::init(uint64_t base, size_t size) {
 
 void* DynamicMemoryAllocator::allocate(size_t size) {
     size_t newSegmentSize = size + sizeof(HeapSegmentHeader);
-    HeapSegmentHeader* segment = _findFreeSegment(newSegmentSize);
+
+    // + sizeof(HeapSegmentHeader) is to account for the splitting
+    HeapSegmentHeader* segment = _findFreeSegment(newSegmentSize + sizeof(HeapSegmentHeader));
 
     if (!_splitSegment(segment, newSegmentSize)) {
         return nullptr;

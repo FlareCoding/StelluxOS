@@ -41,4 +41,14 @@ typedef void* uintptr_t;
 #define __PRIVILEGED_CODE __attribute__((section(".ktext")))
 #define __PRIVILEGED_DATA __attribute__((section(".kdata")))
 
+// Placement new operator
+inline void* operator new(size_t, void* ptr) noexcept {
+    return ptr;
+}
+
+// Placement delete operator (optional but recommended for symmetry)
+inline void operator delete(void*, void*) noexcept {
+    // No operation
+}
+
 #endif
