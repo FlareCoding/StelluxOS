@@ -19,6 +19,7 @@
 #include <acpi/acpi_controller.h>
 #include <kprint.h>
 #include <kstring.h>
+#include <kvector.h>
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
@@ -170,15 +171,27 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
-    kstl::string str = "This is cool!";
-    auto substr = str.substring(4, 6);
+    kstl::vector<size_t> vec;
+    kuPrint("vec.size()     : %lli\n", vec.size());
+    kuPrint("vec.capacity() : %lli\n\n", vec.capacity());
 
-    kuPrint("str        : %s\n", str.c_str());
-    kuPrint("length     : %lli\n", str.length());
-    kuPrint("capacity   : %lli\n", str.capacity());
-    kuPrint("substring  : %s\n", substr.c_str());
-    kuPrint("find('co') : %lli\n", str.find("co"));
-    kuPrint("find('zo') : %lli\n", str.find("zo"));
+    vec.pushBack(12);
+    vec.pushBack(18);
+    vec.pushBack(17);
+    vec.erase(1);
+    vec.pushBack(4);
+    vec.pushBack(3);
+    vec.popBack();
+    vec.pushBack(6);
+    vec.pushBack(19);
+    vec.insert(vec.find(17), 45);
+
+    kuPrint("vec.size()     : %lli\n", vec.size());
+    kuPrint("vec.capacity() : %lli\n\n", vec.capacity());
+
+    for (size_t i = 0; i < vec.size(); ++i) {
+        kuPrint("vec[%lli] == %lli\n", i, vec[i]);
+    }
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
