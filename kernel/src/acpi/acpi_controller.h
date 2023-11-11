@@ -104,14 +104,15 @@ struct PciDeviceConfig {
 
 class AcpiController {
 public:
-    __PRIVILEGED_CODE
     static AcpiController& get();
 
     __PRIVILEGED_CODE
     void init(void* rsdp);
 
-    __PRIVILEGED_CODE
     inline uint64_t getAcpiTableEntryCount() const { return m_acpiTableEntries; }
+    inline bool hasApicTable() const { return (m_madt != nullptr); }
+
+    Madt* getApicTable() { return m_madt; }
 
 private:
     AcpiXsdt*   m_xsdt;

@@ -25,6 +25,10 @@ public:
     Madt(MadtDescriptor* desc);
     ~Madt() = default;
 
+    LocalApicDescriptor& getLocalApicDescriptor(size_t idx) { return m_localApics[idx]; }
+
+    size_t getCpuCount() const { return m_localApics.size(); }
+
 private:
     kstl::vector<LocalApicDescriptor> m_localApics;
 };

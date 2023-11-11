@@ -181,10 +181,19 @@ void _kuser_entry() {
     // Add some sample tasks to test the scheduler code
     //testTaskExecutionAndPreemption();
 
+    auto& acpiController = AcpiController::get();
+
     RUN_ELEVATED({
-        auto& acpiController = AcpiController::get();
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
+
+    if (acpiController.hasApicTable()) {
+        auto apicTable = acpiController.getApicTable();
+        kuPrint("==== Detect %lli CPUs ====\n", apicTable->getCpuCount());
+        for (size_t i = 0; i < apicTable->getCpuCount(); ++i) {
+            kuPrint("    Core %lli: online\n", apicTable->getLocalApicDescriptor(i).apicId);
+        }
+    }
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }

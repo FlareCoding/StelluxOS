@@ -5,10 +5,8 @@
 #include <pci/pci.h>
 #include <kprint.h>
 
-__PRIVILEGED_DATA
 AcpiController g_acpiController;
 
-__PRIVILEGED_CODE
 AcpiController& AcpiController::get() {
     return g_acpiController;
 }
