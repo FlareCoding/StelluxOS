@@ -183,6 +183,16 @@ void _kuser_entry() {
     // Start the kernel-wide APIC periodic timer
     KernelTimer::startApicPeriodicTimer();
 
+    if (acpiController.hasPciDeviceTable()) {
+        auto pciDeviceTable = acpiController.getPciDeviceTable();
+        
+        size_t idx = pciDeviceTable->findXhciController();
+        if (idx != kstl::npos) {
+            auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
+            dbgPrintPciDeviceInfo(&xhciControllerPciDeviceInfo.headerInfo);
+        }
+    }
+
     // if (acpiController.hasApicTable()) {
     //     auto apicTable = acpiController.getApic();
     //     kuPrint("==== Detect %lli CPUs ====\n", apicTable->getCpuCount());

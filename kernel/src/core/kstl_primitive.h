@@ -33,6 +33,7 @@ template <> struct is_primitive<long double> { static const bool value = true; }
 template <typename T>
 struct is_primitive<T*> { static const bool value = true; };
 
+static const size_t npos = static_cast<size_t>(-1);
 } // namespace kstl
 
 #endif

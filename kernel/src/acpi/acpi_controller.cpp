@@ -200,11 +200,6 @@ void parseDsdt(AcpiTableHeader* dsdt) {
 // }
 
 __PRIVILEGED_CODE
-void parseMcfg(McfgHeader* mcfg) {
-    enumeratePciDevices(mcfg);
-}
-
-__PRIVILEGED_CODE
 void AcpiController::init(void* rsdp) {
     uint64_t xsdtAddr = static_cast<AcpiRsdp*>(rsdp)->xsdtAddress;
     m_xsdt = reinterpret_cast<AcpiXsdt*>(__va((void*)xsdtAddr));
@@ -220,7 +215,7 @@ void AcpiController::init(void* rsdp) {
         tableName[4] = '\0';
         memcpy(tableName, table->signature, 4);
 
-        kprint("   ACPI Table Entry Found: %s\n", tableName);
+        //kprint("   ACPI Table Entry Found: %s\n", tableName);
 
         if (memcmp(table->signature, (char*)"APIC", 4) == 0) {
             m_madt = kstl::SharedPtr<Madt>(new Madt((MadtDescriptor*)table));
@@ -236,8 +231,8 @@ void AcpiController::init(void* rsdp) {
         } else if (memcmp(table->signature, (char*)"SSDT", 4) == 0) {
             //parseAmlTable(table);
         } else if (memcmp(table->signature, (char*)"MCFG", 4) == 0) {
-            // McfgHeader* mcfg = reinterpret_cast<McfgHeader*>(__va(table));
-            // parseMcfg(mcfg);
+            m_mcfg = kstl::SharedPtr<Mcfg>(new Mcfg((McfgHeader*)table));
+            m_mcfg->enumeratePciDevices();
         } else if (memcmp(table->signature, (char*)"HPET", 4) == 0) {
             m_hpet = kstl::SharedPtr<Hpet>(new Hpet((HpetTable*)table));
         }

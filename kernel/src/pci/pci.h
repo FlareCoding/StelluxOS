@@ -1,7 +1,6 @@
 #ifndef PCI_H
 #define PCI_H
 #include <ktypes.h>
-#include <acpi/acpi_controller.h>
 
 struct PciDeviceHeader {
     uint16_t vendorID;
@@ -29,7 +28,25 @@ struct PciDeviceHeader {
     uint8_t maxLatency;
 };
 
-__PRIVILEGED_CODE
-void enumeratePciDevices(McfgHeader* mcfg);
+struct PciDeviceConfig {
+    uint64_t base;
+    uint16_t pciSegGroup;
+    uint8_t startBus;
+    uint8_t endBus;
+    uint32_t reserved;
+}__attribute__((packed));
+
+const char* getPciDeviceType(uint8_t classCode);
+const char* getPciVendorName(uint16_t vendorID);
+const char* getPciDeviceName(uint16_t vendorID, uint16_t deviceID);
+const char* getPciMassStorageControllerSubclassName(uint8_t subclassCode);
+const char* getPciSerialBusControllerSubclassName(uint8_t subclassCode);
+const char* getPciBridgeDeviceSubclassName(uint8_t subclassCode);
+const char* getPciSubclassName(uint8_t classCode, uint8_t subclassCode);
+const char* getPciProgIFName(uint8_t classCode, uint8_t subclassCode, uint8_t progIF);
+
+uint64_t getBarFromPciHeader(PciDeviceHeader* header);
+
+void dbgPrintPciDeviceInfo(PciDeviceHeader* header);
 
 #endif

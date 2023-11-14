@@ -1,8 +1,8 @@
 #ifndef ACPI_CONTROLLER_H
 #define ACPI_CONTROLLER_H
-#include "acpi.h"
 #include "madt.h"
 #include "hpet.h"
+#include "mcfg.h"
 
 // ACPI RSDP (Root System Description Pointer)
 struct AcpiRsdp {
@@ -90,19 +90,6 @@ struct AcpiFacp {
     GenericAddressStructure x_gpe1Block;
 } __attribute__((packed));
 
-struct McfgHeader{
-    AcpiTableHeader header;
-    uint64_t reserved;
-}__attribute__((packed));
-
-struct PciDeviceConfig {
-    uint64_t base;
-    uint16_t pciSegGroup;
-    uint8_t startBus;
-    uint8_t endBus;
-    uint32_t reserved;
-}__attribute__((packed));
-
 class AcpiController {
 public:
     static AcpiController& get();
@@ -113,14 +100,17 @@ public:
     inline uint64_t getAcpiTableEntryCount() const { return m_acpiTableEntries; }
     inline bool hasApicTable() const { return (m_madt.get() != nullptr); }
     inline bool hasHpetTable() const { return (m_hpet.get() != nullptr); }
+    inline bool hasPciDeviceTable() const { return (m_mcfg.get() != nullptr); }
 
     Madt* getApic() { return m_madt.get(); }
     Hpet* getHpet() { return m_hpet.get(); }
+    Mcfg* getPciDeviceTable() { return m_mcfg.get(); }
 
 private:
     AcpiXsdt*               m_xsdt;
     kstl::SharedPtr<Madt>   m_madt;
     kstl::SharedPtr<Hpet>   m_hpet;
+    kstl::SharedPtr<Mcfg>   m_mcfg;
     uint64_t                m_acpiTableEntries;
 };
 
