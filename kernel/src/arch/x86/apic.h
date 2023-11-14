@@ -4,8 +4,6 @@
 
 #define IA32_APIC_BASE_MSR          0x1B
 #define APIC_REGISTER_SPACE_SIZE    0x400
-#define APIC_TIMER_DIVIDE_CONFIG    0x3
-#define APIC_TIMER_INTERVAL_VALUE   0x10000
 
 // The offset of the ICR (Interrupt Command Register) in the Local APIC
 #define APIC_ICR_LO 0x300  
@@ -16,11 +14,6 @@ void initializeApic();
 
 // Returns the base address of APIC
 void* getApicBase();
-
-// Configures the APIC timer interrupt
-void configureApicTimerIrq(
-    uint8_t irqno
-);
 
 // Tell APIC that an interupt has been processed
 void completeApicIrq();

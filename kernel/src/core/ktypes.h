@@ -30,6 +30,8 @@ typedef __UINT64_TYPE__ size_t;
 typedef void* uintptr_t;
 #define NULL    0
 
+#define offsetof(type, member) ((size_t) &(((type *)0)->member))
+
 #if defined(__cplusplus)
     #define EXTERN_C extern "C"
 #else

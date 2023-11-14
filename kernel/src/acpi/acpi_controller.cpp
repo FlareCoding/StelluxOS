@@ -226,19 +226,20 @@ void AcpiController::init(void* rsdp) {
             m_madt = kstl::SharedPtr<Madt>(new Madt((MadtDescriptor*)table));
         } else if (memcmp(table->signature, (char*)"FACP", 4) == 0) {
             // We've found the FACP, now let's get the DSDT
-            AcpiFacp* facp = (AcpiFacp*)table;
-            uint64_t dsdtAddress = facp->x_dsdt;  // Use the 64-bit address for ACPI 2.0+
-            AcpiTableHeader* dsdt = reinterpret_cast<AcpiTableHeader*>(__va((void*)dsdtAddress));
+            // AcpiFacp* facp = (AcpiFacp*)table;
+            // uint64_t dsdtAddress = facp->x_dsdt;  // Use the 64-bit address for ACPI 2.0+
+            // AcpiTableHeader* dsdt = reinterpret_cast<AcpiTableHeader*>(__va((void*)dsdtAddress));
             
-            kprint("       DSDT Address: 0x%llx\n", (unsigned long long)dsdt);
-            parseDsdt(dsdt);
+            // kprint("       DSDT Address: 0x%llx\n", (unsigned long long)dsdt);
+            // parseDsdt(dsdt);
             //parseAmlTable(dsdt);
         } else if (memcmp(table->signature, (char*)"SSDT", 4) == 0) {
             //parseAmlTable(table);
         } else if (memcmp(table->signature, (char*)"MCFG", 4) == 0) {
-            McfgHeader* mcfg = reinterpret_cast<McfgHeader*>(__va(table));
-            parseMcfg(mcfg);
-            break;
+            // McfgHeader* mcfg = reinterpret_cast<McfgHeader*>(__va(table));
+            // parseMcfg(mcfg);
+        } else if (memcmp(table->signature, (char*)"HPET", 4) == 0) {
+            m_hpet = kstl::SharedPtr<Hpet>(new Hpet((HpetTable*)table));
         }
     }
     kprint("\n");

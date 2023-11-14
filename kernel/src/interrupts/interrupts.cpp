@@ -80,7 +80,7 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
 
     _g_system_tick_count++;
 
-    if (_g_system_tick_count % 100 == 0) {
+    if (_g_system_tick_count % 2 == 0) {
         auto& sched = RoundRobinScheduler::get();
         PCB* prevTask = sched.getCurrentTask();
         PCB* nextTask = sched.peekNextTask();

@@ -27,6 +27,8 @@ QEMU_EMULATOR := qemu-system-x86_64
 COMMON_QEMU_FLAGS := -machine q35 -device qemu-xhci,id=xhci -drive file=$(DISK_IMG),format=raw -m 2G -net none -smp $(QEMU_CORES) -serial mon:stdio -serial file:com2.serial
 QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/OVMF_CODE.fd",readonly=on -drive if=pflash,format=raw,unit=1,file="efi/OVMF_VARS.fd"
 
+QEMU_FLAGS += -device usb-host,vendorid=0x046d,productid=0xc07e
+
 # Architecture Specifics
 ifeq ($(ARCH), aarch64)
 	QEMU_EMULATOR := qemu-system-aarch64

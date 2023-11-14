@@ -206,9 +206,37 @@ void* kmalloc(size_t size) {
     return heapAllocator.allocate(size);
 }
 
+void* kmallocAligned(size_t size, size_t alignment) {
+    // Allocate extra memory for alignment and storing the original pointer
+    void* original = kmalloc(size + alignment + sizeof(void*));
+
+    if (!original) return nullptr;
+
+    // Calculate the aligned memory address
+    size_t offset = alignment + sizeof(void*);
+    void* aligned = (void*)(((uint64_t)original + offset) & ~(alignment - 1));
+
+    // Store the original pointer just before the aligned address
+    ((void**)aligned)[-1] = original;
+
+    return aligned;
+}
+
 void kfree(void* ptr) {
+    if (!ptr) return;
+
     auto& heapAllocator = DynamicMemoryAllocator::get();
     heapAllocator.free(ptr);
+}
+
+void kfreeAligned(void* ptr) {
+    if (!ptr) return;
+
+    // Retrieve the original pointer stored just before the aligned address
+    void* original = ((void**)ptr)[-1];
+
+    // Free the original (unaligned) memory
+    kfree(original);
 }
 
 void* krealloc(void* ptr, size_t size) {

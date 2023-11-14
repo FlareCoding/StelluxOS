@@ -2,6 +2,7 @@
 #define ACPI_CONTROLLER_H
 #include "acpi.h"
 #include "madt.h"
+#include "hpet.h"
 
 // ACPI RSDP (Root System Description Pointer)
 struct AcpiRsdp {
@@ -111,12 +112,15 @@ public:
 
     inline uint64_t getAcpiTableEntryCount() const { return m_acpiTableEntries; }
     inline bool hasApicTable() const { return (m_madt.get() != nullptr); }
+    inline bool hasHpetTable() const { return (m_hpet.get() != nullptr); }
 
-    Madt* getApicTable() { return m_madt.get(); }
+    Madt* getApic() { return m_madt.get(); }
+    Hpet* getHpet() { return m_hpet.get(); }
 
 private:
     AcpiXsdt*               m_xsdt;
     kstl::SharedPtr<Madt>   m_madt;
+    kstl::SharedPtr<Hpet>   m_hpet;
     uint64_t                m_acpiTableEntries;
 };
 

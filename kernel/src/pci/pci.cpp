@@ -1,8 +1,9 @@
 #include "pci.h"
 #include <paging/page.h>
+#include <drivers/usb/xhci.h>
 #include <kprint.h>
 
-const char* DeviceClasses[] {
+const char* g_deviceClasses[] {
     "Unclassified",
     "Mass Storage Controller",
     "Network Controller",
@@ -25,7 +26,7 @@ const char* DeviceClasses[] {
     "Non Essential Instrumentation"
 };
 
-const char* GetVendorName(uint16_t vendorID){
+const char* getVendorName(uint16_t vendorID){
     switch (vendorID){
         case 0x8086:
             return "Intel Corp";
@@ -40,7 +41,7 @@ const char* GetVendorName(uint16_t vendorID){
     return "Unknown Vendor ID";
 }
 
-const char* GetDeviceName(uint16_t vendorID, uint16_t deviceID){
+const char* getDeviceName(uint16_t vendorID, uint16_t deviceID){
     switch (vendorID){
         case 0x8086: // Intel
             switch(deviceID){
@@ -59,7 +60,7 @@ const char* GetDeviceName(uint16_t vendorID, uint16_t deviceID){
     return "Unknown Device ID";
 }
 
-const char* MassStorageControllerSubclassName(uint8_t subclassCode){
+const char* massStorageControllerSubclassName(uint8_t subclassCode){
     switch (subclassCode){
         case 0x00:
             return "SCSI Bus Controller";
@@ -88,7 +89,7 @@ const char* MassStorageControllerSubclassName(uint8_t subclassCode){
     return "Unknown Subclass Code";
 }
 
-const char* SerialBusControllerSubclassName(uint8_t subclassCode){
+const char* serialBusControllerSubclassName(uint8_t subclassCode){
     switch (subclassCode){
         case 0x00:
             return "FireWire (IEEE 1394) Controller";
@@ -119,7 +120,7 @@ const char* SerialBusControllerSubclassName(uint8_t subclassCode){
     return "Unknown Subclass Code";
 }
 
-const char* BridgeDeviceSubclassName(uint8_t subclassCode){
+const char* bridgeDeviceSubclassName(uint8_t subclassCode){
     switch (subclassCode){
         case 0x00:
             return "Host Bridge";
@@ -152,10 +153,10 @@ const char* BridgeDeviceSubclassName(uint8_t subclassCode){
     return "Unknown Subclass Code";
 }
 
-const char* GetSubclassName(uint8_t classCode, uint8_t subclassCode){
+const char* getSubclassName(uint8_t classCode, uint8_t subclassCode){
     switch (classCode) {
         case 0x01:
-            return MassStorageControllerSubclassName(subclassCode);
+            return massStorageControllerSubclassName(subclassCode);
         case 0x03: {
             switch (subclassCode) {
                 case 0x00:
@@ -166,9 +167,9 @@ const char* GetSubclassName(uint8_t classCode, uint8_t subclassCode){
             break;
         }
         case 0x06:
-            return BridgeDeviceSubclassName(subclassCode);
+            return bridgeDeviceSubclassName(subclassCode);
         case 0x0C:
-            return SerialBusControllerSubclassName(subclassCode);
+            return serialBusControllerSubclassName(subclassCode);
         default:
             break;
     }
@@ -176,7 +177,7 @@ const char* GetSubclassName(uint8_t classCode, uint8_t subclassCode){
     return "Unknown Subclass Code";
 }
 
-const char* GetProgIFName(uint8_t classCode, uint8_t subclassCode, uint8_t progIF){
+const char* getProgIFName(uint8_t classCode, uint8_t subclassCode, uint8_t progIF){
     switch (classCode){
         case 0x01: {
             switch (subclassCode) {
@@ -249,6 +250,30 @@ const char* GetProgIFName(uint8_t classCode, uint8_t subclassCode, uint8_t progI
     return "Unknown Controller";
 }
 
+uint64_t getBarFromHeader(PciDeviceHeader* header) {
+    for (int i = 0; i < 2; i++) {
+        uint32_t barValue = header->bar[i];
+
+        // Check if the BAR is memory-mapped
+        if ((barValue & 0x1) == 0) {
+            // Check if the BAR is 64-bit (by checking the type in bits [1:2])
+            if ((barValue & 0x6) == 0x4) {
+                // It's a 64-bit BAR, read the high part from the next BAR
+                uint64_t high = (uint64_t)(header->bar[i + 1]);
+                uint64_t address = (high << 32) | (barValue & ~0xF);
+                return address;
+            } else {
+                // It's a 32-bit BAR
+                uint64_t address = (uint64_t)(barValue & ~0xF);
+                return address;
+            }
+        }
+    }
+
+
+    return 0; // No valid BAR found
+}
+
 void enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
     uint64_t offset = function << 12;
 
@@ -257,17 +282,38 @@ void enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
 
     PciDeviceHeader* pciDeviceHeader = (PciDeviceHeader*)functionAddress;
 
-    if (pciDeviceHeader->DeviceID == 0) return;
-    if (pciDeviceHeader->DeviceID == 0xFFFF) return;
+    if (pciDeviceHeader->deviceID == 0) return;
+    if (pciDeviceHeader->deviceID == 0xFFFF) return;
 
-    kprint(
-        "           %s / %s / %s / %s / %s\n",
-        GetVendorName(pciDeviceHeader->VendorID),
-        GetDeviceName(pciDeviceHeader->VendorID, pciDeviceHeader->DeviceID),
-        DeviceClasses[pciDeviceHeader->Class],
-        GetSubclassName(pciDeviceHeader->Class, pciDeviceHeader->Subclass),
-        GetProgIFName(pciDeviceHeader->Class, pciDeviceHeader->Subclass, pciDeviceHeader->ProgIF)
-    );
+    if (
+        pciDeviceHeader->classCode == 0x0C &&
+        pciDeviceHeader->subclass == 0x03 &&
+        pciDeviceHeader->progIF == 0x30
+    ) {
+        kuPrint(
+            "       FOUND %s - %s - %s\n",
+            g_deviceClasses[pciDeviceHeader->classCode],
+            getSubclassName(pciDeviceHeader->classCode, pciDeviceHeader->subclass),
+            getProgIFName(pciDeviceHeader->classCode, pciDeviceHeader->subclass, pciDeviceHeader->progIF)
+        );
+
+        // Extract the BAR (Base Address Register)
+        uint64_t bar = getBarFromHeader(pciDeviceHeader); // You'll need to implement getBarFromHeader
+
+        kuPrint("           BAR: 0x%llx\n", bar);
+        
+        // Call the initialization function for xHCI controller
+        xhciControllerInit(bar);
+    }
+
+    // kuPrint(
+    //     "           %s / %s / %s / %s / %s\n",
+    //     getVendorName(pciDeviceHeader->vendorID),
+    //     getDeviceName(pciDeviceHeader->vendorID, pciDeviceHeader->deviceID),
+    //     g_deviceClasses[pciDeviceHeader->classCode],
+    //     getSubclassName(pciDeviceHeader->classCode, pciDeviceHeader->subclass),
+    //     getProgIFName(pciDeviceHeader->classCode, pciDeviceHeader->subclass, pciDeviceHeader->progIF)
+    // );
 }
 
 void enumeratePciDevice(uint64_t busAddress, uint64_t device) {
@@ -278,8 +324,8 @@ void enumeratePciDevice(uint64_t busAddress, uint64_t device) {
 
     PciDeviceHeader* pciDeviceHeader = (PciDeviceHeader*)deviceAddress;
 
-    if (pciDeviceHeader->DeviceID == 0) return;
-    if (pciDeviceHeader->DeviceID == 0xFFFF) return;
+    if (pciDeviceHeader->deviceID == 0) return;
+    if (pciDeviceHeader->deviceID == 0xFFFF) return;
 
     for (uint64_t function = 0; function < 8; function++){
         enumeratePciFunction(deviceAddress, function);
@@ -294,8 +340,8 @@ void enumeratePciBus(uint64_t baseAddress, uint64_t bus) {
 
     PciDeviceHeader* pciDeviceHeader = (PciDeviceHeader*)busAddress;
 
-    if (pciDeviceHeader->DeviceID == 0) return;
-    if (pciDeviceHeader->DeviceID == 0xFFFF) return;
+    if (pciDeviceHeader->deviceID == 0) return;
+    if (pciDeviceHeader->deviceID == 0xFFFF) return;
 
     for (uint64_t device = 0; device < 32; device++){
         enumeratePciDevice(busAddress, device);

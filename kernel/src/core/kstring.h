@@ -23,6 +23,13 @@ int htoa(
     uint64_t bufsize
 );
 
+// double --> string
+int ftoa(
+    double val,
+    char* buffer,
+    uint64_t bufsize
+);
+
 uint64_t strlen(const char *str);
 
 namespace kstl {

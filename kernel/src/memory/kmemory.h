@@ -19,7 +19,9 @@ void* allocPages(size_t pages);
 void* zallocPages(size_t pages);
 
 void* kmalloc(size_t size);
+void* kmallocAligned(size_t size, size_t alignment);
 void kfree(void* ptr);
+void kfreeAligned(void* ptr);
 void* krealloc(void* ptr, size_t size);
 
 // Placement new operator

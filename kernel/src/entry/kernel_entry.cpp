@@ -10,6 +10,7 @@
 #include <arch/x86/cpuid.h>
 #include <arch/x86/msr.h>
 #include <arch/x86/apic.h>
+#include <arch/x86/apic_timer.h>
 #include <arch/x86/gsfsbase.h>
 #include <sched/sched.h>
 #include <syscall/syscalls.h>
@@ -18,6 +19,7 @@
 #include <kprint.h>
 #include <kstring.h>
 #include <kvector.h>
+#include <time/ktime.h>
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
@@ -165,21 +167,6 @@ void _kuser_entry() {
     kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_kernelEntryParameters.kernelStack + PAGE_SIZE);
 
     initializeApic();
-    configureApicTimerIrq(IRQ0);
-
-    auto& sched = RoundRobinScheduler::get();
- 
-    // Add the root kernel swapper task to the scheduler. The CPU context
-    // should get properly filled upon the first context switch.
-    sched.addTask(g_rootKernelInitTask);
-
-    __kelevate();
-    bool isTaskElevated = current->elevated;
-    kuPrint("IS TASK ELEVATED: %i\n", isTaskElevated);
-    __klower();
-
-    // Add some sample tasks to test the scheduler code
-    //testTaskExecutionAndPreemption();
 
     auto& acpiController = AcpiController::get();
 
@@ -187,12 +174,41 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
-    if (acpiController.hasApicTable()) {
-        auto apicTable = acpiController.getApicTable();
-        kuPrint("==== Detect %lli CPUs ====\n", apicTable->getCpuCount());
-        for (size_t i = 0; i < apicTable->getCpuCount(); ++i) {
-            kuPrint("    Core %lli: online\n", apicTable->getLocalApicDescriptor(i).apicId);
-        }
+    // Initialize high precision event timer and query hardware frequency
+    KernelTimer::init();
+
+    // Calibrate apic timer tickrate to 100 milliseconds
+    KernelTimer::calibrateApicTimer(100);
+
+    // Start the kernel-wide APIC periodic timer
+    KernelTimer::startApicPeriodicTimer();
+
+    // if (acpiController.hasApicTable()) {
+    //     auto apicTable = acpiController.getApic();
+    //     kuPrint("==== Detect %lli CPUs ====\n", apicTable->getCpuCount());
+    //     for (size_t i = 0; i < apicTable->getCpuCount(); ++i) {
+    //         kuPrint("    Core %lli: online\n", apicTable->getLocalApicDescriptor(i).apicId);
+    //     }
+    // }
+
+    auto& sched = RoundRobinScheduler::get();
+ 
+    // Add the root kernel swapper task to the scheduler. The CPU context
+    // should get properly filled upon the first context switch.
+    sched.addTask(g_rootKernelInitTask);
+
+    // Add some sample tasks to test the scheduler code
+    //testTaskExecutionAndPreemption();
+
+    while (true) {
+        sleep(1);
+        kuPrint(
+            "Ticked: ns:%llu us:%llu ms:%llu s:%llu\n",
+            KernelTimer::getSystemTimeInNanoseconds(),
+            KernelTimer::getSystemTimeInMicroseconds(),
+            KernelTimer::getSystemTimeInMilliseconds(),
+            KernelTimer::getSystemTimeInSeconds()
+        );
     }
 
     // Infinite loop
@@ -216,7 +232,7 @@ PCB createKernelTask(task_function_t taskFunction, uint64_t pid) {
     // Initialize the CPU context
     newTask.context.rsp = (uint64_t)stack + PAGE_SIZE;  // Point to the top of the stack
     newTask.context.rbp = newTask.context.rsp;          // Point to the top of the stack
-    newTask.context.rip = (uint64_t)taskFunction;      // Set instruction pointer to the task function
+    newTask.context.rip = (uint64_t)taskFunction;       // Set instruction pointer to the task function
     newTask.context.rflags = 0x200;                     // Enable interrupts
 
     // Set up segment registers for user space. These values correspond to the selectors in the GDT.
