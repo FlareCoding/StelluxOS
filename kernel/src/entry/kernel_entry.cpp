@@ -20,6 +20,7 @@
 #include <kstring.h>
 #include <kvector.h>
 #include <time/ktime.h>
+#include <drivers/usb/xhci.h>
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
@@ -189,7 +190,11 @@ void _kuser_entry() {
         size_t idx = pciDeviceTable->findXhciController();
         if (idx != kstl::npos) {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
-            dbgPrintPciDeviceInfo(&xhciControllerPciDeviceInfo.headerInfo);
+            
+            RUN_ELEVATED({
+                auto& xhciDriver = drivers::XhciDriver::get();
+                xhciDriver.init(xhciControllerPciDeviceInfo.barAddress);
+            });
         }
     }
 
@@ -210,16 +215,16 @@ void _kuser_entry() {
     // Add some sample tasks to test the scheduler code
     //testTaskExecutionAndPreemption();
 
-    while (true) {
-        sleep(1);
-        kuPrint(
-            "Ticked: ns:%llu us:%llu ms:%llu s:%llu\n",
-            KernelTimer::getSystemTimeInNanoseconds(),
-            KernelTimer::getSystemTimeInMicroseconds(),
-            KernelTimer::getSystemTimeInMilliseconds(),
-            KernelTimer::getSystemTimeInSeconds()
-        );
-    }
+    // while (true) {
+    //     sleep(1);
+    //     kuPrint(
+    //         "Ticked: ns:%llu us:%llu ms:%llu s:%llu\n",
+    //         KernelTimer::getSystemTimeInNanoseconds(),
+    //         KernelTimer::getSystemTimeInMicroseconds(),
+    //         KernelTimer::getSystemTimeInMilliseconds(),
+    //         KernelTimer::getSystemTimeInSeconds()
+    //     );
+    // }
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }

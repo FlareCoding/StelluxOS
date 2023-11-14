@@ -2,83 +2,92 @@
 #include <paging/page.h>
 #include <paging/phys_addr_translation.h>
 #include <memory/kmemory.h>
+#include <time/ktime.h>
 #include <kprint.h>
 
-#define XHCI_MAX_SLOTS(regs) ((regs->hcsparams1) & 0xFF)
-#define XHCI_NUM_PORTS(regs) ((regs->hcsparams1 >> 24) & 0xFF)
+namespace drivers {
 
-void printXhciCapabilityRegisters(XhciCapabilityRegisters* capRegs) {
-    kuPrint("Capability Registers:\n");
-    kuPrint("CAPLENGTH: %x\n", (uint32_t)capRegs->caplength);
-    kuPrint("HCIVERSION: %llx\n", (uint64_t)capRegs->hciversion);
-    kuPrint("HCSPARAMS1: %llx\n", capRegs->hcsparams1);
-    kuPrint("HCSPARAMS2: %llx\n", capRegs->hcsparams2);
-    kuPrint("HCSPARAMS3: %llx\n", capRegs->hcsparams3);
-    kuPrint("HCCPARAMS1: %llx\n", capRegs->hccparams1);
-    kuPrint("DBOFF: %llx\n", capRegs->dboff);
-    kuPrint("RTSOFF: %llx\n", capRegs->rtsoff);
-    kuPrint("HCCPARAMS2: %llx\n", capRegs->hccparams2);
-    kuPrint("\n");
-}
+    XhciDriver g_globalXhciInstance;
 
-void printXhciOperationalRegisters(XhciOperationalRegisters* opRegs) {
-    kuPrint("Operational Registers:\n");
-    kuPrint("USBCMD: %llx\n", opRegs->usbcmd);
-    kuPrint("USBSTS: %llx\n", opRegs->usbsts);
-    kuPrint("PAGESIZE: %llx\n", opRegs->pagesize);
-    kuPrint("DNCTRL: %llx\n", opRegs->dnctrl);
-    kuPrint("CRCR: %llx\n", opRegs->crcr);
-    kuPrint("DCBAAP: %llx\n", opRegs->dcbaap);
-    kuPrint("CONFIG: %llx\n", opRegs->config);
-    kuPrint("\n");
-}
-
-XhciCapabilityRegisters* mapXhciRegisters(uint64_t bar) {
-    // Map a conservatively large space for xHCI registers
-    for (size_t offset = 0; offset < 0x20000; offset += PAGE_SIZE) {
-        paging::mapPage((void*)(bar + offset), (void*)(bar + offset), USERSPACE_PAGE, paging::g_kernelRootPageTable);
+    void printXhciCapabilityRegisters(XhciCapabilityRegisters* capRegs) {
+        kuPrint("Capability Registers:\n");
+        kuPrint("CAPLENGTH: %x\n", (uint32_t)capRegs->caplength);
+        kuPrint("HCIVERSION: %llx\n", (uint64_t)capRegs->hciversion);
+        kuPrint("HCSPARAMS1: %llx\n", capRegs->hcsparams1);
+        kuPrint("HCSPARAMS2: %llx\n", capRegs->hcsparams2);
+        kuPrint("HCSPARAMS3: %llx\n", capRegs->hcsparams3);
+        kuPrint("HCCPARAMS1: %llx\n", capRegs->hccparams1);
+        kuPrint("DBOFF: %llx\n", capRegs->dboff);
+        kuPrint("RTSOFF: %llx\n", capRegs->rtsoff);
+        kuPrint("HCCPARAMS2: %llx\n", capRegs->hccparams2);
+        kuPrint("\n");
     }
 
-    return (XhciCapabilityRegisters*)bar;
-}
+    void printXhciOperationalRegisters(XhciOperationalRegisters* opRegs) {
+        kuPrint("Operational Registers:\n");
+        kuPrint("USBCMD: %llx\n", opRegs->usbcmd);
+        kuPrint("USBSTS: %llx\n", opRegs->usbsts);
+        kuPrint("PAGESIZE: %llx\n", opRegs->pagesize);
+        kuPrint("DNCTRL: %llx\n", opRegs->dnctrl);
+        kuPrint("CRCR: %llx\n", opRegs->crcr);
+        kuPrint("DCBAAP: %llx\n", opRegs->dcbaap);
+        kuPrint("CONFIG: %llx\n", opRegs->config);
+        kuPrint("\n");
+    }
 
-// bool resetXhciController(XhciOperationalRegisters* regs) {
-//     // Write to USB Command Register to reset the controller
-//     regs->usbcmd |= XHCI_CMD_RESET;
+    XhciDriver& XhciDriver::get() {
+        return g_globalXhciInstance;
+    }
 
-//     // Wait for the reset bit to be cleared, indicating completion
-//     uint64_t timeout = 0x600000ULL;
-//     while (regs->usbcmd & XHCI_CMD_RESET) {
-//         if (timeout == 0) break;
-//         --timeout;
-//     }
+    bool XhciDriver::init(uint64_t pciBarAddress) {
+        _mapDeviceMmio(pciBarAddress);
 
-//     // After reset, ensure that the Run/Stop bit is cleared
-//     if (regs->usbcmd & XHCI_CMD_RUN) {
-//         return false;
-//     }
+        uint32_t maxDeviceSlots = XHCI_MAX_DEVICE_SLOTS(m_capRegisters);
+        uint32_t numPorts = XHCI_NUM_PORTS(m_capRegisters);
 
-//     // Check the USB Status Register for Controller Not Ready (CNR) status
-//     if (regs->usbsts & XHCI_STS_CNR) {
-//         kuPrint("Xhci controller didn't have XHCI_STS_CNR bit set\n");
-//         return false;
-//     }
+        uint64_t opRegBase = (uint64_t)m_capRegisters + m_capRegisters->caplength;
+        m_opRegisters = (XhciOperationalRegisters*)opRegBase;
 
-//     return true;
-// }
+        printXhciCapabilityRegisters(m_capRegisters);
+        printXhciOperationalRegisters(m_opRegisters);
 
-void xhciControllerInit(size_t bar) {
-    // Map the xHCI registers
-    XhciCapabilityRegisters* capabilityRegs = mapXhciRegisters(bar);
+        _resetController();
 
-    uint32_t maxDeviceSlots = XHCI_MAX_SLOTS(capabilityRegs);
-    uint32_t numPorts = XHCI_NUM_PORTS(capabilityRegs);
+        kuPrint("\n\n");
+        printXhciCapabilityRegisters(m_capRegisters);
+        printXhciOperationalRegisters(m_opRegisters);
 
-    uint64_t opRegBase = (uint64_t)capabilityRegs + capabilityRegs->caplength;
-    XhciOperationalRegisters* operationalRegs = (XhciOperationalRegisters*)opRegBase;
+        kuPrint("System has %i ports and %i device slots\n", numPorts, maxDeviceSlots);
 
-    printXhciCapabilityRegisters(capabilityRegs);
-    printXhciOperationalRegisters(operationalRegs);
+        return true;
+    }
 
-    kuPrint("System has %i ports and %i device slots\n", numPorts, maxDeviceSlots);
-}
+    void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {
+        // Map a conservatively large space for xHCI registers
+        for (size_t offset = 0; offset < 0x20000; offset += PAGE_SIZE) {
+            paging::mapPage((void*)(pciBarAddress + offset), (void*)(pciBarAddress + offset), USERSPACE_PAGE, paging::g_kernelRootPageTable);
+        }
+
+        m_capRegisters = (XhciCapabilityRegisters*)pciBarAddress;
+    }
+
+    void XhciDriver::_writeUsbRegCommand(uint32_t cmd) {
+        m_opRegisters->usbcmd |= cmd;
+    }
+    
+    bool XhciDriver::_readUsbRegStatusFlag(uint32_t flag) {
+        return (m_opRegisters->usbsts & flag);
+    }
+
+    bool XhciDriver::_isControllerReady() {
+        return !_readUsbRegStatusFlag(XHCI_USBSTS_CNR);
+    }
+
+    void XhciDriver::_resetController() {
+        _writeUsbRegCommand(XHCI_USBCMD_HCRESET);
+
+        while (!_isControllerReady()) {
+            msleep(1);
+        }
+    }
+} // namespace drivers

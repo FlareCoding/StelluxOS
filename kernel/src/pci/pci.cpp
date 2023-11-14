@@ -1,6 +1,5 @@
 #include "pci.h"
 #include <paging/page.h>
-#include <drivers/usb/xhci.h>
 #include <kprint.h>
 
 const char* g_pciDeviceClasses[] {
