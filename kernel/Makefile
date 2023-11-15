@@ -1,6 +1,6 @@
 KERNEL_INCLUDES = -I./src -I./src/core
 
-CFLAGS = -m64 -g -ffreestanding -O0 -Wall -Werror -Wextra -nostdlib -nostdinc++ -mno-red-zone -fno-allow-store-data-races -fno-reorder-blocks -fno-ipa-cp-clone -fno-partial-inlining -Wframe-larger-than=2048 -Wimplicit-fallthrough=5 -Wno-unused-but-set-variable -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls -fno-stack-clash-protection -Wno-stringop-truncation -Wno-zero-length-bounds -Wno-array-bounds -Wno-stringop-overflow -Wno-restrict -Wno-maybe-uninitialized -fno-strict-overflow -fno-stack-check -fconserve-stack $(KERNEL_INCLUDES)
+CFLAGS = -m64 -g -ffreestanding -O0 -Wall -Werror -Wextra -nostdlib -nostdinc++ -mno-red-zone -fno-allow-store-data-races -fno-reorder-blocks -fno-ipa-cp-clone -fno-partial-inlining -Wframe-larger-than=2048 -Wimplicit-fallthrough=5 -Wno-unused-but-set-variable -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls -fno-stack-clash-protection -Wno-stringop-truncation -Wno-zero-length-bounds -Wno-array-bounds -Wno-stringop-overflow -Wno-restrict -Wno-maybe-uninitialized -fno-strict-overflow -fno-stack-check -fconserve-stack -fno-stack-protector $(KERNEL_INCLUDES)
 CXXFLAGS = $(CFLAGS) -std=c++17 -fno-exceptions -fno-rtti
 ASMC	 = as
 ASMFLAGS = -g --64 -I./src/arch/x86/asm
