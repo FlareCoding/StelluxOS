@@ -9,6 +9,8 @@
 
 paging::PageFrameAllocator g_globalAllocator;
 
+extern uint64_t __ksymstart;
+
 namespace paging {
     void PageFrameBitmap::initialize(uint64_t size, uint8_t* buffer) {
         m_size = size;
@@ -118,9 +120,32 @@ namespace paging {
             }
         }
 
+        // Calculate the page frame bitmap size
         uint64_t pageBitmapSize = m_totalSystemMemory / PAGE_SIZE / 8 + 1;
+
+        // Set the page frame bitmap base by default
+        // to the beginning of the largest free segment.
         uint8_t* pageBitmapBase = static_cast<uint8_t*>(largestFreeMemorySegment);
         uint8_t* pageBitmapVirtualBase = (uint8_t*)__va(pageBitmapBase);
+
+        // Check to make sure if the virtual page frame bitmap base is at a userspace
+        // kernel address because otherwise the base would have to be recalculated.
+        if ((uint64_t)pageBitmapVirtualBase < (uint64_t)&__ksymstart) {
+            for (uint64_t i = 0; i < memoryDescriptorCount; ++i) {
+                EFI_MEMORY_DESCRIPTOR* desc =
+                    (EFI_MEMORY_DESCRIPTOR*)((uint64_t)memoryMap + (i * memoryDescriptorSize));
+
+                // Only track EfiConventionalMemory
+                if (desc->type != 7)
+                    continue;
+
+                if (desc->pageCount * PAGE_SIZE >= pageBitmapSize) {
+                    pageBitmapBase = static_cast<uint8_t*>(desc->paddr);
+                    pageBitmapVirtualBase = (uint8_t*)__va(pageBitmapBase);
+                    break;
+                }
+            }
+        }
 
         m_pageFrameBitmap.initialize(pageBitmapSize, pageBitmapVirtualBase);
 
