@@ -39,15 +39,23 @@ void Mcfg::_enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
     uint64_t functionAddress = deviceAddress + offset;
     paging::mapPage((void*)functionAddress, (void*)functionAddress, KERNEL_PAGE, paging::getCurrentTopLevelPageTable());
 
-    PciDeviceHeader* pciDeviceHeader = (PciDeviceHeader*)functionAddress;
+    volatile PciDeviceHeader* pciDeviceHeader = (volatile PciDeviceHeader*)functionAddress;
 
     if (pciDeviceHeader->deviceID == 0) return;
     if (pciDeviceHeader->deviceID == 0xFFFF) return;
 
     PciDeviceInfo info;
-    info.headerInfo = *pciDeviceHeader;
+    zeromem(&info, sizeof(PciDeviceInfo));
+
+    for (size_t i = 0; i < sizeof(PciDeviceHeader); i++) {
+        volatile uint8_t* src = ((volatile uint8_t*)pciDeviceHeader) + i;
+        uint8_t* dest = ((uint8_t*)&info.headerInfo) + i;
+
+        *dest = *src;
+    }
+    
     info.functionAddress = functionAddress;
-    info.barAddress = getBarFromPciHeader(pciDeviceHeader);
+    info.barAddress = getBarFromPciHeader(&info.headerInfo);
     m_devices.pushBack(info);
 }
 

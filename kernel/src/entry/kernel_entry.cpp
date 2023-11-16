@@ -187,13 +187,21 @@ void _kuser_entry() {
     if (acpiController.hasPciDeviceTable()) {
         auto pciDeviceTable = acpiController.getPciDeviceTable();
         
+        for (size_t i = 0; i < pciDeviceTable->getDeviceCount(); i++) {
+            dbgPrintPciDeviceInfo(&pciDeviceTable->getDeviceInfo(i).headerInfo);
+        }
+
         size_t idx = pciDeviceTable->findXhciController();
         if (idx != kstl::npos) {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
             
             RUN_ELEVATED({
                 auto& xhciDriver = drivers::XhciDriver::get();
-                xhciDriver.init(xhciControllerPciDeviceInfo.barAddress);
+                bool status = xhciDriver.init(xhciControllerPciDeviceInfo.barAddress);
+
+                if (!status) {
+                    kuPrint("[-] Failed to initialize xHci USB3.0 controller\n");
+                }
             });
         }
     }

@@ -9,7 +9,7 @@ namespace drivers {
 
     XhciDriver g_globalXhciInstance;
 
-    void printXhciCapabilityRegisters(XhciCapabilityRegisters* capRegs) {
+    void printXhciCapabilityRegisters(volatile XhciCapabilityRegisters* capRegs) {
         kuPrint("Capability Registers:\n");
         kuPrint("CAPLENGTH: %x\n", (uint32_t)capRegs->caplength);
         kuPrint("HCIVERSION: %llx\n", (uint64_t)capRegs->hciversion);
@@ -23,7 +23,7 @@ namespace drivers {
         kuPrint("\n");
     }
 
-    void printXhciOperationalRegisters(XhciOperationalRegisters* opRegs) {
+    void printXhciOperationalRegisters(volatile XhciOperationalRegisters* opRegs) {
         kuPrint("Operational Registers:\n");
         kuPrint("USBCMD: %llx\n", opRegs->usbcmd);
         kuPrint("USBSTS: %llx\n", opRegs->usbsts);
@@ -42,19 +42,29 @@ namespace drivers {
     bool XhciDriver::init(uint64_t pciBarAddress) {
         _mapDeviceMmio(pciBarAddress);
 
+        uint64_t opRegBase = (uint64_t)m_capRegisters + m_capRegisters->caplength;
+        m_opRegisters = (volatile XhciOperationalRegisters*)opRegBase;
+
+        uint64_t runtimeRegBase = opRegBase + m_capRegisters->rtsoff;
+        m_rtRegisters = (volatile XhciRuntimeRegisters*)runtimeRegBase;
+
         uint32_t maxDeviceSlots = XHCI_MAX_DEVICE_SLOTS(m_capRegisters);
         uint32_t numPorts = XHCI_NUM_PORTS(m_capRegisters);
 
-        uint64_t opRegBase = (uint64_t)m_capRegisters + m_capRegisters->caplength;
-        m_opRegisters = (XhciOperationalRegisters*)opRegBase;
+        // printXhciCapabilityRegisters(m_capRegisters);
+        // printXhciOperationalRegisters(m_opRegisters);
 
-        printXhciCapabilityRegisters(m_capRegisters);
-        printXhciOperationalRegisters(m_opRegisters);
+        if (!_resetController()) {
+            return false;
+        }
 
-        _resetController();
+        // Set the Max Device Slots Enabled field
+        m_opRegisters->config = XHCI_SET_MAX_SLOTS_EN(m_opRegisters->config, maxDeviceSlots);
+
+        m_opRegisters->config = 0x40;
 
         kuPrint("\n\n");
-        printXhciCapabilityRegisters(m_capRegisters);
+        // printXhciCapabilityRegisters(m_capRegisters);
         printXhciOperationalRegisters(m_opRegisters);
 
         kuPrint("System has %i ports and %i device slots\n", numPorts, maxDeviceSlots);
@@ -68,7 +78,7 @@ namespace drivers {
             paging::mapPage((void*)(pciBarAddress + offset), (void*)(pciBarAddress + offset), USERSPACE_PAGE, paging::g_kernelRootPageTable);
         }
 
-        m_capRegisters = (XhciCapabilityRegisters*)pciBarAddress;
+        m_capRegisters = (volatile XhciCapabilityRegisters*)pciBarAddress;
     }
 
     void XhciDriver::_writeUsbRegCommand(uint32_t cmd) {
@@ -83,11 +93,24 @@ namespace drivers {
         return !_readUsbRegStatusFlag(XHCI_USBSTS_CNR);
     }
 
-    void XhciDriver::_resetController() {
+    bool XhciDriver::_resetController() {
         _writeUsbRegCommand(XHCI_USBCMD_HCRESET);
 
+        // Make sure the controller's CNR flag is cleared
         while (!_isControllerReady()) {
-            msleep(1);
+            msleep(16);
         }
+
+        // Wait for the usbcmd reset flag to get cleared
+        while (m_opRegisters->usbcmd & XHCI_USBCMD_HCRESET) {
+            msleep(16);
+        }
+
+        // Check the Host System Error flag for error control
+        return !(m_opRegisters->usbsts & XHCI_USBSTS_HSE);
+    }
+
+    void XhciDriver::_initializeDcbaa() {
+        
     }
 } // namespace drivers

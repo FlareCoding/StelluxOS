@@ -659,6 +659,43 @@ enabled by the VTIOE flag in the USBCMD register.
 #define XHCI_VTC(regs) ((regs->hccparams2 >> 9) & 0x1)
 
 /*
+// xHci Spec Section 5.4.7 Table 5-26: Configure Register Bit Definitions (CONFIG) (page 369)
+
+Max Device Slots Enabled (MaxSlotsEn) – RW. Default = ‘0’. This field specifies
+the maximum number of enabled Device Slots. Valid values are in the range of 0 to
+MaxSlots. Enabled Devices Slots are allocated contiguously. For example, a value of
+16 specifies that Device Slots 1 to 16 are active. A value of ‘0’ disables all Device
+Slots. A disabled Device Slot shall not respond to Doorbell Register references.
+This field shall not be modified by software if the xHC is running (Run/Stop (R/S) =
+‘1’).
+*/
+#define XHCI_MAX_SLOTS_EN(config) ((config) & 0xFF)
+
+// Returns the value of config with max device slots set to the given value
+#define XHCI_SET_MAX_SLOTS_EN(config, slots) (((config) & ~0xFF) | ((slots) & 0xFF))
+
+/*
+// xHci Spec Section 5.4.7 Table 5-26: Configure Register Bit Definitions (CONFIG) (page 369)
+
+U3 Entry Enable (U3E) – RW. Default = '0'. When set to '1', the xHC shall assert
+the PLC flag ('1') when a Root Hub port transitions to the U3 State. Refer to section
+4.15.1 for more information.
+*/
+#define XHCI_U3_ENTRY_ENABLE(config) (((config) >> 8) & 0x1)
+
+/*
+// xHci Spec Section 5.4.7 Table 5-26: Configure Register Bit Definitions (CONFIG) (page 369)
+
+Configuration Information Enable (CIE) - RW. Default = '0'. When set to '1', the
+software shall initialize the Configuration Value, Interface Number, and Alternate
+Setting fields in the Input Control Context when it is associated with a Configure
+Endpoint Command. When this bit is '0', the extended Input Control Context fields
+are not supported. Refer to section 6.2.5.1 for more information.
+*/
+#define XHCI_CONFIG_INFO_ENABLE(config) (((config) >> 9) & 0x1)
+
+
+/*
 // xHci Spec Section 5.3 Table 5-9: eXtensible Host Controller Capability Registers (page 346)
 
 These registers specify the limits and capabilities of the host controller
@@ -772,81 +809,94 @@ Refer to Section 4.23.1 Power Wells for a discussion of the effect of Power
 Wells on register state after power-on and light resets.
 Document Number: 625472, Revision: 1.2b 69
 Following are a review of the operations that system software would perform in
-order to initialize the xHC using MSI-X as the interrupt mechanism5
-:
-• Initialize the system I/O memory maps, if supported.
-• After Chip Hardware Reset6 wait until the Controller Not Ready (CNR) flag
+order to initialize the xHC using MSI-X as the interrupt mechanism:
+    • Initialize the system I/O memory maps, if supported.
+    
+    • After Chip Hardware Reset6 wait until the Controller Not Ready (CNR) flag
 in the USBSTS is ‘0’ before writing any xHC Operational or Runtime
 registers.
+
 Note: This text does not imply a specific order for the following operations, however
 these operations shall be completed before setting the USBCMD register
 Run/Stop (R/S) bit to ‘1’.
-• Program the Max Device Slots Enabled (MaxSlotsEn) field in the CONFIG
+
+
+    • Program the Max Device Slots Enabled (MaxSlotsEn) field in the CONFIG
 register (5.4.7) to enable the device slots that system software is going to
 use.
-• Program the Device Context Base Address Array Pointer (DCBAAP) register
+
+    • Program the Device Context Base Address Array Pointer (DCBAAP) register
 (Section 5.4.6 Device Context Base Address Array Pointer Register
 (DCBAAP)) with a 64-bit address pointing to where the Device Context
 Base Address Array is located.
-• Define the Command Ring Dequeue Pointer by programming the Command
+
+    • Define the Command Ring Dequeue Pointer by programming the Command
 Ring Control Register (Section 5.4.5 Command Ring Control Register
 (CRCR)) with a 64-bit address pointing to the starting address of the first
 TRB of the Command Ring.
-• Initialize interrupts7 by:
-o Allocate and initialize the MSI-X Message Table (Section 5.2.8.3 MSI-X
-Table), setting the Message Address and Message Data, and enable the
-vectors. At a minimum, table vector entry 0 shall be initialized and
-enabled. Refer to the PCI specification for more details.
-o Allocate and initialize the MSI-X Pending Bit Array (PBA, Section 5.2.8.4
-MSI-X PBA).
-o Point the Table Offset and PBA Offsets in the MSI-X Capability Structure
-to the MSI-X Message Control Table and Pending Bit Array,
-respectively.
-o Initialize the Message Control register (Section 5.2.8.3 MSI-X Table) of
-the MSI-X Capability Structure.
-o Initialize each active interrupter by:
-▪ Defining the Event Ring: (refer to Section 4.9.4 Event Ring
-Management for a discussion of Event Ring Management.)
-• Allocate and initialize the Event Ring Segment(s).
+
+    • Initialize interrupts by:
+        o Allocate and initialize the MSI-X Message Table (Section 5.2.8.3 MSI-X
+        Table), setting the Message Address and Message Data, and enable the
+        vectors. At a minimum, table vector entry 0 shall be initialized and
+        enabled. Refer to the PCI specification for more details.
+        o Allocate and initialize the MSI-X Pending Bit Array (PBA, Section 5.2.8.4
+        MSI-X PBA).
+        o Point the Table Offset and PBA Offsets in the MSI-X Capability Structure
+        to the MSI-X Message Control Table and Pending Bit Array,
+        respectively.
+        o Initialize the Message Control register (Section 5.2.8.3 MSI-X Table) of
+        the MSI-X Capability Structure.
+        o Initialize each active interrupter by:
+            ▪ Defining the Event Ring: (refer to Section 4.9.4 Event Ring
+            Management for a discussion of Event Ring Management.)
+
+    • Allocate and initialize the Event Ring Segment(s).
 5Refer to the PCI spec for the initialization and use of MSI or PIN interrupt mechanisms
 6A Chip Hardware Reset may be either a PCI reset input or an optional power-on reset input to the xHC.
 7
 Interrupts are optional. The xHC may be managed by polling Event Rings.
 70 Document Number: 625472, Revision: 1.2b
 Intel Confidential
-• Allocate the Event Ring Segment Table (ERST) (Section 6.5
+
+    • Allocate the Event Ring Segment Table (ERST) (Section 6.5
 Event Ring Segment Table). Initialize ERST table entries to
 point to and to define the size (in TRBs) of the respective Event
 Ring Segment.
-• Program the Interrupter Event Ring Segment Table Size
+
+    • Program the Interrupter Event Ring Segment Table Size
 (ERSTSZ) register (Section 5.5.2.3.1 Event Ring Segment Table
 Size Register (ERSTSZ)) with the number of segments
 described by the Event Ring Segment Table.
-• Program the Interrupter Event Ring Dequeue Pointer (ERDP)
+
+    • Program the Interrupter Event Ring Dequeue Pointer (ERDP)
 register (Section 5.5.2.3.3 Event Ring Dequeue Pointer Register
 (ERDP)) with the starting address of the first segment
 described by the Event Ring Segment Table.
-• Program the Interrupter Event Ring Segment Table Base
+
+    • Program the Interrupter Event Ring Segment Table Base
 Address (ERSTBA) register (Section 5.5.2.3.2 Event Ring
 Segment Table Base Address Register (ERSTBA)) with a 64-bit
 address pointer to where the Event Ring Segment Table is
 located.
-• Note that writing the ERSTBA enables the Event Ring. Refer to
+
+Note that writing the ERSTBA enables the Event Ring. Refer to
 Section 4.9.4 Event Ring Management for more information on
 the Event Ring registers and their initialization.
-▪ Defining the interrupts:
-• Enable the MSI-X interrupt mechanism by setting the MSI-X
-Enable flag in the MSI-X Capability Structure Message Control
-register (5.2.8.3).
-• Initializing the Interval field of the Interrupt Moderation register
-(5.5.2.2) with the target interrupt moderation rate.
-• Enable system bus interrupt generation by writing a ‘1’ to the
-Interrupter Enable (INTE) flag of the USBCMD register (5.4.1).
-• Enable the Interrupter by writing a ‘1’ to the Interrupt Enable
-(IE) field of the Interrupter Management register (5.5.2.1).
-• Write the USBCMD (5.4.1) to turn the host controller ON via setting the
-Run/Stop (R/S) bit to ‘1’. This operation allows the xHC to begin accepting
-doorbell references.
+
+    ▪ Defining the interrupts:
+        • Enable the MSI-X interrupt mechanism by setting the MSI-X
+        Enable flag in the MSI-X Capability Structure Message Control
+        register (5.2.8.3).
+        • Initializing the Interval field of the Interrupt Moderation register
+        (5.5.2.2) with the target interrupt moderation rate.
+        • Enable system bus interrupt generation by writing a ‘1’ to the
+        Interrupter Enable (INTE) flag of the USBCMD register (5.4.1).
+        • Enable the Interrupter by writing a ‘1’ to the Interrupt Enable
+        (IE) field of the Interrupter Management register (5.5.2.1).
+        • Write the USBCMD (5.4.1) to turn the host controller ON via setting the
+        Run/Stop (R/S) bit to ‘1’. This operation allows the xHC to begin accepting
+        doorbell references.
 */
 class XhciDriver {
 public:
@@ -859,9 +909,9 @@ public:
     bool init(uint64_t pciBarAddress);
 
 private:
-    XhciCapabilityRegisters*    m_capRegisters;
-    XhciOperationalRegisters*   m_opRegisters;
-    XhciInterrupterRegisters*   m_intRegisters;
+    volatile XhciCapabilityRegisters*    m_capRegisters;
+    volatile XhciOperationalRegisters*   m_opRegisters;
+    volatile XhciRuntimeRegisters*       m_rtRegisters;
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
@@ -880,7 +930,23 @@ private:
     in the USBSTS is ‘0’ before writing any xHC Operational or Runtime
     registers.
     */
-    void _resetController();
+    bool _resetController();
+
+    /*
+    // xHci Spec Section 6.1 Device Context Base Address Array (page 403)
+
+    The Device Context Base Address Array (DCBAA) data structure is used to
+    associate an xHCI Device Slot with its respective Device Context data
+    structure. The Device Context Base Address Array entry associated with each
+    allocated Device Slot shall contain a 64-bit pointer to the base of the associated
+    Device Context. Refer to section 3.2.1 for more information.
+
+    The Device Context Base Address Array shall be indexed by the Device Slot ID.
+    The Device Context Base Address Array shall be aligned to a 64 byte boundary.
+    Software shall set Device Context Base Address Array entries for
+    unallocated Device Slots to ‘0’.
+    */
+    void _initializeDcbaa();
 };
 } // namespace drivers
 
