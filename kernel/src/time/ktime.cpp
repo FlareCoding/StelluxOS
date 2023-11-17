@@ -2,6 +2,8 @@
 #include <acpi/acpi_controller.h>
 #include <arch/x86/apic_timer.h>
 #include <kelevate/kelevate.h>
+#include <paging/tlb.h>
+#include <arch/x86/per_cpu_data.h>
 
 Hpet* g_precisionTimerInstance = nullptr;
 uint64_t g_hardwareFrequency = 0;
@@ -14,6 +16,11 @@ void KernelTimer::init() {
 
     g_precisionTimerInstance->init();
     g_hardwareFrequency = g_precisionTimerInstance->qeueryFrequency();
+
+    // TLB has to be flushed for proper writes to HPET registers in the future
+    RUN_ELEVATED({
+        paging::flushTlbAll();
+    });
 }
 
 void KernelTimer::calibrateApicTimer(uint64_t milliseconds) {
