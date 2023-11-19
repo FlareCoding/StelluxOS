@@ -48,8 +48,8 @@ namespace drivers {
         uint64_t runtimeRegBase = opRegBase + m_capRegisters->rtsoff;
         m_rtRegisters = (volatile XhciRuntimeRegisters*)runtimeRegBase;
 
-        uint32_t maxDeviceSlots = XHCI_MAX_DEVICE_SLOTS(m_capRegisters);
-        uint32_t numPorts = XHCI_NUM_PORTS(m_capRegisters);
+        m_maxDeviceSlots = XHCI_MAX_DEVICE_SLOTS(m_capRegisters);
+        m_numPorts = XHCI_NUM_PORTS(m_capRegisters);
 
         // printXhciCapabilityRegisters(m_capRegisters);
         // printXhciOperationalRegisters(m_opRegisters);
@@ -57,17 +57,37 @@ namespace drivers {
         if (!_resetController()) {
             return false;
         }
+        kuPrint("[XHCI] Reset the controller\n");
 
         // Set the Max Device Slots Enabled field
-        m_opRegisters->config = XHCI_SET_MAX_SLOTS_EN(m_opRegisters->config, maxDeviceSlots);
+        uint32_t configReg = XHCI_SET_MAX_SLOTS_EN(m_opRegisters->config, m_maxDeviceSlots);
+        m_opRegisters->config = configReg;
 
-        m_opRegisters->config = 0x40;
+        // Initialize device context base address array
+        if (!_initializeDcbaa()) {
+            return false;
+        }
+        kuPrint("[XHCI] Initialized device context array\n");
 
         kuPrint("\n\n");
         // printXhciCapabilityRegisters(m_capRegisters);
         printXhciOperationalRegisters(m_opRegisters);
 
-        kuPrint("System has %i ports and %i device slots\n", numPorts, maxDeviceSlots);
+        kuPrint("System has %i ports and %i device slots\n", m_numPorts, m_maxDeviceSlots);
+
+        // Enable the controller
+        _enableController();
+
+        while (true) {
+            for (uint32_t i = 1; i <= m_numPorts; i++) {
+                volatile XhciPortscRegister* portscReg = _getPortscReg(i);
+                uint32_t connectStatus = (uint32_t)portscReg->ccs;
+                kuPrint("%i ", connectStatus);
+            }
+            kuPrint("\n");
+
+            sleep(1);
+        }
 
         return true;
     }
@@ -93,6 +113,10 @@ namespace drivers {
         return !_readUsbRegStatusFlag(XHCI_USBSTS_CNR);
     }
 
+    bool XhciDriver::_is64ByteContextUsed() {
+        return (XHCI_CSZ(m_capRegisters));
+    }
+
     bool XhciDriver::_resetController() {
         _writeUsbRegCommand(XHCI_USBCMD_HCRESET);
 
@@ -110,7 +134,71 @@ namespace drivers {
         return !(m_opRegisters->usbsts & XHCI_USBSTS_HSE);
     }
 
-    void XhciDriver::_initializeDcbaa() {
-        
+    void XhciDriver::_enableController() {
+        m_opRegisters->usbcmd |= XHCI_USBCMD_RUN_STOP;
+
+        // Make sure the controller's CNR flag is cleared
+        while (m_opRegisters->usbsts & XHCI_USBSTS_HCH) {
+            msleep(16);
+        }
+    }
+
+    bool XhciDriver::_initializeDcbaa() {
+        // The address has to be 64-byte aligned
+        uint64_t* dcbaapVirtual = (uint64_t*)kmallocAligned(sizeof(uint64_t) * m_maxDeviceSlots, 64);
+        if (!dcbaapVirtual) {
+            return false;
+        }
+
+        // Make sure each entry is zeroed out
+        zeromem(dcbaapVirtual, sizeof(uint64_t) * m_maxDeviceSlots);
+
+        // Initialize the device context array
+        _initializeDeviceContexts((XhciDeviceContext**)dcbaapVirtual);
+
+        // Get the physical address
+        void* dcbaapPhysical = __pa(dcbaapVirtual);
+
+        // Update operational register with the physical address of DCBAA
+        m_opRegisters->dcbaap = reinterpret_cast<uint64_t>(dcbaapPhysical);
+
+        return true;
+    }
+
+    bool XhciDriver::_initializeDeviceContexts(XhciDeviceContext** dcbaap) {
+        XhciDeviceContext* firstDeviceContext = (XhciDeviceContext*)kmallocAligned(sizeof(XhciDeviceContext), 64);
+        if (!firstDeviceContext) {
+            return false;
+        }
+
+        zeromem(firstDeviceContext, sizeof(XhciDeviceContext));
+
+        /*
+        // xHci Spec Section 6.1 (page 404)
+
+        If the Max Scratchpad Buffers field of the HCSPARAMS2 register is > ‘0’, then
+        the first entry (entry_0) in the DCBAA shall contain a pointer to the Scratchpad
+        Buffer Array. If the Max Scratchpad Buffers field of the HCSPARAMS2 register is
+        = ‘0’, then the first entry (entry_0) in the DCBAA is reserved and shall be
+        cleared to ‘0’ by software.
+        */
+        uint32_t maxScratchpadBuffers = XHCI_MAX_SCRATCHPAD_BUFFERS(m_capRegisters);
+
+        // TO-DO: if maxScratchpadBuffers > 0, initialize scratchpad buffer array
+        if (maxScratchpadBuffers > 0) {
+            kuPrint("TO-DO: if maxScratchpadBuffers > 0, initialize scratchpad buffer array\n");
+        }
+
+        dcbaap[1] = firstDeviceContext;
+
+        return true;
+    }
+
+    volatile XhciPortscRegister* XhciDriver::_getPortscReg(uint32_t portNum) {
+        // Operational Base + (400h + (10h * (n – 1)))
+        uint64_t opbase = (uint64_t)m_opRegisters;
+        uint64_t portscBase = opbase + (0x400 + (0x10 * (portNum - 1)));
+
+        return (volatile XhciPortscRegister*)portscBase;
     }
 } // namespace drivers

@@ -793,11 +793,202 @@ Qword references. If a system is incapable of issuing Qword references, then
 writes to the Qword address fields shall be performed using 2 Dword
 references; low Dword-first, high-Dword second.
 */
+
 struct XhciRuntimeRegisters {
     uint32_t mfIndex;                          // Microframe Index (offset 0000h)
     uint32_t rsvdZ[7];                         // Reserved (offset 001Fh:0004h)
     XhciInterrupterRegisters ir[1024];         // Interrupter Register Sets (offset 0020h to 8000h)
 };
+
+/*
+// xHci Spec Section 6.2.2 Figure 6-2: Slot Context Data Structure (page 407)
+
+The Slot Context data structure defines information that applies to a device as
+a whole.
+
+Note: Figure 6-2 illustrates a 32 byte Slot Context. That is, the Context Size (CSZ)
+field in the HCCPARAMS1 register = ‘0’. If the Context Size (CSZ) field = ‘1’
+then each Slot Context data structure consumes 64 bytes, where bytes 32 to
+63 are also xHCI Reserved (RsvdO).
+*/
+struct XhciSlotContext {
+    uint32_t    routeString         : 20;   // Offset 00h
+    uint32_t    speed               : 4;
+    uint32_t    rsvd0               : 1;
+    uint32_t    mtt                 : 1;
+    uint32_t    hub                 : 1;
+    uint32_t    contextEntries      : 5;
+    uint32_t    maxExitLatency      : 16;   // Offset 04h
+    uint32_t    rootHubPortNum      : 8;
+    uint32_t    numPorts            : 8;
+    uint32_t    ttHubSlotID         : 8;    // Offset 08h
+    uint32_t    portNum             : 8;
+    uint32_t    ttt                 : 2;
+    uint32_t    rsvd1               : 4;
+    uint32_t    interrupterTarget   : 10;
+    uint32_t    usbDeviceAddress    : 8;    // Offset 0Ch
+    uint32_t    rsvd2               : 19;
+    uint32_t    slotState           : 5;
+    uint32_t    rsvd3;
+    uint32_t    rsvd4;
+    uint32_t    rsvd5;
+    uint32_t    rsvd6;
+
+    // Extra reserved padding for 64-byte struct size
+    uint64_t    rsvd64b0;
+    uint64_t    rsvd64b1;
+    uint64_t    rsvd64b2;
+    uint64_t    rsvd64b3;
+} __attribute__((packed));
+static_assert(sizeof(XhciSlotContext) == 64);
+
+/*
+// xHci Spec Section 6.2.3 Figure 6-3: Endpoint Context Data Structure (page 412)
+
+The Endpoint Context data structure defines information that applies to a
+specific endpoint.
+
+Note: Unless otherwise stated: As Input, all fields of the Endpoint Context shall be
+initialized to the appropriate value by software before issuing a command. As
+Output, the xHC shall update each field to reflect the current value that
+it is using.
+
+Note: The remaining bytes (14-1Fh) within the Endpoint Context are dedicated for
+exclusive use by the xHC and shall be treated by system software as
+Reserved and Opaque (RsvdO).
+
+Note: Figure 6-3 illustrates a 32 byte Endpoint Context. That is, the Context Size
+(CSZ) field in the HCCPARAMS1 register = ‘0’. If the Context Size (CSZ) field
+= ‘1’ then each Endpoint Context data structure consumes 64 bytes, where
+bytes 32 to 63 are xHCI Reserved (RsvdO).
+*/
+struct XhciEndpointContext {
+    uint32_t    epState             : 3;    // Offset 00h
+    uint32_t    rsvd0               : 5;
+    uint32_t    mult                : 2;
+    uint32_t    maxPStreams         : 5;
+    uint32_t    lsa                 : 1;
+    uint32_t    interval            : 8;
+    uint32_t    maxEsitPayloadHi    : 8;
+    uint32_t    rsvd1               : 1;    // Offset 04h
+    uint32_t    cErr                : 2;
+    uint32_t    epType              : 3;
+    uint32_t    rsvd2               : 1;
+    uint32_t    hid                 : 1;
+    uint32_t    maxBurstSize        : 8;
+    uint32_t    maxPacketSize       : 16;
+    uint32_t    dcs                 : 1;    // Offset 08h
+    uint32_t    rsvd3               : 3;
+    uint32_t    trDequeuePointerLo  : 28;
+    uint32_t    trDequeuePointerHi;         // Offset 0Ch
+    uint32_t    avgTrbLength        : 16;   // Offset 10h
+    uint32_t    maxEsitPayloadLo    : 16;
+    uint32_t    rsvd4;
+    uint32_t    rsvd5;
+    uint32_t    rsvd6;
+
+    // Extra reserved padding for 64-byte struct size
+    uint64_t    rsvd64b0;
+    uint64_t    rsvd64b1;
+    uint64_t    rsvd64b2;
+    uint64_t    rsvd64b3;
+} __attribute__((packed));
+static_assert(sizeof(XhciEndpointContext) == 64);
+
+/*
+// xHci Spec Section 6.2.1 Device Context (page 406)
+
+The Device Context data structure is used in the xHCI architecture as Output
+by the xHC to report device configuration and state information to system
+software. The Device Context data structure is pointed to by an entry in the
+Device Context Base Address Array (refer to section 6.1).
+The Device Context Index (DCI) is used to reference the respective element of
+the Device Context data structure.
+All unused entries of the Device Context shall be initialized to ‘0’ by software.
+
+    Note: Figure 6-1 illustrates offsets with 32-byte Device Context data
+    structures. That is, the Context Size (CSZ) field in the HCCPARAMS1 register
+    = '0'. If the Context Size (CSZ) field = '1' then the Device Context data
+    structures consume 64 bytes each. The offsets shall be 040h for the EP
+    Context 0, 080h for EP Context 1, and so on.
+
+    Note: Ownership of the Output Device Context data structure is passed to
+    the xHC when software rings the Command Ring doorbell for the first Address
+    Device Command issued to a Device Slot after an Enable Slot Command, that
+    is, the first transition of the Slot from the Enabled to the Default or Addressed
+    state. Software shall initialize the Output Device Context to 0 prior to the
+    execution of the first Address Device Command.
+*/
+struct XhciDeviceContext {
+    XhciSlotContext slotContext;
+    XhciEndpointContext endpointContext[31];
+};
+static_assert(sizeof(XhciDeviceContext) == 2048); // Max 256 context entries == 2 KB
+
+/*
+// xHci Spec Section 5.4.8 Figure 5-20: Port Status and Control Register (PORTSC) (page 369-370)
+
+Address: Operational Base + (400h + (10h * (n–1)))
+where: n = Port Number (Valid values are 1, 2, 3, … MaxPorts)
+Default: Field dependent
+Attribute: RO, RW, RW1C (field dependent)
+Size 32 bits
+
+A host controller shall implement one or more port registers. The number of
+port registers implemented by a particular instantiation of a host controller is
+documented in the HCSPARAMS1 register (Section 5.3.3). Software uses this 
+370 Document Number: 625472, Revision: 1.2b
+Intel Confidential
+information as an input parameter to determine how many ports need to be
+serviced. All ports have the structure defined below.
+This register is in the Aux Power well. It is only reset by platform hardware
+during a cold reset or in response to a Host Controller Reset (HCRST). The
+initial conditions of a port are described in Section 4.19.
+
+Note: Port Status Change Events cannot be generated if the xHC is stopped
+(HCHalted (HCH) = ‘1’). Refer to section 4.19.2 for more information about
+change flags.
+
+Note: Software shall ensure that the xHC is running (HCHalted (HCH) = ‘0’) before
+attempting to write to this register.
+Software cannot change the state of the port unless Port Power (PP) is asserted
+(‘1’), regardless of the Port Power Control (PPC) capability (section 5.3.6). The
+host is required to have power stable to the port within 20 milliseconds of the
+‘0’ to ‘1’ transition of PP. If PPC = ‘1’ software is responsible for waiting 20 ms.
+after asserting PP, before attempting to change the state of the port.
+
+Note: If a port has been assigned to the Debug Capability, then the port shall not
+report device connected (that is, CCS = ‘0’) and enabled when the Port Power
+Flag is ‘1’. Refer to Section 7.6 for more information on the xHCI Debug
+Capability operation.
+*/
+struct XhciPortscRegister {
+    uint32_t    ccs         : 1;
+    uint32_t    ped         : 1;
+    uint32_t    tm          : 1;
+    uint32_t    oca         : 1;
+    uint32_t    pr          : 1;
+    uint32_t    pls         : 4;
+    uint32_t    pp          : 1;
+    uint32_t    portSpeed   : 4;
+    uint32_t    pic         : 2;
+    uint32_t    lws         : 1;
+    uint32_t    csc         : 1;
+    uint32_t    pec         : 1;
+    uint32_t    wrc         : 1;
+    uint32_t    occ         : 1;
+    uint32_t    prc         : 1;
+    uint32_t    plc         : 1;
+    uint32_t    cec         : 1;
+    uint32_t    cas         : 1;
+    uint32_t    wce         : 1;
+    uint32_t    wde         : 1;
+    uint32_t    woe         : 1;
+    uint32_t    rsvd        : 2;
+    uint32_t    dr          : 1;
+    uint32_t    wpr         : 1;
+} __attribute__((packed));
+static_assert(sizeof(XhciPortscRegister) == 4);
 
 /*
 // xHci Spec Section 4.2 Host Controller Initialization (page 68)
@@ -852,12 +1043,11 @@ TRB of the Command Ring.
             Management for a discussion of Event Ring Management.)
 
     • Allocate and initialize the Event Ring Segment(s).
-5Refer to the PCI spec for the initialization and use of MSI or PIN interrupt mechanisms
-6A Chip Hardware Reset may be either a PCI reset input or an optional power-on reset input to the xHC.
-7
+Refer to the PCI spec for the initialization and use of MSI or PIN interrupt mechanisms
+A Chip Hardware Reset may be either a PCI reset input or an optional power-on reset input to the xHC.
+
 Interrupts are optional. The xHC may be managed by polling Event Rings.
-70 Document Number: 625472, Revision: 1.2b
-Intel Confidential
+Document Number: 625472, Revision: 1.2b Intel Confidential
 
     • Allocate the Event Ring Segment Table (ERST) (Section 6.5
 Event Ring Segment Table). Initialize ERST table entries to
@@ -913,6 +1103,9 @@ private:
     volatile XhciOperationalRegisters*   m_opRegisters;
     volatile XhciRuntimeRegisters*       m_rtRegisters;
 
+    uint32_t m_maxDeviceSlots;
+    uint32_t m_numPorts;
+
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
 
@@ -921,6 +1114,8 @@ private:
     bool _readUsbRegStatusFlag(uint32_t flag);
 
     bool _isControllerReady();
+
+    bool _is64ByteContextUsed();
 
 private:
     /*
@@ -931,6 +1126,8 @@ private:
     registers.
     */
     bool _resetController();
+
+    void _enableController();
 
     /*
     // xHci Spec Section 6.1 Device Context Base Address Array (page 403)
@@ -946,7 +1143,21 @@ private:
     Software shall set Device Context Base Address Array entries for
     unallocated Device Slots to ‘0’.
     */
-    void _initializeDcbaa();
+    bool _initializeDcbaa();
+
+    bool _initializeDeviceContexts(XhciDeviceContext** dcbaap);
+
+private:
+    /*
+    // xHci Spec Section 5.4.8
+
+    Address: Operational Base + (400h + (10h * (n–1)))
+            where: n = Port Number (Valid values are 1, 2, 3, … MaxPorts)
+    Default: Field dependent
+    Attribute: RO, RW, RW1C (field dependent)
+    Size 32 bits
+    */
+    volatile XhciPortscRegister* _getPortscReg(uint32_t portNum);
 };
 } // namespace drivers
 
