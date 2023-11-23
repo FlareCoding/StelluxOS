@@ -78,6 +78,36 @@ namespace drivers {
         // Enable the controller
         _enableController();
 
+        // --- DEBUGGING STAGE --- //
+        volatile XhciPortscRegister* portscReg = _getPortscReg(1);
+        kuPrint("total: 0x%llx\n", *(volatile uint32_t*)portscReg);
+        kuPrint("ccs: %i\n", portscReg->ccs);
+        kuPrint("ped: %i\n", portscReg->ped);
+        kuPrint("tm: %i\n", portscReg->tm);
+        kuPrint("oca: %i\n", portscReg->oca);
+        kuPrint("pr: %i\n", portscReg->pr);
+        kuPrint("pls: %i\n", portscReg->pls);
+        kuPrint("pp: %i\n", portscReg->pp);
+        kuPrint("portSpeed: %i\n", portscReg->portSpeed);
+        kuPrint("pic: %i\n", portscReg->pic);
+        kuPrint("lws: %i\n", portscReg->lws);
+        kuPrint("csc: %i\n", portscReg->csc);
+        kuPrint("pec: %i\n", portscReg->pec);
+        kuPrint("wrc: %i\n", portscReg->wrc);
+        kuPrint("occ: %i\n", portscReg->occ);
+        kuPrint("prc: %i\n", portscReg->prc);
+        kuPrint("plc: %i\n", portscReg->plc);
+        kuPrint("cec: %i\n", portscReg->cec);
+        kuPrint("cas: %i\n", portscReg->cas);
+        kuPrint("wce: %i\n", portscReg->wce);
+        kuPrint("wde: %i\n", portscReg->wde);
+        kuPrint("woe: %i\n", portscReg->woe);
+        kuPrint("rsvd: %i\n", portscReg->rsvd);
+        kuPrint("dr: %i\n", portscReg->dr);
+        kuPrint("wpr: %i\n", portscReg->wpr);
+
+        while (true);
+
         while (true) {
             for (uint32_t i = 1; i <= m_numPorts; i++) {
                 volatile XhciPortscRegister* portscReg = _getPortscReg(i);
