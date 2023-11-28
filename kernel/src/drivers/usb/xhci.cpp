@@ -105,9 +105,6 @@ namespace drivers {
         // Enable the controller
         _enableController();
 
-        // Hot reset the ports
-        _resetPorts();
-
         while (true) {
             for (uint32_t i = 1; i <= m_numPorts; i++) {
                 XhciPortscRegister portscReg;
