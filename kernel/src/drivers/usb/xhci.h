@@ -963,30 +963,35 @@ Flag is ‘1’. Refer to Section 7.6 for more information on the xHCI Debug
 Capability operation.
 */
 struct XhciPortscRegister {
-    uint32_t    ccs         : 1;
-    uint32_t    ped         : 1;
-    uint32_t    tm          : 1;
-    uint32_t    oca         : 1;
-    uint32_t    pr          : 1;
-    uint32_t    pls         : 4;
-    uint32_t    pp          : 1;
-    uint32_t    portSpeed   : 4;
-    uint32_t    pic         : 2;
-    uint32_t    lws         : 1;
-    uint32_t    csc         : 1;
-    uint32_t    pec         : 1;
-    uint32_t    wrc         : 1;
-    uint32_t    occ         : 1;
-    uint32_t    prc         : 1;
-    uint32_t    plc         : 1;
-    uint32_t    cec         : 1;
-    uint32_t    cas         : 1;
-    uint32_t    wce         : 1;
-    uint32_t    wde         : 1;
-    uint32_t    woe         : 1;
-    uint32_t    rsvd        : 2;
-    uint32_t    dr          : 1;
-    uint32_t    wpr         : 1;
+    union {
+        uint32_t raw;
+        struct {
+            uint32_t    ccs         : 1;
+            uint32_t    ped         : 1;
+            uint32_t    tm          : 1;
+            uint32_t    oca         : 1;
+            uint32_t    pr          : 1;
+            uint32_t    pls         : 4;
+            uint32_t    pp          : 1;
+            uint32_t    portSpeed   : 4;
+            uint32_t    pic         : 2;
+            uint32_t    lws         : 1;
+            uint32_t    csc         : 1;
+            uint32_t    pec         : 1;
+            uint32_t    wrc         : 1;
+            uint32_t    occ         : 1;
+            uint32_t    prc         : 1;
+            uint32_t    plc         : 1;
+            uint32_t    cec         : 1;
+            uint32_t    cas         : 1;
+            uint32_t    wce         : 1;
+            uint32_t    wde         : 1;
+            uint32_t    woe         : 1;
+            uint32_t    rsvd        : 2;
+            uint32_t    dr          : 1;
+            uint32_t    wpr         : 1;
+        } bits __attribute__((packed));
+    };
 } __attribute__((packed));
 static_assert(sizeof(XhciPortscRegister) == 4);
 
@@ -1157,7 +1162,11 @@ private:
     Attribute: RO, RW, RW1C (field dependent)
     Size 32 bits
     */
-    volatile XhciPortscRegister* _getPortscReg(uint32_t portNum);
+    void _readPortscReg(uint32_t portNum, XhciPortscRegister& reg);
+    void _writePortscReg(uint32_t portNum, XhciPortscRegister& reg);
+
+    void _resetPort(uint32_t portNum);
+    void _resetPorts();
 };
 } // namespace drivers
 

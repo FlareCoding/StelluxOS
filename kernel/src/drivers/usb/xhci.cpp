@@ -39,6 +39,33 @@ namespace drivers {
         return g_globalXhciInstance;
     }
 
+    void printPortscRegister(const XhciPortscRegister& reg) {
+        kuPrint("PORTSC Register: raw=0x%x\n", reg.raw);
+        kuPrint("CCS: %i\n", reg.bits.ccs);
+        kuPrint("PED: %i ", reg.bits.ped);
+        kuPrint("TM: %i ", reg.bits.tm);
+        kuPrint("OCA: %i ", reg.bits.oca);
+        kuPrint("PR: %i\n", reg.bits.pr);
+        kuPrint("PLS: %i\n", reg.bits.pls);
+        kuPrint("PP: %i\n", reg.bits.pp);
+        kuPrint("Port Speed: %i\n", reg.bits.portSpeed);
+        kuPrint("PIC: %i ", reg.bits.pic);
+        kuPrint("LWS: %i ", reg.bits.lws);
+        kuPrint("CSC: %i ", reg.bits.csc);
+        kuPrint("PEC: %i\n", reg.bits.pec);
+        kuPrint("WRC: %i ", reg.bits.wrc);
+        kuPrint("OCC: %i ", reg.bits.occ);
+        kuPrint("PRC: %i ", reg.bits.prc);
+        kuPrint("PLC: %i ", reg.bits.plc);
+        kuPrint("CEC: %i\n", reg.bits.cec);
+        kuPrint("CAS: %i ", reg.bits.cas);
+        kuPrint("WCE: %i ", reg.bits.wce);
+        kuPrint("WDE: %i ", reg.bits.wde);
+        kuPrint("WOE: %i\n", reg.bits.woe);
+        kuPrint("DR: %i ", reg.bits.dr);
+        kuPrint("WPR: %i\n", reg.bits.wpr);
+    }
+
     bool XhciDriver::init(uint64_t pciBarAddress) {
         _mapDeviceMmio(pciBarAddress);
 
@@ -78,41 +105,14 @@ namespace drivers {
         // Enable the controller
         _enableController();
 
-        // --- DEBUGGING STAGE --- //
-        volatile XhciPortscRegister* portscReg = _getPortscReg(1);
-        kuPrint("total: 0x%llx\n", *(volatile uint32_t*)portscReg);
-        kuPrint("ccs: %i\n", portscReg->ccs);
-        kuPrint("ped: %i\n", portscReg->ped);
-        kuPrint("tm: %i\n", portscReg->tm);
-        kuPrint("oca: %i\n", portscReg->oca);
-        kuPrint("pr: %i\n", portscReg->pr);
-        kuPrint("pls: %i\n", portscReg->pls);
-        kuPrint("pp: %i\n", portscReg->pp);
-        kuPrint("portSpeed: %i\n", portscReg->portSpeed);
-        kuPrint("pic: %i\n", portscReg->pic);
-        kuPrint("lws: %i\n", portscReg->lws);
-        kuPrint("csc: %i\n", portscReg->csc);
-        kuPrint("pec: %i\n", portscReg->pec);
-        kuPrint("wrc: %i\n", portscReg->wrc);
-        kuPrint("occ: %i\n", portscReg->occ);
-        kuPrint("prc: %i\n", portscReg->prc);
-        kuPrint("plc: %i\n", portscReg->plc);
-        kuPrint("cec: %i\n", portscReg->cec);
-        kuPrint("cas: %i\n", portscReg->cas);
-        kuPrint("wce: %i\n", portscReg->wce);
-        kuPrint("wde: %i\n", portscReg->wde);
-        kuPrint("woe: %i\n", portscReg->woe);
-        kuPrint("rsvd: %i\n", portscReg->rsvd);
-        kuPrint("dr: %i\n", portscReg->dr);
-        kuPrint("wpr: %i\n", portscReg->wpr);
-
-        while (true);
+        // Hot reset the ports
+        _resetPorts();
 
         while (true) {
             for (uint32_t i = 1; i <= m_numPorts; i++) {
-                volatile XhciPortscRegister* portscReg = _getPortscReg(i);
-                uint32_t connectStatus = (uint32_t)portscReg->ccs;
-                kuPrint("%i ", connectStatus);
+                XhciPortscRegister portscReg;
+                _readPortscReg(i, portscReg);
+                kuPrint("%i ", portscReg.bits.ccs);
             }
             kuPrint("\n");
 
@@ -224,11 +224,42 @@ namespace drivers {
         return true;
     }
 
-    volatile XhciPortscRegister* XhciDriver::_getPortscReg(uint32_t portNum) {
+    void XhciDriver::_readPortscReg(uint32_t portNum, XhciPortscRegister& reg) {
         // Operational Base + (400h + (10h * (n – 1)))
         uint64_t opbase = (uint64_t)m_opRegisters;
         uint64_t portscBase = opbase + (0x400 + (0x10 * (portNum - 1)));
 
-        return (volatile XhciPortscRegister*)portscBase;
+        reg.raw = ((volatile XhciPortscRegister*)portscBase)->raw;
+    }
+
+    void XhciDriver::_writePortscReg(uint32_t portNum, XhciPortscRegister& reg) {
+        // Operational Base + (400h + (10h * (n – 1)))
+        uint64_t opbase = (uint64_t)m_opRegisters;
+        uint64_t portscBase = opbase + (0x400 + (0x10 * (portNum - 1)));
+
+        ((volatile XhciPortscRegister*)portscBase)->raw = reg.raw;
+    }
+
+    void XhciDriver::_resetPort(uint32_t portNum) {
+        XhciPortscRegister portscReg;
+
+        _readPortscReg(portNum, portscReg);
+        portscReg.bits.pr = 1;
+        _writePortscReg(portNum, portscReg);
+
+        do {
+            _readPortscReg(portNum, portscReg);
+            msleep(10);
+        } while (portscReg.bits.pr);
+
+        _readPortscReg(portNum, portscReg);
+        portscReg.bits.prc = 1;
+        _writePortscReg(portNum, portscReg);
+    }
+
+    void XhciDriver::_resetPorts() {
+        for (uint32_t i = 1; i <= m_numPorts; i++) {
+            _resetPort(i);
+        }
     }
 } // namespace drivers
