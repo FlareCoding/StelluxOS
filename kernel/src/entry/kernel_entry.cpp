@@ -182,22 +182,29 @@ void _kuser_entry() {
     KernelTimer::calibrateApicTimer(100);
 
     // Start the kernel-wide APIC periodic timer
-    KernelTimer::startApicPeriodicTimer();
+    //KernelTimer::startApicPeriodicTimer();
 
     if (acpiController.hasPciDeviceTable()) {
         auto pciDeviceTable = acpiController.getPciDeviceTable();
         
         for (size_t i = 0; i < pciDeviceTable->getDeviceCount(); i++) {
-            dbgPrintPciDeviceInfo(&pciDeviceTable->getDeviceInfo(i).headerInfo);
+            //dbgPrintPciDeviceInfo(&pciDeviceTable->getDeviceInfo(i).headerInfo);
         }
 
         size_t idx = pciDeviceTable->findXhciController();
         if (idx != kstl::npos) {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
+            uint8_t interruptLine = xhciControllerPciDeviceInfo.headerInfo.interruptLine;
+            kuPrint("bus      : 0x%llx\n", xhciControllerPciDeviceInfo.bus);
+            kuPrint("device   : 0x%llx\n", xhciControllerPciDeviceInfo.device);
+            kuPrint("function : 0x%llx\n", xhciControllerPciDeviceInfo.function);
+            kuPrint("caps     : 0x%llx\n", xhciControllerPciDeviceInfo.capabilities);
+            kuPrint("MSI    Support  : %i\n", HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapabilityMsi));
+            kuPrint("MSI-X  Support  : %i\n", HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapabilityMsiX));
             
             RUN_ELEVATED({
                 auto& xhciDriver = drivers::XhciDriver::get();
-                bool status = xhciDriver.init(xhciControllerPciDeviceInfo.barAddress);
+                bool status = xhciDriver.init(xhciControllerPciDeviceInfo.barAddress, interruptLine);
 
                 if (!status) {
                     kuPrint("[-] Failed to initialize xHci USB3.0 controller\n");

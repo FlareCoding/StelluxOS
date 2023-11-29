@@ -6,7 +6,6 @@
 #include <kprint.h>
 
 namespace drivers {
-
     XhciDriver g_globalXhciInstance;
 
     void printXhciCapabilityRegisters(volatile XhciCapabilityRegisters* capRegs) {
@@ -33,6 +32,10 @@ namespace drivers {
         kuPrint("DCBAAP: %llx\n", opRegs->dcbaap);
         kuPrint("CONFIG: %llx\n", opRegs->config);
         kuPrint("\n");
+    }
+
+    void xhciInterruptHandler() {
+        kuPrint("xhciInterruptHandler fired!\n");
     }
 
     XhciDriver& XhciDriver::get() {
@@ -66,14 +69,14 @@ namespace drivers {
         kuPrint("WPR: %i\n", reg.bits.wpr);
     }
 
-    bool XhciDriver::init(uint64_t pciBarAddress) {
+    bool XhciDriver::init(uint64_t pciBarAddress, uint8_t interruptLine) {
         _mapDeviceMmio(pciBarAddress);
 
         uint64_t opRegBase = (uint64_t)m_capRegisters + m_capRegisters->caplength;
         m_opRegisters = (volatile XhciOperationalRegisters*)opRegBase;
 
-        uint64_t runtimeRegBase = opRegBase + m_capRegisters->rtsoff;
-        m_rtRegisters = (volatile XhciRuntimeRegisters*)runtimeRegBase;
+        m_runtimeRegisterBase = opRegBase + m_capRegisters->rtsoff;
+        m_rtRegisters = (volatile XhciRuntimeRegisters*)m_runtimeRegisterBase;
 
         m_maxDeviceSlots = XHCI_MAX_DEVICE_SLOTS(m_capRegisters);
         m_numPorts = XHCI_NUM_PORTS(m_capRegisters);
@@ -96,24 +99,52 @@ namespace drivers {
         }
         kuPrint("[XHCI] Initialized device context array\n");
 
+        kuPrint("System has %i ports and %i device slots\n", m_numPorts, m_maxDeviceSlots);
+        kuPrint("IRQ Line: %i\n", interruptLine);
+
+        // Allocate memory for the ERST
+        XhciErstEntry* eventRingSegmentTable = (XhciErstEntry*)kmallocAligned(sizeof(XhciErstEntry) * 1, 64);
+
+        // Allocate memory for the Event Ring segment
+        XhciTransferRequestBlock* eventRingSegment = (XhciTransferRequestBlock*)kmallocAligned(sizeof(XhciTransferRequestBlock) * m_defaultEventRingSize, 64);
+
+        // Initialize ERST entry to point to the Event Ring segment
+        eventRingSegmentTable[0].ringSegmentBaseAddress = (uint64_t)__pa(eventRingSegment);
+        eventRingSegmentTable[0].ringSegmentSize = m_defaultEventRingSize;
+        eventRingSegmentTable[0].rsvd = 0;
+
+        // Write to ERSTBA register
+        volatile uint64_t* erstba = _getErstbaRegAddress(0);
+        *erstba = (uint64_t)__pa(eventRingSegmentTable);
+
+        // Write to ERSTSZ register
+        volatile uint32_t* erstsz = _getErstszRegAddress(0);
+        *erstsz = 1;
+
+        // Initialize and set ERDP
+        volatile uint64_t* erdp = _getErdpRegAddress(0);
+        *erdp = (uint64_t)__pa(eventRingSegment);
+
+        // Enable interrupts
+        //_enableInterrupter(0);
+
         kuPrint("\n\n");
         // printXhciCapabilityRegisters(m_capRegisters);
         printXhciOperationalRegisters(m_opRegisters);
 
-        kuPrint("System has %i ports and %i device slots\n", m_numPorts, m_maxDeviceSlots);
-
         // Enable the controller
         _enableController();
 
-        while (true) {
-            for (uint32_t i = 1; i <= m_numPorts; i++) {
-                XhciPortscRegister portscReg;
-                _readPortscReg(i, portscReg);
-                kuPrint("%i ", portscReg.bits.ccs);
+        for (uint32_t i = 1; i <= m_numPorts; i++) {
+            XhciPortscRegister portscReg;
+            _readPortscReg(i, portscReg);
+            
+            if (portscReg.bits.ccs) {
+                kuPrint("--- Port %i: Connected ----\n", i);
+                // kuPrint("  speed : %i\n", portscReg.bits.portSpeed);
+                // kuPrint("  pls   : %i\n", portscReg.bits.pls);
+                // kuPrint("\n");
             }
-            kuPrint("\n");
-
-            sleep(1);
         }
 
         return true;
@@ -125,6 +156,7 @@ namespace drivers {
             paging::mapPage((void*)(pciBarAddress + offset), (void*)(pciBarAddress + offset), USERSPACE_PAGE, paging::g_kernelRootPageTable);
         }
 
+        m_xhcBase = pciBarAddress;
         m_capRegisters = (volatile XhciCapabilityRegisters*)pciBarAddress;
     }
 
@@ -193,12 +225,19 @@ namespace drivers {
     }
 
     bool XhciDriver::_initializeDeviceContexts(XhciDeviceContext** dcbaap) {
-        XhciDeviceContext* firstDeviceContext = (XhciDeviceContext*)kmallocAligned(sizeof(XhciDeviceContext), 64);
-        if (!firstDeviceContext) {
-            return false;
-        }
+        for (uint32_t slot = 1; slot <= m_maxDeviceSlots; ++slot) {
+            XhciDeviceContext* deviceContext = (XhciDeviceContext*)kmallocAligned(sizeof(XhciDeviceContext), 64);
+            if (!deviceContext) {
+                return false;
+            }
+            zeromem(deviceContext, sizeof(XhciDeviceContext));
 
-        zeromem(firstDeviceContext, sizeof(XhciDeviceContext));
+            // Configure the Control Endpoint Context
+            _configureControlEndpoint(&deviceContext->endpointContext[0]);
+
+            // Store the Device Context in the DCBAA
+            dcbaap[slot] = deviceContext;
+        }
 
         /*
         // xHci Spec Section 6.1 (page 404)
@@ -216,9 +255,20 @@ namespace drivers {
             kuPrint("TO-DO: if maxScratchpadBuffers > 0, initialize scratchpad buffer array\n");
         }
 
-        dcbaap[1] = firstDeviceContext;
-
         return true;
+    }
+
+    void XhciDriver::_configureControlEndpoint(XhciEndpointContext* ctx) {
+        // Zero out the endpoint context
+        zeromem(ctx, sizeof(XhciEndpointContext));
+
+        // Set the Max Packet Size for the control endpoint (usually 64 for USB 2.0, 512 for USB 3.0)
+        // This may vary based on the USB version and device capabilities.
+        ctx->maxPacketSize = 512;
+
+        // Set the Interval for the control endpoint
+        // For control endpoints, this is usually set to 0.
+        ctx->interval = 0;
     }
 
     void XhciDriver::_readPortscReg(uint32_t portNum, XhciPortscRegister& reg) {
@@ -226,7 +276,9 @@ namespace drivers {
         uint64_t opbase = (uint64_t)m_opRegisters;
         uint64_t portscBase = opbase + (0x400 + (0x10 * (portNum - 1)));
 
-        reg.raw = ((volatile XhciPortscRegister*)portscBase)->raw;
+        volatile uint32_t* hwreg = (volatile uint32_t*)portscBase;
+
+        reg.raw = *hwreg;
     }
 
     void XhciDriver::_writePortscReg(uint32_t portNum, XhciPortscRegister& reg) {
@@ -234,7 +286,9 @@ namespace drivers {
         uint64_t opbase = (uint64_t)m_opRegisters;
         uint64_t portscBase = opbase + (0x400 + (0x10 * (portNum - 1)));
 
-        ((volatile XhciPortscRegister*)portscBase)->raw = reg.raw;
+        volatile uint32_t* hwreg = (volatile uint32_t*)portscBase;
+
+        *hwreg = reg.raw;
     }
 
     void XhciDriver::_resetPort(uint32_t portNum) {
@@ -258,5 +312,63 @@ namespace drivers {
         for (uint32_t i = 1; i <= m_numPorts; i++) {
             _resetPort(i);
         }
+    }
+
+    void XhciDriver::_readImanReg(uint32_t interrupter, XhciInterrupterManagementRegister& reg) {
+        // Address: Runtime Base + 020h + (32 * Interrupter)
+        //          where: Interrupter is 0, 1, 2, 3, … 1023
+        uint64_t base = m_runtimeRegisterBase + 0x20 + (32 * interrupter);
+        volatile uint32_t* hwreg = (volatile uint32_t*)base;
+
+        reg.raw = *hwreg;
+    }
+
+    void XhciDriver::_writeImanReg(uint32_t interrupter, XhciInterrupterManagementRegister& reg) {
+        // Address: Runtime Base + 020h + (32 * Interrupter)
+        //          where: Interrupter is 0, 1, 2, 3, … 1023
+        uint64_t base = m_runtimeRegisterBase + 0x20 + (32 * interrupter);
+        volatile uint32_t* hwreg = (volatile uint32_t*)base;
+
+        *hwreg = reg.raw;
+    }
+
+    void XhciDriver::_enableInterrupter(uint32_t interrupter) {
+        XhciInterrupterManagementRegister imanReg;
+        
+        _readImanReg(interrupter, imanReg);
+        imanReg.bits.interruptEnabled = 1;
+        _writeImanReg(interrupter, imanReg);
+    }
+
+    void XhciDriver::_acknowledgeInterrupt(uint32_t interrupter) {
+        XhciInterrupterManagementRegister imanReg;
+        
+        _readImanReg(interrupter, imanReg);
+        imanReg.bits.interruptPending = 1;
+        _writeImanReg(interrupter, imanReg);
+    }
+
+    volatile uint32_t* XhciDriver::_getErstszRegAddress(uint32_t interrupter) {
+        // Address: Runtime Base + 028h + (32 * Interrupter)
+        //          where: Interrupter is 0, 1, 2, 3, … 1023
+        uint64_t base = m_runtimeRegisterBase + 0x28 + (32 * interrupter);
+
+        return (volatile uint32_t*)base;
+    }
+
+    volatile uint64_t* XhciDriver::_getErstbaRegAddress(uint32_t interrupter) {
+        // Address: Runtime Base + 030h + (32 * Interrupter)
+        //          where: Interrupter is 0, 1, 2, 3, … 1023
+        uint64_t base = m_runtimeRegisterBase + 0x30 + (32 * interrupter);
+
+        return (volatile uint64_t*)base;
+    }
+
+    volatile uint64_t* XhciDriver::_getErdpRegAddress(uint32_t interrupter) {
+        // Address: Runtime Base + 038h + (32 * Interrupter)
+        //          where: Interrupter is 0, 1, 2, 3, … 1023
+        uint64_t base = m_runtimeRegisterBase + 0x38 + (32 * interrupter);
+
+        return (volatile uint64_t*)base;
     }
 } // namespace drivers

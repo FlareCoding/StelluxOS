@@ -13,7 +13,14 @@ struct PciDeviceInfo {
     PciDeviceHeader headerInfo;
     uint64_t        functionAddress;
     uint64_t        barAddress;
+    uint8_t         bus;
+    uint8_t         device;
+    uint8_t         function;
+    uint8_t         padding;
+    uint32_t        capabilities;
 };
+
+#define HAS_PCI_CAP(info, cap) ((bool)(info.capabilities & (1u << cap)))
 
 class Mcfg {
 public:
@@ -42,6 +49,15 @@ private:
 
     __PRIVILEGED_CODE
     void _enumeratePciBus(uint64_t baseAddress, uint64_t bus);
+
+    __PRIVILEGED_CODE
+    uint32_t _readCapabilities(uint8_t bus, uint8_t device, uint8_t function);
+
+    __PRIVILEGED_CODE
+    uint32_t _getPciConfigAddress(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+
+    __PRIVILEGED_CODE
+    uint8_t _pciConfigRead8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 };
 
 #endif

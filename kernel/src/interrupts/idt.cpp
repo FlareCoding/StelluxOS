@@ -131,6 +131,8 @@ void __common_irq_entry(PtRegs* frame) {
 
 // Common entry point for all interrupt service routines
 EXTERN_C __PRIVILEGED_CODE void __common_isr_entry(PtRegs frame) {
+    kprint("Received int: %i\n", frame.intno);
+
     // Check whether the interrupt is an IRQ or a trap/exception
     if (frame.intno >= IRQ0) {
         __common_irq_entry(&frame);

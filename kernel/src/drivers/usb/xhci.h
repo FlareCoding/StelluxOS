@@ -3,10 +3,6 @@
 #include <ktypes.h>
 
 namespace drivers {
-
-#define XHCI_DCBAA_SIZE             256
-#define XHCI_DOORBELL_ARRAY_SIZE    256
-
 /*
 // xHci Spec Section 5.4.1 USB Table 5-20: USB Command Register Bit Definitions (USBCMD) (page 358)
 
@@ -759,6 +755,43 @@ struct XhciTransferRequestBlock {
 };
 
 /*
+// xHci Spec Section 6.5 Event Ring Segment Table Figure 6-40: Event Ring Segment Table Entry
+
+Note: The Ring Segment Size may be set to any value from 16 to 4096, however
+software shall allocate a buffer for the Event Ring Segment that rounds up its
+size to the nearest 64B boundary to allow full cache-line accesses.
+*/
+struct XhciErstEntry {
+    uint64_t ringSegmentBaseAddress;  // Base address of the Event Ring segment
+    uint32_t ringSegmentSize;         // Size of the Event Ring segment (only low 16 bits are used)
+    uint32_t rsvd;
+} __attribute__((packed));
+
+/*
+// xHci Spec Section 5.5.2.1 (page 390)
+
+Address: Runtime Base + 020h + (32 * Interrupter)
+        where: Interrupter is 0, 1, 2, 3, … 1023
+Default Value: 0000 0000h
+Attribute: RW
+Size: 32 bits
+
+The Interrupter Management register allows system software to enable,
+disable, and detect xHC interrupts.
+*/
+struct XhciInterrupterManagementRegister {
+    union {
+        uint32_t raw;
+        struct {
+            uint32_t interruptPending   : 1;  // Interrupt Pending (IP), bit 0
+            uint32_t interruptEnabled   : 1;  // Interrupt Enable (IE), bit 1
+            uint32_t reserved           : 30; // Reserved bits, bits 2-31
+        } bits __attribute__((packed));
+    };
+} __attribute__((packed));
+static_assert(sizeof(XhciInterrupterManagementRegister) == 4);
+
+/*
 // xHci Spec Section 5.5.2 (page 389)
 
 Note: All registers of the Primary Interrupter shall be initialized before
@@ -793,7 +826,6 @@ Qword references. If a system is incapable of issuing Qword references, then
 writes to the Qword address fields shall be performed using 2 Dword
 references; low Dword-first, high-Dword second.
 */
-
 struct XhciRuntimeRegisters {
     uint32_t mfIndex;                          // Microframe Index (offset 0000h)
     uint32_t rsvdZ[7];                         // Reserved (offset 001Fh:0004h)
@@ -1101,11 +1133,14 @@ public:
     XhciDriver() = default;
     ~XhciDriver() = default;
 
-    bool init(uint64_t pciBarAddress);
+    bool init(uint64_t pciBarAddress, uint8_t interruptLine);
 
 private:
+    uint64_t                             m_xhcBase;
     volatile XhciCapabilityRegisters*    m_capRegisters;
     volatile XhciOperationalRegisters*   m_opRegisters;
+
+    uint64_t                             m_runtimeRegisterBase;
     volatile XhciRuntimeRegisters*       m_rtRegisters;
 
     uint32_t m_maxDeviceSlots;
@@ -1152,6 +1187,8 @@ private:
 
     bool _initializeDeviceContexts(XhciDeviceContext** dcbaap);
 
+    void _configureControlEndpoint(XhciEndpointContext* ctx);
+
 private:
     /*
     // xHci Spec Section 5.4.8
@@ -1167,6 +1204,62 @@ private:
 
     void _resetPort(uint32_t portNum);
     void _resetPorts();
+
+private:
+    const uint64_t m_defaultEventRingSize = 1024;
+
+    /*
+    // xHci Spec Section 5.5.2.1
+
+    Address: Runtime Base + 020h + (32 * Interrupter)
+        where: Interrupter is 0, 1, 2, 3, … 1023
+    Default Value: 0000 0000h
+    Attribute: RW
+    Size: 32 bits
+    */
+    void _readImanReg(uint32_t interrupter, XhciInterrupterManagementRegister& reg);
+    void _writeImanReg(uint32_t interrupter, XhciInterrupterManagementRegister& reg);
+
+    void _enableInterrupter(uint32_t interrupter);
+
+    void _acknowledgeInterrupt(uint32_t interrupter);
+
+    /*
+    // xHci Spec 5.5.2.3.1 Event Ring Segment Table Size Register (ERSTSZ)
+
+    Address: Runtime Base + 028h + (32 * Interrupter)
+             where: Interrupter is 0, 1, 2, 3, … 1023
+    Default Value: 0000 0000h
+    Attribute: RW
+    Size: 32 bits
+
+    The maximum value supported by an xHC
+    implementation for this register is defined by the ERST Max field in the HCSPARAMS2 register
+    (5.3.4).
+    */
+    volatile uint32_t* _getErstszRegAddress(uint32_t interrupter);
+
+    /*
+    // xHci Spec Section 5.5.2.3.2 Event Ring Segment Table Base Address Register (ERSTBA)
+
+    Address: Runtime Base + 030h + (32 * Interrupter)
+             where: Interrupter is 0, 1, 2, 3, … 1023
+    Default Value: 0000 0000 0000 0000h
+    Attribute: RW
+    Size: 64 bits
+    */
+    volatile uint64_t* _getErstbaRegAddress(uint32_t interrupter);
+
+    /*
+    // xHci Spec Section 5.5.2.3.3 Event Ring Dequeue Pointer Register (ERDP)
+
+    Address: Runtime Base + 038h + (32 * Interrupter)
+             where: Interrupter is 0, 1, 2, 3, … 1023
+    Default Value: 0000 0000 0000 0000h
+    Attribute: RW
+    Size: 64 bits
+    */
+    volatile uint64_t* _getErdpRegAddress(uint32_t interrupter);
 };
 } // namespace drivers
 

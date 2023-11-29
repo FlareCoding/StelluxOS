@@ -1,6 +1,7 @@
 #include "mcfg.h"
 #include <paging/page.h>
 #include <paging/phys_addr_translation.h>
+#include <ports/ports.h>
 
 Mcfg::Mcfg(McfgHeader* table) {
     m_base = (McfgHeader*)__va(table);
@@ -53,9 +54,14 @@ void Mcfg::_enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
 
         *dest = *src;
     }
-    
+
     info.functionAddress = functionAddress;
     info.barAddress = getBarFromPciHeader(&info.headerInfo);
+    info.bus = (deviceAddress >> 20) & 0xFF;
+    info.device = (deviceAddress >> 15) & 0x1F;
+    info.function = (uint8_t)function;
+    info.capabilities = _readCapabilities(info.bus, info.device, info.function);
+
     m_devices.pushBack(info);
 }
 
@@ -91,4 +97,99 @@ void Mcfg::_enumeratePciBus(uint64_t baseAddress, uint64_t bus) {
     for (uint64_t device = 0; device < 32; device++){
         _enumeratePciDevice(busAddress, device);
     }
+}
+
+__PRIVILEGED_CODE
+uint32_t Mcfg::_readCapabilities(uint8_t bus, uint8_t device, uint8_t function) {
+    uint32_t capabilities;
+
+    uint8_t capPointer = _pciConfigRead8(bus, device, function, 0x34);
+
+    while (capPointer != 0 && capPointer != 0xFF) {
+        uint8_t capId = _pciConfigRead8(bus, device, function, capPointer);
+        PciCapability cap = PciCapabilityInvalidCap;
+
+        switch (capId) {
+            case PCI_CAPABILITY_ID_PMI: 
+                cap = PciCapabilityPmi;
+                break;
+            case PCI_CAPABILITY_ID_AGP: 
+                cap = PciCapabilityAgp;
+                break;
+            case PCI_CAPABILITY_ID_VPD: 
+                cap = PciCapabilityVpd;
+                break;
+            case PCI_CAPABILITY_ID_SLOT_ID: 
+                cap = PciCapabilitySlotId;
+                break;
+            case PCI_CAPABILITY_ID_MSI: 
+                cap = PciCapabilityMsi;
+                break;
+            case PCI_CAPABILITY_ID_COMPACTPCI_HS: 
+                cap = PciCapabilityCPHotSwap;
+                break;
+            case PCI_CAPABILITY_ID_PCI_X: 
+                cap = PciCapabilityPciX;
+                break;
+            case PCI_CAPABILITY_ID_HYPERTRANSPORT: 
+                cap = PciCapabilityHyperTransport;
+                break;
+            case PCI_CAPABILITY_ID_VENDOR: 
+                cap = PciCapabilityVendorSpecific;
+                break;
+            case PCI_CAPABILITY_ID_DEBUG_PORT: 
+                cap = PciCapabilityDebugPort;
+                break;
+            case PCI_CAPABILITY_ID_CPCI_RES_CTRL: 
+                cap = PciCapabilityCPCentralResourceControl;
+                break;
+            case PCI_CAPABILITY_ID_HOTPLUG: 
+                cap = PciCapabilityPciHotPlug;
+                break;
+            case PCI_CAPABILITY_ID_BRIDGE_SUBVID: 
+                cap = PciCapabilityBridgeSubsystemVendorId;
+                break;
+            case PCI_CAPABILITY_ID_AGP_8X: 
+                cap = PciCapabilityAgp8x;
+                break;
+            case PCI_CAPABILITY_ID_SECURE_DEVICE: 
+                cap = PciCapabilitySecureDevice;
+                break;
+            case PCI_CAPABILITY_ID_PCI_EXPRESS: 
+                cap = PciCapabilityPciExpress;
+                break;
+            case PCI_CAPABILITY_ID_MSI_X: 
+                cap = PciCapabilityMsiX;
+                break;
+            case PCI_CAPABILITY_ID_SATA_DATA_IDX: 
+                cap = PciCapabilitySataConfig;
+                break;
+            case PCI_CAPABILITY_ID_PCI_EXPRESS_AF: 
+                cap = PciCapabilityAdvancedFeatures;
+                break;
+            default: 
+                break;
+        }
+
+        capPointer = _pciConfigRead8(bus, device, function, capPointer + 1);
+
+        if (cap != PciCapabilityInvalidCap) {
+            capabilities |= (1u << cap);
+        }
+    }
+
+    return capabilities;
+}
+
+__PRIVILEGED_CODE
+uint32_t Mcfg::_getPciConfigAddress(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
+    return ((uint32_t)(bus) << 16) | ((uint32_t)(slot) << 11) |
+           ((uint32_t)(func) << 8) | (offset & 0xfc) | ((uint32_t)0x80000000);
+}
+
+__PRIVILEGED_CODE
+uint8_t Mcfg::_pciConfigRead8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
+    outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
+    uint32_t data = inl(PCI_CONFIG_DATA);
+    return (data >> ((offset & 3) * 8)) & 0xff;
 }
