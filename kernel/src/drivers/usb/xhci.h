@@ -1,6 +1,6 @@
 #ifndef XCHI_H
 #define XCHI_H
-#include <ktypes.h>
+#include <acpi/mcfg.h>
 
 namespace drivers {
 /*
@@ -1133,7 +1133,7 @@ public:
     XhciDriver() = default;
     ~XhciDriver() = default;
 
-    bool init(uint64_t pciBarAddress, uint8_t interruptLine);
+    bool init(PciDeviceInfo& deviceInfo);
 
 private:
     uint64_t                             m_xhcBase;

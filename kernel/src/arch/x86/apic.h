@@ -15,6 +15,9 @@ void initializeApic();
 // Returns the base address of APIC
 void* getApicBase();
 
+// Returns the physical base of local APIC
+uint64_t getLocalApicPhysicalBase();
+
 // Tell APIC that an interupt has been processed
 void completeApicIrq();
 

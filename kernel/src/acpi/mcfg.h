@@ -22,6 +22,24 @@ struct PciDeviceInfo {
 
 #define HAS_PCI_CAP(info, cap) ((bool)(info.capabilities & (1u << cap)))
 
+struct PciMsiXCapability {
+    uint16_t messageControl;
+    uint32_t tableOffset;
+    uint32_t pbaOffset; // PBA: Pending Bit Array
+} __attribute__((packed));
+
+struct MsiXTableEntry {
+    uint64_t messageAddress;
+    uint32_t messageData;
+    uint32_t vectorControl;
+} __attribute__((packed));
+
+struct PciMsiCapability {
+    uint16_t messageControl;
+    uint32_t messageAddress;
+    uint16_t messageData;
+} __attribute__((packed));
+
 class Mcfg {
 public:
     Mcfg(McfgHeader* table);
@@ -52,12 +70,12 @@ private:
 
     __PRIVILEGED_CODE
     uint32_t _readCapabilities(uint8_t bus, uint8_t device, uint8_t function);
-
-    __PRIVILEGED_CODE
-    uint32_t _getPciConfigAddress(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
-
-    __PRIVILEGED_CODE
-    uint8_t _pciConfigRead8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
 };
+
+__PRIVILEGED_CODE
+PciMsiXCapability _readMsixCapability(const uint8_t bus, const uint8_t device, const uint8_t function, uint32_t& capOffset);
+
+__PRIVILEGED_CODE
+PciMsiCapability _readMsiCapability(const uint8_t bus, const uint8_t device, const uint8_t function, uint32_t& capOffset);
 
 #endif

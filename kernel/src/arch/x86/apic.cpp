@@ -6,6 +6,7 @@
 #include <kelevate/kelevate.h>
 
 volatile uint32_t* g_lapicBase = NULL;
+uint64_t g_lapicPhysicalBase = 0;
 
 void initializeApic() {
     uint64_t apicBaseMsr;
@@ -26,6 +27,8 @@ void initializeApic() {
     });
 
     g_lapicBase = (uint32_t*)(apicBaseMsr & ~0xFFF);
+
+    g_lapicPhysicalBase = (uint64_t)g_lapicBase;
 
     // Map the LAPIC base into the kernel's address space
     void* lapicVirtualBase = zallocPage(); // this will lock a kernel page for our use
@@ -52,6 +55,10 @@ void initializeApic() {
 
 void* getApicBase() {
     return (void*)g_lapicBase;
+}
+
+uint64_t getLocalApicPhysicalBase() {
+    return g_lapicPhysicalBase;
 }
 
 void completeApicIrq() {

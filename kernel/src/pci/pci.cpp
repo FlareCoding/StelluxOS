@@ -1,5 +1,6 @@
 #include "pci.h"
 #include <paging/page.h>
+#include <ports/ports.h>
 #include <kprint.h>
 
 const char* g_pciDeviceClasses[] {
@@ -286,4 +287,54 @@ void dbgPrintPciDeviceInfo(PciDeviceHeader* header) {
         getPciSubclassName(header->classCode, header->subclass),
         getPciProgIFName(header->classCode, header->subclass, header->progIF)
     );
+}
+
+__PRIVILEGED_CODE
+uint32_t _getPciConfigAddress(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
+    return ((uint32_t)(bus) << 16) | ((uint32_t)(slot) << 11) |
+           ((uint32_t)(func) << 8) | (offset & 0xfc) | ((uint32_t)0x80000000);
+}
+
+__PRIVILEGED_CODE
+uint8_t pciConfigRead8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
+    outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
+    uint32_t data = inl(PCI_CONFIG_DATA);
+    return (data >> ((offset & 3) * 8)) & 0xff;
+}
+
+__PRIVILEGED_CODE
+uint16_t pciConfigRead16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
+    outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
+    uint32_t data = inl(PCI_CONFIG_DATA);
+    return (data >> ((offset & 2) * 8)) & 0xffff;
+}
+
+__PRIVILEGED_CODE
+uint32_t pciConfigRead32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
+    outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
+    return inl(PCI_CONFIG_DATA);
+}
+
+__PRIVILEGED_CODE
+void pciConfigWrite8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t value) {
+    outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
+    uint32_t data = inl(PCI_CONFIG_DATA);
+    data &= ~(0xFF << ((offset & 3) * 8)); // Clear the byte
+    data |= (uint32_t)value << ((offset & 3) * 8); // Set the new value
+    outl(PCI_CONFIG_DATA, data);
+}
+
+__PRIVILEGED_CODE
+void pciConfigWrite16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t value) {
+    outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
+    uint32_t data = inl(PCI_CONFIG_DATA);
+    data &= ~(0xFFFF << ((offset & 2) * 8)); // Clear the 16-bit word
+    data |= (uint32_t)value << ((offset & 2) * 8); // Set the new value
+    outl(PCI_CONFIG_DATA, data);
+}
+
+__PRIVILEGED_CODE
+void pciConfigWrite32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value) {
+    outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
+    outl(PCI_CONFIG_DATA, value);
 }

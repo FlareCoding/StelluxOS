@@ -3,6 +3,8 @@
 #include <paging/phys_addr_translation.h>
 #include <memory/kmemory.h>
 #include <time/ktime.h>
+#include <arch/x86/apic.h>
+#include <interrupts/interrupts.h>
 #include <kprint.h>
 
 namespace drivers {
@@ -69,8 +71,8 @@ namespace drivers {
         kuPrint("WPR: %i\n", reg.bits.wpr);
     }
 
-    bool XhciDriver::init(uint64_t pciBarAddress, uint8_t interruptLine) {
-        _mapDeviceMmio(pciBarAddress);
+    bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
+        _mapDeviceMmio(deviceInfo.barAddress);
 
         uint64_t opRegBase = (uint64_t)m_capRegisters + m_capRegisters->caplength;
         m_opRegisters = (volatile XhciOperationalRegisters*)opRegBase;
@@ -100,7 +102,51 @@ namespace drivers {
         kuPrint("[XHCI] Initialized device context array\n");
 
         kuPrint("System has %i ports and %i device slots\n", m_numPorts, m_maxDeviceSlots);
-        kuPrint("IRQ Line: %i\n", interruptLine);
+       
+        // if (HAS_PCI_CAP(deviceInfo, PciCapabilityMsiX)) {
+        //     uint32_t msixCapOffset = 0;
+        //     PciMsiXCapability msixCap = _readMsixCapability(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msixCapOffset);
+        //     uint16_t numEntries = (msixCap.messageControl & 0x7FF) + 1;
+        //     kuPrint("MSI-X Table Entries: %i\n", numEntries);
+        //     kuPrint("MSI-X Table Offset: 0x%llx\n", msixCap.tableOffset & ~0x7);
+
+        //     MsiXTableEntry* msixTable = (MsiXTableEntry*)kmallocAligned(sizeof(MsiXTableEntry) * numEntries, 64);
+
+        //     for (int i = 0; i < numEntries; ++i) {
+        //         msixTable[i].messageAddress = getLocalApicPhysicalBase();
+        //         msixTable[i].messageData = IRQ1 + i;
+        //         msixTable[i].vectorControl = 0; // Unmask the interrupt
+        //     }
+
+        //     uint32_t msixTableOffset = msixCap.tableOffset & ~0x7;
+        //     uint64_t msixTablePhysAddr = m_xhcBase + msixTableOffset;
+        //     kuPrint("msixTablePhysAddr: 0x%llx\n", msixTablePhysAddr);
+
+        //     paging::mapPage((void*)msixTablePhysAddr, (void*)msixTablePhysAddr, USERSPACE_PAGE, paging::g_kernelRootPageTable);
+
+        //     memcpy((void*)msixTablePhysAddr, msixTable, sizeof(MsiXTableEntry) * numEntries);
+
+        //     uint16_t msixControl = pciConfigRead16(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msixCapOffset);
+        //     msixControl |= 0x8000; // Set the MSI-X Enable bit
+        //     pciConfigWrite16(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msixCapOffset, msixControl);
+        // } else if (HAS_PCI_CAP(deviceInfo, PciCapabilityMsi)) {
+        //     uint32_t msiCapOffset = 0;
+        //     // Read the MSI capability structure
+        //     PciMsiCapability msiCap = _readMsiCapability(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msiCapOffset);
+
+        //     // Configure the MSI message address and data
+        //     uint32_t msiAddress = getLocalApicPhysicalBase(); // Address of the local APIC
+        //     uint16_t msiData = IRQ1; // Data, typically an interrupt vector
+
+        //     // Write the address and data to the appropriate MSI registers
+        //     pciConfigWrite32(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msiCapOffset + offsetof(PciMsiCapability, messageAddress), msiAddress);
+        //     pciConfigWrite16(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msiCapOffset + offsetof(PciMsiCapability, messageData), msiData);
+
+        //     // Enable MSI in the control register
+        //     uint16_t msiControl = pciConfigRead16(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msiCapOffset + offsetof(PciMsiCapability, messageControl));
+        //     msiControl |= 0x0001; // Set the MSI Enable bit
+        //     pciConfigWrite16(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msiCapOffset + offsetof(PciMsiCapability, messageControl), msiControl);
+        // }
 
         // Allocate memory for the ERST
         XhciErstEntry* eventRingSegmentTable = (XhciErstEntry*)kmallocAligned(sizeof(XhciErstEntry) * 1, 64);
@@ -126,7 +172,7 @@ namespace drivers {
         *erdp = (uint64_t)__pa(eventRingSegment);
 
         // Enable interrupts
-        //_enableInterrupter(0);
+        _enableInterrupter(0);
 
         kuPrint("\n\n");
         // printXhciCapabilityRegisters(m_capRegisters);

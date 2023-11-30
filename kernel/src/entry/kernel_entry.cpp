@@ -194,7 +194,6 @@ void _kuser_entry() {
         size_t idx = pciDeviceTable->findXhciController();
         if (idx != kstl::npos) {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
-            uint8_t interruptLine = xhciControllerPciDeviceInfo.headerInfo.interruptLine;
             kuPrint("bus      : 0x%llx\n", xhciControllerPciDeviceInfo.bus);
             kuPrint("device   : 0x%llx\n", xhciControllerPciDeviceInfo.device);
             kuPrint("function : 0x%llx\n", xhciControllerPciDeviceInfo.function);
@@ -204,7 +203,7 @@ void _kuser_entry() {
             
             RUN_ELEVATED({
                 auto& xhciDriver = drivers::XhciDriver::get();
-                bool status = xhciDriver.init(xhciControllerPciDeviceInfo.barAddress, interruptLine);
+                bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
 
                 if (!status) {
                     kuPrint("[-] Failed to initialize xHci USB3.0 controller\n");

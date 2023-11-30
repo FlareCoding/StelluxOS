@@ -98,4 +98,25 @@ uint64_t getBarFromPciHeader(PciDeviceHeader* header);
 
 void dbgPrintPciDeviceInfo(PciDeviceHeader* header);
 
+__PRIVILEGED_CODE
+uint32_t _getPciConfigAddress(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+
+__PRIVILEGED_CODE
+uint8_t pciConfigRead8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+
+__PRIVILEGED_CODE
+uint16_t pciConfigRead16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+
+__PRIVILEGED_CODE
+uint32_t pciConfigRead32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);
+
+__PRIVILEGED_CODE
+void pciConfigWrite8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint8_t value);
+
+__PRIVILEGED_CODE
+void pciConfigWrite16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint16_t value);
+
+__PRIVILEGED_CODE
+void pciConfigWrite32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
+
 #endif

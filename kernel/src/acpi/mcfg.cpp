@@ -1,7 +1,7 @@
 #include "mcfg.h"
 #include <paging/page.h>
 #include <paging/phys_addr_translation.h>
-#include <ports/ports.h>
+#include <interrupts/interrupts.h>
 
 Mcfg::Mcfg(McfgHeader* table) {
     m_base = (McfgHeader*)__va(table);
@@ -103,10 +103,10 @@ __PRIVILEGED_CODE
 uint32_t Mcfg::_readCapabilities(uint8_t bus, uint8_t device, uint8_t function) {
     uint32_t capabilities;
 
-    uint8_t capPointer = _pciConfigRead8(bus, device, function, 0x34);
+    uint8_t capPointer = pciConfigRead8(bus, device, function, 0x34);
 
     while (capPointer != 0 && capPointer != 0xFF) {
-        uint8_t capId = _pciConfigRead8(bus, device, function, capPointer);
+        uint8_t capId = pciConfigRead8(bus, device, function, capPointer);
         PciCapability cap = PciCapabilityInvalidCap;
 
         switch (capId) {
@@ -171,7 +171,7 @@ uint32_t Mcfg::_readCapabilities(uint8_t bus, uint8_t device, uint8_t function) 
                 break;
         }
 
-        capPointer = _pciConfigRead8(bus, device, function, capPointer + 1);
+        capPointer = pciConfigRead8(bus, device, function, capPointer + 1);
 
         if (cap != PciCapabilityInvalidCap) {
             capabilities |= (1u << cap);
@@ -182,14 +182,45 @@ uint32_t Mcfg::_readCapabilities(uint8_t bus, uint8_t device, uint8_t function) 
 }
 
 __PRIVILEGED_CODE
-uint32_t Mcfg::_getPciConfigAddress(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
-    return ((uint32_t)(bus) << 16) | ((uint32_t)(slot) << 11) |
-           ((uint32_t)(func) << 8) | (offset & 0xfc) | ((uint32_t)0x80000000);
+PciMsiXCapability _readMsixCapability(const uint8_t bus, const uint8_t device, const uint8_t function, uint32_t& capOffset) {
+    PciMsiXCapability msixCap;
+    uint8_t capPointer = pciConfigRead8(bus, device, function, offsetof(PciDeviceHeader, capabilitiesPtr));
+
+    while (capPointer != 0 && capPointer != 0xFF) {
+        uint8_t capId = pciConfigRead8(bus, device, function, capPointer);
+        if (capId == PCI_CAPABILITY_ID_MSI_X) {
+            // Read the MSI-X capability structure
+            msixCap.messageControl = pciConfigRead16(bus, device, function, capPointer + offsetof(PciMsiXCapability, messageControl));
+            msixCap.tableOffset = pciConfigRead32(bus, device, function, capPointer + offsetof(PciMsiXCapability, tableOffset));
+            msixCap.pbaOffset = pciConfigRead32(bus, device, function, capPointer + offsetof(PciMsiXCapability, pbaOffset));
+
+            capOffset = capPointer;
+            break;
+        }
+        capPointer = pciConfigRead8(bus, device, function, capPointer + 1);
+    }
+
+    return msixCap;
 }
 
 __PRIVILEGED_CODE
-uint8_t Mcfg::_pciConfigRead8(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
-    outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
-    uint32_t data = inl(PCI_CONFIG_DATA);
-    return (data >> ((offset & 3) * 8)) & 0xff;
+PciMsiCapability _readMsiCapability(const uint8_t bus, const uint8_t device, const uint8_t function, uint32_t& capOffset) {
+    PciMsiCapability msiCap;
+    uint8_t capPointer = pciConfigRead8(bus, device, function, offsetof(PciDeviceHeader, capabilitiesPtr));
+
+    while (capPointer != 0 && capPointer != 0xFF) {
+        uint8_t capId = pciConfigRead8(bus, device, function, capPointer);
+        if (capId == PCI_CAPABILITY_ID_MSI) {
+            // Read the MSI capability structure
+            msiCap.messageControl = pciConfigRead16(bus, device, function, capPointer + offsetof(PciMsiCapability, messageControl));
+            msiCap.messageAddress = pciConfigRead32(bus, device, function, capPointer + offsetof(PciMsiCapability, messageAddress));
+            msiCap.messageData = pciConfigRead16(bus, device, function, capPointer + offsetof(PciMsiCapability, messageData));
+
+            capOffset = capPointer;
+            break;
+        }
+        capPointer = pciConfigRead8(bus, device, function, capPointer + 1);
+    }
+
+    return msiCap;
 }
