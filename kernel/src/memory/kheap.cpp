@@ -41,6 +41,10 @@ void* DynamicMemoryAllocator::allocate(size_t size) {
     // + sizeof(HeapSegmentHeader) is to account for the splitting
     HeapSegmentHeader* segment = _findFreeSegment(newSegmentSize + sizeof(HeapSegmentHeader));
 
+    if (!segment) {
+        return nullptr;
+    }
+
     if (!_splitSegment(segment, newSegmentSize)) {
         return nullptr;
     }
@@ -202,12 +206,13 @@ bool DynamicMemoryAllocator::_mergeSegmentWithNext(HeapSegmentHeader* segment) {
 
 void DynamicMemoryAllocator::__debugHeap() {
     HeapSegmentHeader* seg = m_firstSegment;
-    uint64_t segId = 1;
+    int64_t segId = 1;
 
     kuPrint("---------------------------------------------\n");
     while (seg) {
         kuPrint("Segment %llu:\n", segId);
         kuPrint("    base         : %llx\n", (uint64_t)seg);
+        kuPrint("    userptr      : %llx\n", (uint64_t)seg + sizeof(HeapSegmentHeader));
         kuPrint("    total size   : %llx\n", seg->size);
         kuPrint("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
         kuPrint("    status       : %s\n", seg->flags.free ? "free" : "used");
@@ -218,4 +223,51 @@ void DynamicMemoryAllocator::__debugHeap() {
         seg = seg->next;
     }
     kuPrint("---------------------------------------------\n");
+}
+
+void DynamicMemoryAllocator::__debugHeapSegment(void* ptr, int64_t segId) {
+    HeapSegmentHeader* seg = (HeapSegmentHeader*)ptr;
+    
+    if (segId != -1)
+        kuPrint("Segment %llu:\n", segId);
+    else
+        kuPrint("Segment\n");
+
+    kuPrint("    base         : %llx\n", (uint64_t)seg);
+    kuPrint("    userptr      : %llx\n", (uint64_t)seg + sizeof(HeapSegmentHeader));
+    kuPrint("    total size   : %llx\n", seg->size);
+    kuPrint("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
+    kuPrint("    status       : %s\n", seg->flags.free ? "free" : "used");
+    kuPrint("    next         : %llx\n", (uint64_t)seg->next);
+    kuPrint("    prev         : %llx\n\n", (uint64_t)seg->prev);
+}
+
+void DynamicMemoryAllocator::__debugUserHeapPointer(void* ptr, int64_t id) {
+    void* seg = (void*)((uint64_t)ptr - sizeof(HeapSegmentHeader));
+    __debugHeapSegment(seg, id);
+}
+
+bool DynamicMemoryAllocator::__detectHeapCorruption(bool dbgLog) {
+    HeapSegmentHeader* seg = m_firstSegment;
+    int64_t segId = 1;
+
+    while (seg) {
+        if (memcmp(seg->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, sizeof(seg->magic)) != 0) {
+            if (dbgLog) {
+                kuPrint("---- Detected Heap Corruption (segment %lli) ----\n", segId);
+                __debugHeapSegment(seg, segId);
+            }
+
+            return true;
+        }
+        
+        segId++;
+        seg = seg->next;
+    }
+
+    if (dbgLog) {
+        kuPrint("---- No Heap Corruption Detected (checked %lli segments) ----\n", segId - 1);
+    }
+
+    return false;
 }

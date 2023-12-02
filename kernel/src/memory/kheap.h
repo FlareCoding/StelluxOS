@@ -33,6 +33,10 @@ public:
     void* reallocate(void* ptr, size_t newSize);
 
     void __debugHeap();
+    void __debugHeapSegment(void* ptr, int64_t segId = -1);
+    void __debugUserHeapPointer(void* ptr, int64_t id = -1);
+
+    bool __detectHeapCorruption(bool dbgLog = true);
 
 private:
     uint64_t            m_heapSize;
