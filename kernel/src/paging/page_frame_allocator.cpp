@@ -115,8 +115,13 @@ namespace paging {
             // );
 
             if (desc->pageCount * PAGE_SIZE > largestFreeMemorySegmentSize) {
-                largestFreeMemorySegment = desc->paddr;
-                largestFreeMemorySegmentSize = desc->pageCount * PAGE_SIZE;
+                uint64_t virtualBase = (uint64_t)desc->vaddr;
+                uint64_t virtualRegionEnd = virtualBase + desc->pageCount * PAGE_SIZE;
+
+                if ((uint64_t)virtualRegionEnd < 0xffff000000000000) {
+                    largestFreeMemorySegment = desc->paddr;
+                    largestFreeMemorySegmentSize = desc->pageCount * PAGE_SIZE;
+                }
             }
         }
 
@@ -130,7 +135,7 @@ namespace paging {
 
         // Check to make sure if the virtual page frame bitmap base is at a userspace
         // kernel address because otherwise the base would have to be recalculated.
-        if ((uint64_t)pageBitmapVirtualBase < (uint64_t)&__ksymstart) {
+        if (((uint64_t)pageBitmapVirtualBase < 0xffff000000000000) || pageBitmapVirtualBase == 0) {
             for (uint64_t i = 0; i < memoryDescriptorCount; ++i) {
                 EFI_MEMORY_DESCRIPTOR* desc =
                     (EFI_MEMORY_DESCRIPTOR*)((uint64_t)memoryMap + (i * memoryDescriptorSize));
