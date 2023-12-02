@@ -10,6 +10,7 @@
 #include <arch/x86/cpuid.h>
 #include <arch/x86/msr.h>
 #include <arch/x86/apic.h>
+#include <arch/x86/ioapic.h>
 #include <arch/x86/apic_timer.h>
 #include <arch/x86/gsfsbase.h>
 #include <sched/sched.h>
@@ -169,6 +170,25 @@ void _kuser_entry() {
 
     initializeApic();
 
+    // void* p1 = kmalloc(sizeof(PciDeviceInfo) * 1);
+    // void* p2 = kmalloc(sizeof(PciDeviceInfo) * 2);
+    // void* p3 = kmalloc(sizeof(PciDeviceInfo) * 4);
+    // void* p4 = kmalloc(sizeof(PciDeviceInfo) * 8);
+    // void* p5 = kmalloc(sizeof(PciDeviceInfo) * 16);
+
+    // DynamicMemoryAllocator::get().__debugHeap();
+    // kuPrint("p1: %llx\n", p1);
+    // kuPrint("p2: %llx\n", p2);
+    // kuPrint("p3: %llx\n", p3);
+    // kuPrint("p4: %llx\n", p4);
+    // kuPrint("p5: %llx\n", p5);
+
+    // void* ptr = kmalloc(2048); // <-- this malloc makes it corrupted
+    // kuPrint("ptr:%llx\n", ptr);
+    // DynamicMemoryAllocator::get().__debugHeap();
+    // DynamicMemoryAllocator::get().__detectHeapCorruption();
+    // while (1);
+
     auto& acpiController = AcpiController::get();
 
     RUN_ELEVATED({
@@ -183,6 +203,11 @@ void _kuser_entry() {
 
     // Start the kernel-wide APIC periodic timer
     //KernelTimer::startApicPeriodicTimer();
+
+    // Initialize IOAPIC
+    if (acpiController.hasApicTable()) {
+        initializeIoApic();
+    }
 
     if (acpiController.hasPciDeviceTable()) {
         auto pciDeviceTable = acpiController.getPciDeviceTable();

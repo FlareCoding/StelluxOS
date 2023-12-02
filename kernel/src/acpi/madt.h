@@ -20,17 +20,29 @@ struct LocalApicDescriptor {
     uint32_t flags;
 } __attribute__((packed));
 
+struct IoApicDescriptor {
+    uint8_t type;   // should be 1 for IOAPIC
+    uint8_t length; // should be 12 for IOAPIC
+    uint8_t ioapicId;
+    uint8_t reserved;
+    uint32_t ioapicAddress; // This is the base address of the IOAPIC
+    uint32_t globalSystemInterruptBase;
+} __attribute__((packed));
+
 class Madt {
 public:
     Madt(MadtDescriptor* desc);
     ~Madt() = default;
 
     LocalApicDescriptor& getLocalApicDescriptor(size_t idx) { return m_localApics[idx]; }
+    IoApicDescriptor& getIoApicDescriptor(size_t idx) { return m_ioApics[idx]; }
 
     size_t getCpuCount() const { return m_localApics.size(); }
+    size_t getIoApicCount() const { return m_ioApics.size(); }
 
 private:
     kstl::vector<LocalApicDescriptor> m_localApics;
+    kstl::vector<IoApicDescriptor> m_ioApics;
 };
 
 #endif

@@ -3,7 +3,7 @@
 #include <paging/phys_addr_translation.h>
 #include <memory/kmemory.h>
 #include <time/ktime.h>
-#include <arch/x86/apic.h>
+#include <arch/x86/ioapic.h>
 #include <interrupts/interrupts.h>
 #include <kprint.h>
 
@@ -102,6 +102,10 @@ namespace drivers {
         kuPrint("[XHCI] Initialized device context array\n");
 
         kuPrint("System has %i ports and %i device slots\n", m_numPorts, m_maxDeviceSlots);
+        kuPrint("IRQ Line: %i\n", deviceInfo.headerInfo.interruptLine);
+
+        kuPrint("Rerouting interrupt line: %i -> %i\n", deviceInfo.headerInfo.interruptLine, IRQ1);
+        mapIoApicIrq(deviceInfo.headerInfo.interruptLine, IRQ1, 0);
        
         // if (HAS_PCI_CAP(deviceInfo, PciCapabilityMsiX)) {
         //     uint32_t msixCapOffset = 0;
@@ -148,16 +152,40 @@ namespace drivers {
         //     pciConfigWrite16(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msiCapOffset + offsetof(PciMsiCapability, messageControl), msiControl);
         // }
 
+        const uint64_t defaultEventRingSize = 1024;
+
         // Allocate memory for the ERST
         XhciErstEntry* eventRingSegmentTable = (XhciErstEntry*)kmallocAligned(sizeof(XhciErstEntry) * 1, 64);
+        if (!eventRingSegmentTable) {
+            kuPrint("Failed to allocate ERST\n");
+            return false;
+        }
+
+        kuPrint("ERST Allocated at: %llx\n", (uint64_t)eventRingSegmentTable);
 
         // Allocate memory for the Event Ring segment
-        XhciTransferRequestBlock* eventRingSegment = (XhciTransferRequestBlock*)kmallocAligned(sizeof(XhciTransferRequestBlock) * m_defaultEventRingSize, 64);
+        XhciTransferRequestBlock* eventRingSegment = (XhciTransferRequestBlock*)kmallocAligned(sizeof(XhciTransferRequestBlock) * defaultEventRingSize, 64);
+        if (!eventRingSegment) {
+            kuPrint("Failed to allocate Event Ring Segment\n");
+            return false;
+        }
+
+        kuPrint("Event Ring Segment Allocated at: %llx\n", (uint64_t)eventRingSegment);
+
+        // Ensure that m_defaultEventRingSize is correctly initialized
+        kuPrint("defaultEventRingSize: %lli\n", defaultEventRingSize);
+        if (defaultEventRingSize == 0) {
+            kuPrint("defaultEventRingSize is zero\n");
+            return false;
+        }
 
         // Initialize ERST entry to point to the Event Ring segment
         eventRingSegmentTable[0].ringSegmentBaseAddress = (uint64_t)__pa(eventRingSegment);
-        eventRingSegmentTable[0].ringSegmentSize = m_defaultEventRingSize;
+        eventRingSegmentTable[0].ringSegmentSize = defaultEventRingSize;
         eventRingSegmentTable[0].rsvd = 0;
+
+        kuPrint("ERST Entry Base Address: %llx\n", eventRingSegmentTable[0].ringSegmentBaseAddress);
+        kuPrint("ERST Entry Segment Size: %llx\n", eventRingSegmentTable[0].ringSegmentSize);
 
         // Write to ERSTBA register
         volatile uint64_t* erstba = _getErstbaRegAddress(0);
@@ -171,10 +199,13 @@ namespace drivers {
         volatile uint64_t* erdp = _getErdpRegAddress(0);
         *erdp = (uint64_t)__pa(eventRingSegment);
 
+        kuPrint("ERDP: %llx\n", *erdp);
+
         // Enable interrupts
         _enableInterrupter(0);
+        kuPrint("Interrupts enabled for interrupter 0\n");
 
-        kuPrint("\n\n");
+        kuPrint("\n");
         // printXhciCapabilityRegisters(m_capRegisters);
         printXhciOperationalRegisters(m_opRegisters);
 
@@ -273,6 +304,7 @@ namespace drivers {
     bool XhciDriver::_initializeDeviceContexts(XhciDeviceContext** dcbaap) {
         for (uint32_t slot = 1; slot <= m_maxDeviceSlots; ++slot) {
             XhciDeviceContext* deviceContext = (XhciDeviceContext*)kmallocAligned(sizeof(XhciDeviceContext), 64);
+            break;
             if (!deviceContext) {
                 return false;
             }

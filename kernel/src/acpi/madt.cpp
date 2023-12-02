@@ -9,17 +9,25 @@ Madt::Madt(MadtDescriptor* desc) {
         uint8_t entryType = *entryPtr;
         uint8_t entryLength = *(entryPtr + 1);
 
-        if (entryType == 0) {
+        switch (entryType) {
+        case 0: { // Local APIC
             LocalApicDescriptor* lapic = (LocalApicDescriptor*)entryPtr;
-
-            // Now you can access lapic->AcpiProcessorId, lapic->ApicId, etc.
-            // For example, to check if the CPU is enabled:
             if (lapic->flags & 1) {
                 LocalApicDescriptor desc;
                 memcpy(&desc, lapic, sizeof(LocalApicDescriptor));
-
                 m_localApics.pushBack(desc);
             }
+            break;
+        }
+        case 1: { // IOAPIC
+            IoApicDescriptor* ioapic = (IoApicDescriptor*)entryPtr;
+            IoApicDescriptor desc;
+            memcpy(&desc, ioapic, sizeof(IoApicDescriptor));
+
+            m_ioApics.pushBack(desc);
+            break;
+        }
+        default: break;
         }
 
         entryPtr += entryLength;  // Move to the next entry

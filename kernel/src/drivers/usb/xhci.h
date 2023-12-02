@@ -1206,8 +1206,6 @@ private:
     void _resetPorts();
 
 private:
-    const uint64_t m_defaultEventRingSize = 1024;
-
     /*
     // xHci Spec Section 5.5.2.1
 

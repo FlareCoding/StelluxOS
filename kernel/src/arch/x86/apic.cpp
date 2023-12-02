@@ -3,12 +3,24 @@
 #include <paging/page.h>
 #include <memory/kmemory.h>
 #include <paging/tlb.h>
+#include <ports/ports.h>
 #include <kelevate/kelevate.h>
 
 volatile uint32_t* g_lapicBase = NULL;
 uint64_t g_lapicPhysicalBase = 0;
 
+void disablePic() {
+    // Send the disable command (0xFF) to both PIC1 and PIC2 data ports
+    outByte(0xA1, 0xFF);
+    outByte(0x21, 0xFF);
+}
+
 void initializeApic() {
+    // First we want to disable PIC as we won't be using it
+    RUN_ELEVATED({
+        disablePic();
+    });
+
     uint64_t apicBaseMsr;
 
     if (g_lapicBase != NULL) {
@@ -44,7 +56,7 @@ void initializeApic() {
         paging::flushTlbAll();
     });
 
-    g_lapicBase = (uint32_t*)lapicVirtualBase;
+    g_lapicBase = (volatile uint32_t*)lapicVirtualBase;
 
     // Set the spurious interrupt vector and enable the APIC
     uint32_t spurious_vector = readApicRegister(0xF0);
