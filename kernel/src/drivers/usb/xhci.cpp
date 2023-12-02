@@ -107,6 +107,7 @@ namespace drivers {
         kuPrint("Rerouting interrupt line: %i -> %i\n", deviceInfo.headerInfo.interruptLine, IRQ1);
         mapIoApicIrq(deviceInfo.headerInfo.interruptLine, IRQ1, 0);
        
+        /*
         // if (HAS_PCI_CAP(deviceInfo, PciCapabilityMsiX)) {
         //     uint32_t msixCapOffset = 0;
         //     PciMsiXCapability msixCap = _readMsixCapability(deviceInfo.bus, deviceInfo.device, deviceInfo.function, msixCapOffset);
@@ -204,6 +205,7 @@ namespace drivers {
         // Enable interrupts
         _enableInterrupter(0);
         kuPrint("Interrupts enabled for interrupter 0\n");
+        */
 
         kuPrint("\n");
         // printXhciCapabilityRegisters(m_capRegisters);
@@ -217,10 +219,18 @@ namespace drivers {
             _readPortscReg(i, portscReg);
             
             if (portscReg.bits.ccs) {
+                _resetPort(i);
                 kuPrint("--- Port %i: Connected ----\n", i);
-                // kuPrint("  speed : %i\n", portscReg.bits.portSpeed);
-                // kuPrint("  pls   : %i\n", portscReg.bits.pls);
-                // kuPrint("\n");
+                switch (portscReg.bits.portSpeed) {
+                case USB_SPEED_FULL: kuPrint("   speed: 12 Mb/s (Full Speed)\n"); break;
+                case USB_SPEED_LOW: kuPrint("   speed: 1.5 Mb/s (Low Speed)\n"); break;
+                case USB_SPEED_HIGH: kuPrint("   speed: 480 Mb/s (High Speed)\n"); break;
+                case USB_SPEED_SUPER: kuPrint("   speed: 5000 Mb/s (SuperSpeed)\n"); break;
+                case USB_SPEED_SUPER_PLUS: kuPrint("   speed: 10000 Mb/s (SuperSpeed+)\n"); break;
+                default:break;
+                }
+                
+                kuPrint("\n");
             }
         }
 

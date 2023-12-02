@@ -3,6 +3,13 @@
 #include <acpi/mcfg.h>
 
 namespace drivers {
+// Define speed values as per xHCI specification
+#define USB_SPEED_FULL          1   // Full Speed (12 Mb/s)
+#define USB_SPEED_LOW           2   // Low Speed (1.5 Mb/s)
+#define USB_SPEED_HIGH          3   // High Speed (480 Mb/s)
+#define USB_SPEED_SUPER         4   // SuperSpeed (5000 Mb/s)
+#define USB_SPEED_SUPER_PLUS    5   // SuperSpeed+ (10000 Mb/s)
+
 /*
 // xHci Spec Section 5.4.1 USB Table 5-20: USB Command Register Bit Definitions (USBCMD) (page 358)
 
