@@ -697,6 +697,468 @@ are not supported. Refer to section 6.2.5.1 for more information.
 */
 #define XHCI_CONFIG_INFO_ENABLE(config) (((config) >> 9) & 0x1)
 
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 469)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_RESERVED  0
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 469)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : no
+Transfer Ring : yes
+*/
+#define XHCI_TRB_TYPE_NORMAL  1
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 469)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : no
+Transfer Ring : yes
+*/
+#define XHCI_TRB_TYPE_SETUP_STAGE  2
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 469)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : no
+Transfer Ring : yes
+*/
+#define XHCI_TRB_TYPE_DATA_STAGE  3
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 469)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : no
+Transfer Ring : yes
+*/
+#define XHCI_TRB_TYPE_STATUS_STAGE  4
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : no
+Transfer Ring : yes
+*/
+#define XHCI_TRB_TYPE_ISOCH  5
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : yes
+*/
+#define XHCI_TRB_TYPE_LINK  6
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : no
+Transfer Ring : yes
+*/
+#define XHCI_TRB_TYPE_EVENT_DATA  7
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : no
+Transfer Ring : yes
+*/
+#define XHCI_TRB_TYPE_NOOP  8
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_ENABLE_SLOT_CMD  9
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_DISABLE_SLOT_CMD  10
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD  11
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD  12
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD  13
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_RESET_ENDPOINT_CMD  14
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_STOP_ENDPOINT_CMD  15
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD  16
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_RESET_DEVICE_CMD  17
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+
+Note: (Optional, used with virtualization only)
+*/
+#define XHCI_TRB_TYPE_FORCE_EVENT_CMD  18
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+
+Note: (Optional)
+*/
+#define XHCI_TRB_TYPE_NEGOTIATE_BANDWIDTH_CMD  19
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+
+Note: (Optional)
+*/
+#define XHCI_TRB_TYPE_SET_LATENCY_TOLERANCE_VALUE_CMD  20
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+
+Note: (Optional)
+*/
+#define XHCI_TRB_TYPE_GET_PORT_BANDWIDTH_CMD  21
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_FORCE_HEADER_CMD  22
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_NOOP_CMD  23
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+
+Note: (Optional)
+*/
+#define XHCI_TRB_TYPE_GET_EXTENDED_PROPERTY_CMD  24
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 470)
+Allowed TRB Types
+-----------------
+Command Ring  : yes
+Event Ring    : no
+Transfer Ring : no
+
+Note: (Optional)
+*/
+#define XHCI_TRB_TYPE_SET_EXTENDED_PROPERTY_CMD  25
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 471)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : yes
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_TRANSFER_EVENT  32
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 471)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : yes
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_CMD_COMPLETION_EVENT  33
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 471)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : yes
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT  34
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 471)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : yes
+Transfer Ring : no
+
+Note: (Optional)
+*/
+#define XHCI_TRB_TYPE_BANDWIDTH_REQUEST_EVENT  35
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 471)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : yes
+Transfer Ring : no
+
+Note: (Optional, used width virtualization only)
+*/
+#define XHCI_TRB_TYPE_DOORBELL_EVENT  36
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 471)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : yes
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_HOST_CONTROLLER_EVENT  37
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 471)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : yes
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_DEVICE_NOTIFICATION_EVENT  38
+
+/*
+// xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 471)
+Allowed TRB Types
+-----------------
+Command Ring  : no
+Event Ring    : yes
+Transfer Ring : no
+*/
+#define XHCI_TRB_TYPE_MFINDEX_WRAP_EVENT  39
+
+// The Cycle Bit for a TRB, typically set to 1 for an initialized TRB
+// (TO-DO: find exact spec page with documentation)
+#define XHCI_TRB_CYCLE_BIT  0x1
+
+// The Toggle Cycle bit for a Link TRB, used to toggle the Cycle Bit
+// (TO-DO: find exact spec page with documentation)
+#define XHCI_TRB_TOGGLE_CYCLE 0x2
+
+/*
+// xHci Spec Section 5.4.5 Table 5-24: Command Ring Control Register Bit Definitions (CRCR) (page 366)
+
+Ring Cycle State (RCS) - RW. This bit identifies the value of the xHC Consumer
+Cycle State (CCS) flag for the TRB referenced by the Command Ring Pointer. Refer to
+section 4.9.3 for more information.
+
+Writes to this flag are ignored if Command Ring Running (CRR) is ‘1’.
+
+If the CRCR is written while the Command Ring is stopped (CRR = ‘0’), then the
+value of this flag shall be used to fetch the first Command TRB the next time the Host
+Controller Doorbell register is written with the DB Reason field set to Host Controller
+Command.
+
+If the CRCR is not written while the Command Ring is stopped (CRR = ‘0’), then the
+Command Ring shall begin fetching Command TRBs using the current value of the
+internal Command Ring CCS flag.
+
+Reading this flag always returns ‘0’
+*/
+#define XHCI_CRCR_RING_CYCLE_STATE      (1 << 0)
+
+/*
+// xHci Spec Section 5.4.5 Table 5-24: Command Ring Control Register Bit Definitions (CRCR) (page 366)
+
+Command Stop (CS) - RW1S. Default = ‘0’. Writing a ‘1’ to this bit shall stop the
+operation of the Command Ring after the completion of the currently executing
+command and generate a Command Completion Event with the Completion Code set
+to Command Ring Stopped and the Command TRB Pointer set to the current value of
+the Command Ring Dequeue Pointer. Refer to section 4.6.1.1 for more information on
+stopping a command.
+
+The next write to the Host Controller Doorbell with DB Reason field set to Host
+Controller Command shall restart the Command Ring operation.
+
+Writes to this flag are ignored by the xHC if Command Ring Running (CRR) = ‘0’.
+
+Reading this bit shall always return ‘0’.
+*/
+#define XHCI_CRCR_COMMAND_STOP          (1 << 1)
+
+/*
+// xHci Spec Section 5.4.5 Table 5-24: Command Ring Control Register Bit Definitions (CRCR) (page 367)
+
+Command Abort (CA) - RW1S. Default = ‘0’. Writing a ‘1’ to this bit shall
+immediately terminate the currently executing command, stop the Command Ring,
+and generate a Command Completion Event with the Completion Code set to
+Command Ring Stopped. Refer to section 4.6.1.2 for more information on aborting a
+command.
+The next write to the Host Controller Doorbell with DB Reason field set to Host
+Controller Command shall restart the Command Ring operation.
+Writes to this flag are ignored by the xHC if Command Ring Running (CRR) = ‘0’.
+Reading this bit always returns ‘0’.
+*/
+#define XHCI_CRCR_COMMAND_ABORT          (1 << 2)
+
+/*
+// xHci Spec Section 5.4.5 Table 5-24: Command Ring Control Register Bit Definitions (CRCR) (page 367)
+
+Command Ring Running (CRR) - RO. Default = 0. This flag is set to ‘1’ if the
+Run/Stop (R/S) bit is ‘1’ and the Host Controller Doorbell register is written with the
+DB Reason field set to Host Controller Command. It is cleared to ‘0’ when the
+Command Ring is “stopped” after writing a ‘1’ to the Command Stop (CS) or
+Command Abort (CA) flags, or if the R/S bit is cleared to ‘0’
+*/
+#define XHCI_CRCR_COMMAND_RING_RUNNING   (1 << 3)
+
+// This macro defines the bit position in the control field of a Transfer
+// Request Block (TRB) where the TRB type field begins. The xHCI specification
+// requires that the TRB type be placed in a specific position within the control
+// field of a TRB. This macro is used to shift the TRB type value to the correct
+// position when preparing a TRB.
+// (TO-DO: find spec page)
+#define XHCI_TRB_TYPE_SHIFT 10
+
+// TRB Type field mask and shift
+// (TO-DO: find spec page)
+#define XHCI_TRB_TYPE_MASK  0xFC00 // Mask for the TRB type field
+
+// Slot ID field mask and shift (in the status field of a Command Completion Event TRB)
+// (TO-DO: find spec page)
+#define XHCI_SLOT_ID_MASK   0x3F000000
+
+// Shift for the Slot ID field
+// (TO-DO: find spec page)
+#define XHCI_SLOT_ID_SHIFT  24
+
+// Completion Code field mask and shift (in the status field of a Command Completion Event TRB)
+// (TO-DO: find spec page)
+#define XHCI_COMPLETION_CODE_MASK   0xFF0000
+
+// Shift for the Completion Code field
+// (TO-DO: find spec page)
+#define XHCI_COMPLETION_CODE_SHIFT  16
+
+// Success completion code value
+// (TO-DO: find spec page)
+#define XHCI_COMPLETION_CODE_SUCCESS    1
 
 /*
 // xHci Spec Section 5.3 Table 5-9: eXtensible Host Controller Capability Registers (page 346)
@@ -755,11 +1217,11 @@ This section discusses the properties and uses of TRBs that are outside of the
 scope of the general data structure descriptions that are provided in section
 6.4.
 */
-struct XhciTransferRequestBlock {
+typedef struct XhciTransferRequestBlock {
     uint64_t parameter; // TRB-specific parameter
     uint32_t status;    // Status information
     uint32_t control;   // Control bits, including the TRB type
-};
+} XhciTrb_t;
 
 /*
 // xHci Spec Section 6.5 Event Ring Segment Table Figure 6-40: Event Ring Segment Table Entry
@@ -1035,6 +1497,43 @@ struct XhciPortscRegister {
 static_assert(sizeof(XhciPortscRegister) == 4);
 
 /*
+// xHci Spec Section 5.6 Figure 5-29: Doorbell Register (page 394)
+
+The Doorbell Array is organized as an array of up to 256 Doorbell Registers.
+One 32-bit Doorbell Register is defined in the array for each Device Slot.
+System software utilizes the Doorbell Register to notify the xHC that it has
+Device Slot related work for the xHC to perform.
+The number of Doorbell Registers implemented by a particular instantiation of a
+host controller is documented in the Number of Device Slots (MaxSlots) field of
+the HCSPARAMS1 register (section 5.3.3).
+These registers are pointed to by the Doorbell Offset Register (DBOFF) in the
+xHC Capability register space. The Doorbell Array base address shall be Dword
+aligned and is calculated by adding the value in the DBOFF register (section
+5.3.7) to “Base” (the base address of the xHCI Capability register address
+space).
+
+All registers are 32 bits in length. Software should read and write these
+registers using only Dword accesses
+
+Note: Software shall not write the Doorbell of an endpoint until after it has issued a
+Configure Endpoint Command for the endpoint and received a successful
+Command Completion Event.
+*/
+struct XhciDoorbellRegister {
+    union {
+        uint32_t raw;
+        struct {
+            uint8_t     dbTarget;
+            uint8_t     rsvd;
+            uint16_t    dbTaskId;
+        };
+    };
+} __attribute__((packed));
+
+// (TO-DO: Find spec page)
+#define XHCI_DOORBELL_TARGET_COMMAND_RING 0
+
+/*
 // xHci Spec Section 4.2 Host Controller Initialization (page 68)
 
 When the system boots, the host controller is enumerated, assigned a base
@@ -1150,8 +1649,20 @@ private:
     uint64_t                             m_runtimeRegisterBase;
     volatile XhciRuntimeRegisters*       m_rtRegisters;
 
+    uint64_t                             m_doorbellArrayBase;
+
     uint32_t m_maxDeviceSlots;
     uint32_t m_numPorts;
+
+    uint64_t                             m_eventRingSize;
+    uint64_t                             m_eventRingDequeueIndex;
+    uint64_t                             m_eventRingCycleState;
+    XhciTransferRequestBlock*            m_eventRing;
+
+    uint64_t                             m_commandRingSize;
+    uint64_t                             m_commandRingEnqueueIndex;
+    bool                                 m_commandRingCycleState;
+    XhciTransferRequestBlock*            m_commandRing;
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
@@ -1175,6 +1686,8 @@ private:
     bool _resetController();
 
     void _enableController();
+
+    bool _checkForHostControllerError();
 
     /*
     // xHci Spec Section 6.1 Device Context Base Address Array (page 403)
@@ -1229,6 +1742,9 @@ private:
 
     void _acknowledgeInterrupt(uint32_t interrupter);
 
+private:
+    bool _setupEventRing();
+
     /*
     // xHci Spec 5.5.2.3.1 Event Ring Segment Table Size Register (ERSTSZ)
 
@@ -1265,6 +1781,36 @@ private:
     Size: 64 bits
     */
     volatile uint64_t* _getErdpRegAddress(uint32_t interrupter);
+
+    void _waitForCommandCompletionEvent();
+
+private:
+    /*
+    // xHci Spec Section 5.3.7 Doorbell Offset (DBOFF) (page 353)
+
+    Address: Base + (14h)
+    Document Number: 625472, Revision: 1.2b 353
+    Default Value: Implementation Dependent
+    Attribute: RO
+    Size: 32 bits
+
+    This register defines the offset of the Doorbell Array base address from the Base
+    */
+    uint32_t _readDoorbellArrayOffset();
+
+    void _readDoorbellRegister(uint32_t doorbell, XhciDoorbellRegister& reg);
+    void _writeDoorbellRegister(uint32_t doorbell, XhciDoorbellRegister& reg);
+    
+    void _ringCommandRingDoorbell();
+
+private:
+    bool _setupCommandRing();
+
+    void _prepareEnableSlotTrb(XhciTransferRequestBlock& trb);
+    void _addTrbToCommandRing(XhciTransferRequestBlock& trb);
+
+private:
+    uint32_t _allocateSlot();
 };
 } // namespace drivers
 
