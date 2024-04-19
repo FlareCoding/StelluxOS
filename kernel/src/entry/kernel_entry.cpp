@@ -194,33 +194,33 @@ void _kuser_entry() {
         initializeIoApic();
     }
 
-    // if (acpiController.hasPciDeviceTable()) {
-    //     auto pciDeviceTable = acpiController.getPciDeviceTable();
+    if (acpiController.hasPciDeviceTable()) {
+        auto pciDeviceTable = acpiController.getPciDeviceTable();
         
-    //     for (size_t i = 0; i < pciDeviceTable->getDeviceCount(); i++) {
-    //         //dbgPrintPciDeviceInfo(&pciDeviceTable->getDeviceInfo(i).headerInfo);
-    //     }
+        for (size_t i = 0; i < pciDeviceTable->getDeviceCount(); i++) {
+            //dbgPrintPciDeviceInfo(&pciDeviceTable->getDeviceInfo(i).headerInfo);
+        }
 
-    //     size_t idx = pciDeviceTable->findXhciController();
-    //     if (idx != kstl::npos) {
-    //         auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
-    //         kuPrint("bus      : 0x%llx\n", xhciControllerPciDeviceInfo.bus);
-    //         kuPrint("device   : 0x%llx\n", xhciControllerPciDeviceInfo.device);
-    //         kuPrint("function : 0x%llx\n", xhciControllerPciDeviceInfo.function);
-    //         kuPrint("caps     : 0x%llx\n", xhciControllerPciDeviceInfo.capabilities);
-    //         kuPrint("MSI    Support  : %i\n", HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapabilityMsi));
-    //         kuPrint("MSI-X  Support  : %i\n", HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapabilityMsiX));
+        size_t idx = pciDeviceTable->findXhciController();
+        if (idx != kstl::npos) {
+            auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
+            kuPrint("bus      : 0x%llx\n", xhciControllerPciDeviceInfo.bus);
+            kuPrint("device   : 0x%llx\n", xhciControllerPciDeviceInfo.device);
+            kuPrint("function : 0x%llx\n", xhciControllerPciDeviceInfo.function);
+            kuPrint("caps     : 0x%llx\n", xhciControllerPciDeviceInfo.capabilities);
+            kuPrint("MSI    Support  : %i\n", HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapabilityMsi));
+            kuPrint("MSI-X  Support  : %i\n", HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapabilityMsiX));
             
-    //         RUN_ELEVATED({
-    //             auto& xhciDriver = drivers::XhciDriver::get();
-    //             bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
+            RUN_ELEVATED({
+                auto& xhciDriver = drivers::XhciDriver::get();
+                bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
 
-    //             if (!status) {
-    //                 kuPrint("[-] Failed to initialize xHci USB3.0 controller\n");
-    //             }
-    //         });
-    //     }
-    // }
+                if (!status) {
+                    kuPrint("[-] Failed to initialize xHci USB3.0 controller\n");
+                }
+            });
+        }
+    }
 
     if (acpiController.hasApicTable()) {
         auto apicTable = acpiController.getApic();
@@ -242,61 +242,61 @@ void _kuser_entry() {
     size_t ncpus = acpiController.getApic()->getCpuCount();
     kuPrint("\nSystem has detected %i cpu cores\n", ncpus);
 
-    RUN_ELEVATED({
-        void* __ap_startup_code_real_mode_address = (void*)0x8000;
+    // RUN_ELEVATED({
+    //     void* __ap_startup_code_real_mode_address = (void*)0x8000;
 
-        // Copy the AP startup code to a 16bit address
-        globalPageFrameAllocator.lockPage(__ap_startup_code_real_mode_address);
-        globalPageFrameAllocator.lockPage((void*)0x9000);
-        globalPageFrameAllocator.lockPage((void*)0x11000);
-        globalPageFrameAllocator.lockPage((void*)0x15000);
-        memcpy(__ap_startup_code_real_mode_address, (void*)__ap_startup_asm, PAGE_SIZE);
+    //     // Copy the AP startup code to a 16bit address
+    //     globalPageFrameAllocator.lockPage(__ap_startup_code_real_mode_address);
+    //     globalPageFrameAllocator.lockPage((void*)0x9000);
+    //     globalPageFrameAllocator.lockPage((void*)0x11000);
+    //     globalPageFrameAllocator.lockPage((void*)0x15000);
+    //     memcpy(__ap_startup_code_real_mode_address, (void*)__ap_startup_asm, PAGE_SIZE);
         
-        uint64_t __ap_startup_c_entry_address = (uint64_t)__ap_startup;
-        memcpy((void*)0x9000, &__ap_startup_c_entry_address, sizeof(uint64_t));
+    //     uint64_t __ap_startup_c_entry_address = (uint64_t)__ap_startup;
+    //     memcpy((void*)0x9000, &__ap_startup_c_entry_address, sizeof(uint64_t));
 
-        kprint("AP startup vector: 0x%llx\n", 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
+    //     kprint("AP startup vector: 0x%llx\n", 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
 
-        volatile uint8_t* aprunning_ptr = (volatile uint8_t*)0x11000;  // count how many APs have started
-        uint8_t* bspid_ptr = (uint8_t*)0x11008; // BSP id
-        uint8_t* bspdone_ptr = (uint8_t*)0x11010; // Spinlock flag
+    //     volatile uint8_t* aprunning_ptr = (volatile uint8_t*)0x11000;  // count how many APs have started
+    //     uint8_t* bspid_ptr = (uint8_t*)0x11008; // BSP id
+    //     uint8_t* bspdone_ptr = (uint8_t*)0x11010; // Spinlock flag
 
-        memcpy((void*)0x15000, paging::g_kernelRootPageTable, PAGE_SIZE);
+    //     memcpy((void*)0x15000, paging::g_kernelRootPageTable, PAGE_SIZE);
 
-        *aprunning_ptr = 0;
-        *bspid_ptr = 0;
-        *bspdone_ptr = 0;
+    //     *aprunning_ptr = 0;
+    //     *bspid_ptr = 0;
+    //     *bspdone_ptr = 0;
 
-        // get the BSP's Local APIC ID
-        __asm__ __volatile__ ("mov $1, %%eax; cpuid; shrl $24, %%ebx;": "=b"(*bspid_ptr) : :);
+    //     // get the BSP's Local APIC ID
+    //     __asm__ __volatile__ ("mov $1, %%eax; cpuid; shrl $24, %%ebx;": "=b"(*bspid_ptr) : :);
 
-        for (uint32_t apicId = 1; apicId < ncpus; apicId++) {
-            kprint("Waking up cpu %i\n", apicId);
-            sendIpi(apicId, 0x500);
-            msleep(20);
+    //     for (uint32_t apicId = 1; apicId < ncpus; apicId++) {
+    //         kprint("Waking up cpu %i\n", apicId);
+    //         sendIpi(apicId, 0x500);
+    //         msleep(20);
 
-            sendIpi(apicId, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
-            msleep(20);
-        }
+    //         sendIpi(apicId, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
+    //         msleep(20);
+    //     }
 
-        *bspdone_ptr = 1;
-    });
+    //     *bspdone_ptr = 1;
+    // });
 
-    while (true) {
-        uint64_t ia32_therm_status_msr = 0;
-        RUN_ELEVATED({
-            ia32_therm_status_msr = readMsr(0x19C); // IA32_THERM_STATUS MSR
-        });
-        int temp_offset = (ia32_therm_status_msr >> 16) & 0x7F; // Extracting temperature
+    // while (true) {
+    //     uint64_t ia32_therm_status_msr = 0;
+    //     RUN_ELEVATED({
+    //         ia32_therm_status_msr = readMsr(0x19C); // IA32_THERM_STATUS MSR
+    //     });
+    //     int temp_offset = (ia32_therm_status_msr >> 16) & 0x7F; // Extracting temperature
 
-        // Assuming TjMax is 100 degrees Celsius
-        // This value might differ based on the CPU. Check your CPU's specific documentation.
-        int tj_max = 100; 
+    //     // Assuming TjMax is 100 degrees Celsius
+    //     // This value might differ based on the CPU. Check your CPU's specific documentation.
+    //     int tj_max = 100; 
 
-        int cpu_temp = tj_max - temp_offset;
-        kuPrint("CPU Temperature: %lliC\n", cpu_temp);
-        sleep(1);
-    }
+    //     int cpu_temp = tj_max - temp_offset;
+    //     kuPrint("CPU Temperature: %lliC\n", cpu_temp);
+    //     sleep(1);
+    // }
 
     // while (true) {
     //     sleep(1);

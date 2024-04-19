@@ -189,70 +189,70 @@ namespace drivers {
         // Set the TRB type to 'Enable Slot Command'
         trb.control = (XHCI_TRB_TYPE_NOOP_CMD << XHCI_TRB_TYPE_SHIFT);
 
-        // Copy the TRB to the current position in the Command Ring
-        m_commandRing[0] = trb;
-        m_commandRing[0].control |= XHCI_TRB_CYCLE_BIT;
+        // // Copy the TRB to the current position in the Command Ring
+        // m_commandRing[0] = trb;
+        // m_commandRing[0].control |= XHCI_TRB_CYCLE_BIT;
 
-        kuPrint("Added TRB to command ring, usbsts: %llx\n", m_opRegisters->usbsts);
+        // kuPrint("Added TRB to command ring, usbsts: %llx\n", m_opRegisters->usbsts);
 
-        kuPrint("Dumping the first 2 TRBs from the command ring:\n");
+        // kuPrint("Dumping the first 2 TRBs from the command ring:\n");
 
-        for (int i = 0; i < 2; ++i) {
-            XhciTrb_t* currentTrb = &m_commandRing[i];
+        // for (int i = 0; i < 2; ++i) {
+        //     XhciTrb_t* currentTrb = &m_commandRing[i];
 
-            kuPrint("TRB %i:\n", i);
-            kuPrint("  Parameter: 0x%llx\n", currentTrb->parameter);
-            kuPrint("  Status:    0x%llx\n", currentTrb->status);
-            kuPrint("  Control:   0x%llx\n\n", currentTrb->control);
-        }
+        //     kuPrint("TRB %i:\n", i);
+        //     kuPrint("  Parameter: 0x%llx\n", currentTrb->parameter);
+        //     kuPrint("  Status:    0x%llx\n", currentTrb->status);
+        //     kuPrint("  Control:   0x%llx\n\n", currentTrb->control);
+        // }
 
-        // Ring the command ring doorbell
-        _ringCommandRingDoorbell();
+        // // Ring the command ring doorbell
+        // _ringCommandRingDoorbell();
 
-        sleep(1);
-        kuPrint("Rung command ring doorbell, usbsts: %llx\n", m_opRegisters->usbsts);
+        // sleep(1);
+        // kuPrint("Rung command ring doorbell, usbsts: %llx\n", m_opRegisters->usbsts);
 
-        if (_checkForHostControllerError()) {
-            kuPrint("[XHCI] HOST CONTROLLER ERROR!\n");
-            printXhciOperationalRegisters(m_opRegisters);
-            while (1);
-        }
+        // if (_checkForHostControllerError()) {
+        //     kuPrint("[XHCI] HOST CONTROLLER ERROR!\n");
+        //     printXhciOperationalRegisters(m_opRegisters);
+        //     while (1);
+        // }
 
-        // Wait for command completion event
-        //_waitForCommandCompletionEvent();
+        // // Wait for command completion event
+        // //_waitForCommandCompletionEvent();
 
-        kuPrint("Dumping the first 5 TRBs from the event ring:\n");
+        // kuPrint("Dumping the first 5 TRBs from the event ring:\n");
 
-        for (int i = 0; i < 2; ++i) {
-            XhciTrb_t* currentTrb = &m_eventRing[i];
+        // for (int i = 0; i < 2; ++i) {
+        //     XhciTrb_t* currentTrb = &m_eventRing[i];
 
-            kuPrint("TRB %i:\n", i);
-            kuPrint("  Parameter: 0x%llx\n", currentTrb->parameter);
-            kuPrint("  Status:    0x%llx\n", currentTrb->status);
-            kuPrint("  Control:   0x%llx\n\n", currentTrb->control);
-        }
+        //     kuPrint("TRB %i:\n", i);
+        //     kuPrint("  Parameter: 0x%llx\n", currentTrb->parameter);
+        //     kuPrint("  Status:    0x%llx\n", currentTrb->status);
+        //     kuPrint("  Control:   0x%llx\n\n", currentTrb->control);
+        // }
 
         //_allocateSlot();
 
-        // for (uint32_t i = 1; i <= m_numPorts; i++) {
-        //     XhciPortscRegister portscReg;
-        //     _readPortscReg(i, portscReg);
+        for (uint32_t i = 1; i <= m_numPorts; i++) {
+            XhciPortscRegister portscReg;
+            _readPortscReg(i, portscReg);
             
-        //     if (portscReg.bits.ccs) {
-        //         _resetPort(i);
+            if (portscReg.bits.ccs) {
+                _resetPort(i);
 
-        //         kuPrint("--- Port %i: Connected ----\n", i);
-        //         switch (portscReg.bits.portSpeed) {
-        //         case USB_SPEED_FULL: kuPrint("   speed: 12 Mb/s (Full Speed)\n"); break;
-        //         case USB_SPEED_LOW: kuPrint("   speed: 1.5 Mb/s (Low Speed)\n"); break;
-        //         case USB_SPEED_HIGH: kuPrint("   speed: 480 Mb/s (High Speed)\n"); break;
-        //         case USB_SPEED_SUPER: kuPrint("   speed: 5000 Mb/s (SuperSpeed)\n"); break;
-        //         case USB_SPEED_SUPER_PLUS: kuPrint("   speed: 10000 Mb/s (SuperSpeedPlus)\n"); break;
-        //         default:break;
-        //         }
-        //         kuPrint("\n");
-        //     }
-        // }
+                kuPrint("--- Port %i: Connected ----\n", i);
+                switch (portscReg.bits.portSpeed) {
+                case USB_SPEED_FULL: kuPrint("   speed: 12 Mb/s (Full Speed)\n"); break;
+                case USB_SPEED_LOW: kuPrint("   speed: 1.5 Mb/s (Low Speed)\n"); break;
+                case USB_SPEED_HIGH: kuPrint("   speed: 480 Mb/s (High Speed)\n"); break;
+                case USB_SPEED_SUPER: kuPrint("   speed: 5000 Mb/s (SuperSpeed)\n"); break;
+                case USB_SPEED_SUPER_PLUS: kuPrint("   speed: 10000 Mb/s (SuperSpeedPlus)\n"); break;
+                default:break;
+                }
+                kuPrint("\n");
+            }
+        }
 
         return true;
     }
@@ -442,12 +442,6 @@ namespace drivers {
         _readPortscReg(portNum, portscReg);
         portscReg.bits.pr = 1;
         _writePortscReg(portNum, portscReg);
-        
-        if (_checkForHostControllerError()) {
-            kuPrint("[XHCI] HOST CONTROLLER ERROR!\n");
-            printXhciOperationalRegisters(m_opRegisters);
-            while (1);
-        }
 
         do {
             _readPortscReg(portNum, portscReg);
@@ -463,8 +457,6 @@ namespace drivers {
         _readPortscReg(portNum, portscReg);
         portscReg.bits.prc = 1;
         _writePortscReg(portNum, portscReg);
-
-        while (1);
     }
 
     void XhciDriver::_resetPorts() {
