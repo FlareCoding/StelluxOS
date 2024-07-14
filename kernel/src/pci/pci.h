@@ -2,11 +2,13 @@
 #define PCI_H
 #include <ktypes.h>
 
-#define PCI_CONFIG_ADDRESS 0xCF8
-#define PCI_CONFIG_DATA    0xCFC
+#define PCI_CONFIG_ADDRESS                  0xCF8
+#define PCI_CONFIG_DATA                     0xCFC
 
-#define MSI_CAPABILITY_ID 0x05
-#define MSI_X_CAPABILITY_ID 0x11
+#define PCI_COMMAND_REGISTER                0x04
+
+#define MSI_CAPABILITY_ID                   0x05
+#define MSI_X_CAPABILITY_ID                 0x11
 
 #define PCI_CAPABILITY_ID_PMI               0x01
 #define PCI_CAPABILITY_ID_AGP               0x02
@@ -97,6 +99,9 @@ const char* getPciProgIFName(uint8_t classCode, uint8_t subclassCode, uint8_t pr
 uint64_t getBarFromPciHeader(PciDeviceHeader* header);
 
 void dbgPrintPciDeviceInfo(PciDeviceHeader* header);
+
+__PRIVILEGED_CODE
+void enableBusMastering(uint8_t bus, uint8_t slot, uint8_t func);
 
 __PRIVILEGED_CODE
 uint32_t _getPciConfigAddress(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset);

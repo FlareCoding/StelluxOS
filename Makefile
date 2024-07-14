@@ -24,7 +24,7 @@ DISK_IMG := $(BIN_DIR)/$(OSNAME).elf
 # QEMU
 QEMU_CORES := 6
 QEMU_EMULATOR := qemu-system-x86_64
-COMMON_QEMU_FLAGS := -machine q35 -device qemu-xhci,id=xhci -drive file=$(DISK_IMG),format=raw -m 2G -net none -smp $(QEMU_CORES) -serial mon:stdio -serial file:com2.serial
+COMMON_QEMU_FLAGS := -machine q35 -device qemu-xhci,id=xhci -drive file=$(DISK_IMG),format=raw -m 4G -net none -smp $(QEMU_CORES) -serial mon:stdio -serial file:com2.serial -trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
 QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/OVMF_CODE.fd",readonly=on -drive if=pflash,format=raw,unit=1,file="efi/OVMF_VARS.fd"
 
 # Sample connected USB 2.0 devices

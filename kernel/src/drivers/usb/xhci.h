@@ -1161,6 +1161,18 @@ Command Abort (CA) flags, or if the R/S bit is cleared to ‘0’
 #define XHCI_COMPLETION_CODE_SUCCESS    1
 
 /*
+// xHci Spec Section 7.1.1 USB Legacy Support Capability (USBLEGSUP) (page 519)
+*/
+#define XHCI_LEGACY_SUPPORT_CAP_ID 1
+#define XHCI_LEGACY_BIOS_OWNED_SEMAPHORE (1 << 16)
+#define XHCI_LEGACY_OS_OWNED_SEMAPHORE (1 << 24)
+
+/*
+// xHci Spec Section 7.1.2 USB Legacy Support Control/Status (USBLEGCTLSTS) (page 520)
+*/
+#define XHCI_LEGACY_SMI_ENABLE_BITS ((1 << 0) | (1 << 4) | (1 << 13) | (1 << 14) | (1 << 15))
+
+/*
 // xHci Spec Section 5.3 Table 5-9: eXtensible Host Controller Capability Registers (page 346)
 
 These registers specify the limits and capabilities of the host controller
@@ -1643,6 +1655,7 @@ public:
 
 private:
     uint64_t                             m_xhcBase;
+
     volatile XhciCapabilityRegisters*    m_capRegisters;
     volatile XhciOperationalRegisters*   m_opRegisters;
 
@@ -1651,25 +1664,28 @@ private:
 
     uint64_t                             m_doorbellArrayBase;
 
-    uint32_t m_maxDeviceSlots;
-    uint32_t m_numPorts;
-
-    uint64_t                             m_eventRingSize;
-    uint64_t                             m_eventRingDequeueIndex;
-    uint64_t                             m_eventRingCycleState;
-    XhciTransferRequestBlock*            m_eventRing;
-
-    uint64_t                             m_commandRingSize;
-    uint64_t                             m_commandRingEnqueueIndex;
-    bool                                 m_commandRingCycleState;
-    XhciTransferRequestBlock*            m_commandRing;
+    uint32_t                             m_maxDeviceSlots;
+    uint32_t                             m_numPorts;
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
 
+    // Allocated a 64-byte aligned block of memory for xHC
+    void* _allocXhciMemory(size_t size);
+
+    void _assumeOwnershipFromBios();  
+
 private:
     void _writeUsbRegCommand(uint32_t cmd);
     bool _readUsbRegStatusFlag(uint32_t flag);
+
+    uint32_t _readExtendedCapability(uint8_t capId);
+    void _writeExtendedCapability(uint8_t capId, uint32_t value);
+
+    volatile uint32_t* _getErstszRegAddress(uint32_t interrupter);
+    volatile uint64_t* _getErstbaRegAddress(uint32_t interrupter);
+    volatile uint64_t* _getErdpRegAddress(uint32_t interrupter);
+    volatile uint32_t* _getImanRegAddress(uint32_t interrupter);
 
     bool _isControllerReady();
 
@@ -1689,26 +1705,6 @@ private:
 
     bool _checkForHostControllerError();
 
-    /*
-    // xHci Spec Section 6.1 Device Context Base Address Array (page 403)
-
-    The Device Context Base Address Array (DCBAA) data structure is used to
-    associate an xHCI Device Slot with its respective Device Context data
-    structure. The Device Context Base Address Array entry associated with each
-    allocated Device Slot shall contain a 64-bit pointer to the base of the associated
-    Device Context. Refer to section 3.2.1 for more information.
-
-    The Device Context Base Address Array shall be indexed by the Device Slot ID.
-    The Device Context Base Address Array shall be aligned to a 64 byte boundary.
-    Software shall set Device Context Base Address Array entries for
-    unallocated Device Slots to ‘0’.
-    */
-    bool _initializeDcbaa();
-
-    bool _initializeDeviceContexts(XhciDeviceContext** dcbaap);
-
-    void _configureControlEndpoint(XhciEndpointContext* ctx);
-
 private:
     /*
     // xHci Spec Section 5.4.8
@@ -1721,96 +1717,6 @@ private:
     */
     void _readPortscReg(uint32_t portNum, XhciPortscRegister& reg);
     void _writePortscReg(uint32_t portNum, XhciPortscRegister& reg);
-
-    void _resetPort(uint32_t portNum);
-    void _resetPorts();
-
-private:
-    /*
-    // xHci Spec Section 5.5.2.1
-
-    Address: Runtime Base + 020h + (32 * Interrupter)
-        where: Interrupter is 0, 1, 2, 3, … 1023
-    Default Value: 0000 0000h
-    Attribute: RW
-    Size: 32 bits
-    */
-    void _readImanReg(uint32_t interrupter, XhciInterrupterManagementRegister& reg);
-    void _writeImanReg(uint32_t interrupter, XhciInterrupterManagementRegister& reg);
-
-    void _enableInterrupter(uint32_t interrupter);
-
-    void _acknowledgeInterrupt(uint32_t interrupter);
-
-private:
-    bool _setupEventRing();
-
-    /*
-    // xHci Spec 5.5.2.3.1 Event Ring Segment Table Size Register (ERSTSZ)
-
-    Address: Runtime Base + 028h + (32 * Interrupter)
-             where: Interrupter is 0, 1, 2, 3, … 1023
-    Default Value: 0000 0000h
-    Attribute: RW
-    Size: 32 bits
-
-    The maximum value supported by an xHC
-    implementation for this register is defined by the ERST Max field in the HCSPARAMS2 register
-    (5.3.4).
-    */
-    volatile uint32_t* _getErstszRegAddress(uint32_t interrupter);
-
-    /*
-    // xHci Spec Section 5.5.2.3.2 Event Ring Segment Table Base Address Register (ERSTBA)
-
-    Address: Runtime Base + 030h + (32 * Interrupter)
-             where: Interrupter is 0, 1, 2, 3, … 1023
-    Default Value: 0000 0000 0000 0000h
-    Attribute: RW
-    Size: 64 bits
-    */
-    volatile uint64_t* _getErstbaRegAddress(uint32_t interrupter);
-
-    /*
-    // xHci Spec Section 5.5.2.3.3 Event Ring Dequeue Pointer Register (ERDP)
-
-    Address: Runtime Base + 038h + (32 * Interrupter)
-             where: Interrupter is 0, 1, 2, 3, … 1023
-    Default Value: 0000 0000 0000 0000h
-    Attribute: RW
-    Size: 64 bits
-    */
-    volatile uint64_t* _getErdpRegAddress(uint32_t interrupter);
-
-    void _waitForCommandCompletionEvent();
-
-private:
-    /*
-    // xHci Spec Section 5.3.7 Doorbell Offset (DBOFF) (page 353)
-
-    Address: Base + (14h)
-    Document Number: 625472, Revision: 1.2b 353
-    Default Value: Implementation Dependent
-    Attribute: RO
-    Size: 32 bits
-
-    This register defines the offset of the Doorbell Array base address from the Base
-    */
-    uint32_t _readDoorbellArrayOffset();
-
-    void _readDoorbellRegister(uint32_t doorbell, XhciDoorbellRegister& reg);
-    void _writeDoorbellRegister(uint32_t doorbell, XhciDoorbellRegister& reg);
-    
-    void _ringCommandRingDoorbell();
-
-private:
-    bool _setupCommandRing();
-
-    void _prepareEnableSlotTrb(XhciTransferRequestBlock& trb);
-    void _addTrbToCommandRing(XhciTransferRequestBlock& trb);
-
-private:
-    uint32_t _allocateSlot();
 };
 } // namespace drivers
 

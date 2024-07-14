@@ -290,6 +290,13 @@ void dbgPrintPciDeviceInfo(PciDeviceHeader* header) {
 }
 
 __PRIVILEGED_CODE
+void enableBusMastering(uint8_t bus, uint8_t slot, uint8_t func) {
+    uint16_t commandReg = pciConfigRead16(bus, slot, func, PCI_COMMAND_REGISTER);
+    commandReg |= 0x04;  // Set Bus Master Enable bit (bit 2)
+    pciConfigWrite16(bus, slot, func, PCI_COMMAND_REGISTER, commandReg);
+}
+
+__PRIVILEGED_CODE
 uint32_t _getPciConfigAddress(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
     return ((uint32_t)(bus) << 16) | ((uint32_t)(slot) << 11) |
            ((uint32_t)(func) << 8) | (offset & 0xfc) | ((uint32_t)0x80000000);
