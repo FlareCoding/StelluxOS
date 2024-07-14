@@ -35,3 +35,6 @@ bin/
 *.out
 *.app
 *.efi
+
+# QEMU files
+usb_debug.log
