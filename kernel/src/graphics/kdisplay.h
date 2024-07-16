@@ -46,7 +46,13 @@ public:
     __PRIVILEGED_CODE
     static void swapBuffers();
 
+    __PRIVILEGED_CODE
+    static void drawRectangle(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color);
+
 private:
+    __PRIVILEGED_DATA static uint32_t s_displayWidth;
+    __PRIVILEGED_DATA static uint32_t s_displayHeight;
+
     __PRIVILEGED_DATA
     static Framebuffer s_framebuffer;
 

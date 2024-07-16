@@ -15,6 +15,7 @@
 #define CPUID_FEAT_EDX_PAE         (1 << 6)
 #define CPUID_FEAT_EDX_APIC        (1 << 9)
 #define CPUID_FEAT_EDX_PGE         (1 << 13)
+#define CPUID_FEAT_EDX_PAT         (1 << 16)
 
 // Feature bits in ECX for CPUID with EAX=1
 #define CPUID_FEAT_ECX_SSE3        (1 << 0)
@@ -112,6 +113,13 @@ static inline bool cpuid_isFMASupported() {
     uint32_t eax, edx;
     readCpuid(CPUID_FEATURES, &eax, &edx);
     return (eax & CPUID_ECX_FMA) != 0;
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_isPATSupported() {
+    uint32_t eax, edx;
+    readCpuid(CPUID_FEATURES, &eax, &edx);
+    return (edx & CPUID_FEAT_EDX_PAT) != 0;
 }
 
 #endif

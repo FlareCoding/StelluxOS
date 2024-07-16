@@ -100,19 +100,19 @@ namespace paging {
 
             m_freeSystemMemory += desc->pageCount * PAGE_SIZE;
 
-            kprintInfo("0x%llx - 0x%llx (%llu pages) [%s]\n",
-                (uint64_t)desc->paddr,
-                (uint64_t)desc->paddr + desc->pageCount * PAGE_SIZE,
-                desc->pageCount,
-                EFI_MEMORY_TYPE_STRINGS[desc->type]
-            );
+            // kprintInfo("0x%llx - 0x%llx (%llu pages) [%s]\n",
+            //     (uint64_t)desc->paddr,
+            //     (uint64_t)desc->paddr + desc->pageCount * PAGE_SIZE,
+            //     desc->pageCount,
+            //     EFI_MEMORY_TYPE_STRINGS[desc->type]
+            // );
 
-            kprintInfo("0x%llx - 0x%llx (%llu pages) [%s]\n\n",
-                __va(desc->paddr),
-                __va((uint8_t*)desc->paddr + desc->pageCount * PAGE_SIZE),
-                desc->pageCount,
-                EFI_MEMORY_TYPE_STRINGS[desc->type]
-            );
+            // kprintInfo("0x%llx - 0x%llx (%llu pages) [%s]\n\n",
+            //     __va(desc->paddr),
+            //     __va((uint8_t*)desc->paddr + desc->pageCount * PAGE_SIZE),
+            //     desc->pageCount,
+            //     EFI_MEMORY_TYPE_STRINGS[desc->type]
+            // );
 
             if (desc->pageCount * PAGE_SIZE > largestFreeMemorySegmentSize) {
                 uint64_t virtualBase = (uint64_t)__va(desc->paddr);
@@ -157,9 +157,9 @@ namespace paging {
         // Initialize the kernel heap
         uint64_t kernelHeapBase = reinterpret_cast<uint64_t>(pageBitmapVirtualBase) + pageBitmapSize;
         heapAllocator.init(kernelHeapBase, KERNEL_HEAP_INIT_SIZE);
-        kprint("pageBitmapVirtualBase : %llx\n", pageBitmapVirtualBase);
-        kprint("pageBitmapSize        : %llx\n", pageBitmapSize);
-        kprint("kernelHeapBase        : %llx\n", kernelHeapBase);
+        // kprint("pageBitmapVirtualBase : %llx\n", pageBitmapVirtualBase);
+        // kprint("pageBitmapSize        : %llx\n", pageBitmapSize);
+        // kprint("kernelHeapBase        : %llx\n", kernelHeapBase);
 
         // Get the address of PML4 table from cr3
         auto pml4 = getCurrentTopLevelPageTable();

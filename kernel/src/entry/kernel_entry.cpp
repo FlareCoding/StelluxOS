@@ -13,6 +13,8 @@
 #include <arch/x86/ioapic.h>
 #include <arch/x86/apic_timer.h>
 #include <arch/x86/gsfsbase.h>
+#include <arch/x86/pat.h>
+#include <arch/x86/x86_cpu_control.h>
 #include <sched/sched.h>
 #include <syscall/syscalls.h>
 #include <kelevate/kelevate.h>
@@ -22,11 +24,12 @@
 
 #include "tests/kernel_entry_tests.h"
 
-// #define KE_TEST_MULTITHREADING
+#define KE_TEST_MULTITHREADING
 // #define KE_TEST_XHCI_INIT
 // #define KE_TEST_AP_STARTUP
 // #define KE_TEST_CPU_TEMP_READINGS
-#define KE_TEST_PRINT_CURRENT_TIME
+// #define KE_TEST_PRINT_CURRENT_TIME
+// #define KE_TEST_GRAPHICS
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
@@ -66,15 +69,6 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     initializeSerialPort(SERIAL_PORT_BASE_COM2);
     initializeSerialPort(SERIAL_PORT_BASE_COM3);
     initializeSerialPort(SERIAL_PORT_BASE_COM4);
-
-    // Initialize display and graphics context
-    Display::initialize(&params->graphicsFramebuffer, params->textRenderingFont);
-
-    char vendorName[13];
-    cpuid_readVendorId(vendorName);
-    kprintInfo("===== Stellux Kernel =====\n");
-    kprintInfo("CPU Vendor: %s\n", vendorName);
-    kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
     
     // Initialize the default root kernel swapper task (this thread).
     g_rootKernelInitTask.state = ProcessState::RUNNING;
@@ -122,7 +116,48 @@ void _kuser_entry() {
     );
 
     RUN_ELEVATED({
-        setMtrrWriteCombining((uint64_t)__pa(g_kernelEntryParameters.graphicsFramebuffer.base), g_kernelEntryParameters.graphicsFramebuffer.size);
+        // Initialize display and graphics context
+        Display::initialize(&g_kernelEntryParameters.graphicsFramebuffer, g_kernelEntryParameters.textRenderingFont);
+
+        if (cpuid_isPATSupported()) {
+            uint64_t old_cr0 = 0;
+
+            pat_t pat = readPatMsr();
+            disableInterrupts();
+
+            x86_cpu_cache_disable(&old_cr0);
+            x86_cpu_cache_flush();
+            x86_cpu_pge_clear();
+
+            pat.pa4.type = PAT_MEM_TYPE_WC;
+            writePatMsr(pat);
+
+            x86_cpu_cache_flush();
+            x86_cpu_pge_clear();
+            x86_cpu_set_cr0(old_cr0);
+            x86_cpu_pge_enable();
+
+            enableInterrupts();
+
+            uint64_t gopBase = (uint64_t)g_kernelEntryParameters.graphicsFramebuffer.base;
+            uint64_t gopSize = g_kernelEntryParameters.graphicsFramebuffer.size;
+            for (
+                uint64_t page = gopBase;
+                page < gopBase + gopSize;
+                page += PAGE_SIZE
+            ) {
+                paging::pte_t* pte = paging::getPteForAddr((void*)page, paging::g_kernelRootPageTable);
+                pte->pageAccessType = 1;
+            }
+
+            paging::flushTlbAll();
+        }
+
+        char vendorName[13];
+        cpuid_readVendorId(vendorName);
+        kprintInfo("===== Stellux Kernel =====\n");
+        kprintInfo("CPU Vendor: %s\n", vendorName);
+        kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
     });
 
     kuPrint("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
@@ -169,6 +204,7 @@ void _kuser_entry() {
         for (size_t i = 0; i < apicTable->getCpuCount(); ++i) {
             kuPrint("    Core %lli: online\n", apicTable->getLocalApicDescriptor(i).apicId);
         }
+        kuPrint("\n");
     }
 
 #ifdef KE_TEST_MULTITHREADING
@@ -189,6 +225,10 @@ void _kuser_entry() {
 
 #ifdef KE_TEST_PRINT_CURRENT_TIME
     ke_test_print_current_time();
+#endif
+
+#ifdef KE_TEST_GRAPHICS
+    ke_test_graphics();
 #endif
 
     // Infinite loop

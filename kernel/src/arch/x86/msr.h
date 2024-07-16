@@ -16,10 +16,11 @@
 #define IA32_MTRR_PHYSBASE(n) (0x200 + (n) * 2)
 #define IA32_MTRR_PHYSMASK(n) (0x200 + (n) * 2 + 1)
 
+#define IA32_PAT_MSR    0x277
+
 #define MTRR_UC               0x00
 #define MTRR_WC               0x01
 #define MTRR_WB               0x06
-
 
 __PRIVILEGED_CODE
 uint64_t readMsr(
@@ -34,14 +35,5 @@ void writeMsr(
 
 __PRIVILEGED_CODE
 void enableSyscallInterface();
-
-__PRIVILEGED_CODE
-void disableCpuCache();
-
-__PRIVILEGED_CODE
-void enableCpuCache();
-
-__PRIVILEGED_CODE
-void setMtrrWriteCombining(uint64_t base, uint64_t size);
 
 #endif
