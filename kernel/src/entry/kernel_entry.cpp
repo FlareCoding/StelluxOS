@@ -26,9 +26,9 @@
 // #define KE_TEST_MULTITHREADING
 // #define KE_TEST_XHCI_INIT
 // #define KE_TEST_AP_STARTUP
-// #define KE_TEST_CPU_TEMP_READINGS
+#define KE_TEST_CPU_TEMP_READINGS
 // #define KE_TEST_PRINT_CURRENT_TIME
-#define KE_TEST_GRAPHICS
+// #define KE_TEST_GRAPHICS
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
