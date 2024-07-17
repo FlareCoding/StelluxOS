@@ -38,3 +38,4 @@ bin/
 
 # QEMU files
 usb_debug.log
+com2.serial
