@@ -2,6 +2,7 @@
 #include <memory/kmemory.h>
 #include <interrupts/interrupts.h>
 #include <paging/phys_addr_translation.h>
+#include <paging/tlb.h>
 
 #define CHAR_PIXEL_WIDTH 8
 
@@ -37,6 +38,20 @@ void Display::initialize(void* framebuffer, void* font) {
 
     // Clear the back buffer
     memset(s_backBuffer, 0xA, s_framebuffer.size);
+
+    // Set the framebuffer pages to use Write-Combining access type
+    uint64_t gopBase = (uint64_t)s_framebuffer.base;
+    uint64_t gopSize = s_framebuffer.size;
+    for (
+        uint64_t page = gopBase;
+        page < gopBase + gopSize;
+        page += PAGE_SIZE
+    ) {
+        paging::pte_t* pte = paging::getPteForAddr((void*)page, paging::g_kernelRootPageTable);
+        pte->pageAccessType = 1;
+    }
+
+    paging::flushTlbAll();
 }
 
 __PRIVILEGED_CODE

@@ -18,7 +18,7 @@ void ke_test_graphics() {
         if (colorVal == 255) colorVal = 0;
         else colorVal = 255;
 
-        Display::drawRectangle(100, 100, 600, 400, rgbToUint32(colorVal, 60, 50));
+        Display::drawRectangle(440, 100, 260, 400, rgbToUint32(colorVal, 60, 50));
         sleep(1);
     }
 

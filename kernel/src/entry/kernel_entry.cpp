@@ -14,7 +14,6 @@
 #include <arch/x86/apic_timer.h>
 #include <arch/x86/gsfsbase.h>
 #include <arch/x86/pat.h>
-#include <arch/x86/x86_cpu_control.h>
 #include <sched/sched.h>
 #include <syscall/syscalls.h>
 #include <kelevate/kelevate.h>
@@ -24,12 +23,12 @@
 
 #include "tests/kernel_entry_tests.h"
 
-#define KE_TEST_MULTITHREADING
+// #define KE_TEST_MULTITHREADING
 // #define KE_TEST_XHCI_INIT
 // #define KE_TEST_AP_STARTUP
 // #define KE_TEST_CPU_TEMP_READINGS
 // #define KE_TEST_PRINT_CURRENT_TIME
-// #define KE_TEST_GRAPHICS
+#define KE_TEST_GRAPHICS
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
@@ -116,48 +115,20 @@ void _kuser_entry() {
     );
 
     RUN_ELEVATED({
+        // Setup the Page Attribute Table (if supported)
+        if (cpuid_isPATSupported()) {
+            ksetupPatOnKernelEntry();
+        }
+
         // Initialize display and graphics context
         Display::initialize(&g_kernelEntryParameters.graphicsFramebuffer, g_kernelEntryParameters.textRenderingFont);
-
-        if (cpuid_isPATSupported()) {
-            uint64_t old_cr0 = 0;
-
-            pat_t pat = readPatMsr();
-            disableInterrupts();
-
-            x86_cpu_cache_disable(&old_cr0);
-            x86_cpu_cache_flush();
-            x86_cpu_pge_clear();
-
-            pat.pa4.type = PAT_MEM_TYPE_WC;
-            writePatMsr(pat);
-
-            x86_cpu_cache_flush();
-            x86_cpu_pge_clear();
-            x86_cpu_set_cr0(old_cr0);
-            x86_cpu_pge_enable();
-
-            enableInterrupts();
-
-            uint64_t gopBase = (uint64_t)g_kernelEntryParameters.graphicsFramebuffer.base;
-            uint64_t gopSize = g_kernelEntryParameters.graphicsFramebuffer.size;
-            for (
-                uint64_t page = gopBase;
-                page < gopBase + gopSize;
-                page += PAGE_SIZE
-            ) {
-                paging::pte_t* pte = paging::getPteForAddr((void*)page, paging::g_kernelRootPageTable);
-                pte->pageAccessType = 1;
-            }
-
-            paging::flushTlbAll();
-        }
 
         char vendorName[13];
         cpuid_readVendorId(vendorName);
         kprintInfo("===== Stellux Kernel =====\n");
         kprintInfo("CPU Vendor: %s\n", vendorName);
-        kprintWarn("Is 5-level paging supported? %i\n\n", cpuid_isLa57Supported());
+        kprintWarn("5-level paging support: %s\n\n", cpuid_isLa57Supported() ? "enabled" : "disabled");
+        debugPat(readPatMsr());
     });
 
     kuPrint("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);

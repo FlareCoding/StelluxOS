@@ -1,6 +1,6 @@
 #ifndef PAT_H
 #define PAT_H
-#include "msr.h"
+#include <ktypes.h>
 
 #define PAT_MEM_TYPE_UC         0x00 // Uncacheable
 #define PAT_MEM_TYPE_WC         0x01 // Write Combining
@@ -40,6 +40,9 @@ pat_t readPatMsr();
 
 __PRIVILEGED_CODE
 void writePatMsr(pat_t pat);
+
+__PRIVILEGED_CODE
+void ksetupPatOnKernelEntry();
 
 void debugPat(pat_t pat);
 

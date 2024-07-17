@@ -1,6 +1,9 @@
 #include "pat.h"
 #include <kstring.h>
 #include <kprint.h>
+#include <interrupts/interrupts.h>
+#include "msr.h"
+#include "x86_cpu_control.h"
 
 kstl::string patAttribToString(pat_attrib_t attrib) {
     switch (attrib.type) {
@@ -27,6 +30,29 @@ pat_t readPatMsr() {
 __PRIVILEGED_CODE
 void writePatMsr(pat_t pat) {
     writeMsr(IA32_PAT_MSR, pat.raw);
+}
+
+__PRIVILEGED_CODE
+void ksetupPatOnKernelEntry() {
+    uint64_t old_cr0 = 0;
+
+    pat_t pat = readPatMsr();
+    disableInterrupts();
+
+    x86_cpu_cache_disable(&old_cr0);
+    x86_cpu_cache_flush();
+    x86_cpu_pge_clear();
+
+    pat.pa4.type = PAT_MEM_TYPE_WC;
+    pat.pa2.type = PAT_MEM_TYPE_UC;
+    writePatMsr(pat);
+
+    x86_cpu_cache_flush();
+    x86_cpu_pge_clear();
+    x86_cpu_set_cr0(old_cr0);
+    x86_cpu_pge_enable();
+
+    enableInterrupts();
 }
 
 void debugPat(pat_t pat) {
