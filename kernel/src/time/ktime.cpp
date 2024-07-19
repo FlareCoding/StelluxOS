@@ -58,12 +58,6 @@ void KernelTimer::startApicPeriodicTimer() {
     apicTimer.start();
 }
 
-uint64_t KernelTimer::rdtsc() {
-    uint32_t hi, lo;
-    __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)lo) | (((uint64_t)hi) << 32);
-}
-
 uint64_t KernelTimer::getSystemTime() {
     return g_precisionTimerInstance->readCounter();
 }

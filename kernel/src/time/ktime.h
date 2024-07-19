@@ -13,9 +13,6 @@ public:
     // Starts the interrupt driven APIC periodic timer
     static void startApicPeriodicTimer();
 
-    // Reads the CPU timestamp counter
-    static uint64_t rdtsc();
-
     // Reads HPET time counter value
     static uint64_t getSystemTime();
     static uint64_t getSystemTimeInNanoseconds();
@@ -27,6 +24,12 @@ private:
     static uint64_t s_apicTicksCalibratedFrequency;
     static uint64_t s_tscTicksCalibratedFrequency;
 };
+
+inline __attribute__((always_inline)) uint64_t rdtsc() {
+    uint32_t hi, lo;
+    __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)lo) | (((uint64_t)hi) << 32);
+}
 
 void sleep(uint32_t seconds);
 
