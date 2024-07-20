@@ -50,12 +50,14 @@ void ke_test_ap_startup() {
         // get the BSP's Local APIC ID
         __asm__ __volatile__ ("mov $1, %%eax; cpuid; shrl $24, %%ebx;": "=b"(*bspid_ptr) : :);
 
+        auto& lapic = Apic::getLocalApic();
+
         for (uint32_t apicId = 1; apicId < acpiController.getApic()->getCpuCount(); apicId++) {
             kprint("Waking up cpu %i\n", apicId);
-            sendIpi(apicId, 0x500);
+            lapic->sendIpi(apicId, 0x500);
             msleep(20);
 
-            sendIpi(apicId, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
+            lapic->sendIpi(apicId, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
             msleep(20);
         }
 

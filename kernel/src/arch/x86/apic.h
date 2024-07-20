@@ -1,6 +1,6 @@
 #ifndef APIC_H
 #define APIC_H
-#include <ktypes.h>
+#include <memory/kmemory.h>
 
 #define IA32_APIC_BASE_MSR          0x1B
 #define APIC_REGISTER_SPACE_SIZE    0x400
@@ -9,27 +9,24 @@
 #define APIC_ICR_LO 0x300  
 #define APIC_ICR_HI 0x310
 
-// Initializes and enables the APIC base address
-void initializeApic();
+class Apic {
+public:
+    static void initializeLocalApic();
+    static kstl::SharedPtr<Apic>& getLocalApic();
 
-// Returns the base address of APIC
-void* getApicBase();
+    Apic(uint64_t base, uint8_t spuriorIrq = 0xFF);
 
-// Returns the physical base of local APIC
-uint64_t getLocalApicPhysicalBase();
+    void write(uint32_t reg, uint32_t value);
+    uint32_t read(uint32_t reg);
 
-// Tell APIC that an interupt has been processed
-void completeApicIrq();
+    void completeIrq();
+    void sendIpi(uint8_t apicId, uint32_t vector);
 
-void writeApicRegister(
-    uint32_t reg,
-    uint32_t value
-);
+    static void disableLegacyPic();
 
-uint32_t readApicRegister(
-    uint32_t reg
-);
-
-void sendIpi(uint8_t apic_id, uint32_t vector);
+private:
+    void*               m_physicalBase = nullptr;
+    volatile uint32_t*  m_virtualBase = nullptr;
+};
 
 #endif

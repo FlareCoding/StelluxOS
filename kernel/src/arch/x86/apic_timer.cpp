@@ -16,18 +16,18 @@ void ApicTimer::setupOneShot(uint8_t irqNumber, uint32_t divideConfig, uint32_t 
 
 void ApicTimer::start() const {
     // To start the timer, set the initial count
-    writeApicRegister(APIC_TIMER_INITIAL_COUNT, m_intervalValue);
+    Apic::getLocalApic()->write(APIC_TIMER_INITIAL_COUNT, m_intervalValue);
 }
 
 uint32_t ApicTimer::readCounter() const {
-    return readApicRegister(APIC_CURRENT_COUNT);
+    return Apic::getLocalApic()->read(APIC_CURRENT_COUNT);
 }
 
 uint32_t ApicTimer::stop() const {
     uint32_t cnt = readCounter();
 
     // To stop the timer, set the initial count to 0
-    writeApicRegister(APIC_TIMER_INITIAL_COUNT, 0);
+    Apic::getLocalApic()->write(APIC_TIMER_INITIAL_COUNT, 0);
 
     // Read the current count value
     return cnt;
@@ -38,12 +38,14 @@ void ApicTimer::_setup(uint32_t mode, uint8_t irqNumber, uint32_t divideConfig, 
     m_divideConfig = divideConfig;
     m_intervalValue = intervalValue;
 
+    auto& lapic = Apic::getLocalApic();
+
     // Set the timer in periodic mode
-    writeApicRegister(APIC_TIMER_REGISTER, mode | irqNumber);
+    lapic->write(APIC_TIMER_REGISTER, mode | irqNumber);
 
     // Set the divide configuration value
-    writeApicRegister(APIC_TIMER_DIVIDE_CONFIG, m_divideConfig);
+    lapic->write(APIC_TIMER_DIVIDE_CONFIG, m_divideConfig);
 
     // Set the timer interval value
-    writeApicRegister(APIC_TIMER_INITIAL_COUNT, 0);
+    lapic->write(APIC_TIMER_INITIAL_COUNT, 0);
 }

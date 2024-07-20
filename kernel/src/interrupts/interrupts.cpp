@@ -76,7 +76,7 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
-    completeApicIrq();
+    Apic::getLocalApic()->completeIrq();
 
     _g_system_tick_count++;
 

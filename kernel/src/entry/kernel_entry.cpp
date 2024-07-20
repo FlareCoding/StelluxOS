@@ -140,7 +140,7 @@ void _kuser_entry() {
     kuPrint("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
     kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_kernelEntryParameters.kernelStack + PAGE_SIZE);
 
-    initializeApic();
+    Apic::initializeLocalApic();
 
     auto& acpiController = AcpiController::get();
 
