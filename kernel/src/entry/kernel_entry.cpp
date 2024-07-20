@@ -158,8 +158,6 @@ void _kuser_entry() {
     KernelTimer::startApicPeriodicTimer();
 
     // Initialize IOAPIC
-    IOAPIC* ioapic = nullptr;
-
     if (acpiController.hasApicTable()) {
         auto& desc = acpiController.getApicTable()->getIoApicDescriptor(0);
         kuPrint("---- IOAPIC Descriptor 0 ----\n");
@@ -171,8 +169,16 @@ void _kuser_entry() {
         kuPrint("\n");
 
         RUN_ELEVATED({
-            ioapic = new IOAPIC((uint64_t)desc.ioapicAddress, (uint64_t)desc.globalSystemInterruptBase);
-            setAndEnableKeyboardInterrupt(*ioapic, 0);
+            IoApic* ioapic = new IoApic((uint64_t)desc.ioapicAddress, (uint64_t)desc.globalSystemInterruptBase);
+            
+            // Enable keyboard IRQ
+            IoApic::RedirectionEntry entry;
+            memset(&entry, 0, sizeof(IoApic::RedirectionEntry));
+
+            uint8_t ioapicEntryNo = 1;
+            entry.vector = IRQ1;
+            entry.destination = BSP_CPU_ID;
+            ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
         });
     }
 
