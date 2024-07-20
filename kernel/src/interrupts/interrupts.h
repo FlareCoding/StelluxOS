@@ -117,5 +117,6 @@ DEFINE_INT_HANDLER(_exc_handler_div);
 DEFINE_INT_HANDLER(_exc_handler_pf);
 
 DEFINE_INT_HANDLER(_irq_handler_timer);
+DEFINE_INT_HANDLER(_irq_handler_keyboard);
 
 #endif

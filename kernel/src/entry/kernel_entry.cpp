@@ -27,7 +27,7 @@
 // #define KE_TEST_XHCI_INIT
 // #define KE_TEST_AP_STARTUP
 // #define KE_TEST_CPU_TEMP_READINGS
-#define KE_TEST_PRINT_CURRENT_TIME
+// #define KE_TEST_PRINT_CURRENT_TIME
 // #define KE_TEST_GRAPHICS
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
@@ -158,8 +158,22 @@ void _kuser_entry() {
     KernelTimer::startApicPeriodicTimer();
 
     // Initialize IOAPIC
+    IOAPIC* ioapic = nullptr;
+
     if (acpiController.hasApicTable()) {
-        initializeIoApic();
+        auto& desc = acpiController.getApicTable()->getIoApicDescriptor(0);
+        kuPrint("---- IOAPIC Descriptor 0 ----\n");
+        kuPrint("    Type    : %i\n", desc.type);
+        kuPrint("    Length  : %i\n", desc.length);
+        kuPrint("    ID      : %i\n", desc.ioapicId);
+        kuPrint("    Address : 0x%x\n", desc.ioapicAddress);
+        kuPrint("    GSIB    : %i\n", desc.globalSystemInterruptBase);
+        kuPrint("\n");
+
+        RUN_ELEVATED({
+            ioapic = new IOAPIC((uint64_t)desc.ioapicAddress, (uint64_t)desc.globalSystemInterruptBase);
+            setAndEnableKeyboardInterrupt(*ioapic, 0);
+        });
     }
 
     auto& sched = RoundRobinScheduler::get();
@@ -170,7 +184,7 @@ void _kuser_entry() {
 
     // Print system CPU core information
     if (acpiController.hasApicTable()) {
-        auto apicTable = acpiController.getApic();
+        auto apicTable = acpiController.getApicTable();
         kuPrint("==== Detected %lli CPUs ====\n", apicTable->getCpuCount());
         for (size_t i = 0; i < apicTable->getCpuCount(); ++i) {
             kuPrint("    Core %lli: online\n", apicTable->getLocalApicDescriptor(i).apicId);

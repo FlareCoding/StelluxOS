@@ -102,7 +102,7 @@ public:
     inline bool hasHpetTable() const { return (m_hpet.get() != nullptr); }
     inline bool hasPciDeviceTable() const { return (m_mcfg.get() != nullptr); }
 
-    Madt* getApic() { return m_madt.get(); }
+    Madt* getApicTable() { return m_madt.get(); }
     Hpet* getHpet() { return m_hpet.get(); }
     Mcfg* getPciDeviceTable() { return m_mcfg.get(); }
 

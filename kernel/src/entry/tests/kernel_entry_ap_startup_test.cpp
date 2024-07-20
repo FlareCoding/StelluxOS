@@ -52,7 +52,7 @@ void ke_test_ap_startup() {
 
         auto& lapic = Apic::getLocalApic();
 
-        for (uint32_t apicId = 1; apicId < acpiController.getApic()->getCpuCount(); apicId++) {
+        for (uint32_t apicId = 1; apicId < acpiController.getApicTable()->getCpuCount(); apicId++) {
             kprint("Waking up cpu %i\n", apicId);
             lapic->sendIpi(apicId, 0x500);
             msleep(20);

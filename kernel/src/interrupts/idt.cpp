@@ -91,7 +91,8 @@ InterruptHandler_t g_int_exc_handlers[15] = {
 
 InterruptHandler_t g_int_irq_handlers[15] = {
     _irq_handler_timer,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    _irq_handler_keyboard,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
 IdtDescriptor g_kernelIdtDescriptor = {

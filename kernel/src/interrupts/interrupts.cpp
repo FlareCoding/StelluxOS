@@ -94,3 +94,12 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
         }
     }
 }
+
+DEFINE_INT_HANDLER(_irq_handler_keyboard) {
+    (void)frame;
+
+    Apic::getLocalApic()->completeIrq();
+    uint8_t scancode = inByte(0x60);
+
+    kprint("Scancode: %i\n", (int)scancode);
+}
