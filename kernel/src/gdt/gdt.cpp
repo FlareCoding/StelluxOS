@@ -5,22 +5,22 @@
 
 EXTERN_C void __kinstall_gdt_asm(GdtDescriptor* descriptor);
 
-__PRIVILEGED_DATA TaskStateSegment g_tss;
-__PRIVILEGED_DATA GDT g_globalDescriptorTable;
+struct GdtAndTssData {
+    GdtSegmentDescriptor kernelNullDescriptor;
+    GdtSegmentDescriptor kernelCodeDescriptor;
+    GdtSegmentDescriptor kernelDataDescriptor;
+    GdtSegmentDescriptor userCodeDescriptor;
+    GdtSegmentDescriptor userDataDescriptor;
+    TSSDescriptor        tssDescriptor;
 
-__PRIVILEGED_DATA GdtSegmentDescriptor kernelNullDescriptor;
-__PRIVILEGED_DATA GdtSegmentDescriptor kernelCodeDescriptor;
-__PRIVILEGED_DATA GdtSegmentDescriptor kernelDataDescriptor;
-__PRIVILEGED_DATA GdtSegmentDescriptor userCodeDescriptor;
-__PRIVILEGED_DATA GdtSegmentDescriptor userDataDescriptor;
+    GDT gdt;
+    TaskStateSegment tss;
 
-__PRIVILEGED_DATA TSSDescriptor        tssDescriptor;
-
-__PRIVILEGED_DATA 
-GdtDescriptor g_gdtDescriptor = {
-    .limit = sizeof(GDT) - 1,
-    .base = (uint64_t)&g_globalDescriptorTable
+    GdtDescriptor gdtDescriptor;
 };
+
+__PRIVILEGED_DATA
+GdtAndTssData g_gdtPerCpuArray[MAX_CPUS];
 
 __PRIVILEGED_CODE
 void setSegmentDescriptorBase(
@@ -59,101 +59,105 @@ void setTSSDescriptorLimit(TSSDescriptor* desc, uint32_t limit) {
 }
 
 __PRIVILEGED_CODE
-void initializeAndInstallGDT(void* kernelStack) {
+void initializeAndInstallGDT(int apicid, void* kernelStack) {
+    GdtAndTssData* data = &g_gdtPerCpuArray[apicid];
+
     // Zero out all descriptors initially
-    zeromem(&kernelNullDescriptor, sizeof(GdtSegmentDescriptor));
-    zeromem(&kernelCodeDescriptor, sizeof(GdtSegmentDescriptor));
-    zeromem(&kernelDataDescriptor, sizeof(GdtSegmentDescriptor));
-    zeromem(&userCodeDescriptor, sizeof(GdtSegmentDescriptor));
-    zeromem(&userDataDescriptor, sizeof(GdtSegmentDescriptor));
+    zeromem(&data->kernelNullDescriptor, sizeof(GdtSegmentDescriptor));
+    zeromem(&data->kernelCodeDescriptor, sizeof(GdtSegmentDescriptor));
+    zeromem(&data->kernelDataDescriptor, sizeof(GdtSegmentDescriptor));
+    zeromem(&data->userCodeDescriptor, sizeof(GdtSegmentDescriptor));
+    zeromem(&data->userDataDescriptor, sizeof(GdtSegmentDescriptor));
     
     // Initialize Kernel Code Segment
-    setSegmentDescriptorBase(&kernelCodeDescriptor, 0);
-    setSegmentDescriptorLimit(&kernelCodeDescriptor, 0xFFFFF);
-    kernelCodeDescriptor.longMode = 1;
-    kernelCodeDescriptor.granularity = 1;
-    kernelCodeDescriptor.available = 1;
-    kernelCodeDescriptor.accessByte.present = 1;
-    kernelCodeDescriptor.accessByte.descriptorPrivilegeLvl = 0; // Kernel privilege level
-    kernelCodeDescriptor.accessByte.executable = 1; // Code segment
-    kernelCodeDescriptor.accessByte.readWrite = 1;
-    kernelCodeDescriptor.accessByte.descriptorType = 1;
+    setSegmentDescriptorBase(&data->kernelCodeDescriptor, 0);
+    setSegmentDescriptorLimit(&data->kernelCodeDescriptor, 0xFFFFF);
+    data->kernelCodeDescriptor.longMode = 1;
+    data->kernelCodeDescriptor.granularity = 1;
+    data->kernelCodeDescriptor.available = 1;
+    data->kernelCodeDescriptor.accessByte.present = 1;
+    data->kernelCodeDescriptor.accessByte.descriptorPrivilegeLvl = 0; // Kernel privilege level
+    data->kernelCodeDescriptor.accessByte.executable = 1; // Code segment
+    data->kernelCodeDescriptor.accessByte.readWrite = 1;
+    data->kernelCodeDescriptor.accessByte.descriptorType = 1;
 
     // Initialize Kernel Data Segment
-    setSegmentDescriptorBase(&kernelDataDescriptor, 0);
-    setSegmentDescriptorLimit(&kernelDataDescriptor, 0xFFFFF);
-    kernelDataDescriptor.longMode = 1;
-    kernelDataDescriptor.granularity = 1;
-    kernelDataDescriptor.available = 1;
-    kernelDataDescriptor.accessByte.present = 1;
-    kernelDataDescriptor.accessByte.descriptorPrivilegeLvl = 0; // Kernel privilege level
-    kernelDataDescriptor.accessByte.executable = 0; // Data segment
-    kernelDataDescriptor.accessByte.readWrite = 1;
-    kernelDataDescriptor.accessByte.descriptorType = 1;
+    setSegmentDescriptorBase(&data->kernelDataDescriptor, 0);
+    setSegmentDescriptorLimit(&data->kernelDataDescriptor, 0xFFFFF);
+    data->kernelDataDescriptor.longMode = 1;
+    data->kernelDataDescriptor.granularity = 1;
+    data->kernelDataDescriptor.available = 1;
+    data->kernelDataDescriptor.accessByte.present = 1;
+    data->kernelDataDescriptor.accessByte.descriptorPrivilegeLvl = 0; // Kernel privilege level
+    data->kernelDataDescriptor.accessByte.executable = 0; // Data segment
+    data->kernelDataDescriptor.accessByte.readWrite = 1;
+    data->kernelDataDescriptor.accessByte.descriptorType = 1;
     
     // Initialize User Code Segment
-    setSegmentDescriptorBase(&userCodeDescriptor, 0);
-    setSegmentDescriptorLimit(&userCodeDescriptor, 0xFFFFF);
-    userCodeDescriptor.longMode = 1;
-    userCodeDescriptor.granularity = 1;
-    userCodeDescriptor.available = 1;
-    userCodeDescriptor.accessByte.present = 1;
-    userCodeDescriptor.accessByte.descriptorPrivilegeLvl = 3; // Usermode privilege level
-    userCodeDescriptor.accessByte.executable = 1; // Code segment
-    userCodeDescriptor.accessByte.readWrite = 1;
-    userCodeDescriptor.accessByte.descriptorType = 1;
+    setSegmentDescriptorBase(&data->userCodeDescriptor, 0);
+    setSegmentDescriptorLimit(&data->userCodeDescriptor, 0xFFFFF);
+    data->userCodeDescriptor.longMode = 1;
+    data->userCodeDescriptor.granularity = 1;
+    data->userCodeDescriptor.available = 1;
+    data->userCodeDescriptor.accessByte.present = 1;
+    data->userCodeDescriptor.accessByte.descriptorPrivilegeLvl = 3; // Usermode privilege level
+    data->userCodeDescriptor.accessByte.executable = 1; // Code segment
+    data->userCodeDescriptor.accessByte.readWrite = 1;
+    data->userCodeDescriptor.accessByte.descriptorType = 1;
 
     // Initialize User Data Segment
-    setSegmentDescriptorBase(&userDataDescriptor, 0);
-    setSegmentDescriptorLimit(&userDataDescriptor, 0xFFFFF);
-    userDataDescriptor.longMode = 1;
-    userDataDescriptor.granularity = 1;
-    userDataDescriptor.available = 1;
-    userDataDescriptor.accessByte.present = 1;
-    userDataDescriptor.accessByte.descriptorPrivilegeLvl = 3; // Usermode privilege level
-    userDataDescriptor.accessByte.executable = 0; // Data segment
-    userDataDescriptor.accessByte.readWrite = 1;
-    userDataDescriptor.accessByte.descriptorType = 1;
+    setSegmentDescriptorBase(&data->userDataDescriptor, 0);
+    setSegmentDescriptorLimit(&data->userDataDescriptor, 0xFFFFF);
+    data->userDataDescriptor.longMode = 1;
+    data->userDataDescriptor.granularity = 1;
+    data->userDataDescriptor.available = 1;
+    data->userDataDescriptor.accessByte.present = 1;
+    data->userDataDescriptor.accessByte.descriptorPrivilegeLvl = 3; // Usermode privilege level
+    data->userDataDescriptor.accessByte.executable = 0; // Data segment
+    data->userDataDescriptor.accessByte.readWrite = 1;
+    data->userDataDescriptor.accessByte.descriptorType = 1;
 
     // Initialize TSS
-    zeromem(&g_tss, sizeof(TaskStateSegment));
-    g_tss.rsp0 = reinterpret_cast<uint64_t>(kernelStack);
-    g_tss.ioMapBase = sizeof(TaskStateSegment);
+    zeromem(&data->tss, sizeof(TaskStateSegment));
+    data->tss.rsp0 = reinterpret_cast<uint64_t>(kernelStack);
+    data->tss.ioMapBase = sizeof(TaskStateSegment);
 
     // Initialize TSS descriptor
-    setTSSDescriptorBase(&tssDescriptor, (uint64_t)&g_tss);
-    setTSSDescriptorLimit(&tssDescriptor, sizeof(TaskStateSegment) - 1);
-    tssDescriptor.accessByte.type = 0x9;  // 0b1001 for 64-bit TSS (Available)
-    tssDescriptor.accessByte.present = 1;
-    tssDescriptor.accessByte.dpl = 0; // Kernel privilege level
-    tssDescriptor.accessByte.zero = 0; // Should be zero
-    tssDescriptor.limitHigh = 0; // 64-bit TSS doesn't use limitHigh, set it to 0
-    tssDescriptor.available = 1; // If you use this field, set it to 1
-    tssDescriptor.granularity = 0; // No granularity for TSS
-    tssDescriptor.zero = 0; // Should be zero
-    tssDescriptor.zeroAgain = 0; // Should be zero
+    setTSSDescriptorBase(&data->tssDescriptor, (uint64_t)&data->tss);
+    setTSSDescriptorLimit(&data->tssDescriptor, sizeof(TaskStateSegment) - 1);
+    data->tssDescriptor.accessByte.type = 0x9;  // 0b1001 for 64-bit TSS (Available)
+    data->tssDescriptor.accessByte.present = 1;
+    data->tssDescriptor.accessByte.dpl = 0; // Kernel privilege level
+    data->tssDescriptor.accessByte.zero = 0; // Should be zero
+    data->tssDescriptor.limitHigh = 0; // 64-bit TSS doesn't use limitHigh, set it to 0
+    data->tssDescriptor.available = 1; // If you use this field, set it to 1
+    data->tssDescriptor.granularity = 0; // No granularity for TSS
+    data->tssDescriptor.zero = 0; // Should be zero
+    data->tssDescriptor.zeroAgain = 0; // Should be zero
 
     // Update the GDT with initialized descriptors
-    g_globalDescriptorTable.kernelNull = kernelNullDescriptor;
-    g_globalDescriptorTable.kernelCode = kernelCodeDescriptor;
-    g_globalDescriptorTable.kernelData = kernelDataDescriptor;
-    g_globalDescriptorTable.userCode = userCodeDescriptor;
-    g_globalDescriptorTable.userData = userDataDescriptor;
-    g_globalDescriptorTable.tss = tssDescriptor;
+    data->gdt.kernelNull = data->kernelNullDescriptor;
+    data->gdt.kernelCode = data->kernelCodeDescriptor;
+    data->gdt.kernelData = data->kernelDataDescriptor;
+    data->gdt.userCode = data->userCodeDescriptor;
+    data->gdt.userData = data->userDataDescriptor;
+    data->gdt.tss = data->tssDescriptor;
+
+    // Initialize the GDT descriptor
+    data->gdtDescriptor = {
+        .limit = sizeof(GDT) - 1,
+        .base = (uint64_t)&data->gdt
+    };
 
     // Install the GDT
-    __kinstall_gdt_asm(&g_gdtDescriptor);
+    __kinstall_gdt_asm(&data->gdtDescriptor);
 
     // Load the Task Register (TR)
     __asm__("ltr %%ax" : : "a" (__TSS_PT1_SELECTOR));
 
-    __per_cpu_data.__cpu[BSP_CPU_ID].defaultKernelStack = reinterpret_cast<uint64_t>(kernelStack);
+    __per_cpu_data.__cpu[apicid].cpu = apicid;
+    __per_cpu_data.__cpu[apicid].defaultKernelStack = reinterpret_cast<uint64_t>(kernelStack);
 
     // Store the address of the tss in gsbase
-    writeMsr(IA32_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[BSP_CPU_ID]);
-}
-
-__PRIVILEGED_CODE
-TaskStateSegment* getActiveTSS() {
-    return &g_tss;
+    writeMsr(IA32_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[apicid]);
 }

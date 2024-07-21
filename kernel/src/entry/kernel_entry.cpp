@@ -25,7 +25,7 @@
 
 // #define KE_TEST_MULTITHREADING
 // #define KE_TEST_XHCI_INIT
-// #define KE_TEST_AP_STARTUP
+#define KE_TEST_AP_STARTUP
 // #define KE_TEST_CPU_TEMP_READINGS
 // #define KE_TEST_PRINT_CURRENT_TIME
 // #define KE_TEST_GRAPHICS
@@ -55,7 +55,7 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
 
     // First thing we have to take care of
     // is setting up the Global Descriptor Table.
-    initializeAndInstallGDT((void*)kernelStackTop);
+    initializeAndInstallGDT(BSP_CPU_ID, (void*)kernelStackTop);
     
     // Enable the syscall functionality
     enableSyscallInterface();

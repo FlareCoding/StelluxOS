@@ -140,16 +140,9 @@ void setSegmentDescriptorLimit(
     uint64_t limit
 );
 
-__PRIVILEGED_DATA
-extern GDT g_globalDescriptorTable;
-
-__PRIVILEGED_DATA
-extern GdtDescriptor g_gdtDescriptor;
-
-EXTERN_C __PRIVILEGED_CODE void initializeAndInstallGDT(void* kernelStack);
-
+EXTERN_C
 __PRIVILEGED_CODE
-TaskStateSegment* getActiveTSS();
+void initializeAndInstallGDT(int apicid, void* kernelStack);
 
 #define __KERNEL_CS         0x08
 #define __KERNEL_DS         0x10

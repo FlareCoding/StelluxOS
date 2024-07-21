@@ -7,19 +7,68 @@
 #include <time/ktime.h>
 #include <acpi/acpi_controller.h>
 #include <arch/x86/apic.h>
+#include <arch/x86/msr.h>
+#include <gdt/gdt.h>
+#include <interrupts/idt.h>
 
 EXTERN_C void __ap_startup_asm();
 
-EXTERN_C void __ap_startup(int apicid) {
+void __ap_startup_user_entry();
+
+EXTERN_C
+void __ap_startup(int apicid) {
     (void)apicid;
 
     kprint("Hello from core %i!\n", apicid);
-	// do what you want to do on the AP
-	while(1);
+
+    void* apKernelStack = zallocPages(4);
+    kprintInfo("[CPU%i] Kernel stack: 0x%llx\n", apicid, (uint64_t)apKernelStack);
+
+    initializeAndInstallGDT(apicid, apKernelStack);
+    kprintInfo("[CPU%i] GDT installed\n", apicid);
+
+    loadIdtr();
+    enableInterrupts();
+    kprintInfo("[CPU%i] IDT installed and interrupts enabled\n", apicid);
+
+    enableSyscallInterface();
+    kprintInfo("[CPU%i] Syscalls enabled\n", apicid);
+
+    uint64_t gs_cpuid;
+    asm volatile (
+        "movq %%gs:0x20, %0"
+        : "=r" (gs_cpuid)
+    );
+
+    kprintInfo("[CPU%i] __cpu_id: %i\n", apicid, gs_cpuid);
+
+    while (1);
+
+    // char* usermodeStack = (char*)zallocPages(8);
+    // size_t usermodeStackSize = 8 * PAGE_SIZE;
+
+	// __call_lowered_entry(__ap_startup_user_entry, usermodeStack + usermodeStackSize);
 }
 
+// void __ap_startup_user_entry() {
+//     __kelevate();
+//     uint64_t gs_cpuid;
+//     asm volatile (
+//         "movq %%gs:0x20, %0"
+//         : "=r" (gs_cpuid)
+//     );
+
+//     kprintInfo("[CPU%i] __cpu_id: %i\n", 1, gs_cpuid);
+//     __klower();
+
+//     // ---===== SHOULD GIVE A PAGE FAULT =====---
+//     // uint8_t i = *(uint8_t*)0x40000;
+//     // kuPrint("%i\n", i);
+
+//     while (1);
+// }
+
 void ke_test_ap_startup() {
-    auto& acpiController = AcpiController::get();
     auto& globalPageFrameAllocator = paging::getGlobalPageFrameAllocator();
 
     RUN_ELEVATED({
@@ -52,14 +101,13 @@ void ke_test_ap_startup() {
 
         auto& lapic = Apic::getLocalApic();
 
-        for (uint32_t apicId = 1; apicId < acpiController.getApicTable()->getCpuCount(); apicId++) {
-            kprint("Waking up cpu %i\n", apicId);
-            lapic->sendIpi(apicId, 0x500);
-            msleep(20);
+        // Test with only one extra CPU
+        kprint("Waking up cpu %i\n", 1);
+        lapic->sendIpi(1, 0x500);
+        msleep(20);
 
-            lapic->sendIpi(apicId, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
-            msleep(20);
-        }
+        lapic->sendIpi(1, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
+        msleep(20);
 
         *bspdone_ptr = 1;
     });
