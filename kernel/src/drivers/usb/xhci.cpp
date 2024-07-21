@@ -269,10 +269,7 @@ namespace drivers {
         // Map a conservatively large space for xHCI registers
         for (size_t offset = 0; offset < 0x20000; offset += PAGE_SIZE) {
             void* mmioPage = (void*)(pciBarAddress + offset);
-            paging::mapPage(mmioPage, mmioPage, KERNEL_PAGE, paging::g_kernelRootPageTable);
-
-            paging::pte_t* pte = paging::getPteForAddr(mmioPage, paging::g_kernelRootPageTable);
-            pte->pageCacheDisabled = 1;
+            paging::mapPage(mmioPage, mmioPage, KERNEL_PAGE, PAGE_ATTRIB_CACHE_DISABLED, paging::g_kernelRootPageTable);
         }
 
         paging::flushTlbAll();
@@ -291,9 +288,7 @@ namespace drivers {
         }
 
         // Make sure the memory is uncacheable
-        paging::pte_t* pte = paging::getPteForAddr(ptr, paging::g_kernelRootPageTable);
-        pte->pageCacheDisabled = 1;
-        paging::flushTlbAll();
+        paging::markPageUncacheable(ptr);
 
         return ptr;
     }

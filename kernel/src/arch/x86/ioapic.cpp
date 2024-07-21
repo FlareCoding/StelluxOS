@@ -8,11 +8,8 @@ __PRIVILEGED_CODE
 IoApic::IoApic(uint64_t physRegs, uint64_t gsib) {
     m_virtualBase = (uint64_t)zallocPage();
 
-    paging::mapPage((void*)m_virtualBase, (void*)physRegs, KERNEL_PAGE, paging::g_kernelRootPageTable);
-
-    auto pte = paging::getPteForAddr((void*)m_virtualBase, paging::g_kernelRootPageTable);
-    pte->pageCacheDisabled = 1;
-    paging::flushTlbAll();
+    paging::mapPage((void*)m_virtualBase, (void*)physRegs, KERNEL_PAGE, PAGE_ATTRIB_CACHE_DISABLED, paging::g_kernelRootPageTable);
+    paging::flushTlbPage((void*)m_virtualBase);
 
     m_apicId = (read(IOAPICID) >> 24) & 0xF0;
     m_apicVersion = read(IOAPICVER);

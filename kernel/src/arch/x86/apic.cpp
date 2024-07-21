@@ -18,10 +18,12 @@ Apic::Apic(uint64_t base, uint8_t spuriousIrq) {
             virtualBase,
             m_physicalBase,
             USERSPACE_PAGE,
+            PAGE_ATTRIB_CACHE_DISABLED,
             paging::g_kernelRootPageTable,
             paging::getGlobalPageFrameAllocator()
         );
-        paging::flushTlbAll();
+        
+        paging::flushTlbPage(virtualBase);
     });
 
     m_virtualBase = static_cast<volatile uint32_t*>(virtualBase);

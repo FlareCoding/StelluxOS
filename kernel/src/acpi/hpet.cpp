@@ -7,7 +7,7 @@ Hpet::Hpet(HpetTable* table) {
     void* physicalBase = reinterpret_cast<void*>(table->address);
     void* virtualBase = zallocPage();
 
-    paging::mapPage(virtualBase, physicalBase, USERSPACE_PAGE, paging::g_kernelRootPageTable);
+    paging::mapPage(virtualBase, physicalBase, USERSPACE_PAGE, 0, paging::g_kernelRootPageTable);
 
     m_base = reinterpret_cast<uint64_t>(virtualBase);
 }

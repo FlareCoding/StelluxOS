@@ -38,7 +38,7 @@ void Mcfg::_enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
     uint64_t offset = function << 12;
 
     uint64_t functionAddress = deviceAddress + offset;
-    paging::mapPage((void*)functionAddress, (void*)functionAddress, KERNEL_PAGE, paging::getCurrentTopLevelPageTable());
+    paging::mapPage((void*)functionAddress, (void*)functionAddress, KERNEL_PAGE, 0, paging::getCurrentTopLevelPageTable());
 
     volatile PciDeviceHeader* pciDeviceHeader = (volatile PciDeviceHeader*)functionAddress;
 
@@ -70,7 +70,7 @@ void Mcfg::_enumeratePciDevice(uint64_t busAddress, uint64_t device) {
     uint64_t offset = device << 15;
 
     uint64_t deviceAddress = busAddress + offset;
-    paging::mapPage((void*)deviceAddress, (void*)deviceAddress, KERNEL_PAGE, paging::getCurrentTopLevelPageTable());
+    paging::mapPage((void*)deviceAddress, (void*)deviceAddress, KERNEL_PAGE, 0, paging::getCurrentTopLevelPageTable());
 
     PciDeviceHeader* pciDeviceHeader = (PciDeviceHeader*)deviceAddress;
 
@@ -87,7 +87,7 @@ void Mcfg::_enumeratePciBus(uint64_t baseAddress, uint64_t bus) {
     uint64_t offset = bus << 20;
 
     uint64_t busAddress = baseAddress + offset;
-    paging::mapPage((void*)busAddress, (void*)busAddress, KERNEL_PAGE, paging::getCurrentTopLevelPageTable());
+    paging::mapPage((void*)busAddress, (void*)busAddress, KERNEL_PAGE, 0, paging::getCurrentTopLevelPageTable());
 
     PciDeviceHeader* pciDeviceHeader = (PciDeviceHeader*)busAddress;
 

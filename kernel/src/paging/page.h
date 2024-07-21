@@ -7,6 +7,10 @@
 #define USERSPACE_PAGE  1
 #define KERNEL_PAGE     0
 
+#define PAGE_ATTRIB_CACHE_DISABLED 0x01  // Bit 0
+#define PAGE_ATTRIB_WRITE_THROUGH  0x02  // Bit 1
+#define PAGE_ATTRIB_ACCESS_TYPE    0x04  // Bit 2
+
 namespace paging {
 typedef struct PageTableEntry {
     union
@@ -37,20 +41,37 @@ struct PageTable {
     pte_t entries[PAGE_TABLE_ENTRIES];
 } __attribute__((aligned(PAGE_SIZE)));
 
-static inline void* pageAlignAddress(void* addr) {
+static __attribute__((always_inline)) inline void* pageAlignAddress(void* addr) {
     return (void*)((reinterpret_cast<uint64_t>(addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
 }
 
+__PRIVILEGED_CODE
+PageTable* getCurrentTopLevelPageTable();
+
+__PRIVILEGED_CODE
+void setCurrentTopLevelPageTable(PageTable* pml4);
+
+__PRIVILEGED_CODE
 void mapPage(
     void* vaddr,
     void* paddr,
-    int privilegeLevel,
+    uint8_t privilegeLevel,
+    uint8_t attribs,
     PageTable* pml4,
     PageFrameAllocator& pageFrameAllocator = getGlobalPageFrameAllocator()
 );
 
-PageTable* getCurrentTopLevelPageTable();
-void setCurrentTopLevelPageTable(PageTable* pml4);
+__PRIVILEGED_CODE
+void changePageAttribs(void* vaddr, uint8_t attribs, PageTable* pml4 = getCurrentTopLevelPageTable());
+
+__PRIVILEGED_CODE
+void markPageUncacheable(void* vaddr, PageTable* pml4 = getCurrentTopLevelPageTable());
+
+__PRIVILEGED_CODE
+void markPageWriteThrough(void* vaddr, PageTable* pml4 = getCurrentTopLevelPageTable());
+
+__PRIVILEGED_CODE
+void markPageAccessType(void* vaddr, PageTable* pml4 = getCurrentTopLevelPageTable());
 
 pte_t* getPml4Entry(void* vaddr, PageTable* pml4);
 pte_t* getPdptEntry(void* vaddr, PageTable* pdpt);

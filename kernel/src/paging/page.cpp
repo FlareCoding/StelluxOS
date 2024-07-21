@@ -1,5 +1,6 @@
 #include "page.h"
 #include "phys_addr_translation.h"
+#include "tlb.h"
 #include <kprint.h>
 
 namespace paging {
@@ -22,6 +23,7 @@ void getPageTableIndicesFromVirtualAddress(
     *ipml4 = vaddr & 0x1ff;
 }
 
+__PRIVILEGED_CODE
 PageTable* getCurrentTopLevelPageTable() {
     uint64_t cr3_value;
     __asm__ volatile(
@@ -35,6 +37,7 @@ PageTable* getCurrentTopLevelPageTable() {
 	return static_cast<PageTable*>(pml4Vaddr);
 }
 
+__PRIVILEGED_CODE
 void setCurrentTopLevelPageTable(PageTable* pml4) {
     __asm__ volatile("mov %0, %%cr3" : : "r"(reinterpret_cast<uint64_t>(__pa(pml4))));
 }
@@ -68,10 +71,12 @@ PageTable* getNextLevelPageTable(pte_t* entry) {
 	return reinterpret_cast<PageTable*>(pageTablePhysicalAddr);
 }
 
+__PRIVILEGED_CODE
 void mapPage(
     void* vaddr,
     void* paddr,
-	int privilegeLevel,
+	uint8_t privilegeLevel,
+    uint8_t attribs,
     PageTable* pml4,
     PageFrameAllocator& pageFrameAllocator
 ) {
@@ -126,7 +131,40 @@ void mapPage(
 	pte->present = 1;
 	pte->readWrite = 1;
 	pte->userSupervisor = privilegeLevel;
+	pte->pageCacheDisabled = attribs & PAGE_ATTRIB_CACHE_DISABLED;
+	pte->pageWriteThrough = attribs & PAGE_ATTRIB_WRITE_THROUGH;
+	pte->pageAccessType = attribs & PAGE_ATTRIB_ACCESS_TYPE;
 	pte->pageFrameNumber = reinterpret_cast<uint64_t>(paddr) >> 12;
+}
+
+__PRIVILEGED_CODE
+void changePageAttribs(void* vaddr, uint8_t attribs, PageTable* pml4) {
+	pte_t* pte = getPteForAddr(vaddr, pml4);
+	pte->pageCacheDisabled = attribs & PAGE_ATTRIB_CACHE_DISABLED;
+	pte->pageWriteThrough = attribs & PAGE_ATTRIB_WRITE_THROUGH;
+	pte->pageAccessType = attribs & PAGE_ATTRIB_ACCESS_TYPE;
+	flushTlbPage(vaddr);
+}
+
+__PRIVILEGED_CODE
+void markPageUncacheable(void* vaddr, PageTable* pml4) {
+	pte_t* pte = getPteForAddr(vaddr, pml4);
+	pte->pageCacheDisabled = 1;
+	flushTlbPage(vaddr);
+}
+
+__PRIVILEGED_CODE
+void markPageWriteThrough(void* vaddr, PageTable* pml4) {
+	pte_t* pte = getPteForAddr(vaddr, pml4);
+	pte->pageWriteThrough = 1;
+	flushTlbPage(vaddr);
+}
+
+__PRIVILEGED_CODE
+void markPageAccessType(void* vaddr, PageTable* pml4) {
+	pte_t* pte = getPteForAddr(vaddr, pml4);
+	pte->pageAccessType = 1;
+	flushTlbPage(vaddr);
 }
 
 PageTableEntry* getPteForAddr(void* vaddr, PageTable* pml4) {
