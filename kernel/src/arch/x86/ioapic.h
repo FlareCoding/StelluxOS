@@ -58,6 +58,7 @@ public:
     uint8_t getRedirectionEntryCount() { return m_redirectionEntryCount; }
     uint64_t getGlobalInterruptBase() { return m_globalIntrBase; }
 
+    __PRIVILEGED_CODE
     IoApic(uint64_t physRegs, uint64_t gsib);
 
     /*

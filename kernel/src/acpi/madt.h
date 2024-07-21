@@ -2,6 +2,7 @@
 #define MADT_H
 #include "acpi.h"
 #include <kvector.h>
+#include <arch/x86/ioapic.h>
 
 // MADT structure
 struct MadtDescriptor {
@@ -35,14 +36,14 @@ public:
     ~Madt() = default;
 
     LocalApicDescriptor& getLocalApicDescriptor(size_t idx) { return m_localApics[idx]; }
-    IoApicDescriptor& getIoApicDescriptor(size_t idx) { return m_ioApics[idx]; }
+    kstl::SharedPtr<IoApic>& getIoApic(size_t idx) { return m_ioApics[idx]; }
 
     size_t getCpuCount() const { return m_localApics.size(); }
     size_t getIoApicCount() const { return m_ioApics.size(); }
 
 private:
     kstl::vector<LocalApicDescriptor> m_localApics;
-    kstl::vector<IoApicDescriptor> m_ioApics;
+    kstl::vector<kstl::SharedPtr<IoApic>> m_ioApics;
 };
 
 #endif

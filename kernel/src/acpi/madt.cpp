@@ -1,5 +1,6 @@
 #include "madt.h"
 #include <kprint.h>
+#include <kelevate/kelevate.h>
 
 Madt::Madt(MadtDescriptor* desc) {
     uint8_t* entryPtr = desc->tableEntries;
@@ -20,11 +21,16 @@ Madt::Madt(MadtDescriptor* desc) {
             break;
         }
         case 1: { // IOAPIC
-            IoApicDescriptor* ioapic = (IoApicDescriptor*)entryPtr;
-            IoApicDescriptor desc;
-            memcpy(&desc, ioapic, sizeof(IoApicDescriptor));
+            IoApicDescriptor* desc = (IoApicDescriptor*)entryPtr;
 
-            m_ioApics.pushBack(desc);
+            // Initialize the IOAPIC
+            RUN_ELEVATED({
+                auto ioapic = kstl::SharedPtr<IoApic>(
+                    new IoApic((uint64_t)desc->ioapicAddress, (uint64_t)desc->globalSystemInterruptBase)
+                );
+
+                m_ioApics.pushBack(ioapic);
+            });
             break;
         }
         default: break;

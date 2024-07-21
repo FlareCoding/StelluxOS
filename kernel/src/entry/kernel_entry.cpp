@@ -159,27 +159,16 @@ void _kuser_entry() {
 
     // Initialize IOAPIC
     if (acpiController.hasApicTable()) {
-        auto& desc = acpiController.getApicTable()->getIoApicDescriptor(0);
-        kuPrint("---- IOAPIC Descriptor 0 ----\n");
-        kuPrint("    Type    : %i\n", desc.type);
-        kuPrint("    Length  : %i\n", desc.length);
-        kuPrint("    ID      : %i\n", desc.ioapicId);
-        kuPrint("    Address : 0x%x\n", desc.ioapicAddress);
-        kuPrint("    GSIB    : %i\n", desc.globalSystemInterruptBase);
-        kuPrint("\n");
+        kstl::SharedPtr<IoApic>& ioapic = acpiController.getApicTable()->getIoApic(0);
 
-        RUN_ELEVATED({
-            IoApic* ioapic = new IoApic((uint64_t)desc.ioapicAddress, (uint64_t)desc.globalSystemInterruptBase);
-            
-            // Enable keyboard IRQ
-            IoApic::RedirectionEntry entry;
-            memset(&entry, 0, sizeof(IoApic::RedirectionEntry));
+        // Enable keyboard IRQ
+        IoApic::RedirectionEntry entry;
+        memset(&entry, 0, sizeof(IoApic::RedirectionEntry));
 
-            uint8_t ioapicEntryNo = 1;
-            entry.vector = IRQ1;
-            entry.destination = BSP_CPU_ID;
-            ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
-        });
+        uint8_t ioapicEntryNo = 1;
+        entry.vector = IRQ1;
+        entry.destination = BSP_CPU_ID;
+        ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
     }
 
     auto& sched = RoundRobinScheduler::get();

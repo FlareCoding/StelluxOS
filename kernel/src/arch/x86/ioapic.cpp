@@ -4,6 +4,7 @@
 #include <paging/tlb.h>
 #include <kelevate/kelevate.h>
 
+__PRIVILEGED_CODE
 IoApic::IoApic(uint64_t physRegs, uint64_t gsib) {
     m_virtualBase = (uint64_t)zallocPage();
 
@@ -81,8 +82,14 @@ bool IoApic::writeRedirectionEntry(uint8_t entNo, IoApic::RedirectionEntry *entr
 */
 uint32_t IoApic::read(uint8_t regOff)
 {
-    *(uint32_t volatile*)(m_virtualBase + IOAPIC_REGSEL) = regOff;
-    return *(uint32_t volatile*)(m_virtualBase + IOAPIC_IOWIN);
+    uint32_t result = 0;
+
+    RUN_ELEVATED({
+        *(uint32_t volatile*)(m_virtualBase + IOAPIC_REGSEL) = regOff;
+        result = *(uint32_t volatile*)(m_virtualBase + IOAPIC_IOWIN);
+    });
+
+    return result;
 }
 
 /*
@@ -92,7 +99,9 @@ uint32_t IoApic::read(uint8_t regOff)
 * @param data - dword to write to the register
 */
 void IoApic::write(uint8_t regOff, uint32_t data) {
-    *(uint32_t volatile*)(m_virtualBase + IOAPIC_REGSEL) = regOff;
-    *(uint32_t volatile*)(m_virtualBase + IOAPIC_IOWIN) = data;
+    RUN_ELEVATED({
+        *(uint32_t volatile*)(m_virtualBase + IOAPIC_REGSEL) = regOff;
+        *(uint32_t volatile*)(m_virtualBase + IOAPIC_IOWIN) = data;
+    });
 }
 
