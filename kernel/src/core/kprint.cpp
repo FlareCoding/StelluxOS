@@ -225,6 +225,21 @@ void kprint(
 }
 
 __PRIVILEGED_CODE
+void kprintLocked(
+    const char* fmt,
+    ...
+) {
+    va_list args;
+    va_start(args, fmt);
+
+    acquireSpinlock(&__kprint_spinlock);
+    kprintFmtColoredEx(DEFAULT_TEXT_COLOR, fmt, args);
+    releaseSpinlock(&__kprint_spinlock);
+
+    va_end(args);
+}
+
+__PRIVILEGED_CODE
 void kprintError(
     const char* fmt,
     ...

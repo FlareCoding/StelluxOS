@@ -52,8 +52,10 @@ void __ap_startup(int apicid) {
     char* usermodeStack = (char*)zallocPages(8);
     size_t usermodeStackSize = 8 * PAGE_SIZE;
     size_t userStackTop = (uint64_t)(usermodeStack + usermodeStackSize);
-    
+
     __call_lowered_entry(__ap_startup_user_entry, (void*)userStackTop);
+
+    while (1);
 }
 
 void __ap_startup_user_entry() {
@@ -102,8 +104,8 @@ void ke_test_ap_startup() {
 
         auto& lapic = Apic::getLocalApic();
 
-        // for (size_t i = 1; i < apicTable->getCpuCount(); i++) {
-        for (size_t i = 1; i < 2; i++) {
+        // for (size_t i = 1; i < apicTable->getCpuCount() - 1; i++) {
+        for (size_t i = 1; i < 5; i++) {
             uint8_t apicid = apicTable->getLocalApicDescriptor(i).apicId;
 
             kprint("Waking up cpu %i\n", apicid);

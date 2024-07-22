@@ -1,7 +1,7 @@
 #include "kmemory.h"
 #include <paging/page_frame_allocator.h>
 
-    EXTERN_C {
+EXTERN_C {
     int __cxa_atexit(void (*destructor) (void *), void *arg, void *dso_handle) {
         (void)destructor;
         (void)arg;

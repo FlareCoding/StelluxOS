@@ -53,6 +53,12 @@ void kprint(
 );
 
 __PRIVILEGED_CODE
+void kprintLocked(
+    const char* fmt,
+    ...
+);
+
+__PRIVILEGED_CODE
 void kprintError(
     const char* fmt,
     ...

@@ -5,11 +5,15 @@
 #include "phys_addr_translation.h"
 #include "page.h"
 #include "tlb.h"
+#include <sync.h>
 #include <kprint.h>
 
 paging::PageFrameAllocator g_globalAllocator;
 
 extern uint64_t __ksymstart;
+
+DECLARE_SPINLOCK(__kpage_allocator_lock);
+DECLARE_SPINLOCK(__kpage_request_lock);
 
 namespace paging {
     void PageFrameBitmap::initialize(uint64_t size, uint8_t* buffer) {
@@ -215,8 +219,11 @@ namespace paging {
     }
 
     void PageFrameAllocator::freePhysicalPage(void* paddr) {
+        acquireSpinlock(&__kpage_allocator_lock);
+
         // Check if the page is already free
         if (m_pageFrameBitmap.isPageFree(paddr)) {
+            releaseSpinlock(&__kpage_allocator_lock);
             return;
         }
 
@@ -224,6 +231,8 @@ namespace paging {
             m_freeSystemMemory += PAGE_SIZE;
             m_usedSystemMemory -= PAGE_SIZE;
         }
+
+        releaseSpinlock(&__kpage_allocator_lock);
     }
 
     void PageFrameAllocator::freePhysicalPages(void* paddr, uint64_t pages) {
@@ -234,8 +243,11 @@ namespace paging {
     }
 
     void PageFrameAllocator::lockPhysicalPage(void* paddr) {
+        acquireSpinlock(&__kpage_allocator_lock);
+
         // Check if the page is already in use
         if (m_pageFrameBitmap.isPageUsed(paddr)) {
+            releaseSpinlock(&__kpage_allocator_lock);
             return;
         }
 
@@ -243,6 +255,8 @@ namespace paging {
             m_freeSystemMemory -= PAGE_SIZE;
             m_usedSystemMemory += PAGE_SIZE;
         }
+
+        releaseSpinlock(&__kpage_allocator_lock);
     }
 
     void PageFrameAllocator::lockPhysicalPages(void* paddr, uint64_t pages) {
@@ -253,10 +267,13 @@ namespace paging {
     }
 
     void PageFrameAllocator::freePage(void* vaddr) {
+        acquireSpinlock(&__kpage_allocator_lock);
+
         void* paddr = __pa(vaddr);
 
         // Check if the page is already free
         if (m_pageFrameBitmap.isPageFree(paddr)) {
+            releaseSpinlock(&__kpage_allocator_lock);
             return;
         }
 
@@ -264,6 +281,8 @@ namespace paging {
             m_freeSystemMemory += PAGE_SIZE;
             m_usedSystemMemory -= PAGE_SIZE;
         }
+
+        releaseSpinlock(&__kpage_allocator_lock);
     }
 
     void PageFrameAllocator::freePages(void* vaddr, uint64_t pages) {
@@ -274,10 +293,13 @@ namespace paging {
     }
 
     void PageFrameAllocator::lockPage(void* vaddr) {
+        acquireSpinlock(&__kpage_allocator_lock);
+
         void* paddr = __pa(vaddr);
 
         // Check if the page is already in use
         if (m_pageFrameBitmap.isPageUsed(paddr)) {
+            releaseSpinlock(&__kpage_allocator_lock);
             return;
         }
 
@@ -285,6 +307,8 @@ namespace paging {
             m_freeSystemMemory -= PAGE_SIZE;
             m_usedSystemMemory += PAGE_SIZE;
         }
+
+        releaseSpinlock(&__kpage_allocator_lock);
     }
 
     void PageFrameAllocator::lockPages(void* vaddr, uint64_t pages) {
@@ -295,6 +319,8 @@ namespace paging {
     }
 
     void* PageFrameAllocator::requestFreePage() {
+        acquireSpinlock(&__kpage_request_lock);
+
         for (
             uint8_t* page = reinterpret_cast<uint8_t*>(m_lastTrackedFreePage);
             page < reinterpret_cast<uint8_t*>(m_totalSystemMemory);
@@ -308,8 +334,11 @@ namespace paging {
             lockPhysicalPage(page);
 
             m_lastTrackedFreePage = page + PAGE_SIZE;
+            releaseSpinlock(&__kpage_request_lock);
             return __va(page);
         }
+
+        releaseSpinlock(&__kpage_request_lock);
 
         // If there are no more pages in RAM to give out,
         // a disk page frame swap is required to request more pages,
@@ -326,6 +355,8 @@ namespace paging {
     }
 
     void* PageFrameAllocator::requestFreePages(size_t pages) {
+        acquireSpinlock(&__kpage_request_lock);
+
         for (
             uint8_t* page = reinterpret_cast<uint8_t*>(m_lastTrackedFreePage);
             page < reinterpret_cast<uint8_t*>(m_totalSystemMemory);
@@ -364,8 +395,11 @@ namespace paging {
                 }
             }
 
+            releaseSpinlock(&__kpage_request_lock);
             return __va(page);
         }
+
+        releaseSpinlock(&__kpage_request_lock);
 
         // If there are no more pages in RAM to give out,
         // a disk page frame swap is required to request more pages,
