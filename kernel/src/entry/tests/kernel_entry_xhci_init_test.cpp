@@ -11,7 +11,7 @@ void ke_test_xhci_init() {
         auto pciDeviceTable = acpiController.getPciDeviceTable();
         
         for (size_t i = 0; i < pciDeviceTable->getDeviceCount(); i++) {
-            //dbgPrintPciDeviceInfo(&pciDeviceTable->getDeviceInfo(i).headerInfo);
+            dbgPrintPciDeviceInfo(&pciDeviceTable->getDeviceInfo(i).headerInfo);
         }
 
         size_t idx = pciDeviceTable->findXhciController();
@@ -24,14 +24,14 @@ void ke_test_xhci_init() {
             kuPrint("MSI    Support  : %i\n", HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapabilityMsi));
             kuPrint("MSI-X  Support  : %i\n", HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapabilityMsiX));
 
-            RUN_ELEVATED({
-                auto& xhciDriver = drivers::XhciDriver::get();
-                bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
+            // RUN_ELEVATED({
+            //     auto& xhciDriver = drivers::XhciDriver::get();
+            //     bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
 
-                if (!status) {
-                    kuPrint("[-] Failed to initialize xHci USB3.0 controller\n\n");
-                }
-            });
+            //     if (!status) {
+            //         kuPrint("[-] Failed to initialize xHci USB3.0 controller\n\n");
+            //     }
+            // });
         }
     }
 }

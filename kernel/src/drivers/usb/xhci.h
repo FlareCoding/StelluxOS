@@ -1656,67 +1656,12 @@ public:
 private:
     uint64_t                             m_xhcBase;
 
-    volatile XhciCapabilityRegisters*    m_capRegisters;
-    volatile XhciOperationalRegisters*   m_opRegisters;
-
-    uint64_t                             m_runtimeRegisterBase;
-    volatile XhciRuntimeRegisters*       m_rtRegisters;
-
-    uint64_t                             m_doorbellArrayBase;
-
-    uint32_t                             m_maxDeviceSlots;
-    uint32_t                             m_numPorts;
-
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
 
     // Allocated a 64-byte aligned block of memory for xHC
     void* _allocXhciMemory(size_t size);
-
-    void _assumeOwnershipFromBios();  
-
 private:
-    void _writeUsbRegCommand(uint32_t cmd);
-    bool _readUsbRegStatusFlag(uint32_t flag);
-
-    uint32_t _readExtendedCapability(uint8_t capId);
-    void _writeExtendedCapability(uint8_t capId, uint32_t value);
-
-    volatile uint32_t* _getErstszRegAddress(uint32_t interrupter);
-    volatile uint64_t* _getErstbaRegAddress(uint32_t interrupter);
-    volatile uint64_t* _getErdpRegAddress(uint32_t interrupter);
-    volatile uint32_t* _getImanRegAddress(uint32_t interrupter);
-
-    bool _isControllerReady();
-
-    bool _is64ByteContextUsed();
-
-private:
-    /*
-    // xHci Spec Section 4.2 Host Controller Initialization (page 68)
-
-    After Chip Hardware Reset6 wait until the Controller Not Ready (CNR) flag
-    in the USBSTS is ‘0’ before writing any xHC Operational or Runtime
-    registers.
-    */
-    bool _resetController();
-
-    void _enableController();
-
-    bool _checkForHostControllerError();
-
-private:
-    /*
-    // xHci Spec Section 5.4.8
-
-    Address: Operational Base + (400h + (10h * (n–1)))
-            where: n = Port Number (Valid values are 1, 2, 3, … MaxPorts)
-    Default: Field dependent
-    Attribute: RO, RW, RW1C (field dependent)
-    Size 32 bits
-    */
-    void _readPortscReg(uint32_t portNum, XhciPortscRegister& reg);
-    void _writePortscReg(uint32_t portNum, XhciPortscRegister& reg);
 };
 } // namespace drivers
 
