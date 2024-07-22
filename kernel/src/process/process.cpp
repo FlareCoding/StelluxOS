@@ -2,6 +2,7 @@
 #include <paging/page.h>
 #include <arch/x86/per_cpu_data.h>
 #include <sched/sched.h>
+#include <kelevate/kelevate.h>
 
 EXTERN_C void __asm_switch_cpu_context_and_iret(CpuContext* ctx);
 
@@ -114,4 +115,13 @@ void switchTo(PCB* from, PCB* to) {
 
     // // Switch to the new context and jump to it using iret
     // __asm_switch_cpu_context_and_iret(&to->context);
+}
+
+// Reads the current task's CPU field
+uint8_t getCurrentCpuId() {
+    uint8_t cpu = 0;
+    RUN_ELEVATED({
+        cpu = current->cpu;
+    });
+    return cpu;
 }

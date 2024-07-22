@@ -60,9 +60,9 @@ void __ap_startup_user_entry() {
     uint64_t rsp = 0;
     asm volatile ("mov %%rsp, %0" : "=r"(rsp));
 
-    __kelevate();
-    kprintInfo("[CPU%i] stack: 0x%llx\n", current->cpu, rsp);
-    __klower();
+    uint8_t cpu = getCurrentCpuId();
+
+    kuPrint("[CPU%i] stack: 0x%llx\n", cpu, rsp);
 
     while (1);
 }

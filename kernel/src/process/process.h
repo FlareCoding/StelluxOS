@@ -55,4 +55,7 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs *frame);
 //
 void switchTo(PCB* from, PCB* to);
 
+// Reads the current task's CPU field
+uint8_t getCurrentCpuId();
+
 #endif
