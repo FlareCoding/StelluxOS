@@ -4,10 +4,6 @@
 #include <arch/x86/per_cpu_data.h>
 #include <kprint.h>
 
-EXTERN_C long __check_current_elevate_status() {
-    return static_cast<long>(current->elevated);
-}
-
 EXTERN_C long __syscall_handler(
     uint64_t syscallnum,
     uint64_t arg1,
@@ -34,6 +30,12 @@ EXTERN_C long __syscall_handler(
         break;
     }
     case SYSCALL_SYS_ELEVATE: {
+        // Special condition to check for elevation rather than perform it
+        if (arg1 == 1) {
+            returnVal = (uint64_t)current->elevated;
+            break;
+        }
+
         if (current->elevated) {
             kprint("[*] Already elevated\n");
         } else {

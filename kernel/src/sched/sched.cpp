@@ -3,6 +3,8 @@
 
 RoundRobinScheduler s_globalRRScheduler;
 
+PCB g_kernelSwapperTasks[MAX_CPUS] = {};
+
 RoundRobinScheduler& RoundRobinScheduler::get() {
     return s_globalRRScheduler;
 }

@@ -155,7 +155,6 @@ void initializeAndInstallGDT(int apicid, void* kernelStack) {
     // Load the Task Register (TR)
     __asm__("ltr %%ax" : : "a" (__TSS_PT1_SELECTOR));
 
-    __per_cpu_data.__cpu[apicid].cpu = apicid;
     __per_cpu_data.__cpu[apicid].defaultKernelStack = reinterpret_cast<uint64_t>(kernelStack);
 
     // Store the address of the tss in gsbase

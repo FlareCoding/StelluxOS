@@ -8,8 +8,10 @@
 #include <acpi/acpi_controller.h>
 #include <arch/x86/apic.h>
 #include <arch/x86/msr.h>
+#include <arch/x86/x86_cpu_control.h>
 #include <gdt/gdt.h>
 #include <interrupts/idt.h>
+#include <sched/sched.h>
 
 EXTERN_C void __ap_startup_asm();
 
@@ -17,59 +19,58 @@ void __ap_startup_user_entry();
 
 EXTERN_C
 void __ap_startup(int apicid) {
-    (void)apicid;
-
-    kprint("Hello from core %i!\n", apicid);
-
+    // Switch onto a clean kernel stack for the core
     void* apKernelStack = zallocPages(4);
-    kprintInfo("[CPU%i] Kernel stack: 0x%llx\n", apicid, (uint64_t)apKernelStack);
+    uint64_t apKernelStackTop = reinterpret_cast<uint64_t>(apKernelStack) + PAGE_SIZE;
+    asm volatile ("mov %0, %%rsp" :: "r"(apKernelStackTop));
 
-    initializeAndInstallGDT(apicid, apKernelStack);
-    kprintInfo("[CPU%i] GDT installed\n", apicid);
+    // Setup the GDT
+    initializeAndInstallGDT(apicid, (void*)apKernelStackTop);
 
+    // Install the existing IDT and enable interrupts
     loadIdtr();
     enableInterrupts();
-    kprintInfo("[CPU%i] IDT installed and interrupts enabled\n", apicid);
 
+    // Enable syscalls
     enableSyscallInterface();
-    kprintInfo("[CPU%i] Syscalls enabled\n", apicid);
 
-    uint64_t gs_cpuid;
-    asm volatile (
-        "movq %%gs:0x20, %0"
-        : "=r" (gs_cpuid)
-    );
+    // Update cr3
+    paging::setCurrentTopLevelPageTable(paging::g_kernelRootPageTable);
 
-    kprintInfo("[CPU%i] __cpu_id: %i\n", apicid, gs_cpuid);
+    // Initialize the default root kernel swapper task (this thread).
+    g_kernelSwapperTasks[apicid].state = ProcessState::RUNNING;
+    g_kernelSwapperTasks[apicid].pid = 1;
+    zeromem(&g_kernelSwapperTasks[apicid].context, sizeof(CpuContext));
+    g_kernelSwapperTasks[apicid].context.rflags |= 0x200;
+    g_kernelSwapperTasks[apicid].elevated = 0;
 
-    while (1);
+    // Set the current task in the per cpu region
+    __per_cpu_data.__cpu[apicid].currentTask = &g_kernelSwapperTasks[apicid];
+    __per_cpu_data.__cpu[apicid].currentTask->cpu = apicid;
 
-    // char* usermodeStack = (char*)zallocPages(8);
-    // size_t usermodeStackSize = 8 * PAGE_SIZE;
-
-	// __call_lowered_entry(__ap_startup_user_entry, usermodeStack + usermodeStackSize);
+    // Setup per-cpu stack info
+    char* usermodeStack = (char*)zallocPages(8);
+    size_t usermodeStackSize = 8 * PAGE_SIZE;
+    size_t userStackTop = (uint64_t)(usermodeStack + usermodeStackSize);
+    
+    __call_lowered_entry(__ap_startup_user_entry, (void*)userStackTop);
 }
 
-// void __ap_startup_user_entry() {
-//     __kelevate();
-//     uint64_t gs_cpuid;
-//     asm volatile (
-//         "movq %%gs:0x20, %0"
-//         : "=r" (gs_cpuid)
-//     );
+void __ap_startup_user_entry() {
+    uint64_t rsp = 0;
+    asm volatile ("mov %%rsp, %0" : "=r"(rsp));
 
-//     kprintInfo("[CPU%i] __cpu_id: %i\n", 1, gs_cpuid);
-//     __klower();
+    __kelevate();
+    kprintInfo("[CPU%i] stack: 0x%llx\n", current->cpu, rsp);
+    __klower();
 
-//     // ---===== SHOULD GIVE A PAGE FAULT =====---
-//     // uint8_t i = *(uint8_t*)0x40000;
-//     // kuPrint("%i\n", i);
-
-//     while (1);
-// }
+    while (1);
+}
 
 void ke_test_ap_startup() {
     auto& globalPageFrameAllocator = paging::getGlobalPageFrameAllocator();
+    auto& acpiController = AcpiController::get();
+    Madt* apicTable = acpiController.getApicTable();
 
     RUN_ELEVATED({
         void* __ap_startup_code_real_mode_address = (void*)0x8000;
@@ -101,13 +102,17 @@ void ke_test_ap_startup() {
 
         auto& lapic = Apic::getLocalApic();
 
-        // Test with only one extra CPU
-        kprint("Waking up cpu %i\n", 1);
-        lapic->sendIpi(1, 0x500);
-        msleep(20);
+        // for (size_t i = 1; i < apicTable->getCpuCount(); i++) {
+        for (size_t i = 1; i < 2; i++) {
+            uint8_t apicid = apicTable->getLocalApicDescriptor(i).apicId;
 
-        lapic->sendIpi(1, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
-        msleep(20);
+            kprint("Waking up cpu %i\n", apicid);
+            lapic->sendIpi(apicid, 0x500);
+            msleep(20);
+
+            lapic->sendIpi(apicid, 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
+            msleep(20);
+        }
 
         *bspdone_ptr = 1;
     });

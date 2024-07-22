@@ -1,8 +1,11 @@
 #ifndef SCHED_H
 #define SCHED_H
+#include <arch/x86/per_cpu_data.h>
 #include <process/process.h>
 
 #define MAX_QUEUED_PROCESSES 128
+
+EXTERN_C PCB g_kernelSwapperTasks[MAX_CPUS];
 
 class RoundRobinScheduler {
 public:

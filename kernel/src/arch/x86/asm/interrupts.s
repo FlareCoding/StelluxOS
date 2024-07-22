@@ -71,6 +71,12 @@ __asm_common_isr_entry:
     cli
 
     #
+    # We need to copy the existing hardware-pushed exception
+    # frame onto the kernel stack and then switch to it.
+    #
+    swapgs
+
+    #
     # Check if the process is user-elevated,
     # if so, switch onto a good kernel stack.
     #
@@ -79,12 +85,6 @@ __asm_common_isr_entry:
     testb al, 1
     pop rax
     jz __isr_entry_post_stack_switch
-
-    #
-    # We need to copy the existing hardware-pushed exception
-    # frame onto the kernel stack and then switch to it.
-    #
-    swapgs
 
     # Clobber rax and r15
     push rax

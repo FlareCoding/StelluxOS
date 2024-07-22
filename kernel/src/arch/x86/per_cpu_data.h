@@ -11,7 +11,6 @@ struct CpuData {
     uint64_t defaultKernelStack;    // 0x08
     uint64_t currentKernelStack;    // 0x10
     uint64_t currentUserStack;      // 0x18
-    uint64_t cpu;                   // 0x20
 } __attribute__((packed));
 
 struct PerCpuData {
@@ -20,6 +19,15 @@ struct PerCpuData {
 
 EXTERN_C PerCpuData __per_cpu_data;
 
-#define current __per_cpu_data.__cpu[BSP_CPU_ID].currentTask
+static __attribute__((always_inline)) inline PCB* getCurrentTask() {
+    PCB* currentTask = nullptr;
+    asm volatile (
+        "movq %%gs:0x0, %0"
+        : "=r" (currentTask)
+    );
+    return currentTask;
+}
+
+#define current getCurrentTask()
 
 #endif

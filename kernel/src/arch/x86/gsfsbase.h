@@ -1,11 +1,11 @@
 #ifndef GSFSBASE_H
 #define GSFSBASE_H
-#include <ktypes.h>
+#include "msr.h"
 
 #define CR4_FSGSBASE_BIT 16
 
 __PRIVILEGED_CODE
-void enableFSGSBase() {
+static inline void enableFSGSBase() {
     uint64_t cr4;
 
     // Read the current CR4 value into cr4
@@ -16,6 +16,21 @@ void enableFSGSBase() {
 
     // Write the new CR4 value
     asm volatile ("mov %0, %%cr4" : : "r"(cr4));
+}
+
+__PRIVILEGED_CODE
+static __attribute__((always_inline)) inline uint64_t rdgsbase() {
+    return readMsr(IA32_GS_BASE);
+}
+
+__PRIVILEGED_CODE
+static __attribute__((always_inline)) inline void wrgsbase(uint64_t gsbase) {
+    writeMsr(IA32_GS_BASE, gsbase);
+}
+
+__PRIVILEGED_CODE
+static __attribute__((always_inline)) inline void swapgs() {
+    asm volatile ("swapgs");
 }
 
 #endif
