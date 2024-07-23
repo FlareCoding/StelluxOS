@@ -2030,6 +2030,8 @@ private:
 
     // USB3.x-specific ports
     kstl::vector<uint8_t> m_usb3Ports;
+
+    XhciTrb_t* m_masterCommandRing;
 };
 } // namespace drivers
 
