@@ -150,11 +150,49 @@ namespace drivers {
 
         _configureOperationalRegisters();
 
-        if (!resetHostController()) {
+        if (!_resetHostController()) {
             return false;
         }
 
-        startHostController();
+        _startHostController();
+
+        // Reset the ports
+        for (uint8_t i = 0; i < m_maxPorts; i++) {
+            if (_resetPort(i)) {
+                kprintInfo("[*] Successfully reset %s port %i\n", _isUSB3Port(i) ? "USB3" : "USB2", i);
+            } else {
+                kprintWarn("[*] Failed to reset %s port %i\n", _isUSB3Port(i) ? "USB3" : "USB2", i);
+            }
+        }
+
+        kprint("\n");
+        msleep(600);
+
+        while (true) {
+            for (uint8_t i = 0; i < m_maxPorts; i++) {
+                XhciPortRegisterSet regset = _getPortRegisterSet(i);
+                XhciPortscRegister portsc;
+                regset.readPortscReg(portsc);
+
+                bool isUsb3Port = _isUSB3Port(i);
+
+                if (portsc.ccs) {
+                    kprint("%s device connected on port %i with speed ", isUsb3Port ? "USB3" : "USB2", i);
+
+                    switch (portsc.portSpeed) {
+                    case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
+                    case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
+                    case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
+                    case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
+                    case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
+                    default: kprint("Undefined\n"); break;
+                    }
+                }
+            }
+
+            sleep(2);
+            kprint("\n");
+        }
 
         kprint("\n");
         return true;
@@ -211,6 +249,23 @@ namespace drivers {
         m_extendedCapabilitiesHead = kstl::SharedPtr<XhciExtendedCapability>(
             new XhciExtendedCapability(headCapPtr)
         );
+
+        auto node = m_extendedCapabilitiesHead;
+        while (node.get()) {
+            if (node->id() == XhciExtendedCapabilityCode::SupportedProtocol) {
+                XhciUsbSupportedProtocolCapability cap(node->base());
+                // Make the ports zero-based
+                uint8_t firstPort = cap.compatiblePortOffset - 1;
+                uint8_t lastPort = firstPort + cap.compatiblePortCount - 1;
+
+                if (cap.majorRevisionVersion == 3) {
+                    for (uint8_t port = firstPort; port <= lastPort; port++) {
+                        m_usb3Ports.pushBack(port);
+                    }
+                }
+            }
+            node = node->next();
+        }
     }
 
     void XhciDriver::_logUsbsts() {
@@ -239,6 +294,16 @@ namespace drivers {
         m_opRegs->config = static_cast<uint32_t>(m_maxDeviceSlots);
     }
 
+    bool XhciDriver::_isUSB3Port(uint8_t portNum) {
+        for (size_t i = 0; i < m_usb3Ports.size(); ++i) {
+            if (m_usb3Ports[i] == portNum) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     XhciPortRegisterSet XhciDriver::_getPortRegisterSet(uint8_t portNum) {
         uint64_t base = reinterpret_cast<uint64_t>(m_opRegs) + (0x400 + (0x10 * portNum));
         return XhciPortRegisterSet(base);
@@ -256,7 +321,7 @@ namespace drivers {
         m_xhcBase = pciBarAddress;
     }
 
-    bool XhciDriver::resetHostController() {
+    bool XhciDriver::_resetHostController() {
         // Make sure we clear the Run/Stop bit
         uint32_t usbcmd = m_opRegs->usbcmd;
         usbcmd &= ~XHCI_USBCMD_RUN_STOP;
@@ -313,7 +378,7 @@ namespace drivers {
         return true;
     }
 
-    void XhciDriver::startHostController() {
+    void XhciDriver::_startHostController() {
         uint32_t usbcmd = m_opRegs->usbcmd;
         usbcmd |= XHCI_USBCMD_RUN_STOP;
         usbcmd |= XHCI_USBCMD_INTERRUPTER_ENABLE;
@@ -325,5 +390,69 @@ namespace drivers {
         while (m_opRegs->usbsts & XHCI_USBSTS_HCH) {
             msleep(16);
         }
+    }
+
+    bool XhciDriver::_resetPort(uint8_t portNum) {
+        XhciPortRegisterSet regset = _getPortRegisterSet(portNum);
+        XhciPortscRegister portsc;
+        regset.readPortscReg(portsc);
+
+        bool isUsb3Port = _isUSB3Port(portNum);
+
+        if (portsc.pp == 0) {
+            portsc.pp = 1;
+            regset.writePortscReg(portsc);
+            msleep(20);
+            regset.readPortscReg(portsc);
+
+            if (portsc.pp == 0) {
+                kprintWarn("Port %i: Bad Reset\n", portNum);
+                return false;
+            }
+        }
+
+        // Clear connect status change bit by writing a '1' to it
+        portsc.csc = 1;
+        regset.writePortscReg(portsc);
+
+        // Write to the appropriate reset bit
+        if (isUsb3Port) {
+            portsc.wpr = 1;
+        } else {
+            portsc.pr = 1;
+        }
+        portsc.ped = 0;
+        regset.writePortscReg(portsc);
+
+        int timeout = 500;
+        while (timeout) {
+            regset.readPortscReg(portsc);
+
+            // Detect port reset change bit to be set
+            if (isUsb3Port && portsc.wrc) {
+                break;
+            } else if (!isUsb3Port && portsc.prc) {
+                break;
+            }
+
+            timeout--;
+            msleep(1);
+        }
+
+        if (timeout > 0) {
+            msleep(3);
+            regset.readPortscReg(portsc);
+
+            // Check for the port enable/disable bit
+            // to be set and indicate 'enabled' state.
+            if (portsc.ped) {
+                // Clear connect status change bit by writing a '1' to it
+                portsc.csc = 1;
+                regset.writePortscReg(portsc);
+                return true;
+            }
+        }
+
+        return false; 
     }
 } // namespace drivers

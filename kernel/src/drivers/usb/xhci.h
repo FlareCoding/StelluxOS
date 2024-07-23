@@ -1577,6 +1577,20 @@ struct XhciPortscRegister {
 } __attribute__((packed));
 static_assert(sizeof(XhciPortscRegister) == sizeof(uint32_t));
 
+/*
+// xHci Spec Section 7.2.1 Protocol Speed ID (PSI) (page 524)
+
+Protocol Speed ID (PSI) Dwords immediately follow the Dword at offset 10h in
+an xHCI Supported Protocol Capability data structure. Table 7-10 defines the
+fields of a PSI Dword.
+*/
+#define XHCI_USB_SPEED_UNDEFINED            0
+#define XHCI_USB_SPEED_FULL_SPEED           1 // 12 MB/s USB 2.0
+#define XHCI_USB_SPEED_LOW_SPEED            2 // 1.5 Mb/s USB 2.0
+#define XHCI_USB_SPEED_HIGH_SPEED           3 // 480 Mb/s USB 2.0
+#define XHCI_USB_SPEED_SUPER_SPEED          4 // 5 Gb/s (Gen1 x1) USB 3.0
+#define XHCI_USB_SPEED_SUPER_SPEED_PLUS     5 // 10 Gb/s (Gen2 x1) USB 3.1
+
 // TO-DO add spec page
 struct XhciPortpmscRegisterUsb2 {
     union {
@@ -1715,7 +1729,10 @@ struct XhciUsbSupportedProtocolCapability {
         uint32_t dword0;
     };
 
-    uint32_t name; // "USB "
+    union {
+        uint32_t dword1;
+        uint32_t name; // "USB "
+    };
 
     union {
         struct {
@@ -1736,6 +1753,14 @@ struct XhciUsbSupportedProtocolCapability {
 
         uint32_t dword3;
     };
+
+    XhciUsbSupportedProtocolCapability() = default;
+    XhciUsbSupportedProtocolCapability(volatile uint32_t* cap) {
+        dword0 = cap[0];
+        dword1 = cap[1];
+        dword2 = cap[2];
+        dword3 = cap[3];
+    }
 };
 
 static_assert(sizeof(XhciUsbSupportedProtocolCapability) == (4 * sizeof(uint32_t)));
@@ -1916,15 +1941,17 @@ private:
 
     void _configureOperationalRegisters();
 
+    bool _isUSB3Port(uint8_t portNum);
     XhciPortRegisterSet _getPortRegisterSet(uint8_t portNum);
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
 
 private:
-    bool resetHostController();
+    bool _resetHostController();
+    void _startHostController();
 
-    void startHostController();
+    bool _resetPort(uint8_t portNum);
 
 private:
     // CAPLENGTH
@@ -1954,6 +1981,9 @@ private:
 
     // Page size supported by host controller
     uint64_t m_hcPageSize;
+
+    // USB3.x-specific ports
+    kstl::vector<uint8_t> m_usb3Ports;
 };
 } // namespace drivers
 
