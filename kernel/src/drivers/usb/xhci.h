@@ -1916,13 +1916,10 @@ private:
 
     void _configureOperationalRegisters();
 
-    XhciPortRegisterSet getPortRegisterSet(uint8_t portNum);
+    XhciPortRegisterSet _getPortRegisterSet(uint8_t portNum);
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
-
-    // Allocated a 64-byte aligned block of memory for xHC
-    void* _allocXhciMemory(size_t size);
 
 private:
     bool resetHostController();
