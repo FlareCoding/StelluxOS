@@ -68,19 +68,7 @@ namespace drivers {
 
         _parseExtendedCapabilityRegisters();
 
-        auto cap = m_extendedCapabilitiesHead;
-        while (cap.get()) {
-            kprintInfo("Found Extended Capability: %s\n", extendedCapabilityToString(cap->id()));
-
-            if (cap->id() == XhciExtendedCapabilityCode::SupportedProtocol) {
-                XhciUsbSupportedProtocolCapability usbSupportCap;
-                volatile uint32_t* arr = cap->base();
-                usbSupportCap.dword0 = arr[0];
-                kprintInfo("   Support Protocol Version: USB %i.%i\n", usbSupportCap.majorRevisionVersion, usbSupportCap.minorRevisionVersion);
-            }
-
-            cap = cap->next();
-        }
+        _logUsbsts();
 
         kprint("\n");
         return true;
@@ -106,6 +94,9 @@ namespace drivers {
         m_portIndicators = XHCI_PIND(m_capRegs);
         m_lightResetCapability = XHCI_LHRC(m_capRegs);
         m_extendedCapabilitiesOffset = XHCI_XECP(m_capRegs) * sizeof(uint32_t);
+
+        // Update the base pointer to operational register set
+        m_opRegs = reinterpret_cast<volatile XhciOperationalRegisters*>(m_xhcBase + m_capabilityRegsLength);
     }
 
     void XhciDriver::_logCapabilityRegisters() {
@@ -134,6 +125,21 @@ namespace drivers {
         m_extendedCapabilitiesHead = kstl::SharedPtr<XhciExtendedCapability>(
             new XhciExtendedCapability(headCapPtr)
         );
+    }
+
+    void XhciDriver::_logUsbsts() {
+        uint32_t status = m_opRegs->usbsts;
+        kprint("===== USBSTS =====\n");
+        if (status & XHCI_USBSTS_HCH) kprint("    Host Controlled Halted\n");
+        if (status & XHCI_USBSTS_HSE) kprint("    Host System Error\n");
+        if (status & XHCI_USBSTS_EINT) kprint("    Event Interrupt\n");
+        if (status & XHCI_USBSTS_PCD) kprint("    Port Change Detect\n");
+        if (status & XHCI_USBSTS_SSS) kprint("    Save State Status\n");
+        if (status & XHCI_USBSTS_RSS) kprint("    Restore State Status\n");
+        if (status & XHCI_USBSTS_SRE) kprint("    Save/Restore Error\n");
+        if (status & XHCI_USBSTS_CNR) kprint("    Controller Not Ready\n");
+        if (status & XHCI_USBSTS_HCE) kprint("    Host Controller Error\n");
+        kprint("\n");
     }
 
     void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {
