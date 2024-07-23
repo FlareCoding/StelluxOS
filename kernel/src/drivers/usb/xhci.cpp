@@ -375,23 +375,23 @@ namespace drivers {
         const uint64_t commandRingSize = XHCI_COMMAND_RING_TRB_COUNT * sizeof(XhciTrb_t);
 
         // Create the command ring memory block
-        XhciTrb_t* commandRing = (XhciTrb_t*)_allocXhciMemory(
+        m_masterCommandRing = (XhciTrb_t*)_allocXhciMemory(
             commandRingSize,
             XHCI_COMMAND_RING_SEGMENTS_ALIGNMENT,
             XHCI_COMMAND_RING_SEGMENTS_BOUNDARY
         );
 
         // Zero out the memory by default
-        zeromem(commandRing, commandRingSize);
+        zeromem(m_masterCommandRing, commandRingSize);
+
+        // Get the physical mapping
+        uint64_t commandRingPhysicalBase = (uint64_t)__pa(m_masterCommandRing);
 
         // Set the last TRB as a link TRB to point back to the first TRB
-        commandRing[255].parameter = (uint64_t)__pa(commandRing);
-        commandRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | XHCI_CRCR_RING_CYCLE_STATE;
+        m_masterCommandRing[255].parameter = commandRingPhysicalBase;
+        m_masterCommandRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | XHCI_CRCR_RING_CYCLE_STATE;
 
-        uint64_t commandRingPhysicalBase = (uint64_t)__pa(commandRing);
         m_opRegs->crcr = commandRingPhysicalBase | XHCI_CRCR_RING_CYCLE_STATE;
-
-        kprintInfo("CRCR set to 0x%llx\n", commandRingPhysicalBase | XHCI_CRCR_RING_CYCLE_STATE);
     }
 
     void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {
