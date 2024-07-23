@@ -164,35 +164,34 @@ namespace drivers {
                 kprintWarn("[*] Failed to reset %s port %i\n", _isUSB3Port(i) ? "USB3" : "USB2", i);
             }
         }
-
         kprint("\n");
-        msleep(600);
 
-        while (true) {
-            for (uint8_t i = 0; i < m_maxPorts; i++) {
-                XhciPortRegisterSet regset = _getPortRegisterSet(i);
-                XhciPortscRegister portsc;
-                regset.readPortscReg(portsc);
+        // msleep(600);
+        // while (true) {
+        //     for (uint8_t i = 0; i < m_maxPorts; i++) {
+        //         XhciPortRegisterSet regset = _getPortRegisterSet(i);
+        //         XhciPortscRegister portsc;
+        //         regset.readPortscReg(portsc);
 
-                bool isUsb3Port = _isUSB3Port(i);
+        //         bool isUsb3Port = _isUSB3Port(i);
 
-                if (portsc.ccs) {
-                    kprint("%s device connected on port %i with speed ", isUsb3Port ? "USB3" : "USB2", i);
+        //         if (portsc.ccs) {
+        //             kprint("%s device connected on port %i with speed ", isUsb3Port ? "USB3" : "USB2", i);
 
-                    switch (portsc.portSpeed) {
-                    case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
-                    case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
-                    case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
-                    case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
-                    case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
-                    default: kprint("Undefined\n"); break;
-                    }
-                }
-            }
+        //             switch (portsc.portSpeed) {
+        //             case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
+        //             case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
+        //             case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
+        //             case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
+        //             case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
+        //             default: kprint("Undefined\n"); break;
+        //             }
+        //         }
+        //     }
 
-            sleep(2);
-            kprint("\n");
-        }
+        //     sleep(2);
+        //     kprint("\n");
+        // }
 
         kprint("\n");
         return true;
