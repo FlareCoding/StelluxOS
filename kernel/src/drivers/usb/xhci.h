@@ -298,7 +298,7 @@ xHCI Supported Protocol Capability, described in section 7.2. Software shall ref
 these capabilities to identify whether a specific Port Number is valid, and the protocol
 supported by the associated Port Register Set.
 */
-#define XHCI_NUM_PORTS(regs) ((regs->hcsparams1 >> 24) & 0xFF)
+#define XHCI_MAX_PORTS(regs) ((regs->hcsparams1 >> 24) & 0xFF)
 
 /*
 // xHci Spec Section 5.3.4 Table 5-11: Host Controller Structural Parameters 2 (HCSPARAMS2) (page 349)
@@ -1182,17 +1182,19 @@ all relative to the beginning of the host controller’s MMIO address space. The
 beginning of the host controller’s MMIO address space is referred to as “Base”.
 */
 struct XhciCapabilityRegisters {
-    uint8_t caplength;    // Capability Register Length
-    uint8_t reserved0;
-    uint16_t hciversion;  // Interface Version Number
-    uint32_t hcsparams1;  // Structural Parameters 1
-    uint32_t hcsparams2;  // Structural Parameters 2
-    uint32_t hcsparams3;  // Structural Parameters 3
-    uint32_t hccparams1;  // Capability Parameters 1
-    uint32_t dboff;       // Doorbell Offset
-    uint32_t rtsoff;      // Runtime Register Space Offset
-    uint32_t hccparams2;  // Capability Parameters 2
+    const uint8_t caplength;    // Capability Register Length
+    const uint8_t reserved0;
+    const uint16_t hciversion;  // Interface Version Number
+    const uint32_t hcsparams1;  // Structural Parameters 1
+    const uint32_t hcsparams2;  // Structural Parameters 2
+    const uint32_t hcsparams3;  // Structural Parameters 3
+    const uint32_t hccparams1;  // Capability Parameters 1
+    const uint32_t dboff;       // Doorbell Offset
+    const uint32_t rtsoff;      // Runtime Register Space Offset
+    const uint32_t hccparams2;  // Capability Parameters 2
 };
+
+static_assert(sizeof(XhciCapabilityRegisters) == 32);
 
 /*
 // xHci Spec Section 5.4 Table 5-18: Host Controller Operational Registers (page 356)
@@ -1209,15 +1211,15 @@ These registers are located at a positive offset from the Capabilities Registers
 (refer to Section 5.3).
 */
 struct XhciOperationalRegisters {
-    uint32_t usbcmd;      // USB Command
-    uint32_t usbsts;      // USB Status
-    uint32_t pagesize;    // Page Size
+    uint32_t usbcmd;        // USB Command
+    uint32_t usbsts;        // USB Status
+    uint32_t pagesize;      // Page Size
     uint32_t reserved0[2];
-    uint32_t dnctrl;      // Device Notification Control
-    uint64_t crcr;        // Command Ring Control
+    uint32_t dnctrl;        // Device Notification Control
+    uint64_t crcr;          // Command Ring Control
     uint32_t reserved1[4];
-    uint64_t dcbaap;      // Device Context Base Address Array Pointer
-    uint32_t config;      // Configure
+    uint64_t dcbaap;        // Device Context Base Address Array Pointer
+    uint32_t config;        // Configure
     uint32_t reserved2[49];
     // Port Register Set offset has to be calculated dynamically based on MAXPORTS
 };
@@ -1654,14 +1656,42 @@ public:
     bool init(PciDeviceInfo& deviceInfo);
 
 private:
-    uint64_t                             m_xhcBase;
+    uint64_t m_xhcBase;
+
+    volatile XhciCapabilityRegisters* m_capRegs;
+    volatile XhciOperationalRegisters* m_opRegs;
+
+    void _parseCapabilityRegisters();
+    void _logCapabilityRegisters();
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
 
     // Allocated a 64-byte aligned block of memory for xHC
     void* _allocXhciMemory(size_t size);
+
 private:
+    // CAPLENGTH
+    uint8_t m_capabilityRegsLength;
+    
+    // HCSPARAMS1
+    uint8_t m_maxDeviceSlots;
+    uint8_t m_maxInterrupters;
+    uint8_t m_maxPorts;
+
+    // HCSPARAMS2
+    uint8_t m_isochronousSchedulingThreshold;
+    uint8_t m_erstMax;
+    uint8_t m_maxScratchpadBuffers;
+
+    // HCCPARAMS1
+    bool m_64bitAddressingCapability;
+    bool m_bandwidthNegotiationCapability;
+    bool m_64ByteContextSize;
+    bool m_portPowerControl;
+    bool m_portIndicators;
+    bool m_lightResetCapability;
+    uint16_t m_extendedCapabilitiesPointer;
 };
 } // namespace drivers
 
