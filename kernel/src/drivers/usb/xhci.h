@@ -49,6 +49,9 @@ namespace drivers {
 #define XHCI_SCRATCHPAD_BUFFER_ARRAY_ALIGNMENT   64
 #define XHCI_SCRATCHPAD_BUFFERS_ALIGNMENT        PAGE_SIZE
 
+// Configuration Definitions
+#define XHCI_COMMAND_RING_TRB_COUNT     256
+
 /*
 // xHci Spec Section 5.4.1 USB Table 5-20: USB Command Register Bit Definitions (USBCMD) (page 358)
 
@@ -1976,12 +1979,16 @@ private:
     void _logCapabilityRegisters();
 
     void _parseExtendedCapabilityRegisters();
-    void _logUsbsts();
 
     void _configureOperationalRegisters();
+    void _logUsbsts();
+    void _logOperationalRegisters();
 
     bool _isUSB3Port(uint8_t portNum);
     XhciPortRegisterSet _getPortRegisterSet(uint8_t portNum);
+
+    void _setupDcbaa();
+    void _setupCommandRing();
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);

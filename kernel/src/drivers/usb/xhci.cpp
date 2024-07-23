@@ -148,13 +148,15 @@ namespace drivers {
 
         _parseExtendedCapabilityRegisters();
 
-        _configureOperationalRegisters();
-
         if (!_resetHostController()) {
             return false;
         }
 
+        _configureOperationalRegisters();
         _startHostController();
+
+        _logOperationalRegisters();
+        _logUsbsts();
 
         // Reset the ports
         for (uint8_t i = 0; i < m_maxPorts; i++) {
@@ -166,32 +168,34 @@ namespace drivers {
         }
         kprint("\n");
 
-        // msleep(600);
-        // while (true) {
-        //     for (uint8_t i = 0; i < m_maxPorts; i++) {
-        //         XhciPortRegisterSet regset = _getPortRegisterSet(i);
-        //         XhciPortscRegister portsc;
-        //         regset.readPortscReg(portsc);
+        msleep(20);
+        while (true) {
+            for (uint8_t i = 0; i < m_maxPorts; i++) {
+                XhciPortRegisterSet regset = _getPortRegisterSet(i);
+                XhciPortscRegister portsc;
+                regset.readPortscReg(portsc);
 
-        //         bool isUsb3Port = _isUSB3Port(i);
+                bool isUsb3Port = _isUSB3Port(i);
 
-        //         if (portsc.ccs) {
-        //             kprint("%s device connected on port %i with speed ", isUsb3Port ? "USB3" : "USB2", i);
+                if (portsc.ccs) {
+                    kprint("%s device connected on port %i with speed ", isUsb3Port ? "USB3" : "USB2", i);
 
-        //             switch (portsc.portSpeed) {
-        //             case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
-        //             case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
-        //             case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
-        //             case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
-        //             case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
-        //             default: kprint("Undefined\n"); break;
-        //             }
-        //         }
-        //     }
+                    switch (portsc.portSpeed) {
+                    case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
+                    case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
+                    case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
+                    case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
+                    case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
+                    default: kprint("Undefined\n"); break;
+                    }
+                }
+            }
 
-        //     sleep(2);
-        //     kprint("\n");
-        // }
+            sleep(2);
+            kprint("\n");
+
+            break;
+        }
 
         kprint("\n");
         return true;
@@ -267,6 +271,23 @@ namespace drivers {
         }
     }
 
+    void XhciDriver::_configureOperationalRegisters() {
+        // Establish host controller's supported page size in bytes
+        m_hcPageSize = static_cast<uint64_t>(m_opRegs->pagesize & 0xffff) << 12;
+        
+        // Enable device notifications 
+        m_opRegs->dnctrl = 0xffff;
+
+        // Configure the usbconfig field
+        m_opRegs->config = static_cast<uint32_t>(m_maxDeviceSlots);
+
+        // Setup device context base address array and scratchpad buffers
+        _setupDcbaa();
+
+        // Setup the command ring and write CRCR
+        _setupCommandRing();
+    }
+
     void XhciDriver::_logUsbsts() {
         uint32_t status = m_opRegs->usbsts;
         kprint("===== USBSTS =====\n");
@@ -282,15 +303,16 @@ namespace drivers {
         kprint("\n");
     }
 
-    void XhciDriver::_configureOperationalRegisters() {
-        // Establish host controller's supported page size in bytes
-        m_hcPageSize = static_cast<uint64_t>(m_opRegs->pagesize & 0xffff) << 12;
-        
-        // Enable device notifications 
-        m_opRegs->dnctrl = 0xffff;
-
-        // Configure the usbconfig field
-        m_opRegs->config = static_cast<uint32_t>(m_maxDeviceSlots);
+    void XhciDriver::_logOperationalRegisters() {
+        kprintInfo("===== Operational Registers (0x%llx) =====\n", (uint64_t)m_opRegs);
+        kprintInfo("    usbcmd     : %x\n", m_opRegs->usbcmd);
+        kprintInfo("    usbsts     : %x\n", m_opRegs->usbsts);
+        kprintInfo("    pagesize   : %x\n", m_opRegs->pagesize);
+        kprintInfo("    dnctrl     : %x\n", m_opRegs->dnctrl);
+        kprintInfo("    crcr       : %llx\n", m_opRegs->crcr);
+        kprintInfo("    dcbaap     : %llx\n", m_opRegs->dcbaap);
+        kprintInfo("    config     : %x\n", m_opRegs->config);
+        kprint("\n");
     }
 
     bool XhciDriver::_isUSB3Port(uint8_t portNum) {
@@ -306,6 +328,70 @@ namespace drivers {
     XhciPortRegisterSet XhciDriver::_getPortRegisterSet(uint8_t portNum) {
         uint64_t base = reinterpret_cast<uint64_t>(m_opRegs) + (0x400 + (0x10 * portNum));
         return XhciPortRegisterSet(base);
+    }
+
+    void XhciDriver::_setupDcbaa() {
+        size_t contextEntrySize = m_64ByteContextSize ? 64 : 32;
+        size_t dcbaaSize = contextEntrySize * (m_maxDeviceSlots + 1);
+
+        uint64_t* dcbaaVirtualBase = (uint64_t*)_allocXhciMemory(dcbaaSize, XHCI_DEVICE_CONTEXT_ALIGNMENT, XHCI_DEVICE_CONTEXT_BOUNDARY);
+        zeromem(dcbaaVirtualBase, dcbaaSize);
+
+        /*
+        // xHci Spec Section 6.1 (page 404)
+
+        If the Max Scratchpad Buffers field of the HCSPARAMS2 register is > ‘0’, then
+        the first entry (entry_0) in the DCBAA shall contain a pointer to the Scratchpad
+        Buffer Array. If the Max Scratchpad Buffers field of the HCSPARAMS2 register is
+        = ‘0’, then the first entry (entry_0) in the DCBAA is reserved and shall be
+        cleared to ‘0’ by software.
+        */
+
+        // Initialize scratchpad buffer array if needed
+        if (m_maxScratchpadBuffers > 0) {
+            uint64_t* scratchpadArray = (uint64_t*)_allocXhciMemory(m_maxScratchpadBuffers * sizeof(uint64_t));
+            
+            // Create scratchpad pages
+            for (uint8_t i = 0; i < m_maxScratchpadBuffers; i++) {
+                void* scratchpad = _allocXhciMemory(PAGE_SIZE, XHCI_SCRATCHPAD_BUFFERS_ALIGNMENT, XHCI_SCRATCHPAD_BUFFERS_BOUNDARY);
+                uint64_t scratchpadPhysicalBase = (uint64_t)__pa(scratchpad);
+
+                scratchpadArray[i] = scratchpadPhysicalBase;
+            }
+
+            uint64_t scratchpadArrayPhysicalBase = (uint64_t)__pa(scratchpadArray);
+
+            // Set the first slot in the DCBAA to point to the scratchpad array
+            dcbaaVirtualBase[0] = scratchpadArrayPhysicalBase;
+        }
+
+        // Set DCBAA pointer in the operational registers
+        uint64_t dcbaaPhysicalBase = (uint64_t)__pa(dcbaaVirtualBase);
+
+        m_opRegs->dcbaap = dcbaaPhysicalBase;
+    }
+
+    void XhciDriver::_setupCommandRing() {
+        const uint64_t commandRingSize = XHCI_COMMAND_RING_TRB_COUNT * sizeof(XhciTrb_t);
+
+        // Create the command ring memory block
+        XhciTrb_t* commandRing = (XhciTrb_t*)_allocXhciMemory(
+            commandRingSize,
+            XHCI_COMMAND_RING_SEGMENTS_ALIGNMENT,
+            XHCI_COMMAND_RING_SEGMENTS_BOUNDARY
+        );
+
+        // Zero out the memory by default
+        zeromem(commandRing, commandRingSize);
+
+        // Set the last TRB as a link TRB to point back to the first TRB
+        commandRing[255].parameter = (uint64_t)__pa(commandRing);
+        commandRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | XHCI_CRCR_RING_CYCLE_STATE;
+
+        uint64_t commandRingPhysicalBase = (uint64_t)__pa(commandRing);
+        m_opRegs->crcr = commandRingPhysicalBase | XHCI_CRCR_RING_CYCLE_STATE;
+
+        kprintInfo("CRCR set to 0x%llx\n", commandRingPhysicalBase | XHCI_CRCR_RING_CYCLE_STATE);
     }
 
     void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {
