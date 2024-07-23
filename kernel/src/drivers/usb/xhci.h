@@ -1806,6 +1806,9 @@ private:
     void* _allocXhciMemory(size_t size);
 
 private:
+    bool resetHostController();
+
+private:
     // CAPLENGTH
     uint8_t m_capabilityRegsLength;
     
