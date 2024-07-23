@@ -21,7 +21,7 @@ void ke_test_xhci_init() {
                 if (!status) {
                     kprintError("[-] Failed to initialize xHCI controller\n\n");
                 } else {
-                    kprintInfo("[*] xHCI controlled initialized\n\n");
+                    kprintInfo("[*] xHCI controller initialized\n\n");
                 }
             });
         }
