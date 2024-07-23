@@ -56,6 +56,66 @@ namespace drivers {
         }
     }
 
+    void XhciPortRegisterSet::readPortscReg(XhciPortscRegister& reg) const {
+        uint64_t portscAddress = m_base + m_portscOffset;
+        reg.raw = *reinterpret_cast<volatile uint32_t*>(portscAddress);
+    }
+
+    void XhciPortRegisterSet::writePortscReg(XhciPortscRegister& reg) const {
+        uint64_t portscAddress = m_base + m_portscOffset;
+        *reinterpret_cast<volatile uint32_t*>(portscAddress) = reg.raw;
+    }
+
+    void XhciPortRegisterSet::readPortpmscRegUsb2(XhciPortpmscRegisterUsb2& reg) const {
+        uint64_t portpmscAddress = m_base + m_portpmscOffset;
+        reg.raw = *reinterpret_cast<volatile uint32_t*>(portpmscAddress);
+    }
+
+    void XhciPortRegisterSet::writePortpmscRegUsb2(XhciPortpmscRegisterUsb2& reg) const {
+        uint64_t portpmscAddress = m_base + m_portpmscOffset;
+        *reinterpret_cast<volatile uint32_t*>(portpmscAddress) = reg.raw;
+    }
+
+    void XhciPortRegisterSet::readPortpmscRegUsb3(XhciPortpmscRegisterUsb3& reg) const {
+        uint64_t portpmscAddress = m_base + m_portpmscOffset;
+        reg.raw = *reinterpret_cast<volatile uint32_t*>(portpmscAddress);
+    }
+
+    void XhciPortRegisterSet::writePortpmscRegUsb3(XhciPortpmscRegisterUsb3& reg) const {
+        uint64_t portpmscAddress = m_base + m_portpmscOffset;
+        *reinterpret_cast<volatile uint32_t*>(portpmscAddress) = reg.raw;
+    }
+
+    void XhciPortRegisterSet::readPortliReg(XhciPortliRegister& reg) const {
+        uint64_t portliAddress = m_base + m_portliOffset;
+        reg.raw = *reinterpret_cast<volatile uint32_t*>(portliAddress);
+    }
+
+    void XhciPortRegisterSet::writePortliReg(XhciPortliRegister& reg) const {
+        uint64_t portliAddress = m_base + m_portliOffset;
+        *reinterpret_cast<volatile uint32_t*>(portliAddress) = reg.raw;
+    }
+
+    void XhciPortRegisterSet::readPorthlpmcRegUsb2(XhciPorthlpmcRegisterUsb2& reg) const {
+        uint64_t porthlpmAddress = m_base + m_porthlpmcOffset;
+        reg.raw = *reinterpret_cast<volatile uint32_t*>(porthlpmAddress);
+    }
+
+    void XhciPortRegisterSet::writePorthlpmcRegUsb2(XhciPorthlpmcRegisterUsb2& reg) const {
+        uint64_t porthlpmAddress = m_base + m_porthlpmcOffset;
+        *reinterpret_cast<volatile uint32_t*>(porthlpmAddress) = reg.raw;
+    }
+
+    void XhciPortRegisterSet::readPorthlpmcRegUsb3(XhciPorthlpmcRegisterUsb3& reg) const {
+        uint64_t porthlpmAddress = m_base + m_porthlpmcOffset;
+        reg.raw = *reinterpret_cast<volatile uint32_t*>(porthlpmAddress);
+    }
+
+    void XhciPortRegisterSet::writePorthlpmcRegUsb3(XhciPorthlpmcRegisterUsb3& reg) const {
+        uint64_t porthlpmAddress = m_base + m_porthlpmcOffset;
+        *reinterpret_cast<volatile uint32_t*>(porthlpmAddress) = reg.raw;
+    }
+
     XhciDriver& XhciDriver::get() {
         return g_globalXhciInstance;
     }
@@ -68,14 +128,13 @@ namespace drivers {
 
         _parseExtendedCapabilityRegisters();
 
-        _logUsbsts();
+        _configureOperationalRegisters();
 
         if (!resetHostController()) {
             return false;
         }
 
-        _logUsbsts();
-
+        startHostController();
 
         kprint("\n");
         return true;
@@ -147,6 +206,22 @@ namespace drivers {
         if (status & XHCI_USBSTS_CNR) kprint("    Controller Not Ready\n");
         if (status & XHCI_USBSTS_HCE) kprint("    Host Controller Error\n");
         kprint("\n");
+    }
+
+    void XhciDriver::_configureOperationalRegisters() {
+        // Establish host controller's supported page size in bytes
+        m_hcPageSize = static_cast<uint64_t>(m_opRegs->pagesize & 0xffff) << 12;
+        
+        // Enable device notifications 
+        m_opRegs->dnctrl = 0xffff;
+
+        // Configure the usbconfig field
+        m_opRegs->config = static_cast<uint32_t>(m_maxDeviceSlots);
+    }
+
+    XhciPortRegisterSet XhciDriver::getPortRegisterSet(uint8_t portNum) {
+        uint64_t base = reinterpret_cast<uint64_t>(m_opRegs) + (0x400 + (0x10 * portNum));
+        return XhciPortRegisterSet(base);
     }
 
     void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {
@@ -231,5 +306,19 @@ namespace drivers {
             return false;
 
         return true;
+    }
+
+    void XhciDriver::startHostController() {
+        uint32_t usbcmd = m_opRegs->usbcmd;
+        usbcmd |= XHCI_USBCMD_RUN_STOP;
+        usbcmd |= XHCI_USBCMD_INTERRUPTER_ENABLE;
+        usbcmd |= XHCI_USBCMD_HOSTSYS_ERROR_ENABLE;
+
+        m_opRegs->usbcmd = usbcmd;
+
+        // Make sure the controller's HCH flag is cleared
+        while (m_opRegs->usbsts & XHCI_USBSTS_HCH) {
+            msleep(16);
+        }
     }
 } // namespace drivers

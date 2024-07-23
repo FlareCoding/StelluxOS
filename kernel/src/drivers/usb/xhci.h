@@ -1544,7 +1544,6 @@ Capability operation.
 */
 struct XhciPortscRegister {
     union {
-        uint32_t raw;
         struct {
             uint32_t    ccs         : 1;
             uint32_t    ped         : 1;
@@ -1570,10 +1569,92 @@ struct XhciPortscRegister {
             uint32_t    rsvd        : 2;
             uint32_t    dr          : 1;
             uint32_t    wpr         : 1;
-        } bits __attribute__((packed));
+        } __attribute__((packed));
+
+        // Must be accessed using 32-bit dwords
+        uint32_t raw;
     };
 } __attribute__((packed));
-static_assert(sizeof(XhciPortscRegister) == 4);
+static_assert(sizeof(XhciPortscRegister) == sizeof(uint32_t));
+
+// TO-DO add spec page
+struct XhciPortpmscRegisterUsb2 {
+    union {
+        struct {
+            uint32_t l1Status                       : 3;
+            uint32_t remoteWakeEnable               : 1;
+            uint32_t hostInitiatedResumeDuration    : 4;
+            uint32_t l1DeviceSlot                   : 8;
+            uint32_t hardwareLpmEnable              : 1;
+            uint32_t rsvd                           : 11;
+            uint32_t portTestControl                : 4;
+        } __attribute__((packed));
+
+        // Must be accessed using 32-bit dwords
+        uint32_t raw;
+    };
+} __attribute__((packed));
+static_assert(sizeof(XhciPortpmscRegisterUsb2) == sizeof(uint32_t));
+
+struct XhciPortpmscRegisterUsb3 {
+    union {
+        struct {
+            uint32_t u1Timeout          : 8;
+            uint32_t u2Timeout          : 8;
+            uint32_t forceLinkPmAccept  : 1;
+            uint32_t rsvd               : 15;
+        } __attribute__((packed));
+
+        // Must be accessed using 32-bit dwords
+        uint32_t raw;
+    };
+} __attribute__((packed));
+static_assert(sizeof(XhciPortpmscRegisterUsb3) == sizeof(uint32_t));
+
+// For USB2.0 this register is reserved and preserved
+struct XhciPortliRegister {
+    union {
+        struct {
+            uint32_t linkErrorCount : 16;
+            uint32_t rxLaneCount    : 4;
+            uint32_t txLaneCount    : 4;
+            uint32_t rsvd           : 8;
+        } __attribute__((packed));
+
+        // Must be accessed using 32-bit dwords
+        uint32_t raw;
+    };
+} __attribute__((packed));
+static_assert(sizeof(XhciPortliRegister) == sizeof(uint32_t));
+
+// Port Hardware LPM Control Register
+struct XhciPorthlpmcRegisterUsb2 {
+    union {
+        struct {
+            uint32_t hirdm      : 2;
+            uint32_t l1Timeout  : 8;
+            uint32_t besld      : 4;
+            uint32_t rsvd       : 18;
+        } __attribute__((packed));
+
+        // Must be accessed using 32-bit dwords
+        uint32_t raw;
+    };
+} __attribute__((packed));
+static_assert(sizeof(XhciPorthlpmcRegisterUsb2) == sizeof(uint32_t));
+
+struct XhciPorthlpmcRegisterUsb3 {
+    union {
+        struct {
+            uint16_t linkSoftErrorCount;
+            uint16_t rsvd;
+        } __attribute__((packed));
+
+        // Must be accessed using 32-bit dwords
+        uint32_t raw;
+    };
+} __attribute__((packed));
+static_assert(sizeof(XhciPorthlpmcRegisterUsb3) == sizeof(uint32_t));
 
 /*
 // xHci Spec Section 5.6 Figure 5-29: Doorbell Register (page 394)
@@ -1600,12 +1681,14 @@ Command Completion Event.
 */
 struct XhciDoorbellRegister {
     union {
-        uint32_t raw;
         struct {
             uint8_t     dbTarget;
             uint8_t     rsvd;
             uint16_t    dbTaskId;
         };
+
+        // Must be accessed using 32-bit dwords
+        uint32_t raw;
     };
 } __attribute__((packed));
 
@@ -1777,6 +1860,38 @@ private:
     void _readNextExtCaps();
 };
 
+class XhciPortRegisterSet {
+public:
+    XhciPortRegisterSet(uint64_t base) : m_base(base) {}
+
+    void readPortscReg(XhciPortscRegister& reg) const;
+    void writePortscReg(XhciPortscRegister& reg) const;
+
+    void readPortpmscRegUsb2(XhciPortpmscRegisterUsb2& reg) const;
+    void writePortpmscRegUsb2(XhciPortpmscRegisterUsb2& reg) const;
+
+    void readPortpmscRegUsb3(XhciPortpmscRegisterUsb3& reg) const;
+    void writePortpmscRegUsb3(XhciPortpmscRegisterUsb3& reg) const;
+
+
+    void readPortliReg(XhciPortliRegister& reg) const;
+    void writePortliReg(XhciPortliRegister& reg) const;
+
+    void readPorthlpmcRegUsb2(XhciPorthlpmcRegisterUsb2& reg) const;
+    void writePorthlpmcRegUsb2(XhciPorthlpmcRegisterUsb2& reg) const;
+
+    void readPorthlpmcRegUsb3(XhciPorthlpmcRegisterUsb3& reg) const;
+    void writePorthlpmcRegUsb3(XhciPorthlpmcRegisterUsb3& reg) const;
+
+private:
+    uint64_t m_base;
+
+    const size_t m_portscOffset     = 0x00;
+    const size_t m_portpmscOffset   = 0x04;
+    const size_t m_portliOffset     = 0x08;
+    const size_t m_porthlpmcOffset  = 0x0C;
+};
+
 class XhciDriver {
 public:
     static XhciDriver& get();
@@ -1799,6 +1914,10 @@ private:
     void _parseExtendedCapabilityRegisters();
     void _logUsbsts();
 
+    void _configureOperationalRegisters();
+
+    XhciPortRegisterSet getPortRegisterSet(uint8_t portNum);
+
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
 
@@ -1807,6 +1926,8 @@ private:
 
 private:
     bool resetHostController();
+
+    void startHostController();
 
 private:
     // CAPLENGTH
@@ -1831,7 +1952,11 @@ private:
     bool m_lightResetCapability;
     uint32_t m_extendedCapabilitiesOffset;
 
+    // Linked list of extended capabilities
     kstl::SharedPtr<XhciExtendedCapability> m_extendedCapabilitiesHead;
+
+    // Page size supported by host controller
+    uint64_t m_hcPageSize;
 };
 } // namespace drivers
 
