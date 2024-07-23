@@ -11,19 +11,24 @@
 namespace drivers {
     XhciDriver g_globalXhciInstance;
 
-    void* _allocXhciMemory(size_t size) {
-        void* ptr = kmallocAligned(size, 64);
-        if (!ptr) {
+    void* _allocXhciMemory(size_t size, size_t alignment = 64, size_t boundary = PAGE_SIZE) {
+        // Allocate extra memory to ensure we can align the block within the boundary
+        size_t totalSize = size + boundary - 1;
+        void* memblock = kmallocAligned(totalSize, alignment);
+
+        if (!memblock) {
             kuPrint("[XHCI] ======= MEMORY ALLOCATION PROBLEM =======\n");
-            
-            // Ideally panic, but spin for now
             while (true);
         }
 
-        // Make sure the memory is uncacheable
-        paging::markPageUncacheable(ptr);
+        // Align the memory block to the specified boundary
+        size_t alignedAddress = ((size_t)memblock + boundary - 1) & ~(boundary - 1);
+        void* aligned = (void*)alignedAddress;
 
-        return ptr;
+        // Mark the aligned memory block as uncacheable
+        paging::markPageUncacheable(aligned);
+
+        return aligned;
     }
 
     const char* extendedCapabilityToString(XhciExtendedCapabilityCode capid) {
