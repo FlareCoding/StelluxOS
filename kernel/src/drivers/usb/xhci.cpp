@@ -70,6 +70,13 @@ namespace drivers {
 
         _logUsbsts();
 
+        if (!resetHostController()) {
+            return false;
+        }
+
+        _logUsbsts();
+
+
         kprint("\n");
         return true;
     }
@@ -167,5 +174,62 @@ namespace drivers {
         paging::markPageUncacheable(ptr);
 
         return ptr;
+    }
+
+    bool XhciDriver::resetHostController() {
+        // Make sure we clear the Run/Stop bit
+        uint32_t usbcmd = m_opRegs->usbcmd;
+        usbcmd &= ~XHCI_USBCMD_RUN_STOP;
+        m_opRegs->usbcmd = usbcmd;
+
+        // Wait for the HCHalted bit to be set
+        uint32_t timeout = 20;
+        while (!(m_opRegs->usbsts & XHCI_USBSTS_HCH)) {
+            if (--timeout == 0) {
+                kprint("XHCI HC did not halt within %ims\n", timeout);
+                return false;
+            }
+
+            msleep(1);
+        }
+
+        // Set the HC Reset bit
+        usbcmd = m_opRegs->usbcmd;
+        usbcmd |= XHCI_USBCMD_HCRESET;
+        m_opRegs->usbcmd = usbcmd;
+
+        // Wait for this bit and CNR bit to clear
+        timeout = 100;
+        while (
+            m_opRegs->usbcmd & XHCI_USBCMD_HCRESET ||
+            m_opRegs->usbsts & XHCI_USBSTS_CNR
+        ) {
+            if (--timeout == 0) {
+                kprint("XHCI HC did not reset within %ims\n", timeout);
+                return false;
+            }
+
+            msleep(1);
+        }
+
+        msleep(50);
+
+        // Check the defaults of the operational registers
+        if (m_opRegs->usbcmd != 0)
+            return false;
+
+        if (m_opRegs->dnctrl != 0)
+            return false;
+
+        if (m_opRegs->crcr != 0)
+            return false;
+
+        if (m_opRegs->dcbaap != 0)
+            return false;
+
+        if (m_opRegs->config != 0)
+            return false;
+
+        return true;
     }
 } // namespace drivers
