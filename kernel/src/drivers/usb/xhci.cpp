@@ -11,6 +11,51 @@
 namespace drivers {
     XhciDriver g_globalXhciInstance;
 
+    const char* extendedCapabilityToString(XhciExtendedCapabilityCode capid) {
+        uint8_t id = static_cast<uint8_t>(capid);
+
+        switch (capid) {
+        case XhciExtendedCapabilityCode::Reserved: return "Reserved";
+        case XhciExtendedCapabilityCode::UsbLegacySupport: return "USB Legacy Support";
+        case XhciExtendedCapabilityCode::SupportedProtocol: return "Supported Protocol";
+        case XhciExtendedCapabilityCode::ExtendedPowerManagement: return "Extended Power Management";
+        case XhciExtendedCapabilityCode::IOVirtualizationSupport: return "I/O Virtualization Support";
+        case XhciExtendedCapabilityCode::LocalMemorySupport: return "Local Memory Support";
+        case XhciExtendedCapabilityCode::UsbDebugCapabilitySupport: return "USB Debug Capability Support";
+        case XhciExtendedCapabilityCode::ExtendedMessageInterruptSupport: return "Extended Message Interrupt Support";
+        default: break;
+        }
+
+        if (id >= 7 && id <= 9) {
+            return "Reserved";
+        }
+
+        if (id >= 11 && id <= 16) {
+            return "Reserved";
+        }
+
+        if (id >= 18 && id <= 191) {
+            return "Reserved";
+        }
+
+        return "Vendor Specific";
+    }
+
+    XhciExtendedCapability::XhciExtendedCapability(volatile uint32_t* capPtr)
+    : m_base(capPtr) {
+        m_entry.raw = *m_base;
+        _readNextExtCaps();
+    }
+
+    void XhciExtendedCapability::_readNextExtCaps() {
+        if (m_entry.next) {
+            auto nextCapPtr = XHCI_NEXT_EXT_CAP_PTR(m_base, m_entry.next);
+            m_next = kstl::SharedPtr<XhciExtendedCapability>(
+                new XhciExtendedCapability(nextCapPtr)
+            );
+        }
+    }
+
     XhciDriver& XhciDriver::get() {
         return g_globalXhciInstance;
     }
@@ -21,8 +66,21 @@ namespace drivers {
         _parseCapabilityRegisters();
         _logCapabilityRegisters();
 
-        // m_opRegs = reinterpret_cast<volatile XhciOperationalRegisters*>(m_xhcBase + capLen);
-        // kprintInfo("usbsts: 0x%x\n", m_opRegs->usbsts);
+        _parseExtendedCapabilityRegisters();
+
+        auto cap = m_extendedCapabilitiesHead;
+        while (cap.get()) {
+            kprintInfo("Found Extended Capability: %s\n", extendedCapabilityToString(cap->id()));
+
+            if (cap->id() == XhciExtendedCapabilityCode::SupportedProtocol) {
+                XhciUsbSupportedProtocolCapability usbSupportCap;
+                volatile uint32_t* arr = cap->base();
+                usbSupportCap.dword0 = arr[0];
+                kprintInfo("   Support Protocol Version: USB %i.%i\n", usbSupportCap.majorRevisionVersion, usbSupportCap.minorRevisionVersion);
+            }
+
+            cap = cap->next();
+        }
 
         kprint("\n");
         return true;
@@ -47,7 +105,7 @@ namespace drivers {
         m_portPowerControl = XHCI_PPC(m_capRegs);
         m_portIndicators = XHCI_PIND(m_capRegs);
         m_lightResetCapability = XHCI_LHRC(m_capRegs);
-        m_extendedCapabilitiesPointer = XHCI_XECP(m_capRegs);
+        m_extendedCapabilitiesOffset = XHCI_XECP(m_capRegs) * sizeof(uint32_t);
     }
 
     void XhciDriver::_logCapabilityRegisters() {
@@ -66,6 +124,16 @@ namespace drivers {
         kprintInfo("    Port Indicators       : %i\n", m_portIndicators);
         kprintInfo("    Light Reset Available : %i\n", m_lightResetCapability);
         kprint("\n");
+    }
+
+    void XhciDriver::_parseExtendedCapabilityRegisters() {
+        volatile uint32_t* headCapPtr = reinterpret_cast<volatile uint32_t*>(
+            m_xhcBase + m_extendedCapabilitiesOffset
+        );
+
+        m_extendedCapabilitiesHead = kstl::SharedPtr<XhciExtendedCapability>(
+            new XhciExtendedCapability(headCapPtr)
+        );
     }
 
     void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {
