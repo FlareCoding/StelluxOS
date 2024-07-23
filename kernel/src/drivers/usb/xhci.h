@@ -1197,6 +1197,71 @@ struct XhciCapabilityRegisters {
 static_assert(sizeof(XhciCapabilityRegisters) == 32);
 
 /*
+// xHci Spec Section 7.0 Table 7-1: Format of xHCI Extended Capability Pointer Register
+
+The xHC exports xHCI-specific extended capabilities utilizing a method similar to
+the PCI extended capabilities. If an xHC implements any extended capabilities, it
+specifies a non-zero value in the xHCI Extended Capabilities Pointer (xECP) field
+of the HCCPARAMS1 register (5.3.6). This value is an offset into xHC MMIO space
+from the Base, where the Base is the beginning of the host controller’s MMIO
+address space. Each capability register has the format illustrated in Table 7-1
+*/
+struct XhciExtendedCapabilityEntry {
+    union {
+        struct {
+            /*
+                This field identifies the xHCI Extended capability.
+                Refer to Table 7-2 for a list of the valid xHCI extended capabilities.
+            */
+            uint8_t id;
+
+            /*
+                This field points to the xHC MMIO space offset of
+                the next xHCI extended capability pointer. A value of 00h indicates the end of the extended
+                capability list. A non-zero value in this register indicates a relative offset, in Dwords, from this
+                Dword to the beginning of the next extended capability.
+                
+                For example, assuming an effective address of this data structure is 350h and assuming a
+                pointer value of 068h, we can calculate the following effective address:
+                350h + (068h << 2) -> 350h + 1A0h -> 4F0h
+            */
+            uint8_t next;
+
+            /*
+                The definition and attributes of these bits depends on the specific capability.
+            */
+           uint16_t capSpecific;
+        };
+
+        // Extended capability entries must be read as 32-bit words
+        uint32_t raw;
+    };
+};
+
+static_assert(sizeof(XhciExtendedCapabilityEntry) == 4);
+
+/*
+// xHci Spec Section 7.0 Table 7-1: Format of xHCI Extended Capability Pointer Register
+*/
+#define XHCI_NEXT_EXT_CAP_PTR(ptr, next) (volatile uint32_t*)((char*)ptr + (next * sizeof(uint32_t)))
+
+/*
+// xHci Spec Section 7.0 Table 7-2: xHCI Extended Capability Codes
+*/
+enum class XhciExtendedCapabilityCode {
+    Reserved = 0,
+    UsbLegacySupport = 1,
+    SupportedProtocol = 2,
+    ExtendedPowerManagement = 3,
+    IOVirtualizationSupport = 4,
+    MessageInterruptSupport = 5,
+    LocalMemorySupport = 6,
+    UsbDebugCapabilitySupport = 10,
+    ExtendedMessageInterruptSupport = 17
+};
+
+
+/*
 // xHci Spec Section 5.4 Table 5-18: Host Controller Operational Registers (page 356)
 
 The base address of this register space is referred to as Operational Base.
@@ -1548,6 +1613,51 @@ struct XhciDoorbellRegister {
 #define XHCI_DOORBELL_TARGET_COMMAND_RING 0
 
 /*
+// xHci Spec Section 7.2 (page 521)
+At least one of these capability structures is required for all xHCI
+implementations. More than one may be defined for implementations that
+support more than one bus protocol. Refer to section 4.19.7 for more
+information.
+*/
+struct XhciUsbSupportedProtocolCapability {
+    union {
+        struct {
+            uint8_t id;
+            uint8_t next;
+            uint8_t minorRevisionVersion;
+            uint8_t majorRevisionVersion;
+        };
+
+        // Extended capability entries must be read as 32-bit words
+        uint32_t dword0;
+    };
+
+    uint32_t name; // "USB "
+
+    union {
+        struct {
+            uint8_t compatiblePortOffset;
+            uint8_t compatiblePortCount;
+            uint8_t protocolDefined;
+            uint8_t protocolSpeedIdCount; // (PSIC)
+        };
+
+        uint32_t dword2;
+    };
+
+    union {
+        struct {
+            uint32_t slotType : 4;
+            uint32_t reserved : 28;
+        };
+
+        uint32_t dword3;
+    };
+};
+
+static_assert(sizeof(XhciUsbSupportedProtocolCapability) == (4 * sizeof(uint32_t)));
+
+/*
 // xHci Spec Section 4.2 Host Controller Initialization (page 68)
 
 When the system boots, the host controller is enumerated, assigned a base
@@ -1645,6 +1755,28 @@ the Event Ring registers and their initialization.
         Run/Stop (R/S) bit to ‘1’. This operation allows the xHC to begin accepting
         doorbell references.
 */
+class XhciExtendedCapability {
+public:
+    XhciExtendedCapability(volatile uint32_t* capPtr);
+
+    inline volatile uint32_t* base() const { return m_base; }
+    
+    inline XhciExtendedCapabilityCode id() const {
+        return static_cast<XhciExtendedCapabilityCode>(m_entry.id);
+    }
+
+    inline kstl::SharedPtr<XhciExtendedCapability> next() const { return m_next; }
+
+private:
+    volatile uint32_t* m_base;
+    XhciExtendedCapabilityEntry m_entry;
+
+    kstl::SharedPtr<XhciExtendedCapability> m_next;
+
+private:
+    void _readNextExtCaps();
+};
+
 class XhciDriver {
 public:
     static XhciDriver& get();
@@ -1663,6 +1795,8 @@ private:
 
     void _parseCapabilityRegisters();
     void _logCapabilityRegisters();
+
+    void _parseExtendedCapabilityRegisters();
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
@@ -1691,7 +1825,9 @@ private:
     bool m_portPowerControl;
     bool m_portIndicators;
     bool m_lightResetCapability;
-    uint16_t m_extendedCapabilitiesPointer;
+    uint32_t m_extendedCapabilitiesOffset;
+
+    kstl::SharedPtr<XhciExtendedCapability> m_extendedCapabilitiesHead;
 };
 } // namespace drivers
 
