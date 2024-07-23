@@ -11,6 +11,21 @@
 namespace drivers {
     XhciDriver g_globalXhciInstance;
 
+    void* _allocXhciMemory(size_t size) {
+        void* ptr = kmallocAligned(size, 64);
+        if (!ptr) {
+            kuPrint("[XHCI] ======= MEMORY ALLOCATION PROBLEM =======\n");
+            
+            // Ideally panic, but spin for now
+            while (true);
+        }
+
+        // Make sure the memory is uncacheable
+        paging::markPageUncacheable(ptr);
+
+        return ptr;
+    }
+
     const char* extendedCapabilityToString(XhciExtendedCapabilityCode capid) {
         uint8_t id = static_cast<uint8_t>(capid);
 
@@ -219,7 +234,7 @@ namespace drivers {
         m_opRegs->config = static_cast<uint32_t>(m_maxDeviceSlots);
     }
 
-    XhciPortRegisterSet XhciDriver::getPortRegisterSet(uint8_t portNum) {
+    XhciPortRegisterSet XhciDriver::_getPortRegisterSet(uint8_t portNum) {
         uint64_t base = reinterpret_cast<uint64_t>(m_opRegs) + (0x400 + (0x10 * portNum));
         return XhciPortRegisterSet(base);
     }
@@ -234,21 +249,6 @@ namespace drivers {
         paging::flushTlbAll();
 
         m_xhcBase = pciBarAddress;
-    }
-
-    void* XhciDriver::_allocXhciMemory(size_t size) {
-        void* ptr = kmallocAligned(size, 64);
-        if (!ptr) {
-            kuPrint("[XHCI] ======= MEMORY ALLOCATION PROBLEM =======\n");
-            
-            // Ideally panic, but spin for now
-            while (true);
-        }
-
-        // Make sure the memory is uncacheable
-        paging::markPageUncacheable(ptr);
-
-        return ptr;
     }
 
     bool XhciDriver::resetHostController() {
