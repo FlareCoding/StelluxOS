@@ -1797,6 +1797,7 @@ private:
     void _logCapabilityRegisters();
 
     void _parseExtendedCapabilityRegisters();
+    void _logUsbsts();
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
