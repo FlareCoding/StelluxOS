@@ -136,6 +136,14 @@ namespace drivers {
         *reinterpret_cast<volatile uint32_t*>(porthlpmAddress) = reg.raw;
     }
 
+    XhciInterrupterRegisters* XhciRuntimeRegisterSet::getInterrupterRegisters(uint8_t interrupter) const {
+        if (interrupter > m_maxInterrupters) {
+            return nullptr;
+        }
+
+        return &m_base->ir[interrupter];
+    }
+
     XhciDriver& XhciDriver::get() {
         return g_globalXhciInstance;
     }
@@ -143,16 +151,23 @@ namespace drivers {
     bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
         _mapDeviceMmio(deviceInfo.barAddress);
 
+        // Parse the read-only capability register space
         _parseCapabilityRegisters();
         _logCapabilityRegisters();
 
+        // Parse the extended capabilities
         _parseExtendedCapabilityRegisters();
 
+        // Reset the controller
         if (!_resetHostController()) {
             return false;
         }
 
+        // Configure the controller's register spaces
         _configureOperationalRegisters();
+        _configureRuntimeRegisters();
+
+        // At this point the controller is all setup so we can start it
         _startHostController();
 
         // Allocate and clear a test TRB
@@ -265,6 +280,12 @@ namespace drivers {
 
         // Update the base pointer to operational register set
         m_opRegs = reinterpret_cast<volatile XhciOperationalRegisters*>(m_xhcBase + m_capabilityRegsLength);
+
+        // Construct a controller class instance for the runtime register set
+        uint64_t runtimeRegisterBase = m_xhcBase + m_capRegs->rtsoff;
+        m_runtimeRegisterSet = kstl::SharedPtr<XhciRuntimeRegisterSet>(
+            new XhciRuntimeRegisterSet(runtimeRegisterBase, m_maxInterrupters)
+        );
     }
 
     void XhciDriver::_logCapabilityRegisters() {
@@ -327,10 +348,6 @@ namespace drivers {
 
         // Setup the command ring and write CRCR
         _setupCommandRing();
-
-        // Setup the event ring and write to interrupter
-        // registers to set ERSTSZ, ERSDP, and ERSTBA.
-        _setupEventRing();
     }
 
     void XhciDriver::_logUsbsts() {
@@ -358,6 +375,12 @@ namespace drivers {
         kprintInfo("    dcbaap     : %llx\n", m_opRegs->dcbaap);
         kprintInfo("    config     : %x\n", m_opRegs->config);
         kprint("\n");
+    }
+
+    void XhciDriver::_configureRuntimeRegisters() {
+        // Setup the event ring and write to interrupter
+        // registers to set ERSTSZ, ERSDP, and ERSTBA.
+        _setupEventRing();
     }
 
     bool XhciDriver::_isUSB3Port(uint8_t portNum) {
@@ -440,6 +463,12 @@ namespace drivers {
     }
 
     void XhciDriver::_setupEventRing() {
+        auto interrupterRegs = m_runtimeRegisterSet->getInterrupterRegisters(0);
+        if (!interrupterRegs) {
+            kprintError("[*] Failed to retrieve interrupter register set when setting up the event ring!");
+            return;
+        }
+
         const uint64_t eventRingSize = XHCI_EVENT_RING_TRB_COUNT * sizeof(XhciTrb_t);
         const uint64_t eventRingSegmentTableSize = 1 * sizeof(XhciErstEntry);
 
@@ -476,16 +505,13 @@ namespace drivers {
         eventRingSegmentTable[0] = entry;
 
         // Configure the Event Ring Segment Table Size (ERSTSZ) register
-        volatile uint32_t* erstsz = (volatile uint32_t*)(m_xhcBase + m_capRegs->rtsoff + 0x28);
-        *erstsz = 1;
+        interrupterRegs->erstsz = 1;
 
         // Initialize and set ERDP
-        volatile uint64_t* erdp = (volatile uint64_t*)(m_xhcBase + m_capRegs->rtsoff + 0x38);
-        *erdp = eventRingSegmentPhysicalBase;
+        interrupterRegs->erdp = eventRingSegmentPhysicalBase;
 
         // Write to ERSTBA register
-        volatile uint64_t* erstba = (volatile uint64_t*)(m_xhcBase + m_capRegs->rtsoff + 0x30);
-        *erstba = eventRingSegmentTablePhysicalBase;
+        interrupterRegs->erstba = eventRingSegmentTablePhysicalBase;
     }
 
     void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {

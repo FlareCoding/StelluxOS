@@ -1987,6 +1987,19 @@ private:
     const size_t m_porthlpmcOffset  = 0x0C;
 };
 
+class XhciRuntimeRegisterSet {
+public:
+    XhciRuntimeRegisterSet(uint64_t base, uint8_t maxInterrupters)
+        : m_base(reinterpret_cast<XhciRuntimeRegisters*>(base)),
+          m_maxInterrupters(maxInterrupters) {}
+
+    XhciInterrupterRegisters* getInterrupterRegisters(uint8_t interrupter) const;
+
+private:
+    XhciRuntimeRegisters*   m_base;
+    uint8_t                 m_maxInterrupters;
+};
+
 class XhciDriver {
 public:
     static XhciDriver& get();
@@ -2011,6 +2024,8 @@ private:
     void _configureOperationalRegisters();
     void _logUsbsts();
     void _logOperationalRegisters();
+
+    void _configureRuntimeRegisters();
 
     bool _isUSB3Port(uint8_t portNum);
     XhciPortRegisterSet _getPortRegisterSet(uint8_t portNum);
@@ -2059,6 +2074,9 @@ private:
 
     // USB3.x-specific ports
     kstl::vector<uint8_t> m_usb3Ports;
+
+    // Controller class for runtime registers
+    kstl::SharedPtr<XhciRuntimeRegisterSet> m_runtimeRegisterSet;
 
     XhciTrb_t* m_masterCommandRing;
     XhciTrb_t* m_masterEventRing;
