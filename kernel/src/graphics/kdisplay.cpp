@@ -87,7 +87,7 @@ void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color
         // Clear the last line
         for (unsigned long offy = s_displayHeight - charPixelHeight; offy < s_displayHeight; ++offy) {
             for (unsigned long offx = 0; offx < s_framebuffer.width; ++offx) {
-                fillPixel(offx, offy, 0);  // Assuming 0 is the 'clear' color
+                fillPixel(offx, offy, 0xA0A0A0A);
             }
         }
 
@@ -98,7 +98,7 @@ void Display::renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color
     // First we clear the character slot in case something is already there
     for (unsigned long yOffset = y; yOffset < y + charPixelHeight; yOffset++) {
 		for (unsigned long xOffset = x; xOffset < x + CHAR_PIXEL_WIDTH; xOffset++) {
-			fillPixel(xOffset, yOffset, 0);
+			fillPixel(xOffset, yOffset, 0xA0A0A0A);
 		}
 	}
 
