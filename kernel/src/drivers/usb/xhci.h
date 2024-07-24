@@ -1203,6 +1203,9 @@ Command Abort (CA) flags, or if the R/S bit is cleared to ‘0’
 // (TO-DO: find spec page)
 #define XHCI_COMPLETION_CODE_SUCCESS    1
 
+// Helper macro to easily construct TRB command objects
+#define XHCI_CONSTRUCT_CMD_TRB(type) XhciTrb_t { .parameter = 0, .status = 0, .control = type << XHCI_TRB_TYPE_SHIFT }
+
 /*
 // xHci Spec Section 7.1.1 USB Legacy Support Capability (USBLEGSUP) (page 519)
 */
@@ -2000,6 +2003,24 @@ private:
     uint8_t                 m_maxInterrupters;
 };
 
+class XhciCommandRing {
+public:
+    XhciCommandRing(size_t maxTrbs);
+
+    inline uint64_t getVirtualBase() const { return (uint64_t)m_trbRing; }
+    inline uint64_t getPhysicalBase() const { return m_physicalRingBase; }
+    inline uint8_t  getCycleBit() const { return m_rcsBit; }
+
+    void enqueTrb(XhciTrb_t& trb);
+
+private:
+    size_t      m_maxTrbCount;         // Number of valid TRBs in the ring including the LINK_TRB
+    size_t      m_enquePtr;         // Index in the ring where to enque next TRB
+    XhciTrb_t*  m_trbRing;          // Virtual ring base
+    uint64_t    m_physicalRingBase; // Physical ring base
+    uint8_t     m_rcsBit;           // Ring Cycle State
+};
+
 class XhciDriver {
 public:
     static XhciDriver& get();
@@ -2031,7 +2052,6 @@ private:
     XhciPortRegisterSet _getPortRegisterSet(uint8_t portNum);
 
     void _setupDcbaa();
-    void _setupCommandRing();
     void _setupEventRing();
 
 private:
@@ -2078,7 +2098,9 @@ private:
     // Controller class for runtime registers
     kstl::SharedPtr<XhciRuntimeRegisterSet> m_runtimeRegisterSet;
 
-    XhciTrb_t* m_masterCommandRing;
+    // Main command ring
+    kstl::SharedPtr<XhciCommandRing> m_commandRing;
+
     XhciTrb_t* m_masterEventRing;
 };
 } // namespace drivers
