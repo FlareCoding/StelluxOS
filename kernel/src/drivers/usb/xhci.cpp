@@ -144,6 +144,45 @@ namespace drivers {
         return &m_base->ir[interrupter];
     }
 
+    XhciCommandRing::XhciCommandRing(size_t maxTrbs) {
+        m_maxTrbCount = maxTrbs;
+        m_rcsBit = XHCI_CRCR_RING_CYCLE_STATE;
+        m_enquePtr = 0;
+
+        const uint64_t ringSize = XHCI_COMMAND_RING_TRB_COUNT * sizeof(XhciTrb_t);
+
+        // Create the command ring memory block
+        m_trbRing = (XhciTrb_t*)_allocXhciMemory(
+            ringSize,
+            XHCI_COMMAND_RING_SEGMENTS_ALIGNMENT,
+            XHCI_COMMAND_RING_SEGMENTS_BOUNDARY
+        );
+
+        // Zero out the memory by default
+        zeromem(m_trbRing, ringSize);
+
+        // Get the physical mapping
+        m_physicalRingBase = (uint64_t)__pa(m_trbRing);
+
+        // Set the last TRB as a link TRB to point back to the first TRB
+        m_trbRing[255].parameter = m_physicalRingBase;
+        m_trbRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | m_rcsBit;
+    }
+
+    void XhciCommandRing::enqueTrb(XhciTrb_t& trb) {
+        // Adjust the TRB's cycle bit to the current RCS
+        trb.cycleBit = m_rcsBit;
+
+        // Insert the TRB into the ring
+        m_trbRing[m_enquePtr] = trb;
+
+        // Advance and possibly wrap the enque pointer if needed
+        if (++m_enquePtr == m_maxTrbCount) {
+            m_enquePtr = 0;
+            m_rcsBit = !m_rcsBit;
+        }
+    }
+
     XhciDriver& XhciDriver::get() {
         return g_globalXhciInstance;
     }
@@ -171,17 +210,11 @@ namespace drivers {
         _startHostController();
 
         // Allocate and clear a test TRB
-        XhciTrb_t testTrb;
-        zeromem(&testTrb, sizeof(XhciTrb_t));
-        testTrb.cycleBit = 1;
-        testTrb.trbType = XHCI_TRB_TYPE_ENABLE_SLOT_CMD;
-        m_masterCommandRing[0] = testTrb;
+        XhciTrb_t enableSlotTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+        XhciTrb_t noOpTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_NOOP_CMD);
 
-        XhciTrb_t noOpTrb;
-        zeromem(&noOpTrb, sizeof(XhciTrb_t));
-        noOpTrb.cycleBit = 1;
-        noOpTrb.trbType = XHCI_TRB_TYPE_NOOP_CMD;
-        m_masterCommandRing[1] = noOpTrb;
+        m_commandRing->enqueTrb(enableSlotTrb);
+        m_commandRing->enqueTrb(noOpTrb);
 
         // Ring the doorbell for slot 0 (command ring)
         uint64_t doorbellArrayBase = m_xhcBase + m_capRegs->dboff;
@@ -347,7 +380,10 @@ namespace drivers {
         _setupDcbaa();
 
         // Setup the command ring and write CRCR
-        _setupCommandRing();
+        m_commandRing = kstl::SharedPtr<XhciCommandRing>(
+            new XhciCommandRing(XHCI_COMMAND_RING_TRB_COUNT)
+        );
+        m_opRegs->crcr = m_commandRing->getPhysicalBase() | m_commandRing->getCycleBit();
     }
 
     void XhciDriver::_logUsbsts() {
@@ -437,29 +473,6 @@ namespace drivers {
         uint64_t dcbaaPhysicalBase = (uint64_t)__pa(dcbaaVirtualBase);
 
         m_opRegs->dcbaap = dcbaaPhysicalBase;
-    }
-
-    void XhciDriver::_setupCommandRing() {
-        const uint64_t commandRingSize = XHCI_COMMAND_RING_TRB_COUNT * sizeof(XhciTrb_t);
-
-        // Create the command ring memory block
-        m_masterCommandRing = (XhciTrb_t*)_allocXhciMemory(
-            commandRingSize,
-            XHCI_COMMAND_RING_SEGMENTS_ALIGNMENT,
-            XHCI_COMMAND_RING_SEGMENTS_BOUNDARY
-        );
-
-        // Zero out the memory by default
-        zeromem(m_masterCommandRing, commandRingSize);
-
-        // Get the physical mapping
-        uint64_t commandRingPhysicalBase = (uint64_t)__pa(m_masterCommandRing);
-
-        // Set the last TRB as a link TRB to point back to the first TRB
-        m_masterCommandRing[255].parameter = commandRingPhysicalBase;
-        m_masterCommandRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | XHCI_CRCR_RING_CYCLE_STATE;
-
-        m_opRegs->crcr = commandRingPhysicalBase | XHCI_CRCR_RING_CYCLE_STATE;
     }
 
     void XhciDriver::_setupEventRing() {
