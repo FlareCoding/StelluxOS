@@ -155,8 +155,49 @@ namespace drivers {
         _configureOperationalRegisters();
         _startHostController();
 
+        // Allocate and clear a test TRB
+        XhciTrb_t testTrb;
+        zeromem(&testTrb, sizeof(XhciTrb_t));
+        testTrb.cycleBit = 1;
+        testTrb.trbType = XHCI_TRB_TYPE_ENABLE_SLOT_CMD;
+        m_masterCommandRing[0] = testTrb;
+
+        XhciTrb_t noOpTrb;
+        zeromem(&noOpTrb, sizeof(XhciTrb_t));
+        noOpTrb.cycleBit = 1;
+        noOpTrb.trbType = XHCI_TRB_TYPE_NOOP_CMD;
+        m_masterCommandRing[1] = noOpTrb;
+
+        // Ring the doorbell for slot 0 (command ring)
+        uint64_t doorbellArrayBase = m_xhcBase + m_capRegs->dboff;
+        volatile uint32_t* db1 = (volatile uint32_t*)doorbellArrayBase;
+        *db1 = 0;
+
+        kuPrint("[XHCI] Sent a test TRB\n");
+
         _logOperationalRegisters();
         _logUsbsts();
+
+        msleep(10);
+        for (size_t i = 0; i < XHCI_EVENT_RING_TRB_COUNT; i++) {
+            auto trb = m_masterEventRing[i];
+            
+            if (trb.trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
+                auto completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(&trb);
+                XhciTrb_t* commandTrb = (XhciTrb_t*)__va((void*)completionTrb->commandTrbPointer);
+
+                if (commandTrb->trbType == XHCI_TRB_TYPE_ENABLE_SLOT_CMD) {
+                    kprintInfo("Found Completion TRB at slot %i: 'Enable Slot Command'\n", i);
+                } else if (commandTrb->trbType == XHCI_TRB_TYPE_NOOP_CMD) {
+                    kprintInfo("Found Completion TRB at slot %i: 'No-Op Command'\n", i);
+                } else {
+                    kprintInfo("Found Completion TRB at slot %i: %i\n", i, commandTrb->trbType);
+                }
+            } else if (trb.trbType == XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT) {
+                kprintInfo("Found Port Status Change Event TRB at slot %i\n", i);
+            }
+        }
+        kprint("\n");
 
         // Reset the ports
         for (uint8_t i = 0; i < m_maxPorts; i++) {
@@ -168,7 +209,7 @@ namespace drivers {
         }
         kprint("\n");
 
-        msleep(20);
+        msleep(100);
         while (true) {
             for (uint8_t i = 0; i < m_maxPorts; i++) {
                 XhciPortRegisterSet regset = _getPortRegisterSet(i);
@@ -191,10 +232,10 @@ namespace drivers {
                 }
             }
 
-            sleep(2);
             kprint("\n");
-
             break;
+
+            sleep(2);
         }
 
         kprint("\n");
@@ -286,6 +327,10 @@ namespace drivers {
 
         // Setup the command ring and write CRCR
         _setupCommandRing();
+
+        // Setup the event ring and write to interrupter
+        // registers to set ERSTSZ, ERSDP, and ERSTBA.
+        _setupEventRing();
     }
 
     void XhciDriver::_logUsbsts() {
@@ -392,6 +437,55 @@ namespace drivers {
         m_masterCommandRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | XHCI_CRCR_RING_CYCLE_STATE;
 
         m_opRegs->crcr = commandRingPhysicalBase | XHCI_CRCR_RING_CYCLE_STATE;
+    }
+
+    void XhciDriver::_setupEventRing() {
+        const uint64_t eventRingSize = XHCI_EVENT_RING_TRB_COUNT * sizeof(XhciTrb_t);
+        const uint64_t eventRingSegmentTableSize = 1 * sizeof(XhciErstEntry);
+
+        // Create the event ring segment memory block
+        m_masterEventRing = (XhciTrb_t*)_allocXhciMemory(
+            eventRingSize,
+            XHCI_EVENT_RING_SEGMENTS_ALIGNMENT,
+            XHCI_EVENT_RING_SEGMENTS_BOUNDARY
+        );
+
+        // Zero out the memory by default
+        zeromem(m_masterEventRing, eventRingSize);
+
+        // Get the physical mapping to the main event ring segment
+        uint64_t eventRingSegmentPhysicalBase = (uint64_t)__pa(m_masterEventRing);
+
+        // Create the event ring segment table
+        XhciErstEntry* eventRingSegmentTable = (XhciErstEntry*)_allocXhciMemory(
+            eventRingSegmentTableSize,
+            XHCI_EVENT_RING_SEGMENT_TABLE_ALIGNMENT,
+            XHCI_EVENT_RING_SEGMENT_TABLE_BOUNDARY
+        );
+
+        // Get the physical mapping to the segment table
+        uint64_t eventRingSegmentTablePhysicalBase = (uint64_t)__pa(eventRingSegmentTable);
+
+        // Construct the segment table entry
+        XhciErstEntry entry;
+        entry.ringSegmentBaseAddress = eventRingSegmentPhysicalBase;
+        entry.ringSegmentSize = XHCI_EVENT_RING_TRB_COUNT;
+        entry.rsvd = 0;
+
+        // Insert the constructed segment into the table
+        eventRingSegmentTable[0] = entry;
+
+        // Configure the Event Ring Segment Table Size (ERSTSZ) register
+        volatile uint32_t* erstsz = (volatile uint32_t*)(m_xhcBase + m_capRegs->rtsoff + 0x28);
+        *erstsz = 1;
+
+        // Initialize and set ERDP
+        volatile uint64_t* erdp = (volatile uint64_t*)(m_xhcBase + m_capRegs->rtsoff + 0x38);
+        *erdp = eventRingSegmentPhysicalBase;
+
+        // Write to ERSTBA register
+        volatile uint64_t* erstba = (volatile uint64_t*)(m_xhcBase + m_capRegs->rtsoff + 0x30);
+        *erstba = eventRingSegmentTablePhysicalBase;
     }
 
     void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {

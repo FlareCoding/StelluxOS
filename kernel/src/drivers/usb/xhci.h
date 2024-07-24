@@ -51,6 +51,7 @@ namespace drivers {
 
 // Configuration Definitions
 #define XHCI_COMMAND_RING_TRB_COUNT     256
+#define XHCI_EVENT_RING_TRB_COUNT       256
 
 /*
 // xHci Spec Section 5.4.1 USB Table 5-20: USB Command Register Bit Definitions (USBCMD) (page 358)
@@ -1341,8 +1342,35 @@ scope of the general data structure descriptions that are provided in section
 typedef struct XhciTransferRequestBlock {
     uint64_t parameter; // TRB-specific parameter
     uint32_t status;    // Status information
-    uint32_t control;   // Control bits, including the TRB type
+    union {
+        struct {
+            uint32_t cycleBit   : 1;
+            uint32_t rsvd0      : 9;
+            uint32_t trbType    : 6;
+            uint32_t rsvd1      : 16;
+        };
+        uint32_t control;   // Control bits, including the TRB type
+    };
 } XhciTrb_t;
+
+static_assert(sizeof(XhciTrb_t) == sizeof(uint32_t) * 4);
+
+typedef struct XhciCommandCompletionRequestBlock {
+    uint64_t commandTrbPointer;
+    struct {
+        uint32_t rsvd0          : 24;
+        uint32_t completionCode : 8;
+    };
+    struct {
+        uint32_t cycleBit   : 1;
+        uint32_t rsvd1      : 9;
+        uint32_t trbType    : 6;
+        uint32_t vfid       : 8;
+        uint32_t slotId     : 8;
+    };
+} XhciCompletionTrb_t;
+
+static_assert(sizeof(XhciCompletionTrb_t) == sizeof(uint32_t) * 4);
 
 /*
 // xHci Spec Section 6.5 Event Ring Segment Table Figure 6-40: Event Ring Segment Table Entry
@@ -1989,6 +2017,7 @@ private:
 
     void _setupDcbaa();
     void _setupCommandRing();
+    void _setupEventRing();
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
@@ -2032,6 +2061,7 @@ private:
     kstl::vector<uint8_t> m_usb3Ports;
 
     XhciTrb_t* m_masterCommandRing;
+    XhciTrb_t* m_masterEventRing;
 };
 } // namespace drivers
 
