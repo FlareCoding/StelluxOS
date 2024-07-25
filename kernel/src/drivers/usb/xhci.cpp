@@ -732,7 +732,7 @@ namespace drivers {
         auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
 
         // Clear the interrupt pending bit in the primary interrupter
-        interrupterRegs->iman |= ~(1 << 0);
+        interrupterRegs->iman |= ~XHCI_IMAN_INTERRUPT_PENDING;
 
         // Clear the interrupt pending bit in USBSTS
         m_opRegs->usbsts |= ~XHCI_USBSTS_EINT;
