@@ -1705,23 +1705,32 @@ struct XhciPortscRegister {
 
             // Connect status change (R/WC), if PP is 0, this bit is also 0.
             // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
+            // ** Clear this bit by writing a '1' to it.
             uint32_t    csc         : 1;
 
-            // Port enable/disable change (R/WC), if PP is 0, this bit is also 0.
-            // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
+            /*
+            Port enable/disable change (R/WC), if PP is 0, this bit is also 0.
+            ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
+            ** For a USB2 protocol port, this bit shall be set to ‘1’ only when the port is disabled (EOF2)
+            ** For a USB3 protocol port, this bit shall never be set to ‘1’
+            ** Software shall clear this bit by writing a ‘1’ to it. Refer to section 4.19.2
+            */
             uint32_t    pec         : 1;
 
             // Warm port reset change (R/WC), if PP is 0, this bit is also 0.
             // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
             // ** Reserved and zeroed on USB2 ports.
+            // ** Software shall clear this bit by writing a '1' to it.
             uint32_t    wrc         : 1;
 
             // Over-current change (R/WC), if PP is 0, this bit is also 0.
             // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
+            // ** Software shall clear this bit by writing a '1' to it.
             uint32_t    occ         : 1;
 
             // Port reset change (R/WC), if PP is 0, this bit is also 0.
             // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
+            // ** Software shall clear this bit by writing a '1' to it.
             uint32_t    prc         : 1;
 
             // Port link state change (R/WC), if PP is 0, this bit is also 0.
@@ -1731,6 +1740,7 @@ struct XhciPortscRegister {
             // Port config error change (R/WC), if PP is 0, this bit is also 0.
             // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
             // ** Reserved and zeroed on USB2 ports.
+            // ** Software shall clear this bit by writing a '1' to it.
             uint32_t    cec         : 1;
 
             // Cold attach status (R/O), if PP is 0, this bit is also 0.
@@ -2049,9 +2059,6 @@ the Event Ring registers and their initialization.
         doorbell references.
 */
 
-// Forward declaration
-class XhciDriver;
-
 class XhciExtendedCapability {
 public:
     XhciExtendedCapability(volatile uint32_t* capPtr);
@@ -2140,6 +2147,9 @@ public:
 
     void enqueue(XhciTrb_t& trb);
 
+    // Helper functions for sending most common commands
+    void enqueueEnableSlotTrb();
+
 private:
     size_t      m_maxTrbCount;      // Number of valid TRBs in the ring including the LINK_TRB
     size_t      m_enqueuePtr;       // Index in the ring where to enque next TRB
@@ -2158,7 +2168,9 @@ public:
     inline uint8_t  getCycleBit() const { return m_rcsBit; }
 
     bool hasUnprocessedEvents();
-    void processEvents(XhciDriver* driver, void (XhciDriver::*func)(XhciTrb_t*));
+    void dequeueEvents(kstl::vector<XhciTrb_t*>& receivedEventTrbs);
+
+    void flushUnprocessedEvents();
 
 private:
     XhciInterrupterRegisters* m_interrupterRegs;
@@ -2220,10 +2232,13 @@ private:
     void _startHostController();
 
     bool _resetPort(uint8_t portNum);
+    uint8_t _requestDeviceSlot();
 
     void _markXhciInterruptCompleted(uint8_t interrupter);
-
     void _processEventRingTrb(XhciTrb_t* trb);
+
+    void _handleDeviceConnected(uint8_t port);
+    void _handleDeviceDiconnected(uint8_t port);
 
 private:
     // CAPLENGTH
