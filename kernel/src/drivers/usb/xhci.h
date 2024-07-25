@@ -1367,10 +1367,17 @@ typedef struct XhciTransferRequestBlock {
     uint32_t status;    // Status information
     union {
         struct {
-            uint32_t cycleBit   : 1;
-            uint32_t rsvd0      : 9;
-            uint32_t trbType    : 6;
-            uint32_t rsvd1      : 16;
+            uint32_t cycleBit               : 1;
+            uint32_t evalNextTrb            : 1;
+            uint32_t interruptOnShortPkt    : 1;
+            uint32_t noSnoop                : 1;
+            uint32_t chainBit               : 1;
+            uint32_t interruptOnCompletion  : 1;
+            uint32_t immediateData          : 1;
+            uint32_t rsvd0                  : 2;
+            uint32_t blockEventInterrupt    : 1;
+            uint32_t trbType                : 6;
+            uint32_t rsvd1                  : 16;
         };
         uint32_t control;   // Control bits, including the TRB type
     };
@@ -1591,15 +1598,15 @@ struct XhciEndpointContext32 {
     uint32_t    hid                 : 1;
     uint32_t    maxBurstSize        : 8;
     uint32_t    maxPacketSize       : 16;
-    uint32_t    dcs                 : 1;    // Offset 08h
-    uint32_t    rsvd3               : 3;
-    uint32_t    trDequeuePointerLo  : 28;
-    uint32_t    trDequeuePointerHi;         // Offset 0Ch
+
+    // Offset 08h: LSB of this QWORD is a DCS (Dequeue Cycle State) bit
+    uint64_t    trDequeuePointer;
+
     uint32_t    avgTrbLength        : 16;   // Offset 10h
     uint32_t    maxEsitPayloadLo    : 16;
+    uint32_t    rsvd3;
     uint32_t    rsvd4;
     uint32_t    rsvd5;
-    uint32_t    rsvd6;
 };
 static_assert(sizeof(XhciEndpointContext32) == 32);
 
