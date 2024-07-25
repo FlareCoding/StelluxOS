@@ -766,6 +766,11 @@ namespace drivers {
             XHCI_DEVICE_CONTEXT_BOUNDARY
         );
 
+        if (!ctx) {
+            kprintError("[*] CRITICAL FAILURE: Failed to allocate memory for a device context\n");
+            return;
+        }
+
         // Zero out the device context memory by default
         zeromem(ctx, sizeof(deviceContextSize));
 
@@ -773,15 +778,83 @@ namespace drivers {
         // into the Device Context Base Addres Array (DCBAA).
         m_dcbaa[slotId] = (uint64_t)__pa(ctx);
 
+        // Determine the size of the input control context
+        // based on the capability register parameters.
+        uint64_t inputControlContextSize = m_64ByteContextSize ? sizeof(XhciInputControlContext64) : sizeof(XhciInputControlContext32); 
+
+        // Allocate a memory block for the device context
+        void* inputControlCtx = _allocXhciMemory(
+            inputControlContextSize,
+            XHCI_INPUT_CONTROL_CONTEXT_ALIGNMENT,
+            XHCI_INPUT_CONTROL_CONTEXT_BOUNDARY
+        );
+
+        if (!inputControlCtx) {
+            kprintError("[*] CRITICAL FAILURE: Failed to allocate memory for a device input control context\n");
+            return;
+        }
+
+        // Zero out the device context memory by default
+        zeromem(inputControlCtx, sizeof(inputControlContextSize));
+
+        // Calculate the max packet size for the control endpoint context
+        uint32_t maxPacketSize = 0;
+        switch (portSpeed) {
+        case XHCI_USB_SPEED_LOW_SPEED: maxPacketSize = 8; break;
+        case XHCI_USB_SPEED_FULL_SPEED: maxPacketSize = 64; break;
+        case XHCI_USB_SPEED_HIGH_SPEED: maxPacketSize = 64; break;
+        case XHCI_USB_SPEED_SUPER_SPEED: maxPacketSize = 512; break;
+        case XHCI_USB_SPEED_SUPER_SPEED_PLUS: maxPacketSize = 512; break;
+        default: maxPacketSize = 8; break;
+        }
+
         // Set the appropriate fields in the Slot Context
         if (m_64ByteContextSize) {
-            XhciDeviceContext64* context = (XhciDeviceContext64*)ctx;
-            context->slotContext.ctx32.portNum = port;
+            // Configure the input context
+            XhciInputControlContext64* inputContext = (XhciInputControlContext64*)inputControlCtx;
+            inputContext->enableSlotCtx = 1;
+            inputContext->enableControlCtx = 1;
+
+            // Copy the device context into the input context buffer
+            memcpy(&inputContext->deviceContext, ctx, deviceContextSize);
+
+            XhciDeviceContext64* context = &inputContext->deviceContext;
+
+            // Initialize the slot context
             context->slotContext.ctx32.speed = portSpeed;
+            context->slotContext.ctx32.portNum = port + 1; // one-based
+            context->slotContext.ctx32.contextEntries = 1;
+            context->slotContext.ctx32.interrupterTarget = 0;
+
+            // Initialize the control endpoint context
+            context->endpointContext[0].ctx32.epType = 4;
+            context->endpointContext[0].ctx32.interval = 0;
+            context->endpointContext[0].ctx32.cErr = 3;
+            context->endpointContext[0].ctx32.maxPacketSize = maxPacketSize;
+            context->endpointContext[0].ctx32.avgTrbLength = 8;
         } else {
-            XhciDeviceContext32* context = (XhciDeviceContext32*)ctx;
-            context->slotContext.portNum = port;
+            // Configure the input context
+            XhciInputControlContext32* inputContext = (XhciInputControlContext32*)inputControlCtx;
+            inputContext->enableSlotCtx = 1;
+            inputContext->enableControlCtx = 1;
+
+            // Copy the device context into the input context buffer
+            memcpy(&inputContext->deviceContext, ctx, deviceContextSize);
+
+            XhciDeviceContext32* context = &inputContext->deviceContext;
+
+            // Initialize the slot context
             context->slotContext.speed = portSpeed;
+            context->slotContext.portNum = port + 1; // one-based
+            context->slotContext.contextEntries = 1;
+            context->slotContext.interrupterTarget = 0;
+
+            // Initialize the control endpoint context
+            context->endpointContext[0].epType = 4;
+            context->endpointContext[0].interval = 0;
+            context->endpointContext[0].cErr = 3;
+            context->endpointContext[0].maxPacketSize = maxPacketSize;
+            context->endpointContext[0].avgTrbLength = 8;
         }
     }
 

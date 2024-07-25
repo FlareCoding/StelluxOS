@@ -1753,20 +1753,118 @@ struct XhciInputControlContext32 {
         };
         uint32_t dword7;
     };
+
+    // Device context copy
+    XhciDeviceContext32 deviceContext;
 };
-static_assert(sizeof(XhciInputControlContext32) == 32);
+static_assert(sizeof(XhciInputControlContext32) == 32 + sizeof(XhciDeviceContext32));
 
 struct XhciInputControlContext64 {
-    // Default 32-byte context fields
-    XhciInputControlContext32 ctx32;
+    // DWORD 0
+    union {
+        struct {
+            uint32_t rsvd0             : 2;
+            uint32_t disableEp1Out     : 1;
+            uint32_t disableEp1In      : 1;
+            uint32_t disableEp2Out     : 1;
+            uint32_t disableEp2In      : 1;
+            uint32_t disableEp3Out     : 1;
+            uint32_t disableEp3In      : 1;
+            uint32_t disableEp4Out     : 1;
+            uint32_t disableEp4In      : 1;
+            uint32_t disableEp5Out     : 1;
+            uint32_t disableEp5In      : 1;
+            uint32_t disableEp6Out     : 1;
+            uint32_t disableEp6In      : 1;
+            uint32_t disableEp7Out     : 1;
+            uint32_t disableEp7In      : 1;
+            uint32_t disableEp8Out     : 1;
+            uint32_t disableEp8In      : 1;
+            uint32_t disableEp9Out     : 1;
+            uint32_t disableEp9In      : 1;
+            uint32_t disableEp10Out    : 1;
+            uint32_t disableEp10In     : 1;
+            uint32_t disableEp11Out    : 1;
+            uint32_t disableEp11In     : 1;
+            uint32_t disableEp12Out    : 1;
+            uint32_t disableEp12In     : 1;
+            uint32_t disableEp13Out    : 1;
+            uint32_t disableEp13In     : 1;
+            uint32_t disableEp14Out    : 1;
+            uint32_t disableEp14In     : 1;
+            uint32_t disableEp15Out    : 1;
+            uint32_t disableEp15In     : 1;
+        };
+        uint32_t dword0;
+    };
+
+    // DWORD 1
+    union {
+        struct {
+            uint32_t enableSlotCtx    : 1;
+            uint32_t enableControlCtx : 1;
+            uint32_t enableEp1Out     : 1;
+            uint32_t enableEp1In      : 1;
+            uint32_t enableEp2Out     : 1;
+            uint32_t enableEp2In      : 1;
+            uint32_t enableEp3Out     : 1;
+            uint32_t enableEp3In      : 1;
+            uint32_t enableEp4Out     : 1;
+            uint32_t enableEp4In      : 1;
+            uint32_t enableEp5Out     : 1;
+            uint32_t enableEp5In      : 1;
+            uint32_t enableEp6Out     : 1;
+            uint32_t enableEp6In      : 1;
+            uint32_t enableEp7Out     : 1;
+            uint32_t enableEp7In      : 1;
+            uint32_t enableEp8Out     : 1;
+            uint32_t enableEp8In      : 1;
+            uint32_t enableEp9Out     : 1;
+            uint32_t enableEp9In      : 1;
+            uint32_t enableEp10Out    : 1;
+            uint32_t enableEp10In     : 1;
+            uint32_t enableEp11Out    : 1;
+            uint32_t enableEp11In     : 1;
+            uint32_t enableEp12Out    : 1;
+            uint32_t enableEp12In     : 1;
+            uint32_t enableEp13Out    : 1;
+            uint32_t enableEp13In     : 1;
+            uint32_t enableEp14Out    : 1;
+            uint32_t enableEp14In     : 1;
+            uint32_t enableEp15Out    : 1;
+            uint32_t enableEp15In     : 1;
+        };
+        uint32_t dword1;
+    };
+
+    // DWORD 2-6 (all reserved and zero'd)
+    uint32_t dword2rsvd;
+    uint32_t dword3rsvd;
+    uint32_t dword4rsvd;
+    uint32_t dword5rsvd;
+    uint32_t dword6rsvd;
+
+    // DWORD 7
+    union {
+        struct {
+            uint8_t configurationValue;
+            uint8_t interfaceNumber;
+            uint8_t alternateSetting;
+            uint8_t rsvd1;
+        };
+        uint32_t dword7;
+    };
 
     // Extra reserved padding for 64-byte struct size
     uint64_t    rsvd64b0;
     uint64_t    rsvd64b1;
     uint64_t    rsvd64b2;
     uint64_t    rsvd64b3;
+
+    // Device context copy
+    XhciDeviceContext64 deviceContext;
 };
-static_assert(sizeof(XhciInputControlContext64) == 64);
+static_assert(sizeof(XhciInputControlContext64) == 64 + sizeof(XhciDeviceContext64));
 
 /*
 // xHci Spec Section 5.4.8 Figure 5-20: Port Status and Control Register (PORTSC) (page 369-370)
