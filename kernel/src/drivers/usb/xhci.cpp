@@ -198,6 +198,11 @@ namespace drivers {
         }
     }
 
+    void XhciCommandRing::enqueueEnableSlotTrb() {
+        XhciTrb_t trb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+        enqueue(trb);
+    }
+
     XhciEventRing::XhciEventRing(size_t maxTrbs, XhciInterrupterRegisters* primaryInterrupterRegisters) {
         m_interrupterRegs = primaryInterrupterRegisters;
         m_segmentTrbCount = maxTrbs;
@@ -253,14 +258,23 @@ namespace drivers {
         return (m_primarySegmentRing[m_dequeuePtr].cycleBit == m_rcsBit);
     }
 
-    void XhciEventRing::processEvents(XhciDriver* driver, void (XhciDriver::*func)(XhciTrb_t*)) {
+    void XhciEventRing::dequeueEvents(kstl::vector<XhciTrb_t*>& receivedEventTrbs) {
         // Process each event TRB
         while (hasUnprocessedEvents()) {
-            auto eventTrb = _dequeueTrb();
-            if (!eventTrb) break;
+            auto trb = _dequeueTrb();
+            if (!trb) break;
 
-            // Call the driver's callback function
-            (driver->*func)(eventTrb);
+            receivedEventTrbs.pushBack(trb);
+        }
+
+        // Update the ERDP register
+        _updateErdpInterrupterRegister();
+    }
+
+    void XhciEventRing::flushUnprocessedEvents() {
+        // Dequeue all unprocessed TRBs
+        while (hasUnprocessedEvents()) {
+            _dequeueTrb();
         }
 
         // Update the ERDP register
@@ -326,9 +340,33 @@ namespace drivers {
         }
         kprint("\n");
 
-        if (m_eventRing->hasUnprocessedEvents()) {
-            m_eventRing->processEvents(this, &XhciDriver::_processEventRingTrb);
-            _markXhciInterruptCompleted(0);
+        // After port resets, there will be extreneous port state change events
+        // for ports with connected devices, but without CSC bit set, so we have
+        // to manually iterate the ports with connected devices and set them up.
+        m_eventRing->flushUnprocessedEvents();
+
+        for (uint8_t port = 0; port < m_maxPorts; ++port) {
+            auto portRegisterSet = _getPortRegisterSet(port);
+            XhciPortscRegister portsc;
+            portRegisterSet.readPortscReg(portsc);
+
+            if (portsc.ccs) {
+                _handleDeviceConnected(port);
+            }
+        }
+
+        kstl::vector<XhciTrb_t*> eventTrbs;
+        while (true) {
+           eventTrbs.clear();
+            if (m_eventRing->hasUnprocessedEvents()) {
+                m_eventRing->dequeueEvents(eventTrbs);
+                _markXhciInterruptCompleted(0);
+            }
+
+            // Process the TRBs
+            for (size_t i = 0; i < eventTrbs.size(); ++i) {
+                _processEventRingTrb(eventTrbs[i]);
+            }
         }
 
         kprint("\n");
@@ -684,6 +722,38 @@ namespace drivers {
         return false; 
     }
 
+    uint8_t XhciDriver::_requestDeviceSlot() {
+        // Small delay period between ringing the
+        // doorbell and polling the event ring.
+        const uint32_t commandDelay = 10;
+
+        m_commandRing->enqueueEnableSlotTrb();
+        m_doorbellManager->ringCommandDoorbell();
+
+        // Let the host controller process the command
+        msleep(commandDelay);
+        
+        kstl::vector<XhciTrb_t*> events;
+        if (m_eventRing->hasUnprocessedEvents()) {
+            m_eventRing->dequeueEvents(events);
+            _markXhciInterruptCompleted(0);
+        }
+
+        XhciCompletionTrb_t* completionTrb = nullptr;
+        for (size_t i = 0; i < events.size(); ++i) {
+            if (events[i]->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
+                completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(events[i]);
+                break;   
+            }
+        }
+
+        if (!completionTrb || completionTrb->completionCode != 1) {
+            return 0;
+        }
+
+        return completionTrb->slotId;
+    }
+
     void XhciDriver::_markXhciInterruptCompleted(uint8_t interrupter) {
         // Get the interrupter registers
         auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
@@ -717,21 +787,55 @@ namespace drivers {
             XhciPortscRegister portsc;
             portRegisterSet.readPortscReg(portsc);
 
-            if (portsc.ccs) {
-                kprint("%s device connected on port %i with speed ", _isUSB3Port(port) ? "USB3" : "USB2", port);
-
-                switch (portsc.portSpeed) {
-                case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
-                case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
-                case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
-                case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
-                case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
-                default: kprint("Undefined\n"); break;
+            if (portsc.csc) {
+                if (portsc.ccs) {
+                    _handleDeviceConnected(port);
+                } else {
+                    _handleDeviceDiconnected(port);
                 }
             }
 
+            if (portsc.csc) portsc.csc = 1;
+            if (portsc.pec) portsc.pec = 1;
+            if (portsc.wrc) portsc.wrc = 1;
+            if (portsc.occ) portsc.occ = 1;
+            if (portsc.prc) portsc.prc = 1;
+            if (portsc.cec) portsc.cec = 1;
+
+            portRegisterSet.writePortscReg(portsc);
         } else if (trb->trbType == XHCI_TRB_TYPE_HOST_CONTROLLER_EVENT) {
             // kprintInfo("Found Host Controller Event TRB\n");
         }
+    }
+
+    void XhciDriver::_handleDeviceConnected(uint8_t port) {
+        auto portRegisterSet = _getPortRegisterSet(port);
+        XhciPortscRegister portsc;
+        portRegisterSet.readPortscReg(portsc);
+
+        kprintInfo("Port State Change Event on port %i: ", port);
+        kprint("%s device ATTACHED with speed ", _isUSB3Port(port) ? "USB3" : "USB2");
+
+        switch (portsc.portSpeed) {
+        case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
+        case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
+        case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
+        case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
+        case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
+        default: kprint("Undefined\n"); break;
+        }
+
+        uint8_t deviceSlot = _requestDeviceSlot();
+        if (deviceSlot == 0) {
+            kprintError("[*] Failed to enable Device Slot for port %i\n", port);
+            return;
+        }
+
+        kprintInfo("Enabling Device Slot %i...\n", deviceSlot);
+    }
+
+    void XhciDriver::_handleDeviceDiconnected(uint8_t port) {
+        kprintInfo("Port State Change Event on port %i: ", port);
+        kprint("%s device DETACHED\n", _isUSB3Port(port) ? "USB3" : "USB2");
     }
 } // namespace drivers
