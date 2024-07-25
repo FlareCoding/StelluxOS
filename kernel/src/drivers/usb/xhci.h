@@ -741,6 +741,26 @@ are not supported. Refer to section 6.2.5.1 for more information.
 #define XHCI_CONFIG_INFO_ENABLE(config) (((config) >> 9) & 0x1)
 
 /*
+// xHci Spec Section 5.5.2.1 Table 5-38: Interrupter Management Register Bit Definitions (IMAN) (page 425)
+
+Interrupt Pending (IP) - RW1C. Default = ‘0’. This flag represents the current state of the
+Interrupter. If IP = ‘1’, an interrupt is pending for this Interrupter. A ‘0’ value indicates that no
+interrupt is pending for the Interrupter. Refer to section 4.17.3 for the conditions that modify
+the state of this flag.
+*/
+#define XHCI_IMAN_INTERRUPT_PENDING (1 << 0)
+
+/*
+// xHci Spec Section 5.5.2.1 Table 5-38: Interrupter Management Register Bit Definitions (IMAN) (page 425)
+
+Interrupt Enable (IE) – RW. Default = ‘0’. This flag specifies whether the Interrupter is capable of
+generating an interrupt. When this bit and the IP bit are set (‘1’), the Interrupter shall generate
+an interrupt when the Interrupter Moderation Counter reaches ‘0’. If this bit is ‘0’, then the
+Interrupter is prohibited from generating interrupts.
+*/
+#define XHCI_IMAN_INTERRUPT_ENABLE (1 << 1)
+
+/*
 // xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 469)
 Allowed TRB Types
 -----------------
