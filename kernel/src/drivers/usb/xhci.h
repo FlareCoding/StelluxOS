@@ -2120,6 +2120,8 @@ private:
 
     bool _resetPort(uint8_t portNum);
 
+    void _markXhciInterruptCompleted(uint8_t interrupter);
+
 private:
     // CAPLENGTH
     uint8_t m_capabilityRegsLength;
