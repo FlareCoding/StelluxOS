@@ -1427,7 +1427,22 @@ struct XhciInterrupterRegisters {
     uint32_t erstsz;       // Event Ring Segment Table Size (offset 08h)
     uint32_t rsvdP;        // Reserved (offset 0Ch)
     uint64_t erstba;       // Event Ring Segment Table Base Address (offset 10h)
-    uint64_t erdp;         // Event Ring Dequeue Pointer (offset 18h)
+    union {
+        struct {
+            // This index is used to accelerate the checking of
+            // an Event Ring Full condition. This field can be 0.
+            uint64_t dequeueErstSegmentIndex : 3;
+
+            // This bit is set by the controller when it sets the
+            // Interrupt Pending bit. Then once your handler is finished
+            // handling the event ring, you clear it by writing a '1' to it.
+            uint64_t eventHandlerBusy        : 1;
+
+            // Physical address of the _next_ item in the event ring
+            uint64_t eventRingDequeuePointer : 60;
+        };
+        uint64_t erdp;     // Event Ring Dequeue Pointer (offset 18h)
+    };
 };
 
 /*
@@ -2026,18 +2041,42 @@ public:
 
 private:
     size_t      m_maxTrbCount;      // Number of valid TRBs in the ring including the LINK_TRB
-    size_t      m_enqueuePtr;         // Index in the ring where to enque next TRB
+    size_t      m_enqueuePtr;       // Index in the ring where to enque next TRB
     XhciTrb_t*  m_trbRing;          // Virtual ring base
     uint64_t    m_physicalRingBase; // Physical ring base
     uint8_t     m_rcsBit;           // Ring Cycle State
 };
 
+// For now only 1 segment is going to be used
 class XhciEventRing {
 public:
-    XhciEventRing(size_t maxTrbs);
+    XhciEventRing(size_t maxTrbs, XhciInterrupterRegisters* primaryInterrupterRegisters);
+
+    inline uint64_t getVirtualBase() const { return (uint64_t)m_primarySegmentRing; }
+    inline uint64_t getPhysicalBase() const { return m_primarySegmentPhysicalBase; }
+    inline uint8_t  getCycleBit() const { return m_rcsBit; }
+
+    bool hasUnprocessedEvents();
+    void processEvents();
 
 private:
+    XhciInterrupterRegisters* m_interrupterRegs;
 
+    size_t      m_segmentTrbCount;              // Max TRBs allowed on the segment
+
+    XhciTrb_t*  m_primarySegmentRing;           // Primary segment's ring's virtual address
+    uint64_t    m_primarySegmentPhysicalBase;   // Primary segment's ring's physical address
+
+    const uint64_t m_segmentCount = 1;          // Number of segments to be allocated in the segment table
+    XhciErstEntry* m_segmentTable;              // Segment table's virtual address
+    uint64_t       m_segmentTablePhysicalBase;  // Segment table's physical address
+
+    uint64_t       m_dequeuePtr;                // Event ring dequeue pointer
+    uint8_t        m_rcsBit;                    // Ring cycle state
+
+private:
+    void _updateErdpInterrupterRegister();
+    XhciTrb_t* _dequeueTrb();
 };
 
 class XhciDriver {
@@ -2071,7 +2110,6 @@ private:
     XhciPortRegisterManager _getPortRegisterSet(uint8_t portNum);
 
     void _setupDcbaa();
-    void _setupEventRing();
 
 private:
     void _mapDeviceMmio(uint64_t pciBarAddress);
@@ -2120,7 +2158,8 @@ private:
     // Main command ring
     kstl::SharedPtr<XhciCommandRing> m_commandRing;
 
-    XhciTrb_t* m_masterEventRing;
+    // Main event ring
+    kstl::SharedPtr<XhciEventRing> m_eventRing;
 
     // Doorbell register array manager
     kstl::SharedPtr<XhciDoorbellManager> m_doorbellManager;
