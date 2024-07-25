@@ -1395,6 +1395,26 @@ typedef struct XhciCommandCompletionRequestBlock {
 
 static_assert(sizeof(XhciCompletionTrb_t) == sizeof(uint32_t) * 4);
 
+typedef struct XhciPortStatusChangeRequestBlock {
+    struct {
+        uint32_t rsvd0  : 24;
+        uint32_t portId : 8;
+    };
+    uint32_t rsvd1;
+    struct {
+        uint32_t rsvd2          : 24;
+        uint32_t completionCode : 8;
+    };
+    struct {
+        uint32_t cycleBit  : 1;
+        uint32_t rsvd3     : 9;
+        uint32_t trbType   : 6;
+        uint32_t rsvd4     : 16;
+    };
+} XhciPortStatusChangeTrb_t;
+
+static_assert(sizeof(XhciPortStatusChangeTrb_t) == sizeof(uint32_t) * 4);
+
 /*
 // xHci Spec Section 6.5 Event Ring Segment Table Figure 6-40: Event Ring Segment Table Entry
 
@@ -1653,29 +1673,86 @@ Capability operation.
 struct XhciPortscRegister {
     union {
         struct {
+            // Current connect status (RO), if PP is 0, this bit is also 0
             uint32_t    ccs         : 1;
+
+            // Port Enable/Disable (R/WC), if PP is 0, this bit is also 0
             uint32_t    ped         : 1;
-            uint32_t    tm          : 1;
+
+            // Reserved and zeroed
+            uint32_t    rsvd0       : 1;
+            
+            // Over-current active (RO)
             uint32_t    oca         : 1;
+
+            // Port reset (R/W), if PP is 0, this bit is also 0
             uint32_t    pr          : 1;
+
+            // Port link state (R/W), if PP is 0, this bit is also 0
             uint32_t    pls         : 4;
+
+            // Port power (R/W)
             uint32_t    pp          : 1;
+
+            // Port speed (RO)
             uint32_t    portSpeed   : 4;
+
+            // Port indicator control (R/W), if PP is 0, this bit is also 0
             uint32_t    pic         : 2;
+
+            // Port link state write strobe (R/W), if PP is 0, this bit is also 0
             uint32_t    lws         : 1;
+
+            // Connect status change (R/WC), if PP is 0, this bit is also 0.
+            // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
             uint32_t    csc         : 1;
+
+            // Port enable/disable change (R/WC), if PP is 0, this bit is also 0.
+            // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
             uint32_t    pec         : 1;
+
+            // Warm port reset change (R/WC), if PP is 0, this bit is also 0.
+            // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
+            // ** Reserved and zeroed on USB2 ports.
             uint32_t    wrc         : 1;
+
+            // Over-current change (R/WC), if PP is 0, this bit is also 0.
+            // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
             uint32_t    occ         : 1;
+
+            // Port reset change (R/WC), if PP is 0, this bit is also 0.
+            // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
             uint32_t    prc         : 1;
+
+            // Port link state change (R/WC), if PP is 0, this bit is also 0.
+            // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
             uint32_t    plc         : 1;
+
+            // Port config error change (R/WC), if PP is 0, this bit is also 0.
+            // ** When transitioning from 0 to a 1, will trigger a Port Status Change Event.
+            // ** Reserved and zeroed on USB2 ports.
             uint32_t    cec         : 1;
+
+            // Cold attach status (R/O), if PP is 0, this bit is also 0.
             uint32_t    cas         : 1;
+
+            // Wake on connect enable (R/W)
             uint32_t    wce         : 1;
+
+            // Wake on disconnect enable (R/W)
             uint32_t    wde         : 1;
+
+            // Wake on over-current enable (R/W)
             uint32_t    woe         : 1;
-            uint32_t    rsvd        : 2;
+
+            // Reserved and zeroed
+            uint32_t    rsvd1        : 2;
+
+            // Device removable (RO)
             uint32_t    dr          : 1;
+
+            // Warm port reset (R/WC).
+            // ** Reserved and zeroed on USB2 ports.
             uint32_t    wpr         : 1;
         } __attribute__((packed));
 
@@ -1971,6 +2048,10 @@ the Event Ring registers and their initialization.
         Run/Stop (R/S) bit to ‘1’. This operation allows the xHC to begin accepting
         doorbell references.
 */
+
+// Forward declaration
+class XhciDriver;
+
 class XhciExtendedCapability {
 public:
     XhciExtendedCapability(volatile uint32_t* capPtr);
@@ -2077,7 +2158,7 @@ public:
     inline uint8_t  getCycleBit() const { return m_rcsBit; }
 
     bool hasUnprocessedEvents();
-    void processEvents();
+    void processEvents(XhciDriver* driver, void (XhciDriver::*func)(XhciTrb_t*));
 
 private:
     XhciInterrupterRegisters* m_interrupterRegs;
@@ -2141,6 +2222,8 @@ private:
     bool _resetPort(uint8_t portNum);
 
     void _markXhciInterruptCompleted(uint8_t interrupter);
+
+    void _processEventRingTrb(XhciTrb_t* trb);
 
 private:
     // CAPLENGTH

@@ -253,31 +253,14 @@ namespace drivers {
         return (m_primarySegmentRing[m_dequeuePtr].cycleBit == m_rcsBit);
     }
 
-    void XhciEventRing::processEvents() {
+    void XhciEventRing::processEvents(XhciDriver* driver, void (XhciDriver::*func)(XhciTrb_t*)) {
         // Process each event TRB
         while (hasUnprocessedEvents()) {
-            int slot = (int)m_dequeuePtr;
             auto eventTrb = _dequeueTrb();
             if (!eventTrb) break;
 
-            if (eventTrb->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-                auto completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(eventTrb);
-                XhciTrb_t* commandTrb = (XhciTrb_t*)__va((void*)completionTrb->commandTrbPointer);
-
-                if (commandTrb->trbType == XHCI_TRB_TYPE_ENABLE_SLOT_CMD) {
-                    kprintInfo("Found Completion TRB at slot %i: 'Enable Slot Command'\n", slot);
-                } else if (commandTrb->trbType == XHCI_TRB_TYPE_NOOP_CMD) {
-                    kprintInfo("Found Completion TRB at slot %i: 'No-Op Command'\n", slot);
-                } else if (commandTrb->trbType == XHCI_TRB_TYPE_RESET_ENDPOINT_CMD) {
-                    kprintInfo("Found Completion TRB at slot %i: 'Reset Endpoint Command'\n", slot);
-                } else {
-                    kprintInfo("Found Completion TRB at slot %i: %i\n", slot, commandTrb->trbType);
-                }
-            } else if (eventTrb->trbType == XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT) {
-                kprintInfo("Found Port Status Change Event TRB at slot %i\n", slot);
-            } else if (eventTrb->trbType == XHCI_TRB_TYPE_HOST_CONTROLLER_EVENT) {
-                kprintInfo("Found Host Controller Event TRB at slot %i\n", slot);
-            }
+            // Call the driver's callback function
+            (driver->*func)(eventTrb);
         }
 
         // Update the ERDP register
@@ -343,35 +326,9 @@ namespace drivers {
         }
         kprint("\n");
 
-        _logUsbsts();
-
         if (m_eventRing->hasUnprocessedEvents()) {
-            m_eventRing->processEvents();
+            m_eventRing->processEvents(this, &XhciDriver::_processEventRingTrb);
             _markXhciInterruptCompleted(0);
-        }
-
-        _logUsbsts();
-        kprint("\n");
-
-        for (uint8_t i = 0; i < m_maxPorts; i++) {
-            XhciPortRegisterManager regset = _getPortRegisterSet(i);
-            XhciPortscRegister portsc;
-            regset.readPortscReg(portsc);
-
-            bool isUsb3Port = _isUSB3Port(i);
-
-            if (portsc.ccs) {
-                kprint("%s device connected on port %i with speed ", isUsb3Port ? "USB3" : "USB2", i);
-
-                switch (portsc.portSpeed) {
-                case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
-                case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
-                case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
-                case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
-                case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
-                default: kprint("Undefined\n"); break;
-                }
-            }
         }
 
         kprint("\n");
@@ -736,5 +693,45 @@ namespace drivers {
 
         // Clear the interrupt pending bit in USBSTS
         m_opRegs->usbsts |= ~XHCI_USBSTS_EINT;
+    }
+
+    void XhciDriver::_processEventRingTrb(XhciTrb_t* trb) {
+        if (trb->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
+            // auto completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(trb);
+            // XhciTrb_t* commandTrb = (XhciTrb_t*)__va((void*)completionTrb->commandTrbPointer);
+
+            // if (commandTrb->trbType == XHCI_TRB_TYPE_ENABLE_SLOT_CMD) {
+            //     kprintInfo("Found Completion TRB: 'Enable Slot Command'\n");
+            // } else if (commandTrb->trbType == XHCI_TRB_TYPE_NOOP_CMD) {
+            //     kprintInfo("Found Completion TRB: 'No-Op Command'\n");
+            // } else if (commandTrb->trbType == XHCI_TRB_TYPE_RESET_ENDPOINT_CMD) {
+            //     kprintInfo("Found Completion TRB: 'Reset Endpoint Command'\n");
+            // } else {
+            //     kprintInfo("Found Completion TRB: %i\n", commandTrb->trbType);
+            // }
+        } else if (trb->trbType == XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT) {
+            auto pscTrb = reinterpret_cast<XhciPortStatusChangeTrb_t*>(trb);
+            uint8_t port = pscTrb->portId - 1; // TRB's portId index is 1-based
+
+            auto portRegisterSet = _getPortRegisterSet(port);
+            XhciPortscRegister portsc;
+            portRegisterSet.readPortscReg(portsc);
+
+            if (portsc.ccs) {
+                kprint("%s device connected on port %i with speed ", _isUSB3Port(port) ? "USB3" : "USB2", port);
+
+                switch (portsc.portSpeed) {
+                case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
+                case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
+                case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
+                case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
+                case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
+                default: kprint("Undefined\n"); break;
+                }
+            }
+
+        } else if (trb->trbType == XHCI_TRB_TYPE_HOST_CONTROLLER_EVENT) {
+            // kprintInfo("Found Host Controller Event TRB\n");
+        }
     }
 } // namespace drivers
