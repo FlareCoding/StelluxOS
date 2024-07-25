@@ -61,6 +61,73 @@ namespace drivers {
         return "Vendor Specific";
     }
 
+    const char* trbCompletionCodeToString(uint8_t completionCode) {
+        switch (completionCode) {
+        case XHCI_TRB_COMPLETION_CODE_INVALID:
+            return "INVALID";
+        case XHCI_TRB_COMPLETION_CODE_SUCCESS:
+            return "SUCCESS";
+        case XHCI_TRB_COMPLETION_CODE_DATA_BUFFER_ERROR:
+            return "DATA_BUFFER_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR:
+            return "BABBLE_DETECTED_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR:
+            return "USB_TRANSACTION_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_TRB_ERROR:
+            return "TRB_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_STALL_ERROR:
+            return "STALL_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_RESOURCE_ERROR:
+            return "RESOURCE_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_BANDWIDTH_ERROR:
+            return "BANDWIDTH_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_NO_SLOTS_AVAILABLE:
+            return "NO_SLOTS_AVAILABLE";
+        case XHCI_TRB_COMPLETION_CODE_INVALID_STREAM_TYPE:
+            return "INVALID_STREAM_TYPE";
+        case XHCI_TRB_COMPLETION_CODE_SLOT_NOT_ENABLED:
+            return "SLOT_NOT_ENABLED";
+        case XHCI_TRB_COMPLETION_CODE_ENDPOINT_NOT_ENABLED:
+            return "ENDPOINT_NOT_ENABLED";
+        case XHCI_TRB_COMPLETION_CODE_SHORT_PACKET:
+            return "SHORT_PACKET";
+        case XHCI_TRB_COMPLETION_CODE_RING_UNDERRUN:
+            return "RING_UNDERRUN";
+        case XHCI_TRB_COMPLETION_CODE_RING_OVERRUN:
+            return "RING_OVERRUN";
+        case XHCI_TRB_COMPLETION_CODE_VF_EVENT_RING_FULL:
+            return "VF_EVENT_RING_FULL";
+        case XHCI_TRB_COMPLETION_CODE_PARAMETER_ERROR:
+            return "PARAMETER_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_BANDWIDTH_OVERRUN:
+            return "BANDWIDTH_OVERRUN";
+        case XHCI_TRB_COMPLETION_CODE_CONTEXT_STATE_ERROR:
+            return "CONTEXT_STATE_ERROR";
+        case XHCI_TRB_COMPLETION_CODE_NO_PING_RESPONSE:
+            return "NO_PING_RESPONSE";
+        case XHCI_TRB_COMPLETION_CODE_EVENT_RING_FULL:
+            return "EVENT_RING_FULL";
+        case XHCI_TRB_COMPLETION_CODE_INCOMPATIBLE_DEVICE:
+            return "INCOMPATIBLE_DEVICE";
+        case XHCI_TRB_COMPLETION_CODE_MISSED_SERVICE:
+            return "MISSED_SERVICE";
+        case XHCI_TRB_COMPLETION_CODE_COMMAND_RING_STOPPED:
+            return "COMMAND_RING_STOPPED";
+        case XHCI_TRB_COMPLETION_CODE_COMMAND_ABORTED:
+            return "COMMAND_ABORTED";
+        case XHCI_TRB_COMPLETION_CODE_STOPPED:
+            return "STOPPED";
+        case XHCI_TRB_COMPLETION_CODE_STOPPED_LENGTH_INVALID:
+            return "STOPPED_LENGTH_INVALID";
+        case XHCI_TRB_COMPLETION_CODE_STOPPED_SHORT_PACKET:
+            return "STOPPED_SHORT_PACKET";
+        case XHCI_TRB_COMPLETION_CODE_MAX_EXIT_LATENCY_ERROR:
+            return "MAX_EXIT_LATENCY_ERROR";
+        default:
+            return "UNKNOWN_COMPLETION_CODE";
+        }
+    }
+
     XhciExtendedCapability::XhciExtendedCapability(volatile uint32_t* capPtr)
     : m_base(capPtr) {
         m_entry.raw = *m_base;
@@ -163,7 +230,7 @@ namespace drivers {
         m_rcsBit = XHCI_CRCR_RING_CYCLE_STATE;
         m_enqueuePtr = 0;
 
-        const uint64_t ringSize = XHCI_COMMAND_RING_TRB_COUNT * sizeof(XhciTrb_t);
+        const uint64_t ringSize = maxTrbs * sizeof(XhciTrb_t);
 
         // Create the command ring memory block
         m_trbRing = (XhciTrb_t*)_allocXhciMemory(
@@ -302,6 +369,32 @@ namespace drivers {
         }
 
         return ret;
+    }
+
+    XhciTransferRing::XhciTransferRing(size_t maxTrbs) {
+        m_maxTrbCount = maxTrbs;
+        m_dcsBit = 1;
+        m_dequeuePtr = 0;
+        m_enqueuePtr = 0;
+
+        const uint64_t ringSize = maxTrbs * sizeof(XhciTrb_t);
+
+        // Create the transfer ring memory block
+        m_trbRing = (XhciTrb_t*)_allocXhciMemory(
+            ringSize,
+            XHCI_TRANSFER_RING_SEGMENTS_ALIGNMENT,
+            XHCI_TRANSFER_RING_SEGMENTS_BOUNDARY
+        );
+
+        // Zero out the memory by default
+        zeromem(m_trbRing, ringSize);
+
+        // Get the physical mapping
+        m_physicalRingBase = (uint64_t)__pa(m_trbRing);
+
+        // Set the last TRB as a link TRB to point back to the first TRB
+        m_trbRing[255].parameter = m_physicalRingBase;
+        m_trbRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | m_dcsBit;
     }
 
     XhciDriver& XhciDriver::get() {
@@ -733,6 +826,7 @@ namespace drivers {
         // Let the host controller process the command
         msleep(commandDelay);
         
+        // Poll the event ring for the command completion event
         kstl::vector<XhciTrb_t*> events;
         if (m_eventRing->hasUnprocessedEvents()) {
             m_eventRing->dequeueEvents(events);
@@ -808,6 +902,11 @@ namespace drivers {
         default: maxPacketSize = 8; break;
         }
 
+        // Create a transfer ring
+        kstl::SharedPtr<XhciTransferRing> transferRing = kstl::SharedPtr<XhciTransferRing>(
+            new XhciTransferRing(XHCI_TRANSFER_RING_TRB_COUNT)
+        );
+
         // Set the appropriate fields in the Slot Context
         if (m_64ByteContextSize) {
             // Configure the input context
@@ -832,6 +931,7 @@ namespace drivers {
             context->endpointContext[0].ctx32.cErr = 3;
             context->endpointContext[0].ctx32.maxPacketSize = maxPacketSize;
             context->endpointContext[0].ctx32.avgTrbLength = 8;
+            context->endpointContext[0].ctx32.trDequeuePointer = transferRing->getPhysicalBase() | transferRing->getCycleBit();
         } else {
             // Configure the input context
             XhciInputControlContext32* inputContext = (XhciInputControlContext32*)inputControlCtx;
@@ -855,7 +955,48 @@ namespace drivers {
             context->endpointContext[0].cErr = 3;
             context->endpointContext[0].maxPacketSize = maxPacketSize;
             context->endpointContext[0].avgTrbLength = 8;
+            context->endpointContext[0].trDequeuePointer = transferRing->getPhysicalBase() | transferRing->getCycleBit();
         }
+
+        // Now we can finally use the SET_ADDRESS command to
+        // let the host controller initialize the device context.
+        XhciTrb_t setAddressCmdTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD);
+        m_commandRing->enqueue(setAddressCmdTrb);
+
+        // Ring the command doorbell
+        m_doorbellManager->ringCommandDoorbell();
+
+        // Small delay period between ringing the
+        // doorbell and polling the event ring.
+        msleep(10);
+
+        // Poll the event ring for the command completion event
+        kstl::vector<XhciTrb_t*> events;
+        if (m_eventRing->hasUnprocessedEvents()) {
+            m_eventRing->dequeueEvents(events);
+            _markXhciInterruptCompleted(0);
+        }
+
+        XhciCompletionTrb_t* completionTrb = nullptr;
+        for (size_t i = 0; i < events.size(); ++i) {
+            if (events[i]->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
+                completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(events[i]);
+                break;   
+            }
+        }
+
+        if (!completionTrb) {
+            kprintError("[*] Host controller didn't receive SET_ADDRESS command to initialize the device context!\n");
+            return;
+        }
+
+        if (completionTrb->completionCode != 1) {
+            kprintError("[*] Host controller failed to process SET_ADDRESS command to initialize the device context!\n");
+            kprintError("        Completion Code: %s\n", trbCompletionCodeToString(completionTrb->completionCode));
+            return;
+        }
+
+        kprintInfo("[*] Check your DCBAA for correctness :) good job!\n");
     }
 
     void XhciDriver::_markXhciInterruptCompleted(uint8_t interrupter) {
