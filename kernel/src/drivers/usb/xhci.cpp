@@ -76,67 +76,67 @@ namespace drivers {
         }
     }
 
-    void XhciPortRegisterSet::readPortscReg(XhciPortscRegister& reg) const {
+    void XhciPortRegisterManager::readPortscReg(XhciPortscRegister& reg) const {
         uint64_t portscAddress = m_base + m_portscOffset;
         reg.raw = *reinterpret_cast<volatile uint32_t*>(portscAddress);
     }
 
-    void XhciPortRegisterSet::writePortscReg(XhciPortscRegister& reg) const {
+    void XhciPortRegisterManager::writePortscReg(XhciPortscRegister& reg) const {
         uint64_t portscAddress = m_base + m_portscOffset;
         *reinterpret_cast<volatile uint32_t*>(portscAddress) = reg.raw;
     }
 
-    void XhciPortRegisterSet::readPortpmscRegUsb2(XhciPortpmscRegisterUsb2& reg) const {
+    void XhciPortRegisterManager::readPortpmscRegUsb2(XhciPortpmscRegisterUsb2& reg) const {
         uint64_t portpmscAddress = m_base + m_portpmscOffset;
         reg.raw = *reinterpret_cast<volatile uint32_t*>(portpmscAddress);
     }
 
-    void XhciPortRegisterSet::writePortpmscRegUsb2(XhciPortpmscRegisterUsb2& reg) const {
+    void XhciPortRegisterManager::writePortpmscRegUsb2(XhciPortpmscRegisterUsb2& reg) const {
         uint64_t portpmscAddress = m_base + m_portpmscOffset;
         *reinterpret_cast<volatile uint32_t*>(portpmscAddress) = reg.raw;
     }
 
-    void XhciPortRegisterSet::readPortpmscRegUsb3(XhciPortpmscRegisterUsb3& reg) const {
+    void XhciPortRegisterManager::readPortpmscRegUsb3(XhciPortpmscRegisterUsb3& reg) const {
         uint64_t portpmscAddress = m_base + m_portpmscOffset;
         reg.raw = *reinterpret_cast<volatile uint32_t*>(portpmscAddress);
     }
 
-    void XhciPortRegisterSet::writePortpmscRegUsb3(XhciPortpmscRegisterUsb3& reg) const {
+    void XhciPortRegisterManager::writePortpmscRegUsb3(XhciPortpmscRegisterUsb3& reg) const {
         uint64_t portpmscAddress = m_base + m_portpmscOffset;
         *reinterpret_cast<volatile uint32_t*>(portpmscAddress) = reg.raw;
     }
 
-    void XhciPortRegisterSet::readPortliReg(XhciPortliRegister& reg) const {
+    void XhciPortRegisterManager::readPortliReg(XhciPortliRegister& reg) const {
         uint64_t portliAddress = m_base + m_portliOffset;
         reg.raw = *reinterpret_cast<volatile uint32_t*>(portliAddress);
     }
 
-    void XhciPortRegisterSet::writePortliReg(XhciPortliRegister& reg) const {
+    void XhciPortRegisterManager::writePortliReg(XhciPortliRegister& reg) const {
         uint64_t portliAddress = m_base + m_portliOffset;
         *reinterpret_cast<volatile uint32_t*>(portliAddress) = reg.raw;
     }
 
-    void XhciPortRegisterSet::readPorthlpmcRegUsb2(XhciPorthlpmcRegisterUsb2& reg) const {
+    void XhciPortRegisterManager::readPorthlpmcRegUsb2(XhciPorthlpmcRegisterUsb2& reg) const {
         uint64_t porthlpmAddress = m_base + m_porthlpmcOffset;
         reg.raw = *reinterpret_cast<volatile uint32_t*>(porthlpmAddress);
     }
 
-    void XhciPortRegisterSet::writePorthlpmcRegUsb2(XhciPorthlpmcRegisterUsb2& reg) const {
+    void XhciPortRegisterManager::writePorthlpmcRegUsb2(XhciPorthlpmcRegisterUsb2& reg) const {
         uint64_t porthlpmAddress = m_base + m_porthlpmcOffset;
         *reinterpret_cast<volatile uint32_t*>(porthlpmAddress) = reg.raw;
     }
 
-    void XhciPortRegisterSet::readPorthlpmcRegUsb3(XhciPorthlpmcRegisterUsb3& reg) const {
+    void XhciPortRegisterManager::readPorthlpmcRegUsb3(XhciPorthlpmcRegisterUsb3& reg) const {
         uint64_t porthlpmAddress = m_base + m_porthlpmcOffset;
         reg.raw = *reinterpret_cast<volatile uint32_t*>(porthlpmAddress);
     }
 
-    void XhciPortRegisterSet::writePorthlpmcRegUsb3(XhciPorthlpmcRegisterUsb3& reg) const {
+    void XhciPortRegisterManager::writePorthlpmcRegUsb3(XhciPorthlpmcRegisterUsb3& reg) const {
         uint64_t porthlpmAddress = m_base + m_porthlpmcOffset;
         *reinterpret_cast<volatile uint32_t*>(porthlpmAddress) = reg.raw;
     }
 
-    XhciInterrupterRegisters* XhciRuntimeRegisterSet::getInterrupterRegisters(uint8_t interrupter) const {
+    XhciInterrupterRegisters* XhciRuntimeRegisterManager::getInterrupterRegisters(uint8_t interrupter) const {
         if (interrupter > m_maxInterrupters) {
             return nullptr;
         }
@@ -183,6 +183,20 @@ namespace drivers {
         }
     }
 
+    XhciDoorbellManager::XhciDoorbellManager(uint64_t base) {
+        m_doorbellRegisters = reinterpret_cast<XhciDoorbellRegister*>(base);
+    }
+
+    void XhciDoorbellManager::ringDoorbell(uint8_t target) {
+        // *Note* Write _0_ to send the command
+        m_doorbellRegisters[target].raw = 0;
+    }
+
+    void XhciDoorbellManager::ringCommandDoorbell() {
+        uint8_t target = XHCI_DOORBELL_TARGET_COMMAND_RING;
+        ringDoorbell(target);
+    }
+
     XhciDriver& XhciDriver::get() {
         return g_globalXhciInstance;
     }
@@ -217,35 +231,54 @@ namespace drivers {
         m_commandRing->enqueTrb(noOpTrb);
 
         // Ring the doorbell for slot 0 (command ring)
-        uint64_t doorbellArrayBase = m_xhcBase + m_capRegs->dboff;
-        volatile uint32_t* db1 = (volatile uint32_t*)doorbellArrayBase;
-        *db1 = 0;
+        m_doorbellManager->ringCommandDoorbell();
 
         kuPrint("[XHCI] Sent a test TRB\n");
 
         _logOperationalRegisters();
         _logUsbsts();
 
-        msleep(10);
-        for (size_t i = 0; i < XHCI_EVENT_RING_TRB_COUNT; i++) {
-            auto trb = m_masterEventRing[i];
-            
-            if (trb.trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-                auto completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(&trb);
-                XhciTrb_t* commandTrb = (XhciTrb_t*)__va((void*)completionTrb->commandTrbPointer);
+        const auto pollEventRing = [this]() {
+            msleep(10);
+            for (size_t i = 0; i < XHCI_EVENT_RING_TRB_COUNT; i++) {
+                auto trb = m_masterEventRing[i];
+                
+                if (trb.trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
+                    auto completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(&trb);
+                    XhciTrb_t* commandTrb = (XhciTrb_t*)__va((void*)completionTrb->commandTrbPointer);
 
-                if (commandTrb->trbType == XHCI_TRB_TYPE_ENABLE_SLOT_CMD) {
-                    kprintInfo("Found Completion TRB at slot %i: 'Enable Slot Command'\n", i);
-                } else if (commandTrb->trbType == XHCI_TRB_TYPE_NOOP_CMD) {
-                    kprintInfo("Found Completion TRB at slot %i: 'No-Op Command'\n", i);
-                } else {
-                    kprintInfo("Found Completion TRB at slot %i: %i\n", i, commandTrb->trbType);
+                    if (commandTrb->trbType == XHCI_TRB_TYPE_ENABLE_SLOT_CMD) {
+                        kprintInfo("Found Completion TRB at slot %i: 'Enable Slot Command'\n", i);
+                    } else if (commandTrb->trbType == XHCI_TRB_TYPE_NOOP_CMD) {
+                        kprintInfo("Found Completion TRB at slot %i: 'No-Op Command'\n", i);
+                    } else if (commandTrb->trbType == XHCI_TRB_TYPE_RESET_ENDPOINT_CMD) {
+                        kprintInfo("Found Completion TRB at slot %i: 'Reset Endpoint Command'\n", i);
+                    } else {
+                        kprintInfo("Found Completion TRB at slot %i: %i\n", i, commandTrb->trbType);
+                    }
+                } else if (trb.trbType == XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT) {
+                    kprintInfo("Found Port Status Change Event TRB at slot %i\n", i);
                 }
-            } else if (trb.trbType == XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT) {
-                kprintInfo("Found Port Status Change Event TRB at slot %i\n", i);
             }
-        }
-        kprint("\n");
+            kprint("\n");
+        };
+        pollEventRing();
+
+        auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(0);
+        uint64_t erdpVal = interrupterRegs->erdp;
+        erdpVal += sizeof(XhciTrb_t) * 2;
+        interrupterRegs->erdp = erdpVal;
+
+        XhciTrb_t trb1 = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+        XhciTrb_t trb2 = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_RESET_ENDPOINT_CMD);
+
+        m_commandRing->enqueTrb(trb1);
+        m_commandRing->enqueTrb(trb2);
+
+        m_doorbellManager->ringCommandDoorbell();
+        pollEventRing();
+
+        _logUsbsts();
 
         // Reset the ports
         for (uint8_t i = 0; i < m_maxPorts; i++) {
@@ -260,7 +293,7 @@ namespace drivers {
         msleep(100);
         while (true) {
             for (uint8_t i = 0; i < m_maxPorts; i++) {
-                XhciPortRegisterSet regset = _getPortRegisterSet(i);
+                XhciPortRegisterManager regset = _getPortRegisterSet(i);
                 XhciPortscRegister portsc;
                 regset.readPortscReg(portsc);
 
@@ -314,10 +347,15 @@ namespace drivers {
         // Update the base pointer to operational register set
         m_opRegs = reinterpret_cast<volatile XhciOperationalRegisters*>(m_xhcBase + m_capabilityRegsLength);
 
+        // Construct a manager class instance for the doorbell register array
+        m_doorbellManager = kstl::SharedPtr<XhciDoorbellManager>(
+            new XhciDoorbellManager(m_xhcBase + m_capRegs->dboff)
+        );
+
         // Construct a controller class instance for the runtime register set
         uint64_t runtimeRegisterBase = m_xhcBase + m_capRegs->rtsoff;
-        m_runtimeRegisterSet = kstl::SharedPtr<XhciRuntimeRegisterSet>(
-            new XhciRuntimeRegisterSet(runtimeRegisterBase, m_maxInterrupters)
+        m_runtimeRegisterManager = kstl::SharedPtr<XhciRuntimeRegisterManager>(
+            new XhciRuntimeRegisterManager(runtimeRegisterBase, m_maxInterrupters)
         );
     }
 
@@ -429,9 +467,9 @@ namespace drivers {
         return false;
     }
 
-    XhciPortRegisterSet XhciDriver::_getPortRegisterSet(uint8_t portNum) {
+    XhciPortRegisterManager XhciDriver::_getPortRegisterSet(uint8_t portNum) {
         uint64_t base = reinterpret_cast<uint64_t>(m_opRegs) + (0x400 + (0x10 * portNum));
-        return XhciPortRegisterSet(base);
+        return XhciPortRegisterManager(base);
     }
 
     void XhciDriver::_setupDcbaa() {
@@ -476,7 +514,7 @@ namespace drivers {
     }
 
     void XhciDriver::_setupEventRing() {
-        auto interrupterRegs = m_runtimeRegisterSet->getInterrupterRegisters(0);
+        auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(0);
         if (!interrupterRegs) {
             kprintError("[*] Failed to retrieve interrupter register set when setting up the event ring!");
             return;
@@ -611,7 +649,7 @@ namespace drivers {
     }
 
     bool XhciDriver::_resetPort(uint8_t portNum) {
-        XhciPortRegisterSet regset = _getPortRegisterSet(portNum);
+        XhciPortRegisterManager regset = _getPortRegisterSet(portNum);
         XhciPortscRegister portsc;
         regset.readPortscReg(portsc);
 

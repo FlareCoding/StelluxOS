@@ -1771,7 +1771,7 @@ struct XhciDoorbellRegister {
         struct {
             uint8_t     dbTarget;
             uint8_t     rsvd;
-            uint16_t    dbTaskId;
+            uint16_t    dbStreamId;
         };
 
         // Must be accessed using 32-bit dwords
@@ -1958,9 +1958,9 @@ private:
     void _readNextExtCaps();
 };
 
-class XhciPortRegisterSet {
+class XhciPortRegisterManager {
 public:
-    XhciPortRegisterSet(uint64_t base) : m_base(base) {}
+    XhciPortRegisterManager(uint64_t base) : m_base(base) {}
 
     void readPortscReg(XhciPortscRegister& reg) const;
     void writePortscReg(XhciPortscRegister& reg) const;
@@ -1990,9 +1990,9 @@ private:
     const size_t m_porthlpmcOffset  = 0x0C;
 };
 
-class XhciRuntimeRegisterSet {
+class XhciRuntimeRegisterManager {
 public:
-    XhciRuntimeRegisterSet(uint64_t base, uint8_t maxInterrupters)
+    XhciRuntimeRegisterManager(uint64_t base, uint8_t maxInterrupters)
         : m_base(reinterpret_cast<XhciRuntimeRegisters*>(base)),
           m_maxInterrupters(maxInterrupters) {}
 
@@ -2001,6 +2001,17 @@ public:
 private:
     XhciRuntimeRegisters*   m_base;
     uint8_t                 m_maxInterrupters;
+};
+
+class XhciDoorbellManager {
+public:
+    XhciDoorbellManager(uint64_t base);
+
+    void ringDoorbell(uint8_t target);
+    void ringCommandDoorbell();
+
+private:
+    XhciDoorbellRegister* m_doorbellRegisters;
 };
 
 class XhciCommandRing {
@@ -2049,7 +2060,7 @@ private:
     void _configureRuntimeRegisters();
 
     bool _isUSB3Port(uint8_t portNum);
-    XhciPortRegisterSet _getPortRegisterSet(uint8_t portNum);
+    XhciPortRegisterManager _getPortRegisterSet(uint8_t portNum);
 
     void _setupDcbaa();
     void _setupEventRing();
@@ -2096,12 +2107,15 @@ private:
     kstl::vector<uint8_t> m_usb3Ports;
 
     // Controller class for runtime registers
-    kstl::SharedPtr<XhciRuntimeRegisterSet> m_runtimeRegisterSet;
+    kstl::SharedPtr<XhciRuntimeRegisterManager> m_runtimeRegisterManager;
 
     // Main command ring
     kstl::SharedPtr<XhciCommandRing> m_commandRing;
 
     XhciTrb_t* m_masterEventRing;
+
+    // Doorbell register array manager
+    kstl::SharedPtr<XhciDoorbellManager> m_doorbellManager;
 };
 } // namespace drivers
 
