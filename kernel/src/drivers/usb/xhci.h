@@ -52,6 +52,7 @@ namespace drivers {
 // Configuration Definitions
 #define XHCI_COMMAND_RING_TRB_COUNT     256
 #define XHCI_EVENT_RING_TRB_COUNT       256
+#define XHCI_TRANSFER_RING_TRB_COUNT    256
 
 /*
 // xHci Spec Section 5.4.1 USB Table 5-20: USB Command Register Bit Definitions (USBCMD) (page 358)
@@ -1219,9 +1220,42 @@ Command Abort (CA) flags, or if the R/S bit is cleared to ‘0’
 // (TO-DO: find spec page)
 #define XHCI_COMPLETION_CODE_SHIFT  16
 
-// Success completion code value
-// (TO-DO: find spec page)
-#define XHCI_COMPLETION_CODE_SUCCESS    1
+/*
+// xHci Spec Section 6.4.5 Table 6-90: TRB Completion Code Definitions (page 507)
+
+The following TRB Completion Status codes will be asserted by the Host
+Controller during status update if the associated error condition is detected.
+*/
+#define XHCI_TRB_COMPLETION_CODE_INVALID                0
+#define XHCI_TRB_COMPLETION_CODE_SUCCESS                1
+#define XHCI_TRB_COMPLETION_CODE_DATA_BUFFER_ERROR      2
+#define XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR  3
+#define XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR  4
+#define XHCI_TRB_COMPLETION_CODE_TRB_ERROR              5
+#define XHCI_TRB_COMPLETION_CODE_STALL_ERROR            6
+#define XHCI_TRB_COMPLETION_CODE_RESOURCE_ERROR         7
+#define XHCI_TRB_COMPLETION_CODE_BANDWIDTH_ERROR        8
+#define XHCI_TRB_COMPLETION_CODE_NO_SLOTS_AVAILABLE     9
+#define XHCI_TRB_COMPLETION_CODE_INVALID_STREAM_TYPE    10
+#define XHCI_TRB_COMPLETION_CODE_SLOT_NOT_ENABLED       11
+#define XHCI_TRB_COMPLETION_CODE_ENDPOINT_NOT_ENABLED   12
+#define XHCI_TRB_COMPLETION_CODE_SHORT_PACKET           13
+#define XHCI_TRB_COMPLETION_CODE_RING_UNDERRUN          14
+#define XHCI_TRB_COMPLETION_CODE_RING_OVERRUN           15
+#define XHCI_TRB_COMPLETION_CODE_VF_EVENT_RING_FULL     16
+#define XHCI_TRB_COMPLETION_CODE_PARAMETER_ERROR        17
+#define XHCI_TRB_COMPLETION_CODE_BANDWIDTH_OVERRUN      18
+#define XHCI_TRB_COMPLETION_CODE_CONTEXT_STATE_ERROR    19
+#define XHCI_TRB_COMPLETION_CODE_NO_PING_RESPONSE       20
+#define XHCI_TRB_COMPLETION_CODE_EVENT_RING_FULL        21
+#define XHCI_TRB_COMPLETION_CODE_INCOMPATIBLE_DEVICE    22
+#define XHCI_TRB_COMPLETION_CODE_MISSED_SERVICE         23
+#define XHCI_TRB_COMPLETION_CODE_COMMAND_RING_STOPPED   24
+#define XHCI_TRB_COMPLETION_CODE_COMMAND_ABORTED        25
+#define XHCI_TRB_COMPLETION_CODE_STOPPED                26
+#define XHCI_TRB_COMPLETION_CODE_STOPPED_LENGTH_INVALID 27
+#define XHCI_TRB_COMPLETION_CODE_STOPPED_SHORT_PACKET   28
+#define XHCI_TRB_COMPLETION_CODE_MAX_EXIT_LATENCY_ERROR 29
 
 // Helper macro to easily construct TRB command objects
 #define XHCI_CONSTRUCT_CMD_TRB(type) XhciTrb_t { .parameter = 0, .status = 0, .control = type << XHCI_TRB_TYPE_SHIFT }
@@ -2392,10 +2426,10 @@ public:
 
 private:
     size_t      m_maxTrbCount;      // Number of valid TRBs in the ring including the LINK_TRB
-    size_t      m_enqueuePtr;       // Index in the ring where to enque next TRB
+    size_t      m_enqueuePtr;       // Index in the ring where to enqueue next TRB
     XhciTrb_t*  m_trbRing;          // Virtual ring base
     uint64_t    m_physicalRingBase; // Physical ring base
-    uint8_t     m_rcsBit;           // Ring Cycle State
+    uint8_t     m_rcsBit;           // Ring cycle state
 };
 
 // For now only 1 segment is going to be used
@@ -2430,6 +2464,23 @@ private:
 private:
     void _updateErdpInterrupterRegister();
     XhciTrb_t* _dequeueTrb();
+};
+
+class XhciTransferRing {
+public:
+    XhciTransferRing(size_t maxTrbs);
+
+    inline uint64_t getVirtualBase() const { return (uint64_t)m_trbRing; }
+    inline uint64_t getPhysicalBase() const { return m_physicalRingBase; }
+    inline uint8_t  getCycleBit() const { return m_dcsBit; }
+
+private:
+    size_t      m_maxTrbCount;          // Number of valid TRBs in the ring including the LINK_TRB
+    size_t      m_dequeuePtr;           // Transfer ring consumer dequeue pointer
+    size_t      m_enqueuePtr;           // Transfer ring producer enqueue pointer
+    XhciTrb_t*  m_trbRing;              // Virtual ring base
+    uint64_t    m_physicalRingBase;     // Physical ring base
+    uint8_t     m_dcsBit;               // Dequeue cycle state
 };
 
 class XhciDriver {
