@@ -1519,7 +1519,7 @@ field in the HCCPARAMS1 register = ‘0’. If the Context Size (CSZ) field = �
 then each Slot Context data structure consumes 64 bytes, where bytes 32 to
 63 are also xHCI Reserved (RsvdO).
 */
-struct XhciSlotContext {
+struct XhciSlotContext32 {
     uint32_t    routeString         : 20;   // Offset 00h
     uint32_t    speed               : 4;
     uint32_t    rsvd0               : 1;
@@ -1541,6 +1541,12 @@ struct XhciSlotContext {
     uint32_t    rsvd4;
     uint32_t    rsvd5;
     uint32_t    rsvd6;
+};
+static_assert(sizeof(XhciSlotContext32) == 32);
+
+struct XhciSlotContext64 {
+    // Default 32-byte context fields
+    XhciSlotContext32 ctx32;
 
     // Extra reserved padding for 64-byte struct size
     uint64_t    rsvd64b0;
@@ -1548,7 +1554,7 @@ struct XhciSlotContext {
     uint64_t    rsvd64b2;
     uint64_t    rsvd64b3;
 } __attribute__((packed));
-static_assert(sizeof(XhciSlotContext) == 64);
+static_assert(sizeof(XhciSlotContext64) == 64);
 
 /*
 // xHci Spec Section 6.2.3 Figure 6-3: Endpoint Context Data Structure (page 412)
@@ -1570,7 +1576,7 @@ Note: Figure 6-3 illustrates a 32 byte Endpoint Context. That is, the Context Si
 = ‘1’ then each Endpoint Context data structure consumes 64 bytes, where
 bytes 32 to 63 are xHCI Reserved (RsvdO).
 */
-struct XhciEndpointContext {
+struct XhciEndpointContext32 {
     uint32_t    epState             : 3;    // Offset 00h
     uint32_t    rsvd0               : 5;
     uint32_t    mult                : 2;
@@ -1594,6 +1600,12 @@ struct XhciEndpointContext {
     uint32_t    rsvd4;
     uint32_t    rsvd5;
     uint32_t    rsvd6;
+};
+static_assert(sizeof(XhciEndpointContext32) == 32);
+
+struct XhciEndpointContext64 {
+    // Default 32-byte context fields
+    XhciEndpointContext32 ctx32;
 
     // Extra reserved padding for 64-byte struct size
     uint64_t    rsvd64b0;
@@ -1601,7 +1613,7 @@ struct XhciEndpointContext {
     uint64_t    rsvd64b2;
     uint64_t    rsvd64b3;
 } __attribute__((packed));
-static_assert(sizeof(XhciEndpointContext) == 64);
+static_assert(sizeof(XhciEndpointContext64) == 64);
 
 /*
 // xHci Spec Section 6.2.1 Device Context (page 406)
@@ -1627,11 +1639,134 @@ All unused entries of the Device Context shall be initialized to ‘0’ by soft
     state. Software shall initialize the Output Device Context to 0 prior to the
     execution of the first Address Device Command.
 */
-struct XhciDeviceContext {
-    XhciSlotContext slotContext;
-    XhciEndpointContext endpointContext[31];
+struct XhciDeviceContext32 {
+    XhciSlotContext32 slotContext;
+    XhciEndpointContext32 endpointContext[31];
 };
-static_assert(sizeof(XhciDeviceContext) == 2048); // Max 256 context entries == 2 KB
+static_assert(sizeof(XhciDeviceContext32) == 1024); // Max 256 context entries == 1 KB
+
+struct XhciDeviceContext64 {
+    XhciSlotContext64 slotContext;
+    XhciEndpointContext64 endpointContext[31];
+};
+static_assert(sizeof(XhciDeviceContext64) == 2048); // Max 256 context entries == 2 KB
+
+/*
+// xHci Sped Section 6.2.5.1 Figure 6-6: Input Control Context (page 461)
+
+The Input Control Context data structure defines which Device Context data
+structures are affected by a command and the operations to be performed on
+those contexts
+*/
+struct XhciInputControlContext32 {
+    // DWORD 0
+    union {
+        struct {
+            uint32_t rsvd0             : 2;
+            uint32_t disableEp1Out     : 1;
+            uint32_t disableEp1In      : 1;
+            uint32_t disableEp2Out     : 1;
+            uint32_t disableEp2In      : 1;
+            uint32_t disableEp3Out     : 1;
+            uint32_t disableEp3In      : 1;
+            uint32_t disableEp4Out     : 1;
+            uint32_t disableEp4In      : 1;
+            uint32_t disableEp5Out     : 1;
+            uint32_t disableEp5In      : 1;
+            uint32_t disableEp6Out     : 1;
+            uint32_t disableEp6In      : 1;
+            uint32_t disableEp7Out     : 1;
+            uint32_t disableEp7In      : 1;
+            uint32_t disableEp8Out     : 1;
+            uint32_t disableEp8In      : 1;
+            uint32_t disableEp9Out     : 1;
+            uint32_t disableEp9In      : 1;
+            uint32_t disableEp10Out    : 1;
+            uint32_t disableEp10In     : 1;
+            uint32_t disableEp11Out    : 1;
+            uint32_t disableEp11In     : 1;
+            uint32_t disableEp12Out    : 1;
+            uint32_t disableEp12In     : 1;
+            uint32_t disableEp13Out    : 1;
+            uint32_t disableEp13In     : 1;
+            uint32_t disableEp14Out    : 1;
+            uint32_t disableEp14In     : 1;
+            uint32_t disableEp15Out    : 1;
+            uint32_t disableEp15In     : 1;
+        };
+        uint32_t dword0;
+    };
+
+    // DWORD 1
+    union {
+        struct {
+            uint32_t enableSlotCtx    : 1;
+            uint32_t enableControlCtx : 1;
+            uint32_t enableEp1Out     : 1;
+            uint32_t enableEp1In      : 1;
+            uint32_t enableEp2Out     : 1;
+            uint32_t enableEp2In      : 1;
+            uint32_t enableEp3Out     : 1;
+            uint32_t enableEp3In      : 1;
+            uint32_t enableEp4Out     : 1;
+            uint32_t enableEp4In      : 1;
+            uint32_t enableEp5Out     : 1;
+            uint32_t enableEp5In      : 1;
+            uint32_t enableEp6Out     : 1;
+            uint32_t enableEp6In      : 1;
+            uint32_t enableEp7Out     : 1;
+            uint32_t enableEp7In      : 1;
+            uint32_t enableEp8Out     : 1;
+            uint32_t enableEp8In      : 1;
+            uint32_t enableEp9Out     : 1;
+            uint32_t enableEp9In      : 1;
+            uint32_t enableEp10Out    : 1;
+            uint32_t enableEp10In     : 1;
+            uint32_t enableEp11Out    : 1;
+            uint32_t enableEp11In     : 1;
+            uint32_t enableEp12Out    : 1;
+            uint32_t enableEp12In     : 1;
+            uint32_t enableEp13Out    : 1;
+            uint32_t enableEp13In     : 1;
+            uint32_t enableEp14Out    : 1;
+            uint32_t enableEp14In     : 1;
+            uint32_t enableEp15Out    : 1;
+            uint32_t enableEp15In     : 1;
+        };
+        uint32_t dword1;
+    };
+
+    // DWORD 2-6 (all reserved and zero'd)
+    uint32_t dword2rsvd;
+    uint32_t dword3rsvd;
+    uint32_t dword4rsvd;
+    uint32_t dword5rsvd;
+    uint32_t dword6rsvd;
+
+    // DWORD 7
+    union {
+        struct {
+            uint8_t configurationValue;
+            uint8_t interfaceNumber;
+            uint8_t alternateSetting;
+            uint8_t rsvd1;
+        };
+        uint32_t dword7;
+    };
+};
+static_assert(sizeof(XhciInputControlContext32) == 32);
+
+struct XhciInputControlContext64 {
+    // Default 32-byte context fields
+    XhciInputControlContext32 ctx32;
+
+    // Extra reserved padding for 64-byte struct size
+    uint64_t    rsvd64b0;
+    uint64_t    rsvd64b1;
+    uint64_t    rsvd64b2;
+    uint64_t    rsvd64b3;
+};
+static_assert(sizeof(XhciInputControlContext64) == 64);
 
 /*
 // xHci Spec Section 5.4.8 Figure 5-20: Port Status and Control Register (PORTSC) (page 369-370)
@@ -2233,6 +2368,7 @@ private:
 
     bool _resetPort(uint8_t portNum);
     uint8_t _requestDeviceSlot();
+    void _createDeviceContext(uint8_t slotId, uint8_t port, uint8_t portSpeed);
 
     void _markXhciInterruptCompleted(uint8_t interrupter);
     void _processEventRingTrb(XhciTrb_t* trb);
@@ -2271,6 +2407,9 @@ private:
 
     // USB3.x-specific ports
     kstl::vector<uint8_t> m_usb3Ports;
+
+    // Device context base address array's virtual address
+    uint64_t* m_dcbaa;
 
     // Controller class for runtime registers
     kstl::SharedPtr<XhciRuntimeRegisterManager> m_runtimeRegisterManager;

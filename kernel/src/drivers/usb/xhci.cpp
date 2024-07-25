@@ -538,8 +538,8 @@ namespace drivers {
         size_t contextEntrySize = m_64ByteContextSize ? 64 : 32;
         size_t dcbaaSize = contextEntrySize * (m_maxDeviceSlots + 1);
 
-        uint64_t* dcbaaVirtualBase = (uint64_t*)_allocXhciMemory(dcbaaSize, XHCI_DEVICE_CONTEXT_ALIGNMENT, XHCI_DEVICE_CONTEXT_BOUNDARY);
-        zeromem(dcbaaVirtualBase, dcbaaSize);
+        m_dcbaa = (uint64_t*)_allocXhciMemory(dcbaaSize, XHCI_DEVICE_CONTEXT_ALIGNMENT, XHCI_DEVICE_CONTEXT_BOUNDARY);
+        zeromem(m_dcbaa, dcbaaSize);
 
         /*
         // xHci Spec Section 6.1 (page 404)
@@ -566,11 +566,11 @@ namespace drivers {
             uint64_t scratchpadArrayPhysicalBase = (uint64_t)__pa(scratchpadArray);
 
             // Set the first slot in the DCBAA to point to the scratchpad array
-            dcbaaVirtualBase[0] = scratchpadArrayPhysicalBase;
+            m_dcbaa[0] = scratchpadArrayPhysicalBase;
         }
 
         // Set DCBAA pointer in the operational registers
-        uint64_t dcbaaPhysicalBase = (uint64_t)__pa(dcbaaVirtualBase);
+        uint64_t dcbaaPhysicalBase = (uint64_t)__pa(m_dcbaa);
 
         m_opRegs->dcbaap = dcbaaPhysicalBase;
     }
@@ -754,6 +754,37 @@ namespace drivers {
         return completionTrb->slotId;
     }
 
+    void XhciDriver::_createDeviceContext(uint8_t slotId, uint8_t port, uint8_t portSpeed) {
+        // Determine the size of the device context
+        // based on the capability register parameters.
+        uint64_t deviceContextSize = m_64ByteContextSize ? sizeof(XhciDeviceContext64) : sizeof(XhciDeviceContext32);
+
+        // Allocate a memory block for the device context
+        void* ctx = _allocXhciMemory(
+            deviceContextSize,
+            XHCI_DEVICE_CONTEXT_ALIGNMENT,
+            XHCI_DEVICE_CONTEXT_BOUNDARY
+        );
+
+        // Zero out the device context memory by default
+        zeromem(ctx, sizeof(deviceContextSize));
+
+        // Insert the device context's physical address
+        // into the Device Context Base Addres Array (DCBAA).
+        m_dcbaa[slotId] = (uint64_t)__pa(ctx);
+
+        // Set the appropriate fields in the Slot Context
+        if (m_64ByteContextSize) {
+            XhciDeviceContext64* context = (XhciDeviceContext64*)ctx;
+            context->slotContext.ctx32.portNum = port;
+            context->slotContext.ctx32.speed = portSpeed;
+        } else {
+            XhciDeviceContext32* context = (XhciDeviceContext32*)ctx;
+            context->slotContext.portNum = port;
+            context->slotContext.speed = portSpeed;
+        }
+    }
+
     void XhciDriver::_markXhciInterruptCompleted(uint8_t interrupter) {
         // Get the interrupter registers
         auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
@@ -830,8 +861,11 @@ namespace drivers {
             kprintError("[*] Failed to enable Device Slot for port %i\n", port);
             return;
         }
+        kprintInfo("Received Device Slot ID %i\n", deviceSlot);
 
-        kprintInfo("Enabling Device Slot %i...\n", deviceSlot);
+        _createDeviceContext(deviceSlot, port, (uint8_t)portsc.portSpeed);
+
+        kprint("\n");
     }
 
     void XhciDriver::_handleDeviceDiconnected(uint8_t port) {
