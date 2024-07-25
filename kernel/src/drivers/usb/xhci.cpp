@@ -333,10 +333,6 @@ namespace drivers {
         // At this point the controller is all setup so we can start it
         _startHostController();
 
-        // Debug log
-        _logOperationalRegisters();
-        _logUsbsts();
-
         // Reset the ports
         for (uint8_t i = 0; i < m_maxPorts; i++) {
             if (_resetPort(i)) {
@@ -345,6 +341,16 @@ namespace drivers {
                 kprintWarn("[*] Failed to reset %s port %i\n", _isUSB3Port(i) ? "USB3" : "USB2", i);
             }
         }
+        kprint("\n");
+
+        _logUsbsts();
+
+        if (m_eventRing->hasUnprocessedEvents()) {
+            m_eventRing->processEvents();
+            _markXhciInterruptCompleted(0);
+        }
+
+        _logUsbsts();
         kprint("\n");
 
         for (uint8_t i = 0; i < m_maxPorts; i++) {
@@ -513,6 +519,9 @@ namespace drivers {
         m_eventRing = kstl::SharedPtr<XhciEventRing>(
             new XhciEventRing(XHCI_EVENT_RING_TRB_COUNT, interrupterRegs)
         );
+
+        // Clear any pending interrupts for primary interrupter
+        _markXhciInterruptCompleted(0);
     }
 
     bool XhciDriver::_isUSB3Port(uint8_t portNum) {
@@ -716,5 +725,16 @@ namespace drivers {
         }
 
         return false; 
+    }
+
+    void XhciDriver::_markXhciInterruptCompleted(uint8_t interrupter) {
+        // Get the interrupter registers
+        auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
+
+        // Clear the interrupt pending bit in the primary interrupter
+        interrupterRegs->iman |= ~(1 << 0);
+
+        // Clear the interrupt pending bit in USBSTS
+        m_opRegs->usbsts |= ~XHCI_USBSTS_EINT;
     }
 } // namespace drivers
