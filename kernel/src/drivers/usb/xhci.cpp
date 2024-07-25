@@ -333,46 +333,8 @@ namespace drivers {
         // At this point the controller is all setup so we can start it
         _startHostController();
 
-        // Allocate and clear a test TRB
-        XhciTrb_t enableSlotTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
-        XhciTrb_t noOpTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_NOOP_CMD);
-
-        m_commandRing->enqueue(enableSlotTrb);
-        m_commandRing->enqueue(noOpTrb);
-
-        // Ring the doorbell for slot 0 (command ring)
-        m_doorbellManager->ringCommandDoorbell();
-
-        kuPrint("[XHCI] Sent a test TRB\n");
-
+        // Debug log
         _logOperationalRegisters();
-        _logUsbsts();
-
-        msleep(10);
-        if (m_eventRing->hasUnprocessedEvents()) {
-            m_eventRing->processEvents();
-        }
-        kprint("-------------\n");
-
-        auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(0);
-        uint64_t erdpVal = interrupterRegs->erdp;
-        erdpVal += sizeof(XhciTrb_t) * 2;
-        interrupterRegs->erdp = erdpVal;
-
-        XhciTrb_t trb1 = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
-        XhciTrb_t trb2 = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
-
-        m_commandRing->enqueue(trb1);
-        m_commandRing->enqueue(trb2);
-
-        m_doorbellManager->ringCommandDoorbell();
-
-        msleep(10);
-        if (m_eventRing->hasUnprocessedEvents()) {
-            m_eventRing->processEvents();
-        }
-        kprint("-------------\n");
-
         _logUsbsts();
 
         // Reset the ports
@@ -385,33 +347,25 @@ namespace drivers {
         }
         kprint("\n");
 
-        msleep(100);
-        while (true) {
-            for (uint8_t i = 0; i < m_maxPorts; i++) {
-                XhciPortRegisterManager regset = _getPortRegisterSet(i);
-                XhciPortscRegister portsc;
-                regset.readPortscReg(portsc);
+        for (uint8_t i = 0; i < m_maxPorts; i++) {
+            XhciPortRegisterManager regset = _getPortRegisterSet(i);
+            XhciPortscRegister portsc;
+            regset.readPortscReg(portsc);
 
-                bool isUsb3Port = _isUSB3Port(i);
+            bool isUsb3Port = _isUSB3Port(i);
 
-                if (portsc.ccs) {
-                    kprint("%s device connected on port %i with speed ", isUsb3Port ? "USB3" : "USB2", i);
+            if (portsc.ccs) {
+                kprint("%s device connected on port %i with speed ", isUsb3Port ? "USB3" : "USB2", i);
 
-                    switch (portsc.portSpeed) {
-                    case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
-                    case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
-                    case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
-                    case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
-                    case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
-                    default: kprint("Undefined\n"); break;
-                    }
+                switch (portsc.portSpeed) {
+                case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
+                case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
+                case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
+                case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
+                case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
+                default: kprint("Undefined\n"); break;
                 }
             }
-
-            kprint("\n");
-            break;
-
-            sleep(2);
         }
 
         kprint("\n");
