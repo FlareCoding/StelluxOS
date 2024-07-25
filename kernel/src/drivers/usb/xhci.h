@@ -2022,14 +2022,22 @@ public:
     inline uint64_t getPhysicalBase() const { return m_physicalRingBase; }
     inline uint8_t  getCycleBit() const { return m_rcsBit; }
 
-    void enqueTrb(XhciTrb_t& trb);
+    void enqueue(XhciTrb_t& trb);
 
 private:
-    size_t      m_maxTrbCount;         // Number of valid TRBs in the ring including the LINK_TRB
-    size_t      m_enquePtr;         // Index in the ring where to enque next TRB
+    size_t      m_maxTrbCount;      // Number of valid TRBs in the ring including the LINK_TRB
+    size_t      m_enqueuePtr;         // Index in the ring where to enque next TRB
     XhciTrb_t*  m_trbRing;          // Virtual ring base
     uint64_t    m_physicalRingBase; // Physical ring base
     uint8_t     m_rcsBit;           // Ring Cycle State
+};
+
+class XhciEventRing {
+public:
+    XhciEventRing(size_t maxTrbs);
+
+private:
+
 };
 
 class XhciDriver {

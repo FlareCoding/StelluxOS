@@ -147,7 +147,7 @@ namespace drivers {
     XhciCommandRing::XhciCommandRing(size_t maxTrbs) {
         m_maxTrbCount = maxTrbs;
         m_rcsBit = XHCI_CRCR_RING_CYCLE_STATE;
-        m_enquePtr = 0;
+        m_enqueuePtr = 0;
 
         const uint64_t ringSize = XHCI_COMMAND_RING_TRB_COUNT * sizeof(XhciTrb_t);
 
@@ -169,16 +169,16 @@ namespace drivers {
         m_trbRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | m_rcsBit;
     }
 
-    void XhciCommandRing::enqueTrb(XhciTrb_t& trb) {
+    void XhciCommandRing::enqueue(XhciTrb_t& trb) {
         // Adjust the TRB's cycle bit to the current RCS
         trb.cycleBit = m_rcsBit;
 
         // Insert the TRB into the ring
-        m_trbRing[m_enquePtr] = trb;
+        m_trbRing[m_enqueuePtr] = trb;
 
-        // Advance and possibly wrap the enque pointer if needed
-        if (++m_enquePtr == m_maxTrbCount) {
-            m_enquePtr = 0;
+        // Advance and possibly wrap the enqueue pointer if needed
+        if (++m_enqueuePtr == m_maxTrbCount) {
+            m_enqueuePtr = 0;
             m_rcsBit = !m_rcsBit;
         }
     }
@@ -227,8 +227,8 @@ namespace drivers {
         XhciTrb_t enableSlotTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
         XhciTrb_t noOpTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_NOOP_CMD);
 
-        m_commandRing->enqueTrb(enableSlotTrb);
-        m_commandRing->enqueTrb(noOpTrb);
+        m_commandRing->enqueue(enableSlotTrb);
+        m_commandRing->enqueue(noOpTrb);
 
         // Ring the doorbell for slot 0 (command ring)
         m_doorbellManager->ringCommandDoorbell();
@@ -264,6 +264,8 @@ namespace drivers {
         };
         pollEventRing();
 
+        kprint("-------------\n");
+
         auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(0);
         uint64_t erdpVal = interrupterRegs->erdp;
         erdpVal += sizeof(XhciTrb_t) * 2;
@@ -272,8 +274,8 @@ namespace drivers {
         XhciTrb_t trb1 = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
         XhciTrb_t trb2 = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_RESET_ENDPOINT_CMD);
 
-        m_commandRing->enqueTrb(trb1);
-        m_commandRing->enqueTrb(trb2);
+        m_commandRing->enqueue(trb1);
+        m_commandRing->enqueue(trb2);
 
         m_doorbellManager->ringCommandDoorbell();
         pollEventRing();
