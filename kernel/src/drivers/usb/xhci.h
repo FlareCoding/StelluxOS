@@ -1416,8 +1416,29 @@ typedef struct XhciTransferRequestBlock {
         uint32_t control;   // Control bits, including the TRB type
     };
 } XhciTrb_t;
-
 static_assert(sizeof(XhciTrb_t) == sizeof(uint32_t) * 4);
+
+typedef struct XhciAddressDeviceRequestBlock {
+    uint64_t inputContextPhysicalBase;
+    uint32_t rsvd;
+    struct {
+        uint32_t cycleBit   : 1;
+        uint32_t rsvd1      : 8;
+
+        /*
+            Block Set Address Request (BSR). When this flag is set to ‘0’ the Address Device Command shall
+            generate a USB SET_ADDRESS request to the device. When this flag is set to ‘1’ the Address
+            Device Command shall not generate a USB SET_ADDRESS request. Refer to section 4.6.5 for
+            more information on the use of this flag.
+        */
+        uint32_t bsr        : 1; // Block Set Address Request bit
+        
+        uint32_t trbType    : 6;
+        uint32_t rsvd2      : 8;
+        uint32_t slotId     : 8;
+    };
+} XhciAddressDeviceCommandTrb_t;
+static_assert(sizeof(XhciAddressDeviceCommandTrb_t) == sizeof(uint32_t) * 4);
 
 typedef struct XhciCommandCompletionRequestBlock {
     uint64_t commandTrbPointer;
@@ -1433,7 +1454,6 @@ typedef struct XhciCommandCompletionRequestBlock {
         uint32_t slotId     : 8;
     };
 } XhciCompletionTrb_t;
-
 static_assert(sizeof(XhciCompletionTrb_t) == sizeof(uint32_t) * 4);
 
 typedef struct XhciPortStatusChangeRequestBlock {
@@ -1453,7 +1473,6 @@ typedef struct XhciPortStatusChangeRequestBlock {
         uint32_t rsvd4     : 16;
     };
 } XhciPortStatusChangeTrb_t;
-
 static_assert(sizeof(XhciPortStatusChangeTrb_t) == sizeof(uint32_t) * 4);
 
 /*
@@ -2419,7 +2438,7 @@ public:
     inline uint64_t getPhysicalBase() const { return m_physicalRingBase; }
     inline uint8_t  getCycleBit() const { return m_rcsBit; }
 
-    void enqueue(XhciTrb_t& trb);
+    void enqueue(XhciTrb_t* trb);
 
     // Helper functions for sending most common commands
     void enqueueEnableSlotTrb();
