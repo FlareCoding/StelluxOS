@@ -929,7 +929,7 @@ namespace drivers {
             
             // Configure the slot context
             inputContext->deviceContext.slotContext.ctx32.contextEntries = 1;
-            // inputContext->deviceContext.slotContext.ctx32.speed = portSpeed; (DEPRECATED)
+            inputContext->deviceContext.slotContext.ctx32.speed = portSpeed;
             inputContext->deviceContext.slotContext.ctx32.rootHubPortNum = port;
             inputContext->deviceContext.slotContext.ctx32.interrupterTarget = 0;
 
@@ -952,7 +952,7 @@ namespace drivers {
             
             // Configure the slot context
             inputContext->deviceContext.slotContext.contextEntries = 1;
-            // inputContext->deviceContext.slotContext.speed = portSpeed; (DEPRECATED)
+            inputContext->deviceContext.slotContext.speed = portSpeed;
             inputContext->deviceContext.slotContext.rootHubPortNum = port;
             inputContext->deviceContext.slotContext.interrupterTarget = 0;
 
@@ -983,7 +983,7 @@ namespace drivers {
         // Send the Address Device command to the host controller
         XhciCommandCompletionTrb_t* completionTrb = _sendXhciCommand((XhciTrb_t*)&addressDeviceTrb);
         if (!completionTrb) {
-            kprintError("[*] Failed to complete Device Address command!\n");
+            kprintError("[*] Failed to complete the first Device Address command!\n");
             return;
         }
 
@@ -991,12 +991,53 @@ namespace drivers {
             kprintInfo("[*] Successfully issued the first Device Address command!\n");
         }
 
-        // Sanity-check the actual device context entry in DCBAA
-        XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
-        kprint("    DeviceContext[slotId=%i] address: %i  slotState: %i  epSate: %i  maxPacketSize: %i\n",
-            slotId, deviceContext->slotContext.deviceAddress, deviceContext->slotContext.slotState,
-            deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize
-        );
+        if (m_64ByteContextSize) {
+            // Inspect the Output Device Context
+            XhciDeviceContext64* deviceContext = (XhciDeviceContext64*)__va((void*)m_dcbaa[slotId]);
+
+            // Re-configure the input context's max packet size
+            XhciInputContext64* inputContext = (XhciInputContext64*)inputCtxBuffer;
+            inputContext->deviceContext.controlEndpointContext.ctx32.maxPacketSize = deviceContext->controlEndpointContext.ctx32.maxPacketSize;
+        } else {
+            // Inspect the Output Device Context
+            XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
+
+            // Re-configure the input context's max packet size
+            XhciInputContext32* inputContext = (XhciInputContext32*)inputCtxBuffer;
+            inputContext->deviceContext.controlEndpointContext.maxPacketSize = deviceContext->controlEndpointContext.maxPacketSize;
+        }
+
+        // Issue the Address Device command again, but this time with BSR=0
+        addressDeviceTrb.bsr = 0;
+
+        // Send the Address Device command to the host controller
+        completionTrb = _sendXhciCommand((XhciTrb_t*)&addressDeviceTrb);
+        if (!completionTrb) {
+            kprintError("[*] Failed to complete the second Device Address command!\n");
+            return;
+        }
+
+        if (completionTrb->completionCode == XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+            kprintInfo("[*] Successfully issued the second Device Address command!\n");
+        }
+
+        if (m_64ByteContextSize) {
+            // Sanity-check the actual device context entry in DCBAA
+            XhciDeviceContext64* deviceContext = (XhciDeviceContext64*)__va((void*)m_dcbaa[slotId]);
+
+            kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n",
+                slotId, deviceContext->slotContext.ctx32.deviceAddress, deviceContext->slotContext.ctx32.slotState,
+                deviceContext->controlEndpointContext.ctx32.endpointState, deviceContext->controlEndpointContext.ctx32.maxPacketSize
+            );
+        } else {
+            // Sanity-check the actual device context entry in DCBAA
+            XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
+
+            kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n",
+                slotId, deviceContext->slotContext.deviceAddress, deviceContext->slotContext.slotState,
+                deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize
+            );
+        }
     }
 
     void XhciDriver::_markXhciInterruptCompleted(uint8_t interrupter) {
