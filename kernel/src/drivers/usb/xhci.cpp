@@ -990,6 +990,13 @@ namespace drivers {
         if (completionTrb->completionCode == XHCI_TRB_COMPLETION_CODE_SUCCESS) {
             kprintInfo("[*] Successfully issued the first Device Address command!\n");
         }
+
+        // Sanity-check the actual device context entry in DCBAA
+        XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
+        kprint("    DeviceContext[slotId=%i] address: %i  slotState: %i  epSate: %i  maxPacketSize: %i\n",
+            slotId, deviceContext->slotContext.deviceAddress, deviceContext->slotContext.slotState,
+            deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize
+        );
     }
 
     void XhciDriver::_markXhciInterruptCompleted(uint8_t interrupter) {
