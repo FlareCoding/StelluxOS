@@ -666,7 +666,7 @@ namespace drivers {
     void XhciDriver::_createDeviceContext(uint8_t slotId) {
         // Determine the size of the device context
         // based on the capability register parameters.
-        uint64_t deviceContextSize = m_64ByteContextSize ? 2048 : 1024;
+        uint64_t deviceContextSize = m_64ByteContextSize ? sizeof(XhciDeviceContext64) : sizeof(XhciDeviceContext32);
 
         // Allocate a memory block for the device context
         void* ctx = _allocXhciMemory(
@@ -909,37 +909,68 @@ namespace drivers {
             new XhciTransferRing(XHCI_TRANSFER_RING_TRB_COUNT)
         );
 
+        // Calculate the input context size based
+        // on the capability register parameters.
+        uint64_t inputContextSize = m_64ByteContextSize ? sizeof(XhciInputContext64) : sizeof(XhciInputContext32);
+
         // Allocate and zero out the input context
-        XhciInputContext* inputContext = (XhciInputContext*)_allocXhciMemory(
-            sizeof(XhciInputContext),
+        void* inputCtxBuffer = (XhciInputContext32*)_allocXhciMemory(
+            inputContextSize,
             XHCI_INPUT_CONTROL_CONTEXT_ALIGNMENT,
             XHCI_INPUT_CONTROL_CONTEXT_BOUNDARY
         );
-        zeromem(inputContext, sizeof(XhciInputContext));
+        zeromem(inputCtxBuffer, inputContextSize);
 
-        // Configure the input control context
-        inputContext->controlContext.addFlags = (1 << 0) | (1 << 1);
-        
-        // Configure the slot context
-        inputContext->slotContext.contextEntries = 1;
-        inputContext->slotContext.speed = portSpeed;
-        inputContext->slotContext.rootHubPortNum = port;
-        inputContext->slotContext.interrupterTarget = 0;
+        if (m_64ByteContextSize) {
+            XhciInputContext64* inputContext = (XhciInputContext64*)inputCtxBuffer;
 
-        // Configure the control endpoint context
-        inputContext->controlEndpointContext.endpointState = XHCI_ENDPOINT_STATE_DISABLED;
-        inputContext->controlEndpointContext.endpointType = XHCI_ENDPOINT_TYPE_CONTROL;
-        inputContext->controlEndpointContext.interval = 0;
-        inputContext->controlEndpointContext.errorCount = 3;
-        inputContext->controlEndpointContext.maxPacketSize = initialMaxPacketSize;
-        inputContext->controlEndpointContext.transferRingDequeuePtr = transferRing->getPhysicalBase();
-        inputContext->controlEndpointContext.dcs = 1;
-        inputContext->controlEndpointContext.maxEsitPayloadLo = 0;
-        inputContext->controlEndpointContext.maxEsitPayloadHi = 0;
-        inputContext->controlEndpointContext.averageTrbLength = 8;
+            // Configure the input control context
+            inputContext->controlContext.ctx32.addFlags = (1 << 0) | (1 << 1);
+            
+            // Configure the slot context
+            inputContext->deviceContext.slotContext.ctx32.contextEntries = 1;
+            // inputContext->deviceContext.slotContext.ctx32.speed = portSpeed; (DEPRECATED)
+            inputContext->deviceContext.slotContext.ctx32.rootHubPortNum = port;
+            inputContext->deviceContext.slotContext.ctx32.interrupterTarget = 0;
+
+            // Configure the control endpoint context
+            inputContext->deviceContext.controlEndpointContext.ctx32.endpointState = XHCI_ENDPOINT_STATE_DISABLED;
+            inputContext->deviceContext.controlEndpointContext.ctx32.endpointType = XHCI_ENDPOINT_TYPE_CONTROL;
+            inputContext->deviceContext.controlEndpointContext.ctx32.interval = 0;
+            inputContext->deviceContext.controlEndpointContext.ctx32.errorCount = 3;
+            inputContext->deviceContext.controlEndpointContext.ctx32.maxPacketSize = initialMaxPacketSize;
+            inputContext->deviceContext.controlEndpointContext.ctx32.transferRingDequeuePtr = transferRing->getPhysicalBase();
+            inputContext->deviceContext.controlEndpointContext.ctx32.dcs = 1;
+            inputContext->deviceContext.controlEndpointContext.ctx32.maxEsitPayloadLo = 0;
+            inputContext->deviceContext.controlEndpointContext.ctx32.maxEsitPayloadHi = 0;
+            inputContext->deviceContext.controlEndpointContext.ctx32.averageTrbLength = 8;
+        } else {
+            XhciInputContext32* inputContext = (XhciInputContext32*)inputCtxBuffer;
+
+            // Configure the input control context
+            inputContext->controlContext.addFlags = (1 << 0) | (1 << 1);
+            
+            // Configure the slot context
+            inputContext->deviceContext.slotContext.contextEntries = 1;
+            // inputContext->deviceContext.slotContext.speed = portSpeed; (DEPRECATED)
+            inputContext->deviceContext.slotContext.rootHubPortNum = port;
+            inputContext->deviceContext.slotContext.interrupterTarget = 0;
+
+            // Configure the control endpoint context
+            inputContext->deviceContext.controlEndpointContext.endpointState = XHCI_ENDPOINT_STATE_DISABLED;
+            inputContext->deviceContext.controlEndpointContext.endpointType = XHCI_ENDPOINT_TYPE_CONTROL;
+            inputContext->deviceContext.controlEndpointContext.interval = 0;
+            inputContext->deviceContext.controlEndpointContext.errorCount = 3;
+            inputContext->deviceContext.controlEndpointContext.maxPacketSize = initialMaxPacketSize;
+            inputContext->deviceContext.controlEndpointContext.transferRingDequeuePtr = transferRing->getPhysicalBase();
+            inputContext->deviceContext.controlEndpointContext.dcs = 1;
+            inputContext->deviceContext.controlEndpointContext.maxEsitPayloadLo = 0;
+            inputContext->deviceContext.controlEndpointContext.maxEsitPayloadHi = 0;
+            inputContext->deviceContext.controlEndpointContext.averageTrbLength = 8;
+        }
 
         // Get the physical address of the input context
-        uint64_t inputContextPhysicalBase = (uint64_t)__pa(inputContext);
+        uint64_t inputContextPhysicalBase = (uint64_t)__pa(inputCtxBuffer);
 
         // Construct the Address Device TRB
         XhciAddressDeviceCommandTrb_t addressDeviceTrb;
