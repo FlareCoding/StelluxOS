@@ -1604,7 +1604,7 @@ field in the HCCPARAMS1 register = ‘0’. If the Context Size (CSZ) field = �
 then each Slot Context data structure consumes 64 bytes, where bytes 32 to
 63 are also xHCI Reserved (RsvdO).
 */
-struct XhciSlotContext {
+struct XhciSlotContext32 {
     union {
         struct {
             /*
@@ -1782,7 +1782,17 @@ struct XhciSlotContext {
     */
     uint32_t rsvdZ[4];
 } __attribute__((packed));
-static_assert(sizeof(XhciSlotContext) == 32);
+static_assert(sizeof(XhciSlotContext32) == 32);
+
+// 64-byte context version
+struct XhciSlotContext64 {
+    // Default 32-byte context fields
+    XhciSlotContext32 ctx32;
+
+    // Padding to fill up to 64 bytes
+    uint32_t rsvd[8];
+};
+static_assert(sizeof(XhciSlotContext64) == 64);
 
 /*
 // xHci Spec Section 6.2.3 Figure 6-3: Endpoint Context Data Structure (page 412)
@@ -1804,7 +1814,7 @@ Note: Figure 6-3 illustrates a 32 byte Endpoint Context. That is, the Context Si
 = ‘1’ then each Endpoint Context data structure consumes 64 bytes, where
 bytes 32 to 63 are xHCI Reserved (RsvdO).
 */
-struct XhciEndpointContext {
+struct XhciEndpointContext32 {
     union {
         struct {
             /*
@@ -2015,7 +2025,17 @@ struct XhciEndpointContext {
         uint32_t dword4;
     };
 };
-static_assert(sizeof(XhciEndpointContext) == 32);
+static_assert(sizeof(XhciEndpointContext32) == 32);
+
+// 64-byte context version
+struct XhciEndpointContext64 {
+    // Default 32-byte context fields
+    XhciEndpointContext32 ctx32;
+
+    // Padding to fill up to 64 bytes
+    uint32_t rsvd[8];
+};
+static_assert(sizeof(XhciEndpointContext64) == 64);
 
 #define XHCI_ENDPOINT_STATE_DISABLED    0
 #define XHCI_ENDPOINT_STATE_RUNNING     1
@@ -2056,6 +2076,29 @@ All unused entries of the Device Context shall be initialized to ‘0’ by soft
     state. Software shall initialize the Output Device Context to 0 prior to the
     execution of the first Address Device Command.
 */
+struct XhciDeviceContext32 {
+    // Slot context
+    XhciSlotContext32 slotContext;
+
+    // Primary control endpoint
+    XhciEndpointContext32 controlEndpointContext;
+
+    // Optional communication endpoints
+    XhciEndpointContext32 ep[30];
+};
+static_assert(sizeof(XhciDeviceContext32) == 1024);
+
+struct XhciDeviceContext64 {
+    // Slot context
+    XhciSlotContext64 slotContext;
+
+    // Primary control endpoint
+    XhciEndpointContext64 controlEndpointContext;
+
+    // Optional communication endpoints
+    XhciEndpointContext64 ep[30];
+};
+static_assert(sizeof(XhciDeviceContext64) == 2048);
 
 /*
 // xHci Sped Section 6.2.5.1 Figure 6-6: Input Control Context (page 461)
@@ -2064,7 +2107,7 @@ The Input Control Context data structure defines which Device Context data
 structures are affected by a command and the operations to be performed on
 those contexts
 */
-struct XhciInputControlContext {
+struct XhciInputControlContext32 {
     /*
         Drop Context flags (D2 - D31). These single bit fields identify which Device Context data
         structures should be disabled by command. If set to ‘1’, the respective Endpoint Context shall
@@ -2108,7 +2151,17 @@ struct XhciInputControlContext {
     // Reserved and zero'd
     uint8_t rsvdZ;
 } __attribute__((packed));
-static_assert(sizeof(XhciInputControlContext) == 32);
+static_assert(sizeof(XhciInputControlContext32) == 32);
+
+// 64-byte context version
+struct XhciInputControlContext64 {
+    // Default 32-byte context fields
+    XhciInputControlContext32 ctx32;
+
+    // Padding to fill up to 64 bytes
+    uint32_t rsvd[8];
+};
+static_assert(sizeof(XhciInputControlContext64) == 64);
 
 /*
 // xHci Sped Section 6.2.5 Input Context (page 459)
@@ -2121,13 +2174,18 @@ The Input Context is pointed to by an Input Context Pointer field of an Address
 Device, Configure Endpoint, and Evaluate Context Command TRBs. The Input
 Context is an array of up to 33 context data structure entries.
 */
-struct XhciInputContext {
-    XhciInputControlContext controlContext;
-    XhciSlotContext slotContext;
-    XhciEndpointContext controlEndpointContext;
-
+struct XhciInputContext32 {
+    XhciInputControlContext32   controlContext;
+    XhciDeviceContext32         deviceContext;
 };
-static_assert(sizeof(XhciInputContext) == sizeof(XhciInputControlContext) + 32 + 32);
+static_assert(sizeof(XhciInputContext32) == sizeof(XhciInputControlContext32) + sizeof(XhciDeviceContext32));
+
+// 64-byte context version
+struct XhciInputContext64 {
+    XhciInputControlContext64   controlContext;
+    XhciDeviceContext64         deviceContext;
+};
+static_assert(sizeof(XhciInputContext64) == sizeof(XhciInputControlContext64) + sizeof(XhciDeviceContext64));
 
 /*
 // xHci Spec Section 5.4.8 Figure 5-20: Port Status and Control Register (PORTSC) (page 369-370)
