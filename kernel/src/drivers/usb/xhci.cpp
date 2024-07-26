@@ -265,11 +265,6 @@ namespace drivers {
         }
     }
 
-    void XhciCommandRing::enqueueEnableSlotTrb() {
-        XhciTrb_t trb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
-        enqueue(&trb);
-    }
-
     XhciEventRing::XhciEventRing(size_t maxTrbs, XhciInterrupterRegisters* primaryInterrupterRegisters) {
         m_interrupterRegs = primaryInterrupterRegisters;
         m_segmentTrbCount = maxTrbs;
@@ -668,6 +663,73 @@ namespace drivers {
         m_opRegs->dcbaap = dcbaaPhysicalBase;
     }
 
+    void XhciDriver::_createDeviceContext(uint8_t slotId) {
+        // Determine the size of the device context
+        // based on the capability register parameters.
+        uint64_t deviceContextSize = m_64ByteContextSize ? 2048 : 1024;
+
+        // Allocate a memory block for the device context
+        void* ctx = _allocXhciMemory(
+            deviceContextSize,
+            XHCI_DEVICE_CONTEXT_ALIGNMENT,
+            XHCI_DEVICE_CONTEXT_BOUNDARY
+        );
+
+        if (!ctx) {
+            kprintError("[*] CRITICAL FAILURE: Failed to allocate memory for a device context\n");
+            return;
+        }
+
+        // Zero out the device context memory by default
+        zeromem(ctx, sizeof(deviceContextSize));
+
+        // Insert the device context's physical address
+        // into the Device Context Base Addres Array (DCBAA).
+        m_dcbaa[slotId] = (uint64_t)__pa(ctx);
+    }
+
+    XhciCommandCompletionTrb_t* XhciDriver::_sendXhciCommand(XhciTrb_t* trb) {
+        // Small delay period between ringing the
+        // doorbell and polling the event ring.
+        const uint32_t commandDelay = 10;
+
+        // Enqueue the TRB
+        m_commandRing->enqueue(trb);
+
+        // Ring the command doorbell
+        m_doorbellManager->ringCommandDoorbell();
+
+        // Let the host controller process the command
+        msleep(commandDelay);
+        
+        // Poll the event ring for the command completion event
+        kstl::vector<XhciTrb_t*> events;
+        if (m_eventRing->hasUnprocessedEvents()) {
+            m_eventRing->dequeueEvents(events);
+            _markXhciInterruptCompleted(0);
+        }
+
+        XhciCommandCompletionTrb_t* completionTrb = nullptr;
+        for (size_t i = 0; i < events.size(); ++i) {
+            if (events[i]->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
+                completionTrb = reinterpret_cast<XhciCommandCompletionTrb_t*>(events[i]);
+                break;   
+            }
+        }
+
+        if (!completionTrb) {
+            kprintError("[*] Failed to find completion TRB for command %i\n", trb->trbType);
+            return nullptr;
+        }
+
+        if (completionTrb->completionCode != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+            kprintError("[*] Command TRB failed with error: %s\n", trbCompletionCodeToString(completionTrb->completionCode));
+            return nullptr;
+        }
+
+        return completionTrb;
+    }
+
     void XhciDriver::_mapDeviceMmio(uint64_t pciBarAddress) {
         // Map a conservatively large space for xHCI registers
         for (size_t offset = 0; offset < 0x20000; offset += PAGE_SIZE) {
@@ -816,195 +878,87 @@ namespace drivers {
     }
 
     uint8_t XhciDriver::_requestDeviceSlot() {
-        // Small delay period between ringing the
-        // doorbell and polling the event ring.
-        const uint32_t commandDelay = 10;
+        XhciTrb_t enableSlotTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+        auto completionTrb = _sendXhciCommand(&enableSlotTrb);
 
-        m_commandRing->enqueueEnableSlotTrb();
-        m_doorbellManager->ringCommandDoorbell();
-
-        // Let the host controller process the command
-        msleep(commandDelay);
-        
-        // Poll the event ring for the command completion event
-        kstl::vector<XhciTrb_t*> events;
-        if (m_eventRing->hasUnprocessedEvents()) {
-            m_eventRing->dequeueEvents(events);
-            _markXhciInterruptCompleted(0);
-        }
-
-        XhciCompletionTrb_t* completionTrb = nullptr;
-        for (size_t i = 0; i < events.size(); ++i) {
-            if (events[i]->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-                completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(events[i]);
-                break;   
-            }
-        }
-
-        if (!completionTrb || completionTrb->completionCode != 1) {
+        if (!completionTrb) {
             return 0;
         }
 
         return completionTrb->slotId;
     }
 
-    void XhciDriver::_createDeviceContext(uint8_t slotId, uint8_t port, uint8_t portSpeed) {
-        // Determine the size of the device context
-        // based on the capability register parameters.
-        uint64_t deviceContextSize = m_64ByteContextSize ? sizeof(XhciDeviceContext64) : sizeof(XhciDeviceContext32);
+    void XhciDriver::_setDeviceAddress(uint8_t port, uint8_t slotId, uint8_t portSpeed) {
+        (void)portSpeed;
 
-        // Allocate a memory block for the device context
-        void* ctx = _allocXhciMemory(
-            deviceContextSize,
-            XHCI_DEVICE_CONTEXT_ALIGNMENT,
-            XHCI_DEVICE_CONTEXT_BOUNDARY
-        );
-
-        if (!ctx) {
-            kprintError("[*] CRITICAL FAILURE: Failed to allocate memory for a device context\n");
-            return;
-        }
-
-        // Zero out the device context memory by default
-        zeromem(ctx, sizeof(deviceContextSize));
-
-        // Insert the device context's physical address
-        // into the Device Context Base Addres Array (DCBAA).
-        m_dcbaa[slotId] = (uint64_t)__pa(ctx);
-
-        // Determine the size of the input control context
-        // based on the capability register parameters.
-        uint64_t inputControlContextSize = m_64ByteContextSize ? sizeof(XhciInputControlContext64) : sizeof(XhciInputControlContext32); 
-
-        // Allocate a memory block for the device context
-        void* inputControlCtx = _allocXhciMemory(
-            inputControlContextSize,
-            XHCI_INPUT_CONTROL_CONTEXT_ALIGNMENT,
-            XHCI_INPUT_CONTROL_CONTEXT_BOUNDARY
-        );
-
-        if (!inputControlCtx) {
-            kprintError("[*] CRITICAL FAILURE: Failed to allocate memory for a device input control context\n");
-            return;
-        }
-
-        // Zero out the device context memory by default
-        zeromem(inputControlCtx, sizeof(inputControlContextSize));
-
-        // Calculate the max packet size for the control endpoint context
-        uint32_t maxPacketSize = 0;
+        // Calculate initial max packet size for the set device command
+        uint16_t initialMaxPacketSize = 0;
         switch (portSpeed) {
-        case XHCI_USB_SPEED_LOW_SPEED: maxPacketSize = 8; break;
-        case XHCI_USB_SPEED_FULL_SPEED: maxPacketSize = 64; break;
-        case XHCI_USB_SPEED_HIGH_SPEED: maxPacketSize = 64; break;
-        case XHCI_USB_SPEED_SUPER_SPEED: maxPacketSize = 512; break;
-        case XHCI_USB_SPEED_SUPER_SPEED_PLUS: maxPacketSize = 512; break;
-        default: maxPacketSize = 8; break;
+        case XHCI_USB_SPEED_LOW_SPEED: initialMaxPacketSize = 8; break;
+
+        case XHCI_USB_SPEED_FULL_SPEED:
+        case XHCI_USB_SPEED_HIGH_SPEED: initialMaxPacketSize = 64; break;
+
+        case XHCI_USB_SPEED_SUPER_SPEED:
+        case XHCI_USB_SPEED_SUPER_SPEED_PLUS:
+        default: initialMaxPacketSize = 512; break;
         }
 
-        // Create a transfer ring
-        kstl::SharedPtr<XhciTransferRing> transferRing = kstl::SharedPtr<XhciTransferRing>(
+        // Allocate a transfer ring for the control endpoint context
+        auto transferRing = kstl::SharedPtr<XhciTransferRing>(
             new XhciTransferRing(XHCI_TRANSFER_RING_TRB_COUNT)
         );
 
-        // Set the appropriate fields in the Slot Context
-        if (m_64ByteContextSize) {
-            // Configure the input context
-            XhciInputControlContext64* inputContext = (XhciInputControlContext64*)inputControlCtx;
-            inputContext->enableSlotCtx = 1;
-            inputContext->enableControlCtx = 1;
+        // Allocate and zero out the input context
+        XhciInputContext* inputContext = (XhciInputContext*)_allocXhciMemory(
+            sizeof(XhciInputContext),
+            XHCI_INPUT_CONTROL_CONTEXT_ALIGNMENT,
+            XHCI_INPUT_CONTROL_CONTEXT_BOUNDARY
+        );
+        zeromem(inputContext, sizeof(XhciInputContext));
 
-            // Start configuring the device context section of the input control context
-            XhciDeviceContext64* context = &inputContext->deviceContext;
+        // Configure the input control context
+        inputContext->controlContext.addFlags = (1 << 0) | (1 << 1);
+        
+        // Configure the slot context
+        inputContext->slotContext.contextEntries = 1;
+        inputContext->slotContext.speed = portSpeed;
+        inputContext->slotContext.rootHubPortNum = port;
+        inputContext->slotContext.interrupterTarget = 0;
 
-            // Initialize the slot context
-            context->slotContext.ctx32.speed = portSpeed;
-            context->slotContext.ctx32.portNum = port + 1; // one-based
-            context->slotContext.ctx32.contextEntries = 1;
-            context->slotContext.ctx32.interrupterTarget = 0;
+        // Configure the control endpoint context
+        inputContext->controlEndpointContext.endpointState = XHCI_ENDPOINT_STATE_DISABLED;
+        inputContext->controlEndpointContext.endpointType = XHCI_ENDPOINT_TYPE_CONTROL;
+        inputContext->controlEndpointContext.interval = 0;
+        inputContext->controlEndpointContext.errorCount = 3;
+        inputContext->controlEndpointContext.maxPacketSize = initialMaxPacketSize;
+        inputContext->controlEndpointContext.transferRingDequeuePtr = transferRing->getPhysicalBase();
+        inputContext->controlEndpointContext.dcs = 1;
+        inputContext->controlEndpointContext.maxEsitPayloadLo = 0;
+        inputContext->controlEndpointContext.maxEsitPayloadHi = 0;
+        inputContext->controlEndpointContext.averageTrbLength = 8;
 
-            // Initialize the control endpoint context
-            context->endpointContext[0].ctx32.epState = 0;
-            context->endpointContext[0].ctx32.epType = 4;
-            context->endpointContext[0].ctx32.interval = 0;
-            context->endpointContext[0].ctx32.cErr = 3;
-            context->endpointContext[0].ctx32.maxPacketSize = maxPacketSize;
-            context->endpointContext[0].ctx32.avgTrbLength = 8;
-            context->endpointContext[0].ctx32.trDequeuePointer = transferRing->getPhysicalBase() | 1;
-        } else {
-            // Configure the input context
-            XhciInputControlContext32* inputContext = (XhciInputControlContext32*)inputControlCtx;
-            inputContext->enableSlotCtx = 1;
-            inputContext->enableControlCtx = 1;
+        // Get the physical address of the input context
+        uint64_t inputContextPhysicalBase = (uint64_t)__pa(inputContext);
 
-            // Start configuring the device context section of the input control context
-            XhciDeviceContext32* context = &inputContext->deviceContext;
-
-            // Initialize the slot context
-            context->slotContext.speed = portSpeed;
-            context->slotContext.portNum = port + 1; // one-based
-            context->slotContext.contextEntries = 1;
-            context->slotContext.interrupterTarget = 0;
-
-            // Initialize the control endpoint context
-            context->endpointContext[0].epState = 0;
-            context->endpointContext[0].epType = 4;
-            context->endpointContext[0].interval = 0;
-            context->endpointContext[0].cErr = 3;
-            context->endpointContext[0].maxPacketSize = maxPacketSize;
-            context->endpointContext[0].avgTrbLength = 8;
-            context->endpointContext[0].trDequeuePointer = transferRing->getPhysicalBase() | 1;
-        }
-
-        // Now we can finally use the SET_ADDRESS command to
-        // let the host controller initialize the device context.
+        // Construct the Address Device TRB
         XhciAddressDeviceCommandTrb_t addressDeviceTrb;
         zeromem(&addressDeviceTrb, sizeof(XhciAddressDeviceCommandTrb_t));
-        addressDeviceTrb.inputContextPhysicalBase = (uint64_t)__pa(inputControlCtx);
         addressDeviceTrb.trbType = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
-        addressDeviceTrb.slotId = slotId;
+        addressDeviceTrb.inputContextPhysicalBase = inputContextPhysicalBase;
         addressDeviceTrb.bsr = 1;
+        addressDeviceTrb.slotId = slotId;
 
-        // Place the SET_ADDRESS TRB on the command ring
-        m_commandRing->enqueue((XhciTrb_t*)&addressDeviceTrb);
-
-        // Ring the command doorbell
-        m_doorbellManager->ringCommandDoorbell();
-
-        // Small delay period between ringing the
-        // doorbell and polling the event ring.
-        msleep(10);
-
-        // Poll the event ring for the command completion event
-        kstl::vector<XhciTrb_t*> events;
-        if (m_eventRing->hasUnprocessedEvents()) {
-            m_eventRing->dequeueEvents(events);
-            _markXhciInterruptCompleted(0);
-        }
-
-        XhciCompletionTrb_t* completionTrb = nullptr;
-        for (size_t i = 0; i < events.size(); ++i) {
-            XhciCompletionTrb_t* trb = reinterpret_cast<XhciCompletionTrb_t*>(events[i]);
-            if (trb->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT &&
-                trb->slotId == slotId
-            ) {
-                completionTrb = trb;
-                break;   
-            }
-        }
-
+        // Send the Address Device command to the host controller
+        XhciCommandCompletionTrb_t* completionTrb = _sendXhciCommand((XhciTrb_t*)&addressDeviceTrb);
         if (!completionTrb) {
-            kprintError("[*] Host controller didn't receive SET_ADDRESS command to initialize the device context!\n");
+            kprintError("[*] Failed to complete Device Address command!\n");
             return;
         }
 
-        if (completionTrb->completionCode != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-            kprintError("[*] Host controller failed to process SET_ADDRESS command to initialize the device context!\n");
-            kprintError("        Completion Code: %s\n", trbCompletionCodeToString(completionTrb->completionCode));
-            return;
+        if (completionTrb->completionCode == XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+            kprintInfo("[*] Successfully issued the first Device Address command!\n");
         }
-
-        kprintInfo("[*] Check your DCBAA for correctness :) good job!\n");
     }
 
     void XhciDriver::_markXhciInterruptCompleted(uint8_t interrupter) {
@@ -1020,7 +974,7 @@ namespace drivers {
 
     void XhciDriver::_processEventRingTrb(XhciTrb_t* trb) {
         if (trb->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-            // auto completionTrb = reinterpret_cast<XhciCompletionTrb_t*>(trb);
+            // auto completionTrb = reinterpret_cast<XhciCommandCompletionTrb_t*>(trb);
             // XhciTrb_t* commandTrb = (XhciTrb_t*)__va((void*)completionTrb->commandTrbPointer);
 
             // if (commandTrb->trbType == XHCI_TRB_TYPE_ENABLE_SLOT_CMD) {
@@ -1085,7 +1039,11 @@ namespace drivers {
         }
         kprintInfo("Received Device Slot ID %i\n", deviceSlot);
 
-        _createDeviceContext(deviceSlot, port, (uint8_t)portsc.portSpeed);
+        // Create a device context entry in the DCBAA
+        _createDeviceContext(deviceSlot);
+
+        // Port has to be 1-based
+        _setDeviceAddress(port + 1, deviceSlot, portsc.portSpeed);
 
         kprint("\n");
     }
