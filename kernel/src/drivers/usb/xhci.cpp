@@ -691,7 +691,7 @@ namespace drivers {
     XhciCommandCompletionTrb_t* XhciDriver::_sendXhciCommand(XhciTrb_t* trb) {
         // Small delay period between ringing the
         // doorbell and polling the event ring.
-        const uint32_t commandDelay = 10;
+        const uint32_t commandDelay = 40;
 
         // Enqueue the TRB
         m_commandRing->enqueue(trb);
@@ -889,8 +889,6 @@ namespace drivers {
     }
 
     void XhciDriver::_setDeviceAddress(uint8_t port, uint8_t slotId, uint8_t portSpeed) {
-        (void)portSpeed;
-
         // Calculate initial max packet size for the set device command
         uint16_t initialMaxPacketSize = 0;
         switch (portSpeed) {
@@ -931,6 +929,7 @@ namespace drivers {
             inputContext->deviceContext.slotContext.ctx32.contextEntries = 1;
             inputContext->deviceContext.slotContext.ctx32.speed = portSpeed;
             inputContext->deviceContext.slotContext.ctx32.rootHubPortNum = port;
+            inputContext->deviceContext.slotContext.ctx32.routeString = 0;
             inputContext->deviceContext.slotContext.ctx32.interrupterTarget = 0;
 
             // Configure the control endpoint context
@@ -954,6 +953,7 @@ namespace drivers {
             inputContext->deviceContext.slotContext.contextEntries = 1;
             inputContext->deviceContext.slotContext.speed = portSpeed;
             inputContext->deviceContext.slotContext.rootHubPortNum = port;
+            inputContext->deviceContext.slotContext.routeString = 0;
             inputContext->deviceContext.slotContext.interrupterTarget = 0;
 
             // Configure the control endpoint context
