@@ -992,6 +992,24 @@ namespace drivers {
         }
 
         if (m_64ByteContextSize) {
+            // Sanity-check the actual device context entry in DCBAA
+            XhciDeviceContext64* deviceContext = (XhciDeviceContext64*)__va((void*)m_dcbaa[slotId]);
+
+            kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n",
+                slotId, deviceContext->slotContext.ctx32.deviceAddress, deviceContext->slotContext.ctx32.slotState,
+                deviceContext->controlEndpointContext.ctx32.endpointState, deviceContext->controlEndpointContext.ctx32.maxPacketSize
+            );
+        } else {
+            // Sanity-check the actual device context entry in DCBAA
+            XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
+
+            kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n",
+                slotId, deviceContext->slotContext.deviceAddress, deviceContext->slotContext.slotState,
+                deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize
+            );
+        }
+
+        if (m_64ByteContextSize) {
             // Inspect the Output Device Context
             XhciDeviceContext64* deviceContext = (XhciDeviceContext64*)__va((void*)m_dcbaa[slotId]);
 
@@ -1122,7 +1140,9 @@ namespace drivers {
         _createDeviceContext(deviceSlot);
 
         // Port has to be 1-based
-        _setDeviceAddress(port + 1, deviceSlot, portsc.portSpeed);
+        uint8_t devicePort = port + 1;
+
+        _setDeviceAddress(devicePort, deviceSlot, portsc.portSpeed);
 
         kprint("\n");
     }
