@@ -45,44 +45,6 @@ EXTERN_C void __asm_irq_handler_13();
 EXTERN_C void __asm_irq_handler_14();
 EXTERN_C void __asm_irq_handler_15();
 
-__PRIVILEGED_DATA
-const char* g_cpuExceptionMessages[] = {
-    "Division By Zero",
-    "Debug",
-    "Non Maskable Interrupt",
-    "Breakpoint",
-    "Into Detected Overflow",
-    "Out of Bounds",
-    "Invalid Opcode",
-    "No Coprocessor",
-
-    "Double Fault",
-    "Coprocessor Segment Overrun",
-    "Bad TSS",
-    "Segment Not Present",
-    "Stack Fault",
-    "General Protection Fault",
-    "Page Fault",
-    "Unknown Interrupt",
-
-    "Coprocessor Fault",
-    "Alignment Check",
-    "Machine Check",
-    "SIMD Floating-Point Exception",
-    "Virtualization Exception",
-    "Control Protection Exception",
-    "Reserved",
-    "Reserved",
-
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Reserved",
-    "Hypervisor Injection Exception",
-    "VMM Communication Exception",
-    "Security Exception"
-};
-
 InterruptHandler_t g_int_exc_handlers[15] = {
     _exc_handler_div,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -109,15 +71,9 @@ void __common_exc_entry(PtRegs* frame) {
     }
 
     if (frame->hwframe.cs & USER_DPL) {
-        kprint("USERMODE EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
-
         // Usermode exceptions should get handled gracefully
-        //_userspace_common_exc_handler(frame);
-        kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
-        kpanic(frame);
+        _userspace_common_exc_handler(frame);
     } else {
-        kprint("KERNEL SUPERVISOR EXCEPTION: %s\n", g_cpuExceptionMessages[frame->intno]);
-        kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
         kpanic(frame);
     }
 }

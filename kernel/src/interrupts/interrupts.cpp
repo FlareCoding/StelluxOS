@@ -7,12 +7,15 @@
 #include <memory/kmemory.h>
 #include <ports/serial.h>
 #include "panic.h"
+#include <sync.h>
 
 #define PF_PRESENT  0x1  // Bit 0
 #define PF_WRITE    0x2  // Bit 1
 #define PF_USER     0x4  // Bit 2
 
 uint64_t _g_system_tick_count = 0;
+
+DECLARE_SPINLOCK(__kexc_log_lock);
 
 bool areInterruptsEnabled() {
     unsigned long eflags;
@@ -22,20 +25,24 @@ bool areInterruptsEnabled() {
 }
 
 DEFINE_INT_HANDLER(_userspace_common_exc_handler) {
-    kprintWarn("Faulting instruction: 0x%llx\n", frame->hwframe.rip);
     kpanic(frame);
 }
 
 DEFINE_INT_HANDLER(_exc_handler_div) {
+    acquireSpinlock(&__kexc_log_lock);
+
     kprintColoredEx("#DIV", TEXT_COLOR_RED);
     kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->hwframe.rip);
     kprintColoredEx("#DIV ", TEXT_COLOR_RED);
     kprintColoredEx("Your goomba code tried to divide by 0\n", TEXT_COLOR_WHITE);
 
+    releaseSpinlock(&__kexc_log_lock);
     kpanic(frame);
 }
 
 DEFINE_INT_HANDLER(_exc_handler_pf) {
+    acquireSpinlock(&__kexc_log_lock);
+
     kprintColoredEx("#PF", TEXT_COLOR_RED);
     kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->hwframe.rip);
     kprintColoredEx("#PF", TEXT_COLOR_RED);
@@ -72,6 +79,8 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
     kprintWarn("Faulting address: 0x%llx\n", cr2);
 
     kprintChar('\n');
+
+    releaseSpinlock(&__kexc_log_lock);
     kpanic(frame);
 }
 

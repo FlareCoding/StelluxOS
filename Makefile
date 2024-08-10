@@ -22,7 +22,7 @@ RESOURCE_DIR := resources
 DISK_IMG := $(BIN_DIR)/$(OSNAME).elf
 
 # QEMU
-QEMU_CORES := 6
+QEMU_CORES := 8
 QEMU_EMULATOR := qemu-system-x86_64
 COMMON_QEMU_FLAGS := -machine q35 -device qemu-xhci,id=xhci -drive file=$(DISK_IMG),format=raw -m 4G -net none -smp $(QEMU_CORES) -serial mon:stdio -serial file:com2.serial -trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
 QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/OVMF_CODE.fd",readonly=on -drive if=pflash,format=raw,unit=1,file="efi/OVMF_VARS.fd"
@@ -82,13 +82,9 @@ run: $(DISK_IMG)
 run-headless: $(DISK_IMG)
 	$(QEMU_EMULATOR) $(QEMU_FLAGS) -nographic
 
-# Run target with GDB support
-run-debug: $(DISK_IMG)
-	$(QEMU_EMULATOR) -s -S $(QEMU_FLAGS)
-
-# Run target with GDB support
+# Run target headless with GDB support
 run-debug-headless: $(DISK_IMG)
-	$(QEMU_EMULATOR) -gdb tcp::4554 -S $(QEMU_FLAGS) -nographic
+	$(QEMU_EMULATOR) -gdb tcp::4554 -S $(QEMU_FLAGS) -nographic -no-reboot -no-shutdown
 
 # Connects GDB to a running qemu instance
 connect-gdb:

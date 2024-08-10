@@ -15,10 +15,15 @@ static inline void acquireSpinlock(Spinlock* lock) {
     while (__sync_lock_test_and_set(&lock->lockVar, 1)) {
         asm volatile("pause");
     }
+
+    // Memory barrier to prevent reordering
+    __sync_synchronize();
 }
 
 // Release the lock
 static inline void releaseSpinlock(Spinlock* lock) {
+    // Memory barrier to prevent reordering
+    __sync_synchronize();
     __sync_lock_release(&lock->lockVar);
 }
 

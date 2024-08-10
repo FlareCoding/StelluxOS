@@ -3,6 +3,7 @@
 #include <kelevate/kelevate.h>
 #include <paging/page.h>
 #include <paging/page_frame_allocator.h>
+#include <paging/phys_addr_translation.h>
 #include <memory/kmemory.h>
 #include <time/ktime.h>
 #include <acpi/acpi_controller.h>
@@ -12,50 +13,73 @@
 #include <gdt/gdt.h>
 #include <interrupts/idt.h>
 #include <sched/sched.h>
+#include <sync.h>
 
 EXTERN_C void __ap_startup_asm();
 
 void __ap_startup_user_entry();
 
+DECLARE_SPINLOCK(__ap_startup_lock);
+
 EXTERN_C
 void __ap_startup(int apicid) {
-    // Switch onto a clean kernel stack for the core
-    void* apKernelStack = zallocPages(4);
-    uint64_t apKernelStackTop = reinterpret_cast<uint64_t>(apKernelStack) + PAGE_SIZE;
-    asm volatile ("mov %0, %%rsp" :: "r"(apKernelStackTop));
+    // void* apKernelStackTop;
+    // asm volatile ("mov %%rsp, %0" : "=r"(apKernelStackTop));
 
-    // Setup the GDT
-    initializeAndInstallGDT(apicid, (void*)apKernelStackTop);
+    // // Setup the GDT
+    // initializeAndInstallGDT(apicid, __va(apKernelStackTop));
 
-    // Install the existing IDT and enable interrupts
-    loadIdtr();
-    enableInterrupts();
+    // // Initialize the default root kernel swapper task (this thread).
+    // g_kernelSwapperTasks[apicid].state = ProcessState::RUNNING;
+    // g_kernelSwapperTasks[apicid].pid = apicid;
+    // zeromem(&g_kernelSwapperTasks[apicid].context, sizeof(CpuContext));
+    // g_kernelSwapperTasks[apicid].context.rflags |= 0x200;
+    // g_kernelSwapperTasks[apicid].elevated = 0;
 
-    // Enable syscalls
-    enableSyscallInterface();
+    // // Set the current task in the per cpu region
+    // __per_cpu_data.__cpu[apicid].currentTask = &g_kernelSwapperTasks[apicid];
+    // __per_cpu_data.__cpu[apicid].currentTask->cpu = apicid;
 
-    // Update cr3
-    paging::setCurrentTopLevelPageTable(paging::g_kernelRootPageTable);
+    // // Install the existing IDT and enable interrupts
+    // loadIdtr();
+    // enableInterrupts();
 
-    // Initialize the default root kernel swapper task (this thread).
-    g_kernelSwapperTasks[apicid].state = ProcessState::RUNNING;
-    g_kernelSwapperTasks[apicid].pid = 1;
-    zeromem(&g_kernelSwapperTasks[apicid].context, sizeof(CpuContext));
-    g_kernelSwapperTasks[apicid].context.rflags |= 0x200;
-    g_kernelSwapperTasks[apicid].elevated = 0;
+    // // Enable syscalls
+    // enableSyscallInterface();
 
-    // Set the current task in the per cpu region
-    __per_cpu_data.__cpu[apicid].currentTask = &g_kernelSwapperTasks[apicid];
-    __per_cpu_data.__cpu[apicid].currentTask->cpu = apicid;
+    // // Update cr3
+    // paging::setCurrentTopLevelPageTable(paging::g_kernelRootPageTable);
 
-    // Setup per-cpu stack info
-    char* usermodeStack = (char*)zallocPages(8);
-    size_t usermodeStackSize = 8 * PAGE_SIZE;
-    size_t userStackTop = (uint64_t)(usermodeStack + usermodeStackSize);
+    // Setup user stack
+    //char* usermodeStack = (char*)zallocPages(100);
+    //(void)usermodeStack;
 
-    __call_lowered_entry(__ap_startup_user_entry, (void*)userStackTop);
+    // size_t usermodeStackSize = 8 * PAGE_SIZE;
+    // size_t userStackTop = (uint64_t)(usermodeStack + usermodeStackSize);
 
+    // uint64_t rsp = 0;
+    // asm volatile ("mov %%rsp, %0" : "=r"(rsp));
+    // kprintInfo("[CPU%i] kstack: 0x%llx  ustack: 0x%llx\n", apicid, (uint64_t)__va((void*)rsp), (uint64_t)usermodeStack);
+    // zeromem(usermodeStack, PAGE_SIZE * 8);
+
+
+    acquireSpinlock(&__ap_startup_lock);
+
+    void* ptr = (void*)0xffffffff01bd0000;
+    zeromem(ptr, 100 * PAGE_SIZE);
+
+    releaseSpinlock(&__ap_startup_lock);
+    (void)apicid;
+
+    // acquireSpinlock(&__ap_startup_lock);
+    // uint64_t rsp = 0;
+    // asm volatile ("mov %%rsp, %0" : "=r"(rsp));
+    // kprintInfo("[CPU%i] kstack: 0x%llx  ustack: 0x%llx\n", apicid, (uint64_t)__va((void*)rsp), (uint64_t)0);
+    // releaseSpinlock(&__ap_startup_lock);
     while (1);
+
+    // __call_lowered_entry(__ap_startup_user_entry, (void*)userStackTop);
+    // while (1);
 }
 
 void __ap_startup_user_entry() {
@@ -82,6 +106,7 @@ void ke_test_ap_startup() {
         globalPageFrameAllocator.lockPage((void*)0x9000);
         globalPageFrameAllocator.lockPage((void*)0x11000);
         globalPageFrameAllocator.lockPage((void*)0x15000);
+        globalPageFrameAllocator.lockPages((void*)0x30000, MAX_CPUS); // Stack region top is 0x70000
         memcpy(__ap_startup_code_real_mode_address, (void*)__ap_startup_asm, PAGE_SIZE);
         
         uint64_t __ap_startup_c_entry_address = (uint64_t)__ap_startup;
@@ -104,8 +129,7 @@ void ke_test_ap_startup() {
 
         auto& lapic = Apic::getLocalApic();
 
-        // for (size_t i = 1; i < apicTable->getCpuCount() - 1; i++) {
-        for (size_t i = 1; i < 5; i++) {
+        for (size_t i = 1; i < apicTable->getCpuCount(); i++) {
             uint8_t apicid = apicTable->getLocalApicDescriptor(i).apicId;
 
             kprint("Waking up cpu %i\n", apicid);

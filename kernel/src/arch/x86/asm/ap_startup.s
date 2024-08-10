@@ -8,7 +8,9 @@
 .equ bspdone_ptr, 0x11010
 
 .equ kernel_pml4, 0x15000
-.equ stack_top, 0x50000
+.equ stack_top, 0x70000          # Top of the stack region
+.equ stack_base, 0x30000         # Base of the stack region
+.equ stack_size, 0x2000          # Size of each stack (2 pages = 8 KB)
 
 .section .text
 .code16
@@ -49,10 +51,13 @@ _L80A0:
     cpuid
     shr ebx, 24
     mov edi, ebx
-    # set up 32k stack, one for each core. It is important that all core must have its own stack
-    shl ebx, 15
-    mov esp, stack_top
-    sub esp, ebx
+    # set up 8k stack, one for each core. It is important that all cores must have their own stack
+    mov eax, stack_size           # eax = 0x2000 (8 KB per stack)
+    mul edi                       # eax = eax * edi (stack_size * apicid)
+    mov edx, eax                  # edx = eax (store result in edx)
+    mov eax, stack_top            # eax = 0x70000
+    sub eax, edx                  # eax = stack_top - (stack_size * apicid)
+    mov esp, eax                  # esp = calculated stack top for this AP
     push edi
     # spinlock, wait for the BSP to finish
 1:  pause
@@ -66,7 +71,7 @@ _L80A0:
     mov eax, cr4
     or eax, 0x20
     mov cr4, eax
-    # Enable Long Mode (you'll need to write the code for wrmsr)
+    # Enable Long Mode
     mov ecx, 0xC0000080 # IA32_EFER
     rdmsr
     or eax, 0x100
