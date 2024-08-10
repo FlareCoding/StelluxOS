@@ -1,11 +1,74 @@
 #include "panic.h"
 #include <kprint.h>
+#include <sync.h>
+
+const char* g_cpuExceptionMessages[] = {
+    "Division By Zero",
+    "Debug",
+    "Non Maskable Interrupt",
+    "Breakpoint",
+    "Into Detected Overflow",
+    "Out of Bounds",
+    "Invalid Opcode",
+    "No Coprocessor",
+
+    "Double Fault",
+    "Coprocessor Segment Overrun",
+    "Bad TSS",
+    "Segment Not Present",
+    "Stack Fault",
+    "General Protection Fault",
+    "Page Fault",
+    "Unknown Interrupt",
+
+    "Coprocessor Fault",
+    "Alignment Check",
+    "Machine Check",
+    "SIMD Floating-Point Exception",
+    "Virtualization Exception",
+    "Control Protection Exception",
+    "Reserved",
+    "Reserved",
+
+    "Reserved",
+    "Reserved",
+    "Reserved",
+    "Reserved",
+    "Hypervisor Injection Exception",
+    "VMM Communication Exception",
+    "Security Exception"
+};
+
+DECLARE_SPINLOCK(__kpanic_lock);
+
+void printBacktrace(PtRegs* regs) {
+    kprintInfo("======= BACKTRACE =======\n");
+
+    uint64_t *rbp = (uint64_t*)regs->rbp;
+    uint64_t rip = regs->hwframe.rip;
+
+    // Print the current instruction pointer (RIP)
+    kprintInfo("RIP: 0x%llx\n", rip);
+
+    // Iterate through the stack frames
+    while (rbp) {
+        uint64_t next_rip = *(rbp + 1); // Next instruction pointer (return address)
+        if (next_rip == 0x0)
+            break;
+
+        kprintInfo(" -> 0x%llx\n", next_rip);
+
+        rbp = (uint64_t*)*rbp; // Move to the next frame
+    }
+}
 
 void kpanic(PtRegs* frame) {
     uint64_t cr0, cr2, cr3, cr4;
 
     // Disable interrupts
     disableInterrupts();
+
+    acquireSpinlock(&__kpanic_lock);
 
     // Read the control registers using inline assembly
     __asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
@@ -14,9 +77,10 @@ void kpanic(PtRegs* frame) {
     __asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
 
     kprintChar('\n');
-    kprintError("====== PANIC: CPU EXCEPTION ======\n");
-    kprintInfo("Interrupt Number: %llx\n", frame->intno);
+    kprintError("====== PANIC: CPU EXCEPTION %s ======\n", g_cpuExceptionMessages[frame->intno]);
     kprintInfo("Error Code: %llx\n", frame->error);
+
+    printBacktrace(frame);
     
     kprint("======= REGISTER STATE =======\n");
 
@@ -38,7 +102,8 @@ void kpanic(PtRegs* frame) {
     kprint("======= SPECIAL REGISTERS =======\n");
     kprintInfo("RIP: %llx  RFLAGS: %llx\n", frame->hwframe.rip, frame->hwframe.rflags);
 
-    kprintError("======= SYSTEM HALTED =======\n");
+    kprintError("======= PROCESSOR HALTED =======\n");
+    releaseSpinlock(&__kpanic_lock);
     for (;;) {
         // Loop indefinitely to halt the system
         __asm__ volatile ("hlt");

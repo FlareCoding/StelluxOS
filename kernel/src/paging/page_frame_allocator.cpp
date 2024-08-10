@@ -405,13 +405,31 @@ namespace paging {
         // a disk page frame swap is required to request more pages,
         // but Stellux kernel doesn't support it yet.
         kprintError("Out of RAM! Disk page frame swap is not yet implemented\n");
-        return NULL;
+        return nullptr;
     }
 
     void* PageFrameAllocator::requestFreePagesZeroed(size_t pages) {
         void* page = requestFreePages(pages);
+        if (!page) {
+            return nullptr;
+        }
+
         zeromem(page, PAGE_SIZE * pages);
 
         return page;
+    }
+
+    void* PageFrameAllocator::coreTest(size_t pages) {
+        acquireSpinlock(&__kpage_request_lock);
+        releaseSpinlock(&__kpage_request_lock);
+
+        return __va(m_lastTrackedFreePage);
+        (void)pages;
+
+        // If there are no more pages in RAM to give out,
+        // a disk page frame swap is required to request more pages,
+        // but Stellux kernel doesn't support it yet.
+        kprintError("Out of RAM! Disk page frame swap is not yet implemented\n");
+        return nullptr;
     }
 } // namespace paging
