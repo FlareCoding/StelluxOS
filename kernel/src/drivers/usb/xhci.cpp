@@ -215,14 +215,16 @@ namespace drivers {
         m_doorbellRegisters = reinterpret_cast<XhciDoorbellRegister*>(base);
     }
 
-    void XhciDoorbellManager::ringDoorbell(uint8_t target) {
-        // *Note* Write _0_ to send the command
-        m_doorbellRegisters[target].raw = 0;
+    void XhciDoorbellManager::ringDoorbell(uint8_t doorbell, uint8_t target) {
+        m_doorbellRegisters[doorbell].raw = target;
     }
 
     void XhciDoorbellManager::ringCommandDoorbell() {
-        uint8_t target = XHCI_DOORBELL_TARGET_COMMAND_RING;
-        ringDoorbell(target);
+        ringDoorbell(0, XHCI_DOORBELL_TARGET_COMMAND_RING);
+    }
+
+    void XhciDoorbellManager::ringControlEndpointDoorbell(uint8_t doorbell) {
+        ringDoorbell(doorbell, XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
     }
 
     XhciCommandRing::XhciCommandRing(size_t maxTrbs) {
@@ -366,11 +368,12 @@ namespace drivers {
         return ret;
     }
 
-    XhciTransferRing::XhciTransferRing(size_t maxTrbs) {
+    XhciTransferRing::XhciTransferRing(size_t maxTrbs, uint8_t doorbellId) {
         m_maxTrbCount = maxTrbs;
-        m_dcsBit = 0;
+        m_dcsBit = 1;
         m_dequeuePtr = 0;
         m_enqueuePtr = 0;
+        m_doorbellId = doorbellId;
 
         const uint64_t ringSize = maxTrbs * sizeof(XhciTrb_t);
 
@@ -390,6 +393,21 @@ namespace drivers {
         // Set the last TRB as a link TRB to point back to the first TRB
         m_trbRing[255].parameter = m_physicalRingBase;
         m_trbRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | m_dcsBit;
+    }
+
+    void XhciTransferRing::enqueue(XhciTrb_t* trb) {
+        // Adjust the TRB's cycle bit to the current DCS
+        trb->cycleBit = m_dcsBit;
+
+        // Insert the TRB into the ring
+        m_trbRing[m_enqueuePtr] = *trb;
+
+        // Advance and possibly wrap the enqueue pointer if needed.
+        // maxTrbCount - 1 accounts for the LINK_TRB.
+        if (++m_enqueuePtr == m_maxTrbCount - 1) {
+            m_enqueuePtr = 0;
+            m_dcsBit = !m_dcsBit;
+        }
     }
 
     XhciDriver& XhciDriver::get() {
@@ -904,7 +922,7 @@ namespace drivers {
 
         // Allocate a transfer ring for the control endpoint context
         auto transferRing = kstl::SharedPtr<XhciTransferRing>(
-            new XhciTransferRing(XHCI_TRANSFER_RING_TRB_COUNT)
+            new XhciTransferRing(XHCI_TRANSFER_RING_TRB_COUNT, slotId)
         );
 
         // Calculate the input context size based
@@ -1009,6 +1027,110 @@ namespace drivers {
             );
         }
 
+        // Sanity-check the actual device context entry in DCBAA
+        XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
+        kprintInfo("TRDP: 0x%llx\n", deviceContext->controlEndpointContext.transferRingDequeuePtr);
+
+        // Buffer to hold the bytes received from GET_DESCRIPTOR command
+        uint8_t* descriptorBuffer = (uint8_t*)_allocXhciMemory(64, 128, 64);
+
+        // Buffer to hold the bytes received from GET_DESCRIPTOR command
+        uint8_t* transferStatusBuffer = (uint8_t*)_allocXhciMemory(64, 16, 16);
+
+        // Construct the Setup Stage TRB
+        XhciSetupStageTrb_t setupStageTrb;
+        zeromem(&setupStageTrb, sizeof(XhciSetupStageTrb_t));
+
+        setupStageTrb.trbType = XHCI_TRB_TYPE_SETUP_STAGE;
+        setupStageTrb.requestPacket.bRequestType = 0x80;
+        setupStageTrb.requestPacket.bRequest = 6;    // GET_DESCRIPTOR
+        setupStageTrb.requestPacket.wValue = 0x0100; // DEVICE
+        setupStageTrb.requestPacket.wIndex = 0;
+        setupStageTrb.requestPacket.wLength = 8;
+        setupStageTrb.trbTransferLength = 8;
+        setupStageTrb.interrupterTarget = 0;
+        setupStageTrb.trt = 3;
+        setupStageTrb.idt = 1;
+        setupStageTrb.ioc = 0;
+
+        // Construct the Data Stage TRB
+        XhciDataStageTrb_t dataStageTrb;
+        zeromem(&dataStageTrb, sizeof(XhciDataStageTrb_t));
+
+        dataStageTrb.trbType = XHCI_TRB_TYPE_DATA_STAGE;
+        dataStageTrb.trbTransferLength = 8;
+        dataStageTrb.tdSize = 0;
+        dataStageTrb.interrupterTarget = 0;
+        dataStageTrb.ent = 1;
+        dataStageTrb.chain = 1;
+        dataStageTrb.dir = 1;
+        dataStageTrb.dataBuffer = (uint64_t)__pa(descriptorBuffer);
+
+        // Construct the first Event Data TRB
+        XhciEventDataTrb_t eventDataTrb;
+        zeromem(&eventDataTrb, sizeof(XhciEventDataTrb_t));
+
+        eventDataTrb.trbType = XHCI_TRB_TYPE_EVENT_DATA;
+        eventDataTrb.interrupterTarget = 0;
+        eventDataTrb.chain = 0;
+        eventDataTrb.ioc = 1;
+        eventDataTrb.eventData = (uint64_t)__pa(transferStatusBuffer);
+
+        // Small delay period between ringing the
+        // doorbell and polling the event ring.
+        const uint32_t commandDelay = 100;
+
+        transferRing->enqueue((XhciTrb_t*)&setupStageTrb);
+        transferRing->enqueue((XhciTrb_t*)&dataStageTrb);
+        transferRing->enqueue((XhciTrb_t*)&eventDataTrb);
+
+        kprint("[*] Ringing transfer ring doorbell: %i\n", transferRing->getDoorbellId());
+        kprintInfo("   &SetupStageTRB  == 0x%llx\n", (uint64_t)__pa(&setupStageTrb));
+        kprintInfo("   &transferRing   == 0x%llx\n", transferRing->getPhysicalBase());
+        m_doorbellManager->ringDoorbell(transferRing->getDoorbellId(), 1);
+
+        // Let the host controller process the command
+        msleep(commandDelay);
+
+        _logUsbsts();
+        
+        // Poll the event ring for the command completion event
+        XhciSetupDataStageCompletionTrb_t* setupDataStageCompletionTrb = nullptr;
+        kstl::vector<XhciTrb_t*> events;
+        if (m_eventRing->hasUnprocessedEvents()) {
+            m_eventRing->dequeueEvents(events);
+            _markXhciInterruptCompleted(0);
+        }
+
+        // Search for completion TRB
+        for (size_t i = 0; i < events.size(); ++i) {
+            if (events[i]->trbType == XHCI_TRB_TYPE_TRANSFER_EVENT) {
+                setupDataStageCompletionTrb = reinterpret_cast<XhciSetupDataStageCompletionTrb_t*>(events[i]);
+                break;   
+            } else if (events[i]->trbType != 0) {
+                kprint("Found TRB: %s\n", trbCompletionCodeToString(events[i]->trbType));
+            }
+        }
+
+        if (!setupDataStageCompletionTrb) {
+            kprintError("[*] Failed to find completion TRB\n");
+            return;
+        }
+
+        if (setupDataStageCompletionTrb->completionCode != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+            kprintError("[*] Command TRB failed with error: %s\n", trbCompletionCodeToString(completionTrb->completionCode));
+            return;
+        }
+
+        kprintInfo(
+            "[Completion TRB] code: %i bytesTransfered: %i\n",
+            setupDataStageCompletionTrb->completionCode,
+            setupDataStageCompletionTrb->bytesTransfered
+        );
+
+        return;
+
+        // Prepare the Input Context for the second Address Device command
         if (m_64ByteContextSize) {
             // Inspect the Output Device Context
             XhciDeviceContext64* deviceContext = (XhciDeviceContext64*)__va((void*)m_dcbaa[slotId]);

@@ -1456,6 +1456,22 @@ typedef struct XhciCommandCompletionRequestBlock {
 } XhciCommandCompletionTrb_t;
 static_assert(sizeof(XhciCommandCompletionTrb_t) == sizeof(uint32_t) * 4);
 
+typedef struct XhciSetupDataStageCompletionRequestBlock {
+    uint64_t commandTrbPointer;
+    struct {
+        uint32_t bytesTransfered    : 24;
+        uint32_t completionCode     : 8;
+    };
+    struct {
+        uint32_t cycleBit   : 1;
+        uint32_t rsvd1      : 9;
+        uint32_t trbType    : 6;
+        uint32_t vfid       : 8;
+        uint32_t slotId     : 8;
+    };
+} XhciSetupDataStageCompletionTrb_t;
+static_assert(sizeof(XhciSetupDataStageCompletionTrb_t) == sizeof(uint32_t) * 4);
+
 typedef struct XhciPortStatusChangeRequestBlock {
     struct {
         uint32_t rsvd0  : 24;
@@ -1541,7 +1557,7 @@ typedef struct XhciSetupStageTransferRequestBlock {
         uint32_t trbTransferLength  : 17;
 
         // Reserved
-        uint32_t rsvd               : 5;
+        uint32_t rsvd0              : 5;
 
         /*
             This field defines the index of the Interrupter that will receive events
@@ -1555,7 +1571,7 @@ typedef struct XhciSetupStageTransferRequestBlock {
         uint32_t cycleBit       : 1;
 
         // Reserved
-        uint32_t rsvd0          : 4;
+        uint32_t rsvd1          : 4;
 
         /*
             Interrupt On Completion (IOC). If this bit is set to ‘1’, it specifies that when this TRB
@@ -1572,7 +1588,7 @@ typedef struct XhciSetupStageTransferRequestBlock {
         uint32_t idt            : 1;
 
         // Reserved
-        uint32_t rsvd1          : 3;
+        uint32_t rsvd2          : 3;
 
         /*
             TRB Type. This field is set to Setup Stage TRB type.
@@ -1592,7 +1608,7 @@ typedef struct XhciSetupStageTransferRequestBlock {
         uint32_t trt            : 2;
 
         // Reserved
-        uint32_t rsvd2          : 14;
+        uint32_t rsvd3          : 14;
     };
 } XhciSetupStageTrb_t;
 static_assert(sizeof(XhciSetupStageTrb_t) == sizeof(uint32_t) * 4);
@@ -1733,11 +1749,11 @@ and the operation of control endpoints.
 */
 typedef struct XhciStatusStageTransferRequestBlock {
     // Reserved
-    uint64_t rsvd;
+    uint64_t rsvd0;
 
     struct {
         // Reserved
-        uint32_t rsvd               : 22;
+        uint32_t rsvd1              : 22;
 
         /*
             This field defines the index of the Interrupter that will receive events
@@ -1757,7 +1773,7 @@ typedef struct XhciStatusStageTransferRequestBlock {
         uint32_t ent            : 1;
 
         // Reserved
-        uint32_t rsvd0          : 2;
+        uint32_t rsvd2          : 2;
 
         /*
             Chain bit (CH). Set to ‘1’ by software to associate this TRB with the next TRB on the Ring.
@@ -1777,7 +1793,7 @@ typedef struct XhciStatusStageTransferRequestBlock {
         uint32_t ioc            : 1;
 
         // Reserved
-        uint32_t rsvd1          : 4;
+        uint32_t rsvd3          : 4;
 
         /*
             TRB Type. This field is set to Setup Stage TRB type.
@@ -1796,7 +1812,7 @@ typedef struct XhciStatusStageTransferRequestBlock {
         uint32_t dir            : 1;
 
         // Reserved
-        uint32_t rsvd2          : 15;
+        uint32_t rsvd4          : 15;
     };
 } XhciStatusStageTrb_t;
 static_assert(sizeof(XhciStatusStageTrb_t) == sizeof(uint32_t) * 4);
@@ -1824,7 +1840,7 @@ typedef struct XhciEventDataTransferRequestBlock {
 
     struct {
         // Reserved
-        uint32_t rsvd               : 22;
+        uint32_t rsvd0              : 22;
 
         /*
             This field defines the index of the Interrupter that will receive events
@@ -1844,7 +1860,7 @@ typedef struct XhciEventDataTransferRequestBlock {
         uint32_t ent            : 1;
 
         // Reserved
-        uint32_t rsvd0          : 2;
+        uint32_t rsvd1          : 2;
 
         /*
             Chain bit (CH). Set to ‘1’ by software to associate this TRB with the next TRB on the Ring.
@@ -1864,7 +1880,7 @@ typedef struct XhciEventDataTransferRequestBlock {
         uint32_t ioc            : 1;
 
         // Reserved
-        uint32_t rsvd1          : 3;
+        uint32_t rsvd2          : 3;
 
         /*
             Block Event Interrupt (BEI). If this bit is set to '1' and IOC = '1', then the
@@ -1880,7 +1896,7 @@ typedef struct XhciEventDataTransferRequestBlock {
         uint32_t trbType        : 6;
 
         // Reserved
-        uint32_t rsvd2          : 16;
+        uint32_t rsvd3          : 16;
     };
 } XhciEventDataTrb_t;
 static_assert(sizeof(XhciEventDataTrb_t) == sizeof(uint32_t) * 4);
@@ -2866,7 +2882,8 @@ struct XhciDoorbellRegister {
 } __attribute__((packed));
 
 // (TO-DO: Find spec page)
-#define XHCI_DOORBELL_TARGET_COMMAND_RING 0
+#define XHCI_DOORBELL_TARGET_COMMAND_RING       0
+#define XHCI_DOORBELL_TARGET_CONTROL_EP_RING    1
 
 /*
 // xHci Spec Section 7.2 (page 521)
@@ -3094,8 +3111,11 @@ class XhciDoorbellManager {
 public:
     XhciDoorbellManager(uint64_t base);
 
-    void ringDoorbell(uint8_t target);
+    // TargeValue = 2 + (ZeroBasedEndpoint * 2) + (isOutEp ? 0 : 1)
+    void ringDoorbell(uint8_t doorbell, uint8_t target);
+
     void ringCommandDoorbell();
+    void ringControlEndpointDoorbell(uint8_t doorbell);
 
 private:
     XhciDoorbellRegister* m_doorbellRegisters;
@@ -3155,11 +3175,14 @@ private:
 
 class XhciTransferRing {
 public:
-    XhciTransferRing(size_t maxTrbs);
+    XhciTransferRing(size_t maxTrbs, uint8_t doorbellId);
 
     inline uint64_t getVirtualBase() const { return (uint64_t)m_trbRing; }
     inline uint64_t getPhysicalBase() const { return m_physicalRingBase; }
     inline uint8_t  getCycleBit() const { return m_dcsBit; }
+    inline uint8_t getDoorbellId() const { return m_doorbellId; }
+
+    void enqueue(XhciTrb_t* trb);
 
 private:
     size_t      m_maxTrbCount;          // Number of valid TRBs in the ring including the LINK_TRB
@@ -3168,6 +3191,7 @@ private:
     XhciTrb_t*  m_trbRing;              // Virtual ring base
     uint64_t    m_physicalRingBase;     // Physical ring base
     uint8_t     m_dcsBit;               // Dequeue cycle state
+    uint8_t     m_doorbellId;           // ID of the doorbell associated with the ring
 };
 
 class XhciDriver {
