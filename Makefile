@@ -74,6 +74,10 @@ $(DISK_IMG): bootloader kernel
 	mcopy -i $(DISK_IMG) $(KERNEL_DIR)/bin/kernel.elf ::
 	mcopy -i $(DISK_IMG) $(RESOURCE_DIR)/zap-light16.psf ::
 
+# Dependencies
+install-dependencies:
+	sudo apt-get install build-essential g++ gnu-efi qemu-system -y
+
 # Run target
 run: $(DISK_IMG)
 	$(QEMU_EMULATOR) $(QEMU_FLAGS)
