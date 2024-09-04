@@ -19,14 +19,6 @@ IoApic::IoApic(uint64_t physRegs, uint64_t gsib) {
 }
 
 /*
-* Bit of assignment here - implement this on your own. Use the lowerDword & upperDword
-* fields of RedirectionEntry using
-*                                 ent.lowerDword = read(entNo);
-*                                 ent.upperDword = read(entNo);
-*                                 return (ent);
-*
-* Be sure to check that entNo < redirectionEntries()
-*
 * @param entNo - entry no. for which redir-entry is required
 * @return entry associated with entry no.
 */
@@ -48,13 +40,6 @@ IoApic::RedirectionEntry IoApic::getRedirectionEntry(uint8_t entNo) {
 }
 
 /*
-* Bit of assignment here - implement this on your own. Use the lowerDword & upperDword
-* fields of RedirectionEntry using
-*                               write(entNo, ent->lowerDword);
-*                               write(entNo, ent->upperDword);
-*
-* Be sure to check that entNo < redirectionEntries()
-*
 * @param entNo - entry no. for which redir-entry is required
 * @param entry - ptr to entry to write
 */
