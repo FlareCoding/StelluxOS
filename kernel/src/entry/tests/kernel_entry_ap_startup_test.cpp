@@ -95,7 +95,7 @@ void ke_test_ap_startup() {
         uint64_t __ap_startup_c_entry_address = (uint64_t)__ap_startup;
         memcpy((void*)0x9000, &__ap_startup_c_entry_address, sizeof(uint64_t));
 
-        kprint("AP startup vector: 0x%llx\n", 0x600 | ((uint32_t)((uint64_t)__ap_startup_code_real_mode_address >> 12)));
+        kprint("Sending SIPI to AP cores...\n");
 
         volatile uint8_t* aprunning_ptr = (volatile uint8_t*)0x11000;  // count how many APs have started
         uint8_t* bspid_ptr = (uint8_t*)0x11008; // BSP id
@@ -115,7 +115,6 @@ void ke_test_ap_startup() {
         for (size_t i = 1; i < apicTable->getCpuCount(); i++) {
             uint8_t apicid = apicTable->getLocalApicDescriptor(i).apicId;
 
-            kprint("Waking up cpu %i\n", apicid);
             lapic->sendIpi(apicid, 0x500);
             msleep(20);
 

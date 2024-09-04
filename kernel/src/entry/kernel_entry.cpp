@@ -180,10 +180,6 @@ void _kuser_entry() {
     if (acpiController.hasApicTable()) {
         auto apicTable = acpiController.getApicTable();
         kuPrint("==== Detected %lli CPUs ====\n", apicTable->getCpuCount());
-        for (size_t i = 0; i < apicTable->getCpuCount(); ++i) {
-            kuPrint("    Core %lli: online\n", apicTable->getLocalApicDescriptor(i).apicId);
-        }
-        kuPrint("\n");
     }
 
 #ifdef KE_TEST_MULTITHREADING
