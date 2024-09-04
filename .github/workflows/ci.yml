@@ -25,14 +25,14 @@ jobs:
     - name: Build Stellux OS
       run: make
 
-    - name: Verify kernel ELF is created
+    - name: Verify that kernel ELF is created
       run: |
         if [ ! -f kernel/bin/kernel.elf ]; then
           echo "Kernel ELF not found!"
           exit 1
         fi
 
-    - name: Stellux image is created
+    - name: Verify that StelluxOS image is created
       run: |
           if [ ! -f bin/stellux.elf ]; then
             echo "Stellux image not found!"
