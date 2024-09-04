@@ -76,7 +76,7 @@ $(DISK_IMG): bootloader kernel
 
 # Dependencies
 install-dependencies:
-	sudo apt-get install build-essential g++ gnu-efi qemu-system -y
+	sudo apt-get install build-essential g++ gnu-efi mtools qemu-system -y
 
 # Run target
 run: $(DISK_IMG)
