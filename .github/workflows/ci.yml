@@ -1,0 +1,43 @@
+name: Build Stellux OS
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Environment
+      run: sudo apt-get update
+
+    - name: Install Dependencies
+      run: make install-dependencies
+
+    - name: Build Stellux OS
+      run: make
+
+    - name: Verify kernel ELF is created
+      run: |
+        if [ ! -f kernel/bin/kernel.elf ]; then
+          echo "Kernel ELF not found!"
+          exit 1
+        fi
+
+    - name: Stellux image is created
+      run: |
+          if [ ! -f bin/stellux.elf ]; then
+            echo "Stellux image not found!"
+            exit 1
+          fi
+
+    - name: Clean build
+      run: make clean
