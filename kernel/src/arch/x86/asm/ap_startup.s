@@ -8,9 +8,9 @@
 .equ bspdone_ptr, 0x11010
 
 .equ kernel_pml4, 0x15000
-.equ stack_top, 0x70000          # Top of the stack region
-.equ stack_base, 0x30000         # Base of the stack region
-.equ stack_size, 0x2000          # Size of each stack (2 pages = 8 KB)
+.equ stack_top, 0x70000       # Top of the stack region
+.equ stack_base, 0x18000      # Base of the stack region
+.equ stack_size, 512          # Size of each stack (512 bytes)
 
 .section .text
 .code16
@@ -51,7 +51,11 @@ _L80A0:
     cpuid
     shr ebx, 24
     mov edi, ebx
-    # set up 8k stack, one for each core. It is important that all cores must have their own stack
+    
+    #
+    # Set up 512 byte stack, one for each core. It is important that all cores must have their own stack.
+    # After the jump to C code, a proper 8k stack is going to be allocated for each core.
+    #
     mov eax, stack_size           # eax = 0x2000 (8 KB per stack)
     mul edi                       # eax = eax * edi (stack_size * apicid)
     mov edx, eax                  # edx = eax (store result in edx)
@@ -59,6 +63,7 @@ _L80A0:
     sub eax, edx                  # eax = stack_top - (stack_size * apicid)
     mov esp, eax                  # esp = calculated stack top for this AP
     push edi
+
     # spinlock, wait for the BSP to finish
 1:  pause
     cmp byte ptr [bspdone_ptr], 0
