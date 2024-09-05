@@ -33,10 +33,26 @@
 .endm
 
 .macro POPALL
+    # At this point, the stack has:
+    # ------------------
+    #       gs
+    #       fs
+    #       ...
+    # ------------------
+    # We want to pop gs and fs values off the stack, but
+    # not restore them into actual segment registers as
+    # that will force-zero-out the hidden shadow gsbase
+    # and fsbase registers, which will cause further bugs.
+    #
+    # If someone figures out how to prevent that from happening,
+    # a better solution to this behavior will be much appreciated!
+    #
     pop rax
-    mov gs, ax
+    # mov gs, ax  Commented out to prevent zeroing out of gsbase
     pop rax
-    mov fs, ax
+    # mov fs, ax  Commented out to prevent zeroing out of fsbase
+    # ------------------------------------------------------------
+
     pop rax
     mov es, ax
     pop rax
@@ -138,8 +154,8 @@ __isr_entry_post_stack_switch:
     mov     ax, 0x10    # kernel data segment descriptor
 	mov     ds, ax
 	mov     es, ax
-	mov     fs, ax
-	mov     gs, ax
+	# mov     fs, ax
+	# mov     gs, ax
     
     # Call C handler
     call __common_isr_entry
