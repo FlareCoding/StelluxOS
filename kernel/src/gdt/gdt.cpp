@@ -157,6 +157,15 @@ void initializeAndInstallGDT(int apicid, void* kernelStack) {
 
     __per_cpu_data.__cpu[apicid].defaultKernelStack = reinterpret_cast<uint64_t>(kernelStack);
 
-    // Store the address of the tss in gsbase
+    // Store the address of the tss in both gsbase and k_gsbase
     writeMsr(IA32_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[apicid]);
+    writeMsr(IA32_KERNEL_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[apicid]);
+
+    //
+    // TO-DO:
+    //
+    // It would be nice to find a proper solution to managing gsbase vs k_gsbase,  but right
+    // now a stack corruption may occur when under the right circumstances, an interrupt context
+    // gets entered, swapgs gets called for the lowered thread, but never gets called again on exit.
+    //
 }
