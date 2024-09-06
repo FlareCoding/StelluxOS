@@ -24,6 +24,7 @@ public:
     size_t addTask(const PCB& task);
     PCB* getTask(size_t idx);
     PCB* findTaskByPid(pid_t pid);
+    void removeTask(pid_t pid);
 
 private:
     PCB m_runQueue[MAX_QUEUED_PROCESSES];
@@ -33,5 +34,12 @@ private:
     size_t m_currentTaskIndex = 0;
     size_t m_nextTaskIndex = 0;
 };
+
+//
+// Allows the current running kernel thread to terminate and switch to the next
+// available task without waiting for the next timer interrupt. If no next valid
+// task is available, control flow switches back to the kernel swapper task.
+//
+void exitKernelThread();
 
 #endif

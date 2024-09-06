@@ -1,5 +1,6 @@
 #include "sched.h"
 #include <memory/kmemory.h>
+#include <kelevate/kelevate.h>
 
 RoundRobinScheduler s_globalRRScheduler;
 
@@ -75,8 +76,6 @@ PCB* RoundRobinScheduler::getTask(size_t idx) {
     }
 
     return &m_runQueue[idx];
-
-    return nullptr;
 }
 
 PCB* RoundRobinScheduler::findTaskByPid(pid_t pid) {
@@ -88,3 +87,38 @@ PCB* RoundRobinScheduler::findTaskByPid(pid_t pid) {
 
     return nullptr;
 }
+
+void RoundRobinScheduler::removeTask(pid_t pid) {
+    for (size_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
+        if (m_runQueue[i].pid == pid) {
+            zeromem(&m_runQueue[i], sizeof(PCB));
+            break;
+        }
+    }
+}
+
+void exitKernelThread() {
+    // Construct a fake PtRegs structure to switch to a new context
+    PtRegs regs;
+    auto& scheduler = RoundRobinScheduler::get();
+    
+    // Elevate for the context switch and to disable the interrupts
+    __kelevate();
+    disableInterrupts();
+
+    PCB* currentTask = scheduler.getCurrentTask();
+    PCB* nextTask = scheduler.peekNextTask();
+    if (!nextTask) {
+        nextTask = &g_kernelSwapperTasks[BSP_CPU_ID];
+    }
+
+    // Switch to the next available task if possible
+    scheduler.switchToNextTask();
+
+    // Remove the current task from the run queue
+    scheduler.removeTask(currentTask->pid);
+
+    // This will end up calling an assembly routine that results in an 'iretq'
+    exitAndSwitchCurrentContext(nextTask, &regs);
+}
+

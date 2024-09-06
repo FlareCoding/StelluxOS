@@ -30,7 +30,6 @@ void simpleFunctionElevKprint() {
 }
 
 void simpleFunctionSyscallPrint() {
-    __kelevate();
     while(1) {
         int result = fibb(36);
         (void)result;
@@ -41,11 +40,17 @@ void simpleFunctionSyscallPrint() {
 }
 
 void simpleFunctionKuprint() {
-    __kelevate();
-    while(1) {
+    for (int i = 0; i < 5; i++) {
         int result = fibb(34);
         kuPrint("simpleFunctionKuprint> fibb(34): %i\n", result);
     }
+
+    exitKernelThread();
+}
+
+void sayHelloTask() {
+    kuPrint("Hello!\n");
+    exitKernelThread();
 }
 
 PCB createKernelTask(task_function_t taskFunction, uint64_t pid) {
@@ -87,13 +92,15 @@ void ke_test_multithreading() {
     auto& sched = RoundRobinScheduler::get();
 
     // Create some tasks and add them to the scheduler
-    PCB task1, task2, task3;
+    PCB task1, task2, task3, task4;
 
     task1 = createKernelTask(simpleFunctionElevKprint, 2);
     task2 = createKernelTask(simpleFunctionSyscallPrint, 3);
     task3 = createKernelTask(simpleFunctionKuprint, 4);
+    task4 = createKernelTask(sayHelloTask, 5);
 
     sched.addTask(task1);
     sched.addTask(task2);
     sched.addTask(task3);
+    sched.addTask(task4);
 }

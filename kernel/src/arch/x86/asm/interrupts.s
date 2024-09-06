@@ -167,6 +167,111 @@ __isr_entry_post_stack_switch:
     sti                 # Re-enable interrupts
     iretq               # Interrupt return
 
+#
+# Routine to be able to switch process context's
+# in-place outside of a normal interrupt context.
+#
+# void __asm_ctx_switch_no_irq(PtRegs* regs);
+#
+.global __asm_ctx_switch_no_irq
+
+__asm_ctx_switch_no_irq:
+    #
+    # PtRegs is now stored in rdi
+    # Push all the fields onto the stack
+    #
+    # ---- hwframe ----
+    mov rax, [rdi + 0xC8] # regs->ss
+    push rax
+
+    mov rax, [rdi + 0xC0] # regs->rsp
+    push rax
+
+    mov rax, [rdi + 0xB8] # regs->rflags
+    push rax
+
+    mov rax, [rdi + 0xB0] # regs->cs
+    push rax
+
+    mov rax, [rdi + 0xA8] # regs->rip
+    push rax
+
+    #
+    # ---- rest of the registers ----
+    #
+    mov rax, [rdi + 0xA0] # regs->error
+    push rax
+
+    mov rax, [rdi + 0x98] # regs->intno
+    push rax
+
+    mov rax, [rdi + 0x90] # regs->rax
+    push rax
+
+    mov rax, [rdi + 0x88] # regs->rcx
+    push rax
+
+    mov rax, [rdi + 0x80] # regs->rdx
+    push rax
+
+    mov rax, [rdi + 0x78] # regs->rbx
+    push rax
+
+    mov rax, [rdi + 0x70] # regs->rbp
+    push rax
+
+    mov rax, [rdi + 0x68] # regs->rsi
+    push rax
+
+    mov rax, [rdi + 0x60] # regs->rdi
+    push rax
+
+    mov rax, [rdi + 0x58] # regs->r8
+    push rax
+
+    mov rax, [rdi + 0x50] # regs->r9
+    push rax
+
+    mov rax, [rdi + 0x48] # regs->r10
+    push rax
+
+    mov rax, [rdi + 0x40] # regs->r11
+    push rax
+
+    mov rax, [rdi + 0x38] # regs->r12
+    push rax
+
+    mov rax, [rdi + 0x30] # regs->r13
+    push rax
+
+    mov rax, [rdi + 0x28] # regs->r14
+    push rax
+
+    mov rax, [rdi + 0x20] # regs->r15
+    push rax
+
+    mov rax, [rdi + 0x18] # regs->ds
+    push rax
+
+    mov rax, [rdi + 0x10] # regs->es
+    push rax
+
+    mov rax, [rdi + 0x08] # regs->fs
+    push rax
+
+    mov rax, [rdi + 0x00] # regs->gs
+    push rax
+
+    #
+    # Now that the PtRegs are properly constructed on the,
+    # stack we can pop them and iret into the new context.
+    #
+    POPALL              # Pop segment registers and general purpose registers
+
+    add rsp, 16         # Clean up the pushed error code and interrupt number
+    sti                 # Re-enable interrupts
+    iretq               # Interrupt return
+
 # Exception entry points
 .global __asm_exc_handler_div
 .global __asm_exc_handler_db
