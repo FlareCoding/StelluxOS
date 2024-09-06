@@ -43,6 +43,7 @@ void simpleFunctionKuprint() {
 }
 
 void sayHelloTask() {
+    fibb(34);
     kuPrint("Hello!\n");
     exitKernelThread();
 }
@@ -51,13 +52,13 @@ void ke_test_multithreading() {
     auto& sched = RRScheduler::get();
 
     // Create some test tasks and add them to the scheduler
-    Task* task1 = createKernelTask(simpleFunctionElevKprint);
-    Task* task2 = createKernelTask(simpleFunctionSyscallPrint);
-    Task* task3 = createKernelTask(simpleFunctionKuprint);
+    // Task* task1 = createKernelTask(simpleFunctionElevKprint);
+    // Task* task2 = createKernelTask(simpleFunctionSyscallPrint);
+    // Task* task3 = createKernelTask(simpleFunctionKuprint);
     Task* task4 = createKernelTask(sayHelloTask);
 
-    sched.addTask(task1, BSP_CPU_ID);
-    sched.addTask(task2, BSP_CPU_ID);
-    sched.addTask(task3, BSP_CPU_ID);
+    // sched.addTask(task1, BSP_CPU_ID);
+    // sched.addTask(task2, BSP_CPU_ID);
+    // sched.addTask(task3, BSP_CPU_ID);
     sched.addTask(task4, BSP_CPU_ID);
 }

@@ -221,7 +221,7 @@ Task* createKernelTask(void (*taskEntry)(), int priority) {
     // Initialize the CPU context
     task->context.rsp = (uint64_t)userStack + PAGE_SIZE; // Point to the top of the stack
     task->context.rbp = task->context.rsp;               // Point to the top of the stack
-    task->context.rip = (uint64_t)taskEntry;          // Set instruction pointer to the task function
+    task->context.rip = (uint64_t)taskEntry;             // Set instruction pointer to the task function
     task->context.rflags = 0x200;                        // Enable interrupts
 
     // Set up segment registers for user space. These values correspond to the selectors in the GDT.
@@ -254,11 +254,14 @@ void exitKernelThread() {
     PCB* nextTask = sched.peekNextTask(cpu);
     
     //
-    // TO-DO: Properly assert that nextTask is
-    //        not equal to the currentTask.
+    // In the event when because of some scheduling circumstances we
+    // end up with the next task being the same one we are trying to
+    // terminate, switch to the default kernel swapper task.
     //
     if (currentTask == nextTask) {
-        return;
+        nextTask = &g_kernelSwapperTasks[cpu];
+
+        // TO-DO: Assert that the current task is also not the swapper task
     }
 
     // Remove the current task from the run queue
