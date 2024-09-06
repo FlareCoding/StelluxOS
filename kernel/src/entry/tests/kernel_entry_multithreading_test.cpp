@@ -51,10 +51,10 @@ void ke_test_multithreading() {
     auto& sched = RRScheduler::get();
 
     // Create some test tasks and add them to the scheduler
-    Task* task1 = createKernelTask(simpleFunctionElevKprint, 2);
-    Task* task2 = createKernelTask(simpleFunctionSyscallPrint, 3);
-    Task* task3 = createKernelTask(simpleFunctionKuprint, 4);
-    Task* task4 = createKernelTask(sayHelloTask, 5);
+    Task* task1 = createKernelTask(simpleFunctionElevKprint);
+    Task* task2 = createKernelTask(simpleFunctionSyscallPrint);
+    Task* task3 = createKernelTask(simpleFunctionKuprint);
+    Task* task4 = createKernelTask(sayHelloTask);
 
     sched.addTask(task1, BSP_CPU_ID);
     sched.addTask(task2, BSP_CPU_ID);
