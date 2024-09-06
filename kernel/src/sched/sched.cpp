@@ -1,10 +1,23 @@
 #include "sched.h"
 #include <memory/kmemory.h>
+#include <paging/page.h>
+#include <gdt/gdt.h>
 #include <kelevate/kelevate.h>
 
 RRScheduler s_globalRRScheduler;
-
 Task g_kernelSwapperTasks[MAX_CPUS] = {};
+
+size_t g_availableTaskPid = 10;
+size_t _allocateTaskPid() {
+    size_t pid = g_availableTaskPid++;
+
+    // Checking for wrap-around case
+    if (g_availableTaskPid == 0) {
+        g_availableTaskPid = 10;
+    }
+
+    return pid;
+}
 
 size_t RoundRobinRunQueue::size() const {
     return m_tasks.size();
@@ -190,6 +203,40 @@ void RRScheduler::scheduleNextTask(int cpu) {
     
     auto& runQueue = m_runQueues[cpu];
     runQueue->scheduleNextTask();
+}
+
+Task* createKernelTask(void (*taskEntry)(), int priority) {
+    Task* task = (Task*)kmalloc(sizeof(Task));
+    zeromem(task, sizeof(Task));
+
+    // Initialize the task's process control block
+    task->state = ProcessState::READY;
+    task->pid = _allocateTaskPid();
+    task->priority = priority;
+
+    // Allocate both user and kernel stacks
+    void* userStack = zallocPages(2);
+    void* kernelStack = zallocPages(2);
+
+    // Initialize the CPU context
+    task->context.rsp = (uint64_t)userStack + PAGE_SIZE; // Point to the top of the stack
+    task->context.rbp = task->context.rsp;               // Point to the top of the stack
+    task->context.rip = (uint64_t)taskEntry;          // Set instruction pointer to the task function
+    task->context.rflags = 0x200;                        // Enable interrupts
+
+    // Set up segment registers for user space. These values correspond to the selectors in the GDT.
+    task->context.cs = __USER_CS | 0x3;
+    task->context.ds = __USER_DS | 0x3;
+    task->context.es = task->context.ds;
+    task->context.ss = task->context.ds;
+
+    // Save the kernel stack
+    task->kernelStack = (uint64_t)kernelStack + PAGE_SIZE;
+
+    // Setup the task's page table
+    task->cr3 = reinterpret_cast<uint64_t>(paging::g_kernelRootPageTable);
+
+    return task;
 }
 
 void exitKernelThread() {

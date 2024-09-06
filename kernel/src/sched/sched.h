@@ -92,6 +92,12 @@ private:
 };
 
 //
+// Allocates a task object for a new kernel thread that will
+// start its execution at a given function in userspace (DPL=3).
+//
+Task* createKernelTask(void (*taskEntry)(), int priority = 0);
+
+//
 // Allows the current running kernel thread to terminate and switch to the next
 // available task without waiting for the next timer interrupt. If no next valid
 // task is available, control flow switches back to the kernel swapper task.
