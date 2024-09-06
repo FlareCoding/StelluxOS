@@ -53,54 +53,51 @@ void sayHelloTask() {
     exitKernelThread();
 }
 
-PCB createKernelTask(task_function_t taskFunction, uint64_t pid) {
-    PCB newTask;
-    zeromem(&newTask, sizeof(PCB));
+Task* createKernelTask(task_function_t taskFunction, uint64_t pid) {
+    Task* task = (Task*)kmalloc(sizeof(Task));
+    zeromem(task, sizeof(Task));
 
-    // Initialize the PCB
-    memset(&newTask, 0, sizeof(PCB));
-    newTask.state = ProcessState::READY;
-    newTask.pid = pid;
-    newTask.priority = 0;
+    // Initialize the task's process control block
+    task->state = ProcessState::READY;
+    task->pid = pid;
+    task->priority = 0;
 
     // Allocate both user and kernel stacks
-    void* stack = zallocPage();
-    void* kernelStack = zallocPage();
+    void* userStack = zallocPages(2);
+    void* kernelStack = zallocPages(2);
 
     // Initialize the CPU context
-    newTask.context.rsp = (uint64_t)stack + PAGE_SIZE;  // Point to the top of the stack
-    newTask.context.rbp = newTask.context.rsp;          // Point to the top of the stack
-    newTask.context.rip = (uint64_t)taskFunction;       // Set instruction pointer to the task function
-    newTask.context.rflags = 0x200;                     // Enable interrupts
+    task->context.rsp = (uint64_t)userStack + PAGE_SIZE; // Point to the top of the stack
+    task->context.rbp = task->context.rsp;               // Point to the top of the stack
+    task->context.rip = (uint64_t)taskFunction;          // Set instruction pointer to the task function
+    task->context.rflags = 0x200;                        // Enable interrupts
 
     // Set up segment registers for user space. These values correspond to the selectors in the GDT.
-    newTask.context.cs = __USER_CS | 0x3;
-    newTask.context.ds = __USER_DS | 0x3;
-    newTask.context.es = newTask.context.ds;
-    newTask.context.ss = newTask.context.ds;
+    task->context.cs = __USER_CS | 0x3;
+    task->context.ds = __USER_DS | 0x3;
+    task->context.es = task->context.ds;
+    task->context.ss = task->context.ds;
 
     // Save the kernel stack
-    newTask.kernelStack = (uint64_t)kernelStack + PAGE_SIZE;
+    task->kernelStack = (uint64_t)kernelStack + PAGE_SIZE;
 
     // Setup the task's page table
-    newTask.cr3 = reinterpret_cast<uint64_t>(paging::g_kernelRootPageTable);
+    task->cr3 = reinterpret_cast<uint64_t>(paging::g_kernelRootPageTable);
 
-    return newTask;
+    return task;
 }
 
 void ke_test_multithreading() {
-    auto& sched = RoundRobinScheduler::get();
+    auto& sched = RRScheduler::get();
 
-    // Create some tasks and add them to the scheduler
-    PCB task1, task2, task3, task4;
+    // Create some test tasks and add them to the scheduler
+    Task* task1 = createKernelTask(simpleFunctionElevKprint, 2);
+    Task* task2 = createKernelTask(simpleFunctionSyscallPrint, 3);
+    Task* task3 = createKernelTask(simpleFunctionKuprint, 4);
+    Task* task4 = createKernelTask(sayHelloTask, 5);
 
-    task1 = createKernelTask(simpleFunctionElevKprint, 2);
-    task2 = createKernelTask(simpleFunctionSyscallPrint, 3);
-    task3 = createKernelTask(simpleFunctionKuprint, 4);
-    task4 = createKernelTask(sayHelloTask, 5);
-
-    sched.addTask(task1);
-    sched.addTask(task2);
-    sched.addTask(task3);
-    sched.addTask(task4);
+    sched.addTask(task1, BSP_CPU_ID);
+    sched.addTask(task2, BSP_CPU_ID);
+    sched.addTask(task3, BSP_CPU_ID);
+    sched.addTask(task4, BSP_CPU_ID);
 }

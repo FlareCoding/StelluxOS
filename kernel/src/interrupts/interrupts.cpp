@@ -90,16 +90,18 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
     _g_system_tick_count++;
 
     if (_g_system_tick_count % 2 == 0) {
-        auto& sched = RoundRobinScheduler::get();
-        PCB* prevTask = sched.getCurrentTask();
-        PCB* nextTask = sched.peekNextTask();
+        auto& sched = RRScheduler::get();
+        size_t cpu = current->cpu;
+
+        PCB* prevTask = sched.getCurrentTask(cpu);
+        PCB* nextTask = sched.peekNextTask(cpu);
 
         if (nextTask && prevTask != nextTask) {
             // Switch the CPU context
             switchContextInIrq(prevTask, nextTask, frame);
             
             // Tell the scheduler that the context switch has been accepted
-            sched.switchToNextTask();
+            sched.scheduleNextTask(cpu);
         }
     }
 }
