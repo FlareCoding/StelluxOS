@@ -103,7 +103,7 @@ userspace applications that elevate themselves at will whenever they need to eit
 - SMP multicore support
 - Kernel and userspace thread management
 - _kElevate_/_kLower_ mechanisms for runtime privilege switching
-- PCI device enumartion
+- PCI device enumeration
 - Optimized write-combining graphics buffer management
 - HPET and time measuring support
 - Stacktrace dump from the _interrupt_ context
