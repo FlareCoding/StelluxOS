@@ -2,121 +2,223 @@
 #include <memory/kmemory.h>
 #include <kelevate/kelevate.h>
 
-RoundRobinScheduler s_globalRRScheduler;
+RRScheduler s_globalRRScheduler;
 
-PCB g_kernelSwapperTasks[MAX_CPUS] = {};
+Task g_kernelSwapperTasks[MAX_CPUS] = {};
 
-RoundRobinScheduler& RoundRobinScheduler::get() {
-    return s_globalRRScheduler;
+size_t RoundRobinRunQueue::size() const {
+    return m_tasks.size();
 }
 
-RoundRobinScheduler::RoundRobinScheduler() {
-    for (size_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
-        memset(&m_runQueue[i], 0, sizeof(PCB));
-        m_runQueue[i].state = ProcessState::INVALID;
-    }
-}
-
-PCB* RoundRobinScheduler::peekNextTask() {
-    if (m_tasksInQueue == 0) {
-        return nullptr;
-    }
-
-    if (m_tasksInQueue == 1) {
-        return getCurrentTask();
-    }
-
-    size_t index = m_currentTaskIndex;
-    do {
-        index = (index + 1) % MAX_QUEUED_PROCESSES;
-        if (m_runQueue[index].state == ProcessState::READY) {
-            return &m_runQueue[index];
-        }
-    } while (m_currentTaskIndex != index);
-
-    return nullptr;
-}
-
-bool RoundRobinScheduler::switchToNextTask() {
-    // If there is only a single task in the queue
-    if (m_tasksInQueue < 2) {
+bool RoundRobinRunQueue::addTask(Task* task) {
+    if (m_tasks.size() == MAX_QUEUED_PROCESSES) {
+        // The queue limit has been reached
         return false;
     }
 
-    size_t startingIndex = m_currentTaskIndex;
-    do {
-        m_currentTaskIndex = (m_currentTaskIndex + 1) % MAX_QUEUED_PROCESSES;
-        if (m_runQueue[m_currentTaskIndex].state == ProcessState::READY) {
-            // Update the state of the processes
-            m_runQueue[startingIndex].state = ProcessState::READY;
-            m_runQueue[m_currentTaskIndex].state = ProcessState::RUNNING;
+    // Add the task to the run queue
+    m_tasks.pushBack(task);
+    return true;
+}
 
+bool RoundRobinRunQueue::removeTask(pid_t pid) {
+    // Kernel swapper tasks cannot be removed
+    if (pid == 0) {
+        return false;
+    }
+
+    // TO-DO: Assert that the size of the run queue is more than 1
+
+    for (size_t i = 0; i < m_tasks.size(); ++i) {
+        if (m_tasks[i]->pid == pid) {
+            m_tasks.erase(i);
+
+            // For now the easiest way to deal with a task
+            // getting removed is to just throw the last
+            // available task onto the run queue.
+            m_currentTaskIndex = m_tasks.size() - 1;
             return true;
         }
-    } while (m_currentTaskIndex != startingIndex);
+    }
 
     return false;
 }
 
-size_t RoundRobinScheduler::addTask(const PCB& task) {
-    for (size_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
-        if (m_runQueue[i].state == ProcessState::INVALID) {
-            m_runQueue[i] = task;
-            ++m_tasksInQueue;
-            return i; // Return the index where the task was placed
-        }
-    }
-    
-    return -1;
+Task* RoundRobinRunQueue::getCurrentTask() {
+    // TO-DO: Assert that the size of the run queue is at least 1
+    return m_tasks[m_currentTaskIndex];
 }
 
-PCB* RoundRobinScheduler::getTask(size_t idx) {
-    if (idx >= MAX_QUEUED_PROCESSES) {
+Task* RoundRobinRunQueue::peekNextTask() {
+    // TO-DO: Assert that the size of the run queue is at least 1
+
+    size_t nextTaskIndex = _getNextTaskIndex();
+    return m_tasks[nextTaskIndex];
+}
+
+void RoundRobinRunQueue::scheduleNextTask() {
+    size_t nextTaskIndex = _getNextTaskIndex();
+    if (m_currentTaskIndex == nextTaskIndex) {
+        // No new schedulable task discovered
+        return;
+    }
+
+    Task* currentTask = getCurrentTask();
+    Task* nextTask = m_tasks[nextTaskIndex];
+
+    // Update previous/current and next task's states
+    currentTask->state = ProcessState::READY;
+    nextTask->state = ProcessState::RUNNING;
+
+    // Update the tracking task index
+    m_currentTaskIndex = nextTaskIndex;
+}
+
+size_t RoundRobinRunQueue::_getNextTaskIndex() {
+    size_t taskCount = m_tasks.size();
+    size_t nextIndex = m_currentTaskIndex;
+    
+    // Kernel swapper task is the only valid task on the run queue
+    if (taskCount == 1) {
+        return 0;
+    }
+    
+    // Always stay on the first valid task and ignore the kernel swapper task
+    if (taskCount == 2) {
+        return 1;
+    }
+
+    // Wwhen there are more than 2 tasks, we want to skip index 0
+    // since we don't want to waste time in the kernel swapper task.
+    if (taskCount > 2) {
+        // Advance to the next index wrapping around if needed
+        nextIndex = (m_currentTaskIndex + 1) % taskCount;
+        
+        // If the new index is 0, advance one more to skip it
+        if (nextIndex == 0) {
+            nextIndex = 1;
+        }
+    }
+
+    return nextIndex;
+}
+
+RRScheduler& RRScheduler::get() {
+    return s_globalRRScheduler;
+}
+
+void RRScheduler::init() {
+    // Allocate enough run queues for the
+    // maximum number of supported cores.
+    m_runQueues.reserve(MAX_CPUS);
+
+    // Register the run queue for the bootstrapping core
+    registerCpuCore(BSP_CPU_ID);
+}
+
+void RRScheduler::registerCpuCore(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) {
+        // TO-DO: Deal with proper error handling
+        asm volatile ("hlt");
+        return;
+    }
+
+    // The very first task for each run queue must be the kernel swapper
+    // task in case the run queue runs out of application tasks to schedule.
+    RoundRobinRunQueue* runQueue = new RoundRobinRunQueue();
+    m_runQueues[cpu] = runQueue;
+
+    if (runQueue->size() == 0) {
+        runQueue->addTask(&g_kernelSwapperTasks[cpu]);
+    }
+}
+
+bool RRScheduler::addTask(Task* task, int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) {
+        // TO-DO: Deal with proper error handling
+        asm volatile ("hlt");
+        return false;
+    }
+
+    auto& runQueue = m_runQueues[cpu];
+    return runQueue->addTask(task);
+}
+
+bool RRScheduler::removeTask(Task* task, int cpu) {
+    return removeTask(task->pid, cpu);
+}
+
+bool RRScheduler::removeTask(pid_t pid, int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) {
+        // TO-DO: Deal with proper error handling
+        asm volatile ("hlt");
+        return false;
+    }
+
+    auto& runQueue = m_runQueues[cpu];
+    return runQueue->removeTask(pid);
+}
+
+Task* RRScheduler::getCurrentTask(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) {
+        // TO-DO: Deal with proper error handling
+        asm volatile ("hlt");
         return nullptr;
     }
 
-    return &m_runQueue[idx];
+    auto& runQueue = m_runQueues[cpu];
+    return runQueue->getCurrentTask(); 
 }
 
-PCB* RoundRobinScheduler::findTaskByPid(pid_t pid) {
-    for (size_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
-        if (m_runQueue[i].pid == pid) {
-            return &m_runQueue[i];
-        }
+Task* RRScheduler::peekNextTask(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) {
+        // TO-DO: Deal with proper error handling
+        asm volatile ("hlt");
+        return nullptr;
     }
 
-    return nullptr;
+    auto& runQueue = m_runQueues[cpu];
+    return runQueue->peekNextTask();
 }
 
-void RoundRobinScheduler::removeTask(pid_t pid) {
-    for (size_t i = 0; i < MAX_QUEUED_PROCESSES; ++i) {
-        if (m_runQueue[i].pid == pid) {
-            zeromem(&m_runQueue[i], sizeof(PCB));
-            break;
-        }
+void RRScheduler::scheduleNextTask(int cpu) {
+    if (cpu < 0 || cpu >= MAX_CPUS) {
+        // TO-DO: Deal with proper error handling
+        asm volatile ("hlt");
+        return;
     }
+    
+    auto& runQueue = m_runQueues[cpu];
+    runQueue->scheduleNextTask();
 }
 
 void exitKernelThread() {
     // Construct a fake PtRegs structure to switch to a new context
     PtRegs regs;
-    auto& scheduler = RoundRobinScheduler::get();
+    auto& sched = RRScheduler::get();
     
     // Elevate for the context switch and to disable the interrupts
     __kelevate();
     disableInterrupts();
 
-    PCB* currentTask = scheduler.getCurrentTask();
-    PCB* nextTask = scheduler.peekNextTask();
-    if (!nextTask) {
-        nextTask = &g_kernelSwapperTasks[BSP_CPU_ID];
+    int cpu = current->cpu;
+
+    PCB* currentTask = sched.getCurrentTask(cpu);
+    PCB* nextTask = sched.peekNextTask(cpu);
+    
+    //
+    // TO-DO: Properly assert that nextTask is
+    //        not equal to the currentTask.
+    //
+    if (currentTask == nextTask) {
+        return;
     }
 
-    // Switch to the next available task if possible
-    scheduler.switchToNextTask();
-
     // Remove the current task from the run queue
-    scheduler.removeTask(currentTask->pid);
+    sched.removeTask(currentTask->pid, cpu);
+
+    // Switch to the next available task if possible
+    sched.scheduleNextTask(cpu);
 
     // This will end up calling an assembly routine that results in an 'iretq'
     exitAndSwitchCurrentContext(nextTask, &regs);

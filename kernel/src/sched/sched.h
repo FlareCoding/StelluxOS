@@ -1,38 +1,94 @@
 #ifndef SCHED_H
 #define SCHED_H
+#include <core/kvector.h>
 #include <arch/x86/per_cpu_data.h>
 #include <process/process.h>
 
 #define MAX_QUEUED_PROCESSES 128
 
-EXTERN_C PCB g_kernelSwapperTasks[MAX_CPUS];
+using Task = PCB;
 
-class RoundRobinScheduler {
+EXTERN_C Task g_kernelSwapperTasks[MAX_CPUS];
+
+class RoundRobinRunQueue {
 public:
-    RoundRobinScheduler();
-    ~RoundRobinScheduler() = default;
+    RoundRobinRunQueue() = default;
+    ~RoundRobinRunQueue() = default;
 
-    static RoundRobinScheduler& get();
+    size_t size() const;
 
-    inline PCB* getCurrentTask() { return &m_runQueue[m_currentTaskIndex]; }
-    PCB* peekNextTask();
-    
-    inline size_t getQueuedTaskCount() const { return m_tasksInQueue; }
+    // Adds a task to the run queue
+    bool addTask(Task* task);
 
-    bool switchToNextTask();
+    // Removes a task with a specified
+    // pid from the run queue if it exists.
+    bool removeTask(pid_t pid);
 
-    size_t addTask(const PCB& task);
-    PCB* getTask(size_t idx);
-    PCB* findTaskByPid(pid_t pid);
-    void removeTask(pid_t pid);
+    // Returns a pointer to the current scheduled task.
+    // There should be guaranteed to always be at least
+    // one task in the run queue (kernel swapper task).
+    Task* getCurrentTask();
+
+    // Returns the next available schedulable task in the run queue
+    Task* peekNextTask();
+
+    // Takes the current running task off the run
+    // queue and schedules the next available task.
+    void scheduleNextTask();
 
 private:
-    PCB m_runQueue[MAX_QUEUED_PROCESSES];
+    // Run queue of tasks
+    kstl::vector<Task*> m_tasks;
 
-    size_t m_tasksInQueue = 0;
-    
+    // Index of the current running/scheduled task
     size_t m_currentTaskIndex = 0;
-    size_t m_nextTaskIndex = 0;
+
+    // Calculates the index of the next schedulable task on the run queue
+    size_t _getNextTaskIndex();
+};
+
+// Round-robin style scheduler
+class RRScheduler {
+public:
+    RRScheduler() = default;
+    ~RRScheduler() = default;
+
+    static RRScheduler& get();
+    
+    // Allocates the necessary scheduler resources (run-queues, etc.)
+    void init();
+
+    // Creates a separate task run
+    // queue for the provided cpu core.
+    void registerCpuCore(int cpu);
+
+    // Adds a task to the specified cpu core's run queue
+    bool addTask(Task* task, int cpu);
+
+    // Removes a task from the specified
+    // cpu core's run queue if it exists.
+    bool removeTask(Task* task, int cpu);
+
+    // Removes a task with a specified pid from the
+    // specified cpu core's run queue if it exists.
+    bool removeTask(pid_t pid, int cpu);
+
+    // Returns the current scheduled task
+    // for the specified core's run queue.
+    Task* getCurrentTask(int cpu);
+
+    // Returns the next available schedulable
+    // task for a specified cpu core.
+    Task* peekNextTask(int cpu);
+
+    // Takes the current running task off the run
+    // queue of the specified cpu core and schedules
+    // the next available task.
+    void scheduleNextTask(int cpu);
+
+private:
+    // Per-core task run queues
+    kstl::vector<RoundRobinRunQueue*> m_runQueues;
 };
 
 //

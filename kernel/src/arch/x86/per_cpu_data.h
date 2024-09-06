@@ -6,6 +6,11 @@
 
 #define BSP_CPU_ID 0
 
+//
+// ----------------------------- IMPORTANT -----------------------------
+// If this structure ever changes, please make sure that the updated
+// offsets get reflected in arch/x86/common.s and arch/x86/interrupts.s
+//
 struct CpuData {
     PCB* currentTask;               // 0x00
     uint64_t defaultKernelStack;    // 0x08

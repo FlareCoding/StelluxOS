@@ -72,6 +72,9 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     g_kernelSwapperTasks[BSP_CPU_ID].pid = 1;
     zeromem(&g_kernelSwapperTasks[BSP_CPU_ID].context, sizeof(CpuContext));
     g_kernelSwapperTasks[BSP_CPU_ID].context.rflags |= 0x200;
+    
+    // Elevated flag must be 0 since we are going to lower ourselves in the next few calls.
+    // TO-DO: investigate further why setting elevated flag to 1 here causes a crash. 
     g_kernelSwapperTasks[BSP_CPU_ID].elevated = 0;
 
     // Set the current task in the per cpu region
@@ -170,16 +173,21 @@ void _kuser_entry() {
         ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
     }
 
-    auto& sched = RoundRobinScheduler::get();
- 
-    // Add the root kernel swapper task to the scheduler. The CPU context
-    // should get properly filled upon the first context switch.
-    sched.addTask(g_kernelSwapperTasks[BSP_CPU_ID]);
+    // Initialize the scheduler
+    auto& sched = RRScheduler::get();
+    sched.init();
 
-    // Print system CPU core information
+    // If multiple cores are present, register all of them in the scheduler
     if (acpiController.hasApicTable()) {
         auto apicTable = acpiController.getApicTable();
-        kuPrint("==== Detected %lli CPUs ====\n", apicTable->getCpuCount());
+        size_t cpuCount = apicTable->getCpuCount();
+
+        // Create run queues for all detected cores
+        for (size_t cpu = 1; cpu < cpuCount; ++cpu) {
+            sched.registerCpuCore(cpu);
+        }
+
+        kuPrint("==== Detected %lli CPUs ====\n", cpuCount);
     }
 
 #ifdef KE_TEST_MULTITHREADING
