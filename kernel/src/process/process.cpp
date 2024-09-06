@@ -4,7 +4,7 @@
 #include <sched/sched.h>
 #include <kelevate/kelevate.h>
 
-EXTERN_C void __asm_switch_cpu_context_and_iret(CpuContext* ctx);
+EXTERN_C void __asm_ctx_switch_no_irq(PtRegs* regs);
 
 void saveCpuContext(CpuContext* context, PtRegs* frame) {
     context->rax = frame->rax;
@@ -87,34 +87,21 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     __per_cpu_data.__cpu[BSP_CPU_ID].currentTask = to;
 }
 
-//
-// More low level context switch that only switches the CPU context in-place.
-//
-void switchTo(PCB* from, PCB* to) {
-    (void)from;
-    (void)to;
-    // // Read top level page table pointer from cr3
-    // from->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
+void exitAndSwitchCurrentContext(PCB* newCtx, PtRegs* regs) {
+    // Set the new kernel stack
+    __per_cpu_data.__cpu[BSP_CPU_ID].currentKernelStack = newCtx->kernelStack;
 
-    // // Save the current kernel stack
-    // from->kernelStack = __per_cpu_data.__cpu[0].currentKernelStack;
+    // Restore the context from the 'to' PCB
+    restoreCpuContext(&newCtx->context, regs);
 
-    // //
-    // // =================== TO-DO ===================
-    // //   implement saving the current cpu context
-    // //
+    // Read top level page table pointer from cr3
+    paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(newCtx->cr3));
 
-    // // Set the new kernel stack
-    // __per_cpu_data.__cpu[0].currentKernelStack = to->kernelStack;
+    // Set the new value of currentTask
+    __per_cpu_data.__cpu[BSP_CPU_ID].currentTask = newCtx;
 
-    // // Read top level page table pointer from cr3
-    // paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
-
-    // // Set the new value of currentTask
-    // __per_cpu_data.__cpu[0].currentTask = to;
-
-    // // Switch to the new context and jump to it using iret
-    // __asm_switch_cpu_context_and_iret(&to->context);
+    // This will result in an 'iretq' jump instruction
+    __asm_ctx_switch_no_irq(regs);
 }
 
 // Reads the current task's CPU field

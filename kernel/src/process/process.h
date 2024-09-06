@@ -50,10 +50,10 @@ void restoreCpuContext(CpuContext* context, PtRegs* frame);
 // and context would get switched upon interrupt return.
 void switchContextInIrq(PCB* from, PCB* to, PtRegs *frame);
 
-//
-// More low level context switch that only switches the CPU context in-place.
-//
-void switchTo(PCB* from, PCB* to);
+// When exiting a kernel thread, we don't care about the existing context
+// since it will be purged. This routine will just load the new context
+// into the provided PtRegs struct and use it to perform an 'iretq' jump. 
+void exitAndSwitchCurrentContext(PCB* newCtx, PtRegs* regs);
 
 // Reads the current task's CPU field
 uint8_t getCurrentCpuId();
