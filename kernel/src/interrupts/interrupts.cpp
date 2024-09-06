@@ -98,7 +98,7 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
 
         if (nextTask && prevTask != nextTask) {
             // Switch the CPU context
-            switchContextInIrq(prevTask, nextTask, frame);
+            switchContextInIrq(cpu, cpu, prevTask, nextTask, frame);
             
             // Tell the scheduler that the context switch has been accepted
             sched.scheduleNextTask(cpu);

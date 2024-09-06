@@ -43,7 +43,6 @@ void simpleFunctionKuprint() {
 }
 
 void sayHelloTask() {
-    fibb(34);
     kuPrint("Hello!\n");
     exitKernelThread();
 }

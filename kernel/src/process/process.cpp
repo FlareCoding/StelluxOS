@@ -64,7 +64,7 @@ void restoreCpuContext(CpuContext* context, PtRegs* frame) {
 // process control blocks using an interrupt frame.
 // *Note* Meant to be called from within an interrupt handler
 // and context would get switched upon interrupt return.
-void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
+void switchContextInIrq(int oldCpu, int newCpu, PCB* from, PCB* to, PtRegs* frame) {
     // Save the current context into the 'from' PCB
     saveCpuContext(&from->context, frame);
 
@@ -72,10 +72,10 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     from->cr3 = reinterpret_cast<uint64_t>(paging::getCurrentTopLevelPageTable());
 
     // Save the current kernel stack
-    from->kernelStack = __per_cpu_data.__cpu[BSP_CPU_ID].currentKernelStack;
+    from->kernelStack = __per_cpu_data.__cpu[oldCpu].currentKernelStack;
 
     // Set the new kernel stack
-    __per_cpu_data.__cpu[BSP_CPU_ID].currentKernelStack = to->kernelStack;
+    __per_cpu_data.__cpu[newCpu].currentKernelStack = to->kernelStack;
 
     // Restore the context from the 'to' PCB
     restoreCpuContext(&to->context, frame);
@@ -84,12 +84,12 @@ void switchContextInIrq(PCB* from, PCB* to, PtRegs* frame) {
     paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
 
     // Set the new value of currentTask
-    __per_cpu_data.__cpu[BSP_CPU_ID].currentTask = to;
+    __per_cpu_data.__cpu[newCpu].currentTask = to;
 }
 
-void exitAndSwitchCurrentContext(PCB* newCtx, PtRegs* regs) {
+void exitAndSwitchCurrentContext(int cpu, PCB* newCtx, PtRegs* regs) {
     // Set the new kernel stack
-    __per_cpu_data.__cpu[BSP_CPU_ID].currentKernelStack = newCtx->kernelStack;
+    __per_cpu_data.__cpu[cpu].currentKernelStack = newCtx->kernelStack;
 
     // Restore the context from the 'to' PCB
     restoreCpuContext(&newCtx->context, regs);
@@ -98,7 +98,7 @@ void exitAndSwitchCurrentContext(PCB* newCtx, PtRegs* regs) {
     paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(newCtx->cr3));
 
     // Set the new value of currentTask
-    __per_cpu_data.__cpu[BSP_CPU_ID].currentTask = newCtx;
+    __per_cpu_data.__cpu[cpu].currentTask = newCtx;
 
     // This will result in an 'iretq' jump instruction
     __asm_ctx_switch_no_irq(regs);

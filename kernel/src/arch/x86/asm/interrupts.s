@@ -100,7 +100,16 @@ __asm_common_isr_entry:
     call __check_current_elevate_status
     testb al, 1
     pop rax
+
+    # If we are lowered, we need to restore the gsbase
+    # before jumping to the post_stack_switch label
+    swapgs
+
     jz __isr_entry_post_stack_switch
+
+    # If the manual stack switch is indeed needed,
+    # switch the gsbase again to get access to the TLS.
+    swapgs
 
     # Clobber rax and r15
     push rax
