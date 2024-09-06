@@ -271,6 +271,6 @@ void exitKernelThread() {
     sched.scheduleNextTask(cpu);
 
     // This will end up calling an assembly routine that results in an 'iretq'
-    exitAndSwitchCurrentContext(nextTask, &regs);
+    exitAndSwitchCurrentContext(cpu, nextTask, &regs);
 }
 

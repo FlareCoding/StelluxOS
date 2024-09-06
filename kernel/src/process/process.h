@@ -39,7 +39,7 @@ typedef struct ProcessControlBlock {
 typedef int64_t pid_t;
 
 // Saves context registers from the interrupt frame into a CPU context struct
-void saveCpuContext(CpuContext* to_save, PtRegs* frame);
+void saveCpuContext(CpuContext* context, PtRegs* frame);
 
 // Saves context registers from the CPU context struct into an interrupt frame
 void restoreCpuContext(CpuContext* context, PtRegs* frame);
@@ -48,12 +48,12 @@ void restoreCpuContext(CpuContext* context, PtRegs* frame);
 // process control blocks using an interrupt frame.
 // *Note* Meant to be called from within an interrupt handler
 // and context would get switched upon interrupt return.
-void switchContextInIrq(PCB* from, PCB* to, PtRegs *frame);
+void switchContextInIrq(int oldCpu, int newCpu, PCB* from, PCB* to, PtRegs *frame);
 
 // When exiting a kernel thread, we don't care about the existing context
 // since it will be purged. This routine will just load the new context
 // into the provided PtRegs struct and use it to perform an 'iretq' jump. 
-void exitAndSwitchCurrentContext(PCB* newCtx, PtRegs* regs);
+void exitAndSwitchCurrentContext(int cpu, PCB* newCtx, PtRegs* regs);
 
 // Reads the current task's CPU field
 uint8_t getCurrentCpuId();
