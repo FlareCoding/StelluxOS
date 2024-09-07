@@ -166,10 +166,10 @@ make connect-gdb
 * [x] Arbitrary kLower mechanism
 * [x] Multithreading
 * [x] AP processor startup (leads into SMP)
+* [x] SMP support in the scheduler
 * [ ] Unit testing infrastructure
 * [ ] Complete rework of the kpring and dmesg interface
 * [ ] Improved thread creation & management mechanism
-* [ ] SMP support in the scheduler
 * [ ] GUI and window management subsystem
 * [ ] Virtual filesystem and initramfs
 * [ ] Kernel command-line argument support
