@@ -23,9 +23,9 @@
 
 #include "tests/kernel_entry_tests.h"
 
-#define KE_TEST_MULTITHREADING
+// #define KE_TEST_MULTITHREADING
 // #define KE_TEST_XHCI_INIT
-// #define KE_TEST_AP_STARTUP
+#define KE_TEST_AP_STARTUP
 // #define KE_TEST_CPU_TEMP_READINGS
 // #define KE_TEST_PRINT_CURRENT_TIME
 // #define KE_TEST_GRAPHICS
@@ -181,11 +181,6 @@ void _kuser_entry() {
     if (acpiController.hasApicTable()) {
         auto apicTable = acpiController.getApicTable();
         size_t cpuCount = apicTable->getCpuCount();
-
-        // Create run queues for all detected cores
-        for (size_t cpu = 1; cpu < cpuCount; ++cpu) {
-            sched.registerCpuCore(cpu);
-        }
 
         kuPrint("==== Detected %lli CPUs ====\n", cpuCount);
     }
