@@ -144,6 +144,9 @@ void RRScheduler::registerCpuCore(int cpu) {
     if (runQueue->size() == 0) {
         runQueue->addTask(&g_kernelSwapperTasks[cpu]);
     }
+
+    // Increment the usable cpu core count
+    m_usableCpuCount++;
 }
 
 bool RRScheduler::addTask(Task* task, int cpu) {
@@ -153,8 +156,15 @@ bool RRScheduler::addTask(Task* task, int cpu) {
         return false;
     }
 
+    // Assign a cpu to the task
+    task->cpu = cpu;
+
     auto& runQueue = m_runQueues[cpu];
     return runQueue->addTask(task);
+}
+
+bool RRScheduler::addTask(Task* task) {
+    return addTask(task, getNextAvailableCpu());
 }
 
 bool RRScheduler::removeTask(Task* task, int cpu) {
@@ -203,6 +213,21 @@ void RRScheduler::scheduleNextTask(int cpu) {
     
     auto& runQueue = m_runQueues[cpu];
     runQueue->scheduleNextTask();
+}
+
+size_t RRScheduler::getNextAvailableCpu() {
+    size_t cpu = 0;
+    size_t leastTaskCount = m_runQueues[cpu]->size();
+
+    for (size_t i = 1; i < m_usableCpuCount; ++i) {
+        size_t cpuTaskCount = m_runQueues[i]->size();
+        if (cpuTaskCount < leastTaskCount) {
+            cpu = i;
+            leastTaskCount = cpuTaskCount;
+        }
+    }
+
+    return cpu;
 }
 
 Task* createKernelTask(void (*taskEntry)(), int priority) {

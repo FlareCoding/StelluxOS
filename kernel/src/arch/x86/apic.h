@@ -14,6 +14,13 @@ public:
     static void initializeLocalApic();
     static kstl::SharedPtr<Apic>& getLocalApic();
 
+    //
+    // Meant to only be called from the interrupt
+    // context to avoid incorrectly lowering.
+    // This is because of the call to retrieve cpu core's id.
+    //
+    __PRIVILEGED_CODE static kstl::SharedPtr<Apic>& __irqGetLocalApic();
+
     Apic(uint64_t base, uint8_t spuriorIrq = 0xFF);
 
     void write(uint32_t reg, uint32_t value);
@@ -23,10 +30,6 @@ public:
     void sendIpi(uint8_t apicId, uint32_t vector);
 
     static void disableLegacyPic();
-
-private:
-    void*               m_physicalBase = nullptr;
-    volatile uint32_t*  m_virtualBase = nullptr;
 };
 
 #endif

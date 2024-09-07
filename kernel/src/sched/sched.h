@@ -65,6 +65,9 @@ public:
     // Adds a task to the specified cpu core's run queue
     bool addTask(Task* task, int cpu);
 
+    // Adds a task to the next optimal available cpu
+    bool addTask(Task* task);
+
     // Removes a task from the specified
     // cpu core's run queue if it exists.
     bool removeTask(Task* task, int cpu);
@@ -86,9 +89,16 @@ public:
     // the next available task.
     void scheduleNextTask(int cpu);
 
+    // Calculates the next least loaded CPU
+    // core to schedule next task(s) on.
+    size_t getNextAvailableCpu();
+
 private:
     // Per-core task run queues
     kstl::vector<RoundRobinRunQueue*> m_runQueues;
+
+    // Number of actual usable cpu cores
+    size_t m_usableCpuCount;
 };
 
 //

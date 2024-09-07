@@ -61,6 +61,11 @@ void __ap_startup(int apicid) {
     while (1);
 }
 
+void sayHelloCore() {
+    kuPrint("Hello from core %i!\n", getCurrentCpuId());
+    exitKernelThread();
+}
+
 void __ap_startup_user_entry() {
     uint64_t rsp = 0;
     asm volatile ("mov %%rsp, %0" : "=r"(rsp));
@@ -69,6 +74,19 @@ void __ap_startup_user_entry() {
 
     kuPrint("[CPU%i] stack: 0x%llx\n", cpu, rsp);
 
+    // Initialize core's LAPIC
+    Apic::initializeLocalApic();
+
+    // Calibrate apic timer tickrate to 100 milliseconds
+    KernelTimer::calibrateApicTimer(100);
+
+    // Start the kernel-wide APIC periodic timer
+    KernelTimer::startApicPeriodicTimer();
+
+    auto& sched = RRScheduler::get();
+    Task* task = createKernelTask(sayHelloCore);
+    sched.addTask(task);
+
     while (1);
 }
 
@@ -76,6 +94,8 @@ void ke_test_ap_startup() {
     auto& globalPageFrameAllocator = paging::getGlobalPageFrameAllocator();
     auto& acpiController = AcpiController::get();
     Madt* apicTable = acpiController.getApicTable();
+
+    auto& sched = RRScheduler::get();
 
     RUN_ELEVATED({
         void* __ap_startup_code_real_mode_address = (void*)0x8000;
@@ -113,6 +133,9 @@ void ke_test_ap_startup() {
         auto& lapic = Apic::getLocalApic();
 
         for (size_t i = 1; i < apicTable->getCpuCount(); i++) {
+            // Create a scheduler run queue for each detected core
+            sched.registerCpuCore(i);
+
             uint8_t apicid = apicTable->getLocalApicDescriptor(i).apicId;
 
             lapic->sendIpi(apicid, 0x500);

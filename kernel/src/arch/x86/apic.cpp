@@ -4,29 +4,38 @@
 #include <paging/tlb.h>
 #include <ports/ports.h>
 #include <kelevate/kelevate.h>
+#include <arch/x86/per_cpu_data.h>
 
-kstl::SharedPtr<Apic> s_lapic;
+kstl::SharedPtr<Apic> s_lapics[MAX_CPUS];
+
+void*               g_lapicPhysicalBase = nullptr;
+volatile uint32_t*  g_lapicVirtualBase = nullptr;
 
 Apic::Apic(uint64_t base, uint8_t spuriousIrq) {
-    m_physicalBase = (void*)base;
+    //
+    // Since every core's LAPIC shares the same base address in
+    // terms of memory mapping, the page mapping call needs to
+    // only happen once.
+    //
+    if (!g_lapicPhysicalBase) {
+        g_lapicPhysicalBase = (void*)base;
 
-    // Map the LAPIC base into the kernel's address space
-    void* virtualBase = zallocPage();
+        // Map the LAPIC base into the kernel's address space
+        g_lapicVirtualBase = (volatile uint32_t*)zallocPage();
 
-    RUN_ELEVATED({
-        paging::mapPage(
-            virtualBase,
-            m_physicalBase,
-            USERSPACE_PAGE,
-            PAGE_ATTRIB_CACHE_DISABLED,
-            paging::g_kernelRootPageTable,
-            paging::getGlobalPageFrameAllocator()
-        );
-        
-        paging::flushTlbPage(virtualBase);
-    });
-
-    m_virtualBase = static_cast<volatile uint32_t*>(virtualBase);
+        RUN_ELEVATED({
+            paging::mapPage(
+                (void*)g_lapicVirtualBase,
+                g_lapicPhysicalBase,
+                USERSPACE_PAGE,
+                PAGE_ATTRIB_CACHE_DISABLED,
+                paging::g_kernelRootPageTable,
+                paging::getGlobalPageFrameAllocator()
+            );
+            
+            paging::flushTlbPage((void*)g_lapicVirtualBase);
+        });
+    }
 
     // Set the spurious interrupt vector
     uint32_t spuriousVector = read(0xF0);
@@ -36,11 +45,11 @@ Apic::Apic(uint64_t base, uint8_t spuriousIrq) {
 }
 
 void Apic::write(uint32_t reg, uint32_t value) {
-    m_virtualBase[reg / 4] = value;
+    g_lapicVirtualBase[reg / 4] = value;
 }
 
 uint32_t Apic::read(uint32_t reg) {
-    return m_virtualBase[reg / 4];
+    return g_lapicVirtualBase[reg / 4];
 }
 
 void Apic::completeIrq() {
@@ -53,7 +62,9 @@ void Apic::sendIpi(uint8_t apicId, uint32_t vector) {
 }
 
 void Apic::initializeLocalApic() {
-    if (s_lapic.get() != nullptr) {
+    int cpu = getCurrentCpuId();
+
+    if (s_lapics[cpu].get() != nullptr) {
         return;
     }
 
@@ -70,16 +81,24 @@ void Apic::initializeLocalApic() {
 
     uint64_t physicalBase = (uint64_t)(apicBaseMsr & ~0xFFF);
 
-    s_lapic = kstl::SharedPtr<Apic>(new Apic(physicalBase, 0xFF));
+    s_lapics[cpu] = kstl::SharedPtr<Apic>(new Apic(physicalBase, 0xFF));
 }
 
 kstl::SharedPtr<Apic>& Apic::getLocalApic() {
-    if (s_lapic.get() != nullptr) {
-        return s_lapic;
+    int cpu = getCurrentCpuId();
+
+    if (s_lapics[cpu].get() != nullptr) {
+        return s_lapics[cpu];
     }
 
     initializeLocalApic();
-    return s_lapic;
+    return s_lapics[cpu];
+}
+
+__PRIVILEGED_CODE
+kstl::SharedPtr<Apic>& Apic::__irqGetLocalApic() {
+    int cpu = current->cpu;
+    return s_lapics[cpu];
 }
 
 void Apic::disableLegacyPic() {

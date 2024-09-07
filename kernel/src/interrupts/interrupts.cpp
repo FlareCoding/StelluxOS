@@ -13,8 +13,6 @@
 #define PF_WRITE    0x2  // Bit 1
 #define PF_USER     0x4  // Bit 2
 
-uint64_t _g_system_tick_count = 0;
-
 DECLARE_SPINLOCK(__kexc_log_lock);
 
 bool areInterruptsEnabled() {
@@ -85,31 +83,27 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
-    Apic::getLocalApic()->completeIrq();
+    Apic::__irqGetLocalApic()->completeIrq();
 
-    _g_system_tick_count++;
+    auto& sched = RRScheduler::get();
+    size_t cpu = current->cpu;
 
-    if (_g_system_tick_count % 2 == 0) {
-        auto& sched = RRScheduler::get();
-        size_t cpu = current->cpu;
+    PCB* prevTask = sched.getCurrentTask(cpu);
+    PCB* nextTask = sched.peekNextTask(cpu);
 
-        PCB* prevTask = sched.getCurrentTask(cpu);
-        PCB* nextTask = sched.peekNextTask(cpu);
-
-        if (nextTask && prevTask != nextTask) {
-            // Switch the CPU context
-            switchContextInIrq(cpu, cpu, prevTask, nextTask, frame);
-            
-            // Tell the scheduler that the context switch has been accepted
-            sched.scheduleNextTask(cpu);
-        }
+    if (nextTask && prevTask != nextTask) {
+        // Switch the CPU context
+        switchContextInIrq(cpu, cpu, prevTask, nextTask, frame);
+        
+        // Tell the scheduler that the context switch has been accepted
+        sched.scheduleNextTask(cpu);
     }
 }
 
 DEFINE_INT_HANDLER(_irq_handler_keyboard) {
     (void)frame;
 
-    Apic::getLocalApic()->completeIrq();
+    Apic::__irqGetLocalApic()->completeIrq();
     uint8_t scancode = inByte(0x60);
 
     kprint("Scancode: %i\n", (int)scancode);
