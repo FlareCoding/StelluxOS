@@ -159,4 +159,5 @@ void initializeAndInstallGDT(int apicid, void* kernelStack) {
 
     // Store the address of the tss in both gsbase and k_gsbase
     writeMsr(IA32_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[apicid]);
+    writeMsr(IA32_KERNEL_GS_BASE, (uint64_t)&__per_cpu_data.__cpu[apicid]);
 }
