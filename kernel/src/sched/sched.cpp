@@ -3,9 +3,13 @@
 #include <paging/page.h>
 #include <gdt/gdt.h>
 #include <kelevate/kelevate.h>
+#include <sync.h>
 
 RRScheduler s_globalRRScheduler;
 Task g_kernelSwapperTasks[MAX_CPUS] = {};
+
+DECLARE_SPINLOCK(__sched_lock);
+DECLARE_SPINLOCK(__sched_load_balancing_lock);
 
 size_t g_availableTaskPid = 10;
 size_t _allocateTaskPid() {
@@ -156,15 +160,27 @@ bool RRScheduler::addTask(Task* task, int cpu) {
         return false;
     }
 
+    acquireSpinlock(&__sched_lock);
+
     // Assign a cpu to the task
     task->cpu = cpu;
 
     auto& runQueue = m_runQueues[cpu];
-    return runQueue->addTask(task);
+    bool ret = runQueue->addTask(task);
+
+    releaseSpinlock(&__sched_lock);
+    return ret;
 }
 
 bool RRScheduler::addTask(Task* task) {
-    return addTask(task, getNextAvailableCpu());
+    acquireSpinlock(&__sched_load_balancing_lock);
+
+    int cpu = _getNextAvailableCpu();
+    bool ret = addTask(task, cpu);
+
+    releaseSpinlock(&__sched_load_balancing_lock);
+
+    return ret;
 }
 
 bool RRScheduler::removeTask(Task* task, int cpu) {
@@ -178,8 +194,13 @@ bool RRScheduler::removeTask(pid_t pid, int cpu) {
         return false;
     }
 
+    acquireSpinlock(&__sched_lock);
+
     auto& runQueue = m_runQueues[cpu];
-    return runQueue->removeTask(pid);
+    bool ret = runQueue->removeTask(pid);
+
+    releaseSpinlock(&__sched_lock);
+    return ret;
 }
 
 Task* RRScheduler::getCurrentTask(int cpu) {
@@ -189,8 +210,13 @@ Task* RRScheduler::getCurrentTask(int cpu) {
         return nullptr;
     }
 
+    acquireSpinlock(&__sched_lock);
+
     auto& runQueue = m_runQueues[cpu];
-    return runQueue->getCurrentTask(); 
+    Task* task = runQueue->getCurrentTask();
+
+    releaseSpinlock(&__sched_lock);
+    return task;
 }
 
 Task* RRScheduler::peekNextTask(int cpu) {
@@ -200,8 +226,13 @@ Task* RRScheduler::peekNextTask(int cpu) {
         return nullptr;
     }
 
+    acquireSpinlock(&__sched_lock);
+
     auto& runQueue = m_runQueues[cpu];
-    return runQueue->peekNextTask();
+    Task* task = runQueue->peekNextTask();
+
+    releaseSpinlock(&__sched_lock);
+    return task;
 }
 
 void RRScheduler::scheduleNextTask(int cpu) {
@@ -210,16 +241,20 @@ void RRScheduler::scheduleNextTask(int cpu) {
         asm volatile ("hlt");
         return;
     }
+
+    acquireSpinlock(&__sched_lock);
     
     auto& runQueue = m_runQueues[cpu];
     runQueue->scheduleNextTask();
+
+    releaseSpinlock(&__sched_lock);
 }
 
-size_t RRScheduler::getNextAvailableCpu() {
-    size_t cpu = 0;
+int RRScheduler::_getNextAvailableCpu() {
+    int cpu = 0;
     size_t leastTaskCount = m_runQueues[cpu]->size();
 
-    for (size_t i = 1; i < m_usableCpuCount; ++i) {
+    for (int i = 1; i < (int)m_usableCpuCount; ++i) {
         size_t cpuTaskCount = m_runQueues[i]->size();
         if (cpuTaskCount < leastTaskCount) {
             cpu = i;

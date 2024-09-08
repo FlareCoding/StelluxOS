@@ -1,6 +1,7 @@
 #include "kheap.h"
 #include "kmemory.h"
 #include <paging/page_frame_allocator.h>
+#include <sync.h>
 #include <kprint.h>
 
 #define MIN_HEAP_SEGMENT_CAPACITY 1
@@ -11,6 +12,8 @@
     memcpy(seg->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, sizeof(seg->magic));
 
 DynamicMemoryAllocator g_kernelHeapAllocator;
+
+DECLARE_SPINLOCK(__kheap_lock);
 
 DynamicMemoryAllocator& DynamicMemoryAllocator::get() {
     return g_kernelHeapAllocator;
@@ -36,16 +39,20 @@ void DynamicMemoryAllocator::init(uint64_t base, size_t size) {
 }
 
 void* DynamicMemoryAllocator::allocate(size_t size) {
+    acquireSpinlock(&__kheap_lock);
+
     size_t newSegmentSize = size + sizeof(HeapSegmentHeader);
 
     // + sizeof(HeapSegmentHeader) is to account for the splitting
     HeapSegmentHeader* segment = _findFreeSegment(newSegmentSize + sizeof(HeapSegmentHeader));
 
     if (!segment) {
+        releaseSpinlock(&__kheap_lock);
         return nullptr;
     }
 
     if (!_splitSegment(segment, newSegmentSize)) {
+        releaseSpinlock(&__kheap_lock);
         return nullptr;
     }
 
@@ -55,10 +62,13 @@ void* DynamicMemoryAllocator::allocate(size_t size) {
     // Return the usable memory after the segment header
     uint8_t* usableRegionStart = reinterpret_cast<uint8_t*>(segment) + sizeof(HeapSegmentHeader);
 
+    releaseSpinlock(&__kheap_lock);
     return static_cast<void*>(usableRegionStart);
 }
 
 void DynamicMemoryAllocator::free(void* ptr) {
+    acquireSpinlock(&__kheap_lock);
+
     HeapSegmentHeader* segment = reinterpret_cast<HeapSegmentHeader*>(
         reinterpret_cast<uint8_t*>(ptr) - sizeof(HeapSegmentHeader)
     );
@@ -66,6 +76,7 @@ void DynamicMemoryAllocator::free(void* ptr) {
     // Verify the given pointer to be a heap segment header
     if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
         kuPrint("Invalid pointer provided to free()!\n");
+        releaseSpinlock(&__kheap_lock);
         return;
     }
 
@@ -81,6 +92,8 @@ void DynamicMemoryAllocator::free(void* ptr) {
     if (segment->prev && segment->prev->flags.free) {
         _mergeSegmentWithPrevious(segment);
     }
+
+    releaseSpinlock(&__kheap_lock);
 }
 
 void* DynamicMemoryAllocator::reallocate(void* ptr, size_t newSize) {
@@ -89,6 +102,8 @@ void* DynamicMemoryAllocator::reallocate(void* ptr, size_t newSize) {
         return allocate(newSize);
     }
 
+    acquireSpinlock(&__kheap_lock);
+
     HeapSegmentHeader* segment = reinterpret_cast<HeapSegmentHeader*>(
         reinterpret_cast<uint8_t*>(ptr) - sizeof(HeapSegmentHeader)
     );
@@ -96,6 +111,7 @@ void* DynamicMemoryAllocator::reallocate(void* ptr, size_t newSize) {
     // Verify the given pointer to be a heap segment header
     if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
         kuPrint("Invalid pointer provided to realloc()!\n");
+        releaseSpinlock(&__kheap_lock);
         return nullptr;
     }
 
@@ -103,8 +119,13 @@ void* DynamicMemoryAllocator::reallocate(void* ptr, size_t newSize) {
     // potentially resize (shrink) it and return the same pointer.
     if (segment->size >= newSize + sizeof(HeapSegmentHeader)) {
         _splitSegment(segment, newSize + sizeof(HeapSegmentHeader));
+        releaseSpinlock(&__kheap_lock);
         return ptr;
     } else {
+        // Release the currently held lock because further `allocate`
+        // and `free` calls will attempt to acquire the lock themselves.
+        releaseSpinlock(&__kheap_lock);
+
         // Allocate new memory, and check if allocation was successful
         void* newPtr = allocate(newSize);
         if (!newPtr) {
