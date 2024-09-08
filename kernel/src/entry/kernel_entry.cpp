@@ -14,12 +14,13 @@
 #include <arch/x86/apic_timer.h>
 #include <arch/x86/gsfsbase.h>
 #include <arch/x86/pat.h>
+#include <arch/x86/ap_startup.h>
 #include <sched/sched.h>
 #include <syscall/syscalls.h>
 #include <kelevate/kelevate.h>
 #include <acpi/acpi_controller.h>
-#include <kprint.h>
 #include <time/ktime.h>
+#include <kprint.h>
 
 #include "tests/kernel_entry_tests.h"
 
@@ -177,13 +178,8 @@ void _kuser_entry() {
     auto& sched = RRScheduler::get();
     sched.init();
 
-    // If multiple cores are present, register all of them in the scheduler
-    if (acpiController.hasApicTable()) {
-        auto apicTable = acpiController.getApicTable();
-        size_t cpuCount = apicTable->getCpuCount();
-
-        kuPrint("==== Detected %lli CPUs ====\n", cpuCount);
-    }
+    // Bring up all available processor cores
+    initializeApCores();
 
 #ifdef KE_TEST_MULTITHREADING
     ke_test_multithreading();

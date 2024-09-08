@@ -12,7 +12,7 @@
 .equ stack_base, 0x18000      # Base of the stack region
 .equ stack_size, 512          # Size of each stack (512 bytes)
 
-.section .text
+.section .ktext
 .code16
 __ap_startup_asm:
     cli
