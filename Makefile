@@ -95,7 +95,7 @@ connect-gdb:
 	gdb -ex "source ./gdb_setup.gdb" -ex "target remote localhost:4554" -ex "add-symbol-file kernel/bin/kernel.elf" -ex "b _kentry"
 
 # Run tests target
-run-tests: $(DISK_IMG)
+run-unit-tests: $(DISK_IMG)
 	$(QEMU_EMULATOR) $(QEMU_FLAGS) -nographic | tee dev_os_output.log
 
 # Clean target

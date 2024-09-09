@@ -43,4 +43,6 @@ typedef void* uintptr_t;
 #define __PRIVILEGED_CODE __attribute__((section(".ktext")))
 #define __PRIVILEGED_DATA __attribute__((section(".kdata")))
 
+#define __UNIT_TEST __attribute__((used, section(".unit_test")))
+
 #endif
