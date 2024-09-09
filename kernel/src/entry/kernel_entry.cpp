@@ -19,6 +19,7 @@
 #include <syscall/syscalls.h>
 #include <kelevate/kelevate.h>
 #include <acpi/acpi_controller.h>
+#include <acpi/shutdown.h>
 #include <time/ktime.h>
 #include <kprint.h>
 
@@ -26,7 +27,7 @@
 
 // #define KE_TEST_MULTITHREADING
 // #define KE_TEST_XHCI_INIT
-#define KE_TEST_AP_STARTUP
+// #define KE_TEST_AP_STARTUP
 // #define KE_TEST_CPU_TEMP_READINGS
 // #define KE_TEST_PRINT_CURRENT_TIME
 // #define KE_TEST_GRAPHICS
@@ -204,6 +205,12 @@ void _kuser_entry() {
 #ifdef KE_TEST_GRAPHICS
     ke_test_graphics();
 #endif
+    
+    RUN_ELEVATED({
+        kprint("\nExiting in 2 seconds...\n");
+        sleep(2);
+        vmshutdown();
+    });
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
