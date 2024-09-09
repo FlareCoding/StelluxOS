@@ -9,6 +9,12 @@ __PRIVILEGED_CODE
 uint8_t inByte(uint16_t port);
 
 __PRIVILEGED_CODE
+void outw(uint16_t port, uint16_t val);
+
+__PRIVILEGED_CODE
+uint16_t inw(uint16_t port);
+
+__PRIVILEGED_CODE
 void outl(uint16_t port, uint32_t val);
 
 __PRIVILEGED_CODE

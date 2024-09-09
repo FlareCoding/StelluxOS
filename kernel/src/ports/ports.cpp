@@ -13,6 +13,18 @@ uint8_t inByte(uint16_t port) {
 }
 
 __PRIVILEGED_CODE
+void outw(uint16_t port, uint16_t val) {
+    asm volatile ("outw %w0, %w1" : : "a" (val), "Nd" (port));
+}
+
+__PRIVILEGED_CODE
+uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    asm volatile ("inw %w1, %w0" : "=a" (ret) : "Nd" (port));
+    return ret;
+}
+
+__PRIVILEGED_CODE
 void outl(uint16_t port, uint32_t val) {
     __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"(port));
 }
