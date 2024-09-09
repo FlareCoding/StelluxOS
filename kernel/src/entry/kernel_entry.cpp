@@ -23,6 +23,7 @@
 #include <time/ktime.h>
 #include <kprint.h>
 
+#include "tests/kernel_unit_tests.h"
 #include "tests/kernel_entry_tests.h"
 
 // #define KE_TEST_MULTITHREADING
@@ -205,12 +206,16 @@ void _kuser_entry() {
 #ifdef KE_TEST_GRAPHICS
     ke_test_graphics();
 #endif
-    
+
+#ifdef KRUN_UNIT_TESTS
+    // Run unit tests
+    executeUnitTests();
+
+    // Shutdown the machine after running the unit tests
     RUN_ELEVATED({
-        kprint("\nExiting in 2 seconds...\n");
-        sleep(2);
         vmshutdown();
     });
+#endif
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }

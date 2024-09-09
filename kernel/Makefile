@@ -6,6 +6,11 @@ ASMC	 = as
 ASMFLAGS = -g --64 -I./src/arch/x86/asm
 LDFLAGS = -nostdlib -T kstellux.ld -o kernel.elf
 
+# Check if KRUN_UNIT_TESTS is set and add the define flag
+ifdef KRUN_UNIT_TESTS
+	CFLAGS += -DKRUN_UNIT_TESTS
+endif
+
 SRCDIR	:=src
 OBJDIR	:=obj
 
