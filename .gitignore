@@ -36,6 +36,8 @@ bin/
 *.app
 *.efi
 
-# QEMU files
+# QEMU/Debug files
 usb_debug.log
+com1.serial
 com2.serial
+dev_os_output.log
