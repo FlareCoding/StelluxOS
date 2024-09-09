@@ -24,7 +24,7 @@ DISK_IMG := $(BIN_DIR)/$(OSNAME).elf
 # QEMU
 QEMU_CORES := 8
 QEMU_EMULATOR := qemu-system-x86_64
-COMMON_QEMU_FLAGS := -machine q35 -device qemu-xhci,id=xhci -drive file=$(DISK_IMG),format=raw -m 4G -net none -smp $(QEMU_CORES) -serial mon:stdio -serial file:com2.serial -trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
+COMMON_QEMU_FLAGS := -machine q35 -device qemu-xhci,id=xhci -drive file=$(DISK_IMG),format=raw -m 4G -net none -smp $(QEMU_CORES) -serial mon:stdio -trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
 QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/OVMF_CODE.fd",readonly=on -drive if=pflash,format=raw,unit=1,file="efi/OVMF_VARS.fd"
 
 # Sample connected USB 2.0 devices
@@ -94,9 +94,13 @@ run-debug-headless: $(DISK_IMG)
 connect-gdb:
 	gdb -ex "source ./gdb_setup.gdb" -ex "target remote localhost:4554" -ex "add-symbol-file kernel/bin/kernel.elf" -ex "b _kentry"
 
+# Run tests target
+run-tests: $(DISK_IMG)
+	$(QEMU_EMULATOR) $(QEMU_FLAGS) -nographic | tee dev_os_output.log
+
 # Clean target
 clean:
 	rm -rf $(BIN_DIR)
 	$(MAKE) -C $(BOOTLOADER_DIR) clean
 	$(MAKE) -C $(KERNEL_DIR) clean
-	rm -rf com2.serial
+	rm -rf com1.serial com2.serial dev_os_output.log
