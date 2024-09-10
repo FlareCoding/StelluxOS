@@ -1,4 +1,4 @@
-name: Build Stellux OS
+name: StelluxOS Tests
 
 on:
   push:
@@ -41,3 +41,19 @@ jobs:
 
     - name: Clean build
       run: make clean
+
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Environment
+      run: sudo apt-get update
+
+    - name: Install Dependencies
+      run: make install-dependencies
+
+    - name: Build and Execute Unit Tests
+      run: make execute-unit-tests
