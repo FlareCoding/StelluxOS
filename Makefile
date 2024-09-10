@@ -114,7 +114,6 @@ execute-unit-tests:
 	@echo ""
 	@echo "[LOG] Parsing unit test results"
 	
-	# Grouping commands in a single shell to preserve RESULT and handle cleanup
 	@bash -c '\
 		bash parse_unit_test_results.sh; \
 		RESULT=$$?; \
