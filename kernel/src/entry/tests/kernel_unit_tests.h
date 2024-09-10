@@ -15,13 +15,15 @@
 typedef int (*testFunc_t)();
 
 // Macro for registering a test with a name and adding it to the section
+#ifdef KRUN_UNIT_TESTS
 #define DECLARE_UNIT_TEST(testName, testFunc) \
     int testFunc(); \
     static const KUnitTest __UNIT_TEST testStruct_##testFunc = { #testName, testFunc }; \
     int testFunc()
-
-// Macro to place each test into the .unit_test section using the given attribute
-#define __UNIT_TEST __attribute__((used, section(".unit_test")))
+#else
+#define DECLARE_UNIT_TEST(testName, testFunc) \
+    int testFunc()
+#endif
 
 // Structure to hold test information (name and function pointer)
 struct KUnitTest {
