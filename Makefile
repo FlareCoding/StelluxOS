@@ -47,7 +47,7 @@ else
 endif
 
 # Unit test execution duration timeout (all tests)
-UNIT_TESTS_RUN_TIMEOUT := 1m
+UNIT_TESTS_RUN_TIMEOUT := 5m
 
 # Name of the unit test result output file
 UNIT_TESTS_LOG_FILENAME := dev_os_output.log

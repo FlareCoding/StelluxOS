@@ -1,6 +1,7 @@
 #include "kernel_unit_tests.h"
 #include <paging/page.h>
 #include <memory/kmemory.h>
+#include <paging/page.h>
 
 #define ALLOC_SIZE (PAGE_SIZE * 10)
 
@@ -34,8 +35,8 @@ DECLARE_UNIT_TEST("Heap Allocate Aligned Test", kheapAllocateAlignedUnitTest) {
             
             kuPrint(UNIT_TEST "Allocated %llu bytes with alignment %llu: Success\n", (uint64_t)sizes[i], (uint64_t)alignments[j]);
 
-            // Optionally: Free the allocated memory (if applicable)
-            kfree(ptr);
+            // Free the aligned memory pointer
+            kfreeAligned(ptr);
         }
     }
 
@@ -59,22 +60,42 @@ DECLARE_UNIT_TEST("Heap Allocate and Free Test", kheapAllocateAndFreeUnitTest) {
     return UNIT_TEST_SUCCESS;
 }
 
-DECLARE_UNIT_TEST("Heap Allocate - Heavy (x1 mil)", kheapHeavyAllocateTest) {
-    const size_t allocSize = 1000;
-    const size_t oneMillion = 1000000;
-    void** savedPointers = (void**)kmalloc(sizeof(void*) * allocSize);
+DECLARE_UNIT_TEST("Heap Allocate - Heavy", kheapHeavyAllocateTest) {
+    const size_t allocSize = 100000;  // Allocation size in bytes
+    const size_t iterations = 8000; // Number of allocations
+    const size_t reportInterval = iterations / 10; // Report every 10% of iterations
+    const size_t bytesPerMB = 1024 * 1024;
+    size_t nextMemoryMilestone = 100 * bytesPerMB; // First memory milestone (100 MB)
+
+    void** savedPointers = (void**)kmalloc(sizeof(void*) * iterations);
     ASSERT_TRUE_CRITICAL(savedPointers, "Failed to allocate a buffer for memory pointers");
 
+    size_t totalAllocatedBytes = 0;  // Track total allocated memory in bytes
+
     // Perform a heavy-weight tight loop allocation test
-    for (size_t i = 0; i < oneMillion; i++) {
+    for (size_t i = 0; i < iterations; i++) {
         void* ptr = kmalloc(allocSize);
         ASSERT_TRUE_CRITICAL(ptr, "Allocated memory pointer was null");
         
         savedPointers[i] = ptr;
+        totalAllocatedBytes += allocSize;
+
+        // Print progress every 10% of iterations or every 100 MB
+        if ((i + 1) % reportInterval == 0 || totalAllocatedBytes >= nextMemoryMilestone) {
+            kuPrint(UNIT_TEST "Allocated %llu MB of memory after %llu iterations\n",
+                (unsigned long long)(totalAllocatedBytes / bytesPerMB),
+                (unsigned long long)(i + 1));
+            
+            // Update the memory milestone for the next 100 MB
+            nextMemoryMilestone += 100 * bytesPerMB;
+        }
     }
 
+    kuPrint(UNIT_TEST "Finished allocating %llu MB of memory in total\n", 
+        (unsigned long long)(totalAllocatedBytes / bytesPerMB));
+
     // Free all the allocated memory in this test
-    for (size_t i = 0; i < oneMillion; i++) {
+    for (size_t i = 0; i < iterations; i++) {
         kfree(savedPointers[i]);
     }
 
