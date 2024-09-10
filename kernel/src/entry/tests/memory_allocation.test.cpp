@@ -60,7 +60,7 @@ DECLARE_UNIT_TEST("Heap Allocate and Free Test", kheapAllocateAndFreeUnitTest) {
     return UNIT_TEST_SUCCESS;
 }
 
-DECLARE_UNIT_TEST("Heap Allocate - Heavy", kheapHeavyAllocateTest) {
+DECLARE_UNIT_TEST("Heap Allocate - Heavy", kheapHeavyAllocateUnitTest) {
     const size_t allocSize = 100000;  // Allocation size in bytes
     const size_t iterations = 8000; // Number of allocations
     const size_t reportInterval = iterations / 10; // Report every 10% of iterations
@@ -101,6 +101,106 @@ DECLARE_UNIT_TEST("Heap Allocate - Heavy", kheapHeavyAllocateTest) {
 
     // Free the pointer buffer
     kfree(savedPointers);
+
+    return UNIT_TEST_SUCCESS;
+}
+
+DECLARE_UNIT_TEST("Paging - Allocate Single Page", pagingAllocateUnitTest) {
+    auto& allocator = paging::getGlobalPageFrameAllocator();
+    size_t usedMemoryBefore = allocator.getUsedSystemMemory(); // KB
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
+
+    // Allocate a single page
+    void* page = allocPage();
+
+    // Measure system memory usage
+    size_t usedMemoryAfter = allocator.getUsedSystemMemory();
+    size_t memoryUsageChange = usedMemoryAfter - usedMemoryBefore;
+
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kuPrint(UNIT_TEST "Memory usage change: %lli bytes\n", memoryUsageChange);
+
+    // Assert the system memory usage
+    ASSERT_EQ(memoryUsageChange, PAGE_SIZE, "Incorrect system memory usage after page allocation");
+
+    // Free the page
+    freePage(page);
+
+    usedMemoryAfter = allocator.getUsedSystemMemory();
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+
+    // The net change in used memory should be zero after freeing the page
+    ASSERT_EQ(usedMemoryBefore, usedMemoryAfter, "Failed to properly free the allocated page memory");
+
+    return UNIT_TEST_SUCCESS;
+}
+
+DECLARE_UNIT_TEST("Paging - Allocate Single Zeroed Page", pagingAllocateZeroedUnitTest) {
+    auto& allocator = paging::getGlobalPageFrameAllocator();
+    size_t usedMemoryBefore = allocator.getUsedSystemMemory(); // KB
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
+
+    // Allocate a single page
+    void* page = zallocPage();
+    ASSERT_TRUE_CRITICAL(page, "Allocated memory pointer was null");
+
+    // Verify that the page is properly zeroed out
+    for (int i = 0; i < PAGE_SIZE; i++) {
+        uint8_t* ptr = (uint8_t*)page;
+        ASSERT_EQ(ptr[i], 0, "Allocated page memory contents were not zeroed out");
+    }
+
+    // Measure system memory usage
+    size_t usedMemoryAfter = allocator.getUsedSystemMemory();
+    size_t memoryUsageChange = usedMemoryAfter - usedMemoryBefore;
+
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kuPrint(UNIT_TEST "Memory usage change: %lli bytes\n", memoryUsageChange);
+
+    // Assert the system memory usage
+    ASSERT_EQ(memoryUsageChange, PAGE_SIZE, "Incorrect system memory usage after page allocation");
+
+    // Free the page
+    freePage(page);
+
+    usedMemoryAfter = allocator.getUsedSystemMemory();
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+
+    // The net change in used memory should be zero after freeing the page
+    ASSERT_EQ(usedMemoryBefore, usedMemoryAfter, "Failed to properly free the allocated page memory");
+
+    return UNIT_TEST_SUCCESS;
+}
+
+DECLARE_UNIT_TEST("Paging - Allocate Multiple Zeroed Pages", pagingAllocateMultiplePagesUnitTest) {
+    const size_t allocPageCount = 100;
+
+    auto& allocator = paging::getGlobalPageFrameAllocator();
+    size_t usedMemoryBefore = allocator.getUsedSystemMemory(); // KB
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
+
+    // Allocate a single page
+    void* ptr = zallocPages(100);
+    ASSERT_TRUE_CRITICAL(ptr, "Allocated memory pointer was null");
+
+    // Measure system memory usage
+    size_t usedMemoryAfter = allocator.getUsedSystemMemory();
+    size_t memoryUsageChange = usedMemoryAfter - usedMemoryBefore;
+
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kuPrint(UNIT_TEST "Memory usage change: %lli KB\n", memoryUsageChange / 1024);
+
+    // Assert the system memory usage
+    ASSERT_EQ(memoryUsageChange, PAGE_SIZE * allocPageCount, "Incorrect system memory usage after page allocation");
+
+    // Free the page
+    freePages(ptr, allocPageCount);
+
+    usedMemoryAfter = allocator.getUsedSystemMemory();
+    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+
+    // The net change in used memory should be zero after freeing the page
+    ASSERT_EQ(usedMemoryBefore, usedMemoryAfter, "Failed to properly free the allocated page memory");
 
     return UNIT_TEST_SUCCESS;
 }
