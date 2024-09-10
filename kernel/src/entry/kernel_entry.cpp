@@ -26,10 +26,6 @@
 #include "tests/kernel_unit_tests.h"
 #include "tests/kernel_entry_tests.h"
 
-// #define KE_TEST_MULTITHREADING
-// #define KE_TEST_XHCI_INIT
-// #define KE_TEST_AP_STARTUP
-
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
 
@@ -181,18 +177,6 @@ void _kuser_entry() {
 
     // Bring up all available processor cores
     initializeApCores();
-
-#ifdef KE_TEST_MULTITHREADING
-    ke_test_multithreading();
-#endif
-
-#ifdef KE_TEST_XHCI_INIT
-    ke_test_xhci_init();
-#endif
-
-#ifdef KE_TEST_AP_STARTUP
-    ke_test_ap_startup();
-#endif
 
 #ifdef KRUN_UNIT_TESTS
     // Run unit tests
