@@ -21,10 +21,10 @@ while IFS= read -r line; do
         test_name=$(echo "$line" | sed -n 's/.*Test "\(.*\)" passed.*/\1/p')
         passed_tests+=("$test_name")
 
-    # Look for failed tests
-    elif [[ "$line" == *"Test"* && "$line" == *"failed"* ]]; then
+    # Look for failed or critical failure tests
+    elif [[ "$line" == *"Test"* && ( "$line" == *"failed"* || "$line" == *"critical failure"* ) ]]; then
         # Extract test name inside the quotes
-        test_name=$(echo "$line" | sed -n 's/.*Test "\(.*\)" failed.*/\1/p')
+        test_name=$(echo "$line" | sed -n 's/.*Test "\(.*\)".*/\1/p')
         failed_tests+=("$test_name")
     fi
 done < "$log_file"
