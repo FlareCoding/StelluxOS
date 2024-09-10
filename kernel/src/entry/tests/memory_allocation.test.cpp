@@ -4,21 +4,21 @@
 
 #define ALLOC_SIZE (PAGE_SIZE * 10)
 
-int kheapAllocateUnitTest() {
+DECLARE_UNIT_TEST("Heap Allocate Test", kheapAllocateUnitTest) {
     void* ptr = kmalloc(ALLOC_SIZE);
     ASSERT_TRUE_CRITICAL(ptr, "Allocated memory pointer was null");
 
     return UNIT_TEST_SUCCESS;
 }
 
-int kheapAllocateAlignedUnitTest() {
+DECLARE_UNIT_TEST("Heap Allocate Aligned Test", kheapAllocateAlignedUnitTest) {
     void* ptr = kmalloc(ALLOC_SIZE);
     ASSERT_TRUE_CRITICAL(ptr, "Allocated memory pointer was null");
 
     return UNIT_TEST_SUCCESS;
 }
 
-int kheapAllocateAndFreeUnitTest() {
+DECLARE_UNIT_TEST("Heap Allocate and Free Test", kheapAllocateAndFreeUnitTest) {
     void* ptr = kmalloc(ALLOC_SIZE);
     ASSERT_TRUE_CRITICAL(ptr, "Allocated memory pointer was null");
 
@@ -31,7 +31,3 @@ int kheapAllocateAndFreeUnitTest() {
 
     return UNIT_TEST_SUCCESS;
 }
-
-DECLARE_UNIT_TEST("Heap Allocate Test", kheapAllocateUnitTest);
-DECLARE_UNIT_TEST("Heap Allocate Aligned Test", kheapAllocateAlignedUnitTest);
-DECLARE_UNIT_TEST("Heap Allocate and Free Test", kheapAllocateAndFreeUnitTest);
