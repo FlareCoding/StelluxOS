@@ -7,10 +7,4 @@ void ke_test_xhci_init();
 
 void ke_test_ap_startup();
 
-void ke_test_read_cpu_temps();
-
-void ke_test_print_current_time();
-
-void ke_test_graphics();
-
 #endif // KERNEL_ENTRY_TESTS_H

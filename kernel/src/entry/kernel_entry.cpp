@@ -29,9 +29,6 @@
 // #define KE_TEST_MULTITHREADING
 // #define KE_TEST_XHCI_INIT
 // #define KE_TEST_AP_STARTUP
-// #define KE_TEST_CPU_TEMP_READINGS
-// #define KE_TEST_PRINT_CURRENT_TIME
-// #define KE_TEST_GRAPHICS
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
@@ -193,18 +190,6 @@ void _kuser_entry() {
 
 #ifdef KE_TEST_AP_STARTUP
     ke_test_ap_startup();
-#endif
-
-#ifdef KE_TEST_CPU_TEMP_READINGS
-    ke_test_read_cpu_temps();
-#endif
-
-#ifdef KE_TEST_PRINT_CURRENT_TIME
-    ke_test_print_current_time();
-#endif
-
-#ifdef KE_TEST_GRAPHICS
-    ke_test_graphics();
 #endif
 
 #ifdef KRUN_UNIT_TESTS

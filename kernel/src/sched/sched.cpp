@@ -267,6 +267,10 @@ int RRScheduler::_getNextAvailableCpu() {
 
 Task* createKernelTask(void (*taskEntry)(), int priority) {
     Task* task = (Task*)kmalloc(sizeof(Task));
+    if (!task) {
+        return nullptr;
+    }
+
     zeromem(task, sizeof(Task));
 
     // Initialize the task's process control block
@@ -276,7 +280,17 @@ Task* createKernelTask(void (*taskEntry)(), int priority) {
 
     // Allocate both user and kernel stacks
     void* userStack = zallocPages(2);
+    if (!userStack) {
+        kfree(task);
+        return nullptr;
+    }
+
     void* kernelStack = zallocPages(2);
+    if (!kernelStack) {
+        kfree(task);
+        freePages(userStack, 2);
+        return nullptr;
+    }
 
     // Initialize the CPU context
     task->context.rsp = (uint64_t)userStack + PAGE_SIZE; // Point to the top of the stack
