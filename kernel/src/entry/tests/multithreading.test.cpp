@@ -91,48 +91,48 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     return UNIT_TEST_SUCCESS;
 }
 
-// DECLARE_UNIT_TEST("Multithreading Test - Multi Core", mtMultiCoreUnitTest) {
-//     const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
-//     const size_t taskCount = (MAX_QUEUED_PROCESSES - 1) * (systemCpus - 1);
-//     const uint32_t taskExecutionTimeout = 400;
-//     auto& sched = RRScheduler::get();
+DECLARE_UNIT_TEST("Multithreading Test - Multi Core", mtMultiCoreUnitTest) {
+    const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
+    const size_t taskCount = (MAX_QUEUED_PROCESSES - 1) * (systemCpus - 1);
+    const uint32_t taskExecutionTimeout = 400;
+    auto& sched = RRScheduler::get();
 
-//     // Allocate a buffer to store the tasks
-//     Task** taskArray = (Task**)kmalloc(sizeof(Task*) * taskCount);
+    // Allocate a buffer to store the tasks
+    Task** taskArray = (Task**)kmalloc(sizeof(Task*) * taskCount);
 
-//     // Reset the test counter
-//     g_mtUnitTestCounter = 0;
+    // Reset the test counter
+    g_mtUnitTestCounter = 0;
 
-//     kuPrint(UNIT_TEST "Creating %llu test tasks\n", taskCount);
+    kuPrint(UNIT_TEST "Creating %llu test tasks\n", taskCount);
 
-//     // Create the tasks
-//     for (size_t i = 0; i < taskCount; i++) {
-//         Task* task = createKernelTask(incrementMtUnitTestCounter);
-//         ASSERT_TRUE(task, "Failed to allocate a kernel task");
+    // Create the tasks
+    for (size_t i = 0; i < taskCount; i++) {
+        Task* task = createKernelTask(incrementMtUnitTestCounter);
+        ASSERT_TRUE(task, "Failed to allocate a kernel task");
 
-//         taskArray[i] = task;
-//     }
+        taskArray[i] = task;
+    }
 
-//     // Schedule all the tasks
-//     for (size_t i = 0; i < taskCount; i++) {
-//         bool ret = sched.addTask(taskArray[i]);
-//         ASSERT_TRUE(ret, "Failed to schedule a task on a single CPU core");
-//     }
+    // Schedule all the tasks
+    for (size_t i = 0; i < taskCount; i++) {
+        bool ret = sched.addTask(taskArray[i]);
+        ASSERT_TRUE(ret, "Failed to schedule a task on a single CPU core");
+    }
 
-//     // Wait for all tasks to finish
-//     msleep(taskExecutionTimeout);
+    // Wait for all tasks to finish
+    msleep(taskExecutionTimeout);
 
-//     // Check that the counter reached the correct value
-//     ASSERT_EQ(g_mtUnitTestCounter, taskCount, "Incorrect final value of the test counter after task execution");
+    // Check that the counter reached the correct value
+    ASSERT_EQ(g_mtUnitTestCounter, taskCount, "Incorrect final value of the test counter after task execution");
 
-//     // Destroy the allocated tasks
-//     for (size_t i = 0; i < taskCount; i++) {
-//         bool ret = destroyKernelTask(taskArray[i]);
-//         ASSERT_TRUE(ret, "Failed to destroy and clean up a kernel task");
-//     }
+    // Destroy the allocated tasks
+    for (size_t i = 0; i < taskCount; i++) {
+        bool ret = destroyKernelTask(taskArray[i]);
+        ASSERT_TRUE(ret, "Failed to destroy and clean up a kernel task");
+    }
 
-//     // Free the array for holding tasks for this test
-//     kfree(taskArray);
+    // Free the array for holding tasks for this test
+    kfree(taskArray);
 
-//     return UNIT_TEST_SUCCESS;
-// }
+    return UNIT_TEST_SUCCESS;
+}
