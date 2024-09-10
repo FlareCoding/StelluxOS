@@ -5,6 +5,12 @@
 #include <kelevate/kelevate.h>
 #include <sync.h>
 
+#define SCHED_KERNEL_STACK_PAGES    2
+#define SCHED_USER_STACK_PAGES      2
+
+#define SCHED_KERNEL_STACK_SIZE     SCHED_KERNEL_STACK_PAGES * PAGE_SIZE
+#define SCHED_USER_STACK_SIZE       SCHED_USER_STACK_PAGES * PAGE_SIZE
+
 RRScheduler s_globalRRScheduler;
 Task g_kernelSwapperTasks[MAX_CPUS] = {};
 
@@ -279,24 +285,24 @@ Task* createKernelTask(void (*taskEntry)(), int priority) {
     task->priority = priority;
 
     // Allocate both user and kernel stacks
-    void* userStack = zallocPages(2);
+    void* userStack = zallocPages(SCHED_USER_STACK_PAGES);
     if (!userStack) {
         kfree(task);
         return nullptr;
     }
 
-    void* kernelStack = zallocPages(2);
+    void* kernelStack = zallocPages(SCHED_KERNEL_STACK_PAGES);
     if (!kernelStack) {
         kfree(task);
-        freePages(userStack, 2);
+        freePages(userStack, SCHED_USER_STACK_PAGES);
         return nullptr;
     }
 
     // Initialize the CPU context
-    task->context.rsp = (uint64_t)userStack + PAGE_SIZE; // Point to the top of the stack
-    task->context.rbp = task->context.rsp;               // Point to the top of the stack
-    task->context.rip = (uint64_t)taskEntry;             // Set instruction pointer to the task function
-    task->context.rflags = 0x200;                        // Enable interrupts
+    task->context.rsp = (uint64_t)userStack + SCHED_USER_STACK_SIZE; // Point to the top of the stack
+    task->context.rbp = task->context.rsp;       // Point to the top of the stack
+    task->context.rip = (uint64_t)taskEntry;     // Set instruction pointer to the task function
+    task->context.rflags = 0x200;                // Enable interrupts
 
     // Set up segment registers for user space. These values correspond to the selectors in the GDT.
     task->context.cs = __USER_CS | 0x3;
@@ -305,12 +311,30 @@ Task* createKernelTask(void (*taskEntry)(), int priority) {
     task->context.ss = task->context.ds;
 
     // Save the kernel stack
-    task->kernelStack = (uint64_t)kernelStack + PAGE_SIZE;
+    task->kernelStack = (uint64_t)kernelStack + SCHED_KERNEL_STACK_SIZE;
+
+    // Save the user stack
+    task->userStackTop = task->context.rsp;
 
     // Setup the task's page table
     task->cr3 = reinterpret_cast<uint64_t>(paging::g_kernelRootPageTable);
 
     return task;
+}
+
+bool destroyKernelTask(Task* task) {
+    if (!task) {
+        return false;
+    }
+
+    // Destroy the stacks
+    freePages((void*)(task->kernelStack - SCHED_KERNEL_STACK_SIZE), SCHED_KERNEL_STACK_PAGES);
+    freePages((void*)(task->userStackTop - SCHED_USER_STACK_SIZE), SCHED_USER_STACK_PAGES);
+
+    // Free the actual task structure
+    kfree(task);
+
+    return true;
 }
 
 void exitKernelThread() {

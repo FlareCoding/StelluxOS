@@ -91,6 +91,8 @@ void _prepareApStartupMemoryMappings() {
 }
 
 void initializeApCores() {
+    const uint32_t coreStartupMaxTimeout = 3; // seconds
+
     auto& acpiController = AcpiController::get();
     Madt* apicTable = acpiController.getApicTable();
 
@@ -122,6 +124,9 @@ void initializeApCores() {
         // Let the AP cores continue on their own asynchronously
         _releaseApStartupSpinlockFlag();
     });
+
+    // Wait for all cores to fully start and finish initializing
+    sleep(coreStartupMaxTimeout);
 }
 
 void bootAndInitApCore(uint8_t apicid) {
@@ -169,6 +174,9 @@ void apStartupEntryC(int apicid) {
     char* usermodeStack = (char*)zallocPages(8);
     size_t usermodeStackSize = 8 * PAGE_SIZE;
     size_t userStackTop = (uint64_t)(usermodeStack + usermodeStackSize);
+
+    // Set the userStackTop field of the CPU's swapper task
+    g_kernelSwapperTasks[apicid].userStackTop = userStackTop;
 
     __call_lowered_entry(apStartupEntryLowered, (void*)userStackTop);
     while (1);
