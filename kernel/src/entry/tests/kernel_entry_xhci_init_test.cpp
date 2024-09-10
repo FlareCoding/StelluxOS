@@ -1,4 +1,3 @@
-#include "kernel_entry_tests.h"
 #include <core/kprint.h>
 #include <kelevate/kelevate.h>
 #include <acpi/acpi_controller.h>
