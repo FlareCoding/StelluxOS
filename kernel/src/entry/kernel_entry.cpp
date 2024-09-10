@@ -23,8 +23,9 @@
 #include <time/ktime.h>
 #include <kprint.h>
 
-#include "tests/kernel_unit_tests.h"
-#include "tests/kernel_entry_tests.h"
+#ifdef KRUN_UNIT_TESTS
+    #include "tests/kernel_unit_tests.h"
+#endif
 
 EXTERN_C __PRIVILEGED_CODE void _kentry(KernelEntryParams* params);
 extern uint64_t __kern_phys_base;
