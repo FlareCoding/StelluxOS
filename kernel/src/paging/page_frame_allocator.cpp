@@ -158,13 +158,6 @@ namespace paging {
 
         m_pageFrameBitmap.initialize(pageBitmapSize, pageBitmapVirtualBase);
 
-        // Initialize the kernel heap
-        uint64_t kernelHeapBase = reinterpret_cast<uint64_t>(pageBitmapVirtualBase) + pageBitmapSize;
-        heapAllocator.init(kernelHeapBase, KERNEL_HEAP_INIT_SIZE);
-        // kprint("pageBitmapVirtualBase : %llx\n", pageBitmapVirtualBase);
-        // kprint("pageBitmapSize        : %llx\n", pageBitmapSize);
-        // kprint("kernelHeapBase        : %llx\n", kernelHeapBase);
-
         // Get the address of PML4 table from cr3
         auto pml4 = getCurrentTopLevelPageTable();
 
@@ -188,6 +181,10 @@ namespace paging {
                 pte->userSupervisor = USERSPACE_PAGE;
             }
         }
+
+        // Initialize the kernel heap
+        uint64_t kernelHeapBase = reinterpret_cast<uint64_t>(pageBitmapVirtualBase) + pageBitmapSize;
+        heapAllocator.init(kernelHeapBase, KERNEL_HEAP_INIT_SIZE);
 
         // Mark higher-half pages where bitmap lives as accessible to usermode code
         for (uint8_t* bitmapPage = pageBitmapVirtualBase; bitmapPage < pageBitmapVirtualBase + pageBitmapSize; bitmapPage += PAGE_SIZE) {
@@ -316,6 +313,32 @@ namespace paging {
             void* page = (void*)((uint64_t)vaddr + (i * PAGE_SIZE));
             lockPage(page);
         }
+    }
+
+    bool PageFrameAllocator::isPageLocked(void* vaddr) {
+        bool ret = false;
+        uint64_t pageAddress = ((uint64_t)vaddr) & ~(PAGE_SIZE - 1);
+
+        acquireSpinlock(&__kpage_allocator_lock);
+        void* paddr = __pa((void*)pageAddress);
+
+        ret = m_pageFrameBitmap.isPageUsed(paddr);
+
+        releaseSpinlock(&__kpage_allocator_lock);
+
+        return ret;
+    }
+
+    bool PageFrameAllocator::isPhysicalPageLocked(void* paddr) {
+        bool ret = false;
+        uint64_t pageAddress = ((uint64_t)paddr) & ~(PAGE_SIZE - 1);
+
+        acquireSpinlock(&__kpage_allocator_lock);
+        ret = m_pageFrameBitmap.isPageUsed((void*)pageAddress);
+
+        releaseSpinlock(&__kpage_allocator_lock);
+
+        return ret;
     }
 
     void* PageFrameAllocator::requestFreePage() {

@@ -50,6 +50,9 @@ public:
     void lockPage(void* vaddr);
     void lockPages(void* vaddr, uint64_t pages);
 
+    bool isPageLocked(void* vaddr);
+    bool isPhysicalPageLocked(void* paddr);
+
     void* requestFreePage();
     void* requestFreePageZeroed();
 
