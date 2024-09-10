@@ -108,6 +108,21 @@ private:
 Task* createKernelTask(void (*taskEntry)(), int priority = 0);
 
 //
+// Destroys a task object, releasing any resources allocated for the task.
+// This function should properly clean up any state or memory associated 
+// with the task, ensuring it no longer runs and freeing up any used memory.
+//
+// Parameters:
+// - task: A pointer to the Task object to be destroyed.
+//         The Task pointer must not be used after calling this function.
+//
+// Returns:
+// - Returns true if the task was successfully destroyed. False if there
+//   was an error (such as the task not being found).
+//
+bool destroyKernelTask(Task* task);
+
+//
 // Allows the current running kernel thread to terminate and switch to the next
 // available task without waiting for the next timer interrupt. If no next valid
 // task is available, control flow switches back to the kernel swapper task.

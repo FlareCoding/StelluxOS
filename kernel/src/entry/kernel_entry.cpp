@@ -72,6 +72,8 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     g_kernelSwapperTasks[BSP_CPU_ID].pid = 1;
     zeromem(&g_kernelSwapperTasks[BSP_CPU_ID].context, sizeof(CpuContext));
     g_kernelSwapperTasks[BSP_CPU_ID].context.rflags |= 0x200;
+    g_kernelSwapperTasks[BSP_CPU_ID].userStackTop =
+        (uint64_t)(__usermodeKernelEntryStack + USERMODE_KERNEL_ENTRY_STACK_SIZE);
     
     // Elevated flag must be 0 since we are going to lower ourselves in the next few calls.
     // TO-DO: investigate further why setting elevated flag to 1 here causes a crash. 
