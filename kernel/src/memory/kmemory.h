@@ -18,6 +18,9 @@ void* zallocPage();
 void* allocPages(size_t pages);
 void* zallocPages(size_t pages);
 
+void freePage(void* page);
+void freePages(void* addr, size_t pages);
+
 void* kmalloc(size_t size);
 void* kmallocAligned(size_t size, size_t alignment);
 void kfree(void* ptr);
