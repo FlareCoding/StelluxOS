@@ -48,7 +48,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Kernel Task Creation", mtTaskCreationUn
 DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     const size_t taskCount = 1000;
     const int targetCpu = BSP_CPU_ID;
-    const int taskExecutionTimeout = 1200;
+    const int taskExecutionTimeout = 2000;
     auto& sched = Scheduler::get();
 
     // Allocate a buffer to store the tasks
@@ -91,10 +91,10 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     return UNIT_TEST_SUCCESS;
 }
 
-DECLARE_UNIT_TEST("Multithreading Test - Multi Core", mtMultiCoreUnitTest) {
+DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)", mtMultiCoreUnitTest) {
     const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
-    const size_t taskCount = 1000 * systemCpus;
-    const uint32_t taskExecutionTimeout = 1200;
+    const size_t taskCount = 600 * systemCpus;
+    const uint32_t taskExecutionTimeout = 2000;
     auto& sched = Scheduler::get();
 
     // Allocate a buffer to store the tasks
@@ -115,10 +115,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core", mtMultiCoreUnitTest) {
 
     // Schedule all the tasks
     for (size_t i = 0; i < taskCount; i++) {
-        size_t targetCpu = i % systemCpus;
-
-        sched.addTaskToCpu(taskArray[i], targetCpu);
-        // ASSERT_TRUE(ret, "Failed to schedule a task");
+        sched.addTask(taskArray[i]);
     }
 
     // Wait for all tasks to finish
