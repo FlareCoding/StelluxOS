@@ -167,7 +167,7 @@ make connect-gdb
 * [x] Multithreading
 * [x] AP processor startup (leads into SMP)
 * [x] SMP support in the scheduler
-* [ ] Unit testing infrastructure
+* [x] Unit testing infrastructure
 * [ ] Complete rework of the kprint and dmesg interface
 * [ ] Improved thread creation & management mechanism
 * [ ] GUI and window management subsystem
