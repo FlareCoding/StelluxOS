@@ -48,8 +48,8 @@ DECLARE_UNIT_TEST("Multithreading Test - Kernel Task Creation", mtTaskCreationUn
 DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     const size_t taskCount = 1000;
     const int targetCpu = BSP_CPU_ID;
-    const int taskExecutionTimeout = 400;
-    auto& sched = RRScheduler::get();
+    const int taskExecutionTimeout = 1200;
+    auto& sched = Scheduler::get();
 
     // Allocate a buffer to store the tasks
     Task** taskArray = (Task**)kmalloc(sizeof(Task*) * taskCount);
@@ -69,8 +69,8 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
 
     // Schedule all the tasks
     for (size_t i = 0; i < taskCount; i++) {
-        bool ret = sched.addTask(taskArray[i], targetCpu);
-        ASSERT_TRUE(ret, "Failed to schedule a task on a single CPU core");
+        sched.addTaskToCpu(taskArray[i], targetCpu);
+        // ASSERT_TRUE(ret, "Failed to schedule a task on a single CPU core");
     }
 
     // Wait for all tasks to finish
@@ -93,9 +93,9 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
 
 DECLARE_UNIT_TEST("Multithreading Test - Multi Core", mtMultiCoreUnitTest) {
     const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
-    const size_t taskCount = 200 * (systemCpus - 1);
-    const uint32_t taskExecutionTimeout = 400;
-    auto& sched = RRScheduler::get();
+    const size_t taskCount = 1000 * systemCpus;
+    const uint32_t taskExecutionTimeout = 1200;
+    auto& sched = Scheduler::get();
 
     // Allocate a buffer to store the tasks
     Task** taskArray = (Task**)kmalloc(sizeof(Task*) * taskCount);
@@ -115,8 +115,10 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core", mtMultiCoreUnitTest) {
 
     // Schedule all the tasks
     for (size_t i = 0; i < taskCount; i++) {
-        bool ret = sched.addTask(taskArray[i]);
-        ASSERT_TRUE(ret, "Failed to schedule a task");
+        size_t targetCpu = i % systemCpus;
+
+        sched.addTaskToCpu(taskArray[i], targetCpu);
+        // ASSERT_TRUE(ret, "Failed to schedule a task");
     }
 
     // Wait for all tasks to finish

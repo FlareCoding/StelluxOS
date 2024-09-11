@@ -1,4 +1,5 @@
 #include "panic.h"
+#include <sched/sched.h>
 #include <kprint.h>
 #include <sync.h>
 
@@ -78,6 +79,7 @@ void kpanic(PtRegs* frame) {
 
     kprintChar('\n');
     kprintError("====== PANIC: CPU EXCEPTION %s ======\n", g_cpuExceptionMessages[frame->intno]);
+    kprintInfo("CPU: %i\n", current->cpu);
     kprintInfo("Error Code: %llx\n", frame->error);
 
     printBacktrace(frame);

@@ -173,7 +173,7 @@ void _kuser_entry() {
     }
 
     // Initialize the scheduler
-    auto& sched = RRScheduler::get();
+    auto& sched = Scheduler::get();
     sched.init();
 
     // Bring up all available processor cores
