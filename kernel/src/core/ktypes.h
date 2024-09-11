@@ -44,5 +44,6 @@ typedef void* uintptr_t;
 #define __PRIVILEGED_DATA __attribute__((section(".kdata")))
 
 #define __UNIT_TEST __attribute__((used, section(".unit_test")))
+#define __UNIT_TEST_UNUSED __attribute__((used, section(".unit_test_unused")))
 
 #endif
