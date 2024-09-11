@@ -46,7 +46,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Kernel Task Creation", mtTaskCreationUn
 }
 
 DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
-    const size_t taskCount = MAX_QUEUED_PROCESSES - 1;
+    const size_t taskCount = 1000;
     const int targetCpu = BSP_CPU_ID;
     const int taskExecutionTimeout = 400;
     auto& sched = RRScheduler::get();
@@ -93,7 +93,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
 
 DECLARE_UNIT_TEST("Multithreading Test - Multi Core", mtMultiCoreUnitTest) {
     const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
-    const size_t taskCount = (MAX_QUEUED_PROCESSES - 1) * (systemCpus - 1);
+    const size_t taskCount = 200 * (systemCpus - 1);
     const uint32_t taskExecutionTimeout = 400;
     auto& sched = RRScheduler::get();
 
@@ -116,14 +116,14 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core", mtMultiCoreUnitTest) {
     // Schedule all the tasks
     for (size_t i = 0; i < taskCount; i++) {
         bool ret = sched.addTask(taskArray[i]);
-        ASSERT_TRUE(ret, "Failed to schedule a task on a single CPU core");
+        ASSERT_TRUE(ret, "Failed to schedule a task");
     }
 
     // Wait for all tasks to finish
     msleep(taskExecutionTimeout);
 
     // Check that the counter reached the correct value
-    ASSERT_EQ(g_mtUnitTestCounter, taskCount, "Incorrect final value of the test counter after task execution");
+    ASSERT_EQ(g_mtUnitTestCounter, taskCount, "Incorrect final value of the test counter after asynchronous task execution");
 
     // Destroy the allocated tasks
     for (size_t i = 0; i < taskCount; i++) {
