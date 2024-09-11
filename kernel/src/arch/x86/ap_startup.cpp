@@ -155,10 +155,10 @@ void apStartupEntryC(int apicid) {
     zeromem(&g_kernelSwapperTasks[apicid].context, sizeof(CpuContext));
     g_kernelSwapperTasks[apicid].context.rflags |= 0x200;
     g_kernelSwapperTasks[apicid].elevated = 0;
+    g_kernelSwapperTasks[apicid].cpu = apicid;
 
     // Set the current task in the per cpu region
     __per_cpu_data.__cpu[apicid].currentTask = &g_kernelSwapperTasks[apicid];
-    __per_cpu_data.__cpu[apicid].currentTask->cpu = apicid;
 
     // Install the existing IDT and enable interrupts
     loadIdtr();

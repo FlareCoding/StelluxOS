@@ -33,10 +33,11 @@ typedef struct ProcessControlBlock {
     uint64_t        kernelStack;
     uint64_t        userStackTop;
     uint64_t        usergs;
+
     struct {
         uint64_t    elevated    : 1;
-        uint64_t    cpu         : 1;
-        uint64_t    flrsvd      : 62;
+        uint64_t    cpu         : 8;
+        uint64_t    flrsvd      : 55;
     } __attribute__((packed));
 } PCB;
 

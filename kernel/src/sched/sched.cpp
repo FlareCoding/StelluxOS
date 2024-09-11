@@ -34,11 +34,6 @@ size_t RoundRobinRunQueue::size() const {
 }
 
 bool RoundRobinRunQueue::addTask(Task* task) {
-    if (m_tasks.size() == MAX_QUEUED_PROCESSES) {
-        // The queue limit has been reached
-        return false;
-    }
-
     // Add the task to the run queue
     m_tasks.pushBack(task);
     return true;
