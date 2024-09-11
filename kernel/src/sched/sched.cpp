@@ -183,7 +183,7 @@ bool destroyKernelTask(Task* task) {
 
     return true;
 }
-#include <kprint.h>
+
 void exitKernelThread() {
     // Construct a fake PtRegs structure to switch to a new context
     PtRegs regs;
