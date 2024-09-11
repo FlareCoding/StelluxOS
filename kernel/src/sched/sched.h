@@ -22,6 +22,9 @@ public:
 
     static Scheduler& get();
 
+    void init();
+    void registerCoreForScheduling(int cpu);
+
     // Get the current running task
     Task* getCurrentTask(int cpu);
 
@@ -31,17 +34,20 @@ public:
     // Schedule the next task to run
     void scheduleNextTask(int cpu);
 
-    // Add a task
+    // Add a task to a specified cpu core
     void addTaskToCpu(Task* task, int cpu);
+
+    // Adds a task to the next least loaded available cpu core
+    void addTask(Task* task);
 
     // Remove a task
     void removeTaskFromCpu(int pid, int cpu);
 
-    void init();
-    void registerCoreForScheduling(int cpu);
-
 private:
     kstl::vector<kstl::SharedPtr<SchedulerRunQueue>> m_runQueues;
+
+    int _findLeastLoadedCpu();
+    size_t _getRunQueueSize(size_t cpu);
 };
 
 //

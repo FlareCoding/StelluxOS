@@ -15,6 +15,7 @@ Scheduler g_primaryScheduler;
 Task g_kernelSwapperTasks[MAX_CPUS] = {};
 
 DECLARE_SPINLOCK(__sched_pid_alloc_lock);
+DECLARE_SPINLOCK(__sched_load_balancing_lock);
 
 size_t g_availableTaskPid = 10;
 size_t _allocateTaskPid() {
@@ -104,6 +105,11 @@ void Scheduler::addTaskToCpu(Task* task, int cpu) {
     releaseSpinlock(&m_runQueues[cpu]->lock);
 }
 
+void Scheduler::addTask(Task* task) {
+    size_t targetCpu = _findLeastLoadedCpu();
+    addTaskToCpu(task, targetCpu);
+}
+
 void Scheduler::removeTaskFromCpu(int pid, int cpu) {
     acquireSpinlock(&m_runQueues[cpu]->lock);
 
@@ -116,6 +122,34 @@ void Scheduler::removeTaskFromCpu(int pid, int cpu) {
     }
 
     releaseSpinlock(&m_runQueues[cpu]->lock);
+}
+
+int Scheduler::_findLeastLoadedCpu() {
+    int cpu = 0;
+    size_t leastTasksFound = static_cast<size_t>(-1);
+
+    acquireSpinlock(&__sched_load_balancing_lock);
+
+    for (size_t i = 0; i < m_runQueues.size(); i++) {
+        size_t cpuTasks = _getRunQueueSize(i);
+        if (cpuTasks < leastTasksFound) {
+            leastTasksFound = cpuTasks;
+            cpu = static_cast<int>(i);
+        }
+    }
+
+    releaseSpinlock(&__sched_load_balancing_lock);
+    return cpu;
+}
+
+size_t Scheduler::_getRunQueueSize(size_t cpu) {
+    size_t ret = 0;
+
+    acquireSpinlock(&m_runQueues[cpu]->lock);
+    ret = m_runQueues[cpu]->tasks.size();
+
+    releaseSpinlock(&m_runQueues[cpu]->lock);
+    return ret;
 }
 
 Task* createKernelTask(void (*taskEntry)(), int priority) {
