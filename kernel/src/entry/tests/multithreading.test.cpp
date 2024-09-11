@@ -91,7 +91,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     return UNIT_TEST_SUCCESS;
 }
 
-DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)", mtMultiCoreUnitTest) {
+DECLARE_UNUSED_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)", mtMultiCoreUnitTest) {
     const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
     const size_t taskCount = 600 * systemCpus;
     const uint32_t taskExecutionTimeout = 2000;

@@ -76,5 +76,11 @@ SECTIONS
         . = ALIGN(0x1000);
     }
 
+    /* Disabled/Unused Unit Test Section */
+    .unit_test_unused :
+    {
+        . = ALIGN(0x1000);
+    }
+
     __ksymend = .;
 }

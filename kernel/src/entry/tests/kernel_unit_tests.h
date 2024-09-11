@@ -21,6 +21,11 @@ typedef int (*testFunc_t)();
     static const KUnitTest __UNIT_TEST testStruct_##testFunc = { #testName, testFunc }; \
     int testFunc()
 
+#define DECLARE_UNUSED_UNIT_TEST(testName, testFunc) \
+    int testFunc(); \
+    static const KUnitTest __UNIT_TEST_UNUSED testStruct_##testFunc = { #testName, testFunc }; \
+    int testFunc()
+
 // Structure to hold test information (name and function pointer)
 struct KUnitTest {
     const char* name;
