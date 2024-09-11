@@ -12,7 +12,7 @@
   <!-- Badges -->
   <p>
     <a href="https://github.com/FlareCoding/StelluxOS/actions/workflows/ci.yml">
-      <img src="https://github.com/FlareCoding/StelluxOS/actions/workflows/ci.yml/badge.svg?branch=" alt="badge" />
+      <img src="https://github.com/FlareCoding/StelluxOS/actions/workflows/ci.yml/badge.svg?branch=master" alt="badge" />
     </a>
     <a href="https://github.com/FlareCoding/StelluxOS/graphs/contributors">
       <img src="https://img.shields.io/github/contributors/FlareCoding/StelluxOS" alt="contributors" />
