@@ -67,6 +67,12 @@ Task* Scheduler::peekNextTask(int cpu) {
     size_t idx = m_runQueues[cpu]->currentTaskIndex + 1;
     if (idx == m_runQueues[cpu]->tasks.size()) {
         idx = 0;
+
+        // If there are other tasks available in the run
+        // queue, prioritize them over the swapper task.
+        if (m_runQueues[cpu]->tasks.size() > 1) {
+            idx = 1;
+        }
     }
 
     task = m_runQueues[cpu]->tasks[idx];
@@ -83,6 +89,12 @@ void Scheduler::scheduleNextTask(int cpu) {
 
     if (nextIdx == m_runQueues[cpu]->tasks.size()) {
         nextIdx = 0;
+
+        // If there are other tasks available in the run
+        // queue, prioritize them over the swapper task.
+        if (m_runQueues[cpu]->tasks.size() > 1) {
+            nextIdx = 1;
+        }
     }
 
     if (curIdx != nextIdx) {
