@@ -2,6 +2,7 @@
 #define KERNEL_UNIT_TESTS_H
 #include <ktypes.h>
 #include <kprint.h>
+#include <core/kstring.h>
 
 // Define return values for test outcomes
 #define UNIT_TEST_SUCCESS          0

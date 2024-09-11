@@ -105,6 +105,26 @@ DECLARE_UNIT_TEST("Heap Allocate - Heavy", kheapHeavyAllocateUnitTest) {
     return UNIT_TEST_SUCCESS;
 }
 
+DECLARE_UNIT_TEST("Heap Reallocate Test", kheapReallocateUnitTest) {
+    // Allocate an initial block of memory
+    void* ptr = kmalloc(ALLOC_SIZE);
+    ASSERT_TRUE_CRITICAL(ptr, "Initial allocated memory pointer was null");
+
+    // Reallocate the memory to a larger size
+    void* new_ptr = krealloc(ptr, ALLOC_SIZE * 2);
+    ASSERT_TRUE_CRITICAL(new_ptr, "Reallocated memory pointer was null");
+
+    // Ensure the new pointer is valid and that the data wasn't corrupted (if possible to check)
+    ASSERT_TRUE(ptr != new_ptr, "Reallocated memory pointer didn't change as expected when resizing");
+    
+    kuPrint(UNIT_TEST "Reallocated memory from %llu bytes to %llu bytes: Success\n", (uint64_t)ALLOC_SIZE, (uint64_t)(ALLOC_SIZE * 2));
+
+    // Free the reallocated memory
+    kfree(new_ptr);
+
+    return UNIT_TEST_SUCCESS;
+}
+
 DECLARE_UNIT_TEST("Paging - Allocate Single Page", pagingAllocateUnitTest) {
     auto& allocator = paging::getGlobalPageFrameAllocator();
     size_t usedMemoryBefore = allocator.getUsedSystemMemory(); // KB

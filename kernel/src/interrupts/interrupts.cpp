@@ -85,7 +85,7 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 DEFINE_INT_HANDLER(_irq_handler_timer) {
     Apic::__irqGetLocalApic()->completeIrq();
 
-    auto& sched = RRScheduler::get();
+    auto& sched = Scheduler::get();
     size_t cpu = current->cpu;
 
     PCB* prevTask = sched.getCurrentTask(cpu);

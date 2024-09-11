@@ -96,7 +96,7 @@ void initializeApCores() {
     auto& acpiController = AcpiController::get();
     Madt* apicTable = acpiController.getApicTable();
 
-    auto& sched = RRScheduler::get();
+    auto& sched = Scheduler::get();
 
     RUN_ELEVATED({
         // Copy the necessary resources and data to the lower physical address
@@ -112,7 +112,7 @@ void initializeApCores() {
         // *Note* starting at 1 because BSP_ID is 0
         for (size_t cpu = 1; cpu < apicTable->getCpuCount(); cpu++) {
             // Create a scheduler run queue for each detected core
-            sched.registerCpuCore(cpu);
+            sched.registerCoreForScheduling(cpu);
 
             // Get the APIC ID of the core
             uint8_t apicid = apicTable->getLocalApicDescriptor(cpu).apicId;

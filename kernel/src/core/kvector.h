@@ -31,6 +31,7 @@ public:
 
     size_t find(const T& value) const;
 
+    T* data() const;
     size_t size() const;
     size_t capacity() const;
     bool empty() const;
@@ -291,6 +292,11 @@ size_t vector<T>::find(const T& value) const {
     }
 
     return vector<T>::npos;
+}
+
+template <typename T>
+T* vector<T>::data() const {
+    return m_data;
 }
 
 template <typename T>

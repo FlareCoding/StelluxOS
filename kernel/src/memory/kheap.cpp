@@ -51,10 +51,8 @@ void* DynamicMemoryAllocator::allocate(size_t size) {
         return nullptr;
     }
 
-    if (!_splitSegment(segment, newSegmentSize)) {
-        releaseSpinlock(&__kheap_lock);
-        return nullptr;
-    }
+    // Attempt to split the segment if it's large enough
+    _splitSegment(segment, newSegmentSize);
 
     // Mark segment as used
     segment->flags.free = false;
