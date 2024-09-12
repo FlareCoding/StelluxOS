@@ -179,6 +179,8 @@ void _kuser_entry() {
     // Bring up all available processor cores
     initializeApCores();
 
+    asm volatile ("int $47");
+
 #ifdef KRUN_UNIT_TESTS
     // Run unit tests
     executeUnitTests();

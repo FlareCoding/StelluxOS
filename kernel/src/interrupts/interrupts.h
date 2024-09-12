@@ -65,6 +65,9 @@
 #define IRQ14  46
 #define IRQ15  47
 
+// Userspace IRQs
+#define IRQ16  48
+
 // Additional Software Interrupts can be defined here (INT)
 // ...
 
@@ -118,5 +121,7 @@ DEFINE_INT_HANDLER(_exc_handler_pf);
 
 DEFINE_INT_HANDLER(_irq_handler_timer);
 DEFINE_INT_HANDLER(_irq_handler_keyboard);
+
+DEFINE_INT_HANDLER(_irq_handler_schedule);
 
 #endif
