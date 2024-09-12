@@ -100,6 +100,24 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
     }
 }
 
+DEFINE_INT_HANDLER(_irq_handler_schedule) {
+    auto& sched = Scheduler::get();
+    size_t cpu = current->cpu;
+
+    kprint("_irq_handler_schedule called!\n");
+
+    PCB* prevTask = sched.getCurrentTask(cpu);
+    PCB* nextTask = sched.peekNextTask(cpu);
+
+    if (nextTask && prevTask != nextTask) {
+        // Switch the CPU context
+        switchContextInIrq(cpu, cpu, prevTask, nextTask, frame);
+        
+        // Tell the scheduler that the context switch has been accepted
+        sched.scheduleNextTask(cpu);
+    }
+}
+
 DEFINE_INT_HANDLER(_irq_handler_keyboard) {
     (void)frame;
 

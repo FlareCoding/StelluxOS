@@ -45,16 +45,80 @@ EXTERN_C void __asm_irq_handler_13();
 EXTERN_C void __asm_irq_handler_14();
 EXTERN_C void __asm_irq_handler_15();
 
-InterruptHandler_t g_int_exc_handlers[15] = {
-    _exc_handler_div,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    _exc_handler_pf
+struct InterruptExceptionHandlers {
+    InterruptHandler_t divideByZero;
+    InterruptHandler_t debug;
+    InterruptHandler_t nmi;
+    InterruptHandler_t breakpoint;
+    InterruptHandler_t overflow;
+    InterruptHandler_t boundRange;
+    InterruptHandler_t invalidOpcode;
+    InterruptHandler_t deviceNotAvailable;
+    InterruptHandler_t doubleFault;
+    InterruptHandler_t coprocessorSegOverrun;
+    InterruptHandler_t invalidTss;
+    InterruptHandler_t segmentNotPresent;
+    InterruptHandler_t stackFault;
+    InterruptHandler_t generalProtectionFault;
+    InterruptHandler_t pageFault;
+};
+static_assert(sizeof(InterruptExceptionHandlers) == 15 * sizeof(InterruptHandler_t));
+
+struct InterruptIrqHandlers {
+    InterruptHandler_t timerIrq;
+    InterruptHandler_t ps2KeyboardIrq;
+    InterruptHandler_t irq2;
+    InterruptHandler_t irq3;
+    InterruptHandler_t irq4;
+    InterruptHandler_t irq5;
+    InterruptHandler_t irq6;
+    InterruptHandler_t irq7;
+    InterruptHandler_t irq8;
+    InterruptHandler_t irq9;
+    InterruptHandler_t irq10;
+    InterruptHandler_t irq11;
+    InterruptHandler_t irq12;
+    InterruptHandler_t irq13;
+    InterruptHandler_t irq14;
+    InterruptHandler_t schedIrq;
+};
+static_assert(sizeof(InterruptIrqHandlers) == 16 * sizeof(InterruptHandler_t));
+
+InterruptExceptionHandlers g_interruptExceptionHandlers = {
+    .divideByZero = _exc_handler_div,
+    .debug = 0,
+    .nmi = 0,
+    .breakpoint = 0,
+    .overflow = 0,
+    .boundRange = 0,
+    .invalidOpcode = 0,
+    .deviceNotAvailable = 0,
+    .doubleFault = 0,
+    .coprocessorSegOverrun = 0,
+    .invalidTss = 0,
+    .segmentNotPresent = 0,
+    .stackFault = 0,
+    .generalProtectionFault = 0,
+    .pageFault = _exc_handler_pf
 };
 
-InterruptHandler_t g_int_irq_handlers[15] = {
-    _irq_handler_timer,
-    _irq_handler_keyboard,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+InterruptIrqHandlers g_interruptIrqHandlers = {
+    .timerIrq = _irq_handler_timer,
+    .ps2KeyboardIrq = _irq_handler_keyboard,
+    .irq2 = 0,
+    .irq3 = 0,
+    .irq4 = 0,
+    .irq5 = 0,
+    .irq6 = 0,
+    .irq7 = 0,
+    .irq8 = 0,
+    .irq9 = 0,
+    .irq10 = 0,
+    .irq11 = 0,
+    .irq12 = 0,
+    .irq13 = 0,
+    .irq14 = 0,
+    .schedIrq = _irq_handler_schedule,
 };
 
 IdtDescriptor g_kernelIdtDescriptor = {
@@ -66,8 +130,9 @@ InterruptDescriptorTable g_kernelIdt;
 // Common entry point for texceptions
 __PRIVILEGED_CODE
 void __common_exc_entry(PtRegs* frame) {
-    if (g_int_exc_handlers[frame->intno] != NULL) {
-        return g_int_exc_handlers[frame->intno](frame);
+    InterruptHandler_t* handlers = (InterruptHandler_t*)&g_interruptExceptionHandlers;
+    if (handlers[frame->intno] != NULL) {
+        return handlers[frame->intno](frame);
     }
 
     if (frame->hwframe.cs & USER_DPL) {
@@ -81,8 +146,9 @@ void __common_exc_entry(PtRegs* frame) {
 // Common entry point for IRQs
 __PRIVILEGED_CODE
 void __common_irq_entry(PtRegs* frame) {
-    if (g_int_irq_handlers[frame->intno - IRQ0] != NULL) {
-        g_int_irq_handlers[frame->intno - IRQ0](frame);
+    InterruptHandler_t* handlers = (InterruptHandler_t*)&g_interruptIrqHandlers;
+    if (handlers[frame->intno - IRQ0] != NULL) {
+        handlers[frame->intno - IRQ0](frame);
     }
 }
 
@@ -144,7 +210,9 @@ void setupInterruptDescriptorTable() {
     SET_KERNEL_TRAP_GATE(IRQ12, __asm_irq_handler_12);
     SET_KERNEL_TRAP_GATE(IRQ13, __asm_irq_handler_13);
     SET_KERNEL_TRAP_GATE(IRQ14, __asm_irq_handler_14);
-    SET_KERNEL_TRAP_GATE(IRQ15, __asm_irq_handler_15);
+
+    // Set Userspace IRQ Handlers
+    SET_USER_INTERRUPT_GATE(IRQ15, __asm_irq_handler_15);
 }
 
 __PRIVILEGED_CODE

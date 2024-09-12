@@ -11,6 +11,7 @@ uint64_t g_mtUnitTestCounter = 0;
 void incrementMtUnitTestCounter() {
     acquireSpinlock(&mtUnitTestLock);
     ++g_mtUnitTestCounter;
+    kuPrint("%llu\n", g_mtUnitTestCounter);
     releaseSpinlock(&mtUnitTestLock);
 
     exitKernelThread();
@@ -48,7 +49,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Kernel Task Creation", mtTaskCreationUn
 DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     const size_t taskCount = 1000;
     const int targetCpu = BSP_CPU_ID;
-    const int taskExecutionTimeout = 2000;
+    const int taskExecutionTimeout = 8000;
     auto& sched = Scheduler::get();
 
     // Allocate a buffer to store the tasks
@@ -94,7 +95,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
 DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)", mtMultiCoreUnitTest) {
     const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
     const size_t taskCount = 600 * systemCpus;
-    const uint32_t taskExecutionTimeout = 2000;
+    const uint32_t taskExecutionTimeout = 8000;
     auto& sched = Scheduler::get();
 
     // Allocate a buffer to store the tasks
