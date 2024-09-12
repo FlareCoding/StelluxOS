@@ -1,13 +1,15 @@
 #include "hpet.h"
 #include <paging/page.h>
 #include <paging/phys_addr_translation.h>
+#include <paging/tlb.h>
 #include <memory/kmemory.h>
 
 Hpet::Hpet(HpetTable* table) {
     void* physicalBase = reinterpret_cast<void*>(table->address);
     void* virtualBase = zallocPage();
 
-    paging::mapPage(virtualBase, physicalBase, USERSPACE_PAGE, 0, paging::g_kernelRootPageTable);
+    paging::mapPage(virtualBase, physicalBase, USERSPACE_PAGE, PAGE_ATTRIB_CACHE_DISABLED, paging::g_kernelRootPageTable);
+    paging::flushTlbPage(virtualBase);
 
     m_base = reinterpret_cast<uint64_t>(virtualBase);
 }
