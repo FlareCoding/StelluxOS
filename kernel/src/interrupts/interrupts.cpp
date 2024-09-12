@@ -88,6 +88,12 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
     auto& sched = Scheduler::get();
     size_t cpu = current->cpu;
 
+    // A run queue is currently being modified
+    // (adding tasks, removing tasks, etc.)
+    if (sched.__isRunQueueLocked(cpu)) {
+        return;
+    }
+
     PCB* prevTask = sched.getCurrentTask(cpu);
     PCB* nextTask = sched.peekNextTask(cpu);
 
@@ -104,7 +110,11 @@ DEFINE_INT_HANDLER(_irq_handler_schedule) {
     auto& sched = Scheduler::get();
     size_t cpu = current->cpu;
 
-    kprint("_irq_handler_schedule called!\n");
+    // A run queue is currently being modified
+    // (adding tasks, removing tasks, etc.)
+    if (sched.__isRunQueueLocked(cpu)) {
+        return;
+    }
 
     PCB* prevTask = sched.getCurrentTask(cpu);
     PCB* nextTask = sched.peekNextTask(cpu);

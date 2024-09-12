@@ -128,6 +128,20 @@ public:
      */
     void yieldTask();
 
+    /**
+     * @brief Checks if the run queue for a specific CPU core is locked.
+     * 
+     * This function checks if the run queue of the specified CPU core is 
+     * currently locked. A locked run queue indicates that no modifications 
+     * (such as adding or removing tasks) can be made to the task list for 
+     * that CPU at that time. This can occur when the scheduler or other 
+     * mechanisms are currently manipulating the run queue.
+     * 
+     * @param cpu The CPU core number whose run queue lock status is being checked.
+     * @return true if the run queue for the given CPU is locked, false otherwise.
+     */
+    bool __isRunQueueLocked(int cpu);
+
 private:
     // List of run queues for each CPU core, holding tasks to be scheduled on that core
     kstl::vector<kstl::SharedPtr<SchedulerRunQueue>> m_runQueues;

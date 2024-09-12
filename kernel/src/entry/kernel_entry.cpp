@@ -152,8 +152,8 @@ void _kuser_entry() {
     // Initialize high precision event timer and query hardware frequency
     KernelTimer::init();
 
-    // Calibrate apic timer tickrate to 100 milliseconds
-    KernelTimer::calibrateApicTimer(100);
+    // Calibrate apic timer tickrate to 4 milliseconds
+    KernelTimer::calibrateApicTimer(4);
 
     // Start the kernel-wide APIC periodic timer
     KernelTimer::startApicPeriodicTimer();
@@ -178,8 +178,6 @@ void _kuser_entry() {
 
     // Bring up all available processor cores
     initializeApCores();
-
-    sched.yieldTask();
 
 #ifdef KRUN_UNIT_TESTS
     // Run unit tests

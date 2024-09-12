@@ -190,8 +190,8 @@ void apStartupEntryLowered() {
     // Initialize core's LAPIC
     Apic::initializeLocalApic();
 
-    // Calibrate apic timer tickrate to 100 milliseconds
-    KernelTimer::calibrateApicTimer(100);
+    // Calibrate apic timer tickrate to 4 milliseconds
+    KernelTimer::calibrateApicTimer(4);
 
     // Start the kernel-wide APIC periodic timer
     KernelTimer::startApicPeriodicTimer();

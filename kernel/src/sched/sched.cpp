@@ -140,6 +140,10 @@ void Scheduler::yieldTask() {
     asm volatile ("int $47");
 }
 
+bool Scheduler::__isRunQueueLocked(int cpu) {
+    return isSpinlockLocked(&m_runQueues[cpu]->lock);
+}
+
 int Scheduler::_findLeastLoadedCpu() {
     int cpu = 0;
     size_t leastTasksFound = static_cast<size_t>(-1);

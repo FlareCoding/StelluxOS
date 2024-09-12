@@ -3,6 +3,7 @@
 #include <memory/kmemory.h>
 #include <time/ktime.h>
 #include <acpi/acpi_controller.h>
+#include <kelevate/kelevate.h>
 #include <sync.h>
 
 DECLARE_SPINLOCK(mtUnitTestLock);
@@ -11,7 +12,6 @@ uint64_t g_mtUnitTestCounter = 0;
 void incrementMtUnitTestCounter() {
     acquireSpinlock(&mtUnitTestLock);
     ++g_mtUnitTestCounter;
-    kuPrint("%llu\n", g_mtUnitTestCounter);
     releaseSpinlock(&mtUnitTestLock);
 
     exitKernelThread();
@@ -69,10 +69,12 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     }
 
     // Schedule all the tasks
+    RUN_ELEVATED(disableInterrupts(););
     for (size_t i = 0; i < taskCount; i++) {
         sched.addTaskToCpu(taskArray[i], targetCpu);
         // ASSERT_TRUE(ret, "Failed to schedule a task on a single CPU core");
     }
+    RUN_ELEVATED(enableInterrupts(););
 
     // Wait for all tasks to finish
     msleep(taskExecutionTimeout);
@@ -115,9 +117,11 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)",
     }
 
     // Schedule all the tasks
+    RUN_ELEVATED(disableInterrupts(););
     for (size_t i = 0; i < taskCount; i++) {
         sched.addTask(taskArray[i]);
     }
+    RUN_ELEVATED(enableInterrupts(););
 
     // Wait for all tasks to finish
     msleep(taskExecutionTimeout);
