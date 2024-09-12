@@ -83,7 +83,7 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
-    Apic::__irqGetLocalApic()->completeIrq();
+    Apic::getLocalApic()->completeIrq();
 
     auto& sched = Scheduler::get();
     size_t cpu = current->cpu;
@@ -103,7 +103,7 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
 DEFINE_INT_HANDLER(_irq_handler_keyboard) {
     (void)frame;
 
-    Apic::__irqGetLocalApic()->completeIrq();
+    Apic::getLocalApic()->completeIrq();
     uint8_t scancode = inByte(0x60);
 
     kprint("Scancode: %i\n", (int)scancode);

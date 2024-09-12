@@ -106,9 +106,5 @@ void exitAndSwitchCurrentContext(int cpu, PCB* newCtx, PtRegs* regs) {
 
 // Reads the current task's CPU field
 uint8_t getCurrentCpuId() {
-    uint8_t cpu = 0;
-    RUN_ELEVATED({
-        cpu = current->cpu;
-    });
-    return cpu;
+    return current->cpu;
 }
