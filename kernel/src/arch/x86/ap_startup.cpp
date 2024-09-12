@@ -7,6 +7,7 @@
 #include <gdt/gdt.h>
 #include <interrupts/idt.h>
 #include <sched/sched.h>
+#include <kprint.h>
 
 //
 // ------------------------------------ IMPORTANT -------------------------------------
@@ -133,6 +134,9 @@ void bootAndInitApCore(uint8_t apicid) {
     auto& lapic = Apic::getLocalApic();
 
     lapic->sendIpi(apicid, 0x500);
+    msleep(20);
+
+    lapic->sendIpi(apicid, 0x600 | ((uint32_t)((uint64_t)AP_STARTUP_ASM_ADDRESS >> 12)));
     msleep(20);
 
     lapic->sendIpi(apicid, 0x600 | ((uint32_t)((uint64_t)AP_STARTUP_ASM_ADDRESS >> 12)));
