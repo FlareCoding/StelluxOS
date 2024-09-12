@@ -27,4 +27,10 @@ static inline void releaseSpinlock(Spinlock* lock) {
     __sync_lock_release(&lock->lockVar);
 }
 
+// Function to check if the spinlock is currently locked
+static inline int isSpinlockLocked(Spinlock* lock) {
+    // Just read the lockVar without modifying it
+    return __sync_val_compare_and_swap(&lock->lockVar, 1, 1);
+}
+
 #endif
