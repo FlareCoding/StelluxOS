@@ -179,7 +179,7 @@ void _kuser_entry() {
     // Bring up all available processor cores
     initializeApCores();
 
-    asm volatile ("int $47");
+    sched.yieldTask();
 
 #ifdef KRUN_UNIT_TESTS
     // Run unit tests
