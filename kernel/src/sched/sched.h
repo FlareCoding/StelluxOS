@@ -117,6 +117,17 @@ public:
      */
     void removeTaskFromCpu(int pid, int cpu);
 
+    /**
+     * @brief Voluntarily yields the processor from the current task.
+     * 
+     * This function allows the current running task to voluntarily 
+     * yield its execution to allow other tasks to run. It triggers 
+     * the scheduler to select another task to execute on the current 
+     * CPU core. This is typically used when a task has no immediate 
+     * work to do and wishes to give up the CPU.
+     */
+    void yieldTask();
+
 private:
     // List of run queues for each CPU core, holding tasks to be scheduled on that core
     kstl::vector<kstl::SharedPtr<SchedulerRunQueue>> m_runQueues;
