@@ -86,46 +86,12 @@ DEFINE_INT_HANDLER(_irq_handler_timer) {
     Apic::getLocalApic()->completeIrq();
 
     auto& sched = Scheduler::get();
-    size_t cpu = current->cpu;
-
-    // A run queue is currently being modified
-    // (adding tasks, removing tasks, etc.)
-    if (sched.__isRunQueueLocked(cpu)) {
-        return;
-    }
-
-    PCB* prevTask = sched.getCurrentTask(cpu);
-    PCB* nextTask = sched.peekNextTask(cpu);
-
-    if (nextTask && prevTask != nextTask) {
-        // Switch the CPU context
-        switchContextInIrq(cpu, cpu, prevTask, nextTask, frame);
-        
-        // Tell the scheduler that the context switch has been accepted
-        sched.scheduleNextTask(cpu);
-    }
+    sched.__schedule(frame);
 }
 
 DEFINE_INT_HANDLER(_irq_handler_schedule) {
     auto& sched = Scheduler::get();
-    size_t cpu = current->cpu;
-
-    // A run queue is currently being modified
-    // (adding tasks, removing tasks, etc.)
-    if (sched.__isRunQueueLocked(cpu)) {
-        return;
-    }
-
-    PCB* prevTask = sched.getCurrentTask(cpu);
-    PCB* nextTask = sched.peekNextTask(cpu);
-
-    if (nextTask && prevTask != nextTask) {
-        // Switch the CPU context
-        switchContextInIrq(cpu, cpu, prevTask, nextTask, frame);
-        
-        // Tell the scheduler that the context switch has been accepted
-        sched.scheduleNextTask(cpu);
-    }
+    sched.__schedule(frame);
 }
 
 DEFINE_INT_HANDLER(_irq_handler_keyboard) {

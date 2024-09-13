@@ -20,6 +20,7 @@ class Apic {
 public:
     static void initializeLocalApic();
     static kstl::SharedPtr<Apic>& getLocalApic();
+    static kstl::SharedPtr<Apic>& getLocalApicForCpu(int cpu);
 
     Apic(uint64_t base, uint8_t spuriorIrq = 0xFF);
 

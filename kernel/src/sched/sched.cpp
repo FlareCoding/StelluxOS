@@ -2,7 +2,7 @@
 #include <memory/kmemory.h>
 #include <paging/page.h>
 #include <gdt/gdt.h>
-#include <kelevate/kelevate.h>
+#include <arch/x86/apic.h>
 #include <sync.h>
 
 #define SCHED_KERNEL_STACK_PAGES    2
@@ -15,9 +15,8 @@ Scheduler g_primaryScheduler;
 Task g_kernelSwapperTasks[MAX_CPUS] = {};
 
 DECLARE_SPINLOCK(__sched_pid_alloc_lock);
-DECLARE_SPINLOCK(__sched_load_balancing_lock);
-
 size_t g_availableTaskPid = 10;
+
 size_t _allocateTaskPid() {
     acquireSpinlock(&__sched_pid_alloc_lock);
     size_t pid = g_availableTaskPid++;
@@ -31,145 +30,153 @@ size_t _allocateTaskPid() {
     return pid;
 }
 
+SchedRunQueue::SchedRunQueue(Task* idleTask) {
+    m_tasks.pushBack(idleTask);
+}
+
+void SchedRunQueue::addTask(Task* task) {
+    acquireSpinlock(&m_lock);
+    m_tasks.pushBack(task);
+    releaseSpinlock(&m_lock);
+}
+    
+void SchedRunQueue::removeTask(Task* task) {
+    acquireSpinlock(&m_lock);
+    
+    size_t idx = m_tasks.find(task);
+    if (idx != kstl::npos) {
+        m_tasks.erase(idx);
+        _incrementTaskIndex();
+    }
+
+    releaseSpinlock(&m_lock);
+}
+
+Task* SchedRunQueue::scheduleNextTask() {
+    Task* nextTask = nullptr;
+
+    acquireSpinlock(&m_lock);
+    
+    size_t taskCount = m_tasks.size();
+    if (taskCount == 1) {
+        nextTask = m_tasks[0]; // idle task
+    } else if (taskCount == 2) {
+        nextTask = m_tasks[1]; // first real task
+    } else {
+        _incrementTaskIndex();
+        nextTask = m_tasks[m_currentTaskIdx];
+    }
+
+    releaseSpinlock(&m_lock);
+    return nextTask;
+}
+
+size_t SchedRunQueue::size() {
+    size_t sz = 0;
+    acquireSpinlock(&m_lock);
+
+    sz = m_tasks.size();
+    releaseSpinlock(&m_lock);
+
+    return sz;
+}
+
+void SchedRunQueue::_incrementTaskIndex() {
+    const size_t taskCount = m_tasks.size();
+
+    // Handle the wrap-around case
+    if (++m_currentTaskIdx >= taskCount) {
+        m_currentTaskIdx = 0;
+    }
+
+    // If any real task is present, prioritze
+    // it over the idle swapper task.
+    if (m_currentTaskIdx == 0 && taskCount > 1) {
+        m_currentTaskIdx = 1;
+    }
+}
+
 Scheduler& Scheduler::get() {
     return g_primaryScheduler;
 }
 
 void Scheduler::init() {
-    registerCoreForScheduling(BSP_CPU_ID);
+    registerCpuRunQueue(BSP_CPU_ID);
 }
 
-void Scheduler::registerCoreForScheduling(int cpu) {
-    // Create a new run queue for the core with a swapper task
-    auto runQueue = kstl::SharedPtr<SchedulerRunQueue>(new SchedulerRunQueue());
-    runQueue->tasks.pushBack(&g_kernelSwapperTasks[cpu]);
-    runQueue->currentTaskIndex = 0;
-
-    // Add the run queue to the scheduler
+void Scheduler::registerCpuRunQueue(int cpu) {
+    auto runQueue = kstl::SharedPtr<SchedRunQueue>(
+        new SchedRunQueue(&g_kernelSwapperTasks[cpu])
+    );
+    
     m_runQueues.pushBack(runQueue);
 }
 
-Task* Scheduler::getCurrentTask(int cpu) {
-    Task* task;
-    acquireSpinlock(&m_runQueues[cpu]->lock);
-
-    size_t idx = m_runQueues[cpu]->currentTaskIndex;
-    task = m_runQueues[cpu]->tasks[idx];
-
-    releaseSpinlock(&m_runQueues[cpu]->lock);
-    return task;
-}
-
-Task* Scheduler::peekNextTask(int cpu) {
-    Task* task;
-    acquireSpinlock(&m_runQueues[cpu]->lock);
-
-    size_t idx = m_runQueues[cpu]->currentTaskIndex + 1;
-    if (idx == m_runQueues[cpu]->tasks.size()) {
-        idx = 0;
-
-        // If there are other tasks available in the run
-        // queue, prioritize them over the swapper task.
-        if (m_runQueues[cpu]->tasks.size() > 1) {
-            idx = 1;
-        }
+void Scheduler::addTask(Task* task, int cpu) {
+    if (cpu == -1) {
+        cpu = static_cast<int>(_loadBalance());
     }
 
-    task = m_runQueues[cpu]->tasks[idx];
+    // Mask the timer interrupts while adding the task to the queue
+    preemptDisable();
 
-    releaseSpinlock(&m_runQueues[cpu]->lock);
-    return task;
-}
-
-void Scheduler::scheduleNextTask(int cpu) {
-    acquireSpinlock(&m_runQueues[cpu]->lock);
-
-    size_t curIdx = m_runQueues[cpu]->currentTaskIndex;
-    size_t nextIdx = m_runQueues[cpu]->currentTaskIndex + 1;
-
-    if (nextIdx == m_runQueues[cpu]->tasks.size()) {
-        nextIdx = 0;
-
-        // If there are other tasks available in the run
-        // queue, prioritize them over the swapper task.
-        if (m_runQueues[cpu]->tasks.size() > 1) {
-            nextIdx = 1;
-        }
-    }
-
-    if (curIdx != nextIdx) {
-        m_runQueues[cpu]->tasks[curIdx]->state = ProcessState::READY;
-        m_runQueues[cpu]->tasks[nextIdx]->state = ProcessState::RUNNING;
-
-        // Update index of current running task
-        m_runQueues[cpu]->currentTaskIndex = nextIdx;
-    }
-
-    releaseSpinlock(&m_runQueues[cpu]->lock);
-}
-
-void Scheduler::addTaskToCpu(Task* task, int cpu) {
-    acquireSpinlock(&m_runQueues[cpu]->lock);
-
+    // Prepare the task
     task->cpu = cpu;
-    m_runQueues[cpu]->tasks.pushBack(task);
+    task->state = ProcessState::READY;
 
-    releaseSpinlock(&m_runQueues[cpu]->lock);
+    // Atomically add the task to the run-queue of the target processor
+    m_runQueues[cpu]->addTask(task);
+
+    // Unmask the timer interrupt and continue as usual
+    preemptEnable();
 }
 
-void Scheduler::addTask(Task* task) {
-    size_t targetCpu = _findLeastLoadedCpu();
-    addTaskToCpu(task, targetCpu);
+void Scheduler::removeTask(Task* task) {
+    int cpu = task->cpu;
+
+    // Mask the timer interrupts while removing the task from the queue
+    preemptDisable();
+
+    // Atomically add the task to the run-queue of the target processor
+    m_runQueues[cpu]->removeTask(task);
+
+    // Unmask the timer interrupt and continue as usual
+    preemptEnable();
 }
 
-void Scheduler::removeTaskFromCpu(int pid, int cpu) {
-    acquireSpinlock(&m_runQueues[cpu]->lock);
-
-    for (size_t i = 0; i < m_runQueues[cpu]->tasks.size(); i++) {
-        if (m_runQueues[cpu]->tasks[i]->pid == pid) {
-            m_runQueues[cpu]->tasks.erase(i);
-            m_runQueues[cpu]->currentTaskIndex = 0;
-            break;
-        }
+void Scheduler::__schedule(PtRegs* irqFrame) {
+    int cpu = current->cpu;
+    Task* nextTask = m_runQueues[cpu]->scheduleNextTask();
+    if (nextTask && nextTask != current) {
+        switchContextInIrq(cpu, cpu, current, nextTask, irqFrame);
     }
-
-    releaseSpinlock(&m_runQueues[cpu]->lock);
 }
 
-void Scheduler::yieldTask() {
+void Scheduler::schedule() {
     asm volatile ("int $47");
 }
 
-bool Scheduler::__isRunQueueLocked(int cpu) {
-    return isSpinlockLocked(&m_runQueues[cpu]->lock);
+void Scheduler::preemptDisable() {
+    Apic::getLocalApic()->maskTimerIrq();
 }
 
-int Scheduler::_findLeastLoadedCpu() {
-    int cpu = 0;
-    size_t leastTasksFound = static_cast<size_t>(-1);
+void Scheduler::preemptEnable() {
+    Apic::getLocalApic()->unmaskTimerIrq();
+}
 
-    acquireSpinlock(&__sched_load_balancing_lock);
+size_t Scheduler::_loadBalance() {
+    size_t cpu = 0;
+    size_t smallestTaskCount = m_runQueues[cpu]->size();
 
-    for (size_t i = 0; i < m_runQueues.size(); i++) {
-        size_t cpuTasks = _getRunQueueSize(i);
-        if (cpuTasks < leastTasksFound) {
-            leastTasksFound = cpuTasks;
-            cpu = static_cast<int>(i);
+    for (size_t i = 1; i < m_runQueues.size(); i++) {
+        size_t cnt = m_runQueues[i]->size();
+        if (cnt < smallestTaskCount) {
+            cpu = i;
+            smallestTaskCount = cnt;
         }
     }
 
-    releaseSpinlock(&__sched_load_balancing_lock);
     return cpu;
-}
-
-size_t Scheduler::_getRunQueueSize(size_t cpu) {
-    size_t ret = 0;
-
-    acquireSpinlock(&m_runQueues[cpu]->lock);
-    ret = m_runQueues[cpu]->tasks.size();
-
-    releaseSpinlock(&m_runQueues[cpu]->lock);
-    return ret;
 }
 
 Task* createKernelTask(void (*taskEntry)(), int priority) {
@@ -239,29 +246,13 @@ bool destroyKernelTask(Task* task) {
 }
 
 void exitKernelThread() {
-    // Construct a fake PtRegs structure to switch to a new context
-    PtRegs regs;
     auto& sched = Scheduler::get();
-
-    // Elevate for the context switch and to disable the interrupts
-    __kelevate();
-    disableInterrupts();
-
-    int cpu = current->cpu;
-
-    // Get the current running task
-    PCB* currentTask = sched.getCurrentTask(cpu);
     
     // Remove the current task from the run queue
-    sched.removeTaskFromCpu(currentTask->pid, cpu);
+    sched.removeTask(current);
 
-    // Switch to the next available task if possible
-    sched.scheduleNextTask(cpu);
-
-    // Get the new running task
-    PCB* newTask = sched.getCurrentTask(cpu);
-
-    // This will end up calling an assembly routine that results in an 'iretq'
-    exitAndSwitchCurrentContext(cpu, newTask, &regs);
+    // Trigger a schedule sequence which will switch
+    // the context to the next available task.
+    sched.schedule();
 }
 

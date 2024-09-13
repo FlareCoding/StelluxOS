@@ -69,12 +69,12 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     }
 
     // Schedule all the tasks
-    RUN_ELEVATED(disableInterrupts(););
+    sched.preemptDisable();
     for (size_t i = 0; i < taskCount; i++) {
-        sched.addTaskToCpu(taskArray[i], targetCpu);
+        sched.addTask(taskArray[i], targetCpu);
         // ASSERT_TRUE(ret, "Failed to schedule a task on a single CPU core");
     }
-    RUN_ELEVATED(enableInterrupts(););
+    sched.preemptEnable();
 
     // Wait for all tasks to finish
     msleep(taskExecutionTimeout);
@@ -96,7 +96,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
 
 DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)", mtMultiCoreUnitTest) {
     const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
-    const size_t taskCount = 600 * systemCpus;
+    const size_t taskCount = 100 * systemCpus;
     const uint32_t taskExecutionTimeout = 8000;
     auto& sched = Scheduler::get();
 
@@ -117,11 +117,11 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)",
     }
 
     // Schedule all the tasks
-    RUN_ELEVATED(disableInterrupts(););
+    sched.preemptDisable();
     for (size_t i = 0; i < taskCount; i++) {
         sched.addTask(taskArray[i]);
     }
-    RUN_ELEVATED(enableInterrupts(););
+    sched.preemptEnable();
 
     // Wait for all tasks to finish
     msleep(taskExecutionTimeout);

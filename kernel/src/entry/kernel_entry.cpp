@@ -175,14 +175,7 @@ void _kuser_entry() {
         entry.destination = BSP_CPU_ID;
         ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
     }
-
-    while (1) {
-        sleep(1);
-        Apic::getLocalApic()->maskTimerIrq();
-        sleep (1);
-        Apic::getLocalApic()->unmaskTimerIrq();
-    }
-
+    
     // Bring up all available processor cores
     initializeApCores();
 
