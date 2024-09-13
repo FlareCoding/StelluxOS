@@ -125,6 +125,10 @@ kstl::SharedPtr<Apic>& Apic::getLocalApic() {
     return s_lapics[cpu];
 }
 
+kstl::SharedPtr<Apic>& Apic::getLocalApicForCpu(int cpu) {
+    return s_lapics[cpu];
+}
+
 void Apic::disableLegacyPic() {
     RUN_ELEVATED({
         // Send the disable command (0xFF) to both PIC1 and PIC2 data ports
