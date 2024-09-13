@@ -156,12 +156,20 @@ void Scheduler::schedule() {
     asm volatile ("int $47");
 }
 
-void Scheduler::preemptDisable() {
-    Apic::getLocalApic()->maskTimerIrq();
+void Scheduler::preemptDisable(int cpu) {
+    if (cpu == -1) {
+        cpu = current->cpu;
+    }
+
+    Apic::getLocalApicForCpu(cpu)->maskTimerIrq();
 }
 
-void Scheduler::preemptEnable() {
-    Apic::getLocalApic()->unmaskTimerIrq();
+void Scheduler::preemptEnable(int cpu) {
+    if (cpu == -1) {
+        cpu = current->cpu;
+    }
+
+    Apic::getLocalApicForCpu(cpu)->unmaskTimerIrq();
 }
 
 size_t Scheduler::_loadBalance() {

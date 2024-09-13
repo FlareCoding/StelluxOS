@@ -54,10 +54,10 @@ public:
     void schedule();
 
     // Masks timer tick-based interrupts
-    void preemptDisable();
+    void preemptDisable(int cpu = -1);
 
     // Unmasks timer tick-based interrupts
-    void preemptEnable();
+    void preemptEnable(int cpu = -1);
 
 private:
     kstl::vector<kstl::SharedPtr<SchedRunQueue>> m_runQueues;

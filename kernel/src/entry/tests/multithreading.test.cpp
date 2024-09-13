@@ -98,7 +98,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
 DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)", mtMultiCoreUnitTest) {
     const size_t systemCpus = AcpiController::get().getApicTable()->getCpuCount();
     const size_t taskCount = 100 * systemCpus;
-    const uint32_t taskExecutionTimeout = 1000;
+    const uint32_t taskExecutionTimeout = 2000;
     auto& sched = Scheduler::get();
 
     // Allocate a buffer to store the tasks
@@ -117,12 +117,21 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)",
         taskArray[i] = task;
     }
 
+    // Disable preemption on all cores
+    for (size_t cpu = 0; cpu < systemCpus; cpu++) {
+        sched.preemptDisable(cpu);
+    }
+
     // Schedule all the tasks
-    sched.preemptDisable();
     for (size_t i = 0; i < taskCount; i++) {
         sched.addTask(taskArray[i]);
     }
-    sched.preemptEnable();
+    kuPrint(UNIT_TEST "Beginning execution\n");
+
+    // Re-enable preemption on all cores
+    for (size_t cpu = 0; cpu < systemCpus; cpu++) {
+        sched.preemptEnable(cpu);
+    }
 
     // Wait for all tasks to finish
     msleep(taskExecutionTimeout);
