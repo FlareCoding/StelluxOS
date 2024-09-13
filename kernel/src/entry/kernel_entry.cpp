@@ -149,6 +149,10 @@ void _kuser_entry() {
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
 
+    // Initialize the scheduler
+    auto& sched = Scheduler::get();
+    sched.init();
+
     // Initialize high precision event timer and query hardware frequency
     KernelTimer::init();
 
@@ -172,9 +176,12 @@ void _kuser_entry() {
         ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
     }
 
-    // Initialize the scheduler
-    auto& sched = Scheduler::get();
-    sched.init();
+    while (1) {
+        sleep(1);
+        Apic::getLocalApic()->maskTimerIrq();
+        sleep (1);
+        Apic::getLocalApic()->unmaskTimerIrq();
+    }
 
     // Bring up all available processor cores
     initializeApCores();

@@ -52,6 +52,36 @@ uint32_t Apic::read(uint32_t reg) {
     return g_lapicVirtualBase[reg / 4];
 }
 
+void Apic::maskIrq(uint32_t lvtoff) {
+    // Read the current LVT entry
+    uint32_t lvtEntry = read(lvtoff);
+
+    // Set the mask bit (bit 16)
+    lvtEntry |= (1 << 16);
+
+    // Write the modified LVT entry back
+    write(lvtoff, lvtEntry);
+}
+
+void Apic::unmaskIrq(uint32_t lvtoff) {
+    // Read the current LVT entry
+    uint32_t lvtEntry = read(lvtoff);
+
+    // Clear the mask bit (bit 16)
+    lvtEntry &= ~(1 << 16);
+
+    // Write the modified LVT entry back
+    write(lvtoff, lvtEntry);
+}
+
+void Apic::maskTimerIrq() {
+    maskIrq(APIC_LVT_TIMER);
+}
+
+void Apic::unmaskTimerIrq() {
+    unmaskIrq(APIC_LVT_TIMER);
+}
+
 void Apic::completeIrq() {
     write(0xB0, 0x00);
 }
