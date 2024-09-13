@@ -123,6 +123,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)",
     }
 
     // Schedule all the tasks
+    kuPrint(UNIT_TEST "Scheduling the tasks\n");
     for (size_t i = 0; i < taskCount; i++) {
         sched.addTask(taskArray[i]);
     }
