@@ -114,7 +114,8 @@ void Scheduler::registerCpuRunQueue(int cpu) {
 
 void Scheduler::addTask(Task* task, int cpu) {
     if (cpu == -1) {
-        cpu = static_cast<int>(_loadBalance());
+        // cpu = static_cast<int>(_loadBalance());
+        cpu = 3;
     }
 
     // Mask the timer interrupts while adding the task to the queue
