@@ -6,6 +6,7 @@
 #include <sync.h>
 
 using Task = PCB;
+typedef void (*TaskEntryFn_t)(void*);
 
 EXTERN_C Task g_kernelSwapperTasks[MAX_CPUS];
 
@@ -70,7 +71,7 @@ private:
 // Allocates a task object for a new kernel thread that will
 // start its execution at a given function in userspace (DPL=3).
 //
-Task* createKernelTask(void (*taskEntry)(), int priority = 0);
+Task* createKernelTask(TaskEntryFn_t entry, void* taskData, int priority = 0);
 
 //
 // Destroys a task object, releasing any resources allocated for the task.
