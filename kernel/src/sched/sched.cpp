@@ -114,12 +114,14 @@ void Scheduler::registerCpuRunQueue(int cpu) {
 
 void Scheduler::addTask(Task* task, int cpu) {
     if (cpu == -1) {
+        preemptDisable();
         // cpu = static_cast<int>(_loadBalance());
         cpu = 3;
+        preemptEnable();
     }
 
     // Mask the timer interrupts while adding the task to the queue
-    preemptDisable();
+    preemptDisable(cpu);
 
     // Prepare the task
     task->cpu = cpu;
@@ -129,20 +131,20 @@ void Scheduler::addTask(Task* task, int cpu) {
     m_runQueues[cpu]->addTask(task);
 
     // Unmask the timer interrupt and continue as usual
-    preemptEnable();
+    preemptEnable(cpu);
 }
 
 void Scheduler::removeTask(Task* task) {
     int cpu = task->cpu;
 
     // Mask the timer interrupts while removing the task from the queue
-    preemptDisable();
+    preemptDisable(cpu);
 
     // Atomically add the task to the run-queue of the target processor
     m_runQueues[cpu]->removeTask(task);
 
     // Unmask the timer interrupt and continue as usual
-    preemptEnable();
+    preemptEnable(cpu);
 }
 
 void Scheduler::__schedule(PtRegs* irqFrame) {
