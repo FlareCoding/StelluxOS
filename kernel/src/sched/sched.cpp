@@ -189,7 +189,8 @@ size_t Scheduler::_loadBalance() {
     return cpu;
 }
 
-Task* createKernelTask(void (*taskEntry)(), int priority) {
+Task* createKernelTask(TaskEntryFn_t entry, void* taskData, int priority) {
+    (void)taskData;
     Task* task = (Task*)kmalloc(sizeof(Task));
     if (!task) {
         return nullptr;
@@ -219,7 +220,8 @@ Task* createKernelTask(void (*taskEntry)(), int priority) {
     // Initialize the CPU context
     task->context.rsp = (uint64_t)userStack + SCHED_USER_STACK_SIZE; // Point to the top of the stack
     task->context.rbp = task->context.rsp;       // Point to the top of the stack
-    task->context.rip = (uint64_t)taskEntry;     // Set instruction pointer to the task function
+    task->context.rip = (uint64_t)entry;         // Set instruction pointer to the task function
+    task->context.rdi = (uint64_t)taskData;      // Task parameter buffer pointer
     task->context.rflags = 0x200;                // Enable interrupts
 
     // Set up segment registers for user space. These values correspond to the selectors in the GDT.

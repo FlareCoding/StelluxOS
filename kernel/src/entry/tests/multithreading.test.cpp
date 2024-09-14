@@ -9,7 +9,7 @@
 DECLARE_SPINLOCK(mtUnitTestLock);
 uint64_t g_mtUnitTestCounter = 0;
 
-void incrementMtUnitTestCounter() {
+void incrementMtUnitTestCounter(void*) {
     acquireSpinlock(&mtUnitTestLock);
     ++g_mtUnitTestCounter;
     releaseSpinlock(&mtUnitTestLock);
@@ -24,7 +24,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Kernel Task Creation", mtTaskCreationUn
     Task** taskArray = (Task**)kmalloc(sizeof(Task*) * iterations);
 
     for (size_t i = 0; i < iterations; i++) {
-        Task* task = createKernelTask(incrementMtUnitTestCounter);
+        Task* task = createKernelTask(incrementMtUnitTestCounter, nullptr);
         ASSERT_TRUE(task, "Failed to allocate a kernel task");
 
         taskArray[i] = task;
@@ -62,7 +62,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
 
     // Create the tasks
     for (size_t i = 0; i < taskCount; i++) {
-        Task* task = createKernelTask(incrementMtUnitTestCounter);
+        Task* task = createKernelTask(incrementMtUnitTestCounter, nullptr);
         ASSERT_TRUE(task, "Failed to allocate a kernel task");
 
         taskArray[i] = task;
@@ -111,7 +111,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)",
 
     // Create the tasks
     for (size_t i = 0; i < taskCount; i++) {
-        Task* task = createKernelTask(incrementMtUnitTestCounter);
+        Task* task = createKernelTask(incrementMtUnitTestCounter, nullptr);
         ASSERT_TRUE(task, "Failed to allocate a kernel task");
 
         taskArray[i] = task;
