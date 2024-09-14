@@ -115,8 +115,7 @@ void Scheduler::registerCpuRunQueue(int cpu) {
 void Scheduler::addTask(Task* task, int cpu) {
     if (cpu == -1) {
         preemptDisable();
-        // cpu = static_cast<int>(_loadBalance());
-        cpu = 3;
+        cpu = static_cast<int>(_loadBalance());
         preemptEnable();
     }
 
