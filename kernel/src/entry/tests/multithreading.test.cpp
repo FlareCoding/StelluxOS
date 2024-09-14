@@ -126,12 +126,13 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)",
     for (size_t i = 0; i < taskCount; i++) {
         sched.addTask(taskArray[i]);
     }
+
     kuPrint(UNIT_TEST "Beginning execution\n");
 
     // Re-enable preemption on all cores
-    // for (size_t cpu = 0; cpu < systemCpus; cpu++) {
-    //     sched.preemptEnable(cpu);
-    // }
+    for (size_t cpu = 0; cpu < systemCpus; cpu++) {
+        sched.preemptEnable(cpu);
+    }
 
     // Wait for all tasks to finish
     msleep(taskExecutionTimeout);
