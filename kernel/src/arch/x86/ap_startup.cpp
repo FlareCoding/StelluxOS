@@ -194,7 +194,7 @@ void apStartupEntryLowered() {
     KernelTimer::calibrateApicTimer(4);
 
     // Start the kernel-wide APIC periodic timer
-    //KernelTimer::startApicPeriodicTimer();
+    KernelTimer::startApicPeriodicTimer();
 
     while (1);
 }
