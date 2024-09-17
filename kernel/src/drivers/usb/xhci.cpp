@@ -1007,6 +1007,7 @@ namespace drivers {
 
         if (completionTrb->completionCode == XHCI_TRB_COMPLETION_CODE_SUCCESS) {
             kprintInfo("[*] Successfully issued the first Device Address command!\n");
+            msleep(200);
         }
 
         if (m_64ByteContextSize) {
@@ -1021,9 +1022,10 @@ namespace drivers {
             // Sanity-check the actual device context entry in DCBAA
             XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
 
-            kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n",
+            kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n    trdp:0x%llx\n",
                 slotId, deviceContext->slotContext.deviceAddress, deviceContext->slotContext.slotState,
-                deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize
+                deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize,
+                deviceContext->controlEndpointContext.transferRingDequeuePtr
             );
         }
 
