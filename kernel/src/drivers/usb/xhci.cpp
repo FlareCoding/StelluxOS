@@ -995,7 +995,7 @@ namespace drivers {
         zeromem(&addressDeviceTrb, sizeof(XhciAddressDeviceCommandTrb_t));
         addressDeviceTrb.trbType = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
         addressDeviceTrb.inputContextPhysicalBase = inputContextPhysicalBase;
-        addressDeviceTrb.bsr = 1;
+        addressDeviceTrb.bsr = 0;
         addressDeviceTrb.slotId = slotId;
 
         // Send the Address Device command to the host controller
@@ -1026,10 +1026,6 @@ namespace drivers {
                 deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize
             );
         }
-
-        // Sanity-check the actual device context entry in DCBAA
-        XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
-        kprintInfo("TRDP: 0x%llx\n", deviceContext->controlEndpointContext.transferRingDequeuePtr);
 
         // Buffer to hold the bytes received from GET_DESCRIPTOR command
         uint8_t* descriptorBuffer = (uint8_t*)_allocXhciMemory(64, 128, 64);
@@ -1085,14 +1081,16 @@ namespace drivers {
         transferRing->enqueue((XhciTrb_t*)&eventDataTrb);
 
         kprint("[*] Ringing transfer ring doorbell: %i\n", transferRing->getDoorbellId());
-        kprintInfo("   &SetupStageTRB  == 0x%llx\n", (uint64_t)__pa(&setupStageTrb));
-        kprintInfo("   &transferRing   == 0x%llx\n", transferRing->getPhysicalBase());
+        kprintInfo("   transferRing - pa:0x%llx va:0x%llx\n", transferRing->getPhysicalBase(), transferRing->getVirtualBase());
         m_doorbellManager->ringDoorbell(transferRing->getDoorbellId(), 1);
 
         // Let the host controller process the command
         msleep(commandDelay);
 
-        _logUsbsts();
+        if (m_opRegs->usbsts & XHCI_USBSTS_HCE) {
+            _logUsbsts();
+            while (1);
+        }
         
         // Poll the event ring for the command completion event
         XhciSetupDataStageCompletionTrb_t* setupDataStageCompletionTrb = nullptr;
@@ -1127,57 +1125,6 @@ namespace drivers {
             setupDataStageCompletionTrb->completionCode,
             setupDataStageCompletionTrb->bytesTransfered
         );
-
-        return;
-
-        // Prepare the Input Context for the second Address Device command
-        if (m_64ByteContextSize) {
-            // Inspect the Output Device Context
-            XhciDeviceContext64* deviceContext = (XhciDeviceContext64*)__va((void*)m_dcbaa[slotId]);
-
-            // Re-configure the input context's max packet size
-            XhciInputContext64* inputContext = (XhciInputContext64*)inputCtxBuffer;
-            inputContext->deviceContext.controlEndpointContext.ctx32.maxPacketSize = deviceContext->controlEndpointContext.ctx32.maxPacketSize;
-        } else {
-            // Inspect the Output Device Context
-            XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
-
-            // Re-configure the input context's max packet size
-            XhciInputContext32* inputContext = (XhciInputContext32*)inputCtxBuffer;
-            inputContext->deviceContext.controlEndpointContext.maxPacketSize = deviceContext->controlEndpointContext.maxPacketSize;
-        }
-
-        // Issue the Address Device command again, but this time with BSR=0
-        addressDeviceTrb.bsr = 0;
-
-        // Send the Address Device command to the host controller
-        completionTrb = _sendXhciCommand((XhciTrb_t*)&addressDeviceTrb);
-        if (!completionTrb) {
-            kprintError("[*] Failed to complete the second Device Address command!\n");
-            return;
-        }
-
-        if (completionTrb->completionCode == XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-            kprintInfo("[*] Successfully issued the second Device Address command!\n");
-        }
-
-        if (m_64ByteContextSize) {
-            // Sanity-check the actual device context entry in DCBAA
-            XhciDeviceContext64* deviceContext = (XhciDeviceContext64*)__va((void*)m_dcbaa[slotId]);
-
-            kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n",
-                slotId, deviceContext->slotContext.ctx32.deviceAddress, deviceContext->slotContext.ctx32.slotState,
-                deviceContext->controlEndpointContext.ctx32.endpointState, deviceContext->controlEndpointContext.ctx32.maxPacketSize
-            );
-        } else {
-            // Sanity-check the actual device context entry in DCBAA
-            XhciDeviceContext32* deviceContext = (XhciDeviceContext32*)__va((void*)m_dcbaa[slotId]);
-
-            kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n",
-                slotId, deviceContext->slotContext.deviceAddress, deviceContext->slotContext.slotState,
-                deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize
-            );
-        }
     }
 
     void XhciDriver::_markXhciInterruptCompleted(uint8_t interrupter) {
