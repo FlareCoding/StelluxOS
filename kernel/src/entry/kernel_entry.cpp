@@ -22,6 +22,7 @@
 #include <acpi/shutdown.h>
 #include <time/ktime.h>
 #include <kprint.h>
+#include <drivers/usb/xhci.h>
 
 #ifdef KRUN_UNIT_TESTS
     #include "tests/kernel_unit_tests.h"
@@ -39,19 +40,6 @@ KernelEntryParams g_kernelEntryParameters;
 char __usermodeKernelEntryStack[USERMODE_KERNEL_ENTRY_STACK_SIZE];
 
 void _kuser_entry();
-
-struct ThreadParams {
-    int x, y, z;
-    char* test;
-};
-
-void testFunction(void* param) {
-    ThreadParams* data = (ThreadParams*)param;
-    kuPrint("Request is being serviced by core %i\n", getCurrentCpuId());
-    kuPrint("x: %i, y: %i, z: %i\n", data->x, data->y, data->z);
-    kuPrint("test: %s\n", data->test);
-    exitKernelThread();
-}
 
 __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Setup kernel stack
@@ -202,14 +190,25 @@ void _kuser_entry() {
     });
 #endif
 
-    ThreadParams* params = new ThreadParams();
-    params->x = 4554;
-    params->y = 72;
-    params->z = 42;
-    params->test = (char*)"Stellux is working!";
-    
-    Task* testTask = createKernelTask(testFunction, params);
-    sched.addTask(testTask);
+    if (acpiController.hasPciDeviceTable()) {
+        auto pciDeviceTable = acpiController.getPciDeviceTable();
+
+        size_t idx = pciDeviceTable->findXhciController();
+        if (idx != kstl::npos) {
+            auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
+
+            RUN_ELEVATED({
+                auto& xhciDriver = drivers::XhciDriver::get();
+                bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
+
+                if (!status) {
+                    kprintError("[-] Failed to initialize xHCI controller\n\n");
+                } else {
+                    kprintInfo("[*] xHCI controller initialized\n\n");
+                }
+            });
+        }
+    }
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }

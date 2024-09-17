@@ -28,11 +28,11 @@ COMMON_QEMU_FLAGS := -machine q35 -device qemu-xhci,id=xhci -drive file=$(DISK_I
 QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/OVMF_CODE.fd",readonly=on -drive if=pflash,format=raw,unit=1,file="efi/OVMF_VARS.fd"
 
 # Sample connected USB 2.0 devices
-QEMU_FLAGS += -device usb-hub,id=usbhub -device usb-mouse,id=usbmouse
+QEMU_FLAGS += -device usb-kbd,id=usbkbd -device usb-mouse,id=usbmouse -device usb-hub,id=usbhub
 
 #
 # Sample connected USB 3.0 devices
-QEMU_FLAGS += -device usb-storage,bus=xhci.0,drive=usb3drive,id=usb3drive -drive if=none,id=usb3drive,file=usb3_disk.img
+# QEMU_FLAGS += -device usb-storage,bus=xhci.0,drive=usb3drive,id=usb3drive -drive if=none,id=usb3drive,file=usb3_disk.img
 #
 # *Note* in order to test it out, create the backing storage ahead of time with:
 #      qemu-img create -f qcow2 usb3_disk.img 128M
