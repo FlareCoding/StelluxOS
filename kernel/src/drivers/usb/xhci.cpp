@@ -1082,7 +1082,7 @@ namespace drivers {
 
         kprint("[*] Ringing transfer ring doorbell: %i\n", transferRing->getDoorbellId());
         kprintInfo("   transferRing - pa:0x%llx va:0x%llx\n", transferRing->getPhysicalBase(), transferRing->getVirtualBase());
-        m_doorbellManager->ringDoorbell(transferRing->getDoorbellId(), 1);
+        m_doorbellManager->ringControlEndpointDoorbell(transferRing->getDoorbellId());
 
         // Let the host controller process the command
         msleep(commandDelay);
