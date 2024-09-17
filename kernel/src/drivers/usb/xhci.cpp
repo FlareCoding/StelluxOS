@@ -248,8 +248,8 @@ namespace drivers {
         m_physicalRingBase = (uint64_t)__pa(m_trbRing);
 
         // Set the last TRB as a link TRB to point back to the first TRB
-        m_trbRing[255].parameter = m_physicalRingBase;
-        m_trbRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | m_rcsBit;
+        m_trbRing[m_maxTrbCount - 1].parameter = m_physicalRingBase;
+        m_trbRing[m_maxTrbCount - 1].control = (XHCI_TRB_TYPE_LINK << 10) | m_rcsBit;
     }
 
     void XhciCommandRing::enqueue(XhciTrb_t* trb) {
@@ -391,8 +391,8 @@ namespace drivers {
         m_physicalRingBase = (uint64_t)__pa(m_trbRing);
 
         // Set the last TRB as a link TRB to point back to the first TRB
-        m_trbRing[255].parameter = m_physicalRingBase;
-        m_trbRing[255].control = (XHCI_TRB_TYPE_LINK << 10) | m_dcsBit;
+        m_trbRing[m_maxTrbCount - 1].parameter = m_physicalRingBase;
+        m_trbRing[m_maxTrbCount - 1].control = (XHCI_TRB_TYPE_LINK << 10) | m_dcsBit;
     }
 
     void XhciTransferRing::enqueue(XhciTrb_t* trb) {
