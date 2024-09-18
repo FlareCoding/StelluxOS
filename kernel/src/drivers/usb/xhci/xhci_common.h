@@ -1,6 +1,8 @@
 #ifndef XHCI_COMMON_H
 #define XHCI_COMMON_H
 
+#include <ktypes.h>
+
 // Configuration Definitions
 #define XHCI_COMMAND_RING_TRB_COUNT     256
 #define XHCI_EVENT_RING_TRB_COUNT       256

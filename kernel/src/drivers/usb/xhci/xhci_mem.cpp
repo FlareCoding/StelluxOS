@@ -1,30 +1,5 @@
 #include "xhci_mem.h"
-#include <paging/phys_addr_translation.h>
 #include <paging/tlb.h>
-#include <kprint.h>
-
-XhciDma xhciAllocDma(size_t size, size_t alignment, size_t boundary) {
-    // Allocate extra memory to ensure we can align the block within the boundary
-    size_t totalSize = size + boundary - 1;
-    void* memblock = kmallocAligned(totalSize, alignment);
-
-    if (!memblock) {
-        kprintError("[XHCI] ======= MEMORY ALLOCATION PROBLEM =======\n");
-        while (true);
-    }
-
-    // Align the memory block to the specified boundary
-    size_t alignedAddress = ((size_t)memblock + boundary - 1) & ~(boundary - 1);
-    void* aligned = (void*)alignedAddress;
-
-    // Mark the aligned memory block as uncacheable
-    paging::markPageUncacheable(aligned);
-
-    return XhciDma {
-        .virtualBase = aligned,
-        .physicalBase = reinterpret_cast<uint64_t>(__pa(aligned))
-    };
-}
 
 uint64_t xhciMapMmio(uint64_t pciBarAddress) {
     // Map a conservatively large space for xHCI registers
