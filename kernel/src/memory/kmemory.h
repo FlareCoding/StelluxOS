@@ -22,7 +22,9 @@ void freePage(void* page);
 void freePages(void* addr, size_t pages);
 
 void* kmalloc(size_t size);
+void* kzmalloc(size_t size);
 void* kmallocAligned(size_t size, size_t alignment);
+void* kzmallocAligned(size_t size, size_t alignment);
 void kfree(void* ptr);
 void kfreeAligned(void* ptr);
 void* krealloc(void* ptr, size_t size);
