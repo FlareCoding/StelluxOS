@@ -5,6 +5,73 @@
 
 #include "xhci_ext_cap.h"
 
+const char* trbCompletionCodeToString(uint8_t completionCode) {
+    switch (completionCode) {
+    case XHCI_TRB_COMPLETION_CODE_INVALID:
+        return "INVALID";
+    case XHCI_TRB_COMPLETION_CODE_SUCCESS:
+        return "SUCCESS";
+    case XHCI_TRB_COMPLETION_CODE_DATA_BUFFER_ERROR:
+        return "DATA_BUFFER_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR:
+        return "BABBLE_DETECTED_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR:
+        return "USB_TRANSACTION_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_TRB_ERROR:
+        return "TRB_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_STALL_ERROR:
+        return "STALL_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_RESOURCE_ERROR:
+        return "RESOURCE_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_BANDWIDTH_ERROR:
+        return "BANDWIDTH_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_NO_SLOTS_AVAILABLE:
+        return "NO_SLOTS_AVAILABLE";
+    case XHCI_TRB_COMPLETION_CODE_INVALID_STREAM_TYPE:
+        return "INVALID_STREAM_TYPE";
+    case XHCI_TRB_COMPLETION_CODE_SLOT_NOT_ENABLED:
+        return "SLOT_NOT_ENABLED";
+    case XHCI_TRB_COMPLETION_CODE_ENDPOINT_NOT_ENABLED:
+        return "ENDPOINT_NOT_ENABLED";
+    case XHCI_TRB_COMPLETION_CODE_SHORT_PACKET:
+        return "SHORT_PACKET";
+    case XHCI_TRB_COMPLETION_CODE_RING_UNDERRUN:
+        return "RING_UNDERRUN";
+    case XHCI_TRB_COMPLETION_CODE_RING_OVERRUN:
+        return "RING_OVERRUN";
+    case XHCI_TRB_COMPLETION_CODE_VF_EVENT_RING_FULL:
+        return "VF_EVENT_RING_FULL";
+    case XHCI_TRB_COMPLETION_CODE_PARAMETER_ERROR:
+        return "PARAMETER_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_BANDWIDTH_OVERRUN:
+        return "BANDWIDTH_OVERRUN";
+    case XHCI_TRB_COMPLETION_CODE_CONTEXT_STATE_ERROR:
+        return "CONTEXT_STATE_ERROR";
+    case XHCI_TRB_COMPLETION_CODE_NO_PING_RESPONSE:
+        return "NO_PING_RESPONSE";
+    case XHCI_TRB_COMPLETION_CODE_EVENT_RING_FULL:
+        return "EVENT_RING_FULL";
+    case XHCI_TRB_COMPLETION_CODE_INCOMPATIBLE_DEVICE:
+        return "INCOMPATIBLE_DEVICE";
+    case XHCI_TRB_COMPLETION_CODE_MISSED_SERVICE:
+        return "MISSED_SERVICE";
+    case XHCI_TRB_COMPLETION_CODE_COMMAND_RING_STOPPED:
+        return "COMMAND_RING_STOPPED";
+    case XHCI_TRB_COMPLETION_CODE_COMMAND_ABORTED:
+        return "COMMAND_ABORTED";
+    case XHCI_TRB_COMPLETION_CODE_STOPPED:
+        return "STOPPED";
+    case XHCI_TRB_COMPLETION_CODE_STOPPED_LENGTH_INVALID:
+        return "STOPPED_LENGTH_INVALID";
+    case XHCI_TRB_COMPLETION_CODE_STOPPED_SHORT_PACKET:
+        return "STOPPED_SHORT_PACKET";
+    case XHCI_TRB_COMPLETION_CODE_MAX_EXIT_LATENCY_ERROR:
+        return "MAX_EXIT_LATENCY_ERROR";
+    default:
+        return "UNKNOWN_COMPLETION_CODE";
+    }
+}
+
 void XhciHcd::init(PciDeviceInfo* deviceInfo) {
     uint64_t xhcBase = xhciMapMmio(deviceInfo->barAddress);
 
@@ -43,6 +110,27 @@ void XhciHcd::init(PciDeviceInfo* deviceInfo) {
 
     // Reset the ports
     resetAllPorts();
+
+    // After port resets, there will be extreneous port state change events
+    // for ports with connected devices, but without CSC bit set, so we have
+    // to manually iterate the ports with connected devices and set them up.
+    m_ctx->eventRing->flushUnprocessedEvents();
+    
+    // Clear the interrupt pending flags
+    clearIrqFlags(0);
+
+    for (uint8_t port = 0; port < m_ctx->getMaxPorts(); ++port) {
+        auto portRegisterSet = m_ctx->getPortRegisterSet(port);
+        XhciPortscRegister portsc;
+        portRegisterSet.readPortscReg(portsc);
+
+        if (portsc.ccs) {
+            _setupDevice(port);
+            
+            // For debugging purposes
+            break;
+        }
+    }
 }
 
 bool XhciHcd::resetController() {
@@ -202,6 +290,48 @@ void XhciHcd::clearIrqFlags(uint8_t interrupter) {
     m_ctx->opRegs->usbsts |= ~XHCI_USBSTS_EINT;
 }
 
+XhciCommandCompletionTrb_t* XhciHcd::sendCommand(XhciTrb_t* trb) {
+    // Small delay period between ringing the
+    // doorbell and polling the event ring.
+    const uint32_t commandDelay = 40;
+
+    // Enqueue the TRB
+    m_ctx->commandRing->enqueue(trb);
+
+    // Ring the command doorbell
+    m_ctx->doorbellManager->ringCommandDoorbell();
+
+    // Let the host controller process the command
+    msleep(commandDelay);
+    
+    // Poll the event ring for the command completion event
+    kstl::vector<XhciTrb_t*> events;
+    if (m_ctx->eventRing->hasUnprocessedEvents()) {
+        m_ctx->eventRing->dequeueEvents(events);
+        clearIrqFlags(0);
+    }
+
+    XhciCommandCompletionTrb_t* completionTrb = nullptr;
+    for (size_t i = 0; i < events.size(); ++i) {
+        if (events[i]->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
+            completionTrb = reinterpret_cast<XhciCommandCompletionTrb_t*>(events[i]);
+            break;   
+        }
+    }
+
+    if (!completionTrb) {
+        kprintError("[*] Failed to find completion TRB for command %i\n", trb->trbType);
+        return nullptr;
+    }
+
+    if (completionTrb->completionCode != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        kprintError("[*] Command TRB failed with error: %s\n", trbCompletionCodeToString(completionTrb->completionCode));
+        return nullptr;
+    }
+
+    return completionTrb;
+}
+
 void XhciHcd::_logUsbsts() {
     uint32_t status = m_ctx->opRegs->usbsts;
     kprint("===== USBSTS =====\n");
@@ -249,4 +379,22 @@ void XhciHcd::_configureOperationalRegs() {
 
     // Write the CRCR register
     m_ctx->opRegs->crcr = m_ctx->commandRing->getPhysicalBase();
+}
+
+void XhciHcd::_setupDevice(uint8_t port) {
+    auto portRegisterSet = m_ctx->getPortRegisterSet(port);
+    XhciPortscRegister portsc;
+    portRegisterSet.readPortscReg(portsc);
+
+    kprintInfo("Port State Change Event on port %i: ", port);
+    kprint("%s device ATTACHED with speed ", m_ctx->isPortUsb3(port) ? "USB3" : "USB2");
+
+    switch (portsc.portSpeed) {
+    case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
+    case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
+    case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
+    case XHCI_USB_SPEED_SUPER_SPEED: kprint("Super Speed (5 Gb/s - USB3.0)\n"); break;
+    case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
+    default: kprint("Undefined\n"); break;
+    }
 }

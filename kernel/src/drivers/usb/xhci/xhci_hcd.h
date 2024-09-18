@@ -8,7 +8,7 @@ struct PciDeviceInfo;
 
 class XhciHcd {
 public:
-    XhciHcd() = default;;
+    XhciHcd() = default;
     ~XhciHcd() = default;
 
     void init(PciDeviceInfo* deviceInfo);
@@ -23,10 +23,14 @@ public:
 
     void clearIrqFlags(uint8_t interrupter);
 
+    XhciCommandCompletionTrb_t* sendCommand(XhciTrb_t* trb);
+
 private:
     void _logUsbsts();
     void _identifyUsb3Ports();
     void _configureOperationalRegs();
+
+    void _setupDevice(uint8_t port);
 
 private:
     kstl::SharedPtr<XhciHcContext> m_ctx;

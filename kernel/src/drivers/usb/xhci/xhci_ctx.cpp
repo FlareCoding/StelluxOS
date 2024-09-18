@@ -18,6 +18,11 @@ XhciHcContext::XhciHcContext(uint64_t xhcBase) {
         new XhciExtendedCapability(headCapPtr)
     );
 
+    // Construct a manager class instance for the doorbell register array
+    doorbellManager = kstl::SharedPtr<XhciDoorbellManager>(
+        new XhciDoorbellManager(xhcBase + capRegs->dboff)
+    );
+
     // Allocate a command ring
     commandRing = kstl::SharedPtr<XhciCommandRing>(
         new XhciCommandRing(XHCI_COMMAND_RING_TRB_COUNT)
