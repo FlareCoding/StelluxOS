@@ -30,6 +30,22 @@ const char* xhciExtendedCapabilityToString(XhciExtendedCapabilityCode capid) {
     return "Vendor Specific";
 }
 
+XhciDoorbellManager::XhciDoorbellManager(uint64_t base) {
+    m_doorbellRegisters = reinterpret_cast<XhciDoorbellRegister*>(base);
+}
+
+void XhciDoorbellManager::ringDoorbell(uint8_t doorbell, uint8_t target) {
+    m_doorbellRegisters[doorbell].raw = target;
+}
+
+void XhciDoorbellManager::ringCommandDoorbell() {
+    ringDoorbell(0, XHCI_DOORBELL_TARGET_COMMAND_RING);
+}
+
+void XhciDoorbellManager::ringControlEndpointDoorbell(uint8_t doorbell) {
+    ringDoorbell(doorbell, XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
+}
+
 XhciExtendedCapability::XhciExtendedCapability(volatile uint32_t* capPtr) : m_base(capPtr) {
     m_entry.raw = *m_base;
     _readNextExtCaps();

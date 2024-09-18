@@ -53,6 +53,9 @@ public:
 
     // Primary event ring
     kstl::SharedPtr<XhciEventRing> eventRing;
+
+    // Doorbell register manager
+    kstl::SharedPtr<XhciDoorbellManager> doorbellManager;
 };
 
 #endif

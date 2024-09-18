@@ -136,6 +136,56 @@ struct XhciRuntimeRegisters {
 };
 
 /*
+// xHci Spec Section 5.6 Figure 5-29: Doorbell Register (page 394)
+
+The Doorbell Array is organized as an array of up to 256 Doorbell Registers.
+One 32-bit Doorbell Register is defined in the array for each Device Slot.
+System software utilizes the Doorbell Register to notify the xHC that it has
+Device Slot related work for the xHC to perform.
+The number of Doorbell Registers implemented by a particular instantiation of a
+host controller is documented in the Number of Device Slots (MaxSlots) field of
+the HCSPARAMS1 register (section 5.3.3).
+These registers are pointed to by the Doorbell Offset Register (DBOFF) in the
+xHC Capability register space. The Doorbell Array base address shall be Dword
+aligned and is calculated by adding the value in the DBOFF register (section
+5.3.7) to “Base” (the base address of the xHCI Capability register address
+space).
+
+All registers are 32 bits in length. Software should read and write these
+registers using only Dword accesses
+
+Note: Software shall not write the Doorbell of an endpoint until after it has issued a
+Configure Endpoint Command for the endpoint and received a successful
+Command Completion Event.
+*/
+struct XhciDoorbellRegister {
+    union {
+        struct {
+            uint8_t     dbTarget;
+            uint8_t     rsvd;
+            uint16_t    dbStreamId;
+        };
+
+        // Must be accessed using 32-bit dwords
+        uint32_t raw;
+    };
+} __attribute__((packed));
+
+class XhciDoorbellManager {
+public:
+    XhciDoorbellManager(uint64_t base);
+
+    // TargeValue = 2 + (ZeroBasedEndpoint * 2) + (isOutEp ? 0 : 1)
+    void ringDoorbell(uint8_t doorbell, uint8_t target);
+
+    void ringCommandDoorbell();
+    void ringControlEndpointDoorbell(uint8_t doorbell);
+
+private:
+    XhciDoorbellRegister* m_doorbellRegisters;
+};
+
+/*
 // xHci Spec Section 7.0 Table 7-1: Format of xHCI Extended Capability Pointer Register
 
 The xHC exports xHCI-specific extended capabilities utilizing a method similar to
