@@ -1,39 +1,7 @@
 #ifndef XHCI_HCD_H
 #define XHCI_HCD_H
 
-#include "xhci_regs.h"
-#include "xhci_mem.h"
-
-struct XhciHcContext {
-public:
-    XhciHcContext(uint64_t xhcBase);
-    ~XhciHcContext() = default;
-
-    uint8_t getMaxDeviceSlots();
-    uint8_t getMaxInterrupters();
-    uint8_t getMaxPorts();
-
-    uint8_t getIsochronousSchedulingThreshold();
-    uint8_t getErstMax();
-    uint8_t getMaxScratchpadBuffers();
-
-    bool is64bitAddressable();
-    bool hasBandwidthNegotiationCapability();
-    bool has64ByteContextSize();
-    bool hasPortPowerControl();
-    bool hasPortIndicators();
-    bool hasLightResetCapability();
-    
-    uint32_t getExtendedCapabilitiesOffset();
-
-    uint64_t getXhcPageSize();
-
-    void dumpCapabilityRegisters();
-
-private:
-    volatile XhciCapabilityRegisters* m_capRegs;
-    volatile XhciOperationalRegisters* m_opRegs;
-};
+#include "xhci_device_ctx.h"
 
 // Forward declaration
 struct PciDeviceInfo;
@@ -47,8 +15,22 @@ public:
 
     inline kstl::SharedPtr<XhciHcContext>& getCtx() { return m_ctx; }
 
+    bool resetController();
+    void startController();
+
+    bool resetPort(uint8_t port);
+    void resetAllPorts();
+
+    void clearIrqFlags(uint8_t interrupter);
+
+private:
+    void _logUsbsts();
+    void _identifyUsb3Ports();
+    void _configureOperationalRegs();
+
 private:
     kstl::SharedPtr<XhciHcContext> m_ctx;
+    kstl::SharedPtr<XhciDeviceContextManager> m_deviceContextManager;
 };
 
 #endif
