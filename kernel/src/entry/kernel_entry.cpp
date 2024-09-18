@@ -22,7 +22,8 @@
 #include <acpi/shutdown.h>
 #include <time/ktime.h>
 #include <kprint.h>
-#include <drivers/usb/xhci.h>
+#include <drivers/usb/oldxhci.h>
+#include <drivers/usb/xhci/xhci_hcd.h>
 
 #ifdef KRUN_UNIT_TESTS
     #include "tests/kernel_unit_tests.h"
@@ -198,14 +199,18 @@ void _kuser_entry() {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
 
             RUN_ELEVATED({
-                auto& xhciDriver = drivers::XhciDriver::get();
-                bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
+                auto xhciHcd = kstl::SharedPtr<XhciHcd>(new XhciHcd());
+                xhciHcd->init(&xhciControllerPciDeviceInfo);
+                
+                // auto& xhciDriver = drivers::XhciDriver::get();
+                // bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
 
-                if (!status) {
-                    kprintError("[-] Failed to initialize xHCI controller\n\n");
-                } else {
-                    kprintInfo("[*] xHCI controller initialized\n\n");
-                }
+                // if (!status) {
+                //     kprintError("[-] Failed to initialize xHCI controller\n\n");
+                // } else {
+                //     kprintInfo("[*] xHCI controller initialized\n\n");
+                // }
+
             });
         }
     }

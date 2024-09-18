@@ -216,9 +216,31 @@ void* kmalloc(size_t size) {
     return heapAllocator.allocate(size);
 }
 
+void* kzmalloc(size_t size) {
+    void* ptr = kmalloc(size);
+    zeromem(ptr, size);
+    return ptr;
+}
+
 void* kmallocAligned(size_t size, size_t alignment) {
     // Allocate extra memory for alignment and storing the original pointer
     void* original = kmalloc(size + alignment + sizeof(void*));
+
+    if (!original) return nullptr;
+
+    // Calculate the aligned memory address
+    size_t offset = alignment + sizeof(void*);
+    void* aligned = (void*)(((uint64_t)original + offset) & ~(alignment - 1));
+
+    // Store the original pointer just before the aligned address
+    ((void**)aligned)[-1] = original;
+
+    return aligned;
+}
+
+void* kzmallocAligned(size_t size, size_t alignment) {
+    // Allocate extra memory for alignment and storing the original pointer
+    void* original = kzmalloc(size + alignment + sizeof(void*));
 
     if (!original) return nullptr;
 
@@ -266,7 +288,7 @@ void operator delete(void*, void*) noexcept {
 
 // Global new ooperator
 void* operator new(size_t size) {
-    return kmalloc(size);
+    return kzmalloc(size);
 }
 
 // Global delete operator
