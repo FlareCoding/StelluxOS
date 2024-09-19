@@ -485,14 +485,94 @@ static_assert(sizeof(XhciDeviceContext32) == 1024, "Size mismatch for 32-byte De
 using XhciDeviceContext64 = XhciDeviceContext<64>;
 static_assert(sizeof(XhciDeviceContext64) == 2048, "Size mismatch for 64-byte Device Context.");
 
+/*
+// xHci Sped Section 6.2.5.1 Figure 6-6: Input Control Context (page 461)
+
+The Input Control Context data structure defines which Device Context data
+structures are affected by a command and the operations to be performed on
+those contexts
+*/
+template <size_t Size>
+struct XhciInputControlContext {
+    /*
+        Drop Context flags (D2 - D31). These single bit fields identify which Device Context data
+        structures should be disabled by command. If set to ‘1’, the respective Endpoint Context shall
+        be disabled. If cleared to ‘0’, the Endpoint Context is ignored.
+    */
+    uint32_t dropFlags;
+
+    /*
+        Add Context flags (A0 - A31). These single bit fields identify which Device Context data
+        structures shall be evaluated and/or enabled by a command. If set to ‘1’, the respective Context
+        shall be evaluated. If cleared to ‘0’, the Context is ignored.
+    */
+    uint32_t addFlags;
+
+    uint32_t rsvd0[5];
+
+    /*
+        Configuration Value. If CIC = ‘1’, CIE = ‘1’, and this Input Context is associated with a Configure
+        Endpoint Command, then this field contains the value of the Standard Configuration Descriptor
+        bConfigurationValue field associated with the command, otherwise the this field shall be
+        cleared to ‘0’.
+    */
+    uint8_t configValue;
+
+    /*
+        Interface Number. If CIC = ‘1’, CIE = ‘1’, this Input Context is associated with a Configure
+        Endpoint Command, and the command was issued due to a SET_INTERFACE request, then this
+        field contains the value of the Standard Interface Descriptor bInterfaceNumber field associated
+        with the command, otherwise the this field shall be cleared to ‘0’.
+    */
+    uint8_t interfaceNumber;
+
+    /*
+        Alternate Setting. If CIC = ‘1’, CIE = ‘1’, this Input Context is associated with a Configure
+        Endpoint Command, and the command was issued due to a SET_INTERFACE request, then this
+        field contains the value of the Standard Interface Descriptor bAlternateSetting field associated
+        with the command, otherwise the this field shall be cleared to ‘0’
+    */
+    uint8_t alternateSetting;
+
+    // Reserved and zero'd
+    uint8_t rsvd1;
+
+    // Reserved fields depending on context size
+    uint32_t rsvd2[Size == 64 ? 8 : 0]; // 8 reserved for 64-byte context, none for 32-byte
+} __attribute__((packed));
+
+using XhciInputControlContext32 = XhciInputControlContext<32>;
+static_assert(sizeof(XhciInputControlContext32) == 32, "Size mismatch for 32-byte Input Control Context.");
+
+using XhciInputControlContext64 = XhciInputControlContext<64>;
+static_assert(sizeof(XhciInputControlContext64) == 64, "Size mismatch for 64-byte Input Control Context.");
+
+template <size_t Size>
+struct XhciInputContext {
+    XhciInputControlContext<Size> controlContext;
+    XhciDeviceContext<Size> deviceContext;
+};
+
+using XhciInputContext32 = XhciInputContext<32>;
+static_assert(sizeof(XhciInputContext32) == 1056, "Size mismatch for 32-byte Input Context.");
+
+using XhciInputContext64 = XhciInputContext<64>;
+static_assert(sizeof(XhciInputContext64) == 2112, "Size mismatch for 64-byte Input Context.");
+
 class XhciDeviceContextManager {
 public:
     XhciDeviceContextManager() = default;
     ~XhciDeviceContextManager() = default;
 
-    void allocateDcbaa(XhciHcContext* ctx);
+    void allocateDcbaa(XhciHcContext* xhc);
 
-    void* allocateDeviceContext(uint8_t slot) const;
+    // Returns a physical address
+    void allocateDeviceContext(XhciHcContext* xhc, uint8_t slot) const;
+
+    template <size_t Size>
+    inline XhciDeviceContext<Size>* getDeviceContext(uint8_t slot) {
+        return reinterpret_cast<XhciDeviceContext<Size>*>(m_dcbaa.virtualBase[slot]);
+    }
 
 private:
     XhciDma<uint64_t> m_dcbaa;
