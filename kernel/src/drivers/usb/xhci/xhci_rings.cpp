@@ -129,3 +129,45 @@ XhciTrb_t* XhciEventRing::_dequeueTrb() {
 
     return ret;
 }
+
+kstl::SharedPtr<XhciTransferRing> XhciTransferRing::allocate(uint8_t slotId) {
+    return kstl::SharedPtr<XhciTransferRing>(
+        new XhciTransferRing(XHCI_TRANSFER_RING_TRB_COUNT, slotId)
+    );
+}
+
+XhciTransferRing::XhciTransferRing(size_t maxTrbs, uint8_t doorbellId) {
+    m_maxTrbCount = maxTrbs;
+    m_rcsBit = 1;
+    m_dequeuePtr = 0;
+    m_enqueuePtr = 0;
+    m_doorbellId = doorbellId;
+
+    const uint64_t ringSize = maxTrbs * sizeof(XhciTrb_t);
+
+    // Create the transfer ring memory block
+    m_trbs = xhciAllocDma<XhciTrb_t>(
+        ringSize,
+        XHCI_TRANSFER_RING_SEGMENTS_ALIGNMENT,
+        XHCI_TRANSFER_RING_SEGMENTS_BOUNDARY
+    );
+
+    // Set the last TRB as a link TRB to point back to the first TRB
+    m_trbs.virtualBase[m_maxTrbCount - 1].parameter = m_trbs.physicalBase;
+    m_trbs.virtualBase[m_maxTrbCount - 1].control = (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | m_rcsBit;
+}
+
+void XhciTransferRing::enqueue(XhciTrb_t* trb) {
+    // Adjust the TRB's cycle bit to the current DCS
+    trb->cycleBit = m_rcsBit;
+
+    // Insert the TRB into the ring
+    m_trbs.virtualBase[m_enqueuePtr] = *trb;
+
+    // Advance and possibly wrap the enqueue pointer if needed.
+    // maxTrbCount - 1 accounts for the LINK_TRB.
+    if (++m_enqueuePtr == m_maxTrbCount - 1) {
+        m_enqueuePtr = 0;
+        m_rcsBit = !m_rcsBit;
+    }
+}

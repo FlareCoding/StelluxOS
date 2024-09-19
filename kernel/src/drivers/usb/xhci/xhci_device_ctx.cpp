@@ -1,9 +1,9 @@
 #include "xhci_device_ctx.h"
 #include <kprint.h>
 
-void XhciDeviceContextManager::allocateDcbaa(XhciHcContext* ctx) {
-    size_t contextEntrySize = ctx->has64ByteContextSize() ? 64 : 32;
-    size_t dcbaaSize = contextEntrySize * (ctx->getMaxDeviceSlots() + 1);
+void XhciDeviceContextManager::allocateDcbaa(XhciHcContext* xhc) {
+    size_t contextEntrySize = xhc->has64ByteContextSize() ? 64 : 32;
+    size_t dcbaaSize = contextEntrySize * (xhc->getMaxDeviceSlots() + 1);
 
     m_dcbaa = xhciAllocDma<uint64_t>(dcbaaSize, XHCI_DEVICE_CONTEXT_ALIGNMENT, XHCI_DEVICE_CONTEXT_BOUNDARY);
 
@@ -18,7 +18,7 @@ void XhciDeviceContextManager::allocateDcbaa(XhciHcContext* ctx) {
     */
 
     // Initialize scratchpad buffer array if needed
-    uint8_t scratchpadBuffers = ctx->getMaxScratchpadBuffers();
+    uint8_t scratchpadBuffers = xhc->getMaxScratchpadBuffers();
     if (scratchpadBuffers > 0) {
         // Array of uint64_t pointers
         XhciDma<uint64_t> scratchpadArray = xhciAllocDma<uint64_t>(scratchpadBuffers * sizeof(uint64_t));
@@ -34,10 +34,26 @@ void XhciDeviceContextManager::allocateDcbaa(XhciHcContext* ctx) {
     }
 
     // Update the DCBAAP entry in operational registers
-    ctx->opRegs->dcbaap = m_dcbaa.physicalBase;
+    xhc->opRegs->dcbaap = m_dcbaa.physicalBase;
 }
 
-void* XhciDeviceContextManager::allocateDeviceContext(uint8_t slot) const {
-    (void)slot;
-    return nullptr;
+void XhciDeviceContextManager::allocateDeviceContext(XhciHcContext* xhc, uint8_t slot) const {
+    // Allocate a memory block for the device context
+    if (xhc->has64ByteContextSize()) {
+        auto ctx = xhciAllocDma<XhciDeviceContext64>(
+            sizeof(XhciDeviceContext64),
+            XHCI_DEVICE_CONTEXT_ALIGNMENT,
+            XHCI_DEVICE_CONTEXT_BOUNDARY
+        );
+
+        m_dcbaa.virtualBase[slot] = ctx.physicalBase;
+    } else {
+        auto ctx = xhciAllocDma<XhciDeviceContext32>(
+            sizeof(XhciDeviceContext32),
+            XHCI_DEVICE_CONTEXT_ALIGNMENT,
+            XHCI_DEVICE_CONTEXT_BOUNDARY
+        );
+
+        m_dcbaa.virtualBase[slot] = ctx.physicalBase;
+    }
 }

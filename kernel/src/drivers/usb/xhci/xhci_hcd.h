@@ -1,7 +1,7 @@
 #ifndef XHCI_HCD_H
 #define XHCI_HCD_H
 
-#include "xhci_device_ctx.h"
+#include "xhci_device.h"
 
 // Forward declaration
 struct PciDeviceInfo;
@@ -31,6 +31,9 @@ private:
     void _configureOperationalRegs();
 
     void _setupDevice(uint8_t port);
+
+    uint8_t _enableSlot();
+    bool _addressDevice(XhciDevice* device);
 
 private:
     kstl::SharedPtr<XhciHcContext> m_ctx;

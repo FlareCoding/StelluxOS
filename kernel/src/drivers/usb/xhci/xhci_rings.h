@@ -71,4 +71,27 @@ private:
     XhciTrb_t* _dequeueTrb();
 };
 
+class XhciTransferRing {
+public:
+    static kstl::SharedPtr<XhciTransferRing> allocate(uint8_t slotId);
+
+    XhciTransferRing(size_t maxTrbs, uint8_t doorbellId);
+    ~XhciTransferRing() = default;
+
+    inline XhciTrb_t* getVirtualBase() const { return m_trbs.virtualBase; }
+    inline uint64_t getPhysicalBase() const { return m_trbs.physicalBase; }
+    inline uint8_t  getCycleBit() const { return m_rcsBit; }
+    inline uint8_t getDoorbellId() const { return m_doorbellId; }
+
+    void enqueue(XhciTrb_t* trb);
+
+private:
+    size_t              m_maxTrbCount;  // Number of valid TRBs in the ring including the LINK_TRB
+    size_t              m_dequeuePtr;   // Transfer ring consumer dequeue pointer
+    size_t              m_enqueuePtr;   // Transfer ring producer enqueue pointer
+    XhciDma<XhciTrb_t>  m_trbs;         // Base address of the ring buffer
+    uint8_t             m_rcsBit;       // Dequeue cycle state
+    uint8_t             m_doorbellId;   // ID of the doorbell associated with the ring
+};
+
 #endif

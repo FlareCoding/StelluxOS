@@ -72,6 +72,102 @@ const char* trbCompletionCodeToString(uint8_t completionCode) {
     }
 }
 
+void dumpDeviceContext32(const XhciDeviceContext32* context) {
+    // Dump Slot Context
+    kprint("\nSlot Context:\n");
+    kprint("  Route String:           0x%x\n", context->slotContext.routeString);
+    kprint("  Speed:                  0x%x\n", context->slotContext.speed);
+    kprint("  Reserved:               0x%x\n", context->slotContext.rz);
+    kprint("  MTT:                    0x%x\n", context->slotContext.mtt);
+    kprint("  Hub:                    0x%x\n", context->slotContext.hub);
+    kprint("  Context Entries:        0x%x\n", context->slotContext.contextEntries);
+    kprint("  Max Exit Latency:       0x%x\n", context->slotContext.maxExitLatency);
+    kprint("  Root Hub Port Number:   0x%x\n", context->slotContext.rootHubPortNum);
+    kprint("  Port Count:             0x%x\n", context->slotContext.portCount);
+    kprint("  Parent Hub Slot ID:     0x%x\n", context->slotContext.parentHubSlotId);
+    kprint("  Parent Port Number:     0x%x\n", context->slotContext.parentPortNumber);
+    kprint("  TT Think Time:          0x%x\n", context->slotContext.ttThinkTime);
+    kprint("  Reserved0:              0x%x\n", context->slotContext.rsvd0);
+    kprint("  Interrupter Target:     0x%x\n", context->slotContext.interrupterTarget);
+    kprint("  Device Address:         0x%x\n", context->slotContext.deviceAddress);
+    kprint("  Reserved1:              0x%x\n", context->slotContext.rsvd1);
+    kprint("  Slot State:             0x%x\n", context->slotContext.slotState);
+
+    // Reserved fields
+    kprint("  Reserved Fields (Slot Context): [ ");
+    for (int i = 0; i < 4; ++i) {
+        kprint("0x%x ", context->slotContext.rsvdZ[i]);
+    }
+    kprint("]\n");
+
+    // Dump Control Endpoint Context
+    kprint("\nControl Endpoint Context:\n");
+    kprint("  Endpoint State:         0x%x\n", context->controlEndpointContext.endpointState);
+    kprint("  Mult:                   0x%x\n", context->controlEndpointContext.mult);
+    kprint("  Max Primary Streams:    0x%x\n", context->controlEndpointContext.maxPrimaryStreams);
+    kprint("  Linear Stream Array:    0x%x\n", context->controlEndpointContext.linearStreamArray);
+    kprint("  Interval:               0x%x\n", context->controlEndpointContext.interval);
+    kprint("  Max ESIT Payload Hi:    0x%x\n", context->controlEndpointContext.maxEsitPayloadHi);
+    kprint("  Error Count:            0x%x\n", context->controlEndpointContext.errorCount);
+    kprint("  Endpoint Type:          0x%x\n", context->controlEndpointContext.endpointType);
+    kprint("  Host Initiate Disable:  0x%x\n", context->controlEndpointContext.hostInitiateDisable);
+    kprint("  Max Burst Size:         0x%x\n", context->controlEndpointContext.maxBurstSize);
+    kprint("  Max Packet Size:        0x%x\n", context->controlEndpointContext.maxPacketSize);
+    kprint("  Dequeue Cycle State:    0x%llx\n", context->controlEndpointContext.dcs);
+    kprint("  TR Dequeue Ptr:         0x%llx\n", context->controlEndpointContext.trDequeuePtrAddressBits);
+    kprint("  Average TRB Length:     0x%x\n", context->controlEndpointContext.averageTrbLength);
+    kprint("  Max ESIT Payload Lo:    0x%x\n", context->controlEndpointContext.maxEsitPayloadLo);
+
+    // Reserved fields (Control Endpoint Context)
+    kprint("  Reserved Fields (Control Endpoint Context): [ ");
+    for (int i = 0; i < 0; ++i) {
+        kprint("0x%x ", context->controlEndpointContext.rsvd[i]);
+    }
+    kprint("]\n");
+
+    // Dump each Endpoint Context (ep[0] to ep[29])
+    for (int epIndex = 0; epIndex < 30; ++epIndex) {
+        if (context->ep[epIndex].endpointState == XHCI_ENDPOINT_STATE_DISABLED) {
+            continue;
+        }
+
+        kprint("\nEndpoint Context %i:\n", epIndex);
+        kprint("  Endpoint State:         0x%x\n", context->ep[epIndex].endpointState);
+        kprint("  Mult:                   0x%x\n", context->ep[epIndex].mult);
+        kprint("  Max Primary Streams:    0x%x\n", context->ep[epIndex].maxPrimaryStreams);
+        kprint("  Linear Stream Array:    0x%x\n", context->ep[epIndex].linearStreamArray);
+        kprint("  Interval:               0x%x\n", context->ep[epIndex].interval);
+        kprint("  Max ESIT Payload Hi:    0x%x\n", context->ep[epIndex].maxEsitPayloadHi);
+        kprint("  Error Count:            0x%x\n", context->ep[epIndex].errorCount);
+        kprint("  Endpoint Type:          0x%x\n", context->ep[epIndex].endpointType);
+        kprint("  Host Initiate Disable:  0x%x\n", context->ep[epIndex].hostInitiateDisable);
+        kprint("  Max Burst Size:         0x%x\n", context->ep[epIndex].maxBurstSize);
+        kprint("  Max Packet Size:        0x%x\n", context->ep[epIndex].maxPacketSize);
+        kprint("  Dequeue Cycle State:    0x%llx\n", context->ep[epIndex].dcs);
+        kprint("  TR Dequeue Ptr:         0x%llx\n", context->ep[epIndex].trDequeuePtrAddressBits);
+        kprint("  Average TRB Length:     0x%x\n", context->ep[epIndex].averageTrbLength);
+        kprint("  Max ESIT Payload Lo:    0x%x\n", context->ep[epIndex].maxEsitPayloadLo);
+    }
+}
+
+void dumpXhciInputContext32(const XhciInputContext32* context) {
+    // Dump Input Control Context
+    kprint("Input Control Context:\n");
+    kprint("  Drop Flags:             0x%x\n", context->controlContext.dropFlags);
+    kprint("  Add Flags:              0x%x\n", context->controlContext.addFlags);
+    kprint("  Reserved0:              [ ");
+    for (int i = 0; i < 5; ++i) {
+        kprint("0x%x ", context->controlContext.rsvd0[i]);
+    }
+    kprint("]\n");
+    kprint("  Config Value:           0x%x\n", context->controlContext.configValue);
+    kprint("  Interface Number:       0x%x\n", context->controlContext.interfaceNumber);
+    kprint("  Alternate Setting:      0x%x\n", context->controlContext.alternateSetting);
+    kprint("  Reserved1:              0x%x\n", context->controlContext.rsvd1);
+
+    dumpDeviceContext32(&context->deviceContext);
+}
+
 void XhciHcd::init(PciDeviceInfo* deviceInfo) {
     uint64_t xhcBase = xhciMapMmio(deviceInfo->barAddress);
 
@@ -125,7 +221,9 @@ void XhciHcd::init(PciDeviceInfo* deviceInfo) {
         portRegisterSet.readPortscReg(portsc);
 
         if (portsc.ccs) {
-            _setupDevice(port);
+            // Port number has to be 1-indexed
+            // in the device setup routine.
+            _setupDevice(port + 1);
             
             // For debugging purposes
             break;
@@ -389,7 +487,8 @@ void XhciHcd::_setupDevice(uint8_t port) {
     kprintInfo("Port State Change Event on port %i: ", port);
     kprint("%s device ATTACHED with speed ", m_ctx->isPortUsb3(port) ? "USB3" : "USB2");
 
-    switch (portsc.portSpeed) {
+    uint8_t portSpeed = portsc.portSpeed;
+    switch (portSpeed) {
     case XHCI_USB_SPEED_FULL_SPEED: kprint("Full Speed (12 MB/s - USB2.0)\n"); break;
     case XHCI_USB_SPEED_LOW_SPEED: kprint("Low Speed (1.5 Mb/s - USB 2.0)\n"); break;
     case XHCI_USB_SPEED_HIGH_SPEED: kprint("High Speed (480 Mb/s - USB 2.0)\n"); break;
@@ -397,4 +496,55 @@ void XhciHcd::_setupDevice(uint8_t port) {
     case XHCI_USB_SPEED_SUPER_SPEED_PLUS: kprint("Super Speed Plus (10 Gb/s - USB 3.1)\n"); break;
     default: kprint("Undefined\n"); break;
     }
+
+    auto device = new XhciDevice(m_ctx.get(), port);
+    device->slotId = _enableSlot();
+    if (!device->slotId) {
+        kprint("[XHCI] Failed to allocate a slot for device on port %i\n", port);
+        return;
+    }
+
+    device->setupTransferRing();
+    device->setupAddressDeviceCtx(portSpeed);
+
+    // Allocate the output device context entry in the DCBAA slot
+    m_deviceContextManager->allocateDeviceContext(m_ctx.get(), device->slotId);
+
+    // Send the Address Device command
+    if (!_addressDevice(device)) {
+        return;
+    }
+}
+
+uint8_t XhciHcd::_enableSlot() {
+    XhciTrb_t enableSlotTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+    auto completionTrb = sendCommand(&enableSlotTrb);
+
+    if (!completionTrb) {
+        return 0;
+    }
+
+    return completionTrb->slotId;
+}
+
+bool XhciHcd::_addressDevice(XhciDevice* device) {
+    // Construct the Address Device TRB
+    XhciAddressDeviceCommandTrb_t addressDeviceTrb;
+    zeromem(&addressDeviceTrb, sizeof(XhciAddressDeviceCommandTrb_t));
+    addressDeviceTrb.trbType = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
+    addressDeviceTrb.inputContextPhysicalBase = device->getInputContextPhysicalBase();
+    addressDeviceTrb.bsr = 0;
+    addressDeviceTrb.slotId = device->slotId;
+
+    // Send the AddressDevice command
+    auto completionTrb = sendCommand((XhciTrb_t*)&addressDeviceTrb);
+    if (!completionTrb || completionTrb->completionCode != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        kprintError("[XHCI] Failed to complete the first Device Address command\n");
+        return false;
+    }
+
+    kprintInfo("[*] Successfully issued the first Device Address command!\n");
+    msleep(200);
+
+    return true;
 }
