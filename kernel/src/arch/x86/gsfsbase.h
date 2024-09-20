@@ -19,17 +19,17 @@ static inline void enableFSGSBase() {
 }
 
 __PRIVILEGED_CODE
-static __attribute__((always_inline)) inline uint64_t rdgsbase() {
+static __force_inline__ uint64_t rdgsbase() {
     return readMsr(IA32_GS_BASE);
 }
 
 __PRIVILEGED_CODE
-static __attribute__((always_inline)) inline void wrgsbase(uint64_t gsbase) {
+static __force_inline__ void wrgsbase(uint64_t gsbase) {
     writeMsr(IA32_GS_BASE, gsbase);
 }
 
 __PRIVILEGED_CODE
-static __attribute__((always_inline)) inline void swapgs() {
+static __force_inline__ void swapgs() {
     asm volatile ("swapgs");
 }
 
