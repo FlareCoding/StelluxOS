@@ -25,7 +25,7 @@ private:
     static uint64_t s_tscTicksCalibratedFrequency;
 };
 
-inline __attribute__((always_inline)) uint64_t rdtsc() {
+__force_inline__ uint64_t rdtsc() {
     uint32_t hi, lo;
     __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)lo) | (((uint64_t)hi) << 32);

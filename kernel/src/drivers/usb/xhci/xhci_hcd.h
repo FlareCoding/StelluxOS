@@ -34,6 +34,7 @@ private:
 
     uint8_t _enableSlot();
     bool _addressDevice(XhciDevice* device);
+    void _getDeviceDescriptor(XhciDevice* device);
 
 private:
     kstl::SharedPtr<XhciHcContext> m_ctx;

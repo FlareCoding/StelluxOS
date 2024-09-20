@@ -38,7 +38,7 @@ typedef void* uintptr_t;
     #define EXTERN_C extern
 #endif
 
-#define __force_inline __attribute__((always_inline))
+#define __force_inline__ inline __attribute__((always_inline))
 
 #define __PRIVILEGED_CODE __attribute__((section(".ktext")))
 #define __PRIVILEGED_DATA __attribute__((section(".kdata")))

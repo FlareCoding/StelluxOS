@@ -41,7 +41,7 @@ struct PageTable {
     pte_t entries[PAGE_TABLE_ENTRIES];
 } __attribute__((aligned(PAGE_SIZE)));
 
-static __attribute__((always_inline)) inline void* pageAlignAddress(void* addr) {
+static __force_inline__ void* pageAlignAddress(void* addr) {
     return (void*)((reinterpret_cast<uint64_t>(addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1));
 }
 

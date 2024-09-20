@@ -97,11 +97,11 @@ struct PtRegs {
     InterruptFrame hwframe; // Hardware interrupt frame
 } __attribute__((packed));
 
-inline __force_inline void enableInterrupts() {
+__force_inline__ void enableInterrupts() {
     __asm__ volatile("sti");
 }
 
-inline __force_inline void disableInterrupts() {
+__force_inline__ void disableInterrupts() {
     __asm__ volatile("cli");
 }
 

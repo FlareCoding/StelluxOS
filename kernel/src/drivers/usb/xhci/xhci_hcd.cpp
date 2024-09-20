@@ -114,7 +114,7 @@ void dumpDeviceContext32(const XhciDeviceContext32* context) {
     kprint("  Max Burst Size:         0x%x\n", context->controlEndpointContext.maxBurstSize);
     kprint("  Max Packet Size:        0x%x\n", context->controlEndpointContext.maxPacketSize);
     kprint("  Dequeue Cycle State:    0x%llx\n", context->controlEndpointContext.dcs);
-    kprint("  TR Dequeue Ptr:         0x%llx\n", context->controlEndpointContext.trDequeuePtrAddressBits);
+    kprint("  TR Dequeue Ptr:         0x%llx\n", context->controlEndpointContext.transferRingDequeuePtr);
     kprint("  Average TRB Length:     0x%x\n", context->controlEndpointContext.averageTrbLength);
     kprint("  Max ESIT Payload Lo:    0x%x\n", context->controlEndpointContext.maxEsitPayloadLo);
 
@@ -546,5 +546,73 @@ bool XhciHcd::_addressDevice(XhciDevice* device) {
     kprintInfo("[*] Successfully issued the first Device Address command!\n");
     msleep(200);
 
+    dumpDeviceContext32(m_deviceContextManager->getDeviceContext<32>(device->slotId));
+
+    _getDeviceDescriptor(device);
+
     return true;
+}
+
+void XhciHcd::_getDeviceDescriptor(XhciDevice* device) {
+    // Buffer to hold the bytes received from GET_DESCRIPTOR command
+    XhciDma<uint8_t> descriptorBuffer = xhciAllocDma<uint8_t>(64, 128, 64);
+
+    // Buffer to hold the bytes received from GET_DESCRIPTOR command
+    XhciDma<uint8_t> transferStatusBuffer = xhciAllocDma<uint8_t>(64, 16, 16);
+
+    // Construct the Setup Stage TRB
+    XhciSetupStageTrb_t setupStageTrb;
+    zeromem(&setupStageTrb, sizeof(XhciSetupStageTrb_t));
+
+    setupStageTrb.trbType = XHCI_TRB_TYPE_SETUP_STAGE;
+    setupStageTrb.requestPacket.bRequestType = 0x80;
+    setupStageTrb.requestPacket.bRequest = 6;    // GET_DESCRIPTOR
+    setupStageTrb.requestPacket.wValue = 0x0100; // DEVICE
+    setupStageTrb.requestPacket.wIndex = 0;
+    setupStageTrb.requestPacket.wLength = 8;
+    setupStageTrb.trbTransferLength = 8;
+    setupStageTrb.interrupterTarget = 0;
+    setupStageTrb.trt = 3;
+    setupStageTrb.idt = 1;
+    setupStageTrb.ioc = 0;
+
+    // Construct the Data Stage TRB
+    XhciDataStageTrb_t dataStageTrb;
+    zeromem(&dataStageTrb, sizeof(XhciDataStageTrb_t));
+
+    dataStageTrb.trbType = XHCI_TRB_TYPE_DATA_STAGE;
+    dataStageTrb.trbTransferLength = 8;
+    dataStageTrb.tdSize = 0;
+    dataStageTrb.interrupterTarget = 0;
+    dataStageTrb.ent = 1;
+    dataStageTrb.chain = 1;
+    dataStageTrb.dir = 1;
+    dataStageTrb.dataBuffer = descriptorBuffer.physicalBase;
+
+    // Construct the first Event Data TRB
+    XhciEventDataTrb_t eventDataTrb;
+    zeromem(&eventDataTrb, sizeof(XhciEventDataTrb_t));
+
+    eventDataTrb.trbType = XHCI_TRB_TYPE_EVENT_DATA;
+    eventDataTrb.interrupterTarget = 0;
+    eventDataTrb.chain = 0;
+    eventDataTrb.ioc = 1;
+    eventDataTrb.eventData = transferStatusBuffer.physicalBase;
+
+    // Small delay period between ringing the
+    // doorbell and polling the event ring.
+    const uint32_t commandDelay = 100;
+
+    device->controlEpTransferRing->enqueue((XhciTrb_t*)&setupStageTrb);
+    device->controlEpTransferRing->enqueue((XhciTrb_t*)&dataStageTrb);
+    device->controlEpTransferRing->enqueue((XhciTrb_t*)&eventDataTrb);
+
+    kprint("[*] Ringing transfer ring doorbell: %i\n", device->controlEpTransferRing->getDoorbellId());
+    kprintInfo("   transferRing - pa:0x%llx va:0x%llx\n", device->controlEpTransferRing->getPhysicalBase(), device->controlEpTransferRing->getVirtualBase());
+    m_ctx->doorbellManager->ringControlEndpointDoorbell(device->controlEpTransferRing->getDoorbellId());
+
+    // Let the host controller process the command
+    msleep(commandDelay);
+
+    _logUsbsts();
 }

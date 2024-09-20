@@ -24,7 +24,7 @@ struct PerCpuData {
 
 EXTERN_C PerCpuData __per_cpu_data;
 
-static __attribute__((always_inline)) inline PCB* getCurrentTask() {
+static __force_inline__ PCB* getCurrentTask() {
     PCB* currentTask = nullptr;
     asm volatile (
         "movq %%gs:0x0, %0"
