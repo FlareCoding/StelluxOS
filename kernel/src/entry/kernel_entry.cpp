@@ -22,8 +22,9 @@
 #include <acpi/shutdown.h>
 #include <time/ktime.h>
 #include <kprint.h>
-#include <drivers/usb/oldxhci.h>
-#include <drivers/usb/xhci/xhci_hcd.h>
+// #include <drivers/usb/oldxhci.h>
+// #include <drivers/usb/xhci/xhci_hcd.h>
+#include <drivers/usb/xhci_new/xhci.h>
 
 #ifdef KRUN_UNIT_TESTS
     #include "tests/kernel_unit_tests.h"
@@ -179,7 +180,7 @@ void _kuser_entry() {
     }
     
     // Bring up all available processor cores
-    initializeApCores();
+    //initializeApCores();
 
 #ifdef KRUN_UNIT_TESTS
     // Run unit tests
@@ -199,8 +200,11 @@ void _kuser_entry() {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
 
             RUN_ELEVATED({
-                auto xhciHcd = kstl::SharedPtr<XhciHcd>(new XhciHcd());
-                xhciHcd->init(&xhciControllerPciDeviceInfo);
+                auto xhciDriver = kstl::SharedPtr<XhciDriver>(new XhciDriver());
+                xhciDriver->init(xhciControllerPciDeviceInfo);
+                
+                // auto xhciHcd = kstl::SharedPtr<XhciHcd>(new XhciHcd());
+                // xhciHcd->init(&xhciControllerPciDeviceInfo);
                 
                 // auto& xhciDriver = drivers::XhciDriver::get();
                 // bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
@@ -210,7 +214,6 @@ void _kuser_entry() {
                 // } else {
                 //     kprintInfo("[*] xHCI controller initialized\n\n");
                 // }
-
             });
         }
     }

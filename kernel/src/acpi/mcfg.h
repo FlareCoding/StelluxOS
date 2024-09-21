@@ -53,6 +53,7 @@ public:
 
     // Helper functions for finding popular needed PCI devices
     size_t findXhciController();
+    size_t findEhciController();
 
 private:
     McfgHeader* m_base;
