@@ -35,7 +35,7 @@ XhciDoorbellManager::XhciDoorbellManager(uint64_t base) {
 }
 
 void XhciDoorbellManager::ringDoorbell(uint8_t doorbell, uint8_t target) {
-    m_doorbellRegisters[doorbell].raw = target;
+    m_doorbellRegisters[doorbell].raw = static_cast<uint32_t>(target);
 }
 
 void XhciDoorbellManager::ringCommandDoorbell() {

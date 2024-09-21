@@ -215,20 +215,29 @@ void XhciHcd::init(PciDeviceInfo* deviceInfo) {
     // Clear the interrupt pending flags
     clearIrqFlags(0);
 
-    for (uint8_t port = 0; port < m_ctx->getMaxPorts(); ++port) {
-        auto portRegisterSet = m_ctx->getPortRegisterSet(port);
-        XhciPortscRegister portsc;
-        portRegisterSet.readPortscReg(portsc);
+    // for (uint8_t port = 0; port < m_ctx->getMaxPorts(); ++port) {
+    //     auto portRegisterSet = m_ctx->getPortRegisterSet(port);
+    //     XhciPortscRegister portsc;
+    //     portRegisterSet.readPortscReg(portsc);
 
-        if (portsc.ccs) {
-            // Port number has to be 1-indexed
-            // in the device setup routine.
-            _setupDevice(port + 1);
+    //     if (portsc.ccs) {
+    //         // Port number has to be 1-indexed
+    //         // in the device setup routine.
+    //         _setupDevice(port + 1);
             
-            // For debugging purposes
-            break;
-        }
+    //         // For debugging purposes
+    //         break;
+    //     }
+    // }
+
+    XhciTrb_t noop = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_NOOP_CMD);
+    XhciCommandCompletionTrb_t* comp = sendCommand(&noop);
+
+    if (comp) {
+        kprint("Completion TRB Found: %s\n", trbCompletionCodeToString(comp->completionCode));
     }
+
+    _logUsbsts();
 }
 
 bool XhciHcd::resetController() {
@@ -391,7 +400,7 @@ void XhciHcd::clearIrqFlags(uint8_t interrupter) {
 XhciCommandCompletionTrb_t* XhciHcd::sendCommand(XhciTrb_t* trb) {
     // Small delay period between ringing the
     // doorbell and polling the event ring.
-    const uint32_t commandDelay = 40;
+    const uint32_t commandDelay = 400;
 
     // Enqueue the TRB
     m_ctx->commandRing->enqueue(trb);

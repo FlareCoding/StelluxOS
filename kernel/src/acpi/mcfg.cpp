@@ -33,6 +33,21 @@ size_t Mcfg::findXhciController() {
     return kstl::npos;
 }
 
+size_t Mcfg::findEhciController() {
+    for (size_t i = 0; i < m_devices.size(); i++) {
+        auto& info = m_devices[i];
+        if (
+            info.headerInfo.classCode == 0x0C &&
+            info.headerInfo.subclass == 0x03 &&
+            info.headerInfo.progIF == 0x20
+        ) {
+            return i;
+        }
+    }
+
+    return kstl::npos;
+}
+
 __PRIVILEGED_CODE
 void Mcfg::_enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
     uint64_t offset = function << 12;
