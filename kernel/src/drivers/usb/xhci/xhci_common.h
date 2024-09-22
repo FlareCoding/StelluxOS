@@ -1227,6 +1227,11 @@ Controller during status update if the associated error condition is detected.
 #define XHCI_LEGACY_SMI_ENABLE_BITS ((1 << 0) | (1 << 4) | (1 << 13) | (1 << 14) | (1 << 15))
 
 /*
+// xHci Spec Section 7.0 Table 7-1: Format of xHCI Extended Capability Pointer Register
+*/
+#define XHCI_NEXT_EXT_CAP_PTR(ptr, next) (volatile uint32_t*)((char*)ptr + (next * sizeof(uint32_t)))
+
+/*
 // xHci Spec Section 6.2.2 Figure 6-2: Slot Context Data Structure (page 407)
 
 Slot State. This field is updated by the xHC when a Device Slot transitions from one state to

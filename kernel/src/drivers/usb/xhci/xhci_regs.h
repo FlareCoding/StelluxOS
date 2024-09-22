@@ -2,6 +2,7 @@
 #define XHCI_REGS_H
 
 #include "xhci_mem.h"
+#include "xhci_ext_cap.h"
 
 /*
 // xHci Spec Section 5.3 Table 5-9: eXtensible Host Controller Capability Registers (page 346)
@@ -130,9 +131,22 @@ writes to the Qword address fields shall be performed using 2 Dword
 references; low Dword-first, high-Dword second.
 */
 struct XhciRuntimeRegisters {
-    uint32_t mfIndex;                           // Microframe Index (offset 0000h)
-    uint32_t rsvdZ[7];                          // Reserved (offset 001Fh:0004h)
-    volatile XhciInterrupterRegisters ir[1024]; // Interrupter Register Sets (offset 0020h to 8000h)
+    uint32_t mfIndex;                          // Microframe Index (offset 0000h)
+    uint32_t rsvdZ[7];                         // Reserved (offset 001Fh:0004h)
+    XhciInterrupterRegisters ir[1024];         // Interrupter Register Sets (offset 0020h to 8000h)
+};
+
+class XhciRuntimeRegisterManager {
+public:
+    XhciRuntimeRegisterManager(uint64_t base, uint8_t maxInterrupters)
+        : m_base(reinterpret_cast<XhciRuntimeRegisters*>(base)),
+          m_maxInterrupters(maxInterrupters) {}
+
+    XhciInterrupterRegisters* getInterrupterRegisters(uint8_t interrupter) const;
+
+private:
+    XhciRuntimeRegisters*   m_base;
+    uint8_t                 m_maxInterrupters;
 };
 
 /*
