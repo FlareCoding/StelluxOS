@@ -8,103 +8,6 @@
 #include <interrupts/interrupts.h>
 #include <kprint.h>
 
-const char* extendedCapabilityToString(XhciExtendedCapabilityCode capid) {
-    uint8_t id = static_cast<uint8_t>(capid);
-
-    switch (capid) {
-    case XhciExtendedCapabilityCode::Reserved: return "Reserved";
-    case XhciExtendedCapabilityCode::UsbLegacySupport: return "USB Legacy Support";
-    case XhciExtendedCapabilityCode::SupportedProtocol: return "Supported Protocol";
-    case XhciExtendedCapabilityCode::ExtendedPowerManagement: return "Extended Power Management";
-    case XhciExtendedCapabilityCode::IOVirtualizationSupport: return "I/O Virtualization Support";
-    case XhciExtendedCapabilityCode::LocalMemorySupport: return "Local Memory Support";
-    case XhciExtendedCapabilityCode::UsbDebugCapabilitySupport: return "USB Debug Capability Support";
-    case XhciExtendedCapabilityCode::ExtendedMessageInterruptSupport: return "Extended Message Interrupt Support";
-    default: break;
-    }
-
-    if (id >= 7 && id <= 9) {
-        return "Reserved";
-    }
-
-    if (id >= 11 && id <= 16) {
-        return "Reserved";
-    }
-
-    if (id >= 18 && id <= 191) {
-        return "Reserved";
-    }
-
-    return "Vendor Specific";
-}
-
-const char* trbCompletionCodeToString(uint8_t completionCode) {
-    switch (completionCode) {
-    case XHCI_TRB_COMPLETION_CODE_INVALID:
-        return "INVALID";
-    case XHCI_TRB_COMPLETION_CODE_SUCCESS:
-        return "SUCCESS";
-    case XHCI_TRB_COMPLETION_CODE_DATA_BUFFER_ERROR:
-        return "DATA_BUFFER_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_BABBLE_DETECTED_ERROR:
-        return "BABBLE_DETECTED_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_USB_TRANSACTION_ERROR:
-        return "USB_TRANSACTION_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_TRB_ERROR:
-        return "TRB_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_STALL_ERROR:
-        return "STALL_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_RESOURCE_ERROR:
-        return "RESOURCE_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_BANDWIDTH_ERROR:
-        return "BANDWIDTH_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_NO_SLOTS_AVAILABLE:
-        return "NO_SLOTS_AVAILABLE";
-    case XHCI_TRB_COMPLETION_CODE_INVALID_STREAM_TYPE:
-        return "INVALID_STREAM_TYPE";
-    case XHCI_TRB_COMPLETION_CODE_SLOT_NOT_ENABLED:
-        return "SLOT_NOT_ENABLED";
-    case XHCI_TRB_COMPLETION_CODE_ENDPOINT_NOT_ENABLED:
-        return "ENDPOINT_NOT_ENABLED";
-    case XHCI_TRB_COMPLETION_CODE_SHORT_PACKET:
-        return "SHORT_PACKET";
-    case XHCI_TRB_COMPLETION_CODE_RING_UNDERRUN:
-        return "RING_UNDERRUN";
-    case XHCI_TRB_COMPLETION_CODE_RING_OVERRUN:
-        return "RING_OVERRUN";
-    case XHCI_TRB_COMPLETION_CODE_VF_EVENT_RING_FULL:
-        return "VF_EVENT_RING_FULL";
-    case XHCI_TRB_COMPLETION_CODE_PARAMETER_ERROR:
-        return "PARAMETER_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_BANDWIDTH_OVERRUN:
-        return "BANDWIDTH_OVERRUN";
-    case XHCI_TRB_COMPLETION_CODE_CONTEXT_STATE_ERROR:
-        return "CONTEXT_STATE_ERROR";
-    case XHCI_TRB_COMPLETION_CODE_NO_PING_RESPONSE:
-        return "NO_PING_RESPONSE";
-    case XHCI_TRB_COMPLETION_CODE_EVENT_RING_FULL:
-        return "EVENT_RING_FULL";
-    case XHCI_TRB_COMPLETION_CODE_INCOMPATIBLE_DEVICE:
-        return "INCOMPATIBLE_DEVICE";
-    case XHCI_TRB_COMPLETION_CODE_MISSED_SERVICE:
-        return "MISSED_SERVICE";
-    case XHCI_TRB_COMPLETION_CODE_COMMAND_RING_STOPPED:
-        return "COMMAND_RING_STOPPED";
-    case XHCI_TRB_COMPLETION_CODE_COMMAND_ABORTED:
-        return "COMMAND_ABORTED";
-    case XHCI_TRB_COMPLETION_CODE_STOPPED:
-        return "STOPPED";
-    case XHCI_TRB_COMPLETION_CODE_STOPPED_LENGTH_INVALID:
-        return "STOPPED_LENGTH_INVALID";
-    case XHCI_TRB_COMPLETION_CODE_STOPPED_SHORT_PACKET:
-        return "STOPPED_SHORT_PACKET";
-    case XHCI_TRB_COMPLETION_CODE_MAX_EXIT_LATENCY_ERROR:
-        return "MAX_EXIT_LATENCY_ERROR";
-    default:
-        return "UNKNOWN_COMPLETION_CODE";
-    }
-}
-
 bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
     kprint("[XHCI] Initialize xHci Driver 3.0\n\n");
 
@@ -137,13 +40,8 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
     }
     kprint("\n");
 
-    // DEBUG TEST
-    uint8_t slotId = _enableDeviceSlot();
-    if (!slotId) {
-        kprintError("Failed to enable a device slot\n");
-        return false;
-    }
-    kprint("Successfully Enabled Device Slot: %i\n", (int)slotId);
+    // DEBUG - Test setup device at port 4
+    _setupDevice(4);
 
     // const uint8_t testPort = 4; // TEST USB DEVICE
 
@@ -308,6 +206,28 @@ void XhciDriver::_logOperationalRegisters() {
     kprint("\n");
 }
 
+uint8_t XhciDriver::_getPortSpeed(uint8_t port) {
+    auto portRegisterSet = _getPortRegisterSet(port);
+    XhciPortscRegister portsc;
+    portRegisterSet.readPortscReg(portsc);
+
+    return static_cast<uint8_t>(portsc.portSpeed);
+}
+
+const char* XhciDriver::_usbSpeedToString(uint8_t speed) {
+    static const char* speedString[7] = {
+        "Invalid",
+        "Full Speed (12 MB/s - USB2.0)",
+        "Low Speed (1.5 Mb/s - USB 2.0)",
+        "High Speed (480 Mb/s - USB 2.0)",
+        "Super Speed (5 Gb/s - USB3.0)",
+        "Super Speed Plus (10 Gb/s - USB 3.1)",
+        "Undefined"
+    };
+
+    return speedString[speed];
+}
+
 void XhciDriver::_configureRuntimeRegisters() {
     // Get the primary interrupter registers
     auto interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(0);
@@ -365,19 +285,19 @@ void XhciDriver::_setupDcbaa() {
         // Create scratchpad pages
         for (uint8_t i = 0; i < m_maxScratchpadBuffers; i++) {
             void* scratchpad = allocXhciMemory(PAGE_SIZE, XHCI_SCRATCHPAD_BUFFERS_ALIGNMENT, XHCI_SCRATCHPAD_BUFFERS_BOUNDARY);
-            uint64_t scratchpadPhysicalBase = (uint64_t)__pa(scratchpad);
+            uint64_t scratchpadPhysicalBase = physbase(scratchpad);
 
             scratchpadArray[i] = scratchpadPhysicalBase;
         }
 
-        uint64_t scratchpadArrayPhysicalBase = (uint64_t)__pa(scratchpadArray);
+        uint64_t scratchpadArrayPhysicalBase = physbase(scratchpadArray);
 
         // Set the first slot in the DCBAA to point to the scratchpad array
         m_dcbaa[0] = scratchpadArrayPhysicalBase;
     }
 
     // Set DCBAA pointer in the operational registers
-    uint64_t dcbaaPhysicalBase = (uint64_t)__pa(m_dcbaa);
+    uint64_t dcbaaPhysicalBase = physbase(m_dcbaa);
 
     m_opRegs->dcbaap = dcbaaPhysicalBase;
 }
@@ -399,12 +319,9 @@ void XhciDriver::_createDeviceContext(uint8_t slotId) {
         return;
     }
 
-    // Zero out the device context memory by default
-    zeromem(ctx, sizeof(deviceContextSize));
-
     // Insert the device context's physical address
     // into the Device Context Base Addres Array (DCBAA).
-    m_dcbaa[slotId] = (uint64_t)__pa(ctx);
+    m_dcbaa[slotId] = physbase(ctx);
 }
 
 XhciCommandCompletionTrb_t* XhciDriver::_sendCommand(XhciTrb_t* trb, uint32_t timeoutMs) {
@@ -600,4 +517,23 @@ uint8_t XhciDriver::_enableDeviceSlot() {
     }
 
     return completionTrb->slotId;
+}
+
+void XhciDriver::_setupDevice(uint8_t port) {
+    XhciDevice* device = new XhciDevice();
+    device->portRegSet = port;
+    device->portNumber = port + 1;
+    device->speed = _getPortSpeed(port);
+
+    kprintInfo("Setting up %s device on port %i (portReg:%i)\n", _usbSpeedToString(device->speed), device->portNumber, port);
+
+    device->slotId = _enableDeviceSlot();
+    if (!device->slotId) {
+        kprintError("[XHCI] Failed to setup device\n");
+        delete device;
+        return;
+    }
+
+    kprintInfo("Device slotId: %i\n", device->slotId);
+    _createDeviceContext(device->slotId);
 }

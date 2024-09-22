@@ -7,6 +7,8 @@
 #include <paging/phys_addr_translation.h>
 #include <memory/kmemory.h>
 
+using physaddr_t = uint64_t;
+
 // Memory Alignment and Boundary Definitions
 #define XHCI_DEVICE_CONTEXT_INDEX_MAX_SIZE      2048
 #define XHCI_DEVICE_CONTEXT_MAX_SIZE            2048
@@ -53,39 +55,17 @@
 #define XHCI_SCRATCHPAD_BUFFER_ARRAY_ALIGNMENT   64
 #define XHCI_SCRATCHPAD_BUFFERS_ALIGNMENT        PAGE_SIZE
 
-template <typename T = void>
-struct XhciDma {
-    T*          virtualBase;
-    uint64_t    physicalBase;
-};
-
-template <typename T = void>
-static XhciDma<T> xhciAllocDma(size_t size, size_t alignment = 64, size_t boundary = PAGE_SIZE) {
-    // Allocate extra memory to ensure we can align the block within the boundary
-    size_t totalSize = size + boundary - 1;
-    void* memblock = kzmallocAligned(totalSize, alignment);
-
-    if (!memblock) {
-        while (1); // TO-DO: properly handle the error
-        return XhciDma<T> {
-            .virtualBase = nullptr,
-            .physicalBase = 0
-        };
-    }
-
-    // Align the memory block to the specified boundary
-    size_t alignedAddress = ((size_t)memblock + boundary - 1) & ~(boundary - 1);
-    void* aligned = (void*)alignedAddress;
-
-    // Mark the aligned memory block as uncacheable
-    paging::markPageUncacheable(aligned);
-
-    return XhciDma<T> {
-        .virtualBase = reinterpret_cast<T*>(aligned),
-        .physicalBase = reinterpret_cast<uint64_t>(__pa(aligned))
-    };
-}
-
 uint64_t xhciMapMmio(uint64_t pciBarAddress);
+
+void* allocXhciMemory(
+    size_t size,
+    size_t alignment = 64,
+    size_t boundary = PAGE_SIZE
+);
+
+#define physbase(vaddr) \
+    reinterpret_cast<physaddr_t>(\
+        __pa(reinterpret_cast<void*>(vaddr)) \
+    )
 
 #endif

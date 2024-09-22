@@ -582,6 +582,14 @@ struct XhciInputContext64 {
 };
 static_assert(sizeof(XhciInputContext64) == sizeof(XhciInputControlContext64) + sizeof(XhciDeviceContext64));
 
+struct XhciDevice {
+    uint8_t portRegSet; // Port index of the port register sets (0-based)
+    uint8_t portNumber; // Port number (1-based)
+    uint8_t speed;      // Speed of the port to which device is connected
+    uint8_t slotId;     // Slot index into device context base address array
+};
+static_assert(sizeof(XhciDevice) == 4);
+
 /*
 // xHci Spec Section 4.2 Host Controller Initialization (page 68)
 
@@ -701,6 +709,9 @@ private:
     void _configureOperationalRegisters();
     void _logUsbsts();
     void _logOperationalRegisters();
+    
+    uint8_t _getPortSpeed(uint8_t port);
+    const char* _usbSpeedToString(uint8_t speed);
 
     void _configureRuntimeRegisters();
 
@@ -723,6 +734,8 @@ private:
     // Reset a 0-indexed port number
     bool _resetPort(uint8_t portNum);
     uint8_t _enableDeviceSlot();
+
+    void _setupDevice(uint8_t port);
 
 private:
     // CAPLENGTH
