@@ -68,4 +68,9 @@ void* allocXhciMemory(
         __pa(reinterpret_cast<void*>(vaddr)) \
     )
 
+#define virtbase(paddr, T) \
+    reinterpret_cast<T*>(\
+        __va(reinterpret_cast<void*>(paddr)) \
+    )
+
 #endif
