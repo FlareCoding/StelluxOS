@@ -157,6 +157,8 @@ XhciTransferRing::XhciTransferRing(size_t maxTrbs, uint8_t doorbellId) {
         XHCI_TRANSFER_RING_SEGMENTS_BOUNDARY
     );
 
+    m_physicalBase = physbase(m_trbs);
+
     // Set the last TRB as a link TRB to point back to the first TRB
     m_trbs[m_maxTrbCount - 1].parameter = physbase(m_trbs);
     m_trbs[m_maxTrbCount - 1].control = (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | m_rcsBit;
