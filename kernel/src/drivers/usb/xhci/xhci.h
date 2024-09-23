@@ -137,6 +137,7 @@ private:
     void _createDeviceContext(uint8_t slotId);
 
     XhciCommandCompletionTrb_t* _sendCommand(XhciTrb_t* trb, uint32_t timeoutMs = 120);
+    XhciTransferCompletionTrb_t* _getTransferCompletionTrb();
 
     void _clearIrqFlags(uint8_t interrupter);
 
@@ -149,10 +150,12 @@ private:
     // Reset a 0-indexed port number
     bool _resetPort(uint8_t portNum);
     uint8_t _enableDeviceSlot();
+    void _configureDeviceInputContext(XhciDevice* device, uint16_t maxPacketSize);
 
     void _setupDevice(uint8_t port);
+    bool _addressDevice(XhciDevice* device, bool bsr);
 
-    void _configureDeviceInputContext(XhciDevice* device);
+    bool _getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* desc, uint32_t length);
 
 private:
     // CAPLENGTH

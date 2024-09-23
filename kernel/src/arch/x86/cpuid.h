@@ -60,6 +60,14 @@ static inline void readCpuidExtended(int code, uint32_t *a, uint32_t *d) {
     );
 }
 
+__PRIVILEGED_CODE
+static inline void readCpuidFull(int code, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d) {
+    __asm__ volatile("cpuid"
+        : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)  // Output operands
+        : "0"(code)                              // Input operand
+    );
+}
+
 // Returns whether or not 5-level page tables are supported
 __PRIVILEGED_CODE
 static inline int cpuid_isLa57Supported() {
@@ -120,6 +128,28 @@ static inline bool cpuid_isPATSupported() {
     uint32_t eax, edx;
     readCpuid(CPUID_FEATURES, &eax, &edx);
     return (edx & CPUID_FEAT_EDX_PAT) != 0;
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_isRunningUnderQEMU() {
+    uint32_t eax, ebx, ecx, edx;
+
+    // Call CPUID with leaf 0x40000000
+    readCpuidFull(0x40000000, &eax, &ebx, &ecx, &edx);
+
+    // The hypervisor signature is stored in ebx, ecx, and edx
+    char hypervisorSignature[13];
+    ((uint32_t *)hypervisorSignature)[0] = ebx;
+    ((uint32_t *)hypervisorSignature)[1] = ecx;
+    ((uint32_t *)hypervisorSignature)[2] = edx;
+    hypervisorSignature[12] = '\0';  // Null-terminate the string
+
+    // Check if the signature matches "TCGTCGTCGTCG" or "KVMKVMKVM\0\0\0"
+    if (memcmp(hypervisorSignature, (void*)"TCGTCGTCGTCG", 12) == 0 || memcmp(hypervisorSignature, (void*)"KVMKVMKVM\0\0\0", 12) == 0) {
+        return true;  // The system is running under QEMU or KVM
+    }
+
+    return false;  // Not running under QEMU/KVM
 }
 
 #endif

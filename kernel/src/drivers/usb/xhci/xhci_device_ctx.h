@@ -577,6 +577,24 @@ using XhciInputContext64 = XhciInputContext<64>;
 static_assert(sizeof(XhciInputContext32) == sizeof(XhciInputControlContext32) + sizeof(XhciDeviceContext32), "32-byte input context should be 1056 bytes");
 static_assert(sizeof(XhciInputContext64) == sizeof(XhciInputControlContext64) + sizeof(XhciDeviceContext64), "64-byte input context should be 2112 bytes");
 
+struct XhciDeviceDescriptor {
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint16_t bcdUsb;
+    uint8_t bDeviceClass;
+    uint8_t bDeviceSubClass;
+    uint8_t bDeviceProtocol;
+    uint8_t bMaxPacketSize0;
+    uint16_t idVendor;
+    uint16_t idProduct;
+    uint16_t bcdDevice;
+    uint8_t iManufacturer;
+    uint8_t iProduct;
+    uint8_t iSerialNumber;
+    uint8_t bNumConfigurations;
+};
+static_assert(sizeof(XhciDeviceDescriptor) == 18);
+
 class XhciDevice {
 public:
     XhciDevice() = default;
@@ -604,5 +622,10 @@ private:
     void* m_inputContext = nullptr;
     XhciTransferRing* m_controlEndpointTransferRing = nullptr;
 };
+
+void printXhciDeviceDescriptor(const XhciDeviceDescriptor *desc);
+
+const char* xhciSlotStateToString(uint8_t slotState);
+const char* xhciEndpointStateToString(uint8_t epState);
 
 #endif

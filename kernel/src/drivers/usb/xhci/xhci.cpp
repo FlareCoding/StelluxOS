@@ -5,6 +5,7 @@
 #include <memory/kmemory.h>
 #include <time/ktime.h>
 #include <arch/x86/ioapic.h>
+#include <arch/x86/cpuid.h>
 #include <interrupts/interrupts.h>
 #include <kprint.h>
 
@@ -362,6 +363,35 @@ XhciCommandCompletionTrb_t* XhciDriver::_sendCommand(XhciTrb_t* trb, uint32_t ti
     return completionTrb;
 }
 
+XhciTransferCompletionTrb_t* XhciDriver::_getTransferCompletionTrb() {
+    // Poll the event ring for the command completion event
+    kstl::vector<XhciTrb_t*> events;
+    if (m_eventRing->hasUnprocessedEvents()) {
+        m_eventRing->dequeueEvents(events);
+        _clearIrqFlags(0);
+    }
+
+    XhciTransferCompletionTrb_t* completionTrb = nullptr;
+    for (size_t i = 0; i < events.size(); ++i) {
+        if (events[i]->trbType == XHCI_TRB_TYPE_TRANSFER_EVENT) {
+            completionTrb = reinterpret_cast<XhciTransferCompletionTrb_t*>(events[i]);
+            break;
+        }
+    }
+
+    if (!completionTrb) {
+        kprintError("[*] Failed to find completion TRB for transfer\n");
+        return nullptr;
+    }
+
+    if (completionTrb->completionCode != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        kprintError("[*] Transfer TRB failed with error: %s\n", trbCompletionCodeToString(completionTrb->completionCode));
+        return nullptr;
+    }
+
+    return completionTrb;
+}
+
 void XhciDriver::_clearIrqFlags(uint8_t interrupter) {
     // Get the interrupter registers
     XhciInterrupterRegisters* interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
@@ -536,131 +566,7 @@ uint8_t XhciDriver::_enableDeviceSlot() {
     return completionTrb->slotId;
 }
 
-void XhciDriver::_setupDevice(uint8_t port) {
-    XhciDevice* device = new XhciDevice();
-    device->portRegSet = port;
-    device->portNumber = port + 1;
-    device->speed = _getPortSpeed(port);
-
-    kprintInfo("Setting up %s device on port %i (portReg:%i)\n", _usbSpeedToString(device->speed), device->portNumber, port);
-
-    device->slotId = _enableDeviceSlot();
-    if (!device->slotId) {
-        kprintError("[XHCI] Failed to setup device\n");
-        delete device;
-        return;
-    }
-
-    kprintInfo("Device slotId: %i\n", device->slotId);
-    _createDeviceContext(device->slotId);
-
-    // Allocate space for a command input context and transfer ring
-    device->allocateInputContext(m_64ByteContextSize);
-    device->allocateControlEndpointTransferRing();
-
-    // Configure the command input context
-    _configureDeviceInputContext(device);
-
-    // Construct the Address Device TRB
-    XhciAddressDeviceCommandTrb_t addressDeviceTrb;
-    zeromem(&addressDeviceTrb, sizeof(XhciAddressDeviceCommandTrb_t));
-    addressDeviceTrb.trbType = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
-    addressDeviceTrb.inputContextPhysicalBase = device->getInputContextPhysicalBase();
-    addressDeviceTrb.bsr = 1;
-    addressDeviceTrb.slotId = device->slotId;
-
-    // Send the Address Device command
-    XhciCommandCompletionTrb_t* completionTrb = _sendCommand((XhciTrb_t*)&addressDeviceTrb, 200);
-    if (!completionTrb) {
-        kprintError("[*] Failed to complete the first Device Address command!\n");
-        return;
-    }
-
-    if (m_64ByteContextSize) {
-        // Sanity-check the actual device context entry in DCBAA
-        XhciDeviceContext64* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext64);
-
-        kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n    trdp:0x%llx\n",
-            device->slotId, deviceContext->slotContext.deviceAddress, deviceContext->slotContext.slotState,
-            deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize,
-            deviceContext->controlEndpointContext.transferRingDequeuePtr
-        );
-    } else {
-        // Sanity-check the actual device context entry in DCBAA
-        XhciDeviceContext32* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext32);
-
-        kprint("    DeviceContext[slotId=%i] address: 0x%llx slotState: %i epSate: %i maxPacketSize: %i\n    trdp:0x%llx\n",
-            device->slotId, deviceContext->slotContext.deviceAddress, deviceContext->slotContext.slotState,
-            deviceContext->controlEndpointContext.endpointState, deviceContext->controlEndpointContext.maxPacketSize,
-            deviceContext->controlEndpointContext.transferRingDequeuePtr
-        );
-    }
-
-    // Buffer to hold the bytes received from GET_DESCRIPTOR command
-    uint8_t* descriptorBuffer = (uint8_t*)allocXhciMemory(64, 128, 64);
-
-    // Buffer to hold the bytes received from GET_DESCRIPTOR command
-    uint8_t* transferStatusBuffer = (uint8_t*)allocXhciMemory(64, 16, 16);
-
-    // Construct the Setup Stage TRB
-    XhciSetupStageTrb_t setupStageTrb;
-    zeromem(&setupStageTrb, sizeof(XhciSetupStageTrb_t));
-
-    setupStageTrb.trbType = XHCI_TRB_TYPE_SETUP_STAGE;
-    setupStageTrb.requestPacket.bRequestType = 0x80;
-    setupStageTrb.requestPacket.bRequest = 6;    // GET_DESCRIPTOR
-    setupStageTrb.requestPacket.wValue = 0x0100; // DEVICE
-    setupStageTrb.requestPacket.wIndex = 0;
-    setupStageTrb.requestPacket.wLength = 8;
-    setupStageTrb.trbTransferLength = 8;
-    setupStageTrb.interrupterTarget = 0;
-    setupStageTrb.trt = 3;
-    setupStageTrb.idt = 1;
-    setupStageTrb.ioc = 0;
-
-    // Construct the Data Stage TRB
-    XhciDataStageTrb_t dataStageTrb;
-    zeromem(&dataStageTrb, sizeof(XhciDataStageTrb_t));
-
-    dataStageTrb.trbType = XHCI_TRB_TYPE_DATA_STAGE;
-    dataStageTrb.trbTransferLength = 8;
-    dataStageTrb.tdSize = 0;
-    dataStageTrb.interrupterTarget = 0;
-    dataStageTrb.ent = 1;
-    dataStageTrb.chain = 1;
-    dataStageTrb.dir = 1;
-    dataStageTrb.dataBuffer = physbase(descriptorBuffer);
-
-    // Construct the first Event Data TRB
-    XhciEventDataTrb_t eventDataTrb;
-    zeromem(&eventDataTrb, sizeof(XhciEventDataTrb_t));
-
-    eventDataTrb.trbType = XHCI_TRB_TYPE_EVENT_DATA;
-    eventDataTrb.interrupterTarget = 0;
-    eventDataTrb.chain = 0;
-    eventDataTrb.ioc = 1;
-    eventDataTrb.eventData = physbase(transferStatusBuffer);
-
-    // Small delay period between ringing the
-    // doorbell and polling the event ring.
-    const uint32_t commandDelay = 400;
-
-    auto transferRing = device->getControlEndpointTransferRing();
-    transferRing->enqueue((XhciTrb_t*)&setupStageTrb);
-    transferRing->enqueue((XhciTrb_t*)&dataStageTrb);
-    transferRing->enqueue((XhciTrb_t*)&eventDataTrb);
-
-    kprint("[*] Ringing transfer ring doorbell: %i\n", transferRing->getDoorbellId());
-    kprintInfo("   transferRing - pa:0x%llx va:0x%llx\n", transferRing->getPhysicalBase(), transferRing->getVirtualBase());
-    m_doorbellManager->ringControlEndpointDoorbell(transferRing->getDoorbellId());
-
-    // Let the host controller process the command
-    msleep(commandDelay);
-
-    _logUsbsts();
-}
-
-void XhciDriver::_configureDeviceInputContext(XhciDevice* device) {
+void XhciDriver::_configureDeviceInputContext(XhciDevice* device, uint16_t maxPacketSize) {
     XhciInputControlContext32* inputControlContext = device->getInputControlContext(m_64ByteContextSize);
     XhciSlotContext32* slotContext = device->getInputSlotContext(m_64ByteContextSize);
     XhciEndpointContext32* controlEndpointContext = device->getInputControlEndpointContext(m_64ByteContextSize);
@@ -681,10 +587,232 @@ void XhciDriver::_configureDeviceInputContext(XhciDevice* device) {
     controlEndpointContext->endpointType = XHCI_ENDPOINT_TYPE_CONTROL;
     controlEndpointContext->interval = 0;
     controlEndpointContext->errorCount = 3;
-    controlEndpointContext->maxPacketSize = _getMaxInitialPacketSize(device->speed);
+    controlEndpointContext->maxPacketSize = maxPacketSize;
     controlEndpointContext->transferRingDequeuePtr = device->getControlEndpointTransferRing()->getPhysicalBase();
     controlEndpointContext->dcs = device->getControlEndpointTransferRing()->getCycleBit();
     controlEndpointContext->maxEsitPayloadLo = 0;
     controlEndpointContext->maxEsitPayloadHi = 0;
     controlEndpointContext->averageTrbLength = 8;
+}
+
+void XhciDriver::_setupDevice(uint8_t port) {
+    XhciDevice* device = new XhciDevice();
+    device->portRegSet = port;
+    device->portNumber = port + 1;
+    device->speed = _getPortSpeed(port);
+
+    // Calculate the initial max packet size based on device speed
+    uint16_t maxPacketSize = _getMaxInitialPacketSize(device->speed);
+
+    kprintInfo("Setting up %s device on port %i (portReg:%i)\n", _usbSpeedToString(device->speed), device->portNumber, port);
+
+    device->slotId = _enableDeviceSlot();
+    if (!device->slotId) {
+        kprintError("[XHCI] Failed to setup device\n");
+        delete device;
+        return;
+    }
+
+    kprintInfo("Device slotId: %i\n", device->slotId);
+    _createDeviceContext(device->slotId);
+
+    // Allocate space for a command input context and transfer ring
+    device->allocateInputContext(m_64ByteContextSize);
+    device->allocateControlEndpointTransferRing();
+
+    // Configure the command input context
+    _configureDeviceInputContext(device, maxPacketSize);
+
+    // First address device with BSR=1, essentially blocking the SET_ADDRESS request,
+    // but still enables the control endpoint which we can use to get the device descriptor.
+    // Some legacy devices require their desciptor to be read before sending them a SET_ADDRESS command.
+    if (!_addressDevice(device, true)) {
+        kprintError("[XHCI] Failed to setup device\n");
+        return;
+    }
+
+    XhciDeviceDescriptor deviceDescriptor;
+    zeromem(&deviceDescriptor, sizeof(XhciDeviceDescriptor));
+
+    if (!_getDeviceDescriptor(device, &deviceDescriptor, 8)) {
+        kprintError("[XHCI] Failed to get device descriptor\n");
+        return;
+    }
+
+    printXhciDeviceDescriptor(&deviceDescriptor);
+
+    // Reset the port again
+    _resetPort(device->portRegSet);
+
+    // If the read max device packet size is different
+    // from the initially calculated one, update it.
+    if (deviceDescriptor.bMaxPacketSize0 != maxPacketSize) {
+        // Update max packet size with the value from the device descriptor
+        maxPacketSize = deviceDescriptor.bMaxPacketSize0;
+
+        // Update the device input context
+        _configureDeviceInputContext(device, maxPacketSize);
+    }
+
+    // Send the address device command again with BSR=0 this time
+    _addressDevice(device, false);
+
+    // // Read the full device descriptor
+    // if (!_getDeviceDescriptor(device, &deviceDescriptor, deviceDescriptor.bLength)) {
+    //     kprintError("[XHCI] Failed to get full device descriptor\n");
+    //     return;
+    // }
+
+    // printXhciDeviceDescriptor(&deviceDescriptor);
+}
+
+bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
+    // Construct the Address Device TRB
+    XhciAddressDeviceCommandTrb_t addressDeviceTrb;
+    zeromem(&addressDeviceTrb, sizeof(XhciAddressDeviceCommandTrb_t));
+    addressDeviceTrb.trbType = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
+    addressDeviceTrb.inputContextPhysicalBase = device->getInputContextPhysicalBase();
+    addressDeviceTrb.bsr = bsr ? 1 : 0;
+    addressDeviceTrb.slotId = device->slotId;
+
+    // Send the Address Device command
+    XhciCommandCompletionTrb_t* completionTrb = _sendCommand((XhciTrb_t*)&addressDeviceTrb, 200);
+    if (!completionTrb) {
+        kprintError("[*] Failed to address device with BSR=%i\n", (int)bsr);
+        return false;
+    }
+
+    if (m_64ByteContextSize) {
+        // Sanity-check the actual device context entry in DCBAA
+        XhciDeviceContext64* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext64);
+
+        kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epSate:%s maxPacketSize:%i\n",
+            device->slotId, deviceContext->slotContext.deviceAddress,
+            xhciSlotStateToString(deviceContext->slotContext.slotState),
+            xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),
+            deviceContext->controlEndpointContext.maxPacketSize
+        );
+    } else {
+        // Sanity-check the actual device context entry in DCBAA
+        XhciDeviceContext32* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext32);
+
+        kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epSate:%s maxPacketSize:%i\n",
+            device->slotId, deviceContext->slotContext.deviceAddress,
+            xhciSlotStateToString(deviceContext->slotContext.slotState),
+            xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),
+            deviceContext->controlEndpointContext.maxPacketSize
+        );
+    }
+
+    return true;
+}
+
+bool XhciDriver::_getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* desc, uint32_t length) {
+    XhciTransferRing* transferRing = device->getControlEndpointTransferRing();
+
+    uint32_t* transferStatusBuffer = (uint32_t*)allocXhciMemory(sizeof(uint32_t), 16, 16);
+    uint8_t* deviceDescriptorBuffer = (uint8_t*)allocXhciMemory(256, 64, 64);
+    
+    XhciSetupStageTrb_t setupStage;
+    zeromem(&setupStage, sizeof(XhciTrb_t));
+    setupStage.trbType = XHCI_TRB_TYPE_SETUP_STAGE;
+    setupStage.requestPacket.bRequestType = 0x80;
+    setupStage.requestPacket.bRequest = 6;    // GET_DESCRIPTOR
+    setupStage.requestPacket.wValue = 0x0100; // DEVICE
+    setupStage.requestPacket.wIndex = 0;
+    setupStage.requestPacket.wLength = length;
+    setupStage.trbTransferLength = length;
+    setupStage.interrupterTarget = 0;
+    setupStage.trt = 3;
+    setupStage.idt = 1;
+    setupStage.ioc = 0;
+
+    XhciDataStageTrb_t dataStage;
+    zeromem(&dataStage, sizeof(XhciTrb_t));
+    dataStage.trbType = XHCI_TRB_TYPE_DATA_STAGE;
+    dataStage.dataBuffer = physbase(deviceDescriptorBuffer);
+    dataStage.trbTransferLength = length;
+    dataStage.tdSize = 0;
+    dataStage.interrupterTarget = 0;
+    dataStage.dir = 1;
+    dataStage.chain = 1;
+    dataStage.ioc = 0;
+    dataStage.idt = 0;
+
+    // Clear the status buffer
+    *transferStatusBuffer = 0;
+
+    XhciEventDataTrb_t eventDataFirst;
+    zeromem(&eventDataFirst, sizeof(XhciTrb_t));
+    eventDataFirst.trbType = XHCI_TRB_TYPE_EVENT_DATA;
+    eventDataFirst.data = physbase(transferStatusBuffer);
+    eventDataFirst.interrupterTarget = 0;
+    eventDataFirst.chain = 0;
+    eventDataFirst.ioc = 1;
+
+    transferRing->enqueue((XhciTrb_t*)&setupStage);
+    transferRing->enqueue((XhciTrb_t*)&dataStage);
+    transferRing->enqueue((XhciTrb_t*)&eventDataFirst);
+    
+    // QEMU doesn't quite handle SETUP/DATA/STATUS transactions correctly.
+    // It will wait for the STATUS TRB before it completes the transfer.
+    // Technically, you need to check for a good transfer before you send the
+    //  STATUS TRB.  However, since QEMU doesn't update the status until after
+    //  the STATUS TRB, waiting here will not complete a successful transfer.
+    //  Bochs and real hardware handles this correctly, however QEMU does not.
+    // If you are using QEMU, do not ring the doorbell here.  Ring the doorbell
+    //  *after* you place the STATUS TRB on the ring.
+    // (See bug report: https://bugs.launchpad.net/qemu/+bug/1859378 )
+    if (!cpuid_isRunningUnderQEMU()) {
+        m_doorbellManager->ringControlEndpointDoorbell(transferRing->getDoorbellId());
+        msleep(100);
+
+        auto completionTrb = _getTransferCompletionTrb();
+        if (!completionTrb) {
+            return false;
+        }
+
+        kprintInfo(
+            "Transfer Status: %s  Length: %i\n",
+            trbCompletionCodeToString(completionTrb->completionCode),
+            completionTrb->transferLength
+        );
+    }
+
+    XhciStatusStageTrb_t statusStage;
+    zeromem(&statusStage, sizeof(XhciTrb_t));
+    statusStage.trbType = XHCI_TRB_TYPE_STATUS_STAGE;
+    statusStage.interrupterTarget = 0;
+    statusStage.chain = 1;
+    statusStage.ioc = 0;
+    statusStage.dir = 0;
+
+    // Clear the status buffer
+    *transferStatusBuffer = 0;
+
+    XhciEventDataTrb_t eventDataSecond;
+    zeromem(&eventDataSecond, sizeof(XhciTrb_t));
+    eventDataSecond.trbType = XHCI_TRB_TYPE_EVENT_DATA;
+    eventDataSecond.ioc = 1;
+
+    transferRing->enqueue((XhciTrb_t*)&statusStage);
+    transferRing->enqueue((XhciTrb_t*)&eventDataSecond);
+    m_doorbellManager->ringControlEndpointDoorbell(transferRing->getDoorbellId());
+    msleep(100);
+
+    auto completionTrb = _getTransferCompletionTrb();
+    if (!completionTrb) {
+        return false;
+    }
+
+    kprintInfo(
+        "Transfer Status: %s  Length: %i\n",
+        trbCompletionCodeToString(completionTrb->completionCode),
+        completionTrb->transferLength
+    );
+
+    // Copy the descriptor into the requested user buffer location
+    memcpy(desc, deviceDescriptorBuffer, length);
+
+    return true;
 }

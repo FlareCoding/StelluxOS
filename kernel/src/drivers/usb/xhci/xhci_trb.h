@@ -70,6 +70,24 @@ typedef struct XhciCommandCompletionRequestBlock {
 } XhciCommandCompletionTrb_t;
 static_assert(sizeof(XhciCommandCompletionTrb_t) == sizeof(uint32_t) * 4);
 
+typedef struct XhciTransferCompletionRequestBlock {
+    uint64_t transferTrbPointer;
+    struct {
+        uint32_t transferLength : 24;
+        uint32_t completionCode : 8;
+    };
+    struct {
+        uint32_t cycleBit   : 1;
+        uint32_t rsvd1      : 1;
+        uint32_t ed         : 1;
+        uint32_t rsvd2      : 7;
+        uint32_t trbType    : 6;
+        uint32_t vfid       : 8;
+        uint32_t slotId     : 8;
+    };
+} XhciTransferCompletionTrb_t;
+static_assert(sizeof(XhciTransferCompletionTrb_t) == sizeof(uint32_t) * 4);
+
 typedef struct XhciSetupDataStageCompletionRequestBlock {
     uint64_t commandTrbPointer;
     struct {
@@ -450,7 +468,7 @@ typedef struct XhciEventDataTransferRequestBlock {
         Event Data Hi and Lo. This field represents the 64-bit value that shall be copied to
         the TRB Pointer field (Parameter Component) of the Transfer Event TRB.
     */
-    uint64_t eventData;
+    uint64_t data;
 
     struct {
         // Reserved
