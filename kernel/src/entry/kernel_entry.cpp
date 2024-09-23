@@ -22,7 +22,6 @@
 #include <acpi/shutdown.h>
 #include <time/ktime.h>
 #include <kprint.h>
-// #include <drivers/usb/oldxhci.h>
 #include <drivers/usb/xhci/xhci.h>
 
 #ifdef KRUN_UNIT_TESTS
@@ -130,6 +129,7 @@ void _kuser_entry() {
         cpuid_readVendorId(vendorName);
         kprintInfo("===== Stellux Kernel =====\n");
         kprintInfo("CPU Vendor: %s\n", vendorName);
+        kprintInfo("VM detected: %s\n", cpuid_isRunningUnderQEMU() ? "true" : "false");
         kprintWarn("5-level paging support: %s\n\n", cpuid_isLa57Supported() ? "enabled" : "disabled");
         debugPat(readPatMsr());
     });
@@ -201,15 +201,6 @@ void _kuser_entry() {
             RUN_ELEVATED({
                 auto xhciDriver = kstl::SharedPtr<XhciDriver>(new XhciDriver());
                 xhciDriver->init(xhciControllerPciDeviceInfo);
-                
-                // auto& xhciDriver = drivers::XhciDriver::get();
-                // bool status = xhciDriver.init(xhciControllerPciDeviceInfo);
-
-                // if (!status) {
-                //     kprintError("[-] Failed to initialize xHCI controller\n\n");
-                // } else {
-                //     kprintInfo("[*] xHCI controller initialized\n\n");
-                // }
             });
         }
     }
