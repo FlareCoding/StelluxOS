@@ -87,6 +87,35 @@ enum PciCapability {
     PciCapabilityInvalidCap = 31
 };
 
+struct PciMsiXCapability {
+    uint16_t messageControl;
+    uint32_t tableOffset;
+    uint32_t pbaOffset; // PBA: Pending Bit Array
+} __attribute__((packed));
+
+struct MsiXTableEntry {
+    uint64_t messageAddress;
+    uint32_t messageData;
+    uint32_t vectorControl;
+} __attribute__((packed));
+
+struct PciMsiCapability {
+    uint16_t messageControl;
+    uint32_t messageAddress;
+    uint16_t messageData;
+} __attribute__((packed));
+
+struct PciDeviceInfo {
+    PciDeviceHeader headerInfo;
+    uint64_t        functionAddress;
+    uint64_t        barAddress;
+    uint8_t         bus;
+    uint8_t         device;
+    uint8_t         function;
+    uint8_t         padding;
+    uint32_t        capabilities;
+};
+
 const char* getPciDeviceType(uint8_t classCode);
 const char* getPciVendorName(uint16_t vendorID);
 const char* getPciDeviceName(uint16_t vendorID, uint16_t deviceID);
@@ -123,5 +152,15 @@ void pciConfigWrite16(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, u
 
 __PRIVILEGED_CODE
 void pciConfigWrite32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value);
+
+__PRIVILEGED_CODE
+PciMsiXCapability readMsixCapability(const uint8_t bus, const uint8_t device, const uint8_t function);
+
+__PRIVILEGED_CODE
+PciMsiCapability readMsiCapability(const uint8_t bus, const uint8_t device, const uint8_t function);
+
+
+bool isMsixCapabilityEnabled(PciDeviceInfo& info);
+bool isMsiCapabilityEnabled(PciDeviceInfo& info);
 
 #endif

@@ -1,6 +1,7 @@
 #include "pci.h"
 #include <paging/page.h>
 #include <ports/ports.h>
+#include <kelevate/kelevate.h>
 #include <kprint.h>
 
 const char* g_pciDeviceClasses[] {
@@ -344,4 +345,66 @@ __PRIVILEGED_CODE
 void pciConfigWrite32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset, uint32_t value) {
     outl(PCI_CONFIG_ADDRESS, _getPciConfigAddress(bus, slot, func, offset));
     outl(PCI_CONFIG_DATA, value);
+}
+
+__PRIVILEGED_CODE
+PciMsiXCapability readMsixCapability(const uint8_t bus, const uint8_t device, const uint8_t function) {
+    PciMsiXCapability msixCap;
+    uint8_t capPointer = pciConfigRead8(bus, device, function, offsetof(PciDeviceHeader, capabilitiesPtr));
+
+    while (capPointer != 0 && capPointer != 0xFF) {
+        uint8_t capId = pciConfigRead8(bus, device, function, capPointer);
+        if (capId == PCI_CAPABILITY_ID_MSI_X) {
+            // Read the MSI-X capability structure
+            msixCap.messageControl = pciConfigRead16(bus, device, function, capPointer + offsetof(PciMsiXCapability, messageControl));
+            msixCap.tableOffset = pciConfigRead32(bus, device, function, capPointer + offsetof(PciMsiXCapability, tableOffset));
+            msixCap.pbaOffset = pciConfigRead32(bus, device, function, capPointer + offsetof(PciMsiXCapability, pbaOffset));
+            break;
+        }
+        capPointer = pciConfigRead8(bus, device, function, capPointer + 1);
+    }
+
+    return msixCap;
+}
+
+__PRIVILEGED_CODE
+PciMsiCapability readMsiCapability(const uint8_t bus, const uint8_t device, const uint8_t function) {
+    PciMsiCapability msiCap;
+    uint8_t capPointer = pciConfigRead8(bus, device, function, offsetof(PciDeviceHeader, capabilitiesPtr));
+
+    while (capPointer != 0 && capPointer != 0xFF) {
+        uint8_t capId = pciConfigRead8(bus, device, function, capPointer);
+        if (capId == PCI_CAPABILITY_ID_MSI) {
+            // Read the MSI capability structure
+            msiCap.messageControl = pciConfigRead16(bus, device, function, capPointer + offsetof(PciMsiCapability, messageControl));
+            msiCap.messageAddress = pciConfigRead32(bus, device, function, capPointer + offsetof(PciMsiCapability, messageAddress));
+            msiCap.messageData = pciConfigRead16(bus, device, function, capPointer + offsetof(PciMsiCapability, messageData));
+            break;
+        }
+        capPointer = pciConfigRead8(bus, device, function, capPointer + 1);
+    }
+
+    return msiCap;
+}
+
+bool isMsixCapabilityEnabled(PciDeviceInfo& info) {
+    // MSI-X is supported, read MSI-X capability
+    PciMsiXCapability msixCap;
+    RUN_ELEVATED({
+        msixCap = readMsixCapability(info.bus, info.device, info.function);
+    });
+    
+    // Check if MSI-X is enabled
+    return static_cast<bool>((msixCap.messageControl & (1 << 15)));
+}
+
+bool isMsiCapabilityEnabled(PciDeviceInfo& info) {
+    // MSI is supported, read MSI capability
+    PciMsiCapability msiCap;
+    RUN_ELEVATED({
+        msiCap = readMsiCapability(info.bus, info.device, info.function);
+    });
+    
+    // Check if MSI is enabled
+    return static_cast<bool>((msiCap.messageControl & (1 << 0)));
 }

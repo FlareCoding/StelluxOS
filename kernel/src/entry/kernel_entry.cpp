@@ -188,13 +188,11 @@ void _kuser_entry() {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
             uint8_t irqLine = xhciControllerPciDeviceInfo.headerInfo.interruptLine;
 
-            RUN_ELEVATED({
-                pciDeviceTable->checkInterruptMechanism(
-                    xhciControllerPciDeviceInfo.bus,
-                    xhciControllerPciDeviceInfo.device,
-                    xhciControllerPciDeviceInfo.function
-                );
-            });
+            if (isMsixCapabilityEnabled(xhciControllerPciDeviceInfo)) {
+                kuPrint("MSI-X irq are enabled!\n");
+            } else if (isMsiCapabilityEnabled(xhciControllerPciDeviceInfo)) {
+                kuPrint("MSI irq are enabled!\n");
+            }
 
             registerIrqHandler(_irq_handler_xhci, irqLine, IRQ14, BSP_CPU_ID);
 
