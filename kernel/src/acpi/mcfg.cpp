@@ -2,6 +2,7 @@
 #include <paging/page.h>
 #include <paging/phys_addr_translation.h>
 #include <interrupts/interrupts.h>
+#include <kprint.h>
 
 Mcfg::Mcfg(McfgHeader* table) {
     m_base = (McfgHeader*)__va(table);
@@ -238,4 +239,44 @@ PciMsiCapability _readMsiCapability(const uint8_t bus, const uint8_t device, con
     }
 
     return msiCap;
+}
+
+// Function to detect the interrupt mechanism (MSI, MSI-X, or Legacy INTx)
+__PRIVILEGED_CODE
+void Mcfg::checkInterruptMechanism(uint8_t bus, uint8_t device, uint8_t function) {
+    uint32_t capabilities = _readCapabilities(bus, device, function);
+    
+    if (capabilities & (1u << PciCapabilityMsiX)) {
+        // MSI-X is supported, read MSI-X capability
+        uint32_t capOffset = 0;
+        PciMsiXCapability msixCap = _readMsixCapability(bus, device, function, capOffset);
+        
+        // Check if MSI-X is enabled
+        if (msixCap.messageControl & (1 << 15)) {
+            kuPrint("MSI-X is enabled\n");
+            return;
+        }
+    }
+
+    if (capabilities & (1u << PciCapabilityMsi)) {
+        // MSI is supported, read MSI capability
+        uint32_t capOffset = 0;
+        PciMsiCapability msiCap = _readMsiCapability(bus, device, function, capOffset);
+        
+        // Check if MSI is enabled
+        if (msiCap.messageControl & (1 << 0)) {
+            kuPrint("MSI is enabled\n");
+            return;
+        }
+    }
+
+    // If neither MSI nor MSI-X is enabled, fall back to legacy INTx
+    uint8_t interruptLine = pciConfigRead8(bus, device, function, 11) & 0xFF;
+    if (interruptLine != 0xFF) {
+        kuPrint("Legacy INTx interrupt is being used\n");
+        return;
+    }
+
+    kuPrint("No valid interrupt mechanism found\n");
+    return;
 }

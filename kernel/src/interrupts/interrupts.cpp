@@ -94,8 +94,13 @@ DEFINE_INT_HANDLER(_irq_handler_schedule) {
     sched.__schedule(frame);
 }
 
+DEFINE_INT_HANDLER(_irq_handler_xhci) {
+    __unused frame;
+    kprint("Xhci Event Detected!\n");
+}
+
 DEFINE_INT_HANDLER(_irq_handler_keyboard) {
-    (void)frame;
+    __unused frame;
 
     Apic::getLocalApic()->completeIrq();
     uint8_t scancode = inByte(0x60);
