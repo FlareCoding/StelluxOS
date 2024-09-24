@@ -164,19 +164,8 @@ void _kuser_entry() {
     // Start the kernel-wide APIC periodic timer
     KernelTimer::startApicPeriodicTimer();
 
-    // Initialize IOAPIC
-    if (acpiController.hasApicTable()) {
-        kstl::SharedPtr<IoApic>& ioapic = acpiController.getApicTable()->getIoApic(0);
-
-        // Enable keyboard IRQ
-        IoApic::RedirectionEntry entry;
-        memset(&entry, 0, sizeof(IoApic::RedirectionEntry));
-
-        uint8_t ioapicEntryNo = 1;
-        entry.vector = IRQ1;
-        entry.destination = BSP_CPU_ID;
-        ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
-    }
+    // Register keyboard irq
+    registerIrqHandler(_irq_handler_keyboard, 1, IRQ1, BSP_CPU_ID);
     
     // Bring up all available processor cores
     //initializeApCores();
@@ -197,6 +186,17 @@ void _kuser_entry() {
         size_t idx = pciDeviceTable->findXhciController();
         if (idx != kstl::npos) {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
+            uint8_t irqLine = xhciControllerPciDeviceInfo.headerInfo.interruptLine;
+
+            RUN_ELEVATED({
+                pciDeviceTable->checkInterruptMechanism(
+                    xhciControllerPciDeviceInfo.bus,
+                    xhciControllerPciDeviceInfo.device,
+                    xhciControllerPciDeviceInfo.function
+                );
+            });
+
+            registerIrqHandler(_irq_handler_xhci, irqLine, IRQ14, BSP_CPU_ID);
 
             RUN_ELEVATED({
                 auto xhciDriver = kstl::SharedPtr<XhciDriver>(new XhciDriver());

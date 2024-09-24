@@ -40,9 +40,21 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
         }
     }
     kprint("\n");
+    _clearIrqFlags(0);
 
     // DEBUG - setup device at port 4
-    _setupDevice(4);
+    //_setupDevice(4);
+    
+    sleep(1);
+    kprint("Sending test TRB\n");
+
+    XhciTrb_t testTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+    _sendCommand(&testTrb);
+
+    sleep(1);
+    kprint("Sending another test TRB\n");
+
+    _sendCommand(&testTrb);
 
     // const uint8_t testPort = 4; // TEST USB DEVICE
 

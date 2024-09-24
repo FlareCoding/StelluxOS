@@ -1,6 +1,8 @@
 #include "idt.h"
 #include <memory/kmemory.h>
 #include "panic.h"
+#include <arch/x86/ioapic.h>
+#include <acpi/acpi_controller.h>
 #include <kprint.h>
 
 EXTERN_C void __asm_exc_handler_div();
@@ -66,7 +68,7 @@ static_assert(sizeof(InterruptExceptionHandlers) == 15 * sizeof(InterruptHandler
 
 struct InterruptIrqHandlers {
     InterruptHandler_t timerIrq;
-    InterruptHandler_t ps2KeyboardIrq;
+    InterruptHandler_t irq1;
     InterruptHandler_t irq2;
     InterruptHandler_t irq3;
     InterruptHandler_t irq4;
@@ -80,7 +82,7 @@ struct InterruptIrqHandlers {
     InterruptHandler_t irq12;
     InterruptHandler_t irq13;
     InterruptHandler_t irq14;
-    InterruptHandler_t schedIrq;
+    InterruptHandler_t irq15;
 };
 static_assert(sizeof(InterruptIrqHandlers) == 16 * sizeof(InterruptHandler_t));
 
@@ -104,7 +106,7 @@ InterruptExceptionHandlers g_interruptExceptionHandlers = {
 
 InterruptIrqHandlers g_interruptIrqHandlers = {
     .timerIrq = _irq_handler_timer,
-    .ps2KeyboardIrq = _irq_handler_keyboard,
+    .irq1 = 0,
     .irq2 = 0,
     .irq3 = 0,
     .irq4 = 0,
@@ -118,7 +120,7 @@ InterruptIrqHandlers g_interruptIrqHandlers = {
     .irq12 = 0,
     .irq13 = 0,
     .irq14 = 0,
-    .schedIrq = _irq_handler_schedule,
+    .irq15 = _irq_handler_schedule,
 };
 
 IdtDescriptor g_kernelIdtDescriptor = {
@@ -219,4 +221,29 @@ __PRIVILEGED_CODE
 void loadIdtr() {
     // Load the IDT
     __asm__("lidt %0" : : "m"(g_kernelIdtDescriptor));
+}
+
+bool registerIrqHandler(InterruptHandler_t handler, uint8_t intrLine, uint8_t irqVector, uint8_t cpu) {
+    uint8_t irqArrayIdx = irqVector - IRQ0;
+    InterruptHandler_t* handlers = (InterruptHandler_t*)&g_interruptIrqHandlers;
+    if (handlers[irqArrayIdx] != nullptr) {
+        kuPrint("[WARN] registerIrqHandler(): IRQ%i handler already exists!\n", irqArrayIdx);
+        return false;
+    }
+
+    // Set the handler pointer
+    handlers[irqArrayIdx] = handler;
+
+    auto& acpiController = AcpiController::get();
+    kstl::SharedPtr<IoApic>& ioapic = acpiController.getApicTable()->getIoApic(0);
+
+    IoApic::RedirectionEntry entry;
+    zeromem(&entry, sizeof(IoApic::RedirectionEntry));
+
+    uint8_t ioapicEntryNo = intrLine;
+    entry.vector = irqVector;
+    entry.destination = cpu;
+    ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
+
+    return true;
 }

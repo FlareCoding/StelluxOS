@@ -55,6 +55,8 @@ public:
     size_t findXhciController();
     size_t findEhciController();
 
+    __PRIVILEGED_CODE void checkInterruptMechanism(uint8_t bus, uint8_t device, uint8_t function);
+
 private:
     McfgHeader* m_base;
     kstl::vector<PciDeviceInfo> m_devices;
