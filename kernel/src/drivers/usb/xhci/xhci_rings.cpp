@@ -100,6 +100,9 @@ void XhciEventRing::dequeueEvents(kstl::vector<XhciTrb_t*>& receivedEventTrbs) {
 
     // Update the ERDP register
     _updateErdpInterrupterRegister();
+
+    // Clear the EHB (Event Handler Busy) bit
+    m_interrupterRegs->erdp |= XHCI_ERDP_EHB;
 }
 
 void XhciEventRing::flushUnprocessedEvents() {
@@ -110,6 +113,9 @@ void XhciEventRing::flushUnprocessedEvents() {
 
     // Update the ERDP register
     _updateErdpInterrupterRegister();
+
+    // Clear the EHB (Event Handler Busy) bit
+    m_interrupterRegs->erdp |= XHCI_ERDP_EHB;
 }
 
 void XhciEventRing::_updateErdpInterrupterRegister() {

@@ -8,6 +8,7 @@
 #include <ports/serial.h>
 #include "panic.h"
 #include <sync.h>
+#include <drivers/usb/xhci/xhci.h>
 
 #define PF_PRESENT  0x1  // Bit 0
 #define PF_WRITE    0x2  // Bit 1
@@ -96,7 +97,15 @@ DEFINE_INT_HANDLER(_irq_handler_schedule) {
 
 DEFINE_INT_HANDLER(_irq_handler_xhci) {
     __unused frame;
-    kprint("Xhci Event Detected!\n");
+    auto& xhc = XhciDriver::get();
+
+    xhc.processEvents();
+    xhc.acknowledgeIrq(0);
+
+    Apic::getLocalApic()->completeIrq();
+
+
+    kprint("Xhci Event Handled!\n");
 }
 
 DEFINE_INT_HANDLER(_irq_handler_keyboard) {

@@ -223,7 +223,7 @@ void loadIdtr() {
     __asm__("lidt %0" : : "m"(g_kernelIdtDescriptor));
 }
 
-bool registerIrqHandler(InterruptHandler_t handler, uint8_t intrLine, uint8_t irqVector, uint8_t cpu) {
+bool registerIrqHandler(InterruptHandler_t handler, uint8_t intrLine, uint8_t irqVector, uint8_t levelTriggered, uint8_t cpu) {
     uint8_t irqArrayIdx = irqVector - IRQ0;
     InterruptHandler_t* handlers = (InterruptHandler_t*)&g_interruptIrqHandlers;
     if (handlers[irqArrayIdx] != nullptr) {
@@ -243,6 +243,7 @@ bool registerIrqHandler(InterruptHandler_t handler, uint8_t intrLine, uint8_t ir
     uint8_t ioapicEntryNo = intrLine;
     entry.vector = irqVector;
     entry.destination = cpu;
+    entry.triggerMode = levelTriggered;
     ioapic->writeRedirectionEntry(ioapicEntryNo, &entry);
 
     return true;

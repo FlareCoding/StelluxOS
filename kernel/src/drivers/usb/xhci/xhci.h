@@ -103,10 +103,17 @@ the Event Ring registers and their initialization.
 */
 class XhciDriver {
 public:
+    static XhciDriver& get();
+
     XhciDriver() = default;
     ~XhciDriver() = default;
 
     bool init(PciDeviceInfo& deviceInfo);
+
+    void processEvents();
+    void acknowledgeIrq(uint8_t interrupter);
+
+    void logUsbsts();
 
 private:
     uint64_t m_xhcBase;
@@ -120,7 +127,6 @@ private:
     void _parseExtendedCapabilityRegisters();
 
     void _configureOperationalRegisters();
-    void _logUsbsts();
     void _logOperationalRegisters();
     
     uint8_t _getPortSpeed(uint8_t port);
@@ -138,8 +144,6 @@ private:
 
     XhciCommandCompletionTrb_t* _sendCommand(XhciTrb_t* trb, uint32_t timeoutMs = 120);
     XhciTransferCompletionTrb_t* _getTransferCompletionTrb();
-
-    void _clearIrqFlags(uint8_t interrupter);
 
     uint16_t _getMaxInitialPacketSize(uint8_t portSpeed);
 
