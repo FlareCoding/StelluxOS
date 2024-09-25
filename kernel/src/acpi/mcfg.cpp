@@ -76,7 +76,7 @@ void Mcfg::_enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
     info.bus = (deviceAddress >> 20) & 0xFF;
     info.device = (deviceAddress >> 15) & 0x1F;
     info.function = (uint8_t)function;
-    info.capabilities = _readCapabilities(info.bus, info.device, info.function);
+    info.capabilities = _readCapabilities(info.bus, info.device, info.function, &info.msiCapPtr, &info.msixCapPtr);
 
     m_devices.pushBack(info);
 }
@@ -116,7 +116,7 @@ void Mcfg::_enumeratePciBus(uint64_t baseAddress, uint64_t bus) {
 }
 
 __PRIVILEGED_CODE
-uint32_t Mcfg::_readCapabilities(uint8_t bus, uint8_t device, uint8_t function) {
+uint32_t Mcfg::_readCapabilities(uint8_t bus, uint8_t device, uint8_t function, uint8_t* msiCapPtr, uint8_t* msixCapPtr) {
     uint32_t capabilities;
 
     uint8_t capPointer = pciConfigRead8(bus, device, function, 0x34);
@@ -139,6 +139,7 @@ uint32_t Mcfg::_readCapabilities(uint8_t bus, uint8_t device, uint8_t function) 
                 cap = PciCapabilitySlotId;
                 break;
             case PCI_CAPABILITY_ID_MSI: 
+                *msiCapPtr = capPointer;
                 cap = PciCapabilityMsi;
                 break;
             case PCI_CAPABILITY_ID_COMPACTPCI_HS: 
@@ -175,6 +176,7 @@ uint32_t Mcfg::_readCapabilities(uint8_t bus, uint8_t device, uint8_t function) 
                 cap = PciCapabilityPciExpress;
                 break;
             case PCI_CAPABILITY_ID_MSI_X: 
+                *msixCapPtr = capPointer;
                 cap = PciCapabilityMsiX;
                 break;
             case PCI_CAPABILITY_ID_SATA_DATA_IDX: 

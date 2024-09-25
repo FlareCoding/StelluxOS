@@ -716,6 +716,15 @@ Interrupter is prohibited from generating interrupts.
 #define XHCI_IMAN_INTERRUPT_ENABLE (1 << 1)
 
 /*
+// xHci Spec Section 5.5.2.3.3 Event Ring Dequeue Pointer (ERDP) (page 428)
+
+Event Handler Busy (EHB) - RW1C. Default '0'. This flag shall be set to '1' when the IP bit is set
+to '1' and cleared to '0' by software when the Dequeue Pointer register is written. Refer to
+section 4.17.2 for more information.
+*/
+#define XHCI_ERDP_EHB (1 << 3)
+
+/*
 // xHci Spec Section 6.4.6 TRB Types Table 6-91: TRB Type Definitions (page 469)
 Allowed TRB Types
 -----------------

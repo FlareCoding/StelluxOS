@@ -165,7 +165,7 @@ void _kuser_entry() {
     KernelTimer::startApicPeriodicTimer();
 
     // Register keyboard irq
-    registerIrqHandler(_irq_handler_keyboard, 1, IRQ1, BSP_CPU_ID);
+    registerIrqHandler(_irq_handler_keyboard, 1, IRQ1);
     
     // Bring up all available processor cores
     //initializeApCores();
@@ -188,17 +188,38 @@ void _kuser_entry() {
             auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
             uint8_t irqLine = xhciControllerPciDeviceInfo.headerInfo.interruptLine;
 
-            if (isMsixCapabilityEnabled(xhciControllerPciDeviceInfo)) {
-                kuPrint("MSI-X irq are enabled!\n");
-            } else if (isMsiCapabilityEnabled(xhciControllerPciDeviceInfo)) {
-                kuPrint("MSI irq are enabled!\n");
+            if (irqLine != 255) {
+                kuPrint("Registering XHCI irq handler for IRQ%i\n", irqLine);
+                registerIrqHandler(_irq_handler_xhci, irqLine, IRQ14, IRQ_LEVEL_TRIGGERED, BSP_CPU_ID);
+            } else if (HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapability::PciCapabilityMsiX)) {
+                PciMsiXCapability cap;
+                RUN_ELEVATED({
+                    cap = readMsixCapability(
+                        xhciControllerPciDeviceInfo.bus,
+                        xhciControllerPciDeviceInfo.device,
+                        xhciControllerPciDeviceInfo.function
+                    );
+                });
+
+                bool enabled = cap.enableBit;
+                kuPrint("MSI-X capability: %s\n", enabled ? "enabled" : "disabled");
+            } else if (HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapability::PciCapabilityMsi)) {
+                PciMsiCapability cap;
+                RUN_ELEVATED({
+                    cap = readMsiCapability(
+                        xhciControllerPciDeviceInfo.bus,
+                        xhciControllerPciDeviceInfo.device,
+                        xhciControllerPciDeviceInfo.function
+                    );
+                });
+
+                bool enabled = cap.messageControl & 1;
+                kuPrint("MSI capability: %s\n", enabled ? "enabled" : "disabled");
             }
 
-            registerIrqHandler(_irq_handler_xhci, irqLine, IRQ14, BSP_CPU_ID);
-
             RUN_ELEVATED({
-                auto xhciDriver = kstl::SharedPtr<XhciDriver>(new XhciDriver());
-                xhciDriver->init(xhciControllerPciDeviceInfo);
+                auto& xhciDriver = XhciDriver::get();
+                xhciDriver.init(xhciControllerPciDeviceInfo);
             });
         }
     }

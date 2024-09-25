@@ -41,7 +41,7 @@ private:
     void _enumeratePciBus(uint64_t baseAddress, uint64_t bus);
 
     __PRIVILEGED_CODE
-    uint32_t _readCapabilities(uint8_t bus, uint8_t device, uint8_t function);
+    uint32_t _readCapabilities(uint8_t bus, uint8_t device, uint8_t function, uint8_t* msiCapPtr, uint8_t* msixCapPtr);
 };
 
 #endif

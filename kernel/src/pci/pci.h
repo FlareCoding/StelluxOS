@@ -30,6 +30,20 @@
 #define PCI_CAPABILITY_ID_SATA_DATA_IDX     0x12
 #define PCI_CAPABILITY_ID_PCI_EXPRESS_AF    0x13
 
+#define MSI_X_TABLE_ENTRY_SIZE 16  // Each MSI-X table entry is 16 bytes
+
+// Mask for extracting the BIR (lower 3 bits) from tableOffset and pbaOffset
+#define MSIX_BIR_MASK       0x7        // BIR is stored in bits [2:0]
+
+// Mask for extracting the offset (upper 29 bits) from tableOffset and pbaOffset
+#define MSIX_OFFSET_MASK    (~0x7)     // Offset is stored in bits [31:3]
+
+// Macro to extract the BIR (Base Address Register Indicator) from a given offset field
+#define MSIX_EXTRACT_BIR(offset)       ((offset) & MSIX_BIR_MASK)
+
+// Macro to extract the Offset (location within the BAR) from a given offset field
+#define MSIX_EXTRACT_OFFSET(offset)    ((offset) & MSIX_OFFSET_MASK)
+
 struct PciDeviceHeader {
     uint16_t vendorID;
     uint16_t deviceID;
@@ -87,20 +101,67 @@ enum PciCapability {
     PciCapabilityInvalidCap = 31
 };
 
+//
+// https://wiki.osdev.org/PCI#Message_Signaled_Interrupts
+//
 struct PciMsiXCapability {
-    uint16_t messageControl;
-    uint32_t tableOffset;
-    uint32_t pbaOffset; // PBA: Pending Bit Array
+    union {
+        struct {
+            uint8_t capId;
+            uint8_t nextCapPtr;
+            union {
+                struct {
+                    // Table Size is N - 1 encoded, and is the number of
+                    // entries in the MSI-X table. This field is Read-Only.
+                    uint16_t tableSize      : 11;
+                    uint16_t rsvd0          : 3;
+                    uint16_t functionMask   : 1;
+                    uint16_t enableBit      : 1;
+                } __attribute__((packed));
+                uint16_t messageControl;
+            } __attribute__((packed));
+        } __attribute__((packed));
+        uint32_t dword0;
+    };
+
+    union {
+        struct {
+            // BIR specifies which BAR is used for the Message Table. This may be a 64-bit
+            // BAR, and is zero-indexed (so BIR=0, BAR0, offset 0x10 into the header).
+            uint32_t tableBir       : 3;
+            uint32_t tableOffset    : 29;
+        } __attribute__((packed));
+        uint32_t dword1;
+    };
+
+    union {
+        struct {
+            // BIR specifies which BAR is used for the Message Table. This may be a 64-bit
+            // BAR, and is zero-indexed (so BIR=0, BAR0, offset 0x10 into the header).
+            uint32_t pendingBitArrayBir       : 3;
+            uint32_t pendingBitArrayOffset    : 29;
+        } __attribute__((packed));
+        uint32_t dword2;
+    };
 } __attribute__((packed));
+static_assert(sizeof(PciMsiXCapability) == 12);
 
 struct MsiXTableEntry {
-    uint64_t messageAddress;
+    uint32_t messageAddressLo;
+    uint32_t messageAddressHi;
     uint32_t messageData;
     uint32_t vectorControl;
 } __attribute__((packed));
 
 struct PciMsiCapability {
-    uint16_t messageControl;
+    union {
+        struct {
+            uint8_t capId;
+            uint8_t nextCapPtr;
+            uint16_t messageControl;
+        } __attribute__((packed));
+        uint32_t dword0;
+    };
     uint32_t messageAddress;
     uint16_t messageData;
 } __attribute__((packed));
@@ -114,6 +175,8 @@ struct PciDeviceInfo {
     uint8_t         function;
     uint8_t         padding;
     uint32_t        capabilities;
+    uint8_t         msiCapPtr;
+    uint8_t         msixCapPtr;
 };
 
 const char* getPciDeviceType(uint8_t classCode);
@@ -125,7 +188,7 @@ const char* getPciBridgeDeviceSubclassName(uint8_t subclassCode);
 const char* getPciSubclassName(uint8_t classCode, uint8_t subclassCode);
 const char* getPciProgIFName(uint8_t classCode, uint8_t subclassCode, uint8_t progIF);
 
-uint64_t getBarFromPciHeader(PciDeviceHeader* header);
+uint64_t getBarFromPciHeader(PciDeviceHeader* header, size_t barIndex = 0);
 
 void dbgPrintPciDeviceInfo(PciDeviceHeader* header);
 
@@ -159,8 +222,16 @@ PciMsiXCapability readMsixCapability(const uint8_t bus, const uint8_t device, co
 __PRIVILEGED_CODE
 PciMsiCapability readMsiCapability(const uint8_t bus, const uint8_t device, const uint8_t function);
 
+__PRIVILEGED_CODE
+void enableMsix(PciMsiXCapability& msixCap, PciDeviceInfo& info);
 
-bool isMsixCapabilityEnabled(PciDeviceInfo& info);
-bool isMsiCapabilityEnabled(PciDeviceInfo& info);
+__PRIVILEGED_CODE
+void disableMsix(PciMsiXCapability& msixCap, PciDeviceInfo& info);
+
+__PRIVILEGED_CODE
+void disableLegacyInterrupts(PciDeviceInfo& info);
+
+__PRIVILEGED_CODE
+void setupMsixIrqRouting(PciDeviceInfo& info, volatile uint16_t** pba);
 
 #endif

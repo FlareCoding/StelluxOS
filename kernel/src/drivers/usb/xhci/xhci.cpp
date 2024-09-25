@@ -9,6 +9,12 @@
 #include <interrupts/interrupts.h>
 #include <kprint.h>
 
+static XhciDriver g_xhciDriver;
+
+XhciDriver& XhciDriver::get() {
+    return g_xhciDriver;
+}
+
 bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
     kprint("[XHCI] Initialize xHci Driver 3.0\n\n");
 
@@ -40,7 +46,6 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
         }
     }
     kprint("\n");
-    _clearIrqFlags(0);
 
     // DEBUG - setup device at port 4
     //_setupDevice(4);
@@ -89,6 +94,47 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
 
     // kprint("\n");
     return true;
+}
+
+void XhciDriver::processEvents() {
+    // Poll the event ring for the command completion event
+    kstl::vector<XhciTrb_t*> events;
+    if (m_eventRing->hasUnprocessedEvents()) {
+        m_eventRing->dequeueEvents(events);
+    }
+}
+
+void XhciDriver::acknowledgeIrq(uint8_t interrupter) {
+    // Get the interrupter registers
+    XhciInterrupterRegisters* interrupterRegs =
+        m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
+
+    // Read the current value of IMAN
+    uint32_t iman = interrupterRegs->iman;
+
+    // Set the IP bit to '1' to clear it, preserve other bits including IE
+    uint32_t iman_write = iman | XHCI_IMAN_INTERRUPT_PENDING;
+
+    // Write back to IMAN
+    interrupterRegs->iman = iman_write;
+
+    // Clear the EINT bit in USBSTS by writing '1' to it
+    m_opRegs->usbsts = XHCI_USBSTS_EINT;
+}
+
+void XhciDriver::logUsbsts() {
+    uint32_t status = m_opRegs->usbsts;
+    kprint("===== USBSTS =====\n");
+    if (status & XHCI_USBSTS_HCH) kprint("    Host Controlled Halted\n");
+    if (status & XHCI_USBSTS_HSE) kprint("    Host System Error\n");
+    if (status & XHCI_USBSTS_EINT) kprint("    Event Interrupt\n");
+    if (status & XHCI_USBSTS_PCD) kprint("    Port Change Detect\n");
+    if (status & XHCI_USBSTS_SSS) kprint("    Save State Status\n");
+    if (status & XHCI_USBSTS_RSS) kprint("    Restore State Status\n");
+    if (status & XHCI_USBSTS_SRE) kprint("    Save/Restore Error\n");
+    if (status & XHCI_USBSTS_CNR) kprint("    Controller Not Ready\n");
+    if (status & XHCI_USBSTS_HCE) kprint("    Host Controller Error\n");
+    kprint("\n");
 }
 
 void XhciDriver::_parseCapabilityRegisters() {
@@ -192,21 +238,6 @@ void XhciDriver::_configureOperationalRegisters() {
     m_opRegs->crcr = m_commandRing->getPhysicalBase() | m_commandRing->getCycleBit();
 }
 
-void XhciDriver::_logUsbsts() {
-    uint32_t status = m_opRegs->usbsts;
-    kprint("===== USBSTS =====\n");
-    if (status & XHCI_USBSTS_HCH) kprint("    Host Controlled Halted\n");
-    if (status & XHCI_USBSTS_HSE) kprint("    Host System Error\n");
-    if (status & XHCI_USBSTS_EINT) kprint("    Event Interrupt\n");
-    if (status & XHCI_USBSTS_PCD) kprint("    Port Change Detect\n");
-    if (status & XHCI_USBSTS_SSS) kprint("    Save State Status\n");
-    if (status & XHCI_USBSTS_RSS) kprint("    Restore State Status\n");
-    if (status & XHCI_USBSTS_SRE) kprint("    Save/Restore Error\n");
-    if (status & XHCI_USBSTS_CNR) kprint("    Controller Not Ready\n");
-    if (status & XHCI_USBSTS_HCE) kprint("    Host Controller Error\n");
-    kprint("\n");
-}
-
 void XhciDriver::_logOperationalRegisters() {
     kprintInfo("===== Operational Registers (0x%llx) =====\n", (uint64_t)m_opRegs);
     kprintInfo("    usbcmd     : %x\n", m_opRegs->usbcmd);
@@ -249,6 +280,9 @@ void XhciDriver::_configureRuntimeRegisters() {
         return;
     }
 
+    // Enable interrupts
+    interrupterRegs->iman |= XHCI_IMAN_INTERRUPT_ENABLE;
+
     // Setup the event ring and write to interrupter
     // registers to set ERSTSZ, ERSDP, and ERSTBA.
     m_eventRing = kstl::SharedPtr<XhciEventRing>(
@@ -256,7 +290,7 @@ void XhciDriver::_configureRuntimeRegisters() {
     );
 
     // Clear any pending interrupts for primary interrupter
-    _clearIrqFlags(0);
+    acknowledgeIrq(0);
 }
 
 bool XhciDriver::_isUSB3Port(uint8_t portNum) {
@@ -351,7 +385,7 @@ XhciCommandCompletionTrb_t* XhciDriver::_sendCommand(XhciTrb_t* trb, uint32_t ti
     kstl::vector<XhciTrb_t*> events;
     if (m_eventRing->hasUnprocessedEvents()) {
         m_eventRing->dequeueEvents(events);
-        _clearIrqFlags(0);
+        // acknowledgeIrq(0);
     }
 
     XhciCommandCompletionTrb_t* completionTrb = nullptr;
@@ -380,7 +414,7 @@ XhciTransferCompletionTrb_t* XhciDriver::_getTransferCompletionTrb() {
     kstl::vector<XhciTrb_t*> events;
     if (m_eventRing->hasUnprocessedEvents()) {
         m_eventRing->dequeueEvents(events);
-        _clearIrqFlags(0);
+        acknowledgeIrq(0);
     }
 
     XhciTransferCompletionTrb_t* completionTrb = nullptr;
@@ -402,17 +436,6 @@ XhciTransferCompletionTrb_t* XhciDriver::_getTransferCompletionTrb() {
     }
 
     return completionTrb;
-}
-
-void XhciDriver::_clearIrqFlags(uint8_t interrupter) {
-    // Get the interrupter registers
-    XhciInterrupterRegisters* interrupterRegs = m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
-
-    // Clear the interrupt pending bit in the primary interrupter
-    interrupterRegs->iman |= ~XHCI_IMAN_INTERRUPT_PENDING;
-
-    // Clear the interrupt pending bit in USBSTS
-    m_opRegs->usbsts |= ~XHCI_USBSTS_EINT;
 }
 
 uint16_t XhciDriver::_getMaxInitialPacketSize(uint8_t portSpeed) {
