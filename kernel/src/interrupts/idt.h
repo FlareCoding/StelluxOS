@@ -85,9 +85,4 @@ EXTERN_C void setupInterruptDescriptorTable();
 
 EXTERN_C __PRIVILEGED_CODE void loadIdtr();
 
-#define IRQ_EDGE_TRIGGERED  0
-#define IRQ_LEVEL_TRIGGERED 1
-
-bool registerIrqHandler(InterruptHandler_t handler, uint8_t intrLine, uint8_t irqVector, uint8_t levelTriggered = 0, uint8_t cpu = 0);
-
 #endif

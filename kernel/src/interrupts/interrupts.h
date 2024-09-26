@@ -64,12 +64,58 @@
 #define IRQ13  45
 #define IRQ14  46
 #define IRQ15  47
-
-// Userspace IRQs
 #define IRQ16  48
+#define IRQ17  49
+#define IRQ18  50
+#define IRQ19  51
+#define IRQ20  52
+#define IRQ21  53
+#define IRQ22  54
+#define IRQ23  55
+#define IRQ24  56
+#define IRQ25  57
+#define IRQ26  58
+#define IRQ27  59
+#define IRQ28  60
+#define IRQ29  61
+#define IRQ30  62
+#define IRQ31  63
+#define IRQ32  64
+#define IRQ33  65
+#define IRQ34  66
+#define IRQ35  67
+#define IRQ36  68
+#define IRQ37  69
+#define IRQ38  70
+#define IRQ39  71
+#define IRQ40  72
+#define IRQ41  73
+#define IRQ42  74
+#define IRQ43  75
+#define IRQ44  76
+#define IRQ45  77
+#define IRQ46  78
+#define IRQ47  79
+#define IRQ48  80
+#define IRQ49  81
+#define IRQ50  82
+#define IRQ51  83
+#define IRQ52  84
+#define IRQ53  85
+#define IRQ54  86
+#define IRQ55  87
+#define IRQ56  88
+#define IRQ57  89
+#define IRQ58  90
+#define IRQ59  91
+#define IRQ60  92
+#define IRQ61  93
+#define IRQ62  94
+#define IRQ63  95
+#define IRQ64  96
 
-// Additional Software Interrupts can be defined here (INT)
-// ...
+#define IRQ_EDGE_TRIGGERED  0
+#define IRQ_LEVEL_TRIGGERED 1
 
 struct InterruptFrame {
     uint64_t rip;           // Instruction pointer (address of the instruction that was interrupted)
@@ -107,12 +153,18 @@ __force_inline__ void disableInterrupts() {
 
 bool areInterruptsEnabled();
 
-typedef void (*InterruptHandler_t)(struct PtRegs* frame);
+typedef int irqreturn_t;
+
+typedef irqreturn_t (*IrqHandler_t)(PtRegs* ptregs, void* cookie);
 
 #define DEFINE_INT_HANDLER(name) \
-    void name( \
-        struct PtRegs* frame \
+    irqreturn_t name( \
+        PtRegs* ptregs, \
+        void* cookie \
     )
+
+#define IRQ_HANDLED     0
+#define IRQ_UNHANDLED   1
 
 DEFINE_INT_HANDLER(_userspace_common_exc_handler);
 
@@ -121,8 +173,29 @@ DEFINE_INT_HANDLER(_exc_handler_pf);
 
 DEFINE_INT_HANDLER(_irq_handler_timer);
 DEFINE_INT_HANDLER(_irq_handler_keyboard);
-DEFINE_INT_HANDLER(_irq_handler_xhci);
 
 DEFINE_INT_HANDLER(_irq_handler_schedule);
+
+struct IrqDescriptor {
+    // Specifies the handler function
+    IrqHandler_t handler;
+
+    // Device-specific data pointer
+    void* cookie;
+
+    // Specifies whether or not APIC eoi acknowledgement should be
+    // done immediately before passing control to the handler.
+    uint8_t fastApicEoi;
+
+    // IRQ number associated with the interrupt handler
+    uint8_t irqno;
+
+    // Reserved/padding
+    uint16_t rsvd;
+};
+
+bool registerIrqHandler(uint8_t irqno, IrqHandler_t handler, bool fastApicEoi, void* cookie);
+
+void routeIoApicIrq(uint8_t irqLine, uint8_t irqno, uint8_t cpu = 0, uint8_t levelTriggered = 0);
 
 #endif

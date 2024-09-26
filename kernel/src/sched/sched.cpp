@@ -155,7 +155,7 @@ void Scheduler::__schedule(PtRegs* irqFrame) {
 }
 
 void Scheduler::schedule() {
-    asm volatile ("int $47");
+    asm volatile ("int $48");
 }
 
 void Scheduler::preemptDisable(int cpu) {
