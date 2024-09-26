@@ -165,7 +165,8 @@ void _kuser_entry() {
     KernelTimer::startApicPeriodicTimer();
 
     // Register keyboard irq
-    registerIrqHandler(_irq_handler_keyboard, 1, IRQ1);
+    routeIoApicIrq(1, IRQ1);
+    registerIrqHandler(IRQ1, _irq_handler_keyboard, true, nullptr);
     
     // Bring up all available processor cores
     //initializeApCores();
@@ -189,8 +190,8 @@ void _kuser_entry() {
             uint8_t irqLine = xhciControllerPciDeviceInfo.headerInfo.interruptLine;
 
             if (irqLine != 255) {
-                kuPrint("Registering XHCI irq handler for IRQ%i\n", irqLine);
-                registerIrqHandler(_irq_handler_xhci, irqLine, IRQ14, IRQ_LEVEL_TRIGGERED, BSP_CPU_ID);
+                routeIoApicIrq(irqLine, IRQ14, BSP_CPU_ID, IRQ_LEVEL_TRIGGERED);
+                kuPrint("Registered XHCI irq handler for IRQ%i\n", irqLine);
             } else if (HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapability::PciCapabilityMsiX)) {
                 PciMsiXCapability cap;
                 RUN_ELEVATED({
@@ -204,17 +205,13 @@ void _kuser_entry() {
                 bool enabled = cap.enableBit;
                 kuPrint("MSI-X capability: %s\n", enabled ? "enabled" : "disabled");
             } else if (HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapability::PciCapabilityMsi)) {
-                PciMsiCapability cap;
                 RUN_ELEVATED({
-                    cap = readMsiCapability(
-                        xhciControllerPciDeviceInfo.bus,
-                        xhciControllerPciDeviceInfo.device,
-                        xhciControllerPciDeviceInfo.function
-                    );
+                    if (setupMsiInterrupt(xhciControllerPciDeviceInfo, IRQ14, BSP_CPU_ID)) {
+                        kprintInfo("MSI interrupts enabled!\n");
+                    } else {
+                        kprintError("Failed to setup MSI interrupts\n");
+                    }
                 });
-
-                bool enabled = cap.messageControl & 1;
-                kuPrint("MSI capability: %s\n", enabled ? "enabled" : "disabled");
             }
 
             RUN_ELEVATED({

@@ -324,6 +324,55 @@ __asm_ctx_switch_no_irq:
 .global __asm_irq_handler_13
 .global __asm_irq_handler_14
 .global __asm_irq_handler_15
+.global __asm_irq_handler_16
+.global __asm_irq_handler_17
+.global __asm_irq_handler_18
+.global __asm_irq_handler_19
+.global __asm_irq_handler_20
+.global __asm_irq_handler_21
+.global __asm_irq_handler_22
+.global __asm_irq_handler_23
+.global __asm_irq_handler_24
+.global __asm_irq_handler_25
+.global __asm_irq_handler_26
+.global __asm_irq_handler_27
+.global __asm_irq_handler_28
+.global __asm_irq_handler_29
+.global __asm_irq_handler_30
+.global __asm_irq_handler_31
+.global __asm_irq_handler_32
+.global __asm_irq_handler_33
+.global __asm_irq_handler_34
+.global __asm_irq_handler_35
+.global __asm_irq_handler_36
+.global __asm_irq_handler_37
+.global __asm_irq_handler_38
+.global __asm_irq_handler_39
+.global __asm_irq_handler_40
+.global __asm_irq_handler_41
+.global __asm_irq_handler_42
+.global __asm_irq_handler_43
+.global __asm_irq_handler_44
+.global __asm_irq_handler_45
+.global __asm_irq_handler_46
+.global __asm_irq_handler_47
+.global __asm_irq_handler_48
+.global __asm_irq_handler_49
+.global __asm_irq_handler_50
+.global __asm_irq_handler_51
+.global __asm_irq_handler_52
+.global __asm_irq_handler_53
+.global __asm_irq_handler_54
+.global __asm_irq_handler_55
+.global __asm_irq_handler_56
+.global __asm_irq_handler_57
+.global __asm_irq_handler_58
+.global __asm_irq_handler_59
+.global __asm_irq_handler_60
+.global __asm_irq_handler_61
+.global __asm_irq_handler_62
+.global __asm_irq_handler_63
+.global __asm_irq_handler_64
 
 # ----------- EXCEPTIONS ----------- #
 __asm_exc_handler_div:
@@ -515,6 +564,251 @@ __asm_irq_handler_14:
 __asm_irq_handler_15:
     push 0
     push 47
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_16:
+    push 0
+    push 48
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_17:
+    push 0
+    push 49
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_18:
+    push 0
+    push 50
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_19:
+    push 0
+    push 51
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_20:
+    push 0
+    push 52
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_21:
+    push 0
+    push 53
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_22:
+    push 0
+    push 54
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_23:
+    push 0
+    push 55
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_24:
+    push 0
+    push 56
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_25:
+    push 0
+    push 57
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_26:
+    push 0
+    push 58
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_27:
+    push 0
+    push 59
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_28:
+    push 0
+    push 60
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_29:
+    push 0
+    push 61
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_30:
+    push 0
+    push 62
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_31:
+    push 0
+    push 63
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_32:
+    push 0
+    push 64
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_33:
+    push 0
+    push 65
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_34:
+    push 0
+    push 66
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_35:
+    push 0
+    push 67
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_36:
+    push 0
+    push 68
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_37:
+    push 0
+    push 69
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_38:
+    push 0
+    push 70
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_39:
+    push 0
+    push 71
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_40:
+    push 0
+    push 72
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_41:
+    push 0
+    push 73
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_42:
+    push 0
+    push 74
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_43:
+    push 0
+    push 75
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_44:
+    push 0
+    push 76
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_45:
+    push 0
+    push 77
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_46:
+    push 0
+    push 78
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_47:
+    push 0
+    push 79
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_48:
+    push 0
+    push 80
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_49:
+    push 0
+    push 81
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_50:
+    push 0
+    push 82
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_51:
+    push 0
+    push 83
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_52:
+    push 0
+    push 84
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_53:
+    push 0
+    push 85
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_54:
+    push 0
+    push 86
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_55:
+    push 0
+    push 87
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_56:
+    push 0
+    push 88
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_57:
+    push 0
+    push 89
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_58:
+    push 0
+    push 90
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_59:
+    push 0
+    push 91
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_60:
+    push 0
+    push 92
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_61:
+    push 0
+    push 93
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_62:
+    push 0
+    push 94
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_63:
+    push 0
+    push 95
+    jmp __asm_common_isr_entry
+
+__asm_irq_handler_64:
+    push 0
+    push 96
     jmp __asm_common_isr_entry
 
 .section .note.GNU-stack,"",@progbits

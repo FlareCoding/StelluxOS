@@ -158,13 +158,34 @@ struct PciMsiCapability {
         struct {
             uint8_t capId;
             uint8_t nextCapPtr;
-            uint16_t messageControl;
+            union {
+                struct {
+                    uint16_t enableBit               : 1;
+                    uint16_t multipleMessageCapable  : 3;
+                    uint16_t multipleMessageEnable   : 3;
+                    uint16_t _64bit                  : 1;
+                    uint16_t perVectorMasking        : 1;
+                    uint16_t rsvd0                   : 7;
+                } __attribute__((packed));
+                uint16_t messageControl;
+            };
         } __attribute__((packed));
         uint32_t dword0;
     };
-    uint32_t messageAddress;
+    // Message Address (32 or 64 bits)
+    union {
+        struct {
+            uint32_t messageAddressLo;  // Message Address Lower 32 bits
+            uint32_t messageAddressHi;  // Message Address Upper 32 bits (if 64-bit capable)
+        } __attribute__((packed));
+        uint64_t messageAddress;        // Full 64-bit Message Address
+    };
     uint16_t messageData;
+    uint16_t rsvd1;
+    uint32_t mask;
+    uint32_t pending;
 } __attribute__((packed));
+static_assert(sizeof(PciMsiCapability) == 24);
 
 struct PciDeviceInfo {
     PciDeviceHeader headerInfo;
@@ -223,6 +244,12 @@ __PRIVILEGED_CODE
 PciMsiCapability readMsiCapability(const uint8_t bus, const uint8_t device, const uint8_t function);
 
 __PRIVILEGED_CODE
+void enableMsi(PciMsiCapability& msiCap, PciDeviceInfo& info);
+
+__PRIVILEGED_CODE
+void disableMsi(PciMsiCapability& msiCap, PciDeviceInfo& info);
+
+__PRIVILEGED_CODE
 void enableMsix(PciMsiXCapability& msixCap, PciDeviceInfo& info);
 
 __PRIVILEGED_CODE
@@ -233,5 +260,8 @@ void disableLegacyInterrupts(PciDeviceInfo& info);
 
 __PRIVILEGED_CODE
 void setupMsixIrqRouting(PciDeviceInfo& info, volatile uint16_t** pba);
+
+__PRIVILEGED_CODE
+bool setupMsiInterrupt(PciDeviceInfo& deviceInfo, uint8_t interruptVector, uint8_t cpu);
 
 #endif

@@ -4,6 +4,7 @@
 #include <paging/tlb.h>
 #include <memory/kmemory.h>
 #include <time/ktime.h>
+#include <arch/x86/apic.h>
 #include <arch/x86/ioapic.h>
 #include <arch/x86/cpuid.h>
 #include <interrupts/interrupts.h>
@@ -35,6 +36,9 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
     // Configure the controller's register spaces
     _configureOperationalRegisters();
     _configureRuntimeRegisters();
+
+    // Register the IRQ handler
+    registerIrqHandler(IRQ14, reinterpret_cast<IrqHandler_t>(xhciIrqHandler), false, static_cast<void*>(this));
 
     // At this point the controller is all setup so we can start it
     _startHostController();
@@ -96,32 +100,6 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
     return true;
 }
 
-void XhciDriver::processEvents() {
-    // Poll the event ring for the command completion event
-    kstl::vector<XhciTrb_t*> events;
-    if (m_eventRing->hasUnprocessedEvents()) {
-        m_eventRing->dequeueEvents(events);
-    }
-}
-
-void XhciDriver::acknowledgeIrq(uint8_t interrupter) {
-    // Get the interrupter registers
-    XhciInterrupterRegisters* interrupterRegs =
-        m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
-
-    // Read the current value of IMAN
-    uint32_t iman = interrupterRegs->iman;
-
-    // Set the IP bit to '1' to clear it, preserve other bits including IE
-    uint32_t iman_write = iman | XHCI_IMAN_INTERRUPT_PENDING;
-
-    // Write back to IMAN
-    interrupterRegs->iman = iman_write;
-
-    // Clear the EINT bit in USBSTS by writing '1' to it
-    m_opRegs->usbsts = XHCI_USBSTS_EINT;
-}
-
 void XhciDriver::logUsbsts() {
     uint32_t status = m_opRegs->usbsts;
     kprint("===== USBSTS =====\n");
@@ -135,6 +113,16 @@ void XhciDriver::logUsbsts() {
     if (status & XHCI_USBSTS_CNR) kprint("    Controller Not Ready\n");
     if (status & XHCI_USBSTS_HCE) kprint("    Host Controller Error\n");
     kprint("\n");
+}
+
+irqreturn_t XhciDriver::xhciIrqHandler(void*, XhciDriver* driver) {
+    driver->_processEvents();
+    driver->_acknowledgeIrq(0);
+
+    kprint("Xhci Event Handled!\n");
+
+    Apic::getLocalApic()->completeIrq();
+    return IRQ_HANDLED;
 }
 
 void XhciDriver::_parseCapabilityRegisters() {
@@ -290,7 +278,7 @@ void XhciDriver::_configureRuntimeRegisters() {
     );
 
     // Clear any pending interrupts for primary interrupter
-    acknowledgeIrq(0);
+    _acknowledgeIrq(0);
 }
 
 bool XhciDriver::_isUSB3Port(uint8_t portNum) {
@@ -414,7 +402,7 @@ XhciTransferCompletionTrb_t* XhciDriver::_getTransferCompletionTrb() {
     kstl::vector<XhciTrb_t*> events;
     if (m_eventRing->hasUnprocessedEvents()) {
         m_eventRing->dequeueEvents(events);
-        acknowledgeIrq(0);
+        _acknowledgeIrq(0);
     }
 
     XhciTransferCompletionTrb_t* completionTrb = nullptr;
@@ -453,6 +441,32 @@ uint16_t XhciDriver::_getMaxInitialPacketSize(uint8_t portSpeed) {
     }
 
     return initialMaxPacketSize;
+}
+
+void XhciDriver::_processEvents() {
+    // Poll the event ring for the command completion event
+    kstl::vector<XhciTrb_t*> events;
+    if (m_eventRing->hasUnprocessedEvents()) {
+        m_eventRing->dequeueEvents(events);
+    }
+}
+
+void XhciDriver::_acknowledgeIrq(uint8_t interrupter) {
+    // Get the interrupter registers
+    XhciInterrupterRegisters* interrupterRegs =
+        m_runtimeRegisterManager->getInterrupterRegisters(interrupter);
+
+    // Read the current value of IMAN
+    uint32_t iman = interrupterRegs->iman;
+
+    // Set the IP bit to '1' to clear it, preserve other bits including IE
+    uint32_t iman_write = iman | XHCI_IMAN_INTERRUPT_PENDING;
+
+    // Write back to IMAN
+    interrupterRegs->iman = iman_write;
+
+    // Clear the EINT bit in USBSTS by writing '1' to it
+    m_opRegs->usbsts = XHCI_USBSTS_EINT;
 }
 
 bool XhciDriver::_resetHostController() {

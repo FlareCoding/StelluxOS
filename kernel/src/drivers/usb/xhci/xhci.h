@@ -1,6 +1,7 @@
 #ifndef XCHI_H
 #define XCHI_H
 #include <acpi/mcfg.h>
+#include <interrupts/interrupts.h>
 #include "xhci_device_ctx.h"
 
 /*
@@ -110,10 +111,9 @@ public:
 
     bool init(PciDeviceInfo& deviceInfo);
 
-    void processEvents();
-    void acknowledgeIrq(uint8_t interrupter);
-
     void logUsbsts();
+
+    static irqreturn_t xhciIrqHandler(void*, XhciDriver* driver);
 
 private:
     uint64_t m_xhcBase;
@@ -148,6 +148,9 @@ private:
     uint16_t _getMaxInitialPacketSize(uint8_t portSpeed);
 
 private:
+    void _processEvents();
+    void _acknowledgeIrq(uint8_t interrupter);
+
     bool _resetHostController();
     void _startHostController();
 

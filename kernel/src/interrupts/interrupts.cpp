@@ -24,48 +24,58 @@ bool areInterruptsEnabled() {
 }
 
 DEFINE_INT_HANDLER(_userspace_common_exc_handler) {
-    kpanic(frame);
+    __unused cookie;
+
+    kpanic(ptregs);
+
+    return IRQ_HANDLED;
 }
 
 DEFINE_INT_HANDLER(_exc_handler_div) {
+    __unused cookie;
+
     acquireSpinlock(&__kexc_log_lock);
 
     kprintColoredEx("#DIV", TEXT_COLOR_RED);
-    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->hwframe.rip);
+    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", ptregs->hwframe.rip);
     kprintColoredEx("#DIV ", TEXT_COLOR_RED);
     kprintColoredEx("Your goomba code tried to divide by 0\n", TEXT_COLOR_WHITE);
 
     releaseSpinlock(&__kexc_log_lock);
-    kpanic(frame);
+    kpanic(ptregs);
+
+    return IRQ_HANDLED;
 }
 
 DEFINE_INT_HANDLER(_exc_handler_pf) {
+    __unused cookie;
+
     acquireSpinlock(&__kexc_log_lock);
 
     kprintColoredEx("#PF", TEXT_COLOR_RED);
-    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", frame->hwframe.rip);
+    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", ptregs->hwframe.rip);
     kprintColoredEx("#PF", TEXT_COLOR_RED);
-    kprintFmtColored(TEXT_COLOR_WHITE, " error_code: (0x%llx)", frame->error);
+    kprintFmtColored(TEXT_COLOR_WHITE, " error_code: (0x%llx)", ptregs->error);
 
-    if (frame->error & PF_PRESENT) {
+    if (ptregs->error & PF_PRESENT) {
         kprintFmtColored(TEXT_COLOR_WHITE, " - page-level protection violation");
     } else {
         kprintFmtColored(TEXT_COLOR_WHITE, " - page not present");
     }
 
-    if (frame->error & PF_WRITE) {
+    if (ptregs->error & PF_WRITE) {
         kprintFmtColored(TEXT_COLOR_WHITE, " - write operation");
     } else {
         kprintFmtColored(TEXT_COLOR_WHITE, " - read operation");
     }
 
-    if (frame->error & PF_USER) {
-        if (frame->ds & 3)
+    if (ptregs->error & PF_USER) {
+        if (ptregs->ds & 3)
             kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in user mode");
         else
             kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in lowered-supervisor mode");
     } else {
-        if (frame->ds & 3)
+        if (ptregs->ds & 3)
             kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in user-elevated mode");
         else
             kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in supervisor mode");
@@ -80,39 +90,35 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
     kprintChar('\n');
 
     releaseSpinlock(&__kexc_log_lock);
-    kpanic(frame);
+    kpanic(ptregs);
+
+    return IRQ_HANDLED;
 }
 
 DEFINE_INT_HANDLER(_irq_handler_timer) {
-    Apic::getLocalApic()->completeIrq();
+    __unused cookie;
 
     auto& sched = Scheduler::get();
-    sched.__schedule(frame);
+    sched.__schedule(ptregs);
+
+    return IRQ_HANDLED;
 }
 
 DEFINE_INT_HANDLER(_irq_handler_schedule) {
+    __unused cookie;
+    
     auto& sched = Scheduler::get();
-    sched.__schedule(frame);
-}
+    sched.__schedule(ptregs);
 
-DEFINE_INT_HANDLER(_irq_handler_xhci) {
-    __unused frame;
-    auto& xhc = XhciDriver::get();
-
-    xhc.processEvents();
-    xhc.acknowledgeIrq(0);
-
-    Apic::getLocalApic()->completeIrq();
-
-
-    kprint("Xhci Event Handled!\n");
+    return IRQ_HANDLED;
 }
 
 DEFINE_INT_HANDLER(_irq_handler_keyboard) {
-    __unused frame;
-
-    Apic::getLocalApic()->completeIrq();
+    __unused ptregs;
+    __unused cookie;
     uint8_t scancode = inByte(0x60);
 
     kprint("Scancode: %i\n", (int)scancode);
+
+    return IRQ_HANDLED;
 }
