@@ -187,7 +187,7 @@ void __common_irq_entry(PtRegs* frame) {
 
 // Common entry point for all interrupt service routines
 EXTERN_C __PRIVILEGED_CODE void __common_isr_entry(PtRegs frame) {
-    //if (frame.intno != IRQ0) kprint("Received int: %i\n", frame.intno);
+    if (frame.intno != IRQ0) kprint("Received int: %i\n", frame.intno);
 
     // Check whether the interrupt is an IRQ or a trap/exception
     if (frame.intno >= IRQ0) {
@@ -205,7 +205,7 @@ void setupInterruptDescriptorTable() {
     zeromem(&g_irqHandlerTable, sizeof(IrqHandlerDescriptorTable));
     
     registerIrqHandler(IRQ0, _irq_handler_timer, true, nullptr);
-    registerIrqHandler(IRQ16, _irq_handler_timer, true, nullptr);
+    registerIrqHandler(IRQ16, _irq_handler_schedule, true, nullptr);
 
     // Set exception handlers
     SET_KERNEL_INTERRUPT_GATE(EXC_DIVIDE_BY_ZERO,           __asm_exc_handler_div);

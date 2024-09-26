@@ -163,10 +163,6 @@ void _kuser_entry() {
 
     // Start the kernel-wide APIC periodic timer
     KernelTimer::startApicPeriodicTimer();
-
-    // Register keyboard irq
-    routeIoApicIrq(1, IRQ1);
-    registerIrqHandler(IRQ1, _irq_handler_keyboard, true, nullptr);
     
     // Bring up all available processor cores
     //initializeApCores();
@@ -181,7 +177,7 @@ void _kuser_entry() {
     });
 #endif
 
-    if (acpiController.hasPciDeviceTable()) {
+    if (!acpiController.hasPciDeviceTable()) {
         auto pciDeviceTable = acpiController.getPciDeviceTable();
 
         size_t idx = pciDeviceTable->findXhciController();
