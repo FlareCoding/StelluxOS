@@ -177,7 +177,7 @@ void _kuser_entry() {
     });
 #endif
 
-    if (!acpiController.hasPciDeviceTable()) {
+    if (acpiController.hasPciDeviceTable()) {
         auto pciDeviceTable = acpiController.getPciDeviceTable();
 
         size_t idx = pciDeviceTable->findXhciController();
