@@ -170,6 +170,10 @@ XhciTransferRing::XhciTransferRing(size_t maxTrbs, uint8_t doorbellId) {
     m_trbs[m_maxTrbCount - 1].control = (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | m_rcsBit;
 }
 
+physaddr_t XhciTransferRing::getPhysicalDequeuePointerBase() const {
+    return physbase(&m_trbs[m_enqueuePtr]);
+}
+
 void XhciTransferRing::enqueue(XhciTrb_t* trb) {
     // Adjust the TRB's cycle bit to the current DCS
     trb->cycleBit = m_rcsBit;

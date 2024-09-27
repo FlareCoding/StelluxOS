@@ -84,6 +84,8 @@ public:
     inline physaddr_t getPhysicalBase() const { return m_physicalBase; }
     inline uint8_t  getCycleBit() const { return m_rcsBit; }
     inline uint8_t getDoorbellId() const { return m_doorbellId; }
+    
+    physaddr_t getPhysicalDequeuePointerBase() const;
 
     void enqueue(XhciTrb_t* trb);
 

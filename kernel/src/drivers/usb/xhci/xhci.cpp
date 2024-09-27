@@ -45,7 +45,7 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
     // Register the IRQ handler
     if (irqVector != 0) {
         registerIrqHandler(irqVector, reinterpret_cast<IrqHandler_t>(xhciIrqHandler), false, static_cast<void*>(this));
-        kprint("Registered xhci handler at IRQ%i\n", irqVector - IRQ0);
+        kprint("Registered xhci handler at IRQ%i\n\n", irqVector - IRQ0);
     }
 
     // At this point the controller is all setup so we can start it
@@ -55,25 +55,34 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
     for (uint8_t i = 0; i < m_maxPorts; i++) {
         _resetPort(i);
     }
-    kprint("\n");
 
     // DEBUG - setup device at port 4
-    //_setupDevice(4);
-    
-    sleep(1);
-    kprint("Sending test TRB\n");
+    _setupDevice(4);
 
-    XhciTrb_t testTrb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
-    _sendCommand(&testTrb);
+    // This code is just a prototype right now and is by no
+    // means safe and has critical synchronization issues.
+    while (true) {
+        msleep(20);
+        if (m_portStatusChangeEvents.empty()) {
+            continue; 
+        }
 
-    sleep(1);
-    kprint("Sending another test TRB\n");
+        for (size_t i = 0; i < m_portStatusChangeEvents.size(); i++) {
+            uint8_t port = m_portStatusChangeEvents[i]->portId;
+            uint8_t portRegIdx = port - 1;
+            
+            XhciPortRegisterManager regman = _getPortRegisterSet(portRegIdx);
+            XhciPortscRegister reg;
+            regman.readPortscReg(reg);
 
-    _sendCommand(&testTrb);
+            if (reg.ccs) {
+                kprintInfo("[XHCI] Device connected on port %i - %s\n", port, _usbSpeedToString(reg.portSpeed));
+            } else {
+                kprintInfo("[XHCI] Device disconnected from port %i\n", port);
+            }
+        }
 
-    while (1) {
-        sleep(1);
-        kprint("xhci print!\n");
+        m_portStatusChangeEvents.clear();
     }
 
     return DEVICE_INIT_SUCCESS;
@@ -344,22 +353,22 @@ XhciCommandCompletionTrb_t* XhciDriver::_sendCommand(XhciTrb_t* trb, uint32_t ti
     m_doorbellManager->ringCommandDoorbell();
 
     // Let the host controller process the command
-    msleep(timeoutMs);
-    
-    // Poll the event ring for the command completion event
-    kstl::vector<XhciTrb_t*> events;
-    if (m_eventRing->hasUnprocessedEvents()) {
-        m_eventRing->dequeueEvents(events);
-        // acknowledgeIrq(0);
-    }
+    uint64_t sleepPassed = 0;
+    while (!m_commandIrqCompleted) {
+        usleep(10);
+        sleepPassed += 10;
 
-    XhciCommandCompletionTrb_t* completionTrb = nullptr;
-    for (size_t i = 0; i < events.size(); ++i) {
-        if (events[i]->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-            completionTrb = reinterpret_cast<XhciCommandCompletionTrb_t*>(events[i]);
-            break;   
+        if (sleepPassed > timeoutMs * 1000) {
+            break;
         }
     }
+
+    XhciCommandCompletionTrb_t* completionTrb =
+        m_commandCompletionEvents.size() ? m_commandCompletionEvents[0] : nullptr;
+
+    // Reset the irq flag and clear out the command completion event queue
+    m_commandCompletionEvents.clear();
+    m_commandIrqCompleted = 0;
 
     if (!completionTrb) {
         kprintError("[*] Failed to find completion TRB for command %i\n", trb->trbType);
@@ -374,24 +383,31 @@ XhciCommandCompletionTrb_t* XhciDriver::_sendCommand(XhciTrb_t* trb, uint32_t ti
     return completionTrb;
 }
 
-XhciTransferCompletionTrb_t* XhciDriver::_getTransferCompletionTrb() {
-    // Poll the event ring for the command completion event
-    kstl::vector<XhciTrb_t*> events;
-    if (m_eventRing->hasUnprocessedEvents()) {
-        m_eventRing->dequeueEvents(events);
-        _acknowledgeIrq(0);
-    }
+XhciTransferCompletionTrb_t* XhciDriver::_startControlEndpointTransfer(XhciTransferRing* transferRing) {
+    // Ring the endpoint's doorbell
+    m_doorbellManager->ringControlEndpointDoorbell(transferRing->getDoorbellId());
 
-    XhciTransferCompletionTrb_t* completionTrb = nullptr;
-    for (size_t i = 0; i < events.size(); ++i) {
-        if (events[i]->trbType == XHCI_TRB_TYPE_TRANSFER_EVENT) {
-            completionTrb = reinterpret_cast<XhciTransferCompletionTrb_t*>(events[i]);
+    // Let the host controller process the command
+    const uint64_t timeoutMs = 400; 
+    uint64_t sleepPassed = 0;
+    while (!m_transferIrqCompleted) {
+        usleep(10);
+        sleepPassed += 10;
+
+        if (sleepPassed > timeoutMs * 1000) {
             break;
         }
     }
 
+    XhciTransferCompletionTrb_t* completionTrb =
+        m_transferCompletionEvents.size() ? m_transferCompletionEvents[0] : nullptr;
+
+    // Reset the irq flag and clear out the command completion event queue
+    m_transferCompletionEvents.clear();
+    m_transferIrqCompleted = 0;
+
     if (!completionTrb) {
-        kprintError("[*] Failed to find completion TRB for transfer\n");
+        kprintError("[*] Failed to find transfer completion TRB\n");
         return nullptr;
     }
 
@@ -427,28 +443,34 @@ void XhciDriver::_processEvents() {
         m_eventRing->dequeueEvents(events);
     }
 
+    uint8_t portChangeEventStatus = 0;
+    uint8_t commandCompletionStatus = 0;
+    uint8_t transferCompletionStatus = 0;
+
     for (size_t i = 0; i < events.size(); i++) {
         XhciTrb_t* event = events[i];
-        if (event->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
-            auto comp = (XhciCommandCompletionTrb_t*)event;
-            kprint("Received event: %s\n", trbTypeToString(event->trbType));
-            kprint("   completion code: %s\n", trbCompletionCodeToString(comp->completionCode));
-        } else if (event->trbType == XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT) {
-            auto portChangeEvt = (XhciPortStatusChangeTrb_t*)event;
-            uint8_t port = portChangeEvt->portId;
-            uint8_t portRegIdx = port - 1;
-            
-            XhciPortRegisterManager regman = _getPortRegisterSet(portRegIdx);
-            XhciPortscRegister reg;
-            regman.readPortscReg(reg);
-
-            if (reg.ccs) {
-                kprintInfo("[XHCI] Device connected on port %i - %s\n", port, _usbSpeedToString(reg.portSpeed));
-            } else {
-                kprintInfo("[XHCI] Device disconnected from port %i\n", port);
-            }
+        switch (event->trbType) {
+        case XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT: {
+            portChangeEventStatus = 1;
+            m_portStatusChangeEvents.pushBack((XhciPortStatusChangeTrb_t*)event);
+            break;
+        }
+        case XHCI_TRB_TYPE_CMD_COMPLETION_EVENT: {
+            commandCompletionStatus = 1;
+            m_commandCompletionEvents.pushBack((XhciCommandCompletionTrb_t*)event);
+            break;
+        }
+        case XHCI_TRB_TYPE_TRANSFER_EVENT: {
+            transferCompletionStatus = 1;
+            m_transferCompletionEvents.pushBack((XhciTransferCompletionTrb_t*)event);
+            break;
+        }
+        default: break;
         }
     }
+
+    m_commandIrqCompleted = commandCompletionStatus;
+    m_transferIrqCompleted = transferCompletionStatus;
 }
 
 void XhciDriver::_acknowledgeIrq(uint8_t interrupter) {
@@ -637,7 +659,7 @@ void XhciDriver::_configureDeviceInputContext(XhciDevice* device, uint16_t maxPa
     controlEndpointContext->interval = 0;
     controlEndpointContext->errorCount = 3;
     controlEndpointContext->maxPacketSize = maxPacketSize;
-    controlEndpointContext->transferRingDequeuePtr = device->getControlEndpointTransferRing()->getPhysicalBase();
+    controlEndpointContext->transferRingDequeuePtr = device->getControlEndpointTransferRing()->getPhysicalDequeuePointerBase();
     controlEndpointContext->dcs = device->getControlEndpointTransferRing()->getCycleBit();
     controlEndpointContext->maxEsitPayloadLo = 0;
     controlEndpointContext->maxEsitPayloadHi = 0;
@@ -688,10 +710,11 @@ void XhciDriver::_setupDevice(uint8_t port) {
         return;
     }
 
-    printXhciDeviceDescriptor(&deviceDescriptor);
-
     // Reset the port again
-    _resetPort(device->portRegSet);
+    //_resetPort(device->portRegSet);
+
+    // Update the device input context
+    _configureDeviceInputContext(device, deviceDescriptor.bMaxPacketSize0);
 
     // If the read max device packet size is different
     // from the initially calculated one, update it.
@@ -699,20 +722,19 @@ void XhciDriver::_setupDevice(uint8_t port) {
         // Update max packet size with the value from the device descriptor
         maxPacketSize = deviceDescriptor.bMaxPacketSize0;
 
-        // Update the device input context
-        _configureDeviceInputContext(device, maxPacketSize);
+        // MUST SEND AN EVALUATE_CONTEXT CMD HERE
     }
 
     // Send the address device command again with BSR=0 this time
     _addressDevice(device, false);
 
-    // // Read the full device descriptor
-    // if (!_getDeviceDescriptor(device, &deviceDescriptor, deviceDescriptor.bLength)) {
-    //     kprintError("[XHCI] Failed to get full device descriptor\n");
-    //     return;
-    // }
+    // Read the full device descriptor
+    if (!_getDeviceDescriptor(device, &deviceDescriptor, deviceDescriptor.bLength)) {
+        kprintError("[XHCI] Failed to get full device descriptor\n");
+        return;
+    }
 
-    // printXhciDeviceDescriptor(&deviceDescriptor);
+    printXhciDeviceDescriptor(&deviceDescriptor);
 }
 
 bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
@@ -770,7 +792,7 @@ bool XhciDriver::_getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* 
     setupStage.requestPacket.wValue = 0x0100; // DEVICE
     setupStage.requestPacket.wIndex = 0;
     setupStage.requestPacket.wLength = length;
-    setupStage.trbTransferLength = length;
+    setupStage.trbTransferLength = 8;
     setupStage.interrupterTarget = 0;
     setupStage.trt = 3;
     setupStage.idt = 1;
@@ -813,10 +835,7 @@ bool XhciDriver::_getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* 
     //  *after* you place the STATUS TRB on the ring.
     // (See bug report: https://bugs.launchpad.net/qemu/+bug/1859378 )
     if (!cpuid_isRunningUnderQEMU()) {
-        m_doorbellManager->ringControlEndpointDoorbell(transferRing->getDoorbellId());
-        msleep(100);
-
-        auto completionTrb = _getTransferCompletionTrb();
+        auto completionTrb = _startControlEndpointTransfer(transferRing);
         if (!completionTrb) {
             return false;
         }
@@ -846,10 +865,8 @@ bool XhciDriver::_getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* 
 
     transferRing->enqueue((XhciTrb_t*)&statusStage);
     transferRing->enqueue((XhciTrb_t*)&eventDataSecond);
-    m_doorbellManager->ringControlEndpointDoorbell(transferRing->getDoorbellId());
-    msleep(100);
 
-    auto completionTrb = _getTransferCompletionTrb();
+    auto completionTrb = _startControlEndpointTransfer(transferRing);
     if (!completionTrb) {
         return false;
     }
