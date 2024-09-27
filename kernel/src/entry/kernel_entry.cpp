@@ -22,6 +22,7 @@
 #include <acpi/shutdown.h>
 #include <time/ktime.h>
 #include <kprint.h>
+#include <drivers/device_driver_manager.h>
 #include <drivers/usb/xhci/xhci.h>
 
 #ifdef KRUN_UNIT_TESTS
@@ -177,45 +178,9 @@ void _kuser_entry() {
     });
 #endif
 
-    if (acpiController.hasPciDeviceTable()) {
-        auto pciDeviceTable = acpiController.getPciDeviceTable();
-
-        size_t idx = pciDeviceTable->findXhciController();
-        if (idx != kstl::npos) {
-            auto& xhciControllerPciDeviceInfo = pciDeviceTable->getDeviceInfo(idx);
-            uint8_t irqLine = xhciControllerPciDeviceInfo.headerInfo.interruptLine;
-
-            if (irqLine != 255) {
-                routeIoApicIrq(irqLine, IRQ14, BSP_CPU_ID, IRQ_LEVEL_TRIGGERED);
-                kuPrint("Registered XHCI irq handler for IRQ%i\n", irqLine);
-            } else if (HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapability::PciCapabilityMsiX)) {
-                PciMsiXCapability cap;
-                RUN_ELEVATED({
-                    cap = readMsixCapability(
-                        xhciControllerPciDeviceInfo.bus,
-                        xhciControllerPciDeviceInfo.device,
-                        xhciControllerPciDeviceInfo.function
-                    );
-                });
-
-                bool enabled = cap.enableBit;
-                kuPrint("MSI-X capability: %s\n", enabled ? "enabled" : "disabled");
-            } else if (HAS_PCI_CAP(xhciControllerPciDeviceInfo, PciCapability::PciCapabilityMsi)) {
-                RUN_ELEVATED({
-                    if (setupMsiInterrupt(xhciControllerPciDeviceInfo, IRQ14, BSP_CPU_ID)) {
-                        kprintInfo("MSI interrupts enabled!\n");
-                    } else {
-                        kprintError("Failed to setup MSI interrupts\n");
-                    }
-                });
-            }
-
-            RUN_ELEVATED({
-                auto& xhciDriver = XhciDriver::get();
-                xhciDriver.init(xhciControllerPciDeviceInfo);
-            });
-        }
-    }
+    // Iterate over PCI device table and find and
+    // install appropriate drivers for each device.
+    DeviceDriverManager::installPciDeviceDrivers();
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
