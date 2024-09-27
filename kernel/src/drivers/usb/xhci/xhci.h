@@ -160,7 +160,11 @@ private:
     void _setupDevice(uint8_t port);
     bool _addressDevice(XhciDevice* device, bool bsr);
 
-    bool _getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* desc, uint32_t length);
+    bool _sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPacket& req, void* outputBuffer, uint32_t length);
+
+    bool _getDeviceDescriptor(XhciDevice* device, UsbDeviceDescriptor* desc, uint32_t length);
+    bool _getStringLanguageDescriptor(XhciDevice* device, UsbStringLanguageDescriptor* desc);
+    bool _getStringDescriptor(XhciDevice* device, uint8_t descriptorIndex, uint8_t langid, UsbStringDescriptor* desc);
 
 private:
     // CAPLENGTH

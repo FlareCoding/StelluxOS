@@ -9,6 +9,7 @@
 #include <arch/x86/cpuid.h>
 #include <interrupts/interrupts.h>
 #include <sched/sched.h>
+#include <kstring.h>
 #include <kprint.h>
 
 bool g_singletonInitialized = false;
@@ -56,8 +57,9 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
         _resetPort(i);
     }
 
-    // DEBUG - setup device at port 4
+    // DEBUG - setup devices at port 4 and 5
     _setupDevice(4);
+    _setupDevice(5);
 
     // This code is just a prototype right now and is by no
     // means safe and has critical synchronization issues.
@@ -702,8 +704,8 @@ void XhciDriver::_setupDevice(uint8_t port) {
         return;
     }
 
-    XhciDeviceDescriptor deviceDescriptor;
-    zeromem(&deviceDescriptor, sizeof(XhciDeviceDescriptor));
+    UsbDeviceDescriptor deviceDescriptor;
+    zeromem(&deviceDescriptor, sizeof(UsbDeviceDescriptor));
 
     if (!_getDeviceDescriptor(device, &deviceDescriptor, 8)) {
         kprintError("[XHCI] Failed to get device descriptor\n");
@@ -729,12 +731,47 @@ void XhciDriver::_setupDevice(uint8_t port) {
     _addressDevice(device, false);
 
     // Read the full device descriptor
-    if (!_getDeviceDescriptor(device, &deviceDescriptor, deviceDescriptor.bLength)) {
+    if (!_getDeviceDescriptor(device, &deviceDescriptor, deviceDescriptor.header.bLength)) {
         kprintError("[XHCI] Failed to get full device descriptor\n");
         return;
     }
 
-    printXhciDeviceDescriptor(&deviceDescriptor);
+    printUsbDeviceDescriptor(&deviceDescriptor);
+
+    UsbStringLanguageDescriptor stringLanguageDescriptor;
+    if (!_getStringLanguageDescriptor(device, &stringLanguageDescriptor)) {
+        return;
+    }
+
+    // Get the language ID
+    uint16_t langId = stringLanguageDescriptor.langIds[0];
+
+    // Get metadata and information about the device
+    UsbStringDescriptor productName;
+    zeromem(&productName, sizeof(UsbStringDescriptor));
+    _getStringDescriptor(device, deviceDescriptor.iProduct, langId, &productName);
+
+    UsbStringDescriptor manufacturerName;
+    zeromem(&manufacturerName, sizeof(UsbStringDescriptor));
+    _getStringDescriptor(device, deviceDescriptor.iManufacturer, langId, &manufacturerName);
+
+    UsbStringDescriptor serialNumberString;
+    zeromem(&serialNumberString, sizeof(UsbStringDescriptor));
+    _getStringDescriptor(device, deviceDescriptor.iSerialNumber, langId, &serialNumberString);
+
+    char product[255] = { 0 };
+    char manufacturer[255] = { 0 };
+    char serialNumber[255] = { 0 };
+
+    convertUnicodeToNarrowString(productName.unicodeString, product);
+    convertUnicodeToNarrowString(manufacturerName.unicodeString, manufacturer);
+    convertUnicodeToNarrowString(serialNumberString.unicodeString, serialNumber);
+
+    kprint("---- USB Device Info ----\n");
+    kprint("  Product Name    : %s\n", product);
+    kprint("  Manufacturer    : %s\n", manufacturer);
+    kprint("  Serial Numbber  : %s\n", serialNumber);
+    kprint("\n");
 }
 
 bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
@@ -778,20 +815,16 @@ bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
     return true;
 }
 
-bool XhciDriver::_getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* desc, uint32_t length) {
+bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPacket& req, void* outputBuffer, uint32_t length) {
     XhciTransferRing* transferRing = device->getControlEndpointTransferRing();
 
     uint32_t* transferStatusBuffer = (uint32_t*)allocXhciMemory(sizeof(uint32_t), 16, 16);
-    uint8_t* deviceDescriptorBuffer = (uint8_t*)allocXhciMemory(256, 64, 64);
+    uint8_t* descriptorBuffer = (uint8_t*)allocXhciMemory(256, 64, 64);
     
     XhciSetupStageTrb_t setupStage;
     zeromem(&setupStage, sizeof(XhciTrb_t));
     setupStage.trbType = XHCI_TRB_TYPE_SETUP_STAGE;
-    setupStage.requestPacket.bRequestType = 0x80;
-    setupStage.requestPacket.bRequest = 6;    // GET_DESCRIPTOR
-    setupStage.requestPacket.wValue = 0x0100; // DEVICE
-    setupStage.requestPacket.wIndex = 0;
-    setupStage.requestPacket.wLength = length;
+    setupStage.requestPacket = req;
     setupStage.trbTransferLength = 8;
     setupStage.interrupterTarget = 0;
     setupStage.trt = 3;
@@ -801,7 +834,7 @@ bool XhciDriver::_getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* 
     XhciDataStageTrb_t dataStage;
     zeromem(&dataStage, sizeof(XhciTrb_t));
     dataStage.trbType = XHCI_TRB_TYPE_DATA_STAGE;
-    dataStage.dataBuffer = physbase(deviceDescriptorBuffer);
+    dataStage.dataBuffer = physbase(descriptorBuffer);
     dataStage.trbTransferLength = length;
     dataStage.tdSize = 0;
     dataStage.interrupterTarget = 0;
@@ -878,7 +911,68 @@ bool XhciDriver::_getDeviceDescriptor(XhciDevice* device, XhciDeviceDescriptor* 
     );
 
     // Copy the descriptor into the requested user buffer location
-    memcpy(desc, deviceDescriptorBuffer, length);
+    memcpy(outputBuffer, descriptorBuffer, length);
+
+    return true;
+}
+
+bool XhciDriver::_getDeviceDescriptor(XhciDevice* device, UsbDeviceDescriptor* desc, uint32_t length) {
+    XhciDeviceRequestPacket req;
+    req.bRequestType = 0x80;
+    req.bRequest = 6; // GET_DESCRIPTOR
+    req.wValue = USB_DESCRIPTOR_REQUEST(USB_DESCRIPTOR_DEVICE, 0);
+    req.wIndex = 0;
+    req.wLength = length;
+
+    return _sendUsbRequestPacket(device, req, desc, length);
+}
+
+bool XhciDriver::_getStringLanguageDescriptor(XhciDevice* device, UsbStringLanguageDescriptor* desc) {
+    XhciDeviceRequestPacket req;
+    req.bRequestType = 0x80;
+    req.bRequest = 6; // GET_DESCRIPTOR
+    req.wValue = USB_DESCRIPTOR_REQUEST(USB_DESCRIPTOR_STRING, 0);
+    req.wIndex = 0;
+    req.wLength = sizeof(UsbDescriptorHeader);
+
+    // First read just the header in order to get the total descriptor size
+    if (!_sendUsbRequestPacket(device, req, desc, sizeof(UsbDescriptorHeader))) {
+        kprintError("[XHCI] Failed to read device string language descriptor header\n");
+        return false;
+    }
+
+    // Read the entire descriptor
+    req.wLength = desc->header.bLength;
+
+    if (!_sendUsbRequestPacket(device, req, desc, desc->header.bLength)) {
+        kprintError("[XHCI] Failed to read device string language descriptor\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool XhciDriver::_getStringDescriptor(XhciDevice* device, uint8_t descriptorIndex, uint8_t langid, UsbStringDescriptor* desc) {
+    XhciDeviceRequestPacket req;
+    req.bRequestType = 0x80;
+    req.bRequest = 6; // GET_DESCRIPTOR
+    req.wValue = USB_DESCRIPTOR_REQUEST(USB_DESCRIPTOR_STRING, descriptorIndex);
+    req.wIndex = langid;
+    req.wLength = sizeof(UsbDescriptorHeader);
+
+    // First read just the header in order to get the total descriptor size
+    if (!_sendUsbRequestPacket(device, req, desc, sizeof(UsbDescriptorHeader))) {
+        kprintError("[XHCI] Failed to read device string descriptor header\n");
+        return false;
+    }
+
+    // Read the entire descriptor
+    req.wLength = desc->header.bLength;
+
+    if (!_sendUsbRequestPacket(device, req, desc, desc->header.bLength)) {
+        kprintError("[XHCI] Failed to read device string descriptor\n");
+        return false;
+    }
 
     return true;
 }
