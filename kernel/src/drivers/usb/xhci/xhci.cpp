@@ -870,6 +870,8 @@ bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPack
     if (!cpuid_isRunningUnderQEMU()) {
         auto completionTrb = _startControlEndpointTransfer(transferRing);
         if (!completionTrb) {
+            kfreeAligned(transferStatusBuffer);
+            kfreeAligned(descriptorBuffer);
             return false;
         }
 
@@ -901,6 +903,8 @@ bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPack
 
     auto completionTrb = _startControlEndpointTransfer(transferRing);
     if (!completionTrb) {
+        kfreeAligned(transferStatusBuffer);
+        kfreeAligned(descriptorBuffer);
         return false;
     }
 
@@ -912,6 +916,9 @@ bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPack
 
     // Copy the descriptor into the requested user buffer location
     memcpy(outputBuffer, descriptorBuffer, length);
+
+    kfreeAligned(transferStatusBuffer);
+    kfreeAligned(descriptorBuffer);
 
     return true;
 }
