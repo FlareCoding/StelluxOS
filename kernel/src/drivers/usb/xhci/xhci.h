@@ -141,7 +141,7 @@ private:
     void _createDeviceContext(uint8_t slotId);
 
     XhciCommandCompletionTrb_t* _sendCommand(XhciTrb_t* trb, uint32_t timeoutMs = 120);
-    XhciTransferCompletionTrb_t* _getTransferCompletionTrb();
+    XhciTransferCompletionTrb_t* _startControlEndpointTransfer(XhciTransferRing* transferRing);
 
     uint16_t _getMaxInitialPacketSize(uint8_t portSpeed);
 
@@ -208,6 +208,14 @@ private:
 
     // Doorbell register array manager
     kstl::SharedPtr<XhciDoorbellManager> m_doorbellManager;
+
+private:
+    kstl::vector<XhciPortStatusChangeTrb_t*> m_portStatusChangeEvents;
+    kstl::vector<XhciCommandCompletionTrb_t*> m_commandCompletionEvents;
+    kstl::vector<XhciTransferCompletionTrb_t*> m_transferCompletionEvents;
+
+    volatile uint8_t m_commandIrqCompleted = 0;
+    volatile uint8_t m_transferIrqCompleted = 0;
 };
 
 #endif

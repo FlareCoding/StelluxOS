@@ -28,7 +28,8 @@ COMMON_QEMU_FLAGS := -machine q35 -device usb-ehci,id=ehci -device qemu-xhci,id=
 QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/OVMF_CODE.fd",readonly=on -drive if=pflash,format=raw,unit=1,file="efi/OVMF_VARS.fd"
 
 # Sample connected USB 2.0 devices
-QEMU_FLAGS += -device usb-kbd,id=usbkbd -device usb-mouse,id=usbmouse -device usb-hub,id=usbhub
+QEMU_FLAGS += -device usb-kbd,id=usbkbd -device usb-mouse,id=usbmouse
+# QEMU_FLAGS += -device usb-hub,id=usbhub
 
 #
 # Sample connected USB 3.0 devices
