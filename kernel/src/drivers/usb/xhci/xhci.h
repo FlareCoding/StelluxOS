@@ -1,6 +1,6 @@
 #ifndef XCHI_H
 #define XCHI_H
-#include <acpi/mcfg.h>
+#include <drivers/device_driver.h>
 #include <interrupts/interrupts.h>
 #include "xhci_device_ctx.h"
 
@@ -102,14 +102,12 @@ the Event Ring registers and their initialization.
         Run/Stop (R/S) bit to ‘1’. This operation allows the xHC to begin accepting
         doorbell references.
 */
-class XhciDriver {
+class XhciDriver : public DeviceDriver {
 public:
-    static XhciDriver& get();
-
     XhciDriver() = default;
     ~XhciDriver() = default;
 
-    bool init(PciDeviceInfo& deviceInfo);
+    int driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector);
 
     void logUsbsts();
 
@@ -130,7 +128,7 @@ private:
     void _logOperationalRegisters();
     
     uint8_t _getPortSpeed(uint8_t port);
-    const char* _usbSpeedToString(uint8_t speed);
+    const char* _usbSpeedToString(uint8_t speed); 
 
     void _configureRuntimeRegisters();
 

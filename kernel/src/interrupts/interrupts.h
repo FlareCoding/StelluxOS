@@ -194,6 +194,8 @@ struct IrqDescriptor {
     uint16_t rsvd;
 };
 
+uint8_t findFreeIrqVector();
+
 bool registerIrqHandler(uint8_t irqno, IrqHandler_t handler, bool fastApicEoi, void* cookie);
 
 void routeIoApicIrq(uint8_t irqLine, uint8_t irqno, uint8_t cpu = 0, uint8_t levelTriggered = 0);

@@ -8,18 +8,23 @@
 #include <arch/x86/ioapic.h>
 #include <arch/x86/cpuid.h>
 #include <interrupts/interrupts.h>
+#include <sched/sched.h>
 #include <kprint.h>
 
-static XhciDriver g_xhciDriver;
+bool g_singletonInitialized = false;
 
-XhciDriver& XhciDriver::get() {
-    return g_xhciDriver;
-}
+int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
+    if (g_singletonInitialized) {
+        kprintWarn("[XHCI] Another instance of the controller driver is already running\n");
+    }
 
-bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
-    kprint("[XHCI] Initialize xHci Driver 3.0\n\n");
+    kprint("[XHCI] Initializing xHci Driver 3.0\n\n");
 
-    m_xhcBase = xhciMapMmio(deviceInfo.barAddress);
+    // Disable interrupts to prevent incomplete bus
+    // transactions when configuring the controller.
+    Scheduler::get().preemptDisable();
+
+    m_xhcBase = xhciMapMmio(pciInfo.barAddress);
 
     // Parse the read-only capability register space
     _parseCapabilityRegisters();
@@ -30,7 +35,7 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
 
     // Reset the controller
     if (!_resetHostController()) {
-        return false;
+        return DEVICE_INIT_FAILURE;
     }
 
     // Configure the controller's register spaces
@@ -38,16 +43,17 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
     _configureRuntimeRegisters();
 
     // Register the IRQ handler
-    registerIrqHandler(IRQ14, reinterpret_cast<IrqHandler_t>(xhciIrqHandler), false, static_cast<void*>(this));
+    if (irqVector != 0) {
+        registerIrqHandler(irqVector, reinterpret_cast<IrqHandler_t>(xhciIrqHandler), false, static_cast<void*>(this));
+        kprint("Registered xhci handler at IRQ%i\n", irqVector - IRQ0);
+    }
 
     // At this point the controller is all setup so we can start it
     _startHostController();
 
     // Perform an initial port reset for each port
     for (uint8_t i = 0; i < m_maxPorts; i++) {
-        if (_resetPort(i)) {
-            kprintInfo("[*] Successfully reset %s port %i\n", _isUSB3Port(i) ? "USB3" : "USB2", i);
-        }
+        _resetPort(i);
     }
     kprint("\n");
 
@@ -65,39 +71,12 @@ bool XhciDriver::init(PciDeviceInfo& deviceInfo) {
 
     _sendCommand(&testTrb);
 
-    // const uint8_t testPort = 4; // TEST USB DEVICE
+    while (1) {
+        sleep(1);
+        kprint("xhci print!\n");
+    }
 
-    // // After port resets, there will be extreneous port state change events
-    // // for ports with connected devices, but without CSC bit set, so we have
-    // // to manually iterate the ports with connected devices and set them up.
-    // m_eventRing->flushUnprocessedEvents();
-
-    // for (uint8_t port = 0; port < m_maxPorts; ++port) {
-    //     auto portRegisterSet = _getPortRegisterSet(port);
-    //     XhciPortscRegister portsc;
-    //     portRegisterSet.readPortscReg(portsc);
-
-    //     if (portsc.ccs) {
-    //         _handleDeviceConnected(port);
-    //     }
-    // }
-
-    // kstl::vector<XhciTrb_t*> eventTrbs;
-    // while (true) {
-    //    eventTrbs.clear();
-    //     if (m_eventRing->hasUnprocessedEvents()) {
-    //         m_eventRing->dequeueEvents(eventTrbs);
-    //         _markXhciInterruptCompleted(0);
-    //     }
-
-    //     // Process the TRBs
-    //     for (size_t i = 0; i < eventTrbs.size(); ++i) {
-    //         _processEventRingTrb(eventTrbs[i]);
-    //     }
-    // }
-
-    // kprint("\n");
-    return true;
+    return DEVICE_INIT_SUCCESS;
 }
 
 void XhciDriver::logUsbsts() {
@@ -118,8 +97,6 @@ void XhciDriver::logUsbsts() {
 irqreturn_t XhciDriver::xhciIrqHandler(void*, XhciDriver* driver) {
     driver->_processEvents();
     driver->_acknowledgeIrq(0);
-
-    kprint("Xhci Event Handled!\n");
 
     Apic::getLocalApic()->completeIrq();
     return IRQ_HANDLED;
@@ -448,6 +425,29 @@ void XhciDriver::_processEvents() {
     kstl::vector<XhciTrb_t*> events;
     if (m_eventRing->hasUnprocessedEvents()) {
         m_eventRing->dequeueEvents(events);
+    }
+
+    for (size_t i = 0; i < events.size(); i++) {
+        XhciTrb_t* event = events[i];
+        if (event->trbType == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT) {
+            auto comp = (XhciCommandCompletionTrb_t*)event;
+            kprint("Received event: %s\n", trbTypeToString(event->trbType));
+            kprint("   completion code: %s\n", trbCompletionCodeToString(comp->completionCode));
+        } else if (event->trbType == XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT) {
+            auto portChangeEvt = (XhciPortStatusChangeTrb_t*)event;
+            uint8_t port = portChangeEvt->portId;
+            uint8_t portRegIdx = port - 1;
+            
+            XhciPortRegisterManager regman = _getPortRegisterSet(portRegIdx);
+            XhciPortscRegister reg;
+            regman.readPortscReg(reg);
+
+            if (reg.ccs) {
+                kprintInfo("[XHCI] Device connected on port %i - %s\n", port, _usbSpeedToString(reg.portSpeed));
+            } else {
+                kprintInfo("[XHCI] Device disconnected from port %i\n", port);
+            }
+        }
     }
 }
 

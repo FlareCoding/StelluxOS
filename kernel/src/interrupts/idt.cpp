@@ -302,13 +302,23 @@ void setupInterruptDescriptorTable() {
     SET_KERNEL_TRAP_GATE(IRQ62, __asm_irq_handler_62);
     SET_KERNEL_TRAP_GATE(IRQ63, __asm_irq_handler_63);
     SET_KERNEL_TRAP_GATE(IRQ64, __asm_irq_handler_64);
-
 }
 
 __PRIVILEGED_CODE
 void loadIdtr() {
     // Load the IDT
     __asm__("lidt %0" : : "m"(g_kernelIdtDescriptor));
+}
+
+uint8_t findFreeIrqVector() {
+    for (uint8_t irqno = IRQ17; irqno < IRQ64; irqno++) {
+        IrqDescriptor* desc = &g_irqHandlerTable.descriptors[irqno];
+        if (!desc->handler) {
+            return irqno;
+        }
+    }
+
+    return 0;
 }
 
 bool registerIrqHandler(uint8_t irqno, IrqHandler_t handler, bool fastApicEoi, void* cookie) {

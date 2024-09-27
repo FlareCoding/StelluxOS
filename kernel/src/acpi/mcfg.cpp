@@ -2,6 +2,7 @@
 #include <paging/page.h>
 #include <paging/phys_addr_translation.h>
 #include <interrupts/interrupts.h>
+#include <arch/x86/ioapic.h>
 #include <kprint.h>
 
 Mcfg::Mcfg(McfgHeader* table) {
