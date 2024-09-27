@@ -52,11 +52,11 @@ XhciEndpointContext32* XhciDevice::getInputControlEndpointContext(bool use64Byte
     }
 }
 
-void printXhciDeviceDescriptor(const XhciDeviceDescriptor *desc) {
-    kprint("XHCI Device Descriptor:\n");
+void printUsbDeviceDescriptor(const UsbDeviceDescriptor *desc) {
+    kprint("USB Device Descriptor:\n");
     kprint("-------------------------------\n");
-    kprint("bLength:              %i\n", desc->bLength);
-    kprint("bDescriptorType:      %i\n", desc->bDescriptorType);
+    kprint("bLength:              %i\n", desc->header.bLength);
+    kprint("bDescriptorType:      %i\n", desc->header.bDescriptorType);
     kprint("bcdUsb:               %x\n", desc->bcdUsb);            // Typically printed in hex
     kprint("bDeviceClass:         %i\n", desc->bDeviceClass);
     kprint("bDeviceSubClass:      %i\n", desc->bDeviceSubClass);

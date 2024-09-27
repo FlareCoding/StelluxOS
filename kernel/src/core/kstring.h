@@ -33,6 +33,8 @@ int ftoa(
 uint64_t strlen(const char *str);
 int strcmp(const char *s1, const char *s2);
 
+void convertUnicodeToNarrowString(void* unicodeString, char* buffer);
+
 namespace kstl {
 class string {
 public:

@@ -145,6 +145,35 @@ int strcmp(const char *s1, const char *s2) {
     return *(unsigned char *)s1 - *(unsigned char *)s2;
 }
 
+void convertUnicodeToNarrowString(void* unicodeString, char* buffer) {
+    uint16_t* unicode = reinterpret_cast<uint16_t*>(unicodeString);
+
+    if (!unicodeString || !buffer) {
+        return;
+    }
+
+    // Iterate through the unicodeString until the null terminator is reached
+    while (*unicode) {
+        // Get the current unicode character
+        uint16_t unicodeChar = *unicode;
+
+        // If the character is in the ASCII range, directly convert it
+        if (unicodeChar <= 0x7F) {
+            *buffer = static_cast<char>(unicodeChar);
+        } else {
+            // For characters outside the ASCII range, use a placeholder
+            *buffer = ' ';
+        }
+
+        // Move to the next character in both strings
+        ++unicode;
+        ++buffer;
+    }
+
+    // Null-terminate the output buffer
+    *buffer = '\0';
+}
+
 namespace kstl {
     string::string() : m_isUsingSSOBuffer(true) {
         m_ssoBuffer[0] = '\0';

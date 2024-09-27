@@ -1,0 +1,11 @@
+#ifndef USB_LANGIDS_H
+#define USB_LANGIDS_H
+
+#define USB_LANGID_ENGLISH_US   0x0409
+#define USB_LANGID_ENGLISH_AU   0x0C09
+#define USB_LANGID_ENGLISH_CA   0x1009
+#define USB_LANGID_GERMAN       0x0407
+#define USB_LANGID_FRENCH       0x040C
+#define USB_LANGID_SPANISH      0x080A
+
+#endif
