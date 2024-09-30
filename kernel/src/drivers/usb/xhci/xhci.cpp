@@ -21,10 +21,6 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
 
     kprint("[XHCI] Initializing xHci Driver 3.0\n\n");
 
-    // Disable interrupts to prevent incomplete bus
-    // transactions when configuring the controller.
-    Scheduler::get().preemptDisable();
-
     m_xhcBase = xhciMapMmio(pciInfo.barAddress);
 
     // Parse the read-only capability register space
@@ -770,7 +766,7 @@ void XhciDriver::_setupDevice(uint8_t port) {
     kprint("---- USB Device Info ----\n");
     kprint("  Product Name    : %s\n", product);
     kprint("  Manufacturer    : %s\n", manufacturer);
-    kprint("  Serial Numbber  : %s\n", serialNumber);
+    kprint("  Serial Number   : %s\n", serialNumber);
     kprint("\n");
 }
 
