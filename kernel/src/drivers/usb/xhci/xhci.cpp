@@ -53,10 +53,6 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
         _resetPort(i);
     }
 
-    // DEBUG - setup devices at port 4 and 5
-    _setupDevice(4);
-    _setupDevice(5);
-
     // This code is just a prototype right now and is by no
     // means safe and has critical synchronization issues.
     while (true) {
@@ -75,6 +71,10 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
 
             if (reg.ccs) {
                 kprintInfo("[XHCI] Device connected on port %i - %s\n", port, _usbSpeedToString(reg.portSpeed));
+
+                // Setup the newly connected device
+                _setupDevice(portRegIdx);
+
             } else {
                 kprintInfo("[XHCI] Device disconnected from port %i\n", port);
             }
@@ -732,7 +732,7 @@ void XhciDriver::_setupDevice(uint8_t port) {
         return;
     }
 
-    printUsbDeviceDescriptor(&deviceDescriptor);
+    //printUsbDeviceDescriptor(&deviceDescriptor);
 
     UsbStringLanguageDescriptor stringLanguageDescriptor;
     if (!_getStringLanguageDescriptor(device, &stringLanguageDescriptor)) {
@@ -871,11 +871,11 @@ bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPack
             return false;
         }
 
-        kprintInfo(
-            "Transfer Status: %s  Length: %i\n",
-            trbCompletionCodeToString(completionTrb->completionCode),
-            completionTrb->transferLength
-        );
+        // kprintInfo(
+        //     "Transfer Status: %s  Length: %i\n",
+        //     trbCompletionCodeToString(completionTrb->completionCode),
+        //     completionTrb->transferLength
+        // );
     }
 
     XhciStatusStageTrb_t statusStage;
@@ -904,11 +904,11 @@ bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPack
         return false;
     }
 
-    kprintInfo(
-        "Transfer Status: %s  Length: %i\n",
-        trbCompletionCodeToString(completionTrb->completionCode),
-        completionTrb->transferLength
-    );
+    // kprintInfo(
+    //     "Transfer Status: %s  Length: %i\n",
+    //     trbCompletionCodeToString(completionTrb->completionCode),
+    //     completionTrb->transferLength
+    // );
 
     // Copy the descriptor into the requested user buffer location
     memcpy(outputBuffer, descriptorBuffer, length);
