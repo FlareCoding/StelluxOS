@@ -165,6 +165,7 @@ private:
     bool _getDeviceDescriptor(XhciDevice* device, UsbDeviceDescriptor* desc, uint32_t length);
     bool _getStringLanguageDescriptor(XhciDevice* device, UsbStringLanguageDescriptor* desc);
     bool _getStringDescriptor(XhciDevice* device, uint8_t descriptorIndex, uint8_t langid, UsbStringDescriptor* desc);
+    bool _getConfigurationDescriptor(XhciDevice* device, UsbConfigurationDescriptor* desc);
 
 private:
     // CAPLENGTH
