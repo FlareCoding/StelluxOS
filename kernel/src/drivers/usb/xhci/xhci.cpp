@@ -760,8 +760,48 @@ void XhciDriver::_setupDevice(uint8_t port) {
     if (!_getConfigurationDescriptor(device, configurationDescriptor)) {
         return;
     }
+
+    // Set device configuration
+    if (!_setDeviceConfiguration(device, configurationDescriptor->bConfigurationValue)) {
+        return;
+    }
     
-    UsbInterfaceDescriptor* iface = (UsbInterfaceDescriptor*)configurationDescriptor->interfaceDescriptorBuffer;
+    UsbInterfaceDescriptor* iface = nullptr;
+    UsbEndpointDescriptor* epDescriptor = nullptr;
+
+    uint8_t* buffer = configurationDescriptor->data;
+    uint16_t totalLength = configurationDescriptor->wTotalLength - configurationDescriptor->header.bLength;
+    uint16_t index = 0;
+
+    while (index < totalLength) {
+        UsbDescriptorHeader* header = (UsbDescriptorHeader*)&buffer[index];
+
+        switch (header->bDescriptorType) {
+            case USB_DESCRIPTOR_INTERFACE:
+                iface = (UsbInterfaceDescriptor*)header;
+                break;
+            case USB_DESCRIPTOR_HID:
+                // Process HID Descriptor
+                // ...
+                break;
+            case USB_DESCRIPTOR_ENDPOINT:
+                epDescriptor = (UsbEndpointDescriptor*)header;
+                break;
+            default: break;
+        }
+
+        index += header->bLength;
+    }
+
+    if (!iface || !epDescriptor) {
+        kprintError("[XHCI] Failed to find interface or endpoint descriptor\n");
+        return;
+    }
+
+    const uint8_t bootProtocol = 0;
+    if (!_setProtocol(device, iface->bInterfaceNumber, bootProtocol)) {
+        return;
+    }
 
     kprint("---- USB Device Info ----\n");
     kprint("  Product Name    : %s\n", product);
@@ -775,6 +815,7 @@ void XhciDriver::_setupDevice(uint8_t port) {
     kprint("      bmAttributes        - %i\n", configurationDescriptor->bmAttributes);
     kprint("      bMaxPower           - %i milliamps\n", configurationDescriptor->bMaxPower);
     kprint("      ------ Interface 1 ------\n");
+    kprint("        type    - %i\n", iface->header.bDescriptorType);
     kprint("        bInterfaceNumber    - %i\n", iface->bInterfaceNumber);
     kprint("        bAlternateSetting   - %i\n", iface->bAlternateSetting);
     kprint("        bNumEndpoints       - %i\n", iface->bNumEndpoints);
@@ -782,6 +823,11 @@ void XhciDriver::_setupDevice(uint8_t port) {
     kprint("        bInterfaceSubClass  - %i\n", iface->bInterfaceSubClass);
     kprint("        bInterfaceProtocol  - %i\n", iface->bInterfaceProtocol);
     kprint("        iInterface          - %i\n", iface->iInterface);
+    kprint("        ------ Endpoint 1 ------\n");
+    kprint("          bEndpointAddress  - %x\n", epDescriptor->bEndpointAddress);
+    kprint("          bmAttributes      - %i\n", epDescriptor->bmAttributes);
+    kprint("          wMaxPacketSize    - %i\n", epDescriptor->wMaxPacketSize);
+    kprint("          bInterval         - %i\n", epDescriptor->bInterval);
     kprint("\n");
 }
 
@@ -1022,6 +1068,42 @@ bool XhciDriver::_getConfigurationDescriptor(XhciDevice* device, UsbConfiguratio
 
     if (!_sendUsbRequestPacket(device, req, desc, desc->wTotalLength)) {
         kprintError("[XHCI] Failed to read device configuration descriptor with interface descriptors\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool XhciDriver::_setDeviceConfiguration(XhciDevice* device, uint16_t configurationValue) {
+    // Prepare the setup packet
+    XhciDeviceRequestPacket setupPacket;
+    zeromem(&setupPacket, sizeof(XhciDeviceRequestPacket));
+    setupPacket.bRequestType = 0x00; // Host to Device, Standard, Device
+    setupPacket.bRequest = 9;        // SET_CONFIGURATION
+    setupPacket.wValue = configurationValue;
+    setupPacket.wIndex = 0;
+    setupPacket.wLength = 0;
+
+    // Perform the control transfer
+    if (!_sendUsbRequestPacket(device, setupPacket, nullptr, 0)) {
+        kprintError("[XHCI] Failed to set device configuration\n");
+        return false;
+    }
+
+    return true;
+}
+
+bool XhciDriver::_setProtocol(XhciDevice* device, uint8_t interface, uint8_t protocol) {
+    XhciDeviceRequestPacket setupPacket;
+    zeromem(&setupPacket, sizeof(XhciDeviceRequestPacket));
+    setupPacket.bRequestType = 0x21; // Host to Device, Class, Interface
+    setupPacket.bRequest = 0x0B;     // SET_PROTOCOL
+    setupPacket.wValue = protocol;
+    setupPacket.wIndex = interface;
+    setupPacket.wLength = 0;
+
+    if (!_sendUsbRequestPacket(device, setupPacket, nullptr, 0)) {
+        kprintError("[XHCI] Failed to set device protocol\n");
         return false;
     }
 

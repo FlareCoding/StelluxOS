@@ -167,6 +167,9 @@ private:
     bool _getStringDescriptor(XhciDevice* device, uint8_t descriptorIndex, uint8_t langid, UsbStringDescriptor* desc);
     bool _getConfigurationDescriptor(XhciDevice* device, UsbConfigurationDescriptor* desc);
 
+    bool _setDeviceConfiguration(XhciDevice* device, uint16_t configurationValue);
+    bool _setProtocol(XhciDevice* device, uint8_t interface, uint8_t protocol);
+
 private:
     // CAPLENGTH
     uint8_t m_capabilityRegsLength;

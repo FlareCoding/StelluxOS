@@ -80,7 +80,7 @@ struct UsbConfigurationDescriptor {
     uint8_t iConfiguration;
     uint8_t bmAttributes;
     uint8_t bMaxPower;
-    uint8_t interfaceDescriptorBuffer[245];
+    uint8_t data[245];
 } __attribute__((packed));
 static_assert(sizeof(UsbConfigurationDescriptor) == 254);
 
@@ -95,5 +95,14 @@ struct UsbInterfaceDescriptor {
     uint8_t iInterface;
 } __attribute__((packed));
 static_assert(sizeof(UsbInterfaceDescriptor) == 9);
+
+struct UsbEndpointDescriptor {
+    UsbDescriptorHeader header;
+    uint8_t bEndpointAddress;
+    uint8_t bmAttributes;
+    uint16_t wMaxPacketSize;
+    uint8_t bInterval;
+} __attribute__((packed));
+static_assert(sizeof(UsbEndpointDescriptor) == 7);
 
 #endif
