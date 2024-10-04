@@ -592,18 +592,27 @@ public:
     uint64_t getInputContextPhysicalBase();
 
     void allocateControlEndpointTransferRing();
+    void allocateInterruptInEndpointTransferRing();
 
     __force_inline__ XhciTransferRing* getControlEndpointTransferRing() { 
         return m_controlEndpointTransferRing;
     }
 
+    __force_inline__ XhciTransferRing* getInterruptInEndpointTransferRing() { 
+        return m_interruptInEndpointTransferRing;
+    }
+
     XhciInputControlContext32* getInputControlContext(bool use64ByteContexts);
     XhciSlotContext32* getInputSlotContext(bool use64ByteContexts);
     XhciEndpointContext32* getInputControlEndpointContext(bool use64ByteContexts);
+    XhciEndpointContext32* getInputEndpointContext(bool use64ByteContexts, uint8_t endpointID);
+
+    void copyOutputDeviceContextToInputDeviceContext(bool use64ByteContexts, void* outputDeviceContext);
 
 private:
     void* m_inputContext = nullptr;
     XhciTransferRing* m_controlEndpointTransferRing = nullptr;
+    XhciTransferRing* m_interruptInEndpointTransferRing = nullptr;
 };
 
 void printUsbDeviceDescriptor(const UsbDeviceDescriptor *desc);
