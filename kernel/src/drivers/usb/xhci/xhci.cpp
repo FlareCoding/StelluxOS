@@ -460,13 +460,32 @@ void XhciDriver::_processEvents() {
         }
         case XHCI_TRB_TYPE_TRANSFER_EVENT: {
             transferCompletionStatus = 1;
-            m_transferCompletionEvents.pushBack((XhciTransferCompletionTrb_t*)event);
+            auto transferEvent = (XhciTransferCompletionTrb_t*)event;
+            m_transferCompletionEvents.pushBack(transferEvent);
+
+            if (transferEvent->endpointId == 3) {
+                uint8_t modifiers = keyboardDeviceDataBuffer[0];
+                uint8_t keycodes[6];
+                memcpy(keycodes, &keyboardDeviceDataBuffer[2], 6);
+
+                // Process modifier keys
+                bool shiftPressed = (modifiers & 0x02) || (modifiers & 0x20); // Left or Right Shift
+
+                // Process keycodes
+                for (int i = 0; i < 6; i++) {
+                    if (keycodes[i] != 0) {
+                        char keyChar = _mapKeycodeToChar(keycodes[i], shiftPressed);
+                        // Handle the key press
+                        kprint("%c", keyChar);
+                        // You can add the keyChar to an input buffer or trigger an event
+                    }
+                }
+
+                _testKeyboardCommunication(keyboardDevice);
+            }
             break;
         }
-        default: {
-            kprint("Received an event! Please parse...\n");
-            break;
-        }
+        default: break;
         }
     }
 
@@ -900,7 +919,10 @@ void XhciDriver::_setupDevice(uint8_t port) {
     }
 
     kprint("Testing keyboard...\n");
-    _testKeyboardCommunication(device);
+    keyboardDevice = device;
+    keyboardDeviceDataBuffer = (uint8_t*)allocXhciMemory(maxPacketSize, 64, 64);
+
+    _testKeyboardCommunication(keyboardDevice);
 }
 
 bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
@@ -1256,13 +1278,12 @@ void XhciDriver::_testKeyboardCommunication(XhciDevice* device) {
     auto transferRing = device->getInterruptInEndpointTransferRing();
     const uint8_t endpointId = 3;
     const uint16_t maxPacketSize = 8;
-    uint8_t* dataBuffer = (uint8_t*)allocXhciMemory(maxPacketSize, 64, 64);
 
     // Prepare a Normal TRB
     XhciNormalTrb_t normalTrb;
     zeromem(&normalTrb, sizeof(XhciNormalTrb_t));
     normalTrb.trbType = XHCI_TRB_TYPE_NORMAL;
-    normalTrb.dataBufferPhysicalBase = physbase(dataBuffer);
+    normalTrb.dataBufferPhysicalBase = physbase(keyboardDeviceDataBuffer);
     normalTrb.trbTransferLength = maxPacketSize;
     normalTrb.ioc = 1; // Interrupt on Completion
 
@@ -1270,3 +1291,115 @@ void XhciDriver::_testKeyboardCommunication(XhciDevice* device) {
 
     m_doorbellManager->ringDoorbell(device->slotId, endpointId);
 }
+
+char XhciDriver::_mapKeycodeToChar(uint8_t keycode, bool shiftPressed) {
+    // HID Usage ID to ASCII mapping
+    static const char keycodeToAscii[] = {
+        0,    // 0x00
+        0,    // 0x01
+        0,    // 0x02
+        0,    // 0x03
+        'a',  // 0x04
+        'b',  // 0x05
+        'c',  // 0x06
+        'd',  // 0x07
+        'e',  // 0x08
+        'f',  // 0x09
+        'g',  // 0x0A
+        'h',  // 0x0B
+        'i',  // 0x0C
+        'j',  // 0x0D
+        'k',  // 0x0E
+        'l',  // 0x0F
+        'm',  // 0x10
+        'n',  // 0x11
+        'o',  // 0x12
+        'p',  // 0x13
+        'q',  // 0x14
+        'r',  // 0x15
+        's',  // 0x16
+        't',  // 0x17
+        'u',  // 0x18
+        'v',  // 0x19
+        'w',  // 0x1A
+        'x',  // 0x1B
+        'y',  // 0x1C
+        'z',  // 0x1D
+        '1',  // 0x1E
+        '2',  // 0x1F
+        '3',  // 0x20
+        '4',  // 0x21
+        '5',  // 0x22
+        '6',  // 0x23
+        '7',  // 0x24
+        '8',  // 0x25
+        '9',  // 0x26
+        '0',  // 0x27
+        '\n', // 0x28 Enter
+        0x1B, // 0x29 Escape
+        '\b', // 0x2A Backspace
+        '\t', // 0x2B Tab
+        ' ',  // 0x2C Spacebar
+        '-',  // 0x2D - and _
+        '=',  // 0x2E = and +
+        '[',  // 0x2F [ and {
+        ']',  // 0x30 ] and }
+        '\\', // 0x31 \ and |
+        '#',  // 0x32 Non-US # and ~
+        ';',  // 0x33 ; and :
+        '\'', // 0x34 ' and "
+        '`',  // 0x35 Grave Accent and Tilde
+        ',',  // 0x36 , and <
+        '.',  // 0x37 . and >
+        '/',  // 0x38 / and ?
+        // Add more mappings for other keys as needed
+    };
+
+    size_t arraySize = sizeof(keycodeToAscii) / sizeof(keycodeToAscii[0]);
+    if (keycode < arraySize) {
+        char c = keycodeToAscii[keycode];
+
+        if (shiftPressed) {
+            // Handle uppercase letters
+            if (c >= 'a' && c <= 'z') {
+                c = c - 'a' + 'A'; // Convert to uppercase
+            }
+            // Handle shifted symbols
+            else {
+                switch (keycode) {
+                    case 0x1E: c = '!'; break; // 1 -> !
+                    case 0x1F: c = '@'; break; // 2 -> @
+                    case 0x20: c = '#'; break; // 3 -> #
+                    case 0x21: c = '$'; break; // 4 -> $
+                    case 0x22: c = '%'; break; // 5 -> %
+                    case 0x23: c = '^'; break; // 6 -> ^
+                    case 0x24: c = '&'; break; // 7 -> &
+                    case 0x25: c = '*'; break; // 8 -> *
+                    case 0x26: c = '('; break; // 9 -> (
+                    case 0x27: c = ')'; break; // 0 -> )
+                    case 0x2D: c = '_'; break; // - -> _
+                    case 0x2E: c = '+'; break; // = -> +
+                    case 0x2F: c = '{'; break; // [ -> {
+                    case 0x30: c = '}'; break; // ] -> }
+                    case 0x31: c = '|'; break; // \ -> |
+                    case 0x33: c = ':'; break; // ; -> :
+                    case 0x34: c = '"'; break; // ' -> "
+                    case 0x35: c = '~'; break; // ` -> ~
+                    case 0x36: c = '<'; break; // , -> <
+                    case 0x37: c = '>'; break; // . -> >
+                    case 0x38: c = '?'; break; // / -> ?
+                    // Add more shifted symbols as needed
+                    default:
+                        // For keys without shifted symbols, leave as is
+                        break;
+                }
+            }
+        }
+
+        return c;
+    }
+
+    // Return 0 for unknown or unhandled keycodes
+    return 0;
+}
+

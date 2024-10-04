@@ -175,6 +175,7 @@ private:
     bool _setProtocol(XhciDevice* device, uint8_t interface, uint8_t protocol);
 
     void _testKeyboardCommunication(XhciDevice* device);
+    char _mapKeycodeToChar(uint8_t keycode, bool shiftPressed);
 
 private:
     // CAPLENGTH
@@ -222,6 +223,10 @@ private:
 
     // Doorbell register array manager
     kstl::SharedPtr<XhciDoorbellManager> m_doorbellManager;
+
+    // Test device
+    XhciDevice* keyboardDevice;
+    uint8_t* keyboardDeviceDataBuffer;
 
 private:
     kstl::vector<XhciPortStatusChangeTrb_t*> m_portStatusChangeEvents;
