@@ -463,7 +463,10 @@ void XhciDriver::_processEvents() {
             m_transferCompletionEvents.pushBack((XhciTransferCompletionTrb_t*)event);
             break;
         }
-        default: break;
+        default: {
+            kprint("Received an event! Please parse...\n");
+            break;
+        }
         }
     }
 
@@ -878,11 +881,10 @@ void XhciDriver::_setupDevice(uint8_t port) {
     // Sanity-check the actual device context entry in DCBAA
     XhciDeviceContext32* deviceContext = &virtbase(device->getInputContextPhysicalBase(), XhciInputContext32)->deviceContext;
 
-    kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epSate:%s epType:%i\n               maxPacketSize:%i\n",
+    kprint("    DeviceContext[slotId=%i] address:0x%i slotState:%s epSate:%s maxPacketSize:%i\n",
         device->slotId, deviceContext->slotContext.deviceAddress,
         xhciSlotStateToString(deviceContext->slotContext.slotState),
         xhciEndpointStateToString(deviceContext->ep[1].endpointState),
-        deviceContext->ep[1].endpointType,
         deviceContext->ep[1].maxPacketSize
     );
 
@@ -896,6 +898,9 @@ void XhciDriver::_setupDevice(uint8_t port) {
     if (!_setProtocol(device, iface->bInterfaceNumber, bootProtocol)) {
         return;
     }
+
+    kprint("Testing keyboard...\n");
+    _testKeyboardCommunication(device);
 }
 
 bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
@@ -1245,4 +1250,23 @@ bool XhciDriver::_setProtocol(XhciDevice* device, uint8_t interface, uint8_t pro
     }
 
     return true;
+}
+
+void XhciDriver::_testKeyboardCommunication(XhciDevice* device) {
+    auto transferRing = device->getInterruptInEndpointTransferRing();
+    const uint8_t endpointId = 3;
+    const uint16_t maxPacketSize = 8;
+    uint8_t* dataBuffer = (uint8_t*)allocXhciMemory(maxPacketSize, 64, 64);
+
+    // Prepare a Normal TRB
+    XhciNormalTrb_t normalTrb;
+    zeromem(&normalTrb, sizeof(XhciNormalTrb_t));
+    normalTrb.trbType = XHCI_TRB_TYPE_NORMAL;
+    normalTrb.dataBufferPhysicalBase = physbase(dataBuffer);
+    normalTrb.trbTransferLength = maxPacketSize;
+    normalTrb.ioc = 1; // Interrupt on Completion
+
+    transferRing->enqueue((XhciTrb_t*)&normalTrb);
+
+    m_doorbellManager->ringDoorbell(device->slotId, endpointId);
 }
