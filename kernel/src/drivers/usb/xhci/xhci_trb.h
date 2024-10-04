@@ -107,10 +107,11 @@ typedef struct XhciTransferCompletionRequestBlock {
     struct {
         uint32_t cycleBit   : 1;
         uint32_t rsvd1      : 1;
-        uint32_t ed         : 1;
+        uint32_t eventData  : 1;
         uint32_t rsvd2      : 7;
         uint32_t trbType    : 6;
-        uint32_t vfid       : 8;
+        uint32_t endpointId : 5;
+        uint32_t rsvd3      : 3;
         uint32_t slotId     : 8;
     };
 } XhciTransferCompletionTrb_t;
