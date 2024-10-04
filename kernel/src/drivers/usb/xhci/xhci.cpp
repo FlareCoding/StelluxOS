@@ -868,7 +868,7 @@ void XhciDriver::_setupDevice(uint8_t port) {
     // Re-configure the input context to enable the interrupt endpoint
     _configureDeviceInterruptEndpoint(device, epDescriptor);
 
-    // Evaluate the new input context
+    // Configure the endpoint that we got from the ep descriptor
     if (!_configureEndpoint(device)) {
         return;
     }
