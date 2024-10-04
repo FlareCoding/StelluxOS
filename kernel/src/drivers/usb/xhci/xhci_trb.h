@@ -54,6 +54,34 @@ typedef struct XhciAddressDeviceRequestBlock {
 } XhciAddressDeviceCommandTrb_t;
 static_assert(sizeof(XhciAddressDeviceCommandTrb_t) == sizeof(uint32_t) * 4);
 
+typedef struct XhciEvaluateContextCommandRequestBlock {
+    uint64_t inputContextPhysicalBase;
+    uint32_t rsvd0;
+    struct {
+        uint32_t cycleBit   : 1;
+        uint32_t rsvd1      : 8;
+        uint32_t rsvd2      : 1; // Block Set Address Request bit in the Address Device TRB
+        uint32_t trbType    : 6;
+        uint32_t rsvd3      : 8;
+        uint32_t slotId     : 8;
+    };
+} XhciEvaluateContextCommandTrb_t;
+static_assert(sizeof(XhciEvaluateContextCommandTrb_t) == sizeof(uint32_t) * 4);
+
+typedef struct XhciConfigureEndpointCommandRequestBlock {
+    uint64_t inputContextPhysicalBase;
+    uint32_t rsvd0;
+    struct {
+        uint32_t cycleBit    : 1;
+        uint32_t rsvd1       : 8;
+        uint32_t deconfigure : 1;
+        uint32_t trbType     : 6;
+        uint32_t rsvd3       : 8;
+        uint32_t slotId      : 8;
+    };
+} XhciConfigureEndpointCommandTrb_t;
+static_assert(sizeof(XhciConfigureEndpointCommandTrb_t) == sizeof(uint32_t) * 4);
+
 typedef struct XhciCommandCompletionRequestBlock {
     uint64_t commandTrbPointer;
     struct {

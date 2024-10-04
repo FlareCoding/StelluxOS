@@ -157,8 +157,12 @@ private:
     uint8_t _enableDeviceSlot();
     void _configureDeviceInputContext(XhciDevice* device, uint16_t maxPacketSize);
 
+    void _configureDeviceInterruptEndpoint(XhciDevice* device, UsbEndpointDescriptor* epDesc);
+
     void _setupDevice(uint8_t port);
     bool _addressDevice(XhciDevice* device, bool bsr);
+    bool _configureEndpoint(XhciDevice* device);
+    bool _evaluateContext(XhciDevice* device);
 
     bool _sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPacket& req, void* outputBuffer, uint32_t length);
 

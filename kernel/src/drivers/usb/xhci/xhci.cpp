@@ -664,6 +664,45 @@ void XhciDriver::_configureDeviceInputContext(XhciDevice* device, uint16_t maxPa
     controlEndpointContext->averageTrbLength = 8;
 }
 
+void XhciDriver::_configureDeviceInterruptEndpoint(XhciDevice* device, UsbEndpointDescriptor* epDesc) {
+    XhciInputControlContext32* inputControlContext = device->getInputControlContext(m_64ByteContextSize);
+    XhciSlotContext32* slotContext = device->getInputSlotContext(m_64ByteContextSize);
+
+    uint8_t endpointNumber = epDesc->bEndpointAddress & 0x0F;
+    kprint("endpointnumber: %i\n", endpointNumber);
+    uint8_t endpointDirectionIn = (epDesc->bEndpointAddress & 0x80) ? 1 : 0;
+    uint8_t endpointId = (endpointNumber * 2) + endpointDirectionIn;
+    kprint("endpointId: %i\n", endpointId);
+
+    // Enable the input control context flags
+    inputControlContext->addFlags = (1 << endpointId) | (1 << 0);
+    if (endpointId > slotContext->contextEntries) {
+        slotContext->contextEntries = endpointId;
+    }
+
+    // Configure the endpoint context
+    XhciEndpointContext32* interruptEndpointContext = device->getInputEndpointContext(m_64ByteContextSize, endpointId);
+    zeromem(interruptEndpointContext, sizeof(XhciEndpointContext32));
+    interruptEndpointContext->endpointState = XHCI_ENDPOINT_STATE_DISABLED;
+    interruptEndpointContext->endpointType = XHCI_ENDPOINT_TYPE_INTERRUPT_IN;
+    interruptEndpointContext->maxPacketSize = epDesc->wMaxPacketSize;
+    interruptEndpointContext->errorCount = 3;
+    interruptEndpointContext->maxBurstSize = 0;
+    interruptEndpointContext->averageTrbLength = 8;
+    interruptEndpointContext->transferRingDequeuePtr = device->getInterruptInEndpointTransferRing()->getPhysicalDequeuePointerBase();
+    interruptEndpointContext->dcs = device->getInterruptInEndpointTransferRing()->getCycleBit();
+
+    if (device->speed == XHCI_USB_SPEED_HIGH_SPEED || device->speed == XHCI_USB_SPEED_SUPER_SPEED) {
+        interruptEndpointContext->interval = epDesc->bInterval - 1;
+    } else {
+        interruptEndpointContext->interval = epDesc->bInterval;
+    }
+
+    kprint("transferRingDequeuePtr: 0x%llx\n", interruptEndpointContext->transferRingDequeuePtr);
+    const int intervalInMs = ((2 << (interruptEndpointContext->interval - 1)) * 125);
+    kprint("interval: %i  (%i us / %i ms)\n", interruptEndpointContext->interval, intervalInMs, intervalInMs / 1000);
+}
+
 void XhciDriver::_setupDevice(uint8_t port) {
     XhciDevice* device = new XhciDevice();
     device->portRegSet = port;
@@ -724,6 +763,9 @@ void XhciDriver::_setupDevice(uint8_t port) {
     // Send the address device command again with BSR=0 this time
     _addressDevice(device, false);
 
+    // Copy the output device context into the device's input context
+    device->copyOutputDeviceContextToInputDeviceContext(m_64ByteContextSize, (void*)m_dcbaa[device->slotId]);
+
     // Read the full device descriptor
     if (!_getDeviceDescriptor(device, deviceDescriptor, deviceDescriptor->header.bLength)) {
         kprintError("[XHCI] Failed to get full device descriptor\n");
@@ -760,11 +802,6 @@ void XhciDriver::_setupDevice(uint8_t port) {
     if (!_getConfigurationDescriptor(device, configurationDescriptor)) {
         return;
     }
-
-    // Set device configuration
-    if (!_setDeviceConfiguration(device, configurationDescriptor->bConfigurationValue)) {
-        return;
-    }
     
     UsbInterfaceDescriptor* iface = nullptr;
     UsbEndpointDescriptor* epDescriptor = nullptr;
@@ -798,11 +835,6 @@ void XhciDriver::_setupDevice(uint8_t port) {
         return;
     }
 
-    const uint8_t bootProtocol = 0;
-    if (!_setProtocol(device, iface->bInterfaceNumber, bootProtocol)) {
-        return;
-    }
-
     kprint("---- USB Device Info ----\n");
     kprint("  Product Name    : %s\n", product);
     kprint("  Manufacturer    : %s\n", manufacturer);
@@ -829,6 +861,41 @@ void XhciDriver::_setupDevice(uint8_t port) {
     kprint("          wMaxPacketSize    - %i\n", epDescriptor->wMaxPacketSize);
     kprint("          bInterval         - %i\n", epDescriptor->bInterval);
     kprint("\n");
+
+    // Allocate a transfer ring for the interrupt endpoint
+    device->allocateInterruptInEndpointTransferRing();
+
+    // Re-configure the input context to enable the interrupt endpoint
+    _configureDeviceInterruptEndpoint(device, epDescriptor);
+
+    // Evaluate the new input context
+    if (!_configureEndpoint(device)) {
+        return;
+    }
+
+    device->copyOutputDeviceContextToInputDeviceContext(m_64ByteContextSize, (void*)m_dcbaa[device->slotId]);
+
+    // Sanity-check the actual device context entry in DCBAA
+    XhciDeviceContext32* deviceContext = &virtbase(device->getInputContextPhysicalBase(), XhciInputContext32)->deviceContext;
+
+    kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epSate:%s epType:%i\n               maxPacketSize:%i\n",
+        device->slotId, deviceContext->slotContext.deviceAddress,
+        xhciSlotStateToString(deviceContext->slotContext.slotState),
+        xhciEndpointStateToString(deviceContext->ep[1].endpointState),
+        deviceContext->ep[1].endpointType,
+        deviceContext->ep[1].maxPacketSize
+    );
+
+    // Set device configuration
+    if (!_setDeviceConfiguration(device, configurationDescriptor->bConfigurationValue)) {
+        return;
+    }
+
+    // Set BOOT protocol
+    const uint8_t bootProtocol = 0;
+    if (!_setProtocol(device, iface->bInterfaceNumber, bootProtocol)) {
+        return;
+    }
 }
 
 bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
@@ -862,6 +929,76 @@ bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
         XhciDeviceContext32* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext32);
 
         kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epSate:%s maxPacketSize:%i\n",
+            device->slotId, deviceContext->slotContext.deviceAddress,
+            xhciSlotStateToString(deviceContext->slotContext.slotState),
+            xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),
+            deviceContext->controlEndpointContext.maxPacketSize
+        );
+    }
+
+    return true;
+}
+
+bool XhciDriver::_configureEndpoint(XhciDevice* device) {
+    XhciConfigureEndpointCommandTrb_t configureEndpointTrb;
+    zeromem(&configureEndpointTrb, sizeof(XhciConfigureEndpointCommandTrb_t));
+    configureEndpointTrb.trbType = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
+    configureEndpointTrb.inputContextPhysicalBase = device->getInputContextPhysicalBase();
+    configureEndpointTrb.slotId = device->slotId;
+
+    // Send the Configure Endpoint command
+    XhciCommandCompletionTrb_t* completionTrb = _sendCommand((XhciTrb_t*)&configureEndpointTrb, 200);
+    if (!completionTrb) {
+        kprintError("[*] Failed to send Configure Endpoint command\n");
+        return false;
+    }
+
+    // Check the completion code
+    if (completionTrb->completionCode != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        kprintError("[*] Evaluate Context command failed with completion code: %s\n",
+                    trbCompletionCodeToString(completionTrb->completionCode));
+        return false;
+    }
+
+    return true;
+}
+
+bool XhciDriver::_evaluateContext(XhciDevice* device) {
+    // Construct the Evaluate Context Command TRB
+    XhciEvaluateContextCommandTrb_t evaluateContextTrb;
+    zeromem(&evaluateContextTrb, sizeof(XhciEvaluateContextCommandTrb_t));
+    evaluateContextTrb.trbType = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
+    evaluateContextTrb.inputContextPhysicalBase = device->getInputContextPhysicalBase();
+    evaluateContextTrb.slotId = device->slotId;
+
+    // Send the Evaluate Context command
+    XhciCommandCompletionTrb_t* completionTrb = _sendCommand((XhciTrb_t*)&evaluateContextTrb, 200);
+    if (!completionTrb) {
+        kprintError("[*] Failed to send Evaluate Context command\n");
+        return false;
+    }
+
+    // Check the completion code
+    if (completionTrb->completionCode != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        kprintError("[*] Evaluate Context command failed with completion code: %s\n",
+                    trbCompletionCodeToString(completionTrb->completionCode));
+        return false;
+    }
+
+    // Optionally, perform a sanity check similar to _addressDevice
+    if (m_64ByteContextSize) {
+        XhciDeviceContext64* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext64);
+
+        kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epState:%s maxPacketSize:%i\n",
+            device->slotId, deviceContext->slotContext.deviceAddress,
+            xhciSlotStateToString(deviceContext->slotContext.slotState),
+            xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),
+            deviceContext->controlEndpointContext.maxPacketSize
+        );
+    } else {
+        XhciDeviceContext32* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext32);
+
+        kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epState:%s maxPacketSize:%i\n",
             device->slotId, deviceContext->slotContext.deviceAddress,
             xhciSlotStateToString(deviceContext->slotContext.slotState),
             xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),

@@ -22,6 +22,10 @@ void XhciDevice::allocateControlEndpointTransferRing() {
     m_controlEndpointTransferRing = new XhciTransferRing(XHCI_TRANSFER_RING_TRB_COUNT, slotId);
 }
 
+void XhciDevice::allocateInterruptInEndpointTransferRing() {
+    m_interruptInEndpointTransferRing = new XhciTransferRing(XHCI_TRANSFER_RING_TRB_COUNT, slotId);
+}
+
 XhciInputControlContext32* XhciDevice::getInputControlContext(bool use64ByteContexts) {
     if (use64ByteContexts) {
         XhciInputContext64* inputCtx = static_cast<XhciInputContext64*>(m_inputContext);
@@ -49,6 +53,31 @@ XhciEndpointContext32* XhciDevice::getInputControlEndpointContext(bool use64Byte
     } else {
         XhciInputContext32* inputCtx = static_cast<XhciInputContext32*>(m_inputContext);
         return &inputCtx->deviceContext.controlEndpointContext;
+    }
+}
+
+XhciEndpointContext32* XhciDevice::getInputEndpointContext(bool use64ByteContexts, uint8_t endpointID) {
+    uint8_t endpointIndex = endpointID - 2;
+    kprint("endpointContextIndex: %i\n", endpointIndex);
+
+    if (use64ByteContexts) {
+        XhciInputContext64* inputCtx = static_cast<XhciInputContext64*>(m_inputContext);
+        return reinterpret_cast<XhciEndpointContext32*>(&inputCtx->deviceContext.ep[endpointIndex]);
+    } else {
+        XhciInputContext32* inputCtx = static_cast<XhciInputContext32*>(m_inputContext);
+        return &inputCtx->deviceContext.ep[endpointIndex];
+    }
+}
+
+void XhciDevice::copyOutputDeviceContextToInputDeviceContext(bool use64ByteContexts, void* outputDeviceContext) {
+    if (use64ByteContexts) {
+        XhciInputContext64* inputCtx = static_cast<XhciInputContext64*>(m_inputContext);
+        XhciDeviceContext64* inputDeviceCtx = &inputCtx->deviceContext;
+        memcpy(inputDeviceCtx, outputDeviceContext, sizeof(XhciDeviceContext64));
+    } else {
+        XhciInputContext32* inputCtx = static_cast<XhciInputContext32*>(m_inputContext);
+        XhciDeviceContext32* inputDeviceCtx = &inputCtx->deviceContext;
+        memcpy(inputDeviceCtx, outputDeviceContext, sizeof(XhciDeviceContext32));
     }
 }
 
