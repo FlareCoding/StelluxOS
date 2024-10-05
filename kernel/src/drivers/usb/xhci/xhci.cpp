@@ -899,7 +899,6 @@ void XhciDriver::_setupDevice(uint8_t port) {
         if (!_configureEndpoint(device)) {
             continue;
         }
-        kprint("Configured endpoint %i\n", i);
     }
 
     // Update device's input context
@@ -909,16 +908,6 @@ void XhciDriver::_setupDevice(uint8_t port) {
     if (!_configureEndpoint(device)) {
         return;
     }
-
-    // Sanity-check the actual device context entry in DCBAA
-    XhciDeviceContext32* deviceContext = &virtbase(device->getInputContextPhysicalBase(), XhciInputContext32)->deviceContext;
-
-    kprint("    DeviceContext[slotId=%i] address:0x%i slotState:%s epSate:%s maxPacketSize:%i\n",
-        device->slotId, deviceContext->slotContext.deviceAddress,
-        xhciSlotStateToString(deviceContext->slotContext.slotState),
-        xhciEndpointStateToString(deviceContext->ep[1].endpointState),
-        deviceContext->ep[1].maxPacketSize
-    );
 
     // Set device configuration
     if (!_setDeviceConfiguration(device, configurationDescriptor->bConfigurationValue)) {
