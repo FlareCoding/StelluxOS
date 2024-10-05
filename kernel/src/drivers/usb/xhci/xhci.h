@@ -2,7 +2,7 @@
 #define XCHI_H
 #include <drivers/device_driver.h>
 #include <interrupts/interrupts.h>
-#include "xhci_device_ctx.h"
+#include "xhci_device.h"
 
 /*
 // xHci Spec Section 4.2 Host Controller Initialization (page 68)
@@ -157,7 +157,7 @@ private:
     uint8_t _enableDeviceSlot();
     void _configureDeviceInputContext(XhciDevice* device, uint16_t maxPacketSize);
 
-    void _configureDeviceInterruptEndpoint(XhciDevice* device, UsbEndpointDescriptor* epDesc);
+    void _configureDeviceEndpointInputContext(XhciDevice* device, XhciDeviceEndpointDescriptor* endpoint);
 
     void _setupDevice(uint8_t port);
     bool _addressDevice(XhciDevice* device, bool bsr);
