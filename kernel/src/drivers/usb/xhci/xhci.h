@@ -224,9 +224,8 @@ private:
     // Doorbell register array manager
     kstl::SharedPtr<XhciDoorbellManager> m_doorbellManager;
 
-    // Test device
-    XhciDevice* keyboardDevice;
-    uint8_t* keyboardDeviceDataBuffer;
+    // Table of connected devices for each device slot
+    XhciDevice* m_connectedDevices[64]; // TO-DO: make this table dynamic
 
 private:
     kstl::vector<XhciPortStatusChangeTrb_t*> m_portStatusChangeEvents;
