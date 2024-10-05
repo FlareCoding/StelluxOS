@@ -940,28 +940,6 @@ bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
         return false;
     }
 
-    if (m_64ByteContextSize) {
-        // Sanity-check the actual device context entry in DCBAA
-        XhciDeviceContext64* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext64);
-
-        kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epSate:%s maxPacketSize:%i\n",
-            device->slotId, deviceContext->slotContext.deviceAddress,
-            xhciSlotStateToString(deviceContext->slotContext.slotState),
-            xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),
-            deviceContext->controlEndpointContext.maxPacketSize
-        );
-    } else {
-        // Sanity-check the actual device context entry in DCBAA
-        XhciDeviceContext32* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext32);
-
-        kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epSate:%s maxPacketSize:%i\n",
-            device->slotId, deviceContext->slotContext.deviceAddress,
-            xhciSlotStateToString(deviceContext->slotContext.slotState),
-            xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),
-            deviceContext->controlEndpointContext.maxPacketSize
-        );
-    }
-
     return true;
 }
 
