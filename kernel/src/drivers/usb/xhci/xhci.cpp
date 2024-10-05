@@ -30,9 +30,18 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
     // Parse the extended capabilities
     _parseExtendedCapabilityRegisters();
 
+    // Create a table mapping each slot to a device object
+    for (size_t i = 0; i < m_maxDeviceSlots; i++) {
+        if (i >= sizeof(m_connectedDevices) / sizeof(XhciDevice*)) {
+            break;
+        }
+
+        m_connectedDevices[i] = nullptr;
+    }
+
     // Reset the controller
     if (!_resetHostController()) {
-        return DEVICE_INIT_FAILURE;
+        return DEVICE_INIT_FAILURE; 
     }
 
     // Configure the controller's register spaces
@@ -464,9 +473,13 @@ void XhciDriver::_processEvents() {
             m_transferCompletionEvents.pushBack(transferEvent);
 
             if (transferEvent->endpointId == 3) {
-                uint8_t modifiers = keyboardDeviceDataBuffer[0];
+                auto device = m_connectedDevices[transferEvent->slotId];
+                auto endpoint = device->endpoints[0];
+                auto dataBuffer = endpoint->dataBuffer;
+
+                uint8_t modifiers = dataBuffer[0];
                 uint8_t keycodes[6];
-                memcpy(keycodes, &keyboardDeviceDataBuffer[2], 6);
+                memcpy(keycodes, &dataBuffer[2], 6);
 
                 // Process modifier keys
                 bool shiftPressed = (modifiers & 0x02) || (modifiers & 0x20); // Left or Right Shift
@@ -481,7 +494,7 @@ void XhciDriver::_processEvents() {
                     }
                 }
 
-                _testKeyboardCommunication(keyboardDevice);
+                _testKeyboardCommunication(device);
             }
             break;
         }
@@ -918,11 +931,8 @@ void XhciDriver::_setupDevice(uint8_t port) {
         return;
     }
 
-    kprint("Testing keyboard...\n");
-    keyboardDevice = device;
-    keyboardDeviceDataBuffer = (uint8_t*)allocXhciMemory(maxPacketSize, 64, 64);
-
-    _testKeyboardCommunication(keyboardDevice);
+    m_connectedDevices[device->slotId] = device;
+    _testKeyboardCommunication(m_connectedDevices[device->slotId]);
 }
 
 bool XhciDriver::_addressDevice(XhciDevice* device, bool bsr) {
@@ -1275,21 +1285,20 @@ bool XhciDriver::_setProtocol(XhciDevice* device, uint8_t interface, uint8_t pro
 }
 
 void XhciDriver::_testKeyboardCommunication(XhciDevice* device) {
-    auto transferRing = device->endpoints[0]->transferRing;
-    const uint8_t endpointId = 3;
-    const uint16_t maxPacketSize = 8;
+    auto endpoint = device->endpoints[0];
+    auto& transferRing = endpoint->transferRing;
 
     // Prepare a Normal TRB
     XhciNormalTrb_t normalTrb;
     zeromem(&normalTrb, sizeof(XhciNormalTrb_t));
     normalTrb.trbType = XHCI_TRB_TYPE_NORMAL;
-    normalTrb.dataBufferPhysicalBase = physbase(keyboardDeviceDataBuffer);
-    normalTrb.trbTransferLength = maxPacketSize;
+    normalTrb.dataBufferPhysicalBase = physbase(endpoint->dataBuffer);
+    normalTrb.trbTransferLength = endpoint->maxPacketSize;
     normalTrb.ioc = 1; // Interrupt on Completion
 
     transferRing->enqueue((XhciTrb_t*)&normalTrb);
 
-    m_doorbellManager->ringDoorbell(device->slotId, endpointId);
+    m_doorbellManager->ringDoorbell(device->slotId, endpoint->endpointNum);
 }
 
 char XhciDriver::_mapKeycodeToChar(uint8_t keycode, bool shiftPressed) {
