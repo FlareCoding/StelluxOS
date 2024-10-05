@@ -578,45 +578,6 @@ using XhciInputContext64 = XhciInputContext<64>;
 static_assert(sizeof(XhciInputContext32) == sizeof(XhciInputControlContext32) + sizeof(XhciDeviceContext32), "32-byte input context should be 1056 bytes");
 static_assert(sizeof(XhciInputContext64) == sizeof(XhciInputControlContext64) + sizeof(XhciDeviceContext64), "64-byte input context should be 2112 bytes");
 
-class XhciDevice {
-public:
-    XhciDevice() = default;
-    ~XhciDevice() = default;
-
-    uint8_t portRegSet; // Port index of the port register sets (0-based)
-    uint8_t portNumber; // Port number (1-based)
-    uint8_t speed;      // Speed of the port to which device is connected
-    uint8_t slotId;     // Slot index into device context base address array
-    
-    void allocateInputContext(bool use64ByteContexts);
-    uint64_t getInputContextPhysicalBase();
-
-    void allocateControlEndpointTransferRing();
-    void allocateInterruptInEndpointTransferRing();
-
-    __force_inline__ XhciTransferRing* getControlEndpointTransferRing() { 
-        return m_controlEndpointTransferRing;
-    }
-
-    __force_inline__ XhciTransferRing* getInterruptInEndpointTransferRing() { 
-        return m_interruptInEndpointTransferRing;
-    }
-
-    XhciInputControlContext32* getInputControlContext(bool use64ByteContexts);
-    XhciSlotContext32* getInputSlotContext(bool use64ByteContexts);
-    XhciEndpointContext32* getInputControlEndpointContext(bool use64ByteContexts);
-    XhciEndpointContext32* getInputEndpointContext(bool use64ByteContexts, uint8_t endpointID);
-
-    void copyOutputDeviceContextToInputDeviceContext(bool use64ByteContexts, void* outputDeviceContext);
-
-private:
-    void* m_inputContext = nullptr;
-    XhciTransferRing* m_controlEndpointTransferRing = nullptr;
-    XhciTransferRing* m_interruptInEndpointTransferRing = nullptr;
-};
-
-void printUsbDeviceDescriptor(const UsbDeviceDescriptor *desc);
-
 const char* xhciSlotStateToString(uint8_t slotState);
 const char* xhciEndpointStateToString(uint8_t epState);
 

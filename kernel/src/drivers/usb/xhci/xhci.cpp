@@ -686,43 +686,35 @@ void XhciDriver::_configureDeviceInputContext(XhciDevice* device, uint16_t maxPa
     controlEndpointContext->averageTrbLength = 8;
 }
 
-void XhciDriver::_configureDeviceInterruptEndpoint(XhciDevice* device, UsbEndpointDescriptor* epDesc) {
+void XhciDriver::_configureDeviceEndpointInputContext(XhciDevice* device, XhciDeviceEndpointDescriptor* endpoint) {
     XhciInputControlContext32* inputControlContext = device->getInputControlContext(m_64ByteContextSize);
     XhciSlotContext32* slotContext = device->getInputSlotContext(m_64ByteContextSize);
 
-    uint8_t endpointNumber = epDesc->bEndpointAddress & 0x0F;
-    kprint("endpointnumber: %i\n", endpointNumber);
-    uint8_t endpointDirectionIn = (epDesc->bEndpointAddress & 0x80) ? 1 : 0;
-    uint8_t endpointId = (endpointNumber * 2) + endpointDirectionIn;
-    kprint("endpointId: %i\n", endpointId);
-
     // Enable the input control context flags
-    inputControlContext->addFlags = (1 << endpointId) | (1 << 0);
-    if (endpointId > slotContext->contextEntries) {
-        slotContext->contextEntries = endpointId;
+    inputControlContext->addFlags = (1 << endpoint->endpointNum) | (1 << 0);
+    inputControlContext->dropFlags = 0;
+    
+    if (endpoint->endpointNum > slotContext->contextEntries) {
+        slotContext->contextEntries = endpoint->endpointNum;
     }
 
     // Configure the endpoint context
-    XhciEndpointContext32* interruptEndpointContext = device->getInputEndpointContext(m_64ByteContextSize, endpointId);
+    XhciEndpointContext32* interruptEndpointContext = device->getInputEndpointContext(m_64ByteContextSize, endpoint->endpointNum);
     zeromem(interruptEndpointContext, sizeof(XhciEndpointContext32));
     interruptEndpointContext->endpointState = XHCI_ENDPOINT_STATE_DISABLED;
-    interruptEndpointContext->endpointType = XHCI_ENDPOINT_TYPE_INTERRUPT_IN;
-    interruptEndpointContext->maxPacketSize = epDesc->wMaxPacketSize;
+    interruptEndpointContext->endpointType = endpoint->endpointType;
+    interruptEndpointContext->maxPacketSize = endpoint->maxPacketSize;
     interruptEndpointContext->errorCount = 3;
     interruptEndpointContext->maxBurstSize = 0;
     interruptEndpointContext->averageTrbLength = 8;
-    interruptEndpointContext->transferRingDequeuePtr = device->getInterruptInEndpointTransferRing()->getPhysicalDequeuePointerBase();
-    interruptEndpointContext->dcs = device->getInterruptInEndpointTransferRing()->getCycleBit();
+    interruptEndpointContext->transferRingDequeuePtr = endpoint->transferRing->getPhysicalDequeuePointerBase();
+    interruptEndpointContext->dcs = endpoint->transferRing->getCycleBit();
 
     if (device->speed == XHCI_USB_SPEED_HIGH_SPEED || device->speed == XHCI_USB_SPEED_SUPER_SPEED) {
-        interruptEndpointContext->interval = epDesc->bInterval - 1;
+        interruptEndpointContext->interval = endpoint->interval - 1;
     } else {
-        interruptEndpointContext->interval = epDesc->bInterval;
+        interruptEndpointContext->interval = endpoint->interval;
     }
-
-    kprint("transferRingDequeuePtr: 0x%llx\n", interruptEndpointContext->transferRingDequeuePtr);
-    const int intervalInMs = ((2 << (interruptEndpointContext->interval - 1)) * 125);
-    kprint("interval: %i  (%i us / %i ms)\n", interruptEndpointContext->interval, intervalInMs, intervalInMs / 1000);
 }
 
 void XhciDriver::_setupDevice(uint8_t port) {
@@ -824,38 +816,6 @@ void XhciDriver::_setupDevice(uint8_t port) {
     if (!_getConfigurationDescriptor(device, configurationDescriptor)) {
         return;
     }
-    
-    UsbInterfaceDescriptor* iface = nullptr;
-    UsbEndpointDescriptor* epDescriptor = nullptr;
-
-    uint8_t* buffer = configurationDescriptor->data;
-    uint16_t totalLength = configurationDescriptor->wTotalLength - configurationDescriptor->header.bLength;
-    uint16_t index = 0;
-
-    while (index < totalLength) {
-        UsbDescriptorHeader* header = (UsbDescriptorHeader*)&buffer[index];
-
-        switch (header->bDescriptorType) {
-            case USB_DESCRIPTOR_INTERFACE:
-                iface = (UsbInterfaceDescriptor*)header;
-                break;
-            case USB_DESCRIPTOR_HID:
-                // Process HID Descriptor
-                // ...
-                break;
-            case USB_DESCRIPTOR_ENDPOINT:
-                epDescriptor = (UsbEndpointDescriptor*)header;
-                break;
-            default: break;
-        }
-
-        index += header->bLength;
-    }
-
-    if (!iface || !epDescriptor) {
-        kprintError("[XHCI] Failed to find interface or endpoint descriptor\n");
-        return;
-    }
 
     kprint("---- USB Device Info ----\n");
     kprint("  Product Name    : %s\n", product);
@@ -868,34 +828,74 @@ void XhciDriver::_setupDevice(uint8_t port) {
     kprint("      iConfiguration      - %i\n", configurationDescriptor->iConfiguration);
     kprint("      bmAttributes        - %i\n", configurationDescriptor->bmAttributes);
     kprint("      bMaxPower           - %i milliamps\n", configurationDescriptor->bMaxPower);
-    kprint("      ------ Interface 1 ------\n");
-    kprint("        type    - %i\n", iface->header.bDescriptorType);
-    kprint("        bInterfaceNumber    - %i\n", iface->bInterfaceNumber);
-    kprint("        bAlternateSetting   - %i\n", iface->bAlternateSetting);
-    kprint("        bNumEndpoints       - %i\n", iface->bNumEndpoints);
-    kprint("        bInterfaceClass     - %i\n", iface->bInterfaceClass);
-    kprint("        bInterfaceSubClass  - %i\n", iface->bInterfaceSubClass);
-    kprint("        bInterfaceProtocol  - %i\n", iface->bInterfaceProtocol);
-    kprint("        iInterface          - %i\n", iface->iInterface);
-    kprint("        ------ Endpoint 1 ------\n");
-    kprint("          bEndpointAddress  - %x\n", epDescriptor->bEndpointAddress);
-    kprint("          bmAttributes      - %i\n", epDescriptor->bmAttributes);
-    kprint("          wMaxPacketSize    - %i\n", epDescriptor->wMaxPacketSize);
-    kprint("          bInterval         - %i\n", epDescriptor->bInterval);
+
+    uint8_t* buffer = configurationDescriptor->data;
+    uint16_t totalLength = configurationDescriptor->wTotalLength - configurationDescriptor->header.bLength;
+    uint16_t index = 0;
+
+    while (index < totalLength) {
+        UsbDescriptorHeader* header = (UsbDescriptorHeader*)&buffer[index];
+
+        switch (header->bDescriptorType) {
+            case USB_DESCRIPTOR_INTERFACE: {
+                if (device->primaryInterface != 0) {
+                    break;
+                }
+
+                UsbInterfaceDescriptor* iface = (UsbInterfaceDescriptor*)header;
+                device->primaryInterface = iface->bInterfaceNumber;
+                device->interfaceClass = iface->bInterfaceClass;
+                device->interfaceSubClass = iface->bInterfaceSubClass;
+                device->interfaceProtocol = iface->bInterfaceProtocol;
+
+                kprint("    ------ Device Interface ------\n", device->endpoints.size());
+                kprint("      class             - %i\n", device->interfaceClass);
+                kprint("      sub-class         - %i\n", device->interfaceSubClass);
+                kprint("      protocol          - %i\n", device->interfaceProtocol);
+                break;
+            }
+            case USB_DESCRIPTOR_HID: {
+                // Process HID Descriptor
+                // ...
+                break;
+            }
+            case USB_DESCRIPTOR_ENDPOINT: {
+                auto deviceEpDescriptor = new XhciDeviceEndpointDescriptor(device->slotId, (UsbEndpointDescriptor*)header);
+                device->endpoints.pushBack(deviceEpDescriptor);
+
+                kprint("    ------ Endpoint %lli ------\n", device->endpoints.size());
+                kprint("      endpoint number   - %i\n", deviceEpDescriptor->endpointNum);
+                kprint("      endpoint type     - %i\n", deviceEpDescriptor->endpointType);
+                kprint("      maxPacketSize     - %i\n", deviceEpDescriptor->maxPacketSize);
+                kprint("      intervalValue     - %i\n", deviceEpDescriptor->interval);
+                break;
+            }
+            default: break;
+        }
+
+        index += header->bLength;
+    }
+
     kprint("\n");
 
-    // Allocate a transfer ring for the interrupt endpoint
-    device->allocateInterruptInEndpointTransferRing();
+    // For each of the found endpoints send a configure endpoint command
+    for (size_t i = 0; i < device->endpoints.size(); i++) {
+        XhciDeviceEndpointDescriptor* endpoint = device->endpoints[i];
+        _configureDeviceEndpointInputContext(device, endpoint);
 
-    // Re-configure the input context to enable the interrupt endpoint
-    _configureDeviceInterruptEndpoint(device, epDescriptor);
+        if (!_configureEndpoint(device)) {
+            continue;
+        }
+        kprint("Configured endpoint %i\n", i);
+    }
+
+    // Update device's input context
+    device->copyOutputDeviceContextToInputDeviceContext(m_64ByteContextSize, (void*)m_dcbaa[device->slotId]);
 
     // Configure the endpoint that we got from the ep descriptor
     if (!_configureEndpoint(device)) {
         return;
     }
-
-    device->copyOutputDeviceContextToInputDeviceContext(m_64ByteContextSize, (void*)m_dcbaa[device->slotId]);
 
     // Sanity-check the actual device context entry in DCBAA
     XhciDeviceContext32* deviceContext = &virtbase(device->getInputContextPhysicalBase(), XhciInputContext32)->deviceContext;
@@ -914,7 +914,7 @@ void XhciDriver::_setupDevice(uint8_t port) {
 
     // Set BOOT protocol
     const uint8_t bootProtocol = 0;
-    if (!_setProtocol(device, iface->bInterfaceNumber, bootProtocol)) {
+    if (!_setProtocol(device, device->primaryInterface, bootProtocol)) {
         return;
     }
 
@@ -1275,7 +1275,7 @@ bool XhciDriver::_setProtocol(XhciDevice* device, uint8_t interface, uint8_t pro
 }
 
 void XhciDriver::_testKeyboardCommunication(XhciDevice* device) {
-    auto transferRing = device->getInterruptInEndpointTransferRing();
+    auto transferRing = device->endpoints[0]->transferRing;
     const uint8_t endpointId = 3;
     const uint16_t maxPacketSize = 8;
 
