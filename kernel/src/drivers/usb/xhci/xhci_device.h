@@ -1,6 +1,7 @@
 #ifndef XHCI_DEVICE_H
 #define XHCI_DEVICE_H
 #include "xhci_device_ctx.h"
+#include <drivers/usb/usb_device_driver.h>
 
 class XhciDeviceEndpointDescriptor {
 public:
@@ -39,6 +40,9 @@ public:
     // Device-specific endpoints specified in the configuration/endpoint descriptors
     kstl::vector<XhciDeviceEndpointDescriptor*> endpoints;
     
+    // Driver responsible for handling this device
+    IUsbDeviceDriver* usbDeviceDriver = nullptr;
+
     void allocateInputContext(bool use64ByteContexts);
     uint64_t getInputContextPhysicalBase();
 
