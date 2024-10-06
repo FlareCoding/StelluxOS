@@ -1,5 +1,5 @@
-#ifndef XHCI_KEYBOARD_DRIVER_H
-#define XHCI_KEYBOARD_DRIVER_H
+#ifndef HID_KEYBOARD_DRIVER_H
+#define HID_KEYBOARD_DRIVER_H
 #include "xhci_hid.h"
 
 class HidKeyboardDriver : public IHidDeviceDriver {
