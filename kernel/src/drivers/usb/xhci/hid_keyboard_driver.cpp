@@ -1,4 +1,4 @@
-#include "xhci_keyboard_driver.h"
+#include "hid_keyboard_driver.h"
 #include <kprint.h>
 
 HidKeyboardDriver::HidKeyboardDriver() {

@@ -1,15 +1,24 @@
 #include "xhci_hid.h"
-#include "xhci_keyboard_driver.h"
+#include "hid_keyboard_driver.h"
+#include "hid_mouse_driver.h"
 
-#define XHCI_HID_PROTOCOL_KEYBOARD  1
-#define XHCI_HID_PROTOCOL_MOUSE     2
+#define HID_PROTOCOL_KEYBOARD  1
+#define HID_PROTOCOL_MOUSE     2
 
 XhciHidDriver::XhciHidDriver(XhciDoorbellManager* doorbellManager, XhciDevice* device) {
     m_doorbellManager = doorbellManager;
     m_device = device;
 
-    if (device->interfaceProtocol == XHCI_HID_PROTOCOL_KEYBOARD) {
+    switch (device->interfaceProtocol) {
+    case HID_PROTOCOL_KEYBOARD: {
         m_hidDeviceDriver = new HidKeyboardDriver();
+        break;
+    }
+    case HID_PROTOCOL_MOUSE: {
+        m_hidDeviceDriver = new HidMouseDriver();
+        break;
+    }
+    default: break;
     }
 }
 
