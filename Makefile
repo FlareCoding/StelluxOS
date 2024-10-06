@@ -29,8 +29,7 @@ QEMU_FLAGS := $(COMMON_QEMU_FLAGS) -drive if=pflash,format=raw,unit=0,file="efi/
 
 # Sample connected USB 2.0 devices
 QEMU_FLAGS += -device usb-kbd,id=usbkbd
-# QEMU_FLAGS += -device usb-mouse,id=usbmouse
-# QEMU_FLAGS += -device usb-hub,id=usbhub
+QEMU_FLAGS += -device usb-mouse,id=usbmouse
 
 #
 # Sample connected USB 3.0 devices

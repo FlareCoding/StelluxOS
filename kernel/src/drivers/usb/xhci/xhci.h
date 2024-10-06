@@ -174,9 +174,6 @@ private:
     bool _setDeviceConfiguration(XhciDevice* device, uint16_t configurationValue);
     bool _setProtocol(XhciDevice* device, uint8_t interface, uint8_t protocol);
 
-    void _testKeyboardCommunication(XhciDevice* device);
-    char _mapKeycodeToChar(uint8_t keycode, bool shiftPressed);
-
 private:
     // CAPLENGTH
     uint8_t m_capabilityRegsLength;
