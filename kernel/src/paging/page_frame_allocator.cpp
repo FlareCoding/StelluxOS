@@ -213,6 +213,9 @@ namespace paging {
         // Lock the pages used for the bitmap
         lockPhysicalPages(pageBitmapBase, pageBitmapSize / PAGE_SIZE + 1);
         lockPages(pageBitmapVirtualBase, pageBitmapSize / PAGE_SIZE + 1);
+
+        // These pages will later be used for AP startup code
+        lockPhysicalPages((void*)0x6000, 20);
     }
 
     void PageFrameAllocator::freePhysicalPage(void* paddr) {
