@@ -186,13 +186,13 @@ void _kuser_entry() {
 
     // Iterate over PCI device table and find and
     // install appropriate drivers for each device.
-    //DeviceDriverManager::installPciDeviceDrivers();
+    DeviceDriverManager::installPciDeviceDrivers();
 
-    auto shellTask = createKernelTask(userShellTestEntry, nullptr);
-    shellTask->console = new Console();
-    shellTask->console->connectToSerial(SERIAL_PORT_BASE_COM1);
+    // auto shellTask = createKernelTask(userShellTestEntry, nullptr);
+    // shellTask->console = new Console();
+    // shellTask->console->connectToSerial(SERIAL_PORT_BASE_COM1);
 
-    sched.addTask(shellTask);
+    // sched.addTask(shellTask);
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
