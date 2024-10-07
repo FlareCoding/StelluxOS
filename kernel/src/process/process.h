@@ -1,6 +1,7 @@
 #ifndef PROCESS_H
 #define PROCESS_H
 #include <interrupts/interrupts.h>
+#include "console.h"
 
 struct CpuContext {
     // General purpose registers
@@ -39,6 +40,8 @@ typedef struct ProcessControlBlock {
         uint64_t    cpu         : 8;
         uint64_t    flrsvd      : 55;
     } __attribute__((packed));
+
+    Console*        console;
 } PCB;
 
 typedef int64_t pid_t;

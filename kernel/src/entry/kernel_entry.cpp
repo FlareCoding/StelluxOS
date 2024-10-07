@@ -24,6 +24,8 @@
 #include <kprint.h>
 #include <drivers/device_driver_manager.h>
 #include <drivers/usb/xhci/xhci.h>
+#include <drivers/serial/serial_driver.h>
+#include <process/console.h>
 
 #ifdef KRUN_UNIT_TESTS
     #include "tests/kernel_unit_tests.h"
@@ -41,6 +43,7 @@ KernelEntryParams g_kernelEntryParameters;
 char __usermodeKernelEntryStack[USERMODE_KERNEL_ENTRY_STACK_SIZE];
 
 void _kuser_entry();
+void userShellTestEntry(void*);
 
 __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Setup kernel stack
@@ -164,6 +167,9 @@ void _kuser_entry() {
 
     // Start the kernel-wide APIC periodic timer
     KernelTimer::startApicPeriodicTimer();
+
+    // Initialize the serial port driver and register interrupts
+    SerialDriver::init();
     
     // Bring up all available processor cores
     //initializeApCores();
@@ -180,8 +186,60 @@ void _kuser_entry() {
 
     // Iterate over PCI device table and find and
     // install appropriate drivers for each device.
-    DeviceDriverManager::installPciDeviceDrivers();
+    //DeviceDriverManager::installPciDeviceDrivers();
+
+    auto shellTask = createKernelTask(userShellTestEntry, nullptr);
+    shellTask->console = new Console();
+    shellTask->console->connectToSerial(SERIAL_PORT_BASE_COM1);
+
+    sched.addTask(shellTask);
 
     // Infinite loop
     while (1) { __asm__ volatile("nop"); }
+}
+
+void userShellTestEntry(void*) {
+    if (current->console) {
+        RUN_ELEVATED({
+            current->console->write("shell> ");
+        });
+    } 
+
+    const size_t bufferSize = 1024;
+    char* cmdBuffer = (char*)kzmalloc(bufferSize);
+    char* inputBuffer = (char*)kzmalloc(bufferSize);
+    size_t cmdBufferPtr = 0;
+
+    while (true) {
+        if (!current->console) {
+            continue;
+        }
+
+        size_t bytesRead = current->console->read(inputBuffer, bufferSize - 1);
+        if (!bytesRead) {
+            continue;
+        }
+
+        if (cmdBufferPtr < bufferSize - bytesRead - 1) {
+            memcpy(cmdBuffer + cmdBufferPtr, inputBuffer, bytesRead);
+            cmdBufferPtr += bytesRead;
+        }
+
+        char lastChar = inputBuffer[bytesRead - 1];
+        if (lastChar == '\n') {
+            cmdBuffer[cmdBufferPtr - 1] = 0; // erase the newline character from the command
+
+            kuPrint("#parsing command: '%s'\n", cmdBuffer + 7);
+            zeromem(cmdBuffer, sizeof(cmdBuffer));
+            cmdBufferPtr = 0;
+
+            RUN_ELEVATED({
+                current->console->write("shell> ");
+            });
+        }
+
+        zeromem(inputBuffer, bufferSize);
+    }
+
+    exitKernelThread();
 }

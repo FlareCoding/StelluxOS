@@ -19,6 +19,9 @@
 #define SERIAL_LINE_ENABLE_DLAB 0x80
 
 // Line status register (LSR) values
+#define SERIAL_LINE_STATUS_DATA_READY 0x01 // Data ready in receive buffer
+
+// Line status register (LSR) values
 #define SERIAL_LINE_STATUS_THR_EMPTY 0x20  // Transmit-hold-register empty
 
 // Disable all interrupts on the line control register
@@ -39,6 +42,9 @@
 // Enable IRQs, and set RTS and DSR
 #define SERIAL_MCR_ENABLE_IRQ_RTS_DSR 0x0B
 
+// Interrupt when data is received
+#define SERIAL_INTERRUPT_DATA_AVAILABLE 0x01
+
 __PRIVILEGED_CODE
 void initializeSerialPort(uint16_t base);
 
@@ -46,9 +52,18 @@ __PRIVILEGED_CODE
 bool isTransmitQueueEmpty(uint16_t base);
 
 __PRIVILEGED_CODE
+bool isDataAvailable(uint16_t base);
+
+__PRIVILEGED_CODE
 void writeToSerialPort(uint16_t base, char chr);
 
 __PRIVILEGED_CODE
 void writeToSerialPort(uint16_t base, const char* str);
+
+__PRIVILEGED_CODE
+char readFromSerialPort(uint16_t base);
+
+__PRIVILEGED_CODE
+void readStringFromSerialPort(uint16_t base, char* buffer, size_t maxLength);
 
 #endif
