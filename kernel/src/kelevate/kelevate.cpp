@@ -2,8 +2,8 @@
 #include <syscall/syscalls.h>
 #include <arch/x86/gsfsbase.h>
 
-EXTERN_C long __check_current_elevate_status() {
-    return static_cast<long>(current->elevated);
+EXTERN_C int __check_current_elevate_status() {
+    return static_cast<int>(current->elevated);
 }
 
 // Has to be called from usercode's context right after __kelevate()

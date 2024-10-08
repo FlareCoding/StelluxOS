@@ -3,14 +3,18 @@
 #include <kprint.h>
 
 uint64_t xhciMapMmio(uint64_t pciBarAddress) {
+    const size_t mmioRegionPageCount = 10;
+    uint64_t virtualBase = (uint64_t)zallocPages(mmioRegionPageCount);
+
     // Map a conservatively large space for xHCI registers
-    for (size_t offset = 0; offset < 0x10000; offset += PAGE_SIZE) {
+    for (size_t offset = 0; offset < mmioRegionPageCount * PAGE_SIZE; offset += PAGE_SIZE) {
         void* mmioPage = (void*)(pciBarAddress + offset);
-        paging::mapPage(mmioPage, mmioPage, KERNEL_PAGE, PAGE_ATTRIB_CACHE_DISABLED, paging::g_kernelRootPageTable);
+        void* vaddr = (void*)(virtualBase + offset);
+        paging::mapPage(vaddr, mmioPage, KERNEL_PAGE, PAGE_ATTRIB_CACHE_DISABLED, paging::getCurrentTopLevelPageTable());
     }
 
     paging::flushTlbAll();
-    return pciBarAddress;
+    return virtualBase;
 }
 
 void* allocXhciMemory(size_t size, size_t alignment, size_t boundary) {
