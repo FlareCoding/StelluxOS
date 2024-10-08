@@ -97,12 +97,7 @@ void DeviceDriverManager::installPciDeviceDrivers() {
         }
 
         // Start the kernel thread that will launch and init the driver
-        // auto driverThread = createKernelTask(startDriverEntryThread, params);
-        // Scheduler::get().addTask(driverThread);
-
-        // ---------- FOR DEBUGGING PURPOSES ONLY START IN CURRENT THREAD ----------
-        RUN_ELEVATED({
-            params->driverInstance->driverInit(*params->pciInfo, params->irqVector);
-        });
+        auto driverThread = createKernelTask(startDriverEntryThread, params);
+        Scheduler::get().addTask(driverThread);
     }
 }

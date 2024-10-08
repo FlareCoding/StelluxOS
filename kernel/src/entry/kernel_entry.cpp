@@ -43,6 +43,7 @@ KernelEntryParams g_kernelEntryParameters;
 char __usermodeKernelEntryStack[USERMODE_KERNEL_ENTRY_STACK_SIZE];
 
 void _kuser_entry();
+void systemTaskInitEntry(void*);
 void userShellTestEntry(void*);
 
 __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
@@ -184,6 +185,16 @@ void _kuser_entry() {
     });
 #endif
 
+    auto taskInitThread = createKernelTask(systemTaskInitEntry, nullptr);
+    taskInitThread->console = new Console();
+    taskInitThread->console->connectToSerial(SERIAL_PORT_BASE_COM1);
+    sched.addTask(taskInitThread, BSP_CPU_ID);
+
+    // Infinite loop
+    while (1) { __asm__ volatile("nop"); }
+}
+
+void systemTaskInitEntry(void*) {
     // Iterate over PCI device table and find and
     // install appropriate drivers for each device.
     DeviceDriverManager::installPciDeviceDrivers();
@@ -192,10 +203,9 @@ void _kuser_entry() {
     // shellTask->console = new Console();
     // shellTask->console->connectToSerial(SERIAL_PORT_BASE_COM1);
 
-    // sched.addTask(shellTask);
+    // Scheduler::get().addTask(shellTask);
 
-    // Infinite loop
-    while (1) { __asm__ volatile("nop"); }
+    exitKernelThread();
 }
 
 void userShellTestEntry(void*) {
