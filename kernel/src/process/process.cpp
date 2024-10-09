@@ -80,8 +80,10 @@ void switchContextInIrq(int oldCpu, int newCpu, PCB* from, PCB* to, PtRegs* fram
     // Restore the context from the 'to' PCB
     restoreCpuContext(&to->context, frame);
 
-    // Read top level page table pointer from cr3
-    paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
+    // Set the new page table pointer if needed, avoid unnecessary context switches
+    if (from->cr3 != to->cr3) {
+        paging::setCurrentTopLevelPageTable(reinterpret_cast<paging::PageTable*>(to->cr3));
+    }
 
     // Set the new value of currentTask
     __per_cpu_data.__cpu[newCpu].currentTask = to;

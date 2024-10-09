@@ -36,9 +36,11 @@ void handleShutdownCommand() {
 void handlePsCommand() {
     ProcessTable::lockAccess();
     
+    kuPrint("PID   CPU   Name\n");
+    kuPrint("----------------\n");
     for (size_t i = 0; i < ProcessTable::getGlobalTaskCount(); i++) {
         auto task = ProcessTable::getTaskByProcessTableIndex(i);
-        kuPrint("%lli - %s\n", task->pid, task->name);
+        kuPrint("%lli   %i   %s\n", task->pid, task->cpu, task->name);
     }
 
     ProcessTable::unlockAccess();

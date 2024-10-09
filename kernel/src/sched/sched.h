@@ -65,6 +65,9 @@ private:
     size_t _loadBalance();
 };
 
+// Relinquishes computational resources to another task
+void yield();
+
 //
 // Allocates a task object for a new kernel thread that will
 // start its execution at a given function in userspace (DPL=3).

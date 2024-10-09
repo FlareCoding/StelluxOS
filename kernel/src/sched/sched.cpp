@@ -194,6 +194,10 @@ size_t Scheduler::_loadBalance() {
     return cpu;
 }
 
+void yield() {
+    Scheduler::get().schedule();
+}
+
 Task* createKernelTask(TaskEntryFn_t entry, void* taskData, int priority) {
     (void)taskData;
     Task* task = (Task*)kzmalloc(sizeof(Task));

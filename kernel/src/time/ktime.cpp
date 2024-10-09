@@ -4,6 +4,7 @@
 #include <kelevate/kelevate.h>
 #include <paging/tlb.h>
 #include <arch/x86/per_cpu_data.h>
+#include <sched/sched.h>
 
 Hpet* g_precisionTimerInstance = nullptr;
 uint64_t g_hardwareFrequency = 0;
@@ -82,7 +83,7 @@ void sleep(uint32_t seconds) {
     uint64_t start = g_precisionTimerInstance->readCounter();
 
     while (g_precisionTimerInstance->readCounter() < start + (seconds * g_hardwareFrequency)) {
-        asm volatile ("pause");
+        yield();
     }
 }
 
@@ -93,7 +94,7 @@ void msleep(uint32_t milliseconds) {
         g_precisionTimerInstance->readCounter() <
         start + (milliseconds * (g_hardwareFrequency / 1000ULL))
     ) {
-        asm volatile ("pause");
+        yield();
     }
 }
 
@@ -104,7 +105,7 @@ void usleep(uint32_t microseconds) {
         g_precisionTimerInstance->readCounter() <
         start + (microseconds * (g_hardwareFrequency / 1000000ULL))
     ) {
-        asm volatile ("pause");
+        yield();
     }
 }
 
@@ -115,6 +116,6 @@ void nanosleep(uint32_t nanoseconds) {
         g_precisionTimerInstance->readCounter() <
         start + (nanoseconds * (g_hardwareFrequency / 1000000000ULL))
     ) {
-        asm volatile ("pause");
+        yield();
     }
 }
