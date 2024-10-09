@@ -107,10 +107,10 @@ void XhciDevice::copyOutputDeviceContextToInputDeviceContext(bool use64ByteConte
     if (use64ByteContexts) {
         XhciInputContext64* inputCtx = static_cast<XhciInputContext64*>(m_inputContext);
         XhciDeviceContext64* inputDeviceCtx = &inputCtx->deviceContext;
-        memcpy(inputDeviceCtx, outputDeviceContext, sizeof(XhciDeviceContext64));
+        memcpy(inputDeviceCtx, __va(outputDeviceContext), sizeof(XhciDeviceContext64));
     } else {
         XhciInputContext32* inputCtx = static_cast<XhciInputContext32*>(m_inputContext);
         XhciDeviceContext32* inputDeviceCtx = &inputCtx->deviceContext;
-        memcpy(inputDeviceCtx, outputDeviceContext, sizeof(XhciDeviceContext32));
+        memcpy(inputDeviceCtx, __va(outputDeviceContext), sizeof(XhciDeviceContext32));
     }
 }

@@ -24,10 +24,7 @@ struct DriverEntryThreadParams {
 
 void startDriverEntryThread(void* threadParams) {
     auto params = (DriverEntryThreadParams*)threadParams;
-
-    RUN_ELEVATED({
-        params->driverInstance->driverInit(*params->pciInfo, params->irqVector);
-    });
+    params->driverInstance->driverInit(*params->pciInfo, params->irqVector);
 
     exitKernelThread();
 }

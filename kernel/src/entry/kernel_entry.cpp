@@ -168,9 +168,6 @@ void _kuser_entry() {
 
     // Start the kernel-wide APIC periodic timer
     KernelTimer::startApicPeriodicTimer();
-
-    // Initialize the serial port driver and register interrupts
-    SerialDriver::init();
     
     // Bring up all available processor cores
     //initializeApCores();
@@ -186,8 +183,6 @@ void _kuser_entry() {
 #endif
 
     auto taskInitThread = createKernelTask(systemTaskInitEntry, nullptr);
-    taskInitThread->console = new Console();
-    taskInitThread->console->connectToSerial(SERIAL_PORT_BASE_COM1);
     sched.addTask(taskInitThread, BSP_CPU_ID);
 
     // Infinite loop
@@ -199,11 +194,11 @@ void systemTaskInitEntry(void*) {
     // install appropriate drivers for each device.
     DeviceDriverManager::installPciDeviceDrivers();
 
-    // auto shellTask = createKernelTask(userShellTestEntry, nullptr);
-    // shellTask->console = new Console();
-    // shellTask->console->connectToSerial(SERIAL_PORT_BASE_COM1);
+    auto shellTask = createKernelTask(userShellTestEntry, nullptr);
+    shellTask->console = new Console();
+    shellTask->console->connectToSerial(SERIAL_PORT_BASE_COM1);
 
-    // Scheduler::get().addTask(shellTask);
+    Scheduler::get().addTask(shellTask);
 
     exitKernelThread();
 }
