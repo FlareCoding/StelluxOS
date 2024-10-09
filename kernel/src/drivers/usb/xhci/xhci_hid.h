@@ -2,16 +2,9 @@
 #define XHCI_HID_H
 
 #include <drivers/usb/usb_device_driver.h>
+#include <drivers/usb/hid/hid_device_driver.h>
 #include "xhci_regs.h"
 #include "xhci_device.h"
-
-class IHidDeviceDriver {
-public:
-    IHidDeviceDriver() = default;
-    virtual ~IHidDeviceDriver() = default;
-
-    virtual void handleEvent(uint8_t* data) = 0;
-};
 
 class XhciHidDriver : public IUsbDeviceDriver {
 public:

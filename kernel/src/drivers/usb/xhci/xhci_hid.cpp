@@ -1,6 +1,6 @@
 #include "xhci_hid.h"
-#include "hid_keyboard_driver.h"
-#include "hid_mouse_driver.h"
+#include <drivers/usb/hid/hid_keyboard_driver.h>
+#include <drivers/usb/hid/hid_mouse_driver.h>
 
 #define HID_PROTOCOL_KEYBOARD  1
 #define HID_PROTOCOL_MOUSE     2

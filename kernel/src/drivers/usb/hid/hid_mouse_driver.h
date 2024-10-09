@@ -1,6 +1,6 @@
 #ifndef HID_MOUSE_DRIVER_H
 #define HID_MOUSE_DRIVER_H
-#include "xhci_hid.h"
+#include "hid_device_driver.h"
 
 class HidMouseDriver : public IHidDeviceDriver {
 public:
