@@ -2,6 +2,29 @@
 #define SYNC_H
 #include "ktypes.h"
 
+#define ATOMIC_MEMORY_ORDER_RELAXED __ATOMIC_RELAXED
+#define ATOMIC_MEMORY_ORDER_ACQUIRE __ATOMIC_ACQUIRE
+#define ATOMIC_MEMORY_ORDER_RELEASE __ATOMIC_RELEASE
+#define ATOMIC_MEMORY_ORDER_ACQ_REL __ATOMIC_ACQ_REL
+#define ATOMIC_MEMORY_ORDER_SEQ_CST __ATOMIC_SEQ_CST
+
+template <typename T>
+class Atomic {
+public:
+    Atomic(T initialValue = 0) : m_value(initialValue) {}
+
+    T load(int memoryOrder = ATOMIC_MEMORY_ORDER_SEQ_CST) const {
+        return __atomic_load_n(&m_value, memoryOrder);
+    }
+
+    void store(T val, int memoryOrder = ATOMIC_MEMORY_ORDER_SEQ_CST) {
+        __atomic_store_n(&m_value, val, memoryOrder);
+    }
+
+private:
+    T m_value;
+};
+
 // Declare a spinlock type
 typedef struct {
     volatile int lockVar;
