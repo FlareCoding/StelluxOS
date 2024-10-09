@@ -4,6 +4,7 @@
 #include <acpi/acpi_controller.h>
 #include <sched/sched.h>
 #include <drivers/usb/xhci/xhci.h>
+#include <kstring.h>
 #include <kprint.h>
 
 #define GET_PCI_DEVICE_IDENTIFIER(deviceInfo) {\
@@ -95,6 +96,12 @@ void DeviceDriverManager::installPciDeviceDrivers() {
 
         // Start the kernel thread that will launch and init the driver
         auto driverThread = createKernelTask(startDriverEntryThread, params);
+
+        // Register driver task name
+        const char* driverName = driver->getName();
+        const size_t driverNameLen = strlen(driverName);
+        memcpy(driverThread->name, driverName, driverNameLen);
+        
         Scheduler::get().addTask(driverThread);
     }
 }

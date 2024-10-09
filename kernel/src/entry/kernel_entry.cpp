@@ -25,6 +25,7 @@
 #include <drivers/usb/xhci/xhci.h>
 #include <drivers/serial/serial_driver.h>
 #include <process/console.h>
+#include <shell/shell.h>
 #include <kstring.h>
 #include <kprint.h>
 
@@ -45,7 +46,6 @@ char __usermodeKernelEntryStack[USERMODE_KERNEL_ENTRY_STACK_SIZE];
 
 void _kuser_entry();
 void systemTaskInitEntry(void*);
-void userShellTestEntry(void*);
 
 __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Setup kernel stack
@@ -161,6 +161,10 @@ void _kuser_entry() {
     auto& sched = Scheduler::get();
     sched.init();
 
+    // Register the init task
+    memcpy(current->name, "idle", 4);
+    ProcessTable::registerTask(current);
+
     // Initialize high precision event timer and query hardware frequency
     KernelTimer::init();
 
@@ -187,6 +191,7 @@ void _kuser_entry() {
 #endif
 
     auto taskInitThread = createKernelTask(systemTaskInitEntry, nullptr);
+    memcpy(taskInitThread->name, "init", 4);
     sched.addTask(taskInitThread, BSP_CPU_ID);
 
     // Infinite loop
@@ -199,47 +204,12 @@ void systemTaskInitEntry(void*) {
     DeviceDriverManager::installPciDeviceDrivers();
 
     auto shellTask = createKernelTask(userShellTestEntry, nullptr);
+    memcpy(shellTask->name, "shell", 5);
     shellTask->console = new Console();
     shellTask->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
     shellTask->console->connectInputToSerial(SERIAL_PORT_BASE_COM1);
 
     Scheduler::get().addTask(shellTask);
-
-    exitKernelThread();
-}
-
-void userShellTestEntry(void*) {
-    // Get the task's console interface
-    Console* console = current->console;
-
-    // This process will grab focus of the global console
-    setActiveConsole(console);
-
-    // Prompt for the shell
-    const char* prompt = "shell> ";
-    const size_t promptLen = strlen(prompt);
-
-    if (console) {
-        console->write(prompt, promptLen);
-    }
-
-    const size_t bufferSize = 1024;
-    char* cmdBuffer = (char*)kzmalloc(bufferSize);
-
-    while (true) {
-        if (!console) {
-            continue;
-        }
-
-        size_t bytesRead = console->readLine(cmdBuffer, bufferSize - 1);
-        if (!bytesRead) {
-            continue;
-        }
-
-        kuPrint("#parsing command: '%s'\n", cmdBuffer);
-        zeromem(cmdBuffer, sizeof(cmdBuffer));
-        console->write(prompt, promptLen);
-    }
 
     exitKernelThread();
 }

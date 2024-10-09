@@ -3,6 +3,10 @@
 #include <interrupts/interrupts.h>
 #include "console.h"
 
+#define MAX_PROCESS_NAME_LEN 255
+
+typedef int64_t pid_t;
+
 struct CpuContext {
     // General purpose registers
     uint64_t rax, rbx, rcx, rdx;
@@ -28,7 +32,7 @@ enum class ProcessState {
 typedef struct ProcessControlBlock {
     CpuContext      context;
     ProcessState    state;
-    int64_t         pid;
+    pid_t           pid;
     uint64_t        priority;
     uint64_t        cr3;
     uint64_t        kernelStack;
@@ -42,9 +46,10 @@ typedef struct ProcessControlBlock {
     } __attribute__((packed));
 
     Console*        console;
+    char            name[MAX_PROCESS_NAME_LEN + 1];
 } PCB;
 
-typedef int64_t pid_t;
+using Task = PCB;
 
 // Saves context registers from the interrupt frame into a CPU context struct
 void saveCpuContext(CpuContext* context, PtRegs* frame);

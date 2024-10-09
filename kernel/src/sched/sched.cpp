@@ -131,6 +131,9 @@ void Scheduler::addTask(Task* task, int cpu) {
     // Atomically add the task to the run-queue of the target processor
     m_runQueues[cpu]->addTask(task);
 
+    // Register the task in the process table
+    ProcessTable::registerTask(task);
+
     // Unmask the timer interrupt and continue as usual
     preemptEnable(cpu);
 }
@@ -193,7 +196,7 @@ size_t Scheduler::_loadBalance() {
 
 Task* createKernelTask(TaskEntryFn_t entry, void* taskData, int priority) {
     (void)taskData;
-    Task* task = (Task*)kmalloc(sizeof(Task));
+    Task* task = (Task*)kzmalloc(sizeof(Task));
     if (!task) {
         return nullptr;
     }
@@ -248,6 +251,9 @@ bool destroyKernelTask(Task* task) {
     if (!task) {
         return false;
     }
+
+    // Unregister the task from the process table
+    ProcessTable::unregisterTask(task);
 
     // Destroy the stacks
     freePages((void*)(task->kernelStack - SCHED_KERNEL_STACK_SIZE), SCHED_KERNEL_STACK_PAGES);

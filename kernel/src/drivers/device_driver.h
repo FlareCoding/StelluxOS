@@ -15,6 +15,7 @@ public:
     DeviceDriver() = default;
     virtual ~DeviceDriver() = default;
 
+    virtual const char* getName() const = 0;
     virtual int driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) = 0;
 };
 

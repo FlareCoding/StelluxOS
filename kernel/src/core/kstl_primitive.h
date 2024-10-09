@@ -34,6 +34,28 @@ template <typename T>
 struct is_primitive<T*> { static const bool value = true; };
 
 static const size_t npos = static_cast<size_t>(-1);
+
+// Custom enable_if implementation
+template <bool Condition, typename T = void>
+struct enable_if {};
+
+// Specialization when Condition is true
+template <typename T>
+struct enable_if<true, T> {
+    typedef T type;
+};
+
+template <typename T>
+__force_inline__ typename enable_if<is_primitive<T>::value, T>::type
+min(const T& x, const T& y) {
+    return (x < y) ? x : y;
+}
+
+template <typename T>
+__force_inline__ typename enable_if<is_primitive<T>::value, T>::type
+max(const T& x, const T& y) {
+    return (x > y) ? x : y;
+}
 } // namespace kstl
 
 #endif

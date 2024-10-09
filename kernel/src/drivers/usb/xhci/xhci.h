@@ -107,6 +107,7 @@ public:
     XhciDriver() = default;
     ~XhciDriver() = default;
 
+    const char* getName() const override { return "xhci_driver"; }
     int driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector);
 
     void logUsbsts();

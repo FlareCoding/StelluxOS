@@ -1,11 +1,9 @@
 #ifndef SCHED_H
 #define SCHED_H
-#include <core/kvector.h>
+#include "process_table.h"
 #include <arch/x86/per_cpu_data.h>
-#include <process/process.h>
 #include <sync.h>
 
-using Task = PCB;
 typedef void (*TaskEntryFn_t)(void*);
 
 EXTERN_C Task g_kernelSwapperTasks[MAX_CPUS];
