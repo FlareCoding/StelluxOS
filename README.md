@@ -169,12 +169,12 @@ make connect-gdb
 * [x] SMP support in the scheduler
 * [x] Unit testing infrastructure
 * [x] Improved thread creation & management mechanism
+* [x] xhci controller driver
+* [x] USB support for a generic HID keyboard and mouse
 * [ ] Complete rework of the kprint and dmesg interface
 * [ ] GUI and window management subsystem
 * [ ] Virtual filesystem and initramfs
 * [ ] Kernel command-line argument support
-* [ ] xhci controller driver
-* [ ] USB support for keyboards, mice, and USB mass storage devices
 
 
 <!-- Contributing -->
