@@ -143,7 +143,12 @@ Running in QEMU headless in the current shell<br/>
 make run-headless
 ```
 
-<!-- Debuggin -->
+Running unit-tests
+```bash
+make execute-unit-tests
+```
+
+<!-- Debugging -->
 ### :wrench: Debugging
 
 1) Run a headless QEMU session in the current shell
