@@ -4,7 +4,7 @@
 #include <time/ktime.h>
 #include <kstring.h>
 
-Console* g_globalActiveConsole = nullptr;
+Atomic<Console*> g_globalActiveConsole = nullptr;
 
 void Console::connectOutputToSerial(uint16_t port) {
     m_outputSerialPort = port;
@@ -121,9 +121,9 @@ void Console::postInput(const char* data, size_t length) {
 }
 
 void setActiveConsole(Console* console) {
-    g_globalActiveConsole = console;
+    g_globalActiveConsole.store(console, ATOMIC_MEMORY_ORDER_RELEASE);
 }
 
 Console* getActiveConsole() {
-    return g_globalActiveConsole;
+    return g_globalActiveConsole.load(ATOMIC_MEMORY_ORDER_ACQUIRE);
 }
