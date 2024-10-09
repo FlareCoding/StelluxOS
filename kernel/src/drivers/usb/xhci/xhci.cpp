@@ -9,6 +9,7 @@
 #include <arch/x86/ioapic.h>
 #include <arch/x86/cpuid.h>
 #include <interrupts/interrupts.h>
+#include <kelevate/kelevate.h>
 #include <sched/sched.h>
 #include <kstring.h>
 #include <kprint.h>
@@ -17,10 +18,10 @@ bool g_singletonInitialized = false;
 
 int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
     if (g_singletonInitialized) {
-        kprintWarn("[XHCI] Another instance of the controller driver is already running\n");
+        kuPrint("[XHCI] Another instance of the controller driver is already running\n");
     }
 
-    kprint("[XHCI] Initializing xHci Driver 3.0\n\n");
+    kuPrint("[XHCI] Initializing xHci Driver 3.0\n\n");
 
     m_xhcBase = xhciMapMmio(pciInfo.barAddress);
 
@@ -52,7 +53,7 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
     // Register the IRQ handler
     if (irqVector != 0) {
         registerIrqHandler(irqVector, reinterpret_cast<IrqHandler_t>(xhciIrqHandler), false, static_cast<void*>(this));
-        kprint("Registered xhci handler at IRQ%i\n\n", irqVector - IRQ0);
+        kuPrint("Registered xhci handler at IRQ%i\n\n", irqVector - IRQ0);
     }
 
     // At this point the controller is all setup so we can start it
@@ -80,13 +81,13 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
             regman.readPortscReg(reg);
 
             if (reg.ccs) {
-                kprintInfo("[XHCI] Device connected on port %i - %s\n", port, _usbSpeedToString(reg.portSpeed));
+                kuPrint("[XHCI] Device connected on port %i - %s\n", port, _usbSpeedToString(reg.portSpeed));
 
                 // Setup the newly connected device
                 _setupDevice(portRegIdx);
 
             } else {
-                kprintInfo("[XHCI] Device disconnected from port %i\n", port);
+                kuPrint("[XHCI] Device disconnected from port %i\n", port);
             }
         }
 
@@ -98,17 +99,17 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
 
 void XhciDriver::logUsbsts() {
     uint32_t status = m_opRegs->usbsts;
-    kprint("===== USBSTS =====\n");
-    if (status & XHCI_USBSTS_HCH) kprint("    Host Controlled Halted\n");
-    if (status & XHCI_USBSTS_HSE) kprint("    Host System Error\n");
-    if (status & XHCI_USBSTS_EINT) kprint("    Event Interrupt\n");
-    if (status & XHCI_USBSTS_PCD) kprint("    Port Change Detect\n");
-    if (status & XHCI_USBSTS_SSS) kprint("    Save State Status\n");
-    if (status & XHCI_USBSTS_RSS) kprint("    Restore State Status\n");
-    if (status & XHCI_USBSTS_SRE) kprint("    Save/Restore Error\n");
-    if (status & XHCI_USBSTS_CNR) kprint("    Controller Not Ready\n");
-    if (status & XHCI_USBSTS_HCE) kprint("    Host Controller Error\n");
-    kprint("\n");
+    kuPrint("===== USBSTS =====\n");
+    if (status & XHCI_USBSTS_HCH) kuPrint("    Host Controlled Halted\n");
+    if (status & XHCI_USBSTS_HSE) kuPrint("    Host System Error\n");
+    if (status & XHCI_USBSTS_EINT) kuPrint("    Event Interrupt\n");
+    if (status & XHCI_USBSTS_PCD) kuPrint("    Port Change Detect\n");
+    if (status & XHCI_USBSTS_SSS) kuPrint("    Save State Status\n");
+    if (status & XHCI_USBSTS_RSS) kuPrint("    Restore State Status\n");
+    if (status & XHCI_USBSTS_SRE) kuPrint("    Save/Restore Error\n");
+    if (status & XHCI_USBSTS_CNR) kuPrint("    Controller Not Ready\n");
+    if (status & XHCI_USBSTS_HCE) kuPrint("    Host Controller Error\n");
+    kuPrint("\n");
 }
 
 irqreturn_t XhciDriver::xhciIrqHandler(void*, XhciDriver* driver) {
@@ -156,21 +157,21 @@ void XhciDriver::_parseCapabilityRegisters() {
 }
 
 void XhciDriver::_logCapabilityRegisters() {
-    kprintInfo("===== Capability Registers (0x%llx) =====\n", (uint64_t)m_capRegs);
-    kprintInfo("    Length                : %i\n", m_capabilityRegsLength);
-    kprintInfo("    Max Device Slots      : %i\n", m_maxDeviceSlots);
-    kprintInfo("    Max Interrupters      : %i\n", m_maxInterrupters);
-    kprintInfo("    Max Ports             : %i\n", m_maxPorts);
-    kprintInfo("    IST                   : %i\n", m_isochronousSchedulingThreshold);
-    kprintInfo("    ERST Max Size         : %i\n", m_erstMax);
-    kprintInfo("    Scratchpad Buffers    : %i\n", m_maxScratchpadBuffers);
-    kprintInfo("    64-bit Addressing     : %i\n", m_64bitAddressingCapability);
-    kprintInfo("    Bandwidth Negotiation : %i\n", m_bandwidthNegotiationCapability);
-    kprintInfo("    64-byte Context Size  : %i\n", m_64ByteContextSize);
-    kprintInfo("    Port Power Control    : %i\n", m_portPowerControl);
-    kprintInfo("    Port Indicators       : %i\n", m_portIndicators);
-    kprintInfo("    Light Reset Available : %i\n", m_lightResetCapability);
-    kprint("\n");
+    kuPrint("===== Capability Registers (0x%llx) =====\n", (uint64_t)m_capRegs);
+    kuPrint("    Length                : %i\n", m_capabilityRegsLength);
+    kuPrint("    Max Device Slots      : %i\n", m_maxDeviceSlots);
+    kuPrint("    Max Interrupters      : %i\n", m_maxInterrupters);
+    kuPrint("    Max Ports             : %i\n", m_maxPorts);
+    kuPrint("    IST                   : %i\n", m_isochronousSchedulingThreshold);
+    kuPrint("    ERST Max Size         : %i\n", m_erstMax);
+    kuPrint("    Scratchpad Buffers    : %i\n", m_maxScratchpadBuffers);
+    kuPrint("    64-bit Addressing     : %i\n", m_64bitAddressingCapability);
+    kuPrint("    Bandwidth Negotiation : %i\n", m_bandwidthNegotiationCapability);
+    kuPrint("    64-byte Context Size  : %i\n", m_64ByteContextSize);
+    kuPrint("    Port Power Control    : %i\n", m_portPowerControl);
+    kuPrint("    Port Indicators       : %i\n", m_portIndicators);
+    kuPrint("    Light Reset Available : %i\n", m_lightResetCapability);
+    kuPrint("\n");
 }
 
 void XhciDriver::_parseExtendedCapabilityRegisters() {
@@ -221,15 +222,15 @@ void XhciDriver::_configureOperationalRegisters() {
 }
 
 void XhciDriver::_logOperationalRegisters() {
-    kprintInfo("===== Operational Registers (0x%llx) =====\n", (uint64_t)m_opRegs);
-    kprintInfo("    usbcmd     : %x\n", m_opRegs->usbcmd);
-    kprintInfo("    usbsts     : %x\n", m_opRegs->usbsts);
-    kprintInfo("    pagesize   : %x\n", m_opRegs->pagesize);
-    kprintInfo("    dnctrl     : %x\n", m_opRegs->dnctrl);
-    kprintInfo("    crcr       : %llx\n", m_opRegs->crcr);
-    kprintInfo("    dcbaap     : %llx\n", m_opRegs->dcbaap);
-    kprintInfo("    config     : %x\n", m_opRegs->config);
-    kprint("\n");
+    kuPrint("===== Operational Registers (0x%llx) =====\n", (uint64_t)m_opRegs);
+    kuPrint("    usbcmd     : %x\n", m_opRegs->usbcmd);
+    kuPrint("    usbsts     : %x\n", m_opRegs->usbsts);
+    kuPrint("    pagesize   : %x\n", m_opRegs->pagesize);
+    kuPrint("    dnctrl     : %x\n", m_opRegs->dnctrl);
+    kuPrint("    crcr       : %llx\n", m_opRegs->crcr);
+    kuPrint("    dcbaap     : %llx\n", m_opRegs->dcbaap);
+    kuPrint("    config     : %x\n", m_opRegs->config);
+    kuPrint("\n");
 }
 
 uint8_t XhciDriver::_getPortSpeed(uint8_t port) {
@@ -520,7 +521,7 @@ bool XhciDriver::_resetHostController() {
     uint32_t timeout = 20;
     while (!(m_opRegs->usbsts & XHCI_USBSTS_HCH)) {
         if (--timeout == 0) {
-            kprint("XHCI HC did not halt within %ims\n", timeout);
+            kuPrint("XHCI HC did not halt within %ims\n", timeout);
             return false;
         }
 
@@ -539,7 +540,7 @@ bool XhciDriver::_resetHostController() {
         m_opRegs->usbsts & XHCI_USBSTS_CNR
     ) {
         if (--timeout == 0) {
-            kprint("XHCI HC did not reset within %ims\n", timeout);
+            kuPrint("XHCI HC did not reset within %ims\n", timeout);
             return false;
         }
 
@@ -725,7 +726,7 @@ void XhciDriver::_setupDevice(uint8_t port) {
     // Calculate the initial max packet size based on device speed
     uint16_t maxPacketSize = _getMaxInitialPacketSize(device->speed);
 
-    kprintInfo("Setting up %s device on port %i (portReg:%i)\n", _usbSpeedToString(device->speed), device->portNumber, port);
+    kuPrint("Setting up %s device on port %i (portReg:%i)\n", _usbSpeedToString(device->speed), device->portNumber, port);
 
     device->slotId = _enableDeviceSlot();
     if (!device->slotId) {
@@ -734,7 +735,7 @@ void XhciDriver::_setupDevice(uint8_t port) {
         return;
     }
 
-    kprintInfo("Device slotId: %i\n", device->slotId);
+    kuPrint("Device slotId: %i\n", device->slotId);
     _createDeviceContext(device->slotId);
 
     // Allocate space for a command input context and transfer ring
@@ -816,17 +817,17 @@ void XhciDriver::_setupDevice(uint8_t port) {
         return;
     }
 
-    kprint("---- USB Device Info ----\n");
-    kprint("  Product Name    : %s\n", product);
-    kprint("  Manufacturer    : %s\n", manufacturer);
-    kprint("  Serial Number   : %s\n", serialNumber);
-    kprint("  Configuration   :\n");
-    kprint("      wTotalLength        - %i\n", configurationDescriptor->wTotalLength);
-    kprint("      bNumInterfaces      - %i\n", configurationDescriptor->bNumInterfaces);
-    kprint("      bConfigurationValue - %i\n", configurationDescriptor->bConfigurationValue);
-    kprint("      iConfiguration      - %i\n", configurationDescriptor->iConfiguration);
-    kprint("      bmAttributes        - %i\n", configurationDescriptor->bmAttributes);
-    kprint("      bMaxPower           - %i milliamps\n", configurationDescriptor->bMaxPower);
+    kuPrint("---- USB Device Info ----\n");
+    kuPrint("  Product Name    : %s\n", product);
+    kuPrint("  Manufacturer    : %s\n", manufacturer);
+    kuPrint("  Serial Number   : %s\n", serialNumber);
+    kuPrint("  Configuration   :\n");
+    kuPrint("      wTotalLength        - %i\n", configurationDescriptor->wTotalLength);
+    kuPrint("      bNumInterfaces      - %i\n", configurationDescriptor->bNumInterfaces);
+    kuPrint("      bConfigurationValue - %i\n", configurationDescriptor->bConfigurationValue);
+    kuPrint("      iConfiguration      - %i\n", configurationDescriptor->iConfiguration);
+    kuPrint("      bmAttributes        - %i\n", configurationDescriptor->bmAttributes);
+    kuPrint("      bMaxPower           - %i milliamps\n", configurationDescriptor->bMaxPower);
 
     uint8_t* buffer = configurationDescriptor->data;
     uint16_t totalLength = configurationDescriptor->wTotalLength - configurationDescriptor->header.bLength;
@@ -847,10 +848,10 @@ void XhciDriver::_setupDevice(uint8_t port) {
                 device->interfaceSubClass = iface->bInterfaceSubClass;
                 device->interfaceProtocol = iface->bInterfaceProtocol;
 
-                kprint("    ------ Device Interface ------\n", device->endpoints.size());
-                kprint("      class             - %i\n", device->interfaceClass);
-                kprint("      sub-class         - %i\n", device->interfaceSubClass);
-                kprint("      protocol          - %i\n", device->interfaceProtocol);
+                kuPrint("    ------ Device Interface ------\n", device->endpoints.size());
+                kuPrint("      class             - %i\n", device->interfaceClass);
+                kuPrint("      sub-class         - %i\n", device->interfaceSubClass);
+                kuPrint("      protocol          - %i\n", device->interfaceProtocol);
                 break;
             }
             case USB_DESCRIPTOR_HID: {
@@ -862,11 +863,11 @@ void XhciDriver::_setupDevice(uint8_t port) {
                 auto deviceEpDescriptor = new XhciDeviceEndpointDescriptor(device->slotId, (UsbEndpointDescriptor*)header);
                 device->endpoints.pushBack(deviceEpDescriptor);
 
-                kprint("    ------ Endpoint %lli ------\n", device->endpoints.size());
-                kprint("      endpoint number   - %i\n", deviceEpDescriptor->endpointNum);
-                kprint("      endpoint type     - %i\n", deviceEpDescriptor->endpointType);
-                kprint("      maxPacketSize     - %i\n", deviceEpDescriptor->maxPacketSize);
-                kprint("      intervalValue     - %i\n", deviceEpDescriptor->interval);
+                kuPrint("    ------ Endpoint %lli ------\n", device->endpoints.size());
+                kuPrint("      endpoint number   - %i\n", deviceEpDescriptor->endpointNum);
+                kuPrint("      endpoint type     - %i\n", deviceEpDescriptor->endpointType);
+                kuPrint("      maxPacketSize     - %i\n", deviceEpDescriptor->maxPacketSize);
+                kuPrint("      intervalValue     - %i\n", deviceEpDescriptor->interval);
                 break;
             }
             default: break;
@@ -875,7 +876,7 @@ void XhciDriver::_setupDevice(uint8_t port) {
         index += header->bLength;
     }
 
-    kprint("\n");
+    kuPrint("\n");
 
     // For each of the found endpoints send a configure endpoint command
     for (size_t i = 0; i < device->endpoints.size(); i++) {
@@ -989,7 +990,7 @@ bool XhciDriver::_evaluateContext(XhciDevice* device) {
     if (m_64ByteContextSize) {
         XhciDeviceContext64* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext64);
 
-        kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epState:%s maxPacketSize:%i\n",
+        kuPrint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epState:%s maxPacketSize:%i\n",
             device->slotId, deviceContext->slotContext.deviceAddress,
             xhciSlotStateToString(deviceContext->slotContext.slotState),
             xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),
@@ -998,7 +999,7 @@ bool XhciDriver::_evaluateContext(XhciDevice* device) {
     } else {
         XhciDeviceContext32* deviceContext = virtbase(m_dcbaa[device->slotId], XhciDeviceContext32);
 
-        kprint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epState:%s maxPacketSize:%i\n",
+        kuPrint("    DeviceContext[slotId=%i] address:0x%llx slotState:%s epState:%s maxPacketSize:%i\n",
             device->slotId, deviceContext->slotContext.deviceAddress,
             xhciSlotStateToString(deviceContext->slotContext.slotState),
             xhciEndpointStateToString(deviceContext->controlEndpointContext.endpointState),
@@ -1061,7 +1062,12 @@ bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPack
     // If you are using QEMU, do not ring the doorbell here.  Ring the doorbell
     //  *after* you place the STATUS TRB on the ring.
     // (See bug report: https://bugs.launchpad.net/qemu/+bug/1859378 )
-    if (!cpuid_isRunningUnderQEMU()) {
+    bool isRunningVirtualized = false;
+    RUN_ELEVATED({
+        isRunningVirtualized = cpuid_isRunningUnderQEMU();
+    });
+    
+    if (!isRunningVirtualized) {
         auto completionTrb = _startControlEndpointTransfer(transferRing);
         if (!completionTrb) {
             kfreeAligned(transferStatusBuffer);
@@ -1069,7 +1075,7 @@ bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPack
             return false;
         }
 
-        // kprintInfo(
+        // kuPrint(
         //     "Transfer Status: %s  Length: %i\n",
         //     trbCompletionCodeToString(completionTrb->completionCode),
         //     completionTrb->transferLength
@@ -1102,7 +1108,7 @@ bool XhciDriver::_sendUsbRequestPacket(XhciDevice* device, XhciDeviceRequestPack
         return false;
     }
 
-    // kprintInfo(
+    // kuPrint(
     //     "Transfer Status: %s  Length: %i\n",
     //     trbCompletionCodeToString(completionTrb->completionCode),
     //     completionTrb->transferLength
