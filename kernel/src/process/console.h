@@ -1,29 +1,44 @@
 #ifndef CONSOLE_H
 #define CONSOLE_H
-#include <ktypes.h>
-
-#define CONSOLE_BUFFER_SIZE 1024
+#include <sync.h>
 
 class Console {
 public:
     Console() = default;
     ~Console() = default;
 
-    void connectToSerial(uint16_t port);
-    __force_inline__ uint16_t checkSerialConnection() const { return m_serialPort; }
+    void connectOutputToSerial(uint16_t port);
+    void connectInputToSerial(uint16_t port);
 
-    size_t read(char* buffer, size_t len);
-    void write(const char* buffer);
+    __force_inline__ uint16_t checkInputSerialConnection() const { return m_inputSerialPort; }
+
+    // Writes data to the console
+    void write(const char* data, size_t length);
+    void write(const char* data);
+
+    // Reads data from the console's input buffer
+    size_t read(char* buffer, size_t length);
+
+    // Reads data from the console's input
+    // buffer up to the newline character.
+    size_t readLine(char* buffer, size_t length);
+
+    // Input devices call this to post input data
+    void postInput(const char* data, size_t length);
 
 private:
-    char m_dataBuffer[CONSOLE_BUFFER_SIZE];
-    size_t m_readPtr = 0;
-    size_t m_writePtr = 0;
+    uint16_t m_outputSerialPort = 0;
+    uint16_t m_inputSerialPort = 0;
 
-    uint16_t m_serialPort = 0;
+    // Input buffer (ring buffer)
+    static const size_t INPUT_BUFFER_SIZE = 1024;
 
-    bool _isBufferEmpty() const;
-    bool _isBufferFull() const;
+    char m_inputBuffer[INPUT_BUFFER_SIZE];
+    Atomic<size_t> m_inputBufferHead;
+    Atomic<size_t> m_inputBufferTail;
 };
+
+void setActiveConsole(Console* console);
+Console* getActiveConsole();
 
 #endif

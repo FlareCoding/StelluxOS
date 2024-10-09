@@ -23,13 +23,15 @@ irqreturn_t serialPortCom1IrqHandler(PtRegs*, void*) {
     default: break;
     }
 
-    if (current->console && (current->console->checkSerialConnection() == SERIAL_PORT_BASE_COM1)) {
+    Console* console = getActiveConsole();
+    if (console && (console->checkInputSerialConnection() == SERIAL_PORT_BASE_COM1)) {
+        console->write(&c, 1);
+
         if (c == '\b') {
             // Erase last character and move cursor back
-            current->console->write("\b \b");
+            console->postInput("\b \b", 3);
         } else {
-            char buf[2] = { c, 0x00 };
-            current->console->write(buf);
+            console->postInput(&c, 1);
         }
     }
 
@@ -44,12 +46,16 @@ void SerialDriver::init() {
 }
 
 void SerialDriver::writePort(uint16_t port, const char* buffer) {
-    writeToSerialPort(port, buffer);
+    RUN_ELEVATED({
+        writeToSerialPort(port, buffer);
+    });
 }
 
 char SerialDriver::readPort(uint16_t port) {
     char c = (char)0x00;
-    c = readFromSerialPort(port);
+    RUN_ELEVATED({
+        c = readFromSerialPort(port);
+    });
 
     return c;
 }

@@ -21,11 +21,12 @@
 #include <acpi/acpi_controller.h>
 #include <acpi/shutdown.h>
 #include <time/ktime.h>
-#include <kprint.h>
 #include <drivers/device_driver_manager.h>
 #include <drivers/usb/xhci/xhci.h>
 #include <drivers/serial/serial_driver.h>
 #include <process/console.h>
+#include <kstring.h>
+#include <kprint.h>
 
 #ifdef KRUN_UNIT_TESTS
     #include "tests/kernel_unit_tests.h"
@@ -168,6 +169,9 @@ void _kuser_entry() {
 
     // Start the kernel-wide APIC periodic timer
     KernelTimer::startApicPeriodicTimer();
+
+    // Initialize the global serial driver
+    SerialDriver::init();
     
     // Bring up all available processor cores
     //initializeApCores();
@@ -196,7 +200,8 @@ void systemTaskInitEntry(void*) {
 
     auto shellTask = createKernelTask(userShellTestEntry, nullptr);
     shellTask->console = new Console();
-    shellTask->console->connectToSerial(SERIAL_PORT_BASE_COM1);
+    shellTask->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
+    shellTask->console->connectInputToSerial(SERIAL_PORT_BASE_COM1);
 
     Scheduler::get().addTask(shellTask);
 
@@ -204,46 +209,36 @@ void systemTaskInitEntry(void*) {
 }
 
 void userShellTestEntry(void*) {
-    if (current->console) {
-        RUN_ELEVATED({
-            current->console->write("shell> ");
-        });
-    } 
+    // Get the task's console interface
+    Console* console = current->console;
+
+    // This process will grab focus of the global console
+    setActiveConsole(console);
+
+    // Prompt for the shell
+    const char* prompt = "shell> ";
+    const size_t promptLen = strlen(prompt);
+
+    if (console) {
+        console->write(prompt, promptLen);
+    }
 
     const size_t bufferSize = 1024;
     char* cmdBuffer = (char*)kzmalloc(bufferSize);
-    char* inputBuffer = (char*)kzmalloc(bufferSize);
-    size_t cmdBufferPtr = 0;
 
     while (true) {
-        if (!current->console) {
+        if (!console) {
             continue;
         }
 
-        size_t bytesRead = current->console->read(inputBuffer, bufferSize - 1);
+        size_t bytesRead = console->readLine(cmdBuffer, bufferSize - 1);
         if (!bytesRead) {
             continue;
         }
 
-        if (cmdBufferPtr < bufferSize - bytesRead - 1) {
-            memcpy(cmdBuffer + cmdBufferPtr, inputBuffer, bytesRead);
-            cmdBufferPtr += bytesRead;
-        }
-
-        char lastChar = inputBuffer[bytesRead - 1];
-        if (lastChar == '\n') {
-            cmdBuffer[cmdBufferPtr - 1] = 0; // erase the newline character from the command
-
-            kuPrint("#parsing command: '%s'\n", cmdBuffer + 7);
-            zeromem(cmdBuffer, sizeof(cmdBuffer));
-            cmdBufferPtr = 0;
-
-            RUN_ELEVATED({
-                current->console->write("shell> ");
-            });
-        }
-
-        zeromem(inputBuffer, bufferSize);
+        kuPrint("#parsing command: '%s'\n", cmdBuffer);
+        zeromem(cmdBuffer, sizeof(cmdBuffer));
+        console->write(prompt, promptLen);
     }
 
     exitKernelThread();
