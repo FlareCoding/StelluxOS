@@ -1,9 +1,10 @@
 #include "idt.h"
 #include <memory/kmemory.h>
-#include "panic.h"
 #include <arch/x86/ioapic.h>
 #include <arch/x86/apic.h>
 #include <acpi/acpi_controller.h>
+#include <kelevate/kelevate.h>
+#include "panic.h"
 #include <kprint.h>
 
 #define MAX_IRQS 64
@@ -170,10 +171,17 @@ void __common_exc_entry(PtRegs* frame) {
 // Common entry point for IRQs
 __PRIVILEGED_CODE
 void __common_irq_entry(PtRegs* frame) {
+    int originalElevateStatus = __check_current_elevate_status();
+
+    // Fake out being elevated if needed because the code has to
+    // be able to tell if it's running in privileged mode or not.
+    current->elevated = 1;
+
     uint64_t irqIndex = frame->intno - IRQ0;
 
     IrqDescriptor* desc = &g_irqHandlerTable.descriptors[irqIndex];
     if (!desc->handler) {
+        current->elevated = originalElevateStatus;
         return;
     }
 
@@ -183,6 +191,9 @@ void __common_irq_entry(PtRegs* frame) {
 
     irqreturn_t ret = desc->handler(frame, desc->cookie);
     __unused ret;
+
+    // Restore the original elevate status
+    current->elevated = originalElevateStatus;
 }
 
 // Common entry point for all interrupt service routines
