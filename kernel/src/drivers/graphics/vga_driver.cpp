@@ -71,22 +71,10 @@ void VGADriver::renderRectangle(
 }
 
 void VGADriver::swapBuffers() {
-    // Interrupts have to be disabled between writing
-    // to an I/O device to avoid race conditions.
-    bool initialIrqFlag = areInterruptsEnabled();
-    if (initialIrqFlag) {
-        RUN_ELEVATED({disableInterrupts();});
-    }
-    
     for (size_t i = 0; i < s_vgaFramebuffer.height; ++i) {
         char* dest = (char*)s_vgaFramebuffer.virtualBase + (i * s_vgaFramebuffer.pixelsPerScanline * sizeof(uint32_t));
         char* src = (char*)s_backBuffer + (i * s_vgaFramebuffer.width * sizeof(uint32_t));
         memcpy(dest, src, s_vgaFramebuffer.width * sizeof(uint32_t));
-    }
-
-    // Re-enable interrupts if we entered this code path with IF=1
-    if (initialIrqFlag) {
-        RUN_ELEVATED({enableInterrupts();});
     }
 }
 
