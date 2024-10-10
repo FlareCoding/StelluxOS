@@ -98,9 +98,6 @@ string to_string(int value);
 
 // Convert unsigned integer to string
 string to_string(unsigned int value);
-
-// Convert float to string (simple implementation)
-string to_string(float value);
 } // namespace kstl
 
 #endif
