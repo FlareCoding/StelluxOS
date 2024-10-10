@@ -36,9 +36,10 @@ public:
 
     static void swapBuffers();
 
+    static uint32_t* getDrawingContext(); 
+
 private:
     static VgaFramebuffer   s_vgaFramebuffer;
-    static Psf1Font*        s_font;
     static uint32_t*        s_backBuffer;
 };
 
