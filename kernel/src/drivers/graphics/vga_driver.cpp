@@ -2,7 +2,9 @@
 #include <memory/kmemory.h>
 #include <paging/page.h>
 #include <kelevate/kelevate.h>
-#include <kprint.h>
+#include <sched/sched.h>
+#include <time/ktime.h>
+#include <kstring.h>
 
 VgaFramebuffer VGADriver::s_vgaFramebuffer;
 uint32_t* VGADriver::s_backBuffer;
@@ -90,5 +92,24 @@ void VGADriver::swapBuffers() {
 
 uint32_t* VGADriver::getDrawingContext() {
     return s_backBuffer;
+}
+
+void VGADriver::startBufferSwapUpdateThread() {
+    const char* threadName = "vga_driver_buffer_swap";
+    const size_t threadNameLen = strlen(threadName);
+
+    auto bufferSwapThread = createKernelTask(_bufferSwapThreadEntry, nullptr);
+    memcpy(bufferSwapThread->name, threadName, threadNameLen);
+
+    Scheduler::get().addTask(bufferSwapThread);
+}
+
+void VGADriver::_bufferSwapThreadEntry(void*) {
+    while (true) {
+        swapBuffers();
+        msleep(16);
+    }
+
+    exitKernelThread();
 }
 

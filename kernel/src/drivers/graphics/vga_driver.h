@@ -38,9 +38,13 @@ public:
 
     static uint32_t* getDrawingContext(); 
 
+    static void startBufferSwapUpdateThread();
+
 private:
     static VgaFramebuffer   s_vgaFramebuffer;
     static uint32_t*        s_backBuffer;
+
+    static void _bufferSwapThreadEntry(void*);
 };
 
 #endif

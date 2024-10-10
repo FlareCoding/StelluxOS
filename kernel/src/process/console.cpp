@@ -1,5 +1,6 @@
 #include "console.h"
 #include <drivers/serial/serial_driver.h>
+#include <drivers/graphics/vga_text_driver.h>
 #include <memory/kmemory.h>
 #include <time/ktime.h>
 #include <kstring.h>
@@ -15,12 +16,18 @@ void Console::connectInputToSerial(uint16_t port) {
 }
 
 void Console::write(const char* data, size_t length) {
+    char serialBuf[length + 1];
+    zeromem(&serialBuf, length + 1);
+
     if (m_outputSerialPort != 0) {
-        char serialBuf[length + 1] = { 0 };
         memcpy(serialBuf, data, length);
         serialBuf[length] = NULL;
 
         SerialDriver::writePort(m_outputSerialPort, serialBuf);
+    }
+
+    if (m_vgaOutputConnected) {
+        VGATextDriver::renderString(serialBuf);
     }
 }
 
