@@ -125,7 +125,7 @@ void XhciEventRing::_updateErdpInterrupterRegister() {
 
 XhciTrb_t* XhciEventRing::_dequeueTrb() {
     if (m_primarySegmentRing[m_dequeuePtr].cycleBit != m_rcsBit) {
-        kprint("[XHCI_EVENT_RING] Dequeued an invalid TRB, returning NULL!\n");
+        kprintf("[XHCI_EVENT_RING] Dequeued an invalid TRB, returning NULL!\n");
         return nullptr;
     }
 

@@ -24,15 +24,15 @@ void HidMouseDriver::handleEvent(uint8_t* data) {
 
 void HidMouseDriver::_handleButtonPress(uint8_t buttons) {
     if (buttons & 0x01) {
-        kprint("Left Button Clicked\n");
+        kprintf("Left Button Clicked\n");
     }
     
     if (buttons & 0x02) {
-        kprint("Right Button Clicked\n");
+        kprintf("Right Button Clicked\n");
     }
 
     if (buttons & 0x04) {
-        kprint("Middle Button Clicked\n");
+        kprintf("Middle Button Clicked\n");
     }
 }
 
@@ -48,8 +48,8 @@ void HidMouseDriver::_handleMovement(int8_t xDisplacement, int8_t yDisplacement)
 
 void HidMouseDriver::_handleWheel(int8_t wheelDelta) {
     if (wheelDelta > 0) {
-        kprint("Wheel scrolled up by %i\n", wheelDelta);
+        kprintf("Wheel scrolled up by %i\n", wheelDelta);
     } else if (wheelDelta < 0) {
-        kprint("Wheel scrolled down by %i\n", -wheelDelta);
+        kprintf("Wheel scrolled down by %i\n", -wheelDelta);
     }
 }

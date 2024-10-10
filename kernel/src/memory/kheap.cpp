@@ -73,7 +73,7 @@ void DynamicMemoryAllocator::free(void* ptr) {
 
     // Verify the given pointer to be a heap segment header
     if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
-        kuPrint("Invalid pointer provided to free()!\n");
+        kprintf("Invalid pointer provided to free()!\n");
         releaseSpinlock(&__kheap_lock);
         return;
     }
@@ -108,7 +108,7 @@ void* DynamicMemoryAllocator::reallocate(void* ptr, size_t newSize) {
 
     // Verify the given pointer to be a heap segment header
     if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
-        kuPrint("Invalid pointer provided to realloc()!\n");
+        kprintf("Invalid pointer provided to realloc()!\n");
         releaseSpinlock(&__kheap_lock);
         return nullptr;
     }
@@ -227,38 +227,38 @@ void DynamicMemoryAllocator::__debugHeap() {
     HeapSegmentHeader* seg = m_firstSegment;
     int64_t segId = 1;
 
-    kuPrint("---------------------------------------------\n");
+    kprintf("---------------------------------------------\n");
     while (seg) {
-        kuPrint("Segment %llu:\n", segId);
-        kuPrint("    base         : %llx\n", (uint64_t)seg);
-        kuPrint("    userptr      : %llx\n", (uint64_t)seg + sizeof(HeapSegmentHeader));
-        kuPrint("    total size   : %llx\n", seg->size);
-        kuPrint("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
-        kuPrint("    status       : %s\n", seg->flags.free ? "free" : "used");
-        kuPrint("    next         : %llx\n", (uint64_t)seg->next);
-        kuPrint("    prev         : %llx\n\n", (uint64_t)seg->prev);
+        kprintf("Segment %llu:\n", segId);
+        kprintf("    base         : %llx\n", (uint64_t)seg);
+        kprintf("    userptr      : %llx\n", (uint64_t)seg + sizeof(HeapSegmentHeader));
+        kprintf("    total size   : %llx\n", seg->size);
+        kprintf("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
+        kprintf("    status       : %s\n", seg->flags.free ? "free" : "used");
+        kprintf("    next         : %llx\n", (uint64_t)seg->next);
+        kprintf("    prev         : %llx\n\n", (uint64_t)seg->prev);
         
         segId++;
         seg = seg->next;
     }
-    kuPrint("---------------------------------------------\n");
+    kprintf("---------------------------------------------\n");
 }
 
 void DynamicMemoryAllocator::__debugHeapSegment(void* ptr, int64_t segId) {
     HeapSegmentHeader* seg = (HeapSegmentHeader*)ptr;
     
     if (segId != -1)
-        kuPrint("Segment %llu:\n", segId);
+        kprintf("Segment %llu:\n", segId);
     else
-        kuPrint("Segment\n");
+        kprintf("Segment\n");
 
-    kuPrint("    base         : %llx\n", (uint64_t)seg);
-    kuPrint("    userptr      : %llx\n", (uint64_t)seg + sizeof(HeapSegmentHeader));
-    kuPrint("    total size   : %llx\n", seg->size);
-    kuPrint("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
-    kuPrint("    status       : %s\n", seg->flags.free ? "free" : "used");
-    kuPrint("    next         : %llx\n", (uint64_t)seg->next);
-    kuPrint("    prev         : %llx\n\n", (uint64_t)seg->prev);
+    kprintf("    base         : %llx\n", (uint64_t)seg);
+    kprintf("    userptr      : %llx\n", (uint64_t)seg + sizeof(HeapSegmentHeader));
+    kprintf("    total size   : %llx\n", seg->size);
+    kprintf("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
+    kprintf("    status       : %s\n", seg->flags.free ? "free" : "used");
+    kprintf("    next         : %llx\n", (uint64_t)seg->next);
+    kprintf("    prev         : %llx\n\n", (uint64_t)seg->prev);
 }
 
 void DynamicMemoryAllocator::__debugUserHeapPointer(void* ptr, int64_t id) {
@@ -273,7 +273,7 @@ bool DynamicMemoryAllocator::__detectHeapCorruption(bool dbgLog) {
     while (seg) {
         if (memcmp(seg->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, sizeof(seg->magic)) != 0) {
             if (dbgLog) {
-                kuPrint("---- Detected Heap Corruption (segment %lli) ----\n", segId);
+                kprintf("---- Detected Heap Corruption (segment %lli) ----\n", segId);
                 __debugHeapSegment(seg, segId);
             }
 
@@ -285,7 +285,7 @@ bool DynamicMemoryAllocator::__detectHeapCorruption(bool dbgLog) {
     }
 
     if (dbgLog) {
-        kuPrint("---- No Heap Corruption Detected (checked %lli segments) ----\n", segId - 1);
+        kprintf("---- No Heap Corruption Detected (checked %lli segments) ----\n", segId - 1);
     }
 
     return false;

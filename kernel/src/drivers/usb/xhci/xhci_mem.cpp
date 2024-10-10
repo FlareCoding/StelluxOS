@@ -20,7 +20,7 @@ void* allocXhciMemory(size_t size, size_t alignment, size_t boundary) {
     void* memblock = kzmallocAligned(totalSize, alignment);
 
     if (!memblock) {
-        kuPrint("[XHCI] ======= MEMORY ALLOCATION PROBLEM =======\n");
+        kprintf("[XHCI] ======= MEMORY ALLOCATION PROBLEM =======\n");
         while (true);
     }
 

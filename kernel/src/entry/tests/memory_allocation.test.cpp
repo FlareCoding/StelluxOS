@@ -33,7 +33,7 @@ DECLARE_UNIT_TEST("Heap Allocate Aligned Test", kheapAllocateAlignedUnitTest) {
             ASSERT_TRUE_CRITICAL(((uint64_t)ptr % alignments[j]) == 0, 
                 "Memory was not correctly aligned to the requested boundary");
             
-            kuPrint(UNIT_TEST "Allocated %llu bytes with alignment %llu: Success\n", (uint64_t)sizes[i], (uint64_t)alignments[j]);
+            kprintf(UNIT_TEST "Allocated %llu bytes with alignment %llu: Success\n", (uint64_t)sizes[i], (uint64_t)alignments[j]);
 
             // Free the aligned memory pointer
             kfreeAligned(ptr);
@@ -82,7 +82,7 @@ DECLARE_UNIT_TEST("Heap Allocate - Heavy", kheapHeavyAllocateUnitTest) {
 
         // Print progress every 10% of iterations or every 100 MB
         if ((i + 1) % reportInterval == 0 || totalAllocatedBytes >= nextMemoryMilestone) {
-            kuPrint(UNIT_TEST "Allocated %llu MB of memory after %llu iterations\n",
+            kprintf(UNIT_TEST "Allocated %llu MB of memory after %llu iterations\n",
                 (uint64_t)(totalAllocatedBytes / bytesPerMB),
                 (uint64_t)(i + 1));
             
@@ -91,7 +91,7 @@ DECLARE_UNIT_TEST("Heap Allocate - Heavy", kheapHeavyAllocateUnitTest) {
         }
     }
 
-    kuPrint(UNIT_TEST "Finished allocating %llu MB of memory in total\n", 
+    kprintf(UNIT_TEST "Finished allocating %llu MB of memory in total\n", 
         (uint64_t)(totalAllocatedBytes / bytesPerMB));
 
     // Free all the allocated memory in this test
@@ -117,7 +117,7 @@ DECLARE_UNIT_TEST("Heap Reallocate Test", kheapReallocateUnitTest) {
     // Ensure the new pointer is valid and that the data wasn't corrupted (if possible to check)
     ASSERT_TRUE(ptr != new_ptr, "Reallocated memory pointer didn't change as expected when resizing");
     
-    kuPrint(UNIT_TEST "Reallocated memory from %llu bytes to %llu bytes: Success\n", (uint64_t)ALLOC_SIZE, (uint64_t)(ALLOC_SIZE * 2));
+    kprintf(UNIT_TEST "Reallocated memory from %llu bytes to %llu bytes: Success\n", (uint64_t)ALLOC_SIZE, (uint64_t)(ALLOC_SIZE * 2));
 
     // Free the reallocated memory
     kfree(new_ptr);
@@ -128,7 +128,7 @@ DECLARE_UNIT_TEST("Heap Reallocate Test", kheapReallocateUnitTest) {
 DECLARE_UNIT_TEST("Paging - Allocate Single Page", pagingAllocateUnitTest) {
     auto& allocator = paging::getGlobalPageFrameAllocator();
     size_t usedMemoryBefore = allocator.getUsedSystemMemory(); // KB
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
 
     // Allocate a single page
     void* page = allocPage();
@@ -137,8 +137,8 @@ DECLARE_UNIT_TEST("Paging - Allocate Single Page", pagingAllocateUnitTest) {
     size_t usedMemoryAfter = allocator.getUsedSystemMemory();
     size_t memoryUsageChange = usedMemoryAfter - usedMemoryBefore;
 
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
-    kuPrint(UNIT_TEST "Memory usage change: %lli bytes\n", memoryUsageChange);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kprintf(UNIT_TEST "Memory usage change: %lli bytes\n", memoryUsageChange);
 
     // Assert the system memory usage
     ASSERT_EQ(memoryUsageChange, PAGE_SIZE, "Incorrect system memory usage after page allocation");
@@ -147,7 +147,7 @@ DECLARE_UNIT_TEST("Paging - Allocate Single Page", pagingAllocateUnitTest) {
     freePage(page);
 
     usedMemoryAfter = allocator.getUsedSystemMemory();
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
 
     // The net change in used memory should be zero after freeing the page
     ASSERT_EQ(usedMemoryBefore, usedMemoryAfter, "Failed to properly free the allocated page memory");
@@ -158,7 +158,7 @@ DECLARE_UNIT_TEST("Paging - Allocate Single Page", pagingAllocateUnitTest) {
 DECLARE_UNIT_TEST("Paging - Allocate Single Zeroed Page", pagingAllocateZeroedUnitTest) {
     auto& allocator = paging::getGlobalPageFrameAllocator();
     size_t usedMemoryBefore = allocator.getUsedSystemMemory(); // KB
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
 
     // Allocate a single page
     void* page = zallocPage();
@@ -174,8 +174,8 @@ DECLARE_UNIT_TEST("Paging - Allocate Single Zeroed Page", pagingAllocateZeroedUn
     size_t usedMemoryAfter = allocator.getUsedSystemMemory();
     size_t memoryUsageChange = usedMemoryAfter - usedMemoryBefore;
 
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
-    kuPrint(UNIT_TEST "Memory usage change: %lli bytes\n", memoryUsageChange);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kprintf(UNIT_TEST "Memory usage change: %lli bytes\n", memoryUsageChange);
 
     // Assert the system memory usage
     ASSERT_EQ(memoryUsageChange, PAGE_SIZE, "Incorrect system memory usage after page allocation");
@@ -184,7 +184,7 @@ DECLARE_UNIT_TEST("Paging - Allocate Single Zeroed Page", pagingAllocateZeroedUn
     freePage(page);
 
     usedMemoryAfter = allocator.getUsedSystemMemory();
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
 
     // The net change in used memory should be zero after freeing the page
     ASSERT_EQ(usedMemoryBefore, usedMemoryAfter, "Failed to properly free the allocated page memory");
@@ -197,7 +197,7 @@ DECLARE_UNIT_TEST("Paging - Allocate Multiple Zeroed Pages", pagingAllocateMulti
 
     auto& allocator = paging::getGlobalPageFrameAllocator();
     size_t usedMemoryBefore = allocator.getUsedSystemMemory(); // KB
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryBefore);
 
     // Allocate a single page
     void* ptr = zallocPages(100);
@@ -207,8 +207,8 @@ DECLARE_UNIT_TEST("Paging - Allocate Multiple Zeroed Pages", pagingAllocateMulti
     size_t usedMemoryAfter = allocator.getUsedSystemMemory();
     size_t memoryUsageChange = usedMemoryAfter - usedMemoryBefore;
 
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
-    kuPrint(UNIT_TEST "Memory usage change: %lli KB\n", memoryUsageChange / 1024);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kprintf(UNIT_TEST "Memory usage change: %lli KB\n", memoryUsageChange / 1024);
 
     // Assert the system memory usage
     ASSERT_EQ(memoryUsageChange, PAGE_SIZE * allocPageCount, "Incorrect system memory usage after page allocation");
@@ -217,7 +217,7 @@ DECLARE_UNIT_TEST("Paging - Allocate Multiple Zeroed Pages", pagingAllocateMulti
     freePages(ptr, allocPageCount);
 
     usedMemoryAfter = allocator.getUsedSystemMemory();
-    kuPrint(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
+    kprintf(UNIT_TEST "System memory used: %lli KB\n", usedMemoryAfter);
 
     // The net change in used memory should be zero after freeing the page
     ASSERT_EQ(usedMemoryBefore, usedMemoryAfter, "Failed to properly free the allocated page memory");
@@ -255,7 +255,7 @@ DECLARE_UNIT_TEST("Paging and Heap Allocation Combined Test", kheapWithPagingAll
 
         // Print progress every 10% of iterations or every 100 MB
         if ((i + 1) % reportInterval == 0 || totalAllocatedBytes >= nextMemoryMilestone) {
-            kuPrint(UNIT_TEST "Allocated %llu MB of heap memory and %llu pages after %llu iterations\n",
+            kprintf(UNIT_TEST "Allocated %llu MB of heap memory and %llu pages after %llu iterations\n",
                 (uint64_t)(totalAllocatedBytes / bytesPerMB),
                 (uint64_t)(i + 1),
                 (uint64_t)(i + 1));
@@ -265,7 +265,7 @@ DECLARE_UNIT_TEST("Paging and Heap Allocation Combined Test", kheapWithPagingAll
         }
     }
 
-    kuPrint(UNIT_TEST "Finished allocating %llu MB of heap memory and %llu pages in total\n", 
+    kprintf(UNIT_TEST "Finished allocating %llu MB of heap memory and %llu pages in total\n", 
         (uint64_t)(totalAllocatedBytes / bytesPerMB), iterations);
 
     // Free all the allocated heap memory in this test

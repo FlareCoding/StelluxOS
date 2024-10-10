@@ -30,7 +30,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Kernel Task Creation", mtTaskCreationUn
         taskArray[i] = task;
 
         if ((i + 1) % milestone == 0) {
-            kuPrint(UNIT_TEST "Allocated %lli tasks\n", i + 1);
+            kprintf(UNIT_TEST "Allocated %lli tasks\n", i + 1);
         }
     }
 
@@ -58,7 +58,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
     // Reset the test counter
     g_mtUnitTestCounter = 0;
 
-    kuPrint(UNIT_TEST "Creating %llu test tasks\n", taskCount);
+    kprintf(UNIT_TEST "Creating %llu test tasks\n", taskCount);
 
     // Create the tasks
     for (size_t i = 0; i < taskCount; i++) {
@@ -74,7 +74,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Single Core", mtSingleCoreUnitTest) {
         sched.addTask(taskArray[i], targetCpu);
         // ASSERT_TRUE(ret, "Failed to schedule a task on a single CPU core");
     }
-    kuPrint(UNIT_TEST "Beginning execution\n");
+    kprintf(UNIT_TEST "Beginning execution\n");
     sched.preemptEnable();
 
     // Wait for all tasks to finish
@@ -107,7 +107,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)",
     // Reset the test counter
     g_mtUnitTestCounter = 0;
 
-    kuPrint(UNIT_TEST "Creating %llu test tasks\n", taskCount);
+    kprintf(UNIT_TEST "Creating %llu test tasks\n", taskCount);
 
     // Create the tasks
     for (size_t i = 0; i < taskCount; i++) {
@@ -127,7 +127,7 @@ DECLARE_UNIT_TEST("Multithreading Test - Multi Core (Automatic Load Balancing)",
         sched.addTask(taskArray[i]);
     }
 
-    kuPrint(UNIT_TEST "Beginning execution\n");
+    kprintf(UNIT_TEST "Beginning execution\n");
 
     // Re-enable preemption on all cores
     for (size_t cpu = 0; cpu < systemCpus; cpu++) {

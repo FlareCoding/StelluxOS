@@ -1,6 +1,7 @@
 #ifndef KSTRING_H
 #define KSTRING_H
 #include <ktypes.h>
+#include <stdarg.h>
 
 // uint64_t --> string
 int lltoa(
@@ -35,6 +36,7 @@ int strcmp(const char *s1, const char *s2);
 
 void convertUnicodeToNarrowString(void* unicodeString, char* buffer);
 
+void _vaformatStringCopy(char* dest, size_t maxLen, const char* fmt, va_list args);
 void formatStringCopy(char* dest, size_t maxLen, const char* fmt, ...);
 
 namespace kstl {

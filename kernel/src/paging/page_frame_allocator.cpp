@@ -369,7 +369,7 @@ namespace paging {
         // If there are no more pages in RAM to give out,
         // a disk page frame swap is required to request more pages,
         // but Stellux kernel doesn't support it yet.
-        kprintError("Out of RAM! Disk page frame swap is not yet implemented\n");
+        kprintf("Out of RAM! Disk page frame swap is not yet implemented\n");
         return NULL;
     }
 
@@ -430,7 +430,7 @@ namespace paging {
         // If there are no more pages in RAM to give out,
         // a disk page frame swap is required to request more pages,
         // but Stellux kernel doesn't support it yet.
-        kprintError("Out of RAM! Disk page frame swap is not yet implemented\n");
+        kprintf("Out of RAM! Disk page frame swap is not yet implemented\n");
         return nullptr;
     }
 

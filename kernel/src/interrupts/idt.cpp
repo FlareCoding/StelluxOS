@@ -198,7 +198,7 @@ void __common_irq_entry(PtRegs* frame) {
 
 // Common entry point for all interrupt service routines
 EXTERN_C __PRIVILEGED_CODE void __common_isr_entry(PtRegs frame) {
-    //if (frame.intno != IRQ0) kprint("Received int: %i\n", frame.intno);
+    //if (frame.intno != IRQ0) dbgPrint("Received int: %i\n", frame.intno);
 
     // Check whether the interrupt is an IRQ or a trap/exception
     if (frame.intno >= IRQ0) {
@@ -336,7 +336,7 @@ bool registerIrqHandler(uint8_t irqno, IrqHandler_t handler, bool fastApicEoi, v
     uint64_t irqTableIndex = static_cast<uint64_t>(irqno) - IRQ0;
     IrqDescriptor* desc = &g_irqHandlerTable.descriptors[irqTableIndex];
     if (desc->handler) {
-        kuPrint("[WARN] registerIrqHandler(): IRQ%i handler already exists!\n", irqTableIndex);
+        dbgPrint("[WARN] registerIrqHandler(): IRQ%i handler already exists!\n", irqTableIndex);
         return false;
     }
 

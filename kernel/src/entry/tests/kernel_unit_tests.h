@@ -39,7 +39,7 @@ void executeUnitTests();
 #define ASSERT_EQ(value, expected, message) \
     do { \
         if ((value) != (expected)) { \
-            kuPrint("[ASSERT] %s:%i, %s, expected %lli but got %lli\n", \
+            kprintf("[ASSERT] %s:%i, %s, expected %lli but got %lli\n", \
                 __FILE__, __LINE__, message, (uint64_t)(expected), (uint64_t)(value)); \
             return UNIT_TEST_FAILURE; \
         } \
@@ -49,9 +49,9 @@ void executeUnitTests();
 #define ASSERT_EQ_CRITICAL(value, expected, message) \
     do { \
         if ((value) != (expected)) { \
-            kuPrint("[ASSERT] %s:%i, %s, expected %lli but got %lli\n", \
+            kprintf("[ASSERT] %s:%i, %s, expected %lli but got %lli\n", \
                 __FILE__, __LINE__, message, (uint64_t)(expected), (uint64_t)(value)); \
-            kuPrint("[ASSERT] Critical failure detected, shutting down.\n"); \
+            kprintf("[ASSERT] Critical failure detected, shutting down.\n"); \
             return UNIT_TEST_CRITICAL_FAILURE; \
         } \
     } while (0)
@@ -60,7 +60,7 @@ void executeUnitTests();
 #define ASSERT_STR_EQ(value, expected, message) \
     do { \
         if (strcmp((value), (expected)) != 0) { \
-            kuPrint("[ASSERT] %s:%i, %s, expected %s but got %s\n", \
+            kprintf("[ASSERT] %s:%i, %s, expected %s but got %s\n", \
                 __FILE__, __LINE__, message, (uint64_t)(expected), (uint64_t)(value)); \
             return UNIT_TEST_FAILURE; \
         } \
@@ -70,9 +70,9 @@ void executeUnitTests();
 #define ASSERT_STR_EQ_CRITICAL(value, expected, message) \
     do { \
         if (strcmp((value), (expected)) != 0) { \
-            kuPrint("[ASSERT] %s:%i, %s, expected %s but got %s\n", \
+            kprintf("[ASSERT] %s:%i, %s, expected %s but got %s\n", \
                 __FILE__, __LINE__, message, (uint64_t)(expected), (uint64_t)(value)); \
-            kuPrint("[ASSERT] Critical failure detected, shutting down.\n"); \
+            kprintf("[ASSERT] Critical failure detected, shutting down.\n"); \
             return UNIT_TEST_CRITICAL_FAILURE; \
         } \
     } while (0)
@@ -81,7 +81,7 @@ void executeUnitTests();
 #define ASSERT_TRUE(condition, message) \
     do { \
         if (!(condition)) { \
-            kuPrint("[ASSERT] %s:%i, %s, condition failed\n", \
+            kprintf("[ASSERT] %s:%i, %s, condition failed\n", \
                 __FILE__, __LINE__, message); \
             return UNIT_TEST_FAILURE; \
         } \
@@ -91,9 +91,9 @@ void executeUnitTests();
 #define ASSERT_TRUE_CRITICAL(condition, message) \
     do { \
         if (!(condition)) { \
-            kuPrint("[ASSERT] %s:%i, %s, condition failed\n", \
+            kprintf("[ASSERT] %s:%i, %s, condition failed\n", \
                 __FILE__, __LINE__, message); \
-            kuPrint("[ASSERT] Critical failure detected, shutting down.\n"); \
+            kprintf("[ASSERT] Critical failure detected, shutting down.\n"); \
             return UNIT_TEST_CRITICAL_FAILURE; \
         } \
     } while (0)

@@ -1,6 +1,5 @@
 #include "kstring.h"
 #include <memory/kmemory.h>
-#include <stdarg.h>
 
 const char g_hexAlphabet[17] = "0123456789abcdef";
 
