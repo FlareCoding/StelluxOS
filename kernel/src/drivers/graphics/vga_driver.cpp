@@ -5,7 +5,6 @@
 #include <kprint.h>
 
 VgaFramebuffer VGADriver::s_vgaFramebuffer;
-Psf1Font* VGADriver::s_font;
 uint32_t* VGADriver::s_backBuffer;
 
 void VGADriver::init(KernelEntryParams* params) {
@@ -14,8 +13,6 @@ void VGADriver::init(KernelEntryParams* params) {
     s_vgaFramebuffer.width = params->graphicsFramebuffer.width;
     s_vgaFramebuffer.height = params->graphicsFramebuffer.height;
     s_vgaFramebuffer.pixelsPerScanline = params->graphicsFramebuffer.pixelsPerScanline;
-    
-    s_font = reinterpret_cast<Psf1Font*>(params->textRenderingFont);
 
     // Map the VGA memory to a usermode page
     size_t framebufferPages = s_vgaFramebuffer.size / PAGE_SIZE + 1;
@@ -85,5 +82,9 @@ void VGADriver::swapBuffers() {
     if (initialIrqFlag) {
         RUN_ELEVATED({enableInterrupts();});
     }
+}
+
+uint32_t* VGADriver::getDrawingContext() {
+    return s_backBuffer;
 }
 

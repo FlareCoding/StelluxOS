@@ -24,7 +24,7 @@
 #include <drivers/device_driver_manager.h>
 #include <drivers/usb/xhci/xhci.h>
 #include <drivers/serial/serial_driver.h>
-#include <drivers/graphics/vga_driver.h>
+#include <drivers/graphics/vga_text_driver.h>
 #include <process/console.h>
 #include <shell/shell.h>
 #include <kstring.h>
@@ -132,8 +132,15 @@ void _kuserEntry() {
         // Initialize display and graphics context
         Display::initialize(&g_kernelEntryParameters.graphicsFramebuffer, g_kernelEntryParameters.textRenderingFont);
 
-        // Initialize the VGA driver early to enable graphical display of debug information
+        // Initialize the VGA drivers early to enable graphical display of debug information
         VGADriver::init(&g_kernelEntryParameters);
+
+        VGATextDriver::init(
+            g_kernelEntryParameters.graphicsFramebuffer.width,
+            g_kernelEntryParameters.graphicsFramebuffer.height,
+            g_kernelEntryParameters.graphicsFramebuffer.pixelsPerScanline,
+            g_kernelEntryParameters.textRenderingFont
+        );
 
         char vendorName[13];
         cpuid_readVendorId(vendorName);
