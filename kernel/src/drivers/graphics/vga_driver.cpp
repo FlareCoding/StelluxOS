@@ -71,11 +71,16 @@ void VGADriver::renderRectangle(
 }
 
 void VGADriver::swapBuffers() {
+    auto& sched = Scheduler::get();
+    sched.preemptDisable();
+
     for (size_t i = 0; i < s_vgaFramebuffer.height; ++i) {
         char* dest = (char*)s_vgaFramebuffer.virtualBase + (i * s_vgaFramebuffer.pixelsPerScanline * sizeof(uint32_t));
         char* src = (char*)s_backBuffer + (i * s_vgaFramebuffer.width * sizeof(uint32_t));
         memcpy(dest, src, s_vgaFramebuffer.width * sizeof(uint32_t));
     }
+
+    sched.preemptEnable();
 }
 
 uint32_t* VGADriver::getDrawingContext() {
