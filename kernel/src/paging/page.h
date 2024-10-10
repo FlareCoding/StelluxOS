@@ -62,6 +62,17 @@ void mapPage(
 );
 
 __PRIVILEGED_CODE
+void mapPages(
+    void* vaddr,
+    void* paddr,
+    size_t pages,
+    uint8_t privilegeLevel,
+    uint8_t attribs,
+    PageTable* pml4,
+    PageFrameAllocator& pageFrameAllocator = getGlobalPageFrameAllocator()
+);
+
+__PRIVILEGED_CODE
 void changePageAttribs(void* vaddr, uint8_t attribs, PageTable* pml4 = getCurrentTopLevelPageTable());
 
 __PRIVILEGED_CODE

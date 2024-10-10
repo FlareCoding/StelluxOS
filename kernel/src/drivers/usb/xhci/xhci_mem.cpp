@@ -6,16 +6,9 @@
 uint64_t xhciMapMmio(uint64_t pciBarAddress) {
     const size_t mmioRegionPageCount = 10;
     uint64_t virtualBase = (uint64_t)zallocPages(mmioRegionPageCount);
-
+    
     RUN_ELEVATED({
-        // Map a conservatively large space for xHCI registers
-        for (size_t offset = 0; offset < mmioRegionPageCount * PAGE_SIZE; offset += PAGE_SIZE) {
-            void* mmioPage = (void*)(pciBarAddress + offset);
-            void* vaddr = (void*)(virtualBase + offset);
-            paging::mapPage(vaddr, mmioPage, USERSPACE_PAGE, PAGE_ATTRIB_CACHE_DISABLED, paging::getCurrentTopLevelPageTable());
-        }
-
-        paging::flushTlbAll();
+        paging::mapPages((void*)virtualBase, (void*)pciBarAddress, mmioRegionPageCount, USERSPACE_PAGE, PAGE_ATTRIB_CACHE_DISABLED, paging::getCurrentTopLevelPageTable());
     });
 
     return virtualBase;

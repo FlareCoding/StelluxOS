@@ -138,6 +138,28 @@ void mapPage(
 }
 
 __PRIVILEGED_CODE
+void mapPages(
+    void* vaddr,
+    void* paddr,
+    size_t pages,
+    uint8_t privilegeLevel,
+    uint8_t attribs,
+    PageTable* pml4,
+    PageFrameAllocator& pageFrameAllocator
+) {
+	// Create page mappings
+	for (size_t i = 0; i < pages; i++) {
+		uint64_t pageVaddr = (uint64_t)vaddr + PAGE_SIZE * i;
+		uint64_t pagePaddr = (uint64_t)paddr + PAGE_SIZE * i;
+		
+		mapPage((void*)pageVaddr, (void*)pagePaddr, privilegeLevel, attribs, pml4, pageFrameAllocator);
+	}
+
+	// Flush the TLB
+	flushTlbAll();
+}
+
+__PRIVILEGED_CODE
 void changePageAttribs(void* vaddr, uint8_t attribs, PageTable* pml4) {
 	pte_t* pte = getPteForAddr(vaddr, pml4);
 	pte->pageCacheDisabled = attribs & PAGE_ATTRIB_CACHE_DISABLED;
