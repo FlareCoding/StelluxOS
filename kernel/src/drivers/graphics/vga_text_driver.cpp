@@ -1,6 +1,7 @@
 #include "vga_text_driver.h"
 #include <memory/kmemory.h>
 #include <kstring.h>
+#include <sync.h>
 
 #define CHAR_PIXEL_WIDTH        8
 #define CHAR_TOP_BORDER_OFFSET  8
@@ -13,6 +14,8 @@ Psf1Font* VGATextDriver::s_font;
 
 uint32_t VGATextDriver::s_cursorPosX;
 uint32_t VGATextDriver::s_cursorPosY;
+
+DECLARE_SPINLOCK(s_vgaTextRenderingLock);
 
 void VGATextDriver::init(uint32_t width, uint32_t height, uint32_t pixelsPerScanline, void* font) {
     s_width = width;
@@ -67,10 +70,12 @@ void VGATextDriver::renderChar(char chr, uint32_t color) {
 }
 
 void VGATextDriver::renderString(const char* str, uint32_t color) {
+    acquireSpinlock(&s_vgaTextRenderingLock);
     size_t len = strlen(str);
     for (size_t i = 0; i < len; i++) {
         renderChar(str[i], color);
     }
+    releaseSpinlock(&s_vgaTextRenderingLock);
 }
 
 void VGATextDriver::_renderChar(char chr, uint32_t color) {
