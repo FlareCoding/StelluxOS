@@ -1,22 +1,7 @@
 #ifndef KDISPLAY_H
 #define KDISPLAY_H
 #include <ktypes.h>
-
-struct Point {
-    uint32_t x;
-    uint32_t y;
-};
-
-struct Psf1Hdr {
-    uint8_t magic[2];
-    uint8_t mode;
-    uint8_t charSize;
-};
-
-struct Psf1Font {
-    Psf1Hdr* header;
-    void* glyphBuffer;
-};
+#include <drivers/graphics/vga_driver.h>
 
 struct Framebuffer {
 	void*       base;
