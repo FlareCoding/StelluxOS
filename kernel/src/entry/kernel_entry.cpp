@@ -129,6 +129,13 @@ void _kuserEntry() {
         }
     });
 
+    // Initialize the scheduler
+    auto& sched = Scheduler::get();
+    sched.init();
+
+    // Initialize LAPIC
+    Apic::initializeLocalApic();
+
     // Initialize the VGA drivers early to enable graphical display of debug information
     VGADriver::init(&g_kernelEntryParameters);
 
@@ -160,17 +167,11 @@ void _kuserEntry() {
     dbgPrint("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
     dbgPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_kernelEntryParameters.kernelStack + PAGE_SIZE);
 
-    Apic::initializeLocalApic();
-
     auto& acpiController = AcpiController::get();
 
     RUN_ELEVATED({
         acpiController.init(g_kernelEntryParameters.rsdp);
     });
-
-    // Initialize the scheduler
-    auto& sched = Scheduler::get();
-    sched.init();
 
     // Register the init task
     memcpy(current->name, "idle", 4);
