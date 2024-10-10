@@ -660,18 +660,4 @@ namespace kstl {
         lltoa(value, buf, sizeof(buf));  // Use your custom integer-to-string conversion
         return string(buf);
     }
-
-    // Convert float to string (simple implementation)
-    string to_string(float value) {
-        char buf[64] = { 0 };
-        // Use a simple implementation for float-to-string
-        // You may need to write your own logic to handle precision, rounding, etc.
-        int integerPart = static_cast<int>(value);
-        int fractionalPart = static_cast<int>((value - integerPart) * 1000000);  // Keeping 6 decimal places
-        
-        string result = to_string(integerPart) + ".";
-        result += to_string(fractionalPart);
-        
-        return result;
-    }
 } // namespace kstl
