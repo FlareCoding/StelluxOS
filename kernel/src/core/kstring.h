@@ -35,6 +35,8 @@ int strcmp(const char *s1, const char *s2);
 
 void convertUnicodeToNarrowString(void* unicodeString, char* buffer);
 
+void formatStringCopy(char* dest, size_t maxLen, const char* fmt, ...);
+
 namespace kstl {
 class string {
 public:
@@ -48,6 +50,8 @@ public:
     string(string&& other);
 
     string& operator=(const string& other);
+    string operator+(const string& other) const;
+    string& operator+=(const string& other);
     char& operator[](size_t index);
     const char& operator[](size_t index) const;
     bool operator==(const string& other) const;
@@ -88,6 +92,15 @@ private:
 
     bool m_isUsingSSOBuffer;
 };
+
+// Convert integer to string
+string to_string(int value);
+
+// Convert unsigned integer to string
+string to_string(unsigned int value);
+
+// Convert float to string (simple implementation)
+string to_string(float value);
 } // namespace kstl
 
 #endif

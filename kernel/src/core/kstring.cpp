@@ -1,5 +1,6 @@
 #include "kstring.h"
 #include <memory/kmemory.h>
+#include <stdarg.h>
 
 const char g_hexAlphabet[17] = "0123456789abcdef";
 
@@ -174,6 +175,119 @@ void convertUnicodeToNarrowString(void* unicodeString, char* buffer) {
     *buffer = '\0';
 }
 
+void _vaformatStringCopy(char* dest, size_t maxLen, const char* fmt, va_list args) {
+    bool fmtDiscovered = false;
+    size_t index = 0;  // Index for the destination buffer
+
+    // Helper function to append to the destination buffer
+    auto appendToDest = [&](const char* str) {
+        while (*str && index < maxLen - 1) {
+            dest[index++] = *str++;
+        }
+        dest[index] = '\0';  // Null-terminate the string
+    };
+
+    // Helper function for copying a single character
+    auto appendCharToDest = [&](char ch) {
+        if (index < maxLen - 1) {
+            dest[index++] = ch;
+            dest[index] = '\0';
+        }
+    };
+
+    while (*fmt && index < maxLen - 1) {
+        // If the '%' character is discovered, treat it as a start of an arg format.
+        if (*fmt == '%') {
+            fmtDiscovered = true;
+            ++fmt;
+            continue;
+        }
+
+        // If no format specifier is expected, copy the character normally.
+        if (!fmtDiscovered) {
+            appendCharToDest(*fmt);
+            ++fmt;
+            continue;
+        }
+
+        // Handle format specifiers
+        switch (*fmt) {
+        case 'c': {
+            char ch = (char)va_arg(args, int);
+            appendCharToDest(ch);
+            break;
+        }
+        case 's': {
+            char* substr = va_arg(args, char*);
+            appendToDest(substr);
+            break;
+        }
+        case 'i': {
+            int arg = va_arg(args, int);
+            char buf[128] = { 0 };
+            lltoa(arg, buf, sizeof(buf));  // Custom integer to string conversion
+            appendToDest(buf);
+            break;
+        }
+        case 'x': {
+            uint32_t arg = va_arg(args, uint32_t);
+            char buf[17] = { 0 };
+            htoa(arg, buf, sizeof(buf));  // Custom hex conversion function
+            appendToDest(buf);
+            break;
+        }
+        case 'l': {
+            char buf[128] = { 0 };
+
+            // Handle multi-character format specifiers
+            if (*(fmt + 1) == 'l' && *(fmt + 2) == 'u') {
+                uint64_t arg = va_arg(args, uint64_t);
+                lltoa(arg, buf, sizeof(buf));  // Custom unsigned 64-bit conversion
+                fmt += 2;
+            } 
+            else if (*(fmt + 1) == 'l' && *(fmt + 2) == 'i') {
+                int64_t arg = va_arg(args, int64_t);
+                lltoa(arg, buf, sizeof(buf));  // Custom signed 64-bit conversion
+                fmt += 2;
+            } 
+            else if (*(fmt + 1) == 'l' && *(fmt + 2) == 'x') {
+                uint64_t arg = va_arg(args, uint64_t);
+                htoa(arg, buf, sizeof(buf));  // Custom hex conversion for 64-bit
+                fmt += 2;
+            } 
+            else {
+                int32_t arg = va_arg(args, int32_t);
+                lltoa(arg, buf, sizeof(buf));  // Default to 32-bit signed
+            }
+
+            appendToDest(buf);
+            break;
+        }
+        default: {
+            // If format specifier is unknown, treat it as a normal character
+            appendCharToDest(*fmt);
+            break;
+        };
+        }
+
+        fmtDiscovered = false;
+        ++fmt;
+    }
+}
+
+void formatStringCopy(char* dest, size_t maxLen, const char* fmt, ...) {
+    va_list args;
+    
+    // Initialize the va_list with the variable arguments
+    va_start(args, fmt);
+    
+    // Pass the va_list to the actual formatStringCopy function
+    _vaformatStringCopy(dest, maxLen, fmt, args);
+    
+    // Clean up the va_list
+    va_end(args);
+}
+
 namespace kstl {
     string::string() : m_isUsingSSOBuffer(true) {
         m_ssoBuffer[0] = '\0';
@@ -284,6 +398,33 @@ namespace kstl {
             m_isUsingSSOBuffer = false;
         }
 
+        return *this;
+    }
+
+    string string::operator+(const string& other) const {
+        // Create a new string with enough space to hold both strings
+        string newString;
+        size_t totalLength = this->length() + other.length();
+
+        if (totalLength < SSO_SIZE) {
+            // Concatenate within SSO buffer
+            memcpy(newString.m_ssoBuffer, this->m_ssoBuffer, this->length());
+            memcpy(newString.m_ssoBuffer + this->length(), other.m_ssoBuffer, other.length() + 1); // +1 for null terminator
+            newString.m_isUsingSSOBuffer = true;
+        } else {
+            // Concatenate in heap-allocated memory
+            newString.reserve(totalLength + 1); // +1 for null terminator
+            memcpy(newString.m_data, this->c_str(), this->length());
+            memcpy(newString.m_data + this->length(), other.c_str(), other.length() + 1); // +1 for null terminator
+            newString.m_size = totalLength;
+            newString.m_isUsingSSOBuffer = false;
+        }
+
+        return newString;
+    }
+
+    string& string::operator+=(const string& other) {
+        append(other.c_str());
         return *this;
     }
 
@@ -504,5 +645,33 @@ namespace kstl {
 
     const char* string::c_str() const {
         return m_isUsingSSOBuffer ? m_ssoBuffer : m_data;
+    }
+
+    // Convert integer to string
+    string to_string(int value) {
+        char buf[32] = { 0 };  // Large enough to hold any int
+        lltoa(value, buf, sizeof(buf));  // Use your custom integer-to-string conversion
+        return string(buf);
+    }
+
+    // Convert unsigned integer to string
+    string to_string(unsigned int value) {
+        char buf[32] = { 0 };  // Large enough to hold any unsigned int
+        lltoa(value, buf, sizeof(buf));  // Use your custom integer-to-string conversion
+        return string(buf);
+    }
+
+    // Convert float to string (simple implementation)
+    string to_string(float value) {
+        char buf[64] = { 0 };
+        // Use a simple implementation for float-to-string
+        // You may need to write your own logic to handle precision, rounding, etc.
+        int integerPart = static_cast<int>(value);
+        int fractionalPart = static_cast<int>((value - integerPart) * 1000000);  // Keeping 6 decimal places
+        
+        string result = to_string(integerPart) + ".";
+        result += to_string(fractionalPart);
+        
+        return result;
     }
 } // namespace kstl
