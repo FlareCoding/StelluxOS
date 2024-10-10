@@ -210,6 +210,9 @@ void _kuserEntry() {
 }
 
 void systemTaskInitEntry(void*) {
+    // Start the thread responsible for updating the VGA screen
+    VGADriver::startBufferSwapUpdateThread();
+
     // Iterate over PCI device table and find and
     // install appropriate drivers for each device.
     DeviceDriverManager::installPciDeviceDrivers();
@@ -219,9 +222,9 @@ void systemTaskInitEntry(void*) {
     shellTask->console = new Console();
     shellTask->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
     shellTask->console->connectInputToSerial(SERIAL_PORT_BASE_COM1);
+    shellTask->console->connectOutputToVga();
 
     Scheduler::get().addTask(shellTask);
 
     exitKernelThread();
 }
-

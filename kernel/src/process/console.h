@@ -10,6 +10,9 @@ public:
     void connectOutputToSerial(uint16_t port);
     void connectInputToSerial(uint16_t port);
 
+    __force_inline__ void connectOutputToVga() { m_vgaOutputConnected = true; } 
+
+    __force_inline__ bool checkOutputVgaConnection() const { return m_vgaOutputConnected; } 
     __force_inline__ uint16_t checkInputSerialConnection() const { return m_inputSerialPort; }
 
     // Writes data to the console
@@ -29,6 +32,8 @@ public:
 private:
     uint16_t m_outputSerialPort = 0;
     uint16_t m_inputSerialPort = 0;
+
+    bool m_vgaOutputConnected = false;
 
     // Input buffer (ring buffer)
     static const size_t INPUT_BUFFER_SIZE = 1024;
