@@ -24,6 +24,7 @@
 #include <drivers/device_driver_manager.h>
 #include <drivers/usb/xhci/xhci.h>
 #include <drivers/serial/serial_driver.h>
+#include <drivers/graphics/vga_driver.h>
 #include <process/console.h>
 #include <shell/shell.h>
 #include <kstring.h>
@@ -44,7 +45,7 @@ KernelEntryParams g_kernelEntryParameters;
 #define USERMODE_KERNEL_ENTRY_STACK_SIZE 0x8000
 char __usermodeKernelEntryStack[USERMODE_KERNEL_ENTRY_STACK_SIZE];
 
-void _kuser_entry();
+void _kuserEntry();
 void systemTaskInitEntry(void*);
 
 __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
@@ -87,10 +88,10 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     __per_cpu_data.__cpu[BSP_CPU_ID].currentTask = &g_kernelSwapperTasks[BSP_CPU_ID];
     __per_cpu_data.__cpu[BSP_CPU_ID].currentTask->cpu = BSP_CPU_ID;
 
-    __call_lowered_entry(_kuser_entry, __usermodeKernelEntryStack + USERMODE_KERNEL_ENTRY_STACK_SIZE);
+    __call_lowered_entry(_kuserEntry, __usermodeKernelEntryStack + USERMODE_KERNEL_ENTRY_STACK_SIZE);
 }
 
-void _kuser_entry() {
+void _kuserEntry() {
     setupInterruptDescriptorTable();
 
     RUN_ELEVATED({
@@ -130,6 +131,9 @@ void _kuser_entry() {
 
         // Initialize display and graphics context
         Display::initialize(&g_kernelEntryParameters.graphicsFramebuffer, g_kernelEntryParameters.textRenderingFont);
+
+        // Initialize the VGA driver early to enable graphical display of debug information
+        VGADriver::init(&g_kernelEntryParameters);
 
         char vendorName[13];
         cpuid_readVendorId(vendorName);
@@ -213,3 +217,4 @@ void systemTaskInitEntry(void*) {
 
     exitKernelThread();
 }
+
