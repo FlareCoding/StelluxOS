@@ -32,7 +32,7 @@ public:
     static void init(KernelEntryParams* params);
 
     static void renderPixel(uint32_t x, uint32_t y, uint32_t color);
-    static void drawRectangle(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color);
+    static void renderRectangle(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color);
 
     static void swapBuffers();
 

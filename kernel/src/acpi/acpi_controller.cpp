@@ -70,12 +70,12 @@ void parseNameObject(uint8_t** amlPointer) {
                 (*amlPointer)++;
             }
             buffer[i] = '\0'; // Correctly null-terminate the string
-            kprint("             Device String Found: %s\n", buffer);
+            dbgPrint("             Device String Found: %s\n", buffer);
             
             // Check for common XHCI _HID strings
             if (memcmp(buffer, (char*)"PNP0D10", 7) == 0 ||
                 memcmp(buffer, (char*)"ACPI\\80860F35", 13) == 0) {
-                kprint("              XHCI Controller Found: %s\n", buffer);
+                dbgPrint("              XHCI Controller Found: %s\n", buffer);
             }
             break;
         }
@@ -206,8 +206,8 @@ void AcpiController::init(void* rsdp) {
 
     m_acpiTableEntries = (m_xsdt->header.length - sizeof(AcpiTableHeader)) / sizeof(uint64_t);
 
-    kprint("Xsdt Addr: 0x%llx\n", m_xsdt);
-    kprint("ACPI Entries: %lli\n", m_acpiTableEntries);
+    dbgPrint("Xsdt Addr: 0x%llx\n", m_xsdt);
+    dbgPrint("ACPI Entries: %lli\n", m_acpiTableEntries);
 
     for (size_t i = 0; i < m_acpiTableEntries; ++i) {
         AcpiTableHeader* table = (AcpiTableHeader *)m_xsdt->tablePointers[i];
@@ -237,5 +237,5 @@ void AcpiController::init(void* rsdp) {
             m_hpet = kstl::SharedPtr<Hpet>(new Hpet((HpetTable*)table));
         }
     }
-    kprint("\n");
+    dbgPrint("\n");
 }

@@ -1,6 +1,5 @@
 #include "entry_params.h"
 #include <memory/kmemory.h>
-#include <graphics/kdisplay.h>
 #include <gdt/gdt.h>
 #include <paging/phys_addr_translation.h>
 #include <paging/page.h>
@@ -128,37 +127,38 @@ void _kuserEntry() {
         if (cpuid_isPATSupported()) {
             ksetupPatOnKernelEntry();
         }
+    });
 
-        // Initialize display and graphics context
-        Display::initialize(&g_kernelEntryParameters.graphicsFramebuffer, g_kernelEntryParameters.textRenderingFont);
+    // Initialize the VGA drivers early to enable graphical display of debug information
+    VGADriver::init(&g_kernelEntryParameters);
 
-        // Initialize the VGA drivers early to enable graphical display of debug information
-        VGADriver::init(&g_kernelEntryParameters);
+    VGATextDriver::init(
+        g_kernelEntryParameters.graphicsFramebuffer.width,
+        g_kernelEntryParameters.graphicsFramebuffer.height,
+        g_kernelEntryParameters.graphicsFramebuffer.pixelsPerScanline,
+        g_kernelEntryParameters.textRenderingFont
+    );
 
-        VGATextDriver::init(
-            g_kernelEntryParameters.graphicsFramebuffer.width,
-            g_kernelEntryParameters.graphicsFramebuffer.height,
-            g_kernelEntryParameters.graphicsFramebuffer.pixelsPerScanline,
-            g_kernelEntryParameters.textRenderingFont
-        );
-
+    dbgPrint("===== Stellux Kernel =====\n");
+    RUN_ELEVATED({
         char vendorName[13];
         cpuid_readVendorId(vendorName);
-        kprintInfo("===== Stellux Kernel =====\n");
-        kprintInfo("CPU Vendor: %s\n", vendorName);
-        kprintInfo("VM detected: %s\n", cpuid_isRunningUnderQEMU() ? "true" : "false");
-        kprintWarn("5-level paging support: %s\n\n", cpuid_isLa57Supported() ? "enabled" : "disabled");
+
+        dbgPrint("CPU Vendor: %s\n", vendorName);
+        dbgPrint("VM detected: %s\n", cpuid_isRunningUnderQEMU() ? "true" : "false");
+        dbgPrint("5-level paging support: %s\n\n", cpuid_isLa57Supported() ? "enabled" : "disabled");
+        
         debugPat(readPatMsr());
     });
 
-    kuPrint("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
-    kuPrint("System free memory  : %llu MB\n", globalPageFrameAllocator.getFreeSystemMemory() / 1024 / 1024);
-    kuPrint("System used memory  : %llu MB\n", globalPageFrameAllocator.getUsedSystemMemory() / 1024 / 1024);
+    dbgPrint("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
+    dbgPrint("System free memory  : %llu MB\n", globalPageFrameAllocator.getFreeSystemMemory() / 1024 / 1024);
+    dbgPrint("System used memory  : %llu MB\n", globalPageFrameAllocator.getUsedSystemMemory() / 1024 / 1024);
 
-    kuPrint("The kernel is loaded at:\n");
-    kuPrint("    Physical : 0x%llx\n", (uint64_t)__kern_phys_base);
-    kuPrint("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
-    kuPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_kernelEntryParameters.kernelStack + PAGE_SIZE);
+    dbgPrint("The kernel is loaded at:\n");
+    dbgPrint("    Physical : 0x%llx\n", (uint64_t)__kern_phys_base);
+    dbgPrint("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
+    dbgPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_kernelEntryParameters.kernelStack + PAGE_SIZE);
 
     Apic::initializeLocalApic();
 

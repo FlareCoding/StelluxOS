@@ -31,6 +31,10 @@ void VGADriver::init(KernelEntryParams* params) {
 
     // Allocate a back buffer
     s_backBuffer = (uint32_t*)kzmalloc(s_vgaFramebuffer.size);
+
+    // Perform initial clear screen
+    renderRectangle(0, 0, s_vgaFramebuffer.width, s_vgaFramebuffer.height, 0x0A0A0A);
+    swapBuffers();
 }
 
 void VGADriver::renderPixel(uint32_t x, uint32_t y, uint32_t color) {
@@ -38,7 +42,7 @@ void VGADriver::renderPixel(uint32_t x, uint32_t y, uint32_t color) {
     *pixelPtr = color;
 }
 
-void VGADriver::drawRectangle(
+void VGADriver::renderRectangle(
     uint32_t x,
     uint32_t y,
     uint32_t width,

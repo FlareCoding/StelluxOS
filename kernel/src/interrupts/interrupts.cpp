@@ -36,10 +36,10 @@ DEFINE_INT_HANDLER(_exc_handler_div) {
 
     acquireSpinlock(&__kexc_log_lock);
 
-    kprintColoredEx("#DIV", TEXT_COLOR_RED);
-    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", ptregs->hwframe.rip);
-    kprintColoredEx("#DIV ", TEXT_COLOR_RED);
-    kprintColoredEx("Your goomba code tried to divide by 0\n", TEXT_COLOR_WHITE);
+    dbgPrint("#DIV");
+    dbgPrint(" faulting instruction at 0x%llx\n", ptregs->hwframe.rip);
+    dbgPrint("#DIV ");
+    dbgPrint("Your goomba code tried to divide by 0\n");
 
     releaseSpinlock(&__kexc_log_lock);
     kpanic(ptregs);
@@ -52,42 +52,42 @@ DEFINE_INT_HANDLER(_exc_handler_pf) {
 
     acquireSpinlock(&__kexc_log_lock);
 
-    kprintColoredEx("#PF", TEXT_COLOR_RED);
-    kprintFmtColored(TEXT_COLOR_WHITE, " faulting instruction at 0x%llx\n", ptregs->hwframe.rip);
-    kprintColoredEx("#PF", TEXT_COLOR_RED);
-    kprintFmtColored(TEXT_COLOR_WHITE, " error_code: (0x%llx)", ptregs->error);
+    dbgPrint("#PF");
+    dbgPrint(" faulting instruction at 0x%llx\n", ptregs->hwframe.rip);
+    dbgPrint("#PF");
+    dbgPrint(" error_code: (0x%llx)", ptregs->error);
 
     if (ptregs->error & PF_PRESENT) {
-        kprintFmtColored(TEXT_COLOR_WHITE, " - page-level protection violation");
+        dbgPrint(" - page-level protection violation");
     } else {
-        kprintFmtColored(TEXT_COLOR_WHITE, " - page not present");
+        dbgPrint(" - page not present");
     }
 
     if (ptregs->error & PF_WRITE) {
-        kprintFmtColored(TEXT_COLOR_WHITE, " - write operation");
+        dbgPrint(" - write operation");
     } else {
-        kprintFmtColored(TEXT_COLOR_WHITE, " - read operation");
+        dbgPrint(" - read operation");
     }
 
     if (ptregs->error & PF_USER) {
         if (ptregs->ds & 3)
-            kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in user mode");
+            dbgPrint(" - occurred in user mode");
         else
-            kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in lowered-supervisor mode");
+            dbgPrint(" - occurred in lowered-supervisor mode");
     } else {
         if (ptregs->ds & 3)
-            kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in user-elevated mode");
+            dbgPrint(" - occurred in user-elevated mode");
         else
-            kprintFmtColored(TEXT_COLOR_WHITE, " - occurred in supervisor mode");
+            dbgPrint(" - occurred in supervisor mode");
     }
     
-    kprintChar('\n');
+    dbgPrint("\n");
 
     uint64_t cr2;
     __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
-    kprintWarn("Faulting address: 0x%llx\n", cr2);
+    dbgPrint("Faulting address: 0x%llx\n", cr2);
 
-    kprintChar('\n');
+    dbgPrint("\n");
 
     releaseSpinlock(&__kexc_log_lock);
     kpanic(ptregs);
@@ -118,7 +118,7 @@ DEFINE_INT_HANDLER(_irq_handler_keyboard) {
     __unused cookie;
     uint8_t scancode = inByte(0x60);
 
-    kprint("Scancode: %i\n", (int)scancode);
+    dbgPrint("Scancode: %i\n", (int)scancode);
 
     return IRQ_HANDLED;
 }

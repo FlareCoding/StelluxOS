@@ -82,13 +82,13 @@ void DeviceDriverManager::installPciDeviceDrivers() {
                 });
 
                 bool enabled = cap.enableBit;
-                kuPrint("MSI-X capability: %s\n", enabled ? "enabled" : "disabled");
+                kprintf("MSI-X capability: %s\n", enabled ? "enabled" : "disabled");
             } else if (HAS_PCI_CAP(deviceInfo, PciCapability::PciCapabilityMsi)) {
                 RUN_ELEVATED({
                     if (setupMsiInterrupt(deviceInfo, params->irqVector, 0)) {
-                        kprintInfo("MSI interrupts enabled!\n");
+                        kprintf("MSI interrupts enabled!\n");
                     } else {
-                        kprintError("Failed to setup MSI interrupts\n");
+                        kprintf("Failed to setup MSI interrupts\n");
                     }
                 });
             }

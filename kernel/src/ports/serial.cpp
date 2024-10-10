@@ -54,13 +54,13 @@ __PRIVILEGED_CODE
 void readStringFromSerialPort(uint16_t base, char* buffer, size_t maxLength) {
     size_t index = 0;
 
-    kuPrint("readStringFromSerialPort: Waiting for data...\n");
+    kprintf("readStringFromSerialPort: Waiting for data...\n");
 
     // Read until we reach maxLength - 1 or encounter a newline or carriage return
     while (index < maxLength - 1) {
         char chr = readFromSerialPort(base);
         
-        kuPrint("readStringFromSerialPort: Received character '%c' (%d)\n", chr, (int)chr);
+        kprintf("readStringFromSerialPort: Received character '%c' (%d)\n", chr, (int)chr);
         
         // Check for carriage return (Enter key)
         if (chr == '\r') {
@@ -78,5 +78,5 @@ void readStringFromSerialPort(uint16_t base, char* buffer, size_t maxLength) {
 
     // Null-terminate the string
     buffer[index] = '\0';
-    kuPrint("readStringFromSerialPort: Completed read, buffer = '%s'\n", buffer);
+    kprintf("readStringFromSerialPort: Completed read, buffer = '%s'\n", buffer);
 }

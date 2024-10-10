@@ -2,6 +2,16 @@
 #define VGA_TEXT_DRIVER_H
 #include "vga_driver.h"
 
+#define TEXT_COLOR_WHITE    0xffffffff
+#define TEXT_COLOR_BLACK    0xff000000
+#define TEXT_COLOR_RED      0xffff0000
+#define TEXT_COLOR_GREEN    0xff00ff00
+#define TEXT_COLOR_BLUE     0xff0000ff
+#define TEXT_COLOR_YELLOW   0xffffff00
+#define TEXT_COLOR_COOL     0xff05ffa4
+
+#define DEFAULT_TEXT_COLOR  TEXT_COLOR_COOL
+
 class VGATextDriver {
 public:
     static void init(uint32_t width, uint32_t height, uint32_t pixelsPerScanline, void* font);

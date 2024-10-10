@@ -279,7 +279,7 @@ uint64_t getBarFromPciHeader(PciDeviceHeader* header, size_t barIndex) {
 }
 
 void dbgPrintPciDeviceInfo(PciDeviceHeader* header) {
-    kuPrint(
+    kprintf(
         "%s / %s / %s / %s / %s\n",
         getPciVendorName(header->vendorID),
         getPciDeviceName(header->vendorID, header->deviceID),
@@ -483,23 +483,23 @@ __PRIVILEGED_CODE
 void setupMsixIrqRouting(PciDeviceInfo& info, volatile uint16_t** pba) {
     PciMsiXCapability msixCap = readMsixCapability(info.bus, info.device, info.function);
 
-    kprint("msix.tableSize    : %i, (%i: 1-indexed)\n", msixCap.tableSize, msixCap.tableSize + 1);
-    kprint("msix.functionMask : %i\n", msixCap.functionMask);
-    kprint("msix.enableBit    : %i\n", msixCap.enableBit);
-    kprint("msix.tableBir     : %i\n", msixCap.tableBir);
-    kprint("msix.tableOffset  : 0x%llx\n", msixCap.tableOffset);
-    kprint("msix.pbaBir       : %i\n", msixCap.pendingBitArrayBir);
-    kprint("msix.pbaOffset    : 0x%llx\n\n", msixCap.pendingBitArrayOffset);
+    kprintf("msix.tableSize    : %i, (%i: 1-indexed)\n", msixCap.tableSize, msixCap.tableSize + 1);
+    kprintf("msix.functionMask : %i\n", msixCap.functionMask);
+    kprintf("msix.enableBit    : %i\n", msixCap.enableBit);
+    kprintf("msix.tableBir     : %i\n", msixCap.tableBir);
+    kprintf("msix.tableOffset  : 0x%llx\n", msixCap.tableOffset);
+    kprintf("msix.pbaBir       : %i\n", msixCap.pendingBitArrayBir);
+    kprintf("msix.pbaOffset    : 0x%llx\n\n", msixCap.pendingBitArrayOffset);
 
     uint64_t tableBar = getBarFromPciHeader(&info.headerInfo, msixCap.tableBir);
     uint64_t tableAddress = (tableBar) + msixCap.tableOffset;
-    kprint("msix-Table Address: 0x%llx\n", tableAddress);
+    kprintf("msix-Table Address: 0x%llx\n", tableAddress);
 
     uint64_t pbaAddress = (tableBar) + msixCap.pendingBitArrayOffset;
-    kprint("msix-PBA Address: 0x%llx\n", pbaAddress);
+    kprintf("msix-PBA Address: 0x%llx\n", pbaAddress);
 
     uint32_t tableEntryCount = msixCap.tableSize + 1;
-    kprint("msix-Table Entries: %i\n", tableEntryCount);
+    kprintf("msix-Table Entries: %i\n", tableEntryCount);
 
     volatile MsiXTableEntry* msixTable = (volatile MsiXTableEntry*)zallocPage();
     paging::mapPage((void*)msixTable,(void*)tableAddress, KERNEL_PAGE, PAGE_ATTRIB_CACHE_DISABLED, paging::getCurrentTopLevelPageTable());
@@ -521,7 +521,7 @@ void setupMsixIrqRouting(PciDeviceInfo& info, volatile uint16_t** pba) {
     *pba = pbaVirtualAddress;
 
     enableMsix(msixCap, info);
-    kprint("Enabled MSI-X capability\n");
+    kprintf("Enabled MSI-X capability\n");
 }
 
 __PRIVILEGED_CODE

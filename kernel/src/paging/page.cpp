@@ -214,19 +214,19 @@ PageTableEntry* getPteForAddr(void* vaddr, PageTable* pml4) {
 }
 
 void dbgPrintPte(pte_t* pte) {
-    kprint("------ page_table_entry 0x%llx ------\n", pte);
-    kprint("    present             : %i\n", (int)pte->present);
-    kprint("    read_write          : %i\n", (int)pte->readWrite);
-    kprint("    user_supervisor     : %i\n", (int)pte->userSupervisor);
-    kprint("    page_write_through  : %i\n", (int)pte->pageWriteThrough);
-    kprint("    page_cache_disabled : %i\n", (int)pte->pageCacheDisabled);
-    kprint("    accessed            : %i\n", (int)pte->accessed);
-    kprint("    dirty               : %i\n", (int)pte->dirty);
-    kprint("    page_access_type    : %i\n", (int)pte->pageAccessType);
-    kprint("    global              : %i\n", (int)pte->global);
-    kprint("    page_frame_number   : 0x%llx\n", (uint64_t)pte->pageFrameNumber);
-    kprint("    protection_key      : %i\n", (int)pte->protectionKey);
-    kprint("    execute_disable     : %i\n", (int)pte->executeDisable);
+    kprintf("------ page_table_entry 0x%llx ------\n", pte);
+    kprintf("    present             : %i\n", (int)pte->present);
+    kprintf("    read_write          : %i\n", (int)pte->readWrite);
+    kprintf("    user_supervisor     : %i\n", (int)pte->userSupervisor);
+    kprintf("    page_write_through  : %i\n", (int)pte->pageWriteThrough);
+    kprintf("    page_cache_disabled : %i\n", (int)pte->pageCacheDisabled);
+    kprintf("    accessed            : %i\n", (int)pte->accessed);
+    kprintf("    dirty               : %i\n", (int)pte->dirty);
+    kprintf("    page_access_type    : %i\n", (int)pte->pageAccessType);
+    kprintf("    global              : %i\n", (int)pte->global);
+    kprintf("    page_frame_number   : 0x%llx\n", (uint64_t)pte->pageFrameNumber);
+    kprintf("    protection_key      : %i\n", (int)pte->protectionKey);
+    kprintf("    execute_disable     : %i\n", (int)pte->executeDisable);
 }
 
 PageTable* createUserspacePml4(
