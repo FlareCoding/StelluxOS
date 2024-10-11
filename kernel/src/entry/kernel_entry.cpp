@@ -115,7 +115,7 @@ void _kuserEntry() {
 
     globalPageFrameAllocator.lockPage(&g_kernelEntryParameters);
     globalPageFrameAllocator.lockPages(&__ksymstart, (&__ksymend - &__ksymstart) / PAGE_SIZE + 1);
-    globalPageFrameAllocator.lockPage(g_kernelEntryParameters.textRenderingFont);
+    globalPageFrameAllocator.lockPages(g_kernelEntryParameters.textRenderingFont, 2);
     globalPageFrameAllocator.lockPages(g_kernelEntryParameters.kernelElfSegments, (&__ksymend - &__ksymstart) / PAGE_SIZE + 1);
     globalPageFrameAllocator.lockPages(
         g_kernelEntryParameters.graphicsFramebuffer.base,
