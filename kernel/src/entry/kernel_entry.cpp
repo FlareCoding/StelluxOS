@@ -204,6 +204,9 @@ void _kuserEntry() {
 
     auto taskInitThread = createKernelTask(systemTaskInitEntry, nullptr);
     memcpy(taskInitThread->name, "init", 4);
+    taskInitThread->console = new Console();
+    taskInitThread->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
+    taskInitThread->console->connectOutputToVga();
     sched.addTask(taskInitThread, BSP_CPU_ID);
 
     // Infinite loop
