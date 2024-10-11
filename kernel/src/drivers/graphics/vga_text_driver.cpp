@@ -44,6 +44,9 @@ void VGATextDriver::init(uint32_t width, uint32_t height, uint32_t pixelsPerScan
         s_fontGlyphBuffer = reinterpret_cast<char*>(virtualFontPages + fontGlyphBufferOffset);
         s_fontCharSize = psf1Font->header->charSize;
     });
+
+    s_cursorPosX = CHAR_LEFT_BORDER_OFFSET;
+    s_cursorPosY = CHAR_TOP_BORDER_OFFSET;
 }
 
 void VGATextDriver::setCursorPos(uint32_t x, uint32_t y) {
@@ -54,6 +57,11 @@ void VGATextDriver::setCursorPos(uint32_t x, uint32_t y) {
 
     s_cursorPosX = x;
     s_cursorPosY = y;
+}
+
+void VGATextDriver::resetCursorPos() {
+    s_cursorPosX = CHAR_LEFT_BORDER_OFFSET;
+    s_cursorPosY = CHAR_TOP_BORDER_OFFSET;
 }
 
 void VGATextDriver::renderChar(char chr, uint32_t color) {

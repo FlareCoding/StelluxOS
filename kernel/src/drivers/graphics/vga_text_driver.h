@@ -17,6 +17,7 @@ public:
     static void init(uint32_t width, uint32_t height, uint32_t pixelsPerScanline, void* font);
 
     static void setCursorPos(uint32_t x, uint32_t y);
+    static void resetCursorPos();
 
     static void renderChar(char chr, uint32_t color = TEXT_COLOR_WHITE);
     static void renderString(const char* str, uint32_t color = TEXT_COLOR_WHITE);

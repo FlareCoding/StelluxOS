@@ -5,6 +5,7 @@
 #include <acpi/shutdown.h>
 #include <time/ktime.h>
 #include <kelevate/kelevate.h>
+#include <drivers/graphics/vga_text_driver.h>
 #include <kprint.h>
 
 void showHelpOptions() {
@@ -12,25 +13,36 @@ void showHelpOptions() {
 R"(Command         Description
 -------         -----------
 help            shows available commands
+clear           clears the VGA screen buffer
+whoami          prints the current user's name
 ps              displays running processes on the system
 meminfo         displays system memory information
 shutdown        shuts the system down if running in a VM
 
 )";
 
-    current->console->write(helpString.c_str());
+    kprintf(helpString.c_str());
 }
 
 void handleShutdownCommand() {
     RUN_ELEVATED({
         if (cpuid_isRunningUnderQEMU()) {
-            current->console->write("Shutting the system down in 1 second...\n");
+            kprintf("Shutting the system down in 1 second...\n");
             msleep(1000);
             vmshutdown();
         } else {
-            current->console->write("Shutdown command is not yet supported on real hardware\n");
+            kprintf("Shutdown command is not yet supported on real hardware\n");
         }
     });
+}
+
+void handleClearCommand() {
+    VGADriver::clearScreen();
+    VGATextDriver::resetCursorPos();
+}
+
+void handleWhoamiCommand() {
+    kprintf("root\n");
 }
 
 void handlePsCommand() {
@@ -59,14 +71,24 @@ void parseCommand(const char* cmd) {
         return;
     }
 
+    if (cmdStr == "clear") {
+        handleClearCommand();
+        return;
+    }
+
+     if (cmdStr == "whoami") {
+        handleWhoamiCommand();
+        return;
+    }
+
     if (cmdStr == "ps") {
         handlePsCommand();
         return;
     }
     
-    current->console->write("Unrecognized command: '");
-    current->console->write(cmdStr.c_str());
-    current->console->write("'\n");
+    kprintf("Unrecognized command: '");
+    kprintf(cmdStr.c_str());
+    kprintf("'\n");
 }
 
 void userShellTestEntry(void*) {
@@ -81,7 +103,7 @@ void userShellTestEntry(void*) {
     const size_t promptLen = strlen(prompt);
 
     if (console) {
-        console->write(prompt, promptLen);
+        kprintf(prompt, promptLen);
     }
 
     const size_t bufferSize = 1024;
@@ -95,7 +117,7 @@ void userShellTestEntry(void*) {
         size_t bytesRead = console->readLine(cmdBuffer, bufferSize - 1);
         if (!bytesRead) {
             zeromem(cmdBuffer, sizeof(cmdBuffer));
-            console->write(prompt, promptLen);
+            kprintf(prompt, promptLen);
             continue;
         }
 
@@ -103,7 +125,7 @@ void userShellTestEntry(void*) {
         parseCommand(cmdBuffer);
 
         zeromem(cmdBuffer, sizeof(cmdBuffer));
-        console->write(prompt, promptLen);
+        kprintf(prompt, promptLen);
     }
 
     exitKernelThread();
