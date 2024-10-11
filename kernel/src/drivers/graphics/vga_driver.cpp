@@ -39,6 +39,10 @@ void VGADriver::init(KernelEntryParams* params) {
     swapBuffers();
 }
 
+void VGADriver::clearScreen() {
+    renderRectangle(0, 0, s_vgaFramebuffer.width, s_vgaFramebuffer.height, 0x0A0A0A);
+}
+
 void VGADriver::renderPixel(uint32_t x, uint32_t y, uint32_t color) {
     uint32_t* pixelPtr = s_backBuffer + x + (y * s_vgaFramebuffer.width);
     *pixelPtr = color;
