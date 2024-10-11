@@ -28,11 +28,20 @@ void VGATextDriver::init(uint32_t width, uint32_t height, uint32_t pixelsPerScan
     s_height = height;
     s_pixelsPerScanline = pixelsPerScanline;
 
-    const size_t fontPages = 2;
-    s_fontGlyphBuffer = (char*)zallocPages(fontPages);
+    // Calculate the page-aligned base address of psf1Font->glyphBuffer
+    const uint64_t fontGlyphBufferOffset = reinterpret_cast<uint64_t>(psf1Font->glyphBuffer) % PAGE_SIZE;
+    const uint64_t fontGlyphBufferPageAligned = reinterpret_cast<uint64_t>(psf1Font->glyphBuffer) - fontGlyphBufferOffset;
+
+    const size_t fontGlyphBufferSize = PAGE_SIZE * 2;
+    const size_t totalSize = fontGlyphBufferSize + fontGlyphBufferOffset;
+    const size_t fontPages = (totalSize + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    char* virtualFontPages = (char*)zallocPages(fontPages);
 
     RUN_ELEVATED({
-        paging::mapPages(s_fontGlyphBuffer, psf1Font->glyphBuffer, fontPages, USERSPACE_PAGE, 0, paging::getCurrentTopLevelPageTable());
+        paging::mapPages(virtualFontPages, (void*)fontGlyphBufferPageAligned, fontPages, USERSPACE_PAGE, 0, paging::getCurrentTopLevelPageTable());
+        
+        s_fontGlyphBuffer = reinterpret_cast<char*>(virtualFontPages + fontGlyphBufferOffset);
         s_fontCharSize = psf1Font->header->charSize;
     });
 }
@@ -90,7 +99,7 @@ void VGATextDriver::renderString(const char* str, uint32_t color) {
 }
 
 void VGATextDriver::_renderChar(char chr, uint32_t color) {
-    char* fontBuffer = static_cast<char*>(s_fontGlyphBuffer) + (chr * s_fontCharSize);
+    char* fontBuffer = static_cast<char*>(s_fontGlyphBuffer) + (static_cast<unsigned char>(chr) * s_fontCharSize);
 
     // Detect overflow and implement text buffer scrolling
     if (s_cursorPosY + s_fontCharSize > s_height) {
