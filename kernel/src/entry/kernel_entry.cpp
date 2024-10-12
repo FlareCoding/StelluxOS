@@ -139,6 +139,9 @@ void _kuserEntry() {
     // Initialize the VGA drivers early to enable graphical display of debug information
     VGADriver::init(&g_kernelEntryParameters);
 
+    // Request for the framebuffer to be swapped immediately after
+    // every print so that kprintf's can work before scheduling is
+    // setup and the swapper thread is started.
     VGADriver::requestImmediateBufferSwap();
 
     VGATextDriver::init(
@@ -148,26 +151,37 @@ void _kuserEntry() {
         g_kernelEntryParameters.textRenderingFont
     );
 
-    dbgPrint("===== Stellux Kernel =====\n");
+    // Allocate a console for debug output of the setup thread
+    current->console = new Console();
+    current->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
+    current->console->connectOutputToVga();
+
+    kprintf("===== Stellux Kernel =====\n");
     RUN_ELEVATED({
         char vendorName[13];
         cpuid_readVendorId(vendorName);
 
-        dbgPrint("CPU Vendor: %s\n", vendorName);
-        dbgPrint("VM detected: %s\n", cpuid_isRunningUnderQEMU() ? "true" : "false");
-        dbgPrint("5-level paging support: %s\n\n", cpuid_isLa57Supported() ? "enabled" : "disabled");
+        kprintf("CPU Vendor: %s\n", vendorName);
+        kprintf("VM detected: %s\n", cpuid_isRunningUnderQEMU() ? "true" : "false");
+        kprintf("5-level paging support: %s\n\n", cpuid_isLa57Supported() ? "enabled" : "disabled");
         
         debugPat(readPatMsr());
     });
 
-    dbgPrint("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
-    dbgPrint("System free memory  : %llu MB\n", globalPageFrameAllocator.getFreeSystemMemory() / 1024 / 1024);
-    dbgPrint("System used memory  : %llu MB\n", globalPageFrameAllocator.getUsedSystemMemory() / 1024 / 1024);
+    kprintf("Graphics Framebuffer Settings:\n");
+    kprintf("    width          : %i\n", g_kernelEntryParameters.graphicsFramebuffer.width);
+    kprintf("    height         : %i\n", g_kernelEntryParameters.graphicsFramebuffer.height);
+    kprintf("    pxPerScanline  : %i\n", g_kernelEntryParameters.graphicsFramebuffer.pixelsPerScanline);
+    kprintf("\n");
 
-    dbgPrint("The kernel is loaded at:\n");
-    dbgPrint("    Physical : 0x%llx\n", (uint64_t)__kern_phys_base);
-    dbgPrint("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
-    dbgPrint("KernelStack  : 0x%llx\n\n", (uint64_t)g_kernelEntryParameters.kernelStack + PAGE_SIZE);
+    kprintf("System total memory : %llu MB\n", globalPageFrameAllocator.getTotalSystemMemory() / 1024 / 1024);
+    kprintf("System free memory  : %llu MB\n", globalPageFrameAllocator.getFreeSystemMemory() / 1024 / 1024);
+    kprintf("System used memory  : %llu MB\n", globalPageFrameAllocator.getUsedSystemMemory() / 1024 / 1024);
+
+    kprintf("The kernel is loaded at:\n");
+    kprintf("    Physical : 0x%llx\n", (uint64_t)__kern_phys_base);
+    kprintf("    Virtual  : 0x%llx\n\n", (uint64_t)&__ksymstart);
+    kprintf("KernelStack  : 0x%llx\n\n", (uint64_t)g_kernelEntryParameters.kernelStack + PAGE_SIZE);
 
     auto& acpiController = AcpiController::get();
 
@@ -203,6 +217,9 @@ void _kuserEntry() {
         vmshutdown();
     });
 #endif
+
+    // Disable immediate buffer swap setting in the VGA Driver
+    VGADriver::disableImmediateBufferSwap();
 
     auto taskInitThread = createKernelTask(systemTaskInitEntry, nullptr);
     memcpy(taskInitThread->name, "init", 4);

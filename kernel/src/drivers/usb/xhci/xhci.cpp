@@ -19,7 +19,10 @@ bool g_singletonInitialized = false;
 int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
     if (g_singletonInitialized) {
         kprintf("[XHCI] Another instance of the controller driver is already running\n");
+        return DEVICE_INIT_SUCCESS;
     }
+
+    g_singletonInitialized = true;
 
     kprintf("[XHCI] Initializing xHci Driver 3.0\n\n");
 

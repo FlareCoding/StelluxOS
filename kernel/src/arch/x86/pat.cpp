@@ -56,15 +56,15 @@ void ksetupPatOnKernelEntry() {
 }
 
 void debugPat(pat_t pat) {
-    dbgPrint("---- Page Attribute Table ----\n");
-    dbgPrint("    pa0: %s\n", patAttribToString(pat.pa0).c_str());
-    dbgPrint("    pa1: %s\n", patAttribToString(pat.pa1).c_str());
-    dbgPrint("    pa2: %s\n", patAttribToString(pat.pa2).c_str());
-    dbgPrint("    pa3: %s\n", patAttribToString(pat.pa3).c_str());
-    dbgPrint("    pa4: %s\n", patAttribToString(pat.pa4).c_str());
-    dbgPrint("    pa5: %s\n", patAttribToString(pat.pa5).c_str());
-    dbgPrint("    pa6: %s\n", patAttribToString(pat.pa6).c_str());
-    dbgPrint("    pa7: %s\n", patAttribToString(pat.pa7).c_str());
-    dbgPrint("\n");
+    kprintf("---- Page Attribute Table ----\n");
+    kprintf("    pa0: %s\n", patAttribToString(pat.pa0).c_str());
+    kprintf("    pa1: %s\n", patAttribToString(pat.pa1).c_str());
+    kprintf("    pa2: %s\n", patAttribToString(pat.pa2).c_str());
+    kprintf("    pa3: %s\n", patAttribToString(pat.pa3).c_str());
+    kprintf("    pa4: %s\n", patAttribToString(pat.pa4).c_str());
+    kprintf("    pa5: %s\n", patAttribToString(pat.pa5).c_str());
+    kprintf("    pa6: %s\n", patAttribToString(pat.pa6).c_str());
+    kprintf("    pa7: %s\n", patAttribToString(pat.pa7).c_str());
+    kprintf("\n");
 }
 
