@@ -8,6 +8,7 @@
 
 VgaFramebuffer VGADriver::s_vgaFramebuffer;
 uint32_t* VGADriver::s_backBuffer;
+bool VGADriver::s_immediateBufferSwapRequested = false;
 
 void VGADriver::init(KernelEntryParams* params) {
     s_vgaFramebuffer.physicalBase = params->graphicsFramebuffer.base;
@@ -74,6 +75,18 @@ void VGADriver::renderRectangle(
     }
 }
 
+void VGADriver::requestImmediateBufferSwap() {
+    s_immediateBufferSwapRequested = true;
+}
+
+void VGADriver::disableImmediateBufferSwap() {
+    s_immediateBufferSwapRequested = false;
+}
+
+bool VGADriver::isImmediateBufferSwapRequested() {
+    return s_immediateBufferSwapRequested;
+}
+
 void VGADriver::swapBuffers() {
     auto& sched = Scheduler::get();
     sched.preemptDisable();
@@ -103,7 +116,10 @@ void VGADriver::startBufferSwapUpdateThread() {
 
 void VGADriver::_bufferSwapThreadEntry(void*) {
     while (true) {
-        swapBuffers();
+        if (!s_immediateBufferSwapRequested) {
+            swapBuffers();
+        }
+
         msleep(16);
     }
 
