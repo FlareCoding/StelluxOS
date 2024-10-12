@@ -22,7 +22,7 @@ EXTERN_C long __syscall_handler(
     switch (syscallnum) {
     case SYSCALL_SYS_WRITE: {
         // Handle write syscall
-        kprintf((const char*)arg2);
+        dbgPrint((const char*)arg2);
         break;
     }
     case SYSCALL_SYS_READ: {
@@ -37,7 +37,7 @@ EXTERN_C long __syscall_handler(
         }
 
         if (current->elevated) {
-            kprintf("[*] Already elevated\n");
+            dbgPrint("[*] Already elevated\n");
         } else {
             current->elevated = 1;
         }
@@ -45,14 +45,14 @@ EXTERN_C long __syscall_handler(
     }
     case SYSCALL_SYS_LOWER: {
         if (!current->elevated) {
-            kprintf("[*] Already lowered\n");
+            dbgPrint("[*] Already lowered\n");
         } else {
             current->elevated = 0;
         }
         break;
     }
     default: {
-        kprintf("Unknown syscall number %llu\n", syscallnum);
+        dbgPrint("Unknown syscall number %llu\n", syscallnum);
         returnVal = -ENOSYS;
         break;
     }

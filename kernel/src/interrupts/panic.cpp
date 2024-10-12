@@ -80,6 +80,7 @@ void kpanic(PtRegs* frame) {
     dbgPrint("\n");
     dbgPrint("====== PANIC: CPU EXCEPTION %s ======\n", g_cpuExceptionMessages[frame->intno]);
     dbgPrint("CPU: %i\n", current->cpu);
+    dbgPrint("Elevated: %i\n", current->elevated);
     dbgPrint("Error Code: %llx\n", frame->error);
 
     printBacktrace(frame);

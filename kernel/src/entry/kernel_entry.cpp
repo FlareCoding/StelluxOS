@@ -139,6 +139,8 @@ void _kuserEntry() {
     // Initialize the VGA drivers early to enable graphical display of debug information
     VGADriver::init(&g_kernelEntryParameters);
 
+    VGADriver::requestImmediateBufferSwap();
+
     VGATextDriver::init(
         g_kernelEntryParameters.graphicsFramebuffer.width,
         g_kernelEntryParameters.graphicsFramebuffer.height,

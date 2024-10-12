@@ -58,6 +58,22 @@ void handlePsCommand() {
     ProcessTable::unlockAccess();
 }
 
+void handleTestCommand() {
+    kprintf("----------------------\n");
+    kprintf("before elevating\n");
+    kprintf("current->elevated: %i\n", current->elevated);
+    RUN_ELEVATED({
+        for (int i = 0; i < 10; i++) {
+            kprintf("elevated print: %i / 10  ", i + 1);
+            kprintf("current->elevated: %i\n", current->elevated);
+            sleep(1);
+        }
+    });
+    kprintf("after lowering\n");
+    kprintf("current->elevated: %i\n", current->elevated);
+    kprintf("----------------------\n");
+}
+
 void parseCommand(const char* cmd) {
     kstl::string cmdStr = kstl::string(cmd);
 
@@ -76,13 +92,18 @@ void parseCommand(const char* cmd) {
         return;
     }
 
-     if (cmdStr == "whoami") {
+    if (cmdStr == "whoami") {
         handleWhoamiCommand();
         return;
     }
 
     if (cmdStr == "ps") {
         handlePsCommand();
+        return;
+    }
+
+    if (cmdStr == "test") {
+        handleTestCommand();
         return;
     }
     

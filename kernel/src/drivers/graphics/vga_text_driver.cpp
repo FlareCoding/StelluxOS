@@ -19,8 +19,6 @@ uint8_t VGATextDriver::s_fontCharSize;
 uint32_t VGATextDriver::s_cursorPosX;
 uint32_t VGATextDriver::s_cursorPosY;
 
-DECLARE_SPINLOCK(s_vgaTextRenderingLock);
-
 void VGATextDriver::init(uint32_t width, uint32_t height, uint32_t pixelsPerScanline, void* font) {
     auto psf1Font = reinterpret_cast<Psf1Font*>(font);
 
@@ -98,12 +96,14 @@ void VGATextDriver::renderChar(char chr, uint32_t color) {
 }
 
 void VGATextDriver::renderString(const char* str, uint32_t color) {
-    acquireSpinlock(&s_vgaTextRenderingLock);
     size_t len = strlen(str);
     for (size_t i = 0; i < len; i++) {
         renderChar(str[i], color);
     }
-    releaseSpinlock(&s_vgaTextRenderingLock);
+
+    if (VGADriver::isImmediateBufferSwapRequested()) {
+        VGADriver::swapBuffers();
+    }
 }
 
 void VGATextDriver::_renderChar(char chr, uint32_t color) {

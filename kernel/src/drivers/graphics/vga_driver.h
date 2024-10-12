@@ -35,6 +35,11 @@ public:
     static void renderPixel(uint32_t x, uint32_t y, uint32_t color);
     static void renderRectangle(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color);
 
+    static void requestImmediateBufferSwap();
+    static void disableImmediateBufferSwap();
+
+    static bool isImmediateBufferSwapRequested();
+
     static void swapBuffers();
 
     static uint32_t* getDrawingContext(); 
@@ -44,6 +49,7 @@ public:
 private:
     static VgaFramebuffer   s_vgaFramebuffer;
     static uint32_t*        s_backBuffer;
+    static bool             s_immediateBufferSwapRequested;
 
     static void _bufferSwapThreadEntry(void*);
 };
