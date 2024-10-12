@@ -133,7 +133,7 @@ void VGATextDriver::_renderChar(char chr, uint32_t color) {
         }
 
         // Update the y-coordinate for the next character to be printed
-        s_cursorPosY -= s_fontCharSize;  
+        s_cursorPosY -= s_fontCharSize;
     }
 
     // First we clear the character slot in case something is already there
