@@ -67,13 +67,21 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
         _resetPort(i);
     }
 
+    // For development purposes, only attempt to initialize one device on real hardware
+    bool runningBaremetal = false;
+    RUN_ELEVATED({
+        runningBaremetal = !cpuid_isRunningUnderQEMU();
+    });
+
     // This code is just a prototype right now and is by no
     // means safe and has critical synchronization issues.
     while (true) {
-        msleep(20);
+        //msleep(400);
         if (m_portStatusChangeEvents.empty()) {
             continue; 
         }
+
+        uint8_t trackedConnectedPort = 255;
 
         for (size_t i = 0; i < m_portStatusChangeEvents.size(); i++) {
             uint8_t port = m_portStatusChangeEvents[i]->portId;
@@ -87,11 +95,19 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
                 kprintf("[XHCI] Device connected on port %i - %s\n", port, _usbSpeedToString(reg.portSpeed));
 
                 // Setup the newly connected device
-                _setupDevice(portRegIdx);
+                if (!runningBaremetal) {
+                    _setupDevice(portRegIdx);
+                } else if (trackedConnectedPort == 255) {
+                    trackedConnectedPort = portRegIdx;
+                }
 
             } else {
                 kprintf("[XHCI] Device disconnected from port %i\n", port);
             }
+        }
+
+        if (runningBaremetal) {
+            _setupDevice(trackedConnectedPort);
         }
 
         m_portStatusChangeEvents.clear();

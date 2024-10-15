@@ -96,13 +96,16 @@ void DeviceDriverManager::installPciDeviceDrivers() {
         }
 
         // Start the kernel thread that will launch and init the driver
-        auto driverThread = createKernelTask(startDriverEntryThread, params);
+        // auto driverThread = createKernelTask(startDriverEntryThread, params);
 
-        // Register driver task name
-        const char* driverName = driver->getName();
-        const size_t driverNameLen = strlen(driverName);
-        memcpy(driverThread->name, driverName, driverNameLen);
+        // // Register driver task name
+        // const char* driverName = driver->getName();
+        // const size_t driverNameLen = strlen(driverName);
+        // memcpy(driverThread->name, driverName, driverNameLen);
         
-        Scheduler::get().addTask(driverThread);
+        // Scheduler::get().addTask(driverThread);
+
+        // --------- FOR DEBUGGING PURPOSES ------------ //
+        startDriverEntryThread(params);
     }
 }

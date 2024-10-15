@@ -42,7 +42,7 @@ void __klower() {
         "cli;"               // Disable interrupts
         "lea 1f(%%rip), %%rcx;"  // Load the address of the next instruction into rcx
         "movq %%gs:0x0, %%rax;" // Move the address of current task into rax
-        "btr $0, 0xf8(%%rax);"  // Set current->elevated to 0
+        "btrq $0, 0xf8(%%rax);"  // Set current->elevated to 0
         "sysretq;"            // Execute SYSRET and IF flag will get reset from the eflags
         "1:"                 // Label for the next instruction after SYSRET
         : /* no outputs */
