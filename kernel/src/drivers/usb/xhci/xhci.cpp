@@ -106,7 +106,7 @@ int XhciDriver::driverInit(PciDeviceInfo& pciInfo, uint8_t irqVector) {
             }
         }
 
-        if (runningBaremetal) {
+        if (runningBaremetal && trackedConnectedPort != 255 ) {
             _setupDevice(trackedConnectedPort);
         }
 
