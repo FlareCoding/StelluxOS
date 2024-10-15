@@ -37,8 +37,8 @@ void handleShutdownCommand() {
 }
 
 void handleClearCommand() {
-    VGADriver::clearScreen();
-    VGATextDriver::resetCursorPos();
+    // VGADriver::clearScreen();
+    // VGATextDriver::resetCursorPos();
 }
 
 void handleWhoamiCommand() {
@@ -113,41 +113,41 @@ void parseCommand(const char* cmd) {
 }
 
 void userShellTestEntry(void*) {
-    // Get the task's console interface
-    Console* console = current->console;
+    // // Get the task's console interface
+    // Console* console = current->console;
 
-    // This process will grab focus of the global console
-    setActiveConsole(console);
+    // // This process will grab focus of the global console
+    // setActiveConsole(console);
 
-    // Prompt for the shell
-    const char* prompt = "shell> ";
-    const size_t promptLen = strlen(prompt);
+    // // Prompt for the shell
+    // const char* prompt = "shell> ";
+    // const size_t promptLen = strlen(prompt);
 
-    if (console) {
-        kprintf(prompt, promptLen);
-    }
+    // if (console) {
+    //     kprintf(prompt, promptLen);
+    // }
 
-    const size_t bufferSize = 1024;
-    char* cmdBuffer = (char*)kzmalloc(bufferSize);
+    // const size_t bufferSize = 1024;
+    // char* cmdBuffer = (char*)kzmalloc(bufferSize);
 
-    while (true) {
-        if (!console) {
-            continue;
-        }
+    // while (true) {
+    //     if (!console) {
+    //         continue;
+    //     }
 
-        size_t bytesRead = console->readLine(cmdBuffer, bufferSize - 1);
-        if (!bytesRead) {
-            zeromem(cmdBuffer, sizeof(cmdBuffer));
-            kprintf(prompt, promptLen);
-            continue;
-        }
+    //     size_t bytesRead = console->readLine(cmdBuffer, bufferSize - 1);
+    //     if (!bytesRead) {
+    //         zeromem(cmdBuffer, sizeof(cmdBuffer));
+    //         kprintf(prompt, promptLen);
+    //         continue;
+    //     }
 
-        // Process the command
-        parseCommand(cmdBuffer);
+    //     // Process the command
+    //     parseCommand(cmdBuffer);
 
-        zeromem(cmdBuffer, sizeof(cmdBuffer));
-        kprintf(prompt, promptLen);
-    }
+    //     zeromem(cmdBuffer, sizeof(cmdBuffer));
+    //     kprintf(prompt, promptLen);
+    // }
 
     exitKernelThread();
 }

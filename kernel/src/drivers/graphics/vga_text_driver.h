@@ -14,12 +14,16 @@
 
 class VGATextDriver {
 public:
+    __PRIVILEGED_CODE
     static void init(uint32_t width, uint32_t height, uint32_t pixelsPerScanline, void* font);
 
     static void setCursorPos(uint32_t x, uint32_t y);
     static void resetCursorPos();
 
+    __PRIVILEGED_CODE
     static void renderChar(char chr, uint32_t color = TEXT_COLOR_WHITE);
+    
+    __PRIVILEGED_CODE
     static void renderString(const char* str, uint32_t color = TEXT_COLOR_WHITE);
 
 private:
@@ -27,12 +31,14 @@ private:
     static uint32_t s_height;
     static uint32_t s_pixelsPerScanline;
     
+    __PRIVILEGED_DATA
     static char* s_fontGlyphBuffer;
     static uint8_t s_fontCharSize;
 
     static uint32_t s_cursorPosX;
     static uint32_t s_cursorPosY;
 
+    __PRIVILEGED_CODE
     static void _renderChar(char chr, uint32_t color);
 };
 

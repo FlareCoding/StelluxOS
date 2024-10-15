@@ -1,7 +1,6 @@
 #ifndef PROCESS_H
 #define PROCESS_H
 #include <interrupts/interrupts.h>
-#include "console.h"
 
 #define MAX_PROCESS_NAME_LEN 255
 
@@ -45,7 +44,6 @@ typedef struct ProcessControlBlock {
         uint64_t    flrsvd      : 55;
     } __attribute__((packed));
 
-    Console*        console;
     char            name[MAX_PROCESS_NAME_LEN + 1];
 } PCB;
 

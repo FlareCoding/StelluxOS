@@ -24,7 +24,6 @@
 #include <drivers/usb/xhci/xhci.h>
 #include <drivers/serial/serial_driver.h>
 #include <drivers/graphics/vga_text_driver.h>
-#include <process/console.h>
 #include <shell/shell.h>
 #include <kstring.h>
 #include <kprint.h>
@@ -127,34 +126,24 @@ void _kuserEntry() {
         if (cpuid_isPATSupported()) {
             ksetupPatOnKernelEntry();
         }
-    });
 
-    // Initialize the scheduler
-    auto& sched = Scheduler::get();
-    sched.init();
+        // Initialize the VGA drivers early to enable graphical display of debug information
+        VGADriver::initialize(&g_kernelEntryParameters.graphicsFramebuffer, g_kernelEntryParameters.textRenderingFont);
+
+        VGATextDriver::init(
+            g_kernelEntryParameters.graphicsFramebuffer.width,
+            g_kernelEntryParameters.graphicsFramebuffer.height,
+            g_kernelEntryParameters.graphicsFramebuffer.pixelsPerScanline,
+            g_kernelEntryParameters.textRenderingFont
+        );
+    });
 
     // Initialize LAPIC
     Apic::initializeLocalApic();
 
-    // Initialize the VGA drivers early to enable graphical display of debug information
-    VGADriver::init(&g_kernelEntryParameters);
-
-    // Request for the framebuffer to be swapped immediately after
-    // every print so that kprintf's can work before scheduling is
-    // setup and the swapper thread is started.
-    VGADriver::requestImmediateBufferSwap();
-
-    VGATextDriver::init(
-        g_kernelEntryParameters.graphicsFramebuffer.width,
-        g_kernelEntryParameters.graphicsFramebuffer.height,
-        g_kernelEntryParameters.graphicsFramebuffer.pixelsPerScanline,
-        g_kernelEntryParameters.textRenderingFont
-    );
-
-    // Allocate a console for debug output of the setup thread
-    current->console = new Console();
-    current->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
-    current->console->connectOutputToVga();
+    // Initialize the scheduler
+    auto& sched = Scheduler::get();
+    sched.init();
 
     kprintf("===== Stellux Kernel =====\n");
     RUN_ELEVATED({
@@ -218,14 +207,8 @@ void _kuserEntry() {
     });
 #endif
 
-    // Disable immediate buffer swap setting in the VGA Driver
-    VGADriver::disableImmediateBufferSwap();
-
     auto taskInitThread = createKernelTask(systemTaskInitEntry, nullptr);
     memcpy(taskInitThread->name, "init", 4);
-    taskInitThread->console = new Console();
-    taskInitThread->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
-    taskInitThread->console->connectOutputToVga();
     sched.addTask(taskInitThread, BSP_CPU_ID);
 
     // Infinite loop
@@ -233,21 +216,9 @@ void _kuserEntry() {
 }
 
 void systemTaskInitEntry(void*) {
-    // Start the thread responsible for updating the VGA screen
-    VGADriver::startBufferSwapUpdateThread();
-
     // Iterate over PCI device table and find and
     // install appropriate drivers for each device.
     DeviceDriverManager::installPciDeviceDrivers();
-
-    auto shellTask = createKernelTask(userShellTestEntry, nullptr);
-    memcpy(shellTask->name, "shell", 5);
-    shellTask->console = new Console();
-    shellTask->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
-    shellTask->console->connectInputToSerial(SERIAL_PORT_BASE_COM1);
-    shellTask->console->connectOutputToVga();
-
-    Scheduler::get().addTask(shellTask);
 
     exitKernelThread();
 }

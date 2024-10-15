@@ -102,11 +102,6 @@ void DeviceDriverManager::installPciDeviceDrivers() {
         const char* driverName = driver->getName();
         const size_t driverNameLen = strlen(driverName);
         memcpy(driverThread->name, driverName, driverNameLen);
-
-        // Setup the console
-        driverThread->console = new Console();
-        driverThread->console->connectOutputToSerial(SERIAL_PORT_BASE_COM1);
-        driverThread->console->connectOutputToVga();
         
         Scheduler::get().addTask(driverThread);
     }

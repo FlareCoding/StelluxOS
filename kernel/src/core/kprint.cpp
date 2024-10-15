@@ -1,8 +1,11 @@
 #include "kprint.h"
 #include "kstring.h"
 #include <drivers/serial/serial_driver.h>
+#include <drivers/graphics/vga_text_driver.h>
 #include <process/process.h>
 #include <arch/x86/per_cpu_data.h>
+#include <kelevate/kelevate.h>
+#include <sched/sched.h>
 
 void dbgPrint(const char* fmt, ...) {
     char buf[512] = { 0 };
@@ -22,11 +25,6 @@ void dbgPrint(const char* fmt, ...) {
 }
 
 void kprintf(const char* fmt, ...) {
-    Console* console = current->console;
-    if (!console) {
-        return;
-    }
-
     char buf[512] = { 0 };
 
     va_list args;
@@ -40,6 +38,15 @@ void kprintf(const char* fmt, ...) {
     // Clean up the va_list
     va_end(args);
 
-    console->write(buf);
+    SerialDriver::writePort(SERIAL_PORT_BASE_COM1, buf);
+
+    Scheduler::get().preemptDisable();
+
+    RUN_ELEVATED({
+        VGATextDriver::renderString(buf);
+        VGADriver::swapBuffers();
+    });
+
+    Scheduler::get().preemptEnable();
 }
 
