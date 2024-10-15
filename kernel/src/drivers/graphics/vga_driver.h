@@ -18,9 +18,8 @@ struct Psf1Font {
     void* glyphBuffer;
 };
 
-struct VgaFramebuffer {
-	void*       physicalBase;
-	void*       virtualBase;
+struct Framebuffer {
+	void*       base;
 	uint64_t    size;
 	uint32_t    width;
 	uint32_t    height;
@@ -29,29 +28,33 @@ struct VgaFramebuffer {
 
 class VGADriver {
 public:
-    static void init(KernelEntryParams* params);
+    __PRIVILEGED_CODE
+    static void initialize(
+        void* framebuffer,
+        void* font
+    );
 
-    static void clearScreen();
-    static void renderPixel(uint32_t x, uint32_t y, uint32_t color);
-    static void renderRectangle(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color);
+    __PRIVILEGED_CODE
+    static void fillPixel(uint32_t x, uint32_t y, uint32_t color);
+    
+    __PRIVILEGED_CODE
+    static void renderTextGlyph(char chr, uint32_t& x, uint32_t& y, uint32_t color);
 
-    static void requestImmediateBufferSwap();
-    static void disableImmediateBufferSwap();
+    static Framebuffer& getFramebuffer() { return s_framebuffer; }
+    static inline Psf1Font* getTextFontInfo() { return s_font; }
 
-    static bool isImmediateBufferSwapRequested();
-
+    __PRIVILEGED_CODE
     static void swapBuffers();
 
-    static uint32_t* getDrawingContext(); 
-
-    static void startBufferSwapUpdateThread();
+    __PRIVILEGED_CODE
+    static void drawRectangle(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color);
 
 private:
-    static VgaFramebuffer   s_vgaFramebuffer;
-    static uint32_t*        s_backBuffer;
-    static bool             s_immediateBufferSwapRequested;
+    __PRIVILEGED_DATA
+    static Framebuffer s_framebuffer;
 
-    static void _bufferSwapThreadEntry(void*);
+    __PRIVILEGED_DATA
+    static Psf1Font*   s_font;
 };
 
 #endif

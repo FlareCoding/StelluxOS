@@ -23,17 +23,19 @@ irqreturn_t serialPortCom1IrqHandler(PtRegs*, void*) {
     default: break;
     }
 
-    Console* console = getActiveConsole();
-    if (console && (console->checkInputSerialConnection() == SERIAL_PORT_BASE_COM1)) {
-        console->write(&c, 1);
+    __unused c;
 
-        if (c == '\b') {
-            // Erase last character and move cursor back
-            console->postInput("\b \b", 3);
-        } else {
-            console->postInput(&c, 1);
-        }
-    }
+    // Console* console = getActiveConsole();
+    // if (console && (console->checkInputSerialConnection() == SERIAL_PORT_BASE_COM1)) {
+    //     console->write(&c, 1);
+
+    //     if (c == '\b') {
+    //         // Erase last character and move cursor back
+    //         console->postInput("\b \b", 3);
+    //     } else {
+    //         console->postInput(&c, 1);
+    //     }
+    // }
 
     Apic::getLocalApic()->completeIrq();
     return IRQ_HANDLED;

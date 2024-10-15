@@ -1,5 +1,6 @@
 #include "process_table.h"
 #include <kstring.h>
+#include <sync.h>
 
 DECLARE_SPINLOCK(g_processTableLock);
 

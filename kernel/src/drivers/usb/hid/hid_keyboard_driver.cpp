@@ -86,11 +86,7 @@ void HidKeyboardDriver::_handleKeyPress(uint8_t keycode, bool shiftPressed) {
     char keyChar = _mapKeycodeToChar(keycode, shiftPressed);
 
     // Handle the key press event
-    Console* console = getActiveConsole();
-    if (console) {
-        console->write(&keyChar, 1);
-        console->postInput(&keyChar, 1);
-    }
+    kprintf("%c\n", keyChar);
 }
 
 void HidKeyboardDriver::_handleKeyRelease(uint8_t keycode) {

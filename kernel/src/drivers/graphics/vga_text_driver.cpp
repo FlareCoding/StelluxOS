@@ -26,22 +26,8 @@ void VGATextDriver::init(uint32_t width, uint32_t height, uint32_t pixelsPerScan
     s_height = height;
     s_pixelsPerScanline = pixelsPerScanline;
 
-    // Calculate the page-aligned base address of psf1Font->glyphBuffer
-    const uint64_t fontGlyphBufferOffset = reinterpret_cast<uint64_t>(psf1Font->glyphBuffer) % PAGE_SIZE;
-    const uint64_t fontGlyphBufferPageAligned = reinterpret_cast<uint64_t>(psf1Font->glyphBuffer) - fontGlyphBufferOffset;
-
-    const size_t fontGlyphBufferSize = PAGE_SIZE * 2;
-    const size_t totalSize = fontGlyphBufferSize + fontGlyphBufferOffset;
-    const size_t fontPages = (totalSize + PAGE_SIZE - 1) / PAGE_SIZE;
-
-    char* virtualFontPages = (char*)zallocPages(fontPages);
-
-    RUN_ELEVATED({
-        paging::mapPages(virtualFontPages, (void*)fontGlyphBufferPageAligned, fontPages, USERSPACE_PAGE, 0, paging::getCurrentTopLevelPageTable());
-        
-        s_fontGlyphBuffer = reinterpret_cast<char*>(virtualFontPages + fontGlyphBufferOffset);
-        s_fontCharSize = psf1Font->header->charSize;
-    });
+    s_fontGlyphBuffer = reinterpret_cast<char*>(psf1Font);
+    s_fontCharSize = psf1Font->header->charSize;
 
     s_cursorPosX = CHAR_LEFT_BORDER_OFFSET;
     s_cursorPosY = CHAR_TOP_BORDER_OFFSET;
@@ -62,6 +48,7 @@ void VGATextDriver::resetCursorPos() {
     s_cursorPosY = CHAR_TOP_BORDER_OFFSET;
 }
 
+__PRIVILEGED_CODE
 void VGATextDriver::renderChar(char chr, uint32_t color) {
     switch (chr) {
         case '\n': {
@@ -75,7 +62,8 @@ void VGATextDriver::renderChar(char chr, uint32_t color) {
             //
             // *Note* a proper fix should be implemented later.
             //
-            _renderChar(' ', NULL);
+            // _renderChar(' ', NULL);
+            VGADriver::renderTextGlyph(' ', s_cursorPosX, s_cursorPosY, NULL);
             break;
         }
         case '\r': {
@@ -83,7 +71,9 @@ void VGATextDriver::renderChar(char chr, uint32_t color) {
             break;
         }
         default: {
-            _renderChar(chr, color);
+            //_renderChar(chr, color);
+            VGADriver::renderTextGlyph(chr, s_cursorPosX, s_cursorPosY, color);
+
             s_cursorPosX += CHAR_PIXEL_WIDTH;
 
             if (s_cursorPosX + CHAR_PIXEL_WIDTH > s_width) {
@@ -95,17 +85,15 @@ void VGATextDriver::renderChar(char chr, uint32_t color) {
     }
 }
 
+__PRIVILEGED_CODE
 void VGATextDriver::renderString(const char* str, uint32_t color) {
     size_t len = strlen(str);
     for (size_t i = 0; i < len; i++) {
         renderChar(str[i], color);
     }
-
-    if (VGADriver::isImmediateBufferSwapRequested()) {
-        VGADriver::swapBuffers();
-    }
 }
 
+__PRIVILEGED_CODE
 void VGATextDriver::_renderChar(char chr, uint32_t color) {
     char* fontBuffer = static_cast<char*>(s_fontGlyphBuffer) + (static_cast<unsigned char>(chr) * s_fontCharSize);
 
@@ -115,7 +103,7 @@ void VGATextDriver::_renderChar(char chr, uint32_t color) {
         const unsigned long fullLineWidthInBytes = s_width * sizeof(uint32_t); 
 
         // Pointers to the source and destination lines for copying
-        uint8_t* dstLine = reinterpret_cast<uint8_t*>(VGADriver::getDrawingContext());
+        uint8_t* dstLine = reinterpret_cast<uint8_t*>(VGADriver::getFramebuffer().base);
         uint8_t* srcLine = dstLine + (s_fontCharSize * fullLineWidthInBytes);
 
         // Shift each line up by 'charPixelHeight' lines
@@ -128,7 +116,7 @@ void VGATextDriver::_renderChar(char chr, uint32_t color) {
         // Clear the last line
         for (unsigned long offy = s_height - s_fontCharSize; offy < s_height; ++offy) {
             for (unsigned long offx = 0; offx < s_width; ++offx) {
-                VGADriver::renderPixel(offx, offy, 0xA0A0A0A);
+                VGADriver::fillPixel(offx, offy, 0xA0A0A0A);
             }
         }
 
@@ -139,7 +127,7 @@ void VGATextDriver::_renderChar(char chr, uint32_t color) {
     // First we clear the character slot in case something is already there
     for (unsigned long yOffset = s_cursorPosY; yOffset < s_cursorPosY + s_fontCharSize; yOffset++) {
 		for (unsigned long xOffset = s_cursorPosX; xOffset < s_cursorPosX + CHAR_PIXEL_WIDTH; xOffset++) {
-			VGADriver::renderPixel(xOffset, yOffset, 0xA0A0A0A);
+			VGADriver::fillPixel(xOffset, yOffset, 0xA0A0A0A);
 		}
 	}
 
@@ -147,7 +135,7 @@ void VGATextDriver::_renderChar(char chr, uint32_t color) {
 	for (unsigned long yOffset = s_cursorPosY; yOffset < s_cursorPosY + s_fontCharSize; yOffset++) {
 		for (unsigned long xOffset = s_cursorPosX; xOffset < s_cursorPosX + CHAR_PIXEL_WIDTH; xOffset++) {
 			if ((*fontBuffer & (0b10000000 >> (xOffset - s_cursorPosX))) > 0) {
-				VGADriver::renderPixel(xOffset, yOffset, color);
+				VGADriver::fillPixel(xOffset, yOffset, color);
 			}
 		}
 
