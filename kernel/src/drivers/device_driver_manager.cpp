@@ -7,6 +7,7 @@
 #include <ports/serial.h>
 #include <kstring.h>
 #include <kprint.h>
+#include <time/ktime.h>
 
 #define GET_PCI_DEVICE_IDENTIFIER(deviceInfo) {\
             deviceInfo.headerInfo.classCode, \
@@ -25,6 +26,7 @@ struct DriverEntryThreadParams {
 };
 
 void startDriverEntryThread(void* threadParams) {
+    kprintf("[* DBG *] startDriverEntryThread!!!\n");
     auto params = (DriverEntryThreadParams*)threadParams;
     params->driverInstance->driverInit(*params->pciInfo, params->irqVector);
 
@@ -58,6 +60,8 @@ void DeviceDriverManager::installPciDeviceDrivers() {
         if (!driver) {
             continue;
         }
+
+        kprintf("[* DBG *] Discovered an XHCI Driver!\n");
 
         // Construct the device driver thread params
         auto params = new DriverEntryThreadParams();
@@ -96,16 +100,19 @@ void DeviceDriverManager::installPciDeviceDrivers() {
         }
 
         // Start the kernel thread that will launch and init the driver
-        // auto driverThread = createKernelTask(startDriverEntryThread, params);
+        auto driverThread = createKernelTask(startDriverEntryThread, params);
 
-        // // Register driver task name
-        // const char* driverName = driver->getName();
-        // const size_t driverNameLen = strlen(driverName);
-        // memcpy(driverThread->name, driverName, driverNameLen);
+        // Register driver task name
+        const char* driverName = driver->getName();
+        const size_t driverNameLen = strlen(driverName);
+        memcpy(driverThread->name, driverName, driverNameLen);
         
-        // Scheduler::get().addTask(driverThread);
+        kprintf("[* DBG *] About to add the driverThread task!\n");
+        Scheduler::get().addTask(driverThread);
+
+        kprintf("[* DBG *] We made it past adding the task!!\n");
 
         // --------- FOR DEBUGGING PURPOSES ------------ //
-        startDriverEntryThread(params);
+        //startDriverEntryThread(params);
     }
 }
