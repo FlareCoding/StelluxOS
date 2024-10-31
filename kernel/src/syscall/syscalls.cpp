@@ -1,6 +1,7 @@
 #include "syscalls.h"
 #include <process/process.h>
 #include <sched/sched.h>
+#include <paging/page.h>
 #include <arch/x86/per_cpu_data.h>
 #include <kprint.h>
 
@@ -33,6 +34,12 @@ EXTERN_C long __syscall_handler(
         // Special condition to check for elevation rather than perform it
         if (arg1 == 1) {
             returnVal = (uint64_t)current->elevated;
+            break;
+        }
+
+        // Make sure only the blessed kernel address space threads are able to elevate
+        if (!paging::isKernelAsid()) {
+            returnVal = -1;
             break;
         }
 

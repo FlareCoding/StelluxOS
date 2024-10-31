@@ -6,6 +6,9 @@
 namespace paging {
 PageTable* g_kernelRootPageTable;
 
+__PRIVILEGED_DATA
+PageTable* g_kernelAsid = nullptr;
+
 void getPageTableIndicesFromVirtualAddress(
     uint64_t vaddr,
     uint64_t* ipml4,
@@ -227,6 +230,17 @@ void dbgPrintPte(pte_t* pte) {
     kprintf("    page_frame_number   : 0x%llx\n", (uint64_t)pte->pageFrameNumber);
     kprintf("    protection_key      : %i\n", (int)pte->protectionKey);
     kprintf("    execute_disable     : %i\n", (int)pte->executeDisable);
+}
+
+__PRIVILEGED_CODE
+void setBlessedKernelAsid(PageTable* pml4) {
+	g_kernelAsid = pml4;
+}
+
+__PRIVILEGED_CODE
+bool isKernelAsid() {
+	PageTable* currentPml4 = getCurrentTopLevelPageTable();
+	return currentPml4 == g_kernelAsid;
 }
 
 PageTable* createUserspacePml4(

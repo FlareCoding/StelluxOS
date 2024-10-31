@@ -54,6 +54,9 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Copy the kernel parameters to an unprivileged region
     memcpy(&g_kernelEntryParameters, params, sizeof(KernelEntryParams));
 
+    // Immediately update the kernel physical base
+    __kern_phys_base = reinterpret_cast<uint64_t>(params->kernelElfSegments[0].physicalBase);
+
     // First thing we have to take care of
     // is setting up the Global Descriptor Table.
     initializeAndInstallGDT(BSP_CPU_ID, (void*)kernelStackTop);
@@ -61,8 +64,8 @@ __PRIVILEGED_CODE void _kentry(KernelEntryParams* params) {
     // Enable the syscall functionality
     enableSyscallInterface();
 
-    // Immediately update the kernel physical base
-    __kern_phys_base = reinterpret_cast<uint64_t>(params->kernelElfSegments[0].physicalBase);
+    // Set the "blessed" kernel address space identifier to the current page table
+    paging::setBlessedKernelAsid(paging::getCurrentTopLevelPageTable());
 
     // Initialize serial ports (for headless output)
     initializeSerialPort(SERIAL_PORT_BASE_COM1);

@@ -95,6 +95,12 @@ PageTableEntry* getPteForAddr(void* vaddr, PageTable* pml4);
 
 void dbgPrintPte(pte_t* pte);
 
+__PRIVILEGED_CODE
+void setBlessedKernelAsid(PageTable* pml4);
+
+__PRIVILEGED_CODE
+bool isKernelAsid();
+
 PageTable* createUserspacePml4(
     PageTable* kernelPml4,
     PageFrameAllocator& allocator = getGlobalPageFrameAllocator()
