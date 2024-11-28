@@ -23,7 +23,7 @@ ESP_SIZE_MB      := 100
 # QEMU Configuration
 QEMU             := qemu-system-x86_64
 QEMU_CORES       := 8
-QEMU_RAM         := 8G
+QEMU_RAM         := 4G
 QEMU_FLAGS       := \
     -machine q35 \
     -m $(QEMU_RAM) \
@@ -155,4 +155,4 @@ connect-gdb:
 # Phony Targets
 # =========================
 
-.PHONY: all help kernel clean run run-headless run-debug run-debug-headless connect-gdb
+.PHONY: all help kernel image clean run run-headless run-debug run-debug-headless connect-gdb

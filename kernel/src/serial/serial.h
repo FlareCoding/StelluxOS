@@ -46,16 +46,78 @@
 #define SERIAL_INTERRUPT_DATA_AVAILABLE 0x01
 
 namespace serial {
+    /**
+     * @brief Initializes the specified serial port with default settings.
+     * 
+     * This function configures the serial port by setting up the baud rate, 
+     * line control, FIFO settings, and modem control registers. It prepares 
+     * the port for communication by enabling necessary interrupts and setting 
+     * data frame formats.
+     * 
+     * @param port The I/O port address of the serial port to initialize.
+     */
     void init_port(uint16_t port);
     
+    /**
+     * @brief Checks if the transmit queue is empty for the specified serial port.
+     * 
+     * This function reads the Line Status Register (LSR) to determine if the 
+     * Transmit Holding Register (THR) is empty, indicating that all queued 
+     * data has been transmitted and the port is ready to send more data.
+     * 
+     * @param port The I/O port address of the serial port to check.
+     * @return true If the transmit queue is empty and the port is ready to send data.
+     * @return false If there are still bytes pending in the transmit queue.
+     */
     bool is_transmit_queue_empty(uint16_t port);
 
+    /**
+     * @brief Determines if there is incoming data available to read from the serial port.
+     * 
+     * This function checks the Line Status Register (LSR) to verify if data has 
+     * been received and is ready to be read from the receive buffer. It is useful 
+     * for non-blocking read operations to ensure data is available before attempting to read.
+     * 
+     * @param port The I/O port address of the serial port to monitor.
+     * @return true If there is data available in the receive buffer.
+     * @return false If no data is currently available to read.
+     */
     bool is_data_available(uint16_t port);
 
+    /**
+     * @brief Sends a single character through the specified serial port.
+     * 
+     * This function writes a single character to the Transmit Holding Register (THR) 
+     * of the serial port, initiating the transmission of the character over the serial line.
+     * It ensures that the transmit queue is ready to accept new data before writing.
+     * 
+     * @param port The I/O port address of the serial port to use for sending the character.
+     * @param chr The character to be transmitted.
+     */
     void write(uint16_t port, char chr);
 
+    /**
+     * @brief Sends a null-terminated string through the specified serial port.
+     * 
+     * This function iterates over each character in the provided string and transmits 
+     * them sequentially using the serial port. It ensures that the transmit queue is 
+     * ready for each character before sending, allowing for reliable string transmission.
+     * 
+     * @param port The I/O port address of the serial port to use for sending the string.
+     * @param str The null-terminated string to be transmitted.
+     */
     void write(uint16_t port, const char* str);
 
+    /**
+     * @brief Reads a single character from the specified serial port.
+     * 
+     * This function retrieves a character from the Receive Buffer Register (RBR) of 
+     * the serial port. It should be called only when data is confirmed to be available 
+     * using `is_data_available` to avoid reading invalid or empty data.
+     * 
+     * @param port The I/O port address of the serial port to read from.
+     * @return char The character read from the serial port.
+     */
     char read(uint16_t port);
 };
 
