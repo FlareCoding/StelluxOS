@@ -1,23 +1,14 @@
 #ifndef PORTS_H
 #define PORTS_H
-#include <ktypes.h>
+#include <types.h>
 
-__PRIVILEGED_CODE
-void outByte(uint16_t port, uint8_t value);
+void outb(uint16_t port, uint8_t value);
+uint8_t inb(uint16_t port);
 
-__PRIVILEGED_CODE
-uint8_t inByte(uint16_t port);
-
-__PRIVILEGED_CODE
 void outw(uint16_t port, uint16_t val);
-
-__PRIVILEGED_CODE
 uint16_t inw(uint16_t port);
 
-__PRIVILEGED_CODE
 void outl(uint16_t port, uint32_t val);
-
-__PRIVILEGED_CODE
 uint32_t inl(uint16_t port);
 
 #endif

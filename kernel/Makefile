@@ -1,49 +1,67 @@
-KERNEL_INCLUDES = -I./src -I./src/core
+# Define tools
+AS := gcc
+CC := g++
+LD := ld
 
-CFLAGS = -m64 -g -ffreestanding -O0 -Wall -Werror -Wextra -nostdlib -nostdinc++ -mno-red-zone -fno-allow-store-data-races -fno-reorder-blocks -fno-ipa-cp-clone -fno-partial-inlining -Wframe-larger-than=2048 -Wimplicit-fallthrough=5 -Wno-unused-but-set-variable -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls -fno-stack-clash-protection -Wno-stringop-truncation -Wno-zero-length-bounds -Wno-array-bounds -Wno-stringop-overflow -Wno-restrict -Wno-maybe-uninitialized -fno-strict-overflow -fno-stack-check -fconserve-stack -fno-stack-protector -mno-sse -mno-mmx $(KERNEL_INCLUDES)
-CXXFLAGS = $(CFLAGS) -std=c++17 -fno-exceptions -fno-rtti
-ASMC	 = as
-ASMFLAGS = -g --64 -I./src/arch/x86/asm
-LDFLAGS = -nostdlib -T kstellux.ld -o kernel.elf
+# Directories
+SRC_DIR := src
+BUILD_DIR := build
+OBJ_DIR := $(BUILD_DIR)/obj
 
-# Check if KRUN_UNIT_TESTS is set and add the define flag
-ifdef KRUN_UNIT_TESTS
-	CFLAGS += -DKRUN_UNIT_TESTS
-endif
+# Include directories
+INC_DIR := -I$(SRC_DIR)/ -I$(SRC_DIR)/core/
 
-SRCDIR	:=src
-OBJDIR	:=obj
+# Output files
+KERNEL := $(BUILD_DIR)/stellux
+LINKER_SCRIPT := stellux.ld
 
-rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
+# Function to recursively find files in subdirectories
+rwildcard = $(foreach d,$(wildcard $(1)/*), \
+             $(call rwildcard,$d,$2)) \
+             $(filter $(subst *,%,$2),$d)
 
-CPPSOURCES 	:= $(call rwildcard,$(SRCDIR),*.cpp)
-CSOURCES    := $(call rwildcard,$(SRCDIR),*.c)
-ASMSOURCES 	:= $(call rwildcard,$(SRCDIR),*.s)  
-OBJECTS 	:= $(patsubst $(SRCDIR)/%.cpp, $(OBJDIR)/%.o, $(CPPSOURCES))
-OBJECTS 	+= $(patsubst $(SRCDIR)/%.c, $(OBJDIR)/%.o, $(CSOURCES))
-OBJECTS 	+= $(patsubst $(SRCDIR)/%.s, $(OBJDIR)/%_asm.o, $(ASMSOURCES))
+# Source and header files
+ASM_SRCS := $(call rwildcard, $(SRC_DIR), *.S)
+CPP_SRCS := $(call rwildcard, $(SRC_DIR), *.cpp)
+HEADERS  := $(call rwildcard, $(SRC_DIR), *.h)
 
-all: kernel.elf
+# Object files
+ASM_OBJS := $(ASM_SRCS:$(SRC_DIR)/%.S=$(OBJ_DIR)/%.o)
+CPP_OBJS := $(CPP_SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
+OBJS     := $(ASM_OBJS) $(CPP_OBJS)
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.cpp
-	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -c $^ -o $@
+# Compiler and linker flags
+ASFLAGS   := -m64 -g -ffreestanding -nostdlib
+CXXFLAGS  := -m64 -g $(INC_DIR) -ffreestanding -nostdlib \
+              -fno-exceptions -fno-rtti -std=c++17 -mno-red-zone
+LDFLAGS   := -m elf_x86_64 -T $(LINKER_SCRIPT) -g
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.c
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -c $^ -o $@
+# Default target
+all: $(KERNEL)
 
-$(OBJDIR)/%_asm.o: $(SRCDIR)/%.s
-	@mkdir -p $(@D)
-	$(ASMC) $(ASMFLAGS) $^ -o $@
+# Create build directories
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
 
-kernel.elf: $(OBJECTS)
-	@mkdir -p bin
-	$(LD) $(LDFLAGS) $^ -o bin/$@
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
+# Compile assembly files to object files
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.S $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) -c $< -o $@
+
+# Compile C++ files to object files
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CXXFLAGS) -c $< -o $@
+
+# Link the kernel
+$(KERNEL): $(OBJS) $(LINKER_SCRIPT) | $(BUILD_DIR)
+	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+
+# Clean up build files
 clean:
-	rm -rf ./bin
-	rm -rf ./obj
-	rm -f *.o
+	rm -rf $(BUILD_DIR)
 
 .PHONY: all clean
