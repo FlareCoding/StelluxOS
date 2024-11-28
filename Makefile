@@ -74,10 +74,13 @@ help:
 	@echo ""
 
 # Builds the Kernel
-kernel: $(KERNEL_FILE)
+kernel:
+	@$(MKDIR) $(BUILD_DIR)
+	@$(MAKE) -C kernel
+	@cp $(KERNEL_DIR)/build/stellux $(KERNEL_FILE)
 
 # Builds the final .img stellux image
-image: $(STELLUX_IMAGE)
+image: kernel $(STELLUX_IMAGE)
 
 $(BUILD_DIR):
 	@$(MKDIR) $(BUILD_DIR)
@@ -155,4 +158,4 @@ connect-gdb:
 # Phony Targets
 # =========================
 
-.PHONY: all help kernel image clean run run-headless run-debug run-debug-headless connect-gdb
+.PHONY: all help kernel clean run run-headless run-debug run-debug-headless connect-gdb
