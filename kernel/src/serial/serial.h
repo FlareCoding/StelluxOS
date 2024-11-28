@@ -1,6 +1,7 @@
 #ifndef SERIAL_H
 #define SERIAL_H
 #include <ports/ports.h>
+#include <string.h>
 
 // Base I/O port for the first serial port
 #define SERIAL_PORT_BASE_COM1 0x3F8
@@ -119,6 +120,29 @@ namespace serial {
      * @return char The character read from the serial port.
      */
     char read(uint16_t port);
+
+    /**
+     * @brief Prints a formatted string to the COM1 serial port.
+     *
+     * @tparam Args Variadic template arguments corresponding to format specifiers.
+     * @param format The format string.
+     * @param args The arguments to format.
+     * @return int The number of characters written, excluding the null terminator.
+     */
+    template <typename... Args>
+    int com1_printf(const char* format, Args... args) {
+        // Define a buffer with a fixed size. Adjust as necessary.
+        constexpr size_t BUFFER_SIZE = 256;
+        char buffer[BUFFER_SIZE] = { 0 };
+        
+        // Format the string using the custom sprintf
+        int len = sprintf(buffer, BUFFER_SIZE, format, args...);
+        
+        // Send the formatted string over COM1
+        serial::write(SERIAL_PORT_BASE_COM1, buffer);
+        
+        return len;
+    }
 };
 
 #endif
