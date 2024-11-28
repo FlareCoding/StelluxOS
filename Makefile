@@ -154,8 +154,53 @@ connect-gdb:
 	    -ex "add-symbol-file $(KERNEL_FILE)" \
 	    -ex "b init"
 
+# Install all necessary dependencies based on the Linux distribution
+install-dependencies:
+	@echo "Installing dependencies..."
+	@if [ -f /etc/debian_version ]; then \
+		echo "Detected Debian-based system."; \
+		sudo apt-get update && sudo apt-get install -y \
+			build-essential \
+			grub2 \
+			dosfstools \
+			parted \
+			qemu-system-x86 \
+			gdb \
+			ovmf; \
+	elif [ -f /etc/redhat-release ]; then \
+		echo "Detected RedHat-based system."; \
+		sudo dnf groupinstall -y "Development Tools" && \
+		sudo dnf install -y \
+			grub2-efi-x64 \
+			dosfstools \
+			parted \
+			qemu-system-x86_64 \
+			gdb \
+			edk2-ovmf; \
+	elif [ -f /etc/arch-release ]; then \
+		echo "Detected Arch-based system."; \
+		sudo pacman -Sy --noconfirm \
+			base-devel \
+			grub \
+			dosfstools \
+			parted \
+			qemu \
+			gdb \
+			ovmf; \
+	else \
+		echo "Unsupported Linux distribution. Please install the following packages manually:"; \
+		echo "  - build-essential / Development Tools / base-devel"; \
+		echo "  - grub2 / grub / grub2-efi-x64"; \
+		echo "  - dosfstools"; \
+		echo "  - parted"; \
+		echo "  - qemu-system-x86 / qemu-system-x86_64 / qemu"; \
+		echo "  - gdb"; \
+		echo "  - ovmf / edk2-ovmf"; \
+		exit 1; \
+	fi
+
 # =========================
 # Phony Targets
 # =========================
 
-.PHONY: all help kernel clean run run-headless run-debug run-debug-headless connect-gdb
+.PHONY: all help kernel clean run run-headless run-debug run-debug-headless connect-gdb install-dependencies
