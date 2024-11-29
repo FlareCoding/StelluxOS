@@ -1,5 +1,6 @@
 #include <arch/x86/gdt/gdt.h>
 #include <memory/memory.h>
+#include <serial/serial.h>
 
 namespace arch::x86 {
 EXTERN_C
@@ -16,6 +17,7 @@ struct gdt_and_tss_data {
 
     gdt                    gdt_instance;
     task_state_segment     tss_instance;
+    uint8_t                io_bitmap[0x80]; // 0x400 ports (0x400 bits / 8 = 0x80 bytes)
 
     gdt_desc               gdt_descriptor;
 };
@@ -135,6 +137,13 @@ void init_gdt(int apicid, uint64_t kernel_stack) {
     data->tss_descriptor.granularity = 0; // no granularity for TSS
     data->tss_descriptor.zero = 0; // Should be zero
     data->tss_descriptor.zero_again = 0; // should be zero
+
+    // Initialize I/O Bitmap
+    zeromem(&data->io_bitmap, sizeof(data->io_bitmap));
+    memset(&data->io_bitmap, 0xFF, sizeof(data->io_bitmap)); // Set all bits to 1 (inaccessible to userspace)
+
+    // Allow usermode access to COM1 port by clearing the bit in the IO bitmap
+    data->io_bitmap[SERIAL_PORT_BASE_COM1 / 8] &= ~(1 << (SERIAL_PORT_BASE_COM1 % 8));
 
     // Update the gdt with initialized descriptors
     data->gdt_instance.kernel_null = data->kernel_null_descriptor;
