@@ -4,6 +4,7 @@
 
 uint8_t g_default_bsp_kernel_stack[0x2000];
 namespace arch {
+__PRIVILEGED_CODE
 void arch_init() {
     // Setup kernel stack
     uint64_t kernel_bsp_stack_top = reinterpret_cast<uint64_t>(g_default_bsp_kernel_stack) +
@@ -11,4 +12,4 @@ void arch_init() {
 
     x86::init_gdt(0, kernel_bsp_stack_top);
 }
-}
+} // namespace arch

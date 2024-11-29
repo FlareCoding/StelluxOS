@@ -3,7 +3,10 @@
 #include <types.h>
 
 namespace arch {
+
+__PRIVILEGED_CODE
 void arch_init();
-};
+
+} // namespace arch
 
 #endif

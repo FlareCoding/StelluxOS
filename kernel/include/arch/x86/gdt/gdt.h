@@ -135,16 +135,19 @@ struct gdt {
     gdt_segment_descriptor user_code;      // 0x30
 };
 
+__PRIVILEGED_CODE
 void set_segment_descriptor_base(
     gdt_segment_descriptor* descriptor,
     uint64_t base
 );
 
+__PRIVILEGED_CODE
 void set_segment_descriptor_limit(
     gdt_segment_descriptor* descriptor,
     uint64_t limit
 );
 
+__PRIVILEGED_CODE
 void init_gdt(int cpu, uint64_t kernel_stack);
 } // namespace arch::x86
 

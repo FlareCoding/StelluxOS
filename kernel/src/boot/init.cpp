@@ -2,7 +2,9 @@
 #include <boot/multiboot2.h>
 #include <arch/arch_init.h>
 
-EXTERN_C void init(unsigned int magic, void* mbi) {
+EXTERN_C
+__PRIVILEGED_CODE
+void init(unsigned int magic, void* mbi) {
     serial::init_port(SERIAL_PORT_BASE_COM1);
 
     // Architecture-specific initialization sequences

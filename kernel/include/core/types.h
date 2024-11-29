@@ -27,10 +27,10 @@ typedef __UINT64_TYPE__ uint64_t;
 typedef __UINT64_TYPE__ size_t;
 #endif
 
-typedef void* uintptr_t;
+typedef uint64_t uintptr_t;
 #define NULL    0
 
-#define offsetof(type, member) ((size_t) &(((type *)0)->member))
+#define offsetof(type, member) ((uintptr_t) &(((type *)0)->member))
 
 #if defined(__cplusplus)
     #define EXTERN_C extern "C"
@@ -40,6 +40,10 @@ typedef void* uintptr_t;
 
 #define __force_inline__ inline __attribute__((always_inline))
 #define __unused (void)
+
+#define __PRIVILEGED_CODE       __attribute__((section(".ktext")))
+#define __PRIVILEGED_DATA       __attribute__((section(".kdata")))
+#define __PRIVILEGED_RO_DATA    __attribute__((section(".krodata")))
 
 #define __UNIT_TEST __attribute__((used, section(".unit_test")))
 #define __UNIT_TEST_UNUSED __attribute__((used, section(".unit_test_unused")))

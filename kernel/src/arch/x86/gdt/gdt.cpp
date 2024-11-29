@@ -2,7 +2,9 @@
 #include <memory/memory.h>
 
 namespace arch::x86 {
-EXTERN_C void __asm_flush_gdt(gdt_desc* descriptor);
+EXTERN_C
+__PRIVILEGED_CODE
+void __asm_flush_gdt(gdt_desc* descriptor);
 
 struct gdt_and_tss_data {
     gdt_segment_descriptor kernel_null_descriptor;
@@ -18,8 +20,10 @@ struct gdt_and_tss_data {
     gdt_desc               gdt_descriptor;
 };
 
+__PRIVILEGED_DATA
 static gdt_and_tss_data g_gdt_per_cpu_array[64];
 
+__PRIVILEGED_CODE
 void set_segment_descriptor_base(
     gdt_segment_descriptor* descriptor,
     uint64_t base
@@ -29,6 +33,7 @@ void set_segment_descriptor_base(
     descriptor->base_high = (base >> 24) & 0xFF;
 }
 
+__PRIVILEGED_CODE
 void set_segment_descriptor_limit(
     gdt_segment_descriptor* descriptor,
     uint64_t limit
@@ -40,6 +45,7 @@ void set_segment_descriptor_limit(
     descriptor->limit_high = (uint8_t)((limit >> 16) & 0xF);
 }
 
+__PRIVILEGED_CODE
 void set_tss_descriptor_base(tss_desc* desc, uint64_t base) {
     desc->base_low  = (uint16_t)(base & 0xFFFF);
     desc->base_mid  = (uint8_t)((base >> 16) & 0xFF);
@@ -47,11 +53,13 @@ void set_tss_descriptor_base(tss_desc* desc, uint64_t base) {
     desc->base_upper = (uint32_t)((base >> 32) & 0xFFFFFFFF);
 }
 
+__PRIVILEGED_CODE
 void set_tss_descriptor_limit(tss_desc* desc, uint32_t limit) {
     desc->limit_low = (uint16_t)(limit & 0xFFFF);
     desc->limit_high = (uint8_t)((limit >> 16) & 0x0F);
 }
 
+__PRIVILEGED_CODE
 void init_gdt(int apicid, uint64_t kernel_stack) {
     gdt_and_tss_data* data = &g_gdt_per_cpu_array[apicid];
 

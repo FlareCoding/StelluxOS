@@ -1,7 +1,7 @@
 .intel_syntax noprefix
 .code64
 
-.section .text
+.section .ktext
 
 .global __asm_flush_gdt
 
