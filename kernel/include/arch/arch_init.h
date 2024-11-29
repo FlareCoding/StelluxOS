@@ -3,7 +3,7 @@
 #include <types.h>
 
 namespace arch {
-    void arch_init();
+void arch_init();
 };
 
 #endif

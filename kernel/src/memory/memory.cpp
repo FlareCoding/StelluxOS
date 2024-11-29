@@ -1,0 +1,70 @@
+#include <memory/memory.h>
+
+/**
+ * @brief Sets the first `count` bytes of the memory area pointed to by `ptr` to the specified `value`.
+ *
+ * @param ptr Pointer to the memory area to be filled.
+ * @param value The value to be set. Only the least significant byte is used.
+ * @param count Number of bytes to be set to the value.
+ * @return void* Pointer to the memory area `ptr`.
+ */
+void* memset(void* ptr, int value, size_t count) {
+    unsigned char* byte_ptr = static_cast<unsigned char*>(ptr);
+    unsigned char val = static_cast<unsigned char>(value);
+    for (size_t i = 0; i < count; ++i) {
+        byte_ptr[i] = val;
+    }
+    return ptr;
+}
+
+/**
+ * @brief Copies `count` bytes from the memory area `src` to memory area `dest`.
+ *
+ * @param dest Pointer to the destination memory area where the content is to be copied.
+ * @param src Pointer to the source memory area from which the content is to be copied.
+ * @param count Number of bytes to copy.
+ * @return void* Pointer to the destination memory area `dest`.
+ */
+void* memcpy(void* dest, const void* src, size_t count) {
+    unsigned char* dest_ptr = static_cast<unsigned char*>(dest);
+    const unsigned char* src_ptr = static_cast<const unsigned char*>(src);
+
+    // If both pointers are aligned to word boundaries, copy in larger chunks for efficiency
+    // This example assumes 32-bit architecture. Adjust as necessary for your architecture.
+    #if defined(__i386__) || defined(__x86_64__)
+    size_t word_size = sizeof(unsigned long);
+    size_t i = 0;
+
+    // Copy word-sized chunks
+    for (; i + word_size <= count; i += word_size) {
+        *reinterpret_cast<unsigned long*>(dest_ptr + i) = *reinterpret_cast<const unsigned long*>(src_ptr + i);
+    }
+    #endif
+
+    // Copy any remaining bytes
+    for (; i < count; ++i) {
+        dest_ptr[i] = src_ptr[i];
+    }
+
+    return dest;
+}
+
+/**
+ * @brief Compares the first `count` bytes of the memory areas `ptr1` and `ptr2`.
+ *
+ * @param ptr1 Pointer to the first memory area.
+ * @param ptr2 Pointer to the second memory area.
+ * @param count Number of bytes to compare.
+ * @return int An integer less than, equal to, or greater than zero if the first `count` bytes of `ptr1` is found, respectively, to be less than, to match, or be greater than the first `count` bytes of `ptr2`.
+ */
+int memcmp(const void* ptr1, const void* ptr2, size_t count) {
+    const unsigned char* byte_ptr1 = static_cast<const unsigned char*>(ptr1);
+    const unsigned char* byte_ptr2 = static_cast<const unsigned char*>(ptr2);
+
+    for (size_t i = 0; i < count; ++i) {
+        if (byte_ptr1[i] != byte_ptr2[i]) {
+            return byte_ptr1[i] - byte_ptr2[i];
+        }
+    }
+    return 0;
+}
