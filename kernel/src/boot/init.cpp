@@ -2,6 +2,8 @@
 #include <boot/multiboot2.h>
 #include <arch/arch_init.h>
 
+uint8_t g_default_bsp_kernel_stack[0x2000];
+
 EXTERN_C void init(unsigned int magic, void* mbi) {
     serial::init_port(SERIAL_PORT_BASE_COM1);
 
