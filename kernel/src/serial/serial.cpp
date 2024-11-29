@@ -1,4 +1,4 @@
-#include "serial.h"
+#include <serial/serial.h>
 
 namespace serial {
     void init_port(uint16_t port) {

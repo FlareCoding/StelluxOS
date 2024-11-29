@@ -1,7 +1,7 @@
 .intel_syntax noprefix
 
 #define ASM_FILE
-#include "multiboot2.h"
+#include <boot/multiboot2.h>
 
 .section .bss.bootstrap
 

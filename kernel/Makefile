@@ -5,11 +5,9 @@ LD := ld
 
 # Directories
 SRC_DIR := src
+INC_DIR := include
 BUILD_DIR := build
 OBJ_DIR := $(BUILD_DIR)/obj
-
-# Include directories
-INC_DIR := -I$(SRC_DIR)/ -I$(SRC_DIR)/core/
 
 # Output files
 KERNEL := $(BUILD_DIR)/stellux
@@ -31,8 +29,8 @@ CPP_OBJS := $(CPP_SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 OBJS     := $(ASM_OBJS) $(CPP_OBJS)
 
 # Compiler and linker flags
-ASFLAGS   := -m64 -g -ffreestanding -nostdlib
-CXXFLAGS  := -m64 -g $(INC_DIR) -ffreestanding -nostdlib \
+ASFLAGS   := -m64 -g -ffreestanding -nostdlib -I$(INC_DIR) -I$(INC_DIR)/core
+CXXFLAGS  := -m64 -g -I$(INC_DIR) -I$(INC_DIR)/core -ffreestanding -nostdlib \
               -fno-exceptions -fno-rtti -std=c++17 -mno-red-zone
 LDFLAGS   := -m elf_x86_64 -T $(LINKER_SCRIPT) -g
 

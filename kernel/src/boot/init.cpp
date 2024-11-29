@@ -1,7 +1,13 @@
 #include <serial/serial.h>
-#include "multiboot2.h"
+#include <boot/multiboot2.h>
+#include <arch/arch_init.h>
 
 EXTERN_C void init(unsigned int magic, void* mbi) {
+    serial::init_port(SERIAL_PORT_BASE_COM1);
+
+    // Architecture-specific initialization sequences
+    arch::arch_init();
+
     serial::com1_printf("Walking MBI tags...\n");
 
     // Cast the mbi pointer to a byte pointer for arithmetic

@@ -1,4 +1,4 @@
-#include "ports.h"
+#include <ports/ports.h>
 
 void outb(uint16_t port, uint8_t value) {
    __asm__ volatile ("outb %1, %0" : : "dN" (port), "a" (value));
