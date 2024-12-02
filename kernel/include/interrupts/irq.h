@@ -117,4 +117,6 @@ void enable_interrupts();
 __PRIVILEGED_CODE
 void disable_interrupts();
 
+void panic(ptregs* regs);
+
 #endif // IRQ_H

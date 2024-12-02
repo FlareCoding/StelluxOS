@@ -1,6 +1,7 @@
 #ifdef ARCH_X86_64
 #include <arch/x86/idt/idt.h>
 #include <memory/memory.h>
+#include <serial/serial.h>
 
 #define MAX_IRQS 64
 
@@ -160,9 +161,7 @@ void common_exc_entry(ptregs* regs) {
         return;
     }
 
-    while (true) {
-        asm volatile ("hlt");
-    }
+    panic(regs);
 }
 
 // Common entry point for IRQs
@@ -322,6 +321,107 @@ void enable_interrupts() {
 __PRIVILEGED_CODE
 void disable_interrupts() {
     asm volatile ("cli");
+}
+
+static void decode_rflags(uint64_t rflags, char* buffer, size_t buffer_size) {
+    sprintf(buffer, buffer_size, "[ ");
+    
+    // IOPL (Bits 12-13)
+    uint8_t iopl = (rflags >> 12) & 0x3;
+    sprintf(buffer + strlen(buffer), buffer_size - strlen(buffer), "IOPL=%u ", iopl);
+
+    // IF (Interrupt Flag, Bit 9)
+    if (rflags & (1 << 9)) {
+        strncat(buffer, "IF ", buffer_size - strlen(buffer) - 1);
+    }
+
+    // TF (Trap Flag, Bit 8)
+    if (rflags & (1 << 8)) {
+        strncat(buffer, "TF ", buffer_size - strlen(buffer) - 1);
+    }
+
+    // DF (Direction Flag, Bit 10)
+    if (rflags & (1 << 10)) {
+        strncat(buffer, "DF ", buffer_size - strlen(buffer) - 1);
+    }
+
+    // OF (Overflow Flag, Bit 11)
+    if (rflags & (1 << 11)) {
+        strncat(buffer, "OF ", buffer_size - strlen(buffer) - 1);
+    }
+
+    // SF (Sign Flag, Bit 7)
+    if (rflags & (1 << 7)) {
+        strncat(buffer, "SF ", buffer_size - strlen(buffer) - 1);
+    }
+
+    // ZF (Zero Flag, Bit 6)
+    if (rflags & (1 << 6)) {
+        strncat(buffer, "ZF ", buffer_size - strlen(buffer) - 1);
+    }
+
+    // PF (Parity Flag, Bit 2)
+    if (rflags & (1 << 2)) {
+        strncat(buffer, "PF ", buffer_size - strlen(buffer) - 1);
+    }
+
+    // CF (Carry Flag, Bit 0)
+    if (rflags & (1 << 0)) {
+        strncat(buffer, "CF ", buffer_size - strlen(buffer) - 1);
+    }
+
+    // Close the flags representation
+    strncat(buffer, "]", buffer_size - strlen(buffer) - 1);
+}
+
+void panic(ptregs* regs) {
+    // Decode RFLAGS
+    char rflags_buffer[64] = { 0 };
+    decode_rflags(regs->hwframe.rflags, rflags_buffer, sizeof(rflags_buffer));
+
+    serial::com1_printf("\n[PANIC] Kernel Panic! System Halted.\n");
+    serial::com1_printf("============================================================\n");
+
+    // General purpose registers
+    serial::com1_printf("General Purpose Registers:\n");
+    serial::com1_printf("  RAX: 0x%016llx   RBX: 0x%016llx\n", regs->rax, regs->rbx);
+    serial::com1_printf("  RCX: 0x%016llx   RDX: 0x%016llx\n", regs->rcx, regs->rdx);
+    serial::com1_printf("  RSI: 0x%016llx   RDI: 0x%016llx\n", regs->rsi, regs->rdi);
+    serial::com1_printf("  RBP: 0x%016llx   RSP: 0x%016llx\n", regs->rbp, regs->hwframe.rsp);
+    serial::com1_printf("  R8 : 0x%016llx   R9 : 0x%016llx\n", regs->r8, regs->r9);
+    serial::com1_printf("  R10: 0x%016llx   R11: 0x%016llx\n", regs->r10, regs->r11);
+    serial::com1_printf("  R12: 0x%016llx   R13: 0x%016llx\n", regs->r12, regs->r13);
+    serial::com1_printf("  R14: 0x%016llx   R15: 0x%016llx\n", regs->r14, regs->r15);
+
+    // Segment selectors
+    serial::com1_printf("\nSegment Selectors:\n");
+    serial::com1_printf("  CS:  0x%016llx   DS:  0x%016llx\n", regs->hwframe.cs, regs->ds);
+    serial::com1_printf("  ES:  0x%016llx   FS:  0x%016llx\n", regs->es, regs->fs);
+    serial::com1_printf("  GS:  0x%016llx   SS:  0x%016llx\n", regs->gs, regs->hwframe.ss);
+
+    // Instruction pointer, flags, and error code
+    serial::com1_printf("\nInstruction and Context Information:\n");
+    serial::com1_printf("  RIP: 0x%016llx   RFLAGS: 0x%llx %s\n",
+        regs->hwframe.rip, regs->hwframe.rflags, rflags_buffer);
+    serial::com1_printf("  IRQ: 0x%016llx   Error Code: 0x%016llx\n", regs->intno, regs->error);
+
+    // Control registers
+    uint64_t cr0, cr2, cr3, cr4;
+    asm volatile("mov %%cr0, %0" : "=r"(cr0));
+    asm volatile("mov %%cr2, %0" : "=r"(cr2));
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    asm volatile("mov %%cr4, %0" : "=r"(cr4));
+
+    serial::com1_printf("\nControl Registers:\n");
+    serial::com1_printf("  CR0: 0x%016llx   CR2: 0x%016llx\n", cr0, cr2);
+    serial::com1_printf("  CR3: 0x%016llx   CR4: 0x%016llx\n", cr3, cr4);
+
+    // Final separator
+    serial::com1_printf("============================================================\n");
+    serial::com1_printf("System halted.\n");
+    while (1) {
+        asm volatile("hlt");
+    }
 }
 
 #endif // ARCH_X86_64

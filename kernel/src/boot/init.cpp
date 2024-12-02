@@ -1,6 +1,7 @@
 #include <serial/serial.h>
 #include <boot/multiboot2.h>
 #include <arch/arch_init.h>
+#include <interrupts/irq.h>
 
 EXTERN_C
 __PRIVILEGED_CODE
@@ -13,11 +14,6 @@ void init(unsigned int magic, void* mbi) {
 
     // Architecture-specific initialization sequences
     arch::arch_init();
-
-    int x = 0;
-    int y = 4;
-    int z = y / x;
-    __unused z;
 
     serial::com1_printf("Walking MBI tags...\n");
 
