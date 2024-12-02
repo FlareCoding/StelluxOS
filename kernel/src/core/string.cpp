@@ -38,6 +38,25 @@ size_t strlen(const char* str) {
     return length;
 }
 
+char* strncat(char* dest, const char* src, size_t n) {
+    char* original_dest = dest;
+
+    // Find the end of the destination string
+    while (*dest) {
+        dest++;
+    }
+
+    // Append up to `n` characters from `src` to `dest`
+    while (n-- > 0 && *src) {
+        *dest++ = *src++;
+    }
+
+    // Null-terminate the resulting string
+    *dest = '\0';
+
+    return original_dest;
+}
+
 int uint_to_str(uint64_t value, char* buffer, size_t buffer_size, int base) {
     const char digits[] = "0123456789abcdef";
     int i = 0;
@@ -101,6 +120,20 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
                 break; // Trailing '%' character
             }
 
+            // Parse flags
+            int width = 0;
+            char padding_char = ' ';  // Default padding is space
+            if (*ptr == '0') {
+                padding_char = '0';
+                ptr++;
+            }
+
+            // Parse width
+            while (*ptr >= '0' && *ptr <= '9') {
+                width = width * 10 + (*ptr - '0');
+                ptr++;
+            }
+
             // Handle format specifiers
             if (*ptr == 's') {
                 // %s - null-terminated string
@@ -114,6 +147,10 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
                 int32_t int_arg = va_arg(args, int32_t);
                 char num_buffer[12]; // Enough for 32-bit int
                 int num_len = int_to_str((int64_t)int_arg, num_buffer, sizeof(num_buffer), 10);
+                int padding = (width > num_len) ? width - num_len : 0;
+                while (padding-- > 0 && buffer_index < buffer_size - 1) {
+                    buffer[buffer_index++] = padding_char;
+                }
                 for (int i = 0; i < num_len && buffer_index < buffer_size - 1; i++) {
                     buffer[buffer_index++] = num_buffer[i];
                 }
@@ -123,12 +160,16 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
                 uint32_t uint_arg = va_arg(args, uint32_t);
                 char num_buffer[11]; // Enough for 32-bit unsigned int
                 int num_len = uint_to_str((uint64_t)uint_arg, num_buffer, sizeof(num_buffer), 10);
+                int padding = (width > num_len) ? width - num_len : 0;
+                while (padding-- > 0 && buffer_index < buffer_size - 1) {
+                    buffer[buffer_index++] = padding_char;
+                }
                 for (int i = 0; i < num_len && buffer_index < buffer_size - 1; i++) {
                     buffer[buffer_index++] = num_buffer[i];
                 }
             }
             else if (*ptr == 'l') {
-                // Handle long specifiers: %lli, %llu, %llx
+                // Handle long specifiers: %lli, %llu, %llx, %016llx
                 ptr++;
                 if (*ptr == 'l') {
                     ptr++;
@@ -137,6 +178,10 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
                         int64_t long_long_int_arg = va_arg(args, int64_t);
                         char num_buffer[21]; // Enough for 64-bit int
                         int num_len = int_to_str(long_long_int_arg, num_buffer, sizeof(num_buffer), 10);
+                        int padding = (width > num_len) ? width - num_len : 0;
+                        while (padding-- > 0 && buffer_index < buffer_size - 1) {
+                            buffer[buffer_index++] = padding_char;
+                        }
                         for (int i = 0; i < num_len && buffer_index < buffer_size - 1; i++) {
                             buffer[buffer_index++] = num_buffer[i];
                         }
@@ -146,15 +191,23 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
                         uint64_t long_long_uint_arg = va_arg(args, uint64_t);
                         char num_buffer[21]; // Enough for 64-bit unsigned int
                         int num_len = uint_to_str(long_long_uint_arg, num_buffer, sizeof(num_buffer), 10);
+                        int padding = (width > num_len) ? width - num_len : 0;
+                        while (padding-- > 0 && buffer_index < buffer_size - 1) {
+                            buffer[buffer_index++] = padding_char;
+                        }
                         for (int i = 0; i < num_len && buffer_index < buffer_size - 1; i++) {
                             buffer[buffer_index++] = num_buffer[i];
                         }
                     }
                     else if (*ptr == 'x') {
-                        // %llx - uint64_t in hexadecimal
+                        // %llx or %016llx - uint64_t in hexadecimal
                         uint64_t long_long_hex_arg = va_arg(args, uint64_t);
                         char num_buffer[17]; // 16 hex digits + null terminator for 64-bit
                         int num_len = uint_to_str(long_long_hex_arg, num_buffer, sizeof(num_buffer), 16);
+                        int padding = (width > num_len) ? width - num_len : 0;
+                        while (padding-- > 0 && buffer_index < buffer_size - 1) {
+                            buffer[buffer_index++] = padding_char;
+                        }
                         for (int i = 0; i < num_len && buffer_index < buffer_size - 1; i++) {
                             buffer[buffer_index++] = num_buffer[i];
                         }
@@ -179,10 +232,14 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
                 }
             }
             else if (*ptr == 'x') {
-                // %x - uint32_t in hexadecimal
+                // %x or %016x - uint32_t in hexadecimal
                 uint32_t hex_arg = va_arg(args, uint32_t);
                 char num_buffer[9]; // 8 hex digits + null terminator for 32-bit
                 int num_len = uint_to_str((uint64_t)hex_arg, num_buffer, sizeof(num_buffer), 16);
+                int padding = (width > num_len) ? width - num_len : 0;
+                while (padding-- > 0 && buffer_index < buffer_size - 1) {
+                    buffer[buffer_index++] = padding_char;
+                }
                 for (int i = 0; i < num_len && buffer_index < buffer_size - 1; i++) {
                     buffer[buffer_index++] = num_buffer[i];
                 }
@@ -209,3 +266,4 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
     va_end(args);
     return buffer_index;
 }
+

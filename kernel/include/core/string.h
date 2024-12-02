@@ -1,8 +1,8 @@
 #ifndef STRING_H
 #define STRING_H
 
-#include <cstdarg>
 #include <types.h>
+#include <cstdarg>
 
 /**
  * @brief Reverses a string in place.
@@ -53,6 +53,22 @@ char* strcpy(char* dest, const char* src);
  * @return size_t The number of characters in the string.
  */
 size_t strlen(const char* str);
+
+/**
+ * @brief Appends a portion of one string to another.
+ * 
+ * This function appends at most `n` characters from the source string (`src`) 
+ * to the destination string (`dest`), ensuring that the resulting string is null-terminated.
+ * 
+ * The destination string must have enough space to hold the resulting string, 
+ * and `src` must be null-terminated.
+ * 
+ * @param dest Pointer to the destination string.
+ * @param src Pointer to the source string to be appended.
+ * @param n The maximum number of characters to append from `src`.
+ * @return char* Pointer to the destination string.
+ */
+char* strncat(char* dest, const char* src, size_t n);
 
 /**
  * @brief Converts an unsigned integer to a string representation.
