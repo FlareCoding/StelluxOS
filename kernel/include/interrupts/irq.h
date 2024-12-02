@@ -111,12 +111,23 @@ struct irq_desc {
     uint16_t rsvd;
 };
 
+/**
+ * @brief Enables CPU interrupts.
+ */
 __PRIVILEGED_CODE
 void enable_interrupts();
 
+/**
+ * @brief Disables CPU interrupts.
+ */
 __PRIVILEGED_CODE
 void disable_interrupts();
 
+/**
+ * @brief Handles a kernel panic by displaying register information and halting the system.
+ * 
+ * @param regs Pointer to the register state at the time of the panic.
+ */
 void panic(ptregs* regs);
 
 #endif // IRQ_H
