@@ -1,4 +1,5 @@
 .intel_syntax noprefix
+#ifdef ARCH_X86_64
 
 #define ASM_FILE
 #include <boot/multiboot2.h>
@@ -258,4 +259,6 @@ loop:
     jmp loop
 
 .section .note.GNU-stack, "", @progbits
+
+#endif // ARCH_X86_64
 

@@ -1,5 +1,7 @@
 #ifndef TSS_H
 #define TSS_H
+#ifdef ARCH_X86_64
+
 #include <types.h>
 
 struct task_state_segment {
@@ -42,4 +44,5 @@ struct tss_desc {
     uint32_t reserved;
 } __attribute__((packed));
 
-#endif
+#endif // ARCH_X86_64
+#endif // TSS_H

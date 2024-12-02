@@ -1,4 +1,6 @@
 .intel_syntax noprefix
+#ifdef ARCH_X86_64
+
 .code64
 
 .section .ktext
@@ -29,3 +31,5 @@ __asm_flush_gdt:
     retfq
 
 .section .note.GNU-stack, "", @progbits
+
+#endif // ARCH_X86_64

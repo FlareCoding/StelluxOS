@@ -1,3 +1,4 @@
+#ifdef ARCH_X86_64
 #include <arch/x86/gdt/gdt.h>
 #include <memory/memory.h>
 #include <serial/serial.h>
@@ -166,3 +167,6 @@ void init_gdt(int apicid, uint64_t kernel_stack) {
     __asm__("ltr %%ax" : : "a" (__TSS_PT1_SELECTOR));
 }
 } // namespace arch::x86
+
+#endif // ARCH_X86_64
+

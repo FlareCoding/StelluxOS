@@ -1,5 +1,7 @@
 #ifndef GDT_H
 #define GDT_H
+#ifdef ARCH_X86_64
+
 #include "tss.h"
 
 /*
@@ -151,4 +153,5 @@ __PRIVILEGED_CODE
 void init_gdt(int cpu, uint64_t kernel_stack);
 } // namespace arch::x86
 
-#endif
+#endif // ARCH_X86_64
+#endif // GDT_H

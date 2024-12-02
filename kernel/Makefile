@@ -9,6 +9,12 @@ INC_DIR := include
 BUILD_DIR := build
 OBJ_DIR := $(BUILD_DIR)/obj
 
+# Architecture
+TARGET_ARCH := X86_64
+
+# Pre-processor Defines
+PREPROCESSOR_DEFINES := -DARCH_$(TARGET_ARCH)
+
 # Output files
 KERNEL := $(BUILD_DIR)/stellux
 LINKER_SCRIPT := stellux.ld
@@ -29,9 +35,9 @@ CPP_OBJS := $(CPP_SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 OBJS     := $(ASM_OBJS) $(CPP_OBJS)
 
 # Compiler and linker flags
-ASFLAGS   := -m64 -g -ffreestanding -nostdlib -I$(INC_DIR) -I$(INC_DIR)/core
-CXXFLAGS  := -m64 -g -I$(INC_DIR) -I$(INC_DIR)/core -ffreestanding -nostdlib \
-              -fno-exceptions -fno-rtti -std=c++17 -mno-red-zone
+ASFLAGS   := -m64 -g -ffreestanding -nostdlib -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES)
+CXXFLAGS  := -m64 -g -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES) \
+			 -ffreestanding -nostdlib -fno-exceptions -fno-rtti -std=c++17 -mno-red-zone
 LDFLAGS   := -m elf_x86_64 -T $(LINKER_SCRIPT) -g
 
 # Default target
