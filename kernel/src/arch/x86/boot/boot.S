@@ -86,26 +86,26 @@ _start:
 .align MULTIBOOT_HEADER_ALIGN
 
 multiboot_header:
-        .long MULTIBOOT2_HEADER_MAGIC /* Multiboot magic number */
-        .long 0 /* Multiboot Arch i386 */
-        .long multiboot_header_end - multiboot_header
-        .long -(MULTIBOOT2_HEADER_MAGIC + multiboot_header_end - multiboot_header) /* Checksum */
+    .long MULTIBOOT2_HEADER_MAGIC /* Multiboot magic number */
+    .long 0 /* Multiboot Arch i386 */
+    .long multiboot_header_end - multiboot_header
+    .long -(MULTIBOOT2_HEADER_MAGIC + multiboot_header_end - multiboot_header) /* Checksum */
 
-        /* GOP Framebuffer Tag */
-        .short 5        /* Tag type = 5 (Framebuffer) */
-        .short 0        /* Flags */
-        .long 20        /* Size of the tag in bytes */
-        .long 0         /* Preferrer width in pixels (0 = no preference) */
-        .long 0         /* Preferrer height in pixels (0 = no preference) */
-        .long 32        /* Preferrer depth in bits per pixel (0 = no preference) */
+    /* GOP Framebuffer Tag */
+    .short 5        /* Tag type = 5 (Framebuffer) */
+    .short 0        /* Flags */
+    .long 20        /* Size of the tag in bytes */
+    .long 0         /* Preferrer width in pixels (0 = no preference) */
+    .long 0         /* Preferrer height in pixels (0 = no preference) */
+    .long 32        /* Preferrer depth in bits per pixel (0 = no preference) */
 
-        /* Padding to align to 8-byte boundary */
-        .space 4
+    /* Padding to align to 8-byte boundary */
+    .space 4
 
-        /* End Tag */
-        .short MULTIBOOT_HEADER_TAG_END
-        .short 0
-        .long 8
+    /* End Tag */
+    .short MULTIBOOT_HEADER_TAG_END
+    .short 0
+    .long 8
 multiboot_header_end:
 
 real_start:
