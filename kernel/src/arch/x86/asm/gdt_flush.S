@@ -5,9 +5,9 @@
 
 .section .ktext
 
-.global __asm_flush_gdt
+.global asm_flush_gdt
 
-__asm_flush_gdt:
+asm_flush_gdt:
     lgdt [rdi]      # GDT will be passed in from C as a parameter
 
     mov ax, 0x10    # selector for kernel data segment

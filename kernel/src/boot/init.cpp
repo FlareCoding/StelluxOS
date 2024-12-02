@@ -5,10 +5,19 @@
 EXTERN_C
 __PRIVILEGED_CODE
 void init(unsigned int magic, void* mbi) {
+    if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
+        while (true) { asm volatile ("hlt"); }
+    }
+
     serial::init_port(SERIAL_PORT_BASE_COM1);
 
     // Architecture-specific initialization sequences
     arch::arch_init();
+
+    int x = 0;
+    int y = 4;
+    int z = y / x;
+    __unused z;
 
     serial::com1_printf("Walking MBI tags...\n");
 

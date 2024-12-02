@@ -6,7 +6,7 @@
 namespace arch::x86 {
 EXTERN_C
 __PRIVILEGED_CODE
-void __asm_flush_gdt(gdt_desc* descriptor);
+void asm_flush_gdt(gdt_desc* descriptor);
 
 struct gdt_and_tss_data {
     gdt_segment_descriptor kernel_null_descriptor;
@@ -161,7 +161,7 @@ void init_gdt(int apicid, uint64_t kernel_stack) {
     };
 
     // Install the gdt
-    __asm_flush_gdt(&data->gdt_descriptor);
+    asm_flush_gdt(&data->gdt_descriptor);
 
     // Load the Task Register (TR)
     __asm__("ltr %%ax" : : "a" (__TSS_PT1_SELECTOR));

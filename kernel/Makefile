@@ -36,8 +36,12 @@ OBJS     := $(ASM_OBJS) $(CPP_OBJS)
 
 # Compiler and linker flags
 ASFLAGS   := -m64 -g -ffreestanding -nostdlib -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES)
-CXXFLAGS  := -m64 -g -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES) \
-			 -ffreestanding -nostdlib -fno-exceptions -fno-rtti -std=c++17 -mno-red-zone
+CXXFLAGS  := -m64 -g -O0 -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES) \
+			 -ffreestanding -Wall -Werror -Wextra -nostdlib -fno-exceptions -fno-rtti -std=c++17 -mno-red-zone \
+			 -fno-allow-store-data-races -fno-reorder-blocks -fno-ipa-cp-clone -fno-partial-inlining -Wframe-larger-than=2048 \
+			 -Wimplicit-fallthrough=5 -Wno-unused-but-set-variable -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls \
+			 -fno-stack-clash-protection -Wno-stringop-truncation -Wno-zero-length-bounds -Wno-array-bounds -Wno-stringop-overflow -Wno-restrict \
+			 -Wno-maybe-uninitialized -fno-strict-overflow -fno-stack-check -fconserve-stack -fno-stack-protector -mno-sse -mno-mmx
 LDFLAGS   := -m elf_x86_64 -T $(LINKER_SCRIPT) -g
 
 # Default target
