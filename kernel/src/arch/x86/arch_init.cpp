@@ -4,8 +4,15 @@
 #include <arch/x86/gdt/gdt.h>
 #include <arch/x86/idt/idt.h>
 #include <arch/x86/fsgsbase.h>
+#include <syscall/syscalls.h>
+#include <sched/sched.h>
 
 uint8_t g_default_bsp_kernel_stack[0x2000];
+
+EXTERN_C int __check_current_elevate_status() {
+    return static_cast<int>(current->elevated);
+}
+
 namespace arch {
 __PRIVILEGED_CODE
 void arch_init() {
@@ -23,5 +30,8 @@ void arch_init() {
     // Setup per-cpu area for the bootstrapping processor
     x86::enable_fsgsbase();
     init_bsp_per_cpu_area();
+
+    // Enable the syscall interface
+    enable_syscall_interface();
 }
 } // namespace arch
