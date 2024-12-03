@@ -13,11 +13,31 @@
 #define IA32_KERNEL_GS_BASE 0xC0000102
 
 namespace arch::x86::msr {
+/**
+ * @brief Reads the value of a Model Specific Register (MSR).
+ * 
+ * This function retrieves the current value stored in the specified MSR. MSRs are used
+ * to control various CPU-specific features and configurations. Access to MSRs typically
+ * requires privileged CPU modes.
+ * 
+ * @param msr The identifier of the Model Specific Register to read.
+ * @return uint64_t The value read from the specified MSR.
+ */
 __PRIVILEGED_CODE
 uint64_t read(
     uint32_t msr
 );
 
+/**
+ * @brief Writes a value to a Model Specific Register (MSR).
+ * 
+ * This function sets the specified MSR to the provided value. MSRs are used to control
+ * various CPU-specific features and configurations. Writing to MSRs typically requires
+ * privileged CPU modes.
+ * 
+ * @param msr The identifier of the Model Specific Register to write to.
+ * @param value The value to be written to the specified MSR.
+ */
 __PRIVILEGED_CODE
 void write(
     uint32_t msr,

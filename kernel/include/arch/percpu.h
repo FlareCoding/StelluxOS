@@ -15,6 +15,17 @@ extern char __per_cpu_size;
 #define PER_CPU_OFFSET(name) ((uintptr_t)&name - (uintptr_t)&__per_cpu_start)
 
 #ifdef ARCH_X86_64
+/**
+ * @brief Reads a per-CPU variable.
+ * 
+ * This template function retrieves the value of a per-CPU variable by accessing the
+ * appropriate memory location using the GS segment register. It ensures that each
+ * CPU core can access its own instance of the variable without interference from other cores.
+ * 
+ * @tparam T The type of the per-CPU variable.
+ * @param name Reference to the per-CPU variable to be read.
+ * @return T The value of the specified per-CPU variable.
+ */
 template <typename T>
 inline T this_cpu_read(T& name) {
     T __x;
@@ -25,6 +36,17 @@ inline T this_cpu_read(T& name) {
     return __x;
 }
 
+/**
+ * @brief Writes to a per-CPU variable.
+ * 
+ * This template function sets the value of a per-CPU variable by writing to the
+ * appropriate memory location using the GS segment register. It ensures that each
+ * CPU core can modify its own instance of the variable without affecting other cores.
+ * 
+ * @tparam T The type of the per-CPU variable.
+ * @param name Reference to the per-CPU variable to be written to.
+ * @param val The value to assign to the specified per-CPU variable.
+ */
 template <typename T>
 inline void this_cpu_write(T& name, T val) {
     uintptr_t __offset = PER_CPU_OFFSET(name);
