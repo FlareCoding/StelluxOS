@@ -1,7 +1,9 @@
 #include <types.h>
 #include <serial/serial.h>
+#include <arch/percpu.h>
 #include <arch/x86/gdt/gdt.h>
 #include <arch/x86/idt/idt.h>
+#include <arch/x86/fsgsbase.h>
 
 uint8_t g_default_bsp_kernel_stack[0x2000];
 namespace arch {
@@ -17,5 +19,9 @@ void arch_init() {
     // Setup the IDT and enable interrupts
     x86::init_idt();
     enable_interrupts();
+
+    // Setup per-cpu area for the bootstrapping processor
+    x86::enable_fsgsbase();
+    init_bsp_per_cpu_area();
 }
 } // namespace arch

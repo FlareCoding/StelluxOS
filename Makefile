@@ -26,8 +26,7 @@ QEMU_CORES       := 8
 QEMU_RAM         := 4G
 QEMU_FLAGS       := \
     -machine q35 \
-	--enable-kvm \
-	-cpu host,+fsgsbase \
+	-cpu qemu64,+fsgsbase \
     -m $(QEMU_RAM) \
     -serial mon:stdio \
     -drive file=$(STELLUX_IMAGE),format=raw \

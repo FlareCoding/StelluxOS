@@ -65,5 +65,12 @@ SECTIONS
         . = ALIGN(0x1000);
     }
 
+    __per_cpu_start = .;
+    .percpu : AT(ADDR(.percpu) - KERNEL_OFFSET) {
+        *(.percpu)
+    }
+    __per_cpu_end = .;
+    __per_cpu_size = __per_cpu_end - __per_cpu_start;
+
     __ksymend = .;
 }
