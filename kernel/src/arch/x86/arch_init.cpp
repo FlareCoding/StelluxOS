@@ -11,10 +11,6 @@
 
 uint8_t g_default_bsp_system_stack[0x2000];
 
-void test_fn() {
-    return;
-}
-
 namespace arch {
 __PRIVILEGED_CODE
 void arch_init() {
