@@ -20,9 +20,13 @@ struct task_control_block {
     ptregs          cpu_context;
     process_state   state;
     pid_t           pid;
-    uint64_t        kernel_stack;
-    uint64_t        kernel_interrupt_stack;
-    uint64_t        user_stack;
+
+    // Primary execution stack used by a thread
+    uint64_t        task_stack;
+
+    // Secondary stack used for system work
+    // in the syscall and interrupt contexts.
+    uint64_t        system_stack;
 
     struct {
         uint64_t    elevated    : 1;
@@ -34,9 +38,6 @@ struct task_control_block {
 };
 
 DECLARE_PER_CPU(task_control_block*, current_task);
-DECLARE_PER_CPU(uintptr_t, default_kernel_stack);
-DECLARE_PER_CPU(uintptr_t, current_kernel_stack);
-DECLARE_PER_CPU(uintptr_t, current_user_stack);
 
 static __force_inline__ task_control_block* get_current_task() {
     return this_cpu_read(current_task);

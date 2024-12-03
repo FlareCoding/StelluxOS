@@ -2,6 +2,7 @@
 #include <arch/x86/idt/idt.h>
 #include <memory/memory.h>
 #include <serial/serial.h>
+#include <sched/sched.h>
 
 #define MAX_IRQS 64
 
@@ -167,17 +168,17 @@ void common_exc_entry(ptregs* regs) {
 // Common entry point for IRQs
 __PRIVILEGED_CODE
 void common_irq_entry(ptregs* regs) {
-    //int originalElevateStatus = __check_current_elevate_status();
+    int original_elevate_status = current->elevated;
 
     // Fake out being elevated if needed because the code has to
     // be able to tell if it's running in privileged mode or not.
-    //current->elevated = 1;
+    current->elevated = 1;
 
     uint64_t irq_index = regs->intno - IRQ0;
 
     irq_desc* desc = &g_irq_handler_table.descriptors[irq_index];
     if (!desc->handler) {
-        //current->elevated = originalElevateStatus;
+        current->elevated = original_elevate_status;
         return;
     }
 
@@ -189,7 +190,7 @@ void common_irq_entry(ptregs* regs) {
     __unused ret;
 
     // Restore the original elevate status
-    //current->elevated = originalElevateStatus;
+    current->elevated = original_elevate_status;
 }
 
 // Common entry point for all interrupt service routines

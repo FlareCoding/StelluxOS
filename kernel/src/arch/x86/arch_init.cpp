@@ -1,4 +1,5 @@
 #include <types.h>
+#include <memory/memory.h>
 #include <serial/serial.h>
 #include <arch/percpu.h>
 #include <arch/x86/gdt/gdt.h>
@@ -6,22 +7,23 @@
 #include <arch/x86/fsgsbase.h>
 #include <syscall/syscalls.h>
 #include <sched/sched.h>
+#include <dynpriv/dynpriv.h>
 
-uint8_t g_default_bsp_kernel_stack[0x2000];
+uint8_t g_default_bsp_system_stack[0x2000];
 
-EXTERN_C int __check_current_elevate_status() {
-    return static_cast<int>(current->elevated);
+void test_fn() {
+    return;
 }
 
 namespace arch {
 __PRIVILEGED_CODE
 void arch_init() {
     // Setup kernel stack
-    uint64_t kernel_bsp_stack_top = reinterpret_cast<uint64_t>(g_default_bsp_kernel_stack) +
-                                    sizeof(g_default_bsp_kernel_stack);
+    uint64_t bsp_system_stack_top = reinterpret_cast<uint64_t>(g_default_bsp_system_stack) +
+                                    sizeof(g_default_bsp_system_stack) - 0x10;
 
     // Setup the GDT with userspace support
-    x86::init_gdt(0, kernel_bsp_stack_top);
+    x86::init_gdt(BSP_CPU_ID, bsp_system_stack_top);
     
     // Setup the IDT and enable interrupts
     x86::init_idt();
@@ -31,7 +33,21 @@ void arch_init() {
     x86::enable_fsgsbase();
     init_bsp_per_cpu_area();
 
+    // Setup BSP's idle task (current)
+    task_control_block* bsp_idle_task = sched::get_idle_task(BSP_CPU_ID);
+    zeromem(bsp_idle_task, sizeof(task_control_block));
+    this_cpu_write(current_task, bsp_idle_task);
+
+    current->system_stack = bsp_system_stack_top;
+    current->cpu = 0;
+    current->elevated = 1;
+    current->state = process_state::RUNNING;
+    current->pid = 0;
+
     // Enable the syscall interface
     enable_syscall_interface();
+
+    // Setup and enable dynamic privilege mechanism
+    dynpriv::use_current_asid();
 }
 } // namespace arch

@@ -1,5 +1,7 @@
 #include <syscall/syscalls.h>
+#include <process/process.h>
 #include <serial/serial.h>
+#include <dynpriv/dynpriv.h>
 
 EXTERN_C
 int __syscall_handler(
@@ -10,7 +12,7 @@ int __syscall_handler(
     uint64_t arg4,
     uint64_t arg5
 ) {
-    int returnVal = 0;
+    int return_val = 0;
     __unused arg1;
     __unused arg2;
     __unused arg3;
@@ -28,27 +30,28 @@ int __syscall_handler(
         break;
     }
     case SYSCALL_SYS_ELEVATE: {
-        // Special condition to check for elevation rather than perform it
-        // if (arg1 == 1) {
-        //     returnVal = (uint64_t)current->elevated;
-        //     break;
-        // }
+        // Make sure that the thread is allowed to elevate
+        if (!dynpriv::is_asid_allowed()) {
+            serial::com1_printf("[*] Unauthorized elevation attempt\n");
+            return_val = -ENOPRIV;
+            break;
+        }
 
-        // if (current->elevated) {
-        //     dbgPrint("[*] Already elevated\n");
-        // } else {
-        //     current->elevated = 1;
-        // }
+        if (current->elevated) {
+            serial::com1_printf("[*] Already elevated\n");
+        } else {
+            current->elevated = 1;
+        }
         break;
     }
     default: {
         serial::com1_printf("Unknown syscall number %llu\n", syscallnum);
-        returnVal = -ENOSYS;
+        return_val = -ENOSYS;
         break;
     }
     }
 
-    return returnVal;
+    return return_val;
 }
 
 EXTERN_C

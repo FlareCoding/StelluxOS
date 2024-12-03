@@ -2,7 +2,8 @@
 #define SYSCALL_H
 #include <types.h>
 
-#define ENOSYS 1
+#define ENOSYS  1
+#define ENOPRIV 2
 
 #define SYSCALL_SYS_WRITE       0
 #define SYSCALL_SYS_READ        1

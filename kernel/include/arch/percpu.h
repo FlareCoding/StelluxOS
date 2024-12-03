@@ -2,6 +2,10 @@
 #define PERCPU_H
 #include <types.h>
 
+#define MAX_SYSTEM_CPUS 128
+
+#define BSP_CPU_ID 0
+
 extern char __per_cpu_start;
 extern char __per_cpu_end;
 extern char __per_cpu_size;

@@ -14,19 +14,15 @@ asm_syscall_entry:
     # Switch to kernel gs
     swapgs
 
-    # Switch to kernel stack
-    mov gs:[per_cpu_offset_current_user_stack], rsp
-    mov rsp, gs:[per_cpu_offset_current_kernel_stack]
-
     # Comment this out to take the iret path
     jmp _ignored_iret_construction_path
 
     # Construct an interrupt frame on stack
-    push	USER_DS				                        # regs.hwframe->ss
-    push    gs:[per_cpu_offset_current_user_stack]      # regs.hwframe->rsp
-    push	r11					                        # regs.hwframe->rflags
-    push	USER_CS				                        # regs.hwframe->cs
-    push	rcx					                        # regs.hwframe->rip
+    push	USER_DS     # regs.hwframe->ss
+    push    rsp         # regs.hwframe->rsp
+    push	r11         # regs.hwframe->rflags
+    push	USER_CS     # regs.hwframe->cs
+    push	rcx         # regs.hwframe->rip
 
 _ignored_iret_construction_path:
     # Save volatile registers that we are going to modify
@@ -75,7 +71,7 @@ _ignored_iret_construction_path:
     # jmp __syscall_exit_swapgs_and_iret
 
 __syscall_exit_swapgs_and_sysret:
-    mov rsp, gs:[per_cpu_offset_current_user_stack]
+    # Switch back to user gs
     swapgs
 
     sysretq
@@ -87,8 +83,7 @@ __syscall_exit_swapgs_and_iret:
     iretq
 
 __syscall_exit_swapgs_and_elevated_ret:
-    # Switch back to user gs and user stack
-    mov rsp, gs:[per_cpu_offset_current_user_stack]
+    # Switch back to user gs
     swapgs
 
     # Restore the flags

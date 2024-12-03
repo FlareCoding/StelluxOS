@@ -83,85 +83,12 @@ asm_common_isr_entry:
     # Disable interrupts
     cli
 
-    #
-    # We need to copy the existing hardware-pushed exception
-    # frame onto the kernel stack and then switch to it.
-    #
-    swapgs
-
-    #
-    # Check if the process is user-elevated,
-    # and if so, switch onto a good kernel stack.
-    #
-    push rax
-    call __check_current_elevate_status
-    testb al, 1
-    pop rax
-
-    # If we are lowered, we need to restore the gsbase
-    # before jumping to the post_stack_switch label
-    swapgs
-
-    jz __isr_entry_post_stack_switch
-
-    # If the manual stack switch is indeed needed,
-    # switch the gsbase again to get access to the TLS.
-    swapgs
-
-    # Clobber rax and r15
-    push rax
-    push r15
-
-    # Move the top of the kernel stack into rax
-    mov rax, gs:[per_cpu_offset_current_kernel_stack]
-
-    # Copy interrupt number (+0x10 offset is due to rax being pushed)
-    mov r15, [rsp + 0x10]
-    mov [rax], r15
-
-    # Copy error code
-    mov r15, [rsp + 0x18]
-    mov [rax + 0x08], r15
-
-    # Copy rip
-    mov r15, [rsp + 0x20]
-    mov [rax + 0x10], r15
-
-    # Copy cs
-    mov r15, [rsp + 0x28]
-    mov [rax + 0x18], r15
-
-    # Copy rflags
-    mov r15, [rsp + 0x30]
-    mov [rax + 0x20], r15
-
-    # Copy rsp
-    mov r15, [rsp + 0x38]
-    mov [rax + 0x28], r15
-
-    # Copy ss
-    mov r15, [rsp + 0x40]
-    mov [rax + 0x30], r15
-
-    # Restore rax and r15
-    pop r15
-    pop rax
-
-    # Switch onto the kernel stack
-    mov rsp, gs:[per_cpu_offset_current_kernel_stack]
-
-    # Restore original gs
-    swapgs
-
-__isr_entry_post_stack_switch:
     # Save CPU state
     PUSHALL             # pushes segment registers and general purpose registers
     
     mov     ax, 0x10    # kernel data segment descriptor
 	mov     ds, ax
 	mov     es, ax
-	# mov     fs, ax
-	# mov     gs, ax
     
     # Call C handler
     call common_isr_entry

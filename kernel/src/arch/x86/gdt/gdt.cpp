@@ -63,7 +63,7 @@ void set_tss_descriptor_limit(tss_desc* desc, uint32_t limit) {
 }
 
 __PRIVILEGED_CODE
-void init_gdt(int apicid, uint64_t kernel_stack) {
+void init_gdt(int apicid, uint64_t system_stack) {
     gdt_and_tss_data* data = &g_gdt_per_cpu_array[apicid];
 
     // Zero out all descriptors initially
@@ -123,7 +123,7 @@ void init_gdt(int apicid, uint64_t kernel_stack) {
 
     // Initialize tss
     zeromem(&data->tss_instance, sizeof(task_state_segment));
-    data->tss_instance.rsp0 = reinterpret_cast<uint64_t>(kernel_stack);
+    data->tss_instance.rsp0 = reinterpret_cast<uint64_t>(system_stack);
     data->tss_instance.io_map_base = sizeof(task_state_segment);
 
     // Initialize tss descriptor

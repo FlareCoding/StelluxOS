@@ -8,10 +8,6 @@
 
 .equ USER_RPL,    0x03
 
-.extern per_cpu_offset_default_kernel_stack
-.extern per_cpu_offset_current_kernel_stack
-.extern per_cpu_offset_current_user_stack
-
 .section .note.GNU-stack, "", @progbits
 
 #endif // ARCH_X86_64

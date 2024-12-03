@@ -150,7 +150,7 @@ void set_segment_descriptor_limit(
 );
 
 __PRIVILEGED_CODE
-void init_gdt(int cpu, uint64_t kernel_stack);
+void init_gdt(int cpu, uint64_t system_stack);
 } // namespace arch::x86
 
 #endif // ARCH_X86_64
