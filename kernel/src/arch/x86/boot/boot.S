@@ -138,67 +138,67 @@ flush_cs32:
 setup_paging:
     /* Step 1: Link PML4 to PDPTs */
     mov eax, offset pdpt_table_low        /* Physical address of PDPT for low memory */
-    or eax, 0x7                           /* Present, Writable, and User flags */
-    mov [pml4_table], eax                 /* PML4[0] -> PDPT for low memory */
+    or eax, 0x3                          /* Present and Writable flags */
+    mov [pml4_table], eax                /* PML4[0] -> PDPT for low memory */
 
-    mov eax, offset pdpt_table_high       /* Physical address of PDPT for higher-half memory */
-    or eax, 0x7                           /* Present, Writable, and User flags */
-    mov [pml4_table + 511 * 8], eax       /* PML4[511] -> PDPT for higher-half memory */
+    mov eax, offset pdpt_table_high      /* Physical address of PDPT for higher-half memory */
+    or eax, 0x3                          /* Present and Writable flags */
+    mov [pml4_table + 511 * 8], eax      /* PML4[511] -> PDPT for higher-half memory */
 
     /* Step 2: Link PDPT to PD */
-    mov eax, offset pd_table_low          /* Physical address of PD for low memory */
-    or eax, 0x7                           /* Present, Writable, and User flags */
-    mov [pdpt_table_low], eax             /* PDPT[0] -> PD for low memory */
+    mov eax, offset pd_table_low         /* Physical address of PD for low memory */
+    or eax, 0x3                          /* Present and Writable flags */
+    mov [pdpt_table_low], eax            /* PDPT[0] -> PD for low memory */
 
-    mov eax, offset pd_table_high         /* Physical address of PD for higher-half memory */
-    or eax, 0x7                           /* Present, Writable, and User flags */
-    mov [pdpt_table_high + 510 * 8], eax  /* PDPT[510] -> PD for higher-half memory */
+    mov eax, offset pd_table_high        /* Physical address of PD for higher-half memory */
+    or eax, 0x3                          /* Present and Writable flags */
+    mov [pdpt_table_high + 510 * 8], eax /* PDPT[510] -> PD for higher-half memory */
 
     /* Step 3: Map physical memory into both PDs */
-    lea edi, [pd_table_low]               /* PD starts at edi (low memory) */
-    mov eax, offset page_tables_low       /* First Page Table physical address for low memory */
-    mov ecx, 2                            /* Map 2 entries (4MB) */
+    lea edi, [pd_table_low]              /* PD starts at edi (low memory) */
+    mov eax, offset page_tables_low      /* First Page Table physical address for low memory */
+    mov ecx, 2                           /* Map 2 entries (4MB) */
 
 map_pd_low:
-    or eax, 0x7                           /* Present, Writable, and User flags */
-    mov [edi], eax                        /* Set PD entry to point to the page table */
-    add edi, 8                            /* Move to next PD entry */
-    add eax, 0x1000                       /* Next page table physical address */
+    or eax, 0x3                          /* Present and Writable flags */
+    mov [edi], eax                       /* Set PD entry to point to the page table */
+    add edi, 8                           /* Move to next PD entry */
+    add eax, 0x1000                      /* Next page table physical address */
     loop map_pd_low
 
-    lea edi, [pd_table_high]              /* PD[0] starts at edi */
-    mov eax, offset page_tables_high      /* First Page Table physical address for higher-half */
-    mov ecx, 2                            /* Map 2 entries (4MB) */
+    lea edi, [pd_table_high]             /* PD[0] starts at edi */
+    mov eax, offset page_tables_high     /* First Page Table physical address for higher-half */
+    mov ecx, 2                           /* Map 2 entries (4MB) */
 
 map_pd_high:
-    or eax, 0x7                           /* Present, Writable, and User flags */
-    mov [edi], eax                        /* Set PD entry to point to the page table */
-    add edi, 8                            /* Move to next PD entry */
-    add eax, 0x1000                       /* Next page table physical address */
+    or eax, 0x3                          /* Present and Writable flags */
+    mov [edi], eax                       /* Set PD entry to point to the page table */
+    add edi, 8                           /* Move to next PD entry */
+    add eax, 0x1000                      /* Next page table physical address */
     loop map_pd_high
 
     /* Step 4: Fill Page Tables for low memory */
-    mov eax, 0x0                          /* Start of physical memory */
-    lea edi, [page_tables_low]            /* Start of Page Tables for low memory */
-    mov ecx, 512 * 2                      /* Map 4MB in 4KB pages */
+    mov eax, 0x0                         /* Start of physical memory */
+    lea edi, [page_tables_low]           /* Start of Page Tables for low memory */
+    mov ecx, 512 * 2                     /* Map 4MB in 4KB pages */
 
 map_pages_low:
-    or eax, 0x7                           /* Present, Writable, and User flags */
-    mov [edi], eax                        /* Set PTE */
-    add edi, 8                            /* Move to next PTE */
-    add eax, 0x1000                       /* Next 4KB physical page */
+    or eax, 0x3                          /* Present and Writable flags */
+    mov [edi], eax                       /* Set PTE */
+    add edi, 8                           /* Move to next PTE */
+    add eax, 0x1000                      /* Next 4KB physical page */
     loop map_pages_low
 
     /* Step 5: Fill Page Tables for higher-half memory */
-    mov eax, 0x0                          /* Start of physical memory */
-    lea edi, [page_tables_high]           /* Start of Page Tables for higher-half memory */
-    mov ecx, 512 * 2                      /* Map 4MB in 4KB pages */
+    mov eax, 0x0                         /* Start of physical memory */
+    lea edi, [page_tables_high]          /* Start of Page Tables for higher-half memory */
+    mov ecx, 512 * 2                     /* Map 4MB in 4KB pages */
 
 map_pages_high:
-    or eax, 0x7                           /* Present, Writable, and User flags */
-    mov [edi], eax                        /* Set PTE */
-    add edi, 8                            /* Move to next PTE */
-    add eax, 0x1000                       /* Next 4KB physical page */
+    or eax, 0x3                          /* Present and Writable flags */
+    mov [edi], eax                       /* Set PTE */
+    add edi, 8                           /* Move to next PTE */
+    add eax, 0x1000                      /* Next 4KB physical page */
     loop map_pages_high
 
 enable_long_mode:
