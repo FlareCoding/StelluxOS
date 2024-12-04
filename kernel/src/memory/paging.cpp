@@ -2,6 +2,9 @@
 #include <memory/memory.h>
 
 namespace paging {
+__PRIVILEGED_DATA uint64_t page_frame_bitmap::_size;
+__PRIVILEGED_DATA uint8_t* page_frame_bitmap::_buffer;
+
 __PRIVILEGED_CODE
 page_frame_bitmap& page_frame_bitmap::get() {
     static page_frame_bitmap g_page_frame_bitmap;
@@ -10,8 +13,8 @@ page_frame_bitmap& page_frame_bitmap::get() {
 
 __PRIVILEGED_CODE
 void page_frame_bitmap::init(uint64_t size, uint8_t* buffer) {
-    m_size = size;
-    m_buffer = buffer;
+    _size = size;
+    _buffer = buffer;
 
     zeromem(buffer, size);
 }
@@ -31,7 +34,7 @@ bool page_frame_bitmap::mark_pages_free(void* paddr, size_t count) {
     uint64_t start_index = _get_addr_index(paddr);
 
     // Check that we don't go beyond the bitmap buffer
-    if ((start_index + count) > (m_size * 8))
+    if ((start_index + count) > (_size * 8))
         return false;
 
     for (size_t i = 0; i < count; ++i) {
@@ -48,7 +51,7 @@ bool page_frame_bitmap::mark_pages_used(void* paddr, size_t count) {
     uint64_t start_index = _get_addr_index(paddr);
 
     // Check that we don't go beyond the bitmap buffer
-    if ((start_index + count) > (m_size * 8))
+    if ((start_index + count) > (_size * 8))
         return false;
 
     for (size_t i = 0; i < count; ++i) {
@@ -75,7 +78,7 @@ bool page_frame_bitmap::_set_page_value(void* paddr, bool value) {
     uint64_t index = _get_addr_index(paddr);
 
     // Preventing bitmap buffer overflow
-    if (index > (m_size * 8))
+    if (index > (_size * 8))
         return false;
 
     uint64_t byte_idx = index / 8;
@@ -83,11 +86,11 @@ bool page_frame_bitmap::_set_page_value(void* paddr, bool value) {
     uint8_t mask = 0b00000001 << bit_idx;
 
     // First disable the bit
-    m_buffer[byte_idx] &= ~mask;
+    _buffer[byte_idx] &= ~mask;
 
     // Now enable the bit if needed
     if (value) {
-        m_buffer[byte_idx] |= mask;
+        _buffer[byte_idx] |= mask;
     }
 
     return true;
@@ -100,7 +103,7 @@ bool page_frame_bitmap::_get_page_value(void* paddr) {
     uint8_t bit_idx = index % 8;
     uint8_t mask = 0b00000001 << bit_idx;
 
-    return (m_buffer[byte_idx] & mask) > 0;
+    return (_buffer[byte_idx] & mask) > 0;
 }
 
 __PRIVILEGED_CODE

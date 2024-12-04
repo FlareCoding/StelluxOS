@@ -57,7 +57,7 @@ public:
      * 
      * @return uint64_t The total number of pages tracked by the bitmap.
      */
-    __PRIVILEGED_CODE inline uint64_t get_size() const { return m_size; }
+    __PRIVILEGED_CODE inline uint64_t get_size() const { return _size; }
 
     /**
      * @brief Marks a single physical page as free.
@@ -182,7 +182,7 @@ private:
      * This private member variable stores the size of the bitmap, representing the
      * total number of physical pages that are tracked for allocation and deallocation.
      */
-    __PRIVILEGED_DATA uint64_t m_size;
+    __PRIVILEGED_DATA static uint64_t _size;
 
     /**
      * @brief Pointer to the memory buffer that holds the bitmap data.
@@ -191,7 +191,7 @@ private:
      * is stored. Each bit in the buffer represents the status (free or used) of a
      * corresponding physical memory page.
      */
-    __PRIVILEGED_DATA uint8_t* m_buffer;
+    __PRIVILEGED_DATA static uint8_t* _buffer;
 };
 } // namespace paging
 
