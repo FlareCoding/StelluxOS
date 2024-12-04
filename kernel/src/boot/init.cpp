@@ -1,8 +1,8 @@
 #include <serial/serial.h>
 #include <boot/multiboot2.h>
-#include <boot/efimem.h>
 #include <arch/arch_init.h>
 #include <interrupts/irq.h>
+#include <memory/paging.h>
 
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
@@ -11,7 +11,7 @@ __PRIVILEGED_DATA
 multiboot_tag_framebuffer* g_mbi_framebuffer;
 
 __PRIVILEGED_DATA
-multiboot_tag_efi_mmap* g_mbi_efi_mmap;
+void* g_mbi_efi_mmap;
 
 __PRIVILEGED_CODE
 void walk_mbi(void* mbi) {
@@ -41,7 +41,7 @@ void walk_mbi(void* mbi) {
                 break;
             }
             case MULTIBOOT_TAG_TYPE_EFI_MMAP: { // New case for EFI Memory Map
-                g_mbi_efi_mmap = reinterpret_cast<multiboot_tag_efi_mmap*>(tag);
+                g_mbi_efi_mmap = reinterpret_cast<void*>(tag);
                 break;
             }
             default: {
@@ -68,4 +68,7 @@ void init(unsigned int magic, void* mbi) {
 
     // Process and store multiboot provided information
     walk_mbi(mbi);
+
+    // Initialize memory allocators
+    paging::init_physical_allocator(g_mbi_efi_mmap);
 }
