@@ -1,12 +1,13 @@
 #ifdef ARCH_X86_64
 #include <arch/percpu.h>
 #include <arch/x86/msr.h>
+#include <memory/paging.h>
 
 __PRIVILEGED_DATA
-__attribute__((aligned(0x1000)))
+__attribute__((aligned(PAGE_SIZE)))
 uintptr_t g_per_cpu_area_ptrs[MAX_SYSTEM_CPUS] = { 0 };
 
-char g_bsp_per_cpu_area[0x1000] __attribute__((aligned(64)));
+char g_bsp_per_cpu_area[PAGE_SIZE] __attribute__((aligned(64)));
 
 namespace arch {
 __PRIVILEGED_CODE
