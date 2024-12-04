@@ -12,8 +12,7 @@ namespace dynpriv {
  * privilege levels. This is crucial for maintaining the integrity and security of
  * the kernel's authoritative domain.
  */
-__PRIVILEGED_CODE
-void use_current_asid();
+__PRIVILEGED_CODE void use_current_asid();
 
 /**
  * @brief Checks if the current Address Space Identifier (ASID) is permitted to elevate.
@@ -26,8 +25,7 @@ void use_current_asid();
  * @return true If the current ASID is allowed to elevate.
  * @return false If the current ASID is not permitted to elevate.
  */
-__PRIVILEGED_CODE
-bool is_asid_allowed();
+__PRIVILEGED_CODE bool is_asid_allowed();
 
 /**
  * @brief Elevates the current thread's hardware privilege level.
