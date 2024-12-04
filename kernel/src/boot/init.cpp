@@ -3,6 +3,15 @@
 #include <arch/arch_init.h>
 #include <interrupts/irq.h>
 
+struct efi_memory_descriptor {
+    multiboot_uint32_t type;
+    multiboot_uint32_t reserved;
+    multiboot_uint64_t physical_start;
+    multiboot_uint64_t virtual_start;
+    multiboot_uint64_t number_of_pages;
+    multiboot_uint64_t attribute;
+};
+
 EXTERN_C
 __PRIVILEGED_CODE
 void init(unsigned int magic, void* mbi) {
@@ -76,6 +85,8 @@ void init(unsigned int magic, void* mbi) {
                 uint32_t entry_size = mmap_tag->entry_size;
                 uint32_t num_entries = mmap_size / entry_size;
 
+                uint64_t total_system_size_mb = 0;
+
                 for (uint32_t i = 0; i < num_entries; ++i) {
                     multiboot_memory_map_t* entry = reinterpret_cast<multiboot_memory_map_t*>(
                         reinterpret_cast<uint8_t*>(mmap_tag->entries) + i * entry_size
@@ -88,11 +99,14 @@ void init(unsigned int magic, void* mbi) {
                         continue;
                     }
 
-                    serial::com1_printf("    type:%u size:%uMB\n    phys:%llx-%llx virt:%llx-%llx\n",
-                        entry->type, length / 1024 / 1024,
-                        base_addr, base_addr + length,
-                        base_addr + 0xffffffff80000000, base_addr + 0xffffffff80000000 + length);
+                    serial::com1_printf("    type: %u size: %u MB (%u pages)\n    0x%016llx-0x%016llx\n",
+                        entry->type, length / 1024 / 1024, length / 4096,
+                        base_addr, base_addr + length);
+
+                    total_system_size_mb += length / 1024 / 1024;
                 }
+
+                serial::com1_printf("\n    Total System Memory (MBI_MMAP): %llu MB\n", total_system_size_mb);
                 break;
             }
             case MULTIBOOT_TAG_TYPE_FRAMEBUFFER: {
@@ -104,6 +118,41 @@ void init(unsigned int magic, void* mbi) {
                 serial::com1_printf("    Height: %u\n", fb_tag->common.framebuffer_height);
                 serial::com1_printf("    BPP: %u\n", fb_tag->common.framebuffer_bpp);
                 serial::com1_printf("    Type: %u\n", fb_tag->common.framebuffer_type);
+                break;
+            }
+            case MULTIBOOT_TAG_TYPE_EFI_MMAP: { // New case for EFI Memory Map
+                multiboot_tag_efi_mmap* efi_mmap_tag = reinterpret_cast<multiboot_tag_efi_mmap*>(tag);
+                serial::com1_printf("  EFI Memory Map:\n");
+
+                uint32_t descr_size = efi_mmap_tag->descr_size;
+
+                // Calculate the number of EFI memory descriptors
+                uint32_t efi_mmap_size = efi_mmap_tag->size - sizeof(multiboot_tag_efi_mmap);
+                uint32_t num_efi_entries = efi_mmap_size / descr_size;
+
+                uint64_t total_system_size_mb = 0;
+
+                for (uint32_t i = 0; i < num_efi_entries; ++i) {
+                    uint8_t* desc_ptr = efi_mmap_tag->efi_mmap + i * descr_size;
+                    efi_memory_descriptor* desc = reinterpret_cast<efi_memory_descriptor*>(desc_ptr);
+
+                    uint64_t physical_start = desc->physical_start;
+                    uint64_t number_of_pages = desc->number_of_pages;
+                    uint64_t length = number_of_pages * 4096; // Assuming 4KB pages
+
+                    if (desc->type != 7) {
+                        continue;
+                    }
+
+                    serial::com1_printf("    Type: %u, Size: %llu MB (%u pages)\n    0x%016llx-0x%016llx  virt: 0x%llx-0x%llx\n",
+                        desc->type, length / 1024 / 1024, length / 4096,
+                        physical_start, physical_start + length,
+                        physical_start + 0xffffffff80000000, physical_start + length + 0xffffffff80000000);
+
+                    total_system_size_mb += length / 1024 / 1024;
+                }
+
+                serial::com1_printf("\n    Total System Memory (EFI_MMAP): %llu MB\n", total_system_size_mb);
                 break;
             }
             // Add more cases here for other tag types as needed
