@@ -7,6 +7,12 @@ extern char __ksymstart;
 extern char __ksymend;
 
 namespace paging {
+__PRIVILEGED_DATA
+static allocators::bootstrap_allocator g_bootstrap_allocator;
+
+__PRIVILEGED_DATA
+static allocators::bitmap_allocator g_bitmap_allocator;
+
 virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr) {
     virt_addr_indices_t indices;
     indices.pml4 = (virt_addr >> 39) & 0x1FF;
@@ -166,8 +172,74 @@ uint64_t page_frame_bitmap::_get_addr_index(void* paddr) {
     return reinterpret_cast<uint64_t>(paddr) / PAGE_SIZE;
 }
 
+namespace allocators {
+__PRIVILEGED_CODE void bootstrap_allocator::init(uintptr_t base, size_t size) {
+    m_base_address = base;
+    m_free_pointer = m_base_address;
+    m_end_address = m_base_address + size;
+}
+
+__PRIVILEGED_CODE void bootstrap_allocator::lock_physical_page(void* paddr) {
+    // No-op: Bootstrap allocator does not track individual page usage
+    __unused paddr;
+}
+
+__PRIVILEGED_CODE void bootstrap_allocator::lock_physical_pages(void* paddr, size_t count) {
+    // No-op: Bootstrap allocator does not track individual page usage
+    __unused paddr;
+    __unused count;
+}
+
+__PRIVILEGED_CODE void bootstrap_allocator::free_physical_page(void* paddr) {
+    // No-op: Bootstrap allocator does not support freeing pages
+    __unused paddr;
+}
+
+__PRIVILEGED_CODE void bootstrap_allocator::free_physical_pages(void* paddr, size_t count) {
+    // No-op: Bootstrap allocator does not support freeing pages
+    __unused paddr;
+    __unused count;
+}
+
+__PRIVILEGED_CODE void* bootstrap_allocator::alloc_physical_page() {
+    if (m_free_pointer + PAGE_SIZE > m_end_address) {
+        return nullptr; // Out of memory
+    }
+    void* allocated_page = reinterpret_cast<void*>(m_free_pointer);
+    m_free_pointer += PAGE_SIZE;
+    return allocated_page;
+}
+
+__PRIVILEGED_CODE void* bootstrap_allocator::alloc_physical_pages(size_t count) {
+    uintptr_t required_size = count * PAGE_SIZE;
+    if (m_free_pointer + required_size > m_end_address) {
+        return nullptr; // Out of memory
+    }
+    void* allocated_pages = reinterpret_cast<void*>(m_free_pointer);
+    m_free_pointer += required_size;
+    return allocated_pages;
+}
+
+__PRIVILEGED_CODE void* bootstrap_allocator::alloc_physical_pages_aligned(size_t count, uint64_t alignment) {
+    if (alignment < PAGE_SIZE) {
+        alignment = PAGE_SIZE; // Alignment must be at least a page boundary
+    }
+
+    uintptr_t alignment_mask = alignment - 1;
+    uintptr_t aligned_pointer = (m_free_pointer + alignment_mask) & ~alignment_mask;
+
+    uintptr_t required_size = count * PAGE_SIZE;
+    if (aligned_pointer + required_size > m_end_address) {
+        return nullptr; // Out of memory
+    }
+
+    void* allocated_pages = reinterpret_cast<void*>(aligned_pointer);
+    m_free_pointer = aligned_pointer + required_size;
+    return allocated_pages;
+}
+
 __PRIVILEGED_CODE
-void lock_physical_page(void* paddr) {
+void bitmap_allocator::lock_physical_page(void* paddr) {
     // Align the physical address to the page boundary
     uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
     addr &= ~(PAGE_SIZE - 1);
@@ -181,7 +253,7 @@ void lock_physical_page(void* paddr) {
 }
 
 __PRIVILEGED_CODE
-void lock_physical_pages(void* paddr, size_t count) {
+void bitmap_allocator::lock_physical_pages(void* paddr, size_t count) {
     // Align the physical address to the page boundary
     uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
     addr &= ~(PAGE_SIZE - 1);
@@ -195,7 +267,7 @@ void lock_physical_pages(void* paddr, size_t count) {
 }
 
 __PRIVILEGED_CODE
-void free_physical_page(void* paddr) {
+void bitmap_allocator::free_physical_page(void* paddr) {
     // Align the physical address to the page boundary
     uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
     addr &= ~(PAGE_SIZE - 1);
@@ -209,7 +281,7 @@ void free_physical_page(void* paddr) {
 }
 
 __PRIVILEGED_CODE
-void free_physical_pages(void* paddr, size_t count) {
+void bitmap_allocator::free_physical_pages(void* paddr, size_t count) {
     // Align the physical address to the page boundary
     uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
     addr &= ~(PAGE_SIZE - 1);
@@ -223,7 +295,7 @@ void free_physical_pages(void* paddr, size_t count) {
 }
 
 __PRIVILEGED_CODE
-void* alloc_physical_page() {
+void* bitmap_allocator::alloc_physical_page() {
     page_frame_bitmap& bitmap = page_frame_bitmap::get();
     uint64_t size = bitmap.get_size() * 8; // Total number of pages
 
@@ -248,7 +320,7 @@ void* alloc_physical_page() {
 }
 
 __PRIVILEGED_CODE
-void* alloc_physical_pages(size_t count) {
+void* bitmap_allocator::alloc_physical_pages(size_t count) {
     if (count == 0) {
         return nullptr;
     }
@@ -289,7 +361,7 @@ void* alloc_physical_pages(size_t count) {
 }
 
 __PRIVILEGED_CODE
-void* alloc_physical_pages_aligned(size_t count, uint64_t alignment) {
+void* bitmap_allocator::alloc_physical_pages_aligned(size_t count, uint64_t alignment) {
     if (count == 0 || (alignment & (alignment - 1)) != 0) {
         // Alignment is not a power of two or count is zero
         return nullptr;
@@ -340,109 +412,7 @@ void* alloc_physical_pages_aligned(size_t count, uint64_t alignment) {
     // No suitable aligned contiguous block found
     return nullptr;
 }
-
-// __PRIVILEGED_CODE
-// void map_virtual_page(
-//     void* vaddr,
-//     void* paddr
-// ) {
-//     // Retrieve the current PML4 from CR3
-//     uint64_t cr3;
-//     asm volatile ("mov %%cr3, %0" : "=r"(cr3));
-//     page_table* pml4 = (page_table*)cr3;
-
-//     virt_addr_indices_t vaddr_indices =
-//         get_vaddr_page_table_indices(reinterpret_cast<uintptr_t>(vaddr));
-
-// 	page_table *pdpt = nullptr, *pdt = nullptr, *pt = nullptr;
-
-// 	pte_t* pml4_entry = &pml4->entries[vaddr_indices.pml4];
-
-// 	if (pml4_entry->present == 0) {
-// 		pdpt = (page_table*)(g_available_page);
-//         g_available_page += PAGE_SIZE;
-
-// 		pml4_entry->present = 1;
-// 		pml4_entry->read_write = 1;
-// 		pml4_entry->page_frame_number = (reinterpret_cast<uint64_t>(pdpt) - 0xffffffff80000000) >> 12;
-// 	} else {
-// 		pdpt = (page_table*)(((uint64_t)pml4_entry->page_frame_number << 12) + 0xffffffff80000000);
-// 	}
-
-// 	pte_t* pdpt_entry = &pdpt->entries[vaddr_indices.pdpt];
-	
-// 	if (pdpt_entry->present == 0) {
-// 		pdt = (page_table*)(g_available_page);
-//         g_available_page += PAGE_SIZE;
-
-// 		pdpt_entry->present = 1;
-// 		pdpt_entry->read_write = 1;
-// 		pdpt_entry->page_frame_number = (reinterpret_cast<uint64_t>(pdt) - 0xffffffff80000000) >> 12;
-// 	} else {
-// 		pdt = (page_table*)(((uint64_t)pdpt_entry->page_frame_number << 12) + 0xffffffff80000000);
-// 	}
-
-// 	pte_t* pdt_entry = &pdt->entries[vaddr_indices.pdt];
-	
-// 	if (pdt_entry->present == 0) {
-// 		pt = (page_table*)(g_available_page);
-//         g_available_page += PAGE_SIZE;
-
-// 		pdt_entry->present = 1;
-// 		pdt_entry->read_write = 1;
-// 		pdt_entry->page_frame_number = (reinterpret_cast<uint64_t>(pt) - 0xffffffff80000000) >> 12;
-// 	} else {
-// 		pt = (page_table*)(((uint64_t)pdt_entry->page_frame_number << 12) + 0xffffffff80000000);
-// 	}
-
-// 	pte_t* pte = &pt->entries[vaddr_indices.pt];
-// 	pte->present = 1;
-// 	pte->read_write = 1;
-// 	pte->page_frame_number = reinterpret_cast<uint64_t>(paddr) >> 12;
-// }
-
-// void map_2mb_page(void* vaddr, void* paddr) {
-//     uint64_t cr3;
-//     asm volatile ("mov %%cr3, %0" : "=r"(cr3));
-//     page_table* pml4 = (page_table*)cr3;
-
-//     virt_addr_indices_t vaddr_indices =
-//         get_vaddr_page_table_indices(reinterpret_cast<uintptr_t>(vaddr));
-
-//     page_table *pdpt = nullptr, *pdt = nullptr;
-
-//     pte_t* pml4_entry = &pml4->entries[vaddr_indices.pml4];
-
-//     if (pml4_entry->present == 0) {
-//         pdpt = (page_table*)(g_available_page);
-//         g_available_page += PAGE_SIZE;
-
-//         pml4_entry->present = 1;
-//         pml4_entry->read_write = 1;
-//         pml4_entry->page_frame_number = (reinterpret_cast<uint64_t>(pdpt) - 0xffffffff80000000) >> 12;
-//     } else {
-//         pdpt = (page_table*)(((uint64_t)pml4_entry->page_frame_number << 12) + 0xffffffff80000000);
-//     }
-
-//     pte_t* pdpt_entry = &pdpt->entries[vaddr_indices.pdpt];
-
-//     if (pdpt_entry->present == 0) {
-//         pdt = (page_table*)(g_available_page);
-//         g_available_page += PAGE_SIZE;
-
-//         pdpt_entry->present = 1;
-//         pdpt_entry->read_write = 1;
-//         pdpt_entry->page_frame_number = (reinterpret_cast<uint64_t>(pdt) - 0xffffffff80000000) >> 12;
-//     } else {
-//         pdt = (page_table*)(((uint64_t)pdpt_entry->page_frame_number << 12) + 0xffffffff80000000);
-//     }
-
-//     pde_t* pdt_entry = (pde_t*)&pdt->entries[vaddr_indices.pdt];
-//     pdt_entry->present = 1;
-//     pdt_entry->read_write = 1;
-//     pdt_entry->page_size = 1; // Large page (2MB)
-//     pdt_entry->page_frame_number = reinterpret_cast<uint64_t>(paddr) >> 21;
-// }
+} // namespace allocators
 
 void map_1gb_page(void* vaddr, void* paddr) {
     uint64_t cr3;
@@ -528,9 +498,14 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     // Calculate the size needed for the page frame bitmap
     uint64_t page_bitmap_size = memory_map.get_total_conventional_memory() / PAGE_SIZE / 8 + 1;
+    // Round up to the nearest page size
+    page_bitmap_size = (page_bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
     serial::com1_printf("\nPage Bitmap Size: %llu KB\n", page_bitmap_size / 1024);
 
-     uint64_t page_table_memory = calculate_page_table_memory(memory_map.get_total_system_memory());
+    uint64_t page_table_memory = calculate_page_table_memory(memory_map.get_total_system_memory());
+    // Round up to the nearest page size
+    page_table_memory = (page_table_memory + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     serial::com1_printf("Total memory required for page tables: %llu KB\n", page_table_memory / 1024);
 
     // Access largest conventional memory segment
@@ -569,6 +544,16 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     page_frame_bitmap::get().init(page_bitmap_size, (uint8_t*)(physical_start));
     serial::com1_printf("\n[*] Page bitmap initialized!\n");
+
+    g_bootstrap_allocator.init(physical_start + page_bitmap_size, page_table_memory);
+
+    for (int i = 0; i < 10; i++) {
+        void* allocated_page = g_bootstrap_allocator.alloc_physical_page();
+        serial::com1_printf("g_bootstrap_allocator.alloc() = 0x%llx\n", allocated_page);
+
+        allocated_page = g_bitmap_allocator.alloc_physical_page();
+        serial::com1_printf("g_bitmap_allocator.alloc() = 0x%llx\n", allocated_page);
+    }
 }
 } // namespace paging
 

@@ -1,5 +1,17 @@
 #include <memory/memory.h>
 
+EXTERN_C {
+    int __cxa_atexit(void (*destructor) (void *), void *arg, void *dso_handle) {
+        __unused destructor;
+        __unused arg;
+        __unused dso_handle;
+        // We don't need to handle global object destruction right now
+        return 0;
+    }
+
+    void *__dso_handle;
+}
+
 /**
  * @brief Sets the first `count` bytes of the memory area pointed to by `ptr` to the specified `value`.
  *
@@ -68,3 +80,13 @@ int memcmp(const void* ptr1, const void* ptr2, size_t count) {
     }
     return 0;
 }
+
+void operator delete(void* ptr) noexcept {
+    __unused ptr;
+}
+
+void operator delete(void* ptr, unsigned long size) noexcept {
+    __unused ptr;
+    __unused size;
+}
+

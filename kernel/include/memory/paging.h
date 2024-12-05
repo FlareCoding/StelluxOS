@@ -309,86 +309,62 @@ private:
     __PRIVILEGED_DATA static uint64_t _next_free_index;
 };
 
-/**
- * @brief Locks a single physical page to prevent it from being allocated.
- * 
- * This function marks the specified physical page as locked, ensuring that it remains
- * reserved and is not available for allocation to other processes or components.
- * 
- * @param paddr The physical address of the page to lock.
- */
-__PRIVILEGED_CODE void lock_physical_page(void* paddr);
+namespace allocators {
+class phys_frame_allocator_impl {
+public:
+    phys_frame_allocator_impl() = default;
+    virtual ~phys_frame_allocator_impl() = default;
 
-/**
- * @brief Locks multiple contiguous physical pages to prevent them from being allocated.
- * 
- * This function marks a range of physical pages starting from the specified address as locked,
- * ensuring that these pages remain reserved and are not available for allocation to other
- * processes or components. Locking multiple pages is useful for reserving larger memory blocks
- * required for specific system operations or hardware interactions.
- * 
- * @param paddr Pointer to the starting physical address of the pages to lock.
- * @param count The number of contiguous pages to lock.
- */
-__PRIVILEGED_CODE void lock_physical_pages(void* paddr, size_t count);
+    __PRIVILEGED_CODE virtual void lock_physical_page(void* paddr) = 0;
+    __PRIVILEGED_CODE virtual void lock_physical_pages(void* paddr, size_t count) = 0;
 
-/**
- * @brief Frees a single physical page, making it available for allocation.
- * 
- * This function marks the specified physical page as free, allowing it to be allocated
- * to processes or components that request memory.
- * 
- * @param paddr The physical address of the page to free.
- */
-__PRIVILEGED_CODE void free_physical_page(void* paddr);
+    __PRIVILEGED_CODE virtual void free_physical_page(void* paddr) = 0;
+    __PRIVILEGED_CODE virtual void free_physical_pages(void* paddr, size_t count) = 0;
 
-/**
- * @brief Frees multiple contiguous physical pages, making them available for allocation.
- * 
- * This function marks a range of physical pages starting from the specified address as free,
- * allowing them to be allocated to processes or components that request memory.
- * 
- * @param paddr Pointer to the starting physical address of the pages to free.
- * @param count The number of contiguous pages to free.
- */
-__PRIVILEGED_CODE void free_physical_pages(void* paddr, size_t count);
+    __PRIVILEGED_CODE virtual void* alloc_physical_page() = 0;
+    __PRIVILEGED_CODE virtual void* alloc_physical_pages(size_t count) = 0;
+    __PRIVILEGED_CODE virtual void* alloc_physical_pages_aligned(size_t count, uint64_t alignment) = 0;
+};
 
-/**
- * @brief Allocates a single free physical page.
- * 
- * This function searches the physical page bitmap for a free page, marks it as used,
- * and returns its physical address.
- * 
- * @return void* The physical address of the allocated page, or nullptr if no free pages are available.
- */
-__PRIVILEGED_CODE void* alloc_physical_page();
+class bootstrap_allocator : public phys_frame_allocator_impl {
+public:
+    bootstrap_allocator() : m_base_address(0), m_free_pointer(0), m_end_address(0) {}
+    ~bootstrap_allocator() = default;
+    
+    __PRIVILEGED_CODE void init(uintptr_t base, size_t size);
 
-/**
- * @brief Allocates multiple contiguous free physical pages.
- * 
- * This function searches the physical page bitmap for a contiguous block of free pages,
- * marks them as used, and returns the starting physical address of the allocated block.
- * 
- * @param count The number of contiguous pages to allocate.
- * @return void* The starting physical address of the allocated pages, or nullptr if no suitable
- *               contiguous block of free pages is available.
- */
-__PRIVILEGED_CODE void* alloc_physical_pages(size_t count);
+    __PRIVILEGED_CODE void lock_physical_page(void* paddr) override;
+    __PRIVILEGED_CODE void lock_physical_pages(void* paddr, size_t count) override;
 
-/**
- * @brief Allocates multiple contiguous free physical pages with a specified alignment.
- * 
- * This function searches the physical page bitmap for a contiguous block of free pages that
- * satisfies the specified alignment requirement. It marks the allocated pages as used and
- * returns the starting physical address of the allocated block. Alignment is crucial for
- * certain hardware operations or memory regions that require specific boundary constraints.
- * 
- * @param count The number of contiguous pages to allocate.
- * @param alignment The required alignment for the allocated block in bytes. Must be a power of two.
- * @return void* The starting physical address of the allocated and aligned pages, or nullptr if
- *               no suitable contiguous and aligned block of free pages is available.
- */
-__PRIVILEGED_CODE void* alloc_physical_pages_aligned(size_t count, uint64_t alignment);
+    __PRIVILEGED_CODE void free_physical_page(void* paddr) override;
+    __PRIVILEGED_CODE void free_physical_pages(void* paddr, size_t count) override;
+
+    __PRIVILEGED_CODE void* alloc_physical_page() override;
+    __PRIVILEGED_CODE void* alloc_physical_pages(size_t count) override;
+    __PRIVILEGED_CODE void* alloc_physical_pages_aligned(size_t count, uint64_t alignment) override;
+
+private:
+    uintptr_t m_base_address; // Start of the memory region
+    uintptr_t m_free_pointer; // Pointer to the next free page
+    uintptr_t m_end_address;  // End of the memory region
+};
+
+class bitmap_allocator : public phys_frame_allocator_impl {
+public:
+    bitmap_allocator() = default;
+    ~bitmap_allocator() = default;
+
+    __PRIVILEGED_CODE void lock_physical_page(void* paddr) override;
+    __PRIVILEGED_CODE void lock_physical_pages(void* paddr, size_t count) override;
+
+    __PRIVILEGED_CODE void free_physical_page(void* paddr) override;
+    __PRIVILEGED_CODE void free_physical_pages(void* paddr, size_t count) override;
+
+    __PRIVILEGED_CODE void* alloc_physical_page() override;
+    __PRIVILEGED_CODE void* alloc_physical_pages(size_t count) override;
+    __PRIVILEGED_CODE void* alloc_physical_pages_aligned(size_t count, uint64_t alignment) override;
+};
+} // namespace allocators
 
 /**
  * @brief Initializes the physical memory allocator using the Multiboot EFI memory map.
