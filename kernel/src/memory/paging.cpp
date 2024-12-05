@@ -177,6 +177,8 @@ __PRIVILEGED_CODE void bootstrap_allocator::init(uintptr_t base, size_t size) {
     m_base_address = base;
     m_free_pointer = m_base_address;
     m_end_address = m_base_address + size;
+
+    zeromem((void*)base, size);
 }
 
 __PRIVILEGED_CODE void bootstrap_allocator::lock_physical_page(void* paddr) {
@@ -459,6 +461,59 @@ uint64_t calculate_page_table_memory(uint64_t total_system_size) {
     return total_memory;
 }
 
+__PRIVILEGED_CODE
+void map_page(
+    uintptr_t vaddr,
+    uintptr_t paddr,
+    page_table* pml4
+) {
+    virt_addr_indices_t vaddr_indices =
+        get_vaddr_page_table_indices(reinterpret_cast<uintptr_t>(vaddr));
+
+	page_table *pdpt = nullptr, *pdt = nullptr, *pt = nullptr;
+
+	pte_t* pml4_entry = &pml4->entries[vaddr_indices.pml4];
+
+	if (pml4_entry->present == 0) {
+		pdpt = (page_table*)g_bootstrap_allocator.alloc_physical_page();
+
+		pml4_entry->present = 1;
+		pml4_entry->read_write = 1;
+		pml4_entry->page_frame_number = reinterpret_cast<uint64_t>(pdpt) >> 12;
+	} else {
+		pdpt = (page_table*)((uint64_t)pml4_entry->page_frame_number << 12);
+	}
+
+	pte_t* pdpt_entry = &pdpt->entries[vaddr_indices.pdpt];
+	
+	if (pdpt_entry->present == 0) {
+		pdt = (page_table*)g_bootstrap_allocator.alloc_physical_page();
+
+		pdpt_entry->present = 1;
+		pdpt_entry->read_write = 1;
+		pdpt_entry->page_frame_number = reinterpret_cast<uint64_t>(pdt) >> 12;
+	} else {
+		pdt = (page_table*)((uint64_t)pdpt_entry->page_frame_number << 12);
+	}
+
+	pte_t* pdt_entry = &pdt->entries[vaddr_indices.pdt];
+	
+	if (pdt_entry->present == 0) {
+		pt = (page_table*)g_bootstrap_allocator.alloc_physical_page();
+
+		pdt_entry->present = 1;
+		pdt_entry->read_write = 1;
+		pdt_entry->page_frame_number = reinterpret_cast<uint64_t>(pt) >> 12;
+	} else {
+		pt = (page_table*)((uint64_t)pdt_entry->page_frame_number << 12);
+	}
+
+	pte_t* pte = &pt->entries[vaddr_indices.pt];
+	pte->present = 1;
+	pte->read_write = 1;
+	pte->page_frame_number = reinterpret_cast<uint64_t>(paddr) >> 12;
+}
+
 __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     // Identity map the first 1GB of physical RAM memory using a huge page
     map_1gb_page(0x0, 0x0);
@@ -496,6 +551,16 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     serial::com1_printf("\nTotal System Memory                : %llu MB\n", total_system_size_mb);
     serial::com1_printf("Total System Conventional Memory   : %llu MB\n", total_system_conventional_size_mb);
 
+    uint64_t kernel_start = (uint64_t)&__ksymstart;
+    uint64_t kernel_end = (uint64_t)&__ksymend;
+    uint64_t kernel_page_count = (kernel_end - kernel_start) / PAGE_SIZE;
+    serial::com1_printf("Kernel Size: %llu KB\n    ", (kernel_end - kernel_start) / 1024);
+    serial::com1_printf(
+        "0x%016llx-0x%016llx (%d pages)\n",
+        kernel_start - 0xffffffff80000000, kernel_end - 0xffffffff80000000,
+        kernel_page_count
+    );
+
     // Calculate the size needed for the page frame bitmap
     uint64_t page_bitmap_size = memory_map.get_total_conventional_memory() / PAGE_SIZE / 8 + 1;
     // Round up to the nearest page size
@@ -503,7 +568,7 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     serial::com1_printf("\nPage Bitmap Size: %llu KB\n", page_bitmap_size / 1024);
 
-    uint64_t page_table_memory = calculate_page_table_memory(memory_map.get_total_system_memory());
+    uint64_t page_table_memory = calculate_page_table_memory(memory_map.get_total_system_memory() + kernel_page_count * PAGE_SIZE);
     // Round up to the nearest page size
     page_table_memory = (page_table_memory + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     serial::com1_printf("Total memory required for page tables: %llu KB\n", page_table_memory / 1024);
@@ -533,27 +598,45 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
         physical_start, physical_start + length,
         physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
 
-    uint64_t kernel_start = (uint64_t)&__ksymstart;
-    uint64_t kernel_end = (uint64_t)&__ksymend;
-    serial::com1_printf("Kernel Size: %llu KB\n    ", (kernel_end - kernel_start) / 1024);
-    serial::com1_printf(
-        "0x%016llx-0x%016llx (%d pages)\n",
-        kernel_start - 0xffffffff80000000, kernel_end - 0xffffffff80000000,
-        (kernel_end - kernel_start) / PAGE_SIZE
-    );
-
     page_frame_bitmap::get().init(page_bitmap_size, (uint8_t*)(physical_start));
     serial::com1_printf("\n[*] Page bitmap initialized!\n");
 
     g_bootstrap_allocator.init(physical_start + page_bitmap_size, page_table_memory);
 
-    for (int i = 0; i < 10; i++) {
-        void* allocated_page = g_bootstrap_allocator.alloc_physical_page();
-        serial::com1_printf("g_bootstrap_allocator.alloc() = 0x%llx\n", allocated_page);
+    page_table* new_pml4 = (page_table*)g_bootstrap_allocator.alloc_physical_page();
 
-        allocated_page = g_bitmap_allocator.alloc_physical_page();
-        serial::com1_printf("g_bitmap_allocator.alloc() = 0x%llx\n", allocated_page);
+    for (const auto& entry : memory_map) {
+        // Filter for EfiConventionalMemory (type 7)
+        if (entry.desc->type != 7) {
+            continue;
+        }
+
+        uint64_t physical_start = entry.paddr;
+        uint64_t length = entry.length;
+
+        for (uint64_t vaddr = physical_start; vaddr < physical_start + length; vaddr += PAGE_SIZE) {
+            map_page(vaddr, vaddr, new_pml4);
+        }
     }
+
+    for (uint64_t vaddr = 0xffffffff80000000; vaddr < 0xffffffff80000000 + 4 * 1024 * 1024; vaddr += PAGE_SIZE) {
+        uintptr_t paddr = vaddr - 0xffffffff80000000;
+        map_page(vaddr, paddr, new_pml4);
+    }
+
+    // Install the new page table
+    asm volatile(
+        "mov %0, %%cr3"  // Move the value into the CR3 register
+        :
+        : "r"(new_pml4)  // Input operand: new_pml4
+        : "memory"       // Clobber: memory to indicate the register affects memory
+    );
+
+    serial::com1_printf("new page table installed!\n");
+
+    // int* ptr = (int*)0x0000000100000000;
+    // *ptr = 4554;
+    // serial::com1_printf("ptr test: %d\n", *ptr);
 }
 } // namespace paging
 

@@ -366,6 +366,13 @@ public:
 };
 } // namespace allocators
 
+__PRIVILEGED_CODE
+void map_page(
+    uintptr_t vaddr,
+    uintptr_t paddr,
+    page_table* pml4
+);
+
 /**
  * @brief Initializes the physical memory allocator using the Multiboot EFI memory map.
  * 

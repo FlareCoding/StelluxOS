@@ -71,4 +71,26 @@ void init(unsigned int magic, void* mbi) {
 
     // Initialize memory allocators
     paging::init_physical_allocator(g_mbi_efi_mmap);
+
+    uint64_t cr3;
+    asm volatile ("mov %%cr3, %0" : "=r" (cr3));
+    paging::page_table* pml4 = (paging::page_table*)cr3;
+
+    uintptr_t gop = g_mbi_framebuffer->common.framebuffer_addr;
+    paging::map_page(0xffffff8000000000, gop, pml4);
+
+    // Flush the entire TLB
+    asm volatile ("mov %cr3, %rax");
+    asm volatile ("mov %rax, %cr3");
+
+    uint32_t* gop_ptr = (uint32_t*)(0xffffff8000000000);
+    for (uint32_t i = 0; i < (PAGE_SIZE / sizeof(uint32_t)); i++) {
+        *gop_ptr = 0xffffffff;
+        ++gop_ptr;
+    }
+
+    // Idle loop
+    while (true) {
+        asm volatile ("hlt");
+    }
 }
