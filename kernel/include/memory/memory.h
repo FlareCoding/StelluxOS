@@ -32,6 +32,17 @@ void* memcpy(void* dest, const void* src, size_t count);
  */
 int memcmp(const void* ptr1, const void* ptr2, size_t count);
 
+void* operator new(size_t, void* ptr) noexcept;
+
 #define zeromem(vaddr, size) memset(vaddr, 0, size)
+
+#define GENERATE_STATIC_SINGLETON(type) \
+    alignas(type) static uint8_t buffer[sizeof(type)]; \
+    static type* instance = nullptr; \
+    \
+    if (!instance) { \
+        instance = new (buffer) type(); \
+    } \
+    return *instance;
 
 #endif // MEMORY_H

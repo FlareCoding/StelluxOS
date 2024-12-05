@@ -1,6 +1,6 @@
 #ifndef PAGING_H
 #define PAGING_H
-#include <types.h>
+#include "allocators/page_bitmap_allocator.h"
 
 #define PAGE_SIZE 0x1000
 
@@ -94,7 +94,8 @@ __PRIVILEGED_CODE
 void map_page(
     uintptr_t vaddr,
     uintptr_t paddr,
-    page_table* pml4
+    page_table* pml4,
+    allocators::phys_frame_allocator& allocator = allocators::page_bitmap_allocator::get()
 );
 
 /**

@@ -8,9 +8,6 @@
 extern char __ksymstart;
 extern char __ksymend;
 
-__PRIVILEGED_DATA
-allocators::page_bootstrap_allocator s_bootstrap_allocator;
-
 namespace paging {
 virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr) {
     virt_addr_indices_t indices;
@@ -70,7 +67,8 @@ __PRIVILEGED_CODE
 void map_page(
     uintptr_t vaddr,
     uintptr_t paddr,
-    page_table* pml4
+    page_table* pml4,
+    allocators::phys_frame_allocator& allocator
 ) {
     virt_addr_indices_t vaddr_indices =
         get_vaddr_page_table_indices(reinterpret_cast<uintptr_t>(vaddr));
@@ -80,7 +78,7 @@ void map_page(
 	pte_t* pml4_entry = &pml4->entries[vaddr_indices.pml4];
 
 	if (pml4_entry->present == 0) {
-		pdpt = (page_table*)s_bootstrap_allocator.alloc_physical_page();
+		pdpt = (page_table*)allocator.alloc_physical_page();
 
 		pml4_entry->present = 1;
 		pml4_entry->read_write = 1;
@@ -92,7 +90,7 @@ void map_page(
 	pte_t* pdpt_entry = &pdpt->entries[vaddr_indices.pdpt];
 	
 	if (pdpt_entry->present == 0) {
-		pdt = (page_table*)s_bootstrap_allocator.alloc_physical_page();
+		pdt = (page_table*)allocator.alloc_physical_page();
 
 		pdpt_entry->present = 1;
 		pdpt_entry->read_write = 1;
@@ -104,7 +102,7 @@ void map_page(
 	pte_t* pdt_entry = &pdt->entries[vaddr_indices.pdt];
 	
 	if (pdt_entry->present == 0) {
-		pt = (page_table*)s_bootstrap_allocator.alloc_physical_page();
+		pt = (page_table*)allocator.alloc_physical_page();
 
 		pdt_entry->present = 1;
 		pdt_entry->read_write = 1;
@@ -203,9 +201,12 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
         physical_start, physical_start + length,
         physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
 
-    s_bootstrap_allocator.init(physical_start + page_bitmap_size, page_table_memory);
+    // Initialize the bootstrap allocator
+    auto& bootstrap_allocator = allocators::page_bootstrap_allocator::get();
+    bootstrap_allocator.init(physical_start + page_bitmap_size, page_table_memory);
 
-    page_table* new_pml4 = (page_table*)s_bootstrap_allocator.alloc_physical_page();
+    // Create a new top level page table
+    page_table* new_pml4 = (page_table*)bootstrap_allocator.alloc_physical_page();
 
     for (const auto& entry : memory_map) {
         // Filter for EfiConventionalMemory (type 7)
@@ -217,13 +218,13 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
         uint64_t length = entry.length;
 
         for (uint64_t vaddr = physical_start; vaddr < physical_start + length; vaddr += PAGE_SIZE) {
-            map_page(vaddr, vaddr, new_pml4);
+            map_page(vaddr, vaddr, new_pml4, bootstrap_allocator);
         }
     }
 
     for (uint64_t vaddr = 0xffffffff80000000; vaddr < 0xffffffff80000000 + 4 * 1024 * 1024; vaddr += PAGE_SIZE) {
         uintptr_t paddr = vaddr - 0xffffffff80000000;
-        map_page(vaddr, paddr, new_pml4);
+        map_page(vaddr, paddr, new_pml4, bootstrap_allocator);
     }
 
     // Install the new page table

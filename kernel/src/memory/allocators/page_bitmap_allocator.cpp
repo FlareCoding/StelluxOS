@@ -1,14 +1,12 @@
 #include <memory/allocators/page_bitmap_allocator.h>
+#include <memory/memory.h>
 #include <memory/page_bitmap.h>
 #include <memory/paging.h>
 #include <serial/serial.h>
 
 namespace allocators {
-__PRIVILEGED_DATA
-page_bitmap_allocator s_bitmap_allocator;
-
 page_bitmap_allocator& page_bitmap_allocator::get() {
-    return s_bitmap_allocator;
+    GENERATE_STATIC_SINGLETON(page_bitmap_allocator);
 }
 
 __PRIVILEGED_CODE
@@ -82,7 +80,6 @@ void* page_bitmap_allocator::alloc_physical_page() {
 
         if (bitmap.is_page_free(addr)) {
             if (bitmap.mark_page_used(addr)) {
-                bitmap.set_next_free_index(index + 1);
                 return addr;
             }
         }
@@ -119,7 +116,6 @@ void* page_bitmap_allocator::alloc_physical_pages(size_t count) {
             if (consecutive == count) {
                 void* start_addr = reinterpret_cast<void*>(start_index * PAGE_SIZE);
                 if (bitmap.mark_pages_used(start_addr, count)) {
-                    bitmap.set_next_free_index(start_index + count);
                     return start_addr;
                 }
                 consecutive = 0;
@@ -176,7 +172,6 @@ void* page_bitmap_allocator::alloc_physical_pages_aligned(size_t count, uint64_t
         if (block_free) {
             void* start_addr = reinterpret_cast<void*>(index * PAGE_SIZE);
             if (bitmap.mark_pages_used(start_addr, count)) {
-                bitmap.set_next_free_index(index + count);
                 return start_addr;
             }
         }

@@ -3,12 +3,9 @@
 #include <memory/memory.h>
 
 namespace allocators {
-// __PRIVILEGED_DATA
-// page_bootstrap_allocator s_bootstrap_allocator;
-
-// page_bootstrap_allocator& page_bootstrap_allocator::get() {
-//     return s_bootstrap_allocator;
-// }
+page_bootstrap_allocator& page_bootstrap_allocator::get() {
+    GENERATE_STATIC_SINGLETON(page_bootstrap_allocator);
+}
 
 __PRIVILEGED_CODE void page_bootstrap_allocator::init(uintptr_t base, size_t size) {
     m_base_address = base;

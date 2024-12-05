@@ -3,7 +3,7 @@
 #include "phys_frame_allocator.h"
 
 namespace allocators {
-class page_bitmap_allocator : public phys_frame_allocator_impl {
+class page_bitmap_allocator : public phys_frame_allocator {
 public:
     static page_bitmap_allocator& get();
 

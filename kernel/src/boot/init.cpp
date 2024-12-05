@@ -3,6 +3,7 @@
 #include <arch/arch_init.h>
 #include <interrupts/irq.h>
 #include <memory/paging.h>
+#include <memory/allocators/page_bootstrap_allocator.h>
 
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
@@ -77,7 +78,7 @@ void init(unsigned int magic, void* mbi) {
     paging::page_table* pml4 = (paging::page_table*)cr3;
 
     uintptr_t gop = g_mbi_framebuffer->common.framebuffer_addr;
-    paging::map_page(0xffffff8000000000, gop, pml4);
+    paging::map_page(0xffffff8000000000, gop, pml4, allocators::page_bootstrap_allocator().get());
 
     // Flush the entire TLB
     asm volatile ("mov %cr3, %rax");

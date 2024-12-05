@@ -3,10 +3,10 @@
 #include <types.h>
 
 namespace allocators {
-class phys_frame_allocator_impl {
+class phys_frame_allocator {
 public:
-    phys_frame_allocator_impl() = default;
-    virtual ~phys_frame_allocator_impl() = default;
+    phys_frame_allocator() = default;
+    virtual ~phys_frame_allocator() = default;
 
     __PRIVILEGED_CODE virtual void lock_physical_page(void* paddr) = 0;
     __PRIVILEGED_CODE virtual void lock_physical_pages(void* paddr, size_t count) = 0;

@@ -81,6 +81,10 @@ int memcmp(const void* ptr1, const void* ptr2, size_t count) {
     return 0;
 }
 
+void* operator new(size_t, void* ptr) noexcept {
+    return ptr;
+}
+
 void operator delete(void* ptr) noexcept {
     __unused ptr;
 }
