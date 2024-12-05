@@ -214,6 +214,11 @@ enable_long_mode:
     mov eax, cr4
     or eax, 0x20
     mov cr4, eax
+
+    # Enable PSE
+    mov eax, cr4
+    or eax, (1 << 4)
+    mov cr4, eax
     
     # Enable Long Mode
     mov ecx, 0xC0000080 # IA32_EFER

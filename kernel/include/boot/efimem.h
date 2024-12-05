@@ -21,16 +21,16 @@ struct efi_memory_descriptor_wrapper {
 
 class efi_memory_map {
 public:
-    efi_memory_map(multiboot_tag_efi_mmap* efi_mmap_tag);
+    __PRIVILEGED_CODE efi_memory_map(multiboot_tag_efi_mmap* efi_mmap_tag);
 
     // Iterator class for range-based for loops
     class iterator {
     public:
-        iterator(uint8_t* current, uint32_t descr_size, uint32_t index, uint32_t num_entries);
+        __PRIVILEGED_CODE iterator(uint8_t* current, uint32_t descr_size, uint32_t index, uint32_t num_entries);
 
-        bool operator!=(const iterator& other) const;
-        efi_memory_descriptor_wrapper operator*() const;
-        iterator& operator++();
+        __PRIVILEGED_CODE bool operator!=(const iterator& other) const;
+        __PRIVILEGED_CODE efi_memory_descriptor_wrapper operator*() const;
+        __PRIVILEGED_CODE iterator& operator++();
 
     private:
         uint8_t* m_current;
@@ -39,17 +39,26 @@ public:
         uint32_t m_num_entries;
     };
 
-    iterator begin() const;
-    iterator end() const;
+    __PRIVILEGED_CODE iterator begin() const;
+    __PRIVILEGED_CODE iterator end() const;
 
-    uint32_t get_num_entries() const;
-    uint64_t get_total_conventional_memory() const;
-    efi_memory_descriptor_wrapper get_largest_conventional_segment() const;
+    __PRIVILEGED_CODE uint32_t get_num_entries() const;
+    __PRIVILEGED_CODE uint64_t get_total_system_memory() const;
+    __PRIVILEGED_CODE uint64_t get_total_conventional_memory() const;
+
+    __PRIVILEGED_CODE efi_memory_descriptor_wrapper get_largest_conventional_segment() const;
+
+    __PRIVILEGED_CODE efi_memory_descriptor_wrapper find_segment_for_allocation_block(
+        uint64_t min_address,
+        uint64_t max_address,
+        uint64_t size
+    ) const;
 
 private:
     multiboot_tag_efi_mmap* m_efi_mmap_tag;
     uint32_t m_descr_size;
     uint32_t m_num_entries;
+    uint64_t m_total_system_memory;
     uint64_t m_total_conventional_memory;
     efi_memory_descriptor_wrapper m_largest_conventional_segment;
 };

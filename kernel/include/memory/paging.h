@@ -4,7 +4,92 @@
 
 #define PAGE_SIZE 0x1000
 
+#define PAGE_TABLE_ENTRIES 512
+
+#define USER_PAGE    1
+#define KERNEL_PAGE  0
+
+#define PAGE_ATTRIB_CACHE_DISABLED 0x01  // Bit 0
+#define PAGE_ATTRIB_WRITE_THROUGH  0x02  // Bit 1
+#define PAGE_ATTRIB_ACCESS_TYPE    0x04  // Bit 2
+
+// Flags for page table entries
+#define PTE_PRESENT       0x1
+#define PTE_RW            0x2
+#define PTE_US            0x4
+#define PTE_PWT           0x8
+#define PTE_PCD           0x10
+#define PTE_ACCESSED      0x20
+#define PTE_DIRTY         0x40
+#define PTE_PAT           0x80
+#define PTE_GLOBAL        0x100
+#define PTE_NX            (1ULL << 63)
+
 namespace paging {
+typedef struct page_table_entry {
+    union
+    {
+        struct
+        {
+            uint64_t present              : 1;    // Must be 1, region invalid if 0.
+            uint64_t read_write           : 1;    // If 0, writes not allowed.
+            uint64_t user_supervisor      : 1;    // If 0, user-mode accesses not allowed.
+            uint64_t page_write_through   : 1;    // Determines the memory type used to access the memory.
+            uint64_t page_cache_disabled  : 1;    // Determines the memory type used to access the memory.
+            uint64_t accessed             : 1;    // If 0, this entry has not been used for translation.
+            uint64_t dirty                : 1;    // If 0, the memory backing this page has not been written to.
+            uint64_t page_access_type     : 1;    // Determines the memory type used to access the memory.
+            uint64_t global               : 1;    // If 1 and the PGE bit of CR4 is set, translations are global.
+            uint64_t ignored2             : 3;
+            uint64_t page_frame_number    : 36;   // The page frame number of the backing physical page.
+            uint64_t reserved             : 4;
+            uint64_t ignored3             : 7;
+            uint64_t protection_key       : 4;    // If the PKE bit of CR4 is set, determines the protection key.
+            uint64_t execute_disable      : 1;    // If 1, instruction fetches not allowed.
+        } __attribute__((packed));
+        uint64_t value;
+    };
+} __attribute__((packed)) pte_t;
+static_assert(sizeof(page_table_entry) == 8);
+
+typedef struct page_directory_entry {
+    union
+    {
+        struct
+        {
+            uint64_t present              : 1;    // [0] P: Must be 1 if the entry is valid.
+            uint64_t read_write           : 1;    // [1] R/W: 0 = read-only, 1 = read/write.
+            uint64_t user_supervisor      : 1;    // [2] U/S: 0 = supervisor, 1 = user.
+            uint64_t page_write_through   : 1;    // [3] PWT: Determines write-through caching.
+            uint64_t page_cache_disabled  : 1;    // [4] PCD: Disables caching for this page.
+            uint64_t accessed             : 1;    // [5] A: Set by hardware when accessed.
+            uint64_t dirty                : 1;    // [6] D: Set by hardware when written to.
+            uint64_t page_size            : 1;    // [7] PS: If 1, maps a 2MB page; else points to a PT.
+            uint64_t global               : 1;    // [8] G: Global page if CR4.PGE is set.
+            uint64_t ignored1             : 3;    // [9–11] Ignored by hardware.
+            uint64_t page_frame_number    : 36;   // [12–51] Physical address of 2MB page or next-level PT.
+            uint64_t reserved             : 4;    // [52–55] Reserved for future use.
+            uint64_t ignored2             : 7;    // [56–62] Ignored by hardware.
+            uint64_t execute_disable      : 1;    // [63] XD: Instruction fetch disallowed if set.
+        };
+        uint64_t value;                          // Complete 64-bit entry.
+    };
+} __attribute__((packed)) pde_t;
+static_assert(sizeof(page_directory_entry) == 8);
+
+struct page_table {
+    pte_t entries[PAGE_TABLE_ENTRIES];
+} __attribute__((aligned(PAGE_SIZE)));
+
+struct virt_addr_indices_t {
+    uint16_t pml4;
+    uint16_t pdpt;
+    uint16_t pdt;
+    uint16_t pt;
+};
+
+virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr);
+
 /**
  * @class page_frame_bitmap
  * @brief Manages a bitmap for physical page allocation in the OS kernel.
