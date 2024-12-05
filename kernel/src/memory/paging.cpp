@@ -1,18 +1,17 @@
 #include <memory/paging.h>
 #include <memory/memory.h>
 #include <serial/serial.h>
+#include <memory/page_bitmap.h>
+#include <memory/allocators/page_bootstrap_allocator.h>
 #include <boot/efimem.h>
 
 extern char __ksymstart;
 extern char __ksymend;
 
+__PRIVILEGED_DATA
+allocators::page_bootstrap_allocator s_bootstrap_allocator;
+
 namespace paging {
-__PRIVILEGED_DATA
-static allocators::bootstrap_allocator g_bootstrap_allocator;
-
-__PRIVILEGED_DATA
-static allocators::bitmap_allocator g_bitmap_allocator;
-
 virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr) {
     virt_addr_indices_t indices;
     indices.pml4 = (virt_addr >> 39) & 0x1FF;
@@ -21,400 +20,6 @@ virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr) {
     indices.pt = (virt_addr >> 12) & 0x1FF;
     return indices;
 }
-
-__PRIVILEGED_DATA uint64_t page_frame_bitmap::_size;
-__PRIVILEGED_DATA uint8_t* page_frame_bitmap::_buffer;
-__PRIVILEGED_DATA uint64_t page_frame_bitmap::_next_free_index;
-
-__PRIVILEGED_CODE
-page_frame_bitmap& page_frame_bitmap::get() {
-    __PRIVILEGED_DATA
-    static page_frame_bitmap g_page_frame_bitmap;
-
-    return g_page_frame_bitmap;
-}
-
-__PRIVILEGED_CODE
-void page_frame_bitmap::init(uint64_t size, uint8_t* buffer) {
-    _size = size;
-    _buffer = buffer;
-    _next_free_index = 0;
-
-    zeromem(buffer, size);
-}
-
-__PRIVILEGED_CODE
-uint64_t page_frame_bitmap::get_size() const {
-    return _size;
-}
-
-__PRIVILEGED_CODE
-uint64_t page_frame_bitmap::get_next_free_index() const {
-    return _next_free_index;
-}
-
-__PRIVILEGED_CODE
-void page_frame_bitmap::set_next_free_index(uint64_t idx) const {
-    _next_free_index = idx;
-}
-
-__PRIVILEGED_CODE
-bool page_frame_bitmap::mark_page_free(void* paddr) {
-    bool result = _set_page_value(paddr, false);
-    if (result) {
-        uint64_t index = _get_addr_index(paddr);
-        if (index < _next_free_index) {
-            _next_free_index = index; // Update next free index
-        }
-    }
-    return result;
-}
-
-__PRIVILEGED_CODE
-bool page_frame_bitmap::mark_page_used(void* paddr) {
-    bool result = _set_page_value(paddr, true);
-    if (result) {
-        uint64_t index = _get_addr_index(paddr);
-        if (index == _next_free_index) {
-            _next_free_index = index + 1; // Move to the next index
-        }
-    }
-    return result;
-}
-
-__PRIVILEGED_CODE
-bool page_frame_bitmap::mark_pages_free(void* paddr, size_t count) {
-    uint64_t start_index = _get_addr_index(paddr);
-
-    // Check that we don't go beyond the bitmap buffer
-    if ((start_index + count) > (_size * 8))
-        return false;
-
-    for (size_t i = 0; i < count; ++i) {
-        void* addr = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(paddr) + i * PAGE_SIZE);
-        if (!_set_page_value(addr, false))
-            return false;
-    }
-
-    if (start_index < _next_free_index) {
-        _next_free_index = start_index; // Update next free index
-    }
-
-    return true;
-}
-
-__PRIVILEGED_CODE
-bool page_frame_bitmap::mark_pages_used(void* paddr, size_t count) {
-    uint64_t start_index = _get_addr_index(paddr);
-
-    // Check that we don't go beyond the bitmap buffer
-    if ((start_index + count) > (_size * 8))
-        return false;
-
-    for (size_t i = 0; i < count; ++i) {
-        void* addr = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(paddr) + i * PAGE_SIZE);
-        if (!_set_page_value(addr, true))
-            return false;
-    }
-
-    if (start_index <= _next_free_index) {
-        _next_free_index = start_index + count; // Update next free index
-    }
-
-    return true;
-}
-
-__PRIVILEGED_CODE
-bool page_frame_bitmap::is_page_free(void* paddr) {
-    return (_get_page_value(paddr) == false);
-}
-
-__PRIVILEGED_CODE
-bool page_frame_bitmap::is_page_used(void* paddr) {
-    return (_get_page_value(paddr) == true);
-}
-
-__PRIVILEGED_CODE
-bool page_frame_bitmap::_set_page_value(void* paddr, bool value) {
-    uint64_t index = _get_addr_index(paddr);
-
-    // Preventing bitmap buffer overflow
-    if (index > (_size * 8))
-        return false;
-
-    uint64_t byte_idx = index / 8;
-    uint8_t bit_idx = index % 8;
-    uint8_t mask = 0b00000001 << bit_idx;
-
-    // First disable the bit
-    _buffer[byte_idx] &= ~mask;
-
-    // Now enable the bit if needed
-    if (value) {
-        _buffer[byte_idx] |= mask;
-    }
-
-    return true;
-}
-
-__PRIVILEGED_CODE
-bool page_frame_bitmap::_get_page_value(void* paddr) {
-    uint64_t index = _get_addr_index(paddr);
-    uint64_t byte_idx = index / 8;
-    uint8_t bit_idx = index % 8;
-    uint8_t mask = 0b00000001 << bit_idx;
-
-    return (_buffer[byte_idx] & mask) > 0;
-}
-
-__PRIVILEGED_CODE
-uint64_t page_frame_bitmap::_get_addr_index(void* paddr) {
-    return reinterpret_cast<uint64_t>(paddr) / PAGE_SIZE;
-}
-
-namespace allocators {
-__PRIVILEGED_CODE void bootstrap_allocator::init(uintptr_t base, size_t size) {
-    m_base_address = base;
-    m_free_pointer = m_base_address;
-    m_end_address = m_base_address + size;
-
-    zeromem((void*)base, size);
-}
-
-__PRIVILEGED_CODE void bootstrap_allocator::lock_physical_page(void* paddr) {
-    // No-op: Bootstrap allocator does not track individual page usage
-    __unused paddr;
-}
-
-__PRIVILEGED_CODE void bootstrap_allocator::lock_physical_pages(void* paddr, size_t count) {
-    // No-op: Bootstrap allocator does not track individual page usage
-    __unused paddr;
-    __unused count;
-}
-
-__PRIVILEGED_CODE void bootstrap_allocator::free_physical_page(void* paddr) {
-    // No-op: Bootstrap allocator does not support freeing pages
-    __unused paddr;
-}
-
-__PRIVILEGED_CODE void bootstrap_allocator::free_physical_pages(void* paddr, size_t count) {
-    // No-op: Bootstrap allocator does not support freeing pages
-    __unused paddr;
-    __unused count;
-}
-
-__PRIVILEGED_CODE void* bootstrap_allocator::alloc_physical_page() {
-    if (m_free_pointer + PAGE_SIZE > m_end_address) {
-        return nullptr; // Out of memory
-    }
-    void* allocated_page = reinterpret_cast<void*>(m_free_pointer);
-    m_free_pointer += PAGE_SIZE;
-    return allocated_page;
-}
-
-__PRIVILEGED_CODE void* bootstrap_allocator::alloc_physical_pages(size_t count) {
-    uintptr_t required_size = count * PAGE_SIZE;
-    if (m_free_pointer + required_size > m_end_address) {
-        return nullptr; // Out of memory
-    }
-    void* allocated_pages = reinterpret_cast<void*>(m_free_pointer);
-    m_free_pointer += required_size;
-    return allocated_pages;
-}
-
-__PRIVILEGED_CODE void* bootstrap_allocator::alloc_physical_pages_aligned(size_t count, uint64_t alignment) {
-    if (alignment < PAGE_SIZE) {
-        alignment = PAGE_SIZE; // Alignment must be at least a page boundary
-    }
-
-    uintptr_t alignment_mask = alignment - 1;
-    uintptr_t aligned_pointer = (m_free_pointer + alignment_mask) & ~alignment_mask;
-
-    uintptr_t required_size = count * PAGE_SIZE;
-    if (aligned_pointer + required_size > m_end_address) {
-        return nullptr; // Out of memory
-    }
-
-    void* allocated_pages = reinterpret_cast<void*>(aligned_pointer);
-    m_free_pointer = aligned_pointer + required_size;
-    return allocated_pages;
-}
-
-__PRIVILEGED_CODE
-void bitmap_allocator::lock_physical_page(void* paddr) {
-    // Align the physical address to the page boundary
-    uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
-    addr &= ~(PAGE_SIZE - 1);
-    void* aligned_paddr = reinterpret_cast<void*>(addr);
-    
-    // Mark the page as used (locked)
-    bool success = page_frame_bitmap::get().mark_page_used(aligned_paddr);
-    if (!success) {
-        serial::com1_printf("[*] failed to lock physical page: 0x%016llx\n", aligned_paddr);
-    }
-}
-
-__PRIVILEGED_CODE
-void bitmap_allocator::lock_physical_pages(void* paddr, size_t count) {
-    // Align the physical address to the page boundary
-    uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
-    addr &= ~(PAGE_SIZE - 1);
-    void* aligned_paddr = reinterpret_cast<void*>(addr);
-    
-    // Mark the pages as used (locked)
-    bool success = page_frame_bitmap::get().mark_pages_used(aligned_paddr, count);
-    if (!success) {
-        serial::com1_printf("[*] failed to lock %u physical pages at: 0x%016llx\n", count, aligned_paddr);
-    }
-}
-
-__PRIVILEGED_CODE
-void bitmap_allocator::free_physical_page(void* paddr) {
-    // Align the physical address to the page boundary
-    uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
-    addr &= ~(PAGE_SIZE - 1);
-    void* aligned_paddr = reinterpret_cast<void*>(addr);
-    
-    // Mark the page as free
-    bool success = page_frame_bitmap::get().mark_page_free(aligned_paddr);
-    if (!success) {
-        serial::com1_printf("[*] failed to free physical page: 0x%016llx\n", aligned_paddr);
-    }
-}
-
-__PRIVILEGED_CODE
-void bitmap_allocator::free_physical_pages(void* paddr, size_t count) {
-    // Align the physical address to the page boundary
-    uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
-    addr &= ~(PAGE_SIZE - 1);
-    void* aligned_paddr = reinterpret_cast<void*>(addr);
-    
-    // Mark the pages as free
-    bool success = page_frame_bitmap::get().mark_pages_free(aligned_paddr, count);
-    if (!success) {
-        serial::com1_printf("[*] failed to free %u physical pages at: 0x%016llx\n", count, aligned_paddr);
-    }
-}
-
-__PRIVILEGED_CODE
-void* bitmap_allocator::alloc_physical_page() {
-    page_frame_bitmap& bitmap = page_frame_bitmap::get();
-    uint64_t size = bitmap.get_size() * 8; // Total number of pages
-
-    uint64_t index = bitmap.get_next_free_index();
-    uint64_t end_index = size;
-
-    // Search from _next_free_index to the end
-    for (; index < end_index; ++index) {
-        uintptr_t paddr = index * PAGE_SIZE;
-        void* addr = reinterpret_cast<void*>(paddr);
-
-        if (bitmap.is_page_free(addr)) {
-            if (bitmap.mark_page_used(addr)) {
-                bitmap.set_next_free_index(index + 1);
-                return addr;
-            }
-        }
-    }
-
-    // No free page found
-    return nullptr;
-}
-
-__PRIVILEGED_CODE
-void* bitmap_allocator::alloc_physical_pages(size_t count) {
-    if (count == 0) {
-        return nullptr;
-    }
-
-    page_frame_bitmap& bitmap = page_frame_bitmap::get();
-    uint64_t size = bitmap.get_size() * 8; // Total number of pages
-
-    size_t consecutive = 0;
-    uint64_t start_index = 0;
-    uint64_t index = bitmap.get_next_free_index();
-    uint64_t end_index = size;
-
-    // Search from _next_free_index to the end
-    for (; index < end_index; ++index) {
-        void* addr = reinterpret_cast<void*>(index * PAGE_SIZE);
-
-        if (bitmap.is_page_free(addr)) {
-            if (consecutive == 0) {
-                start_index = index;
-            }
-            consecutive++;
-
-            if (consecutive == count) {
-                void* start_addr = reinterpret_cast<void*>(start_index * PAGE_SIZE);
-                if (bitmap.mark_pages_used(start_addr, count)) {
-                    bitmap.set_next_free_index(start_index + count);
-                    return start_addr;
-                }
-                consecutive = 0;
-            }
-        } else {
-            consecutive = 0;
-        }
-    }
-
-    // No suitable contiguous block found
-    return nullptr;
-}
-
-__PRIVILEGED_CODE
-void* bitmap_allocator::alloc_physical_pages_aligned(size_t count, uint64_t alignment) {
-    if (count == 0 || (alignment & (alignment - 1)) != 0) {
-        // Alignment is not a power of two or count is zero
-        return nullptr;
-    }
-
-    page_frame_bitmap& bitmap = page_frame_bitmap::get();
-    uint64_t size = bitmap.get_size() * 8; // Total number of pages
-
-    // Calculate the alignment in terms of pages
-    if (alignment < PAGE_SIZE) {
-        alignment = PAGE_SIZE;
-    }
-    uint64_t alignment_pages = alignment / PAGE_SIZE;
-
-    uint64_t index = bitmap.get_next_free_index();
-    uint64_t end_index = size;
-
-    // Search from _next_free_index to the end
-    for (; index < end_index; ++index) {
-        // Check alignment
-        if ((index % alignment_pages) != 0) {
-            continue;
-        }
-
-        // Check if there are enough pages remaining
-        if (index + count > size) {
-            break;
-        }
-
-        bool block_free = true;
-        for (uint64_t offset = 0; offset < count; ++offset) {
-            void* current_addr = reinterpret_cast<void*>((index + offset) * PAGE_SIZE);
-            if (!bitmap.is_page_free(current_addr)) {
-                block_free = false;
-                break;
-            }
-        }
-
-        if (block_free) {
-            void* start_addr = reinterpret_cast<void*>(index * PAGE_SIZE);
-            if (bitmap.mark_pages_used(start_addr, count)) {
-                bitmap.set_next_free_index(index + count);
-                return start_addr;
-            }
-        }
-    }
-
-    // No suitable aligned contiguous block found
-    return nullptr;
-}
-} // namespace allocators
 
 void map_1gb_page(void* vaddr, void* paddr) {
     uint64_t cr3;
@@ -475,7 +80,7 @@ void map_page(
 	pte_t* pml4_entry = &pml4->entries[vaddr_indices.pml4];
 
 	if (pml4_entry->present == 0) {
-		pdpt = (page_table*)g_bootstrap_allocator.alloc_physical_page();
+		pdpt = (page_table*)s_bootstrap_allocator.alloc_physical_page();
 
 		pml4_entry->present = 1;
 		pml4_entry->read_write = 1;
@@ -487,7 +92,7 @@ void map_page(
 	pte_t* pdpt_entry = &pdpt->entries[vaddr_indices.pdpt];
 	
 	if (pdpt_entry->present == 0) {
-		pdt = (page_table*)g_bootstrap_allocator.alloc_physical_page();
+		pdt = (page_table*)s_bootstrap_allocator.alloc_physical_page();
 
 		pdpt_entry->present = 1;
 		pdpt_entry->read_write = 1;
@@ -499,7 +104,7 @@ void map_page(
 	pte_t* pdt_entry = &pdt->entries[vaddr_indices.pdt];
 	
 	if (pdt_entry->present == 0) {
-		pt = (page_table*)g_bootstrap_allocator.alloc_physical_page();
+		pt = (page_table*)s_bootstrap_allocator.alloc_physical_page();
 
 		pdt_entry->present = 1;
 		pdt_entry->read_write = 1;
@@ -598,12 +203,9 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
         physical_start, physical_start + length,
         physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
 
-    page_frame_bitmap::get().init(page_bitmap_size, (uint8_t*)(physical_start));
-    serial::com1_printf("\n[*] Page bitmap initialized!\n");
+    s_bootstrap_allocator.init(physical_start + page_bitmap_size, page_table_memory);
 
-    g_bootstrap_allocator.init(physical_start + page_bitmap_size, page_table_memory);
-
-    page_table* new_pml4 = (page_table*)g_bootstrap_allocator.alloc_physical_page();
+    page_table* new_pml4 = (page_table*)s_bootstrap_allocator.alloc_physical_page();
 
     for (const auto& entry : memory_map) {
         // Filter for EfiConventionalMemory (type 7)
@@ -632,11 +234,10 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
         : "memory"       // Clobber: memory to indicate the register affects memory
     );
 
-    serial::com1_printf("new page table installed!\n");
+    serial::com1_printf("new page table installed: 0x%llx\n", (uintptr_t)new_pml4);
 
-    // int* ptr = (int*)0x0000000100000000;
-    // *ptr = 4554;
-    // serial::com1_printf("ptr test: %d\n", *ptr);
+    page_frame_bitmap::get().init(page_bitmap_size, (uint8_t*)(physical_start));
+    serial::com1_printf("\n[*] Page bitmap initialized!\n");
 }
 } // namespace paging
 

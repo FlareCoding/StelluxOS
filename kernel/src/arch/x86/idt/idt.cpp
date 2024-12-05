@@ -375,6 +375,29 @@ static void decode_rflags(uint64_t rflags, char* buffer, size_t buffer_size) {
     strncat(buffer, "]", buffer_size - strlen(buffer) - 1);
 }
 
+void print_backtrace(ptregs* regs) {
+    serial::com1_printf("<------- BACKTRACE ------->\n");
+
+    uint64_t *rbp = (uint64_t*)regs->rbp;
+    uint64_t rip = regs->hwframe.rip;
+
+    // Print the current instruction pointer (RIP)
+    serial::com1_printf("RIP: 0x%llx\n", rip);
+
+    // Iterate through the stack frames
+    while (rbp) {
+        uint64_t next_rip = *(rbp + 1); // Next instruction pointer (return address)
+        if (next_rip == 0x0)
+            break;
+
+        serial::com1_printf(" -> 0x%llx\n", next_rip);
+
+        rbp = (uint64_t*)*rbp; // Move to the next frame
+    }
+
+    serial::com1_printf("\n");
+}
+
 void panic(ptregs* regs) {
     // Decode RFLAGS
     char rflags_buffer[64] = { 0 };
@@ -382,6 +405,9 @@ void panic(ptregs* regs) {
 
     serial::com1_printf("\n[PANIC] Kernel Panic! System Halted.\n");
     serial::com1_printf("============================================================\n");
+
+    // Prints the backtrace
+    print_backtrace(regs);
 
     // General purpose registers
     serial::com1_printf("General Purpose Registers:\n");

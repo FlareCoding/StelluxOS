@@ -85,7 +85,7 @@ void init(unsigned int magic, void* mbi) {
 
     uint32_t* gop_ptr = (uint32_t*)(0xffffff8000000000);
     for (uint32_t i = 0; i < (PAGE_SIZE / sizeof(uint32_t)); i++) {
-        *gop_ptr = 0xffffffff;
+        *gop_ptr = 0xffffaaff;
         ++gop_ptr;
     }
 
