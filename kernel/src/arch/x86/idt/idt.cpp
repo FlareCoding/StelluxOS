@@ -98,6 +98,43 @@ EXTERN_C __PRIVILEGED_CODE void asm_irq_handler_63();
 EXTERN_C __PRIVILEGED_CODE void asm_irq_handler_64();
 
 namespace arch::x86 {
+const char* g_cpu_exception_strings[] = {
+    "Division By Zero",
+    "Debug",
+    "Non Maskable Interrupt",
+    "Breakpoint",
+    "Into Detected Overflow",
+    "Out of Bounds",
+    "Invalid Opcode",
+    "No Coprocessor",
+
+    "Double Fault",
+    "Coprocessor Segment Overrun",
+    "Bad TSS",
+    "Segment Not Present",
+    "Stack Fault",
+    "General Protection Fault",
+    "Page Fault",
+    "Unknown Interrupt",
+
+    "Coprocessor Fault",
+    "Alignment Check",
+    "Machine Check",
+    "SIMD Floating-Point Exception",
+    "Virtualization Exception",
+    "Control Protection Exception",
+    "Reserved",
+    "Reserved",
+
+    "Reserved",
+    "Reserved",
+    "Reserved",
+    "Reserved",
+    "Hypervisor Injection Exception",
+    "VMM Communication Exception",
+    "Security Exception"
+};
+
 struct int_exc_handlers {
     irq_handler_t divide_by_zero;
     irq_handler_t debug;
@@ -430,7 +467,8 @@ void panic(ptregs* regs) {
     serial::com1_printf("\nInstruction and Context Information:\n");
     serial::com1_printf("  RIP: 0x%016llx   RFLAGS: 0x%llx %s\n",
         regs->hwframe.rip, regs->hwframe.rflags, rflags_buffer);
-    serial::com1_printf("  IRQ: 0x%016llx   Error Code: 0x%016llx\n", regs->intno, regs->error);
+    serial::com1_printf("  IRQ: %s\n  Error Code: 0x%0llx\n",
+        arch::x86::g_cpu_exception_strings[regs->intno], regs->error);
 
     // Control registers
     uint64_t cr0, cr2, cr3, cr4;
