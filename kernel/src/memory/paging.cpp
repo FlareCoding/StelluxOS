@@ -134,16 +134,15 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     // Debug print the EFI memory map
     memory_map.print_memory_map();
 
-    // Access total system memory
-    uint64_t total_conventional_memory = memory_map.get_total_conventional_memory();
-
     // Kernel memory region details
     uint64_t kernel_start = reinterpret_cast<uint64_t>(&__ksymstart);
     uint64_t kernel_end = reinterpret_cast<uint64_t>(&__ksymend);
     uint64_t kernel_size = kernel_end - kernel_start;
 
     // Calculate the size needed for the page frame bitmap
-    uint64_t page_bitmap_size = page_frame_bitmap::calculate_required_size(total_conventional_memory);
+    uint64_t page_bitmap_size = page_frame_bitmap::calculate_required_size(
+        memory_map.get_highest_address()
+    );
 
     // Calculate memory required for page tables (all of RAM + kernel higher-half mappings)
     uint64_t page_table_size = compute_page_table_memory(
@@ -183,7 +182,7 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     // Identity map the physical addresses in RAM
     for (const auto& entry : memory_map) {
-        if (entry.desc->type == 7) {
+        if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) {
             for (uint64_t vaddr = entry.paddr; vaddr < entry.paddr + entry.length; vaddr += PAGE_SIZE) {
                 map_page(vaddr, vaddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
             }
@@ -201,6 +200,41 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     // Initialize the page frame bitmap
     page_frame_bitmap::get().init(page_bitmap_size, reinterpret_cast<uint8_t*>(largest_segment.paddr));
+
+    auto& bitmap_allocator = allocators::page_bitmap_allocator::get();
+
+    // Since the bitmap starts with all memory marked as 'used', we
+    // have to unlock all memory regions marked as EfiConventionalMemory.
+    for (const auto& entry : memory_map) {
+        if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) {
+            // Lock any page that is not part of EfiConventionalMemory
+            bitmap_allocator.free_physical_pages(
+                reinterpret_cast<void*>(entry.paddr),
+                entry.desc->page_count
+            );
+        }
+    }
+
+    // Lock pages belonging to the kernel
+    uintptr_t kernel_physical_start = reinterpret_cast<uintptr_t>(&__ksymstart) - KERNEL_LOAD_OFFSET;
+    bitmap_allocator.lock_physical_pages(
+        reinterpret_cast<void*>(kernel_physical_start),
+        (kernel_size / PAGE_SIZE) + 1
+    );
+
+    // Lock pages belonging to the page frame bitmap
+    uintptr_t bitmap_physical_start = largest_segment.paddr;
+    bitmap_allocator.lock_physical_pages(
+        reinterpret_cast<void*>(bitmap_physical_start),
+        (page_bitmap_size / PAGE_SIZE) + 1
+    );
+
+    // Lock pages belonging to the new page table
+    uintptr_t page_table_physical_start = largest_segment.paddr + page_bitmap_size;
+    bitmap_allocator.lock_physical_pages(
+        reinterpret_cast<void*>(page_table_physical_start),
+        (page_table_size / PAGE_SIZE) + 1
+    );
 }
 } // namespace paging
 

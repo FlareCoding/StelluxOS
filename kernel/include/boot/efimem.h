@@ -3,6 +3,8 @@
 #include <types.h>
 #include "multiboot2.h"
 
+#define EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY 7
+
 namespace efi {
 struct efi_memory_descriptor {
     multiboot_uint32_t type;
@@ -45,6 +47,7 @@ public:
     __PRIVILEGED_CODE uint32_t get_num_entries() const;
     __PRIVILEGED_CODE uint64_t get_total_system_memory() const;
     __PRIVILEGED_CODE uint64_t get_total_conventional_memory() const;
+    __PRIVILEGED_CODE uintptr_t get_highest_address() const;
 
     __PRIVILEGED_CODE efi_memory_descriptor_wrapper get_largest_conventional_segment() const;
 
@@ -62,6 +65,7 @@ private:
     uint32_t m_num_entries;
     uint64_t m_total_system_memory;
     uint64_t m_total_conventional_memory;
+    uint64_t m_highest_address;
     efi_memory_descriptor_wrapper m_largest_conventional_segment;
 };
 } // namespace efi

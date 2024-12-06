@@ -475,9 +475,7 @@ static char* pixels = (char*)0xffffff8000000000;
 
 static uint32_t bytes_per_pixel;
 
-void
-clear_screen()
-{
+void clear_screen() {
     uint32_t i;
     for (i = 0; i < size; i++) {
         uint32_t offset = i * bytes_per_pixel;
@@ -490,8 +488,7 @@ clear_screen()
     }
 }
 
-void init_framebuffer_renderer()
-{
+void init_framebuffer_renderer() {
     uint32_t framebuffer_page_count;
 
     bytes_per_pixel = g_mbi_framebuffer->common.framebuffer_bpp / 8;
@@ -698,7 +695,7 @@ void memory_map_walk_test() {
     gop_printf("Kernel Size: %llu KB\n    ", (kernel_end - kernel_start) / 1024);
 
     // Calculate the size needed for the page frame bitmap
-    uint64_t page_bitmap_size = memory_map.get_total_conventional_memory() / PAGE_SIZE / 8 + 1;
+    uint64_t page_bitmap_size = memory_map.get_highest_address() / PAGE_SIZE / 8 + 1;
     // Round up to the nearest page size
     page_bitmap_size = (page_bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
@@ -728,11 +725,9 @@ void memory_map_walk_test() {
     gop_printf(
         "Largest Conventional Memory Segment:\n"
         "  Size: %llu MB (%llu pages)\n"
-        "  Physical: 0x%016llx - 0x%016llx\n"
-        "  Virtual:  0x%016llx - 0x%016llx\n",
+        "  Physical: 0x%016llx - 0x%016llx\n",
         length / (1024 * 1024), length / 4096,
-        physical_start, physical_start + length,
-        physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
+        physical_start, physical_start + length);
 }
 
 EXTERN_C

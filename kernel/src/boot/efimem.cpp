@@ -7,7 +7,8 @@
 namespace efi {
 __PRIVILEGED_CODE
 efi_memory_map::efi_memory_map(multiboot_tag_efi_mmap* efi_mmap_tag)
-    : m_efi_mmap_tag(efi_mmap_tag), m_total_system_memory(0), m_total_conventional_memory(0) {
+    : m_efi_mmap_tag(efi_mmap_tag), m_total_system_memory(0),
+      m_total_conventional_memory(0), m_highest_address(0) {
     m_descr_size = m_efi_mmap_tag->descr_size;
 
     // Calculate the number of EFI memory descriptors
@@ -25,6 +26,12 @@ efi_memory_map::efi_memory_map(multiboot_tag_efi_mmap* efi_mmap_tag)
         efi_memory_descriptor* desc = reinterpret_cast<efi_memory_descriptor*>(desc_ptr);
 
         uint64_t length = desc->page_count * 4096; // Assuming 4KB pages
+        uint64_t region_end = desc->physical_start + length;
+
+        // Update the highest address seen
+        if (region_end > m_highest_address) {
+            m_highest_address = region_end;
+        }
 
         // Add to total system memory
         m_total_system_memory += length;
@@ -99,6 +106,10 @@ uint64_t efi_memory_map::get_total_system_memory() const {
 __PRIVILEGED_CODE
 uint64_t efi_memory_map::get_total_conventional_memory() const {
     return m_total_conventional_memory;
+}
+
+__PRIVILEGED_CODE uintptr_t efi_memory_map::get_highest_address() const {
+    return m_highest_address;
 }
 
 __PRIVILEGED_CODE

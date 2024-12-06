@@ -26,7 +26,8 @@ void page_frame_bitmap::init(uint64_t size, uint8_t* buffer) {
     _buffer = buffer;
     _next_free_index = 0;
 
-    zeromem(buffer, size);
+    // Initially mark everything as used
+    memset(buffer, 0xff, size);
 }
 
 __PRIVILEGED_CODE

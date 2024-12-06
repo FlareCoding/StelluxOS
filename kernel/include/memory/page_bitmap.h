@@ -58,7 +58,7 @@ public:
      * This method sets up the bitmap by defining its size (in pages) and assigning
      * the memory buffer that will store the bitmap data. It must be called before
      * any operations are performed on the bitmap. All the pages are initially
-     * marked as 'free'.
+     * marked as 'used' and then unlocked when iterating over the memory map.
      * 
      * @param size The total number of pages that the bitmap will manage.
      * @param buffer Pointer to the memory buffer that will hold the bitmap data.
