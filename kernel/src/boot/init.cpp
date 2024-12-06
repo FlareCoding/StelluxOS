@@ -4,6 +4,7 @@
 #include <interrupts/irq.h>
 #include <memory/paging.h>
 #include <memory/allocators/page_bootstrap_allocator.h>
+#include <boot/efimem.h>
 
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
@@ -470,24 +471,30 @@ const uint8_t psf_font_data[] = {
 
 static uint32_t size;
 static uint32_t cursor_x = 0, cursor_y = 0;
-uint32_t* pixels = (uint32_t*)0xffffff8000000000;
+static char* pixels = (char*)0xffffff8000000000;
+
+static uint32_t bytes_per_pixel;
 
 void
 clear_screen()
 {
     uint32_t i;
-
     for (i = 0; i < size; i++) {
-        pixels[i] = 0x1F1F1F;
+        uint32_t offset = i * bytes_per_pixel;
+        pixels[offset + 0] = 0x1F; // Red
+        pixels[offset + 1] = 0x1F; // Green
+        pixels[offset + 2] = 0x1F; // Blue
+        if (bytes_per_pixel == 4) {
+            pixels[offset + 3] = 0xFF; // Alpha (if present)
+        }
     }
 }
 
 void init_framebuffer_renderer()
 {
-    uint32_t bytes_per_pixel;
-    uint32_t framebuffer_page_count;
+     uint32_t framebuffer_page_count;
 
-    bytes_per_pixel = 4;
+    bytes_per_pixel = g_mbi_framebuffer->common.framebuffer_bpp / 8;
     framebuffer_page_count =
         (g_mbi_framebuffer->common.framebuffer_width * g_mbi_framebuffer->common.framebuffer_height * bytes_per_pixel) /
         PAGE_SIZE;
@@ -507,12 +514,28 @@ void init_framebuffer_renderer()
     asm volatile ("mov %cr3, %rax");
     asm volatile ("mov %rax, %cr3");
 
+    serial::com1_printf("------------ Framebuffer ------------\n");
+    serial::com1_printf("      physbase            : %llx\n", g_mbi_framebuffer->common.framebuffer_addr);
+    serial::com1_printf("      virtbase            : %llx\n", pixels);
+    serial::com1_printf("      framebuffer->pitch  : %u\n", g_mbi_framebuffer->common.framebuffer_pitch);
+    serial::com1_printf("      framebuffer->width  : %u\n", g_mbi_framebuffer->common.framebuffer_width);
+    serial::com1_printf("      framebuffer->height : %u\n", g_mbi_framebuffer->common.framebuffer_height);
+    serial::com1_printf("      framebuffer->bpp    : %u\n", g_mbi_framebuffer->common.framebuffer_bpp);
+
     clear_screen();
 }
 
 void fill_pixel(uint32_t x, uint32_t y, uint32_t color) {
-    volatile uint32_t* pixelPtr = pixels + x + (y * g_mbi_framebuffer->common.framebuffer_width);
-    *pixelPtr = color;
+    uint32_t pitch = g_mbi_framebuffer->common.framebuffer_pitch; // Distance between rows in bytes
+    uint32_t offset = (y * pitch) + (x * bytes_per_pixel);
+
+    // Write color based on bytes_per_pixel
+    pixels[offset + 0] = (color >> 0) & 0xFF;  // Blue
+    pixels[offset + 1] = (color >> 8) & 0xFF;  // Green
+    pixels[offset + 2] = (color >> 16) & 0xFF; // Red
+    if (bytes_per_pixel == 4) {
+        pixels[offset + 3] = (color >> 24) & 0xFF; // Alpha (if present)
+    }
 }
 
 void render_text_glyph(char c, uint32_t x, uint32_t y, uint32_t color) {
@@ -558,7 +581,21 @@ void render_string(const char *str) {
     }
 }
 
-__PRIVILEGED_CODE
+template <typename... Args>
+int gop_printf(const char* format, Args... args) {
+    // Define a buffer with a fixed size. Adjust as necessary.
+    constexpr size_t BUFFER_SIZE = 256;
+    char buffer[BUFFER_SIZE] = { 0 };
+    
+    // Format the string using the custom sprintf
+    int len = sprintf(buffer, BUFFER_SIZE, format, args...);
+    
+    // Send the formatted string over COM1
+    render_string(buffer);
+    
+    return len;
+}
+
 void walk_mbi(void* mbi) {
     // Cast the mbi pointer to a byte pointer for arithmetic
     uint8_t* ptr = static_cast<uint8_t*>(mbi);
@@ -599,6 +636,109 @@ void walk_mbi(void* mbi) {
     }
 }
 
+uint64_t calculate_page_table_memory(uint64_t total_system_size) {
+    const uint64_t page_size = 4096; // 4 KB pages
+    const uint64_t entries_per_table = 512; // 512 entries per page table
+    const uint64_t entry_size = 8; // 8 bytes per entry
+    const uint64_t table_size = entries_per_table * entry_size; // Size of one page table (4 KB)
+
+    // Calculate the number of pages required
+    uint64_t total_pages = (total_system_size + page_size - 1) / page_size;
+
+    // Calculate the number of page tables required
+    uint64_t page_tables = (total_pages + entries_per_table - 1) / entries_per_table;
+
+    // Calculate the number of page directories required
+    uint64_t page_directories = (page_tables + entries_per_table - 1) / entries_per_table;
+
+    // Calculate the number of PDPTs required
+    uint64_t pdpts = (page_directories + entries_per_table - 1) / entries_per_table;
+
+    // Only one PML4 table is required
+    uint64_t pml4_tables = 1;
+
+    // Total memory for all tables
+    uint64_t total_memory = (page_tables + page_directories + pdpts + pml4_tables) * table_size;
+
+    return total_memory;
+}
+
+extern char __ksymstart;
+extern char __ksymend;
+
+void memory_map_walk_test() {
+    multiboot_tag_efi_mmap* efi_mmap_tag = reinterpret_cast<multiboot_tag_efi_mmap*>(g_mbi_efi_mmap);
+    efi::efi_memory_map memory_map(efi_mmap_tag);
+
+    gop_printf("  EFI Memory Map:\n");
+
+    for (const auto& entry : memory_map) {
+        // Filter for EfiConventionalMemory (type 7)
+        if (entry.desc->type != 7) {
+            continue;
+        }
+
+        uint64_t physical_start = entry.paddr;
+        uint64_t length = entry.length;
+
+        gop_printf(
+            "  Type: %u, Size: %llu MB (%llu pages)\n"
+            "  Physical: 0x%016llx - 0x%016llx\n"
+            "  Virtual:  0x%016llx - 0x%016llx\n",
+            entry.desc->type, length / (1024 * 1024), length / 4096,
+            physical_start, physical_start + length,
+            physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
+    }
+
+    // Access total system conventional memory
+    uint64_t total_system_size_mb = memory_map.get_total_system_memory() / (1024 * 1024);
+    uint64_t total_system_conventional_size_mb = memory_map.get_total_conventional_memory() / (1024 * 1024);
+    gop_printf("\nTotal System Memory                : %llu MB\n", total_system_size_mb);
+    gop_printf("Total System Conventional Memory   : %llu MB\n", total_system_conventional_size_mb);
+
+    uint64_t kernel_start = (uint64_t)&__ksymstart;
+    uint64_t kernel_end = (uint64_t)&__ksymend;
+    uint64_t kernel_page_count = (kernel_end - kernel_start) / PAGE_SIZE;
+    gop_printf("Kernel Size: %llu KB\n    ", (kernel_end - kernel_start) / 1024);
+
+    // Calculate the size needed for the page frame bitmap
+    uint64_t page_bitmap_size = memory_map.get_total_conventional_memory() / PAGE_SIZE / 8 + 1;
+    // Round up to the nearest page size
+    page_bitmap_size = (page_bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    gop_printf("\nPage Bitmap Size: %llu KB\n", page_bitmap_size / 1024);
+
+    uint64_t page_table_memory = calculate_page_table_memory(memory_map.get_total_system_memory() + kernel_page_count * PAGE_SIZE);
+    // Round up to the nearest page size
+    page_table_memory = (page_table_memory + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    gop_printf("Total memory required for page tables: %llu KB\n", page_table_memory / 1024);
+
+    // Access largest conventional memory segment
+    // The segment has to be large enough to fit the bitmap and the full page table covering system memory
+    efi::efi_memory_descriptor_wrapper largest_segment = memory_map.find_segment_for_allocation_block(
+        10 * (1 << 20),     // Start searching from the 10MB point to be guaranteed above the kernel
+        1ULL << 30,         // Pick the largest segment within the 1GB range
+        page_bitmap_size + page_table_memory
+    );
+
+    if (largest_segment.desc == nullptr) {
+        gop_printf("[*] No conventional memory segments found!\n");
+        return;
+    }
+    
+    uint64_t physical_start = largest_segment.paddr;
+    uint64_t length = largest_segment.length;
+
+    gop_printf(
+        "Largest Conventional Memory Segment:\n"
+        "  Size: %llu MB (%llu pages)\n"
+        "  Physical: 0x%016llx - 0x%016llx\n"
+        "  Virtual:  0x%016llx - 0x%016llx\n",
+        length / (1024 * 1024), length / 4096,
+        physical_start, physical_start + length,
+        physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
+}
+
 EXTERN_C
 __PRIVILEGED_CODE
 void init(unsigned int magic, void* mbi) {
@@ -636,7 +776,7 @@ void init(unsigned int magic, void* mbi) {
 
     init_framebuffer_renderer();
 
-    render_string("Hello!\n");
+    memory_map_walk_test();
 
     // Idle loop
     while (true) {
