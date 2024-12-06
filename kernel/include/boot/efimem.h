@@ -54,6 +54,8 @@ public:
         uint64_t size
     ) const;
 
+    __PRIVILEGED_CODE void print_memory_map();
+
 private:
     multiboot_tag_efi_mmap* m_efi_mmap_tag;
     uint32_t m_descr_size;

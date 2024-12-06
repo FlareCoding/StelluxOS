@@ -17,13 +17,31 @@ public:
     /**
      * @brief Retrieves the singleton instance of the page_frame_bitmap.
      * 
-     * This static method ensures that only one instance of the `page_frame_bitmap`
+     * This method ensures that only one instance of the `page_frame_bitmap`
      * exists throughout the system. It provides global access to the bitmap for
      * managing physical memory pages.
      * 
      * @return page_frame_bitmap& Reference to the singleton instance of the bitmap.
      */
     __PRIVILEGED_CODE static page_frame_bitmap& get();
+
+    /**
+     * @brief Calculates the required size of the page frame bitmap based on system memory.
+     * 
+     * This method determines the amount of memory needed to represent the
+     * page frame bitmap for the given total system memory. The calculation takes into account
+     * the number of physical pages in the system and computes the bitmap size necessary to
+     * track the allocation status (free or used) of each page. The bitmap size is also
+     * page aligned for further implementation reasons.
+     * 
+     * @param system_memory The total physical memory of the system in bytes.
+     *                       This value is used to calculate the number of pages and,
+     *                       consequently, the size of the bitmap required.
+     * 
+     * @return uint64_t The size in bytes required for the page frame bitmap to manage
+     *                  the specified amount of system memory.
+     */
+    __PRIVILEGED_CODE static uint64_t calculate_required_size(uint64_t system_memory);
 
     /**
      * @brief Default constructor for the page_frame_bitmap class.

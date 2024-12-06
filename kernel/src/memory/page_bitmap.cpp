@@ -16,6 +16,11 @@ page_frame_bitmap& page_frame_bitmap::get() {
 }
 
 __PRIVILEGED_CODE
+uint64_t page_frame_bitmap::calculate_required_size(uint64_t system_memory) {
+    return PAGE_ALIGN((system_memory / PAGE_SIZE / 8) + 1);
+}
+
+__PRIVILEGED_CODE
 void page_frame_bitmap::init(uint64_t size, uint8_t* buffer) {
     _size = size;
     _buffer = buffer;

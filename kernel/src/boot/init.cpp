@@ -776,7 +776,7 @@ void init(unsigned int magic, void* mbi) {
 
     init_framebuffer_renderer();
 
-    memory_map_walk_test();
+    //memory_map_walk_test();
 
     // Idle loop
     while (true) {

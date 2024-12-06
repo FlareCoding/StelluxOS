@@ -2,16 +2,15 @@
 #define PAGING_H
 #include "allocators/page_bitmap_allocator.h"
 
-#define PAGE_SIZE 0x1000
+#define PAGE_SIZE   0x1000
+#define PAGE_OFFSET 0xffffff8000000000
+
+#define PAGE_ALIGN(value) (((value) + (PAGE_SIZE) - 1) & ~((PAGE_SIZE) - 1))
 
 #define PAGE_TABLE_ENTRIES 512
 
 #define USER_PAGE    1
 #define KERNEL_PAGE  0
-
-#define PAGE_ATTRIB_CACHE_DISABLED 0x01  // Bit 0
-#define PAGE_ATTRIB_WRITE_THROUGH  0x02  // Bit 1
-#define PAGE_ATTRIB_ACCESS_TYPE    0x04  // Bit 2
 
 // Flags for page table entries
 #define PTE_PRESENT       0x1
@@ -89,6 +88,26 @@ struct virt_addr_indices_t {
 };
 
 virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr);
+
+/**
+ * @brief Retrieves the current PML4 table by reading the CR3 register.
+ * 
+ * This function reads the CR3 register, which contains the physical address of the current
+ * PML4 (Page Map Level 4) table, and casts it to a pointer to `page_table`.
+ * 
+ * @return A physical address pointer to the current PML4 `page_table`.
+ */
+__PRIVILEGED_CODE page_table* get_pml4();
+
+/**
+ * @brief Sets the current PML4 table by writing to the CR3 register.
+ * 
+ * This function takes a pointer to a `page_table` (PML4) and writes its
+ * address to the CR3 register.
+ * 
+ * @param pml4 A physical address pointer to the `page_table` to be set as the new PML4.
+ */
+__PRIVILEGED_CODE void set_pml4(page_table* pml4);
 
 __PRIVILEGED_CODE
 void map_page(

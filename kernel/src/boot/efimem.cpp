@@ -1,4 +1,5 @@
 #include <boot/efimem.h>
+#include <serial/serial.h>
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -151,4 +152,24 @@ efi_memory_descriptor_wrapper efi_memory_map::find_segment_for_allocation_block(
     return largest_segment;
 }
 
+__PRIVILEGED_CODE void efi_memory_map::print_memory_map() {
+    for (auto it = begin(); it != end(); ++it) {
+        auto entry = *it;
+
+        // Filter for EfiConventionalMemory (type 7)
+        if (entry.desc->type != 7) continue;
+
+        uint64_t physical_start = entry.paddr;
+        uint64_t length = entry.length;
+
+        serial::com1_printf(
+            "  Type: %u, Size: %llu MB (%llu pages)\n"
+            "  Physical: 0x%016llx - 0x%016llx\n",
+            entry.desc->type, length / (1024 * 1024), length / 0x1000,
+            physical_start, physical_start + length
+        );
+    }
+
+    serial::com1_printf("\n");
+}
 } // namespace efi

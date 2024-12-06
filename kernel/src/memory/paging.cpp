@@ -1,9 +1,12 @@
 #include <memory/paging.h>
 #include <memory/memory.h>
-#include <serial/serial.h>
+#include <memory/tlb.h>
 #include <memory/page_bitmap.h>
 #include <memory/allocators/page_bootstrap_allocator.h>
 #include <boot/efimem.h>
+#include <serial/serial.h>
+
+#define KERNEL_LOAD_OFFSET 0xffffffff80000000
 
 extern char __ksymstart;
 extern char __ksymend;
@@ -18,49 +21,69 @@ virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr) {
     return indices;
 }
 
-void map_1gb_page(void* vaddr, void* paddr) {
+__PRIVILEGED_CODE
+page_table* get_pml4() {
     uint64_t cr3;
-    asm volatile ("mov %%cr3, %0" : "=r"(cr3));
-    page_table* pml4 = (page_table*)cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    return reinterpret_cast<page_table*>(cr3);
+}
 
-    virt_addr_indices_t vaddr_indices =
-        get_vaddr_page_table_indices(reinterpret_cast<uintptr_t>(vaddr));
+__PRIVILEGED_CODE
+void set_pml4(page_table* pml4) {
+    uint64_t cr3 = reinterpret_cast<uint64_t>(pml4);
+    asm volatile("mov %0, %%cr3" :: "r"(cr3));
+}
 
-    pte_t* pml4_entry = &pml4->entries[vaddr_indices.pml4];
+/**
+ * @brief Maps the first 1GB of physical memory using 1GB huge pages.
+ * 
+ * This function establishes an identity mapping for the initial 1GB of physical memory
+ * utilizing 1GB huge pages. By doing so, it avoids the need to allocate additional physical
+ * memory and prevents kernel bloat that would otherwise result from the numerous page table
+ * entries required for mapping smaller memory regions. Empirical testing and observations
+ * with GRUB2 indicate that the first 1GB of RAM typically contains a sufficiently large
+ * contiguous free region. This region accommodates the page frame bitmap and provides the
+ * necessary space for a new page table, which is used to identity map the entire RAM and
+ * the higher half of the kernel.
+ */
+void bootstrap_map_first_1gb() {
+    page_table* pml4 = get_pml4();
+
+    pte_t* pml4_entry = &pml4->entries[0];
     page_table* pdpt = (page_table*)(((uint64_t)pml4_entry->page_frame_number << 12));
 
-    pde_t* pdpt_entry = (pde_t*)&pdpt->entries[vaddr_indices.pdpt];
+    pde_t* pdpt_entry = (pde_t*)&pdpt->entries[0];
     pdpt_entry->present = 1;
     pdpt_entry->read_write = 1;
     pdpt_entry->page_size = 1; // Large page (1GB)
-    pdpt_entry->page_frame_number = reinterpret_cast<uint64_t>(paddr) >> 30;
+    pdpt_entry->page_frame_number = 0;
 }
 
-uint64_t calculate_page_table_memory(uint64_t total_system_size) {
-    const uint64_t page_size = 4096; // 4 KB pages
-    const uint64_t entries_per_table = 512; // 512 entries per page table
-    const uint64_t entry_size = 8; // 8 bytes per entry
-    const uint64_t table_size = entries_per_table * entry_size; // Size of one page table (4 KB)
+/**
+ * @brief Calculates the total memory required for page tables to map a given memory size.
+ *
+ * @param memory_to_map The amount of memory (in bytes) that the page tables need to handle.
+ * @return The total memory (in bytes) required for all page tables.
+ */
+uint64_t compute_page_table_memory(uint64_t memory_to_map) {
+    const uint64_t entry_size = 8; // Bytes per page table entry
+    const uint64_t table_size = PAGE_TABLE_ENTRIES * entry_size;
 
-    // Calculate the number of pages required
-    uint64_t total_pages = (total_system_size + page_size - 1) / page_size;
+    // Calculate the number of pages needed, rounding up
+    uint64_t total_pages = (memory_to_map + PAGE_SIZE - 1) / PAGE_SIZE;
 
-    // Calculate the number of page tables required
-    uint64_t page_tables = (total_pages + entries_per_table - 1) / entries_per_table;
+    // Initialize total tables with 1 for the PML4 table
+    uint64_t total_tables = 1;
+    uint64_t entries = total_pages;
 
-    // Calculate the number of page directories required
-    uint64_t page_directories = (page_tables + entries_per_table - 1) / entries_per_table;
+    // Iterate through each level of the page table hierarchy (PDPT, PD, PT)
+    for (int level = 0; level < 3; ++level) {
+        entries = (entries + PAGE_TABLE_ENTRIES - 1) / PAGE_TABLE_ENTRIES;
+        total_tables += entries;
+    }
 
-    // Calculate the number of PDPTs required
-    uint64_t pdpts = (page_directories + entries_per_table - 1) / entries_per_table;
-
-    // Only one PML4 table is required
-    uint64_t pml4_tables = 1;
-
-    // Total memory for all tables
-    uint64_t total_memory = (page_tables + page_directories + pdpts + pml4_tables) * table_size;
-
-    return total_memory;
+    // Calculate the total memory by multiplying the number of tables by the size of each table
+    return PAGE_ALIGN(total_tables * table_size);
 }
 
 __PRIVILEGED_CODE
@@ -115,130 +138,91 @@ void map_page(
 	pte->present = 1;
 	pte->read_write = 1;
 	pte->page_frame_number = reinterpret_cast<uint64_t>(paddr) >> 12;
+
+    // Invalidate the TLB entry
+    invlpg(reinterpret_cast<void*>(vaddr));
 }
 
 __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     // Identity map the first 1GB of physical RAM memory using a huge page
-    map_1gb_page(0x0, 0x0);
+    bootstrap_map_first_1gb();
 
     // Flush the entire TLB
-    asm volatile ("mov %cr3, %rax");
-    asm volatile ("mov %rax, %cr3");
+    tlb_flush_all();
 
-    multiboot_tag_efi_mmap* efi_mmap_tag = reinterpret_cast<multiboot_tag_efi_mmap*>(mbi_efi_mmap_tag);
+    auto efi_mmap_tag = reinterpret_cast<multiboot_tag_efi_mmap*>(mbi_efi_mmap_tag);
     efi::efi_memory_map memory_map(efi_mmap_tag);
 
-    serial::com1_printf("  EFI Memory Map:\n");
+    // Debug print the EFI memory map
+    memory_map.print_memory_map();
 
-    for (const auto& entry : memory_map) {
-        // Filter for EfiConventionalMemory (type 7)
-        if (entry.desc->type != 7) {
-            continue;
-        }
+    // Access total system memory
+    uint64_t total_conventional_memory = memory_map.get_total_conventional_memory();
 
-        uint64_t physical_start = entry.paddr;
-        uint64_t length = entry.length;
-
-        serial::com1_printf(
-            "  Type: %u, Size: %llu MB (%llu pages)\n"
-            "  Physical: 0x%016llx - 0x%016llx\n"
-            "  Virtual:  0x%016llx - 0x%016llx\n",
-            entry.desc->type, length / (1024 * 1024), length / 4096,
-            physical_start, physical_start + length,
-            physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
-    }
-
-    // Access total system conventional memory
-    uint64_t total_system_size_mb = memory_map.get_total_system_memory() / (1024 * 1024);
-    uint64_t total_system_conventional_size_mb = memory_map.get_total_conventional_memory() / (1024 * 1024);
-    serial::com1_printf("\nTotal System Memory                : %llu MB\n", total_system_size_mb);
-    serial::com1_printf("Total System Conventional Memory   : %llu MB\n", total_system_conventional_size_mb);
-
-    uint64_t kernel_start = (uint64_t)&__ksymstart;
-    uint64_t kernel_end = (uint64_t)&__ksymend;
-    uint64_t kernel_page_count = (kernel_end - kernel_start) / PAGE_SIZE;
-    serial::com1_printf("Kernel Size: %llu KB\n    ", (kernel_end - kernel_start) / 1024);
-    serial::com1_printf(
-        "0x%016llx-0x%016llx (%d pages)\n",
-        kernel_start - 0xffffffff80000000, kernel_end - 0xffffffff80000000,
-        kernel_page_count
-    );
+    // Kernel memory region details
+    uint64_t kernel_start = reinterpret_cast<uint64_t>(&__ksymstart);
+    uint64_t kernel_end = reinterpret_cast<uint64_t>(&__ksymend);
+    uint64_t kernel_size = kernel_end - kernel_start;
 
     // Calculate the size needed for the page frame bitmap
-    uint64_t page_bitmap_size = memory_map.get_total_conventional_memory() / PAGE_SIZE / 8 + 1;
-    // Round up to the nearest page size
-    page_bitmap_size = (page_bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint64_t page_bitmap_size = page_frame_bitmap::calculate_required_size(total_conventional_memory);
 
-    serial::com1_printf("\nPage Bitmap Size: %llu KB\n", page_bitmap_size / 1024);
-
-    uint64_t page_table_memory = calculate_page_table_memory(memory_map.get_total_system_memory() + kernel_page_count * PAGE_SIZE);
-    // Round up to the nearest page size
-    page_table_memory = (page_table_memory + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    serial::com1_printf("Total memory required for page tables: %llu KB\n", page_table_memory / 1024);
+    // Calculate memory required for page tables (all of RAM + kernel higher-half mappings)
+    uint64_t page_table_size = compute_page_table_memory(
+        memory_map.get_total_system_memory() + kernel_size
+    );
 
     // Access largest conventional memory segment
     // The segment has to be large enough to fit the bitmap and the full page table covering system memory
     efi::efi_memory_descriptor_wrapper largest_segment = memory_map.find_segment_for_allocation_block(
         10 * (1 << 20),     // Start searching from the 10MB point to be guaranteed above the kernel
         1ULL << 30,         // Pick the largest segment within the 1GB range
-        page_bitmap_size + page_table_memory
+        page_bitmap_size + page_table_size
     );
 
-    if (largest_segment.desc == nullptr) {
+    if (!largest_segment.desc) {
         serial::com1_printf("[*] No conventional memory segments found!\n");
         return;
     }
-    
-    uint64_t physical_start = largest_segment.paddr;
-    uint64_t length = largest_segment.length;
 
+
+#if 0
     serial::com1_printf(
         "Largest Conventional Memory Segment:\n"
         "  Size: %llu MB (%llu pages)\n"
-        "  Physical: 0x%016llx - 0x%016llx\n"
-        "  Virtual:  0x%016llx - 0x%016llx\n",
-        length / (1024 * 1024), length / 4096,
-        physical_start, physical_start + length,
-        physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
+        "  Physical: 0x%016llx - 0x%016llx\n",
+        largest_segment.length / (1024 * 1024), largest_segment.length / PAGE_SIZE,
+        largest_segment.paddr, largest_segment.paddr + largest_segment.length
+    );
+#endif
 
-    // Initialize the bootstrap allocator
+    // Initialize the bootstrap allocator to the region of memory right after the page bitmap
     auto& bootstrap_allocator = allocators::page_bootstrap_allocator::get();
-    bootstrap_allocator.init(physical_start + page_bitmap_size, page_table_memory);
+    bootstrap_allocator.init(largest_segment.paddr + page_bitmap_size, page_table_size);
 
-    // Create a new top level page table
-    page_table* new_pml4 = (page_table*)bootstrap_allocator.alloc_physical_page();
+    // Allocate a new top-level page table
+    page_table* new_pml4 = reinterpret_cast<page_table*>(bootstrap_allocator.alloc_physical_page());
 
+    // Identity map the physical addresses in RAM
     for (const auto& entry : memory_map) {
-        // Filter for EfiConventionalMemory (type 7)
-        if (entry.desc->type != 7) {
-            continue;
-        }
-
-        uint64_t physical_start = entry.paddr;
-        uint64_t length = entry.length;
-
-        for (uint64_t vaddr = physical_start; vaddr < physical_start + length; vaddr += PAGE_SIZE) {
-            map_page(vaddr, vaddr, new_pml4, bootstrap_allocator);
+        if (entry.desc->type == 7) {
+            for (uint64_t vaddr = entry.paddr; vaddr < entry.paddr + entry.length; vaddr += PAGE_SIZE) {
+                map_page(vaddr, vaddr, new_pml4, bootstrap_allocator);
+            }
         }
     }
 
-    for (uint64_t vaddr = 0xffffffff80000000; vaddr < 0xffffffff80000000 + 4 * 1024 * 1024; vaddr += PAGE_SIZE) {
-        uintptr_t paddr = vaddr - 0xffffffff80000000;
+    // Create the higher-half mappings for the kernel
+    for (uint64_t vaddr = KERNEL_LOAD_OFFSET; vaddr < reinterpret_cast<uint64_t>(&__ksymend); vaddr += PAGE_SIZE) {
+        uintptr_t paddr = vaddr - KERNEL_LOAD_OFFSET;
         map_page(vaddr, paddr, new_pml4, bootstrap_allocator);
     }
 
     // Install the new page table
-    asm volatile(
-        "mov %0, %%cr3"  // Move the value into the CR3 register
-        :
-        : "r"(new_pml4)  // Input operand: new_pml4
-        : "memory"       // Clobber: memory to indicate the register affects memory
-    );
+    set_pml4(new_pml4);
 
-    serial::com1_printf("new page table installed: 0x%llx\n", (uintptr_t)new_pml4);
-
-    page_frame_bitmap::get().init(page_bitmap_size, (uint8_t*)(physical_start));
-    serial::com1_printf("\n[*] Page bitmap initialized!\n");
+    // Initialize the page frame bitmap
+    page_frame_bitmap::get().init(page_bitmap_size, reinterpret_cast<uint8_t*>(largest_segment.paddr));
 }
 } // namespace paging
 
