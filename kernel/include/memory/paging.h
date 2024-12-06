@@ -9,20 +9,29 @@
 
 #define PAGE_TABLE_ENTRIES 512
 
-#define USER_PAGE    1
-#define KERNEL_PAGE  0
+#define PTE_PRESENT       (1ULL << 0)   // Page is present
+#define PTE_RW            (1ULL << 1)   // Read/Write: 1=Writable, 0=Read-only
+#define PTE_US            (1ULL << 2)   // User/Supervisor: 1=User, 0=Supervisor
+#define PTE_PWT           (1ULL << 3)   // Page-Level Write-Through
+#define PTE_PCD           (1ULL << 4)   // Page-Level Cache Disable
+#define PTE_ACCESSED      (1ULL << 5)   // Accessed
+#define PTE_DIRTY         (1ULL << 6)   // Dirty
+#define PTE_PAT           (1ULL << 7)   // Page Attribute Table
+#define PTE_GLOBAL        (1ULL << 8)   // Global Page: Ignored in CR4.PGE=0
+#define PTE_NX            (1ULL << 63)  // No-Execute: Only valid if EFER.NXE=1
 
-// Flags for page table entries
-#define PTE_PRESENT       0x1
-#define PTE_RW            0x2
-#define PTE_US            0x4
-#define PTE_PWT           0x8
-#define PTE_PCD           0x10
-#define PTE_ACCESSED      0x20
-#define PTE_DIRTY         0x40
-#define PTE_PAT           0x80
-#define PTE_GLOBAL        0x100
-#define PTE_NX            (1ULL << 63)
+// Custom flags for kernel/user pages
+#define PTE_KERNEL_PAGE   (0ULL)                // Kernel page (Supervisor, no additional flags)
+#define PTE_USER_PAGE     (PTE_US)              // User-accessible page
+
+// Common combinations
+#define PTE_DEFAULT_KERNEL_FLAGS (PTE_PRESENT | PTE_RW)        // Default for kernel pages: Present, writable
+#define PTE_DEFAULT_USER_FLAGS   (PTE_DEFAULT_FLAGS | PTE_US)  // Default for user pages
+
+// Macros for page frame number (PFN) calculations
+#define ADDR_TO_PFN(addr) ((addr) >> 12)  // Convert address to page frame number
+#define PFN_TO_ADDR(pfn) ((pfn) << 12)    // Convert page frame number to address
+
 
 namespace paging {
 typedef struct page_table_entry {
@@ -87,7 +96,20 @@ struct virt_addr_indices_t {
     uint16_t pt;
 };
 
-virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr);
+/**
+ * @brief Retrieves the page table indices for a given virtual address.
+ * 
+ * This function decomposes a 64-bit virtual address into its constituent indices used
+ * for traversing the multi-level page tables (e.g., PML4, PDPT, PD, PT) in a typical
+ * x86_64 paging structure. These indices are essential for locating the appropriate
+ * page table entries that map the virtual address to a physical address.
+ * 
+ * @param vaddr The 64-bit virtual address for which to retrieve the page table indices.
+ * 
+ * @return virt_addr_indices_t A structure containing the individual indices for each level
+ *                             of the page table hierarchy corresponding to the provided virtual address.
+ */
+virt_addr_indices_t get_vaddr_page_table_indices(uint64_t vaddr);
 
 /**
  * @brief Retrieves the current PML4 table by reading the CR3 register.
@@ -113,6 +135,7 @@ __PRIVILEGED_CODE
 void map_page(
     uintptr_t vaddr,
     uintptr_t paddr,
+    uint64_t flags,
     page_table* pml4,
     allocators::phys_frame_allocator& allocator = allocators::page_bitmap_allocator::get()
 );

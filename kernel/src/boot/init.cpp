@@ -492,7 +492,7 @@ clear_screen()
 
 void init_framebuffer_renderer()
 {
-     uint32_t framebuffer_page_count;
+    uint32_t framebuffer_page_count;
 
     bytes_per_pixel = g_mbi_framebuffer->common.framebuffer_bpp / 8;
     framebuffer_page_count =
@@ -501,13 +501,11 @@ void init_framebuffer_renderer()
 
     size = framebuffer_page_count * PAGE_SIZE / bytes_per_pixel;
 
-    uint64_t cr3;
-    asm volatile ("mov %%cr3, %0" : "=r" (cr3));
-    paging::page_table* pml4 = (paging::page_table*)cr3;
+    paging::page_table* pml4 = paging::get_pml4();
 
     uintptr_t gop = g_mbi_framebuffer->common.framebuffer_addr;
     for (uint32_t i = 0; i < framebuffer_page_count; i++) {
-        paging::map_page(0xffffff8000000000 + i * PAGE_SIZE, gop + i * PAGE_SIZE, pml4, allocators::page_bootstrap_allocator().get());
+        paging::map_page(0xffffff8000000000 + i * PAGE_SIZE, gop + i * PAGE_SIZE, PTE_DEFAULT_KERNEL_FLAGS, pml4, allocators::page_bootstrap_allocator().get());
     }
 
     // Flush the entire TLB
@@ -683,11 +681,9 @@ void memory_map_walk_test() {
 
         gop_printf(
             "  Type: %u, Size: %llu MB (%llu pages)\n"
-            "  Physical: 0x%016llx - 0x%016llx\n"
-            "  Virtual:  0x%016llx - 0x%016llx\n",
+            "  Physical: 0x%016llx - 0x%016llx\n",
             entry.desc->type, length / (1024 * 1024), length / 4096,
-            physical_start, physical_start + length,
-            physical_start + 0xffffff8000000000, physical_start + length + 0xffffff8000000000);
+            physical_start, physical_start + length);
     }
 
     // Access total system conventional memory
@@ -757,26 +753,9 @@ void init(unsigned int magic, void* mbi) {
     // Initialize memory allocators
     paging::init_physical_allocator(g_mbi_efi_mmap);
 
-    // uint64_t cr3;
-    // asm volatile ("mov %%cr3, %0" : "=r" (cr3));
-    // paging::page_table* pml4 = (paging::page_table*)cr3;
-
-    // uintptr_t gop = g_mbi_framebuffer->common.framebuffer_addr;
-    // paging::map_page(0xffffff8000000000, gop, pml4, allocators::page_bootstrap_allocator().get());
-
-    // // Flush the entire TLB
-    // asm volatile ("mov %cr3, %rax");
-    // asm volatile ("mov %rax, %cr3");
-
-    // uint32_t* gop_ptr = (uint32_t*)(0xffffff8000000000);
-    // for (uint32_t i = 0; i < (PAGE_SIZE / sizeof(uint32_t)); i++) {
-    //     *gop_ptr = 0xffffaaff;
-    //     ++gop_ptr;
-    // }
-
     init_framebuffer_renderer();
 
-    //memory_map_walk_test();
+    memory_map_walk_test();
 
     // Idle loop
     while (true) {

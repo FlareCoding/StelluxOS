@@ -12,12 +12,12 @@ extern char __ksymstart;
 extern char __ksymend;
 
 namespace paging {
-virt_addr_indices_t get_vaddr_page_table_indices(uint64_t virt_addr) {
+virt_addr_indices_t get_vaddr_page_table_indices(uint64_t vaddr) {
     virt_addr_indices_t indices;
-    indices.pml4 = (virt_addr >> 39) & 0x1FF;
-    indices.pdpt = (virt_addr >> 30) & 0x1FF;
-    indices.pdt = (virt_addr >> 21) & 0x1FF;
-    indices.pt = (virt_addr >> 12) & 0x1FF;
+    indices.pml4 = (vaddr >> 39) & 0x1FF;
+    indices.pdpt = (vaddr >> 30) & 0x1FF;
+    indices.pdt = (vaddr >> 21) & 0x1FF;
+    indices.pt = (vaddr >> 12) & 0x1FF;
     return indices;
 }
 
@@ -90,56 +90,34 @@ __PRIVILEGED_CODE
 void map_page(
     uintptr_t vaddr,
     uintptr_t paddr,
+    uint64_t flags,
     page_table* pml4,
     allocators::phys_frame_allocator& allocator
 ) {
-    virt_addr_indices_t vaddr_indices =
-        get_vaddr_page_table_indices(reinterpret_cast<uintptr_t>(vaddr));
+    virt_addr_indices_t indices = get_vaddr_page_table_indices(static_cast<uintptr_t>(vaddr));
 
-	page_table *pdpt = nullptr, *pdt = nullptr, *pt = nullptr;
+    // Helper lambda to allocate a page table if not present
+    auto get_page_table = [&allocator](pte_t& entry) -> page_table* {
+        if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
+            auto* new_table = static_cast<page_table*>(allocator.alloc_physical_page());
+            entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
+            entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
+            return new_table;
+        }
+        return reinterpret_cast<page_table*>(PFN_TO_ADDR(entry.page_frame_number));
+    };
 
-	pte_t* pml4_entry = &pml4->entries[vaddr_indices.pml4];
+    // Traverse and allocate as necessary
+    page_table* pdpt = get_page_table(pml4->entries[indices.pml4]);
+    page_table* pdt = get_page_table(pdpt->entries[indices.pdpt]);
+    page_table* pt = get_page_table(pdt->entries[indices.pdt]);
 
-	if (pml4_entry->present == 0) {
-		pdpt = (page_table*)allocator.alloc_physical_page();
+    // Map the page with provided flags
+    pte_t& pte = pt->entries[indices.pt];
+    pte.value = flags; // First apply the flags
+    pte.page_frame_number = ADDR_TO_PFN(paddr);
 
-		pml4_entry->present = 1;
-		pml4_entry->read_write = 1;
-		pml4_entry->page_frame_number = reinterpret_cast<uint64_t>(pdpt) >> 12;
-	} else {
-		pdpt = (page_table*)((uint64_t)pml4_entry->page_frame_number << 12);
-	}
-
-	pte_t* pdpt_entry = &pdpt->entries[vaddr_indices.pdpt];
-	
-	if (pdpt_entry->present == 0) {
-		pdt = (page_table*)allocator.alloc_physical_page();
-
-		pdpt_entry->present = 1;
-		pdpt_entry->read_write = 1;
-		pdpt_entry->page_frame_number = reinterpret_cast<uint64_t>(pdt) >> 12;
-	} else {
-		pdt = (page_table*)((uint64_t)pdpt_entry->page_frame_number << 12);
-	}
-
-	pte_t* pdt_entry = &pdt->entries[vaddr_indices.pdt];
-	
-	if (pdt_entry->present == 0) {
-		pt = (page_table*)allocator.alloc_physical_page();
-
-		pdt_entry->present = 1;
-		pdt_entry->read_write = 1;
-		pdt_entry->page_frame_number = reinterpret_cast<uint64_t>(pt) >> 12;
-	} else {
-		pt = (page_table*)((uint64_t)pdt_entry->page_frame_number << 12);
-	}
-
-	pte_t* pte = &pt->entries[vaddr_indices.pt];
-	pte->present = 1;
-	pte->read_write = 1;
-	pte->page_frame_number = reinterpret_cast<uint64_t>(paddr) >> 12;
-
-    // Invalidate the TLB entry
+    // Invalidate the TLB entry for the virtual address
     invlpg(reinterpret_cast<void*>(vaddr));
 }
 
@@ -180,11 +158,11 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
         page_bitmap_size + page_table_size
     );
 
+    // Ensure that the segment actually exists
     if (!largest_segment.desc) {
         serial::com1_printf("[*] No conventional memory segments found!\n");
         return;
     }
-
 
 #if 0
     serial::com1_printf(
@@ -207,7 +185,7 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     for (const auto& entry : memory_map) {
         if (entry.desc->type == 7) {
             for (uint64_t vaddr = entry.paddr; vaddr < entry.paddr + entry.length; vaddr += PAGE_SIZE) {
-                map_page(vaddr, vaddr, new_pml4, bootstrap_allocator);
+                map_page(vaddr, vaddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
             }
         }
     }
@@ -215,7 +193,7 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     // Create the higher-half mappings for the kernel
     for (uint64_t vaddr = KERNEL_LOAD_OFFSET; vaddr < reinterpret_cast<uint64_t>(&__ksymend); vaddr += PAGE_SIZE) {
         uintptr_t paddr = vaddr - KERNEL_LOAD_OFFSET;
-        map_page(vaddr, paddr, new_pml4, bootstrap_allocator);
+        map_page(vaddr, paddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
     }
 
     // Install the new page table
