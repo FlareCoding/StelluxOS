@@ -131,10 +131,46 @@ __PRIVILEGED_CODE page_table* get_pml4();
  */
 __PRIVILEGED_CODE void set_pml4(page_table* pml4);
 
-__PRIVILEGED_CODE
-void map_page(
+/**
+ * @brief Maps a virtual address to a physical address in the specified page table.
+ * 
+ * This function creates a mapping between the provided virtual address (`vaddr`) and
+ * physical address (`paddr`) within the given page table (`pml4`). The `flags` parameter
+ * defines the access permissions and attributes for the mapping. An optional physical
+ * frame allocator can be supplied; if not, the default page bitmap allocator is used.
+ * 
+ * @param vaddr The virtual address to be mapped.
+ * @param paddr The physical address to map to the virtual address.
+ * @param flags Flags specifying the permissions and attributes for the mapping.
+ * @param pml4 Pointer to the PML4 (top-level) page table where the mapping will be added.
+ * @param allocator Reference to a physical frame allocator. Defaults to the page bitmap allocator.
+ */
+__PRIVILEGED_CODE void map_page(
     uintptr_t vaddr,
     uintptr_t paddr,
+    uint64_t flags,
+    page_table* pml4,
+    allocators::phys_frame_allocator& allocator = allocators::page_bitmap_allocator::get()
+);
+
+/**
+ * @brief Maps a contiguous range of virtual addresses to a contiguous range of physical addresses.
+ * 
+ * This function maps multiple contiguous pages starting from `vaddr` to `paddr`.
+ * The number of pages to map is specified by `num_pages`. All pages in the range
+ * will share the same flags.
+ * 
+ * @param vaddr The starting virtual address of the range.
+ * @param paddr The starting physical address of the range.
+ * @param num_pages The number of pages to map.
+ * @param flags The flags specifying permissions and attributes for the mapping.
+ * @param pml4 Pointer to the PML4 (top-level) page table.
+ * @param allocator Reference to a physical frame allocator. Defaults to the page bitmap allocator.
+ */
+__PRIVILEGED_CODE void map_pages(
+    uintptr_t vaddr,
+    uintptr_t paddr,
+    size_t num_pages,
     uint64_t flags,
     page_table* pml4,
     allocators::phys_frame_allocator& allocator = allocators::page_bitmap_allocator::get()

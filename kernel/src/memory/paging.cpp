@@ -121,6 +121,25 @@ void map_page(
     invlpg(reinterpret_cast<void*>(vaddr));
 }
 
+__PRIVILEGED_CODE void map_pages(
+    uintptr_t vaddr,
+    uintptr_t paddr,
+    size_t num_pages,
+    uint64_t flags,
+    page_table* pml4,
+    allocators::phys_frame_allocator& allocator = allocators::page_bitmap_allocator::get()
+) {
+    for (size_t i = 0; i < num_pages; ++i) {
+        map_page(
+            vaddr + i * PAGE_SIZE,
+            paddr + i * PAGE_SIZE,
+            flags,
+            pml4,
+            allocator
+        );
+    }
+}
+
 __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     // Identity map the first 1GB of physical RAM memory using a huge page
     bootstrap_map_first_1gb();
