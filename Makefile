@@ -10,6 +10,7 @@ IMAGE_DIR       := $(BUILD_DIR)/image
 STELLUX_IMAGE   := $(IMAGE_DIR)/stellux.img
 KERNEL_FILE     := $(BUILD_DIR)/stellux
 GRUB_CFG_PATH   := $(GRUB_DIR)/grub.cfg
+GRUB_FONT_PATH   := $(GRUB_DIR)/fonts/unicode.pf2
 
 # OVMF Firmware Files
 OVMF_DIR        := ovmf
@@ -119,6 +120,7 @@ $(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(GRUB_CFG_PATH)
 		--no-floppy; \
 	sudo $(MKDIR) /mnt/efi/boot/grub; \
 	sudo $(CP) $(GRUB_CFG_PATH) /mnt/efi/boot/grub/grub.cfg; \
+	sudo $(CP) $(GRUB_FONT_PATH) /mnt/efi/boot/grub/fonts/; \
 	sudo $(CP) $(KERNEL_FILE) /mnt/efi/boot/stellux; \
 	sudo $(UMOUNT) /mnt/efi; \
 	sudo $(RM) -rf /mnt/efi; \
