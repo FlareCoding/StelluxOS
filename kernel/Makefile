@@ -57,16 +57,19 @@ $(BUILD_DIR):
 # Compile assembly files to object files
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.S $(HEADERS)
 	@mkdir -p $(dir $@)
-	$(AS) $(ASFLAGS) -c $< -o $@
+	@echo "[AS ] Compiling $<"
+	@$(AS) $(ASFLAGS) -c $< -o $@
 
 # Compile C++ files to object files
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CXXFLAGS) -c $< -o $@
+	@echo "[CXX] Compiling $<"
+	@$(CC) $(CXXFLAGS) -c $< -o $@
 
 # Link the kernel
 $(KERNEL): $(OBJS) $(LINKER_SCRIPT) | $(BUILD_DIR)
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+	@echo "[LD ] Linking $@"
+	@$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 # Clean up build files
 clean:
