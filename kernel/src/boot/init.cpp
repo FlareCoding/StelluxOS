@@ -3,6 +3,7 @@
 #include <arch/arch_init.h>
 #include <interrupts/irq.h>
 #include <memory/paging.h>
+#include <memory/tlb.h>
 #include <memory/allocators/page_bootstrap_allocator.h>
 #include <boot/efimem.h>
 
@@ -471,7 +472,7 @@ const uint8_t psf_font_data[] = {
 
 static uint32_t size;
 static uint32_t cursor_x = 0, cursor_y = 0;
-static char* pixels = (char*)0xffffff8000000000;
+static char* pixels = nullptr;
 
 static uint32_t bytes_per_pixel;
 
@@ -498,20 +499,18 @@ void init_framebuffer_renderer() {
 
     size = framebuffer_page_count * PAGE_SIZE / bytes_per_pixel;
 
-    paging::page_table* pml4 = paging::get_pml4();
+    auto& allocator = allocators::page_bitmap_allocator::get_virtual_allocator();
+    pixels = (char*)allocator.alloc_pages(framebuffer_page_count);
 
-    uintptr_t gop = g_mbi_framebuffer->common.framebuffer_addr;
-    for (uint32_t i = 0; i < framebuffer_page_count; i++) {
-        paging::map_page(0xffffff8000000000 + i * PAGE_SIZE, gop + i * PAGE_SIZE, PTE_DEFAULT_KERNEL_FLAGS, pml4, allocators::page_bootstrap_allocator().get());
-    }
+    uintptr_t gop_addr = g_mbi_framebuffer->common.framebuffer_addr;
+    paging::map_pages((uintptr_t)pixels, gop_addr, framebuffer_page_count, PTE_DEFAULT_KERNEL_FLAGS, paging::get_pml4());
 
     // Flush the entire TLB
-    asm volatile ("mov %cr3, %rax");
-    asm volatile ("mov %rax, %cr3");
+    paging::tlb_flush_all();
 
     serial::com1_printf("------------ Framebuffer ------------\n");
-    serial::com1_printf("      physbase            : %llx\n", g_mbi_framebuffer->common.framebuffer_addr);
-    serial::com1_printf("      virtbase            : %llx\n", pixels);
+    serial::com1_printf("      physbase            : 0x%llx\n", g_mbi_framebuffer->common.framebuffer_addr);
+    serial::com1_printf("      virtbase            : 0x%llx\n", pixels);
     serial::com1_printf("      framebuffer->pitch  : %u\n", g_mbi_framebuffer->common.framebuffer_pitch);
     serial::com1_printf("      framebuffer->width  : %u\n", g_mbi_framebuffer->common.framebuffer_width);
     serial::com1_printf("      framebuffer->height : %u\n", g_mbi_framebuffer->common.framebuffer_height);
@@ -688,46 +687,6 @@ void memory_map_walk_test() {
     uint64_t total_system_conventional_size_mb = memory_map.get_total_conventional_memory() / (1024 * 1024);
     gop_printf("\nTotal System Memory                : %llu MB\n", total_system_size_mb);
     gop_printf("Total System Conventional Memory   : %llu MB\n", total_system_conventional_size_mb);
-
-    uint64_t kernel_start = (uint64_t)&__ksymstart;
-    uint64_t kernel_end = (uint64_t)&__ksymend;
-    uint64_t kernel_page_count = (kernel_end - kernel_start) / PAGE_SIZE;
-    gop_printf("Kernel Size: %llu KB\n    ", (kernel_end - kernel_start) / 1024);
-
-    // Calculate the size needed for the page frame bitmap
-    uint64_t page_bitmap_size = memory_map.get_highest_address() / PAGE_SIZE / 8 + 1;
-    // Round up to the nearest page size
-    page_bitmap_size = (page_bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-
-    gop_printf("\nPage Bitmap Size: %llu KB\n", page_bitmap_size / 1024);
-
-    uint64_t page_table_memory = calculate_page_table_memory(memory_map.get_total_system_memory() + kernel_page_count * PAGE_SIZE);
-    // Round up to the nearest page size
-    page_table_memory = (page_table_memory + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    gop_printf("Total memory required for page tables: %llu KB\n", page_table_memory / 1024);
-
-    // Access largest conventional memory segment
-    // The segment has to be large enough to fit the bitmap and the full page table covering system memory
-    efi::efi_memory_descriptor_wrapper largest_segment = memory_map.find_segment_for_allocation_block(
-        10 * (1 << 20),     // Start searching from the 10MB point to be guaranteed above the kernel
-        1ULL << 30,         // Pick the largest segment within the 1GB range
-        page_bitmap_size + page_table_memory
-    );
-
-    if (largest_segment.desc == nullptr) {
-        gop_printf("[*] No conventional memory segments found!\n");
-        return;
-    }
-    
-    uint64_t physical_start = largest_segment.paddr;
-    uint64_t length = largest_segment.length;
-
-    gop_printf(
-        "Largest Conventional Memory Segment:\n"
-        "  Size: %llu MB (%llu pages)\n"
-        "  Physical: 0x%016llx - 0x%016llx\n",
-        length / (1024 * 1024), length / 4096,
-        physical_start, physical_start + length);
 }
 
 EXTERN_C
@@ -747,10 +706,19 @@ void init(unsigned int magic, void* mbi) {
 
     // Initialize memory allocators
     paging::init_physical_allocator(g_mbi_efi_mmap);
+    paging::init_virtual_allocator();
 
     init_framebuffer_renderer();
 
     memory_map_walk_test();
+
+    gop_printf("------------ Framebuffer ------------\n");
+    gop_printf("      physbase            : 0x%llx\n", g_mbi_framebuffer->common.framebuffer_addr);
+    gop_printf("      virtbase            : 0x%llx\n", pixels);
+    gop_printf("      framebuffer->pitch  : %u\n", g_mbi_framebuffer->common.framebuffer_pitch);
+    gop_printf("      framebuffer->width  : %u\n", g_mbi_framebuffer->common.framebuffer_width);
+    gop_printf("      framebuffer->height : %u\n", g_mbi_framebuffer->common.framebuffer_height);
+    gop_printf("      framebuffer->bpp    : %u\n", g_mbi_framebuffer->common.framebuffer_bpp);
 
     // Idle loop
     while (true) {

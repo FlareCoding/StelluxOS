@@ -15,6 +15,7 @@
 #define PTE_ACCESSED      (1ULL << 5)   // Accessed
 #define PTE_DIRTY         (1ULL << 6)   // Dirty
 #define PTE_PAT           (1ULL << 7)   // Page Attribute Table
+#define PTE_PS            (1ULL << 7)   // Page Size (1=Large Page, 0=4KB Page)
 #define PTE_GLOBAL        (1ULL << 8)   // Global Page: Ignored in CR4.PGE=0
 #define PTE_NX            (1ULL << 63)  // No-Execute: Only valid if EFER.NXE=1
 
@@ -178,6 +179,16 @@ __PRIVILEGED_CODE void map_pages(
         allocators::page_bitmap_allocator::get_physical_allocator()
 );
 
+__PRIVILEGED_CODE
+void map_large_page(
+    uintptr_t vaddr,
+    uintptr_t paddr,
+    uint64_t flags,
+    page_table* pml4,
+    allocators::page_frame_allocator& allocator =
+        allocators::page_bitmap_allocator::get_physical_allocator()
+); 
+
 /**
  * @brief Initializes the physical memory allocator using the Multiboot EFI memory map.
  * 
@@ -194,6 +205,14 @@ __PRIVILEGED_CODE void map_pages(
  *                         allocation and which should remain reserved.
  */
 __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag);
+
+/**
+ * @brief Initializes the virtual memory allocator.
+ * 
+ * Prepares the virtual allocator to handle future requests for virtual address space.
+ * Proper initialization is essential for enabling dynamic allocation and deallocation.
+ */
+__PRIVILEGED_CODE void init_virtual_allocator();
 } // namespace paging
 
 #endif // PAGING_H

@@ -46,7 +46,7 @@ void set_pml4(page_table* pml4) {
  * necessary space for a new page table, which is used to identity map the entire RAM and
  * the higher half of the kernel.
  */
-void bootstrap_map_first_1gb() {
+__PRIVILEGED_CODE void bootstrap_map_first_1gb() {
     page_table* pml4 = get_pml4();
 
     pte_t* pml4_entry = &pml4->entries[0];
@@ -121,7 +121,8 @@ void map_page(
     invlpg(reinterpret_cast<void*>(vaddr));
 }
 
-__PRIVILEGED_CODE void map_pages(
+__PRIVILEGED_CODE
+void map_pages(
     uintptr_t vaddr,
     uintptr_t paddr,
     size_t num_pages,
@@ -140,7 +141,43 @@ __PRIVILEGED_CODE void map_pages(
     }
 }
 
-__PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
+__PRIVILEGED_CODE
+void map_large_page(
+    uintptr_t vaddr,
+    uintptr_t paddr,
+    uint64_t flags,
+    page_table* pml4,
+    allocators::page_frame_allocator& allocator
+) {
+    // Get the indices for the given virtual address
+    virt_addr_indices_t indices = get_vaddr_page_table_indices(static_cast<uintptr_t>(vaddr));
+
+    // Helper lambda to allocate a page table if not present
+    auto get_page_table = [&allocator](pte_t& entry) -> page_table* {
+        if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
+            auto* new_table = static_cast<page_table*>(allocator.alloc_page());
+            entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
+            entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
+            return new_table;
+        }
+        return reinterpret_cast<page_table*>(PFN_TO_ADDR(entry.page_frame_number));
+    };
+
+    // Traverse and allocate PML4 and PDPT as necessary
+    page_table* pdpt = get_page_table(pml4->entries[indices.pml4]);
+    page_table* pdt = get_page_table(pdpt->entries[indices.pdpt]);
+
+    // Map the large page with provided flags directly in the PDT
+    pte_t& pde = pdt->entries[indices.pdt];
+    pde.value = flags | PTE_PS; // Apply flags and set the page size (PS) bit
+    pde.page_frame_number = ADDR_TO_PFN(paddr); // Set the physical frame number
+
+    // Invalidate the TLB entry for the virtual address
+    invlpg(reinterpret_cast<void*>(vaddr));
+}
+
+__PRIVILEGED_CODE
+void init_physical_allocator(void* mbi_efi_mmap_tag) {
     // Identity map the first 1GB of physical RAM memory using a huge page
     bootstrap_map_first_1gb();
 
@@ -253,15 +290,48 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
         reinterpret_cast<void*>(page_table_physical_start),
         (page_table_size / PAGE_SIZE) + 1
     );
+}
 
-    // Test
-    for (int i = 0; i < 97 + 24 + 1738; i++) {
-        __unused bitmap_allocator.alloc_page();
+__PRIVILEGED_CODE
+void init_virtual_allocator() {
+    /*
+    * First we have to prepare the memory for the virtual allocator's bitmap.
+    *
+    * Kernel VAS (virtual address space) starts at 0xffffff8000000000 and ends
+    * at 0xffffffff80000000, providing around 510 GB of addressable virtual memory.
+    * In order to support that, the bitmap requires 133,693,440 bits (one bit per 4 KB page).
+    * This means that the bitmap would require 16 MB of backing memory to store it, so
+    * an efficient way to do this would be to map 8 large pages (2 MB each) for backing storage.
+    */
+
+    const uint64_t large_page_size = 2 * 1024 * 1024; // 2MB
+    const uint64_t num_large_pages = 8;               // 16MB / 2MB = 8
+
+    for (uint64_t i = 0; i < num_large_pages; ++i) {
+        // Calculate the virtual address for this page
+        uintptr_t vaddr = KERN_VIRT_BASE + (i * large_page_size);
+
+        // Allocate a 2MB large page
+        auto& physical_allocator = allocators::page_bitmap_allocator::get_physical_allocator();
+        void* paddr = physical_allocator.alloc_large_page();
+        if (paddr == nullptr) {
+            serial::com1_printf("[!] Failed to allocate large page for virtual address: 0x%016llx\n", vaddr);
+            continue;
+        }
+
+        // Map the allocated physical page to the virtual address
+        map_large_page(vaddr, reinterpret_cast<uintptr_t>(paddr), PTE_DEFAULT_KERNEL_FLAGS, get_pml4());
     }
 
-    for (int i = 0; i < 10; i++) {
-        serial::com1_printf("allocated page: 0x%llx\n", bitmap_allocator.alloc_page());
-    }
+    auto& virtual_allocator = allocators::page_bitmap_allocator::get_virtual_allocator();
+    virtual_allocator.init_bitmap(large_page_size * num_large_pages, reinterpret_cast<uint8_t*>(KERN_VIRT_BASE));
+
+    // Make sure the pages that this allocator tracks starts at KERN_VIRT_BASE (0xffffff8000000000)
+    virtual_allocator.set_base_page_offset(KERN_VIRT_BASE);
+
+    // Lock the virtual address space region that references the allocator's bitmap
+    const size_t bitmap_page_count = (large_page_size * num_large_pages) / PAGE_SIZE; // 16MB / 4KB = 4096
+    virtual_allocator.lock_pages(reinterpret_cast<void*>(KERN_VIRT_BASE), bitmap_page_count);
 }
 } // namespace paging
 
