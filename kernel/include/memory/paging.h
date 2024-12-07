@@ -2,10 +2,8 @@
 #define PAGING_H
 #include "allocators/page_bitmap_allocator.h"
 
-#define PAGE_SIZE   0x1000
-#define PAGE_OFFSET 0xffffff8000000000
-
-#define PAGE_ALIGN(value) (((value) + (PAGE_SIZE) - 1) & ~((PAGE_SIZE) - 1))
+#define PAGE_SIZE           0x1000
+#define PAGE_ALIGN(value)   (((value) + (PAGE_SIZE) - 1) & ~((PAGE_SIZE) - 1))
 
 #define PAGE_TABLE_ENTRIES 512
 
@@ -21,8 +19,8 @@
 #define PTE_NX            (1ULL << 63)  // No-Execute: Only valid if EFER.NXE=1
 
 // Custom flags for kernel/user pages
-#define PTE_KERNEL_PAGE   (0ULL)                // Kernel page (Supervisor, no additional flags)
-#define PTE_USER_PAGE     (PTE_US)              // User-accessible page
+#define PTE_KERNEL_PAGE   (0ULL)        // Kernel page (Supervisor, no additional flags)
+#define PTE_USER_PAGE     (PTE_US)      // User-accessible page
 
 // Common combinations
 #define PTE_DEFAULT_KERNEL_FLAGS (PTE_PRESENT | PTE_RW)        // Default for kernel pages: Present, writable
@@ -32,6 +30,8 @@
 #define ADDR_TO_PFN(addr) ((addr) >> 12)  // Convert address to page frame number
 #define PFN_TO_ADDR(pfn) ((pfn) << 12)    // Convert page frame number to address
 
+// Base address of the kernel virtual address space
+#define KERN_VIRT_BASE 0xffffff8000000000
 
 namespace paging {
 typedef struct page_table_entry {
@@ -150,7 +150,8 @@ __PRIVILEGED_CODE void map_page(
     uintptr_t paddr,
     uint64_t flags,
     page_table* pml4,
-    allocators::phys_frame_allocator& allocator = allocators::page_bitmap_allocator::get()
+    allocators::page_frame_allocator& allocator =
+        allocators::page_bitmap_allocator::get_physical_allocator()
 );
 
 /**
@@ -173,7 +174,8 @@ __PRIVILEGED_CODE void map_pages(
     size_t num_pages,
     uint64_t flags,
     page_table* pml4,
-    allocators::phys_frame_allocator& allocator = allocators::page_bitmap_allocator::get()
+    allocators::page_frame_allocator& allocator =
+        allocators::page_bitmap_allocator::get_physical_allocator()
 );
 
 /**

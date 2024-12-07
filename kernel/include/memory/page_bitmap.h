@@ -15,17 +15,6 @@ namespace paging {
 class page_frame_bitmap {
 public:
     /**
-     * @brief Retrieves the singleton instance of the page_frame_bitmap.
-     * 
-     * This method ensures that only one instance of the `page_frame_bitmap`
-     * exists throughout the system. It provides global access to the bitmap for
-     * managing physical memory pages.
-     * 
-     * @return page_frame_bitmap& Reference to the singleton instance of the bitmap.
-     */
-    __PRIVILEGED_CODE static page_frame_bitmap& get();
-
-    /**
      * @brief Calculates the required size of the page frame bitmap based on system memory.
      * 
      * This method determines the amount of memory needed to represent the
@@ -57,13 +46,13 @@ public:
      * 
      * This method sets up the bitmap by defining its size (in pages) and assigning
      * the memory buffer that will store the bitmap data. It must be called before
-     * any operations are performed on the bitmap. All the pages are initially
-     * marked as 'used' and then unlocked when iterating over the memory map.
+     * any operations are performed on the bitmap.
      * 
      * @param size The total number of pages that the bitmap will manage.
-     * @param buffer Pointer to the memory buffer that will hold the bitmap data.
+     * @param buffer Physical address of the buffer that will hold the bitmap data.
+     * @param initial_used_value Sets every bit set to 'used' if true, otherwise bits are marked as 'free'.
      */
-    __PRIVILEGED_CODE void init(uint64_t size, uint8_t* buffer);
+    __PRIVILEGED_CODE void init(uint64_t size, uint8_t* buffer, bool initial_used_value = false);
 
     /**
      * @brief Retrieves the size of the bitmap.
@@ -86,16 +75,6 @@ public:
      * @return uint64_t The total number of pages tracked by the bitmap.
      */
     __PRIVILEGED_CODE uint64_t get_next_free_index() const;
-
-    /**
-     * @brief Sets the next free page index in the bitmap.
-     * 
-     * This method allows for external access to setting the next
-     * available free page index in the bitmap.
-     * 
-     * @return uint64_t The total number of pages tracked by the bitmap.
-     */
-    __PRIVILEGED_CODE void set_next_free_index(uint64_t idx) const;
 
     /**
      * @brief Marks a single physical page as free.
@@ -220,7 +199,7 @@ private:
      * This private member variable stores the size of the bitmap, representing the
      * total number of physical pages that are tracked for allocation and deallocation.
      */
-    __PRIVILEGED_DATA static uint64_t _size;
+    uint64_t m_size;
 
     /**
      * @brief Pointer to the memory buffer that holds the bitmap data.
@@ -229,7 +208,7 @@ private:
      * is stored. Each bit in the buffer represents the status (free or used) of a
      * corresponding physical memory page.
      */
-    __PRIVILEGED_DATA static uint8_t* _buffer;
+    uint8_t* m_buffer;
 
     /**
      * @brief Index of the next available free physical frame in the bitmap.
@@ -237,7 +216,7 @@ private:
      * Having a way to keep track of the next free physical page is a way to
      * optimize physical frame allocation by avoiding redundant linear searching.
      */
-    __PRIVILEGED_DATA static uint64_t _next_free_index;
+    uint64_t m_next_free_index;
 };
 } // namespace paging
 

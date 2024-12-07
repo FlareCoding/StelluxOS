@@ -92,14 +92,14 @@ void map_page(
     uintptr_t paddr,
     uint64_t flags,
     page_table* pml4,
-    allocators::phys_frame_allocator& allocator
+    allocators::page_frame_allocator& allocator
 ) {
     virt_addr_indices_t indices = get_vaddr_page_table_indices(static_cast<uintptr_t>(vaddr));
 
     // Helper lambda to allocate a page table if not present
     auto get_page_table = [&allocator](pte_t& entry) -> page_table* {
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
-            auto* new_table = static_cast<page_table*>(allocator.alloc_physical_page());
+            auto* new_table = static_cast<page_table*>(allocator.alloc_page());
             entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
             entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
             return new_table;
@@ -127,7 +127,7 @@ __PRIVILEGED_CODE void map_pages(
     size_t num_pages,
     uint64_t flags,
     page_table* pml4,
-    allocators::phys_frame_allocator& allocator
+    allocators::page_frame_allocator& allocator
 ) {
     for (size_t i = 0; i < num_pages; ++i) {
         map_page(
@@ -197,7 +197,7 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     bootstrap_allocator.init(largest_segment.paddr + page_bitmap_size, page_table_size);
 
     // Allocate a new top-level page table
-    page_table* new_pml4 = reinterpret_cast<page_table*>(bootstrap_allocator.alloc_physical_page());
+    page_table* new_pml4 = reinterpret_cast<page_table*>(bootstrap_allocator.alloc_page());
 
     // Identity map the physical addresses in RAM
     for (const auto& entry : memory_map) {
@@ -218,16 +218,15 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
     set_pml4(new_pml4);
 
     // Initialize the page frame bitmap
-    page_frame_bitmap::get().init(page_bitmap_size, reinterpret_cast<uint8_t*>(largest_segment.paddr));
-
-    auto& bitmap_allocator = allocators::page_bitmap_allocator::get();
+    auto& bitmap_allocator = allocators::page_bitmap_allocator::get_physical_allocator();
+    bitmap_allocator.init_bitmap(page_bitmap_size, reinterpret_cast<uint8_t*>(largest_segment.paddr), true);
 
     // Since the bitmap starts with all memory marked as 'used', we
     // have to unlock all memory regions marked as EfiConventionalMemory.
     for (const auto& entry : memory_map) {
         if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) {
             // Lock any page that is not part of EfiConventionalMemory
-            bitmap_allocator.free_physical_pages(
+            bitmap_allocator.free_pages(
                 reinterpret_cast<void*>(entry.paddr),
                 entry.desc->page_count
             );
@@ -236,24 +235,33 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     // Lock pages belonging to the kernel
     uintptr_t kernel_physical_start = reinterpret_cast<uintptr_t>(&__ksymstart) - KERNEL_LOAD_OFFSET;
-    bitmap_allocator.lock_physical_pages(
+    bitmap_allocator.lock_pages(
         reinterpret_cast<void*>(kernel_physical_start),
         (kernel_size / PAGE_SIZE) + 1
     );
 
     // Lock pages belonging to the page frame bitmap
     uintptr_t bitmap_physical_start = largest_segment.paddr;
-    bitmap_allocator.lock_physical_pages(
+    bitmap_allocator.lock_pages(
         reinterpret_cast<void*>(bitmap_physical_start),
         (page_bitmap_size / PAGE_SIZE) + 1
     );
 
     // Lock pages belonging to the new page table
     uintptr_t page_table_physical_start = largest_segment.paddr + page_bitmap_size;
-    bitmap_allocator.lock_physical_pages(
+    bitmap_allocator.lock_pages(
         reinterpret_cast<void*>(page_table_physical_start),
         (page_table_size / PAGE_SIZE) + 1
     );
+
+    // Test
+    for (int i = 0; i < 97 + 24 + 1738; i++) {
+        __unused bitmap_allocator.alloc_page();
+    }
+
+    for (int i = 0; i < 10; i++) {
+        serial::com1_printf("allocated page: 0x%llx\n", bitmap_allocator.alloc_page());
+    }
 }
 } // namespace paging
 

@@ -3,46 +3,29 @@
 #include <memory/paging.h>
 
 namespace paging {
-__PRIVILEGED_DATA uint64_t page_frame_bitmap::_size;
-__PRIVILEGED_DATA uint8_t* page_frame_bitmap::_buffer;
-__PRIVILEGED_DATA uint64_t page_frame_bitmap::_next_free_index;
-
-__PRIVILEGED_CODE
-page_frame_bitmap& page_frame_bitmap::get() {
-    __PRIVILEGED_DATA
-    static page_frame_bitmap g_page_frame_bitmap;
-
-    return g_page_frame_bitmap;
-}
-
 __PRIVILEGED_CODE
 uint64_t page_frame_bitmap::calculate_required_size(uint64_t system_memory) {
     return PAGE_ALIGN((system_memory / PAGE_SIZE / 8) + 1);
 }
 
 __PRIVILEGED_CODE
-void page_frame_bitmap::init(uint64_t size, uint8_t* buffer) {
-    _size = size;
-    _buffer = buffer;
-    _next_free_index = 0;
+void page_frame_bitmap::init(uint64_t size, uint8_t* buffer, bool initial_used_value) {
+    m_size = size;
+    m_buffer = buffer;
+    m_next_free_index = 0;
 
     // Initially mark everything as used
-    memset(buffer, 0xff, size);
+    memset(buffer, initial_used_value ? 0xff : 0x00, size);
 }
 
 __PRIVILEGED_CODE
 uint64_t page_frame_bitmap::get_size() const {
-    return _size;
+    return m_size;
 }
 
 __PRIVILEGED_CODE
 uint64_t page_frame_bitmap::get_next_free_index() const {
-    return _next_free_index;
-}
-
-__PRIVILEGED_CODE
-void page_frame_bitmap::set_next_free_index(uint64_t idx) const {
-    _next_free_index = idx;
+    return m_next_free_index;
 }
 
 __PRIVILEGED_CODE
@@ -50,8 +33,8 @@ bool page_frame_bitmap::mark_page_free(void* paddr) {
     bool result = _set_page_value(paddr, false);
     if (result) {
         uint64_t index = _get_addr_index(paddr);
-        if (index < _next_free_index) {
-            _next_free_index = index; // Update next free index
+        if (index < m_next_free_index) {
+            m_next_free_index = index; // Update next free index
         }
     }
     return result;
@@ -62,8 +45,8 @@ bool page_frame_bitmap::mark_page_used(void* paddr) {
     bool result = _set_page_value(paddr, true);
     if (result) {
         uint64_t index = _get_addr_index(paddr);
-        if (index == _next_free_index) {
-            _next_free_index = index + 1; // Move to the next index
+        if (index == m_next_free_index) {
+            m_next_free_index = index + 1; // Move to the next index
         }
     }
     return result;
@@ -74,7 +57,7 @@ bool page_frame_bitmap::mark_pages_free(void* paddr, size_t count) {
     uint64_t start_index = _get_addr_index(paddr);
 
     // Check that we don't go beyond the bitmap buffer
-    if ((start_index + count) > (_size * 8))
+    if ((start_index + count) > (m_size * 8))
         return false;
 
     for (size_t i = 0; i < count; ++i) {
@@ -83,8 +66,8 @@ bool page_frame_bitmap::mark_pages_free(void* paddr, size_t count) {
             return false;
     }
 
-    if (start_index < _next_free_index) {
-        _next_free_index = start_index; // Update next free index
+    if (start_index < m_next_free_index) {
+        m_next_free_index = start_index; // Update next free index
     }
 
     return true;
@@ -95,7 +78,7 @@ bool page_frame_bitmap::mark_pages_used(void* paddr, size_t count) {
     uint64_t start_index = _get_addr_index(paddr);
 
     // Check that we don't go beyond the bitmap buffer
-    if ((start_index + count) > (_size * 8))
+    if ((start_index + count) > (m_size * 8))
         return false;
 
     for (size_t i = 0; i < count; ++i) {
@@ -104,8 +87,8 @@ bool page_frame_bitmap::mark_pages_used(void* paddr, size_t count) {
             return false;
     }
 
-    if (start_index <= _next_free_index) {
-        _next_free_index = start_index + count; // Update next free index
+    if (start_index <= m_next_free_index) {
+        m_next_free_index = start_index + count; // Update next free index
     }
 
     return true;
@@ -126,7 +109,7 @@ bool page_frame_bitmap::_set_page_value(void* paddr, bool value) {
     uint64_t index = _get_addr_index(paddr);
 
     // Preventing bitmap buffer overflow
-    if (index > (_size * 8))
+    if (index > (m_size * 8))
         return false;
 
     uint64_t byte_idx = index / 8;
@@ -134,11 +117,11 @@ bool page_frame_bitmap::_set_page_value(void* paddr, bool value) {
     uint8_t mask = 0b00000001 << bit_idx;
 
     // First disable the bit
-    _buffer[byte_idx] &= ~mask;
+    m_buffer[byte_idx] &= ~mask;
 
     // Now enable the bit if needed
     if (value) {
-        _buffer[byte_idx] |= mask;
+        m_buffer[byte_idx] |= mask;
     }
 
     return true;
@@ -151,7 +134,7 @@ bool page_frame_bitmap::_get_page_value(void* paddr) {
     uint8_t bit_idx = index % 8;
     uint8_t mask = 0b00000001 << bit_idx;
 
-    return (_buffer[byte_idx] & mask) > 0;
+    return (m_buffer[byte_idx] & mask) > 0;
 }
 
 __PRIVILEGED_CODE

@@ -37,8 +37,8 @@ void* operator new(size_t, void* ptr) noexcept;
 #define zeromem(vaddr, size) memset(vaddr, 0, size)
 
 #define GENERATE_STATIC_SINGLETON(type) \
-    alignas(type) static uint8_t buffer[sizeof(type)]; \
-    static type* instance = nullptr; \
+    __PRIVILEGED_DATA alignas(type) static uint8_t buffer[sizeof(type)]; \
+    __PRIVILEGED_DATA static type* instance = nullptr; \
     \
     if (!instance) { \
         instance = new (buffer) type(); \

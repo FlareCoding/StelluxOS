@@ -1,24 +1,31 @@
 #ifndef PAGE_BITMAP_ALLOCATOR_H
 #define PAGE_BITMAP_ALLOCATOR_H
-#include "phys_frame_allocator.h"
+#include "page_frame_allocator.h"
+#include <memory/page_bitmap.h>
 
 namespace allocators {
-class page_bitmap_allocator : public phys_frame_allocator {
+class page_bitmap_allocator : public page_frame_allocator {
 public:
-    static page_bitmap_allocator& get();
+    __PRIVILEGED_CODE static page_bitmap_allocator& get_physical_allocator();
+    __PRIVILEGED_CODE static page_bitmap_allocator& get_virtual_allocator();
 
     page_bitmap_allocator() = default;
     ~page_bitmap_allocator() = default;
 
-    __PRIVILEGED_CODE void lock_physical_page(void* paddr) override;
-    __PRIVILEGED_CODE void lock_physical_pages(void* paddr, size_t count) override;
+    __PRIVILEGED_CODE void init_bitmap(uint64_t size, uint8_t* buffer, bool initial_used_value = false);
 
-    __PRIVILEGED_CODE void free_physical_page(void* paddr) override;
-    __PRIVILEGED_CODE void free_physical_pages(void* paddr, size_t count) override;
+    __PRIVILEGED_CODE void lock_page(void* addr) override;
+    __PRIVILEGED_CODE void lock_pages(void* addr, size_t count) override;
 
-    __PRIVILEGED_CODE void* alloc_physical_page() override;
-    __PRIVILEGED_CODE void* alloc_physical_pages(size_t count) override;
-    __PRIVILEGED_CODE void* alloc_physical_pages_aligned(size_t count, uint64_t alignment) override;
+    __PRIVILEGED_CODE void free_page(void* addr) override;
+    __PRIVILEGED_CODE void free_pages(void* addr, size_t count) override;
+
+    __PRIVILEGED_CODE void* alloc_page() override;
+    __PRIVILEGED_CODE void* alloc_pages(size_t count) override;
+    __PRIVILEGED_CODE void* alloc_pages_aligned(size_t count, uint64_t alignment) override;
+
+private:
+    paging::page_frame_bitmap m_bitmap;
 };
 } // namespace allocators
 

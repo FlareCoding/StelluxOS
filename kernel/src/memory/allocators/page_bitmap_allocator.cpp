@@ -5,69 +5,80 @@
 #include <serial/serial.h>
 
 namespace allocators {
-page_bitmap_allocator& page_bitmap_allocator::get() {
+__PRIVILEGED_CODE
+page_bitmap_allocator& page_bitmap_allocator::get_physical_allocator() {
     GENERATE_STATIC_SINGLETON(page_bitmap_allocator);
 }
 
 __PRIVILEGED_CODE
-void page_bitmap_allocator::lock_physical_page(void* paddr) {
-    // Align the physical address to the page boundary
-    uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
-    addr &= ~(PAGE_SIZE - 1);
-    void* aligned_paddr = reinterpret_cast<void*>(addr);
+page_bitmap_allocator& page_bitmap_allocator::get_virtual_allocator() {
+    GENERATE_STATIC_SINGLETON(page_bitmap_allocator);
+}
+
+__PRIVILEGED_CODE
+void page_bitmap_allocator::init_bitmap(uint64_t size, uint8_t* buffer, bool initial_used_value) {
+    m_bitmap.init(size, buffer, initial_used_value);
+}
+
+__PRIVILEGED_CODE
+void page_bitmap_allocator::lock_page(void* addr) {
+    // Align the address to the page boundary
+    uintptr_t addr_val = reinterpret_cast<uintptr_t>(addr);
+    addr_val &= ~(PAGE_SIZE - 1);
+    void* aligned_addr = reinterpret_cast<void*>(addr_val);
     
     // Mark the page as used (locked)
-    bool success = paging::page_frame_bitmap::get().mark_page_used(aligned_paddr);
+    bool success = m_bitmap.mark_page_used(aligned_addr);
     if (!success) {
-        serial::com1_printf("[*] failed to lock physical page: 0x%016llx\n", aligned_paddr);
+        serial::com1_printf("[*] failed to lock page: 0x%016llx\n", aligned_addr);
     }
 }
 
 __PRIVILEGED_CODE
-void page_bitmap_allocator::lock_physical_pages(void* paddr, size_t count) {
-    // Align the physical address to the page boundary
-    uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
-    addr &= ~(PAGE_SIZE - 1);
-    void* aligned_paddr = reinterpret_cast<void*>(addr);
+void page_bitmap_allocator::lock_pages(void* addr, size_t count) {
+    // Align the address to the page boundary
+    uintptr_t addr_val = reinterpret_cast<uintptr_t>(addr);
+    addr_val &= ~(PAGE_SIZE - 1);
+    void* aligned_addr = reinterpret_cast<void*>(addr_val);
     
     // Mark the pages as used (locked)
-    bool success = paging::page_frame_bitmap::get().mark_pages_used(aligned_paddr, count);
+    bool success = m_bitmap.mark_pages_used(aligned_addr, count);
     if (!success) {
-        serial::com1_printf("[*] failed to lock %u physical pages at: 0x%016llx\n", count, aligned_paddr);
+        serial::com1_printf("[*] failed to lock %u pages at: 0x%016llx\n", count, aligned_addr);
     }
 }
 
 __PRIVILEGED_CODE
-void page_bitmap_allocator::free_physical_page(void* paddr) {
-    // Align the physical address to the page boundary
-    uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
-    addr &= ~(PAGE_SIZE - 1);
-    void* aligned_paddr = reinterpret_cast<void*>(addr);
+void page_bitmap_allocator::free_page(void* addr) {
+    // Align the address to the page boundary
+    uintptr_t addr_val = reinterpret_cast<uintptr_t>(addr);
+    addr_val &= ~(PAGE_SIZE - 1);
+    void* aligned_addr = reinterpret_cast<void*>(addr_val);
     
     // Mark the page as free
-    bool success = paging::page_frame_bitmap::get().mark_page_free(aligned_paddr);
+    bool success = m_bitmap.mark_page_free(aligned_addr);
     if (!success) {
-        serial::com1_printf("[*] failed to free physical page: 0x%016llx\n", aligned_paddr);
+        serial::com1_printf("[*] failed to free page: 0x%016llx\n", aligned_addr);
     }
 }
 
 __PRIVILEGED_CODE
-void page_bitmap_allocator::free_physical_pages(void* paddr, size_t count) {
-    // Align the physical address to the page boundary
-    uintptr_t addr = reinterpret_cast<uintptr_t>(paddr);
-    addr &= ~(PAGE_SIZE - 1);
-    void* aligned_paddr = reinterpret_cast<void*>(addr);
+void page_bitmap_allocator::free_pages(void* addr, size_t count) {
+    // Align the address to the page boundary
+    uintptr_t addr_val = reinterpret_cast<uintptr_t>(addr);
+    addr_val &= ~(PAGE_SIZE - 1);
+    void* aligned_addr = reinterpret_cast<void*>(addr_val);
     
     // Mark the pages as free
-    bool success = paging::page_frame_bitmap::get().mark_pages_free(aligned_paddr, count);
+    bool success = m_bitmap.mark_pages_free(aligned_addr, count);
     if (!success) {
-        serial::com1_printf("[*] failed to free %u physical pages at: 0x%016llx\n", count, aligned_paddr);
+        serial::com1_printf("[*] failed to free %u pages at: 0x%016llx\n", count, aligned_addr);
     }
 }
 
 __PRIVILEGED_CODE
-void* page_bitmap_allocator::alloc_physical_page() {
-    paging::page_frame_bitmap& bitmap = paging::page_frame_bitmap::get();
+void* page_bitmap_allocator::alloc_page() {
+    paging::page_frame_bitmap& bitmap = m_bitmap;
     uint64_t size = bitmap.get_size() * 8; // Total number of pages
 
     uint64_t index = bitmap.get_next_free_index();
@@ -90,12 +101,12 @@ void* page_bitmap_allocator::alloc_physical_page() {
 }
 
 __PRIVILEGED_CODE
-void* page_bitmap_allocator::alloc_physical_pages(size_t count) {
+void* page_bitmap_allocator::alloc_pages(size_t count) {
     if (count == 0) {
         return nullptr;
     }
 
-    paging::page_frame_bitmap& bitmap = paging::page_frame_bitmap::get();
+    paging::page_frame_bitmap& bitmap = m_bitmap;
     uint64_t size = bitmap.get_size() * 8; // Total number of pages
 
     size_t consecutive = 0;
@@ -130,13 +141,13 @@ void* page_bitmap_allocator::alloc_physical_pages(size_t count) {
 }
 
 __PRIVILEGED_CODE
-void* page_bitmap_allocator::alloc_physical_pages_aligned(size_t count, uint64_t alignment) {
+void* page_bitmap_allocator::alloc_pages_aligned(size_t count, uint64_t alignment) {
     if (count == 0 || (alignment & (alignment - 1)) != 0) {
         // Alignment is not a power of two or count is zero
         return nullptr;
     }
 
-    paging::page_frame_bitmap& bitmap = paging::page_frame_bitmap::get();
+    paging::page_frame_bitmap& bitmap = m_bitmap;
     uint64_t size = bitmap.get_size() * 8; // Total number of pages
 
     // Calculate the alignment in terms of pages

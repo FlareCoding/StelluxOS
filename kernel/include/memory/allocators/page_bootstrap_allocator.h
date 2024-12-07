@@ -1,9 +1,9 @@
 #ifndef PAGE_BOOTSTRAP_ALLOCATOR_H
 #define PAGE_BOOTSTRAP_ALLOCATOR_H
-#include "phys_frame_allocator.h"
+#include "page_frame_allocator.h"
 
 namespace allocators {
-class page_bootstrap_allocator : public phys_frame_allocator {
+class page_bootstrap_allocator : public page_frame_allocator {
 public:
     static page_bootstrap_allocator& get();
 
@@ -12,15 +12,15 @@ public:
     
     __PRIVILEGED_CODE void init(uintptr_t base, size_t size);
 
-    __PRIVILEGED_CODE void lock_physical_page(void* paddr) override;
-    __PRIVILEGED_CODE void lock_physical_pages(void* paddr, size_t count) override;
+    __PRIVILEGED_CODE void lock_page(void* addr) override;
+    __PRIVILEGED_CODE void lock_pages(void* addr, size_t count) override;
 
-    __PRIVILEGED_CODE void free_physical_page(void* paddr) override;
-    __PRIVILEGED_CODE void free_physical_pages(void* paddr, size_t count) override;
+    __PRIVILEGED_CODE void free_page(void* addr) override;
+    __PRIVILEGED_CODE void free_pages(void* addr, size_t count) override;
 
-    __PRIVILEGED_CODE void* alloc_physical_page() override;
-    __PRIVILEGED_CODE void* alloc_physical_pages(size_t count) override;
-    __PRIVILEGED_CODE void* alloc_physical_pages_aligned(size_t count, uint64_t alignment) override;
+    __PRIVILEGED_CODE void* alloc_page() override;
+    __PRIVILEGED_CODE void* alloc_pages(size_t count) override;
+    __PRIVILEGED_CODE void* alloc_pages_aligned(size_t count, uint64_t alignment) override;
 
 private:
     uintptr_t m_base_address; // Start of the memory region
