@@ -127,7 +127,7 @@ __PRIVILEGED_CODE void map_pages(
     size_t num_pages,
     uint64_t flags,
     page_table* pml4,
-    allocators::phys_frame_allocator& allocator = allocators::page_bitmap_allocator::get()
+    allocators::phys_frame_allocator& allocator
 ) {
     for (size_t i = 0; i < num_pages; ++i) {
         map_page(
