@@ -35,13 +35,13 @@ void set_pml4(page_table* pml4) {
 }
 
 /**
- * @brief Maps the first 1GB of physical memory using 1GB huge pages.
+ * @brief Maps the first 1GB of physical memory using 2MB large pages.
  * 
  * This function establishes an identity mapping for the initial 1GB of physical memory
- * utilizing 1GB huge pages. By doing so, it avoids the need to allocate additional physical
+ * utilizing 2MB large pages. By doing so, it avoids the need to allocate additional physical
  * memory and prevents kernel bloat that would otherwise result from the numerous page table
  * entries required for mapping smaller memory regions. Empirical testing and observations
- * with GRUB2 indicate that the first 1GB of RAM typically contains a sufficiently large
+ * with GRUB2 showed that the first 1GB of RAM typically contains a sufficiently large
  * contiguous free region. This region accommodates the page frame bitmap and provides the
  * necessary space for a new page table, which is used to identity map the entire RAM and
  * the higher half of the kernel.
@@ -50,13 +50,19 @@ __PRIVILEGED_CODE void bootstrap_map_first_1gb() {
     page_table* pml4 = get_pml4();
 
     pte_t* pml4_entry = &pml4->entries[0];
-    page_table* pdpt = (page_table*)(((uint64_t)pml4_entry->page_frame_number << 12));
+    page_table* pdpt = reinterpret_cast<page_table*>(PFN_TO_ADDR(pml4_entry->page_frame_number));
 
     pde_t* pdpt_entry = (pde_t*)&pdpt->entries[0];
-    pdpt_entry->present = 1;
-    pdpt_entry->read_write = 1;
-    pdpt_entry->page_size = 1; // Large page (1GB)
-    pdpt_entry->page_frame_number = 0;
+    page_table* pdt = reinterpret_cast<page_table*>(PFN_TO_ADDR(pdpt_entry->page_frame_number));
+
+    // Set up the 2MB large pages in the PD
+    for (int i = 0; i < 512; ++i) { // 512 entries map 1GB with 2MB pages
+        pde_t* pdt_entry = (pde_t*)&pdt->entries[i];
+        pdt_entry->present = 1;
+        pdt_entry->read_write = 1;
+        pdt_entry->page_size = 1; // Large page (2MB)
+        pdt_entry->page_frame_number = i * (0x200000 >> 12); // 2MB alignment
+    }
 }
 
 /**
@@ -178,7 +184,7 @@ void map_large_page(
 
 __PRIVILEGED_CODE
 void init_physical_allocator(void* mbi_efi_mmap_tag) {
-    // Identity map the first 1GB of physical RAM memory using a huge page
+    // Identity map the first 1GB of physical RAM memory for further bootstrapping
     bootstrap_map_first_1gb();
 
     // Flush the entire TLB
