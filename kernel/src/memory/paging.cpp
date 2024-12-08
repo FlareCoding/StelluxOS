@@ -183,6 +183,122 @@ void map_large_page(
 }
 
 __PRIVILEGED_CODE
+pde_t* get_pml4_entry(void* vaddr) {
+    page_table* pml4 = get_pml4();
+    virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
+    return reinterpret_cast<pde_t*>(&pml4->entries[indices.pml4]);
+}
+
+__PRIVILEGED_CODE
+pde_t* get_pdpt_entry(void* vaddr) {
+    pde_t* pml4_entry = get_pml4_entry(vaddr);
+    
+    if (!pml4_entry || !(pml4_entry->present)) {
+        return nullptr;
+    }
+
+    page_table* pdpt = reinterpret_cast<page_table*>(PFN_TO_ADDR(pml4_entry->page_frame_number));
+    virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
+    
+    return reinterpret_cast<pde_t*>(&pdpt->entries[indices.pdpt]);
+}
+
+__PRIVILEGED_CODE
+pde_t* get_pdt_entry(void* vaddr) {
+    pde_t* pdpt_entry = get_pdpt_entry(vaddr);
+    if (!pdpt_entry || !(pdpt_entry->present)) {
+        return nullptr;
+    }
+    
+    // Check if this PDPT entry maps a 1GB large page
+    if (pdpt_entry->page_size) {
+        // Large page (1GB) is mapped; PDT is not used
+        return nullptr;
+    }
+    
+    page_table* pdt = reinterpret_cast<page_table*>(PFN_TO_ADDR(pdpt_entry->page_frame_number));
+    virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
+
+    return reinterpret_cast<pde_t*>(&pdt->entries[indices.pdt]);
+}
+
+__PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr) {
+    pde_t* pdt_entry = get_pdt_entry(vaddr);
+    if (!pdt_entry || !(pdt_entry->present)) {
+        return nullptr;
+    }
+
+    // Check if this PDT entry maps a 2MB large page
+    if (pdt_entry->page_size) {
+        // Large page (2MB) is mapped; PT is not used
+        return nullptr;
+    }
+
+    page_table* pt = reinterpret_cast<page_table*>(PFN_TO_ADDR(pdt_entry->page_frame_number));
+    virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
+
+    return &pt->entries[indices.pt];
+}
+
+__PRIVILEGED_CODE
+uintptr_t get_physical_address(void* vaddr) {
+    uint64_t virtual_addr = reinterpret_cast<uint64_t>(vaddr);
+
+    //
+    // If the address is greater than KERNEL_LOAD_OFFSET, then a simple linear
+    // conversion can be performed since it's mapped 1-to-1 to physical memory.
+    //
+    if (virtual_addr >= KERNEL_LOAD_OFFSET) {
+        return virtual_addr - KERNEL_LOAD_OFFSET;
+    }
+
+    virt_addr_indices_t indices = get_vaddr_page_table_indices(virtual_addr);
+
+    // Retrieve PML4 entry
+    pde_t* pml4_entry = get_pml4_entry(vaddr);
+    if (!pml4_entry || !(pml4_entry->present)) {
+        return 0; // Invalid mapping
+    }
+
+    // Retrieve PDPT entry
+    pde_t* pdpt_entry = get_pdpt_entry(vaddr);
+    if (!pdpt_entry || !(pdpt_entry->present)) {
+        return 0; // Invalid mapping
+    }
+
+    // Check for 1GB large page
+    if (pdpt_entry->page_size) {
+        uintptr_t phys_base = PFN_TO_ADDR(pdpt_entry->page_frame_number);
+        uintptr_t offset = virtual_addr & 0x3FFFFFFF; // Offset within 1GB
+        return phys_base + offset;
+    }
+
+    // Retrieve PDT entry
+    pde_t* pdt_entry = get_pdt_entry(vaddr);
+    if (!pdt_entry || !(pdt_entry->present)) {
+        return 0; // Invalid mapping
+    }
+
+    // Check for 2MB large page
+    if (pdt_entry->page_size) {
+        uintptr_t phys_base = PFN_TO_ADDR(pdt_entry->page_frame_number);
+        uintptr_t offset = virtual_addr & 0x1FFFFF; // Offset within 2MB
+        return phys_base + offset;
+    }
+
+    // Retrieve PTE entry
+    pte_t* pte_entry = get_pte_entry(vaddr);
+    if (!pte_entry || !(pte_entry->present)) {
+        return 0; // Invalid mapping
+    }
+
+    // Calculate the physical address
+    uintptr_t phys_base = PFN_TO_ADDR(pte_entry->page_frame_number);
+    uintptr_t offset = virtual_addr & 0xFFF; // Offset within 4KB
+    return phys_base + offset;
+}
+
+__PRIVILEGED_CODE
 void init_physical_allocator(void* mbi_efi_mmap_tag) {
     // Identity map the first 1GB of physical RAM memory for further bootstrapping
     bootstrap_map_first_1gb();

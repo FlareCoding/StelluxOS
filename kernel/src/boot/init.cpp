@@ -719,6 +719,11 @@ void init(unsigned int magic, void* mbi) {
     gop_printf("      framebuffer->width  : %u\n", g_mbi_framebuffer->common.framebuffer_width);
     gop_printf("      framebuffer->height : %u\n", g_mbi_framebuffer->common.framebuffer_height);
     gop_printf("      framebuffer->bpp    : %u\n", g_mbi_framebuffer->common.framebuffer_bpp);
+    gop_printf("\n");
+
+    gop_printf("virtual(`init`)     == 0x%llx\n", (uintptr_t)&init);
+    gop_printf("physical(`init`)    == 0x%llx\n", paging::get_physical_address((void*)&init));
+    gop_printf("physical(`pixels`)  == 0x%llx\n", paging::get_physical_address(pixels));
 
     // Idle loop
     while (true) {

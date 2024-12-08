@@ -190,6 +190,49 @@ void map_large_page(
 ); 
 
 /**
+ * @brief Retrieves the PML4 (Page Map Level 4) entry for a given virtual address.
+ * 
+ * @param vaddr The virtual address.
+ * @return pde_t* Pointer to the PML4 entry. Returns nullptr if the entry is not present.
+ */
+__PRIVILEGED_CODE pde_t* get_pml4_entry(void* vaddr);
+
+/**
+ * @brief Retrieves the PDPT (Page Directory Pointer Table) entry for a given virtual address.
+ * 
+ * @param vaddr The virtual address.
+ * @return pde_t* Pointer to the PDPT entry. Returns nullptr if the entry is not present.
+ */
+__PRIVILEGED_CODE pde_t* get_pdpt_entry(void* vaddr);
+
+/**
+ * @brief Retrieves the PDT (Page Directory Table) entry for a given virtual address.
+ * 
+ * @param vaddr The virtual address.
+ * @return pde_t* Pointer to the PDT entry. Returns nullptr if the entry is not present or if a large page is mapped.
+ */
+__PRIVILEGED_CODE pde_t* get_pdt_entry(void* vaddr);
+
+/**
+ * @brief Retrieves the PTE (Page Table Entry) for a given virtual address.
+ * 
+ * @param vaddr The virtual address.
+ * @return pte_t* Pointer to the PTE. Returns nullptr if the entry is not present or if a large page is mapped.
+ */
+__PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr);
+
+/**
+ * @brief Translates a virtual address to its corresponding physical address.
+ * 
+ * This function traverses the paging hierarchy to locate the physical address that corresponds
+ * to the provided virtual address. It handles both standard 4KB pages and large pages (2MB and 1GB).
+ * 
+ * @param vaddr The virtual address to translate.
+ * @return uintptr_t The physical address. Returns 0 if the translation fails.
+ */
+__PRIVILEGED_CODE uintptr_t get_physical_address(void* vaddr);
+
+/**
  * @brief Initializes the physical memory allocator using the Multiboot EFI memory map.
  * 
  * This function sets up the bitmap-based physical page allocator by parsing the EFI memory map
