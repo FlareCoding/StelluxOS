@@ -4,7 +4,7 @@
 #include <interrupts/irq.h>
 #include <memory/paging.h>
 #include <memory/tlb.h>
-#include <memory/allocators/page_bootstrap_allocator.h>
+#include <memory/vmm.h>
 #include <boot/efimem.h>
 
 __PRIVILEGED_DATA
@@ -498,15 +498,9 @@ void init_framebuffer_renderer() {
         PAGE_SIZE;
 
     size = framebuffer_page_count * PAGE_SIZE / bytes_per_pixel;
-
-    auto& allocator = allocators::page_bitmap_allocator::get_virtual_allocator();
-    pixels = (char*)allocator.alloc_pages(framebuffer_page_count);
-
     uintptr_t gop_addr = g_mbi_framebuffer->common.framebuffer_addr;
-    paging::map_pages((uintptr_t)pixels, gop_addr, framebuffer_page_count, PTE_DEFAULT_KERNEL_FLAGS, paging::get_pml4());
 
-    // Flush the entire TLB
-    paging::tlb_flush_all();
+    pixels = (char*)vmm::map_contiguous_physical_pages(gop_addr, framebuffer_page_count, PTE_DEFAULT_KERNEL_FLAGS);
 
     serial::com1_printf("------------ Framebuffer ------------\n");
     serial::com1_printf("      physbase            : 0x%llx\n", g_mbi_framebuffer->common.framebuffer_addr);
