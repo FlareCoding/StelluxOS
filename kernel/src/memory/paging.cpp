@@ -360,7 +360,8 @@ void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     // Identity map the physical addresses in RAM
     for (const auto& entry : memory_map) {
-        if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) {
+        if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY ||
+            entry.desc->type == EFI_MEMORY_TYPE_ACPI_RECLAIM_MEMORY) {
             for (uint64_t vaddr = entry.paddr; vaddr < entry.paddr + entry.length; vaddr += PAGE_SIZE) {
                 map_page(vaddr, vaddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
             }
