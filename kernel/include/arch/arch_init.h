@@ -21,23 +21,26 @@ namespace arch {
  * Sets up the IDT using `x86::init_idt` and enables CPU interrupts by
  * calling `enable_interrupts()`.
  * 
- * 4. **Enable FSGSBASE Instructions and Initialize Per-CPU Area:**
+ * 4. **Setup the kernel pat:**
+ * Sets the the page attribute table to contain a write-combining entry.
+ * 
+ * 5. **Enable FSGSBASE Instructions and Initialize Per-CPU Area:**
  * Enables the FSGSBASE instructions via `x86::enable_fsgsbase()` and initializes
  * the per-CPU area for the bootstrapping processor with `init_bsp_per_cpu_area()`.
  * 
- * 5. **Setup BSP's Idle Task:**
+ * 6. **Setup BSP's Idle Task:**
  * Retrieves the idle task control block for the BSP CPU using `sched::get_idle_task`,
  * zeroes out its memory, and assigns it to the current CPU's `current_task`.
  * 
- * 6. **Configure Current Task Properties:**
+ * 7. **Configure Current Task Properties:**
  * Sets up the current task's system stack, CPU identifier, privilege level,
  * state, and process ID (`pid`) to their initial values.
  * 
- * 7. **Enable System Call Interface:**
+ * 8. **Enable System Call Interface:**
  * Activates the system call interface by calling `enable_syscall_interface()`,
  * allowing user-space applications to request kernel services.
  * 
- * 8. **Setup and Enable Dynamic Privilege Mechanism:**
+ * 9. **Setup and Enable Dynamic Privilege Mechanism:**
  * Configures the dynamic privilege mechanism by setting the current ASID
  * for elevation checks using `dynpriv::use_current_asid()`.
  */

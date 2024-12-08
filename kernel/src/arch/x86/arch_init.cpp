@@ -5,6 +5,7 @@
 #include <arch/x86/gdt/gdt.h>
 #include <arch/x86/idt/idt.h>
 #include <arch/x86/fsgsbase.h>
+#include <arch/x86/pat.h>
 #include <syscall/syscalls.h>
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
@@ -24,6 +25,9 @@ void arch_init() {
     // Setup the IDT and enable interrupts
     x86::init_idt();
     enable_interrupts();
+
+    // Setup the kernel PAT to contain a write-combining entry
+    x86::setup_kernel_pat();
 
     // Setup per-cpu area for the bootstrapping processor
     x86::enable_fsgsbase();

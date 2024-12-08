@@ -500,7 +500,7 @@ void init_framebuffer_renderer() {
     size = framebuffer_page_count * PAGE_SIZE / bytes_per_pixel;
     uintptr_t gop_addr = g_mbi_framebuffer->common.framebuffer_addr;
 
-    pixels = (char*)vmm::map_contiguous_physical_pages(gop_addr, framebuffer_page_count, PTE_DEFAULT_KERNEL_FLAGS);
+    pixels = (char*)vmm::map_contiguous_physical_pages(gop_addr, framebuffer_page_count, PTE_DEFAULT_KERNEL_FLAGS | PTE_PAT);
 
     serial::com1_printf("------------ Framebuffer ------------\n");
     serial::com1_printf("      physbase            : 0x%llx\n", g_mbi_framebuffer->common.framebuffer_addr);
