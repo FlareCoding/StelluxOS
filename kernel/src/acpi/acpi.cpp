@@ -8,6 +8,75 @@
 #define PCI_CONFIG_ADDRESS 0xCF8
 #define PCI_CONFIG_DATA    0xCFC
 
+// UART I/O Register Offsets
+#define SERIAL_DATA_PORT_UART(base)               (base + 0)
+#define SERIAL_INTERRUPT_ENABLE_PORT(base)   (base + 1)
+#define SERIAL_FIFO_COMMAND_PORT(base)       (base + 2)
+#define SERIAL_LINE_COMMAND_PORT(base)       (base + 3)
+#define SERIAL_MODEM_COMMAND_PORT(base)      (base + 4)
+#define SERIAL_LINE_STATUS_PORT(base)        (base + 5)
+
+// UART Line Control Register (LCR) Flags
+#define SERIAL_LCR_ENABLE_DLAB               0x80 // Enable Divisor Latch Access
+#define SERIAL_LCR_8_BITS_NO_PARITY_ONE_STOP 0x03 // 8 bits, no parity, 1 stop bit
+
+// UART FIFO Control Register (FCR) Flags
+#define SERIAL_FCR_ENABLE_FIFO               0x01 // Enable FIFO
+#define SERIAL_FCR_CLEAR_RECEIVE_FIFO        0x02 // Clear Receive FIFO
+#define SERIAL_FCR_CLEAR_TRANSMIT_FIFO       0x04 // Clear Transmit FIFO
+#define SERIAL_FCR_TRIGGER_14_BYTES          0xC0 // Set trigger level to 14 bytes
+
+// UART Modem Control Register (MCR) Flags
+#define SERIAL_MCR_RTS_DSR                   0x03 // Ready to Send (RTS), Data Set Ready (DSR)
+
+// UART Line Status Register (LSR) Flags
+#define SERIAL_LSR_TRANSMIT_EMPTY            0x20 // Transmitter Holding Register Empty
+#define SERIAL_LSR_DATA_READY                0x01 // Data Ready
+
+void init_port(uint16_t io_base) {
+    // Disable all interrupts
+    outb(SERIAL_INTERRUPT_ENABLE_PORT(io_base), 0x00);
+
+    // Enable DLAB (Divisor Latch Access) to set baud rate
+    outb(SERIAL_LINE_COMMAND_PORT(io_base), SERIAL_LCR_ENABLE_DLAB);
+
+    // Set baud rate divisor to 0x000C (9600 baud at 1.8432 MHz clock)
+    outb(SERIAL_DATA_PORT_UART(io_base), 0x0C); // Divisor Latch Low Byte
+    outb(SERIAL_INTERRUPT_ENABLE_PORT(io_base), 0x00); // Divisor Latch High Byte
+
+    // Configure line control: 8 bits, no parity, 1 stop bit
+    outb(SERIAL_LINE_COMMAND_PORT(io_base), SERIAL_LCR_8_BITS_NO_PARITY_ONE_STOP);
+
+    // Enable FIFO, clear TX/RX queues, set interrupt trigger level to 14 bytes
+    outb(SERIAL_FIFO_COMMAND_PORT(io_base),
+            SERIAL_FCR_ENABLE_FIFO |
+            SERIAL_FCR_CLEAR_RECEIVE_FIFO |
+            SERIAL_FCR_CLEAR_TRANSMIT_FIFO |
+            SERIAL_FCR_TRIGGER_14_BYTES);
+
+    // Set RTS/DSR
+    outb(SERIAL_MODEM_COMMAND_PORT(io_base), SERIAL_MCR_RTS_DSR);
+}
+
+bool is_transmit_empty(uint16_t io_base) {
+    return inb(SERIAL_LINE_STATUS_PORT(io_base)) & SERIAL_LSR_TRANSMIT_EMPTY;
+}
+
+void write_char(uint16_t io_base, char c) {
+    // Wait until the Transmitter Holding Register is empty
+    while (!is_transmit_empty(io_base));
+
+    // Write the character to the Data Register
+    outb(SERIAL_DATA_PORT_UART(io_base), c);
+}
+
+void write_string(uint16_t io_base, const char* str) {
+    while (*str != '\0') {
+        write_char(io_base, *str);
+        str++;
+    }
+}
+
 uint32_t pci_get_address(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset) {
     return (1U << 31) | // Enable bit
            (bus << 16) | // Bus number
@@ -666,10 +735,13 @@ void enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
         uint64_t bus = (deviceAddress >> 20) & 0xFF;
         uint64_t device = (deviceAddress >> 15) & 0x1F;
         uint32_t bar0 = pciDeviceHeader->bar[0];
+        uint32_t bar5 = pciDeviceHeader->bar[5];
 
         char buf[128] = { 0 };
         sprintf(buf, 127, "bar0_literal: 0x%x\n", bar0);
+        render_string(buf);
 
+        sprintf(buf, 127, "bar5_literal: 0x%x\n", bar5);
         render_string(buf);
 
         // Decode BAR0 as I/O base
@@ -685,8 +757,12 @@ void enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
             pci_write_config_word(bus, device, function, 0x04, command | 0x1);
 
             //uart_initialize(io_base);
-            serial::init_port(io_base);
-            serial::write(io_base, "This is a serial UART message!\n");
+            // serial::init_port(io_base);
+            // serial::write(io_base, "This is a serial UART message!\n");
+
+            init_port(io_base);
+            write_string(io_base, "UART messages work!\n");
+            write_string(io_base, "Welcome to Stellux!\n");
         } else {
             render_string("BAR0 is not I/O space\n");
         }
