@@ -41,3 +41,4 @@ usb_debug.log
 com1.serial
 com2.serial
 dev_os_output.log
+uart_pci.log

@@ -5,6 +5,29 @@
 #include <serial/serial.h>
 #include <pci/pci_class_codes.h>
 
+#define PCI_CONFIG_ADDRESS 0xCF8
+#define PCI_CONFIG_DATA    0xCFC
+
+uint32_t pci_get_address(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset) {
+    return (1U << 31) | // Enable bit
+           (bus << 16) | // Bus number
+           (device << 11) | // Device number
+           (function << 8) | // Function number
+           (offset & 0xFC); // Register offset (aligned to 4 bytes)
+}
+
+uint16_t pci_read_config_word(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset) {
+    uint32_t address = pci_get_address(bus, device, function, offset);
+    outl(PCI_CONFIG_ADDRESS, address); // Write address to 0xCF8
+    return inw(PCI_CONFIG_DATA + (offset & 2)); // Read 16 bits from 0xCFC
+}
+
+void pci_write_config_word(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset, uint16_t value) {
+    uint32_t address = pci_get_address(bus, device, function, offset);
+    outl(PCI_CONFIG_ADDRESS, address); // Write address to 0xCF8
+    outw(PCI_CONFIG_DATA + (offset & 2), value); // Write 16 bits to 0xCFC
+}
+
 struct pci_device_header {
     uint16_t vendor_id;
     uint16_t device_id;
@@ -634,6 +657,40 @@ void enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
     }
 
     print_pci_device_info(pciDeviceHeader);
+
+    if (pciDeviceHeader->class_code == PCI_CLASS_SIMPLE_COMMUNICATION_CONTROLLER &&
+        pciDeviceHeader->subclass == PCI_SUBCLASS_SIMPLE_COMM_SERIAL &&
+        pciDeviceHeader->prog_if == PCI_PROGIF_SERIAL_16550_COMPATIBLE    
+    ) {
+        render_string("FOUND PCI SERIAL CONTROLLER\n");
+        uint64_t bus = (deviceAddress >> 20) & 0xFF;
+        uint64_t device = (deviceAddress >> 15) & 0x1F;
+        uint32_t bar0 = pciDeviceHeader->bar[0];
+
+        char buf[128] = { 0 };
+        sprintf(buf, 127, "bar0_literal: 0x%x\n", bar0);
+
+        render_string(buf);
+
+        // Decode BAR0 as I/O base
+        if (bar0 & 0x1) { // I/O space
+            uint16_t io_base = bar0 & ~0x3;
+            serial::com1_printf("Decoded I/O base: 0x%x\n", io_base);
+
+            sprintf(buf, 127, "Decoded I/O base: 0x%x\n", io_base);
+            render_string(buf);
+
+            // Enable I/O space in PCI command register
+            uint16_t command = pci_read_config_word(bus, device, function, 0x04);
+            pci_write_config_word(bus, device, function, 0x04, command | 0x1);
+
+            //uart_initialize(io_base);
+            serial::init_port(io_base);
+            serial::write(io_base, "This is a serial UART message!\n");
+        } else {
+            render_string("BAR0 is not I/O space\n");
+        }
+    }
 }
 
 void enumeratePciDevice(uint64_t busAddress, uint64_t device) {

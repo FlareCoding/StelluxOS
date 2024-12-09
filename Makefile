@@ -30,6 +30,8 @@ QEMU_FLAGS       := \
 	-cpu qemu64,+fsgsbase \
     -m $(QEMU_RAM) \
     -serial mon:stdio \
+    -device pci-serial,bus=pcie.0,addr=0x3,chardev=serial_pci \
+    -chardev file,id=serial_pci,path=uart_pci.log \
     -drive file=$(STELLUX_IMAGE),format=raw \
     -net none \
     -smp $(QEMU_CORES) \
@@ -134,6 +136,7 @@ clean:
 	@echo "Cleaning up build files and disk image..."
 	$(MAKE) -C $(KERNEL_DIR) clean
 	@rm -rf $(BUILD_DIR)
+	@rm -rf *.log
 
 # Run the Disk Image in QEMU
 run: $(STELLUX_IMAGE)
