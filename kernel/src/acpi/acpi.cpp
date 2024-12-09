@@ -608,6 +608,14 @@ void print_pci_device_info(pci_device_header* header) {
         uint64_t bar = getBarFromPciHeader(header, i);
         if (bar != 0) {
             serial::com1_printf("      BAR[%d]: 0x%08llx\n", i, bar);
+
+            if (header->class_code == PCI_CLASS_SIMPLE_COMMUNICATION_CONTROLLER &&
+                header->subclass == PCI_SUBCLASS_SIMPLE_COMM_SERIAL) {
+                char bar_str[128] = { 0 };
+                sprintf(bar_str, 128, "      BAR[%d]: 0x%08llx\n", i, bar);
+
+                render_string(bar_str);
+            }
         }
     }
 }
