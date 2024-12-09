@@ -6,6 +6,7 @@
 #include <memory/tlb.h>
 #include <memory/vmm.h>
 #include <boot/efimem.h>
+#include <acpi/acpi.h>
 
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
@@ -15,6 +16,9 @@ multiboot_tag_framebuffer* g_mbi_framebuffer;
 
 __PRIVILEGED_DATA
 void* g_mbi_efi_mmap;
+
+__PRIVILEGED_DATA
+void* g_mbi_acpi_rsdp;
 
 // PSF font data embedded in binary
 const uint8_t psf_font_data[] = {
@@ -508,7 +512,7 @@ void init_framebuffer_renderer() {
     serial::com1_printf("      framebuffer->pitch  : %u\n", g_mbi_framebuffer->common.framebuffer_pitch);
     serial::com1_printf("      framebuffer->width  : %u\n", g_mbi_framebuffer->common.framebuffer_width);
     serial::com1_printf("      framebuffer->height : %u\n", g_mbi_framebuffer->common.framebuffer_height);
-    serial::com1_printf("      framebuffer->bpp    : %u\n", g_mbi_framebuffer->common.framebuffer_bpp);
+    serial::com1_printf("      framebuffer->bpp    : %u\n\n", g_mbi_framebuffer->common.framebuffer_bpp);
 
     clear_screen();
 }
@@ -614,6 +618,10 @@ void walk_mbi(void* mbi) {
                 g_mbi_efi_mmap = reinterpret_cast<void*>(tag);
                 break;
             }
+            case MULTIBOOT_TAG_TYPE_ACPI_NEW: {
+                g_mbi_acpi_rsdp = reinterpret_cast<multiboot_tag_new_acpi*>(tag)->rsdp;
+                break;
+            }
             default: {
                 break;
             }
@@ -704,20 +712,10 @@ void init(unsigned int magic, void* mbi) {
 
     init_framebuffer_renderer();
 
-    memory_map_walk_test();
+    //memory_map_walk_test();
 
-    gop_printf("------------ Framebuffer ------------\n");
-    gop_printf("      physbase            : 0x%llx\n", g_mbi_framebuffer->common.framebuffer_addr);
-    gop_printf("      virtbase            : 0x%llx\n", pixels);
-    gop_printf("      framebuffer->pitch  : %u\n", g_mbi_framebuffer->common.framebuffer_pitch);
-    gop_printf("      framebuffer->width  : %u\n", g_mbi_framebuffer->common.framebuffer_width);
-    gop_printf("      framebuffer->height : %u\n", g_mbi_framebuffer->common.framebuffer_height);
-    gop_printf("      framebuffer->bpp    : %u\n", g_mbi_framebuffer->common.framebuffer_bpp);
-    gop_printf("\n");
-
-    gop_printf("virtual(`init`)     == 0x%llx\n", (uintptr_t)&init);
-    gop_printf("physical(`init`)    == 0x%llx\n", paging::get_physical_address((void*)&init));
-    gop_printf("physical(`pixels`)  == 0x%llx\n", paging::get_physical_address(pixels));
+    // Discover ACPI tables
+    acpi::enumerate_acpi_tables(g_mbi_acpi_rsdp);
 
     // Idle loop
     while (true) {

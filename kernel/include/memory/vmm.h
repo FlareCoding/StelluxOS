@@ -2,6 +2,8 @@
 #define VMM_H
 #include <types.h>
 
+#define DEFAULT_MAPPING_FLAGS 0x3
+
 namespace vmm {
 /**
  * @brief Allocates a single virtual page and maps it to a new physical page.
