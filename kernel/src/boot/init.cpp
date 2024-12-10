@@ -2,8 +2,8 @@
 #include <boot/multiboot2.h>
 #include <arch/arch_init.h>
 #include <interrupts/irq.h>
+#include <memory/memory.h>
 #include <memory/paging.h>
-#include <memory/tlb.h>
 #include <memory/vmm.h>
 #include <boot/efimem.h>
 #include <acpi/acpi.h>
@@ -716,6 +716,15 @@ void init(unsigned int magic, void* mbi) {
 
     // Discover ACPI tables
     acpi::enumerate_acpi_tables(g_mbi_acpi_rsdp);
+
+    // Test
+    for (int i = 100; i < 200; i += 5) {
+        void* ptr = zmalloc(i);
+        serial::com1_printf("ptr: 0x%llx\n", ptr);
+    }
+
+    void* ptr = vmm::alloc_virtual_page(DEFAULT_MAPPING_FLAGS);
+    serial::com1_printf("ptr: 0x%llx\n", ptr);
 
     // Idle loop
     while (true) {

@@ -32,6 +32,7 @@ void* memcpy(void* dest, const void* src, size_t count);
  */
 int memcmp(const void* ptr1, const void* ptr2, size_t count);
 
+// Placement new operator
 void* operator new(size_t, void* ptr) noexcept;
 
 #define zeromem(vaddr, size) memset(vaddr, 0, size)
@@ -44,5 +45,18 @@ void* operator new(size_t, void* ptr) noexcept;
         instance = new (buffer) type(); \
     } \
     return *instance;
+
+void* malloc(size_t size);
+void* zmalloc(size_t size);
+void free(void* ptr);
+void* realloc(void* ptr, size_t size);
+
+// Global new ooperator
+void* operator new(size_t size);
+
+// Global delete operator
+void operator delete(void* ptr) noexcept;
+
+void operator delete(void* ptr, size_t) noexcept;
 
 #endif // MEMORY_H

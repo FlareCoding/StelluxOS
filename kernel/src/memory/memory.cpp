@@ -1,4 +1,5 @@
 #include <memory/memory.h>
+#include <memory/allocators/heap_allocator.h>
 
 EXTERN_C {
     int __cxa_atexit(void (*destructor) (void *), void *arg, void *dso_handle) {
@@ -85,12 +86,42 @@ void* operator new(size_t, void* ptr) noexcept {
     return ptr;
 }
 
-void operator delete(void* ptr) noexcept {
-    __unused ptr;
+void* malloc(size_t size) {
+    auto& heap = allocators::heap_allocator::get();
+    return heap.allocate(size);
 }
 
-void operator delete(void* ptr, unsigned long size) noexcept {
-    __unused ptr;
-    __unused size;
+void* zmalloc(size_t size) {
+    void* ptr = malloc(size);
+    zeromem(ptr, size);
+    return ptr;
+}
+
+void free(void* ptr) {
+    if (!ptr) {
+        return;
+    }
+
+    auto& heap = allocators::heap_allocator::get();
+    heap.free(ptr);
+}
+
+void* realloc(void* ptr, size_t size) {
+    auto& heap = allocators::heap_allocator::get();
+    return heap.reallocate(ptr, size);
+}
+
+// Global new ooperator
+void* operator new(size_t size) {
+    return zmalloc(size);
+}
+
+// Global delete operator
+void operator delete(void* ptr) noexcept {
+    free(ptr);
+}
+
+void operator delete(void* ptr, size_t) noexcept {
+    free(ptr);
 }
 
