@@ -3,6 +3,7 @@
 #include <memory/tlb.h>
 #include <memory/page_bitmap.h>
 #include <memory/allocators/page_bootstrap_allocator.h>
+#include <memory/allocators/heap_allocator.h>
 #include <boot/efimem.h>
 #include <serial/serial.h>
 
@@ -106,6 +107,14 @@ void map_page(
     auto get_page_table = [&allocator](pte_t& entry) -> page_table* {
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
             auto* new_table = static_cast<page_table*>(allocator.alloc_page());
+            if (!new_table) {
+                serial::com1_printf("[!] Failed to allocate physical frame for a page table!\n");
+                return nullptr;
+            }
+
+            // Ensure that there is no leftover garbage data in the page
+            zeromem(new_table, PAGE_SIZE);
+
             entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
             entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
             return new_table;
@@ -162,6 +171,14 @@ void map_large_page(
     auto get_page_table = [&allocator](pte_t& entry) -> page_table* {
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
             auto* new_table = static_cast<page_table*>(allocator.alloc_page());
+            if (!new_table) {
+                serial::com1_printf("[!] Failed to allocate physical frame for a page table!\n");
+                return nullptr;
+            }
+
+            // Ensure that there is no leftover garbage data in the page
+            zeromem(new_table, PAGE_SIZE);
+
             entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
             entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
             return new_table;
@@ -384,8 +401,8 @@ void init_physical_allocator(void* mbi_efi_mmap_tag) {
     // Since the bitmap starts with all memory marked as 'used', we
     // have to unlock all memory regions marked as EfiConventionalMemory.
     for (const auto& entry : memory_map) {
+        // Unlock only those pages that are part of EfiConventionalMemory
         if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) {
-            // Lock any page that is not part of EfiConventionalMemory
             bitmap_allocator.free_pages(
                 reinterpret_cast<void*>(entry.paddr),
                 entry.desc->page_count
@@ -455,6 +472,10 @@ void init_virtual_allocator() {
     // Lock the virtual address space region that references the allocator's bitmap
     const size_t bitmap_page_count = (large_page_size * num_large_pages) / PAGE_SIZE; // 16MB / 4KB = 4096
     virtual_allocator.lock_pages(reinterpret_cast<void*>(KERN_VIRT_BASE), bitmap_page_count);
+
+    // Finally, initialize the main kernel heap
+    auto& kernel_heap = allocators::heap_allocator::get();
+    kernel_heap.init(0x0, KERNEL_HEAP_INIT_SIZE);
 }
 } // namespace paging
 
