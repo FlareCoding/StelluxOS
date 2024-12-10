@@ -59,4 +59,115 @@ void operator delete(void* ptr) noexcept;
 
 void operator delete(void* ptr, size_t) noexcept;
 
+namespace kstl {
+template <typename T>
+class shared_ptr {
+public:
+    // Default constructor
+    explicit shared_ptr(T* ptr = nullptr) 
+        : m_ptr(ptr), m_ref_count(ptr ? new size_t(1) : nullptr) {}
+
+    // Destructor
+    ~shared_ptr() noexcept {
+        release_resources();
+    }
+
+    // Copy constructor
+    shared_ptr(const shared_ptr& other) 
+        : m_ptr(other.m_ptr), m_ref_count(other.m_ref_count) {
+        if (m_ref_count) {
+            ++(*m_ref_count);
+        }
+    }
+
+    // Copy assignment operator
+    shared_ptr& operator=(const shared_ptr& other) {
+        if (this != &other) {
+            release_resources();
+            m_ptr = other.m_ptr;
+            m_ref_count = other.m_ref_count;
+            if (m_ref_count) {
+                ++(*m_ref_count);
+            }
+        }
+        return *this;
+    }
+
+    // Move constructor
+    shared_ptr(shared_ptr&& other) noexcept 
+        : m_ptr(other.m_ptr), m_ref_count(other.m_ref_count) {
+        other.m_ptr = nullptr;
+        other.m_ref_count = nullptr;
+    }
+
+    // Move assignment operator
+    shared_ptr& operator=(shared_ptr&& other) noexcept {
+        if (this != &other) {
+            release_resources();
+            m_ptr = other.m_ptr;
+            m_ref_count = other.m_ref_count;
+            other.m_ptr = nullptr;
+            other.m_ref_count = nullptr;
+        }
+        return *this;
+    }
+
+    // Dereference operators
+    T& operator*() const { 
+        return *m_ptr; 
+    }
+
+    T* operator->() const { 
+        return m_ptr; 
+    }
+
+    // Comparison operators
+    friend bool operator==(const shared_ptr<T>& lhs, const shared_ptr<T>& rhs) {
+        return lhs.get() == rhs.get();
+    }
+
+    friend bool operator!=(const shared_ptr<T>& lhs, const shared_ptr<T>& rhs) {
+        return !(lhs == rhs);
+    }
+
+    friend bool operator==(const shared_ptr<T>& lhs, const T* rhs) {
+        return lhs.get() == rhs;
+    }
+
+    friend bool operator!=(const shared_ptr<T>& lhs, const T* rhs) {
+        return !(lhs == rhs);
+    }
+
+    friend bool operator==(const T* lhs, const shared_ptr<T>& rhs) {
+        return lhs == rhs.get();
+    }
+
+    friend bool operator!=(const T* lhs, const shared_ptr<T>& rhs) {
+        return !(lhs == rhs);
+    }
+
+    // Utility functions
+    size_t ref_count() const {
+        return m_ref_count ? *m_ref_count : 0;
+    }
+
+    T* get() const { 
+        return m_ptr; 
+    }
+
+private:
+    T* m_ptr;
+    size_t* m_ref_count;
+
+    void release_resources() noexcept {
+        if (m_ref_count && --(*m_ref_count) == 0) {
+            delete m_ptr;
+            delete m_ref_count;
+        }
+        m_ptr = nullptr;
+        m_ref_count = nullptr;
+    }
+};
+} // namespace kstl
+
 #endif // MEMORY_H

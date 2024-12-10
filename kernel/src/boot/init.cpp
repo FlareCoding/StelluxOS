@@ -717,15 +717,6 @@ void init(unsigned int magic, void* mbi) {
     // Discover ACPI tables
     acpi::enumerate_acpi_tables(g_mbi_acpi_rsdp);
 
-    // Test
-    for (int i = 100; i < 200; i += 5) {
-        void* ptr = zmalloc(i);
-        serial::com1_printf("ptr: 0x%llx\n", ptr);
-    }
-
-    void* ptr = vmm::alloc_virtual_page(DEFAULT_MAPPING_FLAGS);
-    serial::com1_printf("ptr: 0x%llx\n", ptr);
-
     // Idle loop
     while (true) {
         asm volatile ("hlt");
