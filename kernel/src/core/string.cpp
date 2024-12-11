@@ -1,4 +1,5 @@
 #include <string.h>
+#include <memory/memory.h>
 
 void reverse_str(char* str, int length) {
     int start = 0;
@@ -267,3 +268,483 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
     return buffer_index;
 }
 
+int lltoa(
+    uint64_t val,
+    char* buffer,
+    uint64_t bufsize
+) {
+    uint8_t length = 0;
+    uint64_t lenTest = val;
+    while (lenTest / 10 > 0) {
+        lenTest /= 10;
+        ++length;
+    }
+
+    if (bufsize < static_cast<uint64_t>(length + 1)) {
+        return -1;
+    }
+
+    uint8_t index = 0;
+    while (val / 10 > 0) {
+        uint8_t remainder = val % 10;
+        val /= 10;
+
+        buffer[length - index] = remainder + '0';
+        ++index;
+    }
+
+    // Last digit
+    uint8_t remainder = val % 10;
+    buffer[length - index] = remainder + '0';
+
+    // Add the null-terminator
+    buffer[length + 1] = 0;
+
+    return 0;
+}
+
+int itoa(
+    int32_t val,
+    char* buffer,
+    uint64_t bufsize
+) {
+    bool negative = false;
+    if (val < 0) {
+        negative = true;
+        val *= -1;
+        buffer[0] = '-';
+    }
+
+    uint8_t length = 0;
+    uint64_t lenTest = val;
+    while (lenTest / 10 > 0) {
+        lenTest /= 10;
+        ++length;
+    }
+
+    if (bufsize < static_cast<uint64_t>(negative + length + 1)) {
+        return -1;
+    }
+
+    uint8_t index = 0;
+    while (val / 10 > 0) {
+        uint8_t remainder = val % 10;
+        val /= 10;
+
+        buffer[negative + length - index] = remainder + '0';
+        ++index;
+    }
+
+    // Last digit
+    uint8_t remainder = val % 10;
+    buffer[negative + length - index] = remainder + '0';
+
+    // Add the null-terminator
+    buffer[negative + length + 1] = 0;
+
+    return 0;
+}
+
+namespace kstl {
+string::string()
+    : m_data(nullptr),
+      m_size(0),
+      m_capacity(0),
+      m_using_sso(true) {
+    m_sso_buffer[0] = '\0';
+}
+
+string::~string() {
+    if (!m_using_sso) {
+        free(m_data);
+    }
+}
+
+string::string(const char* str) {
+    size_t len = strlen(str);
+
+    if (len < m_sso_size) {
+        // Small string case
+        memcpy(m_sso_buffer, str, len + 1); // +1 to include null terminator
+        m_using_sso = true;
+        m_size = len;
+        m_capacity = m_sso_size;
+    } else {
+        // Large string case
+        m_data = static_cast<char*>(malloc(len + 1)); // +1 for null terminator
+        memcpy(m_data, str, len + 1);
+        m_size = len;
+        m_capacity = len + 1;
+        m_using_sso = false;
+    }
+}
+
+string::string(const string& other) {
+    size_t len = other.length();
+
+    if (len < m_sso_size) {
+        // Copying a small string (SSO)
+        for (size_t i = 0; i <= len; ++i) {
+            m_sso_buffer[i] = other.m_sso_buffer[i];
+        }
+
+        m_using_sso = true;
+        m_size = len;
+        m_capacity = m_sso_size;
+    } else {
+        // Copying a large string
+        m_data = static_cast<char*>(malloc(len + 1));
+        for (size_t i = 0; i <= len; ++i) {
+            m_data[i] = other.m_data[i];
+        }
+
+        m_size = len;
+        m_capacity = len + 1;
+        m_using_sso = false;
+    }
+}
+
+string::string(string&& other) {
+    // Check if the other string is using SSO buffer
+    if (other.m_using_sso) {
+        // Copy the SSO buffer manually
+        for (size_t i = 0; i <= m_sso_size; ++i) {
+            m_sso_buffer[i] = other.m_sso_buffer[i];
+        }
+
+        m_using_sso = true;
+        m_size = other.m_size;
+        m_capacity = m_sso_size;
+    } else {
+        // Transfer ownership of resources
+        m_data = other.m_data;
+        m_size = other.m_size;
+        m_capacity = other.m_capacity;
+        m_using_sso = false;
+
+        // Leave the other object's dynamic resources in a valid state
+        other.m_data = nullptr;
+        other.m_size = 0;
+        other.m_capacity = 0;
+    }
+
+    // Null-terminate the SSO buffer of the other string
+    other.m_sso_buffer[0] = '\0';
+    other.m_using_sso = true;
+}
+
+string& string::operator=(const string& other) {
+    if (this == &other) {
+        // Self-assignment check
+        return *this;
+    }
+
+    size_t len = other.length();
+
+    if (!m_using_sso) {
+        // Release any existing heap memory
+        free(m_data);
+    }
+
+    if (len < m_sso_size) {
+        // Copying a small string (SSO)
+        for (size_t i = 0; i <= len; ++i) {
+            m_sso_buffer[i] = other.m_sso_buffer[i];
+        }
+
+        m_using_sso = true;
+        m_size = len;
+        m_capacity = m_sso_size;
+    } else {
+        // Copying a large string
+        m_data = static_cast<char*>(malloc(len + 1));
+        for (size_t i = 0; i <= len; ++i) {
+            m_data[i] = other.m_data[i];
+        }
+
+        m_size = len;
+        m_capacity = len + 1;
+        m_using_sso = false;
+    }
+
+    return *this;
+}
+
+string string::operator+(const string& other) const {
+    // Create a new string with enough space to hold both strings
+    size_t total_length = this->length() + other.length();
+    string new_string;
+
+    if (total_length < m_sso_size) {
+        // Concatenate within SSO buffer
+        memcpy(new_string.m_sso_buffer, this->c_str(), this->length());
+        memcpy(new_string.m_sso_buffer + this->length(), other.c_str(), other.length() + 1); // +1 for null terminator
+        new_string.m_using_sso = true;
+        new_string.m_size = total_length;
+        new_string.m_capacity = m_sso_size;
+    } else {
+        // Concatenate in heap-allocated memory
+        new_string.reserve(total_length + 1); // +1 for null terminator
+        memcpy(new_string.m_data, this->c_str(), this->length());
+        memcpy(new_string.m_data + this->length(), other.c_str(), other.length() + 1); // +1 for null terminator
+        new_string.m_size = total_length;
+        new_string.m_using_sso = false;
+    }
+
+    return new_string;
+}
+
+string& string::operator+=(const string& other) {
+    append(other.c_str());
+    return *this;
+}
+
+char& string::operator[](size_t index) {
+    return m_using_sso ? m_sso_buffer[index] : m_data[index];
+}
+
+const char& string::operator[](size_t index) const {
+    return m_using_sso ? m_sso_buffer[index] : m_data[index];
+}
+
+bool string::operator==(const string& other) const {
+    // First check if both strings have the same length
+    if (this->length() != other.length()) {
+        return false;
+    }
+
+    if (m_using_sso && other.m_using_sso) {
+        // Compare SSO strings
+        for (size_t i = 0; i <= m_sso_size; ++i) {
+            if (m_sso_buffer[i] != other.m_sso_buffer[i]) {
+                return false;
+            }
+            if (m_sso_buffer[i] == '\0') {
+                break;
+            }
+        }
+        return true;
+    } else if (!m_using_sso && !other.m_using_sso) {
+        // Compare large strings
+        for (size_t i = 0; i < m_size; ++i) {
+            if (m_data[i] != other.m_data[i]) {
+                return false;
+            }
+        }
+        return true;
+    } else {
+        // One uses SSO, the other does not, but lengths matched. Check actual chars.
+        const char* this_str = c_str();
+        const char* other_str = other.c_str();
+        for (size_t i = 0; i < this->length(); ++i) {
+            if (this_str[i] != other_str[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
+bool string::operator!=(const string& other) const {
+    return !(*this == other);
+}
+
+size_t string::length() const {
+    return m_using_sso ? strlen(m_sso_buffer) : m_size;
+}
+
+size_t string::capacity() const {
+    return m_using_sso ? m_sso_size : m_capacity;
+}
+
+void string::append(const char* str) {
+    size_t len = strlen(str);
+    size_t current_length = this->length();
+    size_t new_length = current_length + len;
+
+    if (new_length < m_sso_size) {
+        // Append within SSO buffer
+        memcpy(m_sso_buffer + current_length, str, len + 1); // +1 for null terminator
+        m_using_sso = true; // still SSO
+        m_size = new_length;
+    } else {
+        if (!m_using_sso && new_length < m_capacity) {
+            // Append in existing heap space
+            memcpy(m_data + current_length, str, len + 1); // +1 for null terminator
+            m_size = new_length;
+        } else {
+            // Allocate new heap space
+            size_t new_capacity = new_length + 1; // +1 for null terminator
+            char* new_data = static_cast<char*>(malloc(new_capacity));
+
+            // Copy old data to new data
+            memcpy(new_data, m_using_sso ? m_sso_buffer : m_data, current_length);
+            memcpy(new_data + current_length, str, len + 1); // +1 for null terminator
+
+            if (!m_using_sso) {
+                // Free old heap data
+                free(m_data);
+            }
+
+            // Update data pointer and size/capacity
+            m_data = new_data;
+            m_size = new_length;
+            m_capacity = new_capacity;
+            m_using_sso = false;
+        }
+    }
+}
+
+void string::append(char chr) {
+    char temp[2] = { chr, '\0' };
+    append(temp);
+}
+
+void string::reserve(size_t new_capacity) {
+    if (new_capacity <= capacity()) {
+        return;
+    }
+
+    if (m_using_sso) {
+        // Transition from SSO to heap allocation
+        size_t cur_length = length();
+        char* new_data = static_cast<char*>(malloc(new_capacity));
+        memcpy(new_data, m_sso_buffer, cur_length + 1); // include null terminator
+        m_data = new_data;
+        m_size = cur_length;
+    } else {
+        // Reallocate more memory on the heap
+        // Assuming krealloc is available and works similarly to realloc
+        m_data = static_cast<char*>(realloc(m_data, new_capacity));
+    }
+
+    m_capacity = new_capacity;
+    m_using_sso = false; // Now using heap memory
+}
+
+void string::resize(size_t new_size) {
+    size_t cur_length = length();
+    if (new_size < cur_length) {
+        // If new size is smaller, just truncate by placing a null terminator
+        if (m_using_sso) {
+            m_sso_buffer[new_size] = '\0';
+        } else {
+            m_data[new_size] = '\0';
+            m_size = new_size;
+        }
+    } else if (new_size > cur_length) {
+        // If new size is larger, reserve more space and zero-fill
+        reserve(new_size + 1); // +1 for null terminator
+        if (m_using_sso) {
+            memset(m_sso_buffer + cur_length, 0, new_size - cur_length);
+            m_sso_buffer[new_size] = '\0';
+        } else {
+            memset(m_data + m_size, 0, new_size - m_size);
+            m_data[new_size] = '\0';
+            m_size = new_size;
+        }
+    }
+}
+
+size_t string::find(char c) const {
+    const char* str = m_using_sso ? m_sso_buffer : m_data;
+    for (size_t i = 0; i < length(); ++i) {
+        if (str[i] == c) {
+            return i; // Found the character
+        }
+    }
+
+    return npos;
+}
+
+size_t string::find(const char* substr) const {
+    size_t len = strlen(substr);
+    if (len == 0) {
+        return 0; // Empty string always matches at the beginning
+    }
+
+    const char* current = m_using_sso ? m_sso_buffer : m_data;
+    size_t this_len = this->length();
+
+    if (len > this_len) {
+        return npos;
+    }
+
+    for (size_t i = 0; i <= this_len - len; ++i) {
+        size_t j;
+        for (j = 0; j < len; ++j) {
+            if (current[i + j] != substr[j]) {
+                break;
+            }
+        }
+
+        if (j == len) {
+            return i; // Substring found at position i
+        }
+    }
+
+    return npos; // Substring not found
+}
+
+size_t string::find(const string& str) const {
+    return find(str.c_str());
+}
+
+string string::substring(size_t start, size_t length) const {
+    size_t str_length = this->length();
+
+    if (start >= str_length) {
+        return string(); // Return an empty string if start is out of bounds
+    }
+
+    // If length is npos or extends beyond the end, adjust it
+    if (length == npos || start + length > str_length) {
+        length = str_length - start;
+    }
+
+    char* buffer = static_cast<char*>(malloc(length + 1)); // +1 for null terminator
+
+    const char* str = m_using_sso ? m_sso_buffer : m_data;
+    
+    memcpy(buffer, str + start, length);
+    buffer[length] = '\0'; // Null-terminate
+
+    string new_string(buffer);
+    free(buffer); // Free temporary buffer
+
+    return new_string;
+}
+
+void string::clear() {
+    if (!m_using_sso && m_capacity) {
+        free(m_data);
+    }
+
+    m_sso_buffer[0] = '\0';
+    m_using_sso = true;
+    m_size = 0;
+    m_capacity = m_sso_size;
+}
+
+const char* string::data() const {
+    return c_str();
+}
+
+const char* string::c_str() const {
+    return m_using_sso ? m_sso_buffer : m_data;
+}
+
+// Convert integer to string
+string to_string(int value) {
+    char buf[32] = { 0 };  // Large enough for an int
+    lltoa(value, buf, sizeof(buf));  // Custom integer-to-string conversion
+    return string(buf);
+}
+
+// Convert unsigned integer to string
+string to_string(unsigned int value) {
+    char buf[32] = { 0 };  // Large enough for unsigned int
+    lltoa(value, buf, sizeof(buf));  // Custom integer-to-string conversion
+    return string(buf);
+}
+} // namespace kstl

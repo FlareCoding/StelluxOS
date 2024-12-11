@@ -579,10 +579,10 @@ int gop_printf(const char* format, Args... args) {
     constexpr size_t BUFFER_SIZE = 256;
     char buffer[BUFFER_SIZE] = { 0 };
     
-    // Format the string using the custom sprintf
+    // Format the kstl::string using the custom sprintf
     int len = sprintf(buffer, BUFFER_SIZE, format, args...);
     
-    // Send the formatted string over COM1
+    // Send the formatted kstl::string over COM1
     render_string(buffer);
     
     return len;
@@ -698,6 +698,7 @@ void init(unsigned int magic, void* mbi) {
         while (true) { asm volatile ("hlt"); }
     }
 
+    // Initialize early stage serial output
     serial::init_port(SERIAL_PORT_BASE_COM1);
 
     // Architecture-specific initialization sequences

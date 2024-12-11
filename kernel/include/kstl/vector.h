@@ -56,7 +56,7 @@ template <typename T>
 vector<T>::vector(size_t initial_capacity)
     : m_data(nullptr), m_size(0), m_capacity(initial_capacity) {
     if (initial_capacity > 0) {
-        m_data = static_cast<T*>(kmalloc(initial_capacity * sizeof(T)));
+        m_data = static_cast<T*>(zmalloc(initial_capacity * sizeof(T)));
     }
 }
 
@@ -64,7 +64,7 @@ template <typename T>
 vector<T>::vector(const vector<T>& other)
     : m_data(nullptr), m_size(other.m_size), m_capacity(other.m_capacity) {
     if (m_capacity > 0) {
-        m_data = static_cast<T*>(kmalloc(m_capacity * sizeof(T)));
+        m_data = static_cast<T*>(zmalloc(m_capacity * sizeof(T)));
 
         for (size_t i = 0; i < m_size; ++i) {
             if constexpr (is_primitive<T>::value) {
@@ -90,7 +90,7 @@ vector<T>::~vector() {
         for (size_t i = 0; i < m_size; i++) {
             m_data[i].~T();
         }
-        kfree(m_data);
+        free(m_data);
     }
 }
 
@@ -101,12 +101,12 @@ vector<T>& vector<T>::operator=(const vector<T>& other) {
             for (size_t i = 0; i < m_size; i++) {
                 m_data[i].~T();
             }
-            kfree(m_data);
+            free(m_data);
         }
 
         m_size = other.m_size;
         m_capacity = other.m_capacity;
-        m_data = m_capacity > 0 ? static_cast<T*>(kmalloc(m_capacity * sizeof(T))) : nullptr;
+        m_data = m_capacity > 0 ? static_cast<T*>(zmalloc(m_capacity * sizeof(T))) : nullptr;
 
         for (size_t i = 0; i < m_size; i++) {
             if constexpr (is_primitive<T>::value) {
@@ -127,7 +127,7 @@ vector<T>& vector<T>::operator=(vector<T>&& other) noexcept {
             for (size_t i = 0; i < m_size; i++) {
                 m_data[i].~T();
             }
-            kfree(m_data);
+            free(m_data);
         }
 
         m_data = other.m_data;
@@ -292,7 +292,7 @@ void vector<T>::clear() {
 
 template <typename T>
 void vector<T>::reallocate(size_t new_capacity) {
-    T* new_block = static_cast<T*>(kmalloc(new_capacity * sizeof(T)));
+    T* new_block = static_cast<T*>(zmalloc(new_capacity * sizeof(T)));
 
     if (new_block) {
         for (size_t i = 0; i < m_size; ++i) {
@@ -305,7 +305,7 @@ void vector<T>::reallocate(size_t new_capacity) {
         }
 
         if (m_data) {
-            kfree(m_data);
+            free(m_data);
         }
 
         m_data = new_block;
