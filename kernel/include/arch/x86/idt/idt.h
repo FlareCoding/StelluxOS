@@ -114,5 +114,5 @@ __PRIVILEGED_CODE
 void init_idt();
 } // namespace arch::x86
 
-#endif // ARCH_X86_64
 #endif // IDT_H
+#endif // ARCH_X86_64

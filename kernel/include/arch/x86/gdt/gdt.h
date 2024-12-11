@@ -153,5 +153,5 @@ __PRIVILEGED_CODE
 void init_gdt(int cpu, uint64_t system_stack);
 } // namespace arch::x86
 
-#endif // ARCH_X86_64
 #endif // GDT_H
+#endif // ARCH_X86_64

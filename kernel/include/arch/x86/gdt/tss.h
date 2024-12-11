@@ -43,5 +43,5 @@ struct tss_desc {
     uint32_t reserved;
 } __attribute__((packed));
 
-#endif // ARCH_X86_64
 #endif // TSS_H
+#endif // ARCH_X86_64

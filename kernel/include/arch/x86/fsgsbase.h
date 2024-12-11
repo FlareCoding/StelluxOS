@@ -87,6 +87,5 @@ static __force_inline__ void swapgs() {
 }
 } // namespace arch::x86
 
-#endif // ARCH_X86_64
 #endif // FSGSBASE_H
-
+#endif // ARCH_X86_64

@@ -55,5 +55,5 @@ __PRIVILEGED_CODE
 void cpu_pge_enable();
 } // namespace arch::x86
 
-#endif // ARCH_X86_64
 #endif // CPU_CONTROL_H
+#endif // ARCH_X86_64

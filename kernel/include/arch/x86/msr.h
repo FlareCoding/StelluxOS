@@ -45,5 +45,6 @@ void write(
 );
 } // namespace arch::x86::msr
 
-#endif // ARCH_X86_64
 #endif // MSR_H
+#endif // ARCH_X86_64
+

@@ -48,5 +48,5 @@ __PRIVILEGED_CODE void setup_kernel_pat();
 __PRIVILEGED_CODE void debug_kernel_pat();
 } // namespace arch::x86
 
-#endif // ARCH_X86_64
 #endif // PAT_H
+#endif // ARCH_X86_64

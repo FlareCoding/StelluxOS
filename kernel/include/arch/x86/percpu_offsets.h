@@ -16,5 +16,5 @@ extern uintptr_t per_cpu_offset_current_user_stack;
 }
 #endif
 
-#endif // ARCH_X86_64
 #endif // PERCPU_OFFSETS_H
+#endif // ARCH_X86_64
