@@ -18,6 +18,8 @@ namespace sched {
  */
 __PRIVILEGED_CODE
 task_control_block* get_idle_task(uint64_t cpu);
+
+__PRIVILEGED_CODE void install_sched_irq_handler();
 } // namespace sched
 
 #endif // SCHED_H

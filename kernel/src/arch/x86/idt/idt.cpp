@@ -490,5 +490,35 @@ void panic(ptregs* regs) {
     }
 }
 
+__PRIVILEGED_CODE
+uint8_t find_free_irq_vector() {
+    for (uint8_t irqno = IRQ17; irqno < IRQ64; irqno++) {
+        uint64_t irq_table_index = static_cast<uint64_t>(irqno) - IRQ0;
+        irq_desc* desc = &arch::x86::g_irq_handler_table.descriptors[irq_table_index];
+        if (!desc->handler) {
+            return irqno;
+        }
+    }
+
+    return 0;
+}
+
+__PRIVILEGED_CODE
+bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, void* cookie) {
+    uint64_t irq_table_index = static_cast<uint64_t>(irqno) - IRQ0;
+    irq_desc* desc = &arch::x86::g_irq_handler_table.descriptors[irq_table_index];
+    if (desc->handler) {
+        serial::com1_printf("[WARN] registerIrqHandler(): IRQ%i handler already exists!\n", irq_table_index);
+        return false;
+    }
+
+    desc->handler = handler;
+    desc->flags   = flags;
+    desc->cookie  = cookie;
+    desc->irqno   = irqno;
+
+    return true;
+}
+
 #endif // ARCH_X86_64
 

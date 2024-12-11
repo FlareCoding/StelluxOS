@@ -81,7 +81,7 @@ struct ptregs;
 typedef irqreturn_t (*irq_handler_t)(ptregs* regs, void* cookie);
 
 #define DEFINE_INT_HANDLER(name) \
-    irqreturn_t name( \
+    __PRIVILEGED_CODE irqreturn_t name( \
         ptregs* regs, \
         void* cookie \
     )
@@ -114,14 +114,12 @@ struct irq_desc {
 /**
  * @brief Enables CPU interrupts.
  */
-__PRIVILEGED_CODE
-void enable_interrupts();
+__PRIVILEGED_CODE void enable_interrupts();
 
 /**
  * @brief Disables CPU interrupts.
  */
-__PRIVILEGED_CODE
-void disable_interrupts();
+__PRIVILEGED_CODE void disable_interrupts();
 
 /**
  * @brief Handles a kernel panic by displaying register information and halting the system.
@@ -129,5 +127,9 @@ void disable_interrupts();
  * @param regs Pointer to the register state at the time of the panic.
  */
 void panic(ptregs* regs);
+
+__PRIVILEGED_CODE uint8_t find_free_irq_vector();
+
+__PRIVILEGED_CODE bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, void* cookie);
 
 #endif // IRQ_H

@@ -8,6 +8,7 @@
 #include <boot/efimem.h>
 #include <acpi/acpi.h>
 #include <time/time.h>
+#include <sched/sched.h>
 
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
@@ -728,10 +729,8 @@ void init(unsigned int magic, void* mbi) {
     // Start CPU timer in order to receive timer IRQs
     kernel_timer::start_cpu_periodic_timer();
 
-    for (int i = 1; i <= 10; i++) {
-        serial::com1_printf("i: %i\n", i);
-        msleep(500);
-    }
+    // Install the timer interrupt handler
+    sched::install_sched_irq_handler();
 
     // Idle loop
     while (true) {
