@@ -1,7 +1,6 @@
+#ifdef ARCH_X86_64
 #ifndef TSS_H
 #define TSS_H
-#ifdef ARCH_X86_64
-
 #include <types.h>
 
 struct task_state_segment {

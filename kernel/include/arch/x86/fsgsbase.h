@@ -1,6 +1,6 @@
+#ifdef ARCH_X86_64
 #ifndef FSGSBASE_H
 #define FSGSBASE_H
-#ifdef ARCH_X86_64
 #include <types.h>
 
 namespace arch::x86 {

@@ -1,6 +1,6 @@
+#ifdef ARCH_X86_64
 #ifndef PERCPU_OFFSETS_H
 #define PERCPU_OFFSETS_H
-#ifdef ARCH_X86_64
 #include <types.h>
 
 #ifdef __cplusplus

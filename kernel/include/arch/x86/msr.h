@@ -1,6 +1,6 @@
+#ifdef ARCH_X86_64
 #ifndef MSR_H
 #define MSR_H
-#ifdef ARCH_X86_64
 #include <types.h>
 
 #define IA32_EFER       0xC0000080

@@ -1,6 +1,6 @@
+#ifdef ARCH_X86_64
 #ifndef CPU_CONTROL_H
 #define CPU_CONTROL_H
-#ifdef ARCH_X86_64
 #include <types.h>
 
 #define CR0_PE (1UL << 0)  // Protected Mode Enable

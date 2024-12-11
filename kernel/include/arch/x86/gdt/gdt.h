@@ -1,6 +1,6 @@
+#ifdef ARCH_X86_64
 #ifndef GDT_H
 #define GDT_H
-#ifdef ARCH_X86_64
 
 #include "tss.h"
 

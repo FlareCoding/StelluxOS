@@ -1,6 +1,6 @@
+#ifdef ARCH_X86_64
 #ifndef IDT_H
 #define IDT_H
-#ifdef ARCH_X86_64
 
 #include <interrupts/irq.h>
 #include <process/ptregs.h>

@@ -1,6 +1,6 @@
+#ifdef ARCH_X86_64
 #ifndef PAT_H
 #define PAT_H
-#ifdef ARCH_X86_64
 #include <types.h>
 
 #define IA32_PAT_MSR            0x277
