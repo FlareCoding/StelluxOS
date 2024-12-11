@@ -4,6 +4,7 @@
 #include <memory/paging.h>
 #include <serial/serial.h>
 #include <pci/pci_manager.h>
+#include <acpi/hpet.h>
 
 // UART I/O Register Offsets
 #define SERIAL_DATA_PORT_UART(base)               (base + 0)
@@ -151,6 +152,10 @@ void enumerate_acpi_tables(void* rsdp) {
                 pci.init(table);
 
                 pci_test();
+            } else if (strcmp(table_name, "HPET") == 0) {
+                // Initialize the HPET timer
+                auto& timer = hpet::get();
+                timer.init(table);
             }
         }
     }
