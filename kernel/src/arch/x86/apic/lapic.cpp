@@ -37,6 +37,9 @@ lapic::lapic(uint64_t base, uint8_t spurious_irq) {
     spurious_vector |= (1 << 8);        // Enable the APIC
     spurious_vector |= spurious_irq;    // Set the spurious interrupt vector (choose a free vector number)
     write(0xF0, spurious_vector);
+
+    // Disable legacy PIC controller
+    disable_legacy_pic();
 }
 
 __PRIVILEGED_CODE 
