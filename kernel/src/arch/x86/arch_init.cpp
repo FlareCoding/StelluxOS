@@ -1,5 +1,6 @@
 #include <types.h>
 #include <memory/memory.h>
+#include <memory/paging.h>
 #include <serial/serial.h>
 #include <arch/percpu.h>
 #include <arch/x86/gdt/gdt.h>
@@ -11,7 +12,7 @@
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
 
-uint8_t g_default_bsp_system_stack[0x2000];
+uint8_t g_default_bsp_system_stack[PAGE_SIZE];
 
 namespace arch {
 __PRIVILEGED_CODE
