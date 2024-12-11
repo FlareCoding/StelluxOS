@@ -480,4 +480,9 @@
 // Class Code 0xFF - Unassigned Class (Vendor Specific)
 #define PCI_CLASS_UNASSIGNED_VENDOR_SPECIFIC     0xFF
 
+namespace pci {
+struct pci_function_desc;
+const char* get_pci_device_name(const pci_function_desc* header);
+} // namespace pci
+
 #endif // PCI_CLASS_CODES_H
