@@ -3,7 +3,7 @@
 #include <memory/vmm.h>
 #include <memory/paging.h>
 #include <serial/serial.h>
-#include <pci/pci_device.h>
+#include <pci/pci_manager.h>
 
 // UART I/O Register Offsets
 #define SERIAL_DATA_PORT_UART(base)               (base + 0)
@@ -74,120 +74,33 @@ void write_string(uint16_t io_base, const char* str) {
     }
 }
 
-struct mcfg_entry {
-    uint64_t base_address;      // Base address for this PCI segment
-    uint16_t pci_segment_group; // Segment group number
-    uint8_t start_bus;          // Starting bus number
-    uint8_t end_bus;            // Ending bus number
-    uint32_t reserved;          // Reserved, must be 0
-} __attribute__((packed));
+void pci_test() {
+    auto& pci = pci::pci_manager::get();
 
-struct mcfg_table {
-    acpi::acpi_sdt_header header;   // Standard ACPI table header
-    uint64_t reserved;              // Reserved field
-} __attribute__((packed));
-
-uint64_t getBarFromPciHeader(pci::pci_function_desc* header, size_t barIndex) {
-    uint32_t barValue = header->bar[barIndex];
-
-    // Check if the BAR is memory-mapped
-    if ((barValue & 0x1) == 0) {
-        // Check if the BAR is 64-bit (by checking the type in bits [1:2])
-        if ((barValue & 0x6) == 0x4) {
-            // It's a 64-bit BAR, read the high part from the next BAR
-            uint64_t high = (uint64_t)(header->bar[barIndex + 1]);
-            uint64_t address = (high << 32) | (barValue & ~0xF);
-            return address;
-        } else {
-            // It's a 32-bit BAR
-            uint64_t address = (uint64_t)(barValue & ~0xF);
-            return address;
-        }
+    for (auto& device : pci.get_devices()) {
+        device->dbg_print_to_string();
     }
 
-    return 0; // No valid BAR found
-}
-
-void enumeratePciFunction(uint64_t deviceAddress, uint64_t function) {
-    uint64_t function_offset = function << 12;
-
-    uint64_t functionAddress = deviceAddress + function_offset;
-    void* functionVirtualAddress = vmm::map_physical_page(functionAddress, DEFAULT_MAPPING_FLAGS);
-
-    pci::pci_function_desc* pciDeviceHeader = (pci::pci_function_desc*)functionVirtualAddress;
-
-    if (pciDeviceHeader->device_id == 0 || pciDeviceHeader->device_id == 0xffff) {
-        vmm::unmap_virtual_page((uintptr_t)functionVirtualAddress);
+    auto serial_controller = pci.find_by_class(PCI_CLASS_SIMPLE_COMMUNICATION_CONTROLLER, PCI_SUBCLASS_SIMPLE_COMM_SERIAL);
+    if (!serial_controller.get()) {
         return;
     }
 
-    pci::pci_device device(functionAddress, pciDeviceHeader);
-    device.dbg_print_to_string();
+    serial::com1_printf("\n   [*] Found serial controller!\n");
+    serial_controller->dbg_print_to_string();
 
-    if (pciDeviceHeader->class_code == PCI_CLASS_SIMPLE_COMMUNICATION_CONTROLLER &&
-        pciDeviceHeader->subclass == PCI_SUBCLASS_SIMPLE_COMM_SERIAL &&
-        pciDeviceHeader->prog_if == PCI_PROGIF_SERIAL_16550_COMPATIBLE    
-    ) {
-        auto& bars = device.get_bars();
-        auto& bar0 = bars[0];
+    serial_controller->enable();
 
-        device.enable();
+    auto& bar = serial_controller->get_bars()[0];
 
-        // Decode BAR0 as I/O base
-        if (bar0.type == pci::pci_bar_type::io_space) { // I/O space
-            uint16_t io_base = bar0.address & ~0x3;
+    if (bar.type == pci::pci_bar_type::io_space) { // I/O space
+        uint16_t io_base = bar.address & ~0x3;
 
-            init_port(io_base);
-            write_string(io_base, "UART messages work!\n");
-            write_string(io_base, "Welcome to Stellux 2.0!\n");
-        }
+        init_port(io_base);
+        write_string(io_base, "UART messages work!\n");
+        write_string(io_base, "Welcome to Stellux 2.0!\n");
     }
-}
-
-void enumeratePciDevice(uint64_t busAddress, uint64_t device) {
-    uint64_t device_offset = device << 15;
-    uint64_t deviceAddress = busAddress + device_offset;
-
-    void* deviceVirtualAddress = vmm::map_physical_page(deviceAddress, DEFAULT_MAPPING_FLAGS);
-
-    pci::pci_function_desc* pciDeviceHeader = (pci::pci_function_desc*)deviceVirtualAddress;
-
-    if (pciDeviceHeader->device_id == 0 || pciDeviceHeader->device_id == 0xffff) {
-        vmm::unmap_virtual_page((uintptr_t)deviceVirtualAddress);
-        return;
-    }
-
-    for (uint64_t function = 0; function < 8; function++){
-        enumeratePciFunction(deviceAddress, function);
-    }
-}
-
-void enumeratePciBus(uint64_t baseAddress, uint64_t bus) {
-    uint64_t bus_offset = bus << 20;
-    uint64_t busAddress = baseAddress + bus_offset;
-
-    void* busVirtualAddress = vmm::map_physical_page(busAddress, DEFAULT_MAPPING_FLAGS);
-
-    pci::pci_function_desc* pciDeviceHeader = (pci::pci_function_desc*)busVirtualAddress;
-
-    if (pciDeviceHeader->device_id == 0 || pciDeviceHeader->device_id == 0xffff) {
-        vmm::unmap_virtual_page((uintptr_t)busVirtualAddress);
-        return;
-    }
-
-    for (uint64_t device = 0; device < 32; device++){
-        enumeratePciDevice(busAddress, device);
-    }
-}
-
-void enumerate_mcfg_table(mcfg_table* mcfg) {
-    size_t entries = (mcfg->header.length - sizeof(mcfg_table)) / sizeof(mcfg_entry);
-    for (size_t t = 0; t < entries; t++) {
-        mcfg_entry* device_config = (mcfg_entry*)((uint64_t)mcfg + sizeof(mcfg_table) + (sizeof(mcfg_entry) * t));
-        for (uint64_t bus = device_config->start_bus; bus < device_config->end_bus; bus++) {
-            enumeratePciBus(device_config->base_address, bus);
-        }
-    }
+    serial::com1_printf("\n");
 }
 
 namespace acpi {
@@ -233,8 +146,11 @@ void enumerate_acpi_tables(void* rsdp) {
             serial::com1_printf("Found ACPI table: %s (0x%llx)\n", table_name, table);
 
             if (strcmp(table_name, "MCFG") == 0) {
-                mcfg_table* mcfg = reinterpret_cast<mcfg_table*>(table);
-                enumerate_mcfg_table(mcfg);
+                // Initialize the PCI subsystem
+                auto& pci = pci::pci_manager::get();
+                pci.init(table);
+
+                pci_test();
             }
         }
     }

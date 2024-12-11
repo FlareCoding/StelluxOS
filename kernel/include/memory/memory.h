@@ -168,6 +168,16 @@ private:
         m_ref_count = nullptr;
     }
 };
+
+template <typename T, typename... Args>
+shared_ptr<T> make_shared(Args&&... args) {
+    // Construct the T object on the heap.
+    T* ptr = new T(static_cast<Args&&>(args)...);
+
+    // Return a shared_ptr that takes ownership of this new object.
+    return shared_ptr<T>(ptr);
+}
+
 } // namespace kstl
 
 #endif // MEMORY_H
