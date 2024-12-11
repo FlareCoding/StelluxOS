@@ -711,6 +711,9 @@ void init(unsigned int magic, void* mbi) {
     paging::init_physical_allocator(g_mbi_efi_mmap);
     paging::init_virtual_allocator();
 
+    // Perform arch-specific initialzation that require VMM
+    arch::arch_late_stage_init();
+
     init_framebuffer_renderer();
 
     //memory_map_walk_test();

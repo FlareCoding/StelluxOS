@@ -6,6 +6,7 @@
 #include <arch/x86/idt/idt.h>
 #include <arch/x86/fsgsbase.h>
 #include <arch/x86/pat.h>
+#include <arch/x86/apic/lapic.h>
 #include <syscall/syscalls.h>
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
@@ -49,5 +50,16 @@ void arch_init() {
 
     // Setup and enable dynamic privilege mechanism
     dynpriv::use_current_asid();
+}
+
+__PRIVILEGED_CODE
+void arch_late_stage_init() {
+    auto& lapic = x86::lapic::get();
+    if (!lapic.get()) {
+        serial::com1_printf("[!] Failed to initialize local APIC\n");
+        return;
+    }
+
+    lapic->init();
 }
 } // namespace arch

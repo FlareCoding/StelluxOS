@@ -44,8 +44,14 @@ namespace arch {
  * Configures the dynamic privilege mechanism by setting the current ASID
  * for elevation checks using `dynpriv::use_current_asid()`.
  */
-__PRIVILEGED_CODE
-void arch_init();
+__PRIVILEGED_CODE void arch_init();
+
+/**
+ * @brief Initializes late-stage architecture specific components.
+ * 
+ * This function must be called AFTER virtual memory manager has been initialized.
+ */
+__PRIVILEGED_CODE void arch_late_stage_init();
 } // namespace arch
 
 #endif
