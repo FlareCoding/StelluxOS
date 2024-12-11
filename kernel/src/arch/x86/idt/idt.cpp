@@ -1,5 +1,6 @@
 #ifdef ARCH_X86_64
 #include <arch/x86/idt/idt.h>
+#include <arch/x86/apic/lapic.h>
 #include <memory/memory.h>
 #include <serial/serial.h>
 #include <sched/sched.h>
@@ -220,7 +221,7 @@ void common_irq_entry(ptregs* regs) {
     }
 
     if (desc->fast_apic_eoi) {
-        //Apic::getLocalApic()->completeIrq();
+        lapic::get()->complete_irq();
     }
 
     irqreturn_t ret = desc->handler(regs, desc->cookie);

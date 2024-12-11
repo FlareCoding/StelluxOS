@@ -7,6 +7,7 @@
 #include <memory/vmm.h>
 #include <boot/efimem.h>
 #include <acpi/acpi.h>
+#include <time/time.h>
 
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
@@ -720,6 +721,17 @@ void init(unsigned int magic, void* mbi) {
 
     // Discover ACPI tables
     acpi::enumerate_acpi_tables(g_mbi_acpi_rsdp);
+
+    // Calibrate architecture-specific CPU timer to a tickrate of 4ms
+    kernel_timer::calibrate_cpu_timer(4);
+
+    // Start CPU timer in order to receive timer IRQs
+    kernel_timer::start_cpu_periodic_timer();
+
+    for (int i = 1; i <= 10; i++) {
+        serial::com1_printf("i: %i\n", i);
+        msleep(500);
+    }
 
     // Idle loop
     while (true) {

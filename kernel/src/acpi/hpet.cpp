@@ -1,6 +1,7 @@
 #include <acpi/hpet.h>
 #include <memory/vmm.h>
 #include <memory/paging.h>
+#include <memory/tlb.h>
 
 namespace acpi {
 // Global system instance of HPET controller
@@ -20,6 +21,9 @@ void hpet::init(acpi_sdt_header* acpi_hpet_table) {
     void* virt_base = vmm::map_physical_page(physical_base, DEFAULT_MAPPING_FLAGS | PTE_PCD | PTE_US);
 
     m_base = reinterpret_cast<uint64_t>(virt_base);
+
+    // TLB has to be flushed for proper writes to HPET registers in the future
+    paging::tlb_flush_all();
 
     // Enable the HPET by setting the ENABLE bit in the General Configuration Register
     uint64_t gen_config = _read_hpet_register(HPET_GENERAL_CONFIGURATION_OFFSET);
