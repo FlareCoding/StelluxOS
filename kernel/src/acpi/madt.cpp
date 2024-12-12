@@ -1,5 +1,6 @@
 #include <acpi/madt.h>
 #include <serial/serial.h>
+#include <arch/percpu.h>
 
 namespace acpi {
 madt g_madt;
@@ -25,6 +26,11 @@ void madt::init(acpi_sdt_header* acpi_madt_table) {
 
         switch (entry_type) {
         case MADT_DESCRIPTOR_TYPE_LAPIC: {
+            // Check if maximum supported number of local apics has been tracked
+            if (m_local_apics.size() >= MAX_SYSTEM_CPUS) {
+                break;
+            }
+
             lapic_desc* desc = reinterpret_cast<lapic_desc*>(entry);
             if (desc->flags & LAPIC_PROCESSOR_ENABLED_BIT) {
                 m_local_apics.push_back(*desc);
