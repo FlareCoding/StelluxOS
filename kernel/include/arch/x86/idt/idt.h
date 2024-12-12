@@ -112,6 +112,8 @@ struct interrupt_descriptor_table {
 EXTERN_C
 __PRIVILEGED_CODE
 void init_idt();
+
+__PRIVILEGED_CODE void install_idt();
 } // namespace arch::x86
 
 #endif // IDT_H

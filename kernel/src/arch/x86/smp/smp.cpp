@@ -2,9 +2,16 @@
 #include <smp/smp.h>
 #include <acpi/madt.h>
 #include <memory/memory.h>
+#include <memory/vmm.h>
 #include <memory/paging.h>
 #include <time/time.h>
+#include <arch/percpu.h>
 #include <arch/x86/apic/lapic.h>
+#include <arch/x86/gdt/gdt.h>
+#include <arch/x86/idt/idt.h>
+#include <arch/x86/fsgsbase.h>
+#include <syscall/syscalls.h>
+#include <sched/sched.h>
 #include <serial/serial.h>
 
 #define AP_STARTUP_ASM_ADDRESS              static_cast<uint64_t>(0x8000)
@@ -22,12 +29,48 @@
 #define IPI_STARTUP_DELAY  20
 #define IPI_RETRY_DELAY    100
 
+#define AP_SYSTEM_STACK_SIZE 0x2000 - 0x10
+
 EXTERN_C __PRIVILEGED_CODE void asm_ap_startup();
 
+__PRIVILEGED_DATA
+__attribute__((aligned(PAGE_SIZE)))
+uintptr_t g_ap_system_stacks[MAX_SYSTEM_CPUS] = { 0 };
+
 namespace arch::x86 {
+EXTERN_C
 __PRIVILEGED_CODE
 void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
-    serial::com1_printf("AP core %i started with lapic_id: %i\n", acpi_cpu_index, lapicid);
+    // Setup kernel stack
+    uint64_t ap_system_stack_top =
+        reinterpret_cast<uint64_t>(g_ap_system_stacks[acpi_cpu_index]) + AP_SYSTEM_STACK_SIZE;
+
+    // Setup the GDT with userspace support
+    init_gdt(acpi_cpu_index, ap_system_stack_top);
+
+    // Setup the IDT and enable interrupts
+    install_idt();
+    enable_interrupts();
+
+    // Setup per-cpu area for the bootstrapping processor
+    enable_fsgsbase();
+    init_ap_per_cpu_area(acpi_cpu_index);
+
+    // Setup BSP's idle task (current)
+    task_control_block* ap_idle_task = sched::get_idle_task(acpi_cpu_index);
+    zeromem(ap_idle_task, sizeof(task_control_block));
+    this_cpu_write(current_task, ap_idle_task);
+
+    current->system_stack = ap_system_stack_top;
+    current->cpu = lapicid;
+    current->elevated = 1;
+    current->state = process_state::RUNNING;
+    current->pid = 0;
+
+    // Enable the syscall interface
+    enable_syscall_interface();
+
+    serial::com1_printf("AP core %i ready with lapic_id: %i\n", acpi_cpu_index, current->cpu);
     while (true) {
         asm volatile ("hlt");
     }
@@ -107,21 +150,35 @@ void smp_init() {
     uint32_t stack_index = 0;
 
     for (acpi::lapic_desc& desc : apic_table.get_lapics()) {
+        uint8_t cpu_index = desc.acpi_processor_id;
+
         // Ignore the bootstrapping processor
-        if (desc.acpi_processor_id == 0) {
+        if (cpu_index == 0) {
             continue;
         }
 
+        // Allocate a system stack for the AP core
+        void* ap_stack = vmm::alloc_virtual_pages(2, DEFAULT_MAPPING_FLAGS | PTE_PCD);
+        g_ap_system_stacks[cpu_index] = reinterpret_cast<uintptr_t>(ap_stack);
+
+        // Allocate a per-cpu area for the processor
+        arch::allocate_ap_per_cpu_area(cpu_index);
+
         startup_data->stack_index = stack_index++;
-        startup_data->acpi_cpu_index = desc.acpi_processor_id;
+        startup_data->acpi_cpu_index = cpu_index;
 
         // Send INIT and STARTUP IPI sequence
         if (!send_ap_startup_sequence(startup_data, desc.apic_id)) {
-            serial::com1_printf("[!] Core %u failed to start (lapic_id: %u)\n", desc.acpi_processor_id, desc.apic_id);
+            serial::com1_printf("[!] Core %u failed to start (lapic_id: %u)\n", cpu_index, desc.apic_id);
+
+            // Free the resources allocated for the core
+            vmm::unmap_contiguous_virtual_pages(g_ap_system_stacks[cpu_index], 2);
+            arch::deallocate_ap_per_cpu_area(cpu_index);
+
             continue;
         }
 
-        serial::com1_printf("[*] Successfully started core %u (lapic_id: %u)\n", desc.acpi_processor_id, desc.apic_id);
+        serial::com1_printf("[*] Successfully started core %u (lapic_id: %u)\n", cpu_index, desc.apic_id);
 
         // Safety delay
         msleep(1);

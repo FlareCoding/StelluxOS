@@ -8,6 +8,7 @@
 .equ acpi_processor_id_ptr,     0x9018
 
 .equ stack_size, 512
+.equ ap_system_stack_size, 0x2000 - 0x10
 
 /*
 ==============================================================
@@ -139,15 +140,22 @@ _L80A0:
 
 .align 64
 .code64
-_L8140:
-    # Increment the number of running CPUs
-    lock inc dword ptr [cpus_running_ptr]
+.extern g_ap_system_stacks
 
+_L8140:
     #
     # RDI - LAPIC ID
     # RSI - ACPI Processor Index/ID 
     #
     mov rsi, qword ptr [acpi_processor_id_ptr]
+
+    # Switch onto a pre-allocated 64bit stack
+    mov rsp, [g_ap_system_stacks + rsi * 8]
+    add rsp, ap_system_stack_size
+    mov rbp, rsp
+
+    # Increment the number of running CPUs
+    lock inc dword ptr [cpus_running_ptr]
 
     # Here you are in 64-bit mode
     mov rax, [c_entry_address_ptr]

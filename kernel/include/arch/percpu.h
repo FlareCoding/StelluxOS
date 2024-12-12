@@ -2,7 +2,7 @@
 #define PERCPU_H
 #include <types.h>
 
-#define MAX_SYSTEM_CPUS 128
+#define MAX_SYSTEM_CPUS 64
 
 #define BSP_CPU_ID 0
 
@@ -69,6 +69,15 @@ inline void this_cpu_write(T& name, T val) {}
 namespace arch {
 __PRIVILEGED_CODE
 void init_bsp_per_cpu_area();
+
+__PRIVILEGED_CODE
+void init_ap_per_cpu_area(uint8_t cpu_id);
+
+__PRIVILEGED_CODE
+void allocate_ap_per_cpu_area(uint8_t cpu_id);
+
+__PRIVILEGED_CODE
+void deallocate_ap_per_cpu_area(uint8_t cpu_id);
 } // namespace arch
 
 #endif // PERCPU_H

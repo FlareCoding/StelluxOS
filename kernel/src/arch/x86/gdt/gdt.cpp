@@ -63,8 +63,8 @@ void set_tss_descriptor_limit(tss_desc* desc, uint32_t limit) {
 }
 
 __PRIVILEGED_CODE
-void init_gdt(int apicid, uint64_t system_stack) {
-    gdt_and_tss_data* data = &g_gdt_per_cpu_array[apicid];
+void init_gdt(int cpu, uint64_t system_stack) {
+    gdt_and_tss_data* data = &g_gdt_per_cpu_array[cpu];
 
     // Zero out all descriptors initially
     zeromem(&data->kernel_null_descriptor, sizeof(gdt_segment_descriptor));

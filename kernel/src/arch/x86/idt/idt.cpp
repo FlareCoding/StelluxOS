@@ -348,6 +348,11 @@ void init_idt() {
     SET_KERNEL_TRAP_GATE(IRQ64, asm_irq_handler_64);
 
     // Load the IDT
+    install_idt();
+}
+
+__PRIVILEGED_CODE
+void install_idt() {
     asm volatile ("lidt %0" :: "m"(g_kernel_idt_descriptor));
 }
 } // namespace arch::x86
