@@ -9,6 +9,7 @@
 #include <acpi/acpi.h>
 #include <time/time.h>
 #include <sched/sched.h>
+#include <smp/smp.h>
 
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
@@ -731,6 +732,9 @@ void init(unsigned int magic, void* mbi) {
 
     // Install the timer interrupt handler
     sched::install_sched_irq_handler();
+
+    // Initialize SMP and bring up application processors
+    smp::smp_init();
 
     // Idle loop
     while (true) {

@@ -26,7 +26,9 @@ void madt::init(acpi_sdt_header* acpi_madt_table) {
         switch (entry_type) {
         case MADT_DESCRIPTOR_TYPE_LAPIC: {
             lapic_desc* desc = reinterpret_cast<lapic_desc*>(entry);
-            m_local_apics.push_back(*desc);
+            if (desc->flags & LAPIC_PROCESSOR_ENABLED_BIT) {
+                m_local_apics.push_back(*desc);
+            }
             break;
         }
         case MADT_DESCRIPTOR_TYPE_IOAPIC: {
