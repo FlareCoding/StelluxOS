@@ -70,6 +70,16 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     // Enable the syscall interface
     enable_syscall_interface();
 
+    // Initialize the local APIC controller
+    auto& lapic = x86::lapic::get();
+    lapic->init();
+
+    // Calibrate the local APIC timer to a tickrate of 4ms
+    kernel_timer::calibrate_cpu_timer(4);
+
+    // Start local APIC timer in order to receive timer IRQs
+    kernel_timer::start_cpu_periodic_timer();
+
     serial::com1_printf("AP core %i ready with lapic_id: %i\n", acpi_cpu_index, current->cpu);
     while (true) {
         asm volatile ("hlt");
