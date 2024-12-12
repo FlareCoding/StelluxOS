@@ -3,7 +3,7 @@
 #include <types.h>
 
 namespace smp {
-void smp_init();
+__PRIVILEGED_CODE void smp_init();
 } // namespace smp
 
 #endif // SMP_H
