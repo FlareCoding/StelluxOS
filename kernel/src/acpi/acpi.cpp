@@ -5,6 +5,7 @@
 #include <serial/serial.h>
 #include <pci/pci_manager.h>
 #include <acpi/hpet.h>
+#include <acpi/madt.h>
 #include <time/time.h>
 
 // UART I/O Register Offsets
@@ -160,6 +161,10 @@ void enumerate_acpi_tables(void* rsdp) {
 
                 // Initialize kernel time
                 kernel_timer::init();
+            } else if (strcmp(table_name, "APIC") == 0) {
+                // Initialize the MADT table
+                auto& apic_table = madt::get();
+                apic_table.init(table);
             }
         }
     }
