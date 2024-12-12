@@ -1,3 +1,4 @@
+#ifdef ARCH_X86_64
 #include <smp/smp.h>
 #include <acpi/madt.h>
 #include <memory/memory.h>
@@ -21,6 +22,18 @@
 #define IPI_STARTUP_DELAY  20
 #define IPI_RETRY_DELAY    100
 
+EXTERN_C __PRIVILEGED_CODE void asm_ap_startup();
+
+namespace arch::x86 {
+__PRIVILEGED_CODE
+void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
+    serial::com1_printf("AP core %i started with lapic_id: %i\n", acpi_cpu_index, lapicid);
+    while (true) {
+        asm volatile ("hlt");
+    }
+}
+} // namespace arch::x86
+
 namespace smp {
 struct ap_startup_data {
     volatile uint32_t   cpus_running;       // Tracks the number of running CPUs
@@ -29,11 +42,6 @@ struct ap_startup_data {
     volatile uintptr_t  c_entry_address;    // Address of the C entry function
     volatile uint64_t   acpi_cpu_index;     // CPU index from the ACPI MADT table
 };
-
-EXTERN_C __PRIVILEGED_CODE void asm_ap_startup();
-
-__PRIVILEGED_CODE
-void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index);
 
 // Map and load the AP startup code
 __PRIVILEGED_CODE
@@ -57,7 +65,7 @@ ap_startup_data* initialize_startup_data() {
     auto* startup_data = reinterpret_cast<ap_startup_data*>(AP_STARTUP_DATA_ADDRESS);
     startup_data->cpus_running = 1; // Including the BSP
     startup_data->page_table_address = reinterpret_cast<uintptr_t>(paging::get_pml4());
-    startup_data->c_entry_address = reinterpret_cast<uintptr_t>(ap_startup_entry);
+    startup_data->c_entry_address = reinterpret_cast<uintptr_t>(&arch::x86::ap_startup_entry);
     startup_data->stack_index = 0;
 
     return startup_data;
@@ -119,12 +127,6 @@ void smp_init() {
         msleep(1);
     }
 }
-
-__PRIVILEGED_CODE
-void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
-    serial::com1_printf("AP core %i started with lapic_id: %i\n", acpi_cpu_index, lapicid);
-    while (true) {
-        asm volatile ("hlt");
-    }
-}
 } // namespace smp
+
+#endif // ARCH_X86_64
