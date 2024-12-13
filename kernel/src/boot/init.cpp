@@ -11,6 +11,9 @@
 #include <sched/sched.h>
 #include <smp/smp.h>
 
+#include <pci/pci_manager.h>
+#include <memory/allocators/heap_allocator.h>
+
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
 
@@ -719,6 +722,9 @@ void init(unsigned int magic, void* mbi) {
 
     init_framebuffer_renderer();
 
+    // Create a vector of shared_ptr to pci_device
+    kstl::vector<kstl::shared_ptr<pci::pci_device>> device_tests;
+
     //memory_map_walk_test();
 
     // Discover ACPI tables
@@ -734,7 +740,7 @@ void init(unsigned int magic, void* mbi) {
     sched::scheduler::get().init();
 
     // Initialize SMP and bring up application processors
-    smp::smp_init();
+    // smp::smp_init();
 
     // Idle loop
     while (true) {

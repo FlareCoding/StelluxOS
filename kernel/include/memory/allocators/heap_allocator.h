@@ -2,7 +2,7 @@
 #define HEAP_ALLOCATOR_H
 #include <sync.h>
 
-#define KERNEL_HEAP_INIT_SIZE               0x60000000 // 1.5GB Kernel Heap
+#define KERNEL_HEAP_INIT_SIZE               0x12C00000 // 300MB Kernel Heap
 
 #define KERNEL_HEAP_SEGMENT_HDR_SIGNATURE   "HEAPHDR"
 

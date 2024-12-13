@@ -244,8 +244,7 @@ void* page_bitmap_allocator::alloc_pages_aligned(size_t count, uint64_t alignmen
 
 __PRIVILEGED_CODE
 void* page_bitmap_allocator::alloc_large_page() {
-    const uint64_t large_page_size = 2 * 1024 * 1024; // 2MB
-    const uint64_t large_page_alignment = large_page_size / PAGE_SIZE; // Alignment in terms of 4KB pages
+    const uint64_t large_page_alignment = LARGE_PAGE_SIZE / PAGE_SIZE; // Alignment in terms of 4KB pages
 
     paging::page_frame_bitmap& bitmap = m_bitmap;
     uint64_t total_pages = bitmap.get_size(); // Total number of 4KB pages

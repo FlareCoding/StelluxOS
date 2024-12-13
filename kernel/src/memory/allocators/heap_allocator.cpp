@@ -26,17 +26,33 @@ void heap_allocator::init(uint64_t base, size_t size) {
 
     if (!m_first_segment) {
         size_t pages = size / PAGE_SIZE;
+        size_t large_pages = size / LARGE_PAGE_SIZE;
 
         /*
          * Optimization: instead of searching through the bitmap for a free
          * contiguous region, since this code is run at kernel init time,
          * we know that all allocated virtual pages will be contiguous.
-         * Therefore, we can allocate 1 page and then lock all consecutive pages.
+         * Therefore, we can allocate and map only 1 page and then manually
+         * lock all consecutive pages.
          */
         void* vbase = vmm::alloc_virtual_pages(1, PTE_DEFAULT_KERNEL_FLAGS);
         page_bitmap_allocator::get_virtual_allocator().lock_pages(vbase, pages);
 
         m_first_segment = reinterpret_cast<heap_segment_header*>(vbase);
+
+        // Map the rest of the heap using large pages
+        for (size_t i = 0; i < large_pages; ++i) {
+            void* pbase = page_bitmap_allocator::get_physical_allocator().alloc_large_page();
+            if (!pbase) {
+                serial::com1_printf("Failed to allocate large page %llu\n", i);
+                break;
+            }
+
+            uintptr_t paddr = reinterpret_cast<uintptr_t>(pbase);
+            uintptr_t vaddr = reinterpret_cast<uintptr_t>(vbase) + (i * LARGE_PAGE_SIZE);
+
+            paging::map_large_page(vaddr, paddr, PTE_DEFAULT_KERNEL_FLAGS, paging::get_pml4());
+        }
     }
 
     // Setup the root segment

@@ -3,6 +3,7 @@
 #include "allocators/page_bitmap_allocator.h"
 
 #define PAGE_SIZE           0x1000
+#define LARGE_PAGE_SIZE     (2 * 1024 * 1024)
 #define PAGE_ALIGN(value)   (((value) + (PAGE_SIZE) - 1) & ~((PAGE_SIZE) - 1))
 
 #define PAGE_TABLE_ENTRIES 512
