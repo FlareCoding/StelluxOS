@@ -1,6 +1,6 @@
 #ifndef HEAP_ALLOCATOR_H
 #define HEAP_ALLOCATOR_H
-#include <types.h>
+#include <sync.h>
 
 #define KERNEL_HEAP_INIT_SIZE               0x60000000 // 1.5GB Kernel Heap
 
@@ -42,6 +42,10 @@ public:
 private:
     uint64_t                m_heap_size;
     heap_segment_header*    m_first_segment;
+
+    // Call the constructor to ensure full object
+    // construction including the base class.
+    spinlock                m_heap_lock = spinlock();
 
 private:
     heap_segment_header* find_free_segment(size_t min_size);

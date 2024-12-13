@@ -19,6 +19,8 @@ heap_allocator& heap_allocator::get() {
 }
 
 void heap_allocator::init(uint64_t base, size_t size) {
+    spinlock_guard guard(m_heap_lock);
+
     m_heap_size = size;
     m_first_segment = reinterpret_cast<heap_segment_header*>(base);
 
@@ -49,6 +51,8 @@ void heap_allocator::init(uint64_t base, size_t size) {
 }
 
 void* heap_allocator::allocate(size_t size) {
+    spinlock_guard guard(m_heap_lock);
+
     size_t new_segment_size = size + sizeof(heap_segment_header);
 
     heap_segment_header* segment = find_free_segment(new_segment_size + sizeof(heap_segment_header));
@@ -66,6 +70,8 @@ void* heap_allocator::allocate(size_t size) {
 }
 
 void heap_allocator::free(void* ptr) {
+    spinlock_guard guard(m_heap_lock);
+
     heap_segment_header* segment = reinterpret_cast<heap_segment_header*>(
         reinterpret_cast<uint8_t*>(ptr) - sizeof(heap_segment_header)
     );
@@ -87,6 +93,8 @@ void heap_allocator::free(void* ptr) {
 }
 
 void* heap_allocator::reallocate(void* ptr, size_t new_size) {
+    spinlock_guard guard(m_heap_lock);
+
     if (ptr == nullptr) {
         return allocate(new_size);
     }
@@ -189,6 +197,8 @@ bool heap_allocator::merge_segment_with_next(heap_segment_header* segment) {
 }
 
 void heap_allocator::debug_heap() {
+    spinlock_guard guard(m_heap_lock);
+
     heap_segment_header* seg = m_first_segment;
     int64_t seg_id = 1;
 
@@ -210,6 +220,8 @@ void heap_allocator::debug_heap() {
 }
 
 void heap_allocator::debug_heap_segment(void* ptr, int64_t seg_id) {
+    spinlock_guard guard(m_heap_lock);
+
     heap_segment_header* seg = (heap_segment_header*)ptr;
     
     if (seg_id != -1)
@@ -232,6 +244,8 @@ void heap_allocator::debug_user_heap_pointer(void* ptr, int64_t id) {
 }
 
 bool heap_allocator::detect_heap_corruption(bool dbg_log) {
+    spinlock_guard guard(m_heap_lock);
+
     heap_segment_header* seg = m_first_segment;
     int64_t seg_id = 1;
 

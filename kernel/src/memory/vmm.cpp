@@ -1,11 +1,17 @@
 #include <memory/vmm.h>
 #include <memory/paging.h>
 #include <memory/allocators/page_bitmap_allocator.h>
+#include <sync.h>
 
 namespace vmm {
+// Global spinlock for virtual memory manager
+DECLARE_GLOBAL_OBJECT(spinlock, vmm_lock);
+
 // Allocates a single virtual page and maps it to a new physical page
 __PRIVILEGED_CODE
 void* alloc_virtual_page(uint64_t flags) {
+    spinlock_guard guard(vmm_lock);
+
     void* phys_page = allocators::page_bitmap_allocator::get_physical_allocator().alloc_page();
     if (!phys_page) {
         return nullptr; // Physical page allocation failed
@@ -30,6 +36,8 @@ void* alloc_virtual_page(uint64_t flags) {
 // Maps an existing physical page to a virtual page
 __PRIVILEGED_CODE
 void* map_physical_page(uintptr_t paddr, uint64_t flags) {
+    spinlock_guard guard(vmm_lock);
+
     void* virt_page = allocators::page_bitmap_allocator::get_virtual_allocator().alloc_page();
     if (!virt_page) {
         return nullptr; // Virtual page allocation failed
@@ -42,6 +50,8 @@ void* map_physical_page(uintptr_t paddr, uint64_t flags) {
 // Allocates and maps a range of contiguous virtual pages to new physical pages
 __PRIVILEGED_CODE
 void* alloc_virtual_pages(size_t count, uint64_t flags) {
+    spinlock_guard guard(vmm_lock);
+
     void* virt_start = allocators::page_bitmap_allocator::get_virtual_allocator().alloc_pages(count);
     if (!virt_start) {
         return nullptr; // Virtual pages allocation failed
@@ -69,6 +79,8 @@ void* alloc_virtual_pages(size_t count, uint64_t flags) {
 // Allocates a contiguous range of virtual pages and maps them to contiguous physical pages
 __PRIVILEGED_CODE
 void* alloc_contiguous_virtual_pages(size_t count, uint64_t flags) {
+    spinlock_guard guard(vmm_lock);
+
     void* phys_start = allocators::page_bitmap_allocator::get_physical_allocator().alloc_pages(count);
     if (!phys_start) {
         return nullptr; // Contiguous physical pages allocation failed
@@ -94,6 +106,8 @@ void* alloc_contiguous_virtual_pages(size_t count, uint64_t flags) {
 // Maps a contiguous range of physical pages to virtual pages
 __PRIVILEGED_CODE
 void* map_contiguous_physical_pages(uintptr_t paddr, size_t count, uint64_t flags) {
+    spinlock_guard guard(vmm_lock);
+
     void* virt_start = allocators::page_bitmap_allocator::get_virtual_allocator().alloc_pages(count);
     if (!virt_start) {
         return nullptr; // Contiguous virtual pages allocation failed
@@ -113,6 +127,8 @@ void* map_contiguous_physical_pages(uintptr_t paddr, size_t count, uint64_t flag
 // Unmaps a single virtual page
 __PRIVILEGED_CODE
 void unmap_virtual_page(uintptr_t vaddr) {
+    spinlock_guard guard(vmm_lock);
+
     uintptr_t paddr = paging::get_physical_address(reinterpret_cast<void*>(vaddr));
     if (paddr) {
         allocators::page_bitmap_allocator::get_physical_allocator().free_page(reinterpret_cast<void*>(paddr));
@@ -125,6 +141,8 @@ void unmap_virtual_page(uintptr_t vaddr) {
 // Unmaps a contiguous range of virtual pages
 __PRIVILEGED_CODE
 void unmap_contiguous_virtual_pages(uintptr_t vaddr, size_t count) {
+    spinlock_guard guard(vmm_lock);
+
     for (size_t i = 0; i < count; ++i) {
         unmap_virtual_page(vaddr + i * PAGE_SIZE);
     }
