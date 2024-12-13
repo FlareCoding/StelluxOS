@@ -21,8 +21,9 @@
 namespace arch::x86 {
 class lapic {
 public:
-    static void init();
-    static kstl::shared_ptr<lapic>& get();
+    __PRIVILEGED_CODE static void init();
+    __PRIVILEGED_CODE static kstl::shared_ptr<lapic>& get();
+    __PRIVILEGED_CODE static kstl::shared_ptr<lapic>& get(int cpu);
 
     lapic(uint64_t base, uint8_t spurior_irq = 0xFF);
 

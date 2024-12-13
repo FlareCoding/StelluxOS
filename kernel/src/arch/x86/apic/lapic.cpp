@@ -128,6 +128,11 @@ kstl::shared_ptr<lapic>& lapic::get() {
     return s_system_lapics[cpu];
 }
 
+__PRIVILEGED_CODE
+kstl::shared_ptr<lapic>& lapic::get(int cpu) {
+    return s_system_lapics[cpu];
+}
+
 __PRIVILEGED_CODE 
 void lapic::disable_legacy_pic() {
     // Send the disable command (0xFF) to both PIC1 and PIC2 data ports

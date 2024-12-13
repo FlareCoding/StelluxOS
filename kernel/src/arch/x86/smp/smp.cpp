@@ -41,6 +41,8 @@ namespace arch::x86 {
 EXTERN_C
 __PRIVILEGED_CODE
 void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
+    __unused lapicid;
+
     // Setup kernel stack
     uint64_t ap_system_stack_top =
         reinterpret_cast<uint64_t>(g_ap_system_stacks[acpi_cpu_index]) + AP_SYSTEM_STACK_SIZE;
@@ -62,7 +64,7 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     this_cpu_write(current_task, ap_idle_task);
 
     current->system_stack = ap_system_stack_top;
-    current->cpu = lapicid;
+    current->cpu = acpi_cpu_index;
     current->elevated = 1;
     current->state = process_state::RUNNING;
     current->pid = 0;

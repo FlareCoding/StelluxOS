@@ -730,8 +730,8 @@ void init(unsigned int magic, void* mbi) {
     // Start CPU timer in order to receive timer IRQs
     kernel_timer::start_cpu_periodic_timer();
 
-    // Install the timer interrupt handler
-    sched::install_sched_irq_handler();
+    // Initialize the scheduler
+    sched::scheduler::get().init();
 
     // Initialize SMP and bring up application processors
     smp::smp_init();
