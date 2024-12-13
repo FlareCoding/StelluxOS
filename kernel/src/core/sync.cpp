@@ -18,13 +18,11 @@ void spinlock::lock() {
     }
 
     memory_barrier();
-    serial::com1_printf("lock acquired!\n");
 }
 
 void spinlock::unlock() {
     memory_barrier();
     m_state = SPINLOCK_STATE_UNLOCKED;
-    serial::com1_printf("lock released!\n");
 }
 
 bool spinlock::try_lock() {
