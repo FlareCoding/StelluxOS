@@ -42,6 +42,4 @@ struct acpi_table {
 
 __PRIVILEGED_CODE void enumerate_acpi_tables(void* rsdp);
 } // namespace acpi
-
-void render_string(const char *str);
 #endif // ACPI_H

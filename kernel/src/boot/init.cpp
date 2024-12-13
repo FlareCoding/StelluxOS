@@ -733,8 +733,14 @@ void init(unsigned int magic, void* mbi) {
     // Initialize the scheduler
     sched::scheduler::get().init();
 
+    render_string("Starting APs in 1 second...\n");
+    sleep(1);
+    render_string("Starting APs now!\n");
+
     // Initialize SMP and bring up application processors
-    // smp::smp_init();
+    smp::smp_init();
+
+    render_string("Init Finished!\n");
 
     // Idle loop
     while (true) {
