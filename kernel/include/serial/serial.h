@@ -3,50 +3,51 @@
 #include <ports/ports.h>
 #include <string.h>
 
-// Base I/O port for the first serial port
+// Base UART I/O ports
 #define SERIAL_PORT_BASE_COM1 0x3F8
 #define SERIAL_PORT_BASE_COM2 0x2F8
 #define SERIAL_PORT_BASE_COM3 0x3EF
 #define SERIAL_PORT_BASE_COM4 0x2EF
 
-// Offsets for specific serial port registers
-#define SERIAL_DATA_PORT(base)      (base)
-#define SERIAL_FIFO_COMMAND_PORT(base) (base + 2)
-#define SERIAL_LINE_COMMAND_PORT(base) (base + 3)
-#define SERIAL_MODEM_COMMAND_PORT(base) (base + 4)
-#define SERIAL_LINE_STATUS_PORT(base) (base + 5)
+// UART I/O Register Offsets
+#define SERIAL_DATA_PORT(base)               (base + 0)
+#define SERIAL_INTERRUPT_ENABLE_PORT(base)   (base + 1)
+#define SERIAL_FIFO_COMMAND_PORT(base)       (base + 2)
+#define SERIAL_LINE_COMMAND_PORT(base)       (base + 3)
+#define SERIAL_MODEM_COMMAND_PORT(base)      (base + 4)
+#define SERIAL_LINE_STATUS_PORT(base)        (base + 5)
 
-// Line control register (LCR) values
-#define SERIAL_LINE_ENABLE_DLAB 0x80
+// UART Line Control Register (LCR) Flags
+#define SERIAL_LCR_ENABLE_DLAB               0x80 // Enable Divisor Latch Access
+#define SERIAL_LCR_8_BITS_NO_PARITY_ONE_STOP 0x03 // 8 bits, no parity, 1 stop bit
 
-// Line status register (LSR) values
-#define SERIAL_LINE_STATUS_DATA_READY 0x01 // Data ready in receive buffer
+// UART FIFO Control Register (FCR) Flags
+#define SERIAL_FCR_ENABLE_FIFO               0x01 // Enable FIFO
+#define SERIAL_FCR_CLEAR_RECEIVE_FIFO        0x02 // Clear Receive FIFO
+#define SERIAL_FCR_CLEAR_TRANSMIT_FIFO       0x04 // Clear Transmit FIFO
+#define SERIAL_FCR_TRIGGER_14_BYTES          0xC0 // Set trigger level to 14 bytes
 
-// Line status register (LSR) values
-#define SERIAL_LINE_STATUS_THR_EMPTY 0x20  // Transmit-hold-register empty
+// UART Modem Control Register (MCR) Flags
+#define SERIAL_MCR_RTS_DSR                   0x03 // Ready to Send (RTS), Data Set Ready (DSR)
 
-// Disable all interrupts on the line control register
-#define SERIAL_LCR_DISABLE_ALL_INTERRUPTS 0x00
+// UART Line Status Register (LSR) Flags
+#define SERIAL_LSR_TRANSMIT_EMPTY            0x20 // Transmitter Holding Register Empty
+#define SERIAL_LSR_DATA_READY                0x01 // Data Ready
 
-// Baud rate divisor value (low byte and high byte)
-// for a baud rate of 38400
-#define SERIAL_BAUD_RATE_DIVISOR_LOW 0x03
-#define SERIAL_BAUD_RATE_DIVISOR_HIGH 0x00
-
-// Data frame format: 8 data bits, no parity, one stop bit
-#define SERIAL_LCR_EIGHT_BITS_NO_PARITY_ONE_STOP 0x03
-
-// Enable FIFO, clear both receiver and transmitter FIFOs, 
-// and set the interrupt level at 14 bytes
-#define SERIAL_FIFO_CTRL_ENABLE_CLEAR_14BYTES 0xC7
-
-// Enable IRQs, and set RTS and DSR
-#define SERIAL_MCR_ENABLE_IRQ_RTS_DSR 0x0B
-
-// Interrupt when data is received
-#define SERIAL_INTERRUPT_DATA_AVAILABLE 0x01
+// Common Baud Rates Divisors (assuming 1.8432 MHz clock)
+#define SERIAL_BAUD_DIVISOR_115200           0x01 // 115200 baud
+#define SERIAL_BAUD_DIVISOR_57600            0x02 // 57600 baud
+#define SERIAL_BAUD_DIVISOR_38400            0x03 // 38400 baud
+#define SERIAL_BAUD_DIVISOR_19200            0x06 // 19200 baud
+#define SERIAL_BAUD_DIVISOR_9600             0x0C // 9600 baud
+#define SERIAL_BAUD_DIVISOR_4800             0x18 // 4800 baud
+#define SERIAL_BAUD_DIVISOR_2400             0x30 // 2400 baud
+#define SERIAL_BAUD_DIVISOR_1200             0x60 // 1200 baud
 
 namespace serial {
+// I/O address of the UART port to which kernel's serial prints will get directed
+extern uint16_t g_kernel_uart_port;
+
 /**
  * @brief Initializes the specified serial port with default settings.
  * 
@@ -56,8 +57,19 @@ namespace serial {
  * data frame formats.
  * 
  * @param port The I/O port address of the serial port to initialize.
+ * @param baud_rate_divisor  The divisor value for the desired baud rate.
  */
-void init_port(uint16_t port);
+void init_port(uint16_t port, uint16_t baud_rate_divisor = SERIAL_BAUD_DIVISOR_9600);
+
+/**
+ * @brief Sets the baud rate for the specified serial port.
+ *
+ * This function configures the Divisor Latch registers (DLAB) to set the baud rate.
+ *
+ * @param port The I/O port address of the serial port to configure.
+ * @param divisor The divisor value for the desired baud rate.
+ */
+void set_baud_rate(uint16_t port, uint16_t divisor);
 
 /**
  * @brief Checks if the transmit queue is empty for the specified serial port.
@@ -122,6 +134,13 @@ void write(uint16_t port, const char* str);
 char read(uint16_t port);
 
 /**
+ * @brief Sets the port to which kernel directs all serial `printf` calls.
+ * 
+ * @param port The I/O address of the port to which direct all kernel serial prints. 
+ */
+void set_kernel_uart_port(uint16_t port);
+
+/**
  * @brief Prints a formatted string to the COM1 serial port.
  *
  * @tparam Args Variadic template arguments corresponding to format specifiers.
@@ -130,7 +149,7 @@ char read(uint16_t port);
  * @return int The number of characters written, excluding the null terminator.
  */
 template <typename... Args>
-int com1_printf(const char* format, Args... args) {
+int printf(const char* format, Args... args) {
     // Define a buffer with a fixed size. Adjust as necessary.
     constexpr size_t BUFFER_SIZE = 256;
     char buffer[BUFFER_SIZE] = { 0 };
@@ -138,8 +157,8 @@ int com1_printf(const char* format, Args... args) {
     // Format the string using the custom sprintf
     int len = sprintf(buffer, BUFFER_SIZE, format, args...);
     
-    // Send the formatted string over COM1
-    serial::write(SERIAL_PORT_BASE_COM1, buffer);
+    // Send the formatted string over the target UART port
+    serial::write(g_kernel_uart_port, buffer);
     
     return len;
 }

@@ -82,7 +82,7 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     // Start local APIC timer in order to receive timer IRQs
     kernel_timer::start_cpu_periodic_timer();
 
-    serial::com1_printf("AP core %i ready with lapic_id: %i\n", acpi_cpu_index, current->cpu);
+    serial::printf("AP core %i ready with lapic_id: %i\n", acpi_cpu_index, current->cpu);
     while (true) {
         asm volatile ("hlt");
     }
@@ -153,7 +153,7 @@ __PRIVILEGED_CODE
 void smp_init() {
     auto& apic_table = acpi::madt::get();
 
-    serial::com1_printf("[*] %u available cpu cores present\n", apic_table.get_cpu_count());
+    serial::printf("[*] %u available cpu cores detected\n", apic_table.get_cpu_count());
 
     // Setup AP startup code and data
     setup_ap_startup_code();
@@ -181,7 +181,7 @@ void smp_init() {
 
         // Send INIT and STARTUP IPI sequence
         if (!send_ap_startup_sequence(startup_data, desc.apic_id)) {
-            serial::com1_printf("[!] Core %u failed to start (lapic_id: %u)\n", cpu_index, desc.apic_id);
+            serial::printf("[!] Core %u failed to start (lapic_id: %u)\n", cpu_index, desc.apic_id);
 
             // Free the resources allocated for the core
             vmm::unmap_contiguous_virtual_pages(g_ap_system_stacks[cpu_index], 2);
@@ -189,8 +189,6 @@ void smp_init() {
 
             continue;
         }
-
-        serial::com1_printf("[*] Successfully started core %u (lapic_id: %u)\n", cpu_index, desc.apic_id);
 
         // Safety delay
         msleep(1);

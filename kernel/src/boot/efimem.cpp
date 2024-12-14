@@ -173,7 +173,7 @@ __PRIVILEGED_CODE void efi_memory_map::print_memory_map() {
         uint64_t physical_start = entry.paddr;
         uint64_t length = entry.length;
 
-        serial::com1_printf(
+        serial::printf(
             "  Type: %u, Size: %llu MB (%llu pages)\n"
             "  Physical: 0x%016llx - 0x%016llx\n",
             entry.desc->type, length / (1024 * 1024), length / 0x1000,
@@ -181,6 +181,6 @@ __PRIVILEGED_CODE void efi_memory_map::print_memory_map() {
         );
     }
 
-    serial::com1_printf("\n");
+    serial::printf("\n");
 }
 } // namespace efi

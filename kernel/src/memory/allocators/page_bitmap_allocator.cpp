@@ -33,7 +33,7 @@ void page_bitmap_allocator::lock_page(void* addr) {
 
     // Ensure the address is within the managed range
     if (addr_val < m_base_page_offset) {
-        serial::com1_printf("[*] failed to lock page: address below base offset: 0x%016llx\n", addr_val);
+        serial::printf("[*] failed to lock page: address below base offset: 0x%016llx\n", addr_val);
         return;
     }
 
@@ -44,7 +44,7 @@ void page_bitmap_allocator::lock_page(void* addr) {
     // Mark the page as used (locked)
     bool success = m_bitmap.mark_page_used(relative_addr);
     if (!success) {
-        serial::com1_printf("[*] failed to lock page: 0x%016llx\n", aligned_addr);
+        serial::printf("[*] failed to lock page: 0x%016llx\n", aligned_addr);
     }
 }
 
@@ -57,7 +57,7 @@ void page_bitmap_allocator::lock_pages(void* addr, size_t count) {
 
     // Ensure the address is within the managed range
     if (addr_val < m_base_page_offset) {
-        serial::com1_printf("[*] failed to lock %zu pages: address below base offset: 0x%016llx\n", count, addr_val);
+        serial::printf("[*] failed to lock %zu pages: address below base offset: 0x%016llx\n", count, addr_val);
         return;
     }
 
@@ -68,7 +68,7 @@ void page_bitmap_allocator::lock_pages(void* addr, size_t count) {
     // Mark the pages as used (locked)
     bool success = m_bitmap.mark_pages_used(relative_addr, count);
     if (!success) {
-        serial::com1_printf("[*] failed to lock %zu pages at: 0x%016llx\n", count, aligned_addr);
+        serial::printf("[*] failed to lock %zu pages at: 0x%016llx\n", count, aligned_addr);
     }
 }
 
@@ -81,7 +81,7 @@ void page_bitmap_allocator::free_page(void* addr) {
 
     // Ensure the address is within the managed range
     if (addr_val < m_base_page_offset) {
-        serial::com1_printf("[*] failed to free page: address below base offset: 0x%016llx\n", addr_val);
+        serial::printf("[*] failed to free page: address below base offset: 0x%016llx\n", addr_val);
         return;
     }
 
@@ -92,7 +92,7 @@ void page_bitmap_allocator::free_page(void* addr) {
     // Mark the page as free
     bool success = m_bitmap.mark_page_free(relative_addr);
     if (!success) {
-        serial::com1_printf("[*] failed to free page: 0x%016llx\n", aligned_addr);
+        serial::printf("[*] failed to free page: 0x%016llx\n", aligned_addr);
     }
 }
 
@@ -105,7 +105,7 @@ void page_bitmap_allocator::free_pages(void* addr, size_t count) {
 
     // Ensure the address is within the managed range
     if (addr_val < m_base_page_offset) {
-        serial::com1_printf("[*] failed to free %zu pages: address below base offset: 0x%016llx\n", count, addr_val);
+        serial::printf("[*] failed to free %zu pages: address below base offset: 0x%016llx\n", count, addr_val);
         return;
     }
 
@@ -116,7 +116,7 @@ void page_bitmap_allocator::free_pages(void* addr, size_t count) {
     // Mark the pages as free
     bool success = m_bitmap.mark_pages_free(relative_addr, count);
     if (!success) {
-        serial::com1_printf("[*] failed to free %zu pages at: 0x%016llx\n", count, aligned_addr);
+        serial::printf("[*] failed to free %zu pages at: 0x%016llx\n", count, aligned_addr);
     }
 }
 

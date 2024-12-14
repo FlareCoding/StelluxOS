@@ -60,16 +60,16 @@ __PRIVILEGED_CODE
 void debug_kernel_pat() {
     pat_t pat = read_pat_msr();
 
-    serial::com1_printf("---- Page Attribute Table ----\n");
-    serial::com1_printf("    pa0: %s\n", pat_attrib_to_string(pat.pa0));
-    serial::com1_printf("    pa1: %s\n", pat_attrib_to_string(pat.pa1));
-    serial::com1_printf("    pa2: %s\n", pat_attrib_to_string(pat.pa2));
-    serial::com1_printf("    pa3: %s\n", pat_attrib_to_string(pat.pa3));
-    serial::com1_printf("    pa4: %s\n", pat_attrib_to_string(pat.pa4));
-    serial::com1_printf("    pa5: %s\n", pat_attrib_to_string(pat.pa5));
-    serial::com1_printf("    pa6: %s\n", pat_attrib_to_string(pat.pa6));
-    serial::com1_printf("    pa7: %s\n", pat_attrib_to_string(pat.pa7));
-    serial::com1_printf("\n");
+    serial::printf("---- Page Attribute Table ----\n");
+    serial::printf("    pa0: %s\n", pat_attrib_to_string(pat.pa0));
+    serial::printf("    pa1: %s\n", pat_attrib_to_string(pat.pa1));
+    serial::printf("    pa2: %s\n", pat_attrib_to_string(pat.pa2));
+    serial::printf("    pa3: %s\n", pat_attrib_to_string(pat.pa3));
+    serial::printf("    pa4: %s\n", pat_attrib_to_string(pat.pa4));
+    serial::printf("    pa5: %s\n", pat_attrib_to_string(pat.pa5));
+    serial::printf("    pa6: %s\n", pat_attrib_to_string(pat.pa6));
+    serial::printf("    pa7: %s\n", pat_attrib_to_string(pat.pa7));
+    serial::printf("\n");
 }
 } // namespace arch::x86
 

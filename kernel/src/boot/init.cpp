@@ -509,13 +509,13 @@ void init_framebuffer_renderer() {
 
     pixels = (char*)vmm::map_contiguous_physical_pages(gop_addr, framebuffer_page_count, PTE_DEFAULT_KERNEL_FLAGS | PTE_PAT);
 
-    serial::com1_printf("------------ Framebuffer ------------\n");
-    serial::com1_printf("      physbase            : 0x%llx\n", g_mbi_framebuffer->common.framebuffer_addr);
-    serial::com1_printf("      virtbase            : 0x%llx\n", pixels);
-    serial::com1_printf("      framebuffer->pitch  : %u\n", g_mbi_framebuffer->common.framebuffer_pitch);
-    serial::com1_printf("      framebuffer->width  : %u\n", g_mbi_framebuffer->common.framebuffer_width);
-    serial::com1_printf("      framebuffer->height : %u\n", g_mbi_framebuffer->common.framebuffer_height);
-    serial::com1_printf("      framebuffer->bpp    : %u\n\n", g_mbi_framebuffer->common.framebuffer_bpp);
+    serial::printf("------------ Framebuffer ------------\n");
+    serial::printf("      physbase            : 0x%llx\n", g_mbi_framebuffer->common.framebuffer_addr);
+    serial::printf("      virtbase            : 0x%llx\n", pixels);
+    serial::printf("      framebuffer->pitch  : %u\n", g_mbi_framebuffer->common.framebuffer_pitch);
+    serial::printf("      framebuffer->width  : %u\n", g_mbi_framebuffer->common.framebuffer_width);
+    serial::printf("      framebuffer->height : %u\n", g_mbi_framebuffer->common.framebuffer_height);
+    serial::printf("      framebuffer->bpp    : %u\n\n", g_mbi_framebuffer->common.framebuffer_bpp);
 
     clear_screen();
 }
@@ -732,10 +732,6 @@ void init(unsigned int magic, void* mbi) {
 
     // Initialize the scheduler
     sched::scheduler::get().init();
-
-    render_string("Starting APs in 1 second...\n");
-    sleep(1);
-    render_string("Starting APs now!\n");
 
     // Initialize SMP and bring up application processors
     smp::smp_init();

@@ -419,13 +419,13 @@ static void decode_rflags(uint64_t rflags, char* buffer, size_t buffer_size) {
 }
 
 void print_backtrace(ptregs* regs) {
-    serial::com1_printf("<------- BACKTRACE ------->\n");
+    serial::printf("<------- BACKTRACE ------->\n");
 
     uint64_t *rbp = (uint64_t*)regs->rbp;
     uint64_t rip = regs->hwframe.rip;
 
     // Print the current instruction pointer (RIP)
-    serial::com1_printf("RIP: 0x%llx\n", rip);
+    serial::printf("RIP: 0x%llx\n", rip);
 
     // Iterate through the stack frames
     while (rbp) {
@@ -433,12 +433,12 @@ void print_backtrace(ptregs* regs) {
         if (next_rip == 0x0)
             break;
 
-        serial::com1_printf(" -> 0x%llx\n", next_rip);
+        serial::printf(" -> 0x%llx\n", next_rip);
 
         rbp = (uint64_t*)*rbp; // Move to the next frame
     }
 
-    serial::com1_printf("\n");
+    serial::printf("\n");
 }
 
 void panic(ptregs* regs) {
@@ -446,34 +446,34 @@ void panic(ptregs* regs) {
     char rflags_buffer[64] = { 0 };
     decode_rflags(regs->hwframe.rflags, rflags_buffer, sizeof(rflags_buffer));
 
-    serial::com1_printf("\n[PANIC] Kernel Panic! System Halted.\n");
-    serial::com1_printf("============================================================\n");
+    serial::printf("\n[PANIC] Kernel Panic! System Halted.\n");
+    serial::printf("============================================================\n");
 
     // Prints the backtrace
     print_backtrace(regs);
 
     // General purpose registers
-    serial::com1_printf("General Purpose Registers:\n");
-    serial::com1_printf("  RAX: 0x%016llx   RBX: 0x%016llx\n", regs->rax, regs->rbx);
-    serial::com1_printf("  RCX: 0x%016llx   RDX: 0x%016llx\n", regs->rcx, regs->rdx);
-    serial::com1_printf("  RSI: 0x%016llx   RDI: 0x%016llx\n", regs->rsi, regs->rdi);
-    serial::com1_printf("  RBP: 0x%016llx   RSP: 0x%016llx\n", regs->rbp, regs->hwframe.rsp);
-    serial::com1_printf("  R8 : 0x%016llx   R9 : 0x%016llx\n", regs->r8, regs->r9);
-    serial::com1_printf("  R10: 0x%016llx   R11: 0x%016llx\n", regs->r10, regs->r11);
-    serial::com1_printf("  R12: 0x%016llx   R13: 0x%016llx\n", regs->r12, regs->r13);
-    serial::com1_printf("  R14: 0x%016llx   R15: 0x%016llx\n", regs->r14, regs->r15);
+    serial::printf("General Purpose Registers:\n");
+    serial::printf("  RAX: 0x%016llx   RBX: 0x%016llx\n", regs->rax, regs->rbx);
+    serial::printf("  RCX: 0x%016llx   RDX: 0x%016llx\n", regs->rcx, regs->rdx);
+    serial::printf("  RSI: 0x%016llx   RDI: 0x%016llx\n", regs->rsi, regs->rdi);
+    serial::printf("  RBP: 0x%016llx   RSP: 0x%016llx\n", regs->rbp, regs->hwframe.rsp);
+    serial::printf("  R8 : 0x%016llx   R9 : 0x%016llx\n", regs->r8, regs->r9);
+    serial::printf("  R10: 0x%016llx   R11: 0x%016llx\n", regs->r10, regs->r11);
+    serial::printf("  R12: 0x%016llx   R13: 0x%016llx\n", regs->r12, regs->r13);
+    serial::printf("  R14: 0x%016llx   R15: 0x%016llx\n", regs->r14, regs->r15);
 
     // Segment selectors
-    serial::com1_printf("\nSegment Selectors:\n");
-    serial::com1_printf("  CS:  0x%016llx   DS:  0x%016llx\n", regs->hwframe.cs, regs->ds);
-    serial::com1_printf("  ES:  0x%016llx   FS:  0x%016llx\n", regs->es, regs->fs);
-    serial::com1_printf("  GS:  0x%016llx   SS:  0x%016llx\n", regs->gs, regs->hwframe.ss);
+    serial::printf("\nSegment Selectors:\n");
+    serial::printf("  CS:  0x%016llx   DS:  0x%016llx\n", regs->hwframe.cs, regs->ds);
+    serial::printf("  ES:  0x%016llx   FS:  0x%016llx\n", regs->es, regs->fs);
+    serial::printf("  GS:  0x%016llx   SS:  0x%016llx\n", regs->gs, regs->hwframe.ss);
 
     // Instruction pointer, flags, and error code
-    serial::com1_printf("\nInstruction and Context Information:\n");
-    serial::com1_printf("  RIP: 0x%016llx   RFLAGS: 0x%llx %s\n",
+    serial::printf("\nInstruction and Context Information:\n");
+    serial::printf("  RIP: 0x%016llx   RFLAGS: 0x%llx %s\n",
         regs->hwframe.rip, regs->hwframe.rflags, rflags_buffer);
-    serial::com1_printf("  IRQ: %s\n  Error Code: 0x%0llx\n",
+    serial::printf("  IRQ: %s\n  Error Code: 0x%0llx\n",
         arch::x86::g_cpu_exception_strings[regs->intno], regs->error);
 
     // Control registers
@@ -483,13 +483,13 @@ void panic(ptregs* regs) {
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     asm volatile("mov %%cr4, %0" : "=r"(cr4));
 
-    serial::com1_printf("\nControl Registers:\n");
-    serial::com1_printf("  CR0: 0x%016llx   CR2: 0x%016llx\n", cr0, cr2);
-    serial::com1_printf("  CR3: 0x%016llx   CR4: 0x%016llx\n", cr3, cr4);
+    serial::printf("\nControl Registers:\n");
+    serial::printf("  CR0: 0x%016llx   CR2: 0x%016llx\n", cr0, cr2);
+    serial::printf("  CR3: 0x%016llx   CR4: 0x%016llx\n", cr3, cr4);
 
     // Final separator
-    serial::com1_printf("============================================================\n");
-    serial::com1_printf("System halted.\n");
+    serial::printf("============================================================\n");
+    serial::printf("System halted.\n");
     while (1) {
         asm volatile("hlt");
     }
@@ -513,7 +513,7 @@ bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, v
     uint64_t irq_table_index = static_cast<uint64_t>(irqno) - IRQ0;
     irq_desc* desc = &arch::x86::g_irq_handler_table.descriptors[irq_table_index];
     if (desc->handler) {
-        serial::com1_printf("[WARN] registerIrqHandler(): IRQ%i handler already exists!\n", irq_table_index);
+        serial::printf("[WARN] registerIrqHandler(): IRQ%i handler already exists!\n", irq_table_index);
         return false;
     }
 

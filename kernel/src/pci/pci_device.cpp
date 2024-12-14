@@ -150,7 +150,7 @@ void pci_device::_parse_bars() {
 }
 
 void pci_device::dbg_print_to_string() const {
-    serial::com1_printf(
+    serial::printf(
         "   PCI Device %04x:%04x - %s\n", 
         m_desc->vendor_id, 
         m_desc->device_id, 
@@ -171,7 +171,7 @@ void pci_device::dbg_print_to_string() const {
             case pci_bar_type::mmio_64:  bar_type_str = "mmio64"; break;
         }
 
-        serial::com1_printf(
+        serial::printf(
             "      BAR%llu: type: %s, addr: 0x%llx, size: 0x%llx, prefetch: %s\n",
             i, 
             bar_type_str, 

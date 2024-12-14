@@ -8,102 +8,30 @@
 #include <acpi/madt.h>
 #include <time/time.h>
 
-// UART I/O Register Offsets
-#define SERIAL_DATA_PORT_UART(base)               (base + 0)
-#define SERIAL_INTERRUPT_ENABLE_PORT(base)   (base + 1)
-#define SERIAL_FIFO_COMMAND_PORT(base)       (base + 2)
-#define SERIAL_LINE_COMMAND_PORT(base)       (base + 3)
-#define SERIAL_MODEM_COMMAND_PORT(base)      (base + 4)
-#define SERIAL_LINE_STATUS_PORT(base)        (base + 5)
-
-// UART Line Control Register (LCR) Flags
-#define SERIAL_LCR_ENABLE_DLAB               0x80 // Enable Divisor Latch Access
-#define SERIAL_LCR_8_BITS_NO_PARITY_ONE_STOP 0x03 // 8 bits, no parity, 1 stop bit
-
-// UART FIFO Control Register (FCR) Flags
-#define SERIAL_FCR_ENABLE_FIFO               0x01 // Enable FIFO
-#define SERIAL_FCR_CLEAR_RECEIVE_FIFO        0x02 // Clear Receive FIFO
-#define SERIAL_FCR_CLEAR_TRANSMIT_FIFO       0x04 // Clear Transmit FIFO
-#define SERIAL_FCR_TRIGGER_14_BYTES          0xC0 // Set trigger level to 14 bytes
-
-// UART Modem Control Register (MCR) Flags
-#define SERIAL_MCR_RTS_DSR                   0x03 // Ready to Send (RTS), Data Set Ready (DSR)
-
-// UART Line Status Register (LSR) Flags
-#define SERIAL_LSR_TRANSMIT_EMPTY            0x20 // Transmitter Holding Register Empty
-#define SERIAL_LSR_DATA_READY                0x01 // Data Ready
-
-void init_port(uint16_t io_base) {
-    // Disable all interrupts
-    outb(SERIAL_INTERRUPT_ENABLE_PORT(io_base), 0x00);
-
-    // Enable DLAB (Divisor Latch Access) to set baud rate
-    outb(SERIAL_LINE_COMMAND_PORT(io_base), SERIAL_LCR_ENABLE_DLAB);
-
-    // Set baud rate divisor to 0x000C (9600 baud at 1.8432 MHz clock)
-    outb(SERIAL_DATA_PORT_UART(io_base), 0x0C); // Divisor Latch Low Byte
-    outb(SERIAL_INTERRUPT_ENABLE_PORT(io_base), 0x00); // Divisor Latch High Byte
-
-    // Configure line control: 8 bits, no parity, 1 stop bit
-    outb(SERIAL_LINE_COMMAND_PORT(io_base), SERIAL_LCR_8_BITS_NO_PARITY_ONE_STOP);
-
-    // Enable FIFO, clear TX/RX queues, set interrupt trigger level to 14 bytes
-    outb(SERIAL_FIFO_COMMAND_PORT(io_base),
-            SERIAL_FCR_ENABLE_FIFO |
-            SERIAL_FCR_CLEAR_RECEIVE_FIFO |
-            SERIAL_FCR_CLEAR_TRANSMIT_FIFO |
-            SERIAL_FCR_TRIGGER_14_BYTES);
-
-    // Set RTS/DSR
-    outb(SERIAL_MODEM_COMMAND_PORT(io_base), SERIAL_MCR_RTS_DSR);
-}
-
-bool is_transmit_empty(uint16_t io_base) {
-    return inb(SERIAL_LINE_STATUS_PORT(io_base)) & SERIAL_LSR_TRANSMIT_EMPTY;
-}
-
-void write_char(uint16_t io_base, char c) {
-    // Wait until the Transmitter Holding Register is empty
-    while (!is_transmit_empty(io_base));
-
-    // Write the character to the Data Register
-    outb(SERIAL_DATA_PORT_UART(io_base), c);
-}
-
-void write_string(uint16_t io_base, const char* str) {
-    while (*str != '\0') {
-        write_char(io_base, *str);
-        str++;
-    }
-}
-
 void pci_test() {
     auto& pci = pci::pci_manager::get();
-
-    for (auto& device : pci.get_devices()) {
-        device->dbg_print_to_string();
-    }
 
     auto serial_controller = pci.find_by_class(PCI_CLASS_SIMPLE_COMMUNICATION_CONTROLLER, PCI_SUBCLASS_SIMPLE_COMM_SERIAL);
     if (!serial_controller.get()) {
         return;
     }
 
-    serial::com1_printf("\n   [*] Found serial controller!\n");
-    serial_controller->dbg_print_to_string();
-
     serial_controller->enable();
 
     auto& bar = serial_controller->get_bars()[0];
 
-    if (bar.type == pci::pci_bar_type::io_space) { // I/O space
-        uint16_t io_base = bar.address & ~0x3;
+    if (bar.type == pci::pci_bar_type::io_space) {
+        uint16_t io_base = static_cast<uint16_t>(bar.address);
 
-        init_port(io_base);
-        write_string(io_base, "UART messages work!\n");
-        write_string(io_base, "Welcome to Stellux 2.0!\n");
+        serial::init_port(io_base, SERIAL_BAUD_DIVISOR_9600);
+        serial::set_kernel_uart_port(io_base);
     }
-    serial::com1_printf("\n");
+    
+    for (auto& device : pci.get_devices()) {
+        device->dbg_print_to_string();
+    }
+
+    serial::printf("\n");
 }
 
 namespace acpi {
@@ -120,7 +48,7 @@ bool acpi_validate_checksum(void* table, size_t length) {
 __PRIVILEGED_CODE
 void enumerate_acpi_tables(void* rsdp) {
     if (!rsdp) {
-        serial::com1_printf("[*] RSDP was null\n");
+        serial::printf("[*] RSDP was null\n");
         return;
     }
 
@@ -130,7 +58,7 @@ void enumerate_acpi_tables(void* rsdp) {
 
     // Validate XSDT checksum
     if (!acpi_validate_checksum(xsdt_table, xsdt_table->header.length)) {
-        serial::com1_printf("[*] XSDT has an invalid checksum\n");
+        serial::printf("[*] XSDT has an invalid checksum\n");
         return;
     }
 
@@ -146,7 +74,7 @@ void enumerate_acpi_tables(void* rsdp) {
             memcpy(table_name, table->signature, 4);
             
             // Handle specific table (e.g., MADT, FADT, etc.)
-            serial::com1_printf("Found ACPI table: %s (0x%llx)\n", table_name, table);
+            serial::printf("Found ACPI table: %s (0x%llx)\n", table_name, table);
 
             if (strcmp(table_name, "MCFG") == 0) {
                 // Initialize the PCI subsystem
@@ -168,6 +96,6 @@ void enumerate_acpi_tables(void* rsdp) {
             }
         }
     }
-    serial::com1_printf("\n");
+    serial::printf("\n");
 }
 } // namespace acpi

@@ -44,7 +44,7 @@ void heap_allocator::init(uint64_t base, size_t size) {
         for (size_t i = 0; i < large_pages; ++i) {
             void* pbase = page_bitmap_allocator::get_physical_allocator().alloc_large_page();
             if (!pbase) {
-                serial::com1_printf("Failed to allocate large page %llu\n", i);
+                serial::printf("Failed to allocate large page %llu\n", i);
                 break;
             }
 
@@ -93,7 +93,7 @@ void heap_allocator::free(void* ptr) {
     );
 
     if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
-        serial::com1_printf("Invalid pointer provided to free()!\n");
+        serial::printf("Invalid pointer provided to free()!\n");
         return;
     }
 
@@ -120,7 +120,7 @@ void* heap_allocator::reallocate(void* ptr, size_t new_size) {
     );
 
     if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
-        serial::com1_printf("Invalid pointer provided to realloc()!\n");
+        serial::printf("Invalid pointer provided to realloc()!\n");
         return nullptr;
     }
 
@@ -218,21 +218,21 @@ void heap_allocator::debug_heap() {
     heap_segment_header* seg = m_first_segment;
     int64_t seg_id = 1;
 
-    serial::com1_printf("---------------------------------------------\n");
+    serial::printf("---------------------------------------------\n");
     while (seg) {
-        serial::com1_printf("Segment %llu:\n", seg_id);
-        serial::com1_printf("    base         : %llx\n", (uint64_t)seg);
-        serial::com1_printf("    userptr      : %llx\n", (uint64_t)seg + sizeof(heap_segment_header));
-        serial::com1_printf("    total size   : %llx\n", seg->size);
-        serial::com1_printf("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
-        serial::com1_printf("    status       : %s\n", seg->flags.free ? "free" : "used");
-        serial::com1_printf("    next         : %llx\n", (uint64_t)seg->next);
-        serial::com1_printf("    prev         : %llx\n\n", (uint64_t)seg->prev);
+        serial::printf("Segment %llu:\n", seg_id);
+        serial::printf("    base         : %llx\n", (uint64_t)seg);
+        serial::printf("    userptr      : %llx\n", (uint64_t)seg + sizeof(heap_segment_header));
+        serial::printf("    total size   : %llx\n", seg->size);
+        serial::printf("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
+        serial::printf("    status       : %s\n", seg->flags.free ? "free" : "used");
+        serial::printf("    next         : %llx\n", (uint64_t)seg->next);
+        serial::printf("    prev         : %llx\n\n", (uint64_t)seg->prev);
         
         seg_id++;
         seg = seg->next;
     }
-    serial::com1_printf("---------------------------------------------\n");
+    serial::printf("---------------------------------------------\n");
 }
 
 void heap_allocator::debug_heap_segment(void* ptr, int64_t seg_id) {
@@ -241,17 +241,17 @@ void heap_allocator::debug_heap_segment(void* ptr, int64_t seg_id) {
     heap_segment_header* seg = (heap_segment_header*)ptr;
     
     if (seg_id != -1)
-        serial::com1_printf("Segment %llu:\n", seg_id);
+        serial::printf("Segment %llu:\n", seg_id);
     else
-        serial::com1_printf("Segment\n");
+        serial::printf("Segment\n");
 
-    serial::com1_printf("    base         : %llx\n", (uint64_t)seg);
-    serial::com1_printf("    userptr      : %llx\n", (uint64_t)seg + sizeof(heap_segment_header));
-    serial::com1_printf("    total size   : %llx\n", seg->size);
-    serial::com1_printf("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
-    serial::com1_printf("    status       : %s\n", seg->flags.free ? "free" : "used");
-    serial::com1_printf("    next         : %llx\n", (uint64_t)seg->next);
-    serial::com1_printf("    prev         : %llx\n\n", (uint64_t)seg->prev);
+    serial::printf("    base         : %llx\n", (uint64_t)seg);
+    serial::printf("    userptr      : %llx\n", (uint64_t)seg + sizeof(heap_segment_header));
+    serial::printf("    total size   : %llx\n", seg->size);
+    serial::printf("    usable size  : %llx\n", GET_USABLE_BLOCK_MEMORY_SIZE(seg));
+    serial::printf("    status       : %s\n", seg->flags.free ? "free" : "used");
+    serial::printf("    next         : %llx\n", (uint64_t)seg->next);
+    serial::printf("    prev         : %llx\n\n", (uint64_t)seg->prev);
 }
 
 void heap_allocator::debug_user_heap_pointer(void* ptr, int64_t id) {
@@ -268,7 +268,7 @@ bool heap_allocator::detect_heap_corruption(bool dbg_log) {
     while (seg) {
         if (memcmp(seg->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, sizeof(seg->magic)) != 0) {
             if (dbg_log) {
-                serial::com1_printf("---- Detected Heap Corruption (segment %lli) ----\n", seg_id);
+                serial::printf("---- Detected Heap Corruption (segment %lli) ----\n", seg_id);
                 debug_heap_segment(seg, seg_id);
             }
 
@@ -280,7 +280,7 @@ bool heap_allocator::detect_heap_corruption(bool dbg_log) {
     }
 
     if (dbg_log) {
-        serial::com1_printf("---- No Heap Corruption Detected (checked %lli segments) ----\n", seg_id - 1);
+        serial::printf("---- No Heap Corruption Detected (checked %lli segments) ----\n", seg_id - 1);
     }
 
     return false;

@@ -57,7 +57,7 @@ __PRIVILEGED_CODE
 void arch_late_stage_init() {
     auto& lapic = x86::lapic::get();
     if (!lapic.get()) {
-        serial::com1_printf("[!] Failed to initialize local APIC\n");
+        serial::printf("[!] Failed to initialize local APIC\n");
         return;
     }
 

@@ -22,7 +22,7 @@ int __syscall_handler(
     switch (syscallnum) {
     case SYSCALL_SYS_WRITE: {
         // Handle write syscall
-        serial::com1_printf((const char*)arg2);
+        serial::printf((const char*)arg2);
         break;
     }
     case SYSCALL_SYS_READ: {
@@ -32,20 +32,20 @@ int __syscall_handler(
     case SYSCALL_SYS_ELEVATE: {
         // Make sure that the thread is allowed to elevate
         if (!dynpriv::is_asid_allowed()) {
-            serial::com1_printf("[*] Unauthorized elevation attempt\n");
+            serial::printf("[*] Unauthorized elevation attempt\n");
             return_val = -ENOPRIV;
             break;
         }
 
         if (current->elevated) {
-            serial::com1_printf("[*] Already elevated\n");
+            serial::printf("[*] Already elevated\n");
         } else {
             current->elevated = 1;
         }
         break;
     }
     default: {
-        serial::com1_printf("Unknown syscall number %llu\n", syscallnum);
+        serial::printf("Unknown syscall number %llu\n", syscallnum);
         return_val = -ENOSYS;
         break;
     }

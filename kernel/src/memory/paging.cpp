@@ -108,7 +108,7 @@ void map_page(
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
             auto* new_table = static_cast<page_table*>(allocator.alloc_page());
             if (!new_table) {
-                serial::com1_printf("[!] Failed to allocate physical frame for a page table!\n");
+                serial::printf("[!] Failed to allocate physical frame for a page table!\n");
                 return nullptr;
             }
 
@@ -172,7 +172,7 @@ void map_large_page(
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
             auto* new_table = static_cast<page_table*>(allocator.alloc_page());
             if (!new_table) {
-                serial::com1_printf("[!] Failed to allocate physical frame for a page table!\n");
+                serial::printf("[!] Failed to allocate physical frame for a page table!\n");
                 return nullptr;
             }
 
@@ -354,12 +354,12 @@ void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     // Ensure that the segment actually exists
     if (!largest_segment.desc) {
-        serial::com1_printf("[*] No conventional memory segments found!\n");
+        serial::printf("[*] No conventional memory segments found!\n");
         return;
     }
 
 #if 0
-    serial::com1_printf(
+    serial::printf(
         "Largest Conventional Memory Segment:\n"
         "  Size: %llu MB (%llu pages)\n"
         "  Physical: 0x%016llx - 0x%016llx\n",
@@ -455,7 +455,7 @@ void init_virtual_allocator() {
         auto& physical_allocator = allocators::page_bitmap_allocator::get_physical_allocator();
         void* paddr = physical_allocator.alloc_large_page();
         if (paddr == nullptr) {
-            serial::com1_printf("[!] Failed to allocate large page for virtual address: 0x%016llx\n", vaddr);
+            serial::printf("[!] Failed to allocate large page for virtual address: 0x%016llx\n", vaddr);
             continue;
         }
 
