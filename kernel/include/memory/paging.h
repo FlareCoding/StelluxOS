@@ -247,8 +247,11 @@ __PRIVILEGED_CODE uintptr_t get_physical_address(void* vaddr);
  *                         their physical addresses, sizes, and types (e.g., usable, reserved). The
  *                         allocator uses this data to determine which pages are available for
  *                         allocation and which should remain reserved.
+ * @param mbi_start_vaddr  Starting higher half address of the multiboot information structure passed by
+ *                         GRUB to the kernel.
+ * @param mbi_size         Size the multiboot information structure passed by GRUB to the kernel.
  */
-__PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag);
+__PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, size_t mbi_size);
 
 /**
  * @brief Initializes the virtual memory allocator.

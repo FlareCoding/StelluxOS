@@ -635,65 +635,6 @@ void walk_mbi(void* mbi) {
     }
 }
 
-uint64_t calculate_page_table_memory(uint64_t total_system_size) {
-    const uint64_t page_size = 4096; // 4 KB pages
-    const uint64_t entries_per_table = 512; // 512 entries per page table
-    const uint64_t entry_size = 8; // 8 bytes per entry
-    const uint64_t table_size = entries_per_table * entry_size; // Size of one page table (4 KB)
-
-    // Calculate the number of pages required
-    uint64_t total_pages = (total_system_size + page_size - 1) / page_size;
-
-    // Calculate the number of page tables required
-    uint64_t page_tables = (total_pages + entries_per_table - 1) / entries_per_table;
-
-    // Calculate the number of page directories required
-    uint64_t page_directories = (page_tables + entries_per_table - 1) / entries_per_table;
-
-    // Calculate the number of PDPTs required
-    uint64_t pdpts = (page_directories + entries_per_table - 1) / entries_per_table;
-
-    // Only one PML4 table is required
-    uint64_t pml4_tables = 1;
-
-    // Total memory for all tables
-    uint64_t total_memory = (page_tables + page_directories + pdpts + pml4_tables) * table_size;
-
-    return total_memory;
-}
-
-extern char __ksymstart;
-extern char __ksymend;
-
-void memory_map_walk_test() {
-    multiboot_tag_efi_mmap* efi_mmap_tag = reinterpret_cast<multiboot_tag_efi_mmap*>(g_mbi_efi_mmap);
-    efi::efi_memory_map memory_map(efi_mmap_tag);
-
-    gop_printf("  EFI Memory Map:\n");
-
-    for (const auto& entry : memory_map) {
-        // Filter for EfiConventionalMemory (type 7)
-        if (entry.desc->type != 7) {
-            continue;
-        }
-
-        uint64_t physical_start = entry.paddr;
-        uint64_t length = entry.length;
-
-        gop_printf(
-            "  Type: %u, Size: %llu MB (%llu pages)\n"
-            "  Physical: 0x%016llx - 0x%016llx\n",
-            entry.desc->type, length / (1024 * 1024), length / 4096,
-            physical_start, physical_start + length);
-    }
-
-    // Access total system conventional memory
-    uint64_t total_system_size_mb = memory_map.get_total_system_memory() / (1024 * 1024);
-    uint64_t total_system_conventional_size_mb = memory_map.get_total_conventional_memory() / (1024 * 1024);
-    gop_printf("\nTotal System Memory                : %llu MB\n", total_system_size_mb);
-    gop_printf("Total System Conventional Memory   : %llu MB\n", total_system_conventional_size_mb);
-}
-
 EXTERN_C
 __PRIVILEGED_CODE
 void init(unsigned int magic, void* mbi) {
@@ -710,16 +651,18 @@ void init(unsigned int magic, void* mbi) {
     // Process and store multiboot provided information
     walk_mbi(mbi);
 
+    // Read the total size of the multiboot information structure
+    uint32_t mbi_size = *reinterpret_cast<uint32_t*>(mbi);
+    uintptr_t mbi_start_addr = reinterpret_cast<uintptr_t>(mbi);
+
     // Initialize memory allocators
-    paging::init_physical_allocator(g_mbi_efi_mmap);
+    paging::init_physical_allocator(g_mbi_efi_mmap, mbi_start_addr, mbi_size);
     paging::init_virtual_allocator();
 
     // Perform arch-specific initialzation that require VMM
     arch::arch_late_stage_init();
 
     init_framebuffer_renderer();
-
-    //memory_map_walk_test();
 
     // Discover ACPI tables
     acpi::enumerate_acpi_tables(g_mbi_acpi_rsdp);

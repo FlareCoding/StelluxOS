@@ -316,7 +316,7 @@ uintptr_t get_physical_address(void* vaddr) {
 }
 
 __PRIVILEGED_CODE
-void init_physical_allocator(void* mbi_efi_mmap_tag) {
+void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, size_t mbi_size) {
     // Identity map the first 1GB of physical RAM memory for further bootstrapping
     bootstrap_map_first_1gb();
 
@@ -341,7 +341,7 @@ void init_physical_allocator(void* mbi_efi_mmap_tag) {
 
     // Calculate memory required for page tables (all of RAM + kernel higher-half mappings)
     uint64_t page_table_size = compute_page_table_memory(
-        memory_map.get_total_system_memory() + kernel_size
+        memory_map.get_total_system_memory() + kernel_size + mbi_size
     );
 
     // Access largest conventional memory segment
@@ -389,6 +389,16 @@ void init_physical_allocator(void* mbi_efi_mmap_tag) {
     for (uint64_t vaddr = KERNEL_LOAD_OFFSET; vaddr < reinterpret_cast<uint64_t>(&__ksymend); vaddr += PAGE_SIZE) {
         uintptr_t paddr = vaddr - KERNEL_LOAD_OFFSET;
         map_page(vaddr, paddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
+    }
+
+    // Create the higher half mappings for the MBI data structure
+    size_t mbi_size_page_aligned = PAGE_ALIGN(mbi_size);
+    uintptr_t mbi_start_paddr = mbi_start_vaddr - KERNEL_LOAD_OFFSET;
+    uintptr_t mbi_end_paddr = mbi_start_paddr + mbi_size_page_aligned;
+
+    for (uint64_t mbi_paddr = mbi_start_paddr; mbi_paddr < mbi_end_paddr; mbi_paddr += PAGE_SIZE) {
+        uint64_t mbi_high_half_addr = mbi_paddr + KERNEL_LOAD_OFFSET;
+        map_page(mbi_high_half_addr, mbi_paddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
     }
 
     // Install the new page table
