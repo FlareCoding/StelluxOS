@@ -639,25 +639,9 @@ void walk_mbi(void* mbi) {
 mutex g_mtx;
 
 void test_function(void*) {
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 400; i++) {
         mutex_guard guard(g_mtx);
         serial::printf("[CPU%i] test_function executed!\n", current->cpu);
-    }
-    sched::exit_thread();
-}
-
-void test_function2(void*) {
-    for (int i = 0; i < 100; i++) {
-        mutex_guard guard(g_mtx);
-        serial::printf("[CPU%i] test_function2 executed!\n", current->cpu);
-    }
-    sched::exit_thread();
-}
-
-void test_function3(void*) {
-    for (int i = 0; i < 100; i++) {
-        mutex_guard guard(g_mtx);
-        serial::printf("[CPU%i] test_function3 executed!\n", current->cpu);
     }
     sched::exit_thread();
 }
@@ -708,14 +692,10 @@ void init(unsigned int magic, void* mbi) {
 
     render_string("Init Finished!\n");
 
-    task_control_block* task1 = sched::create_kernel_task(test_function, nullptr);
-    sched::scheduler::get().add_task(task1);
-
-    task_control_block* task2 = sched::create_kernel_task(test_function2, nullptr);
-    sched::scheduler::get().add_task(task2);
-
-    task_control_block* task3 = sched::create_kernel_task(test_function3, nullptr);
-    sched::scheduler::get().add_task(task3);
+    for (int i = 1; i < 8; i++) {
+        task_control_block* task = sched::create_kernel_task(test_function, nullptr);
+        sched::scheduler::get().add_task(task, i);
+    }
 
     // Idle loop
     while (true) {
