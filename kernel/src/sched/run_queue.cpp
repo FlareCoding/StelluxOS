@@ -3,12 +3,12 @@
 sched_run_queue::sched_run_queue() : m_next_index(0) {}
 
 void sched_run_queue::add_task(task_control_block* task) {
-    spinlock_guard guard(m_lock); // Automatically acquires and releases the lock
+    mutex_guard guard(m_lock); // Automatically acquires and releases the lock
     m_tasks.push_back(task);
 }
 
 void sched_run_queue::remove_task(task_control_block* task) {
-    spinlock_guard guard(m_lock);
+    mutex_guard guard(m_lock);
 
     // Search for the task and remove it
     for (size_t i = 0; i < m_tasks.size(); ++i) {
@@ -28,7 +28,7 @@ void sched_run_queue::remove_task(task_control_block* task) {
 }
 
 task_control_block* sched_run_queue::pick_next() {
-    spinlock_guard guard(m_lock);
+    mutex_guard guard(m_lock);
 
     if (m_tasks.empty()) {
         return nullptr; // No task to run
@@ -53,6 +53,6 @@ task_control_block* sched_run_queue::pick_next() {
 }
 
 bool sched_run_queue::is_empty() {
-    spinlock_guard guard(m_lock);
+    mutex_guard guard(m_lock);
     return m_tasks.empty();
 }

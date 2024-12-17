@@ -45,7 +45,7 @@ private:
 
     // Call the constructor to ensure full object
     // construction including the base class.
-    spinlock                m_heap_lock = spinlock();
+    mutex                   m_heap_lock = mutex();
 
 private:
     heap_segment_header* find_free_segment(size_t min_size);

@@ -22,7 +22,7 @@ public:
 
 private:
     kstl::vector<task_control_block*> m_tasks;
-    spinlock m_lock = spinlock();
+    mutex m_lock = mutex();
     size_t m_next_index;
 };
 

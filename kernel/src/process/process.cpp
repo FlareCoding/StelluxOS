@@ -17,11 +17,11 @@ DEFINE_PER_CPU(task_control_block*, current_task);
 
 namespace sched {
 // Lock to ensure no identical PIDs get produced
-spinlock g_pid_alloc_lock = spinlock();
+DECLARE_GLOBAL_OBJECT(mutex, g_pid_alloc_lock);
 pid_t g_available_task_pid = 1;
 
 pid_t alloc_task_pid() {
-    spinlock_guard guard(g_pid_alloc_lock);
+    mutex_guard guard(g_pid_alloc_lock);
     return g_available_task_pid++;
 }
 
