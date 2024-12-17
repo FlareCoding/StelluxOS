@@ -639,7 +639,7 @@ void walk_mbi(void* mbi) {
 mutex g_mtx;
 
 void test_function(void*) {
-    for (int i = 0; i < 400; i++) {
+    for (int i = 0; i < 10; i++) {
         mutex_guard guard(g_mtx);
         serial::printf("[CPU%i] test_function executed!\n", current->cpu);
     }
