@@ -60,6 +60,9 @@ void scheduler::init() {
 __PRIVILEGED_CODE
 void scheduler::register_cpu_run_queue(uint64_t cpu) {
     m_run_queues[cpu] = kstl::make_shared<sched_run_queue>();
+
+    // Ensure that the run queue contains the idle task
+    m_run_queues[cpu]->add_task(&g_idle_tasks[cpu]);
 }
 
 __PRIVILEGED_CODE

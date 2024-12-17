@@ -637,17 +637,20 @@ void walk_mbi(void* mbi) {
 }
 
 void test_function(void*) {
-    while (true) {
-        sleep(1);
-        serial::printf("[CPU%i] test_function executed!\n", current->cpu);
-    }
+    sched::yield();
+    serial::printf("[CPU%i] test_function executed!\n", current->cpu);
+    sched::exit_thread();
 }
 
 void test_function2(void*) {
-    while (true) {
-        sleep(2);
-        serial::printf("[CPU%i] test_function2 executed!\n", current->cpu);
-    }
+    serial::printf("[CPU%i] test_function2 executed!\n", current->cpu);
+    sched::exit_thread();
+}
+
+void test_function3(void*) {
+    sched::yield();
+    serial::printf("[CPU%i] test_function3 executed!\n", current->cpu);
+    sched::exit_thread();
 }
 
 EXTERN_C
@@ -696,32 +699,14 @@ void init(unsigned int magic, void* mbi) {
 
     render_string("Init Finished!\n");
 
-    uint8_t cpu = 1;
+    task_control_block* task1 = sched::create_kernel_task(test_function, nullptr);
+    sched::scheduler::get().add_task(task1);
 
-    for (uint8_t i = 0; i < 20; ++i) {
-        task_control_block* task = nullptr;
+    task_control_block* task2 = sched::create_kernel_task(test_function2, nullptr);
+    sched::scheduler::get().add_task(task2);
 
-        // Alternate between test_function and test_function2
-        if (i % 2 == 0) {
-            task = sched::create_kernel_task(test_function, nullptr);
-        } else {
-            task = sched::create_kernel_task(test_function2, nullptr);
-        }
-
-        // Check if task creation was successful
-        if (!task) {
-            serial::printf("[*] Failed to create task %d!\n", i + 1);
-        } else {
-            sched::scheduler::get().add_task(task, cpu);
-            serial::printf("[+] Task %u assigned to CPU %d\n", i + 1, cpu);
-        }
-
-        // Update CPU in round-robin fashion
-        cpu++;
-        if (cpu > 7) {
-            cpu = 1;
-        }
-    }
+    task_control_block* task3 = sched::create_kernel_task(test_function3, nullptr);
+    sched::scheduler::get().add_task(task3);
 
     // Idle loop
     while (true) {

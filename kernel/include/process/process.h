@@ -72,6 +72,34 @@ __PRIVILEGED_CODE void switch_context_in_irq(
 //
 __PRIVILEGED_CODE task_control_block* create_kernel_task(task_entry_fn_t entry, void* task_data);
 
+//
+// Destroys a task object, releasing any resources allocated for the task.
+// This function should properly clean up any state or memory associated 
+// with the task, ensuring it no longer runs and freeing up any used memory.
+//
+// Parameters:
+// - task: A pointer to the Task object to be destroyed.
+//         The Task pointer must not be used after calling this function.
+//
+// Returns:
+// - Returns true if the task was successfully destroyed. False if there
+//   was an error (such as the task not being found).
+//
+__PRIVILEGED_CODE bool destroy_task(task_control_block* task);
+
+//
+// Allows the current running kernel thread to terminate and switch to the next
+// available task without waiting for the next timer interrupt. If no next valid
+// task is available, control flow switches back to the kernel swapper task.
+//
+__PRIVILEGED_CODE void exit_thread();
+
+//
+// Relinquishes the CPU and causes a context switch to switch to the next
+// available task without waiting for the next timer tick. If no next valid
+// task is available, control flow switches back to the current task.
+//
+__PRIVILEGED_CODE void yield();
 } // namespace sched
 
 #endif // PROCESS_H

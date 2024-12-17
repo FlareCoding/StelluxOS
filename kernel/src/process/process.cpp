@@ -3,6 +3,7 @@
 #include <memory/vmm.h>
 #include <memory/paging.h>
 #include <arch/x86/gdt/gdt.h>
+#include <sched/sched.h>
 
 DEFINE_PER_CPU(task_control_block*, current_task);
 
@@ -15,6 +16,15 @@ DEFINE_PER_CPU(task_control_block*, current_task);
 #define SCHED_TASK_STACK_SIZE       SCHED_TASK_STACK_PAGES * PAGE_SIZE - SCHED_STACK_TOP_PADDING
 
 namespace sched {
+// Lock to ensure no identical PIDs get produced
+spinlock g_pid_alloc_lock = spinlock();
+pid_t g_available_task_pid = 1;
+
+pid_t alloc_task_pid() {
+    spinlock_guard guard(g_pid_alloc_lock);
+    return g_available_task_pid++;
+}
+
 // Saves context registers from the interrupt frame into a CPU context struct
 __PRIVILEGED_CODE
 void save_cpu_context(ptregs* process_context, ptregs* irq_frame) {
@@ -61,7 +71,7 @@ task_control_block* create_kernel_task(task_entry_fn_t entry, void* task_data) {
 
     // Initialize the task's process control block
     task->state = process_state::READY;
-    task->pid = 0;
+    task->pid = alloc_task_pid();
     task->elevated = 1;
 
     // Allocate both task and system stacks
@@ -96,5 +106,48 @@ task_control_block* create_kernel_task(task_entry_fn_t entry, void* task_data) {
     task->cpu_context.hwframe.cs = __KERNEL_CS;
 
     return task;
+}
+
+__PRIVILEGED_CODE
+bool destroy_task(task_control_block* task) {
+    if (!task) {
+        return false;
+    }
+
+    // Destroy the stacks
+    vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->task_stack), SCHED_TASK_STACK_PAGES);
+    vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
+
+    // Free the actual task structure
+    delete task;
+
+    return true;
+}
+
+__PRIVILEGED_CODE
+void exit_thread() {
+    auto& scheduler = sched::scheduler::get();
+
+    // First disable the timer IRQs to avoid bugs
+    // that could come from an unexpected context
+    // switch here.
+    scheduler.preempt_disable();
+
+    // Indicate that this task is ready to be reaped
+    current->state = process_state::TERMINATED;
+
+    // Remove the task from the scheduler queue
+    scheduler.remove_task(current);
+
+    // Trigger a context switch to switch to the next
+    // available task in the scheduler run queue.
+    scheduler.schedule();
+}
+
+__PRIVILEGED_CODE
+void yield() {
+    // Trigger a context switch to switch to the next
+    // available task in the scheduler run queue.
+    sched::scheduler::get().schedule();
 }
 } // namespace sched
