@@ -201,6 +201,10 @@ Contributions are always welcome through pull requests.
 <!-- Acknowledgments -->
 ## :gem: Acknowledgements
 
-Special thanks to Dr. Tommy Unger for the Symbiote and kElevate work, Dr. Jonathan Appavoo for supporting
-this project from inception, and the Red Hat Research team for all the technical knowledge and support they brought to the table.
+This work was supported by the
+Red Hat Collaboratory at Boston University under the award “Symbiotes: A New Step in Linux’s Evolution”,
+Red Hat Collaboratory Research Incubation Award Program (2024-01-RH12)
+
+Additionally, special thanks to Dr. Tommy Unger for the Symbiote and kElevate work, Dr. Jonathan Appavoo for supporting
+this project from inception, and all the support they brought to the table.
 
