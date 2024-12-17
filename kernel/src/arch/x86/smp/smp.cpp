@@ -169,6 +169,9 @@ void smp_init() {
             continue;
         }
 
+        // Register a run queue in the scheduler for this core
+        sched::scheduler::get().register_cpu_run_queue(cpu_index);
+
         // Allocate a system stack for the AP core
         void* ap_stack = vmm::alloc_virtual_pages(2, DEFAULT_MAPPING_FLAGS | PTE_PCD);
         g_ap_system_stacks[cpu_index] = reinterpret_cast<uintptr_t>(ap_stack);

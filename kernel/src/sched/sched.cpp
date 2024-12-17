@@ -31,16 +31,14 @@ void install_sched_irq_handlers() {
 
 DEFINE_INT_HANDLER(irq_handler_timer) {
     __unused cookie;
-    __unused regs;
-    //scheduler::get().__schedule(regs);
+    scheduler::get().__schedule(regs);
 
     return IRQ_HANDLED;
 }
 
 DEFINE_INT_HANDLER(irq_handler_schedule) {
     __unused cookie;
-    __unused regs;
-    //scheduler::get().__schedule(regs);
+    scheduler::get().__schedule(regs);
 
     return IRQ_HANDLED;
 }

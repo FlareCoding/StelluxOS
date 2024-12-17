@@ -446,7 +446,7 @@ void panic(ptregs* regs) {
     char rflags_buffer[64] = { 0 };
     decode_rflags(regs->hwframe.rflags, rflags_buffer, sizeof(rflags_buffer));
 
-    serial::printf("\n[PANIC] Kernel Panic! System Halted.\n");
+    serial::printf("\n[PANIC] Kernel Panic! System Halted. CPU: %i \n", current->cpu);
     serial::printf("============================================================\n");
 
     // Prints the backtrace
@@ -475,6 +475,7 @@ void panic(ptregs* regs) {
         regs->hwframe.rip, regs->hwframe.rflags, rflags_buffer);
     serial::printf("  IRQ: %s\n  Error Code: 0x%0llx\n",
         arch::x86::g_cpu_exception_strings[regs->intno], regs->error);
+    serial::printf("  CPU: %i\n", current->cpu);
 
     // Control registers
     uint64_t cr0, cr2, cr3, cr4;
