@@ -9,6 +9,7 @@
 #include <acpi/acpi.h>
 #include <time/time.h>
 #include <sched/sched.h>
+#include <process/process.h>
 #include <smp/smp.h>
 
 __PRIVILEGED_DATA
@@ -635,6 +636,20 @@ void walk_mbi(void* mbi) {
     }
 }
 
+void test_function(void*) {
+    while (true) {
+        sleep(1);
+        serial::printf("[CPU%i] test_function executed!\n", current->cpu);
+    }
+}
+
+void test_function2(void*) {
+    while (true) {
+        sleep(2);
+        serial::printf("[CPU%i] test_function2 executed!\n", current->cpu);
+    }
+}
+
 EXTERN_C
 __PRIVILEGED_CODE
 void init(unsigned int magic, void* mbi) {
@@ -680,6 +695,33 @@ void init(unsigned int magic, void* mbi) {
     smp::smp_init();
 
     render_string("Init Finished!\n");
+
+    uint8_t cpu = 1;
+
+    for (uint8_t i = 0; i < 20; ++i) {
+        task_control_block* task = nullptr;
+
+        // Alternate between test_function and test_function2
+        if (i % 2 == 0) {
+            task = sched::create_kernel_task(test_function, nullptr);
+        } else {
+            task = sched::create_kernel_task(test_function2, nullptr);
+        }
+
+        // Check if task creation was successful
+        if (!task) {
+            serial::printf("[*] Failed to create task %d!\n", i + 1);
+        } else {
+            sched::scheduler::get().add_task(task, cpu);
+            serial::printf("[+] Task %u assigned to CPU %d\n", i + 1, cpu);
+        }
+
+        // Update CPU in round-robin fashion
+        cpu++;
+        if (cpu > 7) {
+            cpu = 1;
+        }
+    }
 
     // Idle loop
     while (true) {

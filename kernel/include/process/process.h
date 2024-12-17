@@ -46,6 +46,8 @@ static __force_inline__ task_control_block* get_current_task() {
 #define current get_current_task()
 
 namespace sched {
+typedef void (*task_entry_fn_t)(void*);
+
 // Saves context registers from the interrupt frame into a CPU context struct
 __PRIVILEGED_CODE void save_cpu_context(ptregs* process_context, ptregs* irq_frame);
 
@@ -63,6 +65,13 @@ __PRIVILEGED_CODE void switch_context_in_irq(
     task_control_block* to,
     ptregs* irq_frame
 );
+
+//
+// Allocates a task object for a new kernel thread that will
+// start its execution at a given function in kernel mode (DPL=0).
+//
+__PRIVILEGED_CODE task_control_block* create_kernel_task(task_entry_fn_t entry, void* task_data);
+
 } // namespace sched
 
 #endif // PROCESS_H

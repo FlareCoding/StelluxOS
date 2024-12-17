@@ -64,6 +64,10 @@ void scheduler::register_cpu_run_queue(uint64_t cpu) {
 
 __PRIVILEGED_CODE
 void scheduler::add_task(task_control_block* task, int cpu) {
+    if (cpu == -1) {
+        cpu = BSP_CPU_ID;
+    }
+
     // Mask the timer interrupts while adding the task to the queue
     preempt_disable(cpu);
 
