@@ -201,6 +201,6 @@ Contributions are always welcome through pull requests.
 <!-- Acknowledgments -->
 ## :gem: Acknowledgements
 
-Special thanks to Dr. Tommy Unger for the Symbiote and kElevate work and Dr. Jonathan Appavoo for supporting
-this project from inception and all the technical knowledge they brought to the table. 
+Special thanks to Dr. Tommy Unger for the Symbiote and kElevate work, Dr. Jonathan Appavoo for supporting
+this project from inception, and the Red Hat Research team for all the technical knowledge and support they brought to the table.
 
