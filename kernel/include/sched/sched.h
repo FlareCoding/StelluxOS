@@ -28,6 +28,7 @@ public:
 
     __PRIVILEGED_CODE void init();
     __PRIVILEGED_CODE void register_cpu_run_queue(uint64_t cpu);
+    __PRIVILEGED_CODE void unregister_cpu_run_queue(uint64_t cpu);
 
     __PRIVILEGED_CODE void add_task(task_control_block* task, int cpu = -1);
     __PRIVILEGED_CODE void remove_task(task_control_block* task);
@@ -48,6 +49,8 @@ public:
 
 private:
     kstl::shared_ptr<sched_run_queue> m_run_queues[MAX_SYSTEM_CPUS];
+
+    int _load_balance_find_cpu();
 };
 } // namespace sched
 

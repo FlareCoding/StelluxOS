@@ -20,6 +20,9 @@ public:
     // Check if the queue is empty
     bool is_empty();
 
+    // Get the size of the queue
+    size_t size() const { return m_tasks.size(); }
+
 private:
     kstl::vector<task_control_block*> m_tasks;
     mutex m_lock = mutex();

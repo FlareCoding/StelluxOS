@@ -187,6 +187,7 @@ void smp_init() {
             serial::printf("[!] Core %u failed to start (lapic_id: %u)\n", cpu_index, desc.apic_id);
 
             // Free the resources allocated for the core
+             sched::scheduler::get().unregister_cpu_run_queue(cpu_index);
             vmm::unmap_contiguous_virtual_pages(g_ap_system_stacks[cpu_index], 2);
             arch::deallocate_ap_per_cpu_area(cpu_index);
 

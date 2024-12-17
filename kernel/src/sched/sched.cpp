@@ -66,9 +66,19 @@ void scheduler::register_cpu_run_queue(uint64_t cpu) {
 }
 
 __PRIVILEGED_CODE
+void scheduler::unregister_cpu_run_queue(uint64_t cpu) {
+    m_run_queues[cpu] = kstl::shared_ptr<sched_run_queue>(nullptr);
+}
+
+__PRIVILEGED_CODE
 void scheduler::add_task(task_control_block* task, int cpu) {
     if (cpu == -1) {
-        cpu = BSP_CPU_ID;
+        cpu = _load_balance_find_cpu();
+    }
+
+    if (m_run_queues[cpu].get() == nullptr) {
+        serial::printf("[*] Failed to add task to invalid cpu %i!\n", cpu);
+        return;
     }
 
     // Mask the timer interrupts while adding the task to the queue
@@ -139,5 +149,28 @@ void scheduler::preempt_enable(int cpu) {
 #ifdef ARCH_X86_64
     arch::x86::lapic::get(cpu)->unmask_timer_irq();
 #endif
+}
+
+int scheduler::_load_balance_find_cpu() {
+    int optimal_cpu = 0;
+    size_t min_load = m_run_queues[0]->size();
+
+    // Iterate over all CPUs to find the least loaded one
+    for (int i = 0; i < MAX_SYSTEM_CPUS; ++i) {
+        // Skip over invalid queues
+        if (!m_run_queues[i].get()) {
+            continue;
+        }
+
+        size_t load = m_run_queues[i]->size();
+
+        // Check if this CPU has a lighter load
+        if (load < min_load) {
+            min_load = load;
+            optimal_cpu = i;
+        }
+    }
+
+    return optimal_cpu;
 }
 } // namespace sched

@@ -692,9 +692,9 @@ void init(unsigned int magic, void* mbi) {
 
     render_string("Init Finished!\n");
 
-    for (int i = 1; i < 8; i++) {
+    for (int i = 1; i < 100; i++) {
         task_control_block* task = sched::create_kernel_task(test_function, nullptr);
-        sched::scheduler::get().add_task(task, i);
+        sched::scheduler::get().add_task(task);
     }
 
     // Idle loop
