@@ -5,6 +5,9 @@
 #define SPINLOCK_STATE_UNLOCKED  0
 #define SPINLOCK_STATE_LOCKED    1
 
+#define MUTEX_STATE_UNLOCKED     0
+#define MUTEX_STATE_LOCKED       1
+
 #ifdef ARCH_X86_64
     #define memory_barrier() asm volatile("mfence" ::: "memory");
     #define load_memory_barrier() asm volatile("lfence" ::: "memory");
@@ -47,6 +50,40 @@ public:
 
 private:
     spinlock& m_lock;
+};
+
+class mutex {
+public:
+    explicit mutex() : m_state(MUTEX_STATE_UNLOCKED) {}
+
+    // Acquire the lock (blocking)
+    void lock();
+
+    // Release the lock
+    void unlock();
+
+    // Try to acquire the lock (non-blocking)
+    bool try_lock();
+
+private:
+    volatile int m_state; // 0 = unlocked, 1 = locked
+
+    // Atomic compare-and-swap
+    bool _atomic_cmpxchg(volatile int* addr, int expected, int new_value);
+};
+
+class mutex_guard {
+public:
+    explicit mutex_guard(mutex& mtx) : m_mutex(mtx) {
+        m_mutex.lock();
+    }
+
+    ~mutex_guard() {
+        m_mutex.unlock();
+    }
+
+private:
+    mutex& m_mutex;
 };
 
 #endif // SYNC_H

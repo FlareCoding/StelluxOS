@@ -636,20 +636,29 @@ void walk_mbi(void* mbi) {
     }
 }
 
+mutex g_mtx;
+
 void test_function(void*) {
-    sched::yield();
-    serial::printf("[CPU%i] test_function executed!\n", current->cpu);
+    for (int i = 0; i < 100; i++) {
+        mutex_guard guard(g_mtx);
+        serial::printf("[CPU%i] test_function executed!\n", current->cpu);
+    }
     sched::exit_thread();
 }
 
 void test_function2(void*) {
-    serial::printf("[CPU%i] test_function2 executed!\n", current->cpu);
+    for (int i = 0; i < 100; i++) {
+        mutex_guard guard(g_mtx);
+        serial::printf("[CPU%i] test_function2 executed!\n", current->cpu);
+    }
     sched::exit_thread();
 }
 
 void test_function3(void*) {
-    sched::yield();
-    serial::printf("[CPU%i] test_function3 executed!\n", current->cpu);
+    for (int i = 0; i < 100; i++) {
+        mutex_guard guard(g_mtx);
+        serial::printf("[CPU%i] test_function3 executed!\n", current->cpu);
+    }
     sched::exit_thread();
 }
 
