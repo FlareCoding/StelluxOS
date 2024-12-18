@@ -92,6 +92,16 @@ void execute_unit_tests();
         } \
     } while (0)
 
+#define ASSERT_FALSE(condition, fmt, ...) \
+    do { \
+        if ((condition)) { \
+            serial::printf("[ASSERT] %s:%i, ", __FILE__, __LINE__); \
+            serial::printf(fmt, ##__VA_ARGS__); \
+            serial::printf(", condition failed\n"); \
+            return UNIT_TEST_FAILURE; \
+        } \
+    } while (0)
+
 // Macro for critical condition assertion, triggers a shutdown on failure
 #define ASSERT_TRUE_CRITICAL(condition, fmt, ...) \
     do { \

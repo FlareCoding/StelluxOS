@@ -405,32 +405,42 @@ string::string(const string& other) {
 }
 
 string::string(string&& other) {
-    // Check if the other string is using SSO buffer
     if (other.m_using_sso) {
-        // Copy the SSO buffer manually
-        for (size_t i = 0; i <= m_sso_size; ++i) {
+        // If the other string is using SSO, just copy its SSO buffer
+        // and mark other as empty.
+        m_size = other.m_size;
+        m_capacity = other.m_capacity; // This might be equal to m_sso_size
+        m_using_sso = true;
+        // Copy the SSO buffer including the null terminator
+        for (size_t i = 0; i <= m_size; ++i) {
             m_sso_buffer[i] = other.m_sso_buffer[i];
         }
+        m_data = nullptr; // We do not use m_data in SSO
 
-        m_using_sso = true;
-        m_size = other.m_size;
-        m_capacity = m_sso_size;
+        // Reset the other string to empty state
+        other.m_sso_buffer[0] = '\0';
+        other.m_size = 0;
+        other.m_capacity = m_sso_size;
+        other.m_using_sso = true;
+        other.m_data = nullptr;
     } else {
-        // Transfer ownership of resources
+        // If the other string was using a dynamic buffer
+        // Just steal the pointer and data
         m_data = other.m_data;
         m_size = other.m_size;
         m_capacity = other.m_capacity;
         m_using_sso = false;
+        // The SSO buffer isn't used since we're in heap mode, but let's
+        // keep it clean:
+        m_sso_buffer[0] = '\0';
 
-        // Leave the other object's dynamic resources in a valid state
+        // Now reset the other string to an empty SSO-based string
         other.m_data = nullptr;
         other.m_size = 0;
-        other.m_capacity = 0;
+        other.m_sso_buffer[0] = '\0';
+        other.m_capacity = m_sso_size;
+        other.m_using_sso = true;
     }
-
-    // Null-terminate the SSO buffer of the other string
-    other.m_sso_buffer[0] = '\0';
-    other.m_using_sso = true;
 }
 
 string& string::operator=(const string& other) {
@@ -550,7 +560,7 @@ bool string::operator!=(const string& other) const {
 }
 
 size_t string::length() const {
-    return m_using_sso ? strlen(m_sso_buffer) : m_size;
+    return m_size;
 }
 
 size_t string::capacity() const {
@@ -623,26 +633,34 @@ void string::reserve(size_t new_capacity) {
 }
 
 void string::resize(size_t new_size) {
-    size_t cur_length = length();
-    if (new_size < cur_length) {
-        // If new size is smaller, just truncate by placing a null terminator
+    if (new_size < m_size) {
+        // Shrinking
+        m_size = new_size;
         if (m_using_sso) {
+            m_sso_buffer[m_size] = '\0';
+        } else {
+            m_data[m_size] = '\0';
+        }
+    } else if (new_size > m_size) {
+        // Growing
+        if (new_size > m_capacity) {
+            reserve(new_size);
+        }
+
+        // Fill with '\0' from old size to new_size
+        if (m_using_sso) {
+            for (size_t i = m_size; i < new_size; ++i) {
+                m_sso_buffer[i] = '\0';
+            }
             m_sso_buffer[new_size] = '\0';
         } else {
+            for (size_t i = m_size; i < new_size; ++i) {
+                m_data[i] = '\0';
+            }
             m_data[new_size] = '\0';
-            m_size = new_size;
         }
-    } else if (new_size > cur_length) {
-        // If new size is larger, reserve more space and zero-fill
-        reserve(new_size + 1); // +1 for null terminator
-        if (m_using_sso) {
-            memset(m_sso_buffer + cur_length, 0, new_size - cur_length);
-            m_sso_buffer[new_size] = '\0';
-        } else {
-            memset(m_data + m_size, 0, new_size - m_size);
-            m_data[new_size] = '\0';
-            m_size = new_size;
-        }
+
+        m_size = new_size;
     }
 }
 
@@ -737,7 +755,7 @@ const char* string::c_str() const {
 // Convert integer to string
 string to_string(int value) {
     char buf[32] = { 0 };  // Large enough for an int
-    lltoa(value, buf, sizeof(buf));  // Custom integer-to-string conversion
+    itoa(value, buf, sizeof(buf));  // Custom integer-to-string conversion
     return string(buf);
 }
 
