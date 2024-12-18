@@ -48,7 +48,10 @@ private:
     mutex                   m_heap_lock = mutex();
 
 private:
-    heap_segment_header* find_free_segment(size_t min_size);
+    void* _allocate_locked(size_t size);
+    void _free_locked(void* ptr);
+
+    heap_segment_header* _find_free_segment(size_t min_size);
 
     //
     // |-----|--------------|     |-----|------------|  |-----|------------|
@@ -57,10 +60,10 @@ private:
     //
     // <-------- x --------->     <------ size ------>  <---- x - size ---->
     //
-    bool split_segment(heap_segment_header* segment, size_t size);
+    bool _split_segment(heap_segment_header* segment, size_t size);
 
-    bool merge_segment_with_previous(heap_segment_header* segment);
-    bool merge_segment_with_next(heap_segment_header* segment);
+    bool _merge_segment_with_previous(heap_segment_header* segment);
+    bool _merge_segment_with_next(heap_segment_header* segment);
 };
 } // namespace allocators
 

@@ -5,40 +5,40 @@
 using namespace kstl;
 
 // A helper class to test construction/destruction
-class TestObject {
+class VecTestObject {
 public:
     static size_t alive_count;
     int value;
 
-    TestObject(int val = 0) : value(val) {
+    VecTestObject(int val = 0) : value(val) {
         ++alive_count;
     }
 
-    TestObject(const TestObject& other) : value(other.value) {
+    VecTestObject(const VecTestObject& other) : value(other.value) {
         ++alive_count;
     }
 
-    TestObject(TestObject&& other) noexcept : value(other.value) {
+    VecTestObject(VecTestObject&& other) noexcept : value(other.value) {
         ++alive_count;
         // We could set other.value to something, but not strictly needed.
     }
 
-    ~TestObject() {
+    ~VecTestObject() {
         --alive_count;
     }
 
-    TestObject& operator=(const TestObject& other) {
+    VecTestObject& operator=(const VecTestObject& other) {
         if (this != &other) {
             value = other.value;
         }
         return *this;
     }
 
-    bool operator==(const TestObject& other) const {
+    bool operator==(const VecTestObject& other) const {
         return value == other.value;
     }
 };
-size_t TestObject::alive_count = 0;
+size_t VecTestObject::alive_count = 0;
 
 // Test default construction
 DECLARE_UNIT_TEST("vector default constructor", test_vector_default_constructor) {
@@ -79,22 +79,22 @@ DECLARE_UNIT_TEST("vector push_back primitive", test_vector_push_back_primitive)
 // Test push_back with a non-primitive type
 DECLARE_UNIT_TEST("vector push_back non-primitive", test_vector_push_back_non_primitive) {
     {
-        vector<TestObject> v;
-        ASSERT_EQ(TestObject::alive_count, (size_t)0, "No objects alive before insertion");
+        vector<VecTestObject> v;
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "No objects alive before insertion");
 
-        v.push_back(TestObject(42));
+        v.push_back(VecTestObject(42));
         ASSERT_EQ(v.size(), (size_t)1, "One element added");
         ASSERT_EQ(v[0].value, 42, "Element value should match");
-        ASSERT_EQ(TestObject::alive_count, (size_t)1, "One object alive after push_back");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)1, "One object alive after push_back");
 
-        v.push_back(TestObject(99));
+        v.push_back(VecTestObject(99));
         ASSERT_EQ(v.size(), (size_t)2, "Two elements added");
         ASSERT_EQ(v[1].value, 99, "Element value should match");
-        ASSERT_EQ(TestObject::alive_count, (size_t)2, "Two objects alive");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)2, "Two objects alive");
 
         // Going out of scope will destroy the vector and all objects
     }
-    ASSERT_EQ(TestObject::alive_count, (size_t)0, "All objects should be destroyed after vector goes out of scope");
+    ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "All objects should be destroyed after vector goes out of scope");
     return UNIT_TEST_SUCCESS;
 }
 
@@ -211,21 +211,21 @@ DECLARE_UNIT_TEST("vector copy constructor", test_vector_copy_constructor) {
 
     {
         // Test with non-primitive
-        ASSERT_EQ(TestObject::alive_count, (size_t)0, "No objects alive before test");
-        vector<TestObject> v;
-        v.push_back(TestObject(42));
-        v.push_back(TestObject(7));
-        ASSERT_EQ(TestObject::alive_count, (size_t)2, "Two objects alive");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "No objects alive before test");
+        vector<VecTestObject> v;
+        v.push_back(VecTestObject(42));
+        v.push_back(VecTestObject(7));
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)2, "Two objects alive");
 
-        vector<TestObject> v2 = v; // copy
+        vector<VecTestObject> v2 = v; // copy
         ASSERT_EQ(v2.size(), (size_t)2, "Copied vector size");
         ASSERT_EQ(v2[0].value, 42, "Check value");
         ASSERT_EQ(v2[1].value, 7,  "Check value");
-        ASSERT_EQ(TestObject::alive_count, (size_t)4, "Copy constructor should create two new objects");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)4, "Copy constructor should create two new objects");
 
         // Both vectors go out of scope here, destroying all 4 objects
     }
-    ASSERT_EQ(TestObject::alive_count, (size_t)0, "All objects destroyed after scope");
+    ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "All objects destroyed after scope");
     return UNIT_TEST_SUCCESS;
 }
 
@@ -313,35 +313,35 @@ DECLARE_UNIT_TEST("vector clear", test_vector_clear) {
     return UNIT_TEST_SUCCESS;
 }
 
-// Test with multiple insertions, erasures and check destructors with TestObject
-DECLARE_UNIT_TEST("vector complex TestObject operations", test_vector_complex_testobject) {
-    ASSERT_EQ(TestObject::alive_count, (size_t)0, "No objects alive at start");
+// Test with multiple insertions, erasures and check destructors with VecTestObject
+DECLARE_UNIT_TEST("vector complex VecTestObject operations", test_vector_complex_VecTestObject) {
+    ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "No objects alive at start");
 
     {
-        vector<TestObject> v;
-        v.push_back(TestObject(10));
-        v.push_back(TestObject(20));
-        v.push_back(TestObject(30));
+        vector<VecTestObject> v;
+        v.push_back(VecTestObject(10));
+        v.push_back(VecTestObject(20));
+        v.push_back(VecTestObject(30));
 
         ASSERT_EQ(v.size(), (size_t)3, "Three elements");
-        ASSERT_EQ(TestObject::alive_count, (size_t)3, "Three alive objects");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)3, "Three alive objects");
 
-        v.insert(1, TestObject(15));
+        v.insert(1, VecTestObject(15));
         ASSERT_EQ(v.size(), (size_t)4, "Inserted one element");
-        ASSERT_EQ(TestObject::alive_count, (size_t)4, "Four objects alive");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)4, "Four objects alive");
         ASSERT_EQ(v[1].value, 15, "Check inserted value");
 
         v.erase(2); // erase element originally at index 2 (which was 20 or 30 depending on shift)
         ASSERT_EQ(v.size(), (size_t)3, "One less element after erase");
         // After erase, we should have destroyed one object
-        ASSERT_EQ(TestObject::alive_count, (size_t)3, "Three objects alive after erase");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)3, "Three objects alive after erase");
 
         // Let's clear and see if all objects are destroyed
         v.clear();
         ASSERT_EQ(v.size(), (size_t)0, "Cleared vector");
-        ASSERT_EQ(TestObject::alive_count, (size_t)0, "No objects alive after clear");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "No objects alive after clear");
     }
 
-    ASSERT_EQ(TestObject::alive_count, (size_t)0, "No objects alive after vector scope ends");
+    ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "No objects alive after vector scope ends");
     return UNIT_TEST_SUCCESS;
 }

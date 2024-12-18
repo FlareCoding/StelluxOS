@@ -56,8 +56,11 @@ void* operator new(size_t size);
 
 // Global delete operator
 void operator delete(void* ptr) noexcept;
-
 void operator delete(void* ptr, size_t) noexcept;
+
+void* operator new[](size_t size);
+void operator delete[](void* ptr) noexcept;
+void operator delete[](void* ptr, size_t) noexcept;
 
 namespace kstl {
 template <typename T>

@@ -68,51 +68,19 @@ void heap_allocator::init(uint64_t base, size_t size) {
 
 void* heap_allocator::allocate(size_t size) {
     mutex_guard guard(m_heap_lock);
-
-    size_t new_segment_size = size + sizeof(heap_segment_header);
-
-    heap_segment_header* segment = find_free_segment(new_segment_size + sizeof(heap_segment_header));
-
-    if (!segment) {
-        return nullptr;
-    }
-
-    split_segment(segment, new_segment_size);
-
-    segment->flags.free = false;
-
-    uint8_t* usable_region_start = reinterpret_cast<uint8_t*>(segment) + sizeof(heap_segment_header);
-    return static_cast<void*>(usable_region_start);
+    return _allocate_locked(size);
 }
 
 void heap_allocator::free(void* ptr) {
     mutex_guard guard(m_heap_lock);
-
-    heap_segment_header* segment = reinterpret_cast<heap_segment_header*>(
-        reinterpret_cast<uint8_t*>(ptr) - sizeof(heap_segment_header)
-    );
-
-    if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
-        serial::printf("Invalid pointer provided to free()!\n");
-        return;
-    }
-
-    segment->flags.free = true;
-
-    if (segment->next && segment->next->flags.free) {
-        merge_segment_with_next(segment);
-    }
-
-    if (segment->prev && segment->prev->flags.free) {
-        merge_segment_with_previous(segment);
-    }
+    _free_locked(ptr);
 }
 
 void* heap_allocator::reallocate(void* ptr, size_t new_size) {
     mutex_guard guard(m_heap_lock);
 
     if (ptr == nullptr) {
-        return allocate(new_size);
+        return _allocate_locked(new_size);
     }
 
     heap_segment_header* segment = reinterpret_cast<heap_segment_header*>(
@@ -125,17 +93,17 @@ void* heap_allocator::reallocate(void* ptr, size_t new_size) {
     }
 
     if (segment->size >= new_size + sizeof(heap_segment_header)) {
-        split_segment(segment, new_size + sizeof(heap_segment_header));
+        _split_segment(segment, new_size + sizeof(heap_segment_header));
         return ptr;
     } else {
-        void* new_ptr = allocate(new_size);
+        void* new_ptr = _allocate_locked(new_size);
         if (!new_ptr) {
             return nullptr;
         }
 
         memcpy(new_ptr, ptr, segment->size - sizeof(heap_segment_header));
 
-        free(ptr);
+        _free_locked(ptr);
 
         return new_ptr;
     }
@@ -143,7 +111,50 @@ void* heap_allocator::reallocate(void* ptr, size_t new_size) {
     return nullptr;
 }
 
-heap_segment_header* heap_allocator::find_free_segment(size_t min_size) {
+void* heap_allocator::_allocate_locked(size_t size) {
+    // Check for an invalid allocation size
+    if (size == 0) {
+        return nullptr;
+    }
+
+    size_t new_segment_size = size + sizeof(heap_segment_header);
+
+    heap_segment_header* segment = _find_free_segment(new_segment_size + sizeof(heap_segment_header));
+
+    if (!segment) {
+        return nullptr;
+    }
+
+    _split_segment(segment, new_segment_size);
+
+    segment->flags.free = false;
+
+    uint8_t* usable_region_start = reinterpret_cast<uint8_t*>(segment) + sizeof(heap_segment_header);
+    return static_cast<void*>(usable_region_start);
+}
+
+void heap_allocator::_free_locked(void* ptr) {
+    heap_segment_header* segment = reinterpret_cast<heap_segment_header*>(
+        reinterpret_cast<uint8_t*>(ptr) - sizeof(heap_segment_header)
+    );
+
+    if (memcmp(segment->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, 7) != 0) {
+        serial::printf("Invalid pointer provided to free()!\n");
+        return;
+    }
+
+    segment->flags.free = true;
+
+    if (segment->next && segment->next->flags.free) {
+        _merge_segment_with_next(segment);
+    }
+
+    if (segment->prev && segment->prev->flags.free) {
+        _merge_segment_with_previous(segment);
+    }
+}
+
+heap_segment_header* heap_allocator::_find_free_segment(size_t min_size) {
     heap_segment_header* seg = m_first_segment;
 
     while (seg) {
@@ -157,7 +168,7 @@ heap_segment_header* heap_allocator::find_free_segment(size_t min_size) {
     return nullptr;
 }
 
-bool heap_allocator::split_segment(heap_segment_header* segment, size_t size) {
+bool heap_allocator::_split_segment(heap_segment_header* segment, size_t size) {
     if (static_cast<int64_t>(segment->size - (size + sizeof(heap_segment_header))) < MIN_HEAP_SEGMENT_CAPACITY * 2) {
         return false;
     }
@@ -178,7 +189,7 @@ bool heap_allocator::split_segment(heap_segment_header* segment, size_t size) {
     return true;
 }
 
-bool heap_allocator::merge_segment_with_previous(heap_segment_header* segment) {
+bool heap_allocator::_merge_segment_with_previous(heap_segment_header* segment) {
     heap_segment_header* previous_segment = segment->prev;
 
     if (previous_segment == nullptr) {
@@ -195,7 +206,7 @@ bool heap_allocator::merge_segment_with_previous(heap_segment_header* segment) {
     return true;
 }
 
-bool heap_allocator::merge_segment_with_next(heap_segment_header* segment) {
+bool heap_allocator::_merge_segment_with_next(heap_segment_header* segment) {
     heap_segment_header* next_segment = segment->next;
 
     if (next_segment == nullptr) {

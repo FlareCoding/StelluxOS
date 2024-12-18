@@ -93,6 +93,11 @@ void* malloc(size_t size) {
 
 void* zmalloc(size_t size) {
     void* ptr = malloc(size);
+
+    if (!ptr) {
+        return nullptr;
+    }
+
     zeromem(ptr, size);
     return ptr;
 }
@@ -125,3 +130,14 @@ void operator delete(void* ptr, size_t) noexcept {
     free(ptr);
 }
 
+void* operator new[](size_t size) {
+    return zmalloc(size);
+}
+
+void operator delete[](void* ptr) noexcept {
+    free(ptr);
+}
+
+void operator delete[](void* ptr, size_t) noexcept {
+    free(ptr);
+}
