@@ -141,8 +141,6 @@ void unmap_virtual_page(uintptr_t vaddr) {
 // Unmaps a contiguous range of virtual pages
 __PRIVILEGED_CODE
 void unmap_contiguous_virtual_pages(uintptr_t vaddr, size_t count) {
-    mutex_guard guard(vmm_lock);
-
     for (size_t i = 0; i < count; ++i) {
         unmap_virtual_page(vaddr + i * PAGE_SIZE);
     }
