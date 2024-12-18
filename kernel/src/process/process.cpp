@@ -172,8 +172,10 @@ bool destroy_task(task_control_block* task) {
 }
 
 void exit_thread() {
-    // Elevate in order to call scheduler functions
-    dynpriv::elevate();
+    // The thread needs to be elevated in order to call scheduler functions
+    if (!dynpriv::is_elevated()) {
+        dynpriv::elevate();
+    }
 
     auto& scheduler = sched::scheduler::get();
 
