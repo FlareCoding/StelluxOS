@@ -42,18 +42,18 @@ jobs:
     - name: Clean build
       run: make clean
 
-  # unit-tests:
-  #   runs-on: ubuntu-latest
+  unit-tests:
+    runs-on: ubuntu-latest
 
-  #   steps:
-  #   - name: Checkout repository
-  #     uses: actions/checkout@v4
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-  #   - name: Setup Environment
-  #     run: sudo apt-get update
+    - name: Setup Environment
+      run: sudo apt-get update
 
-  #   - name: Install Dependencies
-  #     run: make install-dependencies
+    - name: Install Dependencies
+      run: make install-dependencies
 
-  #   - name: Build and Execute Unit Tests
-  #     run: make execute-unit-tests
+    - name: Build and Execute Unit Tests
+      run: make execute-unit-tests

@@ -29,6 +29,11 @@ ASM_SRCS := $(call rwildcard, $(SRC_DIR), *.S)
 CPP_SRCS := $(call rwildcard, $(SRC_DIR), *.cpp)
 HEADERS  := $(call rwildcard, $(SRC_DIR), *.h)
 
+# Conditionally exclude .test.cpp files if BUILD_UNIT_TESTS is not set
+ifndef BUILD_UNIT_TESTS
+CPP_SRCS := $(filter-out %.test.cpp, $(CPP_SRCS))
+endif
+
 # Object files
 ASM_OBJS := $(ASM_SRCS:$(SRC_DIR)/%.S=$(OBJ_DIR)/%.o)
 CPP_OBJS := $(CPP_SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
@@ -43,6 +48,11 @@ CXXFLAGS  := -m64 -g -O0 -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES) 
 			 -fno-stack-clash-protection -Wno-stringop-truncation -Wno-zero-length-bounds -Wno-array-bounds -Wno-stringop-overflow -Wno-restrict \
 			 -Wno-maybe-uninitialized -fno-strict-overflow -fno-stack-check -fconserve-stack -fno-stack-protector -mno-sse -mno-mmx
 LDFLAGS   := -m elf_x86_64 -T $(LINKER_SCRIPT) -g
+
+ifdef BUILD_UNIT_TESTS
+CXXFLAGS += -DBUILD_UNIT_TESTS
+ASFLAGS  += -DBUILD_UNIT_TESTS
+endif
 
 # Default target
 all: $(KERNEL)

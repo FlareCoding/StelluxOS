@@ -12,6 +12,11 @@
 #include <process/process.h>
 #include <smp/smp.h>
 
+#ifdef BUILD_UNIT_TESTS
+#include <acpi/shutdown.h>
+#include <unit_tests/unit_tests.h>
+#endif // BUILD_UNIT_TESTS
+
 __PRIVILEGED_DATA
 char* g_mbi_kernel_cmdline;
 
@@ -689,6 +694,14 @@ void init(unsigned int magic, void* mbi) {
 
     // Initialize SMP and bring up application processors
     smp::smp_init();
+
+#ifdef BUILD_UNIT_TESTS
+    // Run unit tests
+    execute_unit_tests();
+
+    // Shutdown the machine after running the unit tests
+    vmshutdown();
+#endif // BUILD_UNIT_TESTS
 
     render_string("Init Finished!\n");
 

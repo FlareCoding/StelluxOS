@@ -72,5 +72,22 @@ SECTIONS
     __per_cpu_end = .;
     __per_cpu_size = __per_cpu_end - __per_cpu_start;
 
+    . = ALIGN(0x1000);
+
+    /* Unit Test Section */
+    .unit_test :
+    {
+        __unit_tests_start = .;
+        KEEP(*(.unit_test))
+        __unit_tests_end = .;
+        . = ALIGN(0x1000);
+    }
+
+    /* Disabled/Unused Unit Test Section */
+    .unit_test_unused :
+    {
+        . = ALIGN(0x1000);
+    }
+
     __ksymend = .;
 }

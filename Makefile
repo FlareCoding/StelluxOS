@@ -38,6 +38,12 @@ QEMU_FLAGS       := \
     -boot order=c \
 	-device qemu-xhci,id=xhci
 
+# Unit test execution duration timeout (all tests)
+UNIT_TESTS_RUN_TIMEOUT := 5m
+
+# Name of the unit test result output file
+UNIT_TESTS_LOG_FILENAME := unit_tests.out
+
 # QEMU_FLAGS += -device pci-serial,bus=pcie.0,addr=0x3,chardev=serial_pci -chardev file,id=serial_pci,path=uart_pci.log
 
 # GDB Configuration
@@ -137,6 +143,7 @@ clean:
 	$(MAKE) -C $(KERNEL_DIR) clean
 	@rm -rf $(BUILD_DIR)
 	@rm -rf *.log
+	@rm -rf $(UNIT_TESTS_LOG_FILENAME)
 
 # Run the Disk Image in QEMU
 run: $(STELLUX_IMAGE)
@@ -160,6 +167,28 @@ connect-gdb:
 	    -ex "target remote localhost:4554" \
 	    -ex "add-symbol-file $(KERNEL_FILE)" \
 	    -ex "b init"
+
+# Builds and runs a clean image of the OS with appropriate unit test flags
+execute-unit-tests:
+	@echo "[LOG] Preparing a clean build environment"
+	@$(MAKE) clean > /dev/null
+
+	@echo "[LOG] Building the kernel with unit tests"
+	@$(MAKE) image BUILD_UNIT_TESTS=1 > /dev/null
+
+	@echo "[LOG] Launching the StelluxOS image in a VM"
+	@timeout $(UNIT_TESTS_RUN_TIMEOUT) setsid bash -c '$(QEMU) $(QEMU_FLAGS) -nographic | tee $(UNIT_TESTS_LOG_FILENAME)'
+
+	@echo ""
+	@echo "[LOG] Parsing unit test results"
+	
+	@bash -c '\
+		bash parse_unit_test_results.sh; \
+		RESULT=$$?; \
+		echo "[LOG] Cleaning up"; \
+		$(MAKE) clean > /dev/null; \
+		exit $$RESULT \
+	'
 
 # Install all necessary dependencies based on the Linux distribution
 install-dependencies:
