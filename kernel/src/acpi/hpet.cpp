@@ -18,7 +18,7 @@ void hpet::init(acpi_sdt_header* acpi_hpet_table) {
     uintptr_t physical_base = table->address;
 
     // Map the HPET controller into the kernel's virtual address space
-    void* virt_base = vmm::map_physical_page(physical_base, DEFAULT_MAPPING_FLAGS | PTE_PCD | PTE_US);
+    void* virt_base = vmm::map_physical_page(physical_base, DEFAULT_PRIV_PAGE_FLAGS | PTE_PCD | PTE_US);
 
     m_base = reinterpret_cast<uint64_t>(virt_base);
 

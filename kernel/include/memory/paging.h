@@ -24,9 +24,11 @@
 #define PTE_KERNEL_PAGE   (0ULL)        // Kernel page (Supervisor, no additional flags)
 #define PTE_USER_PAGE     (PTE_US)      // User-accessible page
 
-// Common combinations
-#define PTE_DEFAULT_KERNEL_FLAGS (PTE_PRESENT | PTE_RW)        // Default for kernel pages: Present, writable
-#define PTE_DEFAULT_USER_FLAGS   (PTE_DEFAULT_FLAGS | PTE_US)  // Default for user pages
+// Default flags for privileged kernel pages: Present, writable
+#define PTE_DEFAULT_PRIV_KERNEL_FLAGS (PTE_PRESENT | PTE_RW)
+
+// Default flags for unprivileged kernel pages: Present, writable, user
+#define PTE_DEFAULT_UNPRIV_KERNEL_FLAGS (PTE_PRESENT | PTE_RW | PTE_US)
 
 // Macros for page frame number (PFN) calculations
 #define ADDR_TO_PFN(addr) ((addr) >> 12)  // Convert address to page frame number

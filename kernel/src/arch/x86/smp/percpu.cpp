@@ -31,7 +31,7 @@ void init_ap_per_cpu_area(uint8_t cpu_id) {
 
 __PRIVILEGED_CODE
 void allocate_ap_per_cpu_area(uint8_t cpu_id) {
-    void* percpu_area = vmm::alloc_virtual_page(DEFAULT_MAPPING_FLAGS | PTE_PCD);
+    void* percpu_area = vmm::alloc_virtual_page(DEFAULT_PRIV_PAGE_FLAGS | PTE_PCD);
     g_per_cpu_area_ptrs[cpu_id] = reinterpret_cast<uintptr_t>(percpu_area);
 }
 

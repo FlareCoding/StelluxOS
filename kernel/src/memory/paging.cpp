@@ -6,11 +6,14 @@
 #include <memory/allocators/heap_allocator.h>
 #include <boot/efimem.h>
 #include <serial/serial.h>
+#include <dynpriv/dynpriv.h>
 
 #define KERNEL_LOAD_OFFSET 0xffffffff80000000
 
 extern char __ksymstart;
 extern char __ksymend;
+extern char __privileged_kernel_region_start;
+extern char __privileged_kernel_region_end;
 
 namespace paging {
 virt_addr_indices_t get_vaddr_page_table_indices(uint64_t vaddr) {
@@ -104,7 +107,7 @@ void map_page(
     virt_addr_indices_t indices = get_vaddr_page_table_indices(static_cast<uintptr_t>(vaddr));
 
     // Helper lambda to allocate a page table if not present
-    auto get_page_table = [&allocator](pte_t& entry) -> page_table* {
+    auto get_page_table = [&allocator, &indices](pte_t& entry) -> page_table* {
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
             auto* new_table = static_cast<page_table*>(allocator.alloc_page());
             if (!new_table) {
@@ -116,6 +119,14 @@ void map_page(
             zeromem(new_table, PAGE_SIZE);
 
             entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
+
+            // If the page table is used for representing addresses
+            // in the higher half kernel address space, the top level
+            // of the page table should be marked as user-accessible.
+            if (indices.pml4 == 511) {
+                entry.user_supervisor = 1;
+            }
+
             entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
             return new_table;
         }
@@ -168,7 +179,7 @@ void map_large_page(
     virt_addr_indices_t indices = get_vaddr_page_table_indices(static_cast<uintptr_t>(vaddr));
 
     // Helper lambda to allocate a page table if not present
-    auto get_page_table = [&allocator](pte_t& entry) -> page_table* {
+    auto get_page_table = [&allocator, &indices](pte_t& entry) -> page_table* {
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
             auto* new_table = static_cast<page_table*>(allocator.alloc_page());
             if (!new_table) {
@@ -180,6 +191,14 @@ void map_large_page(
             zeromem(new_table, PAGE_SIZE);
 
             entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
+
+            // If the page table is used for representing addresses
+            // in the higher half kernel address space, the top level
+            // of the page table should be marked as user-accessible.
+            if (indices.pml4 == 511) {
+                entry.user_supervisor = 1;
+            }
+
             entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
             return new_table;
         }
@@ -380,15 +399,25 @@ void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, 
         if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY ||
             entry.desc->type == EFI_MEMORY_TYPE_ACPI_RECLAIM_MEMORY) {
             for (uint64_t vaddr = entry.paddr; vaddr < entry.paddr + entry.length; vaddr += PAGE_SIZE) {
-                map_page(vaddr, vaddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
+                map_page(vaddr, vaddr, PTE_DEFAULT_PRIV_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
             }
         }
     }
 
+    // Keep track of privileged kernel regions
+    uintptr_t priv_region_start = reinterpret_cast<uintptr_t>(&__privileged_kernel_region_start);
+    uintptr_t priv_region_end = reinterpret_cast<uintptr_t>(&__privileged_kernel_region_end);
+
     // Create the higher-half mappings for the kernel
     for (uint64_t vaddr = KERNEL_LOAD_OFFSET; vaddr < reinterpret_cast<uint64_t>(&__ksymend); vaddr += PAGE_SIZE) {
         uintptr_t paddr = vaddr - KERNEL_LOAD_OFFSET;
-        map_page(vaddr, paddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
+        uint64_t flags = PTE_DEFAULT_UNPRIV_KERNEL_FLAGS;
+
+        if (vaddr >= priv_region_start && vaddr < priv_region_end) {
+            flags = PTE_DEFAULT_PRIV_KERNEL_FLAGS;
+        }
+
+        map_page(vaddr, paddr, flags, new_pml4, bootstrap_allocator);
     }
 
     // Create the higher half mappings for the MBI data structure
@@ -398,11 +427,14 @@ void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, 
 
     for (uint64_t mbi_paddr = mbi_start_paddr; mbi_paddr < mbi_end_paddr; mbi_paddr += PAGE_SIZE) {
         uint64_t mbi_high_half_addr = mbi_paddr + KERNEL_LOAD_OFFSET;
-        map_page(mbi_high_half_addr, mbi_paddr, PTE_DEFAULT_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
+        map_page(mbi_high_half_addr, mbi_paddr, PTE_DEFAULT_PRIV_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
     }
 
     // Install the new page table
     set_pml4(new_pml4);
+
+    // Set the new blessed kernel ASID in the dynamic privilege subsystem
+    dynpriv::use_current_asid();
 
     // Initialize the page frame bitmap
     auto& bitmap_allocator = allocators::page_bitmap_allocator::get_physical_allocator();
@@ -470,7 +502,7 @@ void init_virtual_allocator() {
         }
 
         // Map the allocated physical page to the virtual address
-        map_large_page(vaddr, reinterpret_cast<uintptr_t>(paddr), PTE_DEFAULT_KERNEL_FLAGS, get_pml4());
+        map_large_page(vaddr, reinterpret_cast<uintptr_t>(paddr), PTE_DEFAULT_PRIV_KERNEL_FLAGS, get_pml4());
     }
 
     auto& virtual_allocator = allocators::page_bitmap_allocator::get_virtual_allocator();

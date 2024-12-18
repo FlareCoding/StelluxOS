@@ -206,7 +206,11 @@ void common_exc_entry(ptregs* regs) {
 // Common entry point for IRQs
 __PRIVILEGED_CODE
 void common_irq_entry(ptregs* regs) {
+    // After faking out being elevated, original elevation
+    // privileged should be restored, except in the case
+    // when the scheduler switched context into a new task.
     int original_elevate_status = current->elevated;
+    task_control_block* original_task = current;
 
     // Fake out being elevated if needed because the code has to
     // be able to tell if it's running in privileged mode or not.
@@ -227,8 +231,10 @@ void common_irq_entry(ptregs* regs) {
     irqreturn_t ret = desc->handler(regs, desc->cookie);
     __unused ret;
 
-    // Restore the original elevate status
-    current->elevated = original_elevate_status;
+    // Restore the original elevate status if the task didn't switch
+    if (current == original_task) {
+        current->elevated = original_elevate_status;
+    }
 }
 
 // Common entry point for all interrupt service routines

@@ -28,7 +28,7 @@ void pci_manager::_enumerate_bus(uint64_t segment_base_addr, uint8_t bus) {
     uint64_t bus_offset = bus << 20;
     uint64_t bus_address = segment_base_addr + bus_offset;
 
-    void* bus_virtual_base = vmm::map_physical_page(bus_address, DEFAULT_MAPPING_FLAGS);
+    void* bus_virtual_base = vmm::map_physical_page(bus_address, DEFAULT_PRIV_PAGE_FLAGS);
 
     pci_function_desc* desc = reinterpret_cast<pci_function_desc*>(bus_virtual_base);
 
@@ -46,7 +46,7 @@ void pci_manager::_enumerate_device(uint64_t bus_addr, uint8_t device) {
     uint64_t device_offset = device << 15;
     uint64_t device_address = bus_addr + device_offset;
 
-    void* device_virtual_base = vmm::map_physical_page(device_address, DEFAULT_MAPPING_FLAGS);
+    void* device_virtual_base = vmm::map_physical_page(device_address, DEFAULT_PRIV_PAGE_FLAGS);
 
     pci_function_desc* desc = reinterpret_cast<pci_function_desc*>(device_virtual_base);
 
@@ -64,7 +64,7 @@ void pci_manager::_enumerate_function(uint64_t device_addr, uint8_t function) {
     uint64_t function_offset = function << 12;
 
     uint64_t function_address = device_addr + function_offset;
-    void* function_virtual_base = vmm::map_physical_page(function_address, DEFAULT_MAPPING_FLAGS);
+    void* function_virtual_base = vmm::map_physical_page(function_address, DEFAULT_PRIV_PAGE_FLAGS);
 
     pci_function_desc* desc = reinterpret_cast<pci_function_desc*>(function_virtual_base);
 

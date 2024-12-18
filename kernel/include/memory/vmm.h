@@ -2,7 +2,11 @@
 #define VMM_H
 #include <types.h>
 
-#define DEFAULT_MAPPING_FLAGS 0x3
+// Default flags for privileged kernel pages: Present, writable
+#define DEFAULT_PRIV_PAGE_FLAGS 0x3
+
+// Default flags for unprivileged kernel pages: Present, writable, user
+#define DEFAULT_UNPRIV_PAGE_FLAGS 0x7
 
 namespace vmm {
 /**

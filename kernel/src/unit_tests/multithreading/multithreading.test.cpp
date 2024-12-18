@@ -54,8 +54,8 @@ DECLARE_UNIT_TEST("multithread single task run and exit", test_single_task_run) 
     global_counter = 0;
 
     int increments = 10;
-    task_control_block* task = create_kernel_task(increment_task, &increments);
-    ASSERT_TRUE(task != nullptr, "create_kernel_task should return a valid task");
+    task_control_block* task = create_priv_kernel_task(increment_task, &increments);
+    ASSERT_TRUE(task != nullptr, "create_priv_kernel_task should return a valid task");
 
     // Schedule the task on a random CPU
     sched::scheduler::get().add_task(task);
@@ -84,7 +84,7 @@ DECLARE_UNIT_TEST("multithread multiple tasks", test_multiple_tasks) {
 
     task_control_block* tasks[num_tasks];
     for (int i = 0; i < num_tasks; i++) {
-        tasks[i] = create_kernel_task(increment_task, (void*)&increments_per_task);
+        tasks[i] = create_priv_kernel_task(increment_task, (void*)&increments_per_task);
         ASSERT_TRUE(tasks[i] != nullptr, "Task creation should succeed");
         sched::scheduler::get().add_task(tasks[i]);
     }
@@ -113,7 +113,7 @@ DECLARE_UNIT_TEST("multithread per-CPU tasks", test_per_cpu_tasks) {
     for (int cpu_id = 0; cpu_id < num_tasks; cpu_id++) {
         int* data = (int*)zmalloc(sizeof(int));
         *data = increments_per_task;
-        task_control_block* task = create_kernel_task(increment_task, data);
+        task_control_block* task = create_priv_kernel_task(increment_task, data);
         ASSERT_TRUE(task != nullptr, "Task creation should succeed");
         sched::scheduler::get().add_task(task, cpu_id);
     }
@@ -133,7 +133,7 @@ DECLARE_UNIT_TEST("multithread per-CPU tasks", test_per_cpu_tasks) {
 
 // Test that a task that exits immediately doesn't affect the system
 DECLARE_UNIT_TEST("multithread exit immediate task", test_exit_immediate) {
-    task_control_block* task = create_kernel_task(exit_immediately_task, nullptr);
+    task_control_block* task = create_priv_kernel_task(exit_immediately_task, nullptr);
     ASSERT_TRUE(task != nullptr, "Should create task");
 
     sched::scheduler::get().add_task(task, 0);
@@ -147,7 +147,7 @@ DECLARE_UNIT_TEST("multithread exit immediate task", test_exit_immediate) {
 
 // Test destroying a task that was never run (just to confirm resource cleanup)
 DECLARE_UNIT_TEST("multithread destroy task before run", test_destroy_before_run) {
-    task_control_block* task = create_kernel_task(exit_immediately_task, nullptr);
+    task_control_block* task = create_priv_kernel_task(exit_immediately_task, nullptr);
     ASSERT_TRUE(task != nullptr, "Should create task");
 
     // Destroy the task without scheduling it
@@ -165,7 +165,7 @@ DECLARE_UNIT_TEST("multithread mutex test", test_mutex_usage) {
     const int num_tasks = 3;
 
     for (int i = 0; i < num_tasks; i++) {
-        task_control_block* t = create_kernel_task(mutex_increment_task, (void*)&increments_per_task);
+        task_control_block* t = create_priv_kernel_task(mutex_increment_task, (void*)&increments_per_task);
         ASSERT_TRUE(t != nullptr, "Should create mutex increment task");
         sched::scheduler::get().add_task(t);
     }
@@ -206,7 +206,7 @@ DECLARE_UNIT_TEST("multithread exit_thread removal", test_exit_thread_removal) {
         exit_thread();
     };
 
-    task_control_block* t = create_kernel_task(single_increment_and_exit, nullptr);
+    task_control_block* t = create_priv_kernel_task(single_increment_and_exit, nullptr);
     sched::scheduler::get().add_task(t);
 
     // Yield a couple times to let the task run and exit

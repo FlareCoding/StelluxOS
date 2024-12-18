@@ -70,7 +70,13 @@ __PRIVILEGED_CODE void switch_context_in_irq(
 // Allocates a task object for a new kernel thread that will
 // start its execution at a given function in kernel mode (DPL=0).
 //
-__PRIVILEGED_CODE task_control_block* create_kernel_task(task_entry_fn_t entry, void* task_data);
+__PRIVILEGED_CODE task_control_block* create_priv_kernel_task(task_entry_fn_t entry, void* task_data);
+
+//
+// Allocates a task object for a new kernel thread that will
+// start its execution at a given function in user mode (DPL=3).
+//
+__PRIVILEGED_CODE task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_data);
 
 //
 // Destroys a task object, releasing any resources allocated for the task.
@@ -92,7 +98,7 @@ __PRIVILEGED_CODE bool destroy_task(task_control_block* task);
 // available task without waiting for the next timer interrupt. If no next valid
 // task is available, control flow switches back to the kernel swapper task.
 //
-__PRIVILEGED_CODE void exit_thread();
+void exit_thread();
 
 //
 // Relinquishes the CPU and causes a context switch to switch to the next

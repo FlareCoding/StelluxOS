@@ -10,7 +10,6 @@ namespace sched {
 DEFINE_INT_HANDLER(irq_handler_timer);
 DEFINE_INT_HANDLER(irq_handler_schedule);
 
-__PRIVILEGED_DATA
 task_control_block g_idle_tasks[MAX_SYSTEM_CPUS];
 
 __PRIVILEGED_CODE

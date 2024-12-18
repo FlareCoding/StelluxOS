@@ -11,6 +11,7 @@
 #include <sched/sched.h>
 #include <process/process.h>
 #include <smp/smp.h>
+#include <dynpriv/dynpriv.h>
 
 #ifdef BUILD_UNIT_TESTS
 #include <acpi/shutdown.h>
@@ -513,7 +514,7 @@ void init_framebuffer_renderer() {
     size = framebuffer_page_count * PAGE_SIZE / bytes_per_pixel;
     uintptr_t gop_addr = g_mbi_framebuffer->common.framebuffer_addr;
 
-    pixels = (char*)vmm::map_contiguous_physical_pages(gop_addr, framebuffer_page_count, PTE_DEFAULT_KERNEL_FLAGS | PTE_PAT);
+    pixels = (char*)vmm::map_contiguous_physical_pages(gop_addr, framebuffer_page_count, PTE_DEFAULT_PRIV_KERNEL_FLAGS | PTE_PAT);
 
     serial::printf("------------ Framebuffer ------------\n");
     serial::printf("      physbase            : 0x%llx\n", g_mbi_framebuffer->common.framebuffer_addr);
@@ -641,13 +642,13 @@ void walk_mbi(void* mbi) {
     }
 }
 
-mutex g_mtx;
+void unpriv_test_fn(void*) {
+    RUN_ELEVATED({
+        uint64_t cr3;
+        asm volatile("mov %%cr3, %0" : "=r"(cr3));
+        serial::printf("cr3: 0x%llx\n", cr3);
+    });
 
-void test_function(void*) {
-    for (int i = 0; i < 10; i++) {
-        mutex_guard guard(g_mtx);
-        serial::printf("[CPU%i] test_function executed!\n", current->cpu);
-    }
     sched::exit_thread();
 }
 
@@ -705,10 +706,8 @@ void init(unsigned int magic, void* mbi) {
 
     render_string("Init Finished!\n");
 
-    for (int i = 1; i < 100; i++) {
-        task_control_block* task = sched::create_kernel_task(test_function, nullptr);
-        sched::scheduler::get().add_task(task);
-    }
+    auto task = sched::create_unpriv_kernel_task(unpriv_test_fn, nullptr);
+    sched::scheduler::get().add_task(task);
 
     // Idle loop
     while (true) {

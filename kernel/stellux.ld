@@ -41,6 +41,8 @@ SECTIONS
         . = ALIGN(0x1000);
     }
 
+    __privileged_kernel_region_start = .;
+
     /* Privileged Text Section */
     .ktext : AT(ADDR(.ktext) - KERNEL_OFFSET)
     {
@@ -64,6 +66,8 @@ SECTIONS
         *(.krodata.*)
         . = ALIGN(0x1000);
     }
+
+    __privileged_kernel_region_end = .;
 
     __per_cpu_start = .;
     .percpu : AT(ADDR(.percpu) - KERNEL_OFFSET) {

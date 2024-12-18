@@ -35,7 +35,7 @@ void heap_allocator::init(uint64_t base, size_t size) {
          * Therefore, we can allocate and map only 1 page and then manually
          * lock all consecutive pages.
          */
-        void* vbase = vmm::alloc_virtual_pages(1, PTE_DEFAULT_KERNEL_FLAGS);
+        void* vbase = vmm::alloc_virtual_pages(1, PTE_DEFAULT_UNPRIV_KERNEL_FLAGS);
         page_bitmap_allocator::get_virtual_allocator().lock_pages(vbase, pages);
 
         m_first_segment = reinterpret_cast<heap_segment_header*>(vbase);
@@ -51,7 +51,7 @@ void heap_allocator::init(uint64_t base, size_t size) {
             uintptr_t paddr = reinterpret_cast<uintptr_t>(pbase);
             uintptr_t vaddr = reinterpret_cast<uintptr_t>(vbase) + (i * LARGE_PAGE_SIZE);
 
-            paging::map_large_page(vaddr, paddr, PTE_DEFAULT_KERNEL_FLAGS, paging::get_pml4());
+            paging::map_large_page(vaddr, paddr, PTE_DEFAULT_UNPRIV_KERNEL_FLAGS, paging::get_pml4());
         }
     }
 

@@ -19,7 +19,7 @@ static bool maps_to(void* vaddr, uintptr_t expected_paddr) {
 
 // Test single page allocation
 DECLARE_UNIT_TEST("vmm alloc_virtual_page", test_vmm_alloc_virtual_page) {
-    void* vaddr = alloc_virtual_page(DEFAULT_MAPPING_FLAGS);
+    void* vaddr = alloc_virtual_page(DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(vaddr != nullptr, "alloc_virtual_page should return a non-null pointer");
     ASSERT_TRUE(is_mapped(vaddr), "Returned page should be mapped to a physical page");
 
@@ -33,7 +33,7 @@ DECLARE_UNIT_TEST("vmm alloc_virtual_page", test_vmm_alloc_virtual_page) {
 // Test mapping a known physical page
 DECLARE_UNIT_TEST("vmm map_physical_page", test_vmm_map_physical_page) {
     // We have a known good physical page at 0x12000
-    void* vaddr = map_physical_page(0x12000, DEFAULT_MAPPING_FLAGS);
+    void* vaddr = map_physical_page(0x12000, DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(vaddr != nullptr, "map_physical_page should return non-null pointer");
     ASSERT_TRUE(
         maps_to(vaddr, 0x12000),
@@ -51,7 +51,7 @@ DECLARE_UNIT_TEST("vmm map_physical_page", test_vmm_map_physical_page) {
 // Test allocating multiple pages
 DECLARE_UNIT_TEST("vmm alloc_virtual_pages", test_vmm_alloc_virtual_pages) {
     size_t count = 3;
-    void* base = alloc_virtual_pages(count, DEFAULT_MAPPING_FLAGS);
+    void* base = alloc_virtual_pages(count, DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(base != nullptr, "alloc_virtual_pages should return a valid pointer");
     // Check each page in the range is mapped
     for (size_t i = 0; i < count; i++) {
@@ -72,7 +72,7 @@ DECLARE_UNIT_TEST("vmm alloc_virtual_pages", test_vmm_alloc_virtual_pages) {
 // Test allocating contiguous virtual pages
 DECLARE_UNIT_TEST("vmm alloc_contiguous_virtual_pages", test_vmm_alloc_contiguous_virtual_pages) {
     size_t count = 4;
-    void* base = alloc_contiguous_virtual_pages(count, DEFAULT_MAPPING_FLAGS);
+    void* base = alloc_contiguous_virtual_pages(count, DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(base != nullptr, "alloc_contiguous_virtual_pages should return a valid pointer");
     // Verify each is mapped and contiguous
     for (size_t i = 0; i < count; i++) {
@@ -94,7 +94,7 @@ DECLARE_UNIT_TEST("vmm alloc_contiguous_virtual_pages", test_vmm_alloc_contiguou
 DECLARE_UNIT_TEST("vmm map_contiguous_physical_pages", test_vmm_map_contiguous_physical_pages) {
     // We'll map two known physical pages: 0x12000 and 0x13000
     size_t count = 2;
-    void* base = map_contiguous_physical_pages(0x12000, count, DEFAULT_MAPPING_FLAGS);
+    void* base = map_contiguous_physical_pages(0x12000, count, DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(base != nullptr, "map_contiguous_physical_pages should return a valid pointer");
 
     // Check the mapping
@@ -113,7 +113,7 @@ DECLARE_UNIT_TEST("vmm map_contiguous_physical_pages", test_vmm_map_contiguous_p
 
 // Test unmap_virtual_page explicitly after mapping a single page
 DECLARE_UNIT_TEST("vmm unmap_virtual_page", test_vmm_unmap_virtual_page) {
-    void* vaddr = alloc_virtual_page(DEFAULT_MAPPING_FLAGS);
+    void* vaddr = alloc_virtual_page(DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(is_mapped(vaddr), "Should be mapped after alloc_virtual_page");
 
     unmap_virtual_page((uintptr_t)vaddr);
@@ -125,7 +125,7 @@ DECLARE_UNIT_TEST("vmm unmap_virtual_page", test_vmm_unmap_virtual_page) {
 // Test unmap_contiguous_virtual_pages explicitly
 DECLARE_UNIT_TEST("vmm unmap_contiguous_virtual_pages", test_vmm_unmap_contiguous_virtual_pages) {
     size_t count = 3;
-    void* base = alloc_virtual_pages(count, DEFAULT_MAPPING_FLAGS);
+    void* base = alloc_virtual_pages(count, DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(base != nullptr, "Should allocate a contiguous block of virtual pages");
 
     // Check mapping
@@ -145,7 +145,7 @@ DECLARE_UNIT_TEST("vmm unmap_contiguous_virtual_pages", test_vmm_unmap_contiguou
 // Test repeated allocations and deallocations to ensure stability
 DECLARE_UNIT_TEST("vmm repeated allocations", test_vmm_repeated_allocations) {
     for (int i = 0; i < 5; i++) {
-        void* page = alloc_virtual_page(DEFAULT_MAPPING_FLAGS);
+        void* page = alloc_virtual_page(DEFAULT_PRIV_PAGE_FLAGS);
         ASSERT_TRUE(page != nullptr, "alloc_virtual_page should succeed on iteration");
         ASSERT_TRUE(is_mapped(page), "Allocated page should be mapped");
 
@@ -160,7 +160,7 @@ DECLARE_UNIT_TEST("vmm repeated allocations", test_vmm_repeated_allocations) {
 DECLARE_UNIT_TEST("vmm large contiguous allocation", test_vmm_large_contiguous) {
     // Allocate a larger number of pages, say 8
     size_t count = 8;
-    void* base = alloc_contiguous_virtual_pages(count, DEFAULT_MAPPING_FLAGS);
+    void* base = alloc_contiguous_virtual_pages(count, DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(base != nullptr, "alloc_contiguous_virtual_pages should succeed for larger count");
 
     for (size_t i = 0; i < count; i++) {
@@ -181,7 +181,7 @@ DECLARE_UNIT_TEST("vmm large contiguous allocation", test_vmm_large_contiguous) 
 // Test mapping an already allocated virtual page to a known physical address
 DECLARE_UNIT_TEST("vmm remap to physical", test_vmm_remap_to_physical) {
     // First, allocate a virtual page
-    void* vaddr = alloc_virtual_page(DEFAULT_MAPPING_FLAGS);
+    void* vaddr = alloc_virtual_page(DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(is_mapped(vaddr), "Should be mapped initially");
 
     // Get its physical address
@@ -193,7 +193,7 @@ DECLARE_UNIT_TEST("vmm remap to physical", test_vmm_remap_to_physical) {
     ASSERT_FALSE(is_mapped(vaddr), "Should be unmapped now");
 
     // Map it again to a known physical address
-    void* new_vaddr = map_physical_page(0x13000, DEFAULT_MAPPING_FLAGS);
+    void* new_vaddr = map_physical_page(0x13000, DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(new_vaddr != nullptr, "Should successfully map a known physical page");
     ASSERT_TRUE(maps_to(new_vaddr, 0x13000), "Should map to new physical address 0x13000");
 
@@ -224,7 +224,7 @@ DECLARE_UNIT_TEST("vmm heavy allocation exhaustion", test_vmm_heavy_allocation_e
             serial::printf("\r[INFO] Allocation progress: %llu%%", current_percentage);
         }
 
-        void* page = alloc_virtual_page(DEFAULT_MAPPING_FLAGS);
+        void* page = alloc_virtual_page(DEFAULT_PRIV_PAGE_FLAGS);
         if (page == nullptr) {
             // Allocation failed, finalize progress line and break
             serial::printf("\r[INFO] Allocation progress: %llu%% - Exhausted at attempt %llu\n", current_percentage, i);
@@ -253,7 +253,7 @@ DECLARE_UNIT_TEST("vmm heavy allocation exhaustion", test_vmm_heavy_allocation_e
     free(allocated);
 
     // Try allocating again after freeing all pages
-    void* page = alloc_virtual_page(DEFAULT_MAPPING_FLAGS);
+    void* page = alloc_virtual_page(DEFAULT_PRIV_PAGE_FLAGS);
     ASSERT_TRUE(page != nullptr, "Should be able to allocate a page again after freeing");
 
     // Cleanup

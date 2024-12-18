@@ -26,7 +26,7 @@ lapic::lapic(uint64_t base, uint8_t spurious_irq) {
         g_lapic_physical_base = base;
 
         // Map the LAPIC base into the kernel's address space
-        void* virt_base = vmm::map_physical_page(base, DEFAULT_MAPPING_FLAGS | PTE_PCD);
+        void* virt_base = vmm::map_physical_page(base, DEFAULT_PRIV_PAGE_FLAGS | PTE_PCD);
 
         // Update the globally tracked virtual base pointer
         g_lapic_virtual_base = reinterpret_cast<volatile uint32_t*>(virt_base);

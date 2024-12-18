@@ -72,6 +72,26 @@ void lower(void* target_fn);
  * @return false If the thread is operating at a standard or lower privilege level.
  */
 bool is_elevated();
+
+/**
+ * @brief Macro to run a code block with elevated privileges if required.
+ * 
+ * This macro ensures the code block is executed with elevated privileges
+ * and restores the original privilege state afterwards.
+ * 
+ * @param code The block of code to execute with elevated privileges.
+ */
+#define RUN_ELEVATED(code)                          \
+    do {                                            \
+        bool was_elevated = dynpriv::is_elevated(); \
+        if (!was_elevated) {                        \
+            dynpriv::elevate();                     \
+        }                                           \
+        code;                                       \
+        if (!was_elevated) {                        \
+            dynpriv::lower();                       \
+        }                                           \
+    } while (0)
 } // namespace dynpriv
 
 #endif // DYNPRIV_H

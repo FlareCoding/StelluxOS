@@ -106,7 +106,7 @@ void setup_ap_startup_code() {
         AP_STARTUP_ASM_ADDRESS,
         AP_STARTUP_ASM_ADDRESS,
         AP_STARTUP_PAGE_COUNT,
-        PTE_DEFAULT_KERNEL_FLAGS,
+        PTE_DEFAULT_PRIV_KERNEL_FLAGS,
         paging::get_pml4()
     );
 
@@ -173,7 +173,7 @@ void smp_init() {
         sched::scheduler::get().register_cpu_run_queue(cpu_index);
 
         // Allocate a system stack for the AP core
-        void* ap_stack = vmm::alloc_virtual_pages(2, DEFAULT_MAPPING_FLAGS | PTE_PCD);
+        void* ap_stack = vmm::alloc_virtual_pages(2, DEFAULT_PRIV_PAGE_FLAGS | PTE_PCD);
         g_ap_system_stacks[cpu_index] = reinterpret_cast<uintptr_t>(ap_stack);
 
         // Allocate a per-cpu area for the processor
