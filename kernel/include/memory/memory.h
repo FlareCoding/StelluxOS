@@ -149,6 +149,10 @@ public:
         return !(lhs == rhs);
     }
 
+    explicit operator bool() const noexcept {
+        return m_ptr != nullptr;
+    }
+
     // Utility functions
     size_t ref_count() const {
         return m_ref_count ? *m_ref_count : 0;
