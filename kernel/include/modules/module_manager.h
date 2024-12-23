@@ -48,6 +48,8 @@ public:
 
 private:
     kstl::vector<kstl::shared_ptr<module_base>> m_modules;
+
+    static void _module_start_task_entry(module_base* mod);
 };
 } // namespace modules
 

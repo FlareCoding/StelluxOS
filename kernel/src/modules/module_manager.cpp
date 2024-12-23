@@ -1,5 +1,6 @@
 #include <modules/module_manager.h>
 #include <core/string.h>
+#include <sched/sched.h>
 #include <serial/serial.h>
 
 namespace modules {
@@ -63,10 +64,14 @@ bool module_manager::start_module(const char* name) {
         return false;
     }
 
-    bool success = mod->start();
-    mod->m_state = success ? module_state::running : module_state::error;
+    task_control_block* module_task = sched::create_unpriv_kernel_task(
+        reinterpret_cast<sched::task_entry_fn_t>(&module_manager::_module_start_task_entry),
+        mod
+    );
 
-    return success;
+    strcpy(module_task->name, name);
+
+    sched::scheduler::get().add_task(module_task);
 }
 
 bool module_manager::stop_module(const char* name) {
@@ -111,5 +116,14 @@ module_base* module_manager::find_module(const char* name) {
 
     serial::printf("[!] Failed to find module '%s'\n", name);
     return nullptr;
+}
+
+void module_manager::_module_start_task_entry(module_base* mod) {
+    mod->m_state = module_state::running;
+    if (!mod->start()) {
+        mod->m_state = module_state::error;
+    }
+
+    sched::exit_thread();
 }
 } // namespace modules
