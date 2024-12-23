@@ -72,6 +72,7 @@ bool module_manager::start_module(const char* name) {
     strcpy(module_task->name, name);
 
     sched::scheduler::get().add_task(module_task);
+    return true;
 }
 
 bool module_manager::stop_module(const char* name) {
