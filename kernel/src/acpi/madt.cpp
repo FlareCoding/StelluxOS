@@ -2,6 +2,10 @@
 #include <serial/serial.h>
 #include <arch/percpu.h>
 
+#ifdef ARCH_X86_64
+#include <arch/x86/apic/ioapic.h>
+#endif // ARCH_X86_64
+
 namespace acpi {
 madt g_madt;
 
@@ -38,12 +42,10 @@ void madt::init(acpi_sdt_header* acpi_madt_table) {
             break;
         }
         case MADT_DESCRIPTOR_TYPE_IOAPIC: {
-            // ioapic_desc* desc = reinterpret_cast<ioapic_desc*>(entry);
-
-            // serial::printf("IOAPIC Entry:\n");
-            // serial::printf("  IOAPIC ID: %u\n", desc->ioapic_id);
-            // serial::printf("  IOAPIC Address: 0x%08x\n", desc->ioapic_address);
-            // serial::printf("  Global System Interrupt Base: %u\n", desc->global_system_interrupt_base);
+            ioapic_desc* desc = reinterpret_cast<ioapic_desc*>(entry);
+            #ifdef ARCH_X86_64
+            arch::x86::ioapic::create(desc->ioapic_address, desc->global_system_interrupt_base);
+            #endif // ARCH_X86_64
             break;
         }
         default: {

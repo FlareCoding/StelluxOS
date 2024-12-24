@@ -644,6 +644,16 @@ void walk_mbi(void* mbi) {
     }
 }
 
+#include <arch/x86/apic/lapic.h>
+
+irqreturn_t com1_serial_port_irq_handler(ptregs*, void*) {
+    char c = serial::read(SERIAL_PORT_BASE_COM1);
+    serial::printf("COM1 irq fired with character: '%c'\n", c);
+
+    arch::x86::lapic::get()->complete_irq();
+    return IRQ_HANDLED;
+}
+
 // Since the scheduler will prioritize any other task to the idle task,
 // the module manager that will start scheduling future tasks has to get
 // started in a thread of its own to avoid getting forever descheduled
@@ -703,6 +713,9 @@ void init(unsigned int magic, void* mbi) {
 #endif // BUILD_UNIT_TESTS
 
     render_string("Init Finished!\n");
+
+    route_legacy_irq(4, IRQ4);
+    register_irq_handler(IRQ4, com1_serial_port_irq_handler, 0, nullptr);
 
     auto task = sched::create_unpriv_kernel_task(module_manager_init, nullptr);
     sched::scheduler::get().add_task(task);

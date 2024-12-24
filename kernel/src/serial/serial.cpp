@@ -20,8 +20,12 @@ void init_port(uint16_t port, uint16_t baud_rate_divisor) {
          SERIAL_FCR_CLEAR_TRANSMIT_FIFO |
          SERIAL_FCR_TRIGGER_14_BYTES);
 
-    // Set RTS/DSR
-    outb(SERIAL_MODEM_COMMAND_PORT(port), SERIAL_MCR_RTS_DSR);
+    // Set RTS, DSR, and OUT2 to enable interrupts
+    outb(SERIAL_MODEM_COMMAND_PORT(port),
+         SERIAL_MCR_RTS_DSR | SERIAL_MCR_OUT2);
+
+    // Enable "Received Data Available" interrupt
+    outb(SERIAL_INTERRUPT_ENABLE_PORT(port), 0x01);
 }
 
 void set_baud_rate(uint16_t port, uint16_t divisor) {

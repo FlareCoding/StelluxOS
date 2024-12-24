@@ -29,6 +29,7 @@
 
 // UART Modem Control Register (MCR) Flags
 #define SERIAL_MCR_RTS_DSR                   0x03 // Ready to Send (RTS), Data Set Ready (DSR)
+#define SERIAL_MCR_OUT2                      0x08 // OUT2 bit, required to enable UART interrupts
 
 // UART Line Status Register (LSR) Flags
 #define SERIAL_LSR_TRANSMIT_EMPTY            0x20 // Transmitter Holding Register Empty
