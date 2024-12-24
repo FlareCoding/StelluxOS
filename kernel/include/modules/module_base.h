@@ -1,12 +1,11 @@
 #ifndef MODULE_BASE_H
 #define MODULE_BASE_H
-#include <types.h>
+#include <core/string.h>
 
 namespace modules {
 enum class module_state {
     unloaded,
     loaded,
-    initialized,
     running,
     stopped,
     error
@@ -14,7 +13,7 @@ enum class module_state {
 
 class module_base {
 public:
-    explicit module_base(const char* name)
+    module_base(const kstl::string& name)
         : m_name(name), m_state(module_state::unloaded) {}
 
     virtual ~module_base() = default;
@@ -43,16 +42,16 @@ public:
     // Accessors
     // ------------------------------------------------------------------------
 
-    __force_inline__ const char* name() const {
+    inline const kstl::string& name() const {
         return m_name;
     }
 
-    __force_inline__ module_state state() const {
+    inline module_state state() const {
         return m_state;
     }
 
 private:
-    const char*   m_name;
+    kstl::string  m_name;
     module_state  m_state;
 
     friend class module_manager;

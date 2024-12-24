@@ -7,6 +7,8 @@
 namespace modules {
 class module_manager {
 public:
+    static module_manager& get();
+
     module_manager() = default;
     ~module_manager() = default;
 
@@ -25,15 +27,14 @@ public:
     // Lifecycle Control
     // ------------------------------------------------------------------------
 
-    bool init_module(const char* name);
-    bool start_module(const char* name);
-    bool stop_module(const char* name);
+    bool start_module(const kstl::string& name);
+    bool stop_module(const kstl::string& name);
 
     // ------------------------------------------------------------------------
     // Command Interface
     // ------------------------------------------------------------------------
 
-    bool send_command(const char*   name,
+    bool send_command(const kstl::string&   name,
                       uint64_t      command,
                       const void*   data_in,
                       size_t        data_in_size,
@@ -44,7 +45,7 @@ public:
     // Debug / Inspection
     // ------------------------------------------------------------------------
 
-    module_base* find_module(const char* name);
+    module_base* find_module(const kstl::string& name);
 
 private:
     kstl::vector<kstl::shared_ptr<module_base>> m_modules;

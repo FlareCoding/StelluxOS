@@ -4,10 +4,16 @@
 #include <serial/serial.h>
 
 namespace modules {
+module_manager g_global_module_manager;
+
+module_manager& module_manager::get() {
+    return g_global_module_manager;
+}
+
 bool module_manager::register_module(const kstl::shared_ptr<module_base>& mod) {
     if (!mod) {
         // Cannot register a null pointer
-        serial::printf("[!] Failed to register module\n");
+        serial::printf("[!] Failed to register module, parameter was nullptr\n");
         return false;
     }
 
@@ -28,6 +34,7 @@ bool module_manager::register_module(const kstl::shared_ptr<module_base>& mod) {
 
 bool module_manager::unregister_module(module_base* mod) {
     if (!mod) {
+        serial::printf("[!] Failed to find module '%s'\n", mod->name());
         return false;
     }
 
@@ -46,21 +53,10 @@ bool module_manager::unregister_module(module_base* mod) {
     return false;
 }
 
-bool module_manager::init_module(const char* name) {
+bool module_manager::start_module(const kstl::string& name) {
     module_base* mod = find_module(name);
     if (!mod) {
-        return false; 
-    }
-
-    bool success = mod->init();
-    mod->m_state = success ? module_state::initialized : module_state::error;
-
-    return success;
-}
-
-bool module_manager::start_module(const char* name) {
-    module_base* mod = find_module(name);
-    if (!mod) {
+        serial::printf("[!] Failed to find module '%s'\n", name);
         return false;
     }
 
@@ -69,26 +65,31 @@ bool module_manager::start_module(const char* name) {
         mod
     );
 
-    strcpy(module_task->name, name);
+    strcpy(module_task->name, name.c_str());
 
     sched::scheduler::get().add_task(module_task);
     return true;
 }
 
-bool module_manager::stop_module(const char* name) {
+bool module_manager::stop_module(const kstl::string& name) {
     module_base* mod = find_module(name);
     if (!mod) {
+        serial::printf("[!] Failed to find module '%s'\n", name);
         return false;
     }
 
     bool success = mod->stop();
     mod->m_state = success ? module_state::stopped : module_state::error;
 
+    if (!success) {
+        serial::printf("[!] Failed to stop module '%s'\n", name);
+    }
+
     return success;
 }
 
 bool module_manager::send_command(
-    const char*   name,
+    const kstl::string&   name,
     uint64_t      command,
     const void*   data_in,
     size_t        data_in_size,
@@ -97,32 +98,39 @@ bool module_manager::send_command(
 ) {
     module_base* mod = find_module(name);
     if (!mod) {
+        serial::printf("[!] Failed to find module '%s'\n", name);
         return false;
     }
 
     return mod->on_command(command, data_in, data_in_size, data_out, data_out_size);
 }
 
-module_base* module_manager::find_module(const char* name) {
-    if (!name) {
+module_base* module_manager::find_module(const kstl::string& name) {
+    if (name.empty()) {
         return nullptr;
     }
 
     for (size_t i = 0; i < m_modules.size(); i++) {
-        const char* mod_name = m_modules[i]->name();
-        if (mod_name && (strcmp(mod_name, name) == 0)) {
+        const kstl::string& mod_name = m_modules[i]->name();
+        if (mod_name == name) {
             return m_modules[i].get();
         }
     }
 
-    serial::printf("[!] Failed to find module '%s'\n", name);
     return nullptr;
 }
 
 void module_manager::_module_start_task_entry(module_base* mod) {
+    if (!mod->init()) {
+        mod->m_state = module_state::error;
+        serial::printf("[!] Failed to initialize module '%s'\n", mod->name());
+    }
+
     mod->m_state = module_state::running;
+
     if (!mod->start()) {
         mod->m_state = module_state::error;
+        serial::printf("[!] Failed to start module '%s'\n", mod->name());
     }
 
     sched::exit_thread();
