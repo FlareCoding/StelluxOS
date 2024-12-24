@@ -12,6 +12,8 @@
 #include <process/process.h>
 #include <smp/smp.h>
 #include <dynpriv/dynpriv.h>
+#include <modules/graphics/gfx_framebuffer_driver.h>
+#include <modules/module_manager.h>
 
 #ifdef BUILD_UNIT_TESTS
 #include <acpi/shutdown.h>
@@ -705,6 +707,12 @@ void init(unsigned int magic, void* mbi) {
 #endif // BUILD_UNIT_TESTS
 
     render_string("Init Finished!\n");
+
+    kstl::shared_ptr<modules::module_base> gfx_driver = kstl::make_shared<modules::gfx_framebuffer_driver>(0, 0, 0, 0, 0);
+    
+    auto& module_manager = modules::module_manager::get();
+    module_manager.register_module(gfx_driver);
+    module_manager.start_module(gfx_driver->name());
 
     auto task = sched::create_unpriv_kernel_task(unpriv_test_fn, nullptr);
     sched::scheduler::get().add_task(task);
