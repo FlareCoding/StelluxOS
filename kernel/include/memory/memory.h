@@ -1,6 +1,7 @@
 #ifndef MEMORY_H
 #define MEMORY_H
 #include <types.h>
+#include <type_traits>
 
 /**
  * @brief Sets the first `count` bytes of the memory area pointed to by `ptr` to the specified `value`.
@@ -65,6 +66,9 @@ void operator delete[](void* ptr, size_t) noexcept;
 namespace kstl {
 template <typename T>
 class shared_ptr {
+// Make every instantiation of shared_ptr a friend
+template <typename U> friend class shared_ptr;
+
 public:
     // Default constructor
     explicit shared_ptr(T* ptr = nullptr) 
@@ -78,6 +82,18 @@ public:
     // Copy constructor
     shared_ptr(const shared_ptr& other) 
         : m_ptr(other.m_ptr), m_ref_count(other.m_ref_count) {
+        if (m_ref_count) {
+            ++(*m_ref_count);
+        }
+    }
+
+    // Upcast support from <Derived> to <Base>
+    template <typename U>
+    shared_ptr(const shared_ptr<U>& other,
+               typename std::enable_if<std::is_convertible<U*, T*>::value>::type* = 0)
+        : m_ptr(other.m_ptr),
+          m_ref_count(other.m_ref_count)
+    {
         if (m_ref_count) {
             ++(*m_ref_count);
         }
@@ -185,6 +201,14 @@ shared_ptr<T> make_shared(Args&&... args) {
     return shared_ptr<T>(ptr);
 }
 
+template <class T, class U>
+kstl::shared_ptr<T> static_pointer_cast(const kstl::shared_ptr<U>& r);
+
+template <class T, class U>
+kstl::shared_ptr<T> dynamic_pointer_cast(const kstl::shared_ptr<U>& r);
+
+template <class T, class U>
+kstl::shared_ptr<T> reinterpret_pointer_cast(const kstl::shared_ptr<U>& r);
 } // namespace kstl
 
 #endif // MEMORY_H
