@@ -521,7 +521,7 @@ bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, v
     uint64_t irq_table_index = static_cast<uint64_t>(irqno) - IRQ0;
     irq_desc* desc = &arch::x86::g_irq_handler_table.descriptors[irq_table_index];
     if (desc->handler) {
-        serial::printf("[WARN] registerIrqHandler(): IRQ%i handler already exists!\n", irq_table_index);
+        serial::printf("[WARN] register_irq_handler(): IRQ%i handler already exists!\n", irq_table_index);
         return false;
     }
 
