@@ -183,7 +183,7 @@ execute-unit-tests:
 	@echo "[LOG] Parsing unit test results"
 	
 	@bash -c '\
-		bash parse_unit_test_results.sh; \
+		bash ./tools/parse_unit_test_results.sh; \
 		RESULT=$$?; \
 		echo "[LOG] Cleaning up"; \
 		$(MAKE) clean > /dev/null; \
