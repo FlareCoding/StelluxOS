@@ -156,6 +156,11 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
                     buffer[buffer_index++] = num_buffer[i];
                 }
             }
+            else if (*ptr == 'c') {
+                // %c - single character
+                char char_arg = (char)va_arg(args, int); // Characters are promoted to int in variadic arguments
+                buffer[buffer_index++] = char_arg;
+            }
             else if (*ptr == 'u') {
                 // %u - uint32_t
                 uint32_t uint_arg = va_arg(args, uint32_t);

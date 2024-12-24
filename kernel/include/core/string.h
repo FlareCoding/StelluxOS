@@ -110,6 +110,7 @@ int int_to_str(int64_t value, char* buffer, size_t buffer_size, int base);
  *   %i  - int32_t
  *   %u  - uint32_t
  *   %d  - int32_t
+ *   %c  - char
  *   %lli - int64_t
  *   %llu - uint64_t
  *   %x  - uint32_t in hexadecimal
