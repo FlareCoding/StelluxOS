@@ -31,6 +31,14 @@ SECTIONS
     .data : AT(ADDR(.data) - KERNEL_OFFSET)
     {
         *(.data)
+        *(.data.*)
+        . = ALIGN(0x1000);
+    }
+
+    .rodata : AT(ADDR(.rodata) - KERNEL_OFFSET)
+    {
+        *(.rodata)
+        *(.rodata.*)
         . = ALIGN(0x1000);
     }
 
