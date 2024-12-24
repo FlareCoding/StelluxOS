@@ -644,15 +644,11 @@ void walk_mbi(void* mbi) {
     }
 }
 
-void unpriv_test_fn(void*) {
-    uint64_t cr3;
-    RUN_ELEVATED({
-        asm volatile("mov %%cr3, %0" : "=r"(cr3));
-    });
-    serial::printf("cr3: 0x%llx\n", cr3);
-
-    sched::exit_thread();
-}
+// Since the scheduler will prioritize any other task to the idle task,
+// the module manager that will start scheduling future tasks has to get
+// started in a thread of its own to avoid getting forever descheduled
+// when the first module task gets scheduled.
+void module_manager_init(void*);
 
 EXTERN_C
 __PRIVILEGED_CODE
@@ -708,17 +704,22 @@ void init(unsigned int magic, void* mbi) {
 
     render_string("Init Finished!\n");
 
-    kstl::shared_ptr<modules::module_base> gfx_driver = kstl::make_shared<modules::gfx_framebuffer_driver>(0, 0, 0, 0, 0);
-    
-    auto& module_manager = modules::module_manager::get();
-    module_manager.register_module(gfx_driver);
-    module_manager.start_module(gfx_driver->name());
-
-    auto task = sched::create_unpriv_kernel_task(unpriv_test_fn, nullptr);
+    auto task = sched::create_unpriv_kernel_task(module_manager_init, nullptr);
     sched::scheduler::get().add_task(task);
 
     // Idle loop
     while (true) {
         asm volatile ("hlt");
     }
+}
+
+void module_manager_init(void*) {
+    // First create a graphics module to allow rendering to the screen
+    kstl::shared_ptr<modules::module_base> gfx_driver = kstl::make_shared<modules::gfx_framebuffer_driver>(0, 0, 0, 0, 0);
+    
+    auto& module_manager = modules::module_manager::get();
+    module_manager.register_module(gfx_driver);
+    module_manager.start_module(gfx_driver->name());
+
+    sched::exit_thread();
 }

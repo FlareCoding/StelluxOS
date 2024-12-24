@@ -2,6 +2,7 @@
 #include <core/string.h>
 #include <sched/sched.h>
 #include <serial/serial.h>
+#include <dynpriv/dynpriv.h>
 
 namespace modules {
 module_manager g_global_module_manager;
@@ -60,14 +61,16 @@ bool module_manager::start_module(const kstl::string& name) {
         return false;
     }
 
-    task_control_block* module_task = sched::create_unpriv_kernel_task(
-        reinterpret_cast<sched::task_entry_fn_t>(&module_manager::_module_start_task_entry),
-        mod
-    );
+    RUN_ELEVATED({
+        task_control_block* module_task = sched::create_unpriv_kernel_task(
+            reinterpret_cast<sched::task_entry_fn_t>(&module_manager::_module_start_task_entry),
+            mod
+        );
 
-    strcpy(module_task->name, name.c_str());
+        strcpy(module_task->name, name.c_str());
 
-    sched::scheduler::get().add_task(module_task);
+        sched::scheduler::get().add_task(module_task);
+    });
     return true;
 }
 
