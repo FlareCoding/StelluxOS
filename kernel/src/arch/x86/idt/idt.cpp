@@ -482,6 +482,7 @@ void panic(ptregs* regs) {
     serial::printf("  IRQ: %s\n  Error Code: 0x%0llx\n",
         arch::x86::g_cpu_exception_strings[regs->intno], regs->error);
     serial::printf("  CPU: %i\n", current->cpu);
+    serial::printf("  Privilege: %s\n", current->elevated ? "elevated" : "lowered");
 
     // Control registers
     uint64_t cr0, cr2, cr3, cr4;
