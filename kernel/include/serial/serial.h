@@ -162,6 +162,9 @@ int printf(const char* format, Args... args) {
     
     return len;
 }
+
+__PRIVILEGED_CODE void mark_serial_port_privileged(uint16_t serial_port);
+__PRIVILEGED_CODE void mark_serial_port_unprivileged(uint16_t serial_port);
 } // namespace serial
 
 #endif

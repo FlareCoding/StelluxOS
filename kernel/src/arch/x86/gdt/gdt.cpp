@@ -1,5 +1,6 @@
 #ifdef ARCH_X86_64
 #include <arch/x86/gdt/gdt.h>
+#include <process/process.h>
 #include <memory/memory.h>
 #include <serial/serial.h>
 
@@ -18,13 +19,16 @@ struct gdt_and_tss_data {
 
     gdt                    gdt_instance;
     task_state_segment     tss_instance;
-    uint8_t                io_bitmap[0x80]; // 0x400 ports (0x400 bits / 8 = 0x80 bytes)
+    uint8_t                io_bitmap[0x2002];
 
     gdt_desc               gdt_descriptor;
-};
+} __attribute__((packed));
+
+static_assert(sizeof(task_state_segment) == 0x68, "Unexpected TSS size");
+static_assert(sizeof(gdt_and_tss_data::io_bitmap) == 0x2002, "Unexpected I/O bitmap size");
 
 __PRIVILEGED_DATA
-static gdt_and_tss_data g_gdt_per_cpu_array[64];
+static gdt_and_tss_data g_gdt_per_cpu_array[MAX_SYSTEM_CPUS];
 
 __PRIVILEGED_CODE
 void set_segment_descriptor_base(
@@ -128,23 +132,26 @@ void init_gdt(int cpu, uint64_t system_stack) {
 
     // Initialize tss descriptor
     set_tss_descriptor_base(&data->tss_descriptor, (uint64_t)&data->tss_instance);
-    set_tss_descriptor_limit(&data->tss_descriptor, sizeof(task_state_segment) - 1);
+    set_tss_descriptor_limit(&data->tss_descriptor, sizeof(task_state_segment) - 1 + sizeof(data->io_bitmap));
     data->tss_descriptor.access_byte.type = 0x9;  // 0b1001 for 64-bit TSS (Available)
     data->tss_descriptor.access_byte.present = 1;
     data->tss_descriptor.access_byte.dpl = 0; // kernel privilege level
     data->tss_descriptor.access_byte.zero = 0; // Should be zero
-    data->tss_descriptor.limit_high = 0; // 64-bit TSS doesn't use limitHigh, set it to 0
+    data->tss_descriptor.limit_high = 0; // 64-bit TSS doesn't use limit_high, set it to 0
     data->tss_descriptor.available = 1; // If you use this field, set it to 1
     data->tss_descriptor.granularity = 0; // no granularity for TSS
     data->tss_descriptor.zero = 0; // Should be zero
     data->tss_descriptor.zero_again = 0; // should be zero
 
     // Initialize I/O Bitmap
-    zeromem(&data->io_bitmap, sizeof(data->io_bitmap));
     memset(&data->io_bitmap, 0xFF, sizeof(data->io_bitmap)); // Set all bits to 1 (inaccessible to userspace)
 
     // Allow usermode access to COM1 port by clearing the bit in the IO bitmap
-    data->io_bitmap[SERIAL_PORT_BASE_COM1 / 8] &= ~(1 << (SERIAL_PORT_BASE_COM1 % 8));
+    serial::mark_serial_port_unprivileged(SERIAL_PORT_BASE_COM1);
+
+    // Ensure the end-of-bitmap marker is set to 0xFFFF
+    data->io_bitmap[sizeof(data->io_bitmap) - 2] = 0xFF;
+    data->io_bitmap[sizeof(data->io_bitmap) - 1] = 0xFF;
 
     // Update the gdt with initialized descriptors
     data->gdt_instance.kernel_null = data->kernel_null_descriptor;
@@ -167,6 +174,30 @@ void init_gdt(int cpu, uint64_t system_stack) {
     __asm__("ltr %%ax" : : "a" (__TSS_PT1_SELECTOR));
 }
 } // namespace arch::x86
+
+__PRIVILEGED_CODE
+void mark_port_privileged(uint16_t port) {
+    // Calculate the byte and bit indices in the I/O Permission Bitmap
+    size_t byte = port / 8;
+    size_t bit = port % 8;
+
+    // Iterate over all CPUs to update their respective I/O bitmaps
+    for (size_t i = 0; i < MAX_SYSTEM_CPUS; i++) {
+        arch::x86::g_gdt_per_cpu_array[i].io_bitmap[byte] |= (1 << bit);
+    }
+}
+
+__PRIVILEGED_CODE
+void mark_port_unprivileged(uint16_t port) {
+    // Calculate the byte and bit indices in the I/O Permission Bitmap
+    size_t byte = port / 8;
+    size_t bit = port % 8;
+
+    // Iterate over all CPUs to update their respective I/O bitmaps
+    for (size_t i = 0; i < MAX_SYSTEM_CPUS; i++) {
+        arch::x86::g_gdt_per_cpu_array[i].io_bitmap[byte] &= ~(1 << bit);
+    }
+}
 
 #endif // ARCH_X86_64
 

@@ -73,4 +73,7 @@ void outl(uint16_t port, uint32_t val);
  */
 uint32_t inl(uint16_t port);
 
+__PRIVILEGED_CODE void mark_port_privileged(uint16_t port);
+__PRIVILEGED_CODE void mark_port_unprivileged(uint16_t port);
+
 #endif

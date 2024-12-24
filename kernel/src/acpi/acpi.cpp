@@ -8,7 +8,7 @@
 #include <acpi/madt.h>
 #include <time/time.h>
 
-void pci_test() {
+void __detect_and_use_baremetal_pci_serial_controller() {
     auto& pci = pci::pci_manager::get();
 
     auto serial_controller = pci.find_by_class(PCI_CLASS_SIMPLE_COMMUNICATION_CONTROLLER, PCI_SUBCLASS_SIMPLE_COMM_SERIAL);
@@ -24,6 +24,7 @@ void pci_test() {
         uint16_t io_base = static_cast<uint16_t>(bar.address);
 
         serial::init_port(io_base, SERIAL_BAUD_DIVISOR_9600);
+        serial::mark_serial_port_unprivileged(io_base);
         serial::set_kernel_uart_port(io_base);
     }
     
@@ -81,7 +82,11 @@ void enumerate_acpi_tables(void* rsdp) {
                 auto& pci = pci::pci_manager::get();
                 pci.init(table);
 
-                pci_test();
+                // For baremetal machines that have a PCI serial adapter card
+                // installed, configure it and set that port to be the primary
+                // kernel output UART port for increased baremetal debuggability.
+                __detect_and_use_baremetal_pci_serial_controller();
+
             } else if (strcmp(table_name, "HPET") == 0) {
                 // Initialize the HPET timer
                 auto& timer = hpet::get();

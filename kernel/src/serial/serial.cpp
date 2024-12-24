@@ -70,4 +70,19 @@ char read(uint16_t port) {
 void set_kernel_uart_port(uint16_t port) {
     g_kernel_uart_port = port;
 }
+
+__PRIVILEGED_CODE
+void mark_serial_port_privileged(uint16_t serial_port) {
+    // Mark every I/O port pertaining to the serial port base
+    for (uint16_t i = serial_port; i <= serial_port + 6; i++) {
+        mark_port_privileged(i);
+    }
+}
+
+__PRIVILEGED_CODE
+void mark_serial_port_unprivileged(uint16_t serial_port) {
+    for (uint16_t i = serial_port; i <= serial_port + 6; i++) {
+        mark_port_unprivileged(i);
+    }
+}
 } // namespace serial

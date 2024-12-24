@@ -18,23 +18,17 @@ gfx_framebuffer_driver::gfx_framebuffer_driver(
 }
 
 bool gfx_framebuffer_driver::init() {
-    RUN_ELEVATED({
-        serial::printf("gfx_framebuffer_driver::init()\n");
-    });
+    serial::printf("gfx_framebuffer_driver::init()\n");
     return true;
 }
 
 bool gfx_framebuffer_driver::start() {
-    RUN_ELEVATED({
-        serial::printf("gfx_framebuffer_driver::start()\n");
-    });
+    serial::printf("gfx_framebuffer_driver::start()\n");
     return true;
 }
 
 bool gfx_framebuffer_driver::stop() {
-    RUN_ELEVATED({
-        serial::printf("gfx_framebuffer_driver::stop()\n");
-    });
+    serial::printf("gfx_framebuffer_driver::stop()\n");
     return true;
 }
 

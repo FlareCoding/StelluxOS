@@ -645,11 +645,11 @@ void walk_mbi(void* mbi) {
 }
 
 void unpriv_test_fn(void*) {
+    uint64_t cr3;
     RUN_ELEVATED({
-        uint64_t cr3;
         asm volatile("mov %%cr3, %0" : "=r"(cr3));
-        serial::printf("cr3: 0x%llx\n", cr3);
     });
+    serial::printf("cr3: 0x%llx\n", cr3);
 
     sched::exit_thread();
 }
