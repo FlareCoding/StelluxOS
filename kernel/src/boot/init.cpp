@@ -734,5 +734,8 @@ void module_manager_init(void*) {
     module_manager.register_module(gfx_driver);
     module_manager.start_module(gfx_driver->name());
 
+    auto pml4 = paging::get_pml4();
+    __unused pml4;
+
     sched::exit_thread();
 }

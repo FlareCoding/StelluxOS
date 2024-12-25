@@ -19,19 +19,19 @@ public:
 
     apic_timer() = default;
 
-    void setup_periodic(uint8_t irq_number, uint32_t divide_config, uint32_t interval_value);
-    void setup_one_shot(uint8_t irq_number, uint32_t divide_config, uint32_t interval_value);
+    __PRIVILEGED_CODE void setup_periodic(uint8_t irq_number, uint32_t divide_config, uint32_t interval_value);
+    __PRIVILEGED_CODE void setup_one_shot(uint8_t irq_number, uint32_t divide_config, uint32_t interval_value);
 
-    void start() const;
-    uint32_t read_counter() const;
-    uint32_t stop() const;
+    __PRIVILEGED_CODE void start() const;
+    __PRIVILEGED_CODE uint32_t read_counter() const;
+    __PRIVILEGED_CODE uint32_t stop() const;
 
 private:
     uint8_t     m_irqno;
     uint32_t    m_divide_config;
     uint32_t    m_interval_value;
 
-    void _setup(uint32_t mode, uint8_t irq_number, uint32_t divide_config, uint32_t interval_value);
+    __PRIVILEGED_CODE void _setup(uint32_t mode, uint8_t irq_number, uint32_t divide_config, uint32_t interval_value);
 };
 } // namespace arch::x86
 

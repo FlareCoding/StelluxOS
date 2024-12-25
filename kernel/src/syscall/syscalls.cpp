@@ -4,6 +4,7 @@
 #include <dynpriv/dynpriv.h>
 
 EXTERN_C
+__PRIVILEGED_CODE
 int __syscall_handler(
     uint64_t syscallnum,
     uint64_t arg1,

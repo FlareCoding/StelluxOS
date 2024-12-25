@@ -9,23 +9,28 @@ apic_timer& apic_timer::get() {
     return g_apic_timer;
 }
 
+__PRIVILEGED_CODE
 void apic_timer::setup_periodic(uint8_t irq_number, uint32_t divide_config, uint32_t interval_value) {
     _setup(APIC_TIMER_PERIODIC_MODE, irq_number, divide_config, interval_value);
 }
 
+__PRIVILEGED_CODE
 void apic_timer::setup_one_shot(uint8_t irq_number, uint32_t divide_config, uint32_t interval_value) {
     _setup(APIC_TIMER_ONE_SHOT_MODE, irq_number, divide_config, interval_value);
 }
 
+__PRIVILEGED_CODE
 void apic_timer::start() const {
     // To start the timer, set the initial count
     lapic::get()->write(APIC_TIMER_INITIAL_COUNT, m_interval_value);
 }
 
+__PRIVILEGED_CODE
 uint32_t apic_timer::read_counter() const {
     return lapic::get()->read(APIC_CURRENT_COUNT);
 }
 
+__PRIVILEGED_CODE
 uint32_t apic_timer::stop() const {
     uint32_t cnt = read_counter();
 
@@ -36,6 +41,7 @@ uint32_t apic_timer::stop() const {
     return cnt;
 }
 
+__PRIVILEGED_CODE
 void apic_timer::_setup(uint32_t mode, uint8_t irq_number, uint32_t divide_config, uint32_t interval_value) {
     m_irqno = irq_number;
     m_divide_config = divide_config;
