@@ -42,7 +42,6 @@ DEFINE_INT_HANDLER(irq_handler_schedule) {
     return IRQ_HANDLED;
 }
 
-__PRIVILEGED_CODE
 scheduler& scheduler::get() {
     GENERATE_STATIC_SINGLETON(scheduler);
 }
@@ -121,7 +120,6 @@ void scheduler::__schedule(ptregs* irq_frame) {
 
 // Forces a new task to get scheduled and triggers a
 // context switch without the need for a timer tick.
-__PRIVILEGED_CODE
 void scheduler::schedule() {
     asm volatile ("int $48");
 }

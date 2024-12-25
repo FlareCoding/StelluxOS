@@ -105,7 +105,7 @@ void exit_thread();
 // available task without waiting for the next timer tick. If no next valid
 // task is available, control flow switches back to the current task.
 //
-__PRIVILEGED_CODE void yield();
+void yield();
 } // namespace sched
 
 #endif // PROCESS_H

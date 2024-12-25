@@ -24,7 +24,7 @@ __PRIVILEGED_CODE void install_sched_irq_handlers();
 
 class scheduler {
 public:
-    __PRIVILEGED_CODE static scheduler& get();
+    static scheduler& get();
 
     __PRIVILEGED_CODE void init();
     __PRIVILEGED_CODE void register_cpu_run_queue(uint64_t cpu);
@@ -37,9 +37,13 @@ public:
     // next task to run and switches the context into it.
     __PRIVILEGED_CODE void __schedule(ptregs* irq_frame);
 
+    //
     // Forces a new task to get scheduled and triggers a
     // context switch without the need for a timer tick.
-    __PRIVILEGED_CODE void schedule();
+    //
+    // *Note: allowed to be called from userspace
+    //        for yielding purposes.
+    void schedule();
 
     // Masks timer tick-based interrupts
     __PRIVILEGED_CODE void preempt_disable(int cpu = -1);

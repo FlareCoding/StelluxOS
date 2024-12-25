@@ -195,7 +195,6 @@ void exit_thread() {
     scheduler.schedule();
 }
 
-__PRIVILEGED_CODE
 void yield() {
     // Trigger a context switch to switch to the next
     // available task in the scheduler run queue.

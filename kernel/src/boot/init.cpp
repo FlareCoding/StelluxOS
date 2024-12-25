@@ -646,6 +646,7 @@ void walk_mbi(void* mbi) {
 
 #include <arch/x86/apic/lapic.h>
 
+__PRIVILEGED_CODE
 irqreturn_t com1_serial_port_irq_handler(ptregs*, void*) {
     char c = serial::read(SERIAL_PORT_BASE_COM1);
     serial::printf("COM1 irq fired with character: '%c'\n", c);
