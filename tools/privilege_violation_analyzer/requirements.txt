@@ -1,0 +1,4 @@
+pyelftools==0.29
+cxxfilt==0.2.0
+capstone==5.0.3
+colorama==0.4.6
