@@ -30,6 +30,9 @@ public:
     bool start_module(const kstl::string& name);
     bool stop_module(const kstl::string& name);
 
+    bool start_module(module_base* mod);
+    bool stop_module(module_base* mod);
+
     // ------------------------------------------------------------------------
     // Command Interface
     // ------------------------------------------------------------------------
@@ -46,6 +49,13 @@ public:
     // ------------------------------------------------------------------------
 
     module_base* find_module(const kstl::string& name);
+
+
+    // ------------------------------------------------------------------------
+    // Module Discovery
+    // ------------------------------------------------------------------------
+
+    void start_pci_device_modules();
 
 private:
     kstl::vector<kstl::shared_ptr<module_base>> m_modules;

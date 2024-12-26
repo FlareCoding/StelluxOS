@@ -110,6 +110,16 @@ kstl::shared_ptr<pci_device> pci_manager::find_by_class(uint8_t class_code, uint
     return kstl::shared_ptr<pci_device>(nullptr);
 }
 
+kstl::shared_ptr<pci_device> pci_manager::find_by_progif(uint8_t class_code, uint8_t subclass, uint8_t prog_if) const {
+    for (auto& dev : m_devices) {
+        if (dev->class_code() == class_code && dev->subclass() == subclass && dev->prog_if() == prog_if) {
+            return dev;
+        }
+    }
+    
+    return kstl::shared_ptr<pci_device>(nullptr);
+}
+
 kstl::vector<kstl::shared_ptr<pci_device>> pci_manager::find_all_by_class(uint8_t class_code, uint8_t subclass) const {
     kstl::vector<kstl::shared_ptr<pci_device>> matches;
 

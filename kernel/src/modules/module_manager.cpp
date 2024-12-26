@@ -1,8 +1,12 @@
 #include <modules/module_manager.h>
+#include <modules/pci_module_base.h>
+#include <pci/pci_manager.h>
 #include <core/string.h>
 #include <sched/sched.h>
 #include <serial/serial.h>
 #include <dynpriv/dynpriv.h>
+
+#include <modules/usb/xhci/xhci.h>
 
 namespace modules {
 module_manager g_global_module_manager;
@@ -61,17 +65,7 @@ bool module_manager::start_module(const kstl::string& name) {
         return false;
     }
 
-    RUN_ELEVATED({
-        task_control_block* module_task = sched::create_unpriv_kernel_task(
-            reinterpret_cast<sched::task_entry_fn_t>(&module_manager::_module_start_task_entry),
-            mod
-        );
-
-        strcpy(module_task->name, name.c_str());
-
-        sched::scheduler::get().add_task(module_task);
-    });
-    return true;
+    return start_module(mod);
 }
 
 bool module_manager::stop_module(const kstl::string& name) {
@@ -81,11 +75,29 @@ bool module_manager::stop_module(const kstl::string& name) {
         return false;
     }
 
+    return stop_module(mod);
+}
+
+bool module_manager::start_module(module_base* mod) {
+    RUN_ELEVATED({
+        task_control_block* module_task = sched::create_unpriv_kernel_task(
+            reinterpret_cast<sched::task_entry_fn_t>(&module_manager::_module_start_task_entry),
+            mod
+        );
+
+        strcpy(module_task->name, mod->name().c_str());
+
+        sched::scheduler::get().add_task(module_task);
+    });
+    return true;
+}
+
+bool module_manager::stop_module(module_base* mod) {
     bool success = mod->stop();
     mod->m_state = success ? module_state::stopped : module_state::error;
 
     if (!success) {
-        serial::printf("[!] Failed to stop module '%s'\n", name);
+        serial::printf("[!] Failed to stop module '%s'\n", mod->name());
     }
 
     return success;
@@ -121,6 +133,35 @@ module_base* module_manager::find_module(const kstl::string& name) {
     }
 
     return nullptr;
+}
+
+void module_manager::start_pci_device_modules() {
+    auto xhci_controller_dev = kstl::shared_ptr<pci::pci_device>(nullptr);
+
+    RUN_ELEVATED({
+        auto& pci = pci::pci_manager::get();
+
+        xhci_controller_dev = pci.find_by_progif(
+            PCI_CLASS_SERIAL_BUS_CONTROLLER,
+            PCI_SUBCLASS_SERIAL_BUS_USB,
+            PCI_PROGIF_USB_XHCI
+        );
+    });
+
+    if (!xhci_controller_dev) {
+        return;
+    }
+
+    auto mod = kstl::make_shared<xhci_driver_module>();
+    mod->attach_device(xhci_controller_dev, true);
+
+    if (!register_module(mod)) {
+        return;
+    }
+
+    if (!start_module(mod.get())) {
+        return;
+    }
 }
 
 void module_manager::_module_start_task_entry(module_base* mod) {

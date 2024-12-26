@@ -721,5 +721,8 @@ void module_manager_init(void*) {
     module_manager.register_module(gfx_driver);
     module_manager.start_module(gfx_driver->name());
 
+    // Iterate over discovered PCI devices and attempt to find driver modules
+    module_manager.start_pci_device_modules();
+
     sched::exit_thread();
 }

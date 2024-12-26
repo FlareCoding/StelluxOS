@@ -41,6 +41,10 @@ public:
     // Returns nullptr if not found.
     kstl::shared_ptr<pci_device> find_by_class(uint8_t class_code, uint8_t subclass) const;
 
+    // Find the first device that matches the given class_code, subclass, and program interface.
+    // Returns nullptr if not found.
+    kstl::shared_ptr<pci_device> find_by_progif(uint8_t class_code, uint8_t subclass, uint8_t prog_if) const;
+
     // Find all devices that match the given class_code and subclass.
     kstl::vector<kstl::shared_ptr<pci_device>> find_all_by_class(uint8_t class_code, uint8_t subclass) const;
 
