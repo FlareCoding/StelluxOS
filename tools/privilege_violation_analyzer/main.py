@@ -34,6 +34,9 @@ def main(filename, root_function):
         # Print call graph tree for a given function
         #call_graph_builder.print_call_graph_tree(root_function)
 
+        # Print privilege warnings
+        #call_graph_builder.print_privilege_warnings(root_function)
+
         # Print privilege violations
         call_graph_builder.print_privilege_violations(root_function)
 

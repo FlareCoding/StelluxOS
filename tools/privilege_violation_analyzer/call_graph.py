@@ -20,7 +20,8 @@ class CallGraphBuilder:
         self.addr_to_symbol = {sym['address']: sym for sym in symbols}
         self.called_addresses = set()
         self.call_paths = None
-        self.privilege_violations = []  # Stores privilege violation data
+        self.privilege_violations = []
+        self.privilege_warnings = []
 
     def _create_call_edge(self, caller, callee, elevated_call_privilege=False):
         """
@@ -101,20 +102,27 @@ class CallGraphBuilder:
 
     def analyze_privilege_violations(self):
         """
-        Analyze the call paths and detect privilege violations.
-        A privilege violation occurs when an unprivileged function makes a call to a privileged function,
-        but NOT if the callee has 'elevated_call_privilege' set to True.
-        Stores unique violations in `self.privilege_violations`.
-        """
-        self.privilege_violations = []  # Clear any previous data
-        seen_violations = set()  # Track unique violations
+        Analyze the call paths and detect privilege violations and warnings.
+        A privilege violation occurs when:
+        - An unprivileged function calls a privileged function.
 
-        def check_for_violations(path):
+        A privilege warning occurs when:
+        - An unprivileged function that inherited privilege in the current call chain calls a privileged function.
+
+        Stores violations in `self.privilege_violations` and warnings in `self.privilege_warnings`.
+        """
+        self.privilege_violations = []  # Clear previous violations
+        self.privilege_warnings = []    # Clear previous warnings
+        seen_violations = set()         # Track unique violations
+        seen_warnings = set()           # Track unique warnings
+
+        def check_for_violations_and_warnings(path):
             for i in range(len(path) - 1):
                 caller_name, caller_privileged, caller_addr = path[i]
                 callee_name, callee_privileged, callee_addr = path[i + 1]
 
                 # Find the corresponding call edge for elevated privilege check
+                edge_key = (caller_addr, callee_addr)
                 call_edges = self.call_graph.get(caller_addr, [])
                 elevated_call_privilege = any(
                     edge["callee"] == callee_addr and edge.get("elevated_call_privilege", False)
@@ -136,8 +144,23 @@ class CallGraphBuilder:
                         }
                         self.privilege_violations.append(violation)
 
+                # Detect privilege warning
+                if caller_privileged and not elevated_call_privilege and not caller_name.startswith("dynpriv::"):
+                    warning_key = (
+                        caller_name, caller_addr, callee_name, callee_addr,
+                        tuple((name, privileged) for name, privileged, _ in path[:i + 2])  # Path snapshot
+                    )
+                    if callee_privileged and warning_key not in seen_warnings:
+                        seen_warnings.add(warning_key)
+                        warning = {
+                            "caller": {"name": caller_name, "address": caller_addr},
+                            "callee": {"name": callee_name, "address": callee_addr},
+                            "path": path[:i + 2],  # The path leading to the warning
+                        }
+                        self.privilege_warnings.append(warning)
+
         for path in self.call_paths:
-            check_for_violations(path)
+            check_for_violations_and_warnings(path)
 
     def print_call_graph_tree(self, sym=None):
         """
@@ -233,3 +256,33 @@ class CallGraphBuilder:
             print(f"{Fore.LIGHTWHITE_EX}  Caller: {Fore.CYAN}{caller['name']:<{name_alignment}} {Fore.LIGHTBLACK_EX}[0x{caller['address']:x}]")
             print(f"{Fore.LIGHTWHITE_EX}  Callee: {Fore.LIGHTRED_EX}{callee['name']:<{name_alignment}} {Fore.LIGHTBLACK_EX}[0x{callee['address']:x}]")
             print_violation(violation)
+
+    def print_privilege_warnings(self, sym=None):
+        """
+        Print detected privilege warnings in a visually enhanced, aligned, and indented format.
+        """
+        if not self.privilege_warnings:
+            print(f"{Fore.GREEN}[No privilege warnings detected]")
+            return
+
+        def print_warning(warning):
+            path = warning["path"]
+            print(f"\n{Fore.LIGHTBLACK_EX}Call Stack:")
+            for i, (name, privileged, addr) in enumerate(path):
+                privilege_state = f"{Fore.RED}(privileged)" if privileged else f"{Fore.WHITE}(unprivileged)"
+                prefix = f"{Fore.LIGHTBLACK_EX}└── " if i == len(path) - 1 else f"{Fore.LIGHTBLACK_EX}│   "
+                addr_str = f"0x{addr:x}"  # Lowercase hexadecimal
+                print(f"  {prefix}{name:<60} {privilege_state} {Fore.LIGHTBLACK_EX}[{addr_str}]")
+
+        for idx, warning in enumerate(self.privilege_warnings):
+            if sym is not None and sym not in warning["path"][0][0]:
+                continue
+            caller = warning["caller"]
+            callee = warning["callee"]
+
+            print(f"\n{Fore.LIGHTBLACK_EX}{'=' * 40}")
+            print(f"{Fore.LIGHTCYAN_EX}[ {Fore.LIGHTYELLOW_EX}⚠ Warning {idx + 1} ⚠ {Fore.LIGHTCYAN_EX}]".center(40))
+            print(f"{Fore.LIGHTBLACK_EX}{'=' * 40}")
+            print(f"{Fore.LIGHTWHITE_EX}  Caller: {Fore.CYAN}{caller['name']} {Fore.LIGHTBLACK_EX}[0x{caller['address']:x}]")
+            print(f"{Fore.LIGHTWHITE_EX}  Callee: {Fore.LIGHTRED_EX}{callee['name']} {Fore.LIGHTBLACK_EX}[0x{callee['address']:x}]")
+            print_warning(warning)
