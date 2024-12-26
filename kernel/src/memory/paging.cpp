@@ -4,6 +4,7 @@
 #include <memory/page_bitmap.h>
 #include <memory/allocators/page_bootstrap_allocator.h>
 #include <memory/allocators/heap_allocator.h>
+#include <memory/allocators/dma_allocator.h>
 #include <boot/efimem.h>
 #include <serial/serial.h>
 #include <dynpriv/dynpriv.h>
@@ -515,9 +516,13 @@ void init_virtual_allocator() {
     const size_t bitmap_page_count = (large_page_size * num_large_pages) / PAGE_SIZE; // 16MB / 4KB = 4096
     virtual_allocator.lock_pages(reinterpret_cast<void*>(KERN_VIRT_BASE), bitmap_page_count);
 
-    // Finally, initialize the main kernel heap
+    // Initialize the main kernel heap
     auto& kernel_heap = allocators::heap_allocator::get();
     kernel_heap.init(0x0, KERNEL_HEAP_INIT_SIZE);
+
+    // Finally, create the DMA pools
+    auto& dma = allocators::dma_allocator::get();
+    dma.init();
 }
 } // namespace paging
 
