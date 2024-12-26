@@ -5,6 +5,7 @@ from colorama import Fore, Style, init as colorama_init
 # Initialize colorama
 colorama_init(autoreset=True)
 
+
 class CallGraphBuilder:
     def __init__(self, symbols):
         """
@@ -15,11 +16,21 @@ class CallGraphBuilder:
         - 'privileged': boolean indicating if the function is privileged
         """
         self.symbols = symbols
-        self.call_graph = defaultdict(list)
+        self.call_graph = defaultdict(list)  # Maps caller address to list of callee edges
         self.addr_to_symbol = {sym['address']: sym for sym in symbols}
         self.called_addresses = set()
         self.call_paths = None
         self.privilege_violations = []  # Stores privilege violation data
+
+    def _create_call_edge(self, caller, callee, elevated_call_privilege=False):
+        """
+        Create a structured call edge as a dictionary.
+        """
+        return {
+            "caller": caller,
+            "callee": callee,
+            "elevated_call_privilege": elevated_call_privilege,
+        }
 
     def build_graph(self):
         """
@@ -27,11 +38,17 @@ class CallGraphBuilder:
         """
         for sym in self.symbols:
             caller_addr = sym['address']
-            for _, mnemonic, op_str in sym['instructions']:
+            for instruction in sym['instructions']:
+                mnemonic = instruction["mnemonic"]
+                op_str = instruction["op_str"]
+                elevated_call_privilege = instruction["elevated_call_privilege"]
+
                 if mnemonic == "call" and op_str.startswith("0x"):
                     try:
                         callee_addr = int(op_str.split()[0], 16)  # Extract address from "0xADDR <symbol>"
-                        self.call_graph[caller_addr].append(callee_addr)
+                        edge = self._create_call_edge(caller=caller_addr, callee=callee_addr,
+                                                      elevated_call_privilege=elevated_call_privilege)
+                        self.call_graph[caller_addr].append(edge)
                         self.called_addresses.add(callee_addr)
                     except ValueError:
                         pass
@@ -52,7 +69,7 @@ class CallGraphBuilder:
     def generate_call_paths(self):
         """
         Generate all call paths starting from root functions.
-        Returns a list of paths, each represented as a list of tuples (function name, privilege).
+        Returns a list of paths, each represented as a list of tuples (function name, privilege, address).
         """
         root_functions = self.find_root_functions()
         paths = []
@@ -62,7 +79,7 @@ class CallGraphBuilder:
                 return  # Prevent cycles
             if current_addr not in self.addr_to_symbol:
                 return  # Skip unknown addresses
-            
+
             visited.add(current_addr)
             symbol = self.addr_to_symbol[current_addr]
             current_privilege = is_privileged or symbol['privileged']
@@ -71,9 +88,9 @@ class CallGraphBuilder:
             if current_addr not in self.call_graph:
                 paths.append(list(current_path))  # Leaf node, save the path
             else:
-                for callee_addr in self.call_graph[current_addr]:
-                    dfs(current_path, callee_addr, visited, current_privilege)
-            
+                for edge in self.call_graph[current_addr]:
+                    dfs(current_path, edge["callee"], visited, current_privilege)
+
             current_path.pop()
             visited.remove(current_addr)
 
@@ -85,7 +102,8 @@ class CallGraphBuilder:
     def analyze_privilege_violations(self):
         """
         Analyze the call paths and detect privilege violations.
-        A privilege violation occurs when an unprivileged function makes a call to a privileged function.
+        A privilege violation occurs when an unprivileged function makes a call to a privileged function,
+        but NOT if the callee has 'elevated_call_privilege' set to True.
         Stores unique violations in `self.privilege_violations`.
         """
         self.privilege_violations = []  # Clear any previous data
@@ -96,8 +114,15 @@ class CallGraphBuilder:
                 caller_name, caller_privileged, caller_addr = path[i]
                 callee_name, callee_privileged, callee_addr = path[i + 1]
 
+                # Find the corresponding call edge for elevated privilege check
+                call_edges = self.call_graph.get(caller_addr, [])
+                elevated_call_privilege = any(
+                    edge["callee"] == callee_addr and edge.get("elevated_call_privilege", False)
+                    for edge in call_edges
+                )
+
                 # Detect privilege violation
-                if not caller_privileged and callee_privileged:
+                if not caller_privileged and callee_privileged and not elevated_call_privilege:
                     violation_key = (
                         caller_name, caller_addr, callee_name, callee_addr,
                         tuple((name, privileged) for name, privileged, _ in path[:i + 2])  # Path snapshot
@@ -116,40 +141,55 @@ class CallGraphBuilder:
 
     def print_call_graph_tree(self, sym=None):
         """
-        Print the call graph as an ASCII tree with privilege state, without duplicating function names.
+        Print the call graph as an ASCII tree with privilege state, marking elevated calls and avoiding duplicates.
         """
-        def print_tree(node_addr, prefix="", visited=None, inherited_privilege=False):
-            if visited is None:
-                visited = set()
-            if node_addr in visited:
-                symbol = self.addr_to_symbol[node_addr]
-                name = SymbolAnalyzer.simplify_symbol_name(symbol['name'])
-                privilege_state = "privileged" if inherited_privilege or symbol['privileged'] else "unprivileged"
-                print(f"{prefix}└── {name} ({privilege_state})")
-                return
-            if node_addr not in self.addr_to_symbol:
+        def print_tree(node_addr, prefix="", visited_nodes=None, visited_edges=None, inherited_privilege=False):
+            if visited_nodes is None:
+                visited_nodes = set()
+            if visited_edges is None:
+                visited_edges = set()
+
+            if node_addr in visited_nodes:
+                return  # Prevent cycles in the graph
+
+            symbol = self.addr_to_symbol.get(node_addr)
+            if not symbol:
                 return  # Skip unknown addresses
 
-            visited.add(node_addr)
-            symbol = self.addr_to_symbol[node_addr]
+            visited_nodes.add(node_addr)
             name = SymbolAnalyzer.simplify_symbol_name(symbol['name'])
             privilege_state = "privileged" if inherited_privilege or symbol['privileged'] else "unprivileged"
             print(f"{prefix}└── {name} ({privilege_state})")
 
             children = self.call_graph.get(node_addr, [])
-            for i, child_addr in enumerate(children):
+            for i, edge in enumerate(children):
+                edge_key = (edge["caller"], edge["callee"])
+                if edge_key in visited_edges:
+                    continue  # Skip duplicate edges
+
+                visited_edges.add(edge_key)
+                child_addr = edge["callee"]
                 child_inherited_privilege = inherited_privilege or symbol['privileged']
-                if i == len(children) - 1:
-                    print_tree(child_addr, prefix + "    ", visited, child_inherited_privilege)
-                else:
-                    print_tree(child_addr, prefix + "│   ", visited, child_inherited_privilege)
+                elevated_marker = f" {Fore.YELLOW}[Elevated]" if edge["elevated_call_privilege"] else ""
+
+                is_last = (i == len(children) - 1)
+                connector = "└──" if is_last else "├──"
+                new_prefix = prefix + ("    " if is_last else "│   ")
+
+                child_symbol = self.addr_to_symbol.get(child_addr, {})
+                child_name = SymbolAnalyzer.simplify_symbol_name(child_symbol.get("name", "unknown"))
+                child_privilege_state = "privileged" if child_inherited_privilege else "unprivileged"
+
+                print(f"{prefix}{connector} {child_name} ({child_privilege_state}){elevated_marker}")
+                print_tree(child_addr, new_prefix, visited_nodes, visited_edges, child_inherited_privilege)
 
         root_functions = self.find_root_functions()
         for root in root_functions:
             if sym is not None and sym not in root['name']:
                 continue
             print(f"{root['name']}:")
-            print_tree(root['address'], inherited_privilege=root['privileged'])
+            print_tree(root['address'])
+
 
     def print_privilege_violations(self, sym=None):
         """
@@ -193,4 +233,3 @@ class CallGraphBuilder:
             print(f"{Fore.LIGHTWHITE_EX}  Caller: {Fore.CYAN}{caller['name']:<{name_alignment}} {Fore.LIGHTBLACK_EX}[0x{caller['address']:x}]")
             print(f"{Fore.LIGHTWHITE_EX}  Callee: {Fore.LIGHTRED_EX}{callee['name']:<{name_alignment}} {Fore.LIGHTBLACK_EX}[0x{callee['address']:x}]")
             print_violation(violation)
-

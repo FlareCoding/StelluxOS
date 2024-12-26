@@ -32,7 +32,7 @@ def main(filename, root_function):
         call_graph_builder.build_graph()
 
         # Print call graph tree for a given function
-        call_graph_builder.print_call_graph_tree(root_function)
+        #call_graph_builder.print_call_graph_tree(root_function)
 
         # Print privilege violations
         call_graph_builder.print_privilege_violations(root_function)
