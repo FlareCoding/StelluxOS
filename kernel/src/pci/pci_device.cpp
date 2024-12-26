@@ -13,32 +13,38 @@ pci_device::pci_device(uint64_t function_address, pci_function_desc* desc)
     _parse_bars();
 }
 
+__PRIVILEGED_CODE
 void pci_device::enable() {
     uint16_t command = _read_command_register();
     command |= (PCI_COMMAND_IO_SPACE | PCI_COMMAND_MEMORY_SPACE);
     _write_command_register(command);
 }
 
+__PRIVILEGED_CODE
 void pci_device::disable() {
     uint16_t command = _read_command_register();
     command &= ~(PCI_COMMAND_IO_SPACE | PCI_COMMAND_MEMORY_SPACE);
     _write_command_register(command);
 }
 
+__PRIVILEGED_CODE
 void pci_device::enable_bus_mastering() {
     uint16_t command = _read_command_register();
     command |= PCI_COMMAND_BUS_MASTER;
     _write_command_register(command);
 }
 
+__PRIVILEGED_CODE
 uint16_t pci_device::_read_command_register() {
     return config::read_word(m_bus, m_device, m_function, PCI_COMMAND_OFFSET);
 }
 
+__PRIVILEGED_CODE
 void pci_device::_write_command_register(uint16_t value) {
     config::write_word(m_bus, m_device, m_function, PCI_COMMAND_OFFSET, value);
 }
 
+__PRIVILEGED_CODE
 void pci_device::_parse_bars() {
     m_bars.clear();
     m_bars.reserve(PCI_BAR_COUNT);

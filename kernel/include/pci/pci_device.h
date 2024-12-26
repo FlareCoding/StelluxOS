@@ -15,13 +15,13 @@ public:
     uint8_t revision_id() const { return m_desc->revision_id; }
 
     // Enable the device by setting memory space and IO space bits in the command register
-    void enable();
+    __PRIVILEGED_CODE void enable();
 
     // Disable the device by clearing memory and IO space bits in the command register
-    void disable();
+    __PRIVILEGED_CODE void disable();
 
     // Enable bus mastering
-    void enable_bus_mastering();
+    __PRIVILEGED_CODE void enable_bus_mastering();
 
     const kstl::vector<pci_bar>& get_bars() const { return m_bars; }
 
@@ -39,9 +39,9 @@ private:
 
     kstl::vector<pci_bar> m_bars;
 
-    void _parse_bars();
-    void _write_command_register(uint16_t value);
-    uint16_t _read_command_register();
+    __PRIVILEGED_CODE void _parse_bars();
+    __PRIVILEGED_CODE void _write_command_register(uint16_t value);
+    __PRIVILEGED_CODE uint16_t _read_command_register();
 };
 
 } // namespace pci
