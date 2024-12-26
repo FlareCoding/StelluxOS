@@ -25,7 +25,6 @@ def main(filename, root_function):
         disassembler = DisassemblyAnalyzer(elffile, symbol_analyzer.get_addr_to_sym_map())
         for sym in symbols:
             sym["instructions"] = disassembler.disassemble_symbol(sym)
-    
 
         # Step 4: Construct a call graph and detect privilege violations
         call_graph_builder = CallGraphBuilder(symbols)
@@ -40,6 +39,9 @@ def main(filename, root_function):
         # Print privilege violations
         call_graph_builder.print_privilege_violations(root_function)
 
+        # Return appropriate exit code
+        return 1 if call_graph_builder.privilege_violations else 0
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python main.py <file.elf> [<root_function>]")
@@ -49,4 +51,5 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         root_function = sys.argv[2]
 
-    main(sys.argv[1], root_function)
+    exit_code = main(sys.argv[1], root_function)
+    sys.exit(exit_code)

@@ -57,3 +57,35 @@ jobs:
 
     - name: Build and Execute Unit Tests
       run: make execute-unit-tests
+
+  privilege-violation-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Environment
+      run: sudo apt-get update
+
+    - name: Install Dependencies
+      run: make install-dependencies
+
+    - name: Install Python
+      run: |
+        sudo apt-get install -y python3 python3-pip
+        pip3 install -r requirements.txt
+
+    - name: Build Stellux OS image
+      run: make image
+
+    - name: Verify that kernel ELF is created
+      run: |
+        if [ ! -f build/stellux ]; then
+          echo "Kernel binary was not found!"
+          exit 1
+        fi
+
+    - name: Perform Privilege Violation Analysis
+      run: |
+        python3 ./tools/privilege_violation_analyzer/main.py build/stellux
