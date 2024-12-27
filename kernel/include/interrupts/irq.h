@@ -134,4 +134,6 @@ __PRIVILEGED_CODE bool register_irq_handler(uint8_t irqno, irq_handler_t handler
 
 __PRIVILEGED_CODE void route_legacy_irq(uint8_t irq_line, uint8_t irqno, uint8_t cpu = 0, uint8_t level_triggered = 0);
 
+__PRIVILEGED_CODE void irq_send_eoi();
+
 #endif // IRQ_H

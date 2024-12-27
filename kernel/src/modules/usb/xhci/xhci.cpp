@@ -47,6 +47,14 @@ bool xhci_driver_module::init() {
     _configure_operational_registers();
     _configure_runtime_registers();
 
+    // Register the xhci host controller IRQ handler
+    if (m_irq_vector != 0) {
+        RUN_ELEVATED({
+            register_irq_handler(m_irq_vector, reinterpret_cast<irq_handler_t>(xhci_irq_handler), false, static_cast<void*>(this));
+        });
+        serial::printf("[XHCI] Registered xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
+    }
+
     return true;
 }
 
@@ -71,6 +79,33 @@ bool xhci_driver_module::on_command(
     __unused data_out;
     __unused data_out_size;
     return true;
+}
+
+void xhci_driver_module::log_usbsts() {
+    uint32_t status = m_op_regs->usbsts;
+    serial::printf("===== USBSTS =====\n");
+    if (status & XHCI_USBSTS_HCH) serial::printf("    Host Controlled Halted\n");
+    if (status & XHCI_USBSTS_HSE) serial::printf("    Host System Error\n");
+    if (status & XHCI_USBSTS_EINT) serial::printf("    Event Interrupt\n");
+    if (status & XHCI_USBSTS_PCD) serial::printf("    Port Change Detect\n");
+    if (status & XHCI_USBSTS_SSS) serial::printf("    Save State Status\n");
+    if (status & XHCI_USBSTS_RSS) serial::printf("    Restore State Status\n");
+    if (status & XHCI_USBSTS_SRE) serial::printf("    Save/Restore Error\n");
+    if (status & XHCI_USBSTS_CNR) serial::printf("    Controller Not Ready\n");
+    if (status & XHCI_USBSTS_HCE) serial::printf("    Host Controller Error\n");
+    serial::printf("\n");
+}
+
+__PRIVILEGED_CODE
+irqreturn_t xhci_driver_module::xhci_irq_handler(void*, xhci_driver_module* driver) {
+    driver->_process_events();
+    driver->_acknowledge_irq(0);
+
+    // Acknowledge the interrupt
+    irq_send_eoi();
+
+    // Return indicating that the interrupt was handled successfully
+    return IRQ_HANDLED;
 }
 
 void xhci_driver_module::_parse_capability_registers() {
@@ -288,6 +323,54 @@ void xhci_driver_module::_setup_dcbaa() {
 
     // Set DCBAA pointer in the operational registers
     m_op_regs->dcbaap = xhci_get_physical_addr(m_dcbaa);
+}
+
+void xhci_driver_module::_process_events() {
+    // Poll the event ring for the command completion event
+    kstl::vector<xhci_trb_t*> events;
+    if (m_event_ring->has_unprocessed_events()) {
+        m_event_ring->dequeue_events(events);
+    }
+
+    uint8_t port_change_event_status = 0;
+    uint8_t command_completion_status = 0;
+    uint8_t transfer_completion_status = 0;
+
+    for (size_t i = 0; i < events.size(); i++) {
+        xhci_trb_t* event = events[i];
+        switch (event->trb_type) {
+        case XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT: {
+            port_change_event_status = 1;
+            m_port_status_change_events.push_back((xhci_port_status_change_trb_t*)event);
+            break;
+        }
+        case XHCI_TRB_TYPE_CMD_COMPLETION_EVENT: {
+            command_completion_status = 1;
+            m_command_completion_events.push_back((xhci_command_completion_trb_t*)event);
+            break;
+        }
+        case XHCI_TRB_TYPE_TRANSFER_EVENT: {
+            transfer_completion_status = 1;
+            auto transfer_event = (xhci_transfer_completion_trb_t*)event;
+            m_transfer_completion_events.push_back(transfer_event);
+
+            auto device = m_connected_devices[transfer_event->slot_id];
+            if (!device) {
+                break;
+            }
+
+            // if (device->usb_device_driver) {
+            //     device->usb_device_driver->handle_event(transfer_event);
+            // }
+
+            break;
+        }
+        default: break;
+        }
+    }
+
+    m_command_irq_completed = command_completion_status;
+    m_transfer_irq_completed = transfer_completion_status;
 }
 
 void xhci_driver_module::_acknowledge_irq(uint8_t interrupter) {

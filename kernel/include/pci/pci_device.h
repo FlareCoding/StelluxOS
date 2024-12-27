@@ -13,6 +13,7 @@ public:
     uint8_t subclass() const { return m_desc->subclass; }
     uint8_t prog_if() const { return m_desc->prog_if; }
     uint8_t revision_id() const { return m_desc->revision_id; }
+    uint8_t legacy_irq_line() const { return m_desc->interrupt_line; }
 
     // Enable the device by setting memory space and IO space bits in the command register
     __PRIVILEGED_CODE void enable();

@@ -22,6 +22,7 @@ public:
 
 protected:
     kstl::shared_ptr<pci::pci_device> m_pci_dev;
+    uint8_t m_irq_vector = 0;
 
 private:
     friend class module_manager;

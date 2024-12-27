@@ -533,5 +533,9 @@ bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, v
     return true;
 }
 
+__PRIVILEGED_CODE
+void irq_send_eoi() {
+    arch::x86::lapic::get()->complete_irq();
+}
 #endif // ARCH_X86_64
 
