@@ -162,7 +162,7 @@ private:
     void _setup_dcbaa();
 
     // Creates a device context buffer and inserts it into DCBAA
-    void _create_device_context(uint8_t slot_id);
+    bool _create_device_context(uint8_t slot_id);
 
     xhci_command_completion_trb_t* _send_command(xhci_trb_t* trb, uint32_t timeout_ms = 120);
     xhci_transfer_completion_trb_t* _start_control_endpoint_transfer(xhci_transfer_ring* transfer_ring);
@@ -232,6 +232,10 @@ private:
 
     // Device context base address array's virtual address
     uint64_t* m_dcbaa;
+
+    // Since DCBAA stores physical addresses, we want to keep
+    // track of the virtual pointers to the output device contexts.
+    uint64_t* m_dcbaa_virtual_addresses;
 
     // Controller class for runtime registers
     kstl::shared_ptr<xhci_runtime_register_manager> m_runtime_register_manager;

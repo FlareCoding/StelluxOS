@@ -211,7 +211,7 @@ Stage TRBs and the operation of control endpoints. Also refer to section 8.5.3 i
 the USB2 spec. for a description of “Control Transfers”.
 */
 typedef struct xhci_setup_stage_transfer_request_block {
-    xhci_device_request_packet requestPacket;
+    xhci_device_request_packet request_packet;
     
     struct {
         // Always 8

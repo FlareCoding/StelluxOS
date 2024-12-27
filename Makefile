@@ -39,6 +39,10 @@ QEMU_FLAGS       := \
 	-device qemu-xhci,id=xhci \
 	-trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
 
+# Sample connected USB 2.0 devices
+QEMU_FLAGS += -device usb-kbd,id=usbkbd
+QEMU_FLAGS += -device usb-mouse,id=usbmouse
+
 # Unit test execution duration timeout (all tests)
 UNIT_TESTS_RUN_TIMEOUT := 5m
 

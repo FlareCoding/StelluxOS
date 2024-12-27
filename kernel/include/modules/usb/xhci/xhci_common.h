@@ -1221,7 +1221,7 @@ Controller during status update if the associated error condition is detected.
 #define XHCI_TRB_COMPLETION_CODE_MAX_EXIT_LATENCY_ERROR 29
 
 // Helper macro to easily construct TRB command objects
-#define XHCI_CONSTRUCT_CMD_TRB(type) XhciTrb_t { .parameter = 0, .status = 0, .control = type << XHCI_TRB_TYPE_SHIFT }
+#define XHCI_CONSTRUCT_CMD_TRB(type) xhci_trb_t { .parameter = 0, .status = 0, .control = type << XHCI_TRB_TYPE_SHIFT }
 
 /*
 // xHci Spec Section 7.1.1 USB Legacy Support Capability (USBLEGSUP) (page 519)
