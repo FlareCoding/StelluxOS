@@ -1,0 +1,159 @@
+#ifdef ARCH_X86_64
+#ifndef CPUID_H
+#define CPUID_H
+#include <memory/memory.h>
+
+// Basic CPUID Information
+#define CPUID_VENDOR_ID            0x00000000
+#define CPUID_FEATURES             0x00000001
+#define CPUID_CACHE_DESC           0x00000002
+#define CPUID_SERIAL_NUMBER        0x00000003
+
+// Extended CPUID Information
+#define CPUID_EXTENDED_FEATURES    0x80000001
+
+// Feature bits in EDX for CPUID with EAX=1
+#define CPUID_FEAT_EDX_PAE         (1 << 6)
+#define CPUID_FEAT_EDX_APIC        (1 << 9)
+#define CPUID_FEAT_EDX_PGE         (1 << 13)
+#define CPUID_FEAT_EDX_PAT         (1 << 16)
+
+// Feature bits in ECX for CPUID with EAX=1
+#define CPUID_FEAT_ECX_SSE3        (1 << 0)
+#define CPUID_FEAT_ECX_VMX         (1 << 5)
+
+// Feature bits in ECX for CPUID with EAX=7, ECX=0
+#define CPUID_FEAT_ECX_FSGSBASE    (1 << 0)
+#define CPUID_FEAT_ECX_LA57        (1 << 16)  // 5-level paging
+
+// SSE (Streaming SIMD Extensions) Feature Bit
+#define CPUID_EDX_SSE         0x02000000
+
+// SSE2 (Streaming SIMD Extensions 2) Feature Bit
+#define CPUID_EDX_SSE2        0x04000000
+
+// SSE3 (Streaming SIMD Extensions 3) Feature Bit
+#define CPUID_ECX_SSE3        0x00000001
+
+// AVX (Advanced Vector Extensions) Feature Bit
+#define CPUID_ECX_AVX         0x10000000
+
+// FMA3 (Fused Multiply-Add 3) Feature Bit
+#define CPUID_ECX_FMA         0x00001000
+
+namespace arch::x86 {
+// Read basic CPUID information
+__PRIVILEGED_CODE
+static inline void read_cpuid(int code, uint32_t *a, uint32_t *d) {
+    __asm__ volatile("cpuid"
+        : "=a"(*a), "=d"(*d)  // Output operands
+        : "0"(code)           // Input operands
+        : "ecx", "ebx"        // Clobbered registers
+    );
+}
+
+// Read extended CPUID information
+__PRIVILEGED_CODE
+static inline void read_cpuid_extended(int code, uint32_t *a, uint32_t *d) {
+    __asm__ volatile("cpuid"
+        : "=a"(*a), "=d"(*d)  // Output operands
+        : "0"(code)           // Input operands
+        : "ecx", "ebx"        // Clobbered registers
+    );
+}
+
+__PRIVILEGED_CODE
+static inline void read_cpuid_full(int code, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d) {
+    __asm__ volatile("cpuid"
+        : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)  // Output operands
+        : "0"(code)                              // Input operand
+    );
+}
+
+// Returns whether or not 5-level page tables are supported
+__PRIVILEGED_CODE
+static inline int cpuid_is_la57_supported() {
+    uint32_t a, d;
+    read_cpuid(7, &a, &d);
+    return (a & CPUID_FEAT_ECX_LA57) != 0;
+}
+
+// Reads the Vendor ID into the specified buffer.
+// *Note: vendor buffer should be at least 13 bytes in size
+__PRIVILEGED_CODE
+static inline void cpuid_read_vendor_id(char* vendor) {
+    uint32_t ebx, ecx, edx;
+    asm volatile("cpuid":"=b"(ebx),"=c"(ecx),"=d"(edx):"a"(CPUID_VENDOR_ID));
+    ((uint32_t*)vendor)[0] = ebx;
+    ((uint32_t*)vendor)[1] = edx;
+    ((uint32_t*)vendor)[2] = ecx;
+    vendor[12] = '\0';
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_is_sse_supported() {
+    uint32_t eax, edx;
+    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    return (edx & CPUID_EDX_SSE) != 0;
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_is_sse2_supported() {
+    uint32_t eax, edx;
+    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    return (edx & CPUID_EDX_SSE2) != 0;
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_is_sse3_supported() {
+    uint32_t eax, edx;
+    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    return (eax & CPUID_ECX_SSE3) != 0;
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_is_avx_supported() {
+    uint32_t eax, edx;
+    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    return (eax & CPUID_ECX_AVX) != 0;
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_is_fma_supported() {
+    uint32_t eax, edx;
+    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    return (eax & CPUID_ECX_FMA) != 0;
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_is_pat_supported() {
+    uint32_t eax, edx;
+    read_cpuid(CPUID_FEATURES, &eax, &edx);
+    return (edx & CPUID_FEAT_EDX_PAT) != 0;
+}
+
+__PRIVILEGED_CODE
+static inline bool cpuid_is_running_under_qemu() {
+    uint32_t eax, ebx, ecx, edx;
+
+    // Call CPUID with leaf 0x40000000
+    read_cpuid_full(0x40000000, &eax, &ebx, &ecx, &edx);
+
+    // The hypervisor signature is stored in ebx, ecx, and edx
+    char hypervisorSignature[13];
+    ((uint32_t *)hypervisorSignature)[0] = ebx;
+    ((uint32_t *)hypervisorSignature)[1] = ecx;
+    ((uint32_t *)hypervisorSignature)[2] = edx;
+    hypervisorSignature[12] = '\0';  // Null-terminate the string
+
+    // Check if the signature matches "TCGTCGTCGTCG" or "KVMKVMKVM\0\0\0"
+    if (memcmp(hypervisorSignature, (void*)"TCGTCGTCGTCG", 12) == 0 || memcmp(hypervisorSignature, (void*)"KVMKVMKVM\0\0\0", 12) == 0) {
+        return true;  // The system is running under QEMU or KVM
+    }
+
+    return false;  // Not running under QEMU/KVM
+}
+} // namespace arch::x86
+
+#endif // CPUID_H
+#endif // ARCH_X86_64
