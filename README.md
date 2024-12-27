@@ -7,9 +7,9 @@
     StelluxOS is a personal operating system project inspired by Symbiote project's philosophy of providing runtime privilege
     level switching mechanism for userspace threads. The unique feature of StelluxOS is that within the authoritative OS-level
     privileged domain, threads can transition in and out of hardware privilege at a very low cost using light-weight primitives
-    called `elevate` and `lower`. This use of dynamic privilege would allow deprivileging large parts of the kernel and allow
-    threads within the "blessed" kernel address space to acquire privilege when needed, performing privileged operations, and
-    dropping hardware privileges right after.
+    called <b>elevate</b> and <b>lower</b>. This use of dynamic privilege would allow deprivileging large parts of the kernel
+    and allow threads within the "<i>blessed</i>" kernel address space to acquire privilege when needed, performing privileged operations,
+    and dropping hardware privileges right after.
   </p>
   <p>
     The benefit of this design that we aim to explore is that, for example, if a driver or a filesystem component
