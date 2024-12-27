@@ -125,6 +125,19 @@ int int_to_str(int64_t value, char* buffer, size_t buffer_size, int base);
  */
 int sprintf(char* buffer, size_t buffer_size, const char* format, ...);
 
+/**
+ * @brief Converts a Unicode string to a narrow (ASCII) string.
+ * 
+ * This function takes a Unicode string (assumed to be UTF-16 encoded) and converts it to a 
+ * narrow ASCII string, storing the result in the provided buffer. Non-ASCII characters are 
+ * replaced with a placeholder character (e.g., '?'). This function operates without 
+ * relying on the standard library, making it suitable for kernel-level operations.
+ * 
+ * @param unicode_string Pointer to the UTF-16 encoded Unicode string to be converted.
+ * @param buffer Pointer to the buffer where the resulting narrow string will be stored.
+ */
+void convert_unicode_to_narrow_string(void* unicode_string, char* buffer);
+
 namespace kstl {
 class string {
 public:

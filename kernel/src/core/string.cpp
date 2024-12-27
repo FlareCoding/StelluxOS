@@ -273,6 +273,31 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...) {
     return buffer_index;
 }
 
+void convert_unicode_to_narrow_string(void* unicode_string, char* buffer) {
+    if (unicode_string == nullptr || buffer == nullptr) {
+        // Handle null pointers appropriately (could log an error or handle as needed)
+        return;
+    }
+
+    uint16_t* u_str = static_cast<uint16_t*>(unicode_string);
+    size_t i = 0; // Index for the Unicode string
+    size_t j = 0; // Index for the narrow string
+
+    while (u_str[i] != 0) { // Continue until null-terminator is reached
+        uint16_t code_unit = u_str[i];
+
+        if (code_unit < 128) { // ASCII range
+            buffer[j++] = static_cast<char>(code_unit);
+        } else {
+            buffer[j++] = '?'; // Placeholder for non-ASCII characters
+        }
+
+        i++;
+    }
+
+    buffer[j] = '\0'; // Null-terminate the resulting string
+}
+
 int lltoa(
     uint64_t val,
     char* buffer,
