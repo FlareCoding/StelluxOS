@@ -6,6 +6,8 @@ namespace modules {
 xhci_driver_module::xhci_driver_module() : pci_module_base("xhci_driver_module") {}
 
 bool xhci_driver_module::init() {
+    
+
     return true;
 }
 

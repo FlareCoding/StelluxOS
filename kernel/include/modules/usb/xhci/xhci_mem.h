@@ -62,4 +62,6 @@ void* alloc_xhci_memory(
 
 void free_xhci_memory(void* ptr);
 
+uintptr_t xhci_get_physical_addr(void* vaddr);
+
 #endif // XHCI_MEM_H

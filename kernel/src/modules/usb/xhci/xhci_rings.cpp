@@ -16,7 +16,7 @@ xhci_command_ring::xhci_command_ring(size_t max_trbs) {
         XHCI_COMMAND_RING_SEGMENTS_BOUNDARY
     );
 
-    m_physical_base = paging::get_physical_address(m_trbs);
+    m_physical_base = xhci_get_physical_addr(m_trbs);
 
     // Set the last TRB as a link TRB to point back to the first TRB
     m_trbs[m_max_trb_count - 1].parameter = m_physical_base;
@@ -58,7 +58,7 @@ xhci_event_ring::xhci_event_ring(
     );
 
     // Store the physical DMA base
-    m_primary_segment_ring_physical_base = paging::get_physical_address(m_primary_segment_ring);
+    m_primary_segment_ring_physical_base = xhci_get_physical_addr(m_primary_segment_ring);
 
     // Create the event ring segment table
     m_segment_table = (xhci_erst_entry*)alloc_xhci_memory(
@@ -83,7 +83,7 @@ xhci_event_ring::xhci_event_ring(
     _update_erdp_interrupter_register();
 
     // Write to ERSTBA register
-    m_interrupter_regs->erstba = paging::get_physical_address(m_segment_table);
+    m_interrupter_regs->erstba = xhci_get_physical_addr(m_segment_table);
 }
 
 bool xhci_event_ring::has_unprocessed_events() {
@@ -164,7 +164,7 @@ xhci_transfer_ring::xhci_transfer_ring(size_t max_trbs, uint8_t doorbell_id) {
         XHCI_TRANSFER_RING_SEGMENTS_BOUNDARY
     );
 
-    m_physical_base = paging::get_physical_address(m_trbs);
+    m_physical_base = xhci_get_physical_addr(m_trbs);
 
     // Set the last TRB as a link TRB to point back to the first TRB
     m_trbs[m_max_trb_count - 1].parameter = m_physical_base;
@@ -172,7 +172,7 @@ xhci_transfer_ring::xhci_transfer_ring(size_t max_trbs, uint8_t doorbell_id) {
 }
 
 uintptr_t xhci_transfer_ring::get_physical_dequeue_pointer_base() const {
-    return paging::get_physical_address(&m_trbs[m_enqueue_ptr]);
+    return xhci_get_physical_addr(&m_trbs[m_enqueue_ptr]);
 }
 
 void xhci_transfer_ring::enqueue(xhci_trb_t* trb) {

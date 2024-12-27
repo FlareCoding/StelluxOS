@@ -55,7 +55,7 @@ void xhci_device::allocate_input_context(bool use_64byte_contexts) {
 }
 
 uint64_t xhci_device::get_input_context_physical_base() {
-    return paging::get_physical_address(m_input_context);
+    return xhci_get_physical_addr(m_input_context);
 }
 
 void xhci_device::allocate_control_ep_transfer_ring() {

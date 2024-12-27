@@ -40,3 +40,11 @@ void free_xhci_memory(void* ptr) {
         dma.free(ptr);
     });
 }
+
+uintptr_t xhci_get_physical_addr(void* vaddr) {
+    uintptr_t paddr;
+    RUN_ELEVATED({
+        paddr = paging::get_physical_address(vaddr);
+    });
+    return paddr;
+}
