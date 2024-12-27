@@ -32,3 +32,11 @@ void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary) {
 
     return memblock;
 }
+
+void free_xhci_memory(void* ptr) {
+    auto& dma = allocators::dma_allocator::get();
+
+    RUN_ELEVATED({
+        dma.free(ptr);
+    });
+}

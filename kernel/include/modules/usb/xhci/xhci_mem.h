@@ -60,4 +60,6 @@ void* alloc_xhci_memory(
     size_t boundary = PAGE_SIZE
 );
 
+void free_xhci_memory(void* ptr);
+
 #endif // XHCI_MEM_H

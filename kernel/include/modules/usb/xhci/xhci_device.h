@@ -46,16 +46,16 @@ public:
     void allocate_input_context(bool use64byte_contexts);
     uint64_t get_input_context_physical_base();
 
-    void allocate_control_endpoint_transfer_ring();
+    void allocate_control_ep_transfer_ring();
 
-    __force_inline__ xhci_transfer_ring* get_control_endpoint_transfer_ring() { 
+    __force_inline__ xhci_transfer_ring* get_control_ep_transfer_ring() { 
         return m_control_endpoint_transfer_ring.get();
     }
 
     xhci_input_control_context32* get_input_control_context(bool use_64byte_contexts);
     xhci_slot_context32* get_input_slot_context(bool use_64byte_contexts);
-    xhci_endpoint_context32* get_input_control_endpoint_context(bool use_64byte_contexts);
-    xhci_endpoint_context32* get_input_endpoint_context(bool use_64byte_contexts, uint8_t endpoint_id);
+    xhci_endpoint_context32* get_input_control_ep_context(bool use_64byte_contexts);
+    xhci_endpoint_context32* get_input_ep_context(bool use_64byte_contexts, uint8_t endpoint_id);
 
     void copy_output_device_context_to_input_device_context(bool use_64byte_contexts, void* output_device_context);
 
