@@ -18,7 +18,7 @@ public:
     };
 
     // Singleton access
-    static dma_allocator& get();
+    __PRIVILEGED_CODE static dma_allocator& get();
 
     // Initialization
     __PRIVILEGED_CODE void init();

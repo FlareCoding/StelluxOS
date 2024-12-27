@@ -136,6 +136,8 @@ public:
     static irqreturn_t xhci_irq_handler(void*, xhci_driver_module* driver);
 
 private:
+    static bool s_singleton_initialized;
+
     uintptr_t m_xhc_base;
 
     volatile xhci_capability_registers* m_cap_regs;
@@ -154,7 +156,7 @@ private:
 
     void _configure_runtime_registers();
 
-    bool _is_usb3port(uint8_t port_num);
+    bool _is_usb3_port(uint8_t port_num);
     xhci_port_register_manager _get_port_register_set(uint8_t port_num);
 
     void _setup_dcbaa();
@@ -226,7 +228,7 @@ private:
     uint64_t m_hc_page_size;
 
     // USB3.x-specific ports
-    kstl::vector<uint8_t> m_usb3ports;
+    kstl::vector<uint8_t> m_usb3_ports;
 
     // Device context base address array's virtual address
     uint64_t* m_dcbaa;

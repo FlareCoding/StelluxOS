@@ -18,10 +18,9 @@ uintptr_t xhci_map_mmio(uint64_t pci_bar_address, uint32_t bar_size) {
 }
 
 void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary) {
-    auto& dma = allocators::dma_allocator::get();
-
     void* memblock = nullptr;
     RUN_ELEVATED({
+        auto& dma = allocators::dma_allocator::get();
         memblock = dma.allocate(size, alignment, boundary);
     });
 
@@ -30,13 +29,13 @@ void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary) {
         while (true);
     }
 
+    zeromem(memblock, size);
     return memblock;
 }
 
 void free_xhci_memory(void* ptr) {
-    auto& dma = allocators::dma_allocator::get();
-
     RUN_ELEVATED({
+        auto& dma = allocators::dma_allocator::get();
         dma.free(ptr);
     });
 }

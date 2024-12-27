@@ -82,7 +82,7 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     // Start local APIC timer in order to receive timer IRQs
     kernel_timer::start_cpu_periodic_timer();
 
-    serial::printf("AP core %i ready with lapic_id: %i\n", acpi_cpu_index, current->cpu);
+    //serial::printf("AP core %i ready with lapic_id: %i\n", acpi_cpu_index, current->cpu);
     while (true) {
         asm volatile ("hlt");
     }

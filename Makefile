@@ -36,7 +36,8 @@ QEMU_FLAGS       := \
     -drive if=pflash,format=raw,readonly=on,file="$(OVMF_CODE)" \
     -drive if=pflash,format=raw,file="$(OVMF_VARS)" \
     -boot order=c \
-	-device qemu-xhci,id=xhci
+	-device qemu-xhci,id=xhci \
+	-trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
 
 # Unit test execution duration timeout (all tests)
 UNIT_TESTS_RUN_TIMEOUT := 5m

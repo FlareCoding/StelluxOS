@@ -4,6 +4,7 @@
 #include <serial/serial.h>
 
 namespace allocators {
+__PRIVILEGED_CODE
 dma_allocator& dma_allocator::get() {
     GENERATE_STATIC_SINGLETON(dma_allocator);
 }
@@ -38,7 +39,7 @@ void dma_allocator::create_pool(size_t block_size, size_t alignment, size_t max_
     size_t total_pages = (pool_size / PAGE_SIZE) + alignment_pages;
 
     // Allocate the required number of contiguous virtual pages
-    void* virt_base_alloc = vmm::alloc_contiguous_virtual_pages(total_pages, PTE_DEFAULT_PRIV_KERNEL_FLAGS | PTE_PCD);
+    void* virt_base_alloc = vmm::alloc_contiguous_virtual_pages(total_pages, PTE_DEFAULT_UNPRIV_KERNEL_FLAGS | PTE_PCD);
     if (!virt_base_alloc) {
         // Handle allocation failure
         serial::printf("DMA pool creation failed. Failed to allocate %llu pages\n", total_pages);
