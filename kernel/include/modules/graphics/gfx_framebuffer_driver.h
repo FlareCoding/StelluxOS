@@ -5,12 +5,17 @@
 namespace modules {
 class gfx_framebuffer_driver : public module_base {
 public:
+    struct framebuffer_t {
+        uint32_t    width;
+        uint32_t    height;
+        uint32_t    pitch;
+        uint8_t     bpp;
+        uint8_t*    pixels;
+    };
+
     explicit gfx_framebuffer_driver(
         uintptr_t physbase,
-        uint32_t width,
-        uint32_t height,
-        uint32_t pitch,
-        uint8_t bpp
+        const framebuffer_t& framebuffer
     );
 
     // ------------------------------------------------------------------------
@@ -34,6 +39,8 @@ public:
     ) override;
 
 private:
+    uintptr_t       m_physical_base;
+    framebuffer_t   m_native_hw_buffer;
 };
 
 } // namespace modules

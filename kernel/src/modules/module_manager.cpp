@@ -168,6 +168,7 @@ void module_manager::_module_start_task_entry(module_base* mod) {
     if (!mod->init()) {
         mod->m_state = module_state::error;
         serial::printf("[!] Failed to initialize module '%s'\n", mod->name());
+        sched::exit_thread();
     }
 
     mod->m_state = module_state::running;
@@ -175,8 +176,10 @@ void module_manager::_module_start_task_entry(module_base* mod) {
     if (!mod->start()) {
         mod->m_state = module_state::error;
         serial::printf("[!] Failed to start module '%s'\n", mod->name());
+        sched::exit_thread();
     }
 
+    // Final thread exit
     sched::exit_thread();
 }
 } // namespace modules
