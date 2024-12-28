@@ -7,6 +7,8 @@
 
 #define MAX_IRQS 64
 
+#define PANIC_IRQ IRQ17
+
 EXTERN_C __PRIVILEGED_CODE void asm_exc_handler_div();
 EXTERN_C __PRIVILEGED_CODE void asm_exc_handler_db();
 EXTERN_C __PRIVILEGED_CODE void asm_exc_handler_nmi();
@@ -133,7 +135,8 @@ const char* g_cpu_exception_strings[] = {
     "Reserved",
     "Hypervisor Injection Exception",
     "VMM Communication Exception",
-    "Security Exception"
+    "Security Exception",
+    "Manual Panic"
 };
 
 struct int_exc_handlers {
@@ -215,6 +218,16 @@ void common_irq_entry(ptregs* regs) {
     // Fake out being elevated if needed because the code has to
     // be able to tell if it's running in privileged mode or not.
     current->elevated = 1;
+
+    // Check if a panic was manually induced
+    if (regs->intno == PANIC_IRQ) {
+        // Patch the irq number to get the appropriate
+        // string when debug printing later.
+        regs->intno = 31;
+
+        // Call the panic
+        panic(regs);
+    }
 
     uint64_t irq_index = regs->intno - IRQ0;
 
@@ -301,10 +314,12 @@ void init_idt() {
     SET_KERNEL_TRAP_GATE(IRQ14, asm_irq_handler_14);
     SET_KERNEL_TRAP_GATE(IRQ15, asm_irq_handler_15);
 
-    // Special scheduler IRQ
+    // Scheduler IRQ that can be called from usermode
     SET_USER_INTERRUPT_GATE(IRQ16, asm_irq_handler_16);
     
-    SET_KERNEL_TRAP_GATE(IRQ17, asm_irq_handler_17);
+    // Panic interrupt that can be called from usermode
+    SET_USER_INTERRUPT_GATE(IRQ17, asm_irq_handler_17);
+
     SET_KERNEL_TRAP_GATE(IRQ18, asm_irq_handler_18);
     SET_KERNEL_TRAP_GATE(IRQ19, asm_irq_handler_19);
     SET_KERNEL_TRAP_GATE(IRQ20, asm_irq_handler_20);
@@ -503,9 +518,14 @@ void panic(ptregs* regs) {
     }
 }
 
+void panic(const char* msg) {
+    serial::printf("%s\n", msg);
+    asm volatile ("int $49");
+}
+
 __PRIVILEGED_CODE
 uint8_t find_free_irq_vector() {
-    for (uint8_t irqno = IRQ17; irqno < IRQ64; irqno++) {
+    for (uint8_t irqno = IRQ18; irqno < IRQ64; irqno++) {
         uint64_t irq_table_index = static_cast<uint64_t>(irqno) - IRQ0;
         irq_desc* desc = &arch::x86::g_irq_handler_table.descriptors[irq_table_index];
         if (!desc->handler) {

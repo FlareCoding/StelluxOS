@@ -128,6 +128,13 @@ __PRIVILEGED_CODE void disable_interrupts();
  */
 void panic(ptregs* regs);
 
+/**
+ * @brief Invokes an interrupt to cause a kernel panic, to be used to halt execution at a known point.
+ * 
+ * @param msg Message to be printed before invoking the panic interrupt.
+ */
+void panic(const char* msg);
+
 __PRIVILEGED_CODE uint8_t find_free_irq_vector();
 
 __PRIVILEGED_CODE bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, void* cookie);
