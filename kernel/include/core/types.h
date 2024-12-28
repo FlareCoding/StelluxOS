@@ -12,6 +12,7 @@ typedef __INT32_TYPE__ int32_t;
 #endif
 #ifdef __INT64_TYPE__
 typedef __INT64_TYPE__ int64_t;
+typedef __INT64_TYPE__ ssize_t;
 #endif
 #ifdef __UINT8_TYPE__
 typedef __UINT8_TYPE__ uint8_t;
