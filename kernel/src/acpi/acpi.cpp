@@ -19,6 +19,7 @@ void __detect_and_use_baremetal_pci_serial_controller() {
     serial_controller->enable();
 
     auto& bar = serial_controller->get_bars()[0];
+    serial_controller->dbg_print_to_string();
 
     if (bar.type == pci::pci_bar_type::io_space) {
         uint16_t io_base = static_cast<uint16_t>(bar.address);
@@ -46,6 +47,43 @@ bool acpi_validate_checksum(void* table, size_t length) {
     return sum == 0;
 }
 
+/**
+ * @brief Ensures that the ACPI table is fully mapped in memory.
+ * 
+ * This function checks if the ACPI table spans multiple pages and maps any additional
+ * pages required to ensure the table is fully accessible in virtual memory.
+ * 
+ * @param table_address The physical address of the ACPI table.
+ */
+__PRIVILEGED_CODE
+void map_acpi_table(uintptr_t table_address) {
+    // Initially, just one page has to be mapped for the table
+    if (paging::get_physical_address(reinterpret_cast<void*>(table_address)) == 0) {
+        paging::map_page(table_address, table_address, DEFAULT_PRIV_PAGE_FLAGS, paging::get_pml4());
+    }
+
+    // Now that we can access the table's header, we can look at the length
+    acpi_sdt_header* table = reinterpret_cast<acpi_sdt_header*>(table_address);
+
+    // Calculate the starting and ending physical addresses
+    uintptr_t start_address = table_address;
+    uintptr_t end_address = table_address + table->length - 1;
+
+    // Align start and end addresses to page boundaries
+    uintptr_t start_page = start_address & ~(PAGE_SIZE - 1);
+    uintptr_t end_page = end_address & ~(PAGE_SIZE - 1);
+
+    // Traverse and map each page in the range
+    for (uintptr_t current_page = start_page; current_page <= end_page; current_page += PAGE_SIZE) {
+        // Check if the page is already mapped
+        uintptr_t physical_address = paging::get_physical_address(reinterpret_cast<void*>(current_page));
+        if (physical_address == 0) {
+            // Map the page if it's not already mapped
+            paging::map_page(current_page, current_page, DEFAULT_PRIV_PAGE_FLAGS, paging::get_pml4());
+        }
+    }
+}
+
 __PRIVILEGED_CODE
 void enumerate_acpi_tables(void* rsdp) {
     if (!rsdp) {
@@ -57,6 +95,9 @@ void enumerate_acpi_tables(void* rsdp) {
     rsdp_descriptor* rsdp_desc = reinterpret_cast<rsdp_descriptor*>(rsdp);
     xsdt* xsdt_table = reinterpret_cast<xsdt*>(rsdp_desc->xsdt_address);
 
+    // Ensure that the XSDT table is mapped into the kernel's address space
+    map_acpi_table(rsdp_desc->xsdt_address);
+
     // Validate XSDT checksum
     if (!acpi_validate_checksum(xsdt_table, xsdt_table->header.length)) {
         serial::printf("[*] XSDT has an invalid checksum\n");
@@ -67,6 +108,8 @@ void enumerate_acpi_tables(void* rsdp) {
     size_t entry_count = (xsdt_table->header.length - sizeof(acpi_sdt_header)) / sizeof(uint64_t);
     for (size_t i = 0; i < entry_count; ++i) {
         auto table_address = xsdt_table->entries[i];
+        map_acpi_table(table_address);
+
         acpi_sdt_header* table = reinterpret_cast<acpi_sdt_header*>(table_address);
 
         // Validate table checksum
@@ -75,8 +118,6 @@ void enumerate_acpi_tables(void* rsdp) {
             memcpy(table_name, table->signature, 4);
             
             // Handle specific table (e.g., MADT, FADT, etc.)
-            serial::printf("Found ACPI table: %s (0x%llx)\n", table_name, table);
-
             if (strcmp(table_name, "MCFG") == 0) {
                 // Initialize the PCI subsystem
                 auto& pci = pci::pci_manager::get();
