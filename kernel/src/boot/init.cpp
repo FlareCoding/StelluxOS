@@ -14,6 +14,8 @@
 #include <dynpriv/dynpriv.h>
 #include <modules/graphics/gfx_framebuffer_driver.h>
 #include <modules/module_manager.h>
+#include <fs/ram_filesystem.h>
+#include <fs/vfs.h>
 
 #ifdef BUILD_UNIT_TESTS
 #include <acpi/shutdown.h>
@@ -142,6 +144,197 @@ void init(unsigned int magic, void* mbi) {
     }
 }
 
+// void ls(fs::filesystem& fs, const kstl::string& path) {
+//     kstl::vector<fs::direntry> entries;
+
+//     // List the directory
+//     fs::fs_error error = fs.list_directory(path, entries);
+//     if (error != fs::fs_error::success) {
+//         serial::printf("Error: Unable to list '%s' - %s\n", path.c_str(), fs::error_to_string(error));
+//         return;
+//     }
+
+//     serial::printf("Listing directory: %s\n", path.c_str());
+//     serial::printf("Permissions  Size       Name\n");
+//     serial::printf("-----------------------------------\n");
+
+//     for (const auto& entry : entries) {
+//         const auto& inode = entry.target_inode();
+
+//         // Null pointer check
+//         if (!inode) {
+//             serial::printf("Error: Null inode for '%s'\n", entry.name().c_str());
+//             continue;
+//         }
+
+//         // Permissions
+//         char permissions[11] = {'-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '\0'};
+//         if (inode->is_directory()) permissions[0] = 'd';
+//         if (inode->perms() & 0b100000000) permissions[1] = 'r';
+//         if (inode->perms() & 0b010000000) permissions[2] = 'w';
+//         if (inode->perms() & 0b001000000) permissions[3] = 'x';
+//         if (inode->perms() & 0b000100000) permissions[4] = 'r';
+//         if (inode->perms() & 0b000010000) permissions[5] = 'w';
+//         if (inode->perms() & 0b000001000) permissions[6] = 'x';
+//         if (inode->perms() & 0b000000100) permissions[7] = 'r';
+//         if (inode->perms() & 0b000000010) permissions[8] = 'w';
+//         if (inode->perms() & 0b000000001) permissions[9] = 'x';
+
+//         // Ensure name is valid
+//         if (entry.name().empty()) {
+//             serial::printf("Error: Empty name for inode\n");
+//             continue;
+//         }
+
+//         const auto& name = entry.name();
+
+//         // Print the entry in Linux-like format
+//         serial::printf("%s  %u %04s %s\n", permissions, inode->size(), " ", name.c_str());
+//     }
+// }
+
+void test_ramfs() {
+    auto mockfs = kstl::make_shared<fs::ram_filesystem>();
+
+    auto& vfs = fs::virtual_filesystem::get();
+    vfs.mount("/", mockfs);
+
+    kstl::string path = "/";
+    serial::printf("vfs.path_exists(\"%s\") --> %i\n", path.c_str(), vfs.path_exists(path));
+
+    path = "/home";
+    serial::printf("vfs.path_exists(\"%s\") --> %i\n", path.c_str(), vfs.path_exists(path));
+
+    auto status = vfs.create(path, fs::vfs_node_type::directory);
+    if (status != fs::fs_error::success) {
+        serial::printf("Failed to create '%s': %s\n", path.c_str(), fs::error_to_string(status));
+        return;
+    }
+
+    path = "/home/subdir/";
+    status = vfs.create(path, fs::vfs_node_type::directory);
+    if (status != fs::fs_error::success) {
+        serial::printf("Failed to create '%s': %s\n", path.c_str(), fs::error_to_string(status));
+        return;
+    }
+
+    path = "/home/subdir/test_file.txt";
+    status = vfs.create(path, fs::vfs_node_type::file);
+    if (status != fs::fs_error::success) {
+        serial::printf("Failed to create '%s': %s\n", path.c_str(), fs::error_to_string(status));
+        return;
+    }
+
+    path = "/home";
+    serial::printf("vfs.path_exists(\"%s\") --> %i\n", path.c_str(), vfs.path_exists(path));
+
+    path = "/home/var";
+    serial::printf("vfs.path_exists(\"%s\") --> %i\n", path.c_str(), vfs.path_exists(path));
+
+    path = "/home/subdir";
+    serial::printf("vfs.path_exists(\"%s\") --> %i\n", path.c_str(), vfs.path_exists(path));
+    
+    path = "/home/subdir/test";
+    serial::printf("vfs.path_exists(\"%s\") --> %i\n", path.c_str(), vfs.path_exists(path));
+
+    path = "/home/subdir/test_file.txt";
+    serial::printf("vfs.path_exists(\"%s\") --> %i\n", path.c_str(), vfs.path_exists(path));
+
+    serial::printf("Reading file '%s'...\n", path.c_str());
+    char buf[16] = { 0 };
+    ssize_t bytes_read = vfs.read(path, buf, sizeof(buf) - 1, 0);
+    if (bytes_read < 0) {
+        serial::printf("Error: %s\n", fs::error_to_string(bytes_read));
+    } else {
+        serial::printf("Bytes read: %lli, buffer: '%s'\n", bytes_read, buf);
+    }
+
+    serial::printf("Writing to file '%s'...\n", path.c_str());
+    char write_buf[] = "Hello File!";
+    ssize_t bytes_written = vfs.write(path, write_buf, sizeof(write_buf), 0);
+    if (bytes_written < 0) {
+        serial::printf("Error: %s\n", fs::error_to_string(bytes_written));
+    } else {
+        serial::printf("Bytes written: %lli\n", bytes_written);
+    }
+
+    serial::printf("Reading file '%s' again...\n", path.c_str());
+    zeromem(buf, 16);
+    bytes_read = vfs.read(path, buf, sizeof(buf) - 1, 0);
+    if (bytes_read < 0) {
+        serial::printf("Error: %s\n", fs::error_to_string(bytes_read));
+    } else {
+        serial::printf("Bytes read: %lli, buffer: '%s'\n", bytes_read, buf);
+    }
+
+    serial::printf("Reading file '%s' again (x2)...\n", path.c_str());
+    zeromem(buf, 16);
+    bytes_read = vfs.read(path, buf, sizeof(buf) - 1, 0);
+    if (bytes_read < 0) {
+        serial::printf("Error: %s\n", fs::error_to_string(bytes_read));
+    } else {
+        serial::printf("Bytes read: %lli, buffer: '%s'\n", bytes_read, buf);
+    }
+
+    path = "/";
+    kstl::vector<kstl::string> entries;
+    status = fs::virtual_filesystem::get().listdir(path, entries);
+
+    if (status == fs::fs_error::success) {
+        serial::printf("Contents of '%s':\n", path.c_str());
+        for (const auto& name : entries) {
+            serial::printf("- %s\n", name.c_str());
+        }
+    } else {
+        serial::printf("Failed to list directory: %s\n", fs::error_to_string(status));
+    }
+
+    path = "/home";
+    entries.clear();
+    status = fs::virtual_filesystem::get().listdir(path, entries);
+
+    if (status == fs::fs_error::success) {
+        serial::printf("Contents of '%s':\n", path.c_str());
+        for (const auto& name : entries) {
+            serial::printf("- %s\n", name.c_str());
+        }
+    } else {
+        serial::printf("Failed to list directory: %s\n", fs::error_to_string(status));
+    }
+
+    path = "/home/subdir";
+    entries.clear();
+    status = fs::virtual_filesystem::get().listdir(path, entries);
+
+    if (status == fs::fs_error::success) {
+        serial::printf("Contents of '%s':\n", path.c_str());
+        for (const auto& name : entries) {
+            serial::printf("- %s\n", name.c_str());
+        }
+    } else {
+        serial::printf("Failed to list directory: %s\n", fs::error_to_string(status));
+    }
+
+    status = vfs.remove(path);
+    if (status != fs::fs_error::success) {
+        serial::printf("Failed to remove '%s': %s\n", path.c_str(), fs::error_to_string(status));
+        return;
+    }
+
+    path = "/var/subdir";
+    entries.clear();
+    status = fs::virtual_filesystem::get().listdir(path, entries);
+
+    if (status == fs::fs_error::success) {
+        serial::printf("Contents of '%s':\n", path.c_str());
+        for (const auto& name : entries) {
+            serial::printf("- %s\n", name.c_str());
+        }
+    } else {
+        serial::printf("Failed to list directory: %s\n", fs::error_to_string(status));
+    }
+}
+
 void module_manager_init(void*) {
     // First create a graphics module to allow rendering to the screen,
     // and for that we need to create a framebuffer information struct.
@@ -175,6 +368,8 @@ void module_manager_init(void*) {
 
     // Iterate over discovered PCI devices and attempt to find driver modules
     //module_manager.start_pci_device_modules();
+
+    test_ramfs();
 
     sched::exit_thread();
 }
