@@ -15,7 +15,7 @@ public:
 
     fs_error mount(const kstl::string& path, const kstl::shared_ptr<filesystem>& fs);
 
-    fs_error create(const kstl::string& path, fs::vfs_node_type type);
+    fs_error create(const kstl::string& path, fs::vfs_node_type type, uint32_t perms);
     fs_error remove(const kstl::string& path);
 
     ssize_t read(const kstl::string& path, void* buffer, size_t size, uint64_t offset);

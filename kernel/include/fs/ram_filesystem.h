@@ -14,6 +14,10 @@ struct ramfs_direntry {
 struct ramfs_node {
     kstl::string name;
     vfs_node_type type;
+    uint32_t permissions;
+    uint64_t creation_ts;
+    uint64_t modification_ts;
+    uint64_t access_ts;
     uint8_t* data; // File data (only for files)
     size_t data_size; // Size of the file data
     kstl::vector<ramfs_direntry*> children; // Directory children
@@ -31,7 +35,7 @@ private:
     static ssize_t ramfs_write(vfs_node* node, const void* buffer, size_t size, uint64_t offset);
 
     static kstl::shared_ptr<vfs_node> ramfs_lookup(vfs_node* parent, const char* name);
-    static int ramfs_create(vfs_node* parent, const char* name, vfs_node_type type);
+    static int ramfs_create(vfs_node* parent, const char* name, vfs_node_type type, uint32_t perms);
     static int ramfs_remove(vfs_node* parent, vfs_node* node);
     static int ramfs_listdir(vfs_node* node, kstl::vector<kstl::string>& entries);
 

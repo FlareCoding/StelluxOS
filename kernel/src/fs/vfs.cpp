@@ -39,7 +39,8 @@ fs_error virtual_filesystem::mount(
 
 fs_error virtual_filesystem::create(
     const kstl::string& path,
-    fs::vfs_node_type type
+    fs::vfs_node_type type,
+    uint32_t perms
 ) {
     // Validate the input path
     if (path.empty()) {
@@ -86,7 +87,7 @@ fs_error virtual_filesystem::create(
     }
 
     // Call the create operation
-    int status = parent_node->ops.create(parent_node.get(), name.c_str(), type);
+    int status = parent_node->ops.create(parent_node.get(), name.c_str(), type, perms);
     
     return (status == 0) ? fs_error::success : fs_error::io_error;
 }

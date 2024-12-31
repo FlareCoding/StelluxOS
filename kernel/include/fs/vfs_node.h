@@ -20,7 +20,7 @@ enum class vfs_node_type {
 typedef ssize_t (*vfs_read_t)(vfs_node* node, void* buffer, size_t size, uint64_t offset);
 typedef ssize_t (*vfs_write_t)(vfs_node* node, const void* buffer, size_t size, uint64_t offset);
 typedef kstl::shared_ptr<vfs_node> (*vfs_lookup_t)(vfs_node* parent, const char* name);
-typedef int (*vfs_create_t)(vfs_node* parent, const char* name, vfs_node_type type);
+typedef int (*vfs_create_t)(vfs_node* parent, const char* name, vfs_node_type type, uint32_t perms);
 typedef int (*vfs_delete_t)(vfs_node* parent, vfs_node* node);
 typedef int (*vfs_listdir_t)(vfs_node* node, kstl::vector<kstl::string>& entries);
 

@@ -205,21 +205,21 @@ void test_ramfs() {
     path = "/home";
     serial::printf("vfs.path_exists(\"%s\") --> %i\n", path.c_str(), vfs.path_exists(path));
 
-    auto status = vfs.create(path, fs::vfs_node_type::directory);
+    auto status = vfs.create(path, fs::vfs_node_type::directory, 777);
     if (status != fs::fs_error::success) {
         serial::printf("Failed to create '%s': %s\n", path.c_str(), fs::error_to_string(status));
         return;
     }
 
     path = "/home/subdir/";
-    status = vfs.create(path, fs::vfs_node_type::directory);
+    status = vfs.create(path, fs::vfs_node_type::directory, 777);
     if (status != fs::fs_error::success) {
         serial::printf("Failed to create '%s': %s\n", path.c_str(), fs::error_to_string(status));
         return;
     }
 
     path = "/home/subdir/test_file.txt";
-    status = vfs.create(path, fs::vfs_node_type::file);
+    status = vfs.create(path, fs::vfs_node_type::file, 777);
     if (status != fs::fs_error::success) {
         serial::printf("Failed to create '%s': %s\n", path.c_str(), fs::error_to_string(status));
         return;

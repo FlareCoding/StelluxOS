@@ -1,4 +1,5 @@
 #include <fs/ram_filesystem.h>
+#include <time/time.h>
 #include <serial/serial.h>
 
 namespace fs {
@@ -55,6 +56,9 @@ ssize_t ram_filesystem::ramfs_read(vfs_node* node, void* buffer, size_t size, ui
         return 0; // Offset out of bounds
     }
 
+    // Update the last access timestamp
+    ram_node->access_ts = kernel_timer::get_system_time_in_milliseconds();
+
     size_t readable = kstl::min(size, ram_node->data_size - offset);
     memcpy(buffer, ram_node->data + offset, readable);
     return readable;
@@ -85,6 +89,10 @@ ssize_t ram_filesystem::ramfs_write(vfs_node* node, const void* buffer, size_t s
         ram_node->data_size = required_size;
     }
 
+    // Update the last access and modification timestamps
+    ram_node->access_ts = kernel_timer::get_system_time_in_milliseconds();
+    ram_node->modification_ts = ram_node->access_ts;
+
     // Write the data into the file's data buffer
     memcpy(ram_node->data + offset, buffer, size);
 
@@ -107,6 +115,10 @@ kstl::shared_ptr<vfs_node> ram_filesystem::ramfs_lookup(vfs_node* parent, const 
             auto vnode = kstl::make_shared<vfs_node>();
             vnode->type = entry->node->type;
             vnode->size = entry->node->data_size;
+            vnode->perms = entry->node->permissions;
+            vnode->creation_ts = entry->node->creation_ts;
+            vnode->modification_ts = entry->node->modification_ts;
+            vnode->access_ts = entry->node->access_ts;
             vnode->_private = entry->node;
 
 #if 0
@@ -119,7 +131,12 @@ kstl::shared_ptr<vfs_node> ram_filesystem::ramfs_lookup(vfs_node* parent, const 
     return vfs_null_node; // Not found
 }
 
-int ram_filesystem::ramfs_create(vfs_node* parent, const char* name, vfs_node_type type) {
+int ram_filesystem::ramfs_create(
+    vfs_node* parent,
+    const char* name,
+    vfs_node_type type,
+    uint32_t perms
+) {
     auto ram_node = static_cast<ramfs_node*>(parent->_private);
     if (ram_node->type != vfs_node_type::directory) {
         return -1; // Not a directory
@@ -128,6 +145,10 @@ int ram_filesystem::ramfs_create(vfs_node* parent, const char* name, vfs_node_ty
     auto new_node = new ramfs_node();
     new_node->name = name;
     new_node->type = type;
+    new_node->permissions = perms;
+    new_node->creation_ts = kernel_timer::get_system_time_in_milliseconds();
+    new_node->modification_ts = new_node->creation_ts;
+    new_node->access_ts = new_node->creation_ts;
     new_node->data = nullptr;
     new_node->data_size = 0;
 
