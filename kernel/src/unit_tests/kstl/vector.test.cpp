@@ -298,6 +298,72 @@ DECLARE_UNIT_TEST("vector reserve", test_vector_reserve) {
     return UNIT_TEST_SUCCESS;
 }
 
+// Test resize with primitive and non-primitive types
+DECLARE_UNIT_TEST("vector resize", test_vector_resize) {
+    // Test with primitive type
+    {
+        vector<int> v;
+        v.push_back(1);
+        v.push_back(2);
+
+        // Resize to a larger size
+        v.resize(5);
+        ASSERT_EQ(v.size(), (size_t)5, "Resized vector should have size 5");
+        ASSERT_EQ(v[0], 1, "Check existing element 0");
+        ASSERT_EQ(v[1], 2, "Check existing element 1");
+        ASSERT_EQ(v[2], 0, "Newly added elements should be default-initialized to 0");
+        ASSERT_EQ(v[3], 0, "Newly added elements should be default-initialized to 0");
+        ASSERT_EQ(v[4], 0, "Newly added elements should be default-initialized to 0");
+
+        // Resize to a smaller size
+        v.resize(1);
+        ASSERT_EQ(v.size(), (size_t)1, "Resized vector should have size 1");
+        ASSERT_EQ(v[0], 1, "Remaining element should be the first one");
+
+        // Resize to zero
+        v.resize(0);
+        ASSERT_EQ(v.size(), (size_t)0, "Resized vector should have size 0");
+        ASSERT_TRUE(v.empty(), "Vector should be empty");
+    }
+
+    // Test with non-primitive type
+    {
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "No objects alive at start");
+
+        vector<VecTestObject> v;
+        v.push_back(VecTestObject(10));
+        v.push_back(VecTestObject(20));
+
+        ASSERT_EQ(v.size(), (size_t)2, "Initial size should be 2");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)2, "Two objects alive");
+
+        // Resize to a larger size
+        v.resize(5);
+        ASSERT_EQ(v.size(), (size_t)5, "Resized vector should have size 5");
+        ASSERT_EQ(v[0].value, 10, "Check existing element 0");
+        ASSERT_EQ(v[1].value, 20, "Check existing element 1");
+        ASSERT_EQ(v[2].value, 0, "Newly added elements should be default-constructed");
+        ASSERT_EQ(v[3].value, 0, "Newly added elements should be default-constructed");
+        ASSERT_EQ(v[4].value, 0, "Newly added elements should be default-constructed");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)5, "Five objects alive after resize");
+
+        // Resize to a smaller size
+        v.resize(2);
+        ASSERT_EQ(v.size(), (size_t)2, "Resized vector should have size 2");
+        ASSERT_EQ(v[0].value, 10, "Check remaining element 0");
+        ASSERT_EQ(v[1].value, 20, "Check remaining element 1");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)2, "Two objects alive after resizing smaller");
+
+        // Resize to zero
+        v.resize(0);
+        ASSERT_EQ(v.size(), (size_t)0, "Resized vector should have size 0");
+        ASSERT_TRUE(v.empty(), "Vector should be empty");
+        ASSERT_EQ(VecTestObject::alive_count, (size_t)0, "No objects alive after resizing to zero");
+    }
+
+    return UNIT_TEST_SUCCESS;
+}
+
 // Test clear
 DECLARE_UNIT_TEST("vector clear", test_vector_clear) {
     vector<int> v;

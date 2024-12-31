@@ -119,6 +119,15 @@ public:
         other.m_ref_count = nullptr;
     }
 
+    template <typename U>
+    shared_ptr(const shared_ptr<U>& other, T* casted_ptr)
+        : m_ptr(casted_ptr),
+        m_ref_count(other.m_ref_count) {
+        if (m_ref_count) {
+            ++(*m_ref_count);
+        }
+    }
+
     // Move assignment operator
     shared_ptr& operator=(shared_ptr&& other) noexcept {
         if (this != &other) {
@@ -201,14 +210,26 @@ shared_ptr<T> make_shared(Args&&... args) {
     return shared_ptr<T>(ptr);
 }
 
+// Static cast for shared_ptr
 template <class T, class U>
-kstl::shared_ptr<T> static_pointer_cast(const kstl::shared_ptr<U>& r);
+kstl::shared_ptr<T> static_pointer_cast(const kstl::shared_ptr<U>& r) noexcept {
+    return kstl::shared_ptr<T>(r, static_cast<T*>(r.get())); // Share ownership but cast the pointer
+}
 
+// Dynamic cast for shared_ptr
 template <class T, class U>
-kstl::shared_ptr<T> dynamic_pointer_cast(const kstl::shared_ptr<U>& r);
+kstl::shared_ptr<T> dynamic_pointer_cast(const kstl::shared_ptr<U>& r) noexcept {
+    if (T* p = dynamic_cast<T*>(r.get())) {
+        return kstl::shared_ptr<T>(r, p); // Share ownership only if the cast succeeds
+    }
+    return kstl::shared_ptr<T>(); // Return an empty shared_ptr if cast fails
+}
 
+// Reinterpret cast for shared_ptr
 template <class T, class U>
-kstl::shared_ptr<T> reinterpret_pointer_cast(const kstl::shared_ptr<U>& r);
+kstl::shared_ptr<T> reinterpret_pointer_cast(const kstl::shared_ptr<U>& r) noexcept {
+    return kstl::shared_ptr<T>(r, reinterpret_cast<T*>(r.get())); // Share ownership but reinterpret the pointer
+}
 } // namespace kstl
 
 #endif // MEMORY_H

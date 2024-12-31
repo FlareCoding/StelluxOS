@@ -738,6 +738,70 @@ size_t string::find(const string& str) const {
     return find(str.c_str());
 }
 
+size_t string::find(char c, size_t start) const {
+    const char* current = m_using_sso ? m_sso_buffer : m_data;
+    size_t this_len = this->length();
+
+    if (start >= this_len) {
+        return npos; // Starting index out of bounds
+    }
+
+    for (size_t i = start; i < this_len; ++i) {
+        if (current[i] == c) {
+            return i; // Found the character
+        }
+    }
+
+    return npos; // Character not found
+}
+
+size_t string::find(const char* substr, size_t start) const {
+    size_t len = strlen(substr);
+    if (len == 0) {
+        return start; // Empty string always matches at the starting index
+    }
+
+    const char* current = m_using_sso ? m_sso_buffer : m_data;
+    size_t this_len = this->length();
+
+    if (start >= this_len || len > this_len - start) {
+        return npos; // Starting index out of bounds or substring too long
+    }
+
+    for (size_t i = start; i <= this_len - len; ++i) {
+        size_t j;
+        for (j = 0; j < len; ++j) {
+            if (current[i + j] != substr[j]) {
+                break;
+            }
+        }
+
+        if (j == len) {
+            return i; // Substring found at position i
+        }
+    }
+
+    return npos; // Substring not found
+}
+
+size_t string::find(const string& str, size_t start) const {
+    return find(str.c_str(), start);
+}
+
+size_t string::find_last_of(char c) const {
+    const char* str = m_using_sso ? m_sso_buffer : m_data;
+    size_t len = this->length();
+
+    // Traverse the string backward to find the last occurrence of the character
+    for (size_t i = len; i > 0; --i) {
+        if (str[i - 1] == c) {
+            return i - 1; // Return the index of the last occurrence
+        }
+    }
+
+    return npos; // Character not found
+}
+
 string string::substring(size_t start, size_t length) const {
     size_t str_length = this->length();
 
@@ -761,6 +825,28 @@ string string::substring(size_t start, size_t length) const {
     free(buffer); // Free temporary buffer
 
     return new_string;
+}
+
+bool string::starts_with(const kstl::string& prefix) const {
+    size_t prefix_length = prefix.length();
+    size_t str_length = this->length();
+
+    // If the prefix is longer than the string, it cannot match
+    if (prefix_length > str_length) {
+        return false;
+    }
+
+    const char* str = this->c_str();
+    const char* prefix_str = prefix.c_str();
+
+    // Compare the prefix with the start of the string
+    for (size_t i = 0; i < prefix_length; ++i) {
+        if (str[i] != prefix_str[i]) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void string::clear() {

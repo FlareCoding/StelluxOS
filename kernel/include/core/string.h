@@ -171,7 +171,13 @@ public:
     size_t find(const char* str) const;
     size_t find(const string& str) const;
 
+    size_t find(char c, size_t start) const;
+    size_t find(const char* substr, size_t start) const;
+    size_t find(const string& str, size_t start) const;
+    size_t find_last_of(char c) const;
+
     string substring(size_t start, size_t length = npos) const;
+    bool starts_with(const kstl::string& prefix) const;
 
     void clear();
 

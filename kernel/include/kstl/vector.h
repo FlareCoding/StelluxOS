@@ -21,6 +21,9 @@ public:
     T& operator[](size_t index);
     const T& operator[](size_t index) const;
 
+    T& front();
+    T& back();
+
     void push_back(const T& value);
     void push_back(T&& value);
 
@@ -37,6 +40,7 @@ public:
     bool empty() const;
 
     void reserve(size_t new_capacity);
+    void resize(size_t new_size);
     void clear();
 
     T* begin() { return m_data; }
@@ -159,6 +163,18 @@ T& vector<T>::operator[](size_t index) {
 template <typename T>
 const T& vector<T>::operator[](size_t index) const {
     return m_data[index];
+}
+
+template <typename T>
+T& vector<T>::front() {
+    // Assuming the vector is not empty
+    return m_data[0];
+}
+
+template <typename T>
+T& vector<T>::back() {
+    // Assuming the vector is not empty
+    return m_data[m_size - 1];
 }
 
 template <typename T>
@@ -289,6 +305,34 @@ void vector<T>::reserve(size_t new_capacity) {
     if (new_capacity > m_capacity) {
         reallocate(new_capacity);
     }
+}
+
+template <typename T>
+void vector<T>::resize(size_t new_size) {
+    if (new_size < m_size) {
+        // Shrink the vector: Destroy the excess elements
+        for (size_t i = new_size; i < m_size; ++i) {
+            m_data[i].~T();
+        }
+    } else if (new_size > m_size) {
+        // Grow the vector: Ensure capacity and default-construct new elements
+        if (new_size > m_capacity) {
+            size_t new_capacity = m_capacity == 0 ? 1 : m_capacity;
+            while (new_capacity < new_size) {
+                new_capacity *= 2;
+            }
+            reallocate(new_capacity);
+        }
+
+        // Default-construct new elements
+        for (size_t i = m_size; i < new_size; ++i) {
+            if constexpr (!is_primitive<T>::value) {
+                new(&m_data[i]) T();
+            }
+        }
+    }
+
+    m_size = new_size;
 }
 
 template <typename T>
