@@ -1,18 +1,18 @@
-#include <modules/graphics/gfx_framebuffer_driver.h>
+#include <modules/graphics/gfx_framebuffer_module.h>
 #include <memory/vmm.h>
 #include <memory/paging.h>
 #include <dynpriv/dynpriv.h>
 
 namespace modules {
-gfx_framebuffer_driver::gfx_framebuffer_driver(
+gfx_framebuffer_module::gfx_framebuffer_module(
     uintptr_t physbase,
     const framebuffer_t& framebuffer
-) : module_base("gfx_framebuffer_driver") {
+) : module_base("gfx_framebuffer_module") {
     m_physical_base = physbase;
     m_native_hw_buffer = framebuffer;
 }
 
-bool gfx_framebuffer_driver::init() {
+bool gfx_framebuffer_module::init() {
     // Calculate how many pages the framebuffer needs
     uint32_t page_count = (m_native_hw_buffer.pitch * m_native_hw_buffer.height) / PAGE_SIZE + 1;
 
@@ -117,15 +117,15 @@ bool gfx_framebuffer_driver::init() {
     return true;
 }
 
-bool gfx_framebuffer_driver::start() {
+bool gfx_framebuffer_module::start() {
     return true;
 }
 
-bool gfx_framebuffer_driver::stop() {
+bool gfx_framebuffer_module::stop() {
     return true;
 }
 
-bool gfx_framebuffer_driver::on_command(
+bool gfx_framebuffer_module::on_command(
     uint64_t  command,
     const void* data_in,
     size_t      data_in_size,

@@ -1,9 +1,9 @@
-#ifndef GFX_FRAMEBUFFER_DRIVER_H
-#define GFX_FRAMEBUFFER_DRIVER_H
+#ifndef GFX_FRAMEBUFFER_MODULE_H
+#define GFX_FRAMEBUFFER_MODULE_H
 #include <modules/module_manager.h>
 
 namespace modules {
-class gfx_framebuffer_driver : public module_base {
+class gfx_framebuffer_module : public module_base {
 public:
     struct framebuffer_t {
         uint32_t    width;
@@ -13,7 +13,7 @@ public:
         uint8_t*    pixels;
     };
 
-    explicit gfx_framebuffer_driver(
+    explicit gfx_framebuffer_module(
         uintptr_t physbase,
         const framebuffer_t& framebuffer
     );
@@ -45,5 +45,5 @@ private:
 
 } // namespace modules
 
-#endif // GFX_FRAMEBUFFER_DRIVER_H
+#endif // GFX_FRAMEBUFFER_MODULE_H
 
