@@ -105,7 +105,7 @@ fs_error virtual_filesystem::create(
     }
 
     // Ensure the parent node is a directory
-    if (parent_node->type != fs::vfs_node_type::directory) {
+    if (parent_node->stat.type != fs::vfs_node_type::directory) {
         return fs_error::not_directory;
     }
 
@@ -168,7 +168,7 @@ fs_error virtual_filesystem::remove(
     }
 
     // Ensure the parent node is a directory
-    if (parent_node->type != fs::vfs_node_type::directory) {
+    if (parent_node->stat.type != fs::vfs_node_type::directory) {
         return fs_error::not_directory;
     }
 
@@ -209,7 +209,7 @@ ssize_t virtual_filesystem::read(
     }
 
     // Ensure the resolved node is a file
-    if (resolved_node->type != fs::vfs_node_type::file) {
+    if (resolved_node->stat.type != fs::vfs_node_type::file) {
         return make_error_code(fs_error::not_a_file);
     }
 
@@ -245,7 +245,7 @@ ssize_t virtual_filesystem::write(
     }
 
     // Ensure the resolved node is a file
-    if (resolved_node->type != fs::vfs_node_type::file) {
+    if (resolved_node->stat.type != fs::vfs_node_type::file) {
         return make_error_code(fs_error::not_a_file);
     }
 
@@ -276,7 +276,7 @@ fs_error virtual_filesystem::listdir(const kstl::string& path, kstl::vector<kstl
     }
 
     // Ensure the resolved node is a directory
-    if (resolved_node->type != vfs_node_type::directory) {
+    if (resolved_node->stat.type != vfs_node_type::directory) {
         return fs_error::not_directory;
     }
 
@@ -289,6 +289,26 @@ fs_error virtual_filesystem::listdir(const kstl::string& path, kstl::vector<kstl
     int status = resolved_node->ops.listdir(resolved_node.get(), entries);
     
     return static_cast<fs_error>(status);
+}
+
+fs_error virtual_filesystem::stat(const kstl::string& path, vfs_stat_struct& info) {
+    // Validate the input path
+    if (path.empty()) {
+        return fs_error::invalid_path;
+    }
+
+    // Resolve the node for the provided path
+    kstl::shared_ptr<vfs_node> resolved_node;
+    fs_error result = _resolve_path(path, resolved_node);
+
+    if (result != fs_error::success) {
+        return result; // Path could not be resolved
+    }
+
+    // Copy the stat information from the resolved
+    // node to the info struct provided by reference.
+    info = resolved_node->stat;
+    return fs_error::success;
 }
 
 bool virtual_filesystem::path_exists(const kstl::string& path) {

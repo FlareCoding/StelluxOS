@@ -161,6 +161,53 @@ DECLARE_UNIT_TEST("vfs list directory", test_vfs_list_directory) {
     return UNIT_TEST_SUCCESS;
 }
 
+// Test the `stat()` functionality on a file
+DECLARE_UNIT_TEST("vfs stat file", test_vfs_stat_file) {
+    // Create and mount a RAM filesystem
+    auto mockfs = kstl::make_shared<ram_filesystem>();
+    auto& vfs = virtual_filesystem::get();
+
+    fs_error status = vfs.mount("/", mockfs);
+    ASSERT_EQ(status, fs_error::success, "Failed to mount ramfs: %s", error_to_string(status));
+
+    // Create a file
+    kstl::string file_path = "/stat_test.txt";
+    status = vfs.create(file_path, fs::vfs_node_type::file, 0644);
+    ASSERT_EQ(status, fs_error::success, "Failed to create file '%s': %s",
+              file_path.c_str(), error_to_string(status));
+
+    // Write some data
+    const char* write_data = "Check stat!";
+    ssize_t bytes_written = vfs.write(file_path, write_data, strlen(write_data), 0);
+    ASSERT_EQ(bytes_written, (ssize_t)strlen(write_data),
+              "Failed to write to file '%s': Expected %lli bytes, wrote %lli bytes",
+              file_path.c_str(), (long long)strlen(write_data), (long long)bytes_written);
+
+    // 4) Call stat() on the newly created file
+    vfs_stat_struct info;
+    status = vfs.stat(file_path, info);
+    ASSERT_EQ(status, fs_error::success, "Failed to stat '%s': %s",
+              file_path.c_str(), error_to_string(status));
+
+    // 5) Check that file metadata is correct
+    //    Adjust the checks based on what your vfs_stat_struct contains.
+    ASSERT_EQ(info.type, vfs_node_type::file,
+              "Expected node type 'file' but got something else");
+    ASSERT_EQ(info.size, (uint64_t)strlen(write_data),
+              "Expected file size %llu, got %llu",
+              strlen(write_data), (unsigned long long)info.size);
+
+    // Permissions may be stored differently; adjust as needed.
+    ASSERT_EQ(info.perms, 0644,
+              "Expected file permissions 0644, got %u", info.perms);
+
+    // Unmount and finish
+    status = vfs.unmount("/");
+    ASSERT_EQ(status, fs_error::success, "Failed to unmount ramfs: %s", error_to_string(status));
+
+    return UNIT_TEST_SUCCESS;
+}
+
 // Test removing a file
 DECLARE_UNIT_TEST("vfs remove file", test_vfs_remove_file) {
     auto mockfs = kstl::make_shared<ram_filesystem>();

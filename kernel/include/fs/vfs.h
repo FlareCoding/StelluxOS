@@ -23,6 +23,7 @@ public:
     ssize_t write(const kstl::string& path, const void* buffer, size_t size, uint64_t offset);
 
     fs_error listdir(const kstl::string& path, kstl::vector<kstl::string>& entries);
+    fs_error stat(const kstl::string& path, vfs_stat_struct& info);
 
     bool path_exists(const kstl::string& path);
 

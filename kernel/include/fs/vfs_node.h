@@ -34,14 +34,18 @@ struct vfs_operations {
     vfs_listdir_t    listdir;
 };
 
-struct vfs_node {
-    uint64_t        id;                 // Unique ID for this node
+struct vfs_stat_struct {
     vfs_node_type   type;               // Type of node (file, directory, etc.)
     uint64_t        size;               // Size of the file
     uint32_t        perms;              // Permissions (e.g., rwx flags)
     uint64_t        creation_ts;        // Creation timestamp
     uint64_t        modification_ts;    // Last modification timestamp
     uint64_t        access_ts;          // Last access timestamp
+};
+
+struct vfs_node {
+    // Node information structure
+    vfs_stat_struct stat;
 
     // Filesystem-specific operations
     vfs_operations  ops;

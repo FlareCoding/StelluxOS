@@ -12,7 +12,7 @@ kstl::shared_ptr<vfs_node> ram_filesystem::create_root_node() {
 
     // Create and return the root node
     m_root = kstl::make_shared<vfs_node>();
-    m_root->type = vfs_node_type::directory;
+    m_root->stat.type = vfs_node_type::directory;
 
     // Create the root RAM node
     auto root_ram_node = new ramfs_node();
@@ -46,7 +46,7 @@ void ram_filesystem::set_ops(kstl::shared_ptr<vfs_node>& node, const kstl::strin
     };
 
     // Directory-specific rules
-    if (node->type == vfs_node_type::directory) {
+    if (node->stat.type == vfs_node_type::directory) {
         node->ops.read = nullptr;
         node->ops.write = nullptr;
         node->ops.create = &ramfs_create;
@@ -117,7 +117,7 @@ ssize_t ram_filesystem::ramfs_write(vfs_node* node, const void* buffer, size_t s
     memcpy(ram_node->data + offset, buffer, size);
 
     // Update the size in the VFS node to match the RAM node
-    node->size = ram_node->data_size;
+    node->stat.size = ram_node->data_size;
 
     // Return the number of bytes written
     return size;
@@ -136,12 +136,12 @@ kstl::shared_ptr<vfs_node> ram_filesystem::ramfs_lookup(vfs_node* parent, const 
         if (entry->name == name) {
             // Create and return the virtual filesystem node
             auto vnode = kstl::make_shared<vfs_node>();
-            vnode->type = entry->node->type;
-            vnode->size = entry->node->data_size;
-            vnode->perms = entry->node->permissions;
-            vnode->creation_ts = entry->node->creation_ts;
-            vnode->modification_ts = entry->node->modification_ts;
-            vnode->access_ts = entry->node->access_ts;
+            vnode->stat.type = entry->node->type;
+            vnode->stat.size = entry->node->data_size;
+            vnode->stat.perms = entry->node->permissions;
+            vnode->stat.creation_ts = entry->node->creation_ts;
+            vnode->stat.modification_ts = entry->node->modification_ts;
+            vnode->stat.access_ts = entry->node->access_ts;
             vnode->_private = entry->node;
 
 #if 0
