@@ -4,9 +4,13 @@
 
 namespace fs {
 kstl::shared_ptr<vfs_node> ram_filesystem::create_root_node() {
+    if (m_root) {
+        return m_root;
+    }
+
     // Create and return the root node
-    auto root_node = kstl::make_shared<vfs_node>();
-    root_node->type = vfs_node_type::directory;
+    m_root = kstl::make_shared<vfs_node>();
+    m_root->type = vfs_node_type::directory;
 
     // Create the root RAM node
     auto root_ram_node = new ramfs_node();
@@ -14,9 +18,15 @@ kstl::shared_ptr<vfs_node> ram_filesystem::create_root_node() {
     root_ram_node->type = vfs_node_type::directory;
 
     // Link the VFS node with the RAM node
-    root_node->_private = root_ram_node;
+    m_root->_private = root_ram_node;
 
-    return root_node;
+    return m_root;
+}
+
+void ram_filesystem::unmount() {
+    // Cleanup all resources
+    auto root_ram_node = static_cast<ramfs_node*>(m_root->_private);
+    _delete_ram_directory(root_ram_node);
 }
 
 void ram_filesystem::set_ops(kstl::shared_ptr<vfs_node>& node, const kstl::string& path) {
@@ -109,7 +119,7 @@ kstl::shared_ptr<vfs_node> ram_filesystem::ramfs_lookup(vfs_node* parent, const 
         return vfs_null_node; // Not a directory
     }
 
-    for (auto& entry : ram_node->children) {
+    for (ramfs_direntry* entry : ram_node->children) {
         if (entry->name == name) {
             // Create and return the virtual filesystem node
             auto vnode = kstl::make_shared<vfs_node>();
@@ -182,7 +192,7 @@ int ram_filesystem::ramfs_remove(vfs_node* parent, vfs_node* node) {
 
     // Find the target node in the parent's children
     for (size_t i = 0; i < parent_ram_node->children.size(); ++i) {
-        auto& direntry = parent_ram_node->children[i];
+        auto direntry = parent_ram_node->children[i];
         if (direntry->node != target_ram_node) {
             continue;
         }
@@ -228,7 +238,7 @@ int ram_filesystem::ramfs_listdir(vfs_node* node, kstl::vector<kstl::string>& en
     }
 
     // Populate the entries with the names of the children
-    for (auto& entry : ram_node->children) {
+    for (ramfs_direntry* entry : ram_node->children) {
         entries.push_back(entry->name);
     }
 
@@ -262,7 +272,7 @@ void ram_filesystem::_delete_ram_directory(ramfs_node* dir_node) {
 #endif
 
     // Recursively delete each child
-    for (auto& direntry : dir_node->children) {
+    for (ramfs_direntry* direntry : dir_node->children) {
         if (direntry->node->type == vfs_node_type::directory) {
             _delete_ram_directory(direntry->node);
         } else {

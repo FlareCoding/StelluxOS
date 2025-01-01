@@ -26,10 +26,13 @@ struct ramfs_node {
 class ram_filesystem : public filesystem {
 public:
     kstl::shared_ptr<vfs_node> create_root_node() override;
+    void unmount() override;
 
     void set_ops(kstl::shared_ptr<vfs_node>& node, const kstl::string& path) override;
 
 private:
+    kstl::shared_ptr<vfs_node> m_root;
+
     // RAM Filesystem Operations
     static ssize_t ramfs_read(vfs_node* node, void* buffer, size_t size, uint64_t offset);
     static ssize_t ramfs_write(vfs_node* node, const void* buffer, size_t size, uint64_t offset);

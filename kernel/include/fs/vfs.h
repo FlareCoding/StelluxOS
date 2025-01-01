@@ -14,6 +14,7 @@ public:
     static virtual_filesystem& get();
 
     fs_error mount(const kstl::string& path, const kstl::shared_ptr<filesystem>& fs);
+    fs_error unmount(const kstl::string& path);
 
     fs_error create(const kstl::string& path, fs::vfs_node_type type, uint32_t perms);
     fs_error remove(const kstl::string& path);

@@ -70,6 +70,11 @@ public:
     virtual kstl::shared_ptr<vfs_node> create_root_node() = 0;
 
     /**
+     * @brief Hook to be called on filesystem unmount operation.
+     */
+    virtual void unmount() = 0;
+
+    /**
      * @brief Sets the `vfs_operations` for a given `vfs_node`.
      *
      * This function is used to assign the appropriate operations to a node.

@@ -37,6 +37,30 @@ fs_error virtual_filesystem::mount(
     return fs_error::success;
 }
 
+fs_error virtual_filesystem::unmount(
+    const kstl::string& path
+) {
+    if (path.empty()) {
+        return fs_error::invalid_argument;
+    }
+
+    for (size_t i = 0; i < m_mount_points.size(); ++i) {
+        auto& mnt = m_mount_points[i];
+        if (mnt.path == path) {
+            // Call the filesystem's specific unmount hook
+            mnt.owner_fs->unmount();
+
+            // Remove the mount point
+            m_mount_points.erase(i);
+
+            return fs_error::success;
+        }
+    }
+
+    // Mount point was not found
+    return fs_error::invalid_path;
+}
+
 fs_error virtual_filesystem::create(
     const kstl::string& path,
     fs::vfs_node_type type,
@@ -84,6 +108,16 @@ fs_error virtual_filesystem::create(
     // Ensure the parent node has a valid create operation
     if (!parent_node->ops.create) {
         return fs_error::unsupported_operation;
+    }
+
+    // Check if the path already exists
+    if (!parent_node->ops.lookup) {
+        return fs_error::unsupported_operation;
+    }
+
+    kstl::shared_ptr<vfs_node> target_node = parent_node->ops.lookup(parent_node.get(), name.c_str());
+    if (target_node) {
+        return fs_error::already_exists;
     }
 
     // Call the create operation
@@ -329,7 +363,7 @@ fs_error virtual_filesystem::_resolve_path(
         
         // If lookup fails, return an error
         if (!current_node) {
-            return fs_error::invalid_path;
+            return fs_error::not_found;
         }
 
         // Since the node was most likely newly created, we need
