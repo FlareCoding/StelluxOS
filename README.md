@@ -121,6 +121,7 @@ when it actually happened.
 - Kernel module subsystem allowing daemons and drivers to be spawned easily
 - Xhci driver module for USB stack support
 - Unit testing framework integrated with Github Actions CI pipeline
+- VFS and RAM filesystem support
 
 <!-- Getting Started -->
 ## :gear: Getting Started
