@@ -9,6 +9,7 @@
 #include <arch/x86/apic/lapic.h>
 #include <arch/x86/gdt/gdt.h>
 #include <arch/x86/idt/idt.h>
+#include <arch/x86/pat.h>
 #include <arch/x86/fsgsbase.h>
 #include <syscall/syscalls.h>
 #include <sched/sched.h>
@@ -53,6 +54,9 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     // Setup the IDT and enable interrupts
     install_idt();
     enable_interrupts();
+
+    // Setup the kernel PAT for this processor core
+    setup_kernel_pat();
 
     // Setup per-cpu area for the bootstrapping processor
     enable_fsgsbase();
