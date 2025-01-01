@@ -2,6 +2,7 @@
 #include <memory/vmm.h>
 #include <memory/paging.h>
 #include <dynpriv/dynpriv.h>
+#include <time/time.h>
 
 namespace modules {
 gfx_framebuffer_module::gfx_framebuffer_module(
@@ -113,6 +114,33 @@ bool gfx_framebuffer_module::init() {
     fill_rect(cursor_x, start_y + (letter_height / 2) - 10, letter_width, 20, text_color); // Middle
     fill_rect(cursor_x + letter_width - 20, start_y + (letter_height / 2), 20, letter_height / 2, text_color); // Bottom right
     fill_rect(cursor_x, start_y + letter_height - 20, letter_width, 20, text_color);     // Bottom
+
+    // Moving square logic
+    int square_size = 50;             // Size of the square
+    int square_x = 0;                 // Initial x-position of the square
+    int square_y = m_native_hw_buffer.height / 2 - square_size / 2; // Center vertically
+    int dx = 1;                      // Horizontal movement step
+    const uint32_t square_color = 0xFF0000; // Red
+    const uint32_t bg_color = 0x1F1F1F;
+
+    while (true) {
+        // Clear the old square
+        fill_rect(square_x, square_y, square_size, square_size, bg_color);
+
+        // Update position
+        square_x += dx;
+
+        // Check boundaries
+        if ((uint32_t)square_x + (uint32_t)square_size >= m_native_hw_buffer.width || square_x <= 0) {
+            dx = -dx; // Reverse direction
+        }
+
+        // Draw the square at the new position
+        fill_rect(square_x, square_y, square_size, square_size, square_color);
+
+        // Sleep to control the speed
+        msleep(1); // Adjust delay for desired speed
+    }
 
     return true;
 }
