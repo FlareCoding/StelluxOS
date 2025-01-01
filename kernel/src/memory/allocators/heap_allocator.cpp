@@ -143,14 +143,16 @@ void heap_allocator::_free_locked(void* ptr) {
         return;
     }
 
+    void* userptr = (void*)((uint64_t)segment + sizeof(heap_segment_header));
+    zeromem(userptr, segment->size - sizeof(heap_segment_header));
     segment->flags.free = true;
-
-    if (segment->next && segment->next->flags.free) {
-        _merge_segment_with_next(segment);
-    }
 
     if (segment->prev && segment->prev->flags.free) {
         _merge_segment_with_previous(segment);
+    }
+
+    if (segment->next && segment->next->flags.free) {
+        _merge_segment_with_next(segment);
     }
 }
 
@@ -177,11 +179,20 @@ bool heap_allocator::_split_segment(heap_segment_header* segment, size_t size) {
         reinterpret_cast<uint8_t*>(segment) + size
     );
 
+    // Clear out the segment's memory
+    zeromem(new_segment, sizeof(heap_segment_header));
+
+    // Initialize the segment
     WRITE_SEGMENT_MAGIC_FIELD(new_segment)
     new_segment->flags.free = segment->flags.free;
     new_segment->size = segment->size - size;
     new_segment->next = segment->next;
     new_segment->prev = segment;
+
+    // Fix the next node's prev link
+    if (segment->next) {
+        segment->next->prev = new_segment;
+    }
 
     segment->size = size;
     segment->next = new_segment;
@@ -202,6 +213,10 @@ bool heap_allocator::_merge_segment_with_previous(heap_segment_header* segment) 
     if (previous_segment->next) {
         previous_segment->next->prev = previous_segment;
     }
+
+    // Discard the links from the original segment
+    segment->next = nullptr;
+    segment->prev = nullptr;
 
     return true;
 }
@@ -247,8 +262,6 @@ void heap_allocator::debug_heap() {
 }
 
 void heap_allocator::debug_heap_segment(void* ptr, int64_t seg_id) {
-    mutex_guard guard(m_heap_lock);
-
     heap_segment_header* seg = (heap_segment_header*)ptr;
     
     if (seg_id != -1)
@@ -277,7 +290,28 @@ bool heap_allocator::detect_heap_corruption(bool dbg_log) {
     int64_t seg_id = 1;
 
     while (seg) {
+        bool corrupted = false;
         if (memcmp(seg->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, sizeof(seg->magic)) != 0) {
+            corrupted = true;
+            serial::printf("[!] Magic number is corrupted\n");
+        } else if (seg->flags.reserved != 0) {
+            corrupted = true;
+            serial::printf("[!] Reserved flags were not 0\n");
+        } else if (
+            seg->next != nullptr &&
+            reinterpret_cast<uint8_t*>(seg) + seg->size != reinterpret_cast<uint8_t*>(seg->next)
+        ) {
+            corrupted = true;
+            serial::printf("[!] Corrupted size + next link\n");
+        } else if (seg->prev && seg->prev->next != seg) {
+            corrupted = true;
+            serial::printf("[!] Corrupted seg->prev->next link\n");
+        } else if (seg->next && seg->next->prev != seg) {
+            corrupted = true;
+            serial::printf("[!] Corrupted seg->next->prev link\n");
+        }
+
+        if (corrupted) {
             if (dbg_log) {
                 serial::printf("---- Detected Heap Corruption (segment %lli) ----\n", seg_id);
                 debug_heap_segment(seg, seg_id);

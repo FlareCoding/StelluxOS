@@ -1,5 +1,6 @@
 #include <memory/memory.h>
 #include <memory/allocators/heap_allocator.h>
+#include <interrupts/irq.h>
 
 EXTERN_C {
     int __cxa_atexit(void (*destructor) (void *), void *arg, void *dso_handle) {
@@ -44,7 +45,7 @@ void* memcpy(void* dest, const void* src, size_t count) {
 
     // If both pointers are aligned to word boundaries, copy in larger chunks for efficiency
     // This example assumes 32-bit architecture. Adjust as necessary for your architecture.
-    #if defined(__i386__) || defined(__x86_64__)
+    #if defined(__i386__) || defined(__x86_64__) || defined(ARCH_X86_64)
     size_t word_size = sizeof(unsigned long);
     size_t i = 0;
 
@@ -88,7 +89,15 @@ void* operator new(size_t, void* ptr) noexcept {
 
 void* malloc(size_t size) {
     auto& heap = allocators::heap_allocator::get();
-    return heap.allocate(size);
+    void* ptr = heap.allocate(size);
+
+#ifdef PROFILE_HEAP_CORRUPTION
+    if (heap.detect_heap_corruption(true)) {
+        panic("Kernel heap corrupted after malloc()");
+    }
+#endif
+
+    return ptr;
 }
 
 void* zmalloc(size_t size) {
@@ -109,11 +118,25 @@ void free(void* ptr) {
 
     auto& heap = allocators::heap_allocator::get();
     heap.free(ptr);
+
+#ifdef PROFILE_HEAP_CORRUPTION
+    if (heap.detect_heap_corruption(true)) {
+        panic("Kernel heap corrupted after free()");
+    }
+#endif
 }
 
 void* realloc(void* ptr, size_t size) {
     auto& heap = allocators::heap_allocator::get();
-    return heap.reallocate(ptr, size);
+    void* res = heap.reallocate(ptr, size);
+
+#ifdef PROFILE_HEAP_CORRUPTION
+    if (heap.detect_heap_corruption(true)) {
+        panic("Kernel heap corrupted after realloc()");
+    }
+#endif
+
+    return res;
 }
 
 // Global new ooperator
