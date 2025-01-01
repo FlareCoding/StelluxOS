@@ -45,6 +45,18 @@ struct enable_if<true, T> {
     typedef T type;
 };
 
+// Base template
+template <typename T>
+struct is_void {
+    static const bool value = false;
+};
+
+// Specialization for void
+template <>
+struct is_void<void> {
+    static const bool value = true;
+};
+
 template <typename T>
 __force_inline__ typename enable_if<is_primitive<T>::value, T>::type
 min(const T& x, const T& y) {
