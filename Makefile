@@ -171,7 +171,7 @@ connect-gdb:
 	gdb -ex "source ./$(GDB_SETUP)" \
 	    -ex "target remote localhost:4554" \
 	    -ex "add-symbol-file $(KERNEL_FILE)" \
-	    -ex "b init"
+	    -ex "b init.cpp:init"
 
 # Builds and runs a clean image of the OS with appropriate unit test flags
 execute-unit-tests:
