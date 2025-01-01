@@ -375,7 +375,9 @@ fs_error virtual_filesystem::_resolve_path(
         kstl::shared_ptr<vfs_node> mount_node;
         if (is_mount_point(current_path, mount_node) == fs_error::success) {
             current_node = mount_node;
+#if 0
             serial::printf("switching to a new filesystem's root node: %llx\n", current_node.get());
+#endif
             continue; // Switch to the new filesystem's root node
         }
 

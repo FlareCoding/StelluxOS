@@ -16,6 +16,7 @@
 #include <modules/module_manager.h>
 #include <fs/ram_filesystem.h>
 #include <fs/vfs.h>
+#include <fs/cpio/cpio.h>
 
 #ifdef BUILD_UNIT_TESTS
 #include <acpi/shutdown.h>
@@ -23,16 +24,19 @@
 #endif // BUILD_UNIT_TESTS
 
 __PRIVILEGED_DATA
-char* g_mbi_kernel_cmdline;
+char* g_mbi_kernel_cmdline = nullptr;
 
 __PRIVILEGED_DATA
-multiboot_tag_framebuffer* g_mbi_framebuffer;
+multiboot_tag_framebuffer* g_mbi_framebuffer = nullptr;
 
 __PRIVILEGED_DATA
-void* g_mbi_efi_mmap;
+void* g_mbi_efi_mmap = nullptr;
 
 __PRIVILEGED_DATA
-void* g_mbi_acpi_rsdp;
+void* g_mbi_acpi_rsdp = nullptr;
+
+__PRIVILEGED_DATA
+multiboot_tag_module* g_initrd_mod = nullptr;
 
 __PRIVILEGED_CODE
 void walk_mbi(void* mbi) {
@@ -59,10 +63,16 @@ void walk_mbi(void* mbi) {
             }
             case MULTIBOOT_TAG_TYPE_MODULE: {
                 multiboot_tag_module* module_tag = reinterpret_cast<multiboot_tag_module*>(tag);
+#if 0
                 serial::printf("GRUB_MOD:\n");
                 serial::printf("  start   : 0x%llx\n", module_tag->mod_start);
                 serial::printf("  end     : 0x%llx\n", module_tag->mod_end);
                 serial::printf("  cmdline : '%s'\n", module_tag->cmdline);
+#endif
+
+                if (memcmp(module_tag->cmdline, "initrd", 7) == 0) {
+                    g_initrd_mod = module_tag;
+                }
                 break;
             }
             case MULTIBOOT_TAG_TYPE_FRAMEBUFFER: {
@@ -85,6 +95,28 @@ void walk_mbi(void* mbi) {
         // Move to the next tag, ensuring 8-byte alignment
         ptr += (tag->size + 7) & ~7;
     }
+}
+
+__PRIVILEGED_CODE
+void load_initrd() {
+    if (!g_initrd_mod) {
+        return;
+    }
+
+    size_t mod_size = g_initrd_mod->mod_end - g_initrd_mod->mod_start;
+    size_t mod_page_count = (mod_size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    void* vaddr = vmm::map_contiguous_physical_pages(g_initrd_mod->mod_start, mod_page_count, DEFAULT_PRIV_PAGE_FLAGS);
+    if (!vaddr) {
+        serial::printf("[!] Failed to map initrd into kernel's address space\n");
+        return;
+    }
+
+    // Create a temporary root ("/") mount point
+    auto& vfs = fs::virtual_filesystem::get();
+    vfs.mount("/", kstl::make_shared<fs::ram_filesystem>());
+
+    fs::load_cpio_initrd(reinterpret_cast<const uint8_t*>(vaddr), mod_size, "/initrd");
 }
 
 // Since the scheduler will prioritize any other task to the idle task,
@@ -122,6 +154,9 @@ void init(unsigned int magic, void* mbi) {
 
     // Discover ACPI tables
     acpi::enumerate_acpi_tables(g_mbi_acpi_rsdp);
+
+    // Load the initrd if it's available
+    load_initrd();
 
     // Calibrate architecture-specific CPU timer to a tickrate of 4ms
     kernel_timer::calibrate_cpu_timer(4);
