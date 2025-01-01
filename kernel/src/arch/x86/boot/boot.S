@@ -91,6 +91,21 @@ multiboot_header:
     .long multiboot_header_end - multiboot_header
     .long -(MULTIBOOT2_HEADER_MAGIC + multiboot_header_end - multiboot_header) /* Checksum */
 
+    /* Information Request Tag: modules (type=3) */
+    .align 8
+    .short MULTIBOOT_HEADER_TAG_INFORMATION_REQUEST
+    .short 0                            /* flags = 0 */
+    .long 16                            /* size = 16 bytes total */
+    .long MULTIBOOT_TAG_TYPE_MODULE     /* we want modules */
+    .long 0                             /* end of the request array */
+
+    /* Module Align Tag */
+    /* If you want GRUB to align modules on page boundaries */
+    .align 8
+    .short MULTIBOOT_HEADER_TAG_MODULE_ALIGN
+    .short 0
+    .long 8
+
     /* GOP Framebuffer Tag */
     .short 5        /* Tag type = 5 (Framebuffer) */
     .short 0        /* Flags */

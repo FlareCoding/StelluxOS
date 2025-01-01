@@ -57,6 +57,14 @@ void walk_mbi(void* mbi) {
                 g_mbi_kernel_cmdline = cmdline_tag->string;
                 break;
             }
+            case MULTIBOOT_TAG_TYPE_MODULE: {
+                multiboot_tag_module* module_tag = reinterpret_cast<multiboot_tag_module*>(tag);
+                serial::printf("GRUB_MOD:\n");
+                serial::printf("  start   : 0x%llx\n", module_tag->mod_start);
+                serial::printf("  end     : 0x%llx\n", module_tag->mod_end);
+                serial::printf("  cmdline : '%s'\n", module_tag->cmdline);
+                break;
+            }
             case MULTIBOOT_TAG_TYPE_FRAMEBUFFER: {
                 g_mbi_framebuffer = reinterpret_cast<multiboot_tag_framebuffer*>(tag);
                 break;

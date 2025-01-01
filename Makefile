@@ -136,6 +136,7 @@ $(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(GRUB_CFG_PATH)
 	sudo $(CP) $(GRUB_CFG_PATH) /mnt/efi/boot/grub/grub.cfg; \
 	sudo $(CP) $(GRUB_FONT_PATH) /mnt/efi/boot/grub/fonts/; \
 	sudo $(CP) $(KERNEL_FILE) /mnt/efi/boot/stellux; \
+	sudo $(CP) initrd.cpio /mnt/efi/boot/initrd.cpio; \
 	sudo $(UMOUNT) /mnt/efi; \
 	sudo $(RM) -rf /mnt/efi; \
 	sudo $(LOSETUP) -d $${LOOP_DEV}; \

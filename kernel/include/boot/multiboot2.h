@@ -73,9 +73,9 @@
 
 #ifndef ASM_FILE
 
-typedef unsigned char		multiboot_uint8_t;
-typedef unsigned short		multiboot_uint16_t;
-typedef unsigned int		multiboot_uint32_t;
+typedef unsigned char		    multiboot_uint8_t;
+typedef unsigned short		  multiboot_uint16_t;
+typedef unsigned int		    multiboot_uint32_t;
 typedef unsigned long long	multiboot_uint64_t;
 
 struct multiboot_header
@@ -195,18 +195,14 @@ struct multiboot_tag_string
   char string[0];
 };
 
-// struct multiboot_tag_module
-// {
-//   multiboot_uint32_t type;
-//   multiboot_uint32_t size;
-// 	union {
-// 		multiboot_uint32_t mod_start;
-// 		Elf32_Ehdr *pe;
-// 	};
-// 	//multiboot_uint32_t mod_end;
-// 	void * mod_end;
-//   char cmdline[0];
-// };
+struct multiboot_tag_module
+{
+  multiboot_uint32_t type;
+  multiboot_uint32_t size;
+	multiboot_uint32_t mod_start;
+	multiboot_uint32_t mod_end;
+  char cmdline[0];
+};
 
 struct multiboot_tag_basic_meminfo
 {
