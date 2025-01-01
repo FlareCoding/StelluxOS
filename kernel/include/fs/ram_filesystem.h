@@ -32,6 +32,7 @@ public:
 
 private:
     kstl::shared_ptr<vfs_node> m_root;
+    mutex m_fs_lock = mutex();
 
     // RAM Filesystem Operations
     static ssize_t ramfs_read(vfs_node* node, void* buffer, size_t size, uint64_t offset);

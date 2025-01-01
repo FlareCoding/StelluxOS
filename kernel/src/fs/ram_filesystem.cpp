@@ -4,6 +4,8 @@
 
 namespace fs {
 kstl::shared_ptr<vfs_node> ram_filesystem::create_root_node() {
+    mutex_guard guard(m_fs_lock);
+
     if (m_root) {
         return m_root;
     }
@@ -24,6 +26,8 @@ kstl::shared_ptr<vfs_node> ram_filesystem::create_root_node() {
 }
 
 void ram_filesystem::unmount() {
+    mutex_guard guard(m_fs_lock);
+
     // Cleanup all resources
     auto root_ram_node = static_cast<ramfs_node*>(m_root->_private);
     _delete_ram_directory(root_ram_node);
@@ -51,6 +55,9 @@ void ram_filesystem::set_ops(kstl::shared_ptr<vfs_node>& node, const kstl::strin
 }
 
 ssize_t ram_filesystem::ramfs_read(vfs_node* node, void* buffer, size_t size, uint64_t offset) {
+    auto fs = static_cast<ram_filesystem*>(node->fs);
+    mutex_guard guard(fs->m_fs_lock);
+
     // Validate the input node and buffer
     if (!node || !buffer) {
         return make_error_code(fs_error::invalid_argument);
@@ -75,6 +82,9 @@ ssize_t ram_filesystem::ramfs_read(vfs_node* node, void* buffer, size_t size, ui
 }
 
 ssize_t ram_filesystem::ramfs_write(vfs_node* node, const void* buffer, size_t size, uint64_t offset) {
+    auto fs = static_cast<ram_filesystem*>(node->fs);
+    mutex_guard guard(fs->m_fs_lock);
+
     // Validate the input node and buffer
     if (!node || !buffer) {
         return make_error_code(fs_error::invalid_argument);
@@ -114,6 +124,9 @@ ssize_t ram_filesystem::ramfs_write(vfs_node* node, const void* buffer, size_t s
 }
 
 kstl::shared_ptr<vfs_node> ram_filesystem::ramfs_lookup(vfs_node* parent, const char* name) {
+    auto fs = static_cast<ram_filesystem*>(parent->fs);
+    mutex_guard guard(fs->m_fs_lock);
+
     auto ram_node = static_cast<ramfs_node*>(parent->_private);
     if (ram_node->type != vfs_node_type::directory) {
         return vfs_null_node; // Not a directory
@@ -147,6 +160,9 @@ int ram_filesystem::ramfs_create(
     vfs_node_type type,
     uint32_t perms
 ) {
+    auto fs = static_cast<ram_filesystem*>(parent->fs);
+    mutex_guard guard(fs->m_fs_lock);
+
     auto ram_node = static_cast<ramfs_node*>(parent->_private);
     if (ram_node->type != vfs_node_type::directory) {
         return -1; // Not a directory
@@ -181,6 +197,9 @@ int ram_filesystem::ramfs_remove(vfs_node* parent, vfs_node* node) {
     if (!parent || !node) {
         return make_error_code(fs_error::invalid_argument);
     }
+
+    auto fs = static_cast<ram_filesystem*>(node->fs);
+    mutex_guard guard(fs->m_fs_lock);
 
     auto parent_ram_node = static_cast<ramfs_node*>(parent->_private);
     auto target_ram_node = static_cast<ramfs_node*>(node->_private);
@@ -229,6 +248,9 @@ int ram_filesystem::ramfs_listdir(vfs_node* node, kstl::vector<kstl::string>& en
     if (!node) {
         return make_error_code(fs_error::invalid_argument);
     }
+
+    auto fs = static_cast<ram_filesystem*>(node->fs);
+    mutex_guard guard(fs->m_fs_lock);
 
     auto ram_node = static_cast<ramfs_node*>(node->_private);
 

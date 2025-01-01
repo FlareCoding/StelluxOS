@@ -1,6 +1,7 @@
 #ifndef FILESYSTEM_H
 #define FILESYSTEM_H
 #include "vfs_node.h"
+#include <sync.h>
 
 namespace fs {
 enum class fs_error : ssize_t {

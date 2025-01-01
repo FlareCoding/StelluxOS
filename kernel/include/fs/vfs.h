@@ -28,6 +28,7 @@ public:
 
 private:
     kstl::vector<mount_point> m_mount_points;
+    mutex m_vfs_lock = mutex();
 
     fs_error is_mount_point(const kstl::string& path, kstl::shared_ptr<vfs_node>& out_root_node);
 

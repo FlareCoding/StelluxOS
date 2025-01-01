@@ -12,6 +12,8 @@ fs_error virtual_filesystem::mount(
     const kstl::string& path,
     const kstl::shared_ptr<filesystem>& fs
 ) {
+    mutex_guard guard(m_vfs_lock);
+
     if (!fs) {
         serial::printf("[*] Attempting to mount a nullptr filesystem at '%s'\n", path.c_str());
         return fs_error::bad_filesystem;
@@ -40,6 +42,8 @@ fs_error virtual_filesystem::mount(
 fs_error virtual_filesystem::unmount(
     const kstl::string& path
 ) {
+    mutex_guard guard(m_vfs_lock);
+
     if (path.empty()) {
         return fs_error::invalid_argument;
     }
@@ -310,6 +314,8 @@ fs_error virtual_filesystem::_resolve_path(
     const kstl::string& path,
     kstl::shared_ptr<vfs_node>& out_node
 ) {
+    mutex_guard guard(m_vfs_lock);
+
     // Validate the input path
     if (path.empty()) {
         return fs_error::invalid_path;
