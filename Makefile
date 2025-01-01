@@ -6,11 +6,13 @@
 KERNEL_DIR      := kernel
 GRUB_DIR        := grub
 BUILD_DIR       := build
+INITRD_DIR  	:= initrd
 IMAGE_DIR       := $(BUILD_DIR)/image
 STELLUX_IMAGE   := $(IMAGE_DIR)/stellux.img
 KERNEL_FILE     := $(BUILD_DIR)/stellux
 GRUB_CFG_PATH   := $(GRUB_DIR)/grub.cfg
-GRUB_FONT_PATH   := $(GRUB_DIR)/fonts/unicode.pf2
+GRUB_FONT_PATH  := $(GRUB_DIR)/fonts/unicode.pf2
+INITRD_ARCHIVE  := $(BUILD_DIR)/initrd
 
 # OVMF Firmware Files
 OVMF_DIR        := ovmf
@@ -108,7 +110,13 @@ $(KERNEL_FILE): $(BUILD_DIR)
 	$(MAKE) -C $(KERNEL_DIR)
 	@cp $(KERNEL_DIR)/build/stellux $(KERNEL_FILE)
 
-$(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(GRUB_CFG_PATH)
+$(INITRD_ARCHIVE): $(BUILD_DIR)
+	@echo "Building initrd from $(INITRD_DIR)"
+	@mkdir -p $(BUILD_DIR)
+	@cd $(INITRD_DIR) && find . | cpio -o --format=newc > ../$(INITRD_ARCHIVE)
+	@echo "Initrd created at $(INITRD_ARCHIVE)"
+
+$(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(INITRD_ARCHIVE) $(GRUB_CFG_PATH)
 	@echo "Creating raw disk image..."
 	@dd if=/dev/zero of=$(STELLUX_IMAGE) bs=1M count=$(IMAGE_SIZE_MB)
 
@@ -136,7 +144,7 @@ $(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(GRUB_CFG_PATH)
 	sudo $(CP) $(GRUB_CFG_PATH) /mnt/efi/boot/grub/grub.cfg; \
 	sudo $(CP) $(GRUB_FONT_PATH) /mnt/efi/boot/grub/fonts/; \
 	sudo $(CP) $(KERNEL_FILE) /mnt/efi/boot/stellux; \
-	sudo $(CP) initrd.cpio /mnt/efi/boot/initrd.cpio; \
+	sudo $(CP) $(INITRD_ARCHIVE) /mnt/efi/boot/initrd;
 	sudo $(UMOUNT) /mnt/efi; \
 	sudo $(RM) -rf /mnt/efi; \
 	sudo $(LOSETUP) -d $${LOOP_DEV}; \
@@ -245,4 +253,4 @@ install-dependencies:
 # Phony Targets
 # =========================
 
-.PHONY: all help kernel clean run run-headless run-debug run-debug-headless connect-gdb install-dependencies
+.PHONY: all help kernel initrd clean run run-headless run-debug run-debug-headless connect-gdb install-dependencies
