@@ -42,9 +42,21 @@
 #define CPUID_ECX_FMA         0x00001000
 
 namespace arch::x86 {
-// Read basic CPUID information
-__PRIVILEGED_CODE
-static inline void read_cpuid(int code, uint32_t *a, uint32_t *d) {
+/**
+ * @brief Reads basic CPUID information for a given code.
+ * @param code The CPUID code to query.
+ * @param a Pointer to store the EAX register result.
+ * @param d Pointer to store the EDX register result.
+ * 
+ * Uses the CPUID instruction to retrieve information based on the provided code.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline void read_cpuid(
+    int code,
+    uint32_t* a,
+    uint32_t* d
+) {
     __asm__ volatile("cpuid"
         : "=a"(*a), "=d"(*d)  // Output operands
         : "0"(code)           // Input operands
@@ -52,9 +64,21 @@ static inline void read_cpuid(int code, uint32_t *a, uint32_t *d) {
     );
 }
 
-// Read extended CPUID information
-__PRIVILEGED_CODE
-static inline void read_cpuid_extended(int code, uint32_t *a, uint32_t *d) {
+/**
+ * @brief Reads extended CPUID information for a given code.
+ * @param code The CPUID code to query.
+ * @param a Pointer to store the EAX register result.
+ * @param d Pointer to store the EDX register result.
+ * 
+ * Uses the CPUID instruction to query extended information.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline void read_cpuid_extended(
+    int code,
+    uint32_t* a,
+    uint32_t* d
+) {
     __asm__ volatile("cpuid"
         : "=a"(*a), "=d"(*d)  // Output operands
         : "0"(code)           // Input operands
@@ -62,26 +86,54 @@ static inline void read_cpuid_extended(int code, uint32_t *a, uint32_t *d) {
     );
 }
 
-__PRIVILEGED_CODE
-static inline void read_cpuid_full(int code, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d) {
+/**
+ * @brief Reads full CPUID information for a given code.
+ * @param code The CPUID code to query.
+ * @param a Pointer to store the EAX register result.
+ * @param b Pointer to store the EBX register result.
+ * @param c Pointer to store the ECX register result.
+ * @param d Pointer to store the EDX register result.
+ * 
+ * Retrieves all register values (EAX, EBX, ECX, EDX) using the CPUID instruction.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline void read_cpuid_full(
+    int code,
+    uint32_t* a,
+    uint32_t* b,
+    uint32_t* c,
+    uint32_t* d
+) {
     __asm__ volatile("cpuid"
-        : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)  // Output operands
+        : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d) // Output operands
         : "0"(code)                              // Input operand
     );
 }
 
-// Returns whether or not 5-level page tables are supported
-__PRIVILEGED_CODE
-static inline int cpuid_is_la57_supported() {
+/**
+ * @brief Checks if 5-level page tables (LA57) are supported.
+ * @return True if LA57 is supported, false otherwise.
+ * 
+ * Uses the CPUID instruction to determine 57-bit addressing support.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline int cpuid_is_la57_supported() {
     uint32_t a, d;
     read_cpuid(7, &a, &d);
     return (a & CPUID_FEAT_ECX_LA57) != 0;
 }
 
-// Reads the Vendor ID into the specified buffer.
-// *Note: vendor buffer should be at least 13 bytes in size
-__PRIVILEGED_CODE
-static inline void cpuid_read_vendor_id(char* vendor) {
+/**
+ * @brief Reads the CPU vendor ID into a buffer.
+ * @param vendor Pointer to a buffer of at least 13 bytes to store the vendor ID string.
+ * 
+ * Queries the vendor ID string using the CPUID instruction and null-terminates it.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline void cpuid_read_vendor_id(char* vendor) {
     uint32_t ebx, ecx, edx;
     asm volatile("cpuid":"=b"(ebx),"=c"(ecx),"=d"(edx):"a"(CPUID_VENDOR_ID));
     ((uint32_t*)vendor)[0] = ebx;
@@ -90,50 +142,101 @@ static inline void cpuid_read_vendor_id(char* vendor) {
     vendor[12] = '\0';
 }
 
-__PRIVILEGED_CODE
-static inline bool cpuid_is_sse_supported() {
+/**
+ * @brief Checks if the CPU supports SSE instructions.
+ * @return True if SSE is supported, false otherwise.
+ * 
+ * Queries the CPUID features leaf to check for SSE support.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline bool cpuid_is_sse_supported() {
     uint32_t eax, edx;
     read_cpuid(CPUID_FEATURES, &eax, &edx);
     return (edx & CPUID_EDX_SSE) != 0;
 }
 
-__PRIVILEGED_CODE
-static inline bool cpuid_is_sse2_supported() {
+/**
+ * @brief Checks if the CPU supports SSE2 instructions.
+ * @return True if SSE2 is supported, false otherwise.
+ * 
+ * Queries the CPUID features leaf to check for SSE2 support.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline bool cpuid_is_sse2_supported() {
     uint32_t eax, edx;
     read_cpuid(CPUID_FEATURES, &eax, &edx);
     return (edx & CPUID_EDX_SSE2) != 0;
 }
 
-__PRIVILEGED_CODE
-static inline bool cpuid_is_sse3_supported() {
+/**
+ * @brief Checks if the CPU supports SSE3 instructions.
+ * @return True if SSE3 is supported, false otherwise.
+ * 
+ * Queries the CPUID features leaf to check for SSE3 support.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline bool cpuid_is_sse3_supported() {
     uint32_t eax, edx;
     read_cpuid(CPUID_FEATURES, &eax, &edx);
     return (eax & CPUID_ECX_SSE3) != 0;
 }
 
-__PRIVILEGED_CODE
-static inline bool cpuid_is_avx_supported() {
+/**
+ * @brief Checks if the CPU supports AVX instructions.
+ * @return True if AVX is supported, false otherwise.
+ * 
+ * Queries the CPUID features leaf to check for AVX support.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline bool cpuid_is_avx_supported() {
     uint32_t eax, edx;
     read_cpuid(CPUID_FEATURES, &eax, &edx);
     return (eax & CPUID_ECX_AVX) != 0;
 }
 
-__PRIVILEGED_CODE
-static inline bool cpuid_is_fma_supported() {
+/**
+ * @brief Checks if the CPU supports FMA instructions.
+ * @return True if FMA is supported, false otherwise.
+ * 
+ * Queries the CPUID features leaf to check for FMA support.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline bool cpuid_is_fma_supported() {
     uint32_t eax, edx;
     read_cpuid(CPUID_FEATURES, &eax, &edx);
     return (eax & CPUID_ECX_FMA) != 0;
 }
 
-__PRIVILEGED_CODE
-static inline bool cpuid_is_pat_supported() {
+
+/**
+ * @brief Checks if the CPU supports the Page Attribute Table (PAT).
+ * @return True if PAT is supported, false otherwise.
+ * 
+ * Queries the CPUID features leaf to check for PAT support.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline bool cpuid_is_pat_supported() {
     uint32_t eax, edx;
     read_cpuid(CPUID_FEATURES, &eax, &edx);
     return (edx & CPUID_FEAT_EDX_PAT) != 0;
 }
 
-__PRIVILEGED_CODE
-static inline bool cpuid_is_running_under_qemu() {
+/**
+ * @brief Checks if the CPU is running under QEMU or KVM.
+ * @return True if running under QEMU/KVM, false otherwise.
+ * 
+ * Uses the CPUID instruction to retrieve the hypervisor vendor signature and compares it
+ * with known signatures for QEMU and KVM.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline bool cpuid_is_running_under_qemu() {
     uint32_t eax, ebx, ecx, edx;
 
     // Call CPUID with leaf 0x40000000

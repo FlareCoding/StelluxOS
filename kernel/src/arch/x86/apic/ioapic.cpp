@@ -26,14 +26,15 @@ ioapic::ioapic(uint64_t phys_regs, uint64_t gsib) {
     );
 
     // Initialize APIC ID and version
-    m_apic_id = (read(IOAPICID) >> 24) & 0xF0;
-    m_apic_version = read(IOAPICVER);
+    m_apic_id = (_read(IOAPICID) >> 24) & 0xF0;
+    m_apic_version = _read(IOAPICVER);
 
     // Initialize redirection entry count and global interrupt base
-    m_redirection_entry_count = (read(IOAPICVER) >> 16) + 1;
+    m_redirection_entry_count = (_read(IOAPICVER) >> 16) + 1;
     m_global_intr_base = gsib;
 }
 
+__PRIVILEGED_CODE
 ioapic::redirection_entry ioapic::get_redirection_entry(uint8_t ent_no) const {
     // Check if the entry number is within the valid range
     if (ent_no >= m_redirection_entry_count) {
@@ -44,12 +45,13 @@ ioapic::redirection_entry ioapic::get_redirection_entry(uint8_t ent_no) const {
 
     redirection_entry entry;
     // Read the lower and upper 32-bits of the redirection entry
-    entry.lower_dword = read(IOAPICREDTBL(ent_no));
-    entry.upper_dword = read(IOAPICREDTBL(ent_no) + 1);
+    entry.lower_dword = _read(IOAPICREDTBL(ent_no));
+    entry.upper_dword = _read(IOAPICREDTBL(ent_no) + 1);
 
     return entry;
 }
 
+__PRIVILEGED_CODE
 bool ioapic::write_redirection_entry(uint8_t ent_no, const redirection_entry* entry) {
     // Check if the entry number is within the valid range
     if (ent_no >= m_redirection_entry_count) {
@@ -57,13 +59,14 @@ bool ioapic::write_redirection_entry(uint8_t ent_no, const redirection_entry* en
     }
 
     // Write the lower and upper 32-bits of the redirection entry
-    write(IOAPICREDTBL(ent_no), entry->lower_dword);
-    write(IOAPICREDTBL(ent_no) + 1, entry->upper_dword);
+    _write(IOAPICREDTBL(ent_no), entry->lower_dword);
+    _write(IOAPICREDTBL(ent_no) + 1, entry->upper_dword);
 
     return true;
 }
 
-uint32_t ioapic::read(uint8_t reg_off) const {
+__PRIVILEGED_CODE
+uint32_t ioapic::_read(uint8_t reg_off) const {
     uint32_t result = 0;
 
     *reinterpret_cast<volatile uint32_t*>(m_virtual_base + IOAPIC_REGSEL) = reg_off;
@@ -72,7 +75,7 @@ uint32_t ioapic::read(uint8_t reg_off) const {
     return result;
 }
 
-void ioapic::write(uint8_t reg_off, uint32_t data) {
+void ioapic::_write(uint8_t reg_off, uint32_t data) {
     *reinterpret_cast<volatile uint32_t*>(m_virtual_base + IOAPIC_REGSEL) = reg_off;
     *reinterpret_cast<volatile uint32_t*>(m_virtual_base + IOAPIC_IOWIN) = data;
 }

@@ -13,6 +13,7 @@ madt& madt::get() {
     return g_madt;
 }
 
+__PRIVILEGED_CODE
 void madt::init(acpi_sdt_header* acpi_madt_table) {
     madt_table* table = reinterpret_cast<madt_table*>(acpi_madt_table);
 

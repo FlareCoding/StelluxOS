@@ -4,6 +4,13 @@
 #include <sync.h>
 
 namespace fs {
+/**
+ * @enum fs_error
+ * @brief Represents error codes for filesystem operations.
+ * 
+ * This enumeration defines a set of error codes used to
+ * identify various filesystem-related issues.
+ */
 enum class fs_error : ssize_t {
     success = 0,                 // No error
     not_found = -1,              // File or directory not found
@@ -22,6 +29,13 @@ enum class fs_error : ssize_t {
     unknown_error = -14          // Generic error
 };
 
+/**
+ * @brief Converts an `fs_error` enumeration value to its corresponding error message string.
+ * @param err The `fs_error` value to convert.
+ * @return A string to the corresponding error message.
+ * 
+ * This function provides human-readable descriptions of filesystem error codes.
+ */
 inline const char* error_to_string(fs_error err) {
     switch (err) {
     case fs_error::success:              return "Success";
@@ -42,10 +56,25 @@ inline const char* error_to_string(fs_error err) {
     }
 }
 
+/**
+ * @brief Converts an error code of type `ssize_t` to its corresponding error message string.
+ * @param err The error code to convert.
+ * @return A string to the corresponding error message.
+ * 
+ * Internally casts the error code to `fs_error` and retrieves its message.
+ */
 inline const char* error_to_string(ssize_t err) {
     return error_to_string(static_cast<fs_error>(err));
 }
 
+/**
+ * @brief Converts an `fs_error` enumeration value to its corresponding numeric error code.
+ * @param err The `fs_error` value to convert.
+ * @return The numeric representation of the error code as `ssize_t`.
+ * 
+ * Provides a way to retrieve the numeric value of an `fs_error` for use in functions or APIs
+ * expecting standard error codes.
+ */
 constexpr ssize_t make_error_code(fs_error err) {
     return static_cast<ssize_t>(err);
 }

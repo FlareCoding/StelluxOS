@@ -4,52 +4,262 @@
 #include <memory/memory.h>
 
 namespace kstl {
+/**
+ * @class vector
+ * @brief A dynamic array implementation with automatic resizing.
+ * 
+ * Provides a container for storing elements of type `T` with random access, dynamic resizing,
+ * and standard operations such as copy, move, and element access.
+ * 
+ * @tparam T The type of elements stored in the vector.
+ */
 template <typename T>
 class vector {
 public:
+    /**
+     * @brief Represents a special value indicating no match found in search operations.
+     */
     static const size_t npos = static_cast<size_t>(-1);
 
+    /**
+     * @brief Constructs an empty vector.
+     * 
+     * Initializes the vector with no elements and zero capacity.
+     */
     vector();
+
+    /**
+     * @brief Constructs a vector with an initial capacity.
+     * @param initial_capacity The number of elements the vector can initially hold.
+     * 
+     * Pre-allocates memory to accommodate the specified capacity.
+     */
     explicit vector(size_t initial_capacity);
+
+    /**
+     * @brief Copy constructor for the vector class.
+     * @param other The vector to copy.
+     * 
+     * Creates a new vector as a copy of the provided vector.
+     */
     vector(const vector& other);
+
+    /**
+     * @brief Move constructor for the vector class.
+     * @param other The vector to move.
+     * 
+     * Transfers ownership of resources from the provided vector, leaving it in an empty state.
+     */
     vector(vector&& other) noexcept;
 
+    /**
+     * @brief Destructor for the vector class.
+     * 
+     * Releases all resources held by the vector.
+     */
     ~vector();
 
+    /**
+     * @brief Copy assignment operator for the vector class.
+     * @param other The vector to copy.
+     * @return Reference to the updated vector.
+     * 
+     * Replaces the current vector with a copy of the provided vector.
+     */
     vector& operator=(const vector& other);
+
+    /**
+     * @brief Move assignment operator for the vector class.
+     * @param other The vector to move.
+     * @return Reference to the updated vector.
+     * 
+     * Transfers ownership of resources from the provided vector, leaving it in an empty state.
+     */
     vector& operator=(vector&& other) noexcept;
+
+    /**
+     * @brief Accesses an element by index for modification.
+     * @param index The index of the element to access.
+     * @return Reference to the element at the specified index.
+     * 
+     * Provides direct access to the element at the given index. The behavior is undefined if the index is out of bounds.
+     */
     T& operator[](size_t index);
+
+    /**
+     * @brief Accesses an element by index for read-only access.
+     * @param index The index of the element to access.
+     * @return Reference to the element at the specified index.
+     * 
+     * Provides read-only access to the element at the given index. The behavior is undefined if the index is out of bounds.
+     */
     const T& operator[](size_t index) const;
 
+    /**
+     * @brief Retrieves the first element in the vector.
+     * @return Reference to the first element.
+     * 
+     * The behavior is undefined if the vector is empty.
+     */
     T& front();
+
+    /**
+     * @brief Retrieves the last element in the vector.
+     * @return Reference to the last element.
+     * 
+     * The behavior is undefined if the vector is empty.
+     */
     T& back();
 
+    /**
+     * @brief Appends a copy of an element to the end of the vector.
+     * @param value The element to copy and append.
+     * 
+     * Adds a new element to the end of the vector, resizing it if necessary.
+     */
     void push_back(const T& value);
+
+    /**
+     * @brief Appends a movable element to the end of the vector.
+     * @param value The element to move and append.
+     * 
+     * Moves the provided element to the end of the vector, resizing it if necessary.
+     */
     void push_back(T&& value);
 
+    /**
+     * @brief Inserts an element at a specified position.
+     * @param index The position at which to insert the new element.
+     * @param value The element to copy and insert.
+     * 
+     * Shifts existing elements to the right to make space for the new element. The behavior is undefined
+     * if the index is out of bounds.
+     */
     void insert(size_t index, const T& value);
 
+    /**
+     * @brief Removes the last element from the vector.
+     * 
+     * Reduces the size of the vector by one. The behavior is undefined if the vector is empty.
+     */
     void pop_back();
+
+    /**
+     * @brief Removes an element at a specified position.
+     * @param index The position of the element to remove.
+     * 
+     * Shifts subsequent elements to the left to fill the gap. The behavior is undefined if the index
+     * is out of bounds.
+     */
     void erase(size_t index);
 
+    /**
+     * @brief Finds the first occurrence of an element in the vector.
+     * @param value The element to search for.
+     * @return The index of the first occurrence of the element, or `npos` if not found.
+     * 
+     * Compares elements using the `==` operator.
+     */
     size_t find(const T& value) const;
 
+    /**
+     * @brief Retrieves a pointer to the internal data array.
+     * @return Pointer to the first element of the vector.
+     * 
+     * Provides direct access to the underlying array storing the vector's elements.
+     */
     T* data() const;
+
+    /**
+     * @brief Retrieves the number of elements in the vector.
+     * @return The current number of elements in the vector.
+     * 
+     * The size reflects the number of elements currently stored, not the allocated capacity.
+     */
     size_t size() const;
+
+    /**
+     * @brief Retrieves the current capacity of the vector.
+     * @return The number of elements the vector can hold without resizing.
+     */
     size_t capacity() const;
+
+    /**
+     * @brief Checks if the vector is empty.
+     * @return True if the vector contains no elements, false otherwise.
+     */
     bool empty() const;
 
+    /**
+     * @brief Reserves memory to accommodate at least the specified capacity.
+     * @param new_capacity The desired capacity for the vector.
+     * 
+     * Ensures the vector can store at least `new_capacity` elements without further allocation.
+     * Does nothing if the current capacity is already sufficient.
+     */
     void reserve(size_t new_capacity);
+
+    /**
+     * @brief Resizes the vector to contain the specified number of elements.
+     * @param new_size The desired number of elements in the vector.
+     * 
+     * If the new size is larger, default-constructed elements are added. If smaller, elements are truncated.
+     */
     void resize(size_t new_size);
+
+    /**
+     * @brief Clears the contents of the vector.
+     * 
+     * Resets the vector to an empty state, releasing resources used by its elements but retaining its capacity.
+     */
     void clear();
 
+    /**
+     * @brief Retrieves an iterator to the beginning of the vector.
+     * @return Pointer to the first element of the vector.
+     * 
+     * Allows iteration from the first element.
+     */
     T* begin() { return m_data; }
+
+    /**
+     * @brief Retrieves an iterator to the end of the vector.
+     * @return Pointer to one past the last element of the vector.
+     * 
+     * Allows iteration until one past the last element.
+     */
     T* end() { return m_data + m_size; }
 
+    /**
+     * @brief Retrieves a constant iterator to the beginning of the vector.
+     * @return Constant pointer to the first element of the vector.
+     * 
+     * Allows read-only iteration from the first element.
+     */
     const T* begin() const { return m_data; }
+
+    /**
+     * @brief Retrieves a constant iterator to the end of the vector.
+     * @return Constant pointer to one past the last element of the vector.
+     * 
+     * Allows read-only iteration until one past the last element.
+     */
     const T* end() const { return m_data + m_size; }
 
+    /**
+     * @brief Retrieves a constant iterator to the beginning of the vector.
+     * @return Constant pointer to the first element of the vector.
+     * 
+     * Allows read-only iteration from the first element.
+     */
     const T* cbegin() const { return m_data; }
+
+    /**
+     * @brief Retrieves a constant iterator to the end of the vector.
+     * @return Constant pointer to one past the last element of the vector.
+     * 
+     * Allows read-only iteration until one past the last element.
+     */
     const T* cend() const { return m_data + m_size; }
 
 private:
@@ -58,7 +268,15 @@ private:
     size_t m_capacity;
 
 private:
-    void reallocate(size_t new_capacity);
+    /**
+     * @brief Reallocates the vector's internal storage to a new capacity.
+     * @param new_capacity The new capacity for the vector.
+     * 
+     * Allocates a new memory block with the specified capacity, moves existing elements
+     * to the new storage, and deallocates the old memory. This method is called internally
+     * when the vector's capacity needs to be increased.
+     */
+    void _reallocate(size_t new_capacity);
 };
 
 template <typename T>
@@ -181,7 +399,7 @@ template <typename T>
 void vector<T>::push_back(const T& value) {
     if (m_size == m_capacity) {
         size_t new_capacity = m_capacity == 0 ? 1 : 2 * m_capacity;
-        reallocate(new_capacity);
+        _reallocate(new_capacity);
     }
 
     if constexpr (is_primitive<T>::value) {
@@ -197,7 +415,7 @@ template <typename T>
 void vector<T>::push_back(T&& value) {
     if (m_size == m_capacity) {
         size_t new_capacity = m_capacity == 0 ? 1 : 2 * m_capacity;
-        reallocate(new_capacity);
+        _reallocate(new_capacity);
     }
 
     if constexpr (is_primitive<T>::value) {
@@ -218,7 +436,7 @@ void vector<T>::insert(size_t index, const T& value) {
 
     if (m_size == m_capacity) {
         size_t new_capacity = m_capacity == 0 ? 1 : 2 * m_capacity;
-        reallocate(new_capacity);
+        _reallocate(new_capacity);
     }
 
     // Shift elements to the right
@@ -303,7 +521,7 @@ bool vector<T>::empty() const {
 template <typename T>
 void vector<T>::reserve(size_t new_capacity) {
     if (new_capacity > m_capacity) {
-        reallocate(new_capacity);
+        _reallocate(new_capacity);
     }
 }
 
@@ -321,7 +539,7 @@ void vector<T>::resize(size_t new_size) {
             while (new_capacity < new_size) {
                 new_capacity *= 2;
             }
-            reallocate(new_capacity);
+            _reallocate(new_capacity);
         }
 
         // Default-construct new elements
@@ -344,7 +562,7 @@ void vector<T>::clear() {
 }
 
 template <typename T>
-void vector<T>::reallocate(size_t new_capacity) {
+void vector<T>::_reallocate(size_t new_capacity) {
     T* new_block = static_cast<T*>(zmalloc(new_capacity * sizeof(T)));
 
     if (new_block) {

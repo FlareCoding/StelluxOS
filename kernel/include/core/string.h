@@ -139,68 +139,290 @@ int sprintf(char* buffer, size_t buffer_size, const char* format, ...);
 void convert_unicode_to_narrow_string(void* unicode_string, char* buffer);
 
 namespace kstl {
+/**
+ * @class string
+ * @brief Provides a dynamically sized string class with a variety of operations.
+ * 
+ * This class supports common string manipulation tasks such as concatenation, comparison,
+ * and element access. It also provides constructors for various initialization methods.
+ */
 class string {
 public:
+    /**
+     * @brief Represents a special value indicating no match found in search operations.
+     */
     static const size_t npos = static_cast<size_t>(-1);
 
+    /**
+     * @brief Constructs an empty string.
+     * 
+     * Initializes the string to an empty state.
+     */
     string();
+
+    /**
+     * @brief Destructor for the string class.
+     * 
+     * Releases any resources held by the string.
+     */
     ~string();
 
+    /**
+     * @brief Constructs a string from a null-terminated C-string.
+     * @param str Pointer to the null-terminated string to initialize with.
+     * 
+     * Copies the contents of the provided C-string into the string.
+     */
     string(const char* str);
+
+    /**
+     * @brief Copy constructor for the string class.
+     * @param other The string object to copy.
+     * 
+     * Creates a new string as a copy of the provided string.
+     */
     string(const string& other);
+
+    /**
+     * @brief Move constructor for the string class.
+     * @param other The string object to move.
+     * 
+     * Transfers ownership of resources from the provided string, leaving it empty.
+     */
     string(string&& other);
 
+    /**
+     * @brief Copy assignment operator for the string class.
+     * @param other The string object to copy.
+     * @return Reference to the updated string.
+     * 
+     * Replaces the current string with a copy of the provided string.
+     */
     string& operator=(const string& other);
+
+    /**
+     * @brief Concatenates two strings and returns the result.
+     * @param other The string to concatenate.
+     * @return A new string containing the concatenation of the current and the other string.
+     */
     string operator+(const string& other) const;
+
+    /**
+     * @brief Appends another string to the current string.
+     * @param other The string to append.
+     * @return Reference to the updated string.
+     * 
+     * Adds the contents of the other string to the end of the current string.
+     */
     string& operator+=(const string& other);
+
+    /**
+     * @brief Accesses a character at the specified index for modification.
+     * @param index The index of the character to access.
+     * @return Reference to the character at the specified index.
+     * 
+     * Provides direct access to the character at the given index, allowing modification.
+     * The behavior is undefined if the index is out of bounds.
+     */
     char& operator[](size_t index);
+
+    /**
+     * @brief Accesses a character at the specified index for read-only access.
+     * @param index The index of the character to access.
+     * @return Reference to the character at the specified index.
+     * 
+     * Provides read-only access to the character at the given index.
+     * The behavior is undefined if the index is out of bounds.
+     */
     const char& operator[](size_t index) const;
+
+    /**
+     * @brief Compares two strings for equality.
+     * @param other The string to compare with.
+     * @return True if the strings are equal, false otherwise.
+     */
     bool operator==(const string& other) const;
+
+    /**
+     * @brief Compares two strings for inequality.
+     * @param other The string to compare with.
+     * @return True if the strings are not equal, false otherwise.
+     */
     bool operator!=(const string& other) const;
 
+    /**
+     * @brief Retrieves the length of the string.
+     * @return The number of characters in the string.
+     * 
+     * Returns the current size of the string, excluding the null terminator.
+     */
     size_t length() const;
+
+    /**
+     * @brief Retrieves the current capacity of the string.
+     * @return The number of characters that can be stored without resizing.
+     * 
+     * The capacity reflects the allocated memory for the string, which may be larger than its length.
+     */
     size_t capacity() const;
 
+    /**
+     * @brief Appends a null-terminated C-string to the end of the current string.
+     * @param str Pointer to the C-string to append.
+     * 
+     * Adds the characters from the provided C-string to the end of the current string, resizing if necessary.
+     */
     void append(const char* str);
+
+    /**
+     * @brief Appends a single character to the end of the current string.
+     * @param chr The character to append.
+     * 
+     * Adds the specified character to the end of the string, resizing if necessary.
+     */
     void append(char chr);
 
+    /**
+     * @brief Reserves memory to accommodate a specified capacity.
+     * @param new_capacity The desired capacity for the string.
+     * 
+     * Increases the capacity of the string to at least `new_capacity` without changing its length.
+     * Does nothing if the current capacity is already sufficient.
+     */
     void reserve(size_t new_capacity);
+
+    /**
+     * @brief Resizes the string to the specified size.
+     * @param new_size The new size for the string.
+     * 
+     * If the new size is larger, the string is expanded with null characters. If smaller, the string is truncated.
+     */
     void resize(size_t new_size);
 
+    /**
+     * @brief Finds the first occurrence of a character in the string.
+     * @param c The character to search for.
+     * @return The index of the first occurrence of the character, or `npos` if not found.
+     */
     size_t find(char c) const;
+
+    /**
+     * @brief Finds the first occurrence of a C-string in the string.
+     * @param str Pointer to the null-terminated C-string to search for.
+     * @return The index of the first occurrence of the substring, or `npos` if not found.
+     */
     size_t find(const char* str) const;
+
+    /**
+     * @brief Finds the first occurrence of another string in the current string.
+     * @param str The string to search for.
+     * @return The index of the first occurrence of the string, or `npos` if not found.
+     */
     size_t find(const string& str) const;
 
+    /**
+     * @brief Finds the first occurrence of a character in the string starting from a specific index.
+     * @param c The character to search for.
+     * @param start The starting index for the search.
+     * @return The index of the first occurrence of the character, or `npos` if not found.
+     */
     size_t find(char c, size_t start) const;
+
+    /**
+     * @brief Finds the first occurrence of a C-string in the string starting from a specific index.
+     * @param substr Pointer to the null-terminated C-string to search for.
+     * @param start The starting index for the search.
+     * @return The index of the first occurrence of the substring, or `npos` if not found.
+     */
     size_t find(const char* substr, size_t start) const;
+
+    /**
+     * @brief Finds the first occurrence of another string in the current string starting from a specific index.
+     * @param str The string to search for.
+     * @param start The starting index for the search.
+     * @return The index of the first occurrence of the string, or `npos` if not found.
+     */
     size_t find(const string& str, size_t start) const;
+
+    /**
+     * @brief Finds the last occurrence of a character in the string.
+     * @param c The character to search for.
+     * @return The index of the last occurrence of the character, or `npos` if not found.
+     */
     size_t find_last_of(char c) const;
 
+    /**
+     * @brief Retrieves a substring of the string.
+     * @param start The starting index of the substring.
+     * @param length The length of the substring. Defaults to `npos` for the remainder of the string.
+     * @return A new string containing the specified substring.
+     * 
+     * Extracts a substring starting at the specified index. If the length exceeds the remaining characters,
+     * the substring will include characters up to the end of the string.
+     */
     string substring(size_t start, size_t length = npos) const;
+
+    /**
+     * @brief Checks if the string starts with a specific prefix.
+     * @param prefix The prefix to check.
+     * @return True if the string starts with the prefix, false otherwise.
+     */
     bool starts_with(const kstl::string& prefix) const;
 
+    /**
+     * @brief Clears the contents of the string.
+     * 
+     * Sets the string to an empty state, releasing any dynamically allocated memory if necessary.
+     */
     void clear();
 
+    /**
+     * @brief Checks if the string is empty.
+     * @return True if the string has no characters, false otherwise.
+     * 
+     * This is an inline method for quick checks of string emptiness.
+     */
     inline bool empty() const { return m_size == 0; }
 
+    /**
+     * @brief Retrieves the internal character data of the string.
+     * @return Pointer to the internal character buffer.
+     * 
+     * Provides direct access to the raw character data stored in the string.
+     */
     const char* data() const;
+
+    /**
+     * @brief Retrieves a null-terminated version of the string.
+     * @return Pointer to a null-terminated C-string representation of the string.
+     * 
+     * This method ensures compatibility with APIs expecting a null-terminated string.
+     */
     const char* c_str() const;
 
 private:
-    static const size_t m_sso_size = 15;
+    static const size_t m_sso_size = 15; /** Size of the Small String Optimization (SSO) buffer */
 
-    char m_sso_buffer[m_sso_size + 1] = { 0 };
+    char m_sso_buffer[m_sso_size + 1] = { 0 }; /** Buffer for storing small strings using SSO */
 
-    char*  m_data;
-    size_t m_size;
-    size_t m_capacity;
-    bool   m_using_sso;
+    char*  m_data;       /** Pointer to dynamically allocated memory for larger strings */
+    size_t m_size;       /** Current size of the string (number of characters) */
+    size_t m_capacity;   /** Current capacity of the string (allocated space) */
+    bool   m_using_sso;  /** Indicates whether the string is using SSO for storage */
 };
 
-// Convert integer to string
+/**
+ * @brief Converts an integer to a string.
+ * @param value The integer to convert.
+ * @return A string representation of the integer.
+ */
 string to_string(int value);
 
-// Convert unsigned integer to string
+/**
+ * @brief Converts an unsigned integer to a string.
+ * @param value The unsigned integer to convert.
+ * @return A string representation of the unsigned integer.
+ */
 string to_string(unsigned int value);
 } // namespace kstl
 

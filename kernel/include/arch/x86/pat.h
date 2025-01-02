@@ -39,12 +39,42 @@ typedef struct page_attribute_table {
     };
 } pat_t;
 
+/**
+ * @brief Reads the Page Attribute Table (PAT) Model-Specific Register (MSR).
+ * @return The current PAT value encapsulated in a `pat_t` structure.
+ * 
+ * Retrieves the contents of the PAT MSR, which defines memory type attributes for page caching.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE pat_t read_pat_msr();
 
+/**
+ * @brief Writes a new value to the Page Attribute Table (PAT) Model-Specific Register (MSR).
+ * @param pat The new PAT value encapsulated in a `pat_t` structure.
+ * 
+ * Updates the PAT MSR with the provided value, altering memory type attributes for page caching.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void write_pat_msr(pat_t pat);
 
+/**
+ * @brief Configures the PAT MSR for the kernel.
+ * 
+ * Sets up the PAT MSR with appropriate memory type attributes optimized for kernel use.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void setup_kernel_pat();
 
+/**
+ * @brief Outputs debug information for the current PAT configuration.
+ * 
+ * Provides detailed information about the current PAT MSR configuration for debugging purposes.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void debug_kernel_pat();
 } // namespace arch::x86
 

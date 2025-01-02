@@ -24,8 +24,7 @@
  * @return int The result of the system call. A non-negative value typically indicates
  *             success or a valid return value, while a negative value signifies an error.
  */
-EXTERN_C
-int syscall(
+EXTERN_C int syscall(
     uint64_t syscallNumber,
     uint64_t arg1,
     uint64_t arg2,
@@ -37,8 +36,21 @@ int syscall(
 
 // Architecture-specific code for enabling the syscall interface
 namespace arch {
-__PRIVILEGED_CODE
-void enable_syscall_interface();
+/**
+ * @brief Enables the architecture-specific syscall interface.
+ * 
+ * Configures the necessary hardware and system state to allow the use of system calls.
+ * This function performs architecture-specific setup, such as configuring Model Specific Registers (MSRs),
+ * enabling appropriate CPU flags, and ensuring the syscall handler is properly registered.
+ * 
+ * @note This function must be called during system initialization to enable user-space processes
+ *       to make system calls.
+ * 
+ * @namespace arch
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void enable_syscall_interface();
 } // namespace arch
 
 #endif // SYSCALL_H

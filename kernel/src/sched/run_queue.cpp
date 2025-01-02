@@ -1,5 +1,6 @@
 #include <sched/run_queue.h>
 
+namespace sched {
 sched_run_queue::sched_run_queue() : m_next_index(0) {}
 
 void sched_run_queue::add_task(task_control_block* task) {
@@ -56,3 +57,4 @@ bool sched_run_queue::is_empty() {
     mutex_guard guard(m_lock);
     return m_tasks.empty();
 }
+} // namespace sched

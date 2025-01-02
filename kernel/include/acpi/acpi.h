@@ -40,6 +40,14 @@ struct acpi_table {
     void* data;               // Pointer to the table data
 };
 
+/**
+ * @brief Enumerates and processes ACPI tables starting from the provided RSDP.
+ * @param rsdp Pointer to the Root System Description Pointer (RSDP).
+ * 
+ * This function parses the ACPI tables starting from the given RSDP and performs any required initialization
+ * or processing for each detected table. It is marked as privileged code.
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void enumerate_acpi_tables(void* rsdp);
 } // namespace acpi
 #endif // ACPI_H

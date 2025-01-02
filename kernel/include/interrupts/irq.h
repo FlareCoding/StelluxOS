@@ -113,11 +113,13 @@ struct irq_desc {
 
 /**
  * @brief Enables CPU interrupts.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void enable_interrupts();
 
 /**
  * @brief Disables CPU interrupts.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void disable_interrupts();
 
@@ -135,12 +137,53 @@ void panic(ptregs* regs);
  */
 void panic(const char* msg);
 
+/**
+ * @brief Finds a free IRQ vector for handling interrupts.
+ * @return The free IRQ vector number, or an error if no vectors are available.
+ * 
+ * Scans the available IRQ vectors to identify one that is currently unused, making it
+ * available for new interrupt handlers.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE uint8_t find_free_irq_vector();
 
+/**
+ * @brief Registers an interrupt request (IRQ) handler.
+ * @param irqno The IRQ number to associate with the handler.
+ * @param handler The function to handle the interrupt.
+ * @param flags Configuration flags for the handler (e.g., edge or level-triggered).
+ * @param cookie Pointer to user-defined data passed to the handler during invocation.
+ * @return True if the handler was successfully registered, false otherwise.
+ * 
+ * Associates a custom handler with a specific IRQ, enabling the system to invoke the handler
+ * when the corresponding interrupt is triggered.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, void* cookie);
 
+/**
+ * @brief Routes a legacy IRQ line to a specified IRQ vector and CPU.
+ * @param irq_line The legacy IRQ line to route.
+ * @param irqno The IRQ vector to associate with the legacy IRQ line.
+ * @param cpu The CPU to route the IRQ to (default: 0).
+ * @param level_triggered Specifies whether the IRQ is level-triggered (default: 0 for edge-triggered).
+ * 
+ * Configures a legacy IRQ to map to a specific IRQ vector and optionally directs it to a particular CPU.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void route_legacy_irq(uint8_t irq_line, uint8_t irqno, uint8_t cpu = 0, uint8_t level_triggered = 0);
 
+/**
+ * @brief Sends an End of Interrupt (EOI) signal to the interrupt controller.
+ * 
+ * Informs the interrupt controller that the current interrupt has been processed, allowing it
+ * to deliver further interrupts.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void irq_send_eoi();
 
 #endif // IRQ_H

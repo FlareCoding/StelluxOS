@@ -67,17 +67,46 @@ inline void this_cpu_write(T& name, T val) {}
 #endif
 
 namespace arch {
-__PRIVILEGED_CODE
-void init_bsp_per_cpu_area();
+/**
+ * @brief Initializes the per-CPU area for the Bootstrap Processor (BSP).
+ * 
+ * Sets up the memory area used to store per-CPU data for the BSP, ensuring proper initialization
+ * of CPU-specific structures and data.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void init_bsp_per_cpu_area();
 
-__PRIVILEGED_CODE
-void init_ap_per_cpu_area(uint8_t cpu_id);
+/**
+ * @brief Initializes the per-CPU area for an Application Processor (AP).
+ * @param cpu_id The ID of the AP to initialize the per-CPU area for.
+ * 
+ * Sets up the memory area for storing per-CPU data for the specified AP, ensuring that CPU-specific
+ * data structures are properly initialized.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void init_ap_per_cpu_area(uint8_t cpu_id);
 
-__PRIVILEGED_CODE
-void allocate_ap_per_cpu_area(uint8_t cpu_id);
+/**
+ * @brief Allocates memory for the per-CPU area of an Application Processor (AP).
+ * @param cpu_id The ID of the AP to allocate the per-CPU area for.
+ * 
+ * Dynamically allocates the required memory for the per-CPU area associated with the specified AP.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void allocate_ap_per_cpu_area(uint8_t cpu_id);
 
-__PRIVILEGED_CODE
-void deallocate_ap_per_cpu_area(uint8_t cpu_id);
+/**
+ * @brief Deallocates the per-CPU area of an Application Processor (AP).
+ * @param cpu_id The ID of the AP to deallocate the per-CPU area for.
+ * 
+ * Frees the memory allocated for the per-CPU area of the specified AP, ensuring proper cleanup.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void deallocate_ap_per_cpu_area(uint8_t cpu_id);
 } // namespace arch
 
 #endif // PERCPU_H

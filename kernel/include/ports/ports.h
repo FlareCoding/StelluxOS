@@ -73,7 +73,26 @@ void outl(uint16_t port, uint32_t val);
  */
 uint32_t inl(uint16_t port);
 
+/**
+ * @brief Marks an I/O port as privileged.
+ * @param port The I/O port to mark as privileged.
+ * 
+ * Configures the specified I/O port to require elevated privileges for access. This is typically 
+ * used to restrict access to sensitive hardware or low-level system resources.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void mark_port_privileged(uint16_t port);
+
+/**
+ * @brief Marks an I/O port as unprivileged.
+ * @param port The I/O port to mark as unprivileged.
+ * 
+ * Configures the specified I/O port to allow access without elevated privileges. This is typically 
+ * used for ports that interact with user-space applications or less sensitive hardware.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void mark_port_unprivileged(uint16_t port);
 
 #endif

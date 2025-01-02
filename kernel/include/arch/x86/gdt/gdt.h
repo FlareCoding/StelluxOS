@@ -137,20 +137,46 @@ struct gdt {
     gdt_segment_descriptor user_code;      // 0x30
 };
 
-__PRIVILEGED_CODE
-void set_segment_descriptor_base(
+/**
+ * @brief Sets the base address for a GDT segment descriptor.
+ * @param descriptor Pointer to the GDT segment descriptor to modify.
+ * @param base The base address to set for the segment.
+ * 
+ * This function configures the base address field of the specified GDT segment descriptor.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_segment_descriptor_base(
     gdt_segment_descriptor* descriptor,
     uint64_t base
 );
 
-__PRIVILEGED_CODE
-void set_segment_descriptor_limit(
+/**
+ * @brief Sets the limit for a GDT segment descriptor.
+ * @param descriptor Pointer to the GDT segment descriptor to modify.
+ * @param limit The limit to set for the segment.
+ * 
+ * This function configures the limit field of the specified GDT segment descriptor. The limit determines
+ * the maximum addressable range of the segment.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_segment_descriptor_limit(
     gdt_segment_descriptor* descriptor,
     uint64_t limit
 );
 
-__PRIVILEGED_CODE
-void init_gdt(int cpu, uint64_t system_stack);
+/**
+ * @brief Initializes the Global Descriptor Table (GDT) for a specific CPU.
+ * @param cpu The CPU ID for which to initialize the GDT.
+ * @param system_stack The address of the system stack to associate with the CPU.
+ * 
+ * Sets up the GDT for the specified CPU, including configuring the system stack and necessary
+ * segment descriptors.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void init_gdt(int cpu, uint64_t system_stack);
 } // namespace arch::x86
 
 #endif // GDT_H

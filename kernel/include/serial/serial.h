@@ -164,7 +164,28 @@ int printf(const char* format, Args... args) {
     return len;
 }
 
+/**
+ * @brief Marks a serial port as privileged.
+ * 
+ * Configures the specified serial port to require elevated privileges for access. This is 
+ * typically used to restrict access to critical or sensitive serial ports.
+ * 
+ * @param serial_port The starting I/O port address of the serial port to mark as privileged.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void mark_serial_port_privileged(uint16_t serial_port);
+
+/**
+ * @brief Marks a serial port as unprivileged.
+ * 
+ * Configures the specified serial port to allow access without elevated privileges. This is 
+ * typically used for serial ports that interact with user-space applications or general-purpose hardware.
+ * 
+ * @param serial_port The starting I/O port address of the serial port to mark as unprivileged.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void mark_serial_port_unprivileged(uint16_t serial_port);
 } // namespace serial
 

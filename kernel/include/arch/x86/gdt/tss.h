@@ -5,7 +5,7 @@
 
 struct task_state_segment {
     uint32_t reserved0;  // 0x00
-    uint64_t rsp0;       // 0x04
+    uint64_t rsp0;       // 0x04 (x86_64 ring0 stack)
     uint64_t rsp1;       // 0x0C
     uint64_t rsp2;       // 0x14
     uint64_t reserved1;

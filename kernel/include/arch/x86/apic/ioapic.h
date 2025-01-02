@@ -12,18 +12,39 @@
 #define IOAPIC_IOWIN      0x10
 
 namespace arch::x86 {
+/**
+ * @class ioapic
+ * @brief Manages the Input/Output Advanced Programmable Interrupt Controller (I/O APIC).
+ * 
+ * This class provides functionality for initializing, configuring, and controlling the I/O APIC, which handles
+ * interrupt redirection and delivery for external hardware interrupts.
+ */
 class ioapic {
 public:
+    /**
+     * @enum delivery_mode
+     * @brief Specifies the interrupt delivery mode.
+     */
     enum delivery_mode {
         edge  = 0,
         level = 1,
     };
 
+    /**
+     * @enum destination_mode
+     * @brief Specifies the destination mode for interrupts.
+     */
     enum destination_mode {
         physical = 0,
         logical  = 1
     };
 
+    /**
+     * @union redirection_entry
+     * @brief Represents a redirection entry in the I/O APIC.
+     * 
+     * This union provides access to the redirection entry as either a bitfield or two 32-bit words.
+     */
     union redirection_entry {
         struct {
             uint64_t vector        : 8;
@@ -44,33 +65,74 @@ public:
         };
     };
 
-    __PRIVILEGED_CODE
-    static kstl::shared_ptr<ioapic>& get();
+    /**
+     * @brief Retrieves the singleton instance of the I/O APIC.
+     * @return A shared pointer to the singleton ioapic instance.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static kstl::shared_ptr<ioapic>& get();
 
-    __PRIVILEGED_CODE
-    static void create(uint64_t physbase, uint64_t gsib);
+    /**
+     * @brief Creates and initializes a new I/O APIC instance.
+     * @param physbase The physical base address of the I/O APIC registers.
+     * @param gsib The global system interrupt base for this I/O APIC.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void create(uint64_t physbase, uint64_t gsib);
 
-    // Getter functions
+    /**
+     * @brief Retrieves the APIC ID of the I/O APIC.
+     * @return The APIC ID.
+     */
     uint8_t get_id() const { return m_apic_id; }
+
+    /**
+     * @brief Retrieves the APIC version of the I/O APIC.
+     * @return The APIC version.
+     */
     uint8_t get_version() const { return m_apic_version; }
+
+    /**
+     * @brief Retrieves the number of redirection entries supported by the I/O APIC.
+     * @return The redirection entry count.
+     */
     uint8_t get_redirection_entry_count() const { return m_redirection_entry_count; }
+
+    /**
+     * @brief Retrieves the global interrupt base for this I/O APIC.
+     * @return The global interrupt base.
+     */
     uint64_t get_global_interrupt_base() const { return m_global_intr_base; }
 
-    __PRIVILEGED_CODE
-    ioapic(uint64_t phys_regs, uint64_t gsib);
-
-    /*
-     * @param ent_no - entry number for which redirection entry is required
-     * @return redirection entry associated with entry number
+    /**
+     * @brief Constructs and initializes an I/O APIC instance.
+     * @param phys_regs The physical address of the I/O APIC registers.
+     * @param gsib The global system interrupt base.
+     * 
+     * @note Privilege: **required**
      */
-    redirection_entry get_redirection_entry(uint8_t ent_no) const;
+    __PRIVILEGED_CODE ioapic(uint64_t phys_regs, uint64_t gsib);
 
-    /*
-     * @param ent_no - entry number for which redirection entry is required
-     * @param entry - pointer to entry to write
-     * @return true if write was successful, false otherwise
+    /**
+     * @brief Retrieves a redirection entry from the I/O APIC.
+     * @param ent_no The entry number to retrieve.
+     * @return The redirection entry.
+     * 
+     * @note Privilege: **required**
      */
-    bool write_redirection_entry(uint8_t ent_no, const redirection_entry *entry);
+    __PRIVILEGED_CODE redirection_entry get_redirection_entry(uint8_t ent_no) const;
+
+    /**
+     * @brief Writes a redirection entry to the I/O APIC.
+     * @param ent_no The entry number to write to.
+     * @param entry A pointer to the redirection entry to write.
+     * @return True if the operation was successful, false otherwise.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool write_redirection_entry(uint8_t ent_no, const redirection_entry *entry);
 
 private:
     /*
@@ -109,21 +171,23 @@ private:
      */
     uint64_t m_global_intr_base;
 
-    /*
-     * Reads the data present in the register at offset reg_off.
-     *
-     * @param reg_off - the register's offset which is being read
-     * @return the data present in the register associated with that offset
+    /**
+     * @brief Reads a register from the I/O APIC.
+     * @param reg_off The register offset to read from.
+     * @return The value of the register.
+     * 
+     * @note Privilege: **required**
      */
-    uint32_t read(uint8_t reg_off) const;
+    __PRIVILEGED_CODE uint32_t _read(uint8_t reg_off) const;
 
-    /*
-     * Writes the data into the register associated.
-     *
-     * @param reg_off - the register's offset which is being written
-     * @param data - dword to write to the register
+    /**
+     * @brief Writes a value to a register in the I/O APIC.
+     * @param reg_off The register offset to write to.
+     * @param data The value to write to the register.
+     * 
+     * @note Privilege: **required**
      */
-    void write(uint8_t reg_off, uint32_t data);
+    __PRIVILEGED_CODE void _write(uint8_t reg_off, uint32_t data);
 };
 } // namespace arch::x86
 

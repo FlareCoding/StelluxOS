@@ -18,6 +18,7 @@
  * and can be hooked into scenarios where a manual or automatic shutdown is required.
  *
  * @note This function assumes the OS can detect that it is running inside a VM.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void vmshutdown();
 

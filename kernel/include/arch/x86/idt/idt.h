@@ -109,10 +109,23 @@ struct interrupt_descriptor_table {
 #define SET_USER_TRAP_GATE(entry_index, isr) \
     SET_IDT_GATE(entry_index, isr, 0, TRAP_GATE, USER_DPL, KERNEL_CS)
 
-EXTERN_C
-__PRIVILEGED_CODE
-void init_idt();
+/**
+ * @brief Initializes the Interrupt Descriptor Table (IDT).
+ * 
+ * Sets up the IDT by configuring all necessary interrupt and exception handlers.
+ * 
+ * @note Privilege: **required**
+ */
+EXTERN_C __PRIVILEGED_CODE void init_idt();
 
+/**
+ * @brief Installs the configured Interrupt Descriptor Table (IDT).
+ * 
+ * Loads the IDT into the processor using the `lidt` instruction, making it active
+ * for handling interrupts and exceptions.
+ * 
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void install_idt();
 } // namespace arch::x86
 

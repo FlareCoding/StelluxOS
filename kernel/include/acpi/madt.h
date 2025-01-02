@@ -88,17 +88,56 @@ struct lapic_x2apic_desc {
     uint32_t acpi_id;
 } __attribute__((packed));
 
+/**
+ * @class madt
+ * @brief Manages the MADT (Multiple APIC Description Table) and provides access to LAPICs.
+ * 
+ * This class is responsible for parsing and storing the LAPIC entries from the MADT.
+ * It provides methods to retrieve information about the local APICs and the number of CPUs.
+ */
 class madt {
 public:
+    /**
+     * @brief Gets the singleton instance of the madt class.
+     * @return The singleton madt instance.
+     * 
+     * This function ensures that only one instance of the madt class is used, providing a global point of access.
+     */
     static madt& get();
 
+    /**
+     * @brief Default constructor for the madt class.
+     */
     madt() = default;
+
+    /**
+     * @brief Default destructor for the madt class.
+     */
     ~madt() = default;
 
-    void init(acpi_sdt_header* acpi_madt_table);
+    /**
+     * @brief Initializes the madt object using the provided ACPI MADT table.
+     * @param acpi_madt_table Pointer to the ACPI MADT table header.
+     * 
+     * This function processes the provided MADT table and extracts information related to LAPICs.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void init(acpi_sdt_header* acpi_madt_table);
 
+    /**
+     * @brief Returns a reference to the vector of LAPIC descriptors.
+     * @return Reference to the vector containing LAPIC descriptors.
+     * 
+     * This function allows access to the LAPIC descriptors, which are part of the parsed MADT table.
+     */
     kstl::vector<lapic_desc>& get_lapics() { return m_local_apics; }
 
+    /**
+     * @brief Returns the number of CPUs (based on LAPIC entries).
+     * @return The number of LAPIC entries (i.e., CPUs).
+     * 
+     * This function computes the CPU count by checking the number of LAPIC entries in the MADT.
+     */
     __force_inline__ size_t get_cpu_count() const { return m_local_apics.size(); }
 
 private:

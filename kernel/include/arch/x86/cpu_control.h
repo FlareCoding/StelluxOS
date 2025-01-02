@@ -39,20 +39,54 @@
 #define CR4_PKS        (1UL << 24)  // Enable Protection Keys for Supervisor-Mode Pages
 
 namespace arch::x86 {
-__PRIVILEGED_CODE
-void cpu_cache_disable(uint64_t* old_cr0);
+/**
+ * @brief Disables the CPU cache and retrieves the previous CR0 register value.
+ * @param old_cr0 Pointer to store the previous value of the CR0 register.
+ * 
+ * Modifies the CR0 register to disable the CPU cache and stores the old value for later restoration.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cpu_cache_disable(uint64_t* old_cr0);
 
-__PRIVILEGED_CODE
-void cpu_set_cr0(uint64_t cr0);
+/**
+ * @brief Sets the CR0 register to a specified value.
+ * @param cr0 The value to set in the CR0 register.
+ * 
+ * Updates the CR0 register to the provided value, modifying system behavior as required.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cpu_set_cr0(uint64_t cr0);
 
-__PRIVILEGED_CODE
-void cpu_cache_flush();
+/**
+ * @brief Flushes the CPU cache.
+ * 
+ * Ensures all modified cache lines are written back to memory and invalidates the cache,
+ * forcing subsequent memory operations to fetch from main memory.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cpu_cache_flush();
 
-__PRIVILEGED_CODE
-void cpu_pge_clear();
+/**
+ * @brief Clears the Page Global Enable (PGE) bit in the CR4 register.
+ * 
+ * Disables the Page Global feature, invalidating global page entries in the TLB.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cpu_pge_clear();
 
-__PRIVILEGED_CODE
-void cpu_pge_enable();
+/**
+ * @brief Enables the Page Global Enable (PGE) bit in the CR4 register.
+ * 
+ * Activates the Page Global feature, allowing global page entries to remain in the TLB
+ * across context switches.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cpu_pge_enable();
 } // namespace arch::x86
 
 #endif // CPU_CONTROL_H
