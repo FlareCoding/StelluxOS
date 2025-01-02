@@ -112,6 +112,8 @@ struct virt_addr_indices_t {
  * 
  * @return virt_addr_indices_t A structure containing the individual indices for each level
  *                             of the page table hierarchy corresponding to the provided virtual address.
+ * 
+ * @note Privilege: **required**
  */
 virt_addr_indices_t get_vaddr_page_table_indices(uint64_t vaddr);
 
@@ -122,6 +124,8 @@ virt_addr_indices_t get_vaddr_page_table_indices(uint64_t vaddr);
  * PML4 (Page Map Level 4) table, and casts it to a pointer to `page_table`.
  * 
  * @return A physical address pointer to the current PML4 `page_table`.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE page_table* get_pml4();
 
@@ -132,6 +136,8 @@ __PRIVILEGED_CODE page_table* get_pml4();
  * address to the CR3 register.
  * 
  * @param pml4 A physical address pointer to the `page_table` to be set as the new PML4.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void set_pml4(page_table* pml4);
 
@@ -148,6 +154,8 @@ __PRIVILEGED_CODE void set_pml4(page_table* pml4);
  * @param flags Flags specifying the permissions and attributes for the mapping.
  * @param pml4 Pointer to the PML4 (top-level) page table where the mapping will be added.
  * @param allocator Reference to a physical frame allocator. Defaults to the page bitmap allocator.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void map_page(
     uintptr_t vaddr,
@@ -171,6 +179,8 @@ __PRIVILEGED_CODE void map_page(
  * @param flags The flags specifying permissions and attributes for the mapping.
  * @param pml4 Pointer to the PML4 (top-level) page table.
  * @param allocator Reference to a physical frame allocator. Defaults to the page bitmap allocator.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void map_pages(
     uintptr_t vaddr,
@@ -182,8 +192,20 @@ __PRIVILEGED_CODE void map_pages(
         allocators::page_bitmap_allocator::get_physical_allocator()
 );
 
-__PRIVILEGED_CODE
-void map_large_page(
+/**
+ * @brief Maps a virtual address to a large physical page address in the specified page table.
+ * 
+ * Maps a 2MB large page, eliminating the need for the bottom level page table.
+ * 
+ * @param vaddr The starting virtual address of the range.
+ * @param paddr The starting physical address of the range.
+ * @param flags The flags specifying permissions and attributes for the mapping.
+ * @param pml4 Pointer to the PML4 (top-level) page table.
+ * @param allocator Reference to a physical frame allocator. Defaults to the page bitmap allocator.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void map_large_page(
     uintptr_t vaddr,
     uintptr_t paddr,
     uint64_t flags,
@@ -197,6 +219,8 @@ void map_large_page(
  * 
  * @param vaddr The virtual address.
  * @return pde_t* Pointer to the PML4 entry. Returns nullptr if the entry is not present.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE pde_t* get_pml4_entry(void* vaddr);
 
@@ -205,6 +229,8 @@ __PRIVILEGED_CODE pde_t* get_pml4_entry(void* vaddr);
  * 
  * @param vaddr The virtual address.
  * @return pde_t* Pointer to the PDPT entry. Returns nullptr if the entry is not present.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE pde_t* get_pdpt_entry(void* vaddr);
 
@@ -213,6 +239,8 @@ __PRIVILEGED_CODE pde_t* get_pdpt_entry(void* vaddr);
  * 
  * @param vaddr The virtual address.
  * @return pde_t* Pointer to the PDT entry. Returns nullptr if the entry is not present or if a large page is mapped.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE pde_t* get_pdt_entry(void* vaddr);
 
@@ -221,6 +249,8 @@ __PRIVILEGED_CODE pde_t* get_pdt_entry(void* vaddr);
  * 
  * @param vaddr The virtual address.
  * @return pte_t* Pointer to the PTE. Returns nullptr if the entry is not present or if a large page is mapped.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr);
 
@@ -232,6 +262,8 @@ __PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr);
  * 
  * @param vaddr The virtual address to translate.
  * @return uintptr_t The physical address. Returns 0 if the translation fails.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uintptr_t get_physical_address(void* vaddr);
 
@@ -252,6 +284,8 @@ __PRIVILEGED_CODE uintptr_t get_physical_address(void* vaddr);
  * @param mbi_start_vaddr  Starting higher half address of the multiboot information structure passed by
  *                         GRUB to the kernel.
  * @param mbi_size         Size the multiboot information structure passed by GRUB to the kernel.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, size_t mbi_size);
 
@@ -260,6 +294,8 @@ __PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t
  * 
  * Prepares the virtual allocator to handle future requests for virtual address space.
  * Proper initialization is essential for enabling dynamic allocation and deallocation.
+ * 
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void init_virtual_allocator();
 } // namespace paging
