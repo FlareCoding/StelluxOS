@@ -81,14 +81,18 @@ help:
 	@echo "---- Stellux Makefile Options ----"
 	@echo ""
 	@echo "Available Targets:"
-	@echo "  make help            Show this help message"
-	@echo "  make kernel          Build the Stellux kernel"
-	@echo "  make image           Create the UEFI-compatible disk image (requires sudo)"
-	@echo "  make run             Run the Stellux image in QEMU"
-	@echo "  make run-headless    Run QEMU without graphical output"
-	@echo "  make run-debug       Run QEMU with GDB support"
-	@echo "  make connect-gdb     Connect GDB to a running QEMU instance"
-	@echo "  make clean           Clean build artifacts and disk image"
+	@echo "  make help            		Show this help message"
+	@echo "  make install-dependencies	Installs the necessary tools and packages for the current Linux distribution"
+	@echo "  make kernel          		Build the Stellux kernel"
+	@echo "  make image           		Create the UEFI-compatible disk image (requires sudo)"
+	@echo "  make run             		Run the Stellux image in QEMU"
+	@echo "  make run-headless    		Run QEMU without graphical output"
+	@echo "  make run-debug       		Run QEMU with GDB support"
+	@echo "  make connect-gdb     		Connect GDB to a running QEMU instance"
+	@echo "  make execute-unit-tests	Build and run a special image version with unit tests"
+	@echo "  make generate-docs	        Generate Doxygen documentation in the docs/ directory"
+	@echo "  make clean-docs           	Clean up and remove the Doxygen-generated docs"
+	@echo "  make clean           		Clean build artifacts and disk image"
 	@echo ""
 
 # Builds the Kernel
@@ -216,7 +220,8 @@ install-dependencies:
 			parted \
 			qemu-system-x86 \
 			gdb \
-			ovmf; \
+			ovmf \
+			doxygen; \
 	elif [ -f /etc/redhat-release ]; then \
 		echo "Detected RedHat-based system."; \
 		sudo dnf groupinstall -y "Development Tools" && \
@@ -226,7 +231,8 @@ install-dependencies:
 			parted \
 			qemu-system-x86_64 \
 			gdb \
-			edk2-ovmf; \
+			edk2-ovmf \
+			doxygen; \
 	elif [ -f /etc/arch-release ]; then \
 		echo "Detected Arch-based system."; \
 		sudo pacman -Sy --noconfirm \
@@ -236,7 +242,8 @@ install-dependencies:
 			parted \
 			qemu \
 			gdb \
-			ovmf; \
+			ovmf \
+			doxygen; \
 	else \
 		echo "Unsupported Linux distribution. Please install the following packages manually:"; \
 		echo "  - build-essential / Development Tools / base-devel"; \
@@ -246,11 +253,29 @@ install-dependencies:
 		echo "  - qemu-system-x86 / qemu-system-x86_64 / qemu"; \
 		echo "  - gdb"; \
 		echo "  - ovmf / edk2-ovmf"; \
+		echo "  - doxygen"; \
 		exit 1; \
 	fi
+
+# Builds the doxygen documentation
+generate-docs:
+	@echo "Generating documentation using Doxygen..."
+	@if [ -f docs/Doxyfile ]; then \
+		cd docs && doxygen Doxyfile; \
+		echo "Documentation generated successfully. Check the docs/output/html directory."; \
+	else \
+		echo "Error: Doxyfile not found in docs/ directory. Please create it first."; \
+		exit 1; \
+	fi
+
+clean-docs:
+	@echo "Cleaning generated documentation..."
+	@rm -rf docs/output
 
 # =========================
 # Phony Targets
 # =========================
 
-.PHONY: all help kernel initrd clean run run-headless run-debug run-debug-headless connect-gdb install-dependencies
+.PHONY: all help kernel initrd clean run run-headless run-debug \
+        run-debug-headless connect-gdb install-dependencies \
+        generate-docs clean-docs
