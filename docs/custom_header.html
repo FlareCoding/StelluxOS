@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- DO NOT REMOVE! The next lines are crucial for Doxygen to insert its scripts and styles. -->
+  \ifnot GENERATE_TREEVIEW
+    \endhtmlonly
+  \fi
+  \if GENERATE_TREEVIEW
+    \endhtmlonly
+  \fi
+
+  <title>\title</title>
+  \include stylesheets
+  \include scripts
+  <!-- Optionally link to your extra JS if you prefer an external file -->
+  <script>
+    //--- Simple Drag to Resize Script ---
+    let isDragging = false;
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const navTree = document.getElementById('nav-tree');
+      const mainContent = document.getElementById('doc-content');
+      const dragBar = document.getElementById('dragbar');
+
+      // Initial sizing if you like:
+      navTree.style.width = '250px';  // example default
+      mainContent.style.marginLeft = '250px'; // or set padding
+
+      dragBar.addEventListener('mousedown', e => {
+        isDragging = true;
+        document.body.style.userSelect = 'none'; // disable text selection
+      });
+
+      document.addEventListener('mouseup', () => {
+        isDragging = false;
+        document.body.style.userSelect = 'auto'; // re-enable text selection
+      });
+
+      document.addEventListener('mousemove', e => {
+        if (!isDragging) return;
+        // e.pageX is the mouse's X pos
+        // We clamp or check min/max widths if desired:
+        const minWidth = 150;
+        const maxWidth = 600;
+        let newWidth = e.pageX;
+        if (newWidth < minWidth) newWidth = minWidth;
+        if (newWidth > maxWidth) newWidth = maxWidth;
+
+        // Update nav tree and main content
+        navTree.style.width = newWidth + 'px';
+        mainContent.style.marginLeft = newWidth + 'px';
+      });
+    });
+  </script>
+</head>
+<body>
+<div id="top"> <!-- Possibly a top bar, optional -->
+  \logo
+  \projectname
+  \projectnumber
+</div>
+
+<!-- The left nav-tree container (Doxygen will fill #nav-tree with the doc nav). -->
+<div id="nav-tree-outer"> <!-- a wrapper if you like -->
+  <div id="nav-tree"></div>
+</div>
+
+<!-- Here’s our drag bar -->
+<div id="dragbar"></div>
+
+<!-- The main content area, where doc pages go -->
+<div id="doc-content">

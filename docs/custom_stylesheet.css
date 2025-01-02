@@ -1,0 +1,602 @@
+/*----------------------------------------------------------------------------
+ * Doxygen 1.9.4 Custom Stylesheet - Dark Theme with Brown/Gold Accents
+ *----------------------------------------------------------------------------
+ * Usage:
+ *   1. In your Doxyfile, set:
+ *         HTML_EXTRA_STYLESHEET = custom_stylesheets.css
+ *   2. Re-run doxygen, then open the HTML docs.
+ *----------------------------------------------------------------------------
+ */
+
+/* Global text & body background */
+body {
+	background-color: #1b1b1b; /* dark background */
+	color: #d0cfcf;              /* light text */
+	margin: 0;
+  }
+  
+  /* Basic text elements (to ensure consistent color) */
+  p, dl, table, div {
+	color: #d0cfcf !important;
+	background-color: transparent !important;
+	font: 400 14px/22px Roboto, sans-serif;
+  }
+
+  .header {
+	background-image: none !important;
+  }
+
+  #nav-tree {
+	background-image: none !important;
+  }
+  
+  /* Default headings get a subtle glow effect on hover (optional).
+	 Keeping the text-shadow transitions but changing colors. */
+  h1, h2, h3, h4, h5, h6 {
+	transition: text-shadow 0.5s linear;
+	margin-right: 15px;
+	color: #d4a35b; /* gold/brown accent for headings */
+  }
+  h1.glow, h2.glow, h3.glow, h4.glow, h5.glow, h6.glow {
+	text-shadow: 0 0 15px #d4a35b;
+  }
+
+  h2.memtitle {
+	background-color: #343434;
+	background-image: none;
+  }
+  
+  /* Bold dt elements (definitions) remain bold, but ensure dark BG */
+  dt {
+	font-weight: bold;
+	background-color: transparent;
+  }
+  
+  /* Multi-column lists: just keep them dark. */
+  ul.multicol {
+	column-gap: 1em;
+	column-count: 3;
+  }
+  
+  /* Table captions and legends, tweak color. */
+  caption, span.legend {
+	font-weight: bold;
+	color: #ccc;
+	background-color: transparent;
+  }
+  
+  /* Versions get smaller, but keep color. */
+  h3.version {
+	font-size: 90%;
+	text-align: center;
+	color: #ccc;
+  }
+  
+  /* Navigation tabs become dark with a brownish highlight. */
+  div.navtab {
+	border-right: 1px solid #664d2e;
+	padding-right: 15px;
+	text-align: right;
+	line-height: 110%;
+	background-color: #2b2b2b;
+  }
+  td.navtab, td.navtabHL {
+	background: #2b2b2b;
+	color: #d0cfcf;
+  }
+  td.navtabHL a, td.navtabHL a:visited {
+	color: #d4a35b;
+	text-shadow: none;
+  }
+  
+  /* Quick index block, smaller text in dark style. */
+  div.qindex {
+	text-align: center;
+	width: 100%;
+	line-height: 140%;
+	font-size: 130%;
+	color: #aaa;
+  }
+  dt.alphachar {
+	font-size: 180%;
+	font-weight: bold;
+	color: #d4a35b !important;
+  }
+  
+  /* Class index styling (for large lists of classes). */
+  .classindex dl {
+	padding: 25px;
+	column-count: 1;
+	background-color: #1f1f1f;
+  }
+  .classindex dd {
+	display: inline-block;
+	margin-left: 50px;
+	width: 90%;
+	line-height: 1.15em;
+	color: #d0cfcf;
+  }
+  .classindex dl.odd {
+	background-color: #232323; /* slightly different dark row */
+  }
+  
+  /* Links: override default blues with gold/brown. */
+  a {
+	color: #d4a35b !important;
+	font-weight: normal;
+	text-decoration: none;
+  }
+  a:hover {
+	text-decoration: underline;
+  }
+  .contents a:visited {
+	color: #d4a35b;
+  }
+
+  /* The drag bar: */
+  .ui-resizable-handle {
+	color: #454545;
+	background-image: none;
+	min-width: 2px;
+	background-color: #454545 !important;
+	border-radius: 5px;
+  }
+
+  /* The nav sync button */
+  #nav-sync {
+	visibility: hidden !important;
+  }
+  
+  /* Links inside code fragments, line references, etc. */
+  a.code, a.code:visited,
+  a.line, a.line:visited,
+  a.codeRef, a.codeRef:visited,
+  a.lineRef, a.lineRef:visited {
+	color: #d4a35b;
+  }
+  
+  /* Definition lists in doxygen pages. */
+  dl.el {
+	margin-left: -1cm;
+  }
+  
+  /* Code fragments (pre, .fragment) and line numbering. */
+  pre.fragment {
+	border: 1px solid #444;
+	background-color: #2f2f2f;
+	padding: 4px 6px;
+	margin: 4px 8px 4px 2px;
+	overflow: auto;
+	word-wrap: break-word;
+	font-size:  9pt;
+	line-height: 125%;
+	font-family: monospace, fixed;
+	color: #d0cfcf;
+  }
+  div.fragment {
+	padding: 0 0 1px 0;
+	margin: 4px 8px 4px 2px;
+	background-color: #2f2f2f;
+	border: 1px solid #444;
+  }
+  div.line {
+	font-family: monospace, fixed;
+	font-size: 13px;
+	min-height: 13px;
+	line-height: 1.0;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+	text-indent: -53px;
+	padding-left: 53px;
+	margin: 0px;
+	transition: background-color 0.5s, box-shadow 0.5s;
+	background-color: #2f2f2f;
+	color: #d0cfcf;
+  }
+  span.lineno {
+	padding-right: 4px;
+	margin-right: 9px;
+	text-align: right;
+	border-right: 2px solid #664d2e;
+	background-color: #2b2b2b;
+	white-space: pre;
+	color: #d0cfcf;
+  }
+  
+  /* “.ah” elements used for highlighting certain blocks. */
+  div.ah, span.ah {
+	background-color: #333;
+	font-weight: bold;
+	color: #d0cfcf;
+	margin-bottom: 3px;
+	margin-top: 3px;
+	padding: 0.2em;
+	border: solid thin #664d2e;
+	border-radius: 0.5em;
+	box-shadow: 2px 2px 3px #000;
+  }
+  
+  /* Directory listings in index pages, make them dark. */
+  div.directory {
+	margin: 10px 0px;
+	border-top: 1px solid #444;
+	border-bottom: 1px solid #444;
+	width: 100%;
+	background-color: #1f1f1f;
+  }
+  .directory td.entry,
+  .directory td.desc {
+	background: none !important;
+	color: #d0cfcf;
+  }
+  .directory tr.even {
+	background-color: #232323;
+  }
+  .directory .levels span {
+	cursor: pointer;
+	padding-left: 2px;
+	padding-right: 2px;
+	color: #d4a35b;
+  }
+  
+  /* Search results container, dark background. */
+  #powerTip {
+	background-color: #2b2b2b;
+	border: 1px solid #444;
+	color: #d0cfcf;
+	opacity: 0.95;
+	max-width: 80%;
+  }
+  #powerTip div {
+	color: #d0cfcf;
+	font: 12px/16px Roboto, sans-serif;
+  }
+
+  #projectname {
+	color: #d4a35b !important;
+  }
+
+  dt.alphachar {
+	color: #d4a35b !important;
+  }
+  
+  /* Addresses (like doc footers) in a dark theme. */
+  address {
+	font-style: normal;
+	color: #ccc;
+  }
+  
+  /* Tables in doxygen pages (doxtable, fieldtable, etc.). */
+  table.doxtable {
+	border-collapse: collapse;
+	margin-top: 4px;
+	margin-bottom: 4px;
+	background-color: #1f1f1f;
+  }
+  table.doxtable td, table.doxtable th {
+	border: 1px solid #444;
+	padding: 3px 7px 2px;
+	color: #d0cfcf;
+  }
+  table.doxtable th {
+	background-color: #2b2b2b;
+	color: #d4a35b;
+	font-size: 110%;
+	padding-bottom: 4px;
+	padding-top: 5px;
+  }
+  
+  /* Field tables, used for struct/class members. */
+  table.fieldtable {
+	margin-bottom: 10px;
+	border: 1px solid #444;
+	border-radius: 4px;
+	box-shadow: 2px 2px 2px #000;
+	background-color: #1f1f1f;
+	border-spacing: 0px;
+  }
+  .fieldtable td, .fieldtable th {
+	padding: 3px 7px 2px;
+	color: #d0cfcf;
+	border: 1px solid #444;
+  }
+  .fieldtable th {
+	background-color: #2b2b2b;
+	color: #d4a35b;
+	font-weight: 400;
+	border-bottom: 1px solid #444;
+  }
+  
+  /* Nav path (breadcrumbs) at the top of content pages. */
+  .navpath ul {
+	font-size: 11px;
+	background-color: #2b2b2b;
+	height: 30px;
+	line-height: 30px;
+	color: #d0cfcf;
+	border: 1px solid #444;
+	margin: 0px;
+	padding: 0px;
+	overflow: hidden;
+  }
+  .navpath li.navelem a {
+	color: #d4a35b;
+	text-shadow: none;
+  }
+  
+  /* Summaries and in-groups. */
+  div.summary {
+	float: right;
+	font-size: 8pt;
+	padding-right: 5px;
+	width: 50%;
+	text-align: right;
+	color: #ccc;
+  }
+  div.ingroups {
+	font-size: 8pt;
+	width: 50%;
+	text-align: left;
+	color: #ccc;
+  }
+  
+  /* The large top header area (titlearea). */
+  #titlearea {
+	padding: 0px;
+	margin: 0px;
+	width: 100%;
+	border-bottom: 1px solid #664d2e;
+	background-color: #2b2b2b;
+  }
+  
+  /* The top "headertitle" block with project name. */
+  div.headertitle {
+	padding: 5px 5px 5px 10px;
+	color: #d0cfcf;
+	background-color: #2b2b2b;
+  }
+  
+  #projectname {
+	font: 200% Tahoma, Arial, sans-serif;
+	margin: 0px;
+	padding: 2px 0px;
+	color: #d4a35b;
+  }
+  #projectbrief {
+	font: 90% Tahoma, Arial, sans-serif;
+	margin: 0px;
+	padding: 0px;
+	color: #ccc;
+  }
+  #projectnumber {
+	font: 50% Tahoma, Arial, sans-serif;
+	margin: 0px;
+	padding: 0px;
+	color: #777;
+  }
+  
+  /* The main content area inside Doxygen pages. */
+  div.contents {
+	margin-top: 10px;
+	margin-left: 12px;
+	margin-right: 8px;
+	background-color: #1b1b1b;
+	color: #d0cfcf;
+  }
+  
+  /* Member declarations and docs. */
+  table.memberdecls {
+	border-spacing: 0px;
+	padding: 0px;
+	background-color: #1f1f1f;
+  }
+  .memberdecls td {
+	transition: background-color 0.5s, box-shadow 0.5s;
+	color: #d0cfcf;
+  }
+  .mdescLeft, .mdescRight,
+  .memItemLeft, .memItemRight,
+  .memTemplItemLeft, .memTemplItemRight,
+  .memTemplParams {
+	background-color: #232323;
+	color: #d0cfcf;
+	border: none;
+	margin: 4px;
+	padding: 1px 0 0 8px;
+  }
+  .mdescLeft, .mdescRight {
+	padding: 0px 8px 4px 8px;
+	color: #ccc;
+  }
+  
+  .memSeparator {
+	border-bottom: 1px solid #444;
+	line-height: 1px;
+	margin: 0px;
+	padding: 0px;
+  }
+  
+  .memItemLeft, .memTemplItemLeft {
+	white-space: nowrap;
+  }
+  .memItemRight, .memTemplItemRight {
+	width: 100%;
+  }
+  
+  /* Type parameters (template params) in a slightly different color */
+  .memTemplParams {
+	color: #d4a35b;
+	white-space: nowrap;
+	font-size: 80%;
+  }
+
+  memItemRight b {
+	color: #d4a35b;
+  }
+  
+  /* Detailed member doc blocks. */
+  .memtitle {
+	padding: 8px;
+	border: 1px solid #444;
+	border-top-right-radius: 4px;
+	border-top-left-radius: 4px;
+	margin-bottom: -1px;
+	background-color: #2b2b2b;
+	color: #d4a35b;
+	line-height: 1.25;
+	font-weight: 300;
+	float: left;
+  }
+  .memdoc {
+	border: 1px solid #444;
+	padding: 6px 10px 2px 10px;
+	background-color: #232323;
+	border-top: none;
+	color: #d0cfcf;
+	border-bottom-left-radius: 4px;
+	border-bottom-right-radius: 4px;
+  }
+  .memproto {
+	border: 1px solid #444;
+	padding: 6px 0px;
+	color: #d4a35b;
+	background-color: #333;
+	font-weight: bold;
+	text-shadow: none;
+	border-top-right-radius: 4px;
+	box-shadow: 5px 5px 5px rgba(0, 0, 0, 0.15);
+  }
+  .memname {
+	font-weight: 400;
+	margin-left: 6px;
+	color: #d0cfcf;
+  }
+  
+  /* Parameter blocks for documented functions. */
+  .paramname {
+	color: #d4a35b;
+	white-space: nowrap;
+  }
+  .paramtype {
+	font-style: italic;
+	color: #d0cfcf;
+  }
+  .params, .retval, .exception, .tparams {
+	margin-left: 0px;
+	padding-left: 0px;
+	color: #d0cfcf;
+  }
+  .paramname code {
+	line-height: 14px;
+  }
+  
+  /* MLabels: those small squares with text like “inline”, “static” */
+  span.mlabel {
+	background-color: #664d2e;
+	border-top: 1px solid #444;
+	border-left: 1px solid #444;
+	border-right: 1px solid #444;
+	border-bottom: 1px solid #444;
+	color: #d0cfcf;
+	margin-right: 4px;
+	padding: 2px 3px;
+	border-radius: 3px;
+	font-size: 7pt;
+	white-space: nowrap;
+	vertical-align: middle;
+	text-shadow: none;
+  }
+  
+  /* Directory tables, now dark. */
+  table.directory {
+	background-color: #1f1f1f;
+	font: 400 14px Roboto, sans-serif;
+	border: 1px solid #444;
+	border-collapse: collapse;
+  }
+  th.dirtab {
+	background: #2b2b2b;
+	font-weight: bold;
+	color: #d4a35b;
+  }
+  
+  /* Horizontal rule in dark theme. */
+  hr {
+	height: 0px;
+	border: none;
+	border-top: 1px solid #444;
+  }
+  hr.footer {
+	height: 1px;
+	border: none;
+	border-top: 1px solid #444;
+  }
+  
+  /* Markdown tables that Doxygen might generate. */
+  table.markdownTable {
+	border-collapse: collapse;
+	margin-top: 4px;
+	margin-bottom: 4px;
+	background-color: #1f1f1f;
+  }
+  table.markdownTable td, table.markdownTable th {
+	border: 1px solid #444;
+	padding: 3px 7px 2px;
+	color: #d0cfcf;
+  }
+  th.markdownTableHeadLeft, th.markdownTableHeadRight,
+  th.markdownTableHeadCenter, th.markdownTableHeadNone {
+	background-color: #2b2b2b;
+	color: #d4a35b;
+	font-size: 110%;
+	padding-bottom: 4px;
+	padding-top: 5px;
+  }
+  
+  /* Syntax highlighting for code tokens:
+	 Instead of the default pastel colors, we pick some that stand out on dark. */
+  span.keyword {       color: #cc9b50; }
+  span.keywordtype {   color: #cc9b50; }
+  span.keywordflow {   color: #e08000; }
+  span.comment {       color: #999;    }
+  span.preprocessor {  color: #d4a35b; }
+  span.stringliteral { color: #fff;    }
+  span.charliteral {   color: #ffa07a; }
+  span.vhdldigit  {    color: #ff00ff; }
+  span.vhdlkeyword {   color: #d4a35b; }
+  span.vhdllogic {     color: #ff0000; }
+  
+  /* Additional doxygen “notes” or “warnings” etc. blocks. */
+  dl.note, dl.warning, dl.attention, dl.pre, dl.post, dl.invariant,
+  dl.deprecated, dl.todo, dl.test, dl.bug {
+	margin-left: -7px;
+	padding-left: 3px;
+	border-left: 4px solid #d4a35b;
+	background-color: #2b2b2b;
+	color: #d0cfcf;
+  }
+
+  .line a {
+	background-color: #604934 !important;
+	/* Optionally, adjust text color so it’s readable on that background: */
+	color: #d0cfcf !important;
+  }
+  
+  /* Searching is typically done with a top or side bar. 
+	 If you see an input field, you can style it here. */
+  
+  /* For printed output, just ensure the background is white text on black, etc. */
+  @media print {
+	#top, #side-nav, #nav-path { display: none; }
+	body { overflow: visible; }
+	h1, h2, h3, h4, h5, h6 { page-break-after: avoid; }
+	.summary { display: none; }
+	.memitem { page-break-inside: avoid; }
+	#doc-content {
+	  margin-left: 0 !important;
+	  height: auto !important;
+	  width: auto !important;
+	  overflow: inherit;
+	  display: inline;
+	}
+  }
