@@ -189,6 +189,8 @@ void parse_elf64_file(const uint8_t* file_buffer) {
     new_page_table->entries[511] = paging::get_pml4()->entries[511];
 
     uintptr_t new_page_table_paddr = paging::get_physical_address(new_page_table);
+    dynpriv::whitelist_asid(new_page_table_paddr);
+
     paging::set_pml4(reinterpret_cast<paging::page_table*>(new_page_table_paddr));
 
     // ELF Header

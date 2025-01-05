@@ -8,7 +8,7 @@ int main() {
     serial::printf("sleep(1) called\n");
     sleep(1);
     
-    serial::printf("Exiting userland process... (well, spinning for now...)\n");
-    while (1);
+    serial::printf("Exiting userland process...\n");
+    sched::exit_thread();
     return 0;
 }
