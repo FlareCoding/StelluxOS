@@ -5,6 +5,7 @@
 #include <arch/x86/gdt/gdt.h>
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
+#include <serial/serial.h>
 
 DEFINE_PER_CPU(task_control_block*, current_task);
 
@@ -144,6 +145,46 @@ task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_
     task->cpu_context.hwframe.rsp = task->task_stack + SCHED_TASK_STACK_SIZE; // Point to the top of the stack
     task->cpu_context.rbp = task->cpu_context.hwframe.rsp;                    // Point to the top of the stack
     task->cpu_context.rdi = reinterpret_cast<uint64_t>(task_data);            // Task parameter buffer pointer
+
+    // Set up segment registers for unprivileged kernel space. These values correspond to the selectors in the GDT.
+    uint64_t data_segment = __USER_DS | 0x3;
+    task->cpu_context.ds = data_segment;
+    task->cpu_context.es = data_segment;
+    task->cpu_context.hwframe.ss = data_segment;
+    task->cpu_context.hwframe.cs = __USER_CS | 0x3;
+
+    return task;
+}
+
+__PRIVILEGED_CODE
+task_control_block* create_upper_class_userland_task(
+    uintptr_t entry_addr,
+    uintptr_t user_stack_top
+) {
+    task_control_block* task = new task_control_block();
+    if (!task) {
+        return nullptr;
+    }
+
+    // Initialize the task's process control block
+    task->state = process_state::READY;
+    task->pid = alloc_task_pid();
+    task->elevated = 0;
+
+    void* system_stack = vmm::alloc_contiguous_virtual_pages(SCHED_SYSTEM_STACK_PAGES, DEFAULT_PRIV_PAGE_FLAGS);
+    if (!system_stack) {
+        delete task;
+        return nullptr;
+    }
+
+    task->task_stack = user_stack_top;
+    task->system_stack = reinterpret_cast<uint64_t>(system_stack);
+
+    // Initialize the CPU context
+    task->cpu_context.hwframe.rip = entry_addr;             // Set instruction pointer to the task function
+    task->cpu_context.hwframe.rflags = 0x200;               // Enable interrupts
+    task->cpu_context.hwframe.rsp = user_stack_top;         // Point to the top of the stack
+    task->cpu_context.rbp = task->cpu_context.hwframe.rsp;  // Point to the top of the stack
 
     // Set up segment registers for unprivileged kernel space. These values correspond to the selectors in the GDT.
     uint64_t data_segment = __USER_DS | 0x3;
