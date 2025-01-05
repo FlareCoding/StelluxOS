@@ -39,7 +39,7 @@ public:
      * does not perform any initialization of the bitmap itself, this should be done
      * using the `init` method after construction.
      */
-    __PRIVILEGED_CODE page_frame_bitmap() = default;
+    __PRIVILEGED_CODE page_frame_bitmap();
     
     /**
      * @brief Initializes the bitmap with a specified size and buffer.
@@ -156,6 +156,12 @@ public:
      */
     __PRIVILEGED_CODE bool is_page_used(void* addr);
 
+    /**
+     * @brief Indicates that the buffer is a physical address and requires
+     * linear kernel virtual-to-physical address translations on access.
+     */
+    __PRIVILEGED_CODE void mark_buffer_address_as_physical();
+
 private:
     /**
      * @brief Sets the value of a single page in the bitmap.
@@ -217,6 +223,12 @@ private:
      * optimize frame allocation by avoiding redundant linear searching.
      */
     uint64_t m_next_free_index;
+
+    /**
+     * @brief Indicates whether the buffer is a physical address and requires
+     * linear kernel virtual-to-physical address translations on access.
+     */
+    bool m_is_physical_buffer_address = false;
 };
 } // namespace paging
 

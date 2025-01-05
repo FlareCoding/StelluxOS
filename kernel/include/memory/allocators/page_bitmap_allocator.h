@@ -68,6 +68,12 @@ public:
     __PRIVILEGED_CODE void set_base_page_offset(uint64_t offset);
 
     /**
+     * @brief Indicates that the bitmap buffer is a physical address and
+     * requires linear kernel virtual-to-physical address translations on access.
+     */
+    __PRIVILEGED_CODE void mark_bitmap_address_as_physical();
+
+    /**
      * @brief Locks a specific page to prevent its allocation.
      * @param addr Address of the page to lock.
      * 

@@ -9,7 +9,16 @@
 #include <serial/serial.h>
 #include <dynpriv/dynpriv.h>
 
+/*
+ * Address where the kernel is loaded (-2GB)
+ */
 #define KERNEL_LOAD_OFFSET 0xffffffff80000000
+
+/*
+ * Addresses from 0xffffffdf80000000 to 0xffffffff80000000 will be reserved
+ * to provide linear mapping between physical and virtual addresses.
+ */
+#define KERNEL_LINEAR_MAPPING_OFFSET 0xffffffdf80000000
 
 extern char __ksymstart;
 extern char __ksymend;
@@ -17,6 +26,31 @@ extern char __privileged_kernel_region_start;
 extern char __privileged_kernel_region_end;
 
 namespace paging {
+bool g_linear_address_translations_available = false;
+
+void* phys_to_virt_linear(uintptr_t paddr) {
+    if (g_linear_address_translations_available) {
+        return (void*)(paddr + KERNEL_LINEAR_MAPPING_OFFSET);
+    }
+    return (void*)paddr;
+}
+
+void* phys_to_virt_linear(void* paddr) {
+    return phys_to_virt_linear(reinterpret_cast<uintptr_t>(paddr));
+}
+
+uintptr_t virt_to_phys_linear(void* vaddr) {
+    if (g_linear_address_translations_available) {
+        return (uintptr_t)vaddr - KERNEL_LINEAR_MAPPING_OFFSET;
+    }
+    return (uintptr_t)vaddr;
+}
+
+uintptr_t virt_to_phys_linear(uintptr_t vaddr) {
+    return virt_to_phys_linear(reinterpret_cast<void*>(vaddr));
+}
+
+
 virt_addr_indices_t get_vaddr_page_table_indices(uint64_t vaddr) {
     virt_addr_indices_t indices;
     indices.pml4 = (vaddr >> 39) & 0x1FF;
@@ -110,7 +144,10 @@ void map_page(
     // Helper lambda to allocate a page table if not present
     auto get_page_table = [&allocator, &indices](pte_t& entry) -> page_table* {
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
-            auto* new_table = static_cast<page_table*>(allocator.alloc_page());
+            auto* new_table = static_cast<page_table*>(
+                phys_to_virt_linear(allocator.alloc_page())
+            );
+
             if (!new_table) {
                 serial::printf("[!] Failed to allocate physical frame for a page table!\n");
                 return nullptr;
@@ -119,23 +156,21 @@ void map_page(
             // Ensure that there is no leftover garbage data in the page
             zeromem(new_table, PAGE_SIZE);
 
-            entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
+            // Default flags for new page tables
+            entry.value = PTE_PRESENT | PTE_RW | PTE_US;
 
-            // If the page table is used for representing addresses
-            // in the higher half kernel address space, the top level
-            // of the page table should be marked as user-accessible.
-            if (indices.pml4 == 511) {
-                entry.user_supervisor = 1;
-            }
-
-            entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
+            entry.page_frame_number = ADDR_TO_PFN(virt_to_phys_linear(new_table));
             return new_table;
         }
-        return reinterpret_cast<page_table*>(PFN_TO_ADDR(entry.page_frame_number));
+
+        return reinterpret_cast<page_table*>(
+            phys_to_virt_linear(PFN_TO_ADDR(entry.page_frame_number))
+        );
     };
 
     // Traverse and allocate as necessary
-    page_table* pdpt = get_page_table(pml4->entries[indices.pml4]);
+    page_table* pml4_table = reinterpret_cast<page_table*>(phys_to_virt_linear(pml4));
+    page_table* pdpt = get_page_table(pml4_table->entries[indices.pml4]);
     page_table* pdt = get_page_table(pdpt->entries[indices.pdpt]);
     page_table* pt = get_page_table(pdt->entries[indices.pdt]);
 
@@ -182,7 +217,10 @@ void map_large_page(
     // Helper lambda to allocate a page table if not present
     auto get_page_table = [&allocator, &indices](pte_t& entry) -> page_table* {
         if (!(entry.value & PTE_PRESENT)) {  // Check if entry is not present
-            auto* new_table = static_cast<page_table*>(allocator.alloc_page());
+            auto* new_table = static_cast<page_table*>(
+                phys_to_virt_linear(allocator.alloc_page())
+            );
+
             if (!new_table) {
                 serial::printf("[!] Failed to allocate physical frame for a page table!\n");
                 return nullptr;
@@ -191,23 +229,21 @@ void map_large_page(
             // Ensure that there is no leftover garbage data in the page
             zeromem(new_table, PAGE_SIZE);
 
-            entry.value = PTE_PRESENT | PTE_RW; // Default for new page tables
+            // Default flags for new page tables
+            entry.value = PTE_PRESENT | PTE_RW | PTE_US;
 
-            // If the page table is used for representing addresses
-            // in the higher half kernel address space, the top level
-            // of the page table should be marked as user-accessible.
-            if (indices.pml4 == 511) {
-                entry.user_supervisor = 1;
-            }
-
-            entry.page_frame_number = ADDR_TO_PFN(reinterpret_cast<uintptr_t>(new_table));
+            entry.page_frame_number = ADDR_TO_PFN(virt_to_phys_linear(new_table));
             return new_table;
         }
-        return reinterpret_cast<page_table*>(PFN_TO_ADDR(entry.page_frame_number));
+
+        return reinterpret_cast<page_table*>(
+            phys_to_virt_linear(PFN_TO_ADDR(entry.page_frame_number))
+        );
     };
 
     // Traverse and allocate PML4 and PDPT as necessary
-    page_table* pdpt = get_page_table(pml4->entries[indices.pml4]);
+    page_table* pml4_table = reinterpret_cast<page_table*>(phys_to_virt_linear(pml4));
+    page_table* pdpt = get_page_table(pml4_table->entries[indices.pml4]);
     page_table* pdt = get_page_table(pdpt->entries[indices.pdpt]);
 
     // Map the large page with provided flags directly in the PDT
@@ -221,7 +257,7 @@ void map_large_page(
 
 __PRIVILEGED_CODE
 pde_t* get_pml4_entry(void* vaddr) {
-    page_table* pml4 = get_pml4();
+    page_table* pml4 = reinterpret_cast<page_table*>(phys_to_virt_linear(get_pml4()));
     virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
     return reinterpret_cast<pde_t*>(&pml4->entries[indices.pml4]);
 }
@@ -234,7 +270,9 @@ pde_t* get_pdpt_entry(void* vaddr) {
         return nullptr;
     }
 
-    page_table* pdpt = reinterpret_cast<page_table*>(PFN_TO_ADDR(pml4_entry->page_frame_number));
+    page_table* pdpt = reinterpret_cast<page_table*>(
+        phys_to_virt_linear(PFN_TO_ADDR(pml4_entry->page_frame_number))
+    );
     virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
     
     return reinterpret_cast<pde_t*>(&pdpt->entries[indices.pdpt]);
@@ -253,7 +291,9 @@ pde_t* get_pdt_entry(void* vaddr) {
         return nullptr;
     }
     
-    page_table* pdt = reinterpret_cast<page_table*>(PFN_TO_ADDR(pdpt_entry->page_frame_number));
+    page_table* pdt = reinterpret_cast<page_table*>(
+        phys_to_virt_linear(PFN_TO_ADDR(pdpt_entry->page_frame_number))
+    );
     virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
 
     return reinterpret_cast<pde_t*>(&pdt->entries[indices.pdt]);
@@ -271,7 +311,9 @@ __PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr) {
         return nullptr;
     }
 
-    page_table* pt = reinterpret_cast<page_table*>(PFN_TO_ADDR(pdt_entry->page_frame_number));
+    page_table* pt = reinterpret_cast<page_table*>(
+        phys_to_virt_linear(PFN_TO_ADDR(pdt_entry->page_frame_number))
+    );
     virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
 
     return &pt->entries[indices.pt];
@@ -440,6 +482,7 @@ void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, 
     // Initialize the page frame bitmap
     auto& bitmap_allocator = allocators::page_bitmap_allocator::get_physical_allocator();
     bitmap_allocator.init_bitmap(page_bitmap_size, reinterpret_cast<uint8_t*>(largest_segment.paddr), true);
+    bitmap_allocator.mark_bitmap_address_as_physical();
 
     // Since the bitmap starts with all memory marked as 'used', we
     // have to unlock all memory regions marked as EfiConventionalMemory.
@@ -480,11 +523,30 @@ void init_virtual_allocator() {
     /*
     * First we have to prepare the memory for the virtual allocator's bitmap.
     *
-    * Kernel VAS (virtual address space) starts at 0xffffff8000000000 and ends
+    * Available Kernel VAS (virtual address space) starts at 0xffffff8000000000 and ends
     * at 0xffffffff80000000, providing around 510 GB of addressable virtual memory.
     * In order to support that, the bitmap requires 133,693,440 bits (one bit per 4 KB page).
     * This means that the bitmap would require 16 MB of backing memory to store it, so
     * an efficient way to do this would be to map 8 large pages (2 MB each) for backing storage.
+    * 
+    * Additionally, addresses from 0xffffffdf80000000 to 0xffffffff80000000 will be reserved
+    * to provide linear mapping between physical and virtual addresses.
+    * This mapping is valid for up to 128GB of physical addresses.
+    * 
+    * The full kernel VAS layout is represented below:
+    *  +----------------------------+  0xFFFFFFFFFFFFFFFF
+    *  |      Kernel Image Region   |
+    *  |                            |
+    *  |    [Kernel code, data]     |
+    *  +----------------------------+  0xFFFFFFFF80000000
+    *  |    Linear Mapping Region   |
+    *  |                            |
+    *  | [128GB of phys. addresses] |
+    *  +----------------------------+  0xFFFFFFDF80000000
+    *  |  VMM and Virtual Allocator |
+    *  |                            |
+    *  | [Heap, temp maps, others]  |
+    *  +----------------------------+  0xFFFFFF8000000000
     */
 
     const uint64_t large_page_size = 2 * 1024 * 1024; // 2MB
@@ -520,9 +582,28 @@ void init_virtual_allocator() {
     auto& kernel_heap = allocators::heap_allocator::get();
     kernel_heap.init(0x0, KERNEL_HEAP_INIT_SIZE);
 
-    // Finally, create the DMA pools
+    // Create the DMA pools
     auto& dma = allocators::dma_allocator::get();
     dma.init();
+
+    // Lock the kernel VAS region reserved for linear mapping physical addresses
+    virtual_allocator.lock_pages(
+        reinterpret_cast<void*>(KERNEL_LINEAR_MAPPING_OFFSET),
+        (KERNEL_LOAD_OFFSET - KERNEL_LINEAR_MAPPING_OFFSET) / PAGE_SIZE
+    );
+
+    // Map using 2MB pages the kernel VAS region reserved for linear mapping physical addresses
+    for (size_t i = KERNEL_LINEAR_MAPPING_OFFSET; i < KERNEL_LOAD_OFFSET; i += LARGE_PAGE_SIZE) {
+        uintptr_t vaddr = i;
+        uintptr_t paddr = i - KERNEL_LINEAR_MAPPING_OFFSET;
+
+        // Ensure the mapped virtual pages are privileged
+        paging::map_large_page(vaddr, paddr, PTE_DEFAULT_PRIV_KERNEL_FLAGS, get_pml4());
+    }
+
+    // Indicate that the linear address translations
+    // have been initialized and are now available.
+    g_linear_address_translations_available = true;
 }
 } // namespace paging
 
