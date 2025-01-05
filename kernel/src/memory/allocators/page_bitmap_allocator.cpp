@@ -20,8 +20,14 @@ void page_bitmap_allocator::init_bitmap(uint64_t size, uint8_t* buffer, bool ini
     m_bitmap.init(size, buffer, initial_used_value);
 }
 
-__PRIVILEGED_CODE void page_bitmap_allocator::set_base_page_offset(uint64_t offset) {
+__PRIVILEGED_CODE
+void page_bitmap_allocator::set_base_page_offset(uint64_t offset) {
     m_base_page_offset = offset;
+}
+
+__PRIVILEGED_CODE
+void page_bitmap_allocator::mark_bitmap_address_as_physical() {
+    m_bitmap.mark_buffer_address_as_physical();
 }
 
 __PRIVILEGED_CODE

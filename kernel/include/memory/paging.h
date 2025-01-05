@@ -5,6 +5,8 @@
 #define PAGE_SIZE           0x1000
 #define LARGE_PAGE_SIZE     (2 * 1024 * 1024)
 #define PAGE_ALIGN(value)   (((value) + (PAGE_SIZE) - 1) & ~((PAGE_SIZE) - 1))
+#define PAGE_ALIGN_UP(value) PAGE_ALIGN(value)
+#define PAGE_ALIGN_DOWN(value) ((value) & ~((PAGE_SIZE) - 1))
 
 #define PAGE_TABLE_ENTRIES 512
 
@@ -99,6 +101,28 @@ struct virt_addr_indices_t {
     uint16_t pdt;
     uint16_t pt;
 };
+
+/**
+ * Converts a physical address to a virtual address in the linear mapping region.
+ * If linear mapping is not initialized, returns the original physical address.
+ *
+ * @param paddr The physical address to convert.
+ * @return The corresponding virtual address in the linear mapping region, or the original
+ *         address if linear mapping is not initialized.
+ */
+void* phys_to_virt_linear(uintptr_t paddr);
+void* phys_to_virt_linear(void* paddr);
+
+/**
+ * Converts a virtual address in the linear mapping region back to its physical address.
+ * If linear mapping is not initialized, returns the original virtual address.
+ *
+ * @param vaddr The virtual address to convert.
+ * @return The corresponding physical address, or the original address if linear mapping
+ *         is not initialized.
+ */
+uintptr_t virt_to_phys_linear(void* vaddr);
+uintptr_t virt_to_phys_linear(uintptr_t vaddr);
 
 /**
  * @brief Retrieves the page table indices for a given virtual address.

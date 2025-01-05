@@ -3,6 +3,8 @@
 #include <memory/paging.h>
 
 namespace paging {
+__PRIVILEGED_CODE page_frame_bitmap::page_frame_bitmap() {}
+
 __PRIVILEGED_CODE
 uint64_t page_frame_bitmap::calculate_required_size(uint64_t system_memory) {
     return PAGE_ALIGN((system_memory / PAGE_SIZE / 8) + 1);
@@ -105,6 +107,11 @@ bool page_frame_bitmap::is_page_used(void* addr) {
 }
 
 __PRIVILEGED_CODE
+void page_frame_bitmap::mark_buffer_address_as_physical() {
+    m_is_physical_buffer_address = true;
+}
+
+__PRIVILEGED_CODE
 bool page_frame_bitmap::_set_page_value(void* addr, bool value) {
     uint64_t index = _get_addr_index(addr);
 
@@ -116,12 +123,18 @@ bool page_frame_bitmap::_set_page_value(void* addr, bool value) {
     uint8_t bit_idx = index % 8;
     uint8_t mask = 0b00000001 << bit_idx;
 
+    // Get the mapped virtual address for the buffer
+    uint8_t* vbuffer = m_buffer;
+    if (m_is_physical_buffer_address) {
+        vbuffer = reinterpret_cast<uint8_t*>(phys_to_virt_linear(m_buffer));
+    }
+
     // First disable the bit
-    m_buffer[byte_idx] &= ~mask;
+    vbuffer[byte_idx] &= ~mask;
 
     // Now enable the bit if needed
     if (value) {
-        m_buffer[byte_idx] |= mask;
+        vbuffer[byte_idx] |= mask;
     }
 
     return true;
@@ -134,7 +147,13 @@ bool page_frame_bitmap::_get_page_value(void* addr) {
     uint8_t bit_idx = index % 8;
     uint8_t mask = 0b00000001 << bit_idx;
 
-    return (m_buffer[byte_idx] & mask) > 0;
+    // Get the mapped virtual address for the buffer
+    uint8_t* vbuffer = m_buffer;
+    if (m_is_physical_buffer_address) {
+        vbuffer = reinterpret_cast<uint8_t*>(phys_to_virt_linear(m_buffer));
+    }
+
+    return (vbuffer[byte_idx] & mask) > 0;
 }
 
 __PRIVILEGED_CODE
