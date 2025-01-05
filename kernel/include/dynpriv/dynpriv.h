@@ -12,7 +12,7 @@ namespace dynpriv {
  * privilege levels. This is crucial for maintaining the integrity and security of
  * the kernel's authoritative domain.
  */
-__PRIVILEGED_CODE void use_current_asid();
+__PRIVILEGED_CODE void set_blessed_kernel_asid();
 
 /**
  * @brief Checks if the current Address Space Identifier (ASID) is permitted to elevate.
@@ -26,6 +26,35 @@ __PRIVILEGED_CODE void use_current_asid();
  * @return false If the current ASID is not permitted to elevate.
  */
 __PRIVILEGED_CODE bool is_asid_allowed();
+
+/**
+ * @brief Initializes the dynamic privilege ASID whitelist.
+ * 
+ * Sets up the data structures required to manage a list of Address Space Identifiers (ASIDs) 
+ * authorized for privilege elevation. Ensures that only trusted ASIDs can elevate hardware 
+ * privilege levels. Should be invoked during system initialization before any elevation checks occur.
+ */
+__PRIVILEGED_CODE void initialize_dynpriv_asid_whitelist();
+
+/**
+ * @brief Adds an Address Space Identifier (ASID) to the whitelist.
+ * 
+ * Marks the specified ASID as trusted, allowing it to elevate hardware privilege levels. 
+ * Whitelisted ASIDs are considered secure and authorized for privilege transitions.
+ * 
+ * @param asid The ASID to be added to the whitelist.
+ */
+__PRIVILEGED_CODE void whitelist_asid(uintptr_t asid);
+
+/**
+ * @brief Removes an Address Space Identifier (ASID) from the whitelist.
+ * 
+ * Revokes the privilege elevation capability of the specified ASID by removing it 
+ * from the whitelist. Blacklisted ASIDs are explicitly denied elevation access.
+ * 
+ * @param asid The ASID to be removed from the whitelist.
+ */
+__PRIVILEGED_CODE void blacklist_asid(uintptr_t asid);
 
 /**
  * @brief Elevates the current thread's hardware privilege level.

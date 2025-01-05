@@ -50,7 +50,7 @@ void arch_init() {
     enable_syscall_interface();
 
     // Setup and enable dynamic privilege mechanism
-    dynpriv::use_current_asid();
+    dynpriv::set_blessed_kernel_asid();
 }
 
 __PRIVILEGED_CODE

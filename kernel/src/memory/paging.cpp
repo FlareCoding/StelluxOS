@@ -477,7 +477,7 @@ void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, 
     set_pml4(new_pml4);
 
     // Set the new blessed kernel ASID in the dynamic privilege subsystem
-    dynpriv::use_current_asid();
+    dynpriv::set_blessed_kernel_asid();
 
     // Initialize the page frame bitmap
     auto& bitmap_allocator = allocators::page_bitmap_allocator::get_physical_allocator();
@@ -604,6 +604,10 @@ void init_virtual_allocator() {
     // Indicate that the linear address translations
     // have been initialized and are now available.
     g_linear_address_translations_available = true;
+
+    // Initialize the dynamic privilege ASID whitelist data
+    // structures that require dynamic memory allocator.
+    dynpriv::initialize_dynpriv_asid_whitelist();
 }
 } // namespace paging
 
