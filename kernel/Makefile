@@ -39,9 +39,12 @@ ASM_OBJS := $(ASM_SRCS:$(SRC_DIR)/%.S=$(OBJ_DIR)/%.o)
 CPP_OBJS := $(CPP_SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 OBJS     := $(ASM_OBJS) $(CPP_OBJS)
 
+# Optimization level [0, 1, 2, or 3]
+COMPILER_OPTIMIZATION_LEVEL := 0
+
 # Compiler and linker flags
 ASFLAGS   := -m64 -g -ffreestanding -nostdlib -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES)
-CXXFLAGS  := -m64 -g -O0 -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES) \
+CXXFLAGS  := -m64 -g -O$(COMPILER_OPTIMIZATION_LEVEL) -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES) \
 			 -ffreestanding -Wall -Werror -Wextra -nostdlib -fno-exceptions -fno-rtti -std=c++17 -mno-red-zone \
 			 -fno-allow-store-data-races -fno-reorder-blocks -fno-ipa-cp-clone -fno-partial-inlining -Wframe-larger-than=2048 \
 			 -Wimplicit-fallthrough=5 -Wno-unused-but-set-variable -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls \
