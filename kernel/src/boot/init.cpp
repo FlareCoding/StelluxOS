@@ -119,6 +119,212 @@ void load_initrd() {
     fs::load_cpio_initrd(reinterpret_cast<const uint8_t*>(vaddr), mod_size, "/initrd");
 }
 
+struct Elf64_Ehdr {
+    uint8_t e_ident[16];     // ELF Identification bytes
+    uint16_t e_type;         // Object file type
+    uint16_t e_machine;      // Machine type
+    uint32_t e_version;      // Object file version
+    uint64_t e_entry;        // Entry point address
+    uint64_t e_phoff;        // Program header offset
+    uint64_t e_shoff;        // Section header offset
+    uint32_t e_flags;        // Processor-specific flags
+    uint16_t e_ehsize;       // ELF header size
+    uint16_t e_phentsize;    // Size of a program header entry
+    uint16_t e_phnum;        // Number of program header entries
+    uint16_t e_shentsize;    // Size of a section header entry
+    uint16_t e_shnum;        // Number of section header entries
+    uint16_t e_shstrndx;     // Section name string table index
+};
+
+struct Elf64_Phdr {
+    uint32_t p_type;         // Type of segment
+    uint32_t p_flags;        // Segment attributes
+    uint64_t p_offset;       // Offset in file
+    uint64_t p_vaddr;        // Virtual address in memory
+    uint64_t p_paddr;        // Physical address (unused on many platforms)
+    uint64_t p_filesz;       // Size of segment in file
+    uint64_t p_memsz;        // Size of segment in memory
+    uint64_t p_align;        // Alignment of segment
+};
+
+struct Elf64_Shdr {
+    uint32_t sh_name;        // Section name (string table index)
+    uint32_t sh_type;        // Section type
+    uint64_t sh_flags;       // Section attributes
+    uint64_t sh_addr;        // Virtual address in memory
+    uint64_t sh_offset;      // Offset in file
+    uint64_t sh_size;        // Size of section
+    uint32_t sh_link;        // Link to other section
+    uint32_t sh_info;        // Miscellaneous information
+    uint64_t sh_addralign;   // Address alignment boundary
+    uint64_t sh_entsize;     // Size of entries, if section has a table
+};
+
+const char* program_header_type_to_string(uint32_t type) {
+    switch (type) {
+        case 0x00000000: return "PT_NULL";
+        case 0x00000001: return "PT_LOAD";
+        case 0x00000002: return "PT_DYNAMIC";
+        case 0x00000003: return "PT_INTERP";
+        case 0x00000004: return "PT_NOTE";
+        case 0x00000005: return "PT_SHLIB";
+        case 0x00000006: return "PT_PHDR";
+        case 0x6474e551: return "PT_GNU_STACK";
+        default: return "UNKNOWN";
+    }
+}
+
+__PRIVILEGED_CODE
+void parse_elf64_file(const uint8_t* file_buffer) {
+    constexpr uint32_t ELF_MAGIC = 0x464c457f; // Little endian "\x7FELF"
+    
+    // Check ELF magic number
+    const uint32_t magic = *reinterpret_cast<const uint32_t*>(file_buffer);
+    if (magic != ELF_MAGIC) {
+        serial::printf("Invalid ELF file: magic = 0x%x\n", magic);
+        return;
+    }
+
+    paging::page_table* new_page_table = reinterpret_cast<paging::page_table*>(vmm::alloc_virtual_page(DEFAULT_UNPRIV_PAGE_FLAGS));
+    new_page_table->entries[511] = paging::get_pml4()->entries[511];
+
+    uintptr_t new_page_table_paddr = paging::get_physical_address(new_page_table);
+    paging::set_pml4(reinterpret_cast<paging::page_table*>(new_page_table_paddr));
+
+    // ELF Header
+    const Elf64_Ehdr* elf_header = reinterpret_cast<const Elf64_Ehdr*>(file_buffer);
+    serial::printf("ELF Entry Point: 0x%llx\n", elf_header->e_entry);
+    serial::printf("Program Header Offset: 0x%llx\n", elf_header->e_phoff);
+    serial::printf("Section Header Offset: 0x%llx\n", elf_header->e_shoff);
+    serial::printf("Number of Program Headers: %d\n", elf_header->e_phnum);
+    serial::printf("Number of Section Headers: %d\n", elf_header->e_shnum);
+    serial::printf("Section Header String Table Index: %d\n", elf_header->e_shstrndx);
+
+    // Locate Section Header String Table (SHSTRTAB)
+    // const auto* section_headers = reinterpret_cast<const Elf64_Shdr*>(file_buffer + elf_header->e_shoff);
+    // const auto& shstrtab_header = section_headers[elf_header->e_shstrndx];
+    // const char* shstrtab = reinterpret_cast<const char*>(file_buffer + shstrtab_header.sh_offset);
+
+    // Parse Program Headers
+    const Elf64_Phdr* program_header = reinterpret_cast<const Elf64_Phdr*>(file_buffer + elf_header->e_phoff);
+    for (int i = 0; i < elf_header->e_phnum; ++i) {
+        // const char* type_str = program_header_type_to_string(program_header[i].p_type);
+
+        // serial::printf("Program Header [%d]:\n", i);
+        // serial::printf("  Type: %s (0x%x)\n", type_str, program_header[i].p_type);
+        // serial::printf("  Virtual Address: 0x%llx\n", program_header[i].p_vaddr);
+        // serial::printf("  Physical Address: 0x%llx\n", program_header[i].p_paddr);
+        // serial::printf("  File Offset: 0x%llx\n", program_header[i].p_offset);
+        // serial::printf("  File Size: 0x%llx\n", program_header[i].p_filesz);
+        // serial::printf("  Memory Size: 0x%llx\n", program_header[i].p_memsz);
+        // serial::printf("  Flags: 0x%x\n", program_header[i].p_flags);
+        // serial::printf("  Align: 0x%llx\n", program_header[i].p_align);
+
+        const auto& phdr = program_header[i];
+        if (phdr.p_type != 0x00000001) {
+            continue; // Only load PT_LOAD segments
+        }
+
+        uint64_t segment_vaddr = phdr.p_vaddr;
+        uint64_t segment_offset = phdr.p_offset;
+        uint64_t segment_filesz = phdr.p_filesz;
+        uint64_t segment_memsz = phdr.p_memsz;
+
+        // Align the virtual address and size to page boundaries
+        uint64_t aligned_vaddr_start = PAGE_ALIGN_DOWN(segment_vaddr);
+        uint64_t aligned_vaddr_end = PAGE_ALIGN_UP(segment_vaddr + segment_memsz);
+        uint64_t aligned_size = aligned_vaddr_end - aligned_vaddr_start;
+
+        // Allocate physical pages
+        size_t num_pages = aligned_size / PAGE_SIZE;
+        auto& physalloc = allocators::page_bitmap_allocator::get_physical_allocator();
+        void* phys_memory = physalloc.alloc_pages(num_pages);
+
+        if (!phys_memory) {
+            serial::printf("Failed to allocate physical pages for segment [%d]\n", i);
+            return;
+        }
+
+        // Map the pages to the virtual address space
+        paging::map_pages(
+            aligned_vaddr_start,
+            reinterpret_cast<uintptr_t>(phys_memory),
+            num_pages,
+            DEFAULT_UNPRIV_PAGE_FLAGS,
+            reinterpret_cast<paging::page_table*>(new_page_table_paddr)
+        );
+
+        // Copy the file data to the allocated memory
+        void* dest_memory = reinterpret_cast<void*>(aligned_vaddr_start + (segment_vaddr % PAGE_SIZE));
+        const void* src_memory = reinterpret_cast<const void*>(file_buffer + segment_offset);
+        memcpy(dest_memory, src_memory, segment_filesz);
+
+        // Zero out the rest of the memory (if memsz > filesz)
+        if (segment_memsz > segment_filesz) {
+            void* bss_start = reinterpret_cast<void*>(aligned_vaddr_start + segment_filesz);
+            size_t bss_size = segment_memsz - segment_filesz;
+            memset(bss_start, 0, bss_size);
+        }
+
+        serial::printf(
+            "Loaded segment [%d]: vaddr=0x%llx, paddr=0x%llx, filesz=0x%llx, memsz=0x%llx\n",
+            i, segment_vaddr, reinterpret_cast<uintptr_t>(phys_memory), segment_filesz, segment_memsz
+        );
+    }
+
+    // Parse Section Headers
+    // for (int i = 0; i < elf_header->e_shnum; ++i) {
+    //     const auto& shdr = section_headers[i];
+    //     const char* section_name = shstrtab + shdr.sh_name;
+    //     if (kstl::string(section_name).starts_with(".debug")) {
+    //         continue;
+    //     }
+
+    //     serial::printf("Section [%d]:\n", i);
+    //     serial::printf("  Name: %s\n", section_name);
+    //     serial::printf("  Type: 0x%x\n", shdr.sh_type);
+    //     serial::printf("  Address: 0x%llx\n", shdr.sh_addr);
+    //     serial::printf("  Offset: 0x%llx\n", shdr.sh_offset);
+    //     serial::printf("  Size: 0x%llx\n", shdr.sh_size);
+    //     serial::printf("  Flags: 0x%llx\n", shdr.sh_flags);
+    // }
+
+    uintptr_t user_stack_address_top = 0x00007fffffffffff;
+    const size_t user_stack_pages = 8;
+    const size_t user_stack_size = PAGE_SIZE * user_stack_pages;
+    const uintptr_t user_stack_start_page = PAGE_ALIGN(user_stack_address_top - user_stack_size);
+
+    auto& physalloc = allocators::page_bitmap_allocator::get_physical_allocator();
+    void* phys_stack_start_page = physalloc.alloc_pages(user_stack_pages);
+    paging::map_pages(
+        user_stack_start_page,
+        reinterpret_cast<uintptr_t>(phys_stack_start_page),
+        user_stack_pages,
+        DEFAULT_UNPRIV_PAGE_FLAGS,
+        reinterpret_cast<paging::page_table*>(new_page_table_paddr)
+    );
+
+    user_stack_address_top -= 0x100;
+
+    task_control_block* task = sched::create_upper_class_userland_task(elf_header->e_entry, user_stack_address_top);
+    sched::scheduler::get().add_task(task, BSP_CPU_ID);
+}
+
+__PRIVILEGED_CODE
+void test_load_hello_world_from_initrd() {
+    auto& vfs = fs::virtual_filesystem::get();
+    fs::vfs_stat_struct stat;
+    vfs.stat("/initrd/bin/hello_world", stat);
+
+    uint8_t* file_buffer = reinterpret_cast<uint8_t*>(zmalloc(stat.size));
+    serial::printf("stat.size: %llu bytes (%llu KB)\n", stat.size, stat.size / 1024);
+
+    vfs.read("/initrd/bin/hello_world", file_buffer, stat.size, 0);
+    serial::printf("file_buffer: 0x%llx\n", file_buffer);
+
+    parse_elf64_file(file_buffer);
+}
+
 // Since the scheduler will prioritize any other task to the idle task,
 // the module manager that will start scheduling future tasks has to get
 // started in a thread of its own to avoid getting forever descheduled
@@ -177,6 +383,8 @@ void init(unsigned int magic, void* mbi) {
     // Shutdown the machine after running the unit tests
     vmshutdown();
 #endif // BUILD_UNIT_TESTS
+
+    test_load_hello_world_from_initrd();
 
     auto task = sched::create_unpriv_kernel_task(module_manager_init, nullptr);
     sched::scheduler::get().add_task(task);

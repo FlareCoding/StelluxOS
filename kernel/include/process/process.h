@@ -143,6 +143,16 @@ __PRIVILEGED_CODE task_control_block* create_priv_kernel_task(task_entry_fn_t en
 __PRIVILEGED_CODE task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_data);
 
 /**
+ * @brief TBD.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE task_control_block* create_upper_class_userland_task(
+    uintptr_t entry_addr,
+    uintptr_t user_stack_top
+);
+
+/**
  * @brief Destroys a task, releasing its resources.
  * @param task Pointer to the `task_control_block` of the task to destroy.
  * @return True if the task was successfully destroyed, false otherwise.
