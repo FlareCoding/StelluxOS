@@ -204,6 +204,18 @@ void init(unsigned int magic, void* mbi) {
 }
 
 void module_manager_init(void*) {
+    RUN_ELEVATED({
+        // Start a shell process
+        task_control_block* task = elf::elf64_loader::load_from_file("/initrd/bin/shell");
+        if (!task) {
+            return;
+        }
+
+        // Allow the process to elevate privileges
+        dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
+        sched::scheduler::get().add_task(task, BSP_CPU_ID);
+    });
+
     // First create a graphics module to allow rendering to the screen,
     // and for that we need to create a framebuffer information struct.
     modules::gfx_framebuffer_module::framebuffer_t framebuffer_info;
