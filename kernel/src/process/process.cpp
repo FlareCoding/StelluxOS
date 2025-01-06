@@ -14,8 +14,13 @@ DEFINE_PER_CPU(uint64_t, current_system_stack);
 #define SCHED_SYSTEM_STACK_PAGES    2
 #define SCHED_TASK_STACK_PAGES      2
 
+#define SCHED_USERLAND_TASK_STACK_PAGES 8
+#define SCHED_USERLAND_TASK_STACK_SIZE  SCHED_USERLAND_TASK_STACK_PAGES * PAGE_SIZE - SCHED_STACK_TOP_PADDING
+
 #define SCHED_SYSTEM_STACK_SIZE     SCHED_SYSTEM_STACK_PAGES * PAGE_SIZE - SCHED_STACK_TOP_PADDING
 #define SCHED_TASK_STACK_SIZE       SCHED_TASK_STACK_PAGES * PAGE_SIZE - SCHED_STACK_TOP_PADDING
+
+#define USERLAND_TASK_STACK_TOP     0x00007fffffffffff
 
 namespace sched {
 // Lock to ensure no identical PIDs get produced
@@ -72,7 +77,7 @@ void switch_context_in_irq(
     this_cpu_write(current_task, to);
 
     // Set the new value of the current system stack
-    this_cpu_write(current_system_stack, to->system_stack);
+    this_cpu_write(current_system_stack, to->system_stack_top);
 }
 
 __PRIVILEGED_CODE
@@ -87,28 +92,28 @@ task_control_block* create_priv_kernel_task(task_entry_fn_t entry, void* task_da
     task->pid = alloc_task_pid();
     task->elevated = 1;
 
-    // Allocate both task and system stacks
+    // Allocate the primary execution task stack
     void* task_stack = vmm::alloc_contiguous_virtual_pages(SCHED_TASK_STACK_PAGES, DEFAULT_PRIV_PAGE_FLAGS);
     if (!task_stack) {
         delete task;
         return nullptr;
     }
 
-    uint64_t system_stack_top = 0;
-    uint64_t system_stack = allocate_system_stack(system_stack_top);
-    if (!system_stack) {
+    task->task_stack = reinterpret_cast<uint64_t>(task_stack);
+    task->task_stack_top = task->task_stack + SCHED_TASK_STACK_SIZE;
+
+    // Allocate the system stack used for sensitive system and interrupt contexts
+    task->system_stack = allocate_system_stack(task->system_stack_top);
+    if (!task->system_stack) {
         delete task;
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task_stack), SCHED_TASK_STACK_PAGES);
         return nullptr;
     }
 
-    task->task_stack = reinterpret_cast<uint64_t>(task_stack);
-    task->system_stack = system_stack_top;
-
     // Initialize the CPU context
     task->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(entry);        // Set instruction pointer to the task function
     task->cpu_context.hwframe.rflags = 0x200;                                 // Enable interrupts
-    task->cpu_context.hwframe.rsp = task->task_stack + SCHED_TASK_STACK_SIZE; // Point to the top of the stack
+    task->cpu_context.hwframe.rsp = task->task_stack_top;                     // Point to the top of the stack
     task->cpu_context.rbp = task->cpu_context.hwframe.rsp;                    // Point to the top of the stack
     task->cpu_context.rdi = reinterpret_cast<uint64_t>(task_data);            // Task parameter buffer pointer
 
@@ -137,23 +142,23 @@ task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_
     task->pid = alloc_task_pid();
     task->elevated = 0;
 
-    // Allocate both task and system stacks (task stack is unprivileged)
+    // Allocate the primary execution task stack
     void* task_stack = vmm::alloc_contiguous_virtual_pages(SCHED_TASK_STACK_PAGES, DEFAULT_UNPRIV_PAGE_FLAGS);
     if (!task_stack) {
         delete task;
         return nullptr;
     }
 
-    uint64_t system_stack_top = 0;
-    uint64_t system_stack = allocate_system_stack(system_stack_top);
-    if (!system_stack) {
+    task->task_stack = reinterpret_cast<uint64_t>(task_stack);
+    task->task_stack_top = task->task_stack + SCHED_TASK_STACK_SIZE;
+
+    // Allocate the system stack used for sensitive system and interrupt contexts
+    task->system_stack = allocate_system_stack(task->system_stack_top);
+    if (!task->system_stack) {
         delete task;
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task_stack), SCHED_TASK_STACK_PAGES);
         return nullptr;
     }
-
-    task->task_stack = reinterpret_cast<uint64_t>(task_stack);
-    task->system_stack = system_stack_top;
 
     // Initialize the CPU context
     task->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(entry);        // Set instruction pointer to the task function
@@ -178,7 +183,6 @@ task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_
 __PRIVILEGED_CODE
 task_control_block* create_upper_class_userland_task(
     uintptr_t entry_addr,
-    uintptr_t user_stack_top,
     paging::page_table* pt
 ) {
     task_control_block* task = new task_control_block();
@@ -191,20 +195,23 @@ task_control_block* create_upper_class_userland_task(
     task->pid = alloc_task_pid();
     task->elevated = 0;
 
-    uint64_t system_stack_top = 0;
-    uint64_t system_stack = allocate_system_stack(system_stack_top);
-    if (!system_stack) {
+    // Allocate the system stack used for sensitive system and interrupt contexts
+    task->system_stack = allocate_system_stack(task->system_stack_top);
+    if (!task->system_stack) {
         delete task;
         return nullptr;
     }
 
-    task->task_stack = user_stack_top;
-    task->system_stack = system_stack_top;
+    if (!map_userland_task_stack(pt, task->task_stack, task->task_stack_top)) {
+        vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
+        delete task;
+        return nullptr;
+    }
 
     // Initialize the CPU context
     task->cpu_context.hwframe.rip = entry_addr;             // Set instruction pointer to the task function
     task->cpu_context.hwframe.rflags = 0x200;               // Enable interrupts
-    task->cpu_context.hwframe.rsp = user_stack_top;         // Point to the top of the stack
+    task->cpu_context.hwframe.rsp = task->task_stack_top;   // Point to the top of the stack
     task->cpu_context.rbp = task->cpu_context.hwframe.rsp;  // Point to the top of the stack
 
     // Set up segment registers for unprivileged kernel space. These values correspond to the selectors in the GDT.
@@ -226,12 +233,9 @@ bool destroy_task(task_control_block* task) {
         return false;
     }
 
-    uint64_t system_stack_page_addr =
-        reinterpret_cast<uint64_t>(task->system_stack) - (SCHED_TASK_STACK_SIZE);
-
     // Destroy the stacks
     vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->task_stack), SCHED_TASK_STACK_PAGES);
-    vmm::unmap_contiguous_virtual_pages(system_stack_page_addr, SCHED_SYSTEM_STACK_PAGES);
+    vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
 
     // Free the actual task structure
     delete task;
@@ -248,6 +252,35 @@ uint64_t allocate_system_stack(uint64_t& out_stack_top) {
 
     out_stack_top = reinterpret_cast<uint64_t>(stack) + SCHED_TASK_STACK_SIZE;
     return reinterpret_cast<uint64_t>(stack);
+}
+
+__PRIVILEGED_CODE bool map_userland_task_stack(
+    paging::page_table* pt,
+    uint64_t& out_stack_bottom,
+    uint64_t& out_stack_top
+) {
+    const uint64_t user_stack_address_top = USERLAND_TASK_STACK_TOP;
+    const uintptr_t user_stack_start_page =
+        PAGE_ALIGN_UP(user_stack_address_top) - (SCHED_USERLAND_TASK_STACK_PAGES * PAGE_SIZE);
+
+    auto& physalloc = allocators::page_bitmap_allocator::get_physical_allocator();
+    void* phys_stack_start_page = physalloc.alloc_pages(SCHED_USERLAND_TASK_STACK_PAGES);
+    if (!phys_stack_start_page) {
+        return false;
+    }
+
+    paging::map_pages(
+        user_stack_start_page,
+        reinterpret_cast<uintptr_t>(phys_stack_start_page),
+        SCHED_USERLAND_TASK_STACK_PAGES,
+        DEFAULT_UNPRIV_PAGE_FLAGS,
+        pt
+    );
+
+    out_stack_bottom = user_stack_start_page;
+    out_stack_top = user_stack_start_page + SCHED_USERLAND_TASK_STACK_SIZE;
+
+    return true;
 }
 
 void exit_thread() {

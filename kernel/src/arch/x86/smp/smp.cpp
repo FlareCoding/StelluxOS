@@ -68,7 +68,7 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     this_cpu_write(current_task, ap_idle_task);
     this_cpu_write(current_system_stack, ap_system_stack_top);
 
-    current->system_stack = ap_system_stack_top;
+    current->system_stack_top = ap_system_stack_top;
     current->cpu = acpi_cpu_index;
     current->elevated = 1;
     current->state = process_state::RUNNING;

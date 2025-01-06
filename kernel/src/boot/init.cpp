@@ -192,33 +192,10 @@ void parse_elf64_file(const uint8_t* file_buffer) {
 
     // ELF Header
     const Elf64_Ehdr* elf_header = reinterpret_cast<const Elf64_Ehdr*>(file_buffer);
-    serial::printf("ELF Entry Point: 0x%llx\n", elf_header->e_entry);
-    serial::printf("Program Header Offset: 0x%llx\n", elf_header->e_phoff);
-    serial::printf("Section Header Offset: 0x%llx\n", elf_header->e_shoff);
-    serial::printf("Number of Program Headers: %d\n", elf_header->e_phnum);
-    serial::printf("Number of Section Headers: %d\n", elf_header->e_shnum);
-    serial::printf("Section Header String Table Index: %d\n", elf_header->e_shstrndx);
-
-    // Locate Section Header String Table (SHSTRTAB)
-    // const auto* section_headers = reinterpret_cast<const Elf64_Shdr*>(file_buffer + elf_header->e_shoff);
-    // const auto& shstrtab_header = section_headers[elf_header->e_shstrndx];
-    // const char* shstrtab = reinterpret_cast<const char*>(file_buffer + shstrtab_header.sh_offset);
 
     // Parse Program Headers
     const Elf64_Phdr* program_header = reinterpret_cast<const Elf64_Phdr*>(file_buffer + elf_header->e_phoff);
     for (int i = 0; i < elf_header->e_phnum; ++i) {
-        // const char* type_str = program_header_type_to_string(program_header[i].p_type);
-
-        // serial::printf("Program Header [%d]:\n", i);
-        // serial::printf("  Type: %s (0x%x)\n", type_str, program_header[i].p_type);
-        // serial::printf("  Virtual Address: 0x%llx\n", program_header[i].p_vaddr);
-        // serial::printf("  Physical Address: 0x%llx\n", program_header[i].p_paddr);
-        // serial::printf("  File Offset: 0x%llx\n", program_header[i].p_offset);
-        // serial::printf("  File Size: 0x%llx\n", program_header[i].p_filesz);
-        // serial::printf("  Memory Size: 0x%llx\n", program_header[i].p_memsz);
-        // serial::printf("  Flags: 0x%x\n", program_header[i].p_flags);
-        // serial::printf("  Align: 0x%llx\n", program_header[i].p_align);
-
         const auto& phdr = program_header[i];
         if (phdr.p_type != 0x00000001) {
             continue; // Only load PT_LOAD segments
@@ -277,43 +254,8 @@ void parse_elf64_file(const uint8_t* file_buffer) {
         );
     }
 
-    // Parse Section Headers
-    // for (int i = 0; i < elf_header->e_shnum; ++i) {
-    //     const auto& shdr = section_headers[i];
-    //     const char* section_name = shstrtab + shdr.sh_name;
-    //     if (kstl::string(section_name).starts_with(".debug")) {
-    //         continue;
-    //     }
-
-    //     serial::printf("Section [%d]:\n", i);
-    //     serial::printf("  Name: %s\n", section_name);
-    //     serial::printf("  Type: 0x%x\n", shdr.sh_type);
-    //     serial::printf("  Address: 0x%llx\n", shdr.sh_addr);
-    //     serial::printf("  Offset: 0x%llx\n", shdr.sh_offset);
-    //     serial::printf("  Size: 0x%llx\n", shdr.sh_size);
-    //     serial::printf("  Flags: 0x%llx\n", shdr.sh_flags);
-    // }
-
-    uintptr_t user_stack_address_top = 0x00007fffffffffff;
-    const size_t user_stack_pages = 8;
-    const size_t user_stack_size = PAGE_SIZE * user_stack_pages;
-    const uintptr_t user_stack_start_page = PAGE_ALIGN(user_stack_address_top - user_stack_size);
-
-    auto& physalloc = allocators::page_bitmap_allocator::get_physical_allocator();
-    void* phys_stack_start_page = physalloc.alloc_pages(user_stack_pages);
-    paging::map_pages(
-        user_stack_start_page,
-        reinterpret_cast<uintptr_t>(phys_stack_start_page),
-        user_stack_pages,
-        DEFAULT_UNPRIV_PAGE_FLAGS,
-        new_pt
-    );
-
-    user_stack_address_top -= 0x100;
-
     task_control_block* task = sched::create_upper_class_userland_task(
         elf_header->e_entry,
-        user_stack_address_top,
         new_pt
     );
 
