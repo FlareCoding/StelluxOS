@@ -41,7 +41,7 @@ void arch_init() {
     this_cpu_write(current_task, bsp_idle_task);
     this_cpu_write(current_system_stack, bsp_system_stack_top);
 
-    current->system_stack = bsp_system_stack_top;
+    current->system_stack_top = bsp_system_stack_top;
     current->cpu = 0;
     current->elevated = 1;
     current->state = process_state::RUNNING;

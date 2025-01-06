@@ -91,7 +91,7 @@ asm_common_isr_entry:
     #
     push rax
     this_cpu_read rax, current_task
-    mov rax, [rax + 0xf0] # current_task->elevated
+    mov rax, [rax + 0x100] # current_task->elevated
     testb al, 1
     pop rax
     jz __isr_entry_post_stack_switch

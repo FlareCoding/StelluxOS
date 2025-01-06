@@ -36,10 +36,12 @@ struct task_control_block {
 
     // Primary execution stack used by a thread
     uint64_t        task_stack;
+    uint64_t        task_stack_top;
 
     // Secondary stack used for system work
     // in the syscall and interrupt contexts.
     uint64_t        system_stack;
+    uint64_t        system_stack_top;
 
     struct {
         // Indicates if the task is currently in a hw-privileged state.
@@ -159,7 +161,6 @@ __PRIVILEGED_CODE task_control_block* create_unpriv_kernel_task(task_entry_fn_t 
  */
 __PRIVILEGED_CODE task_control_block* create_upper_class_userland_task(
     uintptr_t entry_addr,
-    uintptr_t user_stack_top,
     paging::page_table* pt
 );
 
@@ -194,6 +195,37 @@ __PRIVILEGED_CODE bool destroy_task(task_control_block* task);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint64_t allocate_system_stack(uint64_t& out_stack_top);
+
+/**
+ * @brief Maps a userland task stack into virtual memory.
+ * 
+ * This function allocates and maps a stack for a userland task. The stack is aligned to
+ * `PAGE_SIZE` and spans a predefined range in the userland address space. The bottom and
+ * top addresses of the stack are written to `out_stack_bottom` and `out_stack_top`, respectively.
+ *
+ * @param pt Page table to map the userland task stack into.
+ * 
+ * @param[out] out_stack_bottom A reference to a variable where the bottom address of the
+ *                              stack will be stored. This address represents the lowest 
+ *                              accessible address of the stack.
+
+ * @param[out] out_stack_top A reference to a variable where the top address of the
+ *                           stack will be stored. This address represents the initial
+ *                           stack pointer value.
+ * 
+ * @return bool `true` if the stack was successfully mapped, `false` otherwise.
+ * 
+ * The stack is mapped in a user-accessible region, ensuring proper permissions for userland tasks.
+ * The stack top is typically mapped to a high address, such as `0x00007fffffffffff`, while the 
+ * bottom address depends on the allocated stack size.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool map_userland_task_stack(
+    paging::page_table* pt,
+    uint64_t& out_stack_bottom,
+    uint64_t& out_stack_top
+);
 
 /**
  * @brief Terminates the current kernel thread and switches to the next task.
