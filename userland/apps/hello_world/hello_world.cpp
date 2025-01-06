@@ -5,7 +5,6 @@
 #include <dynpriv/dynpriv.h>
 
 int main() {
-    dynpriv::elevate();
     serial::printf("Userland code executed!\n");
     serial::printf("sleep(1) called\n");
     sleep(1);
