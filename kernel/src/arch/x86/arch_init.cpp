@@ -35,10 +35,11 @@ void arch_init() {
     x86::enable_fsgsbase();
     init_bsp_per_cpu_area();
 
-    // Setup BSP's idle task (current)
+    // Setup BSP's idle task (current) and system stack reference
     task_control_block* bsp_idle_task = sched::get_idle_task(BSP_CPU_ID);
     zeromem(bsp_idle_task, sizeof(task_control_block));
     this_cpu_write(current_task, bsp_idle_task);
+    this_cpu_write(current_system_stack, bsp_system_stack_top);
 
     current->system_stack = bsp_system_stack_top;
     current->cpu = 0;

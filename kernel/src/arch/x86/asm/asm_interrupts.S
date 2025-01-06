@@ -3,6 +3,7 @@
 
 .code64
 #include "common.S"
+
 .extern common_isr_entry
 
 .macro PUSHALL
@@ -83,6 +84,70 @@ asm_common_isr_entry:
     # Disable interrupts
     cli
 
+    #
+    # Check if the process is user-elevated,
+    # and if so, we must manually switch onto
+    # a good system stack.
+    #
+    push rax
+    this_cpu_read rax, current_task
+    mov rax, [rax + 0xf0] # current_task->elevated
+    testb al, 1
+    pop rax
+    jz __isr_entry_post_stack_switch
+
+    # Clobber rax and r15
+    push rax
+    push r15
+
+    # Get the top of the current system stack
+    this_cpu_read rax, current_system_stack
+    sub rax, 0x40
+
+    # Copy pushed r15
+    mov r15, [rsp + 0x00]
+    mov [rax + 0x00], r15
+
+    # Copy pushed rax
+    mov r15, [rsp + 0x08]
+    mov [rax + 0x08], r15
+
+    # Copy interrupt number
+    mov r15, [rsp + 0x10]
+    mov [rax + 0x10], r15
+
+    # Copy error code
+    mov r15, [rsp + 0x18]
+    mov [rax + 0x18], r15
+
+    # Copy rip
+    mov r15, [rsp + 0x20]
+    mov [rax + 0x20], r15
+
+    # Copy cs
+    mov r15, [rsp + 0x28]
+    mov [rax + 0x28], r15
+
+    # Copy rflags
+    mov r15, [rsp + 0x30]
+    mov [rax + 0x30], r15
+
+    # Copy rsp
+    mov r15, [rsp + 0x38]
+    mov [rax + 0x38], r15
+
+    # Copy ss
+    mov r15, [rsp + 0x40]
+    mov [rax + 0x40], r15
+
+    # Switch onto the system stack
+    mov rsp, rax
+
+    # Restore rax and r15 from the new stack
+    pop r15
+    pop rax
+
+__isr_entry_post_stack_switch:
     # Save CPU state
     PUSHALL             # pushes segment registers and general purpose registers
     
