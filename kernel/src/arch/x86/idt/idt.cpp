@@ -244,10 +244,8 @@ void common_irq_entry(ptregs* regs) {
     irqreturn_t ret = desc->handler(regs, desc->cookie);
     __unused ret;
 
-    // Restore the original elevate status if the task didn't switch
-    if (current == original_task) {
-        current->elevated = original_elevate_status;
-    }
+    // Restore the original elevate status
+    original_task->elevated = original_elevate_status;
 }
 
 // Common entry point for all interrupt service routines
