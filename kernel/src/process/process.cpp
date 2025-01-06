@@ -183,7 +183,7 @@ __PRIVILEGED_CODE
 task_control_block* create_upper_class_userland_task(
     uintptr_t entry_addr,
     uintptr_t user_stack_top,
-    uintptr_t page_table
+    paging::page_table* pt
 ) {
     task_control_block* task = new task_control_block();
     if (!task) {
@@ -221,7 +221,7 @@ task_control_block* create_upper_class_userland_task(
     task->cpu_context.hwframe.cs = __USER_CS | 0x3;
 
     // Setup the page table
-    task->mm_ctx.root_page_table = page_table;
+    task->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(pt);
 
     return task;
 }

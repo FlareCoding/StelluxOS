@@ -280,16 +280,30 @@ __PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr);
 
 /**
  * @brief Translates a virtual address to its corresponding physical address.
- * 
+ *
  * This function traverses the paging hierarchy to locate the physical address that corresponds
  * to the provided virtual address. It handles both standard 4KB pages and large pages (2MB and 1GB).
- * 
+ *
  * @param vaddr The virtual address to translate.
  * @return uintptr_t The physical address. Returns 0 if the translation fails.
- * 
+ *
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uintptr_t get_physical_address(void* vaddr);
+
+/**
+ * @brief Creates a new page table hierarchy for a userland process.
+ *
+ * Initializes a new set of page tables for use by a middle or an
+ * upper class userland process. This means that the unprivileged
+ * parts of the kernel are also mapped.
+ *
+ * @return page_table* Physical address to the newly created PML4 table. 
+ *                     Returns nullptr if the allocation fails.
+ *
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE page_table* create_higher_class_userland_page_table();
 
 /**
  * @brief Initializes the physical memory allocator using the Multiboot EFI memory map.

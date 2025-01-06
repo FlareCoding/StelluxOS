@@ -185,11 +185,10 @@ void parse_elf64_file(const uint8_t* file_buffer) {
         return;
     }
 
-    paging::page_table* new_page_table = reinterpret_cast<paging::page_table*>(vmm::alloc_virtual_page(DEFAULT_UNPRIV_PAGE_FLAGS));
-    new_page_table->entries[511] = paging::get_pml4()->entries[511];
+    paging::page_table* new_pt = paging::create_higher_class_userland_page_table();
 
-    uintptr_t new_page_table_paddr = paging::get_physical_address(new_page_table);
-    dynpriv::whitelist_asid(new_page_table_paddr);
+    // Whitelist the new page table's ASID
+    dynpriv::whitelist_asid(paging::get_physical_address(new_pt));
 
     // ELF Header
     const Elf64_Ehdr* elf_header = reinterpret_cast<const Elf64_Ehdr*>(file_buffer);
@@ -251,7 +250,7 @@ void parse_elf64_file(const uint8_t* file_buffer) {
             reinterpret_cast<uintptr_t>(phys_memory),
             num_pages,
             DEFAULT_UNPRIV_PAGE_FLAGS,
-            reinterpret_cast<paging::page_table*>(new_page_table_paddr)
+            new_pt
         );
 
         // Temporarily map the segment's physical address into the current address space
@@ -307,7 +306,7 @@ void parse_elf64_file(const uint8_t* file_buffer) {
         reinterpret_cast<uintptr_t>(phys_stack_start_page),
         user_stack_pages,
         DEFAULT_UNPRIV_PAGE_FLAGS,
-        reinterpret_cast<paging::page_table*>(new_page_table_paddr)
+        new_pt
     );
 
     user_stack_address_top -= 0x100;
@@ -315,7 +314,7 @@ void parse_elf64_file(const uint8_t* file_buffer) {
     task_control_block* task = sched::create_upper_class_userland_task(
         elf_header->e_entry,
         user_stack_address_top,
-        new_page_table_paddr
+        new_pt
     );
 
     sched::scheduler::get().add_task(task, BSP_CPU_ID);

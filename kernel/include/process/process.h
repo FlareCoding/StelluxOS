@@ -2,6 +2,7 @@
 #define PROCESS_H
 #include "ptregs.h"
 #include "mm.h"
+#include <memory/paging.h>
 #include <arch/percpu.h>
 
 #define MAX_PROCESS_NAME_LEN 255
@@ -159,7 +160,7 @@ __PRIVILEGED_CODE task_control_block* create_unpriv_kernel_task(task_entry_fn_t 
 __PRIVILEGED_CODE task_control_block* create_upper_class_userland_task(
     uintptr_t entry_addr,
     uintptr_t user_stack_top,
-    uintptr_t page_table
+    paging::page_table* pt
 );
 
 /**
