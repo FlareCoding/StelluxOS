@@ -124,6 +124,32 @@ void* map_contiguous_physical_pages(uintptr_t paddr, size_t count, uint64_t flag
     return virt_start;
 }
 
+__PRIVILEGED_CODE
+void* alloc_linear_mapped_persistent_page() {
+    mutex_guard guard(vmm_lock);
+
+    void* phys_start = allocators::page_bitmap_allocator::get_physical_allocator().alloc_page();
+    if (!phys_start) {
+        return nullptr;
+    }
+
+    void* virt_start = paging::phys_to_virt_linear(phys_start);
+    return virt_start;
+}
+
+__PRIVILEGED_CODE
+void* alloc_linear_mapped_persistent_pages(size_t count) {
+    mutex_guard guard(vmm_lock);
+
+    void* phys_start = allocators::page_bitmap_allocator::get_physical_allocator().alloc_pages(count);
+    if (!phys_start) {
+        return nullptr;
+    }
+
+    void* virt_start = paging::phys_to_virt_linear(phys_start);
+    return virt_start;
+}
+
 // Unmaps a single virtual page
 __PRIVILEGED_CODE
 void unmap_virtual_page(uintptr_t vaddr) {
