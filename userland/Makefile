@@ -1,41 +1,83 @@
+# =========================
+# Userland Settings
+# =========================
+
 # Compiler settings
 CXX       := g++
+LD        := ld
 
-# Where the kernel's build artifacts live (relative to userland/ directory)
-KERNEL_ELF		:= ../build/stellux
-KERNEL_INCLUDES := -I../kernel/include -I../kernel/include/core
+# Paths
+ROOT_DIR         := $(shell realpath ..)
+KERNEL_ELF       := $(ROOT_DIR)/build/stellux
+KERNEL_INCLUDES  := -I$(ROOT_DIR)/kernel/include -I$(ROOT_DIR)/kernel/include/core
+INITRD_BIN_DIR   := $(ROOT_DIR)/initrd/bin
+USERLAND_DIR     := $(shell realpath .)
+APPS_DIR       	 := $(USERLAND_DIR)/apps
+USERLAND_LINKER_SCRIPT := $(USERLAND_DIR)/userland.ld
 
 # Architecture
 TARGET_ARCH := X86_64
 
-# Pre-processor Defines
+# Preprocessor Defines
 PREPROCESSOR_DEFINES := -DARCH_$(TARGET_ARCH)
 
-CXXFLAGS := -m64 -g -O0 $(PREPROCESSOR_DEFINES) \
-			 -ffreestanding -Wall -Werror -nostdlib -fno-rtti -std=c++17 -mno-red-zone \
-			 $(KERNEL_INCLUDES) $(PREPROCESSOR_DEFINES) -fno-pie -fno-pic -mcmodel=large 
+# Common flags for all userland applications
+COMMON_CXXFLAGS := -m64 -g -O0 $(PREPROCESSOR_DEFINES) \
+				   -ffreestanding -Wall -Werror -nostdlib -fno-rtti -std=c++17 -mno-red-zone \
+				   $(KERNEL_INCLUDES) -fno-pie -fno-pic -mcmodel=large 
 
-LDFLAGS  := -T userland.ld -nostdlib -z max-page-size=0x1000 -no-pie  \
-			--just-symbols=$(KERNEL_ELF)
+COMMON_LDFLAGS  := -T $(USERLAND_LINKER_SCRIPT) -nostdlib -z max-page-size=0x1000 -no-pie \
+				   --just-symbols=$(KERNEL_ELF)
 
-# The final output binary
-TARGET := hello_world
+# =========================
+# Targets
+# =========================
 
-# Sources
-SRCS   := hello_world.cpp
-OBJS   := $(SRCS:.cpp=.o)
+.PHONY: all clean install install_to_initrd check-kernel build-apps
 
-.PHONY: all clean
+# Build all applications
+all: check-kernel build-apps
 
-all: $(TARGET)
+# Check if the Kernel ELF file exists
+check-kernel:
+	@if [ ! -f "$(KERNEL_ELF)" ]; then \
+		echo "[ERROR] Kernel ELF file '$(KERNEL_ELF)' not found. Please build the kernel first."; \
+		exit 1; \
+	fi
 
-$(TARGET): $(OBJS)
-	@echo "[LD] Linking $@"
-	$(LD) $(LDFLAGS) -o $@ $^
+build-apps:
+	@echo "Building all userland applications..."
+	@for app in $(APPS_DIR)/*; do \
+		if [ -f $$app/Makefile ]; then \
+			OBJ_DIR=$$app/obj; \
+			BIN_DIR=$$app/bin; \
+			$(MAKE) -C $$app \
+				CXX="$(CXX)" \
+				CXXFLAGS="$(COMMON_CXXFLAGS)" \
+				LD="$(LD)" \
+				LDFLAGS="$(COMMON_LDFLAGS)" \
+				OBJ_DIR=$$OBJ_DIR \
+				BIN_DIR=$$BIN_DIR || exit 1; \
+		fi \
+	done
+	@echo "All applications built successfully."
 
-%.o: %.cpp
-	@echo "[CXX] Compiling $<"
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+# Install applications to the initrd/bin directory
+install_to_initrd: check-kernel build-apps
+	@echo "Copying applications to $(INITRD_BIN_DIR)..."
+	@mkdir -p $(INITRD_BIN_DIR)
+	@for app in $(APPS_DIR)/*; do \
+		bin_file=$$app/bin/$$(basename $$app); \
+		cp $$bin_file $(INITRD_BIN_DIR)/ || exit 1; \
+	done
+	@echo "Applications installed to $(INITRD_BIN_DIR)."
 
+# Clean all application builds
 clean:
-	rm -f $(OBJS) $(TARGET)
+	@echo "Cleaning all userland applications..."
+	@for app in $(APPS_DIR)/*; do \
+		if [ -f $$app/Makefile ]; then \
+			$(MAKE) -C $$app clean || exit 1; \
+		fi \
+	done
+	@echo "Userland cleaned."
