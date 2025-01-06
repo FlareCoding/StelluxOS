@@ -5,9 +5,9 @@
 #include <arch/x86/gdt/gdt.h>
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
-#include <serial/serial.h>
 
 DEFINE_PER_CPU(task_control_block*, current_task);
+DEFINE_PER_CPU(uint64_t, current_system_stack);
 
 #define SCHED_STACK_TOP_PADDING     0x80
 
@@ -54,14 +54,25 @@ void switch_context_in_irq(
     __unused old_cpu;
     __unused new_cpu;
 
-    // Save the current context into the 'from' PCB
+    // Save the current context into the 'from' TCB
     save_cpu_context(&from->cpu_context, irq_frame);
 
-    // Restore the context from the 'to' PCB
+    // Save the current MMU context into the 'from' TCB
+    from->mm_ctx = save_mm_context();
+
+    // Restore the context from the 'to' TCB
     restore_cpu_context(&to->cpu_context, irq_frame);
+
+    // Perform an address space switch if needed
+    if (from->mm_ctx.root_page_table != to->mm_ctx.root_page_table) {
+        install_mm_context(to->mm_ctx);
+    }
 
     // Set the new value of current_task for the current CPU
     this_cpu_write(current_task, to);
+
+    // Set the new value of the current system stack
+    this_cpu_write(current_system_stack, to->system_stack);
 }
 
 __PRIVILEGED_CODE
@@ -83,15 +94,18 @@ task_control_block* create_priv_kernel_task(task_entry_fn_t entry, void* task_da
         return nullptr;
     }
 
-    void* system_stack = vmm::alloc_contiguous_virtual_pages(SCHED_SYSTEM_STACK_PAGES, DEFAULT_PRIV_PAGE_FLAGS);
+    void* system_stack = vmm::alloc_linear_mapped_persistent_pages(SCHED_SYSTEM_STACK_PAGES);
     if (!system_stack) {
         delete task;
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task_stack), SCHED_TASK_STACK_PAGES);
         return nullptr;
     }
 
+    uint64_t system_stack_top =
+        reinterpret_cast<uint64_t>(system_stack) + SCHED_TASK_STACK_SIZE;
+
     task->task_stack = reinterpret_cast<uint64_t>(task_stack);
-    task->system_stack = reinterpret_cast<uint64_t>(system_stack);
+    task->system_stack = system_stack_top;
 
     // Initialize the CPU context
     task->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(entry);        // Set instruction pointer to the task function
@@ -106,6 +120,9 @@ task_control_block* create_priv_kernel_task(task_entry_fn_t entry, void* task_da
     task->cpu_context.es = data_segment;
     task->cpu_context.hwframe.ss = data_segment;
     task->cpu_context.hwframe.cs = __KERNEL_CS;
+
+    // Setup the page table
+    task->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
 
     return task;
 }
@@ -129,15 +146,18 @@ task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_
         return nullptr;
     }
 
-    void* system_stack = vmm::alloc_contiguous_virtual_pages(SCHED_SYSTEM_STACK_PAGES, DEFAULT_PRIV_PAGE_FLAGS);
+    void* system_stack = vmm::alloc_linear_mapped_persistent_pages(SCHED_SYSTEM_STACK_PAGES);
     if (!system_stack) {
         delete task;
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task_stack), SCHED_TASK_STACK_PAGES);
         return nullptr;
     }
 
+    uint64_t system_stack_top =
+        reinterpret_cast<uint64_t>(system_stack) + SCHED_TASK_STACK_SIZE;
+
     task->task_stack = reinterpret_cast<uint64_t>(task_stack);
-    task->system_stack = reinterpret_cast<uint64_t>(system_stack);
+    task->system_stack = system_stack_top;
 
     // Initialize the CPU context
     task->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(entry);        // Set instruction pointer to the task function
@@ -153,13 +173,17 @@ task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_
     task->cpu_context.hwframe.ss = data_segment;
     task->cpu_context.hwframe.cs = __USER_CS | 0x3;
 
+    // Setup the page table
+    task->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
+
     return task;
 }
 
 __PRIVILEGED_CODE
 task_control_block* create_upper_class_userland_task(
     uintptr_t entry_addr,
-    uintptr_t user_stack_top
+    uintptr_t user_stack_top,
+    uintptr_t page_table
 ) {
     task_control_block* task = new task_control_block();
     if (!task) {
@@ -171,14 +195,17 @@ task_control_block* create_upper_class_userland_task(
     task->pid = alloc_task_pid();
     task->elevated = 0;
 
-    void* system_stack = vmm::alloc_contiguous_virtual_pages(SCHED_SYSTEM_STACK_PAGES, DEFAULT_PRIV_PAGE_FLAGS);
+    void* system_stack = vmm::alloc_linear_mapped_persistent_pages(SCHED_SYSTEM_STACK_PAGES);
     if (!system_stack) {
         delete task;
         return nullptr;
     }
 
+    uint64_t system_stack_top =
+        reinterpret_cast<uint64_t>(system_stack) + SCHED_TASK_STACK_SIZE;
+
     task->task_stack = user_stack_top;
-    task->system_stack = reinterpret_cast<uint64_t>(system_stack);
+    task->system_stack = system_stack_top;
 
     // Initialize the CPU context
     task->cpu_context.hwframe.rip = entry_addr;             // Set instruction pointer to the task function
@@ -193,6 +220,9 @@ task_control_block* create_upper_class_userland_task(
     task->cpu_context.hwframe.ss = data_segment;
     task->cpu_context.hwframe.cs = __USER_CS | 0x3;
 
+    // Setup the page table
+    task->mm_ctx.root_page_table = page_table;
+
     return task;
 }
 
@@ -202,9 +232,12 @@ bool destroy_task(task_control_block* task) {
         return false;
     }
 
+    uint64_t system_stack_page_addr =
+        reinterpret_cast<uint64_t>(task->system_stack) - (SCHED_TASK_STACK_SIZE);
+
     // Destroy the stacks
     vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->task_stack), SCHED_TASK_STACK_PAGES);
-    vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
+    vmm::unmap_contiguous_virtual_pages(system_stack_page_addr, SCHED_SYSTEM_STACK_PAGES);
 
     // Free the actual task structure
     delete task;

@@ -1,6 +1,7 @@
 #ifndef PROCESS_H
 #define PROCESS_H
 #include "ptregs.h"
+#include "mm.h"
 #include <arch/percpu.h>
 
 #define MAX_PROCESS_NAME_LEN 255
@@ -50,6 +51,9 @@ struct task_control_block {
         uint64_t    flrsvd      : 55;
     } __attribute__((packed));
 
+    // MMU-specific context
+    mm_context      mm_ctx;
+
     char            name[MAX_PROCESS_NAME_LEN + 1];
 };
 
@@ -57,6 +61,11 @@ struct task_control_block {
  * @brief Per-CPU variable for the current task.
  */
 DECLARE_PER_CPU(task_control_block*, current_task);
+
+/**
+ * @brief Per-CPU variable for the top of the current system stack.
+ */
+DECLARE_PER_CPU(uint64_t, current_system_stack);
 
 /**
  * @brief Retrieves the current task for the executing CPU.
@@ -149,7 +158,8 @@ __PRIVILEGED_CODE task_control_block* create_unpriv_kernel_task(task_entry_fn_t 
  */
 __PRIVILEGED_CODE task_control_block* create_upper_class_userland_task(
     uintptr_t entry_addr,
-    uintptr_t user_stack_top
+    uintptr_t user_stack_top,
+    uintptr_t page_table
 );
 
 /**

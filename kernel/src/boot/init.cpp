@@ -191,8 +191,6 @@ void parse_elf64_file(const uint8_t* file_buffer) {
     uintptr_t new_page_table_paddr = paging::get_physical_address(new_page_table);
     dynpriv::whitelist_asid(new_page_table_paddr);
 
-    paging::set_pml4(reinterpret_cast<paging::page_table*>(new_page_table_paddr));
-
     // ELF Header
     const Elf64_Ehdr* elf_header = reinterpret_cast<const Elf64_Ehdr*>(file_buffer);
     serial::printf("ELF Entry Point: 0x%llx\n", elf_header->e_entry);
@@ -256,8 +254,14 @@ void parse_elf64_file(const uint8_t* file_buffer) {
             reinterpret_cast<paging::page_table*>(new_page_table_paddr)
         );
 
+        // Temporarily map the segment's physical address into the current address space
+        void* phys_memory_mapped_vaddr = paging::phys_to_virt_linear(phys_memory);
+        serial::printf("physical address: 0x%llx\n", phys_memory);
+
         // Copy the file data to the allocated memory
-        void* dest_memory = reinterpret_cast<void*>(aligned_vaddr_start + (segment_vaddr % PAGE_SIZE));
+        void* dest_memory = reinterpret_cast<void*>(
+            reinterpret_cast<uintptr_t>(phys_memory_mapped_vaddr) + (segment_vaddr % PAGE_SIZE)
+        );
         const void* src_memory = reinterpret_cast<const void*>(file_buffer + segment_offset);
         memcpy(dest_memory, src_memory, segment_filesz);
 
@@ -308,7 +312,12 @@ void parse_elf64_file(const uint8_t* file_buffer) {
 
     user_stack_address_top -= 0x100;
 
-    task_control_block* task = sched::create_upper_class_userland_task(elf_header->e_entry, user_stack_address_top);
+    task_control_block* task = sched::create_upper_class_userland_task(
+        elf_header->e_entry,
+        user_stack_address_top,
+        new_page_table_paddr
+    );
+
     sched::scheduler::get().add_task(task, BSP_CPU_ID);
 }
 
@@ -422,7 +431,7 @@ void module_manager_init(void*) {
             gop_framebuffer_address,
             framebuffer_info
         );
-    
+
     // Register and start the gfx module
     auto& module_manager = modules::module_manager::get();
     module_manager.register_module(gfx_driver);

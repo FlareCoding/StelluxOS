@@ -66,6 +66,7 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     task_control_block* ap_idle_task = sched::get_idle_task(acpi_cpu_index);
     zeromem(ap_idle_task, sizeof(task_control_block));
     this_cpu_write(current_task, ap_idle_task);
+    this_cpu_write(current_system_stack, ap_system_stack_top);
 
     current->system_stack = ap_system_stack_top;
     current->cpu = acpi_cpu_index;
@@ -177,7 +178,7 @@ void smp_init() {
         sched::scheduler::get().register_cpu_run_queue(cpu_index);
 
         // Allocate a system stack for the AP core
-        void* ap_stack = vmm::alloc_virtual_pages(2, DEFAULT_PRIV_PAGE_FLAGS | PTE_PCD);
+        void* ap_stack = vmm::alloc_linear_mapped_persistent_pages(2);
         g_ap_system_stacks[cpu_index] = reinterpret_cast<uintptr_t>(ap_stack);
 
         // Allocate a per-cpu area for the processor
