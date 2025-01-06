@@ -10,6 +10,7 @@
 #include <time/time.h>
 #include <sched/sched.h>
 #include <process/process.h>
+#include <process/elf/elf64_loader.h>
 #include <smp/smp.h>
 #include <dynpriv/dynpriv.h>
 #include <modules/graphics/gfx_framebuffer_module.h>
@@ -119,162 +120,17 @@ void load_initrd() {
     fs::load_cpio_initrd(reinterpret_cast<const uint8_t*>(vaddr), mod_size, "/initrd");
 }
 
-struct Elf64_Ehdr {
-    uint8_t e_ident[16];     // ELF Identification bytes
-    uint16_t e_type;         // Object file type
-    uint16_t e_machine;      // Machine type
-    uint32_t e_version;      // Object file version
-    uint64_t e_entry;        // Entry point address
-    uint64_t e_phoff;        // Program header offset
-    uint64_t e_shoff;        // Section header offset
-    uint32_t e_flags;        // Processor-specific flags
-    uint16_t e_ehsize;       // ELF header size
-    uint16_t e_phentsize;    // Size of a program header entry
-    uint16_t e_phnum;        // Number of program header entries
-    uint16_t e_shentsize;    // Size of a section header entry
-    uint16_t e_shnum;        // Number of section header entries
-    uint16_t e_shstrndx;     // Section name string table index
-};
-
-struct Elf64_Phdr {
-    uint32_t p_type;         // Type of segment
-    uint32_t p_flags;        // Segment attributes
-    uint64_t p_offset;       // Offset in file
-    uint64_t p_vaddr;        // Virtual address in memory
-    uint64_t p_paddr;        // Physical address (unused on many platforms)
-    uint64_t p_filesz;       // Size of segment in file
-    uint64_t p_memsz;        // Size of segment in memory
-    uint64_t p_align;        // Alignment of segment
-};
-
-struct Elf64_Shdr {
-    uint32_t sh_name;        // Section name (string table index)
-    uint32_t sh_type;        // Section type
-    uint64_t sh_flags;       // Section attributes
-    uint64_t sh_addr;        // Virtual address in memory
-    uint64_t sh_offset;      // Offset in file
-    uint64_t sh_size;        // Size of section
-    uint32_t sh_link;        // Link to other section
-    uint32_t sh_info;        // Miscellaneous information
-    uint64_t sh_addralign;   // Address alignment boundary
-    uint64_t sh_entsize;     // Size of entries, if section has a table
-};
-
-const char* program_header_type_to_string(uint32_t type) {
-    switch (type) {
-        case 0x00000000: return "PT_NULL";
-        case 0x00000001: return "PT_LOAD";
-        case 0x00000002: return "PT_DYNAMIC";
-        case 0x00000003: return "PT_INTERP";
-        case 0x00000004: return "PT_NOTE";
-        case 0x00000005: return "PT_SHLIB";
-        case 0x00000006: return "PT_PHDR";
-        case 0x6474e551: return "PT_GNU_STACK";
-        default: return "UNKNOWN";
-    }
-}
-
 __PRIVILEGED_CODE
-void parse_elf64_file(const uint8_t* file_buffer) {
-    constexpr uint32_t ELF_MAGIC = 0x464c457f; // Little endian "\x7FELF"
-    
-    // Check ELF magic number
-    const uint32_t magic = *reinterpret_cast<const uint32_t*>(file_buffer);
-    if (magic != ELF_MAGIC) {
-        serial::printf("Invalid ELF file: magic = 0x%x\n", magic);
+void test_load_hello_world_from_initrd() {
+    task_control_block* task = elf::elf64_loader::load_from_file("/initrd/bin/hello_world");
+    if (!task) {
         return;
     }
 
-    paging::page_table* new_pt = paging::create_higher_class_userland_page_table();
-
-    // Whitelist the new page table's ASID
-    dynpriv::whitelist_asid(paging::get_physical_address(new_pt));
-
-    // ELF Header
-    const Elf64_Ehdr* elf_header = reinterpret_cast<const Elf64_Ehdr*>(file_buffer);
-
-    // Parse Program Headers
-    const Elf64_Phdr* program_header = reinterpret_cast<const Elf64_Phdr*>(file_buffer + elf_header->e_phoff);
-    for (int i = 0; i < elf_header->e_phnum; ++i) {
-        const auto& phdr = program_header[i];
-        if (phdr.p_type != 0x00000001) {
-            continue; // Only load PT_LOAD segments
-        }
-
-        uint64_t segment_vaddr = phdr.p_vaddr;
-        uint64_t segment_offset = phdr.p_offset;
-        uint64_t segment_filesz = phdr.p_filesz;
-        uint64_t segment_memsz = phdr.p_memsz;
-
-        // Align the virtual address and size to page boundaries
-        uint64_t aligned_vaddr_start = PAGE_ALIGN_DOWN(segment_vaddr);
-        uint64_t aligned_vaddr_end = PAGE_ALIGN_UP(segment_vaddr + segment_memsz);
-        uint64_t aligned_size = aligned_vaddr_end - aligned_vaddr_start;
-
-        // Allocate physical pages
-        size_t num_pages = aligned_size / PAGE_SIZE;
-        auto& physalloc = allocators::page_bitmap_allocator::get_physical_allocator();
-        void* phys_memory = physalloc.alloc_pages(num_pages);
-
-        if (!phys_memory) {
-            serial::printf("Failed to allocate physical pages for segment [%d]\n", i);
-            return;
-        }
-
-        // Map the pages to the virtual address space
-        paging::map_pages(
-            aligned_vaddr_start,
-            reinterpret_cast<uintptr_t>(phys_memory),
-            num_pages,
-            DEFAULT_UNPRIV_PAGE_FLAGS,
-            new_pt
-        );
-
-        // Temporarily map the segment's physical address into the current address space
-        void* phys_memory_mapped_vaddr = paging::phys_to_virt_linear(phys_memory);
-        serial::printf("physical address: 0x%llx\n", phys_memory);
-
-        // Copy the file data to the allocated memory
-        void* dest_memory = reinterpret_cast<void*>(
-            reinterpret_cast<uintptr_t>(phys_memory_mapped_vaddr) + (segment_vaddr % PAGE_SIZE)
-        );
-        const void* src_memory = reinterpret_cast<const void*>(file_buffer + segment_offset);
-        memcpy(dest_memory, src_memory, segment_filesz);
-
-        // Zero out the rest of the memory (if memsz > filesz)
-        if (segment_memsz > segment_filesz) {
-            void* bss_start = reinterpret_cast<void*>(aligned_vaddr_start + segment_filesz);
-            size_t bss_size = segment_memsz - segment_filesz;
-            memset(bss_start, 0, bss_size);
-        }
-
-        serial::printf(
-            "Loaded segment [%d]: vaddr=0x%llx, paddr=0x%llx, filesz=0x%llx, memsz=0x%llx\n",
-            i, segment_vaddr, reinterpret_cast<uintptr_t>(phys_memory), segment_filesz, segment_memsz
-        );
-    }
-
-    task_control_block* task = sched::create_upper_class_userland_task(
-        elf_header->e_entry,
-        new_pt
-    );
+    // Allow the process to elevate privileges
+    dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
 
     sched::scheduler::get().add_task(task, BSP_CPU_ID);
-}
-
-__PRIVILEGED_CODE
-void test_load_hello_world_from_initrd() {
-    auto& vfs = fs::virtual_filesystem::get();
-    fs::vfs_stat_struct stat;
-    vfs.stat("/initrd/bin/hello_world", stat);
-
-    uint8_t* file_buffer = reinterpret_cast<uint8_t*>(zmalloc(stat.size));
-    serial::printf("stat.size: %llu bytes (%llu KB)\n", stat.size, stat.size / 1024);
-
-    vfs.read("/initrd/bin/hello_world", file_buffer, stat.size, 0);
-    serial::printf("file_buffer: 0x%llx\n", file_buffer);
-
-    parse_elf64_file(file_buffer);
 }
 
 // Since the scheduler will prioritize any other task to the idle task,
