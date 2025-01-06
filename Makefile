@@ -4,6 +4,7 @@
 
 # Directories and Files
 KERNEL_DIR      := kernel
+USERLAND_DIR    := userland
 GRUB_DIR        := grub
 BUILD_DIR       := build
 INITRD_DIR  	:= initrd
@@ -85,6 +86,7 @@ help:
 	@echo "  make install-dependencies	Installs the necessary tools and packages for the current Linux distribution"
 	@echo "  make kernel          		Build the Stellux kernel"
 	@echo "  make image           		Create the UEFI-compatible disk image (requires sudo)"
+	@echo "  make initrd           		Rebuild and package an initrd cpio ramdisk"
 	@echo "  make run             		Run the Stellux image in QEMU"
 	@echo "  make run-headless    		Run QEMU without graphical output"
 	@echo "  make run-debug       		Run QEMU with GDB support"
@@ -95,14 +97,26 @@ help:
 	@echo "  make clean           		Clean build artifacts and disk image"
 	@echo ""
 
-# Builds the Kernel
+# Builds the kernel
 kernel:
 	@$(MKDIR) $(BUILD_DIR)
 	@$(MAKE) -C kernel
 	@cp $(KERNEL_DIR)/build/stellux $(KERNEL_FILE)
 
+# Builds userland applications and modules
+userland: $(KERNEL_FILE)
+	@$(MAKE) -C userland
+	@$(MAKE) -C userland install_to_initrd
+
+# Builds the initrd ramdisk
+initrd:
+	@echo "Building initrd from $(INITRD_DIR)"
+	@mkdir -p $(BUILD_DIR)
+	@cd $(INITRD_DIR) && find . | cpio -o --format=newc > ../$(INITRD_ARCHIVE)
+	@echo "Initrd created at $(INITRD_ARCHIVE)"
+
 # Builds the final .img stellux image
-image: kernel $(STELLUX_IMAGE)
+image: kernel userland initrd $(STELLUX_IMAGE)
 
 $(BUILD_DIR):
 	@$(MKDIR) $(BUILD_DIR)
@@ -115,10 +129,7 @@ $(KERNEL_FILE): $(BUILD_DIR)
 	@cp $(KERNEL_DIR)/build/stellux $(KERNEL_FILE)
 
 $(INITRD_ARCHIVE): $(BUILD_DIR)
-	@echo "Building initrd from $(INITRD_DIR)"
-	@mkdir -p $(BUILD_DIR)
-	@cd $(INITRD_DIR) && find . | cpio -o --format=newc > ../$(INITRD_ARCHIVE)
-	@echo "Initrd created at $(INITRD_ARCHIVE)"
+	$(MAKE) initrd
 
 $(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(INITRD_ARCHIVE) $(GRUB_CFG_PATH)
 	@echo "Creating raw disk image..."
@@ -159,9 +170,11 @@ $(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(INITRD_ARCHIVE) $(GRUB_CFG_PATH)
 clean:
 	@echo "Cleaning up build files and disk image..."
 	$(MAKE) -C $(KERNEL_DIR) clean
+	$(MAKE) -C $(USERLAND_DIR) clean
 	@rm -rf $(BUILD_DIR)
 	@rm -rf *.log
 	@rm -rf $(UNIT_TESTS_LOG_FILENAME)
+	@rm -rf $(INITRD_DIR)/bin
 
 # Run the Disk Image in QEMU
 run: $(STELLUX_IMAGE)
