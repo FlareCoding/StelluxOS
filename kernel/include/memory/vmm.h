@@ -14,6 +14,7 @@ namespace vmm {
  * 
  * @param flags Flags specifying permissions and attributes for the mapping.
  * @return Pointer to the allocated virtual address, or nullptr on failure.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void* alloc_virtual_page(uint64_t flags);
 
@@ -23,6 +24,7 @@ __PRIVILEGED_CODE void* alloc_virtual_page(uint64_t flags);
  * @param paddr Physical address to map.
  * @param flags Flags specifying permissions and attributes for the mapping.
  * @return Pointer to the virtual address of the mapped page, or nullptr on failure.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void* map_physical_page(uintptr_t paddr, uint64_t flags);
 
@@ -33,6 +35,7 @@ __PRIVILEGED_CODE void* map_physical_page(uintptr_t paddr, uint64_t flags);
  * @param count Number of pages to allocate.
  * @param flags Flags specifying permissions and attributes for the mapping.
  * @return Pointer to the starting virtual address of the range, or nullptr on failure.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void* alloc_virtual_pages(size_t count, uint64_t flags);
 
@@ -42,6 +45,7 @@ __PRIVILEGED_CODE void* alloc_virtual_pages(size_t count, uint64_t flags);
  * @param count Number of contiguous pages to allocate.
  * @param flags Flags specifying permissions and attributes for the mapping.
  * @return Pointer to the starting virtual address of the allocated range, or nullptr on failure.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void* alloc_contiguous_virtual_pages(size_t count, uint64_t flags);
 
@@ -52,13 +56,36 @@ __PRIVILEGED_CODE void* alloc_contiguous_virtual_pages(size_t count, uint64_t fl
  * @param count Number of contiguous pages to map.
  * @param flags Flags specifying permissions and attributes for the mapping.
  * @return Pointer to the starting virtual address of the mapped range, or nullptr on failure.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void* map_contiguous_physical_pages(uintptr_t paddr, size_t count, uint64_t flags);
+
+/**
+ * Allocates a single physical page and provides a linear-mapped virtual address to it.
+ * The allocated page is guaranteed to be persistent across all address spaces and
+ * accessible via the linear mapping region.
+ *
+ * @return Linear-mapped virtual address of the allocated page, or nullptr on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void* alloc_linear_mapped_persistent_page();
+
+/**
+ * Allocates a contiguous range of physical pages and provides linear-mapped virtual addresses to them.
+ * All allocated pages are guaranteed to be persistent across all address spaces and accessible via
+ * the linear mapping region. The number of pages to allocate is specified by the `count` parameter.
+ *
+ * @param flags Flags specifying permissions and attributes for the mapping.
+ * @return Linear-mapped virtual address of the first page in the range, or nullptr on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void* alloc_linear_mapped_persistent_pages(size_t count);
 
 /**
  * @brief Unmaps a single virtual page.
  * 
  * @param vaddr Virtual address to unmap.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void unmap_virtual_page(uintptr_t vaddr);
 
@@ -67,6 +94,7 @@ __PRIVILEGED_CODE void unmap_virtual_page(uintptr_t vaddr);
  * 
  * @param vaddr Starting virtual address of the range.
  * @param count Number of pages to unmap.
+ * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void unmap_contiguous_virtual_pages(uintptr_t vaddr, size_t count);
 } // namespace vmm
