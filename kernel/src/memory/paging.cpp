@@ -1,5 +1,6 @@
 #include <memory/paging.h>
 #include <memory/memory.h>
+#include <memory/vmm.h>
 #include <memory/tlb.h>
 #include <memory/page_bitmap.h>
 #include <memory/allocators/page_bootstrap_allocator.h>
@@ -375,6 +376,23 @@ uintptr_t get_physical_address(void* vaddr) {
     uintptr_t phys_base = PFN_TO_ADDR(pte_entry->page_frame_number);
     uintptr_t offset = virtual_addr & 0xFFF; // Offset within 4KB
     return phys_base + offset;
+}
+
+__PRIVILEGED_CODE
+page_table* create_higher_class_userland_page_table() {
+    // Get the current page table
+    page_table* current_pt = paging::get_pml4();
+
+    // Allocate a page for the new top-level page table
+    page_table* new_pt = reinterpret_cast<page_table*>(
+        vmm::alloc_virtual_page(DEFAULT_UNPRIV_PAGE_FLAGS)
+    );
+
+    // Copy the page directory pointer table responsible for
+    // the kernel's higher-half address region.
+    new_pt->entries[511] = current_pt->entries[511];
+
+    return reinterpret_cast<page_table*>(get_physical_address(new_pt));
 }
 
 __PRIVILEGED_CODE
