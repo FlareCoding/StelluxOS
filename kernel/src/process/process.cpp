@@ -94,15 +94,13 @@ task_control_block* create_priv_kernel_task(task_entry_fn_t entry, void* task_da
         return nullptr;
     }
 
-    void* system_stack = vmm::alloc_linear_mapped_persistent_pages(SCHED_SYSTEM_STACK_PAGES);
+    uint64_t system_stack_top = 0;
+    uint64_t system_stack = allocate_system_stack(system_stack_top);
     if (!system_stack) {
         delete task;
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task_stack), SCHED_TASK_STACK_PAGES);
         return nullptr;
     }
-
-    uint64_t system_stack_top =
-        reinterpret_cast<uint64_t>(system_stack) + SCHED_TASK_STACK_SIZE;
 
     task->task_stack = reinterpret_cast<uint64_t>(task_stack);
     task->system_stack = system_stack_top;
@@ -146,15 +144,13 @@ task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_
         return nullptr;
     }
 
-    void* system_stack = vmm::alloc_linear_mapped_persistent_pages(SCHED_SYSTEM_STACK_PAGES);
+    uint64_t system_stack_top = 0;
+    uint64_t system_stack = allocate_system_stack(system_stack_top);
     if (!system_stack) {
         delete task;
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task_stack), SCHED_TASK_STACK_PAGES);
         return nullptr;
     }
-
-    uint64_t system_stack_top =
-        reinterpret_cast<uint64_t>(system_stack) + SCHED_TASK_STACK_SIZE;
 
     task->task_stack = reinterpret_cast<uint64_t>(task_stack);
     task->system_stack = system_stack_top;
@@ -195,14 +191,12 @@ task_control_block* create_upper_class_userland_task(
     task->pid = alloc_task_pid();
     task->elevated = 0;
 
-    void* system_stack = vmm::alloc_linear_mapped_persistent_pages(SCHED_SYSTEM_STACK_PAGES);
+    uint64_t system_stack_top = 0;
+    uint64_t system_stack = allocate_system_stack(system_stack_top);
     if (!system_stack) {
         delete task;
         return nullptr;
     }
-
-    uint64_t system_stack_top =
-        reinterpret_cast<uint64_t>(system_stack) + SCHED_TASK_STACK_SIZE;
 
     task->task_stack = user_stack_top;
     task->system_stack = system_stack_top;
@@ -243,6 +237,17 @@ bool destroy_task(task_control_block* task) {
     delete task;
 
     return true;
+}
+
+__PRIVILEGED_CODE
+uint64_t allocate_system_stack(uint64_t& out_stack_top) {
+    void* stack = vmm::alloc_linear_mapped_persistent_pages(SCHED_SYSTEM_STACK_PAGES);
+    if (!stack) {
+        return 0;
+    }
+
+    out_stack_top = reinterpret_cast<uint64_t>(stack) + SCHED_TASK_STACK_SIZE;
+    return reinterpret_cast<uint64_t>(stack);
 }
 
 void exit_thread() {

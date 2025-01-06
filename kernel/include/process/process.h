@@ -175,6 +175,27 @@ __PRIVILEGED_CODE task_control_block* create_upper_class_userland_task(
 __PRIVILEGED_CODE bool destroy_task(task_control_block* task);
 
 /**
+ * @brief Creates a new system stack.
+ * 
+ * This function allocates a new system stack for use in interrupt contexts.
+ * The base address of the allocated stack is returned, and the top address
+ * (used for initializing the stack pointer) is written to `out_stack_top`.
+ * 
+ * @param[out] out_stack_top A reference to a variable where the top address of
+ *                           the newly created stack will be stored. This address
+ *                           should be used as the stack pointer when starting the task.
+ * 
+ * @return uint64_t The base address of the newly allocated stack. Returns 0 if
+ *                  stack allocation fails.
+ * 
+ * The created stack is aligned to `PAGE_SIZE` and has sufficient space for typical
+ * kernel tasks.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t allocate_system_stack(uint64_t& out_stack_top);
+
+/**
  * @brief Terminates the current kernel thread and switches to the next task.
  * 
  * If no valid task is available, the kernel swapper/idle task is executed.
