@@ -316,6 +316,21 @@ bool virtual_filesystem::path_exists(const kstl::string& path) {
     return _resolve_path(path, resolved_node) == fs_error::success;
 }
 
+kstl::string virtual_filesystem::get_filename_from_path(const kstl::string& path) {
+    if (path.empty()) {
+        return ""; // Return an empty string if the path is empty.
+    }
+
+    // Vector to hold the path components
+    kstl::vector<kstl::string> components;
+
+    // Split the path into components
+    _split_path(path, components);
+
+    // Return the last component, which represents the filename, or empty if no components
+    return components.empty() ? "" : components.back();
+}
+
 fs_error virtual_filesystem::is_mount_point(
     const kstl::string& path,
     kstl::shared_ptr<vfs_node>& out_root_node

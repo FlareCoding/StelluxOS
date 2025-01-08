@@ -104,6 +104,13 @@ public:
      */
     bool path_exists(const kstl::string& path);
 
+    /**
+     * @brief Extracts the filename from a given path.
+     * @param path The full path to extract the filename from.
+     * @return The filename as a `kstl::string`, or an empty string if the path is invalid.
+     */
+    static kstl::string get_filename_from_path(const kstl::string& path);
+
 private:
     kstl::vector<mount_point> m_mount_points; /** List of all mounted filesystems */
     mutex m_vfs_lock = mutex(); /** Mutex to synchronize VFS operations */
@@ -129,7 +136,7 @@ private:
      * @param path The path to split.
      * @param components Vector to populate with the individual components of the path.
      */
-    void _split_path(const kstl::string& path, kstl::vector<kstl::string>& components);
+    static void _split_path(const kstl::string& path, kstl::vector<kstl::string>& components);
 };
 } // namespace fs
 
