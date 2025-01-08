@@ -180,6 +180,8 @@ void init(unsigned int magic, void* mbi) {
 #endif // BUILD_UNIT_TESTS
 
     auto task = sched::create_unpriv_kernel_task(module_manager_init, nullptr);
+    memcpy(task->name, "module_manager_init", 19);
+
     sched::scheduler::get().add_task(task);
 
     // Idle loop
