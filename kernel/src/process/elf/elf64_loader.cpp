@@ -136,9 +136,11 @@ bool elf64_loader::_load_segments(
         }
 
         _log_info("Loading segment...");
+#ifdef ELF64_LOADER_ENABLE_LOGS
         serial::printf("  Virtual Address: 0x%llx\n", phdr.p_vaddr);
         serial::printf("  File Size: 0x%llx\n", phdr.p_filesz);
         serial::printf("  Memory Size: 0x%llx\n", phdr.p_memsz);
+#endif
 
         // Allocate and map the segment
         if (!_allocate_and_map_segment(
