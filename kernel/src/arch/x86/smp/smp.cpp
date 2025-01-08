@@ -56,10 +56,6 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     uint64_t ap_system_stack_top =
         reinterpret_cast<uint64_t>(g_ap_system_stacks[acpi_cpu_index]) + AP_SYSTEM_STACK_SIZE;
 
-    if (acpi_cpu_index == 1) {
-        serial::printf("ap_stack allocated: 0x%llx\n", ap_system_stack_top);
-    }
-
     // Setup the GDT with userspace support
     init_gdt(acpi_cpu_index, ap_system_stack_top);
 
@@ -202,9 +198,6 @@ void smp_init() {
 
         startup_data->stack_index = stack_index++;
         startup_data->acpi_cpu_index = cpu_index;
-
-        serial::printf("ap_task_stack allocated: 0x%llx\n", ap_task_stack);
-        serial::printf("ap_system_stack allocated: 0x%llx\n", ap_system_stack);
 
         // Send INIT and STARTUP IPI sequence
         if (!send_ap_startup_sequence(startup_data, desc.apic_id)) {
