@@ -30,6 +30,10 @@ int __syscall_handler(
         // Handle read syscall
         break;
     }
+    case SYSCALL_SYS_EXIT: {
+        sched::exit_thread();
+        break;
+    }
     case SYSCALL_SYS_ELEVATE: {
         // Make sure that the thread is allowed to elevate
         if (!dynpriv::is_asid_allowed()) {
