@@ -253,7 +253,9 @@ uint8_t* elf64_loader::_read_file(const char* file_path, size_t& file_size) {
         return nullptr;
     }
 
+#ifdef ELF64_LOADER_ENABLE_LOGS
     serial::printf("File read successfully: %s (%llu bytes)\n", file_path, file_size);
+#endif
     return buffer;
 }
 
