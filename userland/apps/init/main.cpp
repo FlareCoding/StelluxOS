@@ -9,7 +9,6 @@ int main() {
         // Start a shell process
         task_control_block* task = elf::elf64_loader::load_from_file("/initrd/bin/shell");
         if (!task) {
-            sched::exit_thread();
             return -1;
         }
 
@@ -18,6 +17,5 @@ int main() {
         sched::scheduler::get().add_task(task);
     });
 
-    sched::exit_thread();
     return 0;
 }

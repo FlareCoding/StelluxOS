@@ -27,16 +27,16 @@ COMMON_CXXFLAGS := -m64 -g -O0 $(PREPROCESSOR_DEFINES) \
 				   -std=c++17 -mno-red-zone $(KERNEL_INCLUDES) -fno-pie -fno-pic -mcmodel=large
 
 COMMON_LDFLAGS  := -T $(USERLAND_LINKER_SCRIPT) -nostdlib -z max-page-size=0x1000 -no-pie \
-				   --just-symbols=$(KERNEL_ELF)
+				   --just-symbols=$(KERNEL_ELF) -L$(USERLAND_DIR)/lib -lstellux_crt
 
 # =========================
 # Targets
 # =========================
 
-.PHONY: all clean install install_to_initrd check-kernel build-apps
+.PHONY: all clean install install_to_initrd check-kernel build-libs build-apps
 
 # Build all applications
-all: check-kernel build-apps
+all: check-kernel build-libs build-apps
 
 # Check if the Kernel ELF file exists
 check-kernel:
@@ -44,6 +44,10 @@ check-kernel:
 		echo "[ERROR] Kernel ELF file '$(KERNEL_ELF)' not found. Please build the kernel first."; \
 		exit 1; \
 	fi
+
+build-libs:
+	@echo "Building userland libraries..."
+	$(MAKE) -C $(USERLAND_DIR)/lib
 
 build-apps:
 	@echo "Building all userland applications..."
@@ -74,6 +78,8 @@ install_to_initrd: check-kernel build-apps
 
 # Clean all application builds
 clean:
+	@echo "Cleaning userland libraries..."
+	@$(MAKE) -C $(USERLAND_DIR)/lib clean
 	@echo "Cleaning all userland applications..."
 	@for app in $(APPS_DIR)/*; do \
 		if [ -f $$app/Makefile ]; then \

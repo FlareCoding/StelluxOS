@@ -1,5 +1,5 @@
 OUTPUT_FORMAT("elf64-x86-64")
-ENTRY(main)
+ENTRY(_stlx_crt_start)
 
 SECTIONS
 {
