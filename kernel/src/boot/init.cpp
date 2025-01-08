@@ -120,19 +120,6 @@ void load_initrd() {
     fs::load_cpio_initrd(reinterpret_cast<const uint8_t*>(vaddr), mod_size, "/initrd");
 }
 
-__PRIVILEGED_CODE
-void test_load_hello_world_from_initrd() {
-    task_control_block* task = elf::elf64_loader::load_from_file("/initrd/bin/hello_world");
-    if (!task) {
-        return;
-    }
-
-    // Allow the process to elevate privileges
-    dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
-
-    sched::scheduler::get().add_task(task, BSP_CPU_ID);
-}
-
 // Since the scheduler will prioritize any other task to the idle task,
 // the module manager that will start scheduling future tasks has to get
 // started in a thread of its own to avoid getting forever descheduled
@@ -192,8 +179,6 @@ void init(unsigned int magic, void* mbi) {
     vmshutdown();
 #endif // BUILD_UNIT_TESTS
 
-    test_load_hello_world_from_initrd();
-
     auto task = sched::create_unpriv_kernel_task(module_manager_init, nullptr);
     sched::scheduler::get().add_task(task);
 
@@ -213,7 +198,7 @@ void module_manager_init(void*) {
 
         // Allow the process to elevate privileges
         dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
-        sched::scheduler::get().add_task(task, BSP_CPU_ID);
+        sched::scheduler::get().add_task(task);
     });
 
     // First create a graphics module to allow rendering to the screen,

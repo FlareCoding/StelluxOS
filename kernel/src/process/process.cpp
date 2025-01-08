@@ -71,6 +71,7 @@ void switch_context_in_irq(
     // Perform an address space switch if needed
     if (from->mm_ctx.root_page_table != to->mm_ctx.root_page_table) {
         install_mm_context(to->mm_ctx);
+        memory_barrier();
     }
 
     // Set the new value of current_task for the current CPU

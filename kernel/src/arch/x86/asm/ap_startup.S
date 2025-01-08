@@ -8,7 +8,7 @@
 .equ acpi_processor_id_ptr,     0x9018
 
 .equ stack_size, 512
-.equ ap_system_stack_size, 0x2000 - 0x10
+.equ ap_task_stack_size, 0x2000 - 0x10
 
 /*
 ==============================================================
@@ -115,19 +115,56 @@ _L80A0:
     mov eax, dword ptr [page_table_address_ptr]
     mov cr3, eax
 
+    #   Setup CR0:
+    #    - Clear unwanted bits (CD=bit 30, NW=bit 29) to enable caching
+    #    - Set WP=bit 16, NE=bit 5, MP=bit 1, PE=bit 0, etc.
+    #
+    #    Typical desired CR0 bits for 64-bit OS:
+    #      PE (bit 0)  = 1 (protected mode)
+    #      MP (bit 1)  = 1 (monitor co-processor)
+    #      ET (bit 4)  = 1 (extension type, always 1 on modern CPUs)
+    #      NE (bit 5)  = 1 (native FPU error handling)
+    #      WP (bit 16) = 1 (write-protect kernel pages)
+    #      PG (bit 31) = will be set later to enable paging (or do it now if you prefer)
+    #
+    mov   eax, cr0
+    and   eax, ~((1 << 30) | (1 << 29))   # Clear CD=30, NW=29
+    or    eax, (1 << 4)                   # Set ET=1
+    or    eax, ((1 << 16) | (1 << 5) | (1 << 1) | (1 << 0)) # Set WP, NE, MP, PE
+    mov   cr0, eax
+
     # Enable long mode by setting the relevant bits in CR4 and EFER
-    mov eax, cr4
-    or eax, 0x20                          # Set PAE bit
-    mov cr4, eax
+    # -------------------------------------------------------------------------
+    # Setup CR4:
+    #   BSP has: OSXMMEXCPT, OSFXSR, PGE, MCE, PAE, PSE, DE
+    #      DE (bit 3)
+    #      PSE (bit 4)
+    #      PAE (bit 5)
+    #      MCE (bit 6)
+    #      PGE (bit 7)
+    #      OSFXSR (bit 9)
+    #      OSXMMEXCPT (bit 10)
+    #
+    #    Combine them into one mask: 0x6F8
+    # -------------------------------------------------------------------------
+    mov   eax, cr4
+    or    eax, 0x6F8
+    mov   cr4, eax
 
-    # Enable PSE
-    mov eax, cr4
-    or eax, (1 << 4)
-    mov cr4, eax
-
-    mov ecx, 0xC0000080                   # IA32_EFER MSR
-    rdmsr
-    or eax, 0x100                         # Enable Long Mode (LME)
+    # -------------------------------------------------------------------------
+    # Set up EFER MSR:
+    #    Typically want: SCE (bit 0), LME (bit 8), NXE (bit 11).
+    #    LMA (bit 10) is read-only and gets set automatically once Long Mode
+    #    paging is activated. If your BSP has EFER = 0xD01, that includes:
+    #      bit 0 => SCE
+    #      bit 8 => LME
+    #      bit 10 => LMA (auto-set once active)
+    #      bit 11 => NXE
+    # -------------------------------------------------------------------------
+    mov ecx, 0xC0000080     # MSR index for IA32_EFER
+    rdmsr                   # Read EFER into EDX:EAX
+    or eax, 0xD01           # Set bits 0 (SCE), 8 (LME), 11 (NXE)
+                            # LMA bit (10) will appear once active
     wrmsr
 
     # Enable Paging
@@ -140,7 +177,7 @@ _L80A0:
 
 .align 64
 .code64
-.extern g_ap_system_stacks
+.extern g_ap_task_stacks
 
 _L8140:
     #
@@ -150,8 +187,10 @@ _L8140:
     mov rsi, qword ptr [acpi_processor_id_ptr]
 
     # Switch onto a pre-allocated 64bit stack
-    mov rsp, [g_ap_system_stacks + rsi * 8]
-    add rsp, ap_system_stack_size
+    mov rsp, [g_ap_task_stacks + rsi * 8]
+    
+    # Move to the top of the stack
+    add rsp, ap_task_stack_size
     mov rbp, rsp
 
     # Increment the number of running CPUs

@@ -1,8 +1,6 @@
-#include <types.h>
 #include <serial/serial.h>
 #include <sched/sched.h>
 #include <time/time.h>
-#include <dynpriv/dynpriv.h>
 
 int main() {
     serial::printf("Userland code executed!\n");

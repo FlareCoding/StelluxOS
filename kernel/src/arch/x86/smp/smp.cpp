@@ -30,9 +30,17 @@
 #define IPI_STARTUP_DELAY  20
 #define IPI_RETRY_DELAY    100
 
-#define AP_SYSTEM_STACK_SIZE 0x2000 - 0x10
+#define AP_TASK_STACK_PAGES   2
+#define AP_TASK_STACK_SIZE    0x2000 - 0x10
+
+#define AP_SYSTEM_STACK_PAGES   2
+#define AP_SYSTEM_STACK_SIZE    0x2000 - 0x10
 
 EXTERN_C __PRIVILEGED_CODE void asm_ap_startup();
+
+__PRIVILEGED_DATA
+__attribute__((aligned(PAGE_SIZE)))
+uintptr_t g_ap_task_stacks[MAX_SYSTEM_CPUS] = { 0 };
 
 __PRIVILEGED_DATA
 __attribute__((aligned(PAGE_SIZE)))
@@ -47,6 +55,10 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     // Setup kernel stack
     uint64_t ap_system_stack_top =
         reinterpret_cast<uint64_t>(g_ap_system_stacks[acpi_cpu_index]) + AP_SYSTEM_STACK_SIZE;
+
+    if (acpi_cpu_index == 1) {
+        serial::printf("ap_stack allocated: 0x%llx\n", ap_system_stack_top);
+    }
 
     // Setup the GDT with userspace support
     init_gdt(acpi_cpu_index, ap_system_stack_top);
@@ -170,16 +182,20 @@ void smp_init() {
         uint8_t cpu_index = desc.acpi_processor_id;
 
         // Ignore the bootstrapping processor
-        if (cpu_index == 0) {
+        if (cpu_index == 0 || cpu_index >= MAX_SYSTEM_CPUS) {
             continue;
         }
 
         // Register a run queue in the scheduler for this core
         sched::scheduler::get().register_cpu_run_queue(cpu_index);
 
+        // Allocate a task stack for the AP core
+        void* ap_task_stack = vmm::alloc_contiguous_virtual_pages(AP_TASK_STACK_PAGES, DEFAULT_UNPRIV_PAGE_FLAGS);
+        g_ap_task_stacks[cpu_index] = reinterpret_cast<uintptr_t>(ap_task_stack);
+
         // Allocate a system stack for the AP core
-        void* ap_stack = vmm::alloc_linear_mapped_persistent_pages(2);
-        g_ap_system_stacks[cpu_index] = reinterpret_cast<uintptr_t>(ap_stack);
+        void* ap_system_stack = vmm::alloc_linear_mapped_persistent_pages(AP_SYSTEM_STACK_PAGES);
+        g_ap_system_stacks[cpu_index] = reinterpret_cast<uintptr_t>(ap_system_stack);
 
         // Allocate a per-cpu area for the processor
         arch::allocate_ap_per_cpu_area(cpu_index);
@@ -187,13 +203,17 @@ void smp_init() {
         startup_data->stack_index = stack_index++;
         startup_data->acpi_cpu_index = cpu_index;
 
+        serial::printf("ap_task_stack allocated: 0x%llx\n", ap_task_stack);
+        serial::printf("ap_system_stack allocated: 0x%llx\n", ap_system_stack);
+
         // Send INIT and STARTUP IPI sequence
         if (!send_ap_startup_sequence(startup_data, desc.apic_id)) {
             serial::printf("[!] Core %u failed to start (lapic_id: %u)\n", cpu_index, desc.apic_id);
 
             // Free the resources allocated for the core
-             sched::scheduler::get().unregister_cpu_run_queue(cpu_index);
-            vmm::unmap_contiguous_virtual_pages(g_ap_system_stacks[cpu_index], 2);
+            sched::scheduler::get().unregister_cpu_run_queue(cpu_index);
+            vmm::unmap_contiguous_virtual_pages(g_ap_task_stacks[cpu_index], AP_TASK_STACK_PAGES);
+            vmm::unmap_contiguous_virtual_pages(g_ap_system_stacks[cpu_index], AP_SYSTEM_STACK_PAGES);
             arch::deallocate_ap_per_cpu_area(cpu_index);
 
             continue;
