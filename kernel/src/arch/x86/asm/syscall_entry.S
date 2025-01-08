@@ -11,9 +11,6 @@
 .global asm_syscall_entry
 
 asm_syscall_entry:
-    # Switch to kernel gs
-    swapgs
-
     # Comment this out to take the iret path
     jmp _ignored_iret_construction_path
 
