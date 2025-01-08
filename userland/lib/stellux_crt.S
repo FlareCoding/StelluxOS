@@ -12,7 +12,7 @@
 _stlx_crt_start:
    call main
 
-   # Put return value from main into RDI if desired
+   # Put return value from main into RDI for the exit system call
    mov rdi, rax
 
    # Exit system call
