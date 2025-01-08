@@ -72,6 +72,10 @@ task_control_block* elf64_loader::load_from_file(const char* filepath) {
         return nullptr;
     }
 
+    // Set the task's name
+    auto name = fs::virtual_filesystem::get_filename_from_path(filepath);
+    memcpy(task->name, name.c_str(), kstl::max(name.length(), sizeof(task->name) - 1));
+
     return task;
 }
 
