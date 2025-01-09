@@ -125,7 +125,6 @@ _L80A0:
     #      ET (bit 4)  = 1 (extension type, always 1 on modern CPUs)
     #      NE (bit 5)  = 1 (native FPU error handling)
     #      WP (bit 16) = 1 (write-protect kernel pages)
-    #      PG (bit 31) = will be set later to enable paging (or do it now if you prefer)
     #
     mov   eax, cr0
     and   eax, ~((1 << 30) | (1 << 29))   # Clear CD=30, NW=29
@@ -133,7 +132,6 @@ _L80A0:
     or    eax, ((1 << 16) | (1 << 5) | (1 << 1) | (1 << 0)) # Set WP, NE, MP, PE
     mov   cr0, eax
 
-    # Enable long mode by setting the relevant bits in CR4 and EFER
     # -------------------------------------------------------------------------
     # Setup CR4:
     #   BSP has: OSXMMEXCPT, OSFXSR, PGE, MCE, PAE, PSE, DE
@@ -147,9 +145,17 @@ _L80A0:
     #
     #    Combine them into one mask: 0x6F8
     # -------------------------------------------------------------------------
-    mov   eax, cr4
-    or    eax, 0x6F8
-    mov   cr4, eax
+    mov     eax, cr4
+
+    or      eax, (1 << 3)           # Debug Extensions
+    or      eax, (1 << 4)           # Page Size Extensions
+    or      eax, (1 << 5)           # Physical Address Extension
+    or      eax, (1 << 6)           # Machine Check Enable
+    or      eax, (1 << 7)           # Page Global Enable
+    or      eax, (1 << 9)           # OS support for FXSAVE/FXRSTOR
+    or      eax, (1 << 10)          # OS support for unmasked SSE exceptions
+
+    mov     cr4, eax
 
     # -------------------------------------------------------------------------
     # Set up EFER MSR:
@@ -163,8 +169,7 @@ _L80A0:
     # -------------------------------------------------------------------------
     mov ecx, 0xC0000080     # MSR index for IA32_EFER
     rdmsr                   # Read EFER into EDX:EAX
-    or eax, 0xD01           # Set bits 0 (SCE), 8 (LME), 11 (NXE)
-                            # LMA bit (10) will appear once active
+    or eax, 0x901           # Set bits 0 (SCE), 8 (LME), 11 (NXE)
     wrmsr
 
     # Enable Paging
@@ -188,8 +193,6 @@ _L8140:
 
     # Switch onto a pre-allocated 64bit stack
     mov rsp, [g_ap_task_stacks + rsi * 8]
-    
-    # Move to the top of the stack
     add rsp, ap_task_stack_size
     mov rbp, rsp
 
