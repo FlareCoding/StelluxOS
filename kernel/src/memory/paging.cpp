@@ -181,7 +181,9 @@ void map_page(
     pte.page_frame_number = ADDR_TO_PFN(paddr);
 
     // Invalidate the TLB entry for the virtual address
-    invlpg(reinterpret_cast<void*>(vaddr));
+    if (get_pml4() == pml4) {
+        invlpg(reinterpret_cast<void*>(vaddr));
+    }
 }
 
 __PRIVILEGED_CODE
@@ -253,7 +255,9 @@ void map_large_page(
     pde.page_frame_number = ADDR_TO_PFN(paddr); // Set the physical frame number
 
     // Invalidate the TLB entry for the virtual address
-    invlpg(reinterpret_cast<void*>(vaddr));
+    if (get_pml4() == pml4) {
+        invlpg(reinterpret_cast<void*>(vaddr));
+    }
 }
 
 __PRIVILEGED_CODE
