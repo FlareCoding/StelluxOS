@@ -42,8 +42,9 @@ public:
     /**
      * @brief Retrieves the singleton instance of the scheduler.
      * @return Reference to the singleton instance of the `scheduler`.
+     * @note Privilege: **required**
      */
-    static scheduler& get();
+    __PRIVILEGED_CODE static scheduler& get();
 
     /**
      * @brief Initializes the scheduler.

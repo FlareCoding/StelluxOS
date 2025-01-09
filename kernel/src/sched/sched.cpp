@@ -42,6 +42,7 @@ DEFINE_INT_HANDLER(irq_handler_schedule) {
     return IRQ_HANDLED;
 }
 
+__PRIVILEGED_CODE
 scheduler& scheduler::get() {
     GENERATE_STATIC_SINGLETON(scheduler);
 }

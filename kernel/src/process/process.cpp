@@ -309,8 +309,10 @@ void exit_thread() {
 }
 
 void yield() {
-    // Trigger a context switch to switch to the next
-    // available task in the scheduler run queue.
-    sched::scheduler::get().schedule();
+    RUN_ELEVATED({
+        // Trigger a context switch to switch to the next
+        // available task in the scheduler run queue.
+        sched::scheduler::get().schedule();
+    });
 }
 } // namespace sched
