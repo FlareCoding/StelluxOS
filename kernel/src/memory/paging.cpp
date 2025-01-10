@@ -394,6 +394,9 @@ page_table* create_higher_class_userland_page_table() {
         vmm::alloc_linear_mapped_persistent_page()
     );
 
+    // Zero out and prepare a clean page
+    zeromem(new_pt, sizeof(page_table));
+
     // Copy the page directory pointer table responsible for
     // the kernel's higher-half address region.
     new_pt->entries[511] = current_pt->entries[511];
