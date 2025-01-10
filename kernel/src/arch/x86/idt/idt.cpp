@@ -437,6 +437,14 @@ static void decode_rflags(uint64_t rflags, char* buffer, size_t buffer_size) {
     strncat(buffer, "]", buffer_size - strlen(buffer) - 1);
 }
 
+bool is_valid_address(void* addr) {
+    constexpr uint64_t lower_bound = 0x1000;
+    constexpr uint64_t upper_bound = 0xFFFFFFFFFFFF;
+
+    uint64_t address = (uint64_t)addr;
+    return (address >= lower_bound && address <= upper_bound);
+}
+
 void print_backtrace(ptregs* regs) {
     serial::printf("<------- BACKTRACE ------->\n");
 
@@ -448,6 +456,12 @@ void print_backtrace(ptregs* regs) {
 
     // Iterate through the stack frames
     while (rbp) {
+        // Validate that the pointer is in a reasonable range
+        if (!is_valid_address(rbp)) {
+            serial::printf(" [Invalid RBP: 0x%llx]\n", (uint64_t)rbp);
+            break;
+        }
+
         uint64_t next_rip = *(rbp + 1); // Next instruction pointer (return address)
         if (next_rip == 0x0)
             break;
