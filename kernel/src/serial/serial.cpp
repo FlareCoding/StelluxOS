@@ -85,8 +85,25 @@ void mark_serial_port_privileged(uint16_t serial_port) {
 
 __PRIVILEGED_CODE
 void mark_serial_port_unprivileged(uint16_t serial_port) {
+    // Mark every I/O port pertaining to the serial port base
     for (uint16_t i = serial_port; i <= serial_port + 6; i++) {
         mark_port_unprivileged(i);
+    }
+}
+
+__PRIVILEGED_CODE
+void mark_serial_port_privileged(uint16_t serial_port, uint8_t cpu) {
+    // Mark every I/O port pertaining to the serial port base
+    for (uint16_t i = serial_port; i <= serial_port + 6; i++) {
+        mark_port_privileged(i, cpu);
+    }
+}
+
+__PRIVILEGED_CODE
+void mark_serial_port_unprivileged(uint16_t serial_port, uint8_t cpu) {
+    // Mark every I/O port pertaining to the serial port base
+    for (uint16_t i = serial_port; i <= serial_port + 6; i++) {
+        mark_port_unprivileged(i, cpu);
     }
 }
 } // namespace serial

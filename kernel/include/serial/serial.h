@@ -187,6 +187,33 @@ __PRIVILEGED_CODE void mark_serial_port_privileged(uint16_t serial_port);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void mark_serial_port_unprivileged(uint16_t serial_port);
+
+/**
+ * @brief Marks a serial port as privileged for a specific CPU.
+ * 
+ * Configures the specified serial port to require elevated privileges for access on the provided CPU. This is 
+ * typically used to restrict access to critical or sensitive serial ports in systems with CPU-specific I/O control.
+ * 
+ * @param serial_port The starting I/O port address of the serial port to mark as privileged.
+ * @param cpu The ID of the CPU whose I/O bitmap should be modified.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void mark_serial_port_privileged(uint16_t serial_port, uint8_t cpu);
+
+/**
+ * @brief Marks a serial port as unprivileged for a specific CPU.
+ * 
+ * Configures the specified serial port to allow access without elevated privileges on the provided CPU. This is 
+ * typically used for serial ports that interact with user-space applications or general-purpose hardware in 
+ * systems with CPU-specific I/O control.
+ * 
+ * @param serial_port The starting I/O port address of the serial port to mark as unprivileged.
+ * @param cpu The ID of the CPU whose I/O bitmap should be modified.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void mark_serial_port_unprivileged(uint16_t serial_port, uint8_t cpu);
 } // namespace serial
 
 #endif

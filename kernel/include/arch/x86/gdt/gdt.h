@@ -177,6 +177,19 @@ __PRIVILEGED_CODE void set_segment_descriptor_limit(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void init_gdt(int cpu, uint64_t system_stack);
+
+/**
+ * @brief Reloads the Task Register (TR) for the current CPU.
+ * 
+ * This function reloads the Task Register to ensure the CPU uses the updated Task-State Segment (TSS)
+ * descriptor from the GDT. It is typically invoked after initializing or modifying the GDT for a CPU.
+ * 
+ * @note This operation is critical for correct system behavior, particularly for handling interrupts and 
+ * switching tasks in protected or long mode.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void reload_task_register();
 } // namespace arch::x86
 
 #endif // GDT_H

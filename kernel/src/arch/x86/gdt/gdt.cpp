@@ -147,7 +147,7 @@ void init_gdt(int cpu, uint64_t system_stack) {
     memset(&data->io_bitmap, 0xFF, sizeof(data->io_bitmap)); // Set all bits to 1 (inaccessible to userspace)
 
     // Allow usermode access to COM1 port by clearing the bit in the IO bitmap
-    serial::mark_serial_port_unprivileged(SERIAL_PORT_BASE_COM1);
+    serial::mark_serial_port_unprivileged(SERIAL_PORT_BASE_COM1, cpu);
 
     // Ensure the end-of-bitmap marker is set to 0xFFFF
     data->io_bitmap[sizeof(data->io_bitmap) - 2] = 0xFF;
@@ -171,6 +171,11 @@ void init_gdt(int cpu, uint64_t system_stack) {
     asm_flush_gdt(&data->gdt_descriptor);
 
     // Load the Task Register (TR)
+    reload_task_register();
+}
+
+__PRIVILEGED_CODE
+void reload_task_register() {
     __asm__("ltr %%ax" : : "a" (__TSS_PT1_SELECTOR));
 }
 } // namespace arch::x86
@@ -197,6 +202,24 @@ void mark_port_unprivileged(uint16_t port) {
     for (size_t i = 0; i < MAX_SYSTEM_CPUS; i++) {
         arch::x86::g_gdt_per_cpu_array[i].io_bitmap[byte] &= ~(1 << bit);
     }
+}
+
+__PRIVILEGED_CODE
+void mark_port_privileged(uint16_t port, uint8_t cpu) {
+    // Calculate the byte and bit indices in the I/O Permission Bitmap
+    size_t byte = port / 8;
+    size_t bit = port % 8;
+
+    arch::x86::g_gdt_per_cpu_array[cpu].io_bitmap[byte] |= (1 << bit);
+}
+
+__PRIVILEGED_CODE
+void mark_port_unprivileged(uint16_t port, uint8_t cpu) {
+    // Calculate the byte and bit indices in the I/O Permission Bitmap
+    size_t byte = port / 8;
+    size_t bit = port % 8;
+
+    arch::x86::g_gdt_per_cpu_array[cpu].io_bitmap[byte] &= ~(1 << bit);
 }
 
 #endif // ARCH_X86_64

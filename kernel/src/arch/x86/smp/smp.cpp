@@ -63,6 +63,10 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     install_idt();
     enable_interrupts();
 
+    // Re-mark the currently used kernel serial UART port as unprivileged
+    // since the bitmap was reinitialized inside the `init_gdt` function.
+    serial::mark_serial_port_unprivileged(serial::g_kernel_uart_port, acpi_cpu_index);
+
     // Setup the kernel PAT for this processor core
     setup_kernel_pat();
 
