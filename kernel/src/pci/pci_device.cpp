@@ -1,4 +1,5 @@
 #include <pci/pci_device.h>
+#include <pci/pci_msi.h>
 #include <memory/vmm.h>
 #include <serial/serial.h>
 
@@ -11,6 +12,7 @@ pci_device::pci_device(uint64_t function_address, pci_function_desc* desc)
     m_function = (uint8_t)((m_function_address >> 12) & 0x07);
 
     _parse_bars();
+    _parse_capabilities();
 }
 
 __PRIVILEGED_CODE
@@ -32,6 +34,16 @@ void pci_device::enable_bus_mastering() {
     uint16_t command = _read_command_register();
     command |= PCI_COMMAND_BUS_MASTER;
     _write_command_register(command);
+}
+
+const pci_capability* pci_device::find_capability(capability_id cap_id) const {
+    for (auto& cap : m_caps) {
+        if (cap.id == cap_id) {
+            return &cap;
+        }
+    }
+
+    return nullptr;
 }
 
 __PRIVILEGED_CODE
@@ -153,6 +165,91 @@ void pci_device::_parse_bars() {
 
         m_bars.push_back(bar);
     }
+}
+
+__PRIVILEGED_CODE
+void pci_device::_parse_capabilities() {
+    m_caps.clear();
+    enumerate_capabilities(m_bus, m_device, m_function, m_caps);
+}
+
+__PRIVILEGED_CODE
+bool pci_device::setup_msi(uint8_t cpu, uint8_t vector, uint8_t edgetrigger, uint8_t deassert) {
+    const auto* cap = find_capability(capability_id::msi);
+    if (!cap) {
+        serial::printf("[*] setup_msi: Device %04x:%04x has no MSI capability.\n", 
+            m_desc->vendor_id, m_desc->device_id);
+        return false;
+    }
+
+    if (cap->data.size() < sizeof(pci_msi_capability)) {
+        serial::printf("[!] MSI cap data is too small. size=%llu, needed=%llu\n", 
+            cap->data.size(), sizeof(pci_msi_capability));
+        return false;
+    }
+
+    // Convert raw bytes into our pci_msi_capability structure
+    pci_msi_capability msi;
+    zeromem(&msi, sizeof(pci_msi_capability));
+
+    // Copy from cap.data into our local structure
+    memcpy(&msi, cap->data.data(), sizeof(msi));
+
+    // Check if the device is 64-bit capable
+    bool is64 = (msi.is_64bit == 1);
+
+    // Build the MSI address and data
+    uint64_t address = build_msi_address(cpu);
+    uint16_t data    = build_msi_data(vector, edgetrigger, deassert);
+
+    // Populate our local struct fields
+    if (is64) {
+        msi.message_address = address;
+    } else {
+        msi.message_address_lo = static_cast<uint32_t>(address & 0xFFFFFFFFull);
+    }
+    msi.message_data = data;
+
+    // Enable MSI in the message control field
+    // This sets 'enable_bit' to 1
+    msi.enable_bit = 1;
+
+    // Potentially set multiple_message_enable if you want multiple vectors
+    // For now only support single vector.
+    msi.multiple_message_enable = 0;
+
+    // Now we must write this struct back to the config space. 
+    uint8_t offset = cap->offset;
+
+    // dword 0 = { cap_id, next_cap_ptr, message_control } 
+    // We can reinterpret the first 4 bytes as `msi.dword0`.
+    config::write_dword(m_bus, m_device, m_function, offset, msi.dword0);
+
+    // The next dword(s) contain the message address/data. 
+    // If 64-bit, we have 2 dwords for the address, then 1 dword for message_data + reserved, etc.
+    // If 32-bit, we have 1 dword for address, 1 dword for data + reserved, etc.
+
+    // dword 1 => lower address
+    config::write_dword(m_bus, m_device, m_function, offset + 4, msi.message_address_lo);
+
+    // dword 2 => either upper address or message_data
+    if (is64) {
+        // Upper 32 bits of address
+        config::write_dword(m_bus, m_device, m_function, offset + 8, msi.message_address_hi);
+        config::write_word(m_bus, m_device, m_function, offset + 0x0C, msi.message_data);
+        config::write_dword(m_bus, m_device, m_function, offset + 0x10, msi.mask);
+        config::write_dword(m_bus, m_device, m_function, offset + 0x14, msi.pending);
+    } else {
+        // For 32-bit, the next 16 bits are message_data, 
+        config::write_word(m_bus, m_device, m_function, offset + 8, msi.message_data);
+        config::write_dword(m_bus, m_device, m_function, offset + 0x0C, msi.mask);
+        config::write_dword(m_bus, m_device, m_function, offset + 0x10, msi.pending);
+    }
+
+    serial::printf("MSI configured for device [%02x:%02x.%u]: vector=0x%x -> CPU=%u, 64bit=%u\n",
+        m_bus, m_device, m_function, vector, cpu, is64);
+
+    return true;
 }
 
 void pci_device::dbg_print_to_string() const {

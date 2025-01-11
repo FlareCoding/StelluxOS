@@ -94,6 +94,13 @@ bool xhci_driver_module::start() {
                 serial::printf("[XHCI] Device connected on port %i - %s\n", port, _usb_speed_to_string(reg.port_speed));
                 _setup_device(port_reg_idx);
                 serial::printf("\n");
+
+                // For debugging, only test one device on real hardware
+                bool qemu_detected = false;
+                RUN_ELEVATED({ qemu_detected = DETECT_QEMU(); });
+                if (!qemu_detected) {
+                    break;
+                }
             } else {
                 serial::printf("[XHCI] Device disconnected from port %i\n", port);
             }

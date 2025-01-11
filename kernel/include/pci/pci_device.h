@@ -1,6 +1,7 @@
 #ifndef PCI_DEVICE_H
 #define PCI_DEVICE_H
 #include "pci.h"
+#include "pci_capabilities.h"
 
 namespace pci {
 /**
@@ -97,6 +98,39 @@ public:
     const kstl::vector<pci_bar>& get_bars() const { return m_bars; }
 
     /**
+     * @brief Retrieves the list capabilities of the PCI device.
+     * @return A reference to a vector of `pci_capability` objects representing the device's PCI capabilities.
+     */
+    const kstl::vector<pci_capability>& get_capabilities() const { return m_caps; }
+
+    /**
+     * @brief Retrieves a pointer to a capability by its ID, or nullptr if not found.
+     * @param cap_id The ID of the capability to find.
+     * @return Pointer to the capability, or nullptr if not present.
+     */
+    const pci_capability* find_capability(capability_id cap_id) const;
+    
+    /**
+     * @brief Checks whether a given PCI capability is present in the device.
+     * @param cap_id The ID of the capability to find.
+     * @return True if the capability was found, false otherwise.
+     */
+    inline bool has_capability(capability_id cap_id) const { return (find_capability(cap_id) != nullptr); }
+
+    /**
+     * @brief Configures and enables MSI for this device, routing IRQ to the specified CPU and vector.
+     * @param cpu The destination CPU's APIC ID (in xAPIC mode).
+     * @param vector The IDT vector you want this MSI to trigger.
+     * @param edgetrigger Whether the IRQ is edge-triggered or level-triggered.
+     * @param deassert Deassert value of the IRQ.
+     * @return True if MSI configuration was successful, false otherwise.
+     * 
+     * @note This requires that the device actually supports an MSI capability.
+     *       If the device doesn't have MSI or is already in MSI-X mode, this may fail.
+     */
+    __PRIVILEGED_CODE bool setup_msi(uint8_t cpu, uint8_t vector, uint8_t edgetrigger = 1, uint8_t deassert = 1);
+
+    /**
      * @brief Prints debug information about the PCI device.
      * 
      * Outputs the device's information, including its BARs, for diagnostic purposes.
@@ -112,6 +146,7 @@ private:
     uint8_t m_function; /** Function number of the PCI device */
 
     kstl::vector<pci_bar> m_bars; /** Vector of Base Address Registers (BARs) for the device */
+    kstl::vector<pci_capability> m_caps; /** Vector of PCI capabilities for the device */
 
     /**
      * @brief Parses and initializes the BARs for the PCI device.
@@ -121,6 +156,15 @@ private:
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void _parse_bars();
+
+    /**
+     * @brief Parses and stores a list of PCI capabilities for the device.
+     * 
+     * Reads the configuration space to populate the list of PCI capabilities.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void _parse_capabilities();
 
     /**
      * @brief Writes a value to the command register.
