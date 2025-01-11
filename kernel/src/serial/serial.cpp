@@ -59,6 +59,10 @@ void write(uint16_t port, char chr) {
 void write(uint16_t port, const char* str) {
     while (*str != '\0') {
         write(port, *str);
+        if (*str == '\n') {
+            // Treat "\n" as the CRLF ("\n\r") combo
+            write(port, '\r');
+        }
         ++str;
     }
 }
