@@ -62,6 +62,6 @@ void shell_loop() {
 }
 
 int main() {
-    //shell_loop();
+    shell_loop();
     return 0;
 }
