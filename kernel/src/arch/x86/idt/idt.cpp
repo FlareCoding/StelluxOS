@@ -139,6 +139,8 @@ const char* g_cpu_exception_strings[] = {
     "Manual Panic"
 };
 
+DECLARE_GLOBAL_OBJECT(mutex, g_panic_lock);
+
 struct int_exc_handlers {
     irq_handler_t divide_by_zero;
     irq_handler_t debug;
@@ -475,6 +477,9 @@ void print_backtrace(ptregs* regs) {
 }
 
 void panic(ptregs* regs) {
+    // To ensure that the kernel panic messages get printed without getting jumbled
+    arch::x86::g_panic_lock.lock();
+
     // Decode RFLAGS
     char rflags_buffer[64] = { 0 };
     decode_rflags(regs->hwframe.rflags, rflags_buffer, sizeof(rflags_buffer));
@@ -509,6 +514,7 @@ void panic(ptregs* regs) {
     serial::printf("  IRQ: %s\n  Error Code: 0x%0llx\n",
         arch::x86::g_cpu_exception_strings[regs->intno], regs->error);
     serial::printf("  CPU: %i\n", current->cpu);
+    serial::printf("  Thread Name: '%s'\n", current->name);
     serial::printf("  Privilege: %s\n", current->elevated ? "elevated" : "lowered");
 
     // Control registers
@@ -525,6 +531,10 @@ void panic(ptregs* regs) {
     // Final separator
     serial::printf("============================================================\n");
     serial::printf("System halted.\n");
+
+    // Release the panic lock
+    arch::x86::g_panic_lock.unlock();
+
     while (1) {
         asm volatile("hlt");
     }
