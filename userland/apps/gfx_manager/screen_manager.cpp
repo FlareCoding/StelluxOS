@@ -73,10 +73,12 @@ bool screen_manager::_create_canvas(psf1_font* font) {
     // Create the canvas
     m_canvas = kstl::make_shared<canvas>(fb, font);
 
+#if 0
     serial::printf(
         "screen_manager: Successfully initialized canvas: %ux%u pitch=%u bpp=%u\n",
         fb.width, fb.height, fb.pitch, fb.bpp
     );
+#endif
 
     return true;
 }
