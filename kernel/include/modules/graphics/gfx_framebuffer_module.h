@@ -10,7 +10,13 @@ public:
         uint32_t    height;
         uint32_t    pitch;
         uint8_t     bpp;
-        uint8_t*    pixels;
+        uint8_t*    data;
+    };
+
+    enum command_id : uint64_t {
+        CMD_CLEAR_SCREEN    = 0x01,
+        CMD_SWAP_BUFFERS    = 0x02,
+        CMD_MAP_BACKBUFFER  = 0x03
     };
 
     explicit gfx_framebuffer_module(
@@ -41,6 +47,10 @@ public:
 private:
     uintptr_t       m_physical_base;
     framebuffer_t   m_native_hw_buffer;
+    framebuffer_t   m_back_buffer;
+
+    void clear_screen(uint8_t color);
+    void swap_buffers();
 };
 
 } // namespace modules

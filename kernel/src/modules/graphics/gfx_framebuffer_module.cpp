@@ -17,130 +17,28 @@ bool gfx_framebuffer_module::init() {
     // Calculate how many pages the framebuffer needs
     uint32_t page_count = (m_native_hw_buffer.pitch * m_native_hw_buffer.height) / PAGE_SIZE + 1;
 
+    // Initialize the front buffer
     RUN_ELEVATED({
-        m_native_hw_buffer.pixels = reinterpret_cast<uint8_t*>(
+        m_native_hw_buffer.data = reinterpret_cast<uint8_t*>(
             vmm::map_contiguous_physical_pages(m_physical_base, page_count, DEFAULT_UNPRIV_PAGE_FLAGS | PTE_PAT)
         );
     });
 
-    if (!m_native_hw_buffer.pixels) {
+    if (!m_native_hw_buffer.data) {
         return false;
     }
 
-    // Clear the screen (FOR TESTING)
-    for (uint32_t i = 0; i < m_native_hw_buffer.pitch * m_native_hw_buffer.height; i++) {
-        m_native_hw_buffer.pixels[i] = 0x1F;
-    }
+    // Initialize the back buffer
+    memcpy(&m_back_buffer, &m_native_hw_buffer, sizeof(framebuffer_t));
+    RUN_ELEVATED({
+        m_back_buffer.data = reinterpret_cast<uint8_t*>(
+            vmm::alloc_contiguous_virtual_pages(page_count, DEFAULT_UNPRIV_PAGE_FLAGS)
+        );
+    });
 
-    // Helper to fill rectangles
-    auto fill_rect = [&](int x, int y, int width, int height, uint32_t color) {
-        for (int row = y; row < y + height; ++row) {
-            for (int col = x; col < x + width; ++col) {
-                int offset = (row * m_native_hw_buffer.pitch) + (col * 3); // Assuming 3 bytes per pixel (RGB)
-                m_native_hw_buffer.pixels[offset + 0] = (color >> 0) & 0xFF;  // Blue
-                m_native_hw_buffer.pixels[offset + 1] = (color >> 8) & 0xFF;  // Green
-                m_native_hw_buffer.pixels[offset + 2] = (color >> 16) & 0xFF; // Red
-            }
-        }
-    };
-
-    // Define drawing parameters
-    const int start_x = 100, start_y = 100; // Top-left corner of the drawing region
-    const int letter_width = 50, letter_height = 100;
-    const int letter_spacing = 20; // Spacing between letters
-    const uint32_t text_color = 0xFFFFFF; // White
-
-    // Draw "StelluxOS" in a very simple blocky style
-    int cursor_x = start_x;
-
-    // S
-    fill_rect(cursor_x, start_y, letter_width, 20, text_color);                           // Top
-    fill_rect(cursor_x, start_y, 20, letter_height / 2, text_color);                      // Top left
-    fill_rect(cursor_x, start_y + (letter_height / 2) - 10, letter_width, 20, text_color); // Middle
-    fill_rect(cursor_x + letter_width - 20, start_y + (letter_height / 2), 20, letter_height / 2, text_color); // Bottom right
-    fill_rect(cursor_x, start_y + letter_height - 20, letter_width, 20, text_color);     // Bottom
-    cursor_x += letter_width + letter_spacing;
-
-    // T
-    fill_rect(cursor_x, start_y, letter_width, 20, text_color);                           // Top
-    fill_rect(cursor_x + (letter_width / 2) - 10, start_y, 20, letter_height, text_color); // Vertical bar
-    cursor_x += letter_width + letter_spacing;
-
-    // E
-    fill_rect(cursor_x, start_y, letter_width, 20, text_color);                           // Top
-    fill_rect(cursor_x, start_y, 20, letter_height, text_color);                          // Vertical bar
-    fill_rect(cursor_x, start_y + (letter_height / 2) - 10, letter_width, 20, text_color); // Middle
-    fill_rect(cursor_x, start_y + letter_height - 20, letter_width, 20, text_color);     // Bottom
-    cursor_x += letter_width + letter_spacing;
-
-    // L
-    fill_rect(cursor_x, start_y, 20, letter_height, text_color);                          // Vertical bar
-    fill_rect(cursor_x, start_y + letter_height - 20, letter_width, 20, text_color);     // Bottom
-    cursor_x += letter_width + letter_spacing;
-
-    // L (second L)
-    fill_rect(cursor_x, start_y, 20, letter_height, text_color);                          // Vertical bar
-    fill_rect(cursor_x, start_y + letter_height - 20, letter_width, 20, text_color);     // Bottom
-    cursor_x += letter_width + letter_spacing;
-
-    // U
-    fill_rect(cursor_x, start_y, 20, letter_height, text_color);                          // Left bar
-    fill_rect(cursor_x + letter_width - 20, start_y, 20, letter_height, text_color);     // Right bar
-    fill_rect(cursor_x, start_y + letter_height - 20, letter_width, 20, text_color);     // Bottom
-    cursor_x += letter_width + letter_spacing;
-
-    // X
-    for (int i = 0; i < letter_height; i++) {
-        // Left-to-right diagonal
-        int left_to_right_x = cursor_x + (i * letter_width) / letter_height;
-        fill_rect(left_to_right_x, start_y + i, 5, 5, text_color);
-
-        // Right-to-left diagonal
-        int right_to_left_x = cursor_x + letter_width - (i * letter_width) / letter_height - 5;
-        fill_rect(right_to_left_x, start_y + i, 5, 5, text_color);
-    }
-    cursor_x += letter_width + letter_spacing;
-
-    // O
-    fill_rect(cursor_x, start_y, letter_width, 20, text_color);                           // Top
-    fill_rect(cursor_x, start_y, 20, letter_height, text_color);                          // Left bar
-    fill_rect(cursor_x + letter_width - 20, start_y, 20, letter_height, text_color);     // Right bar
-    fill_rect(cursor_x, start_y + letter_height - 20, letter_width, 20, text_color);     // Bottom
-    cursor_x += letter_width + letter_spacing;
-
-    // S (same as above)
-    fill_rect(cursor_x, start_y, letter_width, 20, text_color);                           // Top
-    fill_rect(cursor_x, start_y, 20, letter_height / 2, text_color);                      // Top left
-    fill_rect(cursor_x, start_y + (letter_height / 2) - 10, letter_width, 20, text_color); // Middle
-    fill_rect(cursor_x + letter_width - 20, start_y + (letter_height / 2), 20, letter_height / 2, text_color); // Bottom right
-    fill_rect(cursor_x, start_y + letter_height - 20, letter_width, 20, text_color);     // Bottom
-
-    // Moving square logic
-    int square_size = 50;             // Size of the square
-    int square_x = 0;                 // Initial x-position of the square
-    int square_y = m_native_hw_buffer.height / 2 - square_size / 2; // Center vertically
-    int dx = 1;                      // Horizontal movement step
-    const uint32_t square_color = 0xFF0000; // Red
-    const uint32_t bg_color = 0x1F1F1F;
-
-    while (true) {
-        // Clear the old square
-        fill_rect(square_x, square_y, square_size, square_size, bg_color);
-
-        // Update position
-        square_x += dx;
-
-        // Check boundaries
-        if ((uint32_t)square_x + (uint32_t)square_size >= m_native_hw_buffer.width || square_x <= 0) {
-            dx = -dx; // Reverse direction
-        }
-
-        // Draw the square at the new position
-        fill_rect(square_x, square_y, square_size, square_size, square_color);
-
-        // Sleep to control the speed
-        msleep(1); // Adjust delay for desired speed
-    }
+    // Start with a cleared screen
+    clear_screen(0x0);
+    swap_buffers();
 
     return true;
 }
@@ -160,11 +58,42 @@ bool gfx_framebuffer_module::on_command(
     void*       data_out,
     size_t      data_out_size
 ) {
-    __unused command;
-    __unused data_in;
-    __unused data_in_size;
-    __unused data_out;
-    __unused data_out_size;
-    return true;
+    switch (command) {
+    case CMD_CLEAR_SCREEN: {
+        // If a color byte is provided, use it
+        uint8_t color = 0x00;
+        if (data_in && data_in_size == sizeof(uint8_t)) {
+            color = *reinterpret_cast<const uint8_t*>(data_in);
+        }
+        clear_screen(color);
+        return true;
+    }
+    case CMD_SWAP_BUFFERS: {
+        swap_buffers();
+        return true;
+    }
+    case CMD_MAP_BACKBUFFER: {
+        if (data_out && data_out_size == sizeof(framebuffer_t)) {
+            memcpy(reinterpret_cast<framebuffer_t*>(data_out), &m_back_buffer, sizeof(framebuffer_t));
+        }
+        return true;
+    }
+    default: {
+        // Unknown command
+        return false;
+    }
+    }
+}
+
+void gfx_framebuffer_module::clear_screen(uint8_t color) {
+    // Clear both front and back buffers to maintain sync
+    uint32_t fb_size = m_native_hw_buffer.pitch * m_native_hw_buffer.height;
+    memset(m_back_buffer.data,      color, fb_size);
+}
+
+void gfx_framebuffer_module::swap_buffers() {
+    // Simple CPU copy from back -> front
+    uint32_t fb_size = m_native_hw_buffer.pitch * m_native_hw_buffer.height;
+    memcpy(m_native_hw_buffer.data, m_back_buffer.data, fb_size);
 }
 } // namespace modules

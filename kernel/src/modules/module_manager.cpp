@@ -117,6 +117,17 @@ bool module_manager::send_command(
         return false;
     }
 
+    return send_command(mod, command, data_in, data_in_size, data_out, data_out_size);
+}
+
+bool module_manager::send_command(
+    module_base*  mod,
+    uint64_t      command,
+    const void*   data_in,
+    size_t        data_in_size,
+    void*         data_out,
+    size_t        data_out_size
+) {
     return mod->on_command(command, data_in, data_in_size, data_out, data_out_size);
 }
 

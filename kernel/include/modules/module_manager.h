@@ -117,6 +117,27 @@ public:
         size_t        data_out_size
     );
 
+    /**
+     * @brief Sends a command to a module by its name.
+     * @param mod Pointer to the module to stop.
+     * @param command The command identifier.
+     * @param data_in Pointer to the input data for the command.
+     * @param data_in_size Size of the input data, in bytes.
+     * @param data_out Pointer to the buffer for output data.
+     * @param data_out_size Size of the output buffer, in bytes.
+     * @return True if the command is successfully handled, false otherwise.
+     * 
+     * Allows interaction with a module by sending commands and exchanging data.
+     */
+    bool send_command(
+        module_base*  mod,
+        uint64_t      command,
+        const void*   data_in,
+        size_t        data_in_size,
+        void*         data_out,
+        size_t        data_out_size
+    );
+
     // ------------------------------------------------------------------------
     // Debug / Inspection
     // ------------------------------------------------------------------------
