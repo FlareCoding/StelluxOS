@@ -1,7 +1,10 @@
 #!/bin/bash
 
-# Path to the kernel ELF file
-KERNEL_ELF="build/stellux"
+# Default path to the kernel ELF file
+DEFAULT_KERNEL_ELF="build/stellux"
+
+# Determine the ELF file to use (use the parameter if provided, otherwise fallback to the default)
+KERNEL_ELF="${1:-$DEFAULT_KERNEL_ELF}"
 
 # Function to resolve an address to a symbol
 resolve_address() {
