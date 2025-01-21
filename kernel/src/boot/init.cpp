@@ -192,7 +192,7 @@ void init(unsigned int magic, void* mbi) {
 
 void module_manager_init(void*) {
     RUN_ELEVATED({
-        // Start a shell process
+        // Start an init process
         task_control_block* task = elf::elf64_loader::load_from_file("/initrd/bin/init");
         if (!task) {
             return;
