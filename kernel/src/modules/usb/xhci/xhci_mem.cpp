@@ -6,7 +6,15 @@
 
 __PRIVILEGED_CODE
 uintptr_t xhci_map_mmio(uint64_t pci_bar_address, uint32_t bar_size) {
-    const size_t page_count = bar_size / PAGE_SIZE;
+    size_t page_count = bar_size / PAGE_SIZE;
+
+    /*
+     * Some devices have been seen to report the BAR size as 0x10 for XHCI,
+     * however most commonly xhci controller takes up at most 4-5 pages.
+     */
+    if (page_count == 0) {
+        page_count = 5;
+    }
 
     void* vbase = vmm::map_contiguous_physical_pages(
         pci_bar_address,
