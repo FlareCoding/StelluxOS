@@ -1,6 +1,7 @@
 #ifdef ARCH_X86_64
 #include <arch/x86/idt/idt.h>
 #include <arch/x86/apic/lapic.h>
+#include <arch/x86/exc/bkpt.h>
 #include <memory/memory.h>
 #include <serial/serial.h>
 #include <sched/sched.h>
@@ -168,9 +169,9 @@ static_assert(sizeof(irq_handler_descriptor_table) == MAX_IRQS * sizeof(irq_desc
 __PRIVILEGED_DATA
 static int_exc_handlers g_int_exc_handlers = {
     .divide_by_zero = 0,
-    .debug = 0,
+    .debug = exc_debug_handler,
     .nmi = 0,
-    .breakpoint = 0,
+    .breakpoint = exc_breakpoint_handler,
     .overflow = 0,
     .bound_range = 0,
     .invalid_opcode = 0,
@@ -211,16 +212,6 @@ void common_exc_entry(ptregs* regs) {
 // Common entry point for IRQs
 __PRIVILEGED_CODE
 void common_irq_entry(ptregs* regs) {
-    // After faking out being elevated, original elevation
-    // privileged should be restored, except in the case
-    // when the scheduler switched context into a new task.
-    int original_elevate_status = current->elevated;
-    task_control_block* original_task = current;
-
-    // Fake out being elevated if needed because the code has to
-    // be able to tell if it's running in privileged mode or not.
-    current->elevated = 1;
-
     // Check if a panic was manually induced
     if (regs->intno == PANIC_IRQ) {
         // Patch the irq number to get the appropriate
@@ -235,7 +226,6 @@ void common_irq_entry(ptregs* regs) {
 
     irq_desc* desc = &g_irq_handler_table.descriptors[irq_index];
     if (!desc->handler) {
-        current->elevated = original_elevate_status;
         return;
     }
 
@@ -245,21 +235,31 @@ void common_irq_entry(ptregs* regs) {
 
     irqreturn_t ret = desc->handler(regs, desc->cookie);
     __unused ret;
-
-    // Restore the original elevate status
-    original_task->elevated = original_elevate_status;
 }
 
 // Common entry point for all interrupt service routines
 EXTERN_C
 __PRIVILEGED_CODE
 void common_isr_entry(ptregs regs) {
+    // After faking out being elevated, original elevation
+    // privileged should be restored, except in the case
+    // when the scheduler switched context into a new task.
+    int original_elevate_status = current->elevated;
+    task_control_block* original_task = current;
+
+    // Fake out being elevated if needed because the code has to
+    // be able to tell if it's running in privileged mode or not.
+    original_task->elevated = 1;
+
     // Check whether the interrupt is an IRQ or a trap/exception
     if (regs.intno >= IRQ0) {
         common_irq_entry(&regs);
     } else {
         common_exc_entry(&regs);
     }
+
+    // Restore the original elevate status
+    original_task->elevated = original_elevate_status;
 }
 
 __PRIVILEGED_CODE
@@ -272,9 +272,9 @@ void init_idt() {
 
     // Set exception handlers
     SET_KERNEL_INTERRUPT_GATE(EXC_DIVIDE_BY_ZERO,           asm_exc_handler_div);
-    SET_KERNEL_INTERRUPT_GATE(EXC_DEBUG,                    asm_exc_handler_db);
+    SET_USER_INTERRUPT_GATE(EXC_DEBUG,                      asm_exc_handler_db);
     SET_KERNEL_INTERRUPT_GATE(EXC_NMI,                      asm_exc_handler_nmi);
-    SET_KERNEL_INTERRUPT_GATE(EXC_BREAKPOINT,               asm_exc_handler_bp);
+    SET_USER_INTERRUPT_GATE(EXC_BREAKPOINT,                 asm_exc_handler_bp);
     SET_KERNEL_INTERRUPT_GATE(EXC_OVERFLOW,                 asm_exc_handler_of);
     SET_KERNEL_INTERRUPT_GATE(EXC_BOUND_RANGE,              asm_exc_handler_br);
     SET_KERNEL_INTERRUPT_GATE(EXC_INVALID_OPCODE,           asm_exc_handler_ud);

@@ -33,6 +33,7 @@ QEMU_FLAGS       := \
 	-cpu qemu64,+fsgsbase \
     -m $(QEMU_RAM) \
     -serial mon:stdio \
+	-serial pty \
     -drive file=$(STELLUX_IMAGE),format=raw \
     -net none \
     -smp $(QEMU_CORES) \
@@ -198,6 +199,13 @@ connect-gdb:
 	    -ex "target remote localhost:4554" \
 	    -ex "add-symbol-file $(KERNEL_FILE)" \
 	    -ex "b init.cpp:init"
+
+# Connect GDB to a Running QEMU Instance through a serial connection
+connect-gdb-serial:
+	gdb -ex "source ./$(GDB_SETUP)" \
+	    -ex "add-symbol-file $(KERNEL_FILE)" \
+		-ex "set architecture i386:x86-64" \
+	    -ex "target remote /dev/ttyS1"
 
 # Builds and runs a clean image of the OS with appropriate unit test flags
 execute-unit-tests:

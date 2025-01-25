@@ -8,6 +8,8 @@
 #include <acpi/madt.h>
 #include <time/time.h>
 
+extern char* g_mbi_kernel_cmdline;
+
 void __detect_and_use_baremetal_pci_serial_controller() {
     auto& pci = pci::pci_manager::get();
 
@@ -26,7 +28,15 @@ void __detect_and_use_baremetal_pci_serial_controller() {
 
         serial::init_port(io_base, SERIAL_BAUD_DIVISOR_9600);
         serial::mark_serial_port_unprivileged(io_base);
-        serial::set_kernel_uart_port(io_base);
+
+        // If the GDB stub is enabled, don't direct normal kernel serial traffic
+        // to the UART port, but rather leave it for the GDB stub to use.
+        kstl::string cmdline_args = kstl::string(g_mbi_kernel_cmdline);
+        if (cmdline_args.find("enable-gdb-stub") != kstl::string::npos) {
+            serial::g_kernel_gdb_stub_uart_port = io_base;
+        } else {
+            serial::set_kernel_uart_port(io_base);
+        }
     }
     
     for (auto& device : pci.get_devices()) {
