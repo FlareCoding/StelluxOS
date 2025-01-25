@@ -100,44 +100,67 @@ void kernel_timer::sched_irq_global_tick() {
 void sleep(uint32_t seconds) {
     auto& timer = acpi::hpet::get();
     uint64_t start = timer.read_counter();
+    uint64_t target = start + (seconds * g_hardware_frequency);
 
-    while (timer.read_counter() < start + (seconds * g_hardware_frequency)) {
-        asm volatile ("pause");
+    while (true) {
+        uint64_t current = timer.read_counter();
+        if (current < start) { // Wraparound detected
+            start = current;
+            target = start + (seconds * g_hardware_frequency);
+        }
+        if (current >= target) break;
+
+        asm volatile("pause");
     }
 }
 
 void msleep(uint32_t milliseconds) {
     auto& timer = acpi::hpet::get();
     uint64_t start = timer.read_counter();
+    uint64_t target = start + (milliseconds * (g_hardware_frequency / 1000ULL));
 
-    while (
-        timer.read_counter() <
-        start + (milliseconds * (g_hardware_frequency / 1000ULL))
-    ) {
-        asm volatile ("pause");
+    while (true) {
+        uint64_t current = timer.read_counter();
+        if (current < start) { // Wraparound detected
+            start = current;
+            target = start + (milliseconds * (g_hardware_frequency / 1000ULL));
+        }
+        if (current >= target) break;
+
+        asm volatile("pause");
     }
 }
 
 void usleep(uint32_t microseconds) {
     auto& timer = acpi::hpet::get();
     uint64_t start = timer.read_counter();
+    uint64_t target = start + (microseconds * (g_hardware_frequency / 1'000'000ULL));
 
-    while (
-        timer.read_counter() <
-        start + (microseconds * (g_hardware_frequency / 1000000ULL))
-    ) {
-        asm volatile ("pause");
+    while (true) {
+        uint64_t current = timer.read_counter();
+        if (current < start) { // Wraparound detected
+            start = current;
+            target = start + (microseconds * (g_hardware_frequency / 1'000'000ULL));
+        }
+        if (current >= target) break;
+
+        asm volatile("pause");
     }
 }
 
 void nanosleep(uint32_t nanoseconds) {
     auto& timer = acpi::hpet::get();
     uint64_t start = timer.read_counter();
+    uint64_t target = start + (nanoseconds * (g_hardware_frequency / 1'000'000'000ULL));
 
-    while (
-        timer.read_counter() <
-        start + (nanoseconds * (g_hardware_frequency / 1000000000ULL))
-    ) {
-        asm volatile ("pause");
+    while (true) {
+        uint64_t current = timer.read_counter();
+        if (current < start) { // Wraparound detected
+            start = current;
+            target = start + (nanoseconds * (g_hardware_frequency / 1'000'000'000ULL));
+        }
+        if (current >= target) break;
+
+        asm volatile("pause");
     }
 }
