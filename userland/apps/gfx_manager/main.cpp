@@ -26,7 +26,7 @@ int main() {
         uint64_t minutes = (sys_uptime % 3600) / 60;
         uint64_t seconds = sys_uptime % 60;
 
-        sprintf(time_str_buf, 127, "System Uptime: %uh %um %us", hours, minutes, seconds);
+        sprintf(time_str_buf, 127, "System Uptime: %lluh %llum %llus", hours, minutes, seconds);
 
         screen->begin_frame();
 

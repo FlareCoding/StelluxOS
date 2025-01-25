@@ -1,5 +1,6 @@
 #include <sched/sched.h>
 #include <interrupts/irq.h>
+#include <time/time.h>
 #include <serial/serial.h>
 
 #ifdef ARCH_X86_64
@@ -30,6 +31,13 @@ void install_sched_irq_handlers() {
 
 DEFINE_INT_HANDLER(irq_handler_timer) {
     __unused cookie;
+
+    // Only the BSP updates global time
+    if (current->cpu == BSP_CPU_ID) {
+        kernel_timer::sched_irq_global_tick();
+    }
+
+    // Call scheduler routines
     scheduler::get().__schedule(regs);
 
     return IRQ_HANDLED;

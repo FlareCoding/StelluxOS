@@ -41,7 +41,7 @@ public:
      * @brief Retrieves the current system time in raw HPET counter ticks.
      * @return The current system time as a raw HPET counter value.
      */
-    static uint64_t get_system_time();
+    static uint64_t get_high_precision_system_time();
 
     /**
      * @brief Retrieves the current system time in nanoseconds.
@@ -67,9 +67,16 @@ public:
      */
     static uint64_t get_system_time_in_seconds();
 
+    /**
+     * @brief Ticks and updates the global system time management system.
+     */
+    static void sched_irq_global_tick();
+
 private:
     static uint64_t s_apic_ticks_calibrated_frequency;
     static uint64_t s_tsc_ticks_calibrated_frequency;
+    static uint64_t s_global_system_time_ns;
+    static uint64_t s_configured_apic_interval_ms;
 };
 
 /**

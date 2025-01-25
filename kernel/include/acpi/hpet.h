@@ -8,7 +8,8 @@
 #define HPET_MAIN_COUNTER_OFFSET                0xF0
 
 // HPET General Configuration Register Bits
-#define HPET_ENABLE_BIT 0x1   // Bit to enable HPET
+#define HPET_ENABLE_BIT     (1ULL << 0)   // Bit to enable HPET
+#define HPET_64BIT_MODE_BIT (1ULL << 13)  // Bit 13: Enable 64-bit counter mode
 
 namespace acpi {
 struct hpet_table {

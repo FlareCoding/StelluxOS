@@ -6,6 +6,8 @@
 uint64_t g_hardware_frequency = 0;
 uint64_t kernel_timer::s_apic_ticks_calibrated_frequency = 0;
 uint64_t kernel_timer::s_tsc_ticks_calibrated_frequency = 0;
+uint64_t kernel_timer::s_global_system_time_ns = 0;
+uint64_t kernel_timer::s_configured_apic_interval_ms = 0;
 
 void kernel_timer::init() {
     auto& timer = acpi::hpet::get();
@@ -44,6 +46,7 @@ void kernel_timer::calibrate_cpu_timer(uint64_t milliseconds) {
     // Assuming APIC timer counts down from the initial count
     s_apic_ticks_calibrated_frequency = (((uint64_t)(0xffffffff - apic_end)) / 1000) * milliseconds;
     s_tsc_ticks_calibrated_frequency = rdtsc_end - rdtsc_start;
+    s_configured_apic_interval_ms = milliseconds;
 }
 
 void kernel_timer::start_cpu_periodic_timer() {
@@ -53,24 +56,45 @@ void kernel_timer::start_cpu_periodic_timer() {
     apic_timer.start();
 }
 
-uint64_t kernel_timer::get_system_time() {
+uint64_t kernel_timer::get_high_precision_system_time() {
     return acpi::hpet::get().read_counter();
 }
 
 uint64_t kernel_timer::get_system_time_in_nanoseconds() {
-    return (get_system_time() / g_hardware_frequency) * 1000000000ULL;
-}
-
-uint64_t kernel_timer::get_system_time_in_microseconds() {
-    return (get_system_time() / g_hardware_frequency) * 1000000ULL;
+    return s_global_system_time_ns;
 }
 
 uint64_t kernel_timer::get_system_time_in_milliseconds() {
-    return (get_system_time() / g_hardware_frequency) * 1000ULL;
+    return s_global_system_time_ns / 1'000'000ULL;
 }
 
 uint64_t kernel_timer::get_system_time_in_seconds() {
-    return get_system_time() / g_hardware_frequency;
+    return s_global_system_time_ns / 1'000'000'000ULL;
+}
+
+void kernel_timer::sched_irq_global_tick() {
+    // Increment global time by the APIC timer interval in ns
+    s_global_system_time_ns += s_configured_apic_interval_ms * 1'000'000ULL;
+
+    // Synchronize with HPET every second for drift correction
+    static uint64_t last_hpet_ticks = 0;
+    uint64_t current_hpet_ticks = get_high_precision_system_time();
+
+    // Check for HPET wraparound (current counter is smaller than the last counter)
+    if (current_hpet_ticks < last_hpet_ticks) {
+        // Discard synchronization
+        return;
+    }
+
+    // Perform synchronization if at least 1 second has passed
+    if ((current_hpet_ticks - last_hpet_ticks) >= g_hardware_frequency) {
+        // Calculate HPET-based nanoseconds
+        uint64_t hpet_ns = (current_hpet_ticks * 1'000'000'000ULL) / g_hardware_frequency;
+
+        // Synchronize global time
+        s_global_system_time_ns = hpet_ns;
+        last_hpet_ticks = current_hpet_ticks;
+    }
 }
 
 void sleep(uint32_t seconds) {
