@@ -18,6 +18,7 @@
 #include <fs/ram_filesystem.h>
 #include <fs/vfs.h>
 #include <fs/cpio/cpio.h>
+#include <gdb/gdb_stub.h>
 
 #ifdef BUILD_UNIT_TESTS
 #include <acpi/shutdown.h>
@@ -155,6 +156,14 @@ void init(unsigned int magic, void* mbi) {
 
     // Discover ACPI tables
     acpi::enumerate_acpi_tables(g_mbi_acpi_rsdp);
+
+    // Connect to the GDB session if the gdb server stub is enabled
+    kstl::string cmdline_args = kstl::string(g_mbi_kernel_cmdline);
+    if (cmdline_args.find("enable-gdb-stub") != kstl::string::npos) {
+        // Connect to the GDB stub
+        serial::printf("[*] Waiting for the GDB stub to connect...\n");
+        gdb_stub::perform_initial_trap();
+    }
 
     // Load the initrd if it's available
     load_initrd();

@@ -49,6 +49,9 @@ namespace serial {
 // I/O address of the UART port to which kernel's serial prints will get directed
 extern uint16_t g_kernel_uart_port;
 
+// I/O address of the UART port to be used for the GDB stub
+extern uint16_t g_kernel_gdb_stub_uart_port;
+
 /**
  * @brief Initializes the specified serial port with default settings.
  * 

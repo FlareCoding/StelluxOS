@@ -2,6 +2,7 @@
 
 namespace serial {
 uint16_t g_kernel_uart_port = SERIAL_PORT_BASE_COM1;
+uint16_t g_kernel_gdb_stub_uart_port = SERIAL_PORT_BASE_COM2;
 
 void init_port(uint16_t port, uint16_t baud_rate_divisor) {
     // Disable all interrupts
