@@ -74,7 +74,7 @@
   * [Prerequisites](#bangbang-prerequisites)
   * [Building and Running](#hammer_and_wrench-building-and-running-the-project)
   * [Debugging](#wrench-debugging)
-- [Roadmap](#compass-roadmap)
+  * [Baremetal Debugging](#wrench-debugging)
 - [Contributing](#wave-contributing)
 - [License](#newspaper-license)
 - [Acknowledgements](#gem-acknowledgements)
@@ -122,6 +122,8 @@ when it actually happened.
 - Xhci driver module for USB stack support
 - Unit testing framework integrated with Github Actions CI pipeline
 - VFS and RAM filesystem support
+- GDB server stub for low-level kernel debugging, including breakpoint and memory
+  inspection support on baremetal
 
 <!-- Getting Started -->
 ## :gear: Getting Started
@@ -177,6 +179,17 @@ make run-debug-headless
 make connect-gdb
 ```
 *Note: Type 'y' in the prompt and continue, the kernel will hit a breakpoint on kernel entry*
+
+<!-- Baremetal Debugging -->
+### :wrench: Baremetal Debugging
+
+In my personal setup, I have installed a PCIe serial controller card which
+Stellux looks for during PCI device enumeration. If you include `enable-gdb-stub`
+in GRUB kernel command line args, and have a second machine watching the serial port,
+you could run `make connect-gdb-serial` and be able to debug Stellux running on a baremetal
+machine using GDB.
+
+*Note: you might need to modify the `connect-gdb-serial` make target to specify your serial tty device you are using.*
 
 <!-- Contributing -->
 ## :wave: Contributing
