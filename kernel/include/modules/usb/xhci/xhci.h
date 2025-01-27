@@ -189,6 +189,7 @@ private:
     bool _evaluate_context(xhci_device* dev);
 
     bool _send_usb_request_packet(xhci_device* dev, xhci_device_request_packet& req, void* output_buffer, uint32_t length);
+    bool _send_usb_no_data_request_packet(xhci_device* dev, xhci_device_request_packet& req);
 
     bool _get_device_descriptor(xhci_device* dev, usb_device_descriptor* desc, uint32_t length);
     bool _get_string_language_descriptor(xhci_device* dev, usb_string_language_descriptor* desc);
