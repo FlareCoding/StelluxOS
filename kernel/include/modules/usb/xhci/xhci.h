@@ -198,6 +198,7 @@ private:
 
     bool _set_device_configuration(xhci_device* dev, uint16_t configuration_value);
     bool _set_protocol(xhci_device* dev, uint8_t interface, uint8_t protocol);
+    bool _set_interface(xhci_device* device, uint8_t interface_number, uint8_t alternate_setting);
 
 private:
     // CAPLENGTH
@@ -221,6 +222,9 @@ private:
     bool m_port_indicators;
     bool m_light_reset_capability;
     uint32_t m_extended_capabilities_offset;
+
+    // Specifies whether the current running environment is within qemu or not
+    bool m_qemu_detected;
 
     // Linked list of extended capabilities
     kstl::shared_ptr<xhci_extended_capability> m_extended_capabilities_head;
