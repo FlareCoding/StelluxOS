@@ -1,4 +1,5 @@
 #include <modules/usb/xhci/xhci_rings.h>
+#include <modules/usb/xhci/xhci_log.h>
 #include <memory/paging.h>
 #include <serial/serial.h>
 
@@ -126,7 +127,7 @@ void xhci_event_ring::_update_erdp_interrupter_register() {
 
 xhci_trb_t* xhci_event_ring::_dequeue_trb() {
     if (m_primary_segment_ring[m_dequeue_ptr].cycle_bit != m_rcs_bit) {
-        serial::printf("[XHCI_EVENT_RING] Dequeued an invalid TRB, returning nullptr!\n");
+        xhci_error("Event Ring dequeued an invalid TRB, returning nullptr!\n");
         return nullptr;
     }
 
