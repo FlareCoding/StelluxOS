@@ -72,53 +72,55 @@ bool xhci_driver_module::start() {
     // At this point the controller is all setup so we can start it
     _start_host_controller();
 
-    // Perform an initial port reset for each port
-    for (uint8_t i = 0; i < m_max_ports; i++) {
-        _reset_port(i);
+    if (m_qemu_detected) {
+        for (uint8_t i = 0; i < m_max_ports; i++) {
+            xhci_port_register_manager regman = _get_port_register_set(i);
+            xhci_portsc_register portsc;
+            regman.read_portsc_reg(portsc);
+
+            if (portsc.csc && portsc.ccs) {
+                xhci_port_connection_event conn_evt;
+                conn_evt.port_id = i + 1;
+                conn_evt.device_connected = (portsc.ccs == 1);
+                m_port_connection_events.push_back(conn_evt);
+            }
+        }
     }
 
     // This code is just a prototype right now and is by no
     // means safe and has critical synchronization issues.
     while (true) {
         msleep(100);
-        if (m_port_status_change_events.empty()) {
-            continue; 
+
+        if (m_port_connection_events.empty()) {
+            continue;
         }
 
-        for (size_t i = 0; i < m_port_status_change_events.size(); i++) {
-            uint8_t port = m_port_status_change_events[i]->port_id;
+        for (size_t i = 0; i < m_port_connection_events.size(); i++) {
+            auto event = m_port_connection_events[i];
+            uint8_t port = event.port_id;
             uint8_t port_reg_idx = port - 1;
 
-            // For debugging, only test one device on real hardware
-            // if (!m_qemu_detected && port != 3) {
-            //     continue;
-            // }
-            
             xhci_port_register_manager regman = _get_port_register_set(port_reg_idx);
             xhci_portsc_register portsc;
             regman.read_portsc_reg(portsc);
 
-            if (portsc.ccs) {
-                xhci_log("Device connected on port %i - %s\n", port, _usb_speed_to_string(portsc.port_speed));
-                _setup_device(port_reg_idx);
+            if (event.device_connected) {
+                bool reset_successful = _reset_port(port_reg_idx);
+                msleep(100);
+
+                if (reset_successful) {
+                    xhci_log("Device connected on port %i - %s\n", port, _usb_speed_to_string(portsc.port_speed));
+                    _setup_device(port_reg_idx);
+                } else {
+                    xhci_warn("Failed to reset port %i after connection detection\n", port);
+                }
             } else {
                 xhci_log("Device disconnected from port %i\n", port);
             }
-
-            xhci_portsc_register clear_reg;
-            zeromem(&clear_reg, sizeof(xhci_portsc_register));
-
-            // Acknowledge the port connect status change
-            clear_reg.csc = 1;
-            regman.write_portsc_reg(clear_reg);
-
-            // TO-DO: For debugging purposes only, test only one connected device on real hardware
-            // if (!m_qemu_detected) {
-            //     break;
-            // }
         }
 
-        m_port_status_change_events.clear();
+        m_port_connection_events.clear();
     }
 
     return true;
@@ -524,7 +526,19 @@ void xhci_driver_module::_process_events() {
         switch (event->trb_type) {
         case XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT: {
             port_change_event_status = 1;
-            m_port_status_change_events.push_back((xhci_port_status_change_trb_t*)event);
+            auto port_evt = reinterpret_cast<xhci_port_status_change_trb_t*>(event);
+            m_port_status_change_events.push_back(port_evt);
+
+            xhci_port_register_manager regman = _get_port_register_set(port_evt->port_id - 1);
+            xhci_portsc_register portsc;
+            regman.read_portsc_reg(portsc);
+
+            if (portsc.csc) {
+                xhci_port_connection_event conn_evt;
+                conn_evt.port_id = port_evt->port_id;
+                conn_evt.device_connected = (portsc.ccs == 1);
+                m_port_connection_events.push_back(conn_evt);
+            }
             break;
         }
         case XHCI_TRB_TYPE_CMD_COMPLETION_EVENT: {
@@ -925,6 +939,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         return;
     }
 
+#if 0
     xhci_logv("USB Device Descriptor:\n");
     xhci_logv("  bcdUSB:            0x%04x\n", device_descriptor->bcdUsb);
     xhci_logv("  bDeviceClass:      0x%02x\n", device_descriptor->bDeviceClass);
@@ -938,6 +953,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     xhci_logv("  iProduct:          0x%02x\n", device_descriptor->iProduct);
     xhci_logv("  iSerialNumber:     0x%02x\n", device_descriptor->iSerialNumber);
     xhci_logv("  bNumConfigurations: 0x%02x\n", device_descriptor->bNumConfigurations);
+#endif
 
     usb_string_language_descriptor string_language_descriptor;
     if (!_get_string_language_descriptor(device, &string_language_descriptor)) {
@@ -976,11 +992,6 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         return;
     }
 
-    xhci_log("---- USB Device Info ----\n");
-    xhci_log("  Product Name    : %s\n", product);
-    xhci_log("  Manufacturer    : %s\n", manufacturer);
-    xhci_log("  Serial Number   : %s\n", serial_number);
-
     xhci_logv("---- USB Device Info ----\n");
     xhci_logv("  Product Name    : %s\n", product);
     xhci_logv("  Manufacturer    : %s\n", manufacturer);
@@ -998,6 +1009,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
     );
 
+    serial::printf("\n");
     return;
 
     // Set device configuration

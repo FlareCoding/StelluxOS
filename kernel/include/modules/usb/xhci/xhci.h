@@ -156,6 +156,7 @@ private:
 
     void _configure_runtime_registers();
 
+    // Check if 0-based port_num is part of the USB3 port register set
     bool _is_usb3_port(uint8_t port_num);
     xhci_port_register_manager _get_port_register_set(uint8_t port_num);
 
@@ -232,7 +233,7 @@ private:
     // Page size supported by host controller
     uint64_t m_hc_page_size;
 
-    // USB3.x-specific ports
+    // USB3.x-specific ports (0-based)
     kstl::vector<uint8_t> m_usb3_ports;
 
     // Device context base address array's virtual address
@@ -256,6 +257,12 @@ private:
 
     // Table of connected devices for each device slot
     xhci_device* m_connected_devices[64]; // TO-DO: make this table dynamic
+
+    struct xhci_port_connection_event {
+        uint8_t port_id;        // 1-based port number
+        bool device_connected;  // true=connected false=disconnected
+    };
+    kstl::vector<xhci_port_connection_event> m_port_connection_events;
 
 private:
     kstl::vector<xhci_port_status_change_trb_t*> m_port_status_change_events;
