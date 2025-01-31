@@ -6,10 +6,15 @@
 class xhci_device_endpoint_descriptor {
 public:
     xhci_device_endpoint_descriptor() = default;
-    xhci_device_endpoint_descriptor(uint8_t slot_id, usb_endpoint_descriptor* desc);
+    xhci_device_endpoint_descriptor(
+        uint8_t slot_id,
+        uint8_t config_value,
+        usb_endpoint_descriptor* desc
+    );
     ~xhci_device_endpoint_descriptor();
 
     uint8_t             slot_id;
+    uint8_t             configuration_value;
     uint8_t             endpoint_num;
     uint8_t             endpoint_type;
     uint16_t            max_packet_size;

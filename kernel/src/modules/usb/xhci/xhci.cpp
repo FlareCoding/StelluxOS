@@ -757,11 +757,12 @@ void xhci_driver_module::_configure_device_endpoint_input_context(xhci_device* d
     // QEMU doesn't like when you add the control endpoint to the
     // `add_flags` after the slot context is in the Addressed state,
     // but real hardware requires all active endpoints to be specified.
-    if (!m_qemu_detected) {
-        input_control_context->add_flags |= (1 << 1);
-    }
+    // if (!m_qemu_detected) {
+    //     input_control_context->add_flags |= (1 << 1);
+    // }
 
     input_control_context->drop_flags = 0;
+    input_control_context->config_value = endpoint->configuration_value;
     
     if (endpoint->endpoint_num > slot_context->context_entries) {
         slot_context->context_entries = endpoint->endpoint_num;
@@ -778,18 +779,44 @@ void xhci_driver_module::_configure_device_endpoint_input_context(xhci_device* d
     interrupt_ep_context->max_esit_payload_lo = endpoint->max_packet_size;
     interrupt_ep_context->error_count = 3;
     interrupt_ep_context->max_burst_size = 0;
-    interrupt_ep_context->average_trb_length = 8;
+    interrupt_ep_context->average_trb_length = endpoint->max_packet_size;
     interrupt_ep_context->transfer_ring_dequeue_ptr = endpoint->transfer_ring->get_physical_dequeue_pointer_base();
     interrupt_ep_context->dcs = endpoint->transfer_ring->get_cycle_bit();
 
+    /*
+    +------------------------------+------------------+------------------+----------------------------+-------------------------------+
+    |          Endpoint            |  bInterval Range |    Time Range    |      Time Computation      | Endpoint Context Valid Range  |
+    +------------------------------+------------------+------------------+----------------------------+-------------------------------+
+    | FS/LS Interrupt              |       1 - 255    |   1 - 255 ms     | bInterval * 1 ms           |              3 - 10           |
+    +------------------------------+------------------+------------------+----------------------------+-------------------------------+
+    | FS Isoch                     |       1 - 16     |   1 - 32,768 ms  | 2^(bInterval - 1) * 1 ms   |              3 - 18           |
+    +------------------------------+------------------+------------------+----------------------------+-------------------------------+
+    | SSP, SS or HS Interrupt or   |                  |                  |                            |                               |
+    | Isoch                        |       1 - 16     | 125 µs - 4,096 ms| 2^(bInterval - 1) * 125 µs |              0 - 15           |
+    +------------------------------+------------------+------------------+----------------------------+-------------------------------+
+    */
     if (device->speed == XHCI_USB_SPEED_HIGH_SPEED || device->speed == XHCI_USB_SPEED_SUPER_SPEED) {
         interrupt_ep_context->interval = endpoint->interval - 1;
     } else {
         interrupt_ep_context->interval = endpoint->interval;
+        if (endpoint->interval < 3) {
+            interrupt_ep_context->interval = 3;
+        }
     }
 
-    serial::printf("[XHCI] Endpoint Context set up for ep_num=%u:\n",
-                   endpoint->endpoint_num);
+    serial::printf("[XHCI] Slot Context set up for ep_num=%u\n", endpoint->endpoint_num);
+    serial::printf("  context_entries: %u\n", slot_context->context_entries);
+    serial::printf("  speed: %u\n", slot_context->speed);
+
+    serial::printf("[XHCI] Input Control Context set up for ep_num=%u\n", endpoint->endpoint_num);
+    serial::printf("  drop flags : 0x%x\n", input_control_context->drop_flags);
+    serial::printf("  add flags  : 0x%x\n", input_control_context->add_flags);
+    serial::printf("  config     : %u\n", input_control_context->config_value);
+    serial::printf("  interface  : %u\n", input_control_context->interface_number);
+    serial::printf("  altsetting : %u\n", input_control_context->alternate_setting);
+
+    serial::printf("[XHCI] Endpoint Context set up for ep_num=%u config=%u:\n",
+                   endpoint->endpoint_num, endpoint->configuration_value);
     serial::printf("  ep_state=%u, ep_type=%u, MPS=%u, interval=%u\n",
                    interrupt_ep_context->endpoint_state,
                    interrupt_ep_context->endpoint_type,
@@ -799,6 +826,9 @@ void xhci_driver_module::_configure_device_endpoint_input_context(xhci_device* d
                    interrupt_ep_context->average_trb_length,
                    interrupt_ep_context->error_count,
                    interrupt_ep_context->max_burst_size);
+    serial::printf("  maxESITlo=%u, maxESIThi=%u\n",
+                   interrupt_ep_context->max_esit_payload_lo,
+                   interrupt_ep_context->max_esit_payload_hi);
     serial::printf("  dequeue_ptr=0x%llx, dcs=%u\n",
                    (unsigned long long)interrupt_ep_context->transfer_ring_dequeue_ptr,
                    (unsigned)interrupt_ep_context->dcs);
@@ -940,7 +970,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     serial::printf("      bConfigurationValue - %i\n", configuration_descriptor->bConfigurationValue);
     serial::printf("      iConfiguration      - %i\n", configuration_descriptor->iConfiguration);
     serial::printf("      bmAttributes        - %i\n", configuration_descriptor->bmAttributes);
-    serial::printf("      bMaxPower           - %i milliamps\n", configuration_descriptor->bMaxPower);
+    serial::printf("      bMaxPower           - %i milliamps\n", configuration_descriptor->bMaxPower * 2);
 
     device->copy_output_device_context_to_input_device_context(
         m_64byte_context_size,
@@ -992,6 +1022,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
             case USB_DESCRIPTOR_ENDPOINT: {
                 auto device_ep_descriptor = new xhci_device_endpoint_descriptor(
                     device->slot_id,
+                    configuration_descriptor->bConfigurationValue,
                     reinterpret_cast<usb_endpoint_descriptor*>(header)
                 );
                 device->endpoints.push_back(device_ep_descriptor);
@@ -1050,24 +1081,17 @@ void xhci_driver_module::_setup_device(uint8_t port) {
 
     serial::printf("Slot ctx slot state   : %s\n", xhci_slot_state_to_string(device->get_input_slot_context(m_64byte_context_size)->slot_state));
     serial::printf("Control ep ctx state  : %s\n", xhci_ep_state_to_string(device->get_input_control_ep_context(m_64byte_context_size)->endpoint_state));
-    serial::printf("Endpoint ctx state    : %s\n\n", xhci_ep_state_to_string(device->get_input_ep_context(m_64byte_context_size, device->endpoints[0]->endpoint_num)->endpoint_state));
-
-    // // Configure the endpoint that we got from the ep descriptor
-    // if (!_configure_endpoint(device)) {
-    //     return;
-    // }
-
-    // // Update device's input context
-    // device->copy_output_device_context_to_input_device_context(
-    //     m_64byte_context_size,
-    //     reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
-    // );
-
-    // // Set BOOT protocol
-    // const uint8_t boot_protocol = 0;
-    // if (!_set_protocol(device, device->primary_interface, boot_protocol)) {
-    //     return;
-    // }
+    for (size_t i = 0; i < device->endpoints.size(); i++) {
+        auto ep = device->get_input_ep_context(m_64byte_context_size, device->endpoints[i]->endpoint_num);
+        serial::printf(
+            "Endpoint%i ctx      : %s\n",
+            device->endpoints[i]->endpoint_num - 2,
+            xhci_ep_state_to_string(ep->endpoint_state)
+        );
+        serial::printf("  type             : %u\n", ep->endpoint_type);
+        serial::printf("  max_packet_size  : %u\n", ep->max_packet_size);
+        serial::printf("  interval         : %u\n", ep->interval);
+    }
 
     // Detect if the USB device is an HID device
     // if (device->interface_class == 3 && device->interface_sub_class == 1) {

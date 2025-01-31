@@ -24,7 +24,11 @@ uint8_t get_endpoint_type_from_ep_descriptor(usb_endpoint_descriptor* desc) {
     return 0;
 }
 
-xhci_device_endpoint_descriptor::xhci_device_endpoint_descriptor(uint8_t slot_id, usb_endpoint_descriptor* desc) : slot_id(slot_id) {
+xhci_device_endpoint_descriptor::xhci_device_endpoint_descriptor(
+    uint8_t slot_id,
+    uint8_t config_value,
+    usb_endpoint_descriptor* desc
+) : slot_id(slot_id), configuration_value(config_value) {
     uint8_t endpoint_number_base = desc->bEndpointAddress & 0x0F;
     uint8_t endpoint_direction_in = (desc->bEndpointAddress & 0x80) ? 1 : 0;
 
