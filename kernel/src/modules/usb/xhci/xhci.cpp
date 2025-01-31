@@ -559,7 +559,14 @@ void xhci_driver_module::_process_events() {
             auto endpoint = device->endpoints[0];
 
             auto data = endpoint->data_buffer;
-            xhci_log("%u %u %u %u %u %u\n", data[0], data[1], data[2], data[3], data[4], data[5]);
+            uint8_t buttons = data[0];
+
+            bool left_button = buttons & 0x01;
+            bool right_button = buttons & 0x02;
+            bool middle_button = buttons & 0x04;
+
+            xhci_log("Mouse Report: Buttons[L:%d, R:%d, M:%d]\n",
+                left_button, right_button, middle_button);
 
             // if (device->usb_device_driver) {
             //     device->usb_device_driver->handle_event(transfer_event);
@@ -996,6 +1003,8 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     xhci_logv("  Product Name    : %s\n", product);
     xhci_logv("  Manufacturer    : %s\n", manufacturer);
     xhci_logv("  Serial Number   : %s\n", serial_number);
+
+#if 0
     xhci_logv("  Configuration   :\n");
     xhci_logv("      wTotalLength        - %i\n", configuration_descriptor->wTotalLength);
     xhci_logv("      bNumInterfaces      - %i\n", configuration_descriptor->bNumInterfaces);
@@ -1003,6 +1012,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     xhci_logv("      iConfiguration      - %i\n", configuration_descriptor->iConfiguration);
     xhci_logv("      bmAttributes        - %i\n", configuration_descriptor->bmAttributes);
     xhci_logv("      bMaxPower           - %i milliamps\n", configuration_descriptor->bMaxPower * 2);
+#endif
 
     device->copy_output_device_context_to_input_device_context(
         m_64byte_context_size,
@@ -1073,8 +1083,6 @@ void xhci_driver_module::_setup_device(uint8_t port) {
                 xhci_logv("      bmAttributes      - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->bmAttributes);
                 xhci_logv("      wMaxPacketSize    - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->wMaxPacketSize);
                 xhci_logv("      endpoint number   - %i\n", device_ep_descriptor->endpoint_num);
-                xhci_logv("      endpoint type     - %i\n", device_ep_descriptor->endpoint_type);
-                xhci_logv("      maxPacketSize     - %i\n", device_ep_descriptor->max_packet_size);
                 xhci_logv("      intervalValue     - %i\n", device_ep_descriptor->interval);
                 break;
             }
@@ -1113,9 +1121,6 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         }
 
         xhci_logv("Endpoint configured successfully!\n");
-        
-        // TO-DO: This is for debugging the mouse on real hardware, have only one endpoint setup
-        break;
     }
 
     // Update device's input context
