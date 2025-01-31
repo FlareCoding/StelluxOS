@@ -103,7 +103,6 @@ bool xhci_driver_module::start() {
                 _setup_device(port_reg_idx);
             } else {
                 xhci_log("Device disconnected from port %i\n", port);
-                xhci_log("Device disconnected from port %i\n", port);
             }
 
             // TO-DO: For debugging purposes only, test only one connected device on real hardware
