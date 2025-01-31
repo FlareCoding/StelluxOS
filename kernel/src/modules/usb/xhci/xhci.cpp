@@ -90,9 +90,9 @@ bool xhci_driver_module::start() {
             uint8_t port_reg_idx = port - 1;
 
             // For debugging, only test one device on real hardware
-            if (!m_qemu_detected && port != 3) {
-                continue;
-            }
+            // if (!m_qemu_detected && port != 3) {
+            //     continue;
+            // }
             
             xhci_port_register_manager regman = _get_port_register_set(port_reg_idx);
             xhci_portsc_register portsc;
@@ -105,10 +105,17 @@ bool xhci_driver_module::start() {
                 xhci_log("Device disconnected from port %i\n", port);
             }
 
+            xhci_portsc_register clear_reg;
+            zeromem(&clear_reg, sizeof(xhci_portsc_register));
+
+            // Acknowledge the port connect status change
+            clear_reg.csc = 1;
+            regman.write_portsc_reg(clear_reg);
+
             // TO-DO: For debugging purposes only, test only one connected device on real hardware
-            if (!m_qemu_detected) {
-                break;
-            }
+            // if (!m_qemu_detected) {
+            //     break;
+            // }
         }
 
         m_port_status_change_events.clear();
@@ -969,6 +976,11 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         return;
     }
 
+    xhci_log("---- USB Device Info ----\n");
+    xhci_log("  Product Name    : %s\n", product);
+    xhci_log("  Manufacturer    : %s\n", manufacturer);
+    xhci_log("  Serial Number   : %s\n", serial_number);
+
     xhci_logv("---- USB Device Info ----\n");
     xhci_logv("  Product Name    : %s\n", product);
     xhci_logv("  Manufacturer    : %s\n", manufacturer);
@@ -985,6 +997,8 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         m_64byte_context_size,
         reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
     );
+
+    return;
 
     // Set device configuration
     if (!_set_device_configuration(device, configuration_descriptor->bConfigurationValue)) {
