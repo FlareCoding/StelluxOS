@@ -1,4 +1,5 @@
 #include <modules/usb/xhci/xhci_mem.h>
+#include <modules/usb/xhci/xhci_log.h>
 #include <memory/vmm.h>
 #include <memory/allocators/dma_allocator.h>
 #include <serial/serial.h>
@@ -33,7 +34,7 @@ void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary) {
     });
 
     if (!memblock) {
-        serial::printf("[XHCI] ======= MEMORY ALLOCATION FAILED =======\n");
+        xhci_error("======= MEMORY ALLOCATION FAILED =======\n");
         while (true);
     }
 

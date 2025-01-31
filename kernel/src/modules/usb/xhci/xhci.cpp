@@ -1,4 +1,5 @@
 #include <modules/usb/xhci/xhci.h>
+#include <modules/usb/xhci/xhci_log.h>
 #include <serial/serial.h>
 #include <dynpriv/dynpriv.h>
 #include <time/time.h>
@@ -17,14 +18,14 @@ xhci_driver_module::xhci_driver_module() : pci_module_base("xhci_driver_module")
 
 bool xhci_driver_module::init() {
     if (s_singleton_initialized) {
-        serial::printf("[XHCI] Another instance of the controller driver is already running\n");
+        xhci_warn("Another instance of the controller driver is already running\n");
         return true;
     }
     s_singleton_initialized = true;
 
     RUN_ELEVATED({ m_qemu_detected = DETECT_QEMU(); });
 
-    serial::printf("[XHCI] Initializing xhci driver\n\n");
+    xhci_log("Initializing xhci driver\n\n");
 
     auto pci_bar = m_pci_dev->get_bars()[0];
     RUN_ELEVATED({
@@ -61,7 +62,7 @@ bool xhci_driver_module::init() {
         RUN_ELEVATED({
             register_irq_handler(m_irq_vector, reinterpret_cast<irq_handler_t>(xhci_irq_handler), false, static_cast<void*>(this));
         });
-        serial::printf("[XHCI] Registered xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
+        xhci_log("Registered xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
     }
 
     return true;
@@ -98,11 +99,11 @@ bool xhci_driver_module::start() {
             regman.read_portsc_reg(portsc);
 
             if (portsc.ccs) {
-                serial::printf("[XHCI] Device connected on port %i - %s\n", port, _usb_speed_to_string(portsc.port_speed));
+                xhci_log("Device connected on port %i - %s\n", port, _usb_speed_to_string(portsc.port_speed));
                 _setup_device(port_reg_idx);
-                serial::printf("\n");
             } else {
-                serial::printf("[XHCI] Device disconnected from port %i\n", port);
+                xhci_log("Device disconnected from port %i\n", port);
+                xhci_log("Device disconnected from port %i\n", port);
             }
 
             // TO-DO: For debugging purposes only, test only one connected device on real hardware
@@ -138,17 +139,17 @@ bool xhci_driver_module::on_command(
 
 void xhci_driver_module::log_usbsts() {
     uint32_t status = m_op_regs->usbsts;
-    serial::printf("===== USBSTS =====\n");
-    if (status & XHCI_USBSTS_HCH) serial::printf("    Host Controlled Halted\n");
-    if (status & XHCI_USBSTS_HSE) serial::printf("    Host System Error\n");
-    if (status & XHCI_USBSTS_EINT) serial::printf("    Event Interrupt\n");
-    if (status & XHCI_USBSTS_PCD) serial::printf("    Port Change Detect\n");
-    if (status & XHCI_USBSTS_SSS) serial::printf("    Save State Status\n");
-    if (status & XHCI_USBSTS_RSS) serial::printf("    Restore State Status\n");
-    if (status & XHCI_USBSTS_SRE) serial::printf("    Save/Restore Error\n");
-    if (status & XHCI_USBSTS_CNR) serial::printf("    Controller Not Ready\n");
-    if (status & XHCI_USBSTS_HCE) serial::printf("    Host Controller Error\n");
-    serial::printf("\n");
+    xhci_log("===== USBSTS =====\n");
+    if (status & XHCI_USBSTS_HCH) xhci_log("    Host Controlled Halted\n");
+    if (status & XHCI_USBSTS_HSE) xhci_log("    Host System Error\n");
+    if (status & XHCI_USBSTS_EINT) xhci_log("    Event Interrupt\n");
+    if (status & XHCI_USBSTS_PCD) xhci_log("    Port Change Detect\n");
+    if (status & XHCI_USBSTS_SSS) xhci_log("    Save State Status\n");
+    if (status & XHCI_USBSTS_RSS) xhci_log("    Restore State Status\n");
+    if (status & XHCI_USBSTS_SRE) xhci_log("    Save/Restore Error\n");
+    if (status & XHCI_USBSTS_CNR) xhci_log("    Controller Not Ready\n");
+    if (status & XHCI_USBSTS_HCE) xhci_log("    Host Controller Error\n");
+    xhci_log("\n");
 }
 
 __PRIVILEGED_CODE
@@ -200,21 +201,21 @@ void xhci_driver_module::_parse_capability_registers() {
 }
 
 void xhci_driver_module::_log_capability_registers() {
-    serial::printf("===== Xhci Capability Registers (0x%llx) =====\n", (uint64_t)m_cap_regs);
-    serial::printf("    Length                : %i\n", m_capability_regs_length);
-    serial::printf("    Max Device Slots      : %i\n", m_max_device_slots);
-    serial::printf("    Max Interrupters      : %i\n", m_max_interrupters);
-    serial::printf("    Max Ports             : %i\n", m_max_ports);
-    serial::printf("    IST                   : %i\n", m_isochronous_scheduling_threshold);
-    serial::printf("    ERST Max Size         : %i\n", m_erst_max);
-    serial::printf("    Scratchpad Buffers    : %i\n", m_max_scratchpad_buffers);
-    serial::printf("    64-bit Addressing     : %s\n", m_64bit_addressing_capability ? "yes" : "no");
-    serial::printf("    Bandwidth Negotiation : %i\n", m_bandwidth_negotiation_capability);
-    serial::printf("    64-byte Context Size  : %s\n", m_64byte_context_size ? "yes" : "no");
-    serial::printf("    Port Power Control    : %i\n", m_port_power_control);
-    serial::printf("    Port Indicators       : %i\n", m_port_indicators);
-    serial::printf("    Light Reset Available : %i\n", m_light_reset_capability);
-    serial::printf("\n");
+    xhci_logv("===== Xhci Capability Registers (0x%llx) =====\n", (uint64_t)m_cap_regs);
+    xhci_logv("    Length                : %i\n", m_capability_regs_length);
+    xhci_logv("    Max Device Slots      : %i\n", m_max_device_slots);
+    xhci_logv("    Max Interrupters      : %i\n", m_max_interrupters);
+    xhci_logv("    Max Ports             : %i\n", m_max_ports);
+    xhci_logv("    IST                   : %i\n", m_isochronous_scheduling_threshold);
+    xhci_logv("    ERST Max Size         : %i\n", m_erst_max);
+    xhci_logv("    Scratchpad Buffers    : %i\n", m_max_scratchpad_buffers);
+    xhci_logv("    64-bit Addressing     : %s\n", m_64bit_addressing_capability ? "yes" : "no");
+    xhci_logv("    Bandwidth Negotiation : %i\n", m_bandwidth_negotiation_capability);
+    xhci_logv("    64-byte Context Size  : %s\n", m_64byte_context_size ? "yes" : "no");
+    xhci_logv("    Port Power Control    : %i\n", m_port_power_control);
+    xhci_logv("    Port Indicators       : %i\n", m_port_indicators);
+    xhci_logv("    Light Reset Available : %i\n", m_light_reset_capability);
+    xhci_logv("\n");
 }
 
 void xhci_driver_module::_parse_extended_capability_registers() {
@@ -265,15 +266,15 @@ void xhci_driver_module::_configure_operational_registers() {
 }
 
 void xhci_driver_module::_log_operational_registers() {
-    serial::printf("===== Xhci Operational Registers (0x%llx) =====\n", (uint64_t)m_op_regs);
-    serial::printf("    usbcmd     : 0x%x\n", m_op_regs->usbcmd);
-    serial::printf("    usbsts     : 0x%x\n", m_op_regs->usbsts);
-    serial::printf("    pagesize   : 0x%x\n", m_op_regs->pagesize);
-    serial::printf("    dnctrl     : 0x%x\n", m_op_regs->dnctrl);
-    serial::printf("    crcr       : 0x%llx\n", m_op_regs->crcr);
-    serial::printf("    dcbaap     : 0x%llx\n", m_op_regs->dcbaap);
-    serial::printf("    config     : 0x%x\n", m_op_regs->config);
-    serial::printf("\n");
+    xhci_logv("===== Xhci Operational Registers (0x%llx) =====\n", (uint64_t)m_op_regs);
+    xhci_logv("    usbcmd     : 0x%x\n", m_op_regs->usbcmd);
+    xhci_logv("    usbsts     : 0x%x\n", m_op_regs->usbsts);
+    xhci_logv("    pagesize   : 0x%x\n", m_op_regs->pagesize);
+    xhci_logv("    dnctrl     : 0x%x\n", m_op_regs->dnctrl);
+    xhci_logv("    crcr       : 0x%llx\n", m_op_regs->crcr);
+    xhci_logv("    dcbaap     : 0x%llx\n", m_op_regs->dcbaap);
+    xhci_logv("    config     : 0x%x\n", m_op_regs->config);
+    xhci_logv("\n");
 }
 
 uint8_t xhci_driver_module::_get_port_speed(uint8_t port) {
@@ -302,7 +303,7 @@ void xhci_driver_module::_configure_runtime_registers() {
     // Get the primary interrupter registers
     auto interrupter_regs = m_runtime_register_manager->get_interrupter_registers(0);
     if (!interrupter_regs) {
-        serial::printf("[*] Failed to retrieve interrupter register set when setting up the event ring!");
+        xhci_error("Failed to retrieve interrupter register set when setting up the event ring!");
         return;
     }
 
@@ -413,7 +414,7 @@ bool xhci_driver_module::_create_device_context(uint8_t slot_id) {
     );
 
     if (!ctx) {
-        serial::printf("[XHCI] CRITICAL FAILURE: Failed to allocate memory for a device context\n");
+        xhci_error("Failed to allocate memory for a device context\n");
         return false;
     }
 
@@ -453,12 +454,12 @@ xhci_command_completion_trb_t* xhci_driver_module::_send_command(xhci_trb_t* trb
     m_command_irq_completed = 0;
 
     if (!completion_trb) {
-        serial::printf("[*] Failed to find completion TRB for command %i\n", trb->trb_type);
+        xhci_warn("Failed to find completion TRB for command %i\n", trb->trb_type);
         return nullptr;
     }
 
     if (completion_trb->completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        serial::printf("[*] Command TRB failed with error: %s\n", trb_completion_code_to_string(completion_trb->completion_code));
+        xhci_warn("Command TRB failed with error: %s\n", trb_completion_code_to_string(completion_trb->completion_code));
         return nullptr;
     }
 
@@ -489,12 +490,12 @@ xhci_transfer_completion_trb_t* xhci_driver_module::_start_control_endpoint_tran
     m_transfer_irq_completed = 0;
 
     if (!completion_trb) {
-        serial::printf("[XHCI] Failed to find transfer completion TRB\n");
+        xhci_warn("Failed to find transfer completion TRB\n");
         return nullptr;
     }
 
     if (completion_trb->completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        serial::printf("[XHCI] Transfer TRB failed with error: %s\n", trb_completion_code_to_string(completion_trb->completion_code));
+        xhci_warn("Transfer TRB failed with error: %s\n", trb_completion_code_to_string(completion_trb->completion_code));
         return nullptr;
     }
 
@@ -538,7 +539,7 @@ void xhci_driver_module::_process_events() {
             auto endpoint = device->endpoints[0];
 
             auto data = endpoint->data_buffer;
-            serial::printf("%u %u %u %u %u %u\n", data[0], data[1], data[2], data[3], data[4], data[5]);
+            xhci_log("%u %u %u %u %u %u\n", data[0], data[1], data[2], data[3], data[4], data[5]);
 
             // if (device->usb_device_driver) {
             //     device->usb_device_driver->handle_event(transfer_event);
@@ -594,7 +595,7 @@ bool xhci_driver_module::_reset_host_controller() {
     uint32_t timeout = 20;
     while (!(m_op_regs->usbsts & XHCI_USBSTS_HCH)) {
         if (--timeout == 0) {
-            serial::printf("XHCI HC did not halt within %ims\n", timeout);
+            xhci_error("Host controller did not halt within %ims\n", timeout);
             return false;
         }
 
@@ -613,7 +614,7 @@ bool xhci_driver_module::_reset_host_controller() {
         m_op_regs->usbsts & XHCI_USBSTS_CNR
     ) {
         if (--timeout == 0) {
-            serial::printf("XHCI HC did not reset within %ims\n", timeout);
+            xhci_error("Host controller did not reset within %ims\n", timeout);
             return false;
         }
 
@@ -669,7 +670,7 @@ bool xhci_driver_module::_reset_port(uint8_t port_num) {
         regset.read_portsc_reg(portsc);
 
         if (portsc.pp == 0) {
-            serial::printf("Port %i: Bad Reset\n", port_num);
+            xhci_warn("Port %i: Bad Reset\n", port_num);
             return false;
         }
     }
@@ -813,32 +814,32 @@ void xhci_driver_module::_configure_device_endpoint_input_context(xhci_device* d
         }
     }
 
-    serial::printf("[XHCI] Slot Context set up for ep_num=%u\n", endpoint->endpoint_num);
-    serial::printf("  context_entries: %u\n", slot_context->context_entries);
-    serial::printf("  speed: %u\n", slot_context->speed);
+    xhci_logv("Slot Context set up for ep_num=%u\n", endpoint->endpoint_num);
+    xhci_logv("  context_entries: %u\n", slot_context->context_entries);
+    xhci_logv("  speed: %u\n", slot_context->speed);
 
-    serial::printf("[XHCI] Input Control Context set up for ep_num=%u\n", endpoint->endpoint_num);
-    serial::printf("  drop flags : 0x%x\n", input_control_context->drop_flags);
-    serial::printf("  add flags  : 0x%x\n", input_control_context->add_flags);
-    serial::printf("  config     : %u\n", input_control_context->config_value);
-    serial::printf("  interface  : %u\n", input_control_context->interface_number);
-    serial::printf("  altsetting : %u\n", input_control_context->alternate_setting);
+    xhci_logv("Input Control Context set up for ep_num=%u\n", endpoint->endpoint_num);
+    xhci_logv("  drop flags : 0x%x\n", input_control_context->drop_flags);
+    xhci_logv("  add flags  : 0x%x\n", input_control_context->add_flags);
+    xhci_logv("  config     : %u\n", input_control_context->config_value);
+    xhci_logv("  interface  : %u\n", input_control_context->interface_number);
+    xhci_logv("  altsetting : %u\n", input_control_context->alternate_setting);
 
-    serial::printf("[XHCI] Endpoint Context set up for ep_num=%u config=%u:\n",
+    xhci_logv("Endpoint Context set up for ep_num=%u config=%u:\n",
                    endpoint->endpoint_num, endpoint->configuration_value);
-    serial::printf("  ep_state=%u, ep_type=%u, MPS=%u, interval=%u\n",
+    xhci_logv("  ep_state=%u, ep_type=%u, MPS=%u, interval=%u\n",
                    interrupt_ep_context->endpoint_state,
                    interrupt_ep_context->endpoint_type,
                    interrupt_ep_context->max_packet_size,
                    interrupt_ep_context->interval);
-    serial::printf("  avg_TRB_len=%u, error_count=%u, max_burst=%u\n",
+    xhci_logv("  avg_TRB_len=%u, error_count=%u, max_burst=%u\n",
                    interrupt_ep_context->average_trb_length,
                    interrupt_ep_context->error_count,
                    interrupt_ep_context->max_burst_size);
-    serial::printf("  maxESITlo=%u, maxESIThi=%u\n",
+    xhci_logv("  maxESITlo=%u, maxESIThi=%u\n",
                    interrupt_ep_context->max_esit_payload_lo,
                    interrupt_ep_context->max_esit_payload_hi);
-    serial::printf("  dequeue_ptr=0x%llx, dcs=%u\n",
+    xhci_logv("  dequeue_ptr=0x%llx, dcs=%u\n",
                    (unsigned long long)interrupt_ep_context->transfer_ring_dequeue_ptr,
                    (unsigned)interrupt_ep_context->dcs);
 }
@@ -852,18 +853,18 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     // Calculate the initial max packet size based on device speed
     uint16_t max_packet_size = _get_max_initial_packet_size(device->speed);
 
-    serial::printf("Setting up %s device on port %i (portReg:%i)\n",
-        _usb_speed_to_string(device->speed), device->port_number, port);
+    xhci_log("Setting up %s device on port %i\n",
+        _usb_speed_to_string(device->speed), device->port_number);
 
     device->slot_id = _enable_device_slot();
     if (!device->slot_id) {
-        serial::printf("[XHCI] Failed to setup device - failed to enable device slot\n");
+        xhci_error("Failed to setup device - failed to enable device slot\n");
         delete device;
         return;
     }
 
-    serial::printf("Device slot id: %i\n", device->slot_id);
     if (!_create_device_context(device->slot_id)) {
+        xhci_error("Failed to setup device - failed to create device context\n");
         delete device;
         return;
     }
@@ -879,13 +880,13 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     // but still enables the control endpoint which we can use to get the device descriptor.
     // Some legacy devices require their desciptor to be read before sending them a SET_ADDRESS command.
     if (!_address_device(device, true)) {
-        serial::printf("[XHCI] Failed to setup device - failed to set device address\n");
+        xhci_error("Failed to setup device - failed to set device address\n");
         return;
     }
 
     usb_device_descriptor* device_descriptor = new usb_device_descriptor();
     if (!_get_device_descriptor(device, device_descriptor, 8)) {
-        serial::printf("[XHCI] Failed to get device descriptor\n");
+        xhci_error("Failed to get device descriptor\n");
         return;
     }
 
@@ -914,23 +915,23 @@ void xhci_driver_module::_setup_device(uint8_t port) {
 
     // Read the full device descriptor
     if (!_get_device_descriptor(device, device_descriptor, device_descriptor->header.bLength)) {
-        serial::printf("[XHCI] Failed to get full device descriptor\n");
+        xhci_error("Failed to get full device descriptor\n");
         return;
     }
 
-    serial::printf("USB Device Descriptor:\n");
-    serial::printf("  bcdUSB:            0x%04x\n", device_descriptor->bcdUsb);
-    serial::printf("  bDeviceClass:      0x%02x\n", device_descriptor->bDeviceClass);
-    serial::printf("  bDeviceSubClass:   0x%02x\n", device_descriptor->bDeviceSubClass);
-    serial::printf("  bDeviceProtocol:   0x%02x\n", device_descriptor->bDeviceProtocol);
-    serial::printf("  bMaxPacketSize0:   0x%02x\n", device_descriptor->bMaxPacketSize0);
-    serial::printf("  idVendor:          0x%04x\n", device_descriptor->idVendor);
-    serial::printf("  idProduct:         0x%04x\n", device_descriptor->idProduct);
-    serial::printf("  bcdDevice:         0x%04x\n", device_descriptor->bcdDevice);
-    serial::printf("  iManufacturer:     0x%02x\n", device_descriptor->iManufacturer);
-    serial::printf("  iProduct:          0x%02x\n", device_descriptor->iProduct);
-    serial::printf("  iSerialNumber:     0x%02x\n", device_descriptor->iSerialNumber);
-    serial::printf("  bNumConfigurations: 0x%02x\n", device_descriptor->bNumConfigurations);
+    xhci_logv("USB Device Descriptor:\n");
+    xhci_logv("  bcdUSB:            0x%04x\n", device_descriptor->bcdUsb);
+    xhci_logv("  bDeviceClass:      0x%02x\n", device_descriptor->bDeviceClass);
+    xhci_logv("  bDeviceSubClass:   0x%02x\n", device_descriptor->bDeviceSubClass);
+    xhci_logv("  bDeviceProtocol:   0x%02x\n", device_descriptor->bDeviceProtocol);
+    xhci_logv("  bMaxPacketSize0:   0x%02x\n", device_descriptor->bMaxPacketSize0);
+    xhci_logv("  idVendor:          0x%04x\n", device_descriptor->idVendor);
+    xhci_logv("  idProduct:         0x%04x\n", device_descriptor->idProduct);
+    xhci_logv("  bcdDevice:         0x%04x\n", device_descriptor->bcdDevice);
+    xhci_logv("  iManufacturer:     0x%02x\n", device_descriptor->iManufacturer);
+    xhci_logv("  iProduct:          0x%02x\n", device_descriptor->iProduct);
+    xhci_logv("  iSerialNumber:     0x%02x\n", device_descriptor->iSerialNumber);
+    xhci_logv("  bNumConfigurations: 0x%02x\n", device_descriptor->bNumConfigurations);
 
     usb_string_language_descriptor string_language_descriptor;
     if (!_get_string_language_descriptor(device, &string_language_descriptor)) {
@@ -969,17 +970,17 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         return;
     }
 
-    serial::printf("---- USB Device Info ----\n");
-    serial::printf("  Product Name    : %s\n", product);
-    serial::printf("  Manufacturer    : %s\n", manufacturer);
-    serial::printf("  Serial Number   : %s\n", serial_number);
-    serial::printf("  Configuration   :\n");
-    serial::printf("      wTotalLength        - %i\n", configuration_descriptor->wTotalLength);
-    serial::printf("      bNumInterfaces      - %i\n", configuration_descriptor->bNumInterfaces);
-    serial::printf("      bConfigurationValue - %i\n", configuration_descriptor->bConfigurationValue);
-    serial::printf("      iConfiguration      - %i\n", configuration_descriptor->iConfiguration);
-    serial::printf("      bmAttributes        - %i\n", configuration_descriptor->bmAttributes);
-    serial::printf("      bMaxPower           - %i milliamps\n", configuration_descriptor->bMaxPower * 2);
+    xhci_logv("---- USB Device Info ----\n");
+    xhci_logv("  Product Name    : %s\n", product);
+    xhci_logv("  Manufacturer    : %s\n", manufacturer);
+    xhci_logv("  Serial Number   : %s\n", serial_number);
+    xhci_logv("  Configuration   :\n");
+    xhci_logv("      wTotalLength        - %i\n", configuration_descriptor->wTotalLength);
+    xhci_logv("      bNumInterfaces      - %i\n", configuration_descriptor->bNumInterfaces);
+    xhci_logv("      bConfigurationValue - %i\n", configuration_descriptor->bConfigurationValue);
+    xhci_logv("      iConfiguration      - %i\n", configuration_descriptor->iConfiguration);
+    xhci_logv("      bmAttributes        - %i\n", configuration_descriptor->bmAttributes);
+    xhci_logv("      bMaxPower           - %i milliamps\n", configuration_descriptor->bMaxPower * 2);
 
     device->copy_output_device_context_to_input_device_context(
         m_64byte_context_size,
@@ -1015,12 +1016,12 @@ void xhci_driver_module::_setup_device(uint8_t port) {
                 device->interface_sub_class = iface->bInterfaceSubClass;
                 device->interface_protocol = iface->bInterfaceProtocol;
 
-                serial::printf("    ------ Device Interface ------\n", device->endpoints.size());
-                serial::printf("      class             - %i\n", device->interface_class);
-                serial::printf("      sub-class         - %i\n", device->interface_sub_class);
-                serial::printf("      protocol          - %i\n", device->interface_protocol);
-                serial::printf("      bInterfaceNumber  - %i\n", iface->bInterfaceNumber);
-                serial::printf("      bAlternateSetting - %i\n", iface->bAlternateSetting);
+                xhci_logv("    ------ Device Interface ------\n", device->endpoints.size());
+                xhci_logv("      class             - %i\n", device->interface_class);
+                xhci_logv("      sub-class         - %i\n", device->interface_sub_class);
+                xhci_logv("      protocol          - %i\n", device->interface_protocol);
+                xhci_logv("      bInterfaceNumber  - %i\n", iface->bInterfaceNumber);
+                xhci_logv("      bAlternateSetting - %i\n", iface->bAlternateSetting);
                 break;
             }
             case USB_DESCRIPTOR_HID: {
@@ -1036,16 +1037,16 @@ void xhci_driver_module::_setup_device(uint8_t port) {
                 );
                 device->endpoints.push_back(device_ep_descriptor);
 
-                serial::printf("    ------ Endpoint %lli ------\n", device->endpoints.size());
-                serial::printf("      bLength           - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->header.bLength);
-                serial::printf("      bDescriptorType   - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->header.bDescriptorType);
-                serial::printf("      bEndpointAddress  - 0x%x\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->bEndpointAddress);
-                serial::printf("      bmAttributes      - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->bmAttributes);
-                serial::printf("      wMaxPacketSize    - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->wMaxPacketSize);
-                serial::printf("      endpoint number   - %i\n", device_ep_descriptor->endpoint_num);
-                serial::printf("      endpoint type     - %i\n", device_ep_descriptor->endpoint_type);
-                serial::printf("      maxPacketSize     - %i\n", device_ep_descriptor->max_packet_size);
-                serial::printf("      intervalValue     - %i\n", device_ep_descriptor->interval);
+                xhci_logv("    ------ Endpoint %lli ------\n", device->endpoints.size());
+                xhci_logv("      bLength           - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->header.bLength);
+                xhci_logv("      bDescriptorType   - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->header.bDescriptorType);
+                xhci_logv("      bEndpointAddress  - 0x%x\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->bEndpointAddress);
+                xhci_logv("      bmAttributes      - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->bmAttributes);
+                xhci_logv("      wMaxPacketSize    - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->wMaxPacketSize);
+                xhci_logv("      endpoint number   - %i\n", device_ep_descriptor->endpoint_num);
+                xhci_logv("      endpoint type     - %i\n", device_ep_descriptor->endpoint_type);
+                xhci_logv("      maxPacketSize     - %i\n", device_ep_descriptor->max_packet_size);
+                xhci_logv("      intervalValue     - %i\n", device_ep_descriptor->interval);
                 break;
             }
             default: break;
@@ -1054,7 +1055,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         index += header->bLength;
     }
 
-    serial::printf("\n");
+    xhci_logv("\n");
 
     // For each of the found endpoints send a configure endpoint command
     for (size_t i = 0; i < device->endpoints.size(); i++) {
@@ -1066,17 +1067,17 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         xhci_device_endpoint_descriptor* endpoint = device->endpoints[i];
         _configure_device_endpoint_input_context(device, endpoint);
 
-        serial::printf("    ------ Configuring Endpoint %lli ------\n", i + 1);
-        serial::printf("      endpoint number   - %i\n", endpoint->endpoint_num);
-        serial::printf("      endpoint type     - %i\n", endpoint->endpoint_type);
-        serial::printf("      maxPacketSize     - %i\n", endpoint->max_packet_size);
-        serial::printf("      intervalValue     - %i\n", endpoint->interval);
+        xhci_logv("    ------ Configuring Endpoint %lli ------\n", i + 1);
+        xhci_logv("      endpoint number   - %i\n", endpoint->endpoint_num);
+        xhci_logv("      endpoint type     - %i\n", endpoint->endpoint_type);
+        xhci_logv("      maxPacketSize     - %i\n", endpoint->max_packet_size);
+        xhci_logv("      intervalValue     - %i\n", endpoint->interval);
 
         if (!_configure_endpoint(device)) {
             return;
         }
 
-        serial::printf("Endpoint configured successfully!\n");
+        xhci_logv("Endpoint configured successfully!\n");
         
         // TO-DO: This is for debugging the mouse on real hardware, have only one endpoint setup
         break;
@@ -1088,18 +1089,18 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
     );
 
-    serial::printf("Slot ctx slot state   : %s\n", xhci_slot_state_to_string(device->get_input_slot_context(m_64byte_context_size)->slot_state));
-    serial::printf("Control ep ctx state  : %s\n", xhci_ep_state_to_string(device->get_input_control_ep_context(m_64byte_context_size)->endpoint_state));
+    xhci_logv("Slot ctx slot state   : %s\n", xhci_slot_state_to_string(device->get_input_slot_context(m_64byte_context_size)->slot_state));
+    xhci_logv("Control ep ctx state  : %s\n", xhci_ep_state_to_string(device->get_input_control_ep_context(m_64byte_context_size)->endpoint_state));
     for (size_t i = 0; i < device->endpoints.size(); i++) {
         auto ep = device->get_input_ep_context(m_64byte_context_size, device->endpoints[i]->endpoint_num);
-        serial::printf(
+        xhci_logv(
             "Endpoint%i ctx      : %s\n",
             device->endpoints[i]->endpoint_num - 2,
             xhci_ep_state_to_string(ep->endpoint_state)
         );
-        serial::printf("  type             : %u\n", ep->endpoint_type);
-        serial::printf("  max_packet_size  : %u\n", ep->max_packet_size);
-        serial::printf("  interval         : %u\n", ep->interval);
+        xhci_logv("  type             : %u\n", ep->endpoint_type);
+        xhci_logv("  max_packet_size  : %u\n", ep->max_packet_size);
+        xhci_logv("  interval         : %u\n", ep->interval);
     }
 
     // Detect if the USB device is an HID device
@@ -1115,7 +1116,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     //     device->usb_device_driver->start();
     // }
 
-    serial::printf("[XHCI] Device setup complete\n");
+    xhci_log("Device setup complete\n");
 
     auto endpoint = device->endpoints[0];
     auto& transfer_ring = endpoint->transfer_ring;
@@ -1145,7 +1146,7 @@ bool xhci_driver_module::_address_device(xhci_device* device, bool bsr) {
         _send_command(reinterpret_cast<xhci_trb_t*>(&address_device_trb), 200);
 
     if (!completion_trb) {
-        serial::printf("[*] Failed to address device with BSR=%i\n", (int)bsr);
+        xhci_error("Failed to address device with BSR=%i\n", (int)bsr);
         return false;
     }
 
@@ -1164,13 +1165,13 @@ bool xhci_driver_module::_configure_endpoint(xhci_device* device) {
         _send_command(reinterpret_cast<xhci_trb_t*>(&configure_ep_trb), 200);
 
     if (!completion_trb) {
-        serial::printf("[*] Failed to send Configure Endpoint command\n");
+        xhci_error("Failed to send Configure Endpoint command\n");
         return false;
     }
 
     // Check the completion code
     if (completion_trb->completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        serial::printf("[XHCI] Configure Endpoint command failed with completion code: %s\n",
+        xhci_error("Configure Endpoint command failed with completion code: %s\n",
                     trb_completion_code_to_string(completion_trb->completion_code));
         return false;
     }
@@ -1191,38 +1192,15 @@ bool xhci_driver_module::_evaluate_context(xhci_device* device) {
         _send_command(reinterpret_cast<xhci_trb_t*>(&evaluate_context_trb), 200);
 
     if (!completion_trb) {
-        serial::printf("[*] Failed to send Evaluate Context command\n");
+        xhci_error("Failed to send Evaluate Context command\n");
         return false;
     }
 
     // Check the completion code
     if (completion_trb->completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
-        serial::printf("[*] Evaluate Context command failed with completion code: %s\n",
+        xhci_error("Evaluate Context command failed with completion code: %s\n",
                     trb_completion_code_to_string(completion_trb->completion_code));
         return false;
-    }
-
-    // Optionally, perform a sanity check similar to _address_device
-    if (m_64byte_context_size) {
-        xhci_device_context64* device_context =
-            reinterpret_cast<xhci_device_context64*>(m_dcbaa_virtual_addresses[device->slot_id]);
-
-        serial::printf("    DeviceContext[slotId=%i] address:0x%llx slot_state:%s ep_state:%s max_packet_size:%i\n",
-            device->slot_id, device_context->slot_context.device_address,
-            xhci_slot_state_to_string(device_context->slot_context.slot_state),
-            xhci_ep_state_to_string(device_context->control_ep_context.endpoint_state),
-            device_context->control_ep_context.max_packet_size
-        );
-    } else {
-        xhci_device_context32* device_context =
-            reinterpret_cast<xhci_device_context32*>(m_dcbaa_virtual_addresses[device->slot_id]);
-
-        serial::printf("    DeviceContext[slotId=%i] address:0x%llx slot_state:%s ep_state:%s max_packet_size:%i\n",
-            device->slot_id, device_context->slot_context.device_address,
-            xhci_slot_state_to_string(device_context->slot_context.slot_state),
-            xhci_ep_state_to_string(device_context->control_ep_context.endpoint_state),
-            device_context->control_ep_context.max_packet_size
-        );
     }
 
     return true;
@@ -1287,12 +1265,6 @@ bool xhci_driver_module::_send_usb_request_packet(xhci_device* device, xhci_devi
             free_xhci_memory(descriptor_buffer);
             return false;
         }
-
-        // serial::printf(
-        //     "Transfer Status: %s  Length: %i\n",
-        //     trb_completion_code_to_string(completion_trb->completion_code),
-        //     completion_trb->transfer_length
-        // );
     }
 
     xhci_status_stage_trb_t status_stage;
@@ -1321,12 +1293,6 @@ bool xhci_driver_module::_send_usb_request_packet(xhci_device* device, xhci_devi
         return false;
     }
 
-    // serial::printf(
-    //     "Transfer Status: %s  Length: %i\n",
-    //     trb_completion_code_to_string(completion_trb->completion_code),
-    //     completion_trb->transfer_length
-    // );
-
     // Copy the descriptor into the requested user buffer location
     memcpy(output_buffer, descriptor_buffer, length);
 
@@ -1340,7 +1306,7 @@ bool xhci_driver_module::_send_usb_no_data_request_packet(xhci_device* dev, xhci
     // 1) Get the control endpoint's transfer ring
     xhci_transfer_ring* transfer_ring = dev->get_control_ep_transfer_ring();
     if (!transfer_ring) {
-        serial::printf("No control transfer ring allocated.\n");
+        xhci_error("No control transfer ring allocated.\n");
         return false;
     }
 
@@ -1377,7 +1343,7 @@ bool xhci_driver_module::_send_usb_no_data_request_packet(xhci_device* dev, xhci
     // 5) Ring the doorbell and wait for completion
     auto completion_trb = _start_control_endpoint_transfer(transfer_ring);
     if (!completion_trb) {
-        serial::printf("[XHCI] No-Data request: Timed out or failed.\n");
+        xhci_error("No-Data request: Timed out or failed.\n");
         return false;
     }
 
@@ -1405,7 +1371,7 @@ bool xhci_driver_module::_get_string_language_descriptor(xhci_device* device, us
 
     // First read just the header in order to get the total descriptor size
     if (!_send_usb_request_packet(device, req, desc, sizeof(usb_descriptor_header))) {
-        serial::printf("[XHCI] Failed to read device string language descriptor header\n");
+        xhci_warn("Failed to read device string language descriptor header\n");
         return false;
     }
 
@@ -1413,7 +1379,7 @@ bool xhci_driver_module::_get_string_language_descriptor(xhci_device* device, us
     req.wLength = desc->header.bLength;
 
     if (!_send_usb_request_packet(device, req, desc, desc->header.bLength)) {
-        serial::printf("[XHCI] Failed to read device string language descriptor\n");
+        xhci_warn("Failed to read device string language descriptor\n");
         return false;
     }
 
@@ -1435,7 +1401,7 @@ bool xhci_driver_module::_get_string_descriptor(
 
     // First read just the header in order to get the total descriptor size
     if (!_send_usb_request_packet(device, req, desc, sizeof(usb_descriptor_header))) {
-        serial::printf("[XHCI] Failed to read device string descriptor header\n");
+        xhci_warn("Failed to read device string descriptor header\n");
         return false;
     }
 
@@ -1443,7 +1409,7 @@ bool xhci_driver_module::_get_string_descriptor(
     req.wLength = desc->header.bLength;
 
     if (!_send_usb_request_packet(device, req, desc, desc->header.bLength)) {
-        serial::printf("[XHCI] Failed to read device string descriptor\n");
+        xhci_warn("Failed to read device string descriptor\n");
         return false;
     }
 
@@ -1460,7 +1426,7 @@ bool xhci_driver_module::_get_configuration_descriptor(xhci_device* device, usb_
 
     // First read just the header in order to get the total descriptor size
     if (!_send_usb_request_packet(device, req, desc, sizeof(usb_descriptor_header))) {
-        serial::printf("[XHCI] Failed to read device configuration descriptor header\n");
+        xhci_error("Failed to read device configuration descriptor header\n");
         return false;
     }
 
@@ -1468,7 +1434,7 @@ bool xhci_driver_module::_get_configuration_descriptor(xhci_device* device, usb_
     req.wLength = desc->header.bLength;
 
     if (!_send_usb_request_packet(device, req, desc, desc->header.bLength)) {
-        serial::printf("[XHCI] Failed to read device configuration descriptor\n");
+        xhci_error("Failed to read device configuration descriptor\n");
         return false;
     }
 
@@ -1476,7 +1442,7 @@ bool xhci_driver_module::_get_configuration_descriptor(xhci_device* device, usb_
     req.wLength = desc->wTotalLength;
 
     if (!_send_usb_request_packet(device, req, desc, desc->wTotalLength)) {
-        serial::printf("[XHCI] Failed to read device configuration descriptor with interface descriptors\n");
+        xhci_error("Failed to read device configuration descriptor with interface descriptors\n");
         return false;
     }
 
@@ -1495,7 +1461,7 @@ bool xhci_driver_module::_set_device_configuration(xhci_device* device, uint16_t
 
     // Perform the control transfer
     if (!_send_usb_no_data_request_packet(device, setup_packet)) {
-        serial::printf("[XHCI] Failed to set device configuration\n");
+        xhci_error("Failed to set device configuration\n");
         return false;
     }
 
@@ -1512,7 +1478,7 @@ bool xhci_driver_module::_set_protocol(xhci_device* device, uint8_t interface, u
     setup_packet.wLength = 0;
 
     if (!_send_usb_no_data_request_packet(device, setup_packet)) {
-        serial::printf("[XHCI] Failed to set device protocol\n");
+        xhci_error("Failed to set device protocol\n");
         return false;
     }
 
@@ -1531,7 +1497,7 @@ bool xhci_driver_module::_set_interface(xhci_device* device, uint8_t interface_n
 
     // Because it's zero-length and Host->Device, use your no-data request function
     if (!_send_usb_no_data_request_packet(device, req)) {
-        serial::printf("[XHCI] Failed to set interface to altSetting=%u on interface=%u\n",
+        xhci_error("Failed to set interface to alt_setting=%u on interface=%u\n",
                        alternate_setting, interface_number);
         return false;
     }
