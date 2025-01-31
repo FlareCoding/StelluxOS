@@ -1009,9 +1009,6 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
     );
 
-    serial::printf("\n");
-    return;
-
     // Set device configuration
     if (!_set_device_configuration(device, configuration_descriptor->bConfigurationValue)) {
         return;
@@ -1036,10 +1033,12 @@ void xhci_driver_module::_setup_device(uint8_t port) {
                 }
 
                 usb_interface_descriptor* iface = reinterpret_cast<usb_interface_descriptor*>(header);
-                device->primary_interface = iface->bInterfaceNumber;
-                device->interface_class = iface->bInterfaceClass;
-                device->interface_sub_class = iface->bInterfaceSubClass;
-                device->interface_protocol = iface->bInterfaceProtocol;
+                if (!device->interface_class) {
+                    device->primary_interface = iface->bInterfaceNumber;
+                    device->interface_class = iface->bInterfaceClass;
+                    device->interface_sub_class = iface->bInterfaceSubClass;
+                    device->interface_protocol = iface->bInterfaceProtocol;
+                }
 
                 xhci_logv("    ------ Device Interface ------\n", device->endpoints.size());
                 xhci_logv("      class             - %i\n", device->interface_class);
@@ -1055,6 +1054,11 @@ void xhci_driver_module::_setup_device(uint8_t port) {
                 break;
             }
             case USB_DESCRIPTOR_ENDPOINT: {
+                // Ignore non-hid endpoints for now (just a kludge)
+                if (device->interface_class != 3) {
+                    break;
+                }
+
                 auto device_ep_descriptor = new xhci_device_endpoint_descriptor(
                     device->slot_id,
                     configuration_descriptor->bConfigurationValue,
@@ -1081,6 +1085,12 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     }
 
     xhci_logv("\n");
+
+    // Only continue setting up HID devices for now
+    if (device->interface_class != 3) {
+        serial::printf("\n");
+        return;
+    }
 
     // For each of the found endpoints send a configure endpoint command
     for (size_t i = 0; i < device->endpoints.size(); i++) {
@@ -1141,7 +1151,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     //     device->usb_device_driver->start();
     // }
 
-    xhci_log("Device setup complete\n");
+    xhci_log("Device setup complete\n\n");
 
     auto endpoint = device->endpoints[0];
     auto& transfer_ring = endpoint->transfer_ring;
