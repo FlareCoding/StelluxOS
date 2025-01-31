@@ -535,10 +535,26 @@ void xhci_driver_module::_process_events() {
                 break;
             }
 
-            serial::printf("Device packet received!\n");
+            auto endpoint = device->endpoints[0];
+
+            auto data = endpoint->data_buffer;
+            serial::printf("%u %u %u %u %u %u\n", data[0], data[1], data[2], data[3], data[4], data[5]);
+
             // if (device->usb_device_driver) {
             //     device->usb_device_driver->handle_event(transfer_event);
             // }
+
+            auto& transfer_ring = endpoint->transfer_ring;
+
+            xhci_normal_trb_t normal_trb;
+            zeromem(&normal_trb, sizeof(xhci_normal_trb_t));
+            normal_trb.trb_type = XHCI_TRB_TYPE_NORMAL;
+            normal_trb.data_buffer_physical_base = xhci_get_physical_addr(endpoint->data_buffer);
+            normal_trb.trb_transfer_length = endpoint->max_packet_size;
+            normal_trb.ioc = 1;
+
+            transfer_ring->enqueue(reinterpret_cast<xhci_trb_t*>(&normal_trb));
+            m_doorbell_manager->ring_doorbell(device->slot_id, endpoint->endpoint_num);
 
             break;
         }
@@ -753,13 +769,6 @@ void xhci_driver_module::_configure_device_endpoint_input_context(xhci_device* d
 
     // Enable the input control context flags
     input_control_context->add_flags = (1 << endpoint->endpoint_num) | (1 << 0);
-    
-    // QEMU doesn't like when you add the control endpoint to the
-    // `add_flags` after the slot context is in the Addressed state,
-    // but real hardware requires all active endpoints to be specified.
-    // if (!m_qemu_detected) {
-    //     input_control_context->add_flags |= (1 << 1);
-    // }
 
     input_control_context->drop_flags = 0;
     input_control_context->config_value = endpoint->configuration_value;
