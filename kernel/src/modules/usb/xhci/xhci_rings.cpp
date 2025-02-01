@@ -21,7 +21,8 @@ xhci_command_ring::xhci_command_ring(size_t max_trbs) {
 
     // Set the last TRB as a link TRB to point back to the first TRB
     m_trbs[m_max_trb_count - 1].parameter = m_physical_base;
-    m_trbs[m_max_trb_count - 1].control = (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | m_rcs_bit;
+    m_trbs[m_max_trb_count - 1].control =
+        (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_LINK_TRB_TC_BIT | m_rcs_bit;
 }
 
 void xhci_command_ring::enqueue(xhci_trb_t* trb) {
@@ -34,6 +35,11 @@ void xhci_command_ring::enqueue(xhci_trb_t* trb) {
     // Advance and possibly wrap the enqueue pointer if needed.
     // maxTrbCount - 1 accounts for the LINK_TRB.
     if (++m_enqueue_ptr == m_max_trb_count - 1) {
+        // Update the Link TRB to reflect the current,
+        // cycle state including the TC flag.
+        m_trbs[m_max_trb_count - 1].control =
+            (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_LINK_TRB_TC_BIT | m_rcs_bit;
+
         m_enqueue_ptr = 0;
         m_rcs_bit = !m_rcs_bit;
     }
@@ -169,7 +175,7 @@ xhci_transfer_ring::xhci_transfer_ring(size_t max_trbs, uint8_t doorbell_id) {
 
     // Set the last TRB as a link TRB to point back to the first TRB
     m_trbs[m_max_trb_count - 1].parameter = m_physical_base;
-    m_trbs[m_max_trb_count - 1].control = (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | m_rcs_bit;
+    m_trbs[m_max_trb_count - 1].control = (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_LINK_TRB_TC_BIT | m_rcs_bit;
 }
 
 uintptr_t xhci_transfer_ring::get_physical_dequeue_pointer_base() const {
@@ -186,6 +192,10 @@ void xhci_transfer_ring::enqueue(xhci_trb_t* trb) {
     // Advance and possibly wrap the enqueue pointer if needed.
     // maxTrbCount - 1 accounts for the LINK_TRB.
     if (++m_enqueue_ptr == m_max_trb_count - 1) {
+        // Only now update the Link TRB, syncing its cycle bit and setting the TC flag.
+        m_trbs[m_max_trb_count - 1].control =
+            (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_LINK_TRB_TC_BIT | m_rcs_bit;
+
         m_enqueue_ptr = 0;
         m_rcs_bit = !m_rcs_bit;
     }
