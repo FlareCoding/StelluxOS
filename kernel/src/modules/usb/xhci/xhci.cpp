@@ -556,9 +556,9 @@ void xhci_driver_module::_process_events() {
                 break;
             }
 
-            auto endpoint = device->endpoints[0];
+            auto endpoint = device->interfaces[0]->endpoints[0];
 
-            auto data = endpoint->data_buffer;
+            uint8_t* data = endpoint->get_data_buffer();
             uint8_t buttons = data[0];
 
             bool left_button = buttons & 0x01;
@@ -568,22 +568,17 @@ void xhci_driver_module::_process_events() {
             xhci_log("Mouse Report: Buttons[L:%d, R:%d, M:%d]\n",
                 left_button, right_button, middle_button);
 
-            // if (device->usb_device_driver) {
-            //     device->usb_device_driver->handle_event(transfer_event);
-            // }
-
-            auto& transfer_ring = endpoint->transfer_ring;
+            auto transfer_ring = endpoint->get_transfer_ring();
 
             xhci_normal_trb_t normal_trb;
             zeromem(&normal_trb, sizeof(xhci_normal_trb_t));
             normal_trb.trb_type = XHCI_TRB_TYPE_NORMAL;
-            normal_trb.data_buffer_physical_base = xhci_get_physical_addr(endpoint->data_buffer);
+            normal_trb.data_buffer_physical_base = endpoint->get_data_buffer_dma();
             normal_trb.trb_transfer_length = endpoint->max_packet_size;
             normal_trb.ioc = 1;
 
             transfer_ring->enqueue(reinterpret_cast<xhci_trb_t*>(&normal_trb));
-            m_doorbell_manager->ring_doorbell(device->slot_id, endpoint->endpoint_num);
-
+            m_doorbell_manager->ring_doorbell(device->get_slot_id(), endpoint->xhc_endpoint_num);
             break;
         }
         default: break;
@@ -762,10 +757,10 @@ uint8_t xhci_driver_module::_enable_device_slot() {
     return completion_trb->slot_id;
 }
 
-void xhci_driver_module::_configure_device_input_context(xhci_device* device, uint16_t max_packet_size) {
-    xhci_input_control_context32* input_control_context = device->get_input_control_context(m_64byte_context_size);
-    xhci_slot_context32* slot_context = device->get_input_slot_context(m_64byte_context_size);
-    xhci_endpoint_context32* control_ep_context = device->get_input_control_ep_context(m_64byte_context_size);
+void xhci_driver_module::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
+    xhci_input_control_context32* input_control_context = device->get_input_ctrl_ctx();
+    xhci_slot_context32* slot_context = device->get_input_slot_ctx();
+    xhci_endpoint_context32* control_ep_context = device->get_input_ctrl_ep_ctx();
 
     // Enable slot and control endpoint contexts
     input_control_context->add_flags = (1 << 0) | (1 << 1);
@@ -773,8 +768,8 @@ void xhci_driver_module::_configure_device_input_context(xhci_device* device, ui
 
     // Configure the slot context
     slot_context->context_entries = 1;
-    slot_context->speed = device->speed;
-    slot_context->root_hub_port_num = device->port_number;
+    slot_context->speed = device->get_speed();
+    slot_context->root_hub_port_num = device->get_port_id();
     slot_context->route_string = 0;
     slot_context->interrupter_target = 0;
 
@@ -784,41 +779,39 @@ void xhci_driver_module::_configure_device_input_context(xhci_device* device, ui
     control_ep_context->interval = 0;
     control_ep_context->error_count = 3;
     control_ep_context->max_packet_size = max_packet_size;
-    control_ep_context->transfer_ring_dequeue_ptr = device->get_control_ep_transfer_ring()->get_physical_dequeue_pointer_base();
-    control_ep_context->dcs = device->get_control_ep_transfer_ring()->get_cycle_bit();
+    control_ep_context->transfer_ring_dequeue_ptr = device->get_ctrl_ep_transfer_ring()->get_physical_dequeue_pointer_base();
+    control_ep_context->dcs = device->get_ctrl_ep_transfer_ring()->get_cycle_bit();
     control_ep_context->max_esit_payload_lo = 0;
     control_ep_context->max_esit_payload_hi = 0;
     control_ep_context->average_trb_length = 8;
 }
 
-void xhci_driver_module::_configure_device_endpoint_input_context(xhci_device* device, xhci_device_endpoint_descriptor* endpoint) {
-    xhci_input_control_context32* input_control_context = device->get_input_control_context(m_64byte_context_size);
-    xhci_slot_context32* slot_context = device->get_input_slot_context(m_64byte_context_size);
+void xhci_driver_module::_configure_ep_input_context(xhci_device* dev, xhci_endpoint* endpoint) {
+    xhci_input_control_context32* input_control_context = dev->get_input_ctrl_ctx();
+    xhci_slot_context32* slot_context = dev->get_input_slot_ctx();
 
     // Enable the input control context flags
-    input_control_context->add_flags = (1 << endpoint->endpoint_num) | (1 << 0);
-
+    input_control_context->add_flags |= (1 << endpoint->xhc_endpoint_num);
     input_control_context->drop_flags = 0;
-    input_control_context->config_value = endpoint->configuration_value;
     
-    if (endpoint->endpoint_num > slot_context->context_entries) {
-        slot_context->context_entries = endpoint->endpoint_num;
+    if (endpoint->xhc_endpoint_num > slot_context->context_entries) {
+        slot_context->context_entries = endpoint->xhc_endpoint_num;
     }
 
     // Configure the endpoint context
     xhci_endpoint_context32* interrupt_ep_context =
-        device->get_input_ep_context(m_64byte_context_size, endpoint->endpoint_num);
+        dev->get_input_ep_ctx(endpoint->xhc_endpoint_num);
 
     zeromem(interrupt_ep_context, sizeof(xhci_endpoint_context32));
     interrupt_ep_context->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
-    interrupt_ep_context->endpoint_type = endpoint->endpoint_type;
+    interrupt_ep_context->endpoint_type = endpoint->xhc_endpoint_type;
     interrupt_ep_context->max_packet_size = endpoint->max_packet_size;
     interrupt_ep_context->max_esit_payload_lo = endpoint->max_packet_size;
     interrupt_ep_context->error_count = 3;
     interrupt_ep_context->max_burst_size = 0;
     interrupt_ep_context->average_trb_length = endpoint->max_packet_size;
-    interrupt_ep_context->transfer_ring_dequeue_ptr = endpoint->transfer_ring->get_physical_dequeue_pointer_base();
-    interrupt_ep_context->dcs = endpoint->transfer_ring->get_cycle_bit();
+    interrupt_ep_context->transfer_ring_dequeue_ptr = endpoint->get_transfer_ring()->get_physical_dequeue_pointer_base();
+    interrupt_ep_context->dcs = endpoint->get_transfer_ring()->get_cycle_bit();
 
     /*
     +------------------------------+------------------+------------------+----------------------------+-------------------------------+
@@ -832,15 +825,26 @@ void xhci_driver_module::_configure_device_endpoint_input_context(xhci_device* d
     | Isoch                        |       1 - 16     | 125 µs - 4,096 ms| 2^(bInterval - 1) * 125 µs |              0 - 15           |
     +------------------------------+------------------+------------------+----------------------------+-------------------------------+
     */
-    if (device->speed == XHCI_USB_SPEED_HIGH_SPEED || device->speed == XHCI_USB_SPEED_SUPER_SPEED) {
+    if (dev->get_speed() == XHCI_USB_SPEED_HIGH_SPEED || dev->get_speed() == XHCI_USB_SPEED_SUPER_SPEED) {
         interrupt_ep_context->interval = endpoint->interval - 1;
     } else {
         interrupt_ep_context->interval = endpoint->interval;
-        if (endpoint->interval < 3) {
-            interrupt_ep_context->interval = 3;
+
+        if (
+            endpoint->xhc_endpoint_type == XHCI_ENDPOINT_TYPE_INTERRUPT_IN ||
+            endpoint->xhc_endpoint_type == XHCI_ENDPOINT_TYPE_INTERRUPT_OUT ||
+            endpoint->xhc_endpoint_type == XHCI_ENDPOINT_TYPE_ISOCHRONOUS_IN ||
+            endpoint->xhc_endpoint_type == XHCI_ENDPOINT_TYPE_ISOCHRONOUS_OUT
+        ) {
+            if (endpoint->interval < 3) {
+                interrupt_ep_context->interval = 3;
+            } else if (endpoint->interval > 18) {
+                interrupt_ep_context->interval = 18;
+            }
         }
     }
 
+#if 0
     xhci_logv("Slot Context set up for ep_num=%u\n", endpoint->endpoint_num);
     xhci_logv("  context_entries: %u\n", slot_context->context_entries);
     xhci_logv("  speed: %u\n", slot_context->speed);
@@ -869,39 +873,34 @@ void xhci_driver_module::_configure_device_endpoint_input_context(xhci_device* d
     xhci_logv("  dequeue_ptr=0x%llx, dcs=%u\n",
                    (unsigned long long)interrupt_ep_context->transfer_ring_dequeue_ptr,
                    (unsigned)interrupt_ep_context->dcs);
+#endif
 }
 
 void xhci_driver_module::_setup_device(uint8_t port) {
-    xhci_device* device = new xhci_device();
-    device->port_reg_set = port;
-    device->port_number = port + 1;
-    device->speed = _get_port_speed(port);
+    uint8_t port_id = port + 1;
+    uint8_t port_speed = _get_port_speed(port);
 
     // Calculate the initial max packet size based on device speed
-    uint16_t max_packet_size = _get_max_initial_packet_size(device->speed);
+    uint16_t max_packet_size = _get_max_initial_packet_size(port_speed);
 
     xhci_log("Setting up %s device on port %i\n",
-        _usb_speed_to_string(device->speed), device->port_number);
+        _usb_speed_to_string(port_speed), port_id);
 
-    device->slot_id = _enable_device_slot();
-    if (!device->slot_id) {
-        xhci_error("Failed to setup device - failed to enable device slot\n");
-        delete device;
+    uint8_t slot_id = _enable_device_slot();
+    if (!slot_id) {
+        xhci_error("Failed to enable device slot\n");
         return;
     }
 
-    if (!_create_device_context(device->slot_id)) {
-        xhci_error("Failed to setup device - failed to create device context\n");
-        delete device;
+    if (!_create_device_context(slot_id)) {
+        xhci_error("Failed to create device context\n");
         return;
     }
 
-    // Allocate space for a command input context and transfer ring
-    device->allocate_input_context(m_64byte_context_size);
-    device->allocate_control_ep_transfer_ring();
+    xhci_device* device = new xhci_device(port_id, slot_id, port_speed, m_64byte_context_size);
 
-    // Configure the command input context
-    _configure_device_input_context(device, max_packet_size);
+    // Configure the command input context to enable the control endpoint
+    _configure_ctrl_ep_input_context(device, max_packet_size);
 
     // First address device with BSR=1, essentially blocking the SET_ADDRESS request,
     // but still enables the control endpoint which we can use to get the device descriptor.
@@ -918,7 +917,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     }
 
     // Update the device input context
-    _configure_device_input_context(device, device_descriptor->bMaxPacketSize0);
+    _configure_ctrl_ep_input_context(device, device_descriptor->bMaxPacketSize0);
 
     // If the read max device packet size is different
     // from the initially calculated one, update it.
@@ -934,10 +933,8 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     // Send the address device command again with BSR=0 this time
     _address_device(device, false);
 
-    // Copy the output device context into the device's input context
-    device->copy_output_device_context_to_input_device_context(
-        m_64byte_context_size,
-        reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
+    device->sync_input_ctx(
+        reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->get_slot_id()])
     );
 
     // Read the full device descriptor
@@ -1014,18 +1011,12 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     xhci_logv("      bMaxPower           - %i milliamps\n", configuration_descriptor->bMaxPower * 2);
 #endif
 
-    device->copy_output_device_context_to_input_device_context(
-        m_64byte_context_size,
-        reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
+    device->sync_input_ctx(
+        reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->get_slot_id()])
     );
 
     // Set device configuration
     if (!_set_device_configuration(device, configuration_descriptor->bConfigurationValue)) {
-        return;
-    }
-
-    // Set interface
-    if (!_set_interface(device, 0, 0)) {
         return;
     }
 
@@ -1038,24 +1029,8 @@ void xhci_driver_module::_setup_device(uint8_t port) {
 
         switch (header->bDescriptorType) {
             case USB_DESCRIPTOR_INTERFACE: {
-                if (device->primary_interface != 0) {
-                    break;
-                }
-
-                usb_interface_descriptor* iface = reinterpret_cast<usb_interface_descriptor*>(header);
-                if (!device->interface_class) {
-                    device->primary_interface = iface->bInterfaceNumber;
-                    device->interface_class = iface->bInterfaceClass;
-                    device->interface_sub_class = iface->bInterfaceSubClass;
-                    device->interface_protocol = iface->bInterfaceProtocol;
-                }
-
-                xhci_logv("    ------ Device Interface ------\n", device->endpoints.size());
-                xhci_logv("      class             - %i\n", device->interface_class);
-                xhci_logv("      sub-class         - %i\n", device->interface_sub_class);
-                xhci_logv("      protocol          - %i\n", device->interface_protocol);
-                xhci_logv("      bInterfaceNumber  - %i\n", iface->bInterfaceNumber);
-                xhci_logv("      bAlternateSetting - %i\n", iface->bAlternateSetting);
+                usb_interface_descriptor* iface_desc = reinterpret_cast<usb_interface_descriptor*>(header);
+                device->setup_add_interface(iface_desc);
                 break;
             }
             case USB_DESCRIPTOR_HID: {
@@ -1064,26 +1039,14 @@ void xhci_driver_module::_setup_device(uint8_t port) {
                 break;
             }
             case USB_DESCRIPTOR_ENDPOINT: {
-                // Ignore non-hid endpoints for now (just a kludge)
-                if (device->interface_class != 3) {
+                auto& current_interface = device->interfaces.back();
+                if (!current_interface) {
+                    xhci_error("??? Endpoint descriptor discovered before an interface!\n");
                     break;
                 }
 
-                auto device_ep_descriptor = new xhci_device_endpoint_descriptor(
-                    device->slot_id,
-                    configuration_descriptor->bConfigurationValue,
-                    reinterpret_cast<usb_endpoint_descriptor*>(header)
-                );
-                device->endpoints.push_back(device_ep_descriptor);
-
-                xhci_logv("    ------ Endpoint %lli ------\n", device->endpoints.size());
-                xhci_logv("      bLength           - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->header.bLength);
-                xhci_logv("      bDescriptorType   - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->header.bDescriptorType);
-                xhci_logv("      bEndpointAddress  - 0x%x\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->bEndpointAddress);
-                xhci_logv("      bmAttributes      - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->bmAttributes);
-                xhci_logv("      wMaxPacketSize    - %i\n", reinterpret_cast<usb_endpoint_descriptor*>(header)->wMaxPacketSize);
-                xhci_logv("      endpoint number   - %i\n", device_ep_descriptor->endpoint_num);
-                xhci_logv("      intervalValue     - %i\n", device_ep_descriptor->interval);
+                usb_endpoint_descriptor* ep_desc = reinterpret_cast<usb_endpoint_descriptor*>(header);
+                current_interface->setup_add_endpoint(ep_desc);
                 break;
             }
             default: break;
@@ -1092,84 +1055,75 @@ void xhci_driver_module::_setup_device(uint8_t port) {
         index += header->bLength;
     }
 
-    xhci_logv("\n");
+    xhci_input_control_context32* in_ctrl_ctx = device->get_input_ctrl_ctx();
+    in_ctrl_ctx->add_flags = (1 << 0);
+    in_ctrl_ctx->drop_flags = 0;
 
-    // Only continue setting up HID devices for now
-    if (device->interface_class != 3) {
-        serial::printf("\n");
+    for (auto& iface : device->interfaces) {
+        xhci_log("  ---- Interface %u ----\n", iface->descriptor.bInterfaceNumber);
+        xhci_log("  class    : %u\n", iface->descriptor.bInterfaceClass);
+        xhci_log("  subclass : %u\n", iface->descriptor.bInterfaceSubClass);
+        xhci_log("  protocol : %u\n", iface->descriptor.bInterfaceProtocol);
+
+        for (auto& ep : iface->endpoints) {
+            xhci_log("    -- Endpoint %u --\n", ep->xhc_endpoint_num);
+            xhci_log("    type            : %u\n", ep->xhc_endpoint_type);
+            xhci_log("    address         : 0x%x\n", ep->usb_endpoint_addr);
+            xhci_log("    max_packet_size : %u\n", ep->max_packet_size);
+            xhci_log("    interval        : %u\n", ep->interval);
+            xhci_log("    attribs         : %u\n", ep->usb_endpoint_attributes);
+
+            _configure_ep_input_context(device, ep.get());
+        }
+    }
+
+    if (!_configure_endpoint(device)) {
         return;
     }
 
-    // For each of the found endpoints send a configure endpoint command
-    for (size_t i = 0; i < device->endpoints.size(); i++) {
-        device->copy_output_device_context_to_input_device_context(
-            m_64byte_context_size,
-            reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
-        );
-
-        xhci_device_endpoint_descriptor* endpoint = device->endpoints[i];
-        _configure_device_endpoint_input_context(device, endpoint);
-
-        xhci_logv("    ------ Configuring Endpoint %lli ------\n", i + 1);
-        xhci_logv("      endpoint number   - %i\n", endpoint->endpoint_num);
-        xhci_logv("      endpoint type     - %i\n", endpoint->endpoint_type);
-        xhci_logv("      maxPacketSize     - %i\n", endpoint->max_packet_size);
-        xhci_logv("      intervalValue     - %i\n", endpoint->interval);
-
-        if (!_configure_endpoint(device)) {
-            return;
-        }
-
-        xhci_logv("Endpoint configured successfully!\n");
-    }
-
-    // Update device's input context
-    device->copy_output_device_context_to_input_device_context(
-        m_64byte_context_size,
-        reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->slot_id])
+    device->sync_input_ctx(
+        reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->get_slot_id()])
     );
 
-    xhci_logv("Slot ctx slot state   : %s\n", xhci_slot_state_to_string(device->get_input_slot_context(m_64byte_context_size)->slot_state));
-    xhci_logv("Control ep ctx state  : %s\n", xhci_ep_state_to_string(device->get_input_control_ep_context(m_64byte_context_size)->endpoint_state));
-    for (size_t i = 0; i < device->endpoints.size(); i++) {
-        auto ep = device->get_input_ep_context(m_64byte_context_size, device->endpoints[i]->endpoint_num);
-        xhci_logv(
-            "Endpoint%i ctx      : %s\n",
-            device->endpoints[i]->endpoint_num - 2,
-            xhci_ep_state_to_string(ep->endpoint_state)
-        );
-        xhci_logv("  type             : %u\n", ep->endpoint_type);
-        xhci_logv("  max_packet_size  : %u\n", ep->max_packet_size);
-        xhci_logv("  interval         : %u\n", ep->interval);
+    // Set interface
+    if (!_set_interface(device, 0, 0)) {
+        return;
     }
 
-    // Detect if the USB device is an HID device
-    // if (device->interface_class == 3 && device->interface_sub_class == 1) {
-    //     device->usb_device_driver = new xhci_hid_driver(m_doorbell_manager.get(), device);
-    // }
+    xhci_logv("\n");
+
+#if 0
+    xhci_logv("Slot ctx slot state   : %s\n", xhci_slot_state_to_string(device->get_input_slot_ctx()->slot_state));
+    xhci_logv("Control ep ctx state  : %s\n", xhci_ep_state_to_string(device->get_input_ctrl_ep_ctx()->endpoint_state));
+    for (auto& iface : device->interfaces) {
+        for (auto& ep : iface->endpoints) {
+            auto ep_ctx = device->get_input_ep_ctx(ep->xhc_endpoint_num);
+            xhci_logv(
+                "Endpoint%i ctx         : %s\n",
+                ep->xhc_endpoint_num,
+                xhci_ep_state_to_string(ep_ctx->endpoint_state)
+            );
+        }
+    }
+#endif
 
     // Register the device in the device table
-    m_connected_devices[device->slot_id] = device;
-
-    // If the device has a valid driver, start it
-    // if (device->usb_device_driver) {
-    //     device->usb_device_driver->start();
-    // }
+    m_connected_devices[device->get_slot_id()] = device;
 
     xhci_log("Device setup complete\n\n");
 
-    auto endpoint = device->endpoints[0];
-    auto& transfer_ring = endpoint->transfer_ring;
+    auto endpoint = device->interfaces[0]->endpoints[0];
+    auto transfer_ring = endpoint->get_transfer_ring();
 
     xhci_normal_trb_t normal_trb;
     zeromem(&normal_trb, sizeof(xhci_normal_trb_t));
     normal_trb.trb_type = XHCI_TRB_TYPE_NORMAL;
-    normal_trb.data_buffer_physical_base = xhci_get_physical_addr(endpoint->data_buffer);
+    normal_trb.data_buffer_physical_base = endpoint->get_data_buffer_dma();
     normal_trb.trb_transfer_length = endpoint->max_packet_size;
     normal_trb.ioc = 1;
 
     transfer_ring->enqueue(reinterpret_cast<xhci_trb_t*>(&normal_trb));
-    m_doorbell_manager->ring_doorbell(device->slot_id, endpoint->endpoint_num);
+    m_doorbell_manager->ring_doorbell(device->get_slot_id(), endpoint->xhc_endpoint_num);
 }
 
 bool xhci_driver_module::_address_device(xhci_device* device, bool bsr) {
@@ -1177,9 +1131,9 @@ bool xhci_driver_module::_address_device(xhci_device* device, bool bsr) {
     xhci_address_device_command_trb_t address_device_trb;
     zeromem(&address_device_trb, sizeof(xhci_address_device_command_trb_t));
     address_device_trb.trb_type                     = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
-    address_device_trb.input_context_physical_base  = device->get_input_context_physical_base();
+    address_device_trb.input_context_physical_base  = device->get_input_ctx_dma();
     address_device_trb.bsr                          = bsr ? 1 : 0;
-    address_device_trb.slot_id                      = device->slot_id;
+    address_device_trb.slot_id                      = device->get_slot_id();
 
     // Send the Address Device command
     xhci_command_completion_trb_t* completion_trb =
@@ -1197,8 +1151,8 @@ bool xhci_driver_module::_configure_endpoint(xhci_device* device) {
     xhci_configure_endpoint_command_trb_t configure_ep_trb;
     zeromem(&configure_ep_trb, sizeof(xhci_configure_endpoint_command_trb_t));
     configure_ep_trb.trb_type = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
-    configure_ep_trb.input_context_physical_base = device->get_input_context_physical_base();
-    configure_ep_trb.slot_id = device->slot_id;
+    configure_ep_trb.input_context_physical_base = device->get_input_ctx_dma();
+    configure_ep_trb.slot_id = device->get_slot_id();
 
     // Send the Configure Endpoint command
     xhci_command_completion_trb_t* completion_trb =
@@ -1224,8 +1178,8 @@ bool xhci_driver_module::_evaluate_context(xhci_device* device) {
     xhci_evaluate_context_command_trb_t evaluate_context_trb;
     zeromem(&evaluate_context_trb, sizeof(xhci_evaluate_context_command_trb_t));
     evaluate_context_trb.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
-    evaluate_context_trb.input_context_physical_base = device->get_input_context_physical_base();
-    evaluate_context_trb.slot_id = device->slot_id;
+    evaluate_context_trb.input_context_physical_base = device->get_input_ctx_dma();
+    evaluate_context_trb.slot_id = device->get_slot_id();
 
     // Send the Evaluate Context command
     xhci_command_completion_trb_t* completion_trb =
@@ -1247,7 +1201,7 @@ bool xhci_driver_module::_evaluate_context(xhci_device* device) {
 }
 
 bool xhci_driver_module::_send_usb_request_packet(xhci_device* device, xhci_device_request_packet& req, void* output_buffer, uint32_t length) {
-    xhci_transfer_ring* transfer_ring = device->get_control_ep_transfer_ring();
+    xhci_transfer_ring* transfer_ring = device->get_ctrl_ep_transfer_ring();
 
     uint32_t* transfer_status_buffer = reinterpret_cast<uint32_t*>(alloc_xhci_memory(sizeof(uint32_t), 16, 16));
     uint8_t* descriptor_buffer = reinterpret_cast<uint8_t*>(alloc_xhci_memory(256, 256, 256));
@@ -1344,7 +1298,7 @@ bool xhci_driver_module::_send_usb_request_packet(xhci_device* device, xhci_devi
 
 bool xhci_driver_module::_send_usb_no_data_request_packet(xhci_device* dev, xhci_device_request_packet& req) {
     // 1) Get the control endpoint's transfer ring
-    xhci_transfer_ring* transfer_ring = dev->get_control_ep_transfer_ring();
+    xhci_transfer_ring* transfer_ring = dev->get_ctrl_ep_transfer_ring();
     if (!transfer_ring) {
         xhci_error("No control transfer ring allocated.\n");
         return false;

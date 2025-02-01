@@ -1,72 +1,49 @@
 #ifndef XHCI_DEVICE_H
 #define XHCI_DEVICE_H
-
-#include "xhci_device_ctx.h"
-
-class xhci_device_endpoint_descriptor {
-public:
-    xhci_device_endpoint_descriptor() = default;
-    xhci_device_endpoint_descriptor(
-        uint8_t slot_id,
-        uint8_t config_value,
-        usb_endpoint_descriptor* desc
-    );
-    ~xhci_device_endpoint_descriptor();
-
-    uint8_t             slot_id;
-    uint8_t             configuration_value;
-    uint8_t             endpoint_num;
-    uint8_t             endpoint_type;
-    uint16_t            max_packet_size;
-    uint8_t             interval;
-    uint8_t*            data_buffer;
-
-    kstl::shared_ptr<xhci_transfer_ring>  transfer_ring;
-};
+#include "xhci_usb_interface.h"
 
 class xhci_device {
 public:
-    xhci_device() = default;
+    // port is a 1-based port ID
+    xhci_device(uint8_t port, uint8_t slot, uint8_t speed, bool use_64byte_ctx);
     ~xhci_device() = default;
 
-    uint8_t port_reg_set;   // Port index of the port register sets (0-based)
-    uint8_t port_number;    // Port number (1-based)
-    uint8_t speed;          // Speed of the port to which device is connected
-    uint8_t slot_id;        // Slot index into device context base address array
+    __force_inline__ uint8_t get_port_id() const { return m_port_id; }
+    __force_inline__ uint8_t get_port_regset_id() const { return m_port_id - 1; }
+    __force_inline__ uint8_t get_slot_id() const { return m_slot_id; }
+    __force_inline__ uint8_t get_speed() const { return m_speed; }
 
-    // Primary configuration interface
-    uint8_t primary_interface;
-
-    // Device type identification fields
-    uint8_t interface_class;
-    uint8_t interface_sub_class;
-    uint8_t interface_protocol;
+    __force_inline__ uintptr_t get_input_ctx_dma() const { return m_input_ctx_dma_addr; }
     
-    // Device-specific endpoints specified in the configuration/endpoint descriptors
-    kstl::vector<xhci_device_endpoint_descriptor*> endpoints;
-    
-    // Driver responsible for handling this device
-    // iusb_device_driver* usb_device_driver = nullptr;
-
-    void allocate_input_context(bool use64byte_contexts);
-    uint64_t get_input_context_physical_base();
-
-    void allocate_control_ep_transfer_ring();
-
-    __force_inline__ xhci_transfer_ring* get_control_ep_transfer_ring() { 
-        return m_control_endpoint_transfer_ring.get();
+    __force_inline__ xhci_transfer_ring* get_ctrl_ep_transfer_ring() { 
+        return m_ctrl_ep_ring.get();
     }
 
-    xhci_input_control_context32* get_input_control_context(bool use_64byte_contexts);
-    xhci_slot_context32* get_input_slot_context(bool use_64byte_contexts);
-    xhci_endpoint_context32* get_input_control_ep_context(bool use_64byte_contexts);
-    xhci_endpoint_context32* get_input_ep_context(bool use_64byte_contexts, uint8_t endpoint_id);
+    xhci_input_control_context32*   get_input_ctrl_ctx();
+    xhci_slot_context32*            get_input_slot_ctx();
+    xhci_endpoint_context32*        get_input_ctrl_ep_ctx();
+    xhci_endpoint_context32*        get_input_ep_ctx(uint8_t endpoint_num);
 
-    void copy_output_device_context_to_input_device_context(bool use_64byte_contexts, void* output_device_context);
+    // Copies data from the output device context into the input context
+    void sync_input_ctx(void* out_ctx);
+
+    void setup_add_interface(const usb_interface_descriptor* desc);
+
+    kstl::vector<kstl::shared_ptr<xhci_usb_interface>> interfaces;
 
 private:
-    void* m_input_context = nullptr;
-    kstl::shared_ptr<xhci_transfer_ring> m_control_endpoint_transfer_ring;
+    const uint8_t m_port_id;    // 1-based port ID
+    const uint8_t m_slot_id;    // slot index in the xhci DCBAA
+    const uint8_t m_speed;      // port speed
+    const bool    m_use64byte_ctx;
+
+    void*         m_input_ctx;
+    uintptr_t     m_input_ctx_dma_addr;
+    kstl::shared_ptr<xhci_transfer_ring> m_ctrl_ep_ring;
+
+private:
+    void _alloc_input_ctx();
+    void _alloc_ctrl_ep_ring();
 };
 
 #endif // XHCI_DEVICE_H

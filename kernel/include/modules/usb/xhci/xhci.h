@@ -180,9 +180,9 @@ private:
     // Reset a 0-indexed port number
     bool _reset_port(uint8_t port_num);
     uint8_t _enable_device_slot();
-    void _configure_device_input_context(xhci_device* dev, uint16_t max_packet_size);
-
-    void _configure_device_endpoint_input_context(xhci_device* dev, xhci_device_endpoint_descriptor* endpoint);
+    
+    void _configure_ctrl_ep_input_context(xhci_device* dev, uint16_t max_packet_size);
+    void _configure_ep_input_context(xhci_device* dev, xhci_endpoint* endpoint);
 
     void _setup_device(uint8_t port);
     bool _address_device(xhci_device* dev, bool bsr);
