@@ -132,6 +132,8 @@ public:
 
     void log_usbsts();
 
+    void ring_doorbell(uint8_t slot, uint8_t ep);
+
     __PRIVILEGED_CODE
     static irqreturn_t xhci_irq_handler(void*, xhci_driver_module* driver);
 

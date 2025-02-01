@@ -4,6 +4,8 @@
 #include <dynpriv/dynpriv.h>
 #include <time/time.h>
 
+#include <modules/usb/xhci/xhci_usb_hid_mouse_driver.h>
+
 #ifdef ARCH_X86_64
 #include <arch/x86/cpuid.h>
 #define DETECT_QEMU() arch::x86::cpuid_is_running_under_qemu()
@@ -158,6 +160,10 @@ void xhci_driver_module::log_usbsts() {
     if (status & XHCI_USBSTS_CNR) xhci_log("    Controller Not Ready\n");
     if (status & XHCI_USBSTS_HCE) xhci_log("    Host Controller Error\n");
     xhci_log("\n");
+}
+
+void xhci_driver_module::ring_doorbell(uint8_t slot, uint8_t ep) {
+    m_doorbell_manager->ring_doorbell(slot, ep);
 }
 
 __PRIVILEGED_CODE
@@ -556,29 +562,10 @@ void xhci_driver_module::_process_events() {
                 break;
             }
 
-            auto endpoint = device->interfaces[0]->endpoints[0];
-
-            uint8_t* data = endpoint->get_data_buffer();
-            uint8_t buttons = data[0];
-
-            bool left_button = buttons & 0x01;
-            bool right_button = buttons & 0x02;
-            bool middle_button = buttons & 0x04;
-
-            xhci_log("Mouse Report: Buttons[L:%d, R:%d, M:%d]\n",
-                left_button, right_button, middle_button);
-
-            auto transfer_ring = endpoint->get_transfer_ring();
-
-            xhci_normal_trb_t normal_trb;
-            zeromem(&normal_trb, sizeof(xhci_normal_trb_t));
-            normal_trb.trb_type = XHCI_TRB_TYPE_NORMAL;
-            normal_trb.data_buffer_physical_base = endpoint->get_data_buffer_dma();
-            normal_trb.trb_transfer_length = endpoint->max_packet_size;
-            normal_trb.ioc = 1;
-
-            transfer_ring->enqueue(reinterpret_cast<xhci_trb_t*>(&normal_trb));
-            m_doorbell_manager->ring_doorbell(device->get_slot_id(), endpoint->xhc_endpoint_num);
+            auto& primary_interface = device->interfaces[0];
+            if (primary_interface->driver) {
+                primary_interface->driver->on_event(this, device);
+            }
             break;
         }
         default: break;
@@ -1060,20 +1047,34 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     in_ctrl_ctx->drop_flags = 0;
 
     for (auto& iface : device->interfaces) {
-        xhci_log("  ---- Interface %u ----\n", iface->descriptor.bInterfaceNumber);
-        xhci_log("  class    : %u\n", iface->descriptor.bInterfaceClass);
-        xhci_log("  subclass : %u\n", iface->descriptor.bInterfaceSubClass);
-        xhci_log("  protocol : %u\n", iface->descriptor.bInterfaceProtocol);
+        xhci_logv("  ---- Interface %u ----\n", iface->descriptor.bInterfaceNumber);
+        xhci_logv("  class    : %u\n", iface->descriptor.bInterfaceClass);
+        xhci_logv("  subclass : %u\n", iface->descriptor.bInterfaceSubClass);
+        xhci_logv("  protocol : %u\n", iface->descriptor.bInterfaceProtocol);
 
         for (auto& ep : iface->endpoints) {
-            xhci_log("    -- Endpoint %u --\n", ep->xhc_endpoint_num);
-            xhci_log("    type            : %u\n", ep->xhc_endpoint_type);
-            xhci_log("    address         : 0x%x\n", ep->usb_endpoint_addr);
-            xhci_log("    max_packet_size : %u\n", ep->max_packet_size);
-            xhci_log("    interval        : %u\n", ep->interval);
-            xhci_log("    attribs         : %u\n", ep->usb_endpoint_attributes);
+            xhci_logv("    -- Endpoint %u --\n", ep->xhc_endpoint_num);
+            xhci_logv("    type            : %u\n", ep->xhc_endpoint_type);
+            xhci_logv("    address         : 0x%x\n", ep->usb_endpoint_addr);
+            xhci_logv("    max_packet_size : %u\n", ep->max_packet_size);
+            xhci_logv("    interval        : %u\n", ep->interval);
+            xhci_logv("    attribs         : %u\n", ep->usb_endpoint_attributes);
 
             _configure_ep_input_context(device, ep.get());
+        }
+
+        // Detect if a potential driver can be found for this interface,
+        // for now only handle HID boot protocol interfaces
+        if (iface->descriptor.bInterfaceClass == 3 && iface->descriptor.bInterfaceSubClass == 1) {
+            // Mouse
+            if (iface->descriptor.bInterfaceProtocol == 2) {
+                iface->driver = new xhci_usb_hid_mouse_driver();
+                iface->driver->attach_interface(iface.get());
+            }
+
+            // Keyboard
+            if (iface->descriptor.bInterfaceProtocol == 1) {
+            }
         }
     }
 
@@ -1112,18 +1113,9 @@ void xhci_driver_module::_setup_device(uint8_t port) {
 
     xhci_log("Device setup complete\n\n");
 
-    auto endpoint = device->interfaces[0]->endpoints[0];
-    auto transfer_ring = endpoint->get_transfer_ring();
-
-    xhci_normal_trb_t normal_trb;
-    zeromem(&normal_trb, sizeof(xhci_normal_trb_t));
-    normal_trb.trb_type = XHCI_TRB_TYPE_NORMAL;
-    normal_trb.data_buffer_physical_base = endpoint->get_data_buffer_dma();
-    normal_trb.trb_transfer_length = endpoint->max_packet_size;
-    normal_trb.ioc = 1;
-
-    transfer_ring->enqueue(reinterpret_cast<xhci_trb_t*>(&normal_trb));
-    m_doorbell_manager->ring_doorbell(device->get_slot_id(), endpoint->xhc_endpoint_num);
+    if (device->interfaces[0]->driver) {
+        device->interfaces[0]->driver->on_startup(this, device);
+    }
 }
 
 bool xhci_driver_module::_address_device(xhci_device* device, bool bsr) {
