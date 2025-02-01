@@ -1223,6 +1223,8 @@ Controller during status update if the associated error condition is detected.
 // Helper macro to easily construct TRB command objects
 #define XHCI_CONSTRUCT_CMD_TRB(type) xhci_trb_t { .parameter = 0, .status = 0, .control = type << XHCI_TRB_TYPE_SHIFT }
 
+#define XHCI_LINK_TRB_TC_BIT (1 << 1)
+
 /*
 // xHci Spec Section 7.1.1 USB Legacy Support Capability (USBLEGSUP) (page 519)
 */
