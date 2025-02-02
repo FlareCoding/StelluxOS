@@ -5,6 +5,7 @@
 #include <time/time.h>
 
 #include <modules/usb/xhci/xhci_usb_hid_mouse_driver.h>
+#include <modules/usb/hid/hid_report_parser.h>
 
 #ifdef ARCH_X86_64
 #include <arch/x86/cpuid.h>
@@ -1022,15 +1023,41 @@ void xhci_driver_module::_setup_device(uint8_t port) {
             }
             case USB_DESCRIPTOR_HID: {
                 // Process HID Descriptor
-                // ...
+                usb_hid_descriptor* hid_desc = reinterpret_cast<usb_hid_descriptor*>(header);
+
+                // Process subordinate descriptors
+                for (uint8_t i = 0; i < hid_desc->bNumDescriptors; i++) {
+
+                    // Check if this subordinate descriptor is the HID Report Descriptor
+                    if (hid_desc->desc[i].bDescriptorType == USB_DESCRIPTOR_HID_REPORT) {
+                        if (device->interfaces.empty()) {
+                            xhci_error("??? HID descriptor discovered before an interface!\n");
+                            break;
+                        }
+                        auto& current_interface = device->interfaces.back();
+
+                        current_interface->additional_data_length = hid_desc->desc[i].wDescriptorLength;
+
+                        // Allocate a buffer to hold the HID report descriptor.
+                        current_interface->additional_data = new uint8_t[current_interface->additional_data_length];
+                        
+                        int8_t interface_number = device->interfaces.back()->descriptor.bInterfaceNumber;
+                            
+                        // Retrieve the HID report descriptor.
+                        if (!_get_hid_report_descriptor(device, interface_number, 0, current_interface->additional_data, current_interface->additional_data_length)) {
+                            delete[] current_interface->additional_data;
+                            current_interface->additional_data_length = 0;
+                        }
+                    }
+                }
                 break;
             }
             case USB_DESCRIPTOR_ENDPOINT: {
-                auto& current_interface = device->interfaces.back();
-                if (!current_interface) {
+                if (device->interfaces.empty()) {
                     xhci_error("??? Endpoint descriptor discovered before an interface!\n");
                     break;
                 }
+                auto& current_interface = device->interfaces.back();
 
                 usb_endpoint_descriptor* ep_desc = reinterpret_cast<usb_endpoint_descriptor*>(header);
                 current_interface->setup_add_endpoint(ep_desc);
@@ -1433,6 +1460,27 @@ bool xhci_driver_module::_get_configuration_descriptor(xhci_device* device, usb_
     }
 
     return true;
+}
+
+bool xhci_driver_module::_get_hid_report_descriptor(
+    xhci_device* device,
+    uint8_t interface_number,
+    uint8_t descriptor_index,
+    uint8_t* report_buffer,
+    uint16_t report_length
+) {
+    xhci_device_request_packet req;
+    zeromem(&req, sizeof(req));
+    
+    // bmRequestType: 0x81 = Device-to-Host, Standard, Interface
+    req.bRequestType = 0x81;
+    req.bRequest     = 0x06;  // GET_DESCRIPTOR
+    // wValue: high byte is the descriptor type (HID Report), low byte is descriptor index (0 for now)
+    req.wValue       = (USB_DESCRIPTOR_HID_REPORT << 8) | descriptor_index;
+    req.wIndex       = interface_number; // Interface number for the HID device
+    req.wLength      = report_length;
+    
+    return _send_usb_request_packet(device, req, report_buffer, report_length);
 }
 
 bool xhci_driver_module::_set_device_configuration(xhci_device* device, uint16_t configuration_value) {

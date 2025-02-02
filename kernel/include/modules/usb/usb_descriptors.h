@@ -22,8 +22,8 @@
 
 // HID Class-Specific Descriptor Types
 #define USB_DESCRIPTOR_HID                             0x21
-#define USB_DESCRIPTOR_REPORT                          0x22
-#define USB_DESCRIPTOR_PHYSICAL                        0x23
+#define USB_DESCRIPTOR_HID_REPORT                      0x22
+#define USB_DESCRIPTOR_HID_PHYSICAL_REPORT             0x23
 
 // Hub Descriptor Types
 #define USB_DESCRIPTOR_HUB                             0x29
@@ -95,6 +95,18 @@ struct usb_interface_descriptor {
     uint8_t iInterface;
 } __attribute__((packed));
 static_assert(sizeof(usb_interface_descriptor) == 9);
+
+struct usb_hid_descriptor {
+    usb_descriptor_header header;
+    uint16_t bcdHID;
+    uint8_t  bCountryCode;
+    uint8_t  bNumDescriptors;
+    struct {
+        uint8_t  bDescriptorType;
+        uint16_t wDescriptorLength;
+    } __attribute__((packed)) desc[1];
+} __attribute__((packed));
+static_assert(sizeof(usb_hid_descriptor) == 9);
 
 struct usb_endpoint_descriptor {
     usb_descriptor_header header;
