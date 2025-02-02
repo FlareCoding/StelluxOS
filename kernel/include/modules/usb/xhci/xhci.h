@@ -198,6 +198,7 @@ private:
     bool _get_string_language_descriptor(xhci_device* dev, usb_string_language_descriptor* desc);
     bool _get_string_descriptor(xhci_device* dev, uint8_t descriptor_index, uint8_t langid, usb_string_descriptor* desc);
     bool _get_configuration_descriptor(xhci_device* dev, usb_configuration_descriptor* desc);
+    bool _get_hid_report_descriptor(xhci_device* device, uint8_t interface_number, uint8_t descriptor_index, uint8_t* report_buffer, uint16_t report_length);
 
     bool _set_device_configuration(xhci_device* dev, uint16_t configuration_value);
     bool _set_protocol(xhci_device* dev, uint8_t interface, uint8_t protocol);

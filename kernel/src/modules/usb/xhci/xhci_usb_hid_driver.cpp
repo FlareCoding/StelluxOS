@@ -2,6 +2,8 @@
 #include <time/time.h>
 
 void xhci_usb_hid_driver::on_startup(xhci_hcd* hcd, xhci_device* dev) {
+    this->on_device_init();
+
     _request_hid_report(hcd, dev);
 }
 
@@ -10,7 +12,7 @@ void xhci_usb_hid_driver::on_event(xhci_hcd* hcd, xhci_device* dev) {
     uint8_t* data = endpoint->get_data_buffer();
 
     // Delegate specific data handling logic to child class drivers
-    this->on_event(data);
+    this->on_device_event(data);
 
     _request_hid_report(hcd, dev);
 }

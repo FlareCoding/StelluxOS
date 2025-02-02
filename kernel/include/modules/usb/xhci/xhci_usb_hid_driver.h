@@ -7,7 +7,8 @@ public:
     xhci_usb_hid_driver() = default;
     ~xhci_usb_hid_driver() = default;
 
-    virtual void on_event(uint8_t* data) = 0;
+    virtual void on_device_init() = 0;
+    virtual void on_device_event(uint8_t* data) = 0;
 
     void on_startup(xhci_hcd* hcd, xhci_device* dev) override;
     void on_event(xhci_hcd* hcd, xhci_device* dev) override;

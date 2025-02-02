@@ -16,6 +16,10 @@ public:
     kstl::vector<kstl::shared_ptr<xhci_endpoint>>   endpoints;
     xhci_usb_device_driver*                         driver;
 
+    // HID report data for HID devices
+    uint8_t* additional_data = nullptr;
+    size_t   additional_data_length = 0;
+
 private:
     uint8_t m_dev_slot_id;
 };
