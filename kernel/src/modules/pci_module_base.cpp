@@ -1,6 +1,7 @@
 #include <modules/pci_module_base.h>
 #include <interrupts/irq.h>
 #include <dynpriv/dynpriv.h>
+#include <serial/serial.h>
 
 namespace modules {
 pci_module_base::pci_module_base(
@@ -31,10 +32,17 @@ void pci_module_base::attach_device(
 
             // Route the legacy IRQ line to the allocated IRQ vector
             route_legacy_irq(legacy_irq_line, m_irq_vector, 0, IRQ_LEVEL_TRIGGERED);
+        } else if (dev->has_capability(pci::capability_id::msi_x)) {
+            // Allocate a free IRQ vector
+            m_irq_vector = find_free_irq_vector();
+
+            // Setup MSI-X
+            dev->setup_msix(0, m_irq_vector);
         } else if (dev->has_capability(pci::capability_id::msi)) {
             // Allocate a free IRQ vector
             m_irq_vector = find_free_irq_vector();
 
+            // Setup MSI
             dev->setup_msi(0, m_irq_vector);
         }
     });
