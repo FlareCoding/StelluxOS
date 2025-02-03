@@ -5,25 +5,30 @@ extern uint64_t g_mouse_cursor_pos_x;
 extern uint64_t g_mouse_cursor_pos_y;
 
 void draw_cursor(kstl::shared_ptr<canvas>& cvs, int x, int y, uint32_t color) {
-    // Define an 8x8 arrow shape. The tip is at the top-left.
-    // You can experiment with this pattern to get the look you like.
-    static const char* cursor_shape[8] = {
-        "X       ",
-        "XX      ",
-        "X X     ",
-        "X  X    ",
-        "X   X   ",
-        "X    X  ",
-        "X     X ",
-        "XXXXXXXX"
+    static const char* cursor_shape[16] = {
+        "X                 ",
+        "XX                ",
+        "X.X               ",
+        "X..X              ",
+        "X...X             ",
+        "X....X            ",
+        "X.....X           ",
+        "X......X          ",
+        "X.......X         ",
+        "X........X        ",
+        "X...XXXXXXX       ",
+        "X..XX             ",
+        "X.X               ",
+        "XX                ",
+        "X                 ",
+        "                  "
     };
 
-    const int height = 8;
-    const int width = 8;
+    const int height = 16;
+    const int width = 16;
     for (int row = 0; row < height; ++row) {
         for (int col = 0; col < width; ++col) {
             if (cursor_shape[row][col] == 'X') {
-                // Draw a single pixel (1x1 rectangle) at the corresponding offset.
                 cvs->fill_rect(x + col, y + row, 1, 1, color);
             }
         }
