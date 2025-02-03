@@ -120,6 +120,7 @@ bool xhci_driver_module::start() {
                 }
             } else {
                 xhci_log("Device disconnected from port %i\n", port);
+                _reset_port(port_reg_idx);
             }
         }
 
@@ -673,65 +674,73 @@ bool xhci_driver_module::_reset_port(uint8_t port_num) {
 
     bool is_usb3_port = _is_usb3_port(port_num);
 
+    // Power on the port if necessary
     if (portsc.pp == 0) {
         portsc.pp = 1;
         regset.write_portsc_reg(portsc);
-        msleep(20);
+        msleep(20); // Wait for power stabilization
         regset.read_portsc_reg(portsc);
 
         if (portsc.pp == 0) {
-            xhci_warn("Port %i: Bad Reset\n", port_num);
+            xhci_warn("Port %i: Failed to power on port\n", port_num);
             return false;
         }
     }
 
-    // Clear connect status change bit by writing a '1' to it
-    portsc.csc = 1;
-    portsc.pec = 1;
+    // Clear any lingering status change bits before initiating the reset
+    portsc.csc = 1; // Clear connect status change
+    portsc.pec = 1; // Clear port enable/disable change
+    portsc.prc = 1; // Clear port reset change
     regset.write_portsc_reg(portsc);
 
-    // Write to the appropriate reset bit
+    // Initiate the port reset
     if (is_usb3_port) {
-        portsc.wpr = 1;
+        portsc.wpr = 1; // Warm reset for USB 3.0
     } else {
-        portsc.pr = 1;
+        portsc.pr = 1; // Standard port reset for USB 2.0
     }
-    portsc.ped = 0;
     regset.write_portsc_reg(portsc);
 
+    // Wait for the reset to complete
     int timeout = 100;
-    while (timeout) {
+    while (timeout > 0) {
         regset.read_portsc_reg(portsc);
 
-        // Detect port reset change bit to be set
-        if (is_usb3_port && portsc.wrc) {
-            break;
-        } else if (!is_usb3_port && portsc.prc) {
-            break;
+        if ((is_usb3_port && portsc.wrc) || (!is_usb3_port && portsc.prc)) {
+            break; // Reset has completed
         }
 
         timeout--;
         msleep(1);
     }
 
-    if (timeout > 0) {
-        msleep(3);
-        regset.read_portsc_reg(portsc);
-
-        // Check for the port enable/disable bit
-        // to be set and indicate 'enabled' state.
-        if (portsc.ped) {
-            // Clear connect status change bit by writing a '1' to it
-            portsc.ped = 0;
-            portsc.csc = 1;
-            portsc.pec = 1;
-            portsc.prc = 1;
-            regset.write_portsc_reg(portsc);
-            return true;
-        }
+    if (timeout == 0) {
+        xhci_warn("Port %i: Port reset timed out\n", port_num);
+        return false;
     }
 
-    return false; 
+    msleep(3); // Give the hardware time to settle
+
+    // Clear the reset completion and status change bits
+    portsc.prc = 1; // Clear port reset change
+    portsc.wrc = 1; // Clear warm reset change (USB 3.0)
+    portsc.csc = 1; // Clear connect status change
+    portsc.pec = 1; // Clear port enable/disable change
+    portsc.ped = 0; // Don't clear the PED bit
+    regset.write_portsc_reg(portsc);
+
+    msleep(3);
+
+    // Re-read the register to check if the port is enabled
+    regset.read_portsc_reg(portsc);
+
+    // This case could happen when the port has been reset after
+    // a device disconnect event, and no device has connected since.
+    if (portsc.ped == 0) {
+        return false;
+    }
+
+    return true;
 }
 
 uint8_t xhci_driver_module::_enable_device_slot() {
