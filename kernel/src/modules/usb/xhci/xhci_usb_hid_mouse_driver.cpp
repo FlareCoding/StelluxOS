@@ -4,60 +4,87 @@
 uint64_t g_mouse_cursor_pos_x = 100;
 uint64_t g_mouse_cursor_pos_y = 100;
 
-// Reads field data (of size field_size bytes, where field_size can be 1, 2, or 4)
-// and returns a sign‑extended int32_t value (assuming little‑endian data).
-int32_t parse_signed_field(const uint8_t* data, uint8_t field_size) {
+static int32_t parse_signed_field(const uint8_t* data, uint16_t bit_offset, uint16_t bit_size) {
     int32_t value = 0;
-    // Copy the available bytes into value.
-    memcpy(&value, data, field_size);
-    // If the field is less than 4 bytes, sign‑extend it.
-    if (field_size < 4) {
-        // Calculate how many bits to shift.
-        int shift = (4 - field_size) * 8;
-        // Left shift then arithmetic right shift to sign-extend.
-        value = (value << shift) >> shift;
-    }
+
+    // Read the necessary bytes and handle sign extension if needed
+    memcpy(&value, data + (bit_offset / 8), (bit_size + 7) / 8);  // Round bit size up to the nearest byte
+
+    // Handle sign extension if necessary
+    int32_t shift = 32 - bit_size;
+    value = (value << shift) >> shift;  // Sign extend based on bit size
+
     return value;
 }
 
 void xhci_usb_hid_mouse_driver::on_device_init() {
-    _construct_default_report_layout();
+    // Default values
+    m_input_layout.buttons_offset   = 0;
+    m_input_layout.x_axis_offset    = 1;
+    m_input_layout.y_axis_offset    = 2;
+    m_input_layout.buttons_size     = 1;
+    m_input_layout.x_axis_size      = 1;
+    m_input_layout.y_axis_size      = 1;
 
-    if (!m_interface->additional_data) {
+    kstl::vector<hid::hid_report_item> hid_report_items;
+    bool success = hid::hid_report_parser::parse_descriptor(
+        m_interface->additional_data,
+        m_interface->additional_data_length,
+        hid_report_items
+    );
+
+    if (!success) {
+        serial::printf("[Mouse Driver] Failed to parse HID report descriptor.\n");
         return;
     }
 
-    kstl::vector<hid_report_item> hid_items;
-    if (!hid_report_parser::parse_descriptor(
-        m_interface->additional_data, m_interface->additional_data_length, hid_items
-    )) {
-        return;
-    }
+    hid::hid_report_layout layout(hid_report_items);
 
-    if (!parse_mouse_report_layout(hid_items, m_report_layout)) {
-        return;
-    }
+    // Initialize button, X-axis, and Y-axis fields using the helper function
+    _initialize_input_field(layout, static_cast<uint16_t>(hid::usage_page::buttons), 1, 
+                           m_input_layout.buttons_offset, m_input_layout.buttons_size, "Buttons");
 
-    // Store the computed layout in your interface structure for later use.
-    serial::printf("Parsed mouse layout: buttons at %u (%u bytes), dx at %u (%u bytes), dy at %u (%u bytes)\n",
-        m_report_layout.buttons_offset, m_report_layout.buttons_size,
-        m_report_layout.dx_offset, m_report_layout.dx_size,
-        m_report_layout.dy_offset, m_report_layout.dy_size);
+    _initialize_input_field(layout, static_cast<uint16_t>(hid::usage_page::generic_desktop), 
+                           static_cast<uint16_t>(hid::generic_desktop_usage::x_axis), 
+                           m_input_layout.x_axis_offset, m_input_layout.x_axis_size, "X-axis");
+
+    _initialize_input_field(layout, static_cast<uint16_t>(hid::usage_page::generic_desktop), 
+                           static_cast<uint16_t>(hid::generic_desktop_usage::y_axis), 
+                           m_input_layout.y_axis_offset, m_input_layout.y_axis_size, "Y-axis");
 }
 
 void xhci_usb_hid_mouse_driver::on_device_event(uint8_t* data) {
-    int32_t dx = parse_signed_field(data + m_report_layout.dx_offset, m_report_layout.dx_size);
-    int32_t dy = parse_signed_field(data + m_report_layout.dy_offset, m_report_layout.dy_size);
+    int32_t dx = parse_signed_field(data, m_input_layout.x_axis_offset, m_input_layout.x_axis_size);
+    int32_t dy = parse_signed_field(data, m_input_layout.y_axis_offset, m_input_layout.y_axis_size);
 
     g_mouse_cursor_pos_x += dx;
     g_mouse_cursor_pos_y += dy;
 }
 
-void xhci_usb_hid_mouse_driver::_construct_default_report_layout() {
-    m_report_layout.buttons_offset  = 0;
-    m_report_layout.dx_offset       = 1;
-    m_report_layout.dy_offset       = 2;
-    m_report_layout.buttons_size    = 1;
-    m_report_layout.dx_size         = 1;
-    m_report_layout.dy_size         = 1;
+void xhci_usb_hid_mouse_driver::_initialize_input_field(
+    hid::hid_report_layout& layout, 
+    uint16_t usage_page, uint16_t usage, 
+    uint16_t& offset, uint16_t& size, 
+    const char* field_name
+) {
+    const hid::field_info* field = layout.find_field_by_usage(usage_page, usage);
+    if (field) {
+        offset = field->bit_offset;
+        
+        // Special case for usage pages with multiple fields (like buttons)
+        if (usage_page == static_cast<uint16_t>(hid::usage_page::buttons)) {
+            size = layout.get_total_bits_for_usage_page(usage_page);
+        } else {
+            size = field->bit_size;
+        }
+
+#if 0
+        serial::printf(
+            "[Mouse Driver] %s field detected at offset=%u, size=%u bits.\n", 
+            field_name, offset, size
+        );
+#else
+        __unused field_name;
+#endif
+    }
 }
