@@ -39,13 +39,24 @@ QEMU_FLAGS       := \
     -smp $(QEMU_CORES) \
     -drive if=pflash,format=raw,readonly=on,file="$(OVMF_CODE)" \
     -drive if=pflash,format=raw,file="$(OVMF_VARS)" \
-    -boot order=c \
-	-device qemu-xhci,id=xhci \
-	-trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
+    -boot order=c
+# -device qemu-xhci,id=xhci \
+# -trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
 
 # Sample connected USB 2.0 devices
-QEMU_FLAGS += -device usb-kbd,id=usbkbd
-QEMU_FLAGS += -device usb-mouse,id=usbmouse
+# QEMU_FLAGS += -device usb-kbd,id=usbkbd
+# QEMU_FLAGS += -device usb-mouse,id=usbmouse
+
+# Adding two xHCI controllers
+QEMU_FLAGS += -device qemu-xhci,id=xhci1
+QEMU_FLAGS += -device qemu-xhci,id=xhci2
+
+# Connect USB keyboard to the first controller (xhci1)
+QEMU_FLAGS += -device usb-kbd,id=usbkbd,bus=xhci1.0
+
+# Connect USB mouse to the second controller (xhci2)
+QEMU_FLAGS += -device usb-mouse,id=usbmouse,bus=xhci2.0
+
 
 # Unit test execution duration timeout (all tests)
 UNIT_TESTS_RUN_TIMEOUT := 5m
