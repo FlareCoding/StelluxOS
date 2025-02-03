@@ -1123,9 +1123,9 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     );
 
     // Set interface
-    if (!_set_interface(device, 0, 0)) {
-        return;
-    }
+    // if (!_set_interface(device, 0, 0)) {
+    //     return;
+    // }
 
     xhci_logv("\n");
 
@@ -1227,6 +1227,37 @@ bool xhci_driver_module::_evaluate_context(xhci_device* device) {
 
     return true;
 }
+
+bool xhci_driver_module::_reset_endpoint(xhci_device* device, uint8_t endpoint_number) {
+    xhci_log("Resetting endpoint %u for device on slot %u\n", endpoint_number, device->get_slot_id());
+
+    // Create a Reset Endpoint TRB
+    xhci_reset_endpoint_command_trb_t reset_ep_trb;
+    zeromem(&reset_ep_trb, sizeof(reset_ep_trb));
+    reset_ep_trb.trb_type = XHCI_TRB_TYPE_RESET_ENDPOINT_CMD;
+    reset_ep_trb.endpoint_id = endpoint_number;
+    reset_ep_trb.slot_id = device->get_slot_id();
+
+    // Send the Reset Endpoint command
+    xhci_command_completion_trb_t* completion_trb =
+        _send_command(reinterpret_cast<xhci_trb_t*>(&reset_ep_trb), 200);
+
+    if (!completion_trb) {
+        xhci_error("Failed to reset endpoint %u\n", endpoint_number);
+        return false;
+    }
+
+    // Check for successful completion
+    if (completion_trb->completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        xhci_error("Reset Endpoint failed with completion code: %s\n",
+                   trb_completion_code_to_string(completion_trb->completion_code));
+        return false;
+    }
+
+    xhci_log("Endpoint %u reset successfully\n", endpoint_number);
+    return true;
+}
+
 
 bool xhci_driver_module::_send_usb_request_packet(xhci_device* device, xhci_device_request_packet& req, void* output_buffer, uint32_t length) {
     xhci_transfer_ring* transfer_ring = device->get_ctrl_ep_transfer_ring();
@@ -1547,4 +1578,29 @@ bool xhci_driver_module::_set_interface(xhci_device* device, uint8_t interface_n
 
     return true;
 }
+
+bool xhci_driver_module::_clear_stall(xhci_device* device, uint8_t endpoint_number) {
+    xhci_device_request_packet setup_packet;
+    zeromem(&setup_packet, sizeof(xhci_device_request_packet));
+
+    // bmRequestType: Host->Device, Standard, Endpoint
+    setup_packet.bRequestType = 0x02;
+    setup_packet.bRequest = 1;  // CLEAR_FEATURE
+    setup_packet.wValue = 0;    // Feature selector 0 = ENDPOINT_HALT
+    setup_packet.wIndex = endpoint_number;
+    setup_packet.wLength = 0;
+
+    // Give the device time to recover before issuing the CLEAR_FEATURE request
+    msleep(10);
+
+    // Send the no-data control request to clear the endpoint stall
+    if (!_send_usb_no_data_request_packet(device, setup_packet)) {
+        xhci_error("Failed to clear stall on endpoint %u\n", endpoint_number);
+        return false;
+    }
+
+    xhci_logv("Cleared stall on endpoint %u\n", endpoint_number);
+    return true;
+}
+
 } // namespace modules

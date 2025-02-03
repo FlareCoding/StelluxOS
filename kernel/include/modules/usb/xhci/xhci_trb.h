@@ -82,6 +82,21 @@ typedef struct xhci_configure_endpoint_command_request_block {
 } xhci_configure_endpoint_command_trb_t;
 static_assert(sizeof(xhci_configure_endpoint_command_trb_t) == sizeof(uint32_t) * 4);
 
+typedef struct xhci_reset_endpoint_command_request_block {
+    uint64_t input_context_physical_base;
+    uint32_t rsvd0;
+    struct {
+        uint32_t cycle_bit    : 1;
+        uint32_t rsvd1        : 8;
+        uint32_t tsp          : 1;
+        uint32_t trb_type     : 6;
+        uint32_t endpoint_id  : 5;
+        uint32_t rsvd3        : 3;
+        uint32_t slot_id      : 8;
+    };
+} xhci_reset_endpoint_command_trb_t;
+static_assert(sizeof(xhci_reset_endpoint_command_trb_t) == sizeof(uint32_t) * 4);
+
 typedef struct xhci_command_completion_request_block {
     uint64_t command_trb_pointer;
     struct {
