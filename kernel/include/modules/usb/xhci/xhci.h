@@ -190,6 +190,7 @@ private:
     bool _address_device(xhci_device* dev, bool bsr);
     bool _configure_endpoint(xhci_device* dev);
     bool _evaluate_context(xhci_device* dev);
+    bool _reset_endpoint(xhci_device* device, uint8_t endpoint_number);
 
     bool _send_usb_request_packet(xhci_device* dev, xhci_device_request_packet& req, void* output_buffer, uint32_t length);
     bool _send_usb_no_data_request_packet(xhci_device* dev, xhci_device_request_packet& req);
@@ -203,6 +204,8 @@ private:
     bool _set_device_configuration(xhci_device* dev, uint16_t configuration_value);
     bool _set_protocol(xhci_device* dev, uint8_t interface, uint8_t protocol);
     bool _set_interface(xhci_device* device, uint8_t interface_number, uint8_t alternate_setting);
+    
+    bool _clear_stall(xhci_device* device, uint8_t endpoint_number);
 
 private:
     // CAPLENGTH
