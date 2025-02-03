@@ -131,6 +131,18 @@ public:
     __PRIVILEGED_CODE bool setup_msi(uint8_t cpu, uint8_t vector, uint8_t edgetrigger = 1, uint8_t deassert = 1);
 
     /**
+     * @brief Configures and enables MSI-X for this device, routing IRQ to the specified CPU and vector.
+     * @param cpu The destination CPU's APIC ID (in xAPIC mode).
+     * @param vector The IDT vector you want this MSI-X interrupt to trigger.
+     * @param edgetrigger Whether the IRQ is edge-triggered or level-triggered.
+     * @param deassert Deassert value of the IRQ.
+     * @return True if MSI-X configuration was successful, false otherwise.
+     *
+     * @note This requires that the device actually supports MSI-X capability.
+     */
+    __PRIVILEGED_CODE bool setup_msix(uint8_t cpu, uint8_t vector, uint8_t edgetrigger = 1, uint8_t deassert = 1);
+
+    /**
      * @brief Prints debug information about the PCI device.
      * 
      * Outputs the device's information, including its BARs, for diagnostic purposes.
@@ -185,6 +197,14 @@ private:
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE uint16_t _read_command_register();
+
+    /**
+     * @brief Maps the MSI-X vector table or PBA into memory from the appropriate BAR register.
+     * @return Base address of the mapped data structure.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void* _map_msix_table_or_pba(const pci_bar& bar, uint32_t offset, uint32_t size);
 };
 } // namespace pci
 

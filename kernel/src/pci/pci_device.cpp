@@ -1,6 +1,8 @@
 #include <pci/pci_device.h>
 #include <pci/pci_msi.h>
+#include <pci/pci_msi_x.h>
 #include <memory/vmm.h>
+#include <memory/paging.h>
 #include <serial/serial.h>
 
 namespace pci {
@@ -54,6 +56,32 @@ uint16_t pci_device::_read_command_register() {
 __PRIVILEGED_CODE
 void pci_device::_write_command_register(uint16_t value) {
     config::write_word(m_bus, m_device, m_function, PCI_COMMAND_OFFSET, value);
+}
+
+__PRIVILEGED_CODE
+void* pci_device::_map_msix_table_or_pba(const pci_bar& bar, uint32_t offset, uint32_t size) {
+    // Calculate the page-aligned base address and offset within the page
+    uint64_t page_aligned_address = (bar.address + offset) & ~0xFFF;
+    uint32_t page_offset = (bar.address + offset) & 0xFFF;
+
+    // Calculate the size to map, rounding up to cover the entire region
+    uint32_t total_size_to_map = ((page_offset + size + PAGE_SIZE - 1) & ~0xFFF);
+
+    serial::printf("[*] Mapping region: page-aligned address=0x%llx, page offset=0x%x, total size=0x%x\n",
+        page_aligned_address, page_offset, total_size_to_map);
+
+    void* virtual_base = vmm::map_contiguous_physical_pages(
+        page_aligned_address,
+        total_size_to_map / PAGE_SIZE,
+        DEFAULT_UNPRIV_PAGE_FLAGS | PTE_PCD
+    );
+
+    if (!virtual_base) {
+        return nullptr;
+    }
+
+    // Map the pages and return the correct base address
+    return reinterpret_cast<uint8_t*>(virtual_base) + page_offset;
 }
 
 __PRIVILEGED_CODE
@@ -248,6 +276,77 @@ bool pci_device::setup_msi(uint8_t cpu, uint8_t vector, uint8_t edgetrigger, uin
 
     serial::printf("MSI configured for device [%02x:%02x.%u]: vector=0x%x -> CPU=%u, 64bit=%u\n",
         m_bus, m_device, m_function, vector, cpu, is64);
+
+    return true;
+}
+
+__PRIVILEGED_CODE
+bool pci_device::setup_msix(uint8_t cpu, uint8_t vector, uint8_t edgetrigger, uint8_t deassert) {
+    __unused edgetrigger;
+    __unused deassert;
+    
+    const auto* cap = find_capability(capability_id::msi_x);
+    if (!cap) {
+        serial::printf("[*] setup_msix: Device %04x:%04x has no MSI-X capability.\n",
+            m_desc->vendor_id, m_desc->device_id);
+        return false;
+    }
+
+    // Read the MSI-X capability structure
+    pci_msix_capability msix_cap;
+    zeromem(&msix_cap, sizeof(pci_msix_capability));
+    memcpy(&msix_cap, cap->data.data(), sizeof(msix_cap));
+
+    // Disable MSI-X temporarily by clearing the MSI-X enable bit (bit 15)
+    msix_cap.enable_bit = 0;
+    config::write_word(m_bus, m_device, m_function, cap->offset, msix_cap.message_control);
+
+    // Extract BAR number (lower 3 bits) and offset (remaining bits)
+    uint8_t table_bir = msix_cap.table_bir;
+    uint32_t table_offset = msix_cap.table_offset;
+
+    uint8_t pba_bir = msix_cap.pba_bir;
+    uint32_t pba_offset = msix_cap.pba_offset;
+
+    // Make sure the BAR is valid before using it
+    if (table_bir >= m_bars.size() || pba_bir >= m_bars.size()) {
+        serial::printf("[!] Invalid BAR number for table or PBA: Table BIR=%u, PBA BIR=%u\n",
+            table_bir, pba_bir);
+        return false;
+    }
+
+    const pci_bar& table_bar = m_bars[table_bir];
+    const pci_bar& pba_bar = m_bars[pba_bir];
+
+    // Map the MSI-X table and PBA with proper page alignment handling
+    void* table_base = _map_msix_table_or_pba(table_bar, table_offset, table_bar.size);
+    void* pba_base = _map_msix_table_or_pba(pba_bar, pba_offset, pba_bar.size);
+
+    if (!table_base || !pba_base) {
+        serial::printf("[!] Failed to map MSI-X table or PBA.\n");
+        return false;
+    }
+
+    // Build the MSI-X address and data
+    uint64_t msix_address = build_msix_address(cpu);
+    uint16_t msix_data = build_msix_data(vector);
+
+    // Populate the vector table entry
+    msix_table_entry entry;
+    entry.message_address = msix_address;
+    entry.message_data = msix_data;
+    entry.vector_control = 0; // Unmask the vector (bit 0 = 0)
+
+    // Write the entry to the vector table
+    write_msix_vector_entry(table_base, vector, entry);
+
+    // Re-enable MSI-X
+    msix_cap.enable_bit = 1;
+    config::write_word(m_bus, m_device, m_function, cap->offset, msix_cap.message_control);
+    serial::printf("[*] MSI-X enabled for device [%02x:%02x.%u].\n", m_bus, m_device, m_function);
+
+    // Clear any pending interrupts for this vector
+    clear_msix_pending_bit(pba_base, vector);
 
     return true;
 }
