@@ -10,6 +10,8 @@
 
 #define PANIC_IRQ IRQ17
 
+#define RESERVED_IRQ_VECTOR 0xff
+
 EXTERN_C __PRIVILEGED_CODE void asm_exc_handler_div();
 EXTERN_C __PRIVILEGED_CODE void asm_exc_handler_db();
 EXTERN_C __PRIVILEGED_CODE void asm_exc_handler_nmi();
@@ -562,7 +564,7 @@ __PRIVILEGED_CODE
 bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, void* cookie) {
     uint64_t irq_table_index = static_cast<uint64_t>(irqno) - IRQ0;
     irq_desc* desc = &arch::x86::g_irq_handler_table.descriptors[irq_table_index];
-    if (desc->handler) {
+    if (desc->handler && reinterpret_cast<uint64_t>(desc->handler) != RESERVED_IRQ_VECTOR) {
         serial::printf("[WARN] register_irq_handler(): IRQ%i handler already exists!\n", irq_table_index);
         return false;
     }
@@ -572,6 +574,19 @@ bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, v
     desc->cookie  = cookie;
     desc->irqno   = irqno;
 
+    return true;
+}
+
+__PRIVILEGED_CODE
+bool reserve_irq_vector(uint8_t irqno) {
+    uint64_t irq_table_index = static_cast<uint64_t>(irqno) - IRQ0;
+    irq_desc* desc = &arch::x86::g_irq_handler_table.descriptors[irq_table_index];
+    if (desc->handler) {
+        serial::printf("[WARN] reserve_irq_vector(): IRQ%i vector is already taken!\n", irq_table_index);
+        return false;
+    }
+
+    desc->handler = reinterpret_cast<irq_handler_t>(RESERVED_IRQ_VECTOR);
     return true;
 }
 
