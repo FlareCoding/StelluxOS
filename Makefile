@@ -21,8 +21,8 @@ OVMF_CODE       := $(OVMF_DIR)/OVMF_CODE.fd
 OVMF_VARS       := $(OVMF_DIR)/OVMF_VARS.fd
 
 # Image Configuration
-IMAGE_SIZE_MB    := 200
-ESP_SIZE_MB      := 100
+IMAGE_SIZE_MB    := 60
+ESP_SIZE_MB      := 40
 
 # QEMU Configuration
 QEMU             := qemu-system-x86_64
