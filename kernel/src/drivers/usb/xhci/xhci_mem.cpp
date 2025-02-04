@@ -27,6 +27,21 @@ uintptr_t xhci_map_mmio(uint64_t pci_bar_address, uint32_t bar_size) {
 }
 
 void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary) {
+    if (size == 0) {
+        xhci_error("Attempted DMA allocation with size 0!\n");
+        while (true);
+    }
+
+    if (alignment == 0) {
+        xhci_error("Attempted DMA allocation with alignment 0!\n");
+        while (true);
+    }
+
+    if (boundary == 0) {
+        xhci_error("Attempted DMA allocation with boundary 0!\n");
+        while (true);
+    }
+
     void* memblock = nullptr;
     RUN_ELEVATED({
         auto& dma = allocators::dma_allocator::get();
