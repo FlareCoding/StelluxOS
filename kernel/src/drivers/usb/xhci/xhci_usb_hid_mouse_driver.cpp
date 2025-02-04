@@ -1,4 +1,4 @@
-#include <modules/usb/xhci/xhci_usb_hid_mouse_driver.h>
+#include <drivers/usb/xhci/xhci_usb_hid_mouse_driver.h>
 #include <serial/serial.h>
 
 uint64_t g_mouse_cursor_pos_x = 100;

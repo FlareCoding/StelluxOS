@@ -1,7 +1,7 @@
 #ifndef XHCI_DEVICE_CTX_H
 #define XHCI_DEVICE_CTX_H
 
-#include <modules/usb/usb_descriptors.h>
+#include <drivers/usb/usb_descriptors.h>
 #include "xhci_rings.h"
 
 /*

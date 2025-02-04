@@ -149,17 +149,6 @@ public:
      */
     module_base* find_module(const kstl::string& name);
 
-    // ------------------------------------------------------------------------
-    // Module Discovery
-    // ------------------------------------------------------------------------
-
-    /**
-     * @brief Starts all modules associated with PCI devices.
-     * 
-     * Automatically discovers and starts modules related to PCI device drivers.
-     */
-    void start_pci_device_modules();
-
 private:
     kstl::vector<kstl::shared_ptr<module_base>> m_modules; /** List of registered modules */
 

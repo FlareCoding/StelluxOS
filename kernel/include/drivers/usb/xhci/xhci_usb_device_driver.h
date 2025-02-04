@@ -4,7 +4,7 @@
 #include "xhci_device.h"
 #include "xhci_usb_interface.h"
 
-using xhci_hcd = modules::xhci_driver_module;
+using xhci_hcd = drivers::xhci_driver;
 
 class xhci_usb_device_driver {
 public:

@@ -1,4 +1,4 @@
-#include <modules/usb/xhci/xhci_usb_hid_driver.h>
+#include <drivers/usb/xhci/xhci_usb_hid_driver.h>
 #include <time/time.h>
 
 void xhci_usb_hid_driver::on_startup(xhci_hcd* hcd, xhci_device* dev) {

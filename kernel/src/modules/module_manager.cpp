@@ -1,12 +1,9 @@
 #include <modules/module_manager.h>
-#include <modules/pci_module_base.h>
 #include <pci/pci_manager.h>
 #include <core/string.h>
 #include <sched/sched.h>
 #include <serial/serial.h>
 #include <dynpriv/dynpriv.h>
-
-#include <modules/usb/xhci/xhci.h>
 
 namespace modules {
 module_manager g_global_module_manager;
@@ -144,35 +141,6 @@ module_base* module_manager::find_module(const kstl::string& name) {
     }
 
     return nullptr;
-}
-
-void module_manager::start_pci_device_modules() {
-    auto xhci_controller_dev = kstl::shared_ptr<pci::pci_device>(nullptr);
-
-    RUN_ELEVATED({
-        auto& pci = pci::pci_manager::get();
-
-        xhci_controller_dev = pci.find_by_progif(
-            PCI_CLASS_SERIAL_BUS_CONTROLLER,
-            PCI_SUBCLASS_SERIAL_BUS_USB,
-            PCI_PROGIF_USB_XHCI
-        );
-    });
-
-    if (!xhci_controller_dev) {
-        return;
-    }
-
-    auto mod = kstl::make_shared<xhci_driver_module>();
-    mod->attach_device(xhci_controller_dev, true);
-
-    if (!register_module(mod)) {
-        return;
-    }
-
-    if (!start_module(mod.get())) {
-        return;
-    }
 }
 
 void module_manager::_module_start_task_entry(module_base* mod) {

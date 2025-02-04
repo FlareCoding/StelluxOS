@@ -1,4 +1,4 @@
-#include <modules/usb/xhci/xhci_device.h>
+#include <drivers/usb/xhci/xhci_device.h>
 
 xhci_device::xhci_device(uint8_t port, uint8_t slot, uint8_t speed, bool use_64byte_ctx)
     : m_port_id(port), m_slot_id(slot), m_speed(speed), m_use64byte_ctx(use_64byte_ctx) {
