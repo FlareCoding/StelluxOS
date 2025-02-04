@@ -164,6 +164,18 @@ __PRIVILEGED_CODE uint8_t find_free_irq_vector();
 __PRIVILEGED_CODE bool register_irq_handler(uint8_t irqno, irq_handler_t handler, uint8_t flags, void* cookie);
 
 /**
+ * @brief Reserves an IRQ vector number to be used sometime later.
+ * @param irqno The IRQ number to reserve.
+ * @return True if the handler was successfully reserved, false otherwise.
+ * 
+ * Marks a given IRQ vector number as reserved, so it would be skipped when trying to
+ * find another free IRQ vector.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool reserve_irq_vector(uint8_t irqno);
+
+/**
  * @brief Routes a legacy IRQ line to a specified IRQ vector and CPU.
  * @param irq_line The legacy IRQ line to route.
  * @param irqno The IRQ vector to associate with the legacy IRQ line.
