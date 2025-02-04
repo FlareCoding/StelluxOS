@@ -20,13 +20,6 @@ bool xhci_driver::s_singleton_initialized = false;
 xhci_driver::xhci_driver() : pci_device_driver("xhci_driver") {}
 
 bool xhci_driver::init_device() {
-    if (s_singleton_initialized) {
-        xhci_warn("Another instance of the controller driver is already running\n");
-        sleep(5);
-        // return false;
-    }
-    s_singleton_initialized = true;
-
     RUN_ELEVATED({ m_qemu_detected = DETECT_QEMU(); });
 
     xhci_log("Initializing xhci driver\n\n");

@@ -32,18 +32,7 @@ void pci_device_driver::attach_device(
         // Check if the device requires an IRQ vector
         uint8_t legacy_irq_line = dev->legacy_irq_line();
 
-        if (dev->has_capability(pci::capability_id::msi_x) && !m_qemu_detected) {
-            // Allocate a free IRQ vector
-            m_irq_vector = find_free_irq_vector();
-
-            if (m_irq_vector) {
-                // Ensure that the found IRQ vector is marked as reserved
-                reserve_irq_vector(m_irq_vector);
-
-                // Setup MSI-X
-                dev->setup_msix(0, m_irq_vector);
-            }
-        } else if (dev->has_capability(pci::capability_id::msi) && !m_qemu_detected) {
+        if (dev->has_capability(pci::capability_id::msi) && !m_qemu_detected) {
             // Allocate a free IRQ vector
             m_irq_vector = find_free_irq_vector();
 
@@ -53,6 +42,17 @@ void pci_device_driver::attach_device(
 
                 // Setup MSI
                 dev->setup_msi(0, m_irq_vector);
+            }
+        } else if (dev->has_capability(pci::capability_id::msi_x) && !m_qemu_detected) {
+            // Allocate a free IRQ vector
+            m_irq_vector = find_free_irq_vector();
+
+            if (m_irq_vector) {
+                // Ensure that the found IRQ vector is marked as reserved
+                reserve_irq_vector(m_irq_vector);
+
+                // Setup MSI-X
+                dev->setup_msix(0, m_irq_vector);
             }
         } else if (legacy_irq_line != 255 && legacy_irq_line != 0) {
             // Allocate a free IRQ vector
