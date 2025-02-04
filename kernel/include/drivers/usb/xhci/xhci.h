@@ -3,6 +3,7 @@
 
 #include <drivers/pci_device_driver.h>
 #include <interrupts/irq.h>
+#include <sync.h>
 #include "xhci_device.h"
 
 /*
@@ -126,12 +127,13 @@ public:
     static irqreturn_t xhci_irq_handler(void*, xhci_driver* driver);
 
 private:
-    static bool s_singleton_initialized;
-
     uintptr_t m_xhc_base;
 
     volatile xhci_capability_registers* m_cap_regs;
     volatile xhci_operational_registers* m_op_regs;
+
+    void _begin_logical_dbg_log_block();
+    void _end_logical_dbg_log_block();
 
     void _parse_capability_registers();
     void _log_capability_registers();
@@ -265,6 +267,10 @@ private:
 
     volatile uint8_t m_command_irq_completed = 0;
     volatile uint8_t m_transfer_irq_completed = 0;
+
+    static mutex s_xhc_command_lock;
+    static mutex s_xhc_device_setup_lock;
+    static mutex s_xhc_logical_logging_block_lock;
 };
 } // namespace drivers
 

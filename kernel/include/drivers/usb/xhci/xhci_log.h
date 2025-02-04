@@ -1,6 +1,7 @@
 #ifndef XHCI_LOG_H
 #define XHCI_LOG_H
 #include <serial/serial.h>
+#include <sync.h>
 
 // Possible log levels
 #define XHCI_LOG_LEVEL_VERBOSE  1
@@ -17,9 +18,13 @@ constexpr size_t LOG_BUFFER_SIZE = 256;
 
 template <typename... Args>
 void xhci_log_internal(int level, const char* prefix, const char* format, Args... args) {
+    extern mutex g_xhc_internal_log_lock;
+
     if (level < XHCI_LOG_LEVEL) {
         return;
     }
+
+    mutex_guard guard(g_xhc_internal_log_lock);
 
     // Create the message buffer
     char buffer[LOG_BUFFER_SIZE] = { 0 };

@@ -14,8 +14,12 @@
 #define DETECT_QEMU()
 #endif
 
+mutex g_xhc_internal_log_lock = mutex();
+
 namespace drivers {
-bool xhci_driver::s_singleton_initialized = false;
+mutex xhci_driver::s_xhc_command_lock = mutex();
+mutex xhci_driver::s_xhc_device_setup_lock = mutex();
+mutex xhci_driver::s_xhc_logical_logging_block_lock = mutex();
 
 xhci_driver::xhci_driver() : pci_device_driver("xhci_driver") {}
 
@@ -162,6 +166,14 @@ irqreturn_t xhci_driver::xhci_irq_handler(void*, xhci_driver* driver) {
     return IRQ_HANDLED;
 }
 
+void xhci_driver::_begin_logical_dbg_log_block() {
+    s_xhc_logical_logging_block_lock.lock();
+}
+
+void xhci_driver::_end_logical_dbg_log_block() {
+    s_xhc_logical_logging_block_lock.unlock();
+}
+
 void xhci_driver::_parse_capability_registers() {
     m_cap_regs = reinterpret_cast<volatile xhci_capability_registers*>(m_xhc_base);
 
@@ -199,6 +211,7 @@ void xhci_driver::_parse_capability_registers() {
 }
 
 void xhci_driver::_log_capability_registers() {
+    _begin_logical_dbg_log_block();
     xhci_logv("===== Xhci Capability Registers (0x%llx) =====\n", (uint64_t)m_cap_regs);
     xhci_logv("    Length                : %i\n", m_capability_regs_length);
     xhci_logv("    Max Device Slots      : %i\n", m_max_device_slots);
@@ -214,6 +227,7 @@ void xhci_driver::_log_capability_registers() {
     xhci_logv("    Port Indicators       : %i\n", m_port_indicators);
     xhci_logv("    Light Reset Available : %i\n", m_light_reset_capability);
     xhci_logv("\n");
+    _end_logical_dbg_log_block();
 }
 
 void xhci_driver::_parse_extended_capability_registers() {
@@ -264,6 +278,7 @@ void xhci_driver::_configure_operational_registers() {
 }
 
 void xhci_driver::_log_operational_registers() {
+    _begin_logical_dbg_log_block();
     xhci_logv("===== Xhci Operational Registers (0x%llx) =====\n", (uint64_t)m_op_regs);
     xhci_logv("    usbcmd     : 0x%x\n", m_op_regs->usbcmd);
     xhci_logv("    usbsts     : 0x%x\n", m_op_regs->usbsts);
@@ -273,6 +288,7 @@ void xhci_driver::_log_operational_registers() {
     xhci_logv("    dcbaap     : 0x%llx\n", m_op_regs->dcbaap);
     xhci_logv("    config     : 0x%x\n", m_op_regs->config);
     xhci_logv("\n");
+    _end_logical_dbg_log_block();
 }
 
 uint8_t xhci_driver::_get_port_speed(uint8_t port) {
@@ -427,6 +443,8 @@ bool xhci_driver::_create_device_context(uint8_t slot_id) {
 }
 
 xhci_command_completion_trb_t* xhci_driver::_send_command(xhci_trb_t* trb, uint32_t timeout_ms) {
+    mutex_guard guard(s_xhc_command_lock);
+
     // Enqueue the TRB
     m_command_ring->enqueue(trb);
 
@@ -824,6 +842,7 @@ void xhci_driver::_configure_ep_input_context(xhci_device* dev, xhci_endpoint* e
     }
 
 #if 0
+    _begin_logical_dbg_log_block();
     xhci_logv("Slot Context set up for ep_num=%u\n", endpoint->endpoint_num);
     xhci_logv("  context_entries: %u\n", slot_context->context_entries);
     xhci_logv("  speed: %u\n", slot_context->speed);
@@ -852,10 +871,13 @@ void xhci_driver::_configure_ep_input_context(xhci_device* dev, xhci_endpoint* e
     xhci_logv("  dequeue_ptr=0x%llx, dcs=%u\n",
                    (unsigned long long)interrupt_ep_context->transfer_ring_dequeue_ptr,
                    (unsigned)interrupt_ep_context->dcs);
+    _end_logical_dbg_log_block();
 #endif
 }
 
 void xhci_driver::_setup_device(uint8_t port) {
+    mutex_guard guard(s_xhc_device_setup_lock);
+
     uint8_t port_id = port + 1;
     uint8_t port_speed = _get_port_speed(port);
 
@@ -1103,11 +1125,6 @@ void xhci_driver::_setup_device(uint8_t port) {
     device->sync_input_ctx(
         reinterpret_cast<void*>(m_dcbaa_virtual_addresses[device->get_slot_id()])
     );
-
-    // Set interface
-    // if (!_set_interface(device, 0, 0)) {
-    //     return;
-    // }
 
     xhci_logv("\n");
 
