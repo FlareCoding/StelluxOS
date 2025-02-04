@@ -1,5 +1,5 @@
-#include <modules/usb/xhci/xhci_mem.h>
-#include <modules/usb/xhci/xhci_log.h>
+#include <drivers/usb/xhci/xhci_mem.h>
+#include <drivers/usb/xhci/xhci_log.h>
 #include <memory/vmm.h>
 #include <memory/allocators/dma_allocator.h>
 #include <serial/serial.h>

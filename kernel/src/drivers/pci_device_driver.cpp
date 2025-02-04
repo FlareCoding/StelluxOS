@@ -1,4 +1,4 @@
-#include <modules/pci_module_base.h>
+#include <drivers/pci_device_driver.h>
 #include <interrupts/irq.h>
 #include <dynpriv/dynpriv.h>
 #include <serial/serial.h>
@@ -7,12 +7,8 @@
 #include <arch/x86/cpuid.h>
 #endif
 
-namespace modules {
-pci_module_base::pci_module_base(
-    const kstl::string& name
-) : module_base(name) {}
-
-void pci_module_base::attach_device(
+namespace drivers {
+void pci_device_driver::attach_device(
     kstl::shared_ptr<pci::pci_device>& dev,
     bool enable_bus_mastering
 ) {
@@ -40,21 +36,36 @@ void pci_module_base::attach_device(
             // Allocate a free IRQ vector
             m_irq_vector = find_free_irq_vector();
 
-            // Setup MSI-X
-            dev->setup_msix(0, m_irq_vector);
+            if (m_irq_vector) {
+                // Ensure that the found IRQ vector is marked as reserved
+                reserve_irq_vector(m_irq_vector);
+
+                // Setup MSI-X
+                dev->setup_msix(0, m_irq_vector);
+            }
         } else if (dev->has_capability(pci::capability_id::msi) && !m_qemu_detected) {
             // Allocate a free IRQ vector
             m_irq_vector = find_free_irq_vector();
 
-            // Setup MSI
-            dev->setup_msi(0, m_irq_vector);
+            if (m_irq_vector) {
+                // Ensure that the found IRQ vector is marked as reserved
+                reserve_irq_vector(m_irq_vector);
+
+                // Setup MSI
+                dev->setup_msi(0, m_irq_vector);
+            }
         } else if (legacy_irq_line != 255 && legacy_irq_line != 0) {
             // Allocate a free IRQ vector
             m_irq_vector = find_free_irq_vector();
 
-            // Route the legacy IRQ line to the allocated IRQ vector
-            route_legacy_irq(legacy_irq_line, m_irq_vector, 0, IRQ_LEVEL_TRIGGERED);
+            if (m_irq_vector) {
+                // Ensure that the found IRQ vector is marked as reserved
+                reserve_irq_vector(m_irq_vector);
+
+                // Route the legacy IRQ line to the allocated IRQ vector
+                route_legacy_irq(legacy_irq_line, m_irq_vector, 0, IRQ_LEVEL_TRIGGERED);
+            }
         }
     });
 }
-} // namespace modules
+} // namespace drivers

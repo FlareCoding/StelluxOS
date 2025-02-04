@@ -1,7 +1,7 @@
 #ifndef XHCI_USB_INTERFACE_H
 #define XHCI_USB_INTERFACE_H
 #include "xhci_endpoint.h"
-#include <modules/usb/usb_descriptors.h>
+#include <drivers/usb/usb_descriptors.h>
 
 class xhci_usb_device_driver;
 

@@ -1,4 +1,4 @@
-#include <modules/usb/xhci/xhci_regs.h>
+#include <drivers/usb/xhci/xhci_regs.h>
 
 const char* xhci_extended_capability_to_string(xhci_extended_capability_code capid) {
     uint8_t id = static_cast<uint8_t>(capid);

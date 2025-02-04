@@ -1,5 +1,5 @@
-#include <modules/usb/xhci/xhci_rings.h>
-#include <modules/usb/xhci/xhci_log.h>
+#include <drivers/usb/xhci/xhci_rings.h>
+#include <drivers/usb/xhci/xhci_log.h>
 #include <memory/paging.h>
 #include <serial/serial.h>
 

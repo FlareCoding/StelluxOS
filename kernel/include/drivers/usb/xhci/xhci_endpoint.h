@@ -1,7 +1,7 @@
 #ifndef XHCI_ENDPOINT_H
 #define XHCI_ENDPOINT_H
 #include "xhci_device_ctx.h"
-#include <modules/usb/usb_descriptors.h>
+#include <drivers/usb/usb_descriptors.h>
 
 class xhci_endpoint {
 public:

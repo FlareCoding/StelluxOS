@@ -1,7 +1,7 @@
 #ifndef XHCI_USB_HID_MOUSE_DRIVER_H
 #define XHCI_USB_HID_MOUSE_DRIVER_H
 #include "xhci_usb_hid_driver.h"
-#include <modules/usb/hid/hid_report_parser.h>
+#include <drivers/usb/hid/hid_report_parser.h>
 
 class xhci_usb_hid_mouse_driver : public xhci_usb_hid_driver {
 public:

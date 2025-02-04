@@ -1,4 +1,4 @@
-#include <modules/usb/xhci/xhci_endpoint.h>
+#include <drivers/usb/xhci/xhci_endpoint.h>
 
 uint8_t get_xhc_endpoint_type_from_ep_descriptor(const usb_endpoint_descriptor* desc) {
     uint8_t endpoint_direction_in = (desc->bEndpointAddress & 0x80) ? 1 : 0;

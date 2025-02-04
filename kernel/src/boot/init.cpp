@@ -14,6 +14,7 @@
 #include <smp/smp.h>
 #include <dynpriv/dynpriv.h>
 #include <modules/graphics/gfx_framebuffer_module.h>
+#include <modules/pci/pci_manager_module.h>
 #include <modules/module_manager.h>
 #include <fs/ram_filesystem.h>
 #include <fs/vfs.h>
@@ -200,18 +201,6 @@ void init(unsigned int magic, void* mbi) {
 }
 
 void module_manager_init(void*) {
-    RUN_ELEVATED({
-        // Start an init process
-        task_control_block* task = elf::elf64_loader::load_from_file("/initrd/bin/init");
-        if (!task) {
-            return;
-        }
-
-        // Allow the process to elevate privileges
-        dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
-        sched::scheduler::get().add_task(task);
-    });
-
     // First create a graphics module to allow rendering to the screen,
     // and for that we need to create a framebuffer information struct.
     modules::gfx_framebuffer_module::framebuffer_t framebuffer_info;
@@ -231,7 +220,7 @@ void module_manager_init(void*) {
     });
 
     // Create the gfx driver module
-    kstl::shared_ptr<modules::module_base> gfx_driver =
+    kstl::shared_ptr<modules::module_base> gfx_module =
         kstl::make_shared<modules::gfx_framebuffer_module>(
             gop_framebuffer_address,
             framebuffer_info
@@ -239,11 +228,27 @@ void module_manager_init(void*) {
 
     // Register and start the gfx module
     auto& module_manager = modules::module_manager::get();
-    module_manager.register_module(gfx_driver);
-    module_manager.start_module(gfx_driver->name());
+    module_manager.register_module(gfx_module);
+    module_manager.start_module(gfx_module.get());
 
-    // Iterate over discovered PCI devices and attempt to find driver modules
-    module_manager.start_pci_device_modules();
+    // Create and start the PCI manager module
+    kstl::shared_ptr<modules::module_base> pci_mngr =
+        kstl::make_shared<modules::pci_manager_module>();
+
+    module_manager.register_module(pci_mngr);
+    module_manager.start_module(pci_mngr.get());
+
+    // Load and start the init process
+    RUN_ELEVATED({
+        task_control_block* task = elf::elf64_loader::load_from_file("/initrd/bin/init");
+        if (!task) {
+            return;
+        }
+
+        // Allow the process to elevate privileges
+        dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
+        sched::scheduler::get().add_task(task);
+    });
 
     sched::exit_thread();
 }

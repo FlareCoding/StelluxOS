@@ -1,4 +1,4 @@
-#include <modules/usb/hid/hid_report_parser.h>
+#include <drivers/usb/hid/hid_report_parser.h>
 #include <serial/serial.h>
 
 namespace hid {

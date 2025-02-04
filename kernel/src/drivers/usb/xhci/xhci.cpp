@@ -1,11 +1,11 @@
-#include <modules/usb/xhci/xhci.h>
-#include <modules/usb/xhci/xhci_log.h>
+#include <drivers/usb/xhci/xhci.h>
+#include <drivers/usb/xhci/xhci_log.h>
 #include <serial/serial.h>
 #include <dynpriv/dynpriv.h>
 #include <time/time.h>
 
-#include <modules/usb/xhci/xhci_usb_hid_mouse_driver.h>
-#include <modules/usb/hid/hid_report_parser.h>
+#include <drivers/usb/xhci/xhci_usb_hid_mouse_driver.h>
+#include <drivers/usb/hid/hid_report_parser.h>
 
 #ifdef ARCH_X86_64
 #include <arch/x86/cpuid.h>
@@ -14,15 +14,16 @@
 #define DETECT_QEMU()
 #endif
 
-namespace modules {
-bool xhci_driver_module::s_singleton_initialized = false;
+namespace drivers {
+bool xhci_driver::s_singleton_initialized = false;
 
-xhci_driver_module::xhci_driver_module() : pci_module_base("xhci_driver_module") {}
+xhci_driver::xhci_driver() : pci_device_driver("xhci_driver") {}
 
-bool xhci_driver_module::init() {
+bool xhci_driver::init_device() {
     if (s_singleton_initialized) {
         xhci_warn("Another instance of the controller driver is already running\n");
-        return true;
+        sleep(5);
+        // return false;
     }
     s_singleton_initialized = true;
 
@@ -63,15 +64,18 @@ bool xhci_driver_module::init() {
     // Register the xhci host controller IRQ handler
     if (m_irq_vector != 0) {
         RUN_ELEVATED({
-            register_irq_handler(m_irq_vector, reinterpret_cast<irq_handler_t>(xhci_irq_handler), false, static_cast<void*>(this));
+            if (!register_irq_handler(m_irq_vector, reinterpret_cast<irq_handler_t>(xhci_irq_handler), false, static_cast<void*>(this))) {
+                xhci_log("Failed to register xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
+            } else {
+                xhci_log("Registered xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
+            }
         });
-        xhci_log("Registered xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
     }
 
     return true;
 }
 
-bool xhci_driver_module::start() {
+bool xhci_driver::start_device() {
     // At this point the controller is all setup so we can start it
     _start_host_controller();
 
@@ -130,26 +134,11 @@ bool xhci_driver_module::start() {
     return true;
 }
 
-bool xhci_driver_module::stop() {
+bool xhci_driver::shutdown_device() {
     return true;
 }
 
-bool xhci_driver_module::on_command(
-    uint64_t    command,
-    const void* data_in,
-    size_t      data_in_size,
-    void*       data_out,
-    size_t      data_out_size
-) {
-    __unused command;
-    __unused data_in;
-    __unused data_in_size;
-    __unused data_out;
-    __unused data_out_size;
-    return true;
-}
-
-void xhci_driver_module::log_usbsts() {
+void xhci_driver::log_usbsts() {
     uint32_t status = m_op_regs->usbsts;
     xhci_log("===== USBSTS =====\n");
     if (status & XHCI_USBSTS_HCH) xhci_log("    Host Controlled Halted\n");
@@ -164,12 +153,12 @@ void xhci_driver_module::log_usbsts() {
     xhci_log("\n");
 }
 
-void xhci_driver_module::ring_doorbell(uint8_t slot, uint8_t ep) {
+void xhci_driver::ring_doorbell(uint8_t slot, uint8_t ep) {
     m_doorbell_manager->ring_doorbell(slot, ep);
 }
 
 __PRIVILEGED_CODE
-irqreturn_t xhci_driver_module::xhci_irq_handler(void*, xhci_driver_module* driver) {
+irqreturn_t xhci_driver::xhci_irq_handler(void*, xhci_driver* driver) {
     driver->_process_events();
     driver->_acknowledge_irq(0);
 
@@ -180,7 +169,7 @@ irqreturn_t xhci_driver_module::xhci_irq_handler(void*, xhci_driver_module* driv
     return IRQ_HANDLED;
 }
 
-void xhci_driver_module::_parse_capability_registers() {
+void xhci_driver::_parse_capability_registers() {
     m_cap_regs = reinterpret_cast<volatile xhci_capability_registers*>(m_xhc_base);
 
     m_capability_regs_length = m_cap_regs->caplength;
@@ -216,7 +205,7 @@ void xhci_driver_module::_parse_capability_registers() {
     );
 }
 
-void xhci_driver_module::_log_capability_registers() {
+void xhci_driver::_log_capability_registers() {
     xhci_logv("===== Xhci Capability Registers (0x%llx) =====\n", (uint64_t)m_cap_regs);
     xhci_logv("    Length                : %i\n", m_capability_regs_length);
     xhci_logv("    Max Device Slots      : %i\n", m_max_device_slots);
@@ -234,7 +223,7 @@ void xhci_driver_module::_log_capability_registers() {
     xhci_logv("\n");
 }
 
-void xhci_driver_module::_parse_extended_capability_registers() {
+void xhci_driver::_parse_extended_capability_registers() {
     volatile uint32_t* head_cap_ptr = reinterpret_cast<volatile uint32_t*>(
         m_xhc_base + m_extended_capabilities_offset
     );
@@ -261,7 +250,7 @@ void xhci_driver_module::_parse_extended_capability_registers() {
     }
 }
 
-void xhci_driver_module::_configure_operational_registers() {
+void xhci_driver::_configure_operational_registers() {
     // Establish host controller's supported page size in bytes
     m_hc_page_size = static_cast<uint64_t>(m_op_regs->pagesize & 0xffff) << 12;
     
@@ -281,7 +270,7 @@ void xhci_driver_module::_configure_operational_registers() {
     m_op_regs->crcr = m_command_ring->get_physical_base() | m_command_ring->get_cycle_bit();
 }
 
-void xhci_driver_module::_log_operational_registers() {
+void xhci_driver::_log_operational_registers() {
     xhci_logv("===== Xhci Operational Registers (0x%llx) =====\n", (uint64_t)m_op_regs);
     xhci_logv("    usbcmd     : 0x%x\n", m_op_regs->usbcmd);
     xhci_logv("    usbsts     : 0x%x\n", m_op_regs->usbsts);
@@ -293,7 +282,7 @@ void xhci_driver_module::_log_operational_registers() {
     xhci_logv("\n");
 }
 
-uint8_t xhci_driver_module::_get_port_speed(uint8_t port) {
+uint8_t xhci_driver::_get_port_speed(uint8_t port) {
     auto port_register_set = _get_port_register_set(port);
     xhci_portsc_register portsc;
     port_register_set.read_portsc_reg(portsc);
@@ -301,7 +290,7 @@ uint8_t xhci_driver_module::_get_port_speed(uint8_t port) {
     return static_cast<uint8_t>(portsc.port_speed);
 }
 
-const char* xhci_driver_module::_usb_speed_to_string(uint8_t speed) {
+const char* xhci_driver::_usb_speed_to_string(uint8_t speed) {
     static const char* speed_string[7] = {
         "Invalid",
         "Full Speed (12 MB/s - USB2.0)",
@@ -315,7 +304,7 @@ const char* xhci_driver_module::_usb_speed_to_string(uint8_t speed) {
     return speed_string[speed];
 }
 
-void xhci_driver_module::_configure_runtime_registers() {
+void xhci_driver::_configure_runtime_registers() {
     // Get the primary interrupter registers
     auto interrupter_regs = m_runtime_register_manager->get_interrupter_registers(0);
     if (!interrupter_regs) {
@@ -336,7 +325,7 @@ void xhci_driver_module::_configure_runtime_registers() {
     _acknowledge_irq(0);
 }
 
-bool xhci_driver_module::_is_usb3_port(uint8_t port_num) {
+bool xhci_driver::_is_usb3_port(uint8_t port_num) {
     for (size_t i = 0; i < m_usb3_ports.size(); ++i) {
         if (m_usb3_ports[i] == port_num) {
             return true;
@@ -346,12 +335,12 @@ bool xhci_driver_module::_is_usb3_port(uint8_t port_num) {
     return false;
 }
 
-xhci_port_register_manager xhci_driver_module::_get_port_register_set(uint8_t port_num) {
+xhci_port_register_manager xhci_driver::_get_port_register_set(uint8_t port_num) {
     uint64_t base = reinterpret_cast<uint64_t>(m_op_regs) + (0x400 + (0x10 * port_num));
     return xhci_port_register_manager(base);
 }
 
-void xhci_driver_module::_setup_dcbaa() {
+void xhci_driver::_setup_dcbaa() {
     size_t dcbaa_size = sizeof(uintptr_t) * (m_max_device_slots + 1);
 
     m_dcbaa = reinterpret_cast<uint64_t*>(
@@ -400,7 +389,7 @@ void xhci_driver_module::_setup_dcbaa() {
     m_op_regs->dcbaap = xhci_get_physical_addr(m_dcbaa);
 }
 
-uint16_t xhci_driver_module::_get_max_initial_packet_size(uint8_t port_speed) {
+uint16_t xhci_driver::_get_max_initial_packet_size(uint8_t port_speed) {
     // Calculate initial max packet size for the set device command
     uint16_t initial_max_packet_size = 0;
     switch (port_speed) {
@@ -417,7 +406,7 @@ uint16_t xhci_driver_module::_get_max_initial_packet_size(uint8_t port_speed) {
     return initial_max_packet_size;
 }
 
-bool xhci_driver_module::_create_device_context(uint8_t slot_id) {
+bool xhci_driver::_create_device_context(uint8_t slot_id) {
     // Determine the size of the device context
     // based on the capability register parameters.
     uint64_t device_context_size = m_64byte_context_size ? sizeof(xhci_device_context64) : sizeof(xhci_device_context32);
@@ -444,7 +433,7 @@ bool xhci_driver_module::_create_device_context(uint8_t slot_id) {
     return true;
 }
 
-xhci_command_completion_trb_t* xhci_driver_module::_send_command(xhci_trb_t* trb, uint32_t timeout_ms) {
+xhci_command_completion_trb_t* xhci_driver::_send_command(xhci_trb_t* trb, uint32_t timeout_ms) {
     // Enqueue the TRB
     m_command_ring->enqueue(trb);
 
@@ -482,7 +471,7 @@ xhci_command_completion_trb_t* xhci_driver_module::_send_command(xhci_trb_t* trb
     return completion_trb;
 }
 
-xhci_transfer_completion_trb_t* xhci_driver_module::_start_control_endpoint_transfer(xhci_transfer_ring* transfer_ring) {
+xhci_transfer_completion_trb_t* xhci_driver::_start_control_endpoint_transfer(xhci_transfer_ring* transfer_ring) {
     // Ring the endpoint's doorbell
     m_doorbell_manager->ring_control_endpoint_doorbell(transfer_ring->get_doorbell_id());
 
@@ -518,7 +507,7 @@ xhci_transfer_completion_trb_t* xhci_driver_module::_start_control_endpoint_tran
     return completion_trb;
 }
 
-void xhci_driver_module::_process_events() {
+void xhci_driver::_process_events() {
     // Poll the event ring for the command completion event
     kstl::vector<xhci_trb_t*> events;
     if (m_event_ring->has_unprocessed_events()) {
@@ -578,7 +567,7 @@ void xhci_driver_module::_process_events() {
     m_transfer_irq_completed = transfer_completion_status;
 }
 
-void xhci_driver_module::_acknowledge_irq(uint8_t interrupter) {
+void xhci_driver::_acknowledge_irq(uint8_t interrupter) {
     // Get the interrupter registers
     xhci_interrupter_registers* interrupter_regs =
         m_runtime_register_manager->get_interrupter_registers(interrupter);
@@ -596,7 +585,7 @@ void xhci_driver_module::_acknowledge_irq(uint8_t interrupter) {
     m_op_regs->usbsts = XHCI_USBSTS_EINT;
 }
 
-bool xhci_driver_module::_reset_host_controller() {
+bool xhci_driver::_reset_host_controller() {
     // Make sure we clear the Run/Stop bit
     uint32_t usbcmd = m_op_regs->usbcmd;
     usbcmd &= ~XHCI_USBCMD_RUN_STOP;
@@ -653,7 +642,7 @@ bool xhci_driver_module::_reset_host_controller() {
     return true;
 }
 
-void xhci_driver_module::_start_host_controller() {
+void xhci_driver::_start_host_controller() {
     uint32_t usbcmd = m_op_regs->usbcmd;
     usbcmd |= XHCI_USBCMD_RUN_STOP;
     usbcmd |= XHCI_USBCMD_INTERRUPTER_ENABLE;
@@ -667,7 +656,7 @@ void xhci_driver_module::_start_host_controller() {
     }
 }
 
-bool xhci_driver_module::_reset_port(uint8_t port_num) {
+bool xhci_driver::_reset_port(uint8_t port_num) {
     xhci_port_register_manager regset = _get_port_register_set(port_num);
     xhci_portsc_register portsc;
     regset.read_portsc_reg(portsc);
@@ -743,7 +732,7 @@ bool xhci_driver_module::_reset_port(uint8_t port_num) {
     return true;
 }
 
-uint8_t xhci_driver_module::_enable_device_slot() {
+uint8_t xhci_driver::_enable_device_slot() {
     xhci_trb_t enable_slot_trb = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
     auto completion_trb = _send_command(&enable_slot_trb);
 
@@ -754,7 +743,7 @@ uint8_t xhci_driver_module::_enable_device_slot() {
     return completion_trb->slot_id;
 }
 
-void xhci_driver_module::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
+void xhci_driver::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
     xhci_input_control_context32* input_control_context = device->get_input_ctrl_ctx();
     xhci_slot_context32* slot_context = device->get_input_slot_ctx();
     xhci_endpoint_context32* control_ep_context = device->get_input_ctrl_ep_ctx();
@@ -783,7 +772,7 @@ void xhci_driver_module::_configure_ctrl_ep_input_context(xhci_device* device, u
     control_ep_context->average_trb_length = 8;
 }
 
-void xhci_driver_module::_configure_ep_input_context(xhci_device* dev, xhci_endpoint* endpoint) {
+void xhci_driver::_configure_ep_input_context(xhci_device* dev, xhci_endpoint* endpoint) {
     xhci_input_control_context32* input_control_context = dev->get_input_ctrl_ctx();
     xhci_slot_context32* slot_context = dev->get_input_slot_ctx();
 
@@ -873,7 +862,7 @@ void xhci_driver_module::_configure_ep_input_context(xhci_device* dev, xhci_endp
 #endif
 }
 
-void xhci_driver_module::_setup_device(uint8_t port) {
+void xhci_driver::_setup_device(uint8_t port) {
     uint8_t port_id = port + 1;
     uint8_t port_speed = _get_port_speed(port);
 
@@ -1154,7 +1143,7 @@ void xhci_driver_module::_setup_device(uint8_t port) {
     }
 }
 
-bool xhci_driver_module::_address_device(xhci_device* device, bool bsr) {
+bool xhci_driver::_address_device(xhci_device* device, bool bsr) {
     // Construct the Address Device TRB
     xhci_address_device_command_trb_t address_device_trb;
     zeromem(&address_device_trb, sizeof(xhci_address_device_command_trb_t));
@@ -1175,7 +1164,7 @@ bool xhci_driver_module::_address_device(xhci_device* device, bool bsr) {
     return true;
 }
 
-bool xhci_driver_module::_configure_endpoint(xhci_device* device) {
+bool xhci_driver::_configure_endpoint(xhci_device* device) {
     xhci_configure_endpoint_command_trb_t configure_ep_trb;
     zeromem(&configure_ep_trb, sizeof(xhci_configure_endpoint_command_trb_t));
     configure_ep_trb.trb_type = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
@@ -1201,7 +1190,7 @@ bool xhci_driver_module::_configure_endpoint(xhci_device* device) {
     return true;
 }
 
-bool xhci_driver_module::_evaluate_context(xhci_device* device) {
+bool xhci_driver::_evaluate_context(xhci_device* device) {
     // Construct the Evaluate Context Command TRB
     xhci_evaluate_context_command_trb_t evaluate_context_trb;
     zeromem(&evaluate_context_trb, sizeof(xhci_evaluate_context_command_trb_t));
@@ -1228,7 +1217,7 @@ bool xhci_driver_module::_evaluate_context(xhci_device* device) {
     return true;
 }
 
-bool xhci_driver_module::_reset_endpoint(xhci_device* device, uint8_t endpoint_number) {
+bool xhci_driver::_reset_endpoint(xhci_device* device, uint8_t endpoint_number) {
     xhci_log("Resetting endpoint %u for device on slot %u\n", endpoint_number, device->get_slot_id());
 
     // Create a Reset Endpoint TRB
@@ -1259,7 +1248,7 @@ bool xhci_driver_module::_reset_endpoint(xhci_device* device, uint8_t endpoint_n
 }
 
 
-bool xhci_driver_module::_send_usb_request_packet(xhci_device* device, xhci_device_request_packet& req, void* output_buffer, uint32_t length) {
+bool xhci_driver::_send_usb_request_packet(xhci_device* device, xhci_device_request_packet& req, void* output_buffer, uint32_t length) {
     xhci_transfer_ring* transfer_ring = device->get_ctrl_ep_transfer_ring();
 
     uint32_t* transfer_status_buffer = reinterpret_cast<uint32_t*>(alloc_xhci_memory(sizeof(uint32_t), 16, 16));
@@ -1355,7 +1344,7 @@ bool xhci_driver_module::_send_usb_request_packet(xhci_device* device, xhci_devi
     return true;
 }
 
-bool xhci_driver_module::_send_usb_no_data_request_packet(xhci_device* dev, xhci_device_request_packet& req) {
+bool xhci_driver::_send_usb_no_data_request_packet(xhci_device* dev, xhci_device_request_packet& req) {
     // 1) Get the control endpoint's transfer ring
     xhci_transfer_ring* transfer_ring = dev->get_ctrl_ep_transfer_ring();
     if (!transfer_ring) {
@@ -1403,7 +1392,7 @@ bool xhci_driver_module::_send_usb_no_data_request_packet(xhci_device* dev, xhci
     return true;
 }
 
-bool xhci_driver_module::_get_device_descriptor(xhci_device* device, usb_device_descriptor* desc, uint32_t length) {
+bool xhci_driver::_get_device_descriptor(xhci_device* device, usb_device_descriptor* desc, uint32_t length) {
     xhci_device_request_packet req;
     req.bRequestType = 0x80; // Device to Host, Standard, Device
     req.bRequest = 6; // GET_DESCRIPTOR
@@ -1414,7 +1403,7 @@ bool xhci_driver_module::_get_device_descriptor(xhci_device* device, usb_device_
     return _send_usb_request_packet(device, req, desc, length);
 }
 
-bool xhci_driver_module::_get_string_language_descriptor(xhci_device* device, usb_string_language_descriptor* desc) {
+bool xhci_driver::_get_string_language_descriptor(xhci_device* device, usb_string_language_descriptor* desc) {
     xhci_device_request_packet req;
     req.bRequestType = 0x80;
     req.bRequest = 6; // GET_DESCRIPTOR
@@ -1439,7 +1428,7 @@ bool xhci_driver_module::_get_string_language_descriptor(xhci_device* device, us
     return true;
 }
 
-bool xhci_driver_module::_get_string_descriptor(
+bool xhci_driver::_get_string_descriptor(
     xhci_device* device,
     uint8_t descriptor_index,
     uint8_t langid,
@@ -1469,7 +1458,7 @@ bool xhci_driver_module::_get_string_descriptor(
     return true;
 }
 
-bool xhci_driver_module::_get_configuration_descriptor(xhci_device* device, usb_configuration_descriptor* desc) {
+bool xhci_driver::_get_configuration_descriptor(xhci_device* device, usb_configuration_descriptor* desc) {
     xhci_device_request_packet req;
     req.bRequestType = 0x80; // Device to Host, Standard, Device
     req.bRequest = 6; // GET_DESCRIPTOR
@@ -1502,7 +1491,7 @@ bool xhci_driver_module::_get_configuration_descriptor(xhci_device* device, usb_
     return true;
 }
 
-bool xhci_driver_module::_get_hid_report_descriptor(
+bool xhci_driver::_get_hid_report_descriptor(
     xhci_device* device,
     uint8_t interface_number,
     uint8_t descriptor_index,
@@ -1523,7 +1512,7 @@ bool xhci_driver_module::_get_hid_report_descriptor(
     return _send_usb_request_packet(device, req, report_buffer, report_length);
 }
 
-bool xhci_driver_module::_set_device_configuration(xhci_device* device, uint16_t configuration_value) {
+bool xhci_driver::_set_device_configuration(xhci_device* device, uint16_t configuration_value) {
     // Prepare the setup packet
     xhci_device_request_packet setup_packet;
     zeromem(&setup_packet, sizeof(xhci_device_request_packet));
@@ -1542,7 +1531,7 @@ bool xhci_driver_module::_set_device_configuration(xhci_device* device, uint16_t
     return true;
 }
 
-bool xhci_driver_module::_set_protocol(xhci_device* device, uint8_t interface, uint8_t protocol) {
+bool xhci_driver::_set_protocol(xhci_device* device, uint8_t interface, uint8_t protocol) {
     xhci_device_request_packet setup_packet;
     zeromem(&setup_packet, sizeof(xhci_device_request_packet));
     setup_packet.bRequestType = 0x21; // Host to Device, Class, Interface
@@ -1559,7 +1548,7 @@ bool xhci_driver_module::_set_protocol(xhci_device* device, uint8_t interface, u
     return true;
 }
 
-bool xhci_driver_module::_set_interface(xhci_device* device, uint8_t interface_number, uint8_t alternate_setting) {
+bool xhci_driver::_set_interface(xhci_device* device, uint8_t interface_number, uint8_t alternate_setting) {
     // Build the Setup Packet for the standard SET_INTERFACE request
     xhci_device_request_packet req;
     zeromem(&req, sizeof(req));
@@ -1579,7 +1568,7 @@ bool xhci_driver_module::_set_interface(xhci_device* device, uint8_t interface_n
     return true;
 }
 
-bool xhci_driver_module::_clear_stall(xhci_device* device, uint8_t endpoint_number) {
+bool xhci_driver::_clear_stall(xhci_device* device, uint8_t endpoint_number) {
     xhci_device_request_packet setup_packet;
     zeromem(&setup_packet, sizeof(xhci_device_request_packet));
 
@@ -1603,4 +1592,4 @@ bool xhci_driver_module::_clear_stall(xhci_device* device, uint8_t endpoint_numb
     return true;
 }
 
-} // namespace modules
+} // namespace drivers

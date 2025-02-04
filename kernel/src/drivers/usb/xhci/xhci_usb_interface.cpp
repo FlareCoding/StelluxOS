@@ -1,4 +1,4 @@
-#include <modules/usb/xhci/xhci_usb_interface.h>
+#include <drivers/usb/xhci/xhci_usb_interface.h>
 
 xhci_usb_interface::xhci_usb_interface(uint8_t dev_slot_id, const usb_interface_descriptor* desc) : m_dev_slot_id(dev_slot_id) {
     this->descriptor = *desc;

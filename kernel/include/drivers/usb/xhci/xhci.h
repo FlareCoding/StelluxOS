@@ -1,7 +1,7 @@
 #ifndef XCHI_H
 #define XCHI_H
 
-#include <modules/pci_module_base.h>
+#include <drivers/pci_device_driver.h>
 #include <interrupts/irq.h>
 #include "xhci_device.h"
 
@@ -103,39 +103,27 @@ the Event Ring registers and their initialization.
         Run/Stop (R/S) bit to ‘1’. This operation allows the xHC to begin accepting
         doorbell references.
 */
-namespace modules {
+namespace drivers {
 
-class xhci_driver_module : public pci_module_base {
+class xhci_driver : public pci_device_driver {
 public:
-    xhci_driver_module();
-    ~xhci_driver_module() = default;
+    xhci_driver();
+    ~xhci_driver() = default;
 
     // ------------------------------------------------------------------------
     // Lifecycle Hooks (overrides from module_base)
     // ------------------------------------------------------------------------
     
-    bool init() override;
-    bool start() override;
-    bool stop() override;
-
-    // ------------------------------------------------------------------------
-    // Command Interface
-    // ------------------------------------------------------------------------
-
-    bool on_command(
-        uint64_t    command,
-        const void* data_in,
-        size_t      data_in_size,
-        void*       data_out,
-        size_t      data_out_size
-    );
+    bool init_device() override;
+    bool start_device() override;
+    bool shutdown_device() override;
 
     void log_usbsts();
 
     void ring_doorbell(uint8_t slot, uint8_t ep);
 
     __PRIVILEGED_CODE
-    static irqreturn_t xhci_irq_handler(void*, xhci_driver_module* driver);
+    static irqreturn_t xhci_irq_handler(void*, xhci_driver* driver);
 
 private:
     static bool s_singleton_initialized;
@@ -278,6 +266,6 @@ private:
     volatile uint8_t m_command_irq_completed = 0;
     volatile uint8_t m_transfer_irq_completed = 0;
 };
-} // namespace modules
+} // namespace drivers
 
 #endif // XCHI_H

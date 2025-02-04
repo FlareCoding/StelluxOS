@@ -47,9 +47,11 @@ QEMU_FLAGS       := \
 # QEMU_FLAGS += -device usb-kbd,id=usbkbd
 # QEMU_FLAGS += -device usb-mouse,id=usbmouse
 
-# Adding two xHCI controllers
-QEMU_FLAGS += -device qemu-xhci,id=xhci1
-QEMU_FLAGS += -device qemu-xhci,id=xhci2
+# Add the first xHCI controller at PCI slot 5 (generates a specific IRQ)
+QEMU_FLAGS += -device qemu-xhci,id=xhci1,bus=pcie.0,addr=0x5
+
+# Add the second xHCI controller at PCI slot 6 (generates a different IRQ)
+QEMU_FLAGS += -device qemu-xhci,id=xhci2,bus=pcie.0,addr=0x6
 
 # Connect USB keyboard to the first controller (xhci1)
 QEMU_FLAGS += -device usb-kbd,id=usbkbd,bus=xhci1.0

@@ -1,4 +1,4 @@
-#include <modules/usb/xhci/xhci_rings.h>
+#include <drivers/usb/xhci/xhci_rings.h>
 
 const char* xhci_slot_state_to_string(uint8_t slot_state) {
     switch (slot_state) {
