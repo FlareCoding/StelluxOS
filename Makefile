@@ -86,6 +86,7 @@ help:
 	@echo "  make help            		Show this help message"
 	@echo "  make install-dependencies	Installs the necessary tools and packages for the current Linux distribution"
 	@echo "  make kernel          		Build the Stellux kernel"
+	@echo "  make userspace          	Build the userspace Stellux applications"
 	@echo "  make image           		Create the UEFI-compatible disk image (requires sudo)"
 	@echo "  make initrd           		Rebuild and package an initrd cpio ramdisk"
 	@echo "  make run             		Run the Stellux image in QEMU"
@@ -242,6 +243,7 @@ install-dependencies:
 			qemu-system-x86 \
 			gdb \
 			ovmf \
+			cpio \
 			doxygen; \
 	elif [ -f /etc/redhat-release ]; then \
 		echo "Detected RedHat-based system."; \
@@ -253,6 +255,7 @@ install-dependencies:
 			qemu-system-x86_64 \
 			gdb \
 			edk2-ovmf \
+			cpio \
 			doxygen; \
 	elif [ -f /etc/arch-release ]; then \
 		echo "Detected Arch-based system."; \
@@ -264,6 +267,7 @@ install-dependencies:
 			qemu \
 			gdb \
 			ovmf \
+			cpio \
 			doxygen; \
 	else \
 		echo "Unsupported Linux distribution. Please install the following packages manually:"; \
@@ -274,6 +278,7 @@ install-dependencies:
 		echo "  - qemu-system-x86 / qemu-system-x86_64 / qemu"; \
 		echo "  - gdb"; \
 		echo "  - ovmf / edk2-ovmf"; \
+		echo "  - cpio"; \
 		echo "  - doxygen"; \
 		exit 1; \
 	fi
