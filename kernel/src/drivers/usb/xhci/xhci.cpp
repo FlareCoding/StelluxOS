@@ -1002,6 +1002,11 @@ void xhci_driver::_setup_device(uint8_t port) {
     xhci_logv("  Manufacturer    : %s\n", manufacturer);
     xhci_logv("  Serial Number   : %s\n", serial_number);
 
+    if (product[0] == '?' && manufacturer[0] == '?' && serial_number[0] == '?') {
+        xhci_logv("Unrecognized USB device, aborting setup...\n");
+        return;
+    }
+
 #if 0
     xhci_logv("  Configuration   :\n");
     xhci_logv("      wTotalLength        - %i\n", configuration_descriptor->wTotalLength);
@@ -1487,6 +1492,13 @@ bool xhci_driver::_get_configuration_descriptor(xhci_device* device, usb_configu
 
     if (!_send_usb_request_packet(device, req, desc, desc->header.bLength)) {
         xhci_error("Failed to read device configuration descriptor\n");
+        return false;
+    }
+
+    // Check if the descriptor is larger than the currently supported size (254)
+    if (desc->wTotalLength > sizeof(usb_configuration_descriptor) - 1) {
+        xhci_error("Configuration descriptor is larger than the currently supported size: %u > %u\n",
+            desc->wTotalLength, sizeof(usb_configuration_descriptor));
         return false;
     }
 
