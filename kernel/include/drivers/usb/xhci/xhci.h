@@ -167,7 +167,8 @@ private:
     void _acknowledge_irq(uint8_t interrupter);
 
     bool _reset_host_controller();
-    void _start_host_controller();
+    bool _start_host_controller();
+    bool _request_bios_handoff(volatile uint32_t* usblegsup, volatile uint32_t* usblegctlsts);
 
     // Reset a 0-indexed port number
     bool _reset_port(uint8_t port_num);
