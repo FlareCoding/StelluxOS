@@ -73,8 +73,6 @@ bool xhci_driver::init_device() {
 }
 
 bool xhci_driver::start_device() {
-    xhci_log("About to start the controller..\n");
-
     // At this point the controller is all setup so we can start it
     if (!_start_host_controller()) {
         xhci_error("Failed to start the host controller\n");
@@ -668,24 +666,18 @@ bool xhci_driver::_reset_host_controller() {
 }
 
 bool xhci_driver::_start_host_controller() {
-    log_usbsts();
-
     // Ensure USBCMD bits for RUN/STOP are properly set
     uint32_t usbcmd = m_op_regs->usbcmd;
-    xhci_log("read usbcmd val: 0x%x\n", usbcmd);
     usbcmd |= XHCI_USBCMD_RUN_STOP;
     usbcmd |= XHCI_USBCMD_INTERRUPTER_ENABLE;
     usbcmd |= XHCI_USBCMD_HOSTSYS_ERROR_ENABLE;
-    xhci_log("writing usbcmd val: 0x%x\n", usbcmd);
     m_op_regs->usbcmd = usbcmd;
-    xhci_log("wrote usbcmd!\n");
 
     // Ensure the controller transitions out of the halted state
     constexpr int max_retries = 1000;
     int retries = 0;
 
     while (m_op_regs->usbsts & XHCI_USBSTS_HCH) {
-        xhci_log("waiting for controller...\n");
         if (retries++ >= max_retries) {
             // Timeout: Controller failed to start
             return false;
