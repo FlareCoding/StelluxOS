@@ -1228,14 +1228,22 @@ Controller during status update if the associated error condition is detected.
 /*
 // xHci Spec Section 7.1.1 USB Legacy Support Capability (USBLEGSUP) (page 519)
 */
-#define XHCI_LEGACY_SUPPORT_CAP_ID 1
-#define XHCI_LEGACY_BIOS_OWNED_SEMAPHORE (1 << 16)
-#define XHCI_LEGACY_OS_OWNED_SEMAPHORE (1 << 24)
+#define XHCI_LEGACY_SUPPORT_CAP_ID          1
+#define XHCI_LEGACY_BIOS_OWNED_SEMAPHORE    (1 << 16)
+#define XHCI_LEGACY_OS_OWNED_SEMAPHORE      (1 << 24)
 
 /*
 // xHci Spec Section 7.1.2 USB Legacy Support Control/Status (USBLEGCTLSTS) (page 520)
 */
-#define XHCI_LEGACY_SMI_ENABLE_BITS ((1 << 0) | (1 << 4) | (1 << 13) | (1 << 14) | (1 << 15))
+#define XHCI_LEGACY_SMI_ENABLE               (1 << 0)   // USB SMI Enable
+#define XHCI_LEGACY_SMI_ON_OS_OWNERSHIP      (1 << 13)  // SMI on OS Ownership Enable
+#define XHCI_LEGACY_SMI_ON_HOST_ERROR        (1 << 4)   // SMI on Host System Error
+#define XHCI_LEGACY_SMI_ON_PCI_COMMAND       (1 << 14)  // SMI on PCI Command
+#define XHCI_LEGACY_SMI_ON_BAR               (1 << 15)  // SMI on BAR (Base Address Register)
+
+#define XHCI_LEGACY_SMI_ENABLE_BITS \
+    (XHCI_LEGACY_SMI_ENABLE | XHCI_LEGACY_SMI_ON_OS_OWNERSHIP | XHCI_LEGACY_SMI_ON_HOST_ERROR | \
+     XHCI_LEGACY_SMI_ON_PCI_COMMAND | XHCI_LEGACY_SMI_ON_BAR)
 
 /*
 // xHci Spec Section 7.0 Table 7-1: Format of xHCI Extended Capability Pointer Register

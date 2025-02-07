@@ -73,8 +73,13 @@ bool xhci_driver::init_device() {
 }
 
 bool xhci_driver::start_device() {
+    xhci_log("About to start the controller..\n");
+
     // At this point the controller is all setup so we can start it
-    _start_host_controller();
+    if (!_start_host_controller()) {
+        xhci_error("Failed to start the host controller\n");
+        return false;
+    }
 
     if (m_qemu_detected) {
         for (uint8_t i = 0; i < m_max_ports; i++) {
@@ -90,6 +95,8 @@ bool xhci_driver::start_device() {
             }
         }
     }
+
+    xhci_log("Started the controller\n");
 
     // This code is just a prototype right now and is by no
     // means safe and has critical synchronization issues.
@@ -252,6 +259,13 @@ void xhci_driver::_parse_extended_capability_registers() {
                     m_usb3_ports.push_back(port);
                 }
             }
+        } else if (node->id() == xhci_extended_capability_code::usb_legacy_support) {
+            // Get pointers to USBLEGSUP and USBLEGCTLSTS registers
+            volatile uint32_t* usb_legacy_support = node->base();               // xECP + 00h
+            volatile uint32_t* usb_legacy_control_status = node->base() + 1;    // xECP + 04h
+
+            // There must be a handoff from BIOS --> OS
+            _request_bios_handoff(usb_legacy_support, usb_legacy_control_status);
         }
         node = node->next();
     }
@@ -603,10 +617,10 @@ bool xhci_driver::_reset_host_controller() {
     m_op_regs->usbcmd = usbcmd;
 
     // Wait for the HCHalted bit to be set
-    uint32_t timeout = 20;
+    uint32_t timeout = 200;
     while (!(m_op_regs->usbsts & XHCI_USBSTS_HCH)) {
         if (--timeout == 0) {
-            xhci_error("Host controller did not halt within %ims\n", timeout);
+            xhci_error("Host controller did not halt within %ums\n", timeout);
             return false;
         }
 
@@ -619,13 +633,13 @@ bool xhci_driver::_reset_host_controller() {
     m_op_regs->usbcmd = usbcmd;
 
     // Wait for this bit and CNR bit to clear
-    timeout = 100;
+    timeout = 1000;
     while (
         m_op_regs->usbcmd & XHCI_USBCMD_HCRESET ||
         m_op_regs->usbsts & XHCI_USBSTS_CNR
     ) {
         if (--timeout == 0) {
-            xhci_error("Host controller did not reset within %ims\n", timeout);
+            xhci_error("Host controller did not reset within %ums\n", timeout);
             return false;
         }
 
@@ -653,17 +667,64 @@ bool xhci_driver::_reset_host_controller() {
     return true;
 }
 
-void xhci_driver::_start_host_controller() {
+bool xhci_driver::_start_host_controller() {
+    log_usbsts();
+
+    // Ensure USBCMD bits for RUN/STOP are properly set
     uint32_t usbcmd = m_op_regs->usbcmd;
+    xhci_log("read usbcmd val: 0x%x\n", usbcmd);
     usbcmd |= XHCI_USBCMD_RUN_STOP;
     usbcmd |= XHCI_USBCMD_INTERRUPTER_ENABLE;
     usbcmd |= XHCI_USBCMD_HOSTSYS_ERROR_ENABLE;
-
+    xhci_log("writing usbcmd val: 0x%x\n", usbcmd);
     m_op_regs->usbcmd = usbcmd;
+    xhci_log("wrote usbcmd!\n");
 
-    // Make sure the controller's HCH flag is cleared
+    // Ensure the controller transitions out of the halted state
+    constexpr int max_retries = 1000;
+    int retries = 0;
+
     while (m_op_regs->usbsts & XHCI_USBSTS_HCH) {
-        msleep(16);
+        xhci_log("waiting for controller...\n");
+        if (retries++ >= max_retries) {
+            // Timeout: Controller failed to start
+            return false;
+        }
+        msleep(1); // Poll every 1 ms for responsiveness
+    }
+
+    // Verify CNR (Controller Not Ready) bit is clear
+    if (m_op_regs->usbsts & XHCI_USBSTS_CNR) {
+        return false; // Controller is not ready
+    }
+
+    // Controller started successfully
+    return true;
+}
+
+bool xhci_driver::_request_bios_handoff(volatile uint32_t* usblegsup, volatile uint32_t* usblegctlsts) {
+    // Disable all SMIs to prevent crashes
+    *usblegctlsts &= ~XHCI_LEGACY_SMI_ENABLE_BITS;
+    msleep(10);
+
+    // Set the OS Owned Semaphore in USBLEGSUP
+    xhci_log("Requesting OS ownership of the xHCI controller\n");
+    *usblegsup |= XHCI_LEGACY_OS_OWNED_SEMAPHORE;
+    msleep(10);
+
+    // Wait for BIOS to clear the BIOS Owned Semaphore
+    constexpr int handoff_timeout = 1000; // 1000 ms timeout
+    int retries = 0;
+    while ((*usblegsup & XHCI_LEGACY_BIOS_OWNED_SEMAPHORE) && retries++ < handoff_timeout) {
+        msleep(1); // Sleep for 1 ms
+    }
+
+    if (*usblegsup & XHCI_LEGACY_BIOS_OWNED_SEMAPHORE) {
+        xhci_error("BIOS did not release control of the xHCI controller within %ums\n", handoff_timeout);
+        return false;
+    } else {
+        xhci_log("BIOS successfully handed off control of the xHCI controller\n");
+        return true;
     }
 }
 
