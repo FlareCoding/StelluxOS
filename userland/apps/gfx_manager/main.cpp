@@ -4,7 +4,7 @@
 extern uint64_t g_mouse_cursor_pos_x;
 extern uint64_t g_mouse_cursor_pos_y;
 
-void draw_cursor(kstl::shared_ptr<canvas>& cvs, int x, int y, uint32_t color) {
+void draw_cursor(kstl::shared_ptr<canvas>& cvs, int x, int y, uint32_t fill_color, uint32_t border_color) {
     static const char* cursor_shape[16] = {
         "X                 ",
         "XX                ",
@@ -29,7 +29,9 @@ void draw_cursor(kstl::shared_ptr<canvas>& cvs, int x, int y, uint32_t color) {
     for (int row = 0; row < height; ++row) {
         for (int col = 0; col < width; ++col) {
             if (cursor_shape[row][col] == 'X') {
-                cvs->fill_rect(x + col, y + row, 1, 1, color);
+                cvs->fill_rect(x + col, y + row, 1, 1, border_color);
+            } else if (cursor_shape[row][col] == '.') {
+                cvs->fill_rect(x + col, y + row, 1, 1, fill_color);
             }
         }
     }
@@ -67,7 +69,7 @@ int main() {
         cvs->draw_string(cvs->width() - 220, 2, time_str_buf, 0xffffffff);
         cvs->draw_string(16, 2, cpu_vendor_display_str_buf, 0xffffffff);
 
-        draw_cursor(cvs, g_mouse_cursor_pos_x, g_mouse_cursor_pos_y, 0xffffffff);
+        draw_cursor(cvs, g_mouse_cursor_pos_x, g_mouse_cursor_pos_y, 0x00000000, 0xffffffff);
 
         screen->end_frame();
 
