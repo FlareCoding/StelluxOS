@@ -146,7 +146,7 @@ make install-dependencies
 
 To build the __Stellux__ image, simply run
 ```bash
-make
+make image
 ```
 
 Running in QEMU in a separate graphical window
