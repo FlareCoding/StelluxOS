@@ -21,4 +21,10 @@ SECTIONS
         *(COMMON)
         *(.bss .bss.*)
     }
+
+    .init_array : {
+        __init_array_start = .;
+        KEEP(*(.init_array))
+        __init_array_end = .;
+    }
 }
