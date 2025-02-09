@@ -2,7 +2,7 @@
 #include <arch/x86/cpuid.h>
 
 #include "sample_window_app.h"
-#include <test.h>
+#include <color.h>
 
 extern uint64_t g_mouse_cursor_pos_x;
 extern uint64_t g_mouse_cursor_pos_y;
@@ -89,8 +89,37 @@ void draw_window_decorations(kstl::shared_ptr<canvas>& cvs, window* win,
     cvs->draw_rect(x, y, width, title_bar_height + border_thickness * 2, border_color);
 }
 
+void test_color() {
+    using stella_ui::color;
+
+    // 1. Test the default constructor
+    color default_color;
+    serial::printf("Default color (should be black, opaque): 0x%x\n", default_color.to_argb());
+
+    // 2. Test constructor with components
+    color red_color(255, 0, 0);
+    serial::printf("Red color: 0x%x (A: %d, R: %d, G: %d, B: %d)\n", 
+        red_color.to_argb(), red_color.alpha(), red_color.r(), red_color.g(), red_color.b());
+
+    // 3. Test color from hex string (#RRGGBB format)
+    color green_color = color::from_hex("#00FF00");
+    serial::printf("Green color (from #00FF00): 0x%x\n", green_color.to_argb());
+
+    // 4. Test color from hex string (#AARRGGBB format)
+    color semi_transparent_blue = color::from_hex("#800000FF");
+    serial::printf("Semi-transparent blue (from #800000FF): 0x%x\n", semi_transparent_blue.to_argb());
+}
+
+void test_predefined_colors() {
+    serial::printf("Black color: 0x%x\n", stella_ui::color::black.to_argb());
+    serial::printf("White color: 0x%x\n", stella_ui::color::white.to_argb());
+    serial::printf("Red color: 0x%x\n", stella_ui::color::red.to_argb());
+    serial::printf("Transparent color: 0x%x\n", stella_ui::color::transparent.to_argb());
+}
+
 int main() {
-    test_fn(4554);
+    test_color();
+    test_predefined_colors();
 
     // Initialize the screen manager
     auto screen = kstl::make_shared<screen_manager>();
