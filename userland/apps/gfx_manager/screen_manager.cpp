@@ -1,6 +1,13 @@
 #include "screen_manager.h"
 #include <fs/vfs.h>
 
+psf1_font* screen_manager::s_global_font = nullptr;
+kstl::vector<window*> screen_manager::s_window_registry;
+
+void screen_manager::register_window(window* wnd) {
+    s_window_registry.push_back(wnd);
+}
+
 screen_manager::screen_manager()
     : m_gfx_module(nullptr), m_canvas(nullptr) {}
 
@@ -8,13 +15,17 @@ screen_manager::~screen_manager() {
     // TO-DO: resource clean-up
 }
 
+psf1_font* screen_manager::get_global_system_font() {
+    return s_global_font;
+}
+
 bool screen_manager::initialize() {
-    psf1_font* font = _load_font();
-    if (!font) {
+    s_global_font = _load_font();
+    if (!s_global_font) {
         return false;
     }
     
-    if (!_create_canvas(font)) {
+    if (!_create_canvas(s_global_font)) {
         return false;
     }
 
