@@ -2,12 +2,12 @@
 #include <arch/x86/cpuid.h>
 
 #include "sample_window_app.h"
-#include <color.h>
 
 extern uint64_t g_mouse_cursor_pos_x;
 extern uint64_t g_mouse_cursor_pos_y;
+extern bool g_mouse_button_pressed;
 
-void draw_cursor(kstl::shared_ptr<canvas>& cvs, int x, int y, uint32_t fill_color, uint32_t border_color) {
+void draw_cursor(kstl::shared_ptr<stella_ui::canvas>& cvs, int x, int y, uint32_t fill_color, uint32_t border_color) {
     static const char* cursor_shape[16] = {
         "X                 ",
         "XX                ",
@@ -40,87 +40,7 @@ void draw_cursor(kstl::shared_ptr<canvas>& cvs, int x, int y, uint32_t fill_colo
     }
 }
 
-void draw_close_button_icon(kstl::shared_ptr<canvas>& cvs, int x, int y, int size, color_t color) {
-    // Draw an "X" icon inside the close button
-    int padding = size / 4;  // Slight padding from edges of the button
-    int x0 = x + padding;
-    int y0 = y + padding;
-    int x1 = x + size - padding;
-    int y1 = y + size - padding;
-
-    // Two diagonal lines forming an "X"
-    cvs->draw_line(x0, y0, x1, y1, color);  // Diagonal line: top-left to bottom-right
-    cvs->draw_line(x0, y1, x1, y0, color);  // Diagonal line: bottom-left to top-right
-}
-
-void draw_window_decorations(kstl::shared_ptr<canvas>& cvs, window* win, 
-    color_t border_color, color_t title_bar_color, 
-    color_t text_color) {
-    // Window properties
-    int border_thickness = 2;
-    int title_bar_height = 24;
-    int x = win->xpos - border_thickness;
-    int y = win->ypos - border_thickness;
-    int width = win->width + border_thickness * 2;
-    int height = win->height + border_thickness * 2 + title_bar_height;
-
-    // Draw the window border
-    cvs->draw_rect(x, y, width, height, border_color);
-
-    // Fill the title bar background
-    cvs->fill_rect(x + border_thickness, y + border_thickness, 
-    width - 2 * border_thickness, title_bar_height, title_bar_color);
-
-    // Draw the close button (a small square on the right of the title bar)
-    int close_button_size = title_bar_height - 8;  // Slight padding from edges
-    int close_button_x = x + width - border_thickness - close_button_size - 2;  // Right-aligned
-    int close_button_y = y + border_thickness + 4;  // Slight padding from top
-
-    cvs->fill_rect(close_button_x, close_button_y, close_button_size, close_button_size, border_color);
-    draw_close_button_icon(cvs, close_button_x, close_button_y, close_button_size, text_color);
-
-    // Draw the window title
-    const char* title = win->title.c_str();
-    int text_x = x + border_thickness + 8;  // Small left padding
-    int text_y = y + (title_bar_height - 10) / 2;  // Center vertically
-    cvs->draw_string(text_x, text_y, title, text_color);
-
-    // Draw the title border
-    cvs->draw_rect(x, y, width, title_bar_height + border_thickness * 2, border_color);
-}
-
-void test_color() {
-    using stella_ui::color;
-
-    // 1. Test the default constructor
-    color default_color;
-    serial::printf("Default color (should be black, opaque): 0x%x\n", default_color.to_argb());
-
-    // 2. Test constructor with components
-    color red_color(255, 0, 0);
-    serial::printf("Red color: 0x%x (A: %d, R: %d, G: %d, B: %d)\n", 
-        red_color.to_argb(), red_color.alpha(), red_color.r(), red_color.g(), red_color.b());
-
-    // 3. Test color from hex string (#RRGGBB format)
-    color green_color = color::from_hex("#00FF00");
-    serial::printf("Green color (from #00FF00): 0x%x\n", green_color.to_argb());
-
-    // 4. Test color from hex string (#AARRGGBB format)
-    color semi_transparent_blue = color::from_hex("#800000FF");
-    serial::printf("Semi-transparent blue (from #800000FF): 0x%x\n", semi_transparent_blue.to_argb());
-}
-
-void test_predefined_colors() {
-    serial::printf("Black color: 0x%x\n", stella_ui::color::black.to_argb());
-    serial::printf("White color: 0x%x\n", stella_ui::color::white.to_argb());
-    serial::printf("Red color: 0x%x\n", stella_ui::color::red.to_argb());
-    serial::printf("Transparent color: 0x%x\n", stella_ui::color::transparent.to_argb());
-}
-
 int main() {
-    test_color();
-    test_predefined_colors();
-
     // Initialize the screen manager
     auto screen = kstl::make_shared<screen_manager>();
     if (!screen->initialize()) {
@@ -128,7 +48,7 @@ int main() {
     }
 
     // Retrieve the primary screen canvas
-    auto cvs = screen->get_canvas();
+    auto cvs = screen->get_screen_canvas();
 
     char cpu_vendor_str[16] = { 0 };
     arch::x86::cpuid_read_vendor_id(cpu_vendor_str);
@@ -137,8 +57,8 @@ int main() {
     char cpu_vendor_display_str_buf[128] = { 0 };
     sprintf(cpu_vendor_display_str_buf, 127, "CPU: %s", cpu_vendor_str);
 
-    auto app = kstl::make_shared<sample_window_app>();
-    app->init();
+    auto app_window = kstl::make_shared<example_window>();
+    app_window->setup();
 
     while (true) {
         uint64_t sys_uptime = kernel_timer::get_system_time_in_seconds();
@@ -150,22 +70,23 @@ int main() {
 
         sprintf(time_str_buf, 127, "System Uptime: %lluh %llum %llus", hours, minutes, seconds);
 
-        app->render();
+        if (g_mouse_button_pressed) {
+            app_window->position.x = g_mouse_cursor_pos_x - 60;
+            app_window->position.y = g_mouse_cursor_pos_y - 6;
+        }
+
+        app_window->draw();
 
         screen->begin_frame();
 
         cvs->draw_string(cvs->width() - 220, 2, time_str_buf, 0xffffffff);
         cvs->draw_string(16, 2, cpu_vendor_display_str_buf, 0xffffffff);
 
-        for (auto window : screen->get_all_windows()) {
-            auto window_canvas = window->get_canvas().get();
-            
-            // Draw window decorations (border, title bar, close button)
-            draw_window_decorations(cvs, window, 0xff000000, 0xff333333, 0xffffffff);
+        app_window->draw_decorations(cvs);
 
-            // Composite the window contents
-            cvs->composite_canvas(window->xpos, window->ypos + 24, window_canvas);  // Offset for title bar
-        }
+        auto window_canvas = app_window->get_canvas().get();
+        auto window_canvas_pos = app_window->get_canvas_position();
+        cvs->composite_canvas(window_canvas_pos.x, window_canvas_pos.y, window_canvas);
 
         draw_cursor(cvs, g_mouse_cursor_pos_x, g_mouse_cursor_pos_y, 0x00000000, 0xffffffff);
 

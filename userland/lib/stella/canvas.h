@@ -5,7 +5,10 @@
 #include <dynpriv/dynpriv.h>
 #include <time/time.h>
 #include <serial/serial.h>
-#include "psf1.h"
+#include "font.h"
+#include "color.h"
+
+namespace stella_ui {
 
 using color_t       = uint32_t;
 using framebuffer_t = modules::gfx_framebuffer_module::framebuffer_t;
@@ -33,8 +36,6 @@ public:
     inline color_t get_background_color() const { return m_backgorund_color; }
     inline void set_background_color(color_t color) { m_backgorund_color = color; }
 
-    inline uint8_t* get_raw_rendering_ctx() { return m_framebuffer.data; }
-
 private:
     framebuffer_t   m_framebuffer;
     psf1_font*      m_font;
@@ -47,6 +48,8 @@ private:
 
     void draw_line_bresenham(int x0, int y0, int x1, int y1, color_t color);
 };
+
+} // namespace stella_ui
 
 #endif // CANVAS_H
 
