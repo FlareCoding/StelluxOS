@@ -3,6 +3,7 @@
 
 uint64_t g_mouse_cursor_pos_x = 100;
 uint64_t g_mouse_cursor_pos_y = 100;
+bool g_mouse_button_pressed = false;
 
 static int32_t parse_signed_field(const uint8_t* data, uint16_t bit_offset, uint16_t bit_size) {
     int32_t value = 0;
@@ -56,9 +57,11 @@ void xhci_usb_hid_mouse_driver::on_device_init() {
 void xhci_usb_hid_mouse_driver::on_device_event(uint8_t* data) {
     int32_t dx = parse_signed_field(data, m_input_layout.x_axis_offset, m_input_layout.x_axis_size);
     int32_t dy = parse_signed_field(data, m_input_layout.y_axis_offset, m_input_layout.y_axis_size);
+    int32_t buttons = parse_signed_field(data, m_input_layout.buttons_offset, m_input_layout.buttons_size);
 
     g_mouse_cursor_pos_x += dx;
     g_mouse_cursor_pos_y += dy;
+    g_mouse_button_pressed = buttons & 1;
 }
 
 void xhci_usb_hid_mouse_driver::_initialize_input_field(

@@ -1,15 +1,12 @@
 #ifndef SAMPLE_WINDOW_APP_H
 #define SAMPLE_WINDOW_APP_H
-#include "window.h"
+#include <stella_ui.h>
 
-class sample_window_app {
+class example_window : public stella_ui::window_base {
 public:
-    bool init();
-    void render();
+    example_window();
 
-private:
-    window* m_window;
-    kstl::shared_ptr<canvas> m_canvas;
+    void draw() override;
 };
 
 #endif // SAMPLE_WINDOW_APP_H

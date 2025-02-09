@@ -2,6 +2,8 @@
 
 #define abs(a) (((a) < 0) ? -(a) : (a))
 
+namespace stella_ui {
+
 canvas::canvas(const modules::gfx_framebuffer_module::framebuffer_t& fb, psf1_font* font)
     : m_framebuffer(fb), m_font(font), m_backgorund_color(0xff222222) {}
 
@@ -295,3 +297,6 @@ void canvas::composite_canvas(int dst_x, int dst_y, canvas* src_canvas) {
         }
     }
 }
+
+} // namespace stella_ui
+
