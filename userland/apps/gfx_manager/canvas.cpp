@@ -235,3 +235,63 @@ void canvas::draw_string(int x, int y, const char* str, color_t color) {
     }
 }
 
+void canvas::composite_canvas(int dst_x, int dst_y, canvas* src_canvas) {
+    // Ensure the source is within bounds of the destination canvas
+    if (dst_x >= (int)width() || dst_y >= (int)height()) {
+        return; // Completely out of bounds
+    }
+
+    auto& src_framebuffer = src_canvas->m_framebuffer;
+
+    // Determine the effective copy region (clipping)
+    int src_width = src_framebuffer.width;
+    int src_height = src_framebuffer.height;
+    int copy_width = kstl::min(src_width, (int)width() - dst_x);
+    int copy_height = kstl::min(src_height, (int)height() - dst_y);
+
+    // Adjust for negative dst_x or dst_y (partial out-of-bounds cases)
+    int x_offset = (dst_x < 0) ? -dst_x : 0;
+    int y_offset = (dst_y < 0) ? -dst_y : 0;
+
+    dst_x = kstl::max(0, dst_x);
+    dst_y = kstl::max(0, dst_y);
+
+    // Optimization path: if bpp matches, perform fast row-by-row memcpy
+    if (m_framebuffer.bpp == src_framebuffer.bpp) {
+        for (int y = y_offset; y < copy_height; ++y) {
+            uint8_t* src_row = src_framebuffer.data + y * src_framebuffer.pitch;
+            uint8_t* dst_row = m_framebuffer.data + (dst_y + y) * m_framebuffer.pitch + dst_x * (m_framebuffer.bpp / 8);
+
+            memcpy(dst_row, src_row + x_offset * (src_framebuffer.bpp / 8), copy_width * (src_framebuffer.bpp / 8));
+        }
+    } else {
+        // Fallback path: copy pixel by pixel and convert between formats if needed
+        for (int y = y_offset; y < copy_height; ++y) {
+            for (int x = x_offset; x < copy_width; ++x) {
+                // Calculate pixel position in the source framebuffer
+                int src_offset = y * src_framebuffer.pitch + x * (src_framebuffer.bpp / 8);
+                
+                color_t src_color = 0;
+                switch (src_framebuffer.bpp) {
+                    case 8:
+                        src_color = src_framebuffer.data[src_offset];
+                        break;
+                    case 16:
+                        src_color = *(uint16_t*)(src_framebuffer.data + src_offset);
+                        break;
+                    case 24:
+                        src_color = src_framebuffer.data[src_offset] |
+                                    (src_framebuffer.data[src_offset + 1] << 8) |
+                                    (src_framebuffer.data[src_offset + 2] << 16);
+                        break;
+                    case 32:
+                        src_color = *(uint32_t*)(src_framebuffer.data + src_offset);
+                        break;
+                }
+
+                // Draw the pixel on the destination canvas
+                draw_pixel(dst_x + x, dst_y + y, src_color);
+            }
+        }
+    }
+}

@@ -25,11 +25,15 @@ public:
     void draw_char(int x, int y, char c, color_t color);
     void draw_string(int x, int y, const char* str, color_t color);
 
+    void composite_canvas(int dst_x, int dst_y, canvas* src_canvas);
+
     inline uint32_t width() const  { return m_framebuffer.width; }
     inline uint32_t height() const { return m_framebuffer.height; }
 
     inline color_t get_background_color() const { return m_backgorund_color; }
     inline void set_background_color(color_t color) { m_backgorund_color = color; }
+
+    inline uint8_t* get_raw_rendering_ctx() { return m_framebuffer.data; }
 
 private:
     framebuffer_t   m_framebuffer;
