@@ -2,6 +2,7 @@
 #include <arch/x86/cpuid.h>
 
 #include "sample_window_app.h"
+#include <test.h>
 
 extern uint64_t g_mouse_cursor_pos_x;
 extern uint64_t g_mouse_cursor_pos_y;
@@ -89,6 +90,8 @@ void draw_window_decorations(kstl::shared_ptr<canvas>& cvs, window* win,
 }
 
 int main() {
+    test_fn(4554);
+
     // Initialize the screen manager
     auto screen = kstl::make_shared<screen_manager>();
     if (!screen->initialize()) {
