@@ -27,7 +27,10 @@ COMMON_CXXFLAGS := -m64 -g -O0 $(PREPROCESSOR_DEFINES) \
 				   -std=c++17 -mno-red-zone $(KERNEL_INCLUDES) -fno-pie -fno-pic -mcmodel=large
 
 COMMON_LDFLAGS  := -T $(USERLAND_LINKER_SCRIPT) -nostdlib -z max-page-size=0x1000 -no-pie \
-				   --just-symbols=$(KERNEL_ELF) -L$(USERLAND_DIR)/lib -lstellux_crt
+				   --just-symbols=$(KERNEL_ELF) -L$(USERLAND_DIR)/lib/crt -lstellux_crt
+
+export CXXFLAGS := $(COMMON_CXXFLAGS)
+export LDFLAGS := $(COMMON_LDFLAGS)
 
 # =========================
 # Targets
@@ -47,7 +50,7 @@ check-kernel:
 
 build-libs:
 	@echo "Building userland libraries..."
-	$(MAKE) -C $(USERLAND_DIR)/lib
+	@$(MAKE) -C $(USERLAND_DIR)/lib CXXFLAGS="$(COMMON_CXXFLAGS)" LDFLAGS="$(COMMON_LDFLAGS)"
 
 build-apps:
 	@echo "Building all userland applications..."
@@ -57,9 +60,7 @@ build-apps:
 			BIN_DIR=$$app/bin; \
 			$(MAKE) -C $$app \
 				CXX="$(CXX)" \
-				CXXFLAGS="$(COMMON_CXXFLAGS)" \
 				LD="$(LD)" \
-				LDFLAGS="$(COMMON_LDFLAGS)" \
 				OBJ_DIR=$$OBJ_DIR \
 				BIN_DIR=$$BIN_DIR || exit 1; \
 		fi \

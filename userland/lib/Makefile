@@ -1,26 +1,16 @@
-# Tools
-CXX        := g++
-AS         := as
-AR         := ar
-RM         := rm
-
-ASFLAGS    := --64 -g -O0 -nostdlib -fno-pie -fno-pic
-
-# The objects and final library to produce
-CRT_OBJS   := stellux_crt.o
-CRT_LIB    := libstellux_crt.a
+# List of library directories inside lib/
+LIB_DIRS := $(shell find . -mindepth 1 -maxdepth 1 -type d)
 
 .PHONY: all clean
 
-all: $(CRT_LIB)
-
-%.o: %.S
-	@echo "[AS ] Assembling $<"
-	@$(AS) $(ASFLAGS) -c $< -o $@
-
-$(CRT_LIB): $(CRT_OBJS)
-	@echo "[AR ] Creating static library archive $<"
-	@$(AR) rcs $(CRT_LIB) $(CRT_OBJS)
+all:
+	@for dir in $(LIB_DIRS); do \
+		echo "[BUILD] Building library in $$dir..."; \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
 clean:
-	$(RM) -f $(CRT_OBJS) $(CRT_LIB)
+	@for dir in $(LIB_DIRS); do \
+		echo "[CLEAN] Cleaning library in $$dir..."; \
+		$(MAKE) -C $$dir clean || exit 1; \
+	done

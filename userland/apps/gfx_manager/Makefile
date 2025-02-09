@@ -9,6 +9,14 @@ TARGET := $(BIN_DIR)/gfx_manager
 SRCS := $(wildcard *.cpp)
 OBJS := $(addprefix $(OBJ_DIR)/, $(SRCS:.cpp=.o))
 
+# Paths to libraries
+LIB_DIR := ../../lib/stella/lib
+INCLUDE_DIR := ../../lib/stella
+
+# CXXFLAGS and LDFLAGS
+CXXFLAGS += -I$(INCLUDE_DIR)
+LDFLAGS += -L$(LIB_DIR) -lstella_ui
+
 .PHONY: all clean
 
 all: $(TARGET)
@@ -17,7 +25,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	@mkdir -p $(BIN_DIR)
 	@echo "[LD] Linking $@"
-	@$(LD) $(LDFLAGS) -o $@ $^
+	@$(LD) -o $@ $^ $(LDFLAGS)
 
 # Compiling the source files into the object directory
 $(OBJ_DIR)/%.o: %.cpp
