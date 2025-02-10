@@ -1,7 +1,7 @@
 #include <ipc/mq.h>
 
 namespace ipc {
-mq_handle_t message_queue::s_available_mq_id = 1;
+mq_handle_t message_queue::s_available_mq_id = 0;
 mutex message_queue::s_queue_map_lock = mutex();
 
 kstl::hashmap<kstl::string, mq_handle_t> message_queue::s_mq_name_mappings;
@@ -9,6 +9,13 @@ kstl::hashmap<mq_handle_t, kstl::shared_ptr<message_queue>> message_queue::s_mes
 
 mq_handle_t message_queue::create(const kstl::string& name) {
     mutex_guard guard(s_queue_map_lock);
+
+    if (s_available_mq_id == 0) {
+        s_mq_name_mappings = kstl::hashmap<kstl::string, mq_handle_t>();
+        s_message_queue_map = kstl::hashmap<mq_handle_t, kstl::shared_ptr<message_queue>>();
+        
+        s_available_mq_id++;
+    }
 
     if (s_mq_name_mappings.find(name)) {
         return MESSAGE_QUEUE_ID_INVALID;
