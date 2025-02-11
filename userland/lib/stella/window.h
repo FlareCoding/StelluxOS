@@ -13,7 +13,7 @@ public:
 
     void draw_decorations(kstl::shared_ptr<canvas>& cvs);
 
-    virtual void draw() = 0;
+    virtual void draw() {}
 
     point position;
     size window_size;
