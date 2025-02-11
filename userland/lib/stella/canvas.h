@@ -36,6 +36,8 @@ public:
     inline color_t get_background_color() const { return m_backgorund_color; }
     inline void set_background_color(color_t color) { m_backgorund_color = color; }
 
+    inline framebuffer_t& get_native_framebuffer() { return m_framebuffer; }
+
 private:
     framebuffer_t   m_framebuffer;
     psf1_font*      m_font;

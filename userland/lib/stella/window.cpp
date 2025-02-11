@@ -1,4 +1,5 @@
 #include "window.h"
+#include <memory/paging.h>
 
 namespace stella_ui {
 bool window_base::setup() {

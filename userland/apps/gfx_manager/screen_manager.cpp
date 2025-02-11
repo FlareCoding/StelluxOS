@@ -1,5 +1,6 @@
 #include "screen_manager.h"
 #include <arch/x86/cpuid.h>
+#include <memory/paging.h>
 
 extern uint64_t g_mouse_cursor_pos_x;
 extern uint64_t g_mouse_cursor_pos_y;
@@ -203,9 +204,20 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
         }
         break;
     }
-    case STELLA_COMMAND_ID_RENDER_CONTENT: {
+    case STELLA_COMMAND_ID_MAP_CANVAS: {
         auto window = user_session.window;
-        window->get_canvas()->clear();
+        auto canvas = window->get_canvas();
+        auto fb = canvas->get_native_framebuffer();
+
+        size_t bytes_allocated = fb.pitch * fb.height;
+        size_t page_size = PAGE_SIZE;
+        size_t pages_used = (bytes_allocated + page_size - 1) / PAGE_SIZE;
+
+        serial::printf("Framebuffer info: %llu bytes, using %llu pages\n", bytes_allocated, pages_used);
+        serial::printf("virtual framebuffer address  : 0x%llx\n", fb.data);
+        RUN_ELEVATED({
+            serial::printf("physical framebuffer address : 0x%llx\n", paging::get_physical_address(fb.data));
+        });
         break;
     }
     default: {

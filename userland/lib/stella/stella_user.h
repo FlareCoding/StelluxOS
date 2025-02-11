@@ -2,6 +2,7 @@
 #define STELLA_USER_H
 #include <string.h>
 #include "color.h"
+#include "canvas.h"
 
 namespace stella_ui {
 enum class compositor_event : uint64_t {
@@ -20,7 +21,7 @@ bool create_window(
     const color& bg_color = color::dark_gray
 );
 
-bool render_content();
+bool request_map_window_canvas(kstl::shared_ptr<canvas>& out_canvas);
 
 bool peek_compositor_events();
 
