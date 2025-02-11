@@ -28,6 +28,7 @@ public:
     static const color cyan;
     static const color magenta;
     static const color gray;
+    static const color dark_gray;
     static const color transparent;
 
 private:

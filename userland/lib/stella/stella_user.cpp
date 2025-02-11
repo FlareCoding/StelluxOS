@@ -55,13 +55,14 @@ bool connect_to_compositor() {
     return true;
 }
 
-bool create_window(uint32_t width, uint32_t height, const kstl::string& title) {
+bool create_window(uint32_t width, uint32_t height, const kstl::string& title, const color& bg_color) {
     internal::userlib_request_create_window req;
     zeromem(&req, sizeof(internal::userlib_request_create_window));
 
     req.header.type = STELLA_COMMAND_ID_CREATE_WINDOW;
     req.width = width;
     req.height = height;
+    req.bg_color = bg_color.to_argb();
     memcpy(req.title, title.data(), kstl::min(sizeof(req.title) - 1, title.length()));
 
     if (!_send_compositor_request(&req, sizeof(internal::userlib_request_create_window))) {

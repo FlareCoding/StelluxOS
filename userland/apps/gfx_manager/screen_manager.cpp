@@ -210,7 +210,7 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
             .height = req->height
         };
         window->title = req->title;
-        window->background_color = stella_ui::color(77, 93, 97);
+        window->background_color = stella_ui::color(req->bg_color);
         if (window->setup()) {
             serial::printf("[GFX_MANAGER] Successfully created user window\n");
             m_window_list.push_back(window);
