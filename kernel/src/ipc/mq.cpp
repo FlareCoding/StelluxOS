@@ -82,21 +82,29 @@ message_queue* message_queue::_get_mq_object(mq_handle_t handle) {
 }
 
 bool message_queue::_post_message(mq_message* message) {
-    // Allocate memory for the new message (variable payload size)
-    mq_message* new_message = (mq_message*) new uint8_t[sizeof(mq_message) + message->payload_size];
+    // Allocate memory for the new message
+    mq_message* new_message = new mq_message;
     if (!new_message) {
-        return false; // Allocation failed
+        return false;  // Allocation failed
     }
 
-    // Copy the message and payload
-    new_message->message_id = m_next_message_id++;
+    // Allocate memory for the payload
     new_message->payload_size = message->payload_size;
+    new_message->payload = new uint8_t[message->payload_size];
+    if (!new_message->payload) {
+        delete new_message;
+        return false;  // Allocation failed
+    }
+
+    // Copy the message data and payload
+    new_message->message_id = m_next_message_id++;
     memcpy(new_message->payload, message->payload, message->payload_size);
 
     // Create a new node to hold the message
     mq_node* new_node = new mq_node;
     if (!new_node) {
-        delete[] (uint8_t*) new_message;
+        delete[] new_message->payload;
+        delete new_message;
         return false;
     }
 
@@ -108,11 +116,9 @@ bool message_queue::_post_message(mq_message* message) {
 
     // Append the new node to the end of the queue
     if (!m_tail) {
-        // If the queue is empty, set both head and tail
         m_head = new_node;
         m_tail = new_node;
     } else {
-        // Append to the end of the list
         m_tail->next = new_node;
         m_tail = new_node;
     }
@@ -131,7 +137,7 @@ bool message_queue::_get_message(mq_message* out_message) {
     mutex_guard guard(m_lock);
 
     if (!m_head) {
-        return false; // Queue is empty
+        return false;  // Queue is empty
     }
 
     // Get the node at the head of the queue
@@ -139,16 +145,28 @@ bool message_queue::_get_message(mq_message* out_message) {
     m_head = node->next;
 
     if (!m_head) {
-        m_tail = nullptr; // Queue is now empty
+        m_tail = nullptr;  // Queue is now empty
     }
 
-    // Copy the message contents to the caller’s buffer
+    // Copy the message metadata
     out_message->message_id = node->message->message_id;
     out_message->payload_size = node->message->payload_size;
+
+    // Allocate memory for the payload in the output message
+    out_message->payload = new uint8_t[node->message->payload_size];
+    if (!out_message->payload) {
+        delete node->message->payload;
+        delete node->message;
+        delete node;
+        return false;  // Allocation failed
+    }
+
+    // Copy the payload
     memcpy(out_message->payload, node->message->payload, node->message->payload_size);
 
     // Free the message and node memory
-    delete[] (uint8_t*) node->message;
+    delete[] node->message->payload;
+    delete node->message;
     delete node;
 
     return true;
