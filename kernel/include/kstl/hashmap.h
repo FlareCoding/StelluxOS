@@ -1,6 +1,7 @@
 #ifndef HASHMAP_H
 #define HASHMAP_H
 #include "kstl_primitive.h"
+#include "vector.h"
 #include <memory/memory.h>
 #include <string.h>
 
@@ -110,6 +111,13 @@ public:
      * @return Reference to the value associated with the key.
      */
     V& operator[](const K& key);
+
+    /**
+    * @brief Retrieves all keys in the hashmap as a kstl::vector.
+    * 
+    * @return A kstl::vector containing all keys.
+    */
+    kstl::vector<K> keys() const;
 
 private:
     /**
@@ -364,6 +372,22 @@ V& hashmap<K, V>::operator[](const K& key) {
     }
 
     return new_node->value;
+}
+
+template <typename K, typename V>
+kstl::vector<K> hashmap<K, V>::keys() const {
+    kstl::vector<K> key_list;
+    // If your kstl::vector supports reserve, do so for efficiency
+    key_list.reserve(m_size);
+
+    for (size_t i = 0; i < m_bucket_count; ++i) {
+        node* curr_node = m_buckets[i];
+        while (curr_node) {
+            key_list.push_back(curr_node->key);
+            curr_node = curr_node->next;
+        }
+    }
+    return key_list;
 }
 
 /**
