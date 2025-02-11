@@ -15,7 +15,6 @@ int main() {
         screen->draw_screen_overlays();
 
         screen->end_frame();
-        screen->send_paint_notifications();
 
         // ~16 ms == ~60 FPS
         msleep(8);
