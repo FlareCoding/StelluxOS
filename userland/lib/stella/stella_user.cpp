@@ -10,6 +10,8 @@ ipc::mq_handle_t g_outbound_connection_id = MESSAGE_QUEUE_ID_INVALID;
 ipc::mq_handle_t g_inbound_connection_id = MESSAGE_QUEUE_ID_INVALID;
 
 bool _send_compositor_request(void* req, size_t size);
+bool _get_compositor_response(void* resp);
+bool _wait_for_ack_response();
 
 bool connect_to_compositor() {
     // Connect to the gfx_manager_process message queue
@@ -45,28 +47,7 @@ bool connect_to_compositor() {
     }
 
     // At this point we've sent the request and need to wait for the ACK message
-    retries = 20;
-    while (retries > 0) {
-        if (!ipc::message_queue::peek_message(g_inbound_connection_id)) {
-            msleep(100);
-            --retries;
-            continue;
-        }
-
-        break;
-    }
-
-    // Read and verify the ACK
-    ipc::mq_message msg;
-    if (!ipc::message_queue::get_message(g_inbound_connection_id, &msg)) {
-        return false;
-    }
-
-    if (msg.payload_size != 4) {
-        return false;
-    }
-
-    if (strcmp((const char*)msg.payload, "ACK") != 0) {
+    if (!_wait_for_ack_response()) {
         return false;
     }
 
@@ -92,5 +73,42 @@ bool _send_compositor_request(void* req, size_t size) {
     msg.payload = reinterpret_cast<uint8_t*>(req);
 
     return ipc::message_queue::post_message(g_outbound_connection_id, &msg);
+}
+
+bool _get_compositor_response(ipc::mq_message& resp) {
+    uint32_t retries = 20;
+    while (retries > 0) {
+        if (!ipc::message_queue::peek_message(g_inbound_connection_id)) {
+            msleep(100);
+            --retries;
+            continue;
+        }
+
+        break;
+    }
+
+    // Read and verify the ACK
+    if (!ipc::message_queue::get_message(g_inbound_connection_id, &resp)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool _wait_for_ack_response() {
+    ipc::mq_message resp;
+    if (!_get_compositor_response(resp)) {
+        return false;
+    }
+
+    if (resp.payload_size != 4) {
+        return false;
+    }
+
+    if (strcmp((const char*)resp.payload, "ACK") != 0) {
+        return false;
+    }
+
+    return true;
 }
 } // namespace stella_ui
