@@ -67,7 +67,18 @@ bool create_window(uint32_t width, uint32_t height, const kstl::string& title) {
     return _send_compositor_request(&req, sizeof(internal::userlib_request_create_window));
 }
 
+bool render_content() {
+    internal::userlib_request_render_content req;
+    zeromem(&req, sizeof(internal::userlib_request_header));
+
+    req.header.type = STELLA_COMMAND_ID_RENDER_CONTENT;
+
+    return _send_compositor_request(&req, sizeof(internal::userlib_request_header));
+}
+
 bool _send_compositor_request(void* req, size_t size) {
+    reinterpret_cast<internal::userlib_request_header*>(req)->session_id = g_inbound_connection_id;
+
     ipc::mq_message msg;
     msg.payload_size = size;
     msg.payload = reinterpret_cast<uint8_t*>(req);

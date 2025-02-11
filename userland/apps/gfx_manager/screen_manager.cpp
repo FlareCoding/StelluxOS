@@ -173,6 +173,7 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
     using namespace stella_ui::internal;
 
     auto hdr = reinterpret_cast<userlib_request_header*>(payload);
+    auto& user_session = m_user_sessions[hdr->session_id];
 
     switch (hdr->type) {
     case STELLA_COMMAND_ID_CREATE_SESSION: {
@@ -190,10 +191,19 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
             .height = req->height
         };
         window->title = req->title;
+        window->background_color = stella_ui::color(77, 93, 97);
         if (window->setup()) {
             serial::printf("[GFX_MANAGER] Successfully created user window\n");
             m_window_list.push_back(window);
+            user_session.window = window;
         }
+        break;
+    }
+    case STELLA_COMMAND_ID_RENDER_CONTENT: {
+        auto window = user_session.window;
+        window->get_canvas()->clear();
+
+        serial::printf("[GFX_MANAGER] Rendered content!\n");
         break;
     }
     default: {
