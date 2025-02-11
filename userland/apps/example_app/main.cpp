@@ -2,9 +2,7 @@
 #include <serial/serial.h>
 #include <time/time.h>
 
-struct test_msg {
-    uint64_t secret;
-};
+#include <internal/commands.h>
 
 int main() {
     ipc::mq_handle_t queue = MESSAGE_QUEUE_ID_INVALID;
@@ -14,13 +12,20 @@ int main() {
     }
 
     serial::printf("[EXAMPLE_APP] Connected to gfx manager message queue!\n");
+    sleep(2);
 
-    test_msg content;
-    content.secret = 4554;
+    stella_ui::internal::userlib_request_create_window req;
+    zeromem(&req, sizeof(stella_ui::internal::userlib_request_create_window));
+
+    req.header.type = STELLA_COMMAND_ID_CREATE_WINDOW;
+    req.header.size = sizeof(stella_ui::internal::userlib_request_create_window);
+    req.width = 480;
+    req.height = 360;
+    strcpy(req.title, "Demo");
 
     ipc::mq_message msg;
-    msg.payload_size = sizeof(test_msg);
-    msg.payload = (uint8_t*)&content;
+    msg.payload_size = sizeof(stella_ui::internal::userlib_request_create_window);
+    msg.payload = reinterpret_cast<uint8_t*>(&req);
 
     ipc::message_queue::post_message(queue, &msg);
 
