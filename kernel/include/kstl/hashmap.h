@@ -2,6 +2,7 @@
 #define HASHMAP_H
 #include "kstl_primitive.h"
 #include <memory/memory.h>
+#include <string.h>
 
 namespace kstl {
 
@@ -140,6 +141,14 @@ private:
      * @return The computed hash value.
      */
     size_t _default_hash(uint64_t key) const;
+
+    /**
+     * @brief Default hash function for string keys.
+     * 
+     * @param key The key to hash.
+     * @return The computed hash value.
+     */
+    size_t _default_hash(const kstl::string& key) const;
 
     /**
      * @brief Fallback hash function for other key types.
@@ -376,6 +385,20 @@ size_t hashmap<K, V>::_default_hash(uint64_t key) const {
     key *= 0xc4ceb9fe1a85ec53;
     key ^= (key >> 33);
     return key;
+}
+
+/**
+ * @copydoc hashmap::_default_hash(const kstl::string&) const
+ */
+template <typename K, typename V>
+size_t hashmap<K, V>::_default_hash(const kstl::string& key) const {
+    const char* str = key.c_str();  // Assuming kstl::string has this method
+    size_t hash = 0;
+    while (*str) {
+        hash = (hash * 31) + static_cast<size_t>(*str);
+        ++str;
+    }
+    return hash;
 }
 
 /**
