@@ -30,5 +30,9 @@ int main() {
         return -1;
     }
 
+    if (!start_process("/initrd/bin/example_app")) {
+        return -1;
+    }
+
     return 0;
 }
