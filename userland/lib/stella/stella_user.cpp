@@ -76,11 +76,11 @@ bool create_window(uint32_t width, uint32_t height, const kstl::string& title, c
     return true;
 }
 
-bool render_content() {
-    internal::userlib_request_render_content req;
+bool request_map_window_canvas(kstl::shared_ptr<canvas>& out_canvas) {
+    internal::userlib_request_header req;
     zeromem(&req, sizeof(internal::userlib_request_header));
 
-    req.header.type = STELLA_COMMAND_ID_RENDER_CONTENT;
+    req.type = STELLA_COMMAND_ID_MAP_CANVAS;
 
     return _send_compositor_request(&req, sizeof(internal::userlib_request_header));
 }

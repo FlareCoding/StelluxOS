@@ -18,5 +18,11 @@ int main() {
         return -1;
     }
 
+    kstl::shared_ptr<stella_ui::canvas> canvas;
+    if (!stella_ui::request_map_window_canvas(canvas)) {
+        serial::printf("[EXAMPLE_APP] Failed to map window canvas\n");
+        return -1;
+    }
+
     return 0;
 }
