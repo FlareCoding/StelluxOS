@@ -3,6 +3,12 @@
 #include <stella_ui.h>
 #include <kstl/vector.h>
 #include <ipc/mq.h>
+#include <internal/commands.h>
+
+struct user_session {
+    ipc::mq_handle_t handle;
+    stella_ui::window_base* window;
+};
 
 class screen_manager {
 public:
@@ -22,7 +28,8 @@ public:
 private:
     modules::module_base* m_gfx_module;
     kstl::shared_ptr<stella_ui::canvas> m_screen_canvas;
-    kstl::vector<stella_ui::window_base*> m_window_registry;
+    kstl::hashmap<ipc::mq_handle_t, user_session> m_user_sessions;
+    kstl::vector<stella_ui::window_base*> m_window_list;
 
     ipc::mq_handle_t m_incoming_event_queue;
 
@@ -31,7 +38,7 @@ private:
 
     void _process_event(uint8_t* payload, size_t payload_size);
 
-    void _register_window(stella_ui::window_base* wnd);
+    bool _establish_user_session(stella_ui::internal::userlib_request_create_session* req);
 };
 
 #endif // SCREEN_MANAGER_H

@@ -1,8 +1,6 @@
 #include "screen_manager.h"
 #include <arch/x86/cpuid.h>
 
-#include <internal/commands.h>
-
 extern uint64_t g_mouse_cursor_pos_x;
 extern uint64_t g_mouse_cursor_pos_y;
 
@@ -49,7 +47,7 @@ void screen_manager::end_frame() {
 }
 
 void screen_manager::composite_windows() {
-    for (auto window : m_window_registry) {
+    for (auto window : m_window_list) {
         // Render window content into its canvas
         window->draw();
 
@@ -93,7 +91,6 @@ void screen_manager::poll_events() {
             break;
         }
 
-        serial::printf("[GFX_MANAGER] Received event with ID %u!\n", request.message_id);
         _process_event(request.payload, request.payload_size);
     }
 }
@@ -173,9 +170,17 @@ void screen_manager::_draw_mouse_cursor() {
 }
 
 void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
-    auto hdr = reinterpret_cast<stella_ui::internal::userlib_request_header*>(payload);
-    if (hdr->type == STELLA_COMMAND_ID_CREATE_WINDOW) {
-        auto req = reinterpret_cast<stella_ui::internal::userlib_request_create_window*>(payload);
+    using namespace stella_ui::internal;
+
+    auto hdr = reinterpret_cast<userlib_request_header*>(payload);
+
+    switch (hdr->type) {
+    case STELLA_COMMAND_ID_CREATE_SESSION: {
+        _establish_user_session(reinterpret_cast<userlib_request_create_session*>(payload));
+        break;
+    }
+    case STELLA_COMMAND_ID_CREATE_WINDOW: {
+        auto req = reinterpret_cast<userlib_request_create_window*>(payload);
 
         stella_ui::window_base* window = new stella_ui::window_base();
         window->position.x = 100;
@@ -186,12 +191,54 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
         };
         window->title = req->title;
         if (window->setup()) {
-            _register_window(window);
+            serial::printf("[GFX_MANAGER] Successfully created user window\n");
+            m_window_list.push_back(window);
         }
+        break;
+    }
+    default: {
+        serial::printf("[GFX_MANAGER] Unknown command received: 0x%llx\n", hdr->type);
+        break;
+    }
     }
 }
 
-void screen_manager::_register_window(stella_ui::window_base* wnd) {
-    m_window_registry.push_back(wnd);
+bool screen_manager::_establish_user_session(stella_ui::internal::userlib_request_create_session* req) {
+    // Connect to the user session message queue
+    uint32_t retries = 20;
+    ipc::mq_handle_t handle = MESSAGE_QUEUE_ID_INVALID;
+    while (handle == MESSAGE_QUEUE_ID_INVALID && retries > 0) {
+        handle = ipc::message_queue::open(req->name);
+
+        if (handle == MESSAGE_QUEUE_ID_INVALID) {
+            msleep(100);
+            --retries;
+        }
+    }
+
+    if (handle == MESSAGE_QUEUE_ID_INVALID) {
+        serial::printf("[GFX_MANAGER] Failed to connect to user session '%s'\n", req->name);
+        return false;
+    }
+
+    user_session session;
+    zeromem(&session, sizeof(user_session));
+
+    session.handle = handle;
+    m_user_sessions[handle] = session;
+
+    char ack_str[4] = { 'A', 'C', 'K', '\0' };
+    
+    ipc::mq_message ack;
+    ack.payload_size = 4;
+    ack.payload = reinterpret_cast<uint8_t*>(ack_str);
+
+    if (!ipc::message_queue::post_message(handle, &ack)) {
+        serial::printf("[GFX_MANAGER] Failed to send ACK to user session '%s'\n", req->name);
+        return false;
+    }
+
+    serial::printf("[GFX_MANAGER] Connected to user session '%s'\n", req->name);
+    return true;
 }
 
