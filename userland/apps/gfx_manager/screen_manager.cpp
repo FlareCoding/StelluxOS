@@ -84,6 +84,25 @@ void screen_manager::draw_screen_overlays() {
     _draw_mouse_cursor();
 }
 
+void screen_manager::send_paint_notifications() {
+    for (auto& session_id : m_user_sessions.keys()) {
+        auto& session = m_user_sessions[session_id];
+        
+        // Only send paint notifications to sessions with established windows
+        if (!session.window) {
+            continue;
+        }
+
+        auto paint_event = stella_ui::compositor_event::comp_evt_paint;
+
+        ipc::mq_message evt;
+        evt.payload_size = sizeof(stella_ui::compositor_event);
+        evt.payload = reinterpret_cast<uint8_t*>(&paint_event);
+
+        ipc::message_queue::post_message(session.handle, &evt);
+    }
+}
+
 void screen_manager::poll_events() {
     while (ipc::message_queue::peek_message(m_incoming_event_queue)) {
         ipc::mq_message request;
@@ -196,14 +215,16 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
             serial::printf("[GFX_MANAGER] Successfully created user window\n");
             m_window_list.push_back(window);
             user_session.window = window;
+
+            _send_ack_to_session(user_session.handle);
+        } else {
+            _send_nack_to_session(user_session.handle);
         }
         break;
     }
     case STELLA_COMMAND_ID_RENDER_CONTENT: {
         auto window = user_session.window;
         window->get_canvas()->clear();
-
-        serial::printf("[GFX_MANAGER] Rendered content!\n");
         break;
     }
     default: {
@@ -237,13 +258,7 @@ bool screen_manager::_establish_user_session(stella_ui::internal::userlib_reques
     session.handle = handle;
     m_user_sessions[handle] = session;
 
-    char ack_str[4] = { 'A', 'C', 'K', '\0' };
-    
-    ipc::mq_message ack;
-    ack.payload_size = 4;
-    ack.payload = reinterpret_cast<uint8_t*>(ack_str);
-
-    if (!ipc::message_queue::post_message(handle, &ack)) {
+    if (!_send_ack_to_session(handle)) {
         serial::printf("[GFX_MANAGER] Failed to send ACK to user session '%s'\n", req->name);
         return false;
     }
@@ -252,3 +267,30 @@ bool screen_manager::_establish_user_session(stella_ui::internal::userlib_reques
     return true;
 }
 
+bool screen_manager::_send_ack_to_session(ipc::mq_handle_t session_id) {
+    char ack_str[4] = { 'A', 'C', 'K', '\0' };
+    
+    ipc::mq_message ack;
+    ack.payload_size = 4;
+    ack.payload = reinterpret_cast<uint8_t*>(ack_str);
+
+    if (!ipc::message_queue::post_message(session_id, &ack)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool screen_manager::_send_nack_to_session(ipc::mq_handle_t session_id) {
+    char nack_str[5] = { 'N', 'A', 'C', 'K', '\0' };
+    
+    ipc::mq_message nack;
+    nack.payload_size = 5;
+    nack.payload = reinterpret_cast<uint8_t*>(nack_str);
+
+    if (!ipc::message_queue::post_message(session_id, &nack)) {
+        return false;
+    }
+
+    return true;
+}
