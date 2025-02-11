@@ -18,5 +18,12 @@ int main() {
         return -1;
     }
 
+    sleep(1);
+
+    if (!stella_ui::render_content()) {
+        serial::printf("[EXAMPLE_APP] Failed to render content\n");
+        return -1;
+    }
+
     return 0;
 }
