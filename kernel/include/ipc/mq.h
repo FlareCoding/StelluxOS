@@ -12,7 +12,7 @@ using mq_handle_t = uint64_t;
 struct mq_message {
     uint64_t message_id;
     size_t payload_size;
-    uint8_t payload[];
+    uint8_t* payload;
 };
 
 struct mq_node {
