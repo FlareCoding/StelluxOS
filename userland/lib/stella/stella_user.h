@@ -13,7 +13,12 @@ using window_handle_t = uint64_t;
 
 bool connect_to_compositor();
 
-bool create_window(uint32_t width, uint32_t height, const kstl::string& title);
+bool create_window(
+    uint32_t width,
+    uint32_t height,
+    const kstl::string& title,
+    const color& bg_color = color::dark_gray
+);
 
 bool render_content();
 

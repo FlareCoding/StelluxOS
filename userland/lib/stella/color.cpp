@@ -10,6 +10,7 @@ const color color::yellow       = color(255, 255, 0);
 const color color::cyan         = color(0, 255, 255);
 const color color::magenta      = color(255, 0, 255);
 const color color::gray         = color(128, 128, 128);
+const color color::dark_gray    = color(60, 60, 60);
 const color color::transparent  = color(0, 0, 0, 0);
 
 // Default constructor (black, fully opaque)

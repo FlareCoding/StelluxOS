@@ -21,6 +21,7 @@ struct userlib_request_create_window {
     userlib_request_header header;
     uint32_t width;
     uint32_t height;
+    uint32_t bg_color;
     char title[128];
 };
 
