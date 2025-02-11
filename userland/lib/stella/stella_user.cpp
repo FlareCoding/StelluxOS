@@ -64,7 +64,15 @@ bool create_window(uint32_t width, uint32_t height, const kstl::string& title) {
     req.height = height;
     memcpy(req.title, title.data(), kstl::min(sizeof(req.title) - 1, title.length()));
 
-    return _send_compositor_request(&req, sizeof(internal::userlib_request_create_window));
+    if (!_send_compositor_request(&req, sizeof(internal::userlib_request_create_window))) {
+        return false;
+    }
+
+    if (!_wait_for_ack_response()) {
+        return false;
+    }
+
+    return true;
 }
 
 bool render_content() {
@@ -74,6 +82,26 @@ bool render_content() {
     req.header.type = STELLA_COMMAND_ID_RENDER_CONTENT;
 
     return _send_compositor_request(&req, sizeof(internal::userlib_request_header));
+}
+
+bool peek_compositor_events() {
+    return ipc::message_queue::peek_message(g_inbound_connection_id);
+}
+
+compositor_event get_compositor_event() {
+    ipc::mq_message msg;
+    if (!ipc::message_queue::get_message(g_inbound_connection_id, &msg)) {
+        return compositor_event::invalid;
+    }
+
+    if (msg.payload_size != sizeof(compositor_event)) {
+        return compositor_event::invalid;
+    }
+
+    // Get the event code
+    uint64_t evt_code = *reinterpret_cast<uint64_t*>(msg.payload);
+
+    return static_cast<compositor_event>(evt_code);
 }
 
 bool _send_compositor_request(void* req, size_t size) {

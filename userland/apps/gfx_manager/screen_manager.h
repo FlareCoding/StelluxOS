@@ -3,6 +3,8 @@
 #include <stella_ui.h>
 #include <kstl/vector.h>
 #include <ipc/mq.h>
+
+#include <stella_user.h>
 #include <internal/commands.h>
 
 struct user_session {
@@ -23,6 +25,8 @@ public:
     void composite_windows();
     void draw_screen_overlays();
 
+    void send_paint_notifications();
+
     void poll_events();
 
 private:
@@ -39,6 +43,8 @@ private:
     void _process_event(uint8_t* payload, size_t payload_size);
 
     bool _establish_user_session(stella_ui::internal::userlib_request_create_session* req);
+    bool _send_ack_to_session(ipc::mq_handle_t session_id);
+    bool _send_nack_to_session(ipc::mq_handle_t session_id);
 };
 
 #endif // SCREEN_MANAGER_H
