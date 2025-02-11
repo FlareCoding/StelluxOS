@@ -84,25 +84,6 @@ void screen_manager::draw_screen_overlays() {
     _draw_mouse_cursor();
 }
 
-void screen_manager::send_paint_notifications() {
-    for (auto& session_id : m_user_sessions.keys()) {
-        auto& session = m_user_sessions[session_id];
-        
-        // Only send paint notifications to sessions with established windows
-        if (!session.window) {
-            continue;
-        }
-
-        auto paint_event = stella_ui::compositor_event::comp_evt_paint;
-
-        ipc::mq_message evt;
-        evt.payload_size = sizeof(stella_ui::compositor_event);
-        evt.payload = reinterpret_cast<uint8_t*>(&paint_event);
-
-        ipc::message_queue::post_message(session.handle, &evt);
-    }
-}
-
 void screen_manager::poll_events() {
     while (ipc::message_queue::peek_message(m_incoming_event_queue)) {
         ipc::mq_message request;

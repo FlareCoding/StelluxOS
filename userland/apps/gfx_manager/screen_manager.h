@@ -25,8 +25,6 @@ public:
     void composite_windows();
     void draw_screen_overlays();
 
-    void send_paint_notifications();
-
     void poll_events();
 
 private:
