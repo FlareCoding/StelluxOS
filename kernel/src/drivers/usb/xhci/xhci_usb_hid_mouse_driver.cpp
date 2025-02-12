@@ -1,8 +1,8 @@
 #include <drivers/usb/xhci/xhci_usb_hid_mouse_driver.h>
 #include <serial/serial.h>
 
-uint64_t g_mouse_cursor_pos_x = 100;
-uint64_t g_mouse_cursor_pos_y = 100;
+int64_t g_mouse_cursor_pos_x = 100;
+int64_t g_mouse_cursor_pos_y = 100;
 bool g_mouse_button_pressed = false;
 
 static int32_t parse_signed_field(const uint8_t* data, uint16_t bit_offset, uint16_t bit_size) {

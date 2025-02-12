@@ -2,7 +2,7 @@
 #include "internal/commands.h"
 #include <ipc/mq.h>
 #include <time/time.h>
-#include <sched/sched.h>
+#include <process/process.h>
 #include <serial/serial.h>
 #include <memory/vmm.h>
 
@@ -101,14 +101,6 @@ bool request_map_window_canvas(kstl::shared_ptr<canvas>& out_canvas) {
         return false;
     }
 
-    serial::printf("width  : %u\n", info->width);
-    serial::printf("height : %u\n", info->height);
-    serial::printf("pitch  : %u\n", info->pitch);
-    serial::printf("bpp    : %u\n", info->bpp);
-    serial::printf("page_count        : %llu\n", info->page_count);
-    serial::printf("page_offset       : 0x%llx\n", info->page_offset);
-    serial::printf("physical_page_ptr : 0x%llx\n", info->physical_page_ptr);
-
     uintptr_t mapped_fb_page_start = 0;
     RUN_ELEVATED({
         mapped_fb_page_start = reinterpret_cast<uintptr_t>(
@@ -116,12 +108,27 @@ bool request_map_window_canvas(kstl::shared_ptr<canvas>& out_canvas) {
         );
     });
 
+    if (!mapped_fb_page_start) {
+        return false;
+    }
+
     void* mapped_fb_start_addr = reinterpret_cast<void*>(
         mapped_fb_page_start + info->page_offset
     );
 
-    serial::printf("mapped framebuffer: 0x%llx\n", mapped_fb_start_addr);
+    framebuffer_t fb;
+    fb.width = info->width;
+    fb.height = info->height;
+    fb.bpp = info->bpp;
+    fb.pitch = info->pitch;
+    fb.data = reinterpret_cast<uint8_t*>(mapped_fb_start_addr);
 
+    psf1_font* font = _load_system_font();
+    if (!font) {
+        return false;
+    }
+
+    out_canvas = kstl::make_shared<canvas>(fb, font);
     return true;
 }
 
