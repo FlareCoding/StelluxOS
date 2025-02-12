@@ -212,12 +212,29 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
         size_t bytes_allocated = fb.pitch * fb.height;
         size_t page_size = PAGE_SIZE;
         size_t pages_used = (bytes_allocated + page_size - 1) / PAGE_SIZE;
+        uintptr_t physical_fb_addr = 0;
 
-        serial::printf("Framebuffer info: %llu bytes, using %llu pages\n", bytes_allocated, pages_used);
-        serial::printf("virtual framebuffer address  : 0x%llx\n", fb.data);
         RUN_ELEVATED({
-            serial::printf("physical framebuffer address : 0x%llx\n", paging::get_physical_address(fb.data));
+            physical_fb_addr = paging::get_physical_address(fb.data);
         });
+
+        userlib_response_map_window_framebuffer response;
+        zeromem(&response, sizeof(userlib_response_map_window_framebuffer));
+
+        response.header.type = STELLA_RESPONSE_ID_MAP_FRAMEBUFFER;
+        response.width = fb.width;
+        response.height = fb.height;
+        response.pitch = fb.pitch;
+        response.bpp = fb.bpp;
+        response.physical_page_ptr = (physical_fb_addr & ~(PAGE_SIZE - 1));
+        response.page_offset = (physical_fb_addr & (PAGE_SIZE - 1));
+        response.page_count = pages_used;
+
+        ipc::mq_message response_msg;
+        response_msg.payload_size = sizeof(userlib_response_map_window_framebuffer);
+        response_msg.payload = reinterpret_cast<uint8_t*>(&response);
+
+        ipc::message_queue::post_message(user_session.handle, &response_msg);
         break;
     }
     default: {
