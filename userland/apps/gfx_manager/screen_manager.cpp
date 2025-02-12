@@ -2,8 +2,8 @@
 #include <arch/x86/cpuid.h>
 #include <memory/paging.h>
 
-extern uint64_t g_mouse_cursor_pos_x;
-extern uint64_t g_mouse_cursor_pos_y;
+extern int64_t g_mouse_cursor_pos_x;
+extern int64_t g_mouse_cursor_pos_y;
 
 screen_manager::screen_manager()
     : m_gfx_module(nullptr), m_screen_canvas(nullptr) {}
@@ -138,6 +138,19 @@ bool screen_manager::_create_canvas(psf1_font* font) {
 }
 
 void screen_manager::_draw_mouse_cursor() {
+    if (g_mouse_cursor_pos_x < 0) {
+        g_mouse_cursor_pos_x = 0;
+    }
+    if (g_mouse_cursor_pos_y < 0) {
+        g_mouse_cursor_pos_y = 0;
+    }
+    if (g_mouse_cursor_pos_x > m_screen_canvas->width() - 2) {
+        g_mouse_cursor_pos_x = m_screen_canvas->width() - 2;
+    }
+    if (g_mouse_cursor_pos_y > m_screen_canvas->height() - 2) {
+        g_mouse_cursor_pos_y = m_screen_canvas->height() - 2;
+    }
+
     static const char* cursor_shape[16] = {
         "X                 ",
         "XX                ",
