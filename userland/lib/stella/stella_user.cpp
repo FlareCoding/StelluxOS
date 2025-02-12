@@ -4,13 +4,14 @@
 #include <time/time.h>
 #include <sched/sched.h>
 #include <serial/serial.h>
+#include <memory/vmm.h>
 
 namespace stella_ui {
 ipc::mq_handle_t g_outbound_connection_id = MESSAGE_QUEUE_ID_INVALID;
 ipc::mq_handle_t g_inbound_connection_id = MESSAGE_QUEUE_ID_INVALID;
 
 bool _send_compositor_request(void* req, size_t size);
-bool _get_compositor_response(void* resp);
+bool _get_compositor_response(ipc::mq_message& resp);
 bool _wait_for_ack_response();
 
 bool connect_to_compositor() {
@@ -82,7 +83,46 @@ bool request_map_window_canvas(kstl::shared_ptr<canvas>& out_canvas) {
 
     req.type = STELLA_COMMAND_ID_MAP_CANVAS;
 
-    return _send_compositor_request(&req, sizeof(internal::userlib_request_header));
+    if (!_send_compositor_request(&req, sizeof(internal::userlib_request_header))) {
+        return false;
+    }
+
+    ipc::mq_message resp;
+    if (!_get_compositor_response(resp)) {
+        return false;
+    }
+
+    if (resp.payload_size != sizeof(internal::userlib_response_map_window_framebuffer)) {
+        return false;
+    }
+
+    auto info = reinterpret_cast<internal::userlib_response_map_window_framebuffer*>(resp.payload);
+    if (info->header.type != STELLA_RESPONSE_ID_MAP_FRAMEBUFFER) {
+        return false;
+    }
+
+    serial::printf("width  : %u\n", info->width);
+    serial::printf("height : %u\n", info->height);
+    serial::printf("pitch  : %u\n", info->pitch);
+    serial::printf("bpp    : %u\n", info->bpp);
+    serial::printf("page_count        : %llu\n", info->page_count);
+    serial::printf("page_offset       : 0x%llx\n", info->page_offset);
+    serial::printf("physical_page_ptr : 0x%llx\n", info->physical_page_ptr);
+
+    uintptr_t mapped_fb_page_start = 0;
+    RUN_ELEVATED({
+        mapped_fb_page_start = reinterpret_cast<uintptr_t>(
+            vmm::map_contiguous_physical_pages(info->physical_page_ptr, info->page_count, DEFAULT_UNPRIV_PAGE_FLAGS)
+        );
+    });
+
+    void* mapped_fb_start_addr = reinterpret_cast<void*>(
+        mapped_fb_page_start + info->page_offset
+    );
+
+    serial::printf("mapped framebuffer: 0x%llx\n", mapped_fb_start_addr);
+
+    return true;
 }
 
 bool peek_compositor_events() {
@@ -127,7 +167,7 @@ bool _get_compositor_response(ipc::mq_message& resp) {
         break;
     }
 
-    // Read and verify the ACK
+    // Read and verify the response
     if (!ipc::message_queue::get_message(g_inbound_connection_id, &resp)) {
         return false;
     }
