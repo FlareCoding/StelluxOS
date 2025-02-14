@@ -8,8 +8,8 @@
 extern bool g_arrow_up_pressed;
 extern bool g_arrow_down_pressed;
 
-constexpr int WINDOW_WIDTH = 400;
-constexpr int WINDOW_HEIGHT = 300;
+constexpr int WINDOW_WIDTH = 520;
+constexpr int WINDOW_HEIGHT = 420;
 constexpr int PADDLE_WIDTH = 10;
 constexpr int PADDLE_HEIGHT = 80;
 constexpr int BALL_SIZE = 10;
