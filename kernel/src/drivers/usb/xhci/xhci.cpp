@@ -4,6 +4,7 @@
 #include <dynpriv/dynpriv.h>
 #include <time/time.h>
 
+#include <drivers/usb/xhci/xhci_usb_hid_kbd_driver.h>
 #include <drivers/usb/xhci/xhci_usb_hid_mouse_driver.h>
 #include <drivers/usb/hid/hid_report_parser.h>
 
@@ -1172,6 +1173,8 @@ void xhci_driver::_setup_device(uint8_t port) {
 
             // Keyboard
             if (iface->descriptor.bInterfaceProtocol == 1) {
+                iface->driver = new xhci_usb_hid_kbd_driver();
+                iface->driver->attach_interface(iface.get());
             }
         }
     }
