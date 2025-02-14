@@ -224,7 +224,7 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
 
         size_t bytes_allocated = fb.pitch * fb.height;
         size_t page_size = PAGE_SIZE;
-        size_t pages_used = (bytes_allocated + page_size - 1) / PAGE_SIZE;
+        size_t pages_used = (bytes_allocated + page_size - 1) / PAGE_SIZE + 1;
         uintptr_t physical_fb_addr = 0;
 
         RUN_ELEVATED({
