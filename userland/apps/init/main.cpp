@@ -30,7 +30,7 @@ int main() {
         return -1;
     }
 
-    if (!start_process("/initrd/bin/example_app")) {
+    if (!start_process("/initrd/bin/pong")) {
         return -1;
     }
 
