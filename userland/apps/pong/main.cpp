@@ -8,17 +8,19 @@
 extern bool g_arrow_up_pressed;
 extern bool g_arrow_down_pressed;
 
-constexpr int WINDOW_WIDTH = 520;
-constexpr int WINDOW_HEIGHT = 420;
+constexpr int WINDOW_WIDTH = 560;
+constexpr int WINDOW_HEIGHT = 480;
 constexpr int PADDLE_WIDTH = 10;
 constexpr int PADDLE_HEIGHT = 80;
 constexpr int BALL_SIZE = 10;
-constexpr int PADDLE_SPEED = 5;
-constexpr int BALL_SPEED_X = 4;
-constexpr int BALL_SPEED_Y = 4;
+constexpr int INITIAL_PADDLE_SPEED = 6;
+constexpr int INITIAL_BALL_SPEED_X = 5;
+constexpr int INITIAL_BALL_SPEED_Y = 5;
+constexpr int BALL_SPEED_INCREMENT = 1;  // Increase by 1 per hit
 
 struct Paddle {
     int x, y;
+    int speed;
 };
 
 struct Ball {
@@ -26,22 +28,23 @@ struct Ball {
     int dx, dy;
 };
 
-Paddle left_paddle = { 10, WINDOW_HEIGHT / 2 - PADDLE_HEIGHT / 2 };
-Paddle right_paddle = { WINDOW_WIDTH - 20, WINDOW_HEIGHT / 2 - PADDLE_HEIGHT / 2 };
-Ball ball = { WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, BALL_SPEED_X, BALL_SPEED_Y };
+Paddle left_paddle = { 10, WINDOW_HEIGHT / 2 - PADDLE_HEIGHT / 2, INITIAL_PADDLE_SPEED };
+Paddle right_paddle = { WINDOW_WIDTH - 20, WINDOW_HEIGHT / 2 - PADDLE_HEIGHT / 2, INITIAL_PADDLE_SPEED };
+Ball ball = { WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, INITIAL_BALL_SPEED_X, INITIAL_BALL_SPEED_Y };
 int left_score = 0, right_score = 0;
 
 void update_paddles() {
     if (g_arrow_up_pressed && left_paddle.y > 0)
-        left_paddle.y -= PADDLE_SPEED;
+        left_paddle.y -= left_paddle.speed;
     if (g_arrow_down_pressed && left_paddle.y < WINDOW_HEIGHT - PADDLE_HEIGHT)
-        left_paddle.y += PADDLE_SPEED;
-    
-    // Simple AI for right paddle (or use 'W' & 'S' keys in future)
-    if (ball.y < right_paddle.y && right_paddle.y > 0)
-        right_paddle.y -= PADDLE_SPEED;
-    if (ball.y > left_paddle.y + PADDLE_HEIGHT && right_paddle.y < WINDOW_HEIGHT - PADDLE_HEIGHT)
-        right_paddle.y += PADDLE_SPEED;
+        left_paddle.y += left_paddle.speed;
+
+    // AI movement prediction
+    int predicted_ball_y = ball.y + (ball.dy * (right_paddle.x - ball.x) / (ball.dx != 0 ? ball.dx : 1));
+    if (predicted_ball_y < right_paddle.y + PADDLE_HEIGHT / 2 && right_paddle.y > 0)
+        right_paddle.y -= right_paddle.speed;
+    if (predicted_ball_y > right_paddle.y + PADDLE_HEIGHT / 2 && right_paddle.y < WINDOW_HEIGHT - PADDLE_HEIGHT)
+        right_paddle.y += right_paddle.speed;
 }
 
 void update_ball() {
@@ -57,14 +60,25 @@ void update_ball() {
          ball.y <= left_paddle.y + PADDLE_HEIGHT) ||
         (ball.x + BALL_SIZE >= right_paddle.x && ball.y >= right_paddle.y && 
          ball.y <= right_paddle.y + PADDLE_HEIGHT)) {
+        ball.dx = (ball.dx > 0 ? ball.dx + BALL_SPEED_INCREMENT : ball.dx - BALL_SPEED_INCREMENT);
+        ball.dy = (ball.dy > 0 ? ball.dy + BALL_SPEED_INCREMENT : ball.dy - BALL_SPEED_INCREMENT);
         ball.dx = -ball.dx;
     }
 
     // Scoring conditions
-    if (ball.x <= 0) { right_score++; ball = { WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, BALL_SPEED_X, BALL_SPEED_Y }; }
-    if (ball.x >= WINDOW_WIDTH) { left_score++; ball = { WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, -BALL_SPEED_X, BALL_SPEED_Y }; }
+    if (ball.x <= 0) { 
+        right_score++; 
+        ball = { WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, INITIAL_BALL_SPEED_X, INITIAL_BALL_SPEED_Y };
+    }
+    if (ball.x >= WINDOW_WIDTH) { 
+        left_score++; 
+        ball = { WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2, -INITIAL_BALL_SPEED_X, INITIAL_BALL_SPEED_Y };
+    }
+    
+    // Increase AI speed if player leads
+    int score_diff = left_score - right_score;
+    right_paddle.speed = INITIAL_PADDLE_SPEED + (score_diff > 0 ? score_diff : 0);
 }
-
 
 int main() {
     if (!stella_ui::connect_to_compositor()) {
