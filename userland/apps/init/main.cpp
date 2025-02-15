@@ -30,6 +30,9 @@ int main() {
         return -1;
     }
 
+    // User applications
+    sleep(4);
+
     if (!start_process("/initrd/bin/pong")) {
         return -1;
     }

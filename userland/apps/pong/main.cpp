@@ -73,7 +73,6 @@ int main() {
     }
 
     serial::printf("[PONG] Connected to compositor!\n");
-    sleep(2);
 
     if (!stella_ui::create_window(WINDOW_WIDTH, WINDOW_HEIGHT, "Pong")) {
         serial::printf("[SNAKE] Failed to create a window\n");
