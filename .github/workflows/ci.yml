@@ -77,7 +77,7 @@ jobs:
         pip3 install -r ./tools/privilege_violation_analyzer/requirements.txt
 
     - name: Build Stellux OS image
-      run: make image
+      run: make image COMPILER_OPTIMIZATION_LEVEL=0
 
     - name: Verify that kernel ELF is created
       run: |
