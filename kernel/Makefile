@@ -40,7 +40,7 @@ CPP_OBJS := $(CPP_SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 OBJS     := $(ASM_OBJS) $(CPP_OBJS)
 
 # Optimization level [0, 1, 2, or 3]
-COMPILER_OPTIMIZATION_LEVEL := 0
+COMPILER_OPTIMIZATION_LEVEL := 2
 
 # Compiler and linker flags
 ASFLAGS   := -m64 -g -ffreestanding -nostdlib -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES)
