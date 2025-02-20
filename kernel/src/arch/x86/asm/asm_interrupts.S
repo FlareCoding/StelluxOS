@@ -300,6 +300,7 @@ asm_exc_handler_nm:
     jmp asm_common_isr_entry
 
 asm_exc_handler_df:
+    push 0
     push 8
     jmp asm_common_isr_entry
 
