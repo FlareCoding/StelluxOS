@@ -10,6 +10,7 @@
 #include <arch/x86/gdt/gdt.h>
 #include <arch/x86/idt/idt.h>
 #include <arch/x86/pat.h>
+#include <arch/x86/cpuid.h>
 #include <arch/x86/fsgsbase.h>
 #include <syscall/syscalls.h>
 #include <sched/sched.h>
@@ -70,8 +71,12 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     // Setup the kernel PAT for this processor core
     setup_kernel_pat();
 
+    // Enable fsgsbase instructions if they are supported
+    if (cpuid_is_fsgsbase_supported()) {
+        enable_fsgsbase();
+    }
+
     // Setup per-cpu area for the bootstrapping processor
-    enable_fsgsbase();
     init_ap_per_cpu_area(acpi_cpu_index);
 
     // Setup BSP's idle task (current)

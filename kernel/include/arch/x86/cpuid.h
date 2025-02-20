@@ -228,6 +228,28 @@ __PRIVILEGED_CODE static inline bool cpuid_is_pat_supported() {
 }
 
 /**
+ * @brief Checks if the CPU supports the FSGSBASE instruction set.
+ * 
+ * This function uses the CPUID instruction to determine whether the processor supports the
+ * FSGSBASE instructions. These instructions allow direct access to the FS and GS segment
+ * base registers without needing privileged system calls. Enabling FSGSBASE can improve
+ * performance in low-level context switching and threading operations.
+ * 
+ * @return True if FSGSBASE is supported, false otherwise.
+ *
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline bool cpuid_is_fsgsbase_supported() {
+    uint32_t eax, ebx, ecx, edx;
+    
+    asm volatile("cpuid"
+                 : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                 : "a"(7), "c"(0)); // CPUID leaf 7, subleaf 0
+
+    return (ebx & (1 << 0)); // Check bit 0 of EBX for FSGSBASE support
+}
+
+/**
  * @brief Checks if the CPU is running under QEMU or KVM.
  * @return True if running under QEMU/KVM, false otherwise.
  * 

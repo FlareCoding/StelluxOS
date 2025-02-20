@@ -5,6 +5,7 @@
 #include <arch/percpu.h>
 #include <arch/x86/gdt/gdt.h>
 #include <arch/x86/idt/idt.h>
+#include <arch/x86/cpuid.h>
 #include <arch/x86/fsgsbase.h>
 #include <arch/x86/pat.h>
 #include <arch/x86/apic/lapic.h>
@@ -31,8 +32,12 @@ void arch_init() {
     // Setup the kernel PAT to contain a write-combining entry
     x86::setup_kernel_pat();
 
+    // Enable fsgsbase instructions if they are supported
+    if (x86::cpuid_is_fsgsbase_supported()) {
+        x86::enable_fsgsbase();
+    }
+
     // Setup per-cpu area for the bootstrapping processor
-    x86::enable_fsgsbase();
     init_bsp_per_cpu_area();
 
     // Setup BSP's idle task (current) and system stack reference
