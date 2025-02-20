@@ -6,7 +6,8 @@
 #include <memory/allocators/page_bootstrap_allocator.h>
 #include <memory/allocators/heap_allocator.h>
 #include <memory/allocators/dma_allocator.h>
-#include <boot/efimem.h>
+#include <boot/efi_memory_map.h>
+#include <boot/legacy_memory_map.h>
 #include <serial/serial.h>
 #include <dynpriv/dynpriv.h>
 
@@ -405,18 +406,33 @@ page_table* create_higher_class_userland_page_table() {
 }
 
 __PRIVILEGED_CODE
-void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, size_t mbi_size) {
+void init_physical_allocator(
+    void* mbi_efi_mmap_tag,
+    void* mbi_mmap_tag,
+    uintptr_t mbi_start_vaddr,
+    size_t mbi_size
+) {
     // Identity map the first 1GB of physical RAM memory for further bootstrapping
     bootstrap_map_first_1gb();
 
     // Flush the entire TLB
     tlb_flush_all();
+    
+    // Create
+    efi_memory_map efi_memmap(reinterpret_cast<multiboot_tag_efi_mmap*>(mbi_efi_mmap_tag));
+    legacy_memory_map legacy_memmap(reinterpret_cast<multiboot_tag_mmap*>(mbi_mmap_tag));
 
-    auto efi_mmap_tag = reinterpret_cast<multiboot_tag_efi_mmap*>(mbi_efi_mmap_tag);
-    efi::efi_memory_map memory_map(efi_mmap_tag);
+    // Then select which one we want via a pointer
+    boot_memory_map* memory_map = nullptr;
+
+    if (mbi_efi_mmap_tag) {
+        memory_map = &efi_memmap;
+    } else {
+        memory_map = &legacy_memmap;
+    }
 
     // Debug print the EFI memory map
-    memory_map.print_memory_map();
+    memory_map->print_memory_map();
 
     // Kernel memory region details
     uint64_t kernel_start = reinterpret_cast<uint64_t>(&__ksymstart);
@@ -425,24 +441,24 @@ void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, 
 
     // Calculate the size needed for the page frame bitmap
     uint64_t page_bitmap_size = page_frame_bitmap::calculate_required_size(
-        memory_map.get_highest_address()
+        memory_map->get_highest_address()
     );
 
     // Calculate memory required for page tables (all of RAM + kernel higher-half mappings)
     uint64_t page_table_size = compute_page_table_memory(
-        memory_map.get_total_system_memory() + kernel_size + mbi_size
+        memory_map->get_total_system_memory() + kernel_size + mbi_size
     );
 
     // Access largest conventional memory segment
     // The segment has to be large enough to fit the bitmap and the full page table covering system memory
-    efi::efi_memory_descriptor_wrapper largest_segment = memory_map.find_segment_for_allocation_block(
+    memory_map_descriptor largest_segment = memory_map->find_segment_for_allocation_block(
         10 * (1 << 20),     // Start searching from the 10MB point to be guaranteed above the kernel
         1ULL << 30,         // Pick the largest segment within the 1GB range
         page_bitmap_size + page_table_size
     );
 
     // Ensure that the segment actually exists
-    if (!largest_segment.desc) {
+    if (!largest_segment.mem_available) {
         serial::printf("[*] No conventional memory segments found!\n");
         return;
     }
@@ -459,16 +475,17 @@ void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, 
 
     // Initialize the bootstrap allocator to the region of memory right after the page bitmap
     auto& bootstrap_allocator = allocators::page_bootstrap_allocator::get();
-    bootstrap_allocator.init(largest_segment.paddr + page_bitmap_size, page_table_size);
+    bootstrap_allocator.init(largest_segment.base_addr + page_bitmap_size, page_table_size);
 
     // Allocate a new top-level page table
     page_table* new_pml4 = reinterpret_cast<page_table*>(bootstrap_allocator.alloc_page());
 
     // Identity map the physical addresses in RAM
-    for (const auto& entry : memory_map) {
-        if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY ||
-            entry.desc->type == EFI_MEMORY_TYPE_ACPI_RECLAIM_MEMORY) {
-            for (uint64_t vaddr = entry.paddr; vaddr < entry.paddr + entry.length; vaddr += PAGE_SIZE) {
+    for (size_t i = 0; i < memory_map->get_num_entries(); i++) {
+        const auto entry = memory_map->get_entry_desc(i);
+
+        if (entry.mem_available) {
+            for (uint64_t vaddr = entry.base_addr; vaddr < entry.base_addr + entry.length; vaddr += PAGE_SIZE) {
                 map_page(vaddr, vaddr, PTE_DEFAULT_PRIV_KERNEL_FLAGS, new_pml4, bootstrap_allocator);
             }
         }
@@ -508,17 +525,19 @@ void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, 
 
     // Initialize the page frame bitmap
     auto& bitmap_allocator = allocators::page_bitmap_allocator::get_physical_allocator();
-    bitmap_allocator.init_bitmap(page_bitmap_size, reinterpret_cast<uint8_t*>(largest_segment.paddr), true);
+    bitmap_allocator.init_bitmap(page_bitmap_size, reinterpret_cast<uint8_t*>(largest_segment.base_addr), true);
     bitmap_allocator.mark_bitmap_address_as_physical();
 
     // Since the bitmap starts with all memory marked as 'used', we
-    // have to unlock all memory regions marked as EfiConventionalMemory.
-    for (const auto& entry : memory_map) {
+    // have to unlock all memory regions marked as Available.
+    for (size_t i = 0; i < memory_map->get_num_entries(); i++) {
+        const auto entry = memory_map->get_entry_desc(i);
+
         // Unlock only those pages that are part of EfiConventionalMemory
-        if (entry.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) {
+        if (entry.mem_available) {
             bitmap_allocator.free_pages(
-                reinterpret_cast<void*>(entry.paddr),
-                entry.desc->page_count
+                reinterpret_cast<void*>(entry.base_addr),
+                entry.length / PAGE_SIZE
             );
         }
     }
@@ -531,14 +550,14 @@ void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, 
     );
 
     // Lock pages belonging to the page frame bitmap
-    uintptr_t bitmap_physical_start = largest_segment.paddr;
+    uintptr_t bitmap_physical_start = largest_segment.base_addr;
     bitmap_allocator.lock_pages(
         reinterpret_cast<void*>(bitmap_physical_start),
         (page_bitmap_size / PAGE_SIZE) + 1
     );
 
     // Lock pages belonging to the new page table
-    uintptr_t page_table_physical_start = largest_segment.paddr + page_bitmap_size;
+    uintptr_t page_table_physical_start = largest_segment.base_addr + page_bitmap_size;
     bitmap_allocator.lock_pages(
         reinterpret_cast<void*>(page_table_physical_start),
         (page_table_size / PAGE_SIZE) + 1

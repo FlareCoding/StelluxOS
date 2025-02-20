@@ -319,13 +319,19 @@ __PRIVILEGED_CODE page_table* create_higher_class_userland_page_table();
  *                         their physical addresses, sizes, and types (e.g., usable, reserved). The
  *                         allocator uses this data to determine which pages are available for
  *                         allocation and which should remain reserved.
+ * @param mbi_mmap_tag     On legacy systems where EFI is not available, a fallback legacy memory map is provided.
  * @param mbi_start_vaddr  Starting higher half address of the multiboot information structure passed by
  *                         GRUB to the kernel.
  * @param mbi_size         Size the multiboot information structure passed by GRUB to the kernel.
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void init_physical_allocator(void* mbi_efi_mmap_tag, uintptr_t mbi_start_vaddr, size_t mbi_size);
+__PRIVILEGED_CODE void init_physical_allocator(
+    void* mbi_efi_mmap_tag,
+    void* mbi_mmap_tag,
+    uintptr_t mbi_start_vaddr,
+    size_t mbi_size
+);
 
 /**
  * @brief Initializes the virtual memory allocator.

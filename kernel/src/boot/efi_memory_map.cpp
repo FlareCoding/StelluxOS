@@ -1,14 +1,18 @@
-#include <boot/efimem.h>
+#include <boot/efi_memory_map.h>
 #include <serial/serial.h>
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-namespace efi {
 __PRIVILEGED_CODE
 efi_memory_map::efi_memory_map(multiboot_tag_efi_mmap* efi_mmap_tag)
     : m_efi_mmap_tag(efi_mmap_tag), m_total_system_memory(0),
       m_total_conventional_memory(0), m_highest_address(0) {
+
+    if (!efi_mmap_tag) {
+        return;
+    }
+
     m_descr_size = m_efi_mmap_tag->descr_size;
 
     // Calculate the number of EFI memory descriptors
@@ -37,7 +41,7 @@ efi_memory_map::efi_memory_map(multiboot_tag_efi_mmap* efi_mmap_tag)
         m_total_system_memory += length;
 
         // Ignore non-conventional memory regions
-        if (desc->type != 7) {
+        if (desc->type != EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) {
             continue;
         }
 
@@ -113,12 +117,42 @@ __PRIVILEGED_CODE uintptr_t efi_memory_map::get_highest_address() const {
 }
 
 __PRIVILEGED_CODE
-efi_memory_descriptor_wrapper efi_memory_map::get_largest_conventional_segment() const {
-    return m_largest_conventional_segment;
+memory_map_descriptor efi_memory_map::get_entry_desc(size_t idx) const {
+    memory_map_descriptor desc;
+    desc.mem_available = false;
+    
+    if (idx >= m_num_entries) {
+        return desc; // Return an unavailable descriptor if index is out of bounds
+    }
+
+    uint8_t* desc_ptr = m_efi_mmap_tag->efi_mmap + idx * m_descr_size;
+    efi_memory_descriptor* efi_desc = reinterpret_cast<efi_memory_descriptor*>(desc_ptr);
+
+    desc.base_addr = efi_desc->physical_start;
+    desc.length = efi_desc->page_count * 4096;
+    desc.mem_available = (efi_desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) ||
+                         (efi_desc->type == EFI_MEMORY_TYPE_ACPI_RECLAIM_MEMORY);
+    
+    return desc;
 }
 
 __PRIVILEGED_CODE
-efi_memory_descriptor_wrapper efi_memory_map::find_segment_for_allocation_block(
+memory_map_descriptor efi_memory_map::get_largest_conventional_segment() const {
+    memory_map_descriptor desc;
+    desc.mem_available = false;
+    if (!m_largest_conventional_segment.desc) {
+        return desc;
+    }
+
+    desc.base_addr = m_largest_conventional_segment.paddr;
+    desc.length = m_largest_conventional_segment.length;
+    desc.mem_available = (m_largest_conventional_segment.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY);
+
+    return desc;
+}
+
+__PRIVILEGED_CODE
+memory_map_descriptor efi_memory_map::find_segment_for_allocation_block(
     uint64_t min_address,
     uint64_t max_address,
     uint64_t size
@@ -134,12 +168,12 @@ efi_memory_descriptor_wrapper efi_memory_map::find_segment_for_allocation_block(
         efi_memory_descriptor* desc = reinterpret_cast<efi_memory_descriptor*>(desc_ptr);
 
         // Ignore non-conventional memory regions
-        if (desc->type != 7) {
+        if (desc->type != EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) {
             continue;
         }
 
         uint64_t start = desc->physical_start;
-        uint64_t length = desc->page_count * 4096; // Assuming 4KB pages
+        uint64_t length = desc->page_count * 4096;
         uint64_t end = start + length;
 
         // Check if the segment overlaps with the specified range
@@ -160,7 +194,17 @@ efi_memory_descriptor_wrapper efi_memory_map::find_segment_for_allocation_block(
         }
     }
 
-    return largest_segment;
+    memory_map_descriptor desc;
+    desc.mem_available = false;
+    if (!largest_segment.desc) {
+        return desc;
+    }
+
+    desc.base_addr = largest_segment.paddr;
+    desc.length = largest_segment.length;
+    desc.mem_available = (largest_segment.desc->type == EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY);
+
+    return desc;
 }
 
 __PRIVILEGED_CODE void efi_memory_map::print_memory_map() {
@@ -168,7 +212,7 @@ __PRIVILEGED_CODE void efi_memory_map::print_memory_map() {
         auto entry = *it;
 
         // Filter for EfiConventionalMemory (type 7)
-        if (entry.desc->type != 7) continue;
+        if (entry.desc->type != EFI_MEMORY_TYPE_CONVENTIONAL_MEMORY) continue;
 
         uint64_t physical_start = entry.paddr;
         uint64_t length = entry.length;
@@ -183,4 +227,3 @@ __PRIVILEGED_CODE void efi_memory_map::print_memory_map() {
 
     serial::printf("\n");
 }
-} // namespace efi
