@@ -46,9 +46,6 @@ legacy_memory_map::legacy_memory_map(multiboot_tag_mmap* mmap_tag)
         uint64_t length    = (static_cast<uint64_t>(entry->length_high)    << 32) | entry->length_low;
         uint64_t region_end = base_addr + length;
 
-        // Add to total system memory
-        m_total_system_memory += length;
-
         // Update highest address seen
         if (region_end > m_highest_address) {
             m_highest_address = region_end;
@@ -56,6 +53,8 @@ legacy_memory_map::legacy_memory_map(multiboot_tag_mmap* mmap_tag)
 
         // Check if this region is conventional (available) memory
         if (entry->type == MULTIBOOT_MEMORY_TYPE_AVAILABLE) {
+            m_total_system_memory += length;
+
             // Accumulate total conventional memory
             m_total_conventional_memory += length;
 
