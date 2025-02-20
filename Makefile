@@ -234,6 +234,11 @@ run-debug: $(STELLUX_IMAGE)
 run-debug-headless: $(STELLUX_IMAGE)
 	$(QEMU) $(QEMU_FLAGS) -gdb tcp::4554 -S -nographic -no-reboot -no-shutdown
 
+run-headless-legacy: $(STELLUX_LEGACY_IMAGE)
+	$(QEMU) -machine q35 -m 4G -smp 8 \
+	-drive file=build/image/stellux-legacy.img,format=raw,if=ide \
+	-boot order=c -nographic -nographic -no-reboot -no-shutdown
+
 run-debug-headless-legacy: $(STELLUX_LEGACY_IMAGE)
 	$(QEMU) -machine q35 -m 4G -smp 8 \
 	-drive file=build/image/stellux-legacy.img,format=raw,if=ide \
