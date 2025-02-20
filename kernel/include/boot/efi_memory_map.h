@@ -1,7 +1,7 @@
 #ifndef EFIMEM_H
 #define EFIMEM_H
-#include <types.h>
 #include "multiboot2.h"
+#include "boot_memory_map.h"
 
 #define EFI_MEMORY_TYPE_RESERVED_MEMORY         0
 #define EFI_MEMORY_TYPE_LOADER_CODE             1
@@ -20,7 +20,6 @@
 #define EFI_MEMORY_TYPE_PERSISTENT_MEMORY       14
 #define EFI_MEMORY_TYPE_MAX_MEMORY_TYPE         15
 
-namespace efi {
 struct efi_memory_descriptor {
     multiboot_uint32_t type;
     multiboot_uint32_t reserved;
@@ -43,7 +42,7 @@ struct efi_memory_descriptor_wrapper {
  * This class encapsulates the EFI memory map, providing functionality to iterate over memory descriptors,
  * query memory statistics, and locate specific memory regions.
  */
-class efi_memory_map {
+class efi_memory_map : public boot_memory_map {
 public:
     /**
      * @brief Constructs an EFI memory map from the provided multiboot tag.
@@ -136,7 +135,7 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE uint32_t get_num_entries() const;
+    __PRIVILEGED_CODE uint32_t get_num_entries() const override;
 
     /**
      * @brief Computes the total system memory based on the EFI memory map.
@@ -144,7 +143,7 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE uint64_t get_total_system_memory() const;
+    __PRIVILEGED_CODE uint64_t get_total_system_memory() const override;
 
     /**
      * @brief Computes the total amount of conventional memory.
@@ -152,7 +151,7 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE uint64_t get_total_conventional_memory() const;
+    __PRIVILEGED_CODE uint64_t get_total_conventional_memory() const override;
 
     /**
      * @brief Retrieves the highest memory address in the EFI memory map.
@@ -160,7 +159,16 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE uintptr_t get_highest_address() const;
+    __PRIVILEGED_CODE uintptr_t get_highest_address() const override;
+
+    /**
+     * @brief Retrieves a memory descriptor at a specified index.
+     * @param idx Index of the memory descriptor to retrieve.
+     * @return The memory descriptor at the specified index.
+     *
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE memory_map_descriptor get_entry_desc(size_t idx) const override;
 
     /**
      * @brief Finds the largest segment of conventional memory.
@@ -168,7 +176,7 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE efi_memory_descriptor_wrapper get_largest_conventional_segment() const;
+    __PRIVILEGED_CODE memory_map_descriptor get_largest_conventional_segment() const override;
 
     /**
      * @brief Finds a memory segment suitable for a specified allocation block.
@@ -181,11 +189,11 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE efi_memory_descriptor_wrapper find_segment_for_allocation_block(
+    __PRIVILEGED_CODE memory_map_descriptor find_segment_for_allocation_block(
         uint64_t min_address,
         uint64_t max_address,
         uint64_t size
-    ) const;
+    ) const override;
 
     /**
      * @brief Prints the EFI memory map to the console or log.
@@ -194,7 +202,7 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE void print_memory_map();
+    __PRIVILEGED_CODE void print_memory_map() override;
 
 private:
     multiboot_tag_efi_mmap* m_efi_mmap_tag; /** Pointer to the EFI memory map tag from multiboot */
@@ -205,6 +213,5 @@ private:
     uint64_t m_highest_address;            /** Highest physical memory address in the map */
     efi_memory_descriptor_wrapper m_largest_conventional_segment; /** Largest conventional memory segment */
 };
-} // namespace efi
 
 #endif // EFIMEM_H

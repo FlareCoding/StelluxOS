@@ -5,7 +5,6 @@
 #include <memory/memory.h>
 #include <memory/paging.h>
 #include <memory/vmm.h>
-#include <boot/efimem.h>
 #include <acpi/acpi.h>
 #include <time/time.h>
 #include <sched/sched.h>
@@ -34,6 +33,9 @@ multiboot_tag_framebuffer* g_mbi_framebuffer = nullptr;
 
 __PRIVILEGED_DATA
 void* g_mbi_efi_mmap = nullptr;
+
+__PRIVILEGED_DATA
+void* g_mbi_fallback_mmap = nullptr;
 
 __PRIVILEGED_DATA
 void* g_mbi_acpi_rsdp = nullptr;
@@ -84,6 +86,10 @@ void walk_mbi(void* mbi) {
             }
             case MULTIBOOT_TAG_TYPE_EFI_MMAP: { // New case for EFI Memory Map
                 g_mbi_efi_mmap = reinterpret_cast<void*>(tag);
+                break;
+            }
+            case MULTIBOOT_TAG_TYPE_MMAP: {
+                g_mbi_fallback_mmap = reinterpret_cast<multiboot_tag_mmap*>(tag);
                 break;
             }
             case MULTIBOOT_TAG_TYPE_ACPI_NEW: {
@@ -149,7 +155,7 @@ void init(unsigned int magic, void* mbi) {
     uintptr_t mbi_start_addr = reinterpret_cast<uintptr_t>(mbi);
 
     // Initialize memory allocators
-    paging::init_physical_allocator(g_mbi_efi_mmap, mbi_start_addr, mbi_size);
+    paging::init_physical_allocator(g_mbi_efi_mmap, g_mbi_fallback_mmap, mbi_start_addr, mbi_size);
     paging::init_virtual_allocator();
 
     // Perform arch-specific initialzation that require VMM

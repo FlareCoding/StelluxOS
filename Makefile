@@ -168,6 +168,46 @@ $(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(INITRD_ARCHIVE) $(GRUB_CFG_PATH)
 	trap - EXIT; \
 	echo "Final image '$(STELLUX_IMAGE)' is ready."
 
+STELLUX_LEGACY_IMAGE := $(IMAGE_DIR)/stellux-legacy.img
+
+# Builds the final .img Stellux image for Legacy BIOS boot
+legacy-image: kernel userland initrd $(STELLUX_LEGACY_IMAGE)
+
+$(STELLUX_LEGACY_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(INITRD_ARCHIVE) $(GRUB_CFG_PATH)
+	@echo "Creating raw disk image for Legacy BIOS boot..."
+	@dd if=/dev/zero of=$(STELLUX_LEGACY_IMAGE) bs=1M count=$(IMAGE_SIZE_MB)
+
+	@echo "Partitioning the disk image with MBR..."
+	@sudo $(PARTED) $(STELLUX_LEGACY_IMAGE) --script mklabel msdos \
+		mkpart primary ext2 1MiB 100% \
+		set 1 boot on
+
+	@echo "Setting up loop device, formatting partition, mounting, installing GRUB, and copying files..."
+	@set -e; \
+	LOOP_DEV=$$(sudo $(LOSETUP) --find --partscan --show $(STELLUX_LEGACY_IMAGE)); \
+	echo "Loop device: $$LOOP_DEV"; \
+	sudo mkfs.ext2 $${LOOP_DEV}p1; \
+	sudo $(MKDIR) /mnt/legacy; \
+	sudo $(MOUNT) $${LOOP_DEV}p1 /mnt/legacy; \
+	trap "sudo umount /mnt/legacy && sudo rmdir /mnt/legacy && sudo losetup -d $${LOOP_DEV}" EXIT; \
+	sudo $(MKDIR) /mnt/legacy/boot/grub; \
+	sudo $(CP) $(GRUB_CFG_PATH) /mnt/legacy/boot/grub/grub.cfg; \
+	sudo $(CP) $(KERNEL_FILE) /mnt/legacy/boot/stellux; \
+	sudo $(CP) $(INITRD_ARCHIVE) /mnt/legacy/boot/initrd; \
+	sudo $(GRUB_INSTALL) \
+		--target=i386-pc \
+		--boot-directory=/mnt/legacy/boot \
+		--modules="biosdisk part_msdos ext2" \
+		--recheck \
+		--no-floppy \
+		--debug \
+		$$LOOP_DEV; \
+	sudo $(UMOUNT) /mnt/legacy; \
+	sudo $(RM) -rf /mnt/legacy; \
+	sudo $(LOSETUP) -d $${LOOP_DEV}; \
+	trap - EXIT; \
+	echo "Final legacy BIOS image '$(STELLUX_LEGACY_IMAGE)' is ready."
+
 # Clean Up Build Files and Image
 clean:
 	@echo "Cleaning up build files and disk image..."
@@ -193,6 +233,11 @@ run-debug: $(STELLUX_IMAGE)
 # Run QEMU Headless with GDB Support
 run-debug-headless: $(STELLUX_IMAGE)
 	$(QEMU) $(QEMU_FLAGS) -gdb tcp::4554 -S -nographic -no-reboot -no-shutdown
+
+run-debug-headless-legacy: $(STELLUX_LEGACY_IMAGE)
+	$(QEMU) -machine q35 -m 4G -smp 8 \
+	-drive file=build/image/stellux-legacy.img,format=raw,if=ide \
+	-boot order=c -nographic -gdb tcp::4554 -S -nographic -no-reboot -no-shutdown
 
 # Connect GDB to a Running QEMU Instance
 connect-gdb:
