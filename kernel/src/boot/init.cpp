@@ -185,7 +185,9 @@ void init(unsigned int magic, void* mbi) {
     sched::scheduler::get().init();
 
     // Initialize SMP and bring up application processors
-    smp::smp_init();
+    if (cmdline_args.find("nosmp") == kstl::string::npos) {
+        smp::smp_init();   
+    }
 
 #ifdef BUILD_UNIT_TESTS
     // Run unit tests
