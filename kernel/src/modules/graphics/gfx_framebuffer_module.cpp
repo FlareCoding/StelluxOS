@@ -37,7 +37,7 @@ bool gfx_framebuffer_module::init() {
     });
 
     // Start with a cleared screen
-    clear_screen(0x0);
+    clear_screen(0x22);
     swap_buffers();
 
     return true;
