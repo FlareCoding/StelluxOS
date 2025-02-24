@@ -235,10 +235,11 @@ enable_long_mode:
     or eax, (1 << 4)
     mov cr4, eax
     
-    # Enable Long Mode
-    mov ecx, 0xC0000080 # IA32_EFER
+    # Enable Long Mode and NXE
+    mov ecx, 0xC0000080  # IA32_EFER
     rdmsr
-    or eax, 0x100
+    or eax, 0x100        # Set Long Mode Enable (bit 8)
+    or eax, 0x800        # Set No-Execute Enable (bit 11)
     wrmsr
     
     # Enable Paging
