@@ -153,11 +153,11 @@ bool send_ap_startup_sequence(ap_startup_data* startup_data, uint8_t apicid) {
     uint32_t current_running_cpus = startup_data->cpus_running;
     auto& lapic = arch::x86::lapic::get();
 
-    lapic->send_ipi(apicid, IPI_INIT);
+    lapic->send_init_ipi(apicid);
     msleep(IPI_INIT_DELAY);
 
     uint32_t startup_command = IPI_STARTUP | (AP_STARTUP_ASM_ADDRESS >> 12);
-    lapic->send_ipi(apicid, startup_command);
+    lapic->send_startup_ipi(apicid, startup_command);
     msleep(IPI_STARTUP_DELAY);
 
     // Check if the first STARTUP IPI worked and no retry is needed
@@ -165,7 +165,7 @@ bool send_ap_startup_sequence(ap_startup_data* startup_data, uint8_t apicid) {
         return true;
     }
 
-    lapic->send_ipi(apicid, startup_command);
+    lapic->send_startup_ipi(apicid, startup_command);
     msleep(IPI_RETRY_DELAY);
 
     return (startup_data->cpus_running == current_running_cpus + 1);
