@@ -156,8 +156,8 @@ bool send_ap_startup_sequence(ap_startup_data* startup_data, uint8_t apicid) {
     lapic->send_init_ipi(apicid);
     msleep(IPI_INIT_DELAY);
 
-    uint32_t startup_command = IPI_STARTUP | (AP_STARTUP_ASM_ADDRESS >> 12);
-    lapic->send_startup_ipi(apicid, startup_command);
+    uint32_t startup_vector = (AP_STARTUP_ASM_ADDRESS >> 12);
+    lapic->send_startup_ipi(apicid, startup_vector);
     msleep(IPI_STARTUP_DELAY);
 
     // Check if the first STARTUP IPI worked and no retry is needed
@@ -165,7 +165,7 @@ bool send_ap_startup_sequence(ap_startup_data* startup_data, uint8_t apicid) {
         return true;
     }
 
-    lapic->send_startup_ipi(apicid, startup_command);
+    lapic->send_startup_ipi(apicid, startup_vector);
     msleep(IPI_RETRY_DELAY);
 
     return (startup_data->cpus_running == current_running_cpus + 1);
@@ -186,8 +186,8 @@ void smp_init() {
     for (acpi::lapic_desc& desc : apic_table.get_lapics()) {
         uint8_t cpu_index = desc.acpi_processor_id;
 
-        // Ignore the bootstrapping processor
-        if (cpu_index == 0 || cpu_index >= MAX_SYSTEM_CPUS) {
+        // Ignore the bootstrapping processor and out-of-range cores
+        if (desc.apic_id == BSP_CPU_ID || cpu_index >= MAX_SYSTEM_CPUS) {
             continue;
         }
 

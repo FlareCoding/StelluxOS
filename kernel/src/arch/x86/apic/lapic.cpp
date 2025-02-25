@@ -5,7 +5,6 @@
 #include <ports/ports.h>
 #include <memory/vmm.h>
 #include <memory/paging.h>
-#include <serial/serial.h>
 
 // ICR Register Offsets in the LAPIC MMIO space
 static constexpr uint32_t APIC_REG_ICR_LOW   = 0x300; // Interrupt Command Register [31:0]
@@ -198,9 +197,10 @@ void lapic::send_startup_ipi(uint8_t apic_id, uint32_t vector) {
     //               | APIC_TRIGGER_EDGE
     //               | ...
     //
-    uint32_t icr_low = ((uint32_t)vector & APIC_VECTOR_MASK)
+    uint32_t icr_low = (static_cast<uint32_t>(vector) & APIC_VECTOR_MASK)
                      | APIC_DM_STARTUP
                      | APIC_TRIGGER_EDGE;
+
     write(APIC_REG_ICR_LOW, icr_low);
 
     // ------------------------------------------------------
