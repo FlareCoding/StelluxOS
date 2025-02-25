@@ -131,15 +131,34 @@ public:
     __PRIVILEGED_CODE void complete_irq();
 
     /**
-     * @brief Sends an Inter-Processor Interrupt (IPI) to a specified LAPIC.
+     * @brief Sends an INIT Inter-Processor Interrupt (IPI) to a specified LAPIC.
      * @param apic_id The APIC ID of the target LAPIC.
-     * @param vector The interrupt vector to send.
      * 
-     * Used for inter-processor communication to trigger actions on other processors.
+     * Used for inter-processor communication to trigger an INIT action on other processors.
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE void send_ipi(uint8_t apic_id, uint32_t vector);
+    __PRIVILEGED_CODE void send_init_ipi(uint8_t apic_id);
+
+    /**
+     * @brief Sends a Startup Inter-Processor Interrupt (IPI) to a specified LAPIC.
+     * @param apic_id The APIC ID of the target LAPIC.
+     * @param vector The interrupt vector to send.
+     * 
+     * Used for inter-processor communication to trigger a Startup action on other processors.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void send_startup_ipi(uint8_t apic_id, uint32_t vector);
+
+    /**
+     * @brief Waits for an ICR command completion by reading the Delivery Status bit.
+     * 
+     * Used in inter-processor communication through IPIs.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void wait_for_icr_cmd_completion();
 
     /**
      * @brief Disables the legacy Programmable Interrupt Controller (PIC).

@@ -5,6 +5,37 @@
 #include <ports/ports.h>
 #include <memory/vmm.h>
 #include <memory/paging.h>
+#include <serial/serial.h>
+
+// ICR Register Offsets in the LAPIC MMIO space
+static constexpr uint32_t APIC_REG_ICR_LOW   = 0x300; // Interrupt Command Register [31:0]
+static constexpr uint32_t APIC_REG_ICR_HIGH  = 0x310; // Interrupt Command Register [63:32]
+
+// Bits in ICR_LOW (32 bits)
+static constexpr uint32_t APIC_VECTOR_MASK         = 0x000000FF;  // Bits [7:0]:  Interrupt vector
+// Delivery Mode (bits [10:8]) 
+static constexpr uint32_t APIC_DM_FIXED            = (0 << 8);    // 000: Fixed
+static constexpr uint32_t APIC_DM_LOWEST           = (1 << 8);    // 001: Lowest Priority
+static constexpr uint32_t APIC_DM_SMI              = (2 << 8);    // 010: SMI (system management interrupt)
+static constexpr uint32_t APIC_DM_NMI              = (4 << 8);    // 100: NMI
+static constexpr uint32_t APIC_DM_INIT             = (5 << 8);    // 101: INIT
+static constexpr uint32_t APIC_DM_STARTUP          = (6 << 8);    // 110: STARTUP
+// Destination Mode (bit 11)
+static constexpr uint32_t APIC_DESTMODE_LOGICAL    = (1 << 11);   // 1 for logical, 0 for physical
+// Delivery Status (bit 12)
+static constexpr uint32_t APIC_DELIVERY_STATUS     = (1 << 12);   // 1 if APIC is busy sending
+// Level (bit 14) - used only for INIT level de-assert
+static constexpr uint32_t APIC_LEVEL_ASSERT        = (1 << 14);  
+static constexpr uint32_t APIC_LEVEL_DEASSERT      = (0 << 14); // same bit = 0
+// Trigger Mode (bit 15)
+static constexpr uint32_t APIC_TRIGGER_LEVEL       = (1 << 15);   // 1 for level, 0 for edge
+static constexpr uint32_t APIC_TRIGGER_EDGE        = (0 << 15);   
+// Destination Shorthand (bits [19:18])
+//  00 = No shorthand, 01 = Self, 02 = All including self, 03 = All excluding self
+// Usually we leave it at 00 because we specify the APIC ID in ICR_HIGH.
+
+// Bits in ICR_HIGH (32 bits)
+static constexpr uint32_t APIC_ICR_DEST_SHIFT      = 24;          // Bits [31:24]: Destination APIC ID
 
 namespace arch::x86 {
 __PRIVILEGED_DATA
@@ -92,9 +123,98 @@ void lapic::complete_irq() {
 }
 
 __PRIVILEGED_CODE 
-void lapic::send_ipi(uint8_t apic_id, uint32_t vector) {
-    write(APIC_ICR_HI, apic_id << 24);
-    write(APIC_ICR_LO, vector | (1 << 14));
+void lapic::send_init_ipi(uint8_t apic_id) {
+    // ------------------------------------------------------
+    // Write to ICR_HIGH: set the target APIC ID
+    // ------------------------------------------------------
+    //
+    // Bits [31:24] = Destination APIC ID
+    // The lower 24 bits of ICR_HIGH are reserved (must be 0).
+    // 
+    write(APIC_REG_ICR_HIGH, static_cast<uint32_t>(apic_id) << APIC_ICR_DEST_SHIFT);
+
+    // ------------------------------------------------------
+    // Write to ICR_LOW: set the command for INIT IPI
+    // ------------------------------------------------------
+    //
+    // For an INIT IPI:
+    //   - Vector = 0 (bits [7:0] = 0)
+    //   - Delivery Mode = 101b (INIT)
+    //   - Level = 1 (Assert) 
+    //   - Trigger Mode = 1 (Level)
+    //   - Destination Mode = 0 (Physical, if you want physical APIC ID)
+    //   - Destination Shorthand = 00 (bits [19:18] = 0)
+    //
+    // Putting it all together:
+    //   ICR_LOW = APIC_DM_INIT | APIC_TRIGGER_LEVEL | APIC_LEVEL_ASSERT
+    //
+    uint32_t icr_low = APIC_DM_INIT | APIC_TRIGGER_LEVEL | APIC_LEVEL_ASSERT;
+    write(APIC_REG_ICR_LOW, icr_low);
+
+    // ------------------------------------------------------
+    // Wait for the send to complete
+    // ------------------------------------------------------
+    wait_for_icr_cmd_completion();
+
+    // ------------------------------------------------------
+    // De-assert the INIT IPI (per Intel specs),
+    // done by writing the same command but with
+    // Level=0 (deassert).
+    // ------------------------------------------------------
+    write(APIC_REG_ICR_HIGH, (uint32_t)apic_id << APIC_ICR_DEST_SHIFT);
+
+    // APIC_DM_INIT | APIC_TRIGGER_LEVEL is still set, but now Level=0
+    icr_low = APIC_DM_INIT | APIC_TRIGGER_LEVEL | APIC_LEVEL_DEASSERT;
+    write(APIC_REG_ICR_LOW, icr_low);
+
+    // Wait again for send to complete
+    wait_for_icr_cmd_completion();
+}
+
+__PRIVILEGED_CODE 
+void lapic::send_startup_ipi(uint8_t apic_id, uint32_t vector) {
+    // ------------------------------------------------------
+    // Write ICR_HIGH: set the target APIC ID
+    // ------------------------------------------------------
+    write(APIC_REG_ICR_HIGH, static_cast<uint32_t>(apic_id) << APIC_ICR_DEST_SHIFT);
+
+    // ------------------------------------------------------
+    // Write ICR_LOW: set command for STARTUP IPI
+    // ------------------------------------------------------
+    //
+    // For a STARTUP IPI:
+    //   - Vector = startup_vector (bits [7:0])
+    //   - Delivery Mode = 110b (STARTUP)
+    //   - Trigger Mode = 0 (Edge)
+    //   - Level = 1 (Assert) — but for STARTUP, we treat it as edge,
+    //       so bit 15 = 0 for edge, bit 14 can be 0 or 1. Typically 0 is used 
+    //       in practice (Intel’s examples vary but edge triggers do not rely on level).
+    //
+    // The CPU will start execution at physical address = startup_vector * 0x1000.
+    //
+    // So:
+    //    ICR_LOW = (startup_vector & APIC_VECTOR_MASK)
+    //               | APIC_DM_STARTUP
+    //               | APIC_TRIGGER_EDGE
+    //               | ...
+    //
+    uint32_t icr_low = ((uint32_t)vector & APIC_VECTOR_MASK)
+                     | APIC_DM_STARTUP
+                     | APIC_TRIGGER_EDGE;
+    write(APIC_REG_ICR_LOW, icr_low);
+
+    // ------------------------------------------------------
+    // Wait for send to complete
+    // ------------------------------------------------------
+    wait_for_icr_cmd_completion();
+}
+
+__PRIVILEGED_CODE void lapic::wait_for_icr_cmd_completion() {
+    // Wait until the Delivery Status bit is cleared, meaning
+    // the IPI has been sent (the hardware is not busy anymore).
+    while (g_lapic_virtual_base[APIC_REG_ICR_LOW / 4] & APIC_DELIVERY_STATUS) {
+        asm volatile("pause");
+    }
 }
 
 __PRIVILEGED_CODE 
