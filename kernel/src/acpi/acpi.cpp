@@ -114,6 +114,9 @@ void enumerate_acpi_tables(void* rsdp) {
         return;
     }
 
+    kstl::string cmdline_args = kstl::string(g_mbi_kernel_cmdline);
+    bool use_pci_serial = (cmdline_args.find("use-pci-serial=true") != kstl::string::npos);
+
     // Enumerate tables
     size_t entry_count = (xsdt_table->header.length - sizeof(acpi_sdt_header)) / sizeof(uint64_t);
     for (size_t i = 0; i < entry_count; ++i) {
@@ -133,10 +136,12 @@ void enumerate_acpi_tables(void* rsdp) {
                 auto& pci = pci::pci_manager::get();
                 pci.init(table);
 
-                // For baremetal machines that have a PCI serial adapter card
-                // installed, configure it and set that port to be the primary
-                // kernel output UART port for increased baremetal debuggability.
-                __detect_and_use_baremetal_pci_serial_controller();
+                if (use_pci_serial) {
+                    // For baremetal machines that have a PCI serial adapter card
+                    // installed, configure it and set that port to be the primary
+                    // kernel output UART port for increased baremetal debuggability.
+                    __detect_and_use_baremetal_pci_serial_controller();
+                }
 
             } else if (strcmp(table_name, "HPET") == 0) {
                 // Initialize the HPET timer
