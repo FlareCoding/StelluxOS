@@ -706,19 +706,23 @@ bool xhci_driver::_request_bios_handoff(volatile uint32_t* usblegsup, volatile u
     msleep(10);
 
     // Wait for BIOS to clear the BIOS Owned Semaphore
-    constexpr int handoff_timeout = 1000; // 1000 ms timeout
+    constexpr int handoff_timeout = 5000; // 5 s timeout
     int retries = 0;
     while ((*usblegsup & XHCI_LEGACY_BIOS_OWNED_SEMAPHORE) && retries++ < handoff_timeout) {
         msleep(1); // Sleep for 1 ms
     }
 
     if (*usblegsup & XHCI_LEGACY_BIOS_OWNED_SEMAPHORE) {
-        xhci_error("BIOS did not release control of the xHCI controller within %ums\n", handoff_timeout);
-        return false;
+        xhci_warn("BIOS did not release control of the xHCI controller within %ums\n", handoff_timeout);
+        xhci_log("Attempting forced controller takeover...\n");
+
+        *usblegsup &= ~XHCI_LEGACY_BIOS_OWNED_SEMAPHORE;
+        msleep(10);
     } else {
         xhci_log("BIOS successfully handed off control of the xHCI controller\n");
-        return true;
     }
+
+    return true;
 }
 
 bool xhci_driver::_reset_port(uint8_t port_num) {
