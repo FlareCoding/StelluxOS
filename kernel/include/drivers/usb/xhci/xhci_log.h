@@ -10,7 +10,7 @@
 #define XHCI_LOG_LEVEL_NONE     5
 
 // Current log verbosity level
-#define XHCI_LOG_LEVEL XHCI_LOG_LEVEL_VERBOSE
+#define XHCI_LOG_LEVEL XHCI_LOG_LEVEL_WARN
 
 // Buffer size for log messages
 constexpr size_t LOG_BUFFER_SIZE = 256;
