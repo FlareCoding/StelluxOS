@@ -27,7 +27,7 @@ xhci_driver::xhci_driver() : pci_device_driver("xhci_driver") {}
 bool xhci_driver::init_device() {
     RUN_ELEVATED({ m_qemu_detected = DETECT_QEMU(); });
 
-    xhci_log("Initializing xhci driver\n\n");
+    xhci_logv("Initializing xhci driver\n\n");
 
     auto pci_bar = m_pci_dev->get_bars()[0];
     RUN_ELEVATED({
@@ -63,9 +63,9 @@ bool xhci_driver::init_device() {
     if (m_irq_vector != 0) {
         RUN_ELEVATED({
             if (!register_irq_handler(m_irq_vector, reinterpret_cast<irq_handler_t>(xhci_irq_handler), false, static_cast<void*>(this))) {
-                xhci_log("Failed to register xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
+                xhci_error("Failed to register xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
             } else {
-                xhci_log("Registered xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
+                xhci_logv("Registered xhci handler at IRQ%i\n\n", m_irq_vector - IRQ0);
             }
         });
     }
@@ -95,7 +95,7 @@ bool xhci_driver::start_device() {
         }
     }
 
-    xhci_log("Started the controller\n");
+    xhci_logv("Started the controller\n");
 
     // This code is just a prototype right now and is by no
     // means safe and has critical synchronization issues.
