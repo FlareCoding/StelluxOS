@@ -6,6 +6,7 @@
 #include <pci/pci_manager.h>
 #include <acpi/hpet.h>
 #include <acpi/madt.h>
+#include <acpi/fadt.h>
 #include <time/time.h>
 
 extern char* g_mbi_kernel_cmdline;
@@ -154,6 +155,10 @@ void enumerate_acpi_tables(void* rsdp) {
                 // Initialize the MADT table
                 auto& apic_table = madt::get();
                 apic_table.init(table);
+            } else if (strcmp(table_name, "FACP") == 0) {
+                // Initialize the FADT table controller
+                auto& fadt_table = fadt::get();
+                fadt_table.init(table);
             }
         }
     }
