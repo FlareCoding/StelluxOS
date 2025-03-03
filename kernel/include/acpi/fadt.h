@@ -122,8 +122,6 @@ public:
      */
     __force_inline__ uint16_t get_sci_interrupt() const { return m_fadt_data.sci_interrupt; }
 
-    __force_inline__ fadt_table* get_internal_table() { return &m_fadt_data; }
-
 private:
     fadt_table m_fadt_data; // Stores the parsed FADT table data.
 };
