@@ -1,7 +1,6 @@
 #ifndef XHCI_LOG_H
 #define XHCI_LOG_H
-#include <serial/serial.h>
-#include <sync.h>
+#include <klog.h>
 
 // Possible log levels
 #define XHCI_LOG_LEVEL_VERBOSE  1
@@ -42,7 +41,7 @@ void xhci_log_internal(int level, const char* prefix, const char* format, Args..
     }
 
     // Send the complete log message
-    serial::printf(buffer);
+    kprint(buffer);
 }
 
 template <typename... Args>
