@@ -14,7 +14,7 @@
 #include <arch/x86/fsgsbase.h>
 #include <syscall/syscalls.h>
 #include <sched/sched.h>
-#include <serial/serial.h>
+#include <core/klog.h>
 
 #define AP_STARTUP_ASM_ADDRESS              static_cast<uint64_t>(0x8000)
 #define AP_STARTUP_DATA_ADDRESS             static_cast<uint64_t>(0x9000)
@@ -100,6 +100,9 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
 
     // Calibrate the local APIC timer to a tickrate of 4ms
     kernel_timer::calibrate_cpu_timer(4);
+
+    // Log that the cpu is now online
+    kprint("CPU %u online!\n", current->cpu);
 
     // Start local APIC timer in order to receive timer IRQs
     kernel_timer::start_cpu_periodic_timer();
