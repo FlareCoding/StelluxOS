@@ -1,6 +1,8 @@
 #include "screen_manager.h"
 #include <arch/x86/cpuid.h>
+#include <memory/vmm.h>
 #include <memory/paging.h>
+#include <core/klog.h>
 
 extern int64_t g_mouse_cursor_pos_x;
 extern int64_t g_mouse_cursor_pos_y;
@@ -27,7 +29,23 @@ bool screen_manager::initialize() {
         return false;
     }
 
+    RUN_ELEVATED({
+        m_console_log_buffer = static_cast<char*>(vmm::alloc_contiguous_virtual_pages(8, DEFAULT_UNPRIV_PAGE_FLAGS));
+    });
+
+    if (!m_console_log_buffer) {
+        return false;
+    }
+
+    uint32_t screen_height = m_screen_canvas->height();
+    uint32_t font_height = 18;
+    m_max_displayable_console_lines = screen_height / font_height;
+
     return true;
+}
+
+void screen_manager::set_background_color(const stella_ui::color& color) {
+    m_screen_canvas->set_background_color(color.to_argb());
 }
 
 void screen_manager::begin_frame() {
@@ -80,9 +98,38 @@ void screen_manager::draw_screen_overlays() {
     sprintf(time_str_buf, 127, "System Uptime: %lluh %llum %llus", hours, minutes, seconds);
 
     m_screen_canvas->draw_string(m_screen_canvas->width() - 220, 2, time_str_buf, 0xffffffff);
-    m_screen_canvas->draw_string(16, 2, cpu_vendor_display_str_buf, 0xffffffff);
+    m_screen_canvas->draw_string(4, 2, cpu_vendor_display_str_buf, 0xffffffff);
 
     _draw_mouse_cursor();
+}
+
+void screen_manager::draw_kernel_log_console() {
+    // Fetch the last `lines_to_display` lines from the kernel log buffer
+    size_t bytes_read = klog::logger::read_last_n_lines(m_max_displayable_console_lines, m_console_log_buffer, PAGE_SIZE * 8);
+
+    if (bytes_read == 0) {
+        return; // No logs to display
+    }
+
+    // Draw each line on the screen, starting from the top
+    uint32_t y_offset = 0;
+    char* line_start = m_console_log_buffer;
+
+    for (size_t i = 0; i < bytes_read; ++i) {
+        if (m_console_log_buffer[i] == '\n' || m_console_log_buffer[i] == '\0') {
+            m_console_log_buffer[i] = '\0'; // Null-terminate the line
+            m_screen_canvas->draw_string(16, y_offset, line_start, 0xffffffff);
+            y_offset += 18;
+
+            // Move to the next line
+            line_start = &m_console_log_buffer[i + 1];
+
+            // Stop if we've filled the screen
+            if (y_offset >= m_screen_canvas->height()) {
+                break;
+            }
+        }
+    }
 }
 
 void screen_manager::poll_events() {
@@ -101,7 +148,7 @@ bool screen_manager::_create_canvas(psf1_font* font) {
     auto& mgr = modules::module_manager::get();
     m_gfx_module = mgr.find_module("gfx_framebuffer_module");
     if (!m_gfx_module) {
-        serial::printf("screen_manager: Failed to find gfx_framebuffer_module\n");
+        kprint("screen_manager: Failed to find gfx_framebuffer_module\n");
         return false;
     }
 
@@ -120,7 +167,7 @@ bool screen_manager::_create_canvas(psf1_font* font) {
     );
 
     if (!result || !fb.data) {
-        serial::printf("[!] screen_manager: Failed to map back buffer.\n");
+        kprint("[!] screen_manager: Failed to map back buffer.\n");
         return false;
     }
 
@@ -128,7 +175,7 @@ bool screen_manager::_create_canvas(psf1_font* font) {
     m_screen_canvas = kstl::make_shared<stella_ui::canvas>(fb, font);
 
 #if 0
-    serial::printf(
+    kprint(
         "screen_manager: Successfully initialized canvas: %ux%u pitch=%u bpp=%u\n",
         fb.width, fb.height, fb.pitch, fb.bpp
     );
@@ -207,7 +254,7 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
         window->title = req->title;
         window->background_color = stella_ui::color(req->bg_color);
         if (window->setup()) {
-            serial::printf("[GFX_MANAGER] Successfully created user window\n");
+            kprint("[GFX_MANAGER] Successfully created user window\n");
             m_window_list.push_back(window);
             user_session.window = window;
 
@@ -251,7 +298,7 @@ void screen_manager::_process_event(uint8_t* payload, size_t payload_size) {
         break;
     }
     default: {
-        serial::printf("[GFX_MANAGER] Unknown command received: 0x%llx\n", hdr->type);
+        kprint("[GFX_MANAGER] Unknown command received: 0x%llx\n", hdr->type);
         break;
     }
     }
@@ -271,7 +318,7 @@ bool screen_manager::_establish_user_session(stella_ui::internal::userlib_reques
     }
 
     if (handle == MESSAGE_QUEUE_ID_INVALID) {
-        serial::printf("[GFX_MANAGER] Failed to connect to user session '%s'\n", req->name);
+        kprint("[GFX_MANAGER] Failed to connect to user session '%s'\n", req->name);
         return false;
     }
 
@@ -282,11 +329,11 @@ bool screen_manager::_establish_user_session(stella_ui::internal::userlib_reques
     m_user_sessions[handle] = session;
 
     if (!_send_ack_to_session(handle)) {
-        serial::printf("[GFX_MANAGER] Failed to send ACK to user session '%s'\n", req->name);
+        kprint("[GFX_MANAGER] Failed to send ACK to user session '%s'\n", req->name);
         return false;
     }
 
-    serial::printf("[GFX_MANAGER] Connected to user session '%s'\n", req->name);
+    kprint("[GFX_MANAGER] Connected to user session '%s'\n", req->name);
     return true;
 }
 
