@@ -1,3 +1,4 @@
+#include <core/klog.h>
 #include <serial/serial.h>
 #include <boot/multiboot2.h>
 #include <arch/arch_init.h>
@@ -157,6 +158,9 @@ void init(unsigned int magic, void* mbi) {
     // Initialize memory allocators
     paging::init_physical_allocator(g_mbi_efi_mmap, g_mbi_fallback_mmap, mbi_start_addr, mbi_size);
     paging::init_virtual_allocator();
+
+    // Initialize kernel logging subsystem
+    klog::logger::init(8);
 
     // Perform arch-specific initialzation that require VMM
     arch::arch_late_stage_init();
