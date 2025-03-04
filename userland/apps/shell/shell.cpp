@@ -46,11 +46,10 @@ void process_command(const kstl::string& command) {
         });
     } else if (command == "cpuinfo") {
         char cpu_vendor_str[24] = { 0 };
-        char cpu_brand[49] = { 0 };
+        char cpu_brand[52] = { 0 };
         uint32_t cpu_family = 0, cpu_model = 0, cpu_stepping = 0;
         uint32_t num_logical_cores = 0, num_physical_cores = 0;
-        uint32_t l1_cache, l2_cache, l3_cache;
-        int32_t cpu_temperature = -1;
+        uint32_t l1_cache = 0, l2_cache = 0, l3_cache = 0;
 
         RUN_ELEVATED({
             arch::x86::cpuid_read_vendor_id(cpu_vendor_str);
@@ -61,7 +60,6 @@ void process_command(const kstl::string& command) {
             num_logical_cores = arch::x86::cpuid_read_logical_cores();
             num_physical_cores = arch::x86::cpuid_read_physical_cores();
             arch::x86::cpuid_read_cache_sizes(&l1_cache, &l2_cache, &l3_cache);
-            cpu_temperature = arch::x86::msr::read_cpu_temperature();
 
             kprint("Vendor: %s\n", cpu_vendor_str);
             kprint("CPU: %s\n", cpu_brand);
@@ -73,7 +71,6 @@ void process_command(const kstl::string& command) {
             print_cache_size("L1", l1_cache);
             print_cache_size("L2", l2_cache);
             print_cache_size("L3", l3_cache);
-            kprint("Current Temp: %iC\n", cpu_temperature);
         });
     } else if (command == "clear") {
         kprint("\033[2J\033[H"); // ANSI escape codes to clear screen and move cursor to home
