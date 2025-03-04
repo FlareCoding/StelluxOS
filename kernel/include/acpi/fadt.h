@@ -9,7 +9,7 @@ struct generic_address_structure {
     uint8_t bit_offset;
     uint8_t access_size;
     uint64_t address;
-};
+} __attribute__((packed));
 
 /**
  * @struct fadt_table
@@ -42,6 +42,12 @@ struct fadt_table {
     uint32_t pm_timer_block;
     uint32_t gpe0_block;
     uint32_t gpe1_block;
+    uint8_t  pm1_evt_len;
+    uint8_t  pm1_ctrl_len;
+    uint8_t  pm2_ctrl_len;
+    uint8_t  pm_timer_len;
+    uint8_t  gpe0_block_len;
+    uint8_t  gpe1_block_len;
     uint8_t gpe1_base;
     uint8_t cstate_control;
     uint16_t worst_c2_latency;
@@ -55,7 +61,7 @@ struct fadt_table {
     uint8_t century;
 
     // Reserved in ACPI 1.0, used since ACPI 2.0+
-    uint16_t boot_architecture_flags;
+    uint16_t iapc_boot_arch_flags;
 
     uint8_t reserved2;
     uint32_t flags;

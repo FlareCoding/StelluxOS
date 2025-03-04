@@ -1,6 +1,5 @@
 #include <acpi/fadt.h>
 #include <memory/memory.h>
-#include <serial/serial.h>
 
 namespace acpi {
 fadt g_fadt;
