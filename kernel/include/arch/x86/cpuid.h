@@ -212,11 +212,7 @@ __PRIVILEGED_CODE static inline uint32_t cpuid_read_logical_cores() {
  * @brief Reads the number of physical CPU cores.
  * @return The number of physical CPU cores.
  */
-__PRIVILEGED_CODE static inline uint32_t cpuid_read_physical_cores() {
-    uint32_t eax, ebx, ecx, edx;
-    read_cpuid_full(0x4, &eax, &ebx, &ecx, &edx);
-    return ((eax >> 26) & 0x3F) + 1; // Bits [31:26] contain the core count
-}
+__PRIVILEGED_CODE uint32_t cpuid_read_physical_cores();
 
 /**
  * @brief Reads L1, L2, and L3 cache sizes in KB.
@@ -224,14 +220,7 @@ __PRIVILEGED_CODE static inline uint32_t cpuid_read_physical_cores() {
  * @param l2 Pointer to store L2 cache size.
  * @param l3 Pointer to store L3 cache size.
  */
-__PRIVILEGED_CODE static inline void cpuid_read_cache_sizes(uint32_t* l1, uint32_t* l2, uint32_t* l3) {
-    uint32_t eax, ebx, ecx, edx;
-    read_cpuid_full(CPUID_CACHE_INFO, &eax, &ebx, &ecx, &edx);
-
-    *l1 = ecx & 0xFF;      // L1 cache size (DCache per core)
-    *l2 = (ecx >> 16) & 0xFFFF;  // L2 cache size
-    *l3 = (edx >> 18) & 0x3FFF;  // L3 cache size
-}
+__PRIVILEGED_CODE void cpuid_read_cache_sizes(uint32_t* l1, uint32_t* l2, uint32_t* l3);
 
 /**
  * @brief Checks if the CPU supports SSE instructions.
