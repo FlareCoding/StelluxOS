@@ -41,6 +41,13 @@ int32_t read_cpu_temperature() {
 
     // AMD CPU temperature reading (AMD THERMTRIP MSR)
     if (strcmp(cpu_vendor, "AuthenticAMD") == 0) {
+        uint32_t cpu_family = cpuid_read_cpu_family();
+
+        // AMD temperature MSR is only available on Family 10h (0x10) and newer
+        if (cpu_family < 0x10) {
+            return -1; // Temperature MSR is not available on older AMD CPUs
+        }
+
         msr_value = read(AMD_THERMTRIP);
 
         uint8_t temp_readout = (msr_value >> 16) & 0x7F;
