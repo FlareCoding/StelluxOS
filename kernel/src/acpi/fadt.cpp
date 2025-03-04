@@ -28,13 +28,12 @@ __PRIVILEGED_CODE
 void fadt::shutdown() {
     kprint("[SHUTDOWN] Initiating shutdown through a FADT acpi table\n");
 
-    uint16_t SLP_TYP = (5 << 10); // S5 sleep type
     uint16_t SLP_EN = (1 << 13);  // Sleep enable bit
 
-    outw(m_fadt_data.pm1a_control_block, SLP_TYP | SLP_EN);
+    outw(m_fadt_data.pm1a_control_block, SLP_EN);
 
     if (m_fadt_data.pm1b_control_block) {
-        outw(m_fadt_data.pm1b_control_block, SLP_TYP | SLP_EN);
+        outw(m_fadt_data.pm1b_control_block, SLP_EN);
     }
 }
 } // namespace acpi
