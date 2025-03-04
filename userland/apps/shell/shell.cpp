@@ -36,12 +36,16 @@ void process_command(const kstl::string& command) {
         });
     } else if (command == "cpuinfo") {
         char cpu_vendor_str[24] = { 0 };
+        uint32_t cpu_family = 0;
         int32_t cpu_temperature = -1;
+
         RUN_ELEVATED({
             arch::x86::cpuid_read_vendor_id(cpu_vendor_str);
+            cpu_family = arch::x86::cpuid_read_cpu_family();
             cpu_temperature = arch::x86::msr::read_cpu_temperature();
 
             kprint("Vendor: %s\n", cpu_vendor_str);
+            kprint("Family: 0x%x\n", cpu_family);
             kprint("Current Temp: %iC\n", cpu_temperature);
         });
     } else if (command == "clear") {
