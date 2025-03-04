@@ -128,6 +128,30 @@ public:
      */
     __force_inline__ uint16_t get_sci_interrupt() const { return m_fadt_data.sci_interrupt; }
 
+    /**
+     * @brief Retrieves the iAPC boot architecture flags.
+     * @return The boot architecture flags.
+     */
+    __force_inline__ uint16_t get_iapc_boot_arch_flags() const { return m_fadt_data.iapc_boot_arch_flags; }
+
+    /**
+     * @brief Checks if a PS/2 controller is present.
+     * @return True if a PS/2 controller is present, false otherwise.
+     */
+    __force_inline__ bool is_ps2_controller_present() const { return !(m_fadt_data.iapc_boot_arch_flags & (1 << 1)); }
+    
+    /**
+     * @brief Reboots the system using the ACPI reset register.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void reboot();
+    
+    /**
+     * @brief Shuts down the system using ACPI S5 sleep state.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void shutdown();
+
 private:
     fadt_table m_fadt_data; // Stores the parsed FADT table data.
 };
