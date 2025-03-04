@@ -11,6 +11,10 @@
 
 // Extended CPUID Information
 #define CPUID_EXTENDED_FEATURES    0x80000001
+#define CPUID_BRAND_STRING_1       0x80000002
+#define CPUID_BRAND_STRING_2       0x80000003
+#define CPUID_BRAND_STRING_3       0x80000004
+#define CPUID_CACHE_INFO           0x80000006
 
 // Feature bits in EDX for CPUID with EAX=1
 #define CPUID_FEAT_EDX_PAE         (1 << 6)
@@ -157,6 +161,76 @@ __PRIVILEGED_CODE static inline uint32_t cpuid_read_cpu_family() {
     uint32_t family = (base_family == 0xF) ? (base_family + extended_family) : base_family;
 
     return family;
+}
+
+/**
+ * @brief Reads the CPU model ID.
+ * @return CPU model ID.
+ */
+__PRIVILEGED_CODE static inline uint32_t cpuid_read_cpu_model() {
+    uint32_t eax, ebx, ecx, edx;
+    read_cpuid_full(CPUID_FEATURES, &eax, &ebx, &ecx, &edx);
+    return (eax >> 4) & 0xF; // Bits [7:4] contain the model ID
+}
+
+/**
+ * @brief Reads the CPU stepping ID.
+ * @return CPU stepping ID.
+ */
+__PRIVILEGED_CODE static inline uint32_t cpuid_read_cpu_stepping() {
+    uint32_t eax, ebx, ecx, edx;
+    read_cpuid_full(CPUID_FEATURES, &eax, &ebx, &ecx, &edx);
+    return eax & 0xF; // Bits [3:0] contain the stepping ID
+}
+
+/**
+ * @brief Reads the CPU brand string.
+ * @param brand Pointer to a buffer of at least 49 bytes to store the brand string.
+ */
+__PRIVILEGED_CODE static inline void cpuid_read_cpu_brand(char* brand) {
+    uint32_t data[12];
+    
+    read_cpuid_full(CPUID_BRAND_STRING_1, &data[0], &data[1], &data[2], &data[3]);
+    read_cpuid_full(CPUID_BRAND_STRING_2, &data[4], &data[5], &data[6], &data[7]);
+    read_cpuid_full(CPUID_BRAND_STRING_3, &data[8], &data[9], &data[10], &data[11]);
+
+    memcpy(brand, data, 48);
+    brand[48] = '\0';
+}
+
+/**
+ * @brief Reads the number of logical CPU cores.
+ * @return The number of logical CPU cores.
+ */
+__PRIVILEGED_CODE static inline uint32_t cpuid_read_logical_cores() {
+    uint32_t eax, ebx, ecx, edx;
+    read_cpuid_full(CPUID_FEATURES, &eax, &ebx, &ecx, &edx);
+    return (ebx >> 16) & 0xFF; // Bits [23:16] of EBX contain the logical processor count
+}
+
+/**
+ * @brief Reads the number of physical CPU cores.
+ * @return The number of physical CPU cores.
+ */
+__PRIVILEGED_CODE static inline uint32_t cpuid_read_physical_cores() {
+    uint32_t eax, ebx, ecx, edx;
+    read_cpuid_full(0x4, &eax, &ebx, &ecx, &edx);
+    return ((eax >> 26) & 0x3F) + 1; // Bits [31:26] contain the core count
+}
+
+/**
+ * @brief Reads L1, L2, and L3 cache sizes in KB.
+ * @param l1 Pointer to store L1 cache size.
+ * @param l2 Pointer to store L2 cache size.
+ * @param l3 Pointer to store L3 cache size.
+ */
+__PRIVILEGED_CODE static inline void cpuid_read_cache_sizes(uint32_t* l1, uint32_t* l2, uint32_t* l3) {
+    uint32_t eax, ebx, ecx, edx;
+    read_cpuid_full(CPUID_CACHE_INFO, &eax, &ebx, &ecx, &edx);
+
+    *l1 = ecx & 0xFF;      // L1 cache size (DCache per core)
+    *l2 = (ecx >> 16) & 0xFFFF;  // L2 cache size
+    *l3 = (edx >> 18) & 0x3FFF;  // L3 cache size
 }
 
 /**
