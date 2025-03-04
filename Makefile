@@ -86,7 +86,7 @@ help:
 	@echo "  make help            		Show this help message"
 	@echo "  make install-dependencies	Installs the necessary tools and packages for the current Linux distribution"
 	@echo "  make kernel          		Build the Stellux kernel"
-	@echo "  make userspace          	Build the userspace Stellux applications"
+	@echo "  make userland          	Build the userspace Stellux applications"
 	@echo "  make image           		Create the UEFI-compatible disk image (requires sudo)"
 	@echo "  make initrd           		Rebuild and package an initrd cpio ramdisk"
 	@echo "  make run             		Run the Stellux image in QEMU"
