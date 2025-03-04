@@ -4,7 +4,7 @@
 #include <core/string.h>
 #include <time/time.h>
 #include <dynpriv/dynpriv.h>
-#include <acpi/shutdown.h>
+#include <acpi/fadt.h>
 
 constexpr size_t MAX_COMMAND_LENGTH = 256;
 
@@ -15,14 +15,21 @@ void process_command(const kstl::string& command) {
         serial::printf("  clear        - Clear the screen\n");
         serial::printf("  echo [text]  - Echo the text back\n");
         serial::printf("  shutdown     - Shutdown the system\n");
+        serial::printf("  reboot       - Reboot the system\n");
     } else if (command.starts_with("echo ")) {
         serial::printf(command.substring(5).c_str());
         serial::printf("\n");
     } else if (command == "shutdown") {
-        serial::printf("Shutting system down...\n");
-        msleep(800);
+        msleep(100);
         RUN_ELEVATED({
-            vmshutdown();
+            auto& fadt = acpi::fadt::get();
+            fadt.shutdown();
+        });
+    } else if (command == "reboot") {
+        msleep(100);
+        RUN_ELEVATED({
+            auto& fadt = acpi::fadt::get();
+            fadt.reboot();
         });
     } else if (command == "clear") {
         serial::printf("\033[2J\033[H"); // ANSI escape codes to clear screen and move cursor to home
