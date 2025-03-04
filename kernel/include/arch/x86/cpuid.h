@@ -116,6 +116,31 @@ __PRIVILEGED_CODE static inline void read_cpuid_full(
 }
 
 /**
+ * @brief Executes the CPUID instruction with the given leaf and subleaf.
+ * 
+ * @param leaf The main CPUID function to query.
+ * @param subleaf The subfunction to query (for Intel 0x04, AMD 0x8000001D).
+ * @param eax Pointer to store the EAX register result.
+ * @param ebx Pointer to store the EBX register result.
+ * @param ecx Pointer to store the ECX register result.
+ * @param edx Pointer to store the EDX register result.
+ *
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline void read_cpuid_full(
+    uint32_t leaf,
+    uint32_t subleaf,
+    uint32_t* eax,
+    uint32_t* ebx,
+    uint32_t* ecx,
+    uint32_t* edx
+) {
+    asm volatile("cpuid"
+                 : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
+                 : "a"(leaf), "c"(subleaf));
+}
+
+/**
  * @brief Checks if 5-level page tables (LA57) are supported.
  * @return True if LA57 is supported, false otherwise.
  * 
