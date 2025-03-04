@@ -82,7 +82,9 @@ void screen_manager::composite_windows() {
 
 void screen_manager::draw_screen_overlays() {
     char cpu_vendor_str[16] = { 0 };
-    arch::x86::cpuid_read_vendor_id(cpu_vendor_str);
+    RUN_ELEVATED({
+        arch::x86::cpuid_read_vendor_id(cpu_vendor_str);
+    });
 
     char cpu_vendor_display_str_buf[128] = { 0 };
     sprintf(cpu_vendor_display_str_buf, 127, "CPU: %s", cpu_vendor_str);
