@@ -143,6 +143,23 @@ __PRIVILEGED_CODE static inline void cpuid_read_vendor_id(char* vendor) {
 }
 
 /**
+ * @brief Reads the CPU family ID.
+ * @return CPU family ID.
+ *
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline uint32_t cpuid_read_cpu_family() {
+    uint32_t eax, ebx, ecx, edx;
+    asm volatile ("cpuid":"=a"(eax),"=b"(ebx),"=c"(ecx),"=d"(edx):"a"(CPUID_FEATURES));
+
+    uint32_t base_family = (eax >> 8) & 0xF;
+    uint32_t extended_family = (eax >> 20) & 0xFF;
+    uint32_t family = (base_family == 0xF) ? (base_family + extended_family) : base_family;
+
+    return family;
+}
+
+/**
  * @brief Checks if the CPU supports SSE instructions.
  * @return True if SSE is supported, false otherwise.
  * 
