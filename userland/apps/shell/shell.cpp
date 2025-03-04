@@ -10,6 +10,16 @@
 
 constexpr size_t MAX_COMMAND_LENGTH = 256;
 
+void print_cache_size(const char* level, uint32_t size) {
+    if (size >= 1024 * 1024) {
+        kprint("%s Cache: %u MB\n", level, size / (1024 * 1024));
+    } else if (size >= 1024) {
+        kprint("%s Cache: %u KB\n", level, size / 1024);
+    } else {
+        kprint("%s Cache: %u Bytes\n", level, size);
+    }
+}
+
 void process_command(const kstl::string& command) {
     if (command == "help") {
         kprint("Available commands:\n");
@@ -60,9 +70,9 @@ void process_command(const kstl::string& command) {
             kprint("Stepping: 0x%x\n", cpu_stepping);
             kprint("Logical Cores: %u\n", num_logical_cores);
             kprint("Physical Cores: %u\n", num_physical_cores);
-            kprint("L1 Cache: %u KB\n", l1_cache);
-            kprint("L2 Cache: %u KB\n", l2_cache);
-            kprint("L3 Cache: %u KB\n", l3_cache);
+            print_cache_size("L1", l1_cache);
+            print_cache_size("L2", l2_cache);
+            print_cache_size("L3", l3_cache);
             kprint("Current Temp: %iC\n", cpu_temperature);
         });
     } else if (command == "clear") {
