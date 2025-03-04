@@ -36,16 +36,33 @@ void process_command(const kstl::string& command) {
         });
     } else if (command == "cpuinfo") {
         char cpu_vendor_str[24] = { 0 };
-        uint32_t cpu_family = 0;
+        char cpu_brand[49] = { 0 };
+        uint32_t cpu_family = 0, cpu_model = 0, cpu_stepping = 0;
+        uint32_t num_logical_cores = 0, num_physical_cores = 0;
+        uint32_t l1_cache, l2_cache, l3_cache;
         int32_t cpu_temperature = -1;
 
         RUN_ELEVATED({
             arch::x86::cpuid_read_vendor_id(cpu_vendor_str);
             cpu_family = arch::x86::cpuid_read_cpu_family();
+            cpu_model = arch::x86::cpuid_read_cpu_model();
+            cpu_stepping = arch::x86::cpuid_read_cpu_stepping();
+            arch::x86::cpuid_read_cpu_brand(cpu_brand);
+            num_logical_cores = arch::x86::cpuid_read_logical_cores();
+            num_physical_cores = arch::x86::cpuid_read_physical_cores();
+            arch::x86::cpuid_read_cache_sizes(&l1_cache, &l2_cache, &l3_cache);
             cpu_temperature = arch::x86::msr::read_cpu_temperature();
 
             kprint("Vendor: %s\n", cpu_vendor_str);
+            kprint("CPU: %s\n", cpu_brand);
             kprint("Family: 0x%x\n", cpu_family);
+            kprint("Model: 0x%x\n", cpu_model);
+            kprint("Stepping: 0x%x\n", cpu_stepping);
+            kprint("Logical Cores: %u\n", num_logical_cores);
+            kprint("Physical Cores: %u\n", num_physical_cores);
+            kprint("L1 Cache: %u KB\n", l1_cache);
+            kprint("L2 Cache: %u KB\n", l2_cache);
+            kprint("L3 Cache: %u KB\n", l3_cache);
             kprint("Current Temp: %iC\n", cpu_temperature);
         });
     } else if (command == "clear") {
