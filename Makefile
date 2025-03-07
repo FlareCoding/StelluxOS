@@ -244,7 +244,7 @@ install-dependencies:
 			ovmf \
 			cpio \
 			doxygen \
-			grub-efi-amd64; \
+			$$( [ -f /usr/lib/grub/x86_64-efi/modinfo.sh ] && echo "" || echo "grub-efi-amd64" ); \
 	elif [ -f /etc/redhat-release ]; then \
 		echo "Detected RedHat-based system."; \
 		sudo dnf groupinstall -y "Development Tools" && \
