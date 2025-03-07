@@ -221,7 +221,6 @@ execute-unit-tests:
 
 	@echo ""
 	@echo "[LOG] Parsing unit test results"
-	
 	@bash -c '\
 		bash ./tools/parse_unit_test_results.sh; \
 		RESULT=$$?; \
@@ -244,19 +243,20 @@ install-dependencies:
 			gdb \
 			ovmf \
 			cpio \
-			doxygen; \
+			doxygen \
+			grub-efi-amd64; \
 	elif [ -f /etc/redhat-release ]; then \
 		echo "Detected RedHat-based system."; \
 		sudo dnf groupinstall -y "Development Tools" && \
 		sudo dnf install -y \
-			grub2-efi-x64 \
 			dosfstools \
 			parted \
 			qemu-system-x86_64 \
 			gdb \
 			edk2-ovmf \
 			cpio \
-			doxygen; \
+			doxygen \
+			grub2-efi-x64; \
 	elif [ -f /etc/arch-release ]; then \
 		echo "Detected Arch-based system."; \
 		sudo pacman -Sy --noconfirm \
