@@ -52,6 +52,14 @@ __PRIVILEGED_CODE void arch_init();
  * This function must be called AFTER virtual memory manager has been initialized.
  */
 __PRIVILEGED_CODE void arch_late_stage_init();
+
+/**
+ * @brief Sets up and installs an interrupt handler for COM1 serial input.
+ * 
+ * Performs appropriate architecture-specific IRQ routing (e.g. IOAPIC on x86)
+ * and installs the interrupt handler for COM1 serial input interrupts.
+ */
+__PRIVILEGED_CODE void setup_com1_irq();
 } // namespace arch
 
 #endif
