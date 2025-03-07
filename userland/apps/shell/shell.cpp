@@ -7,6 +7,7 @@
 #include <acpi/fadt.h>
 #include <arch/x86/cpuid.h>
 #include <arch/x86/msr.h>
+#include <input/system_input_manager.h>
 
 constexpr size_t MAX_COMMAND_LENGTH = 256;
 
@@ -85,8 +86,21 @@ void shell_loop() {
     char command_buffer[MAX_COMMAND_LENGTH] = {0};
     size_t command_length = 0;
 
+    auto& input_manager = input::system_input_manager::get();
+    auto kbd_queue = input_manager.get_queue(INPUT_QUEUE_ID_KBD);
+    if (!kbd_queue) {
+        kprint("[SHELL] Input queue for keyboard events was not found!\n");
+        return;
+    }
+
+    input::input_event_t evt;
+
     while (true) {
-        char input = serial::read(serial::g_kernel_uart_port);
+        // char input = serial::read(serial::g_kernel_uart_port);
+        if (!kbd_queue->wait_and_pop(evt)) {
+            continue;
+        }
+        char input = static_cast<char>(evt.sdata1);
 
         if (input == '\n' || input == '\r') {
             // Process the command when Enter is pressed
