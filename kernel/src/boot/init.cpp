@@ -19,6 +19,7 @@
 #include <fs/ram_filesystem.h>
 #include <fs/vfs.h>
 #include <fs/cpio/cpio.h>
+#include <input/system_input_manager.h>
 #include <gdb/gdb_stub.h>
 
 #ifdef BUILD_UNIT_TESTS
@@ -213,6 +214,9 @@ void init(unsigned int magic, void* mbi) {
 }
 
 void module_manager_init(void*) {
+    // Initializes the system-wide input kernel subsystem
+    input::system_input_manager::get().init();
+
     // First create a graphics module to allow rendering to the screen,
     // and for that we need to create a framebuffer information struct.
     modules::gfx_framebuffer_module::framebuffer_t framebuffer_info;
