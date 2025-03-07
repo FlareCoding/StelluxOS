@@ -9,9 +9,11 @@
 #include <arch/x86/fsgsbase.h>
 #include <arch/x86/pat.h>
 #include <arch/x86/apic/lapic.h>
+#include <arch/x86/apic/ioapic.h>
 #include <syscall/syscalls.h>
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
+#include <input/serial_irq.h>
 
 uint8_t g_default_bsp_system_stack[PAGE_SIZE];
 
@@ -68,5 +70,35 @@ void arch_late_stage_init() {
     }
 
     lapic->init();
+}
+
+__PRIVILEGED_CODE
+void setup_com1_irq() {
+    // Get IOAPIC instance
+    auto ioapic = arch::x86::ioapic::get();
+    if (!ioapic) {
+        return;
+    }
+
+    // Calculate the Global System Interrupt (GSI) for COM1 (IRQ4)
+    uint8_t com1_irq = 4;
+    uint32_t com1_gsi = ioapic->get_global_interrupt_base() + com1_irq;
+
+    // Create a redirection entry for COM1
+    arch::x86::ioapic::redirection_entry entry;
+    zeromem(&entry, sizeof(arch::x86::ioapic::redirection_entry));
+
+    entry.vector = find_free_irq_vector();  // Assign an IDT vector
+    entry.delv_mode = 0b000;                // Fixed delivery mode
+    entry.dest_mode = 0;                    // Physical mode
+    entry.trigger_mode = 0;                 // Edge-triggered
+    entry.mask = 0;                         // Enable the interrupt
+    entry.destination = current->cpu;       // Route to the current CPU
+
+    // Create an IOAPIC redirection entry
+    ioapic->write_redirection_entry(com1_gsi, &entry);
+
+    // Register the interrupt handler in the IDT
+    register_irq_handler(entry.vector, input::__com1_irq_handler, true, nullptr);
 }
 } // namespace arch

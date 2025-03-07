@@ -217,6 +217,12 @@ void module_manager_init(void*) {
     // Initializes the system-wide input kernel subsystem
     input::system_input_manager::get().init();
 
+    // After input queues have initialized, setup IRQ handling for
+    // COM1 input to be processed as a proper system input source.
+    RUN_ELEVATED({
+        arch::setup_com1_irq();
+    });
+
     // First create a graphics module to allow rendering to the screen,
     // and for that we need to create a framebuffer information struct.
     modules::gfx_framebuffer_module::framebuffer_t framebuffer_info;
