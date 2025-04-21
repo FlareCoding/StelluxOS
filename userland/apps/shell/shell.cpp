@@ -100,6 +100,12 @@ void shell_loop() {
         if (!kbd_queue->wait_and_pop(evt)) {
             continue;
         }
+
+        // Only track key presses
+        if (evt.type != input::input_event_type::KBD_EVT_KEY_PRESSED) {
+            continue;
+        }
+
         char input = static_cast<char>(evt.sdata1);
 
         if (input == '\n' || input == '\r') {
