@@ -14,7 +14,7 @@ irqreturn_t __com1_irq_handler(ptregs*, void*) {
     // Create an input event structure
     input::input_event_t evt;
     zeromem(&evt, sizeof(input::input_event_t));
-    evt.type = input::KBD_EVT_KEY_RELEASED;
+    evt.type = input::KBD_EVT_KEY_PRESSED;
     evt.sdata1 = static_cast<int32_t>(input_char);
     
     // Push the event into the kernel input queue
