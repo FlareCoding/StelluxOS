@@ -113,6 +113,8 @@ void screen_manager::draw_kernel_log_console() {
         return; // No logs to display
     }
 
+    const uint32_t line_height = 18;
+
     // Draw each line on the screen, starting from the top
     uint32_t y_offset = 0;
     char* line_start = m_console_log_buffer;
@@ -121,16 +123,20 @@ void screen_manager::draw_kernel_log_console() {
         if (m_console_log_buffer[i] == '\n' || m_console_log_buffer[i] == '\0') {
             m_console_log_buffer[i] = '\0'; // Null-terminate the line
             m_screen_canvas->draw_string(16, y_offset, line_start, 0xffffffff);
-            y_offset += 18;
+            y_offset += line_height;
 
             // Move to the next line
             line_start = &m_console_log_buffer[i + 1];
 
             // Stop if we've filled the screen
-            if (y_offset >= m_screen_canvas->height()) {
+            if (y_offset + line_height > m_screen_canvas->height()) {
                 break;
             }
         }
+    }
+
+    if (*line_start != '\0' && y_offset < m_screen_canvas->height()) {
+        m_screen_canvas->draw_string(16, y_offset, line_start, 0xffffffff);
     }
 }
 
