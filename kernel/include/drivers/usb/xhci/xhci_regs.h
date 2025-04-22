@@ -136,19 +136,6 @@ struct xhci_runtime_registers {
     xhci_interrupter_registers ir[1024];    // Interrupter Register Sets (offset 0020h to 8000h)
 };
 
-class xhci_runtime_register_manager {
-public:
-    xhci_runtime_register_manager(uintptr_t base, uint8_t max_interrupters)
-        : m_base(reinterpret_cast<xhci_runtime_registers*>(base)),
-          m_max_interrupters(max_interrupters) {}
-
-    xhci_interrupter_registers* get_interrupter_registers(uint8_t interrupter) const;
-
-private:
-    xhci_runtime_registers*     m_base;
-    uint8_t                     m_max_interrupters;
-};
-
 /*
 // xHci Spec Section 5.6 Figure 5-29: Doorbell Register (page 394)
 

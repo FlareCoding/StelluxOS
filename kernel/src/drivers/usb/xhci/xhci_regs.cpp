@@ -30,14 +30,6 @@ const char* xhci_extended_capability_to_string(xhci_extended_capability_code cap
     return "Vendor Specific";
 }
 
-xhci_interrupter_registers* xhci_runtime_register_manager::get_interrupter_registers(uint8_t interrupter) const {
-    if (interrupter > m_max_interrupters) {
-        return nullptr;
-    }
-
-    return &m_base->ir[interrupter];
-}
-
 xhci_doorbell_manager::xhci_doorbell_manager(uintptr_t base) {
     m_doorbell_registers = reinterpret_cast<xhci_doorbell_register*>(base);
 }
