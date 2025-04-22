@@ -209,11 +209,8 @@ void xhci_driver::_parse_capability_registers() {
         new xhci_doorbell_manager(m_xhc_base + m_cap_regs->dboff)
     );
 
-    // Construct a controller class instance for the runtime register set
-    uint64_t runtime_register_base = m_xhc_base + m_cap_regs->rtsoff;
-    m_runtime_register_manager = kstl::shared_ptr<xhci_runtime_register_manager>(
-        new xhci_runtime_register_manager(runtime_register_base, m_max_interrupters)
-    );
+    // Update the base pointer to the runtime register set
+    m_runtime_regs = reinterpret_cast<volatile xhci_runtime_registers*>(m_xhc_base + m_cap_regs->rtsoff);
 }
 
 void xhci_driver::_log_capability_registers() {
@@ -328,7 +325,7 @@ const char* xhci_driver::_usb_speed_to_string(uint8_t speed) {
 
 void xhci_driver::_configure_runtime_registers() {
     // Get the primary interrupter registers
-    auto interrupter_regs = m_runtime_register_manager->get_interrupter_registers(0);
+    auto interrupter_regs = &m_runtime_regs->ir[0];
     if (!interrupter_regs) {
         xhci_error("Failed to retrieve interrupter register set when setting up the event ring!");
         return;
@@ -593,8 +590,7 @@ void xhci_driver::_process_events() {
 
 void xhci_driver::_acknowledge_irq(uint8_t interrupter) {
     // Get the interrupter registers
-    xhci_interrupter_registers* interrupter_regs =
-        m_runtime_register_manager->get_interrupter_registers(interrupter);
+    volatile xhci_interrupter_registers* interrupter_regs = &m_runtime_regs->ir[interrupter];
 
     // Read the current value of IMAN
     uint32_t iman = interrupter_regs->iman;

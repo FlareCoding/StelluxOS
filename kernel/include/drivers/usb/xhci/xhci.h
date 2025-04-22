@@ -129,8 +129,9 @@ public:
 private:
     uintptr_t m_xhc_base;
 
-    volatile xhci_capability_registers* m_cap_regs;
+    volatile xhci_capability_registers*  m_cap_regs;
     volatile xhci_operational_registers* m_op_regs;
+    volatile xhci_runtime_registers*     m_runtime_regs;
 
     void _begin_logical_dbg_log_block();
     void _end_logical_dbg_log_block();
@@ -239,9 +240,6 @@ private:
     // Since DCBAA stores physical addresses, we want to keep
     // track of the virtual pointers to the output device contexts.
     uint64_t* m_dcbaa_virtual_addresses;
-
-    // Controller class for runtime registers
-    kstl::shared_ptr<xhci_runtime_register_manager> m_runtime_register_manager;
 
     // Main command ring
     kstl::shared_ptr<xhci_command_ring> m_command_ring;
