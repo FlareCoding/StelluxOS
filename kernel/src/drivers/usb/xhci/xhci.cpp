@@ -589,6 +589,9 @@ void xhci_driver::_process_events() {
 }
 
 void xhci_driver::_acknowledge_irq(uint8_t interrupter) {
+    // Clear the EINT bit in USBSTS by writing '1' to it
+    m_op_regs->usbsts = XHCI_USBSTS_EINT;
+
     // Get the interrupter registers
     volatile xhci_interrupter_registers* interrupter_regs = &m_runtime_regs->ir[interrupter];
 
@@ -600,9 +603,6 @@ void xhci_driver::_acknowledge_irq(uint8_t interrupter) {
 
     // Write back to IMAN
     interrupter_regs->iman = iman_write;
-
-    // Clear the EINT bit in USBSTS by writing '1' to it
-    m_op_regs->usbsts = XHCI_USBSTS_EINT;
 }
 
 bool xhci_driver::_reset_host_controller() {
