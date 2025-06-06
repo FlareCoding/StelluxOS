@@ -5,6 +5,7 @@
 #include <arch/x86/gdt/gdt.h>
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
+#include <process/elf/elf64_loader.h>
 
 DEFINE_PER_CPU(task_control_block*, current_task);
 DEFINE_PER_CPU(uint64_t, current_system_stack);
@@ -316,3 +317,26 @@ void yield() {
     });
 }
 } // namespace sched
+
+task_control_block* create_process(
+    const char* path,
+    process_creation_flags flags
+) {
+    task_control_block* task = nullptr;
+
+    RUN_ELEVATED({
+        task = elf::elf64_loader::load_from_file(path);
+        if (task) {
+            if (has_process_flag(flags, process_creation_flags::ALLOW_ELEVATE)) {
+                // Allow the process to elevate privileges
+                dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
+            }
+
+            if (has_process_flag(flags, process_creation_flags::SCHEDULE_NOW)) {
+                sched::scheduler::get().add_task(task);
+            }
+        }
+    });
+
+    return task;
+}

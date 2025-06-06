@@ -272,5 +272,12 @@ void module_manager_init(void*) {
         sched::scheduler::get().add_task(task);
     });
 
+    const auto init_proc_flags =
+        process_creation_flags::IS_USERLAND     |
+        process_creation_flags::SCHEDULE_NOW    |
+        process_creation_flags::ALLOW_ELEVATE;
+
+    create_process("/initrd/bin/init", init_proc_flags);
+
     sched::exit_thread();
 }

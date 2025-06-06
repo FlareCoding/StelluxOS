@@ -242,4 +242,57 @@ void exit_thread();
 void yield();
 } // namespace sched
 
+/**
+ * @enum process_creation_flags
+ * @brief Flags used to control process creation behavior.
+ */
+enum class process_creation_flags : uint64_t {
+    NONE         = 0,        // No special creation behavior
+    ALLOW_ELEVATE = 1 << 0,  // Allows process to use dynpriv functionality
+    IS_KERNEL     = 1 << 1,  // Indicates the process is a kernel-level thread
+    IS_USERLAND   = 1 << 2,  // Indicates the process is a user-level thread
+    SCHEDULE_NOW  = 1 << 3   // Automatically schedules the process right after the creation
+};
+
+// Enable bitwise operations for process_creation_flags
+inline process_creation_flags operator|(process_creation_flags lhs, process_creation_flags rhs) {
+    return static_cast<process_creation_flags>(
+        static_cast<uint64_t>(lhs) | static_cast<uint64_t>(rhs)
+    );
+}
+
+inline process_creation_flags operator&(process_creation_flags lhs, process_creation_flags rhs) {
+    return static_cast<process_creation_flags>(
+        static_cast<uint64_t>(lhs) & static_cast<uint64_t>(rhs)
+    );
+}
+
+inline process_creation_flags operator~(process_creation_flags val) {
+    return static_cast<process_creation_flags>(~static_cast<uint64_t>(val));
+}
+
+inline bool operator!(process_creation_flags val) {
+    return static_cast<uint64_t>(val) == 0;
+}
+
+inline bool has_process_flag(process_creation_flags value, process_creation_flags flag) {
+    return static_cast<uint64_t>(value & flag) != 0;
+}
+
+/**
+ * @brief Creates a new process with a specified program's path and creation flags.
+ * 
+ * This function allocates and initializes a new task control block with the
+ * specified program's path and creation flags.
+ * 
+ * @param path Full path to the executable.
+ * @param flags Flags used to control the creation behavior of the process.
+ * 
+ * @return Pointer to the newly created `task_control_block`, or `nullptr` on failure.
+ *
+ */
+task_control_block* create_process(
+    const char* path,
+    process_creation_flags flags
+);
 #endif // PROCESS_H

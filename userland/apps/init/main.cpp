@@ -2,38 +2,25 @@
 #include <sched/sched.h>
 #include <time/time.h>
 #include <dynpriv/dynpriv.h>
-#include <process/elf/elf64_loader.h>
-
-bool start_process(const kstl::string& name) {
-    RUN_ELEVATED({
-        // Start a shell process
-        task_control_block* task = elf::elf64_loader::load_from_file(name.c_str());
-        if (!task) {
-            serial::printf("[INIT] Failed to start '%s'!\n", name.c_str());
-            return false;
-        }
-
-        // Allow the process to elevate privileges
-        dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
-        sched::scheduler::get().add_task(task);
-    });
-
-    return true;
-}
 
 int main() {
-    if (!start_process("/initrd/bin/shell")) {
+    const auto proc_flags =
+        process_creation_flags::IS_USERLAND     |
+        process_creation_flags::SCHEDULE_NOW    |
+        process_creation_flags::ALLOW_ELEVATE;
+
+    if (!create_process("/initrd/bin/shell", proc_flags)) {
         return -1;
     }
 
-    if (!start_process("/initrd/bin/gfx_manager")) {
+    if (!create_process("/initrd/bin/gfx_manager", proc_flags)) {
         return -1;
     }
 
     // User applications
     sleep(4);
 
-    if (!start_process("/initrd/bin/pong")) {
+    if (!create_process("/initrd/bin/pong", proc_flags)) {
         return -1;
     }
 
