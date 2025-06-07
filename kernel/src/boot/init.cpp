@@ -260,18 +260,6 @@ void module_manager_init(void*) {
     module_manager.register_module(pci_mngr);
     module_manager.start_module(pci_mngr.get());
 
-    // Load and start the init process
-    RUN_ELEVATED({
-        task_control_block* task = elf::elf64_loader::load_from_file("/initrd/bin/init");
-        if (!task) {
-            return;
-        }
-
-        // Allow the process to elevate privileges
-        dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
-        sched::scheduler::get().add_task(task);
-    });
-
     const auto init_proc_flags =
         process_creation_flags::IS_USERLAND     |
         process_creation_flags::SCHEDULE_NOW    |
