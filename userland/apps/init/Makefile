@@ -17,7 +17,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	@mkdir -p $(BIN_DIR)
 	@echo "[LD] Linking $@"
-	@$(LD) $(LDFLAGS) -o $@ $^
+	@$(LD) -o $@ $^ $(LDFLAGS)
 
 # Compiling the source files into the object directory
 $(OBJ_DIR)/%.o: %.cpp
