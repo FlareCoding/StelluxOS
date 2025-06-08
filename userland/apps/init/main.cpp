@@ -4,7 +4,7 @@
 // #include <ipc/shm.h>
 // #include <core/klog.h>
 
-#include <stlibc.h>
+#include <stlibc/stlibc.h>
 
 int main() {
     // const auto proc_flags =
@@ -16,7 +16,7 @@ int main() {
     //     return -1;
     // }
 
-    sys_write("sys_write executed\n");
+    syscall(SYS_WRITE, 0, (uint64_t)"Hello, World!\n", 13, 0, 0, 0);
 
     return 0;
 }
