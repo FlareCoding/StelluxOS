@@ -15,11 +15,11 @@ CRT_LIB    := libstellux_crt.a
 all: $(CRT_LIB)
 
 %.o: %.S
-	@echo "[AS ] Assembling $<"
+	@echo "[AS] Assembling $<"
 	@$(AS) $(ASFLAGS) -c $< -o $@
 
 $(CRT_LIB): $(CRT_OBJS)
-	@echo "[AR ] Creating static library archive $@"
+	@echo "[AR] Creating static library archive $@"
 	@$(AR) rcs $(CRT_LIB) $(CRT_OBJS)
 
 clean:

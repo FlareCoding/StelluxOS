@@ -2,8 +2,17 @@
 #define MM_H
 #include <types.h>
 
+// Forward declaration of vma_area
+struct vma_area;
+
 struct mm_context {
     uint64_t root_page_table;
+    
+    // VMA management
+    vma_area* vma_list;           // Head of the VMA list
+    uintptr_t mmap_base;          // Base address for mmap allocations
+    uintptr_t task_size;          // Size of the task's address space
+    size_t vma_count;             // Number of VMAs
 };
 
 /**

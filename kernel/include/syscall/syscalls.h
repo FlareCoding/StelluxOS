@@ -8,13 +8,15 @@
 #define SYSCALL_SYS_WRITE       0
 #define SYSCALL_SYS_READ        1
 #define SYSCALL_SYS_EXIT        2
+#define SYSCALL_SYS_MMAP        3
+#define SYSCALL_SYS_MUNMAP      4
 
 #define SYSCALL_SYS_ELEVATE     90
 
 /**
  * @brief Executes a system call with the specified number and arguments.
  * 
- * @param syscallNumber The unique identifier for the system call to be executed.
+ * @param syscall_number The unique identifier for the system call to be executed.
  * @param arg1 The first argument to pass to the system call.
  * @param arg2 The second argument to pass to the system call.
  * @param arg3 The third argument to pass to the system call.
@@ -24,8 +26,8 @@
  * @return int The result of the system call. A non-negative value typically indicates
  *             success or a valid return value, while a negative value signifies an error.
  */
-EXTERN_C int syscall(
-    uint64_t syscallNumber,
+EXTERN_C long syscall(
+    uint64_t syscall_number,
     uint64_t arg1,
     uint64_t arg2,
     uint64_t arg3,
