@@ -1,6 +1,6 @@
 #include <syscall/syscalls.h>
 #include <process/process.h>
-#include <serial/serial.h>
+#include <core/klog.h>
 #include <dynpriv/dynpriv.h>
 
 EXTERN_C
@@ -23,7 +23,7 @@ int __syscall_handler(
     switch (syscallnum) {
     case SYSCALL_SYS_WRITE: {
         // Handle write syscall
-        serial::printf((const char*)arg2);
+        kprint(reinterpret_cast<const char*>(arg2));
         break;
     }
     case SYSCALL_SYS_READ: {

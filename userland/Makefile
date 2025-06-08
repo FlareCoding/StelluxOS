@@ -22,12 +22,14 @@ TARGET_ARCH := X86_64
 PREPROCESSOR_DEFINES := -DARCH_$(TARGET_ARCH)
 
 # Common flags for all userland applications
-COMMON_CXXFLAGS := -m64 -g -O0 $(PREPROCESSOR_DEFINES) \
-				   -ffreestanding -Wall -Werror -nostdlib -fno-rtti -fno-exceptions \
-				   -std=c++17 -mno-red-zone $(KERNEL_INCLUDES) -fno-pie -fno-pic -mcmodel=large
+COMMON_CXXFLAGS := 	-m64 -g -O0 $(PREPROCESSOR_DEFINES) \
+					-ffreestanding -Wall -Werror -nostdlib -fno-rtti -fno-exceptions \
+					-std=c++17 -mno-red-zone $(KERNEL_INCLUDES) -fno-pie -fno-pic -mcmodel=large \
+					-I$(USERLAND_DIR)/lib/stlibc/include
 
-COMMON_LDFLAGS  := -T $(USERLAND_LINKER_SCRIPT) -nostdlib -z max-page-size=0x1000 -no-pie \
-				   --just-symbols=$(KERNEL_ELF) -L$(USERLAND_DIR)/lib/crt -lstellux_crt
+COMMON_LDFLAGS  := 	-T $(USERLAND_LINKER_SCRIPT) -nostdlib -z max-page-size=0x1000 -no-pie \
+					--just-symbols=$(KERNEL_ELF) -L$(USERLAND_DIR)/lib/crt -lstellux_crt \
+					-L$(USERLAND_DIR)/lib/stlibc -lstlibc
 
 export CXXFLAGS := $(COMMON_CXXFLAGS)
 export LDFLAGS := $(COMMON_LDFLAGS)
