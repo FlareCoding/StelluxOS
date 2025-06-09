@@ -59,7 +59,7 @@ task_control_block* elf64_loader::load_elf(const uint8_t* file_buffer, size_t bu
     _log_info("ELF loaded successfully, task created.");
 
     // For debugging purposes
-    print_vma_regions(&task->mm_ctx, task->name);
+    dbg_print_vma_regions(&task->mm_ctx, task->name);
 
     return task;
 }
