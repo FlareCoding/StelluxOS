@@ -185,10 +185,23 @@ long __syscall_handler(
             break;
         }
 
-        // Get current process's page table
-        paging::page_table* pt = reinterpret_cast<paging::page_table*>(current->mm_ctx.root_page_table);
-        if (!pt) {
+        // Get current process's memory context
+        mm_context* mm_ctx = &current->mm_ctx;
+        if (!mm_ctx) {
             return_val = -EFAULT;
+            break;
+        }
+
+        // Find the VMA containing this address
+        vma_area* vma = find_vma(mm_ctx, reinterpret_cast<uintptr_t>(addr));
+        if (!vma) {
+            return_val = -EINVAL;  // No VMA found at this address
+            break;
+        }
+
+        // Verify the entire range is within the VMA
+        if (reinterpret_cast<uintptr_t>(addr) + length > vma->end) {
+            return_val = -EINVAL;  // Range extends beyond VMA
             break;
         }
 
@@ -204,6 +217,25 @@ long __syscall_handler(
             void* phys_page = reinterpret_cast<void*>(paging::get_physical_address(page_addr));
             if (phys_page) {
                 vmm::unmap_virtual_page(reinterpret_cast<uintptr_t>(page_addr));
+            }
+        }
+
+        // If we're unmapping the entire VMA, remove it
+        if (reinterpret_cast<uintptr_t>(addr) == vma->start && 
+            length == (vma->end - vma->start)) {
+            remove_vma(mm_ctx, vma);
+        } else {
+            // Otherwise split the VMA
+            if (reinterpret_cast<uintptr_t>(addr) > vma->start) {
+                // Split at start of unmapped region
+                split_vma(mm_ctx, vma, reinterpret_cast<uintptr_t>(addr));
+            }
+            if (reinterpret_cast<uintptr_t>(addr) + length < vma->end) {
+                // Split at end of unmapped region
+                vma_area* remaining = find_vma(mm_ctx, reinterpret_cast<uintptr_t>(addr));
+                if (remaining) {
+                    split_vma(mm_ctx, remaining, reinterpret_cast<uintptr_t>(addr) + length);
+                }
             }
         }
 
