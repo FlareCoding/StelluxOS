@@ -198,6 +198,14 @@ task_control_block* create_upper_class_userland_task(
     task->pid = alloc_task_pid();
     task->elevated = 0;
 
+    // Initialize VMA management for the task
+    task->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(pt);
+    if (!init_process_vma(&task->mm_ctx)) {
+        kprint("[VMA] Failed to initialize process VMA\n");
+        delete task;
+        return nullptr;
+    }
+
     // Allocate the system stack used for sensitive system and interrupt contexts
     task->system_stack = allocate_system_stack(task->system_stack_top);
     if (!task->system_stack) {
@@ -240,9 +248,6 @@ task_control_block* create_upper_class_userland_task(
     task->cpu_context.es = data_segment;
     task->cpu_context.hwframe.ss = data_segment;
     task->cpu_context.hwframe.cs = __USER_CS | 0x3;
-
-    // Setup the page table
-    task->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(pt);
 
     return task;
 }

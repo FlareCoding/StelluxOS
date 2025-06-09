@@ -32,20 +32,6 @@ task_control_block* elf64_loader::load_elf(const uint8_t* file_buffer, size_t bu
         return nullptr;
     }
 
-    // Initialize VMA management for the process
-    mm_context mm_ctx;
-    mm_ctx.root_page_table = reinterpret_cast<uint64_t>(page_table);
-    if (!init_process_vma(&mm_ctx)) {
-        _log_error("Failed to initialize VMA management.");
-        return nullptr;
-    }
-
-    // Load ELF Segments
-    if (!_load_segments(file_buffer, elf_header, page_table, &mm_ctx)) {
-        _log_error("Failed to load ELF segments.");
-        return nullptr;
-    }
-
     // Create a userland task with the entry point and page table
     task_control_block* task = sched::create_upper_class_userland_task(elf_header.e_entry, page_table);
     if (!task) {
@@ -53,25 +39,10 @@ task_control_block* elf64_loader::load_elf(const uint8_t* file_buffer, size_t bu
         return nullptr;
     }
 
-    // Instead of overwriting, merge the ELF VMAs into the task's context
-
-    // Copy ELF VMAs into the task's context
-    vma_area* elf_vma = mm_ctx.vma_list;
-    while (elf_vma) {
-        vma_area* new_vma = create_vma(
-            &task->mm_ctx,
-            elf_vma->start,
-            elf_vma->end - elf_vma->start,
-            elf_vma->flags,
-            elf_vma->type,
-            elf_vma->file_backing,
-            elf_vma->file_offset
-        );
-        if (!new_vma) {
-            _log_error("Failed to merge ELF VMA into task context.");
-            return nullptr;
-        }
-        elf_vma = elf_vma->next;
+    // Load ELF Segments directly into the task's context
+    if (!_load_segments(file_buffer, elf_header, page_table, &task->mm_ctx)) {
+        _log_error("Failed to load ELF segments.");
+        return nullptr;
     }
 
     _log_info("ELF loaded successfully, task created.");

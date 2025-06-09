@@ -236,7 +236,21 @@ __PRIVILEGED_CODE void map_large_page(
     page_table* pml4,
     allocators::page_frame_allocator& allocator =
         allocators::page_bitmap_allocator::get_physical_allocator()
-); 
+);
+
+/**
+ * @brief Unmaps a virtual page in the specified page table.
+ * 
+ * This function removes the mapping for the provided virtual address (`vaddr`)
+ * within the given page table (`pml4`). The page is unmapped by clearing its
+ * entry in the page table.
+ * 
+ * @param vaddr The virtual address to be unmapped.
+ * @param pml4 Pointer to the PML4 (top-level) page table where the mapping will be removed.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void unmap_page(uintptr_t vaddr, page_table* pml4);
 
 /**
  * @brief Retrieves the PML4 (Page Map Level 4) entry for a given virtual address.
