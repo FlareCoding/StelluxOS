@@ -7,6 +7,7 @@
 #include <memory/allocators/page_bitmap_allocator.h>
 #include <memory/vmm.h>
 #include <process/vma.h>
+#include <kstl/vector.h>
 
 // Error codes
 #define EINVAL 22  // Invalid argument
@@ -120,6 +121,10 @@ long __syscall_handler(
             break;
         }
 
+        // Track allocated physical pages
+        kstl::vector<void*> allocated_pages;
+        allocated_pages.reserve(num_pages);
+
         // Map the pages
         for (size_t i = 0; i < num_pages; i++) {
             void* page_addr = reinterpret_cast<void*>(
@@ -129,17 +134,15 @@ long __syscall_handler(
             // Allocate physical page
             void* phys_page = allocators::page_bitmap_allocator::get_physical_allocator().alloc_page();
             if (!phys_page) {
-                // Clean up already mapped pages
-                for (size_t j = 0; j < i; j++) {
-                    void* cleanup_addr = reinterpret_cast<void*>(
-                        reinterpret_cast<uintptr_t>(addr) + (j * PAGE_SIZE)
-                    );
-                    vmm::unmap_virtual_page(reinterpret_cast<uintptr_t>(cleanup_addr));
+                // Clean up already allocated pages
+                for (void* page : allocated_pages) {
+                    allocators::page_bitmap_allocator::get_physical_allocator().free_page(page);
                 }
                 remove_vma(mm_ctx, vma);
                 return_val = -ENOMEM;
                 break;
             }
+            allocated_pages.push_back(phys_page);
 
             // Map the page with appropriate permissions
             uint64_t page_flags = PTE_PRESENT | PTE_US;
@@ -154,13 +157,9 @@ long __syscall_handler(
             );
 
             if (!paging::get_physical_address(page_addr)) {
-                allocators::page_bitmap_allocator::get_physical_allocator().free_page(phys_page);
-                // Clean up already mapped pages
-                for (size_t j = 0; j < i; j++) {
-                    void* cleanup_addr = reinterpret_cast<void*>(
-                        reinterpret_cast<uintptr_t>(addr) + (j * PAGE_SIZE)
-                    );
-                    vmm::unmap_virtual_page(reinterpret_cast<uintptr_t>(cleanup_addr));
+                // Clean up already allocated pages
+                for (void* page : allocated_pages) {
+                    allocators::page_bitmap_allocator::get_physical_allocator().free_page(page);
                 }
                 remove_vma(mm_ctx, vma);
                 return_val = -EFAULT;
@@ -168,19 +167,19 @@ long __syscall_handler(
             }
         }
 
-        if (return_val == 0) {
-            return_val = reinterpret_cast<long>(addr);
-        }
+        // Set return value to the allocated address
+        return_val = reinterpret_cast<long>(addr);
         break;
     }
     case SYSCALL_SYS_MUNMAP: {
         // arg1 = addr
         // arg2 = length
-        void* addr = reinterpret_cast<void*>(arg1);
+        uintptr_t addr = static_cast<uintptr_t>(arg1);
         size_t length = arg2;
 
         // Validate length
         if (length == 0 || length % PAGE_SIZE != 0) {
+            kprint("[MUNMAP] Invalid length: %llu (must be non-zero and page-aligned)\n", length);
             return_val = -EINVAL;
             break;
         }
@@ -188,19 +187,23 @@ long __syscall_handler(
         // Get current process's memory context
         mm_context* mm_ctx = &current->mm_ctx;
         if (!mm_ctx) {
+            kprint("[MUNMAP] Invalid memory context\n");
             return_val = -EFAULT;
             break;
         }
 
         // Find the VMA containing this address
-        vma_area* vma = find_vma(mm_ctx, reinterpret_cast<uintptr_t>(addr));
+        vma_area* vma = find_vma(mm_ctx, addr);
         if (!vma) {
+            kprint("[MUNMAP] No VMA found at address 0x%llx\n", addr);
             return_val = -EINVAL;  // No VMA found at this address
             break;
         }
 
         // Verify the entire range is within the VMA
-        if (reinterpret_cast<uintptr_t>(addr) + length > vma->end) {
+        if (addr + length > vma->end) {
+            kprint("[MUNMAP] Range extends beyond VMA: addr+len=0x%llx, vma->end=0x%llx\n",
+                addr + length, vma->end);
             return_val = -EINVAL;  // Range extends beyond VMA
             break;
         }
@@ -208,33 +211,33 @@ long __syscall_handler(
         // Calculate number of pages to unmap
         size_t num_pages = length / PAGE_SIZE;
 
-        // Unmap the pages
+        // Unmap pages and free physical memory
         for (size_t i = 0; i < num_pages; i++) {
-            void* page_addr = reinterpret_cast<void*>(
-                reinterpret_cast<uintptr_t>(addr) + (i * PAGE_SIZE)
-            );
-
-            void* phys_page = reinterpret_cast<void*>(paging::get_physical_address(page_addr));
-            if (phys_page) {
-                vmm::unmap_virtual_page(reinterpret_cast<uintptr_t>(page_addr));
+            uintptr_t page_addr = addr + (i * PAGE_SIZE);
+            void* phys_addr = reinterpret_cast<void*>(paging::get_physical_address(reinterpret_cast<void*>(page_addr)));
+            
+            if (phys_addr) {
+                // Unmap the page
+                paging::unmap_page(page_addr, reinterpret_cast<paging::page_table*>(mm_ctx->root_page_table));
+                // Free the physical page
+                allocators::page_bitmap_allocator::get_physical_allocator().free_page(phys_addr);
             }
         }
 
         // If we're unmapping the entire VMA, remove it
-        if (reinterpret_cast<uintptr_t>(addr) == vma->start && 
-            length == (vma->end - vma->start)) {
+        if (addr == vma->start && length == (vma->end - vma->start)) {
             remove_vma(mm_ctx, vma);
         } else {
             // Otherwise split the VMA
-            if (reinterpret_cast<uintptr_t>(addr) > vma->start) {
+            if (addr > vma->start) {
                 // Split at start of unmapped region
-                split_vma(mm_ctx, vma, reinterpret_cast<uintptr_t>(addr));
+                split_vma(mm_ctx, vma, addr);
             }
-            if (reinterpret_cast<uintptr_t>(addr) + length < vma->end) {
+            if (addr + length < vma->end) {
                 // Split at end of unmapped region
-                vma_area* remaining = find_vma(mm_ctx, reinterpret_cast<uintptr_t>(addr));
+                vma_area* remaining = find_vma(mm_ctx, addr);
                 if (remaining) {
-                    split_vma(mm_ctx, remaining, reinterpret_cast<uintptr_t>(addr) + length);
+                    split_vma(mm_ctx, remaining, addr + length);
                 }
             }
         }
@@ -245,20 +248,20 @@ long __syscall_handler(
     case SYSCALL_SYS_ELEVATE: {
         // Make sure that the thread is allowed to elevate
         if (!dynpriv::is_asid_allowed()) {
-            serial::printf("[*] Unauthorized elevation attempt\n");
+            kprint("[*] Unauthorized elevation attempt\n");
             return_val = -ENOPRIV;
             break;
         }
 
         if (current->elevated) {
-            serial::printf("[*] Already elevated\n");
+            kprint("[*] Already elevated\n");
         } else {
             current->elevated = 1;
         }
         break;
     }
     default: {
-        serial::printf("Unknown syscall number %llu\n", syscallnum);
+        kprint("Unknown syscall number %llu\n", syscallnum);
         return_val = -ENOSYS;
         break;
     }
@@ -294,6 +297,6 @@ long syscall(
         : "rax", "rdi", "rsi", "rdx", "r10", "r8", "r9"
     );
 
-    return static_cast<int>(ret);
+    return static_cast<long>(ret);
 }
 

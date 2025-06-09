@@ -33,7 +33,7 @@ uintptr_t find_free_vma_range(mm_context* mm_ctx, size_t size, uint64_t flags, u
 
     // If preferred address is specified, check if it's available
     if (preferred_addr) {
-        if (preferred_addr < USERSPACE_START || 
+        if (preferred_addr < mm_ctx->mmap_base || 
             preferred_addr + size > USERSPACE_END) {
             return 0;
         }
@@ -51,25 +51,50 @@ uintptr_t find_free_vma_range(mm_context* mm_ctx, size_t size, uint64_t flags, u
         return preferred_addr;
     }
 
-    // Search for a suitable gap
-    uintptr_t current_addr = mm_ctx->mmap_base;
+    // First, try to find a gap between existing VMAs within the mmap-able region
     vma_area* vma = mm_ctx->vma_list;
+    while (vma && vma->next) {
+        // Only consider gaps that are within the mmap-able region
+        if (vma->end >= mm_ctx->mmap_base && vma->next->start <= USERSPACE_END) {
+            uintptr_t gap_start = vma->end;
+            uintptr_t gap_end = vma->next->start;
+            size_t gap_size = gap_end - gap_start;
+
+            if (gap_size >= size) {
+                return gap_start;  // Found a suitable gap
+            }
+        }
+        vma = vma->next;
+    }
+
+    // If no suitable gap found, search from top down starting from mmap_base
+    uintptr_t current_addr = mm_ctx->mmap_base;
+    bool found_gap = false;
 
     while (current_addr + size <= USERSPACE_END) {
-        bool found_gap = true;
-        vma_area* temp = vma;
-        
-        while (temp) {
-            if (current_addr + size > temp->start && current_addr < temp->end) {
+        found_gap = true;
+        vma = mm_ctx->vma_list;
+        uintptr_t gap_end = USERSPACE_END;
+
+        // Find the end of the current gap
+        while (vma) {
+            if (vma->start > current_addr && vma->start < gap_end) {
+                gap_end = vma->start;
+            }
+            if ((current_addr >= vma->start && current_addr < vma->end) ||
+                (current_addr + size > vma->start && current_addr + size <= vma->end)) {
                 found_gap = false;
-                current_addr = temp->end;
+                // Move to the end of this VMA
+                current_addr = vma->end;
                 break;
             }
-            temp = temp->next;
+            vma = vma->next;
         }
 
         if (found_gap) {
-            return current_addr;
+            // For top-down allocation, we want to place the new region at the end of the gap
+            // minus the size we want to allocate
+            return gap_end - size;
         }
     }
 

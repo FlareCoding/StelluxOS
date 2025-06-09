@@ -262,6 +262,50 @@ void map_large_page(
 }
 
 __PRIVILEGED_CODE
+void unmap_page(uintptr_t vaddr, page_table* pml4) {
+    virt_addr_indices_t indices = get_vaddr_page_table_indices(vaddr);
+
+    // Get the page table entries
+    page_table* pml4_table = reinterpret_cast<page_table*>(phys_to_virt_linear(pml4));
+    pte_t& pml4_entry = pml4_table->entries[indices.pml4];
+    
+    if (!(pml4_entry.value & PTE_PRESENT)) {
+        return; // Page not mapped
+    }
+
+    page_table* pdpt = reinterpret_cast<page_table*>(
+        phys_to_virt_linear(PFN_TO_ADDR(pml4_entry.page_frame_number))
+    );
+    pte_t& pdpt_entry = pdpt->entries[indices.pdpt];
+    
+    if (!(pdpt_entry.value & PTE_PRESENT)) {
+        return; // Page not mapped
+    }
+
+    page_table* pdt = reinterpret_cast<page_table*>(
+        phys_to_virt_linear(PFN_TO_ADDR(pdpt_entry.page_frame_number))
+    );
+    pte_t& pdt_entry = pdt->entries[indices.pdt];
+    
+    if (!(pdt_entry.value & PTE_PRESENT)) {
+        return; // Page not mapped
+    }
+
+    page_table* pt = reinterpret_cast<page_table*>(
+        phys_to_virt_linear(PFN_TO_ADDR(pdt_entry.page_frame_number))
+    );
+    pte_t& pte = pt->entries[indices.pt];
+    
+    // Clear the page table entry
+    pte.value = 0;
+
+    // Invalidate the TLB entry for the virtual address
+    if (get_pml4() == pml4) {
+        invlpg(reinterpret_cast<void*>(vaddr));
+    }
+}
+
+__PRIVILEGED_CODE
 pde_t* get_pml4_entry(void* vaddr) {
     page_table* pml4 = reinterpret_cast<page_table*>(phys_to_virt_linear(get_pml4()));
     virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
