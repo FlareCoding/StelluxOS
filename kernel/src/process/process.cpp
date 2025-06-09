@@ -210,6 +210,22 @@ task_control_block* create_upper_class_userland_task(
         return nullptr;
     }
 
+    // Create VMA entry for the userland task stack
+    vma_area* stack_vma = create_vma(
+        &task->mm_ctx,
+        task->task_stack,
+        SCHED_USERLAND_TASK_STACK_PAGES * PAGE_SIZE,
+        VMA_PROT_READ | VMA_PROT_WRITE,
+        VMA_TYPE_PRIVATE
+    );
+
+    if (!stack_vma) {
+        vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
+        vmm::unmap_contiguous_virtual_pages(task->task_stack, SCHED_USERLAND_TASK_STACK_PAGES);
+        delete task;
+        return nullptr;
+    }
+
     // Initialize the CPU context
     task->cpu_context.hwframe.rip = entry_addr;             // Set instruction pointer to the task function
     task->cpu_context.hwframe.rflags = 0x200;               // Enable interrupts

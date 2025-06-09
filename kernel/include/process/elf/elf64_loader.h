@@ -2,6 +2,7 @@
 #define ELF64_LOADER_H
 #include "elf_types.h"
 #include <process/process.h>
+#include <process/vma.h>
 
 namespace elf {
 class elf64_loader {
@@ -21,7 +22,8 @@ private:
     __PRIVILEGED_CODE static bool _load_segments(
         const uint8_t* file_buffer,
         const elf64_ehdr& header,
-        paging::page_table* page_table
+        paging::page_table* page_table,
+        mm_context* mm_ctx
     );
 
     __PRIVILEGED_CODE static void* _allocate_and_map_segment(
