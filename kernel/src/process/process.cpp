@@ -212,6 +212,7 @@ task_control_block* create_upper_class_userland_task(
     }
 
     // Create VMA entry for the userland task stack
+    kprint("[VMA] Creating stack VMA at %llx with size %llx\n", task->task_stack, SCHED_TASK_STACK_SIZE);
     vma_area* stack_vma = create_vma(
         &task->mm_ctx,
         task->task_stack,
@@ -221,11 +222,13 @@ task_control_block* create_upper_class_userland_task(
     );
 
     if (!stack_vma) {
+        kprint("[VMA] Failed to create stack VMA\n");
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
         vmm::unmap_contiguous_virtual_pages(task->task_stack, SCHED_USERLAND_TASK_STACK_PAGES);
         delete task;
         return nullptr;
     }
+    kprint("[VMA] Created stack VMA successfully\n");
 
     // Initialize the CPU context
     task->cpu_context.hwframe.rip = entry_addr;             // Set instruction pointer to the task function
