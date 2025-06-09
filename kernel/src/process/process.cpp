@@ -215,13 +215,12 @@ task_control_block* create_upper_class_userland_task(
     vma_area* stack_vma = create_vma(
         &task->mm_ctx,
         task->task_stack,
-        SCHED_USERLAND_TASK_STACK_PAGES * PAGE_SIZE,
+        SCHED_TASK_STACK_SIZE,
         VMA_PROT_READ | VMA_PROT_WRITE,
         VMA_TYPE_PRIVATE
     );
 
     if (!stack_vma) {
-        kprint("Failed to create stack_vma!\n");
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
         vmm::unmap_contiguous_virtual_pages(task->task_stack, SCHED_USERLAND_TASK_STACK_PAGES);
         delete task;
