@@ -130,4 +130,13 @@ __PRIVILEGED_CODE bool merge_vmas(mm_context* mm_ctx, vma_area* vma);
  */
 __PRIVILEGED_CODE vma_area* split_vma(mm_context* mm_ctx, vma_area* vma, uintptr_t split_addr);
 
+/**
+ * @brief Prints a human-readable representation of all VMAs in a process's address space.
+ * 
+ * @param mm_ctx The process's memory management context
+ * @param process_name Optional name of the process for better identification in logs
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void print_vma_regions(const mm_context* mm_ctx, const char* process_name = nullptr);
+
 #endif // VMA_H 

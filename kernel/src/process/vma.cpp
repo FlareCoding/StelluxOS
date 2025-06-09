@@ -1,7 +1,7 @@
 #include <process/vma.h>
 #include <memory/paging.h>
 #include <memory/vmm.h>
-#include <serial/serial.h>
+#include <core/klog.h>
 
 // Constants for VMA management
 constexpr uintptr_t USERSPACE_START = 0x0;
@@ -238,4 +238,57 @@ vma_area* split_vma(mm_context* mm_ctx, vma_area* vma, uintptr_t split_addr) {
     vma->end = split_addr;
 
     return new_vma;
+}
+
+__PRIVILEGED_CODE
+void print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
+    if (!mm_ctx) {
+        kprint("[VMA] Invalid memory context\n");
+        return;
+    }
+
+    kprint("\n[VMA] Memory map for process: %s\n", process_name ? process_name : "unnamed");
+    kprint("┌─────────────────────────────────────────────────────────────────────────────┐\n");
+    kprint("│ %-16s │ %-16s │ %-8s │ %-8s │ %-8s │\n", 
+        "Start", "End", "Size", "Prot", "Type");
+    kprint("├─────────────────────────────────────────────────────────────────────────────┤\n");
+
+    vma_area* vma = mm_ctx->vma_list;
+    while (vma) {
+        // Calculate size in human-readable format
+        uint64_t size = vma->end - vma->start;
+        const char* size_unit = "B";
+        if (size >= 1024 * 1024 * 1024) {
+            size = size / (1024 * 1024 * 1024);
+            size_unit = "GB";
+        } else if (size >= 1024 * 1024) {
+            size = size / (1024 * 1024);
+            size_unit = "MB";
+        } else if (size >= 1024) {
+            size = size / 1024;
+            size_unit = "KB";
+        }
+
+        // Build protection string
+        char prot[5] = "----";
+        if (vma->flags & VMA_PROT_READ) prot[0] = 'r';
+        if (vma->flags & VMA_PROT_WRITE) prot[1] = 'w';
+        if (vma->flags & VMA_PROT_EXEC) prot[2] = 'x';
+        prot[3] = 'p';  // Present
+
+        // Build type string
+        const char* type = "unknown";
+        if (vma->type & VMA_TYPE_PRIVATE) type = "private";
+        else if (vma->type & VMA_TYPE_SHARED) type = "shared";
+        else if (vma->type & VMA_TYPE_ANONYMOUS) type = "anon";
+        else if (vma->type & VMA_TYPE_FILE) type = "file";
+
+        kprint("│ %016llx │ %016llx │ %-7llu%s │ %-8s │ %-8s │\n",
+            vma->start, vma->end, size, size_unit, prot, type);
+
+        vma = vma->next;
+    }
+
+    kprint("└─────────────────────────────────────────────────────────────────────────────┘\n");
+    kprint("Total VMAs: %zu\n\n", mm_ctx->vma_count);
 }

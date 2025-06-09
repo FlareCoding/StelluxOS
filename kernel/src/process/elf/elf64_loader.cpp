@@ -32,8 +32,16 @@ task_control_block* elf64_loader::load_elf(const uint8_t* file_buffer, size_t bu
         return nullptr;
     }
 
+    // Initialize VMA management for the process
+    mm_context mm_ctx;
+    mm_ctx.root_page_table = reinterpret_cast<uint64_t>(page_table);
+    if (!init_process_vma(&mm_ctx)) {
+        _log_error("Failed to initialize VMA management.");
+        return nullptr;
+    }
+
     // Load ELF Segments
-    if (!_load_segments(file_buffer, elf_header, page_table)) {
+    if (!_load_segments(file_buffer, elf_header, page_table, &mm_ctx)) {
         _log_error("Failed to load ELF segments.");
         return nullptr;
     }
@@ -45,7 +53,14 @@ task_control_block* elf64_loader::load_elf(const uint8_t* file_buffer, size_t bu
         return nullptr;
     }
 
+    // Copy the initialized VMA context to the task
+    task->mm_ctx = mm_ctx;
+
     _log_info("ELF loaded successfully, task created.");
+
+    // For debugging purposes
+    print_vma_regions(&task->mm_ctx, task->name);
+
     return task;
 }
 
@@ -127,7 +142,8 @@ __PRIVILEGED_CODE
 bool elf64_loader::_load_segments(
     const uint8_t* file_buffer,
     const elf64_ehdr& header,
-    paging::page_table* page_table
+    paging::page_table* page_table,
+    mm_context* mm_ctx
 ) {
     const auto* program_headers = reinterpret_cast<const elf64_phdr*>(file_buffer + header.e_phoff);
 
@@ -145,6 +161,18 @@ bool elf64_loader::_load_segments(
         serial::printf("  File Size: 0x%llx\n", phdr.p_filesz);
         serial::printf("  Memory Size: 0x%llx\n", phdr.p_memsz);
 #endif
+
+        // Convert ELF flags to VMA flags
+        uint64_t vma_flags = VMA_PROT_READ;
+        if (phdr.p_flags & PF_W) vma_flags |= VMA_PROT_WRITE;
+        if (phdr.p_flags & PF_X) vma_flags |= VMA_PROT_EXEC;
+
+        // Create VMA entry for this segment
+        vma_area* vma = create_vma(mm_ctx, phdr.p_vaddr, phdr.p_memsz, vma_flags, VMA_TYPE_PRIVATE);
+        if (!vma) {
+            _log_error("Failed to create VMA for segment.");
+            return false;
+        }
 
         // Allocate and map the segment
         if (!_allocate_and_map_segment(
