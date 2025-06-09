@@ -3,7 +3,7 @@
 #include <memory/vmm.h>
 #include <memory/paging.h>
 #include <fs/vfs.h>
-#include <serial/serial.h>
+#include <core/klog.h>
 
 // Uncomment to see verbose loader logs
 // #define ELF64_LOADER_ENABLE_LOGS 1
@@ -53,8 +53,26 @@ task_control_block* elf64_loader::load_elf(const uint8_t* file_buffer, size_t bu
         return nullptr;
     }
 
-    // Copy the initialized VMA context to the task
-    task->mm_ctx = mm_ctx;
+    // Instead of overwriting, merge the ELF VMAs into the task's context
+
+    // Copy ELF VMAs into the task's context
+    vma_area* elf_vma = mm_ctx.vma_list;
+    while (elf_vma) {
+        vma_area* new_vma = create_vma(
+            &task->mm_ctx,
+            elf_vma->start,
+            elf_vma->end - elf_vma->start,
+            elf_vma->flags,
+            elf_vma->type,
+            elf_vma->file_backing,
+            elf_vma->file_offset
+        );
+        if (!new_vma) {
+            _log_error("Failed to merge ELF VMA into task context.");
+            return nullptr;
+        }
+        elf_vma = elf_vma->next;
+    }
 
     _log_info("ELF loaded successfully, task created.");
 
