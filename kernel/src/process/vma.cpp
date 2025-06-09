@@ -282,7 +282,7 @@ void dbg_print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
         else if (vma->type & VMA_TYPE_ANONYMOUS) type = "anon";
         else if (vma->type & VMA_TYPE_FILE) type = "file";
 
-        kprint("| %016llx     | %016llx      | %llu%s    | %s    | %s    |\n",
+        kprint("| %016llx     | %016llx     | %llu%s    | %s    | %s    |\n",
             vma->start, vma->end, size, size_unit, prot, type);
 
         vma = vma->next;
