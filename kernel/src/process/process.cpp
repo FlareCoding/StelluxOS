@@ -6,6 +6,7 @@
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
 #include <process/elf/elf64_loader.h>
+#include <core/klog.h>
 
 DEFINE_PER_CPU(task_control_block*, current_task);
 DEFINE_PER_CPU(uint64_t, current_system_stack);
@@ -220,6 +221,7 @@ task_control_block* create_upper_class_userland_task(
     );
 
     if (!stack_vma) {
+        kprint("Failed to create stack_vma!\n");
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
         vmm::unmap_contiguous_virtual_pages(task->task_stack, SCHED_USERLAND_TASK_STACK_PAGES);
         delete task;
