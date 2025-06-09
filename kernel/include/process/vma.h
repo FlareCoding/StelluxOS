@@ -137,6 +137,6 @@ __PRIVILEGED_CODE vma_area* split_vma(mm_context* mm_ctx, vma_area* vma, uintptr
  * @param process_name Optional name of the process for better identification in logs
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void print_vma_regions(const mm_context* mm_ctx, const char* process_name = nullptr);
+__PRIVILEGED_CODE void dbg_print_vma_regions(const mm_context* mm_ctx, const char* process_name = nullptr);
 
 #endif // VMA_H 

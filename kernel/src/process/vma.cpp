@@ -241,17 +241,16 @@ vma_area* split_vma(mm_context* mm_ctx, vma_area* vma, uintptr_t split_addr) {
 }
 
 __PRIVILEGED_CODE
-void print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
+void dbg_print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
     if (!mm_ctx) {
         kprint("[VMA] Invalid memory context\n");
         return;
     }
 
     kprint("\n[VMA] Memory map for process: %s\n", process_name ? process_name : "unnamed");
-    kprint("┌─────────────────────────────────────────────────────────────────────────────┐\n");
-    kprint("│ %-16s │ %-16s │ %-8s │ %-8s │ %-8s │\n", 
-        "Start", "End", "Size", "Prot", "Type");
-    kprint("├─────────────────────────────────────────────────────────────────────────────┤\n");
+    kprint("+-----------------------------------------------------------------------------+\n");
+    kprint("|        Start         |         End          |   Size   |   Prot   |  Type   |\n");
+    kprint("+-----------------------------------------------------------------------------+\n");
 
     vma_area* vma = mm_ctx->vma_list;
     while (vma) {
@@ -283,12 +282,12 @@ void print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
         else if (vma->type & VMA_TYPE_ANONYMOUS) type = "anon";
         else if (vma->type & VMA_TYPE_FILE) type = "file";
 
-        kprint("│ %016llx │ %016llx │ %-7llu%s │ %-8s │ %-8s │\n",
+        kprint("| %016llx | %016llx | %llu%s | %s | %s |\n",
             vma->start, vma->end, size, size_unit, prot, type);
 
         vma = vma->next;
     }
 
-    kprint("└─────────────────────────────────────────────────────────────────────────────┘\n");
+    kprint("+-----------------------------------------------------------------------------+\n");
     kprint("Total VMAs: %zu\n\n", mm_ctx->vma_count);
 }
