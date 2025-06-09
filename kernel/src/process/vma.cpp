@@ -249,7 +249,7 @@ void dbg_print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
 
     kprint("\n[VMA] Memory map for process: %s\n", process_name ? process_name : "unnamed");
     kprint("+-----------------------------------------------------------------------------+\n");
-    kprint("|        Start         |         End          |   Size   |   Prot   |  Type   |\n");
+    kprint("|        Start            |         End             |   Size   |   Prot   |  Type   |\n");
     kprint("+-----------------------------------------------------------------------------+\n");
 
     vma_area* vma = mm_ctx->vma_list;
@@ -289,5 +289,5 @@ void dbg_print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
     }
 
     kprint("+-----------------------------------------------------------------------------+\n");
-    kprint("Total VMAs: %zu\n\n", mm_ctx->vma_count);
+    kprint("Total VMAs: %llu\n\n", mm_ctx->vma_count);
 }
