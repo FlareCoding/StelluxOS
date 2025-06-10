@@ -47,7 +47,7 @@ bool page_frame_bitmap::mark_page_used(void* addr) {
     bool result = _set_page_value(addr, true);
     if (result) {
         uint64_t index = _get_addr_index(addr);
-        if (index == m_next_free_index) {
+        if (index <= m_next_free_index) {
             m_next_free_index = index + 1; // Move to the next index
         }
     }
@@ -89,8 +89,9 @@ bool page_frame_bitmap::mark_pages_used(void* addr, size_t count) {
             return false;
     }
 
+    // Update next_free_index if this block was at or before it
     if (start_index <= m_next_free_index) {
-        m_next_free_index = start_index + count; // Update next free index
+        m_next_free_index = start_index + count;
     }
 
     return true;
