@@ -5,64 +5,123 @@
 // #include <core/klog.h>
 
 #include <stlibc/stlibc.h>
+#include <stlibc/memory/malloc.h>
+#include <stlibc/system/syscall.h>
+#include <stlibc/memory/memory.h>
+#include <stlibc/string/string.h>
+#include <stlibc/string/format.h>
 
-// Simple sprintf implementation for hex numbers
-int sprintf_hex(char* buf, const char* format, uint64_t value) {
-    const char* hex_chars = "0123456789abcdef";
-    int i = 0;
-    
-    // Write "0x" prefix
-    buf[i++] = '0';
-    buf[i++] = 'x';
-    
-    // Convert number to hex (16 digits)
-    for (int j = 15; j >= 0; j--) {
-        buf[i++] = hex_chars[(value >> (j * 4)) & 0xF];
-    }
-    
-    // Add newline
-    buf[i++] = '\n';
-    buf[i] = '\0';
-    
-    return i;
+// Helper function to make syscalls cleaner
+void write_str(const char* str) {
+    size_t len = strlen(str);
+    syscall(SYS_WRITE, 0, reinterpret_cast<uint64_t>(str), len, 0, 0, 0);
 }
 
-int main() {
-    // const auto proc_flags =
-    //     process_creation_flags::IS_USERLAND     |
-    //     process_creation_flags::SCHEDULE_NOW    |
-    //     process_creation_flags::ALLOW_ELEVATE;
+// Test basic string operations
+void test_basic_string_ops() {
+    char buffer[256];
+    char str1[] = "Hello";
+    char str2[] = "World";
+    
+    // Test strcpy and strcat
+    strcpy(buffer, str1);
+    strcat(buffer, " ");
+    strcat(buffer, str2);
+    printf("Basic string concatenation: %s\n", buffer);
 
-    // if (!create_process("/initrd/bin/shell", proc_flags)) {
-    //     return -1;
-    // }
+    // Test strncpy with padding
+    char padded[16] = "XXXXXXXXXXXXXXX";
+    strncpy(padded, "Hello", 5);
+    printf("strncpy with padding: %s\n", padded);
 
-    syscall(SYS_WRITE, 0, (uint64_t)"Hello, World!\n", 13, 0, 0, 0);
+    // Test string comparison
+    if (strcmp(str1, "Hello") == 0) {
+        printf("String comparison works!\n");
+    }
+}
 
-    void* ptr = mmap(nullptr, 0x1000 * 10, PROT_READ | PROT_WRITE, 0);
-    syscall(SYS_WRITE, 0, (uint64_t)"First mmap returned: ", 20, 0, 0, 0);
-    char buf[32];
-    int len = sprintf_hex(buf, "0x%llx\n", reinterpret_cast<uintptr_t>(ptr));
-    syscall(SYS_WRITE, 0, (uint64_t)buf, len, 0, 0, 0);
+// Test string search functions
+void test_string_search() {
+    const char* text = "Hello, this is a test string";
+    char buffer[256];
 
-    void* ptr2 = mmap(nullptr, 0x1000 * 5, PROT_READ | PROT_WRITE, 0);
-    syscall(SYS_WRITE, 0, (uint64_t)"Second mmap returned: ", 21, 0, 0, 0);
-    len = sprintf_hex(buf, "0x%llx\n", reinterpret_cast<uintptr_t>(ptr2));
-    syscall(SYS_WRITE, 0, (uint64_t)buf, len, 0, 0, 0);
+    // Test strchr
+    char* comma = strchr(text, ',');
+    if (comma) {
+        strncpy(buffer, comma + 2, 4);
+        buffer[4] = '\0';
+        printf("Found after comma: %s\n", buffer);
+    }
 
-    syscall(SYS_WRITE, 0, (uint64_t)"Unmapping first region...\n", 25, 0, 0, 0);
-    munmap(ptr, 0x1000 * 10);
+    // Test strstr
+    const char* test = strstr(text, "test");
+    if (test) {
+        strncpy(buffer, test, 4);
+        buffer[4] = '\0';
+        printf("Found substring: %s\n", buffer);
+    }
+}
 
-    // Test reallocation of the same size
-    void* ptr3 = mmap(nullptr, 0x1000 * 10, PROT_READ | PROT_WRITE, 0);
-    syscall(SYS_WRITE, 0, (uint64_t)"Third mmap (reallocation test) returned: ", 38, 0, 0, 0);
-    len = sprintf_hex(buf, "0x%llx\n", reinterpret_cast<uintptr_t>(ptr3));
-    syscall(SYS_WRITE, 0, (uint64_t)buf, len, 0, 0, 0);
+// Test string formatting
+void test_string_formatting() {
+    // Test basic integer formatting
+    printf("Integer: %d, Hex: %x, Octal: %o\n", 42, 42, 42);
 
-    syscall(SYS_WRITE, 0, (uint64_t)"Unmapping second region...\n", 26, 0, 0, 0);
-    munmap(ptr2, 0x1000 * 5);
-    syscall(SYS_WRITE, 0, (uint64_t)"Unmapping third region...\n", 26, 0, 0, 0);
-    munmap(ptr3, 0x1000 * 10);
+    // Test string formatting with width and precision
+    printf("String: %10s, Truncated: %.5s\n", "Hello World", "Hello World");
 
+    // Test flags and padding
+    printf("Padded: %05d, Left: %-5d, Signed: %+d\n", 42, 42, 42);
+
+    // Test hex formatting with prefix
+    printf("Hex with prefix: %#x, Uppercase: %X\n", 42, 42);
+
+    // Test multiple arguments
+    printf("Multiple: %s %d %c\n", "Test", 123, 'A');
+}
+
+// Test complex formatting scenarios
+void test_complex_formatting() {
+    // Test width and precision with strings
+    printf("Width and precision test:\n");
+    printf("%-10.5s|%10.5s\n", "Hello World", "Hello World");
+
+    // Test number formatting with different bases
+    printf("Decimal: %d\n"
+           "Hex: %#x\n"
+           "Octal: %#o\n"
+           "Unsigned: %u\n",
+           42, 42, 42, 42);
+
+    // Test character formatting
+    printf("Char: %c, Padded: %5c\n", 'A', 'B');
+
+    // Test special cases
+    printf("%4d %-4s\n", 100, "KB");
+    printf("%4d %-4s\n", 42, "B");
+    printf("%4d %-4s\n", 1004, "KB");
+    printf("%4d %-4s\n", 472, "MB");
+}
+
+extern "C" int main() {
+    printf("Starting string manipulation and formatting tests...\n\n");
+
+    printf("=== Basic String Operations ===\n");
+    test_basic_string_ops();
+    printf("\n");
+
+    printf("=== String Search Functions ===\n");
+    test_string_search();
+    printf("\n");
+
+    printf("=== Basic String Formatting ===\n");
+    test_string_formatting();
+    printf("\n");
+
+    printf("=== Complex Formatting Scenarios ===\n");
+    test_complex_formatting();
+    printf("\n");
+
+    printf("All string tests completed\n");
     return 0;
 }
