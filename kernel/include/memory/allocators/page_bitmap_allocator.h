@@ -169,6 +169,16 @@ public:
      */
     __PRIVILEGED_CODE void* alloc_large_pages(size_t count);
 
+    /**
+     * @brief Frees a previously allocated large page.
+     * @param addr Address of the large page to free.
+     * 
+     * Marks the large page as free in the bitmap.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void free_large_page(void* addr);
+
 private:
     paging::page_frame_bitmap m_bitmap; /** Bitmap for tracking page usage */
     uint64_t m_base_page_offset;        /** Base offset for page indices */

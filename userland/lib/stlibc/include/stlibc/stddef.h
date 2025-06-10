@@ -28,6 +28,9 @@ typedef __UINT64_TYPE__ uint64_t;
 typedef __UINT64_TYPE__ size_t;
 #endif
 
+#define UINTPTR_MAX       18446744073709551615UL
+#define SIZE_MAX          UINTPTR_MAX
+
 typedef uint64_t uintptr_t;
 #define NULL    0
 

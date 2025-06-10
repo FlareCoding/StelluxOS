@@ -81,9 +81,6 @@ long __syscall_handler(
             break;
         }
 
-        // Calculate number of pages needed
-        size_t num_pages = length / PAGE_SIZE;
-
         // Convert protection flags to VMA flags
         uint64_t vma_flags = 0;
         if (prot_flags & PROT_READ) vma_flags |= VMA_PROT_READ;
@@ -91,7 +88,7 @@ long __syscall_handler(
         if (prot_flags & PROT_EXEC) vma_flags |= VMA_PROT_EXEC;
 
         // Convert mapping flags to VMA type
-        uint64_t vma_type = 0;
+        uint64_t vma_type = MAP_PRIVATE;
         if (flags & MAP_PRIVATE) vma_type |= VMA_TYPE_PRIVATE;
         if (flags & MAP_SHARED) vma_type |= VMA_TYPE_SHARED;
         if (flags & MAP_ANONYMOUS) vma_type |= VMA_TYPE_ANONYMOUS;
@@ -122,33 +119,93 @@ long __syscall_handler(
         }
 
         // Track allocated physical pages
-        kstl::vector<void*> allocated_pages;
-        allocated_pages.reserve(num_pages);
+        struct allocated_page {
+            void* addr;
+            bool is_large;
+        };
+        kstl::vector<allocated_page> allocated_pages;
+        allocated_pages.reserve(length / PAGE_SIZE);
 
-        // Map the pages
-        for (size_t i = 0; i < num_pages; i++) {
+        // Calculate number of large pages and remainder
+        size_t large_pages_needed = length / LARGE_PAGE_SIZE;
+        size_t remaining_bytes = length % LARGE_PAGE_SIZE;
+        size_t small_pages_needed = remaining_bytes / PAGE_SIZE;
+
+        // Set up page flags
+        uint64_t page_flags = PTE_PRESENT | PTE_US;
+        if (vma_flags & VMA_PROT_WRITE) page_flags |= PTE_RW;
+        if (!(vma_flags & VMA_PROT_EXEC)) page_flags |= PTE_NX;
+
+        // First map large pages
+        for (size_t i = 0; i < large_pages_needed; i++) {
             void* page_addr = reinterpret_cast<void*>(
-                reinterpret_cast<uintptr_t>(addr) + (i * PAGE_SIZE)
+                reinterpret_cast<uintptr_t>(addr) + (i * LARGE_PAGE_SIZE)
+            );
+
+            // Allocate physical large page
+            void* phys_page = allocators::page_bitmap_allocator::get_physical_allocator().alloc_large_page();
+            if (!phys_page) {
+                // Clean up already allocated pages
+                for (const auto& page : allocated_pages) {
+                    if (page.is_large) {
+                        allocators::page_bitmap_allocator::get_physical_allocator().free_large_page(page.addr);
+                    } else {
+                        allocators::page_bitmap_allocator::get_physical_allocator().free_page(page.addr);
+                    }
+                }
+                remove_vma(mm_ctx, vma);
+                return_val = -ENOMEM;
+                break;
+            }
+            allocated_pages.push_back({phys_page, true});
+
+            // Map the large page
+            paging::map_large_page(
+                reinterpret_cast<uintptr_t>(page_addr),
+                reinterpret_cast<uintptr_t>(phys_page),
+                page_flags,
+                reinterpret_cast<paging::page_table*>(mm_ctx->root_page_table)
+            );
+
+            if (!paging::get_physical_address(page_addr)) {
+                // Clean up already allocated pages
+                for (const auto& page : allocated_pages) {
+                    if (page.is_large) {
+                        allocators::page_bitmap_allocator::get_physical_allocator().free_large_page(page.addr);
+                    } else {
+                        allocators::page_bitmap_allocator::get_physical_allocator().free_page(page.addr);
+                    }
+                }
+                remove_vma(mm_ctx, vma);
+                return_val = -EFAULT;
+                break;
+            }
+        }
+
+        // Then map remaining small pages
+        for (size_t i = 0; i < small_pages_needed; i++) {
+            void* page_addr = reinterpret_cast<void*>(
+                reinterpret_cast<uintptr_t>(addr) + (large_pages_needed * LARGE_PAGE_SIZE) + (i * PAGE_SIZE)
             );
 
             // Allocate physical page
             void* phys_page = allocators::page_bitmap_allocator::get_physical_allocator().alloc_page();
             if (!phys_page) {
                 // Clean up already allocated pages
-                for (void* page : allocated_pages) {
-                    allocators::page_bitmap_allocator::get_physical_allocator().free_page(page);
+                for (const auto& page : allocated_pages) {
+                    if (page.is_large) {
+                        allocators::page_bitmap_allocator::get_physical_allocator().free_large_page(page.addr);
+                    } else {
+                        allocators::page_bitmap_allocator::get_physical_allocator().free_page(page.addr);
+                    }
                 }
                 remove_vma(mm_ctx, vma);
                 return_val = -ENOMEM;
                 break;
             }
-            allocated_pages.push_back(phys_page);
+            allocated_pages.push_back({phys_page, false});
 
-            // Map the page with appropriate permissions
-            uint64_t page_flags = PTE_PRESENT | PTE_US;
-            if (vma_flags & VMA_PROT_WRITE) page_flags |= PTE_RW;
-            if (!(vma_flags & VMA_PROT_EXEC)) page_flags |= PTE_NX;
-
+            // Map the page
             paging::map_page(
                 reinterpret_cast<uintptr_t>(page_addr),
                 reinterpret_cast<uintptr_t>(phys_page),
@@ -158,8 +215,12 @@ long __syscall_handler(
 
             if (!paging::get_physical_address(page_addr)) {
                 // Clean up already allocated pages
-                for (void* page : allocated_pages) {
-                    allocators::page_bitmap_allocator::get_physical_allocator().free_page(page);
+                for (const auto& page : allocated_pages) {
+                    if (page.is_large) {
+                        allocators::page_bitmap_allocator::get_physical_allocator().free_large_page(page.addr);
+                    } else {
+                        allocators::page_bitmap_allocator::get_physical_allocator().free_page(page.addr);
+                    }
                 }
                 remove_vma(mm_ctx, vma);
                 return_val = -EFAULT;
@@ -172,6 +233,24 @@ long __syscall_handler(
         break;
     }
     case SYSCALL_SYS_MUNMAP: {
+        /*
+         * TODO: Improve munmap to properly handle large pages (2MB) vs normal pages (4KB)
+         * Current issues:
+         * 1. No tracking of whether a page was allocated as a large page or normal page
+         * 2. Assumes all pages are 4KB when unmapping, which could lead to:
+         *    - Incorrect unmapping of large pages (only unmapping first 4KB)
+         *    - Memory leaks if large pages aren't properly freed
+         *    - Potential corruption if trying to unmap parts of large pages
+         * 
+         * Proposed solution:
+         * 1. Add page type tracking during mmap (large vs normal)
+         * 2. Store this information in the VMA or a separate tracking structure
+         * 3. Use this information during munmap to:
+         *    - Properly unmap entire large pages when needed
+         *    - Handle mixed regions of large and normal pages
+         *    - Ensure correct physical page freeing
+         */
+
         // arg1 = addr
         // arg2 = length
         uintptr_t addr = static_cast<uintptr_t>(arg1);
