@@ -64,9 +64,9 @@ long __syscall_handler(
         // arg5 = offset
         void* addr = reinterpret_cast<void*>(arg1);
         size_t length = arg2;
-        int prot_flags = arg3;
-        int flags = arg4;
-        long offset = arg5;
+        uint64_t prot_flags = arg3;
+        uint64_t flags = arg4;
+        uint64_t offset = arg5;
 
         // Validate length
         if (length == 0 || length % PAGE_SIZE != 0) {
@@ -83,15 +83,27 @@ long __syscall_handler(
 
         // Convert protection flags to VMA flags
         uint64_t vma_flags = 0;
-        if (prot_flags & PROT_READ) vma_flags |= VMA_PROT_READ;
-        if (prot_flags & PROT_WRITE) vma_flags |= VMA_PROT_WRITE;
-        if (prot_flags & PROT_EXEC) vma_flags |= VMA_PROT_EXEC;
+        if (prot_flags & PROT_READ) {
+            vma_flags |= VMA_PROT_READ;
+        }
+        if (prot_flags & PROT_WRITE) {
+            vma_flags |= VMA_PROT_WRITE;
+        }
+        if (prot_flags & PROT_EXEC) {
+            vma_flags |= VMA_PROT_EXEC;
+        }
 
         // Convert mapping flags to VMA type
-        uint64_t vma_type = MAP_PRIVATE;
-        if (flags & MAP_PRIVATE) vma_type |= VMA_TYPE_PRIVATE;
-        if (flags & MAP_SHARED) vma_type |= VMA_TYPE_SHARED;
-        if (flags & MAP_ANONYMOUS) vma_type |= VMA_TYPE_ANONYMOUS;
+        uint64_t vma_type = 0;
+        if (flags & MAP_PRIVATE) {
+            vma_type |= VMA_TYPE_PRIVATE;
+        }
+        if (flags & MAP_SHARED) {
+            vma_type |= VMA_TYPE_SHARED;
+        }
+        if (flags & MAP_ANONYMOUS) {
+            vma_type |= VMA_TYPE_ANONYMOUS;
+        }
 
         // If addr is NULL or MAP_FIXED is not set, find a suitable address
         if (!addr || !(flags & MAP_FIXED)) {
@@ -133,8 +145,12 @@ long __syscall_handler(
 
         // Set up page flags
         uint64_t page_flags = PTE_PRESENT | PTE_US;
-        if (vma_flags & VMA_PROT_WRITE) page_flags |= PTE_RW;
-        if (!(vma_flags & VMA_PROT_EXEC)) page_flags |= PTE_NX;
+        if (vma_flags & VMA_PROT_WRITE) {
+            page_flags |= PTE_RW;
+        }
+        if (!(vma_flags & VMA_PROT_EXEC)) {
+            page_flags |= PTE_NX;
+        }
 
         // First map large pages
         for (size_t i = 0; i < large_pages_needed; i++) {
@@ -356,8 +372,7 @@ long syscall(
     uint64_t arg2,
     uint64_t arg3,
     uint64_t arg4,
-    uint64_t arg5,
-    uint64_t arg6
+    uint64_t arg5
 ) {
     long ret;
 
@@ -368,12 +383,11 @@ long syscall(
         "mov %4, %%rdx\n"  // arg3
         "mov %5, %%r10\n"  // arg4
         "mov %6, %%r8\n"   // arg5
-        "mov %7, %%r9\n"   // arg6
         "syscall\n"
         "mov %%rax, %0\n"  // Capture return value
         : "=r"(ret)
-        : "r"(syscall_number), "r"(arg1), "r"(arg2), "r"(arg3), "r"(arg4), "r"(arg5), "r"(arg6)
-        : "rax", "rdi", "rsi", "rdx", "r10", "r8", "r9"
+        : "r"(syscall_number), "r"(arg1), "r"(arg2), "r"(arg3), "r"(arg4), "r"(arg5)
+        : "rax", "rdi", "rsi", "rdx", "r10", "r8"
     );
 
     return static_cast<long>(ret);

@@ -83,7 +83,7 @@ void blacklist_asid(uintptr_t asid) {
 }
 
 void elevate() {
-    syscall(SYSCALL_SYS_ELEVATE, 0, 0, 0, 0, 0, 0);
+    syscall(SYSCALL_SYS_ELEVATE, 0, 0, 0, 0, 0);
 }
 
 void lower() {

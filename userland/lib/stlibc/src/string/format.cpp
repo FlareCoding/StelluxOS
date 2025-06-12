@@ -76,6 +76,7 @@ int _parse_format_spec(const char* format, struct format_spec* spec) {
     spec->precision = 0;
     spec->has_width = false;
     spec->has_precision = false;
+    spec->is_long_long = false;
 
     // Parse flags
     while (true) {
@@ -110,6 +111,12 @@ width:
             spec->precision = spec->precision * 10 + (*format - '0');
             format++;
         }
+    }
+
+    // Parse length modifier
+    if (*format == 'l' && *(format + 1) == 'l') {
+        spec->is_long_long = true;
+        format += 2;
     }
 
     // Parse type
@@ -330,7 +337,7 @@ int printf(const char* format, ...) {
 
     // Write syscall
     if (result > 0) {
-        syscall(SYS_WRITE, 0, reinterpret_cast<uint64_t>(buffer), result, 0, 0, 0);
+        syscall(SYS_WRITE, 0, reinterpret_cast<uint64_t>(buffer), result, 0, 0);
     }
 
     va_end(args);
@@ -379,21 +386,43 @@ int vsnprintf(char* str, size_t size, const char* format, va_list args) {
 
         int result = 0;
         switch (spec.type) {
+            case 'p': {
+                void* value = va_arg(args, void*);
+                spec.flags |= FMT_ALT;  // Force '0x' prefix
+                spec.type = 'x';        // Force hex formatting
+                result = _format_unsigned(str + written, size - written, reinterpret_cast<uint64_t>(value), &spec);
+                break;
+            }
             case 'd':
             case 'i': {
-                int value = va_arg(args, int);
-                result = _format_integer(str + written, size - written, value, &spec);
+                if (spec.is_long_long) {
+                    int64_t value = va_arg(args, int64_t);
+                    result = _format_integer(str + written, size - written, value, &spec);
+                } else {
+                    int value = va_arg(args, int);
+                    result = _format_integer(str + written, size - written, value, &spec);
+                }
                 break;
             }
             case 'u': {
-                unsigned int value = va_arg(args, unsigned int);
-                result = _format_unsigned(str + written, size - written, value, &spec);
+                if (spec.is_long_long) {
+                    uint64_t value = va_arg(args, uint64_t);
+                    result = _format_unsigned(str + written, size - written, value, &spec);
+                } else {
+                    unsigned int value = va_arg(args, unsigned int);
+                    result = _format_unsigned(str + written, size - written, value, &spec);
+                }
                 break;
             }
             case 'x':
             case 'X': {
-                unsigned int value = va_arg(args, unsigned int);
-                result = _format_unsigned(str + written, size - written, value, &spec);
+                if (spec.is_long_long) {
+                    uint64_t value = va_arg(args, uint64_t);
+                    result = _format_unsigned(str + written, size - written, value, &spec);
+                } else {
+                    unsigned int value = va_arg(args, unsigned int);
+                    result = _format_unsigned(str + written, size - written, value, &spec);
+                }
                 break;
             }
             case 'o': {
@@ -436,3 +465,4 @@ int vsnprintf(char* str, size_t size, const char* format, va_list args) {
 }
 
 } // extern "C"
+ 

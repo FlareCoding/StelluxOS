@@ -8,11 +8,8 @@ long syscall(
     uint64_t arg2,
     uint64_t arg3,
     uint64_t arg4,
-    uint64_t arg5,
-    uint64_t arg6
-) {
-    int ret;
-    
+    uint64_t arg5
+) {    
     // x86_64 syscall convention:
     // rax = syscall number
     // rdi = arg1
@@ -20,22 +17,24 @@ long syscall(
     // rdx = arg3
     // r10 = arg4
     // r8  = arg5
-    // r9  = arg6
     // syscall instruction
     // rax = return value
+    long ret;
+
     asm volatile(
-        "syscall"
-        : "=a" (ret)
-        : "a" (syscall_number),
-          "D" (arg1),
-          "S" (arg2),
-          "d" (arg3),
-          "r" (arg4),
-          "r" (arg5),
-          "r" (arg6)
-        : "rcx", "r11", "memory"
+        "mov %1, %%rax\n"  // syscall number
+        "mov %2, %%rdi\n"  // arg1
+        "mov %3, %%rsi\n"  // arg2
+        "mov %4, %%rdx\n"  // arg3
+        "mov %5, %%r10\n"  // arg4
+        "mov %6, %%r8\n"   // arg5
+        "syscall\n"
+        "mov %%rax, %0\n"  // Capture return value
+        : "=r"(ret)
+        : "r"(syscall_number), "r"(arg1), "r"(arg2), "r"(arg3), "r"(arg4), "r"(arg5)
+        : "rax", "rdi", "rsi", "rdx", "r10", "r8"
     );
-    
+
     return ret;
 }
 
