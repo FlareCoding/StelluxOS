@@ -22,7 +22,6 @@
  * @param arg3 The third argument to pass to the system call.
  * @param arg4 The fourth argument to pass to the system call.
  * @param arg5 The fifth argument to pass to the system call.
- * @param arg6 The sixth argument to pass to the system call.
  * @return int The result of the system call. A non-negative value typically indicates
  *             success or a valid return value, while a negative value signifies an error.
  */
@@ -32,8 +31,7 @@ EXTERN_C long syscall(
     uint64_t arg2,
     uint64_t arg3,
     uint64_t arg4,
-    uint64_t arg5,
-    uint64_t arg6
+    uint64_t arg5
 );
 
 // Architecture-specific code for enabling the syscall interface

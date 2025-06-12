@@ -32,6 +32,7 @@ struct format_spec {
     char type;           // Conversion type (d, i, u, x, X, o, s, c, etc.)
     bool has_width;      // Whether width was specified
     bool has_precision;  // Whether precision was specified
+    bool is_long_long;   // Whether 'll' length modifier was specified
 };
 
 /**
@@ -124,3 +125,4 @@ int _format_char(char* str, size_t size, char value, const struct format_spec* s
 #endif
 
 #endif // STLIBC_FORMAT_H
+ 

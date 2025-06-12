@@ -193,10 +193,10 @@ void* page_bitmap_allocator::alloc_pages(size_t count) {
             uintptr_t start_relative_addr_val = index * PAGE_SIZE;
             void* start_relative_addr = reinterpret_cast<void*>(start_relative_addr_val);
 
-            if (bitmap.mark_pages_used(start_relative_addr, count)) {
+                if (bitmap.mark_pages_used(start_relative_addr, count)) {
                 uintptr_t absolute_start_addr_val = m_base_page_offset + start_relative_addr_val;
-                void* absolute_start_addr = reinterpret_cast<void*>(absolute_start_addr_val);
-                return absolute_start_addr;
+                    void* absolute_start_addr = reinterpret_cast<void*>(absolute_start_addr_val);
+                    return absolute_start_addr;
             } else {
                 serial::printf("[*] alloc_pages: failed to mark pages as used starting at index %llu\n", index);
             }
@@ -373,7 +373,7 @@ void* page_bitmap_allocator::alloc_large_pages(size_t count) {
                     return absolute_start_addr;
                 } else {
                     serial::printf("[*] alloc_large_pages: failed to mark pages as used at index %llu\n", index);
-                }
+            }
             }
         }
 

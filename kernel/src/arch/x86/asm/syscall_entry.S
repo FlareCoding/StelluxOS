@@ -22,31 +22,45 @@ asm_syscall_entry:
     push	rcx         # regs.hwframe->rip
 
 _ignored_iret_construction_path:
-    # Save volatile registers that we are going to modify
+    # Save all registers we'll modify
     push rdi
     push rsi
     push rdx
     push rcx
     push r8
-    push r9
     push r10
     push r11
+    push r12
+    push r13
+    push r14
+    push r15
 
-    # Move syscall arguments into appropriate registers
-    mov r9,  r8   # arg5
-    mov r8,  r10  # arg4
-    mov r10, rdx  # arg3
-    mov rdx, rsi  # arg2
-    mov rsi, rdi  # arg1
-    mov rdi, rax  # syscall number
+    # Save syscall number and arguments
+    mov rcx, rax  # Save syscall number
+    mov r11, rdi  # Save arg1
+    mov r12, rsi  # Save arg2
+    mov r13, rdx  # Save arg3
+    mov r14, r10  # Save arg4
+    mov r15, r8   # Save arg5
+
+    # Move syscall arguments into appropriate registers for __syscall_handler
+    mov rdi, rcx  # syscall number
+    mov rsi, r11  # arg1
+    mov rdx, r12  # arg2
+    mov rcx, r13  # arg3
+    mov r8,  r14  # arg4
+    mov r10, r15  # arg5
 
     # Call the C function
     call __syscall_handler
 
-    # Restore volatile registers
+    # Restore all registers in reverse order
+    pop r15
+    pop r14
+    pop r13
+    pop r12
     pop r11
     pop r10
-    pop r9
     pop r8
     pop rcx
     pop rdx

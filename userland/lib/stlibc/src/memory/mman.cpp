@@ -3,15 +3,14 @@
 
 extern "C" {
 
-void* mmap(void* addr, size_t length, int prot_flags, long offset) {
+void* mmap(void* addr, size_t length, int prot_flags, int flags, long offset) {
     uint64_t result = syscall(
         SYS_MMAP,
         reinterpret_cast<uint64_t>(addr),
         length,
         prot_flags,
-        offset,
-        0,
-        0
+        flags,
+        offset
     );
     
     // Convert the 64-bit result to a pointer
@@ -23,7 +22,6 @@ int munmap(void* addr, size_t length) {
         SYS_MUNMAP,
         reinterpret_cast<uint64_t>(addr),
         length,
-        0,
         0,
         0,
         0

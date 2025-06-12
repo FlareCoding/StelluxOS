@@ -1,7 +1,7 @@
 #include <stlibc/memory/heap.h>
 #include <stlibc/memory/memory.h>
 #include <stlibc/memory/mman.h>
-#include <serial/serial.h>
+#include <stlibc/string/format.h>
 
 namespace stlibc {
 
@@ -18,8 +18,8 @@ heap_allocator& heap_allocator::get() {
 }
 
 void heap_allocator::init() {
-    // Allocate initial heap space using mmap
-    m_heap_start = mmap(nullptr, HEAP_INIT_SIZE, PROT_READ | PROT_WRITE, 0);
+    // Allocate initial heap space using mmap with MAP_PRIVATE | MAP_ANONYMOUS flags
+    m_heap_start = mmap(nullptr, HEAP_INIT_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0);
     if (!m_heap_start) {
         // If mmap fails, we can't continue
         return;
@@ -229,7 +229,8 @@ bool heap_allocator::_expand_heap(size_t size) {
     void* new_memory = mmap(
         m_heap_end,
         new_size - m_heap_size, 
-        PROT_READ | PROT_WRITE, 
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
         0
     );
     
@@ -274,18 +275,18 @@ void heap_allocator::debug_heap_segment(void* ptr, int64_t seg_id) {
     
     if (seg_id != -1) {
         // TODO: Replace with proper logging
-        // printf("Segment %lld:\n", seg_id);
+        printf("Segment %lld:\n", seg_id);
     } else {
-        // printf("Segment:\n");
+        printf("Segment:\n");
     }
     
-    // printf("    base         : %p\n", segment);
-    // printf("    userptr      : %p\n", static_cast<char*>(ptr) + sizeof(heap_segment_header));
-    // printf("    total size   : %zu\n", segment->size);
-    // printf("    usable size  : %zu\n", segment->size - sizeof(heap_segment_header));
-    // printf("    status       : %s\n", segment->flags.free ? "free" : "used");
-    // printf("    next         : %p\n", segment->next);
-    // printf("    prev         : %p\n\n", segment->prev);
+    printf("    base         : %p\n", segment);
+    printf("    userptr      : %p\n", static_cast<char*>(ptr) + sizeof(heap_segment_header));
+    printf("    total size   : %zu\n", segment->size);
+    printf("    usable size  : %zu\n", segment->size - sizeof(heap_segment_header));
+    printf("    status       : %s\n", segment->flags.free ? "free" : "used");
+    printf("    next         : %p\n", segment->next);
+    printf("    prev         : %p\n\n", segment->prev);
 }
 
 void heap_allocator::debug_user_heap_pointer(void* ptr, int64_t id) {
@@ -302,27 +303,27 @@ bool heap_allocator::detect_heap_corruption(bool dbg_log) {
         
         if (memcmp(current->magic, HEAP_SEGMENT_HDR_SIGNATURE, sizeof(current->magic)) != 0) {
             corrupted = true;
-            // printf("[!] Magic number is corrupted\n");
+            printf("[!] Magic number is corrupted\n");
         } else if (current->flags.reserved != 0) {
             corrupted = true;
-            // printf("[!] Reserved flags were not 0\n");
+            printf("[!] Reserved flags were not 0\n");
         } else if (
             current->next != nullptr &&
             reinterpret_cast<char*>(current) + current->size != reinterpret_cast<char*>(current->next)
         ) {
             corrupted = true;
-            // printf("[!] Corrupted size + next link\n");
+            printf("[!] Corrupted size + next link\n");
         } else if (current->prev && current->prev->next != current) {
             corrupted = true;
-            // printf("[!] Corrupted current->prev->next link\n");
+            printf("[!] Corrupted current->prev->next link\n");
         } else if (current->next && current->next->prev != current) {
             corrupted = true;
-            // printf("[!] Corrupted current->next->prev link\n");
+            printf("[!] Corrupted current->next->prev link\n");
         }
 
         if (corrupted) {
             if (dbg_log) {
-                // printf("---- Detected Heap Corruption (segment %lld) ----\n", seg_id);
+                printf("---- Detected Heap Corruption (segment %lld) ----\n", seg_id);
                 debug_heap_segment(current, seg_id);
             }
             return true;
@@ -333,7 +334,7 @@ bool heap_allocator::detect_heap_corruption(bool dbg_log) {
     }
 
     if (dbg_log) {
-        // printf("---- No Heap Corruption Detected (checked %lld segments) ----\n", seg_id - 1);
+        printf("---- No Heap Corruption Detected (checked %lld segments) ----\n", seg_id - 1);
     }
 
     return false;

@@ -17,13 +17,13 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	@mkdir -p $(BIN_DIR)
 	@echo "[LD] Linking $@"
-	@$(LD) $(LDFLAGS) -o $@ $^
+	@$(LD) $(LDFLAGS) $(KERNEL_LIB_LDFLAGS) -o $@ $^
 
 # Compiling the source files into the object directory
 $(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(OBJ_DIR)
 	@echo "[CXX] Compiling $<"
-	@$(CXX) $(CXXFLAGS) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(KERNEL_LIB_CXX_FLAGS) -c $< -o $@
 
 clean:
 	@echo "Cleaning $(OBJ_DIR) and $(BIN_DIR)..."
