@@ -90,7 +90,7 @@ void scheduler::register_cpu_run_queue(uint64_t cpu) {
         idle_core->hw_state.elevated = 1;
 
         // Create the idle process with the static environment
-        new (&g_idle_processes[cpu]) process(idle_core, &g_idle_process_env);
+        g_idle_processes[cpu].init(idle_core, false, &g_idle_process_env, false);
     }
 
     // Ensure that the run queue contains the idle process

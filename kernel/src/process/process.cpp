@@ -366,36 +366,37 @@ void yield() {
 
 } // namespace sched
 
-// Process class implementation
-process::process() : m_core(nullptr), m_env(nullptr), m_is_initialized(false), m_owns_core(false), m_owns_env(false) {}
-
 __PRIVILEGED_CODE
-process::process(process_core* core, process_creation_flags flags) 
-    : m_core(core), m_env(nullptr), m_is_initialized(false), m_owns_core(true), m_owns_env(false) {
-    init_with_core(core, flags, false);
-}
+process_core* process::_create_process_core(task_entry_fn_t entry, void* data, process_creation_flags flags) {
+    // Create appropriate core based on flags
+    if (has_process_flag(flags, process_creation_flags::IS_KERNEL)) {
+        if (has_process_flag(flags, process_creation_flags::PRIV_KERN_THREAD)) {
+            return sched::create_priv_kernel_process_core(entry, data);
+        } else {
+            return sched::create_unpriv_kernel_process_core(entry, data);
+        }
+    } else {
+        // For userland processes, we need a page table
+        auto pt = paging::create_higher_class_userland_page_table();
+        if (!pt) {
+            return nullptr;
+        }
+        auto core = sched::create_userland_process_core(
+            reinterpret_cast<uintptr_t>(entry),
+            pt
+        );
 
-__PRIVILEGED_CODE
-process::process(process_env* env, process_creation_flags flags)
-    : m_core(nullptr), m_env(env), m_is_initialized(false), m_owns_core(false), m_owns_env(true) {
-    init_with_env(env, flags, false);
-}
+        // Allow certain processes to elevate
+        if (core && has_process_flag(flags, process_creation_flags::CAN_ELEVATE)) {
+            dynpriv::whitelist_asid(core->mm_ctx.root_page_table);
+        }
 
-__PRIVILEGED_CODE
-process::process(process_core* core, process_env* env)
-    : m_core(core), m_env(env), m_is_initialized(false), m_owns_core(true), m_owns_env(true) {
-    if (core && env) {
-        m_is_initialized = true;
+        return core;
     }
 }
 
 __PRIVILEGED_CODE
-process::~process() {
-    cleanup();
-}
-
-__PRIVILEGED_CODE
-bool process::init(process_creation_flags flags) {
+bool process::init_with_flags(const char* name, process_creation_flags flags) {
     if (m_is_initialized) {
         return false;
     }
@@ -408,29 +409,14 @@ bool process::init(process_creation_flags flags) {
     m_owns_env = true;
     m_env->flags = flags;
 
-    // Create appropriate core based on flags
-    if (has_process_flag(flags, process_creation_flags::IS_KERNEL)) {
-        if (has_process_flag(flags, process_creation_flags::PRIV_KERN_THREAD)) {
-            m_core = sched::create_priv_kernel_process_core(nullptr, nullptr);
-        } else {
-            m_core = sched::create_unpriv_kernel_process_core(nullptr, nullptr);
-        }
-    } else {
-        // For userland processes, we need a page table
-        auto pt = paging::create_higher_class_userland_page_table();
-        if (!pt) {
-            delete m_env;
-            m_env = nullptr;
-            return false;
-        }
-        m_core = sched::create_userland_process_core(0x0, pt); // Entry point must be set later
-
-        // Allow certain processes to elevate
-        if (has_process_flag(flags, process_creation_flags::CAN_ELEVATE)) {
-            dynpriv::whitelist_asid(m_core->mm_ctx.root_page_table);
-        }
+    // Set process name if provided
+    if (name) {
+        strcpy(m_env->identity.name, name);
+        m_env->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
     }
 
+    // Create core
+    m_core = _create_process_core(nullptr, nullptr, flags);
     if (!m_core) {
         delete m_env;
         m_env = nullptr;
@@ -439,11 +425,17 @@ bool process::init(process_creation_flags flags) {
     m_owns_core = true;
 
     m_is_initialized = true;
+
+    // Schedule the process if requested
+    if (has_process_flag(flags, process_creation_flags::SCHEDULE_NOW)) {
+        sched::scheduler::get().add_process(this);
+    }
+
     return true;
 }
 
 __PRIVILEGED_CODE
-bool process::init_with_core(process_core* core, process_creation_flags flags, bool take_ownership) {
+bool process::init_with_core(const char* name, process_core* core, process_creation_flags flags, bool take_ownership) {
     if (m_is_initialized || !core) {
         return false;
     }
@@ -456,10 +448,22 @@ bool process::init_with_core(process_core* core, process_creation_flags flags, b
     m_owns_env = true;
     m_env->flags = flags;
 
+    // Set process name if provided
+    if (name) {
+        strcpy(m_env->identity.name, name);
+        m_env->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
+    }
+
     m_core = core;
     m_owns_core = take_ownership;
 
     m_is_initialized = true;
+
+    // Schedule the process if requested
+    if (has_process_flag(flags, process_creation_flags::SCHEDULE_NOW)) {
+        sched::scheduler::get().add_process(this);
+    }
+
     return true;
 }
 
@@ -472,69 +476,131 @@ bool process::init_with_env(process_env* env, process_creation_flags flags, bool
     m_env = env;
     m_owns_env = take_ownership;
 
-    // Create appropriate core based on flags
-    if (has_process_flag(flags, process_creation_flags::IS_KERNEL)) {
-        if (has_process_flag(flags, process_creation_flags::PRIV_KERN_THREAD)) {
-            m_core = sched::create_priv_kernel_process_core(nullptr, nullptr);
-        } else {
-            m_core = sched::create_unpriv_kernel_process_core(nullptr, nullptr);
-        }
-    } else {
-        // For userland processes, we need a page table
-        auto pt = paging::create_higher_class_userland_page_table();
-        if (!pt) {
-            return false;
-        }
-        m_core = sched::create_userland_process_core(0x0, pt); // Entry point will be set later
-
-        // Allow certain processes to elevate
-        if (has_process_flag(flags, process_creation_flags::CAN_ELEVATE)) {
-            dynpriv::whitelist_asid(m_core->mm_ctx.root_page_table);
-        }
-    }
-
+    // Create core
+    m_core = _create_process_core(nullptr, nullptr, flags);
     if (!m_core) {
         return false;
     }
     m_owns_core = true;
 
     m_is_initialized = true;
+
+    // Schedule the process if requested
+    if (has_process_flag(flags, process_creation_flags::SCHEDULE_NOW)) {
+        sched::scheduler::get().add_process(this);
+    }
+
+    return true;
+}
+
+__PRIVILEGED_CODE
+bool process::init(process_core* core, bool take_core_ownership, process_env* env, bool take_env_ownership) {
+    if (m_is_initialized || !core || !env) {
+        return false;
+    }
+
+    m_core = core;
+    m_owns_core = take_core_ownership;
+
+    m_env = env;
+    m_owns_env = take_env_ownership;
+
+    m_is_initialized = true;
+
+    // Schedule the process if requested
+    if (has_process_flag(env->flags, process_creation_flags::SCHEDULE_NOW)) {
+        sched::scheduler::get().add_process(this);
+    }
+
+    return true;
+}
+
+__PRIVILEGED_CODE
+bool process::init_with_entry(const char* name, task_entry_fn_t entry, void* data, process_creation_flags flags) {
+    if (m_is_initialized || !entry) {
+        return false;
+    }
+
+    // Create new environment
+    m_env = new process_env();
+    if (!m_env) {
+        return false;
+    }
+    m_owns_env = true;
+    m_env->flags = flags;
+
+    // Set process name if provided
+    if (name) {
+        strcpy(m_env->identity.name, name);
+        m_env->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
+    }
+
+    // Create core
+    m_core = _create_process_core(entry, data, flags);
+    if (!m_core) {
+        delete m_env;
+        m_env = nullptr;
+        return false;
+    }
+    m_owns_core = true;
+
+    m_is_initialized = true;
+
+    // Schedule the process if requested
+    if (has_process_flag(flags, process_creation_flags::SCHEDULE_NOW)) {
+        sched::scheduler::get().add_process(this);
+    }
+
+    return true;
+}
+
+__PRIVILEGED_CODE
+bool process::init_with_entry(task_entry_fn_t entry, void* data, process_env* env, process_creation_flags flags, bool take_ownership) {
+    if (m_is_initialized || !entry || !env) {
+        return false;
+    }
+
+    m_env = env;
+    m_owns_env = take_ownership;
+
+    // Create core
+    m_core = _create_process_core(entry, data, flags);
+    if (!m_core) {
+        return false;
+    }
+    m_owns_core = true;
+
+    m_is_initialized = true;
+
+    // Schedule the process if requested
+    if (has_process_flag(flags, process_creation_flags::SCHEDULE_NOW)) {
+        sched::scheduler::get().add_process(this);
+    }
+
     return true;
 }
 
 __PRIVILEGED_CODE
 void process::cleanup() {
+    if (!m_is_initialized) {
+        return;
+    }
+
+    // If we own the core, destroy it
     if (m_owns_core && m_core) {
         sched::destroy_process_core(m_core);
         m_core = nullptr;
     }
+
+    // If we own the environment, delete it
     if (m_owns_env && m_env) {
         delete m_env;
         m_env = nullptr;
     }
+
     m_is_initialized = false;
-}
-
-__PRIVILEGED_CODE
-bool process::set_environment(process_env* env, bool take_ownership) {
-    __unused env;
-    __unused take_ownership;
-    kprint("[Process] set_environment: Unimplemented\n");
-    return false;
-}
-
-__PRIVILEGED_CODE
-bool process::snapshot_core(process_core& out_core) const {
-    __unused out_core;
-    kprint("[Process] snapshot_core: Unimplemented\n");
-    return false;
-}
-
-__PRIVILEGED_CODE
-bool process::restore_core(const process_core& core) {
-    __unused core;
-    kprint("[Process] restore_core: Unimplemented\n");
-    return false;
+    m_owns_core = false;
+    m_owns_env = false;
 }
 
 bool process::start() {
@@ -572,5 +638,3 @@ bool process::terminate() {
     m_core->state = process_state::TERMINATED;
     return true;
 }
-
-

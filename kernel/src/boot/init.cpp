@@ -205,21 +205,20 @@ void init(unsigned int magic, void* mbi) {
 #endif // BUILD_UNIT_TESTS
 
     // Create the module manager process
-    auto module_manager = new process();
-    if (!module_manager->init(process_creation_flags::IS_KERNEL | process_creation_flags::CAN_ELEVATE)) {
+    process* module_mngr_proc = new process();
+    if (!module_mngr_proc->init_with_entry(
+        "module_manager",
+        module_manager_init,
+        nullptr,
+        process_creation_flags::IS_KERNEL | process_creation_flags::SCHEDULE_NOW
+    )) {
         kprint("[!] Failed to initialize module manager process\n");
         while (true) {
             asm volatile ("hlt");
         }
     }
 
-    // Set the entry point and name
-    module_manager->get_core()->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(module_manager_init);
-    module_manager->get_core()->cpu_context.rdi = 0; // No arguments
-    memcpy(module_manager->get_env()->identity.name, "module_manager_init", 19);
-
-    // Add the process to the scheduler
-    sched::scheduler::get().add_process(module_manager);
+    memcpy(module_mngr_proc->get_env()->identity.name, "module_manager_init", 19);
 
     // Idle loop
     while (true) {
@@ -286,16 +285,16 @@ void module_manager_init(void*) {
         dynpriv::whitelist_asid(init_core->mm_ctx.root_page_table);
 
         // Create the init process with the loaded core
-        auto init_process = new process(init_core, process_creation_flags::CAN_ELEVATE);
-        if (!init_process->is_initialized()) {
+        auto init_process = new process();
+        if (!init_process->init_with_core(
+            "init",
+            init_core,
+            process_creation_flags::CAN_ELEVATE | process_creation_flags::SCHEDULE_NOW,
+            true
+        )) {
             kprint("[!] Failed to initialize init process\n");
             sched::exit_process();
         }
-
-        memcpy(init_process->get_env()->identity.name, "init", 5);
-
-        // Add the process to the scheduler
-        sched::scheduler::get().add_process(init_process);
 
         // Exit this process
         sched::exit_process();
