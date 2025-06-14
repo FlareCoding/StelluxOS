@@ -31,13 +31,20 @@ bool pci_manager_module::start() {
             auto xhc_driver = new drivers::xhci_driver();
             xhc_driver->attach_device(dev, true);
 
-            task_control_block* driver_task = sched::create_unpriv_kernel_task(
-                reinterpret_cast<sched::task_entry_fn_t>(&pci_manager_module::_driver_thread_entry),
-                xhc_driver
-            );
-            strcpy(driver_task->name, xhc_driver->get_name().c_str());
+            // Create a new process for the driver
+            auto driver_process = new process();
+            if (!driver_process->init(process_creation_flags::IS_KERNEL)) {
+                serial::printf("[!] Failed to initialize driver process for '%s'\n", xhc_driver->get_name());
+                continue;
+            }
 
-            sched::scheduler::get().add_task(driver_task);
+            // Set the entry point and name
+            driver_process->get_core()->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(&pci_manager_module::_driver_thread_entry);
+            driver_process->get_core()->cpu_context.rdi = reinterpret_cast<uint64_t>(xhc_driver);
+            memcpy(driver_process->get_env()->identity.name, xhc_driver->get_name().c_str(), xhc_driver->get_name().length() + 1);
+
+            // Add the process to the scheduler
+            sched::scheduler::get().add_process(driver_process);
         }
     });
     return true;
@@ -65,20 +72,20 @@ bool pci_manager_module::on_command(
 void pci_manager_module::_driver_thread_entry(drivers::pci_device_driver* driver) {
     if (!driver->init_device()) {
         serial::printf("[!] Failed to initialize '%s'\n", driver->get_name());
-        sched::exit_thread();
+        sched::exit_process();
     }
 
     if (!driver->start_device()) {
         serial::printf("[!] Failed to start '%s'\n", driver->get_name());
-        sched::exit_thread();
+        sched::exit_process();
     }
 
     if (!driver->shutdown_device()) {
         serial::printf("[!] Failed to shutdown '%s'\n", driver->get_name());
-        sched::exit_thread();
+        sched::exit_process();
     }
 
     // Final thread exit
-    sched::exit_thread();
+    sched::exit_process();
 }
 } // namespace modules

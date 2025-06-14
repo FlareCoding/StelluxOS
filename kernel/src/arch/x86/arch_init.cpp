@@ -14,6 +14,8 @@
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
 #include <input/serial_irq.h>
+#include <process/process.h>
+#include <process/process_env.h>
 
 uint8_t g_default_bsp_system_stack[PAGE_SIZE];
 
@@ -42,17 +44,28 @@ void arch_init() {
     // Setup per-cpu area for the bootstrapping processor
     init_bsp_per_cpu_area();
 
-    // Setup BSP's idle task (current) and system stack reference
-    task_control_block* bsp_idle_task = sched::get_idle_task(BSP_CPU_ID);
-    zeromem(bsp_idle_task, sizeof(task_control_block));
-    this_cpu_write(current_task, bsp_idle_task);
-    this_cpu_write(current_system_stack, bsp_system_stack_top);
+    // Initialize the idle process environment
+    new (&g_idle_process_env) process_env(
+        process_creation_flags::IS_KERNEL |
+        process_creation_flags::IS_IDLE
+    );
 
-    current->system_stack_top = bsp_system_stack_top;
-    current->cpu = 0;
-    current->elevated = 1;
-    current->state = process_state::RUNNING;
-    current->pid = 0;
+    // Initialize the BSP's idle process core
+    process_core* bsp_idle_core = sched::get_idle_process_core(BSP_CPU_ID);
+    zeromem(bsp_idle_core, sizeof(process_core));
+    bsp_idle_core->state = process_state::RUNNING;
+    bsp_idle_core->hw_state.cpu = BSP_CPU_ID;
+    bsp_idle_core->hw_state.elevated = 1;
+    bsp_idle_core->stacks.system_stack_top = bsp_system_stack_top;
+
+    // Create the BSP's idle process
+    process* bsp_idle_task = sched::get_idle_process(BSP_CPU_ID);
+    new (bsp_idle_task) process(bsp_idle_core, &g_idle_process_env);
+
+    // Set up the current process and system stack
+    this_cpu_write(current_process, bsp_idle_task);
+    this_cpu_write(current_process_core, bsp_idle_core);
+    this_cpu_write(current_system_stack, bsp_system_stack_top);
 
     // Enable the syscall interface
     enable_syscall_interface();
@@ -93,7 +106,7 @@ void setup_com1_irq() {
     entry.dest_mode = 0;                    // Physical mode
     entry.trigger_mode = 0;                 // Edge-triggered
     entry.mask = 0;                         // Enable the interrupt
-    entry.destination = current->cpu;       // Route to the current CPU
+    entry.destination = current->get_core()->hw_state.cpu;  // Route to the current CPU
 
     // Create an IOAPIC redirection entry
     ioapic->write_redirection_entry(com1_gsi, &entry);

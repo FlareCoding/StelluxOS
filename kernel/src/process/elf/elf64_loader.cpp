@@ -10,7 +10,7 @@
 
 namespace elf {
 __PRIVILEGED_CODE
-task_control_block* elf64_loader::load_elf(const uint8_t* file_buffer, size_t buffer_size) {
+process_core* elf64_loader::load_elf(const uint8_t* file_buffer, size_t buffer_size) {
     if (!file_buffer || buffer_size < sizeof(elf64_ehdr)) {
         _log_error("Invalid file buffer or buffer size.");
         return nullptr;
@@ -32,25 +32,26 @@ task_control_block* elf64_loader::load_elf(const uint8_t* file_buffer, size_t bu
         return nullptr;
     }
 
-    // Create a userland task with the entry point and page table
-    task_control_block* task = sched::create_upper_class_userland_task(elf_header.e_entry, page_table);
-    if (!task) {
-        _log_error("Failed to create userland task.");
+    // Create a userland process core with the entry point and page table
+    process_core* core = sched::create_userland_process_core(elf_header.e_entry, page_table);
+    if (!core) {
+        _log_error("Failed to create userland process core.");
         return nullptr;
     }
 
-    // Load ELF Segments directly into the task's context
-    if (!_load_segments(file_buffer, elf_header, page_table, &task->mm_ctx)) {
+    // Load ELF Segments directly into the process core's context
+    if (!_load_segments(file_buffer, elf_header, page_table, &core->mm_ctx)) {
         _log_error("Failed to load ELF segments.");
+        sched::destroy_process_core(core);
         return nullptr;
     }
 
-    _log_info("ELF loaded successfully, task created.");
-    return task;
+    _log_info("ELF loaded successfully, process core created.");
+    return core;
 }
 
 __PRIVILEGED_CODE
-task_control_block* elf64_loader::load_from_file(const char* filepath) {
+process_core* elf64_loader::load_from_file(const char* filepath) {
     if (!filepath) {
         _log_error("Invalid file path.");
         return nullptr;
@@ -64,19 +65,17 @@ task_control_block* elf64_loader::load_from_file(const char* filepath) {
         return nullptr;
     }
 
-    // Create ELF loader instance and load ELF file
-    auto loader = elf::elf64_loader();
-    task_control_block* task = loader.load_elf(file_buffer, file_size);
-    if (!task) {
+    // Load ELF file into a process core
+    process_core* core = load_elf(file_buffer, file_size);
+    if (!core) {
         _log_error("Failed to load ELF file.");
         return nullptr;
     }
 
-    // Set the task's name
-    auto name = fs::virtual_filesystem::get_filename_from_path(filepath);
-    memcpy(task->name, name.c_str(), kstl::max(name.length(), sizeof(task->name) - 1));
+    // Free the file buffer as it's no longer needed
+    free(file_buffer);
 
-    return task;
+    return core;
 }
 
 bool elf64_loader::_validate_elf_header(const elf64_ehdr& header) {

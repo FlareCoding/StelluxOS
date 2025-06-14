@@ -8,7 +8,8 @@
 #include <process/elf/elf64_loader.h>
 #include <core/klog.h>
 
-DEFINE_PER_CPU(task_control_block*, current_task);
+DEFINE_PER_CPU(process*, current_process);
+DEFINE_PER_CPU(process_core*, current_process_core);
 DEFINE_PER_CPU(uint64_t, current_system_stack);
 
 #define SCHED_STACK_TOP_PADDING     0x80
@@ -25,15 +26,6 @@ DEFINE_PER_CPU(uint64_t, current_system_stack);
 #define USERLAND_TASK_STACK_TOP     0x00007fffffffffff
 
 namespace sched {
-// Lock to ensure no identical PIDs get produced
-DECLARE_GLOBAL_OBJECT(mutex, g_pid_alloc_lock);
-pid_t g_available_task_pid = 1;
-
-pid_t alloc_task_pid() {
-    mutex_guard guard(g_pid_alloc_lock);
-    return g_available_task_pid++;
-}
-
 // Saves context registers from the interrupt frame into a CPU context struct
 __PRIVILEGED_CODE
 void save_cpu_context(ptregs* process_context, ptregs* irq_frame) {
@@ -54,175 +46,183 @@ __PRIVILEGED_CODE
 void switch_context_in_irq(
     int old_cpu,
     int new_cpu,
-    task_control_block* from,
-    task_control_block* to,
+    process* from,
+    process* to,
     ptregs* irq_frame
 ) {
     __unused old_cpu;
     __unused new_cpu;
 
-    // Save the current context into the 'from' TCB
-    save_cpu_context(&from->cpu_context, irq_frame);
+    // Get the process cores
+    process_core* from_core = from->get_core();
+    process_core* to_core = to->get_core();
 
-    // Save the current MMU context into the 'from' TCB
-    from->mm_ctx = save_mm_context();
+    // Save the current context into the 'from' process core
+    save_cpu_context(&from_core->cpu_context, irq_frame);
 
-    // Restore the context from the 'to' TCB
-    restore_cpu_context(&to->cpu_context, irq_frame);
+    // Save the current MMU context into the 'from' process core
+    from_core->mm_ctx = save_mm_context();
+
+    // Restore the context from the 'to' process core
+    restore_cpu_context(&to_core->cpu_context, irq_frame);
 
     // Perform an address space switch if needed
-    if (from->mm_ctx.root_page_table != to->mm_ctx.root_page_table) {
-        install_mm_context(to->mm_ctx);
+    if (from_core->mm_ctx.root_page_table != to_core->mm_ctx.root_page_table) {
+        install_mm_context(to_core->mm_ctx);
         memory_barrier();
     }
 
-    // Set the new value of current_task for the current CPU
-    this_cpu_write(current_task, to);
+    // Set the new value of current_process for the current CPU
+    this_cpu_write(current_process, to);
+
+    // Set the new value of the current process's execution core
+    this_cpu_write(current_process_core, to->get_core());
 
     // Set the new value of the current system stack
-    this_cpu_write(current_system_stack, to->system_stack_top);
+    this_cpu_write(current_system_stack, to_core->stacks.system_stack_top);
 }
 
 __PRIVILEGED_CODE
-task_control_block* create_priv_kernel_task(task_entry_fn_t entry, void* task_data) {
-    task_control_block* task = new task_control_block();
-    if (!task) {
+process_core* create_priv_kernel_process_core(task_entry_fn_t entry, void* process_data) {
+    process_core* core = new process_core();
+    if (!core) {
         return nullptr;
     }
 
-    // Initialize the task's process control block
-    task->state = process_state::READY;
-    task->pid = alloc_task_pid();
-    task->elevated = 1;
+    // Initialize the process core state
+    core->state = process_state::READY;
+    core->hw_state.elevated = 1;
+    core->hw_state.cpu = 0;  // Will be set by scheduler when assigned
 
     // Allocate the primary execution task stack
     void* task_stack = vmm::alloc_contiguous_virtual_pages(SCHED_TASK_STACK_PAGES, DEFAULT_PRIV_PAGE_FLAGS);
     if (!task_stack) {
-        delete task;
+        delete core;
         return nullptr;
     }
 
-    task->task_stack = reinterpret_cast<uint64_t>(task_stack);
-    task->task_stack_top = task->task_stack + SCHED_TASK_STACK_SIZE;
+    core->stacks.task_stack = reinterpret_cast<uint64_t>(task_stack);
+    core->stacks.task_stack_top = core->stacks.task_stack + SCHED_TASK_STACK_SIZE;
 
     // Allocate the system stack used for sensitive system and interrupt contexts
-    task->system_stack = allocate_system_stack(task->system_stack_top);
-    if (!task->system_stack) {
-        delete task;
+    core->stacks.system_stack = allocate_system_stack(core->stacks.system_stack_top);
+    if (!core->stacks.system_stack) {
+        delete core;
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task_stack), SCHED_TASK_STACK_PAGES);
         return nullptr;
     }
 
     // Initialize the CPU context
-    task->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(entry);        // Set instruction pointer to the task function
-    task->cpu_context.hwframe.rflags = 0x200;                                 // Enable interrupts
-    task->cpu_context.hwframe.rsp = task->task_stack_top;                     // Point to the top of the stack
-    task->cpu_context.rbp = task->cpu_context.hwframe.rsp;                    // Point to the top of the stack
-    task->cpu_context.rdi = reinterpret_cast<uint64_t>(task_data);            // Task parameter buffer pointer
+    core->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(entry);        // Set instruction pointer to the task function
+    core->cpu_context.hwframe.rflags = 0x200;                                 // Enable interrupts
+    core->cpu_context.hwframe.rsp = core->stacks.task_stack_top;              // Point to the top of the stack
+    core->cpu_context.rbp = core->cpu_context.hwframe.rsp;                    // Point to the top of the stack
+    core->cpu_context.rdi = reinterpret_cast<uint64_t>(process_data);         // Process parameter buffer pointer
 
     // Set up segment registers for kernel space. These values correspond to the selectors in the GDT.
     uint64_t data_segment = __KERNEL_DS;
-    task->cpu_context.ds = data_segment;
-    task->cpu_context.es = data_segment;
-    task->cpu_context.hwframe.ss = data_segment;
-    task->cpu_context.hwframe.cs = __KERNEL_CS;
+    core->cpu_context.ds = data_segment;
+    core->cpu_context.es = data_segment;
+    core->cpu_context.hwframe.ss = data_segment;
+    core->cpu_context.hwframe.cs = __KERNEL_CS;
 
     // Setup the page table
-    task->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
+    core->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
 
-    return task;
+    return core;
 }
 
 __PRIVILEGED_CODE
-task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_data) {
-    task_control_block* task = new task_control_block();
-    if (!task) {
+process_core* create_unpriv_kernel_process_core(task_entry_fn_t entry, void* process_data) {
+    process_core* core = new process_core();
+    if (!core) {
         return nullptr;
     }
 
-    // Initialize the task's process control block
-    task->state = process_state::READY;
-    task->pid = alloc_task_pid();
-    task->elevated = 0;
+    // Initialize the process core state
+    core->state = process_state::READY;
+    core->hw_state.elevated = 0;  // Unprivileged mode
+    core->hw_state.cpu = 0;       // Will be set by scheduler when assigned
 
     // Allocate the primary execution task stack
     void* task_stack = vmm::alloc_contiguous_virtual_pages(SCHED_TASK_STACK_PAGES, DEFAULT_UNPRIV_PAGE_FLAGS);
     if (!task_stack) {
-        delete task;
+        delete core;
         return nullptr;
     }
 
-    task->task_stack = reinterpret_cast<uint64_t>(task_stack);
-    task->task_stack_top = task->task_stack + SCHED_TASK_STACK_SIZE;
+    core->stacks.task_stack = reinterpret_cast<uint64_t>(task_stack);
+    core->stacks.task_stack_top = core->stacks.task_stack + SCHED_TASK_STACK_SIZE;
 
     // Allocate the system stack used for sensitive system and interrupt contexts
-    task->system_stack = allocate_system_stack(task->system_stack_top);
-    if (!task->system_stack) {
-        delete task;
+    core->stacks.system_stack = allocate_system_stack(core->stacks.system_stack_top);
+    if (!core->stacks.system_stack) {
+        delete core;
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task_stack), SCHED_TASK_STACK_PAGES);
         return nullptr;
     }
 
     // Initialize the CPU context
-    task->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(entry);        // Set instruction pointer to the task function
-    task->cpu_context.hwframe.rflags = 0x200;                                 // Enable interrupts
-    task->cpu_context.hwframe.rsp = task->task_stack + SCHED_TASK_STACK_SIZE; // Point to the top of the stack
-    task->cpu_context.rbp = task->cpu_context.hwframe.rsp;                    // Point to the top of the stack
-    task->cpu_context.rdi = reinterpret_cast<uint64_t>(task_data);            // Task parameter buffer pointer
+    core->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(entry);        // Set instruction pointer to the task function
+    core->cpu_context.hwframe.rflags = 0x200;                                 // Enable interrupts
+    core->cpu_context.hwframe.rsp = core->stacks.task_stack_top;              // Point to the top of the stack
+    core->cpu_context.rbp = core->cpu_context.hwframe.rsp;                    // Point to the top of the stack
+    core->cpu_context.rdi = reinterpret_cast<uint64_t>(process_data);         // Process parameter buffer pointer
 
     // Set up segment registers for unprivileged kernel space. These values correspond to the selectors in the GDT.
-    uint64_t data_segment = __USER_DS | 0x3;
-    task->cpu_context.ds = data_segment;
-    task->cpu_context.es = data_segment;
-    task->cpu_context.hwframe.ss = data_segment;
-    task->cpu_context.hwframe.cs = __USER_CS | 0x3;
+    uint64_t data_segment = __USER_DS | 0x3;  // Add RPL=3 for user mode
+    core->cpu_context.ds = data_segment;
+    core->cpu_context.es = data_segment;
+    core->cpu_context.hwframe.ss = data_segment;
+    core->cpu_context.hwframe.cs = __USER_CS | 0x3;  // Add RPL=3 for user mode
 
     // Setup the page table
-    task->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
+    core->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
 
-    return task;
+    return core;
 }
 
 __PRIVILEGED_CODE
-task_control_block* create_upper_class_userland_task(
+process_core* create_userland_process_core(
     uintptr_t entry_addr,
     paging::page_table* pt
 ) {
-    task_control_block* task = new task_control_block();
-    if (!task) {
+    process_core* core = new process_core();
+    if (!core) {
         return nullptr;
     }
 
-    // Initialize the task's process control block
-    task->state = process_state::READY;
-    task->pid = alloc_task_pid();
-    task->elevated = 0;
+    // Initialize the process core state
+    core->state = process_state::READY;
+    core->hw_state.elevated = 0;  // Userland processes are unprivileged by default
+    core->hw_state.cpu = 0;       // Will be set by scheduler when assigned
 
-    // Initialize VMA management for the task
-    task->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(pt);
-    if (!init_process_vma(&task->mm_ctx)) {
+    // Initialize VMA management for the process
+    core->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(pt);
+    if (!init_process_vma(&core->mm_ctx)) {
         kprint("[VMA] Failed to initialize process VMA\n");
-        delete task;
+        delete core;
         return nullptr;
     }
 
     // Allocate the system stack used for sensitive system and interrupt contexts
-    task->system_stack = allocate_system_stack(task->system_stack_top);
-    if (!task->system_stack) {
-        delete task;
+    core->stacks.system_stack = allocate_system_stack(core->stacks.system_stack_top);
+    if (!core->stacks.system_stack) {
+        delete core;
         return nullptr;
     }
 
-    if (!map_userland_task_stack(pt, task->task_stack, task->task_stack_top)) {
-        vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
-        delete task;
+    // Map the userland task stack
+    if (!map_userland_process_stack(pt, core->stacks.task_stack, core->stacks.task_stack_top)) {
+        vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(core->stacks.system_stack), SCHED_SYSTEM_STACK_PAGES);
+        delete core;
         return nullptr;
     }
 
     // Create VMA entry for the userland task stack
     vma_area* stack_vma = create_vma(
-        &task->mm_ctx,
-        task->task_stack,
+        &core->mm_ctx,
+        core->stacks.task_stack,
         SCHED_TASK_STACK_SIZE,
         VMA_PROT_READ | VMA_PROT_WRITE,
         VMA_TYPE_PRIVATE
@@ -230,40 +230,60 @@ task_control_block* create_upper_class_userland_task(
 
     if (!stack_vma) {
         kprint("Failed to create stack VMA\n");
-        vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
-        vmm::unmap_contiguous_virtual_pages(task->task_stack, SCHED_USERLAND_TASK_STACK_PAGES);
-        delete task;
+        vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(core->stacks.system_stack), SCHED_SYSTEM_STACK_PAGES);
+        vmm::unmap_contiguous_virtual_pages(core->stacks.task_stack, SCHED_USERLAND_TASK_STACK_PAGES);
+        delete core;
         return nullptr;
     }
 
     // Initialize the CPU context
-    task->cpu_context.hwframe.rip = entry_addr;             // Set instruction pointer to the task function
-    task->cpu_context.hwframe.rflags = 0x200;               // Enable interrupts
-    task->cpu_context.hwframe.rsp = task->task_stack_top;   // Point to the top of the stack
-    task->cpu_context.rbp = task->cpu_context.hwframe.rsp;  // Point to the top of the stack
+    core->cpu_context.hwframe.rip = entry_addr;                     // Set instruction pointer to the task function
+    core->cpu_context.hwframe.rflags = 0x200;                       // Enable interrupts
+    core->cpu_context.hwframe.rsp = core->stacks.task_stack_top;    // Point to the top of the stack
+    core->cpu_context.rbp = core->cpu_context.hwframe.rsp;          // Point to the top of the stack
 
-    // Set up segment registers for unprivileged kernel space. These values correspond to the selectors in the GDT.
-    uint64_t data_segment = __USER_DS | 0x3;
-    task->cpu_context.ds = data_segment;
-    task->cpu_context.es = data_segment;
-    task->cpu_context.hwframe.ss = data_segment;
-    task->cpu_context.hwframe.cs = __USER_CS | 0x3;
+    // Set up segment registers for userland space. These values correspond to the selectors in the GDT.
+    uint64_t data_segment = __USER_DS | 0x3;  // Add RPL=3 for user mode
+    core->cpu_context.ds = data_segment;
+    core->cpu_context.es = data_segment;
+    core->cpu_context.hwframe.ss = data_segment;
+    core->cpu_context.hwframe.cs = __USER_CS | 0x3;  // Add RPL=3 for user mode
 
-    return task;
+    return core;
 }
 
 __PRIVILEGED_CODE
-bool destroy_task(task_control_block* task) {
-    if (!task) {
+bool destroy_process_core(process_core* core) {
+    if (!core) {
         return false;
     }
 
-    // Destroy the stacks
-    vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->task_stack), SCHED_TASK_STACK_PAGES);
-    vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(task->system_stack), SCHED_SYSTEM_STACK_PAGES);
+    // Free the system stack
+    if (core->stacks.system_stack) {
+        vmm::unmap_contiguous_virtual_pages(
+            reinterpret_cast<uintptr_t>(core->stacks.system_stack),
+            SCHED_SYSTEM_STACK_PAGES
+        );
+    }
 
-    // Free the actual task structure
-    delete task;
+    // Free the userland task stack if it exists
+    if (core->stacks.task_stack) {
+        vmm::unmap_contiguous_virtual_pages(
+            core->stacks.task_stack,
+            SCHED_USERLAND_TASK_STACK_PAGES
+        );
+    }
+
+    // Clean up VMA resources by removing all VMAs
+    vma_area* vma = core->mm_ctx.vma_list;
+    while (vma) {
+        vma_area* next = vma->next;
+        remove_vma(&core->mm_ctx, vma);
+        vma = next;
+    }
+
+    // Free the process core itself
+    delete core;
 
     return true;
 }
@@ -279,7 +299,7 @@ uint64_t allocate_system_stack(uint64_t& out_stack_top) {
     return reinterpret_cast<uint64_t>(stack);
 }
 
-__PRIVILEGED_CODE bool map_userland_task_stack(
+__PRIVILEGED_CODE bool map_userland_process_stack(
     paging::page_table* pt,
     uint64_t& out_stack_bottom,
     uint64_t& out_stack_top
@@ -308,8 +328,8 @@ __PRIVILEGED_CODE bool map_userland_task_stack(
     return true;
 }
 
-void exit_thread() {
-    // The thread needs to be elevated in order to call scheduler functions
+void exit_process() {
+    // The process needs to be elevated in order to call scheduler functions
     if (!dynpriv::is_elevated()) {
         dynpriv::elevate();
     }
@@ -321,14 +341,18 @@ void exit_thread() {
     // switch here.
     scheduler.preempt_disable();
 
-    // Indicate that this task is ready to be reaped
-    current->state = process_state::TERMINATED;
+    // Get the current process's core
+    process_core* core = current->get_core();
+    if (core) {
+        // Indicate that this process is ready to be reaped
+        core->state = process_state::TERMINATED;
+    }
 
-    // Remove the task from the scheduler queue
-    scheduler.remove_task(current);
+    // Remove the process from the scheduler queue
+    scheduler.remove_process(current);
 
     // Trigger a context switch to switch to the next
-    // available task in the scheduler run queue.
+    // available process in the scheduler run queue.
     scheduler.schedule();
 }
 
@@ -339,27 +363,214 @@ void yield() {
         sched::scheduler::get().schedule();
     });
 }
+
 } // namespace sched
 
-task_control_block* create_process(
-    const char* path,
-    process_creation_flags flags
-) {
-    task_control_block* task = nullptr;
+// Process class implementation
+process::process() : m_core(nullptr), m_env(nullptr), m_is_initialized(false), m_owns_core(false), m_owns_env(false) {}
 
-    RUN_ELEVATED({
-        task = elf::elf64_loader::load_from_file(path);
-        if (task) {
-            if (has_process_flag(flags, process_creation_flags::ALLOW_ELEVATE)) {
-                // Allow the process to elevate privileges
-                dynpriv::whitelist_asid(task->mm_ctx.root_page_table);
-            }
-
-            if (has_process_flag(flags, process_creation_flags::SCHEDULE_NOW)) {
-                sched::scheduler::get().add_task(task);
-            }
-        }
-    });
-
-    return task;
+__PRIVILEGED_CODE
+process::process(process_core* core, process_creation_flags flags) 
+    : m_core(core), m_env(nullptr), m_is_initialized(false), m_owns_core(true), m_owns_env(false) {
+    init_with_core(core, flags, false);
 }
+
+__PRIVILEGED_CODE
+process::process(process_env* env, process_creation_flags flags)
+    : m_core(nullptr), m_env(env), m_is_initialized(false), m_owns_core(false), m_owns_env(true) {
+    init_with_env(env, flags, false);
+}
+
+__PRIVILEGED_CODE
+process::process(process_core* core, process_env* env)
+    : m_core(core), m_env(env), m_is_initialized(false), m_owns_core(true), m_owns_env(true) {
+    if (core && env) {
+        m_is_initialized = true;
+    }
+}
+
+__PRIVILEGED_CODE
+process::~process() {
+    cleanup();
+}
+
+__PRIVILEGED_CODE
+bool process::init(process_creation_flags flags) {
+    if (m_is_initialized) {
+        return false;
+    }
+
+    // Create new environment
+    m_env = new process_env();
+    if (!m_env) {
+        return false;
+    }
+    m_owns_env = true;
+    m_env->flags = flags;
+
+    // Create appropriate core based on flags
+    if (has_process_flag(flags, process_creation_flags::IS_KERNEL)) {
+        if (has_process_flag(flags, process_creation_flags::PRIV_KERN_THREAD)) {
+            m_core = sched::create_priv_kernel_process_core(nullptr, nullptr);
+        } else {
+            m_core = sched::create_unpriv_kernel_process_core(nullptr, nullptr);
+        }
+    } else {
+        // For userland processes, we need a page table
+        auto pt = paging::create_higher_class_userland_page_table();
+        if (!pt) {
+            delete m_env;
+            m_env = nullptr;
+            return false;
+        }
+        m_core = sched::create_userland_process_core(0x0, pt); // Entry point must be set later
+
+        // Allow certain processes to elevate
+        if (has_process_flag(flags, process_creation_flags::CAN_ELEVATE)) {
+            dynpriv::whitelist_asid(m_core->mm_ctx.root_page_table);
+        }
+    }
+
+    if (!m_core) {
+        delete m_env;
+        m_env = nullptr;
+        return false;
+    }
+    m_owns_core = true;
+
+    m_is_initialized = true;
+    return true;
+}
+
+__PRIVILEGED_CODE
+bool process::init_with_core(process_core* core, process_creation_flags flags, bool take_ownership) {
+    if (m_is_initialized || !core) {
+        return false;
+    }
+
+    // Create new environment
+    m_env = new process_env();
+    if (!m_env) {
+        return false;
+    }
+    m_owns_env = true;
+    m_env->flags = flags;
+
+    m_core = core;
+    m_owns_core = take_ownership;
+
+    m_is_initialized = true;
+    return true;
+}
+
+__PRIVILEGED_CODE
+bool process::init_with_env(process_env* env, process_creation_flags flags, bool take_ownership) {
+    if (m_is_initialized || !env) {
+        return false;
+    }
+
+    m_env = env;
+    m_owns_env = take_ownership;
+
+    // Create appropriate core based on flags
+    if (has_process_flag(flags, process_creation_flags::IS_KERNEL)) {
+        if (has_process_flag(flags, process_creation_flags::PRIV_KERN_THREAD)) {
+            m_core = sched::create_priv_kernel_process_core(nullptr, nullptr);
+        } else {
+            m_core = sched::create_unpriv_kernel_process_core(nullptr, nullptr);
+        }
+    } else {
+        // For userland processes, we need a page table
+        auto pt = paging::create_higher_class_userland_page_table();
+        if (!pt) {
+            return false;
+        }
+        m_core = sched::create_userland_process_core(0x0, pt); // Entry point will be set later
+
+        // Allow certain processes to elevate
+        if (has_process_flag(flags, process_creation_flags::CAN_ELEVATE)) {
+            dynpriv::whitelist_asid(m_core->mm_ctx.root_page_table);
+        }
+    }
+
+    if (!m_core) {
+        return false;
+    }
+    m_owns_core = true;
+
+    m_is_initialized = true;
+    return true;
+}
+
+__PRIVILEGED_CODE
+void process::cleanup() {
+    if (m_owns_core && m_core) {
+        sched::destroy_process_core(m_core);
+        m_core = nullptr;
+    }
+    if (m_owns_env && m_env) {
+        delete m_env;
+        m_env = nullptr;
+    }
+    m_is_initialized = false;
+}
+
+__PRIVILEGED_CODE
+bool process::set_environment(process_env* env, bool take_ownership) {
+    __unused env;
+    __unused take_ownership;
+    kprint("[Process] set_environment: Unimplemented\n");
+    return false;
+}
+
+__PRIVILEGED_CODE
+bool process::snapshot_core(process_core& out_core) const {
+    __unused out_core;
+    kprint("[Process] snapshot_core: Unimplemented\n");
+    return false;
+}
+
+__PRIVILEGED_CODE
+bool process::restore_core(const process_core& core) {
+    __unused core;
+    kprint("[Process] restore_core: Unimplemented\n");
+    return false;
+}
+
+bool process::start() {
+    if (!m_is_initialized || !m_core) {
+        return false;
+    }
+
+    m_core->state = process_state::READY;
+    return true;
+}
+
+bool process::pause() {
+    if (!m_is_initialized || !m_core) {
+        return false;
+    }
+
+    m_core->state = process_state::WAITING;
+    return true;
+}
+
+bool process::resume() {
+    if (!m_is_initialized || !m_core) {
+        return false;
+    }
+
+    m_core->state = process_state::READY;
+    return true;
+}
+
+bool process::terminate() {
+    if (!m_is_initialized || !m_core) {
+        return false;
+    }
+
+    m_core->state = process_state::TERMINATED;
+    return true;
+}
+
+

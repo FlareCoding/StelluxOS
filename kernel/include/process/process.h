@@ -1,69 +1,22 @@
 #ifndef PROCESS_H
 #define PROCESS_H
-#include "ptregs.h"
-#include "mm.h"
+#include "process_core.h"
+#include "process_env.h"
 #include <memory/paging.h>
-#include <arch/percpu.h>
+#include <memory/memory.h>
 
-#define MAX_PROCESS_NAME_LEN 255
-
-typedef int64_t pid_t;
-
-/**
- * @enum process_state
- * @brief Represents the state of a process.
- */
-enum class process_state {
-    INVALID = 0, // Process doesn't exist
-    NEW,        // Process created but not yet ready to run
-    READY,      // Ready to be scheduled
-    RUNNING,    // Currently executing
-    WAITING,    // Waiting for some resource
-    TERMINATED  // Finished execution
-};
+// Forward declaration of process class
+class process;
 
 /**
- * @struct task_control_block
- * @brief Represents the control block for a task or process.
- * 
- * Contains all information needed to manage and schedule a task, including
- * CPU context, state, PID, stacks, and task name.
+ * @brief Per-CPU variable for the current process.
  */
-struct task_control_block {
-    ptregs          cpu_context;
-    process_state   state;
-    pid_t           pid;
-
-    // Primary execution stack used by a thread
-    uint64_t        task_stack;
-    uint64_t        task_stack_top;
-
-    // Secondary stack used for system work
-    // in the syscall and interrupt contexts.
-    uint64_t        system_stack;
-    uint64_t        system_stack_top;
-
-    struct {
-        // Indicates if the task is currently in a hw-privileged state.
-        uint64_t    elevated    : 1;
-
-        // CPU core that the task is currently running/schedulable on
-        uint64_t    cpu         : 8;
-
-        // Reserved flags
-        uint64_t    flrsvd      : 55;
-    } __attribute__((packed));
-
-    // MMU-specific context
-    mm_context      mm_ctx;
-
-    char            name[MAX_PROCESS_NAME_LEN + 1];
-};
+DECLARE_PER_CPU(process*, current_process);
 
 /**
- * @brief Per-CPU variable for the current task.
+ * @brief Per-CPU variable for the current process core.
  */
-DECLARE_PER_CPU(task_control_block*, current_task);
+DECLARE_PER_CPU(process_core*, current_process_core);
 
 /**
  * @brief Per-CPU variable for the top of the current system stack.
@@ -71,17 +24,30 @@ DECLARE_PER_CPU(task_control_block*, current_task);
 DECLARE_PER_CPU(uint64_t, current_system_stack);
 
 /**
- * @brief Retrieves the current task for the executing CPU.
- * @return Pointer to the `task_control_block` of the current task.
+ * @brief Retrieves the current process for the executing CPU.
+ * @return Pointer to the current process.
  */
-static __force_inline__ task_control_block* get_current_task() {
-    return this_cpu_read(current_task);
+static __force_inline__ process* get_current_process() {
+    return this_cpu_read(current_process);
 }
 
 /**
- * @brief Macro for accessing the current task's control block.
+ * @brief Retrieves the current process core for the executing CPU.
+ * @return Pointer to the current process core.
  */
-#define current get_current_task()
+static __force_inline__ process_core* get_current_process_core() {
+    return this_cpu_read(current_process_core);
+}
+
+/**
+ * @brief Macro for accessing the current process.
+ */
+#define current get_current_process()
+
+/**
+ * @brief Macro for accessing the current process core.
+ */
+#define current_task get_current_process_core()
 
 namespace sched {
 /**
@@ -94,7 +60,7 @@ typedef void (*task_entry_fn_t)(void*);
 
 /**
  * @brief Saves CPU context into the process control block.
- * @param process_context Pointer to the task's saved context.
+ * @param process_context Pointer to the process's saved context.
  * @param irq_frame Pointer to the interrupt frame.
  * 
  * @note Privilege: **required**
@@ -103,7 +69,7 @@ __PRIVILEGED_CODE void save_cpu_context(ptregs* process_context, ptregs* irq_fra
 
 /**
  * @brief Restores CPU context from the process control block.
- * @param process_context Pointer to the task's saved context.
+ * @param process_context Pointer to the process's saved context.
  * @param irq_frame Pointer to the interrupt frame.
  * 
  * @note Privilege: **required**
@@ -114,8 +80,8 @@ __PRIVILEGED_CODE void restore_cpu_context(ptregs* process_context, ptregs* irq_
  * @brief Switches context during an IRQ interrupt.
  * @param old_cpu ID of the old CPU.
  * @param new_cpu ID of the new CPU.
- * @param from Pointer to the task being switched out.
- * @param to Pointer to the task being switched in.
+ * @param from Pointer to the process being switched out.
+ * @param to Pointer to the process being switched in.
  * @param irq_frame Pointer to the interrupt frame.
  * 
  * This function is called from an IRQ handler to perform context switching.
@@ -125,55 +91,58 @@ __PRIVILEGED_CODE void restore_cpu_context(ptregs* process_context, ptregs* irq_
 __PRIVILEGED_CODE void switch_context_in_irq(
     int old_cpu,
     int new_cpu,
-    task_control_block* from,
-    task_control_block* to,
+    process* from,
+    process* to,
     ptregs* irq_frame
 );
 
 /**
- * @brief Creates a privileged kernel task.
- * @param entry Entry function for the task.
- * @param task_data Pointer to data passed to the task.
- * @return Pointer to the `task_control_block` for the created task.
+ * @brief Creates a privileged kernel process core.
+ * @param entry Entry function for the process.
+ * @param process_data Pointer to data passed to the process.
+ * @return Pointer to the created process core.
  * 
- * The task starts in privileged mode (DPL=0).
+ * The process core starts in privileged mode (DPL=0).
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE task_control_block* create_priv_kernel_task(task_entry_fn_t entry, void* task_data);
+__PRIVILEGED_CODE process_core* create_priv_kernel_process_core(task_entry_fn_t entry, void* process_data);
 
 /**
- * @brief Creates an unprivileged kernel task.
- * @param entry Entry function for the task.
- * @param task_data Pointer to data passed to the task.
- * @return Pointer to the `task_control_block` for the created task.
+ * @brief Creates an unprivileged kernel process core.
+ * @param entry Entry function for the process.
+ * @param process_data Pointer to data passed to the process.
+ * @return Pointer to the created process core.
  * 
- * The task starts in unprivileged mode (DPL=3).
+ * The process core starts in unprivileged mode (DPL=3).
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE task_control_block* create_unpriv_kernel_task(task_entry_fn_t entry, void* task_data);
+__PRIVILEGED_CODE process_core* create_unpriv_kernel_process_core(task_entry_fn_t entry, void* process_data);
 
 /**
- * @brief TBD.
+ * @brief Creates a userland process core.
+ * @param entry_addr Entry point address for the process.
+ * @param pt Page table for the process.
+ * @return Pointer to the created process core.
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE task_control_block* create_upper_class_userland_task(
+__PRIVILEGED_CODE process_core* create_userland_process_core(
     uintptr_t entry_addr,
     paging::page_table* pt
 );
 
 /**
- * @brief Destroys a task, releasing its resources.
- * @param task Pointer to the `task_control_block` of the task to destroy.
- * @return True if the task was successfully destroyed, false otherwise.
+ * @brief Destroys a process core, releasing its resources.
+ * @param core Pointer to the process core to destroy.
+ * @return True if the process core was successfully destroyed, false otherwise.
  * 
- * Frees all memory and resources associated with the task.
+ * Frees all memory and resources associated with the process core.
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool destroy_task(task_control_block* task);
+__PRIVILEGED_CODE bool destroy_process_core(process_core* core);
 
 /**
  * @brief Creates a new system stack.
@@ -221,78 +190,209 @@ __PRIVILEGED_CODE uint64_t allocate_system_stack(uint64_t& out_stack_top);
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool map_userland_task_stack(
+__PRIVILEGED_CODE bool map_userland_process_stack(
     paging::page_table* pt,
     uint64_t& out_stack_bottom,
     uint64_t& out_stack_top
 );
 
 /**
- * @brief Terminates the current kernel thread and switches to the next task.
+ * @brief Terminates the current kernel thread and switches to the next process.
  * 
- * If no valid task is available, the kernel swapper/idle task is executed.
+ * If no valid process is available, the kernel swapper/idle task is executed.
  */
-void exit_thread();
+void exit_process();
 
 /**
  * @brief Relinquishes the CPU and forces a context switch.
  * 
- * Causes the current task to yield the CPU to the next available task.
+ * Causes the current process to yield the CPU to the next available task.
  */
 void yield();
 } // namespace sched
 
 /**
- * @enum process_creation_flags
- * @brief Flags used to control process creation behavior.
+ * @class process
+ * @brief Represents a process in the system, combining core execution state and environment.
+ * 
+ * This class manages both the process core (execution state) and environment (context).
+ * It provides methods for process lifecycle management, resource control, and state
+ * manipulation.
  */
-enum class process_creation_flags : uint64_t {
-    NONE         = 0,        // No special creation behavior
-    ALLOW_ELEVATE = 1 << 0,  // Allows process to use dynpriv functionality
-    IS_KERNEL     = 1 << 1,  // Indicates the process is a kernel-level thread
-    IS_USERLAND   = 1 << 2,  // Indicates the process is a user-level thread
-    SCHEDULE_NOW  = 1 << 3   // Automatically schedules the process right after the creation
+class process {
+public:
+    /**
+     * @brief Default constructor.
+     * 
+     * Creates an uninitialized process. One of the init methods must be called before use.
+     */
+    process();
+
+    /**
+     * @brief Constructor that takes ownership of an existing core.
+     * 
+     * Creates a process with an existing core but a new environment.
+     * The process takes ownership of the core and will delete it when destroyed.
+     * 
+     * @param core The core execution state to use.
+     * @param flags Flags controlling process creation behavior.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE process(process_core* core, process_creation_flags flags);
+
+    /**
+     * @brief Constructor that takes ownership of an existing environment.
+     * 
+     * Creates a process with an existing environment but a new core.
+     * The process takes ownership of the environment and will delete it when destroyed.
+     * 
+     * @param env The process environment to use.
+     * @param flags Flags controlling process creation behavior.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE process(process_env* env, process_creation_flags flags);
+
+    /**
+     * @brief Constructor that takes ownership of both core and environment.
+     * 
+     * Creates a process with existing core and environment.
+     * The process takes ownership of both and will delete them when destroyed.
+     * 
+     * @param core The core execution state to use.
+     * @param env The process environment to use.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE process(process_core* core, process_env* env);
+
+    /**
+     * @brief Destructor.
+     * 
+     * Ensures all resources are properly cleaned up.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE ~process();
+
+    /**
+     * @brief Initializes a new process with both new core and environment.
+     * @param flags Flags controlling process creation behavior.
+     * @return true if initialization was successful, false otherwise.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool init(process_creation_flags flags);
+
+    /**
+     * @brief Initializes a process with an existing core.
+     * @param core The core execution state to use.
+     * @param flags Flags controlling process creation behavior.
+     * @param take_ownership Whether to take ownership of the core.
+     * @return true if initialization was successful, false otherwise.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool init_with_core(process_core* core, process_creation_flags flags, bool take_ownership = false);
+
+    /**
+     * @brief Initializes a process with an existing environment.
+     * @param env The process environment to use.
+     * @param flags Flags controlling process creation behavior.
+     * @param take_ownership Whether to take ownership of the environment.
+     * @return true if initialization was successful, false otherwise.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool init_with_env(process_env* env, process_creation_flags flags, bool take_ownership = false);
+
+    /**
+     * @brief Creates a snapshot of the process core.
+     * @param[out] out_core Where to store the core snapshot.
+     * @return true if snapshot was successful, false otherwise.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool snapshot_core(process_core& out_core) const;
+
+    /**
+     * @brief Restores a process core from a snapshot.
+     * @param core The core snapshot to restore from.
+     * @return true if restoration was successful, false otherwise.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool restore_core(const process_core& core);
+
+    /**
+     * @brief Sets a new environment for the process.
+     * @param env The new environment to use.
+     * @param take_ownership Whether to take ownership of the environment.
+     * @return true if environment was successfully set, false otherwise.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool set_environment(process_env* env, bool take_ownership = false);
+
+    /**
+     * @brief Gets the current process core.
+     * @return Pointer to the process core, or nullptr if not initialized.
+     */
+    process_core* get_core() const { return m_core; }
+
+    /**
+     * @brief Gets the current process environment.
+     * @return Pointer to the process environment, or nullptr if not initialized.
+     */
+    process_env* get_env() const { return m_env; }
+
+    /**
+     * @brief Checks if the process is properly initialized.
+     * @return true if the process is initialized, false otherwise.
+     */
+    bool is_initialized() const { return m_is_initialized; }
+
+    /**
+     * @brief Starts the process execution.
+     * @return true if the process was successfully started, false otherwise.
+     */
+    bool start();
+
+    /**
+     * @brief Pauses the process execution.
+     * @return true if the process was successfully paused, false otherwise.
+     */
+    bool pause();
+
+    /**
+     * @brief Resumes the process execution.
+     * @return true if the process was successfully resumed, false otherwise.
+     */
+    bool resume();
+
+    /**
+     * @brief Terminates the process.
+     * @return true if the process was successfully terminated, false otherwise.
+     */
+    bool terminate();
+
+private:
+    process_core* m_core;       // Core execution state
+    process_env* m_env;         // Process environment
+    bool m_is_initialized;      // Whether the process has been properly initialized
+    bool m_owns_core;           // Whether this process owns and should delete the core
+    bool m_owns_env;            // Whether this process owns and should delete the environment
+
+    /**
+     * @brief Cleans up process resources.
+     * 
+     * This is called by the destructor and can be called explicitly
+     * to clean up resources before the process is destroyed.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void cleanup();
 };
 
-// Enable bitwise operations for process_creation_flags
-inline process_creation_flags operator|(process_creation_flags lhs, process_creation_flags rhs) {
-    return static_cast<process_creation_flags>(
-        static_cast<uint64_t>(lhs) | static_cast<uint64_t>(rhs)
-    );
-}
-
-inline process_creation_flags operator&(process_creation_flags lhs, process_creation_flags rhs) {
-    return static_cast<process_creation_flags>(
-        static_cast<uint64_t>(lhs) & static_cast<uint64_t>(rhs)
-    );
-}
-
-inline process_creation_flags operator~(process_creation_flags val) {
-    return static_cast<process_creation_flags>(~static_cast<uint64_t>(val));
-}
-
-inline bool operator!(process_creation_flags val) {
-    return static_cast<uint64_t>(val) == 0;
-}
-
-inline bool has_process_flag(process_creation_flags value, process_creation_flags flag) {
-    return static_cast<uint64_t>(value & flag) != 0;
-}
-
-/**
- * @brief Creates a new process with a specified program's path and creation flags.
- * 
- * This function allocates and initializes a new task control block with the
- * specified program's path and creation flags.
- * 
- * @param path Full path to the executable.
- * @param flags Flags used to control the creation behavior of the process.
- * 
- * @return Pointer to the newly created `task_control_block`, or `nullptr` on failure.
- *
- */
-task_control_block* create_process(
-    const char* path,
-    process_creation_flags flags
-);
 #endif // PROCESS_H

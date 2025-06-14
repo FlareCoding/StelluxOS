@@ -163,6 +163,8 @@ void init(unsigned int magic, void* mbi) {
     // Initialize kernel logging subsystem
     klog::logger::init(8);
 
+    serial::printf("dynpriv 'elevated' offset: 0x%llx\n", &current_task->hw_state);
+
     // Perform arch-specific initialzation that require VMM
     arch::arch_late_stage_init();
 
@@ -202,10 +204,22 @@ void init(unsigned int magic, void* mbi) {
     vmshutdown();
 #endif // BUILD_UNIT_TESTS
 
-    auto task = sched::create_unpriv_kernel_task(module_manager_init, nullptr);
-    memcpy(task->name, "module_manager_init", 19);
+    // Create the module manager process
+    auto module_manager = new process();
+    if (!module_manager->init(process_creation_flags::IS_KERNEL | process_creation_flags::CAN_ELEVATE)) {
+        kprint("[!] Failed to initialize module manager process\n");
+        while (true) {
+            asm volatile ("hlt");
+        }
+    }
 
-    sched::scheduler::get().add_task(task);
+    // Set the entry point and name
+    module_manager->get_core()->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(module_manager_init);
+    module_manager->get_core()->cpu_context.rdi = 0; // No arguments
+    memcpy(module_manager->get_env()->identity.name, "module_manager_init", 19);
+
+    // Add the process to the scheduler
+    sched::scheduler::get().add_process(module_manager);
 
     // Idle loop
     while (true) {
@@ -260,12 +274,30 @@ void module_manager_init(void*) {
     module_manager.register_module(pci_mngr);
     module_manager.start_module(pci_mngr.get());
 
-    const auto init_proc_flags =
-        process_creation_flags::IS_USERLAND     |
-        process_creation_flags::SCHEDULE_NOW    |
-        process_creation_flags::ALLOW_ELEVATE;
+    RUN_ELEVATED({
+        // Load the init binary into a process core
+        auto init_core = elf::elf64_loader::load_from_file("/initrd/bin/init");
+        if (!init_core) {
+            kprint("[!] Failed to load init binary\n");
+            sched::exit_process();
+        }
 
-    create_process("/initrd/bin/init", init_proc_flags);
+        // Allow the init process to elevate
+        dynpriv::whitelist_asid(init_core->mm_ctx.root_page_table);
 
-    sched::exit_thread();
+        // Create the init process with the loaded core
+        auto init_process = new process(init_core, process_creation_flags::CAN_ELEVATE);
+        if (!init_process->is_initialized()) {
+            kprint("[!] Failed to initialize init process\n");
+            sched::exit_process();
+        }
+
+        memcpy(init_process->get_env()->identity.name, "init", 5);
+
+        // Add the process to the scheduler
+        sched::scheduler::get().add_process(init_process);
+
+        // Exit this process
+        sched::exit_process();
+    });
 }

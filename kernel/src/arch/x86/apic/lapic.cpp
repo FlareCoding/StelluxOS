@@ -219,7 +219,7 @@ __PRIVILEGED_CODE void lapic::wait_for_icr_cmd_completion() {
 
 __PRIVILEGED_CODE 
 void lapic::init() {
-    int cpu = current->cpu;
+    int cpu = current->get_core()->hw_state.cpu;
 
     if (s_system_lapics[cpu].get() != nullptr) {
         return;
@@ -238,7 +238,7 @@ void lapic::init() {
 
 __PRIVILEGED_CODE 
 kstl::shared_ptr<lapic>& lapic::get() {
-    int cpu = current->cpu;
+    int cpu = current->get_core()->hw_state.cpu;
 
     if (s_system_lapics[cpu].get() != nullptr) {
         return s_system_lapics[cpu];

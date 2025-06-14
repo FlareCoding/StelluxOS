@@ -77,15 +77,22 @@ bool module_manager::stop_module(const kstl::string& name) {
 
 bool module_manager::start_module(module_base* mod) {
     RUN_ELEVATED({
-        task_control_block* module_task = sched::create_unpriv_kernel_task(
-            reinterpret_cast<sched::task_entry_fn_t>(&module_manager::_module_start_task_entry),
-            mod
-        );
+        // Create a new process for the module
+        auto module_process = new process();
+        if (!module_process->init(process_creation_flags::IS_KERNEL)) {
+            serial::printf("[!] Failed to initialize module process for '%s'\n", mod->name());
+            return false;
+        }
 
-        strcpy(module_task->name, mod->name().c_str());
+        // Set the entry point and name
+        module_process->get_core()->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(&module_manager::_module_start_task_entry);
+        module_process->get_core()->cpu_context.rdi = reinterpret_cast<uint64_t>(mod);
+        memcpy(module_process->get_env()->identity.name, mod->name().c_str(), mod->name().length() + 1);
 
-        sched::scheduler::get().add_task(module_task);
+        // Add the process to the scheduler
+        sched::scheduler::get().add_process(module_process);
     });
+
     return true;
 }
 
@@ -147,7 +154,7 @@ void module_manager::_module_start_task_entry(module_base* mod) {
     if (!mod->init()) {
         mod->m_state = module_state::error;
         serial::printf("[!] Failed to initialize module '%s'\n", mod->name());
-        sched::exit_thread();
+        sched::exit_process();
     }
 
     mod->m_state = module_state::running;
@@ -155,10 +162,10 @@ void module_manager::_module_start_task_entry(module_base* mod) {
     if (!mod->start()) {
         mod->m_state = module_state::error;
         serial::printf("[!] Failed to start module '%s'\n", mod->name());
-        sched::exit_thread();
+        sched::exit_process();
     }
 
     // Final thread exit
-    sched::exit_thread();
+    sched::exit_process();
 }
 } // namespace modules

@@ -30,7 +30,7 @@ namespace arch {
  * 
  * 6. **Setup BSP's Idle Task:**
  * Retrieves the idle task control block for the BSP CPU using `sched::get_idle_task`,
- * zeroes out its memory, and assigns it to the current CPU's `current_task`.
+ * zeroes out its memory, and assigns it to the current CPU's `current_process`.
  * 
  * 7. **Configure Current Task Properties:**
  * Sets up the current task's system stack, CPU identifier, privilege level,

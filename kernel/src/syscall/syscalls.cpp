@@ -53,7 +53,7 @@ long __syscall_handler(
         break;
     }
     case SYSCALL_SYS_EXIT: {
-        sched::exit_thread();
+        sched::exit_process();
         break;
     }
     case SYSCALL_SYS_MMAP: {
@@ -75,7 +75,7 @@ long __syscall_handler(
         }
 
         // Get current process's memory context
-        mm_context* mm_ctx = &current->mm_ctx;
+        mm_context* mm_ctx = &current->get_core()->mm_ctx;
         if (!mm_ctx) {
             return_val = -EFAULT;
             break;
@@ -280,7 +280,7 @@ long __syscall_handler(
         }
 
         // Get current process's memory context
-        mm_context* mm_ctx = &current->mm_ctx;
+        mm_context* mm_ctx = &current->get_core()->mm_ctx;
         if (!mm_ctx) {
             kprint("[MUNMAP] Invalid memory context\n");
             return_val = -EFAULT;
@@ -348,10 +348,10 @@ long __syscall_handler(
             break;
         }
 
-        if (current->elevated) {
+        if (current->get_core()->hw_state.elevated) {
             kprint("[*] Already elevated\n");
         } else {
-            current->elevated = 1;
+            current->get_core()->hw_state.elevated = 1;
         }
         break;
     }
