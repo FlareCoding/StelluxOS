@@ -7,12 +7,27 @@
 namespace elf {
 class elf64_loader {
 public:
-    __PRIVILEGED_CODE static task_control_block* load_elf(
+    /**
+     * @brief Loads an ELF file from a memory buffer into a process core.
+     * @param file_buffer Pointer to the ELF file data in memory.
+     * @param buffer_size Size of the file buffer in bytes.
+     * @return Pointer to the created process core, or nullptr if loading failed.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static process_core* load_elf(
         const uint8_t* file_buffer,
         size_t buffer_size
     );
 
-    __PRIVILEGED_CODE static task_control_block* load_from_file(
+    /**
+     * @brief Loads an ELF file from disk into a process core.
+     * @param filepath Path to the ELF file on disk.
+     * @return Pointer to the created process core, or nullptr if loading failed.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static process_core* load_from_file(
         const char* filepath
     );
 

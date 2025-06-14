@@ -4,7 +4,7 @@
 #include <kstl/hashmap.h>
 
 EXTERN_C int __check_current_elevate_status() {
-    return static_cast<int>(current->elevated);
+    return static_cast<int>(current_task->hw_state.elevated);
 }
 
 namespace dynpriv {
@@ -92,11 +92,11 @@ void lower() {
         "popq %%r11;"            // Pop EFLAGS into r11 (as required by SYSRET)
         "cli;"                   // Disable interrupts
         "lea 1f(%%rip), %%rcx;"  // Load the address of the next instruction into rcx
-        "btrq $0, 0x100(%0);"    // Set current->elevated to 0
+        "btrq $0, 0x118(%0);"    // Set current->elevated to 0
         "sysretq;"               // Execute SYSRET and IF flag will get reset from the eflags
         "1:"                     // Label for the next instruction after SYSRET
         : /* no outputs */
-        : "r"(current)
+        : "r"(current_task)
         : "rcx", "r11", "memory"   // Clobbered registers
     );
 }
@@ -107,10 +107,10 @@ void lower(void* target_fn) {
         "popq %%r11;"                        // Pop RFLAGS into R11 (required by SYSRETQ)
         "cli;"                               // Disable interrupts
         "mov %0, %%rcx;"                     // Move target_fn into RCX
-        "btrq $0, 0x100(%0);"                // Set current->elevated to 0
+        "btrq $0, 0x118(%0);"                // Set current->elevated to 0
         "sysretq;"                           // Execute SYSRETQ to return to target_fn
         :
-        : "r"(current),                      // %0 = pointer to current TCB
+        : "r"(current_task),                      // %0 = pointer to current TCB
           "r"(target_fn)                     // %1 = the target function
         : "rcx", "r11", "rax", "memory"      // Clobbered registers
     );

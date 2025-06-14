@@ -246,12 +246,12 @@ void common_isr_entry(ptregs regs) {
     // After faking out being elevated, original elevation
     // privileged should be restored, except in the case
     // when the scheduler switched context into a new task.
-    int original_elevate_status = current->elevated;
-    task_control_block* original_task = current;
+    int original_elevate_status = current->get_core()->hw_state.elevated;
+    process* original_task = current;
 
     // Fake out being elevated if needed because the code has to
     // be able to tell if it's running in privileged mode or not.
-    original_task->elevated = 1;
+    original_task->get_core()->hw_state.elevated = 1;
 
     // Check whether the interrupt is an IRQ or a trap/exception
     if (regs.intno >= IRQ0) {
@@ -261,7 +261,7 @@ void common_isr_entry(ptregs regs) {
     }
 
     // Restore the original elevate status
-    original_task->elevated = original_elevate_status;
+    original_task->get_core()->hw_state.elevated = original_elevate_status;
 }
 
 __PRIVILEGED_CODE
@@ -486,7 +486,7 @@ void panic(ptregs* regs) {
     char rflags_buffer[64] = { 0 };
     decode_rflags(regs->hwframe.rflags, rflags_buffer, sizeof(rflags_buffer));
 
-    kprint("\n[PANIC] Kernel Panic! System Halted. CPU: %i \n", current->cpu);
+    kprint("\n[PANIC] Kernel Panic! System Halted. CPU: %i \n", current->get_core()->hw_state.cpu);
     kprint("============================================================\n");
 
     // Prints the backtrace
@@ -515,9 +515,9 @@ void panic(ptregs* regs) {
         regs->hwframe.rip, regs->hwframe.rflags, rflags_buffer);
     kprint("  IRQ: %s\n  Error Code: 0x%0llx\n",
         arch::x86::g_cpu_exception_strings[regs->intno], regs->error);
-    kprint("  CPU: %i\n", current->cpu);
-    kprint("  Thread Name: '%s'\n", current->name);
-    kprint("  Privilege: %s\n", current->elevated ? "elevated" : "lowered");
+    kprint("  CPU: %i\n", current->get_core()->hw_state.cpu);
+    kprint("  Thread Name: '%s'\n", current->get_env()->identity.name);
+    kprint("  Privilege: %s\n", current->get_core()->hw_state.elevated ? "elevated" : "lowered");
 
     // Control registers
     uint64_t cr0, cr2, cr3, cr4;

@@ -7,10 +7,10 @@
 namespace sched {
 /**
  * @class sched_run_queue
- * @brief Represents a task run queue for CPU scheduling.
+ * @brief Represents a process run queue for CPU scheduling.
  * 
- * Maintains a queue of tasks eligible for execution on a CPU and provides methods to add, remove,
- * and select tasks using a Round-Robin scheduling policy.
+ * Maintains a queue of processes eligible for execution on a CPU and provides methods to add, remove,
+ * and select processes using a Round-Robin scheduling policy.
  */
 class sched_run_queue {
 public:
@@ -20,31 +20,31 @@ public:
     sched_run_queue();
 
     /**
-     * @brief Adds a task to the run queue.
-     * @param task Pointer to the task control block to add.
+     * @brief Adds a process to the run queue.
+     * @param process Pointer to the process to add.
      * 
-     * Enqueues the task for scheduling. This method is thread-safe and ensures
+     * Enqueues the process for scheduling. This method is thread-safe and ensures
      * proper synchronization when modifying the queue.
      */
-    void add_task(task_control_block* task);
+    void add_process(process* proc);
 
     /**
-     * @brief Removes a specific task from the run queue.
-     * @param task Pointer to the task control block to remove.
+     * @brief Removes a specific process from the run queue.
+     * @param process Pointer to the process to remove.
      * 
-     * Dequeues the specified task, making it ineligible for further scheduling.
+     * Dequeues the specified process, making it ineligible for further scheduling.
      * This method is thread-safe and ensures proper synchronization.
      */
-    void remove_task(task_control_block* task);
+    void remove_process(process* proc);
 
     /**
-     * @brief Picks the next task to run using a Round-Robin policy.
-     * @return Pointer to the next task control block, or `nullptr` if the queue is empty.
+     * @brief Picks the next process to run using a Round-Robin policy.
+     * @return Pointer to the next process, or `nullptr` if the queue is empty.
      * 
-     * Selects the next task for execution based on a simple Round-Robin scheduling algorithm.
-     * This method ensures fairness by cycling through tasks in the order they were added.
+     * Selects the next process for execution based on a simple Round-Robin scheduling algorithm.
+     * This method ensures fairness by cycling through processes in the order they were added.
      */
-    task_control_block* pick_next();
+    process* pick_next();
 
     /**
      * @brief Checks if the run queue is empty.
@@ -54,12 +54,12 @@ public:
 
     /**
      * @brief Retrieves the size of the run queue.
-     * @return The number of tasks currently in the queue.
+     * @return The number of processes currently in the queue.
      */
-    size_t size() const { return m_tasks.size(); }
+    size_t size() const { return m_processes.size(); }
 
 private:
-    kstl::vector<task_control_block*> m_tasks;
+    kstl::vector<process*> m_processes;
     mutex m_lock = mutex();
     size_t m_next_index;
 };

@@ -13,7 +13,7 @@ struct mm_context {
     uintptr_t mmap_base;          // Base address for mmap allocations
     uintptr_t task_size;          // Size of the task's address space
     size_t vma_count;             // Number of VMAs
-};
+} __attribute__((packed));
 
 /**
  * @brief Reads the current memory management context.

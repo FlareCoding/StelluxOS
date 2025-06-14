@@ -11,14 +11,26 @@ namespace sched {
 DEFINE_INT_HANDLER(irq_handler_timer);
 DEFINE_INT_HANDLER(irq_handler_schedule);
 
-task_control_block g_idle_tasks[MAX_SYSTEM_CPUS];
+// Array of idle process cores, one per CPU
+process_core g_idle_process_cores[MAX_SYSTEM_CPUS];
+
+// Array of idle processes, one per CPU
+process g_idle_processes[MAX_SYSTEM_CPUS];
 
 __PRIVILEGED_CODE
-task_control_block* get_idle_task(uint64_t cpu) {
+process_core* get_idle_process_core(uint64_t cpu) {
     if (cpu > MAX_SYSTEM_CPUS - 1) {
         return nullptr;
     }
-    return &g_idle_tasks[cpu];
+    return &g_idle_process_cores[cpu];
+}
+
+__PRIVILEGED_CODE
+process* get_idle_process(uint64_t cpu) {
+    if (cpu > MAX_SYSTEM_CPUS - 1) {
+        return nullptr;
+    }
+    return &g_idle_processes[cpu];
 }
 
 __PRIVILEGED_CODE
@@ -33,7 +45,7 @@ DEFINE_INT_HANDLER(irq_handler_timer) {
     __unused cookie;
 
     // Only the BSP updates global time
-    if (current->cpu == BSP_CPU_ID) {
+    if (current->get_core()->hw_state.cpu == BSP_CPU_ID) {
         kernel_timer::sched_irq_global_tick();
     }
 
@@ -68,8 +80,21 @@ __PRIVILEGED_CODE
 void scheduler::register_cpu_run_queue(uint64_t cpu) {
     m_run_queues[cpu] = kstl::make_shared<sched_run_queue>();
 
-    // Ensure that the run queue contains the idle task
-    m_run_queues[cpu]->add_task(&g_idle_tasks[cpu]);
+    // `arch_init` code would have already setup the BSP idle task
+    if (cpu != BSP_CPU_ID) {
+        // Initialize the idle process core
+        process_core* idle_core = &g_idle_process_cores[cpu];
+        zeromem(idle_core, sizeof(process_core));
+        idle_core->state = process_state::READY;
+        idle_core->hw_state.cpu = cpu;
+        idle_core->hw_state.elevated = 1;
+
+        // Create the idle process with the static environment
+        new (&g_idle_processes[cpu]) process(idle_core, &g_idle_process_env);
+    }
+
+    // Ensure that the run queue contains the idle process
+    m_run_queues[cpu]->add_process(&g_idle_processes[cpu]);
 }
 
 __PRIVILEGED_CODE
@@ -78,56 +103,56 @@ void scheduler::unregister_cpu_run_queue(uint64_t cpu) {
 }
 
 __PRIVILEGED_CODE
-void scheduler::add_task(task_control_block* task, int cpu) {
+void scheduler::add_process(process* proc, int cpu) {
     if (cpu == -1) {
         cpu = _load_balance_find_cpu();
     }
 
     if (m_run_queues[cpu].get() == nullptr) {
-        serial::printf("[*] Failed to add task to invalid cpu %i!\n", cpu);
+        serial::printf("[*] Failed to add process to invalid cpu %i!\n", cpu);
         return;
     }
 
-    // Mask the timer interrupts while adding the task to the queue
+    // Mask the timer interrupts while adding the process to the queue
     preempt_disable(cpu);
 
-    // Prepare the task
-    task->cpu = cpu;
-    task->state = process_state::READY;
+    // Prepare the process
+    proc->get_core()->hw_state.cpu = cpu;
+    proc->get_core()->state = process_state::READY;
 
-    // Atomically add the task to the run-queue of the target processor
-    m_run_queues[cpu]->add_task(task);
+    // Atomically add the process to the run-queue of the target processor
+    m_run_queues[cpu]->add_process(proc);
 
     // Unmask the timer interrupt and continue as usual
     preempt_enable(cpu);
 }
 
 __PRIVILEGED_CODE
-void scheduler::remove_task(task_control_block* task) {
-    int cpu = task->cpu;
+void scheduler::remove_process(process* proc) {
+    int cpu = proc->get_core()->hw_state.cpu;
 
-    // Mask the timer interrupts while removing the task from the queue
+    // Mask the timer interrupts while removing the process from the queue
     preempt_disable(cpu);
 
-    // Atomically remove the task from the run-queue of the target processor
-    m_run_queues[cpu]->remove_task(task);
+    // Atomically remove the process from the run-queue of the target processor
+    m_run_queues[cpu]->remove_process(proc);
 
     // Unmask the timer interrupt and continue as usual
     preempt_enable(cpu);
 }
 
 // Called from the IRQ interrupt context. Picks the
-// next task to run and switches the context into it.
+// next process to run and switches the context into it.
 __PRIVILEGED_CODE
 void scheduler::__schedule(ptregs* irq_frame) {
-    int cpu = current->cpu;
-    task_control_block* next = m_run_queues[cpu]->pick_next();
+    int cpu = current->get_core()->hw_state.cpu;
+    process* next = m_run_queues[cpu]->pick_next();
     if (next && next != current) {
         switch_context_in_irq(cpu, cpu, current, next, irq_frame);
     }
 }
 
-// Forces a new task to get scheduled and triggers a
+// Forces a new process to get scheduled and triggers a
 // context switch without the need for a timer tick.
 void scheduler::schedule() {
     asm volatile ("int $48");
@@ -137,7 +162,7 @@ void scheduler::schedule() {
 __PRIVILEGED_CODE
 void scheduler::preempt_disable(int cpu) {
     if (cpu == -1) {
-        cpu = current->cpu;
+        cpu = current->get_core()->hw_state.cpu;
     }
 
 #ifdef ARCH_X86_64
@@ -148,8 +173,8 @@ void scheduler::preempt_disable(int cpu) {
 // Unmasks timer tick-based interrupts
 __PRIVILEGED_CODE
 void scheduler::preempt_enable(int cpu) {
-        if (cpu == -1) {
-        cpu = current->cpu;
+    if (cpu == -1) {
+        cpu = current->get_core()->hw_state.cpu;
     }
 
 #ifdef ARCH_X86_64

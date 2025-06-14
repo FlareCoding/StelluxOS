@@ -79,17 +79,17 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     // Setup per-cpu area for the bootstrapping processor
     init_ap_per_cpu_area(acpi_cpu_index);
 
-    // Setup BSP's idle task (current)
-    task_control_block* ap_idle_task = sched::get_idle_task(acpi_cpu_index);
-    zeromem(ap_idle_task, sizeof(task_control_block));
-    this_cpu_write(current_task, ap_idle_task);
-    this_cpu_write(current_system_stack, ap_system_stack_top);
+    // Initialize the AP's idle process core
+    process_core* ap_idle_task_core = sched::get_idle_process_core(acpi_cpu_index);
+    ap_idle_task_core->stacks.system_stack_top = ap_system_stack_top;
 
-    current->system_stack_top = ap_system_stack_top;
-    current->cpu = acpi_cpu_index;
-    current->elevated = 1;
-    current->state = process_state::RUNNING;
-    current->pid = 0;
+    // Create the AP's idle process
+    process* ap_idle_task = sched::get_idle_process(acpi_cpu_index);
+
+    // Set up the current process and system stack
+    this_cpu_write(current_process, ap_idle_task);
+    this_cpu_write(current_process_core, ap_idle_task_core);
+    this_cpu_write(current_system_stack, ap_system_stack_top);
 
     // Enable the syscall interface
     enable_syscall_interface();
@@ -102,12 +102,11 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     kernel_timer::calibrate_cpu_timer(4);
 
     // Log that the cpu is now online
-    kprint("CPU %u online!\n", current->cpu);
+    kprint("CPU %u online!\n", ap_idle_task_core->hw_state.cpu);
 
     // Start local APIC timer in order to receive timer IRQs
     kernel_timer::start_cpu_periodic_timer();
 
-    //serial::printf("AP core %i ready with lapic_id: %i\n", acpi_cpu_index, current->cpu);
     while (true) {
         asm volatile ("hlt");
     }
