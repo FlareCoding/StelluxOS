@@ -9,6 +9,13 @@
 class process;
 
 /**
+ * @brief Defines the type for task entry functions.
+ * 
+ * A function of this type is called when a new kernel thread starts executing.
+ */
+typedef void (*task_entry_fn_t)(void*);
+
+/**
  * @brief Per-CPU variable for the current process.
  */
 DECLARE_PER_CPU(process*, current_process);
@@ -50,14 +57,6 @@ static __force_inline__ process_core* get_current_process_core() {
 #define current_task get_current_process_core()
 
 namespace sched {
-/**
- * @typedef task_entry_fn_t
- * @brief Defines the type for task entry functions.
- * 
- * A function of this type is called when a new kernel thread starts executing.
- */
-typedef void (*task_entry_fn_t)(void*);
-
 /**
  * @brief Saves CPU context into the process control block.
  * @param process_context Pointer to the process's saved context.
@@ -226,75 +225,59 @@ public:
      * 
      * Creates an uninitialized process. One of the init methods must be called before use.
      */
-    process();
+    process() = default;
 
     /**
-     * @brief Constructor that takes ownership of an existing core.
+     * @brief Default destructor.
      * 
-     * Creates a process with an existing core but a new environment.
-     * The process takes ownership of the core and will delete it when destroyed.
-     * 
-     * @param core The core execution state to use.
-     * @param flags Flags controlling process creation behavior.
-     * 
-     * @note Privilege: **required**
+     * Note: cleanup() should be called before destruction to properly free resources.
      */
-    __PRIVILEGED_CODE process(process_core* core, process_creation_flags flags);
+    ~process() = default;
 
     /**
-     * @brief Constructor that takes ownership of an existing environment.
-     * 
-     * Creates a process with an existing environment but a new core.
-     * The process takes ownership of the environment and will delete it when destroyed.
-     * 
-     * @param env The process environment to use.
-     * @param flags Flags controlling process creation behavior.
-     * 
-     * @note Privilege: **required**
-     */
-    __PRIVILEGED_CODE process(process_env* env, process_creation_flags flags);
-
-    /**
-     * @brief Constructor that takes ownership of both core and environment.
-     * 
-     * Creates a process with existing core and environment.
-     * The process takes ownership of both and will delete them when destroyed.
-     * 
-     * @param core The core execution state to use.
-     * @param env The process environment to use.
-     * 
-     * @note Privilege: **required**
-     */
-    __PRIVILEGED_CODE process(process_core* core, process_env* env);
-
-    /**
-     * @brief Destructor.
-     * 
-     * Ensures all resources are properly cleaned up.
-     * 
-     * @note Privilege: **required**
-     */
-    __PRIVILEGED_CODE ~process();
-
-    /**
-     * @brief Initializes a new process with both new core and environment.
+     * @brief Initializes a process with an entry point and data.
+     * @param name Optional name for the process. If nullptr, no name is set.
+     * @param entry Entry function for the process.
+     * @param data Data to pass to the entry function.
      * @param flags Flags controlling process creation behavior.
      * @return true if initialization was successful, false otherwise.
      * 
+     * Creates both a new process core and environment. The process takes ownership of both.
+     * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE bool init(process_creation_flags flags);
+    __PRIVILEGED_CODE bool init_with_entry(const char* name, task_entry_fn_t entry, void* data, process_creation_flags flags);
+
+    /**
+     * @brief Initializes a process with an entry point, data, and existing environment.
+     * @param entry Entry function for the process.
+     * @param data Data to pass to the entry function.
+     * @param env The process environment to use.
+     * @param flags Flags controlling process creation behavior.
+     * @param take_ownership Whether to take ownership of the environment.
+     * @return true if initialization was successful, false otherwise.
+     * 
+     * Creates a new process core and uses the provided environment. The process takes ownership
+     * of the core and optionally takes ownership of the environment.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE bool init_with_entry(task_entry_fn_t entry, void* data, process_env* env, process_creation_flags flags, bool take_ownership = false);
 
     /**
      * @brief Initializes a process with an existing core.
+     * @param name Optional name for the process. If nullptr, no name is set.
      * @param core The core execution state to use.
      * @param flags Flags controlling process creation behavior.
      * @param take_ownership Whether to take ownership of the core.
      * @return true if initialization was successful, false otherwise.
      * 
+     * Uses the provided core and creates a new environment. The process optionally takes ownership
+     * of the core and takes ownership of the new environment.
+     * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE bool init_with_core(process_core* core, process_creation_flags flags, bool take_ownership = false);
+    __PRIVILEGED_CODE bool init_with_core(const char* name, process_core* core, process_creation_flags flags, bool take_ownership = false);
 
     /**
      * @brief Initializes a process with an existing environment.
@@ -303,37 +286,48 @@ public:
      * @param take_ownership Whether to take ownership of the environment.
      * @return true if initialization was successful, false otherwise.
      * 
+     * Creates a new process core and uses the provided environment. The process takes ownership
+     * of the new core and optionally takes ownership of the environment.
+     * 
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE bool init_with_env(process_env* env, process_creation_flags flags, bool take_ownership = false);
 
     /**
-     * @brief Creates a snapshot of the process core.
-     * @param[out] out_core Where to store the core snapshot.
-     * @return true if snapshot was successful, false otherwise.
+     * @brief Initializes a process with just creation flags.
+     * @param name Optional name for the process. If nullptr, no name is set.
+     * @param flags Flags controlling process creation behavior.
+     * @return true if initialization was successful, false otherwise.
+     * 
+     * Creates both a new process core and environment. The process takes ownership of both.
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE bool snapshot_core(process_core& out_core) const;
+    __PRIVILEGED_CODE bool init_with_flags(const char* name, process_creation_flags flags);
 
     /**
-     * @brief Restores a process core from a snapshot.
-     * @param core The core snapshot to restore from.
-     * @return true if restoration was successful, false otherwise.
+     * @brief Initializes a process with existing core and environment.
+     * @param core The core execution state to use.
+     * @param take_core_ownership Whether to take ownership of the core.
+     * @param env The process environment to use.
+     * @param take_env_ownership Whether to take ownership of the environment.
+     * @return true if initialization was successful, false otherwise.
+     * 
+     * Uses the provided core and environment. The process optionally takes ownership of both.
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE bool restore_core(const process_core& core);
+    __PRIVILEGED_CODE bool init(process_core* core, bool take_core_ownership, process_env* env, bool take_env_ownership);
 
     /**
-     * @brief Sets a new environment for the process.
-     * @param env The new environment to use.
-     * @param take_ownership Whether to take ownership of the environment.
-     * @return true if environment was successfully set, false otherwise.
+     * @brief Cleans up process resources.
+     * 
+     * This should be called before the process is destroyed to ensure
+     * proper cleanup of resources.
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE bool set_environment(process_env* env, bool take_ownership = false);
+    __PRIVILEGED_CODE void cleanup();
 
     /**
      * @brief Gets the current process core.
@@ -378,21 +372,22 @@ public:
     bool terminate();
 
 private:
-    process_core* m_core;       // Core execution state
-    process_env* m_env;         // Process environment
-    bool m_is_initialized;      // Whether the process has been properly initialized
-    bool m_owns_core;           // Whether this process owns and should delete the core
-    bool m_owns_env;            // Whether this process owns and should delete the environment
+    process_core* m_core = nullptr;       // Core execution state
+    process_env* m_env = nullptr;         // Process environment
+    bool m_is_initialized = false;        // Whether the process has been properly initialized
+    bool m_owns_core = false;             // Whether this process owns and should delete the core
+    bool m_owns_env = false;              // Whether this process owns and should delete the environment
 
     /**
-     * @brief Cleans up process resources.
-     * 
-     * This is called by the destructor and can be called explicitly
-     * to clean up resources before the process is destroyed.
+     * @brief Creates a process core based on flags and entry point.
+     * @param entry Entry function for the process, or nullptr if none.
+     * @param data Data to pass to the entry function.
+     * @param flags Flags controlling process creation behavior.
+     * @return Pointer to the created process core, or nullptr if creation failed.
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE void cleanup();
+    __PRIVILEGED_CODE process_core* _create_process_core(task_entry_fn_t entry, void* data, process_creation_flags flags);
 };
 
 #endif // PROCESS_H

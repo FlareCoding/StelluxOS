@@ -60,7 +60,7 @@ void arch_init() {
 
     // Create the BSP's idle process
     process* bsp_idle_task = sched::get_idle_process(BSP_CPU_ID);
-    new (bsp_idle_task) process(bsp_idle_core, &g_idle_process_env);
+    bsp_idle_task->init(bsp_idle_core, false, &g_idle_process_env, false);
 
     // Set up the current process and system stack
     this_cpu_write(current_process, bsp_idle_task);

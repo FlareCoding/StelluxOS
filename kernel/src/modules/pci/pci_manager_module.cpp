@@ -33,18 +33,22 @@ bool pci_manager_module::start() {
 
             // Create a new process for the driver
             auto driver_process = new process();
-            if (!driver_process->init(process_creation_flags::IS_KERNEL)) {
+
+            const auto proc_flags =
+                process_creation_flags::IS_KERNEL |
+                process_creation_flags::SCHEDULE_NOW;
+
+            bool ret = driver_process->init_with_entry(
+                xhc_driver->get_name().c_str(),
+                reinterpret_cast<task_entry_fn_t>(&pci_manager_module::_driver_thread_entry),
+                xhc_driver,
+                proc_flags
+            );
+
+            if (!ret) {
                 serial::printf("[!] Failed to initialize driver process for '%s'\n", xhc_driver->get_name());
                 continue;
             }
-
-            // Set the entry point and name
-            driver_process->get_core()->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(&pci_manager_module::_driver_thread_entry);
-            driver_process->get_core()->cpu_context.rdi = reinterpret_cast<uint64_t>(xhc_driver);
-            memcpy(driver_process->get_env()->identity.name, xhc_driver->get_name().c_str(), xhc_driver->get_name().length() + 1);
-
-            // Add the process to the scheduler
-            sched::scheduler::get().add_process(driver_process);
         }
     });
     return true;

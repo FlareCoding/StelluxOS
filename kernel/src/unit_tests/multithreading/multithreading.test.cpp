@@ -27,13 +27,13 @@ void increment_task(void* data) {
         yield();
     }
 
-    exit_thread();
+    exit_process();
 }
 
 // A task that immediately exits
 void exit_immediately_task(void* data) {
     __unused data;
-    exit_thread();
+    exit_process();
 }
 
 // A task that tests mutex usage
@@ -46,7 +46,16 @@ void mutex_increment_task(void* data) {
         }
         yield();
     }
-    exit_thread();
+    exit_process();
+}
+
+// Function that increments once and exits
+void single_increment_and_exit(void* data) {
+    __unused data;
+    g_multithreading_test_counter_lock.lock();
+    global_counter++;
+    g_multithreading_test_counter_lock.unlock();
+    exit_process();
 }
 
 // Test creating a single task and letting it run and exit
@@ -54,11 +63,18 @@ DECLARE_UNIT_TEST("multithread single task run and exit", test_single_task_run) 
     global_counter = 0;
 
     int increments = 10;
-    task_control_block* task = create_priv_kernel_task(increment_task, &increments);
-    ASSERT_TRUE(task != nullptr, "create_priv_kernel_task should return a valid task");
+    process* proc = new process();
+    ASSERT_TRUE(proc != nullptr, "process allocation failed");
+    
+    // Initialize as a privileged kernel process
+    const auto proc_flags =
+        process_creation_flags::IS_KERNEL |
+        process_creation_flags::PRIV_KERN_THREAD |
+        process_creation_flags::SCHEDULE_NOW; // This will place the task onto a random CPU
 
-    // Schedule the task on a random CPU
-    sched::scheduler::get().add_task(task);
+    bool ret = proc->init_with_entry("", increment_task, &increments, proc_flags);
+
+    ASSERT_TRUE(ret, "process initialization failed");
 
     // Run the scheduler by calling yield until the task is done
     // Assuming that after 20 yields, the task will finish increments
@@ -69,24 +85,33 @@ DECLARE_UNIT_TEST("multithread single task run and exit", test_single_task_run) 
     // Make sure all the tasks on all cpus fully finish within a 1 second interval
     sleep(1);
 
-    // After the task finishes (calls exit_thread), it should not run again
+    // After the task finishes (calls exit_process), it should not run again
     // Check the counter
-    ASSERT_EQ(global_counter, increments, "The global counter should match increments count");
+    ASSERT_EQ(global_counter, increments, "The global counter didn't match increments count");
 
     return UNIT_TEST_SUCCESS;
 }
 
-// Test multiple tasks running concurrently, each incrementing the counter
-DECLARE_UNIT_TEST("multithread multiple tasks", test_multiple_tasks) {
+// Test creating multiple tasks and letting them run and exit
+DECLARE_UNIT_TEST("multithread multiple tasks run and exit", test_multiple_tasks) {
     global_counter = 0;
-    const int increments_per_task = 5;
+    int increments_per_task = 5;
     const int num_tasks = 4;
 
-    task_control_block* tasks[num_tasks];
+    const auto proc_flags =
+        process_creation_flags::IS_KERNEL |
+        process_creation_flags::PRIV_KERN_THREAD |
+        process_creation_flags::SCHEDULE_NOW; // This will place the task onto a random CPU
+
+    process* procs[num_tasks];
     for (int i = 0; i < num_tasks; i++) {
-        tasks[i] = create_priv_kernel_task(increment_task, (void*)&increments_per_task);
-        ASSERT_TRUE(tasks[i] != nullptr, "Task creation should succeed");
-        sched::scheduler::get().add_task(tasks[i]);
+        procs[i] = new process();
+        ASSERT_TRUE(procs[i] != nullptr, "process allocation failed");
+
+        bool ret = procs[i]->init_with_entry("", increment_task, &increments_per_task, proc_flags);
+        
+        // Initialize as a privileged kernel process
+        ASSERT_TRUE(ret,  "process initialization failed");
     }
 
     // Run for enough yields to ensure all tasks finish
@@ -108,14 +133,24 @@ DECLARE_UNIT_TEST("multithread per-CPU tasks", test_per_cpu_tasks) {
     global_counter = 0;
     const int increments_per_task = 3;
     const int num_tasks = 2;
-    // You mentioned at most 8 CPUs, so we assume cpu IDs from 0 to 7.
+
+    const auto proc_flags =
+        process_creation_flags::IS_KERNEL |
+        process_creation_flags::PRIV_KERN_THREAD;
 
     for (int cpu_id = 0; cpu_id < num_tasks; cpu_id++) {
         int* data = (int*)zmalloc(sizeof(int));
         *data = increments_per_task;
-        task_control_block* task = create_priv_kernel_task(increment_task, data);
-        ASSERT_TRUE(task != nullptr, "Task creation should succeed");
-        sched::scheduler::get().add_task(task, cpu_id);
+        process* proc = new process();
+        ASSERT_TRUE(proc != nullptr, "process allocation failed");
+
+        // Initialize as a privileged kernel process
+        bool ret = proc->init_with_entry("", increment_task, data, proc_flags);
+
+        ASSERT_TRUE(ret, "process initialization failed");
+
+        // Schedule the process on the specified CPU
+        sched::scheduler::get().add_process(proc, cpu_id);
     }
 
     // Run yields enough times
@@ -133,10 +168,21 @@ DECLARE_UNIT_TEST("multithread per-CPU tasks", test_per_cpu_tasks) {
 
 // Test that a task that exits immediately doesn't affect the system
 DECLARE_UNIT_TEST("multithread exit immediate task", test_exit_immediate) {
-    task_control_block* task = create_priv_kernel_task(exit_immediately_task, nullptr);
-    ASSERT_TRUE(task != nullptr, "Should create task");
+    process* proc = new process();
+    ASSERT_TRUE(proc != nullptr, "process allocation failed");
 
-    sched::scheduler::get().add_task(task, 0);
+    const auto proc_flags =
+        process_creation_flags::IS_KERNEL |
+        process_creation_flags::PRIV_KERN_THREAD;
+
+    bool ret = proc->init_with_entry("", exit_immediately_task, nullptr, proc_flags);
+    
+    // Initialize as a privileged kernel process
+    ASSERT_TRUE(ret, "process initialization failed");
+
+    // Schedule the process on CPU 0
+    sched::scheduler::get().add_process(proc, 0);
+
     // Just yield a few times, the task should exit immediately
     yield();
     yield();
@@ -146,32 +192,50 @@ DECLARE_UNIT_TEST("multithread exit immediate task", test_exit_immediate) {
 }
 
 // Test destroying a task that was never run (just to confirm resource cleanup)
-DECLARE_UNIT_TEST("multithread destroy task before run", test_destroy_before_run) {
-    task_control_block* task = create_priv_kernel_task(exit_immediately_task, nullptr);
-    ASSERT_TRUE(task != nullptr, "Should create task");
+DECLARE_UNIT_TEST("multithread destroy/cleanup task before scheduling", test_destroy_before_run) {
+    process* proc = new process();
+    ASSERT_TRUE(proc != nullptr, "process allocation failed");
 
-    // Destroy the task without scheduling it
-    bool success = destroy_task(task);
-    ASSERT_TRUE(success, "Destroying the task before run should succeed");
+    const auto proc_flags =
+        process_creation_flags::IS_KERNEL |
+        process_creation_flags::PRIV_KERN_THREAD;
+
+    bool ret = proc->init_with_entry("", exit_immediately_task, nullptr, proc_flags);
+    
+    // Initialize as a privileged kernel process
+    ASSERT_TRUE(ret, "process initialization failed");
+
+    // Destroy the process without scheduling it
+    proc->cleanup();
+    delete proc;
 
     // No crash, no double free expected
     return UNIT_TEST_SUCCESS;
 }
 
-// Test using a mutex with multiple tasks incrementing a counter
-DECLARE_UNIT_TEST("multithread mutex test", test_mutex_usage) {
+// Test that mutexes work correctly with multiple tasks
+DECLARE_UNIT_TEST("multithread mutex usage", test_mutex_usage) {
     global_mutex_counter = 0;
-    const int increments_per_task = 5;
-    const int num_tasks = 3;
+    int num_tasks = 4;
+    int increments_per_task = 10;
 
+    const auto proc_flags =
+        process_creation_flags::IS_KERNEL |
+        process_creation_flags::PRIV_KERN_THREAD |
+        process_creation_flags::SCHEDULE_NOW; // This will place the task onto a random CPU
+
+    process* procs[num_tasks];
     for (int i = 0; i < num_tasks; i++) {
-        task_control_block* t = create_priv_kernel_task(mutex_increment_task, (void*)&increments_per_task);
-        ASSERT_TRUE(t != nullptr, "Should create mutex increment task");
-        sched::scheduler::get().add_task(t);
+        procs[i] = new process();
+        ASSERT_TRUE(procs[i] != nullptr, "process allocation failed");
+
+        // Initialize as a privileged kernel process
+        bool ret = procs[i]->init_with_entry("", mutex_increment_task, &increments_per_task, proc_flags);
+        
+        ASSERT_TRUE(ret, "process initialization failed");
     }
 
     // Run yields to let tasks finish
-    // Each does increments_per_task increments, total is num_tasks * increments_per_task
     for (int i = 0; i < num_tasks * increments_per_task * 2; i++) {
         yield();
     }
@@ -179,7 +243,8 @@ DECLARE_UNIT_TEST("multithread mutex test", test_mutex_usage) {
     // Make sure all the tasks on all cpus fully finish within a 1 second interval
     sleep(1);
 
-    ASSERT_EQ(global_mutex_counter, num_tasks * increments_per_task, "Mutex-protected increments should match the total expected");
+    ASSERT_EQ(global_mutex_counter, num_tasks * increments_per_task, "All tasks should have incremented the counter with mutex protection");
+
     return UNIT_TEST_SUCCESS;
 }
 
@@ -193,21 +258,22 @@ DECLARE_UNIT_TEST("multithread yield no tasks", test_yield_no_tasks) {
     return UNIT_TEST_SUCCESS;
 }
 
-// Test that exiting a thread actually removes it from scheduling
-DECLARE_UNIT_TEST("multithread exit_thread removal", test_exit_thread_removal) {
+// Test that exiting a process actually removes it from scheduling
+DECLARE_UNIT_TEST("multithread exit process removal", test_exit_process_removal) {
     global_counter = 0;
 
-    // This task increments once and then exits
-    auto single_increment_and_exit = [](void*) {
-        g_multithreading_test_counter_lock.lock();
-        global_counter++;
-        g_multithreading_test_counter_lock.unlock();
+    process* proc = new process();
+    ASSERT_TRUE(proc != nullptr, "process allocation failed");
 
-        exit_thread();
-    };
+    const auto proc_flags =
+        process_creation_flags::IS_KERNEL |
+        process_creation_flags::PRIV_KERN_THREAD |
+        process_creation_flags::SCHEDULE_NOW; // This will place the task onto a random CPU
+    
+    // Initialize as a privileged kernel process
+    bool ret = proc->init_with_entry("", single_increment_and_exit, nullptr, proc_flags);
 
-    task_control_block* t = create_priv_kernel_task(single_increment_and_exit, nullptr);
-    sched::scheduler::get().add_task(t);
+    ASSERT_TRUE(ret, "process initialization failed");
 
     // Yield a couple times to let the task run and exit
     yield();

@@ -79,18 +79,22 @@ bool module_manager::start_module(module_base* mod) {
     RUN_ELEVATED({
         // Create a new process for the module
         auto module_process = new process();
-        if (!module_process->init(process_creation_flags::IS_KERNEL)) {
+
+        const auto proc_flags =
+            process_creation_flags::IS_KERNEL |
+            process_creation_flags::SCHEDULE_NOW;
+
+        bool ret = module_process->init_with_entry(
+            mod->name().c_str(),
+            reinterpret_cast<task_entry_fn_t>(&module_manager::_module_start_task_entry),
+            mod,
+            proc_flags
+        );
+
+        if (!ret) {
             serial::printf("[!] Failed to initialize module process for '%s'\n", mod->name());
             return false;
         }
-
-        // Set the entry point and name
-        module_process->get_core()->cpu_context.hwframe.rip = reinterpret_cast<uint64_t>(&module_manager::_module_start_task_entry);
-        module_process->get_core()->cpu_context.rdi = reinterpret_cast<uint64_t>(mod);
-        memcpy(module_process->get_env()->identity.name, mod->name().c_str(), mod->name().length() + 1);
-
-        // Add the process to the scheduler
-        sched::scheduler::get().add_process(module_process);
     });
 
     return true;
