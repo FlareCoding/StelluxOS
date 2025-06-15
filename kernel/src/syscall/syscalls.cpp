@@ -8,6 +8,9 @@
 #include <memory/vmm.h>
 #include <process/vma.h>
 #include <kstl/vector.h>
+#include <interrupts/irq.h>
+#include <fs/vfs.h>
+#include <process/elf/elf64_loader.h>
 
 // Error codes
 #define EINVAL 22  // Invalid argument
@@ -35,12 +38,23 @@ long __syscall_handler(
     uint64_t arg4,
     uint64_t arg5
 ) {
+    // Make sure the elevation status patch happens uninterrupted
+    disable_interrupts();
+
+    // After faking out being elevated, original elevation
+    // privileged should be restored, except in the case
+    // when the scheduler switched context into a new task.
+    int original_elevate_status = current->get_core()->hw_state.elevated;
+    process* original_task = current;
+
+    current->get_core()->hw_state.elevated = 1;
+
+    // Re-enable interrupts after the elevated status is patched
+    enable_interrupts();
+
+    // Different syscall cases will set the
+    // return value to be returned at the end.
     long return_val = 0;
-    __unused arg1;
-    __unused arg2;
-    __unused arg3;
-    __unused arg4;
-    __unused arg5;
 
     switch (syscallnum) {
     case SYSCALL_SYS_WRITE: {
@@ -340,6 +354,68 @@ long __syscall_handler(
         return_val = 0;
         break;
     }
+    case SYSCALL_SYS_GETPID: {
+        return_val = static_cast<long>(current->get_core()->identity.pid);
+        break;
+    }
+    case SYSCALL_SYS_PROC_CREATE: {
+        // arg1 = path to executable
+        // arg2 = process creation flags
+        const char* path = reinterpret_cast<const char*>(arg1);
+        uint64_t flags = arg2;
+        __unused flags;
+
+        if (!path) {
+            return_val = -EINVAL;
+            break;
+        }
+
+        // Load the ELF file and create a process core
+        process_core* core = elf::elf64_loader::load_from_file(path);
+        if (!core) {
+            return_val = -ENOMEM;
+            break;
+        }
+
+        // Create a new process with the loaded core
+        process* new_proc = new process();
+        if (!new_proc) {
+            sched::destroy_process_core(core);
+            return_val = -ENOMEM;
+            break;
+        }
+
+        // Initialize the process with the loaded core
+        if (!new_proc->init_with_core(core, process_creation_flags::SCHEDULE_NOW, true)) {
+            new_proc->cleanup(); // Will call `destroy_process_core`
+            delete new_proc;
+            return_val = -ENOMEM;
+            break;
+        }
+
+        // Return the new process's PID
+        return_val = static_cast<long>(core->identity.pid);
+        break;
+    }
+    case SYSCALL_SYS_PROC_WAIT: {
+        // arg1 = pid to wait for
+        // arg2 = pointer to store exit code
+        pid_t pid = static_cast<pid_t>(arg1);
+        int* exit_code = reinterpret_cast<int*>(arg2);
+
+        if (pid <= 0) {
+            return_val = -EINVAL;
+            break;
+        }
+
+        // TODO: Implement process waiting
+        kprint("SYSCALL_SYS_PROC_WAIT unimplemented!\n");
+        if (exit_code) {
+            *exit_code = 0;
+        }
+        return_val = -ENOPRIV;
+        break;
+    }
     case SYSCALL_SYS_ELEVATE: {
         // Make sure that the thread is allowed to elevate
         if (!dynpriv::is_asid_allowed()) {
@@ -348,7 +424,7 @@ long __syscall_handler(
             break;
         }
 
-        if (current->get_core()->hw_state.elevated) {
+        if (original_elevate_status) {
             kprint("[*] Already elevated\n");
         } else {
             current->get_core()->hw_state.elevated = 1;
@@ -360,6 +436,11 @@ long __syscall_handler(
         return_val = -ENOSYS;
         break;
     }
+    }
+
+    if (syscallnum != SYSCALL_SYS_ELEVATE) {
+        // Restore the original elevate status
+        original_task->get_core()->hw_state.elevated = original_elevate_status;
     }
 
     return return_val;

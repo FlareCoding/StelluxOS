@@ -1,5 +1,5 @@
-#ifndef CTYPES_H
-#define CTYPES_H
+#ifndef STLIBC_STDDEF_H
+#define STLIBC_STDDEF_H
 
 #ifdef __INT8_TYPE__
 typedef __INT8_TYPE__ int8_t;
@@ -45,4 +45,4 @@ typedef uint64_t uintptr_t;
 #define __force_inline__ inline __attribute__((always_inline))
 #define __unused (void)
 
-#endif // CTYPES_H
+#endif // STLIBC_STDDEF_H
