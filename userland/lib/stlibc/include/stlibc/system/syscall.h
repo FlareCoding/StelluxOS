@@ -1,5 +1,5 @@
-#ifndef STELLUX_SYSCALL_H
-#define STELLUX_SYSCALL_H
+#ifndef STLIBC_SYSCALL_H
+#define STLIBC_SYSCALL_H
 
 #include <stlibc/stddef.h>
 
@@ -14,6 +14,9 @@ enum {
     SYS_EXIT        = 2,
     SYS_MMAP        = 3,
     SYS_MUNMAP      = 4,
+    SYS_GETPID      = 5,
+    SYS_PROC_CREATE = 6,
+    SYS_PROC_WAIT   = 7,
     SYS_ELEVATE     = 90
 };
 
@@ -31,4 +34,4 @@ long syscall(
 }
 #endif
 
-#endif // STELLUX_SYSCALL_H 
+#endif // STLIBC_SYSCALL_H 

@@ -279,9 +279,6 @@ void module_manager_init(void*) {
             sched::exit_process();
         }
 
-        // Allow the init process to elevate
-        dynpriv::whitelist_asid(init_core->mm_ctx.root_page_table);
-
         // Create the init process with the loaded core
         auto init_process = new process();
         if (!init_process->init_with_core(

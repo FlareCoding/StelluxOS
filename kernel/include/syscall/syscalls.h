@@ -2,14 +2,20 @@
 #define SYSCALL_H
 #include <types.h>
 
-#define ENOSYS  1
-#define ENOPRIV 2
+#define ENOSYS  1   // Invalid system call number
+#define ENOPRIV 2   // Invalid privilege permissions
+#define EINVAL  22  // Invalid argument
+#define EFAULT  14  // Bad address
+#define ENOMEM  12  // Out of memory
 
 #define SYSCALL_SYS_WRITE       0
 #define SYSCALL_SYS_READ        1
 #define SYSCALL_SYS_EXIT        2
 #define SYSCALL_SYS_MMAP        3
 #define SYSCALL_SYS_MUNMAP      4
+#define SYSCALL_SYS_GETPID      5
+#define SYSCALL_SYS_PROC_CREATE 6
+#define SYSCALL_SYS_PROC_WAIT   7
 
 #define SYSCALL_SYS_ELEVATE     90
 

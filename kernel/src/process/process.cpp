@@ -452,6 +452,11 @@ bool process::init_with_core(process_core* core, process_creation_flags flags, b
     m_core = core;
     m_owns_core = take_ownership;
 
+    // Allow authorized process to use dynamic privilege functionality
+    if (has_process_flag(flags, process_creation_flags::CAN_ELEVATE)) {
+        dynpriv::whitelist_asid(core->mm_ctx.root_page_table);
+    }
+
     m_is_initialized = true;
 
     // Schedule the process if requested
