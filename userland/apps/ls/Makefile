@@ -3,10 +3,10 @@ OBJ_DIR ?= obj
 BIN_DIR ?= bin
 
 # Target binary
-TARGET := $(BIN_DIR)/shell
+TARGET := $(BIN_DIR)/ls
 
 # Sources and objects
-SRCS := shell.cpp
+SRCS := ls.cpp
 OBJS := $(addprefix $(OBJ_DIR)/, $(SRCS:.cpp=.o))
 
 .PHONY: all clean
@@ -27,4 +27,4 @@ $(OBJ_DIR)/%.o: %.cpp
 
 clean:
 	@echo "Cleaning $(OBJ_DIR) and $(BIN_DIR)..."
-	@rm -rf $(OBJ_DIR) $(BIN_DIR)
+	@rm -rf $(OBJ_DIR) $(BIN_DIR) 

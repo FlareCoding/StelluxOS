@@ -26,8 +26,8 @@ int main() {
 
     free(arr);
 
-    if (proc_create("/initrd/bin/hello_world", PROC_NEW_ENV) < 0) {
-        printf("Failed to create 'hello_world' process!\n");
+    if (proc_create("/initrd/bin/shell", PROC_NEW_ENV | PROC_CAN_ELEVATE) < 0) {
+        printf("Failed to create 'shell' process!\n");
     }
 
     printf("init process exiting!\n");

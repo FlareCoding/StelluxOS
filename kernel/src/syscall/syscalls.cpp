@@ -28,6 +28,15 @@
 #define MAP_ANONYMOUS 0x4
 #define MAP_FIXED    0x8
 
+// Userland process creation flags
+typedef enum {
+    PROC_NONE           = 0 << 0,  // Invalid / empty flags
+    PROC_SHARE_ENV      = 1 << 0,  // Share environment with parent
+    PROC_COPY_ENV       = 1 << 1,  // Copy parent's environment
+    PROC_NEW_ENV        = 1 << 2,  // Create new environment
+    PROC_CAN_ELEVATE    = 1 << 3,  // Create new environment
+} userland_proc_flags_t;
+
 EXTERN_C
 __PRIVILEGED_CODE
 long __syscall_handler(
@@ -362,8 +371,7 @@ long __syscall_handler(
         // arg1 = path to executable
         // arg2 = process creation flags
         const char* path = reinterpret_cast<const char*>(arg1);
-        uint64_t flags = arg2;
-        __unused flags;
+        uint64_t userland_proc_fl = arg2;
 
         if (!path) {
             return_val = -EINVAL;
@@ -385,8 +393,14 @@ long __syscall_handler(
             break;
         }
 
+        auto new_proc_flags = process_creation_flags::SCHEDULE_NOW;
+
+        if (userland_proc_fl & PROC_CAN_ELEVATE) {
+            new_proc_flags |= process_creation_flags::CAN_ELEVATE;
+        }
+
         // Initialize the process with the loaded core
-        if (!new_proc->init_with_core(core, process_creation_flags::SCHEDULE_NOW, true)) {
+        if (!new_proc->init_with_core(core, new_proc_flags, true)) {
             new_proc->cleanup(); // Will call `destroy_process_core`
             delete new_proc;
             return_val = -ENOMEM;
@@ -438,7 +452,12 @@ long __syscall_handler(
     }
     }
 
-    if (syscallnum != SYSCALL_SYS_ELEVATE) {
+    // Condition under which the SYS_ELEVATE call succeeded and
+    // restoration of original elevate status is not necessary.
+    bool successfull_elevation_syscall =
+        (syscallnum == SYSCALL_SYS_ELEVATE) && (return_val == 0);
+
+    if (!successfull_elevation_syscall) {
         // Restore the original elevate status
         original_task->get_core()->hw_state.elevated = original_elevate_status;
     }
