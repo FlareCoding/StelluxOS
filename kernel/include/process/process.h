@@ -236,7 +236,7 @@ public:
 
     /**
      * @brief Initializes a process with an entry point and data.
-     * @param name Optional name for the process. If nullptr, no name is set.
+     * @param name Name for the process.
      * @param entry Entry function for the process.
      * @param data Data to pass to the entry function.
      * @param flags Flags controlling process creation behavior.
@@ -250,6 +250,7 @@ public:
 
     /**
      * @brief Initializes a process with an entry point, data, and existing environment.
+     * @param name Name for the process.
      * @param entry Entry function for the process.
      * @param data Data to pass to the entry function.
      * @param env The process environment to use.
@@ -262,11 +263,10 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE bool init_with_entry(task_entry_fn_t entry, void* data, process_env* env, process_creation_flags flags, bool take_ownership = false);
+    __PRIVILEGED_CODE bool init_with_entry(const char* name, task_entry_fn_t entry, void* data, process_env* env, process_creation_flags flags, bool take_ownership = false);
 
     /**
      * @brief Initializes a process with an existing core.
-     * @param name Optional name for the process. If nullptr, no name is set.
      * @param core The core execution state to use.
      * @param flags Flags controlling process creation behavior.
      * @param take_ownership Whether to take ownership of the core.
@@ -277,10 +277,11 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE bool init_with_core(const char* name, process_core* core, process_creation_flags flags, bool take_ownership = false);
+    __PRIVILEGED_CODE bool init_with_core(process_core* core, process_creation_flags flags, bool take_ownership = false);
 
     /**
      * @brief Initializes a process with an existing environment.
+     * @param name Name for the process.
      * @param env The process environment to use.
      * @param flags Flags controlling process creation behavior.
      * @param take_ownership Whether to take ownership of the environment.
@@ -291,7 +292,7 @@ public:
      * 
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE bool init_with_env(process_env* env, process_creation_flags flags, bool take_ownership = false);
+    __PRIVILEGED_CODE bool init_with_env(const char* name, process_env* env, process_creation_flags flags, bool take_ownership = false);
 
     /**
      * @brief Initializes a process with just creation flags.

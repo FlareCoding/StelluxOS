@@ -5,6 +5,21 @@
 #include "mm.h"
 #include <arch/percpu.h>
 
+#define MAX_PROCESS_NAME_LEN 255
+
+typedef int64_t pid_t;
+
+/**
+ * @brief Allocates a new process ID.
+ * 
+ * This function atomically allocates a new process ID by incrementing
+ * a global counter. The allocation is protected by a mutex to ensure
+ * no duplicate PIDs are generated.
+ * 
+ * @return pid_t The newly allocated process ID.
+ */
+pid_t alloc_process_id();
+
 /**
  * @enum process_state
  * @brief Represents the state of a process.
@@ -75,6 +90,14 @@ struct process_core {
      * terminated, etc.
      */
     process_state state;
+
+    /**
+     * @brief Process identity information.
+     */
+    struct {
+        pid_t pid;                              // Process ID
+        char name[MAX_PROCESS_NAME_LEN + 1];    // Process name
+    } identity;
 };
 
 #endif // PROCESS_CORE_H

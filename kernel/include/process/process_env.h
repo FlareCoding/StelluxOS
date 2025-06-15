@@ -4,21 +4,20 @@
 #include <core/string.h>
 #include <kstl/hashmap.h>
 
-#define MAX_PROCESS_NAME_LEN 255
 #define MAX_CWD_LEN 255
 
-typedef int64_t pid_t;
+typedef int64_t eid_t;
 
 /**
- * @brief Allocates a new process ID.
+ * @brief Allocates a new environment ID.
  * 
- * This function atomically allocates a new process ID by incrementing
+ * This function atomically allocates a new environment ID by incrementing
  * a global counter. The allocation is protected by a mutex to ensure
- * no duplicate PIDs are generated.
+ * no duplicate EIDs are generated.
  * 
- * @return pid_t The newly allocated process ID.
+ * @return eid_t The newly allocated environment ID.
  */
-pid_t alloc_process_pid();
+eid_t alloc_environment_id();
 
 /**
  * @enum process_creation_flags
@@ -68,11 +67,10 @@ inline bool has_process_flag(process_creation_flags value, process_creation_flag
  */
 struct process_env {
     /**
-     * @brief Process identity information.
+     * @brief Process environment identity information.
      */
     struct {
-        pid_t pid;                              // Process ID
-        char name[MAX_PROCESS_NAME_LEN + 1];    // Process name
+        eid_t eid;                              // Environment ID
     } identity;
 
     /**
@@ -162,11 +160,10 @@ struct process_env {
      * @brief Constructor for process environment.
      * 
      * Initializes all members to their default values.
-     * Aassigns a new PID to the environment.
+     * Assigns a new EID to the environment.
      */
     process_env() {
-        identity.pid = alloc_process_pid();
-        identity.name[0] = '\0';
+        identity.eid = alloc_environment_id();
         environment.init();
         limits = { .max_memory = 0, .current_memory = 0 };
         working_dir[0] = '\0';
@@ -178,10 +175,10 @@ struct process_env {
      * @brief Static initialization constructor.
      * 
      * Used for compile-time initialization of the idle process environment.
-     * Avoids any dynamic memory allocation and PID assignment.
+     * Avoids any dynamic memory allocation and EID assignment.
      */
     constexpr process_env(process_creation_flags init_flags) 
-        : identity{0, {'i', 'd', 'l', 'e', '\0'}},
+        : identity{0},
           environment{},
           limits{0, 0},
           working_dir{0},

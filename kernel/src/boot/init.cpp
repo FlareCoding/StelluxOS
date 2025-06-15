@@ -218,8 +218,6 @@ void init(unsigned int magic, void* mbi) {
         }
     }
 
-    memcpy(module_mngr_proc->get_env()->identity.name, "module_manager_init", 19);
-
     // Idle loop
     while (true) {
         asm volatile ("hlt");
@@ -287,7 +285,6 @@ void module_manager_init(void*) {
         // Create the init process with the loaded core
         auto init_process = new process();
         if (!init_process->init_with_core(
-            "init",
             init_core,
             process_creation_flags::CAN_ELEVATE | process_creation_flags::SCHEDULE_NOW,
             true

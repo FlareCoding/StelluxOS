@@ -93,6 +93,7 @@ process_core* create_priv_kernel_process_core(task_entry_fn_t entry, void* proce
     core->state = process_state::READY;
     core->hw_state.elevated = 1;
     core->hw_state.cpu = 0;  // Will be set by scheduler when assigned
+    core->identity.pid = alloc_process_id();
 
     // Allocate the primary execution task stack
     void* task_stack = vmm::alloc_contiguous_virtual_pages(SCHED_TASK_STACK_PAGES, DEFAULT_PRIV_PAGE_FLAGS);
@@ -143,6 +144,7 @@ process_core* create_unpriv_kernel_process_core(task_entry_fn_t entry, void* pro
     core->state = process_state::READY;
     core->hw_state.elevated = 0;  // Unprivileged mode
     core->hw_state.cpu = 0;       // Will be set by scheduler when assigned
+    core->identity.pid = alloc_process_id();
 
     // Allocate the primary execution task stack
     void* task_stack = vmm::alloc_contiguous_virtual_pages(SCHED_TASK_STACK_PAGES, DEFAULT_UNPRIV_PAGE_FLAGS);
@@ -196,6 +198,7 @@ process_core* create_userland_process_core(
     core->state = process_state::READY;
     core->hw_state.elevated = 0;  // Userland processes are unprivileged by default
     core->hw_state.cpu = 0;       // Will be set by scheduler when assigned
+    core->identity.pid = alloc_process_id();
 
     // Initialize VMA management for the process
     core->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(pt);
@@ -409,12 +412,6 @@ bool process::init_with_flags(const char* name, process_creation_flags flags) {
     m_owns_env = true;
     m_env->flags = flags;
 
-    // Set process name if provided
-    if (name) {
-        strcpy(m_env->identity.name, name);
-        m_env->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
-    }
-
     // Create core
     m_core = _create_process_core(nullptr, nullptr, flags);
     if (!m_core) {
@@ -423,6 +420,10 @@ bool process::init_with_flags(const char* name, process_creation_flags flags) {
         return false;
     }
     m_owns_core = true;
+
+    // Set process name
+    strcpy(m_core->identity.name, name);
+    m_core->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
 
     m_is_initialized = true;
 
@@ -435,7 +436,7 @@ bool process::init_with_flags(const char* name, process_creation_flags flags) {
 }
 
 __PRIVILEGED_CODE
-bool process::init_with_core(const char* name, process_core* core, process_creation_flags flags, bool take_ownership) {
+bool process::init_with_core(process_core* core, process_creation_flags flags, bool take_ownership) {
     if (m_is_initialized || !core) {
         return false;
     }
@@ -447,12 +448,6 @@ bool process::init_with_core(const char* name, process_core* core, process_creat
     }
     m_owns_env = true;
     m_env->flags = flags;
-
-    // Set process name if provided
-    if (name) {
-        strcpy(m_env->identity.name, name);
-        m_env->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
-    }
 
     m_core = core;
     m_owns_core = take_ownership;
@@ -468,7 +463,7 @@ bool process::init_with_core(const char* name, process_core* core, process_creat
 }
 
 __PRIVILEGED_CODE
-bool process::init_with_env(process_env* env, process_creation_flags flags, bool take_ownership) {
+bool process::init_with_env(const char* name, process_env* env, process_creation_flags flags, bool take_ownership) {
     if (m_is_initialized || !env) {
         return false;
     }
@@ -482,6 +477,10 @@ bool process::init_with_env(process_env* env, process_creation_flags flags, bool
         return false;
     }
     m_owns_core = true;
+
+    // Set process name
+    strcpy(m_core->identity.name, name);
+    m_core->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
 
     m_is_initialized = true;
 
@@ -529,12 +528,6 @@ bool process::init_with_entry(const char* name, task_entry_fn_t entry, void* dat
     m_owns_env = true;
     m_env->flags = flags;
 
-    // Set process name if provided
-    if (name) {
-        strcpy(m_env->identity.name, name);
-        m_env->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
-    }
-
     // Create core
     m_core = _create_process_core(entry, data, flags);
     if (!m_core) {
@@ -543,6 +536,10 @@ bool process::init_with_entry(const char* name, task_entry_fn_t entry, void* dat
         return false;
     }
     m_owns_core = true;
+
+    // Set process name
+    strcpy(m_core->identity.name, name);
+    m_core->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
 
     m_is_initialized = true;
 
@@ -555,7 +552,7 @@ bool process::init_with_entry(const char* name, task_entry_fn_t entry, void* dat
 }
 
 __PRIVILEGED_CODE
-bool process::init_with_entry(task_entry_fn_t entry, void* data, process_env* env, process_creation_flags flags, bool take_ownership) {
+bool process::init_with_entry(const char* name, task_entry_fn_t entry, void* data, process_env* env, process_creation_flags flags, bool take_ownership) {
     if (m_is_initialized || !entry || !env) {
         return false;
     }
@@ -569,6 +566,10 @@ bool process::init_with_entry(task_entry_fn_t entry, void* data, process_env* en
         return false;
     }
     m_owns_core = true;
+
+    // Set process name
+    strcpy(m_core->identity.name, name);
+    m_core->identity.name[MAX_PROCESS_NAME_LEN] = '\0';
 
     m_is_initialized = true;
 
