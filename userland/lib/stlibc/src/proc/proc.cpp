@@ -1,7 +1,7 @@
 #include <stlibc/proc/proc.h>
 #include <stlibc/system/syscall.h>
 
-pid_t proc_create(const char* path, proc_flags_t flags) {
+pid_t proc_create(const char* path, uint64_t flags) {
     return static_cast<pid_t>(syscall(SYS_PROC_CREATE, reinterpret_cast<uint64_t>(path), flags, 0, 0, 0));
 }
 

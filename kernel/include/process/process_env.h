@@ -53,6 +53,16 @@ inline bool operator!(process_creation_flags val) {
     return static_cast<uint64_t>(val) == 0;
 }
 
+inline process_creation_flags& operator|=(process_creation_flags& lhs, process_creation_flags rhs) {
+    lhs = lhs | rhs;
+    return lhs;
+}
+
+inline process_creation_flags& operator&=(process_creation_flags& lhs, process_creation_flags rhs) {
+    lhs = lhs & rhs;
+    return lhs;
+}
+
 inline bool has_process_flag(process_creation_flags value, process_creation_flags flag) {
     return static_cast<uint64_t>(value & flag) != 0;
 }
@@ -114,7 +124,7 @@ struct process_env {
     /**
      * @brief Working directory information.
      */
-    char working_dir[MAX_CWD_LEN + 1] = { 0 };
+    char working_dir[MAX_CWD_LEN + 1] = { '/', 0 };
 
     /**
      * @brief File descriptor management.

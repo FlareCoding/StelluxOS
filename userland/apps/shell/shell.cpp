@@ -8,6 +8,9 @@
 #include <arch/x86/cpuid.h>
 #include <arch/x86/msr.h>
 #include <input/system_input_manager.h>
+#include <fs/vfs.h>
+
+#include <stlibc/proc/proc.h>
 
 constexpr size_t MAX_COMMAND_LENGTH = 256;
 
@@ -76,7 +79,20 @@ void process_command(const kstl::string& command) {
     } else if (command == "clear") {
         kprint("\033[2J\033[H"); // ANSI escape codes to clear screen and move cursor to home
     } else {
-        kprint("Unknown command. Type 'help' for a list of commands.\n");
+        auto& vfs = fs::virtual_filesystem::get();
+        fs::vfs_stat_struct stat;
+
+        kstl::string bin_path = kstl::string("/initrd/bin/") + command;
+
+        // Get file stats
+        if (vfs.stat(bin_path, stat) != fs::fs_error::success) {
+            kprint("Unknown command. Type 'help' for a list of commands.\n");
+            return;
+        }
+
+        if (proc_create(bin_path.c_str(), PROC_NEW_ENV) < 0) {
+            kprint("Failed to launch: '%s'\n", bin_path.c_str());
+        }
     }
 }
 

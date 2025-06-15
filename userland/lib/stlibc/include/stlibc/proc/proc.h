@@ -8,12 +8,13 @@ extern "C" {
 #endif
 
 // Process creation flags
-typedef enum proc_flags {
-    PROC_NONE       = 0 << 0,  // Invalid / empty flags
-    PROC_SHARE_ENV  = 1 << 0,  // Share environment with parent
-    PROC_COPY_ENV   = 1 << 1,  // Copy parent's environment
-    PROC_NEW_ENV    = 1 << 2,  // Create new environment
-} proc_flags_t;
+enum proc_flags_t {
+    PROC_NONE           = 0 << 0,  // Invalid / empty flags
+    PROC_SHARE_ENV      = 1 << 0,  // Share environment with parent
+    PROC_COPY_ENV       = 1 << 1,  // Copy parent's environment
+    PROC_NEW_ENV        = 1 << 2,  // Create new environment
+    PROC_CAN_ELEVATE    = 1 << 3,  // Create new environment
+};
 
 /**
  * @brief Creates a new process by loading an executable file.
@@ -21,7 +22,7 @@ typedef enum proc_flags {
  * @param flags Process creation flags
  * @return pid_t The process ID of the created process, or -1 on error
  */
-pid_t proc_create(const char* path, proc_flags_t flags);
+pid_t proc_create(const char* path, uint64_t flags);
 
 /**
  * @brief Waits for a process to terminate.
