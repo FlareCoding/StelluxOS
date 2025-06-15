@@ -5,10 +5,10 @@
 process_env g_idle_process_env;
 
 // Lock to ensure no identical PIDs get produced
-DECLARE_GLOBAL_OBJECT(mutex, g_pid_alloc_lock);
-pid_t g_available_process_pid = 1;
+DECLARE_GLOBAL_OBJECT(mutex, g_eid_alloc_lock);
+eid_t g_available_env_eid = 1;
 
-pid_t alloc_process_pid() {
-    mutex_guard guard(g_pid_alloc_lock);
-    return g_available_process_pid++;
+eid_t alloc_environment_id() {
+    mutex_guard guard(g_eid_alloc_lock);
+    return g_available_env_eid++;
 }

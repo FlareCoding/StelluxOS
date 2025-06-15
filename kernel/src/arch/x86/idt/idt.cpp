@@ -516,7 +516,7 @@ void panic(ptregs* regs) {
     kprint("  IRQ: %s\n  Error Code: 0x%0llx\n",
         arch::x86::g_cpu_exception_strings[regs->intno], regs->error);
     kprint("  CPU: %i\n", current->get_core()->hw_state.cpu);
-    kprint("  Thread Name: '%s'\n", current->get_env()->identity.name);
+    kprint("  Thread Name: '%s'\n", current->get_core()->identity.name);
     kprint("  Privilege: %s\n", current->get_core()->hw_state.elevated ? "elevated" : "lowered");
 
     // Control registers

@@ -72,6 +72,10 @@ process_core* elf64_loader::load_from_file(const char* filepath) {
         return nullptr;
     }
 
+    // Copy the name into process core
+    auto name = fs::virtual_filesystem::get_filename_from_path(filepath);
+    memcpy(core->identity.name, name.c_str(), kstl::max(name.length(), sizeof(core->identity.name) - 1));
+
     // Free the file buffer as it's no longer needed
     free(file_buffer);
 
