@@ -206,8 +206,8 @@ void scheduler::process_cleanup_queue() {
             continue;
         }
 
-#if 0
-        serial::printf("'%s'->cleanup()\n", proc->get_core()->identity.name);
+#ifdef ENABLE_PROC_LIFECYCLE_TRACES
+        serial::printf("pid:%u '%s'->cleanup()\n", proc->get_core()->identity.pid, proc->get_core()->identity.name);
 #endif
         m_cleanup_queue.erase(i);
         proc->cleanup();

@@ -10,6 +10,7 @@
 #include <kstl/vector.h>
 #include <interrupts/irq.h>
 #include <fs/vfs.h>
+#include <sched/sched.h>
 #include <process/elf/elf64_loader.h>
 
 // Error codes
@@ -470,6 +471,11 @@ long __syscall_handler(
         // Remove the handle and release our reference
         current->get_env()->handles.remove_handle(handle_index);
         target_proc->release_ref();
+
+        // Add the process to the cleanup queue if needed
+        if (target_proc->get_core()->ctx_switch_state.needs_cleanup == 1) {
+            sched::scheduler::get().add_to_cleanup_queue(target_proc);
+        }
 
         return_val = 0;
         break;

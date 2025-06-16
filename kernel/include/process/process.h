@@ -6,6 +6,8 @@
 #include <memory/memory.h>
 #include <core/sync.h>
 
+// #define ENABLE_PROC_LIFECYCLE_TRACES
+
 // Forward declaration of process class
 class process;
 
@@ -406,8 +408,7 @@ private:
     bool m_is_initialized = false;        // Whether the process has been properly initialized
     bool m_owns_core = false;             // Whether this process owns and should delete the core
     bool m_owns_env = false;              // Whether this process owns and should delete the environment
-    uint64_t m_ref_count;                 // Reference count for the process
-    mutable mutex m_ref_mutex = mutex();  // Mutex protecting the reference count
+    atomic<uint64_t> m_ref_count{1};      // Reference count for the process
 
     /**
      * @brief Creates a process core based on flags and entry point.
