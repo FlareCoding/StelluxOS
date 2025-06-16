@@ -171,4 +171,58 @@ private:
     mutex& m_mutex; /** Reference to the managed mutex */
 };
 
+template<typename T>
+class atomic {
+    /* Compile-time sanity checks ------------------------------------------------ */
+    static_assert(__is_trivially_copyable(T),
+                  "atomic<T> requires a trivially-copyable type");
+
+    static_assert(sizeof(T) == 1 || sizeof(T) == 2 ||
+                  sizeof(T) == 4 || sizeof(T) == 8,
+                  "atomic<T> only supports 1, 2, 4 or 8-byte objects");
+
+public:
+    /* Constructors -------------------------------------------------------------- */
+    constexpr atomic() noexcept : m_value{} {}
+    constexpr explicit atomic(T desired) noexcept : m_value{desired} {}
+
+    /* Non-copyable / non-movable (like std::atomic) ----------------------------- */
+    atomic(const atomic&)            = delete;
+    atomic& operator=(const atomic&) = delete;
+
+    /* Store / load -------------------------------------------------------------- */
+    inline void store(T desired) noexcept {
+        __atomic_store_n(&m_value, desired, __ATOMIC_SEQ_CST);
+    }
+
+    inline T load() const noexcept {
+        return __atomic_load_n(&m_value, __ATOMIC_SEQ_CST);
+    }
+
+    /* Fetch-add / Fetch-sub ---------------------------------------------------- */
+    inline T fetch_add(T arg) noexcept {
+        return __atomic_fetch_add(&m_value, arg, __ATOMIC_SEQ_CST);
+    }
+
+    inline T fetch_sub(T arg) noexcept {
+        return __atomic_fetch_sub(&m_value, arg, __ATOMIC_SEQ_CST);
+    }
+
+    /* Exchange ------------------------------------------------------------------ */
+    inline T exchange(T desired) noexcept {
+        return __atomic_exchange_n(&m_value, desired, __ATOMIC_SEQ_CST);
+    }
+
+    /* Compare-and-exchange (strong) -------------------------------------------- */
+    inline bool compare_exchange_strong(T& expected, T desired) noexcept {
+        return __atomic_compare_exchange_n(
+            &m_value, &expected, desired,
+            /*weak=*/false,
+            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    }
+
+private:
+    volatile T m_value __attribute__((aligned(sizeof(T))));
+};
+
 #endif // SYNC_H

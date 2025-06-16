@@ -384,6 +384,11 @@ void exit_process() {
     // Release the process's reference to itself
     current->release_ref();
 
+    // Add the process to the cleanup queue if needed
+    if (core->ctx_switch_state.needs_cleanup == 1) {
+        sched::scheduler::get().add_to_cleanup_queue(current);
+    }
+
     // Remove the process from the scheduler queue
     scheduler.remove_process(current);
 
@@ -432,28 +437,31 @@ process_core* process::_create_process_core(task_entry_fn_t entry, void* data, p
 }
 
 void process::add_ref() {
-    mutex_guard guard(m_ref_mutex);
-#if 0
-    kprint("'%s'->add_ref()\n", m_core->identity.name);
+    m_ref_count.fetch_add(1);
+#ifdef ENABLE_PROC_LIFECYCLE_TRACES
+    kprint("pid:%u '%s'->add_ref() new_count:%u\n", m_core->identity.pid, m_core->identity.name, m_ref_count.load());
 #endif
-    m_ref_count++;
 }
 
 bool process::release_ref() {
-    mutex_guard guard(m_ref_mutex);
-#if 0
-    kprint("'%s'->release_ref()\n", m_core->identity.name);
-#endif
-    if (--m_ref_count == 0) {
-        // Add the process to the cleanup queue
-        sched::scheduler::get().add_to_cleanup_queue(this);
+    // Use atomic fetch_sub to decrement the reference count
+    uint64_t old_count = m_ref_count.fetch_sub(1);
+    
+    // If this was the last reference
+    if (old_count == 1) {
+        // Indicate to the caller that this process needs
+        // to be added to the scheduler's cleanup queue.
+        m_core->ctx_switch_state.needs_cleanup = 1;
+        memory_barrier();
     }
+#ifdef ENABLE_PROC_LIFECYCLE_TRACES
+    kprint("pid:%u '%s'->release_ref() new_count:%u\n", m_core->identity.pid, m_core->identity.name, m_ref_count.load());
+#endif
     return true;
 }
 
 uint64_t process::get_ref_count() const {
-    mutex_guard guard(m_ref_mutex);
-    return m_ref_count;
+    return m_ref_count.load();
 }
 
 __PRIVILEGED_CODE
