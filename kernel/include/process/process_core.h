@@ -98,22 +98,6 @@ struct process_core {
         pid_t pid;                              // Process ID
         char name[MAX_PROCESS_NAME_LEN + 1];    // Process name
     } identity;
-
-    /**
-     * @brief Context switch state flags.
-     * 
-     * Contains flags that indicate the state of the process
-     * during context switching. These flags are used by the
-     * interrupt handler to perform necessary cleanup after
-     * a context switch is complete.
-     */
-    struct {
-        uint64_t needs_ref_decrement : 1;   // Set when process exits and needs ref count decremented
-                                            // after context switch completes. This is needed because
-                                            // the interrupt handler still needs access to the process
-                                            // core until the context switch is fully complete.
-        uint64_t reserved           : 63;   // Reserved for future use
-    } __attribute__((packed)) ctx_switch_state;
 };
 
 #endif // PROCESS_CORE_H

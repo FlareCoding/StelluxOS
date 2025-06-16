@@ -142,8 +142,47 @@ public:
      */
     __PRIVILEGED_CODE void preempt_enable(int cpu = -1);
 
+    /**
+     * @brief Adds a process to the cleanup queue.
+     * @param proc Pointer to the process to be cleaned up.
+     * 
+     * Adds a terminated process to the cleanup queue for later resource cleanup.
+     * The process will be cleaned up when the cleanup queue is processed.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void add_to_cleanup_queue(process* proc);
+
+    /**
+     * @brief Processes the cleanup queue.
+     * 
+     * Iterates through the cleanup queue and performs resource cleanup
+     * for each terminated process. This includes freeing memory and
+     * other system resources.
+     * 
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void process_cleanup_queue();
+
 private:
     kstl::shared_ptr<sched_run_queue> m_run_queues[MAX_SYSTEM_CPUS];
+
+    /**
+     * @brief Vector of processes pending cleanup.
+     * 
+     * Stores processes that have been terminated and need their resources
+     * cleaned up. Processes are added to this queue when their reference
+     * count reaches zero.
+     */
+    kstl::vector<process*> m_cleanup_queue;
+
+    /**
+     * @brief Mutex for synchronizing access to the cleanup queue.
+     * 
+     * Protects the cleanup queue from concurrent access when multiple
+     * processes are being added or removed for cleanup.
+     */
+    mutex m_cleanup_lock;
 
     /**
      * @brief Finds the least-loaded CPU for process assignment.

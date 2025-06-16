@@ -42,8 +42,10 @@ process* sched_run_queue::pick_next() {
         process* next_proc = m_processes[m_next_index];
         m_next_index = (m_next_index + 1) % m_processes.size();
 
+        process_core* next_proc_core = next_proc->get_core();
+
         // Check if this is a non-idle process
-        if (next_proc->get_core() && next_proc->get_core()->identity.pid != 0) { // Assuming idle process has pid 0
+        if (next_proc_core && next_proc_core->identity.pid != 0 && next_proc_core->state == process_state::READY) { // Assuming idle process has pid 0
             return next_proc;
         }
 
