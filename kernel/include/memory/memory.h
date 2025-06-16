@@ -3,6 +3,10 @@
 #include <types.h>
 #include <type_traits>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Sets the first `count` bytes of the memory area pointed to by `ptr` to the specified `value`.
  *
@@ -32,6 +36,10 @@ void* memcpy(void* dest, const void* src, size_t count);
  * @return int An integer less than, equal to, or greater than zero if the first `count` bytes of `ptr1` is found, respectively, to be less than, to match, or be greater than the first `count` bytes of `ptr2`.
  */
 int memcmp(const void* ptr1, const void* ptr2, size_t count);
+
+#ifdef __cplusplus
+}
+#endif
 
 // Placement new operator
 void* operator new(size_t, void* ptr) noexcept;

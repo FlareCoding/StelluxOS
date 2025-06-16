@@ -26,8 +26,15 @@ int main() {
 
     free(arr);
 
-    if (proc_create("/initrd/bin/shell", PROC_NEW_ENV | PROC_CAN_ELEVATE) < 0) {
+    pid_t shell_pid = proc_create("/initrd/bin/shell", PROC_NEW_ENV | PROC_CAN_ELEVATE);
+
+    if (shell_pid < 0) {
         printf("Failed to create 'shell' process!\n");
+    } else {
+        int shell_exit_code = 0;
+        if (proc_wait(shell_pid, &shell_exit_code) != 0) {
+            printf("proc_wait failed on shell_pid\n");
+        }
     }
 
     printf("init process exiting!\n");

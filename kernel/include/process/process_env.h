@@ -112,6 +112,70 @@ struct process_env {
     } environment;
 
     /**
+     * @brief Working directory information.
+     */
+    char working_dir[MAX_CWD_LEN + 1] = { '/', 0 };
+
+    /**
+     * @brief Handle management.
+     * 
+     * Stores handles to kernel objects, including processes.
+     */
+    struct handle_table {
+        static constexpr size_t MAX_HANDLES = 1024;
+        struct handle_entry {
+            uint64_t id = 0;                // Handle ID (PID for process handles)
+            void* __object = nullptr;       // Pointer to kernel object
+        } __attribute__((packed)) entries[MAX_HANDLES];
+
+        /**
+         * @brief Default constructor.
+         * 
+         * Initializes all entries to their default values.
+         */
+        constexpr handle_table() = default;
+
+        /**
+         * @brief Initializes the handle table.
+         */
+        void init() {
+            for (size_t i = 0; i < MAX_HANDLES; i++) {
+                entries[i].id = 0;
+                entries[i].__object = nullptr;
+            }
+        }
+
+        /**
+         * @brief Static initialization for compile-time initialization.
+         */
+        constexpr void static_init() {
+            // No-op for static initialization
+        }
+
+        /**
+         * @brief Adds a handle to the table.
+         * @param id The handle ID
+         * @param object Pointer to the kernel object
+         * @return The index of the new handle, or SIZE_MAX if table is full
+         */
+        size_t add_handle(uint64_t id, void* object);
+
+        /**
+         * @brief Removes a handle from the table.
+         * @param index The index of the handle to remove
+         * @return true if the handle was removed, false if invalid index
+         */
+        bool remove_handle(size_t index);
+
+        /**
+         * @brief Finds a handle by ID.
+         * @param id The handle ID to find
+         * @return The index of the handle, or SIZE_MAX if not found
+         */
+        size_t find_handle(uint64_t id);
+    } handles;
+
+    /**
      * @brief Resource limits and tracking.
      * 
      * Defines various resource limits and their current usage.
@@ -122,49 +186,12 @@ struct process_env {
     } limits;
 
     /**
-     * @brief Working directory information.
-     */
-    char working_dir[MAX_CWD_LEN + 1] = { '/', 0 };
-
-    /**
-     * @brief File descriptor management.
-     * 
-     * Tracks open file descriptors and their associated resources.
-     */
-    struct fd_table {
-        static constexpr size_t MAX_FDS = 1024;
-        struct fd_entry {
-            uint8_t in_use;
-            int32_t flags;
-            uint8_t padding[3];
-        } __attribute__((packed)) entries[MAX_FDS];
-
-        /**
-         * @brief Initializes the file descriptor table.
-         */
-        void init() {
-            for (auto& entry : entries) {
-                entry.in_use = false;
-                entry.flags = 0;
-            }
-        }
-
-        /**
-         * @brief Static initialization for compile-time initialization.
-         * This is used for the idle process environment.
-         */
-        constexpr void static_init() {
-            // No-op for static initialization
-        }
-    } fds;
-
-    /**
      * @brief Process creation flags.
      * 
      * Defines various flags that control process creation
      * and execution behavior.
      */
-    process_creation_flags flags;
+    process_creation_flags creation_flags;
 
     /**
      * @brief Constructor for process environment.
@@ -172,13 +199,16 @@ struct process_env {
      * Initializes all members to their default values.
      * Assigns a new EID to the environment.
      */
-    process_env() {
+    process_env() 
+        : identity{0},
+          environment{},
+          working_dir{0},
+          handles{},
+          limits{0, 0},
+          creation_flags(process_creation_flags::NONE) {
         identity.eid = alloc_environment_id();
         environment.init();
-        limits = { .max_memory = 0, .current_memory = 0 };
-        working_dir[0] = '\0';
-        fds.init();
-        flags = process_creation_flags::NONE;
+        handles.init();
     }
 
     /**
@@ -190,12 +220,12 @@ struct process_env {
     constexpr process_env(process_creation_flags init_flags) 
         : identity{0},
           environment{},
-          limits{0, 0},
           working_dir{0},
-          fds{},
-          flags(init_flags) {
+          handles{},
+          limits{0, 0},
+          creation_flags(init_flags) {
         environment.static_init();
-        fds.static_init();
+        handles.static_init();
     }
 
     /**
