@@ -269,6 +269,8 @@ bool destroy_process_core(process_core* core) {
         );
     }
 
+    return true;
+
     // Free the task stack if it exists for kernel processes
     // using the kernel's virtual memory manager (vmm).
     if (core->stacks.task_stack && core->stacks.task_stack > USERLAND_TASK_STACK_TOP) {
@@ -379,12 +381,11 @@ void exit_process() {
         core->state = process_state::TERMINATED;
     }
 
+    // Release the process's reference to itself
+    current->release_ref();
+
     // Remove the process from the scheduler queue
     scheduler.remove_process(current);
-
-    // Indicate that the reference count should be decreased
-    // when the process exits and completed the context switch.
-    core->ctx_switch_state.needs_ref_decrement = 1;
 
     // Trigger a context switch to switch to the next
     // available process in the scheduler run queue.
@@ -444,11 +445,8 @@ bool process::release_ref() {
     kprint("'%s'->release_ref()\n", m_core->identity.name);
 #endif
     if (--m_ref_count == 0) {
-#if 0
-        kprint("'%s'->cleanup()!\n", m_core->identity.name);
-#endif
-        cleanup();
-        delete this;
+        // Add the process to the cleanup queue
+        sched::scheduler::get().add_to_cleanup_queue(this);
     }
     return true;
 }

@@ -104,6 +104,9 @@ void scheduler::unregister_cpu_run_queue(uint64_t cpu) {
 
 __PRIVILEGED_CODE
 void scheduler::add_process(process* proc, int cpu) {
+    // Process cleanup queue before scheduling
+    process_cleanup_queue();
+    
     if (cpu == -1) {
         cpu = _load_balance_find_cpu();
     }
@@ -146,6 +149,7 @@ void scheduler::remove_process(process* proc) {
 __PRIVILEGED_CODE
 void scheduler::__schedule(ptregs* irq_frame) {
     int cpu = current->get_core()->hw_state.cpu;
+
     process* next = m_run_queues[cpu]->pick_next();
     if (next && next != current) {
         switch_context_in_irq(cpu, cpu, current, next, irq_frame);
@@ -180,6 +184,35 @@ void scheduler::preempt_enable(int cpu) {
 #ifdef ARCH_X86_64
     arch::x86::lapic::get(cpu)->unmask_timer_irq();
 #endif
+}
+
+__PRIVILEGED_CODE
+void scheduler::add_to_cleanup_queue(process* proc) {
+    mutex_guard guard(m_cleanup_lock);
+    m_cleanup_queue.push_back(proc);
+}
+
+__PRIVILEGED_CODE
+void scheduler::process_cleanup_queue() {
+    mutex_guard guard(m_cleanup_lock);
+
+    size_t i = 0;
+    while (i < m_cleanup_queue.size()) {
+        process* proc = m_cleanup_queue[i];
+        
+        // Skip if this is the current process
+        if (proc == current) {
+            i++;
+            continue;
+        }
+
+#if 0
+        serial::printf("'%s'->cleanup()\n", proc->get_core()->identity.name);
+#endif
+        m_cleanup_queue.erase(i);
+        proc->cleanup();
+        delete proc;
+    }
 }
 
 int scheduler::_load_balance_find_cpu() {
