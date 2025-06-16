@@ -262,6 +262,13 @@ void common_isr_entry(ptregs regs) {
 
     // Restore the original elevate status
     original_task->get_core()->hw_state.elevated = original_elevate_status;
+
+    // If a process context switch occured due to a process exit and the new task
+    // is now setup and active, the original should have its reference count decremented
+    // so that resources can be freed up properly.
+    if (current != original_task && original_task->get_core()->ctx_switch_state.needs_ref_decrement) {
+        original_task->release_ref();
+    }
 }
 
 __PRIVILEGED_CODE

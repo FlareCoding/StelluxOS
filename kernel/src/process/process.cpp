@@ -15,9 +15,9 @@ DEFINE_PER_CPU(uint64_t, current_system_stack);
 #define SCHED_STACK_TOP_PADDING     0x80
 
 #define SCHED_SYSTEM_STACK_PAGES    2
-#define SCHED_TASK_STACK_PAGES      2
+#define SCHED_TASK_STACK_PAGES      8
 
-#define SCHED_USERLAND_TASK_STACK_PAGES 8
+#define SCHED_USERLAND_TASK_STACK_PAGES SCHED_TASK_STACK_PAGES
 #define SCHED_USERLAND_TASK_STACK_SIZE  SCHED_USERLAND_TASK_STACK_PAGES * PAGE_SIZE - SCHED_STACK_TOP_PADDING
 
 #define SCHED_SYSTEM_STACK_SIZE     SCHED_SYSTEM_STACK_PAGES * PAGE_SIZE - SCHED_STACK_TOP_PADDING
@@ -269,21 +269,49 @@ bool destroy_process_core(process_core* core) {
         );
     }
 
-    // Free the userland task stack if it exists
-    if (core->stacks.task_stack) {
+    // Free the task stack if it exists for kernel processes
+    // using the kernel's virtual memory manager (vmm).
+    if (core->stacks.task_stack && core->stacks.task_stack > USERLAND_TASK_STACK_TOP) {
         vmm::unmap_contiguous_virtual_pages(
             core->stacks.task_stack,
-            SCHED_USERLAND_TASK_STACK_PAGES
+            SCHED_TASK_STACK_PAGES
         );
     }
 
-    // Clean up VMA resources by removing all VMAs
+    // Clean up VMA resources by removing all VMAs and unmapping their pages
     vma_area* vma = core->mm_ctx.vma_list;
     while (vma) {
         vma_area* next = vma->next;
+
+        // Unmap only the userland pages for this VMA range
+        if (vma->start < USERLAND_TASK_STACK_TOP) {
+            size_t size = vma->end - vma->start;
+            size_t num_pages = size / PAGE_SIZE;
+
+            // Unmap pages and free physical memory
+            for (size_t i = 0; i < num_pages; i++) {
+                uintptr_t page_addr = vma->start + (i * PAGE_SIZE);
+                void* phys_addr = reinterpret_cast<void*>(paging::get_physical_address(reinterpret_cast<void*>(page_addr)));
+                
+                if (phys_addr) {
+                    // Unmap the page using the process's page table
+                    paging::unmap_page(page_addr, reinterpret_cast<paging::page_table*>(core->mm_ctx.root_page_table));
+
+                    // Free the physical page
+                    allocators::page_bitmap_allocator::get_physical_allocator().free_page(phys_addr);
+                }
+            }
+        }
+
         remove_vma(&core->mm_ctx, vma);
         vma = next;
     }
+
+    //
+    // TO-DO:
+    //   - properly free up and deallocate the page table
+    //   - deallocate the dynpriv whitelist entry if it exists
+    //
 
     // Free the process core itself
     delete core;
@@ -354,6 +382,10 @@ void exit_process() {
     // Remove the process from the scheduler queue
     scheduler.remove_process(current);
 
+    // Indicate that the reference count should be decreased
+    // when the process exits and completed the context switch.
+    core->ctx_switch_state.needs_ref_decrement = 1;
+
     // Trigger a context switch to switch to the next
     // available process in the scheduler run queue.
     scheduler.schedule();
@@ -398,6 +430,34 @@ process_core* process::_create_process_core(task_entry_fn_t entry, void* data, p
     }
 }
 
+void process::add_ref() {
+    mutex_guard guard(m_ref_mutex);
+#if 0
+    kprint("'%s'->add_ref()\n", m_core->identity.name);
+#endif
+    m_ref_count++;
+}
+
+bool process::release_ref() {
+    mutex_guard guard(m_ref_mutex);
+#if 0
+    kprint("'%s'->release_ref()\n", m_core->identity.name);
+#endif
+    if (--m_ref_count == 0) {
+#if 0
+        kprint("'%s'->cleanup()!\n", m_core->identity.name);
+#endif
+        cleanup();
+        delete this;
+    }
+    return true;
+}
+
+uint64_t process::get_ref_count() const {
+    mutex_guard guard(m_ref_mutex);
+    return m_ref_count;
+}
+
 __PRIVILEGED_CODE
 bool process::init_with_flags(const char* name, process_creation_flags flags) {
     if (m_is_initialized) {
@@ -410,7 +470,7 @@ bool process::init_with_flags(const char* name, process_creation_flags flags) {
         return false;
     }
     m_owns_env = true;
-    m_env->flags = flags;
+    m_env->creation_flags = flags;
 
     // Create core
     m_core = _create_process_core(nullptr, nullptr, flags);
@@ -447,7 +507,7 @@ bool process::init_with_core(process_core* core, process_creation_flags flags, b
         return false;
     }
     m_owns_env = true;
-    m_env->flags = flags;
+    m_env->creation_flags = flags;
 
     m_core = core;
     m_owns_core = take_ownership;
@@ -512,7 +572,7 @@ bool process::init(process_core* core, bool take_core_ownership, process_env* en
     m_is_initialized = true;
 
     // Schedule the process if requested
-    if (has_process_flag(env->flags, process_creation_flags::SCHEDULE_NOW)) {
+    if (has_process_flag(env->creation_flags, process_creation_flags::SCHEDULE_NOW)) {
         sched::scheduler::get().add_process(this);
     }
 
@@ -531,7 +591,7 @@ bool process::init_with_entry(const char* name, task_entry_fn_t entry, void* dat
         return false;
     }
     m_owns_env = true;
-    m_env->flags = flags;
+    m_env->creation_flags = flags;
 
     // Create core
     m_core = _create_process_core(entry, data, flags);

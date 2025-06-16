@@ -4,6 +4,7 @@
 #include "process_env.h"
 #include <memory/paging.h>
 #include <memory/memory.h>
+#include <core/sync.h>
 
 // Forward declaration of process class
 class process;
@@ -224,8 +225,9 @@ public:
      * @brief Default constructor.
      * 
      * Creates an uninitialized process. One of the init methods must be called before use.
+     * Initializes reference count to 1 for self-ownership.
      */
-    process() = default;
+    process() : m_ref_count(1) {}
 
     /**
      * @brief Default destructor.
@@ -233,6 +235,32 @@ public:
      * Note: cleanup() should be called before destruction to properly free resources.
      */
     ~process() = default;
+
+    /**
+     * @brief Increments the process reference count.
+     * 
+     * This should be called when creating a new handle to this process.
+     * The reference count is protected by a mutex to ensure thread safety.
+     */
+    void add_ref();
+
+    /**
+     * @brief Decrements the process reference count.
+     * 
+     * This should be called when closing a handle to this process.
+     * If the reference count reaches 0, the process is cleaned up and deleted.
+     * The reference count is protected by a mutex to ensure thread safety.
+     * 
+     * @return true if the process was deleted, false otherwise
+     */
+    bool release_ref();
+
+    /**
+     * @brief Gets the current reference count.
+     * 
+     * @return The current reference count
+     */
+    uint64_t get_ref_count() const;
 
     /**
      * @brief Initializes a process with an entry point and data.
@@ -378,6 +406,8 @@ private:
     bool m_is_initialized = false;        // Whether the process has been properly initialized
     bool m_owns_core = false;             // Whether this process owns and should delete the core
     bool m_owns_env = false;              // Whether this process owns and should delete the environment
+    uint64_t m_ref_count;                 // Reference count for the process
+    mutable mutex m_ref_mutex = mutex();  // Mutex protecting the reference count
 
     /**
      * @brief Creates a process core based on flags and entry point.

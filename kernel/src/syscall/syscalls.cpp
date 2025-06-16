@@ -407,6 +407,23 @@ long __syscall_handler(
             break;
         }
 
+        // Add a handle to the new process in the parent's environment
+        int handle_index = current->get_env()->handles.add_handle(
+            new_proc->get_core()->identity.pid,
+            new_proc
+        );
+
+        if (handle_index < 0) {
+            // If we can't add the handle, we need to clean up the process
+            new_proc->cleanup();
+            delete new_proc;
+            return_val = -ENOMEM;
+            break;
+        }
+
+        // Increment the reference count for the parent's handle
+        new_proc->add_ref();
+
         // Return the new process's PID
         return_val = static_cast<long>(core->identity.pid);
         break;
@@ -422,12 +439,39 @@ long __syscall_handler(
             break;
         }
 
-        // TODO: Implement process waiting
-        kprint("SYSCALL_SYS_PROC_WAIT unimplemented!\n");
+        // Find the handle for the target process
+        int handle_index = current->get_env()->handles.find_handle(pid);
+        if (handle_index < 0) {
+            return_val = -EINVAL;  // No handle found for this PID
+            break;
+        }
+
+        // Get the process pointer from the handle
+        process* target_proc = reinterpret_cast<process*>(
+            current->get_env()->handles.entries[handle_index].__object
+        );
+        if (!target_proc) {
+            return_val = -EINVAL;  // Invalid handle
+            break;
+        }
+
+        // Wait for the process to terminate
+        while (target_proc->get_core()->state != process_state::TERMINATED) {
+            // Yield to other processes while waiting
+            sched::yield();
+        }
+
+        // Get the exit code if requested
         if (exit_code) {
+            // TODO: Implement proper exit code tracking
             *exit_code = 0;
         }
-        return_val = -ENOPRIV;
+
+        // Remove the handle and release our reference
+        current->get_env()->handles.remove_handle(handle_index);
+        target_proc->release_ref();
+
+        return_val = 0;
         break;
     }
     case SYSCALL_SYS_ELEVATE: {

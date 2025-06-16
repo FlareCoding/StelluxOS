@@ -90,8 +90,15 @@ void process_command(const kstl::string& command) {
             return;
         }
 
-        if (proc_create(bin_path.c_str(), PROC_NEW_ENV) < 0) {
+        pid_t pid = proc_create(bin_path.c_str(), PROC_NEW_ENV);
+        if (pid < 0) {
             kprint("Failed to launch: '%s'\n", bin_path.c_str());
+            return;
+        }
+
+        int exit_code = 0;
+        if (proc_wait(pid, &exit_code) != 0) {
+            kprint("proc_wait failed on '%s'\n", bin_path.c_str());
         }
     }
 }
@@ -129,6 +136,11 @@ void shell_loop() {
             kprint("\n");
             if (command_length > 0) {
                 command_buffer[command_length] = '\0';
+
+                if (kstl::string(command_buffer) == "exit") {
+                    break;
+                }
+
                 process_command(command_buffer);
                 command_length = 0; // Reset the buffer for the next command
             }
