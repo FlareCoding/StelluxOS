@@ -17,6 +17,7 @@ enum {
     SYS_GETPID      = 5,
     SYS_PROC_CREATE = 6,
     SYS_PROC_WAIT   = 7,
+    SYS_PROC_CLOSE  = 8,
     SYS_ELEVATE     = 90
 };
 

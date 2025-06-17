@@ -371,8 +371,17 @@ long __syscall_handler(
     case SYSCALL_SYS_PROC_CREATE: {
         // arg1 = path to executable
         // arg2 = process creation flags
+        // arg3 = access rights
+        // arg4 = handle flags
+        // arg5 = pointer to proc_info struct
         const char* path = reinterpret_cast<const char*>(arg1);
         uint64_t userland_proc_fl = arg2;
+        uint32_t access_rights = static_cast<uint32_t>(arg3);
+        uint32_t handle_flags = static_cast<uint32_t>(arg4);
+        struct userland_proc_info {
+            pid_t pid;          // Process ID
+            char name[256];     // Process name
+        } *info = reinterpret_cast<struct userland_proc_info*>(arg5);
 
         if (!path) {
             return_val = -EINVAL;
@@ -409,12 +418,15 @@ long __syscall_handler(
         }
 
         // Add a handle to the new process in the parent's environment
-        int handle_index = current->get_env()->handles.add_handle(
-            new_proc->get_core()->identity.pid,
-            new_proc
+        size_t handle_index = current->get_env()->handles.add_handle(
+            handle_type::PROCESS,
+            new_proc,
+            access_rights,
+            handle_flags,
+            static_cast<uint64_t>(core->identity.pid) // Store PID in metadata
         );
 
-        if (handle_index < 0) {
+        if (handle_index == SIZE_MAX) {
             // If we can't add the handle, we need to clean up the process
             new_proc->cleanup();
             delete new_proc;
@@ -425,32 +437,37 @@ long __syscall_handler(
         // Increment the reference count for the parent's handle
         new_proc->add_ref();
 
-        // Return the new process's PID
-        return_val = static_cast<long>(core->identity.pid);
+        // Fill in process info if requested
+        if (info) {
+            info->pid = core->identity.pid;
+            memcpy(info->name, core->identity.name, sizeof(info->name) - 1);
+            info->name[sizeof(info->name) - 1] = '\0';
+        }
+
+        // Return the handle index
+        return_val = static_cast<long>(handle_index);
         break;
     }
     case SYSCALL_SYS_PROC_WAIT: {
-        // arg1 = pid to wait for
+        // arg1 = handle to wait for
         // arg2 = pointer to store exit code
-        pid_t pid = static_cast<pid_t>(arg1);
+        int32_t handle = static_cast<int32_t>(arg1);
         int* exit_code = reinterpret_cast<int*>(arg2);
 
-        if (pid <= 0) {
+        if (handle < 0) {
             return_val = -EINVAL;
             break;
         }
 
-        // Find the handle for the target process
-        int handle_index = current->get_env()->handles.find_handle(pid);
-        if (handle_index < 0) {
-            return_val = -EINVAL;  // No handle found for this PID
+        // Get the handle entry
+        handle_entry* hentry = current->get_env()->handles.get_handle(handle);
+        if (!hentry || hentry->type != handle_type::PROCESS) {
+            return_val = -EINVAL;  // Invalid handle
             break;
         }
 
         // Get the process pointer from the handle
-        process* target_proc = reinterpret_cast<process*>(
-            current->get_env()->handles.entries[handle_index].__object
-        );
+        process* target_proc = reinterpret_cast<process*>(hentry->object);
         if (!target_proc) {
             return_val = -EINVAL;  // Invalid handle
             break;
@@ -469,12 +486,74 @@ long __syscall_handler(
         }
 
         // Remove the handle and release our reference
-        current->get_env()->handles.remove_handle(handle_index);
+        current->get_env()->handles.remove_handle(handle);
         target_proc->release_ref();
 
         // Add the process to the cleanup queue if needed
         if (target_proc->get_core()->ctx_switch_state.needs_cleanup == 1) {
             sched::scheduler::get().add_to_cleanup_queue(target_proc);
+        }
+
+        return_val = 0;
+        break;
+    }
+    case SYSCALL_SYS_PROC_CLOSE: {
+        // Process handle flags
+        enum proc_handle_flags_t {
+            PROC_HANDLE_NONE    = 0 << 0,  // No special flags
+            PROC_HANDLE_INHERIT = 1 << 0,  // Handle is inherited by child processes
+            PROC_HANDLE_PROTECT = 1 << 1   // Handle cannot be closed
+        };
+
+        // arg1 = handle to close
+        int32_t handle = static_cast<int32_t>(arg1);
+
+        if (handle < 0) {
+            return_val = -EINVAL;
+            break;
+        }
+
+        // Get the handle entry
+        handle_entry* hentry = current->get_env()->handles.get_handle(handle);
+        if (!hentry) {
+            return_val = -EINVAL;  // Invalid handle
+            break;
+        }
+
+        // Check if handle is protected
+        if (hentry->flags & PROC_HANDLE_PROTECT) {
+            return_val = -EACCES;  // Handle is protected
+            break;
+        }
+
+        // Get the object pointer
+        void* object = hentry->object;
+        if (!object) {
+            return_val = -EINVAL;  // Invalid handle
+            break;
+        }
+
+        // Handle type-specific cleanup
+        switch (hentry->type) {
+        case handle_type::PROCESS: {
+            process* proc = reinterpret_cast<process*>(object);
+            proc->release_ref();
+
+            // Add the process to the cleanup queue if needed
+            if (proc->get_core()->ctx_switch_state.needs_cleanup == 1) {
+                sched::scheduler::get().add_to_cleanup_queue(proc);
+            }
+            break;
+        }
+        // Add more handle type cleanup as needed
+        default:
+            break;
+        }
+
+        // Remove the handle
+        if (!current->get_env()->handles.remove_handle(handle)) {
+            return_val = -EINVAL;
+            break;
         }
 
         return_val = 0;

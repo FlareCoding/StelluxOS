@@ -7,6 +7,7 @@
 #define EINVAL  22  // Invalid argument
 #define EFAULT  14  // Bad address
 #define ENOMEM  12  // Out of memory
+#define EACCES  13  // Invalid access
 
 #define SYSCALL_SYS_WRITE       0
 #define SYSCALL_SYS_READ        1
@@ -16,6 +17,7 @@
 #define SYSCALL_SYS_GETPID      5
 #define SYSCALL_SYS_PROC_CREATE 6
 #define SYSCALL_SYS_PROC_WAIT   7
+#define SYSCALL_SYS_PROC_CLOSE  8
 
 #define SYSCALL_SYS_ELEVATE     90
 

@@ -34,6 +34,8 @@ typedef __UINT64_TYPE__ size_t;
 typedef uint64_t uintptr_t;
 #define NULL    0
 
+typedef int32_t handle_t;
+
 #define offsetof(type, member) ((uintptr_t) &(((type *)0)->member))
 
 #if defined(__cplusplus)

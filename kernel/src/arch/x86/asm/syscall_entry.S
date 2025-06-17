@@ -28,7 +28,7 @@ _ignored_iret_construction_path:
     push rdx
     push rcx
     push r8
-    push r10
+    push r9
     push r11
     push r12
     push r13
@@ -49,7 +49,7 @@ _ignored_iret_construction_path:
     mov rdx, r12  # arg2
     mov rcx, r13  # arg3
     mov r8,  r14  # arg4
-    mov r10, r15  # arg5
+    mov r9,  r15  # arg5
 
     # Call the C function
     call __syscall_handler
