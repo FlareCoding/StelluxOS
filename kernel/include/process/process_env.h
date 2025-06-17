@@ -68,6 +68,35 @@ inline bool has_process_flag(process_creation_flags value, process_creation_flag
 }
 
 /**
+ * @enum handle_type
+ * @brief Represents the type of kernel object a handle refers to.
+ */
+enum class handle_type : uint32_t {
+    INVALID = 0,    // Invalid handle
+    PROCESS,        // Process handle
+    THREAD,         // Thread handle
+    FILE,           // File handle
+    MUTEX,          // Mutex handle
+    SEMAPHORE,      // Semaphore handle
+    EVENT,          // Event handle
+    SHARED_MEM,     // Shared memory handle
+    SOCKET,         // Socket handle
+    // Add more handle types as needed
+};
+
+/**
+ * @struct handle_entry
+ * @brief Represents a single handle table entry.
+ */
+struct handle_entry {
+    handle_type type = handle_type::INVALID;    // Type of kernel object
+    void*       object = nullptr;               // Pointer to kernel object
+    uint32_t    access_rights = 0;              // Access rights for the handle
+    uint32_t    flags = 0;                      // Additional handle flags
+    uint64_t    metadata = 0;                   // Additional metadata (usage dependent)
+} __attribute__((packed));
+
+/**
  * @struct process_env
  * @brief Represents the environment and context of a process.
  * 
@@ -123,10 +152,7 @@ struct process_env {
      */
     struct handle_table {
         static constexpr size_t MAX_HANDLES = 1024;
-        struct handle_entry {
-            uint64_t id = 0;                // Handle ID (PID for process handles)
-            void* __object = nullptr;       // Pointer to kernel object
-        } __attribute__((packed)) entries[MAX_HANDLES];
+        handle_entry entries[MAX_HANDLES];
 
         /**
          * @brief Default constructor.
@@ -140,8 +166,11 @@ struct process_env {
          */
         void init() {
             for (size_t i = 0; i < MAX_HANDLES; i++) {
-                entries[i].id = 0;
-                entries[i].__object = nullptr;
+                entries[i].type = handle_type::INVALID;
+                entries[i].object = nullptr;
+                entries[i].access_rights = 0;
+                entries[i].flags = 0;
+                entries[i].metadata = 0;
             }
         }
 
@@ -154,25 +183,35 @@ struct process_env {
 
         /**
          * @brief Adds a handle to the table.
-         * @param id The handle ID
+         * @param type Type of kernel object
          * @param object Pointer to the kernel object
-         * @return The index of the new handle, or SIZE_MAX if table is full
+         * @param access_rights Access rights for the handle
+         * @param flags Additional handle flags
+         * @param metadata Additional metadata
+         * @return The handle index, or SIZE_MAX if table is full
          */
-        size_t add_handle(uint64_t id, void* object);
+        size_t add_handle(handle_type type, void* object, uint32_t access_rights = 0, uint32_t flags = 0, uint64_t metadata = 0);
 
         /**
          * @brief Removes a handle from the table.
-         * @param index The index of the handle to remove
-         * @return true if the handle was removed, false if invalid index
+         * @param handle The handle to remove
+         * @return true if the handle was removed, false if invalid handle
          */
-        bool remove_handle(size_t index);
+        bool remove_handle(int32_t handle);
 
         /**
-         * @brief Finds a handle by ID.
-         * @param id The handle ID to find
-         * @return The index of the handle, or SIZE_MAX if not found
+         * @brief Gets a handle entry.
+         * @param handle The handle to get
+         * @return Pointer to the handle entry, or nullptr if invalid handle
          */
-        size_t find_handle(uint64_t id);
+        handle_entry* get_handle(int32_t handle);
+
+        /**
+         * @brief Finds a handle by object pointer.
+         * @param object The object pointer to find
+         * @return The handle index, or SIZE_MAX if not found
+         */
+        size_t find_handle_by_object(void* object);
     } handles;
 
     /**

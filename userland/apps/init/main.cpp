@@ -26,14 +26,17 @@ int main() {
 
     free(arr);
 
-    pid_t shell_pid = proc_create("/initrd/bin/shell", PROC_NEW_ENV | PROC_CAN_ELEVATE);
+    while (true) {
+        handle_t shell_handle = proc_create("/initrd/bin/shell", PROC_NEW_ENV | PROC_CAN_ELEVATE, PROC_ACCESS_ALL, PROC_HANDLE_NONE, nullptr);
 
-    if (shell_pid < 0) {
-        printf("Failed to create 'shell' process!\n");
-    } else {
-        int shell_exit_code = 0;
-        if (proc_wait(shell_pid, &shell_exit_code) != 0) {
-            printf("proc_wait failed on shell_pid\n");
+        if (shell_handle < 0) {
+            printf("Failed to create 'shell' process!\n");
+            break;
+        } else {
+            int shell_exit_code = 0;
+            if (proc_wait(shell_handle, &shell_exit_code) != 0) {
+                printf("proc_wait failed on shell_pid\n");
+            }
         }
     }
 

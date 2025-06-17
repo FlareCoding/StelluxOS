@@ -90,14 +90,14 @@ void process_command(const kstl::string& command) {
             return;
         }
 
-        pid_t pid = proc_create(bin_path.c_str(), PROC_NEW_ENV);
-        if (pid < 0) {
+        handle_t proc_handle = proc_create(bin_path.c_str(), PROC_NEW_ENV, PROC_ACCESS_ALL, PROC_HANDLE_NONE, nullptr);
+        if (proc_handle < 0) {
             kprint("Failed to launch: '%s'\n", bin_path.c_str());
             return;
         }
 
         int exit_code = 0;
-        if (proc_wait(pid, &exit_code) != 0) {
+        if (proc_wait(proc_handle, &exit_code) != 0) {
             kprint("proc_wait failed on '%s'\n", bin_path.c_str());
         }
     }
