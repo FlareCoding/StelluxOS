@@ -6,11 +6,6 @@
 TOOLCHAIN_DIR := $(realpath ../toolchain/dist)
 TOOLCHAIN_PREFIX := x86_64-linux-musl
 
-# Check if toolchain exists
-ifeq ($(wildcard $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-gcc),)
-$(error Toolchain not found. Please run 'cd ../toolchain/scripts && source env.sh && ./build-toolchain.sh')
-endif
-
 # =========================
 # Exported Toolchain Variables
 # =========================
@@ -74,6 +69,19 @@ LIBS_DIR := lib
 APPS_DIR := apps
 
 # =========================
+# Helper Functions
+# =========================
+
+# Function to check if toolchain exists (only for build targets)
+define check_toolchain
+	@if [ ! -f "$(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-gcc" ]; then \
+		echo "Error: Toolchain not found at $(TOOLCHAIN_DIR)"; \
+		echo "Please run: cd ../toolchain/scripts && source env.sh && ./build-toolchain.sh"; \
+		exit 1; \
+	fi
+endef
+
+# =========================
 # Build Targets
 # =========================
 
@@ -82,6 +90,7 @@ all: create_dirs libs apps install_to_initrd
 
 # Create necessary directories
 create_dirs:
+	$(call check_toolchain)
 	@mkdir -p $(USERLAND_BUILD_DIR) $(USERLAND_LIB_DIR) $(USERLAND_BIN_DIR) $(INITRD_BIN_DIR)
 
 # Build libraries first (apps depend on them)
@@ -104,15 +113,16 @@ install_to_initrd: apps
 		echo "No binaries to install"; \
 	fi
 
-# Clean all build artifacts
+# Clean all build artifacts (no toolchain check needed)
 clean:
 	@echo "Cleaning userland build artifacts..."
-	@$(MAKE) -C $(LIBS_DIR) clean
-	@$(MAKE) -C $(APPS_DIR) clean
+	@$(MAKE) -C $(LIBS_DIR) clean || true
+	@$(MAKE) -C $(APPS_DIR) clean || true
 	@rm -rf $(USERLAND_BUILD_DIR)
 
-# Debug target to show exported variables
+# Debug target to show exported variables (requires toolchain)
 debug-vars:
+	$(call check_toolchain)
 	@echo "=== Exported Build Variables ==="
 	@echo "CC: $(CC)"
 	@echo "CXX: $(CXX)"
