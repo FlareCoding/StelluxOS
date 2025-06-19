@@ -186,11 +186,7 @@ $(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(INITRD_ARCHIVE) $(GRUB_CFG_PATH)
 clean:
 	@echo "Cleaning up build files and disk image..."
 	$(MAKE) -C $(KERNEL_DIR) clean
-ifdef NO_USERLAND_BUILD
-	@echo "Skipping userland clean (NO_USERLAND_BUILD is set)"
-else
 	$(MAKE) -C $(USERLAND_DIR) clean
-endif
 	@rm -rf $(BUILD_DIR)
 	@rm -rf *.log
 	@rm -rf $(UNIT_TESTS_LOG_FILENAME)
