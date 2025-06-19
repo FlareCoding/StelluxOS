@@ -1,18 +1,7 @@
-#ifndef STELLUX_STLIBC_H
-#define STELLUX_STLIBC_H
+#ifndef STLIBC_H
+#define STLIBC_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <stddef.h>
+#include <stdint.h>
 
-// Memory management
-#include <stlibc/memory/mman.h>
-
-// System calls
-#include <stlibc/system/syscall.h>
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif // STELLUX_STLIBC_H 
+#endif // STLIBC_H

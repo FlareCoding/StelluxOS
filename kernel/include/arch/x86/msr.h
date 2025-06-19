@@ -9,6 +9,7 @@
 #define IA32_LSTAR      0xC0000082
 #define IA32_FMASK      0xC0000084
 
+#define IA32_FS_BASE        0xC0000100
 #define IA32_GS_BASE        0xC0000101
 #define IA32_KERNEL_GS_BASE 0xC0000102
 

@@ -47,7 +47,7 @@ void dma_allocator::create_pool(size_t block_size, size_t alignment, size_t max_
     }
 
     // Retrieve the physical base address of the allocated pages
-    uintptr_t phys_base_alloc = paging::get_physical_address(virt_base_alloc);
+    uintptr_t phys_base_alloc = paging::get_physical_address(virt_base_alloc, paging::get_pml4());
     if (!phys_base_alloc) {
         // Clean up virtual memory and fail
         vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(virt_base_alloc), total_pages);

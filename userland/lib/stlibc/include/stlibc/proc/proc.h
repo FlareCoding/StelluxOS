@@ -1,7 +1,8 @@
 #ifndef STLIBC_PROC_H
 #define STLIBC_PROC_H
 
-#include <stlibc/proc/pid.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,7 +51,7 @@ struct proc_info {
  * @param info Pointer to store process information (can be NULL)
  * @return int32_t The process handle, or -1 on error
  */
-handle_t proc_create(const char* path, uint64_t flags, uint32_t access_rights, uint32_t handle_flags, struct proc_info* info);
+int proc_create(const char* path, uint64_t flags, uint32_t access_rights, uint32_t handle_flags, struct proc_info* info);
 
 /**
  * @brief Waits for a process to terminate.
@@ -58,14 +59,14 @@ handle_t proc_create(const char* path, uint64_t flags, uint32_t access_rights, u
  * @param exit_code Pointer to store the exit code (can be NULL)
  * @return 0 on success, -1 on error
  */
-int proc_wait(handle_t handle, int* exit_code);
+int proc_wait(int handle, int* exit_code);
 
 /**
  * @brief Closes a process handle.
  * @param handle Process handle to close
  * @return 0 on success, -1 on error
  */
-int proc_close(handle_t handle);
+int proc_close(int handle);
 
 #ifdef __cplusplus
 }

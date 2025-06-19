@@ -306,15 +306,15 @@ void unmap_page(uintptr_t vaddr, page_table* pml4) {
 }
 
 __PRIVILEGED_CODE
-pde_t* get_pml4_entry(void* vaddr) {
-    page_table* pml4 = reinterpret_cast<page_table*>(phys_to_virt_linear(get_pml4()));
+pde_t* get_pml4_entry(void* vaddr, page_table* pml4) {
+    page_table* pml4_virt = reinterpret_cast<page_table*>(phys_to_virt_linear(pml4));
     virt_addr_indices_t indices = get_vaddr_page_table_indices(reinterpret_cast<uint64_t>(vaddr));
-    return reinterpret_cast<pde_t*>(&pml4->entries[indices.pml4]);
+    return reinterpret_cast<pde_t*>(&pml4_virt->entries[indices.pml4]);
 }
 
 __PRIVILEGED_CODE
-pde_t* get_pdpt_entry(void* vaddr) {
-    pde_t* pml4_entry = get_pml4_entry(vaddr);
+pde_t* get_pdpt_entry(void* vaddr, page_table* pml4) {
+    pde_t* pml4_entry = get_pml4_entry(vaddr, pml4);
     
     if (!pml4_entry || !(pml4_entry->present)) {
         return nullptr;
@@ -329,8 +329,8 @@ pde_t* get_pdpt_entry(void* vaddr) {
 }
 
 __PRIVILEGED_CODE
-pde_t* get_pdt_entry(void* vaddr) {
-    pde_t* pdpt_entry = get_pdpt_entry(vaddr);
+pde_t* get_pdt_entry(void* vaddr, page_table* pml4) {
+    pde_t* pdpt_entry = get_pdpt_entry(vaddr, pml4);
     if (!pdpt_entry || !(pdpt_entry->present)) {
         return nullptr;
     }
@@ -349,8 +349,8 @@ pde_t* get_pdt_entry(void* vaddr) {
     return reinterpret_cast<pde_t*>(&pdt->entries[indices.pdt]);
 }
 
-__PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr) {
-    pde_t* pdt_entry = get_pdt_entry(vaddr);
+__PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr, page_table* pml4) {
+    pde_t* pdt_entry = get_pdt_entry(vaddr, pml4);
     if (!pdt_entry || !(pdt_entry->present)) {
         return nullptr;
     }
@@ -370,7 +370,7 @@ __PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr) {
 }
 
 __PRIVILEGED_CODE
-uintptr_t get_physical_address(void* vaddr) {
+uintptr_t get_physical_address(void* vaddr, page_table* pml4) {
     uint64_t virtual_addr = reinterpret_cast<uint64_t>(vaddr);
 
     //
@@ -384,13 +384,13 @@ uintptr_t get_physical_address(void* vaddr) {
     virt_addr_indices_t indices = get_vaddr_page_table_indices(virtual_addr);
 
     // Retrieve PML4 entry
-    pde_t* pml4_entry = get_pml4_entry(vaddr);
+    pde_t* pml4_entry = get_pml4_entry(vaddr, pml4);
     if (!pml4_entry || !(pml4_entry->present)) {
         return 0; // Invalid mapping
     }
 
     // Retrieve PDPT entry
-    pde_t* pdpt_entry = get_pdpt_entry(vaddr);
+    pde_t* pdpt_entry = get_pdpt_entry(vaddr, pml4);
     if (!pdpt_entry || !(pdpt_entry->present)) {
         return 0; // Invalid mapping
     }
@@ -403,7 +403,7 @@ uintptr_t get_physical_address(void* vaddr) {
     }
 
     // Retrieve PDT entry
-    pde_t* pdt_entry = get_pdt_entry(vaddr);
+    pde_t* pdt_entry = get_pdt_entry(vaddr, pml4);
     if (!pdt_entry || !(pdt_entry->present)) {
         return 0; // Invalid mapping
     }
@@ -416,7 +416,7 @@ uintptr_t get_physical_address(void* vaddr) {
     }
 
     // Retrieve PTE entry
-    pte_t* pte_entry = get_pte_entry(vaddr);
+    pte_t* pte_entry = get_pte_entry(vaddr, pml4);
     if (!pte_entry || !(pte_entry->present)) {
         return 0; // Invalid mapping
     }

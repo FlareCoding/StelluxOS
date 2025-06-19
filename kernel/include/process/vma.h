@@ -4,10 +4,53 @@
 #include <memory/paging.h>
 #include <process/mm.h>
 
-// Protection flags for VMA regions
-#define VMA_PROT_READ    0x1
-#define VMA_PROT_WRITE   0x2
-#define VMA_PROT_EXEC    0x4
+/**
+ * StelluxOS Virtual Address Space Layout (x86-64)
+ * 
+ * This follows a simplified version of the Linux x86-64 memory layout:
+ * 
+ * 0x0000000000000000 - 0x0000000000000fff   : Null page (unmapped)
+ * 0x0000000000001000 - 0x00000000003fffff   : Low memory (reserved)
+ * 0x0000000000400000 - 0x0000000040000000   : ELF executable region
+ * 0x0000000040000000 - 0x00007f0000000000   : Heap region (brk grows up starting after the loaded ELF segments)
+ * 0x00007f0000000000 - 0x00007fffffffffff   : mmap region (grows up)
+ * 0x00007fff00000000 - 0x00007fffffffffff   : Stack region (grows down from top)
+ * 
+ * Notes:
+ * - ELF executables in Stellux are loaded at 0x400000
+ * - Heap starts after ELF segments and grows upward with brk()
+ * - mmap region starts at 0x7f0000000000 and grows upward
+ * - Stack is at the very top and grows downward
+ * - This leaves a large gap between heap and mmap for safety
+ */
+
+// Address space layout constants
+constexpr uintptr_t USERSPACE_START         = 0x0000000000001000;   // Skip null page
+constexpr uintptr_t USERSPACE_END           = 0x00007fffffffffff;   // Top of user space
+constexpr uintptr_t ELF_REGION_START        = 0x0000000000400000;   // Typical ELF load address
+constexpr uintptr_t ELF_REGION_END          = 0x0000000040000000;   // End of ELF region
+constexpr uintptr_t HEAP_REGION_START       = 0x0000000040000000;   // Start of heap region
+constexpr uintptr_t MMAP_REGION_START       = 0x00007f0000000000;   // Start of mmap region
+constexpr uintptr_t STACK_REGION_START      = 0x00007fff00000000;   // Bottom/start of stack region, the actual stack beginning address at the top is 0x00007fffffffffff
+
+// Protection flags for mmap() - standard Linux values
+#define PROT_NONE    0x0  // Page may not be accessed
+#define PROT_READ    0x1  // Page may be read
+#define PROT_WRITE   0x2  // Page may be written
+#define PROT_EXEC    0x4  // Page may be executed
+
+// Mapping flags for mmap() - standard Linux values
+#define MAP_SHARED      0x01   // Share changes with other processes
+#define MAP_PRIVATE     0x02   // Changes are copy-on-write, private
+#define MAP_FIXED       0x10   // Interpret addr exactly
+#define MAP_ANONYMOUS   0x20   // Not backed by file (fd ignored)
+#define MAP_LOCKED      0x2000 // Lock pages in memory
+#define MAP_POPULATE    0x8000 // Populate (prefault) page tables
+
+// Protection flags for VMA regions (same values as mmap PROT_* flags)
+#define VMA_PROT_READ    PROT_READ
+#define VMA_PROT_WRITE   PROT_WRITE
+#define VMA_PROT_EXEC    PROT_EXEC
 
 // VMA type flags
 #define VMA_TYPE_PRIVATE    0x1  // Private mapping

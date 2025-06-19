@@ -67,7 +67,7 @@ void free_xhci_memory(void* ptr) {
 uintptr_t xhci_get_physical_addr(void* vaddr) {
     uintptr_t paddr;
     RUN_ELEVATED({
-        paddr = paging::get_physical_address(vaddr);
+        paddr = paging::get_physical_address(vaddr, paging::get_pml4());
     });
     return paddr;
 }

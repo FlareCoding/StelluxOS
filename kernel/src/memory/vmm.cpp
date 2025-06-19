@@ -155,7 +155,7 @@ __PRIVILEGED_CODE
 void unmap_virtual_page(uintptr_t vaddr) {
     mutex_guard guard(vmm_lock);
 
-    uintptr_t paddr = paging::get_physical_address(reinterpret_cast<void*>(vaddr));
+    uintptr_t paddr = paging::get_physical_address(reinterpret_cast<void*>(vaddr), paging::get_pml4());
     if (paddr) {
         allocators::page_bitmap_allocator::get_physical_allocator().free_page(reinterpret_cast<void*>(paddr));
     }

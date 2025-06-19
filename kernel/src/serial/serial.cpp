@@ -68,6 +68,16 @@ void write(uint16_t port, const char* str) {
     }
 }
 
+void write(uint16_t port, const char* str, uint32_t length) {
+    for (uint32_t i = 0; i < length; i++) {
+        write(port, str[i]);
+        if (str[i] == '\n') {
+            // Treat "\n" as the CRLF ("\n\r") combo
+            write(port, '\r');
+        }
+    }
+}
+
 char read(uint16_t port) {
     // Wait until data is available
     while (!is_data_available(port));

@@ -334,7 +334,7 @@ bool gdb_stub::_is_virtual_address_mapped(uintptr_t vaddr) const {
     bool mapped = false;
 
     RUN_ELEVATED({
-        mapped = (paging::get_physical_address(reinterpret_cast<void*>(vaddr))) != 0;
+        mapped = (paging::get_physical_address(reinterpret_cast<void*>(vaddr), paging::get_pml4())) != 0;
     });
 
     return mapped;

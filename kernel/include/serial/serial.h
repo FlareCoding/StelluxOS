@@ -126,6 +126,20 @@ void write(uint16_t port, char chr);
 void write(uint16_t port, const char* str);
 
 /**
+ * @brief Sends a string of specified length through the specified serial port.
+ * 
+ * This function transmits a string of the specified length through the serial port,
+ * regardless of null terminators within the string. It ensures that the transmit queue is 
+ * ready for each character before sending, allowing for reliable transmission of binary data
+ * or partial strings.
+ * 
+ * @param port The I/O port address of the serial port to use for sending the string.
+ * @param str The string to be transmitted.
+ * @param length The number of characters to transmit from the string.
+ */
+void write(uint16_t port, const char* str, uint32_t length);
+
+/**
  * @brief Reads a single character from the specified serial port.
  * 
  * This function retrieves a character from the Receive Buffer Register (RBR) of 

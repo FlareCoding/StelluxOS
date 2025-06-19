@@ -3,6 +3,7 @@
 #include <memory/vmm.h>
 #include <memory/paging.h>
 #include <arch/x86/gdt/gdt.h>
+#include <arch/x86/msr.h>
 #include <sched/sched.h>
 #include <dynpriv/dynpriv.h>
 #include <process/elf/elf64_loader.h>
@@ -63,8 +64,14 @@ void switch_context_in_irq(
     // Save the current MMU context into the 'from' process core
     from_core->mm_ctx = save_mm_context();
 
+    // Save the TLS base
+    from_core->fs_base = arch::x86::msr::read(IA32_FS_BASE);
+
     // Restore the context from the 'to' process core
     restore_cpu_context(&to_core->cpu_context, irq_frame);
+
+    // Load the next process's TLS base
+    arch::x86::msr::write(IA32_FS_BASE, to_core->fs_base);
 
     // Perform an address space switch if needed
     if (from_core->mm_ctx.root_page_table != to_core->mm_ctx.root_page_table) {
@@ -280,6 +287,9 @@ bool destroy_process_core(process_core* core) {
         );
     }
 
+    // Page table
+    paging::page_table* pt = reinterpret_cast<paging::page_table*>(core->mm_ctx.root_page_table);
+
     // Clean up VMA resources by removing all VMAs and unmapping their pages
     vma_area* vma = core->mm_ctx.vma_list;
     while (vma) {
@@ -293,7 +303,7 @@ bool destroy_process_core(process_core* core) {
             // Unmap pages and free physical memory
             for (size_t i = 0; i < num_pages; i++) {
                 uintptr_t page_addr = vma->start + (i * PAGE_SIZE);
-                void* phys_addr = reinterpret_cast<void*>(paging::get_physical_address(reinterpret_cast<void*>(page_addr)));
+                void* phys_addr = reinterpret_cast<void*>(paging::get_physical_address(reinterpret_cast<void*>(page_addr), pt));
                 
                 if (phys_addr) {
                     // Unmap the page using the process's page table
@@ -354,6 +364,13 @@ __PRIVILEGED_CODE bool map_userland_process_stack(
         DEFAULT_UNPRIV_PAGE_FLAGS,
         pt
     );
+
+    // Zero out the stack memory after mapping
+    void* stack_virt_addr = paging::phys_to_virt_linear(phys_stack_start_page);
+    if (stack_virt_addr) {
+        zeromem(stack_virt_addr, SCHED_USERLAND_TASK_STACK_PAGES * PAGE_SIZE);
+    }
+
 
     out_stack_bottom = user_stack_start_page;
     out_stack_top = user_stack_start_page + SCHED_USERLAND_TASK_STACK_SIZE;

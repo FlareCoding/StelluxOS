@@ -13,6 +13,10 @@ struct mm_context {
     uintptr_t mmap_base;          // Base address for mmap allocations
     uintptr_t task_size;          // Size of the task's address space
     size_t vma_count;             // Number of VMAs
+
+    // Process heap
+    uintptr_t heap_start;         // Initial brk_end
+    uintptr_t heap_end;           // brk_end
 } __attribute__((packed));
 
 /**
@@ -37,5 +41,18 @@ __PRIVILEGED_CODE mm_context save_mm_context();
  * @note Privilege: **required**
  */
 void install_mm_context(const mm_context& context);
+
+/**
+ * @brief Grows or shrinks the process heap.
+ * 
+ * Updates the heap end address by either allocating new pages (growth) or
+ * freeing existing pages (shrinkage). Uses VMA management to track heap regions.
+ * 
+ * @param mm_ctx The process's memory management context
+ * @param new_heap_end The new heap end address (page-aligned)
+ * @return true if the operation was successful, false otherwise
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool manage_process_heap(mm_context* mm_ctx, uintptr_t new_heap_end);
 
 #endif // MM_H

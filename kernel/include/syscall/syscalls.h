@@ -8,18 +8,26 @@
 #define EFAULT  14  // Bad address
 #define ENOMEM  12  // Out of memory
 #define EACCES  13  // Invalid access
+#define ENOTTY	25  // Invalid tty
 
-#define SYSCALL_SYS_WRITE       0
-#define SYSCALL_SYS_READ        1
-#define SYSCALL_SYS_EXIT        2
-#define SYSCALL_SYS_MMAP        3
-#define SYSCALL_SYS_MUNMAP      4
-#define SYSCALL_SYS_GETPID      5
-#define SYSCALL_SYS_PROC_CREATE 6
-#define SYSCALL_SYS_PROC_WAIT   7
-#define SYSCALL_SYS_PROC_CLOSE  8
+#define SYSCALL_SYS_READ                0
+#define SYSCALL_SYS_WRITE               1
+#define SYSCALL_SYS_MMAP                9
+#define SYSCALL_SYS_MUNMAP              11
+#define SYSCALL_SYS_BRK                 12
+#define SYSCALL_SYS_IOCTL               16
+#define SYSCALL_SYS_WRITEV              20
+#define SYSCALL_SYS_GETPID              39
+#define SYSCALL_SYS_EXIT                60
+#define SYSCALL_SYS_SET_THREAD_AREA     158
+#define SYSCALL_SYS_SET_TID_ADDRESS     218
+#define SYSCALL_SYS_EXIT_GROUP          231
 
-#define SYSCALL_SYS_ELEVATE     90
+#define SYSCALL_SYS_PROC_CREATE 706
+#define SYSCALL_SYS_PROC_WAIT   707
+#define SYSCALL_SYS_PROC_CLOSE  708
+
+#define SYSCALL_SYS_ELEVATE     790
 
 /**
  * @brief Executes a system call with the specified number and arguments.
@@ -30,6 +38,7 @@
  * @param arg3 The third argument to pass to the system call.
  * @param arg4 The fourth argument to pass to the system call.
  * @param arg5 The fifth argument to pass to the system call.
+ * @param arg6 The sixth argument to pass to the system call.
  * @return int The result of the system call. A non-negative value typically indicates
  *             success or a valid return value, while a negative value signifies an error.
  */
@@ -39,7 +48,8 @@ EXTERN_C long syscall(
     uint64_t arg2,
     uint64_t arg3,
     uint64_t arg4,
-    uint64_t arg5
+    uint64_t arg5,
+    uint64_t arg6
 );
 
 // Architecture-specific code for enabling the syscall interface

@@ -69,7 +69,7 @@ bool acpi_validate_checksum(void* table, size_t length) {
 __PRIVILEGED_CODE
 void map_acpi_table(uintptr_t table_address) {
     // Initially, just one page has to be mapped for the table
-    if (paging::get_physical_address(reinterpret_cast<void*>(table_address)) == 0) {
+    if (paging::get_physical_address(reinterpret_cast<void*>(table_address), paging::get_pml4()) == 0) {
         paging::map_page(table_address, table_address, DEFAULT_PRIV_PAGE_FLAGS, paging::get_pml4());
     }
 
@@ -87,7 +87,7 @@ void map_acpi_table(uintptr_t table_address) {
     // Traverse and map each page in the range
     for (uintptr_t current_page = start_page; current_page <= end_page; current_page += PAGE_SIZE) {
         // Check if the page is already mapped
-        uintptr_t physical_address = paging::get_physical_address(reinterpret_cast<void*>(current_page));
+        uintptr_t physical_address = paging::get_physical_address(reinterpret_cast<void*>(current_page), paging::get_pml4());
         if (physical_address == 0) {
             // Map the page if it's not already mapped
             paging::map_page(current_page, current_page, DEFAULT_PRIV_PAGE_FLAGS, paging::get_pml4());
