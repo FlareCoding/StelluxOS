@@ -22,8 +22,8 @@ jobs:
     - name: Install Dependencies
       run: make install-dependencies
 
-    - name: Build Stellux OS image
-      run: make image
+    - name: Build Stellux OS image (kernel only, no userland)
+      run: make image NO_USERLAND_BUILD=1
 
     - name: Verify that kernel ELF is created
       run: |
@@ -76,8 +76,8 @@ jobs:
         sudo apt-get install -y python3 python3-pip
         pip3 install -r ./tools/privilege_violation_analyzer/requirements.txt
 
-    - name: Build Stellux OS image
-      run: make image COMPILER_OPTIMIZATION_LEVEL=0
+    - name: Build Stellux OS image (kernel only, no userland)
+      run: make image COMPILER_OPTIMIZATION_LEVEL=0 NO_USERLAND_BUILD=1
 
     - name: Verify that kernel ELF is created
       run: |
