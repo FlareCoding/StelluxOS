@@ -46,6 +46,9 @@ process_core* elf64_loader::load_elf(const uint8_t* file_buffer, size_t buffer_s
         return nullptr;
     }
 
+    // Initialize the heap above all loaded segments
+    _initialize_process_heap(file_buffer, elf_header, &core->mm_ctx);
+
     _log_info("ELF loaded successfully, process core created.");
     return core;
 }
@@ -179,6 +182,52 @@ bool elf64_loader::_load_segments(
 
     _log_info("All segments loaded successfully.");
     return true;
+}
+
+__PRIVILEGED_CODE
+void elf64_loader::_initialize_process_heap(
+    const uint8_t* file_buffer,
+    const elf64_ehdr& header,
+    mm_context* mm_ctx
+) {
+    if (!file_buffer || !mm_ctx) {
+        _log_error("Invalid parameters for heap initialization.");
+        return;
+    }
+
+    // Find the highest virtual address used by any loadable segment
+    const auto* program_headers = reinterpret_cast<const elf64_phdr*>(file_buffer + header.e_phoff);
+    uintptr_t highest_segment_end = 0;
+
+    for (uint16_t i = 0; i < header.e_phnum; ++i) {
+        const auto& phdr = program_headers[i];
+
+        // Only consider loadable segments
+        if (phdr.p_type == PT_LOAD) {
+            uintptr_t segment_end = phdr.p_vaddr + phdr.p_memsz;
+            if (segment_end > highest_segment_end) {
+                highest_segment_end = segment_end;
+            }
+        }
+    }
+
+    // Align the highest segment end to page boundary
+    highest_segment_end = PAGE_ALIGN_UP(highest_segment_end);
+
+    // Add a small gap (one page) between the loaded segments and heap
+    // to avoid accidental overwrites and improve debugging
+    constexpr uintptr_t HEAP_GAP = PAGE_SIZE;
+    uintptr_t heap_start = highest_segment_end + HEAP_GAP;
+
+    // Initialize the heap (empty initially)
+    mm_ctx->heap_start = heap_start;
+    mm_ctx->heap_end = heap_start;
+
+    _log_info("Process heap initialized successfully.");
+#ifdef ELF64_LOADER_ENABLE_LOGS
+    serial::printf("  Highest segment end: 0x%llx\n", highest_segment_end);
+    serial::printf("  Heap start/end: 0x%llx\n", heap_start);
+#endif
 }
 
 __PRIVILEGED_CODE

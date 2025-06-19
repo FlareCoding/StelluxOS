@@ -5,7 +5,6 @@
 #include "common.S"
 
 .extern __syscall_handler
-.extern __check_current_elevate_status
 
 .section .ktext
 .global asm_syscall_entry
@@ -29,6 +28,7 @@ _ignored_iret_construction_path:
     push rcx
     push r8
     push r9
+    push r10
     push r11
     push r12
     push r13
@@ -42,6 +42,7 @@ _ignored_iret_construction_path:
     mov r13, rdx  # Save arg3
     mov r14, r10  # Save arg4
     mov r15, r8   # Save arg5
+    mov r10, r9   # Save arg6
 
     # Move syscall arguments into appropriate registers for __syscall_handler
     mov rdi, rcx  # syscall number
@@ -50,17 +51,20 @@ _ignored_iret_construction_path:
     mov rcx, r13  # arg3
     mov r8,  r14  # arg4
     mov r9,  r15  # arg5
+    push r10      # arg6 (7th param goes on the stack according to the System V AMD64 ABI calling convention)
 
     # Call the C function
     call __syscall_handler
 
     # Restore all registers in reverse order
+    add rsp, 8  # Clean arg6 which was pushed onto the stack
     pop r15
     pop r14
     pop r13
     pop r12
     pop r11
     pop r10
+    pop r9
     pop r8
     pop rcx
     pop rdx
@@ -71,8 +75,12 @@ _ignored_iret_construction_path:
     # Check if the process is elevated, and if so, take a special retq path.
     #
     push rax                                # preserve syscall return value
-    call __check_current_elevate_status     # check the elevate status
-    testb al, 0x1                           # if the result is non-zero, then task is elevated
+    
+    # Inline elevation check using rax
+    this_cpu_read rax, current_process_core
+    mov rax, [rax + 0xd0]                   # current_process_core->hw_state.elevated
+    testb al, 1                             # test the elevated bit
+
     pop rax                                 # restore syscall return value
 
     # Take a retq path if we are elevated

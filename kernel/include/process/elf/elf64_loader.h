@@ -41,6 +41,12 @@ private:
         mm_context* mm_ctx
     );
 
+    __PRIVILEGED_CODE static void _initialize_process_heap(
+        const uint8_t* file_buffer,
+        const elf64_ehdr& header,
+        mm_context* mm_ctx
+    );
+
     __PRIVILEGED_CODE static void* _allocate_and_map_segment(
         uint64_t vaddr,
         uint64_t offset,

@@ -1,41 +1,48 @@
-CXX ?= g++
-AR  ?= ar
-RM  ?= rm
+# =========================
+# StelluxOS Standard C Library (stlibc)
+# =========================
+# Uses exported variables from parent Makefiles
 
-# Build configuration
-CXXFLAGS += -std=c++17 -Wall -Wextra -fPIC
-CXXFLAGS += -I./include
+# Source and build directories
+SRC_DIR := src
+INC_DIR := include
+BUILD_DIR := build
+OBJ_DIR := $(BUILD_DIR)/obj
 
-# Directory structure
-SRCDIR := src
-INCDIR := include
-OBJDIR := obj
+# Source files
+C_SOURCES := $(wildcard $(SRC_DIR)/*.c)
+OBJECTS := $(C_SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
-# Find all source files recursively
-SRCS := $(shell find $(SRCDIR) -name '*.cpp')
-OBJS := $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(SRCS))
-LIB  := libstlibc.a
+# Library output
+LIBRARY := $(USERLAND_LIB_DIR)/libstlibc.a
 
-# Create object directory structure
-OBJ_DIRS := $(sort $(dir $(OBJS)))
+# Use exported flags from parent with any library-specific additions
+CFLAGS := $(CFLAGS_COMMON)
 
-.PHONY: all clean
+# Default target
+all: $(LIBRARY)
 
-all: $(LIB)
-
-$(LIB): $(OBJS)
-	@echo "[AR] Creating library $@ from $^"
+# Create the static library
+$(LIBRARY): $(OBJECTS)
+	@mkdir -p $(dir $@)
+	@echo "[AR] Creating $@"
 	@$(AR) rcs $@ $^
+	@$(RANLIB) $@
 
-$(OBJDIR):
-	mkdir -p $(OBJDIR)
+# Compile C source files to local obj directory
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	@mkdir -p $(dir $@)
+	@echo "[CC] Compiling $<"
+	@$(CC) $(CFLAGS) -c $< -o $@
 
-$(OBJ_DIRS): | $(OBJDIR)
-	mkdir -p $@
-
-$(OBJDIR)/%.o: $(SRCDIR)/%.cpp | $(OBJ_DIRS)
-	@echo "[CXX] Compiling $<"
-	@$(CXX) $(CXXFLAGS) -c $< -o $@
-
+# Clean build artifacts
 clean:
-	$(RM) -rf $(OBJDIR) $(LIB)
+	@echo "Cleaning stlibc..."
+	@rm -rf $(BUILD_DIR)
+	@rm -f $(LIBRARY)
+
+# Install headers (if needed)
+install-headers:
+	@echo "Headers are already in the include directory structure"
+
+.PHONY: all clean install-headers

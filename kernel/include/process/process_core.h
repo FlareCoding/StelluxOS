@@ -49,6 +49,18 @@ struct process_core {
      * and other CPU state needed for execution.
      */
     ptregs cpu_context;
+
+    /**
+     * @brief Hardware-specific state flags.
+     * 
+     * Contains various hardware state flags and CPU information
+     * needed for proper execution and scheduling.
+     */
+    struct {
+        uint64_t elevated : 1;    // Hardware privilege state
+        uint64_t cpu      : 8;    // Current CPU core
+        uint64_t flrsvd   : 55;   // Reserved for future use
+    } __attribute__((packed)) hw_state;
     
     /**
      * @brief Memory management context.
@@ -72,18 +84,6 @@ struct process_core {
     } stacks;
     
     /**
-     * @brief Hardware-specific state flags.
-     * 
-     * Contains various hardware state flags and CPU information
-     * needed for proper execution and scheduling.
-     */
-    struct {
-        uint64_t elevated : 1;    // Hardware privilege state
-        uint64_t cpu      : 8;    // Current CPU core
-        uint64_t flrsvd   : 55;   // Reserved for future use
-    } __attribute__((packed)) hw_state;
-    
-    /**
      * @brief Current execution state of the process.
      * 
      * Tracks whether the process is running, waiting,
@@ -100,6 +100,15 @@ struct process_core {
     } identity;
 
     /**
+     * @brief Exit code of the process.
+     * 
+     * Stores the exit code that will be returned when the process
+     * terminates. This value is set by the process itself or by
+     * the kernel when the process is terminated.
+     */
+    int exit_code;
+
+    /**
      * @brief Context switch state flags.
      * 
      * Contains flags that indicate the state of the process
@@ -113,6 +122,15 @@ struct process_core {
                                         // process can do it potentially without `RUN_ELEVATED()` call.
         uint64_t reserved       : 63;   // Reserved for future use
     } __attribute__((packed)) ctx_switch_state;
+
+    /**
+     * @brief Thread Local Storage (TLS) base address.
+     * 
+     * Stores the base address for the thread's local storage.
+     * This is used by the kernel to manage thread-specific data
+     * and is typically accessed through the FS segment register.
+     */
+    uint64_t fs_base;
 };
 
 #endif // PROCESS_CORE_H

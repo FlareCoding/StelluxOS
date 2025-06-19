@@ -3,11 +3,6 @@
 #include <memory/vmm.h>
 #include <core/klog.h>
 
-// Constants for VMA management
-constexpr uintptr_t USERSPACE_START = 0x0;
-constexpr uintptr_t USERSPACE_END = 0x7fffffffffff;
-constexpr size_t DEFAULT_MMAP_GAP = 0x1000000; // 16MB gap
-
 __PRIVILEGED_CODE
 bool init_process_vma(mm_context* mm_ctx) {
     if (!mm_ctx) {
@@ -16,89 +11,120 @@ bool init_process_vma(mm_context* mm_ctx) {
 
     // Initialize VMA management
     mm_ctx->vma_list = nullptr;
-    mm_ctx->mmap_base = USERSPACE_END - DEFAULT_MMAP_GAP;
-    mm_ctx->task_size = USERSPACE_END - USERSPACE_START;
     mm_ctx->vma_count = 0;
+    
+    // Set mmap_base to start of mmap region (grows upward from here)
+    mm_ctx->mmap_base = MMAP_REGION_START;
+    mm_ctx->task_size = USERSPACE_END - USERSPACE_START;
 
     return true;
+}
+
+/**
+ * @brief Check if two address ranges overlap
+ * @param start1 Start of first range
+ * @param end1 End of first range (exclusive)
+ * @param start2 Start of second range  
+ * @param end2 End of second range (exclusive)
+ * @return true if ranges overlap
+ */
+static bool ranges_overlap(uintptr_t start1, uintptr_t end1, uintptr_t start2, uintptr_t end2) {
+    return (start1 < end2) && (start2 < end1);
+}
+
+/**
+ * @brief Check if an address range conflicts with any existing VMA
+ * @param mm_ctx Memory management context
+ * @param start Start address of range to check
+ * @param size Size of range to check
+ * @return Pointer to conflicting VMA, or nullptr if no conflict
+ */
+static vma_area* find_vma_conflict(mm_context* mm_ctx, uintptr_t start, size_t size) {
+    if (!mm_ctx) {
+        return nullptr;
+    }
+    
+    uintptr_t end = start + size;
+    
+    vma_area* vma = mm_ctx->vma_list;
+    while (vma) {
+        if (ranges_overlap(start, end, vma->start, vma->end)) {
+            return vma;
+        }
+        vma = vma->next;
+    }
+    
+    return nullptr;
+}
+
+/**
+ * @brief Find a free address range in the mmap region
+ * @param mm_ctx Memory management context
+ * @param size Size of range needed
+ * @return Start address of free range, or 0 if none found
+ * 
+ * This implements a simple growing-upward allocation strategy:
+ * 1. Start from mmap_base
+ * 2. Find the first gap large enough for the allocation
+ * 3. Return the start of that gap
+ */
+static uintptr_t find_free_mmap_range(mm_context* mm_ctx, size_t size) {
+    if (!mm_ctx || size == 0) {
+        return 0;
+    }
+    
+    // Start searching from mmap_base
+    uintptr_t search_addr = mm_ctx->mmap_base;
+    const uintptr_t search_end = STACK_REGION_START;
+    
+    while (search_addr + size <= search_end) {
+        // Check if this range conflicts with any existing VMA
+        if (!find_vma_conflict(mm_ctx, search_addr, size)) {
+            return search_addr;  // Found a free range
+        }
+        
+        // Find the next potential start address by moving past the conflicting VMA
+        vma_area* conflict = find_vma_conflict(mm_ctx, search_addr, size);
+        if (conflict) {
+            // Move past this VMA and align to page boundary
+            search_addr = PAGE_ALIGN_UP(conflict->end);
+        } else {
+            // This shouldn't happen, but just in case
+            search_addr += PAGE_SIZE;
+        }
+    }
+    
+    return 0;  // No free range found
 }
 
 __PRIVILEGED_CODE
 uintptr_t find_free_vma_range(mm_context* mm_ctx, size_t size, uint64_t flags, uintptr_t preferred_addr) {
     __unused flags;
     
-    if (!mm_ctx) {
+    if (!mm_ctx || size == 0) {
         return 0;
     }
-
-    // If preferred address is specified, check if it's available
+    
+    // Handle preferred address (used for MAP_FIXED and hints)
     if (preferred_addr) {
-        if (preferred_addr < mm_ctx->mmap_base || 
-            preferred_addr + size > USERSPACE_END) {
+        // Validate that preferred address is in user space
+        if (preferred_addr < USERSPACE_START || 
+            preferred_addr > USERSPACE_END - size) {
             return 0;
         }
-
-        // Check if the range overlaps with any existing VMA
-        vma_area* vma = mm_ctx->vma_list;
-        while (vma) {
-            if ((preferred_addr >= vma->start && preferred_addr < vma->end) ||
-                (preferred_addr + size > vma->start && preferred_addr + size <= vma->end)) {
-                return 0;
-            }
-            vma = vma->next;
+        
+        // Check if the preferred range is free
+        if (!find_vma_conflict(mm_ctx, preferred_addr, size)) {
+            return preferred_addr;
         }
-
-        return preferred_addr;
+        
+        // For MAP_FIXED, we must use the exact address (caller handles unmapping)
+        // For hints, we fall through to automatic allocation
+        return 0;
     }
-
-    // First, try to find a gap between existing VMAs within the mmap-able region
-    vma_area* vma = mm_ctx->vma_list;
-    while (vma && vma->next) {
-        // Only consider gaps that are within the mmap-able region
-        if (vma->end >= mm_ctx->mmap_base && vma->next->start <= USERSPACE_END) {
-            uintptr_t gap_start = vma->end;
-            uintptr_t gap_end = vma->next->start;
-            size_t gap_size = gap_end - gap_start;
-
-            if (gap_size >= size) {
-                return gap_start;  // Found a suitable gap
-            }
-        }
-        vma = vma->next;
-    }
-
-    // If no suitable gap found, search from top down starting from mmap_base
-    uintptr_t current_addr = mm_ctx->mmap_base;
-    bool found_gap = false;
-
-    while (current_addr + size <= USERSPACE_END) {
-        found_gap = true;
-        vma = mm_ctx->vma_list;
-        uintptr_t gap_end = USERSPACE_END;
-
-        // Find the end of the current gap
-        while (vma) {
-            if (vma->start > current_addr && vma->start < gap_end) {
-                gap_end = vma->start;
-            }
-            if ((current_addr >= vma->start && current_addr < vma->end) ||
-                (current_addr + size > vma->start && current_addr + size <= vma->end)) {
-                found_gap = false;
-                // Move to the end of this VMA
-                current_addr = vma->end;
-                break;
-            }
-            vma = vma->next;
-        }
-
-        if (found_gap) {
-            // For top-down allocation, we want to place the new region at the end of the gap
-            // minus the size we want to allocate
-            return gap_end - size;
-        }
-    }
-
-    return 0;
+    
+    // Automatic allocation in mmap region
+    return find_free_mmap_range(mm_ctx, size);
 }
 
 __PRIVILEGED_CODE
@@ -109,7 +135,7 @@ vma_area* create_vma(mm_context* mm_ctx, uintptr_t start, size_t size, uint64_t 
     }
 
     // Validate address range
-    if (start < USERSPACE_START || start + size > USERSPACE_END) {
+    if (start < USERSPACE_START || start > USERSPACE_END - size) {
         return nullptr;
     }
 
@@ -130,16 +156,19 @@ vma_area* create_vma(mm_context* mm_ctx, uintptr_t start, size_t size, uint64_t 
 
     // Insert into VMA list
     if (!mm_ctx->vma_list) {
+        // First VMA
         mm_ctx->vma_list = new_vma;
     } else {
         vma_area* current = mm_ctx->vma_list;
         vma_area* prev = nullptr;
 
+        // Find insertion point (keep list sorted by start address)
         while (current && current->start < start) {
             prev = current;
             current = current->next;
         }
 
+        // Insert new_vma between prev and current
         new_vma->next = current;
         new_vma->prev = prev;
 
@@ -215,27 +244,53 @@ bool merge_vmas(mm_context* mm_ctx, vma_area* vma) {
         return false;
     }
 
+    bool merged = false;
+
     // Try to merge with next VMA
     if (vma->next && vma->end == vma->next->start &&
         vma->flags == vma->next->flags &&
-        vma->type == vma->next->type) {
+        vma->type == vma->next->type &&
+        vma->file_backing == vma->next->file_backing) {
         
-        vma->end = vma->next->end;
-        remove_vma(mm_ctx, vma->next);
-        return true;
+        vma_area* next_vma = vma->next;
+        
+        // Extend current VMA to include next VMA
+        vma->end = next_vma->end;
+        
+        // Remove next VMA from list
+        vma->next = next_vma->next;
+        if (next_vma->next) {
+            next_vma->next->prev = vma;
+        }
+        
+        delete next_vma;
+        mm_ctx->vma_count--;
+        merged = true;
     }
 
     // Try to merge with previous VMA
     if (vma->prev && vma->prev->end == vma->start &&
         vma->prev->flags == vma->flags &&
-        vma->prev->type == vma->type) {
+        vma->prev->type == vma->type &&
+        vma->prev->file_backing == vma->file_backing) {
         
-        vma->prev->end = vma->end;
-        remove_vma(mm_ctx, vma);
-        return true;
+        vma_area* prev_vma = vma->prev;
+        
+        // Extend previous VMA to include current VMA
+        prev_vma->end = vma->end;
+        
+        // Remove current VMA from list
+        prev_vma->next = vma->next;
+        if (vma->next) {
+            vma->next->prev = prev_vma;
+        }
+        
+        delete vma;
+        mm_ctx->vma_count--;
+        merged = true;
     }
 
-    return false;
+    return merged;
 }
 
 __PRIVILEGED_CODE
@@ -259,7 +314,7 @@ vma_area* split_vma(mm_context* mm_ctx, vma_area* vma, uintptr_t split_addr) {
         return nullptr;
     }
 
-    // Update original VMA
+    // Update original VMA to cover only the first half
     vma->end = split_addr;
 
     return new_vma;
@@ -273,9 +328,9 @@ void dbg_print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
     }
 
     kprint("\n[VMA] Memory map for process: %s\n", process_name ? process_name : "unnamed");
-    kprint("+-----------------------------------------------------------------------------+\n");
-    kprint("|        Start         |         End          |   Size   |   Prot   |  Type   |\n");
-    kprint("+-----------------------------------------------------------------------------+\n");
+    kprint("+---------------------------------------------------------------------------------+\n");
+    kprint("|        Start         |         End          |   Size   |   Prot   |    Type    |\n");
+    kprint("+---------------------------------------------------------------------------------+\n");
 
     vma_area* vma = mm_ctx->vma_list;
     while (vma) {
@@ -302,10 +357,15 @@ void dbg_print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
 
         // Build type string
         const char* type = "unknown";
-        if (vma->type & VMA_TYPE_PRIVATE) type = "private";
-        else if (vma->type & VMA_TYPE_SHARED) type = "shared";
-        else if (vma->type & VMA_TYPE_ANONYMOUS) type = "anon";
-        else if (vma->type & VMA_TYPE_FILE) type = "file";
+        if (vma->type & VMA_TYPE_ANONYMOUS) {
+            if (vma->type & VMA_TYPE_PRIVATE) type = "anon-priv";
+            else if (vma->type & VMA_TYPE_SHARED) type = "anon-shr";
+            else type = "anonymous";
+        } else if (vma->type & VMA_TYPE_FILE) {
+            if (vma->type & VMA_TYPE_PRIVATE) type = "file-priv";
+            else if (vma->type & VMA_TYPE_SHARED) type = "file-shr";
+            else type = "file";
+        }
 
         kprint("| %016llx     | %016llx     | %llu%s    | %s    | %s    |\n",
             vma->start, vma->end, size, size_unit, prot, type);
@@ -313,6 +373,6 @@ void dbg_print_vma_regions(const mm_context* mm_ctx, const char* process_name) {
         vma = vma->next;
     }
 
-    kprint("+-----------------------------------------------------------------------------+\n");
-    kprint("Total VMAs: %llu\n\n", mm_ctx->vma_count);
+    kprint("+---------------------------------------------------------------------------------+\n");
+    kprint("Total VMAs: %llu, mmap_base: 0x%llx\n\n", mm_ctx->vma_count, mm_ctx->mmap_base);
 }

@@ -1,96 +1,127 @@
 # =========================
-# Userland Settings
+# Userland Master Makefile
 # =========================
 
-# Compiler settings
-CXX       := g++
-LD        := ld
+# Toolchain Configuration
+TOOLCHAIN_DIR := $(realpath ../toolchain/dist)
+TOOLCHAIN_PREFIX := x86_64-linux-musl
 
-# Paths
-ROOT_DIR         := $(shell realpath ..)
-KERNEL_ELF       := $(ROOT_DIR)/build/stellux
-KERNEL_INCLUDES  := -I$(ROOT_DIR)/kernel/include -I$(ROOT_DIR)/kernel/include/core
-INITRD_BIN_DIR   := $(ROOT_DIR)/initrd/bin
-USERLAND_DIR     := $(shell realpath .)
-APPS_DIR       	 := $(USERLAND_DIR)/apps
-USERLAND_LINKER_SCRIPT := $(USERLAND_DIR)/userland.ld
-
-# Architecture
-TARGET_ARCH := X86_64
-
-# Preprocessor Defines
-PREPROCESSOR_DEFINES := -DARCH_$(TARGET_ARCH)
-
-# Common flags for all userland applications
-COMMON_CXXFLAGS := 	-m64 -g -O0 $(PREPROCESSOR_DEFINES) \
-					-ffreestanding -Wall -Werror -nostdlib -fno-rtti -fno-exceptions \
-					-std=c++17 -mno-red-zone -fno-pie -fno-pic -mcmodel=large \
-					-I$(USERLAND_DIR)/lib/stlibc/include
-
-COMMON_LDFLAGS  := 	-T $(USERLAND_LINKER_SCRIPT) -nostdlib \
-					-z max-page-size=0x1000 -no-pie \
-					-L$(USERLAND_DIR)/lib/crt -lstellux_crt \
-					-L$(USERLAND_DIR)/lib/stlibc -lstlibc
-
-export KERNEL_LIB_CXX_FLAGS := $(KERNEL_INCLUDES)
-export KERNEL_LIB_LDFLAGS := --just-symbols=$(KERNEL_ELF)
-
-export CXXFLAGS := $(COMMON_CXXFLAGS)
-export LDFLAGS := $(COMMON_LDFLAGS)
+# Check if toolchain exists
+ifeq ($(wildcard $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-gcc),)
+$(error Toolchain not found. Please run 'cd ../toolchain/scripts && source env.sh && ./build-toolchain.sh')
+endif
 
 # =========================
-# Targets
+# Exported Toolchain Variables
+# =========================
+export CC := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-gcc
+export CXX := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-g++
+export LD := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-ld
+export AR := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-ar
+export RANLIB := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-ranlib
+export STRIP := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-strip
+export OBJCOPY := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-objcopy
+export OBJDUMP := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-objdump
+
+# =========================
+# Exported Directory Variables
+# =========================
+export USERLAND_ROOT := $(CURDIR)
+export USERLAND_BUILD_DIR := $(USERLAND_ROOT)/build
+export USERLAND_LIB_DIR := $(USERLAND_BUILD_DIR)/lib
+export USERLAND_BIN_DIR := $(USERLAND_BUILD_DIR)/bin
+export USERLAND_INCLUDE_DIR := $(USERLAND_ROOT)/lib/stlibc/include
+export USERLAND_SYSROOT := $(TOOLCHAIN_DIR)/$(TOOLCHAIN_PREFIX)
+export INITRD_BIN_DIR := $(USERLAND_ROOT)/../initrd/bin
+
+# =========================
+# Exported Compiler Flags
+# =========================
+# Architecture and basic flags
+export ARCH_FLAGS := -m64 -march=x86-64
+export DEBUG_FLAGS := -g -O2
+export WARNING_FLAGS := -Wall -Wextra -Werror
+
+# Include paths
+export INCLUDE_FLAGS := -I$(USERLAND_INCLUDE_DIR) -I$(USERLAND_SYSROOT)/include
+
+# Standard C flags
+export CFLAGS_COMMON := $(ARCH_FLAGS) $(DEBUG_FLAGS) $(WARNING_FLAGS) $(INCLUDE_FLAGS) \
+                       -std=c11 -fno-stack-protector -nostartfiles
+
+# Standard C++ flags  
+export CXXFLAGS_COMMON := $(ARCH_FLAGS) $(DEBUG_FLAGS) $(WARNING_FLAGS) $(INCLUDE_FLAGS) \
+                         -std=c++17 -fno-stack-protector -nostartfiles -fno-exceptions -fno-rtti
+
+# =========================
+# Exported Linker Flags
+# =========================
+export LDFLAGS_COMMON := -L$(USERLAND_LIB_DIR) -L$(USERLAND_SYSROOT)/lib
+export LIBS_COMMON := -lstlibc -lc
+export LINKER_SCRIPT := $(USERLAND_ROOT)/userland.ld
+export LDFLAGS_EXE := -T$(LINKER_SCRIPT) $(LDFLAGS_COMMON)
+
+# =========================
+# Exported Build Configuration
+# =========================
+export USERLAND_CRT_START := $(USERLAND_LIB_DIR)/crt0.o
+export USERLAND_CRT_END := $(USERLAND_LIB_DIR)/crtn.o
+
+# =========================
+# Local Directories
+# =========================
+LIBS_DIR := lib
+APPS_DIR := apps
+
+# =========================
+# Build Targets
 # =========================
 
-.PHONY: all clean install install_to_initrd check-kernel build-libs build-apps
+# Default target - build everything and install to initrd
+all: create_dirs libs apps install_to_initrd
 
-# Build all applications
-all: check-kernel build-libs build-apps
+# Create necessary directories
+create_dirs:
+	@mkdir -p $(USERLAND_BUILD_DIR) $(USERLAND_LIB_DIR) $(USERLAND_BIN_DIR) $(INITRD_BIN_DIR)
 
-# Check if the Kernel ELF file exists
-check-kernel:
-	@if [ ! -f "$(KERNEL_ELF)" ]; then \
-		echo "[ERROR] Kernel ELF file '$(KERNEL_ELF)' not found. Please build the kernel first."; \
-		exit 1; \
+# Build libraries first (apps depend on them)
+libs: create_dirs
+	@echo "Building userland libraries..."
+	@$(MAKE) -C $(LIBS_DIR)
+
+# Build applications (depends on libraries)
+apps: libs
+	@echo "Building userland applications..."
+	@$(MAKE) -C $(APPS_DIR)
+
+# Install binaries to initrd
+install_to_initrd: apps
+	@echo "Installing binaries to initrd..."
+	@if [ -n "$$(ls -A $(USERLAND_BIN_DIR)/ 2>/dev/null)" ]; then \
+		cp $(USERLAND_BIN_DIR)/* $(INITRD_BIN_DIR)/; \
+		echo "Binaries installed to initrd"; \
+	else \
+		echo "No binaries to install"; \
 	fi
 
-build-libs:
-	@echo "Building userland libraries..."
-	@$(MAKE) -C $(USERLAND_DIR)/lib CXXFLAGS="$(COMMON_CXXFLAGS)" LDFLAGS="$(COMMON_LDFLAGS)"
-
-build-apps:
-	@echo "Building all userland applications..."
-	@for app in $(APPS_DIR)/*; do \
-		if [ -f $$app/Makefile ]; then \
-			OBJ_DIR=$$app/obj; \
-			BIN_DIR=$$app/bin; \
-			$(MAKE) -C $$app \
-				CXX="$(CXX)" \
-				LD="$(LD)" \
-				OBJ_DIR=$$OBJ_DIR \
-				BIN_DIR=$$BIN_DIR || exit 1; \
-		fi \
-	done
-	@echo "All applications built successfully."
-
-# Install applications to the initrd/bin directory
-install_to_initrd: check-kernel build-apps
-	@echo "Copying applications to $(INITRD_BIN_DIR)..."
-	@mkdir -p $(INITRD_BIN_DIR)
-	@for app in $(APPS_DIR)/*; do \
-		bin_file=$$app/bin/$$(basename $$app); \
-		cp $$bin_file $(INITRD_BIN_DIR)/ || exit 1; \
-	done
-	@echo "Applications installed to $(INITRD_BIN_DIR)."
-
-# Clean all application builds
+# Clean all build artifacts
 clean:
-	@echo "Cleaning userland libraries..."
-	@$(MAKE) -C $(USERLAND_DIR)/lib clean
-	@echo "Cleaning all userland applications..."
-	@for app in $(APPS_DIR)/*; do \
-		if [ -f $$app/Makefile ]; then \
-			$(MAKE) -C $$app clean || exit 1; \
-		fi \
-	done
-	@echo "Userland cleaned."
+	@echo "Cleaning userland build artifacts..."
+	@$(MAKE) -C $(LIBS_DIR) clean
+	@$(MAKE) -C $(APPS_DIR) clean
+	@rm -rf $(USERLAND_BUILD_DIR)
+
+# Debug target to show exported variables
+debug-vars:
+	@echo "=== Exported Build Variables ==="
+	@echo "CC: $(CC)"
+	@echo "CXX: $(CXX)"
+	@echo "CFLAGS_COMMON: $(CFLAGS_COMMON)"
+	@echo "CXXFLAGS_COMMON: $(CXXFLAGS_COMMON)"
+	@echo "LDFLAGS_COMMON: $(LDFLAGS_COMMON)"
+	@echo "LIBS_COMMON: $(LIBS_COMMON)"
+	@echo "USERLAND_INCLUDE_DIR: $(USERLAND_INCLUDE_DIR)"
+	@echo "USERLAND_LIB_DIR: $(USERLAND_LIB_DIR)"
+	@echo "USERLAND_BIN_DIR: $(USERLAND_BIN_DIR)"
+
+.PHONY: all clean create_dirs libs apps install_to_initrd debug-vars

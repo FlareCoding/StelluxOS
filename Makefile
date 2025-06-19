@@ -86,7 +86,7 @@ help:
 	@echo "  make help            		Show this help message"
 	@echo "  make install-dependencies	Installs the necessary tools and packages for the current Linux distribution"
 	@echo "  make kernel          		Build the Stellux kernel"
-	@echo "  make userland          	Build the userspace Stellux applications"
+	@echo "  make userland          	Build the userspace Stellux applications (requires custom toolchain)"
 	@echo "  make image           		Create the UEFI-compatible disk image (requires sudo)"
 	@echo "  make initrd           		Rebuild and package an initrd cpio ramdisk"
 	@echo "  make run             		Run the Stellux image in QEMU"
@@ -98,6 +98,11 @@ help:
 	@echo "  make clean-docs           	Clean up and remove the Doxygen-generated docs"
 	@echo "  make clean           		Clean build artifacts and disk image"
 	@echo ""
+	@echo "For first-time setup:"
+	@echo "  1. make install-dependencies"
+	@echo "  2. cd toolchain/scripts && source env.sh && ./build-toolchain.sh"
+	@echo "  3. make image"
+	@echo ""
 
 # Builds the kernel
 kernel:
@@ -106,9 +111,13 @@ kernel:
 	@cp $(KERNEL_DIR)/build/stellux $(KERNEL_FILE)
 
 # Builds userland applications and modules
+ifdef BUILD_UNIT_TESTS
+userland:
+	@echo "Skipping userland build for unit tests"
+else
 userland: $(KERNEL_FILE)
 	@$(MAKE) -C userland
-	@$(MAKE) -C userland install_to_initrd
+endif
 
 # Builds the initrd ramdisk
 initrd:

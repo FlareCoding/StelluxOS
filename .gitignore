@@ -5,6 +5,11 @@ bin/
 __pycache__/
 docs/output/
 
+# Toolchain build artifacts and fetched sources (keep scripts/ directory)
+toolchain/dist/
+toolchain/build/
+toolchain/src/
+
 # Prerequisites
 *.d
 

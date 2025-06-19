@@ -256,41 +256,45 @@ __PRIVILEGED_CODE void unmap_page(uintptr_t vaddr, page_table* pml4);
  * @brief Retrieves the PML4 (Page Map Level 4) entry for a given virtual address.
  * 
  * @param vaddr The virtual address.
+ * @param pt Physical address of the page table of the process in whose address space to perform the search.
  * @return pde_t* Pointer to the PML4 entry. Returns nullptr if the entry is not present.
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE pde_t* get_pml4_entry(void* vaddr);
+__PRIVILEGED_CODE pde_t* get_pml4_entry(void* vaddr, page_table* pml4);
 
 /**
  * @brief Retrieves the PDPT (Page Directory Pointer Table) entry for a given virtual address.
  * 
  * @param vaddr The virtual address.
+ * @param pt Physical address of the page table of the process in whose address space to perform the search.
  * @return pde_t* Pointer to the PDPT entry. Returns nullptr if the entry is not present.
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE pde_t* get_pdpt_entry(void* vaddr);
+__PRIVILEGED_CODE pde_t* get_pdpt_entry(void* vaddr, page_table* pml4);
 
 /**
  * @brief Retrieves the PDT (Page Directory Table) entry for a given virtual address.
  * 
  * @param vaddr The virtual address.
+ * @param pt Physical address of the page table of the process in whose address space to perform the search.
  * @return pde_t* Pointer to the PDT entry. Returns nullptr if the entry is not present or if a large page is mapped.
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE pde_t* get_pdt_entry(void* vaddr);
+__PRIVILEGED_CODE pde_t* get_pdt_entry(void* vaddr, page_table* pml4);
 
 /**
  * @brief Retrieves the PTE (Page Table Entry) for a given virtual address.
  * 
  * @param vaddr The virtual address.
+ * @param pt Physical address of the page table of the process in whose address space to perform the search.
  * @return pte_t* Pointer to the PTE. Returns nullptr if the entry is not present or if a large page is mapped.
  * 
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr);
+__PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr, page_table* pml4);
 
 /**
  * @brief Translates a virtual address to its corresponding physical address.
@@ -299,11 +303,12 @@ __PRIVILEGED_CODE pte_t* get_pte_entry(void* vaddr);
  * to the provided virtual address. It handles both standard 4KB pages and large pages (2MB and 1GB).
  *
  * @param vaddr The virtual address to translate.
+ * @param pt Physical address of the page table of the process in whose address space to perform the search.
  * @return uintptr_t The physical address. Returns 0 if the translation fails.
  *
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE uintptr_t get_physical_address(void* vaddr);
+__PRIVILEGED_CODE uintptr_t get_physical_address(void* vaddr, page_table* pml4);
 
 /**
  * @brief Creates a new page table hierarchy for a userland process.
