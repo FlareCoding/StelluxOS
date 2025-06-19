@@ -21,7 +21,7 @@ static bool does_not_cross_boundary(uintptr_t addr, size_t size, size_t boundary
 DECLARE_UNIT_TEST("dma_allocator default allocation", test_dma_allocator_default_allocation) {
     size_t size = 4096; // Default alignment is 4096
     void* ptr = dma_allocator::get().allocate(size);
-    uintptr_t phys_addr = paging::get_physical_address(ptr);
+    uintptr_t phys_addr = paging::get_physical_address(ptr, paging::get_pml4());
 
     ASSERT_TRUE(ptr != nullptr, "DMA allocation should return a non-null pointer, got: 0x%llx", (uintptr_t)ptr);
     ASSERT_TRUE(phys_addr != 0, "Allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr);
@@ -38,7 +38,7 @@ DECLARE_UNIT_TEST("dma_allocator custom alignment", test_dma_allocator_custom_al
     size_t size = 8192;
     size_t alignment = 8192;
     void* ptr = dma_allocator::get().allocate(size, alignment);
-    uintptr_t phys_addr = paging::get_physical_address(ptr);
+    uintptr_t phys_addr = paging::get_physical_address(ptr, paging::get_pml4());
 
     ASSERT_TRUE(ptr != nullptr, "DMA allocation with alignment %llu should return a non-null pointer, got: 0x%llx", alignment, (uintptr_t)ptr);
     ASSERT_TRUE(phys_addr != 0, "Allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr);
@@ -57,7 +57,7 @@ DECLARE_UNIT_TEST("dma_allocator boundary constraints", test_dma_allocator_bound
     size_t boundary = 65536;
 
     void* ptr = dma_allocator::get().allocate(size, alignment, boundary);
-    uintptr_t phys_addr = paging::get_physical_address(ptr);
+    uintptr_t phys_addr = paging::get_physical_address(ptr, paging::get_pml4());
 
     ASSERT_TRUE(ptr != nullptr, "DMA allocation with boundary %llu should return a non-null pointer, got: 0x%llx", boundary, (uintptr_t)ptr);
     ASSERT_TRUE(phys_addr != 0, "Allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr);
@@ -81,7 +81,7 @@ DECLARE_UNIT_TEST("dma_allocator multiple allocations", test_dma_allocator_multi
     // Allocate multiple blocks
     for (size_t i = 0; i < num_allocs; i++) {
         ptrs[i] = dma_allocator::get().allocate(size, alignment);
-        phys_addrs[i] = paging::get_physical_address(ptrs[i]);
+        phys_addrs[i] = paging::get_physical_address(ptrs[i], paging::get_pml4());
 
         ASSERT_TRUE(ptrs[i] != nullptr, "DMA allocation %llu should return a non-null pointer, got: 0x%llx", i, (uintptr_t)ptrs[i]);
         ASSERT_TRUE(phys_addrs[i] != 0, "Allocated DMA memory %llu should have a valid physical address, address was: 0x%llx", i, phys_addrs[i]);
@@ -108,7 +108,7 @@ DECLARE_UNIT_TEST("dma_allocator allocate and free", test_dma_allocator_allocate
 
     // Allocate a block
     void* ptr = dma_allocator::get().allocate(size, alignment);
-    uintptr_t phys_addr = paging::get_physical_address(ptr);
+    uintptr_t phys_addr = paging::get_physical_address(ptr, paging::get_pml4());
 
     ASSERT_TRUE(ptr != nullptr, "DMA allocation should return a non-null pointer, got: 0x%llx", (uintptr_t)ptr);
     ASSERT_TRUE(phys_addr != 0, "Allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr);
@@ -119,7 +119,7 @@ DECLARE_UNIT_TEST("dma_allocator allocate and free", test_dma_allocator_allocate
 
     // Attempt to allocate again, potentially getting the same address
     void* ptr2 = dma_allocator::get().allocate(size, alignment);
-    uintptr_t phys_addr2 = paging::get_physical_address(ptr2);
+    uintptr_t phys_addr2 = paging::get_physical_address(ptr2, paging::get_pml4());
 
     ASSERT_TRUE(ptr2 != nullptr, "Re-allocation should return a non-null pointer, got: 0x%llx", (uintptr_t)ptr2);
     ASSERT_TRUE(phys_addr2 != 0, "Re-allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr2);
@@ -144,7 +144,7 @@ DECLARE_UNIT_TEST("dma_allocator various boundaries", test_dma_allocator_various
     for (size_t i = 0; i < num_boundaries; i++) {
         size_t boundary = boundaries[i];
         void* ptr = dma_allocator::get().allocate(size, alignment, boundary);
-        uintptr_t phys_addr = paging::get_physical_address(ptr);
+        uintptr_t phys_addr = paging::get_physical_address(ptr, paging::get_pml4());
 
         ASSERT_TRUE(ptr != nullptr, "DMA allocation with boundary %llu should return a non-null pointer, got: 0x%llx", boundary, (uintptr_t)ptr);
         ASSERT_TRUE(phys_addr != 0, "Allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr);
@@ -169,7 +169,7 @@ DECLARE_UNIT_TEST("dma_allocator allocate and free multiple times", test_dma_all
 
     for (size_t i = 0; i < num_iterations; i++) {
         ptrs[i] = dma_allocator::get().allocate(size, alignment);
-        phys_addrs[i] = paging::get_physical_address(ptrs[i]);
+        phys_addrs[i] = paging::get_physical_address(ptrs[i], paging::get_pml4());
 
         ASSERT_TRUE(ptrs[i] != nullptr, "DMA allocation %llu should return a non-null pointer, got: 0x%llx", i, (uintptr_t)ptrs[i]);
         ASSERT_TRUE(phys_addrs[i] != 0, "Allocated DMA memory %llu should have a valid physical address, address was: 0x%llx", i, phys_addrs[i]);
@@ -184,7 +184,7 @@ DECLARE_UNIT_TEST("dma_allocator allocate and free multiple times", test_dma_all
     // Reallocate again to ensure memory is reusable
     for (size_t i = 0; i < num_iterations; i++) {
         ptrs[i] = dma_allocator::get().allocate(size, alignment);
-        phys_addrs[i] = paging::get_physical_address(ptrs[i]);
+        phys_addrs[i] = paging::get_physical_address(ptrs[i], paging::get_pml4());
 
         ASSERT_TRUE(ptrs[i] != nullptr, "Re-allocation %llu should return a non-null pointer, got: 0x%llx", i, (uintptr_t)ptrs[i]);
         ASSERT_TRUE(phys_addrs[i] != 0, "Re-allocated DMA memory %llu should have a valid physical address, address was: 0x%llx", i, phys_addrs[i]);
@@ -205,7 +205,7 @@ DECLARE_UNIT_TEST("dma_allocator alignment greater than block size", test_dma_al
     size_t alignment = 32768; // Greater than typical block size
 
     void* ptr = dma_allocator::get().allocate(size, alignment);
-    uintptr_t phys_addr = paging::get_physical_address(ptr);
+    uintptr_t phys_addr = paging::get_physical_address(ptr, paging::get_pml4());
 
     ASSERT_TRUE(ptr != nullptr, "DMA allocation with large alignment %llu should return a non-null pointer, got: 0x%llx", alignment, (uintptr_t)ptr);
     ASSERT_TRUE(phys_addr != 0, "Allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr);
@@ -226,7 +226,7 @@ DECLARE_UNIT_TEST("dma_allocator maximum alignment and boundary", test_dma_alloc
     size_t boundary = 65536;
 
     void* ptr = dma_allocator::get().allocate(size, alignment, boundary);
-    uintptr_t phys_addr = paging::get_physical_address(ptr);
+    uintptr_t phys_addr = paging::get_physical_address(ptr, paging::get_pml4());
 
     ASSERT_TRUE(ptr != nullptr, "DMA allocation with maximum alignment %llu should return a non-null pointer, got: 0x%llx", alignment, (uintptr_t)ptr);
     ASSERT_TRUE(phys_addr != 0, "Allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr);
@@ -246,7 +246,7 @@ DECLARE_UNIT_TEST("dma_allocator large boundary and alignment", test_dma_allocat
     size_t boundary = 262144;   // 256KB
 
     void* ptr = dma_allocator::get().allocate(size, alignment, boundary);
-    uintptr_t phys_addr = paging::get_physical_address(ptr);
+    uintptr_t phys_addr = paging::get_physical_address(ptr, paging::get_pml4());
 
     ASSERT_TRUE(ptr != nullptr, "DMA allocation with large alignment %llu should return a non-null pointer, got: 0x%llx", alignment, (uintptr_t)ptr);
     ASSERT_TRUE(phys_addr != 0, "Allocated DMA memory should have a valid physical address, address was: 0x%llx", phys_addr);

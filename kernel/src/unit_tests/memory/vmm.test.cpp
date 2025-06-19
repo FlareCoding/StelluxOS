@@ -7,13 +7,13 @@ using namespace vmm;
 
 // Helper function to verify that a given virtual address is mapped and returns a nonzero physical address
 static bool is_mapped(void* vaddr) {
-    uintptr_t paddr = paging::get_physical_address(vaddr);
+    uintptr_t paddr = paging::get_physical_address(vaddr, paging::get_pml4());
     return (paddr != 0);
 }
 
 // Helper function to verify that a given virtual address maps to a specific physical address
 static bool maps_to(void* vaddr, uintptr_t expected_paddr) {
-    uintptr_t paddr = paging::get_physical_address(vaddr);
+    uintptr_t paddr = paging::get_physical_address(vaddr, paging::get_pml4());
     return (paddr == expected_paddr);
 }
 
@@ -38,7 +38,7 @@ DECLARE_UNIT_TEST("vmm map_physical_page", test_vmm_map_physical_page) {
     ASSERT_TRUE(
         maps_to(vaddr, 0x12000),
         "Virtual address should map to physical 0x12000, mapped to 0x%llx instead",
-        paging::get_physical_address(vaddr)
+        paging::get_physical_address(vaddr, paging::get_pml4())
     );
 
     // Unmap and verify
@@ -185,7 +185,7 @@ DECLARE_UNIT_TEST("vmm remap to physical", test_vmm_remap_to_physical) {
     ASSERT_TRUE(is_mapped(vaddr), "Should be mapped initially");
 
     // Get its physical address
-    uintptr_t old_paddr = paging::get_physical_address(vaddr);
+    uintptr_t old_paddr = paging::get_physical_address(vaddr, paging::get_pml4());
     ASSERT_TRUE(old_paddr != 0, "Should have a valid physical address");
 
     // Now unmap it
@@ -247,7 +247,7 @@ DECLARE_UNIT_TEST("vmm heavy allocation exhaustion", test_vmm_heavy_allocation_e
     // Free all allocated pages
     for (size_t i = 0; i < allocated_count; i++) {
         unmap_virtual_page((uintptr_t)allocated[i]);
-        ASSERT_FALSE((bool)(paging::get_physical_address(allocated[i])), "Page should be unmapped after freeing");
+        ASSERT_FALSE((bool)(paging::get_physical_address(allocated[i], paging::get_pml4())), "Page should be unmapped after freeing");
     }
 
     free(allocated);

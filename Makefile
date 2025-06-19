@@ -103,6 +103,11 @@ help:
 	@echo "  2. cd toolchain/scripts && source env.sh && ./build-toolchain.sh"
 	@echo "  3. make image"
 	@echo ""
+	@echo "Build flags:"
+	@echo "  NO_USERLAND_BUILD=1     Skip building userland applications (kernel only)"
+	@echo "  BUILD_UNIT_TESTS=1      Include unit tests in kernel build"
+	@echo "  COMPILER_OPTIMIZATION_LEVEL=N  Set compiler optimization (0-3, default: 2)"
+	@echo ""
 
 # Builds the kernel
 kernel:
@@ -111,9 +116,9 @@ kernel:
 	@cp $(KERNEL_DIR)/build/stellux $(KERNEL_FILE)
 
 # Builds userland applications and modules
-ifdef BUILD_UNIT_TESTS
+ifdef NO_USERLAND_BUILD
 userland:
-	@echo "Skipping userland build for unit tests"
+	@echo "Skipping userland build (NO_USERLAND_BUILD is set)"
 else
 userland: $(KERNEL_FILE)
 	@$(MAKE) -C userland
@@ -223,7 +228,7 @@ execute-unit-tests:
 	@$(MAKE) clean > /dev/null
 
 	@echo "[LOG] Building the kernel with unit tests"
-	@$(MAKE) image BUILD_UNIT_TESTS=1 > /dev/null
+	@$(MAKE) image BUILD_UNIT_TESTS=1 NO_USERLAND_BUILD=1 > /dev/null
 
 	@echo "[LOG] Launching the StelluxOS image in a VM"
 	@timeout $(UNIT_TESTS_RUN_TIMEOUT) setsid bash -c '$(QEMU) $(QEMU_FLAGS) -nographic | tee $(UNIT_TESTS_LOG_FILENAME)'
@@ -253,6 +258,21 @@ install-dependencies:
 			ovmf \
 			cpio \
 			doxygen \
+			curl \
+			wget \
+			file \
+			texinfo \
+			bison \
+			flex \
+			gawk \
+			autoconf \
+			automake \
+			libtool \
+			pkg-config \
+			libgmp-dev \
+			libmpfr-dev \
+			libmpc-dev \
+			zlib1g-dev \
 			$$( [ -f /usr/lib/grub/x86_64-efi/modinfo.sh ] && echo "" || echo "grub-efi-amd64" ); \
 	elif [ -f /etc/redhat-release ]; then \
 		echo "Detected RedHat-based system."; \
@@ -265,7 +285,22 @@ install-dependencies:
 			edk2-ovmf \
 			cpio \
 			doxygen \
-			grub2-efi-x64; \
+			grub2-efi-x64 \
+			curl \
+			wget \
+			file \
+			texinfo \
+			bison \
+			flex \
+			gawk \
+			autoconf \
+			automake \
+			libtool \
+			pkgconf \
+			gmp-devel \
+			mpfr-devel \
+			libmpc-devel \
+			zlib-devel; \
 	elif [ -f /etc/arch-release ]; then \
 		echo "Detected Arch-based system."; \
 		sudo pacman -Sy --noconfirm \
@@ -277,18 +312,35 @@ install-dependencies:
 			gdb \
 			ovmf \
 			cpio \
-			doxygen; \
+			doxygen \
+			curl \
+			wget \
+			file \
+			texinfo \
+			bison \
+			flex \
+			gawk \
+			autoconf \
+			automake \
+			libtool \
+			pkgconf \
+			gmp \
+			mpfr \
+			libmpc \
+			zlib; \
 	else \
 		echo "Unsupported Linux distribution. Please install the following packages manually:"; \
-		echo "  - build-essential / Development Tools / base-devel"; \
-		echo "  - grub2 / grub / grub2-efi-x64"; \
-		echo "  - dosfstools"; \
-		echo "  - parted"; \
-		echo "  - qemu-system-x86 / qemu-system-x86_64 / qemu"; \
-		echo "  - gdb"; \
-		echo "  - ovmf / edk2-ovmf"; \
-		echo "  - cpio"; \
-		echo "  - doxygen"; \
+		echo "  Core build tools:"; \
+		echo "    - build-essential / Development Tools / base-devel"; \
+		echo "    - grub2 / grub / grub2-efi-x64"; \
+		echo "    - dosfstools, parted, cpio"; \
+		echo "    - qemu-system-x86 / qemu-system-x86_64 / qemu"; \
+		echo "    - gdb, ovmf / edk2-ovmf, doxygen"; \
+		echo "  Toolchain build dependencies:"; \
+		echo "    - curl, wget, file"; \
+		echo "    - texinfo, bison, flex, gawk"; \
+		echo "    - autoconf, automake, libtool, pkg-config"; \
+		echo "    - libgmp-dev, libmpfr-dev, libmpc-dev, zlib1g-dev"; \
 		exit 1; \
 	fi
 
