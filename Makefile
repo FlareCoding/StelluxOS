@@ -100,7 +100,7 @@ help:
 	@echo ""
 	@echo "For first-time setup:"
 	@echo "  1. make install-dependencies"
-	@echo "  2. cd toolchain/scripts && source env.sh && ./build-toolchain.sh"
+	@echo "  2. cd toolchain/scripts && source env.sh && ./fetch-sources.sh && ./build-toolchain.sh"
 	@echo "  3. make image"
 	@echo ""
 	@echo "Build flags:"
