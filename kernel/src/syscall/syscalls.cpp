@@ -418,6 +418,7 @@ long __syscall_handler(
         }
         
         mm_context* mm_ctx = &current->get_core()->mm_ctx;
+
         paging::page_table* page_table = reinterpret_cast<paging::page_table*>(mm_ctx->root_page_table);
         auto& physalloc = allocators::page_bitmap_allocator::get_physical_allocator();
         
@@ -495,7 +496,7 @@ long __syscall_handler(
         break;
     }
     case SYSCALL_SYS_IOCTL: {
-        int fd = static_cast<int>(arg5);
+        int fd = static_cast<int>(arg1);
         __unused fd;
 
         uint64_t req = arg2;
@@ -510,10 +511,17 @@ long __syscall_handler(
                 unsigned short ws_ypixel;
             };
             
+            // Validate userbuf pointer before writing to it
+            if (!userbuf) {
+                return_val = -EFAULT;
+                break;
+            }
+
             struct winsize ws = { 24, 80, 0, 0 };
             memcpy(userbuf, &ws, sizeof(struct winsize));
+
 #ifdef STELLUX_STRACE_ENABLED
-            kprint("ioctl(%llu, TIOCGWINSZ, {ws_row=%d, ws_col=%d, ws_xpixel=%d, ws_ypixel=%d}) = 0\n", 
+            kprint("ioctl(%d, TIOCGWINSZ, {ws_row=%d, ws_col=%d, ws_xpixel=%d, ws_ypixel=%d}) = 0\n",
                    fd, ws.ws_row, ws.ws_col, ws.ws_xpixel, ws.ws_ypixel);
 #endif
             return_val = 0;
@@ -805,7 +813,6 @@ long __syscall_handler(
                 return_val = static_cast<long>(current->get_core()->mm_ctx.heap_end);
             }
         }
-        
 #ifdef STELLUX_STRACE_ENABLED
         kprint("brk(0x%llx) = 0x%llx\n", arg1, return_val);
 #endif

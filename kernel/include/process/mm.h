@@ -20,15 +20,15 @@ struct mm_context {
 } __attribute__((packed));
 
 /**
- * @brief Reads the current memory management context.
+ * @brief Reads and saves the current memory management context.
  * 
  * Retrieves the root page table address (or equivalent) currently installed in the MMU.
  * This function typically reads the CR3 register or its platform-specific equivalent.
  * 
- * @return mm_context The current memory management context.
+ * @param context The core's memory management context into which to save the current context.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE mm_context save_mm_context();
+__PRIVILEGED_CODE void save_mm_context(mm_context* context);
 
 /**
  * @brief Installs a memory management context into the MMU.

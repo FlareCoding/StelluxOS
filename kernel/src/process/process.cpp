@@ -62,7 +62,7 @@ void switch_context_in_irq(
     save_cpu_context(&from_core->cpu_context, irq_frame);
 
     // Save the current MMU context into the 'from' process core
-    from_core->mm_ctx = save_mm_context();
+    save_mm_context(&from_core->mm_ctx);
 
     // Save the TLS base
     from_core->fs_base = arch::x86::msr::read(IA32_FS_BASE);
@@ -316,8 +316,6 @@ bool destroy_process_core(process_core* core) {
             SCHED_SYSTEM_STACK_PAGES
         );
     }
-
-    return true;
 
     // Free the task stack if it exists for kernel processes
     // using the kernel's virtual memory manager (vmm).
