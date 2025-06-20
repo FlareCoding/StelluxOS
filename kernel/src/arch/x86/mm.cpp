@@ -8,13 +8,8 @@
 #include <core/klog.h>
 
 __PRIVILEGED_CODE
-mm_context save_mm_context() {
-    mm_context ctx;
-    zeromem(&ctx, sizeof(mm_context));
-
-    ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
-
-    return ctx;
+void save_mm_context(mm_context* context) {
+    context->root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
 }
 
 /**
