@@ -10,6 +10,8 @@
 #include <time/time.h>
 #include <sched/sched.h>
 #include <process/process.h>
+#include <process/process_core.h>
+#include <process/fpu.h>
 #include <process/elf/elf64_loader.h>
 #include <smp/smp.h>
 #include <dynpriv/dynpriv.h>
@@ -163,8 +165,6 @@ void init(unsigned int magic, void* mbi) {
     // Initialize kernel logging subsystem
     klog::logger::init(8);
 
-    serial::printf("dynpriv 'elevated' offset: 0x%llx\n", &current_task->hw_state);
-
     // Perform arch-specific initialzation that require VMM
     arch::arch_late_stage_init();
 
@@ -272,22 +272,26 @@ void module_manager_init(void*) {
     module_manager.start_module(pci_mngr.get());
 
     RUN_ELEVATED({
-        // Load the init binary into a process core
-        auto init_core = elf::elf64_loader::load_from_file("/initrd/bin/init");
-        if (!init_core) {
-            kprint("[!] Failed to load init binary\n");
-            sched::exit_process();
-        }
+        for (int i = 0; i < 5; i++) {
+            // Load the init binary into a process core
+            auto init_core = elf::elf64_loader::load_from_file("/initrd/bin/init");
+            if (!init_core) {
+                kprint("[!] Failed to load init binary\n");
+                sched::exit_process();
+            }
 
-        // Create the init process with the loaded core
-        auto init_process = new process();
-        if (!init_process->init_with_core(
-            init_core,
-            process_creation_flags::CAN_ELEVATE | process_creation_flags::SCHEDULE_NOW,
-            true
-        )) {
-            kprint("[!] Failed to initialize init process\n");
-            sched::exit_process();
+            // Create the init process with the loaded core
+            auto init_process = new process();
+            if (!init_process->init_with_core(
+                init_core,
+                process_creation_flags::CAN_ELEVATE,
+                true
+            )) {
+                kprint("[!] Failed to initialize init process\n");
+                sched::exit_process();
+            }
+
+            sched::scheduler::get().add_process(init_process, 3);
         }
 
         // Exit this process

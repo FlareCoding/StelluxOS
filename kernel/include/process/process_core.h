@@ -2,6 +2,7 @@
 #define PROCESS_CORE_H
 
 #include "ptregs.h"
+#include "fpu.h"
 #include "mm.h"
 #include <arch/percpu.h>
 
@@ -49,6 +50,14 @@ struct process_core {
      * and other CPU state needed for execution.
      */
     ptregs cpu_context;
+
+    /**
+     * @brief FPU/SSE register state of the process.
+     * 
+     * Contains the complete floating point state including
+     * XMM registers, control/status registers, and tracking flags.
+     */
+    fpu::fpu_state fpu_context __attribute__((aligned(__FPU_ALIGNMENT)));
 
     /**
      * @brief Hardware-specific state flags.

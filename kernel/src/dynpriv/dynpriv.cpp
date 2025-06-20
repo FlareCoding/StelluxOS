@@ -92,12 +92,12 @@ void lower() {
         "popq %%r11;"            // Pop EFLAGS into r11 (as required by SYSRET)
         "cli;"                   // Disable interrupts
         "lea 1f(%%rip), %%rcx;"  // Load the address of the next instruction into rcx
-        "btrq $0, 0xd0(%0);"     // Set current->elevated to 0
+        "btrq $0, 0x2e0(%0);"    // Set current->elevated to 0
         "sysretq;"               // Execute SYSRET and IF flag will get reset from the eflags
         "1:"                     // Label for the next instruction after SYSRET
         : /* no outputs */
         : "r"(current_task)
-        : "rcx", "r11", "memory"   // Clobbered registers
+        : "rcx", "r11", "memory" // Clobbered registers
     );
 }
 
@@ -107,7 +107,7 @@ void lower(void* target_fn) {
         "popq %%r11;"                        // Pop RFLAGS into R11 (required by SYSRETQ)
         "cli;"                               // Disable interrupts
         "mov %0, %%rcx;"                     // Move target_fn into RCX
-        "btrq $0, 0xd0(%0);"                 // Set current->elevated to 0
+        "btrq $0, 0x2e0(%0);"                // Set current->elevated to 0
         "sysretq;"                           // Execute SYSRETQ to return to target_fn
         :
         : "r"(current_task),                 // %0 = pointer to current TCB

@@ -91,6 +91,10 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
     this_cpu_write(current_process_core, ap_idle_task_core);
     this_cpu_write(current_system_stack, ap_system_stack_top);
 
+    // Initialize FPU per-CPU tracking variables for this AP
+    this_cpu_write(fpu_owner, ap_idle_task_core);
+    this_cpu_write(fpu_used_in_irq, false);
+
     // Enable the syscall interface
     enable_syscall_interface();
 

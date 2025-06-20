@@ -67,6 +67,38 @@ void switch_context_in_irq(
     // Save the TLS base
     from_core->fs_base = arch::x86::msr::read(IA32_FS_BASE);
 
+    // FPU context switching logic
+    process_core* current_fpu_owner = this_cpu_read(fpu_owner);
+    
+    // Save FPU state if the current process owns the FPU and has used it
+    if (current_fpu_owner == from_core && 
+        from_core->fpu_context.has_used_fpu && 
+        from_core->fpu_context.needs_fpu_save) {
+        fpu::save_fpu_state(from_core);
+    }
+    
+    // Determine FPU handling based on the target process's FPU usage history
+    // Reminder: current task may not always equal to the FPU owner (if it doesn't use FPU for example)
+    if (current_fpu_owner == to_core) {
+        // Switching back to current FPU owner - just restore and enable
+        if (to_core->fpu_context.has_used_fpu) {
+            fpu::restore_fpu_state(to_core);
+            fpu::enable();
+        }
+    } else if (to_core->fpu_context.has_used_fpu) {
+        // Switching to a process that has used FPU before:
+        // Save current owner's state if needed (already done above)
+        // Restore new process's state and make it the owner
+        fpu::restore_fpu_state(to_core);
+        fpu::enable();
+        this_cpu_write(fpu_owner, to_core);
+        to_core->fpu_context.needs_fpu_save = 1;
+    } else {
+        // Switching to a process that has never used FPU
+        // Disable FPU to trigger lazy loading on first use
+        fpu::disable();  // Set CR0.TS = 1 to trigger #NM on FPU use
+    }
+
     // Restore the context from the 'to' process core
     restore_cpu_context(&to_core->cpu_context, irq_frame);
 
@@ -137,6 +169,9 @@ process_core* create_priv_kernel_process_core(task_entry_fn_t entry, void* proce
     // Setup the page table
     core->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
 
+    // Initialize FPU state
+    fpu::init_fpu_state(core);
+
     return core;
 }
 
@@ -187,6 +222,9 @@ process_core* create_unpriv_kernel_process_core(task_entry_fn_t entry, void* pro
 
     // Setup the page table
     core->mm_ctx.root_page_table = reinterpret_cast<uint64_t>(paging::get_pml4());
+
+    // Initialize FPU state
+    fpu::init_fpu_state(core);
 
     return core;
 }
@@ -258,6 +296,9 @@ process_core* create_userland_process_core(
     core->cpu_context.es = data_segment;
     core->cpu_context.hwframe.ss = data_segment;
     core->cpu_context.hwframe.cs = __USER_CS | 0x3;  // Add RPL=3 for user mode
+
+    // Initialize FPU state
+    fpu::init_fpu_state(core);
 
     return core;
 }

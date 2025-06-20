@@ -67,6 +67,10 @@ void arch_init() {
     this_cpu_write(current_process_core, bsp_idle_core);
     this_cpu_write(current_system_stack, bsp_system_stack_top);
 
+    // Initialize FPU per-CPU tracking variables
+    this_cpu_write(fpu_owner, bsp_idle_core);
+    this_cpu_write(fpu_used_in_irq, false);
+
     // Enable the syscall interface
     enable_syscall_interface();
 
