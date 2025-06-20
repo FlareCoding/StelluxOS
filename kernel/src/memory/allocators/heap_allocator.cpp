@@ -5,11 +5,22 @@
 #include <memory/paging.h>
 
 #define MIN_HEAP_SEGMENT_CAPACITY 1
+#define HEAP_ALIGNMENT 16
 
 #define GET_USABLE_BLOCK_MEMORY_SIZE(seg) seg->size - sizeof(heap_segment_header)
 
 #define WRITE_SEGMENT_MAGIC_FIELD(seg) \
     memcpy(seg->magic, (void*)KERNEL_HEAP_SEGMENT_HDR_SIGNATURE, sizeof(seg->magic));
+
+// Helper function to align address to 16-byte boundary
+static inline uintptr_t align_to_16_bytes(uintptr_t addr) {
+    return (addr + (HEAP_ALIGNMENT - 1)) & ~(HEAP_ALIGNMENT - 1);
+}
+
+// Helper function to check if address is 16-byte aligned
+static inline bool is_16_byte_aligned(uintptr_t addr) {
+    return (addr & (HEAP_ALIGNMENT - 1)) == 0;
+}
 
 namespace allocators {
 heap_allocator g_kernel_heap_allocator;
@@ -125,11 +136,28 @@ void* heap_allocator::_allocate_locked(size_t size) {
         return nullptr;
     }
 
+    // Verify the segment is 16-byte aligned before using it
+    if (!is_16_byte_aligned(reinterpret_cast<uintptr_t>(segment))) {
+        serial::printf("[HEAP] ERROR: Segment not 16-byte aligned during allocation: 0x%llx\n", 
+                      reinterpret_cast<uintptr_t>(segment));
+        return nullptr;
+    }
+
     _split_segment(segment, new_segment_size);
 
     segment->flags.free = false;
 
     uint8_t* usable_region_start = reinterpret_cast<uint8_t*>(segment) + sizeof(heap_segment_header);
+    
+    // Verify the user pointer is 16-byte aligned
+    if (!is_16_byte_aligned(reinterpret_cast<uintptr_t>(usable_region_start))) {
+        serial::printf("[HEAP] ERROR: User pointer not 16-byte aligned: 0x%llx\n", 
+                      reinterpret_cast<uintptr_t>(usable_region_start));
+        serial::printf("[HEAP]   Segment: 0x%llx, Header size: %zu\n", 
+                      reinterpret_cast<uintptr_t>(segment), sizeof(heap_segment_header));
+        return nullptr;
+    }
+    
     return static_cast<void*>(usable_region_start);
 }
 
@@ -171,21 +199,38 @@ heap_segment_header* heap_allocator::_find_free_segment(size_t min_size) {
 }
 
 bool heap_allocator::_split_segment(heap_segment_header* segment, size_t size) {
-    if (static_cast<int64_t>(segment->size - (size + sizeof(heap_segment_header))) < MIN_HEAP_SEGMENT_CAPACITY * 2) {
+    // Ensure the split size is 16-byte aligned to maintain alignment
+    size_t aligned_size = align_to_16_bytes(size);
+    
+    // Check if we have enough space for the aligned split plus a minimum viable segment
+    size_t min_remaining = sizeof(heap_segment_header) + HEAP_ALIGNMENT + MIN_HEAP_SEGMENT_CAPACITY;
+    if (static_cast<int64_t>(segment->size - (aligned_size + min_remaining)) < 0) {
         return false;
     }
 
-    heap_segment_header* new_segment = reinterpret_cast<heap_segment_header*>(
-        reinterpret_cast<uint8_t*>(segment) + size
-    );
+    // Calculate where the new segment will be placed (must be 16-byte aligned)
+    uintptr_t new_segment_addr = reinterpret_cast<uintptr_t>(segment) + aligned_size;
+    new_segment_addr = align_to_16_bytes(new_segment_addr);
+    
+    heap_segment_header* new_segment = reinterpret_cast<heap_segment_header*>(new_segment_addr);
+    
+    // Verify alignment
+    if (!is_16_byte_aligned(new_segment_addr)) {
+        serial::printf("[HEAP] ERROR: New segment not 16-byte aligned: 0x%llx\n", new_segment_addr);
+        return false;
+    }
 
-    // Clear out the segment's memory
+    // Calculate actual sizes accounting for alignment
+    size_t actual_first_size = new_segment_addr - reinterpret_cast<uintptr_t>(segment);
+    size_t actual_second_size = segment->size - actual_first_size;
+
+    // Clear out the new segment's memory
     zeromem(new_segment, sizeof(heap_segment_header));
 
-    // Initialize the segment
+    // Initialize the new segment
     WRITE_SEGMENT_MAGIC_FIELD(new_segment)
     new_segment->flags.free = segment->flags.free;
-    new_segment->size = segment->size - size;
+    new_segment->size = actual_second_size;
     new_segment->next = segment->next;
     new_segment->prev = segment;
 
@@ -194,7 +239,8 @@ bool heap_allocator::_split_segment(heap_segment_header* segment, size_t size) {
         segment->next->prev = new_segment;
     }
 
-    segment->size = size;
+    // Update the original segment
+    segment->size = actual_first_size;
     segment->next = new_segment;
 
     return true;

@@ -23,9 +23,9 @@ public:
      * @brief Constructs a hashmap with an initial capacity and load factor.
      * 
      * @param initial_capacity Initial number of buckets in the hashmap.
-     * @param load_factor Maximum load factor before resizing occurs.
+     * @param load_factor_percent Load factor as percentage (75 = 75% = 0.75)
      */
-    explicit hashmap(size_t initial_capacity = 16, double load_factor = 0.75);
+    explicit hashmap(size_t initial_capacity = 16, size_t load_factor_percent = 75);
 
     /**
      * @brief Copy constructor.
@@ -131,7 +131,7 @@ private:
 
     size_t m_bucket_count; ///< Number of buckets in the hashmap.
     size_t m_size;         ///< Current number of elements in the hashmap.
-    double m_load_factor;  ///< Load factor threshold for resizing.
+    size_t m_load_factor_percent;  ///< Load factor threshold as percentage (75 = 75%)
     node** m_buckets;      ///< Array of bucket pointers.
 
     /**
@@ -189,11 +189,11 @@ private:
 // Implementation of hashmap methods
 
 /**
- * @copydoc hashmap::hashmap(size_t, double)
+ * @copydoc hashmap::hashmap(size_t, size_t)
  */
 template <typename K, typename V>
-hashmap<K, V>::hashmap(size_t initial_capacity, double load_factor)
-    : m_bucket_count(initial_capacity), m_size(0), m_load_factor(load_factor) {
+hashmap<K, V>::hashmap(size_t initial_capacity, size_t load_factor_percent)
+    : m_bucket_count(initial_capacity), m_size(0), m_load_factor_percent(load_factor_percent) {
     m_buckets = new node*[m_bucket_count];
     for (size_t i = 0; i < m_bucket_count; ++i) {
         m_buckets[i] = nullptr;
@@ -213,7 +213,7 @@ hashmap<K, V>::hashmap(const hashmap& other) {
  */
 template <typename K, typename V>
 hashmap<K, V>::hashmap(hashmap&& other) noexcept
-    : m_bucket_count(other.m_bucket_count), m_size(other.m_size), m_load_factor(other.m_load_factor),
+    : m_bucket_count(other.m_bucket_count), m_size(other.m_size), m_load_factor_percent(other.m_load_factor_percent),
       m_buckets(other.m_buckets) {
     other.m_buckets = nullptr;
     other.m_size = 0;
@@ -241,7 +241,7 @@ hashmap<K, V>& hashmap<K, V>::operator=(hashmap&& other) noexcept {
         _clear();
         m_bucket_count = other.m_bucket_count;
         m_size = other.m_size;
-        m_load_factor = other.m_load_factor;
+        m_load_factor_percent = other.m_load_factor_percent;
         m_buckets = other.m_buckets;
 
         other.m_buckets = nullptr;
@@ -278,7 +278,8 @@ bool hashmap<K, V>::insert(const K& key, const V& value) {
     m_buckets[index] = new_node;
     ++m_size;
 
-    if (static_cast<double>(m_size) / m_bucket_count > m_load_factor) {
+    // Check load factor using integer arithmetic: m_size * 100 > m_bucket_count * m_load_factor_percent
+    if (m_size * 100 > m_bucket_count * m_load_factor_percent) {
         _rehash();
     }
 
@@ -367,7 +368,8 @@ V& hashmap<K, V>::operator[](const K& key) {
     m_buckets[index] = new_node;
     ++m_size;
 
-    if (static_cast<double>(m_size) / m_bucket_count > m_load_factor) {
+    // Check load factor using integer arithmetic: m_size * 100 > m_bucket_count * m_load_factor_percent
+    if (m_size * 100 > m_bucket_count * m_load_factor_percent) {
         _rehash();
     }
 
@@ -494,7 +496,7 @@ template <typename K, typename V>
 void hashmap<K, V>::_copy_from(const hashmap& other) {
     m_bucket_count = other.m_bucket_count;
     m_size = other.m_size;
-    m_load_factor = other.m_load_factor;
+    m_load_factor_percent = other.m_load_factor_percent;
     m_buckets = new node*[m_bucket_count];
 
     for (size_t i = 0; i < m_bucket_count; ++i) {

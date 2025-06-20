@@ -15,7 +15,7 @@
 #include <process/elf/elf64_loader.h>
 #include <arch/x86/msr.h>
 
-#define STELLUX_STRACE_ENABLED
+// #define STELLUX_STRACE_ENABLED
 
 // Userland process creation flags
 typedef enum {

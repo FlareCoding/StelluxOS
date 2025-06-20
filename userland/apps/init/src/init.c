@@ -8,7 +8,7 @@ int main() {
     int* arr = (int*)malloc(sizeof(int) * 10);
     printf("StelluxOS Init Process\n");
     printf("======================\n");
-    printf("Allocated array at: %p\n", arr);
+    printf("Allocated array at: 0x%p\n", arr);
     
     for (int i = 0; i < 10; i++) {
         arr[i] = i * i;  // Store squares
@@ -23,6 +23,17 @@ int main() {
     free(arr);
 
     printf("mypid: %d\n", getpid());
+
+    float x = 4.5;
+    float y = 5.6;
+    float z = x * y;
     
+
+    printf("%f * %f = %f\n", x, y, z);
+    
+    for (int i = 0; i < 100000000; i++) {
+        x++;
+    }
+
     return 0;
 }

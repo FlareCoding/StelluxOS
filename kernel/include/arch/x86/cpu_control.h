@@ -40,6 +40,42 @@
 
 namespace arch::x86 {
 /**
+ * @brief Reads the current value of the CR0 control register.
+ * 
+ * @return uint64_t The current value of the CR0 register.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t __read_cr0();
+
+/**
+ * @brief Writes a value to the CR0 control register.
+ * 
+ * @param cr0 The value to write to the CR0 register.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void __write_cr0(uint64_t cr0);
+
+/**
+ * @brief Reads the current value of the CR4 control register.
+ * 
+ * @return uint64_t The current value of the CR4 register.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t __read_cr4();
+
+/**
+ * @brief Writes a value to the CR4 control register.
+ * 
+ * @param cr4 The value to write to the CR4 register.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void __write_cr4(uint64_t cr4);
+
+/**
  * @brief Disables the CPU cache and retrieves the previous CR0 register value.
  * @param old_cr0 Pointer to store the previous value of the CR0 register.
  * 
@@ -87,6 +123,43 @@ __PRIVILEGED_CODE void cpu_pge_clear();
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void cpu_pge_enable();
+
+/**
+ * @brief Enables FPU by clearing the TS (Task Switched) bit in CR0.
+ * 
+ * Uses the CLTS instruction to quickly enable FPU operations.
+ * After this call, FPU instructions will execute normally.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static __force_inline__ void fpu_enable() {
+    asm volatile("clts" ::: "memory");
+}
+
+/**
+ * @brief Disables FPU by setting the TS (Task Switched) bit in CR0.
+ * 
+ * After this call, FPU instructions will trigger #NM exceptions.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static __force_inline__ void fpu_disable() {
+    uint64_t cr0 = __read_cr0();
+    cr0 |= CR0_TS;
+    __write_cr0(cr0);
+}
+
+/**
+ * @brief Checks if FPU is currently enabled.
+ * 
+ * @return true if FPU is enabled (TS bit clear), false if disabled (TS bit set)
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static __force_inline__ bool is_fpu_enabled() {
+    uint64_t cr0 = __read_cr0();
+    return (cr0 & CR0_TS) == 0;
+}
 } // namespace arch::x86
 
 #endif // CPU_CONTROL_H

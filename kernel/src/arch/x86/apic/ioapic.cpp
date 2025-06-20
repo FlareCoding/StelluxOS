@@ -82,7 +82,7 @@ void ioapic::_write(uint8_t reg_off, uint32_t data) {
 } // namespace arch::x86
 
 __PRIVILEGED_CODE
-void route_legacy_irq(uint8_t irq_line, uint8_t irqno, uint8_t cpu = 0, uint8_t level_triggered = 0) {
+void route_legacy_irq(uint8_t irq_line, uint8_t irqno, uint8_t cpu, uint8_t level_triggered) {
     auto& io_apic = arch::x86::ioapic::get();
 
     arch::x86::ioapic::redirection_entry entry;

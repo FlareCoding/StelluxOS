@@ -82,7 +82,7 @@ DECLARE_UNIT_TEST("hashmap find", test_hashmap_find) {
 
 // Test dynamic resizing
 DECLARE_UNIT_TEST("hashmap dynamic resizing", test_hashmap_dynamic_resizing) {
-    hashmap<int, int> map(4, 0.75); // Small initial size to force rehashing
+    hashmap<int, int> map(4, 75); // Small initial size to force rehashing (75%)
     for (int i = 0; i < 20; ++i) {
         map.insert(i, i * 10);
     }
@@ -124,7 +124,7 @@ DECLARE_UNIT_TEST("hashmap complex types", test_hashmap_complex_types) {
 
 // Test collision handling
 DECLARE_UNIT_TEST("hashmap collision handling", test_hashmap_collision_handling) {
-    hashmap<int, int> map(2, 0.75); // Force collisions with small bucket count
+    hashmap<int, int> map(2, 75); // Force collisions with small bucket count (75%)
     map.insert(1, 10);
     map.insert(3, 30); // Both keys should hash to the same bucket
 

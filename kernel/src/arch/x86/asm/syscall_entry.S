@@ -78,7 +78,7 @@ _ignored_iret_construction_path:
     
     # Inline elevation check using rax
     this_cpu_read rax, current_process_core
-    mov rax, [rax + 0xd0]                   # current_process_core->hw_state.elevated
+    mov rax, [rax + 0x2e0]                  # current_process_core->hw_state.elevated
     testb al, 1                             # test the elevated bit
 
     pop rax                                 # restore syscall return value
