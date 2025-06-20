@@ -15,6 +15,9 @@
 #include <process/elf/elf64_loader.h>
 #include <arch/x86/msr.h>
 
+#include <modules/module_manager.h>
+#include <modules/graphics/gfx_framebuffer_module.h>
+
 // #define STELLUX_STRACE_ENABLED
 
 // Userland process creation flags
@@ -869,6 +872,192 @@ long __syscall_handler(
         kprint("set_tid_address(0x%llx) = %d\n", arg1, current->get_core()->identity.pid);
 #endif
         return_val = current->get_core()->identity.pid;
+        break;
+    }
+    case SYSCALL_SYS_GET_FILE_SIZE_AND_FB_INFO: {
+        // arg1 = pointer to struct to fill with file size and framebuffer info
+        void* info_ptr = reinterpret_cast<void*>(arg1);
+        
+        if (!info_ptr) {
+            return_val = -EINVAL;
+            break;
+        }
+        
+        // Define the info struct that userland expects
+        struct file_size_and_fb_info {
+            uint64_t font_file_size;     // Size of UbuntuMono-Regular.ttf
+            uint32_t fb_width;           // Framebuffer width
+            uint32_t fb_height;          // Framebuffer height  
+            uint32_t fb_pitch;           // Framebuffer pitch
+            uint8_t  fb_bpp;             // Bits per pixel
+        };
+        
+        file_size_and_fb_info* info = reinterpret_cast<file_size_and_fb_info*>(info_ptr);
+        
+        // Get font file size from VFS using stat (like ELF64 loader)
+        auto& vfs = fs::virtual_filesystem::get();
+        fs::vfs_stat_struct stat;
+        
+        if (vfs.stat("/initrd/res/fonts/UbuntuMono-Regular.ttf", stat) != fs::fs_error::success) {
+            kprint("Failed to stat font file\n");
+            return_val = -ENOENT;
+            break;
+        }
+        
+        info->font_file_size = stat.size;
+        
+        // Get framebuffer info from the graphics module
+        auto& module_manager = modules::module_manager::get();
+        auto gfx_module = module_manager.find_module("gfx_framebuffer_module");
+        
+        if (!gfx_module) {
+            kprint("Graphics module not found\n");
+            return_val = -ENODEV;
+            break;
+        }
+        
+        // Get framebuffer info via module command
+        modules::gfx_framebuffer_module::framebuffer_t fb_info;
+        if (!gfx_module->on_command(
+            modules::gfx_framebuffer_module::CMD_MAP_BACKBUFFER,
+            nullptr, 0,
+            &fb_info, sizeof(fb_info)
+        )) {
+            kprint("Failed to get framebuffer info from graphics module\n");
+            return_val = -EIO;
+            break;
+        }
+        
+        info->fb_width = fb_info.width;
+        info->fb_height = fb_info.height;
+        info->fb_pitch = fb_info.pitch;
+        info->fb_bpp = fb_info.bpp;
+        
+        kprint("Font file size: %llu bytes, FB: %ux%u, pitch: %u, bpp: %u\n",
+               info->font_file_size, info->fb_width, info->fb_height, info->fb_pitch, info->fb_bpp);
+        
+        return_val = 0;
+        break;
+    }
+    case SYSCALL_SYS_MAP_FRAMEBUFFER: {
+        // arg1 = desired virtual address to map framebuffer at
+        uintptr_t desired_addr = static_cast<uintptr_t>(arg1);
+        
+        if (!desired_addr) {
+            return_val = -EINVAL;
+            break;
+        }
+        
+        // Get framebuffer info from the graphics module
+        auto& module_manager = modules::module_manager::get();
+        auto gfx_module = module_manager.find_module("gfx_framebuffer_module");
+        
+        if (!gfx_module) {
+            kprint("Graphics module not found for framebuffer mapping\n");
+            return_val = -ENODEV;
+            break;
+        }
+        
+        // Get framebuffer info via module command
+        modules::gfx_framebuffer_module::framebuffer_t fb_info;
+        if (!gfx_module->on_command(
+            modules::gfx_framebuffer_module::CMD_MAP_BACKBUFFER,
+            nullptr, 0,
+            &fb_info, sizeof(fb_info)
+        )) {
+            kprint("Failed to get framebuffer info for mapping\n");
+            return_val = -EIO;
+            break;
+        }
+        
+        // Calculate framebuffer size
+        uint32_t fb_size = fb_info.pitch * fb_info.height;
+        uint32_t page_count = (fb_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        
+        // Get the physical base address from the graphics module
+        uintptr_t physical_base;
+        if (!gfx_module->on_command(
+            modules::gfx_framebuffer_module::CMD_GET_PHYSICAL_BASE,
+            nullptr, 0,
+            &physical_base, sizeof(physical_base)
+        )) {
+            kprint("Failed to get physical base address from graphics module\n");
+            return_val = -EIO;
+            break;
+        }
+        
+        // Map the physical framebuffer into userland virtual memory
+        void* mapped_addr = vmm::map_contiguous_physical_pages(
+            physical_base, 
+            page_count, 
+            DEFAULT_UNPRIV_PAGE_FLAGS | PTE_PAT
+        );
+        
+        if (!mapped_addr) {
+            kprint("Failed to map framebuffer into userland\n");
+            return_val = -ENOMEM;
+            break;
+        }
+        
+        kprint("Framebuffer mapped at 0x%llx (physical: 0x%llx), size: %u bytes (%u pages)\n", 
+               reinterpret_cast<uintptr_t>(mapped_addr), physical_base, fb_size, page_count);
+        
+        // Return the mapped virtual address
+        return_val = static_cast<long>(reinterpret_cast<uintptr_t>(mapped_addr));
+        break;
+    }
+    case SYSCALL_SYS_LOAD_FONT_DATA: {
+        // arg1 = userland buffer address to copy font data to
+        // arg2 = size of the userland buffer
+        void* user_buffer = reinterpret_cast<void*>(arg1);
+        size_t buffer_size = static_cast<size_t>(arg2);
+        
+        if (!user_buffer || buffer_size == 0) {
+            return_val = -EINVAL;
+            break;
+        }
+        
+        // Read the font file into kernel memory first
+        auto& vfs = fs::virtual_filesystem::get();
+        fs::vfs_stat_struct stat;
+        
+        if (vfs.stat("/initrd/res/fonts/UbuntuMono-Regular.ttf", stat) != fs::fs_error::success) {
+            kprint("Failed to stat font file for loading\n");
+            return_val = -ENOENT;
+            break;
+        }
+        
+        if (buffer_size < stat.size) {
+            kprint("Userland buffer too small: %zu < %zu\n", buffer_size, stat.size);
+            return_val = -EINVAL;
+            break;
+        }
+        
+        // Allocate temporary kernel buffer
+        uint8_t* kernel_buffer = reinterpret_cast<uint8_t*>(zmalloc(stat.size));
+        if (!kernel_buffer) {
+            kprint("Failed to allocate kernel buffer for font data\n");
+            return_val = -ENOMEM;
+            break;
+        }
+        
+        // Read font file into kernel buffer
+        if (!vfs.read("/initrd/res/fonts/UbuntuMono-Regular.ttf", kernel_buffer, stat.size, 0)) {
+            kprint("Failed to read font file into kernel buffer\n");
+            free(kernel_buffer);
+            return_val = -EIO;
+            break;
+        }
+        
+        // Copy font data to userland buffer
+        memcpy(user_buffer, kernel_buffer, stat.size);
+        
+        // Free kernel buffer
+        free(kernel_buffer);
+        
+        kprint("Font data loaded: %llu bytes copied to userland at 0x%llx\n", stat.size, reinterpret_cast<uint64_t>(user_buffer));
+        
+        return_val = static_cast<long>(stat.size);
         break;
     }
     default: {

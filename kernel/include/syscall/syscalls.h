@@ -9,6 +9,9 @@
 #define ENOMEM  12  // Out of memory
 #define EACCES  13  // Invalid access
 #define ENOTTY	25  // Invalid tty
+#define ENOENT  2   // No such file or directory
+#define ENODEV  19  // No such device
+#define EIO     5   // Input/output error
 
 #define SYSCALL_SYS_READ                0
 #define SYSCALL_SYS_WRITE               1
@@ -28,6 +31,11 @@
 #define SYSCALL_SYS_PROC_CLOSE  708
 
 #define SYSCALL_SYS_ELEVATE     790
+
+// Font rendering prototype syscalls
+#define SYSCALL_SYS_GET_FILE_SIZE_AND_FB_INFO 791
+#define SYSCALL_SYS_MAP_FRAMEBUFFER           792
+#define SYSCALL_SYS_LOAD_FONT_DATA            793
 
 /**
  * @brief Executes a system call with the specified number and arguments.

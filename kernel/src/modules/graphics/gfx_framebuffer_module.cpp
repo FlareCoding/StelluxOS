@@ -78,6 +78,12 @@ bool gfx_framebuffer_module::on_command(
         }
         return true;
     }
+    case CMD_GET_PHYSICAL_BASE: {
+        if (data_out && data_out_size == sizeof(uintptr_t)) {
+            *reinterpret_cast<uintptr_t*>(data_out) = m_physical_base;
+        }
+        return true;
+    }
     default: {
         // Unknown command
         return false;

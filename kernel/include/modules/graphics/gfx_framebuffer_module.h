@@ -16,7 +16,8 @@ public:
     enum command_id : uint64_t {
         CMD_CLEAR_SCREEN    = 0x01,
         CMD_SWAP_BUFFERS    = 0x02,
-        CMD_MAP_BACKBUFFER  = 0x03
+        CMD_MAP_BACKBUFFER  = 0x03,
+        CMD_GET_PHYSICAL_BASE = 0x04
     };
 
     explicit gfx_framebuffer_module(
