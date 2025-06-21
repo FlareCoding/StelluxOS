@@ -12,6 +12,7 @@ typedef long (*syscall_handler_t)(uint64_t arg1, uint64_t arg2, uint64_t arg3,
 
 // Macro to declare a syscall handler
 #define DECLARE_SYSCALL_HANDLER(name) \
+    __PRIVILEGED_CODE \
     long sys_##name##_handler([[maybe_unused]] uint64_t arg1, \
                               [[maybe_unused]] uint64_t arg2, \
                               [[maybe_unused]] uint64_t arg3, \
