@@ -4,82 +4,115 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
-#include <stlibc/stlibc.h>
+#include <stdint.h>
 
 int main() {
     printf("<--- StelluxOS Init Process --->\n");
-    printf("Testing complete file I/O functionality...\n\n");
+    printf("Loading TTF font file into memory...\n\n");
     
-    // Test 1: Open file for read/write with creation
-    printf("1. Opening /test.txt for read/write...\n");
-    int fd = open("/test.txt", O_RDWR | O_CREAT, 0644);
+    const char* font_path = "/initrd/res/fonts/UbuntuMono-Regular.ttf";
+    
+    // Step 1: Open the font file for reading
+    printf("1. Opening font file: %s\n", font_path);
+    int fd = open(font_path, O_RDONLY);
     if (fd < 0) {
-        perror("Failed to open /test.txt");
+        perror("Failed to open font file");
         printf("errno: %d (%s)\n", errno, strerror(errno));
         return 1;
     }
-    printf("   Successfully opened /test.txt with fd: %d\n", fd);
-
-    // Test 2: Write data to file
-    printf("\n2. Writing data to file...\n");
-    const char* message = "Hello StelluxOS File System!";
-    ssize_t bytes_written = write(fd, message, strlen(message));
-    if (bytes_written < 0) {
-        perror("Failed to write to /test.txt");
+    printf("   Successfully opened font file with fd: %d\n", fd);
+    
+    // Step 2: Get the file size
+    printf("\n2. Determining file size...\n");
+    off_t file_size = lseek(fd, 0, SEEK_END);
+    if (file_size < 0) {
+        perror("Failed to seek to end of file");
         printf("errno: %d (%s)\n", errno, strerror(errno));
         close(fd);
         return 1;
     }
-    printf("   Successfully wrote %zd bytes: '%s'\n", bytes_written, message);
-
-    // Test 3: Seek back to beginning
-    printf("\n3. Seeking back to beginning of file...\n");
-    off_t pos = lseek(fd, 0, SEEK_SET);
-    if (pos < 0) {
+    printf("   Font file size: %ld bytes\n", file_size);
+    
+    // Step 3: Seek back to beginning
+    printf("\n3. Seeking back to beginning...\n");
+    if (lseek(fd, 0, SEEK_SET) < 0) {
         perror("Failed to seek to beginning");
         printf("errno: %d (%s)\n", errno, strerror(errno));
         close(fd);
         return 1;
     }
-    printf("   Successfully seeked to position: %ld\n", pos);
-
-    // Test 4: Read data back from file
-    printf("\n4. Reading data back from file...\n");
-    char read_buffer[100];
-    memset(read_buffer, 0, sizeof(read_buffer)); // Zero the buffer
-    ssize_t bytes_read = read(fd, read_buffer, sizeof(read_buffer) - 1);
-    if (bytes_read < 0) {
-        perror("Failed to read from /test.txt");
-        printf("errno: %d (%s)\n", errno, strerror(errno));
+    printf("   Successfully positioned at start of file\n");
+    
+    // Step 4: Allocate memory for the font data
+    printf("\n4. Allocating memory for font data...\n");
+    void* font_data = malloc(file_size);
+    if (!font_data) {
+        printf("Failed to allocate %ld bytes for font data\n", file_size);
         close(fd);
         return 1;
     }
-    read_buffer[bytes_read] = '\0'; // Null terminate
-    printf("   Successfully read %zd bytes: '%s'\n", bytes_read, read_buffer);
-
-    // Test 5: Seek to end of file
-    printf("\n5. Seeking to end of file...\n");
-    pos = lseek(fd, 0, SEEK_END);
-    if (pos < 0) {
-        perror("Failed to seek to end");
-        printf("errno: %d (%s)\n", errno, strerror(errno));
-        close(fd);
-        return 1;
+    printf("   Successfully allocated %ld bytes at address: %p\n", file_size, font_data);
+    
+    // Step 5: Read the entire font file into memory
+    printf("\n5. Reading font file into memory...\n");
+    ssize_t total_read = 0;
+    char* buffer = (char*)font_data;
+    
+    while (total_read < file_size) {
+        ssize_t bytes_read = read(fd, buffer + total_read, file_size - total_read);
+        if (bytes_read < 0) {
+            perror("Failed to read from font file");
+            printf("errno: %d (%s)\n", errno, strerror(errno));
+            free(font_data);
+            close(fd);
+            return 1;
+        }
+        if (bytes_read == 0) {
+            // EOF reached
+            break;
+        }
+        total_read += bytes_read;
     }
-    printf("   File size: %ld bytes\n", pos);
-
-    // Test 6: Close the file
-    printf("\n6. Closing file...\n");
-    int close_result = close(fd);
-    if (close_result < 0) {
-        perror("Failed to close /test.txt");
-        printf("errno: %d (%s)\n", errno, strerror(errno));
-        return 1;
+    
+    printf("   Successfully read %zd bytes into memory\n", total_read);
+    
+    // Step 6: Verify TTF magic number (basic validation)
+    printf("\n6. Validating TTF file format...\n");
+    if (total_read >= 4) {
+        uint8_t* data = (uint8_t*)font_data;
+        // TTF files start with 0x00, 0x01, 0x00, 0x00 or "OTTO" for OpenType
+        if ((data[0] == 0x00 && data[1] == 0x01 && data[2] == 0x00 && data[3] == 0x00) ||
+            (data[0] == 'O' && data[1] == 'T' && data[2] == 'T' && data[3] == 'O')) {
+            printf("   [+] Valid TTF/OpenType font file detected!\n");
+            printf("   Magic bytes: 0x%02X 0x%02X 0x%02X 0x%02X\n", 
+                   data[0], data[1], data[2], data[3]);
+        } else {
+            printf("   [!] Warning: Unexpected magic bytes: 0x%02X 0x%02X 0x%02X 0x%02X\n", 
+                   data[0], data[1], data[2], data[3]);
+        }
     }
-    printf("   Successfully closed file\n");
-
-    printf("\n[+] All file I/O tests completed successfully!\n");
-    printf("StelluxOS file system is working!\n");
+    
+    // Step 7: Close the file
+    printf("\n7. Closing font file...\n");
+    if (close(fd) < 0) {
+        perror("Failed to close font file");
+        printf("errno: %d (%s)\n", errno, strerror(errno));
+    } else {
+        printf("   Successfully closed font file\n");
+    }
+    
+    // Summary
+    printf("\n[+] Font loading completed successfully!\n");
+    printf("Font: %s\n", font_path);
+    printf("Size: %ld bytes\n", file_size);
+    printf("Memory address: %p\n", font_data);
+    printf("Ready for font rendering!\n");
+    
+    // Note: In a real implementation, you'd keep this font_data around
+    // for rendering. For this test, we'll free it before exiting.
+    printf("\nCleaning up memory...\n");
+    free(font_data);
+    printf("Memory freed.\n");
 
     return 0;
 }
