@@ -3,15 +3,25 @@
 #include <types.h>
 
 #define ENOSYS  1   // Invalid system call number
-#define ENOPRIV 2   // Invalid privilege permissions
 #define EINVAL  22  // Invalid argument
 #define EFAULT  14  // Bad address
 #define ENOMEM  12  // Out of memory
 #define EACCES  13  // Invalid access
 #define ENOTTY	25  // Invalid tty
+#define ENOENT  2   // No such file or directory
+#define EEXIST  17  // File exists
+#define EISDIR  21  // Is a directory
+#define EMFILE  24  // Too many open files
+#define EIO     5   // I/O error
+#define EBADF   9   // Bad file descriptor
+#define ESPIPE  29  // Illegal seek
+#define ENOPRIV 72  // Invalid privilege permissions
 
 #define SYSCALL_SYS_READ                0
 #define SYSCALL_SYS_WRITE               1
+#define SYSCALL_SYS_OPEN                2
+#define SYSCALL_SYS_CLOSE               3
+#define SYSCALL_SYS_LSEEK               8
 #define SYSCALL_SYS_MMAP                9
 #define SYSCALL_SYS_MUNMAP              11
 #define SYSCALL_SYS_BRK                 12

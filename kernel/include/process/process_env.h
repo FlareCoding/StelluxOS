@@ -73,15 +73,13 @@ inline bool has_process_flag(process_creation_flags value, process_creation_flag
  */
 enum class handle_type : uint32_t {
     INVALID = 0,    // Invalid handle
+    INPUT_STREAM,   // Current stub for stdin
+    OUTPUT_STREAM,  // Current stub for stdout
     PROCESS,        // Process handle
-    THREAD,         // Thread handle
     FILE,           // File handle
-    MUTEX,          // Mutex handle
     SEMAPHORE,      // Semaphore handle
     EVENT,          // Event handle
     SHARED_MEM,     // Shared memory handle
-    SOCKET,         // Socket handle
-    // Add more handle types as needed
 };
 
 /**
@@ -172,6 +170,11 @@ struct process_env {
                 entries[i].flags = 0;
                 entries[i].metadata = 0;
             }
+
+            // Hardcore POSIX entries for stdout, stdin, and stderr
+            entries[0].type = handle_type::INPUT_STREAM;
+            entries[1].type = handle_type::OUTPUT_STREAM;
+            entries[2].type = handle_type::OUTPUT_STREAM;
         }
 
         /**
