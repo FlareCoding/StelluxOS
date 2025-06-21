@@ -332,7 +332,9 @@ void xhci_driver::_configure_runtime_registers() {
     }
 
     // Enable interrupts
-    interrupter_regs->iman |= XHCI_IMAN_INTERRUPT_ENABLE;
+    uint32_t iman = interrupter_regs->iman;
+    iman |= XHCI_IMAN_INTERRUPT_ENABLE;
+    interrupter_regs->iman = iman;
 
     // Setup the event ring and write to interrupter
     // registers to set ERSTSZ, ERSDP, and ERSTBA.
@@ -693,12 +695,16 @@ bool xhci_driver::_start_host_controller() {
 
 bool xhci_driver::_request_bios_handoff(volatile uint32_t* usblegsup, volatile uint32_t* usblegctlsts) {
     // Disable all SMIs to prevent crashes
-    *usblegctlsts &= ~XHCI_LEGACY_SMI_ENABLE_BITS;
+    uint32_t legctlsts = *usblegctlsts;
+    legctlsts &= ~XHCI_LEGACY_SMI_ENABLE_BITS;
+    *usblegctlsts = legctlsts;
     msleep(10);
 
     // Set the OS Owned Semaphore in USBLEGSUP
     xhci_log("Requesting OS ownership of the xHCI controller\n");
-    *usblegsup |= XHCI_LEGACY_OS_OWNED_SEMAPHORE;
+    uint32_t legsup = *usblegsup;
+    legsup |= XHCI_LEGACY_OS_OWNED_SEMAPHORE;
+    *usblegsup = legsup;
     msleep(10);
 
     // Wait for BIOS to clear the BIOS Owned Semaphore
@@ -712,7 +718,9 @@ bool xhci_driver::_request_bios_handoff(volatile uint32_t* usblegsup, volatile u
         xhci_warn("BIOS did not release control of the xHCI controller within %ums\n", handoff_timeout);
         xhci_log("Attempting forced controller takeover...\n");
 
-        *usblegsup &= ~XHCI_LEGACY_BIOS_OWNED_SEMAPHORE;
+        uint32_t legsup_forced = *usblegsup;
+        legsup_forced &= ~XHCI_LEGACY_BIOS_OWNED_SEMAPHORE;
+        *usblegsup = legsup_forced;
         msleep(10);
     } else {
         xhci_log("BIOS successfully handed off control of the xHCI controller\n");
