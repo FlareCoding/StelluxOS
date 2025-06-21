@@ -110,7 +110,9 @@ void xhci_event_ring::dequeue_events(kstl::vector<xhci_trb_t*>& received_event_t
     _update_erdp_interrupter_register();
 
     // Clear the EHB (Event Handler Busy) bit
-    m_interrupter_regs->erdp |= XHCI_ERDP_EHB;
+    uint64_t erdp = m_interrupter_regs->erdp;
+    erdp |= XHCI_ERDP_EHB;
+    m_interrupter_regs->erdp = erdp;
 }
 
 void xhci_event_ring::flush_unprocessed_events() {
@@ -123,7 +125,9 @@ void xhci_event_ring::flush_unprocessed_events() {
     _update_erdp_interrupter_register();
 
     // Clear the EHB (Event Handler Busy) bit
-    m_interrupter_regs->erdp |= XHCI_ERDP_EHB;
+    uint64_t erdp = m_interrupter_regs->erdp;
+    erdp |= XHCI_ERDP_EHB;
+    m_interrupter_regs->erdp = erdp;
 }
 
 void xhci_event_ring::_update_erdp_interrupter_register() {
