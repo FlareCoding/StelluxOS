@@ -74,6 +74,9 @@ void arch_init() {
     // Enable the syscall interface
     enable_syscall_interface();
 
+    // Initialize the syscall table
+    init_syscall_table();
+
     // Setup and enable dynamic privilege mechanism
     dynpriv::set_blessed_kernel_asid();
 }
