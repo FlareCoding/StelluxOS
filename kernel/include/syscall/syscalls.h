@@ -29,6 +29,19 @@
 
 #define SYSCALL_SYS_ELEVATE     790
 
+// Uncomment this if you want to see strace-style logs for every issued syscall
+// #define STELLUX_STRACE_ENABLED
+
+/**
+ * @brief Initializes the syscall handler table.
+ * 
+ * This function sets up the global syscall table with all registered system call handlers.
+ * It should be called during kernel initialization to ensure proper syscall handling.
+ * 
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void init_syscall_table();
+
 /**
  * @brief Executes a system call with the specified number and arguments.
  * 
