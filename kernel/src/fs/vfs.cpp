@@ -316,6 +316,10 @@ bool virtual_filesystem::path_exists(const kstl::string& path) {
     return _resolve_path(path, resolved_node) == fs_error::success;
 }
 
+fs_error virtual_filesystem::resolve_path(const kstl::string& path, kstl::shared_ptr<vfs_node>& out_node) {
+    return _resolve_path(path, out_node);
+}
+
 kstl::string virtual_filesystem::get_filename_from_path(const kstl::string& path) {
     if (path.empty()) {
         return ""; // Return an empty string if the path is empty.

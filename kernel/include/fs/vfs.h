@@ -105,6 +105,16 @@ public:
     bool path_exists(const kstl::string& path);
 
     /**
+     * @brief Resolves a path to its corresponding VFS node.
+     * @param path The path to resolve.
+     * @param out_node Reference to store the resolved VFS node.
+     * @return `fs_error::success` on success, or an appropriate error code.
+     * 
+     * This is a public wrapper around the private _resolve_path function.
+     */
+    fs_error resolve_path(const kstl::string& path, kstl::shared_ptr<vfs_node>& out_node);
+
+    /**
      * @brief Extracts the filename from a given path.
      * @param path The full path to extract the filename from.
      * @return The filename as a `kstl::string`, or an empty string if the path is invalid.
