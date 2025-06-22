@@ -7,253 +7,192 @@
 #include <math.h>
 #include <stdint.h>
 #include "stlxdm.h"
+#include <stlxgfx/stlxgfx.h>
 
-// Define STB TrueType implementation
-#define STB_TRUETYPE_IMPLEMENTATION
-
-// Suppress warnings for STB TrueType library
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-variable"
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-
-#include "stb_truetype.h"
-
-#pragma GCC diagnostic pop
-
-int main() {
-    printf("StelluxOS Display Manager (STLXDM) - Initializing...\n");
-    
-    const char* font_path = "/initrd/res/fonts/UbuntuMono-Regular.ttf";
-    
-    // Load TTF font file
-    int fd = open(font_path, O_RDONLY);
-    if (fd < 0) {
-        printf("ERROR: Failed to open font file: %s (errno: %d - %s)\n", 
-               font_path, errno, strerror(errno));
-        return 1;
+int stlxdm_get_framebuffer_info(struct gfx_framebuffer_info* fb_info) {
+    if (!fb_info) {
+        printf("ERROR: NULL framebuffer info pointer\n");
+        return -1;
     }
     
-    // Get file size
-    off_t file_size = lseek(fd, 0, SEEK_END);
-    if (file_size < 0) {
-        printf("ERROR: Failed to get font file size (errno: %d - %s)\n", 
-               errno, strerror(errno));
-        close(fd);
-        return 1;
-    }
-    
-    if (lseek(fd, 0, SEEK_SET) < 0) {
-        printf("ERROR: Failed to seek to beginning of font file (errno: %d - %s)\n", 
-               errno, strerror(errno));
-        close(fd);
-        return 1;
-    }
-    
-    // Allocate memory for font data
-    void* font_data = malloc(file_size);
-    if (!font_data) {
-        printf("ERROR: Failed to allocate %ld bytes for font data\n", file_size);
-        close(fd);
-        return 1;
-    }
-    
-    // Read font file
-    ssize_t total_read = 0;
-    char* buffer = (char*)font_data;
-    
-    while (total_read < file_size) {
-        ssize_t bytes_read = read(fd, buffer + total_read, file_size - total_read);
-        if (bytes_read < 0) {
-            printf("ERROR: Failed to read from font file (errno: %d - %s)\n", 
-                   errno, strerror(errno));
-            free(font_data);
-            close(fd);
-            return 1;
-        }
-        if (bytes_read == 0) break;
-        total_read += bytes_read;
-    }
-    
-    // Basic TTF validation
-    if (total_read >= 4) {
-        uint8_t* data = (uint8_t*)font_data;
-        if (!((data[0] == 0x00 && data[1] == 0x01 && data[2] == 0x00 && data[3] == 0x00) ||
-              (data[0] == 'O' && data[1] == 'T' && data[2] == 'T' && data[3] == 'O'))) {
-            printf("WARNING: Font file may not be a valid TTF/OpenType font\n");
-        }
-    }
-    
-    close(fd);
-
-    // Initialize graphics system
-    // Get framebuffer info
-    struct gfx_framebuffer_info fb_info;
-    long result = syscall2(SYS_GRAPHICS_FRAMEBUFFER_OP, GFX_OP_GET_INFO, (uint64_t)&fb_info);
+    long result = syscall2(SYS_GRAPHICS_FRAMEBUFFER_OP, GFX_OP_GET_INFO, (uint64_t)fb_info);
     if (result != 0) {
         printf("ERROR: Failed to get framebuffer info: %ld\n", result);
-        free(font_data);
-        return 1;
+        return -1;
     }
     
-    printf("Framebuffer: %ux%u, %u BPP\n", fb_info.width, fb_info.height, fb_info.bpp);
+    printf("STLXDM] Framebuffer info: %ux%u, %u BPP, pitch=%u, size=%u\n", 
+           fb_info->width, fb_info->height, fb_info->bpp, fb_info->pitch, fb_info->size);
     
-    // Map framebuffer
+    return 0;
+}
+
+uint8_t* stlxdm_map_framebuffer(void) {
     long map_result = syscall1(SYS_GRAPHICS_FRAMEBUFFER_OP, GFX_OP_MAP_FRAMEBUFFER);
     if (map_result <= 0) {
         printf("ERROR: Failed to map framebuffer: %ld\n", map_result);
-        free(font_data);
+        return NULL;
+    }
+    
+    printf("[STLXDM] Framebuffer mapped at address: 0x%lx\n", map_result);
+    return (uint8_t*)map_result;
+}
+
+int stlxdm_unmap_framebuffer(void) {
+    long result = syscall1(SYS_GRAPHICS_FRAMEBUFFER_OP, GFX_OP_UNMAP_FRAMEBUFFER);
+    if (result != 0) {
+        printf("ERROR: Failed to unmap framebuffer: %ld\n", result);
+        return -1;
+    }
+    
+    printf("Framebuffer unmapped successfully\n");
+    return 0;
+}
+
+// ====================== //
+//    Main Entry Point    //
+// ====================== //
+
+int main() {
+    printf("StelluxOS Display Manager (STLXDM) - Initializing...\n");
+
+    // Initialize framebuffer first
+    struct gfx_framebuffer_info fb_info;
+    if (stlxdm_get_framebuffer_info(&fb_info) != 0) {
         return 1;
     }
     
-    // Set up rendering
-    uint8_t* framebuffer = (uint8_t*)map_result;
-    uint32_t width = fb_info.width;
-    uint32_t height = fb_info.height;
-    uint32_t bytes_per_pixel = fb_info.bpp / 8;
-    uint32_t pitch = fb_info.pitch;
-    
-    // Helper macro for pixel writing
-    #define write_pixel(x, y, color) do { \
-        if ((x) < width && (y) < height) { \
-            uint8_t* pixel = framebuffer + ((y) * pitch) + ((x) * bytes_per_pixel); \
-            uint8_t r = ((color) >> 16) & 0xFF; \
-            uint8_t g = ((color) >> 8) & 0xFF; \
-            uint8_t b = (color) & 0xFF; \
-            if (bytes_per_pixel == 3) { \
-                pixel[0] = b; pixel[1] = g; pixel[2] = r; \
-            } else if (bytes_per_pixel == 4) { \
-                pixel[0] = b; pixel[1] = g; pixel[2] = r; pixel[3] = 0; \
-            } \
-        } \
-    } while(0)
-    
-    // Clear screen
-    for (uint32_t y = 0; y < height; y++) {
-        for (uint32_t x = 0; x < width; x++) {
-            write_pixel(x, y, 0x202020);
-        }
-    }
-    
-    // Draw colored squares in corners
-    for (uint32_t y = 50; y < 150 && y < height; y++) {
-        for (uint32_t x = 50; x < 150 && x < width; x++) {
-            write_pixel(x, y, 0xFF0000);  // Red - top-left
-        }
-    }
-    
-    for (uint32_t y = 50; y < 150 && y < height; y++) {
-        for (uint32_t x = width - 150; x < width - 50 && x < width; x++) {
-            write_pixel(x, y, 0x00FF00);  // Green - top-right
-        }
-    }
-    
-    for (uint32_t y = height - 150; y < height - 50 && y < height; y++) {
-        for (uint32_t x = 50; x < 150 && x < width; x++) {
-            write_pixel(x, y, 0x0000FF);  // Blue - bottom-left
-        }
-    }
-    
-    for (uint32_t y = height - 150; y < height - 50 && y < height; y++) {
-        for (uint32_t x = width - 150; x < width - 50 && x < width; x++) {
-            write_pixel(x, y, 0xFFFFFF);  // White - bottom-right
-        }
-    }
-    
-    // Draw RGB gradient in center
-    uint32_t gradient_start_y = height / 2 - 50;
-    uint32_t gradient_end_y = height / 2 + 50;
-    for (uint32_t y = gradient_start_y; y < gradient_end_y && y < height; y++) {
-        for (uint32_t x = 200; x < width - 200 && x < width; x++) {
-            uint32_t red = (255 * (width - 200 - x)) / (width - 400);
-            uint32_t blue = (255 * x) / (width - 400);
-            uint32_t color = (red << 16) | blue;
-            write_pixel(x, y, color);
-        }
-    }
-    
-    // Draw checkerboard pattern
-    for (uint32_t y = height / 2 - 100; y < height / 2 + 100 && y < height; y++) {
-        for (uint32_t x = 50; x < 250 && x < width; x++) {
-            int checker = ((x / 20) + (y / 20)) % 2;
-            uint32_t color = checker ? 0x808080 : 0xC0C0C0;
-            write_pixel(x, y, color);
-        }
-    }
-    
-    // Draw diagonal stripes
-    for (uint32_t y = height / 2 - 100; y < height / 2 + 100 && y < height; y++) {
-        for (uint32_t x = width - 250; x < width - 50 && x < width; x++) {
-            int stripe = ((x - (width - 250)) + y) / 15 % 2;
-            uint32_t color = stripe ? 0xFF00FF : 0x00FFFF;
-            write_pixel(x, y, color);
-        }
-    }
-    
-    // Initialize TTF font rendering
-    stbtt_fontinfo font;
-    if (!stbtt_InitFont(&font, font_data, 0)) {
-        printf("ERROR: Failed to initialize STB TrueType font\n");
-        free(font_data);
+    uint8_t* framebuffer = stlxdm_map_framebuffer();
+    if (!framebuffer) {
         return 1;
     }
     
-    // Set up font parameters
-    float scale = stbtt_ScaleForPixelHeight(&font, 32.0f);
-    int ascent, descent, lineGap;
-    stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+    // Initialize graphics library
+    stlxgfx_context_t* gfx_ctx = stlxgfx_init(STLXGFX_MODE_DISPLAY_MANAGER);
+    if (!gfx_ctx) {
+        printf("ERROR: Failed to initialize graphics library\n");
+        stlxdm_unmap_framebuffer();
+        return 1;
+    }
+
+    const char* font_path = "/initrd/res/fonts/UbuntuMono-Regular.ttf";
+    if (stlxgfx_dm_load_font(gfx_ctx, font_path) != 0) {
+        printf("ERROR: Failed to load stlxgfx font\n");
+        stlxgfx_cleanup(gfx_ctx);
+        stlxdm_unmap_framebuffer();
+        return 1;
+    }
     
-    // Render text
-    const char* text = "Hello from StelluxOS!";
-    int text_x = 180, text_y = height / 2 + 140;
+    stlxgfx_font_metrics_t metrics;
+    if (stlxgfx_dm_get_font_metrics(gfx_ctx, &metrics) == 0) {
+        printf("Font metrics retrieved successfully!\n");
+    }
     
-    for (int i = 0; text[i]; i++) {
-        int codepoint = text[i];
+    stlxgfx_text_size_t text_size;
+    if (stlxgfx_get_text_size(gfx_ctx, "Hello from StelluxOS!", 32, &text_size) == 0) {
+        printf("Text size calculated successfully!\n");
+    }
+    
+    // Create compositor surface matching framebuffer format
+    stlxgfx_surface_t* compositor_surface = stlxgfx_dm_create_surface(gfx_ctx, fb_info.width, fb_info.height, stlxgfx_detect_gop_format(fb_info.bpp));
+    if (compositor_surface) {
+        printf("Surface created successfully! %ux%u, pitch=%u\n", 
+               compositor_surface->width, compositor_surface->height, compositor_surface->pitch);
         
-        // Get character metrics
-        int advance, lsb;
-        stbtt_GetCodepointHMetrics(&font, codepoint, &advance, &lsb);
+        uint8_t bpp = stlxgfx_get_bpp_for_format(compositor_surface->format);
+        printf("Surface format BPP: %u\n", bpp);
         
-        // Get character bitmap
-        int char_width, char_height, xoff, yoff;
-        unsigned char* bitmap = stbtt_GetCodepointBitmap(&font, scale, scale, codepoint, 
-                                                       &char_width, &char_height, &xoff, &yoff);
+        // Test drawing primitives
+        printf("[STLXDM] Testing drawing primitives...\n");
         
-        if (bitmap && char_width > 0 && char_height > 0) {
-            // Draw character to framebuffer
-            int char_x = text_x + (int)(lsb * scale) + xoff;
-            int char_y = text_y + (int)(ascent * scale) + yoff;
-            
-            for (int py = 0; py < char_height; py++) {
-                for (int px = 0; px < char_width; px++) {
-                    int fb_x = char_x + px;
-                    int fb_y = char_y + py;
-                    
-                    if (fb_x >= 0 && fb_x < (int)width && 
-                        fb_y >= 0 && fb_y < (int)height) {
-                        
-                        unsigned char alpha = bitmap[py * char_width + px];
-                        if (alpha > 0) {
-                            uint32_t color = ((uint32_t)alpha << 16) | ((uint32_t)alpha << 8) | (uint32_t)alpha;
-                            write_pixel((uint32_t)fb_x, (uint32_t)fb_y, color);
-                        }
-                    }
-                }
+        // Clear surface with dark gray background
+        if (stlxgfx_clear_surface(compositor_surface, 0xFF202020) == 0) {
+            printf("   Clear surface test passed\n");
+        }
+        
+        // Test colored rectangles in corners
+        if (stlxgfx_fill_rect(compositor_surface, 50, 50, 100, 100, 0xFFFF0000) == 0) { // Red top-left
+            printf("   Fill rect (red) test passed\n");
+        }
+        
+        if (stlxgfx_fill_rect(compositor_surface, fb_info.width - 150, 50, 100, 100, 0xFF00FF00) == 0) { // Green top-right
+            printf("   Fill rect (green) test passed\n");
+        }
+        
+        if (stlxgfx_fill_rect(compositor_surface, 50, fb_info.height - 150, 100, 100, 0xFF0000FF) == 0) { // Blue bottom-left
+            printf("   Fill rect (blue) test passed\n");
+        }
+        
+        if (stlxgfx_fill_rect(compositor_surface, fb_info.width - 150, fb_info.height - 150, 100, 100, 0xFFFFFFFF) == 0) { // White bottom-right
+            printf("   Fill rect (white) test passed\n");
+        }
+        
+        // Test rectangle outlines
+        if (stlxgfx_draw_rect(compositor_surface, 200, 100, 200, 150, 0xFFFFFF00) == 0) { // Yellow outline
+            printf("   Draw rect outline test passed\n");
+        }
+        
+        // Test rounded rectangles
+        uint32_t center_x = fb_info.width / 2;
+        uint32_t center_y = fb_info.height / 2;
+        
+        if (stlxgfx_fill_rounded_rect(compositor_surface, center_x - 100, center_y - 50, 200, 100, 20, 0xFF800080) == 0) { // Purple rounded rect
+            printf("   Fill rounded rect test passed\n");
+        }
+        
+        if (stlxgfx_draw_rounded_rect(compositor_surface, center_x - 120, center_y - 70, 240, 140, 25, 0xFF00FFFF) == 0) { // Cyan rounded outline
+            printf("   Draw rounded rect outline test passed\n");
+        }
+        
+        // Test individual pixels
+        for (int i = 0; i < 20; i++) {
+            uint32_t color = 0xFF000000 | (i * 12) | ((i * 8) << 8) | ((i * 15) << 16);
+            stlxgfx_draw_pixel(compositor_surface, 300 + i * 2, 200, color);
+        }
+        printf("   Draw pixel test passed\n");
+        
+        // Test text rendering
+        if (stlxgfx_render_text(gfx_ctx, compositor_surface, "StelluxOS Display Manager", 
+                               center_x - 150, center_y + 80, 24, 0xFFFFFFFF) == 0) {
+            printf("   Text rendering test passed\n");
+        }
+        
+        if (stlxgfx_render_text(gfx_ctx, compositor_surface, "Graphics Library v0.1", 
+                               center_x - 100, center_y + 110, 18, 0xFF00FFFF) == 0) {
+            printf("   Text rendering (smaller) test passed\n");
+        }
+        
+        // Test gradient effect
+        printf("  Creating gradient effect...\n");
+        for (uint32_t y = center_y - 20; y < center_y + 20; y++) {
+            for (uint32_t x = center_x - 80; x < center_x + 80; x++) {
+                uint32_t red = (255 * (x - (center_x - 80))) / 160;
+                uint32_t blue = (255 * (y - (center_y - 20))) / 40;
+                uint32_t color = 0xFF000000 | (red << 16) | blue;
+                stlxgfx_draw_pixel(compositor_surface, x, y, color);
             }
-            
-            stbtt_FreeBitmap(bitmap, NULL);
+        }
+        printf("   Gradient effect test passed\n");
+        
+        // Copy compositor surface to framebuffer
+        printf("[STLXDM] Copying surface to framebuffer...\n");
+        if (stlxgfx_blit_surface_to_buffer(compositor_surface, framebuffer, fb_info.pitch) == 0) {
+            printf("   Surface to framebuffer blit successful!\n");
+            printf("[STLXDM] Display should now show graphics test pattern\n");
+        } else {
+            printf("  ✗ Failed to blit surface to framebuffer\n");
         }
         
-        // Advance to next character
-        text_x += (int)(advance * scale);
+        stlxgfx_dm_destroy_surface(gfx_ctx, compositor_surface);
+    } else {
+        printf("Failed to create compositor surface!\n");
     }
     
-    #undef write_pixel
     
-    printf("Graphics rendering complete!\n");
-    printf("STLXDM initialization finished - display should be visible\n");
+    
 
     // Clean up
-    free(font_data);
+    stlxgfx_cleanup(gfx_ctx);
+    stlxdm_unmap_framebuffer();
     return 0;
 }
