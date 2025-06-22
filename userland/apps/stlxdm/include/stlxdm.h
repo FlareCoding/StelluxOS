@@ -24,4 +24,27 @@ struct gfx_framebuffer_info {
     uint32_t format;    // Pixel format
 };
 
+// =========================
+// Framebuffer Functions
+// =========================
+
+/**
+ * Get framebuffer information from the kernel
+ * @param fb_info - pointer to structure to fill with framebuffer info
+ * @return 0 on success, negative on error
+ */
+int stlxdm_get_framebuffer_info(struct gfx_framebuffer_info* fb_info);
+
+/**
+ * Map the framebuffer into userspace
+ * @return pointer to mapped framebuffer on success, NULL on error
+ */
+uint8_t* stlxdm_map_framebuffer(void);
+
+/**
+ * Unmap the framebuffer from userspace
+ * @return 0 on success, negative on error
+ */
+int stlxdm_unmap_framebuffer(void);
+
 #endif // STLXDM_H

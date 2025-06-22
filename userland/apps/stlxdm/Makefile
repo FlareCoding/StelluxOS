@@ -18,9 +18,9 @@ OBJECTS := $(SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 TARGET := $(USERLAND_BIN_DIR)/$(APP_NAME)
 
 # Use exported flags from parent with local include directory
-CFLAGS := $(CFLAGS_COMMON) -I$(INC_DIR)
+CFLAGS := $(CFLAGS_COMMON) -I$(INC_DIR) -I$(LIBSTLXGFX_INCLUDE_DIR)
 LDFLAGS := $(LDFLAGS_EXE)
-LIBS := $(LIBS_COMMON)
+LIBS := $(LIBS_COMMON) $(LIBS_STLXGFX)
 
 # Default target
 all: $(TARGET)

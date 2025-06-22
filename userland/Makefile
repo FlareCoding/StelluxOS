@@ -38,6 +38,7 @@ export DEBUG_FLAGS := -g -O2
 export WARNING_FLAGS := -Wall -Wextra -Werror
 
 # Include paths
+export LIBSTLXGFX_INCLUDE_DIR := $(USERLAND_ROOT)/lib/libstlxgfx/include
 export INCLUDE_FLAGS := -I$(USERLAND_INCLUDE_DIR) -I$(USERLAND_SYSROOT)/include
 
 # Standard C flags
@@ -53,6 +54,7 @@ export CXXFLAGS_COMMON := $(ARCH_FLAGS) $(DEBUG_FLAGS) $(WARNING_FLAGS) $(INCLUD
 # =========================
 export LDFLAGS_COMMON := -L$(USERLAND_LIB_DIR) -L$(USERLAND_SYSROOT)/lib
 export LIBS_COMMON := -lstlibc -lc
+export LIBS_STLXGFX := -lstlxgfx
 export LINKER_SCRIPT := $(USERLAND_ROOT)/userland.ld
 export LDFLAGS_EXE := -T$(LINKER_SCRIPT) $(LDFLAGS_COMMON)
 
