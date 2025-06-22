@@ -3,6 +3,7 @@
 #include <memory/paging.h>
 #include <dynpriv/dynpriv.h>
 #include <time/time.h>
+#include <syscall/handlers/sys_graphics.h>
 
 namespace modules {
 gfx_framebuffer_module::gfx_framebuffer_module(
@@ -37,7 +38,7 @@ bool gfx_framebuffer_module::init() {
     });
 
     // Start with a cleared screen
-    clear_screen(0x22);
+    clear_screen(0x02);
     swap_buffers();
 
     return true;
@@ -95,5 +96,25 @@ void gfx_framebuffer_module::swap_buffers() {
     // Simple CPU copy from back -> front
     uint32_t fb_size = m_native_hw_buffer.pitch * m_native_hw_buffer.height;
     memcpy(m_native_hw_buffer.data, m_back_buffer.data, fb_size);
+}
+
+bool gfx_framebuffer_module::get_framebuffer_info(void* info) const {
+    if (!info) {
+        return false;
+    }
+    
+    gfx_framebuffer_info* fb_info = reinterpret_cast<gfx_framebuffer_info*>(info);
+    fb_info->width = m_native_hw_buffer.width;
+    fb_info->height = m_native_hw_buffer.height;
+    fb_info->pitch = m_native_hw_buffer.pitch;
+    fb_info->bpp = m_native_hw_buffer.bpp;
+    fb_info->size = m_native_hw_buffer.pitch * m_native_hw_buffer.height;
+    fb_info->format = 0; // RGB format for now
+    
+    return true;
+}
+
+size_t gfx_framebuffer_module::get_total_fb_size() const {
+    return m_native_hw_buffer.pitch * m_native_hw_buffer.height;
 }
 } // namespace modules

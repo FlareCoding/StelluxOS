@@ -39,6 +39,8 @@
 
 #define SYSCALL_SYS_ELEVATE     790
 
+#define SYSCALL_SYS_GRAPHICS_FRAMEBUFFER_OP 800
+
 // Uncomment this if you want to see strace-style logs for every issued syscall
 // #define STELLUX_STRACE_ENABLED
 
