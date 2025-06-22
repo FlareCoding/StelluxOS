@@ -4,6 +4,7 @@
 #include <syscall/handlers/sys_mem.h>
 #include <syscall/handlers/sys_proc.h>
 #include <syscall/handlers/sys_arch.h>
+#include <syscall/handlers/sys_graphics.h>
 #include <process/process.h>
 #include <core/klog.h>
 
@@ -44,6 +45,8 @@ void init_syscall_table() {
     REGISTER_SYSCALL(SYSCALL_SYS_PROC_CLOSE, proc_close);
     
     REGISTER_SYSCALL(SYSCALL_SYS_ELEVATE, elevate);
+    
+    REGISTER_SYSCALL(SYSCALL_SYS_GRAPHICS_FRAMEBUFFER_OP, gfx_fb_op);
 }
 
 EXTERN_C

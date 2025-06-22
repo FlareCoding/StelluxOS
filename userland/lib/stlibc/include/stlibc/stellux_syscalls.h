@@ -10,20 +10,48 @@
 #define SYS_ELEVATE             790
 
 // Error codes
+#ifndef ENOSYS
 #define ENOSYS      1   // Invalid system call number
+#endif
+#ifndef ENOENT
 #define ENOENT      2   // No such file or directory
+#endif
+#ifndef EIO
 #define EIO         5   // I/O error
+#endif
+#ifndef EBADF
 #define EBADF       9   // Bad file descriptor
+#endif
+#ifndef ENOMEM
 #define ENOMEM      12  // Out of memory
+#endif
+#ifndef EACCES
 #define EACCES      13  // Invalid access
+#endif
+#ifndef EFAULT
 #define EFAULT      14  // Bad address
+#endif
+#ifndef EEXIST
 #define EEXIST      17  // File exists
+#endif
+#ifndef EISDIR
 #define EISDIR      21  // Is a directory
+#endif
+#ifndef EINVAL
 #define EINVAL      22  // Invalid argument
+#endif
+#ifndef EMFILE
 #define EMFILE      24  // Too many open files
+#endif
+#ifndef ENOTTY
 #define ENOTTY      25  // Invalid tty
+#endif
+#ifndef ESPIPE
 #define ESPIPE      29  // Illegal seek
+#endif
+#ifndef ENOPRIV
 #define ENOPRIV     72  // Invalid privilege permissions
+#endif
 
 /**
  * @brief Performs a system call with up to 6 arguments.
