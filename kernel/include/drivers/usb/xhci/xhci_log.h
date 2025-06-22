@@ -10,7 +10,7 @@
 #define XHCI_LOG_LEVEL_NONE     5
 
 // Current log verbosity level
-#define XHCI_LOG_LEVEL XHCI_LOG_LEVEL_WARN
+#define XHCI_LOG_LEVEL XHCI_LOG_LEVEL_ERROR
 
 // Buffer size for log messages
 constexpr size_t LOG_BUFFER_SIZE = 256;
@@ -46,7 +46,7 @@ void xhci_log_internal(int level, const char* prefix, const char* format, Args..
 
 template <typename... Args>
 void xhci_log(const char* format, Args... args) {
-    xhci_log_internal(XHCI_LOG_LEVEL, "", format, args...);
+    xhci_log_internal(XHCI_LOG_LEVEL_DBG, "", format, args...);
 }
 
 template <typename... Args>
