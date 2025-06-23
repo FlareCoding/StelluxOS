@@ -53,6 +53,26 @@ int stlxdm_unmap_framebuffer(void) {
     return 0;
 }
 
+int stlxdm_begin_frame(void) {
+    long result = syscall1(SYS_GRAPHICS_FRAMEBUFFER_OP, GFX_OP_DISABLE_PREEMPT);
+    if (result != 0) {
+        printf("ERROR: Failed to disable preemption: %ld\n", result);
+        return -1;
+    }
+    
+    return 0;
+}
+
+int stlxdm_end_frame(void) {
+    long result = syscall1(SYS_GRAPHICS_FRAMEBUFFER_OP, GFX_OP_ENABLE_PREEMPT);
+    if (result != 0) {
+        printf("ERROR: Failed to enable preemption: %ld\n", result);
+        return -1;
+    }
+    
+    return 0;
+}
+
 // ====================== //
 //    Main Entry Point    //
 // ====================== //
@@ -236,7 +256,9 @@ int main() {
             }
             
             // Copy compositor surface to framebuffer
+            stlxdm_begin_frame();
             stlxgfx_blit_surface_to_buffer(compositor_surface, framebuffer, fb_info.pitch);
+            stlxdm_end_frame();
             
             // Small delay for animation timing
             struct timespec ts = { 0, 1 * 1000 * 1000 }; // 1ms

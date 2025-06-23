@@ -8,6 +8,7 @@
 #include <process/vma.h>
 #include <process/mm.h>
 #include <process/process.h>
+#include <sched/sched.h>
 #include <time/time.h>
 
 DECLARE_SYSCALL_HANDLER(gfx_fb_op) {
@@ -110,6 +111,16 @@ DECLARE_SYSCALL_HANDLER(gfx_fb_op) {
         case GFX_OP_UNMAP_FRAMEBUFFER: {
             SYSCALL_TRACE("0 [UNMAP_FRAMEBUFFER - not implemented yet]\n");
             return 0;  // Success for now
+        }
+        case GFX_OP_DISABLE_PREEMPT: {
+            sched::scheduler::get().preempt_disable();
+            SYSCALL_TRACE("0\n");
+            return 0;
+        }
+        case GFX_OP_ENABLE_PREEMPT: {
+            sched::scheduler::get().preempt_enable();
+            SYSCALL_TRACE("0\n");
+            return 0;
         }
         default: {
             SYSCALL_TRACE("-EINVAL [unknown operation]\n");
