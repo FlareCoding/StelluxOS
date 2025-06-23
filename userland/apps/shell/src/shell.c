@@ -14,8 +14,73 @@
 #include <stlibc/stlibc.h>
 
 int main() {
-    // printf("[SHELL] Starting Unix Domain Socket client test...\n");
+    struct timespec ts = { 5, 0 }; // 5 seconds
+    nanosleep(&ts, NULL);
+    printf("[SHELL] Starting...\n");
     
+    // === SHARED MEMORY PING-PONG TEST ===
+    printf("[SHELL] Starting shared memory ping-pong test...\n");
+    
+    // Open the shared memory region created by stlxdm
+    shm_handle_t shm_handle = stlx_shm_open("ping_pong_test");
+    if (shm_handle == 0) {
+        printf("[SHELL] ERROR: Failed to open shared memory region\n");
+        return 1;
+    }
+    printf("[SHELL] Opened shared memory region with handle: %lu\n", shm_handle);
+    
+    // Map the shared memory
+    void* shm_ptr = stlx_shm_map(shm_handle, SHM_MAP_READ | SHM_MAP_WRITE);
+    if (shm_ptr == NULL) {
+        printf("[SHELL] ERROR: Failed to map shared memory\n");
+        return 1;
+    }
+    printf("[SHELL] Mapped shared memory at address: 0x%lx\n", (uint64_t)shm_ptr);
+    
+    // Start the ping-pong test
+    uint32_t* counter = (uint32_t*)shm_ptr;
+    uint32_t last_value = 0;
+    int rounds = 0;
+    const int max_rounds = 10;
+    
+    printf("[SHELL] Starting ping-pong with initial value: %u\n", *counter);
+    
+    while (rounds < max_rounds) {
+        // Check if stlxdm initialized or updated the value
+        if (*counter != last_value) {
+            printf("[SHELL] Received: %u\n", *counter);
+            last_value = *counter;
+            
+            // Increment and write back
+            *counter = *counter + 1;
+            printf("[SHELL] Sent: %u\n", *counter);
+            last_value = *counter;
+            rounds++;
+            
+            // Small delay to make it easier to follow
+            struct timespec ts = { 0, 100 * 1000 * 1000 }; // 100ms
+            nanosleep(&ts, NULL);
+        } else {
+            // Small delay while waiting
+            struct timespec ts = { 0, 10 * 1000 * 1000 }; // 10ms
+            nanosleep(&ts, NULL);
+        }
+    }
+    
+    printf("[SHELL] Ping-pong test completed after %d rounds. Final value: %u\n", rounds, *counter);
+    
+    // Clean up shared memory
+    if (stlx_shm_unmap(shm_handle, shm_ptr) != 0) {
+        printf("[SHELL] ERROR: Failed to unmap shared memory\n");
+    }
+    
+    printf("[SHELL] Shared memory ping-pong test completed!\n");
+
+    struct timespec ts2 = { 2, 0 }; // 2 seconds
+    nanosleep(&ts2, NULL);
+
+    printf("[SHELL] Starting Unix Domain Socket client test...\n");
+
     int client_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (client_fd < 0) {
         printf("[SHELL] ERROR: socket() failed: %d\n", errno);

@@ -1,7 +1,12 @@
 #include <ipc/shm.h>
 #include <memory/vmm.h>
 #include <memory/paging.h>
+#include <memory/allocators/page_bitmap_allocator.h>
 #include <dynpriv/dynpriv.h>
+#include <process/process.h>
+#include <process/vma.h>
+#include <process/mm.h>
+#include <core/klog.h>
 
 namespace ipc {
 
@@ -99,41 +104,109 @@ bool shared_memory::destroy(shm_handle_t handle) {
     return true;
 }
 
-void* shared_memory::map(shm_handle_t handle, uint64_t flags) {
+void* shared_memory::map(shm_handle_t handle, uint64_t flags, shm_mapping_context context) {
     shm_region* region = get_region(handle);
     if (!region) {
         return nullptr;
     }
 
     mutex_guard region_guard(region->lock);
-
     const size_t page_count = region->pages.size();
-    void* virt_base = nullptr;
 
-    RUN_ELEVATED({
-        virt_base = vmm::alloc_contiguous_virtual_pages(page_count, flags);
-    });
-    
-    if (!virt_base) {
-        return nullptr;
-    }
+    if (context == shm_mapping_context::KERNEL) {
+        // Kernel mapping path - use existing implementation
+        void* virt_base = nullptr;
 
-    RUN_ELEVATED({
-        for (size_t i = 0; i < page_count; ++i) {
-            paging::map_page(
-                reinterpret_cast<uintptr_t>(virt_base) + i * PAGE_SIZE,
-                region->pages[i],
-                flags,
-                paging::get_pml4()
-            );
+        RUN_ELEVATED({
+            virt_base = vmm::alloc_contiguous_virtual_pages(page_count, flags);
+        });
+        
+        if (!virt_base) {
+            return nullptr;
         }
-    });
 
-    region->ref_count++;
-    return virt_base;
+        RUN_ELEVATED({
+            for (size_t i = 0; i < page_count; ++i) {
+                paging::map_page(
+                    reinterpret_cast<uintptr_t>(virt_base) + i * PAGE_SIZE,
+                    region->pages[i],
+                    flags,
+                    paging::get_pml4()
+                );
+            }
+        });
+
+        region->ref_count++;
+        return virt_base;
+    } else {
+        // Userland mapping path - similar to mmap implementation
+        if (!current || !current->get_core()) {
+            return nullptr;
+        }
+
+        mm_context* mm_ctx = &current->get_core()->mm_ctx;
+        size_t mapping_size = page_count * PAGE_SIZE;
+
+        // Find free virtual address range in userland space
+        uintptr_t target_addr = find_free_vma_range(mm_ctx, mapping_size, 0, 0);
+        if (!target_addr) {
+            return nullptr; // No free address range found
+        }
+
+        // Convert shm_access policy to VMA protection flags
+        uint64_t vma_prot = 0;
+        if (region->policy == shm_access::READ_ONLY || region->policy == shm_access::READ_WRITE) {
+            vma_prot |= VMA_PROT_READ;
+        }
+        if (region->policy == shm_access::READ_WRITE) {
+            vma_prot |= VMA_PROT_WRITE;
+        }
+
+        // Create VMA for the shared memory region
+        uint64_t vma_type = VMA_TYPE_SHARED | VMA_TYPE_ANONYMOUS;
+        vma_area* vma = create_vma(mm_ctx, target_addr, mapping_size, vma_prot, vma_type);
+        if (!vma) {
+            return nullptr; // Failed to create VMA
+        }
+
+        // Convert protection flags to page table flags
+        uint64_t page_flags = PTE_PRESENT | PTE_US;  // User accessible
+        if (region->policy == shm_access::READ_WRITE) {
+            page_flags |= PTE_RW;
+        }
+        // Note: We don't set PTE_NX since shared memory should be non-executable
+
+        // Map the shared memory pages into userland virtual memory
+        paging::page_table* page_table = reinterpret_cast<paging::page_table*>(mm_ctx->root_page_table);
+        bool mapping_failed = false;
+
+        RUN_ELEVATED({
+            for (size_t i = 0; i < page_count; ++i) {
+                uintptr_t virt_addr = target_addr + (i * PAGE_SIZE);
+                uintptr_t phys_addr = region->pages[i];
+
+                paging::map_page(virt_addr, phys_addr, page_flags, page_table);
+            }
+        });
+
+        if (mapping_failed) {
+            // Clean up: unmap any successfully mapped pages and remove VMA
+            RUN_ELEVATED({
+                for (size_t i = 0; i < page_count; ++i) {
+                    uintptr_t virt_addr = target_addr + (i * PAGE_SIZE);
+                    paging::unmap_page(virt_addr, page_table);
+                }
+            });
+            remove_vma(mm_ctx, vma);
+            return nullptr;
+        }
+
+        region->ref_count++;
+        return reinterpret_cast<void*>(target_addr);
+    }
 }
 
-bool shared_memory::unmap(shm_handle_t handle, void* addr) {
+bool shared_memory::unmap(shm_handle_t handle, void* addr, shm_mapping_context context) {
     shm_region* region = get_region(handle);
     if (!region || !addr) {
         return false;
@@ -142,9 +215,40 @@ bool shared_memory::unmap(shm_handle_t handle, void* addr) {
     mutex_guard region_guard(region->lock);
     size_t page_count = region->pages.size();
 
-    RUN_ELEVATED({
-        vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(addr), page_count);
-    });
+    if (context == shm_mapping_context::KERNEL) {
+        // Kernel unmapping path - use existing implementation
+        RUN_ELEVATED({
+            vmm::unmap_contiguous_virtual_pages(reinterpret_cast<uintptr_t>(addr), page_count);
+        });
+    } else {
+        // Userland unmapping path - similar to munmap implementation
+        if (!current || !current->get_core()) {
+            return false;
+        }
+
+        mm_context* mm_ctx = &current->get_core()->mm_ctx;
+        uintptr_t virt_addr = reinterpret_cast<uintptr_t>(addr);
+        size_t mapping_size = page_count * PAGE_SIZE;
+
+        // Find the VMA containing this address
+        vma_area* vma = find_vma(mm_ctx, virt_addr);
+        if (!vma || vma->start != virt_addr || (vma->end - vma->start) != mapping_size) {
+            return false; // Invalid address or size mismatch
+        }
+
+        // Unmap the pages from userland virtual memory
+        paging::page_table* page_table = reinterpret_cast<paging::page_table*>(mm_ctx->root_page_table);
+
+        RUN_ELEVATED({
+            for (size_t i = 0; i < page_count; ++i) {
+                uintptr_t page_addr = virt_addr + (i * PAGE_SIZE);
+                paging::unmap_page(page_addr, page_table);
+            }
+        });
+
+        // Remove the VMA
+        remove_vma(mm_ctx, vma);
+    }
 
     if (region->ref_count > 0) {
         region->ref_count--;

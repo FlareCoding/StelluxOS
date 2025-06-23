@@ -16,7 +16,15 @@ using shm_handle_t = uint64_t;
 enum class shm_access {
     READ_ONLY,      // Region is read-only.
     READ_WRITE,     // Region is readable and writable.
-    COPY_ON_WRITE   // Region starts read-only, create private copy on write.
+};
+
+/**
+ * @enum shm_mapping_context
+ * @brief Describes the context in which shared memory is being mapped.
+ */
+enum class shm_mapping_context {
+    KERNEL,     // Kernel thread mapping - use vmm directly
+    USERLAND    // Userland process mapping - use VMA system
 };
 
 /**
@@ -50,10 +58,10 @@ public:
     static bool destroy(shm_handle_t handle);
 
     /** Map a shared memory region into the caller address space. */
-    static void* map(shm_handle_t handle, uint64_t flags);
+    static void* map(shm_handle_t handle, uint64_t flags, shm_mapping_context context);
 
     /** Unmap a previously mapped shared memory region. */
-    static bool unmap(shm_handle_t handle, void* addr);
+    static bool unmap(shm_handle_t handle, void* addr, shm_mapping_context context);
 
 private:
     static shm_region* get_region(shm_handle_t handle);

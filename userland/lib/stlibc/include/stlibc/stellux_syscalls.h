@@ -7,6 +7,11 @@
 #define SYS_PROC_CREATE         706
 #define SYS_PROC_WAIT           707
 #define SYS_PROC_CLOSE          708
+#define SYS_SHM_CREATE          709
+#define SYS_SHM_OPEN            710
+#define SYS_SHM_DESTROY         711
+#define SYS_SHM_MAP             712
+#define SYS_SHM_UNMAP           713
 #define SYS_ELEVATE             790
 
 // Error codes

@@ -30,6 +30,10 @@ typedef __UINT64_TYPE__ size_t;
 
 typedef uint64_t uintptr_t;
 
+#ifndef NULL
+#define NULL (void*)0
+#endif
+
 #define __force_inline__ inline __attribute__((always_inline))
 #define __unused (void)
 

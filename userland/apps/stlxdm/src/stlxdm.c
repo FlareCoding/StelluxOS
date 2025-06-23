@@ -13,6 +13,8 @@
 #include "stlxdm.h"
 #include <stlxgfx/stlxgfx.h>
 
+#include <stlibc/stlibc.h>
+
 int stlxdm_get_framebuffer_info(struct gfx_framebuffer_info* fb_info) {
     if (!fb_info) {
         printf("ERROR: NULL framebuffer info pointer\n");
@@ -79,6 +81,73 @@ int stlxdm_end_frame(void) {
 
 int main() {
     printf("StelluxOS Display Manager (STLXDM) - Initializing...\n");
+    
+    // === SHARED MEMORY PING-PONG TEST ===
+    printf("[STLXDM] Starting shared memory ping-pong test...\n");
+    
+    // Create shared memory region for ping-pong test
+    shm_handle_t shm_handle = stlx_shm_create("ping_pong_test", 4096, SHM_READ_WRITE);
+    if (shm_handle == 0) {
+        printf("[STLXDM] ERROR: Failed to create shared memory region\n");
+        return 1;
+    }
+    printf("[STLXDM] Created shared memory region with handle: %lu\n", shm_handle);
+    
+    // Map the shared memory
+    void* shm_ptr = stlx_shm_map(shm_handle, SHM_MAP_READ | SHM_MAP_WRITE);
+    if (shm_ptr == NULL) {
+        printf("[STLXDM] ERROR: Failed to map shared memory\n");
+        stlx_shm_destroy(shm_handle);
+        return 1;
+    }
+    printf("[STLXDM] Mapped shared memory at address: 0x%lx\n", (uint64_t)shm_ptr);
+    
+    // Initialize the ping-pong counter
+    uint32_t* counter = (uint32_t*)shm_ptr;
+    *counter = 1;  // Start with 1
+    printf("[STLXDM] Initialized counter to: %u\n", *counter);
+    
+    // Wait for shell to increment it, then we'll ping-pong for a few rounds
+    uint32_t last_value = *counter;
+    int rounds = 0;
+    const int max_rounds = 10;
+    
+    printf("[STLXDM] Waiting for shell to start ping-pong...\n");
+    
+    while (rounds < max_rounds) {
+        // Check if the value changed (shell updated it)
+        if (*counter != last_value) {
+            printf("[STLXDM] Received: %u\n", *counter);
+            last_value = *counter;
+            
+            // Increment and write back
+            *counter = *counter + 1;
+            printf("[STLXDM] Sent: %u\n", *counter);
+            last_value = *counter;
+            rounds++;
+            
+            // Small delay to make it easier to follow
+            struct timespec ts = { 0, 100 * 1000 * 1000 }; // 100ms
+            nanosleep(&ts, NULL);
+        } else {
+            // Small delay while waiting
+            struct timespec ts = { 0, 10 * 1000 * 1000 }; // 10ms
+            nanosleep(&ts, NULL);
+        }
+    }
+    
+    printf("[STLXDM] Ping-pong test completed after %d rounds. Final value: %u\n", rounds, *counter);
+    
+    // Clean up shared memory
+    if (stlx_shm_unmap(shm_handle, shm_ptr) != 0) {
+        printf("[STLXDM] ERROR: Failed to unmap shared memory\n");
+    }
+    
+    if (stlx_shm_destroy(shm_handle) != 0) {
+        printf("[STLXDM] ERROR: Failed to destroy shared memory\n");
+    }
+    
+    printf("[STLXDM] Shared memory ping-pong test completed!\n");
     
     // === UNIX DOMAIN SOCKET SERVER TEST ===
     printf("[STLXDM] Testing Unix Domain Socket server...\n");
@@ -231,7 +300,7 @@ int main() {
             uint32_t unlock_y = banner_y + banner_height + 130;
             
             // Create smooth breathing effect with constant speed
-            float breathing_speed = 0.24f;
+            float breathing_speed = 0.08f;
             float fade_factor = (sinf(frame * breathing_speed) + 1.0f) / 2.0f; // 0.0 to 1.0
             
             // Interpolate between transparent gray (0x00808080) and white (0xFFFFFFFF)
