@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -6,6 +7,9 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
 #include "stlxdm.h"
 #include <stlxgfx/stlxgfx.h>
 
@@ -55,6 +59,60 @@ int stlxdm_unmap_framebuffer(void) {
 
 int main() {
     printf("StelluxOS Display Manager (STLXDM) - Initializing...\n");
+    
+    // === UNIX DOMAIN SOCKET SERVER TEST ===
+    printf("[STLXDM] Testing Unix Domain Socket server...\n");
+    
+    int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        printf("[STLXDM] ERROR: socket() failed: %d\n", errno);
+        return 1;
+    }
+    
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strcpy(addr.sun_path, "/tmp/stlxdm.socket");
+    
+    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        printf("[STLXDM] ERROR: bind() failed: %d\n", errno);
+        close(server_fd);
+        return 1;
+    }
+    
+    if (listen(server_fd, 1) < 0) {
+        printf("[STLXDM] ERROR: listen() failed: %d\n", errno);
+        close(server_fd);
+        return 1;
+    }
+    
+    printf("[STLXDM] Server listening on /tmp/stlxdm.socket\n");
+    
+    int client_fd = accept(server_fd, NULL, NULL);
+    if (client_fd < 0) {
+        printf("[STLXDM] ERROR: accept() failed: %d\n", errno);
+        close(server_fd);
+        return 1;
+    }
+
+    printf("[STLXDM] Client connected with fd %i\n", client_fd);
+    
+    char buffer[256];
+    ssize_t bytes = read(client_fd, buffer, sizeof(buffer) - 1);
+    printf("[STLXDM] Read returned %ld bytes\n", bytes);
+    if (bytes > 0) {
+        buffer[bytes] = '\0';
+        printf("[STLXDM] Received: '%s'\n", buffer);
+    } else if (bytes == 0) {
+        printf("[STLXDM] Connection closed by peer (EOF)\n");
+    } else {
+        printf("[STLXDM] Read error: %ld (errno: %d)\n", bytes, errno);
+    }
+    
+    close(client_fd);
+    close(server_fd);
+
+    printf("[STLXDM] Unix Domain Socket test completed!\n");
 
     // Initialize framebuffer first
     struct gfx_framebuffer_info fb_info;
@@ -102,94 +160,93 @@ int main() {
         uint8_t bpp = stlxgfx_get_bpp_for_format(compositor_surface->format);
         printf("Surface format BPP: %u\n", bpp);
         
-        // Test drawing primitives
-        printf("[STLXDM] Testing drawing primitives...\n");
+        // Create stylish display manager interface
         
-        // Clear surface with dark gray background
-        if (stlxgfx_clear_surface(compositor_surface, 0xFF202020) == 0) {
-            printf("   Clear surface test passed\n");
-        }
-        
-        // Test colored rectangles in corners
-        if (stlxgfx_fill_rect(compositor_surface, 50, 50, 100, 100, 0xFFFF0000) == 0) { // Red top-left
-            printf("   Fill rect (red) test passed\n");
-        }
-        
-        if (stlxgfx_fill_rect(compositor_surface, fb_info.width - 150, 50, 100, 100, 0xFF00FF00) == 0) { // Green top-right
-            printf("   Fill rect (green) test passed\n");
-        }
-        
-        if (stlxgfx_fill_rect(compositor_surface, 50, fb_info.height - 150, 100, 100, 0xFF0000FF) == 0) { // Blue bottom-left
-            printf("   Fill rect (blue) test passed\n");
-        }
-        
-        if (stlxgfx_fill_rect(compositor_surface, fb_info.width - 150, fb_info.height - 150, 100, 100, 0xFFFFFFFF) == 0) { // White bottom-right
-            printf("   Fill rect (white) test passed\n");
-        }
-        
-        // Test rectangle outlines
-        if (stlxgfx_draw_rect(compositor_surface, 200, 100, 200, 150, 0xFFFFFF00) == 0) { // Yellow outline
-            printf("   Draw rect outline test passed\n");
-        }
-        
-        // Test rounded rectangles
         uint32_t center_x = fb_info.width / 2;
-        uint32_t center_y = fb_info.height / 2;
+        uint32_t banner_y = fb_info.height / 3;
         
-        if (stlxgfx_fill_rounded_rect(compositor_surface, center_x - 100, center_y - 50, 200, 100, 20, 0xFF800080) == 0) { // Purple rounded rect
-            printf("   Fill rounded rect test passed\n");
-        }
-        
-        if (stlxgfx_draw_rounded_rect(compositor_surface, center_x - 120, center_y - 70, 240, 140, 25, 0xFF00FFFF) == 0) { // Cyan rounded outline
-            printf("   Draw rounded rect outline test passed\n");
-        }
-        
-        // Test individual pixels
-        for (int i = 0; i < 20; i++) {
-            uint32_t color = 0xFF000000 | (i * 12) | ((i * 8) << 8) | ((i * 15) << 16);
-            stlxgfx_draw_pixel(compositor_surface, 300 + i * 2, 200, color);
-        }
-        printf("   Draw pixel test passed\n");
-        
-        // Test text rendering
-        if (stlxgfx_render_text(gfx_ctx, compositor_surface, "StelluxOS Display Manager", 
-                               center_x - 150, center_y + 80, 24, 0xFFFFFFFF) == 0) {
-            printf("   Text rendering test passed\n");
-        }
-        
-        if (stlxgfx_render_text(gfx_ctx, compositor_surface, "Graphics Library v0.1", 
-                               center_x - 100, center_y + 110, 18, 0xFF00FFFF) == 0) {
-            printf("   Text rendering (smaller) test passed\n");
-        }
-        
-        // Test gradient effect
-        printf("  Creating gradient effect...\n");
-        for (uint32_t y = center_y - 20; y < center_y + 20; y++) {
-            for (uint32_t x = center_x - 80; x < center_x + 80; x++) {
-                uint32_t red = (255 * (x - (center_x - 80))) / 160;
-                uint32_t blue = (255 * (y - (center_y - 20))) / 40;
-                uint32_t color = 0xFF000000 | (red << 16) | blue;
-                stlxgfx_draw_pixel(compositor_surface, x, y, color);
+        // Animation loop for flashing text
+        uint64_t frame = 0;
+        while (1) {
+            ++frame;
+
+            // Clear surface with dark background
+            stlxgfx_clear_surface(compositor_surface, 0xFF0A0A0A);
+            
+            // Create modern gradient banner
+            uint32_t banner_width = 600;
+            uint32_t banner_height = 80;
+            uint32_t banner_x = center_x - banner_width / 2;
+            
+            for (uint32_t y = banner_y; y < banner_y + banner_height; y++) {
+                for (uint32_t x = banner_x; x < banner_x + banner_width; x++) {
+                    // Create a modern blue-to-purple gradient
+                    float progress_x = (float)(x - banner_x) / banner_width;
+                    float progress_y = (float)(y - banner_y) / banner_height;
+                    
+                    // Blue to purple gradient with some vertical variation
+                    uint32_t red = (uint32_t)(80 + progress_x * 120 + progress_y * 30);
+                    uint32_t green = (uint32_t)(60 + progress_y * 40);
+                    uint32_t blue = (uint32_t)(200 - progress_x * 80 + progress_y * 20);
+                    
+                    // Clamp values
+                    if (red > 255) red = 255;
+                    if (green > 255) green = 255;
+                    if (blue > 255) blue = 255;
+                    
+                    uint32_t color = 0xFF000000 | (red << 16) | (green << 8) | blue;
+                    stlxgfx_draw_pixel(compositor_surface, x, y, color);
+                }
             }
-        }
-        printf("   Gradient effect test passed\n");
-        
-        // Copy compositor surface to framebuffer
-        printf("[STLXDM] Copying surface to framebuffer...\n");
-        if (stlxgfx_blit_surface_to_buffer(compositor_surface, framebuffer, fb_info.pitch) == 0) {
-            printf("   Surface to framebuffer blit successful!\n");
-            printf("[STLXDM] Display should now show graphics test pattern\n");
-        } else {
-            printf("  ✗ Failed to blit surface to framebuffer\n");
+            
+            // Draw cyan rounded rectangle border around banner
+            stlxgfx_draw_rounded_rect(compositor_surface, banner_x - 10, banner_y - 10,
+                                    banner_width + 20, banner_height + 20, 15, 0xFF00FFFF);
+            
+            // Add title text underneath the banner
+            stlxgfx_render_text(gfx_ctx, compositor_surface, "StelluxOS Display Manager", 
+                               center_x - 180, banner_y + banner_height + 30, 28, 0xFFFFFFFF);
+            
+            // Fading "Press enter to unlock..." text
+            uint32_t unlock_y = banner_y + banner_height + 130;
+            
+            // Create smooth breathing effect with constant speed
+            float breathing_speed = 0.24f;
+            float fade_factor = (sinf(frame * breathing_speed) + 1.0f) / 2.0f; // 0.0 to 1.0
+            
+            // Interpolate between transparent gray (0x00808080) and white (0xFFFFFFFF)
+            // At fade_factor = 0.0: fully transparent gray (0x00808080)
+            // At fade_factor = 1.0: fully opaque white (0xFFFFFFFF)
+            uint32_t alpha = (uint32_t)(0x00 + (0xFF - 0x00) * fade_factor);
+            uint32_t rgb = (uint32_t)(0x80 + (0xFF - 0x80) * fade_factor);
+            
+            uint32_t text_color = (alpha << 24) | (rgb << 16) | (rgb << 8) | rgb;
+            
+            // Calculate text width for perfect centering
+            const char* unlock_text = "Press enter to unlock...";
+            stlxgfx_text_size_t unlock_text_size;
+            if (stlxgfx_get_text_size(gfx_ctx, unlock_text, 32, &unlock_text_size) == 0) {
+                uint32_t text_x = center_x - (unlock_text_size.width / 2);
+                stlxgfx_render_text(gfx_ctx, compositor_surface, unlock_text, 
+                                   text_x, unlock_y, 32, text_color);
+            } else {
+                // Fallback to approximate centering if text size calculation fails
+                stlxgfx_render_text(gfx_ctx, compositor_surface, unlock_text, 
+                                   center_x - 160, unlock_y, 32, text_color);
+            }
+            
+            // Copy compositor surface to framebuffer
+            stlxgfx_blit_surface_to_buffer(compositor_surface, framebuffer, fb_info.pitch);
+            
+            // Small delay for animation timing
+            struct timespec ts = { 0, 1 * 1000 * 1000 }; // 1ms
+            nanosleep(&ts, NULL);
         }
         
         stlxgfx_dm_destroy_surface(gfx_ctx, compositor_surface);
     } else {
         printf("Failed to create compositor surface!\n");
     }
-    
-    
-    
 
     // Clean up
     stlxgfx_cleanup(gfx_ctx);

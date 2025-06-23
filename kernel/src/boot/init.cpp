@@ -22,6 +22,7 @@
 #include <fs/vfs.h>
 #include <fs/cpio/cpio.h>
 #include <input/system_input_manager.h>
+#include <net/unix_socket_manager.h>
 #include <gdb/gdb_stub.h>
 
 #ifdef BUILD_UNIT_TESTS
@@ -129,6 +130,10 @@ void load_initrd() {
     auto& vfs = fs::virtual_filesystem::get();
     vfs.mount("/", kstl::make_shared<fs::ram_filesystem>());
 
+    // Create a /tmp/ directory
+    vfs.create("/tmp", fs::vfs_node_type::directory, 0755);
+
+    // Load the initial ramdisk into /initrd
     fs::load_cpio_initrd(reinterpret_cast<const uint8_t*>(vaddr), mod_size, "/initrd");
 }
 
@@ -181,6 +186,9 @@ void init(unsigned int magic, void* mbi) {
 
     // Load the initrd if it's available
     load_initrd();
+
+    // Initialize the Unix Domain Socket subsystem
+    net::unix_socket_manager::get().init();
 
     // Calibrate architecture-specific CPU timer to a tickrate of 4ms
     kernel_timer::calibrate_cpu_timer(4);
