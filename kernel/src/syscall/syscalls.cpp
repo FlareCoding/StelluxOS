@@ -7,6 +7,7 @@
 #include <syscall/handlers/sys_graphics.h>
 #include <syscall/handlers/sys_time.h>
 #include <syscall/handlers/sys_net.h>
+#include <syscall/handlers/sys_shm.h>
 #include <process/process.h>
 #include <core/klog.h>
 
@@ -51,6 +52,11 @@ void init_syscall_table() {
     REGISTER_SYSCALL(SYSCALL_SYS_PROC_CREATE, proc_create);
     REGISTER_SYSCALL(SYSCALL_SYS_PROC_WAIT, proc_wait);
     REGISTER_SYSCALL(SYSCALL_SYS_PROC_CLOSE, proc_close);
+    REGISTER_SYSCALL(SYSCALL_SYS_SHM_CREATE, shm_create);
+    REGISTER_SYSCALL(SYSCALL_SYS_SHM_OPEN, shm_open);
+    REGISTER_SYSCALL(SYSCALL_SYS_SHM_DESTROY, shm_destroy);
+    REGISTER_SYSCALL(SYSCALL_SYS_SHM_MAP, shm_map);
+    REGISTER_SYSCALL(SYSCALL_SYS_SHM_UNMAP, shm_unmap);
     
     REGISTER_SYSCALL(SYSCALL_SYS_ELEVATE, elevate);
     
