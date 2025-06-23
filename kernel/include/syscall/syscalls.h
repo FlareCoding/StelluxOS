@@ -2,20 +2,26 @@
 #define SYSCALL_H
 #include <types.h>
 
-#define ENOSYS  1   // Invalid system call number
-#define EINVAL  22  // Invalid argument
-#define EFAULT  14  // Bad address
-#define ENOMEM  12  // Out of memory
-#define EACCES  13  // Invalid access
-#define ENOTTY	25  // Invalid tty
-#define ENOENT  2   // No such file or directory
-#define EEXIST  17  // File exists
-#define EISDIR  21  // Is a directory
-#define EMFILE  24  // Too many open files
-#define EIO     5   // I/O error
-#define EBADF   9   // Bad file descriptor
-#define ESPIPE  29  // Illegal seek
-#define ENOPRIV 72  // Invalid privilege permissions
+#define ENOSYS          1   // Invalid system call number
+#define ENOENT          2   // No such file or directory
+#define EIO             5   // I/O error
+#define EBADF           9   // Bad file descriptor
+#define ENOMEM          12  // Out of memory
+#define EACCES          13  // Invalid access
+#define EFAULT          14  // Bad address
+#define EEXIST          17  // File exists
+#define EISDIR          21  // Is a directory
+#define EINVAL          22  // Invalid argument
+#define EMFILE          24  // Too many open files
+#define ENOTTY	        25  // Invalid tty
+#define ESPIPE          29  // Illegal seek
+#define EPIPE           32  // Broken pipe
+#define EADDRINUSE      98  // Address already in use
+#define EAFNOSUPPORT    102 // Address family not supported
+#define ENOTCONN        107 // Transport endpoint is not connected
+#define ECONNREFUSED    111 // Connection refused
+#define EPROTONOSUPPORT 135 // Protocol not supported
+#define ENOPRIV         720 // Invalid privilege permissions
 
 #define SYSCALL_SYS_READ                0
 #define SYSCALL_SYS_WRITE               1
@@ -27,7 +33,13 @@
 #define SYSCALL_SYS_BRK                 12
 #define SYSCALL_SYS_IOCTL               16
 #define SYSCALL_SYS_WRITEV              20
+#define SYSCALL_SYS_NANOSLEEP           35
 #define SYSCALL_SYS_GETPID              39
+#define SYSCALL_SYS_SOCKET              41
+#define SYSCALL_SYS_CONNECT             42
+#define SYSCALL_SYS_ACCEPT              43
+#define SYSCALL_SYS_BIND                49
+#define SYSCALL_SYS_LISTEN              50
 #define SYSCALL_SYS_EXIT                60
 #define SYSCALL_SYS_SET_THREAD_AREA     158
 #define SYSCALL_SYS_SET_TID_ADDRESS     218

@@ -4,6 +4,8 @@
 #include <fs/filesystem.h>
 #include <process/process.h>
 #include <core/klog.h>
+#include <net/unix_socket.h>
+#include <net/unix_socket_manager.h>
 
 DECLARE_SYSCALL_HANDLER(write) {
     int handle = static_cast<int>(arg1);
@@ -27,7 +29,10 @@ DECLARE_SYSCALL_HANDLER(write) {
     switch (hentry->type) {
         case handle_type::OUTPUT_STREAM: {
             // Write to serial port (stdout behavior)
-            serial::write(serial::g_kernel_uart_port, buf, count);
+            char hack[512] = { 0 };
+            memcpy(hack, buf, count < 512 ? count : 511);
+            kprint(hack);
+            // serial::write(serial::g_kernel_uart_port, buf, count);
             bytes_written = count;
             break;
         }
@@ -49,6 +54,24 @@ DECLARE_SYSCALL_HANDLER(write) {
             if (bytes_written > 0) {
                 fobj->position += bytes_written;
             }
+            break;
+        }
+        case handle_type::UNIX_SOCKET: {
+            // Write to Unix domain socket
+            auto socket_ptr = reinterpret_cast<kstl::shared_ptr<net::unix_stream_socket>*>(hentry->object);
+            if (!socket_ptr || !(*socket_ptr)) {
+                return -EBADF;
+            }
+            
+            auto socket = *socket_ptr;
+            
+            // Let the socket's write method handle state checking
+            int result = socket->write(buf, count);
+            if (result < 0) {
+                return result; // Error (already negative)
+            }
+            
+            bytes_written = static_cast<size_t>(result);
             break;
         }
         default: {
@@ -113,6 +136,26 @@ DECLARE_SYSCALL_HANDLER(read) {
             if (bytes_read > 0) {
                 fobj->position += bytes_read;
             }
+            break;
+        }
+        
+        case handle_type::UNIX_SOCKET: {
+            // Read from Unix domain socket
+            auto socket_ptr = reinterpret_cast<kstl::shared_ptr<net::unix_stream_socket>*>(hentry->object);
+            if (!socket_ptr || !(*socket_ptr)) {
+                return -EBADF;
+            }
+            
+            auto socket = *socket_ptr;
+            
+            // Let the socket's read method handle state checking and EOF logic
+            // It can read from both CONNECTED and DISCONNECTED states appropriately
+            int result = socket->read(buf, count);
+            if (result < 0) {
+                return result;
+            }
+            
+            bytes_read = static_cast<ssize_t>(result);
             break;
         }
         
@@ -248,6 +291,22 @@ DECLARE_SYSCALL_HANDLER(close) {
             if (fobj) {
                 // The file_object destructor will handle vfs_node cleanup via shared_ptr
                 delete fobj;
+            }
+            break;
+        }
+        case handle_type::UNIX_SOCKET: {
+            // Clean up Unix domain socket
+            auto socket_ptr = reinterpret_cast<kstl::shared_ptr<net::unix_stream_socket>*>(hentry->object);
+            if (socket_ptr) {
+                auto socket = *socket_ptr;
+                if (socket) {
+                    // Close the socket - this will disconnect peers and clean up state
+                    // The socket's close() method handles manager unregistration automatically
+                    socket->close();
+                }
+                
+                // Clean up the shared_ptr object itself
+                delete socket_ptr;
             }
             break;
         }
@@ -399,7 +458,10 @@ DECLARE_SYSCALL_HANDLER(writev) {
         switch (hentry->type) {
             case handle_type::OUTPUT_STREAM: {
                 // Write to serial port (stdout behavior)
-                serial::write(serial::g_kernel_uart_port, reinterpret_cast<char*>(k_iov.iov_base), k_iov.iov_len);
+                //serial::write(serial::g_kernel_uart_port, reinterpret_cast<char*>(k_iov.iov_base), k_iov.iov_len);
+                char hack[512] = { 0 };
+                memcpy(hack, k_iov.iov_base, k_iov.iov_len < 512 ? k_iov.iov_len : 511);
+                kprint(hack);
                 n = k_iov.iov_len;
                 break;
             }
@@ -422,6 +484,20 @@ DECLARE_SYSCALL_HANDLER(writev) {
                 if (n > 0) {
                     fobj->position += n;
                 }
+                break;
+            }
+            
+            case handle_type::UNIX_SOCKET: {
+                // Write to Unix domain socket
+                auto socket_ptr = reinterpret_cast<kstl::shared_ptr<net::unix_stream_socket>*>(hentry->object);
+                if (!socket_ptr || !(*socket_ptr)) {
+                    return -EBADF;
+                }
+                
+                auto socket = *socket_ptr;
+                
+                // Let the socket's write method handle state checking
+                n = socket->write(k_iov.iov_base, k_iov.iov_len);
                 break;
             }
             

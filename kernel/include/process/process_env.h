@@ -80,6 +80,7 @@ enum class handle_type : uint32_t {
     SEMAPHORE,      // Semaphore handle
     EVENT,          // Event handle
     SHARED_MEM,     // Shared memory handle
+    UNIX_SOCKET,    // Unix domain socket handle
 };
 
 /**

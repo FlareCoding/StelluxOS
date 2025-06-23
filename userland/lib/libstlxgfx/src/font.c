@@ -139,8 +139,6 @@ int stlxgfx_get_text_size(stlxgfx_context_t* ctx, const char* text,
         size->width += (int)(advance * scale);
     }
     
-    printf("STLXGFX: Text '%s' size at %dpx: %dx%d\n", text, font_size, size->width, size->height);
-    
     return 0;
 }
 

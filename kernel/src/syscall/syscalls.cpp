@@ -5,6 +5,8 @@
 #include <syscall/handlers/sys_proc.h>
 #include <syscall/handlers/sys_arch.h>
 #include <syscall/handlers/sys_graphics.h>
+#include <syscall/handlers/sys_time.h>
+#include <syscall/handlers/sys_net.h>
 #include <process/process.h>
 #include <core/klog.h>
 
@@ -34,7 +36,13 @@ void init_syscall_table() {
     REGISTER_SYSCALL(SYSCALL_SYS_BRK, brk);
     REGISTER_SYSCALL(SYSCALL_SYS_IOCTL, ioctl);
     REGISTER_SYSCALL(SYSCALL_SYS_WRITEV, writev);
+    REGISTER_SYSCALL(SYSCALL_SYS_NANOSLEEP, nanosleep);
     REGISTER_SYSCALL(SYSCALL_SYS_GETPID, getpid);
+    REGISTER_SYSCALL(SYSCALL_SYS_SOCKET, socket);
+    REGISTER_SYSCALL(SYSCALL_SYS_CONNECT, connect);
+    REGISTER_SYSCALL(SYSCALL_SYS_ACCEPT, accept);
+    REGISTER_SYSCALL(SYSCALL_SYS_BIND, bind);
+    REGISTER_SYSCALL(SYSCALL_SYS_LISTEN, listen);
     REGISTER_SYSCALL(SYSCALL_SYS_EXIT, exit);
     REGISTER_SYSCALL(SYSCALL_SYS_SET_THREAD_AREA, set_thread_area);
     REGISTER_SYSCALL(SYSCALL_SYS_SET_TID_ADDRESS, set_tid_address);
