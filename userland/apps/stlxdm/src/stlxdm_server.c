@@ -27,7 +27,6 @@ int stlxdm_server_init(stlxdm_server_t* server, stlxgfx_context_t* gfx_ctx, stlx
         server->clients[i].window = NULL;
     }
     
-    printf("[STLXDM_SERVER] Server initialized (max clients: %d, format: %d)\n", STLXDM_MAX_CLIENTS, format);
     return 0;
 }
 
@@ -36,16 +35,12 @@ void stlxdm_server_cleanup(stlxdm_server_t* server) {
         return;
     }
     
-    printf("[STLXDM_SERVER] Cleaning up server...\n");
-    
     // Disconnect all clients
     for (int i = 0; i < STLXDM_MAX_CLIENTS; i++) {
         if (server->clients[i].state != STLXDM_CLIENT_DISCONNECTED) {
             stlxdm_server_disconnect_client(server, i);
         }
     }
-    
-    printf("[STLXDM_SERVER] Server cleanup complete\n");
 }
 
 int stlxdm_server_accept_new_connections(stlxdm_server_t* server) {
@@ -78,8 +73,7 @@ int stlxdm_server_accept_new_connections(stlxdm_server_t* server) {
                 server->client_count++;
                 new_connections++;
                 
-                printf("[STLXDM_SERVER] Client %u connected (slot %d, fd %d). Total clients: %d\n", 
-                       server->clients[slot].client_id, slot, new_client_fd, server->client_count);
+
             } else {
                 // No slots available, close the connection
                 printf("[STLXDM_SERVER] WARNING: No client slots available, closing connection\n");
@@ -127,8 +121,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
                                                      const uint8_t* payload) {
     const stlxgfx_create_window_request_t* req = (const stlxgfx_create_window_request_t*)payload;
     
-    printf("[STLXDM_SERVER] CREATE_WINDOW_REQUEST: %ux%u from client %u\n", 
-           req->width, req->height, client->client_id);
+
     
     // Check if client already has a window
     if (client->window != NULL) {

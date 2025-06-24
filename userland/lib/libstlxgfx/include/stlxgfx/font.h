@@ -23,7 +23,7 @@ typedef struct {
  * @param font_path - path to TTF font file
  * @return 0 on success, negative on error
  */
-int stlxgfx_dm_load_font(stlxgfx_context_t* ctx, const char* font_path);
+int stlxgfx_load_font(stlxgfx_context_t* ctx, const char* font_path);
 
 /**
  * Get font vertical metrics (Display Manager)
