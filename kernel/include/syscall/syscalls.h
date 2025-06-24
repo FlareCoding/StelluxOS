@@ -6,6 +6,8 @@
 #define ENOENT          2   // No such file or directory
 #define EIO             5   // I/O error
 #define EBADF           9   // Bad file descriptor
+#define EAGAIN          11  // Try again (resource temporarily unavailable)
+#define EWOULDBLOCK     EAGAIN  // Operation would block (same as EAGAIN)
 #define ENOMEM          12  // Out of memory
 #define EACCES          13  // Invalid access
 #define EFAULT          14  // Bad address
@@ -16,10 +18,12 @@
 #define ENOTTY	        25  // Invalid tty
 #define ESPIPE          29  // Illegal seek
 #define EPIPE           32  // Broken pipe
+#define EOPNOTSUPP      95  // Operation not supported on transport endpoint
 #define EADDRINUSE      98  // Address already in use
 #define EAFNOSUPPORT    102 // Address family not supported
 #define ENOTCONN        107 // Transport endpoint is not connected
 #define ECONNREFUSED    111 // Connection refused
+#define EINPROGRESS     115 // Operation now in progress
 #define EPROTONOSUPPORT 135 // Protocol not supported
 #define ENOPRIV         720 // Invalid privilege permissions
 
@@ -38,9 +42,12 @@
 #define SYSCALL_SYS_SOCKET              41
 #define SYSCALL_SYS_CONNECT             42
 #define SYSCALL_SYS_ACCEPT              43
+#define SYSCALL_SYS_SENDTO              44
+#define SYSCALL_SYS_RECVFROM            45
 #define SYSCALL_SYS_BIND                49
 #define SYSCALL_SYS_LISTEN              50
 #define SYSCALL_SYS_EXIT                60
+#define SYSCALL_SYS_FCNTL               72
 #define SYSCALL_SYS_SET_THREAD_AREA     158
 #define SYSCALL_SYS_SET_TID_ADDRESS     218
 #define SYSCALL_SYS_EXIT_GROUP          231
