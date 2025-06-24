@@ -22,6 +22,17 @@ struct stlxgfx_context {
     size_t font_data_size;
     stbtt_fontinfo font_info;
     int font_loaded;
+    
+    // Socket communication
+    int socket_fd;
+    uint32_t next_sequence_number;
+    
+    // Display manager specific
+    int server_socket_fd;  // DM mode: listening socket
+    int client_count;      // DM mode: number of connected clients
+    
+    // Application specific  
+    int connected_to_dm;   // App mode: connection status
 };
 
 #endif // STLXGFX_CTX_H
