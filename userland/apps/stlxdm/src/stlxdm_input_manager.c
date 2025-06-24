@@ -1,6 +1,8 @@
 #include "stlxdm_input_manager.h"
 #include <stdio.h>
 #include <string.h>
+
+#define _POSIX_C_SOURCE 199309L
 #include <time.h>
 
 // Input grab types
@@ -481,9 +483,9 @@ const void* stlxdm_input_manager_get_stats(const stlxdm_input_manager_t* input_m
 }
 
 static uint32_t _get_current_time_ms(void) {
-    //struct timespec ts;
-    // if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
-    //     return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
-    // }
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+        return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
+    }
     return 0;
 }

@@ -84,3 +84,30 @@ DECLARE_SYSCALL_HANDLER(nanosleep) {
     
     return 0;
 }
+
+DECLARE_SYSCALL_HANDLER(clock_gettime) {
+    /* Linux-style calling convention
+     * arg1 = clockid_t clk_id (clock type)
+     * arg2 = struct timespec* tp (output buffer)
+     */
+    
+    int clk_id = static_cast<int>(arg1); __unused clk_id;
+    struct timespec* tp = reinterpret_cast<struct timespec*>(arg2);
+    
+    // Validate the output pointer
+    if (!tp) {
+        SYSCALL_TRACE("clock_gettime(%d, NULL) = -EFAULT\n", clk_id);
+        return -EFAULT;
+    }
+    
+    // Get current time in milliseconds since boot
+    uint64_t time_ms = kernel_timer::get_system_time_in_milliseconds();
+    
+    // Convert to seconds and nanoseconds
+    tp->tv_sec = static_cast<int64_t>(time_ms / 1000);
+    tp->tv_nsec = static_cast<int64_t>((time_ms % 1000) * 1000000);
+    
+    SYSCALL_TRACE("clock_gettime(%d, {tv_sec=%lli, tv_nsec=%lli}) = 0\n",
+                  clk_id, tp->tv_sec, tp->tv_nsec);
+    return 0;
+}
