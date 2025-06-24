@@ -51,20 +51,23 @@ typedef struct {
 
 // Window synchronization structure (lives in shared memory)
 typedef struct stlxgfx_window_sync {
-    // Double-buffering synchronization
-    volatile uint32_t app_frame_ready;    // App finished drawing to back buffer
-    volatile uint32_t dm_frame_consumed;  // DM finished reading front buffer
-    volatile uint32_t app_buffer_index;   // Which buffer app is drawing to (0 or 1)
-    volatile uint32_t dm_buffer_index;    // Which buffer DM is reading from (0 or 1)
+    // Triple-buffering synchronization
+    volatile uint32_t front_buffer_index;   // Which buffer DM is reading from (0,1,2)
+    volatile uint32_t back_buffer_index;    // Which buffer app is drawing to (0,1,2)
+    volatile uint32_t ready_buffer_index;   // Which buffer is ready to become front (0,1,2)
+    
+    volatile uint32_t frame_ready;          // New frame available for swap (0/1)
+    volatile uint32_t dm_consuming;         // DM is currently reading front buffer (0/1)
+    volatile uint32_t swap_pending;         // Swap operation pending (0/1)
     
     // Window state (read-only for app, managed by DM)
-    volatile uint32_t window_visible;     // Window visibility state
-    volatile uint32_t window_focused;     // Window focus state
-    volatile uint32_t close_requested;    // DM requests window close
-    volatile uint32_t reserved;           // Reserved for future use
+    volatile uint32_t window_visible;       // Window visibility state
+    volatile uint32_t window_focused;       // Window focus state
+    volatile uint32_t close_requested;      // DM requests window close
+    volatile uint32_t reserved;             // Reserved for future use
     
     // Padding for cache line alignment (64 bytes total)
-    uint32_t padding[8];
+    uint32_t padding[6];
 } stlxgfx_window_sync_t;
 
 // Error codes

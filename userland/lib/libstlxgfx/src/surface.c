@@ -159,20 +159,20 @@ void stlxgfx_dm_destroy_surface(stlxgfx_context_t* ctx, stlxgfx_surface_t* surfa
     printf("STLXGFX: Destroying surface %ux%u\n", surface->width, surface->height);
     free(surface);
 }
-
-int stlxgfx_dm_create_shared_surface_pair(stlxgfx_context_t* ctx,
-                                          uint32_t width, uint32_t height,
-                                          stlxgfx_pixel_format_t format,
-                                          shm_handle_t* out_shm_handle,
-                                          stlxgfx_surface_t** out_surface0,
-                                          stlxgfx_surface_t** out_surface1) {
+int stlxgfx_dm_create_shared_surface_set(stlxgfx_context_t* ctx,
+                                         uint32_t width, uint32_t height,
+                                         stlxgfx_pixel_format_t format,
+                                         shm_handle_t* out_shm_handle,
+                                         stlxgfx_surface_t** out_surface0,
+                                         stlxgfx_surface_t** out_surface1,
+                                         stlxgfx_surface_t** out_surface2) {
     if (!ctx || !ctx->initialized || ctx->mode != STLXGFX_MODE_DISPLAY_MANAGER) {
-        printf("STLXGFX: Shared surface pair creation only available in Display Manager mode\n");
+        printf("STLXGFX: Shared surface set creation only available in Display Manager mode\n");
         return -1;
     }
     
-    if (!out_shm_handle || !out_surface0 || !out_surface1) {
-        printf("STLXGFX: Invalid output parameters for shared surface pair\n");
+    if (!out_shm_handle || !out_surface0 || !out_surface1 || !out_surface2) {
+        printf("STLXGFX: Invalid output parameters for shared surface set\n");
         return -1;
     }
     
@@ -194,22 +194,22 @@ int stlxgfx_dm_create_shared_surface_pair(stlxgfx_context_t* ctx,
     
     // Round up to 16-byte alignment
     size_t aligned_surface_size = (single_surface_size + 15) & ~15;
-    size_t total_size = aligned_surface_size * 2;  // Two aligned surfaces
+    size_t total_size = aligned_surface_size * 3;  // Three aligned surfaces
     
     // Create shared memory
     char shm_name[64];
-    snprintf(shm_name, sizeof(shm_name), "stlxgfx_surfaces_%u_%u", width, height);
+    snprintf(shm_name, sizeof(shm_name), "stlxgfx_surfaces3_%u_%u", width, height);
     
     shm_handle_t shm_handle = stlx_shm_create(shm_name, total_size, SHM_READ_WRITE);
     if (shm_handle == 0) {
-        printf("STLXGFX: Failed to create shared memory (%zu bytes)\n", total_size);
+        printf("STLXGFX: Failed to create shared memory for surface set (%zu bytes)\n", total_size);
         return -1;
     }
     
     // Map shared memory
     void* shm_memory = stlx_shm_map(shm_handle, SHM_MAP_READ | SHM_MAP_WRITE);
     if (!shm_memory) {
-        printf("STLXGFX: Failed to map shared memory\n");
+        printf("STLXGFX: Failed to map shared memory for surface set\n");
         stlx_shm_destroy(shm_handle);
         return -1;
     }
@@ -228,27 +228,37 @@ int stlxgfx_dm_create_shared_surface_pair(stlxgfx_context_t* ctx,
     surface1->pitch = pitch;
     surface1->format = format;
     
-    // Clear both surfaces to black
+    // Initialize third surface (16-byte aligned)
+    stlxgfx_surface_t* surface2 = (stlxgfx_surface_t*)((uint8_t*)shm_memory + aligned_surface_size * 2);
+    surface2->width = width;
+    surface2->height = height;
+    surface2->pitch = pitch;
+    surface2->format = format;
+    
+    // Clear all three surfaces to black
     memset(surface0->pixels, 0, pixel_data_size);
     memset(surface1->pixels, 0, pixel_data_size);
+    memset(surface2->pixels, 0, pixel_data_size);
     
     // Return results
     *out_shm_handle = shm_handle;
     *out_surface0 = surface0;
     *out_surface1 = surface1;
+    *out_surface2 = surface2;
     
-    printf("STLXGFX: Created shared surface pair %ux%u (%u BPP, pitch=%u, %zu bytes each, aligned to %zu)\n",
+    printf("STLXGFX: Created shared surface set %ux%u (%u BPP, pitch=%u, %zu bytes each, aligned to %zu)\n",
            width, height, bpp, pitch, single_surface_size, aligned_surface_size);
     
     return 0;
 }
 
-int stlxgfx_dm_destroy_shared_surface_pair(stlxgfx_context_t* ctx,
-                                           shm_handle_t shm_handle,
-                                           stlxgfx_surface_t* surface0,
-                                           stlxgfx_surface_t* surface1) {
+int stlxgfx_dm_destroy_shared_surface_set(stlxgfx_context_t* ctx,
+                                          shm_handle_t shm_handle,
+                                          stlxgfx_surface_t* surface0,
+                                          stlxgfx_surface_t* surface1,
+                                          stlxgfx_surface_t* surface2) {
     if (!ctx || !ctx->initialized || ctx->mode != STLXGFX_MODE_DISPLAY_MANAGER) {
-        printf("STLXGFX: Shared surface pair destruction only available in Display Manager mode\n");
+        printf("STLXGFX: Shared surface set destruction only available in Display Manager mode\n");
         return -1;
     }
     
@@ -258,68 +268,72 @@ int stlxgfx_dm_destroy_shared_surface_pair(stlxgfx_context_t* ctx,
     }
     
     // Log destruction info if we have valid surfaces
-    if (surface0 && surface1) {
-        printf("STLXGFX: Destroying shared surface pair %ux%u\n", 
+    if (surface0 && surface1 && surface2) {
+        printf("STLXGFX: Destroying shared surface set %ux%u\n", 
                surface0->width, surface0->height);
     } else {
-        printf("STLXGFX: Destroying shared surface pair (surfaces already unmapped)\n");
+        printf("STLXGFX: Destroying shared surface set (surfaces already unmapped)\n");
     }
     
     // Unmap shared memory (this invalidates surface pointers)
     if (surface0) {
         // Use surface0 as base address since it's at the start of the SHM region
         if (stlx_shm_unmap(shm_handle, surface0) != 0) {
-            printf("STLXGFX: Warning: Failed to unmap shared memory\n");
+            printf("STLXGFX: Warning: Failed to unmap shared memory for surface set\n");
             // Continue with destruction attempt
         }
     }
     
     // Destroy shared memory handle
     if (stlx_shm_destroy(shm_handle) != 0) {
-        printf("STLXGFX: Failed to destroy shared memory handle\n");
+        printf("STLXGFX: Failed to destroy shared memory handle for surface set\n");
         return -1;
     }
     
-    printf("STLXGFX: Shared surface pair destroyed successfully\n");
+    printf("STLXGFX: Shared surface set destroyed successfully\n");
     return 0;
 }
 
-int stlxgfx_map_shared_surface_pair(shm_handle_t shm_handle,
-                                    stlxgfx_surface_t** out_surface0,
-                                    stlxgfx_surface_t** out_surface1) {
+int stlxgfx_map_shared_surface_set(shm_handle_t shm_handle,
+                                   stlxgfx_surface_t** out_surface0,
+                                   stlxgfx_surface_t** out_surface1,
+                                   stlxgfx_surface_t** out_surface2) {
     if (shm_handle == 0) {
         printf("STLXGFX: Invalid shared memory handle\n");
         return -1;
     }
     
-    if (!out_surface0 || !out_surface1) {
-        printf("STLXGFX: Invalid output parameters for surface mapping\n");
+    if (!out_surface0 || !out_surface1 || !out_surface2) {
+        printf("STLXGFX: Invalid output parameters for surface set mapping\n");
         return -1;
     }
     
     // Map shared memory with read/write access
     void* shm_memory = stlx_shm_map(shm_handle, SHM_MAP_READ | SHM_MAP_WRITE);
     if (!shm_memory) {
-        printf("STLXGFX: Failed to map shared memory for surface pair\n");
+        printf("STLXGFX: Failed to map shared memory for surface set\n");
         return -1;
     }
     
-    // Get pointers to both surfaces
+    // Get pointers to all three surfaces
     stlxgfx_surface_t* surface0 = (stlxgfx_surface_t*)shm_memory;
     
-    // Calculate size of first surface to find second surface
+    // Calculate size of first surface to find subsequent surfaces
     uint8_t bpp = stlxgfx_get_bpp_for_format(surface0->format);
     size_t pixel_data_size = surface0->height * surface0->pitch;
     size_t single_surface_size = sizeof(stlxgfx_surface_t) + pixel_data_size;
     size_t aligned_surface_size = (single_surface_size + 15) & ~15;  // 16-byte align
     
     stlxgfx_surface_t* surface1 = (stlxgfx_surface_t*)((uint8_t*)shm_memory + aligned_surface_size);
+    stlxgfx_surface_t* surface2 = (stlxgfx_surface_t*)((uint8_t*)shm_memory + aligned_surface_size * 2);
     
     // Validate that we got sensible surface data
     if (surface0->width == 0 || surface0->height == 0 || 
         surface1->width != surface0->width || surface1->height != surface0->height ||
-        surface1->format != surface0->format) {
-        printf("STLXGFX: Invalid surface data in shared memory\n");
+        surface1->format != surface0->format ||
+        surface2->width != surface0->width || surface2->height != surface0->height ||
+        surface2->format != surface0->format) {
+        printf("STLXGFX: Invalid surface data in shared memory for surface set\n");
         stlx_shm_unmap(shm_handle, shm_memory);
         return -1;
     }
@@ -327,38 +341,40 @@ int stlxgfx_map_shared_surface_pair(shm_handle_t shm_handle,
     // Return surface pointers
     *out_surface0 = surface0;
     *out_surface1 = surface1;
+    *out_surface2 = surface2;
     
-    printf("STLXGFX: Mapped shared surface pair %ux%u (%u BPP, pitch=%u)\n",
+    printf("STLXGFX: Mapped shared surface set %ux%u (%u BPP, pitch=%u)\n",
            surface0->width, surface0->height, bpp, surface0->pitch);
     
     return 0;
 }
 
-int stlxgfx_unmap_shared_surface_pair(shm_handle_t shm_handle,
-                                      stlxgfx_surface_t* surface0,
-                                      stlxgfx_surface_t* surface1) {
+int stlxgfx_unmap_shared_surface_set(shm_handle_t shm_handle,
+                                     stlxgfx_surface_t* surface0,
+                                     stlxgfx_surface_t* surface1,
+                                     stlxgfx_surface_t* surface2) {
     if (shm_handle == 0) {
         printf("STLXGFX: Invalid shared memory handle\n");
         return -1;
     }
     
     // Log unmapping info if we have valid surfaces
-    if (surface0 && surface1) {
-        printf("STLXGFX: Unmapping shared surface pair %ux%u\n", 
+    if (surface0 && surface1 && surface2) {
+        printf("STLXGFX: Unmapping shared surface set %ux%u\n", 
                surface0->width, surface0->height);
     } else {
-        printf("STLXGFX: Unmapping shared surface pair (surfaces already invalid)\n");
+        printf("STLXGFX: Unmapping shared surface set (surfaces already invalid)\n");
     }
     
     // Unmap shared memory using surface0 as base address
     if (surface0) {
         if (stlx_shm_unmap(shm_handle, surface0) != 0) {
-            printf("STLXGFX: Failed to unmap shared memory\n");
+            printf("STLXGFX: Failed to unmap shared memory for surface set\n");
             return -1;
         }
     }
     
-    printf("STLXGFX: Shared surface pair unmapped successfully\n");
+    printf("STLXGFX: Shared surface set unmapped successfully\n");
     return 0;
 }
 
@@ -400,15 +416,17 @@ int stlxgfx_dm_create_window_sync_shm(stlxgfx_context_t* ctx,
     // Initialize window sync structure
     stlxgfx_window_sync_t* sync = (stlxgfx_window_sync_t*)shm_memory;
     
-    // Initialize all fields to safe defaults
-    sync->app_frame_ready = 0;
-    sync->dm_frame_consumed = 1;  // DM starts ready to consume
-    sync->app_buffer_index = 0;   // App starts with buffer 0
-    sync->dm_buffer_index = 1;    // DM starts reading from buffer 1
-    sync->window_visible = 0;     // Start hidden
-    sync->window_focused = 0;     // Start unfocused
-    sync->close_requested = 0;    // No close request initially
-    sync->reserved = 0;           // Reserved field
+    // Initialize all fields to safe defaults for triple buffering
+    sync->front_buffer_index = 0;   // DM reads from buffer 0
+    sync->back_buffer_index = 1;    // App draws to buffer 1
+    sync->ready_buffer_index = 2;   // Buffer 2 is ready for swap
+    sync->frame_ready = 0;          // No frame ready initially
+    sync->dm_consuming = 0;         // DM not consuming initially
+    sync->swap_pending = 0;         // No swap pending initially
+    sync->window_visible = 0;       // Start hidden
+    sync->window_focused = 0;       // Start unfocused
+    sync->close_requested = 0;      // No close request initially
+    sync->reserved = 0;             // Reserved field
     
     // Clear padding
     memset(sync->padding, 0, sizeof(sync->padding));
@@ -479,7 +497,7 @@ int stlxgfx_map_window_sync_shm(shm_handle_t shm_handle,
     stlxgfx_window_sync_t* sync = (stlxgfx_window_sync_t*)shm_memory;
     
     // Basic validation - check if structure looks reasonable
-    if (sync->app_buffer_index > 1 || sync->dm_buffer_index > 1) {
+    if (sync->front_buffer_index > 2 || sync->back_buffer_index > 2 || sync->ready_buffer_index > 2) {
         printf("STLXGFX: Invalid window sync data in shared memory (bad buffer indices)\n");
         stlx_shm_unmap(shm_handle, shm_memory);
         return -1;

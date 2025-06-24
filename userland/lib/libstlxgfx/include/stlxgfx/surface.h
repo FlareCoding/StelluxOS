@@ -58,7 +58,7 @@ stlxgfx_surface_t* stlxgfx_dm_create_surface(stlxgfx_context_t* ctx,
 void stlxgfx_dm_destroy_surface(stlxgfx_context_t* ctx, stlxgfx_surface_t* surface);
 
 /**
- * Create a pair of surfaces in shared memory (Display Manager only)
+ * Create a set of three surfaces in shared memory (Display Manager only)
  * @param ctx - graphics context
  * @param width - surface width in pixels
  * @param height - surface height in pixels
@@ -66,49 +66,57 @@ void stlxgfx_dm_destroy_surface(stlxgfx_context_t* ctx, stlxgfx_surface_t* surfa
  * @param out_shm_handle - returns the shared memory handle
  * @param out_surface0 - returns pointer to first surface (16-byte aligned)
  * @param out_surface1 - returns pointer to second surface (16-byte aligned)
+ * @param out_surface2 - returns pointer to third surface (16-byte aligned)
  * @return 0 on success, negative on error
  */
-int stlxgfx_dm_create_shared_surface_pair(stlxgfx_context_t* ctx,
-                                          uint32_t width, uint32_t height,
-                                          stlxgfx_pixel_format_t format,
-                                          shm_handle_t* out_shm_handle,
-                                          stlxgfx_surface_t** out_surface0,
-                                          stlxgfx_surface_t** out_surface1);
+int stlxgfx_dm_create_shared_surface_set(stlxgfx_context_t* ctx,
+                                         uint32_t width, uint32_t height,
+                                         stlxgfx_pixel_format_t format,
+                                         shm_handle_t* out_shm_handle,
+                                         stlxgfx_surface_t** out_surface0,
+                                         stlxgfx_surface_t** out_surface1,
+                                         stlxgfx_surface_t** out_surface2);
 
 /**
- * Destroy a shared surface pair (Display Manager only)
+ * Destroy a shared surface set (Display Manager only)
  * @param ctx - graphics context
  * @param shm_handle - shared memory handle to destroy
  * @param surface0 - pointer to first surface (will be invalidated)
  * @param surface1 - pointer to second surface (will be invalidated)
+ * @param surface2 - pointer to third surface (will be invalidated)
  * @return 0 on success, negative on error
  */
-int stlxgfx_dm_destroy_shared_surface_pair(stlxgfx_context_t* ctx,
-                                           shm_handle_t shm_handle,
-                                           stlxgfx_surface_t* surface0,
-                                           stlxgfx_surface_t* surface1);
+int stlxgfx_dm_destroy_shared_surface_set(stlxgfx_context_t* ctx,
+                                          shm_handle_t shm_handle,
+                                          stlxgfx_surface_t* surface0,
+                                          stlxgfx_surface_t* surface1,
+                                          stlxgfx_surface_t* surface2);
 
 /**
- * Map a shared surface pair into application address space
+ * Map a shared surface set into application address space
  * @param shm_handle - shared memory handle from display manager
  * @param out_surface0 - returns pointer to first surface 
  * @param out_surface1 - returns pointer to second surface
+ * @param out_surface2 - returns pointer to third surface
  * @return 0 on success, negative on error
  */
-int stlxgfx_map_shared_surface_pair(shm_handle_t shm_handle,
-                                    stlxgfx_surface_t** out_surface0,
-                                    stlxgfx_surface_t** out_surface1);
+int stlxgfx_map_shared_surface_set(shm_handle_t shm_handle,
+                                   stlxgfx_surface_t** out_surface0,
+                                   stlxgfx_surface_t** out_surface1,
+                                   stlxgfx_surface_t** out_surface2);
 
 /**
- * Unmap a shared surface pair from application address space
+ * Unmap a shared surface set from application address space
  * @param shm_handle - shared memory handle
  * @param surface0 - pointer to first surface (will be invalidated)
  * @param surface1 - pointer to second surface (will be invalidated)
+ * @param surface2 - pointer to third surface (will be invalidated)
  * @return 0 on success, negative on error
  */
-int stlxgfx_unmap_shared_surface_pair(shm_handle_t shm_handle,
-                                      stlxgfx_surface_t* surface0,
-                                      stlxgfx_surface_t* surface1);
+int stlxgfx_unmap_shared_surface_set(shm_handle_t shm_handle,
+                                     stlxgfx_surface_t* surface0,
+                                     stlxgfx_surface_t* surface1,
+                                     stlxgfx_surface_t* surface2);
 
 /**
  * Create window sync shared memory (Display Manager only)
