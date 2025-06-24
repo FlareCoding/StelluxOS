@@ -27,11 +27,6 @@ int main() {
         return 1;
     }
     
-    printf("[SHELL] Graphics library initialized successfully\n");
-
-    struct timespec ts2 = { 0, 2 * 1000 * 1000 }; // 2 ms
-    nanosleep(&ts2, NULL);
-    
     // Create a test window
     printf("[SHELL] Creating window (800x600)...\n");
     stlxgfx_window_t* window = stlxgfx_create_window(ctx, 460, 340);
@@ -43,42 +38,74 @@ int main() {
     
     printf("[SHELL] Window created successfully!\n");
     
-    // Test actual drawing functions on the surface
-    printf("[SHELL] Drawing to surface...\n");
+    // Animation variables for bouncing cube
+    int cube_x = 50;        // Cube X position
+    int cube_y = 150;       // Cube Y position (fixed)
+    int cube_size = 40;     // Cube size
+    int velocity_x = 3;     // Horizontal velocity
+    int window_width = 460;
+    int window_height = 340;
     
-    // Keep the window "alive" for demonstration
+    uint32_t frame_count = 0;
+    
+    printf("[SHELL] Starting bouncing cube animation...\n");
+    
+    // Keep the window "alive" with animation
     while (1) {
         // Get the active drawing surface for this frame
         stlxgfx_surface_t* surface = stlxgfx_get_active_surface(window);
         if (!surface) {
-            printf("[SHELL] ERROR: Failed to get active surface for frame %d\n", 11-i);
+            printf("[SHELL] ERROR: Failed to get active surface\n");
             break;
         }
         
-        printf("[SHELL] Drawing to surface %ux%u (frame %d)...\n", surface->width, surface->height, 11-i);
+        // Clear surface with dark blue background
+        stlxgfx_clear_surface(surface, 0xFF362616);
         
-        // Clear surface with dark gray background
-        stlxgfx_clear_surface(surface, 0xFF202020);
+        // Update cube position
+        cube_x += velocity_x;
         
-        // Draw some test content
-        stlxgfx_draw_pixel(surface, 100, 100, 0xFFFFFFFF);  // White pixel
-        stlxgfx_fill_rect(surface, 50, 50, 200, 100, 0xFF0066CC);  // Blue rectangle
-        stlxgfx_fill_rect(surface, 300, 200, 150, 80, 0xFF00AA44);  // Green rectangle
+        // Bounce off walls
+        if (cube_x <= 0) {
+            cube_x = 0;
+            velocity_x = 3; // Move right
+        } else if (cube_x + cube_size >= window_width) {
+            cube_x = window_width - cube_size;
+            velocity_x = -3; // Move left
+        }
         
-        // Add some more visual elements for testing
-        stlxgfx_fill_rect(surface, 20, 20, 10, 10, 0xFFFF0000);    // Red square (top-left)
-        stlxgfx_fill_rect(surface, surface->width-30, 20, 10, 10, 0xFFFF0000);  // Red square (top-right)
-        stlxgfx_fill_rect(surface, 20, surface->height-30, 10, 10, 0xFFFF0000); // Red square (bottom-left)
-        stlxgfx_fill_rect(surface, surface->width-30, surface->height-30, 10, 10, 0xFFFF0000); // Red square (bottom-right)
+        // Draw the bouncing cube (bright green)
+        stlxgfx_fill_rect(surface, cube_x, cube_y, cube_size, cube_size, 0xFFA5A5A5);
         
-        printf("[SHELL] Drawing completed, swapping buffers...\n");
+        // Add some static elements for reference
+        stlxgfx_fill_rect(surface, 20, 20, 10, 10, 0xFFFF0000);  // Red corner marker (top-left)
+        stlxgfx_fill_rect(surface, window_width - 30, 20, 10, 10, 0xFFFF0000); // Red corner marker (top-right)
+        stlxgfx_fill_rect(surface, 20, window_height - 30, 10, 10, 0xFFFF0000); // Red corner marker (bottom-left)
+        stlxgfx_fill_rect(surface, window_width - 30, window_height - 30, 10, 10, 0xFFFF0000); // Red corner marker (bottom-right)
+        
+        // Add a center reference line
+        stlxgfx_fill_rect(surface, window_width / 2 - 1, 0, 2, window_height, 0xFF444444);
         
         // Swap buffers to present the frame
         int swap_result = stlxgfx_swap_buffers(window);
-        if (swap_result != 0) {
-            printf("[SHELL] WARNING: Buffer swap failed with code %d\n", swap_result);
+        if (swap_result == -3) {
+            // In triple buffering, we can continue drawing even if swap is pending
+            // This demonstrates the non-blocking nature of triple buffering
+        } else if (swap_result != 0) {
+            printf("[SHELL] ERROR: Buffer swap failed with code %d\n", swap_result);
+            break;
         }
-        nanosleep(&ts2, NULL);
+        
+        frame_count++;
+        
+        // Print performance info every 500 frames
+        if (frame_count % 500 == 0) {
+            printf("[SHELL] Frame %u - Cube at X=%d, velocity=%d\n", frame_count, cube_x, velocity_x);
+        }
+        
+        // Small delay to control animation speed (about 60 FPS)
+        struct timespec frame_delay = { 0, 16 * 1000 * 1000 }; // 16ms = ~60 FPS
+        nanosleep(&frame_delay, NULL);
     }
     
     // Clean up
@@ -86,6 +113,6 @@ int main() {
     stlxgfx_destroy_window(ctx, window);
     stlxgfx_cleanup(ctx);
     
-    printf("[SHELL] Example window application completed successfully!\n");
+    printf("[SHELL] Bouncing cube animation completed successfully!\n");
     return 0;
 }

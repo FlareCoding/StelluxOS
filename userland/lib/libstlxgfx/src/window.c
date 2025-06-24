@@ -107,11 +107,12 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
         return NULL;
     }
     
-    // Map surface pair shared memory
+    // Map surface set shared memory
     stlxgfx_surface_t* surface0;
     stlxgfx_surface_t* surface1;
-    if (stlxgfx_map_shared_surface_pair(response.surface_shm_handle, &surface0, &surface1) != 0) {
-        printf("STLXGFX: Failed to map surface pair SHM\n");
+    stlxgfx_surface_t* surface2;
+    if (stlxgfx_map_shared_surface_set(response.surface_shm_handle, &surface0, &surface1, &surface2) != 0) {
+        printf("STLXGFX: Failed to map surface set SHM\n");
         // Clean up sync mapping
         stlxgfx_unmap_window_sync_shm(response.sync_shm_handle, sync_data);
         return NULL;
@@ -122,7 +123,7 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
     if (!window) {
         printf("STLXGFX: Failed to allocate window structure\n");
         // Clean up mappings
-        stlxgfx_unmap_shared_surface_pair(response.surface_shm_handle, surface0, surface1);
+        stlxgfx_unmap_shared_surface_set(response.surface_shm_handle, surface0, surface1, surface2);
         stlxgfx_unmap_window_sync_shm(response.sync_shm_handle, sync_data);
         return NULL;
     }
@@ -136,15 +137,16 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
     window->surface_shm_handle = response.surface_shm_handle;
     window->sync_data = sync_data;
     
-    // Store surface pointers directly - no front/back assignment needed
-    // The app_buffer_index and dm_buffer_index in sync_data determine which surface each side uses
+    // Store surface pointers directly - triple buffering uses indices to determine which surface each side uses
     window->surface0 = surface0;
     window->surface1 = surface1;
+    window->surface2 = surface2;
     
     window->initialized = 1;
     
-    printf("STLXGFX: Window %ux%u mapped successfully (app_buf=%u, dm_buf=%u, visible=%u)\n",
-           width, height, sync_data->app_buffer_index, sync_data->dm_buffer_index, sync_data->window_visible);
+    printf("STLXGFX: Window %ux%u mapped successfully (back_buf=%u, front_buf=%u, ready_buf=%u, visible=%u)\n",
+           width, height, sync_data->back_buffer_index, sync_data->front_buffer_index, 
+           sync_data->ready_buffer_index, sync_data->window_visible);
     
     return window;
 }
@@ -159,8 +161,8 @@ void stlxgfx_destroy_window(stlxgfx_context_t* ctx, stlxgfx_window_t* window) {
     // Clean up shared memory mappings if they exist
     if (window->initialized) {
         if (window->surface_shm_handle != 0 && window->surface0) {
-            stlxgfx_unmap_shared_surface_pair(window->surface_shm_handle, 
-                                              window->surface0, window->surface1);
+            stlxgfx_unmap_shared_surface_set(window->surface_shm_handle, 
+                                             window->surface0, window->surface1, window->surface2);
         }
         
         if (window->sync_shm_handle != 0 && window->sync_data) {
@@ -193,11 +195,14 @@ stlxgfx_surface_t* stlxgfx_get_app_surface(stlxgfx_window_t* window) {
         return NULL;
     }
     
-    // App draws to the surface indicated by app_buffer_index
-    if (window->sync_data->app_buffer_index == 0) {
+    // App draws to the surface indicated by back_buffer_index
+    uint32_t index = window->sync_data->back_buffer_index;
+    if (index == 0) {
         return window->surface0;
-    } else {
+    } else if (index == 1) {
         return window->surface1;
+    } else {
+        return window->surface2;
     }
 }
 
@@ -206,11 +211,14 @@ stlxgfx_surface_t* stlxgfx_get_dm_surface(stlxgfx_window_t* window) {
         return NULL;
     }
     
-    // DM reads from the surface indicated by dm_buffer_index
-    if (window->sync_data->dm_buffer_index == 0) {
+    // DM reads from the surface indicated by front_buffer_index
+    uint32_t index = window->sync_data->front_buffer_index;
+    if (index == 0) {
         return window->surface0;
-    } else {
+    } else if (index == 1) {
         return window->surface1;
+    } else {
+        return window->surface2;
     }
 }
 
@@ -225,65 +233,51 @@ int stlxgfx_swap_buffers(stlxgfx_window_t* window) {
         return -1;
     }
     
-    printf("STLXGFX: Starting buffer swap for window ID=%u\n", window->window_id);
+    printf("STLXGFX: Starting non-blocking buffer swap for window ID=%u\n", window->window_id);
     
-    // Signal that the application has finished drawing this frame
-    window->sync_data->app_frame_ready = 1;
-    printf("STLXGFX: Set app_frame_ready=1, waiting for compositor to consume...\n");
-    
-    // Wait for display manager to detect and start consuming the frame
-    // The DM will set dm_frame_consumed=0 AND reset app_frame_ready=0 when it starts processing
-    int timeout_count = 0;
-    const int max_timeout = 4000; // 4 seconds at 1ms per loop iteration
-    
-    // Wait for DM to start consuming (dm_frame_consumed becomes 0)
-    // OR for DM to reset our app_frame_ready flag (indicating it saw and processed our request)
-    while (window->sync_data->dm_frame_consumed == 1 && window->sync_data->app_frame_ready == 1) {
-        if (timeout_count++ >= max_timeout) {
-            printf("STLXGFX: Timeout waiting for DM to start consuming frame (window ID=%u)\n", window->window_id);
-            window->sync_data->app_frame_ready = 0; // Reset on timeout
-            return -2; // Timeout error
-        }
-        
-        // Small delay to prevent busy spinning - use 1ms as requested
-        struct timespec delay = { 0, 1000000 }; // 1ms
-        nanosleep(&delay, NULL);
+    // Check if there's already a swap pending - if so, we can't swap yet
+    if (window->sync_data->swap_pending) {
+        printf("STLXGFX: Swap already pending, cannot swap yet (window ID=%u)\n", window->window_id);
+        return -3; // Swap pending error - app should retry later or drop frame
     }
     
-    // Check the reason we exited the loop
-    if (window->sync_data->app_frame_ready == 0) {
-        printf("STLXGFX: DM acknowledged frame, waiting for composition to complete...\n");
-    } else {
-        printf("STLXGFX: DM started consuming frame, waiting for completion...\n");
+    // Move current back buffer to ready position
+    window->sync_data->ready_buffer_index = window->sync_data->back_buffer_index;
+    
+    // Signal that a new frame is ready and a swap is pending
+    window->sync_data->frame_ready = 1;
+    window->sync_data->swap_pending = 1;
+    
+    // Find the next free buffer for the app to draw to
+    // In triple buffering, we cycle through buffers: 0 -> 1 -> 2 -> 0
+    uint32_t next_back = (window->sync_data->back_buffer_index + 1) % 3;
+    
+    // Make sure the next buffer isn't currently being consumed by DM
+    // If DM is consuming the buffer we want to use, we need to pick a different one
+    if (window->sync_data->dm_consuming && next_back == window->sync_data->front_buffer_index) {
+        // DM is consuming our preferred next buffer, use the other free buffer
+        next_back = (next_back + 1) % 3;
+        printf("STLXGFX: DM consuming preferred buffer, using buffer %u instead\n", next_back);
     }
     
-    // Now wait for DM to finish consuming the frame (dm_frame_consumed goes back to 1)
-    timeout_count = 0;
-    while (window->sync_data->dm_frame_consumed == 0) {
-        if (timeout_count++ >= max_timeout) {
-            printf("STLXGFX: Timeout waiting for DM to finish consuming frame (window ID=%u)\n", window->window_id);
-            return -2; // Timeout error
-        }
-        
-        // Small delay to prevent busy spinning
-        struct timespec delay = { 0, 1000000 }; // 1ms
-        nanosleep(&delay, NULL);
+    // Update to the new back buffer
+    window->sync_data->back_buffer_index = next_back;
+    
+    printf("STLXGFX: Non-blocking swap complete - ready_buf=%u, new_back_buf=%u, front_buf=%u\n", 
+           window->sync_data->ready_buffer_index, window->sync_data->back_buffer_index, window->sync_data->front_buffer_index);
+    
+    printf("STLXGFX: App can immediately start drawing to buffer %u\n", next_back);
+    
+    return 0; // Success - app can immediately start drawing next frame
+}
+
+int stlxgfx_can_swap_buffers(stlxgfx_window_t* window) {
+    if (!window || !window->initialized || !window->sync_data) {
+        return 0; // Cannot swap
     }
     
-    printf("STLXGFX: DM finished consuming frame\n");
-    
-    // Update buffer indices in sync structure - this is the actual "swap"
-    // No need to swap local pointers, just update the shared indices
-    window->sync_data->app_buffer_index = 1 - window->sync_data->app_buffer_index;
-    window->sync_data->dm_buffer_index = 1 - window->sync_data->dm_buffer_index;
-    
-    // Reset frame ready flag for next frame
-    window->sync_data->app_frame_ready = 0;
-    
-    printf("STLXGFX: Buffer swap complete (app_buf=%u, dm_buf=%u)\n", 
-           window->sync_data->app_buffer_index, window->sync_data->dm_buffer_index);
-    
-    return 0;
+    // In triple buffering, we can swap as long as there's no pending swap
+    return !window->sync_data->swap_pending;
 }
 
 int stlxgfx_dm_sync_window(stlxgfx_window_t* window) {
@@ -297,21 +291,26 @@ int stlxgfx_dm_sync_window(stlxgfx_window_t* window) {
         return -1;
     }
     
-    // Check if application has a new frame ready
-    if (window->sync_data->app_frame_ready == 0) {
-        // No new frame available, nothing to composite
-        return 0;
+    // Check if there's a pending swap to process
+    if (window->sync_data->swap_pending && window->sync_data->frame_ready) {
+        // Perform the swap: move ready buffer to front
+        window->sync_data->front_buffer_index = window->sync_data->ready_buffer_index;
+        
+        // Clear the swap flags
+        window->sync_data->frame_ready = 0;
+        window->sync_data->swap_pending = 0;
+        
+        printf("STLXGFX_DM: Swapped buffer %u to front for window ID=%u\n", 
+               window->sync_data->front_buffer_index, window->window_id);
     }
     
-    // Signal that DM is starting to consume the frame
-    window->sync_data->dm_frame_consumed = 0;
+    // Always return 1 to composite the current front buffer
+    // In triple buffering, we always have a valid front buffer to display
+    printf("STLXGFX_DM: Compositing window ID=%u from front buffer %u\n", 
+           window->window_id, window->sync_data->front_buffer_index);
     
-    // IMPORTANT: Reset app_frame_ready immediately to prevent double-processing
-    // The application is waiting for dm_frame_consumed to become 0, which just happened
-    window->sync_data->app_frame_ready = 0;
-    
-    printf("STLXGFX_DM: Starting frame consumption for window ID=%u (app_buf=%u, dm_buf=%u)\n", 
-           window->window_id, window->sync_data->app_buffer_index, window->sync_data->dm_buffer_index);
+    // Signal that DM is consuming the front buffer
+    window->sync_data->dm_consuming = 1;
     
     return 1; // Ready to composite
 }
@@ -322,7 +321,7 @@ int stlxgfx_dm_finish_sync_window(stlxgfx_window_t* window) {
     }
     
     // Signal that DM has finished consuming the frame
-    window->sync_data->dm_frame_consumed = 1;
+    window->sync_data->dm_consuming = 0;
     
     printf("STLXGFX_DM: Finished frame consumption for window ID=%u\n", window->window_id);
     

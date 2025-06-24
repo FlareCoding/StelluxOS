@@ -161,15 +161,16 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
         return -1;
     }
     
-    // Create surface pair shared memory
+    // Create surface set shared memory (triple buffering)
     shm_handle_t surface_shm_handle;
     stlxgfx_surface_t* surface0;
     stlxgfx_surface_t* surface1;
+    stlxgfx_surface_t* surface2;
     stlxgfx_pixel_format_t surface_format = server->format; // Use stored format
     
-    if (stlxgfx_dm_create_shared_surface_pair(gfx_ctx, req->width, req->height, surface_format,
-                                              &surface_shm_handle, &surface0, &surface1) != 0) {
-        printf("[STLXDM_SERVER] Failed to create surface pair SHM\n");
+    if (stlxgfx_dm_create_shared_surface_set(gfx_ctx, req->width, req->height, surface_format,
+                                             &surface_shm_handle, &surface0, &surface1, &surface2) != 0) {
+        printf("[STLXDM_SERVER] Failed to create surface set SHM\n");
         // Clean up sync SHM
         stlxgfx_dm_destroy_window_sync_shm(gfx_ctx, sync_shm_handle, sync_data);
         return -1;
@@ -180,7 +181,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     if (!window) {
         printf("[STLXDM_SERVER] Failed to allocate window structure\n");
         // Clean up shared memory
-        stlxgfx_dm_destroy_shared_surface_pair(gfx_ctx, surface_shm_handle, surface0, surface1);
+        stlxgfx_dm_destroy_shared_surface_set(gfx_ctx, surface_shm_handle, surface0, surface1, surface2);
         stlxgfx_dm_destroy_window_sync_shm(gfx_ctx, sync_shm_handle, sync_data);
         return -1;
     }
@@ -195,6 +196,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     window->sync_data = sync_data;
     window->surface0 = surface0;
     window->surface1 = surface1;
+    window->surface2 = surface2;
     window->initialized = 1;
     
     // Store window in client info
@@ -226,7 +228,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
         // Clean up everything on send failure
         client->window = NULL;
         free(window);
-        stlxgfx_dm_destroy_shared_surface_pair(gfx_ctx, surface_shm_handle, surface0, surface1);
+        stlxgfx_dm_destroy_shared_surface_set(gfx_ctx, surface_shm_handle, surface0, surface1, surface2);
         stlxgfx_dm_destroy_window_sync_shm(gfx_ctx, sync_shm_handle, sync_data);
         return -1;
     }
@@ -295,8 +297,31 @@ int stlxdm_server_disconnect_client(stlxdm_server_t* server, int client_index) {
     
     // Clean up window if it exists
     if (client->window) {
-        // TODO: Properly destroy window with shared memory cleanup
-        // For now, just set to NULL
+        stlxgfx_window_t* window = client->window;
+        printf("[STLXDM_SERVER] Cleaning up window ID=%u for client %u\n", 
+               window->window_id, client->client_id);
+        
+        // Properly destroy window with shared memory cleanup
+        if (window->initialized) {
+            // Clean up surface set shared memory
+            if (window->surface_shm_handle != 0 && window->surface0) {
+                stlxgfx_dm_destroy_shared_surface_set(server->gfx_ctx, 
+                                                      window->surface_shm_handle,
+                                                      window->surface0, 
+                                                      window->surface1, 
+                                                      window->surface2);
+            }
+            
+            // Clean up window sync shared memory
+            if (window->sync_shm_handle != 0 && window->sync_data) {
+                stlxgfx_dm_destroy_window_sync_shm(server->gfx_ctx, 
+                                                   window->sync_shm_handle, 
+                                                   window->sync_data);
+            }
+        }
+        
+        // Free window structure
+        free(window);
         client->window = NULL;
     }
     
