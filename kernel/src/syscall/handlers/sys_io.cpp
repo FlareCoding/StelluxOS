@@ -325,6 +325,67 @@ DECLARE_SYSCALL_HANDLER(close) {
     return 0; // Success
 }
 
+DECLARE_SYSCALL_HANDLER(fcntl) {
+    /* -----------------------------------------------------------------
+     *  Linux-style calling convention
+     *      arg1 = int           fd/handle
+     *      arg2 = int           cmd        (F_GETFL, F_SETFL, etc.)
+     *      arg3 = long          arg        (flags for F_SETFL)
+     * -----------------------------------------------------------------*/
+    
+    int handle = static_cast<int>(arg1);
+    int cmd = static_cast<int>(arg2);
+    long fcntl_arg = static_cast<long>(arg3);
+    
+    // Get handle entry from process handle table
+    handle_entry* hentry = current->get_env()->handles.get_handle(handle);
+    
+    if (!hentry) {
+        return -EBADF; // Bad file descriptor
+    }
+    
+    // For now, we only support fcntl on Unix sockets for O_NONBLOCK
+    if (hentry->type != handle_type::UNIX_SOCKET) {
+        return -ENOTTY; // Not supported on this handle type
+    }
+    
+    auto socket_ptr = reinterpret_cast<kstl::shared_ptr<net::unix_stream_socket>*>(hentry->object);
+    if (!socket_ptr || !(*socket_ptr)) {
+        return -EBADF;
+    }
+    
+    auto socket = *socket_ptr;
+    
+    switch (cmd) {
+        case 3: { // F_GETFL - get file status flags
+            // Return current socket flags
+            // For now, we'll track O_NONBLOCK in the socket object
+            int flags = socket->is_nonblocking() ? 0x800 : 0; // O_NONBLOCK = 0x800
+            SYSCALL_TRACE("fcntl(%d, F_GETFL) = 0x%x\n", handle, flags);
+            return flags;
+        }
+        
+        case 4: { // F_SETFL - set file status flags
+            // Set socket to blocking/non-blocking based on O_NONBLOCK flag
+            int flags = static_cast<int>(fcntl_arg);
+            bool nonblocking = (flags & 0x800) != 0; // O_NONBLOCK = 0x800
+            
+            int result = socket->set_nonblocking(nonblocking);
+            if (result != 0) {
+                return result;
+            }
+            
+            SYSCALL_TRACE("fcntl(%d, F_SETFL, 0x%x) = 0\n", handle, flags);
+            return 0;
+        }
+        
+        default: {
+            SYSCALL_TRACE("fcntl(%d, %d, %lli) = -EINVAL (unsupported cmd)\n", handle, cmd, fcntl_arg);
+            return -EINVAL; // Invalid command
+        }
+    }
+}
+
 DECLARE_SYSCALL_HANDLER(lseek) {
     /* -----------------------------------------------------------------
      *  Linux-style calling convention

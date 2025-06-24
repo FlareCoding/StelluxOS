@@ -154,12 +154,22 @@ public:
     bool is_server() const { return m_is_server; }
     bool is_connected() const { return get_state() == unix_socket_state::CONNECTED; }
     bool is_listening() const { return get_state() == unix_socket_state::LISTENING; }
+    bool is_nonblocking() const { return m_nonblocking; }
+    
+    /**
+     * @brief Sets the socket to blocking or non-blocking mode.
+     * 
+     * @param nonblocking True for non-blocking, false for blocking
+     * @return 0 on success, negative error code on failure
+     */
+    int set_nonblocking(bool nonblocking);
 
 private:
     // Core socket state
     atomic<unix_socket_state> m_state = atomic<unix_socket_state>(unix_socket_state::CREATED);
     kstl::string m_path;                                        // Bound path (for server sockets)
     bool m_is_server = false;                                   // True if this is a server socket
+    bool m_nonblocking = false;                                 // True if socket is in non-blocking mode
     int m_backlog = 0;                                          // Listen backlog size
     
     // Connection management

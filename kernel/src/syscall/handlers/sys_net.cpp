@@ -173,17 +173,23 @@ DECLARE_SYSCALL_HANDLER(accept) {
         return -EBADF;
     }
     
-    // Accept connection (blocking)
+    // Accept connection
     auto client_socket = (*socket_ptr)->accept();
     if (!client_socket) {
-        SYSCALL_TRACE("accept(%d, %p, %p) = -EINVAL\n", sockfd, addr, addrlen);
+        // Check if socket is non-blocking
+        if ((*socket_ptr)->is_nonblocking()) {
+            SYSCALL_TRACE("accept(%d, 0x%llx, 0x%llx) = -EAGAIN (non-blocking)\n", sockfd, addr, addrlen);
+            return -EAGAIN;
+        } else {
+            SYSCALL_TRACE("accept(%d, 0x%llx, 0x%llx) = -EINVAL\n", sockfd, addr, addrlen);
         return -EINVAL;
+        }
     }
     
     // Create shared_ptr wrapper for the new connection
     auto* client_socket_ptr = new kstl::shared_ptr<net::unix_stream_socket>(client_socket);
     if (!client_socket_ptr) {
-        SYSCALL_TRACE("accept(%d, %p, %p) = -ENOMEM\n", sockfd, addr, addrlen);
+        SYSCALL_TRACE("accept(%d, 0x%llx, 0x%llx) = -ENOMEM\n", sockfd, addr, addrlen);
         return -ENOMEM;
     }
     
@@ -192,7 +198,7 @@ DECLARE_SYSCALL_HANDLER(accept) {
     size_t client_handle = handles.add_handle(handle_type::UNIX_SOCKET, client_socket_ptr);
     if (client_handle == SIZE_MAX) {
         delete client_socket_ptr;
-        SYSCALL_TRACE("accept(%d, %p, %p) = -EMFILE\n", sockfd, addr, addrlen);
+        SYSCALL_TRACE("accept(%d, 0x%llx, 0x%llx) = -EMFILE\n", sockfd, addr, addrlen);
         return -EMFILE;
     }
     
@@ -203,7 +209,7 @@ DECLARE_SYSCALL_HANDLER(accept) {
         *addrlen = sizeof(sockaddr_un);
     }
     
-    SYSCALL_TRACE("accept(%d, %p, %p) = %d\n", sockfd, addr, addrlen, static_cast<int>(client_handle));
+    SYSCALL_TRACE("accept(%d, 0x%llx, 0x%llx) = %d\n", sockfd, addr, addrlen, static_cast<int>(client_handle));
     return static_cast<long>(client_handle);
 }
 
@@ -249,3 +255,81 @@ DECLARE_SYSCALL_HANDLER(connect) {
                   sockfd, addr->sun_path, addrlen, result);
     return result;
 } 
+
+DECLARE_SYSCALL_HANDLER(sendto) {
+    /* -----------------------------------------------------------------
+     *  Linux-style calling convention
+     *      arg1 = int                    sockfd
+     *      arg2 = const void*            buf
+     *      arg3 = size_t                 len
+     *      arg4 = int                    flags
+     *      arg5 = const struct sockaddr* dest_addr (ignored for SOCK_STREAM)
+     *      arg6 = socklen_t              addrlen    (ignored for SOCK_STREAM)
+     * -----------------------------------------------------------------*/
+    
+    int sockfd = static_cast<int>(arg1);
+    const void* buf = reinterpret_cast<const void*>(arg2);
+    size_t len = static_cast<size_t>(arg3);
+    // dest_addr and addrlen are ignored for Unix SOCK_STREAM sockets
+    
+    // Validate buffer pointer
+    if (!buf) {
+        return -EFAULT;
+    }
+    
+    // Get socket handle
+    handle_entry* hentry = current->get_env()->handles.get_handle(sockfd);
+    if (!hentry || hentry->type != handle_type::UNIX_SOCKET) {
+        return -EBADF;
+    }
+    
+    auto* socket_ptr = static_cast<kstl::shared_ptr<net::unix_stream_socket>*>(hentry->object);
+    if (!socket_ptr || !*socket_ptr) {
+        return -EBADF;
+    }
+    
+    // Use existing socket write method
+    int result = (*socket_ptr)->write(buf, len);
+    
+    SYSCALL_TRACE("sendto(%d, 0x%llx, %llu, %d, NULL, 0) = %d\n", sockfd, reinterpret_cast<uint64_t>(buf), static_cast<uint64_t>(len), static_cast<int>(arg4), result);
+    return result;
+}
+
+DECLARE_SYSCALL_HANDLER(recvfrom) {
+    /* -----------------------------------------------------------------
+     *  Linux-style calling convention
+     *      arg1 = int                    sockfd
+     *      arg2 = void*                  buf
+     *      arg3 = size_t                 len
+     *      arg4 = int                    flags
+     *      arg5 = struct sockaddr*       src_addr (ignored for SOCK_STREAM)
+     *      arg6 = socklen_t*             addrlen  (ignored for SOCK_STREAM)
+     * -----------------------------------------------------------------*/
+    
+    int sockfd = static_cast<int>(arg1);
+    void* buf = reinterpret_cast<void*>(arg2);
+    size_t len = static_cast<size_t>(arg3);
+    // src_addr and addrlen are ignored for Unix SOCK_STREAM sockets
+    
+    // Validate buffer pointer
+    if (!buf) {
+        return -EFAULT;
+    }
+    
+    // Get socket handle
+    handle_entry* hentry = current->get_env()->handles.get_handle(sockfd);
+    if (!hentry || hentry->type != handle_type::UNIX_SOCKET) {
+        return -EBADF;
+    }
+    
+    auto* socket_ptr = static_cast<kstl::shared_ptr<net::unix_stream_socket>*>(hentry->object);
+    if (!socket_ptr || !*socket_ptr) {
+        return -EBADF;
+    }
+    
+    // Use existing socket read method
+    int result = (*socket_ptr)->read(buf, len);
+    
+    SYSCALL_TRACE("recvfrom(%d, 0x%llx, %llu, %d, NULL, NULL) = %d\n", sockfd, reinterpret_cast<uint64_t>(buf), static_cast<uint64_t>(len), static_cast<int>(arg4), result);
+    return result;
+}

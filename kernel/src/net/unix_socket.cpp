@@ -135,11 +135,38 @@ kstl::shared_ptr<unix_stream_socket> unix_stream_socket::accept() {
         return kstl::shared_ptr<unix_stream_socket>(nullptr);
     }
     
-    UNIX_SOCKET_TRACE("[UNIX_SOCKET] Waiting for incoming connections...\n");
+    // Try to get a pending connection immediately
+    auto client = _get_pending_connection();
+    if (client) {
+        // Create a new socket for this connection
+        auto connection_socket = kstl::shared_ptr<unix_stream_socket>(new unix_stream_socket());
+        if (!connection_socket) {
+            UNIX_SOCKET_TRACE("[UNIX_SOCKET] Error: Failed to create connection socket\n");
+            return kstl::shared_ptr<unix_stream_socket>(nullptr);
+        }
+        
+        // Set up the bidirectional connection
+        connection_socket->m_peer = client;
+        client->m_peer = connection_socket;
     
-    // Block until a connection is available
+        // Both sockets are now connected
+        connection_socket->_change_state(unix_socket_state::CONNECTED);
+        client->_change_state(unix_socket_state::CONNECTED);
+        
+        UNIX_SOCKET_TRACE("[UNIX_SOCKET] Accepted connection\n");
+        return connection_socket;
+    }
+    
+    // No pending connections available
+    if (m_nonblocking) {
+        UNIX_SOCKET_TRACE("[UNIX_SOCKET] No pending connections (non-blocking)\n");
+        return kstl::shared_ptr<unix_stream_socket>(nullptr); // Will be converted to EAGAIN by fcntl wrapper
+    }
+    
+    // Blocking mode - wait for a connection
+    UNIX_SOCKET_TRACE("[UNIX_SOCKET] Waiting for incoming connections (blocking)...\n");
     while (true) {
-        auto client = _get_pending_connection();
+        client = _get_pending_connection();
         if (client) {
             // Create a new socket for this connection
             auto connection_socket = kstl::shared_ptr<unix_stream_socket>(new unix_stream_socket());
@@ -204,8 +231,22 @@ int unix_stream_socket::connect(const kstl::string& path) {
         return result;
     }
     
-    // Wait for the server to accept us (our state will change to CONNECTED)
-    UNIX_SOCKET_TRACE("[UNIX_SOCKET] Waiting for server to accept connection...\n");
+    // For Unix domain sockets, connection is typically instant, but check mode
+    if (m_nonblocking) {
+        // Non-blocking mode: check if connection completed immediately
+        if (m_state.load() == unix_socket_state::CONNECTED) {
+            UNIX_SOCKET_TRACE("[UNIX_SOCKET] Successfully connected to: %s (immediate)\n", path.c_str());
+            return 0;
+        } else {
+            // Connection in progress - for Unix sockets this is usually instant
+            // but we'll return EINPROGRESS to be semantically correct
+            UNIX_SOCKET_TRACE("[UNIX_SOCKET] Connection in progress (non-blocking)\n");
+            return -EINPROGRESS;
+        }
+    }
+    
+    // Blocking mode: wait for the server to accept us (our state will change to CONNECTED)
+    UNIX_SOCKET_TRACE("[UNIX_SOCKET] Waiting for server to accept connection (blocking)...\n");
     while (m_state.load() == unix_socket_state::CONNECTING) {
         sched::yield();
     }
@@ -254,7 +295,14 @@ ssize_t unix_stream_socket::read(void* buffer, size_t size) {
         return 0;
     }
     
-    // Still connected but no data - block until data arrives or disconnection
+    // Still connected but no data available
+    if (m_nonblocking) {
+        UNIX_SOCKET_TRACE("[UNIX_SOCKET] No data available (non-blocking)\n");
+        return -EAGAIN; // Non-blocking mode: return immediately
+    }
+    
+    // Blocking mode - wait until data arrives or disconnection
+    UNIX_SOCKET_TRACE("[UNIX_SOCKET] Blocking until data arrives...\n");
     while (true) {
         current_state = m_state.load();
         
@@ -303,11 +351,16 @@ ssize_t unix_stream_socket::write(const void* data, size_t size) {
     size_t bytes_written = peer->m_recv_buffer->write(data, size);
     
     if (bytes_written == 0 && size > 0) {
-        // Peer's buffer is full, this is a partial write scenario
-        // For now, we'll return 0 to indicate no bytes written
-        // In a full implementation, we might want to block or return EAGAIN
-        UNIX_SOCKET_TRACE("[UNIX_SOCKET] Warning: Peer buffer full, no bytes written\n");
+        // Peer's buffer is full
+        if (m_nonblocking) {
+            UNIX_SOCKET_TRACE("[UNIX_SOCKET] Peer buffer full (non-blocking)\n");
+            return -EAGAIN; // Non-blocking mode: return immediately
+        } else {
+            // Blocking mode: for now, we'll return 0 to indicate no bytes written
+            // In a full implementation, we might want to block until space is available
+            UNIX_SOCKET_TRACE("[UNIX_SOCKET] Warning: Peer buffer full, no bytes written (blocking)\n");
         return 0;
+        }
     }
     
     UNIX_SOCKET_TRACE("[UNIX_SOCKET] Wrote %llu bytes to peer\n", bytes_written);
@@ -363,6 +416,16 @@ int unix_stream_socket::register_with_manager(kstl::shared_ptr<unix_stream_socke
     }
     
     UNIX_SOCKET_TRACE("[UNIX_SOCKET] Socket registered with manager at path: %s\n", m_path.c_str());
+    return 0;
+}
+
+int unix_stream_socket::set_nonblocking(bool nonblocking) {
+    mutex_guard guard(m_socket_lock);
+    
+    m_nonblocking = nonblocking;
+    
+    UNIX_SOCKET_TRACE("[UNIX_SOCKET] Socket set to %s mode\n", 
+                      nonblocking ? "non-blocking" : "blocking");
     return 0;
 }
 
