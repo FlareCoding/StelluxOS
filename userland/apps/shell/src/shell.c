@@ -12,101 +12,80 @@
 #include <time.h>
 
 #include <stlibc/stlibc.h>
+#include <stlxgfx/stlxgfx.h>
 
 int main() {
+    // Wait for display manager to be ready
     struct timespec ts = { 5, 0 }; // 5 seconds
     nanosleep(&ts, NULL);
-    printf("[SHELL] Starting...\n");
     
-    // === SHARED MEMORY PING-PONG TEST ===
-    printf("[SHELL] Starting shared memory ping-pong test...\n");
-    
-    // Open the shared memory region created by stlxdm
-    shm_handle_t shm_handle = stlx_shm_open("ping_pong_test");
-    if (shm_handle == 0) {
-        printf("[SHELL] ERROR: Failed to open shared memory region\n");
+    // Initialize graphics library in application mode
+    printf("[SHELL] Initializing graphics library in application mode...\n");
+    stlxgfx_context_t* ctx = stlxgfx_init(STLXGFX_MODE_APPLICATION);
+    if (!ctx) {
+        printf("[SHELL] ERROR: Failed to initialize graphics library\n");
         return 1;
     }
-    printf("[SHELL] Opened shared memory region with handle: %lu\n", shm_handle);
     
-    // Map the shared memory
-    void* shm_ptr = stlx_shm_map(shm_handle, SHM_MAP_READ | SHM_MAP_WRITE);
-    if (shm_ptr == NULL) {
-        printf("[SHELL] ERROR: Failed to map shared memory\n");
-        return 1;
-    }
-    printf("[SHELL] Mapped shared memory at address: 0x%lx\n", (uint64_t)shm_ptr);
-    
-    // Start the ping-pong test
-    uint32_t* counter = (uint32_t*)shm_ptr;
-    uint32_t last_value = 0;
-    int rounds = 0;
-    const int max_rounds = 10;
-    
-    printf("[SHELL] Starting ping-pong with initial value: %u\n", *counter);
-    
-    while (rounds < max_rounds) {
-        // Check if stlxdm initialized or updated the value
-        if (*counter != last_value) {
-            printf("[SHELL] Received: %u\n", *counter);
-            last_value = *counter;
-            
-            // Increment and write back
-            *counter = *counter + 1;
-            printf("[SHELL] Sent: %u\n", *counter);
-            last_value = *counter;
-            rounds++;
-            
-            // Small delay to make it easier to follow
-            struct timespec ts = { 0, 100 * 1000 * 1000 }; // 100ms
-            nanosleep(&ts, NULL);
-        } else {
-            // Small delay while waiting
-            struct timespec ts = { 0, 10 * 1000 * 1000 }; // 10ms
-            nanosleep(&ts, NULL);
-        }
-    }
-    
-    printf("[SHELL] Ping-pong test completed after %d rounds. Final value: %u\n", rounds, *counter);
-    
-    // Clean up shared memory
-    if (stlx_shm_unmap(shm_handle, shm_ptr) != 0) {
-        printf("[SHELL] ERROR: Failed to unmap shared memory\n");
-    }
-    
-    printf("[SHELL] Shared memory ping-pong test completed!\n");
+    printf("[SHELL] Graphics library initialized successfully\n");
 
-    struct timespec ts2 = { 2, 0 }; // 2 seconds
+    struct timespec ts2 = { 0, 2 * 1000 * 1000 }; // 2 ms
     nanosleep(&ts2, NULL);
-
-    printf("[SHELL] Starting Unix Domain Socket client test...\n");
-
-    int client_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (client_fd < 0) {
-        printf("[SHELL] ERROR: socket() failed: %d\n", errno);
+    
+    // Create a test window
+    printf("[SHELL] Creating window (800x600)...\n");
+    stlxgfx_window_t* window = stlxgfx_create_window(ctx, 460, 340);
+    if (!window) {
+        printf("[SHELL] ERROR: Failed to create window\n");
+        stlxgfx_cleanup(ctx);
         return 1;
     }
     
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, "/tmp/stlxdm.socket");
+    printf("[SHELL] Window created successfully!\n");
     
-    if (connect(client_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        printf("[SHELL] ERROR: connect() failed: %d\n", errno);
-        close(client_fd);
-        return 1;
+    // Test actual drawing functions on the surface
+    printf("[SHELL] Drawing to surface...\n");
+    
+    // Keep the window "alive" for demonstration
+    while (1) {
+        // Get the active drawing surface for this frame
+        stlxgfx_surface_t* surface = stlxgfx_get_active_surface(window);
+        if (!surface) {
+            printf("[SHELL] ERROR: Failed to get active surface for frame %d\n", 11-i);
+            break;
+        }
+        
+        printf("[SHELL] Drawing to surface %ux%u (frame %d)...\n", surface->width, surface->height, 11-i);
+        
+        // Clear surface with dark gray background
+        stlxgfx_clear_surface(surface, 0xFF202020);
+        
+        // Draw some test content
+        stlxgfx_draw_pixel(surface, 100, 100, 0xFFFFFFFF);  // White pixel
+        stlxgfx_fill_rect(surface, 50, 50, 200, 100, 0xFF0066CC);  // Blue rectangle
+        stlxgfx_fill_rect(surface, 300, 200, 150, 80, 0xFF00AA44);  // Green rectangle
+        
+        // Add some more visual elements for testing
+        stlxgfx_fill_rect(surface, 20, 20, 10, 10, 0xFFFF0000);    // Red square (top-left)
+        stlxgfx_fill_rect(surface, surface->width-30, 20, 10, 10, 0xFFFF0000);  // Red square (top-right)
+        stlxgfx_fill_rect(surface, 20, surface->height-30, 10, 10, 0xFFFF0000); // Red square (bottom-left)
+        stlxgfx_fill_rect(surface, surface->width-30, surface->height-30, 10, 10, 0xFFFF0000); // Red square (bottom-right)
+        
+        printf("[SHELL] Drawing completed, swapping buffers...\n");
+        
+        // Swap buffers to present the frame
+        int swap_result = stlxgfx_swap_buffers(window);
+        if (swap_result != 0) {
+            printf("[SHELL] WARNING: Buffer swap failed with code %d\n", swap_result);
+        }
+        nanosleep(&ts2, NULL);
     }
     
-    const char* message = "hello unix socket";
-    ssize_t bytes = write(client_fd, message, strlen(message));
+    // Clean up
+    printf("[SHELL] Cleaning up window and graphics context...\n");
+    stlxgfx_destroy_window(ctx, window);
+    stlxgfx_cleanup(ctx);
     
-    if (bytes < 0) {
-        printf("[SHELL] ERROR: write() failed: %d\n", errno);
-    }
-    
-    close(client_fd);
-    printf("[SHELL] Unix Domain Socket client test completed!\n");
-    
+    printf("[SHELL] Example window application completed successfully!\n");
     return 0;
 }
