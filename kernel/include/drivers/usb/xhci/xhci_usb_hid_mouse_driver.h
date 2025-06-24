@@ -19,7 +19,11 @@ private:
         uint16_t x_axis_size;
         uint16_t y_axis_offset;
         uint16_t y_axis_size;
+        uint16_t scroll_offset;
+        uint16_t scroll_size;
     } m_input_layout;
+    
+    uint32_t m_previous_button_state; // Track previous button state for press/release detection
 
     void _initialize_input_field(
         hid::hid_report_layout& layout, 
@@ -27,6 +31,8 @@ private:
         uint16_t& offset, uint16_t& size, 
         const char* field_name
     );
+    
+    void _emit_input_event(uint32_t event_type, uint32_t udata1, uint32_t udata2, int32_t sdata1, int32_t sdata2);
 };
 
 #endif // XHCI_USB_HID_MOUSE_DRIVER_H

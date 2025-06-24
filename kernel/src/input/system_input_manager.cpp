@@ -12,8 +12,7 @@ void system_input_manager::init() {
     m_input_queues = kstl::hashmap<uint32_t, input_queue*>();
 
     // Initialize default input queues
-    create_queue(INPUT_QUEUE_ID_KBD, 128);
-    create_queue(INPUT_QUEUE_ID_POINTER, 128);
+    create_queue(INPUT_QUEUE_ID_SYSTEM, 512);
 }
 
 bool system_input_manager::create_queue(uint32_t queue_id, size_t capacity) {
@@ -38,5 +37,13 @@ bool system_input_manager::push_event(uint32_t queue_id, const input_event_t& ev
         return false; // Queue does not exist
     }
     return queue->push_event(event);
-}   
+}
+
+/**
+ * @brief Gets the system input queue (ID: INPUT_QUEUE_ID_SYSTEM).
+ * @return Pointer to the system input queue, or nullptr if not found.
+ */
+input_queue* system_input_manager::get_system_input_queue() {
+    return m_input_queues[INPUT_QUEUE_ID_SYSTEM];
+}
 } // namespace input

@@ -45,8 +45,25 @@ int main() {
         stlxgfx_cleanup(gfx_ctx);
         return 1;
     }
+
+    // Initialize input manager (after compositor and server)
+    stlxdm_input_manager_t input_manager;
+    if (stlxdm_input_manager_init(&input_manager, &compositor, &server) != 0) {
+        printf("ERROR: Failed to initialize input manager\n");
+        stlxdm_server_cleanup(&server);
+        stlxdm_compositor_cleanup(&compositor);
+        stlxgfx_cleanup(gfx_ctx);
+        return 1;
+    }
     
     while (1) {
+        // === INPUT EVENT HANDLING ===
+        // Process input events using the input manager
+        int events_processed = stlxdm_input_manager_process_events(&input_manager);
+        if (events_processed < 0) {
+            printf("[STLXDM] Error processing input events\n");
+        }
+
         // === CLIENT CONNECTION HANDLING ===
         // Accept new client connections
         int new_connections = stlxdm_server_accept_new_connections(&server);
@@ -61,8 +78,12 @@ int main() {
         }
         
         // === RENDERING/COMPOSITION ===
-        // Compose the frame
-        if (stlxdm_compositor_compose(&compositor, &server) < 0) {
+        // Get cursor position from input manager
+        int32_t cursor_x = -1, cursor_y = -1;
+        stlxdm_input_manager_get_cursor_position(&input_manager, &cursor_x, &cursor_y);
+        
+        // Compose the frame with cursor
+        if (stlxdm_compositor_compose(&compositor, &server, cursor_x, cursor_y) < 0) {
             printf("[STLXDM] Error composing frame\n");
         }
         
@@ -70,12 +91,11 @@ int main() {
         if (stlxdm_compositor_present(&compositor) < 0) {
             printf("[STLXDM] Error presenting frame\n");
         }
-        
-        // Small delay to prevent busy-waiting
-        // struct timespec sleep_time = { 0, 4 * 1000 * 1000 }; // 4ms
-        // nanosleep(&sleep_time, NULL);
     }
         
+    // Clean up input manager
+    stlxdm_input_manager_cleanup(&input_manager);
+    
     // Clean up server
     stlxdm_server_cleanup(&server);
     

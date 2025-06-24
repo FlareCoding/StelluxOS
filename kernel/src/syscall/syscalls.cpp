@@ -64,6 +64,7 @@ void init_syscall_table() {
     REGISTER_SYSCALL(SYSCALL_SYS_ELEVATE, elevate);
     
     REGISTER_SYSCALL(SYSCALL_SYS_GRAPHICS_FRAMEBUFFER_OP, gfx_fb_op);
+    REGISTER_SYSCALL(SYSCALL_SYS_READ_INPUT_EVENT, read_input_evt);
 }
 
 EXTERN_C

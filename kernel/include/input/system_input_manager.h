@@ -49,6 +49,12 @@ public:
      */
     bool push_event(uint32_t queue_id, const input_event_t& event);
 
+    /**
+     * @brief Gets the system input queue (ID: INPUT_QUEUE_ID_SYSTEM).
+     * @return Pointer to the system input queue, or nullptr if not found.
+     */
+    input_queue* get_system_input_queue();
+
 private:
     kstl::hashmap<uint32_t, input_queue*> m_input_queues; // Stores input queues mapped by ID.
 };

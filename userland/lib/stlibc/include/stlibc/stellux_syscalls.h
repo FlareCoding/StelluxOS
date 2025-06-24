@@ -13,6 +13,7 @@
 #define SYS_SHM_MAP             712
 #define SYS_SHM_UNMAP           713
 #define SYS_ELEVATE             790
+#define SYS_READ_INPUT_EVENT    801
 
 // Error codes
 #ifndef ENOSYS

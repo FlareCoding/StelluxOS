@@ -2,7 +2,7 @@
 #define SYSCALL_H
 #include <types.h>
 
-#define ENOSYS          1   // Invalid system call number
+#define EPERM           1   // Operation not permitted
 #define ENOENT          2   // No such file or directory
 #define EIO             5   // I/O error
 #define EBADF           9   // Bad file descriptor
@@ -12,12 +12,14 @@
 #define EACCES          13  // Invalid access
 #define EFAULT          14  // Bad address
 #define EEXIST          17  // File exists
+#define ENODEV          19  // No such device
 #define EISDIR          21  // Is a directory
 #define EINVAL          22  // Invalid argument
 #define EMFILE          24  // Too many open files
 #define ENOTTY	        25  // Invalid tty
 #define ESPIPE          29  // Illegal seek
 #define EPIPE           32  // Broken pipe
+#define ENOSYS          38  // Invalid system call number
 #define EOPNOTSUPP      95  // Operation not supported on transport endpoint
 #define EADDRINUSE      98  // Address already in use
 #define EAFNOSUPPORT    102 // Address family not supported
@@ -63,7 +65,8 @@
 
 #define SYSCALL_SYS_ELEVATE             790
 
-#define SYSCALL_SYS_GRAPHICS_FRAMEBUFFER_OP 800
+#define SYSCALL_SYS_GRAPHICS_FRAMEBUFFER_OP     800
+#define SYSCALL_SYS_READ_INPUT_EVENT            801
 
 // Uncomment this if you want to see strace-style logs for every issued syscall
 // #define STELLUX_STRACE_ENABLED
