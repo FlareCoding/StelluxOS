@@ -11,6 +11,9 @@
 #include <sched/sched.h>
 #include <time/time.h>
 
+extern int64_t g_max_mouse_cursor_pos_x;
+extern int64_t g_max_mouse_cursor_pos_y;
+
 DECLARE_SYSCALL_HANDLER(gfx_fb_op) {
     uint64_t operation = arg1;
     
@@ -56,6 +59,11 @@ DECLARE_SYSCALL_HANDLER(gfx_fb_op) {
             SYSCALL_TRACE("0 [GET_INFO: %dx%d, pitch=%d, bpp=%d, size=%d]\n", 
                          user_info->width, user_info->height, user_info->pitch, 
                          user_info->bpp, user_info->size);
+
+            // Clamp the max values for the input subsystem
+            g_max_mouse_cursor_pos_x = user_info->width - 2;
+            g_max_mouse_cursor_pos_y = user_info->height - 2;
+
             return 0;
         }
         case GFX_OP_MAP_FRAMEBUFFER: {        

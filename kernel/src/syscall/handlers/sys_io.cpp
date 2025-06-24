@@ -6,6 +6,7 @@
 #include <core/klog.h>
 #include <net/unix_socket.h>
 #include <net/unix_socket_manager.h>
+#include <input/system_input_manager.h>
 
 DECLARE_SYSCALL_HANDLER(write) {
     int handle = static_cast<int>(arg1);
@@ -617,4 +618,66 @@ DECLARE_SYSCALL_HANDLER(ioctl) {
     default:
         return -ENOTTY; /* "not a terminal" */
     }
-} 
+}
+
+DECLARE_SYSCALL_HANDLER(read_input_evt) {
+    /* -----------------------------------------------------------------
+     *  Calling convention
+     *      arg1 = uint32_t      queue_id     (input queue identifier)
+     *      arg2 = int           blocking     (0 = non-blocking, 1 = blocking)
+     *      arg3 = input_event_t* events      (user pointer to event buffer)
+     *      arg4 = size_t        max_events   (maximum events to read)
+     * -----------------------------------------------------------------*/
+    
+    uint32_t queue_id = static_cast<uint32_t>(arg1);
+    int blocking = static_cast<int>(arg2);
+    input::input_event_t* events = reinterpret_cast<input::input_event_t*>(arg3);
+    size_t max_events = static_cast<size_t>(arg4);
+    
+    // Validate parameters
+    if (!events || max_events == 0) {
+        return -EINVAL;
+    }
+    
+    // Get the input queue
+    auto& input_mgr = input::system_input_manager::get();
+    input::input_queue* queue = (queue_id == INPUT_QUEUE_ID_SYSTEM) ?
+                                input_mgr.get_system_input_queue() :
+                                input_mgr.get_queue(queue_id);
+    if (!queue) {
+        return -ENODEV; // No such device
+    }
+    
+    size_t events_read = 0;
+    input::input_event_t event;
+    
+    if (blocking) {
+        // Blocking read - wait for at least one event
+        if (queue->wait_and_pop(event)) {
+            events[events_read] = event;
+            events_read++;
+            
+            // After getting the first event, read any additional available events (non-blocking)
+            while (events_read < max_events && queue->pop_event(event)) {
+                events[events_read] = event;
+                events_read++;
+            }
+        } else {
+            return -EIO; // Failed to read even with blocking
+        }
+    } else {
+        // Non-blocking read - get all available events up to max_events
+        while (events_read < max_events && queue->pop_event(event)) {
+            events[events_read] = event;
+            events_read++;
+        }
+        
+        // For non-blocking, returning 0 events is valid (no events available)
+    }
+    
+    SYSCALL_TRACE("read_input_evt(%u, %d, 0x%llx, %llu) = %llu\n", 
+                  queue_id, blocking, reinterpret_cast<uint64_t>(events), max_events, events_read);
+    
+    return static_cast<long>(events_read);
+}
+

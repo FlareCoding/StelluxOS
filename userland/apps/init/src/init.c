@@ -19,7 +19,7 @@ int main() {
     }
 
     // We don't need to wait for the display manager
-    proc_close(stlxdm_handle);
+    stlx_proc_close(stlxdm_handle);
 
     int shell_handle = launch_process("shell");
     if (shell_handle < 0) {
@@ -53,7 +53,7 @@ int launch_process(const char* process_name) {
         return -1;
     }
     
-    int handle = proc_create(full_path, PROC_NEW_ENV, PROC_ACCESS_ALL, PROC_HANDLE_NONE, NULL);
+    int handle = stlx_proc_create(full_path, PROC_NEW_ENV, PROC_ACCESS_ALL, PROC_HANDLE_NONE, NULL);
     if (handle < 0) {
         printf("[-] Failed to launch %s process (handle: %d)\n", process_name, handle);
         return -1;
@@ -75,7 +75,7 @@ int wait_for_process(int handle, const char* process_name) {
     }
     
     int exit_code = 0;
-    if (proc_wait(handle, &exit_code) != 0) {
+    if (stlx_proc_wait(handle, &exit_code) != 0) {
         printf("[-] Failed to wait for '%s' process\n", process_name);
         return -1;
     }

@@ -1,17 +1,6 @@
 #include <drivers/usb/xhci/xhci_usb_hid_kbd_driver.h>
 #include <serial/serial.h>
 
-// Global variables to track arrow key states
-bool g_arrow_up_pressed = false;
-bool g_arrow_down_pressed = false;
-bool g_arrow_left_pressed = false;
-bool g_arrow_right_pressed = false;
-
-static constexpr uint8_t KEY_UP = 0x52;
-static constexpr uint8_t KEY_DOWN = 0x51;
-static constexpr uint8_t KEY_LEFT = 0x50;
-static constexpr uint8_t KEY_RIGHT = 0x4F;
-
 // Max keys tracked in standard HID boot protocol
 constexpr size_t MAX_KEYS = 6;
 
@@ -58,27 +47,6 @@ void xhci_usb_hid_kbd_driver::on_device_init() {
 }
 
 void xhci_usb_hid_kbd_driver::on_device_event(uint8_t* data) {
-    bool new_arrow_up_pressed = false;
-    bool new_arrow_down_pressed = false;
-    bool new_arrow_left_pressed = false;
-    bool new_arrow_right_pressed = false;
-
-    for (int i = 2; i < 8; i++) { // Check the key press array
-        switch (data[i]) {
-            case KEY_UP:    new_arrow_up_pressed = true; break;
-            case KEY_DOWN:  new_arrow_down_pressed = true; break;
-            case KEY_LEFT:  new_arrow_left_pressed = true; break;
-            case KEY_RIGHT: new_arrow_right_pressed = true; break;
-            default: break;
-        }
-    }
-
-    // Update global states
-    g_arrow_up_pressed = new_arrow_up_pressed;
-    g_arrow_down_pressed = new_arrow_down_pressed;
-    g_arrow_left_pressed = new_arrow_left_pressed;
-    g_arrow_right_pressed = new_arrow_right_pressed;
-
     const uint8_t* current_keys = &data[2];
     uint8_t modifier_byte = data[0];
 
@@ -147,12 +115,20 @@ void xhci_usb_hid_kbd_driver::_process_input_report(
 void xhci_usb_hid_kbd_driver::_emit_key_event(
     uint8_t key, input::input_event_type type, uint32_t modifiers
 ) {
-    input::input_event_t evt{};
-    evt.id     = 0;
-    evt.type   = type;
-    evt.udata1 = modifiers;
-    evt.sdata1 = translate_hid_usage_to_ascii(key, modifiers);
+    int32_t sdata1 = (type == input::KBD_EVT_KEY_PRESSED) ?
+                    translate_hid_usage_to_ascii(key, modifiers) :
+                    0;
+                    
 
+    input::input_event_t event = {
+        .id = 0,  // Event ID (can be used for tracking)
+        .type = type,
+        .udata1 = static_cast<uint32_t>(key),   // keycode
+        .udata2 = modifiers,                    // modifiers (Ctrl, Alt, Shift, etc.)
+        .sdata1 = sdata1,                       // ASCII character / reserved
+        .sdata2 = 0                             // reserved
+    };
+    
     auto& input_manager = input::system_input_manager::get();
-    input_manager.push_event(INPUT_QUEUE_ID_KBD, evt);
+    input_manager.push_event(INPUT_QUEUE_ID_SYSTEM, event);
 }

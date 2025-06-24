@@ -70,7 +70,7 @@ void stlxdm_compositor_cleanup(stlxdm_compositor_t* compositor) {
     compositor->initialized = 0;
 }
 
-int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server) {
+int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server, int32_t cursor_x, int32_t cursor_y) {
     if (!compositor || !compositor->initialized) {
         return -1;
     }
@@ -138,6 +138,11 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server) {
         }
     }
     
+    // Render cursor if valid position provided
+    if (cursor_x >= 0 && cursor_y >= 0) {
+        stlxdm_compositor_draw_cursor(compositor, cursor_x, cursor_y);
+    }
+    
     return 0;
 }
 
@@ -170,4 +175,75 @@ stlxgfx_surface_t* stlxdm_compositor_get_surface(const stlxdm_compositor_t* comp
         return NULL;
     }
     return compositor->compositor_surface;
+}
+
+void stlxdm_compositor_draw_cursor(stlxdm_compositor_t* compositor, int32_t x, int32_t y) {
+    if (!compositor || !compositor->initialized || !compositor->compositor_surface) {
+        return;
+    }
+    
+    stlxgfx_surface_t* surface = compositor->compositor_surface;
+    
+    // Modern cursor design - sleek arrow with shadow
+    static const char* cursor_shape[16] = {
+        "X                 ",
+        "XX                ",
+        "X.X               ",
+        "X..X              ",
+        "X...X             ",
+        "X....X            ",
+        "X.....X           ",
+        "X......X          ",
+        "X.......X         ",
+        "X........X        ",
+        "X.........X       ",
+        "X..........X      ",
+        "X......XXXXXXX    ",
+        "X...XX            ",
+        "X..X              ",
+        "XX                "
+    };
+    
+    // Modern colors with subtle shadow
+    uint32_t outline = 0xFF000000;      // Black outline
+    uint32_t fill = 0xFFFFFFFF;         // White fill
+    uint32_t shadow = 0x80000000;       // Semi-transparent black shadow
+    
+    const int cursor_width = 18;
+    const int cursor_height = 16;
+    
+    // Check bounds
+    if (x < 0 || y < 0 || 
+        x + cursor_width >= (int32_t)surface->width || 
+        y + cursor_height >= (int32_t)surface->height) {
+        return;
+    }
+    
+    // First pass: Draw shadow (offset by 1 pixel down and right)
+    for (int row = 0; row < cursor_height; row++) {
+        for (int col = 0; col < cursor_width; col++) {
+            char pixel = cursor_shape[row][col];
+            if (pixel == 'X' || pixel == '.') {
+                int shadow_x = x + col + 1;
+                int shadow_y = y + row + 1;
+                if (shadow_x < (int32_t)surface->width && shadow_y < (int32_t)surface->height) {
+                    stlxgfx_draw_pixel(surface, shadow_x, shadow_y, shadow);
+                }
+            }
+        }
+    }
+    
+    // Second pass: Draw main cursor
+    for (int row = 0; row < cursor_height; row++) {
+        for (int col = 0; col < cursor_width; col++) {
+            char pixel = cursor_shape[row][col];
+            if (pixel == 'X') {
+                // Black outline
+                stlxgfx_draw_pixel(surface, x + col, y + row, outline);
+            } else if (pixel == '.') {
+                // White fill
+                stlxgfx_draw_pixel(surface, x + col, y + row, fill);
+            }
+        }
+    }
 }
