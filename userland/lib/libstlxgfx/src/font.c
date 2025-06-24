@@ -7,8 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
-int stlxgfx_dm_load_font(stlxgfx_context_t* ctx, const char* font_path) {
-    if (!ctx || !ctx->initialized || ctx->mode != STLXGFX_MODE_DISPLAY_MANAGER) {
+int stlxgfx_load_font(stlxgfx_context_t* ctx, const char* font_path) {
+    if (!ctx) {
         printf("STLXGFX: Font loading only available in Display Manager mode\n");
         return -1;
     }
@@ -116,7 +116,7 @@ int stlxgfx_dm_get_font_metrics(stlxgfx_context_t* ctx, stlxgfx_font_metrics_t* 
 }
 
 int stlxgfx_get_text_size(stlxgfx_context_t* ctx, const char* text, 
-                             int font_size, stlxgfx_text_size_t* size) {
+                            int font_size, stlxgfx_text_size_t* size) {
     if (!ctx || !ctx->initialized || ctx->mode != STLXGFX_MODE_DISPLAY_MANAGER) {
         return -1;
     }
@@ -141,4 +141,3 @@ int stlxgfx_get_text_size(stlxgfx_context_t* ctx, const char* text,
     
     return 0;
 }
-

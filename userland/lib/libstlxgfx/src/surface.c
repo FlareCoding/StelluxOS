@@ -140,9 +140,6 @@ stlxgfx_surface_t* stlxgfx_dm_create_surface(stlxgfx_context_t* ctx,
     // Clear pixel data to black
     memset(surface->pixels, 0, pixel_data_size);
     
-    printf("STLXGFX: Created surface %ux%u (%u BPP, pitch=%u, %zu bytes, aligned to %zu)\n",
-           width, height, bpp, pitch, pixel_data_size, aligned_size);
-    
     return surface;
 }
 
@@ -156,7 +153,6 @@ void stlxgfx_dm_destroy_surface(stlxgfx_context_t* ctx, stlxgfx_surface_t* surfa
         return;
     }
     
-    printf("STLXGFX: Destroying surface %ux%u\n", surface->width, surface->height);
     free(surface);
 }
 int stlxgfx_dm_create_shared_surface_set(stlxgfx_context_t* ctx,
@@ -246,9 +242,6 @@ int stlxgfx_dm_create_shared_surface_set(stlxgfx_context_t* ctx,
     *out_surface1 = surface1;
     *out_surface2 = surface2;
     
-    printf("STLXGFX: Created shared surface set %ux%u (%u BPP, pitch=%u, %zu bytes each, aligned to %zu)\n",
-           width, height, bpp, pitch, single_surface_size, aligned_surface_size);
-    
     return 0;
 }
 
@@ -267,14 +260,6 @@ int stlxgfx_dm_destroy_shared_surface_set(stlxgfx_context_t* ctx,
         return -1;
     }
     
-    // Log destruction info if we have valid surfaces
-    if (surface0 && surface1 && surface2) {
-        printf("STLXGFX: Destroying shared surface set %ux%u\n", 
-               surface0->width, surface0->height);
-    } else {
-        printf("STLXGFX: Destroying shared surface set (surfaces already unmapped)\n");
-    }
-    
     // Unmap shared memory (this invalidates surface pointers)
     if (surface0) {
         // Use surface0 as base address since it's at the start of the SHM region
@@ -290,7 +275,7 @@ int stlxgfx_dm_destroy_shared_surface_set(stlxgfx_context_t* ctx,
         return -1;
     }
     
-    printf("STLXGFX: Shared surface set destroyed successfully\n");
+    __unused surface1; __unused surface2;
     return 0;
 }
 
@@ -319,7 +304,6 @@ int stlxgfx_map_shared_surface_set(shm_handle_t shm_handle,
     stlxgfx_surface_t* surface0 = (stlxgfx_surface_t*)shm_memory;
     
     // Calculate size of first surface to find subsequent surfaces
-    uint8_t bpp = stlxgfx_get_bpp_for_format(surface0->format);
     size_t pixel_data_size = surface0->height * surface0->pitch;
     size_t single_surface_size = sizeof(stlxgfx_surface_t) + pixel_data_size;
     size_t aligned_surface_size = (single_surface_size + 15) & ~15;  // 16-byte align
@@ -343,9 +327,6 @@ int stlxgfx_map_shared_surface_set(shm_handle_t shm_handle,
     *out_surface1 = surface1;
     *out_surface2 = surface2;
     
-    printf("STLXGFX: Mapped shared surface set %ux%u (%u BPP, pitch=%u)\n",
-           surface0->width, surface0->height, bpp, surface0->pitch);
-    
     return 0;
 }
 
@@ -358,14 +339,6 @@ int stlxgfx_unmap_shared_surface_set(shm_handle_t shm_handle,
         return -1;
     }
     
-    // Log unmapping info if we have valid surfaces
-    if (surface0 && surface1 && surface2) {
-        printf("STLXGFX: Unmapping shared surface set %ux%u\n", 
-               surface0->width, surface0->height);
-    } else {
-        printf("STLXGFX: Unmapping shared surface set (surfaces already invalid)\n");
-    }
-    
     // Unmap shared memory using surface0 as base address
     if (surface0) {
         if (stlx_shm_unmap(shm_handle, surface0) != 0) {
@@ -373,8 +346,8 @@ int stlxgfx_unmap_shared_surface_set(shm_handle_t shm_handle,
             return -1;
         }
     }
-    
-    printf("STLXGFX: Shared surface set unmapped successfully\n");
+
+    __unused surface1; __unused surface2;
     return 0;
 }
 
@@ -435,9 +408,6 @@ int stlxgfx_dm_create_window_sync_shm(stlxgfx_context_t* ctx,
     *out_shm_handle = shm_handle;
     *out_sync = sync;
     
-    printf("STLXGFX: Created window sync SHM (%zu bytes, aligned to %zu)\n", 
-           sync_size, aligned_size);
-    
     return 0;
 }
 
@@ -454,8 +424,6 @@ int stlxgfx_dm_destroy_window_sync_shm(stlxgfx_context_t* ctx,
         return -1;
     }
     
-    printf("STLXGFX: Destroying window sync SHM\n");
-    
     // Unmap shared memory (this invalidates sync pointer)
     if (sync) {
         if (stlx_shm_unmap(shm_handle, sync) != 0) {
@@ -470,7 +438,6 @@ int stlxgfx_dm_destroy_window_sync_shm(stlxgfx_context_t* ctx,
         return -1;
     }
     
-    printf("STLXGFX: Window sync SHM destroyed successfully\n");
     return 0;
 }
 
@@ -506,9 +473,6 @@ int stlxgfx_map_window_sync_shm(shm_handle_t shm_handle,
     // Return sync pointer
     *out_sync = sync;
     
-    printf("STLXGFX: Mapped window sync SHM (visible=%d, focused=%d, close_req=%d)\n",
-           sync->window_visible, sync->window_focused, sync->close_requested);
-    
     return 0;
 }
 
@@ -519,8 +483,6 @@ int stlxgfx_unmap_window_sync_shm(shm_handle_t shm_handle,
         return -1;
     }
     
-    printf("STLXGFX: Unmapping window sync SHM\n");
-    
     // Unmap shared memory
     if (sync) {
         if (stlx_shm_unmap(shm_handle, sync) != 0) {
@@ -529,7 +491,6 @@ int stlxgfx_unmap_window_sync_shm(shm_handle_t shm_handle,
         }
     }
     
-    printf("STLXGFX: Window sync SHM unmapped successfully\n");
     return 0;
 }
 

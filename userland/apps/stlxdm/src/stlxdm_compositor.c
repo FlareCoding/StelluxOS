@@ -31,14 +31,6 @@ int stlxdm_compositor_init(stlxdm_compositor_t* compositor, stlxgfx_context_t* g
         return -1;
     }
     
-    // Load font for graphics context
-    const char* font_path = "/initrd/res/fonts/UbuntuMono-Regular.ttf";
-    if (stlxgfx_dm_load_font(gfx_ctx, font_path) != 0) {
-        printf("[STLXDM_COMPOSITOR] ERROR: Failed to load font\n");
-        stlxdm_unmap_framebuffer();
-        return -1;
-    }
-    
     // Create compositor surface matching framebuffer format
     compositor->compositor_surface = stlxgfx_dm_create_surface(
         gfx_ctx, 
@@ -55,13 +47,6 @@ int stlxdm_compositor_init(stlxdm_compositor_t* compositor, stlxgfx_context_t* g
     
     compositor->initialized = 1;
     
-    printf("[STLXDM_COMPOSITOR] Compositor initialized successfully!\n");
-    printf("[STLXDM_COMPOSITOR] Surface: %ux%u, pitch=%u, BPP=%u\n", 
-           compositor->compositor_surface->width, 
-           compositor->compositor_surface->height,
-           compositor->compositor_surface->pitch,
-           stlxgfx_get_bpp_for_format(compositor->compositor_surface->format));
-    
     return 0;
 }
 
@@ -69,8 +54,6 @@ void stlxdm_compositor_cleanup(stlxdm_compositor_t* compositor) {
     if (!compositor || !compositor->initialized) {
         return;
     }
-    
-    printf("[STLXDM_COMPOSITOR] Cleaning up compositor...\n");
     
     // Destroy the compositor surface
     if (compositor->compositor_surface && compositor->gfx_ctx) {
@@ -85,7 +68,6 @@ void stlxdm_compositor_cleanup(stlxdm_compositor_t* compositor) {
     }
     
     compositor->initialized = 0;
-    printf("[STLXDM_COMPOSITOR] Compositor cleanup complete\n");
 }
 
 int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server) {
@@ -98,7 +80,7 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server) {
     }
     
     // Clear the compositor surface with a dark background
-    stlxgfx_clear_surface(compositor->compositor_surface, 0xFF001122); // Dark blue-gray background
+    stlxgfx_clear_surface(compositor->compositor_surface, 0x100f10);
     
     // Fixed window position for now
     const int window_x = 140;
@@ -131,7 +113,6 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server) {
         // Check if window fits on screen
         if (window_x + window->width > compositor->compositor_surface->width ||
             window_y + window->height > compositor->compositor_surface->height) {
-            printf("[STLXDM_COMPOSITOR] Window %u too large for screen, skipping\n", window->window_id);
             if (sync_result > 0) {
                 stlxgfx_dm_finish_sync_window(window); // Clean up sync state if we started it
             }

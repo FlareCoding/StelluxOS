@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "stlxgfx/stlxgfx.h"
+#include "stlxgfx/font.h"
 
 // Define STB TrueType implementation before including context header
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -17,9 +18,6 @@ stlxgfx_context_t* stlxgfx_init(stlxgfx_mode_t mode) {
     memset(ctx, 0, sizeof(stlxgfx_context_t));
     ctx->mode = mode;
 
-    printf("STLXGFX: Initializing in %s mode\n", 
-           mode == STLXGFX_MODE_DISPLAY_MANAGER ? "Display Manager" : "Application");
-
     // Initialize socket communication channel
     if (stlxgfx_init_comm_channel(ctx) != 0) {
         printf("STLXGFX: Failed to initialize communication\n");
@@ -27,8 +25,15 @@ stlxgfx_context_t* stlxgfx_init(stlxgfx_mode_t mode) {
         return NULL;
     }
 
+    // Load default system font for both DM and applications
+    const char* font_path = "/initrd/res/fonts/UbuntuMono-Regular.ttf";
+    if (stlxgfx_load_font(ctx, font_path) != 0) {
+        printf("STLXGFX: Warning - Failed to load system font (%s)\n", font_path);
+        printf("STLXGFX: Text rendering will be unavailable\n");
+        // Continue initialization even if font loading fails
+    }
+
     ctx->initialized = 1;
-    printf("STLXGFX: Initialization complete\n");
 
     return ctx;
 }
@@ -36,8 +41,6 @@ stlxgfx_context_t* stlxgfx_init(stlxgfx_mode_t mode) {
 void stlxgfx_cleanup(stlxgfx_context_t* ctx) {
     if (!ctx) return;
 
-    printf("STLXGFX: Cleaning up context\n");
-    
     // Clean up socket communication channel
     stlxgfx_cleanup_comm_channel(ctx);
     

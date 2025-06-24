@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 199309L
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -7,8 +9,6 @@
 #include <stdint.h>
 #include <sys/socket.h>
 #include <sys/un.h>
-
-#define _POSIX_C_SOURCE 199309L
 #include <time.h>
 
 #include <stlibc/stlibc.h>
@@ -28,7 +28,7 @@ int main() {
     }
     
     // Create a test window
-    printf("[SHELL] Creating window (800x600)...\n");
+    printf("[SHELL] Creating window (460x340)...\n");
     stlxgfx_window_t* window = stlxgfx_create_window(ctx, 460, 340);
     if (!window) {
         printf("[SHELL] ERROR: Failed to create window\n");
@@ -46,9 +46,10 @@ int main() {
     int window_width = 460;
     int window_height = 340;
     
+    // Simple frame counter
     uint32_t frame_count = 0;
     
-    printf("[SHELL] Starting bouncing cube animation...\n");
+    printf("[SHELL] Starting bouncing cube animation with on-screen info...\n");
     
     // Keep the window "alive" with animation
     while (1) {
@@ -59,7 +60,7 @@ int main() {
             break;
         }
         
-        // Clear surface with dark blue background
+        // Clear surface with dark brown background
         stlxgfx_clear_surface(surface, 0xFF362616);
         
         // Update cube position
@@ -74,7 +75,7 @@ int main() {
             velocity_x = -3; // Move left
         }
         
-        // Draw the bouncing cube (bright green)
+        // Draw the bouncing cube (light gray)
         stlxgfx_fill_rect(surface, cube_x, cube_y, cube_size, cube_size, 0xFFA5A5A5);
         
         // Add some static elements for reference
@@ -86,6 +87,30 @@ int main() {
         // Add a center reference line
         stlxgfx_fill_rect(surface, window_width / 2 - 1, 0, 2, window_height, 0xFF444444);
         
+        // Increment frame counter
+        frame_count++;
+        
+        // Render animation info in top-left corner (below the red marker)
+        char pos_text[32];
+        snprintf(pos_text, sizeof(pos_text), "Position: %d", cube_x);
+        stlxgfx_render_text(ctx, surface, pos_text, 20, 50, 16, 0xFFFFFFFF); // White text, 16px font
+        
+        // Render velocity info
+        char vel_text[32];
+        snprintf(vel_text, sizeof(vel_text), "Velocity: %d", velocity_x);
+        stlxgfx_render_text(ctx, surface, vel_text, 20, 75, 14, 0xFFCCCCCC); // Light gray text, 14px font
+        
+        // Render frame count
+        char frame_text[32];
+        snprintf(frame_text, sizeof(frame_text), "Frame: %u", frame_count);
+        stlxgfx_render_text(ctx, surface, frame_text, 20, 100, 14, 0xFFCCCCCC); // Light gray text
+        
+        // Render status in top-right corner
+        const char* direction = (velocity_x > 0) ? "Right" : "Left";
+        char status_text[32];
+        snprintf(status_text, sizeof(status_text), "Moving: %s", direction);
+        stlxgfx_render_text(ctx, surface, status_text, window_width - 120, 50, 14, 0xFFAAFFAA); // Light green text
+        
         // Swap buffers to present the frame
         int swap_result = stlxgfx_swap_buffers(window);
         if (swap_result == -3) {
@@ -94,13 +119,6 @@ int main() {
         } else if (swap_result != 0) {
             printf("[SHELL] ERROR: Buffer swap failed with code %d\n", swap_result);
             break;
-        }
-        
-        frame_count++;
-        
-        // Print performance info every 500 frames
-        if (frame_count % 500 == 0) {
-            printf("[SHELL] Frame %u - Cube at X=%d, velocity=%d\n", frame_count, cube_x, velocity_x);
         }
         
         // Small delay to control animation speed (about 60 FPS)

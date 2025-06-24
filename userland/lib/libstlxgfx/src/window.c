@@ -31,8 +31,6 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
         return NULL;
     }
     
-    printf("STLXGFX: Creating window %ux%u\n", width, height);
-    
     // Prepare CREATE_WINDOW_REQUEST
     stlxgfx_message_header_t header = {
         .protocol_version = STLXGFX_PROTOCOL_VERSION,
@@ -54,8 +52,6 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
         return NULL;
     }
     
-    printf("STLXGFX: Sent CREATE_WINDOW_REQUEST (seq=%u)\n", header.sequence_number);
-    
     // Wait for response
     stlxgfx_message_header_t response_header;
     stlxgfx_create_window_response_t response;
@@ -64,9 +60,6 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
         printf("STLXGFX: Failed to receive CREATE_WINDOW_RESPONSE\n");
         return NULL;
     }
-    
-    printf("STLXGFX: Received response type=%u, seq=%u\n", 
-           response_header.message_type, response_header.sequence_number);
     
     // Validate response
     if (response_header.message_type == STLXGFX_MSG_ERROR_RESPONSE) {
@@ -90,9 +83,6 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
         printf("STLXGFX: Window creation failed: %d\n", response.result_code);
         return NULL;
     }
-    
-    printf("STLXGFX: Window created successfully! ID=%u, sync_shm=%lu, surface_shm=%lu\n", 
-           response.window_id, response.sync_shm_handle, response.surface_shm_handle);
     
     // Validate that we received valid SHM handles
     if (response.sync_shm_handle == 0 || response.surface_shm_handle == 0) {
@@ -144,10 +134,6 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
     
     window->initialized = 1;
     
-    printf("STLXGFX: Window %ux%u mapped successfully (back_buf=%u, front_buf=%u, ready_buf=%u, visible=%u)\n",
-           width, height, sync_data->back_buffer_index, sync_data->front_buffer_index, 
-           sync_data->ready_buffer_index, sync_data->window_visible);
-    
     return window;
 }
 
@@ -155,8 +141,6 @@ void stlxgfx_destroy_window(stlxgfx_context_t* ctx, stlxgfx_window_t* window) {
     if (!ctx || !window) {
         return;
     }
-    
-    printf("STLXGFX: Destroying window ID=%u\n", window->window_id);
     
     // Clean up shared memory mappings if they exist
     if (window->initialized) {
@@ -233,11 +217,8 @@ int stlxgfx_swap_buffers(stlxgfx_window_t* window) {
         return -1;
     }
     
-    printf("STLXGFX: Starting non-blocking buffer swap for window ID=%u\n", window->window_id);
-    
     // Check if there's already a swap pending - if so, we can't swap yet
     if (window->sync_data->swap_pending) {
-        printf("STLXGFX: Swap already pending, cannot swap yet (window ID=%u)\n", window->window_id);
         return -3; // Swap pending error - app should retry later or drop frame
     }
     
@@ -257,16 +238,10 @@ int stlxgfx_swap_buffers(stlxgfx_window_t* window) {
     if (window->sync_data->dm_consuming && next_back == window->sync_data->front_buffer_index) {
         // DM is consuming our preferred next buffer, use the other free buffer
         next_back = (next_back + 1) % 3;
-        printf("STLXGFX: DM consuming preferred buffer, using buffer %u instead\n", next_back);
     }
     
     // Update to the new back buffer
     window->sync_data->back_buffer_index = next_back;
-    
-    printf("STLXGFX: Non-blocking swap complete - ready_buf=%u, new_back_buf=%u, front_buf=%u\n", 
-           window->sync_data->ready_buffer_index, window->sync_data->back_buffer_index, window->sync_data->front_buffer_index);
-    
-    printf("STLXGFX: App can immediately start drawing to buffer %u\n", next_back);
     
     return 0; // Success - app can immediately start drawing next frame
 }
@@ -299,15 +274,10 @@ int stlxgfx_dm_sync_window(stlxgfx_window_t* window) {
         // Clear the swap flags
         window->sync_data->frame_ready = 0;
         window->sync_data->swap_pending = 0;
-        
-        printf("STLXGFX_DM: Swapped buffer %u to front for window ID=%u\n", 
-               window->sync_data->front_buffer_index, window->window_id);
     }
     
     // Always return 1 to composite the current front buffer
     // In triple buffering, we always have a valid front buffer to display
-    printf("STLXGFX_DM: Compositing window ID=%u from front buffer %u\n", 
-           window->window_id, window->sync_data->front_buffer_index);
     
     // Signal that DM is consuming the front buffer
     window->sync_data->dm_consuming = 1;
@@ -322,8 +292,6 @@ int stlxgfx_dm_finish_sync_window(stlxgfx_window_t* window) {
     
     // Signal that DM has finished consuming the frame
     window->sync_data->dm_consuming = 0;
-    
-    printf("STLXGFX_DM: Finished frame consumption for window ID=%u\n", window->window_id);
     
     return 0;
 }

@@ -58,7 +58,6 @@ static int stlxgfx_setup_server_socket(stlxgfx_context_t* ctx) {
         return -1;
     }
     
-    printf("STLXGFX: Display manager listening on %s (non-blocking)\n", STLXGFX_DM_SOCKET_PATH);
     return 0;
 }
 
@@ -82,7 +81,6 @@ static int stlxgfx_connect_to_server(stlxgfx_context_t* ctx) {
         return -1;
     }
     
-    printf("STLXGFX: Connected to display manager\n");
     ctx->connected_to_dm = 1;
     return 0;
 }
@@ -192,7 +190,6 @@ int stlxgfx_try_accept(int server_fd) {
         return -2;
     }
     
-    printf("STLXGFX: New client connected (fd=%d)\n", client_fd);
     return client_fd;
 }
 
