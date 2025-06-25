@@ -7,6 +7,9 @@
 #include <stlxgfx/internal/stlxgfx_protocol.h>
 #include <stlibc/ipc/shm.h>
 
+#define WINDOW_TITLE_BAR_HEIGHT     32
+#define WINDOW_BORDER_WIDTH         1
+
 typedef struct stlxgfx_context stlxgfx_context_t;
 
 // Window structure (shared between DM and applications)
@@ -14,6 +17,8 @@ struct stlxgfx_window {
     // Window properties
     uint32_t window_id;
     uint32_t width, height;
+    int32_t posx, posy;
+    char title[256];
     stlxgfx_pixel_format_t format;
     
     // Shared memory handles (same across processes)
@@ -38,9 +43,13 @@ typedef struct stlxgfx_window stlxgfx_window_t;
  * @param ctx - graphics context (must be in APPLICATION mode)
  * @param width - window width in pixels
  * @param height - window height in pixels
+ * @param posx - window X position in pixels
+ * @param posy - window Y position in pixels
+ * @param title - window title (can be NULL for no title)
  * @return window handle or NULL on error
  */
-stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, uint32_t height);
+stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, uint32_t height, 
+                                       int32_t posx, int32_t posy, const char* title);
 
 /**
  * Destroy a window

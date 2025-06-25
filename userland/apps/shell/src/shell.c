@@ -28,8 +28,8 @@ int main() {
     }
     
     // Create a test window
-    printf("[SHELL] Creating window (460x340)...\n");
-    stlxgfx_window_t* window = stlxgfx_create_window(ctx, 460, 340);
+    printf("[SHELL] Creating window (460x340) at position (200, 150) with title...\n");
+    stlxgfx_window_t* window = stlxgfx_create_window(ctx, 460, 340, 200, 150, "Demo App");
     if (!window) {
         printf("[SHELL] ERROR: Failed to create window\n");
         stlxgfx_cleanup(ctx);

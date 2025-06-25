@@ -30,7 +30,10 @@ typedef struct {
 typedef struct {
     uint32_t width;
     uint32_t height;
-    uint32_t reserved[2];  // For future extensions
+    int32_t posx;
+    int32_t posy;
+    uint32_t title_length;
+    char title[256];
 } __attribute__((packed)) stlxgfx_create_window_request_t;
 
 // Create window response payload
