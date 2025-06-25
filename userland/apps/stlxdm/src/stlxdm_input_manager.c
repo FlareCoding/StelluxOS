@@ -221,65 +221,16 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
             uint32_t button = event->udata1;
             uint32_t current_time = _get_current_time_ms();
             
-            // Find window under cursor
+            // Find window under cursor and focus it immediately on press
             stlxdm_client_info_t* clicked_window = 
                 stlxdm_input_manager_find_window_at_position(input_mgr, 
                                                            input_mgr->cursor_x, 
                                                            input_mgr->cursor_y);
             
             if (clicked_window && clicked_window->window) {
-                // Hit test the window to determine which region was clicked
-                window_region_t region = stlxdm_hit_test_window(clicked_window->window, 
-                                                               input_mgr->cursor_x, 
-                                                               input_mgr->cursor_y);
-                
-                // Debug: Show window bounds
-                printf("[STLXDM_INPUT] DEBUG: Window %u at (%d,%d) size %dx%d, click at (%d,%d)\n",
-                       clicked_window->window->window_id,
-                       clicked_window->window->posx, clicked_window->window->posy,
-                       clicked_window->window->width, clicked_window->window->height,
-                       input_mgr->cursor_x, input_mgr->cursor_y);
-                
-                // Focus the window regardless of where it was clicked
+                // Focus the window immediately on button press
                 if (clicked_window != input_mgr->focused_client) {
                     stlxdm_input_manager_set_focus(input_mgr, clicked_window);
-                }
-                
-                // Handle different regions
-                switch (region) {
-                    case WINDOW_REGION_CLOSE_BUTTON:
-                        printf("[STLXDM_INPUT] Close button clicked for window %u (stub - would close window)\n", 
-                               clicked_window->window->window_id);
-                        break;
-                        
-                    case WINDOW_REGION_TITLE_BAR:
-                        printf("[STLXDM_INPUT] Title bar clicked for window %u - focusing window\n", 
-                               clicked_window->window->window_id);
-                        break;
-                        
-                    case WINDOW_REGION_BORDER:
-                        printf("[STLXDM_INPUT] Border clicked for window %u - focusing window\n", 
-                               clicked_window->window->window_id);
-                        break;
-                        
-                    case WINDOW_REGION_CLIENT_AREA: {
-                        // Calculate client-relative coordinates
-                        int32_t rel_x = input_mgr->cursor_x - clicked_window->window->posx;
-                        int32_t rel_y = input_mgr->cursor_y - clicked_window->window->posy;
-                        
-                        printf("[STLXDM_INPUT] Client area clicked for window %u - focusing window, would propagate event to app (coords: %d, %d)\n", 
-                               clicked_window->window->window_id, rel_x, rel_y);
-                        
-                        // Route client area events to the application
-                        _route_event_to_focused_window(input_mgr, event);
-                        break;
-                    }
-                    
-                    case WINDOW_REGION_NONE:
-                    default:
-                        printf("[STLXDM_INPUT] Unknown region clicked for window %u\n", 
-                               clicked_window->window->window_id);
-                        break;
                 }
             } else {
                 // Clicked outside any window - clear focus
@@ -305,6 +256,64 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
         
         case POINTER_EVT_MOUSE_BTN_RELEASED: {
             uint32_t button = event->udata1;
+            
+            // Find window under cursor for click actions
+            stlxdm_client_info_t* clicked_window = 
+                stlxdm_input_manager_find_window_at_position(input_mgr, 
+                                                           input_mgr->cursor_x, 
+                                                           input_mgr->cursor_y);
+            
+            if (clicked_window && clicked_window->window) {
+                // Hit test the window to determine which region was clicked
+                window_region_t region = stlxdm_hit_test_window(clicked_window->window, 
+                                                               input_mgr->cursor_x, 
+                                                               input_mgr->cursor_y);
+                
+                // Debug: Show window bounds
+                printf("[STLXDM_INPUT] DEBUG: Window %u at (%d,%d) size %dx%d, click at (%d,%d)\n",
+                       clicked_window->window->window_id,
+                       clicked_window->window->posx, clicked_window->window->posy,
+                       clicked_window->window->width, clicked_window->window->height,
+                       input_mgr->cursor_x, input_mgr->cursor_y);
+                
+                // Handle different regions (click actions happen on release)
+                switch (region) {
+                    case WINDOW_REGION_CLOSE_BUTTON:
+                        printf("[STLXDM_INPUT] Close button clicked for window %u (stub - would close window)\n", 
+                               clicked_window->window->window_id);
+                        break;
+                        
+                    case WINDOW_REGION_TITLE_BAR:
+                        printf("[STLXDM_INPUT] Title bar clicked for window %u\n", 
+                               clicked_window->window->window_id);
+                        break;
+                        
+                    case WINDOW_REGION_BORDER:
+                        printf("[STLXDM_INPUT] Border clicked for window %u\n", 
+                               clicked_window->window->window_id);
+                        break;
+                        
+                    case WINDOW_REGION_CLIENT_AREA: {
+                        // Calculate client-relative coordinates
+                        int32_t rel_x = input_mgr->cursor_x - clicked_window->window->posx;
+                        int32_t rel_y = input_mgr->cursor_y - clicked_window->window->posy;
+                        
+                        printf("[STLXDM_INPUT] Client area clicked for window %u - would propagate event to app (coords: %d, %d)\n", 
+                               clicked_window->window->window_id, rel_x, rel_y);
+                        
+                        // Route client area events to the application
+                        _route_event_to_focused_window(input_mgr, event);
+                        break;
+                    }
+                    
+                    case WINDOW_REGION_NONE:
+                    default:
+                        printf("[STLXDM_INPUT] Unknown region clicked for window %u\n", 
+                               clicked_window->window->window_id);
+                        break;
+                }
+            }
+            
             printf("[STLXDM_INPUT] Mouse button %u released at (%d,%d)\n", 
                    button, input_mgr->cursor_x, input_mgr->cursor_y);
             break;
@@ -357,7 +366,7 @@ static stlxdm_global_shortcut_t _check_global_shortcuts(stlxdm_input_manager_t* 
     bool ctrl = input_mgr->modifiers.ctrl_left || input_mgr->modifiers.ctrl_right;
     bool alt = input_mgr->modifiers.alt_left || input_mgr->modifiers.alt_right;
     bool shift = input_mgr->modifiers.shift_left || input_mgr->modifiers.shift_right;
-    
+
     // Check various global shortcut combinations
     if (ctrl && alt) {
         if (keycode == 0x29) { // Escape key
@@ -367,13 +376,13 @@ static stlxdm_global_shortcut_t _check_global_shortcuts(stlxdm_input_manager_t* 
             return STLXDM_SHORTCUT_CTRL_ALT_T;
         }
     }
-    
+
     if (alt && !ctrl && !shift) {
         if (keycode == 0x2B) { // Tab key
             return STLXDM_SHORTCUT_ALT_TAB;
         }
     }
-    
+
     return STLXDM_SHORTCUT_NONE;
 }
 
@@ -386,14 +395,14 @@ static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, con
         }
         return 0;
     }
-    
+
     // Here you would send the event to the focused window via IPC
     // For now, just log it
     if (event->type != POINTER_EVT_MOUSE_MOVED) {
         printf("[STLXDM_INPUT] Routing event type %u to window %u\n", 
            event->type, input_mgr->focused_window_id);
     }
-    
+
     return 0;
 }
 
@@ -401,10 +410,10 @@ int stlxdm_input_manager_set_focus(stlxdm_input_manager_t* input_mgr, stlxdm_cli
     if (!input_mgr || !input_mgr->initialized) {
         return -1;
     }
-    
+
     stlxdm_client_info_t* old_client = input_mgr->focused_client;
     uint32_t old_window_id = input_mgr->focused_window_id;
-    
+
     if (client) {
         input_mgr->focused_client = client;
         input_mgr->focused_window_id = client->window ? client->window->window_id : 0;
@@ -412,12 +421,12 @@ int stlxdm_input_manager_set_focus(stlxdm_input_manager_t* input_mgr, stlxdm_cli
         input_mgr->focused_client = NULL;
         input_mgr->focused_window_id = 0;
     }
-    
+
     if (old_client != client) {
         input_mgr->stats.focus_changes++;
         printf("[STLXDM_INPUT] Focus changed: %u -> %u\n", old_window_id, input_mgr->focused_window_id);
     }
-    
+
     return 0;
 }
 
