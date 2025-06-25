@@ -102,7 +102,7 @@ asm_common_isr_entry:
 
     # Get the top of the current system stack
     this_cpu_read rax, current_system_stack
-    sub rax, 0x40
+    sub rax, 0x48   # Need 72 bytes (9 * 8) for: r15, rax, intno, error, rip, cs, rflags, rsp, ss
 
     # Copy pushed r15
     mov r15, [rsp + 0x00]

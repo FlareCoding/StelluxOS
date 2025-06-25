@@ -25,6 +25,7 @@ int stlxdm_server_init(stlxdm_server_t* server, stlxgfx_context_t* gfx_ctx, stlx
         server->clients[i].state = STLXDM_CLIENT_DISCONNECTED;
         server->clients[i].client_id = 0;
         server->clients[i].window = NULL;
+        server->clients[i].receive_buffer = NULL;
     }
     
     return 0;
@@ -39,6 +40,12 @@ void stlxdm_server_cleanup(stlxdm_server_t* server) {
     for (int i = 0; i < STLXDM_MAX_CLIENTS; i++) {
         if (server->clients[i].state != STLXDM_CLIENT_DISCONNECTED) {
             stlxdm_server_disconnect_client(server, i);
+        }
+
+        // Free the receive buffer if it was allocated
+        if (server->clients[i].receive_buffer) {
+            free(server->clients[i].receive_buffer);
+            server->clients[i].receive_buffer = NULL;
         }
     }
 }
@@ -70,10 +77,21 @@ int stlxdm_server_accept_new_connections(stlxdm_server_t* server) {
                 server->clients[slot].state = STLXDM_CLIENT_CONNECTED;
                 server->clients[slot].client_id = server->next_client_id++;
                 server->clients[slot].window = NULL;
+                
+                // Allocate receive buffer for this client
+                server->clients[slot].receive_buffer = malloc(STLXGFX_MAX_PAYLOAD_SIZE);
+                if (!server->clients[slot].receive_buffer) {
+                    printf("[STLXDM_SERVER] ERROR: Failed to allocate receive buffer for client %u\n", server->clients[slot].client_id);
+                    // Clean up the connection
+                    close(new_client_fd);
+                    server->clients[slot].socket_fd = -1;
+                    server->clients[slot].state = STLXDM_CLIENT_DISCONNECTED;
+                    server->clients[slot].client_id = 0;
+                    break;
+                }
+                
                 server->client_count++;
                 new_connections++;
-                
-
             } else {
                 // No slots available, close the connection
                 printf("[STLXDM_SERVER] WARNING: No client slots available, closing connection\n");
@@ -241,9 +259,9 @@ int stlxdm_server_handle_client_requests(stlxdm_server_t* server) {
         stlxdm_client_info_t* client = &server->clients[i];
         
         stlxgfx_message_header_t header;
-        uint8_t payload_buffer[256];
         
-        int result = stlxgfx_try_receive(client->socket_fd, &header, payload_buffer, sizeof(payload_buffer));
+        // Use the pre-allocated per-client receive buffer
+        int result = stlxgfx_try_receive(client->socket_fd, &header, client->receive_buffer, STLXGFX_MAX_PAYLOAD_SIZE);
         
         if (result == 0) {
             // Message received, dispatch to appropriate handler
@@ -251,7 +269,7 @@ int stlxdm_server_handle_client_requests(stlxdm_server_t* server) {
                    stlxdm_server_get_message_type_name(header.message_type),
                    header.message_type, client->client_id, i);
             
-            if (stlxdm_server_dispatch_message(server, client, &header, payload_buffer) < 0) {
+            if (stlxdm_server_dispatch_message(server, client, &header, client->receive_buffer) < 0) {
                 printf("[STLXDM_SERVER] Failed to handle message from client %u\n", client->client_id);
             }
         } else if (result == -2) {
@@ -323,6 +341,12 @@ int stlxdm_server_disconnect_client(stlxdm_server_t* server, int client_index) {
     client->state = STLXDM_CLIENT_DISCONNECTED;
     client->client_id = 0;
     client->window = NULL;
+    
+    // Free the receive buffer
+    if (client->receive_buffer) {
+        free(client->receive_buffer);
+        client->receive_buffer = NULL;
+    }
     
     // Decrease client count
     server->client_count--;

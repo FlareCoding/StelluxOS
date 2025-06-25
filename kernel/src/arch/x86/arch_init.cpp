@@ -17,7 +17,7 @@
 #include <process/process.h>
 #include <process/process_env.h>
 
-uint8_t g_default_bsp_system_stack[PAGE_SIZE];
+uint8_t g_default_bsp_system_stack[PAGE_SIZE * 4];
 
 namespace arch {
 __PRIVILEGED_CODE
@@ -56,6 +56,7 @@ void arch_init() {
     bsp_idle_core->state = process_state::RUNNING;
     bsp_idle_core->hw_state.cpu = BSP_CPU_ID;
     bsp_idle_core->hw_state.elevated = 1;
+    bsp_idle_core->stacks.task_stack_top = bsp_system_stack_top;
     bsp_idle_core->stacks.system_stack_top = bsp_system_stack_top;
 
     // Create the BSP's idle process

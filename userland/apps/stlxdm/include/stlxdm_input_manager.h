@@ -125,6 +125,13 @@ int stlxdm_input_manager_get_cursor_position(const stlxdm_input_manager_t* input
                                             int32_t* x, int32_t* y);
 
 /**
+ * @brief Get currently focused window ID
+ * @param input_mgr Input manager context
+ * @return Focused window ID (0 if no window is focused)
+ */
+uint32_t stlxdm_input_manager_get_focused_window_id(const stlxdm_input_manager_t* input_mgr);
+
+/**
  * @brief Set cursor position
  * @param input_mgr Input manager context
  * @param x New X position
@@ -182,3 +189,4 @@ void stlxdm_input_manager_mark_cursor_drawn(stlxdm_input_manager_t* input_mgr);
 const void* stlxdm_input_manager_get_stats(const stlxdm_input_manager_t* input_mgr);
 
 #endif // STLXDM_INPUT_MANAGER_H
+ 

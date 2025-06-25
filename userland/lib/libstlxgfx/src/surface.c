@@ -684,6 +684,74 @@ int stlxgfx_draw_rounded_rect(stlxgfx_surface_t* surface, uint32_t x, uint32_t y
     return 0;
 }
 
+static unsigned char* get_cached_char_bitmap(stlxgfx_context_t* ctx, int codepoint, 
+                                            uint32_t font_size, int* width, int* height, 
+                                            int* xoff, int* yoff) {
+    // Only cache printable ASCII characters (including space character 32)
+    if (codepoint <= 31 || codepoint >= 32 + STLXGFX_CHAR_CACHE_SIZE) {
+        // printf("CACHE: Character %d out of range\n", codepoint);
+        return NULL;
+    }
+    
+    int cache_index = codepoint - 32;
+    stlxgfx_char_cache_t* cache_entry = &ctx->char_cache[cache_index];
+    
+    // Check if we need to invalidate cache due to font size change
+    if (ctx->cached_font_size != font_size) {
+        // printf("CACHE: Font size changed from %u to %u, clearing cache\n", ctx->cached_font_size, font_size);
+        // Clear entire cache when font size changes
+        for (int i = 0; i < STLXGFX_CHAR_CACHE_SIZE; i++) {
+            if (ctx->char_cache[i].bitmap) {
+                free(ctx->char_cache[i].bitmap);
+                ctx->char_cache[i].bitmap = NULL;
+            }
+            ctx->char_cache[i].valid = 0;
+        }
+        ctx->cached_font_size = font_size;
+    }
+    
+    // Check if bitmap is already cached
+    if (cache_entry->valid && cache_entry->font_size == font_size) {
+        // printf("CACHE: Hit for character '%c' (%d)\n", codepoint, codepoint);
+        *width = cache_entry->width;
+        *height = cache_entry->height;
+        *xoff = cache_entry->xoff;
+        *yoff = cache_entry->yoff;
+        return cache_entry->bitmap;
+    }
+    
+    // printf("CACHE: Miss for character '%c' (%d), generating bitmap\n", codepoint, codepoint);
+    
+    // Generate new bitmap and cache it
+    float scale = stbtt_ScaleForPixelHeight(&ctx->font_info, font_size);
+    unsigned char* bitmap = stbtt_GetCodepointBitmap(&ctx->font_info, scale, scale, codepoint, 
+                                                   width, height, xoff, yoff);
+    
+    if (bitmap && *width > 0 && *height > 0) {
+        // Allocate persistent storage for the bitmap
+        size_t bitmap_size = (*width) * (*height);
+        cache_entry->bitmap = malloc(bitmap_size);
+        if (cache_entry->bitmap) {
+            memcpy(cache_entry->bitmap, bitmap, bitmap_size);
+            cache_entry->width = *width;
+            cache_entry->height = *height;
+            cache_entry->xoff = *xoff;
+            cache_entry->yoff = *yoff;
+            cache_entry->font_size = font_size;
+            cache_entry->valid = 1;
+            // printf("CACHE: Cached character '%c' (%d), size %dx%d\n", codepoint, codepoint, *width, *height);
+        }
+        
+        // Free the STB allocated bitmap
+        stbtt_FreeBitmap(bitmap, NULL);
+        
+        // Return our cached copy
+        return cache_entry->bitmap;
+    }
+    
+    return NULL;
+}
+
 int stlxgfx_render_text(stlxgfx_context_t* ctx, stlxgfx_surface_t* surface,
                         const char* text, uint32_t x, uint32_t y, 
                         uint32_t font_size, uint32_t color) {
@@ -705,10 +773,18 @@ int stlxgfx_render_text(stlxgfx_context_t* ctx, stlxgfx_surface_t* surface,
         int advance, lsb;
         stbtt_GetCodepointHMetrics(&ctx->font_info, codepoint, &advance, &lsb);
         
-        // Get character bitmap
+        // Try to get cached bitmap first
         int char_width, char_height, xoff, yoff;
-        unsigned char* bitmap = stbtt_GetCodepointBitmap(&ctx->font_info, scale, scale, codepoint, 
+        unsigned char* bitmap = get_cached_char_bitmap(ctx, codepoint, font_size, 
                                                        &char_width, &char_height, &xoff, &yoff);
+        
+        // If not cached, fall back to direct generation (for non-ASCII chars)
+        int should_free_bitmap = 0;
+        if (!bitmap) {
+            bitmap = stbtt_GetCodepointBitmap(&ctx->font_info, scale, scale, codepoint, 
+                                           &char_width, &char_height, &xoff, &yoff);
+            should_free_bitmap = 1;
+        }
         
         if (bitmap && char_width > 0 && char_height > 0) {
             // Draw character to surface
@@ -737,7 +813,10 @@ int stlxgfx_render_text(stlxgfx_context_t* ctx, stlxgfx_surface_t* surface,
                 }
             }
             
+            // Only free if this was a direct STB allocation (not cached)
+            if (should_free_bitmap) {
             stbtt_FreeBitmap(bitmap, NULL);
+            }
         }
         
         // Advance to next character

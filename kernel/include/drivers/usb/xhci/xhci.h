@@ -263,6 +263,7 @@ private:
     kstl::vector<xhci_port_status_change_trb_t*> m_port_status_change_events;
     kstl::vector<xhci_command_completion_trb_t*> m_command_completion_events;
     kstl::vector<xhci_transfer_completion_trb_t*> m_transfer_completion_events;
+    kstl::vector<xhci_trb_t*> m_events_buffer; // Preallocated buffer for IRQ events
 
     volatile uint8_t m_command_irq_completed = 0;
     volatile uint8_t m_transfer_irq_completed = 0;

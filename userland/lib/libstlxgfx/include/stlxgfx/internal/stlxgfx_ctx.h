@@ -12,6 +12,18 @@
 
 #define STLXGFX_PAGE_SIZE 0x1000
 
+// Character bitmap cache for text rendering optimization
+#define STLXGFX_CHAR_CACHE_SIZE 128  // Cache first 128 ASCII characters
+typedef struct {
+    unsigned char* bitmap;
+    int width;
+    int height;
+    int xoff;
+    int yoff;
+    uint32_t font_size;  // Font size this bitmap was generated for
+    int valid;           // Whether this cache entry is valid
+} stlxgfx_char_cache_t;
+
 // Internal context structure definition
 struct stlxgfx_context {
     stlxgfx_mode_t mode;
@@ -22,6 +34,10 @@ struct stlxgfx_context {
     size_t font_data_size;
     stbtt_fontinfo font_info;
     int font_loaded;
+    
+    // Character bitmap cache
+    stlxgfx_char_cache_t char_cache[STLXGFX_CHAR_CACHE_SIZE];
+    uint32_t cached_font_size;  // Font size currently cached
     
     // Socket communication
     int socket_fd;

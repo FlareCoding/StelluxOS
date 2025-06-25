@@ -5,6 +5,7 @@
 #include <memory/memory.h>
 #include <core/klog.h>
 #include <sched/sched.h>
+#include <process/vma.h>
 
 #define MAX_IRQS 64
 
@@ -249,9 +250,15 @@ void common_isr_entry(ptregs regs) {
     int original_elevate_status = current->get_core()->hw_state.elevated;
     process* original_task = current;
 
+    // Memory barrier to prevent compiler reordering
+    memory_barrier();
+
     // Fake out being elevated if needed because the code has to
     // be able to tell if it's running in privileged mode or not.
     original_task->get_core()->hw_state.elevated = 1;
+
+    // Memory barrier after privilege elevation
+    memory_barrier();
 
     // Check whether the interrupt is an IRQ or a trap/exception
     if (regs.intno >= IRQ0) {
@@ -260,8 +267,14 @@ void common_isr_entry(ptregs regs) {
         common_exc_entry(&regs);
     }
 
+    // Memory barrier before privilege restoration
+   memory_barrier();
+
     // Restore the original elevate status
     original_task->get_core()->hw_state.elevated = original_elevate_status;
+
+    // Final memory barrier
+    memory_barrier();
 }
 
 __PRIVILEGED_CODE
@@ -446,7 +459,17 @@ bool is_valid_address(void* addr) {
     constexpr uint64_t upper_bound = 0xFFFFFFFFFFFF;
 
     uint64_t address = (uint64_t)addr;
-    return (address >= lower_bound && address <= upper_bound);
+    bool valid_range = (address >= lower_bound && address <= upper_bound);
+
+    if (!valid_range) {
+        return false;
+    }
+
+    if (paging::get_physical_address((void*)addr, paging::get_pml4()) == 0) {
+        return false;
+    }
+
+    return true;
 }
 
 void print_backtrace(ptregs* regs) {
@@ -462,13 +485,13 @@ void print_backtrace(ptregs* regs) {
     while (rbp) {
         // Validate that the pointer is in a reasonable range
         if (!is_valid_address(rbp)) {
-            kprint(" [Invalid RBP: 0x%llx]\n", (uint64_t)rbp);
             break;
         }
 
         uint64_t next_rip = *(rbp + 1); // Next instruction pointer (return address)
-        if (next_rip == 0x0)
+        if (!is_valid_address((void*)next_rip)) {
             break;
+        }
 
         kprint(" -> 0x%llx\n", next_rip);
 
@@ -517,7 +540,6 @@ void panic(ptregs* regs) {
         arch::x86::g_cpu_exception_strings[regs->intno], regs->error);
     kprint("  CPU: %i\n", current->get_core()->hw_state.cpu);
     kprint("  Thread Name: '%s'\n", current->get_core()->identity.name);
-    kprint("  Privilege: %s\n", current->get_core()->hw_state.elevated ? "elevated" : "lowered");
 
     // Control registers
     uint64_t cr0, cr2, cr3, cr4;
@@ -529,6 +551,10 @@ void panic(ptregs* regs) {
     kprint("\nControl Registers:\n");
     kprint("  CR0: 0x%016llx   CR2: 0x%016llx\n", cr0, cr2);
     kprint("  CR3: 0x%016llx   CR4: 0x%016llx\n", cr3, cr4);
+    kprint("\n");
+
+    process_core* core = current->get_core();
+    dbg_print_vma_regions(&core->mm_ctx, core->identity.name);
 
     // Final separator
     kprint("============================================================\n");
