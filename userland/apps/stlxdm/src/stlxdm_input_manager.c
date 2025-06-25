@@ -1,8 +1,8 @@
+#define _POSIX_C_SOURCE 199309L
 #include "stlxdm_input_manager.h"
+#include "stlxdm_compositor.h"
 #include <stdio.h>
 #include <string.h>
-
-#define _POSIX_C_SOURCE 199309L
 #include <time.h>
 
 // Input grab types
@@ -221,24 +221,71 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
             uint32_t button = event->udata1;
             uint32_t current_time = _get_current_time_ms();
             
-            // Handle click-to-focus
-            if (input_mgr->config.enable_click_to_focus) {
-                stlxdm_client_info_t* clicked_window = 
-                    stlxdm_input_manager_find_window_at_position(input_mgr, 
+            // Find window under cursor
+            stlxdm_client_info_t* clicked_window = 
+                stlxdm_input_manager_find_window_at_position(input_mgr, 
+                                                           input_mgr->cursor_x, 
+                                                           input_mgr->cursor_y);
+            
+            if (clicked_window && clicked_window->window) {
+                // Hit test the window to determine which region was clicked
+                window_region_t region = stlxdm_hit_test_window(clicked_window->window, 
                                                                input_mgr->cursor_x, 
                                                                input_mgr->cursor_y);
                 
-                if (clicked_window) {
-                    // Clicked on a window - focus it if it's not already focused
-                    if (clicked_window != input_mgr->focused_client) {
-                        stlxdm_input_manager_set_focus(input_mgr, clicked_window);
+                // Debug: Show window bounds
+                printf("[STLXDM_INPUT] DEBUG: Window %u at (%d,%d) size %dx%d, click at (%d,%d)\n",
+                       clicked_window->window->window_id,
+                       clicked_window->window->posx, clicked_window->window->posy,
+                       clicked_window->window->width, clicked_window->window->height,
+                       input_mgr->cursor_x, input_mgr->cursor_y);
+                
+                // Focus the window regardless of where it was clicked
+                if (clicked_window != input_mgr->focused_client) {
+                    stlxdm_input_manager_set_focus(input_mgr, clicked_window);
+                }
+                
+                // Handle different regions
+                switch (region) {
+                    case WINDOW_REGION_CLOSE_BUTTON:
+                        printf("[STLXDM_INPUT] Close button clicked for window %u (stub - would close window)\n", 
+                               clicked_window->window->window_id);
+                        break;
+                        
+                    case WINDOW_REGION_TITLE_BAR:
+                        printf("[STLXDM_INPUT] Title bar clicked for window %u - focusing window\n", 
+                               clicked_window->window->window_id);
+                        break;
+                        
+                    case WINDOW_REGION_BORDER:
+                        printf("[STLXDM_INPUT] Border clicked for window %u - focusing window\n", 
+                               clicked_window->window->window_id);
+                        break;
+                        
+                    case WINDOW_REGION_CLIENT_AREA: {
+                        // Calculate client-relative coordinates
+                        int32_t rel_x = input_mgr->cursor_x - clicked_window->window->posx;
+                        int32_t rel_y = input_mgr->cursor_y - clicked_window->window->posy;
+                        
+                        printf("[STLXDM_INPUT] Client area clicked for window %u - focusing window, would propagate event to app (coords: %d, %d)\n", 
+                               clicked_window->window->window_id, rel_x, rel_y);
+                        
+                        // Route client area events to the application
+                        _route_event_to_focused_window(input_mgr, event);
+                        break;
                     }
-                } else {
-                    // Clicked outside any window - clear focus
-                    if (input_mgr->focused_client) {
-                        printf("[STLXDM_INPUT] Clicked outside window - clearing focus\n");
-                        stlxdm_input_manager_set_focus(input_mgr, NULL);
-                    }
+                    
+                    case WINDOW_REGION_NONE:
+                    default:
+                        printf("[STLXDM_INPUT] Unknown region clicked for window %u\n", 
+                               clicked_window->window->window_id);
+                        break;
+                }
+            } else {
+                // Clicked outside any window - clear focus
+                if (input_mgr->focused_client) {
+                    printf("[STLXDM_INPUT] Clicked outside window - clearing focus\n");
+                    stlxdm_input_manager_set_focus(input_mgr, NULL);
                 }
             }
             
@@ -247,15 +294,12 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
             if (button == input_mgr->last_clicked_button &&
                 (current_time - input_mgr->last_click_time_ms) < input_mgr->config.double_click_timeout_ms) {
                 is_double_click = true;
+                __unused is_double_click;
                 printf("[STLXDM_INPUT] Double-click detected (button %u)\n", button);
             }
             
             input_mgr->last_clicked_button = button;
             input_mgr->last_click_time_ms = current_time;
-            
-            printf("[STLXDM_INPUT] Mouse button %u pressed at (%d,%d)%s\n", 
-                   button, input_mgr->cursor_x, input_mgr->cursor_y, 
-                   is_double_click ? " [DOUBLE]" : "");
             break;
         }
         
@@ -274,12 +318,6 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
         default:
             // Not a mouse event - should not reach here
             return -1;
-    }
-    
-    // Route mouse events to focused window if appropriate
-    if (!input_mgr->input_grabbed || 
-        (input_mgr->grab_type & STLXDM_GRAB_MOUSE)) {
-        _route_event_to_focused_window(input_mgr, event);
     }
     
     return 0;
@@ -428,7 +466,7 @@ stlxdm_client_info_t* stlxdm_input_manager_find_window_at_position(
         return NULL;
     }
     
-    // Simple implementation - check all clients for window bounds
+    // Check all clients for window bounds (including decorations)
     for (int i = 0; i < STLXDM_MAX_CLIENTS; i++) {
         const stlxdm_client_info_t* client = &input_mgr->server->clients[i];
         
@@ -436,12 +474,14 @@ stlxdm_client_info_t* stlxdm_input_manager_find_window_at_position(
             continue;
         }
         
-        // For now, assume fixed window position (140, 140) as in compositor
-        int32_t window_x = 140;
-        int32_t window_y = 140;
+        // Calculate full window bounds including decorations
+        int32_t window_x = client->window->posx - WINDOW_BORDER_WIDTH;
+        int32_t window_y = client->window->posy - WINDOW_TITLE_BAR_HEIGHT - WINDOW_BORDER_WIDTH;
+        int32_t window_width = client->window->width + (2 * WINDOW_BORDER_WIDTH);
+        int32_t window_height = client->window->height + WINDOW_TITLE_BAR_HEIGHT + (2 * WINDOW_BORDER_WIDTH);
         
-        if (x >= window_x && x < window_x + (int32_t)client->window->width &&
-            y >= window_y && y < window_y + (int32_t)client->window->height) {
+        if (x >= window_x && x < window_x + window_width &&
+            y >= window_y && y < window_y + window_height) {
             return (stlxdm_client_info_t*)client;  // Cast away const for return
         }
     }

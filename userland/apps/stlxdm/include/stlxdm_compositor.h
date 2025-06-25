@@ -26,6 +26,15 @@ typedef struct {
     int initialized;
 } stlxdm_compositor_t;
 
+// Window region types for hit testing
+typedef enum {
+    WINDOW_REGION_NONE,
+    WINDOW_REGION_CLOSE_BUTTON,
+    WINDOW_REGION_TITLE_BAR,
+    WINDOW_REGION_BORDER,
+    WINDOW_REGION_CLIENT_AREA
+} window_region_t;
+
 /**
  * Initialize the compositor
  * @param compositor - compositor context to initialize
@@ -87,12 +96,22 @@ void stlxdm_compositor_draw_cursor(stlxdm_compositor_t* compositor, int32_t x, i
  * @param window_y - window Y position
  * @param window_width - window width
  * @param window_height - window height
- * @param window_id - window identifier for title display
  * @param is_focused - whether this window has focus
+ * @param title - window title to display
  */
 void stlxdm_compositor_draw_window_decorations(stlxdm_compositor_t* compositor, 
                                                int32_t window_x, int32_t window_y,
                                                uint32_t window_width, uint32_t window_height,
-                                               uint32_t window_id, int is_focused);
+                                               int is_focused,
+                                               const char* title);
+
+/**
+ * Hit test a window to determine which region was clicked
+ * @param window - target window
+ * @param click_x - screen X coordinate of click
+ * @param click_y - screen Y coordinate of click
+ * @return window region that was clicked
+ */
+window_region_t stlxdm_hit_test_window(stlxgfx_window_t* window, int32_t click_x, int32_t click_y);
 
 #endif // STLXDM_COMPOSITOR_H

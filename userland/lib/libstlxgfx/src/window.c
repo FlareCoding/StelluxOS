@@ -10,7 +10,8 @@
 #define _POSIX_C_SOURCE 199309L
 #include <time.h>
 
-stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, uint32_t height) {
+stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, uint32_t height, 
+                                       int32_t posx, int32_t posy, const char* title) {
     if (!ctx || !ctx->initialized) {
         printf("STLXGFX: Invalid context\n");
         return NULL;
@@ -43,8 +44,22 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
     stlxgfx_create_window_request_t request = {
         .width = width,
         .height = height,
-        .reserved = {0, 0}
+        .posx = posx,
+        .posy = posy,
+        .title_length = 0,
+        .title = {0}
     };
+    
+    // Handle title
+    if (title && title[0] != '\0') {
+        size_t title_len = strlen(title);
+        if (title_len >= sizeof(request.title)) {
+            title_len = sizeof(request.title) - 1; // Leave room for null terminator
+        }
+        memcpy(request.title, title, title_len);
+        request.title[title_len] = '\0';
+        request.title_length = title_len;
+    }
     
     // Send request to display manager
     if (stlxgfx_send_message(ctx->socket_fd, &header, &request) != 0) {
@@ -122,6 +137,14 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
     window->window_id = response.window_id;
     window->width = width;
     window->height = height;
+    window->posx = posx;
+    window->posy = posy;
+    if (request.title_length > 0) {
+        memcpy(window->title, request.title, request.title_length);
+        window->title[request.title_length] = '\0';
+    } else {
+        window->title[0] = '\0';
+    }
     window->format = (stlxgfx_pixel_format_t)response.surface_format;
     window->sync_shm_handle = response.sync_shm_handle;
     window->surface_shm_handle = response.surface_shm_handle;

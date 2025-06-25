@@ -5,6 +5,12 @@
 #include <stlxgfx/internal/stlxgfx_dm.h>
 #include <stlxgfx/window.h>
 
+// Window decoration constants
+#define WINDOW_CLOSE_BUTTON_SIZE    14
+#define WINDOW_CLOSE_BUTTON_MARGIN  9
+#define WINDOW_CLOSE_BUTTON_X_SIZE  6
+#define WINDOW_CLOSE_BUTTON_X_THICKNESS 1
+
 int stlxdm_compositor_init(stlxdm_compositor_t* compositor, stlxgfx_context_t* gfx_ctx) {
     if (!compositor || !gfx_ctx) {
         printf("[STLXDM_COMPOSITOR] ERROR: Invalid parameters for compositor init\n");
@@ -82,10 +88,6 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server, int
     // Clear the compositor surface with a dark background
     stlxgfx_clear_surface(compositor->compositor_surface, 0x100f10);
     
-    // Fixed window position for now
-    const int window_x = 140;
-    const int window_y = 140 + 32 + 1; // Add title bar height + border width
-    
     // Iterate through all connected clients and composite their windows
     for (int i = 0; i < STLXDM_MAX_CLIENTS; i++) {
         stlxdm_server_t* server_ptr = (stlxdm_server_t*)server;
@@ -110,6 +112,9 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server, int
             continue;
         }
         
+        const int window_x = window->posx;
+        const int window_y = window->posy;
+        
         // Check if window + decorations fit on screen
         const int decoration_width = 2;  // 2 * border_width (1 * 2)
         const int decoration_height = 34; // title_bar_height (32) + 2 * border_width (1 * 2)
@@ -121,11 +126,11 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server, int
             continue;
         }
         
-        // Blit the window surface to the compositor surface at fixed position
+        // Blit the window surface to the compositor surface at window's position
         // We always composite the DM surface, regardless of whether there's a new frame
         int blit_result = stlxgfx_blit_surface(
             dm_surface, 0, 0,                       // Source: DM surface
-            compositor->compositor_surface, window_x, window_y,  // Dest: fixed position
+            compositor->compositor_surface, window_x, window_y,  // Dest: window's position
             window->width, window->height           // Size: full window
         );
         
@@ -145,8 +150,8 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server, int
             compositor, 
             window_x, window_y, 
             window->width, window->height,
-            window->window_id, 
-            is_focused
+            is_focused,
+            window->title
         );
     }
     
@@ -263,18 +268,13 @@ void stlxdm_compositor_draw_cursor(stlxdm_compositor_t* compositor, int32_t x, i
 void stlxdm_compositor_draw_window_decorations(stlxdm_compositor_t* compositor, 
                                                int32_t window_x, int32_t window_y,
                                                uint32_t window_width, uint32_t window_height,
-                                               uint32_t window_id, int is_focused) {
+                                               int is_focused,
+                                               const char* title) {
     if (!compositor || !compositor->initialized || !compositor->compositor_surface) {
         return;
     }
     
     stlxgfx_surface_t* surface = compositor->compositor_surface;
-    
-    // Window decoration constants
-    const int title_bar_height = 32;   // Slightly taller for modern look
-    const int border_width = 1;        // Thinner borders for cleaner appearance
-    const int close_button_size = 14;  // Slightly smaller button
-    const int close_button_margin = 9; // (32 - 14) / 2 = 9 for centering
     
     // Modern dark color scheme
     uint32_t border_color = is_focused ? 0xFF2D2D30 : 0xFF1E1E1E;  // Dark gray borders
@@ -285,10 +285,10 @@ void stlxdm_compositor_draw_window_decorations(stlxdm_compositor_t* compositor,
     uint32_t close_button_x_color = 0xFFFFFFFF;  // White X
     
     // Calculate decoration bounds
-    int32_t deco_x = window_x - border_width;
-    int32_t deco_y = window_y - title_bar_height - border_width;
-    int32_t deco_width = window_width + (2 * border_width);
-    int32_t deco_height = window_height + title_bar_height + (2 * border_width);
+    int32_t deco_x = window_x - WINDOW_BORDER_WIDTH;
+    int32_t deco_y = window_y - WINDOW_TITLE_BAR_HEIGHT - WINDOW_BORDER_WIDTH;
+    int32_t deco_width = window_width + (2 * WINDOW_BORDER_WIDTH);
+    int32_t deco_height = window_height + WINDOW_TITLE_BAR_HEIGHT + (2 * WINDOW_BORDER_WIDTH);
     
     // Check bounds to prevent drawing outside screen
     if (deco_x < 0 || deco_y < 0 || 
@@ -299,66 +299,122 @@ void stlxdm_compositor_draw_window_decorations(stlxdm_compositor_t* compositor,
     
     // 1. Draw window border
     // Top border
-    stlxgfx_fill_rect(surface, deco_x, deco_y, deco_width, border_width, border_color);
+    stlxgfx_fill_rect(surface, deco_x, deco_y, deco_width, WINDOW_BORDER_WIDTH, border_color);
     // Bottom border  
-    stlxgfx_fill_rect(surface, deco_x, deco_y + deco_height - border_width, deco_width, border_width, border_color);
+    stlxgfx_fill_rect(surface, deco_x, deco_y + deco_height - WINDOW_BORDER_WIDTH, deco_width, WINDOW_BORDER_WIDTH, border_color);
     // Left border
-    stlxgfx_fill_rect(surface, deco_x, deco_y, border_width, deco_height, border_color);
+    stlxgfx_fill_rect(surface, deco_x, deco_y, WINDOW_BORDER_WIDTH, deco_height, border_color);
     // Right border
-    stlxgfx_fill_rect(surface, deco_x + deco_width - border_width, deco_y, border_width, deco_height, border_color);
+    stlxgfx_fill_rect(surface, deco_x + deco_width - WINDOW_BORDER_WIDTH, deco_y, WINDOW_BORDER_WIDTH, deco_height, border_color);
     
     // 2. Draw title bar
-    stlxgfx_fill_rect(surface, deco_x + border_width, deco_y + border_width, 
-                      deco_width - (2 * border_width), title_bar_height, title_bar_color);
+    stlxgfx_fill_rect(surface, deco_x + WINDOW_BORDER_WIDTH, deco_y + WINDOW_BORDER_WIDTH, 
+                      deco_width - (2 * WINDOW_BORDER_WIDTH), WINDOW_TITLE_BAR_HEIGHT, title_bar_color);
     
     // 3. Draw close button
-    int32_t close_x = deco_x + deco_width - border_width - close_button_margin - close_button_size;
-    int32_t close_y = deco_y + border_width + close_button_margin;
+    int32_t close_x = deco_x + deco_width - WINDOW_BORDER_WIDTH - WINDOW_CLOSE_BUTTON_MARGIN - WINDOW_CLOSE_BUTTON_SIZE;
+    int32_t close_y = deco_y + WINDOW_BORDER_WIDTH + WINDOW_CLOSE_BUTTON_MARGIN;
     
     // Close button background (modern dark with subtle red highlight)
-    stlxgfx_fill_rect(surface, close_x, close_y, close_button_size, close_button_size, is_focused ? close_button_hover : close_button_bg);
+    stlxgfx_fill_rect(surface, close_x, close_y, WINDOW_CLOSE_BUTTON_SIZE, WINDOW_CLOSE_BUTTON_SIZE, is_focused ? close_button_hover : close_button_bg);
     
     // Draw modern X in close button (clean lines)
-    const int x_thickness = 1;
-    const int x_size = 6;  // Smaller, more refined X
-    int32_t x_center_x = close_x + close_button_size / 2;
-    int32_t x_center_y = close_y + close_button_size / 2;
+    int32_t x_center_x = close_x + WINDOW_CLOSE_BUTTON_SIZE / 2;
+    int32_t x_center_y = close_y + WINDOW_CLOSE_BUTTON_SIZE / 2;
     
     // Diagonal line from top-left to bottom-right (thinner, more precise)
-    for (int i = 0; i < x_size; i++) {
+    for (int i = 0; i < WINDOW_CLOSE_BUTTON_X_SIZE; i++) {
         stlxgfx_fill_rect(surface, 
-                          x_center_x - x_size/2 + i, 
-                          x_center_y - x_size/2 + i, 
-                          x_thickness, x_thickness, close_button_x_color);
+                          x_center_x - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                          x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                          WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
         stlxgfx_fill_rect(surface, 
-                          x_center_x - x_size/2 + i + 1, 
-                          x_center_y - x_size/2 + i, 
-                          x_thickness, x_thickness, close_button_x_color);
+                          x_center_x - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i + 1, 
+                          x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                          WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
     }
     
     // Diagonal line from top-right to bottom-left
-    for (int i = 0; i < x_size; i++) {
+    for (int i = 0; i < WINDOW_CLOSE_BUTTON_X_SIZE; i++) {
         stlxgfx_fill_rect(surface, 
-                          x_center_x + x_size/2 - i, 
-                          x_center_y - x_size/2 + i, 
-                          x_thickness, x_thickness, close_button_x_color);
+                          x_center_x + WINDOW_CLOSE_BUTTON_X_SIZE/2 - i, 
+                          x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                          WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
         stlxgfx_fill_rect(surface, 
-                          x_center_x + x_size/2 - i - 1, 
-                          x_center_y - x_size/2 + i, 
-                          x_thickness, x_thickness, close_button_x_color);
+                          x_center_x + WINDOW_CLOSE_BUTTON_X_SIZE/2 - i - 1, 
+                          x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                          WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
     }
     
-    // 4. Draw window title (simple text - using window ID for now)
-    char title_text[32];
-    snprintf(title_text, sizeof(title_text), "Window %u", window_id);
+    // 4. Draw window title
+    const char* title_to_display = title && title[0] != '\0' ? title : "Untitled";
     
     // Calculate text position (left-aligned with some padding)
-    int32_t text_x = deco_x + border_width + 10;
-    int32_t text_y = deco_y + border_width + (title_bar_height / 2) - 8; // Center vertically
+    int32_t text_x = deco_x + WINDOW_BORDER_WIDTH + 10;
+    int32_t text_y = deco_y + WINDOW_BORDER_WIDTH + (WINDOW_TITLE_BAR_HEIGHT / 2) - 8; // Center vertically
     
     // Draw title text (if graphics context supports text rendering)
     if (compositor->gfx_ctx) {
-        stlxgfx_render_text(compositor->gfx_ctx, surface, title_text, 
+        stlxgfx_render_text(compositor->gfx_ctx, surface, title_to_display, 
                            text_x, text_y, 14, title_text_color);
     }
+}
+
+window_region_t stlxdm_hit_test_window(stlxgfx_window_t* window, int32_t click_x, int32_t click_y) {
+    if (!window || !window->initialized) {
+        return WINDOW_REGION_NONE;
+    }
+    
+    // Calculate decoration bounds
+    int32_t deco_x = window->posx - WINDOW_BORDER_WIDTH;
+    int32_t deco_y = window->posy - WINDOW_TITLE_BAR_HEIGHT - WINDOW_BORDER_WIDTH;
+    int32_t deco_width = window->width + (2 * WINDOW_BORDER_WIDTH);
+    int32_t deco_height = window->height + WINDOW_TITLE_BAR_HEIGHT + (2 * WINDOW_BORDER_WIDTH);
+    
+    // Check if click is within window bounds at all
+    if (click_x < deco_x || click_x >= deco_x + deco_width ||
+        click_y < deco_y || click_y >= deco_y + deco_height) {
+        return WINDOW_REGION_NONE;
+    }
+    
+    // Check close button first (highest priority)
+    int32_t close_x = deco_x + deco_width - WINDOW_BORDER_WIDTH - WINDOW_CLOSE_BUTTON_MARGIN - WINDOW_CLOSE_BUTTON_SIZE;
+    int32_t close_y = deco_y + WINDOW_BORDER_WIDTH + WINDOW_CLOSE_BUTTON_MARGIN;
+    
+    if (click_x >= close_x && click_x < close_x + WINDOW_CLOSE_BUTTON_SIZE &&
+        click_y >= close_y && click_y < close_y + WINDOW_CLOSE_BUTTON_SIZE) {
+        return WINDOW_REGION_CLOSE_BUTTON;
+    }
+    
+    // Check borders
+    // Top border
+    if (click_y >= deco_y && click_y < deco_y + WINDOW_BORDER_WIDTH) {
+        return WINDOW_REGION_BORDER;
+    }
+    // Bottom border
+    if (click_y >= deco_y + deco_height - WINDOW_BORDER_WIDTH && click_y < deco_y + deco_height) {
+        return WINDOW_REGION_BORDER;
+    }
+    // Left border
+    if (click_x >= deco_x && click_x < deco_x + WINDOW_BORDER_WIDTH) {
+        return WINDOW_REGION_BORDER;
+    }
+    // Right border
+    if (click_x >= deco_x + deco_width - WINDOW_BORDER_WIDTH && click_x < deco_x + deco_width) {
+        return WINDOW_REGION_BORDER;
+    }
+    
+    // Check title bar (after borders)
+    int32_t title_x = deco_x + WINDOW_BORDER_WIDTH;
+    int32_t title_y = deco_y + WINDOW_BORDER_WIDTH;
+    int32_t title_width = deco_width - (2 * WINDOW_BORDER_WIDTH);
+    int32_t title_height = WINDOW_TITLE_BAR_HEIGHT;
+    
+    if (click_x >= title_x && click_x < title_x + title_width &&
+        click_y >= title_y && click_y < title_y + title_height) {
+        return WINDOW_REGION_TITLE_BAR;
+    }
+    
+    // If we get here, it's the client area
+    return WINDOW_REGION_CLIENT_AREA;
 }

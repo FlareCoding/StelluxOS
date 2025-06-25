@@ -155,6 +155,13 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
         return -1;
     }
     
+    // Validate title length
+    if (req->title_length > 255) {
+        printf("[STLXDM_SERVER] Title too long: %u characters\n", req->title_length);
+        // TODO: Send error response
+        return -1;
+    }
+    
     // Get graphics context from server
     stlxgfx_context_t* gfx_ctx = server->gfx_ctx;
     
@@ -201,6 +208,14 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     window->window_id = client->client_id + 1000;  // Simple window ID based on client ID
     window->width = req->width;
     window->height = req->height;
+    window->posx = req->posx;
+    window->posy = req->posy;
+    if (req->title_length > 0) {
+        memcpy(window->title, req->title, req->title_length);
+        window->title[req->title_length] = '\0';
+    } else {
+        window->title[0] = '\0';
+    }
     window->format = surface_format;
     window->sync_shm_handle = sync_shm_handle;
     window->surface_shm_handle = surface_shm_handle;
