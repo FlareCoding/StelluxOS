@@ -244,7 +244,7 @@ DECLARE_SYSCALL_HANDLER(shm_unmap) {
         return -EINVAL; // Unmapping failed
     }
     
-    SYSCALL_TRACE("shm_unmap(%llu, 0x%llx) = 0\n", handle, virt_addr);
+    SYSCALL_TRACE("shm_unmap(%llu, 0x%llx) = 0\n", handle, addr);
     
     return 0;
 }

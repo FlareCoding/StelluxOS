@@ -21,6 +21,7 @@ typedef struct {
     stlxdm_client_state_t state;        // Connection state
     uint32_t client_id;                 // Unique client identifier
     stlxgfx_window_t* window;           // Client's window (NULL if no window created)
+    uint8_t* receive_buffer;            // Dynamically allocated receive buffer
 } stlxdm_client_info_t;
 
 // Display manager server context

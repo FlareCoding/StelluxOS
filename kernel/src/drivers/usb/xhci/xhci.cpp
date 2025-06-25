@@ -41,6 +41,20 @@ bool xhci_driver::init_device() {
     // Parse the extended capabilities
     _parse_extended_capability_registers();
 
+    // Preallocate vectors to prevent memory allocation during ISR
+    m_port_status_change_events.resize(256);
+    m_command_completion_events.resize(256);
+    m_transfer_completion_events.resize(256);
+    m_port_connection_events.resize(256);
+    m_events_buffer.resize(256);
+    
+    // Clear the vectors to start with empty state but keep the allocated capacity
+    m_port_status_change_events.clear();
+    m_command_completion_events.clear();
+    m_transfer_completion_events.clear();
+    m_port_connection_events.clear();
+    m_events_buffer.clear();
+
     // Create a table mapping each slot to a device object
     for (size_t i = 0; i < m_max_device_slots; i++) {
         if (i >= sizeof(m_connected_devices) / sizeof(xhci_device*)) {
@@ -531,18 +545,20 @@ xhci_transfer_completion_trb_t* xhci_driver::_start_control_endpoint_transfer(xh
 }
 
 void xhci_driver::_process_events() {
+    // Clear the preallocated events buffer
+    m_events_buffer.clear();
+    
     // Poll the event ring for the command completion event
-    kstl::vector<xhci_trb_t*> events;
     if (m_event_ring->has_unprocessed_events()) {
-        m_event_ring->dequeue_events(events);
+        m_event_ring->dequeue_events(m_events_buffer);
     }
 
     uint8_t port_change_event_status = 0;
     uint8_t command_completion_status = 0;
     uint8_t transfer_completion_status = 0;
 
-    for (size_t i = 0; i < events.size(); i++) {
-        xhci_trb_t* event = events[i];
+    for (size_t i = 0; i < m_events_buffer.size(); i++) {
+        xhci_trb_t* event = m_events_buffer[i];
         switch (event->trb_type) {
         case XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT: {
             port_change_event_status = 1;

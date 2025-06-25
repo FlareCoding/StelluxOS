@@ -413,6 +413,14 @@ int stlxdm_input_manager_set_cursor_position(stlxdm_input_manager_t* input_mgr, 
     return 0;
 }
 
+uint32_t stlxdm_input_manager_get_focused_window_id(const stlxdm_input_manager_t* input_mgr) {
+    if (!input_mgr || !input_mgr->initialized) {
+        return 0;
+    }
+    
+    return input_mgr->focused_window_id;
+}
+
 stlxdm_client_info_t* stlxdm_input_manager_find_window_at_position(
     const stlxdm_input_manager_t* input_mgr, int32_t x, int32_t y) {
     
@@ -489,3 +497,4 @@ static uint32_t _get_current_time_ms(void) {
     }
     return 0;
 }
+ 

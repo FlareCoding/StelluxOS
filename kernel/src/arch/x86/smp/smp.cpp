@@ -31,11 +31,11 @@
 #define IPI_STARTUP_DELAY  20
 #define IPI_RETRY_DELAY    100
 
-#define AP_TASK_STACK_PAGES   2
-#define AP_TASK_STACK_SIZE    0x2000 - 0x10
+#define AP_TASK_STACK_PAGES   6
+#define AP_TASK_STACK_SIZE    0x6000 - 0x10
 
-#define AP_SYSTEM_STACK_PAGES   2
-#define AP_SYSTEM_STACK_SIZE    0x2000 - 0x10
+#define AP_SYSTEM_STACK_PAGES   6
+#define AP_SYSTEM_STACK_SIZE    0x6000 - 0x10
 
 EXTERN_C __PRIVILEGED_CODE void asm_ap_startup();
 
@@ -81,6 +81,7 @@ void ap_startup_entry(uint64_t lapicid, uint64_t acpi_cpu_index) {
 
     // Initialize the AP's idle process core
     process_core* ap_idle_task_core = sched::get_idle_process_core(acpi_cpu_index);
+    ap_idle_task_core->stacks.task_stack_top = ap_system_stack_top;
     ap_idle_task_core->stacks.system_stack_top = ap_system_stack_top;
 
     // Create the AP's idle process

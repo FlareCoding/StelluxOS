@@ -11,12 +11,12 @@
 #include <sched/sched.h>
 #include <time/time.h>
 
-extern int64_t g_max_mouse_cursor_pos_x;
-extern int64_t g_max_mouse_cursor_pos_y;
+extern volatile int64_t g_max_mouse_cursor_pos_x;
+extern volatile int64_t g_max_mouse_cursor_pos_y;
 
 DECLARE_SYSCALL_HANDLER(gfx_fb_op) {
     uint64_t operation = arg1;
-    
+
     SYSCALL_TRACE("gfx_fb_op(%llu, 0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx) = ", 
                   operation, arg2, arg3, arg4, arg5, arg6);
     
@@ -26,7 +26,7 @@ DECLARE_SYSCALL_HANDLER(gfx_fb_op) {
         SYSCALL_TRACE("-ENOENT [graphics module not found]\n");
         return -ENOENT;
     }
-    
+
     modules::gfx_framebuffer_module* gfx_module = 
         static_cast<modules::gfx_framebuffer_module*>(base_module);
 
@@ -34,7 +34,7 @@ DECLARE_SYSCALL_HANDLER(gfx_fb_op) {
     while (--timeout && gfx_module->state() != modules::module_state::running) {
         sleep(1);
     }
-    
+
     if (gfx_module->state() != modules::module_state::running) {
         SYSCALL_TRACE("-ETIMEDOUT [graphics module not ready]\n");
         return -EIO;
