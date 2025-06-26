@@ -6,9 +6,14 @@
 #include "stlxgfx/internal/stlxgfx_ctx.h"
 #include "stlxgfx/internal/stlxgfx_comm.h"
 #include "stlxgfx/internal/stlxgfx_protocol.h"
+#include "stlxgfx/internal/stlxgfx_event_dm.h"
 
 #define _POSIX_C_SOURCE 199309L
 #include <time.h>
+
+// Forward declaration for internal event registration
+extern int stlxgfx_register_window_for_events(stlxgfx_window_t* window);
+extern int stlxgfx_unregister_window_from_events(stlxgfx_window_t* window);
 
 stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, uint32_t height, 
                                        int32_t posx, int32_t posy, const char* title) {
@@ -100,7 +105,7 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
     }
     
     // Validate that we received valid SHM handles
-    if (response.sync_shm_handle == 0 || response.surface_shm_handle == 0) {
+    if (response.sync_shm_handle == 0 || response.surface_shm_handle == 0 || response.event_shm_handle == 0) {
         printf("STLXGFX: Invalid SHM handles in response\n");
         return NULL;
     }
@@ -123,11 +128,23 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
         return NULL;
     }
     
+    // Map event ring buffer shared memory
+    stlxgfx_event_ring_t* event_ring;
+    if (stlxgfx_map_event_ring_shm(response.event_shm_handle, &event_ring) != 0) {
+        printf("STLXGFX: Failed to map event ring SHM\n");
+        // Clean up surface set mapping
+        stlxgfx_unmap_shared_surface_set(response.surface_shm_handle, surface0, surface1, surface2);
+        // Clean up sync mapping
+        stlxgfx_unmap_window_sync_shm(response.sync_shm_handle, sync_data);
+        return NULL;
+    }
+    
     // Create window structure
     stlxgfx_window_t* window = malloc(sizeof(stlxgfx_window_t));
     if (!window) {
         printf("STLXGFX: Failed to allocate window structure\n");
-        // Clean up mappings
+        // Clean up all mappings
+        stlxgfx_unmap_event_ring_shm(response.event_shm_handle, event_ring);
         stlxgfx_unmap_shared_surface_set(response.surface_shm_handle, surface0, surface1, surface2);
         stlxgfx_unmap_window_sync_shm(response.sync_shm_handle, sync_data);
         return NULL;
@@ -148,6 +165,7 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
     window->format = (stlxgfx_pixel_format_t)response.surface_format;
     window->sync_shm_handle = response.sync_shm_handle;
     window->surface_shm_handle = response.surface_shm_handle;
+    window->event_shm_handle = response.event_shm_handle;
     window->sync_data = sync_data;
     
     // Store surface pointers directly - triple buffering uses indices to determine which surface each side uses
@@ -155,7 +173,16 @@ stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, 
     window->surface1 = surface1;
     window->surface2 = surface2;
     
+    // Store event ring buffer pointer
+    window->event_ring = event_ring;
+    
     window->initialized = 1;
+    
+    // Register this window for event processing
+    if (stlxgfx_register_window_for_events(window) != 0) {
+        printf("STLXGFX: Warning - Failed to register window for event processing\n");
+        // Continue anyway - window creation succeeded
+    }
     
     return window;
 }
@@ -165,8 +192,16 @@ void stlxgfx_destroy_window(stlxgfx_context_t* ctx, stlxgfx_window_t* window) {
         return;
     }
     
+    // Unregister this window from event processing
+    stlxgfx_unregister_window_from_events(window);
+    
     // Clean up shared memory mappings if they exist
     if (window->initialized) {
+        // Clean up event ring buffer shared memory
+        if (window->event_shm_handle != 0 && window->event_ring) {
+            stlxgfx_unmap_event_ring_shm(window->event_shm_handle, window->event_ring);
+        }
+        
         if (window->surface_shm_handle != 0 && window->surface0) {
             stlxgfx_unmap_shared_surface_set(window->surface_shm_handle, 
                                              window->surface0, window->surface1, window->surface2);

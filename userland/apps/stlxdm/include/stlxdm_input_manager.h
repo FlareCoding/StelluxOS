@@ -8,7 +8,7 @@
 #include "stlxdm_server.h"
 
 // Trace/debug output control
-#define STLXDM_INPUT_TRACE_ENABLED 0  // Set to 0 to disable all input manager trace output
+#define STLXDM_INPUT_TRACE_ENABLED 1  // Set to 0 to disable all input manager trace output
 
 #if STLXDM_INPUT_TRACE_ENABLED
     #define STLXDM_INPUT_TRACE(fmt, ...) printf("[STLXDM_INPUT] " fmt "\n", ##__VA_ARGS__)

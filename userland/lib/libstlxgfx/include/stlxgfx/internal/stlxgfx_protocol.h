@@ -40,7 +40,8 @@ typedef struct {
 typedef struct {
     uint32_t window_id;
     uint64_t sync_shm_handle;     // Window sync shared memory handle
-    uint64_t surface_shm_handle;  // Surface pair shared memory handle
+    uint64_t surface_shm_handle;  // Surface set shared memory handle
+    uint64_t event_shm_handle;    // Event ring buffer shared memory handle
     uint32_t surface_format;
     uint32_t result_code;         // 0 = success, negative = error
 } __attribute__((packed)) stlxgfx_create_window_response_t;

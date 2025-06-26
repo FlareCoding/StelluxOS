@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stlxgfx/internal/stlxgfx_comm.h>
 #include <stlxgfx/internal/stlxgfx_protocol.h>
+#include <stlxgfx/internal/stlxgfx_event_dm.h>
 #include <stlxgfx/surface.h>
 
 int stlxdm_server_init(stlxdm_server_t* server, stlxgfx_context_t* gfx_ctx, stlxgfx_pixel_format_t format) {
@@ -194,11 +195,25 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
         return -1;
     }
     
+    // Create event ring buffer shared memory
+    shm_handle_t event_shm_handle;
+    stlxgfx_event_ring_t* event_ring;
+    
+    if (stlxgfx_dm_create_event_ring_shm(gfx_ctx, &event_shm_handle, &event_ring) != 0) {
+        printf("[STLXDM_SERVER] Failed to create event ring SHM\n");
+        // Clean up surface set SHM
+        stlxgfx_dm_destroy_shared_surface_set(gfx_ctx, surface_shm_handle, surface0, surface1, surface2);
+        // Clean up sync SHM
+        stlxgfx_dm_destroy_window_sync_shm(gfx_ctx, sync_shm_handle, sync_data);
+        return -1;
+    }
+    
     // Create and populate window structure
     stlxgfx_window_t* window = malloc(sizeof(stlxgfx_window_t));
     if (!window) {
         printf("[STLXDM_SERVER] Failed to allocate window structure\n");
-        // Clean up shared memory
+        // Clean up all shared memory
+        stlxgfx_dm_destroy_event_ring_shm(gfx_ctx, event_shm_handle, event_ring);
         stlxgfx_dm_destroy_shared_surface_set(gfx_ctx, surface_shm_handle, surface0, surface1, surface2);
         stlxgfx_dm_destroy_window_sync_shm(gfx_ctx, sync_shm_handle, sync_data);
         return -1;
@@ -219,16 +234,18 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     window->format = surface_format;
     window->sync_shm_handle = sync_shm_handle;
     window->surface_shm_handle = surface_shm_handle;
+    window->event_shm_handle = event_shm_handle;
     window->sync_data = sync_data;
     window->surface0 = surface0;
     window->surface1 = surface1;
     window->surface2 = surface2;
+    window->event_ring = event_ring;
     window->initialized = 1;
     
     // Store window in client info
     client->window = window;
     
-    // Send success response with both SHM handles
+    // Send success response with all three SHM handles
     stlxgfx_message_header_t response_header = {
         .protocol_version = STLXGFX_PROTOCOL_VERSION,
         .message_type = STLXGFX_MSG_CREATE_WINDOW_RESPONSE,
@@ -241,19 +258,21 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
         .window_id = window->window_id,
         .sync_shm_handle = sync_shm_handle,
         .surface_shm_handle = surface_shm_handle,
+        .event_shm_handle = event_shm_handle,
         .surface_format = surface_format,
         .result_code = STLXGFX_ERROR_SUCCESS
     };
     
     if (stlxgfx_send_message(client->socket_fd, &response_header, &response) == 0) {
-        printf("[STLXDM_SERVER] Created window ID=%u with sync_shm=%lu, surface_shm=%lu for client %u\n", 
-               window->window_id, sync_shm_handle, surface_shm_handle, client->client_id);
+        printf("[STLXDM_SERVER] Created window ID=%u with sync_shm=%lu, surface_shm=%lu, event_shm=%lu for client %u\n", 
+               window->window_id, sync_shm_handle, surface_shm_handle, event_shm_handle, client->client_id);
         return 0;
     } else {
         printf("[STLXDM_SERVER] Failed to send response to client %u\n", client->client_id);
         // Clean up everything on send failure
         client->window = NULL;
         free(window);
+        stlxgfx_dm_destroy_event_ring_shm(gfx_ctx, event_shm_handle, event_ring);
         stlxgfx_dm_destroy_shared_surface_set(gfx_ctx, surface_shm_handle, surface0, surface1, surface2);
         stlxgfx_dm_destroy_window_sync_shm(gfx_ctx, sync_shm_handle, sync_data);
         return -1;
@@ -329,6 +348,13 @@ int stlxdm_server_disconnect_client(stlxdm_server_t* server, int client_index) {
         
         // Properly destroy window with shared memory cleanup
         if (window->initialized) {
+            // Clean up event ring buffer shared memory
+            if (window->event_shm_handle != 0 && window->event_ring) {
+                stlxgfx_dm_destroy_event_ring_shm(server->gfx_ctx, 
+                                                  window->event_shm_handle, 
+                                                  window->event_ring);
+            }
+            
             // Clean up surface set shared memory
             if (window->surface_shm_handle != 0 && window->surface0) {
                 stlxgfx_dm_destroy_shared_surface_set(server->gfx_ctx, 
