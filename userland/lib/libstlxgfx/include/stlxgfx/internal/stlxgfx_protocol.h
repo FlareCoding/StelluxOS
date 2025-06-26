@@ -46,6 +46,17 @@ typedef struct {
     uint32_t result_code;         // 0 = success, negative = error
 } __attribute__((packed)) stlxgfx_create_window_response_t;
 
+// Destroy window request payload
+typedef struct {
+    uint32_t window_id;           // ID of window to destroy
+} __attribute__((packed)) stlxgfx_destroy_window_request_t;
+
+// Destroy window response payload
+typedef struct {
+    uint32_t window_id;           // ID of destroyed window (for confirmation)
+    uint32_t result_code;         // 0 = success, negative = error
+} __attribute__((packed)) stlxgfx_destroy_window_response_t;
+
 // Error response payload
 typedef struct {
     uint32_t error_code;

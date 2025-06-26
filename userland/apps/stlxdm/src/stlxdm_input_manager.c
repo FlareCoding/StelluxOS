@@ -366,8 +366,13 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                 // Handle different regions (click actions happen on release)
                 switch (region) {
                     case WINDOW_REGION_CLOSE_BUTTON:
-                        STLXDM_INPUT_TRACE("Close button clicked for window %u (stub - would close window)", 
+                        STLXDM_INPUT_TRACE("Close button clicked for window %u - requesting window close", 
                                clicked_window->window->window_id);
+                        // Set the close_requested flag in the window's sync data
+                        // This will be detected by the application via stlxgfx_is_window_opened()
+                        if (clicked_window->window->sync_data) {
+                            clicked_window->window->sync_data->close_requested = 1;
+                        }
                         break;
                         
                     case WINDOW_REGION_TITLE_BAR:
