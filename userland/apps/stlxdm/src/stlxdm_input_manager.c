@@ -17,12 +17,14 @@ static void _update_modifier_state(stlxdm_input_manager_t* input_mgr, uint32_t k
 static stlxdm_global_shortcut_t _check_global_shortcuts(stlxdm_input_manager_t* input_mgr, uint32_t keycode);
 static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event);
 static uint32_t _get_current_time_ms(void);
+static int _initiate_window_drag(stlxdm_input_manager_t* input_mgr, stlxdm_client_info_t* client, int32_t click_x, int32_t click_y);
+static int _terminate_window_drag(stlxdm_input_manager_t* input_mgr);
 
 int stlxdm_input_manager_init(stlxdm_input_manager_t* input_mgr, 
                              stlxdm_compositor_t* compositor,
                              stlxdm_server_t* server) {
     if (!input_mgr || !compositor || !server) {
-        printf("[STLXDM_INPUT] ERROR: Invalid parameters for input manager init\n");
+        STLXDM_INPUT_TRACE("ERROR: Invalid parameters for input manager init");
         return -1;
     }
     
@@ -67,13 +69,26 @@ int stlxdm_input_manager_init(stlxdm_input_manager_t* input_mgr,
     input_mgr->grab_window_id = 0;
     input_mgr->grab_type = 0;
     
+    // Initialize drag state
+    input_mgr->drag_state.is_dragging = false;
+    input_mgr->drag_state.drag_type = STLXDM_DRAG_TYPE_NONE;
+    input_mgr->drag_state.dragged_window_id = 0;
+    input_mgr->drag_state.dragged_client = NULL;
+    input_mgr->drag_state.drag_start_x = 0;
+    input_mgr->drag_state.drag_start_y = 0;
+    input_mgr->drag_state.window_start_x = 0;
+    input_mgr->drag_state.window_start_y = 0;
+    input_mgr->drag_state.drag_offset_x = 0;
+    input_mgr->drag_state.drag_offset_y = 0;
+    input_mgr->drag_state.drag_start_time_ms = 0;
+    
     // Initialize timing state
     input_mgr->last_click_time_ms = 0;
     input_mgr->last_clicked_button = 0;
     
     input_mgr->initialized = 1;
     
-    printf("[STLXDM_INPUT] Input manager initialized (cursor bounds: %dx%d)\n", 
+    STLXDM_INPUT_TRACE("Input manager initialized (cursor bounds: %dx%d)", 
            input_mgr->cursor_max_x + 1, input_mgr->cursor_max_y + 1);
     
     return 0;
@@ -84,7 +99,7 @@ void stlxdm_input_manager_cleanup(stlxdm_input_manager_t* input_mgr) {
         return;
     }
     
-    printf("[STLXDM_INPUT] Input manager cleanup (processed %lu events total)\n", 
+    STLXDM_INPUT_TRACE("Input manager cleanup (processed %lu events total)", 
            input_mgr->stats.total_events_processed);
     
     // Clear all state
@@ -100,7 +115,7 @@ int stlxdm_input_manager_process_events(stlxdm_input_manager_t* input_mgr) {
     long events_read = stlx_read_input_events(INPUT_QUEUE_ID_SYSTEM, 0, events, STLXDM_INPUT_MAX_EVENTS_PER_FRAME);
     
     if (events_read < 0) {
-        printf("[STLXDM_INPUT] Error reading input events: %ld\n", events_read);
+        STLXDM_INPUT_TRACE("Error reading input events: %ld", events_read);
         return -1;
     }
     
@@ -133,7 +148,7 @@ int stlxdm_input_manager_process_events(stlxdm_input_manager_t* input_mgr) {
                 break;
                 
             default:
-                printf("[STLXDM_INPUT] Unknown input event type: %u\n", event->type);
+                STLXDM_INPUT_TRACE("Unknown input event type: %u", event->type);
                 break;
         }
     }
@@ -157,15 +172,15 @@ static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const struc
             
             switch (shortcut) {
                 case STLXDM_SHORTCUT_CTRL_ALT_ESC:
-                    printf("[STLXDM_INPUT] Global shortcut: Force quit requested\n");
+                    STLXDM_INPUT_TRACE("Global shortcut: Force quit requested");
                     return 0;
                     
                 case STLXDM_SHORTCUT_ALT_TAB:
-                    printf("[STLXDM_INPUT] Global shortcut: Window switcher (not implemented)\n");
+                    STLXDM_INPUT_TRACE("Global shortcut: Window switcher (not implemented)");
                     return 0;
                     
                 case STLXDM_SHORTCUT_CTRL_ALT_T:
-                    printf("[STLXDM_INPUT] Global shortcut: Terminal (not implemented)\n");
+                    STLXDM_INPUT_TRACE("Global shortcut: Terminal (not implemented)");
                     return 0;
                     
                 default:
@@ -205,6 +220,39 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                 input_mgr->cursor_y = new_y;
                 input_mgr->cursor_needs_redraw = true;
                 
+                // Handle window dragging if active
+                if (input_mgr->drag_state.is_dragging && 
+                    input_mgr->drag_state.drag_type == STLXDM_DRAG_TYPE_MOVE &&
+                    input_mgr->drag_state.dragged_client && 
+                    input_mgr->drag_state.dragged_client->window) {
+                    
+                    // Calculate new window position based on cursor movement and drag offset
+                    int32_t new_window_x = new_x - input_mgr->drag_state.drag_offset_x;
+                    int32_t new_window_y = new_y - input_mgr->drag_state.drag_offset_y;
+                    
+                    // Apply boundary constraints
+                    if (new_window_x < -STLXDM_DRAG_BOUNDARY_MARGIN) {
+                        new_window_x = -STLXDM_DRAG_BOUNDARY_MARGIN;
+                    }
+                    if (new_window_y < -STLXDM_DRAG_BOUNDARY_MARGIN) {
+                        new_window_y = -STLXDM_DRAG_BOUNDARY_MARGIN;
+                    }
+                    if (new_window_x + (int32_t)input_mgr->drag_state.dragged_client->window->width > 
+                        input_mgr->cursor_max_x + STLXDM_DRAG_BOUNDARY_MARGIN) {
+                        new_window_x = input_mgr->cursor_max_x + STLXDM_DRAG_BOUNDARY_MARGIN - 
+                                      (int32_t)input_mgr->drag_state.dragged_client->window->width;
+                    }
+                    if (new_window_y + (int32_t)input_mgr->drag_state.dragged_client->window->height > 
+                        input_mgr->cursor_max_y + STLXDM_DRAG_BOUNDARY_MARGIN) {
+                        new_window_y = input_mgr->cursor_max_y + STLXDM_DRAG_BOUNDARY_MARGIN - 
+                                      (int32_t)input_mgr->drag_state.dragged_client->window->height;
+                    }
+                    
+                    // Update window position
+                    input_mgr->drag_state.dragged_client->window->posx = new_window_x;
+                    input_mgr->drag_state.dragged_client->window->posy = new_window_y;
+                }
+                
                 // Focus follows mouse if enabled
                 if (input_mgr->config.enable_focus_follows_mouse) {
                     stlxdm_client_info_t* window_under_cursor = 
@@ -232,10 +280,26 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                 if (clicked_window != input_mgr->focused_client) {
                     stlxdm_input_manager_set_focus(input_mgr, clicked_window);
                 }
+                
+                // Check for drag initiation (left mouse button on title bar)
+                if (button == 1) { // Left mouse button
+                    window_region_t region = stlxdm_hit_test_window(clicked_window->window, 
+                                                                   input_mgr->cursor_x, 
+                                                                   input_mgr->cursor_y);
+                    
+                    if (region == WINDOW_REGION_TITLE_BAR) {
+                        // Initiate window drag
+                        if (_initiate_window_drag(input_mgr, clicked_window, 
+                                                 input_mgr->cursor_x, input_mgr->cursor_y) == 0) {
+                            STLXDM_INPUT_TRACE("Drag initiated for window %u", 
+                                   clicked_window->window->window_id);
+                        }
+                    }
+                }
             } else {
                 // Clicked outside any window - clear focus
                 if (input_mgr->focused_client) {
-                    printf("[STLXDM_INPUT] Clicked outside window - clearing focus\n");
+                    STLXDM_INPUT_TRACE("Clicked outside window - clearing focus");
                     stlxdm_input_manager_set_focus(input_mgr, NULL);
                 }
             }
@@ -246,7 +310,7 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                 (current_time - input_mgr->last_click_time_ms) < input_mgr->config.double_click_timeout_ms) {
                 is_double_click = true;
                 __unused is_double_click;
-                printf("[STLXDM_INPUT] Double-click detected (button %u)\n", button);
+                STLXDM_INPUT_TRACE("Double-click detected (button %u)", button);
             }
             
             input_mgr->last_clicked_button = button;
@@ -256,6 +320,14 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
         
         case POINTER_EVT_MOUSE_BTN_RELEASED: {
             uint32_t button = event->udata1;
+            
+            // Handle drag termination (left mouse button release)
+            if (button == 1 && input_mgr->drag_state.is_dragging) {
+                STLXDM_INPUT_TRACE("Drag terminated for window %u", 
+                       input_mgr->drag_state.dragged_window_id);
+                _terminate_window_drag(input_mgr);
+                break; // Skip normal click handling when dragging
+            }
             
             // Find window under cursor for click actions
             stlxdm_client_info_t* clicked_window = 
@@ -270,7 +342,7 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                                                                input_mgr->cursor_y);
                 
                 // Debug: Show window bounds
-                printf("[STLXDM_INPUT] DEBUG: Window %u at (%d,%d) size %dx%d, click at (%d,%d)\n",
+                STLXDM_INPUT_TRACE("DEBUG: Window %u at (%d,%d) size %dx%d, click at (%d,%d)",
                        clicked_window->window->window_id,
                        clicked_window->window->posx, clicked_window->window->posy,
                        clicked_window->window->width, clicked_window->window->height,
@@ -279,17 +351,17 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                 // Handle different regions (click actions happen on release)
                 switch (region) {
                     case WINDOW_REGION_CLOSE_BUTTON:
-                        printf("[STLXDM_INPUT] Close button clicked for window %u (stub - would close window)\n", 
+                        STLXDM_INPUT_TRACE("Close button clicked for window %u (stub - would close window)", 
                                clicked_window->window->window_id);
                         break;
                         
                     case WINDOW_REGION_TITLE_BAR:
-                        printf("[STLXDM_INPUT] Title bar clicked for window %u\n", 
+                        STLXDM_INPUT_TRACE("Title bar clicked for window %u", 
                                clicked_window->window->window_id);
                         break;
                         
                     case WINDOW_REGION_BORDER:
-                        printf("[STLXDM_INPUT] Border clicked for window %u\n", 
+                        STLXDM_INPUT_TRACE("Border clicked for window %u", 
                                clicked_window->window->window_id);
                         break;
                         
@@ -297,8 +369,10 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                         // Calculate client-relative coordinates
                         int32_t rel_x = input_mgr->cursor_x - clicked_window->window->posx;
                         int32_t rel_y = input_mgr->cursor_y - clicked_window->window->posy;
+                        __unused rel_x;
+                        __unused rel_y;
                         
-                        printf("[STLXDM_INPUT] Client area clicked for window %u - would propagate event to app (coords: %d, %d)\n", 
+                        STLXDM_INPUT_TRACE("Client area clicked for window %u - would propagate event to app (coords: %d, %d)", 
                                clicked_window->window->window_id, rel_x, rel_y);
                         
                         // Route client area events to the application
@@ -308,13 +382,13 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                     
                     case WINDOW_REGION_NONE:
                     default:
-                        printf("[STLXDM_INPUT] Unknown region clicked for window %u\n", 
+                        STLXDM_INPUT_TRACE("Unknown region clicked for window %u", 
                                clicked_window->window->window_id);
                         break;
                 }
             }
             
-            printf("[STLXDM_INPUT] Mouse button %u released at (%d,%d)\n", 
+            STLXDM_INPUT_TRACE("Mouse button %u released at (%d,%d)", 
                    button, input_mgr->cursor_x, input_mgr->cursor_y);
             break;
         }
@@ -399,7 +473,7 @@ static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, con
     // Here you would send the event to the focused window via IPC
     // For now, just log it
     if (event->type != POINTER_EVT_MOUSE_MOVED) {
-        printf("[STLXDM_INPUT] Routing event type %u to window %u\n", 
+        STLXDM_INPUT_TRACE("Routing event type %u to window %u", 
            event->type, input_mgr->focused_window_id);
     }
 
@@ -413,6 +487,7 @@ int stlxdm_input_manager_set_focus(stlxdm_input_manager_t* input_mgr, stlxdm_cli
 
     stlxdm_client_info_t* old_client = input_mgr->focused_client;
     uint32_t old_window_id = input_mgr->focused_window_id;
+    __unused old_window_id;
 
     if (client) {
         input_mgr->focused_client = client;
@@ -424,7 +499,7 @@ int stlxdm_input_manager_set_focus(stlxdm_input_manager_t* input_mgr, stlxdm_cli
 
     if (old_client != client) {
         input_mgr->stats.focus_changes++;
-        printf("[STLXDM_INPUT] Focus changed: %u -> %u\n", old_window_id, input_mgr->focused_window_id);
+        STLXDM_INPUT_TRACE("Focus changed: %u -> %u", old_window_id, input_mgr->focused_window_id);
     }
 
     return 0;
@@ -517,7 +592,7 @@ int stlxdm_input_manager_grab_input(stlxdm_input_manager_t* input_mgr, uint32_t 
     input_mgr->grab_window_id = window_id;
     input_mgr->grab_type = grab_type;
     
-    printf("[STLXDM_INPUT] Input grabbed by window %u (type: 0x%02x)\n", window_id, grab_type);
+    STLXDM_INPUT_TRACE("Input grabbed by window %u (type: 0x%02x)", window_id, grab_type);
     return 0;
 }
 
@@ -526,7 +601,7 @@ int stlxdm_input_manager_ungrab_input(stlxdm_input_manager_t* input_mgr) {
         return -1;
     }
     
-    printf("[STLXDM_INPUT] Input ungrabbed (was window %u)\n", input_mgr->grab_window_id);
+    STLXDM_INPUT_TRACE("Input ungrabbed (was window %u)", input_mgr->grab_window_id);
     
     input_mgr->input_grabbed = false;
     input_mgr->grab_window_id = 0;
@@ -544,6 +619,46 @@ static uint32_t _get_current_time_ms(void) {
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
         return (ts.tv_sec * 1000) + (ts.tv_nsec / 1000000);
     }
+    return 0;
+}
+
+static int _initiate_window_drag(stlxdm_input_manager_t* input_mgr, stlxdm_client_info_t* client, int32_t click_x, int32_t click_y) {
+    if (!input_mgr || !client || !client->window) {
+        return -1;
+    }
+    
+    input_mgr->drag_state.is_dragging = true;
+    input_mgr->drag_state.drag_type = STLXDM_DRAG_TYPE_MOVE;
+    input_mgr->drag_state.dragged_window_id = client->window->window_id;
+    input_mgr->drag_state.dragged_client = client;
+    input_mgr->drag_state.drag_start_x = click_x;
+    input_mgr->drag_state.drag_start_y = click_y;
+    input_mgr->drag_state.window_start_x = client->window->posx;
+    input_mgr->drag_state.window_start_y = client->window->posy;
+    input_mgr->drag_state.drag_offset_x = click_x - client->window->posx;
+    input_mgr->drag_state.drag_offset_y = click_y - client->window->posy;
+    input_mgr->drag_state.drag_start_time_ms = _get_current_time_ms();
+    
+    return 0;
+}
+
+static int _terminate_window_drag(stlxdm_input_manager_t* input_mgr) {
+    if (!input_mgr || !input_mgr->initialized) {
+        return -1;
+    }
+    
+    input_mgr->drag_state.is_dragging = false;
+    input_mgr->drag_state.drag_type = STLXDM_DRAG_TYPE_NONE;
+    input_mgr->drag_state.dragged_window_id = 0;
+    input_mgr->drag_state.dragged_client = NULL;
+    input_mgr->drag_state.drag_start_x = 0;
+    input_mgr->drag_state.drag_start_y = 0;
+    input_mgr->drag_state.window_start_x = 0;
+    input_mgr->drag_state.window_start_y = 0;
+    input_mgr->drag_state.drag_offset_x = 0;
+    input_mgr->drag_state.drag_offset_y = 0;
+    input_mgr->drag_state.drag_start_time_ms = 0;
+    
     return 0;
 }
  

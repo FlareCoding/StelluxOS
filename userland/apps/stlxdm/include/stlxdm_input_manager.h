@@ -7,10 +7,35 @@
 #include "stlxdm_compositor.h"
 #include "stlxdm_server.h"
 
+// Trace/debug output control
+#define STLXDM_INPUT_TRACE_ENABLED 0  // Set to 0 to disable all input manager trace output
+
+#if STLXDM_INPUT_TRACE_ENABLED
+    #define STLXDM_INPUT_TRACE(fmt, ...) printf("[STLXDM_INPUT] " fmt "\n", ##__VA_ARGS__)
+#else
+    #define STLXDM_INPUT_TRACE(fmt, ...) ((void)0)  // No-op when disabled
+#endif
+
 // Input manager configuration
 #define STLXDM_INPUT_MAX_EVENTS_PER_FRAME   32
 #define STLXDM_INPUT_CURSOR_DEFAULT_X       400
 #define STLXDM_INPUT_CURSOR_DEFAULT_Y       300
+
+// Drag operation configuration
+#define STLXDM_DRAG_MIN_DISTANCE_THRESHOLD  3    // Minimum pixels to move before drag starts
+#define STLXDM_DRAG_BOUNDARY_MARGIN         0    // Pixels from screen edge where dragging stops
+
+// Drag operation types (for future extensibility)
+typedef enum {
+    STLXDM_DRAG_TYPE_NONE = 0,
+    STLXDM_DRAG_TYPE_MOVE,                 // Move window
+    STLXDM_DRAG_TYPE_RESIZE,               // Resize window (future)
+    STLXDM_DRAG_TYPE_CUSTOM                // Custom drag operation (future)
+} stlxdm_drag_type_t;
+
+// Drag validation constants
+#define STLXDM_DRAG_MAX_WINDOW_WIDTH       4096  // Maximum window width for drag validation
+#define STLXDM_DRAG_MAX_WINDOW_HEIGHT      4096  // Maximum window height for drag validation
 
 // Global shortcut combinations
 typedef enum {
@@ -55,6 +80,21 @@ typedef struct {
     bool input_grabbed;                    // Is input currently grabbed by a window?
     uint32_t grab_window_id;               // Window that has grabbed input
     uint32_t grab_type;                    // Type of grab (keyboard, mouse, both)
+    
+    // Window drag state management
+    struct {
+        bool is_dragging;                  // Is a window currently being dragged?
+        stlxdm_drag_type_t drag_type;      // Type of drag operation being performed
+        uint32_t dragged_window_id;        // ID of the window being dragged
+        stlxdm_client_info_t* dragged_client; // Pointer to the client being dragged
+        int32_t drag_start_x;              // Screen X where drag started
+        int32_t drag_start_y;              // Screen Y where drag started
+        int32_t window_start_x;            // Window X position when drag started
+        int32_t window_start_y;            // Window Y position when drag started
+        int32_t drag_offset_x;             // Offset from window corner to click point
+        int32_t drag_offset_y;             // Offset from window corner to click point
+        uint32_t drag_start_time_ms;       // Timestamp when drag started
+    } drag_state;
     
     // Event processing statistics (for debugging and monitoring)
     struct {
