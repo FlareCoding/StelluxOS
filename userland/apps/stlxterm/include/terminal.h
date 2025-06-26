@@ -88,6 +88,11 @@ typedef struct {
     // Output buffer (for child process communication)
     char output_buffer[4096];
     int output_buffer_pos;
+    
+    // Command line handling
+    char command_line[1024];
+    int command_line_pos;
+    bool command_ready;
 } terminal_t;
 
 // Function prototypes
