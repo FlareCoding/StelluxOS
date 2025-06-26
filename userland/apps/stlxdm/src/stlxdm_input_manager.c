@@ -14,7 +14,7 @@
 // Forward declarations for internal functions
 static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event);
 static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event);
-static void _update_modifier_state(stlxdm_input_manager_t* input_mgr, uint32_t keycode, bool pressed);
+static void _update_modifier_state(stlxdm_input_manager_t* input_mgr, uint32_t modifiers);
 static stlxdm_global_shortcut_t _check_global_shortcuts(stlxdm_input_manager_t* input_mgr, uint32_t keycode);
 static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event);
 static uint32_t _get_current_time_ms(void);
@@ -159,11 +159,11 @@ int stlxdm_input_manager_process_events(stlxdm_input_manager_t* input_mgr) {
 
 static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event) {
     uint32_t keycode = event->udata1;
-    uint32_t modifiers __attribute__((unused)) = event->udata2;
+    uint32_t modifiers = event->udata2;
     bool is_pressed = (event->type == KBD_EVT_KEY_PRESSED);
     
-    // Update modifier key state
-    _update_modifier_state(input_mgr, keycode, is_pressed);
+    // Update modifier key state using the modifiers field from the event
+    _update_modifier_state(input_mgr, modifiers);
     
     // Check for global shortcuts on key press
     if (is_pressed && input_mgr->config.enable_global_shortcuts) {
@@ -431,34 +431,18 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
     return 0;
 }
 
-static void _update_modifier_state(stlxdm_input_manager_t* input_mgr, uint32_t keycode, bool pressed) {
-    // Update modifier state based on keycode
-    switch (keycode) {
-        case 0xE0: // Left Control
-            input_mgr->modifiers.ctrl_left = pressed;
-            break;
-        case 0xE4: // Right Control  
-            input_mgr->modifiers.ctrl_right = pressed;
-            break;
-        case 0xE2: // Left Alt
-            input_mgr->modifiers.alt_left = pressed;
-            break;
-        case 0xE6: // Right Alt
-            input_mgr->modifiers.alt_right = pressed;
-            break;
-        case 0xE1: // Left Shift
-            input_mgr->modifiers.shift_left = pressed;
-            break;
-        case 0xE5: // Right Shift
-            input_mgr->modifiers.shift_right = pressed;
-            break;
-        case 0xE3: // Left Super/Windows
-            input_mgr->modifiers.super_left = pressed;
-            break;
-        case 0xE7: // Right Super/Windows
-            input_mgr->modifiers.super_right = pressed;
-            break;
-    }
+static void _update_modifier_state(stlxdm_input_manager_t* input_mgr, uint32_t modifiers) {
+    // Update modifier state based on the modifiers bitfield from the event
+    // These bit positions must match the kernel's KBD_MOD_* constants from:
+    // kernel/include/drivers/usb/xhci/xhci_usb_hid_kbd_driver.h
+    input_mgr->modifiers.ctrl_left = (modifiers & (1 << 0)) != 0;   // KBD_MOD_LCTRL
+    input_mgr->modifiers.shift_left = (modifiers & (1 << 1)) != 0;  // KBD_MOD_LSHIFT
+    input_mgr->modifiers.alt_left = (modifiers & (1 << 2)) != 0;    // KBD_MOD_LALT
+    input_mgr->modifiers.super_left = (modifiers & (1 << 3)) != 0;  // KBD_MOD_LGUI
+    input_mgr->modifiers.ctrl_right = (modifiers & (1 << 4)) != 0;  // KBD_MOD_RCTRL
+    input_mgr->modifiers.shift_right = (modifiers & (1 << 5)) != 0; // KBD_MOD_RSHIFT
+    input_mgr->modifiers.alt_right = (modifiers & (1 << 6)) != 0;   // KBD_MOD_RALT
+    input_mgr->modifiers.super_right = (modifiers & (1 << 7)) != 0; // KBD_MOD_RGUI
 }
 
 static stlxdm_global_shortcut_t _check_global_shortcuts(stlxdm_input_manager_t* input_mgr, uint32_t keycode) {
