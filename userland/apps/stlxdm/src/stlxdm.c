@@ -11,6 +11,7 @@
 #include <sys/un.h>
 #include <time.h>
 #include "stlxdm.h"
+#include "stlxdm_splash.h"
 #include <stlxgfx/stlxgfx.h>
 #include <stlxgfx/internal/stlxgfx_dm.h>
 #include <stlxgfx/internal/stlxgfx_comm.h>
@@ -29,7 +30,7 @@ int main() {
         return 1;
     }
     
-    // Initialize compositor (heap allocated)
+    // Initialize compositor
     stlxdm_compositor_t* compositor = malloc(sizeof(stlxdm_compositor_t));
     if (!compositor) {
         printf("ERROR: Failed to allocate compositor\n");
@@ -39,6 +40,15 @@ int main() {
     
     if (stlxdm_compositor_init(compositor, gfx_ctx) != 0) {
         printf("ERROR: Failed to initialize compositor\n");
+        free(compositor);
+        stlxgfx_cleanup(gfx_ctx);
+        return 1;
+    }
+
+    // === SHOW SPLASH SCREEN ===
+    if (stlxdm_show_splash_screen(compositor) != 0) {
+        printf("ERROR: Failed to show splash screen\n");
+        stlxdm_compositor_cleanup(compositor);
         free(compositor);
         stlxgfx_cleanup(gfx_ctx);
         return 1;
@@ -63,7 +73,7 @@ int main() {
         return 1;
     }
 
-    // Initialize input manager (heap allocated, after compositor and server)
+    // Initialize input manager
     stlxdm_input_manager_t* input_manager = malloc(sizeof(stlxdm_input_manager_t));
     if (!input_manager) {
         printf("ERROR: Failed to allocate input manager\n");

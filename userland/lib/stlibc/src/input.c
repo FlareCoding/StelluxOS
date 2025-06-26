@@ -1,7 +1,7 @@
 #include <stlibc/input/input.h>
 #include <stlibc/stellux_syscalls.h>
 
-long stlx_read_input_events(uint32_t queue_id, int blocking, struct input_event_t* events, size_t max_events) {
+long stlx_read_input_events(uint32_t queue_id, int blocking, input_event_t* events, size_t max_events) {
     // Validate parameters
     if (!events || max_events == 0) {
         return -EINVAL;

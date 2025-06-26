@@ -18,13 +18,13 @@ enum input_event_type {
 /** 
  * @brief Represents an input event structure.
  */
-struct input_event_t {
+typedef struct input_event {
     uint32_t                id;     // Event-specific ID     
     enum input_event_type   type;   // Event type (e.g., key press, mouse movement)
     uint32_t                udata1; // Event-specific unsigned data 1
     uint32_t                udata2; // Event-specific unsigned data 2
     int32_t                 sdata1; // Event-specific signed data 1
     int32_t                 sdata2; // Event-specific signed data 2
-} __attribute__((packed));
+} __attribute__((packed)) input_event_t;
 
 #endif // STLIBC_INPUT_EVT_H
