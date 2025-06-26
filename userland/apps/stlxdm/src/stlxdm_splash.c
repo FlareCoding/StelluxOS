@@ -14,6 +14,11 @@
 #define SPLASH_FRAME_RATE 60  // Target 60 FPS
 #define SPLASH_FRAME_DELAY_MS (1000 / SPLASH_FRAME_RATE)
 
+// Typing animation configuration
+#define TYPING_SPEED_MS 14  // <n> ms per character
+#define TYPING_DISPLAY_TIME_MS 1200  // <n>> seconds display time
+#define TYPING_DELETE_SPEED_MS 10  // <n> ms per character deletion
+
 // Color definitions
 #define SPLASH_BG_DARK        0xFF0A0A0A
 #define SPLASH_CYAN_BORDER    0xFF00FFFF
@@ -25,6 +30,14 @@
 #define LOGO_HEIGHT           80
 #define LOGO_BORDER_WIDTH     10
 #define LOGO_BORDER_RADIUS    15
+
+// Typing animation states
+typedef enum {
+    TYPING_STATE_IDLE,
+    TYPING_STATE_TYPING,
+    TYPING_STATE_DISPLAY,
+    TYPING_STATE_DELETING
+} typing_state_t;
 
 static void create_dark_background(stlxgfx_surface_t* surface) {
     if (!surface) return;
@@ -162,6 +175,97 @@ static void add_modern_decorative_elements(stlxgfx_surface_t* surface, uint32_t 
                       logo_y + LOGO_HEIGHT + LOGO_BORDER_WIDTH + corner_size - 2, corner_size, 2, corner_color);
 }
 
+static void draw_typing_animation(stlxgfx_surface_t* surface, stlxgfx_context_t* gfx_ctx,
+                                 uint32_t frame, uint32_t elapsed_ms) {
+    if (!surface || !gfx_ctx) return;
+    
+    static typing_state_t state = TYPING_STATE_IDLE;
+    static uint32_t state_start_time = 0;
+    static uint32_t current_length = 0;
+    static uint32_t last_animation_time = 0;
+    (void) frame;
+    
+    const char* full_text = "User: root";
+    const uint32_t full_length = strlen(full_text);
+    
+    // Initialize state timing
+    if (state == TYPING_STATE_IDLE) {
+        state = TYPING_STATE_TYPING;
+        state_start_time = elapsed_ms;
+        current_length = 0;
+        last_animation_time = elapsed_ms;
+    }
+    
+    // Calculate position in the middle of the gradient rectangle
+    uint32_t center_x = surface->width / 2;
+    uint32_t logo_y = surface->height / 3;
+    uint32_t logo_x = center_x - LOGO_WIDTH / 2;
+    uint32_t text_x = logo_x + LOGO_WIDTH / 2;
+    uint32_t text_y = logo_y + LOGO_HEIGHT / 2 - 4;
+    
+    // Handle state transitions
+    switch (state) {
+        case TYPING_STATE_TYPING: {
+            // Type out characters
+            if (elapsed_ms - last_animation_time >= TYPING_SPEED_MS) {
+                if (current_length < full_length) {
+                    current_length++;
+                    last_animation_time = elapsed_ms;
+                } else {
+                    // Finished typing, move to display state
+                    state = TYPING_STATE_DISPLAY;
+                    state_start_time = elapsed_ms;
+                }
+            }
+            break;
+        }
+        
+        case TYPING_STATE_DISPLAY: {
+            // Display full text for 2 seconds
+            if (elapsed_ms - state_start_time >= TYPING_DISPLAY_TIME_MS) {
+                state = TYPING_STATE_DELETING;
+                state_start_time = elapsed_ms;
+                last_animation_time = elapsed_ms;
+            }
+            break;
+        }
+        
+        case TYPING_STATE_DELETING: {
+            // Delete characters one by one
+            if (elapsed_ms - last_animation_time >= TYPING_DELETE_SPEED_MS) {
+                if (current_length > 0) {
+                    current_length--;
+                    last_animation_time = elapsed_ms;
+                } else {
+                    // Finished deleting, restart typing
+                    state = TYPING_STATE_TYPING;
+                    state_start_time = elapsed_ms;
+                    last_animation_time = elapsed_ms;
+                }
+            }
+            break;
+        }
+        
+        default:
+            break;
+    }
+    
+    // Draw the current text
+    if (current_length > 0) {
+        // Create temporary string with current length
+        char temp_text[32];
+        strncpy(temp_text, full_text, current_length);
+        temp_text[current_length] = '\0';
+        
+        // Calculate text width for centering
+        uint32_t text_width = current_length * 16 * 0.6f; // Approximate width
+        uint32_t draw_x = text_x - text_width / 2;
+        
+        // Draw the typing text in bright green
+        stlxgfx_render_text(gfx_ctx, surface, temp_text, draw_x, text_y, 18, SPLASH_WHITE_BRIGHT);
+    }
+}
+
 static int check_for_enter_key() {
     input_event_t events[16];
     int n = stlx_read_input_events(STLXGFX_INPUT_QUEUE_ID_SYSTEM, 0, events, 16);
@@ -206,11 +310,13 @@ int stlxdm_show_splash_screen(stlxdm_compositor_t* compositor) {
     }
     
     uint32_t frame = 0;
+    uint32_t elapsed_ms = 0;
     printf("[STLXDM_SPLASH] Displaying splash screen (press Enter to continue)\n");
     
     while (1) {
         create_dark_background(splash_surface);
         draw_animated_gradient_logo(splash_surface, frame);
+        draw_typing_animation(splash_surface, compositor->gfx_ctx, frame, elapsed_ms);
         draw_cyan_border(splash_surface);
         draw_static_title(splash_surface, compositor->gfx_ctx);
         draw_breathing_text(splash_surface, compositor->gfx_ctx, frame);
@@ -240,6 +346,7 @@ int stlxdm_show_splash_screen(stlxdm_compositor_t* compositor) {
         nanosleep(&delay, NULL);
         
         frame++;
+        elapsed_ms += SPLASH_FRAME_DELAY_MS;
     }
     
     stlxgfx_dm_destroy_surface(compositor->gfx_ctx, splash_surface);
