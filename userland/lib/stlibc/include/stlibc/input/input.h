@@ -11,6 +11,6 @@
  * @param max_events Maximum number of events to read
  * @return Number of events read on success, negative error code on failure
  */
-long stlx_read_input_events(uint32_t queue_id, int blocking, struct input_event_t* events, size_t max_events);
+long stlx_read_input_events(uint32_t queue_id, int blocking, input_event_t* events, size_t max_events);
 
 #endif // STLIBC_INPUT_H

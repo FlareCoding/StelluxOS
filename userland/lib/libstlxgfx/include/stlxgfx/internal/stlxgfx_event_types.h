@@ -2,37 +2,24 @@
 #define STLXGFX_EVENT_TYPES_H
 
 #include <stdint.h>
+#include <stlibc/input/input_event.h>
 
 // Event queue ID for system input
 #define STLXGFX_INPUT_QUEUE_ID_SYSTEM   0x0001 // Handles both, kbd and pointer events
 
 // Event types - copied from kernel input_event.h for compatibility
-typedef enum {
-    STLXGFX_EVT_TYPE_INVALID = 0x0,
+typedef enum input_event_type stlxgfx_input_event_type_t;
 
-    STLXGFX_KBD_EVT_KEY_PRESSED, 
-    STLXGFX_KBD_EVT_KEY_RELEASED,
-
-    STLXGFX_POINTER_EVT_MOUSE_MOVED, 
-    STLXGFX_POINTER_EVT_MOUSE_BTN_PRESSED,
-    STLXGFX_POINTER_EVT_MOUSE_BTN_RELEASED, 
-    STLXGFX_POINTER_EVT_MOUSE_SCROLLED
-} stlxgfx_input_event_type_t;
-
-/** 
- * @brief Represents an input event structure - copied from kernel for compatibility.
- */
-typedef struct {
-    uint32_t            id;     // Event-specific ID     
-    stlxgfx_input_event_type_t type;   // Event type (e.g., key press, mouse movement)
-    uint32_t            udata1; // Event-specific unsigned data 1
-    uint32_t            udata2; // Event-specific unsigned data 2
-    int32_t             sdata1; // Event-specific signed data 1
-    int32_t             sdata2; // Event-specific signed data 2
-} __attribute__((packed)) stlxgfx_event_t;
+#define STLXGFX_EVT_TYPE_INVALID                EVT_TYPE_INVALID
+#define STLXGFX_KBD_EVT_KEY_PRESSED             KBD_EVT_KEY_PRESSED
+#define STLXGFX_KBD_EVT_KEY_RELEASED            KBD_EVT_KEY_RELEASED
+#define STLXGFX_POINTER_EVT_MOUSE_MOVED         POINTER_EVT_MOUSE_MOVED
+#define STLXGFX_POINTER_EVT_MOUSE_BTN_PRESSED   POINTER_EVT_MOUSE_BTN_PRESSED
+#define STLXGFX_POINTER_EVT_MOUSE_BTN_RELEASED  POINTER_EVT_MOUSE_BTN_RELEASED
+#define STLXGFX_POINTER_EVT_MOUSE_SCROLLED      POINTER_EVT_MOUSE_SCROLLED
 
 // Alias for compatibility with existing code
-typedef stlxgfx_event_t input_event_t;
+typedef input_event_t stlxgfx_event_t;
 
 /**
  * @brief Keyboard key pressed event structure.

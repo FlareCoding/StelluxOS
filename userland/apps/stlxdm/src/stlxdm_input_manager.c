@@ -12,11 +12,11 @@
 #define STLXDM_GRAB_BOTH        (STLXDM_GRAB_KEYBOARD | STLXDM_GRAB_MOUSE)
 
 // Forward declarations for internal functions
-static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event);
-static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event);
+static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const stlxgfx_event_t* event);
+static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const stlxgfx_event_t* event);
 static void _update_modifier_state(stlxdm_input_manager_t* input_mgr, uint32_t modifiers);
 static stlxdm_global_shortcut_t _check_global_shortcuts(stlxdm_input_manager_t* input_mgr, uint32_t keycode);
-static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event);
+static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, const stlxgfx_event_t* event);
 static uint32_t _get_current_time_ms(void);
 static int _initiate_window_drag(stlxdm_input_manager_t* input_mgr, stlxdm_client_info_t* client, int32_t click_x, int32_t click_y);
 static int _terminate_window_drag(stlxdm_input_manager_t* input_mgr);
@@ -112,7 +112,7 @@ int stlxdm_input_manager_process_events(stlxdm_input_manager_t* input_mgr) {
         return -1;
     }
     
-    struct input_event_t events[STLXDM_INPUT_MAX_EVENTS_PER_FRAME];
+    stlxgfx_event_t events[STLXDM_INPUT_MAX_EVENTS_PER_FRAME];
     long events_read = stlx_read_input_events(INPUT_QUEUE_ID_SYSTEM, 0, events, STLXDM_INPUT_MAX_EVENTS_PER_FRAME);
     
     if (events_read < 0) {
@@ -131,7 +131,7 @@ int stlxdm_input_manager_process_events(stlxdm_input_manager_t* input_mgr) {
     
     // Process each event
     for (int i = 0; i < events_read; i++) {
-        const struct input_event_t* event = &events[i];
+        const stlxgfx_event_t* event = &events[i];
         
         switch (event->type) {
             case KBD_EVT_KEY_PRESSED:
@@ -157,7 +157,7 @@ int stlxdm_input_manager_process_events(stlxdm_input_manager_t* input_mgr) {
     return events_read;
 }
 
-static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event) {
+static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const stlxgfx_event_t* event) {
     uint32_t keycode = event->udata1;
     uint32_t modifiers = event->udata2;
     bool is_pressed = (event->type == KBD_EVT_KEY_PRESSED);
@@ -202,7 +202,7 @@ static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const struc
     return 0;
 }
 
-static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event) {
+static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const stlxgfx_event_t* event) {
     switch (event->type) {
         case POINTER_EVT_MOUSE_MOVED: {
             // Update cursor position
@@ -469,7 +469,7 @@ static stlxdm_global_shortcut_t _check_global_shortcuts(stlxdm_input_manager_t* 
     return STLXDM_SHORTCUT_NONE;
 }
 
-static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, const struct input_event_t* event) {
+static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, const stlxgfx_event_t* event) {
     if (!input_mgr->focused_client || !input_mgr->focused_client->window) {
         // No focused window - route to system console
         if (event->type == KBD_EVT_KEY_PRESSED) {
@@ -489,7 +489,7 @@ static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, con
     // Convert kernel event to userland event format (they're compatible)
     stlxgfx_event_t userland_event;
     userland_event.id = event->id;
-    userland_event.type = (stlxgfx_input_event_type_t)event->type;  // Cast is safe since types match
+    userland_event.type = (stlxgfx_input_event_type_t)event->type;
     userland_event.udata1 = event->udata1;
     userland_event.udata2 = event->udata2;
     userland_event.sdata1 = event->sdata1;

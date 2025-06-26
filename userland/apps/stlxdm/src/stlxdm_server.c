@@ -119,9 +119,9 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
                                                      const uint8_t* payload);
 
 static int stlxdm_server_handle_destroy_window_request(stlxdm_server_t* server,
-                                                      stlxdm_client_info_t* client, 
-                                                      const stlxgfx_message_header_t* header,
-                                                      const uint8_t* payload);
+                                                     stlxdm_client_info_t* client, 
+                                                     const stlxgfx_message_header_t* header,
+                                                     const uint8_t* payload);
 
 static int stlxdm_server_dispatch_message(stlxdm_server_t* server,
                                          stlxdm_client_info_t* client, 
