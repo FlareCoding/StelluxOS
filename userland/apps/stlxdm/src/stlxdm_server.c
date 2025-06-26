@@ -118,6 +118,11 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
                                                      const stlxgfx_message_header_t* header,
                                                      const uint8_t* payload);
 
+static int stlxdm_server_handle_destroy_window_request(stlxdm_server_t* server,
+                                                      stlxdm_client_info_t* client, 
+                                                      const stlxgfx_message_header_t* header,
+                                                      const uint8_t* payload);
+
 static int stlxdm_server_dispatch_message(stlxdm_server_t* server,
                                          stlxdm_client_info_t* client, 
                                          const stlxgfx_message_header_t* header,
@@ -125,6 +130,9 @@ static int stlxdm_server_dispatch_message(stlxdm_server_t* server,
     switch (header->message_type) {
         case STLXGFX_MSG_CREATE_WINDOW_REQUEST: {
             return stlxdm_server_handle_create_window_request(server, client, header, payload);
+        }
+        case STLXGFX_MSG_DESTROY_WINDOW_REQUEST: {
+            return stlxdm_server_handle_destroy_window_request(server, client, header, payload);
         }
         default: {
             printf("[STLXDM_SERVER] Unknown message type %u from client %u\n", 
@@ -279,6 +287,124 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     }
 }
 
+static int stlxdm_server_handle_destroy_window_request(stlxdm_server_t* server,
+                                                     stlxdm_client_info_t* client,
+                                                     const stlxgfx_message_header_t* header,
+                                                     const uint8_t* payload) {
+    const stlxgfx_destroy_window_request_t* req = (const stlxgfx_destroy_window_request_t*)payload;
+    
+    // Check if client has a window
+    if (client->window == NULL) {
+        printf("[STLXDM_SERVER] Client %u has no window to destroy\n", client->client_id);
+        // Send error response
+        stlxgfx_message_header_t error_header = {
+            .protocol_version = STLXGFX_PROTOCOL_VERSION,
+            .message_type = STLXGFX_MSG_ERROR_RESPONSE,
+            .sequence_number = header->sequence_number,
+            .payload_size = sizeof(stlxgfx_error_response_t),
+            .flags = 0
+        };
+        
+        stlxgfx_error_response_t error_response = {
+            .error_code = STLXGFX_ERROR_INTERNAL_ERROR,
+            .original_sequence = header->sequence_number,
+            .error_message = "No window to destroy"
+        };
+        
+        stlxgfx_send_message(client->socket_fd, &error_header, &error_response);
+        return -1;
+    }
+    
+    // Validate that the window ID matches
+    if (client->window->window_id != req->window_id) {
+        printf("[STLXDM_SERVER] Window ID mismatch: client has %u, request for %u\n", 
+               client->window->window_id, req->window_id);
+        // Send error response
+        stlxgfx_message_header_t error_header = {
+            .protocol_version = STLXGFX_PROTOCOL_VERSION,
+            .message_type = STLXGFX_MSG_ERROR_RESPONSE,
+            .sequence_number = header->sequence_number,
+            .payload_size = sizeof(stlxgfx_error_response_t),
+            .flags = 0
+        };
+        
+        stlxgfx_error_response_t error_response = {
+            .error_code = STLXGFX_ERROR_INTERNAL_ERROR,
+            .original_sequence = header->sequence_number,
+            .error_message = "Window ID mismatch"
+        };
+        
+        stlxgfx_send_message(client->socket_fd, &error_header, &error_response);
+        return -1;
+    }
+    
+    // Get graphics context from server
+    stlxgfx_context_t* gfx_ctx = server->gfx_ctx;
+    
+    if (!gfx_ctx) {
+        printf("[STLXDM_SERVER] ERROR: No graphics context available\n");
+        return -1;
+    }
+    
+    // Clean up window resources
+    stlxgfx_window_t* window = client->window;
+    printf("[STLXDM_SERVER] Destroying window ID=%u for client %u\n", 
+           window->window_id, client->client_id);
+    
+    // Clean up shared memory resources
+    if (window->initialized) {
+        // Clean up event ring buffer shared memory
+        if (window->event_shm_handle != 0 && window->event_ring) {
+            stlxgfx_dm_destroy_event_ring_shm(gfx_ctx, 
+                                              window->event_shm_handle, 
+                                              window->event_ring);
+        }
+        
+        // Clean up surface set shared memory
+        if (window->surface_shm_handle != 0 && window->surface0) {
+            stlxgfx_dm_destroy_shared_surface_set(gfx_ctx, 
+                                                  window->surface_shm_handle,
+                                                  window->surface0, 
+                                                  window->surface1, 
+                                                  window->surface2);
+        }
+        
+        // Clean up window sync shared memory
+        if (window->sync_shm_handle != 0 && window->sync_data) {
+            stlxgfx_dm_destroy_window_sync_shm(gfx_ctx, 
+                                               window->sync_shm_handle, 
+                                               window->sync_data);
+        }
+    }
+    
+    // Free window structure
+    free(window);
+    client->window = NULL;
+    
+    // Send success response
+    stlxgfx_message_header_t response_header = {
+        .protocol_version = STLXGFX_PROTOCOL_VERSION,
+        .message_type = STLXGFX_MSG_DESTROY_WINDOW_RESPONSE,
+        .sequence_number = header->sequence_number,
+        .payload_size = sizeof(stlxgfx_destroy_window_response_t),
+        .flags = 0
+    };
+    
+    stlxgfx_destroy_window_response_t response = {
+        .window_id = req->window_id,
+        .result_code = STLXGFX_ERROR_SUCCESS
+    };
+    
+    if (stlxgfx_send_message(client->socket_fd, &response_header, &response) == 0) {
+        printf("[STLXDM_SERVER] Successfully destroyed window ID=%u for client %u\n", 
+               req->window_id, client->client_id);
+        return 0;
+    } else {
+        printf("[STLXDM_SERVER] Failed to send destroy response to client %u\n", client->client_id);
+        return -1;
+    }
+}
+
 int stlxdm_server_handle_client_requests(stlxdm_server_t* server) {
     if (!server) {
         return -1;
@@ -401,6 +527,10 @@ const char* stlxdm_server_get_message_type_name(uint32_t message_type) {
             return "CREATE_WINDOW_REQUEST";
         case STLXGFX_MSG_CREATE_WINDOW_RESPONSE:
             return "CREATE_WINDOW_RESPONSE";
+        case STLXGFX_MSG_DESTROY_WINDOW_REQUEST:
+            return "DESTROY_WINDOW_REQUEST";
+        case STLXGFX_MSG_DESTROY_WINDOW_RESPONSE:
+            return "DESTROY_WINDOW_RESPONSE";
         case STLXGFX_MSG_ERROR_RESPONSE:
             return "ERROR_RESPONSE";
         default:

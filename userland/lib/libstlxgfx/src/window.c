@@ -195,6 +195,49 @@ void stlxgfx_destroy_window(stlxgfx_context_t* ctx, stlxgfx_window_t* window) {
     // Unregister this window from event processing
     stlxgfx_unregister_window_from_events(window);
     
+    // Send DESTROY_WINDOW_REQUEST to display manager if connected
+    if (ctx->connected_to_dm && window->initialized) {
+        stlxgfx_message_header_t header = {
+            .protocol_version = STLXGFX_PROTOCOL_VERSION,
+            .message_type = STLXGFX_MSG_DESTROY_WINDOW_REQUEST,
+            .sequence_number = ctx->next_sequence_number++,
+            .payload_size = sizeof(stlxgfx_destroy_window_request_t),
+            .flags = 0
+        };
+        
+        stlxgfx_destroy_window_request_t request = {
+            .window_id = window->window_id
+        };
+        
+        // Send request to display manager
+        if (stlxgfx_send_message(ctx->socket_fd, &header, &request) == 0) {
+            // Wait for response
+            stlxgfx_message_header_t response_header;
+            stlxgfx_destroy_window_response_t response;
+            
+            if (stlxgfx_receive_message(ctx->socket_fd, &response_header, &response, sizeof(response)) == 0) {
+                // Validate response
+                if (response_header.message_type == STLXGFX_MSG_ERROR_RESPONSE) {
+                    stlxgfx_error_response_t* error = (stlxgfx_error_response_t*)&response;
+                    printf("STLXGFX: Error destroying window: %s\n", error->error_message);
+                } else if (response_header.message_type != STLXGFX_MSG_DESTROY_WINDOW_RESPONSE) {
+                    printf("STLXGFX: Unexpected response type during window destruction: %u\n", response_header.message_type);
+                } else if (response_header.sequence_number != header.sequence_number) {
+                    printf("STLXGFX: Sequence number mismatch during window destruction: sent %u, got %u\n", 
+                           header.sequence_number, response_header.sequence_number);
+                } else if (response.result_code != STLXGFX_ERROR_SUCCESS) {
+                    printf("STLXGFX: Window destruction failed: %d\n", response.result_code);
+                } else {
+                    printf("STLXGFX: Window %u destroyed successfully\n", window->window_id);
+                }
+            } else {
+                printf("STLXGFX: Warning - Failed to receive destroy window response, proceeding with local cleanup\n");
+            }
+        } else {
+            printf("STLXGFX: Warning - Failed to send destroy window request, proceeding with local cleanup\n");
+        }
+    }
+    
     // Clean up shared memory mappings if they exist
     if (window->initialized) {
         // Clean up event ring buffer shared memory
@@ -211,8 +254,6 @@ void stlxgfx_destroy_window(stlxgfx_context_t* ctx, stlxgfx_window_t* window) {
             stlxgfx_unmap_window_sync_shm(window->sync_shm_handle, window->sync_data);
         }
     }
-    
-    // TODO: Send DESTROY_WINDOW_REQUEST in later phases
     
     free(window);
 }
@@ -311,6 +352,16 @@ int stlxgfx_can_swap_buffers(stlxgfx_window_t* window) {
     
     // In triple buffering, we can swap as long as there's no pending swap
     return !window->sync_data->swap_pending;
+}
+
+int stlxgfx_is_window_opened(stlxgfx_window_t* window) {
+    if (!window || !window->initialized || !window->sync_data) {
+        return 0; // Window is not opened (invalid window)
+    }
+    
+    // Check if the display manager has requested window closure
+    // The close_requested field is set by the DM when close button is clicked
+    return !window->sync_data->close_requested;
 }
 
 int stlxgfx_dm_sync_window(stlxgfx_window_t* window) {

@@ -97,6 +97,13 @@ int stlxgfx_swap_buffers(stlxgfx_window_t* window);
 int stlxgfx_can_swap_buffers(stlxgfx_window_t* window);
 
 /**
+ * Check if a window is still opened/visible
+ * @param window - target window
+ * @return 1 if window is opened, 0 if window is closed or error
+ */
+int stlxgfx_is_window_opened(stlxgfx_window_t* window);
+
+/**
  * Handle window synchronization for display manager (compositor)
  * Should be called before compositing a window to ensure proper synchronization
  * @param window - target window

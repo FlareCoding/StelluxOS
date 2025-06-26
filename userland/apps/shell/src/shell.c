@@ -18,7 +18,6 @@
 // Global variables for the application
 static stlxgfx_context_t* g_ctx = NULL;
 static stlxgfx_window_t* g_window = NULL;
-static int g_quit_requested = 0;
 
 // Terminal display variables
 #define MAX_LINES 20
@@ -207,21 +206,14 @@ void handle_event(stlxgfx_window_t* window, const stlxgfx_event_t* event) {
         }
         
         case STLXGFX_POINTER_EVT_MOUSE_BTN_PRESSED: {
-            printf("[SHELL] Mouse button pressed: button=%u at (%u, %d)\n", 
-                   event->udata1, event->udata2, event->sdata1);
             break;
         }
         
         case STLXGFX_POINTER_EVT_MOUSE_BTN_RELEASED: {
-            printf("[SHELL] Mouse button released: button=%u at (%u, %d)\n", 
-                   event->udata1, event->udata2, event->sdata1);
             break;
         }
         
         case STLXGFX_POINTER_EVT_MOUSE_SCROLLED: {
-            printf("[SHELL] Mouse scrolled: type=%u, delta=%d at (%u, %d)\n", 
-                   event->udata1, event->sdata2,
-                   event->udata2, event->sdata1);
             break;
         }
         
@@ -314,7 +306,7 @@ int main() {
     }
     
     // Keep the window "alive" with event processing only
-    while (!g_quit_requested) {
+    while (stlxgfx_is_window_opened(g_window)) {
         // Poll for events (this will call our callback if events are available)
         stlxgfx_poll_events();
         
