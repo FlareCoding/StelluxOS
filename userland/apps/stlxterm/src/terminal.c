@@ -11,6 +11,7 @@
 #include <stlxgfx/stlxgfx.h>
 
 #include "terminal.h"
+#include "builtin_commands.h"
 
 // Default colors
 #define DEFAULT_FG_COLOR 0xFFE0E0E0  // Light gray
@@ -159,6 +160,11 @@ void terminal_reset(terminal_t* term) {
     // Reset buffers
     term->input_buffer_pos = 0;
     term->output_buffer_pos = 0;
+    
+    // Reset command line
+    term->command_line_pos = 0;
+    term->command_ready = false;
+    memset(term->command_line, 0, sizeof(term->command_line));
 }
 
 // Main terminal loop
@@ -265,15 +271,41 @@ void terminal_handle_event(terminal_t* term, const stlxgfx_event_t* event) {
                     term->state.cursor_x--;
                     terminal_write_char(term, ' '); // Clear the character
                     term->state.cursor_x--; // Move back again
+                    
+                    // Also remove from command line buffer
+                    if (term->command_line_pos > 0) {
+                        term->command_line_pos--;
+                        term->command_line[term->command_line_pos] = '\0';
+                    }
                 }
                 needs_redraw = true;
             } else if (event->udata1 == 0x28) { // Enter
                 terminal_write_char(term, '\r');
                 terminal_write_char(term, '\n');
+                
+                // Process the command
+                if (term->command_line_pos > 0) {
+                    process_command(term, term->command_line);
+                    
+                    // Reset command line
+                    term->command_line_pos = 0;
+                    memset(term->command_line, 0, sizeof(term->command_line));
+                }
+                
+                // Show new prompt
+                terminal_write_string(term, "$ ");
+                
                 needs_redraw = true;
             } else if (ascii_char >= 32 && ascii_char <= 126) {
                 // Handle printable characters
                 terminal_write_char(term, (char)ascii_char);
+                
+                // Add to command line buffer
+                if (term->command_line_pos < (int)sizeof(term->command_line) - 1) {
+                    term->command_line[term->command_line_pos] = (char)ascii_char;
+                    term->command_line_pos++;
+                }
+                
                 needs_redraw = true;
             }
             break;
