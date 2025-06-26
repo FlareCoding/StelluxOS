@@ -4,7 +4,7 @@
 # Uses exported variables from parent Makefile
 
 # Application directories
-APP_DIRS := init shell stlxdm
+APP_DIRS := init shell stlxdm stlxterm
 
 # Default target - build all applications
 all: $(APP_DIRS)

@@ -1,10 +1,10 @@
 # ==========================
-# Shell Application Makefile
+# Stellux Terminal Emulator Makefile
 # ==========================
 # Uses exported variables from parent Makefiles
 
 # Application configuration
-APP_NAME := shell
+APP_NAME := stlxterm
 SRC_DIR := src
 BUILD_DIR := build
 OBJ_DIR := $(BUILD_DIR)/obj
@@ -17,9 +17,9 @@ OBJECTS := $(SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 TARGET := $(USERLAND_BIN_DIR)/$(APP_NAME)
 
 # Use exported flags from parent
-CFLAGS := $(CFLAGS_COMMON)
+CFLAGS := $(CFLAGS_COMMON) -I$(LIBSTLXGFX_INCLUDE_DIR) -I./include
 LDFLAGS := $(LDFLAGS_EXE)
-LIBS := $(LIBS_COMMON)
+LIBS := $(LIBS_STLXGFX) $(LIBS_COMMON)
 
 # Default target
 all: $(TARGET)
@@ -43,4 +43,4 @@ clean:
 	@rm -rf $(BUILD_DIR)
 	@rm -f $(TARGET)
 
-.PHONY: all clean 
+.PHONY: all clean

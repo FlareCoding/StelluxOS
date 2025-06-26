@@ -1,8 +1,10 @@
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 #include <stlibc/stlibc.h>
 
@@ -21,15 +23,16 @@ int main() {
     // We don't need to wait for the display manager
     stlx_proc_close(stlxdm_handle);
 
-    int shell_handle = launch_process("shell");
-    if (shell_handle < 0) {
+    // Give the display manager 5 seconds to startup and be ready
+    struct timespec ts = { 5, 0 };
+    nanosleep(&ts, NULL);
+
+    int terminal_handle = launch_process("stlxterm");
+    if (terminal_handle < 0) {
         return -1;
     }
     
-    // Will automatically close the handle after the shell exits
-    if (wait_for_process(shell_handle, "shell") != 0) {
-        return -1;
-    }
+    stlx_proc_close(terminal_handle);
 
     return 0;
 }
