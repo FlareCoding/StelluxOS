@@ -8,8 +8,8 @@
 // Terminal configuration
 #define TERMINAL_MAX_COLS 120
 #define TERMINAL_MAX_ROWS 40
-#define TERMINAL_DEFAULT_COLS 80
-#define TERMINAL_DEFAULT_ROWS 24
+#define TERMINAL_DEFAULT_COLS 72
+#define TERMINAL_DEFAULT_ROWS 18
 
 // Terminal cell structure
 typedef struct {
