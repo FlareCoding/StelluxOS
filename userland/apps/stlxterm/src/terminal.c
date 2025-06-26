@@ -76,7 +76,7 @@ int terminal_init(terminal_t* term) {
     printf("[TERMINAL] Creating window (%dx%d)...\n", term->window_width, term->window_height);
     term->window = stlxgfx_create_window(term->gfx_ctx, 
                                         term->window_width, term->window_height, 
-                                        40, 40, "StelluxOS Terminal");
+                                        60, 102, "StelluxOS Terminal");
     if (!term->window) {
         printf("[TERMINAL] ERROR: Failed to create window\n");
         stlxgfx_cleanup(term->gfx_ctx);

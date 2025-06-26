@@ -30,9 +30,9 @@ void handle_event(stlxgfx_window_t* window, const stlxgfx_event_t* event) {
 int main() {
     printf("[STLXTERM] Starting Stellux Terminal Emulator...\n");
     
-    // Create terminal with default size (80x24 characters)
-    int window_width = 640;  // 80 chars * 8 pixels + margins
-    int window_height = 480; // 24 chars * 16 pixels + margins
+    // Create terminal with smaller size (72x18 characters)
+    int window_width = 576;  // 72 chars * 8 pixels + margins
+    int window_height = 360; // 18 chars * 16 pixels + margins
     int cols = TERMINAL_DEFAULT_COLS;
     int rows = TERMINAL_DEFAULT_ROWS;
     
