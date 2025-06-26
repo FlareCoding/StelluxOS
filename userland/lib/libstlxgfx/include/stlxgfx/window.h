@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stlxgfx/surface.h>
 #include <stlxgfx/internal/stlxgfx_protocol.h>
+#include <stlxgfx/internal/stlxgfx_event_ring.h>
 #include <stlibc/ipc/shm.h>
 
 #define WINDOW_TITLE_BAR_HEIGHT     32
@@ -24,12 +25,14 @@ struct stlxgfx_window {
     // Shared memory handles (same across processes)
     shm_handle_t sync_shm_handle;     // Synchronization data
     shm_handle_t surface_shm_handle;  // All three surfaces
+    shm_handle_t event_shm_handle;    // Event ring buffer
     
     // Local pointers (different virtual addresses per process)
     stlxgfx_window_sync_t* sync_data;    // Mapped sync memory
     stlxgfx_surface_t* surface0;         // First surface buffer
     stlxgfx_surface_t* surface1;         // Second surface buffer
     stlxgfx_surface_t* surface2;         // Third surface buffer
+    stlxgfx_event_ring_t* event_ring;    // Mapped event ring buffer
     
     // State
     int initialized;

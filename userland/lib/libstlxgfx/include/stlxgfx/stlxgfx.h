@@ -44,5 +44,6 @@ void stlxgfx_cleanup(stlxgfx_context_t* ctx);
 #include "stlxgfx/font.h"
 #include "stlxgfx/surface.h"
 #include "stlxgfx/window.h"
+#include "stlxgfx/event.h"
 
 #endif // STLXGFX_H 

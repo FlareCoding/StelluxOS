@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stlxgfx/internal/stlxgfx_event_ring.h>
 
 // Input grab types
 #define STLXDM_GRAB_KEYBOARD    0x01
@@ -261,6 +262,17 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                         stlxdm_input_manager_set_focus(input_mgr, window_under_cursor);
                     }
                 }
+                
+                // Route mouse movement to focused window if cursor is over it
+                if (input_mgr->focused_client && input_mgr->focused_client->window) {
+                    stlxdm_client_info_t* window_under_cursor = 
+                        stlxdm_input_manager_find_window_at_position(input_mgr, new_x, new_y);
+                    
+                    // Only route if cursor is over the focused window
+                    if (window_under_cursor == input_mgr->focused_client) {
+                        _route_event_to_focused_window(input_mgr, event);
+                    }
+                }
             }
             break;
         }
@@ -291,15 +303,18 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                         // Initiate window drag
                         if (_initiate_window_drag(input_mgr, clicked_window, 
                                                  input_mgr->cursor_x, input_mgr->cursor_y) == 0) {
-                            STLXDM_INPUT_TRACE("Drag initiated for window %u", 
-                                   clicked_window->window->window_id);
+                            // STLXDM_INPUT_TRACE("Drag initiated for window %u", 
+                            //        clicked_window->window->window_id);
                         }
+                    } else if (region == WINDOW_REGION_CLIENT_AREA) {
+                        // Route button press to client area
+                        _route_event_to_focused_window(input_mgr, event);
                     }
                 }
             } else {
                 // Clicked outside any window - clear focus
                 if (input_mgr->focused_client) {
-                    STLXDM_INPUT_TRACE("Clicked outside window - clearing focus");
+                    // STLXDM_INPUT_TRACE("Clicked outside window - clearing focus");
                     stlxdm_input_manager_set_focus(input_mgr, NULL);
                 }
             }
@@ -310,7 +325,7 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                 (current_time - input_mgr->last_click_time_ms) < input_mgr->config.double_click_timeout_ms) {
                 is_double_click = true;
                 __unused is_double_click;
-                STLXDM_INPUT_TRACE("Double-click detected (button %u)", button);
+                // STLXDM_INPUT_TRACE("Double-click detected (button %u)", button);
             }
             
             input_mgr->last_clicked_button = button;
@@ -323,8 +338,8 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
             
             // Handle drag termination (left mouse button release)
             if (button == 1 && input_mgr->drag_state.is_dragging) {
-                STLXDM_INPUT_TRACE("Drag terminated for window %u", 
-                       input_mgr->drag_state.dragged_window_id);
+                // STLXDM_INPUT_TRACE("Drag terminated for window %u", 
+                //        input_mgr->drag_state.dragged_window_id);
                 _terminate_window_drag(input_mgr);
                 break; // Skip normal click handling when dragging
             }
@@ -342,11 +357,11 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                                                                input_mgr->cursor_y);
                 
                 // Debug: Show window bounds
-                STLXDM_INPUT_TRACE("DEBUG: Window %u at (%d,%d) size %dx%d, click at (%d,%d)",
-                       clicked_window->window->window_id,
-                       clicked_window->window->posx, clicked_window->window->posy,
-                       clicked_window->window->width, clicked_window->window->height,
-                       input_mgr->cursor_x, input_mgr->cursor_y);
+                // STLXDM_INPUT_TRACE("DEBUG: Window %u at (%d,%d) size %dx%d, click at (%d,%d)",
+                //        clicked_window->window->window_id,
+                //        clicked_window->window->posx, clicked_window->window->posy,
+                //        clicked_window->window->width, clicked_window->window->height,
+                //        input_mgr->cursor_x, input_mgr->cursor_y);
                 
                 // Handle different regions (click actions happen on release)
                 switch (region) {
@@ -356,13 +371,13 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                         break;
                         
                     case WINDOW_REGION_TITLE_BAR:
-                        STLXDM_INPUT_TRACE("Title bar clicked for window %u", 
-                               clicked_window->window->window_id);
+                        // STLXDM_INPUT_TRACE("Title bar clicked for window %u", 
+                        //        clicked_window->window->window_id);
                         break;
                         
                     case WINDOW_REGION_BORDER:
-                        STLXDM_INPUT_TRACE("Border clicked for window %u", 
-                               clicked_window->window->window_id);
+                        // STLXDM_INPUT_TRACE("Border clicked for window %u", 
+                        //        clicked_window->window->window_id);
                         break;
                         
                     case WINDOW_REGION_CLIENT_AREA: {
@@ -371,9 +386,6 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                         int32_t rel_y = input_mgr->cursor_y - clicked_window->window->posy;
                         __unused rel_x;
                         __unused rel_y;
-                        
-                        STLXDM_INPUT_TRACE("Client area clicked for window %u - would propagate event to app (coords: %d, %d)", 
-                               clicked_window->window->window_id, rel_x, rel_y);
                         
                         // Route client area events to the application
                         _route_event_to_focused_window(input_mgr, event);
@@ -387,15 +399,23 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const struct i
                         break;
                 }
             }
-            
-            STLXDM_INPUT_TRACE("Mouse button %u released at (%d,%d)", 
-                   button, input_mgr->cursor_x, input_mgr->cursor_y);
+
             break;
         }
         
         case POINTER_EVT_MOUSE_SCROLLED: {
-            // int32_t scroll_delta = event->sdata2;
-            // const char* direction = (event->udata1 == 0) ? "vertical" : "horizontal";
+            // Route scroll events to focused window if cursor is over it
+            if (input_mgr->focused_client && input_mgr->focused_client->window) {
+                stlxdm_client_info_t* window_under_cursor = 
+                    stlxdm_input_manager_find_window_at_position(input_mgr, 
+                                                               input_mgr->cursor_x, 
+                                                               input_mgr->cursor_y);
+                
+                // Only route if cursor is over the focused window
+                if (window_under_cursor == input_mgr->focused_client) {
+                    _route_event_to_focused_window(input_mgr, event);
+                }
+            }
             break;
         }
         default:
@@ -470,11 +490,31 @@ static int _route_event_to_focused_window(stlxdm_input_manager_t* input_mgr, con
         return 0;
     }
 
-    // Here you would send the event to the focused window via IPC
-    // For now, just log it
-    if (event->type != POINTER_EVT_MOUSE_MOVED) {
-        STLXDM_INPUT_TRACE("Routing event type %u to window %u", 
-           event->type, input_mgr->focused_window_id);
+    // Get the focused window's event ring
+    stlxgfx_window_t* window = input_mgr->focused_client->window;
+    if (!window->event_ring) {
+        STLXDM_INPUT_TRACE("ERROR: No event ring for focused window %u", window->window_id);
+        return -1;
+    }
+
+    // Convert kernel event to userland event format (they're compatible)
+    stlxgfx_event_t userland_event;
+    userland_event.id = event->id;
+    userland_event.type = (stlxgfx_input_event_type_t)event->type;  // Cast is safe since types match
+    userland_event.udata1 = event->udata1;
+    userland_event.udata2 = event->udata2;
+    userland_event.sdata1 = event->sdata1;
+    userland_event.sdata2 = event->sdata2;
+
+    // Write event to the window's event ring
+    int write_result = stlxgfx_event_ring_write(window->event_ring, &userland_event);
+    if (write_result != 0) {
+        // Event ring is full - this is normal for high-frequency events like mouse movement
+        if (event->type != POINTER_EVT_MOUSE_MOVED) {
+            STLXDM_INPUT_TRACE("WARNING: Event ring full for window %u, dropping event type %u", 
+               window->window_id, event->type);
+        }
+        return -1;
     }
 
     return 0;
@@ -499,7 +539,7 @@ int stlxdm_input_manager_set_focus(stlxdm_input_manager_t* input_mgr, stlxdm_cli
 
     if (old_client != client) {
         input_mgr->stats.focus_changes++;
-        STLXDM_INPUT_TRACE("Focus changed: %u -> %u", old_window_id, input_mgr->focused_window_id);
+        // STLXDM_INPUT_TRACE("Focus changed: %u -> %u", old_window_id, input_mgr->focused_window_id);
     }
 
     return 0;
