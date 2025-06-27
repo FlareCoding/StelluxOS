@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 199309L
 #include "stlxdm_input_manager.h"
 #include "stlxdm_compositor.h"
+#include "stlxdm_hud.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -23,7 +24,8 @@ static int _terminate_window_drag(stlxdm_input_manager_t* input_mgr);
 
 int stlxdm_input_manager_init(stlxdm_input_manager_t* input_mgr, 
                              stlxdm_compositor_t* compositor,
-                             stlxdm_server_t* server) {
+                             stlxdm_server_t* server,
+                             void* hud) {
     if (!input_mgr || !compositor || !server) {
         STLXDM_INPUT_TRACE("ERROR: Invalid parameters for input manager init");
         return -1;
@@ -34,6 +36,7 @@ int stlxdm_input_manager_init(stlxdm_input_manager_t* input_mgr,
     
     // Set component references
     input_mgr->server = server;
+    input_mgr->hud = hud;
     
     // Initialize cursor state
     input_mgr->cursor_x = STLXDM_INPUT_CURSOR_DEFAULT_X;
@@ -235,9 +238,15 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const stlxgfx_
                     if (new_window_x < -STLXDM_DRAG_BOUNDARY_MARGIN) {
                         new_window_x = -STLXDM_DRAG_BOUNDARY_MARGIN;
                     }
-                    if (new_window_y < -STLXDM_DRAG_BOUNDARY_MARGIN) {
-                        new_window_y = -STLXDM_DRAG_BOUNDARY_MARGIN;
+                    
+                    // HUD constraint: Prevent window decorations from overlapping HUD area
+                    // The window's top edge (including title bar and border) must be at or below HUD height
+                    int32_t window_top_edge = new_window_y - WINDOW_TITLE_BAR_HEIGHT - WINDOW_BORDER_WIDTH;
+                    if (window_top_edge < STLXDM_HUD_HEIGHT) {
+                        // Clamp to HUD height - window decorations must not overlap HUD
+                        new_window_y = STLXDM_HUD_HEIGHT + WINDOW_TITLE_BAR_HEIGHT + WINDOW_BORDER_WIDTH;
                     }
+                    
                     if (new_window_x + (int32_t)input_mgr->drag_state.dragged_client->window->width > 
                         input_mgr->cursor_max_x + STLXDM_DRAG_BOUNDARY_MARGIN) {
                         new_window_x = input_mgr->cursor_max_x + STLXDM_DRAG_BOUNDARY_MARGIN - 
@@ -280,6 +289,17 @@ static int _handle_mouse_event(stlxdm_input_manager_t* input_mgr, const stlxgfx_
         case POINTER_EVT_MOUSE_BTN_PRESSED: {
             uint32_t button = event->udata1;
             uint32_t current_time = _get_current_time_ms();
+            
+            // Check for HUD clicks first (HUD takes priority)
+            if (input_mgr->hud && input_mgr->cursor_y >= 0 && input_mgr->cursor_y < STLXDM_HUD_HEIGHT) {
+                stlxdm_hud_t* hud = (stlxdm_hud_t*)input_mgr->hud;
+                if (stlxdm_hud_handle_mouse_click(hud, input_mgr->cursor_x, input_mgr->cursor_y) == 0) {
+                    // HUD handled the click - don't process further
+                    input_mgr->last_clicked_button = button;
+                    input_mgr->last_click_time_ms = current_time;
+                    break;
+                }
+            }
             
             // Find window under cursor and focus it immediately on press
             stlxdm_client_info_t* clicked_window = 
@@ -592,6 +612,11 @@ stlxdm_client_info_t* stlxdm_input_manager_find_window_at_position(
         int32_t window_y = client->window->posy - WINDOW_TITLE_BAR_HEIGHT - WINDOW_BORDER_WIDTH;
         int32_t window_width = client->window->width + (2 * WINDOW_BORDER_WIDTH);
         int32_t window_height = client->window->height + WINDOW_TITLE_BAR_HEIGHT + (2 * WINDOW_BORDER_WIDTH);
+        
+        // Skip windows that are positioned in the HUD area (window top edge overlaps HUD)
+        if (window_y < STLXDM_HUD_HEIGHT) {
+            continue;
+        }
         
         if (x >= window_x && x < window_x + window_width &&
             y >= window_y && y < window_y + window_height) {

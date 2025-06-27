@@ -1,4 +1,5 @@
 #include "stlxdm_server.h"
+#include "stlxdm_hud.h"
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
@@ -7,6 +8,7 @@
 #include <stlxgfx/internal/stlxgfx_protocol.h>
 #include <stlxgfx/internal/stlxgfx_event_dm.h>
 #include <stlxgfx/surface.h>
+#include <stlxgfx/window.h>
 
 int stlxdm_server_init(stlxdm_server_t* server, stlxgfx_context_t* gfx_ctx, stlxgfx_pixel_format_t format) {
     if (!server || !gfx_ctx) {
@@ -146,16 +148,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
                                                      stlxdm_client_info_t* client,
                                                      const stlxgfx_message_header_t* header,
                                                      const uint8_t* payload) {
-    const stlxgfx_create_window_request_t* req = (const stlxgfx_create_window_request_t*)payload;
-    
-
-    
-    // Check if client already has a window
-    if (client->window != NULL) {
-        printf("[STLXDM_SERVER] Client %u already has a window\n", client->client_id);
-        // TODO: Send error response
-        return -1;
-    }
+    stlxgfx_create_window_request_t* req = (stlxgfx_create_window_request_t*)payload;
     
     // Validate window dimensions
     if (req->width == 0 || req->height == 0 || req->width > 4096 || req->height > 4096) {
@@ -164,9 +157,22 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
         return -1;
     }
     
+    // Validate window position - ensure window decorations don't overlap HUD area
+    int32_t window_top_edge = req->posy - WINDOW_TITLE_BAR_HEIGHT - WINDOW_BORDER_WIDTH;
+    if (window_top_edge < STLXDM_HUD_HEIGHT) {
+        req->posy += STLXDM_HUD_HEIGHT;
+    }
+    
     // Validate title length
     if (req->title_length > 255) {
         printf("[STLXDM_SERVER] Title too long: %u characters\n", req->title_length);
+        // TODO: Send error response
+        return -1;
+    }
+    
+    // Check if client already has a window
+    if (client->window != NULL) {
+        printf("[STLXDM_SERVER] Client %u already has a window\n", client->client_id);
         // TODO: Send error response
         return -1;
     }

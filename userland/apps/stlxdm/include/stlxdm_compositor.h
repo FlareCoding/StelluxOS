@@ -5,6 +5,7 @@
 #include <stlxgfx/stlxgfx.h>
 #include <stlxgfx/surface.h>
 #include "stlxdm_framebuffer.h"
+#include "stlxdm_hud.h"
 
 // Forward declarations
 typedef struct stlxgfx_context stlxgfx_context_t;
@@ -21,6 +22,9 @@ typedef struct {
     
     // Compositor surface
     stlxgfx_surface_t* compositor_surface;
+    
+    // HUD integration
+    stlxdm_hud_t* hud;
     
     // State flags
     int initialized;
@@ -39,9 +43,10 @@ typedef enum {
  * Initialize the compositor
  * @param compositor - compositor context to initialize
  * @param gfx_ctx - graphics context
+ * @param hud - HUD context (can be NULL if no HUD)
  * @return 0 on success, negative on error
  */
-int stlxdm_compositor_init(stlxdm_compositor_t* compositor, stlxgfx_context_t* gfx_ctx);
+int stlxdm_compositor_init(stlxdm_compositor_t* compositor, stlxgfx_context_t* gfx_ctx, stlxdm_hud_t* hud);
 
 /**
  * Cleanup the compositor

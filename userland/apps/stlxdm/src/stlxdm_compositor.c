@@ -11,7 +11,7 @@
 #define WINDOW_CLOSE_BUTTON_X_SIZE  6
 #define WINDOW_CLOSE_BUTTON_X_THICKNESS 1
 
-int stlxdm_compositor_init(stlxdm_compositor_t* compositor, stlxgfx_context_t* gfx_ctx) {
+int stlxdm_compositor_init(stlxdm_compositor_t* compositor, stlxgfx_context_t* gfx_ctx, stlxdm_hud_t* hud) {
     if (!compositor || !gfx_ctx) {
         printf("[STLXDM_COMPOSITOR] ERROR: Invalid parameters for compositor init\n");
         return -1;
@@ -20,6 +20,7 @@ int stlxdm_compositor_init(stlxdm_compositor_t* compositor, stlxgfx_context_t* g
     // Initialize compositor context
     memset(compositor, 0, sizeof(stlxdm_compositor_t));
     compositor->gfx_ctx = gfx_ctx;
+    compositor->hud = hud;
     
     // Initialize framebuffer
     if (stlxdm_get_framebuffer_info(&compositor->fb_info) != 0) {
@@ -115,6 +116,18 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server, int
         const int window_x = window->posx;
         const int window_y = window->posy;
         
+        // Check if window has any visible parts (allow partial off-screen rendering)
+        // Only skip if window is completely off-screen
+        if (window_x + (int32_t)window->width <= 0 || 
+            window_y + (int32_t)window->height <= 0 ||
+            window_x >= (int32_t)compositor->compositor_surface->width ||
+            window_y >= (int32_t)compositor->compositor_surface->height) {
+            if (sync_result > 0) {
+                stlxgfx_dm_finish_sync_window(window); // Clean up sync state if we started it
+            }
+            continue;
+        }
+        
         // Check if window + decorations fit on screen
         const int decoration_width = 2;  // 2 * border_width (1 * 2)
         const int decoration_height = 34; // title_bar_height (32) + 2 * border_width (1 * 2)
@@ -155,7 +168,14 @@ int stlxdm_compositor_compose(stlxdm_compositor_t* compositor, void* server, int
         );
     }
     
-    // Render cursor if valid position provided
+    // Render HUD
+    if (compositor->hud) {
+        if (stlxdm_hud_render(compositor->hud, compositor->compositor_surface) < 0) {
+            printf("[STLXDM_COMPOSITOR] Error rendering HUD\n");
+        }
+    }
+    
+    // Render cursor if valid position provided (on top of everything)
     if (cursor_x >= 0 && cursor_y >= 0) {
         stlxdm_compositor_draw_cursor(compositor, cursor_x, cursor_y);
     }
@@ -229,21 +249,26 @@ void stlxdm_compositor_draw_cursor(stlxdm_compositor_t* compositor, int32_t x, i
     const int cursor_width = 18;
     const int cursor_height = 16;
     
-    // Check bounds
-    if (x < 0 || y < 0 || 
-        x + cursor_width >= (int32_t)surface->width || 
-        y + cursor_height >= (int32_t)surface->height) {
+    // Calculate clipping bounds - only draw visible parts
+    int start_x = (x < 0) ? -x : 0;
+    int start_y = (y < 0) ? -y : 0;
+    int end_x = (x + cursor_width > (int32_t)surface->width) ? cursor_width - ((x + cursor_width) - (int32_t)surface->width) : cursor_width;
+    int end_y = (y + cursor_height > (int32_t)surface->height) ? cursor_height - ((y + cursor_height) - (int32_t)surface->height) : cursor_height;
+    
+    // Check if cursor is completely off-screen
+    if (start_x >= cursor_width || start_y >= cursor_height || end_x <= 0 || end_y <= 0) {
         return;
     }
     
     // First pass: Draw shadow (offset by 1 pixel down and right)
-    for (int row = 0; row < cursor_height; row++) {
-        for (int col = 0; col < cursor_width; col++) {
+    for (int row = start_y; row < end_y; row++) {
+        for (int col = start_x; col < end_x; col++) {
             char pixel = cursor_shape[row][col];
             if (pixel == 'X' || pixel == '.') {
                 int shadow_x = x + col + 1;
                 int shadow_y = y + row + 1;
-                if (shadow_x < (int32_t)surface->width && shadow_y < (int32_t)surface->height) {
+                if (shadow_x >= 0 && shadow_x < (int32_t)surface->width && 
+                    shadow_y >= 0 && shadow_y < (int32_t)surface->height) {
                     stlxgfx_draw_pixel(surface, shadow_x, shadow_y, shadow);
                 }
             }
@@ -251,8 +276,8 @@ void stlxdm_compositor_draw_cursor(stlxdm_compositor_t* compositor, int32_t x, i
     }
     
     // Second pass: Draw main cursor
-    for (int row = 0; row < cursor_height; row++) {
-        for (int col = 0; col < cursor_width; col++) {
+    for (int row = start_y; row < end_y; row++) {
+        for (int col = start_x; col < end_x; col++) {
             char pixel = cursor_shape[row][col];
             if (pixel == 'X') {
                 // Black outline
@@ -290,71 +315,73 @@ void stlxdm_compositor_draw_window_decorations(stlxdm_compositor_t* compositor,
     int32_t deco_width = window_width + (2 * WINDOW_BORDER_WIDTH);
     int32_t deco_height = window_height + WINDOW_TITLE_BAR_HEIGHT + (2 * WINDOW_BORDER_WIDTH);
     
-    // Check bounds to prevent drawing outside screen
-    if (deco_x < 0 || deco_y < 0 || 
-        deco_x + deco_width >= (int32_t)surface->width || 
-        deco_y + deco_height >= (int32_t)surface->height) {
-        return; // Skip decorations if they would go outside screen bounds
+    // Clip decoration bounds to surface
+    int32_t clip_x = 0;
+    int32_t clip_y = 0;
+    int32_t clip_w = (int32_t)surface->width;
+    int32_t clip_h = (int32_t)surface->height;
+    
+    int32_t draw_x = deco_x < clip_x ? clip_x : deco_x;
+    int32_t draw_y = deco_y < clip_y ? clip_y : deco_y;
+    int32_t draw_w = (deco_x + deco_width > clip_w) ? (clip_w - draw_x) : (deco_x + deco_width - draw_x);
+    int32_t draw_h = (deco_y + deco_height > clip_h) ? (clip_h - draw_y) : (deco_y + deco_height - draw_y);
+    if (draw_w <= 0 || draw_h <= 0) return;
+    
+    // 1. Draw window border (clipped)
+    // Top border
+    stlxgfx_fill_rect(surface, draw_x, draw_y, draw_w, WINDOW_BORDER_WIDTH, border_color);
+    // Bottom border
+    stlxgfx_fill_rect(surface, draw_x, draw_y + draw_h - WINDOW_BORDER_WIDTH, draw_w, WINDOW_BORDER_WIDTH, border_color);
+    // Left border
+    stlxgfx_fill_rect(surface, draw_x, draw_y, WINDOW_BORDER_WIDTH, draw_h, border_color);
+    // Right border
+    stlxgfx_fill_rect(surface, draw_x + draw_w - WINDOW_BORDER_WIDTH, draw_y, WINDOW_BORDER_WIDTH, draw_h, border_color);
+    
+    // 2. Draw title bar (clipped)
+    int32_t titlebar_x = draw_x + WINDOW_BORDER_WIDTH;
+    int32_t titlebar_y = draw_y + WINDOW_BORDER_WIDTH;
+    int32_t titlebar_w = draw_w - (2 * WINDOW_BORDER_WIDTH);
+    int32_t titlebar_h = WINDOW_TITLE_BAR_HEIGHT;
+    if (titlebar_w > 0 && titlebar_h > 0 && titlebar_y >= 0 && titlebar_y < (int32_t)surface->height) {
+        stlxgfx_fill_rect(surface, titlebar_x, titlebar_y, titlebar_w, titlebar_h, title_bar_color);
     }
     
-    // 1. Draw window border
-    // Top border
-    stlxgfx_fill_rect(surface, deco_x, deco_y, deco_width, WINDOW_BORDER_WIDTH, border_color);
-    // Bottom border  
-    stlxgfx_fill_rect(surface, deco_x, deco_y + deco_height - WINDOW_BORDER_WIDTH, deco_width, WINDOW_BORDER_WIDTH, border_color);
-    // Left border
-    stlxgfx_fill_rect(surface, deco_x, deco_y, WINDOW_BORDER_WIDTH, deco_height, border_color);
-    // Right border
-    stlxgfx_fill_rect(surface, deco_x + deco_width - WINDOW_BORDER_WIDTH, deco_y, WINDOW_BORDER_WIDTH, deco_height, border_color);
-    
-    // 2. Draw title bar
-    stlxgfx_fill_rect(surface, deco_x + WINDOW_BORDER_WIDTH, deco_y + WINDOW_BORDER_WIDTH, 
-                      deco_width - (2 * WINDOW_BORDER_WIDTH), WINDOW_TITLE_BAR_HEIGHT, title_bar_color);
-    
-    // 3. Draw close button
+    // 3. Draw close button (clipped)
     int32_t close_x = deco_x + deco_width - WINDOW_BORDER_WIDTH - WINDOW_CLOSE_BUTTON_MARGIN - WINDOW_CLOSE_BUTTON_SIZE;
     int32_t close_y = deco_y + WINDOW_BORDER_WIDTH + WINDOW_CLOSE_BUTTON_MARGIN;
-    
-    // Close button background (modern dark with subtle red highlight)
-    stlxgfx_fill_rect(surface, close_x, close_y, WINDOW_CLOSE_BUTTON_SIZE, WINDOW_CLOSE_BUTTON_SIZE, is_focused ? close_button_hover : close_button_bg);
-    
-    // Draw modern X in close button (clean lines)
-    int32_t x_center_x = close_x + WINDOW_CLOSE_BUTTON_SIZE / 2;
-    int32_t x_center_y = close_y + WINDOW_CLOSE_BUTTON_SIZE / 2;
-    
-    // Diagonal line from top-left to bottom-right (thinner, more precise)
-    for (int i = 0; i < WINDOW_CLOSE_BUTTON_X_SIZE; i++) {
-        stlxgfx_fill_rect(surface, 
-                          x_center_x - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
-                          x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
-                          WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
-        stlxgfx_fill_rect(surface, 
-                          x_center_x - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i + 1, 
-                          x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
-                          WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
+    if (close_x + WINDOW_CLOSE_BUTTON_SIZE > 0 && close_x < (int32_t)surface->width &&
+        close_y + WINDOW_CLOSE_BUTTON_SIZE > 0 && close_y < (int32_t)surface->height) {
+        stlxgfx_fill_rect(surface, close_x, close_y, WINDOW_CLOSE_BUTTON_SIZE, WINDOW_CLOSE_BUTTON_SIZE, is_focused ? close_button_hover : close_button_bg);
+        // Draw modern X in close button (clean lines)
+        int32_t x_center_x = close_x + WINDOW_CLOSE_BUTTON_SIZE / 2;
+        int32_t x_center_y = close_y + WINDOW_CLOSE_BUTTON_SIZE / 2;
+        for (int i = 0; i < WINDOW_CLOSE_BUTTON_X_SIZE; i++) {
+            stlxgfx_fill_rect(surface, 
+                              x_center_x - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                              x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                              WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
+            stlxgfx_fill_rect(surface, 
+                              x_center_x - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i + 1, 
+                              x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                              WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
+        }
+        for (int i = 0; i < WINDOW_CLOSE_BUTTON_X_SIZE; i++) {
+            stlxgfx_fill_rect(surface, 
+                              x_center_x + WINDOW_CLOSE_BUTTON_X_SIZE/2 - i, 
+                              x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                              WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
+            stlxgfx_fill_rect(surface, 
+                              x_center_x + WINDOW_CLOSE_BUTTON_X_SIZE/2 - i - 1, 
+                              x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
+                              WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
+        }
     }
     
-    // Diagonal line from top-right to bottom-left
-    for (int i = 0; i < WINDOW_CLOSE_BUTTON_X_SIZE; i++) {
-        stlxgfx_fill_rect(surface, 
-                          x_center_x + WINDOW_CLOSE_BUTTON_X_SIZE/2 - i, 
-                          x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
-                          WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
-        stlxgfx_fill_rect(surface, 
-                          x_center_x + WINDOW_CLOSE_BUTTON_X_SIZE/2 - i - 1, 
-                          x_center_y - WINDOW_CLOSE_BUTTON_X_SIZE/2 + i, 
-                          WINDOW_CLOSE_BUTTON_X_THICKNESS, WINDOW_CLOSE_BUTTON_X_THICKNESS, close_button_x_color);
-    }
-    
-    // 4. Draw window title
+    // 4. Draw window title (clipped)
     const char* title_to_display = title && title[0] != '\0' ? title : "Untitled";
-    
-    // Calculate text position (left-aligned with some padding)
     int32_t text_x = deco_x + WINDOW_BORDER_WIDTH + 10;
     int32_t text_y = deco_y + WINDOW_BORDER_WIDTH + (WINDOW_TITLE_BAR_HEIGHT / 2) - 8; // Center vertically
-    
-    // Draw title text (if graphics context supports text rendering)
-    if (compositor->gfx_ctx) {
+    if (compositor->gfx_ctx && text_x >= 0 && text_x < (int32_t)surface->width && text_y >= 0 && text_y < (int32_t)surface->height) {
         stlxgfx_render_text(compositor->gfx_ctx, surface, title_to_display, 
                            text_x, text_y, 14, title_text_color);
     }
