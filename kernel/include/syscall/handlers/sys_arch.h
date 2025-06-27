@@ -6,6 +6,7 @@
 // Declare all architecture-specific syscall handlers
 DECLARE_SYSCALL_HANDLER(set_thread_area);
 DECLARE_SYSCALL_HANDLER(set_tid_address);
+DECLARE_SYSCALL_HANDLER(reboot);
 
 DECLARE_SYSCALL_HANDLER(elevate);
 

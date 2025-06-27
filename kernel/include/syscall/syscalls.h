@@ -51,6 +51,7 @@
 #define SYSCALL_SYS_EXIT                60
 #define SYSCALL_SYS_FCNTL               72
 #define SYSCALL_SYS_SET_THREAD_AREA     158
+#define SYSCALL_SYS_REBOOT              169
 #define SYSCALL_SYS_SET_TID_ADDRESS     218
 #define SYSCALL_SYS_CLOCK_GETTIME       228
 #define SYSCALL_SYS_EXIT_GROUP          231
