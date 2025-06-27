@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, deque
 from symbol_analyzer import SymbolAnalyzer
 from colorama import Fore, Style, init as colorama_init
 
@@ -19,7 +19,6 @@ class CallGraphBuilder:
         self.call_graph = defaultdict(list)  # Maps caller address to list of callee edges
         self.addr_to_symbol = {sym['address']: sym for sym in symbols}
         self.called_addresses = set()
-        self.call_paths = None
         self.privilege_violations = []
         self.privilege_warnings = []
 
@@ -54,7 +53,6 @@ class CallGraphBuilder:
                     except ValueError:
                         pass
 
-        self.call_paths = self.generate_call_paths()
         self.analyze_privilege_violations()
 
     def find_root_functions(self):
@@ -67,100 +65,90 @@ class CallGraphBuilder:
                 root_functions.append(sym)
         return root_functions
 
-    def generate_call_paths(self):
-        """
-        Generate all call paths starting from root functions.
-        Returns a list of paths, each represented as a list of tuples (function name, privilege, address).
-        """
-        root_functions = self.find_root_functions()
-        paths = []
-
-        def dfs(current_path, current_addr, visited, is_privileged):
-            if current_addr in visited:
-                return  # Prevent cycles
-            if current_addr not in self.addr_to_symbol:
-                return  # Skip unknown addresses
-
-            visited.add(current_addr)
-            symbol = self.addr_to_symbol[current_addr]
-            current_privilege = is_privileged or symbol['privileged']
-            current_path.append((symbol['name'], current_privilege, current_addr))
-
-            if current_addr not in self.call_graph:
-                paths.append(list(current_path))  # Leaf node, save the path
-            else:
-                for edge in self.call_graph[current_addr]:
-                    dfs(current_path, edge["callee"], visited, current_privilege)
-
-            current_path.pop()
-            visited.remove(current_addr)
-
-        for root in root_functions:
-            dfs([], root['address'], set(), root['privileged'])
-
-        return paths
-
     def analyze_privilege_violations(self):
         """
-        Analyze the call paths and detect privilege violations and warnings.
-        A privilege violation occurs when:
-        - An unprivileged function calls a privileged function.
-
-        A privilege warning occurs when:
-        - An unprivileged function that inherited privilege in the current call chain calls a privileged function.
-
-        Stores violations in `self.privilege_violations` and warnings in `self.privilege_warnings`.
+        Analyze the call graph and detect privilege violations and warnings using BFS.
+        This approach avoids enumerating all possible paths and is more efficient.
         """
-        self.privilege_violations = []  # Clear previous violations
-        self.privilege_warnings = []    # Clear previous warnings
-        seen_violations = set()         # Track unique violations
-        seen_warnings = set()           # Track unique warnings
-
-        def check_for_violations_and_warnings(path):
-            for i in range(len(path) - 1):
-                caller_name, caller_privileged, caller_addr = path[i]
-                callee_name, callee_privileged, callee_addr = path[i + 1]
-
-                # Find the corresponding call edge for elevated privilege check
-                edge_key = (caller_addr, callee_addr)
-                call_edges = self.call_graph.get(caller_addr, [])
-                elevated_call_privilege = any(
-                    edge["callee"] == callee_addr and edge.get("elevated_call_privilege", False)
-                    for edge in call_edges
-                )
-
-                # Detect privilege violation
-                if not caller_privileged and callee_privileged and not elevated_call_privilege:
-                    violation_key = (
-                        caller_name, caller_addr, callee_name, callee_addr,
-                        tuple((name, privileged) for name, privileged, _ in path[:i + 2])  # Path snapshot
-                    )
-                    if violation_key not in seen_violations:
-                        seen_violations.add(violation_key)
-                        violation = {
-                            "caller": {"name": caller_name, "address": caller_addr},
-                            "callee": {"name": callee_name, "address": callee_addr},
-                            "path": path[:i + 2],  # The path leading to the violation
-                        }
-                        self.privilege_violations.append(violation)
-
-                # Detect privilege warning
-                if caller_privileged and not elevated_call_privilege and not caller_name.startswith("dynpriv::"):
-                    warning_key = (
-                        caller_name, caller_addr, callee_name, callee_addr,
-                        tuple((name, privileged) for name, privileged, _ in path[:i + 2])  # Path snapshot
-                    )
-                    if callee_privileged and warning_key not in seen_warnings:
-                        seen_warnings.add(warning_key)
-                        warning = {
-                            "caller": {"name": caller_name, "address": caller_addr},
-                            "callee": {"name": callee_name, "address": callee_addr},
-                            "path": path[:i + 2],  # The path leading to the warning
-                        }
-                        self.privilege_warnings.append(warning)
-
-        for path in self.call_paths:
-            check_for_violations_and_warnings(path)
+        self.privilege_violations = []
+        self.privilege_warnings = []
+        seen_violations = set()
+        seen_warnings = set()
+        
+        # Track visited nodes to prevent infinite loops
+        visited = set()
+        
+        def bfs_analyze_violations(start_addr):
+            """
+            Use BFS to analyze privilege violations from a starting function.
+            """
+            if start_addr in visited:
+                return
+                
+            queue = deque([(start_addr, [], False)])  # (addr, path, inherited_privilege)
+            visited.add(start_addr)
+            
+            while queue:
+                current_addr, current_path, inherited_privilege = queue.popleft()
+                
+                if current_addr not in self.addr_to_symbol:
+                    continue
+                    
+                symbol = self.addr_to_symbol[current_addr]
+                current_privilege = inherited_privilege or symbol['privileged']
+                
+                # Add current function to path
+                current_path = current_path + [(symbol['name'], current_privilege, current_addr)]
+                
+                # Check all outgoing edges for violations
+                for edge in self.call_graph.get(current_addr, []):
+                    callee_addr = edge["callee"]
+                    elevated_call_privilege = edge.get("elevated_call_privilege", False)
+                    
+                    if callee_addr not in self.addr_to_symbol:
+                        continue
+                        
+                    callee_symbol = self.addr_to_symbol[callee_addr]
+                    callee_privileged = callee_symbol['privileged']
+                    
+                    # Detect privilege violation
+                    if not current_privilege and callee_privileged and not elevated_call_privilege:
+                        violation_key = (symbol['name'], current_addr, callee_symbol['name'], callee_addr)
+                        if violation_key not in seen_violations:
+                            seen_violations.add(violation_key)
+                            violation = {
+                                "caller": {"name": symbol['name'], "address": current_addr},
+                                "callee": {"name": callee_symbol['name'], "address": callee_addr},
+                                "path": current_path + [(callee_symbol['name'], callee_privileged, callee_addr)],
+                            }
+                            self.privilege_violations.append(violation)
+                    
+                    # Detect privilege warning
+                    if current_privilege and callee_privileged and not elevated_call_privilege and not symbol['name'].startswith("dynpriv::"):
+                        warning_key = (symbol['name'], current_addr, callee_symbol['name'], callee_addr)
+                        if warning_key not in seen_warnings:
+                            seen_warnings.add(warning_key)
+                            warning = {
+                                "caller": {"name": symbol['name'], "address": current_addr},
+                                "callee": {"name": callee_symbol['name'], "address": callee_addr},
+                                "path": current_path + [(callee_symbol['name'], callee_privileged, callee_addr)],
+                            }
+                            self.privilege_warnings.append(warning)
+                    
+                    # Continue BFS if we haven't visited this callee yet
+                    if callee_addr not in visited:
+                        visited.add(callee_addr)
+                        queue.append((callee_addr, current_path, current_privilege))
+        
+        # Start analysis from all root functions
+        root_functions = self.find_root_functions()
+        for root in root_functions:
+            bfs_analyze_violations(root['address'])
+        
+        # Also analyze from any remaining unvisited functions (in case of cycles)
+        for sym in self.symbols:
+            if sym['address'] not in visited:
+                bfs_analyze_violations(sym['address'])
 
     def print_call_graph_tree(self, sym=None):
         """
