@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/reboot.h>
 #include <stlxgfx/stlxgfx.h>
 
 int stlxdm_hud_power_create(stlxdm_hud_component_t* component, uint32_t x, uint32_t y, uint32_t width, uint32_t height) {
@@ -119,11 +121,7 @@ int stlxdm_hud_power_handle_click(stlxdm_hud_component_t* comp, int32_t click_x,
     if ((uint32_t)click_x >= comp->x && (uint32_t)click_x < comp->x + comp->width &&
         (uint32_t)click_y >= comp->y && (uint32_t)click_y < comp->y + comp->height) {
         
-        printf("[STLXDM_HUD_POWER] Power button clicked - shutdown requested\n");
-        
-        // TODO: Implement actual shutdown functionality
-        // For now, just print the message as specified
-        
+        reboot(RB_POWER_OFF);
         return 0;  // Click handled
     }
 
