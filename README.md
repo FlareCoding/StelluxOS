@@ -74,7 +74,7 @@
   * [Prerequisites](#bangbang-prerequisites)
   * [Building and Running](#hammer_and_wrench-building-and-running-the-project)
   * [Debugging](#wrench-debugging)
-  * [Baremetal Debugging](#wrench-debugging)
+  * [Baremetal Debugging](#wrench-baremetal-debugging)
 - [Contributing](#wave-contributing)
 - [License](#newspaper-license)
 - [Acknowledgements](#gem-acknowledgements)
@@ -101,10 +101,31 @@ when it actually happened.
 ### :camera: Screenshots
 
 <div align="center"> 
-  <img src="screenshots/stellux-run.png" alt="screenshot" />
+  <img src="screenshots/stellux_run_splash.png" alt="StelluxOS Splash Screen" width="45%" />
+  <img src="screenshots/stellux_run_desktop.png" alt="StelluxOS Desktop" width="45%" />
   <br/>
   <img src="screenshots/stellux-xhci-run.png" alt="screenshot" />
 </div>
+
+<!-- Supported Architectures -->
+### :desktop_computer: Supported Architectures
+
+<div align="center">
+  <table>
+    <tr>
+      <th>Architecture</th>
+      <th>Status</th>
+      <th>Notes</th>
+    </tr>
+    <tr>
+      <td><b>x86_64</b></td>
+      <td>✅ <b>Fully Supported</b></td>
+      <td>Primary development target with full feature support</td>
+    </tr>
+  </table>
+</div>
+
+*StelluxOS is currently optimized for x86_64 systems with modern UEFI firmware. Support for additional architectures is planned for future releases.*
 
 <!-- Features -->
 ### :dart: Features
@@ -119,11 +140,17 @@ when it actually happened.
 - HPET and time management support
 - Stacktrace dump from the _interrupt_ context
 - Kernel module subsystem allowing daemons and drivers to be spawned easily
-- Xhci driver module for USB stack support
+- xHCI driver for USB stack support
+- HID drivers for modern USB keyboards and mice
 - Unit testing framework integrated with Github Actions CI pipeline
 - VFS and RAM filesystem support
 - GDB server stub for low-level kernel debugging, including breakpoint and memory
   inspection support on baremetal
+- Display manager with compositor utilizing triple-buffer rendering, framebuffer management, and input handling
+- Userland applications with musl libc integration for POSIX compatibility
+- Custom stlibc library providing Stellux-specific functionality
+- Terminal emulator with ANSI escape sequence support and built-in command processing
+- Graphics library (libstlxgfx) for window management and event handling (Undergoing improvements)
 
 <!-- Getting Started -->
 ## :gear: Getting Started
@@ -134,12 +161,28 @@ when it actually happened.
 Clone the repository
 ```bash
 git clone https://github.com/FlareCoding/StelluxOS.git
+cd StelluxOS
 ```
 
-Install dependencies
+Install system dependencies
 ```bash
 make install-dependencies
 ```
+
+Build the custom toolchain for userspace applications
+```bash
+cd toolchain/scripts
+source env.sh
+./fetch-sources.sh
+./build-toolchain.sh
+cd ../..
+```
+
+*Note: The custom toolchain is required for building userspace applications. The toolchain includes:*
+- *binutils 2.43*
+- *GCC 14.3.0* 
+- *musl libc 1.2.5*
+- *Target: x86_64-linux-musl*
 
 <!-- Building and Running the Project -->
 ### :hammer_and_wrench: Building and Running the Project
