@@ -50,6 +50,7 @@ typedef enum {
 typedef struct {
     // Core components
     stlxdm_server_t* server;               // Reference to server for client management
+    void* hud;                             // Reference to HUD for click handling
     
     // Cursor state management
     int32_t cursor_x;                      // Current cursor X position
@@ -126,11 +127,13 @@ typedef struct {
  * @param input_mgr Input manager context to initialize
  * @param compositor Compositor reference for rendering coordination
  * @param server Server reference for client management
+ * @param hud HUD reference for click handling (can be NULL)
  * @return 0 on success, negative on error
  */
 int stlxdm_input_manager_init(stlxdm_input_manager_t* input_mgr, 
                              stlxdm_compositor_t* compositor,
-                             stlxdm_server_t* server);
+                             stlxdm_server_t* server,
+                             void* hud);
 
 /**
  * @brief Clean up the input manager

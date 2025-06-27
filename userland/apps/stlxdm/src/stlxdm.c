@@ -12,6 +12,7 @@
 #include <time.h>
 #include "stlxdm.h"
 #include "stlxdm_splash.h"
+#include "stlxdm_hud.h"
 #include <stlxgfx/stlxgfx.h>
 #include <stlxgfx/internal/stlxgfx_dm.h>
 #include <stlxgfx/internal/stlxgfx_comm.h>
@@ -38,7 +39,7 @@ int main() {
         return 1;
     }
     
-    if (stlxdm_compositor_init(compositor, gfx_ctx) != 0) {
+    if (stlxdm_compositor_init(compositor, gfx_ctx, NULL) != 0) {
         printf("ERROR: Failed to initialize compositor\n");
         free(compositor);
         stlxgfx_cleanup(gfx_ctx);
@@ -73,10 +74,10 @@ int main() {
         return 1;
     }
 
-    // Initialize input manager
-    stlxdm_input_manager_t* input_manager = malloc(sizeof(stlxdm_input_manager_t));
-    if (!input_manager) {
-        printf("ERROR: Failed to allocate input manager\n");
+    // Initialize HUD first
+    stlxdm_hud_t* hud = malloc(sizeof(stlxdm_hud_t));
+    if (!hud) {
+        printf("ERROR: Failed to allocate HUD\n");
         stlxdm_server_cleanup(server);
         free(server);
         stlxdm_compositor_cleanup(compositor);
@@ -85,8 +86,50 @@ int main() {
         return 1;
     }
     
-    if (stlxdm_input_manager_init(input_manager, compositor, server) != 0) {
+    if (stlxdm_hud_init(hud, gfx_ctx) != 0) {
+        printf("ERROR: Failed to initialize HUD\n");
+        free(hud);
+        stlxdm_server_cleanup(server);
+        free(server);
+        stlxdm_compositor_cleanup(compositor);
+        free(compositor);
+        stlxgfx_cleanup(gfx_ctx);
+        return 1;
+    }
+
+    // Initialize input manager
+    stlxdm_input_manager_t* input_manager = malloc(sizeof(stlxdm_input_manager_t));
+    if (!input_manager) {
+        printf("ERROR: Failed to allocate input manager\n");
+        stlxdm_hud_cleanup(hud);
+        free(hud);
+        stlxdm_server_cleanup(server);
+        free(server);
+        stlxdm_compositor_cleanup(compositor);
+        free(compositor);
+        stlxgfx_cleanup(gfx_ctx);
+        return 1;
+    }
+    
+    if (stlxdm_input_manager_init(input_manager, compositor, server, hud) != 0) {
         printf("ERROR: Failed to initialize input manager\n");
+        free(input_manager);
+        stlxdm_hud_cleanup(hud);
+        free(hud);
+        stlxdm_server_cleanup(server);
+        free(server);
+        stlxdm_compositor_cleanup(compositor);
+        free(compositor);
+        stlxgfx_cleanup(gfx_ctx);
+        return 1;
+    }
+
+    // Re-initialize compositor with HUD
+    if (stlxdm_compositor_init(compositor, gfx_ctx, hud) != 0) {
+        printf("ERROR: Failed to re-initialize compositor with HUD\n");
+        stlxdm_hud_cleanup(hud);
+        free(hud);
+        stlxdm_input_manager_cleanup(input_manager);
         free(input_manager);
         stlxdm_server_cleanup(server);
         free(server);
@@ -96,8 +139,21 @@ int main() {
         return 1;
     }
     
-    int loop_iteration = 0;
-    
+    // Register default HUD components
+    if (stlxdm_hud_register_default_components(hud, compositor->fb_info.width) != 0) {
+        printf("ERROR: Failed to register default HUD components\n");
+        stlxdm_hud_cleanup(hud);
+        free(hud);
+        stlxdm_input_manager_cleanup(input_manager);
+        free(input_manager);
+        stlxdm_server_cleanup(server);
+        free(server);
+        stlxdm_compositor_cleanup(compositor);
+        free(compositor);
+        stlxgfx_cleanup(gfx_ctx);
+        return 1;
+    }
+
     while (1) {
         // === INPUT EVENT HANDLING ===
         // Process input events using the input manager
@@ -125,6 +181,14 @@ int main() {
         stlxdm_input_manager_get_cursor_position(input_manager, &cursor_x, &cursor_y);
         uint32_t focused_window_id = stlxdm_input_manager_get_focused_window_id(input_manager);
         
+        // Handle HUD mouse events
+        if (cursor_y >= 0 && cursor_y < STLXDM_HUD_HEIGHT) {
+            stlxdm_hud_handle_mouse_move(hud, cursor_x, cursor_y);
+        } else {
+            // Mouse is outside HUD area - clear hover states
+            stlxdm_hud_handle_mouse_move(hud, -1, -1);
+        }
+        
         // Compose the frame with cursor and focus information
         if (stlxdm_compositor_compose(compositor, server, cursor_x, cursor_y, focused_window_id) < 0) {
             printf("[STLXDM] Error composing frame\n");
@@ -134,10 +198,12 @@ int main() {
         if (stlxdm_compositor_present(compositor) < 0) {
             printf("[STLXDM] Error presenting frame\n");
         }
-        
-        loop_iteration++;
     }
         
+    // Clean up HUD
+    stlxdm_hud_cleanup(hud);
+    free(hud);
+    
     // Clean up input manager
     stlxdm_input_manager_cleanup(input_manager);
     free(input_manager);
