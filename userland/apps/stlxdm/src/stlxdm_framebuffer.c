@@ -14,10 +14,7 @@ int stlxdm_get_framebuffer_info(struct gfx_framebuffer_info* fb_info) {
         printf("ERROR: Failed to get framebuffer info: %ld\n", result);
         return -1;
     }
-    
-    printf("STLXDM] Framebuffer info: %ux%u, %u BPP, pitch=%u, size=%u\n", 
-           fb_info->width, fb_info->height, fb_info->bpp, fb_info->pitch, fb_info->size);
-    
+
     return 0;
 }
 
@@ -27,8 +24,7 @@ uint8_t* stlxdm_map_framebuffer(void) {
         printf("ERROR: Failed to map framebuffer: %ld\n", map_result);
         return NULL;
     }
-    
-    printf("[STLXDM] Framebuffer mapped at address: 0x%lx\n", map_result);
+
     return (uint8_t*)map_result;
 }
 
@@ -38,8 +34,7 @@ int stlxdm_unmap_framebuffer(void) {
         printf("ERROR: Failed to unmap framebuffer: %ld\n", result);
         return -1;
     }
-    
-    printf("Framebuffer unmapped successfully\n");
+
     return 0;
 }
 

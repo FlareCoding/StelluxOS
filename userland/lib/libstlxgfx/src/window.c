@@ -227,8 +227,6 @@ void stlxgfx_destroy_window(stlxgfx_context_t* ctx, stlxgfx_window_t* window) {
                            header.sequence_number, response_header.sequence_number);
                 } else if (response.result_code != STLXGFX_ERROR_SUCCESS) {
                     printf("STLXGFX: Window destruction failed: %d\n", response.result_code);
-                } else {
-                    printf("STLXGFX: Window %u destroyed successfully\n", window->window_id);
                 }
             } else {
                 printf("STLXGFX: Warning - Failed to receive destroy window response, proceeding with local cleanup\n");

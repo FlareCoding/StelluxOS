@@ -12,7 +12,7 @@
 
 int stlxdm_server_init(stlxdm_server_t* server, stlxgfx_context_t* gfx_ctx, stlxgfx_pixel_format_t format) {
     if (!server || !gfx_ctx) {
-        printf("[STLXDM_SERVER] ERROR: Invalid parameters for server init\n");
+        STLXDM_SERVER_TRACE("ERROR: Invalid parameters for server init");
         return -1;
     }
     
@@ -84,7 +84,7 @@ int stlxdm_server_accept_new_connections(stlxdm_server_t* server) {
                 // Allocate receive buffer for this client
                 server->clients[slot].receive_buffer = malloc(STLXGFX_MAX_PAYLOAD_SIZE);
                 if (!server->clients[slot].receive_buffer) {
-                    printf("[STLXDM_SERVER] ERROR: Failed to allocate receive buffer for client %u\n", server->clients[slot].client_id);
+                    STLXDM_SERVER_TRACE("ERROR: Failed to allocate receive buffer for client %u", server->clients[slot].client_id);
                     // Clean up the connection
                     close(new_client_fd);
                     server->clients[slot].socket_fd = -1;
@@ -97,13 +97,13 @@ int stlxdm_server_accept_new_connections(stlxdm_server_t* server) {
                 new_connections++;
             } else {
                 // No slots available, close the connection
-                printf("[STLXDM_SERVER] WARNING: No client slots available, closing connection\n");
+                STLXDM_SERVER_TRACE("WARNING: No client slots available, closing connection");
                 close(new_client_fd);
                 break;
             }
         } else if (new_client_fd == -2) {
             // Error accepting connection
-            printf("[STLXDM_SERVER] ERROR: Failed to accept client connection\n");
+            STLXDM_SERVER_TRACE("ERROR: Failed to accept client connection");
             return -1;
         } else {
             // No more pending connections (new_client_fd == -1)
@@ -137,7 +137,7 @@ static int stlxdm_server_dispatch_message(stlxdm_server_t* server,
             return stlxdm_server_handle_destroy_window_request(server, client, header, payload);
         }
         default: {
-            printf("[STLXDM_SERVER] Unknown message type %u from client %u\n", 
+            STLXDM_SERVER_TRACE("Unknown message type %u from client %u", 
                    header->message_type, client->client_id);
             return -1;
         }
@@ -152,7 +152,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     
     // Validate window dimensions
     if (req->width == 0 || req->height == 0 || req->width > 4096 || req->height > 4096) {
-        printf("[STLXDM_SERVER] Invalid window dimensions: %ux%u\n", req->width, req->height);
+        STLXDM_SERVER_TRACE("Invalid window dimensions: %ux%u", req->width, req->height);
         // TODO: Send error response
         return -1;
     }
@@ -165,14 +165,14 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     
     // Validate title length
     if (req->title_length > 255) {
-        printf("[STLXDM_SERVER] Title too long: %u characters\n", req->title_length);
+        STLXDM_SERVER_TRACE("Title too long: %u characters", req->title_length);
         // TODO: Send error response
         return -1;
     }
     
     // Check if client already has a window
     if (client->window != NULL) {
-        printf("[STLXDM_SERVER] Client %u already has a window\n", client->client_id);
+        STLXDM_SERVER_TRACE("Client %u already has a window", client->client_id);
         // TODO: Send error response
         return -1;
     }
@@ -181,7 +181,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     stlxgfx_context_t* gfx_ctx = server->gfx_ctx;
     
     if (!gfx_ctx) {
-        printf("[STLXDM_SERVER] ERROR: No graphics context available\n");
+        STLXDM_SERVER_TRACE("ERROR: No graphics context available");
         return -1;
     }
     
@@ -190,7 +190,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     stlxgfx_window_sync_t* sync_data;
     
     if (stlxgfx_dm_create_window_sync_shm(gfx_ctx, &sync_shm_handle, &sync_data) != 0) {
-        printf("[STLXDM_SERVER] Failed to create window sync SHM\n");
+        STLXDM_SERVER_TRACE("Failed to create window sync SHM");
         return -1;
     }
     
@@ -203,7 +203,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     
     if (stlxgfx_dm_create_shared_surface_set(gfx_ctx, req->width, req->height, surface_format,
                                              &surface_shm_handle, &surface0, &surface1, &surface2) != 0) {
-        printf("[STLXDM_SERVER] Failed to create surface set SHM\n");
+        STLXDM_SERVER_TRACE("Failed to create surface set SHM");
         // Clean up sync SHM
         stlxgfx_dm_destroy_window_sync_shm(gfx_ctx, sync_shm_handle, sync_data);
         return -1;
@@ -214,7 +214,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     stlxgfx_event_ring_t* event_ring;
     
     if (stlxgfx_dm_create_event_ring_shm(gfx_ctx, &event_shm_handle, &event_ring) != 0) {
-        printf("[STLXDM_SERVER] Failed to create event ring SHM\n");
+        STLXDM_SERVER_TRACE("Failed to create event ring SHM");
         // Clean up surface set SHM
         stlxgfx_dm_destroy_shared_surface_set(gfx_ctx, surface_shm_handle, surface0, surface1, surface2);
         // Clean up sync SHM
@@ -225,7 +225,7 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     // Create and populate window structure
     stlxgfx_window_t* window = malloc(sizeof(stlxgfx_window_t));
     if (!window) {
-        printf("[STLXDM_SERVER] Failed to allocate window structure\n");
+        STLXDM_SERVER_TRACE("Failed to allocate window structure");
         // Clean up all shared memory
         stlxgfx_dm_destroy_event_ring_shm(gfx_ctx, event_shm_handle, event_ring);
         stlxgfx_dm_destroy_shared_surface_set(gfx_ctx, surface_shm_handle, surface0, surface1, surface2);
@@ -278,11 +278,11 @@ static int stlxdm_server_handle_create_window_request(stlxdm_server_t* server,
     };
     
     if (stlxgfx_send_message(client->socket_fd, &response_header, &response) == 0) {
-        printf("[STLXDM_SERVER] Created window ID=%u with sync_shm=%lu, surface_shm=%lu, event_shm=%lu for client %u\n", 
+        STLXDM_SERVER_TRACE("Created window ID=%u with sync_shm=%lu, surface_shm=%lu, event_shm=%lu for client %u", 
                window->window_id, sync_shm_handle, surface_shm_handle, event_shm_handle, client->client_id);
         return 0;
     } else {
-        printf("[STLXDM_SERVER] Failed to send response to client %u\n", client->client_id);
+        STLXDM_SERVER_TRACE("Failed to send response to client %u", client->client_id);
         // Clean up everything on send failure
         client->window = NULL;
         free(window);
@@ -301,7 +301,7 @@ static int stlxdm_server_handle_destroy_window_request(stlxdm_server_t* server,
     
     // Check if client has a window
     if (client->window == NULL) {
-        printf("[STLXDM_SERVER] Client %u has no window to destroy\n", client->client_id);
+        STLXDM_SERVER_TRACE("Client %u has no window to destroy", client->client_id);
         // Send error response
         stlxgfx_message_header_t error_header = {
             .protocol_version = STLXGFX_PROTOCOL_VERSION,
@@ -323,7 +323,7 @@ static int stlxdm_server_handle_destroy_window_request(stlxdm_server_t* server,
     
     // Validate that the window ID matches
     if (client->window->window_id != req->window_id) {
-        printf("[STLXDM_SERVER] Window ID mismatch: client has %u, request for %u\n", 
+        STLXDM_SERVER_TRACE("Window ID mismatch: client has %u, request for %u", 
                client->window->window_id, req->window_id);
         // Send error response
         stlxgfx_message_header_t error_header = {
@@ -348,13 +348,13 @@ static int stlxdm_server_handle_destroy_window_request(stlxdm_server_t* server,
     stlxgfx_context_t* gfx_ctx = server->gfx_ctx;
     
     if (!gfx_ctx) {
-        printf("[STLXDM_SERVER] ERROR: No graphics context available\n");
+        STLXDM_SERVER_TRACE("ERROR: No graphics context available");
         return -1;
     }
     
     // Clean up window resources
     stlxgfx_window_t* window = client->window;
-    printf("[STLXDM_SERVER] Destroying window ID=%u for client %u\n", 
+    STLXDM_SERVER_TRACE("Destroying window ID=%u for client %u", 
            window->window_id, client->client_id);
     
     // Clean up shared memory resources
@@ -402,11 +402,11 @@ static int stlxdm_server_handle_destroy_window_request(stlxdm_server_t* server,
     };
     
     if (stlxgfx_send_message(client->socket_fd, &response_header, &response) == 0) {
-        printf("[STLXDM_SERVER] Successfully destroyed window ID=%u for client %u\n", 
+        STLXDM_SERVER_TRACE("Successfully destroyed window ID=%u for client %u", 
                req->window_id, client->client_id);
         return 0;
     } else {
-        printf("[STLXDM_SERVER] Failed to send destroy response to client %u\n", client->client_id);
+        STLXDM_SERVER_TRACE("Failed to send destroy response to client %u", client->client_id);
         return -1;
     }
 }
@@ -431,16 +431,16 @@ int stlxdm_server_handle_client_requests(stlxdm_server_t* server) {
         
         if (result == 0) {
             // Message received, dispatch to appropriate handler
-            printf("[STLXDM_SERVER] Received %s (%u) from client %u (slot %d)\n", 
+            STLXDM_SERVER_TRACE("Received %s (%u) from client %u (slot %d)", 
                    stlxdm_server_get_message_type_name(header.message_type),
                    header.message_type, client->client_id, i);
             
             if (stlxdm_server_dispatch_message(server, client, &header, client->receive_buffer) < 0) {
-                printf("[STLXDM_SERVER] Failed to handle message from client %u\n", client->client_id);
+                STLXDM_SERVER_TRACE("Failed to handle message from client %u", client->client_id);
             }
         } else if (result == -2) {
             // Client disconnected or error
-            printf("[STLXDM_SERVER] Client %u (slot %d) disconnected\n", client->client_id, i);
+            STLXDM_SERVER_TRACE("Client %u (slot %d) disconnected", client->client_id, i);
             stlxdm_server_disconnect_client(server, i);
         }
         // result == -1 means no data available, which is normal
@@ -464,7 +464,7 @@ int stlxdm_server_disconnect_client(stlxdm_server_t* server, int client_index) {
         return 0; // Already disconnected
     }
     
-    printf("[STLXDM_SERVER] Disconnecting client %u (slot %d, fd %d)\n", 
+    STLXDM_SERVER_TRACE("Disconnecting client %u (slot %d, fd %d)", 
            client->client_id, client_index, client->socket_fd);
     
     // Close socket
@@ -475,7 +475,7 @@ int stlxdm_server_disconnect_client(stlxdm_server_t* server, int client_index) {
     // Clean up window if it exists
     if (client->window) {
         stlxgfx_window_t* window = client->window;
-        printf("[STLXDM_SERVER] Cleaning up window ID=%u for client %u\n", 
+        STLXDM_SERVER_TRACE("Cleaning up window ID=%u for client %u", 
                window->window_id, client->client_id);
         
         // Properly destroy window with shared memory cleanup

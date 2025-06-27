@@ -289,15 +289,13 @@ int stlxdm_show_splash_screen(stlxdm_compositor_t* compositor) {
         printf("[STLXDM_SPLASH] ERROR: Invalid compositor for splash screen\n");
         return -1;
     }
-    
-    printf("[STLXDM_SPLASH] Starting splash screen...\n");
-    
+
     const struct gfx_framebuffer_info* fb_info = stlxdm_compositor_get_fb_info(compositor);
     if (!fb_info) {
         printf("[STLXDM_SPLASH] ERROR: No framebuffer info available\n");
         return -1;
     }
-    
+
     stlxgfx_surface_t* splash_surface = stlxgfx_dm_create_surface(
         compositor->gfx_ctx,
         fb_info->width,
@@ -312,8 +310,7 @@ int stlxdm_show_splash_screen(stlxdm_compositor_t* compositor) {
     
     uint32_t frame = 0;
     uint32_t elapsed_ms = 0;
-    printf("[STLXDM_SPLASH] Displaying splash screen (press Enter to continue)\n");
-    
+
     while (1) {
         create_dark_background(splash_surface);
         draw_animated_gradient_logo(splash_surface, frame);
@@ -336,7 +333,6 @@ int stlxdm_show_splash_screen(stlxdm_compositor_t* compositor) {
         }
         
         if (check_for_enter_key()) {
-            printf("[STLXDM_SPLASH] Enter key pressed, continuing to display manager\n");
             break;
         }
         
@@ -354,6 +350,5 @@ int stlxdm_show_splash_screen(stlxdm_compositor_t* compositor) {
     stlxdm_launch_terminal();
     
     stlxgfx_dm_destroy_surface(compositor->gfx_ctx, splash_surface);
-    printf("[STLXDM_SPLASH] Splash screen completed\n");
     return 0;
 }
