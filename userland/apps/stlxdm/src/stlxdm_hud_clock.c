@@ -99,6 +99,7 @@ int stlxdm_hud_clock_handle_click(stlxdm_hud_component_t* comp, int32_t click_x,
     
     // Clock component doesn't handle clicks for now
     // Could be extended to show date, timezone, etc.
+    __unused click_x; __unused click_y;
     
     return 0;  // Click handled
 }
