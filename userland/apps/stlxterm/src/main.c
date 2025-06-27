@@ -28,17 +28,12 @@ void handle_event(stlxgfx_window_t* window, const stlxgfx_event_t* event) {
 }
 
 int main() {
-    printf("[STLXTERM] Starting Stellux Terminal Emulator...\n");
-    
     // Create terminal with smaller size (72x18 characters)
     int window_width = 576;  // 72 chars * 8 pixels + margins
     int window_height = 360; // 18 chars * 16 pixels + margins
     int cols = TERMINAL_DEFAULT_COLS;
     int rows = TERMINAL_DEFAULT_ROWS;
-    
-    printf("[STLXTERM] Creating terminal with %dx%d characters (%dx%d pixels)...\n", 
-           cols, rows, window_width, window_height);
-    
+
     g_terminal = terminal_create(cols, rows, window_width, window_height);
     if (!g_terminal) {
         printf("[STLXTERM] ERROR: Failed to create terminal\n");
@@ -46,7 +41,6 @@ int main() {
     }
     
     // Initialize the terminal
-    printf("[STLXTERM] Initializing terminal...\n");
     if (terminal_init(g_terminal) != 0) {
         printf("[STLXTERM] ERROR: Failed to initialize terminal\n");
         terminal_destroy(g_terminal);
@@ -54,7 +48,6 @@ int main() {
     }
     
     // Set up event callback
-    printf("[STLXTERM] Setting up event callback...\n");
     if (stlxgfx_set_event_callback(handle_event) != 0) {
         printf("[STLXTERM] WARNING: Failed to set event callback\n");
     }
@@ -64,16 +57,11 @@ int main() {
     terminal_write_string(g_terminal, "Terminal is ready for input.\r\n");
     terminal_write_string(g_terminal, "$ ");
     
-    printf("[STLXTERM] Terminal ready - starting main loop...\n");
-    
     // Main terminal loop
     terminal_main_loop(g_terminal);
     
     // Cleanup
-    printf("[STLXTERM] Shutting down terminal...\n");
     terminal_cleanup(g_terminal);
     terminal_destroy(g_terminal);
-    
-    printf("[STLXTERM] Terminal emulator completed successfully!\n");
     return 0;
 }

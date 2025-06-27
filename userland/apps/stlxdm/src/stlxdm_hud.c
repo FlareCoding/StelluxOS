@@ -35,8 +35,7 @@ int stlxdm_hud_init(stlxdm_hud_t* hud, stlxgfx_context_t* gfx_ctx) {
     hud->mouse_y = -1;
     hud->mouse_over_hud = 0;
     hud->needs_redraw = 1;  // Initial render needed
-    
-    printf("[STLXDM_HUD] HUD initialized successfully\n");
+
     return 0;
 }
 
@@ -55,8 +54,6 @@ void stlxdm_hud_cleanup(stlxdm_hud_t* hud) {
     hud->component_count = 0;
     hud->max_components = 0;
     hud->needs_redraw = 0;
-    
-    printf("[STLXDM_HUD] HUD cleaned up\n");
 }
 
 int stlxdm_hud_register_component(stlxdm_hud_t* hud, stlxdm_hud_component_t* component) {
@@ -79,8 +76,6 @@ int stlxdm_hud_register_component(stlxdm_hud_t* hud, stlxdm_hud_component_t* com
     
     // Mark HUD as needing redraw
     stlxdm_hud_mark_dirty(hud);
-    
-    printf("[STLXDM_HUD] Registered component ID=%u, type=%d\n", component->id, component->type);
     return 0;
 }
 
@@ -106,7 +101,6 @@ int stlxdm_hud_unregister_component(stlxdm_hud_t* hud, uint32_t component_id) {
         }
     }
     
-    printf("[STLXDM_HUD] Component ID=%u not found for unregistration\n", component_id);
     return -1;
 }
 
@@ -167,7 +161,6 @@ int stlxdm_hud_handle_mouse_click(stlxdm_hud_t* hud, int32_t click_x, int32_t cl
 
     // Check if click is within HUD area
     if (click_y < 0 || click_y >= STLXDM_HUD_HEIGHT) {
-        printf("[STLXDM_HUD] Click outside HUD area (y=%d, HUD height=%d)\n", click_y, STLXDM_HUD_HEIGHT);
         return 0;  // Click outside HUD, not handled
     }
 

@@ -65,7 +65,6 @@ int terminal_init(terminal_t* term) {
     }
     
     // Initialize graphics library in application mode
-    printf("[TERMINAL] Initializing graphics library...\n");
     term->gfx_ctx = stlxgfx_init(STLXGFX_MODE_APPLICATION);
     if (!term->gfx_ctx) {
         printf("[TERMINAL] ERROR: Failed to initialize graphics library\n");
@@ -73,7 +72,6 @@ int terminal_init(terminal_t* term) {
     }
     
     // Create window
-    printf("[TERMINAL] Creating window (%dx%d)...\n", term->window_width, term->window_height);
     term->window = stlxgfx_create_window(term->gfx_ctx, 
                                         term->window_width, term->window_height, 
                                         60, 102, "StelluxOS Terminal");
@@ -86,8 +84,6 @@ int terminal_init(terminal_t* term) {
     // Set running state
     term->running = true;
     term->needs_redraw = true;
-    
-    printf("[TERMINAL] Terminal initialized successfully\n");
     return 0;
 }
 
@@ -173,8 +169,6 @@ void terminal_main_loop(terminal_t* term) {
         return;
     }
     
-    printf("[TERMINAL] Starting main loop...\n");
-    
     while (term->running && stlxgfx_is_window_opened(term->window)) {
         // Poll for events
         stlxgfx_poll_events();
@@ -197,8 +191,6 @@ void terminal_main_loop(terminal_t* term) {
         struct timespec frame_delay = { 0, 16 * 1000 * 1000 }; // 16ms
         nanosleep(&frame_delay, NULL);
     }
-    
-    printf("[TERMINAL] Main loop ended\n");
 }
 
 // Render the terminal

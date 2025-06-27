@@ -5,6 +5,15 @@
 #include <stlxgfx/stlxgfx.h>
 #include <stlxgfx/window.h>
 
+// Trace/debug output control
+#define STLXDM_SERVER_TRACE_ENABLED 0  // Set to 0 to disable all server trace output
+
+#if STLXDM_SERVER_TRACE_ENABLED
+    #define STLXDM_SERVER_TRACE(fmt, ...) printf("[STLXDM_SERVER] " fmt "\n", ##__VA_ARGS__)
+#else
+    #define STLXDM_SERVER_TRACE(fmt, ...) ((void)0)  // No-op when disabled
+#endif
+
 // Maximum number of concurrent clients
 #define STLXDM_MAX_CLIENTS 16
 

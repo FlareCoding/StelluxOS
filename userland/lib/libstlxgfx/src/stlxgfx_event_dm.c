@@ -57,10 +57,7 @@ int stlxgfx_dm_create_event_ring_shm(stlxgfx_context_t* ctx,
     // Return results
     *out_shm_handle = shm_handle;
     *out_ring = ring;
-    
-    printf("STLXGFX: Created event ring SHM '%s' (handle: %lu, size: %zu)\n", 
-           shm_name, shm_handle, aligned_size);
-    
+
     return 0;
 }
 
@@ -90,9 +87,7 @@ int stlxgfx_dm_destroy_event_ring_shm(stlxgfx_context_t* ctx,
         printf("STLXGFX: Failed to destroy event ring shared memory handle\n");
         return -1;
     }
-    
-    printf("STLXGFX: Destroyed event ring SHM (handle: %lu)\n", shm_handle);
-    
+
     return 0;
 }
 
