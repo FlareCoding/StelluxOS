@@ -22,18 +22,6 @@ int main() {
 
     // We don't need to wait for the display manager
     stlx_proc_close(stlxdm_handle);
-
-    // Give the display manager 5 seconds to startup and be ready
-    struct timespec ts = { 5, 0 };
-    nanosleep(&ts, NULL);
-
-    int terminal_handle = launch_process("stlxterm");
-    if (terminal_handle < 0) {
-        return -1;
-    }
-    
-    stlx_proc_close(terminal_handle);
-
     return 0;
 }
 

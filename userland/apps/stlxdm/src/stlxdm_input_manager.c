@@ -2,6 +2,7 @@
 #include "stlxdm_input_manager.h"
 #include "stlxdm_compositor.h"
 #include "stlxdm_hud.h"
+#include "stlxdm_sys.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -184,7 +185,7 @@ static int _handle_keyboard_event(stlxdm_input_manager_t* input_mgr, const stlxg
                     return 0;
                     
                 case STLXDM_SHORTCUT_CTRL_ALT_T:
-                    STLXDM_INPUT_TRACE("Global shortcut: Terminal (not implemented)");
+                    stlxdm_launch_terminal();
                     return 0;
                     
                 default:

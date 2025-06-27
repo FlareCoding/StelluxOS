@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 199309L
 #include "stlxdm_splash.h"
+#include "stlxdm_sys.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -348,6 +349,9 @@ int stlxdm_show_splash_screen(stlxdm_compositor_t* compositor) {
         frame++;
         elapsed_ms += SPLASH_FRAME_DELAY_MS;
     }
+    
+    // Launch terminal after splash screen exits
+    stlxdm_launch_terminal();
     
     stlxgfx_dm_destroy_surface(compositor->gfx_ctx, splash_surface);
     printf("[STLXDM_SPLASH] Splash screen completed\n");

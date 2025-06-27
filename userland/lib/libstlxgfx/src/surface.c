@@ -1,6 +1,8 @@
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "stlxgfx/surface.h"
 #include "stlxgfx/internal/stlxgfx_ctx.h"
 #include "stlxgfx/internal/stlxgfx_protocol.h"
@@ -193,8 +195,10 @@ int stlxgfx_dm_create_shared_surface_set(stlxgfx_context_t* ctx,
     size_t total_size = aligned_surface_size * 3;  // Three aligned surfaces
     
     // Create shared memory
+    static uint32_t surface_counter = 0;
+    uint32_t timestamp = (uint32_t)time(NULL);
     char shm_name[64];
-    snprintf(shm_name, sizeof(shm_name), "stlxgfx_surfaces3_%u_%u", width, height);
+    snprintf(shm_name, sizeof(shm_name), "stlxgfx_surfaces3_%u_%u_%u_%u", width, height, timestamp, ++surface_counter);
     
     shm_handle_t shm_handle = stlx_shm_create(shm_name, total_size, SHM_READ_WRITE);
     if (shm_handle == 0) {
@@ -368,9 +372,11 @@ int stlxgfx_dm_create_window_sync_shm(stlxgfx_context_t* ctx,
     size_t sync_size = sizeof(stlxgfx_window_sync_t);
     size_t aligned_size = (sync_size + 15) & ~15;  // 16-byte align
     
-    // Create shared memory with unique name
+    // Create shared memory with unique name using counter and timestamp
+    static uint32_t sync_counter = 0;
+    uint32_t timestamp = (uint32_t)time(NULL);
     char shm_name[64];
-    snprintf(shm_name, sizeof(shm_name), "stlxgfx_sync_%p", (void*)ctx);
+    snprintf(shm_name, sizeof(shm_name), "stlxgfx_sync_%p_%u_%u", (void*)ctx, timestamp, ++sync_counter);
     
     shm_handle_t shm_handle = stlx_shm_create(shm_name, aligned_size, SHM_READ_WRITE);
     if (shm_handle == 0) {
