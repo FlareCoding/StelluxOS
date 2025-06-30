@@ -32,11 +32,11 @@ pd_table_high:
 
 .align 0x1000
 page_tables_low:
-    .fill 512 * 2, 8, 0 /* Page tables for low memory (2 entries for 4MB) */
+    .fill 512 * 4, 8, 0 /* Page tables for low memory (4 entries for 8MB) */
 
 .align 0x1000
 page_tables_high:
-    .fill 512 * 2, 8, 0 /* Page tables for higher-half memory (2 entries for 4MB) */
+    .fill 512 * 4, 8, 0 /* Page tables for higher-half memory (4 entries for 8MB) */
 
 .section .data.bootstrap
 .align 8
@@ -172,7 +172,7 @@ setup_paging:
     /* Step 3: Map physical memory into both PDs */
     lea edi, [pd_table_low]              /* PD starts at edi (low memory) */
     mov eax, offset page_tables_low      /* First Page Table physical address for low memory */
-    mov ecx, 2                           /* Map 2 entries (4MB) */
+    mov ecx, 4                           /* Map 4 entries (8MB) */
 
 map_pd_low:
     or eax, 0x3                          /* Present and Writable flags */
@@ -183,7 +183,7 @@ map_pd_low:
 
     lea edi, [pd_table_high]             /* PD[0] starts at edi */
     mov eax, offset page_tables_high     /* First Page Table physical address for higher-half */
-    mov ecx, 2                           /* Map 2 entries (4MB) */
+    mov ecx, 4                           /* Map 4 entries (8MB) */
 
 map_pd_high:
     or eax, 0x3                          /* Present and Writable flags */
@@ -195,7 +195,7 @@ map_pd_high:
     /* Step 4: Fill Page Tables for low memory */
     mov eax, 0x0                         /* Start of physical memory */
     lea edi, [page_tables_low]           /* Start of Page Tables for low memory */
-    mov ecx, 512 * 2                     /* Map 4MB in 4KB pages */
+    mov ecx, 512 * 4                     /* Map 8MB in 4KB pages */
 
 map_pages_low:
     or eax, 0x3                          /* Present and Writable flags */
@@ -207,7 +207,7 @@ map_pages_low:
     /* Step 5: Fill Page Tables for higher-half memory */
     mov eax, 0x0                         /* Start of physical memory */
     lea edi, [page_tables_high]          /* Start of Page Tables for higher-half memory */
-    mov ecx, 512 * 2                     /* Map 4MB in 4KB pages */
+    mov ecx, 512 * 4                     /* Map 8MB in 4KB pages */
 
 map_pages_high:
     or eax, 0x3                          /* Present and Writable flags */
