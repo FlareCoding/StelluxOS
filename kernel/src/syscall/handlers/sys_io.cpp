@@ -7,6 +7,7 @@
 #include <net/unix_socket.h>
 #include <net/unix_socket_manager.h>
 #include <input/system_input_manager.h>
+#include <ipc/pty.h>
 
 DECLARE_SYSCALL_HANDLER(write) {
     int handle = static_cast<int>(arg1);
@@ -72,6 +73,21 @@ DECLARE_SYSCALL_HANDLER(write) {
                 return result; // Error (already negative)
             }
             
+            bytes_written = static_cast<size_t>(result);
+            break;
+        }
+        case handle_type::PTY_DEVICE: {
+            // Write to PTY device (master or slave)
+            pty* device = static_cast<pty*>(hentry->object);
+            if (!device) {
+                return -EBADF;
+            }
+
+            ssize_t result = device->write(buf, count);
+            if (result < 0) {
+                return result;
+            }
+
             bytes_written = static_cast<size_t>(result);
             break;
         }
@@ -160,6 +176,22 @@ DECLARE_SYSCALL_HANDLER(read) {
             break;
         }
         
+        case handle_type::PTY_DEVICE: {
+            // Read from PTY device (master or slave)
+            pty* device = static_cast<pty*>(hentry->object);
+            if (!device) {
+                return -EBADF;
+            }
+
+            ssize_t result = device->read(buf, count);
+            if (result < 0) {
+                return result;
+            }
+
+            bytes_read = result;
+            break;
+        }
+        
         default: {
             return -EBADF; // Unsupported handle type
         }
@@ -185,6 +217,58 @@ DECLARE_SYSCALL_HANDLER(open) {
     // Validate userspace pointer
     if (!pathname) {
         return -EFAULT;
+    }
+
+    // Check for PTY creation request
+    if (strcmp(pathname, "ptym:create") == 0) {
+        // Create master PTY with RAW mode
+        auto master_pty = new pty(1, pty_input_policy::RAW);
+        if (!master_pty) {
+            return -ENOMEM;
+        }
+
+        // Create slave PTY with COOKED mode (line buffering, echo)
+        auto slave_pty = new pty(1, pty_input_policy::COOKED);
+        if (!slave_pty) {
+            delete master_pty;
+            return -ENOMEM;
+        }
+
+        // Link the PTYs together
+        master_pty->set_peer_pty(slave_pty);
+        slave_pty->set_peer_pty(master_pty);
+
+        // Make the master PTY non-blocking
+        master_pty->set_blocking(false);
+
+        // Add to process handle table
+        auto& handles = current->get_env()->handles;
+        
+        // Add master PTY handle
+        size_t master_handle = handles.add_handle(handle_type::PTY_DEVICE, master_pty, 0, 0);
+        if (master_handle == SIZE_MAX) {
+            delete master_pty;
+            delete slave_pty;
+            return -EMFILE;
+        }
+
+        // Add slave PTY handle
+        size_t slave_handle = handles.add_handle(handle_type::PTY_DEVICE, slave_pty, 0, 1); // Flag 1 indicates slave
+        if (slave_handle == SIZE_MAX) {
+            handles.remove_handle(master_handle);
+            delete master_pty;
+            delete slave_pty;
+            return -EMFILE;
+        }
+
+        // Pack the handles into a 32-bit value (16 bits each)
+        // High 16 bits = master handle, Low 16 bits = slave handle
+        long result = static_cast<long>(((master_handle & 0xFFFF) << 16) | (slave_handle & 0xFFFF));
+
+        SYSCALL_TRACE("open(\"%s\", 0x%x, %d) = 0x%llx (master=%d, slave=%d)\n",
+            pathname, flags, mode, result, master_handle, slave_handle);
+        
+        return result;
     }
     
     auto& vfs = fs::virtual_filesystem::get();
@@ -311,6 +395,15 @@ DECLARE_SYSCALL_HANDLER(close) {
             }
             break;
         }
+        case handle_type::PTY_DEVICE: {
+            // Cleanup PTY device.
+            pty* device = static_cast<pty*>(hentry->object);
+            if (device) {
+                device->close();
+                delete device;
+            }
+            break;
+        }
         default: {
             return -EBADF; // Invalid handle type
         }
@@ -345,8 +438,8 @@ DECLARE_SYSCALL_HANDLER(fcntl) {
         return -EBADF; // Bad file descriptor
     }
     
-    // For now, we only support fcntl on Unix sockets for O_NONBLOCK
-    if (hentry->type != handle_type::UNIX_SOCKET) {
+    // Currently support fcntl on Unix sockets and PTY devices for O_NONBLOCK
+    if (hentry->type != handle_type::UNIX_SOCKET && hentry->type != handle_type::PTY_DEVICE) {
         return -ENOTTY; // Not supported on this handle type
     }
     
@@ -560,6 +653,22 @@ DECLARE_SYSCALL_HANDLER(writev) {
                 
                 // Let the socket's write method handle state checking
                 n = socket->write(k_iov.iov_base, k_iov.iov_len);
+                break;
+            }
+            
+            case handle_type::PTY_DEVICE: {
+                // Write to PTY device (master or slave)
+                pty* device = static_cast<pty*>(hentry->object);
+                if (!device) {
+                    return -EBADF;
+                }
+
+                ssize_t result = device->write(k_iov.iov_base, k_iov.iov_len);
+                if (result < 0) {
+                    return result;
+                }
+
+                n = result;
                 break;
             }
             

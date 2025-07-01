@@ -8,6 +8,8 @@
 
 typedef int64_t eid_t;
 
+class pty;
+
 /**
  * @brief Allocates a new environment ID.
  * 
@@ -81,6 +83,7 @@ enum class handle_type : uint32_t {
     EVENT,          // Event handle
     SHARED_MEM,     // Shared memory handle
     UNIX_SOCKET,    // Unix domain socket handle
+    PTY_DEVICE      // PTY device
 };
 
 /**
@@ -171,11 +174,6 @@ struct process_env {
                 entries[i].flags = 0;
                 entries[i].metadata = 0;
             }
-
-            // Hardcore POSIX entries for stdout, stdin, and stderr
-            entries[0].type = handle_type::INPUT_STREAM;
-            entries[1].type = handle_type::OUTPUT_STREAM;
-            entries[2].type = handle_type::OUTPUT_STREAM;
         }
 
         /**
@@ -252,6 +250,59 @@ struct process_env {
         identity.eid = alloc_environment_id();
         environment.init();
         handles.init();
+
+        // Hardcore POSIX entries for stdout, stdin, and stderr
+        handles.entries[0].type = handle_type::INPUT_STREAM;
+        handles.entries[1].type = handle_type::OUTPUT_STREAM;
+        handles.entries[2].type = handle_type::OUTPUT_STREAM;
+    }
+
+    /**
+     * @brief Constructor for process environment with PTY.
+     * 
+     * Initializes all members to their default values and sets up
+     * stdin, stdout, and stderr to use the provided PTY device.
+     * Assigns a new EID to the environment.
+     * 
+     * @param pty_device Pointer to the PTY device to use for stdio
+     */
+    process_env(pty* pty_device) 
+        : identity{0},
+          environment{},
+          working_dir{0},
+          handles{},
+          limits{0, 0},
+          creation_flags(process_creation_flags::NONE) {
+        identity.eid = alloc_environment_id();
+        environment.init();
+        handles.init();
+
+        if (!pty_device) {
+            // Fall back to the default stubs
+            handles.entries[0].type = handle_type::INPUT_STREAM;
+            handles.entries[1].type = handle_type::OUTPUT_STREAM;
+            handles.entries[2].type = handle_type::OUTPUT_STREAM;
+            return;
+        }
+
+        // Set up stdin, stdout, and stderr to use the PTY device
+        handles.entries[0].type = handle_type::PTY_DEVICE;
+        handles.entries[0].object = pty_device;
+        handles.entries[0].access_rights = 0;
+        handles.entries[0].flags = 0;
+        handles.entries[0].metadata = 0;
+
+        handles.entries[1].type = handle_type::PTY_DEVICE;
+        handles.entries[1].object = pty_device;
+        handles.entries[1].access_rights = 0;
+        handles.entries[1].flags = 0;
+        handles.entries[1].metadata = 0;
+
+        handles.entries[2].type = handle_type::PTY_DEVICE;
+        handles.entries[2].object = pty_device;
+        handles.entries[2].access_rights = 0;
+        handles.entries[2].flags = 0;
+        handles.entries[2].metadata = 0;
     }
 
     /**

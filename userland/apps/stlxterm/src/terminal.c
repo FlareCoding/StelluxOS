@@ -11,7 +11,6 @@
 #include <stlxgfx/stlxgfx.h>
 
 #include "terminal.h"
-#include "builtin_commands.h"
 
 // Default colors
 #define DEFAULT_FG_COLOR 0xFFE0E0E0  // Light gray
@@ -84,6 +83,43 @@ int terminal_init(terminal_t* term) {
     // Set running state
     term->running = true;
     term->needs_redraw = true;
+
+    int pty_fds = open("ptym:create", 0, 0);
+    if (pty_fds < 0) {
+        printf("[-] Failed to create PTY (error: %d)\n", pty_fds);
+        return -1;
+    }
+
+    // Extract master and slave handles from packed 32-bit value
+    // High 16 bits = master handle, Low 16 bits = slave handle
+    term->master_pty_handle = (pty_fds >> 16) & 0xFFFF;
+    term->slave_pty_handle = pty_fds & 0xFFFF;
+
+    // Set master PTY to non-blocking mode so reads don't block the terminal
+    // int flags = fcntl(term->master_pty_handle, F_GETFL, 0);
+    // if (flags >= 0) {
+    //     fcntl(term->master_pty_handle, F_SETFL, flags | O_NONBLOCK);
+    // }
+
+    struct proc_info info;
+    info.inherit_pty = 1;
+    info.pty_handle = term->slave_pty_handle;
+
+    term->shell_handle = stlx_proc_create("/initrd/bin/shell", PROC_NEW_ENV, PROC_ACCESS_ALL, PROC_HANDLE_NONE, &info);
+    if (term->shell_handle < 0) {
+        printf("[-] Failed to launch the shell process (handle: %d)\n", term->shell_handle);
+        return -1;
+    }
+
+    stlx_proc_close(term->shell_handle);
+
+    // Give the shell a moment to start up and display its initial prompt
+    struct timespec startup_delay = { 0, 150 * 1000 * 1000 }; // 150ms
+    nanosleep(&startup_delay, NULL);
+    
+    // Read and display the initial shell output (the prompt should appear automatically)
+    terminal_read_from_shell(term);
+
     return 0;
 }
 
@@ -152,15 +188,58 @@ void terminal_reset(terminal_t* term) {
     
     // Reset selection
     term->state.selection_active = false;
+}
+
+// Forward declaration for escape sequence processing
+static void terminal_process_escape_sequence(terminal_t* term, const char* data, size_t length);
+
+// Read output from shell and display it
+void terminal_read_from_shell(terminal_t* term) {
+    if (!term || term->master_pty_handle < 0) {
+        return;
+    }
     
-    // Reset buffers
-    term->input_buffer_pos = 0;
-    term->output_buffer_pos = 0;
+    char buffer[1024];
+    ssize_t bytes_read = read(term->master_pty_handle, buffer, sizeof(buffer) - 1);
     
-    // Reset command line
-    term->command_line_pos = 0;
-    term->command_ready = false;
-    memset(term->command_line, 0, sizeof(term->command_line));
+    if (bytes_read > 0) {
+        buffer[bytes_read] = '\0';  // Null terminate for safety
+        
+        // Look for escape sequences and process them
+        ssize_t i = 0;
+        while (i < bytes_read) {
+            if (buffer[i] == '\033' && i + 1 < bytes_read && buffer[i + 1] == '[') {
+                // Found start of ANSI escape sequence
+                ssize_t seq_start = i;
+                i += 2; // Skip ESC[
+                
+                // Find the end of the sequence (letter character)
+                while (i < bytes_read && (buffer[i] < 'A' || buffer[i] > 'Z') && (buffer[i] < 'a' || buffer[i] > 'z')) {
+                    i++;
+                }
+                
+                if (i < bytes_read) {
+                    i++; // Include the final letter
+                    // Process the complete escape sequence
+                    terminal_process_escape_sequence(term, &buffer[seq_start], i - seq_start);
+                } else {
+                    // Incomplete sequence, treat as regular characters
+                    for (ssize_t j = seq_start; j < bytes_read; j++) {
+                        terminal_write_char(term, buffer[j]);
+                    }
+                    break;
+                }
+            } else {
+                // Regular character
+                terminal_write_char(term, buffer[i]);
+                i++;
+            }
+        }
+        
+        term->needs_redraw = true;
+    }
+    // If bytes_read == 0, no data available (non-blocking read)
+    // If bytes_read < 0, error occurred (could log this if needed)
 }
 
 // Main terminal loop
@@ -172,6 +251,9 @@ void terminal_main_loop(terminal_t* term) {
     while (term->running && stlxgfx_is_window_opened(term->window)) {
         // Poll for events
         stlxgfx_poll_events();
+
+        // Read output from shell and display it
+        terminal_read_from_shell(term);
         
         // Update cursor blink
         term->state.cursor_blink_timer++;
@@ -247,63 +329,38 @@ void terminal_render(terminal_t* term) {
 
 // Handle events
 void terminal_handle_event(terminal_t* term, const stlxgfx_event_t* event) {
-    if (!term || !event) {
+    if (!term || !event || term->master_pty_handle < 0) {
         return;
     }
     
-    bool needs_redraw = false;
-    
     switch (event->type) {
         case STLXGFX_KBD_EVT_KEY_PRESSED: {
+            char key_to_send = 0;
             int ascii_char = event->sdata1;
             
             // Handle special keys
             if (event->udata1 == 0x2A) { // Backspace
-                if (term->state.cursor_x > 0) {
-                    term->state.cursor_x--;
-                    terminal_write_char(term, ' '); // Clear the character
-                    term->state.cursor_x--; // Move back again
-                    
-                    // Also remove from command line buffer
-                    if (term->command_line_pos > 0) {
-                        term->command_line_pos--;
-                        term->command_line[term->command_line_pos] = '\0';
-                    }
-                }
-                needs_redraw = true;
+                key_to_send = '\b';  // Send backspace to shell
             } else if (event->udata1 == 0x28) { // Enter
-                terminal_write_char(term, '\r');
-                terminal_write_char(term, '\n');
-                
-                // Process the command
-                if (term->command_line_pos > 0) {
-                    process_command(term, term->command_line);
-                    
-                    // Reset command line
-                    term->command_line_pos = 0;
-                    memset(term->command_line, 0, sizeof(term->command_line));
-                }
-                
-                // Show new prompt
-                terminal_write_string(term, "$ ");
-                
-                needs_redraw = true;
+                key_to_send = '\n';  // Send newline to shell
             } else if (ascii_char >= 32 && ascii_char <= 126) {
                 // Handle printable characters
-                terminal_write_char(term, (char)ascii_char);
-                
-                // Add to command line buffer
-                if (term->command_line_pos < (int)sizeof(term->command_line) - 1) {
-                    term->command_line[term->command_line_pos] = (char)ascii_char;
-                    term->command_line_pos++;
+                key_to_send = (char)ascii_char;
+            }
+            
+            // Send the key to the shell via master PTY
+            if (key_to_send != 0) {
+                ssize_t bytes_written = write(term->master_pty_handle, &key_to_send, 1);
+                if (bytes_written < 0) {
+                    // Error writing to PTY - could log this if needed
+                    // For now, just continue silently
                 }
-                
-                needs_redraw = true;
             }
             break;
         }
         
         case STLXGFX_KBD_EVT_KEY_RELEASED: {
+            // Ignore key releases for now
             break;
         }
         
@@ -312,9 +369,25 @@ void terminal_handle_event(terminal_t* term, const stlxgfx_event_t* event) {
             break;
         }
     }
+}
+
+// Simple ANSI escape sequence parser for basic terminal control
+static void terminal_process_escape_sequence(terminal_t* term, const char* data, size_t length) {
+    if (!term || !data || length < 3) return;
     
-    if (needs_redraw) {
-        term->needs_redraw = true;
+    // Check for CSI (Control Sequence Introducer) sequences: ESC[
+    if (data[0] == '\033' && data[1] == '[') {
+        // Clear screen sequences
+        if (length >= 4 && data[2] == '2' && data[3] == 'J') {
+            // ESC[2J - Clear entire screen
+            terminal_clear_screen(term);
+            term->needs_redraw = true;
+        } else if (data[2] == 'H' || (length >= 5 && data[2] == '1' && data[3] == ';' && data[4] == '1' && data[5] == 'H')) {
+            // ESC[H or ESC[1;1H - Move cursor to home position (1,1)
+            term->state.cursor_x = 0;
+            term->state.cursor_y = 0;
+            term->needs_redraw = true;
+        }
     }
 }
 
@@ -329,11 +402,29 @@ void terminal_write_char(terminal_t* term, char c) {
             term->state.cursor_x = 0;
             break;
             
-        case '\n': // Line feed
-            term->state.cursor_y++;
+        case '\n': // Line feed - also acts as carriage return in Unix terminals
+            term->state.cursor_x = 0;  // Move to beginning of line
+            term->state.cursor_y++;    // Move to next line
             if (term->state.cursor_y >= term->state.rows) {
                 terminal_scroll_up(term, 1);
                 term->state.cursor_y = term->state.rows - 1;
+            }
+            break;
+            
+        case '\b': // Backspace
+            if (term->state.cursor_x > 0) {
+                term->state.cursor_x--;
+                // Erase the character at the current position
+                if (term->state.cursor_y < term->state.rows) {
+                    terminal_cell_t* cell = &term->state.grid[term->state.cursor_y][term->state.cursor_x];
+                    cell->character = ' ';
+                    cell->foreground_color = term->state.default_fg_color;
+                    cell->background_color = term->state.default_bg_color;
+                    cell->bold = false;
+                    cell->italic = false;
+                    cell->underline = false;
+                    cell->reverse = false;
+                }
             }
             break;
             
@@ -420,12 +511,12 @@ void terminal_clear_screen(terminal_t* term) {
 
 void terminal_clear_line(terminal_t* term, int row) {
     if (!term || row < 0 || row >= term->state.rows) return;
-    // Implementation will be added later
+    // TODO: Implement when needed
 }
 
 void terminal_scroll_down(terminal_t* term, int lines) {
     if (!term || lines <= 0) return;
-    // Implementation will be added later
+    // TODO: Implement when needed
 }
 
 void terminal_set_cursor(terminal_t* term, int x, int y) {
@@ -456,16 +547,7 @@ void terminal_restore_cursor(terminal_t* term) {
     term->state.cursor_y = term->state.saved_cursor_y;
 }
 
-void terminal_insert_char(terminal_t* term, char c) {
-    (void)term; // Mark as unused
-    (void)c;    // Mark as unused
-    // Implementation will be added later
-}
 
-void terminal_delete_char(terminal_t* term) {
-    if (!term) return;
-    // Implementation will be added later
-}
 
 void terminal_set_foreground_color(terminal_t* term, uint32_t color) {
     if (!term) return;
@@ -483,19 +565,16 @@ void terminal_reset_colors(terminal_t* term) {
     term->state.current_bg_color = term->state.default_bg_color;
 }
 
-void terminal_process_input(terminal_t* term) {
-    if (!term) return;
-    // Implementation will be added later
-}
+
 
 void terminal_resize(terminal_t* term, int cols, int rows) {
     (void)term; // Mark as unused
     (void)cols; // Mark as unused
     (void)rows; // Mark as unused
-    // Implementation will be added later
+    // TODO: Implement when needed
 }
 
 void terminal_bell(terminal_t* term) {
     if (!term) return;
-    // Implementation will be added later
+    // TODO: Implement when needed (visual bell, beep sound, etc.)
 }

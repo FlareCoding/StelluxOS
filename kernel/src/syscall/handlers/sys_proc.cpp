@@ -47,8 +47,10 @@ DECLARE_SYSCALL_HANDLER(proc_create) {
     uint32_t access_rights = static_cast<uint32_t>(arg3);
     uint32_t handle_flags = static_cast<uint32_t>(arg4);
     struct userland_proc_info {
-        pid_t pid;          // Process ID
+        int32_t pid;        // Process ID
         char name[256];     // Process name
+        int inherit_pty;    // Indicator whether the specified pty should be inherited
+        int pty_handle;     // Handle to the PTY device in the calling process to set as the target process's PTY
     } *info = reinterpret_cast<struct userland_proc_info*>(arg5);
 
     if (!path) {
@@ -68,14 +70,26 @@ DECLARE_SYSCALL_HANDLER(proc_create) {
         return -ENOMEM;
     }
 
-    auto new_proc_flags = process_creation_flags::SCHEDULE_NOW;
+    process_creation_flags new_proc_flags = process_creation_flags::SCHEDULE_NOW;
 
     if (userland_proc_fl & PROC_CAN_ELEVATE) {
         new_proc_flags |= process_creation_flags::CAN_ELEVATE;
     }
 
+    // Handle PTY inheritance
+    pty* pty_device = nullptr;
+    if (info && info->inherit_pty == 1 && info->pty_handle >= 0) {
+        handle_entry* pty_handle_entry = current->get_env()->handles.get_handle(info->pty_handle);
+        if (pty_handle_entry && pty_handle_entry->type == handle_type::PTY_DEVICE) {
+            pty_device = reinterpret_cast<pty*>(pty_handle_entry->object);
+        }
+    }
+
+    process_env* env = new process_env(pty_device);
+    env->creation_flags = new_proc_flags;
+
     // Initialize the process with the loaded core
-    if (!new_proc->init_with_core(core, new_proc_flags, true)) {
+    if (!new_proc->init(core, true, env, true)) {
         new_proc->cleanup(); // Will call `destroy_process_core`
         delete new_proc;
         return -ENOMEM;

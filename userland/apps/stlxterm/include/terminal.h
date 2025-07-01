@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <fcntl.h>
 #include <stlxgfx/stlxgfx.h>
 
 // Terminal configuration
@@ -80,19 +81,11 @@ typedef struct {
     // Event handling
     bool running;
     bool needs_redraw;
-    
-    // Input buffer
-    char input_buffer[1024];
-    int input_buffer_pos;
-    
-    // Output buffer (for child process communication)
-    char output_buffer[4096];
-    int output_buffer_pos;
-    
-    // Command line handling
-    char command_line[1024];
-    int command_line_pos;
-    bool command_ready;
+
+    // Shell PTY communication
+    pid_t shell_handle;
+    int master_pty_handle;
+    int slave_pty_handle;
 } terminal_t;
 
 // Function prototypes
@@ -118,8 +111,6 @@ void terminal_restore_cursor(terminal_t* term);
 // Text functions
 void terminal_write_char(terminal_t* term, char c);
 void terminal_write_string(terminal_t* term, const char* str);
-void terminal_insert_char(terminal_t* term, char c);
-void terminal_delete_char(terminal_t* term);
 
 // Color functions
 void terminal_set_foreground_color(terminal_t* term, uint32_t color);
@@ -128,7 +119,7 @@ void terminal_reset_colors(terminal_t* term);
 
 // Event handling
 void terminal_handle_event(terminal_t* term, const stlxgfx_event_t* event);
-void terminal_process_input(terminal_t* term);
+void terminal_read_from_shell(terminal_t* term);
 void terminal_main_loop(terminal_t* term);
 
 // Utility functions

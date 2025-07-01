@@ -11,8 +11,6 @@
 #include <stlxgfx/stlxgfx.h>
 
 #include "terminal.h"
-#include "ansi_parser.h"
-#include "process_manager.h"
 
 // Global terminal instance
 static terminal_t* g_terminal = NULL;
@@ -51,11 +49,6 @@ int main() {
     if (stlxgfx_set_event_callback(handle_event) != 0) {
         printf("[STLXTERM] WARNING: Failed to set event callback\n");
     }
-    
-    // Display welcome message
-    terminal_write_string(g_terminal, "Welcome to Stellux Terminal Emulator!\r\n");
-    terminal_write_string(g_terminal, "Terminal is ready for input.\r\n");
-    terminal_write_string(g_terminal, "$ ");
     
     // Main terminal loop
     terminal_main_loop(g_terminal);

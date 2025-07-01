@@ -41,6 +41,8 @@ enum proc_handle_flags_t {
 struct proc_info {
     pid_t pid;          // Process ID
     char name[256];     // Process name
+    int inherit_pty;    // Indicator whether the specified pty should be inherited
+    int pty_handle;     // Handle to the PTY device in the calling process to set as the target process's PTY
 };
 
 /**
