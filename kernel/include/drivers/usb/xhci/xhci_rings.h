@@ -14,14 +14,17 @@ public:
     inline uintptr_t get_physical_base() const { return m_physical_base; }
     inline uint8_t  get_cycle_bit() const { return m_rcs_bit; }
 
-    void enqueue(xhci_trb_t* trb);
+    bool enqueue(xhci_trb_t* trb);
+    void process_event(xhci_command_completion_trb_t* event);
 
 private:
-    size_t              m_max_trb_count;     // Number of valid TRBs in the ring including the LINK_TRB
-    size_t              m_enqueue_ptr;       // Index in the ring where to enqueue next TRB
-    xhci_trb_t*         m_trbs;              // Base address of the ring buffer
-    uintptr_t           m_physical_base;     // Physical base of the ring
-    uint8_t             m_rcs_bit;           // Ring cycle state
+    size_t              m_max_trb_count;        // Number of valid TRBs in the ring including the LINK_TRB
+    size_t              m_enqueue_ptr;          // Index in the ring where to enqueue next TRB
+    xhci_trb_t*         m_trbs;                 // Base address of the ring buffer
+    uintptr_t           m_physical_base;        // Physical base of the ring
+    uint8_t             m_rcs_bit;              // Ring cycle state
+    size_t              m_dequeue_ptr;          // The xHC's position as it reads the ring
+    bool                m_consumer_cycle_state; // The consumer (xHC)'s ring cycle state
 };
 
 /*
