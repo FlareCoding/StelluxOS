@@ -7,6 +7,8 @@ xhci_command_ring::xhci_command_ring(size_t max_trbs) {
     m_max_trb_count = max_trbs;
     m_rcs_bit = XHCI_CRCR_RING_CYCLE_STATE;
     m_enqueue_ptr = 0;
+    m_dequeue_ptr = 0;
+    m_consumer_cycle_state = true;
 
     const uint64_t ring_size = max_trbs * sizeof(xhci_trb_t);
 
@@ -25,7 +27,14 @@ xhci_command_ring::xhci_command_ring(size_t max_trbs) {
         (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_LINK_TRB_TC_BIT | m_rcs_bit;
 }
 
-void xhci_command_ring::enqueue(xhci_trb_t* trb) {
+bool xhci_command_ring::enqueue(xhci_trb_t* trb) {
+    auto can_enqueue = m_consumer_cycle_state == m_rcs_bit 
+        ? m_enqueue_ptr >= m_dequeue_ptr 
+        : m_enqueue_ptr < m_dequeue_ptr;
+    if (!can_enqueue) {
+        return false;
+    }
+        
     // Adjust the TRB's cycle bit to the current RCS
     trb->cycle_bit = m_rcs_bit;
 
@@ -43,6 +52,25 @@ void xhci_command_ring::enqueue(xhci_trb_t* trb) {
         m_enqueue_ptr = 0;
         m_rcs_bit = !m_rcs_bit;
     }
+
+    return true;
+}
+
+void xhci_command_ring::process_event(xhci_command_completion_trb_t* event) {
+    // xHCI 4.9.3 Command Ring Management
+    // > The location of the Command Ring Dequeue Pointer is reported on the Event Ring in Command Completion Events.
+    // xHCI 3.3 Command Interface
+    // > Commands are executed by the xHC in the order that they are placed on the Command Ring.
+    auto command_index = (event->command_trb_pointer - m_physical_base) / sizeof(xhci_trb_t);
+    // This could result in the dequeue pointer pointing to a Link TRB, which should be pretty instantly processed.
+    // But we can't assume that the xHC processed the Link TRB and we shouldn't overwrite it until we're sure.
+    // Since commands are executed in order, we don't need to worry about the dequeue pointer getting moved back because of out-of-order events.
+    auto new_dequeue_ptr = command_index + 1;
+    // If the consumer (xHC) looped around, it must have toggled its consumer cycle state
+    if (new_dequeue_ptr < m_dequeue_ptr) {
+        m_consumer_cycle_state = !m_consumer_cycle_state;
+    }
+    m_dequeue_ptr = new_dequeue_ptr;
 }
 
 xhci_event_ring::xhci_event_ring(
