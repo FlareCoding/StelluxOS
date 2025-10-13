@@ -148,6 +148,7 @@ void init_gdt(int cpu, uint64_t system_stack) {
 
     // Allow usermode access to COM1 port by clearing the bit in the IO bitmap
     serial::mark_serial_port_unprivileged(SERIAL_PORT_BASE_COM1, cpu);
+    serial::mark_serial_port_unprivileged(SERIAL_PORT_BASE_COM2, cpu);
 
     // Ensure the end-of-bitmap marker is set to 0xFFFF
     data->io_bitmap[sizeof(data->io_bitmap) - 2] = 0xFF;

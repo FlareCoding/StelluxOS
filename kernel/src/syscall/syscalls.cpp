@@ -10,6 +10,7 @@
 #include <syscall/handlers/sys_shm.h>
 #include <process/process.h>
 #include <core/klog.h>
+#include <iris/iris_events.h>
 
 // The global syscall table - initialized at runtime
 syscall_handler_t g_syscall_table[MAX_SYSCALL_NUM];
@@ -105,6 +106,7 @@ long __syscall_handler(
 
     // Try the new dispatch table first for migrated syscalls
     if (syscallnum < MAX_SYSCALL_NUM && g_syscall_table[syscallnum]) {
+        iris_send_syscall_entry(syscallnum, current_task->identity.pid, arg1, arg2, arg3, arg4, arg5, arg6, current_task->hw_state.cpu);
         return_val = g_syscall_table[syscallnum](arg1, arg2, arg3, arg4, arg5, arg6);
         } else {
         kprint("Unknown syscall number %llu\n", syscallnum);

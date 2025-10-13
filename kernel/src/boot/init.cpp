@@ -24,6 +24,7 @@
 #include <input/system_input_manager.h>
 #include <net/unix_socket_manager.h>
 #include <gdb/gdb_stub.h>
+#include <iris/iris_events.h>
 
 #ifdef BUILD_UNIT_TESTS
 #include <acpi/shutdown.h>
@@ -143,6 +144,10 @@ void load_initrd() {
 // when the first module task gets scheduled.
 void module_manager_init(void*);
 
+void __iris_send_pkt_stellux_impl(const uint8_t* data, uint16_t len) {
+    serial::write(SERIAL_PORT_BASE_COM2, reinterpret_cast<const char*>(data), len);
+}
+
 EXTERN_C
 __PRIVILEGED_CODE
 void init(unsigned int magic, void* mbi) {
@@ -152,6 +157,13 @@ void init(unsigned int magic, void* mbi) {
 
     // Initialize early stage serial output
     serial::init_port(SERIAL_PORT_BASE_COM1);
+    serial::init_port(SERIAL_PORT_BASE_COM2);
+
+    // Initialize the iris system
+    iris_events_init(__iris_send_pkt_stellux_impl);
+
+    // Send the first iris system boot event
+    iris_send_system_init(BSP_CPU_ID, 0);
 
     // Architecture-specific initialization sequences
     arch::arch_init();

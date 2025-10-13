@@ -15,6 +15,8 @@ GRUB_CFG_PATH   := $(GRUB_DIR)/grub.cfg
 GRUB_FONT_PATH  := $(GRUB_DIR)/fonts/unicode.pf2
 INITRD_ARCHIVE  := $(BUILD_DIR)/initrd
 
+IRIS_SESSION_FILE := $(HOME)/.iris/active_session
+
 # OVMF Firmware Files
 OVMF_DIR        := ovmf
 OVMF_CODE       := $(OVMF_DIR)/OVMF_CODE.fd
@@ -33,7 +35,7 @@ QEMU_FLAGS       := \
 	-cpu qemu64,+fsgsbase \
     -m $(QEMU_RAM) \
     -serial mon:stdio \
-	-serial pty \
+	-serial file:$(IRIS_SESSION_FILE) \
     -drive file=$(STELLUX_IMAGE),format=raw \
     -net none \
     -smp $(QEMU_CORES) \
@@ -227,7 +229,7 @@ execute-unit-tests:
 	@echo "[LOG] Preparing a clean build environment"
 	@$(MAKE) clean > /dev/null
 
-	@echo "[LOG] Building the kernel with unit tests"
+	@echo "[LOG] Building the kernel with unit ``tests"
 	@$(MAKE) image BUILD_UNIT_TESTS=1 NO_USERLAND_BUILD=1 > /dev/null
 
 	@echo "[LOG] Launching the StelluxOS image in a VM"

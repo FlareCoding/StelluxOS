@@ -3,6 +3,8 @@
 #include <serial/serial.h>
 #include <memory/memory.h>
 #include <memory/paging.h>
+#include <process/process.h>
+#include <iris/iris_events.h>
 
 #define MIN_HEAP_SEGMENT_CAPACITY 1
 #define HEAP_ALIGNMENT 16
@@ -157,6 +159,8 @@ void* heap_allocator::_allocate_locked(size_t size) {
                       reinterpret_cast<uintptr_t>(segment), sizeof(heap_segment_header));
         return nullptr;
     }
+
+    iris_send_heap_alloc(reinterpret_cast<uint64_t>(segment), new_segment_size, current_task->hw_state.cpu);
     
     return static_cast<void*>(usable_region_start);
 }
@@ -182,6 +186,8 @@ void heap_allocator::_free_locked(void* ptr) {
     if (segment->next && segment->next->flags.free) {
         _merge_segment_with_next(segment);
     }
+
+    iris_send_heap_free(reinterpret_cast<uint64_t>(segment), segment->size, current_task->hw_state.cpu);
 }
 
 heap_segment_header* heap_allocator::_find_free_segment(size_t min_size) {

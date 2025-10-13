@@ -2,6 +2,8 @@
 #include <memory/paging.h>
 #include <memory/allocators/page_bitmap_allocator.h>
 #include <sync.h>
+#include <iris/iris_events.h>
+#include <process/process.h>
 
 namespace vmm {
 // Global mutex  for virtual memory manager
@@ -30,6 +32,14 @@ void* alloc_virtual_page(uint64_t flags) {
         paging::get_pml4()
     );
 
+    iris_send_virtual_page_alloc(
+        reinterpret_cast<uint64_t>(virt_page),
+        reinterpret_cast<uint64_t>(phys_page),
+        1,
+        flags,
+        current_task->hw_state.cpu
+    );
+
     return virt_page;
 }
 
@@ -44,6 +54,15 @@ void* map_physical_page(uintptr_t paddr, uint64_t flags) {
     }
 
     paging::map_page(reinterpret_cast<uintptr_t>(virt_page), paddr, flags, paging::get_pml4());
+    
+    iris_send_virtual_page_alloc(
+        reinterpret_cast<uint64_t>(virt_page),
+        paddr,
+        1,
+        flags,
+        current_task->hw_state.cpu
+    );
+    
     return virt_page;
 }
 
@@ -73,6 +92,14 @@ void* alloc_virtual_pages(size_t count, uint64_t flags) {
         );
     }
 
+    iris_send_virtual_page_alloc(
+        reinterpret_cast<uint64_t>(virt_start),
+        reinterpret_cast<uint64_t>(virt_start),  // Physical addresses are per-page, so just use virt_start as marker
+        static_cast<uint32_t>(count),
+        flags,
+        current_task->hw_state.cpu
+    );
+
     return virt_start;
 }
 
@@ -100,6 +127,14 @@ void* alloc_contiguous_virtual_pages(size_t count, uint64_t flags) {
         paging::get_pml4()
     );
 
+    iris_send_virtual_page_alloc(
+        reinterpret_cast<uint64_t>(virt_start),
+        reinterpret_cast<uint64_t>(phys_start),
+        static_cast<uint32_t>(count),
+        flags,
+        current_task->hw_state.cpu
+    );
+
     return virt_start;
 }
 
@@ -119,6 +154,14 @@ void* map_contiguous_physical_pages(uintptr_t paddr, size_t count, uint64_t flag
         count,
         flags,
         paging::get_pml4()
+    );
+    
+    iris_send_virtual_page_alloc(
+        reinterpret_cast<uint64_t>(virt_start),
+        paddr,
+        static_cast<uint32_t>(count),
+        flags,
+        current_task->hw_state.cpu
     );
     
     return virt_start;
@@ -162,6 +205,8 @@ void unmap_virtual_page(uintptr_t vaddr) {
 
     paging::map_page(vaddr, 0, 0, paging::get_pml4()); // Unmap the page by clearing the entry
     allocators::page_bitmap_allocator::get_virtual_allocator().free_page(reinterpret_cast<void*>(vaddr));
+    
+    iris_send_virtual_page_unmap(vaddr, 1, current_task->hw_state.cpu);
 }
 
 // Unmaps a contiguous range of virtual pages
@@ -170,5 +215,8 @@ void unmap_contiguous_virtual_pages(uintptr_t vaddr, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         unmap_virtual_page(vaddr + i * PAGE_SIZE);
     }
+    
+    // Note: Individual unmap events are sent in unmap_virtual_page()
+    // We could optionally send a batch event here instead
 }
 } // namespace vmm

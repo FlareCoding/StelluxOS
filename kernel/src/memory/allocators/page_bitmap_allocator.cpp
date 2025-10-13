@@ -3,6 +3,8 @@
 #include <memory/page_bitmap.h>
 #include <memory/paging.h>
 #include <serial/serial.h>
+#include <iris/iris_events.h>
+#include <process/process.h>
 
 namespace allocators {
 __PRIVILEGED_CODE
@@ -99,6 +101,8 @@ void page_bitmap_allocator::free_page(void* addr) {
     bool success = m_bitmap.mark_page_free(relative_addr);
     if (!success) {
         serial::printf("[*] failed to free page: 0x%016llx\n", aligned_addr);
+    } else {
+        iris_send_physical_page_free(addr_val, 1, current_task->hw_state.cpu);
     }
 }
 
@@ -123,6 +127,8 @@ void page_bitmap_allocator::free_pages(void* addr, size_t count) {
     bool success = m_bitmap.mark_pages_free(relative_addr, count);
     if (!success) {
         serial::printf("[*] failed to free %zu pages at: 0x%016llx\n", count, aligned_addr);
+    } else {
+        iris_send_physical_page_free(addr_val, static_cast<uint32_t>(count), current_task->hw_state.cpu);
     }
 }
 
@@ -143,6 +149,7 @@ void* page_bitmap_allocator::alloc_page() {
             if (bitmap.mark_page_used(relative_addr)) {
                 uintptr_t absolute_addr_val = m_base_page_offset + relative_addr_val;
                 void* absolute_addr = reinterpret_cast<void*>(absolute_addr_val);
+                iris_send_physical_page_alloc(absolute_addr_val, 1, current_task->hw_state.cpu);
                 return absolute_addr;
             } else {
                 serial::printf("[*] alloc_page: failed to mark page as used at index %llu\n", index);
@@ -196,6 +203,7 @@ void* page_bitmap_allocator::alloc_pages(size_t count) {
                 if (bitmap.mark_pages_used(start_relative_addr, count)) {
                 uintptr_t absolute_start_addr_val = m_base_page_offset + start_relative_addr_val;
                     void* absolute_start_addr = reinterpret_cast<void*>(absolute_start_addr_val);
+                    iris_send_physical_page_alloc(absolute_start_addr_val, static_cast<uint32_t>(count), current_task->hw_state.cpu);
                     return absolute_start_addr;
             } else {
                 serial::printf("[*] alloc_pages: failed to mark pages as used starting at index %llu\n", index);
