@@ -133,14 +133,14 @@ private:
      * @param bus_addr Address of the PCI bus containing the device.
      * @param device Device number to enumerate.
      */
-    void _enumerate_device(uint64_t bus_addr, uint8_t device);
+    void _enumerate_device(uint64_t segment_base_addr, uint8_t bus, uint8_t device);
 
     /**
      * @brief Enumerates a specific PCI function on a device.
      * @param device_addr Address of the PCI device containing the function.
      * @param function Function number to enumerate.
      */
-    void _enumerate_function(uint64_t device_addr, uint8_t function);
+    void _enumerate_function(uint64_t segment_base_addr, uint8_t bus, uint8_t device, uint8_t function);
 };
 } // namespace pci
 

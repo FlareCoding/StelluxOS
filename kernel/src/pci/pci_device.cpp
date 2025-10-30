@@ -6,13 +6,14 @@
 #include <serial/serial.h>
 
 namespace pci {
-pci_device::pci_device(uint64_t function_address, pci_function_desc* desc)
+pci_device::pci_device(uint8_t bus, uint8_t device, uint8_t function,
+    uint64_t function_address, pci_function_desc* desc)
     : m_function_address(function_address), m_desc(desc), m_bars()
 {
-    m_bus =     (uint8_t)((m_function_address >> 20) & 0xFF);
-    m_device =  (uint8_t)((m_function_address >> 15) & 0x1F);
-    m_function = (uint8_t)((m_function_address >> 12) & 0x07);
-
+    m_bus = bus;
+    m_device = device;
+    m_function = function;
+    
     _parse_bars();
     _parse_capabilities();
 }
@@ -241,7 +242,7 @@ bool pci_device::setup_msi(uint8_t cpu, uint8_t vector, uint8_t edgetrigger, uin
     // Enable MSI in the message control field
     // This sets 'enable_bit' to 1
     msi.enable_bit = 1;
-
+    
     // Potentially set multiple_message_enable if you want multiple vectors
     // For now only support single vector.
     msi.multiple_message_enable = 0;
