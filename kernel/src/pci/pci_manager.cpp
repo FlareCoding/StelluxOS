@@ -9,8 +9,13 @@ pci_manager& pci_manager::get() {
 void pci_manager::init(acpi::acpi_sdt_header* mcfg_ptr) {
     _parse_mcfg(mcfg_ptr);
 
-    for (uint8_t bus = m_mcfg_segment->start_bus; bus < m_mcfg_segment->end_bus; bus++) {
+    uint8_t bus = m_mcfg_segment->start_bus;
+    while (1) 
+    {
         _enumerate_bus(m_mcfg_segment->base_address, bus);
+        if (bus == m_mcfg_segment->end_bus)
+            break;
+        bus++;
     }
 }
 
@@ -38,13 +43,14 @@ void pci_manager::_enumerate_bus(uint64_t segment_base_addr, uint8_t bus) {
     }
 
     for (uint64_t device = 0; device < 32; device++){
-        _enumerate_device(bus_address, device);
+        _enumerate_device(segment_base_addr, bus, device);
     }
 }
 
-void pci_manager::_enumerate_device(uint64_t bus_addr, uint8_t device) {
-    uint64_t device_offset = device << 15;
-    uint64_t device_address = bus_addr + device_offset;
+void pci_manager::_enumerate_device(uint64_t segment_base_addr, uint8_t bus, uint8_t device) {
+    uint64_t bus_offset = (uint64_t)bus << 20;
+    uint64_t device_offset = (uint64_t)device << 15;
+    uint64_t device_address = segment_base_addr + bus_offset + device_offset;
 
     void* device_virtual_base = vmm::map_physical_page(device_address, DEFAULT_PRIV_PAGE_FLAGS);
 
@@ -56,14 +62,16 @@ void pci_manager::_enumerate_device(uint64_t bus_addr, uint8_t device) {
     }
 
     for (uint64_t function = 0; function < 8; function++){
-        _enumerate_function(device_address, function);
+        _enumerate_function(segment_base_addr, bus, device, function);
     }
 }
 
-void pci_manager::_enumerate_function(uint64_t device_addr, uint8_t function) {
-    uint64_t function_offset = function << 12;
+void pci_manager::_enumerate_function(uint64_t segment_base_addr, uint8_t bus, uint8_t device, uint8_t function) {
+    uint64_t bus_offset = (uint64_t)bus << 20;
+    uint64_t device_offset = (uint64_t)device << 15;
+    uint64_t function_offset = (uint64_t)function << 12;
+    uint64_t function_address = segment_base_addr + bus_offset + device_offset + function_offset;
 
-    uint64_t function_address = device_addr + function_offset;
     void* function_virtual_base = vmm::map_physical_page(function_address, DEFAULT_PRIV_PAGE_FLAGS);
 
     pci_function_desc* desc = reinterpret_cast<pci_function_desc*>(function_virtual_base);
@@ -74,7 +82,9 @@ void pci_manager::_enumerate_function(uint64_t device_addr, uint8_t function) {
     }
 
     // Register and store the PCI device class instance
-    auto dev = kstl::make_shared<pci_device>(function_address, desc);
+    auto dev = kstl::make_shared<pci_device>(
+        bus, device, function,
+        function_address, desc);
     m_devices.push_back(dev);
 }
 

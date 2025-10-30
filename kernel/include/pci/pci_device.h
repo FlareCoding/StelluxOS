@@ -20,7 +20,8 @@ public:
      * 
      * Initializes the PCI device with its configuration and address details.
      */
-    pci_device(uint64_t function_address, pci_function_desc* desc);
+    pci_device(uint8_t bus, uint8_t device, uint8_t function,
+        uint64_t function_address, pci_function_desc* desc);
 
     /**
      * @brief Retrieves the vendor ID of the PCI device.
