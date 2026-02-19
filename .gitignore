@@ -1,52 +1,27 @@
-# Directories
-.vscode/
+# Build artifacts
 build/
-bin/
-__pycache__/
-docs/output/
-
-# Toolchain build artifacts and fetched sources (keep scripts/ directory)
-toolchain/dist/
-toolchain/build/
-toolchain/src/
-
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
 *.o
-*.obj
+*.elf
+*.bin
 
-# Precompiled Headers
-*.gch
-*.pch
+# Generated images
+images/*.img
+images/*.iso
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+# Downloaded Limine binaries (reproducible via make limine)
+boot/limine/*.EFI
+boot/limine/limine
 
-# Fortran module files
-*.mod
-*.smod
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*~
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+# Clangd
+.cache/
+compile_commands.json
 
-# Executables
-*.exe
-*.out
-*.app
-*.efi
-
-# QEMU/Debug files
-usb_debug.log
-com1.serial
-com2.serial
-dev_os_output.log
-uart_pci.log
+# OS files
+.DS_Store
+Thumbs.db
