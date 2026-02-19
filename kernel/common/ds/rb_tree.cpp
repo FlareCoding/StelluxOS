@@ -9,7 +9,7 @@
  *   - Intrusive node swap instead of key copy for deletion with two children
  */
 
-#include "core/ds/rb_tree.h"
+#include "common/ds/rb_tree.h"
 
 namespace rbt {
 

@@ -1,6 +1,6 @@
-#include "core/utils/logging.h"
-#include "core/varargs.h"
-#include "core/utils/string.h"
+#include "common/utils/logging.h"
+#include "common/varargs.h"
+#include "common/utils/string.h"
 #include "io/serial.h"
 #include "hw/cpu.h"
 

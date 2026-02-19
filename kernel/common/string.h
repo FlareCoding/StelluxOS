@@ -1,8 +1,8 @@
 #ifndef STELLUX_COMMON_STRING_H
 #define STELLUX_COMMON_STRING_H
 
-#include "core/utils/string.h"
-#include "core/utils/memory.h"
+#include "common/utils/string.h"
+#include "common/utils/memory.h"
 
 namespace string {
 

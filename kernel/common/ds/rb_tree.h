@@ -26,10 +26,10 @@
  * Thread safety: none. Caller must synchronize concurrent access.
  */
 
-#ifndef STELLUX_CORE_DS_RB_TREE_H
-#define STELLUX_CORE_DS_RB_TREE_H
+#ifndef STELLUX_COMMON_DS_RB_TREE_H
+#define STELLUX_COMMON_DS_RB_TREE_H
 
-#include "core/types.h"
+#include "common/types.h"
 
 namespace rbt {
 
@@ -281,4 +281,4 @@ private:
 
 } // namespace rbt
 
-#endif // STELLUX_CORE_DS_RB_TREE_H
+#endif // STELLUX_COMMON_DS_RB_TREE_H

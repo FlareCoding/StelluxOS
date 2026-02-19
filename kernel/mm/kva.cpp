@@ -11,8 +11,8 @@
 #include "mm/va_layout.h"
 #include "mm/pmm.h"
 #include "mm/paging.h"
-#include "core/utils/logging.h"
-#include "core/utils/memory.h"
+#include "common/utils/logging.h"
+#include "common/utils/memory.h"
 
 namespace kva {
 

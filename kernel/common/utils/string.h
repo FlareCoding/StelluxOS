@@ -1,7 +1,7 @@
-#ifndef STELLUX_CORE_UTILS_STRING_H
-#define STELLUX_CORE_UTILS_STRING_H
+#ifndef STELLUX_COMMON_UTILS_STRING_H
+#define STELLUX_COMMON_UTILS_STRING_H
 
-#include "core/types.h"
+#include "common/types.h"
 
 namespace string {
 
@@ -12,4 +12,4 @@ size_t strlen(const char* s);
 
 } // namespace string
 
-#endif // STELLUX_CORE_UTILS_STRING_H
+#endif // STELLUX_COMMON_UTILS_STRING_H

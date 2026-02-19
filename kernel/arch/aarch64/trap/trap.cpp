@@ -1,7 +1,7 @@
 #include "trap_frame.h"
 #include "defs/exception.h"
 #include "common/types.h"
-#include "core/utils/logging.h"
+#include "common/utils/logging.h"
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
 

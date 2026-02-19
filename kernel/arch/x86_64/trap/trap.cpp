@@ -1,6 +1,6 @@
 #include "trap_frame.h"
 #include "defs/vectors.h"
-#include "core/utils/logging.h"
+#include "common/utils/logging.h"
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
 

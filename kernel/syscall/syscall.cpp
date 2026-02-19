@@ -1,7 +1,7 @@
 #include "syscall/syscall.h"
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
-#include "core/utils/logging.h"
+#include "common/utils/logging.h"
 
 /**
  * @note Privilege: **required**

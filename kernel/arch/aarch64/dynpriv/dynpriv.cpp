@@ -4,7 +4,7 @@
 #include "percpu/percpu.h"
 #include "defs/exception.h"
 #include "common/types.h"
-#include "core/utils/logging.h"
+#include "common/utils/logging.h"
 
 namespace dynpriv {
 

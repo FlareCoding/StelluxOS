@@ -2,8 +2,8 @@
 #include "mm/paging_arch.h"
 #include "mm/pmm.h"
 #include "boot/boot_services.h"
-#include "core/utils/logging.h"
-#include "core/utils/memory.h"
+#include "common/utils/logging.h"
+#include "common/utils/memory.h"
 #include "hw/mmio.h"
 #include "io/serial.h"
 

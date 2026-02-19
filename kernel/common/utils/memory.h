@@ -1,7 +1,7 @@
-#ifndef STELLUX_CORE_UTILS_MEMORY_H
-#define STELLUX_CORE_UTILS_MEMORY_H
+#ifndef STELLUX_COMMON_UTILS_MEMORY_H
+#define STELLUX_COMMON_UTILS_MEMORY_H
 
-#include "core/types.h"
+#include "common/types.h"
 
 namespace memory {
 
@@ -22,4 +22,4 @@ int memcmp(const void* s1, const void* s2, size_t n);
 
 } // namespace memory
 
-#endif // STELLUX_CORE_UTILS_MEMORY_H
+#endif // STELLUX_COMMON_UTILS_MEMORY_H

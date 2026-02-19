@@ -1,7 +1,7 @@
 #include "syscall/syscall.h"
 #include "defs/segments.h"
 #include "hw/msr.h"
-#include "core/utils/logging.h"
+#include "common/utils/logging.h"
 
 extern "C" void stlx_x86_syscall_entry();
 

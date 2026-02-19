@@ -1,7 +1,7 @@
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
 #include "gdt/gdt.h"
-#include "core/utils/logging.h"
+#include "common/utils/logging.h"
 
 extern "C" char stack_top[];
 

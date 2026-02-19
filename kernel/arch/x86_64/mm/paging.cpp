@@ -3,8 +3,8 @@
 #include "mm/pmm.h"
 #include "cpu/features.h"
 #include "boot/boot_services.h"
-#include "core/utils/logging.h"
-#include "core/utils/memory.h"
+#include "common/utils/logging.h"
+#include "common/utils/memory.h"
 
 // Linker symbols for kernel boundaries
 extern "C" {

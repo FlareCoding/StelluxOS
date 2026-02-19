@@ -1,6 +1,6 @@
 #include "boot_services.h"
 #include "io/serial.h"
-#include "core/utils/logging.h"
+#include "common/utils/logging.h"
 #include "hw/cpu.h"
 #include "arch/arch_init.h"
 #include "mm/mm.h"

@@ -1,7 +1,7 @@
-#ifndef STELLUX_CORE_UTILS_LOGGING_H
-#define STELLUX_CORE_UTILS_LOGGING_H
+#ifndef STELLUX_COMMON_UTILS_LOGGING_H
+#define STELLUX_COMMON_UTILS_LOGGING_H
 
-#include "core/types.h"
+#include "common/types.h"
 
 // Default log level if not defined via defconfig
 #ifndef LOG_LEVEL
@@ -85,4 +85,4 @@ void error(const char* fmt, ...);
 
 #define log_fatal(...) log::fatal(__VA_ARGS__)
 
-#endif // STELLUX_CORE_UTILS_LOGGING_H
+#endif // STELLUX_COMMON_UTILS_LOGGING_H
