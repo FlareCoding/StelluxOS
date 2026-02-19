@@ -1,5 +1,16 @@
 # AGENTS.md
 
+## Onboarding
+
+Before starting any task, new agents should perform the equivalent of the `/gather-context` command (see `.cursor/commands/gather-context.md`). In short:
+
+1. **Read project rules** (in order): `.cursor/rules/philosophy.md`, `architecture.md`, `style.md`, `low-level.md`, `error-handling.md`, `build.md`, `cpp-constraints.md`
+2. **Explore directory structure**: `kernel/common/` (arch-independent interfaces), `kernel/arch/{x86_64,aarch64}/` (implementations), `kernel/boot/`, `kernel/mm/`, `kernel/trap/`, `kernel/sched/`, `kernel/syscall/`
+3. **Read key source files**: a common header + both arch implementations, `start.S` and `arch_init` for both architectures, `Makefile` and `kernel/Makefile`
+4. **Check current state**: `git log --oneline -20` to see recent development focus, and scan for TODOs/FIXMEs
+
+This context is essential — the project has strict dual-architecture requirements, a freestanding C++20 subset (no STL), and specific coding conventions that are easy to violate without reading the rules first.
+
 ## Cloud-specific instructions
 
 ### Overview
