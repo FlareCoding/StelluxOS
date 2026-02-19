@@ -134,7 +134,7 @@ inline bool expect_streq(
     STLX_TEST_SUITE_EX(suite_ident, suite_phase, nullptr, nullptr)
 
 #define STLX_TEST(suite_ident, case_ident) \
-    static __PRIVILEGED_CODE void stlx_test_case_##suite_ident##_##case_ident(::test::context& ctx); \
+    static void stlx_test_case_##suite_ident##_##case_ident(::test::context& ctx); \
     namespace { \
     __attribute__((used, section(".stlx_test_cases." #suite_ident "." #case_ident))) \
     const ::test::case_desc stlx_test_case_desc_##suite_ident##_##case_ident = { \
@@ -144,7 +144,7 @@ inline bool expect_streq(
         .body = stlx_test_case_##suite_ident##_##case_ident, \
     }; \
     } \
-    static __PRIVILEGED_CODE void stlx_test_case_##suite_ident##_##case_ident(::test::context& ctx)
+    static void stlx_test_case_##suite_ident##_##case_ident(::test::context& ctx)
 
 #define STLX_EXPECT_TRUE(ctx, expr) \
     ::test::expect_true((ctx), static_cast<bool>(expr), #expr, __FILE__, static_cast<uint32_t>(__LINE__))
