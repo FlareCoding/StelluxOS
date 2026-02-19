@@ -40,9 +40,25 @@ def terminate_process_group(proc: subprocess.Popen[str], grace_seconds: float = 
         pass
 
 
+def sanitize_tag(value: str, fallback: str = "all") -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in value)
+    cleaned = cleaned.strip("_")
+    if not cleaned:
+        cleaned = fallback
+    return cleaned[:48]
+
+
 def build_command(args: argparse.Namespace) -> list[str]:
-    build_dir = f"build/unit-tests-{args.arch}"
-    image_dir = f"images/unit-tests-{args.arch}"
+    filter_tag = sanitize_tag(args.filter, fallback="all")
+    seed_tag = sanitize_tag(str(args.seed), fallback="seed")
+    build_dir = (
+        f"build/unit-tests-{args.arch}-"
+        f"{filter_tag}-ff{args.fail_fast}-r{args.repeat}-s{seed_tag}"
+    )
+    image_dir = (
+        f"images/unit-tests-{args.arch}-"
+        f"{filter_tag}-ff{args.fail_fast}-r{args.repeat}-s{seed_tag}"
+    )
 
     return [
         "make",
