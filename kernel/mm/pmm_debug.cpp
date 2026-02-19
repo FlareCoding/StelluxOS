@@ -1,6 +1,6 @@
 #include "mm/pmm.h"
 #include "mm/pmm_internal.h"
-#include "common/logging.h"
+#include "core/utils/logging.h"
 
 namespace pmm {
 

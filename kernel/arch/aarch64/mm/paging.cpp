@@ -2,8 +2,8 @@
 #include "mm/paging_arch.h"
 #include "mm/pmm.h"
 #include "boot/boot_services.h"
-#include "common/logging.h"
-#include "common/string.h"
+#include "core/utils/logging.h"
+#include "core/utils/memory.h"
 #include "hw/mmio.h"
 #include "io/serial.h"
 
@@ -72,7 +72,7 @@ __PRIVILEGED_CODE static pmm::phys_addr_t alloc_table_page() {
     }
 
     void* virt = phys_to_virt(phys);
-    string::memset(virt, 0, PAGE_SIZE_4KB);
+    memory::memset(virt, 0, PAGE_SIZE_4KB);
     
     return phys;
 }

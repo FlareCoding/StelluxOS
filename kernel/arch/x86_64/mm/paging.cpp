@@ -3,8 +3,8 @@
 #include "mm/pmm.h"
 #include "cpu/features.h"
 #include "boot/boot_services.h"
-#include "common/logging.h"
-#include "common/string.h"
+#include "core/utils/logging.h"
+#include "core/utils/memory.h"
 
 // Linker symbols for kernel boundaries
 extern "C" {
@@ -54,7 +54,7 @@ __PRIVILEGED_CODE static pmm::phys_addr_t alloc_table_page() {
             log::fatal("paging: out of memory for page tables");
         }
         void* virt = phys_to_virt(phys);
-        string::memset(virt, 0, PAGE_SIZE_4KB);
+        memory::memset(virt, 0, PAGE_SIZE_4KB);
     }
     
     return phys;

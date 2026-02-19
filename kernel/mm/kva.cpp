@@ -11,8 +11,8 @@
 #include "mm/va_layout.h"
 #include "mm/pmm.h"
 #include "mm/paging.h"
-#include "common/logging.h"
-#include "common/string.h"
+#include "core/utils/logging.h"
+#include "core/utils/memory.h"
 
 namespace kva {
 
@@ -39,7 +39,7 @@ __PRIVILEGED_CODE static range_node* pool_alloc() {
     if (g_pool.freelist) {
         range_node* n = g_pool.freelist;
         g_pool.freelist = n->pool_next;
-        string::memset(n, 0, sizeof(range_node));
+        memory::memset(n, 0, sizeof(range_node));
         return n;
     }
 
@@ -50,20 +50,20 @@ __PRIVILEGED_CODE static range_node* pool_alloc() {
     size_t count = PAGE_SIZE / sizeof(range_node);
 
     for (size_t i = 0; i < count; i++) {
-        string::memset(&page[i], 0, sizeof(range_node));
+        memory::memset(&page[i], 0, sizeof(range_node));
         page[i].pool_next = (i + 1 < count) ? &page[i + 1] : nullptr;
     }
 
     g_pool.freelist = page[1].pool_next ? &page[1] : nullptr;
     g_pool.pages_allocated++;
 
-    string::memset(&page[0], 0, sizeof(range_node));
+    memory::memset(&page[0], 0, sizeof(range_node));
     return &page[0];
 }
 
 // Return a range_node to the pool freelist.
 __PRIVILEGED_CODE static void pool_free(range_node* n) {
-    string::memset(n, 0, sizeof(range_node));
+    memory::memset(n, 0, sizeof(range_node));
     n->pool_next = g_pool.freelist;
     g_pool.freelist = n;
 }

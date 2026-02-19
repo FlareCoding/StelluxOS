@@ -2,7 +2,7 @@
 #define STELLUX_MM_KVA_INTERNAL_H
 
 #include "mm/kva.h"
-#include "common/rb_tree.h"
+#include "core/ds/rb_tree.h"
 #include "mm/pmm_types.h"
 
 namespace kva {

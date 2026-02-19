@@ -1,6 +1,6 @@
 #include "percpu/percpu.h"
 #include "common/types.h"
-#include "common/logging.h"
+#include "core/utils/logging.h"
 #include "hw/msr.h"
 
 DEFINE_PER_CPU_BASE(uintptr_t, percpu_offset);

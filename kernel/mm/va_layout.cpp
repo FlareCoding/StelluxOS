@@ -1,6 +1,6 @@
 #include "mm/va_layout.h"
 #include "boot/boot_services.h"
-#include "common/logging.h"
+#include "core/utils/logging.h"
 
 extern "C" {
     extern char __stlx_kern_start[];

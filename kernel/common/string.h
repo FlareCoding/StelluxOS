@@ -1,29 +1,25 @@
 #ifndef STELLUX_COMMON_STRING_H
 #define STELLUX_COMMON_STRING_H
 
-#include "types.h"
+#include "core/utils/string.h"
+#include "core/utils/memory.h"
 
 namespace string {
 
 /**
- * @brief Calculate the length of a null-terminated string.
+ * @brief Compatibility aliases for legacy call sites.
  */
-size_t strlen(const char* s);
+inline void* memcpy(void* dest, const void* src, size_t n) {
+    return memory::memcpy(dest, src, n);
+}
 
-/**
- * @brief Copy memory from src to dest.
- */
-void* memcpy(void* dest, const void* src, size_t n);
+inline void* memset(void* dest, int c, size_t n) {
+    return memory::memset(dest, c, n);
+}
 
-/**
- * @brief Fill memory with a constant byte.
- */
-void* memset(void* dest, int c, size_t n);
-
-/**
- * @brief Compare two memory regions.
- */
-int memcmp(const void* s1, const void* s2, size_t n);
+inline int memcmp(const void* s1, const void* s2, size_t n) {
+    return memory::memcmp(s1, s2, n);
+}
 
 } // namespace string
 

@@ -3,7 +3,7 @@
 #include "mm/va_layout.h"
 #include "mm/kva.h"
 #include "mm/vmm.h"
-#include "common/logging.h"
+#include "core/utils/logging.h"
 
 namespace mm {
 

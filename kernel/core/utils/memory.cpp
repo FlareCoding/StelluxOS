@@ -1,14 +1,6 @@
-#include "string.h"
+#include "core/utils/memory.h"
 
-namespace string {
-
-size_t strlen(const char* s) {
-    size_t len = 0;
-    while (s[len] != '\0') {
-        ++len;
-    }
-    return len;
-}
+namespace memory {
 
 void* memcpy(void* dest, const void* src, size_t n) {
     auto* d = static_cast<uint8_t*>(dest);
@@ -38,4 +30,4 @@ int memcmp(const void* s1, const void* s2, size_t n) {
     return 0;
 }
 
-} // namespace string
+} // namespace memory

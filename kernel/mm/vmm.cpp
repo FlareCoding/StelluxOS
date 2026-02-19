@@ -11,8 +11,8 @@
 #include "mm/kva.h"
 #include "mm/pmm.h"
 #include "mm/paging.h"
-#include "common/logging.h"
-#include "common/string.h"
+#include "core/utils/logging.h"
+#include "core/utils/memory.h"
 
 namespace vmm {
 
@@ -104,7 +104,7 @@ __PRIVILEGED_CODE int32_t init() {
         }
 
         if (zero) {
-            string::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
+            memory::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
         }
 
         rc = paging::map_page(base + i * pmm::PAGE_SIZE, phys, flags, g_kernel_root);
@@ -167,7 +167,7 @@ __PRIVILEGED_CODE int32_t init() {
     }
 
     if (zero) {
-        string::memset(paging::phys_to_virt(phys), 0, actual_bytes);
+        memory::memset(paging::phys_to_virt(phys), 0, actual_bytes);
     }
 
     // Map using large pages when aligned and allowed
@@ -264,7 +264,7 @@ __PRIVILEGED_CODE int32_t init() {
         }
 
         // Stacks are always zeroed
-        string::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
+        memory::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
 
         rc = paging::map_page(base + i * pmm::PAGE_SIZE, phys, flags, g_kernel_root);
         if (rc != paging::OK) {

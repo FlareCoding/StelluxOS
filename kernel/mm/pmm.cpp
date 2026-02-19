@@ -2,8 +2,8 @@
 #include "mm/pmm_internal.h"
 #include "mm/paging.h"
 #include "boot/boot_services.h"
-#include "common/logging.h"
-#include "common/string.h"
+#include "core/utils/logging.h"
+#include "core/utils/memory.h"
 
 // Linker symbols for kernel boundaries
 extern "C" {
@@ -153,7 +153,7 @@ __PRIVILEGED_CODE phys_addr_t bootstrap_allocator::alloc_page() {
     g_bootstrap_info.pages_allocated++;
     
     void* virt = reinterpret_cast<void*>(page + g_boot_info.hhdm_offset);
-    string::memset(virt, 0, PAGE_SIZE);
+    memory::memset(virt, 0, PAGE_SIZE);
     return page;
 }
 
@@ -522,7 +522,7 @@ __PRIVILEGED_CODE int32_t init() {
                g_pmm.page_array_phys,
                reinterpret_cast<uint64_t>(g_pmm.page_array));
 
-    string::memset(g_pmm.page_array, 0, g_pmm.page_array_size);
+    memory::memset(g_pmm.page_array, 0, g_pmm.page_array_size);
     init_zones();
 
     // Mark all pages reserved, then mark usable regions as free
