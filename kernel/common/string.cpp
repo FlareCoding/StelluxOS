@@ -39,3 +39,15 @@ int memcmp(const void* s1, const void* s2, size_t n) {
 }
 
 } // namespace string
+
+extern "C" void* memcpy(void* dest, const void* src, size_t n) {
+    return string::memcpy(dest, src, n);
+}
+
+extern "C" void* memset(void* dest, int c, size_t n) {
+    return string::memset(dest, c, n);
+}
+
+extern "C" int memcmp(const void* s1, const void* s2, size_t n) {
+    return string::memcmp(s1, s2, n);
+}

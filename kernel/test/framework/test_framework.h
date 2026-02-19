@@ -33,6 +33,10 @@ inline uint64_t to_u64(const T& value) {
     }
 }
 
+inline uint64_t to_u64(decltype(nullptr)) {
+    return 0;
+}
+
 inline bool expect_true(
     context& ctx,
     bool cond,
@@ -190,6 +194,22 @@ inline bool expect_streq(
 #define STLX_ASSERT_NE(ctx, lhs, rhs) \
     do { \
         if (!STLX_EXPECT_NE((ctx), (lhs), (rhs))) { \
+            ::test::abort_case((ctx)); \
+            return; \
+        } \
+    } while (0)
+
+#define STLX_ASSERT_NULL(ctx, value) \
+    do { \
+        if (!STLX_EXPECT_NULL((ctx), (value))) { \
+            ::test::abort_case((ctx)); \
+            return; \
+        } \
+    } while (0)
+
+#define STLX_ASSERT_NOT_NULL(ctx, value) \
+    do { \
+        if (!STLX_EXPECT_NOT_NULL((ctx), (value))) { \
             ::test::abort_case((ctx)); \
             return; \
         } \
