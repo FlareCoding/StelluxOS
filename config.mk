@@ -63,3 +63,30 @@ MAX_CPUS ?= 64
 
 # Log level (0=debug, 1=info, 2=warn, 3=error, 4=fatal, 5=none)
 LOG_LEVEL ?= 0
+
+# ============================================================================
+# Unit Test Configuration
+# ============================================================================
+
+# Build with in-kernel unit test framework enabled.
+# 0 = disabled (default), 1 = enabled.
+UNIT_TEST ?= 0
+
+# Optional test filter:
+#   ""                    => run all tests
+#   "suite_prefix"        => run suites matching prefix
+#   "suite_name.case_name" => run one test case
+UNIT_TEST_FILTER ?=
+
+# Stop execution immediately after the first failing test case.
+# 0 = continue running all tests (default), 1 = fail-fast.
+UNIT_TEST_FAIL_FAST ?= 0
+
+# Repeat each matching test case this many times (>= 1).
+UNIT_TEST_REPEAT ?= 1
+
+# Seed for deterministic per-test pseudo-random generation.
+UNIT_TEST_SEED ?= 0xC0FFEE
+
+# Host-side unit test timeout (seconds) for QEMU runner.
+UNIT_TEST_TIMEOUT ?= 120

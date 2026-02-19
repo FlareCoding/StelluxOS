@@ -65,6 +65,12 @@ CXX_SOURCES += $(shell find percpu -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find syscall -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
 
+ifeq ($(UNIT_TEST),1)
+CXX_SOURCES += $(shell find test/framework -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find test/common -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find test/arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
+endif
+
 # Find all assembly sources (arch-specific only typically)
 ASM_SOURCES := $(shell find arch/$(ARCH) -name '*.S' 2>/dev/null | sort)
 
@@ -109,6 +115,14 @@ CXXFLAGS_LOG := -DLOG_LEVEL=$(LOG_LEVEL)
 # Configuration defines (from config.mk)
 CXXFLAGS_CONFIG := -DMAX_CPUS=$(MAX_CPUS)
 
+# Unit test config flags (used by framework and boot flow)
+CXXFLAGS_TEST := \
+	-DUNIT_TEST=$(UNIT_TEST) \
+	-DUNIT_TEST_FAIL_FAST=$(UNIT_TEST_FAIL_FAST) \
+	-DUNIT_TEST_REPEAT=$(UNIT_TEST_REPEAT) \
+	-DUNIT_TEST_SEED=$(UNIT_TEST_SEED) \
+	-DUNIT_TEST_FILTER=\"$(UNIT_TEST_FILTER)\"
+
 # Include paths
 # Note: -Iarch/$(ARCH) allows arch-specific headers to be included with paths
 # like #include "hw/barrier.h" - the build system picks the right arch directory
@@ -124,6 +138,7 @@ CXXFLAGS := \
 	$(CXXFLAGS_MODE) \
 	$(CXXFLAGS_LOG) \
 	$(CXXFLAGS_CONFIG) \
+	$(CXXFLAGS_TEST) \
 	$(CXXFLAGS_INCLUDES) \
 	$(CXXFLAGS_EXTRA)
 
@@ -159,6 +174,7 @@ ifeq ($(V),1)
 	@echo "CXXFLAGS=$(CXXFLAGS)"
 	@echo "ASFLAGS=$(ASFLAGS)"
 	@echo "LDFLAGS=$(LDFLAGS)"
+	@echo "UNIT_TEST=$(UNIT_TEST)"
 	@echo "SOURCES=$(CXX_SOURCES) $(ASM_SOURCES)"
 	@echo ""
 else

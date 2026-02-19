@@ -43,6 +43,14 @@ GDB_PORT := 4554
 # QEMU settings
 QEMU_MEMORY := 4G
 
+# Unit test defaults (also defined in config.mk for kernel builds)
+UNIT_TEST ?= 0
+UNIT_TEST_FILTER ?=
+UNIT_TEST_FAIL_FAST ?= 0
+UNIT_TEST_REPEAT ?= 1
+UNIT_TEST_SEED ?= 0xC0FFEE
+UNIT_TEST_TIMEOUT ?= 120
+
 # Verbosity (V=1 for verbose)
 ifeq ($(V),1)
   Q :=
@@ -55,6 +63,12 @@ export V
 export DEBUG
 export RELEASE
 export BUILD_DIR
+export UNIT_TEST
+export UNIT_TEST_FILTER
+export UNIT_TEST_FAIL_FAST
+export UNIT_TEST_REPEAT
+export UNIT_TEST_SEED
+export UNIT_TEST_TIMEOUT
 
 # ============================================================================
 # Supported Architectures
@@ -67,7 +81,7 @@ SUPPORTED_ARCHS := x86_64 aarch64
 # ============================================================================
 
 # Targets that require ARCH
-ARCH_REQUIRED_TARGETS := kernel image run
+ARCH_REQUIRED_TARGETS := kernel image run run-headless test
 
 # Check if current target requires ARCH
 CURRENT_GOALS := $(MAKECMDGOALS)
@@ -100,6 +114,7 @@ endif
 # ============================================================================
 
 .PHONY: all kernel image run run-headless clean \
+        test test-all \
         image-x86_64 image-aarch64 \
         run-qemu-x86_64 run-qemu-aarch64 \
         run-qemu-x86_64-headless run-qemu-aarch64-headless \
@@ -180,6 +195,33 @@ ifeq ($(ARCH),x86_64)
 else ifeq ($(ARCH),aarch64)
 	$(Q)$(MAKE) run-qemu-aarch64-headless
 endif
+
+# ============================================================================
+# Unit Test Execution
+# ============================================================================
+
+test: check-lld
+	python3 scripts/run-unit-tests.py \
+		--arch $(ARCH) \
+		--filter "$(UNIT_TEST_FILTER)" \
+		--fail-fast $(UNIT_TEST_FAIL_FAST) \
+		--repeat $(UNIT_TEST_REPEAT) \
+		--seed $(UNIT_TEST_SEED) \
+		--timeout $(UNIT_TEST_TIMEOUT)
+
+test-all:
+	$(Q)$(MAKE) test ARCH=x86_64 \
+		UNIT_TEST_FILTER="$(UNIT_TEST_FILTER)" \
+		UNIT_TEST_FAIL_FAST=$(UNIT_TEST_FAIL_FAST) \
+		UNIT_TEST_REPEAT=$(UNIT_TEST_REPEAT) \
+		UNIT_TEST_SEED=$(UNIT_TEST_SEED) \
+		UNIT_TEST_TIMEOUT=$(UNIT_TEST_TIMEOUT)
+	$(Q)$(MAKE) test ARCH=aarch64 \
+		UNIT_TEST_FILTER="$(UNIT_TEST_FILTER)" \
+		UNIT_TEST_FAIL_FAST=$(UNIT_TEST_FAIL_FAST) \
+		UNIT_TEST_REPEAT=$(UNIT_TEST_REPEAT) \
+		UNIT_TEST_SEED=$(UNIT_TEST_SEED) \
+		UNIT_TEST_TIMEOUT=$(UNIT_TEST_TIMEOUT)
 
 run-qemu-x86_64: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 	@echo ""
@@ -488,6 +530,8 @@ help:
 	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
 	@echo "  make run-headless ARCH=<arch> Build + run headless (for SSH)"
+	@echo "  make test ARCH=<arch>        Build + run in-kernel unit tests"
+	@echo "  make test-all                Run unit tests for both architectures"
 	@echo "  make usb ARCH=<arch>         Build + print USB instructions"
 	@echo ""
 	@echo "Debugging (run QEMU target in one terminal, connect-gdb in another):"
@@ -502,12 +546,18 @@ help:
 	@echo "  V=1                          Verbose output (show commands)"
 	@echo "  DEBUG=1                      Debug build (default)"
 	@echo "  RELEASE=1                    Release build (-O2)"
+	@echo "  UNIT_TEST_FILTER=<expr>      Test filter (suite prefix or suite.case)"
+	@echo "  UNIT_TEST_FAIL_FAST=1        Stop after first failing test"
+	@echo "  UNIT_TEST_REPEAT=<n>         Repeat each matching test case"
+	@echo "  UNIT_TEST_SEED=<u64>         Deterministic test seed"
+	@echo "  UNIT_TEST_TIMEOUT=<sec>      Host timeout for make test"
 	@echo ""
 	@echo "Architectures: $(SUPPORTED_ARCHS)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make kernel ARCH=x86_64"
 	@echo "  make run ARCH=aarch64"
+	@echo "  make test ARCH=x86_64"
 	@echo "  make kernel ARCH=x86_64 RELEASE=1 V=1"
 	@echo ""
 	@echo "Other:"

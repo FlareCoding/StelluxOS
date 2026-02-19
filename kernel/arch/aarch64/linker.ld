@@ -34,10 +34,25 @@ SECTIONS {
     .rodata : AT(ADDR(.rodata) - KERNEL_VADDR) {
         __rodata_start = .;
         *(.rodata .rodata.*)
+
+        /* Unit test registration tables (kept/sorted for deterministic order) */
+        . = ALIGN(8);
+        __stlx_test_suites_start = .;
+        KEEP(*(SORT_BY_NAME(.stlx_test_suites)))
+        KEEP(*(SORT_BY_NAME(.stlx_test_suites.*)))
+        __stlx_test_suites_end = .;
+
+        . = ALIGN(8);
+        __stlx_test_cases_start = .;
+        KEEP(*(SORT_BY_NAME(.stlx_test_cases)))
+        KEEP(*(SORT_BY_NAME(.stlx_test_cases.*)))
+        __stlx_test_cases_end = .;
+
         /* Privileged rodata */
         . = ALIGN(4096);
         __priv_rodata_start = .;
         *(.priv.rodata .priv.rodata.*)
+        . = ALIGN(4096);
         __rodata_end = .;
     } :rodata
 
