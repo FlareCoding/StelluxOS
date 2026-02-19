@@ -225,10 +225,13 @@ compile-commands:
 	@first=1; \
 	for src in $(CXX_SOURCES); do \
 		if [ $$first -eq 1 ]; then first=0; else echo "," >> compile_commands.json; fi; \
+		args="\"$(CXX)\""; \
+		for flag in $(CXXFLAGS); do args="$$args, \"$$flag\""; done; \
+		args="$$args, \"-c\", \"$$src\""; \
 		echo "  {" >> compile_commands.json; \
 		echo "    \"directory\": \"$$(pwd)\"," >> compile_commands.json; \
 		echo "    \"file\": \"$$src\"," >> compile_commands.json; \
-		echo "    \"arguments\": [\"clang++\", \"-std=c++20\", \"-ffreestanding\", \"-fno-builtin\", \"-nostdinc++\", \"-nostdlib\", \"-fno-exceptions\", \"-fno-rtti\", \"-fno-stack-protector\", \"-fno-PIE\", \"-DMAX_CPUS=$(MAX_CPUS)\", \"-DLOG_LEVEL=$(LOG_LEVEL)\", \"-I.\", \"-Icommon\", \"-Ihw\", \"-Iarch/$(ARCH)\", \"--target=x86_64-unknown-none\", \"-mno-red-zone\", \"-mcmodel=kernel\", \"-c\", \"$$src\"]" >> compile_commands.json; \
+		echo "    \"arguments\": [$$args]" >> compile_commands.json; \
 		echo "  }" >> compile_commands.json; \
 	done
 	@echo "]" >> compile_commands.json
