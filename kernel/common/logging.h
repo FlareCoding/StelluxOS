@@ -2,6 +2,7 @@
 #define STELLUX_COMMON_LOGGING_H
 
 #include "types.h"
+#include "varargs.h"
 
 // Default log level if not defined via defconfig
 #ifndef LOG_LEVEL
@@ -53,6 +54,17 @@ void error(const char* fmt, ...);
  * @brief Log a fatal error and halt the system.
  */
 [[noreturn]] void fatal(const char* fmt, ...);
+
+/**
+ * @brief Write formatted output without level prefix. Appends \r\n.
+ * Uses current backend (or serial if none set).
+ */
+void raw(const char* fmt, ...);
+
+/**
+ * @brief va_list variant of raw() for forwarding from wrapper functions.
+ */
+void vraw(const char* fmt, va_list args);
 
 } // namespace log
 

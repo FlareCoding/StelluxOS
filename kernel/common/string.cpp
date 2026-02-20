@@ -38,4 +38,13 @@ int memcmp(const void* s1, const void* s2, size_t n) {
     return 0;
 }
 
+int strcmp(const char* s1, const char* s2) {
+    while (*s1 && *s1 == *s2) {
+        s1++;
+        s2++;
+    }
+    return static_cast<int>(static_cast<uint8_t>(*s1)) -
+           static_cast<int>(static_cast<uint8_t>(*s2));
+}
+
 } // namespace string

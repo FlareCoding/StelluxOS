@@ -25,6 +25,12 @@ void* memset(void* dest, int c, size_t n);
  */
 int memcmp(const void* s1, const void* s2, size_t n);
 
+/**
+ * @brief Compare two null-terminated strings.
+ * @return 0 if equal, negative if s1 < s2, positive if s1 > s2.
+ */
+int strcmp(const char* s1, const char* s2);
+
 } // namespace string
 
 #endif // STELLUX_COMMON_STRING_H

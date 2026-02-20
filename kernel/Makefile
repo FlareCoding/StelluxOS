@@ -65,6 +65,11 @@ CXX_SOURCES += $(shell find percpu -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find syscall -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
 
+# Unit test sources (only when STLX_UNIT_TESTS_ENABLED=1)
+ifeq ($(STLX_UNIT_TESTS_ENABLED),1)
+CXX_SOURCES += $(shell find tests -name '*.cpp' 2>/dev/null | sort)
+endif
+
 # Find all assembly sources (arch-specific only typically)
 ASM_SOURCES := $(shell find arch/$(ARCH) -name '*.S' 2>/dev/null | sort)
 
@@ -113,6 +118,12 @@ CXXFLAGS_CONFIG := -DMAX_CPUS=$(MAX_CPUS)
 # Note: -Iarch/$(ARCH) allows arch-specific headers to be included with paths
 # like #include "hw/barrier.h" - the build system picks the right arch directory
 CXXFLAGS_INCLUDES := -I. -Icommon -Iarch/$(ARCH)
+
+# Unit test flags
+ifeq ($(STLX_UNIT_TESTS_ENABLED),1)
+CXXFLAGS_EXTRA += -DSTLX_UNIT_TESTS_ENABLED
+CXXFLAGS_INCLUDES += -Itests/framework
+endif
 
 # Combine all C++ flags
 CXXFLAGS := \
@@ -220,13 +231,19 @@ show-objects:
 .PHONY: compile-commands
 
 compile-commands:
-	@echo "Generating compile_commands.json..."
+	@echo "Generating compile_commands.json (includes test sources)..."
+	$(eval CC_SOURCES := $(CXX_SOURCES))
+	$(eval CC_FLAGS := $(CXXFLAGS))
+ifeq ($(STLX_UNIT_TESTS_ENABLED),)
+	$(eval CC_SOURCES += $(shell find tests -name '*.cpp' 2>/dev/null | sort))
+	$(eval CC_FLAGS += -DSTLX_UNIT_TESTS_ENABLED -Itests/framework)
+endif
 	@echo "[" > compile_commands.json
 	@first=1; \
-	for src in $(CXX_SOURCES); do \
+	for src in $(CC_SOURCES); do \
 		if [ $$first -eq 1 ]; then first=0; else echo "," >> compile_commands.json; fi; \
 		args="\"$(CXX)\""; \
-		for flag in $(CXXFLAGS); do args="$$args, \"$$flag\""; done; \
+		for flag in $(CC_FLAGS); do args="$$args, \"$$flag\""; done; \
 		args="$$args, \"-c\", \"$$src\""; \
 		echo "  {" >> compile_commands.json; \
 		echo "    \"directory\": \"$$(pwd)\"," >> compile_commands.json; \

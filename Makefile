@@ -55,6 +55,7 @@ export V
 export DEBUG
 export RELEASE
 export BUILD_DIR
+export STLX_UNIT_TESTS_ENABLED
 
 # ============================================================================
 # Supported Architectures
@@ -67,7 +68,7 @@ SUPPORTED_ARCHS := x86_64 aarch64
 # ============================================================================
 
 # Targets that require ARCH
-ARCH_REQUIRED_TARGETS := kernel image run
+ARCH_REQUIRED_TARGETS := kernel image run test
 
 # Check if current target requires ARCH
 CURRENT_GOALS := $(MAKECMDGOALS)
@@ -99,7 +100,7 @@ endif
 # Primary Targets
 # ============================================================================
 
-.PHONY: all kernel image run run-headless clean \
+.PHONY: all kernel image run run-headless clean test \
         image-x86_64 image-aarch64 \
         run-qemu-x86_64 run-qemu-aarch64 \
         run-qemu-x86_64-headless run-qemu-aarch64-headless \
@@ -120,7 +121,17 @@ kernel: check-lld
 	$(Q)$(MAKE) -C kernel ARCH=$(ARCH) BUILD_DIR=../$(BUILD_DIR) \
 		$(if $(RELEASE),RELEASE=1) \
 		$(if $(DEBUG),DEBUG=1) \
+		$(if $(STLX_UNIT_TESTS_ENABLED),STLX_UNIT_TESTS_ENABLED=1) \
 		$(if $(V),V=1)
+
+# ============================================================================
+# Unit Tests
+# ============================================================================
+
+test:
+	$(Q)$(MAKE) image ARCH=$(ARCH) STLX_UNIT_TESTS_ENABLED=1
+	@echo ""
+	$(Q)./scripts/run_tests.sh $(ARCH)
 
 # ============================================================================
 # Disk Image Creation

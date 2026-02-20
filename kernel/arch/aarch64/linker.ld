@@ -89,6 +89,23 @@ SECTIONS {
         *(.priv.bss .priv.bss.*)
     } :data
 
+    /* Unit test descriptors (empty in production builds, zero overhead) */
+    . = ALIGN(4096);
+    .stlx_unit_test : AT(ADDR(.stlx_unit_test) - KERNEL_VADDR) SUBALIGN(8) {
+        __stlx_unit_test_start = .;
+        KEEP(*(.stlx_unit_test.0.*))
+        KEEP(*(.stlx_unit_test.1.*))
+        KEEP(*(.stlx_unit_test.2.*))
+        KEEP(*(.stlx_unit_test.3.*))
+        __stlx_unit_test_end = .;
+    } :data
+
+    .stlx_unit_test_hooks : AT(ADDR(.stlx_unit_test_hooks) - KERNEL_VADDR) SUBALIGN(8) {
+        __stlx_unit_test_hooks_start = .;
+        KEEP(*(.stlx_unit_test_hooks))
+        __stlx_unit_test_hooks_end = .;
+    } :data
+
     /* Ensure end symbols are page-aligned to avoid partial page issues */
     . = ALIGN(4096);
     __stlx_kern_priv_end = .;

@@ -85,37 +85,31 @@ static const char* itoa(int64_t value, int width, char pad) {
     return str;
 }
 
-// Core vlog function that does the actual formatting
-static void vlog(level lvl, const char* fmt, va_list args) {
-    // Output level prefix
-    output_str(level_prefixes[static_cast<int>(lvl)]);
-    
-    // Process format string
+// Core format engine -- processes format string and outputs via output()/output_char()
+static void vformat(const char* fmt, va_list args) {
     while (*fmt) {
         if (*fmt != '%') {
             output_char(*fmt);
             fmt++;
             continue;
         }
-        
-        fmt++; // Skip '%'
+
+        fmt++;
         if (*fmt == '\0') break;
-        
-        // Parse width
+
         int width = 0;
         char pad = ' ';
-        
+
         if (*fmt == '0') {
             pad = '0';
             fmt++;
         }
-        
+
         while (*fmt >= '0' && *fmt <= '9') {
             width = width * 10 + (*fmt - '0');
             fmt++;
         }
-        
-        // Parse precision (for strings)
+
         int precision = -1;
         if (*fmt == '.') {
             fmt++;
@@ -125,11 +119,10 @@ static void vlog(level lvl, const char* fmt, va_list args) {
                 fmt++;
             }
         }
-        
-        // Parse length modifier
+
         bool is_long = false;
         bool is_size = false;
-        
+
         if (*fmt == 'l') {
             is_long = true;
             fmt++;
@@ -153,7 +146,7 @@ static void vlog(level lvl, const char* fmt, va_list args) {
                 output_str(itoa(val, width, pad));
                 break;
             }
-            
+
             case 'u': {
                 uint64_t val;
                 if (is_long) {
@@ -166,7 +159,7 @@ static void vlog(level lvl, const char* fmt, va_list args) {
                 output_str(utoa(val, 10, false, width, pad));
                 break;
             }
-            
+
             case 'x':
             case 'X': {
                 uint64_t val;
@@ -180,14 +173,14 @@ static void vlog(level lvl, const char* fmt, va_list args) {
                 output_str(utoa(val, 16, *fmt == 'X', width, pad));
                 break;
             }
-            
+
             case 'p': {
                 uintptr_t val = reinterpret_cast<uintptr_t>(va_arg(args, void*));
                 output_str("0x");
                 output_str(utoa(val, 16, false, sizeof(void*) * 2, '0'));
                 break;
             }
-            
+
             case 's': {
                 const char* s = va_arg(args, const char*);
                 if (s == nullptr) {
@@ -205,13 +198,13 @@ static void vlog(level lvl, const char* fmt, va_list args) {
                 output(s, len);
                 break;
             }
-            
+
             case 'c': {
                 char c = static_cast<char>(va_arg(args, int));
                 output_char(c);
                 break;
             }
-            
+
             case 'b': {
                 uint64_t val;
                 if (is_long) {
@@ -222,22 +215,24 @@ static void vlog(level lvl, const char* fmt, va_list args) {
                 output_str(utoa(val, 2, false, width, pad));
                 break;
             }
-            
+
             case '%':
                 output_char('%');
                 break;
-            
+
             default:
-                // Unknown specifier, output as-is
                 output_char('%');
                 output_char(*fmt);
                 break;
         }
-        
+
         fmt++;
     }
-    
-    // Output newline
+}
+
+static void vlog(level lvl, const char* fmt, va_list args) {
+    output_str(level_prefixes[static_cast<int>(lvl)]);
+    vformat(fmt, args);
     output_str("\r\n");
 }
 
@@ -279,6 +274,19 @@ void error(const char* fmt, ...) {
     for (;;) {
         cpu::halt();
     }
+}
+
+void raw(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vformat(fmt, args);
+    output_str("\r\n");
+    va_end(args);
+}
+
+void vraw(const char* fmt, va_list args) {
+    vformat(fmt, args);
+    output_str("\r\n");
 }
 
 } // namespace log

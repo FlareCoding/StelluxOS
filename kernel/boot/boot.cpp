@@ -5,6 +5,10 @@
 #include "arch/arch_init.h"
 #include "mm/mm.h"
 
+#ifdef STLX_UNIT_TESTS_ENABLED
+#include "runner.h"
+#endif
+
 /**
  * @brief Kernel entry point called by bootloader.
  * @note Privilege: **required**
@@ -27,6 +31,13 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     if (mm::init() != mm::OK) {
         log::fatal("mm::init failed");
     }
+
+#ifdef STLX_UNIT_TESTS_ENABLED
+    stlx_test::run_all();
+    while (true) {
+        cpu::halt();
+    }
+#endif
 
     log::debug("Initialization complete! Halting...");
     while (true) {

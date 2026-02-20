@@ -855,7 +855,7 @@ __PRIVILEGED_CODE int32_t init() {
     virt_addr_t priv_rodata_start = reinterpret_cast<virt_addr_t>(__priv_rodata_start);
     if (rodata_start < priv_rodata_start) {
         pmm::phys_addr_t rodata_phys = kern_phys_start + (rodata_start - kern_start);
-        size_t rodata_pages = (priv_rodata_start - rodata_start) / PAGE_SIZE_4KB;
+        size_t rodata_pages = (priv_rodata_start - rodata_start + PAGE_SIZE_4KB - 1) / PAGE_SIZE_4KB;
         for (size_t i = 0; i < rodata_pages; i++) {
             virt_addr_t v = rodata_start + i * PAGE_SIZE_4KB;
             pmm::phys_addr_t p = rodata_phys + i * PAGE_SIZE_4KB;
@@ -869,7 +869,7 @@ __PRIVILEGED_CODE int32_t init() {
     // Map privileged rodata: __priv_rodata_start..rodata_end (KERNEL_RO)
     if (priv_rodata_start < rodata_end) {
         pmm::phys_addr_t priv_rodata_phys = kern_phys_start + (priv_rodata_start - kern_start);
-        size_t priv_rodata_pages = (rodata_end - priv_rodata_start) / PAGE_SIZE_4KB;
+        size_t priv_rodata_pages = (rodata_end - priv_rodata_start + PAGE_SIZE_4KB - 1) / PAGE_SIZE_4KB;
         for (size_t i = 0; i < priv_rodata_pages; i++) {
             virt_addr_t v = priv_rodata_start + i * PAGE_SIZE_4KB;
             pmm::phys_addr_t p = priv_rodata_phys + i * PAGE_SIZE_4KB;
@@ -894,13 +894,15 @@ __PRIVILEGED_CODE int32_t init() {
         }
     }
 
-    // Helper to map a range of 4KB pages
+    // Helper to map a range of 4KB pages (handles non-page-aligned boundaries)
     const auto map_range = [&](virt_addr_t start, virt_addr_t end, page_flags_t flags, const char* label) {
-        if (start >= end) return;
-        pmm::phys_addr_t phys = kern_phys_start + (start - kern_start);
-        size_t pages = (end - start) / PAGE_SIZE_4KB;
+        virt_addr_t start_aligned = start & ~(PAGE_SIZE_4KB - 1ULL);
+        virt_addr_t end_aligned = (end + PAGE_SIZE_4KB - 1) & ~(PAGE_SIZE_4KB - 1ULL);
+        if (start_aligned >= end_aligned) return;
+        pmm::phys_addr_t phys = kern_phys_start + (start_aligned - kern_start);
+        size_t pages = (end_aligned - start_aligned) / PAGE_SIZE_4KB;
         for (size_t i = 0; i < pages; i++) {
-            virt_addr_t v = start + i * PAGE_SIZE_4KB;
+            virt_addr_t v = start_aligned + i * PAGE_SIZE_4KB;
             pmm::phys_addr_t p = phys + i * PAGE_SIZE_4KB;
             int32_t result = map_page_4kb(new_root, v, p, flags);
             if (result != OK && result != ERR_ALREADY_MAPPED) {
@@ -918,10 +920,9 @@ __PRIVILEGED_CODE int32_t init() {
     // This includes .priv.data and .priv.bss
     map_range(priv_data_start, kern_priv_end, PAGE_KERNEL_RW, "privileged data");
 
-    size_t priv_pages = (kern_priv_end - kern_priv_start + PAGE_SIZE_4KB - 1) / PAGE_SIZE_4KB;
-    log::info("paging: kernel mapped - unprivileged: 0x%lx-0x%lx (%lu pages), privileged: 0x%lx-0x%lx (%lu pages)",
-              kern_start, kern_priv_start, unpriv_pages,
-              kern_priv_start, kern_priv_end, priv_pages);
+    size_t total_kernel_pages = (kern_priv_end - kern_start + PAGE_SIZE_4KB - 1) / PAGE_SIZE_4KB;
+    log::info("paging: kernel image mapped 0x%lx-0x%lx (%zu pages, %zu KB)",
+              kern_start, kern_priv_end, total_kernel_pages, total_kernel_pages * 4);
 
     // Switch to new page tables by writing to CR3
     set_kernel_pt_root(new_root);
