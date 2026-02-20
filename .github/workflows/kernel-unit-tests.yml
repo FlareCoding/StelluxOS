@@ -1,0 +1,125 @@
+#
+# Kernel Unit Tests — CI Pipeline
+#
+# Validates every commit by linting privilege annotations, building the kernel
+# across all supported architectures and build modes, and running the full
+# unit-test suite inside QEMU.
+#
+# Job graph:
+#
+#   dynpriv-lint  (fast gate)
+#        │
+#    ┌───┴───┐
+#    ▼       ▼
+#  build   unit-tests
+#  (4 jobs) (2 jobs)
+#
+
+name: Kernel Unit Tests
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  # ============================================================================
+  # Privilege Annotation Lint
+  # ============================================================================
+
+  dynpriv-lint:
+    name: dynpriv lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run dynamic privilege lint
+        run: bash scripts/dynpriv-lint.sh
+
+  # ============================================================================
+  # Build Verification (arch × mode matrix)
+  # ============================================================================
+
+  build:
+    name: build (${{ matrix.arch }}, ${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    needs: dynpriv-lint
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+        mode: [debug, release]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            clang lld llvm \
+            mtools gdisk xorriso
+
+      - name: Fetch Limine EFI binaries
+        run: make limine
+
+      - name: Build kernel
+        run: |
+          make kernel ARCH=${{ matrix.arch }} \
+            ${{ matrix.mode == 'release' && 'RELEASE=1' || '' }}
+
+      - name: Verify kernel ELF exists
+        run: |
+          elf="build/kernel/${{ matrix.arch }}/kernel.elf"
+          if [[ ! -f "$elf" ]]; then
+            echo "::error::Kernel ELF not found: $elf"
+            exit 1
+          fi
+          echo "Kernel ELF: $(ls -lh "$elf")"
+
+  # ============================================================================
+  # Unit Tests (arch matrix)
+  # ============================================================================
+
+  unit-tests:
+    name: unit-tests (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    needs: dynpriv-lint
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build and QEMU dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            clang lld llvm \
+            qemu-system-x86 qemu-system-arm \
+            ovmf qemu-efi-aarch64 \
+            mtools gdisk xorriso
+
+      - name: Fetch Limine EFI binaries
+        run: make limine
+
+      - name: Run unit tests
+        run: make test ARCH=${{ matrix.arch }} 2>&1 | tee test-log-${{ matrix.arch }}.txt
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log-${{ matrix.arch }}
+          path: test-log-${{ matrix.arch }}.txt
+          if-no-files-found: ignore
