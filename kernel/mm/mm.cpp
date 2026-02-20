@@ -3,6 +3,7 @@
 #include "mm/va_layout.h"
 #include "mm/kva.h"
 #include "mm/vmm.h"
+#include "mm/heap.h"
 #include "common/logging.h"
 
 namespace mm {
@@ -28,6 +29,11 @@ __PRIVILEGED_CODE int32_t init() {
 
     if (vmm::init() != vmm::OK) {
         log::error("mm: vmm init failed");
+        return ERR;
+    }
+
+    if (heap::init() != heap::OK) {
+        log::error("mm: heap init failed");
         return ERR;
     }
 

@@ -54,4 +54,12 @@ typedef int64_t  ssize_t;
 #define __PRIVILEGED_RODATA __attribute__((section(".priv.rodata")))
 #define __PRIVILEGED_BSS    __attribute__((section(".priv.bss")))
 
+/* Placement new/delete for freestanding C++ (no <new> header available) */
+#ifdef __cplusplus
+inline void* operator new(decltype(sizeof(0)), void* p) noexcept { return p; }
+inline void* operator new[](decltype(sizeof(0)), void* p) noexcept { return p; }
+inline void  operator delete(void*, void*) noexcept {}
+inline void  operator delete[](void*, void*) noexcept {}
+#endif
+
 #endif /* _TYPES_H */

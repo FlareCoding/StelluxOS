@@ -16,4 +16,16 @@ bool is_elevated();
 
 } // namespace dynpriv
 
+#define RUN_ELEVATED(code)                          \
+    do {                                            \
+        bool was_elevated = dynpriv::is_elevated(); \
+        if (!was_elevated) {                        \
+            dynpriv::elevate();                     \
+        }                                           \
+        code;                                       \
+        if (!was_elevated) {                        \
+            dynpriv::lower();                       \
+        }                                           \
+    } while (0)
+
 #endif // STELLUX_DYNPRIV_DYNPRIV_H

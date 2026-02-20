@@ -1,4 +1,4 @@
-#define STLX_TEST_TIER TIER_MM_ALLOC
+#define STLX_TEST_TIER TIER_MM_CORE
 
 #include "stlx_unit_test.h"
 #include "mm/kva.h"

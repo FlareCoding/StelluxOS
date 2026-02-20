@@ -135,21 +135,21 @@ __PRIVILEGED_CODE bool validate_freelists() {
                 }
 
                 // Check order matches
-                if (pf.order != order) {
+                if (pf.buddy.order != order) {
                     log::error("PMM validate: pfn 0x%x order mismatch (%u vs %u) in %s",
-                               pfn, pf.order, order, z.name);
+                               pfn, pf.buddy.order, order, z.name);
                     valid = false;
                 }
 
                 // Check prev pointer
-                if (pf.list_prev != prev) {
+                if (pf.buddy.list_prev != prev) {
                     log::error("PMM validate: pfn 0x%x bad prev pointer in %s order %u",
                                pfn, z.name, order);
                     valid = false;
                 }
 
                 prev = pfn;
-                pfn = pf.list_next;
+                pfn = pf.buddy.list_next;
                 counted++;
 
                 // Sanity check to avoid infinite loops

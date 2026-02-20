@@ -200,12 +200,12 @@ __PRIVILEGED_CODE void freelist_add(zone& z, pfn_t pfn, uint8_t order) {
     free_area& fa = z.free_areas[order];
     page_frame_descriptor& pf = g_pmm.page_array[pfn];
 
-    pf.list_prev = INVALID_PFN;
-    pf.list_next = fa.first;
-    pf.order = order;
+    pf.buddy.list_prev = INVALID_PFN;
+    pf.buddy.list_next = fa.first;
+    pf.buddy.order = order;
 
     if (fa.first != INVALID_PFN) {
-        g_pmm.page_array[fa.first].list_prev = pfn;
+        g_pmm.page_array[fa.first].buddy.list_prev = pfn;
     } else {
         fa.last = pfn; // First element, also becomes last
     }
@@ -217,20 +217,20 @@ __PRIVILEGED_CODE void freelist_remove(zone& z, pfn_t pfn, uint8_t order) {
     free_area& fa = z.free_areas[order];
     page_frame_descriptor& pf = g_pmm.page_array[pfn];
 
-    if (pf.list_prev != INVALID_PFN) {
-        g_pmm.page_array[pf.list_prev].list_next = pf.list_next;
+    if (pf.buddy.list_prev != INVALID_PFN) {
+        g_pmm.page_array[pf.buddy.list_prev].buddy.list_next = pf.buddy.list_next;
     } else {
-        fa.first = pf.list_next; // Was head
+        fa.first = pf.buddy.list_next; // Was head
     }
 
-    if (pf.list_next != INVALID_PFN) {
-        g_pmm.page_array[pf.list_next].list_prev = pf.list_prev;
+    if (pf.buddy.list_next != INVALID_PFN) {
+        g_pmm.page_array[pf.buddy.list_next].buddy.list_prev = pf.buddy.list_prev;
     } else {
-        fa.last = pf.list_prev; // Was tail
+        fa.last = pf.buddy.list_prev; // Was tail
     }
 
-    pf.list_prev = INVALID_PFN;
-    pf.list_next = INVALID_PFN;
+    pf.buddy.list_prev = INVALID_PFN;
+    pf.buddy.list_next = INVALID_PFN;
     fa.count--;
 }
 
@@ -248,13 +248,13 @@ __PRIVILEGED_CODE phys_addr_t zone_alloc(zone& z, uint8_t order) {
                 // Add upper buddy to freelist
                 pfn_t upper_buddy = pfn + (static_cast<pfn_t>(1) << o);
                 g_pmm.page_array[upper_buddy].flags = PAGE_FLAG_NONE;
-                g_pmm.page_array[upper_buddy].order = o;
+                g_pmm.page_array[upper_buddy].buddy.order = o;
                 freelist_add(z, upper_buddy, o);
             }
 
             // Mark as allocated
             g_pmm.page_array[pfn].flags = PAGE_FLAG_ALLOCATED;
-            g_pmm.page_array[pfn].order = order;
+            g_pmm.page_array[pfn].buddy.order = order;
             z.free_pages -= order_to_pages(order);
 
             return pfn_to_phys(pfn);
@@ -274,9 +274,9 @@ __PRIVILEGED_CODE int32_t zone_free(zone& z, pfn_t pfn, uint8_t order) {
 
 #ifdef DEBUG
     // Verify order matches what was stored during allocation
-    if (pf.order != order) {
+    if (pf.buddy.order != order) {
         log::error("PMM: order mismatch on free: stored=%u, passed=%u, pfn=0x%x",
-                   pf.order, order, pfn);
+                   pf.buddy.order, order, pfn);
         return ERR_ORDER_MISMATCH;
     }
 #endif
@@ -296,7 +296,7 @@ __PRIVILEGED_CODE int32_t zone_free(zone& z, pfn_t pfn, uint8_t order) {
 
         // Check if buddy is free and at the same order
         if (!buddy_pf.is_free()) break;
-        if (buddy_pf.order != order) break;
+        if (buddy_pf.buddy.order != order) break;
 
         // Remove buddy from its freelist
         freelist_remove(z, buddy, order);
@@ -307,7 +307,7 @@ __PRIVILEGED_CODE int32_t zone_free(zone& z, pfn_t pfn, uint8_t order) {
     }
 
     // Add merged block to freelist
-    g_pmm.page_array[pfn].order = order;
+    g_pmm.page_array[pfn].buddy.order = order;
     freelist_add(z, pfn, order);
 
     return OK;
@@ -400,10 +400,10 @@ __PRIVILEGED_CODE static void mark_pages(pfn_t start_pfn, pfn_t end_pfn, uint8_t
     for (pfn_t pfn = start_pfn; pfn < end_pfn && pfn < g_pmm.max_pfn; pfn++) {
         g_pmm.page_array[pfn].flags = flags;
         g_pmm.page_array[pfn].zone = static_cast<uint8_t>(get_zone_for_pfn(pfn));
-        g_pmm.page_array[pfn].order = 0;
-        g_pmm.page_array[pfn].list_next = INVALID_PFN;
-        g_pmm.page_array[pfn].list_prev = INVALID_PFN;
-        g_pmm.page_array[pfn].refcount = 0;
+        g_pmm.page_array[pfn].buddy.order = 0;
+        g_pmm.page_array[pfn].buddy.list_next = INVALID_PFN;
+        g_pmm.page_array[pfn].buddy.list_prev = INVALID_PFN;
+        g_pmm.page_array[pfn].buddy.refcount = 0;
     }
 }
 

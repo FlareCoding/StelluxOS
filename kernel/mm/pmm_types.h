@@ -53,19 +53,33 @@ constexpr int32_t ERR_NOT_INITIALIZED = -5;
 constexpr int32_t ERR_ORDER_MISMATCH  = -6;
 
 // Page frame descriptor - metadata for a single physical page
-// One of these exists for every physical page in the system (16 bytes each)
-struct page_frame_descriptor {
-    uint8_t  flags;         // Flags indicating page state (free, allocated, reserved, etc.)
-    uint8_t  zone;          // Zone ID (DMA32 or NORMAL)
-    uint8_t  order;         // Order of the free block (0=1 page, 1=2 pages, ..., 18=262144 pages)
-    uint8_t  _reserved;     // Reserved for future use
-    pfn_t    list_next;     // Next page in free list
-    pfn_t    list_prev;     // Previous page in free list
-    uint32_t refcount;      // Reference count for page
+// One of these exists for every physical page in the system (16 bytes each).
+// Uses a union: buddy fields when free/allocated by PMM, slab fields when
+// owned by the heap allocator (PAGE_FLAG_SLAB set).
+struct __attribute__((packed)) page_frame_descriptor {
+    uint8_t flags;
+    uint8_t zone;
+    union {
+        struct __attribute__((packed)) {
+            uint8_t  order;
+            uint8_t  _reserved;
+            pfn_t    list_next;
+            pfn_t    list_prev;
+            uint32_t refcount;
+        } buddy;
+        struct __attribute__((packed)) {
+            uint8_t  class_index; // size class (0-7), or 0xFF for large
+            uint8_t  heap_type;   // 0=privileged, 1=unprivileged (see heap::heap_type)
+            uint16_t free_count;
+            uint16_t total_count;
+            uint8_t  _pad[8];
+        } slab;
+    };
 
     bool is_free() const { return flags == PAGE_FLAG_NONE; }
     bool is_allocated() const { return (flags & PAGE_FLAG_ALLOCATED) != 0; }
     bool is_reserved() const { return (flags & PAGE_FLAG_RESERVED) != 0; }
+    bool is_slab() const { return (flags & PAGE_FLAG_SLAB) != 0; }
 };
 static_assert(sizeof(page_frame_descriptor) == 16, "page_frame_descriptor size must be 16 bytes");
 
