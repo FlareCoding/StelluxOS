@@ -545,6 +545,23 @@ __PRIVILEGED_CODE int32_t map_pages(virt_addr_t virt, pmm::phys_addr_t phys, pag
     return OK;
 }
 
+// Check if all 512 entries in a translation table are empty.
+__PRIVILEGED_CODE static bool is_table_empty(const translation_table_t* table) {
+    for (int i = 0; i < 512; i++) {
+        if (table->raw[i] != 0) return false;
+    }
+    return true;
+}
+
+// Free a page table page back to PMM if it was dynamically allocated.
+// Bootstrap-allocated pages (PAGE_FLAG_RESERVED) are not freed.
+__PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
+    auto* pfd = pmm::get_page_frame(phys);
+    if (pfd && pfd->is_allocated()) {
+        pmm::free_page(phys);
+    }
+}
+
 __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     if (!g_initialized) {
         return OK;
@@ -563,6 +580,11 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
     if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
         l1->raw[parts.l1_idx] = 0;
         flush_tlb_page(virt);
+        if (is_table_empty(l1)) {
+            pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
+            l0_entry->value = 0;
+            try_free_table_page(l1_phys);
+        }
         return OK;
     }
 
@@ -576,6 +598,16 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
     if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
         l2->raw[parts.l2_idx] = 0;
         flush_tlb_page(virt);
+        if (is_table_empty(l2)) {
+            pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
+            l1_entry->value = 0;
+            try_free_table_page(l2_phys);
+            if (is_table_empty(l1)) {
+                pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
+                l0_entry->value = 0;
+                try_free_table_page(l1_phys);
+            }
+        }
         return OK;
     }
 
@@ -591,6 +623,24 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
 
     page->value = 0;
     flush_tlb_page(virt);
+
+    // Cascade: reclaim empty page tables up the hierarchy
+    if (is_table_empty(l3)) {
+        pmm::phys_addr_t l3_phys = static_cast<pmm::phys_addr_t>(l2_entry->next_table_addr) << 12;
+        l2_entry->value = 0;
+        try_free_table_page(l3_phys);
+        if (is_table_empty(l2)) {
+            pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
+            l1_entry->value = 0;
+            try_free_table_page(l2_phys);
+            if (is_table_empty(l1)) {
+                pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
+                l0_entry->value = 0;
+                try_free_table_page(l1_phys);
+            }
+        }
+    }
+
     return OK;
 }
 

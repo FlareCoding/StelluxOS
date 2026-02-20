@@ -11,7 +11,6 @@ namespace arch {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t early_init() {
-    // Initialize per-CPU for BSP (sets TPIDR_EL1)
     // Must be first so that per-CPU variables can be used by subsequent init operations
     if (percpu::init_bsp() != percpu::OK) {
         return ERR_PERCPU_INIT;

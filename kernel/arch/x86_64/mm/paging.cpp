@@ -465,6 +465,24 @@ __PRIVILEGED_CODE int32_t map_pages(virt_addr_t virt, pmm::phys_addr_t phys, pag
     return OK;
 }
 
+// Check if all 512 entries in a page table level are empty.
+__PRIVILEGED_CODE static bool is_table_empty(const void* table) {
+    const uint64_t* entries = static_cast<const uint64_t*>(table);
+    for (int i = 0; i < 512; i++) {
+        if (entries[i] != 0) return false;
+    }
+    return true;
+}
+
+// Free a page table page back to PMM if it was dynamically allocated.
+// Bootstrap-allocated pages (PAGE_FLAG_RESERVED) are not freed.
+__PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
+    auto* pfd = pmm::get_page_frame(phys);
+    if (pfd && pfd->is_allocated()) {
+        pmm::free_page(phys);
+    }
+}
+
 __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     if (!g_initialized) {
         return OK;
@@ -484,6 +502,11 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
     if (pdpte->page_size) {
         pdpte->value = 0;
         flush_tlb_page(virt);
+        if (is_table_empty(pdpt)) {
+            pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
+            pml4e->value = 0;
+            try_free_table_page(pdpt_phys);
+        }
         return OK;
     }
 
@@ -495,6 +518,16 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
     if (pde->page_size) {
         pde->value = 0;
         flush_tlb_page(virt);
+        if (is_table_empty(pd)) {
+            pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
+            pdpte->value = 0;
+            try_free_table_page(pd_phys);
+            if (is_table_empty(pdpt)) {
+                pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
+                pml4e->value = 0;
+                try_free_table_page(pdpt_phys);
+            }
+        }
         return OK;
     }
 
@@ -505,6 +538,24 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
 
     pte->value = 0;
     flush_tlb_page(virt);
+
+    // Cascade: reclaim empty page tables up the hierarchy
+    if (is_table_empty(pt)) {
+        pmm::phys_addr_t pt_phys = static_cast<pmm::phys_addr_t>(pde->phys_addr) << 12;
+        pde->value = 0;
+        try_free_table_page(pt_phys);
+        if (is_table_empty(pd)) {
+            pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
+            pdpte->value = 0;
+            try_free_table_page(pd_phys);
+            if (is_table_empty(pdpt)) {
+                pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
+                pml4e->value = 0;
+                try_free_table_page(pdpt_phys);
+            }
+        }
+    }
+
     return OK;
 }
 
