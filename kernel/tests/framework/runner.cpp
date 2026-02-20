@@ -68,23 +68,9 @@ static hook_fn find_hook(const char* suite_name, hook_type type) {
     return nullptr;
 }
 
-// Simple in-place insertion sort of test entries by suite_name
-static void sort_by_suite(test_entry* begin, test_entry* end) {
-    const size_t n = static_cast<size_t>(end - begin);
-    for (size_t i = 1; i < n; i++) {
-        test_entry key = begin[i];
-        size_t j = i;
-        while (j > 0 && string::strcmp(begin[j - 1].suite_name, key.suite_name) > 0) {
-            begin[j] = begin[j - 1];
-            j--;
-        }
-        begin[j] = key;
-    }
-}
-
 int32_t run_all() {
-    auto* tests_begin = const_cast<test_entry*>(__stlx_unit_test_start);
-    auto* tests_end   = const_cast<test_entry*>(__stlx_unit_test_end);
+    const auto* tests_begin = __stlx_unit_test_start;
+    const auto* tests_end   = __stlx_unit_test_end;
     const size_t total_tests = static_cast<size_t>(tests_end - tests_begin);
 
     if (total_tests == 0) {
@@ -93,15 +79,6 @@ int32_t run_all() {
         log::raw("STLX_TESTS_COMPLETE 0");
         return 0;
     }
-
-    // Sort entries by suite name within each tier.
-    // The linker already groups by tier (0 before 1 before 2, etc.),
-    // but within a tier, entries from different TUs may be interleaved.
-    // We sort the entire array by suite_name; since entries within the
-    // same tier already share the same linker-section prefix ordering,
-    // the sort groups tests by suite while preserving tier order for
-    // suites in different tiers (different suite names sort differently).
-    sort_by_suite(tests_begin, tests_end);
 
     // Count unique suites
     size_t suite_count = 1;
