@@ -5,6 +5,7 @@
 #include "mm/pmm_types.h"
 #include "mm/paging_types.h"
 #include "mm/kva.h"
+#include "sync/spinlock.h"
 
 namespace heap {
 
@@ -19,8 +20,6 @@ enum class heap_type : uint8_t {
 };
 
 // Embedded at the start of each slab page.
-// Slab linkage (next/prev) uses VA pointers because vmm::alloc() returns
-// KVA addresses. Freelist pointers in free objects are also KVA addresses.
 struct slab_header {
     uint32_t     magic;
     uint32_t     _pad;
@@ -39,6 +38,7 @@ struct slab_class {
 };
 
 struct heap_state {
+    sync::spinlock       lock;
     slab_class           classes[CLASS_COUNT];
     paging::page_flags_t page_flags; // PAGE_KERNEL_RW or PAGE_USER_RW
     kva::tag             heap_tag;
