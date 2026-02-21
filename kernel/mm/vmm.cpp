@@ -380,27 +380,20 @@ __PRIVILEGED_CODE int32_t free(uintptr_t addr) {
     size_t size = alloc.size;
     kva::tag tag = alloc.alloc_tag;
     uint8_t order = alloc.pmm_order;
+    bool free_phys = (tag != kva::tag::mmio && tag != kva::tag::phys_map);
 
-    // Free physical pages (before unmapping so get_physical still works)
-    if (tag == kva::tag::mmio || tag == kva::tag::phys_map) {
-        // Caller-provided physical — do not free
-    } else if (order > 0) {
-        // Contiguous: free the entire block at once
-        pmm::phys_addr_t phys = paging::get_physical(base, g_kernel_root);
-        if (phys != 0) {
-            pmm::free_pages(phys, order);
-        }
-    } else {
-        // Non-contiguous: free each 4KB page individually
-        for (size_t off = 0; off < size; off += pmm::PAGE_SIZE) {
-            pmm::phys_addr_t phys = paging::get_physical(base + off, g_kernel_root);
-            if (phys != 0) {
-                pmm::free_page(phys);
-            }
-        }
+    // Gather the contiguous base address while the mapping still exists
+    pmm::phys_addr_t contig_phys = 0;
+    if (free_phys && order > 0) {
+        contig_phys = paging::get_physical(base, g_kernel_root);
     }
 
-    // Unmap: walk by detected page size for correctness with large pages
+    // Unmap all pages. For non-contiguous, gather phys addresses per-page
+    // before each unmap, then free after TLB flush to prevent SMP aliasing.
+    constexpr size_t PHYS_BATCH = 64;
+    pmm::phys_addr_t phys_batch[PHYS_BATCH];
+    size_t batch_count = 0;
+
     uintptr_t pos = base;
     uintptr_t end_addr = base + size;
     while (pos < end_addr) {
@@ -412,14 +405,40 @@ __PRIVILEGED_CODE int32_t free(uintptr_t addr) {
             step = paging::PAGE_SIZE_2MB;
         }
 
+        if (free_phys && order == 0) {
+            pmm::phys_addr_t phys = paging::get_physical(pos, g_kernel_root);
+            if (phys != 0) {
+                phys_batch[batch_count++] = phys;
+            }
+        }
+
         paging::unmap_page(pos, g_kernel_root);
         pos += step;
+
+        if (free_phys && order == 0 && batch_count == PHYS_BATCH) {
+            paging::flush_tlb_range(base, pos);
+            for (size_t i = 0; i < batch_count; i++) {
+                pmm::free_page(phys_batch[i]);
+            }
+            batch_count = 0;
+        }
     }
 
-    // Flush TLB for the entire range
     paging::flush_tlb_range(base, base + size);
 
-    // Free the KVA reservation (use alloc.base, not addr, for MMIO offset case)
+    // Free physical pages (safe now — mappings removed and TLB flushed)
+    if (free_phys) {
+        if (order > 0) {
+            if (contig_phys != 0) {
+                pmm::free_pages(contig_phys, order);
+            }
+        } else {
+            for (size_t i = 0; i < batch_count; i++) {
+                pmm::free_page(phys_batch[i]);
+            }
+        }
+    }
+
     kva::free(alloc.base);
 
     return OK;

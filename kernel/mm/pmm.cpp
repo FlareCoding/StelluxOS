@@ -4,6 +4,7 @@
 #include "boot/boot_services.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "sync/spinlock.h"
 
 // Linker symbols for kernel boundaries
 extern "C" {
@@ -181,6 +182,10 @@ __PRIVILEGED_CODE size_t bootstrap_allocator::get_pages_remaining() {
 
 // Global PMM state
 __PRIVILEGED_DATA pmm_state g_pmm = {};
+
+__PRIVILEGED_DATA sync::spinlock g_zone_locks[static_cast<size_t>(zone_id::COUNT)] = {
+    sync::SPINLOCK_INIT, sync::SPINLOCK_INIT
+};
 
 // Debug assertion macro
 #ifdef DEBUG
@@ -577,21 +582,20 @@ __PRIVILEGED_CODE phys_addr_t alloc_pages(uint8_t order, zone_mask_t zones) {
     if (!g_pmm.initialized) return 0;
     if (order > MAX_ORDER) return 0;
 
-    // TODO: Check per-CPU cache first for order == 0
-    // For now, go directly to zone allocator
-
-    // Try ZONE_NORMAL first to preserve DMA32 memory
     if (zones & ZONE_NORMAL) {
-        zone& z = g_pmm.zones[static_cast<size_t>(zone_id::NORMAL)];
+        size_t zi = static_cast<size_t>(zone_id::NORMAL);
+        zone& z = g_pmm.zones[zi];
         if (z.end_pfn > z.start_pfn) {
+            sync::irq_lock_guard guard(g_zone_locks[zi]);
             phys_addr_t addr = zone_alloc(z, order);
             if (addr != 0) return addr;
         }
     }
 
-    // Fall back to ZONE_DMA32
     if (zones & ZONE_DMA32) {
-        zone& z = g_pmm.zones[static_cast<size_t>(zone_id::DMA32)];
+        size_t zi = static_cast<size_t>(zone_id::DMA32);
+        zone& z = g_pmm.zones[zi];
+        sync::irq_lock_guard guard(g_zone_locks[zi]);
         return zone_alloc(z, order);
     }
 
@@ -602,7 +606,6 @@ __PRIVILEGED_CODE int32_t free_pages(phys_addr_t addr, uint8_t order) {
     if (!g_pmm.initialized) return ERR_NOT_INITIALIZED;
     if (order > MAX_ORDER) return ERR_INVALID_ORDER;
 
-    // Check alignment
     phys_addr_t required_align = order_to_bytes(order);
     if ((addr & (required_align - 1)) != 0) {
         return ERR_INVALID_ADDR;
@@ -613,11 +616,11 @@ __PRIVILEGED_CODE int32_t free_pages(phys_addr_t addr, uint8_t order) {
         return ERR_INVALID_ADDR;
     }
 
-    // Determine zone and free
     zone_id zid = get_zone_for_pfn(pfn);
-    zone& z = g_pmm.zones[static_cast<size_t>(zid)];
+    size_t zi = static_cast<size_t>(zid);
+    zone& z = g_pmm.zones[zi];
 
-    // TODO: Return to per-CPU cache for order == 0
+    sync::irq_lock_guard guard(g_zone_locks[zi]);
     return zone_free(z, pfn, order);
 }
 
@@ -644,6 +647,7 @@ __PRIVILEGED_CODE uint64_t free_page_count(zone_mask_t zones) {
     uint64_t total = 0;
     for (size_t zi = 0; zi < static_cast<size_t>(zone_id::COUNT); zi++) {
         if (zones & (1 << zi)) {
+            sync::irq_lock_guard guard(g_zone_locks[zi]);
             total += g_pmm.zones[zi].free_pages;
         }
     }
@@ -657,6 +661,7 @@ __PRIVILEGED_CODE uint64_t free_block_count(uint8_t order, zone_mask_t zones) {
     uint64_t total = 0;
     for (size_t zi = 0; zi < static_cast<size_t>(zone_id::COUNT); zi++) {
         if (zones & (1 << zi)) {
+            sync::irq_lock_guard guard(g_zone_locks[zi]);
             total += g_pmm.zones[zi].free_areas[order].count;
         }
     }

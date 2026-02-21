@@ -44,6 +44,7 @@ __PRIVILEGED_CODE void dump_stats() {
     uint64_t total_pages = 0;
 
     for (size_t zi = 0; zi < static_cast<size_t>(zone_id::COUNT); zi++) {
+        sync::irq_lock_guard guard(g_zone_locks[zi]);
         const zone& z = g_pmm.zones[zi];
 
         // Skip empty zones
@@ -106,6 +107,7 @@ __PRIVILEGED_CODE bool validate_freelists() {
     bool valid = true;
 
     for (size_t zi = 0; zi < static_cast<size_t>(zone_id::COUNT); zi++) {
+        sync::irq_lock_guard guard(g_zone_locks[zi]);
         const zone& z = g_pmm.zones[zi];
         if (z.end_pfn <= z.start_pfn) continue;
 
