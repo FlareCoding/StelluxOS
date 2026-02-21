@@ -282,11 +282,13 @@ __PRIVILEGED_CODE int32_t init() {
     log::info("heap: initialized (priv + unpriv, %u size classes: 16..2048)",
               CLASS_COUNT);
 
+#if 0
     for (uint8_t i = 0; i < CLASS_COUNT; i++) {
         log::debug("heap: class %u: %u bytes, %u objs/slab",
                    i, g_priv_heap.classes[i].obj_size,
                    g_priv_heap.classes[i].objs_per_slab);
     }
+#endif
 
     return OK;
 }
