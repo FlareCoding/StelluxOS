@@ -104,8 +104,8 @@ check_docstring() {
     END {
         i = target - 1
 
-        # Allow one blank line between comment and marker
-        if (i >= 1 && lines[i] ~ /^[[:space:]]*$/) i--
+        # Skip blank lines and template<...> lines between comment and marker
+        while (i >= 1 && (lines[i] ~ /^[[:space:]]*$/ || lines[i] ~ /^[[:space:]]*template[[:space:]]*</)) i--
 
         # Expect closing "*/"
         if (i < 1 || lines[i] !~ /\*\//) exit 1

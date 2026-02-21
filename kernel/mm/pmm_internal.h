@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "pmm_types.h"
+#include "sync/spinlock.h"
 
 namespace pmm {
 
@@ -37,6 +38,7 @@ struct pmm_state {
 };
 
 extern pmm_state g_pmm;
+extern sync::spinlock g_zone_locks[static_cast<size_t>(zone_id::COUNT)];
 
 inline zone_id get_zone_for_pfn(pfn_t pfn) {
     phys_addr_t addr = pfn_to_phys(pfn);

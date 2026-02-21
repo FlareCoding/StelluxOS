@@ -6,6 +6,7 @@
 #include "common/string.h"
 #include "hw/mmio.h"
 #include "io/serial.h"
+#include "sync/spinlock.h"
 
 // Linker symbols for kernel boundaries
 extern "C" {
@@ -26,6 +27,7 @@ namespace paging {
 
 // Tracks whether paging has been initialized
 __PRIVILEGED_DATA static bool g_initialized = false;
+__PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
 
 // UART base address for early serial (PL011)
 // This is typically at 0x09000000 for QEMU virt machine
@@ -480,43 +482,12 @@ __PRIVILEGED_CODE static int32_t map_block_1gb(pmm::phys_addr_t root_pt, virt_ad
     return OK;
 }
 
-__PRIVILEGED_CODE int32_t map_page(virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags, pmm::phys_addr_t root_pt) {
-    if (!g_initialized) {
-        return ERR_INVALID_ADDR;
-    }
-
-    // Handle unmap sentinel
-    if (phys == PHYS_UNMAP) {
-        return unmap_page(virt, root_pt);
-    }
-
-    // Route based on page size flags
-    if (flags & PAGE_HUGE_1GB) {
-        if ((virt & (PAGE_SIZE_1GB - 1)) != 0 || (phys & (PAGE_SIZE_1GB - 1)) != 0) {
-            return ERR_ALIGNMENT;
-        }
-        return map_block_1gb(root_pt, virt, phys, flags);
-    }
-
-    if (flags & PAGE_LARGE_2MB) {
-        if ((virt & (PAGE_SIZE_2MB - 1)) != 0 || (phys & (PAGE_SIZE_2MB - 1)) != 0) {
-            return ERR_ALIGNMENT;
-        }
-        return map_block_2mb(root_pt, virt, phys, flags);
-    }
-
-    // 4KB page
-    if ((virt & (PAGE_SIZE_4KB - 1)) != 0 || (phys & (PAGE_SIZE_4KB - 1)) != 0) {
-        return ERR_ALIGNMENT;
-    }
-
-    return map_page_4kb(root_pt, virt, phys, flags);
-}
-
 __PRIVILEGED_CODE int32_t map_pages(virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags, size_t count, pmm::phys_addr_t root_pt) {
     if (!g_initialized) {
         return ERR_INVALID_ADDR;
     }
+
+    sync::irq_lock_guard guard(g_pt_lock);
 
     // Check alignment
     if ((virt & (PAGE_SIZE_4KB - 1)) != 0 || (phys & (PAGE_SIZE_4KB - 1)) != 0) {
@@ -562,7 +533,7 @@ __PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
     }
 }
 
-__PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt) {
+__PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     if (!g_initialized) {
         return OK;
     }
@@ -644,9 +615,54 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
     return OK;
 }
 
+__PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt) {
+    sync::irq_lock_guard guard(g_pt_lock);
+    return unmap_page_nolock(virt, root_pt);
+}
+
+__PRIVILEGED_CODE static int32_t map_page_nolock(virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags, pmm::phys_addr_t root_pt) {
+    if (!g_initialized) {
+        return ERR_INVALID_ADDR;
+    }
+
+    // Handle unmap sentinel
+    if (phys == PHYS_UNMAP) {
+        return unmap_page_nolock(virt, root_pt);
+    }
+
+    // Route based on page size flags
+    if (flags & PAGE_HUGE_1GB) {
+        if ((virt & (PAGE_SIZE_1GB - 1)) != 0 || (phys & (PAGE_SIZE_1GB - 1)) != 0) {
+            return ERR_ALIGNMENT;
+        }
+        return map_block_1gb(root_pt, virt, phys, flags);
+    }
+
+    if (flags & PAGE_LARGE_2MB) {
+        if ((virt & (PAGE_SIZE_2MB - 1)) != 0 || (phys & (PAGE_SIZE_2MB - 1)) != 0) {
+            return ERR_ALIGNMENT;
+        }
+        return map_block_2mb(root_pt, virt, phys, flags);
+    }
+
+    // 4KB page
+    if ((virt & (PAGE_SIZE_4KB - 1)) != 0 || (phys & (PAGE_SIZE_4KB - 1)) != 0) {
+        return ERR_ALIGNMENT;
+    }
+
+    return map_page_4kb(root_pt, virt, phys, flags);
+}
+
+__PRIVILEGED_CODE int32_t map_page(virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags, pmm::phys_addr_t root_pt) {
+    sync::irq_lock_guard guard(g_pt_lock);
+    return map_page_nolock(virt, phys, flags, root_pt);
+}
+
 __PRIVILEGED_CODE int32_t unmap_pages(virt_addr_t virt, size_t count, pmm::phys_addr_t root_pt) {
+    sync::irq_lock_guard guard(g_pt_lock);
+
     for (size_t i = 0; i < count; i++) {
-        unmap_page(virt + i * PAGE_SIZE_4KB, root_pt);
+        unmap_page_nolock(virt + i * PAGE_SIZE_4KB, root_pt);
     }
     return OK;
 }
@@ -655,6 +671,8 @@ __PRIVILEGED_CODE int32_t set_page_flags(virt_addr_t virt, page_flags_t flags, p
     if (!g_initialized) {
         return ERR_NOT_MAPPED;
     }
+
+    sync::irq_lock_guard guard(g_pt_lock);
 
     auto parts = split_virt_addr(virt);
     translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
@@ -710,6 +728,8 @@ __PRIVILEGED_CODE pmm::phys_addr_t get_physical(virt_addr_t virt, pmm::phys_addr
         return 0;
     }
 
+    sync::irq_lock_guard guard(g_pt_lock);
+
     auto parts = split_virt_addr(virt);
     translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
 
@@ -755,6 +775,8 @@ __PRIVILEGED_CODE page_flags_t get_page_flags(virt_addr_t virt, pmm::phys_addr_t
         return 0;
     }
 
+    sync::irq_lock_guard guard(g_pt_lock);
+
     auto parts = split_virt_addr(virt);
     translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
 
@@ -797,6 +819,8 @@ __PRIVILEGED_CODE bool is_mapped(virt_addr_t virt, pmm::phys_addr_t root_pt) {
         return false;
     }
 
+    sync::irq_lock_guard guard(g_pt_lock);
+
     auto parts = split_virt_addr(virt);
     translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
 
@@ -836,6 +860,8 @@ __PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt) {
 }
 
 __PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end) {
+    sync::irq_lock_guard guard(g_pt_lock);
+
     pmm::phys_addr_t root_pt = get_kernel_pt_root();
     virt_addr_t addr = start;
 
@@ -884,6 +910,8 @@ __PRIVILEGED_CODE void dump_mappings() {
         log::info("paging: not initialized");
         return;
     }
+
+    sync::irq_lock_guard guard(g_pt_lock);
 
     pmm::phys_addr_t root_pt = get_kernel_pt_root();
     log::info("paging: root_pt=0x%lx", root_pt);

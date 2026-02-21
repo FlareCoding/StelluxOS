@@ -13,6 +13,7 @@
 #include "mm/paging.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "sync/spinlock.h"
 
 namespace kva {
 
@@ -21,6 +22,7 @@ __PRIVILEGED_DATA static free_size_tree g_free_by_size;
 __PRIVILEGED_DATA static used_addr_tree g_used_by_addr;
 __PRIVILEGED_DATA static node_pool g_pool;
 __PRIVILEGED_DATA static bool g_initialized = false;
+__PRIVILEGED_DATA static sync::spinlock g_kva_lock = sync::SPINLOCK_INIT;
 
 static inline uintptr_t align_up(uintptr_t val, size_t align) {
     return (val + align - 1) & ~(align - 1);
@@ -162,6 +164,8 @@ __PRIVILEGED_CODE int32_t init() {
     if (!is_power_of_2(align) || align < PAGE_SIZE) return ERR_ALIGNMENT;
     if (pmm_order > pmm::MAX_ORDER) return ERR_INVALID_ARG;
 
+    sync::irq_lock_guard guard(g_kva_lock);
+
     size_t usable = align_up(size, PAGE_SIZE);
     size_t guard_bytes = static_cast<size_t>(guard_pre + guard_post) * PAGE_SIZE;
     size_t reserved = usable + guard_bytes;
@@ -252,7 +256,8 @@ __PRIVILEGED_CODE int32_t init() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t free(uintptr_t base) {
-    // Find the used range by usable_base
+    sync::irq_lock_guard guard(g_kva_lock);
+
     range_node probe{};
     probe.usable_base = base;
 
@@ -310,6 +315,8 @@ __PRIVILEGED_CODE int32_t reserve(uintptr_t base, size_t size, tag t) {
     if ((base & (PAGE_SIZE - 1)) != 0) return ERR_ALIGNMENT;
     size = align_up(size, PAGE_SIZE);
     if (base + size < base) return ERR_INVALID_ARG; // overflow
+
+    sync::irq_lock_guard guard(g_kva_lock);
 
     range_node* containing = find_containing_free(base, size);
     if (!containing) return ERR_NOT_FOUND;
@@ -373,6 +380,8 @@ __PRIVILEGED_CODE int32_t reserve(uintptr_t base, size_t size, tag t) {
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE int32_t query(uintptr_t addr, allocation& out) {
+    sync::irq_lock_guard guard(g_kva_lock);
+
     range_node probe{};
     probe.usable_base = addr;
 
@@ -411,6 +420,8 @@ __PRIVILEGED_CODE static const char* tag_name(tag t) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void dump_state() {
+    sync::irq_lock_guard guard(g_kva_lock);
+
     log::info("kva: state dump");
 
     size_t free_count = 0;
