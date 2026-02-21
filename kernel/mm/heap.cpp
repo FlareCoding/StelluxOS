@@ -19,15 +19,16 @@ static uint8_t size_to_class(size_t size) {
     return 0xFF;
 }
 
-// Validate that a freelist pointer is within the same slab page and aligned.
+// Validate that a freelist pointer is within the valid object region of its slab page.
 __PRIVILEGED_CODE static bool validate_freelist_ptr(
-    void* ptr, uintptr_t page_base, uint16_t obj_size
+    void* ptr, uintptr_t page_base, uint16_t obj_size, uint16_t objs_per_slab
 ) {
     uintptr_t p = reinterpret_cast<uintptr_t>(ptr);
     if ((p & ~0xFFFULL) != page_base) return false;
     if (p < page_base + sizeof(slab_header)) return false;
     uintptr_t offset = p - page_base - sizeof(slab_header);
     if (offset % obj_size != 0) return false;
+    if (offset / obj_size >= objs_per_slab) return false;
     return true;
 }
 
@@ -113,6 +114,8 @@ __PRIVILEGED_CODE static void link_slab(slab_header* header, slab_class& sc) {
 __PRIVILEGED_CODE static void* alloc_internal(size_t size, heap_state* state) {
     if (size == 0) return nullptr;
 
+    sync::irq_lock_guard guard(state->lock);
+
     // Large allocation: pass through to VMM
     if (size > LARGE_THRESHOLD) {
         size_t pages = (size + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE;
@@ -141,12 +144,17 @@ __PRIVILEGED_CODE static void* alloc_internal(size_t size, heap_state* state) {
     }
 
     uintptr_t page_base = reinterpret_cast<uintptr_t>(header);
-    if (!validate_freelist_ptr(ptr, page_base, sc.obj_size)) {
+    if (!validate_freelist_ptr(ptr, page_base, sc.obj_size, sc.objs_per_slab)) {
         log::fatal("heap: corrupted freelist pointer 0x%lx in slab 0x%lx (class %u)",
                    reinterpret_cast<uintptr_t>(ptr), page_base, class_idx);
     }
 
-    header->freelist = *reinterpret_cast<void**>(ptr);
+    void* next = *reinterpret_cast<void**>(ptr);
+    if (next && !validate_freelist_ptr(next, page_base, sc.obj_size, sc.objs_per_slab)) {
+        log::fatal("heap: corrupted freelist next 0x%lx in slab 0x%lx (class %u)",
+                   reinterpret_cast<uintptr_t>(next), page_base, class_idx);
+    }
+    header->freelist = next;
 
     auto* pfd = va_to_pfd(page_base);
     pfd->slab.free_count--;
@@ -170,6 +178,8 @@ __PRIVILEGED_CODE static int32_t free_internal(void* ptr, heap_state* state) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
     uintptr_t page_va = addr & ~0xFFFULL;
 
+    sync::irq_lock_guard guard(state->lock);
+
     auto* pfd = va_to_pfd(page_va);
     if (!pfd) return ERR_BAD_PTR;
 
@@ -177,6 +187,7 @@ __PRIVILEGED_CODE static int32_t free_internal(void* ptr, heap_state* state) {
     if (!pfd->is_slab()) {
         kva::allocation alloc;
         if (kva::query(addr, alloc) != kva::OK) return ERR_BAD_PTR;
+        if (addr != alloc.base) return ERR_BAD_PTR;
         if (alloc.alloc_tag != state->heap_tag) {
             log::fatal("heap: freeing large alloc from wrong heap");
         }
@@ -202,9 +213,14 @@ __PRIVILEGED_CODE static int32_t free_internal(void* ptr, heap_state* state) {
 
     slab_class& sc = state->classes[class_idx];
 
-    if (!validate_freelist_ptr(ptr, page_va, sc.obj_size)) {
+    if (!validate_freelist_ptr(ptr, page_va, sc.obj_size, sc.objs_per_slab)) {
         log::fatal("heap: invalid free pointer 0x%lx in slab 0x%lx (class %u)",
                    addr, page_va, class_idx);
+    }
+
+    if (pfd->slab.free_count >= pfd->slab.total_count) {
+        log::fatal("heap: double-free detected at 0x%lx in slab 0x%lx (class %u, free=%u total=%u)",
+                   addr, page_va, class_idx, pfd->slab.free_count, pfd->slab.total_count);
     }
 
     bool was_full = (pfd->slab.free_count == 0);
@@ -235,6 +251,7 @@ __PRIVILEGED_CODE static int32_t free_internal(void* ptr, heap_state* state) {
 
 __PRIVILEGED_CODE static void init_heap_state(heap_state& state, paging::page_flags_t flags,
                             kva::tag tag, heap_type kind) {
+    state.lock = sync::SPINLOCK_INIT;
     state.page_flags = flags;
     state.heap_tag = tag;
     state.type = kind;
@@ -326,7 +343,8 @@ int32_t ufree(void* ptr) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void dump_stats() {
-    auto dump_heap = [](const char* name, const heap_state& state) {
+    auto dump_heap = [](const char* name, heap_state& state) {
+        sync::irq_lock_guard guard(state.lock);
         log::info("heap: %s heap:", name);
         for (uint8_t i = 0; i < CLASS_COUNT; i++) {
             const slab_class& sc = state.classes[i];

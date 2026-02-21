@@ -5,7 +5,7 @@
 
 namespace cpu {
 
-inline void halt() {
+__PRIVILEGED_CODE inline void halt() {
     asm volatile("hlt");
 }
 
@@ -13,21 +13,24 @@ inline void relax() {
     asm volatile("pause");
 }
 
-inline void irq_disable() {
+inline void send_event() {
+}
+
+__PRIVILEGED_CODE inline void irq_disable() {
     asm volatile("cli" ::: "memory");
 }
 
-inline void irq_enable() {
+__PRIVILEGED_CODE inline void irq_enable() {
     asm volatile("sti" ::: "memory");
 }
 
-inline uint64_t irq_save() {
+__PRIVILEGED_CODE inline uint64_t irq_save() {
     uint64_t flags;
     asm volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
     return flags;
 }
 
-inline void irq_restore(uint64_t flags) {
+__PRIVILEGED_CODE inline void irq_restore(uint64_t flags) {
     asm volatile("push %0; popfq" :: "r"(flags) : "memory", "cc");
 }
 
