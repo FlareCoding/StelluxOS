@@ -9,7 +9,7 @@ constexpr int32_t OK = 0;
 constexpr int32_t ERR_INIT = -1;
 
 // Syscall numbers
-constexpr uint64_t SYS_ELEVATE = 999;
+constexpr uint64_t SYS_ELEVATE = 1000;
 
 /**
  * Architecture-specific syscall initialization (MSRs on x86, etc.)
