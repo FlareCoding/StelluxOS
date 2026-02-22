@@ -1,7 +1,7 @@
 # Stellux 3.0 Scheduler Design
 
 > **Status:** Design finalized — ready for implementation.
-> **Scope:** Scheduler core (structures, states, functions, context switch). No timer. Cooperative scheduling as the initial mode. Designed so that a future timer ISR calling `sched::reschedule()` enables preemption with zero structural changes. Multi-core aware from day one.
+> **Scope:** Scheduler core + pluggable policy. No timer. Cooperative scheduling initially. Designed so that a timer ISR enables preemption with zero structural changes. Multi-core aware from day one.
 
 ---
 
@@ -9,39 +9,250 @@
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Privilege × scheduling | **Orthogonal** — scheduler is privilege-blind | Privilege is task execution state, not scheduler input. Context switch saves/restores it transparently. |
-| Task model | **Flat tasks with `process` struct grouping** | Each thread is an independently schedulable `task`. Tasks point to a `process` for identity/resource grouping. Scheduler treats every task identically. |
-| `task_exec_core` | **Composition** | `task` wraps `task_exec_core`. Execution core remains the arch boundary; scheduling metadata lives in the wrapper. |
-| Initial algorithm | **Simple round-robin** | No priority-based scheduling yet. Pure FIFO round-robin. Priority field exists in the struct (one byte, zero cost) for future use, but the algorithm ignores it. When timers arrive, we choose between priority, MLFQ, or CFS with real workload data. |
-| Context switch model | **Callee-saved only (Linux model)** | One `context_switch()` per architecture, saves callee-saved registers only. Same function for voluntary and involuntary switches. Interrupt entry/exit handles full register save via `pt_regs` on the kernel stack — the scheduler never needs to. |
-| Runqueue topology | **Per-CPU runqueues from day one** | Even with one active CPU, each CPU has its own runqueue. `schedule()` operates on the local CPU's queue. When AP cores come online, each gets its own runqueue without refactoring. |
-| Scheduling mode | **Cooperative now, preemptive-ready** | `sched::yield()` calls `sched::schedule()`. Future timer ISR calls `sched::reschedule()` (stub today). No structural changes needed. |
-| Timer | **Not in scope** | Scheduler exposes hooks; timer subsystem is separate. |
-| Process model | **Lightweight `process` struct from day one** | Tasks hold `process*`. Process struct starts minimal but establishes the relationship now, preventing structural refactors when address spaces, file tables, or signals arrive. |
-| Intrusive list | **Reusable `list_node`/`list_head`** | Small utility type used for runqueues, process task lists, future wait queues. Circular doubly-linked, Linux `list_head` pattern. |
-| Task ID allocation | **Monotonic counter** | `next_tid++`, `next_pid++`. No reuse. Sufficient for early kernel. |
+| Privilege × scheduling | **Orthogonal** — scheduler is privilege-blind | Privilege is task state. Context switch saves/restores it via trap frame. |
+| Task model | **Flat tasks with `process` struct** | Each thread is an independent `task`. Tasks point to a `process`. Scheduler treats all tasks identically. |
+| `task_exec_core` | **Composition** | `task` wraps `task_exec_core`. |
+| Initial algorithm | **Round-robin** | Pure FIFO. No priority logic. Priority field reserved for future use. |
+| Context switch model | **Interrupt-routed** | `yield()` triggers a software interrupt. Both voluntary and involuntary switches go through the trap entry/exit path. `iretq`/`eret` handles privilege-level-aware returns automatically. |
+| Scheduler architecture | **Core + pluggable policy** | Scheduler core (task lifecycle, context switch, `schedule()`) is separated from scheduling policy (`pick_next()`, `enqueue()`, `dequeue()`). Policy is swappable via function pointers without changing the core. |
+| Runqueue topology | **Per-CPU from day one** | Each CPU has its own runqueue. SMP-ready without refactoring. |
+| Process model | **Lightweight `process` struct from day one** | Tasks hold `process*`. Small upfront cost prevents future refactors. |
+| Intrusive list | **Reusable `list_node`/`list_head`** | Linux `list_head` pattern. Used everywhere. |
+| Task ID allocation | **Monotonic counter** | No reuse. Sufficient for now. |
 
 ---
 
-## 2. Existing Infrastructure
+## 2. Key Design: Interrupt-Routed Context Switch
 
-The scheduler builds on:
+### 2.1 The Problem with Callee-Saved-Only Switching
 
-- **`task_exec_core`** — flags, CPU, dual stacks, arch CPU context
-- **`thread_cpu_context`** — arch-specific register save (x86_64: all GPRs; AArch64: x0-x30, SP, PC, PSTATE). Used by interrupt entry/exit for full saves. The scheduler's context switch uses a *smaller* callee-saved subset.
-- **Per-CPU `current_task`** — pointer to running task on each CPU
-- **`TASK_FLAG_*`** — `RUNNING`, `PREEMPTIBLE`, `IDLE`, etc.
-- **Ticket spinlocks** — `spin_lock_irqsave` / `spin_unlock_irqrestore`
-- **VMM `alloc_stack()`** — stacks with guard pages for new tasks
-- **Per-CPU infrastructure** — `this_cpu()`, per-CPU variables, cacheline alignment
+With dynamic privilege, a task can be running at Ring 0/EL1 (elevated) or Ring 3/EL0 (lowered) when it wants to yield. A plain function-call-based `context_switch()` returns via `ret`, which does not change privilege levels. This creates two problems:
+
+1. A lowered task at Ring 3 can't directly call `yield()` — it's privileged code. It would need to elevate first, yield, then lower on resume. Extra steps, extra complexity.
+2. The return path must somehow know whether to return to Ring 0 or Ring 3, adding a conditional branch in the context switch.
+
+### 2.2 The Solution: Route Through the Trap Path
+
+`yield()` triggers a **software interrupt** — a dedicated IDT vector on x86_64, or a specific SVC immediate on AArch64. This means:
+
+1. The existing trap entry code saves the **full machine state** (trap_frame) including the privilege level (CS on x86, SPSR on AArch64)
+2. The trap handler calls `sched::schedule()`
+3. `schedule()` uses a callee-saved context switch to swap between tasks' system stacks
+4. On return, the trap exit code restores the trap_frame and executes `iretq`/`eret`
+5. `iretq`/`eret` **automatically** restores the correct privilege level from the saved CS/SPSR
+
+### 2.3 Why This Is More Robust
+
+The existing trap entry/exit code already handles every privilege scenario:
+
+**x86_64 (`entry.S`):**
+- From Ring 3: swapgs + save trap_frame → handler → restore trap_frame + swapgs + iretq back to Ring 3
+- From Ring 0 (elevated): stack switch to system_stack + save trap_frame → handler → restore trap_frame + iretq back to Ring 0
+- From Ring 0 (pure kernel): save trap_frame → handler → restore trap_frame + iretq back to Ring 0
+
+**AArch64 (`vectors.S`):**
+- From EL0 (lowered): `STLX_A64_EL0_ENTRY` — saves SP_EL0, runs handler on SP_EL1, eret restores EL0
+- From EL1 with SP0 (elevated): `STLX_A64_EL1_SP0_ENTRY` — saves SP_EL0, runs handler on SP_EL1, eret restores EL1 + SP_EL0
+- From EL1 with SPx (kernel): `STLX_A64_EL1_ENTRY` — saves kernel SP, runs handler, eret restores EL1
+
+All of this is **already implemented and tested**. The interrupt-routed context switch reuses it entirely. No new privilege-handling code needed.
+
+### 2.4 Uniform Path for All Context Switches
+
+| Trigger | Entry | Handler | Exit |
+|---------|-------|---------|------|
+| `yield()` (voluntary) | Software interrupt → trap entry → trap_frame saved | `schedule()` → context_switch() | trap exit → trap_frame restored → iretq/eret |
+| Timer tick (involuntary, future) | Hardware interrupt → trap entry → trap_frame saved | `reschedule()` → `schedule()` → context_switch() | trap exit → trap_frame restored → iretq/eret |
+
+**Same entry path. Same exit path. Same context_switch(). One code path.**
+
+### 2.5 How It Works Step by Step
+
+**Task A yields:**
+```
+1. Task A (at any privilege level) executes: int SCHED_VECTOR / svc SCHED_NUM
+2. Trap entry saves Task A's full state (trap_frame) on Task A's system stack
+3. Trap handler calls sched::schedule()
+4. schedule() picks Task B via policy->pick_next()
+5. schedule() calls context_switch(&A->exec, &B->exec)
+6. context_switch() saves callee-saved regs (handler context) on A's system stack
+7. context_switch() switches SP to B's system stack
+8. context_switch() restores callee-saved regs from B's system stack
+9. context_switch() returns (via ret) into B's handler context
+10. B's schedule() returns → B's trap handler returns
+11. Trap exit restores B's trap_frame → iretq/eret
+12. Task B resumes at whatever privilege level it was at
+```
+
+**Timer preempts Task A (future):**
+```
+Steps 1-12 are identical, except step 1 is a hardware interrupt instead of
+a software interrupt. The rest is the same path.
+```
+
+### 2.6 New Task Bootstrap
+
+A newly created task has never been interrupted — it has no trap_frame. We build a **synthetic stack** so that the first `context_switch()` to it follows the normal return path:
+
+```
+New task's system stack (growing downward):
+
+    ┌─────────────────────────┐  ← original system_stack_top
+    │                         │
+    │  Synthetic trap_frame   │  ← full trap frame:
+    │   RIP/ELR = entry_tramp │     instruction pointer → task entry trampoline
+    │   CS/SPSR = privilege   │     desired privilege level (Ring 0 for kernel task)
+    │   RSP/SP = task_stack   │     task's own stack (task_stack_top)
+    │   RFLAGS/PSTATE = IF=1  │     interrupts enabled
+    │   RDI/x0 = arg          │     first argument to entry function
+    │   all other GPRs = 0    │
+    │                         │
+    ├─────────────────────────┤
+    │                         │
+    │  Fake callee-saved      │  ← callee-saved registers (all zero)
+    │   return addr = trap_ret│     points to trap exit label in entry.S
+    │   r12 = &trap_frame     │     (x86_64: used by trap exit to find trap_frame)
+    │                         │
+    └─────────────────────────┘  ← saved system_stack_top in task_exec_core
+```
+
+When `context_switch()` switches to this task:
+1. Restores fake callee-saved registers
+2. `ret` to `trap_return` label (the trap exit path in `entry.S` / `vectors.S`)
+3. Trap exit restores the synthetic trap_frame
+4. `iretq`/`eret` transitions to the entry trampoline at the desired privilege level
+5. Entry trampoline calls `entry(arg)`, then calls `sched::exit()` if it returns
+
+### 2.7 Required Changes to Trap Infrastructure
+
+Minimal, additive changes:
+
+1. **Reserve a vector/SVC number** for scheduling:
+   - x86_64: `SCHED_VECTOR` (e.g., vector 0x81) in the IDT
+   - AArch64: `SYS_YIELD` (e.g., SVC #998) dispatched in the sync handler
+
+2. **Dispatch in the trap handler:**
+   - x86_64: `if (tf->vector == SCHED_VECTOR) { sched::schedule(); return; }`
+   - AArch64: already dispatched via SVC number in the existing sync handlers
+
+3. **Export a trap exit label** for new task bootstrap:
+   - x86_64: `.globl stlx_x86_trap_return` at the trap exit point in `entry.S`
+   - AArch64: equivalent label in `vectors.S`
+
+No structural changes to the existing trap entry/exit code.
 
 ---
 
-## 3. Data Structures
+## 3. Key Design: Scheduler Core vs Policy Separation
 
-### 3.1 Intrusive List (`list_node` / `list_head`)
+### 3.1 The Principle
 
-Circular doubly-linked intrusive list, following the Linux `list_head` pattern. Used by runqueues, process task lists, and future wait queues.
+The scheduler has two distinct concerns:
+
+1. **Scheduler Core** — The mechanics of scheduling: task lifecycle, state transitions, context switching, runqueue management, `schedule()`, `yield()`, `exit()`. These don't change when you change the algorithm.
+
+2. **Scheduling Policy** — The algorithm that answers one question: "given the set of ready tasks, which one runs next?" This is what changes between round-robin, priority, MLFQ, CFS, etc.
+
+The core calls the policy through a well-defined interface. Swapping algorithms means pointing to a different policy implementation. **The core API does not change.**
+
+### 3.2 Policy Interface
+
+```cpp
+struct sched_policy {
+    const char* name;
+
+    // Initialize policy-specific state in the runqueue.
+    void (*init)(runqueue& rq);
+
+    // Add a READY task to the runqueue.
+    void (*enqueue)(runqueue& rq, task* t);
+
+    // Remove a task from the runqueue (e.g., when it blocks or exits).
+    void (*dequeue)(runqueue& rq, task* t);
+
+    // Select the next task to run. Returns nullptr if no tasks are ready.
+    // The returned task is removed from the runqueue.
+    task* (*pick_next)(runqueue& rq);
+
+    // Timer tick callback (future). Called on each tick for the running task.
+    // Policy can use this for timeslice accounting, priority adjustment, etc.
+    void (*tick)(runqueue& rq, task* t);
+};
+```
+
+### 3.3 How the Core Uses the Policy
+
+```cpp
+// In schedule():
+task* next = rq->policy->pick_next(*rq);
+if (!next) next = rq->idle_task;
+
+// In enqueue():
+rq->policy->enqueue(*rq, t);
+rq->nr_running++;
+
+// In reschedule() (future):
+rq->policy->tick(*rq, current);
+// policy may set a "needs_resched" flag → core calls schedule()
+```
+
+The core never decides *how* to pick the next task. It just asks the policy.
+
+### 3.4 Round-Robin Policy (Initial Implementation)
+
+```
+round_robin_policy:
+    init:      initialize task_list head in rq->policy_data
+    enqueue:   list_add_tail(task->runq_node, task_list)
+    dequeue:   list_remove(task->runq_node)
+    pick_next: list_pop_front(task_list), return owning task (or nullptr)
+    tick:      no-op (no timeslice management yet)
+```
+
+Pure FIFO. O(1) enqueue, O(1) dequeue, O(1) pick.
+
+### 3.5 Future Policy: CFS (Example of Swappability)
+
+```
+cfs_policy:
+    init:      initialize rb_tree root, min_vruntime = 0
+    enqueue:   insert task into rb_tree by vruntime
+    dequeue:   remove task from rb_tree
+    pick_next: extract leftmost node (smallest vruntime)
+    tick:      update current task's vruntime, check if leftmost has less
+```
+
+To switch from round-robin to CFS:
+1. Implement the `cfs_policy` struct
+2. Point `rq->policy` to `&cfs_policy` during init
+3. Add `vruntime` field to the task struct (or `sched_entity` sub-struct)
+4. **Zero changes to the scheduler core**
+
+### 3.6 Policy-Specific Runqueue Data
+
+The runqueue carries opaque storage for policy-specific state:
+
+```cpp
+constexpr size_t SCHED_POLICY_DATA_SIZE = 128;
+
+struct runqueue {
+    sync::spinlock lock;
+    uint32_t nr_running;
+    task* idle_task;
+    const sched_policy* policy;
+    alignas(16) uint8_t policy_data[SCHED_POLICY_DATA_SIZE];
+};
+```
+
+Each policy's `init()` function initializes `policy_data` as whatever it needs. Round-robin uses it as a `list_node` (16 bytes). CFS would use it as an rb_tree root + min_vruntime (maybe 24 bytes). The core never interprets this data.
+
+---
+
+## 4. Data Structures
+
+### 4.1 Intrusive List (`list_node`)
+
+Circular doubly-linked intrusive list (Linux `list_head` pattern):
 
 ```cpp
 struct list_node {
@@ -50,24 +261,20 @@ struct list_node {
 };
 ```
 
-Operations: `list_init()`, `list_add_tail()`, `list_remove()`, `list_empty()`, `list_entry()` (container_of macro to get the enclosing struct).
+Operations: `list_init()`, `list_add_tail()`, `list_remove()`, `list_empty()`, `list_entry()` (container_of).
 
-### 3.2 The `process` Struct
-
-Minimal now. Grows as subsystems are added.
+### 4.2 The `process` Struct
 
 ```
 process
-├── pid             : uint32_t          (unique process ID)
-├── thread_count    : uint32_t          (number of live tasks in this process)
-├── task_list       : list_node         (head of intrusive list of all tasks)
-├── lock            : spinlock          (protects task_list and thread_count)
-└── (future: address_space*, file_table*, cwd, signal state, ...)
+├── pid             : uint32_t
+├── thread_count    : uint32_t
+├── task_list       : list_node         (head: intrusive list of tasks in this process)
+├── lock            : spinlock
+└── (future: address_space*, file_table*, ...)
 ```
 
-The first task created in a process has `task.tid == process.pid`. Subsequent threads in the same process share the process pointer and get unique TIDs.
-
-### 3.3 The `task` Struct
+### 4.3 The `task` Struct
 
 ```
 task
@@ -83,14 +290,14 @@ task
 ├── state                   : task_state        (CREATED, READY, RUNNING, BLOCKED, DEAD)
 ├── name                    : char[TASK_NAME_MAX]
 │
-├── priority                : uint8_t           (for future use — ignored by round-robin)
+├── priority                : uint8_t           (reserved — not used by round-robin)
 │
-├── runq_node               : list_node         (links task into its CPU's runqueue)
-├── proc_node               : list_node         (links task into its process's task list)
-└── (future: wait_node for wait queues, timeslice fields, runtime accounting)
+├── runq_node               : list_node         (policy uses this for runqueue linkage)
+├── proc_node               : list_node         (links task into process->task_list)
+└── (future: wait_node, sched_entity with vruntime, etc.)
 ```
 
-### 3.4 Task States
+### 4.4 Task States
 
 ```
                 ┌──────────┐
@@ -98,203 +305,163 @@ task
                 └────┬─────┘
                      │ sched::enqueue()
                      ▼
-                ┌──────────┐    sched::schedule()    ┌──────────┐
-            ┌──▶│  READY   │ ◄─────────────────────▶ │ RUNNING  │
-            │   └──────────┘    sched::yield() /     └────┬─────┘
-            │        ▲          reschedule()              │
-            │        │                                    │
-            │        │ sched::wake()                      │ sched::block()
-            │        │                                    ▼
-            │   ┌──────────┐                         ┌──────────┐
-            │   │  (READY) │ ◄───────────────────────│ BLOCKED  │
-            │   └──────────┘                         └──────────┘
+                ┌──────────┐   sched::schedule()    ┌──────────┐
+            ┌──▶│  READY   │◄─────────────────────▶ │ RUNNING  │
+            │   └──────────┘   sched::yield() /     └────┬─────┘
+            │        ▲         reschedule()              │
+            │        │                                   │
+            │        │ sched::wake()                     │ sched::block()
+            │        │                                   ▼
+            │   ┌──────────┐                        ┌──────────┐
+            │   │  (READY) │◄───────────────────────│ BLOCKED  │
+            │   └──────────┘                        └──────────┘
             │
             │   ┌──────────┐
             └───│   DEAD   │  Exited — pending cleanup
                 └──────────┘
 ```
 
-- **CREATED** — struct initialized, not visible to scheduler
-- **READY** — on a runqueue, eligible for `schedule()` to pick
-- **RUNNING** — executing on a CPU; `current_task` on that CPU points here
-- **BLOCKED** — waiting for an event; off all runqueues (future)
-- **DEAD** — exited; not schedulable; resources await cleanup
-
-### 3.5 Per-CPU Runqueue
+### 4.5 Per-CPU Runqueue
 
 ```
 runqueue (one per CPU)
 ├── lock            : spinlock
-├── nr_running      : uint32_t          (count of READY tasks)
-├── task_list       : list_node         (FIFO circular list of READY tasks)
-└── idle_task       : task*             (fallback when queue is empty)
+├── nr_running      : uint32_t
+├── idle_task       : task*
+├── policy          : const sched_policy*
+└── policy_data     : uint8_t[128]      (opaque, policy-specific)
 ```
-
-Round-robin: `schedule()` picks the first task from `task_list` (head). Yielding tasks go to the tail. O(1) enqueue and dequeue.
-
-When SMP is active, each CPU's runqueue is independent. Load balancing (future) migrates tasks between runqueues.
 
 ---
 
-## 4. Scheduler Core API
+## 5. Scheduler Core API
 
 ```cpp
 namespace sched {
 
     // --- Initialization ---
-    int32_t init();
+    int32_t init();                     // init BSP runqueue, idle task, policy
 
     // --- Task/Process Creation ---
-
-    // Create a new single-threaded kernel process.
-    // Allocates a process struct + its initial task. Task starts in CREATED state.
-    // Call enqueue() to make it schedulable.
-    task* create_kernel_task(void (*entry)(void*), void* arg,
-                            const char* name);
+    task* create_kernel_task(
+        void (*entry)(void*), void* arg,
+        const char* name
+    );
 
     // --- Enqueueing ---
-
-    // Move a CREATED task to READY, place on its CPU's runqueue.
-    void enqueue(task* t);
+    void enqueue(task* t);              // CREATED → READY, add to runqueue
 
     // --- Core Scheduling ---
-
-    // Voluntarily yield. Current task → READY (back of runqueue), pick next.
-    void yield();
-
-    // Core: pick next READY task from local runqueue, context switch.
-    // Called by yield() and future reschedule().
-    void schedule();
-
-    // Hook for timer ISR (future). Stub/no-op today.
-    void reschedule();
+    void yield();                       // triggers software interrupt → schedule()
+    void schedule();                    // pick next via policy, context_switch
+    void reschedule();                  // future timer hook (stub today)
 
     // --- Task Termination ---
-    [[noreturn]] void exit();
+    [[noreturn]] void exit();           // current task → DEAD, schedule()
 
-    // --- Blocking (future, state machine supports it now) ---
-    // void block();
-    // void wake(task* t);
+    // --- Blocking (future) ---
+    // void block();                    // current task → BLOCKED, schedule()
+    // void wake(task* t);             // BLOCKED → READY, enqueue
 
     // --- Queries ---
-    task* current();
+    task* current();                    // this CPU's running task
 
 } // namespace sched
 ```
 
-### 4.1 `schedule()` Pseudocode
+### 5.1 `yield()` Implementation
+
+```cpp
+// x86_64:
+void yield() {
+    asm volatile("int %0" :: "i"(SCHED_VECTOR) : "memory");
+}
+
+// AArch64:
+void yield() {
+    asm volatile("svc %0" :: "i"(SYS_YIELD) : "memory");
+}
+```
+
+That's it. The trap path handles everything else.
+
+### 5.2 `schedule()` Pseudocode
 
 ```
 schedule():
     rq = this_cpu_runqueue()
     irq_flags = spin_lock_irqsave(rq->lock)
 
-    prev = current_task on this CPU
-    next = pick_next(rq)              // dequeue head of rq->task_list
+    prev = current_task_on_this_cpu()
 
-    if next == nullptr:
-        next = rq->idle_task          // nothing ready — run idle
-
-    if next == prev:
-        spin_unlock_irqrestore(rq->lock, irq_flags)
-        return
-
-    if prev->state == RUNNING:        // yielded, not blocked/dead
+    if prev->state == RUNNING:
         prev->state = READY
-        enqueue_locked(rq, prev)      // add to tail
+        rq->policy->enqueue(rq, prev)       // policy decides where to put it
+
+    next = rq->policy->pick_next(rq)         // policy decides what runs next
+    if next == nullptr:
+        next = rq->idle_task
 
     next->state = RUNNING
     next->exec.cpu = this_cpu_id()
-    set this_cpu(current_task) = &next->exec
+    set_current_task(next)
 
     spin_unlock_irqrestore(rq->lock, irq_flags)
 
-    context_switch(&prev->exec, &next->exec)    // arch-specific, callee-saved only
-    // prev resumes here when re-scheduled
+    if prev != next:
+        context_switch(&prev->exec, &next->exec)
 ```
 
-### 4.2 `reschedule()` — Future Timer Hook
+### 5.3 `reschedule()` — Future Timer Hook
 
 ```
-reschedule():                           // called from timer ISR
-    t = sched::current()
+reschedule():                               // called from timer ISR
+    rq = this_cpu_runqueue()
+    t = current_task()
     if !(t->exec.flags & TASK_FLAG_PREEMPTIBLE):
         return
-
-    // future: decrement timeslice, check expiry
+    rq->policy->tick(rq, t)                 // policy updates accounting
+    // if policy decides preemption is needed:
     schedule()
 ```
 
-Today this is a stub. When timers arrive, it becomes the preemption entry point. The key point: **`schedule()` is the same function regardless of who calls it.** `yield()` calls it. `reschedule()` calls it. `block()` will call it. One function, one code path.
+The core just calls `policy->tick()`. The **policy** decides whether to preempt. For round-robin, `tick()` is a no-op. For CFS, it would update vruntime and check the tree.
 
 ---
 
-## 5. Context Switch
+## 6. Context Switch (Internal Mechanism)
 
-### 5.1 The Linux Model (What We're Following)
+### 6.1 Callee-Saved Switch Between System Stacks
 
-Linux uses a single `__switch_to_asm()` that saves only **callee-saved registers**. This works for both voluntary and involuntary switches because:
+Even though yield goes through the trap path, we still need a mechanism to switch between two tasks' system stacks. This is the callee-saved context switch — it operates on the handler's C context, not the task's user context.
 
-1. **Voluntary (`yield()`):** Task calls `yield()` → `schedule()` → `context_switch()`. The C calling convention means caller-saved registers are already handled. Only callee-saved need saving.
+**x86_64 callee-saved:** RBX, RBP, R12, R13, R14, R15, RSP (implicit), return address (on stack)
+**AArch64 callee-saved:** x19-x28, x29 (FP), x30 (LR), SP
 
-2. **Involuntary (timer ISR, future):** Interrupt entry pushes full `pt_regs` on the kernel stack. Handler calls into C code → `schedule()` → `context_switch()`. By this point, we're in a regular function call chain — callee-saved is sufficient. When the task resumes, it returns through the C chain back to the interrupt handler, which restores `pt_regs` and does `iret`/`eret`.
+### 6.2 Flow Diagram
 
-**Result: one `context_switch()` function per architecture. No special cases.**
-
-### 5.2 Registers Saved by `context_switch()`
-
-**x86_64 callee-saved:**
-- RBX, RBP, R12, R13, R14, R15
-- RSP (saved to/restored from `task_exec_core`)
-- Return address (on the stack — `context_switch` returns to its caller)
-
-**AArch64 callee-saved:**
-- x19-x28, x29 (FP), x30 (LR)
-- SP (saved to/restored from `task_exec_core`)
-
-### 5.3 `context_switch()` Pseudocode (x86_64)
-
-```asm
-context_switch(prev_exec_core, next_exec_core):
-    // Save callee-saved registers of prev
-    push rbx
-    push rbp
-    push r12
-    push r13
-    push r14
-    push r15
-
-    // Save prev's stack pointer
-    mov [rdi + TASK_STACK_OFFSET], rsp
-
-    // Restore next's stack pointer
-    mov rsp, [rsi + TASK_STACK_OFFSET]
-
-    // Restore callee-saved registers of next
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rbp
-    pop rbx
-
-    ret     // returns into whatever next was doing when it was switched out
+```
+Task A's system stack                  Task B's system stack
+─────────────────────                  ─────────────────────
+┌───────────────────┐                  ┌───────────────────┐
+│  A's trap_frame   │                  │  B's trap_frame   │
+│  (saved by trap   │                  │  (saved when B    │
+│   entry when A    │                  │   was switched    │
+│   yielded)        │                  │   out earlier)    │
+├───────────────────┤                  ├───────────────────┤
+│ handler C frames  │                  │ handler C frames  │
+│ (schedule, etc.)  │                  │ (schedule, etc.)  │
+├───────────────────┤                  ├───────────────────┤
+│ callee-saved regs │ ◄── save here   │ callee-saved regs │ ◄── restore from here
+│ + return address  │                  │ + return address  │
+└───────────────────┘                  └───────────────────┘
+        ▲                                      ▲
+        │                                      │
+   A's exec.system_stack_top              B's exec.system_stack_top
+   (saved during switch-out)              (restored during switch-in)
 ```
 
-AArch64 is analogous with `stp`/`ldp` for register pairs and `mov sp, xN` for stack switch.
-
-### 5.4 New Task Initial Stack Setup
-
-When `create_kernel_task()` sets up a new task, it needs to prepare the task's stack so that the first `context_switch()` to it "returns" into the task's entry function:
-
-1. Allocate task stack via `vmm::alloc_stack()`
-2. Push a fake stack frame: callee-saved registers (all zero) + a return address pointing to a `task_entry_trampoline`
-3. The trampoline calls the task's `entry(arg)` function, and if it returns, calls `sched::exit()`
-4. Set `task_exec_core.task_stack_top` to the prepared stack pointer
-
-This way, when `context_switch()` switches to the new task for the first time, it pops the fake callee-saved registers and `ret`s into the trampoline → entry function.
-
-### 5.5 Stack Sizing
+### 6.3 Stack Sizing
 
 | Stack | Usable Pages | Guard Pages | Size |
 |-------|-------------|-------------|------|
@@ -303,108 +470,104 @@ This way, when `context_switch()` switches to the new task for the first time, i
 
 ---
 
-## 6. Idle Task
+## 7. Idle Task
 
-- Each CPU has one idle task, created during `sched::init()`
-- The boot task (already created in `arch::early_init()`) becomes CPU 0's idle task
-- The idle task is **never on the runqueue** — it's the fallback when the runqueue is empty
-- `schedule()` returns the idle task when `pick_next()` finds nothing
-- Idle task body: `while (true) { cpu::halt(); }` — wait for interrupts
-
----
-
-## 7. SMP Readiness
-
-The design is multi-core ready from day one:
-
-| Aspect | Design | Single-CPU Behavior | SMP Behavior |
-|--------|--------|---------------------|--------------|
-| Runqueues | Per-CPU | One runqueue, one CPU uses it | Each CPU has its own runqueue |
-| `schedule()` | Operates on local CPU's runqueue | Picks from the only runqueue | Picks from this CPU's runqueue |
-| `current_task` | Per-CPU (already exists) | One active `current_task` | Each CPU has its own |
-| Runqueue lock | Per-runqueue spinlock | No contention | Locks are per-CPU, no cross-CPU contention for scheduling |
-| Task creation | Enqueues to a target CPU's runqueue | Always CPU 0 | Can target any CPU |
-| Load balancing | Future | N/A | Periodic migration between runqueues |
-| Cross-CPU wake | Future | N/A | IPI to notify target CPU |
-
-When AP cores come online:
-1. Each AP calls `sched::init_cpu()` to set up its per-CPU runqueue and idle task
-2. Tasks can be created targeting any CPU
-3. `schedule()` on each CPU is independent — no changes needed
-4. Load balancing is additive — a periodic check that migrates tasks between unbalanced runqueues
+- Each CPU has one idle task (boot task becomes CPU 0's idle task)
+- **Never on the runqueue** — fallback when `pick_next()` returns nullptr
+- Body: `while (true) { cpu::halt(); }`
+- Per-CPU idle tasks are created during SMP bringup
 
 ---
 
-## 8. File Layout
+## 8. SMP Readiness
+
+| Aspect | Design | Single-CPU | SMP |
+|--------|--------|------------|-----|
+| Runqueues | Per-CPU | One runqueue | Each CPU has its own |
+| `schedule()` | Operates on local runqueue | One runqueue | Per-CPU, independent |
+| Runqueue lock | Per-runqueue spinlock | No contention | Per-CPU, minimal contention |
+| Policy | Per-runqueue policy pointer | One policy instance | Same policy, per-CPU state |
+| Load balancing | Future | N/A | Periodic migration |
+| Cross-CPU wake | Future | N/A | IPI to target CPU |
+
+---
+
+## 9. File Layout
 
 ```
 kernel/sched/
-├── task_exec_core.h        (existing — execution core, untouched)
-├── thread_cpu_context.h    (existing — common arch context include)
-├── task.h                  (NEW — task struct, process struct, task states)
-├── sched.h                 (NEW — scheduler public API)
-├── sched.cpp               (NEW — schedule(), yield(), exit(), runqueue)
-└── list.h                  (NEW — intrusive doubly-linked list utility)
+├── task_exec_core.h        (existing — untouched)
+├── thread_cpu_context.h    (existing — untouched)
+├── list.h                  (NEW — intrusive doubly-linked list)
+├── task.h                  (NEW — task, process, task_state)
+├── sched_policy.h          (NEW — sched_policy interface)
+├── sched.h                 (NEW — scheduler core public API)
+├── sched.cpp               (NEW — scheduler core: schedule(), enqueue(), exit())
+├── runqueue.h              (NEW — per-CPU runqueue struct)
+└── round_robin.cpp         (NEW — round-robin policy implementation)
 
 kernel/arch/x86_64/sched/
-├── sched.cpp               (existing — boot task init)
+├── sched.cpp               (existing — boot task init; extend for context_switch)
 ├── context_switch.S        (NEW — callee-saved save/restore + stack switch)
 └── thread_cpu_context.h    (existing)
 
 kernel/arch/aarch64/sched/
-├── sched.cpp               (existing — boot task init)
+├── sched.cpp               (existing — boot task init; extend for context_switch)
 ├── context_switch.S        (NEW — callee-saved save/restore + stack switch)
 └── thread_cpu_context.h    (existing)
 ```
 
 ---
 
-## 9. Phased Roadmap
+## 10. Phased Roadmap
 
 ### Phase 1: Scheduler Core (THIS PHASE)
-- `list_node`/`list_head` intrusive list utility
+- `list_node` intrusive list utility
 - `process` struct (minimal)
 - `task` struct wrapping `task_exec_core`
+- `sched_policy` interface + round-robin implementation
 - Per-CPU runqueue
 - `sched::init()`, `sched::create_kernel_task()`, `sched::enqueue()`
-- `sched::yield()`, `sched::schedule()`, `sched::exit()`
+- `sched::yield()` via software interrupt
+- `sched::schedule()` with policy dispatch
+- `sched::exit()`
 - `sched::reschedule()` stub
-- `context_switch()` on x86_64 and AArch64 (callee-saved only)
+- `context_switch()` on x86_64 and AArch64
+- New task synthetic stack bootstrap
+- Trap handler dispatch for scheduling vector/SVC
+- Trap exit label export for new task bootstrap
 - Idle task per CPU
-- Boot creates idle + test tasks, cooperative round-robin switching
-- **Deliverable:** Tasks run and voluntarily context-switch on both architectures
+- Boot creates idle + test tasks, cooperative round-robin
+- **Deliverable:** Tasks run and cooperatively switch on both architectures
 
 ### Phase 2: Timer + Preemption
 - Timer abstraction (LAPIC / Generic Timer)
 - Timer ISR calls `sched::reschedule()`
-- Timeslice management (fields already in struct, algorithm plugs in)
-- **Deliverable:** Preemption works; zero scheduler structural changes
+- Policy `tick()` implementation (round-robin timeslice, or swap to CFS/MLFQ)
+- **Deliverable:** Preemption works; zero core changes
 
 ### Phase 3: Blocking + Synchronization
 - `sched::block()` / `sched::wake()`
 - Wait queues (reusing `list_node`)
-- Sleeping mutexes / semaphores
-- **Deliverable:** Tasks block on events and are woken
+- Sleeping mutexes
+- **Deliverable:** Tasks block on events
 
-### Phase 4: SMP Scheduling
-- AP core bringup calls `sched::init_cpu()`
-- Load balancing between per-CPU runqueues
-- CPU affinity, migration
-- IPI-based cross-CPU wakeup
-- **Deliverable:** Scheduler scales across CPUs
+### Phase 4: SMP
+- AP bringup + per-CPU runqueue init
+- Load balancing
+- CPU affinity, migration, IPI wakeup
+- **Deliverable:** Multi-core scheduling
 
 ### Phase 5: Process Model + Userspace
 - Address spaces in `process`
-- `fork()` / `exec()` (or Stellux equivalents)
-- Multi-threaded processes (threads sharing process resources)
-- File descriptor table, signals
+- Process creation APIs
+- Multi-threaded processes
 - **Deliverable:** Full process/thread model
 
 ### Phase 6: Policy Evolution
-- Evaluate MLFQ, CFS, deadline scheduling based on real workloads
-- Priority field becomes active
-- Scheduling classes if warranted
-- **Deliverable:** Scheduler policy matches workload needs
+- Swap round-robin for CFS, MLFQ, or priority-based
+- Same core, different `sched_policy` implementation
+- **Deliverable:** Production-quality scheduling
 
 ---
 
