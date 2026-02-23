@@ -4,9 +4,16 @@
 #include "common/logging.h"
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
+#include "irq/irq.h"
+#include "irq/irq_arch.h"
+#include "hwtimer/hwtimer_arch.h"
 
 // Forward declaration of syscall dispatch
 extern "C" void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf);
+
+namespace sched {
+__PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf);
+} // namespace sched
 
 // RAII helper to manage TASK_FLAG_IN_IRQ
 struct irq_context_guard {
@@ -56,7 +63,23 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
 
 extern "C" __PRIVILEGED_CODE 
 void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
-    irq_context_guard guard;
+    sched::task_exec_core* task_core = this_cpu(current_task_exec);
+    task_core->flags |= sched::TASK_FLAG_IN_IRQ;
+
+    uint32_t irq_id = irq::acknowledge();
+    if (irq_id == hwtimer::TIMER_PPI) {
+        hwtimer::rearm();
+        irq::eoi(irq_id);
+        sched::on_tick(tf);
+        task_core = this_cpu(current_task_exec);
+        task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        return;
+    }
+
+    if (irq_id != irq::GIC_SPURIOUS_ID) {
+        irq::eoi(irq_id);
+    }
+    task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     trap_fatal("el0 irq", tf);
 }
 
@@ -90,7 +113,23 @@ void stlx_aarch64_el1_sync_handler(aarch64::trap_frame* tf) {
 
 extern "C" __PRIVILEGED_CODE 
 void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
-    irq_context_guard guard;
+    sched::task_exec_core* task_core = this_cpu(current_task_exec);
+    task_core->flags |= sched::TASK_FLAG_IN_IRQ;
+
+    uint32_t irq_id = irq::acknowledge();
+    if (irq_id == hwtimer::TIMER_PPI) {
+        hwtimer::rearm();
+        irq::eoi(irq_id);
+        sched::on_tick(tf);
+        task_core = this_cpu(current_task_exec);
+        task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        return;
+    }
+
+    if (irq_id != irq::GIC_SPURIOUS_ID) {
+        irq::eoi(irq_id);
+    }
+    task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     trap_fatal("el1 irq", tf);
 }
 

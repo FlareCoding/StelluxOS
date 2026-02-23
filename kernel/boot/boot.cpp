@@ -5,6 +5,8 @@
 #include "arch/arch_init.h"
 #include "mm/mm.h"
 #include "acpi/acpi.h"
+#include "irq/irq.h"
+#include "hwtimer/hwtimer.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
 
@@ -31,7 +33,6 @@ void fib_task_main(void* arg) {
             sched::task* fib_task2 = sched::create_kernel_task(fib_task_main, &n2, "fib_task2");
             sched::enqueue(fib_task2);
         });
-        sched::yield();
     }
     
     log::info("fibonacci(%d) = %d", n, result);
@@ -66,13 +67,20 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("acpi::init failed");
     }
 
+    if (irq::init() != irq::OK) {
+        log::fatal("irq::init failed");
+    }
+
     if (sched::init() != sched::OK) {
         log::fatal("sched::init failed");
     }
 
+    if (hwtimer::init(100) != hwtimer::OK) {
+        log::fatal("hwtimer::init failed");
+    }
+
     sched::task* fib_task = sched::create_kernel_task(fib_task_main, &FIB_N, "fib_task");
     sched::enqueue(fib_task);
-    sched::yield();
     
 #ifdef STLX_UNIT_TESTS_ENABLED
     stlx_test::run_all();

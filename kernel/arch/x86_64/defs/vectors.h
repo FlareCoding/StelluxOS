@@ -33,6 +33,12 @@ constexpr uint8_t EXC_SECURITY           = 0x1E;
 // IRQ base (vectors 32+)
 constexpr uint8_t VEC_IRQ_BASE = 0x20;
 
+// LAPIC timer interrupt
+constexpr uint8_t VEC_TIMER = 0x20;
+
+// LAPIC spurious interrupt
+constexpr uint8_t VEC_SPURIOUS = 0xFF;
+
 // Scheduler yield (software interrupt)
 constexpr uint8_t VEC_SCHED_YIELD = 0x81;
 

@@ -18,7 +18,7 @@ namespace sched {
 
 static task_exec_core g_boot_exec = {
     .flags = TASK_FLAG_ELEVATED | TASK_FLAG_KERNEL | TASK_FLAG_CAN_ELEVATE
-           | TASK_FLAG_IDLE | TASK_FLAG_RUNNING,
+           | TASK_FLAG_IDLE | TASK_FLAG_RUNNING | TASK_FLAG_PREEMPTIBLE,
     .cpu = 0,
     .task_stack_top = 0,
     .system_stack_top = 0,
@@ -102,6 +102,27 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
 
     task* next = pick_next_and_switch(prev);
     if (next == prev) return;
+
+    load_cpu_context(&next->exec.cpu_ctx, tf);
+    arch_post_switch(next);
+}
+
+/**
+ * Called from the aarch64 IRQ handler on timer interrupt (PPI 27).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
+    task* prev = current();
+    if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
+        return;
+    }
+
+    save_cpu_context(tf, &prev->exec.cpu_ctx);
+
+    task* next = pick_next_and_switch(prev);
+    if (next == prev) {
+        return;
+    }
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);
