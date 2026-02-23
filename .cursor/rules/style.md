@@ -9,6 +9,7 @@ globs: ["kernel/**/*.cpp", "kernel/**/*.h", "kernel/**/*.h"]
 
 - `snake_case` for everything: functions, variables, types, structs, classes, namespaces
 - `SCREAMING_SNAKE_CASE` for constants, `constexpr` values, and `#define` macros
+- `m_` prefix for private member variables: `m_ready_list`, `m_count`
 - File names: `snake_case.h`, `snake_case.cpp`, `snake_case.S`
 
 ## Examples

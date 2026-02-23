@@ -41,6 +41,6 @@ int32_t init_boot_task();
 
 } // namespace sched
 
-DECLARE_PER_CPU(sched::task_exec_core*, current_task);
+DECLARE_PER_CPU(sched::task_exec_core*, current_task_exec);
 
 #endif // STELLUX_SCHED_TASK_EXEC_CORE_H

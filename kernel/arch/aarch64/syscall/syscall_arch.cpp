@@ -4,26 +4,29 @@
 #include "common/types.h"
 #include "common/logging.h"
 
+namespace sched {
+__PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf);
+} // namespace sched
+
 namespace syscall {
 
 __PRIVILEGED_CODE int32_t init_arch_syscalls() {
-    // AArch64 doesn't need MSR setup like x86 for SVC.
-    // SVC is dispatched through the exception vector table (VBAR_EL1).
     log::info("syscall: aarch64 initialized (via SVC dispatch)");
     return OK;
 }
 
 } // namespace syscall
 
-// Called from trap handler for SVC exceptions
-extern "C" __PRIVILEGED_CODE 
+extern "C" __PRIVILEGED_CODE
 void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf) {
     // SVC immediate is in ESR_EL1[15:0] on AArch64
     uint64_t syscall_num = tf->esr & 0xFFFF;
 
-    // According to AArch64 calling convention:
-    // x0-x7 = arguments
-    // Map to generic handler: stlx_syscall_handler(num, arg1..arg6)
+    if (syscall_num == syscall::SYS_YIELD) {
+        sched::on_yield(tf);
+        return;
+    }
+
     int64_t result = stlx_syscall_handler(
         syscall_num,
         tf->x[0], tf->x[1], tf->x[2],

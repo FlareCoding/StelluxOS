@@ -6,10 +6,10 @@
 namespace sched {
 
 struct thread_cpu_context {
-    uint64_t x[31];   // x0-x30 (x30 = link register)
+    uint64_t x[31];  // x0-x30 (x30 = link register)
     uint64_t sp;
-    uint64_t pc;      // Program counter (saved ELR)
-    uint64_t pstate;  // Processor state (saved SPSR)
+    uint64_t pc;     // Program counter (saved ELR)
+    uint64_t pstate; // Processor state (saved SPSR)
 };
 
 } // namespace sched

@@ -16,7 +16,7 @@ void elevate() {
 }
 
 void lower() {
-    sched::task_exec_core* task = this_cpu(current_task);
+    sched::task_exec_core* task = this_cpu(current_task_exec);
 
     if (!(task->flags & sched::TASK_FLAG_ELEVATED)) {
         log::warn("dynpriv: task not elevated, cannot lower");
@@ -25,8 +25,8 @@ void lower() {
 
     /*
      * Critical section: We must disable interrupts before clearing the
-     * elevated flag to prevent a race condition where an interrupt handler
-     * sees the task as non-elevated while still in Ring 0.
+     * elevated flag and per-CPU elevation state to prevent a race where
+     * an interrupt handler sees inconsistent state.
      *
      * SYSRET restores RFLAGS from R11, so interrupts are re-enabled
      * after the transition to Ring 3.
@@ -35,18 +35,20 @@ void lower() {
         "pushfq\n\t"                  /* Push RFLAGS onto stack */
         "pop %%r11\n\t"               /* Pop into R11 (required by SYSRET) */
         "cli\n\t"                     /* Disable interrupts */
+        "movb $0, %[pcpu_elev]\n\t"   /* Clear per-CPU elevation flag */
         "lea 1f(%%rip), %%rcx\n\t"    /* Load return address into RCX */
         "andl %[mask], %[flags]\n\t"  /* Clear TASK_FLAG_ELEVATED */
         "sysretq\n\t"                 /* Execute SYSRET (restores IF from R11) */
         "1:"                          /* Return point in Ring 3 */
-        : [flags] "+m" (task->flags)
+        : [flags] "+m" (task->flags),
+          [pcpu_elev] "=m" (this_cpu(percpu_is_elevated))
         : [mask] "i" (static_cast<int32_t>(~sched::TASK_FLAG_ELEVATED))
         : "rcx", "r11", "cc"
     );
 }
 
 bool is_elevated() {
-    return (this_cpu(current_task)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+    return this_cpu(percpu_is_elevated);
 }
 
 } // namespace dynpriv

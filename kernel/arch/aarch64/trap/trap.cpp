@@ -10,12 +10,12 @@ extern "C" void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf);
 
 // RAII helper to manage TASK_FLAG_IN_IRQ
 struct irq_context_guard {
-    sched::task_exec_core* task;
-    irq_context_guard() : task(this_cpu(current_task)) {
-        task->flags |= sched::TASK_FLAG_IN_IRQ;
+    sched::task_exec_core* task_core;
+    irq_context_guard() : task_core(this_cpu(current_task_exec)) {
+        task_core->flags |= sched::TASK_FLAG_IN_IRQ;
     }
     ~irq_context_guard() {
-        task->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     }
 };
 

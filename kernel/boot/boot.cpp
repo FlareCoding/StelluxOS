@@ -4,10 +4,39 @@
 #include "hw/cpu.h"
 #include "arch/arch_init.h"
 #include "mm/mm.h"
+#include "sched/sched.h"
+#include "dynpriv/dynpriv.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
 #endif
+
+int FIB_N = 10;
+
+int fibonacci(int n) {
+    if (n <= 0) return 0;
+    if (n == 1) return 1;
+    if (n == 2) return 1;
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+void fib_task_main(void* arg) {
+    int n = *((int*)arg);
+    int result = fibonacci(n);
+
+    if (n == 10) {
+        int n2 = 20;
+        RUN_ELEVATED({
+            sched::task* fib_task2 = sched::create_kernel_task(fib_task_main, &n2, "fib_task2");
+            sched::enqueue(fib_task2);
+        });
+        sched::yield();
+    }
+    
+    log::info("fibonacci(%d) = %d", n, result);
+
+    sched::exit();
+}
 
 /**
  * @brief Kernel entry point called by bootloader.
@@ -32,6 +61,14 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("mm::init failed");
     }
 
+    if (sched::init() != sched::OK) {
+        log::fatal("sched::init failed");
+    }
+
+    sched::task* fib_task = sched::create_kernel_task(fib_task_main, &FIB_N, "fib_task");
+    sched::enqueue(fib_task);
+    sched::yield();
+    
 #ifdef STLX_UNIT_TESTS_ENABLED
     stlx_test::run_all();
     while (true) {

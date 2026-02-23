@@ -25,7 +25,7 @@
 .include "percpu/percpu_asm.inc"
 
 .extern stlx_syscall_handler
-.extern current_task
+.extern current_task_exec
 
 /* Task flags (must match task_exec_core) */
 .set TASK_FLAGS_OFFSET,   0x00
@@ -77,7 +77,7 @@ stlx_x86_syscall_entry:
 
     /* Determine exit path based on elevated flag */
     push rax
-    this_cpu_read rax, current_task
+    this_cpu_read rax, current_task_exec
     mov eax, dword ptr [rax + TASK_FLAGS_OFFSET]
     test eax, TASK_FLAG_ELEVATED
     pop rax
