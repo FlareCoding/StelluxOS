@@ -4,6 +4,7 @@
 #include "hw/cpu.h"
 #include "arch/arch_init.h"
 #include "mm/mm.h"
+#include "acpi/acpi.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
 
@@ -59,6 +60,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (mm::init() != mm::OK) {
         log::fatal("mm::init failed");
+    }
+
+    if (acpi::init() != acpi::OK) {
+        log::fatal("acpi::init failed");
     }
 
     if (sched::init() != sched::OK) {

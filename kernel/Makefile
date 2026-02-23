@@ -64,6 +64,7 @@ CXX_SOURCES += $(shell find mm -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find percpu -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find sched -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find syscall -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find acpi -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
 
 # Unit test sources (only when STLX_UNIT_TESTS_ENABLED=1)
