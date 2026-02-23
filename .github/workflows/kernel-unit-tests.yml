@@ -1,5 +1,5 @@
 #
-# Kernel Unit Tests — CI Pipeline
+# Kernel CI Pipeline
 #
 # Validates every commit by linting privilege annotations, building the kernel
 # across all supported architectures and build modes, and running the full
@@ -9,13 +9,14 @@
 #
 #   dynpriv-lint  (fast gate)
 #        │
-#    ┌───┴───┐
-#    ▼       ▼
-#  build   unit-tests
-#  (4 jobs) (2 jobs)
+#        ▼
+#      build     (4 jobs: arch × mode)
+#        │
+#        ▼
+#    unit-tests  (2 jobs: arch)
 #
 
-name: Kernel Unit Tests
+name: Kernel CI
 
 on:
   push:
@@ -95,7 +96,7 @@ jobs:
   unit-tests:
     name: unit-tests (${{ matrix.arch }})
     runs-on: ubuntu-latest
-    needs: dynpriv-lint
+    needs: build
     timeout-minutes: 20
 
     strategy:
