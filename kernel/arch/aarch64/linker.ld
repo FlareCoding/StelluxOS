@@ -97,6 +97,7 @@ SECTIONS {
         KEEP(*(.stlx_unit_test.1.*))
         KEEP(*(.stlx_unit_test.2.*))
         KEEP(*(.stlx_unit_test.3.*))
+        KEEP(*(.stlx_unit_test.4.*))
         __stlx_unit_test_end = .;
     } :data
 

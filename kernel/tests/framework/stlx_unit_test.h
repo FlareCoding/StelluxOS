@@ -10,6 +10,7 @@
 #define TIER_DS       1
 #define TIER_MM_CORE  2
 #define TIER_MM_ALLOC 3
+#define TIER_SCHED    4
 
 namespace stlx_test {
 

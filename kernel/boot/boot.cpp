@@ -79,8 +79,8 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("hwtimer::init failed");
     }
 
-    sched::task* fib_task = sched::create_kernel_task(fib_task_main, &FIB_N, "fib_task");
-    sched::enqueue(fib_task);
+    // sched::task* fib_task = sched::create_kernel_task(fib_task_main, &FIB_N, "fib_task");
+    // sched::enqueue(fib_task);
     
 #ifdef STLX_UNIT_TESTS_ENABLED
     stlx_test::run_all();

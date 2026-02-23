@@ -17,12 +17,12 @@ namespace arch {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static void switch_to_el1t() {
-    extern char stack_top[];
+    extern char sys_stack_top[];
     asm volatile(
         "mov x0, sp\n\t"
         "msr sp_el0, x0\n\t"
-        "adrp x1, stack_top\n\t"
-        "add x1, x1, :lo12:stack_top\n\t"
+        "adrp x1, sys_stack_top\n\t"
+        "add x1, x1, :lo12:sys_stack_top\n\t"
         "mov sp, x1\n\t"
         "msr spsel, #0\n\t"
         "isb"

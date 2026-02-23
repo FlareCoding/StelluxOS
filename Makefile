@@ -129,6 +129,7 @@ kernel: check-lld
 # ============================================================================
 
 test:
+	$(Q)$(MAKE) clean
 	$(Q)$(MAKE) image ARCH=$(ARCH) STLX_UNIT_TESTS_ENABLED=1
 	@echo ""
 	$(Q)./scripts/run_tests.sh $(ARCH)

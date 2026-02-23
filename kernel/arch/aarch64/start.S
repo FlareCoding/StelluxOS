@@ -11,9 +11,15 @@
 .section .priv.bss, "aw", @nobits
 .align 16
 stack_bottom:
-    .space 16384   /* 16 KB stack */
+    .space 65536   /* 64 KB task stack (SP_EL0) */
 .global stack_top
 stack_top:
+
+.align 16
+sys_stack_bottom:
+    .space 16384   /* 16 KB system stack (SP_EL1, used by exception handlers) */
+.global sys_stack_top
+sys_stack_top:
 
 .section .priv.text, "ax", @progbits
 .global _start

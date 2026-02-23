@@ -11,7 +11,7 @@
 .section .priv.bss, "aw", @nobits
 .align 16
 stack_bottom:
-    .space 16384   /* 16 KB stack */
+    .space 65536   /* 64 KB stack */
 .global stack_top
 stack_top:
 

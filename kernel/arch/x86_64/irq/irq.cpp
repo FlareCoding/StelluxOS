@@ -53,6 +53,14 @@ __PRIVILEGED_CODE int32_t init() {
         return ERR_MAP;
     }
 
+    // Mask all LVT entries to clear any stale vectors left by UEFI firmware
+    mmio::write32(g_lapic_va + LAPIC_LVT_TIMER,   LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_THERMAL,  LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_PERFCNT,  LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_LINT0,    LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_LINT1,    LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_ERROR,    LVT_MASKED);
+
     // Enable LAPIC: preserve reserved SVR bits, set enable + spurious vector
     uint32_t svr = mmio::read32(g_lapic_va + LAPIC_SVR);
     svr = (svr & ~static_cast<uint32_t>(0xFF)) | 0x1FF;

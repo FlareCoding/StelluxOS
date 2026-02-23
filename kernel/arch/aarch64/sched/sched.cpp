@@ -10,6 +10,7 @@
 #include "common/logging.h"
 
 extern "C" char stack_top[];
+extern "C" char sys_stack_top[];
 
 DECLARE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(sched::task_exec_core*, current_task_exec);
@@ -30,7 +31,7 @@ static task_exec_core g_boot_exec = {
  */
 __PRIVILEGED_CODE int32_t init_boot_task() {
     g_boot_exec.task_stack_top = reinterpret_cast<uintptr_t>(stack_top);
-    g_boot_exec.system_stack_top = reinterpret_cast<uintptr_t>(stack_top);
+    g_boot_exec.system_stack_top = reinterpret_cast<uintptr_t>(sys_stack_top);
 
     this_cpu(current_task_exec) = &g_boot_exec;
     this_cpu(percpu_is_elevated) = (g_boot_exec.flags & TASK_FLAG_ELEVATED) != 0;
