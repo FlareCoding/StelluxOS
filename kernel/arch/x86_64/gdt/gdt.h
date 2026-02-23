@@ -187,6 +187,12 @@ __PRIVILEGED_CODE uintptr_t get_bsp_kernel_stack_top();
  */
 __PRIVILEGED_CODE void load();
 
+/**
+ * @brief Update TSS.RSP0 for the current CPU (context switch).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_rsp0(uintptr_t rsp0);
+
 } // namespace gdt
 } // namespace x86
 

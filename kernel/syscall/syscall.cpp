@@ -1,5 +1,6 @@
 #include "syscall/syscall.h"
 #include "sched/task_exec_core.h"
+#include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 #include "common/logging.h"
 
@@ -7,7 +8,7 @@
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static int64_t handle_sys_elevate() {
-    sched::task_exec_core* task = this_cpu(current_task);
+    sched::task_exec_core* task = this_cpu(current_task_exec);
 
     if (!(task->flags & sched::TASK_FLAG_CAN_ELEVATE)) {
         log::fatal("syscall: task not authorized to elevate");
@@ -19,6 +20,7 @@ __PRIVILEGED_CODE static int64_t handle_sys_elevate() {
     }
 
     task->flags |= sched::TASK_FLAG_ELEVATED;
+    this_cpu(percpu_is_elevated) = true;
     return 0;
 }
 

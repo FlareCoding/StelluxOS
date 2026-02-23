@@ -33,6 +33,9 @@ constexpr uint8_t EXC_SECURITY           = 0x1E;
 // IRQ base (vectors 32+)
 constexpr uint8_t VEC_IRQ_BASE = 0x20;
 
+// Scheduler yield (software interrupt)
+constexpr uint8_t VEC_SCHED_YIELD = 0x81;
+
 // IST (Interrupt Stack Table) indices
 // IST1-IST7 are valid; 0 means use current stack
 constexpr uint8_t IST_DF  = 1; // Double Fault

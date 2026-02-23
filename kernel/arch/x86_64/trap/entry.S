@@ -19,7 +19,7 @@
 .include "percpu/percpu_asm.inc"
 
 .extern stlx_x86_64_trap_handler
-.extern current_task
+.extern current_task_exec
 
 .section .priv.rodata, "a", @progbits
 .p2align 3
@@ -185,7 +185,7 @@ stlx_x86_common_entry:
     push rax
     push rbx
     
-    this_cpu_read rax, current_task
+    this_cpu_read rax, current_task_exec
     mov ebx, [rax + TASK_FLAGS_OFFSET]
     and ebx, (TASK_FLAG_ELEVATED | TASK_FLAG_IN_IRQ)
     cmp ebx, TASK_FLAG_ELEVATED

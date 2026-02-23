@@ -106,5 +106,12 @@ __PRIVILEGED_CODE void load() {
     stlx_x86_64_gdt_flush(&this_cpu(cpu_gdt_ptr), KERNEL_CS, KERNEL_DS, TSS_SEL);
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_rsp0(uintptr_t rsp0) {
+    this_cpu(cpu_tss).rsp0 = rsp0;
+}
+
 } // namespace gdt
 } // namespace x86

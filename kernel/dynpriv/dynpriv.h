@@ -2,6 +2,9 @@
 #define STELLUX_DYNPRIV_DYNPRIV_H
 
 #include "common/types.h"
+#include "percpu/percpu.h"
+
+DECLARE_PER_CPU(bool, percpu_is_elevated);
 
 namespace dynpriv {
 

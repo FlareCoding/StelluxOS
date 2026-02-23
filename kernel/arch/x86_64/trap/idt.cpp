@@ -52,8 +52,8 @@ __PRIVILEGED_CODE int32_t init() {
     for (uint16_t i = 0; i < 256; i++) {
         uint8_t vec = static_cast<uint8_t>(i);
         uint8_t dpl_level = 0;
-        if (vec == x86::EXC_BREAKPOINT) {
-            dpl_level = 3; // Allow int3 from userspace
+        if (vec == x86::EXC_BREAKPOINT || vec == x86::VEC_SCHED_YIELD) {
+            dpl_level = 3;
         }
         uint8_t ist = get_ist_for_vector(vec);
         set_gate(vec, stlx_x86_isr_table[i], dpl_level, ist);
