@@ -23,6 +23,12 @@ on:
       - "**"
   pull_request:
 
+# Ensure all run steps use bash with pipefail so piped commands like
+# `make test | tee` correctly propagate non-zero exit codes.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # ============================================================================
   # Privilege Annotation Lint
