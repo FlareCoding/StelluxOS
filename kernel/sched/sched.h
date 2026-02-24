@@ -48,8 +48,9 @@ void yield();
 /**
  * @brief Terminate the current task. Marks it DEAD and yields.
  * Developer must call this explicitly before returning from task entry.
+ * @param exit_code Exit code to return to the parent task.
  */
-[[noreturn]] void exit();
+[[noreturn]] void exit(int exit_code);
 
 /**
  * @brief Get the current task on this CPU.

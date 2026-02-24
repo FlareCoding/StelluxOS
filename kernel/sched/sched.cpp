@@ -73,9 +73,11 @@ __PRIVILEGED_CODE void enqueue(task* t) {
     sync::spin_unlock(rq.lock);
 }
 
-[[noreturn]] void exit() {
+[[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
-        current()->state = TASK_STATE_DEAD;
+        sched::task* task = current();
+        task->state = TASK_STATE_DEAD;
+        task->exit_code = exit_code;
     });
     yield();
     __builtin_unreachable();

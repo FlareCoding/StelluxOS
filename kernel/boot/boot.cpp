@@ -9,6 +9,7 @@
 #include "hwtimer/hwtimer.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
+#include "sched/task.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -37,7 +38,7 @@ void fib_task_main(void* arg) {
     
     log::info("fibonacci(%d) = %d", n, result);
 
-    sched::exit();
+    sched::exit(n);
 }
 
 /**

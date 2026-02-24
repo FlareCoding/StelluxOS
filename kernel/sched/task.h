@@ -13,6 +13,7 @@ constexpr uint32_t TASK_STATE_DEAD    = 2;
 struct task {
     task_exec_core exec;
     uint32_t       tid;
+    int32_t        exit_code;
     uint32_t       state;
     list::node     sched_link;
     const char*    name;
