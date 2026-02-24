@@ -2,6 +2,7 @@
 #include "defs/vectors.h"
 #include "trap/trap_frame.h"
 #include "debug/symtab.h"
+#include "debug/dwarf_line.h"
 #include "debug/stacktrace.h"
 #include "common/logging.h"
 #include "hw/cpu.h"
@@ -61,27 +62,35 @@ static void print_pf_details(uint64_t error_code, uint64_t cr2) {
     }
 }
 
+static void print_frame(int index, uint64_t addr) {
+    symtab::resolve_result sym;
+    dwarf_line::resolve_result loc;
+    bool has_sym  = symtab::resolve(addr, &sym);
+    bool has_line = dwarf_line::resolve(addr, &loc);
+
+    if (has_sym && has_line) {
+        log::panic_write("  #%d  0x%016lx  %s+0x%lx (%s:%u)",
+            index, addr, sym.name, sym.offset, loc.file, loc.line);
+    } else if (has_sym) {
+        log::panic_write("  #%d  0x%016lx  %s+0x%lx", index, addr, sym.name, sym.offset);
+    } else if (has_line) {
+        log::panic_write("  #%d  0x%016lx  (%s:%u)", index, addr, loc.file, loc.line);
+    } else {
+        log::panic_write("  #%d  0x%016lx", index, addr);
+    }
+}
+
 static void print_stacktrace(uint64_t rbp, uint64_t rip) {
     log::panic_write("");
     log::panic_write("Stack trace:");
 
-    symtab::resolve_result res;
-    if (symtab::resolve(rip, &res)) {
-        log::panic_write("  #0  0x%016lx  %s+0x%lx", rip, res.name, res.offset);
-    } else {
-        log::panic_write("  #0  0x%016lx", rip);
-    }
+    print_frame(0, rip);
 
     stacktrace::frame frames[stacktrace::MAX_FRAMES];
     int depth = stacktrace::walk(rbp, frames, stacktrace::MAX_FRAMES);
 
     for (int i = 0; i < depth; i++) {
-        uint64_t addr = frames[i].return_addr;
-        if (symtab::resolve(addr, &res)) {
-            log::panic_write("  #%d  0x%016lx  %s+0x%lx", i + 1, addr, res.name, res.offset);
-        } else {
-            log::panic_write("  #%d  0x%016lx", i + 1, addr);
-        }
+        print_frame(i + 1, frames[i].return_addr);
     }
 }
 

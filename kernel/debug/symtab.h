@@ -2,6 +2,7 @@
 #define STELLUX_DEBUG_SYMTAB_H
 
 #include "common/types.h"
+#include "debug/kernel_elf.h"
 
 namespace symtab {
 
@@ -17,11 +18,11 @@ struct resolve_result {
 };
 
 /**
- * @brief Parse kernel ELF and copy .symtab/.strtab into heap memory.
+ * @brief Copy .symtab/.strtab from pre-parsed kernel ELF into heap.
  * @return OK on success, negative error code on failure.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t init();
+__PRIVILEGED_CODE int32_t init(const debug::kernel_elf& elf);
 
 /**
  * @brief Resolve a code address to its containing function symbol.
