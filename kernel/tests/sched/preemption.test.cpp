@@ -25,7 +25,7 @@ static volatile uint32_t g_basic_done = 0;
 
 static void basic_task_fn(void*) {
     __atomic_store_n(&g_basic_done, 1, __ATOMIC_RELEASE);
-    sched::exit();
+    sched::exit(0);
 }
 
 TEST(preemption, basic_preemption) {
@@ -58,7 +58,7 @@ static void fib_task_fn(void*) {
     int result = fib(25);
     __atomic_store_n(&g_fib_result, static_cast<uint32_t>(result), __ATOMIC_RELEASE);
     __atomic_store_n(&g_fib_done, 1, __ATOMIC_RELEASE);
-    sched::exit();
+    sched::exit(0);
 }
 
 TEST(preemption, context_integrity) {
@@ -85,7 +85,7 @@ static volatile uint32_t g_multi_done[MULTI_COUNT] = {};
 static void multi_task_fn(void* arg) {
     uint32_t idx = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
     __atomic_store_n(&g_multi_done[idx], 1, __ATOMIC_RELEASE);
-    sched::exit();
+    sched::exit(0);
 }
 
 TEST(preemption, multiple_tasks_complete) {
@@ -124,7 +124,7 @@ static void atomic_task_fn(void* arg) {
         __atomic_fetch_add(&g_atomic_counter, 1, __ATOMIC_RELAXED);
     }
     __atomic_store_n(&g_atomic_done[idx], 1, __ATOMIC_RELEASE);
-    sched::exit();
+    sched::exit(0);
 }
 
 TEST(preemption, atomic_counter) {
