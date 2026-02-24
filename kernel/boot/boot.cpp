@@ -9,6 +9,7 @@
 #include "hwtimer/hwtimer.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
+#include "debug/debug.h"
 #include "sched/task.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
@@ -16,6 +17,7 @@
 #endif
 
 int FIB_N = 10;
+sched::task* fib_task2;
 
 int fibonacci(int n) {
     if (n <= 0) return 0;
@@ -31,7 +33,7 @@ void fib_task_main(void* arg) {
     if (n == 10) {
         int n2 = 20;
         RUN_ELEVATED({
-            sched::task* fib_task2 = sched::create_kernel_task(fib_task_main, &n2, "fib_task2");
+            fib_task2 = sched::create_kernel_task(fib_task_main, &n2, "fib_task2");
             sched::enqueue(fib_task2);
         });
     }
@@ -64,6 +66,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("mm::init failed");
     }
 
+    if (debug::init() != debug::OK) {
+        log::fatal("debug::init failed");
+    }
+
     if (acpi::init() != acpi::OK) {
         log::fatal("acpi::init failed");
     }
@@ -92,6 +98,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     log::debug("Initialization complete! Halting...");
     while (true) {
+        log::debug("fib_task2->state: %d, fib_task->state: %d", fib_task2->state, fib_task->state); // we expect this to fault for demo purposes
         cpu::halt();
     }
 }

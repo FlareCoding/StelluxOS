@@ -31,7 +31,8 @@ OBJCOPY := llvm-objcopy
 CXXFLAGS_DEBUG := \
 	-O0 \
 	-g \
-	-DDEBUG
+	-DDEBUG \
+	-fno-omit-frame-pointer
 
 # ============================================================================
 # Release Flags
@@ -39,7 +40,8 @@ CXXFLAGS_DEBUG := \
 
 CXXFLAGS_RELEASE := \
 	-O2 \
-	-DNDEBUG
+	-DNDEBUG \
+	-fno-omit-frame-pointer
 
 # ============================================================================
 # Build Mode Selection

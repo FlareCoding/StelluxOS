@@ -395,4 +395,12 @@ void vraw(const char* fmt, va_list args) {
     });
 }
 
+void panic_write(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    fatal_vformat(fmt, args);
+    va_end(args);
+    fatal_serial_str("\r\n");
+}
+
 } // namespace log
