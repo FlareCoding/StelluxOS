@@ -66,6 +66,13 @@ void raw(const char* fmt, ...);
  */
 void vraw(const char* fmt, va_list args);
 
+/**
+ * @brief Write formatted output directly to serial, bypassing locks.
+ * For use in crash/panic paths only. Caller must have already
+ * elevated privileges and disabled IRQs. Appends \\r\\n.
+ */
+void panic_write(const char* fmt, ...);
+
 } // namespace log
 
 // Compile-time log level filtering macros

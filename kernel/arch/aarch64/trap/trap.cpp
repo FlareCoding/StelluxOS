@@ -2,6 +2,7 @@
 #include "defs/exception.h"
 #include "common/types.h"
 #include "common/logging.h"
+#include "debug/panic.h"
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
 #include "irq/irq.h"
@@ -28,21 +29,7 @@ struct irq_context_guard {
 
 [[noreturn]] __PRIVILEGED_CODE 
 static void trap_fatal(const char* kind, const aarch64::trap_frame* tf) {
-    const uint64_t esr = tf->esr;
-    const unsigned int ec = static_cast<unsigned int>((esr >> aarch64::ESR_EC_SHIFT) & aarch64::ESR_EC_MASK);
-    const unsigned int iss = static_cast<unsigned int>(esr & aarch64::ESR_ISS_MASK);
-
-    log::fatal(
-        "aarch64 trap (%s): from_user=%u elr=%p spsr=0x%lx esr=0x%lx (ec=0x%02x iss=0x%06x) far=%p sp=%p",
-        kind,
-        aarch64::from_user(tf) ? 1 : 0,
-        reinterpret_cast<void*>(tf->elr),
-        tf->spsr,
-        tf->esr,
-        ec,
-        iss,
-        reinterpret_cast<void*>(tf->far),
-        reinterpret_cast<void*>(tf->sp));
+    panic::on_trap(const_cast<aarch64::trap_frame*>(tf), kind);
 }
 
 extern "C" __PRIVILEGED_CODE 
