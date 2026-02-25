@@ -117,6 +117,12 @@ CXXFLAGS_LOG := -DLOG_LEVEL=$(LOG_LEVEL)
 # Configuration defines (from config.mk)
 CXXFLAGS_CONFIG := -DMAX_CPUS=$(MAX_CPUS)
 
+# Platform define (e.g., PLATFORM=rpi4 → -DSTLX_PLATFORM_RPI4)
+ifneq ($(PLATFORM),qemu-virt)
+PLATFORM_UPPER := $(shell echo '$(PLATFORM)' | tr 'a-z-' 'A-Z_')
+CXXFLAGS_CONFIG += -DSTLX_PLATFORM_$(PLATFORM_UPPER)
+endif
+
 # Include paths
 # Note: -Iarch/$(ARCH) allows arch-specific headers to be included with paths
 # like #include "hw/barrier.h" - the build system picks the right arch directory

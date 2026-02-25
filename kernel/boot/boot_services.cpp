@@ -56,6 +56,14 @@ static volatile limine_kernel_file_request kernel_file_request = {
     .response = nullptr
 };
 
+// Framebuffer request - provides linear framebuffer
+__attribute__((used, section(".limine_requests")))
+static volatile limine_framebuffer_request framebuffer_request = {
+    .id = LIMINE_FRAMEBUFFER_REQUEST,
+    .revision = 0,
+    .response = nullptr
+};
+
 // Module request - provides loaded modules
 __attribute__((used, section(".limine_requests")))
 static volatile limine_module_request module_request = {
@@ -136,6 +144,23 @@ __PRIVILEGED_CODE int32_t init() {
     } else {
         g_boot_info.module_count = 0;
         g_boot_info.modules = nullptr;
+    }
+
+    // Get framebuffer (optional — copy fields, Limine memory is reclaimed later)
+    if (LIMINE_REQUEST_FULFILLED(framebuffer_request) &&
+        framebuffer_request.response->framebuffer_count > 0) {
+        auto* fb = framebuffer_request.response->framebuffers[0];
+        g_boot_info.framebuffer.fb_phys = reinterpret_cast<uintptr_t>(fb->address)
+                                        - hhdm_request.response->offset;
+        g_boot_info.framebuffer.width   = fb->width;
+        g_boot_info.framebuffer.height  = fb->height;
+        g_boot_info.framebuffer.pitch   = fb->pitch;
+        g_boot_info.framebuffer.bpp     = fb->bpp;
+        g_boot_info.framebuffer.red_mask_shift   = fb->red_mask_shift;
+        g_boot_info.framebuffer.green_mask_shift = fb->green_mask_shift;
+        g_boot_info.framebuffer.blue_mask_shift  = fb->blue_mask_shift;
+    } else {
+        g_boot_info.framebuffer.fb_phys = 0;
     }
 
     return OK;

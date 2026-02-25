@@ -12,6 +12,10 @@ images/*.iso
 boot/limine/*.EFI
 boot/limine/limine
 
+# Downloaded RPi4 UEFI firmware (reproducible via make rpi4-firmware)
+boot/rpi4-uefi/*
+!boot/rpi4-uefi/config.txt
+
 # Editor/IDE
 .vscode/
 .idea/

@@ -25,6 +25,10 @@ IMAGE_DIR := images
 BOOT_DIR := boot/limine
 LIMINE_BRANCH := v8.x-binary
 
+# RPi4 UEFI firmware
+RPI4_UEFI_DIR := boot/rpi4-uefi
+RPI4_UEFI_VERSION := v1.41
+
 # QEMU firmware paths (auto-detect)
 OVMF_CODE := $(firstword $(wildcard \
 	/usr/share/OVMF/OVMF_CODE_4M.fd \
@@ -107,7 +111,7 @@ endif
         run-qemu-x86_64-debug run-qemu-aarch64-debug \
         run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
         connect-gdb-x86_64 connect-gdb-aarch64 \
-        deps limine toolchain-check \
+        deps limine rpi4-firmware toolchain-check \
         help
 
 # Default target
@@ -449,6 +453,20 @@ limine:
 	@echo ""
 	@echo "Limine ready in $(BOOT_DIR)/"
 
+rpi4-firmware:
+	@echo "Downloading RPi4 UEFI firmware ($(RPI4_UEFI_VERSION))..."
+	@mkdir -p $(RPI4_UEFI_DIR)/overlays
+	$(Q)curl -L -o $(RPI4_UEFI_DIR)/firmware.zip \
+		"https://github.com/pftf/RPi4/releases/download/$(RPI4_UEFI_VERSION)/RPi4_UEFI_Firmware_$(RPI4_UEFI_VERSION).zip"
+	$(Q)cd $(RPI4_UEFI_DIR) && unzip -o firmware.zip \
+		RPI_EFI.fd start4.elf fixup4.dat bcm2711-rpi-4-b.dtb \
+		overlays/miniuart-bt.dtbo overlays/upstream-pi4.dtbo
+	$(Q)rm -f $(RPI4_UEFI_DIR)/firmware.zip
+	@echo ""
+	@ls -la $(RPI4_UEFI_DIR)/RPI_EFI.fd $(RPI4_UEFI_DIR)/start4.elf
+	@echo ""
+	@echo "RPi4 UEFI firmware ready in $(RPI4_UEFI_DIR)/"
+
 toolchain-check:
 	@echo "=== Toolchain Check ==="
 	@echo ""
@@ -478,8 +496,10 @@ toolchain-check:
 		(test -f $(BOOT_DIR)/BOOTX64.EFI && echo "OK" || echo "NOT FOUND - run 'make limine'")
 	@printf "%-24s" "Limine BOOTAA64.EFI:" && \
 		(test -f $(BOOT_DIR)/BOOTAA64.EFI && echo "OK" || echo "NOT FOUND - run 'make limine'")
+	@printf "%-24s" "RPi4 UEFI firmware:" && \
+		(test -f $(RPI4_UEFI_DIR)/RPI_EFI.fd && echo "OK" || echo "NOT FOUND - run 'make rpi4-firmware'")
 	@echo ""
-	@echo "If anything is NOT FOUND, run 'make deps' and/or 'make limine'"
+	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', and/or 'make rpi4-firmware'"
 
 # ============================================================================
 # Help
@@ -491,6 +511,7 @@ help:
 	@echo "Setup (run once):"
 	@echo "  make deps                    Install required packages"
 	@echo "  make limine                  Download Limine bootloader"
+	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
 	@echo "  make toolchain-check         Verify tools are installed"
 	@echo ""
 	@echo "Build:"

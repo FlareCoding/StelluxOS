@@ -30,6 +30,18 @@ struct boot_info {
     // Modules (nullptr/0 if none)
     uint64_t module_count;
     struct limine_file** modules;
+
+    // Framebuffer (copied from Limine response; fb_phys == 0 means unavailable)
+    struct {
+        uint64_t fb_phys;
+        uint64_t width;
+        uint64_t height;
+        uint64_t pitch;
+        uint16_t bpp;
+        uint8_t red_mask_shift;
+        uint8_t green_mask_shift;
+        uint8_t blue_mask_shift;
+    } framebuffer;
 };
 
 __PRIVILEGED_DATA extern boot_info g_boot_info;

@@ -65,3 +65,15 @@ MAX_CPUS ?= 64
 
 # Log level (0=debug, 1=info, 2=warn, 3=error, 4=fatal, 5=none)
 LOG_LEVEL ?= 0
+
+# ============================================================================
+# Platform Selection
+# ============================================================================
+
+# Target platform (affects hardware addresses, clock rates, etc.)
+# Override at build time: make ARCH=aarch64 PLATFORM=rpi4
+#
+# Supported platforms:
+#   qemu-virt   - QEMU virt machine (default for aarch64)
+#   rpi4        - Raspberry Pi 4 (BCM2711)
+PLATFORM ?= qemu-virt
