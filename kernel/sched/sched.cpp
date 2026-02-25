@@ -36,10 +36,10 @@ task* current() {
 __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
     runqueue& rq = this_cpu(cpu_rq);
 
-    sync::spin_lock(rq.lock);
+    sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
 
-    // Re-enqueue prev unless it's idle or dead
-    if (prev != rq.idle_task && prev->state != TASK_STATE_DEAD) {
+    // Only re-enqueue if prev was running (not dead, blocked, or already woken)
+    if (prev != rq.idle_task && prev->state == TASK_STATE_RUNNING) {
         prev->state = TASK_STATE_READY;
         rq.policy->enqueue(prev);
         rq.nr_running++;
@@ -55,7 +55,7 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
     next->state = TASK_STATE_RUNNING;
     this_cpu(current_task) = next;
 
-    sync::spin_unlock(rq.lock);
+    sync::spin_unlock_irqrestore(rq.lock, irq);
 
     return next;
 }
@@ -66,11 +66,11 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
 __PRIVILEGED_CODE void enqueue(task* t) {
     runqueue& rq = this_cpu(cpu_rq);
 
-    sync::spin_lock(rq.lock);
+    sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     t->state = TASK_STATE_READY;
     rq.policy->enqueue(t);
     rq.nr_running++;
-    sync::spin_unlock(rq.lock);
+    sync::spin_unlock_irqrestore(rq.lock, irq);
 }
 
 [[noreturn]] void exit(int exit_code) {
