@@ -8,6 +8,7 @@
 #include "irq/irq.h"
 #include "hwtimer/hwtimer.h"
 #include "sched/sched.h"
+#include "smp/smp.h"
 #include "dynpriv/dynpriv.h"
 #include "debug/debug.h"
 #include "sched/task.h"
@@ -84,7 +85,11 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     if (hwtimer::init(100) != hwtimer::OK) {
         log::fatal("hwtimer::init failed");
     }
-    
+
+    if (smp::init() != smp::OK) {
+        log::warn("smp::init failed, continuing with single CPU");
+    }
+
 #ifdef STLX_UNIT_TESTS_ENABLED
     stlx_test::run_all();
     while (true) {

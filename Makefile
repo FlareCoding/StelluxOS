@@ -46,6 +46,7 @@ GDB_PORT := 4554
 
 # QEMU settings
 QEMU_MEMORY := 4G
+QEMU_CPU_CORES ?= 4
 
 # Verbosity (V=1 for verbose)
 ifeq ($(V),1)
@@ -205,6 +206,7 @@ run-qemu-x86_64: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-machine q35 \
 		-cpu qemu64,+fsgsbase \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
@@ -228,6 +230,7 @@ run-qemu-aarch64: $(IMAGE_DIR)/stellux-aarch64.img
 		-machine virt \
 		-cpu cortex-a57 \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
 		-device ramfb \
@@ -247,6 +250,7 @@ run-qemu-x86_64-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS
 		-machine q35 \
 		-cpu qemu64,+fsgsbase \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
@@ -265,6 +269,7 @@ run-qemu-aarch64-headless: $(IMAGE_DIR)/stellux-aarch64.img
 		-machine virt \
 		-cpu cortex-a57 \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
 		-device qemu-xhci \
@@ -287,6 +292,7 @@ run-qemu-x86_64-debug: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-machine q35 \
 		-cpu qemu64,+fsgsbase \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
@@ -309,6 +315,7 @@ run-qemu-x86_64-debug-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVM
 		-machine q35 \
 		-cpu qemu64,+fsgsbase \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
@@ -330,6 +337,7 @@ run-qemu-aarch64-debug: $(IMAGE_DIR)/stellux-aarch64.img
 		-machine virt \
 		-cpu cortex-a57 \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
 		-device ramfb \
@@ -351,6 +359,7 @@ run-qemu-aarch64-debug-headless: $(IMAGE_DIR)/stellux-aarch64.img
 		-machine virt \
 		-cpu cortex-a57 \
 		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
 		-device qemu-xhci \
