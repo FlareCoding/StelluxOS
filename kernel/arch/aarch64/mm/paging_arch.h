@@ -206,8 +206,19 @@ __PRIVILEGED_CODE static inline void write_sctlr_el1(uint64_t val) {
 // SCTLR_EL1 bit definitions
 namespace sctlr {
     constexpr uint64_t M    = 1ULL << 0;   // MMU enable
+    constexpr uint64_t C    = 1ULL << 2;   // D-cache enable
+    constexpr uint64_t I    = 1ULL << 12;  // I-cache enable
     constexpr uint64_t WXN  = 1ULL << 19;  // Write permission implies XN (Execute Never)
     constexpr uint64_t SPAN = 1ULL << 23;  // Set Privileged Access Never
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline uint64_t read_vbar_el1() {
+    uint64_t val;
+    asm volatile("mrs %0, vbar_el1" : "=r"(val));
+    return val;
 }
 
 /**
