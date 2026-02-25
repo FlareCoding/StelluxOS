@@ -9,7 +9,7 @@ namespace sched {
 constexpr uint32_t TASK_STATE_CREATED = 0; // exists but not on any queue
 constexpr uint32_t TASK_STATE_READY   = 1; // on a runqueue
 constexpr uint32_t TASK_STATE_RUNNING = 2; // executing on a CPU
-constexpr uint32_t TASK_STATE_BLOCKED = 3; // on a wait queue (future use)
+constexpr uint32_t TASK_STATE_BLOCKED = 3; // on a wait queue
 constexpr uint32_t TASK_STATE_DEAD    = 4; // terminated
 
 struct task {
@@ -18,6 +18,7 @@ struct task {
     int32_t        exit_code;
     uint32_t       state;
     list::node     sched_link;
+    list::node     wait_link;
     const char*    name;
 };
 
