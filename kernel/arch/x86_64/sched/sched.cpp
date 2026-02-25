@@ -8,6 +8,7 @@
 #include "defs/vectors.h"
 #include "percpu/percpu.h"
 #include "gdt/gdt.h"
+#include "hw/cpu.h"
 #include "common/logging.h"
 
 extern "C" char stack_top[];
@@ -19,11 +20,12 @@ namespace sched {
 
 static task_exec_core g_boot_exec = {
     .flags = TASK_FLAG_ELEVATED | TASK_FLAG_KERNEL | TASK_FLAG_CAN_ELEVATE
-           | TASK_FLAG_IDLE | TASK_FLAG_RUNNING | TASK_FLAG_PREEMPTIBLE,
+           | TASK_FLAG_IDLE | TASK_FLAG_PREEMPTIBLE,
     .cpu = 0,
     .task_stack_top = 0,
     .system_stack_top = 0,
     .cpu_ctx = {},
+    .on_cpu = 0,
 };
 
 /**
@@ -32,6 +34,7 @@ static task_exec_core g_boot_exec = {
 __PRIVILEGED_CODE int32_t init_boot_task() {
     g_boot_exec.task_stack_top = reinterpret_cast<uintptr_t>(stack_top);
     g_boot_exec.system_stack_top = x86::gdt::get_bsp_kernel_stack_top();
+    g_boot_exec.on_cpu = 1;
 
     this_cpu(current_task_exec) = &g_boot_exec;
     this_cpu(percpu_is_elevated) = (g_boot_exec.flags & TASK_FLAG_ELEVATED) != 0;
@@ -112,6 +115,11 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     task* next = pick_next_and_switch(prev);
     if (next == prev) return;
 
+    __atomic_store_n(&prev->exec.on_cpu, 0, __ATOMIC_RELEASE);
+    cpu::send_event();
+    next->exec.cpu = percpu::current_cpu_id();
+    __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
+
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);
 }
@@ -132,6 +140,11 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     if (next == prev) {
         return;
     }
+
+    __atomic_store_n(&prev->exec.on_cpu, 0, __ATOMIC_RELEASE);
+    cpu::send_event();
+    next->exec.cpu = percpu::current_cpu_id();
+    __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);

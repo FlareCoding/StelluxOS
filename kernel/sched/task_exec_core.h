@@ -11,7 +11,6 @@ constexpr uint32_t TASK_FLAG_ELEVATED    = (1 << 0);  // Currently at ring 0 / E
 constexpr uint32_t TASK_FLAG_KERNEL      = (1 << 1);  // Is a kernel task
 constexpr uint32_t TASK_FLAG_CAN_ELEVATE = (1 << 2);  // Authorized to elevate
 constexpr uint32_t TASK_FLAG_IDLE        = (1 << 3);  // Is the idle task
-constexpr uint32_t TASK_FLAG_RUNNING     = (1 << 4);  // Currently executing on a CPU
 constexpr uint32_t TASK_FLAG_IN_SYSCALL  = (1 << 5);  // Currently handling a syscall
 constexpr uint32_t TASK_FLAG_IN_IRQ      = (1 << 6);  // Currently in interrupt handler
 constexpr uint32_t TASK_FLAG_PREEMPTIBLE = (1 << 7);  // Can be preempted
@@ -23,6 +22,7 @@ struct task_exec_core {
     uintptr_t task_stack_top;
     uintptr_t system_stack_top;
     thread_cpu_context cpu_ctx;
+    uint32_t  on_cpu; // 1 while context is live and executing on a CPU
 };
 
 constexpr size_t TASK_FLAGS_OFFSET     = __builtin_offsetof(task_exec_core, flags);

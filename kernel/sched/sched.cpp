@@ -10,9 +10,11 @@
 #include "mm/kva.h"
 #include "common/logging.h"
 #include "sync/spinlock.h"
+#include "hw/cpu.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
+DEFINE_PER_CPU(uint32_t, percpu_cpu_id);
 
 static DEFINE_PER_CPU(sched::runqueue, cpu_rq);
 
@@ -90,6 +92,13 @@ __PRIVILEGED_CODE void wake(task* t) {
         return;
     }
 
+    uint32_t task_cpu = __atomic_load_n(&t->exec.cpu, __ATOMIC_RELAXED);
+    if (task_cpu != percpu::current_cpu_id()) {
+        while (__atomic_load_n(&t->exec.on_cpu, __ATOMIC_ACQUIRE)) {
+            cpu::relax();
+        }
+    }
+
     runqueue& rq = this_cpu(cpu_rq);
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
@@ -152,6 +161,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
         ctx_bytes[i] = 0;
     }
     arch_init_task_context(t, entry, arg);
+
+    t->exec.on_cpu = 0;
 
     t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     t->state = TASK_STATE_CREATED;

@@ -30,6 +30,7 @@ extern uintptr_t __per_cpu_offset[MAX_CPUS];
     __typeof__(type) name
 
 DECLARE_PER_CPU_BASE(uintptr_t, percpu_offset);
+DECLARE_PER_CPU(uint32_t, percpu_cpu_id);
 
 namespace percpu {
 
@@ -62,5 +63,13 @@ __PRIVILEGED_CODE int32_t init_bsp();
 } // namespace percpu
 
 #define this_cpu(var) (*percpu::this_cpu_ptr(var))
+
+namespace percpu {
+
+inline uint32_t current_cpu_id() {
+    return this_cpu(percpu_cpu_id);
+}
+
+} // namespace percpu
 
 #endif // STELLUX_PERCPU_PERCPU_H

@@ -24,10 +24,6 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
 
     spin_unlock_irqrestore(lock, saved);
 
-    // SMP: once secondary CPUs are brought up, another CPU could wake
-    // and schedule this task before yield() saves its context. The fix
-    // is a scheduler-level on_cpu guard — the same issue exists in
-    // sched::exit(). Safe on uniprocessor (context saved from trap frame).
     sched::yield();
 
     return spin_lock_irqsave(lock);
