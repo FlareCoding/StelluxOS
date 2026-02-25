@@ -63,9 +63,6 @@ __PRIVILEGED_CODE int32_t init_arch_syscalls() {
     /* SFMASK: RFLAGS bits to clear on SYSCALL (IF, DF, TF) */
     msr::write(MSR_SFMASK, RFLAGS_IF | RFLAGS_DF | RFLAGS_TF);
 
-    log::info("syscall: x86_64 initialized (LSTAR=0x%lx)",
-              reinterpret_cast<uint64_t>(stlx_x86_syscall_entry));
-
     return OK;
 }
 

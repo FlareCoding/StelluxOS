@@ -60,6 +60,16 @@ constexpr int32_t ERR_LAYOUT = -2;
  */
 __PRIVILEGED_CODE int32_t init_bsp();
 
+/**
+ * Initialize per-CPU data for an AP.
+ * Sets GS base, copies template, stores offset.
+ * Must be the AP's first call in ap_entry().
+ * @param cpu_id Logical CPU ID.
+ * @param base_va Virtual address of the pre-allocated per-CPU area.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t base_va);
+
 } // namespace percpu
 
 #define this_cpu(var) (*percpu::this_cpu_ptr(var))

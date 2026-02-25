@@ -18,6 +18,18 @@ constexpr int32_t ERR_NO_MEM = -1;
 __PRIVILEGED_CODE int32_t init();
 
 /**
+ * @brief Initialize the scheduler for an AP. Creates idle task and
+ * per-CPU runqueue. Must be called after percpu::init_ap().
+ * @param cpu_id Logical CPU ID of the AP.
+ * @param task_stack_top Top of the AP's task stack.
+ * @param system_stack_top Top of the AP's system stack (separate from task stack).
+ * @return OK on success, ERR_NO_MEM on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
+                                  uintptr_t system_stack_top);
+
+/**
  * @brief Create a new kernel task. Allocates task struct and stacks.
  * Returns in TASK_STATE_CREATED (not yet enqueued).
  * @param entry Task entry function.

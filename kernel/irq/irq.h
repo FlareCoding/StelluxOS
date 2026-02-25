@@ -20,6 +20,16 @@ constexpr int32_t ERR_MAP     = -2;
 __PRIVILEGED_CODE int32_t init();
 
 /**
+ * @brief Initialize the interrupt controller for an AP.
+ * x86_64: enables this CPU's LAPIC (SVR), masks LVTs, clears EOI.
+ *         Uses the shared LAPIC MMIO mapping from init().
+ * AArch64: stub (GIC CPU interface already configured).
+ * @return OK on success.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap();
+
+/**
  * @brief Signal end-of-interrupt.
  * x86_64: writes LAPIC EOI register (parameter ignored).
  * AArch64: writes interrupt ID to GICC_EOIR.

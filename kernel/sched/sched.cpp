@@ -225,4 +225,48 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
+                                  uintptr_t system_stack_top) {
+    task* idle = heap::kalloc_new<task>();
+    if (!idle) {
+        return ERR_NO_MEM;
+    }
+
+    auto* dst = reinterpret_cast<uint8_t*>(idle);
+    for (size_t i = 0; i < sizeof(task); i++) {
+        dst[i] = 0;
+    }
+
+    idle->exec.flags = TASK_FLAG_IDLE | TASK_FLAG_ELEVATED | TASK_FLAG_KERNEL
+                     | TASK_FLAG_CAN_ELEVATE | TASK_FLAG_PREEMPTIBLE;
+    idle->exec.cpu = cpu_id;
+    idle->exec.on_cpu = 1;
+    idle->exec.task_stack_top = task_stack_top;
+    idle->exec.system_stack_top = system_stack_top;
+    idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
+    idle->state = TASK_STATE_RUNNING;
+    idle->name = "idle";
+
+    this_cpu(current_task) = idle;
+    this_cpu(current_task_exec) = &idle->exec;
+    this_cpu(percpu_is_elevated) = true;
+
+    runqueue& rq = this_cpu(cpu_rq);
+    rq.lock = sync::SPINLOCK_INIT;
+    rq.nr_running = 0;
+    rq.idle_task = idle;
+
+    auto* policy = heap::kalloc_new<round_robin_policy>();
+    if (!policy) {
+        return ERR_NO_MEM;
+    }
+    policy->init();
+    rq.policy = policy;
+
+    return OK;
+}
+
 } // namespace sched

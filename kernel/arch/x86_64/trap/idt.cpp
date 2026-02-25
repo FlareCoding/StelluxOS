@@ -71,4 +71,15 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void load() {
+    const x86::idt_ptr idtr = {
+        .limit = static_cast<uint16_t>(sizeof(g_idt) - 1),
+        .base = reinterpret_cast<uint64_t>(&g_idt[0]),
+    };
+    lidt(idtr);
+}
+
 } // namespace trap

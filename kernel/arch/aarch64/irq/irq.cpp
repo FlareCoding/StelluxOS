@@ -102,4 +102,11 @@ __PRIVILEGED_CODE void mask(uint32_t irq) {
     mmio::write32(g_gicd_va + GICD_ICENABLER + bank * 4, 1u << bit);
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap() {
+    return OK;
+}
+
 } // namespace irq

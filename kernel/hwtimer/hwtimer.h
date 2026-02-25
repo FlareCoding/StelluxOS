@@ -21,6 +21,17 @@ constexpr int32_t ERR = -1;
 __PRIVILEGED_CODE int32_t init(uint32_t hz);
 
 /**
+ * @brief Initialize and start the hardware timer on an AP.
+ * Reuses the BSP's calibrated frequency (no recalibration).
+ * Enables CPU interrupts after starting the timer.
+ * Must be called after irq::init_ap() and sched::init_ap().
+ * @param hz Tick frequency in Hertz (same as BSP).
+ * @return OK on success, ERR on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap(uint32_t hz);
+
+/**
  * @brief Stop the hardware timer and mask its interrupt.
  * @note Privilege: **required**
  */

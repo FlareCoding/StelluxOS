@@ -174,7 +174,7 @@ static void print_registers(const aarch64::trap_frame* tf) {
     const char* mode = aarch64::from_user(tf) ? "user (EL0)" : "kernel (EL1)";
     sched::task* cur = sched::current();
     if (cur && cur->name) {
-        log::panic_write("  Mode: %s | Task: %s (tid=%u)", mode, cur->name, cur->tid);
+        log::panic_write("  Mode: %s | Task: %s (tid=%u) | CPU: %u", mode, cur->name, cur->tid, this_cpu(percpu_cpu_id));
     } else {
         log::panic_write("  Mode: %s", mode);
     }

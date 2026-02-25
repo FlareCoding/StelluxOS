@@ -46,6 +46,10 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE int32_t init_ap(uint32_t) {
+    return ERR;
+}
+
 __PRIVILEGED_CODE void stop() {
     // Disable timer (ENABLE=0)
     write_cntv_ctl(0);

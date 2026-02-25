@@ -135,7 +135,7 @@ static void print_registers(const x86::trap_frame* tf, uint64_t cr2) {
     const char* mode = x86::from_user(tf) ? "user" : "supervisor";
     sched::task* cur = sched::current();
     if (cur && cur->name) {
-        log::panic_write("  Mode: %s | Task: %s (tid=%u)", mode, cur->name, cur->tid);
+        log::panic_write("  Mode: %s | Task: %s (tid=%u) | CPU: %u", mode, cur->name, cur->tid, this_cpu(percpu_cpu_id));
     } else {
         log::panic_write("  Mode: %s", mode);
     }

@@ -105,4 +105,24 @@ __PRIVILEGED_CODE void mask(uint32_t irq) {
     }
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap() {
+    mmio::write32(g_lapic_va + LAPIC_LVT_TIMER,   LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_THERMAL,  LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_PERFCNT,  LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_LINT0,    LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_LINT1,    LVT_MASKED);
+    mmio::write32(g_lapic_va + LAPIC_LVT_ERROR,    LVT_MASKED);
+
+    uint32_t svr = mmio::read32(g_lapic_va + LAPIC_SVR);
+    svr = (svr & ~static_cast<uint32_t>(0xFF)) | 0x1FF;
+    mmio::write32(g_lapic_va + LAPIC_SVR, svr);
+
+    mmio::write32(g_lapic_va + LAPIC_EOI, 0);
+
+    return OK;
+}
+
 } // namespace irq

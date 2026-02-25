@@ -9,6 +9,8 @@
 
 namespace hwtimer {
 
+__PRIVILEGED_BSS static uint64_t g_lapic_freq;
+
 // PIT constants
 constexpr uint16_t PIT_CTRL     = 0x43;
 constexpr uint16_t PIT_CH2_DATA = 0x42;
@@ -77,13 +79,13 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
         return ERR;
     }
 
-    uint64_t freq = calibrate_lapic();
-    if (freq == 0) {
+    g_lapic_freq = calibrate_lapic();
+    if (g_lapic_freq == 0) {
         log::error("hwtimer: LAPIC calibration failed");
         return ERR;
     }
 
-    uint32_t count = static_cast<uint32_t>(freq / hz);
+    uint32_t count = static_cast<uint32_t>(g_lapic_freq / hz);
 
     // Configure LVT Timer: periodic mode, VEC_TIMER, masked during setup
     mmio::write32(lapic + irq::LAPIC_LVT_TIMER,
@@ -103,7 +105,33 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     cpu::irq_enable();
 
     log::info("hwtimer: LAPIC freq=%lu Hz, periodic at %u Hz (count=%u)",
-              freq, hz, count);
+              g_lapic_freq, hz, count);
+
+    return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap(uint32_t hz) {
+    uintptr_t lapic = irq::get_lapic_va();
+    if (!lapic || g_lapic_freq == 0) {
+        return ERR;
+    }
+
+    uint32_t count = static_cast<uint32_t>(g_lapic_freq / hz);
+
+    mmio::write32(lapic + irq::LAPIC_LVT_TIMER,
+                  irq::LVT_MASKED | irq::LVT_PERIODIC | x86::VEC_TIMER);
+
+    mmio::write32(lapic + irq::LAPIC_TIMER_DCR, 0x7);
+
+    mmio::write32(lapic + irq::LAPIC_TIMER_ICR, count);
+
+    mmio::write32(lapic + irq::LAPIC_LVT_TIMER,
+                  irq::LVT_PERIODIC | x86::VEC_TIMER);
+
+    cpu::irq_enable();
 
     return OK;
 }

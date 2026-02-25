@@ -54,8 +54,8 @@ __PRIVILEGED_CODE int32_t init() {
 
         rc = arch::smp_boot_cpu(g_cpus[i]);
         if (rc == OK) {
-            log::info("smp: CPU %u online (hw_id 0x%lx)",
-                      g_cpus[i].logical_id, g_cpus[i].hw_id);
+            log::info("smp: CPU %u online",
+                      g_cpus[i].logical_id);
         } else {
             __atomic_store_n(&g_cpus[i].state, CPU_OFFLINE, __ATOMIC_RELEASE);
             log::warn("smp: CPU %u failed to start (hw_id 0x%lx)",
