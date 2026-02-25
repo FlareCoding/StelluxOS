@@ -19,7 +19,7 @@ __PRIVILEGED_CODE int32_t init();
 
 /**
  * @brief Create a new kernel task. Allocates task struct and stacks.
- * Returns in TASK_STATE_READY (not yet enqueued).
+ * Returns in TASK_STATE_CREATED (not yet enqueued).
  * @param entry Task entry function.
  * @param arg Argument passed to entry via first register.
  * @param name Debug name (not copied, caller must ensure lifetime).
@@ -35,6 +35,8 @@ task* create_kernel_task(void (*entry)(void*), void* arg, const char* name,
 
 /**
  * @brief Add a task to the local CPU's runqueue.
+ * Atomically transitions the task from CREATED to READY via CAS.
+ * Rejects tasks that are already enqueued, running, or dead.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void enqueue(task* t);

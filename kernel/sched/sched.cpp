@@ -54,6 +54,8 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
 
     next->state = TASK_STATE_RUNNING;
     this_cpu(current_task) = next;
+    this_cpu(current_task_exec) = &next->exec;
+    this_cpu(percpu_is_elevated) = (next->exec.flags & TASK_FLAG_ELEVATED) != 0;
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
 
@@ -64,10 +66,15 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void enqueue(task* t) {
-    runqueue& rq = this_cpu(cpu_rq);
+    uint32_t expected = TASK_STATE_CREATED;
+    if (!__atomic_compare_exchange_n(&t->state, &expected, TASK_STATE_READY,
+                                      false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        log::warn("sched: enqueue rejected tid=%u (state=%u)", t->tid, expected);
+        return;
+    }
 
+    runqueue& rq = this_cpu(cpu_rq);
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
-    t->state = TASK_STATE_READY;
     rq.policy->enqueue(t);
     rq.nr_running++;
     sync::spin_unlock_irqrestore(rq.lock, irq);
@@ -129,8 +136,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
     }
     arch_init_task_context(t, entry, arg);
 
-    t->tid = g_next_tid++;
-    t->state = TASK_STATE_READY;
+    t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
+    t->state = TASK_STATE_CREATED;
     t->sched_link = {};
     t->name = name;
 
@@ -144,32 +151,35 @@ __PRIVILEGED_CODE task* create_kernel_task(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init() {
-    // Adopt the current boot task as idle
-    static task idle_task = {};
+    task* idle = heap::kalloc_new<task>();
+    if (!idle) {
+        log::error("sched: failed to allocate idle task");
+        return ERR_NO_MEM;
+    }
 
     // Copy exec core from the existing boot task (byte copy to avoid memcpy)
     task_exec_core* boot_exec = this_cpu(current_task_exec);
     if (boot_exec) {
-        auto* dst = reinterpret_cast<uint8_t*>(&idle_task.exec);
+        auto* dst = reinterpret_cast<uint8_t*>(&idle->exec);
         auto* src = reinterpret_cast<const uint8_t*>(boot_exec);
         for (size_t i = 0; i < sizeof(task_exec_core); i++) {
             dst[i] = src[i];
         }
     }
-    idle_task.exec.flags |= TASK_FLAG_IDLE;
-    idle_task.tid = 0;
-    idle_task.state = TASK_STATE_RUNNING;
-    idle_task.name = "idle";
+    idle->exec.flags |= TASK_FLAG_IDLE;
+    idle->tid = 0;
+    idle->state = TASK_STATE_RUNNING;
+    idle->name = "idle";
 
-    this_cpu(current_task) = &idle_task;
-    this_cpu(current_task_exec) = &idle_task.exec;
-    this_cpu(percpu_is_elevated) = (idle_task.exec.flags & TASK_FLAG_ELEVATED) != 0;
+    this_cpu(current_task) = idle;
+    this_cpu(current_task_exec) = &idle->exec;
+    this_cpu(percpu_is_elevated) = (idle->exec.flags & TASK_FLAG_ELEVATED) != 0;
 
     // Initialize per-CPU runqueue
     runqueue& rq = this_cpu(cpu_rq);
     rq.lock = sync::SPINLOCK_INIT;
     rq.nr_running = 0;
-    rq.idle_task = &idle_task;
+    rq.idle_task = idle;
 
     // Allocate round-robin policy
     auto* policy = heap::kalloc_new<round_robin_policy>();

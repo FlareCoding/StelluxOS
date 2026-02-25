@@ -6,9 +6,11 @@
 
 namespace sched {
 
-constexpr uint32_t TASK_STATE_READY   = 0;
-constexpr uint32_t TASK_STATE_RUNNING = 1;
-constexpr uint32_t TASK_STATE_DEAD    = 2;
+constexpr uint32_t TASK_STATE_CREATED = 0; // exists but not on any queue
+constexpr uint32_t TASK_STATE_READY   = 1; // on a runqueue
+constexpr uint32_t TASK_STATE_RUNNING = 2; // executing on a CPU
+constexpr uint32_t TASK_STATE_BLOCKED = 3; // on a wait queue (future use)
+constexpr uint32_t TASK_STATE_DEAD    = 4; // terminated
 
 struct task {
     task_exec_core exec;

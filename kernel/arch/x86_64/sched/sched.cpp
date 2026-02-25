@@ -91,9 +91,6 @@ __PRIVILEGED_CODE void arch_init_task_context(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void arch_post_switch(task* next) {
-    this_cpu(current_task_exec) = &next->exec;
-    this_cpu(percpu_is_elevated) = (next->exec.flags & TASK_FLAG_ELEVATED) != 0;
-
     // Update TSS.RSP0 so Ring 3 -> Ring 0 transitions use the new task's system stack
     if (next->exec.system_stack_top) {
         x86::gdt::set_rsp0(next->exec.system_stack_top);
