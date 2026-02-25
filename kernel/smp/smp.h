@@ -16,8 +16,10 @@ struct cpu_info {
     bool     is_bsp;     // true for the bootstrap processor
 };
 
-constexpr int32_t OK         = 0;
-constexpr int32_t ERR_NO_CPUS = -1;
+constexpr int32_t OK               = 0;
+constexpr int32_t ERR_NO_CPUS      = -1;
+constexpr int32_t ERR_BOOT_TIMEOUT = -2;
+constexpr int32_t ERR_PREPARE      = -3;
 
 /**
  * @brief Enumerate CPUs from ACPI MADT and initialize the SMP subsystem.

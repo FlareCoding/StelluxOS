@@ -16,6 +16,26 @@ namespace arch {
  */
 __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max);
 
+/**
+ * @brief One-time setup before booting any AP.
+ * x86_64: identity-maps trampoline region, copies trampoline code, inits startup data.
+ * AArch64: stub (no-op for now).
+ * @return smp::OK on success, negative error code on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_prepare();
+
+/**
+ * @brief Boot a single AP. Allocates stack, fills startup data, sends wake
+ * sequence, polls cpu.state for CPU_ONLINE.
+ * x86_64: INIT-SIPI-SIPI via LAPIC ICR.
+ * AArch64: stub (no-op for now).
+ * @param cpu The cpu_info entry to boot. State must be CPU_BOOTING on entry.
+ * @return smp::OK on success, smp::ERR_BOOT_TIMEOUT if AP did not come online.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu);
+
 } // namespace arch
 
 #endif // STELLUX_ARCH_SMP_H

@@ -37,4 +37,18 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
     return count;
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_prepare() {
+    return smp::OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info&) {
+    return smp::ERR_BOOT_TIMEOUT;
+}
+
 } // namespace arch
