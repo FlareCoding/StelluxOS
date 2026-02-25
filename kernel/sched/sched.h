@@ -42,6 +42,14 @@ task* create_kernel_task(void (*entry)(void*), void* arg, const char* name,
 __PRIVILEGED_CODE void enqueue(task* t);
 
 /**
+ * @brief Resume a blocked task by placing it on the local runqueue.
+ * Atomically transitions BLOCKED -> READY via CAS.
+ * Called by sync::wake_one / sync::wake_all.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void wake(task* t);
+
+/**
  * @brief Yield the current CPU to the scheduler (cooperative switch).
  * Triggers a software interrupt that routes through the trap path.
  */

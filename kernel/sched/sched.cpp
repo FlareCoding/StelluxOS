@@ -80,6 +80,23 @@ __PRIVILEGED_CODE void enqueue(task* t) {
     sync::spin_unlock_irqrestore(rq.lock, irq);
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void wake(task* t) {
+    uint32_t expected = TASK_STATE_BLOCKED;
+    if (!__atomic_compare_exchange_n(&t->state, &expected, TASK_STATE_READY,
+                                      false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return;
+    }
+
+    runqueue& rq = this_cpu(cpu_rq);
+    sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
+    rq.policy->enqueue(t);
+    rq.nr_running++;
+    sync::spin_unlock_irqrestore(rq.lock, irq);
+}
+
 [[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
         sched::task* task = current();
@@ -139,6 +156,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     t->state = TASK_STATE_CREATED;
     t->sched_link = {};
+    t->wait_link = {};
     t->name = name;
 
     log::debug("sched: created task '%s' tid=%u stack=%p", name, t->tid,
@@ -169,6 +187,8 @@ __PRIVILEGED_CODE int32_t init() {
     idle->exec.flags |= TASK_FLAG_IDLE;
     idle->tid = 0;
     idle->state = TASK_STATE_RUNNING;
+    idle->sched_link = {};
+    idle->wait_link = {};
     idle->name = "idle";
 
     this_cpu(current_task) = idle;
