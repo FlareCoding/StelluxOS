@@ -15,6 +15,7 @@
 #include "hw/cpu.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
+#include "rc/reaper.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -33,6 +34,25 @@ constexpr uint16_t TASK_GUARD_PAGES = 1;
 
 constexpr size_t SYSTEM_STACK_PAGES = 4;
 constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
+    if (__atomic_load_n(&t->exec.on_cpu, __ATOMIC_ACQUIRE)) {
+        return rc::reaper::RETRY_LATER;
+    }
+
+    vmm::free(t->task_stack_base);
+    vmm::free(t->sys_stack_base);
+    heap::kfree_delete(t);
+    return rc::reaper::DONE;
+}
+
+__PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task_thunk(
+    rc::reaper::dead_node* node) {
+    return rc::reaper::reaper_thunk<sched::task, reap_task>(node);
+}
 
 task* current() {
     return this_cpu(current_task);
@@ -73,6 +93,12 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
         rq.nr_running++;
     }
 
+    // Capture dead task for deferred cleanup after lock is released
+    task* dead_prev = nullptr;
+    if (prev != rq.idle_task && prev->state == TASK_STATE_DEAD) {
+        dead_prev = prev;
+    }
+
     task* next = rq.policy->pick_next();
     if (next) {
         rq.nr_running--;
@@ -86,6 +112,10 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
     this_cpu(percpu_is_elevated) = (next->exec.flags & TASK_FLAG_ELEVATED) != 0;
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
+
+    if (dead_prev) {
+        rc::reaper::defer(&dead_prev->reaper_node);
+    }
 
     return next;
 }
@@ -229,6 +259,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->exec.cpu = 0;
     t->exec.task_stack_top = task_stack_top;
     t->exec.system_stack_top = sys_stack_top;
+    t->task_stack_base = task_stack_base;
+    t->sys_stack_base = sys_stack_base;
 
     // Zero cpu_ctx, then set arch-specific initial state
     uint8_t* ctx_bytes = reinterpret_cast<uint8_t*>(&t->exec.cpu_ctx);
@@ -247,6 +279,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->timer_deadline = 0;
     t->name = name;
     fpu::init_state(&t->fpu_ctx);
+    t->reaper_node.init(reap_task_thunk);
 
     return t;
 }
@@ -273,6 +306,8 @@ __PRIVILEGED_CODE int32_t init() {
     idle->exec.flags |= TASK_FLAG_IDLE;
     idle->tid = 0;
     idle->state = TASK_STATE_RUNNING;
+    idle->task_stack_base = 0;
+    idle->sys_stack_base = 0;
     idle->sched_link = {};
     idle->wait_link = {};
     idle->name = "idle";
@@ -322,6 +357,8 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->exec.on_cpu = 1;
     idle->exec.task_stack_top = task_stack_top;
     idle->exec.system_stack_top = system_stack_top;
+    idle->task_stack_base = 0;
+    idle->sys_stack_base = 0;
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     idle->state = TASK_STATE_RUNNING;
     idle->name = "idle";

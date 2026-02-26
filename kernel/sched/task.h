@@ -4,6 +4,7 @@
 #include "sched/task_exec_core.h"
 #include "sched/fpu_state.h"
 #include "common/list.h"
+#include "rc/reaper.h"
 
 namespace sched {
 
@@ -18,12 +19,15 @@ struct task {
     uint32_t       tid;
     int32_t        exit_code;
     uint32_t       state;
+    uintptr_t      task_stack_base;
+    uintptr_t      sys_stack_base;
     list::node     sched_link;
     list::node     wait_link;
     list::node     timer_link;
     uint64_t       timer_deadline;
     const char*    name;
     fpu_state      fpu_ctx;
+    rc::reaper::dead_node reaper_node;
 };
 
 // Assembly accesses task_exec_core fields via offsets from the task pointer.
