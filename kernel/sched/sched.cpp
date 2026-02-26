@@ -10,6 +10,7 @@
 #include "mm/kva.h"
 #include "common/logging.h"
 #include "sync/spinlock.h"
+#include "smp/smp.h"
 #include "hw/cpu.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
@@ -19,6 +20,8 @@ DEFINE_PER_CPU(uint32_t, percpu_cpu_id);
 static DEFINE_PER_CPU(sched::runqueue, cpu_rq);
 
 static uint32_t g_next_tid = 1;
+
+__PRIVILEGED_DATA static uint32_t g_lb_next_cpu = 0;
 
 namespace sched {
 
@@ -30,6 +33,17 @@ constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
 
 task* current() {
     return this_cpu(current_task);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
+    uint32_t count = smp::cpu_count();
+    if (count <= 1) return 0;
+
+    uint32_t idx = __atomic_fetch_add(&g_lb_next_cpu, 1, __ATOMIC_RELAXED);
+    return idx % count;
 }
 
 /**
@@ -75,7 +89,9 @@ __PRIVILEGED_CODE void enqueue(task* t) {
         return;
     }
 
-    runqueue& rq = this_cpu(cpu_rq);
+    uint32_t cpu = load_balance_select_cpu();
+    t->exec.cpu = cpu;
+    runqueue& rq = per_cpu_on(cpu_rq, cpu);
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;
@@ -93,6 +109,7 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id) {
         return;
     }
 
+    t->exec.cpu = cpu_id;
     runqueue& rq = per_cpu_on(cpu_rq, cpu_id);
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
@@ -188,8 +205,10 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->wait_link = {};
     t->name = name;
 
+#if 0
     log::debug("sched: created task '%s' tid=%u stack=%p", name, t->tid,
                reinterpret_cast<void*>(task_stack_top));
+#endif
 
     return t;
 }

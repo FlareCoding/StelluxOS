@@ -46,9 +46,10 @@ task* create_kernel_task(void (*entry)(void*), void* arg, const char* name,
                          uint32_t flags = 0);
 
 /**
- * @brief Add a task to the local CPU's runqueue.
+ * @brief Add a task to a runqueue, distributing across CPUs via round-robin.
  * Atomically transitions the task from CREATED to READY via CAS.
  * Rejects tasks that are already enqueued, running, or dead.
+ * Use enqueue_on() to target a specific CPU instead.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void enqueue(task* t);

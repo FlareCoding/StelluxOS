@@ -18,7 +18,9 @@
 #endif
 
 void log_cpu_id_entry(void*) {
-    log::info("Hello from core %u!", percpu::current_cpu_id());
+    RUN_ELEVATED({
+        log::info("Task %u is on core %u!", sched::current()->tid, percpu::current_cpu_id());
+    });
     sched::exit(0);
 }
 
@@ -80,9 +82,9 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 #endif
 
-    for (uint32_t i = 0; i < smp::cpu_count(); i++) {
+    for (uint32_t i = 0; i < smp::cpu_count() * 4; i++) {
         sched::task* t = sched::create_kernel_task(log_cpu_id_entry, nullptr, "log_cpu_id_entry");
-        sched::enqueue_on(t, i);
+        sched::enqueue(t);
     }
 
     log::debug("Initialization complete! Halting...");
