@@ -8,6 +8,7 @@
 #include "irq/irq.h"
 #include "irq/irq_arch.h"
 #include "hwtimer/hwtimer_arch.h"
+#include "timer/timer.h"
 
 // Forward declaration of syscall dispatch
 extern "C" void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf);
@@ -55,9 +56,11 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
 
     uint32_t irq_id = irq::acknowledge();
     if (irq_id == hwtimer::TIMER_PPI) {
-        hwtimer::rearm();
+        bool tick = timer::on_interrupt();
         irq::eoi(irq_id);
-        sched::on_tick(tf);
+        if (tick) {
+            sched::on_tick(tf);
+        }
         task_core = this_cpu(current_task_exec);
         task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
@@ -92,7 +95,7 @@ void stlx_aarch64_el1_sync_handler(aarch64::trap_frame* tf) {
     // Check if this is an SVC from AArch64 (e.g., elevate() called while already in EL1)
     if (ec == aarch64::EC_SVC_A64) {
         stlx_aarch64_syscall_dispatch(tf);
-        return;  // Return to continue execution
+        return;
     }
 
     trap_fatal("el1 sync", tf);
@@ -105,9 +108,11 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
 
     uint32_t irq_id = irq::acknowledge();
     if (irq_id == hwtimer::TIMER_PPI) {
-        hwtimer::rearm();
+        bool tick = timer::on_interrupt();
         irq::eoi(irq_id);
-        sched::on_tick(tf);
+        if (tick) {
+            sched::on_tick(tf);
+        }
         task_core = this_cpu(current_task_exec);
         task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;

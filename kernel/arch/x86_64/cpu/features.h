@@ -24,6 +24,8 @@ constexpr uint64_t X2APIC     = 1ULL << 13;  // x2APIC mode
 constexpr uint64_t XSAVE      = 1ULL << 14;  // XSAVE/XRSTOR
 constexpr uint64_t AVX        = 1ULL << 15;  // AVX instructions
 constexpr uint64_t AVX2       = 1ULL << 16;  // AVX2 instructions
+constexpr uint64_t INVARIANT_TSC = 1ULL << 17; // Invariant TSC (constant rate across P/C states)
+constexpr uint64_t RDTSCP     = 1ULL << 18;  // RDTSCP instruction
 
 // Features required for Stellux to boot
 constexpr uint64_t REQUIRED = FSGSBASE | NX | APIC | PAT;

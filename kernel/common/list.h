@@ -155,6 +155,29 @@ public:
     iterator begin() { return iterator(sentinel_.next, &sentinel_); }
     iterator end() { return iterator(&sentinel_, &sentinel_); }
 
+    /**
+     * Insert item in sorted order. Pred(a, b) returns true if a should
+     * come before b. The item is inserted before the first element for
+     * which before(item, existing) is true. If no such element, appends.
+     */
+    template<typename Pred>
+    void insert_sorted(T* item, Pred before) {
+        node* n = to_node(item);
+        node* cur = sentinel_.next;
+        while (cur != &sentinel_) {
+            if (before(item, to_entry(cur))) {
+                n->prev = cur->prev;
+                n->next = cur;
+                cur->prev->next = n;
+                cur->prev = n;
+                ++count_;
+                return;
+            }
+            cur = cur->next;
+        }
+        push_back(item);
+    }
+
 private:
     node   sentinel_;
     size_t count_ = 0;

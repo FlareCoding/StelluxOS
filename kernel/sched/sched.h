@@ -90,6 +90,26 @@ void yield();
  */
 task* current();
 
+/**
+ * @brief Block the current task for at least ns nanoseconds.
+ * The task is placed on the per-CPU sleep queue and woken by the
+ * timer interrupt when the deadline expires.
+ * Must not be called from the idle task.
+ * @param ns Duration in nanoseconds. If 0, yields without blocking.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void sleep_ns(uint64_t ns);
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void sleep_us(uint64_t us);
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void sleep_ms(uint64_t ms);
+
 } // namespace sched
 
 #endif // STELLUX_SCHED_SCHED_H

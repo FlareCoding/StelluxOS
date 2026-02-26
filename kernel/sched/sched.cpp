@@ -12,6 +12,8 @@
 #include "sync/spinlock.h"
 #include "smp/smp.h"
 #include "hw/cpu.h"
+#include "clock/clock.h"
+#include "timer/timer.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -150,6 +152,34 @@ __PRIVILEGED_CODE void wake(task* t) {
     sync::spin_unlock_irqrestore(rq.lock, irq);
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void sleep_ns(uint64_t ns) {
+    if (ns == 0) {
+        yield();
+        return;
+    }
+
+    task* self = current();
+    if (self->exec.flags & TASK_FLAG_IDLE) {
+        return;
+    }
+
+    uint64_t deadline = clock::now_ns() + ns;
+    self->state = TASK_STATE_BLOCKED;
+    timer::schedule_sleep(self, deadline);
+    yield();
+}
+
+__PRIVILEGED_CODE void sleep_us(uint64_t us) {
+    sleep_ns(us * 1000ULL);
+}
+
+__PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
+    sleep_ns(ms * 1000000ULL);
+}
+
 [[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
         sched::task* task = current();
@@ -212,6 +242,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->state = TASK_STATE_CREATED;
     t->sched_link = {};
     t->wait_link = {};
+    t->timer_link = {};
+    t->timer_deadline = 0;
     t->name = name;
 
 #if 0

@@ -6,7 +6,8 @@
 #include "mm/mm.h"
 #include "acpi/acpi.h"
 #include "irq/irq.h"
-#include "hwtimer/hwtimer.h"
+#include "clock/clock.h"
+#include "timer/timer.h"
 #include "sched/sched.h"
 #include "smp/smp.h"
 #include "dynpriv/dynpriv.h"
@@ -19,6 +20,7 @@
 
 void log_cpu_id_entry(void*) {
     RUN_ELEVATED({
+        sched::sleep_ms(sched::current()->tid * 100);
         log::info("Task %u is on core %u!", sched::current()->tid, percpu::current_cpu_id());
     });
     sched::exit(0);
@@ -67,8 +69,12 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("sched::init failed");
     }
 
-    if (hwtimer::init(100) != hwtimer::OK) {
-        log::fatal("hwtimer::init failed");
+    if (clock::init() != clock::OK) {
+        log::fatal("clock::init failed");
+    }
+
+    if (timer::init(100) != timer::OK) {
+        log::fatal("timer::init failed");
     }
 
     if (smp::init() != smp::OK) {

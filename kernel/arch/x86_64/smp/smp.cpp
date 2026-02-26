@@ -18,7 +18,8 @@
 #include "cpu/features.h"
 #include "syscall/syscall.h"
 #include "sched/sched.h"
-#include "hwtimer/hwtimer.h"
+#include "clock/clock.h"
+#include "timer/timer.h"
 
 extern "C" {
     extern char asm_ap_trampoline[];
@@ -114,12 +115,14 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
         while (true) { asm volatile("cli; hlt"); }
     }
 
-    // Signal online (BSP polls this)
+    if (clock::init_ap() != clock::OK || timer::init_ap(100) != timer::OK) {
+        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
+        if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+        while (true) { asm volatile("cli; hlt"); }
+    }
+
     smp::cpu_info* info = smp::get_cpu_info(cpu_id);
     __atomic_store_n(&info->state, smp::CPU_ONLINE, __ATOMIC_RELEASE);
-
-    // Timer + Idle Entry
-    hwtimer::init_ap(100);
 
     while (true) {
         cpu::halt();

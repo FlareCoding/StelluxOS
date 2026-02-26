@@ -19,6 +19,8 @@ struct task {
     uint32_t       state;
     list::node     sched_link;
     list::node     wait_link;
+    list::node     timer_link;
+    uint64_t       timer_deadline;
     const char*    name;
 };
 

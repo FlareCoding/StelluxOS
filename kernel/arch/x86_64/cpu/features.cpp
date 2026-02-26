@@ -38,6 +38,10 @@ constexpr uint32_t CPUID_7_EBX_INVPCID  = 1 << 10;
 // CPUID extended leaf 0x80000001 EDX bits
 constexpr uint32_t CPUID_EXT1_EDX_NX      = 1 << 20;
 constexpr uint32_t CPUID_EXT1_EDX_PAGE1GB = 1 << 26;
+constexpr uint32_t CPUID_EXT1_EDX_RDTSCP  = 1 << 27;
+
+// CPUID extended leaf 0x80000007 EDX bits
+constexpr uint32_t CPUID_EXT7_EDX_INVARIANT_TSC = 1 << 8;
 
 // CPUID leaf 7 ECX bits
 constexpr uint32_t CPUID_7_ECX_LA57 = 1 << 16;
@@ -110,6 +114,13 @@ __PRIVILEGED_CODE static void detect() {
 
         if (edx & CPUID_EXT1_EDX_NX)      g_features.flags |= NX;
         if (edx & CPUID_EXT1_EDX_PAGE1GB) g_features.flags |= PAGE_1GB;
+        if (edx & CPUID_EXT1_EDX_RDTSCP)  g_features.flags |= RDTSCP;
+    }
+
+    if (max_ext_leaf >= 0x80000007) {
+        cpuid(0x80000007, 0, &eax, &ebx, &ecx, &edx);
+
+        if (edx & CPUID_EXT7_EDX_INVARIANT_TSC) g_features.flags |= INVARIANT_TSC;
     }
 }
 

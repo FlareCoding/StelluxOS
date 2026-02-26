@@ -14,7 +14,9 @@
 #include "trap/trap.h"
 #include "irq/irq.h"
 #include "sched/sched.h"
-#include "hwtimer/hwtimer.h"
+#include "clock/clock.h"
+#include "timer/timer.h"
+#include "hwtimer/hwtimer_arch.h"
 #include "common/string.h"
 #include "common/logging.h"
 
@@ -64,17 +66,6 @@ static inline uint64_t read_mpidr_el1() {
     return val;
 }
 
-static inline uint64_t read_cntpct_el0() {
-    uint64_t val;
-    asm volatile("mrs %0, cntpct_el0" : "=r"(val));
-    return val;
-}
-
-static inline uint64_t read_cntfrq_el0() {
-    uint64_t val;
-    asm volatile("mrs %0, cntfrq_el0" : "=r"(val));
-    return val;
-}
 
 static inline uint64_t read_id_aa64pfr0_el1() {
     uint64_t val;
@@ -215,10 +206,15 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
         ::: "memory"
     );
 
+    if (clock::init_ap() != clock::OK || timer::init_ap(100) != timer::OK) {
+        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
+        if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+        while (true) { asm volatile("wfi"); }
+    }
+
     smp::cpu_info* info = smp::get_cpu_info(cpu_id);
     __atomic_store_n(&info->state, smp::CPU_ONLINE, __ATOMIC_RELEASE);
 
-    hwtimer::init_ap(100);
     while (true) { cpu::halt(); }
 }
 
@@ -375,11 +371,11 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
     }
 
     // Poll for the AP to set CPU_ONLINE, with Generic Timer timeout
-    uint64_t freq = read_cntfrq_el0();
-    uint64_t start = read_cntpct_el0();
+    uint64_t freq = hwtimer::read_cntfrq();
+    uint64_t start = hwtimer::read_cntpct();
     uint64_t timeout_ticks = (freq * AP_BOOT_TIMEOUT_MS) / 1000;
 
-    while (read_cntpct_el0() - start < timeout_ticks) {
+    while (hwtimer::read_cntpct() - start < timeout_ticks) {
         if (__atomic_load_n(&cpu.state, __ATOMIC_ACQUIRE) == smp::CPU_ONLINE) {
             return smp::OK;
         }
