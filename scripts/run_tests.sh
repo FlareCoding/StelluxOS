@@ -69,6 +69,7 @@ if [[ "$ARCH" == "x86_64" ]]; then
         -machine q35 \
         -cpu qemu64,+fsgsbase \
         -m 4G \
+        -smp 4 \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$OVMF_VARS" \
         -drive format=raw,file="$IMAGE" \
@@ -89,6 +90,7 @@ elif [[ "$ARCH" == "aarch64" ]]; then
         -machine virt \
         -cpu cortex-a57 \
         -m 4G \
+        -smp 4 \
         -bios "$QEMU_EFI" \
         -drive format=raw,file="$IMAGE" \
         -serial file:"$SERIAL_LOG" \

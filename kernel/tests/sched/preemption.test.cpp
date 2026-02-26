@@ -1,22 +1,15 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sched/task_exec_core.h"
 #include "dynpriv/dynpriv.h"
 
+using test_helpers::spin_wait;
+
 TEST_SUITE(preemption);
-
-constexpr uint64_t SPIN_TIMEOUT = 100000000;
-
-static bool spin_wait(volatile uint32_t* flag) {
-    uint64_t spins = 0;
-    while (!__atomic_load_n(flag, __ATOMIC_ACQUIRE)) {
-        if (++spins > SPIN_TIMEOUT) return false;
-    }
-    return true;
-}
 
 // --- basic_preemption ---
 // Proves: timer preempts the boot task, created task runs without explicit yield.
