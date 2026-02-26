@@ -125,8 +125,17 @@ __PRIVILEGED_CODE static void detect() {
     }
 }
 
+__PRIVILEGED_CODE void enable_fp_simd() {
+    uint64_t cpacr;
+    asm volatile("mrs %0, cpacr_el1" : "=r"(cpacr));
+    cpacr |= (3ULL << 20);
+    asm volatile("msr cpacr_el1, %0" :: "r"(cpacr) : "memory");
+    asm volatile("isb");
+}
+
 __PRIVILEGED_CODE int32_t init() {
     detect();
+    enable_fp_simd();
     return OK;
 }
 

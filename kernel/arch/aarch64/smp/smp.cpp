@@ -14,6 +14,7 @@
 #include "trap/trap.h"
 #include "irq/irq.h"
 #include "sched/sched.h"
+#include "cpu/features.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
 #include "hwtimer/hwtimer_arch.h"
@@ -178,6 +179,8 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     }
     trap::load();
     irq::init_ap();
+
+    cpu::enable_fp_simd();
 
     uintptr_t sys_stack_base = 0, sys_stack_top = 0;
     if (vmm::alloc_stack(AP_STACK_PAGES, AP_GUARD_PAGES,

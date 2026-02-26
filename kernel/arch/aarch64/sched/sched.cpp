@@ -2,6 +2,7 @@
 #include "sched/task.h"
 #include "sched/sched.h"
 #include "sched/sched_internal.h"
+#include "sched/fpu.h"
 #include "dynpriv/dynpriv.h"
 #include "syscall/syscall.h"
 #include "trap/trap_frame.h"
@@ -111,6 +112,9 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     next->exec.cpu = percpu::current_cpu_id();
     __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
 
+    fpu::save(&prev->fpu_ctx);
+    fpu::restore(&next->fpu_ctx);
+
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);
 }
@@ -136,6 +140,9 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     cpu::send_event();
     next->exec.cpu = percpu::current_cpu_id();
     __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
+
+    fpu::save(&prev->fpu_ctx);
+    fpu::restore(&next->fpu_ctx);
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);

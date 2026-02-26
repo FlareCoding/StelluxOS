@@ -3,6 +3,7 @@
 #include "sched/task.h"
 #include "sched/sched_policy.h"
 #include "sched/runqueue.h"
+#include "sched/fpu.h"
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 #include "mm/heap.h"
@@ -245,11 +246,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->timer_link = {};
     t->timer_deadline = 0;
     t->name = name;
-
-#if 0
-    log::debug("sched: created task '%s' tid=%u stack=%p", name, t->tid,
-               reinterpret_cast<void*>(task_stack_top));
-#endif
+    fpu::init_state(&t->fpu_ctx);
 
     return t;
 }
@@ -279,6 +276,7 @@ __PRIVILEGED_CODE int32_t init() {
     idle->sched_link = {};
     idle->wait_link = {};
     idle->name = "idle";
+    fpu::init_state(&idle->fpu_ctx);
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
@@ -327,6 +325,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     idle->state = TASK_STATE_RUNNING;
     idle->name = "idle";
+    fpu::init_state(&idle->fpu_ctx);
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;

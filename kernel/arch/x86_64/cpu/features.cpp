@@ -158,6 +158,24 @@ __PRIVILEGED_CODE static void init_pat() {
     msr::write(MSR_IA32_PAT, PAT_VALUE);
 }
 
+// Enable FPU and SSE via CR0/CR4 bits, then initialize x87 and MXCSR state
+__PRIVILEGED_CODE static void enable_fpu_sse() {
+    uint64_t cr0;
+    asm volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~((1ULL << 2) | (1ULL << 3));
+    cr0 |= (1ULL << 1) | (1ULL << 5);
+    asm volatile("mov %0, %%cr0" :: "r"(cr0) : "memory");
+
+    uint64_t cr4;
+    asm volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ULL << 9) | (1ULL << 10);
+    asm volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
+
+    asm volatile("fninit");
+    uint32_t mxcsr = 0x1F80;
+    asm volatile("ldmxcsr %0" :: "m"(mxcsr));
+}
+
 __PRIVILEGED_CODE int32_t init() {
     detect();
 
@@ -166,11 +184,9 @@ __PRIVILEGED_CODE int32_t init() {
         return ERR_REQUIRED_FEATURE;
     }
 
-    // Enable FSGSBASE
     enable_fsgsbase();
-
-    // Initialize PAT with WC support
     init_pat();
+    enable_fpu_sse();
 
     return OK;
 }

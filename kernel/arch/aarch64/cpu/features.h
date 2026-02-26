@@ -34,10 +34,17 @@ __PRIVILEGED_DATA extern features g_features;
 constexpr int32_t OK = 0;
 
 /**
- * Initialize CPU features: detect via ID registers.
+ * Initialize CPU features: detect via ID registers, enable FP/SIMD.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init();
+
+/**
+ * Enable FP/SIMD on this CPU (sets CPACR_EL1.FPEN).
+ * Called from init() for BSP and directly from ap_entry() for APs.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void enable_fp_simd();
 
 // Check if CPU has all features in mask
 inline bool has(uint64_t mask) {

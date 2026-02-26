@@ -2,6 +2,7 @@
 #define STELLUX_SCHED_TASK_H
 
 #include "sched/task_exec_core.h"
+#include "sched/fpu_state.h"
 #include "common/list.h"
 
 namespace sched {
@@ -22,6 +23,7 @@ struct task {
     list::node     timer_link;
     uint64_t       timer_deadline;
     const char*    name;
+    fpu_state      fpu_ctx;
 };
 
 // Assembly accesses task_exec_core fields via offsets from the task pointer.

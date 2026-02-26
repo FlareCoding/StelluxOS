@@ -12,7 +12,7 @@
  *
  * Layout within the trampoline page:
  *   +0x000: entry point (asm_ap_trampoline)
- *   +0x100: startup data (ap_startup_data, 64 bytes)
+ *   +0x100: startup data (ap_startup_data, 72 bytes)
  *     +0x00: mair_el1    (uint64_t)
  *     +0x08: tcr_el1     (uint64_t)
  *     +0x10: ttbr1_el1   (uint64_t, kernel page table root)
@@ -21,6 +21,7 @@
  *     +0x28: stack_top    (uint64_t, higher-half VA)
  *     +0x30: vbar_el1     (uint64_t, higher-half VA)
  *     +0x38: c_entry      (uint64_t, higher-half VA)
+ *     +0x40: percpu_base  (uint64_t, per-CPU area VA)
  */
 
 .section .priv.text, "ax", @progbits
@@ -51,6 +52,10 @@ asm_ap_trampoline:
 
     adr x0, .Lat_el1
     msr elr_el2, x0
+
+    mrs x0, cptr_el2
+    bic x0, x0, #(1 << 10)
+    msr cptr_el2, x0
 
     isb
     eret

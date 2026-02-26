@@ -78,6 +78,11 @@ endif
 # Find all assembly sources (arch-specific only typically)
 ASM_SOURCES := $(shell find arch/$(ARCH) -name '*.S' 2>/dev/null | sort)
 
+# Unit test assembly sources (e.g., FPU test helpers)
+ifeq ($(STLX_UNIT_TESTS_ENABLED),1)
+ASM_SOURCES += $(shell find tests -name '*.S' 2>/dev/null | sort)
+endif
+
 # Generate object file paths
 CXX_OBJECTS := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(CXX_SOURCES))
 ASM_OBJECTS := $(patsubst %.S,$(OBJ_DIR)/%.o,$(ASM_SOURCES))
