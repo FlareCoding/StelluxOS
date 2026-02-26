@@ -1,5 +1,6 @@
 #include "arch/arch_smp.h"
 #include "acpi/madt_arch.h"
+#include "acpi/acpi.h"
 #include "hw/psci.h"
 #include "hw/cpu.h"
 #include "mm/paging.h"
@@ -31,6 +32,12 @@ constexpr uint16_t AP_GUARD_PAGES = 1;
 constexpr uint32_t AP_BOOT_TIMEOUT_MS = 200;
 constexpr uint32_t PERCPU_PAGES = 2;
 constexpr size_t CACHE_LINE_SIZE = 64;
+
+// ACPI FADT arm_boot_flags (offset 129, ACPI 5.1+)
+constexpr size_t FADT_ARM_BOOT_FLAGS_OFFSET = 129;
+constexpr uint16_t FADT_PSCI_COMPLIANT = (1 << 0);
+constexpr uint16_t FADT_PSCI_USE_HVC   = (1 << 1);
+constexpr uint64_t ID_AA64PFR0_EL3_SHIFT = 12;
 
 // Startup data shared between BSP and AP (matches trampoline offsets at entry + 0x100)
 struct ap_startup_data {
@@ -66,6 +73,12 @@ static inline uint64_t read_cntpct_el0() {
 static inline uint64_t read_cntfrq_el0() {
     uint64_t val;
     asm volatile("mrs %0, cntfrq_el0" : "=r"(val));
+    return val;
+}
+
+static inline uint64_t read_id_aa64pfr0_el1() {
+    uint64_t val;
+    asm volatile("mrs %0, id_aa64pfr0_el1" : "=r"(val));
     return val;
 }
 
@@ -236,11 +249,37 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
 }
 
 /**
+ * Determine the PSCI conduit from ACPI FADT arm_boot_flags.
+ * Falls back to ID_AA64PFR0_EL1 EL3 detection if FADT is unavailable.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static psci::conduit detect_psci_conduit() {
+    const auto* fadt = acpi::find_table("FACP");
+    if (fadt) {
+        uint32_t length;
+        string::memcpy(&length, &fadt->length, sizeof(length));
+        if (length >= FADT_ARM_BOOT_FLAGS_OFFSET + sizeof(uint16_t)) {
+            auto* base = reinterpret_cast<const uint8_t*>(fadt);
+            uint16_t flags;
+            string::memcpy(&flags, base + FADT_ARM_BOOT_FLAGS_OFFSET,
+                           sizeof(flags));
+            if (flags & FADT_PSCI_COMPLIANT) {
+                return (flags & FADT_PSCI_USE_HVC)
+                    ? psci::conduit::HVC
+                    : psci::conduit::SMC;
+            }
+        }
+    }
+
+    bool has_el3 = ((read_id_aa64pfr0_el1() >> ID_AA64PFR0_EL3_SHIFT) & 0xF) != 0;
+    return has_el3 ? psci::conduit::SMC : psci::conduit::HVC;
+}
+
+/**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t smp_prepare() {
-    // Detect PSCI conduit (HVC for VMs, SMC for real hardware with TF-A)
-    g_psci_conduit = psci::detect_conduit();
+    g_psci_conduit = detect_psci_conduit();
     log::info("smp: PSCI conduit: %s",
               g_psci_conduit == psci::conduit::HVC ? "HVC" : "SMC");
 

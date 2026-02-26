@@ -39,11 +39,20 @@ task* current() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
-    uint32_t count = smp::cpu_count();
-    if (count <= 1) return 0;
+    uint32_t online = smp::online_count();
+    if (online <= 1) return 0;
 
-    uint32_t idx = __atomic_fetch_add(&g_lb_next_cpu, 1, __ATOMIC_RELAXED);
-    return idx % count;
+    uint32_t target = __atomic_fetch_add(&g_lb_next_cpu, 1, __ATOMIC_RELAXED) % online;
+    uint32_t total = smp::cpu_count();
+    uint32_t seen = 0;
+    for (uint32_t i = 0; i < total; i++) {
+        smp::cpu_info* info = smp::get_cpu_info(i);
+        if (info && __atomic_load_n(&info->state, __ATOMIC_ACQUIRE) == smp::CPU_ONLINE) {
+            if (seen == target) return i;
+            seen++;
+        }
+    }
+    return 0;
 }
 
 /**

@@ -4,7 +4,8 @@
  * Copied to a DMA32-allocated physical page at runtime.
  * AP starts here via PSCI CPU_ON with:
  *   x0 = logical_id (from PSCI context_id)
- *   MMU off, D-cache off, I-cache undefined, EL1, DAIF masked
+ *   MMU off, D-cache off, I-cache undefined, DAIF masked
+ *   Exception level: EL1 (QEMU) or EL2 (TF-A on real hardware)
  *
  * Startup data is at a fixed offset (+0x100) from the entry point,
  * filled by the BSP before calling PSCI CPU_ON.
@@ -32,6 +33,29 @@ asm_ap_trampoline:
     /* Save logical_id (from PSCI context_id in x0) */
     mov x19, x0
 
+    /*
+     * PSCI CPU_ON may enter at EL2 (TF-A on real hardware like RPi4)
+     * or EL1 (QEMU). Check CurrentEL and drop to EL1 if needed.
+     */
+    mrs x0, CurrentEL
+    and x0, x0, #0xC
+    cmp x0, #0x8
+    b.ne .Lat_el1
+
+    /* At EL2: configure for AArch64 EL1 and drop down */
+    mov x0, #(1 << 31)
+    msr hcr_el2, x0
+
+    mov x0, #0x3c5
+    msr spsr_el2, x0
+
+    adr x0, .Lat_el1
+    msr elr_el2, x0
+
+    isb
+    eret
+
+.Lat_el1:
     /* Compute physical address of startup data (entry + 0x100) */
     adr x20, asm_ap_trampoline
     add x20, x20, #0x100

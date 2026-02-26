@@ -64,23 +64,6 @@ __PRIVILEGED_CODE inline int64_t smc_call(uint64_t fn, uint64_t a1,
 }
 
 /**
- * Detect the PSCI conduit by probing PSCI_VERSION via HVC first, then SMC.
- * @return The working conduit, or HVC as default.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE inline conduit detect_conduit() {
-    int64_t version = hvc_call(PSCI_VERSION, 0, 0, 0);
-    if (version >= 0) {
-        return conduit::HVC;
-    }
-    version = smc_call(PSCI_VERSION, 0, 0, 0);
-    if (version >= 0) {
-        return conduit::SMC;
-    }
-    return conduit::HVC;
-}
-
-/**
  * Issue a PSCI call using the given conduit.
  * @note Privilege: **required**
  */
