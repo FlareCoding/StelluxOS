@@ -46,8 +46,20 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t init_ap(uint32_t) {
-    return ERR;
+__PRIVILEGED_CODE int32_t init_ap(uint32_t hz) {
+    uint32_t freq = read_cntfrq();
+    if (freq == 0) {
+        return ERR;
+    }
+
+    uint32_t interval = freq / hz;
+    write_cntv_tval(interval);
+    write_cntv_ctl(1);
+
+    irq::unmask(TIMER_PPI);
+    cpu::irq_enable();
+
+    return OK;
 }
 
 __PRIVILEGED_CODE void stop() {

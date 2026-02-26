@@ -106,6 +106,8 @@ __PRIVILEGED_CODE void mask(uint32_t irq) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init_ap() {
+    mmio::write32(g_gicc_va + GICC_PMR, 0xFF);
+    mmio::write32(g_gicc_va + GICC_CTLR, 0x1);
     return OK;
 }
 

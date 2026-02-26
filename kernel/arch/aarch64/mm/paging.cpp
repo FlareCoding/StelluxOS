@@ -29,10 +29,6 @@ namespace paging {
 __PRIVILEGED_DATA static bool g_initialized = false;
 __PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
 
-// UART base address for early serial (PL011)
-// This is typically at 0x09000000 for QEMU virt machine
-constexpr pmm::phys_addr_t UART_PHYS_BASE = 0x09000000;
-
 // TTBR1_EL1 mask to extract physical address (mask off ASID in bits 63:48)
 constexpr uint64_t TTBR_BADDR_MASK = 0x0000FFFFFFFFFFFFULL;
 
@@ -1099,10 +1095,6 @@ __PRIVILEGED_CODE int32_t init() {
     size_t total_kernel_pages = (kern_priv_end - kern_start + PAGE_SIZE_4KB - 1) / PAGE_SIZE_4KB;
     log::info("paging: kernel image mapped 0x%lx-0x%lx (%zu pages, %zu KB)",
               kern_start, kern_priv_end, total_kernel_pages, total_kernel_pages * 4);
-
-    // Map UART for early serial
-    virt_addr_t uart_virt = UART_PHYS_BASE + g_boot_info.hhdm_offset;
-    map_page_4kb(new_root, uart_virt, UART_PHYS_BASE, PAGE_KERNEL_RW | PAGE_DEVICE);
 
     // Clear SCTLR RES0 bit 20 if set (can cause spurious faults on some cores)
     uint64_t sctlr = read_sctlr_el1();

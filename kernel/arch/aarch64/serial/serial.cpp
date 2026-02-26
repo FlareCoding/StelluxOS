@@ -1,6 +1,8 @@
 #include "io/serial.h"
 #include "hw/mmio.h"
 #include "mm/early_mmu.h"
+#include "mm/vmm.h"
+#include "mm/paging_types.h"
 
 namespace serial {
 
@@ -96,6 +98,22 @@ int32_t read_char() {
         return ERR_NO_DATA;
     }
     return mmio::read32(uart_base + REG_DR) & 0xFF;
+}
+
+int32_t remap() {
+    uintptr_t kva_base = 0;
+    uintptr_t kva_va = 0;
+    int32_t rc = vmm::map_device(
+        static_cast<pmm::phys_addr_t>(PL011_PHYS),
+        0x1000,
+        paging::PAGE_KERNEL_RW,
+        kva_base, kva_va);
+    if (rc != vmm::OK) {
+        return ERR_NO_DEVICE;
+    }
+
+    uart_base = kva_va;
+    return OK;
 }
 
 } // namespace serial

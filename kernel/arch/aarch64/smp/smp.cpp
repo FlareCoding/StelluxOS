@@ -9,6 +9,11 @@
 #include "mm/pmm_types.h"
 #include "mm/vmm.h"
 #include "mm/kva.h"
+#include "percpu/percpu.h"
+#include "trap/trap.h"
+#include "irq/irq.h"
+#include "sched/sched.h"
+#include "hwtimer/hwtimer.h"
 #include "common/string.h"
 #include "common/logging.h"
 
@@ -24,6 +29,7 @@ constexpr uintptr_t AP_STARTUP_DATA_OFFSET = 0x100;
 constexpr uint32_t AP_STACK_PAGES = 4;
 constexpr uint16_t AP_GUARD_PAGES = 1;
 constexpr uint32_t AP_BOOT_TIMEOUT_MS = 200;
+constexpr uint32_t PERCPU_PAGES = 2;
 constexpr size_t CACHE_LINE_SIZE = 64;
 
 // Startup data shared between BSP and AP (matches trampoline offsets at entry + 0x100)
@@ -36,8 +42,9 @@ struct ap_startup_data {
     uint64_t stack_top;    // +0x28
     uint64_t vbar_el1;     // +0x30
     uint64_t c_entry;      // +0x38
+    uint64_t percpu_base;  // +0x40
 };
-static_assert(sizeof(ap_startup_data) == 64);
+static_assert(sizeof(ap_startup_data) == 72);
 
 // Module state
 static pmm::phys_addr_t g_trampoline_phys = 0;
@@ -135,15 +142,72 @@ __PRIVILEGED_CODE static pmm::phys_addr_t build_identity_map(pmm::phys_addr_t tr
     return l0_phys;
 }
 
+/**
+ * Switch from EL1h (SPSEL=1) to EL1t (SPSEL=0).
+ * Copies current SP to SP_EL0 (task stack), then sets SP_EL1 to the
+ * system stack. Extracted to a separate function so the compiler
+ * rebuilds stack references across the call boundary.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void switch_to_el1t(uintptr_t sys_stack_top) {
+    asm volatile(
+        "mov x0, sp\n\t"
+        "msr sp_el0, x0\n\t"
+        "mov x1, %0\n\t"
+        "mov sp, x1\n\t"
+        "msr spsel, #0\n\t"
+        "isb"
+        :: "r"(sys_stack_top) : "x0", "x1", "memory"
+    );
+}
+
 // AP C entry — called from the trampoline after MMU is enabled
 extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
-    smp::cpu_info* info = smp::get_cpu_info(static_cast<uint32_t>(logical_id));
-    if (info) {
-        __atomic_store_n(&info->state, smp::CPU_ONLINE, __ATOMIC_RELEASE);
+    uint32_t cpu_id = static_cast<uint32_t>(logical_id);
+
+    auto* data = static_cast<volatile ap_startup_data*>(g_startup_data);
+    uintptr_t my_percpu_base = static_cast<uintptr_t>(data->percpu_base);
+    uintptr_t my_stack_top = static_cast<uintptr_t>(data->stack_top);
+
+    if (percpu::init_ap(cpu_id, my_percpu_base) != percpu::OK) {
+        while (true) { asm volatile("wfi"); }
     }
-    while (true) {
-        asm volatile("wfi");
+    trap::load();
+    irq::init_ap();
+
+    uintptr_t sys_stack_base = 0, sys_stack_top = 0;
+    if (vmm::alloc_stack(AP_STACK_PAGES, AP_GUARD_PAGES,
+                         kva::tag::privileged_stack,
+                         sys_stack_base, sys_stack_top) != vmm::OK) {
+        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
+        if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+        while (true) { asm volatile("wfi"); }
     }
+
+    switch_to_el1t(sys_stack_top);
+
+    if (sched::init_ap(cpu_id, my_stack_top, sys_stack_top) != 0) {
+        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
+        if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+        while (true) { asm volatile("wfi"); }
+    }
+
+    // Clear identity map from TTBR0_EL1 + TLB invalidation
+    asm volatile(
+        "msr ttbr0_el1, xzr\n\t"
+        "dsb ishst\n\t"
+        "tlbi vmalle1is\n\t"
+        "dsb ish\n\t"
+        "isb"
+        ::: "memory"
+    );
+
+    smp::cpu_info* info = smp::get_cpu_info(cpu_id);
+    __atomic_store_n(&info->state, smp::CPU_ONLINE, __ATOMIC_RELEASE);
+
+    hwtimer::init_ap(100);
+    log::info("smp: Hello from core %u!", cpu_id);
+    while (true) { cpu::halt(); }
 }
 
 /**
@@ -234,19 +298,30 @@ __PRIVILEGED_CODE int32_t smp_prepare() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
+    uintptr_t percpu_va = 0;
+    int32_t rc = vmm::alloc(PERCPU_PAGES, paging::PAGE_KERNEL_RW,
+                            vmm::ALLOC_ZERO, kva::tag::generic, percpu_va);
+    if (rc != vmm::OK) {
+        log::error("smp: failed to allocate per-CPU area for CPU %u (%d)",
+                   cpu.logical_id, rc);
+        return smp::ERR_BOOT_TIMEOUT;
+    }
+
     uintptr_t stack_base = 0;
     uintptr_t stack_top = 0;
-    int32_t rc = vmm::alloc_stack(AP_STACK_PAGES, AP_GUARD_PAGES,
-                                  kva::tag::privileged_stack,
-                                  stack_base, stack_top);
+    rc = vmm::alloc_stack(AP_STACK_PAGES, AP_GUARD_PAGES,
+                          kva::tag::privileged_stack,
+                          stack_base, stack_top);
     if (rc != vmm::OK) {
         log::error("smp: failed to allocate stack for CPU %u (%d)",
                    cpu.logical_id, rc);
+        vmm::free(percpu_va);
         return smp::ERR_BOOT_TIMEOUT;
     }
 
     // Fill per-AP startup data and flush to DRAM
     g_startup_data->stack_top = stack_top;
+    g_startup_data->percpu_base = percpu_va;
     cache_clean_range(reinterpret_cast<uintptr_t>(g_startup_data),
                       sizeof(ap_startup_data));
 
@@ -257,6 +332,7 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
         log::error("smp: PSCI CPU_ON failed for CPU %u (rc=%d)",
                    cpu.logical_id, psci_rc);
         vmm::free(stack_base);
+        vmm::free(percpu_va);
         return smp::ERR_BOOT_TIMEOUT;
     }
 
@@ -274,6 +350,7 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
 
     // AP did not come online — clean up
     vmm::free(stack_base);
+    vmm::free(percpu_va);
     return smp::ERR_BOOT_TIMEOUT;
 }
 

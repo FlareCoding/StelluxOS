@@ -40,6 +40,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("mm::init failed");
     }
 
+    if (serial::remap() != serial::OK) {
+        log::fatal("serial::remap failed");
+    }
+
     if (debug::init() != debug::OK) {
         log::fatal("debug::init failed");
     }

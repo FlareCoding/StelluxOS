@@ -85,4 +85,8 @@ int32_t read_char() {
     return portio::in8(COM1_BASE + REG_DATA);
 }
 
+int32_t remap() {
+    return OK;
+}
+
 } // namespace serial

@@ -1,5 +1,6 @@
 #include "percpu/percpu.h"
 #include "common/types.h"
+#include "common/string.h"
 #include "common/logging.h"
 #include "boot/boot_services.h"
 
@@ -47,6 +48,35 @@ __PRIVILEGED_CODE int32_t init_bsp() {
     asm volatile("msr tpidr_el1, %0" :: "r"(delta) : "memory");
     asm volatile("msr tpidr_el0, %0" :: "r"(delta) : "memory");
     asm volatile("isb" ::: "memory");
+
+    return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t base_va) {
+    const uintptr_t tmpl = reinterpret_cast<uintptr_t>(__percpu_start);
+
+    const uintptr_t percpu_off_off =
+        reinterpret_cast<uintptr_t>(&percpu_offset) - tmpl;
+    if (percpu_off_off != 0) {
+        return ERR_LAYOUT;
+    }
+
+    const uintptr_t delta = base_va - tmpl;
+
+    string::memcpy(reinterpret_cast<void*>(base_va), __percpu_start, size());
+
+    *reinterpret_cast<uintptr_t*>(base_va) = delta;
+
+    __per_cpu_offset[cpu_id] = delta;
+
+    asm volatile("msr tpidr_el1, %0" :: "r"(delta) : "memory");
+    asm volatile("msr tpidr_el0, %0" :: "r"(delta) : "memory");
+    asm volatile("isb" ::: "memory");
+
+    this_cpu(percpu_cpu_id) = cpu_id;
 
     return OK;
 }

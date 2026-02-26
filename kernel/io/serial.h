@@ -17,6 +17,15 @@ constexpr int32_t ERR_NO_DEVICE = -2;
 int32_t init();
 
 /**
+ * @brief Switch serial from early boot mapping to kernel virtual address.
+ * On AArch64: remaps UART via vmm::map_device (TTBR1) so serial works
+ * after TTBR0 is cleared on APs. Must be called after mm::init().
+ * On x86_64: no-op (serial uses port I/O).
+ * @return OK on success, negative error code on failure.
+ */
+int32_t remap();
+
+/**
  * @brief Write a single byte to the serial port.
  * Blocks until the transmit buffer is ready.
  */
