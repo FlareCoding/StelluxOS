@@ -50,6 +50,15 @@ inline T* this_cpu_ptr(T& var) {
     return reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(&var) + off);
 }
 
+template<typename T>
+inline T* per_cpu_ptr_on(T& var, uint32_t cpu_id) {
+    static_assert(__is_trivially_copyable(T),
+                  "Per-CPU variables must be trivially copyable");
+
+    const uintptr_t off = __per_cpu_offset[cpu_id];
+    return reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(&var) + off);
+}
+
 constexpr int32_t OK = 0;
 constexpr int32_t ERR_SIZE_MISMATCH = -1;
 constexpr int32_t ERR_LAYOUT = -2;
@@ -73,6 +82,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t base_va);
 } // namespace percpu
 
 #define this_cpu(var) (*percpu::this_cpu_ptr(var))
+#define per_cpu_on(var, cpu_id) (*percpu::per_cpu_ptr_on(var, cpu_id))
 
 namespace percpu {
 

@@ -54,6 +54,16 @@ task* create_kernel_task(void (*entry)(void*), void* arg, const char* name,
 __PRIVILEGED_CODE void enqueue(task* t);
 
 /**
+ * @brief Add a task to a specific CPU's runqueue.
+ * Same semantics as enqueue() but targets a remote CPU. The target
+ * CPU's timer tick will pick up the task within one scheduling period.
+ * @param t Task in TASK_STATE_CREATED.
+ * @param cpu_id Logical CPU ID to enqueue on.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id);
+
+/**
  * @brief Resume a blocked task by placing it on the local runqueue.
  * Atomically transitions BLOCKED -> READY via CAS.
  * Called by sync::wake_one / sync::wake_all.

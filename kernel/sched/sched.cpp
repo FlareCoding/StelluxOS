@@ -85,6 +85,24 @@ __PRIVILEGED_CODE void enqueue(task* t) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id) {
+    uint32_t expected = TASK_STATE_CREATED;
+    if (!__atomic_compare_exchange_n(&t->state, &expected, TASK_STATE_READY,
+                                      false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        log::warn("sched: enqueue_on rejected tid=%u (state=%u)", t->tid, expected);
+        return;
+    }
+
+    runqueue& rq = per_cpu_on(cpu_rq, cpu_id);
+    sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
+    rq.policy->enqueue(t);
+    rq.nr_running++;
+    sync::spin_unlock_irqrestore(rq.lock, irq);
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void wake(task* t) {
     uint32_t expected = TASK_STATE_BLOCKED;
     if (!__atomic_compare_exchange_n(&t->state, &expected, TASK_STATE_READY,
@@ -99,7 +117,7 @@ __PRIVILEGED_CODE void wake(task* t) {
         }
     }
 
-    runqueue& rq = this_cpu(cpu_rq);
+    runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;

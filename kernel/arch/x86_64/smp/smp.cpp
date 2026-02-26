@@ -121,8 +121,6 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     // Timer + Idle Entry
     hwtimer::init_ap(100);
 
-    log::debug("Hello from core %u!", percpu::current_cpu_id());
-
     while (true) {
         cpu::halt();
     }
@@ -245,7 +243,7 @@ __PRIVILEGED_CODE int32_t smp_prepare() {
 __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
     // Allocate per-CPU area (2 pages, zeroed)
     uintptr_t percpu_va = 0;
-    int32_t rc = vmm::alloc(PERCPU_PAGES, paging::PAGE_KERNEL_RW,
+    int32_t rc = vmm::alloc(PERCPU_PAGES, paging::PAGE_USER_RW,
                             vmm::ALLOC_ZERO, kva::tag::generic, percpu_va);
     if (rc != vmm::OK) {
         log::error("smp: failed to allocate per-CPU area for CPU %u (%d)",
