@@ -16,7 +16,7 @@ namespace percpu {
 
 uintptr_t this_cpu_offset() {
     uintptr_t off;
-    asm volatile("mrs %0, tpidr_el0" : "=r"(off));
+    asm volatile("mrs %0, tpidrro_el0" : "=r"(off));
     return off;
 }
 
@@ -46,7 +46,7 @@ __PRIVILEGED_CODE int32_t init_bsp() {
     __per_cpu_offset[0] = delta;
 
     asm volatile("msr tpidr_el1, %0" :: "r"(delta) : "memory");
-    asm volatile("msr tpidr_el0, %0" :: "r"(delta) : "memory");
+    asm volatile("msr tpidrro_el0, %0" :: "r"(delta) : "memory");
     asm volatile("isb" ::: "memory");
 
     return OK;
@@ -73,7 +73,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t base_va) {
     __per_cpu_offset[cpu_id] = delta;
 
     asm volatile("msr tpidr_el1, %0" :: "r"(delta) : "memory");
-    asm volatile("msr tpidr_el0, %0" :: "r"(delta) : "memory");
+    asm volatile("msr tpidrro_el0, %0" :: "r"(delta) : "memory");
     asm volatile("isb" ::: "memory");
 
     this_cpu(percpu_cpu_id) = cpu_id;

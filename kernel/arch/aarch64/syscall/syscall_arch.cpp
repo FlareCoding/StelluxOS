@@ -19,8 +19,7 @@ __PRIVILEGED_CODE int32_t init_arch_syscalls() {
 
 extern "C" __PRIVILEGED_CODE
 void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf) {
-    // SVC immediate is in ESR_EL1[15:0] on AArch64
-    uint64_t syscall_num = tf->esr & 0xFFFF;
+    uint64_t syscall_num = tf->x[8];
 
     if (syscall_num == syscall::SYS_YIELD) {
         sched::on_yield(tf);

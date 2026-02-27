@@ -10,10 +10,11 @@ namespace dynpriv {
 
 void elevate() {
     asm volatile(
-        "svc %0"
+        "mov x8, %0\n\t"
+        "svc #0"
         :
-        : "i"(syscall::SYS_ELEVATE)
-        : "memory"
+        : "r"(static_cast<uint64_t>(syscall::SYS_ELEVATE))
+        : "x8", "memory"
     );
 }
 

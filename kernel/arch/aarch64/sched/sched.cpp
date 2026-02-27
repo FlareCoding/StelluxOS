@@ -103,7 +103,13 @@ __PRIVILEGED_CODE void arch_post_switch(task* next) {
 }
 
 void yield() {
-    asm volatile("svc %0" : : "i"(syscall::SYS_YIELD) : "memory");
+    asm volatile(
+        "mov x8, %0\n\t"
+        "svc #0"
+        :
+        : "r"(static_cast<uint64_t>(syscall::SYS_YIELD))
+        : "x8", "memory"
+    );
 }
 
 /**
