@@ -10,6 +10,7 @@
 #include "percpu/percpu.h"
 #include "gdt/gdt.h"
 #include "hw/cpu.h"
+#include "mm/paging.h"
 #include "common/logging.h"
 
 extern "C" char stack_top[];
@@ -27,6 +28,8 @@ static task_exec_core g_boot_exec = {
     .system_stack_top = 0,
     .cpu_ctx = {},
     .on_cpu = 0,
+    .pt_root = 0,
+    .fpu_ctx = {},
 };
 
 /**
@@ -35,6 +38,7 @@ static task_exec_core g_boot_exec = {
 __PRIVILEGED_CODE int32_t init_boot_task() {
     g_boot_exec.task_stack_top = reinterpret_cast<uintptr_t>(stack_top);
     g_boot_exec.system_stack_top = x86::gdt::get_bsp_kernel_stack_top();
+    g_boot_exec.pt_root = paging::get_kernel_pt_root();
     g_boot_exec.on_cpu = 1;
 
     this_cpu(current_task_exec) = &g_boot_exec;
@@ -123,8 +127,8 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     next->exec.cpu = percpu::current_cpu_id();
     __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
 
-    fpu::save(&prev->fpu_ctx);
-    fpu::restore(&next->fpu_ctx);
+    fpu::save(&prev->exec.fpu_ctx);
+    fpu::restore(&next->exec.fpu_ctx);
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);
@@ -156,8 +160,8 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     next->exec.cpu = percpu::current_cpu_id();
     __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
 
-    fpu::save(&prev->fpu_ctx);
-    fpu::restore(&next->fpu_ctx);
+    fpu::save(&prev->exec.fpu_ctx);
+    fpu::restore(&next->exec.fpu_ctx);
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);

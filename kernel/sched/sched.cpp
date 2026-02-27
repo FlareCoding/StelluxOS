@@ -357,6 +357,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->exec.cpu = 0;
     t->exec.task_stack_top = task_stack_top;
     t->exec.system_stack_top = sys_stack_top;
+    t->exec.pt_root = paging::get_kernel_pt_root();
     t->task_stack_base = task_stack_base;
     t->sys_stack_base = sys_stack_base;
 
@@ -381,7 +382,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
     }
-    fpu::init_state(&t->fpu_ctx);
+    fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
 
     return t;
@@ -406,6 +407,7 @@ __PRIVILEGED_CODE int32_t init() {
             dst[i] = src[i];
         }
     }
+    idle->exec.pt_root = paging::get_kernel_pt_root();
     idle->exec.flags |= TASK_FLAG_IDLE;
     idle->tid = 0;
     idle->state = TASK_STATE_RUNNING;
@@ -418,7 +420,7 @@ __PRIVILEGED_CODE int32_t init() {
     idle->name = "idle";
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
-    fpu::init_state(&idle->fpu_ctx);
+    fpu::init_state(&idle->exec.fpu_ctx);
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
@@ -466,6 +468,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->exec.on_cpu = 1;
     idle->exec.task_stack_top = task_stack_top;
     idle->exec.system_stack_top = system_stack_top;
+    idle->exec.pt_root = paging::get_kernel_pt_root();
     idle->task_stack_base = 0;
     idle->sys_stack_base = 0;
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
@@ -473,7 +476,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->name = "idle";
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
-    fpu::init_state(&idle->fpu_ctx);
+    fpu::init_state(&idle->exec.fpu_ctx);
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;

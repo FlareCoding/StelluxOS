@@ -2,7 +2,6 @@
 #define STELLUX_SCHED_TASK_H
 
 #include "sched/task_exec_core.h"
-#include "sched/fpu_state.h"
 #include "common/list.h"
 #include "rc/reaper.h"
 
@@ -45,7 +44,6 @@ struct task {
     uint64_t       timer_deadline;
     const char*    name;
     task_tlb_sync_ticket tlb_sync_ticket;
-    fpu_state      fpu_ctx;
     rc::reaper::dead_node reaper_node;
 };
 

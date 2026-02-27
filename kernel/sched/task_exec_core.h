@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include "percpu/percpu.h"
 #include "sched/thread_cpu_context.h"
+#include "sched/fpu_state.h"
 
 namespace sched {
 
@@ -22,6 +23,8 @@ struct task_exec_core {
     uintptr_t system_stack_top;
     thread_cpu_context cpu_ctx;
     uint32_t  on_cpu; // 1 while context is live and executing on a CPU
+    uint64_t  pt_root; // physical address of top-level page table
+    fpu_state fpu_ctx;
 };
 
 constexpr size_t TASK_FLAGS_OFFSET     = __builtin_offsetof(task_exec_core, flags);
@@ -29,6 +32,8 @@ constexpr size_t TASK_CPU_OFFSET       = __builtin_offsetof(task_exec_core, cpu)
 constexpr size_t TASK_STACK_OFFSET     = __builtin_offsetof(task_exec_core, task_stack_top);
 constexpr size_t TASK_SYS_STACK_OFFSET = __builtin_offsetof(task_exec_core, system_stack_top);
 constexpr size_t TASK_CPU_CTX_OFFSET   = __builtin_offsetof(task_exec_core, cpu_ctx);
+constexpr size_t TASK_PT_ROOT_OFFSET   = __builtin_offsetof(task_exec_core, pt_root);
+constexpr size_t TASK_FPU_CTX_OFFSET   = __builtin_offsetof(task_exec_core, fpu_ctx);
 
 // Static assertions to ensure assembly offsets remain in sync
 // If these fail, update the assembly constants in:
