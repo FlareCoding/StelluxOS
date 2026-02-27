@@ -23,7 +23,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
 
     if (tf->vector == x86::VEC_SCHED_YIELD) {
         sched::on_yield(tf);
-        // WHY: clear the IRQ flag on the originally interrupted task, not the post-switch task.
+        // Clear the IRQ flag on the originally interrupted task, not the post-switch task.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
     }
@@ -34,7 +34,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         if (tick) {
             sched::on_tick(tf);
         }
-        // WHY: clear IRQ state on the interrupted task to avoid stale IN_IRQ ownership.
+        // Clear IRQ state on the interrupted task to avoid stale IN_IRQ ownership.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
     }

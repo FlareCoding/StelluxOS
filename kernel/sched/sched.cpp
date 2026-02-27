@@ -117,7 +117,7 @@ __PRIVILEGED_CODE void finalize_pending_off_cpu() {
     cpu::send_event();
 
     if (load_cleanup_stage(pending) == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
-        // WHY: The reaper must only start cleanup after off-CPU publication is visible.
+        // The reaper must only start cleanup after off-CPU publication is visible.
         rc::reaper::defer(&pending->reaper_node);
     }
 }

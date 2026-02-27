@@ -61,7 +61,7 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         if (tick) {
             sched::on_tick(tf);
         }
-        // WHY: clear the IRQ flag on the interrupted task, not whichever task is current now.
+        // Clear the IRQ flag on the interrupted task, not whichever task is current now.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
     }
@@ -113,7 +113,7 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
         if (tick) {
             sched::on_tick(tf);
         }
-        // WHY: clear the IRQ flag on the interrupted task, not whichever task is current now.
+        // Clear the IRQ flag on the interrupted task, not whichever task is current now.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
     }
