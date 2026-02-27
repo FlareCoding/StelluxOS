@@ -125,6 +125,13 @@ mcopy -i "$IMG"@@1M "$LIMINE_DIR/BOOTAA64.EFI" ::/EFI/BOOT/BOOTAA64.EFI
 mcopy -i "$IMG"@@1M "$KERNEL" ::/kernel.elf
 mcopy -i "$IMG"@@1M "$LIMINE_DIR/limine.conf" ::/limine.conf
 
+INITRD_CPIO="$PROJECT_DIR/build/initrd.cpio"
+if [[ ! -f "$INITRD_CPIO" ]]; then
+    info "Building initrd.cpio..."
+    (cd "$PROJECT_DIR/initrd" && find . -mindepth 1 | cpio -o -H newc > "$INITRD_CPIO" 2>/dev/null)
+fi
+mcopy -i "$IMG"@@1M "$INITRD_CPIO" ::/initrd.cpio
+
 # --- Step 3: Unmount & flash ---
 
 info "Unmounting $DEVICE partitions..."

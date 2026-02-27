@@ -154,7 +154,16 @@ image-x86_64:
 image-aarch64:
 	$(Q)$(MAKE) image ARCH=aarch64
 
-$(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DIR)/limine.conf
+INITRD_DIR  := initrd
+INITRD_CPIO := $(BUILD_DIR)/initrd.cpio
+
+$(INITRD_CPIO): $(shell find $(INITRD_DIR) -type f 2>/dev/null)
+	@mkdir -p $(BUILD_DIR)
+	@echo "Creating initrd.cpio..."
+	$(Q)cd $(INITRD_DIR) && find . -mindepth 1 | cpio -o -H newc > ../$(INITRD_CPIO) 2>/dev/null
+	@echo "Created: $(INITRD_CPIO)"
+
+$(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating x86_64 UEFI disk image..."
 	$(Q)dd if=/dev/zero of=$@ bs=1M count=64 status=none
@@ -165,9 +174,10 @@ $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DI
 	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
 	$(Q)mcopy -i $@@@1M $< ::/kernel.elf
 	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/limine.conf ::/limine.conf
+	$(Q)mcopy -i $@@@1M $(INITRD_CPIO) ::/initrd.cpio
 	@echo "Created: $@"
 
-$(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_DIR)/limine.conf
+$(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating AArch64 UEFI disk image..."
 	$(Q)dd if=/dev/zero of=$@ bs=1M count=64 status=none
@@ -178,6 +188,7 @@ $(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_
 	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/BOOTAA64.EFI ::/EFI/BOOT/BOOTAA64.EFI
 	$(Q)mcopy -i $@@@1M $< ::/kernel.elf
 	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/limine.conf ::/limine.conf
+	$(Q)mcopy -i $@@@1M $(INITRD_CPIO) ::/initrd.cpio
 	@echo "Created: $@"
 
 # ============================================================================

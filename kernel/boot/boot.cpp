@@ -98,30 +98,22 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 #endif
 
-    // VFS demo: create a file, write to it, read it back
-    fs::mkdir("/hello", 0);
-    fs::file* f = fs::open("/hello/world.txt", fs::O_CREAT | fs::O_RDWR);
+    // Read a file from the initrd to verify extraction
+    fs::file* f = fs::open("/initrd/hello.txt", fs::O_RDONLY);
     if (f) {
-        const char* msg = "Hello from Stellux VFS!";
-        fs::write(f, msg, 23);
-        fs::seek(f, 0, fs::SEEK_SET);
-
-        char buf[64] = {};
+        char buf[128] = {};
         ssize_t n = fs::read(f, buf, sizeof(buf) - 1);
         if (n > 0) {
-            log::info("VFS read back: \"%s\"", buf);
+            log::info("initrd read: %s", buf);
         }
         fs::close(f);
     }
-    fs::unlink("/hello/world.txt");
-    fs::rmdir("/hello");
 
     for (uint32_t i = 0; i < smp::cpu_count() * 4; i++) {
         sched::task* t = sched::create_kernel_task(log_cpu_id_entry, nullptr, "log_cpu_id_entry");
         sched::enqueue(t);
     }
 
-    log::debug("Initialization complete! Halting...");
     while (true) {
         cpu::halt();
     }

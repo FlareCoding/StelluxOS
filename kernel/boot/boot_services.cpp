@@ -139,11 +139,20 @@ __PRIVILEGED_CODE int32_t init() {
 
     // Get modules (optional)
     if (LIMINE_REQUEST_FULFILLED(module_request)) {
-        g_boot_info.module_count = module_request.response->module_count;
-        g_boot_info.modules = module_request.response->modules;
+        uint64_t count = module_request.response->module_count;
+        if (count > boot_info::MAX_BOOT_MODULES) {
+            count = boot_info::MAX_BOOT_MODULES;
+        }
+        g_boot_info.module_count = static_cast<uint32_t>(count);
+        uint64_t hhdm = hhdm_request.response->offset;
+        for (uint32_t i = 0; i < g_boot_info.module_count; i++) {
+            auto* mod = module_request.response->modules[i];
+            g_boot_info.modules[i].phys_addr =
+                reinterpret_cast<uintptr_t>(mod->address) - hhdm;
+            g_boot_info.modules[i].size = mod->size;
+        }
     } else {
         g_boot_info.module_count = 0;
-        g_boot_info.modules = nullptr;
     }
 
     // Get framebuffer (optional — copy fields, Limine memory is reclaimed later)
