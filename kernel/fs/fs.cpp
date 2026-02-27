@@ -8,6 +8,8 @@
 #include "mm/heap.h"
 #include "sync/spinlock.h"
 #include "dynpriv/dynpriv.h"
+#include "fs/cpio/cpio.h"
+#include "boot/boot_services.h"
 
 extern "C" __PRIVILEGED_CODE int32_t ramfs_init_driver();
 
@@ -578,6 +580,13 @@ __PRIVILEGED_CODE int32_t init() {
     if (err != OK) {
         log::error("fs: failed to mount rootfs");
         return err;
+    }
+
+    if (g_boot_info.module_count > 0) {
+        int32_t cpio_err = cpio::load_initrd();
+        if (cpio_err != cpio::OK) {
+            log::warn("fs: initrd load failed (err=%d)", cpio_err);
+        }
     }
 
     return OK;

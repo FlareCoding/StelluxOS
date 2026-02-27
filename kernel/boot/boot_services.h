@@ -27,9 +27,14 @@ struct boot_info {
     // Kernel file info (nullptr if not available)
     struct limine_file* kernel_file;
 
-    // Modules (nullptr/0 if none)
-    uint64_t module_count;
-    struct limine_file** modules;
+    // Modules (physical addresses, converted from Limine HHDM during init)
+    struct module_info {
+        uint64_t phys_addr;
+        uint64_t size;
+    };
+    static constexpr uint32_t MAX_BOOT_MODULES = 8;
+    module_info modules[MAX_BOOT_MODULES];
+    uint32_t module_count;
 
     // Framebuffer (copied from Limine response; fb_phys == 0 means unavailable)
     struct {
