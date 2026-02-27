@@ -1041,4 +1041,8 @@ __PRIVILEGED_CODE void destroy_user_pt_root(pmm::phys_addr_t root) {
     }
 }
 
+__PRIVILEGED_CODE pmm::phys_addr_t supervisor_pt_root_for_user_task(pmm::phys_addr_t user_pt_root) {
+    return user_pt_root; // x86_64: single CR3 covers both halves, user PT has kernel mappings
+}
+
 } // namespace paging

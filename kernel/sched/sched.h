@@ -3,6 +3,8 @@
 
 #include "common/types.h"
 
+namespace exec { struct loaded_image; }
+
 namespace sched {
 
 struct task;
@@ -44,6 +46,18 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
 [[nodiscard]] __PRIVILEGED_CODE
 task* create_kernel_task(void (*entry)(void*), void* arg, const char* name,
                          uint32_t flags = 0);
+
+/**
+ * @brief Create a new user task from a loaded ELF image.
+ * Allocates a user stack in the user page table and a system stack in kernel VA.
+ * Returns in TASK_STATE_CREATED (not yet enqueued).
+ * @param image Loaded ELF image with entry_point and pt_root.
+ * @param name Debug name (not copied, caller must ensure lifetime).
+ * @return task pointer on success, nullptr on failure.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE
+task* create_user_task(const exec::loaded_image& image, const char* name);
 
 /**
  * @brief Add a task to a runqueue, distributing across CPUs via round-robin.

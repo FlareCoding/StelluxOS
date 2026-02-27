@@ -17,6 +17,9 @@
 #include "clock/clock.h"
 #include "timer/timer.h"
 #include "rc/reaper.h"
+#include "exec/elf.h"
+#include "mm/pmm.h"
+#include "common/string.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -38,6 +41,10 @@ constexpr uint16_t TASK_GUARD_PAGES = 1;
 
 constexpr size_t SYSTEM_STACK_PAGES = 4;
 constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
+
+constexpr uintptr_t USER_STACK_TOP   = 0x7FFFFFF00000;
+constexpr size_t    USER_STACK_PAGES = 8; // 32KB
+
 constexpr uint64_t TLB_SYNC_CPU_IGNORED = ~0ULL;
 
 static uint32_t load_cleanup_stage(const task* t) {
@@ -368,6 +375,102 @@ __PRIVILEGED_CODE task* create_kernel_task(
         ctx_bytes[i] = 0;
     }
     arch_init_task_context(t, entry, arg);
+
+    t->exec.on_cpu = 0;
+
+    t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
+    t->state = TASK_STATE_CREATED;
+    t->sched_link = {};
+    t->wait_link = {};
+    t->timer_link = {};
+    t->timer_deadline = 0;
+    t->name = name;
+    t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    t->tlb_sync_ticket.armed = 0;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
+    }
+    fpu::init_state(&t->exec.fpu_ctx);
+    t->reaper_node.init(reap_task_thunk);
+
+    return t;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE task* create_user_task(
+    const exec::loaded_image& image, const char* name
+) {
+    task* t = heap::kalloc_new<task>();
+    if (!t) {
+        log::error("sched: failed to allocate user task struct");
+        return nullptr;
+    }
+
+    // System stack in kernel VA (for interrupt handling)
+    uintptr_t sys_stack_base = 0;
+    uintptr_t sys_stack_top = 0;
+    if (vmm::alloc_stack(SYSTEM_STACK_PAGES, SYSTEM_GUARD_PAGES,
+            kva::tag::privileged_stack, sys_stack_base, sys_stack_top) != vmm::OK) {
+        log::error("sched: failed to allocate system stack for user task");
+        heap::kfree_delete(t);
+        return nullptr;
+    }
+
+    // User stack: allocate physical pages and map into user page table
+    uintptr_t user_stack_base = USER_STACK_TOP - USER_STACK_PAGES * pmm::PAGE_SIZE;
+    for (size_t i = 0; i < USER_STACK_PAGES; i++) {
+        pmm::phys_addr_t phys = pmm::alloc_page();
+        if (phys == 0) {
+            log::error("sched: failed to allocate user stack page");
+            for (size_t j = 0; j < i; j++) {
+                uintptr_t va = user_stack_base + j * pmm::PAGE_SIZE;
+                pmm::phys_addr_t p = paging::get_physical(va, image.pt_root);
+                paging::unmap_page(va, image.pt_root);
+                if (p != 0) pmm::free_page(p);
+            }
+            vmm::free(sys_stack_base);
+            heap::kfree_delete(t);
+            return nullptr;
+        }
+
+        string::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
+
+        uintptr_t va = user_stack_base + i * pmm::PAGE_SIZE;
+        int32_t rc = paging::map_page(va, phys, paging::PAGE_USER_RW, image.pt_root);
+        if (rc != paging::OK) {
+            log::error("sched: failed to map user stack page");
+            pmm::free_page(phys);
+            for (size_t j = 0; j < i; j++) {
+                uintptr_t prev_va = user_stack_base + j * pmm::PAGE_SIZE;
+                pmm::phys_addr_t p = paging::get_physical(prev_va, image.pt_root);
+                paging::unmap_page(prev_va, image.pt_root);
+                if (p != 0) {
+                    pmm::free_page(p);
+                }
+            }
+            vmm::free(sys_stack_base);
+            heap::kfree_delete(t);
+            return nullptr;
+        }
+    }
+
+    t->exec.flags = TASK_FLAG_PREEMPTIBLE;
+    t->exec.cpu = 0;
+    t->exec.task_stack_top = USER_STACK_TOP;
+    t->exec.system_stack_top = sys_stack_top;
+    t->exec.pt_root = paging::supervisor_pt_root_for_user_task(image.pt_root);
+    t->exec.user_pt_root = image.pt_root;
+    t->task_stack_base = 0; // user stack is not VMM-allocated
+    t->sys_stack_base = sys_stack_base;
+
+    uint8_t* ctx_bytes = reinterpret_cast<uint8_t*>(&t->exec.cpu_ctx);
+    for (size_t i = 0; i < sizeof(thread_cpu_context); i++) {
+        ctx_bytes[i] = 0;
+    }
+    auto entry = reinterpret_cast<void(*)(void*)>(image.entry_point);
+    arch_init_task_context(t, entry, nullptr);
 
     t->exec.on_cpu = 0;
 

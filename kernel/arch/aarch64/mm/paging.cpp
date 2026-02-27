@@ -1145,4 +1145,8 @@ __PRIVILEGED_CODE void destroy_user_pt_root(pmm::phys_addr_t root) {
     }
 }
 
+__PRIVILEGED_CODE pmm::phys_addr_t supervisor_pt_root_for_user_task(pmm::phys_addr_t) {
+    return get_kernel_pt_root(); // aarch64: TTBR1 stays kernel, TTBR0 is set per-task via user_pt_root
+}
+
 } // namespace paging

@@ -132,6 +132,24 @@ __PRIVILEGED_CODE pmm::phys_addr_t create_user_pt_root();
  */
 __PRIVILEGED_CODE void destroy_user_pt_root(pmm::phys_addr_t root);
 
+/**
+ * @brief Returns the value to store in task_exec_core::pt_root for a user task.
+ *
+ * On x86_64, there is a single CR3 register that covers the entire virtual address
+ * space. The user page table (created by create_user_pt_root) already contains kernel
+ * mappings in its upper half, so CR3 is set to the user page table directly.
+ *
+ * On aarch64, separate registers handle each half: TTBR1_EL1 for kernel addresses
+ * and TTBR0_EL1 for user addresses. TTBR1 should always point to the kernel page
+ * table, while TTBR0 is set per-task via user_pt_root. So pt_root stays as the
+ * kernel page table root.
+ *
+ * @param user_pt_root Physical address of the user page table (from load_elf).
+ * @return Physical address to store in task_exec_core::pt_root.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE pmm::phys_addr_t supervisor_pt_root_for_user_task(pmm::phys_addr_t user_pt_root);
+
 } // namespace paging
 
 #endif // STELLUX_MM_PAGING_H
