@@ -26,6 +26,27 @@ __PRIVILEGED_CODE void arch_post_switch(task* next);
  */
 __PRIVILEGED_CODE task* pick_next_and_switch(task* prev);
 
+/**
+ * Common: publish on_cpu=0 for a previously switched-out task.
+ * Must be called from arch scheduler trap paths before taking reaper decisions.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void finalize_pending_off_cpu();
+
+/**
+ * Common: defer on_cpu publication for the task switched out in this trap.
+ * Call only after switch-out work (including FPU save/restore) is complete.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void defer_off_cpu_finalize(task* prev);
+
+/**
+ * Common: advances this CPU's TLB sync epoch.
+ * This marks a safe point that reaper can rely on before reclaiming stack pages.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void advance_cpu_tlb_sync_epoch();
+
 } // namespace sched
 
 #endif // STELLUX_SCHED_SCHED_INTERNAL_H

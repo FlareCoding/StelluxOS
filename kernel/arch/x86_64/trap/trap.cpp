@@ -16,15 +16,15 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf);
  * @note Privilege: **required**
  */
 extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) {
-    sched::task_exec_core* task_core = this_cpu(current_task_exec);
+    sched::task_exec_core* irq_task_core = this_cpu(current_task_exec);
     
     // Mark as in interrupt context
-    task_core->flags |= sched::TASK_FLAG_IN_IRQ;
+    irq_task_core->flags |= sched::TASK_FLAG_IN_IRQ;
 
     if (tf->vector == x86::VEC_SCHED_YIELD) {
         sched::on_yield(tf);
-        task_core = this_cpu(current_task_exec); // may have switched tasks
-        task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        // WHY: clear the IRQ flag on the originally interrupted task, not the post-switch task.
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
     }
 
@@ -34,8 +34,8 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         if (tick) {
             sched::on_tick(tf);
         }
-        task_core = this_cpu(current_task_exec);
-        task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        // WHY: clear IRQ state on the interrupted task to avoid stale IN_IRQ ownership.
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
     }
 
