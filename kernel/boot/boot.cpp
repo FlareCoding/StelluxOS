@@ -99,17 +99,6 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 #endif
 
-    // Read a file from the initrd to verify extraction
-    fs::file* f = fs::open("/initrd/hello.txt", fs::O_RDONLY);
-    if (f) {
-        char buf[128] = {};
-        ssize_t n = fs::read(f, buf, sizeof(buf) - 1);
-        if (n > 0) {
-            log::info("initrd read: %s", buf);
-        }
-        fs::close(f);
-    }
-
     exec::loaded_image loaded;
     int32_t load_result = exec::load_elf("/initrd/bin/init", &loaded);
     if (load_result == exec::OK) {

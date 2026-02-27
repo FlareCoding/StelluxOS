@@ -1,23 +1,26 @@
 /*
- * x86_64 SYSCALL entry point
+ * x86_64 SYSCALL entry point with kernel stack switch
  *
  * On SYSCALL:
  *   RCX = return RIP
  *   R11 = return RFLAGS
  *   RAX = syscall number
- *   RDI, RSI, RDX, R10, R8, R9 = arguments (Linux convention)
+ *   RDI, RSI, RDX, R10, R8, R9 = arguments
  *
- * SYSCALL does NOT switch stacks. RSP remains unchanged.
+ * SYSCALL does NOT switch stacks, so we switch to system_stack_top
+ * immediately before any register saves. This ensures the kernel
+ * never runs on the user/caller stack.
+ *
+ * Technique: push R14/R15 to the caller's stack as scratch, read
+ * system_stack_top, copy saved values to the system stack, then
+ * switch RSP. After the switch, the caller's stack is never
+ * touched again.
  *
  * Exit path:
- *   - Elevated tasks return via RET (stay Ring 0)
- *   - Non-elevated tasks return via SYSRET (Ring 3)
+ *   - Elevated tasks return via RET (stay in Ring 0, keep kernel GS)
+ *   - Non-elevated tasks return via swapgs + SYSRET (Ring 3)
  */
 
-/*
- * Section flags: "ax" = allocatable + executable, @progbits = contains code.
- * Required for custom sections with Clang/LLD to properly resolve PLT32 relocations.
- */
 .section .priv.text, "ax", @progbits
 .code64
 .intel_syntax noprefix
@@ -27,20 +30,53 @@
 .extern stlx_syscall_handler
 .extern current_task_exec
 
-/* Task flags (must match task_exec_core) */
-.set TASK_FLAGS_OFFSET,   0x00
-.set TASK_FLAG_ELEVATED,  (1 << 0)
+.set TASK_FLAGS_OFFSET,     0x00
+.set TASK_SYS_STACK_OFFSET, 0x10
+.set TASK_FLAG_ELEVATED,    (1 << 0)
 
 .globl stlx_x86_syscall_entry
 .type stlx_x86_syscall_entry, @function
 stlx_x86_syscall_entry:
-    /* Save callee-saved registers and syscall-clobbered state */
-    push rbx
-    push rbp
-    push r12
-    push r13
+    swapgs
+    lfence
+
+    /* Save R14/R15 to caller's stack to free them as scratch. */
     push r14
     push r15
+
+    /* Preserve syscall number while RAX is reused for per-CPU access. */
+    mov r14, rax
+
+    /* Read system_stack_top from current task's exec core. */
+    this_cpu_read rax, current_task_exec
+    mov r15, qword ptr [rax + TASK_SYS_STACK_OFFSET]
+
+    /* Compute original caller RSP (before our 2 pushes). */
+    lea rax, [rsp + 16]
+
+    /*
+     * Write handoff record to top of system stack:
+     *   [S - 8]  = original caller RSP
+     *   [S - 16] = original R14
+     *   [S - 24] = original R15
+     */
+    mov qword ptr [r15 - 8], rax
+    mov rax, qword ptr [rsp + 8]
+    mov qword ptr [r15 - 16], rax
+    mov rax, qword ptr [rsp]
+    mov qword ptr [r15 - 24], rax
+
+    /* Switch to system stack. */
+    lea rsp, [r15 - 24]
+
+    /* Restore syscall number. */
+    mov rax, r14
+
+    /* Save remaining callee-saved regs + return state on system stack. */
+    push r13
+    push r12
+    push rbp
+    push rbx
     push rcx            /* return RIP */
     push r11            /* return RFLAGS */
 
@@ -57,39 +93,41 @@ stlx_x86_syscall_entry:
     mov rsi, rdi        /* arg1 */
     mov rdi, rax        /* syscall number */
 
-    /* Align stack to 16 bytes (9 pushes = 72 bytes, add 8) */
-    sub rsp, 8
-
+    /* 10 qwords from 16-aligned system_stack_top = 80 bytes = aligned. */
     call stlx_syscall_handler
 
-    /* Clean up alignment padding and arg6 */
-    add rsp, 16
+    /* Clean up arg6. */
+    add rsp, 8
 
-    /* Restore saved state */
+    /* Restore saved state. */
     pop r11             /* return RFLAGS */
     pop rcx             /* return RIP */
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rbp
     pop rbx
+    pop rbp
+    pop r12
+    pop r13
+    pop r15             /* original R15 from handoff record */
+    pop r14             /* original R14 from handoff record */
 
-    /* Determine exit path based on elevated flag */
+    /* Check elevated flag (preserve return value in RAX). */
     push rax
     this_cpu_read rax, current_task_exec
     mov eax, dword ptr [rax + TASK_FLAGS_OFFSET]
     test eax, TASK_FLAG_ELEVATED
     pop rax
 
-    jnz .Lsysret_elevated_ret_exit
+    /* Restore original caller RSP (from handoff record). */
+    pop rsp
 
-.Lsysret_exit:
-    /* Return to Ring 3. SYSRET loads RIP from RCX, RFLAGS from R11. */
+    jnz .Lsyscall_ret_exit
+
+.Lsyscall_sysret_exit:
+    swapgs
+    lfence
     sysretq
 
-.Lsysret_elevated_ret_exit:
-    /* Return staying in Ring 0. Manually restore RFLAGS and return. */
+.Lsyscall_ret_exit:
+    /* Elevated: stay in Ring 0, keep kernel GS. */
     push r11
     popfq
     push rcx

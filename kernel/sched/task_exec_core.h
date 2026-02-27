@@ -40,8 +40,9 @@ constexpr size_t TASK_FPU_CTX_OFFSET        = __builtin_offsetof(task_exec_core,
 // Static assertions to ensure assembly offsets remain in sync
 // If these fail, update the assembly constants in:
 //   - kernel/arch/x86_64/trap/entry.S (TASK_FLAGS_OFFSET, TASK_SYS_STACK_OFFSET)
-static_assert(TASK_FLAGS_OFFSET == 0x00, "TASK_FLAGS_OFFSET changed - update x86_64 entry.S");
-static_assert(TASK_SYS_STACK_OFFSET == 0x10, "TASK_SYS_STACK_OFFSET changed - update x86_64 entry.S");
+//   - kernel/arch/x86_64/syscall/syscall_entry.S (TASK_FLAGS_OFFSET, TASK_SYS_STACK_OFFSET)
+static_assert(TASK_FLAGS_OFFSET == 0x00, "TASK_FLAGS_OFFSET changed - update x86_64 entry.S and syscall_entry.S");
+static_assert(TASK_SYS_STACK_OFFSET == 0x10, "TASK_SYS_STACK_OFFSET changed - update x86_64 entry.S and syscall_entry.S");
 
 int32_t init_boot_task();
 

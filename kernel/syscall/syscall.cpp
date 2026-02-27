@@ -38,11 +38,25 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
 ) {
     (void)arg1; (void)arg2; (void)arg3; (void)arg4; (void)arg5; (void)arg6;
 
+    // Mark as elevated so RUN_ELEVATED inside handlers skips nested SYSCALL.
+    // The SYSCALL entry already switched to Ring 0 and the system stack.
+    this_cpu(percpu_is_elevated) = true;
+
+    int64_t result;
+
     switch (syscall_num) {
         case syscall::SYS_ELEVATE:
-            return handle_sys_elevate();
+            result = handle_sys_elevate();
+            break;
         default:
             log::warn("syscall: unknown syscall %lu", syscall_num);
-            return -1;
+            result = -1;
+            break;
     }
+
+    // Restore elevation state: keep elevated only if SYS_ELEVATE set the flag.
+    this_cpu(percpu_is_elevated) =
+        (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+
+    return result;
 }
