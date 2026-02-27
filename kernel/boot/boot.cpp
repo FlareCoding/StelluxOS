@@ -14,6 +14,7 @@
 #include "dynpriv/dynpriv.h"
 #include "debug/debug.h"
 #include "sched/task.h"
+#include "fs/fs.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -74,6 +75,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("rc::reaper::init failed");
     }
 
+    if (fs::init() != fs::OK) {
+        log::fatal("fs::init failed");
+    }
+
     if (clock::init() != clock::OK) {
         log::fatal("clock::init failed");
     }
@@ -92,6 +97,24 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         cpu::halt();
     }
 #endif
+
+    // VFS demo: create a file, write to it, read it back
+    fs::mkdir("/hello", 0);
+    fs::file* f = fs::open("/hello/world.txt", fs::O_CREAT | fs::O_RDWR);
+    if (f) {
+        const char* msg = "Hello from Stellux VFS!";
+        fs::write(f, msg, 23);
+        fs::seek(f, 0, fs::SEEK_SET);
+
+        char buf[64] = {};
+        ssize_t n = fs::read(f, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            log::info("VFS read back: \"%s\"", buf);
+        }
+        fs::close(f);
+    }
+    fs::unlink("/hello/world.txt");
+    fs::rmdir("/hello");
 
     for (uint32_t i = 0; i < smp::cpu_count() * 4; i++) {
         sched::task* t = sched::create_kernel_task(log_cpu_id_entry, nullptr, "log_cpu_id_entry");
