@@ -9,6 +9,7 @@
 #include "mm/heap.h"
 #include "mm/vmm.h"
 #include "mm/kva.h"
+#include "mm/paging.h"
 #include "common/logging.h"
 #include "sync/spinlock.h"
 #include "smp/smp.h"
@@ -20,10 +21,13 @@
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
 DEFINE_PER_CPU(uint32_t, percpu_cpu_id);
+static DEFINE_PER_CPU(sched::task*, pending_off_cpu_task);
+static DEFINE_PER_CPU(uint64_t, cpu_tlb_sync_epoch);
 
 static DEFINE_PER_CPU(sched::runqueue, cpu_rq);
 
 static uint32_t g_next_tid = 1;
+static uint32_t g_pending_tlb_sync_tickets = 0;
 
 __PRIVILEGED_DATA static uint32_t g_lb_next_cpu = 0;
 
@@ -34,12 +38,65 @@ constexpr uint16_t TASK_GUARD_PAGES = 1;
 
 constexpr size_t SYSTEM_STACK_PAGES = 4;
 constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
+constexpr uint64_t TLB_SYNC_CPU_IGNORED = ~0ULL;
+
+static uint32_t load_cleanup_stage(const task* t) {
+    return __atomic_load_n(&t->cleanup_stage, __ATOMIC_ACQUIRE);
+}
+
+static void store_cleanup_stage(task* t, uint32_t stage) {
+    __atomic_store_n(&t->cleanup_stage, stage, __ATOMIC_RELEASE);
+}
 
 /**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
+    uint32_t stage = load_cleanup_stage(t);
+    if (stage < TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
+        return rc::reaper::RETRY_LATER;
+    }
+
     if (__atomic_load_n(&t->exec.on_cpu, __ATOMIC_ACQUIRE)) {
+        return rc::reaper::RETRY_LATER;
+    }
+
+    uint32_t cpu_count = smp::cpu_count();
+    if (stage == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
+        for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
+            smp::cpu_info* info = smp::get_cpu_info(cpu);
+            if (!info || __atomic_load_n(&info->state, __ATOMIC_ACQUIRE) != smp::CPU_ONLINE) {
+                t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] = TLB_SYNC_CPU_IGNORED;
+                continue;
+            }
+            t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] =
+                __atomic_load_n(&per_cpu_on(cpu_tlb_sync_epoch, cpu), __ATOMIC_ACQUIRE);
+        }
+        __atomic_store_n(&t->tlb_sync_ticket.armed, 1, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&g_pending_tlb_sync_tickets, 1, __ATOMIC_ACQ_REL);
+        store_cleanup_stage(t, TASK_CLEANUP_STAGE_WAITING_FOR_TLB_SYNC);
+        return rc::reaper::RETRY_LATER;
+    }
+
+    if (stage == TASK_CLEANUP_STAGE_WAITING_FOR_TLB_SYNC) {
+        if (__atomic_load_n(&t->tlb_sync_ticket.armed, __ATOMIC_ACQUIRE) == 0) {
+            return rc::reaper::RETRY_LATER;
+        }
+
+        for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
+            if (t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] == TLB_SYNC_CPU_IGNORED) {
+                continue;
+            }
+            uint64_t epoch = __atomic_load_n(&per_cpu_on(cpu_tlb_sync_epoch, cpu), __ATOMIC_ACQUIRE);
+            if ((epoch - t->tlb_sync_ticket.cpu_epoch_snapshot[cpu]) == 0) {
+                return rc::reaper::RETRY_LATER;
+            }
+        }
+        __atomic_sub_fetch(&g_pending_tlb_sync_tickets, 1, __ATOMIC_ACQ_REL);
+        store_cleanup_stage(t, TASK_CLEANUP_STAGE_READY_TO_RECLAIM);
+    }
+
+    if (load_cleanup_stage(t) != TASK_CLEANUP_STAGE_READY_TO_RECLAIM) {
         return rc::reaper::RETRY_LATER;
     }
 
@@ -56,6 +113,50 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task_thunk(
 
 task* current() {
     return this_cpu(current_task);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void finalize_pending_off_cpu() {
+    task* pending = this_cpu(pending_off_cpu_task);
+    if (!pending) {
+        return;
+    }
+
+    this_cpu(pending_off_cpu_task) = nullptr;
+    __atomic_store_n(&pending->exec.on_cpu, 0, __ATOMIC_RELEASE);
+    cpu::send_event();
+
+    if (load_cleanup_stage(pending) == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
+        // The reaper must only start cleanup after off-CPU publication is visible.
+        rc::reaper::defer(&pending->reaper_node);
+    }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void defer_off_cpu_finalize(task* prev) {
+    if (!prev) {
+        return;
+    }
+
+    if (this_cpu(pending_off_cpu_task)) {
+        finalize_pending_off_cpu();
+    }
+    this_cpu(pending_off_cpu_task) = prev;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void advance_cpu_tlb_sync_epoch() {
+    if (__atomic_load_n(&g_pending_tlb_sync_tickets, __ATOMIC_ACQUIRE) == 0) {
+        return;
+    }
+    paging::flush_tlb_all();
+    __atomic_add_fetch(&this_cpu(cpu_tlb_sync_epoch), 1, __ATOMIC_RELEASE);
 }
 
 /**
@@ -93,10 +194,9 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
         rq.nr_running++;
     }
 
-    // Capture dead task for deferred cleanup after lock is released
-    task* dead_prev = nullptr;
+    // Dead task is now scheduler-detached and can enter deferred cleanup flow.
     if (prev != rq.idle_task && prev->state == TASK_STATE_DEAD) {
-        dead_prev = prev;
+        store_cleanup_stage(prev, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
     }
 
     task* next = rq.policy->pick_next();
@@ -112,10 +212,6 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
     this_cpu(percpu_is_elevated) = (next->exec.flags & TASK_FLAG_ELEVATED) != 0;
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
-
-    if (dead_prev) {
-        rc::reaper::defer(&dead_prev->reaper_node);
-    }
 
     return next;
 }
@@ -214,6 +310,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
 [[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
         sched::task* task = current();
+        store_cleanup_stage(task, TASK_CLEANUP_STAGE_EXIT_REQUESTED);
         task->state = TASK_STATE_DEAD;
         task->exit_code = exit_code;
     });
@@ -278,6 +375,11 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->timer_link = {};
     t->timer_deadline = 0;
     t->name = name;
+    t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    t->tlb_sync_ticket.armed = 0;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
+    }
     fpu::init_state(&t->fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
 
@@ -310,12 +412,18 @@ __PRIVILEGED_CODE int32_t init() {
     idle->sys_stack_base = 0;
     idle->sched_link = {};
     idle->wait_link = {};
+    idle->timer_link = {};
+    idle->timer_deadline = 0;
     idle->name = "idle";
+    idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->fpu_ctx);
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
     this_cpu(percpu_is_elevated) = (idle->exec.flags & TASK_FLAG_ELEVATED) != 0;
+    this_cpu(pending_off_cpu_task) = nullptr;
+    this_cpu(cpu_tlb_sync_epoch) = 0;
 
     // Initialize per-CPU runqueue
     runqueue& rq = this_cpu(cpu_rq);
@@ -362,11 +470,15 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     idle->state = TASK_STATE_RUNNING;
     idle->name = "idle";
+    idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->fpu_ctx);
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
     this_cpu(percpu_is_elevated) = true;
+    this_cpu(pending_off_cpu_task) = nullptr;
+    this_cpu(cpu_tlb_sync_epoch) = 0;
 
     runqueue& rq = this_cpu(cpu_rq);
     rq.lock = sync::SPINLOCK_INIT;

@@ -111,13 +111,15 @@ void yield() {
  */
 __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     task* prev = current();
+    // Advance per-CPU sync epoch so stack reclaim can wait for a post-switch TLB-safe point.
+    advance_cpu_tlb_sync_epoch();
+    // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
+    finalize_pending_off_cpu();
     save_cpu_context(tf, &prev->exec.cpu_ctx);
 
     task* next = pick_next_and_switch(prev);
     if (next == prev) return;
 
-    __atomic_store_n(&prev->exec.on_cpu, 0, __ATOMIC_RELEASE);
-    cpu::send_event();
     next->exec.cpu = percpu::current_cpu_id();
     __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
 
@@ -126,6 +128,8 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);
+    // Defer prev->on_cpu clear until switch teardown is complete.
+    defer_off_cpu_finalize(prev);
 }
 
 /**
@@ -134,6 +138,10 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
  */
 __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     task* prev = current();
+    // Each scheduler trap is a synchronization checkpoint for deferred reclaim logic.
+    advance_cpu_tlb_sync_epoch();
+    // Finish prior off-CPU publication before handling this tick's switch.
+    finalize_pending_off_cpu();
     if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
         return;
     }
@@ -145,8 +153,6 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
         return;
     }
 
-    __atomic_store_n(&prev->exec.on_cpu, 0, __ATOMIC_RELEASE);
-    cpu::send_event();
     next->exec.cpu = percpu::current_cpu_id();
     __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
 
@@ -155,6 +161,8 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
     arch_post_switch(next);
+    // Prevent early off-CPU publication while trap exit still depends on prev context.
+    defer_off_cpu_finalize(prev);
 }
 
 } // namespace sched
