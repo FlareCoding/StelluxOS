@@ -35,6 +35,15 @@ constexpr int32_t ERR_NO_LOADABLE       = -9;
 constexpr int32_t ERR_FILE_OPEN         = -10;
 constexpr int32_t ERR_FILE_READ         = -11;
 constexpr int32_t ERR_NO_MEM            = -12;
+constexpr int32_t ERR_PT_CREATE         = -13;
+constexpr int32_t ERR_PAGE_ALLOC        = -14;
+constexpr int32_t ERR_PAGE_MAP          = -15;
+
+struct loaded_image {
+    uint64_t entry_point;
+    uint64_t pt_root;
+    uint32_t segment_count;
+};
 
 /**
  * Parse an ELF64 binary from a memory buffer.
@@ -47,6 +56,26 @@ int32_t parse_elf(const void* buffer, size_t size, elf_image* out);
  * Opens the file, reads it into a temporary buffer, parses, and cleans up.
  */
 int32_t parse_elf(const char* path, elf_image* out);
+
+/**
+ * Load an ELF64 binary from a memory buffer into a new user address space.
+ * Creates a user page table and maps all PT_LOAD segments with correct permissions.
+ * Elevates internally for privileged operations (PMM, paging).
+ */
+int32_t load_elf(const void* buffer, size_t size, loaded_image* out);
+
+/**
+ * Load an ELF64 binary from a file path into a new user address space.
+ * Elevates internally for privileged operations (PMM, paging).
+ */
+int32_t load_elf(const char* path, loaded_image* out);
+
+/**
+ * Unload a previously loaded ELF image.
+ * Unmaps and frees all user-space pages, then destroys the page table.
+ * Elevates internally for privileged operations.
+ */
+void unload_elf(loaded_image* img);
 
 } // namespace exec
 

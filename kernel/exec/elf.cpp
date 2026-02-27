@@ -3,8 +3,10 @@
 #include "exec/elf_arch.h"
 #include "fs/fs.h"
 #include "mm/heap.h"
+#include "mm/paging.h"
+#include "mm/pmm.h"
+#include "dynpriv/dynpriv.h"
 #include "common/string.h"
-#include "common/logging.h"
 
 namespace exec {
 
@@ -117,6 +119,172 @@ int32_t parse_elf(const char* path, elf_image* out) {
     heap::ufree(buffer);
     fs::close(f);
     return result;
+}
+
+static paging::page_flags_t elf_flags_to_page_flags(uint32_t elf_flags) {
+    paging::page_flags_t flags = paging::PAGE_USER;
+    if (elf_flags & elf64::PF_R) flags |= paging::PAGE_READ;
+    if (elf_flags & elf64::PF_W) flags |= paging::PAGE_WRITE;
+    if (elf_flags & elf64::PF_X) flags |= paging::PAGE_EXEC;
+    return flags;
+}
+
+__PRIVILEGED_CODE static int32_t load_segments(
+    const void* buffer,
+    size_t buffer_size,
+    const elf_image& img,
+    uint64_t pt_root
+) {
+    auto* base = static_cast<const uint8_t*>(buffer);
+
+    for (uint32_t i = 0; i < img.segment_count; i++) {
+        const auto& seg = img.segments[i];
+
+        uint64_t vaddr_start = pmm::page_align_down(seg.vaddr);
+        uint64_t vaddr_end   = pmm::page_align_up(seg.vaddr + seg.memsz);
+        size_t num_pages     = (vaddr_end - vaddr_start) / pmm::PAGE_SIZE;
+
+        paging::page_flags_t flags = elf_flags_to_page_flags(seg.flags);
+
+        uint64_t seg_file_start = seg.offset;
+        uint64_t seg_vaddr      = seg.vaddr;
+
+        for (size_t p = 0; p < num_pages; p++) {
+            uint64_t page_vaddr = vaddr_start + p * pmm::PAGE_SIZE;
+
+            pmm::phys_addr_t phys;
+            uint8_t* page_ptr;
+            bool already_mapped = paging::is_mapped(page_vaddr, pt_root);
+
+            if (already_mapped) {
+                phys = paging::get_physical(page_vaddr, pt_root);
+                page_ptr = static_cast<uint8_t*>(paging::phys_to_virt(phys));
+            } else {
+                phys = pmm::alloc_page();
+                if (phys == 0) {
+                    return ERR_PAGE_ALLOC;
+                }
+
+                page_ptr = static_cast<uint8_t*>(paging::phys_to_virt(phys));
+                string::memset(page_ptr, 0, pmm::PAGE_SIZE);
+
+                int32_t rc = paging::map_page(page_vaddr, phys, flags, pt_root);
+                if (rc != paging::OK) {
+                    pmm::free_page(phys);
+                    return ERR_PAGE_MAP;
+                }
+            }
+
+            uint64_t copy_start = (page_vaddr < seg_vaddr) ? seg_vaddr : page_vaddr;
+            uint64_t page_end = page_vaddr + pmm::PAGE_SIZE;
+            uint64_t data_end = seg_vaddr + seg.filesz;
+            uint64_t copy_end = (page_end < data_end) ? page_end : data_end;
+
+            if (copy_start < copy_end) {
+                uint64_t file_offset = seg_file_start + (copy_start - seg_vaddr);
+                size_t copy_len = copy_end - copy_start;
+                size_t page_offset = copy_start - page_vaddr;
+
+                if (file_offset + copy_len <= buffer_size) {
+                    string::memcpy(page_ptr + page_offset, base + file_offset, copy_len);
+                }
+            }
+        }
+    }
+
+    return OK;
+}
+
+__PRIVILEGED_CODE static void unload_elf_pages(uint64_t pt_root) {
+    constexpr uint64_t SCAN_END = 16 * 1024 * 1024;
+    for (uint64_t vaddr = 0; vaddr < SCAN_END; vaddr += pmm::PAGE_SIZE) {
+        if (paging::is_mapped(vaddr, pt_root)) {
+            pmm::phys_addr_t phys = paging::get_physical(vaddr, pt_root);
+            if (phys != 0) {
+                paging::unmap_page(vaddr, pt_root);
+                pmm::free_page(phys);
+            }
+        }
+    }
+
+    paging::destroy_user_pt_root(pt_root);
+}
+
+int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
+    elf_image img;
+    int32_t rc = parse_elf(buffer, size, &img);
+    if (rc != OK) {
+        return rc;
+    }
+
+    uint64_t pt_root = 0;
+    int32_t load_rc = OK;
+
+    RUN_ELEVATED({
+        pt_root = paging::create_user_pt_root();
+        if (pt_root == 0) {
+            load_rc = ERR_PT_CREATE;
+        } else {
+            load_rc = load_segments(buffer, size, img, pt_root);
+            if (load_rc != OK) {
+                unload_elf_pages(pt_root);
+                pt_root = 0;
+            }
+        }
+    });
+
+    if (load_rc != OK) {
+        return load_rc;
+    }
+
+    out->entry_point = img.entry_point;
+    out->pt_root = pt_root;
+    out->segment_count = img.segment_count;
+    return OK;
+}
+
+int32_t load_elf(const char* path, loaded_image* out) {
+    fs::file* f = fs::open(path, fs::O_RDONLY);
+    if (!f) {
+        return ERR_FILE_OPEN;
+    }
+
+    fs::vattr attr;
+    if (fs::fstat(f, &attr) != fs::OK) {
+        fs::close(f);
+        return ERR_FILE_READ;
+    }
+
+    void* buffer = heap::ualloc(attr.size);
+    if (!buffer) {
+        fs::close(f);
+        return ERR_NO_MEM;
+    }
+
+    ssize_t n = fs::read(f, buffer, attr.size);
+    if (n < 0 || static_cast<size_t>(n) != attr.size) {
+        heap::ufree(buffer);
+        fs::close(f);
+        return ERR_FILE_READ;
+    }
+
+    int32_t result = load_elf(buffer, attr.size, out);
+
+    heap::ufree(buffer);
+    fs::close(f);
+    return result;
+}
+
+void unload_elf(loaded_image* img) {
+    if (!img || img->pt_root == 0) {
+        return;
+    }
+
+    RUN_ELEVATED({
+        unload_elf_pages(img->pt_root);
+    });
+
+    img->pt_root = 0;
 }
 
 } // namespace exec

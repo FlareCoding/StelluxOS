@@ -16,7 +16,6 @@
 #include "sched/task.h"
 #include "fs/fs.h"
 #include "exec/elf.h"
-#include "exec/elf64.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -111,21 +110,15 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         fs::close(f);
     }
 
-    exec::elf_image img;
-    int32_t elf_result = exec::parse_elf("/initrd/bin/init", &img);
-    if (elf_result == exec::OK) {
-        log::info("ELF parsed: entry=0x%lx segments=%u", img.entry_point, img.segment_count);
-        for (uint32_t i = 0; i < img.segment_count; i++) {
-            const auto& s = img.segments[i];
-            log::info("  [%u] vaddr=0x%lx filesz=0x%lx memsz=0x%lx flags=%c%c%c align=0x%lx",
-                i, s.vaddr, s.filesz, s.memsz,
-                (s.flags & elf64::PF_R) ? 'R' : '-',
-                (s.flags & elf64::PF_W) ? 'W' : '-',
-                (s.flags & elf64::PF_X) ? 'X' : '-',
-                s.align);
-        }
+    exec::loaded_image loaded;
+    int32_t load_result = exec::load_elf("/initrd/bin/init", &loaded);
+    if (load_result == exec::OK) {
+        log::info("ELF loaded: entry=0x%lx pt_root=0x%lx segments=%u",
+            loaded.entry_point, loaded.pt_root, loaded.segment_count);
+        exec::unload_elf(&loaded);
+        log::info("ELF unloaded");
     } else {
-        log::error("ELF parse of /initrd/bin/init failed: %d", elf_result);
+        log::error("ELF load of /initrd/bin/init failed: %d", load_result);
     }
 
     for (uint32_t i = 0; i < smp::cpu_count() * 4; i++) {
