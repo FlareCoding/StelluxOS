@@ -1,5 +1,5 @@
 #include "debug/symtab.h"
-#include "debug/elf64.h"
+#include "exec/elf64.h"
 #include "common/string.h"
 #include "common/logging.h"
 #include "mm/heap.h"

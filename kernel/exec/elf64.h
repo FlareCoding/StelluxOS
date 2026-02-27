@@ -1,5 +1,5 @@
-#ifndef STELLUX_DEBUG_ELF64_H
-#define STELLUX_DEBUG_ELF64_H
+#ifndef STELLUX_EXEC_ELF64_H
+#define STELLUX_EXEC_ELF64_H
 
 #include "common/types.h"
 
@@ -11,14 +11,43 @@ constexpr uint8_t ELFMAG2 = 'L';
 constexpr uint8_t ELFMAG3 = 'F';
 constexpr uint8_t ELFCLASS64 = 2;
 
+// e_ident indices
+constexpr uint8_t EI_CLASS   = 4;
+constexpr uint8_t EI_DATA    = 5;
+constexpr uint8_t EI_VERSION = 6;
+
+// e_ident values
+constexpr uint8_t ELFDATA2LSB = 1;
+constexpr uint8_t EV_CURRENT  = 1;
+
+// e_type
+constexpr uint16_t ET_EXEC = 2;
+constexpr uint16_t ET_DYN  = 3;
+
+// e_machine
+constexpr uint16_t EM_X86_64  = 0x3E;
+constexpr uint16_t EM_AARCH64 = 0xB7;
+
+// p_type
+constexpr uint32_t PT_NULL = 0;
+constexpr uint32_t PT_LOAD = 1;
+
+// p_flags
+constexpr uint32_t PF_X = 0x1;
+constexpr uint32_t PF_W = 0x2;
+constexpr uint32_t PF_R = 0x4;
+
+// Section header types
 constexpr uint32_t SHT_NULL    = 0;
 constexpr uint32_t SHT_SYMTAB = 2;
 constexpr uint32_t SHT_STRTAB = 3;
 
+// Symbol binding
 constexpr uint8_t STB_LOCAL  = 0;
 constexpr uint8_t STB_GLOBAL = 1;
 constexpr uint8_t STB_WEAK   = 2;
 
+// Symbol type
 constexpr uint8_t STT_NOTYPE = 0;
 constexpr uint8_t STT_OBJECT = 1;
 constexpr uint8_t STT_FUNC   = 2;
@@ -40,6 +69,17 @@ struct Ehdr {
     uint16_t e_shentsize;
     uint16_t e_shnum;
     uint16_t e_shstrndx;
+};
+
+struct Phdr {
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
 };
 
 struct Shdr {
@@ -73,9 +113,10 @@ inline uint8_t sym_bind(const Sym* s) {
 }
 
 static_assert(sizeof(Ehdr) == 64, "Ehdr must be 64 bytes");
+static_assert(sizeof(Phdr) == 56, "Phdr must be 56 bytes");
 static_assert(sizeof(Shdr) == 64, "Shdr must be 64 bytes");
 static_assert(sizeof(Sym)  == 24, "Sym must be 24 bytes");
 
 } // namespace elf64
 
-#endif // STELLUX_DEBUG_ELF64_H
+#endif // STELLUX_EXEC_ELF64_H

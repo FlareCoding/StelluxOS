@@ -1,7 +1,7 @@
 #ifndef STELLUX_DEBUG_KERNEL_ELF_H
 #define STELLUX_DEBUG_KERNEL_ELF_H
 
-#include "debug/elf64.h"
+#include "exec/elf64.h"
 #include "common/string.h"
 
 namespace debug {

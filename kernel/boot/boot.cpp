@@ -14,7 +14,6 @@
 #include "dynpriv/dynpriv.h"
 #include "debug/debug.h"
 #include "sched/task.h"
-#include "mm/paging.h"
 #include "fs/fs.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
