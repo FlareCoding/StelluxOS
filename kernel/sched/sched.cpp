@@ -107,7 +107,8 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
 }
 
 __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task_thunk(
-    rc::reaper::dead_node* node) {
+    rc::reaper::dead_node* node
+) {
     return rc::reaper::reaper_thunk<sched::task, reap_task>(node);
 }
 
