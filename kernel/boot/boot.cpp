@@ -9,6 +9,7 @@
 #include "clock/clock.h"
 #include "timer/timer.h"
 #include "sched/sched.h"
+#include "rc/reaper.h"
 #include "smp/smp.h"
 #include "dynpriv/dynpriv.h"
 #include "debug/debug.h"
@@ -67,6 +68,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (sched::init() != sched::OK) {
         log::fatal("sched::init failed");
+    }
+
+    if (rc::reaper::init() != rc::reaper::OK) {
+        log::fatal("rc::reaper::init failed");
     }
 
     if (clock::init() != clock::OK) {

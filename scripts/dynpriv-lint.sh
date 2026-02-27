@@ -283,13 +283,18 @@ for src in "${SOURCES[@]}"; do
         [[ "$is_static" == "1" ]] && continue
 
         for hdr in "${hdrs[@]}"; do
-            # maxind=4: declarations can be inside class bodies
+            # Unqualified names (no "::") are namespace-scope; only match
+            # namespace-scope header declarations (maxind=0) to avoid
+            # collisions with same-named struct/class member methods.
+            maxind=4
+            [[ "$qname" != *::* ]] && maxind=0
+
             while IFS='|' read -r hline _; do
                 [[ -z "$hline" ]] && continue
                 error "$hdr" "$hline" \
                     "'${fname}' is __PRIVILEGED_CODE in $(rel "$src"):${lineno} but NOT in header declaration"
                 ((check2_hits++)) || true
-            done < <(find_unpriv_definition "$hdr" "$fname" 4)
+            done < <(find_unpriv_definition "$hdr" "$fname" "$maxind")
         done
     done < <(extract_priv_funcs "$src")
 done

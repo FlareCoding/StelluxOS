@@ -51,8 +51,8 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
 
 extern "C" __PRIVILEGED_CODE 
 void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
-    sched::task_exec_core* task_core = this_cpu(current_task_exec);
-    task_core->flags |= sched::TASK_FLAG_IN_IRQ;
+    sched::task_exec_core* irq_task_core = this_cpu(current_task_exec);
+    irq_task_core->flags |= sched::TASK_FLAG_IN_IRQ;
 
     uint32_t irq_id = irq::acknowledge();
     if (irq_id == hwtimer::TIMER_PPI) {
@@ -61,15 +61,15 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         if (tick) {
             sched::on_tick(tf);
         }
-        task_core = this_cpu(current_task_exec);
-        task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        // Clear the IRQ flag on the interrupted task, not whichever task is current now.
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
     }
 
     if (irq_id != irq::GIC_SPURIOUS_ID) {
         irq::eoi(irq_id);
     }
-    task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+    irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     trap_fatal("el0 irq", tf);
 }
 
@@ -103,8 +103,8 @@ void stlx_aarch64_el1_sync_handler(aarch64::trap_frame* tf) {
 
 extern "C" __PRIVILEGED_CODE 
 void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
-    sched::task_exec_core* task_core = this_cpu(current_task_exec);
-    task_core->flags |= sched::TASK_FLAG_IN_IRQ;
+    sched::task_exec_core* irq_task_core = this_cpu(current_task_exec);
+    irq_task_core->flags |= sched::TASK_FLAG_IN_IRQ;
 
     uint32_t irq_id = irq::acknowledge();
     if (irq_id == hwtimer::TIMER_PPI) {
@@ -113,15 +113,15 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
         if (tick) {
             sched::on_tick(tf);
         }
-        task_core = this_cpu(current_task_exec);
-        task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        // Clear the IRQ flag on the interrupted task, not whichever task is current now.
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         return;
     }
 
     if (irq_id != irq::GIC_SPURIOUS_ID) {
         irq::eoi(irq_id);
     }
-    task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+    irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     trap_fatal("el1 irq", tf);
 }
 
