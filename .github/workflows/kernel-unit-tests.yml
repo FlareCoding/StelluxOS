@@ -75,10 +75,24 @@ jobs:
       - name: Fetch Limine EFI binaries
         run: make limine
 
+      - name: Cache musl sysroot
+        uses: actions/cache@v4
+        id: musl-cache
+        with:
+          path: userland/sysroot
+          key: musl-sysroot-1.2.5
+
+      - name: Build musl libc
+        if: steps.musl-cache.outputs.cache-hit != 'true'
+        run: make musl
+
       - name: Build kernel
         run: |
           make kernel ARCH=${{ matrix.arch }} \
             ${{ matrix.mode == 'release' && 'RELEASE=1' || '' }}
+
+      - name: Build userland
+        run: make userland ARCH=${{ matrix.arch }}
 
       - name: Verify kernel ELF exists
         run: |
@@ -119,6 +133,17 @@ jobs:
 
       - name: Fetch Limine EFI binaries
         run: make limine
+
+      - name: Cache musl sysroot
+        uses: actions/cache@v4
+        id: musl-cache
+        with:
+          path: userland/sysroot
+          key: musl-sysroot-1.2.5
+
+      - name: Build musl libc
+        if: steps.musl-cache.outputs.cache-hit != 'true'
+        run: make musl
 
       - name: Run unit tests
         run: make test ARCH=${{ matrix.arch }} 2>&1 | tee test-log-${{ matrix.arch }}.txt
