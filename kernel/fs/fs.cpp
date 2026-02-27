@@ -76,12 +76,13 @@ file::file(rc::strong_ref<node>&& n, uint32_t flags)
     : m_node(static_cast<rc::strong_ref<node>&&>(n))
     , m_offset(0)
     , m_flags(flags)
-    , m_private(nullptr) {
+    , m_private(nullptr)
+    , m_opened(false) {
 }
 
 void file::ref_destroy(file* f) {
     RUN_ELEVATED({
-        if (f->m_node) {
+        if (f->m_node && f->m_opened) {
             f->m_node->on_close(f);
         }
         f->~file();
@@ -389,6 +390,7 @@ file* open(const char* path, uint32_t flags) {
         return nullptr;
     }
 
+    f->mark_opened();
     return f;
 }
 

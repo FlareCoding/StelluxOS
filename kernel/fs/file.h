@@ -28,6 +28,8 @@ public:
     uint32_t flags() const { return m_flags; }
     void* private_data() const { return m_private; }
     void set_private_data(void* data) { m_private = data; }
+    bool opened() const { return m_opened; }
+    void mark_opened() { m_opened = true; }
 
     static void ref_destroy(file* f);
 
@@ -36,6 +38,7 @@ private:
     int64_t  m_offset;
     uint32_t m_flags;
     void*    m_private;
+    bool     m_opened;
 };
 
 } // namespace fs
