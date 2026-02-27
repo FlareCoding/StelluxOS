@@ -27,6 +27,7 @@ static DEFINE_PER_CPU(uint64_t, cpu_tlb_sync_epoch);
 static DEFINE_PER_CPU(sched::runqueue, cpu_rq);
 
 static uint32_t g_next_tid = 1;
+static uint32_t g_pending_tlb_sync_tickets = 0;
 
 __PRIVILEGED_DATA static uint32_t g_lb_next_cpu = 0;
 
@@ -37,6 +38,7 @@ constexpr uint16_t TASK_GUARD_PAGES = 1;
 
 constexpr size_t SYSTEM_STACK_PAGES = 4;
 constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
+constexpr uint64_t TLB_SYNC_CPU_IGNORED = ~0ULL;
 
 static uint32_t load_cleanup_stage(const task* t) {
     return __atomic_load_n(&t->cleanup_stage, __ATOMIC_ACQUIRE);
@@ -62,10 +64,16 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
     uint32_t cpu_count = smp::cpu_count();
     if (stage == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
         for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
+            smp::cpu_info* info = smp::get_cpu_info(cpu);
+            if (!info || __atomic_load_n(&info->state, __ATOMIC_ACQUIRE) != smp::CPU_ONLINE) {
+                t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] = TLB_SYNC_CPU_IGNORED;
+                continue;
+            }
             t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] =
                 __atomic_load_n(&per_cpu_on(cpu_tlb_sync_epoch, cpu), __ATOMIC_ACQUIRE);
         }
         __atomic_store_n(&t->tlb_sync_ticket.armed, 1, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&g_pending_tlb_sync_tickets, 1, __ATOMIC_ACQ_REL);
         store_cleanup_stage(t, TASK_CLEANUP_STAGE_WAITING_FOR_TLB_SYNC);
         return rc::reaper::RETRY_LATER;
     }
@@ -76,11 +84,15 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
         }
 
         for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
+            if (t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] == TLB_SYNC_CPU_IGNORED) {
+                continue;
+            }
             uint64_t epoch = __atomic_load_n(&per_cpu_on(cpu_tlb_sync_epoch, cpu), __ATOMIC_ACQUIRE);
-            if (epoch <= t->tlb_sync_ticket.cpu_epoch_snapshot[cpu]) {
+            if ((epoch - t->tlb_sync_ticket.cpu_epoch_snapshot[cpu]) == 0) {
                 return rc::reaper::RETRY_LATER;
             }
         }
+        __atomic_sub_fetch(&g_pending_tlb_sync_tickets, 1, __ATOMIC_ACQ_REL);
         store_cleanup_stage(t, TASK_CLEANUP_STAGE_READY_TO_RECLAIM);
     }
 
@@ -140,6 +152,9 @@ __PRIVILEGED_CODE void defer_off_cpu_finalize(task* prev) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void advance_cpu_tlb_sync_epoch() {
+    if (__atomic_load_n(&g_pending_tlb_sync_tickets, __ATOMIC_ACQUIRE) == 0) {
+        return;
+    }
     paging::flush_tlb_all();
     __atomic_add_fetch(&this_cpu(cpu_tlb_sync_epoch), 1, __ATOMIC_RELEASE);
 }
