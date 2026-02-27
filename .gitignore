@@ -26,6 +26,13 @@ boot/rpi4-uefi/*
 .cache/
 compile_commands.json
 
+# Userland build artifacts
+userland/sysroot/
+userland/musl-*
+userland/build/
+initrd/bin/*
+!initrd/bin/.gitkeep
+
 # OS files
 .DS_Store
 Thumbs.db

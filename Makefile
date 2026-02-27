@@ -73,7 +73,7 @@ SUPPORTED_ARCHS := x86_64 aarch64
 # ============================================================================
 
 # Targets that require ARCH
-ARCH_REQUIRED_TARGETS := kernel image run test
+ARCH_REQUIRED_TARGETS := kernel userland image run test
 
 # Check if current target requires ARCH
 CURRENT_GOALS := $(MAKECMDGOALS)
@@ -105,14 +105,14 @@ endif
 # Primary Targets
 # ============================================================================
 
-.PHONY: all kernel image run run-headless clean test \
+.PHONY: all kernel userland image run run-headless clean test \
         image-x86_64 image-aarch64 \
         run-qemu-x86_64 run-qemu-aarch64 \
         run-qemu-x86_64-headless run-qemu-aarch64-headless \
         run-qemu-x86_64-debug run-qemu-aarch64-debug \
         run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
         connect-gdb-x86_64 connect-gdb-aarch64 \
-        deps limine rpi4-firmware toolchain-check \
+        deps limine musl rpi4-firmware toolchain-check \
         help
 
 # Default target
@@ -130,6 +130,13 @@ kernel: check-lld
 		$(if $(V),V=1)
 
 # ============================================================================
+# Userland Build (delegates to userland/Makefile)
+# ============================================================================
+
+userland:
+	$(Q)$(MAKE) -C userland ARCH=$(ARCH) $(if $(V),V=1)
+
+# ============================================================================
 # Unit Tests
 # ============================================================================
 
@@ -143,7 +150,7 @@ test:
 # Disk Image Creation
 # ============================================================================
 
-image: kernel check-limine $(DISK_IMAGE)
+image: kernel userland check-limine $(DISK_IMAGE)
 	@echo ""
 	@echo "Disk image ready: $(DISK_IMAGE)"
 
@@ -157,7 +164,8 @@ image-aarch64:
 INITRD_DIR  := initrd
 INITRD_CPIO := $(BUILD_DIR)/initrd.cpio
 
-$(INITRD_CPIO): $(shell find $(INITRD_DIR) -type f 2>/dev/null)
+.PHONY: $(INITRD_CPIO)
+$(INITRD_CPIO):
 	@mkdir -p $(BUILD_DIR)
 	@echo "Creating initrd.cpio..."
 	$(Q)cd $(INITRD_DIR) && find . -mindepth 1 | cpio -o -H newc > ../$(INITRD_CPIO) 2>/dev/null
@@ -431,6 +439,8 @@ usb: image
 clean:
 	@echo "Cleaning build artifacts..."
 	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
+	$(Q)rm -rf userland/build
+	$(Q)find initrd/bin -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
 	@echo "Done."
 
 # ============================================================================
@@ -460,6 +470,41 @@ deps:
 		gdb-multiarch
 	@echo ""
 	@echo "Done. Run 'make toolchain-check' to verify."
+
+MUSL_VERSION := 1.2.5
+MUSL_URL     := https://musl.libc.org/releases/musl-$(MUSL_VERSION).tar.gz
+MUSL_DIR     := userland/musl-$(MUSL_VERSION)
+MUSL_TARBALL := userland/musl-$(MUSL_VERSION).tar.gz
+
+musl:
+	@echo "Building musl $(MUSL_VERSION) for x86_64 and aarch64..."
+	@mkdir -p userland
+	@test -f $(MUSL_TARBALL) || \
+		(echo "Downloading musl $(MUSL_VERSION)..." && \
+		 curl -L -o $(MUSL_TARBALL) $(MUSL_URL))
+	@test -d $(MUSL_DIR) || \
+		(echo "Extracting..." && \
+		 cd userland && tar xf musl-$(MUSL_VERSION).tar.gz)
+	@echo ""
+	@echo "Building musl for x86_64..."
+	@mkdir -p $(MUSL_DIR)/build-x86_64
+	cd $(MUSL_DIR)/build-x86_64 && \
+		CC="clang --target=x86_64-linux-musl" \
+		../configure --prefix=$(abspath userland/sysroot/x86_64) --disable-shared > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-x86_64 -j$$(nproc) > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-x86_64 install > /dev/null
+	@echo "musl x86_64 installed to userland/sysroot/x86_64/"
+	@echo ""
+	@echo "Building musl for aarch64..."
+	@mkdir -p $(MUSL_DIR)/build-aarch64
+	cd $(MUSL_DIR)/build-aarch64 && \
+		CC="clang --target=aarch64-linux-musl" \
+		../configure --prefix=$(abspath userland/sysroot/aarch64) --disable-shared > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-aarch64 -j$$(nproc) > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-aarch64 install > /dev/null
+	@echo "musl aarch64 installed to userland/sysroot/aarch64/"
+	@echo ""
+	@echo "musl $(MUSL_VERSION) ready for both architectures."
 
 limine:
 	@echo "Downloading Limine ($(LIMINE_BRANCH))..."
@@ -518,8 +563,12 @@ toolchain-check:
 		(test -f $(BOOT_DIR)/BOOTAA64.EFI && echo "OK" || echo "NOT FOUND - run 'make limine'")
 	@printf "%-24s" "RPi4 UEFI firmware:" && \
 		(test -f $(RPI4_UEFI_DIR)/RPI_EFI.fd && echo "OK" || echo "NOT FOUND - run 'make rpi4-firmware'")
+	@printf "%-24s" "musl (x86_64):" && \
+		(test -f userland/sysroot/x86_64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
+	@printf "%-24s" "musl (aarch64):" && \
+		(test -f userland/sysroot/aarch64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
 	@echo ""
-	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', and/or 'make rpi4-firmware'"
+	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', and/or 'make rpi4-firmware'"
 
 # ============================================================================
 # Help
@@ -531,12 +580,14 @@ help:
 	@echo "Setup (run once):"
 	@echo "  make deps                    Install required packages"
 	@echo "  make limine                  Download Limine bootloader"
+	@echo "  make musl                    Build musl libc for both architectures"
 	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
 	@echo "  make toolchain-check         Verify tools are installed"
 	@echo ""
 	@echo "Build:"
 	@echo "  make kernel ARCH=<arch>      Build kernel"
-	@echo "  make image ARCH=<arch>       Build kernel + create disk image"
+	@echo "  make userland ARCH=<arch>    Build userland applications"
+	@echo "  make image ARCH=<arch>       Build kernel + userland + create disk image"
 	@echo "  make image-x86_64            Build x86_64 disk image (shortcut)"
 	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
@@ -557,6 +608,11 @@ help:
 	@echo "  RELEASE=1                    Release build (-O2)"
 	@echo ""
 	@echo "Architectures: $(SUPPORTED_ARCHS)"
+	@echo ""
+	@echo "First-time setup:"
+	@echo "  1. make deps"
+	@echo "  2. make limine"
+	@echo "  3. make musl"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make kernel ARCH=x86_64"
