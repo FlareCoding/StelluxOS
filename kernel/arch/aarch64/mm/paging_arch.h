@@ -157,6 +157,22 @@ __PRIVILEGED_CODE static inline uint64_t read_ttbr1_el1() {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE static inline void write_ttbr0_el1(uint64_t val) {
+    asm volatile("msr ttbr0_el1, %0" :: "r"(val));
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline uint64_t read_ttbr0_el1() {
+    uint64_t val;
+    asm volatile("mrs %0, ttbr0_el1" : "=r"(val));
+    return val;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE static inline void write_mair_el1(uint64_t val) {
     asm volatile("msr mair_el1, %0" :: "r"(val));
 }

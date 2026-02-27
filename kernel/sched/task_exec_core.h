@@ -23,17 +23,19 @@ struct task_exec_core {
     uintptr_t system_stack_top;
     thread_cpu_context cpu_ctx;
     uint32_t  on_cpu; // 1 while context is live and executing on a CPU
-    uint64_t  pt_root; // physical address of top-level page table
+    uint64_t  pt_root; // physical address of top-level page table (CR3 / TTBR1)
+    uint64_t  user_pt_root; // physical address of user-space page table (= pt_root on x86 / TTBR0 on aarch64)
     fpu_state fpu_ctx;
 };
 
-constexpr size_t TASK_FLAGS_OFFSET     = __builtin_offsetof(task_exec_core, flags);
-constexpr size_t TASK_CPU_OFFSET       = __builtin_offsetof(task_exec_core, cpu);
-constexpr size_t TASK_STACK_OFFSET     = __builtin_offsetof(task_exec_core, task_stack_top);
-constexpr size_t TASK_SYS_STACK_OFFSET = __builtin_offsetof(task_exec_core, system_stack_top);
-constexpr size_t TASK_CPU_CTX_OFFSET   = __builtin_offsetof(task_exec_core, cpu_ctx);
-constexpr size_t TASK_PT_ROOT_OFFSET   = __builtin_offsetof(task_exec_core, pt_root);
-constexpr size_t TASK_FPU_CTX_OFFSET   = __builtin_offsetof(task_exec_core, fpu_ctx);
+constexpr size_t TASK_FLAGS_OFFSET          = __builtin_offsetof(task_exec_core, flags);
+constexpr size_t TASK_CPU_OFFSET            = __builtin_offsetof(task_exec_core, cpu);
+constexpr size_t TASK_STACK_OFFSET          = __builtin_offsetof(task_exec_core, task_stack_top);
+constexpr size_t TASK_SYS_STACK_OFFSET      = __builtin_offsetof(task_exec_core, system_stack_top);
+constexpr size_t TASK_CPU_CTX_OFFSET        = __builtin_offsetof(task_exec_core, cpu_ctx);
+constexpr size_t TASK_PT_ROOT_OFFSET        = __builtin_offsetof(task_exec_core, pt_root);
+constexpr size_t TASK_USER_PT_ROOT_OFFSET   = __builtin_offsetof(task_exec_core, user_pt_root);
+constexpr size_t TASK_FPU_CTX_OFFSET        = __builtin_offsetof(task_exec_core, fpu_ctx);
 
 // Static assertions to ensure assembly offsets remain in sync
 // If these fail, update the assembly constants in:

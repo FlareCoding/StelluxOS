@@ -358,6 +358,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->exec.task_stack_top = task_stack_top;
     t->exec.system_stack_top = sys_stack_top;
     t->exec.pt_root = paging::get_kernel_pt_root();
+    t->exec.user_pt_root = 0;
     t->task_stack_base = task_stack_base;
     t->sys_stack_base = sys_stack_base;
 
@@ -408,6 +409,7 @@ __PRIVILEGED_CODE int32_t init() {
         }
     }
     idle->exec.pt_root = paging::get_kernel_pt_root();
+    idle->exec.user_pt_root = 0;
     idle->exec.flags |= TASK_FLAG_IDLE;
     idle->tid = 0;
     idle->state = TASK_STATE_RUNNING;
@@ -469,6 +471,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->exec.task_stack_top = task_stack_top;
     idle->exec.system_stack_top = system_stack_top;
     idle->exec.pt_root = paging::get_kernel_pt_root();
+    idle->exec.user_pt_root = 0;
     idle->task_stack_base = 0;
     idle->sys_stack_base = 0;
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);

@@ -29,6 +29,7 @@ static task_exec_core g_boot_exec = {
     .cpu_ctx = {},
     .on_cpu = 0,
     .pt_root = 0,
+    .user_pt_root = 0,
     .fpu_ctx = {},
 };
 

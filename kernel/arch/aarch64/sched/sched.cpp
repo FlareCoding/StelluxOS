@@ -10,6 +10,7 @@
 #include "percpu/percpu.h"
 #include "hw/cpu.h"
 #include "mm/paging.h"
+#include "mm/paging_arch.h"
 #include "common/logging.h"
 
 extern "C" char stack_top[];
@@ -29,6 +30,7 @@ static task_exec_core g_boot_exec = {
     .cpu_ctx = {},
     .on_cpu = 0,
     .pt_root = 0,
+    .user_pt_root = 0,
     .fpu_ctx = {},
 };
 
@@ -97,6 +99,7 @@ __PRIVILEGED_CODE void arch_post_switch(task* next) {
         paging::set_kernel_pt_root(next->exec.pt_root);
         paging::flush_tlb_all();
     }
+    paging::write_ttbr0_el1(next->exec.user_pt_root);
 }
 
 void yield() {
