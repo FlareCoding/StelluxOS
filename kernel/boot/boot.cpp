@@ -14,11 +14,22 @@
 #include "dynpriv/dynpriv.h"
 #include "debug/debug.h"
 #include "sched/task.h"
+#include "mm/paging.h"
 #include "fs/fs.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
 #endif
+
+void test_user_address_space(void*) {
+    RUN_ELEVATED({
+        log::info("Running in user address space! tid=%u cpu=%u",
+                  sched::current()->tid, percpu::current_cpu_id());
+        sched::sleep_ms(200);
+        log::info("User AS task woke up, about to exit");
+    });
+    sched::exit(0);
+}
 
 void log_cpu_id_entry(void*) {
     RUN_ELEVATED({
@@ -90,6 +101,20 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     if (smp::init() != smp::OK) {
         log::warn("smp::init failed, continuing with single CPU");
     }
+
+    RUN_ELEVATED({
+        uint64_t user_root = paging::create_user_pt_root();
+        if (user_root) {
+            sched::task* t = sched::create_kernel_task(
+                test_user_address_space, nullptr, "test_user_pt",
+                sched::TASK_FLAG_ELEVATED);
+            t->exec.pt_root = user_root;
+            sched::enqueue(t);
+            log::info("Enqueued test task with user PT root=0x%lx", user_root);
+        } else {
+            log::error("Failed to create user page table root");
+        }
+    });
 
 #ifdef STLX_UNIT_TESTS_ENABLED
     stlx_test::run_all();

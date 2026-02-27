@@ -115,6 +115,23 @@ __PRIVILEGED_CODE void flush_tlb_all();
  */
 __PRIVILEGED_CODE void dump_mappings();
 
+/**
+ * @brief Create a new page table root for user processes.
+ * Copies kernel mappings as supervisor-only (Ring 3 / EL0 cannot access).
+ * Lower-level tables are shared with the kernel, not duplicated.
+ * @return Physical address of the new root, or 0 on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE pmm::phys_addr_t create_user_pt_root();
+
+/**
+ * @brief Destroy a user page table root.
+ * Frees only the top-level table page. Does NOT free shared lower-level
+ * kernel tables or user-mapped pages (caller must unmap those first).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void destroy_user_pt_root(pmm::phys_addr_t root);
+
 } // namespace paging
 
 #endif // STELLUX_MM_PAGING_H

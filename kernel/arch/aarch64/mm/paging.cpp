@@ -1114,4 +1114,35 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
+__PRIVILEGED_CODE pmm::phys_addr_t create_user_pt_root() {
+    pmm::phys_addr_t new_root = pmm::alloc_page();
+    if (new_root == 0) {
+        return 0;
+    }
+
+    auto* new_l0 = static_cast<uint64_t*>(phys_to_virt(new_root));
+    string::memset(new_l0, 0, PAGE_SIZE_4KB);
+
+    sync::irq_lock_guard guard(g_pt_lock);
+    auto* kern_l0 = static_cast<uint64_t*>(phys_to_virt(get_kernel_pt_root()));
+
+    for (int i = 0; i < 512; i++) {
+        uint64_t entry = kern_l0[i];
+        bool valid = entry & 1;
+        bool is_table = entry & 2;
+        if (valid && is_table) {
+            entry |= (1ULL << 61); // ap_table[0] = 1: no EL0 access below
+        }
+        new_l0[i] = entry;
+    }
+
+    return new_root;
+}
+
+__PRIVILEGED_CODE void destroy_user_pt_root(pmm::phys_addr_t root) {
+    if (root != 0) {
+        pmm::free_page(root);
+    }
+}
+
 } // namespace paging

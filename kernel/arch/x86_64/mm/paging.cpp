@@ -1012,4 +1012,33 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
+__PRIVILEGED_CODE pmm::phys_addr_t create_user_pt_root() {
+    pmm::phys_addr_t new_root = pmm::alloc_page();
+    if (new_root == 0) {
+        return 0;
+    }
+
+    auto* new_pml4 = static_cast<pml4_t*>(phys_to_virt(new_root));
+    string::memset(new_pml4, 0, PAGE_SIZE_4KB);
+
+    sync::irq_lock_guard guard(g_pt_lock);
+    auto* kern_pml4 = static_cast<pml4_t*>(phys_to_virt(get_kernel_pt_root()));
+
+    for (int i = 256; i < 512; i++) {
+        pml4e_t entry = kern_pml4->entries[i];
+        if (entry.present) {
+            entry.user_supervisor = 0;
+        }
+        new_pml4->entries[i] = entry;
+    }
+
+    return new_root;
+}
+
+__PRIVILEGED_CODE void destroy_user_pt_root(pmm::phys_addr_t root) {
+    if (root != 0) {
+        pmm::free_page(root);
+    }
+}
+
 } // namespace paging

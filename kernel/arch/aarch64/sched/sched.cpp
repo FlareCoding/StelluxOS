@@ -93,7 +93,10 @@ __PRIVILEGED_CODE void arch_init_task_context(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void arch_post_switch(task* next) {
-    (void)next;
+    if (paging::get_kernel_pt_root() != next->exec.pt_root) {
+        paging::set_kernel_pt_root(next->exec.pt_root);
+        paging::flush_tlb_all();
+    }
 }
 
 void yield() {
