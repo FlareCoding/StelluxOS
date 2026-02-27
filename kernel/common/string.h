@@ -31,6 +31,18 @@ int memcmp(const void* s1, const void* s2, size_t n);
  */
 int strcmp(const char* s1, const char* s2);
 
+/**
+ * @brief Compare at most n bytes of two strings.
+ * @return 0 if equal up to n bytes, negative if s1 < s2, positive if s1 > s2.
+ */
+int strncmp(const char* s1, const char* s2, size_t n);
+
+/**
+ * @brief Calculate the length of a string, bounded by maxlen.
+ * @return min(strlen(s), maxlen).
+ */
+size_t strnlen(const char* s, size_t maxlen);
+
 } // namespace string
 
 #endif // STELLUX_COMMON_STRING_H

@@ -47,4 +47,25 @@ int strcmp(const char* s1, const char* s2) {
            static_cast<int>(static_cast<uint8_t>(*s2));
 }
 
+int strncmp(const char* s1, const char* s2, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (s1[i] != s2[i]) {
+            return static_cast<int>(static_cast<uint8_t>(s1[i])) -
+                   static_cast<int>(static_cast<uint8_t>(s2[i]));
+        }
+        if (s1[i] == '\0') {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+size_t strnlen(const char* s, size_t maxlen) {
+    size_t len = 0;
+    while (len < maxlen && s[len] != '\0') {
+        ++len;
+    }
+    return len;
+}
+
 } // namespace string
