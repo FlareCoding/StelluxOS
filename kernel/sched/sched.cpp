@@ -111,7 +111,6 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
         return rc::reaper::RETRY_LATER;
     }
 
-    log::info("reaping task %u, exit code: %d", t->tid, t->exit_code);
     if (t->exec.mm_ctx) {
         mm::mm_context_release(t->exec.mm_ctx);
         t->exec.mm_ctx = nullptr;

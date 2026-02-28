@@ -96,10 +96,8 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     exec::loaded_image loaded;
     int32_t load_result = exec::load_elf("/initrd/bin/init", &loaded);
     if (load_result == exec::OK) {
-        log::info("ELF loaded: entry=0x%lx pt_root=0x%lx", loaded.entry_point, loaded.pt_root);
         sched::task* user_task = sched::create_user_task(&loaded, "init");
         if (user_task) {
-            log::info("User task created: tid=%u", user_task->tid);
             sched::enqueue(user_task);
         } else {
             log::error("Failed to create user task");
