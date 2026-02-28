@@ -33,7 +33,10 @@ inline uint32_t linux_map_to_mm(uint64_t flags) {
     if (flags & LINUX_MAP_PRIVATE) mm_flags |= mm::MM_MAP_PRIVATE;
     if (flags & LINUX_MAP_FIXED) mm_flags |= mm::MM_MAP_FIXED;
     if (flags & LINUX_MAP_ANONYMOUS) mm_flags |= mm::MM_MAP_ANONYMOUS;
-    if (flags & LINUX_MAP_STACK) mm_flags |= mm::MM_MAP_STACK;
+    // Linux MAP_STACK is effectively a no-op hint for anonymous mappings.
+    // Keep it accepted at the syscall boundary, but do not propagate it into
+    // mm_context_map_anonymous where MM_MAP_STACK is reserved for internal
+    // kernel stack mappings.
     if (flags & LINUX_MAP_FIXED_NOREPLACE) mm_flags |= mm::MM_MAP_FIXED_NOREPLACE;
     return mm_flags;
 }

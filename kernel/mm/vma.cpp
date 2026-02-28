@@ -37,7 +37,10 @@ inline bool ranges_overlap(uintptr_t a_start, uintptr_t a_end,
 }
 
 inline paging::page_flags_t prot_to_page_flags(uint32_t prot) {
-    paging::page_flags_t flags = paging::PAGE_USER;
+    paging::page_flags_t flags = 0;
+    if (prot != 0) {
+        flags |= paging::PAGE_USER;
+    }
     if (prot & MM_PROT_READ) {
         flags |= paging::PAGE_READ;
     }
@@ -400,7 +403,7 @@ __PRIVILEGED_CODE int32_t mm_context_add_vma(
     uint32_t prot,
     uint32_t vma_flags
 ) {
-    if (!mm_ctx || (prot & ~MM_PROT_MASK) != 0 || prot == 0) {
+    if (!mm_ctx || (prot & ~MM_PROT_MASK) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
     if (!is_page_aligned(start)) {
@@ -446,7 +449,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
     if (!mm_ctx || !out_addr) {
         return MM_CTX_ERR_INVALID_ARG;
     }
-    if ((prot & ~MM_PROT_MASK) != 0 || prot == 0) {
+    if ((prot & ~MM_PROT_MASK) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
     if ((map_flags & ~MM_MAP_ALLOWED_FLAGS) != 0) {
@@ -588,7 +591,7 @@ __PRIVILEGED_CODE int32_t mm_context_mprotect(
     if (!mm_ctx || !is_page_aligned(addr) || length == 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
-    if ((prot & ~MM_PROT_MASK) != 0 || prot == 0) {
+    if ((prot & ~MM_PROT_MASK) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
 

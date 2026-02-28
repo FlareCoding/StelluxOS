@@ -2,6 +2,7 @@
 
 #include "stlx_unit_test.h"
 #include "mm/vma.h"
+#include "mm/paging.h"
 #include "mm/pmm.h"
 #include "sync/mutex.h"
 
@@ -152,6 +153,37 @@ TEST(vma_test, mprotect_splits_and_merges_vmas) {
         mm::MM_PROT_READ | mm::MM_PROT_WRITE
     ), mm::MM_CTX_OK);
     EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(1));
+
+    mm::mm_context_release(mm_ctx);
+}
+
+TEST(vma_test, prot_none_map_and_mprotect_roundtrip) {
+    mm::mm_context* mm_ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(mm_ctx);
+
+    uintptr_t mapped = 0;
+    ASSERT_EQ(mm::mm_context_map_anonymous(
+        mm_ctx,
+        0,
+        PAGE,
+        0, // PROT_NONE
+        mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS,
+        &mapped
+    ), mm::MM_CTX_OK);
+
+    paging::page_flags_t flags = paging::get_page_flags(mapped, mm_ctx->pt_root);
+    EXPECT_TRUE((flags & paging::PAGE_USER) == 0);
+
+    ASSERT_EQ(mm::mm_context_mprotect(
+        mm_ctx,
+        mapped,
+        PAGE,
+        mm::MM_PROT_READ
+    ), mm::MM_CTX_OK);
+
+    flags = paging::get_page_flags(mapped, mm_ctx->pt_root);
+    EXPECT_TRUE((flags & paging::PAGE_USER) != 0);
+    EXPECT_TRUE((flags & paging::PAGE_READ) != 0);
 
     mm::mm_context_release(mm_ctx);
 }
