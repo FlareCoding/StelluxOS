@@ -7,9 +7,10 @@
 #
 # This script:
 #   1. Builds the kernel with PLATFORM=rpi4
-#   2. Creates a bootable image (RPi4 UEFI + Limine + Stellux)
-#   3. Unmounts any mounted partitions on the target device
-#   4. Writes the image to the SD card
+#   2. Builds the userland (init binary, etc.)
+#   3. Creates a bootable image (RPi4 UEFI + Limine + Stellux + initrd)
+#   4. Unmounts any mounted partitions on the target device
+#   5. Writes the image to the SD card
 #
 # The device argument should be the whole disk (e.g., /dev/sdb),
 # NOT a partition (e.g., /dev/sdb1).
@@ -91,13 +92,16 @@ done
 [[ -f "$UEFI_DIR/RPI_EFI.fd" ]] || die "RPi4 UEFI firmware not found. Run: make rpi4-firmware"
 [[ -f "$LIMINE_DIR/BOOTAA64.EFI" ]] || die "Limine not found. Run: make limine"
 
-# --- Step 1: Build kernel ---
+# --- Step 1: Build kernel and userland ---
 
 info "Building kernel (ARCH=aarch64 PLATFORM=rpi4)..."
 make -C "$PROJECT_DIR" clean
 make -C "$PROJECT_DIR" kernel ARCH=aarch64 PLATFORM=rpi4
 
 [[ -f "$KERNEL" ]] || die "Kernel build failed: $KERNEL not found"
+
+info "Building userland (ARCH=aarch64)..."
+make -C "$PROJECT_DIR" userland ARCH=aarch64
 
 # --- Step 2: Create image ---
 
@@ -126,10 +130,9 @@ mcopy -i "$IMG"@@1M "$KERNEL" ::/kernel.elf
 mcopy -i "$IMG"@@1M "$LIMINE_DIR/limine.conf" ::/limine.conf
 
 INITRD_CPIO="$PROJECT_DIR/build/initrd.cpio"
-if [[ ! -f "$INITRD_CPIO" ]]; then
-    info "Building initrd.cpio..."
-    (cd "$PROJECT_DIR/initrd" && find . -mindepth 1 | cpio -o -H newc > "$INITRD_CPIO" 2>/dev/null)
-fi
+info "Creating initrd.cpio..."
+mkdir -p "$PROJECT_DIR/build"
+(cd "$PROJECT_DIR/initrd" && find . -mindepth 1 | cpio -o -H newc > "$INITRD_CPIO" 2>/dev/null)
 mcopy -i "$IMG"@@1M "$INITRD_CPIO" ::/initrd.cpio
 
 # --- Step 3: Unmount & flash ---

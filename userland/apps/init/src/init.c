@@ -1,5 +1,6 @@
-#include <stdlib.h>
+#include <stdio.h>
 
 int main() {
-    exit(4554);
+    printf("hello from userspace!\n");
+    return 0;
 }

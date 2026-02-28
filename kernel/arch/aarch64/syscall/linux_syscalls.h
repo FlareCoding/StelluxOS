@@ -5,6 +5,8 @@
 
 namespace syscall::linux_nr {
 
+constexpr uint64_t IOCTL            = 29;
+constexpr uint64_t WRITEV           = 66;
 constexpr uint64_t EXIT             = 93;
 constexpr uint64_t EXIT_GROUP       = 94;
 constexpr uint64_t SET_TID_ADDRESS  = 96;

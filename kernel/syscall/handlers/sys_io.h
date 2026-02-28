@@ -1,0 +1,9 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_IO_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_IO_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(writev);
+DECLARE_SYSCALL(ioctl);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_IO_H
