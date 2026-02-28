@@ -1120,21 +1120,16 @@ __PRIVILEGED_CODE pmm::phys_addr_t create_user_pt_root() {
         return 0;
     }
 
+    // aarch64 uses split translation roots:
+    // - TTBR1_EL1: kernel mappings
+    // - TTBR0_EL1: user mappings
+    //
+    // User roots must therefore start empty and contain only user-space
+    // mappings. Copying kernel L0 entries into TTBR0 would alias kernel
+    // table hierarchy into user roots and can introduce EL0 permission
+    // restrictions through table-level AP limits.
     auto* new_l0 = static_cast<uint64_t*>(phys_to_virt(new_root));
     string::memset(new_l0, 0, PAGE_SIZE_4KB);
-
-    sync::irq_lock_guard guard(g_pt_lock);
-    auto* kern_l0 = static_cast<uint64_t*>(phys_to_virt(get_kernel_pt_root()));
-
-    for (int i = 0; i < 512; i++) {
-        uint64_t entry = kern_l0[i];
-        bool valid = entry & 1;
-        bool is_table = entry & 2;
-        if (valid && is_table) {
-            entry |= (1ULL << 61); // ap_table[0] = 1: no EL0 access below
-        }
-        new_l0[i] = entry;
-    }
 
     return new_root;
 }
