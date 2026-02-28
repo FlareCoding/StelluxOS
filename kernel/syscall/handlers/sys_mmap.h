@@ -1,0 +1,10 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_MMAP_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_MMAP_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(mmap);
+DECLARE_SYSCALL(munmap);
+DECLARE_SYSCALL(mprotect);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_MMAP_H

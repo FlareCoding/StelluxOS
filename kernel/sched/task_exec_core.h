@@ -6,6 +6,8 @@
 #include "sched/thread_cpu_context.h"
 #include "sched/fpu_state.h"
 
+namespace mm { struct mm_context; }
+
 namespace sched {
 
 constexpr uint32_t TASK_FLAG_ELEVATED    = (1 << 0);  // Currently at ring 0 / EL1
@@ -25,6 +27,7 @@ struct task_exec_core {
     uint32_t  on_cpu; // 1 while context is live and executing on a CPU
     uint64_t  pt_root; // physical address of top-level page table (CR3 / TTBR1)
     uint64_t  user_pt_root; // physical address of user-space page table (= pt_root on x86 / TTBR0 on aarch64)
+    mm::mm_context* mm_ctx; // owning reference to process address-space metadata
     fpu_state fpu_ctx;
     uint64_t  tls_base;    // thread-local storage base (FS_BASE on x86, TPIDR_EL0 on aarch64)
 };
@@ -36,6 +39,7 @@ constexpr size_t TASK_SYS_STACK_OFFSET      = __builtin_offsetof(task_exec_core,
 constexpr size_t TASK_CPU_CTX_OFFSET        = __builtin_offsetof(task_exec_core, cpu_ctx);
 constexpr size_t TASK_PT_ROOT_OFFSET        = __builtin_offsetof(task_exec_core, pt_root);
 constexpr size_t TASK_USER_PT_ROOT_OFFSET   = __builtin_offsetof(task_exec_core, user_pt_root);
+constexpr size_t TASK_MM_CTX_OFFSET         = __builtin_offsetof(task_exec_core, mm_ctx);
 constexpr size_t TASK_FPU_CTX_OFFSET        = __builtin_offsetof(task_exec_core, fpu_ctx);
 
 // Static assertions to ensure assembly offsets remain in sync

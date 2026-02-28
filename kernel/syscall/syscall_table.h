@@ -10,7 +10,9 @@ using handler_t = int64_t (*)(uint64_t, uint64_t, uint64_t,
 
 constexpr uint64_t MAX_SYSCALL_NUM = 2048;
 constexpr int64_t EBADF  = -9;
+constexpr int64_t ENOMEM = -12;
 constexpr int64_t EINVAL = -22;
+constexpr int64_t EEXIST = -17;
 constexpr int64_t ENOTTY = -25;
 constexpr int64_t ENOSYS = -38;
 

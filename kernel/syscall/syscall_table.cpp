@@ -4,6 +4,7 @@
 #include "syscall/handlers/sys_task.h"
 #include "syscall/handlers/sys_elevate.h"
 #include "syscall/handlers/sys_io.h"
+#include "syscall/handlers/sys_mmap.h"
 
 namespace syscall {
 
@@ -15,6 +16,9 @@ __PRIVILEGED_CODE void init_syscall_table() {
 
     REGISTER_SYSCALL(linux_nr::IOCTL,           ioctl);
     REGISTER_SYSCALL(linux_nr::WRITEV,          writev);
+    REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
+    REGISTER_SYSCALL(linux_nr::MPROTECT,        mprotect);
+    REGISTER_SYSCALL(linux_nr::MUNMAP,          munmap);
     REGISTER_SYSCALL(linux_nr::EXIT,            exit);
     REGISTER_SYSCALL(linux_nr::EXIT_GROUP,      exit_group);
     REGISTER_SYSCALL(linux_nr::SET_TID_ADDRESS, set_tid_address);

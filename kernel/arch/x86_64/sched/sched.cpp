@@ -30,6 +30,7 @@ static task_exec_core g_boot_exec = {
     .on_cpu = 0,
     .pt_root = 0,
     .user_pt_root = 0,
+    .mm_ctx = nullptr,
     .fpu_ctx = {},
     .tls_base = 0,
 };
@@ -41,6 +42,7 @@ __PRIVILEGED_CODE int32_t init_boot_task() {
     g_boot_exec.task_stack_top = reinterpret_cast<uintptr_t>(stack_top);
     g_boot_exec.system_stack_top = x86::gdt::get_bsp_kernel_stack_top();
     g_boot_exec.pt_root = paging::get_kernel_pt_root();
+    g_boot_exec.mm_ctx = nullptr;
     g_boot_exec.on_cpu = 1;
 
     this_cpu(current_task_exec) = &g_boot_exec;

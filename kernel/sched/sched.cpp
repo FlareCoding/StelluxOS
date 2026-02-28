@@ -19,6 +19,7 @@
 #include "rc/reaper.h"
 #include "exec/elf.h"
 #include "mm/pmm.h"
+#include "mm/vma.h"
 #include "common/string.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
@@ -41,9 +42,6 @@ constexpr uint16_t TASK_GUARD_PAGES = 1;
 
 constexpr size_t SYSTEM_STACK_PAGES = 4;
 constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
-
-constexpr uintptr_t USER_STACK_TOP   = 0x7FFFFFF00000;
-constexpr size_t    USER_STACK_PAGES = 8; // 32KB
 
 constexpr uint64_t TLB_SYNC_CPU_IGNORED = ~0ULL;
 
@@ -114,6 +112,11 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
     }
 
     log::info("reaping task %u, exit code: %d", t->tid, t->exit_code);
+    if (t->exec.mm_ctx) {
+        mm::mm_context_release(t->exec.mm_ctx);
+        t->exec.mm_ctx = nullptr;
+        t->exec.user_pt_root = 0;
+    }
     vmm::free(t->task_stack_base);
     vmm::free(t->sys_stack_base);
     heap::kfree_delete(t);
@@ -373,6 +376,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->exec.system_stack_top = sys_stack_top;
     t->exec.pt_root = paging::get_kernel_pt_root();
     t->exec.user_pt_root = 0;
+    t->exec.mm_ctx = nullptr;
     t->exec.tls_base = 0;
     t->task_stack_base = task_stack_base;
     t->sys_stack_base = sys_stack_base;
@@ -459,8 +463,15 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE task* create_user_task(
-    const exec::loaded_image& image, const char* name
+    exec::loaded_image* image, const char* name
 ) {
+    if (!image || !image->mm_ctx) {
+        log::error("sched: invalid loaded image for user task");
+        return nullptr;
+    }
+
+    mm::mm_context* mm_ctx = image->mm_ctx;
+
     task* t = heap::kalloc_new<task>();
     if (!t) {
         log::error("sched: failed to allocate user task struct");
@@ -477,56 +488,44 @@ __PRIVILEGED_CODE task* create_user_task(
         return nullptr;
     }
 
-    // User stack: allocate physical pages and map into user page table
-    uintptr_t user_stack_base = USER_STACK_TOP - USER_STACK_PAGES * pmm::PAGE_SIZE;
-    pmm::phys_addr_t last_stack_page_phys = 0;
-    for (size_t i = 0; i < USER_STACK_PAGES; i++) {
-        pmm::phys_addr_t phys = pmm::alloc_page();
-        if (phys == 0) {
-            log::error("sched: failed to allocate user stack page");
-            for (size_t j = 0; j < i; j++) {
-                uintptr_t va = user_stack_base + j * pmm::PAGE_SIZE;
-                pmm::phys_addr_t p = paging::get_physical(va, image.pt_root);
-                paging::unmap_page(va, image.pt_root);
-                if (p != 0) pmm::free_page(p);
-            }
-            vmm::free(sys_stack_base);
-            heap::kfree_delete(t);
-            return nullptr;
-        }
-
-        string::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
-        if (i == USER_STACK_PAGES - 1) {
-            last_stack_page_phys = phys;
-        }
-
-        uintptr_t va = user_stack_base + i * pmm::PAGE_SIZE;
-        int32_t rc = paging::map_page(va, phys, paging::PAGE_USER_RW, image.pt_root);
-        if (rc != paging::OK) {
-            log::error("sched: failed to map user stack page");
-            pmm::free_page(phys);
-            for (size_t j = 0; j < i; j++) {
-                uintptr_t prev_va = user_stack_base + j * pmm::PAGE_SIZE;
-                pmm::phys_addr_t p = paging::get_physical(prev_va, image.pt_root);
-                paging::unmap_page(prev_va, image.pt_root);
-                if (p != 0) {
-                    pmm::free_page(p);
-                }
-            }
-            vmm::free(sys_stack_base);
-            heap::kfree_delete(t);
-            return nullptr;
-        }
+    uintptr_t user_stack_base = mm::USER_STACK_TOP - mm::USER_STACK_PAGES * pmm::PAGE_SIZE;
+    uintptr_t mapped_stack_addr = 0;
+    uint32_t stack_map_flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS |
+        mm::MM_MAP_FIXED | mm::MM_MAP_STACK;
+    int32_t map_rc = mm::mm_context_map_anonymous(
+        mm_ctx,
+        user_stack_base,
+        mm::USER_STACK_PAGES * pmm::PAGE_SIZE,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+        stack_map_flags,
+        &mapped_stack_addr
+    );
+    if (map_rc != mm::MM_CTX_OK) {
+        log::error("sched: failed to map user stack VMA (rc=%d)", map_rc);
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
     }
 
-    uintptr_t user_sp = setup_user_stack(last_stack_page_phys, USER_STACK_TOP, image, name);
+    pmm::phys_addr_t last_stack_page_phys =
+        paging::get_physical(mm::USER_STACK_TOP - pmm::PAGE_SIZE, mm_ctx->pt_root);
+    if (last_stack_page_phys == 0) {
+        log::error("sched: failed to resolve user stack top page");
+        mm::mm_context_unmap(mm_ctx, mapped_stack_addr, mm::USER_STACK_PAGES * pmm::PAGE_SIZE);
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
+
+    uintptr_t user_sp = setup_user_stack(last_stack_page_phys, mm::USER_STACK_TOP, *image, name);
 
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
     t->exec.task_stack_top = user_sp;
     t->exec.system_stack_top = sys_stack_top;
-    t->exec.pt_root = paging::supervisor_pt_root_for_user_task(image.pt_root);
-    t->exec.user_pt_root = image.pt_root;
+    t->exec.pt_root = paging::supervisor_pt_root_for_user_task(mm_ctx->pt_root);
+    t->exec.user_pt_root = mm_ctx->pt_root;
+    t->exec.mm_ctx = mm_ctx;
     t->exec.tls_base = 0;
     t->task_stack_base = 0; // user stack is not VMM-allocated
     t->sys_stack_base = sys_stack_base;
@@ -535,7 +534,7 @@ __PRIVILEGED_CODE task* create_user_task(
     for (size_t i = 0; i < sizeof(thread_cpu_context); i++) {
         ctx_bytes[i] = 0;
     }
-    auto entry = reinterpret_cast<void(*)(void*)>(image.entry_point);
+    auto entry = reinterpret_cast<void(*)(void*)>(image->entry_point);
     arch_init_task_context(t, entry, nullptr);
 
     t->exec.on_cpu = 0;
@@ -554,6 +553,9 @@ __PRIVILEGED_CODE task* create_user_task(
     }
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
+
+    image->mm_ctx = nullptr;
+    image->pt_root = 0;
 
     return t;
 }
@@ -579,6 +581,7 @@ __PRIVILEGED_CODE int32_t init() {
     }
     idle->exec.pt_root = paging::get_kernel_pt_root();
     idle->exec.user_pt_root = 0;
+    idle->exec.mm_ctx = nullptr;
     idle->exec.flags |= TASK_FLAG_IDLE;
     idle->tid = 0;
     idle->state = TASK_STATE_RUNNING;
@@ -641,6 +644,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->exec.system_stack_top = system_stack_top;
     idle->exec.pt_root = paging::get_kernel_pt_root();
     idle->exec.user_pt_root = 0;
+    idle->exec.mm_ctx = nullptr;
     idle->task_stack_base = 0;
     idle->sys_stack_base = 0;
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
