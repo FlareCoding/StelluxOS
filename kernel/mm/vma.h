@@ -64,7 +64,11 @@ struct mm_context final : rc::ref_counted<mm_context> {
     sync::mutex      lock;
     vma_tree         vmas;
 
-    static void ref_destroy(mm_context* self);
+    /**
+     * @brief Destroy mm_context and reclaim all mapped resources.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void ref_destroy(mm_context* self);
 };
 
 /**

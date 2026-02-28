@@ -76,7 +76,7 @@ void free_vma(vma* node) {
     }
 }
 
-void unmap_and_free_pages(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
+__PRIVILEGED_CODE void unmap_and_free_pages(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
     for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
         if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
             continue;
@@ -90,7 +90,7 @@ void unmap_and_free_pages(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
     }
 }
 
-void rollback_new_pages(mm_context* mm_ctx, uintptr_t start, uintptr_t mapped_end) {
+__PRIVILEGED_CODE void rollback_new_pages(mm_context* mm_ctx, uintptr_t start, uintptr_t mapped_end) {
     unmap_and_free_pages(mm_ctx, start, mapped_end);
 }
 
@@ -132,7 +132,7 @@ vma* split_vma_locked(mm_context* mm_ctx, vma* node, uintptr_t split_addr) {
     return right;
 }
 
-int32_t unmap_range_locked(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
+__PRIVILEGED_CODE int32_t unmap_range_locked(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
     for (;;) {
         vma* overlap = vma_find_overlap_locked(mm_ctx, start, end);
         if (!overlap || overlap->start >= end) {
@@ -173,7 +173,9 @@ bool range_fully_mapped_locked(mm_context* mm_ctx, uintptr_t start, uintptr_t en
     return true;
 }
 
-int32_t apply_page_protection(mm_context* mm_ctx, uintptr_t start, uintptr_t end, uint32_t prot) {
+__PRIVILEGED_CODE int32_t apply_page_protection(
+    mm_context* mm_ctx, uintptr_t start, uintptr_t end, uint32_t prot
+) {
     paging::page_flags_t page_flags = prot_to_page_flags(prot);
     for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
         if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
@@ -188,7 +190,7 @@ int32_t apply_page_protection(mm_context* mm_ctx, uintptr_t start, uintptr_t end
 
 } // namespace
 
-void mm_context::ref_destroy(mm_context* self) {
+__PRIVILEGED_CODE void mm_context::ref_destroy(mm_context* self) {
     if (!self) {
         return;
     }
