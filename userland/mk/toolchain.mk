@@ -18,9 +18,13 @@ else
   $(error Unsupported ARCH=$(ARCH))
 endif
 
+# Keep userland header resolution hermetic to the musl sysroot so host/cross
+# distro headers (e.g., /usr/aarch64-linux-gnu/include) cannot leak in.
 CFLAGS_COMMON := \
 	--target=$(TARGET_TRIPLE) \
 	--sysroot=$(SYSROOT) \
+	-nostdlibinc \
+	-isystem $(SYSROOT)/include \
 	-std=c11 -O2 -g \
 	-Wall -Wextra -Werror \
 	-fno-stack-protector
