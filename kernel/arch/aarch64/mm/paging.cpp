@@ -129,8 +129,10 @@ __PRIVILEGED_CODE static page_desc_t flags_to_page_desc(pmm::phys_addr_t phys, p
         desc.uxn = 1;  // User execute never (kernel only)
     }
 
-    // Global flag
-    desc.ng = 0;  // Always global for kernel-space mappings
+    // Global flag:
+    // - User mappings should be not-global (ASID-scoped)
+    // - Kernel mappings remain global
+    desc.ng = (flags & PAGE_USER) ? 1 : 0;
 
     // Memory type via MAIR index
     uint32_t mem_type = flags & PAGE_TYPE_MASK;
@@ -206,7 +208,7 @@ __PRIVILEGED_CODE static block_desc_t flags_to_block_desc_2mb(pmm::phys_addr_t p
         desc.uxn = 1;
     }
 
-    desc.ng = 0;
+    desc.ng = (flags & PAGE_USER) ? 1 : 0;
 
     uint32_t mem_type = flags & PAGE_TYPE_MASK;
     if (mem_type == PAGE_DEVICE) {
@@ -272,7 +274,7 @@ __PRIVILEGED_CODE static block_desc_t flags_to_block_desc_1gb(pmm::phys_addr_t p
         desc.uxn = 1;
     }
 
-    desc.ng = 0;
+    desc.ng = (flags & PAGE_USER) ? 1 : 0;
 
     uint32_t mem_type = flags & PAGE_TYPE_MASK;
     if (mem_type == PAGE_DEVICE) {
@@ -1120,21 +1122,16 @@ __PRIVILEGED_CODE pmm::phys_addr_t create_user_pt_root() {
         return 0;
     }
 
+    // aarch64 uses split translation roots:
+    // - TTBR1_EL1: kernel mappings
+    // - TTBR0_EL1: user mappings
+    //
+    // User roots must therefore start empty and contain only user-space
+    // mappings. Copying kernel L0 entries into TTBR0 would alias kernel
+    // table hierarchy into user roots and can introduce EL0 permission
+    // restrictions through table-level AP limits.
     auto* new_l0 = static_cast<uint64_t*>(phys_to_virt(new_root));
     string::memset(new_l0, 0, PAGE_SIZE_4KB);
-
-    sync::irq_lock_guard guard(g_pt_lock);
-    auto* kern_l0 = static_cast<uint64_t*>(phys_to_virt(get_kernel_pt_root()));
-
-    for (int i = 0; i < 512; i++) {
-        uint64_t entry = kern_l0[i];
-        bool valid = entry & 1;
-        bool is_table = entry & 2;
-        if (valid && is_table) {
-            entry |= (1ULL << 61); // ap_table[0] = 1: no EL0 access below
-        }
-        new_l0[i] = entry;
-    }
 
     return new_root;
 }
