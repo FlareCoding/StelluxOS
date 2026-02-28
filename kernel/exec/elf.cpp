@@ -207,6 +207,33 @@ __PRIVILEGED_CODE static int32_t load_segments(
     return OK;
 }
 
+__PRIVILEGED_CODE static void cleanup_mapped_segment_pages(
+    mm::mm_context* mm_ctx,
+    const elf_image& img
+) {
+    if (!mm_ctx || mm_ctx->pt_root == 0) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < img.segment_count; i++) {
+        const auto& seg = img.segments[i];
+        uintptr_t seg_start = pmm::page_align_down(seg.vaddr);
+        uintptr_t seg_end = pmm::page_align_up(seg.vaddr + seg.memsz);
+
+        for (uintptr_t vaddr = seg_start; vaddr < seg_end; vaddr += pmm::PAGE_SIZE) {
+            if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
+                continue;
+            }
+
+            pmm::phys_addr_t phys = paging::get_physical(vaddr, mm_ctx->pt_root);
+            paging::unmap_page(vaddr, mm_ctx->pt_root);
+            if (phys != 0) {
+                pmm::free_page(phys);
+            }
+        }
+    }
+}
+
 int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
     if (!out) {
         return ERR_INVALID_PHDR;
@@ -231,6 +258,7 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
         } else {
             load_rc = load_segments(buffer, size, img, mm_ctx->pt_root);
             if (load_rc != OK) {
+                cleanup_mapped_segment_pages(mm_ctx, img);
                 mm::mm_context_release(mm_ctx);
                 mm_ctx = nullptr;
             } else {
@@ -249,6 +277,7 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
                         flags
                     );
                     if (rc != mm::MM_CTX_OK) {
+                        cleanup_mapped_segment_pages(mm_ctx, img);
                         mm::mm_context_release(mm_ctx);
                         mm_ctx = nullptr;
                         load_rc = ERR_PAGE_MAP;
