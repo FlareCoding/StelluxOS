@@ -48,6 +48,18 @@ void free_test_va(paging::virt_addr_t va) {
     kva::free(static_cast<uintptr_t>(va));
 }
 
+// Pick a low-canonical VA outside current physical span so kernel HHDM aliases
+// are expected to be unmapped, making it suitable for user-root isolation tests.
+paging::virt_addr_t user_test_va() {
+    constexpr uint64_t LOW_CANONICAL_MAX = (1ULL << 47) - paging::PAGE_SIZE_4KB;
+    uint64_t candidate = pmm::page_align_up(
+        g_boot_info.max_phys_addr + paging::PAGE_SIZE_2MB);
+    if (candidate == 0 || candidate > LOW_CANONICAL_MAX) {
+        candidate = 0x0000004000000000ULL; // 256 GB
+    }
+    return static_cast<paging::virt_addr_t>(candidate);
+}
+
 } // namespace
 
 BEFORE_ALL(paging_test, paging_before_all);
@@ -258,5 +270,50 @@ TEST(paging_test, phys_to_virt_consistency) {
     uintptr_t expected = phys + g_boot_info.hhdm_offset;
     EXPECT_EQ(reinterpret_cast<uintptr_t>(virt), expected);
 
+    pmm::free_page(phys);
+}
+
+TEST(paging_test, user_pt_root_mapping_is_isolated_from_kernel_root) {
+    pmm::phys_addr_t user_root = paging::create_user_pt_root();
+    ASSERT_NE(user_root, static_cast<pmm::phys_addr_t>(0));
+
+    pmm::phys_addr_t phys = pmm::alloc_page();
+    ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
+
+    pmm::phys_addr_t kernel_root = paging::get_kernel_pt_root();
+    paging::virt_addr_t va = user_test_va();
+
+    ASSERT_FALSE(paging::is_mapped(va, user_root));
+    ASSERT_FALSE(paging::is_mapped(va, kernel_root));
+
+    ASSERT_EQ(paging::map_page(va, phys, paging::PAGE_USER_RW, user_root), paging::OK);
+    EXPECT_TRUE(paging::is_mapped(va, user_root));
+    EXPECT_FALSE(paging::is_mapped(va, kernel_root));
+
+    ASSERT_EQ(paging::unmap_page(va, user_root), paging::OK);
+    paging::destroy_user_pt_root(user_root);
+    pmm::free_page(phys);
+}
+
+TEST(paging_test, user_mapping_is_not_global) {
+    pmm::phys_addr_t user_root = paging::create_user_pt_root();
+    ASSERT_NE(user_root, static_cast<pmm::phys_addr_t>(0));
+
+    pmm::phys_addr_t phys = pmm::alloc_page();
+    ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
+
+    paging::virt_addr_t va = user_test_va() + paging::PAGE_SIZE_4KB;
+    ASSERT_FALSE(paging::is_mapped(va, user_root));
+
+    ASSERT_EQ(paging::map_page(va, phys, paging::PAGE_USER_RW, user_root), paging::OK);
+
+    paging::page_flags_t flags = paging::get_page_flags(va, user_root);
+    EXPECT_TRUE((flags & paging::PAGE_READ) != 0);
+    EXPECT_TRUE((flags & paging::PAGE_WRITE) != 0);
+    EXPECT_TRUE((flags & paging::PAGE_USER) != 0);
+    EXPECT_FALSE((flags & paging::PAGE_GLOBAL) != 0);
+
+    ASSERT_EQ(paging::unmap_page(va, user_root), paging::OK);
+    paging::destroy_user_pt_root(user_root);
     pmm::free_page(phys);
 }
