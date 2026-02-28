@@ -14,8 +14,14 @@ constexpr int64_t EINVAL = -22;
 
 extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
 
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void init_syscall_table();
 
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void register_arch_syscalls();
 
 } // namespace syscall

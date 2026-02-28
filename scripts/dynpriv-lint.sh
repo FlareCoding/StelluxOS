@@ -44,6 +44,10 @@ error() {
 # ────────────────────────────────────────────────────────────────────────────
 extract_priv_funcs() {
     awk '
+    /^[[:space:]]*#[[:space:]]*define/ { in_macro = 1 }
+    in_macro && /\\[[:space:]]*$/ { next }
+    in_macro { in_macro = 0; next }
+
     /__PRIVILEGED_CODE/ {
         # Skip if inside a block comment (continuation line starting with *)
         if ($0 ~ /^[[:space:]]*\*/) next
