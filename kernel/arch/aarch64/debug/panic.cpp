@@ -6,7 +6,6 @@
 #include "debug/stacktrace.h"
 #include "common/logging.h"
 #include "hw/cpu.h"
-#include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 
@@ -147,9 +146,6 @@ static void print_registers(const aarch64::trap_frame* tf) {
 }
 
 [[noreturn]] __PRIVILEGED_CODE void on_trap(aarch64::trap_frame* tf, const char* kind) {
-    if (!dynpriv::is_elevated()) {
-        dynpriv::elevate();
-    }
     cpu::irq_disable();
 
     uint64_t esr = tf->esr;

@@ -11,7 +11,6 @@
 #include "sched/sched.h"
 #include "rc/reaper.h"
 #include "smp/smp.h"
-#include "dynpriv/dynpriv.h"
 #include "debug/debug.h"
 #include "sched/task.h"
 #include "fs/fs.h"
@@ -21,14 +20,6 @@
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
 #endif
-
-void log_cpu_id_entry(void*) {
-    RUN_ELEVATED({
-        sched::sleep_ms(sched::current()->tid * 100);
-        log::info("Task %u is on core %u!", sched::current()->tid, percpu::current_cpu_id());
-    });
-    sched::exit(0);
-}
 
 /**
  * @brief Kernel entry point called by bootloader.
@@ -109,17 +100,13 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         sched::task* user_task = sched::create_user_task(loaded, "init");
         if (user_task) {
             log::info("User task created: tid=%u", user_task->tid);
+            sched::enqueue(user_task);
         } else {
             log::error("Failed to create user task");
             exec::unload_elf(&loaded);
         }
     } else {
         log::error("ELF load of /initrd/bin/init failed: %d", load_result);
-    }
-
-    for (uint32_t i = 0; i < smp::cpu_count() * 4; i++) {
-        sched::task* t = sched::create_kernel_task(log_cpu_id_entry, nullptr, "log_cpu_id_entry");
-        sched::enqueue(t);
     }
 
     while (true) {

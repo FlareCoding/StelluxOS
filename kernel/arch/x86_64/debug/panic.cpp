@@ -6,7 +6,6 @@
 #include "debug/stacktrace.h"
 #include "common/logging.h"
 #include "hw/cpu.h"
-#include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 
@@ -108,9 +107,6 @@ static void print_registers(const x86::trap_frame* tf, uint64_t cr2) {
 }
 
 [[noreturn]] __PRIVILEGED_CODE void on_trap(x86::trap_frame* tf) {
-    if (!dynpriv::is_elevated()) {
-        dynpriv::elevate();
-    }
     cpu::irq_disable();
 
     uint64_t cr2 = 0;
