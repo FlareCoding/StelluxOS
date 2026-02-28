@@ -70,6 +70,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             clang lld llvm \
+            libclang-rt-dev \
+            gcc-aarch64-linux-gnu \
             mtools gdisk xorriso
 
       - name: Fetch Limine EFI binaries
@@ -127,6 +129,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             clang lld llvm \
+            libclang-rt-dev \
+            gcc-aarch64-linux-gnu \
             qemu-system-x86 qemu-system-arm \
             ovmf qemu-efi-aarch64 \
             mtools gdisk xorriso

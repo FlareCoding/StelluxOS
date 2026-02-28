@@ -7,6 +7,9 @@ namespace syscall::linux_nr {
 
 constexpr uint64_t IOCTL            = 29;
 constexpr uint64_t WRITEV           = 66;
+constexpr uint64_t MUNMAP           = 215;
+constexpr uint64_t MMAP             = 222;
+constexpr uint64_t MPROTECT         = 226;
 constexpr uint64_t EXIT             = 93;
 constexpr uint64_t EXIT_GROUP       = 94;
 constexpr uint64_t SET_TID_ADDRESS  = 96;

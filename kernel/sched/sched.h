@@ -51,13 +51,13 @@ task* create_kernel_task(void (*entry)(void*), void* arg, const char* name,
  * @brief Create a new user task from a loaded ELF image.
  * Allocates a user stack in the user page table and a system stack in kernel VA.
  * Returns in TASK_STATE_CREATED (not yet enqueued).
- * @param image Loaded ELF image with entry_point and pt_root.
+ * @param image Loaded ELF image with entry point and mm context ownership.
  * @param name Debug name (not copied, caller must ensure lifetime).
  * @return task pointer on success, nullptr on failure.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE
-task* create_user_task(const exec::loaded_image& image, const char* name);
+task* create_user_task(exec::loaded_image* image, const char* name);
 
 /**
  * @brief Add a task to a runqueue, distributing across CPUs via round-robin.

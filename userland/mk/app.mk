@@ -22,11 +22,11 @@ all: $(TARGET)
 $(TARGET): $(OBJECTS)
 	$(UQ)mkdir -p $(dir $@)
 	@echo "[LD]  $(APP_NAME) ($(ARCH))"
-	$(UQ)$(CC) -nostdlib -fuse-ld=lld --target=$(ARCH)-linux-musl \
+	$(UQ)$(CC) -nostdlib -fuse-ld=lld --target=$(TARGET_TRIPLE) \
 		-static -o $@ \
 		$(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
 		$(OBJECTS) \
-		-L$(SYSROOT)/lib -lc \
+		-L$(SYSROOT)/lib -Wl,--start-group -lc $(BUILTINS_LIB) -Wl,--end-group \
 		$(SYSROOT)/lib/crtn.o
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c

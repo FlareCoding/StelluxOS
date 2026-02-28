@@ -3,6 +3,8 @@
 
 #include "common/types.h"
 
+namespace mm { struct mm_context; }
+
 namespace exec {
 
 struct elf_segment {
@@ -44,7 +46,8 @@ constexpr int32_t ERR_PAGE_MAP          = -15;
 
 struct loaded_image {
     uint64_t entry_point;
-    uint64_t pt_root;
+    uint64_t pt_root; // convenience mirror of mm_ctx->pt_root
+    mm::mm_context* mm_ctx; // owning reference, transferred to task on success
     uint32_t segment_count;
     uint64_t phdr_vaddr;
     uint16_t phentsize;

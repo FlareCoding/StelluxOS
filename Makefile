@@ -464,6 +464,8 @@ check-limine:
 deps:
 	@echo "Installing required packages (Debian/Ubuntu)..."
 	sudo apt install -y clang lld llvm \
+		libclang-rt-dev \
+		gcc-aarch64-linux-gnu \
 		qemu-system-x86 qemu-system-arm \
 		ovmf qemu-efi-aarch64 \
 		mtools gdisk xorriso \
@@ -539,6 +541,8 @@ toolchain-check:
 		(which clang > /dev/null 2>&1 && clang --version | head -1 || echo "NOT FOUND")
 	@printf "%-24s" "clang++:" && \
 		(which clang++ > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "aarch64-linux-gnu-gcc:" && \
+		(which aarch64-linux-gnu-gcc > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
 	@printf "%-24s" "ld.lld:" && \
 		(which ld.lld > /dev/null 2>&1 && ld.lld --version | head -1 || echo "NOT FOUND")
 	@printf "%-24s" "llvm-objcopy:" && \
@@ -567,6 +571,26 @@ toolchain-check:
 		(test -f userland/sysroot/x86_64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
 	@printf "%-24s" "musl (aarch64):" && \
 		(test -f userland/sysroot/aarch64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
+	@printf "%-24s" "builtins (x86_64):" && \
+		(BRT=$$(clang --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+		 if [ -f "$$BRT" ]; then \
+			echo "$$BRT"; \
+		 elif which x86_64-linux-gnu-gcc > /dev/null 2>&1; then \
+			BGCC=$$(x86_64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
+			[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND"; \
+		 else \
+			echo "NOT FOUND"; \
+		 fi)
+	@printf "%-24s" "builtins (aarch64):" && \
+		(BRT=$$(clang --target=aarch64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+		 if [ -f "$$BRT" ]; then \
+			echo "$$BRT"; \
+		 elif which aarch64-linux-gnu-gcc > /dev/null 2>&1; then \
+			BGCC=$$(aarch64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
+			[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND"; \
+		 else \
+			echo "NOT FOUND"; \
+		 fi)
 	@echo ""
 	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', and/or 'make rpi4-firmware'"
 

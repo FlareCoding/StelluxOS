@@ -5,6 +5,7 @@
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "mm/vma.h"
 #include "dynpriv/dynpriv.h"
 #include "common/string.h"
 
@@ -132,6 +133,14 @@ static paging::page_flags_t elf_flags_to_page_flags(uint32_t elf_flags) {
     return flags;
 }
 
+static uint32_t elf_flags_to_vma_prot(uint32_t elf_flags) {
+    uint32_t prot = 0;
+    if (elf_flags & elf64::PF_R) prot |= mm::MM_PROT_READ;
+    if (elf_flags & elf64::PF_W) prot |= mm::MM_PROT_WRITE;
+    if (elf_flags & elf64::PF_X) prot |= mm::MM_PROT_EXEC;
+    return prot;
+}
+
 __PRIVILEGED_CODE static int32_t load_segments(
     const void* buffer,
     size_t buffer_size,
@@ -198,40 +207,83 @@ __PRIVILEGED_CODE static int32_t load_segments(
     return OK;
 }
 
-__PRIVILEGED_CODE static void unload_elf_pages(uint64_t pt_root) {
-    constexpr uint64_t SCAN_END = 16 * 1024 * 1024;
-    for (uint64_t vaddr = 0; vaddr < SCAN_END; vaddr += pmm::PAGE_SIZE) {
-        if (paging::is_mapped(vaddr, pt_root)) {
-            pmm::phys_addr_t phys = paging::get_physical(vaddr, pt_root);
+__PRIVILEGED_CODE static void cleanup_mapped_segment_pages(
+    mm::mm_context* mm_ctx,
+    const elf_image& img
+) {
+    if (!mm_ctx || mm_ctx->pt_root == 0) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < img.segment_count; i++) {
+        const auto& seg = img.segments[i];
+        uintptr_t seg_start = pmm::page_align_down(seg.vaddr);
+        uintptr_t seg_end = pmm::page_align_up(seg.vaddr + seg.memsz);
+
+        for (uintptr_t vaddr = seg_start; vaddr < seg_end; vaddr += pmm::PAGE_SIZE) {
+            if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
+                continue;
+            }
+
+            pmm::phys_addr_t phys = paging::get_physical(vaddr, mm_ctx->pt_root);
+            paging::unmap_page(vaddr, mm_ctx->pt_root);
             if (phys != 0) {
-                paging::unmap_page(vaddr, pt_root);
                 pmm::free_page(phys);
             }
         }
     }
-
-    paging::destroy_user_pt_root(pt_root);
 }
 
 int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
+    if (!out) {
+        return ERR_INVALID_PHDR;
+    }
+
+    out->mm_ctx = nullptr;
+    out->pt_root = 0;
+
     elf_image img;
     int32_t rc = parse_elf(buffer, size, &img);
     if (rc != OK) {
         return rc;
     }
 
-    uint64_t pt_root = 0;
+    mm::mm_context* mm_ctx = nullptr;
     int32_t load_rc = OK;
 
     RUN_ELEVATED({
-        pt_root = paging::create_user_pt_root();
-        if (pt_root == 0) {
+        mm_ctx = mm::mm_context_create();
+        if (!mm_ctx) {
             load_rc = ERR_PT_CREATE;
         } else {
-            load_rc = load_segments(buffer, size, img, pt_root);
+            load_rc = load_segments(buffer, size, img, mm_ctx->pt_root);
             if (load_rc != OK) {
-                unload_elf_pages(pt_root);
-                pt_root = 0;
+                cleanup_mapped_segment_pages(mm_ctx, img);
+                mm::mm_context_release(mm_ctx);
+                mm_ctx = nullptr;
+            } else {
+                for (uint32_t i = 0; i < img.segment_count; i++) {
+                    const auto& seg = img.segments[i];
+                    uintptr_t seg_start = pmm::page_align_down(seg.vaddr);
+                    uintptr_t seg_end = pmm::page_align_up(seg.vaddr + seg.memsz);
+                    uint32_t prot = elf_flags_to_vma_prot(seg.flags);
+                    uint32_t flags = mm::VMA_FLAG_PRIVATE | mm::VMA_FLAG_ELF;
+
+                    int32_t rc = mm::mm_context_add_vma(
+                        mm_ctx,
+                        seg_start,
+                        seg_end - seg_start,
+                        prot ? prot : mm::MM_PROT_READ,
+                        flags
+                    );
+                    if (rc != mm::MM_CTX_OK) {
+                        cleanup_mapped_segment_pages(mm_ctx, img);
+                        mm::mm_context_release(mm_ctx);
+                        mm_ctx = nullptr;
+                        load_rc = ERR_PAGE_MAP;
+                        break;
+                    }
+                }
             }
         }
     });
@@ -241,7 +293,8 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
     }
 
     out->entry_point = img.entry_point;
-    out->pt_root = pt_root;
+    out->pt_root = mm_ctx->pt_root;
+    out->mm_ctx = mm_ctx;
     out->segment_count = img.segment_count;
     out->phentsize = img.phentsize;
     out->phnum = img.phnum;
@@ -290,14 +343,16 @@ int32_t load_elf(const char* path, loaded_image* out) {
 }
 
 void unload_elf(loaded_image* img) {
-    if (!img || img->pt_root == 0) {
+    if (!img) {
         return;
     }
 
-    RUN_ELEVATED({
-        unload_elf_pages(img->pt_root);
-    });
-
+    if (img->mm_ctx) {
+        RUN_ELEVATED({
+            mm::mm_context_release(img->mm_ctx);
+        });
+    }
+    img->mm_ctx = nullptr;
     img->pt_root = 0;
 }
 
