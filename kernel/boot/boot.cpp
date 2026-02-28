@@ -16,6 +16,7 @@
 #include "sched/task.h"
 #include "fs/fs.h"
 #include "exec/elf.h"
+#include "syscall/syscall_table.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -87,6 +88,8 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     if (timer::init(100) != timer::OK) {
         log::fatal("timer::init failed");
     }
+
+    syscall::init_syscall_table();
 
     if (smp::init() != smp::OK) {
         log::warn("smp::init failed, continuing with single CPU");

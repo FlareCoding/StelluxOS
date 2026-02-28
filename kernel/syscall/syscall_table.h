@@ -1,0 +1,66 @@
+#ifndef STELLUX_SYSCALL_SYSCALL_TABLE_H
+#define STELLUX_SYSCALL_SYSCALL_TABLE_H
+
+#include "common/types.h"
+
+namespace syscall {
+
+using handler_t = int64_t (*)(uint64_t, uint64_t, uint64_t,
+                               uint64_t, uint64_t, uint64_t);
+
+constexpr uint64_t MAX_SYSCALL_NUM = 2048;
+constexpr int64_t ENOSYS = -38;
+constexpr int64_t EINVAL = -22;
+
+extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
+
+__PRIVILEGED_CODE void init_syscall_table();
+
+__PRIVILEGED_CODE void register_arch_syscalls();
+
+} // namespace syscall
+
+#define DECLARE_SYSCALL(name) \
+    __PRIVILEGED_CODE int64_t sys_##name( \
+        uint64_t, uint64_t, uint64_t, \
+        uint64_t, uint64_t, uint64_t)
+
+#define DEFINE_SYSCALL0(name) \
+    __PRIVILEGED_CODE int64_t sys_##name( \
+        uint64_t, uint64_t, uint64_t, \
+        uint64_t, uint64_t, uint64_t)
+
+#define DEFINE_SYSCALL1(name, p1) \
+    __PRIVILEGED_CODE int64_t sys_##name( \
+        uint64_t p1, \
+        uint64_t, uint64_t, uint64_t, uint64_t, uint64_t)
+
+#define DEFINE_SYSCALL2(name, p1, p2) \
+    __PRIVILEGED_CODE int64_t sys_##name( \
+        uint64_t p1, uint64_t p2, \
+        uint64_t, uint64_t, uint64_t, uint64_t)
+
+#define DEFINE_SYSCALL3(name, p1, p2, p3) \
+    __PRIVILEGED_CODE int64_t sys_##name( \
+        uint64_t p1, uint64_t p2, uint64_t p3, \
+        uint64_t, uint64_t, uint64_t)
+
+#define DEFINE_SYSCALL4(name, p1, p2, p3, p4) \
+    __PRIVILEGED_CODE int64_t sys_##name( \
+        uint64_t p1, uint64_t p2, uint64_t p3, uint64_t p4, \
+        uint64_t, uint64_t)
+
+#define DEFINE_SYSCALL5(name, p1, p2, p3, p4, p5) \
+    __PRIVILEGED_CODE int64_t sys_##name( \
+        uint64_t p1, uint64_t p2, uint64_t p3, uint64_t p4, uint64_t p5, \
+        uint64_t)
+
+#define DEFINE_SYSCALL6(name, p1, p2, p3, p4, p5, p6) \
+    __PRIVILEGED_CODE int64_t sys_##name( \
+        uint64_t p1, uint64_t p2, uint64_t p3, \
+        uint64_t p4, uint64_t p5, uint64_t p6)
+
+#define REGISTER_SYSCALL(num, name) \
+    syscall::g_syscall_table[num] = sys_##name
+
+#endif // STELLUX_SYSCALL_SYSCALL_TABLE_H

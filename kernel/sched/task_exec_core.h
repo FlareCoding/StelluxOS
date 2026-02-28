@@ -26,6 +26,7 @@ struct task_exec_core {
     uint64_t  pt_root; // physical address of top-level page table (CR3 / TTBR1)
     uint64_t  user_pt_root; // physical address of user-space page table (= pt_root on x86 / TTBR0 on aarch64)
     fpu_state fpu_ctx;
+    uint64_t  tls_base;    // thread-local storage base (FS_BASE on x86, TPIDR_EL0 on aarch64)
 };
 
 constexpr size_t TASK_FLAGS_OFFSET          = __builtin_offsetof(task_exec_core, flags);

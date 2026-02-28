@@ -32,6 +32,7 @@ static task_exec_core g_boot_exec = {
     .pt_root = 0,
     .user_pt_root = 0,
     .fpu_ctx = {},
+    .tls_base = 0,
 };
 
 /**
@@ -123,6 +124,7 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
     finalize_pending_off_cpu();
     save_cpu_context(tf, &prev->exec.cpu_ctx);
+    prev->exec.tls_base = cpu::read_tls_base();
 
     task* next = pick_next_and_switch(prev);
     if (next == prev) return;
@@ -134,6 +136,7 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     fpu::restore(&next->exec.fpu_ctx);
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
+    cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
     // Defer prev->on_cpu clear until switch teardown is complete.
     defer_off_cpu_finalize(prev);
@@ -154,6 +157,7 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     }
 
     save_cpu_context(tf, &prev->exec.cpu_ctx);
+    prev->exec.tls_base = cpu::read_tls_base();
 
     task* next = pick_next_and_switch(prev);
     if (next == prev) {
@@ -167,6 +171,7 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     fpu::restore(&next->exec.fpu_ctx);
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
+    cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
     // Prevent early off-CPU publication while trap exit still depends on prev context.
     defer_off_cpu_finalize(prev);

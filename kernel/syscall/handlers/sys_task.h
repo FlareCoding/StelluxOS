@@ -1,0 +1,10 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_TASK_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_TASK_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(exit);
+DECLARE_SYSCALL(exit_group);
+DECLARE_SYSCALL(set_tid_address);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_TASK_H

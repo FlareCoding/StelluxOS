@@ -49,6 +49,22 @@ __PRIVILEGED_CODE inline void irq_restore(uint64_t flags) {
     asm volatile("push %0; popfq" :: "r"(flags) : "memory", "cc");
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline uint64_t read_tls_base() {
+    uint64_t base;
+    asm volatile("rdfsbase %0" : "=r"(base));
+    return base;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline void write_tls_base(uint64_t base) {
+    asm volatile("wrfsbase %0" :: "r"(base) : "memory");
+}
+
 } // namespace cpu
 
 #endif // STELLUX_ARCH_X86_64_HW_CPU_H

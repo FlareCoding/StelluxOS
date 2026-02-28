@@ -366,6 +366,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->exec.system_stack_top = sys_stack_top;
     t->exec.pt_root = paging::get_kernel_pt_root();
     t->exec.user_pt_root = 0;
+    t->exec.tls_base = 0;
     t->task_stack_base = task_stack_base;
     t->sys_stack_base = sys_stack_base;
 
@@ -462,6 +463,7 @@ __PRIVILEGED_CODE task* create_user_task(
     t->exec.system_stack_top = sys_stack_top;
     t->exec.pt_root = paging::supervisor_pt_root_for_user_task(image.pt_root);
     t->exec.user_pt_root = image.pt_root;
+    t->exec.tls_base = 0;
     t->task_stack_base = 0; // user stack is not VMM-allocated
     t->sys_stack_base = sys_stack_base;
 
