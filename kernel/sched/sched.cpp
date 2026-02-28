@@ -113,7 +113,7 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
         return rc::reaper::RETRY_LATER;
     }
 
-    log::info("reaping task %u, exit code: %d\n", t->tid, t->exit_code);
+    log::info("reaping task %u, exit code: %d", t->tid, t->exit_code);
     vmm::free(t->task_stack_base);
     vmm::free(t->sys_stack_base);
     heap::kfree_delete(t);
@@ -448,7 +448,7 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     data[idx++] = AT_PAGESZ;       data[idx++] = pmm::PAGE_SIZE;
     data[idx++] = AT_PHDR;         data[idx++] = image.phdr_vaddr;
     data[idx++] = AT_PHENT;        data[idx++] = image.phentsize;
-    data[idx++] = AT_PHNUM;        data[idx++] = image.phnum;
+    data[idx++] = AT_PHNUM;        data[idx++] = image.phdr_vaddr ? image.phnum : 0;
     data[idx++] = AT_NULL;         data[idx++] = 0;
 
     write(sp, data, sizeof(data));

@@ -248,7 +248,11 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
     out->phdr_vaddr = 0;
     if (img.segment_count > 0) {
         const auto& first = img.segments[0];
-        out->phdr_vaddr = first.vaddr + (img.e_phoff - first.offset);
+        uint64_t phdr_end = img.e_phoff + static_cast<uint64_t>(img.phnum) * img.phentsize;
+        if (img.e_phoff >= first.offset &&
+            phdr_end <= first.offset + first.filesz) {
+            out->phdr_vaddr = first.vaddr + (img.e_phoff - first.offset);
+        }
     }
     return OK;
 }
