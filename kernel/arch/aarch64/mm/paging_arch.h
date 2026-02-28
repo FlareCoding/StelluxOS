@@ -158,7 +158,14 @@ __PRIVILEGED_CODE static inline uint64_t read_ttbr1_el1() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static inline void write_ttbr0_el1(uint64_t val) {
-    asm volatile("msr ttbr0_el1, %0" :: "r"(val));
+    asm volatile(
+        "msr ttbr0_el1, %0\n\t"
+        "isb\n\t"
+        "tlbi vmalle1is\n\t"
+        "dsb ish\n\t"
+        "isb"
+        :: "r"(val) : "memory"
+    );
 }
 
 /**

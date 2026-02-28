@@ -47,6 +47,12 @@ constexpr size_t    USER_STACK_PAGES = 8; // 32KB
 
 constexpr uint64_t TLB_SYNC_CPU_IGNORED = ~0ULL;
 
+constexpr uint64_t AT_NULL   = 0;
+constexpr uint64_t AT_PHDR   = 3;
+constexpr uint64_t AT_PHENT  = 4;
+constexpr uint64_t AT_PHNUM  = 5;
+constexpr uint64_t AT_PAGESZ = 6;
+
 static uint32_t load_cleanup_stage(const task* t) {
     return __atomic_load_n(&t->cleanup_stage, __ATOMIC_ACQUIRE);
 }
@@ -107,6 +113,7 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
         return rc::reaper::RETRY_LATER;
     }
 
+    log::info("reaping task %u, exit code: %d\n", t->tid, t->exit_code);
     vmm::free(t->task_stack_base);
     vmm::free(t->sys_stack_base);
     heap::kfree_delete(t);
@@ -398,6 +405,57 @@ __PRIVILEGED_CODE task* create_kernel_task(
 }
 
 /**
+ * Build the Linux-compatible initial stack layout (argc, argv, envp, auxv)
+ * that musl's _start expects. Writes data into the last page of the
+ * already-mapped user stack via the kernel HHDM mapping.
+ *
+ * @return 16-byte-aligned user stack pointer pointing to argc.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static uintptr_t setup_user_stack(
+    pmm::phys_addr_t last_page_phys,
+    uintptr_t stack_top,
+    const exec::loaded_image& image,
+    const char* name
+) {
+    uint8_t* page_kva = static_cast<uint8_t*>(paging::phys_to_virt(last_page_phys));
+    uintptr_t page_base_va = pmm::page_align_down(stack_top - 1);
+    auto write = [&](uintptr_t user_va, const void* data, size_t len) {
+        size_t offset = user_va - page_base_va;
+        string::memcpy(page_kva + offset, data, len);
+    };
+
+    size_t name_len = 0;
+    while (name[name_len]) name_len++;
+    name_len++;
+
+    size_t name_padded = (name_len + 7) & ~7ULL;
+    uintptr_t str_va = stack_top - name_padded;
+    write(str_va, name, name_len);
+
+    constexpr size_t AUXV_ENTRIES = 5;
+    constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
+    constexpr size_t FIXED_WORDS = 1 + 1 + 1 + 1 + AUXV_WORDS;
+    size_t total_struct_bytes = FIXED_WORDS * sizeof(uint64_t);
+    uintptr_t sp = (str_va - total_struct_bytes) & ~0xFULL;
+
+    uint64_t data[FIXED_WORDS];
+    size_t idx = 0;
+    data[idx++] = 1;               // argc
+    data[idx++] = str_va;          // argv[0] -> program name
+    data[idx++] = 0;               // argv[1] = NULL
+    data[idx++] = 0;               // envp[0] = NULL
+    data[idx++] = AT_PAGESZ;       data[idx++] = pmm::PAGE_SIZE;
+    data[idx++] = AT_PHDR;         data[idx++] = image.phdr_vaddr;
+    data[idx++] = AT_PHENT;        data[idx++] = image.phentsize;
+    data[idx++] = AT_PHNUM;        data[idx++] = image.phnum;
+    data[idx++] = AT_NULL;         data[idx++] = 0;
+
+    write(sp, data, sizeof(data));
+    return sp;
+}
+
+/**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE task* create_user_task(
@@ -421,6 +479,7 @@ __PRIVILEGED_CODE task* create_user_task(
 
     // User stack: allocate physical pages and map into user page table
     uintptr_t user_stack_base = USER_STACK_TOP - USER_STACK_PAGES * pmm::PAGE_SIZE;
+    pmm::phys_addr_t last_stack_page_phys = 0;
     for (size_t i = 0; i < USER_STACK_PAGES; i++) {
         pmm::phys_addr_t phys = pmm::alloc_page();
         if (phys == 0) {
@@ -437,6 +496,9 @@ __PRIVILEGED_CODE task* create_user_task(
         }
 
         string::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
+        if (i == USER_STACK_PAGES - 1) {
+            last_stack_page_phys = phys;
+        }
 
         uintptr_t va = user_stack_base + i * pmm::PAGE_SIZE;
         int32_t rc = paging::map_page(va, phys, paging::PAGE_USER_RW, image.pt_root);
@@ -457,9 +519,11 @@ __PRIVILEGED_CODE task* create_user_task(
         }
     }
 
+    uintptr_t user_sp = setup_user_stack(last_stack_page_phys, USER_STACK_TOP, image, name);
+
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
-    t->exec.task_stack_top = USER_STACK_TOP;
+    t->exec.task_stack_top = user_sp;
     t->exec.system_stack_top = sys_stack_top;
     t->exec.pt_root = paging::supervisor_pt_root_for_user_task(image.pt_root);
     t->exec.user_pt_root = image.pt_root;

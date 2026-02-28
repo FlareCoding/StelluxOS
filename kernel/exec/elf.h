@@ -20,6 +20,9 @@ struct elf_image {
     uint64_t    entry_point;
     uint32_t    segment_count;
     elf_segment segments[MAX_ELF_SEGMENTS];
+    uint64_t    e_phoff;
+    uint16_t    phentsize;
+    uint16_t    phnum;
 };
 
 constexpr int32_t OK                    =  0;
@@ -43,6 +46,9 @@ struct loaded_image {
     uint64_t entry_point;
     uint64_t pt_root;
     uint32_t segment_count;
+    uint64_t phdr_vaddr;
+    uint16_t phentsize;
+    uint16_t phnum;
 };
 
 /**

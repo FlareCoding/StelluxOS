@@ -86,6 +86,9 @@ int32_t parse_elf(const void* buffer, size_t size, elf_image* out) {
     }
 
     out->entry_point = ehdr->e_entry;
+    out->e_phoff   = ehdr->e_phoff;
+    out->phentsize = ehdr->e_phentsize;
+    out->phnum     = ehdr->e_phnum;
     return OK;
 }
 
@@ -240,6 +243,13 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
     out->entry_point = img.entry_point;
     out->pt_root = pt_root;
     out->segment_count = img.segment_count;
+    out->phentsize = img.phentsize;
+    out->phnum = img.phnum;
+    out->phdr_vaddr = 0;
+    if (img.segment_count > 0) {
+        const auto& first = img.segments[0];
+        out->phdr_vaddr = first.vaddr + (img.e_phoff - first.offset);
+    }
     return OK;
 }
 
