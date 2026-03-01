@@ -9,11 +9,25 @@ namespace resource {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE void resource_object::ref_destroy(resource_object* self) {
+    if (!self) {
+        return;
+    }
+
+    if (self->ops && self->ops->close) {
+        self->ops->close(self);
+    }
+    heap::kfree_delete(self);
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void resource_add_ref(resource_object* obj) {
     if (!obj) {
         return;
     }
-    __atomic_fetch_add(&obj->refcount, 1, __ATOMIC_RELAXED);
+    obj->add_ref();
 }
 
 /**
@@ -23,13 +37,8 @@ __PRIVILEGED_CODE void resource_release(resource_object* obj) {
     if (!obj) {
         return;
     }
-    uint32_t old = __atomic_fetch_sub(&obj->refcount, 1, __ATOMIC_RELEASE);
-    if (old == 1) {
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        if (obj->ops && obj->ops->close) {
-            obj->ops->close(obj);
-        }
-        heap::kfree_delete(obj);
+    if (obj->release()) {
+        resource_object::ref_destroy(obj);
     }
 }
 

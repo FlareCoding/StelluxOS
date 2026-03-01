@@ -3,6 +3,7 @@
 
 #include "resource/resource_types.h"
 #include "resource/handle_table.h"
+#include "rc/ref_counted.h"
 
 namespace sched { struct task; }
 
@@ -20,11 +21,16 @@ struct resource_ops {
     close_fn close;
 };
 
-struct resource_object {
+struct resource_object : rc::ref_counted<resource_object> {
     resource_type type;
     const resource_ops* ops;
     void* impl;
-    uint32_t refcount;
+
+    /**
+     * @brief Finalize and free a resource object at terminal release.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void ref_destroy(resource_object* self);
 };
 
 constexpr int32_t OK            = 0;

@@ -7,7 +7,7 @@ namespace resource::file_provider {
 
 /**
  * @brief Open a FILE resource from a path.
- * On success returns a resource object with refcount=1.
+ * On success returns a resource object with one owned reference.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t open_file_resource(

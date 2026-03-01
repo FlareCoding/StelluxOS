@@ -104,7 +104,6 @@ __PRIVILEGED_CODE int32_t open_file_resource(
     obj->type = resource_type::FILE;
     obj->ops = &g_file_ops;
     obj->impl = impl;
-    obj->refcount = 1;
 
     *out_obj = obj;
     return OK;

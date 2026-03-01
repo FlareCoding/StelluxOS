@@ -140,7 +140,6 @@ TEST(resource_test, missing_provider_ops_return_err_unsup) {
     read_obj->type = resource::resource_type::FILE;
     read_obj->ops = &no_rw_ops;
     read_obj->impl = nullptr;
-    read_obj->refcount = 1;
 
     resource::handle_t rh = -1;
     ASSERT_EQ(
@@ -158,7 +157,6 @@ TEST(resource_test, missing_provider_ops_return_err_unsup) {
     write_obj->type = resource::resource_type::FILE;
     write_obj->ops = &no_rw_ops;
     write_obj->impl = nullptr;
-    write_obj->refcount = 1;
 
     resource::handle_t wh = -1;
     ASSERT_EQ(
@@ -169,4 +167,55 @@ TEST(resource_test, missing_provider_ops_return_err_unsup) {
 
     EXPECT_EQ(resource::write(task, wh, "x", 1), static_cast<ssize_t>(resource::ERR_UNSUP));
     EXPECT_EQ(resource::close(task, wh), resource::OK);
+}
+
+namespace {
+
+struct close_counter {
+    uint32_t closes;
+};
+
+static void close_counter_close(resource::resource_object* obj) {
+    auto* counter = static_cast<close_counter*>(obj->impl);
+    if (counter) {
+        counter->closes++;
+    }
+}
+
+} // anonymous namespace
+
+TEST(resource_test, terminal_release_invokes_close_once) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    static const resource::resource_ops close_counter_ops = {
+        nullptr,
+        nullptr,
+        close_counter_close,
+    };
+
+    close_counter counter{0};
+
+    auto* obj = heap::kalloc_new<resource::resource_object>();
+    ASSERT_NOT_NULL(obj);
+    obj->type = resource::resource_type::FILE;
+    obj->ops = &close_counter_ops;
+    obj->impl = &counter;
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(
+        resource::alloc_handle(&task->handles, obj, resource::resource_type::FILE, resource::RIGHT_READ, &h),
+        resource::HANDLE_OK
+    );
+
+    // Drop creator ownership; table entry keeps one reference.
+    resource::resource_release(obj);
+    EXPECT_EQ(counter.closes, 0u);
+
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+    EXPECT_EQ(counter.closes, 1u);
+
+    // Closing again must not re-run provider close.
+    EXPECT_EQ(resource::close(task, h), resource::ERR_BADF);
+    EXPECT_EQ(counter.closes, 1u);
 }
