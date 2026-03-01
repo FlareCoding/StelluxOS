@@ -22,6 +22,12 @@ __PRIVILEGED_CODE void arch_post_switch(task* next);
 /**
  * Common: called by arch on_yield/on_tick handler. Handles runqueue lock,
  * state transitions, and picking the next task.
+ *
+ * Ownership boundary:
+ * - Updates task scheduler ownership (current_task/current_task_exec).
+ * - Must NOT finalize per-CPU runtime elevation state for trap/syscall return.
+ *   Trap/syscall return-boundary code restores percpu_is_elevated from the
+ *   selected task's TASK_FLAG_ELEVATED after switch teardown is complete.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE task* pick_next_and_switch(task* prev);
