@@ -53,6 +53,7 @@ __PRIVILEGED_CODE int32_t unmount(const char* target);
 // --- Consumer API ---
 
 file* open(const char* path, uint32_t flags);
+file* open(const char* path, uint32_t flags, int32_t* out_err);
 ssize_t read(file* f, void* buf, size_t count);
 ssize_t write(file* f, const void* buf, size_t count);
 int64_t seek(file* f, int64_t offset, int whence);

@@ -18,9 +18,14 @@ inline int64_t map_resource_error(int64_t rc) {
             return syscall::EINVAL;
         case resource::ERR_NOENT:
             return syscall::ENOENT;
+        case resource::ERR_NOTDIR:
+            return syscall::ENOTDIR;
+        case resource::ERR_NAMETOOLONG:
+            return syscall::ENAMETOOLONG;
         case resource::ERR_NOMEM:
-        case resource::ERR_TABLEFULL:
             return syscall::ENOMEM;
+        case resource::ERR_TABLEFULL:
+            return syscall::EMFILE;
         case resource::ERR_BADF:
         case resource::ERR_ACCESS:
             return syscall::EBADF;

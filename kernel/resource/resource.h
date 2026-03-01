@@ -42,6 +42,8 @@ constexpr int32_t ERR_ACCESS    = -5;
 constexpr int32_t ERR_IO        = -6;
 constexpr int32_t ERR_TABLEFULL = -7;
 constexpr int32_t ERR_UNSUP     = -8;
+constexpr int32_t ERR_NOTDIR    = -9;
+constexpr int32_t ERR_NAMETOOLONG = -10;
 
 /**
  * @brief Initialize handle table storage in task.

@@ -15,6 +15,10 @@ __PRIVILEGED_CODE static int32_t map_fs_error_to_resource(int32_t fs_err) {
             return ERR_NOENT;
         case fs::ERR_NOMEM:
             return ERR_NOMEM;
+        case fs::ERR_NOTDIR:
+            return ERR_NOTDIR;
+        case fs::ERR_NAMETOOLONG:
+            return ERR_NAMETOOLONG;
         case fs::ERR_INVAL:
             return ERR_INVAL;
         case fs::ERR_BADF:
@@ -82,9 +86,10 @@ __PRIVILEGED_CODE int32_t open_file_resource(
         return ERR_INVAL;
     }
 
-    fs::file* file = fs::open(path, flags);
+    int32_t fs_err = fs::OK;
+    fs::file* file = fs::open(path, flags, &fs_err);
     if (!file) {
-        return ERR_NOENT;
+        return map_fs_error_to_resource(fs_err);
     }
 
     auto* impl = heap::kalloc_new<file_resource_impl>();

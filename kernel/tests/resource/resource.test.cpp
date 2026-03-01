@@ -219,3 +219,29 @@ TEST(resource_test, terminal_release_invokes_close_once) {
     EXPECT_EQ(resource::close(task, h), resource::ERR_BADF);
     EXPECT_EQ(counter.closes, 1u);
 }
+
+TEST(resource_test, open_relative_path_returns_inval) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    EXPECT_EQ(resource::open(task, "relative/path", fs::O_RDONLY, &h), resource::ERR_INVAL);
+}
+
+TEST(resource_test, open_returns_tablefull_when_handle_space_exhausted) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t handles[resource::MAX_TASK_HANDLES];
+    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+        handles[i] = -1;
+        ASSERT_EQ(resource::open(task, "/resource_full", fs::O_CREAT | fs::O_RDWR, &handles[i]), resource::OK);
+    }
+
+    resource::handle_t extra = -1;
+    EXPECT_EQ(resource::open(task, "/resource_full", fs::O_CREAT | fs::O_RDWR, &extra), resource::ERR_TABLEFULL);
+
+    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+        EXPECT_EQ(resource::close(task, handles[i]), resource::OK);
+    }
+}

@@ -334,7 +334,20 @@ __PRIVILEGED_CODE int32_t unmount(const char* target) {
 
 
 file* open(const char* path, uint32_t flags) {
-    if (!path || path[0] != '/') return nullptr;
+    return open(path, flags, nullptr);
+}
+
+file* open(const char* path, uint32_t flags, int32_t* out_err) {
+    auto set_err = [out_err](int32_t err) {
+        if (out_err) {
+            *out_err = err;
+        }
+    };
+
+    if (!path || path[0] != '/') {
+        set_err(ERR_INVAL);
+        return nullptr;
+    }
 
     node* n = nullptr;
     int32_t err = ERR_NOENT;
@@ -364,6 +377,7 @@ file* open(const char* path, uint32_t flags) {
     });
 
     if (err != OK || !n) {
+        set_err((err != OK) ? err : ERR_IO);
         return nullptr;
     }
 
@@ -376,6 +390,7 @@ file* open(const char* path, uint32_t flags) {
                 node::ref_destroy(n);
             }
         });
+        set_err(ERR_NOMEM);
         return nullptr;
     }
     auto* f = new (mem) file(rc::strong_ref<node>::adopt(n), flags);
@@ -389,10 +404,12 @@ file* open(const char* path, uint32_t flags) {
         if (f->release()) {
             file::ref_destroy(f);
         }
+        set_err(err);
         return nullptr;
     }
 
     f->mark_opened();
+    set_err(OK);
     return f;
 }
 
