@@ -242,6 +242,8 @@ namespace par_el1 {
     constexpr uint64_t FST_MASK = (1ULL << 7) - 1ULL;        // Fault status code bits [6:1]
 }
 
+constexpr uint64_t TLBI_VA_MASK = 0x0000FFFFFFFFF000ULL;
+
 /**
  * @note Privilege: **required**
  */
@@ -269,14 +271,15 @@ __PRIVILEGED_CODE static inline void tlbi_vmalle1is() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static inline void tlbi_vae1is(uint64_t addr) {
-    // Address should be VA >> 12
-    uint64_t va_shifted = addr >> 12;
+    // Use all-ASID invalidation (VAAE1IS) to avoid ASID contamination from
+    // high canonical VAs when constructing TLBI operands.
+    uint64_t tlbi_operand = (addr & TLBI_VA_MASK) >> 12;
     asm volatile(
         "dsb ishst\n"
-        "tlbi vae1is, %0\n"
+        "tlbi vaae1is, %0\n"
         "dsb ish\n"
         "isb"
-        :: "r"(va_shifted) : "memory"
+        :: "r"(tlbi_operand) : "memory"
     );
 }
 
@@ -335,13 +338,13 @@ __PRIVILEGED_CODE static inline void tlbi_vmalle1() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static inline void tlbi_vae1(uint64_t addr) {
-    uint64_t va_shifted = addr >> 12;
+    uint64_t tlbi_operand = (addr & TLBI_VA_MASK) >> 12;
     asm volatile(
         "dsb nshst\n"
-        "tlbi vae1, %0\n"
+        "tlbi vaae1, %0\n"
         "dsb nsh\n"
         "isb"
-        :: "r"(va_shifted) : "memory"
+        :: "r"(tlbi_operand) : "memory"
     );
 }
 

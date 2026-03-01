@@ -527,6 +527,10 @@ __PRIVILEGED_CODE static bool is_table_empty(const translation_table_t* table) {
 __PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
     auto* pfd = pmm::get_page_frame(phys);
     if (pfd && pfd->is_allocated()) {
+        // A reclaimed translation-table page may be reused quickly for unrelated
+        // allocations. Before releasing it to PMM, invalidate all EL1 TLB state
+        // to ensure no CPU retains stale table-walk references to this page.
+        flush_tlb_all();
         pmm::free_page(phys);
     }
 }
