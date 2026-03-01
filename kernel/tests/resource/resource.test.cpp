@@ -4,6 +4,7 @@
 #include "resource/resource.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "mm/heap.h"
 #include "common/string.h"
 #include "fs/fstypes.h"
 
@@ -122,4 +123,50 @@ TEST(resource_test, used_handle_slots_never_have_unknown_type) {
     EXPECT_TRUE(saw_used);
 
     EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
+TEST(resource_test, missing_provider_ops_return_err_unsup) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    static const resource::resource_ops no_rw_ops = {
+        nullptr,
+        nullptr,
+        nullptr,
+    };
+
+    auto* read_obj = heap::kalloc_new<resource::resource_object>();
+    ASSERT_NOT_NULL(read_obj);
+    read_obj->type = resource::resource_type::FILE;
+    read_obj->ops = &no_rw_ops;
+    read_obj->impl = nullptr;
+    read_obj->refcount = 1;
+
+    resource::handle_t rh = -1;
+    ASSERT_EQ(
+        resource::alloc_handle(&task->handles, read_obj, resource::resource_type::FILE, resource::RIGHT_READ, &rh),
+        resource::HANDLE_OK
+    );
+    resource::resource_release(read_obj);
+
+    char byte = 0;
+    EXPECT_EQ(resource::read(task, rh, &byte, 1), static_cast<ssize_t>(resource::ERR_UNSUP));
+    EXPECT_EQ(resource::close(task, rh), resource::OK);
+
+    auto* write_obj = heap::kalloc_new<resource::resource_object>();
+    ASSERT_NOT_NULL(write_obj);
+    write_obj->type = resource::resource_type::FILE;
+    write_obj->ops = &no_rw_ops;
+    write_obj->impl = nullptr;
+    write_obj->refcount = 1;
+
+    resource::handle_t wh = -1;
+    ASSERT_EQ(
+        resource::alloc_handle(&task->handles, write_obj, resource::resource_type::FILE, resource::RIGHT_WRITE, &wh),
+        resource::HANDLE_OK
+    );
+    resource::resource_release(write_obj);
+
+    EXPECT_EQ(resource::write(task, wh, "x", 1), static_cast<ssize_t>(resource::ERR_UNSUP));
+    EXPECT_EQ(resource::close(task, wh), resource::OK);
 }

@@ -9,12 +9,33 @@ struct file_resource_impl {
     fs::file* file;
 };
 
+__PRIVILEGED_CODE static int32_t map_fs_error_to_resource(int32_t fs_err) {
+    switch (fs_err) {
+        case fs::ERR_NOENT:
+            return ERR_NOENT;
+        case fs::ERR_NOMEM:
+            return ERR_NOMEM;
+        case fs::ERR_INVAL:
+            return ERR_INVAL;
+        case fs::ERR_BADF:
+            return ERR_BADF;
+        case fs::ERR_NOSYS:
+            return ERR_UNSUP;
+        default:
+            return ERR_IO;
+    }
+}
+
 __PRIVILEGED_CODE static ssize_t file_read(resource_object* obj, void* kdst, size_t count) {
     if (!obj || !obj->impl || !kdst) {
         return ERR_INVAL;
     }
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
-    return fs::read(impl->file, kdst, count);
+    ssize_t rc = fs::read(impl->file, kdst, count);
+    if (rc < 0) {
+        return map_fs_error_to_resource(static_cast<int32_t>(rc));
+    }
+    return rc;
 }
 
 __PRIVILEGED_CODE static ssize_t file_write(resource_object* obj, const void* ksrc, size_t count) {
@@ -22,7 +43,11 @@ __PRIVILEGED_CODE static ssize_t file_write(resource_object* obj, const void* ks
         return ERR_INVAL;
     }
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
-    return fs::write(impl->file, ksrc, count);
+    ssize_t rc = fs::write(impl->file, ksrc, count);
+    if (rc < 0) {
+        return map_fs_error_to_resource(static_cast<int32_t>(rc));
+    }
+    return rc;
 }
 
 __PRIVILEGED_CODE static void file_close(resource_object* obj) {

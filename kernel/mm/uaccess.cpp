@@ -1,4 +1,5 @@
 #include "mm/uaccess.h"
+#include "mm/pmm.h"
 #include "mm/vma.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -126,17 +127,27 @@ __PRIVILEGED_CODE int32_t copy_cstr_from_user(
         return ERR_INVAL;
     }
 
-    for (size_t i = 0; i < cap; i++) {
-        int32_t rc = validate_user_range(usrc + i, 1, MM_PROT_READ);
+    size_t i = 0;
+    while (i < cap) {
+        uintptr_t addr = reinterpret_cast<uintptr_t>(usrc + i);
+        size_t remaining_in_page = pmm::PAGE_SIZE - (addr & (pmm::PAGE_SIZE - 1));
+        size_t remaining_total = cap - i;
+        size_t chunk = remaining_total < remaining_in_page ? remaining_total : remaining_in_page;
+
+        int32_t rc = validate_user_range(usrc + i, chunk, MM_PROT_READ);
         if (rc != OK) {
             return rc;
         }
 
-        char c = usrc[i];
-        kdst[i] = c;
-        if (c == '\0') {
-            return OK;
+        for (size_t j = 0; j < chunk; j++) {
+            char c = usrc[i + j];
+            kdst[i + j] = c;
+            if (c == '\0') {
+                return OK;
+            }
         }
+
+        i += chunk;
     }
 
     kdst[cap - 1] = '\0';

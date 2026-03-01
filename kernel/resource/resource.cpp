@@ -1,28 +1,10 @@
 #include "resource/resource.h"
 #include "resource/providers/file_provider.h"
 #include "sched/task.h"
-#include "fs/fs.h"
 #include "fs/fstypes.h"
 #include "mm/heap.h"
 
 namespace resource {
-
-__PRIVILEGED_CODE static int32_t map_fs_error(int32_t fs_err) {
-    switch (fs_err) {
-        case fs::OK:
-            return OK;
-        case fs::ERR_NOENT:
-            return ERR_NOENT;
-        case fs::ERR_NOMEM:
-            return ERR_NOMEM;
-        case fs::ERR_BADF:
-            return ERR_BADF;
-        case fs::ERR_NOSYS:
-            return ERR_UNSUP;
-        default:
-            return ERR_IO;
-    }
-}
 
 /**
  * @note Privilege: **required**
@@ -142,10 +124,6 @@ __PRIVILEGED_CODE ssize_t read(
     }
 
     resource_release(obj);
-
-    if (result < 0) {
-        return map_fs_error(static_cast<int32_t>(result));
-    }
     return result;
 }
 
@@ -174,10 +152,6 @@ __PRIVILEGED_CODE ssize_t write(
     }
 
     resource_release(obj);
-
-    if (result < 0) {
-        return map_fs_error(static_cast<int32_t>(result));
-    }
     return result;
 }
 
