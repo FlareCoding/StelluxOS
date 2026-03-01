@@ -235,13 +235,6 @@ namespace sctlr {
     constexpr uint64_t SPAN = 1ULL << 23;  // Set Privileged Access Never
 }
 
-// PAR_EL1 helpers for AT translation probes
-namespace par_el1 {
-    constexpr uint64_t F_BIT    = 1ULL << 0;                 // Fault status
-    constexpr uint64_t PA_MASK  = 0x0000FFFFFFFFF000ULL;     // Physical address bits [47:12]
-    constexpr uint64_t FST_MASK = (1ULL << 7) - 1ULL;        // Fault status code bits [6:1]
-}
-
 // TLBI VA-based invalidation operands carry VA[55:12].
 // Keep bits [55:48] intact for high canonical kernel VAs (e.g. 0xffff...),
 // otherwise invalidation can miss and leave stale translations resident.
@@ -292,43 +285,6 @@ __PRIVILEGED_CODE static inline void tlbi_vae1is(uint64_t addr) {
         "isb"
         :: "r"(tlbi_operand) : "memory"
     );
-}
-
-/**
- * Perform a stage-1 EL1 read translation probe and return raw PAR_EL1.
- * Useful for debugging software-vs-hardware translation mismatches.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE static inline uint64_t at_s1e1r_par_el1(uint64_t addr) {
-    uint64_t par = 0;
-    asm volatile(
-        "at s1e1r, %1\n\t"
-        "isb\n\t"
-        "mrs %0, par_el1"
-        : "=r"(par)
-        : "r"(addr)
-        : "memory"
-    );
-    return par;
-}
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE static inline bool par_el1_has_fault(uint64_t par_el1) {
-    return (par_el1 & par_el1::F_BIT) != 0;
-}
-
-/**
- * Convert a successful PAR_EL1 probe to a physical address.
- * Returns 0 if PAR_EL1 reports a fault.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE static inline uint64_t par_el1_to_phys(uint64_t par_el1, uint64_t addr) {
-    if (par_el1_has_fault(par_el1)) {
-        return 0;
-    }
-    return (par_el1 & par_el1::PA_MASK) | (addr & 0xFFFULL);
 }
 
 /**

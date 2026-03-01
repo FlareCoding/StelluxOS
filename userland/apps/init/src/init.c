@@ -17,49 +17,49 @@ static int run_vma_syscall_demo(void) {
         -1, 0
     );
     if (region == MAP_FAILED) {
-        printf("mmap failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("mmap failed: errno=%d (%s)\r\n", errno, strerror(errno));
         return 1;
     }
 
     region[0] = 0x2A;
     region[page_size] = 0x55;
-    printf("mmap ok: region=%p first=0x%x second=0x%x\n",
+    printf("mmap ok: region=%p first=0x%x second=0x%x\r\n",
            (void*)region, region[0], region[page_size]);
 
     if (mprotect(region, page_size, PROT_READ) != 0) {
-        printf("mprotect RO failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("mprotect RO failed: errno=%d (%s)\r\n", errno, strerror(errno));
         munmap(region, map_len);
         return 1;
     }
-    printf("mprotect RO ok: first page is now read-only (read value=0x%x)\n", region[0]);
+    printf("mprotect RO ok: first page is now read-only (read value=0x%x)\r\n", region[0]);
 
     if (mprotect(region, page_size, PROT_READ | PROT_WRITE) != 0) {
-        printf("mprotect RW restore failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("mprotect RW restore failed: errno=%d (%s)\r\n", errno, strerror(errno));
         munmap(region, map_len);
         return 1;
     }
     region[1] = 0x33;
-    printf("mprotect RW restore ok: first page write value=0x%x\n", region[1]);
+    printf("mprotect RW restore ok: first page write value=0x%x\r\n", region[1]);
 
     if (munmap(region + page_size, page_size) != 0) {
-        printf("munmap upper page failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("munmap upper page failed: errno=%d (%s)\r\n", errno, strerror(errno));
         munmap(region, page_size);
         return 1;
     }
-    printf("munmap upper page ok\n");
+    printf("munmap upper page ok\r\n");
 
     if (munmap(region + page_size, page_size) != 0) {
-        printf("munmap upper page (second call) failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("munmap upper page (second call) failed: errno=%d (%s)\r\n", errno, strerror(errno));
         munmap(region, page_size);
         return 1;
     }
-    printf("munmap upper page second call ok (idempotent)\n");
+    printf("munmap upper page second call ok (idempotent)\r\n");
 
     if (munmap(region, page_size) != 0) {
-        printf("munmap first page failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("munmap first page failed: errno=%d (%s)\r\n", errno, strerror(errno));
         return 1;
     }
-    printf("munmap first page ok\n");
+    printf("munmap first page ok\r\n");
 
     return 0;
 }
@@ -71,41 +71,41 @@ static int run_resource_fd_demo(void) {
     // Example 1: open/write/close + reopen/read/close
     int fd = open(path, O_CREAT | O_RDWR, 0644);
     if (fd < 0) {
-        printf("open(O_CREAT|O_RDWR) failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("open(O_CREAT|O_RDWR) failed: errno=%d (%s)\r\n", errno, strerror(errno));
         return 1;
     }
 
     ssize_t wr = write(fd, msg, strlen(msg));
     if (wr != (ssize_t)strlen(msg)) {
-        printf("write failed: wrote=%ld errno=%d (%s)\n",
+        printf("write failed: wrote=%ld errno=%d (%s)\r\n",
                (long)wr, errno, strerror(errno));
         close(fd);
         return 1;
     }
 
     if (close(fd) != 0) {
-        printf("close after write failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("close after write failed: errno=%d (%s)\r\n", errno, strerror(errno));
         return 1;
     }
 
     fd = open(path, O_RDONLY, 0);
     if (fd < 0) {
-        printf("reopen(O_RDONLY) failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("reopen(O_RDONLY) failed: errno=%d (%s)\r\n", errno, strerror(errno));
         return 1;
     }
 
     char buf[128] = {};
     ssize_t rd = read(fd, buf, sizeof(buf) - 1);
     if (rd < 0) {
-        printf("read failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("read failed: errno=%d (%s)\r\n", errno, strerror(errno));
         close(fd);
         return 1;
     }
     buf[rd] = '\0';
-    printf("resource fd example 1 ok: read back \"%s\" (%ld bytes)\n", buf, (long)rd);
+    printf("resource fd example 1 ok: read back \"%s\" (%ld bytes)\r\n", buf, (long)rd);
 
     if (close(fd) != 0) {
-        printf("close after read failed: errno=%d (%s)\n", errno, strerror(errno));
+        printf("close after read failed: errno=%d (%s)\r\n", errno, strerror(errno));
         return 1;
     }
 
@@ -113,23 +113,23 @@ static int run_resource_fd_demo(void) {
     errno = 0;
     rd = read(-1, buf, 1);
     if (rd != -1 || errno != EBADF) {
-        printf("resource fd example 2 failed: read(-1) => %ld errno=%d\n",
+        printf("resource fd example 2 failed: read(-1) => %ld errno=%d\r\n",
                (long)rd, errno);
         return 1;
     }
-    printf("resource fd example 2 ok: read(-1) -> EBADF\n");
+    printf("resource fd example 2 ok: read(-1) -> EBADF\r\n");
 
     return 0;
 }
 
 int main(void) {
-    printf("hello from userspace!\n");
+    printf("hello from userspace!\r\n");
 
     int rc_vma = run_vma_syscall_demo();
-    printf("VMA syscall demo %s\n", rc_vma == 0 ? "passed" : "failed");
+    printf("VMA syscall demo %s\r\n", rc_vma == 0 ? "passed" : "failed");
 
     int rc_fd = run_resource_fd_demo();
-    printf("Resource FD demo %s\n", rc_fd == 0 ? "passed" : "failed");
+    printf("Resource FD demo %s\r\n", rc_fd == 0 ? "passed" : "failed");
 
     return (rc_vma == 0 && rc_fd == 0) ? 0 : 1;
 }

@@ -22,9 +22,6 @@
 #include "mm/vma.h"
 #include "common/string.h"
 #include "resource/resource.h"
-#if defined(__aarch64__)
-#include "mm/paging_arch.h"
-#endif
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -54,90 +51,6 @@ constexpr uint64_t AT_PHDR   = 3;
 constexpr uint64_t AT_PHENT  = 4;
 constexpr uint64_t AT_PHNUM  = 5;
 constexpr uint64_t AT_PAGESZ = 6;
-
-#if defined(__aarch64__)
-constexpr uintptr_t TASK_ALIAS_PROBE_OFFSET = 0xFF8;
-constexpr uintptr_t USER_STACK_ALIAS_PROBE_VA = mm::USER_STACK_TOP - 0x80;
-
-__PRIVILEGED_CODE static void log_sw_hw_translation_probe(
-    const char* label,
-    uintptr_t va,
-    pmm::phys_addr_t root_pt
-) {
-    constexpr uint64_t LEGACY_TLBI_VA_MASK = 0x0000FFFFFFFFF000ULL;
-    pmm::phys_addr_t sw_phys = paging::get_physical(va, root_pt);
-    uint64_t par_el1 = paging::at_s1e1r_par_el1(va);
-    pmm::phys_addr_t hw_phys = paging::par_el1_to_phys(par_el1, va);
-    uint64_t fault_status = (par_el1 >> 1) & paging::par_el1::FST_MASK;
-    uint64_t tlbi_operand = paging::tlbi_operand_from_va(va);
-    uint64_t legacy_tlbi_operand = (va & LEGACY_TLBI_VA_MASK) >> 12;
-    uint64_t va_high_bits = (va >> 48) & 0xFFULL;
-    bool hw_fault = paging::par_el1_has_fault(par_el1);
-    bool sw_hw_match = (!hw_fault && sw_phys == hw_phys) || (hw_fault && sw_phys == 0);
-    log::debug(
-        "sched: aliasprobe %s va=0x%016lx sw_phys=0x%016lx par=0x%016lx hw_phys=0x%016lx fault=%s fst=0x%02lx va55_48=0x%02lx tlbi_op=0x%016lx legacy_op=0x%016lx sw_hw_match=%s",
-        label,
-        va,
-        sw_phys,
-        par_el1,
-        hw_phys,
-        hw_fault ? "yes" : "no",
-        fault_status,
-        va_high_bits,
-        tlbi_operand,
-        legacy_tlbi_operand,
-        sw_hw_match ? "yes" : "no"
-    );
-    if (!sw_hw_match) {
-        log::warn(
-            "sched: aliasprobe mismatch %s va=0x%016lx sw_phys=0x%016lx hw_phys=0x%016lx par=0x%016lx",
-            label,
-            va,
-            sw_phys,
-            hw_phys,
-            par_el1
-        );
-    }
-}
-
-__PRIVILEGED_CODE static void log_user_stack_l1_probe(
-    const char* stage,
-    mm::mm_context* mm_ctx
-) {
-    if (!mm_ctx || mm_ctx->pt_root == 0) {
-        log::debug("sched: aliasprobe[%s] user_pt_root unavailable", stage);
-        return;
-    }
-
-    auto parts = paging::split_virt_addr(USER_STACK_ALIAS_PROBE_VA);
-    auto* l0 = static_cast<paging::translation_table_t*>(paging::phys_to_virt(mm_ctx->pt_root));
-    uint64_t l0_raw = l0->raw[parts.l0_idx];
-    pmm::phys_addr_t l1_phys = 0;
-    uint64_t l1_raw = 0;
-    bool l1_valid = false;
-
-    if ((l0_raw & 1ULL) && (l0_raw & 2ULL)) {
-        paging::table_desc_t l0_desc = {};
-        l0_desc.value = l0_raw;
-        l1_phys = static_cast<pmm::phys_addr_t>(l0_desc.next_table_addr) << 12;
-        auto* l1 = static_cast<paging::translation_table_t*>(paging::phys_to_virt(l1_phys));
-        l1_raw = l1->raw[parts.l1_idx];
-        l1_valid = (l1_raw & 1ULL) != 0;
-    }
-
-    log::debug(
-        "sched: aliasprobe[%s] user_va=0x%016lx l0[%u]=0x%016lx l1_phys=0x%016lx l1[%u]=0x%016lx valid=%s",
-        stage,
-        USER_STACK_ALIAS_PROBE_VA,
-        parts.l0_idx,
-        l0_raw,
-        l1_phys,
-        parts.l1_idx,
-        l1_raw,
-        l1_valid ? "yes" : "no"
-    );
-}
-#endif
 
 static uint32_t load_cleanup_stage(const task* t) {
     return __atomic_load_n(&t->cleanup_stage, __ATOMIC_ACQUIRE);
@@ -644,42 +557,7 @@ __PRIVILEGED_CODE task* create_user_task(
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
 
-#if defined(__aarch64__)
-    uintptr_t task_va = reinterpret_cast<uintptr_t>(t);
-    uintptr_t task_probe_va = task_va + TASK_ALIAS_PROBE_OFFSET;
-    pmm::phys_addr_t kernel_root = paging::get_kernel_pt_root();
-    pmm::phys_addr_t task_sw_phys = paging::get_physical(task_va, kernel_root);
-    pmm::phys_addr_t probe_sw_phys = paging::get_physical(task_probe_va, kernel_root);
-    const uint64_t probe_before = *reinterpret_cast<volatile uint64_t*>(task_probe_va);
-
-    log_user_stack_l1_probe("pre_handles", mm_ctx);
-    log_sw_hw_translation_probe("task_base_pre", task_va, kernel_root);
-    log_sw_hw_translation_probe("task_off_ff8_pre", task_probe_va, kernel_root);
-    log::debug(
-        "sched: aliasprobe pre_handles task=0x%016lx task_phys=0x%016lx probe_va=0x%016lx probe_phys=0x%016lx probe_qword=0x%016lx",
-        task_va,
-        task_sw_phys,
-        task_probe_va,
-        probe_sw_phys,
-        probe_before
-    );
-#endif
-
     resource::init_task_handles(t);
-
-#if defined(__aarch64__)
-    const uint64_t probe_after = *reinterpret_cast<volatile uint64_t*>(task_probe_va);
-    log_user_stack_l1_probe("post_handles", mm_ctx);
-    log_sw_hw_translation_probe("task_base_post", task_va, kernel_root);
-    log_sw_hw_translation_probe("task_off_ff8_post", task_probe_va, kernel_root);
-    log::debug(
-        "sched: aliasprobe post_handles task=0x%016lx probe_va=0x%016lx probe_qword_before=0x%016lx probe_qword_after=0x%016lx",
-        task_va,
-        task_probe_va,
-        probe_before,
-        probe_after
-    );
-#endif
 
     image->mm_ctx = nullptr;
     image->pt_root = 0;

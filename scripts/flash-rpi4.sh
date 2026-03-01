@@ -35,7 +35,6 @@ UEFI_DIR="$PROJECT_DIR/boot/rpi4-uefi"
 LIMINE_DIR="$PROJECT_DIR/boot/limine"
 IMG="$PROJECT_DIR/images/stellux-rpi4.img"
 KERNEL="$PROJECT_DIR/build/kernel/aarch64/kernel.elf"
-KERNEL_RELEASE_MODE=0  # force debug kernel so alias probes are compiled in
 
 # --- Argument parsing ---
 
@@ -96,11 +95,8 @@ done
 # --- Step 1: Build kernel and userland ---
 
 info "Building kernel (ARCH=aarch64 PLATFORM=rpi4)..."
-if [[ "${RELEASE:-0}" == "1" ]]; then
-    warn "Ignoring RELEASE=1 from environment; forcing debug kernel for alias probes."
-fi
 make -C "$PROJECT_DIR" clean
-make -C "$PROJECT_DIR" kernel ARCH=aarch64 PLATFORM=rpi4 RELEASE="$KERNEL_RELEASE_MODE"
+make -C "$PROJECT_DIR" kernel ARCH=aarch64 PLATFORM=rpi4
 
 [[ -f "$KERNEL" ]] || die "Kernel build failed: $KERNEL not found"
 
