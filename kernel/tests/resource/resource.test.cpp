@@ -98,3 +98,28 @@ TEST(resource_test, close_all_invalidates_existing_handles) {
     EXPECT_EQ(resource::close(task, h1), resource::ERR_BADF);
     EXPECT_EQ(resource::close(task, h2), resource::ERR_BADF);
 }
+
+TEST(resource_test, used_handle_slots_never_have_unknown_type) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::open(task, "/resource_slot_invariant", fs::O_CREAT | fs::O_RDWR, &h), resource::OK);
+
+    bool saw_used = false;
+    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+        const resource::handle_entry& entry = task->handles.entries[i];
+        if (!entry.used) {
+            continue;
+        }
+        saw_used = true;
+        EXPECT_NOT_NULL(entry.obj);
+        EXPECT_NE(entry.type, resource::resource_type::UNKNOWN);
+        if (entry.obj) {
+            EXPECT_EQ(entry.obj->type, entry.type);
+        }
+    }
+    EXPECT_TRUE(saw_used);
+
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+}
