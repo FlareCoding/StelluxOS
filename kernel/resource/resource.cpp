@@ -62,12 +62,12 @@ __PRIVILEGED_CODE void init_task_handles(sched::task* task) {
 }
 
 __PRIVILEGED_CODE static bool valid_open_flags(uint32_t flags) {
-    constexpr uint32_t ALLOWED_FLAGS = fs::O_CREAT | fs::O_TRUNC | fs::O_APPEND | fs::ACCESS_MODE_MASK;
-    if ((flags & ~ALLOWED_FLAGS) != 0) {
-        return false;
-    }
     uint32_t mode = flags & fs::ACCESS_MODE_MASK;
     return mode == fs::O_RDONLY || mode == fs::O_WRONLY || mode == fs::O_RDWR;
+}
+
+__PRIVILEGED_CODE static uint32_t normalize_open_flags(uint32_t flags) {
+    return flags & (fs::ACCESS_MODE_MASK | fs::O_CREAT | fs::O_TRUNC | fs::O_APPEND);
 }
 
 __PRIVILEGED_CODE static uint32_t rights_from_open_flags(uint32_t flags) {
@@ -97,14 +97,15 @@ __PRIVILEGED_CODE int32_t open(
     if (!valid_open_flags(flags)) {
         return ERR_INVAL;
     }
+    uint32_t fs_flags = normalize_open_flags(flags);
 
     resource_object* obj = nullptr;
-    int32_t rc = file_provider::open_file_resource(kpath, flags, &obj);
+    int32_t rc = file_provider::open_file_resource(kpath, fs_flags, &obj);
     if (rc != OK) {
         return rc;
     }
 
-    uint32_t rights = rights_from_open_flags(flags);
+    uint32_t rights = rights_from_open_flags(fs_flags);
     rc = alloc_handle(&owner->handles, obj, resource_type::FILE, rights, out_handle);
     if (rc != HANDLE_OK) {
         resource_release(obj);
