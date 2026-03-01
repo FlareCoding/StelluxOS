@@ -64,20 +64,40 @@ __PRIVILEGED_CODE static void log_sw_hw_translation_probe(
     uintptr_t va,
     pmm::phys_addr_t root_pt
 ) {
+    constexpr uint64_t LEGACY_TLBI_VA_MASK = 0x0000FFFFFFFFF000ULL;
     pmm::phys_addr_t sw_phys = paging::get_physical(va, root_pt);
     uint64_t par_el1 = paging::at_s1e1r_par_el1(va);
     pmm::phys_addr_t hw_phys = paging::par_el1_to_phys(par_el1, va);
     uint64_t fault_status = (par_el1 >> 1) & paging::par_el1::FST_MASK;
+    uint64_t tlbi_operand = paging::tlbi_operand_from_va(va);
+    uint64_t legacy_tlbi_operand = (va & LEGACY_TLBI_VA_MASK) >> 12;
+    uint64_t va_high_bits = (va >> 48) & 0xFFULL;
+    bool hw_fault = paging::par_el1_has_fault(par_el1);
+    bool sw_hw_match = (!hw_fault && sw_phys == hw_phys) || (hw_fault && sw_phys == 0);
     log::debug(
-        "sched: aliasprobe %s va=0x%016lx sw_phys=0x%016lx par=0x%016lx hw_phys=0x%016lx fault=%s fst=0x%02lx",
+        "sched: aliasprobe %s va=0x%016lx sw_phys=0x%016lx par=0x%016lx hw_phys=0x%016lx fault=%s fst=0x%02lx va55_48=0x%02lx tlbi_op=0x%016lx legacy_op=0x%016lx sw_hw_match=%s",
         label,
         va,
         sw_phys,
         par_el1,
         hw_phys,
-        paging::par_el1_has_fault(par_el1) ? "yes" : "no",
-        fault_status
+        hw_fault ? "yes" : "no",
+        fault_status,
+        va_high_bits,
+        tlbi_operand,
+        legacy_tlbi_operand,
+        sw_hw_match ? "yes" : "no"
     );
+    if (!sw_hw_match) {
+        log::warn(
+            "sched: aliasprobe mismatch %s va=0x%016lx sw_phys=0x%016lx hw_phys=0x%016lx par=0x%016lx",
+            label,
+            va,
+            sw_phys,
+            hw_phys,
+            par_el1
+        );
+    }
 }
 
 __PRIVILEGED_CODE static void log_user_stack_l1_probe(

@@ -242,7 +242,18 @@ namespace par_el1 {
     constexpr uint64_t FST_MASK = (1ULL << 7) - 1ULL;        // Fault status code bits [6:1]
 }
 
-constexpr uint64_t TLBI_VA_MASK = 0x0000FFFFFFFFF000ULL;
+// TLBI VA-based invalidation operands carry VA[55:12].
+// Keep bits [55:48] intact for high canonical kernel VAs (e.g. 0xffff...),
+// otherwise invalidation can miss and leave stale translations resident.
+constexpr uint64_t TLBI_VA_OPERAND_MASK = 0x00FFFFFFFFFFF000ULL;
+
+/**
+ * Derive TLBI-by-VA operand from virtual address (VA[55:12]).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline uint64_t tlbi_operand_from_va(uint64_t addr) {
+    return (addr & TLBI_VA_OPERAND_MASK) >> 12;
+}
 
 /**
  * @note Privilege: **required**
@@ -273,7 +284,7 @@ __PRIVILEGED_CODE static inline void tlbi_vmalle1is() {
 __PRIVILEGED_CODE static inline void tlbi_vae1is(uint64_t addr) {
     // Use all-ASID invalidation (VAAE1IS) to avoid ASID contamination from
     // high canonical VAs when constructing TLBI operands.
-    uint64_t tlbi_operand = (addr & TLBI_VA_MASK) >> 12;
+    uint64_t tlbi_operand = tlbi_operand_from_va(addr);
     asm volatile(
         "dsb ishst\n"
         "tlbi vaae1is, %0\n"
@@ -338,7 +349,7 @@ __PRIVILEGED_CODE static inline void tlbi_vmalle1() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static inline void tlbi_vae1(uint64_t addr) {
-    uint64_t tlbi_operand = (addr & TLBI_VA_MASK) >> 12;
+    uint64_t tlbi_operand = tlbi_operand_from_va(addr);
     asm volatile(
         "dsb nshst\n"
         "tlbi vaae1, %0\n"
