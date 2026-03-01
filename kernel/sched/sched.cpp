@@ -61,12 +61,12 @@ static void store_cleanup_stage(task* t, uint32_t stage) {
 }
 
 #ifdef DEBUG
-[[noreturn]] __PRIVILEGED_CODE static void fail_switch_window_invariant(
+[[noreturn]] __PRIVILEGED_CODE static void panic_invalid_privilege_state(
     const char* site
 ) {
     cpu::irq_disable();
     log::panic_write(
-        "sched: invariant violation at %s: percpu_is_elevated dropped during switch teardown",
+        "sched: invalid privilege state at %s: percpu_is_elevated dropped during switch teardown",
         site
     );
     for (;;) {
@@ -74,11 +74,11 @@ static void store_cleanup_stage(task* t, uint32_t stage) {
     }
 }
 
-__PRIVILEGED_CODE static inline void assert_switch_window_elevated(
+__PRIVILEGED_CODE static inline void assert_switch_privilege_state(
     const char* site
 ) {
     if (!this_cpu(percpu_is_elevated)) {
-        fail_switch_window_invariant(site);
+        panic_invalid_privilege_state(site);
     }
 }
 #endif
@@ -227,7 +227,7 @@ __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
  */
 __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
 #ifdef DEBUG
-    assert_switch_window_elevated("pick_next_and_switch:entry");
+    assert_switch_privilege_state("pick_next_and_switch:entry");
 #endif
 
     runqueue& rq = this_cpu(cpu_rq);
@@ -260,7 +260,7 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
     // Return-boundary code restores percpu_is_elevated from the selected task's
     // TASK_FLAG_ELEVATED after switch teardown is complete.
 #ifdef DEBUG
-    assert_switch_window_elevated("pick_next_and_switch:post-select");
+    assert_switch_privilege_state("pick_next_and_switch:post-select");
 #endif
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
