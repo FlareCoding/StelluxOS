@@ -212,6 +212,26 @@ __PRIVILEGED_CODE static inline uint64_t read_tcr_el1() {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE static inline void at_s1e0r(uint64_t va) {
+    asm volatile(
+        "at s1e0r, %0\n\t"
+        "isb"
+        :: "r"(va) : "memory"
+    );
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static inline uint64_t read_par_el1() {
+    uint64_t val;
+    asm volatile("mrs %0, par_el1" : "=r"(val));
+    return val;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE static inline uint64_t read_sctlr_el1() {
     uint64_t val;
     asm volatile("mrs %0, sctlr_el1" : "=r"(val));
