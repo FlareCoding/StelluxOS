@@ -54,6 +54,13 @@ struct task {
 static_assert(__builtin_offsetof(task, exec) == 0,
     "task.exec must be at offset 0 for assembly compatibility");
 
+// NOTE: task must stay above the slab-large allocation threshold (2048 bytes)
+// unless scheduler/task allocation paths are re-reviewed. The RPi alias bug
+// investigation identified materially different behavior once task allocations
+// moved between slab and page-mapped large-allocation paths.
+static_assert(sizeof(task) > 2048,
+    "sched::task crossed heap slab threshold; review allocator/MMU invariants");
+
 } // namespace sched
 
 #endif // STELLUX_SCHED_TASK_H

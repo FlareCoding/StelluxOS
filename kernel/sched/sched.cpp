@@ -556,6 +556,7 @@ __PRIVILEGED_CODE task* create_user_task(
     }
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
+
     resource::init_task_handles(t);
 
     image->mm_ctx = nullptr;

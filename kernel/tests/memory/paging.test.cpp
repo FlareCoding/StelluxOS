@@ -317,3 +317,44 @@ TEST(paging_test, user_mapping_is_not_global) {
     paging::destroy_user_pt_root(user_root);
     pmm::free_page(phys);
 }
+
+TEST(paging_test, user_mapping_survives_kernel_map_unmap_churn) {
+    pmm::phys_addr_t user_root = paging::create_user_pt_root();
+    ASSERT_NE(user_root, static_cast<pmm::phys_addr_t>(0));
+
+    pmm::phys_addr_t user_phys = pmm::alloc_page();
+    ASSERT_NE(user_phys, static_cast<pmm::phys_addr_t>(0));
+
+    paging::virt_addr_t user_va = user_test_va() + 2 * paging::PAGE_SIZE_4KB;
+    ASSERT_EQ(paging::map_page(user_va, user_phys, paging::PAGE_USER_RW, user_root), paging::OK);
+    ASSERT_TRUE(paging::is_mapped(user_va, user_root));
+    ASSERT_EQ(paging::get_physical(user_va, user_root), user_phys);
+
+    // Stress map/unmap cycles in kernel root to force table create/reclaim churn.
+    pmm::phys_addr_t kernel_root = paging::get_kernel_pt_root();
+    paging::virt_addr_t kernel_va = alloc_test_va();
+    ASSERT_NE(kernel_va, static_cast<paging::virt_addr_t>(0));
+
+    constexpr size_t CHURN_ITERS = 64;
+    for (size_t i = 0; i < CHURN_ITERS; i++) {
+        pmm::phys_addr_t temp_phys = pmm::alloc_page();
+        ASSERT_NE(temp_phys, static_cast<pmm::phys_addr_t>(0));
+
+        ASSERT_EQ(paging::map_page(kernel_va, temp_phys, paging::PAGE_KERNEL_RW, kernel_root), paging::OK);
+        ASSERT_TRUE(paging::is_mapped(kernel_va, kernel_root));
+        ASSERT_EQ(paging::get_physical(kernel_va, kernel_root), temp_phys);
+
+        ASSERT_EQ(paging::unmap_page(kernel_va, kernel_root), paging::OK);
+        ASSERT_FALSE(paging::is_mapped(kernel_va, kernel_root));
+        pmm::free_page(temp_phys);
+    }
+
+    // Kernel churn must never disturb user-root mappings.
+    ASSERT_TRUE(paging::is_mapped(user_va, user_root));
+    EXPECT_EQ(paging::get_physical(user_va, user_root), user_phys);
+
+    ASSERT_EQ(paging::unmap_page(user_va, user_root), paging::OK);
+    paging::destroy_user_pt_root(user_root);
+    free_test_va(kernel_va);
+    pmm::free_page(user_phys);
+}
