@@ -13,6 +13,10 @@ Use this checklist when testing on physical Raspberry Pi hardware.
 
 Collect logs from boot start through first userspace transition (or panic).
 
+Tip: after collecting the serial log, run:
+- `scripts/extract_aliasprobe.sh <path-to-log>`
+to quickly summarize required markers and panic lines.
+
 ### Required markers
 
 - `sched: aliasprobe[pre_handles] ...`
