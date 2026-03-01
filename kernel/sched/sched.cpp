@@ -249,7 +249,6 @@ __PRIVILEGED_CODE void enqueue(task* t) {
 
     uint32_t cpu = load_balance_select_cpu();
     t->exec.cpu = cpu;
-    log::info("sched: enqueue tid=%u name=%s target_cpu=%u", t->tid, t->name ? t->name : "(null)", cpu);
     runqueue& rq = per_cpu_on(cpu_rq, cpu);
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
@@ -522,35 +521,6 @@ __PRIVILEGED_CODE task* create_user_task(
     }
 
     uintptr_t user_sp = setup_user_stack(last_stack_page_phys, mm::USER_STACK_TOP, *image, name);
-    constexpr uintptr_t MAX_USER_VA_39BIT = (1ULL << 39) - 1;
-    uintptr_t stack_high_probe = mm::USER_STACK_TOP - 0x80;
-    uintptr_t stack_low_probe = user_stack_base;
-    bool sp_mapped = paging::is_mapped(user_sp, mm_ctx->pt_root);
-    bool high_probe_mapped = paging::is_mapped(stack_high_probe, mm_ctx->pt_root);
-    bool low_probe_mapped = paging::is_mapped(stack_low_probe, mm_ctx->pt_root);
-    pmm::phys_addr_t sp_phys = paging::get_physical(user_sp, mm_ctx->pt_root);
-    paging::page_flags_t sp_flags = paging::get_page_flags(user_sp, mm_ctx->pt_root);
-    log::info(
-        "sched: user task '%s' stack base=0x%lx top=0x%lx initial_sp=0x%lx "
-        "(SP<=39bit:%s, map_rc=%d, mm_pt=0x%lx, mapped_on_cpu=%u)",
-        name, user_stack_base, mm::USER_STACK_TOP, user_sp,
-        user_sp <= MAX_USER_VA_39BIT ? "yes" : "no",
-        map_rc, mm_ctx->pt_root, percpu::current_cpu_id()
-    );
-    log::info(
-        "sched: stack probes sp_mapped=%s high_probe[0x%lx]=%s low_probe[0x%lx]=%s "
-        "sp_phys=0x%lx sp_flags=0x%x",
-        sp_mapped ? "yes" : "no",
-        stack_high_probe, high_probe_mapped ? "yes" : "no",
-        stack_low_probe, low_probe_mapped ? "yes" : "no",
-        sp_phys, static_cast<uint32_t>(sp_flags)
-    );
-    if (user_sp > MAX_USER_VA_39BIT || stack_high_probe > MAX_USER_VA_39BIT) {
-        log::warn(
-            "sched: user stack VA exceeds 39-bit range (sp=0x%lx, probe=0x%lx, max39=0x%lx)",
-            user_sp, stack_high_probe, MAX_USER_VA_39BIT
-        );
-    }
 
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
