@@ -22,7 +22,7 @@
 #include "mm/vma.h"
 #include "common/string.h"
 #include "resource/resource.h"
-#if defined(__aarch64__)
+#if defined(__aarch64__) && defined(DEBUG)
 #include "mm/paging_arch.h"
 #endif
 
@@ -55,7 +55,7 @@ constexpr uint64_t AT_PHENT  = 4;
 constexpr uint64_t AT_PHNUM  = 5;
 constexpr uint64_t AT_PAGESZ = 6;
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) && defined(DEBUG)
 constexpr uintptr_t TASK_ALIAS_PROBE_OFFSET = 0xFF8;
 constexpr uintptr_t USER_STACK_ALIAS_PROBE_VA = mm::USER_STACK_TOP - 0x80;
 
@@ -624,7 +624,7 @@ __PRIVILEGED_CODE task* create_user_task(
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) && defined(DEBUG)
     uintptr_t task_va = reinterpret_cast<uintptr_t>(t);
     uintptr_t task_probe_va = task_va + TASK_ALIAS_PROBE_OFFSET;
     pmm::phys_addr_t kernel_root = paging::get_kernel_pt_root();
@@ -647,7 +647,7 @@ __PRIVILEGED_CODE task* create_user_task(
 
     resource::init_task_handles(t);
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) && defined(DEBUG)
     const uint64_t probe_after = *reinterpret_cast<volatile uint64_t*>(task_probe_va);
     log_user_stack_l1_probe("post_handles", mm_ctx);
     log_sw_hw_translation_probe("task_base_post", task_va, kernel_root);
