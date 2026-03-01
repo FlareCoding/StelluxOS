@@ -5,8 +5,12 @@
 
 namespace syscall::linux_nr {
 
+constexpr uint64_t READ             = 63;
+constexpr uint64_t WRITE            = 64;
+constexpr uint64_t CLOSE            = 57;
 constexpr uint64_t IOCTL            = 29;
 constexpr uint64_t WRITEV           = 66;
+constexpr uint64_t OPENAT           = 56;
 constexpr uint64_t MUNMAP           = 215;
 constexpr uint64_t MMAP             = 222;
 constexpr uint64_t MPROTECT         = 226;

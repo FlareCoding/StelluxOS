@@ -4,6 +4,7 @@
 #include "sched/task_exec_core.h"
 #include "common/list.h"
 #include "rc/reaper.h"
+#include "resource/handle_table.h"
 
 namespace sched {
 
@@ -45,6 +46,7 @@ struct task {
     const char*    name;
     task_tlb_sync_ticket tlb_sync_ticket;
     rc::reaper::dead_node reaper_node;
+    resource::handle_table handles;
 };
 
 // Assembly accesses task_exec_core fields via offsets from the task pointer.

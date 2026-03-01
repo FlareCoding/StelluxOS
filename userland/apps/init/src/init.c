@@ -1,8 +1,10 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 static int run_vma_syscall_demo(void) {
     const size_t page_size = 4096;
@@ -62,10 +64,72 @@ static int run_vma_syscall_demo(void) {
     return 0;
 }
 
+static int run_resource_fd_demo(void) {
+    const char* path = "/resource_demo_file";
+    const char* msg = "hello from resource fd demo";
+
+    // Example 1: open/write/close + reopen/read/close
+    int fd = open(path, O_CREAT | O_RDWR, 0644);
+    if (fd < 0) {
+        printf("open(O_CREAT|O_RDWR) failed: errno=%d (%s)\n", errno, strerror(errno));
+        return 1;
+    }
+
+    ssize_t wr = write(fd, msg, strlen(msg));
+    if (wr != (ssize_t)strlen(msg)) {
+        printf("write failed: wrote=%ld errno=%d (%s)\n",
+               (long)wr, errno, strerror(errno));
+        close(fd);
+        return 1;
+    }
+
+    if (close(fd) != 0) {
+        printf("close after write failed: errno=%d (%s)\n", errno, strerror(errno));
+        return 1;
+    }
+
+    fd = open(path, O_RDONLY, 0);
+    if (fd < 0) {
+        printf("reopen(O_RDONLY) failed: errno=%d (%s)\n", errno, strerror(errno));
+        return 1;
+    }
+
+    char buf[128] = {};
+    ssize_t rd = read(fd, buf, sizeof(buf) - 1);
+    if (rd < 0) {
+        printf("read failed: errno=%d (%s)\n", errno, strerror(errno));
+        close(fd);
+        return 1;
+    }
+    buf[rd] = '\0';
+    printf("resource fd example 1 ok: read back \"%s\" (%ld bytes)\n", buf, (long)rd);
+
+    if (close(fd) != 0) {
+        printf("close after read failed: errno=%d (%s)\n", errno, strerror(errno));
+        return 1;
+    }
+
+    // Example 2: invalid handle should fail with EBADF
+    errno = 0;
+    rd = read(-1, buf, 1);
+    if (rd != -1 || errno != EBADF) {
+        printf("resource fd example 2 failed: read(-1) => %ld errno=%d\n",
+               (long)rd, errno);
+        return 1;
+    }
+    printf("resource fd example 2 ok: read(-1) -> EBADF\n");
+
+    return 0;
+}
+
 int main(void) {
     printf("hello from userspace!\n");
 
-    int rc = run_vma_syscall_demo();
-    printf("VMA syscall demo %s\n", rc == 0 ? "passed" : "failed");
-    return rc;
+    int rc_vma = run_vma_syscall_demo();
+    printf("VMA syscall demo %s\n", rc_vma == 0 ? "passed" : "failed");
+
+    int rc_fd = run_resource_fd_demo();
+    printf("Resource FD demo %s\n", rc_fd == 0 ? "passed" : "failed");
+
+    return (rc_vma == 0 && rc_fd == 0) ? 0 : 1;
 }

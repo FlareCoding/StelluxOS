@@ -21,6 +21,7 @@
 #include "mm/pmm.h"
 #include "mm/vma.h"
 #include "common/string.h"
+#include "resource/resource.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -110,6 +111,8 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
     if (load_cleanup_stage(t) != TASK_CLEANUP_STAGE_READY_TO_RECLAIM) {
         return rc::reaper::RETRY_LATER;
     }
+
+    resource::close_all(t);
 
     if (t->exec.mm_ctx) {
         mm::mm_context_release(t->exec.mm_ctx);
@@ -403,6 +406,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     }
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
+    resource::init_task_handles(t);
 
     return t;
 }
@@ -552,6 +556,7 @@ __PRIVILEGED_CODE task* create_user_task(
     }
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
+    resource::init_task_handles(t);
 
     image->mm_ctx = nullptr;
     image->pt_root = 0;
@@ -594,6 +599,7 @@ __PRIVILEGED_CODE int32_t init() {
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
+    resource::init_task_handles(idle);
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
@@ -652,6 +658,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
+    resource::init_task_handles(idle);
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;

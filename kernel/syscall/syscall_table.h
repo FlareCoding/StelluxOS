@@ -9,11 +9,17 @@ using handler_t = int64_t (*)(uint64_t, uint64_t, uint64_t,
                                uint64_t, uint64_t, uint64_t);
 
 constexpr uint64_t MAX_SYSCALL_NUM = 2048;
+constexpr int64_t ENOENT = -2;
+constexpr int64_t EIO    = -5;
 constexpr int64_t EBADF  = -9;
 constexpr int64_t ENOMEM = -12;
+constexpr int64_t EFAULT = -14;
+constexpr int64_t ENOTDIR = -20;
+constexpr int64_t EMFILE = -24;
 constexpr int64_t EINVAL = -22;
 constexpr int64_t EEXIST = -17;
 constexpr int64_t ENOTTY = -25;
+constexpr int64_t ENAMETOOLONG = -36;
 constexpr int64_t ENOSYS = -38;
 
 extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
