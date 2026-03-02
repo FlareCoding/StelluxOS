@@ -71,6 +71,7 @@ CXX_SOURCES += $(shell find sync -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find smp -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find rc -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find fs -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find net -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find resource -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
 

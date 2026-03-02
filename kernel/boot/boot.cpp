@@ -14,6 +14,7 @@
 #include "debug/debug.h"
 #include "sched/task.h"
 #include "fs/fs.h"
+#include "net/net.h"
 #include "exec/elf.h"
 #include "syscall/syscall_table.h"
 
@@ -78,6 +79,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (timer::init(100) != timer::OK) {
         log::fatal("timer::init failed");
+    }
+
+    if (net::init() != net::OK) {
+        log::fatal("net::init failed");
     }
 
     syscall::init_syscall_table();
