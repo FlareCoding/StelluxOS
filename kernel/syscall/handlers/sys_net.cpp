@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_net.h"
+#include "syscall/resource_errno.h"
 
 #include "mm/heap.h"
 #include "mm/uaccess.h"
@@ -21,49 +22,6 @@ struct linux_sockaddr_un {
     uint16_t sun_family;
     char sun_path[net::unix_stream::SOCKET_PATH_MAX];
 };
-
-int64_t map_resource_error(int64_t rc) {
-    switch (rc) {
-        case resource::ERR_INVAL:
-            return syscall::EINVAL;
-        case resource::ERR_NOENT:
-            return syscall::ENOENT;
-        case resource::ERR_NOTDIR:
-            return syscall::ENOTDIR;
-        case resource::ERR_NAMETOOLONG:
-            return syscall::ENAMETOOLONG;
-        case resource::ERR_NOMEM:
-            return syscall::ENOMEM;
-        case resource::ERR_TABLEFULL:
-            return syscall::EMFILE;
-        case resource::ERR_AGAIN:
-            return syscall::EAGAIN;
-        case resource::ERR_PIPE:
-            return syscall::EPIPE;
-        case resource::ERR_ADDRINUSE:
-            return syscall::EADDRINUSE;
-        case resource::ERR_AFNOSUPPORT:
-            return syscall::EAFNOSUPPORT;
-        case resource::ERR_PROTONOSUPPORT:
-            return syscall::EPROTONOSUPPORT;
-        case resource::ERR_NOTCONN:
-            return syscall::ENOTCONN;
-        case resource::ERR_CONNREFUSED:
-            return syscall::ECONNREFUSED;
-        case resource::ERR_OPNOTSUPP:
-            return syscall::EOPNOTSUPP;
-        case resource::ERR_NOTSOCK:
-            return syscall::ENOTSOCK;
-        case resource::ERR_BADF:
-        case resource::ERR_ACCESS:
-            return syscall::EBADF;
-        case resource::ERR_UNSUP:
-            return syscall::ENOSYS;
-        case resource::ERR_IO:
-        default:
-            return syscall::EIO;
-    }
-}
 
 int64_t parse_socket_path(
     uint64_t user_addr,
@@ -151,7 +109,7 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::socket_provider::create_stream_socket_resource(nonblocking, &obj);
     if (rc != resource::OK) {
-        return map_resource_error(rc);
+        return syscall::map_resource_error(rc);
     }
 
     resource::handle_t handle = -1;
@@ -191,7 +149,7 @@ DEFINE_SYSCALL3(bind, fd, addr, addrlen) {
     int32_t rc = resource::socket_provider::bind(obj, path);
     resource::resource_release(obj);
     if (rc != resource::OK) {
-        return map_resource_error(rc);
+        return syscall::map_resource_error(rc);
     }
     return 0;
 }
@@ -211,7 +169,7 @@ DEFINE_SYSCALL2(listen, fd, backlog) {
     int32_t rc = resource::socket_provider::listen(obj, static_cast<uint32_t>(backlog));
     resource::resource_release(obj);
     if (rc != resource::OK) {
-        return map_resource_error(rc);
+        return syscall::map_resource_error(rc);
     }
     return 0;
 }
@@ -236,7 +194,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     int32_t rc = resource::socket_provider::accept(listener, &accepted);
     resource::resource_release(listener);
     if (rc != resource::OK) {
-        return map_resource_error(rc);
+        return syscall::map_resource_error(rc);
     }
 
     resource::handle_t new_fd = -1;
@@ -276,7 +234,7 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
     int32_t rc = resource::socket_provider::connect(obj, path);
     resource::resource_release(obj);
     if (rc != resource::OK) {
-        return map_resource_error(rc);
+        return syscall::map_resource_error(rc);
     }
     return 0;
 }
@@ -344,7 +302,7 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
             if (total > 0) {
                 return total;
             }
-            return map_resource_error(n);
+            return syscall::map_resource_error(n);
         }
         if (n == 0) {
             break;
@@ -417,7 +375,7 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
             if (total > 0) {
                 return total;
             }
-            return map_resource_error(n);
+            return syscall::map_resource_error(n);
         }
         if (n == 0) {
             break;

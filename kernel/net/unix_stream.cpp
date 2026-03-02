@@ -779,8 +779,7 @@ __PRIVILEGED_CODE int32_t close(stream_socket* socket) {
         socket->inflight_count = 0;
     }
     if (socket->state == socket_state::CONNECTED && socket->conn) {
-        connection = socket->conn;
-        connection_add_ref(connection);
+        connection = socket->conn; // Transfer this socket's owned ref to local.
         side = socket->conn_side;
         socket->conn = nullptr;
     }

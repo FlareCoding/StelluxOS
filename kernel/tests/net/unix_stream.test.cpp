@@ -223,3 +223,29 @@ TEST(unix_stream, closing_listener_closes_pending_connections) {
     net::unix_stream::release(listener);
     close_and_release(client);
 }
+
+TEST(unix_stream, repeated_connect_close_cycles_do_not_exhaust_resources) {
+    net::unix_stream::socket_path path = {};
+    assert_make_path("/uds_repeat_close", &path);
+
+    net::unix_stream::stream_socket* listener = nullptr;
+    ASSERT_EQ(net::unix_stream::create_socket(false, &listener), net::unix_stream::OK);
+    ASSERT_EQ(net::unix_stream::bind(listener, path), net::unix_stream::OK);
+    ASSERT_EQ(net::unix_stream::listen(listener, 8), net::unix_stream::OK);
+
+    constexpr uint32_t ITERATIONS = 2048;
+    for (uint32_t i = 0; i < ITERATIONS; i++) {
+        net::unix_stream::stream_socket* client = nullptr;
+        net::unix_stream::stream_socket* server = nullptr;
+
+        ASSERT_EQ(net::unix_stream::create_socket(false, &client), net::unix_stream::OK);
+        ASSERT_EQ(net::unix_stream::connect(client, path), net::unix_stream::OK);
+        ASSERT_EQ(net::unix_stream::accept(listener, &server), net::unix_stream::OK);
+        ASSERT_NOT_NULL(server);
+
+        close_and_release(client);
+        close_and_release(server);
+    }
+
+    close_and_release(listener);
+}
