@@ -2,11 +2,13 @@
 
 #include "stlx_unit_test.h"
 #include "resource/resource.h"
+#include "resource/providers/socket_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/heap.h"
 #include "common/string.h"
 #include "fs/fstypes.h"
+#include "net/unix_stream.h"
 
 TEST_SUITE(resource_test);
 
@@ -244,4 +246,77 @@ TEST(resource_test, open_returns_tablefull_when_handle_space_exhausted) {
     for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
         EXPECT_EQ(resource::close(task, handles[i]), resource::OK);
     }
+}
+
+TEST(resource_test, socket_resource_roundtrip_via_handle_io) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    net::unix_stream::socket_path path = {};
+    ASSERT_EQ(net::unix_stream::make_path_cstr("/resource_socket_roundtrip", &path),
+              net::unix_stream::OK);
+
+    resource::resource_object* listener = nullptr;
+    resource::resource_object* client = nullptr;
+    resource::resource_object* server = nullptr;
+
+    ASSERT_EQ(resource::socket_provider::create_stream_socket_resource(false, &listener), resource::OK);
+    ASSERT_EQ(resource::socket_provider::create_stream_socket_resource(false, &client), resource::OK);
+    ASSERT_EQ(resource::socket_provider::bind(listener, path), resource::OK);
+    ASSERT_EQ(resource::socket_provider::listen(listener, 2), resource::OK);
+    ASSERT_EQ(resource::socket_provider::connect(client, path), resource::OK);
+    ASSERT_EQ(resource::socket_provider::accept(listener, &server), resource::OK);
+
+    resource::handle_t h_client = -1;
+    resource::handle_t h_server = -1;
+    ASSERT_EQ(resource::alloc_handle(
+                  &task->handles,
+                  client,
+                  resource::resource_type::SOCKET,
+                  resource::RIGHT_READ | resource::RIGHT_WRITE,
+                  &h_client),
+              resource::HANDLE_OK);
+    ASSERT_EQ(resource::alloc_handle(
+                  &task->handles,
+                  server,
+                  resource::resource_type::SOCKET,
+                  resource::RIGHT_READ | resource::RIGHT_WRITE,
+                  &h_server),
+              resource::HANDLE_OK);
+
+    // Handle table now owns references for client/server.
+    resource::resource_release(client);
+    resource::resource_release(server);
+
+    const char* msg = "socket-io";
+    char buf[16] = {};
+    ASSERT_EQ(resource::write(task, h_client, msg, 9), static_cast<ssize_t>(9));
+    ASSERT_EQ(resource::read(task, h_server, buf, 9), static_cast<ssize_t>(9));
+    buf[9] = '\0';
+    EXPECT_STREQ(buf, "socket-io");
+
+    EXPECT_EQ(resource::close(task, h_client), resource::OK);
+    EXPECT_EQ(resource::close(task, h_server), resource::OK);
+    resource::resource_release(listener);
+}
+
+TEST(resource_test, close_all_closes_socket_handles) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* socket_obj = nullptr;
+    ASSERT_EQ(resource::socket_provider::create_stream_socket_resource(false, &socket_obj), resource::OK);
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::alloc_handle(
+                  &task->handles,
+                  socket_obj,
+                  resource::resource_type::SOCKET,
+                  resource::RIGHT_READ | resource::RIGHT_WRITE,
+                  &h),
+              resource::HANDLE_OK);
+    resource::resource_release(socket_obj);
+
+    resource::close_all(task);
+    EXPECT_EQ(resource::close(task, h), resource::ERR_BADF);
 }
