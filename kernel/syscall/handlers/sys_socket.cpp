@@ -307,9 +307,13 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
         return syscall::EINVAL;
     }
     auto* client_sock = static_cast<socket::unix_socket*>(client_obj->impl);
-    if (client_sock->state != socket::SOCK_STATE_UNBOUND) {
+    if (client_sock->state == socket::SOCK_STATE_CONNECTED) {
         resource::resource_release(client_obj);
         return syscall::EISCONN;
+    }
+    if (client_sock->state == socket::SOCK_STATE_LISTENING) {
+        resource::resource_release(client_obj);
+        return syscall::EINVAL;
     }
 
     fs::node* target_node = nullptr;
