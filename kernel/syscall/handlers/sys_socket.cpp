@@ -10,6 +10,7 @@
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 #include "common/string.h"
+#include "hw/barrier.h"
 
 namespace {
 
@@ -407,16 +408,19 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
         return syscall::ECONNREFUSED;
     }
 
+    // Mutate client socket to CONNECTED (side B) before waking the
+    // accept thread so that readers on AArch64 never see state ==
+    // CONNECTED with a null channel pointer.
+    client_sock->channel = static_cast<rc::strong_ref<socket::unix_channel>&&>(chan);
+    client_sock->is_side_a = false;
+    barrier::smp_write();
+    client_sock->state = socket::SOCK_STATE_CONNECTED;
+
     pc->server_obj = server_obj;
     ls_ref->accept_queue.push_back(pc);
     ls_ref->pending_count++;
     sync::spin_unlock_irqrestore(ls_ref->lock, irq);
     sync::wake_one(ls_ref->accept_wq);
-
-    // Mutate client socket to CONNECTED (side B)
-    client_sock->channel = static_cast<rc::strong_ref<socket::unix_channel>&&>(chan);
-    client_sock->is_side_a = false;
-    client_sock->state = socket::SOCK_STATE_CONNECTED;
 
     resource::resource_release(client_obj);
     return 0;
@@ -451,10 +455,17 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     socket::listener_state* ls = sock->listener.ptr();
 
     sync::irq_state irq = sync::spin_lock_irqsave(ls->lock);
-    if (nonblock && ls->accept_queue.empty()) {
-        sync::spin_unlock_irqrestore(ls->lock, irq);
-        resource::resource_release(listen_obj);
-        return syscall::EAGAIN;
+    if (ls->accept_queue.empty()) {
+        if (ls->closed) {
+            sync::spin_unlock_irqrestore(ls->lock, irq);
+            resource::resource_release(listen_obj);
+            return syscall::EINVAL;
+        }
+        if (nonblock) {
+            sync::spin_unlock_irqrestore(ls->lock, irq);
+            resource::resource_release(listen_obj);
+            return syscall::EAGAIN;
+        }
     }
     while (ls->accept_queue.empty() && !ls->closed) {
         irq = sync::wait(ls->accept_wq, ls->lock, irq);
