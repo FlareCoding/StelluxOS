@@ -52,6 +52,7 @@ __PRIVILEGED_CODE int32_t alloc_handle(
         resource_add_ref(obj);
         entry.used = true;
         entry.generation++;
+        entry.flags = 0;
         entry.rights = rights;
         entry.type = type;
         entry.obj = obj;
