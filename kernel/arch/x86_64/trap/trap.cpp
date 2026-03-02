@@ -12,6 +12,13 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf);
 __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf);
 } // namespace sched
 
+__PRIVILEGED_CODE static inline void restore_post_trap_elevation_state() {
+    // Return-boundary restoration: select runtime elevation based on the
+    // currently selected task's privilege-mode bit.
+    this_cpu(percpu_is_elevated) =
+        (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+}
+
 /**
  * @brief x86_64 trap handler called from assembly.
  * @note Privilege: **required**
@@ -28,8 +35,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         sched::on_yield(tf);
         // Clear the IRQ flag on the originally interrupted task, not the post-switch task.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        this_cpu(percpu_is_elevated) =
-            (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+        restore_post_trap_elevation_state();
         return;
     }
 
@@ -41,8 +47,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         }
         // Clear IRQ state on the interrupted task to avoid stale IN_IRQ ownership.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        this_cpu(percpu_is_elevated) =
-            (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+        restore_post_trap_elevation_state();
         return;
     }
 

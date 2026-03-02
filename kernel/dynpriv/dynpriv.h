@@ -14,12 +14,13 @@ void elevate();
 // Transition from Ring 0 / EL1 to Ring 3 / EL0
 void lower();
 
-// Check if currently elevated (Ring 0 / EL1)
+// Check if the current CPU is executing elevated context right now.
+// Trap/syscall entry/exit code is responsible for keeping this state accurate.
 bool is_elevated();
 
 } // namespace dynpriv
 
-#define RUN_ELEVATED(code)                          \
+#define RUN_ELEVATED(code)                           \
     do {                                            \
         bool was_elevated = dynpriv::is_elevated(); \
         if (!was_elevated) {                        \

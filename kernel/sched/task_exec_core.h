@@ -10,7 +10,10 @@ namespace mm { struct mm_context; }
 
 namespace sched {
 
-constexpr uint32_t TASK_FLAG_ELEVATED    = (1 << 0);  // Currently at ring 0 / EL1
+// Task privilege-mode bit (Ring 0 / EL1 when set). During trap/syscall handling
+// the CPU executes elevated regardless of this bit; per-CPU runtime elevation
+// state is tracked separately via percpu_is_elevated.
+constexpr uint32_t TASK_FLAG_ELEVATED    = (1 << 0);
 constexpr uint32_t TASK_FLAG_KERNEL      = (1 << 1);  // Is a kernel task
 constexpr uint32_t TASK_FLAG_CAN_ELEVATE = (1 << 2);  // Authorized to elevate
 constexpr uint32_t TASK_FLAG_IDLE        = (1 << 3);  // Is the idle task

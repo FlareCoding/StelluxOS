@@ -60,6 +60,29 @@ static void store_cleanup_stage(task* t, uint32_t stage) {
     __atomic_store_n(&t->cleanup_stage, stage, __ATOMIC_RELEASE);
 }
 
+#ifdef DEBUG
+[[noreturn]] __PRIVILEGED_CODE static void panic_invalid_privilege_state(
+    const char* site
+) {
+    cpu::irq_disable();
+    log::panic_write(
+        "sched: invalid privilege state at %s: percpu_is_elevated dropped during switch teardown",
+        site
+    );
+    for (;;) {
+        cpu::halt();
+    }
+}
+
+__PRIVILEGED_CODE static inline void assert_switch_privilege_state(
+    const char* site
+) {
+    if (!this_cpu(percpu_is_elevated)) {
+        panic_invalid_privilege_state(site);
+    }
+}
+#endif
+
 /**
  * @note Privilege: **required**
  */
@@ -203,6 +226,10 @@ __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
+#ifdef DEBUG
+    assert_switch_privilege_state("pick_next_and_switch:entry");
+#endif
+
     runqueue& rq = this_cpu(cpu_rq);
 
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
@@ -229,7 +256,12 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
     next->state = TASK_STATE_RUNNING;
     this_cpu(current_task) = next;
     this_cpu(current_task_exec) = &next->exec;
-    this_cpu(percpu_is_elevated) = (next->exec.flags & TASK_FLAG_ELEVATED) != 0;
+    // Runtime elevation state remains true while trap/syscall teardown continues.
+    // Return-boundary code restores percpu_is_elevated from the selected task's
+    // TASK_FLAG_ELEVATED after switch teardown is complete.
+#ifdef DEBUG
+    assert_switch_privilege_state("pick_next_and_switch:post-select");
+#endif
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
 

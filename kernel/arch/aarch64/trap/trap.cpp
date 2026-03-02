@@ -34,6 +34,13 @@ static void trap_fatal(const char* kind, const aarch64::trap_frame* tf) {
     panic::on_trap(const_cast<aarch64::trap_frame*>(tf), kind);
 }
 
+__PRIVILEGED_CODE static inline void restore_post_trap_elevation_state() {
+    // Return-boundary restoration: select runtime elevation based on the
+    // currently selected task's privilege-mode bit.
+    this_cpu(percpu_is_elevated) =
+        (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+}
+
 extern "C" __PRIVILEGED_CODE 
 void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
     this_cpu(percpu_is_elevated) = true;
@@ -44,8 +51,7 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
 
     if (ec == aarch64::EC_SVC_A64) {
         stlx_aarch64_syscall_dispatch(tf);
-        this_cpu(percpu_is_elevated) =
-            (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+        restore_post_trap_elevation_state();
         return;
     }
 
@@ -67,8 +73,7 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
             sched::on_tick(tf);
         }
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        this_cpu(percpu_is_elevated) =
-            (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+        restore_post_trap_elevation_state();
         return;
     }
 
@@ -103,8 +108,7 @@ void stlx_aarch64_el1_sync_handler(aarch64::trap_frame* tf) {
 
     if (ec == aarch64::EC_SVC_A64) {
         stlx_aarch64_syscall_dispatch(tf);
-        this_cpu(percpu_is_elevated) =
-            (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+        restore_post_trap_elevation_state();
         return;
     }
 
@@ -126,8 +130,7 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
             sched::on_tick(tf);
         }
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
-        this_cpu(percpu_is_elevated) =
-            (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+        restore_post_trap_elevation_state();
         return;
     }
 

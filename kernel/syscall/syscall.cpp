@@ -4,6 +4,13 @@
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 
+__PRIVILEGED_CODE static inline void restore_post_syscall_elevation_state() {
+    // Return-boundary restoration: select runtime elevation based on the
+    // currently selected task's privilege-mode bit.
+    this_cpu(percpu_is_elevated) =
+        (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -28,9 +35,9 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
         result = syscall::ENOSYS;
     }
 
-    // Restore elevation state: keep elevated only if SYS_ELEVATE set the flag.
-    this_cpu(percpu_is_elevated) =
-        (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+    // Return-boundary restore: dynamic runtime elevation follows the selected
+    // task mode once syscall handling and switch teardown are complete.
+    restore_post_syscall_elevation_state();
 
     return result;
 }
