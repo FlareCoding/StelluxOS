@@ -13,7 +13,7 @@ constexpr uint32_t MAX_TASK_HANDLES = 128;
 struct handle_entry {
     bool used;
     uint16_t generation;
-    uint16_t reserved;
+    uint32_t flags;
     uint32_t rights;
     resource_type type;
     resource_object* obj;
@@ -58,7 +58,28 @@ __PRIVILEGED_CODE int32_t get_handle_object(
     handle_table* table,
     handle_t handle,
     uint32_t required_rights,
-    resource_object** out_obj
+    resource_object** out_obj,
+    uint32_t* out_flags = nullptr
+);
+
+/**
+ * @brief Get per-handle flags (O_NONBLOCK, etc.).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t get_handle_flags(
+    handle_table* table,
+    handle_t handle,
+    uint32_t* out_flags
+);
+
+/**
+ * @brief Set per-handle flags (O_NONBLOCK, etc.).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t set_handle_flags(
+    handle_table* table,
+    handle_t handle,
+    uint32_t flags
 );
 
 /**

@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 static int run_vma_syscall_demo(void) {
@@ -122,6 +124,90 @@ static int run_resource_fd_demo(void) {
     return 0;
 }
 
+static int run_socketpair_demo(void) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+        printf("socketpair failed: errno=%d (%s)\r\n", errno, strerror(errno));
+        return 1;
+    }
+    printf("socketpair ok: sv[0]=%d sv[1]=%d\r\n", sv[0], sv[1]);
+
+    const char* msg = "hello sockets";
+    ssize_t nw = write(sv[0], msg, strlen(msg));
+    if (nw != (ssize_t)strlen(msg)) {
+        printf("write sv[0] failed: %ld errno=%d\r\n", (long)nw, errno);
+        close(sv[0]); close(sv[1]);
+        return 1;
+    }
+
+    char buf[64] = {};
+    ssize_t nr = read(sv[1], buf, sizeof(buf) - 1);
+    if (nr != (ssize_t)strlen(msg) || memcmp(buf, msg, strlen(msg)) != 0) {
+        printf("read sv[1] failed: got %ld bytes \"%s\"\r\n", (long)nr, buf);
+        close(sv[0]); close(sv[1]);
+        return 1;
+    }
+    printf("socketpair data ok: wrote \"%s\", read \"%s\"\r\n", msg, buf);
+
+    const char* reply = "world";
+    nw = write(sv[1], reply, strlen(reply));
+    nr = read(sv[0], buf, sizeof(buf) - 1);
+    if (nr < 0) {
+        printf("read sv[0] reply failed: errno=%d (%s)\r\n", errno, strerror(errno));
+        close(sv[0]); close(sv[1]);
+        return 1;
+    }
+    buf[nr] = '\0';
+    if (nr != (ssize_t)strlen(reply) || memcmp(buf, reply, strlen(reply)) != 0) {
+        printf("bidirectional failed: got \"%s\"\r\n", buf);
+        close(sv[0]); close(sv[1]);
+        return 1;
+    }
+    printf("socketpair bidirectional ok\r\n");
+
+    close(sv[0]);
+    nr = read(sv[1], buf, sizeof(buf));
+    if (nr != 0) {
+        printf("EOF test failed: expected 0, got %ld\r\n", (long)nr);
+        close(sv[1]);
+        return 1;
+    }
+    printf("socketpair EOF ok: close sv[0] -> read sv[1] returns 0\r\n");
+
+    close(sv[1]);
+
+    // non-blocking test
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+        printf("socketpair (nonblock test) failed\r\n");
+        return 1;
+    }
+    if (fcntl(sv[0], F_SETFL, O_NONBLOCK) != 0) {
+        printf("fcntl F_SETFL O_NONBLOCK failed: errno=%d\r\n", errno);
+        close(sv[0]); close(sv[1]);
+        return 1;
+    }
+    int fl = fcntl(sv[0], F_GETFL, 0);
+    if (!(fl & O_NONBLOCK)) {
+        printf("fcntl F_GETFL: O_NONBLOCK not set (flags=0x%x)\r\n", fl);
+        close(sv[0]); close(sv[1]);
+        return 1;
+    }
+    printf("fcntl O_NONBLOCK set ok (flags=0x%x)\r\n", fl);
+
+    errno = 0;
+    nr = read(sv[0], buf, sizeof(buf));
+    if (nr != -1 || errno != EAGAIN) {
+        printf("nonblock read expected EAGAIN, got nr=%ld errno=%d\r\n", (long)nr, errno);
+        close(sv[0]); close(sv[1]);
+        return 1;
+    }
+    printf("nonblock read -> EAGAIN ok\r\n");
+
+    close(sv[0]);
+    close(sv[1]);
+    return 0;
+}
+
 int main(void) {
     printf("hello from userspace!\r\n");
 
@@ -131,5 +217,8 @@ int main(void) {
     int rc_fd = run_resource_fd_demo();
     printf("Resource FD demo %s\r\n", rc_fd == 0 ? "passed" : "failed");
 
-    return (rc_vma == 0 && rc_fd == 0) ? 0 : 1;
+    int rc_sock = run_socketpair_demo();
+    printf("Socketpair demo %s\r\n", rc_sock == 0 ? "passed" : "failed");
+
+    return (rc_vma == 0 && rc_fd == 0 && rc_sock == 0) ? 0 : 1;
 }

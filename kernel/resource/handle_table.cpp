@@ -15,7 +15,7 @@ __PRIVILEGED_CODE void init_handle_table(handle_table* table) {
     for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
         table->entries[i].used = false;
         table->entries[i].generation = 0;
-        table->entries[i].reserved = 0;
+        table->entries[i].flags = 0;
         table->entries[i].rights = 0;
         table->entries[i].type = resource_type::UNKNOWN;
         table->entries[i].obj = nullptr;
@@ -52,6 +52,7 @@ __PRIVILEGED_CODE int32_t alloc_handle(
         resource_add_ref(obj);
         entry.used = true;
         entry.generation++;
+        entry.flags = 0;
         entry.rights = rights;
         entry.type = type;
         entry.obj = obj;
@@ -70,7 +71,8 @@ __PRIVILEGED_CODE int32_t get_handle_object(
     handle_table* table,
     handle_t handle,
     uint32_t required_rights,
-    resource_object** out_obj
+    resource_object** out_obj,
+    uint32_t* out_flags
 ) {
     if (!table || !out_obj) {
         return HANDLE_ERR_INVAL;
@@ -93,6 +95,59 @@ __PRIVILEGED_CODE int32_t get_handle_object(
 
     resource_add_ref(entry.obj);
     *out_obj = entry.obj;
+    if (out_flags) {
+        *out_flags = entry.flags;
+    }
+    return HANDLE_OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t get_handle_flags(
+    handle_table* table,
+    handle_t handle,
+    uint32_t* out_flags
+) {
+    if (!table || !out_flags) {
+        return HANDLE_ERR_INVAL;
+    }
+    if (handle < 0 || static_cast<uint32_t>(handle) >= MAX_TASK_HANDLES) {
+        return HANDLE_ERR_NOENT;
+    }
+
+    sync::irq_lock_guard guard(table->lock);
+    handle_entry& entry = table->entries[static_cast<uint32_t>(handle)];
+    if (!entry.used) {
+        return HANDLE_ERR_NOENT;
+    }
+
+    *out_flags = entry.flags;
+    return HANDLE_OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t set_handle_flags(
+    handle_table* table,
+    handle_t handle,
+    uint32_t flags
+) {
+    if (!table) {
+        return HANDLE_ERR_INVAL;
+    }
+    if (handle < 0 || static_cast<uint32_t>(handle) >= MAX_TASK_HANDLES) {
+        return HANDLE_ERR_NOENT;
+    }
+
+    sync::irq_lock_guard guard(table->lock);
+    handle_entry& entry = table->entries[static_cast<uint32_t>(handle)];
+    if (!entry.used) {
+        return HANDLE_ERR_NOENT;
+    }
+
+    entry.flags = flags;
     return HANDLE_OK;
 }
 
@@ -122,7 +177,7 @@ __PRIVILEGED_CODE int32_t remove_handle(
     entry.rights = 0;
     entry.type = resource_type::UNKNOWN;
     entry.obj = nullptr;
-    entry.reserved = 0;
+    entry.flags = 0;
 
     *out_obj = obj;
     return HANDLE_OK;

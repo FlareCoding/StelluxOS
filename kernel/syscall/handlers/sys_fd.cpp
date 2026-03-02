@@ -31,6 +31,18 @@ inline int64_t map_resource_error(int64_t rc) {
             return syscall::EBADF;
         case resource::ERR_UNSUP:
             return syscall::ENOSYS;
+        case resource::ERR_PIPE:
+            return syscall::EPIPE;
+        case resource::ERR_NOTCONN:
+            return syscall::ENOTCONN;
+        case resource::ERR_CONNREFUSED:
+            return syscall::ECONNREFUSED;
+        case resource::ERR_ADDRINUSE:
+            return syscall::EADDRINUSE;
+        case resource::ERR_ISCONN:
+            return syscall::EISCONN;
+        case resource::ERR_AGAIN:
+            return syscall::EAGAIN;
         case resource::ERR_IO:
         default:
             return syscall::EIO;
@@ -217,4 +229,39 @@ DEFINE_SYSCALL1(close, fd) {
         return map_resource_error(rc);
     }
     return 0;
+}
+
+namespace {
+constexpr uint64_t F_GETFL = 3;
+constexpr uint64_t F_SETFL = 4;
+constexpr uint32_t SETFL_MASK = fs::O_NONBLOCK | fs::O_APPEND;
+} // anonymous namespace
+
+DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    if (cmd == F_GETFL) {
+        uint32_t flags = 0;
+        int32_t rc = resource::get_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+        return static_cast<int64_t>(flags);
+    }
+
+    if (cmd == F_SETFL) {
+        uint32_t flags = static_cast<uint32_t>(arg) & SETFL_MASK;
+        int32_t rc = resource::set_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), flags);
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+        return 0;
+    }
+
+    return syscall::EINVAL;
 }

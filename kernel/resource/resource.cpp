@@ -122,14 +122,15 @@ __PRIVILEGED_CODE ssize_t read(
     }
 
     resource_object* obj = nullptr;
-    int32_t rc = get_handle_object(&owner->handles, handle, RIGHT_READ, &obj);
+    uint32_t handle_flags = 0;
+    int32_t rc = get_handle_object(&owner->handles, handle, RIGHT_READ, &obj, &handle_flags);
     if (rc != HANDLE_OK) {
         return (rc == HANDLE_ERR_ACCESS) ? ERR_ACCESS : ERR_BADF;
     }
 
     ssize_t result = ERR_UNSUP;
     if (obj->ops && obj->ops->read) {
-        result = obj->ops->read(obj, kdst, count);
+        result = obj->ops->read(obj, kdst, count, handle_flags);
     }
 
     resource_release(obj);
@@ -150,14 +151,15 @@ __PRIVILEGED_CODE ssize_t write(
     }
 
     resource_object* obj = nullptr;
-    int32_t rc = get_handle_object(&owner->handles, handle, RIGHT_WRITE, &obj);
+    uint32_t handle_flags = 0;
+    int32_t rc = get_handle_object(&owner->handles, handle, RIGHT_WRITE, &obj, &handle_flags);
     if (rc != HANDLE_OK) {
         return (rc == HANDLE_ERR_ACCESS) ? ERR_ACCESS : ERR_BADF;
     }
 
     ssize_t result = ERR_UNSUP;
     if (obj->ops && obj->ops->write) {
-        result = obj->ops->write(obj, ksrc, count);
+        result = obj->ops->write(obj, ksrc, count, handle_flags);
     }
 
     resource_release(obj);

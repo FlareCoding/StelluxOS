@@ -76,6 +76,16 @@ ssize_t readdir(file* f, dirent* entries, size_t count);
  */
 __PRIVILEGED_CODE int32_t lookup(const char* path, node** out);
 
+/**
+ * @brief Resolve the parent directory of a path and extract the final component.
+ * On success, *out_parent has add_ref() called; caller must release.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t resolve_parent_path(
+    const char* path, node** out_parent,
+    const char** out_name, size_t* out_name_len
+);
+
 } // namespace fs
 
 #endif // STELLUX_FS_FS_H

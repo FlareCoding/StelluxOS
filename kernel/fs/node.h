@@ -51,6 +51,9 @@ public:
     // --- Symlink ---
     virtual int32_t readlink(char* buf, size_t size, size_t* out_len);
 
+    // --- Socket node creation (directory nodes may override) ---
+    virtual int32_t create_socket(const char* name, size_t len, void* impl, node** out);
+
     /**
      * ref_counted contract. Destroys the node and frees privileged memory.
      * @note Privilege: **required**

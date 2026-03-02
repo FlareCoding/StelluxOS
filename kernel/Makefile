@@ -72,6 +72,7 @@ CXX_SOURCES += $(shell find smp -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find rc -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find fs -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find resource -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find socket -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
 
 # Unit test sources (only when STLX_UNIT_TESTS_ENABLED=1)
