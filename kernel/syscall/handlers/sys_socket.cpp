@@ -429,9 +429,10 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     }
 
     resource::resource_object* listen_obj = nullptr;
+    uint32_t handle_flags = 0;
     int32_t rc = resource::get_handle_object(
         &task->handles, static_cast<resource::handle_t>(fd),
-        resource::RIGHT_READ, &listen_obj
+        resource::RIGHT_READ, &listen_obj, &handle_flags
     );
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
@@ -446,9 +447,15 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
         return syscall::EINVAL;
     }
 
+    bool nonblock = (handle_flags & fs::O_NONBLOCK) != 0;
     socket::listener_state* ls = sock->listener.ptr();
 
     sync::irq_state irq = sync::spin_lock_irqsave(ls->lock);
+    if (nonblock && ls->accept_queue.empty()) {
+        sync::spin_unlock_irqrestore(ls->lock, irq);
+        resource::resource_release(listen_obj);
+        return syscall::EAGAIN;
+    }
     while (ls->accept_queue.empty() && !ls->closed) {
         irq = sync::wait(ls->accept_wq, ls->lock, irq);
     }
