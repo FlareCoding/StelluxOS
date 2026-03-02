@@ -8,6 +8,7 @@ namespace resource {
 enum class resource_type : uint16_t {
     UNKNOWN = 0,
     FILE    = 1,
+    SOCKET  = 2,
 };
 
 using handle_t = int32_t;

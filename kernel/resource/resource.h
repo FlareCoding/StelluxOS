@@ -44,6 +44,15 @@ constexpr int32_t ERR_TABLEFULL = -7;
 constexpr int32_t ERR_UNSUP     = -8;
 constexpr int32_t ERR_NOTDIR    = -9;
 constexpr int32_t ERR_NAMETOOLONG = -10;
+constexpr int32_t ERR_AGAIN     = -11;
+constexpr int32_t ERR_PIPE      = -12;
+constexpr int32_t ERR_ADDRINUSE = -13;
+constexpr int32_t ERR_AFNOSUPPORT = -14;
+constexpr int32_t ERR_PROTONOSUPPORT = -15;
+constexpr int32_t ERR_NOTCONN   = -16;
+constexpr int32_t ERR_CONNREFUSED = -17;
+constexpr int32_t ERR_OPNOTSUPP = -18;
+constexpr int32_t ERR_NOTSOCK   = -19;
 
 /**
  * @brief Initialize handle table storage in task.
