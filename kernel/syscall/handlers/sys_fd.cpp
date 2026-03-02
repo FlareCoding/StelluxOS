@@ -1,6 +1,7 @@
 #include "syscall/handlers/sys_fd.h"
 
 #include "resource/resource.h"
+#include "resource/providers/socket_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/uaccess.h"
@@ -11,6 +12,9 @@ namespace {
 
 constexpr int64_t AT_FDCWD = -100;
 constexpr size_t IO_CHUNK_SIZE = 4096;
+constexpr uint64_t F_GETFL = 3;
+constexpr uint64_t F_SETFL = 4;
+constexpr uint64_t O_NONBLOCK = 0x800;
 
 inline int64_t map_resource_error(int64_t rc) {
     switch (rc) {
@@ -26,6 +30,24 @@ inline int64_t map_resource_error(int64_t rc) {
             return syscall::ENOMEM;
         case resource::ERR_TABLEFULL:
             return syscall::EMFILE;
+        case resource::ERR_AGAIN:
+            return syscall::EAGAIN;
+        case resource::ERR_PIPE:
+            return syscall::EPIPE;
+        case resource::ERR_ADDRINUSE:
+            return syscall::EADDRINUSE;
+        case resource::ERR_AFNOSUPPORT:
+            return syscall::EAFNOSUPPORT;
+        case resource::ERR_PROTONOSUPPORT:
+            return syscall::EPROTONOSUPPORT;
+        case resource::ERR_NOTCONN:
+            return syscall::ENOTCONN;
+        case resource::ERR_CONNREFUSED:
+            return syscall::ECONNREFUSED;
+        case resource::ERR_OPNOTSUPP:
+            return syscall::EOPNOTSUPP;
+        case resource::ERR_NOTSOCK:
+            return syscall::ENOTSOCK;
         case resource::ERR_BADF:
         case resource::ERR_ACCESS:
             return syscall::EBADF;
@@ -217,4 +239,60 @@ DEFINE_SYSCALL1(close, fd) {
         return map_resource_error(rc);
     }
     return 0;
+}
+
+DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &task->handles,
+        static_cast<resource::handle_t>(fd),
+        0,
+        &obj
+    );
+    if (rc != resource::HANDLE_OK) {
+        return map_resource_error(resource::ERR_BADF);
+    }
+
+    if (cmd == F_GETFL) {
+        if (obj->type != resource::resource_type::SOCKET) {
+            resource::resource_release(obj);
+            return 0;
+        }
+
+        bool nonblocking = false;
+        rc = resource::socket_provider::get_nonblocking(obj, &nonblocking);
+        resource::resource_release(obj);
+        if (rc != resource::OK) {
+            return map_resource_error(rc);
+        }
+
+        return nonblocking ? static_cast<int64_t>(O_NONBLOCK) : 0;
+    }
+
+    if (cmd == F_SETFL) {
+        if (obj->type != resource::resource_type::SOCKET) {
+            resource::resource_release(obj);
+            return 0;
+        }
+        if ((arg & ~O_NONBLOCK) != 0) {
+            resource::resource_release(obj);
+            return syscall::EINVAL;
+        }
+
+        bool nonblocking = (arg & O_NONBLOCK) != 0;
+        rc = resource::socket_provider::set_nonblocking(obj, nonblocking);
+        resource::resource_release(obj);
+        if (rc != resource::OK) {
+            return map_resource_error(rc);
+        }
+        return 0;
+    }
+
+    resource::resource_release(obj);
+    return syscall::EINVAL;
 }

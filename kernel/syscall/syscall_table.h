@@ -13,14 +13,24 @@ constexpr int64_t ENOENT = -2;
 constexpr int64_t EIO    = -5;
 constexpr int64_t EBADF  = -9;
 constexpr int64_t ENOMEM = -12;
+constexpr int64_t EAGAIN = -11;
 constexpr int64_t EFAULT = -14;
 constexpr int64_t ENOTDIR = -20;
 constexpr int64_t EMFILE = -24;
 constexpr int64_t EINVAL = -22;
 constexpr int64_t EEXIST = -17;
 constexpr int64_t ENOTTY = -25;
+constexpr int64_t EPIPE = -32;
 constexpr int64_t ENAMETOOLONG = -36;
 constexpr int64_t ENOSYS = -38;
+constexpr int64_t ENOTSOCK = -88;
+constexpr int64_t EPROTONOSUPPORT = -93;
+constexpr int64_t EOPNOTSUPP = -95;
+constexpr int64_t EAFNOSUPPORT = -97;
+constexpr int64_t EADDRINUSE = -98;
+constexpr int64_t ENOTCONN = -107;
+constexpr int64_t ECONNREFUSED = -111;
+constexpr int64_t EINPROGRESS = -115;
 
 extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
 

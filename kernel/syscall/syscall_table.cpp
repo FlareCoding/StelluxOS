@@ -5,6 +5,7 @@
 #include "syscall/handlers/sys_elevate.h"
 #include "syscall/handlers/sys_io.h"
 #include "syscall/handlers/sys_fd.h"
+#include "syscall/handlers/sys_net.h"
 #include "syscall/handlers/sys_mmap.h"
 
 namespace syscall {
@@ -20,10 +21,18 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::READ,            read);
     REGISTER_SYSCALL(linux_nr::WRITE,           write);
     REGISTER_SYSCALL(linux_nr::CLOSE,           close);
+    REGISTER_SYSCALL(linux_nr::FCNTL,           fcntl);
     REGISTER_SYSCALL(linux_nr::OPENAT,          openat);
 #if defined(__x86_64__)
     REGISTER_SYSCALL(linux_nr::OPEN,            open);
 #endif
+    REGISTER_SYSCALL(linux_nr::SOCKET,          socket);
+    REGISTER_SYSCALL(linux_nr::BIND,            bind);
+    REGISTER_SYSCALL(linux_nr::LISTEN,          listen);
+    REGISTER_SYSCALL(linux_nr::ACCEPT,          accept);
+    REGISTER_SYSCALL(linux_nr::CONNECT,         connect);
+    REGISTER_SYSCALL(linux_nr::SENDTO,          sendto);
+    REGISTER_SYSCALL(linux_nr::RECVFROM,        recvfrom);
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
     REGISTER_SYSCALL(linux_nr::MPROTECT,        mprotect);
     REGISTER_SYSCALL(linux_nr::MUNMAP,          munmap);
