@@ -311,10 +311,10 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
         total += n;
         user_ptr += n;
         remaining -= static_cast<size_t>(n);
-
-        if (static_cast<size_t>(n) < chunk) {
-            break;
-        }
+        // Stream recv semantics: once any bytes are received, return promptly.
+        // Do not loop for more bytes because a subsequent recv could block even
+        // though this call already has data to return.
+        break;
     }
 
     heap::kfree(kbuf);
