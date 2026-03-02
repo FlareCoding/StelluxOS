@@ -28,11 +28,12 @@ enum class socket_state : uint8_t {
 struct ring_buffer {
     uint32_t head;
     uint32_t used;
-    uint8_t bytes[STREAM_BUFFER_SIZE];
+    uint8_t* bytes;
 
-    void init() {
+    void init(uint8_t* storage) {
         head = 0;
         used = 0;
+        bytes = storage;
     }
 
     [[nodiscard]] uint32_t available() const {
@@ -44,7 +45,7 @@ struct ring_buffer {
     }
 
     size_t write(const uint8_t* src, size_t count) {
-        if (!src || count == 0 || used == STREAM_BUFFER_SIZE) {
+        if (!src || !bytes || count == 0 || used == STREAM_BUFFER_SIZE) {
             return 0;
         }
 
@@ -71,7 +72,7 @@ struct ring_buffer {
     }
 
     size_t read(uint8_t* dst, size_t count) {
-        if (!dst || count == 0 || used == 0) {
+        if (!dst || !bytes || count == 0 || used == 0) {
             return 0;
         }
 
@@ -98,11 +99,16 @@ struct ring_buffer {
     }
 };
 
+struct stream_payload {
+    uint8_t a_to_b[STREAM_BUFFER_SIZE];
+    uint8_t b_to_a[STREAM_BUFFER_SIZE];
+};
+
 class stream_connection : public rc::ref_counted<stream_connection> {
 public:
-    stream_connection() : lock(sync::SPINLOCK_INIT), side_open{true, true} {
-        channel[0].init();
-        channel[1].init();
+    stream_connection() : lock(sync::SPINLOCK_INIT), side_open{true, true}, payload(nullptr) {
+        channel[0].init(nullptr);
+        channel[1].init(nullptr);
         data_wq[0].init();
         data_wq[1].init();
         space_wq[0].init();
@@ -113,6 +119,10 @@ public:
         if (!self) {
             return;
         }
+        if (self->payload) {
+            heap::ufree(self->payload);
+            self->payload = nullptr;
+        }
         self->~stream_connection();
         heap::kfree(self);
     }
@@ -122,6 +132,7 @@ public:
     sync::wait_queue data_wq[2];
     sync::wait_queue space_wq[2];
     bool side_open[2];
+    stream_payload* payload;
 };
 
 class stream_socket : public rc::ref_counted<stream_socket> {
@@ -347,9 +358,8 @@ __PRIVILEGED_CODE int32_t init() {
 }
 
 /**
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t make_path(
+int32_t make_path(
     const char* path_bytes,
     size_t path_len,
     socket_path* out
@@ -382,9 +392,8 @@ __PRIVILEGED_CODE int32_t make_path(
 }
 
 /**
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t make_path_cstr(
+int32_t make_path_cstr(
     const char* cstr,
     socket_path* out
 ) {
@@ -529,6 +538,16 @@ __PRIVILEGED_CODE int32_t connect(stream_socket* socket, const socket_path& path
         return ERR_NOMEM;
     }
     connection = new (conn_mem) stream_connection();
+
+    connection->payload = static_cast<stream_payload*>(heap::uzalloc(sizeof(stream_payload)));
+    if (!connection->payload) {
+        unreserve_listener_backlog(listener);
+        connection_release(connection);
+        release(listener);
+        return ERR_NOMEM;
+    }
+    connection->channel[0].init(connection->payload->a_to_b);
+    connection->channel[1].init(connection->payload->b_to_a);
 
     int32_t create_rc = create_socket(false, &server_socket);
     if (create_rc != OK) {

@@ -9,33 +9,29 @@ namespace resource::socket_provider {
 /**
  * @brief Create a new AF_UNIX stream socket resource object.
  * On success returns a resource object with one owned reference.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t create_stream_socket_resource(
+int32_t create_stream_socket_resource(
     bool nonblocking,
     resource_object** out_obj
 );
 
 /**
  * @brief Bind a socket resource to a local path.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t bind(
+int32_t bind(
     resource_object* obj,
     const net::unix_stream::socket_path& path
 );
 
 /**
  * @brief Put a bound socket resource into listening mode.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t listen(resource_object* obj, uint32_t backlog);
+int32_t listen(resource_object* obj, uint32_t backlog);
 
 /**
  * @brief Connect a socket resource to a listening path.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t connect(
+int32_t connect(
     resource_object* obj,
     const net::unix_stream::socket_path& path
 );
@@ -43,27 +39,24 @@ __PRIVILEGED_CODE int32_t connect(
 /**
  * @brief Accept one incoming connection from a listener resource.
  * On success returns a new connected socket resource object with one owned reference.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t accept(
+int32_t accept(
     resource_object* listener_obj,
     resource_object** out_obj
 );
 
 /**
  * @brief Query O_NONBLOCK state from a socket resource.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t get_nonblocking(
+int32_t get_nonblocking(
     resource_object* obj,
     bool* out_nonblocking
 );
 
 /**
  * @brief Set O_NONBLOCK state on a socket resource.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t set_nonblocking(
+int32_t set_nonblocking(
     resource_object* obj,
     bool nonblocking
 );

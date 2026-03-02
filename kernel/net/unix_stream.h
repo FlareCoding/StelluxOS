@@ -36,9 +36,8 @@ __PRIVILEGED_CODE int32_t init();
 /**
  * @brief Build a validated socket path from raw bytes.
  * Rejects empty paths and abstract namespace paths.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t make_path(
+int32_t make_path(
     const char* path_bytes,
     size_t path_len,
     socket_path* out
@@ -46,9 +45,8 @@ __PRIVILEGED_CODE int32_t make_path(
 
 /**
  * @brief Build a validated socket path from a NUL-terminated C string.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t make_path_cstr(
+int32_t make_path_cstr(
     const char* cstr,
     socket_path* out
 );
