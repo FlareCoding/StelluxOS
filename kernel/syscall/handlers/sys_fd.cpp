@@ -14,6 +14,7 @@ constexpr int64_t AT_FDCWD = -100;
 constexpr size_t IO_CHUNK_SIZE = 4096;
 constexpr uint64_t F_GETFL = 3;
 constexpr uint64_t F_SETFL = 4;
+constexpr uint64_t O_RDWR = 0x2;
 constexpr uint64_t O_NONBLOCK = 0x800;
 
 inline int64_t map_resource_error(int64_t rc) {
@@ -271,7 +272,11 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
             return map_resource_error(rc);
         }
 
-        return nonblocking ? static_cast<int64_t>(O_NONBLOCK) : 0;
+        uint64_t flags = O_RDWR;
+        if (nonblocking) {
+            flags |= O_NONBLOCK;
+        }
+        return static_cast<int64_t>(flags);
     }
 
     if (cmd == F_SETFL) {
@@ -279,11 +284,6 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
             resource::resource_release(obj);
             return 0;
         }
-        if ((arg & ~O_NONBLOCK) != 0) {
-            resource::resource_release(obj);
-            return syscall::EINVAL;
-        }
-
         bool nonblocking = (arg & O_NONBLOCK) != 0;
         rc = resource::socket_provider::set_nonblocking(obj, nonblocking);
         resource::resource_release(obj);
