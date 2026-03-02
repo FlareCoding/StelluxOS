@@ -152,6 +152,11 @@ static int run_socketpair_demo(void) {
     const char* reply = "world";
     nw = write(sv[1], reply, strlen(reply));
     nr = read(sv[0], buf, sizeof(buf) - 1);
+    if (nr < 0) {
+        printf("read sv[0] reply failed: errno=%d (%s)\r\n", errno, strerror(errno));
+        close(sv[0]); close(sv[1]);
+        return 1;
+    }
     buf[nr] = '\0';
     if (nr != (ssize_t)strlen(reply) || memcmp(buf, reply, strlen(reply)) != 0) {
         printf("bidirectional failed: got \"%s\"\r\n", buf);
