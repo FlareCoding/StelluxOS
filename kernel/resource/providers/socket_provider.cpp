@@ -132,7 +132,7 @@ __PRIVILEGED_CODE int32_t with_socket(resource_object* obj, net::unix_stream::st
 
 } // namespace
 
-__PRIVILEGED_CODE static int32_t create_stream_socket_resource_elevated(
+__PRIVILEGED_CODE static int32_t create_stream_socket_resource_impl(
     bool nonblocking,
     resource_object** out_obj
 ) {
@@ -161,7 +161,7 @@ __PRIVILEGED_CODE static int32_t create_stream_socket_resource_elevated(
     return OK;
 }
 
-__PRIVILEGED_CODE static int32_t bind_elevated(
+__PRIVILEGED_CODE static int32_t bind_impl(
     resource_object* obj,
     const net::unix_stream::socket_path& path
 ) {
@@ -174,7 +174,7 @@ __PRIVILEGED_CODE static int32_t bind_elevated(
     return map_net_error_to_resource(net::unix_stream::bind(socket, path));
 }
 
-__PRIVILEGED_CODE static int32_t listen_elevated(resource_object* obj, uint32_t backlog) {
+__PRIVILEGED_CODE static int32_t listen_impl(resource_object* obj, uint32_t backlog) {
     net::unix_stream::stream_socket* socket = nullptr;
     int32_t rc = with_socket(obj, &socket);
     if (rc != OK) {
@@ -184,7 +184,7 @@ __PRIVILEGED_CODE static int32_t listen_elevated(resource_object* obj, uint32_t 
     return map_net_error_to_resource(net::unix_stream::listen(socket, backlog));
 }
 
-__PRIVILEGED_CODE static int32_t connect_elevated(
+__PRIVILEGED_CODE static int32_t connect_impl(
     resource_object* obj,
     const net::unix_stream::socket_path& path
 ) {
@@ -197,7 +197,7 @@ __PRIVILEGED_CODE static int32_t connect_elevated(
     return map_net_error_to_resource(net::unix_stream::connect(socket, path));
 }
 
-__PRIVILEGED_CODE static int32_t accept_elevated(
+__PRIVILEGED_CODE static int32_t accept_impl(
     resource_object* listener_obj,
     resource_object** out_obj
 ) {
@@ -230,7 +230,7 @@ __PRIVILEGED_CODE static int32_t accept_elevated(
     return OK;
 }
 
-__PRIVILEGED_CODE static int32_t get_nonblocking_elevated(
+__PRIVILEGED_CODE static int32_t get_nonblocking_impl(
     resource_object* obj,
     bool* out_nonblocking
 ) {
@@ -247,7 +247,7 @@ __PRIVILEGED_CODE static int32_t get_nonblocking_elevated(
     return map_net_error_to_resource(net::unix_stream::get_nonblocking(socket, out_nonblocking));
 }
 
-__PRIVILEGED_CODE static int32_t set_nonblocking_elevated(
+__PRIVILEGED_CODE static int32_t set_nonblocking_impl(
     resource_object* obj,
     bool nonblocking
 ) {
@@ -266,7 +266,7 @@ int32_t create_stream_socket_resource(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = create_stream_socket_resource_elevated(nonblocking, out_obj);
+        rc = create_stream_socket_resource_impl(nonblocking, out_obj);
     });
     return rc;
 }
@@ -277,7 +277,7 @@ int32_t bind(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = bind_elevated(obj, path);
+        rc = bind_impl(obj, path);
     });
     return rc;
 }
@@ -285,7 +285,7 @@ int32_t bind(
 int32_t listen(resource_object* obj, uint32_t backlog) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = listen_elevated(obj, backlog);
+        rc = listen_impl(obj, backlog);
     });
     return rc;
 }
@@ -296,7 +296,7 @@ int32_t connect(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = connect_elevated(obj, path);
+        rc = connect_impl(obj, path);
     });
     return rc;
 }
@@ -307,7 +307,7 @@ int32_t accept(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = accept_elevated(listener_obj, out_obj);
+        rc = accept_impl(listener_obj, out_obj);
     });
     return rc;
 }
@@ -318,7 +318,7 @@ int32_t get_nonblocking(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = get_nonblocking_elevated(obj, out_nonblocking);
+        rc = get_nonblocking_impl(obj, out_nonblocking);
     });
     return rc;
 }
@@ -329,7 +329,7 @@ int32_t set_nonblocking(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = set_nonblocking_elevated(obj, nonblocking);
+        rc = set_nonblocking_impl(obj, nonblocking);
     });
     return rc;
 }
