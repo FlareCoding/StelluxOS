@@ -134,7 +134,7 @@ __PRIVILEGED_CODE int32_t with_socket(resource_object* obj, net::unix_stream::st
 
 namespace detail {
 
-__PRIVILEGED_CODE int32_t create_stream_socket_resource(
+__PRIVILEGED_CODE int32_t priv_create_stream_socket_resource(
     bool nonblocking,
     resource_object** out_obj
 ) {
@@ -163,7 +163,7 @@ __PRIVILEGED_CODE int32_t create_stream_socket_resource(
     return OK;
 }
 
-__PRIVILEGED_CODE int32_t bind(
+__PRIVILEGED_CODE int32_t priv_bind(
     resource_object* obj,
     const net::unix_stream::socket_path& path
 ) {
@@ -176,7 +176,7 @@ __PRIVILEGED_CODE int32_t bind(
     return map_net_error_to_resource(net::unix_stream::bind(socket, path));
 }
 
-__PRIVILEGED_CODE int32_t listen(resource_object* obj, uint32_t backlog) {
+__PRIVILEGED_CODE int32_t priv_listen(resource_object* obj, uint32_t backlog) {
     net::unix_stream::stream_socket* socket = nullptr;
     int32_t rc = with_socket(obj, &socket);
     if (rc != OK) {
@@ -186,7 +186,7 @@ __PRIVILEGED_CODE int32_t listen(resource_object* obj, uint32_t backlog) {
     return map_net_error_to_resource(net::unix_stream::listen(socket, backlog));
 }
 
-__PRIVILEGED_CODE int32_t connect(
+__PRIVILEGED_CODE int32_t priv_connect(
     resource_object* obj,
     const net::unix_stream::socket_path& path
 ) {
@@ -199,7 +199,7 @@ __PRIVILEGED_CODE int32_t connect(
     return map_net_error_to_resource(net::unix_stream::connect(socket, path));
 }
 
-__PRIVILEGED_CODE int32_t accept(
+__PRIVILEGED_CODE int32_t priv_accept(
     resource_object* listener_obj,
     resource_object** out_obj
 ) {
@@ -232,7 +232,7 @@ __PRIVILEGED_CODE int32_t accept(
     return OK;
 }
 
-__PRIVILEGED_CODE int32_t get_nonblocking(
+__PRIVILEGED_CODE int32_t priv_get_nonblocking(
     resource_object* obj,
     bool* out_nonblocking
 ) {
@@ -249,7 +249,7 @@ __PRIVILEGED_CODE int32_t get_nonblocking(
     return map_net_error_to_resource(net::unix_stream::get_nonblocking(socket, out_nonblocking));
 }
 
-__PRIVILEGED_CODE int32_t set_nonblocking(
+__PRIVILEGED_CODE int32_t priv_set_nonblocking(
     resource_object* obj,
     bool nonblocking
 ) {
@@ -270,7 +270,7 @@ int32_t create_stream_socket_resource(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = detail::create_stream_socket_resource(nonblocking, out_obj);
+        rc = detail::priv_create_stream_socket_resource(nonblocking, out_obj);
     });
     return rc;
 }
@@ -281,7 +281,7 @@ int32_t bind(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = detail::bind(obj, path);
+        rc = detail::priv_bind(obj, path);
     });
     return rc;
 }
@@ -289,7 +289,7 @@ int32_t bind(
 int32_t listen(resource_object* obj, uint32_t backlog) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = detail::listen(obj, backlog);
+        rc = detail::priv_listen(obj, backlog);
     });
     return rc;
 }
@@ -300,7 +300,7 @@ int32_t connect(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = detail::connect(obj, path);
+        rc = detail::priv_connect(obj, path);
     });
     return rc;
 }
@@ -311,7 +311,7 @@ int32_t accept(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = detail::accept(listener_obj, out_obj);
+        rc = detail::priv_accept(listener_obj, out_obj);
     });
     return rc;
 }
@@ -322,7 +322,7 @@ int32_t get_nonblocking(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = detail::get_nonblocking(obj, out_nonblocking);
+        rc = detail::priv_get_nonblocking(obj, out_nonblocking);
     });
     return rc;
 }
@@ -333,7 +333,7 @@ int32_t set_nonblocking(
 ) {
     int32_t rc = ERR_IO;
     RUN_ELEVATED({
-        rc = detail::set_nonblocking(obj, nonblocking);
+        rc = detail::priv_set_nonblocking(obj, nonblocking);
     });
     return rc;
 }
