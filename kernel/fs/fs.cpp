@@ -60,6 +60,7 @@ int32_t node::ioctl(file*, uint32_t, uint64_t)      { return ERR_NOSYS; }
 int32_t node::open(file*, uint32_t)                 { return OK; }
 int32_t node::on_close(file*)                       { return OK; }
 int32_t node::readlink(char*, size_t, size_t*)      { return ERR_NOSYS; }
+int32_t node::create_socket(const char*, size_t, void*, node**) { return ERR_NOSYS; }
 
 int32_t node::getattr(vattr* attr) {
     if (!attr) return ERR_INVAL;
@@ -243,6 +244,14 @@ __PRIVILEGED_CODE static int32_t resolve_parent(
 __PRIVILEGED_CODE int32_t lookup(const char* path, node** out) {
     if (!path || !out) return ERR_INVAL;
     return resolve_path(path, out);
+}
+
+__PRIVILEGED_CODE int32_t resolve_parent_path(
+    const char* path, node** out_parent,
+    const char** out_name, size_t* out_name_len
+) {
+    if (!path || !out_parent || !out_name || !out_name_len) return ERR_INVAL;
+    return resolve_parent(path, out_parent, out_name, out_name_len);
 }
 
 

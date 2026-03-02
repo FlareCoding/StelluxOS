@@ -27,6 +27,7 @@ public:
     int32_t rmdir(const char* name, size_t len) override;
     ssize_t readdir(fs::file* f, fs::dirent* entries, size_t count) override;
     int32_t getattr(fs::vattr* attr) override;
+    int32_t create_socket(const char* name, size_t len, void* impl, fs::node** out) override;
 
 private:
     fs::node* find_child(const char* name, size_t len);

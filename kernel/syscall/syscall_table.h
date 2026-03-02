@@ -21,6 +21,12 @@ constexpr int64_t EEXIST = -17;
 constexpr int64_t ENOTTY = -25;
 constexpr int64_t ENAMETOOLONG = -36;
 constexpr int64_t ENOSYS = -38;
+constexpr int64_t EAGAIN = -11;
+constexpr int64_t EPIPE  = -32;
+constexpr int64_t EADDRINUSE   = -98;
+constexpr int64_t EISCONN      = -106;
+constexpr int64_t ENOTCONN     = -107;
+constexpr int64_t ECONNREFUSED = -111;
 
 extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
 

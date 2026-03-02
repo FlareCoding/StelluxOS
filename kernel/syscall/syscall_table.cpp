@@ -6,6 +6,7 @@
 #include "syscall/handlers/sys_io.h"
 #include "syscall/handlers/sys_fd.h"
 #include "syscall/handlers/sys_mmap.h"
+#include "syscall/handlers/sys_socket.h"
 
 namespace syscall {
 
@@ -30,6 +31,14 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::EXIT,            exit);
     REGISTER_SYSCALL(linux_nr::EXIT_GROUP,      exit_group);
     REGISTER_SYSCALL(linux_nr::SET_TID_ADDRESS, set_tid_address);
+
+    REGISTER_SYSCALL(linux_nr::SOCKET,      socket);
+    REGISTER_SYSCALL(linux_nr::SOCKETPAIR,  socketpair);
+    REGISTER_SYSCALL(linux_nr::BIND,        bind);
+    REGISTER_SYSCALL(linux_nr::LISTEN,      listen);
+    REGISTER_SYSCALL(linux_nr::ACCEPT,      accept);
+    REGISTER_SYSCALL(linux_nr::CONNECT,     connect);
+    REGISTER_SYSCALL(linux_nr::FCNTL,       fcntl);
 
     REGISTER_SYSCALL(SYS_ELEVATE, elevate);
 

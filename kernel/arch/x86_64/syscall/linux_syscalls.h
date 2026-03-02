@@ -19,6 +19,13 @@ constexpr uint64_t EXIT             = 60;
 constexpr uint64_t ARCH_PRCTL       = 158;
 constexpr uint64_t SET_TID_ADDRESS  = 218;
 constexpr uint64_t EXIT_GROUP       = 231;
+constexpr uint64_t SOCKET           = 41;
+constexpr uint64_t CONNECT          = 42;
+constexpr uint64_t ACCEPT           = 43;
+constexpr uint64_t BIND             = 49;
+constexpr uint64_t LISTEN           = 50;
+constexpr uint64_t SOCKETPAIR       = 53;
+constexpr uint64_t FCNTL            = 72;
 
 } // namespace syscall::linux_nr
 

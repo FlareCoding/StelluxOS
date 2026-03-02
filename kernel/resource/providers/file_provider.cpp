@@ -30,7 +30,8 @@ __PRIVILEGED_CODE static int32_t map_fs_error_to_resource(int32_t fs_err) {
     }
 }
 
-__PRIVILEGED_CODE static ssize_t file_read(resource_object* obj, void* kdst, size_t count) {
+__PRIVILEGED_CODE static ssize_t file_read(resource_object* obj, void* kdst, size_t count, uint32_t flags) {
+    (void)flags;
     if (!obj || !obj->impl || !kdst) {
         return ERR_INVAL;
     }
@@ -42,7 +43,8 @@ __PRIVILEGED_CODE static ssize_t file_read(resource_object* obj, void* kdst, siz
     return rc;
 }
 
-__PRIVILEGED_CODE static ssize_t file_write(resource_object* obj, const void* ksrc, size_t count) {
+__PRIVILEGED_CODE static ssize_t file_write(resource_object* obj, const void* ksrc, size_t count, uint32_t flags) {
+    (void)flags;
     if (!obj || !obj->impl || !ksrc) {
         return ERR_INVAL;
     }

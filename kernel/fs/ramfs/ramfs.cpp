@@ -1,4 +1,5 @@
 #include "fs/ramfs/ramfs.h"
+#include "fs/socket_node.h"
 #include "fs/fs.h"
 #include "common/string.h"
 #include "mm/heap.h"
@@ -135,6 +136,36 @@ int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node**
         return fs::ERR_NOMEM;
     }
     auto* child = new (mem) file_node(m_fs, name_buf);
+
+    child->set_parent(this);
+    m_children.push_back(child);
+    m_child_count++;
+
+    child->add_ref();
+    *out = child;
+    return fs::OK;
+}
+
+int32_t dir_node::create_socket(const char* name, size_t len, void* impl, fs::node** out) {
+    (void)impl;
+    if (!name || !out || len == 0) return fs::ERR_INVAL;
+    if (len > fs::NAME_MAX) return fs::ERR_NAMETOOLONG;
+
+    sync::irq_lock_guard guard(m_lock);
+
+    if (find_child(name, len)) {
+        return fs::ERR_EXIST;
+    }
+
+    char name_buf[fs::NAME_MAX + 1];
+    string::memcpy(name_buf, name, len);
+    name_buf[len] = '\0';
+
+    void* mem = heap::kzalloc(sizeof(fs::socket_node));
+    if (!mem) {
+        return fs::ERR_NOMEM;
+    }
+    auto* child = new (mem) fs::socket_node(m_fs, name_buf);
 
     child->set_parent(this);
     m_children.push_back(child);

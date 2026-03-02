@@ -11,8 +11,8 @@ namespace resource {
 
 struct resource_object;
 
-using read_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count);
-using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count);
+using read_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint32_t flags);
+using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint32_t flags);
 using close_fn = void (*)(resource_object* obj);
 
 struct resource_ops {
@@ -44,6 +44,12 @@ constexpr int32_t ERR_TABLEFULL = -7;
 constexpr int32_t ERR_UNSUP     = -8;
 constexpr int32_t ERR_NOTDIR    = -9;
 constexpr int32_t ERR_NAMETOOLONG = -10;
+constexpr int32_t ERR_PIPE        = -11;
+constexpr int32_t ERR_NOTCONN     = -12;
+constexpr int32_t ERR_CONNREFUSED = -13;
+constexpr int32_t ERR_ADDRINUSE   = -14;
+constexpr int32_t ERR_ISCONN      = -15;
+constexpr int32_t ERR_AGAIN       = -16;
 
 /**
  * @brief Initialize handle table storage in task.
