@@ -3,6 +3,8 @@
 
 #include "resource/resource.h"
 
+namespace fs { class file; }
+
 namespace resource::file_provider {
 
 /**
@@ -15,6 +17,13 @@ __PRIVILEGED_CODE int32_t open_file_resource(
     uint32_t flags,
     resource_object** out_obj
 );
+
+/**
+ * @brief Get the fs::file from a FILE resource_object.
+ * Returns nullptr if obj is not a FILE resource or has no impl.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE fs::file* get_file(resource_object* obj);
 
 } // namespace resource::file_provider
 

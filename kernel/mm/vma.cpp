@@ -4,13 +4,14 @@
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "mm/shmem.h"
 
 namespace mm {
 
 namespace {
 
 constexpr uint32_t MM_MAP_ALLOWED_FLAGS =
-    MM_MAP_PRIVATE | MM_MAP_ANONYMOUS | MM_MAP_FIXED |
+    MM_MAP_SHARED | MM_MAP_PRIVATE | MM_MAP_ANONYMOUS | MM_MAP_FIXED |
     MM_MAP_FIXED_NOREPLACE | MM_MAP_STACK;
 
 inline bool is_page_aligned(uintptr_t value) {
@@ -54,9 +55,19 @@ inline paging::page_flags_t prot_to_page_flags(uint32_t prot) {
 }
 
 inline bool vma_can_merge(const vma& left, const vma& right) {
-    return left.end == right.start &&
-           left.prot == right.prot &&
-           left.flags == right.flags;
+    if (left.end != right.start || left.prot != right.prot ||
+        left.flags != right.flags) {
+        return false;
+    }
+    if ((left.flags & VMA_FLAG_SHARED) || (right.flags & VMA_FLAG_SHARED)) {
+        if (left.shmem_backing.ptr() != right.shmem_backing.ptr()) {
+            return false;
+        }
+        if (left.backing_offset + (left.end - left.start) != right.backing_offset) {
+            return false;
+        }
+    }
+    return true;
 }
 
 vma* alloc_vma(uintptr_t start, uintptr_t end, uint32_t prot, uint32_t flags) {
@@ -70,6 +81,7 @@ vma* alloc_vma(uintptr_t start, uintptr_t end, uint32_t prot, uint32_t flags) {
     node->prot = prot;
     node->flags = flags;
     node->addr_link = {};
+    node->backing_offset = 0;
     return node;
 }
 
@@ -90,6 +102,15 @@ __PRIVILEGED_CODE void unmap_and_free_pages(mm_context* mm_ctx, uintptr_t start,
         if (phys != 0) {
             pmm::free_page(phys);
         }
+    }
+}
+
+__PRIVILEGED_CODE void unmap_pages_only(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
+    for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
+        if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
+            continue;
+        }
+        paging::unmap_page(vaddr, mm_ctx->pt_root);
     }
 }
 
@@ -124,6 +145,9 @@ vma* split_vma_locked(mm_context* mm_ctx, vma* node, uintptr_t split_addr) {
         return nullptr;
     }
 
+    right->shmem_backing = node->shmem_backing;
+    right->backing_offset = node->backing_offset + (split_addr - node->start);
+
     uintptr_t old_end = node->end;
     node->end = split_addr;
     if (!vma_insert_locked(mm_ctx, right)) {
@@ -155,7 +179,11 @@ __PRIVILEGED_CODE int32_t unmap_range_locked(mm_context* mm_ctx, uintptr_t start
             }
         }
 
-        unmap_and_free_pages(mm_ctx, overlap->start, overlap->end);
+        if (overlap->flags & VMA_FLAG_SHARED) {
+            unmap_pages_only(mm_ctx, overlap->start, overlap->end);
+        } else {
+            unmap_and_free_pages(mm_ctx, overlap->start, overlap->end);
+        }
         mm_ctx->vmas.remove(*overlap);
         free_vma(overlap);
     }
@@ -200,7 +228,11 @@ __PRIVILEGED_CODE void mm_context::ref_destroy(mm_context* self) {
 
     sync::mutex_lock(self->lock);
     while (vma* node = self->vmas.min()) {
-        unmap_and_free_pages(self, node->start, node->end);
+        if (node->flags & VMA_FLAG_SHARED) {
+            unmap_pages_only(self, node->start, node->end);
+        } else {
+            unmap_and_free_pages(self, node->start, node->end);
+        }
         self->vmas.remove(*node);
         free_vma(node);
     }
@@ -653,6 +685,138 @@ __PRIVILEGED_CODE int32_t mm_context_mprotect(
 
     coalesce_all_locked(mm_ctx);
     sync::mutex_unlock(mm_ctx->lock);
+    return MM_CTX_OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_map_shared(
+    mm_context* mm_ctx,
+    shmem* backing,
+    uint64_t offset,
+    size_t length,
+    uint32_t prot,
+    uint32_t map_flags,
+    uintptr_t addr,
+    uintptr_t* out_addr
+) {
+    if (!mm_ctx || !backing || !out_addr) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+    if ((prot & ~MM_PROT_MASK) != 0) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+    if (!(map_flags & MM_MAP_SHARED)) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    size_t aligned_len = pmm::page_align_up(length);
+    if (aligned_len == 0) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+    if (offset % pmm::PAGE_SIZE != 0) {
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    const bool fixed = (map_flags & (MM_MAP_FIXED | MM_MAP_FIXED_NOREPLACE)) != 0;
+    const bool no_replace = (map_flags & MM_MAP_FIXED_NOREPLACE) != 0;
+
+    uintptr_t start = 0;
+    uintptr_t end = 0;
+
+    sync::mutex_lock(mm_ctx->lock);
+
+    if (fixed) {
+        if (!is_page_aligned(addr)) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return MM_CTX_ERR_INVALID_ARG;
+        }
+        start = addr;
+        if (!range_from_len(start, aligned_len, end)) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return MM_CTX_ERR_INVALID_ARG;
+        }
+        if (start < mm_ctx->mmap_base || end > mm_ctx->mmap_end) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return MM_CTX_ERR_NO_VIRT;
+        }
+
+        if (no_replace && vma_find_overlap_locked(mm_ctx, start, end)) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return MM_CTX_ERR_EXISTS;
+        }
+        if (!no_replace) {
+            int32_t rc = unmap_range_locked(mm_ctx, start, end);
+            if (rc != MM_CTX_OK) {
+                sync::mutex_unlock(mm_ctx->lock);
+                return rc;
+            }
+        }
+    } else {
+        start = vma_find_gap_topdown_locked(mm_ctx, aligned_len);
+        if (start == 0) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return MM_CTX_ERR_NO_VIRT;
+        }
+        end = start + aligned_len;
+    }
+
+    sync::mutex_lock(backing->lock);
+
+    size_t backed_size = backing->m_page_count * pmm::PAGE_SIZE;
+    if (aligned_len > backed_size || offset > backed_size - aligned_len) {
+        sync::mutex_unlock(backing->lock);
+        sync::mutex_unlock(mm_ctx->lock);
+        return MM_CTX_ERR_INVALID_ARG;
+    }
+
+    paging::page_flags_t page_flags = prot_to_page_flags(prot);
+    size_t pages = aligned_len / pmm::PAGE_SIZE;
+    size_t page_offset = static_cast<size_t>(offset / pmm::PAGE_SIZE);
+
+    for (size_t i = 0; i < pages; i++) {
+        pmm::phys_addr_t phys = shmem_get_page_locked(backing, page_offset + i);
+        if (phys == 0) {
+            unmap_pages_only(mm_ctx, start, start + i * pmm::PAGE_SIZE);
+            sync::mutex_unlock(backing->lock);
+            sync::mutex_unlock(mm_ctx->lock);
+            return MM_CTX_ERR_NO_MEM;
+        }
+
+        uintptr_t vaddr = start + i * pmm::PAGE_SIZE;
+        if (paging::map_page(vaddr, phys, page_flags, mm_ctx->pt_root) != paging::OK) {
+            unmap_pages_only(mm_ctx, start, vaddr);
+            sync::mutex_unlock(backing->lock);
+            sync::mutex_unlock(mm_ctx->lock);
+            return MM_CTX_ERR_MAP_FAILED;
+        }
+    }
+
+    sync::mutex_unlock(backing->lock);
+
+    vma* node = alloc_vma(start, end, prot, VMA_FLAG_SHARED);
+    if (!node) {
+        unmap_pages_only(mm_ctx, start, end);
+        sync::mutex_unlock(mm_ctx->lock);
+        return MM_CTX_ERR_NO_MEM;
+    }
+
+    backing->add_ref();
+    node->shmem_backing = rc::strong_ref<shmem>::adopt(backing);
+    node->backing_offset = offset;
+
+    if (!vma_insert_locked(mm_ctx, node)) {
+        unmap_pages_only(mm_ctx, start, end);
+        free_vma(node);
+        sync::mutex_unlock(mm_ctx->lock);
+        return MM_CTX_ERR_EXISTS;
+    }
+
+    coalesce_all_locked(mm_ctx);
+    sync::mutex_unlock(mm_ctx->lock);
+
+    *out_addr = start;
     return MM_CTX_OK;
 }
 

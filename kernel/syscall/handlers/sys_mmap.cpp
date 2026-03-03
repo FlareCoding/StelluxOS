@@ -1,6 +1,9 @@
 #include "syscall/handlers/sys_mmap.h"
 
 #include "mm/vma.h"
+#include "mm/shmem.h"
+#include "resource/resource.h"
+#include "resource/providers/shmem_resource_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 
@@ -11,14 +14,15 @@ constexpr uint64_t LINUX_PROT_WRITE = 0x2;
 constexpr uint64_t LINUX_PROT_EXEC  = 0x4;
 constexpr uint64_t LINUX_PROT_MASK  = LINUX_PROT_READ | LINUX_PROT_WRITE | LINUX_PROT_EXEC;
 
+constexpr uint64_t LINUX_MAP_SHARED          = 0x00000001;
 constexpr uint64_t LINUX_MAP_PRIVATE         = 0x00000002;
 constexpr uint64_t LINUX_MAP_FIXED           = 0x00000010;
 constexpr uint64_t LINUX_MAP_ANONYMOUS       = 0x00000020;
 constexpr uint64_t LINUX_MAP_STACK           = 0x00020000;
 constexpr uint64_t LINUX_MAP_FIXED_NOREPLACE = 0x00100000;
 constexpr uint64_t LINUX_MAP_ALLOWED_MASK =
-    LINUX_MAP_PRIVATE | LINUX_MAP_FIXED | LINUX_MAP_ANONYMOUS |
-    LINUX_MAP_STACK | LINUX_MAP_FIXED_NOREPLACE;
+    LINUX_MAP_SHARED | LINUX_MAP_PRIVATE | LINUX_MAP_FIXED |
+    LINUX_MAP_ANONYMOUS | LINUX_MAP_STACK | LINUX_MAP_FIXED_NOREPLACE;
 
 inline uint32_t linux_prot_to_mm(uint64_t prot) {
     uint32_t mm_prot = 0;
@@ -30,13 +34,10 @@ inline uint32_t linux_prot_to_mm(uint64_t prot) {
 
 inline uint32_t linux_map_to_mm(uint64_t flags) {
     uint32_t mm_flags = 0;
+    if (flags & LINUX_MAP_SHARED) mm_flags |= mm::MM_MAP_SHARED;
     if (flags & LINUX_MAP_PRIVATE) mm_flags |= mm::MM_MAP_PRIVATE;
     if (flags & LINUX_MAP_FIXED) mm_flags |= mm::MM_MAP_FIXED;
     if (flags & LINUX_MAP_ANONYMOUS) mm_flags |= mm::MM_MAP_ANONYMOUS;
-    // Linux MAP_STACK is effectively a no-op hint for anonymous mappings.
-    // Keep it accepted at the syscall boundary, but do not propagate it into
-    // mm_context_map_anonymous where MM_MAP_STACK is reserved for internal
-    // kernel stack mappings.
     if (flags & LINUX_MAP_FIXED_NOREPLACE) mm_flags |= mm::MM_MAP_FIXED_NOREPLACE;
     return mm_flags;
 }
@@ -75,13 +76,83 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
     if ((flags & ~LINUX_MAP_ALLOWED_MASK) != 0) {
         return syscall::EINVAL;
     }
-    if (!(flags & LINUX_MAP_PRIVATE)) {
+
+    bool has_shared = (flags & LINUX_MAP_SHARED) != 0;
+    bool has_private = (flags & LINUX_MAP_PRIVATE) != 0;
+    bool has_anon = (flags & LINUX_MAP_ANONYMOUS) != 0;
+    int64_t fd_val = static_cast<int64_t>(fd);
+
+    if (has_shared == has_private) {
         return syscall::EINVAL;
     }
-    if (!(flags & LINUX_MAP_ANONYMOUS)) {
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return syscall::ENOMEM;
+    }
+
+    if (fd_val != -1 && !has_anon) {
+        if (!has_shared) {
+            return syscall::EINVAL;
+        }
+        if (!is_page_aligned(offset)) {
+            return syscall::EINVAL;
+        }
+        if (offset + length < length) {
+            return syscall::EINVAL;
+        }
+
+        uint32_t required_rights = 0;
+        if (prot & LINUX_PROT_READ) required_rights |= resource::RIGHT_READ;
+        if (prot & LINUX_PROT_WRITE) required_rights |= resource::RIGHT_WRITE;
+
+        resource::resource_object* obj = nullptr;
+        int32_t rc = resource::get_handle_object(
+            &task->handles, static_cast<int32_t>(fd_val),
+            required_rights, &obj);
+        if (rc != resource::HANDLE_OK) {
+            return (rc == resource::HANDLE_ERR_ACCESS) ?
+                   syscall::EACCES : syscall::EBADF;
+        }
+
+        if (obj->type != resource::resource_type::SHMEM) {
+            resource::resource_release(obj);
+            return syscall::EINVAL;
+        }
+
+        mm::shmem* backing = resource::shmem_resource_provider::get_shmem_backing(obj);
+        if (!backing) {
+            resource::resource_release(obj);
+            return syscall::EINVAL;
+        }
+
+        uintptr_t mapped_addr = 0;
+        int32_t map_rc = mm::mm_context_map_shared(
+            task->exec.mm_ctx,
+            backing,
+            static_cast<uint64_t>(offset),
+            static_cast<size_t>(length),
+            linux_prot_to_mm(prot),
+            linux_map_to_mm(flags),
+            static_cast<uintptr_t>(addr),
+            &mapped_addr
+        );
+
+        resource::resource_release(obj);
+
+        if (map_rc != mm::MM_CTX_OK) {
+            return mm_status_to_errno(map_rc);
+        }
+        return static_cast<int64_t>(mapped_addr);
+    }
+
+    if (!has_private) {
         return syscall::EINVAL;
     }
-    if (static_cast<int64_t>(fd) != -1) {
+    if (!has_anon) {
+        return syscall::EINVAL;
+    }
+    if (fd_val != -1) {
         return syscall::EINVAL;
     }
     if (offset != 0) {
@@ -91,11 +162,6 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
     bool fixed = (flags & (LINUX_MAP_FIXED | LINUX_MAP_FIXED_NOREPLACE)) != 0;
     if (fixed && !is_page_aligned(addr)) {
         return syscall::EINVAL;
-    }
-
-    sched::task* task = sched::current();
-    if (!task || !task->exec.mm_ctx) {
-        return syscall::ENOMEM;
     }
 
     uintptr_t mapped_addr = 0;

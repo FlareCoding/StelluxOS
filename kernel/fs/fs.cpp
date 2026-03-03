@@ -61,6 +61,7 @@ int32_t node::open(file*, uint32_t)                 { return OK; }
 int32_t node::on_close(file*)                       { return OK; }
 int32_t node::readlink(char*, size_t, size_t*)      { return ERR_NOSYS; }
 int32_t node::create_socket(const char*, size_t, void*, node**) { return ERR_NOSYS; }
+int32_t node::truncate(size_t)                      { return ERR_NOSYS; }
 
 int32_t node::getattr(vattr* attr) {
     if (!attr) return ERR_INVAL;

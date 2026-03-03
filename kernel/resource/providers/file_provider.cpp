@@ -116,4 +116,15 @@ __PRIVILEGED_CODE int32_t open_file_resource(
     return OK;
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE fs::file* get_file(resource_object* obj) {
+    if (!obj || obj->type != resource_type::FILE || !obj->impl) {
+        return nullptr;
+    }
+    auto* impl = static_cast<file_resource_impl*>(obj->impl);
+    return impl->file;
+}
+
 } // namespace resource::file_provider

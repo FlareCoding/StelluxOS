@@ -50,6 +50,7 @@ constexpr int32_t ERR_CONNREFUSED = -13;
 constexpr int32_t ERR_ADDRINUSE   = -14;
 constexpr int32_t ERR_ISCONN      = -15;
 constexpr int32_t ERR_AGAIN       = -16;
+constexpr int32_t ERR_EXIST       = -17;
 
 /**
  * @brief Initialize handle table storage in task.

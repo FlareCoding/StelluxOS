@@ -4,8 +4,10 @@
 #include "common/types.h"
 #include "common/rb_tree.h"
 #include "mm/pmm_types.h"
+#include "mm/shmem.h"
 #include "sync/mutex.h"
 #include "rc/ref_counted.h"
+#include "rc/strong_ref.h"
 
 namespace mm {
 
@@ -22,6 +24,7 @@ constexpr uint32_t MM_PROT_WRITE   = (1u << 1);
 constexpr uint32_t MM_PROT_EXEC    = (1u << 2);
 constexpr uint32_t MM_PROT_MASK    = MM_PROT_READ | MM_PROT_WRITE | MM_PROT_EXEC;
 
+constexpr uint32_t MM_MAP_SHARED           = 0x00000001u;
 constexpr uint32_t MM_MAP_PRIVATE          = 0x00000002u;
 constexpr uint32_t MM_MAP_FIXED            = 0x00000010u;
 constexpr uint32_t MM_MAP_ANONYMOUS        = 0x00000020u;
@@ -32,6 +35,7 @@ constexpr uint32_t VMA_FLAG_PRIVATE   = (1u << 0);
 constexpr uint32_t VMA_FLAG_ANONYMOUS = (1u << 1);
 constexpr uint32_t VMA_FLAG_ELF       = (1u << 2);
 constexpr uint32_t VMA_FLAG_STACK     = (1u << 3);
+constexpr uint32_t VMA_FLAG_SHARED    = (1u << 4);
 
 constexpr uintptr_t MMAP_BASE_DEFAULT = 0x00000080000000ULL;
 constexpr uintptr_t USER_STACK_TOP    = 0x00007FFFFFF00000ULL;
@@ -44,6 +48,8 @@ struct vma {
     uint32_t  prot;
     uint32_t  flags;
     rbt::node addr_link;
+    rc::strong_ref<shmem> shmem_backing;
+    uint64_t              backing_offset;
 };
 
 struct vma_addr_cmp {
@@ -177,6 +183,30 @@ __PRIVILEGED_CODE int32_t mm_context_mprotect(
     uintptr_t addr,
     size_t length,
     uint32_t prot
+);
+
+/**
+ * @brief Map a shmem backing into a user mm_context with MAP_SHARED semantics.
+ * Pages come from the backing; they are not allocated per-mapping.
+ * @param backing Shmem backing. Must have sufficient size for offset+length.
+ * @param offset Byte offset into backing (must be page-aligned).
+ * @param length Number of bytes to map (rounded up to page boundary).
+ * @param prot MM_PROT_READ / MM_PROT_WRITE / MM_PROT_EXEC.
+ * @param map_flags MM_MAP_SHARED, optionally MM_MAP_FIXED / MM_MAP_FIXED_NOREPLACE.
+ * @param addr Hint or fixed address.
+ * @param out_addr Receives the mapped virtual address.
+ * @return MM_CTX_OK on success, error code on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mm_context_map_shared(
+    mm_context* mm_ctx,
+    shmem* backing,
+    uint64_t offset,
+    size_t length,
+    uint32_t prot,
+    uint32_t map_flags,
+    uintptr_t addr,
+    uintptr_t* out_addr
 );
 
 /**
