@@ -11,6 +11,12 @@
 
 namespace {
 
+struct process_info {
+    char name[256];
+    int pid;
+    int cpu;
+};
+
 constexpr uint32_t MAX_PROC_ARGC = 64;
 constexpr size_t MAX_PROC_ARG_LEN = 256;
 constexpr size_t MAX_PROC_ARGV_TOTAL = 3500;
@@ -245,6 +251,48 @@ DEFINE_SYSCALL1(proc_detach, u_handle) {
 }
 
 DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
-    (void)u_handle; (void)u_info_ptr;
-    return syscall::ENOSYS;
+    if (u_info_ptr == 0) {
+        return syscall::EFAULT;
+    }
+
+    int32_t handle = static_cast<int32_t>(u_handle);
+    sched::task* caller = sched::current();
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(&caller->handles, handle, 0, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+    if (obj->type != resource::resource_type::PROCESS) {
+        resource::resource_release(obj);
+        return syscall::EBADF;
+    }
+
+    auto* pr = resource::proc_provider::get_proc_resource(obj);
+    if (!pr) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    process_info kinfo;
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    if (!pr->child) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(obj);
+        return syscall::ESRCH;
+    }
+    string::memcpy(kinfo.name, pr->child->name,
+                   string::strnlen(pr->child->name, sched::TASK_NAME_MAX - 1) + 1);
+    kinfo.pid = static_cast<int>(pr->child->tid);
+    kinfo.cpu = static_cast<int>(pr->child->exec.cpu);
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+
+    int32_t copy_rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(u_info_ptr), &kinfo, sizeof(kinfo));
+    if (copy_rc != mm::uaccess::OK) {
+        resource::resource_release(obj);
+        return syscall::EFAULT;
+    }
+
+    resource::resource_release(obj);
+    return 0;
 }
