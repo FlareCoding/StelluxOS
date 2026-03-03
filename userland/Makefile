@@ -31,10 +31,13 @@ endif
 BIN_DIR   := $(USERLAND_ROOT)/build/$(ARCH)/bin
 INITRD_BIN := $(USERLAND_ROOT)/../initrd/bin
 
-# Build all apps, then install to initrd
-all: apps install
+# Build libs, then apps, then install to initrd
+all: libs apps install
 
-apps:
+libs:
+	@$(MAKE) -C lib ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V)
+
+apps: libs
 	@$(MAKE) -C apps ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V)
 
 install: apps
@@ -49,7 +52,31 @@ install: apps
 
 clean:
 	@echo "Cleaning userland build artifacts..."
+	@$(MAKE) -C lib clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
 	@$(MAKE) -C apps clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
 	@rm -rf build
 
-.PHONY: all apps install clean
+include mk/toolchain.mk
+
+CC_SOURCES := $(shell find apps lib -name '*.c' 2>/dev/null | sort)
+CC_FLAGS := $(CFLAGS_COMMON)
+
+compile-commands:
+	@echo "Generating userland compile_commands.json..."
+	@echo "[" > compile_commands.json
+	@first=1; \
+	for src in $(CC_SOURCES); do \
+		if [ $$first -eq 1 ]; then first=0; else echo "," >> compile_commands.json; fi; \
+		args="\"$(CC)\""; \
+		for flag in $(CC_FLAGS); do args="$$args, \"$$flag\""; done; \
+		args="$$args, \"-c\", \"$$src\""; \
+		echo "  {" >> compile_commands.json; \
+		echo "    \"directory\": \"$$(pwd)\"," >> compile_commands.json; \
+		echo "    \"file\": \"$$src\"," >> compile_commands.json; \
+		echo "    \"arguments\": [$$args]" >> compile_commands.json; \
+		echo "  }" >> compile_commands.json; \
+	done
+	@echo "]" >> compile_commands.json
+	@echo "Created userland/compile_commands.json"
+
+.PHONY: all libs apps install clean compile-commands

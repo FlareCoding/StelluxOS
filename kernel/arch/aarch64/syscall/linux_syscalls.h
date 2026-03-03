@@ -17,6 +17,7 @@ constexpr uint64_t WRITEV           = 66;
 constexpr uint64_t EXIT             = 93;
 constexpr uint64_t EXIT_GROUP       = 94;
 constexpr uint64_t SET_TID_ADDRESS  = 96;
+constexpr uint64_t NANOSLEEP        = 101;
 constexpr uint64_t SOCKET           = 198;
 constexpr uint64_t SOCKETPAIR       = 199;
 constexpr uint64_t BIND             = 200;

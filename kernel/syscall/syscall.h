@@ -12,6 +12,13 @@ constexpr int32_t ERR_INIT = -1;
 constexpr uint64_t SYS_YIELD   = 1000;
 constexpr uint64_t SYS_ELEVATE = 1001;
 
+// Process management
+constexpr uint64_t SYS_PROC_CREATE = 1010;
+constexpr uint64_t SYS_PROC_START  = 1011;
+constexpr uint64_t SYS_PROC_WAIT   = 1012;
+constexpr uint64_t SYS_PROC_DETACH = 1013;
+constexpr uint64_t SYS_PROC_INFO   = 1014;
+
 /**
  * Architecture-specific syscall initialization (MSRs on x86, etc.)
  * @note Privilege: **required**

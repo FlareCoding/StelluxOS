@@ -6,7 +6,11 @@
 #include "rc/reaper.h"
 #include "resource/handle_table.h"
 
+namespace resource::proc_provider { struct proc_resource; }
+
 namespace sched {
+
+constexpr size_t TASK_NAME_MAX = 256;
 
 constexpr uint32_t TASK_STATE_CREATED = 0; // exists but not on any queue
 constexpr uint32_t TASK_STATE_READY   = 1; // on a runqueue
@@ -43,10 +47,11 @@ struct task {
     list::node     wait_link;
     list::node     timer_link;
     uint64_t       timer_deadline;
-    const char*    name;
+    char           name[TASK_NAME_MAX];
     task_tlb_sync_ticket tlb_sync_ticket;
     rc::reaper::dead_node reaper_node;
     resource::handle_table handles;
+    resource::proc_provider::proc_resource* proc_res;
 };
 
 // Assembly accesses task_exec_core fields via offsets from the task pointer.

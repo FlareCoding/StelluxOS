@@ -22,6 +22,7 @@
 #include "mm/vma.h"
 #include "common/string.h"
 #include "resource/resource.h"
+#include "resource/providers/proc_provider.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -362,6 +363,25 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
 [[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
         sched::task* task = current();
+
+        if (task->proc_res) {
+            auto* pr = task->proc_res;
+            sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+            if (!pr->detached) {
+                pr->exit_code = exit_code;
+                pr->exited = true;
+                pr->child = nullptr;
+                sync::wake_all(pr->wait_queue);
+            } else {
+                pr->child = nullptr;
+            }
+            sync::spin_unlock_irqrestore(pr->lock, irq);
+            task->proc_res = nullptr;
+            if (pr->release()) {
+                resource::proc_provider::proc_resource::ref_destroy(pr);
+            }
+        }
+
         store_cleanup_stage(task, TASK_CLEANUP_STAGE_EXIT_REQUESTED);
         task->state = TASK_STATE_DEAD;
         task->exit_code = exit_code;
@@ -430,7 +450,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
-    t->name = name;
+    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
+    t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     t->tlb_sync_ticket.armed = 0;
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
@@ -439,6 +460,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
     resource::init_task_handles(t);
+    t->proc_res = nullptr;
 
     return t;
 }
@@ -448,14 +470,18 @@ __PRIVILEGED_CODE task* create_kernel_task(
  * that musl's _start expects. Writes data into the last page of the
  * already-mapped user stack via the kernel HHDM mapping.
  *
- * @return 16-byte-aligned user stack pointer pointing to argc.
+ * @param user_argc Number of user-provided args (excluding program name).
+ * @param user_argv Kernel-copied argument strings, or nullptr for none.
+ * @return 16-byte-aligned user stack pointer pointing to argc, or 0 on error.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     pmm::phys_addr_t last_page_phys,
     uintptr_t stack_top,
     const exec::loaded_image& image,
-    const char* name
+    const char* name,
+    int user_argc,
+    const char* const* user_argv
 ) {
     uint8_t* page_kva = static_cast<uint8_t*>(paging::phys_to_virt(last_page_phys));
     uintptr_t page_base_va = pmm::page_align_down(stack_top - 1);
@@ -464,33 +490,63 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         string::memcpy(page_kva + offset, data, len);
     };
 
-    size_t name_len = 0;
-    while (name[name_len]) name_len++;
-    name_len++;
+    int total_argc = 1 + user_argc; // argv[0] = name, argv[1..] = user args
 
-    size_t name_padded = (name_len + 7) & ~7ULL;
-    uintptr_t str_va = stack_top - name_padded;
-    write(str_va, name, name_len);
-
+    constexpr size_t MAX_ARGV_PTRS = 66; // 1 name + 64 user args + slack
     constexpr size_t AUXV_ENTRIES = 5;
     constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
-    constexpr size_t FIXED_WORDS = 1 + 1 + 1 + 1 + AUXV_WORDS;
-    size_t total_struct_bytes = FIXED_WORDS * sizeof(uint64_t);
-    uintptr_t sp = (str_va - total_struct_bytes) & ~0xFULL;
 
-    uint64_t data[FIXED_WORDS];
+    size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1 + 1 + AUXV_WORDS;
+    size_t struct_bytes = struct_words * sizeof(uint64_t);
+
+    // Pre-compute total string space needed (8-byte aligned per arg)
+    size_t name_len = string::strnlen(name, TASK_NAME_MAX - 1) + 1;
+    size_t total_string_bytes = (name_len + 7) & ~7ULL;
+    for (int i = 0; i < user_argc; i++) {
+        size_t arg_len = string::strnlen(user_argv[i], 255) + 1;
+        total_string_bytes += (arg_len + 7) & ~7ULL;
+    }
+
+    if (total_string_bytes + struct_bytes + 16 > pmm::PAGE_SIZE) {
+        return 0;
+    }
+
+    // Write strings at the top of the page (growing downward from stack_top)
+    uintptr_t str_cursor = stack_top;
+    uintptr_t argv_vas[MAX_ARGV_PTRS];
+
+    // argv[0] = program name
+    size_t name_padded = (name_len + 7) & ~7ULL;
+    str_cursor -= name_padded;
+    write(str_cursor, name, name_len);
+    argv_vas[0] = str_cursor;
+
+    // argv[1..user_argc] = user-provided args
+    for (int i = 0; i < user_argc; i++) {
+        size_t arg_len = string::strnlen(user_argv[i], 255) + 1;
+        size_t arg_padded = (arg_len + 7) & ~7ULL;
+        str_cursor -= arg_padded;
+        write(str_cursor, user_argv[i], arg_len);
+        argv_vas[1 + i] = str_cursor;
+    }
+
+    uintptr_t sp = (str_cursor - struct_bytes) & ~0xFULL;
+
+    uint64_t data[1 + MAX_ARGV_PTRS + 1 + 1 + AUXV_WORDS];
     size_t idx = 0;
-    data[idx++] = 1;               // argc
-    data[idx++] = str_va;          // argv[0] -> program name
-    data[idx++] = 0;               // argv[1] = NULL
-    data[idx++] = 0;               // envp[0] = NULL
-    data[idx++] = AT_PAGESZ;       data[idx++] = pmm::PAGE_SIZE;
-    data[idx++] = AT_PHDR;         data[idx++] = image.phdr_vaddr;
-    data[idx++] = AT_PHENT;        data[idx++] = image.phentsize;
-    data[idx++] = AT_PHNUM;        data[idx++] = image.phdr_vaddr ? image.phnum : 0;
-    data[idx++] = AT_NULL;         data[idx++] = 0;
+    data[idx++] = static_cast<uint64_t>(total_argc);
+    for (int i = 0; i < total_argc; i++) {
+        data[idx++] = argv_vas[i];
+    }
+    data[idx++] = 0; // argv terminator (NULL)
+    data[idx++] = 0; // envp terminator (NULL)
+    data[idx++] = AT_PAGESZ; data[idx++] = pmm::PAGE_SIZE;
+    data[idx++] = AT_PHDR;   data[idx++] = image.phdr_vaddr;
+    data[idx++] = AT_PHENT;  data[idx++] = image.phentsize;
+    data[idx++] = AT_PHNUM;  data[idx++] = image.phdr_vaddr ? image.phnum : 0;
+    data[idx++] = AT_NULL;   data[idx++] = 0;
 
-    write(sp, data, sizeof(data));
+    write(sp, data, idx * sizeof(uint64_t));
     return sp;
 }
 
@@ -498,7 +554,8 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE task* create_user_task(
-    exec::loaded_image* image, const char* name
+    exec::loaded_image* image, const char* name,
+    int argc, const char* const* argv
 ) {
     if (!image || !image->mm_ctx) {
         log::error("sched: invalid loaded image for user task");
@@ -552,7 +609,15 @@ __PRIVILEGED_CODE task* create_user_task(
         return nullptr;
     }
 
-    uintptr_t user_sp = setup_user_stack(last_stack_page_phys, mm::USER_STACK_TOP, *image, name);
+    uintptr_t user_sp = setup_user_stack(
+        last_stack_page_phys, mm::USER_STACK_TOP, *image, name, argc, argv);
+    if (user_sp == 0) {
+        log::error("sched: user stack setup failed (argv too large?)");
+        mm::mm_context_unmap(mm_ctx, mapped_stack_addr, mm::USER_STACK_PAGES * pmm::PAGE_SIZE);
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
 
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
@@ -580,7 +645,8 @@ __PRIVILEGED_CODE task* create_user_task(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
-    t->name = name;
+    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
+    t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     t->tlb_sync_ticket.armed = 0;
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
@@ -590,6 +656,7 @@ __PRIVILEGED_CODE task* create_user_task(
     t->reaper_node.init(reap_task_thunk);
 
     resource::init_task_handles(t);
+    t->proc_res = nullptr;
 
     image->mm_ctx = nullptr;
     image->pt_root = 0;
@@ -628,11 +695,13 @@ __PRIVILEGED_CODE int32_t init() {
     idle->wait_link = {};
     idle->timer_link = {};
     idle->timer_deadline = 0;
-    idle->name = "idle";
+    string::memcpy(idle->name, "idle", 4);
+    idle->name[4] = '\0';
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
     resource::init_task_handles(idle);
+    idle->proc_res = nullptr;
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
@@ -687,7 +756,8 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->sys_stack_base = 0;
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     idle->state = TASK_STATE_RUNNING;
-    idle->name = "idle";
+    string::memcpy(idle->name, "idle", 4);
+    idle->name[4] = '\0';
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
