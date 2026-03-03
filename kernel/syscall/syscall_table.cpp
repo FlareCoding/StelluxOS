@@ -8,6 +8,7 @@
 #include "syscall/handlers/sys_mmap.h"
 #include "syscall/handlers/sys_socket.h"
 #include "syscall/handlers/sys_memfd.h"
+#include "syscall/handlers/sys_proc.h"
 
 namespace syscall {
 
@@ -46,6 +47,12 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::UNLINKAT,    unlinkat);
 
     REGISTER_SYSCALL(SYS_ELEVATE, elevate);
+
+    REGISTER_SYSCALL(SYS_PROC_CREATE, proc_create);
+    REGISTER_SYSCALL(SYS_PROC_START,  proc_start);
+    REGISTER_SYSCALL(SYS_PROC_WAIT,   proc_wait);
+    REGISTER_SYSCALL(SYS_PROC_DETACH, proc_detach);
+    REGISTER_SYSCALL(SYS_PROC_INFO,   proc_info);
 
     register_arch_syscalls();
 }
