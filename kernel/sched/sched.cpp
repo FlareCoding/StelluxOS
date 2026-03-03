@@ -138,8 +138,6 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
 
     resource::close_all(t);
 
-    log::debug("sched: reaping task tid=%u name=%s", t->tid, t->name);
-
     if (t->exec.mm_ctx) {
         mm::mm_context_release(t->exec.mm_ctx);
         t->exec.mm_ctx = nullptr;
