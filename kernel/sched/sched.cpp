@@ -492,13 +492,30 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
 
     int total_argc = 1 + user_argc; // argv[0] = name, argv[1..] = user args
 
+    constexpr size_t MAX_ARGV_PTRS = 66; // 1 name + 64 user args + slack
+    constexpr size_t AUXV_ENTRIES = 5;
+    constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
+
+    size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1 + 1 + AUXV_WORDS;
+    size_t struct_bytes = struct_words * sizeof(uint64_t);
+
+    // Pre-compute total string space needed (8-byte aligned per arg)
+    size_t name_len = string::strnlen(name, TASK_NAME_MAX - 1) + 1;
+    size_t total_string_bytes = (name_len + 7) & ~7ULL;
+    for (int i = 0; i < user_argc; i++) {
+        size_t arg_len = string::strnlen(user_argv[i], 255) + 1;
+        total_string_bytes += (arg_len + 7) & ~7ULL;
+    }
+
+    if (total_string_bytes + struct_bytes + 16 > pmm::PAGE_SIZE) {
+        return 0;
+    }
+
     // Write strings at the top of the page (growing downward from stack_top)
     uintptr_t str_cursor = stack_top;
-    constexpr size_t MAX_ARGV_PTRS = 66; // 1 name + 64 user args + slack
     uintptr_t argv_vas[MAX_ARGV_PTRS];
 
     // argv[0] = program name
-    size_t name_len = string::strnlen(name, TASK_NAME_MAX - 1) + 1;
     size_t name_padded = (name_len + 7) & ~7ULL;
     str_cursor -= name_padded;
     write(str_cursor, name, name_len);
@@ -511,18 +528,6 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         str_cursor -= arg_padded;
         write(str_cursor, user_argv[i], arg_len);
         argv_vas[1 + i] = str_cursor;
-    }
-
-    size_t total_string_bytes = stack_top - str_cursor;
-
-    constexpr size_t AUXV_ENTRIES = 5;
-    constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
-    // Structure: argc + argv[0..total_argc-1] + NULL + envp NULL + auxv
-    size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1 + 1 + AUXV_WORDS;
-    size_t struct_bytes = struct_words * sizeof(uint64_t);
-
-    if (total_string_bytes + struct_bytes > pmm::PAGE_SIZE) {
-        return 0;
     }
 
     uintptr_t sp = (str_cursor - struct_bytes) & ~0xFULL;

@@ -77,9 +77,15 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
                 break;
             }
 
+            size_t remaining = MAX_PROC_ARGV_TOTAL - buf_offset;
+            if (remaining == 0) {
+                return syscall::ENAMETOOLONG;
+            }
+            size_t cap = remaining < MAX_PROC_ARG_LEN ? remaining : MAX_PROC_ARG_LEN;
+
             rc = mm::uaccess::copy_cstr_from_user(
                 kargv_buf + buf_offset,
-                MAX_PROC_ARG_LEN,
+                cap,
                 reinterpret_cast<const char*>(uptr));
             if (rc == mm::uaccess::ERR_NAMETOOLONG) {
                 return syscall::ENAMETOOLONG;
@@ -88,10 +94,7 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
                 return syscall::EFAULT;
             }
 
-            size_t len = string::strnlen(kargv_buf + buf_offset, MAX_PROC_ARG_LEN);
-            if (buf_offset + len + 1 > MAX_PROC_ARGV_TOTAL) {
-                return syscall::ENAMETOOLONG;
-            }
+            size_t len = string::strnlen(kargv_buf + buf_offset, cap);
 
             kargv_ptrs[kargc] = kargv_buf + buf_offset;
             buf_offset += len + 1;
@@ -273,7 +276,7 @@ DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
         return syscall::EINVAL;
     }
 
-    process_info kinfo;
+    process_info kinfo = {};
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
     if (!pr->child) {
         sync::spin_unlock_irqrestore(pr->lock, irq);
