@@ -47,6 +47,7 @@ public:
 
     // --- Metadata ---
     virtual int32_t getattr(vattr* attr);
+    virtual int32_t truncate(size_t size);
 
     // --- Symlink ---
     virtual int32_t readlink(char* buf, size_t size, size_t* out_len);

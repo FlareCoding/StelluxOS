@@ -481,4 +481,55 @@ int32_t file_node::getattr(fs::vattr* attr) {
     return fs::OK;
 }
 
+int32_t file_node::truncate(size_t size) {
+    size_t max_alignable = ~(pmm::PAGE_SIZE - 1);
+    if (size > max_alignable) {
+        return fs::ERR_INVAL;
+    }
+
+    sync::irq_lock_guard guard(m_lock);
+
+    uint32_t needed = static_cast<uint32_t>(
+        pmm::page_align_up(size) / pmm::PAGE_SIZE);
+
+    if (needed > m_page_count) {
+        int32_t rc = ensure_capacity(needed);
+        if (rc != fs::OK) {
+            return rc;
+        }
+
+        for (uint32_t i = m_page_count; i < needed; i++) {
+            pmm::phys_addr_t phys = pmm::alloc_page();
+            if (phys == 0) {
+                m_size = static_cast<size_t>(i) * pmm::PAGE_SIZE;
+                m_page_count = i;
+                return fs::ERR_NOMEM;
+            }
+            m_pages[i] = static_cast<uint8_t*>(paging::phys_to_virt(phys));
+            string::memset(m_pages[i], 0, pmm::PAGE_SIZE);
+        }
+        m_page_count = needed;
+    } else if (needed < m_page_count) {
+        for (uint32_t i = needed; i < m_page_count; i++) {
+            if (m_pages[i]) {
+                pmm::phys_addr_t phys =
+                    reinterpret_cast<uintptr_t>(m_pages[i]) - g_boot_info.hhdm_offset;
+                pmm::free_page(phys);
+                m_pages[i] = nullptr;
+            }
+        }
+        m_page_count = needed;
+    }
+
+    if (size < m_size && needed > 0) {
+        size_t tail_off = size % pmm::PAGE_SIZE;
+        if (tail_off != 0 && m_pages[needed - 1]) {
+            string::memset(m_pages[needed - 1] + tail_off, 0, pmm::PAGE_SIZE - tail_off);
+        }
+    }
+
+    m_size = size;
+    return fs::OK;
+}
+
 } // namespace ramfs

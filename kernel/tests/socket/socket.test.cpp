@@ -8,10 +8,8 @@
 #include "resource/handle_table.h"
 #include "sched/sched.h"
 #include "sched/task.h"
-#include "mm/heap.h"
 #include "common/string.h"
 #include "fs/fstypes.h"
-#include "fs/fs.h"
 #include "fs/socket_node.h"
 
 TEST_SUITE(socket_test);
@@ -52,9 +50,12 @@ TEST(socket_test, ring_buffer_multiple_writes_single_read) {
     auto* rb = socket::ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("aaa"), 3);
-    socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("bbb"), 3);
-    socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ccc"), 3);
+    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("aaa"), 3),
+        static_cast<ssize_t>(3));
+    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("bbb"), 3),
+        static_cast<ssize_t>(3));
+    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ccc"), 3),
+        static_cast<ssize_t>(3));
 
     uint8_t buf[32] = {};
     ssize_t nr = socket::ring_buffer_read(rb, buf, sizeof(buf));
@@ -68,7 +69,8 @@ TEST(socket_test, ring_buffer_short_read) {
     auto* rb = socket::ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("xyz"), 3);
+    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("xyz"), 3),
+        static_cast<ssize_t>(3));
 
     uint8_t buf[1] = {};
     ssize_t nr = socket::ring_buffer_read(rb, buf, 1);
@@ -86,7 +88,8 @@ TEST(socket_test, ring_buffer_eof_after_close_write) {
     auto* rb = socket::ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ab"), 2);
+    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ab"), 2),
+        static_cast<ssize_t>(2));
     socket::ring_buffer_close_write(rb);
 
     uint8_t buf[32] = {};
@@ -144,7 +147,8 @@ TEST(socket_test, ring_buffer_nonblock_with_data_returns_data) {
     auto* rb = socket::ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("test"), 4);
+    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("test"), 4),
+        static_cast<ssize_t>(4));
 
     uint8_t buf[32] = {};
     ssize_t nr = socket::ring_buffer_read(rb, buf, sizeof(buf), true);

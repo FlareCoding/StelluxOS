@@ -1,10 +1,12 @@
 #include "syscall/handlers/sys_fd.h"
 
 #include "resource/resource.h"
+#include "resource/providers/shm_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
+#include "fs/fs.h"
 #include "fs/fstypes.h"
 
 namespace {
@@ -43,7 +45,41 @@ inline int64_t map_resource_error(int64_t rc) {
             return syscall::EISCONN;
         case resource::ERR_AGAIN:
             return syscall::EAGAIN;
+        case resource::ERR_EXIST:
+            return syscall::EEXIST;
         case resource::ERR_IO:
+        default:
+            return syscall::EIO;
+    }
+}
+
+inline int64_t map_fs_error(int32_t rc) {
+    switch (rc) {
+        case fs::ERR_NOENT:
+            return syscall::ENOENT;
+        case fs::ERR_EXIST:
+            return syscall::EEXIST;
+        case fs::ERR_NOTDIR:
+            return syscall::ENOTDIR;
+        case fs::ERR_ISDIR:
+            return syscall::EISDIR;
+        case fs::ERR_NOMEM:
+            return syscall::ENOMEM;
+        case fs::ERR_INVAL:
+            return syscall::EINVAL;
+        case fs::ERR_NAMETOOLONG:
+            return syscall::ENAMETOOLONG;
+        case fs::ERR_NOTEMPTY:
+            return syscall::ENOTEMPTY;
+        case fs::ERR_NOSYS:
+            return syscall::ENOSYS;
+        case fs::ERR_BUSY:
+            return syscall::EBUSY;
+        case fs::ERR_LOOP:
+            return syscall::ELOOP;
+        case fs::ERR_BADF:
+            return syscall::EBADF;
+        case fs::ERR_IO:
         default:
             return syscall::EIO;
     }
@@ -264,4 +300,41 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     }
 
     return syscall::EINVAL;
+}
+
+DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
+    (void)flags_val;
+
+    if (static_cast<int64_t>(dirfd) != AT_FDCWD) {
+        return syscall::EINVAL;
+    }
+
+    char kpath[fs::PATH_MAX];
+    int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
+        kpath, sizeof(kpath),
+        reinterpret_cast<const char*>(pathname));
+    if (copy_rc != mm::uaccess::OK) {
+        if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
+            return syscall::ENAMETOOLONG;
+        }
+        return syscall::EFAULT;
+    }
+
+    if (kpath[0] != '/') {
+        return syscall::EINVAL;
+    }
+
+    if (resource::shm_provider::is_shm_path(kpath)) {
+        int32_t rc = resource::shm_provider::unlink_shm(kpath);
+        if (rc != resource::OK) {
+            return map_resource_error(rc);
+        }
+        return 0;
+    }
+
+    int32_t rc = fs::unlink(kpath);
+    if (rc != fs::OK) {
+        return map_fs_error(rc);
+    }
+    return 0;
 }

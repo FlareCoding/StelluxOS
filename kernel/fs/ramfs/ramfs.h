@@ -45,6 +45,7 @@ public:
     ssize_t write(fs::file* f, const void* buf, size_t count) override;
     int64_t seek(fs::file* f, int64_t offset, int whence) override;
     int32_t getattr(fs::vattr* attr) override;
+    int32_t truncate(size_t size) override;
 
 private:
     int32_t ensure_capacity(uint32_t needed_pages);

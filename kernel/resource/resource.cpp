@@ -1,5 +1,6 @@
 #include "resource/resource.h"
 #include "resource/providers/file_provider.h"
+#include "resource/providers/shm_provider.h"
 #include "sched/task.h"
 #include "fs/fstypes.h"
 #include "mm/heap.h"
@@ -58,7 +59,7 @@ __PRIVILEGED_CODE static bool valid_open_flags(uint32_t flags) {
 }
 
 __PRIVILEGED_CODE static uint32_t normalize_open_flags(uint32_t flags) {
-    return flags & (fs::ACCESS_MODE_MASK | fs::O_CREAT | fs::O_TRUNC | fs::O_APPEND);
+    return flags & (fs::ACCESS_MODE_MASK | fs::O_CREAT | fs::O_EXCL | fs::O_TRUNC | fs::O_APPEND);
 }
 
 __PRIVILEGED_CODE static uint32_t rights_from_open_flags(uint32_t flags) {
@@ -91,13 +92,22 @@ __PRIVILEGED_CODE int32_t open(
     uint32_t fs_flags = normalize_open_flags(flags);
 
     resource_object* obj = nullptr;
-    int32_t rc = file_provider::open_file_resource(kpath, fs_flags, &obj);
+    int32_t rc;
+    resource_type rtype;
+
+    if (shm_provider::is_shm_path(kpath)) {
+        rc = shm_provider::open_shm_resource(kpath, fs_flags, &obj);
+        rtype = resource_type::SHMEM;
+    } else {
+        rc = file_provider::open_file_resource(kpath, fs_flags, &obj);
+        rtype = resource_type::FILE;
+    }
     if (rc != OK) {
         return rc;
     }
 
     uint32_t rights = rights_from_open_flags(fs_flags);
-    rc = alloc_handle(&owner->handles, obj, resource_type::FILE, rights, out_handle);
+    rc = alloc_handle(&owner->handles, obj, rtype, rights, out_handle);
     if (rc != HANDLE_OK) {
         resource_release(obj);
         return (rc == HANDLE_ERR_NOSPC) ? ERR_TABLEFULL : ERR_IO;

@@ -22,6 +22,7 @@ constexpr uint32_t O_RDONLY = 0;
 constexpr uint32_t O_WRONLY = 1;
 constexpr uint32_t O_RDWR   = 2;
 constexpr uint32_t O_CREAT  = 0x40;
+constexpr uint32_t O_EXCL   = 0x80;
 constexpr uint32_t O_TRUNC  = 0x200;
 constexpr uint32_t O_APPEND   = 0x400;
 constexpr uint32_t O_NONBLOCK = 0x800;
