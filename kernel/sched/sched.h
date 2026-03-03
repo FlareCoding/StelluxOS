@@ -52,12 +52,15 @@ task* create_kernel_task(void (*entry)(void*), void* arg, const char* name,
  * Allocates a user stack in the user page table and a system stack in kernel VA.
  * Returns in TASK_STATE_CREATED (not yet enqueued).
  * @param image Loaded ELF image with entry point and mm context ownership.
- * @param name Debug name (not copied, caller must ensure lifetime).
+ * @param name Debug name (copied into embedded task storage).
+ * @param argc Number of user-provided arguments (excluding program name).
+ * @param argv Array of kernel-copied argument strings, or nullptr for none.
  * @return task pointer on success, nullptr on failure.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE
-task* create_user_task(exec::loaded_image* image, const char* name);
+task* create_user_task(exec::loaded_image* image, const char* name,
+                       int argc = 0, const char* const* argv = nullptr);
 
 /**
  * @brief Add a task to a runqueue, distributing across CPUs via round-robin.

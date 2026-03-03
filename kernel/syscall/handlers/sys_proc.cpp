@@ -11,6 +11,10 @@
 
 namespace {
 
+constexpr uint32_t MAX_PROC_ARGC = 64;
+constexpr size_t MAX_PROC_ARG_LEN = 256;
+constexpr size_t MAX_PROC_ARGV_TOTAL = 3500;
+
 __PRIVILEGED_CODE static const char* path_basename(const char* path) {
     const char* base = path;
     for (const char* p = path; *p; p++) {
@@ -37,8 +41,6 @@ __PRIVILEGED_CODE static int64_t map_elf_error(int32_t rc) {
 } // anonymous namespace
 
 DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
-    (void)u_argv; // argv passing deferred to Phase 5
-
     char kpath[fs::PATH_MAX];
     int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
         kpath, sizeof(kpath),
@@ -50,6 +52,47 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
         return syscall::EFAULT;
     }
 
+    char kargv_buf[MAX_PROC_ARGV_TOTAL];
+    const char* kargv_ptrs[MAX_PROC_ARGC];
+    int kargc = 0;
+
+    if (u_argv != 0) {
+        size_t buf_offset = 0;
+        for (uint32_t i = 0; i < MAX_PROC_ARGC; i++) {
+            uintptr_t uptr = 0;
+            int32_t rc = mm::uaccess::copy_from_user(
+                &uptr,
+                reinterpret_cast<const uintptr_t*>(u_argv) + i,
+                sizeof(uptr));
+            if (rc != mm::uaccess::OK) {
+                return syscall::EFAULT;
+            }
+            if (uptr == 0) {
+                break;
+            }
+
+            rc = mm::uaccess::copy_cstr_from_user(
+                kargv_buf + buf_offset,
+                MAX_PROC_ARG_LEN,
+                reinterpret_cast<const char*>(uptr));
+            if (rc == mm::uaccess::ERR_NAMETOOLONG) {
+                return syscall::ENAMETOOLONG;
+            }
+            if (rc != mm::uaccess::OK) {
+                return syscall::EFAULT;
+            }
+
+            size_t len = string::strnlen(kargv_buf + buf_offset, MAX_PROC_ARG_LEN);
+            if (buf_offset + len + 1 > MAX_PROC_ARGV_TOTAL) {
+                return syscall::ENAMETOOLONG;
+            }
+
+            kargv_ptrs[kargc] = kargv_buf + buf_offset;
+            buf_offset += len + 1;
+            kargc++;
+        }
+    }
+
     exec::loaded_image loaded;
     int32_t elf_rc = exec::load_elf(kpath, &loaded);
     if (elf_rc != exec::OK) {
@@ -57,7 +100,8 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
     }
 
     const char* name = path_basename(kpath);
-    sched::task* child = sched::create_user_task(&loaded, name);
+    sched::task* child = sched::create_user_task(
+        &loaded, name, kargc, kargc > 0 ? kargv_ptrs : nullptr);
     if (!child) {
         exec::unload_elf(&loaded);
         return syscall::ENOMEM;
@@ -120,8 +164,53 @@ DEFINE_SYSCALL1(proc_start, u_handle) {
 }
 
 DEFINE_SYSCALL2(proc_wait, u_handle, u_exit_code_ptr) {
-    (void)u_handle; (void)u_exit_code_ptr;
-    return syscall::ENOSYS;
+    int32_t handle = static_cast<int32_t>(u_handle);
+
+    sched::task* caller = sched::current();
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &caller->handles, handle, 0, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    if (obj->type != resource::resource_type::PROCESS) {
+        resource::resource_release(obj);
+        return syscall::EBADF;
+    }
+
+    auto* pr = resource::proc_provider::get_proc_resource(obj);
+    if (!pr) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    if (pr->child && pr->child->state == sched::TASK_STATE_CREATED) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+    while (!pr->exited) {
+        irq = sync::wait(pr->wait_queue, pr->lock, irq);
+    }
+    int32_t child_exit_code = pr->exit_code;
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+
+    if (u_exit_code_ptr != 0) {
+        int32_t copy_rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(u_exit_code_ptr),
+            &child_exit_code,
+            sizeof(child_exit_code));
+        if (copy_rc != mm::uaccess::OK) {
+            resource::resource_release(obj);
+            return syscall::EFAULT;
+        }
+    }
+
+    resource::resource_release(obj);
+    resource::close(caller, handle);
+    return 0;
 }
 
 DEFINE_SYSCALL1(proc_detach, u_handle) {

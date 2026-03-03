@@ -472,14 +472,18 @@ __PRIVILEGED_CODE task* create_kernel_task(
  * that musl's _start expects. Writes data into the last page of the
  * already-mapped user stack via the kernel HHDM mapping.
  *
- * @return 16-byte-aligned user stack pointer pointing to argc.
+ * @param user_argc Number of user-provided args (excluding program name).
+ * @param user_argv Kernel-copied argument strings, or nullptr for none.
+ * @return 16-byte-aligned user stack pointer pointing to argc, or 0 on error.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     pmm::phys_addr_t last_page_phys,
     uintptr_t stack_top,
     const exec::loaded_image& image,
-    const char* name
+    const char* name,
+    int user_argc,
+    const char* const* user_argv
 ) {
     uint8_t* page_kva = static_cast<uint8_t*>(paging::phys_to_virt(last_page_phys));
     uintptr_t page_base_va = pmm::page_align_down(stack_top - 1);
@@ -488,33 +492,58 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         string::memcpy(page_kva + offset, data, len);
     };
 
-    size_t name_len = 0;
-    while (name[name_len]) name_len++;
-    name_len++;
+    int total_argc = 1 + user_argc; // argv[0] = name, argv[1..] = user args
 
+    // Write strings at the top of the page (growing downward from stack_top)
+    uintptr_t str_cursor = stack_top;
+    constexpr size_t MAX_ARGV_PTRS = 66; // 1 name + 64 user args + slack
+    uintptr_t argv_vas[MAX_ARGV_PTRS];
+
+    // argv[0] = program name
+    size_t name_len = string::strnlen(name, TASK_NAME_MAX - 1) + 1;
     size_t name_padded = (name_len + 7) & ~7ULL;
-    uintptr_t str_va = stack_top - name_padded;
-    write(str_va, name, name_len);
+    str_cursor -= name_padded;
+    write(str_cursor, name, name_len);
+    argv_vas[0] = str_cursor;
+
+    // argv[1..user_argc] = user-provided args
+    for (int i = 0; i < user_argc; i++) {
+        size_t arg_len = string::strnlen(user_argv[i], 255) + 1;
+        size_t arg_padded = (arg_len + 7) & ~7ULL;
+        str_cursor -= arg_padded;
+        write(str_cursor, user_argv[i], arg_len);
+        argv_vas[1 + i] = str_cursor;
+    }
+
+    size_t total_string_bytes = stack_top - str_cursor;
 
     constexpr size_t AUXV_ENTRIES = 5;
     constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
-    constexpr size_t FIXED_WORDS = 1 + 1 + 1 + 1 + AUXV_WORDS;
-    size_t total_struct_bytes = FIXED_WORDS * sizeof(uint64_t);
-    uintptr_t sp = (str_va - total_struct_bytes) & ~0xFULL;
+    // Structure: argc + argv[0..total_argc-1] + NULL + envp NULL + auxv
+    size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1 + 1 + AUXV_WORDS;
+    size_t struct_bytes = struct_words * sizeof(uint64_t);
 
-    uint64_t data[FIXED_WORDS];
+    if (total_string_bytes + struct_bytes > pmm::PAGE_SIZE) {
+        return 0;
+    }
+
+    uintptr_t sp = (str_cursor - struct_bytes) & ~0xFULL;
+
+    uint64_t data[1 + MAX_ARGV_PTRS + 1 + 1 + AUXV_WORDS];
     size_t idx = 0;
-    data[idx++] = 1;               // argc
-    data[idx++] = str_va;          // argv[0] -> program name
-    data[idx++] = 0;               // argv[1] = NULL
-    data[idx++] = 0;               // envp[0] = NULL
-    data[idx++] = AT_PAGESZ;       data[idx++] = pmm::PAGE_SIZE;
-    data[idx++] = AT_PHDR;         data[idx++] = image.phdr_vaddr;
-    data[idx++] = AT_PHENT;        data[idx++] = image.phentsize;
-    data[idx++] = AT_PHNUM;        data[idx++] = image.phdr_vaddr ? image.phnum : 0;
-    data[idx++] = AT_NULL;         data[idx++] = 0;
+    data[idx++] = static_cast<uint64_t>(total_argc);
+    for (int i = 0; i < total_argc; i++) {
+        data[idx++] = argv_vas[i];
+    }
+    data[idx++] = 0; // argv terminator (NULL)
+    data[idx++] = 0; // envp terminator (NULL)
+    data[idx++] = AT_PAGESZ; data[idx++] = pmm::PAGE_SIZE;
+    data[idx++] = AT_PHDR;   data[idx++] = image.phdr_vaddr;
+    data[idx++] = AT_PHENT;  data[idx++] = image.phentsize;
+    data[idx++] = AT_PHNUM;  data[idx++] = image.phdr_vaddr ? image.phnum : 0;
+    data[idx++] = AT_NULL;   data[idx++] = 0;
 
-    write(sp, data, sizeof(data));
+    write(sp, data, idx * sizeof(uint64_t));
     return sp;
 }
 
@@ -522,7 +551,8 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE task* create_user_task(
-    exec::loaded_image* image, const char* name
+    exec::loaded_image* image, const char* name,
+    int argc, const char* const* argv
 ) {
     if (!image || !image->mm_ctx) {
         log::error("sched: invalid loaded image for user task");
@@ -576,7 +606,15 @@ __PRIVILEGED_CODE task* create_user_task(
         return nullptr;
     }
 
-    uintptr_t user_sp = setup_user_stack(last_stack_page_phys, mm::USER_STACK_TOP, *image, name);
+    uintptr_t user_sp = setup_user_stack(
+        last_stack_page_phys, mm::USER_STACK_TOP, *image, name, argc, argv);
+    if (user_sp == 0) {
+        log::error("sched: user stack setup failed (argv too large?)");
+        mm::mm_context_unmap(mm_ctx, mapped_stack_addr, mm::USER_STACK_PAGES * pmm::PAGE_SIZE);
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
 
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;

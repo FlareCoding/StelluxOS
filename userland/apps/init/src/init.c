@@ -3,7 +3,8 @@
 #include <errno.h>
 
 int main(void) {
-    int handle = proc_create("/initrd/bin/hello", NULL);
+    const char* argv[] = { "4", NULL };
+    int handle = proc_create("/initrd/bin/hello", argv);
     if (handle < 0) {
         printf("init: proc_create failed (errno=%d)\r\n", errno);
         return 1;
@@ -17,11 +18,12 @@ int main(void) {
     }
     printf("init: proc_start ok\r\n");
 
-    err = proc_detach(handle);
+    int exit_code = -1;
+    err = proc_wait(handle, &exit_code);
     if (err < 0) {
-        printf("init: proc_detach failed (errno=%d)\r\n", errno);
+        printf("init: proc_wait failed (errno=%d)\r\n", errno);
         return 3;
     }
-    printf("init: proc_detach ok, hello is independent\r\n");
+    printf("init: child exited with code %d\r\n", exit_code);
     return 0;
 }
