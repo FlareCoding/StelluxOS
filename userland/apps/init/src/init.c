@@ -3,7 +3,7 @@
 #include <errno.h>
 
 int main(void) {
-    const char* argv[] = { "4", NULL };
+    const char* argv[] = { "4", "1000", NULL };
     int handle = proc_create("/initrd/bin/hello", argv);
     if (handle < 0) {
         printf("init: proc_create failed (errno=%d)\r\n", errno);

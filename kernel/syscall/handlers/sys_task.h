@@ -6,5 +6,6 @@
 DECLARE_SYSCALL(exit);
 DECLARE_SYSCALL(exit_group);
 DECLARE_SYSCALL(set_tid_address);
+DECLARE_SYSCALL(nanosleep);
 
 #endif // STELLUX_SYSCALL_HANDLERS_SYS_TASK_H

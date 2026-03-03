@@ -33,6 +33,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::EXIT,            exit);
     REGISTER_SYSCALL(linux_nr::EXIT_GROUP,      exit_group);
     REGISTER_SYSCALL(linux_nr::SET_TID_ADDRESS, set_tid_address);
+    REGISTER_SYSCALL(linux_nr::NANOSLEEP,       nanosleep);
 
     REGISTER_SYSCALL(linux_nr::SOCKET,      socket);
     REGISTER_SYSCALL(linux_nr::SOCKETPAIR,  socketpair);
