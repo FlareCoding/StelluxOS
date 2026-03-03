@@ -134,27 +134,24 @@ The following are intentionally **out of scope** for the foundational layer:
 When a process creates a child via `proc_create`, the child's process resource
 is installed in the parent's handle table. The parent **owns** the child.
 
-### Default: Parent Death Kills Children
+### Parent Must Wait or Detach All Children
 
-If the parent task exits (or is killed), all resources in its handle table are
-closed. For process-type resources, closing means:
+A parent **must** call `proc_wait()` or `proc_detach()` on every child handle
+before exiting. If the parent exits with attached, running children that have
+not been waited on or detached, the kernel calls `log::fatal()`. (In the future,
+this will become `proc_kill` + wait on all attached children.)
+
+For process-type resources in the handle table during `close_all`:
 
 - If the child hasn't been started: destroy it (unload ELF, free stacks).
-- If the child is running: terminate it.
-- If the child has already exited: free the task struct.
+- If the child has already exited: clean up the proc_resource.
+- If the child is running and not detached: `log::fatal()` (programmer error).
 
-This is recursive — killing a child closes *its* handle table, which kills *its*
-children.
+### Explicit Detach for Independent Processes
 
-This is intentionally different from Unix (where orphans get reparented to init).
-Stellux's default prevents orphan accumulation. Daemon patterns are opt-in via
-`proc_detach`.
-
-### Explicit Detach for Daemons
-
-`proc_detach(handle)` transfers ownership to the system reaper. The child
-continues running independently. The parent's handle becomes invalid. When the
-child eventually exits, the reaper cleans it up. No one collects the exit code.
+`proc_detach(handle)` makes the child fully independent. The parent's handle
+becomes invalid. The child continues running and is cleaned up normally by the
+reaper when it eventually exits. No one collects the exit code.
 
 ### Zombie Semantics
 
@@ -196,23 +193,39 @@ when needed for the snapshotting model and for standard I/O forwarding.
 A new resource type `PROCESS = 4` in the `resource_type` enum.
 
 The process resource provider (`kernel/resource/providers/proc_provider.h/.cpp`)
-defines:
+uses an **independently ref-counted** `proc_resource`, matching the `shmem`
+pattern. The `resource_object` has 1 ref (handle table only). `proc_resource`
+has 2 refs: one from `proc_resource_impl` (via `strong_ref`), one from the
+child task (via `task->proc_res` raw pointer).
 
 ```cpp
-struct proc_resource {
-    sched::task*      child;      // the child task
-    sync::wait_queue  wait_q;     // for proc_wait blocking
-    int32_t           exit_code;  // stored on child exit
-    bool              exited;     // true once child has terminated
-    bool              detached;   // true if parent called proc_detach
+struct proc_resource : rc::ref_counted<proc_resource> {
+    sync::spinlock    lock;
+    sched::task*      child;
+    sync::wait_queue  wait_queue;
+    int32_t           exit_code;
+    bool              exited;
+    bool              detached;
+
+    __PRIVILEGED_CODE static void ref_destroy(proc_resource* self);
+};
+
+struct proc_resource_impl {
+    rc::strong_ref<proc_resource> proc;
 };
 ```
+
+**Key invariant:** `task->proc_res` is never set to nullptr by anyone other
+than the child itself (on exit). The `detached` flag under the lock tells the
+child to skip notification. This ensures the child can always find proc_resource
+to release its ref.
 
 Wrapped in a `resource_object` with `resource_ops`:
 
 - `read` / `write`: return `ERR_UNSUP` (not a data stream).
-- `close`: handles ownership release — terminate running child if not detached,
-  destroy unstarted child, free exited child.
+- `close`: handles never-started (destroy task), exited (nothing), or
+  running-attached (log::fatal). Frees `proc_resource_impl` which drops
+  the `strong_ref` on `proc_resource`.
 
 ### Syscall Numbers
 
@@ -231,51 +244,67 @@ Registered in `kernel/syscall/syscall_table.cpp`. Handlers in
 
 ### Task Exit Notification
 
-The task exit path (`sched::exit`) is modified to notify waiters:
+The task exit path (`sched::exit`) is modified to notify waiters. The
+notification happens **before** `state = TASK_STATE_DEAD` and before `yield()`,
+while the task is still running on the CPU. This avoids races with the reaper.
 
-- The `task` struct gets a `proc_resource*` back-pointer (set during
+- The `task` struct has a `proc_resource*` back-pointer (`proc_res`, set during
   `proc_create`). This is environment metadata, not exec core.
-- On exit: if the task has a `proc_resource`, store the exit code, set
-  `exited = true`, call `sync::wake_all(proc_resource->wait_q)`.
+- On exit: lock `proc_resource`, if not detached: store exit_code, set
+  `exited = true`, set `child = nullptr`, call `wake_all`. If detached: set
+  `child = nullptr` (defensive). Unlock. Release child's ref on proc_resource.
+  Set `task->proc_res = nullptr`.
 
 ### proc_create Flow
 
-1. Copy path string from user space.
+1. Copy path from user space via `copy_cstr_from_user`.
 2. `exec::load_elf(path, &loaded)` — opens file from VFS, parses ELF, creates
    user page table, maps segments.
-3. Set up child's user stack with ABI-conformant layout for musl's `_start`:
-   `argc`, argv pointers, argv strings, envp=NULL, auxv=AT_NULL.
-4. `sched::create_user_task(&loaded, name)` — task in `TASK_STATE_CREATED`.
-5. `resource::init_task_handles(child_task)` — empty handle table.
-6. Allocate `proc_resource`, set `child = task`, `exited = false`.
-7. Wrap in `resource_object`, install in caller's handle table.
-8. Set `child_task->proc_res = proc_resource` (back-pointer for exit notification).
-9. Return handle.
+3. `sched::create_user_task(&loaded, name)` — task in `TASK_STATE_CREATED`.
+   Name is derived from path basename and copied into embedded `char name[32]`.
+4. `create_proc_resource(child, &obj)` — allocates `proc_resource` (refcount=2),
+   `proc_resource_impl` with `strong_ref`, `resource_object`. Sets
+   `child->proc_res`. Returns `resource_object` with refcount=1.
+5. `alloc_handle(&caller->handles, obj, PROCESS, 0, &handle)`.
+6. `resource_release(obj)` — table now holds the ref.
+7. Return handle.
+
+Error cleanup: each step cleans up all prior allocations on failure. If
+`alloc_handle` fails, `resource_release(obj)` triggers `proc_close` which
+destroys the unstarted child.
 
 ### proc_start Flow
 
-1. Resolve handle via `get_handle_object` with `resource_type::PROCESS`.
-2. Get `proc_resource->child`.
-3. Validate task is in `TASK_STATE_CREATED`.
-4. `sched::enqueue(task)`.
-5. Return 0.
+1. Resolve handle via `get_handle_object` with rights=0.
+2. Verify `obj->type == resource_type::PROCESS`.
+3. Get `proc_resource` from impl.
+4. Lock `proc_resource`.
+5. Validate `child != nullptr` and `child->state == TASK_STATE_CREATED`.
+6. `sched::enqueue(child)` — CAS CREATED->READY, safe under spinlock.
+7. Unlock.
+8. `resource_release(obj)`.
+9. Return 0.
 
 ### proc_wait Flow
 
 1. Resolve handle to `proc_resource`.
-2. If `exited == true`: skip to step 4.
-3. Block on `proc_resource->wait_q` until woken.
+2. Lock. If `exited == true`: skip to step 4.
+3. Block on `proc_resource->wait_queue` until woken (re-check condition).
 4. Copy `exit_code` to user space.
-5. Release/remove the handle from caller's handle table.
+5. Unlock. Remove handle from caller's handle table.
 6. Return 0.
 
 ### proc_detach Flow
 
-1. Resolve handle to `proc_resource`.
-2. Set `detached = true`.
-3. Remove handle from caller's handle table.
-4. If child already exited: free task resources immediately.
-5. If child still running: it continues; system reaper cleans up on exit.
+1. Resolve handle via `get_handle_object`.
+2. Verify type is PROCESS. Get `proc_resource`.
+3. Lock. Set `detached = true`. Unlock.
+4. `resource_release(obj)` — drop `get_handle_object` ref.
+5. `resource::close(caller, handle)` — removes handle, triggers `proc_close`.
+6. `proc_close` frees `proc_resource_impl` which drops the `strong_ref` on
+   `proc_resource`. If the child has already exited, proc_resource refcount
+   hits 0 and `ref_destroy` frees it. If child is still running, child's ref
+   keeps proc_resource alive until the child exits.
 
 ### proc_info Flow
 
@@ -356,30 +385,28 @@ int proc_exec(const char* path, const char* argv[]) {
 - **Test:** init.c calls `proc_create(...)`, gets back `ENOSYS` — end-to-end
   plumbing works.
 
-### Phase 2: Process Resource Type
+### Phase 2+3: Process Resource Type + proc_create + proc_start + proc_detach (COMPLETED)
 
-- Add `PROCESS = 4` to `resource_type` enum.
-- Create `kernel/resource/providers/proc_provider.h/.cpp` with `proc_resource`
-  struct and `resource_ops`.
-- **Test:** Compile-only.
+- Added `PROCESS = 4` to `resource_type` enum, `ESRCH` error code.
+- Created `proc_provider.h/.cpp` with independently ref-counted `proc_resource`,
+  `proc_resource_impl`, resource_ops, `create_proc_resource`,
+  `destroy_unstarted_task`.
+- Modified `task` struct: `proc_res` back-pointer, `name` changed to `char[32]`.
+- Modified `sched::exit()` for exit notification (lock, check detached, store
+  exit_code, set exited, wake waiters, release child ref).
+- Implemented `sys_proc_create` with full error cleanup chain.
+- Implemented `sys_proc_start` (enqueue under proc_resource lock).
+- Implemented `sys_proc_detach` (set detached, close handle).
+- Created `hello` test binary.
+- **Test:** init creates hello, starts it, detaches it, hello prints
+  independently.
 
-### Phase 3: proc_create + proc_start Syscalls
+### Phase 4: proc_wait
 
-- Implement `sys_proc_create`: copy path from user space, load ELF, create task,
-  create proc_resource, install handle, return handle.
-- Implement `sys_proc_start`: resolve handle, enqueue task.
-- Set up minimal child stack: `argc=0, argv={NULL}, envp={NULL}` so musl's
-  `_start` doesn't crash.
-- Create a second test binary (`hello`) in the initrd.
-- **Test:** init creates hello, starts it, hello prints and exits.
-
-### Phase 4: Task Exit Notification + proc_wait
-
-- Add `proc_resource*` back-pointer to `task` struct.
-- Modify `sched::exit()` to store exit code and wake waiters.
-- Implement `sys_proc_wait`: block on wait_q, copy exit code, release handle.
-- **Test:** init creates hello, starts it, hello exits with code 42, init
-  receives 42 from `proc_wait`.
+- Implement `sys_proc_wait`: lock, block on wait_queue if not exited, copy
+  exit_code to user space, remove handle.
+- **Test:** init creates hello, starts it, hello exits with code 1, init
+  receives 1 from `proc_wait`.
 
 ### Phase 5: argv Passing
 

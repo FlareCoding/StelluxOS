@@ -22,6 +22,7 @@
 #include "mm/vma.h"
 #include "common/string.h"
 #include "resource/resource.h"
+#include "resource/providers/proc_provider.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -136,6 +137,8 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
     }
 
     resource::close_all(t);
+
+    log::debug("sched: reaping task tid=%u name=%s", t->tid, t->name);
 
     if (t->exec.mm_ctx) {
         mm::mm_context_release(t->exec.mm_ctx);
@@ -362,6 +365,25 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
 [[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
         sched::task* task = current();
+
+        if (task->proc_res) {
+            auto* pr = task->proc_res;
+            sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+            if (!pr->detached) {
+                pr->exit_code = exit_code;
+                pr->exited = true;
+                pr->child = nullptr;
+                sync::wake_all(pr->wait_queue);
+            } else {
+                pr->child = nullptr;
+            }
+            sync::spin_unlock_irqrestore(pr->lock, irq);
+            task->proc_res = nullptr;
+            if (pr->release()) {
+                resource::proc_provider::proc_resource::ref_destroy(pr);
+            }
+        }
+
         store_cleanup_stage(task, TASK_CLEANUP_STAGE_EXIT_REQUESTED);
         task->state = TASK_STATE_DEAD;
         task->exit_code = exit_code;
@@ -430,7 +452,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
-    t->name = name;
+    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
+    t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     t->tlb_sync_ticket.armed = 0;
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
@@ -439,6 +462,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
     resource::init_task_handles(t);
+    t->proc_res = nullptr;
 
     return t;
 }
@@ -580,7 +604,8 @@ __PRIVILEGED_CODE task* create_user_task(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
-    t->name = name;
+    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
+    t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     t->tlb_sync_ticket.armed = 0;
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
@@ -590,6 +615,7 @@ __PRIVILEGED_CODE task* create_user_task(
     t->reaper_node.init(reap_task_thunk);
 
     resource::init_task_handles(t);
+    t->proc_res = nullptr;
 
     image->mm_ctx = nullptr;
     image->pt_root = 0;
@@ -628,11 +654,13 @@ __PRIVILEGED_CODE int32_t init() {
     idle->wait_link = {};
     idle->timer_link = {};
     idle->timer_deadline = 0;
-    idle->name = "idle";
+    string::memcpy(idle->name, "idle", 4);
+    idle->name[4] = '\0';
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
     resource::init_task_handles(idle);
+    idle->proc_res = nullptr;
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
@@ -687,7 +715,8 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->sys_stack_base = 0;
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     idle->state = TASK_STATE_RUNNING;
-    idle->name = "idle";
+    string::memcpy(idle->name, "idle", 4);
+    idle->name[4] = '\0';
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);

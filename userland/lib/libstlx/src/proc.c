@@ -9,7 +9,9 @@ int proc_create(const char* path, const char* argv[]) {
 
 int proc_exec(const char* path, const char* argv[]) {
     int handle = proc_create(path, argv);
-    if (handle < 0) return handle;
+    if (handle < 0) {
+        return handle;
+    }
     int err = proc_start(handle);
     if (err < 0) {
         close(handle);
