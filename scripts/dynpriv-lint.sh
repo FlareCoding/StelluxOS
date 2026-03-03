@@ -3,9 +3,9 @@
 # dynpriv-lint.sh — Lint dynamic privilege annotations for consistency.
 #
 # Checks:
-#   1) Header __PRIVILEGED_CODE  →  source definition must also be __PRIVILEGED_CODE
-#   2) Source __PRIVILEGED_CODE  →  header declaration must also be __PRIVILEGED_CODE
-#   3) Header __PRIVILEGED_CODE  →  must have "@note Privilege: **required**" docstring
+#   1) Header __PRIVILEGED_CODE  →  must have "@note Privilege: **required**" docstring
+#   2) Header __PRIVILEGED_CODE  →  source definition must also be __PRIVILEGED_CODE
+#   3) Source __PRIVILEGED_CODE  →  header declaration must also be __PRIVILEGED_CODE
 #
 # Usage:
 #   scripts/dynpriv-lint.sh            # scan kernel/
@@ -226,9 +226,9 @@ mapfile -t SOURCES < <(grep -rl --include='*.cpp'  '__PRIVILEGED_CODE' "$SCAN_DI
 printf "  Found ${BOLD}%d${NC} header(s) and ${BOLD}%d${NC} source(s) with privilege annotations.\n\n" \
     "${#HEADERS[@]}" "${#SOURCES[@]}"
 
-# ── Check 3: Docstring ────────────────────────────────────────────────────
-printf "${BOLD}[3] Docstring: @note Privilege: **required**${NC}\n"
-check3_hits=0
+# ── Check 1: Docstring ────────────────────────────────────────────────────
+printf "${BOLD}[1] Docstring: @note Privilege: **required**${NC}\n"
+check1_hits=0
 
 for hdr in "${HEADERS[@]}"; do
     while IFS='|' read -r fname _ lineno _ _; do
@@ -236,17 +236,17 @@ for hdr in "${HEADERS[@]}"; do
         if ! check_docstring "$hdr" "$lineno"; then
             error "$hdr" "$lineno" \
                 "'${fname}' is __PRIVILEGED_CODE but missing '@note Privilege: **required**' docstring"
-            ((check3_hits++)) || true
+            ((check1_hits++)) || true
         fi
     done < <(extract_priv_funcs "$hdr")
 done
 
-(( check3_hits == 0 )) && printf "  ${GREEN}OK${NC}\n"
+(( check1_hits == 0 )) && printf "  ${GREEN}OK${NC}\n"
 echo
 
-# ── Check 1: Header privileged → source privileged ────────────────────────
-printf "${BOLD}[1] Header privileged → source must be privileged${NC}\n"
-check1_hits=0
+# ── Check 2: Header privileged → source privileged ────────────────────────
+printf "${BOLD}[2] Header privileged → source must be privileged${NC}\n"
+check2_hits=0
 
 for hdr in "${HEADERS[@]}"; do
     mapfile -t srcs < <(find_sources_for_header "$hdr")
@@ -263,18 +263,18 @@ for hdr in "${HEADERS[@]}"; do
                 [[ -z "$sline" ]] && continue
                 error "$src" "$sline" \
                     "'${fname}' is __PRIVILEGED_CODE in $(rel "$hdr"):${lineno} but NOT in source definition"
-                ((check1_hits++)) || true
+                ((check2_hits++)) || true
             done < <(find_unpriv_definition "$src" "$fname" 0)
         done
     done < <(extract_priv_funcs "$hdr")
 done
 
-(( check1_hits == 0 )) && printf "  ${GREEN}OK${NC}\n"
+(( check2_hits == 0 )) && printf "  ${GREEN}OK${NC}\n"
 echo
 
-# ── Check 2: Source privileged → header privileged ────────────────────────
-printf "${BOLD}[2] Source privileged → header must be privileged${NC}\n"
-check2_hits=0
+# ── Check 3: Source privileged → header privileged ────────────────────────
+printf "${BOLD}[3] Source privileged → header must be privileged${NC}\n"
+check3_hits=0
 
 for src in "${SOURCES[@]}"; do
     # Use basename-matched headers to avoid cross-namespace false positives
@@ -297,13 +297,13 @@ for src in "${SOURCES[@]}"; do
                 [[ -z "$hline" ]] && continue
                 error "$hdr" "$hline" \
                     "'${fname}' is __PRIVILEGED_CODE in $(rel "$src"):${lineno} but NOT in header declaration"
-                ((check2_hits++)) || true
+                ((check3_hits++)) || true
             done < <(find_unpriv_definition "$hdr" "$fname" "$maxind")
         done
     done < <(extract_priv_funcs "$src")
 done
 
-(( check2_hits == 0 )) && printf "  ${GREEN}OK${NC}\n"
+(( check3_hits == 0 )) && printf "  ${GREEN}OK${NC}\n"
 echo
 
 # ── Summary ───────────────────────────────────────────────────────────────
