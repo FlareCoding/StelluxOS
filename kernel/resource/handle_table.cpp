@@ -72,7 +72,8 @@ __PRIVILEGED_CODE int32_t get_handle_object(
     handle_t handle,
     uint32_t required_rights,
     resource_object** out_obj,
-    uint32_t* out_flags
+    uint32_t* out_flags,
+    uint32_t* out_rights
 ) {
     if (!table || !out_obj) {
         return HANDLE_ERR_INVAL;
@@ -97,6 +98,9 @@ __PRIVILEGED_CODE int32_t get_handle_object(
     *out_obj = entry.obj;
     if (out_flags) {
         *out_flags = entry.flags;
+    }
+    if (out_rights) {
+        *out_rights = entry.rights;
     }
     return HANDLE_OK;
 }
@@ -148,6 +152,50 @@ __PRIVILEGED_CODE int32_t set_handle_flags(
     }
 
     entry.flags = flags;
+    return HANDLE_OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t install_handle_at(
+    handle_table* table,
+    handle_t slot,
+    resource_object* obj,
+    resource_type type,
+    uint32_t rights
+) {
+    if (!table || !obj) {
+        return HANDLE_ERR_INVAL;
+    }
+    if (slot < 0 || static_cast<uint32_t>(slot) >= MAX_TASK_HANDLES) {
+        return HANDLE_ERR_INVAL;
+    }
+    if (type == resource_type::UNKNOWN) {
+        return HANDLE_ERR_INVAL;
+    }
+
+    resource_object* old_obj = nullptr;
+    {
+        sync::irq_lock_guard guard(table->lock);
+        handle_entry& entry = table->entries[static_cast<uint32_t>(slot)];
+
+        if (entry.used && entry.obj) {
+            old_obj = entry.obj;
+        }
+
+        resource_add_ref(obj);
+        entry.used = true;
+        entry.generation++;
+        entry.flags = 0;
+        entry.rights = rights;
+        entry.type = type;
+        entry.obj = obj;
+    }
+
+    if (old_obj) {
+        resource_release(old_obj);
+    }
     return HANDLE_OK;
 }
 
