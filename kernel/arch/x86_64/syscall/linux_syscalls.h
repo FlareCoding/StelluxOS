@@ -25,6 +25,7 @@ constexpr uint64_t EXIT             = 60;
 constexpr uint64_t FCNTL            = 72;
 constexpr uint64_t FTRUNCATE        = 77;
 constexpr uint64_t ARCH_PRCTL       = 158;
+constexpr uint64_t GETDENTS64       = 217;
 constexpr uint64_t SET_TID_ADDRESS  = 218;
 constexpr uint64_t EXIT_GROUP       = 231;
 constexpr uint64_t OPENAT           = 257;

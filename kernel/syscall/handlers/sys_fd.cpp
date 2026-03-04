@@ -1,18 +1,44 @@
 #include "syscall/handlers/sys_fd.h"
 
 #include "resource/resource.h"
+#include "resource/providers/file_provider.h"
 #include "resource/providers/shm_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 #include "fs/fs.h"
+#include "fs/file.h"
 #include "fs/fstypes.h"
+#include "common/string.h"
 
 namespace {
 
 constexpr int64_t AT_FDCWD = -100;
 constexpr size_t IO_CHUNK_SIZE = 4096;
+
+struct linux_dirent64_hdr {
+    uint64_t d_ino;
+    int64_t  d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;
+} __attribute__((packed));
+
+constexpr uint8_t DT_UNKNOWN = 0;
+constexpr uint8_t DT_CHR     = 2;
+constexpr uint8_t DT_DIR     = 4;
+constexpr uint8_t DT_BLK     = 6;
+constexpr uint8_t DT_REG     = 8;
+constexpr uint8_t DT_LNK     = 10;
+constexpr uint8_t DT_SOCK    = 12;
+
+constexpr size_t GETDENTS64_ALIGN = 8;
+constexpr uint16_t GETDENTS64_MIN_RECLEN = static_cast<uint16_t>(
+    (sizeof(linux_dirent64_hdr) + 1 + (GETDENTS64_ALIGN - 1)) &
+    ~(GETDENTS64_ALIGN - 1));
+constexpr uint16_t GETDENTS64_MAX_RECLEN = static_cast<uint16_t>(
+    (sizeof(linux_dirent64_hdr) + fs::NAME_MAX + 1 + (GETDENTS64_ALIGN - 1)) &
+    ~(GETDENTS64_ALIGN - 1));
 
 inline int64_t map_resource_error(int64_t rc) {
     switch (rc) {
@@ -82,6 +108,25 @@ inline int64_t map_fs_error(int32_t rc) {
         case fs::ERR_IO:
         default:
             return syscall::EIO;
+    }
+}
+
+inline uint8_t node_type_to_dirent_type(fs::node_type t) {
+    switch (t) {
+        case fs::node_type::regular:
+            return DT_REG;
+        case fs::node_type::directory:
+            return DT_DIR;
+        case fs::node_type::symlink:
+            return DT_LNK;
+        case fs::node_type::char_device:
+            return DT_CHR;
+        case fs::node_type::block_device:
+            return DT_BLK;
+        case fs::node_type::socket:
+            return DT_SOCK;
+        default:
+            return DT_UNKNOWN;
     }
 }
 
@@ -265,6 +310,118 @@ DEFINE_SYSCALL1(close, fd) {
         return map_resource_error(rc);
     }
     return 0;
+}
+
+DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
+    if (dirp == 0) {
+        return syscall::EFAULT;
+    }
+    if (count == 0) {
+        return 0;
+    }
+    if (count > 0xFFFFFFFFULL) {
+        return syscall::EINVAL;
+    }
+
+    uint32_t out_cap = static_cast<uint32_t>(count);
+    if (out_cap < GETDENTS64_MIN_RECLEN) {
+        return syscall::EINVAL;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &task->handles, static_cast<resource::handle_t>(fd),
+        resource::RIGHT_READ, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return (rc == resource::HANDLE_ERR_ACCESS) ? syscall::EBADF : syscall::EBADF;
+    }
+
+    if (obj->type != resource::resource_type::FILE) {
+        resource::resource_release(obj);
+        return syscall::ENOTDIR;
+    }
+
+    fs::file* kfile = resource::file_provider::get_file(obj);
+    if (!kfile || !kfile->get_node()) {
+        resource::resource_release(obj);
+        return syscall::EIO;
+    }
+
+    if (kfile->get_node()->type() != fs::node_type::directory) {
+        resource::resource_release(obj);
+        return syscall::ENOTDIR;
+    }
+
+    uint8_t record_buf[GETDENTS64_MAX_RECLEN];
+    uint32_t bytes_written = 0;
+
+    while (bytes_written < out_cap) {
+        uint32_t remaining = out_cap - bytes_written;
+        if (remaining < GETDENTS64_MIN_RECLEN) {
+            break;
+        }
+
+        int64_t offset_before = kfile->offset();
+        fs::dirent entry = {};
+        ssize_t nread = fs::readdir(kfile, &entry, 1);
+        if (nread < 0) {
+            resource::resource_release(obj);
+            if (bytes_written > 0) {
+                return static_cast<int64_t>(bytes_written);
+            }
+            return map_fs_error(static_cast<int32_t>(nread));
+        }
+        if (nread == 0) {
+            break;
+        }
+
+        size_t name_len = string::strnlen(entry.name, fs::NAME_MAX);
+        uint16_t reclen = static_cast<uint16_t>(
+            (sizeof(linux_dirent64_hdr) + name_len + 1 + (GETDENTS64_ALIGN - 1)) &
+            ~(GETDENTS64_ALIGN - 1));
+
+        if (reclen > remaining) {
+            kfile->set_offset(offset_before);
+            if (bytes_written == 0) {
+                resource::resource_release(obj);
+                return syscall::EINVAL;
+            }
+            break;
+        }
+
+        string::memset(record_buf, 0, reclen);
+        linux_dirent64_hdr hdr = {};
+        hdr.d_ino = 0;
+        hdr.d_off = kfile->offset();
+        hdr.d_reclen = reclen;
+        hdr.d_type = node_type_to_dirent_type(entry.type);
+
+        string::memcpy(record_buf, &hdr, sizeof(hdr));
+        string::memcpy(record_buf + sizeof(hdr), entry.name, name_len);
+        record_buf[sizeof(hdr) + name_len] = '\0';
+
+        int32_t copy_rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(dirp + bytes_written),
+            record_buf, reclen);
+        if (copy_rc != mm::uaccess::OK) {
+            kfile->set_offset(offset_before);
+            resource::resource_release(obj);
+            if (bytes_written > 0) {
+                return static_cast<int64_t>(bytes_written);
+            }
+            return syscall::EFAULT;
+        }
+
+        bytes_written += reclen;
+    }
+
+    resource::resource_release(obj);
+    return static_cast<int64_t>(bytes_written);
 }
 
 namespace {

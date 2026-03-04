@@ -11,6 +11,7 @@ constexpr uint64_t UNLINKAT         = 35;
 constexpr uint64_t FTRUNCATE        = 46;
 constexpr uint64_t OPENAT           = 56;
 constexpr uint64_t CLOSE            = 57;
+constexpr uint64_t GETDENTS64       = 61;
 constexpr uint64_t READ             = 63;
 constexpr uint64_t WRITE            = 64;
 constexpr uint64_t WRITEV           = 66;
