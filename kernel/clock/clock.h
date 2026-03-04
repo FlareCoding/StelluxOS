@@ -41,6 +41,18 @@ uint64_t now_ns();
  */
 uint64_t freq_hz();
 
+/**
+ * @brief Unix epoch in nanoseconds at boot time.
+ * Returns 0 if no RTC was available or rtc::init() was not called.
+ * Unprivileged: reads a cached value from regular .bss.
+ */
+uint64_t boot_realtime_ns();
+
+/**
+ * @brief Set the boot realtime epoch (called once during boot after RTC init).
+ */
+void set_boot_realtime_ns(uint64_t ns);
+
 } // namespace clock
 
 #endif // STELLUX_CLOCK_CLOCK_H

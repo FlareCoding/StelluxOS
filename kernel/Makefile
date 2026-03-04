@@ -130,6 +130,7 @@ CXXFLAGS_LOG := -DLOG_LEVEL=$(LOG_LEVEL)
 
 # Configuration defines (from config.mk)
 CXXFLAGS_CONFIG := -DMAX_CPUS=$(MAX_CPUS)
+CXXFLAGS_CONFIG += -DSTLX_BUILD_EPOCH=$(STLX_BUILD_EPOCH)
 
 # Platform define (e.g., PLATFORM=rpi4 → -DSTLX_PLATFORM_RPI4)
 ifneq ($(PLATFORM),qemu-virt)

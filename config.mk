@@ -66,6 +66,9 @@ MAX_CPUS ?= 64
 # Log level (0=debug, 1=info, 2=warn, 3=error, 4=fatal, 5=none)
 LOG_LEVEL ?= 0
 
+# Build epoch (Unix timestamp for RTC fallback on platforms without hardware RTC)
+STLX_BUILD_EPOCH ?= $(shell date +%s)
+
 # ============================================================================
 # Platform Selection
 # ============================================================================

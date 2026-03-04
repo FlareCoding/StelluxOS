@@ -10,6 +10,7 @@
 #include "syscall/handlers/sys_memfd.h"
 #include "syscall/handlers/sys_proc.h"
 #include "syscall/handlers/sys_pty.h"
+#include "syscall/handlers/sys_clock.h"
 
 namespace syscall {
 
@@ -42,6 +43,9 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::EXIT_GROUP,      exit_group);
     REGISTER_SYSCALL(linux_nr::SET_TID_ADDRESS, set_tid_address);
     REGISTER_SYSCALL(linux_nr::NANOSLEEP,       nanosleep);
+    REGISTER_SYSCALL(linux_nr::CLOCK_GETTIME,   clock_gettime);
+    REGISTER_SYSCALL(linux_nr::CLOCK_GETRES,    clock_getres);
+    REGISTER_SYSCALL(linux_nr::GETTIMEOFDAY,    gettimeofday);
 
     REGISTER_SYSCALL(linux_nr::SOCKET,      socket);
     REGISTER_SYSCALL(linux_nr::SOCKETPAIR,  socketpair);
