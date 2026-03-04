@@ -368,7 +368,10 @@ __PRIVILEGED_CODE int32_t path_from_node(
         return ERR_INVAL;
     }
 
-    char path_buf[PATH_MAX];
+    char* path_buf = static_cast<char*>(heap::kzalloc(PATH_MAX));
+    if (!path_buf) {
+        return ERR_NOMEM;
+    }
     size_t pos = PATH_MAX;
     path_buf[--pos] = '\0';
 
@@ -384,6 +387,7 @@ __PRIVILEGED_CODE int32_t path_from_node(
             mount_point* mnt = find_mount_for_instance(cur->filesystem());
             if (!mnt || !mnt->mountpoint) {
                 release_node_ref(cur);
+                heap::kfree(path_buf);
                 return ERR_NOENT;
             }
 
@@ -398,10 +402,12 @@ __PRIVILEGED_CODE int32_t path_from_node(
         size_t name_len = string::strnlen(name, NAME_MAX);
         if (name_len == 0) {
             release_node_ref(cur);
+            heap::kfree(path_buf);
             return ERR_NOENT;
         }
         if (pos < name_len + 1) {
             release_node_ref(cur);
+            heap::kfree(path_buf);
             return ERR_NAMETOOLONG;
         }
 
@@ -412,6 +418,7 @@ __PRIVILEGED_CODE int32_t path_from_node(
         node* parent = cur->parent();
         if (!parent) {
             release_node_ref(cur);
+            heap::kfree(path_buf);
             return ERR_NOENT;
         }
 
@@ -424,19 +431,23 @@ __PRIVILEGED_CODE int32_t path_from_node(
 
     if (pos == PATH_MAX - 1) {
         if (out_cap < 2) {
+            heap::kfree(path_buf);
             return ERR_NAMETOOLONG;
         }
         out_path[0] = '/';
         out_path[1] = '\0';
+        heap::kfree(path_buf);
         return OK;
     }
 
     size_t path_len = PATH_MAX - pos;
     if (out_cap < path_len) {
+        heap::kfree(path_buf);
         return ERR_NAMETOOLONG;
     }
 
     string::memcpy(out_path, path_buf + pos, path_len);
+    heap::kfree(path_buf);
     return OK;
 }
 

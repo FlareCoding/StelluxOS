@@ -9,6 +9,19 @@
 
 TEST_SUITE(fs_test);
 
+namespace {
+
+void release_node(fs::node* n) {
+    if (!n) {
+        return;
+    }
+    if (n->release()) {
+        fs::node::ref_destroy(n);
+    }
+}
+
+} // anonymous namespace
+
 TEST(fs_test, create_and_close_file) {
     fs::file* f = fs::open("/test_create", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);
@@ -182,6 +195,110 @@ TEST(fs_test, nested_dir_dotdot) {
     fs::unlink("/a/test");
     fs::rmdir("/a/b");
     fs::rmdir("/a");
+}
+
+TEST(fs_test, lookup_at_resolves_relative_paths) {
+    EXPECT_EQ(fs::mkdir("/lookup_at_base", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/lookup_at_base/sub", 0), fs::OK);
+
+    fs::file* f = fs::open("/lookup_at_base/sub/file", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    fs::node* base = nullptr;
+    ASSERT_EQ(fs::lookup("/lookup_at_base", &base), fs::OK);
+
+    fs::node* resolved = nullptr;
+    ASSERT_EQ(fs::lookup_at(base, "sub/file", &resolved), fs::OK);
+    EXPECT_EQ(static_cast<uint32_t>(resolved->type()),
+              static_cast<uint32_t>(fs::node_type::regular));
+
+    release_node(resolved);
+    release_node(base);
+
+    fs::unlink("/lookup_at_base/sub/file");
+    fs::rmdir("/lookup_at_base/sub");
+    fs::rmdir("/lookup_at_base");
+}
+
+TEST(fs_test, lookup_at_absolute_path_ignores_base) {
+    EXPECT_EQ(fs::mkdir("/lookup_at_abs_a", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/lookup_at_abs_b", 0), fs::OK);
+
+    fs::node* base = nullptr;
+    ASSERT_EQ(fs::lookup("/lookup_at_abs_a", &base), fs::OK);
+
+    fs::node* resolved = nullptr;
+    ASSERT_EQ(fs::lookup_at(base, "/lookup_at_abs_b", &resolved), fs::OK);
+    EXPECT_EQ(static_cast<uint32_t>(resolved->type()),
+              static_cast<uint32_t>(fs::node_type::directory));
+
+    release_node(resolved);
+    release_node(base);
+
+    fs::rmdir("/lookup_at_abs_a");
+    fs::rmdir("/lookup_at_abs_b");
+}
+
+TEST(fs_test, resolve_parent_path_at_resolves_parent_under_base) {
+    EXPECT_EQ(fs::mkdir("/parent_at", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/parent_at/sub", 0), fs::OK);
+
+    fs::node* base = nullptr;
+    ASSERT_EQ(fs::lookup("/parent_at", &base), fs::OK);
+
+    fs::node* parent = nullptr;
+    const char* name = nullptr;
+    size_t name_len = 0;
+    ASSERT_EQ(
+        fs::resolve_parent_path_at(base, "sub/child", &parent, &name, &name_len),
+        fs::OK);
+    ASSERT_NOT_NULL(parent);
+    ASSERT_NOT_NULL(name);
+    EXPECT_EQ(name_len, static_cast<size_t>(5));
+    EXPECT_EQ(string::strncmp(name, "child", name_len), 0);
+
+    char parent_path[fs::PATH_MAX];
+    ASSERT_EQ(fs::path_from_node(parent, parent_path, sizeof(parent_path)), fs::OK);
+    EXPECT_STREQ(parent_path, "/parent_at/sub");
+
+    release_node(parent);
+    release_node(base);
+
+    fs::rmdir("/parent_at/sub");
+    fs::rmdir("/parent_at");
+}
+
+TEST(fs_test, path_from_node_returns_absolute_path) {
+    EXPECT_EQ(fs::mkdir("/path_from", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/path_from/node", 0), fs::OK);
+
+    fs::node* n = nullptr;
+    ASSERT_EQ(fs::lookup("/path_from/node", &n), fs::OK);
+
+    char path_buf[fs::PATH_MAX];
+    ASSERT_EQ(fs::path_from_node(n, path_buf, sizeof(path_buf)), fs::OK);
+    EXPECT_STREQ(path_buf, "/path_from/node");
+
+    release_node(n);
+    fs::rmdir("/path_from/node");
+    fs::rmdir("/path_from");
+}
+
+TEST(fs_test, path_from_node_unlinked_node_returns_noent) {
+    fs::file* f = fs::open("/path_unlinked", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    fs::node* n = nullptr;
+    ASSERT_EQ(fs::lookup("/path_unlinked", &n), fs::OK);
+
+    ASSERT_EQ(fs::unlink("/path_unlinked"), fs::OK);
+
+    char path_buf[fs::PATH_MAX];
+    EXPECT_EQ(fs::path_from_node(n, path_buf, sizeof(path_buf)), fs::ERR_NOENT);
+
+    release_node(n);
 }
 
 TEST(fs_test, stat_nonexistent) {

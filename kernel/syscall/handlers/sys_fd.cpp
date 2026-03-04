@@ -333,11 +333,53 @@ int64_t normalize_absolute_path(
     if (!input_path || !out_path || out_cap == 0) {
         return syscall::EINVAL;
     }
+    out_path[0] = '/';
+    out_path[1] = '\0';
+    size_t out_len = 1;
 
-    constexpr size_t MAX_COMPONENTS = fs::PATH_MAX / 2;
-    const char* components[MAX_COMPONENTS];
-    size_t component_lens[MAX_COMPONENTS];
-    size_t count = 0;
+    auto pop_component = [&]() {
+        if (out_len <= 1) {
+            return;
+        }
+
+        while (out_len > 1 && out_path[out_len - 1] == '/') {
+            out_len--;
+        }
+        while (out_len > 1 && out_path[out_len - 1] != '/') {
+            out_len--;
+        }
+        if (out_len > 1 && out_path[out_len - 1] == '/') {
+            out_len--;
+        }
+
+        if (out_len == 0) {
+            out_len = 1;
+            out_path[0] = '/';
+        }
+        out_path[out_len] = '\0';
+    };
+
+    auto append_component = [&](const char* src, size_t len) -> int64_t {
+        if (len > fs::NAME_MAX) {
+            return syscall::ENAMETOOLONG;
+        }
+
+        if (out_len > 1) {
+            if (out_len + 1 >= out_cap) {
+                return syscall::ENAMETOOLONG;
+            }
+            out_path[out_len++] = '/';
+            out_path[out_len] = '\0';
+        }
+
+        if (out_len + len >= out_cap) {
+            return syscall::ENAMETOOLONG;
+        }
+        string::memcpy(out_path + out_len, src, len);
+        out_len += len;
+        out_path[out_len] = '\0';
+        return 0;
+    };
 
     auto consume = [&](const char* src) -> int64_t {
         size_t pos = 0;
@@ -358,21 +400,14 @@ int64_t normalize_absolute_path(
                 continue;
             }
             if (len == 2 && src[start] == '.' && src[start + 1] == '.') {
-                if (count > 0) {
-                    count--;
-                }
+                pop_component();
                 continue;
             }
-            if (len > fs::NAME_MAX) {
-                return syscall::ENAMETOOLONG;
-            }
-            if (count >= MAX_COMPONENTS) {
-                return syscall::ENAMETOOLONG;
-            }
 
-            components[count] = src + start;
-            component_lens[count] = len;
-            count++;
+            int64_t append_rc = append_component(src + start, len);
+            if (append_rc != 0) {
+                return append_rc;
+            }
         }
         return 0;
     };
@@ -392,38 +427,6 @@ int64_t normalize_absolute_path(
         return path_rc;
     }
 
-    if (count == 0) {
-        if (out_cap < 2) {
-            return syscall::ENAMETOOLONG;
-        }
-        out_path[0] = '/';
-        out_path[1] = '\0';
-        return 0;
-    }
-
-    size_t required = 1;
-    for (size_t i = 0; i < count; i++) {
-        required += component_lens[i];
-        if (i + 1 < count) {
-            required++;
-        }
-    }
-    required++;
-
-    if (required > out_cap) {
-        return syscall::ENAMETOOLONG;
-    }
-
-    size_t out_pos = 0;
-    out_path[out_pos++] = '/';
-    for (size_t i = 0; i < count; i++) {
-        string::memcpy(out_path + out_pos, components[i], component_lens[i]);
-        out_pos += component_lens[i];
-        if (i + 1 < count) {
-            out_path[out_pos++] = '/';
-        }
-    }
-    out_path[out_pos] = '\0';
     return 0;
 }
 
@@ -445,14 +448,22 @@ int64_t normalize_path_for_dirfd(
         return base_rc;
     }
 
-    char base_path[fs::PATH_MAX];
-    int32_t base_path_rc = fs::path_from_node(base_node, base_path, sizeof(base_path));
+    char* base_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+    if (!base_path) {
+        release_node_ref(base_node);
+        return syscall::ENOMEM;
+    }
+
+    int32_t base_path_rc = fs::path_from_node(base_node, base_path, fs::PATH_MAX);
     release_node_ref(base_node);
     if (base_path_rc != fs::OK) {
+        heap::kfree(base_path);
         return map_fs_error(base_path_rc);
     }
 
-    return normalize_absolute_path(base_path, input_path, out_path, out_cap);
+    int64_t norm_rc = normalize_absolute_path(base_path, input_path, out_path, out_cap);
+    heap::kfree(base_path);
+    return norm_rc;
 }
 
 int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
@@ -566,15 +577,21 @@ int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u_stat, 
         return syscall::EIO;
     }
 
-    char normalized_path[fs::PATH_MAX];
+    char* normalized_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+    if (!normalized_path) {
+        return syscall::ENOMEM;
+    }
+
     int64_t norm_rc = normalize_path_for_dirfd(
-        task, dirfd, kpath, normalized_path, sizeof(normalized_path));
+        task, dirfd, kpath, normalized_path, fs::PATH_MAX);
     if (norm_rc != 0) {
+        heap::kfree(normalized_path);
         return norm_rc;
     }
 
     fs::vattr attr = {};
     int32_t fs_rc = fs::stat(normalized_path, &attr);
+    heap::kfree(normalized_path);
     if (fs_rc != fs::OK) {
         return map_fs_error(fs_rc);
     }
@@ -607,10 +624,15 @@ int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, uint64_
         return syscall::EIO;
     }
 
-    char normalized_path[fs::PATH_MAX];
+    char* normalized_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+    if (!normalized_path) {
+        return syscall::ENOMEM;
+    }
+
     int64_t norm_rc = normalize_path_for_dirfd(
-        task, dirfd, kpath, normalized_path, sizeof(normalized_path));
+        task, dirfd, kpath, normalized_path, fs::PATH_MAX);
     if (norm_rc != 0) {
+        heap::kfree(normalized_path);
         return norm_rc;
     }
 
@@ -621,6 +643,7 @@ int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, uint64_
         static_cast<uint32_t>(flags),
         &handle
     );
+    heap::kfree(normalized_path);
     if (rc != resource::OK) {
         return map_resource_error(rc);
     }
@@ -1044,16 +1067,22 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
         return syscall::EIO;
     }
 
-    char normalized_path[fs::PATH_MAX];
+    char* normalized_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+    if (!normalized_path) {
+        return syscall::ENOMEM;
+    }
+
     int64_t norm_rc = normalize_path_for_dirfd(
         task, static_cast<int64_t>(dirfd), kpath,
-        normalized_path, sizeof(normalized_path));
+        normalized_path, fs::PATH_MAX);
     if (norm_rc != 0) {
+        heap::kfree(normalized_path);
         return norm_rc;
     }
 
     if (resource::shm_provider::is_shm_path(normalized_path)) {
         int32_t rc = resource::shm_provider::unlink_shm(normalized_path);
+        heap::kfree(normalized_path);
         if (rc != resource::OK) {
             return map_resource_error(rc);
         }
@@ -1061,6 +1090,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
     }
 
     int32_t rc = fs::unlink(normalized_path);
+    heap::kfree(normalized_path);
     if (rc != fs::OK) {
         return map_fs_error(rc);
     }
