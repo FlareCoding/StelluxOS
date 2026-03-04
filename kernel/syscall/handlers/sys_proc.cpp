@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_proc.h"
+#include "syscall/handlers/sys_error_map.h"
 #include "resource/providers/proc_provider.h"
 #include "resource/resource.h"
 #include "resource/handle_table.h"
@@ -6,6 +7,8 @@
 #include "sched/task.h"
 #include "exec/elf.h"
 #include "mm/uaccess.h"
+#include "fs/fs.h"
+#include "fs/node.h"
 #include "fs/fstypes.h"
 #include "common/string.h"
 
@@ -47,6 +50,11 @@ __PRIVILEGED_CODE static int64_t map_elf_error(int32_t rc) {
 } // anonymous namespace
 
 DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
+    sched::task* caller = sched::current();
+    if (!caller) {
+        return syscall::EIO;
+    }
+
     char kpath[fs::PATH_MAX];
     int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
         kpath, sizeof(kpath),
@@ -116,6 +124,20 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
         return syscall::ENOMEM;
     }
 
+    fs::node* inherited_cwd = nullptr;
+    int32_t cwd_rc = fs::OK;
+    if (caller->cwd) {
+        caller->cwd->add_ref();
+        inherited_cwd = caller->cwd;
+    } else {
+        cwd_rc = fs::lookup("/", &inherited_cwd);
+    }
+    if (cwd_rc != fs::OK || !inherited_cwd) {
+        resource::proc_provider::destroy_unstarted_task(child);
+        return syscall::error_map::map_fs_error(cwd_rc);
+    }
+    child->cwd = inherited_cwd;
+
     resource::resource_object* obj = nullptr;
     int32_t pr_rc = resource::proc_provider::create_proc_resource(child, &obj);
     if (pr_rc != resource::OK) {
@@ -123,7 +145,6 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
         return syscall::ENOMEM;
     }
 
-    sched::task* caller = sched::current();
     resource::handle_t handle = -1;
     int32_t h_rc = resource::alloc_handle(
         &caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);

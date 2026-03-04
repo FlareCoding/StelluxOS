@@ -136,26 +136,92 @@ __PRIVILEGED_CODE static mount_point* find_mount_for_instance(instance* inst) {
     return nullptr;
 }
 
-__PRIVILEGED_CODE static int32_t resolve_path(const char* path, node** out) {
-    if (!path || path[0] != '/') return ERR_INVAL;
-    if (!g_root_mount || !g_root_instance) return ERR_INVAL;
+__PRIVILEGED_CODE static void release_node_ref(node* n) {
+    if (!n) {
+        return;
+    }
+    if (n->release()) {
+        node::ref_destroy(n);
+    }
+}
 
-    node* cur = g_root_instance->root();
-    if (!cur) return ERR_INVAL;
+__PRIVILEGED_CODE static bool is_global_root_node(node* n) {
+    return g_root_instance && n == g_root_instance->root();
+}
 
-    while (cur->mounted_here()) {
-        cur = cur->mounted_here()->root();
+__PRIVILEGED_CODE static int32_t acquire_global_root(node** out_root) {
+    if (!out_root || !g_root_mount || !g_root_instance) {
+        return ERR_INVAL;
     }
 
+    node* cur = g_root_instance->root();
+    if (!cur) {
+        return ERR_INVAL;
+    }
     cur->add_ref();
 
+    while (cur->mounted_here()) {
+        node* mounted_root = cur->mounted_here()->root();
+        mounted_root->add_ref();
+        release_node_ref(cur);
+        cur = mounted_root;
+    }
+
+    *out_root = cur;
+    return OK;
+}
+
+__PRIVILEGED_CODE static int32_t acquire_start_node(
+    node* base_dir, const char* path, node** out_start
+) {
+    if (!path || !out_start) {
+        return ERR_INVAL;
+    }
+
+    if (path[0] == '/') {
+        return acquire_global_root(out_start);
+    }
+
+    node* start = base_dir;
+    if (!start) {
+        return acquire_global_root(out_start);
+    }
+
+    start->add_ref();
+    while (start->mounted_here()) {
+        node* mounted_root = start->mounted_here()->root();
+        mounted_root->add_ref();
+        release_node_ref(start);
+        start = mounted_root;
+    }
+
+    *out_start = start;
+    return OK;
+}
+
+__PRIVILEGED_CODE static int32_t resolve_path_at_internal(
+    node* base_dir, const char* path, node** out
+) {
+    if (!path || !out) {
+        return ERR_INVAL;
+    }
+    if (path[0] == '\0') {
+        return ERR_NOENT;
+    }
+
+    node* cur = nullptr;
+    int32_t start_err = acquire_start_node(base_dir, path, &cur);
+    if (start_err != OK) {
+        return start_err;
+    }
+
     path_iterator it(path);
-    const char* comp;
-    size_t comp_len;
+    const char* comp = nullptr;
+    size_t comp_len = 0;
 
     while (it.next(comp, comp_len)) {
         if (comp_len > NAME_MAX) {
-            if (cur->release()) node::ref_destroy(cur);
+            release_node_ref(cur);
             return ERR_NAMETOOLONG;
         }
 
@@ -165,39 +231,42 @@ __PRIVILEGED_CODE static int32_t resolve_path(const char* path, node** out) {
                 mount_point* mnt = find_mount_for_instance(cur->filesystem());
                 if (mnt && mnt->mountpoint) {
                     next = mnt->mountpoint->parent();
-                    if (!next) next = mnt->mountpoint;
+                    if (!next) {
+                        next = mnt->mountpoint;
+                    }
                 } else {
                     next = cur->parent() ? cur->parent() : cur;
                 }
             } else {
                 next = cur->parent() ? cur->parent() : cur;
             }
+
             next->add_ref();
-            if (cur->release()) node::ref_destroy(cur);
+            release_node_ref(cur);
             cur = next;
             continue;
         }
 
         if (cur->type() != node_type::directory) {
-            if (cur->release()) node::ref_destroy(cur);
+            release_node_ref(cur);
             return ERR_NOTDIR;
         }
 
         node* child = nullptr;
         int32_t err = cur->lookup(comp, comp_len, &child);
         if (err != OK) {
-            if (cur->release()) node::ref_destroy(cur);
+            release_node_ref(cur);
             return err;
         }
 
         while (child->mounted_here()) {
             node* mounted_root = child->mounted_here()->root();
             mounted_root->add_ref();
-            if (child->release()) node::ref_destroy(child);
+            release_node_ref(child);
             child = mounted_root;
         }
 
-        if (cur->release()) node::ref_destroy(cur);
+        release_node_ref(cur);
         cur = child;
     }
 
@@ -205,35 +274,82 @@ __PRIVILEGED_CODE static int32_t resolve_path(const char* path, node** out) {
     return OK;
 }
 
-/**
- * Resolve parent directory and extract last component name.
- * On success, *out_parent has add_ref() called.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE static int32_t resolve_parent(
-    const char* path, node** out_parent,
-    const char** out_name, size_t* out_name_len
+__PRIVILEGED_CODE static int32_t split_parent_path(
+    const char* path,
+    const char** out_name,
+    size_t* out_name_len,
+    size_t* out_parent_len
 ) {
-    const char* name;
-    size_t name_len;
-    size_t parent_len;
+    if (!path || !out_name || !out_name_len || !out_parent_len) {
+        return ERR_INVAL;
+    }
 
-    int32_t err = path_parent(path, name, name_len, parent_len);
-    if (err != OK) return err;
+    size_t len = string::strnlen(path, PATH_MAX);
+    if (len == 0) {
+        return ERR_INVAL;
+    }
 
-    // Resolve the parent path by constructing a temporary null-terminated copy
+    size_t end = len;
+    while (end > 0 && path[end - 1] == '/') {
+        end--;
+    }
+    if (end == 0) {
+        return ERR_INVAL;
+    }
+
+    size_t name_start = end;
+    while (name_start > 0 && path[name_start - 1] != '/') {
+        name_start--;
+    }
+
+    size_t name_len = end - name_start;
+    if (name_len > NAME_MAX) {
+        return ERR_NAMETOOLONG;
+    }
+
+    *out_name = path + name_start;
+    *out_name_len = name_len;
+    *out_parent_len = name_start;
+    return OK;
+}
+
+__PRIVILEGED_CODE static int32_t resolve_parent_at_internal(
+    node* base_dir,
+    const char* path,
+    node** out_parent,
+    const char** out_name,
+    size_t* out_name_len
+) {
+    const char* name = nullptr;
+    size_t name_len = 0;
+    size_t parent_len = 0;
+
+    int32_t err = split_parent_path(path, &name, &name_len, &parent_len);
+    if (err != OK) {
+        return err;
+    }
+
     char parent_buf[PATH_MAX];
-    if (parent_len >= PATH_MAX) return ERR_NAMETOOLONG;
-    string::memcpy(parent_buf, path, parent_len);
-    parent_buf[parent_len] = '\0';
+    if (parent_len >= PATH_MAX) {
+        return ERR_NAMETOOLONG;
+    }
 
-    err = resolve_path(parent_buf, out_parent);
-    if (err != OK) return err;
+    if (parent_len == 0) {
+        parent_buf[0] = '.';
+        parent_buf[1] = '\0';
+    } else {
+        string::memcpy(parent_buf, path, parent_len);
+        parent_buf[parent_len] = '\0';
+    }
+
+    err = resolve_path_at_internal(base_dir, parent_buf, out_parent);
+    if (err != OK) {
+        return err;
+    }
 
     if ((*out_parent)->type() != node_type::directory) {
-        if ((*out_parent)->release()) {
-            node::ref_destroy(*out_parent);
-        }
+        release_node_ref(*out_parent);
+        *out_parent = nullptr;
         return ERR_NOTDIR;
     }
 
@@ -242,17 +358,139 @@ __PRIVILEGED_CODE static int32_t resolve_parent(
     return OK;
 }
 
+__PRIVILEGED_CODE int32_t path_from_node(
+    node* target, char* out_path, size_t out_cap
+) {
+    if (!target || !out_path || out_cap == 0) {
+        return ERR_INVAL;
+    }
+    if (!g_root_instance) {
+        return ERR_INVAL;
+    }
+
+    char* path_buf = static_cast<char*>(heap::kzalloc(PATH_MAX));
+    if (!path_buf) {
+        return ERR_NOMEM;
+    }
+    size_t pos = PATH_MAX;
+    path_buf[--pos] = '\0';
+
+    node* cur = target;
+    cur->add_ref();
+
+    while (true) {
+        if (is_global_root_node(cur)) {
+            break;
+        }
+
+        if (cur->filesystem() && cur == cur->filesystem()->root()) {
+            mount_point* mnt = find_mount_for_instance(cur->filesystem());
+            if (!mnt || !mnt->mountpoint) {
+                release_node_ref(cur);
+                heap::kfree(path_buf);
+                return ERR_NOENT;
+            }
+
+            node* next = mnt->mountpoint;
+            next->add_ref();
+            release_node_ref(cur);
+            cur = next;
+            continue;
+        }
+
+        const char* name = cur->name();
+        size_t name_len = string::strnlen(name, NAME_MAX);
+        if (name_len == 0) {
+            release_node_ref(cur);
+            heap::kfree(path_buf);
+            return ERR_NOENT;
+        }
+        if (pos < name_len + 1) {
+            release_node_ref(cur);
+            heap::kfree(path_buf);
+            return ERR_NAMETOOLONG;
+        }
+
+        pos -= name_len;
+        string::memcpy(path_buf + pos, name, name_len);
+        path_buf[--pos] = '/';
+
+        node* parent = cur->parent();
+        if (!parent) {
+            release_node_ref(cur);
+            heap::kfree(path_buf);
+            return ERR_NOENT;
+        }
+
+        parent->add_ref();
+        release_node_ref(cur);
+        cur = parent;
+    }
+
+    release_node_ref(cur);
+
+    if (pos == PATH_MAX - 1) {
+        if (out_cap < 2) {
+            heap::kfree(path_buf);
+            return ERR_NAMETOOLONG;
+        }
+        out_path[0] = '/';
+        out_path[1] = '\0';
+        heap::kfree(path_buf);
+        return OK;
+    }
+
+    size_t path_len = PATH_MAX - pos;
+    if (out_cap < path_len) {
+        heap::kfree(path_buf);
+        return ERR_NAMETOOLONG;
+    }
+
+    string::memcpy(out_path, path_buf + pos, path_len);
+    heap::kfree(path_buf);
+    return OK;
+}
+
 __PRIVILEGED_CODE int32_t lookup(const char* path, node** out) {
-    if (!path || !out) return ERR_INVAL;
-    return resolve_path(path, out);
+    if (!path || !out) {
+        return ERR_INVAL;
+    }
+    if (path[0] != '/') {
+        return ERR_INVAL;
+    }
+    return resolve_path_at_internal(nullptr, path, out);
+}
+
+__PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, node** out) {
+    if (!path || !out) {
+        return ERR_INVAL;
+    }
+    return resolve_path_at_internal(base_dir, path, out);
 }
 
 __PRIVILEGED_CODE int32_t resolve_parent_path(
     const char* path, node** out_parent,
     const char** out_name, size_t* out_name_len
 ) {
-    if (!path || !out_parent || !out_name || !out_name_len) return ERR_INVAL;
-    return resolve_parent(path, out_parent, out_name, out_name_len);
+    if (!path || !out_parent || !out_name || !out_name_len) {
+        return ERR_INVAL;
+    }
+    if (path[0] != '/') {
+        return ERR_INVAL;
+    }
+    return resolve_parent_at_internal(
+        nullptr, path, out_parent, out_name, out_name_len);
+}
+
+__PRIVILEGED_CODE int32_t resolve_parent_path_at(
+    node* base_dir, const char* path, node** out_parent,
+    const char** out_name, size_t* out_name_len
+) {
+    if (!path || !out_parent || !out_name || !out_name_len) {
+        return ERR_INVAL;
+    }
+    return resolve_parent_at_internal(
+        base_dir, path, out_parent, out_name, out_name_len);
 }
 
 
@@ -299,7 +537,7 @@ __PRIVILEGED_CODE int32_t mount(const char* source, const char* target,
 
     // Non-root mount: resolve target
     node* target_node = nullptr;
-    err = resolve_path(target, &target_node);
+    err = lookup(target, &target_node);
     if (err != OK) {
         heap::kfree_delete(inst);
         return err;
@@ -368,7 +606,8 @@ file* open(const char* path, uint32_t flags, int32_t* out_err) {
             const char* name;
             size_t name_len;
 
-            err = resolve_parent(path, &parent, &name, &name_len);
+            err = resolve_parent_at_internal(
+                nullptr, path, &parent, &name, &name_len);
             if (err == OK) {
                 err = parent->lookup(name, name_len, &n);
                 if (err == ERR_NOENT) {
@@ -382,7 +621,7 @@ file* open(const char* path, uint32_t flags, int32_t* out_err) {
                 }
             }
         } else {
-            err = resolve_path(path, &n);
+            err = lookup(path, &n);
         }
     });
 
@@ -484,7 +723,7 @@ int32_t stat(const char* path, vattr* attr) {
     int32_t err;
 
     RUN_ELEVATED({
-        err = resolve_path(path, &n);
+        err = lookup(path, &n);
         if (err == OK) {
             err = n->getattr(attr);
             if (n->release()) {
@@ -514,7 +753,8 @@ int32_t mkdir(const char* path, uint32_t mode) {
         const char* name;
         size_t name_len;
 
-        err = resolve_parent(path, &parent, &name, &name_len);
+        err = resolve_parent_at_internal(
+            nullptr, path, &parent, &name, &name_len);
         if (err == OK) {
             node* child = nullptr;
             err = parent->mkdir(name, name_len, mode, &child);
@@ -540,7 +780,8 @@ int32_t rmdir(const char* path) {
         const char* name;
         size_t name_len;
 
-        err = resolve_parent(path, &parent, &name, &name_len);
+        err = resolve_parent_at_internal(
+            nullptr, path, &parent, &name, &name_len);
         if (err == OK) {
             err = parent->rmdir(name, name_len);
             if (parent->release()) {
@@ -560,7 +801,8 @@ int32_t unlink(const char* path) {
         const char* name;
         size_t name_len;
 
-        err = resolve_parent(path, &parent, &name, &name_len);
+        err = resolve_parent_at_internal(
+            nullptr, path, &parent, &name, &name_len);
         if (err == OK) {
             err = parent->unlink(name, name_len);
             if (parent->release()) {

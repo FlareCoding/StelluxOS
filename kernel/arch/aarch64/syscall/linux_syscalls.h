@@ -5,10 +5,13 @@
 
 namespace syscall::linux_nr {
 
+constexpr uint64_t GETCWD           = 17;
 constexpr uint64_t FCNTL            = 25;
 constexpr uint64_t IOCTL            = 29;
 constexpr uint64_t UNLINKAT         = 35;
 constexpr uint64_t FTRUNCATE        = 46;
+constexpr uint64_t CHDIR            = 49;
+constexpr uint64_t FCHDIR           = 50;
 constexpr uint64_t OPENAT           = 56;
 constexpr uint64_t CLOSE            = 57;
 constexpr uint64_t GETDENTS64       = 61;
