@@ -49,4 +49,11 @@ int proc_detach(int handle);
  */
 int proc_info(int handle, process_info* info);
 
+/**
+ * Install a resource handle at a specific fd slot in a child process.
+ * The child must be in CREATED state (not yet started). Replaces any
+ * existing handle at that slot. Returns 0 on success, -1 on failure.
+ */
+int proc_set_handle(int proc_handle, int slot, int resource_handle);
+
 #endif /* STLX_PROC_H */

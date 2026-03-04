@@ -39,18 +39,16 @@ __PRIVILEGED_CODE ring_buffer* console_input_rb();
 
 /**
  * @brief Switch the console terminal between raw and cooked mode.
- * Synchronized with the serial RX ISR via spinlock.
+ * Elevates internally for the spinlock critical section.
  * @param cmd STLX_TCSETS_RAW or STLX_TCSETS_COOKED.
  * @return OK on success, ERR on invalid cmd.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t set_mode(uint32_t cmd);
+int32_t set_mode(uint32_t cmd);
 
 /**
  * @brief Get the terminal resource ops table for creating resource_objects.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE const resource::resource_ops* get_terminal_ops();
+const resource::resource_ops* get_terminal_ops();
 
 } // namespace terminal
 

@@ -12,6 +12,7 @@ enum class resource_type : uint16_t {
     SHMEM    = 3,
     PROCESS  = 4,
     TERMINAL = 5,
+    PTY      = 6,
 };
 
 using handle_t = int32_t;

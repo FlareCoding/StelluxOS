@@ -9,6 +9,7 @@
 #include "syscall/handlers/sys_socket.h"
 #include "syscall/handlers/sys_memfd.h"
 #include "syscall/handlers/sys_proc.h"
+#include "syscall/handlers/sys_pty.h"
 
 namespace syscall {
 
@@ -65,6 +66,9 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(SYS_PROC_WAIT,   proc_wait);
     REGISTER_SYSCALL(SYS_PROC_DETACH, proc_detach);
     REGISTER_SYSCALL(SYS_PROC_INFO,   proc_info);
+    REGISTER_SYSCALL(SYS_PROC_SET_HANDLE, proc_set_handle);
+
+    REGISTER_SYSCALL(SYS_PTY_CREATE, pty_create);
 
     register_arch_syscalls();
 }

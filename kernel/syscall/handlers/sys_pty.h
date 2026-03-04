@@ -1,0 +1,8 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_PTY_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_PTY_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(pty_create);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_PTY_H

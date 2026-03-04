@@ -35,3 +35,7 @@ int proc_detach(int handle) {
 int proc_info(int handle, process_info* info) {
     return (int)syscall(SYS_PROC_INFO, handle, info);
 }
+
+int proc_set_handle(int proc_handle, int slot, int resource_handle) {
+    return (int)syscall(SYS_PROC_SET_HANDLE, proc_handle, slot, resource_handle);
+}

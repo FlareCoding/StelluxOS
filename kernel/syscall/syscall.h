@@ -17,7 +17,11 @@ constexpr uint64_t SYS_PROC_CREATE = 1010;
 constexpr uint64_t SYS_PROC_START  = 1011;
 constexpr uint64_t SYS_PROC_WAIT   = 1012;
 constexpr uint64_t SYS_PROC_DETACH = 1013;
-constexpr uint64_t SYS_PROC_INFO   = 1014;
+constexpr uint64_t SYS_PROC_INFO       = 1014;
+constexpr uint64_t SYS_PROC_SET_HANDLE = 1015;
+
+// PTY
+constexpr uint64_t SYS_PTY_CREATE = 1020;
 
 /**
  * Architecture-specific syscall initialization (MSRs on x86, etc.)

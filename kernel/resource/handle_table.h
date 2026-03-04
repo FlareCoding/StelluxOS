@@ -59,7 +59,8 @@ __PRIVILEGED_CODE int32_t get_handle_object(
     handle_t handle,
     uint32_t required_rights,
     resource_object** out_obj,
-    uint32_t* out_flags = nullptr
+    uint32_t* out_flags = nullptr,
+    uint32_t* out_rights = nullptr
 );
 
 /**
@@ -80,6 +81,20 @@ __PRIVILEGED_CODE int32_t set_handle_flags(
     handle_table* table,
     handle_t handle,
     uint32_t flags
+);
+
+/**
+ * @brief Install a resource at a specific slot, replacing any existing handle.
+ * If the slot is occupied, the old handle is removed and its object released.
+ * Increments object refcount on success.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t install_handle_at(
+    handle_table* table,
+    handle_t slot,
+    resource_object* obj,
+    resource_type type,
+    uint32_t rights
 );
 
 /**

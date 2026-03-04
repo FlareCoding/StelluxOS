@@ -336,3 +336,62 @@ DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
     resource::resource_release(obj);
     return 0;
 }
+
+DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
+    sched::task* caller = sched::current();
+    if (!caller) return syscall::EIO;
+
+    int32_t slot = static_cast<int32_t>(u_slot);
+    if (slot < 0 || static_cast<uint32_t>(slot) >= resource::MAX_TASK_HANDLES) {
+        return syscall::EINVAL;
+    }
+
+    resource::resource_object* proc_obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &caller->handles, static_cast<resource::handle_t>(u_proc_handle), 0, &proc_obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    if (proc_obj->type != resource::resource_type::PROCESS) {
+        resource::resource_release(proc_obj);
+        return syscall::EBADF;
+    }
+
+    auto* pr = resource::proc_provider::get_proc_resource(proc_obj);
+    if (!pr) {
+        resource::resource_release(proc_obj);
+        return syscall::EINVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    if (!pr->child || pr->child->state != sched::TASK_STATE_CREATED) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(proc_obj);
+        return syscall::EINVAL;
+    }
+
+    resource::resource_object* res_obj = nullptr;
+    uint32_t res_rights = 0;
+    rc = resource::get_handle_object(
+        &caller->handles, static_cast<resource::handle_t>(u_resource_handle), 0,
+        &res_obj, nullptr, &res_rights);
+    if (rc != resource::HANDLE_OK) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(proc_obj);
+        return syscall::EBADF;
+    }
+
+    rc = resource::install_handle_at(
+        &pr->child->handles, static_cast<resource::handle_t>(slot),
+        res_obj, res_obj->type, res_rights);
+
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+    resource::resource_release(res_obj);
+    resource::resource_release(proc_obj);
+
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EINVAL;
+    }
+    return 0;
+}
