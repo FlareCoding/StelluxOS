@@ -81,6 +81,18 @@ stlx_x86_syscall_entry:
     push r11            /* return RFLAGS */
 
     /*
+     * Save user-visible argument registers. Linux preserves these across
+     * syscalls and musl libc depends on that behavior (e.g. readdir uses
+     * r8 across a getdents64 syscall).
+     */
+    push r9
+    push r8
+    push r10
+    push rdx
+    push rsi
+    push rdi
+
+    /*
      * Shuffle syscall arguments to C calling convention.
      * Syscall: RAX=num, RDI=arg1, RSI=arg2, RDX=arg3, R10=arg4, R8=arg5, R9=arg6
      * C ABI:   RDI=num, RSI=arg1, RDX=arg2, RCX=arg3, R8=arg4,  R9=arg5, stack=arg6
@@ -93,11 +105,19 @@ stlx_x86_syscall_entry:
     mov rsi, rdi        /* arg1 */
     mov rdi, rax        /* syscall number */
 
-    /* 10 qwords from 16-aligned system_stack_top = 80 bytes = aligned. */
+    /* 16 qwords from 16-aligned system_stack_top = 128 bytes = aligned. */
     call stlx_syscall_handler
 
     /* Clean up arg6. */
     add rsp, 8
+
+    /* Restore user argument registers. */
+    pop rdi
+    pop rsi
+    pop rdx
+    pop r10
+    pop r8
+    pop r9
 
     /* Restore saved state. */
     pop r11             /* return RFLAGS */
