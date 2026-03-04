@@ -711,13 +711,14 @@ int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, uint64_
 
     const char* path_for_open = nullptr;
     if (kpath[0] == '/') {
-        if (resource::shm_provider::is_shm_path(kpath)) {
-            int64_t norm_rc = normalize_absolute_path(
-                nullptr, kpath, resolved_path, fs::PATH_MAX);
-            if (norm_rc != 0) {
-                heap::kfree(resolved_path);
-                return norm_rc;
-            }
+        int64_t norm_rc = normalize_absolute_path(
+            nullptr, kpath, resolved_path, fs::PATH_MAX);
+        if (norm_rc != 0) {
+            heap::kfree(resolved_path);
+            return norm_rc;
+        }
+
+        if (resource::shm_provider::is_shm_path(resolved_path)) {
             path_for_open = resolved_path;
         } else {
             int64_t resolve_rc = resolve_open_resource_path(
@@ -1186,18 +1187,19 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
     char* normalized_path = nullptr;
     const char* shm_path = nullptr;
     if (kpath[0] == '/') {
-        if (resource::shm_provider::is_shm_path(kpath)) {
-            normalized_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
-            if (!normalized_path) {
-                return syscall::ENOMEM;
-            }
+        normalized_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+        if (!normalized_path) {
+            return syscall::ENOMEM;
+        }
 
-            int64_t norm_rc = normalize_absolute_path(
-                nullptr, kpath, normalized_path, fs::PATH_MAX);
-            if (norm_rc != 0) {
-                heap::kfree(normalized_path);
-                return norm_rc;
-            }
+        int64_t norm_rc = normalize_absolute_path(
+            nullptr, kpath, normalized_path, fs::PATH_MAX);
+        if (norm_rc != 0) {
+            heap::kfree(normalized_path);
+            return norm_rc;
+        }
+
+        if (resource::shm_provider::is_shm_path(normalized_path)) {
             shm_path = normalized_path;
         }
     } else {
