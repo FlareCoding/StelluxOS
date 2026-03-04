@@ -53,6 +53,10 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::MEMFD_CREATE, memfd_create);
     REGISTER_SYSCALL(linux_nr::FTRUNCATE,   ftruncate);
     REGISTER_SYSCALL(linux_nr::UNLINKAT,    unlinkat);
+#if defined(__x86_64__)
+    REGISTER_SYSCALL(linux_nr::UNLINK,      unlink);
+    REGISTER_SYSCALL(linux_nr::RMDIR,       rmdir);
+#endif
 
     REGISTER_SYSCALL(SYS_ELEVATE, elevate);
 

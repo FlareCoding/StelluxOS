@@ -19,6 +19,7 @@ namespace {
 
 constexpr int64_t AT_FDCWD = -100;
 constexpr uint64_t AT_SYMLINK_NOFOLLOW = 0x100;
+constexpr uint32_t AT_REMOVEDIR = 0x200;
 constexpr uint64_t AT_NO_AUTOMOUNT = 0x800;
 constexpr uint64_t AT_EMPTY_PATH = 0x1000;
 constexpr size_t IO_CHUNK_SIZE = 4096;
@@ -1162,7 +1163,6 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
 }
 
 DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
-    (void)flags_val;
 
     char kpath[fs::PATH_MAX];
     int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
@@ -1246,10 +1246,27 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
         return parent_rc;
     }
 
-    int32_t rc = parent->unlink(name, name_len);
+    int32_t rc;
+    if (flags_val & AT_REMOVEDIR) {
+        rc = parent->rmdir(name, name_len);
+    } else {
+        rc = parent->unlink(name, name_len);
+    }
     release_node_ref(parent);
     if (rc != fs::OK) {
         return syscall::error_map::map_fs_error(rc);
     }
     return 0;
+}
+
+DEFINE_SYSCALL1(unlink, pathname) {
+    return sys_unlinkat(
+        static_cast<uint64_t>(-100), // AT_FDCWD
+        pathname, 0, 0, 0, 0);
+}
+
+DEFINE_SYSCALL1(rmdir, pathname) {
+    return sys_unlinkat(
+        static_cast<uint64_t>(-100), // AT_FDCWD
+        pathname, AT_REMOVEDIR, 0, 0, 0);
 }

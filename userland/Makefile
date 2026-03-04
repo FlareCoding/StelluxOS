@@ -31,17 +31,34 @@ endif
 BIN_DIR   := $(USERLAND_ROOT)/build/$(ARCH)/bin
 INITRD_BIN := $(USERLAND_ROOT)/../initrd/bin
 
-# Build libs, then apps, then install to initrd
-all: libs apps install
+# Verbosity
+ifeq ($(V),1)
+  SUBMAKE_FLAGS :=
+  export STLX_QUIET :=
+else
+  SUBMAKE_FLAGS := --no-print-directory
+  export STLX_QUIET := 1
+endif
 
-libs:
+all: build install-summary
+
+build:
+ifeq ($(V),1)
 	@$(MAKE) -C lib ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V)
-
-apps: libs
 	@$(MAKE) -C apps ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V)
+else
+	@echo ""
+	@echo "  Userland ($(ARCH))"
+	@echo ""
+	@$(MAKE) $(SUBMAKE_FLAGS) -C lib ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
+	@echo ""
+	@$(MAKE) $(SUBMAKE_FLAGS) -C apps ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
+	@echo ""
+endif
 
-install: apps
+install-summary: build
 	@mkdir -p $(INITRD_BIN)
+ifeq ($(V),1)
 	@echo "Installing userland binaries to initrd..."
 	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
 		cp $(BIN_DIR)/* $(INITRD_BIN)/; \
@@ -49,6 +66,17 @@ install: apps
 	else \
 		echo "No binaries to install"; \
 	fi
+else
+	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
+		cp $(BIN_DIR)/* $(INITRD_BIN)/; \
+		bincount=$$(ls -1 $(BIN_DIR)/ | wc -l); \
+		libcount=$$(ls -1 $(SYSROOT)/lib/libstlx.a 2>/dev/null | wc -l); \
+		if [ $$libcount -eq 1 ]; then libword="library"; else libword="libraries"; fi; \
+		printf "  $$libcount $$libword, $$bincount binaries installed to initrd/bin/\n"; \
+	else \
+		echo "  No binaries to install"; \
+	fi
+endif
 
 clean:
 	@echo "Cleaning userland build artifacts..."
@@ -79,4 +107,4 @@ compile-commands:
 	@echo "]" >> compile_commands.json
 	@echo "Created userland/compile_commands.json"
 
-.PHONY: all libs apps install clean compile-commands
+.PHONY: all build install-summary clean compile-commands

@@ -134,7 +134,7 @@ kernel: check-lld
 # ============================================================================
 
 userland:
-	$(Q)$(MAKE) -C userland ARCH=$(ARCH) $(if $(V),V=1)
+	$(Q)$(MAKE) --no-print-directory -C userland ARCH=$(ARCH) $(if $(V),V=1)
 
 # ============================================================================
 # Unit Tests
