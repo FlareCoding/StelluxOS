@@ -22,6 +22,7 @@ constexpr int64_t EISDIR  = -21;
 constexpr int64_t EINVAL  = -22;
 constexpr int64_t EMFILE  = -24;
 constexpr int64_t ENOTTY = -25;
+constexpr int64_t ERANGE = -34;
 constexpr int64_t ENAMETOOLONG = -36;
 constexpr int64_t ENOSYS    = -38;
 constexpr int64_t ENOTEMPTY = -39;
