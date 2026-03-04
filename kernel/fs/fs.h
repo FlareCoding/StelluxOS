@@ -69,6 +69,34 @@ int32_t unlink(const char* path);
 ssize_t readdir(file* f, dirent* entries, size_t count);
 
 /**
+ * @brief Resolve path relative to base_dir when path is not absolute.
+ * If path is absolute, base_dir is ignored.
+ * On success, *out has add_ref() called; caller must release.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, node** out);
+
+/**
+ * @brief Resolve parent directory of path relative to base_dir.
+ * If path is absolute, base_dir is ignored.
+ * On success, *out_parent has add_ref() called; caller must release.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t resolve_parent_path_at(
+    node* base_dir, const char* path, node** out_parent,
+    const char** out_name, size_t* out_name_len
+);
+
+/**
+ * @brief Reconstruct absolute path for an existing node.
+ * Writes a null-terminated absolute path into out_path.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t path_from_node(
+    node* target, char* out_path, size_t out_cap
+);
+
+/**
  * @brief Resolve a path to a node.
  * On success, the returned node has add_ref() called.
  * Caller must release() when done (or adopt into a strong_ref).
