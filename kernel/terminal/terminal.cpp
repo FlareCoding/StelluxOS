@@ -1,9 +1,12 @@
 #include "terminal/terminal.h"
+#include "terminal/console_node.h"
 #include "common/ring_buffer.h"
 #include "io/serial.h"
 #include "resource/resource.h"
 #include "common/logging.h"
 #include "fs/fstypes.h"
+#include "fs/devfs/devfs.h"
+#include "mm/heap.h"
 
 namespace terminal {
 
@@ -31,7 +34,19 @@ __PRIVILEGED_CODE int32_t init() {
         log::warn("terminal: serial RX interrupt setup failed");
     }
 
-    log::info("terminal: console initialized (cooked mode)");
+    void* cn_mem = heap::kzalloc(sizeof(console_node));
+    if (!cn_mem) {
+        log::error("terminal: failed to allocate console_node");
+        return ERR;
+    }
+    auto* cn = new (cn_mem) console_node(nullptr, "console");
+    int32_t rc = devfs::add_char_device("console", cn);
+    if (rc != devfs::OK) {
+        log::error("terminal: failed to register /dev/console");
+        return ERR;
+    }
+
+    log::info("terminal: console initialized (cooked mode, /dev/console registered)");
     return OK;
 }
 

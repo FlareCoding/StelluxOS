@@ -13,8 +13,9 @@ constexpr int32_t ERR = -1;
 
 /**
  * @brief Initialize the global console terminal. Creates the input ring
- * buffer, registers as the serial RX callback, and enables serial RX
- * interrupts. Must be called after irq::init().
+ * buffer, registers as the serial RX callback, enables serial RX
+ * interrupts, and creates /dev/console in devfs.
+ * Must be called after both irq::init() and fs::init().
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init();

@@ -1,7 +1,6 @@
 #include "boot_services.h"
 #include "io/serial.h"
 #include "common/logging.h"
-#include "common/ring_buffer.h"
 #include "hw/cpu.h"
 #include "arch/arch_init.h"
 #include "mm/mm.h"
@@ -26,10 +25,14 @@
 
 static void terminal_test_fn(void*) {
     RUN_ELEVATED({
-        ring_buffer* rb = terminal::console_input_rb();
+        fs::file* console = fs::open("/dev/console", fs::O_RDONLY);
+        if (!console) {
+            log::error("term_test: failed to open /dev/console");
+            return;
+        }
         uint8_t buf[256];
         while (true) {
-            ssize_t n = ring_buffer_read(rb, buf, sizeof(buf) - 1, false);
+            ssize_t n = fs::read(console, buf, sizeof(buf) - 1);
             if (n > 0) {
                 buf[n] = '\0';
                 log::info("terminal: \"%s\"",
@@ -78,10 +81,6 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("irq::init failed");
     }
 
-    if (terminal::init() != terminal::OK) {
-        log::warn("terminal::init failed");
-    }
-
     if (sched::init() != sched::OK) {
         log::fatal("sched::init failed");
     }
@@ -92,6 +91,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (fs::init() != fs::OK) {
         log::fatal("fs::init failed");
+    }
+
+    if (terminal::init() != terminal::OK) {
+        log::warn("terminal::init failed");
     }
 
     if (clock::init() != clock::OK) {

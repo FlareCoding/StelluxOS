@@ -12,6 +12,7 @@
 #include "boot/boot_services.h"
 
 extern "C" __PRIVILEGED_CODE int32_t ramfs_init_driver();
+extern "C" __PRIVILEGED_CODE int32_t devfs_init_driver();
 
 namespace fs {
 
@@ -856,6 +857,24 @@ __PRIVILEGED_CODE int32_t init() {
         if (cpio_err != cpio::OK) {
             log::warn("fs: initrd load failed (err=%d)", cpio_err);
         }
+    }
+
+    err = ::devfs_init_driver();
+    if (err != OK) {
+        log::error("fs: devfs driver registration failed");
+        return err;
+    }
+
+    err = mkdir("/dev", 0);
+    if (err != OK && err != ERR_EXIST) {
+        log::error("fs: failed to create /dev mount point");
+        return err;
+    }
+
+    err = mount(nullptr, "/dev", "devfs", 0);
+    if (err != OK) {
+        log::error("fs: failed to mount devfs at /dev");
+        return err;
     }
 
     return OK;
