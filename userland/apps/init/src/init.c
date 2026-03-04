@@ -128,6 +128,8 @@ static int list_directory(const char* path) {
 }
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     const char* argv[] = { "4", "1000", NULL };
     int handle = proc_create("/initrd/bin/hello", argv);
     if (handle < 0) {
@@ -151,7 +153,15 @@ int main(void) {
     }
     printf("init: child exited with code %d\r\n", exit_code);
 
+    if (list_directory("/") != 0) {
+        printf("init: directory listing failed\r\n");
+        return 4;
+    }
     if (list_directory("/initrd") != 0) {
+        printf("init: directory listing failed\r\n");
+        return 4;
+    }
+    if (list_directory("/initrd/bin") != 0) {
         printf("init: directory listing failed\r\n");
         return 4;
     }
