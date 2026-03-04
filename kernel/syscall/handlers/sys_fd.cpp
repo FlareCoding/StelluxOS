@@ -997,8 +997,13 @@ DEFINE_SYSCALL1(fchdir, fd) {
         return syscall::EIO;
     }
 
+    int64_t dirfd = static_cast<int64_t>(fd);
+    if (dirfd == AT_FDCWD) {
+        return syscall::EBADF;
+    }
+
     fs::node* dir = nullptr;
-    int64_t dir_rc = resolve_dirfd_base_node(task, static_cast<int64_t>(fd), &dir);
+    int64_t dir_rc = resolve_dirfd_base_node(task, dirfd, &dir);
     if (dir_rc != 0) {
         return dir_rc;
     }
