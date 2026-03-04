@@ -128,6 +128,13 @@ static int list_directory(const char* path) {
 }
 
 int main(void) {
+    int fd0 = open("/dev/console", O_RDWR);
+    if (fd0 < 0) {
+        return 99;
+    }
+    open("/dev/console", O_RDWR); // fd 1
+    open("/dev/console", O_RDWR); // fd 2
+
     setvbuf(stdout, NULL, _IONBF, 0);
 
     const char* argv[] = { "4", "1000", NULL };
@@ -167,5 +174,21 @@ int main(void) {
     }
 
     printf("init: directory listing complete\r\n");
+
+    if (list_directory("/dev") != 0) {
+        printf("init: /dev listing failed\r\n");
+        return 4;
+    }
+
+    printf("init: type something and press Enter: ");
+    char input[128];
+    ssize_t n = read(0, input, sizeof(input) - 1);
+    if (n > 0) {
+        input[n] = '\0';
+        printf("init: you typed: %s", input);
+    } else {
+        printf("init: read failed (n=%ld, errno=%d)\r\n", (long)n, errno);
+    }
+
     return 0;
 }

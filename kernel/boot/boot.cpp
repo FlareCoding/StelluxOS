@@ -17,30 +17,10 @@
 #include "exec/elf.h"
 #include "syscall/syscall_table.h"
 #include "terminal/terminal.h"
-#include "dynpriv/dynpriv.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
 #endif
-
-static void terminal_test_fn(void*) {
-    RUN_ELEVATED({
-        fs::file* console = fs::open("/dev/console", fs::O_RDONLY);
-        if (!console) {
-            log::error("term_test: failed to open /dev/console");
-            return;
-        }
-        uint8_t buf[256];
-        while (true) {
-            ssize_t n = fs::read(console, buf, sizeof(buf) - 1);
-            if (n > 0) {
-                buf[n] = '\0';
-                log::info("terminal: \"%s\"",
-                          reinterpret_cast<char*>(buf));
-            }
-        }
-    });
-}
 
 /**
  * @brief Kernel entry point called by bootloader.
@@ -103,12 +83,6 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (timer::init(100) != timer::OK) {
         log::fatal("timer::init failed");
-    }
-
-    sched::task* term_test = sched::create_kernel_task(
-        terminal_test_fn, nullptr, "term_test");
-    if (term_test) {
-        sched::enqueue(term_test);
     }
 
     syscall::init_syscall_table();
