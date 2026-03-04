@@ -2,7 +2,7 @@
 # Stellux Userland - Applications
 #
 
-APP_DIRS := init hello shell
+APP_DIRS := init hello shell ls
 
 all:
 	@for app in $(APP_DIRS); do \
