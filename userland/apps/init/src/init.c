@@ -30,6 +30,26 @@ enum {
     DT_DIR = 4
 };
 
+static void format_mode_string(mode_t mode, char out[11]) {
+    out[0] = S_ISDIR(mode)  ? 'd' :
+             S_ISREG(mode)  ? '-' :
+             S_ISSOCK(mode) ? 's' :
+             S_ISLNK(mode)  ? 'l' :
+             S_ISCHR(mode)  ? 'c' :
+             S_ISBLK(mode)  ? 'b' :
+             S_ISFIFO(mode) ? 'p' : '?';
+    out[1] = (mode & S_IRUSR) ? 'r' : '-';
+    out[2] = (mode & S_IWUSR) ? 'w' : '-';
+    out[3] = (mode & S_IXUSR) ? 'x' : '-';
+    out[4] = (mode & S_IRGRP) ? 'r' : '-';
+    out[5] = (mode & S_IWGRP) ? 'w' : '-';
+    out[6] = (mode & S_IXGRP) ? 'x' : '-';
+    out[7] = (mode & S_IROTH) ? 'r' : '-';
+    out[8] = (mode & S_IWOTH) ? 'w' : '-';
+    out[9] = (mode & S_IXOTH) ? 'x' : '-';
+    out[10] = '\0';
+}
+
 static int list_directory(const char* path) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
@@ -90,29 +110,15 @@ static int list_directory(const char* path) {
             }
 
             struct stat st;
-            char type_char = '?';
+            char mode_str[11] = "??????????";
             long long size = -1;
             if (stat(full_path, &st) == 0) {
                 size = (long long)st.st_size;
-                if (S_ISDIR(st.st_mode)) {
-                    type_char = 'd';
-                } else if (S_ISREG(st.st_mode)) {
-                    type_char = '-';
-                } else if (S_ISSOCK(st.st_mode)) {
-                    type_char = 's';
-                } else if (S_ISLNK(st.st_mode)) {
-                    type_char = 'l';
-                } else if (S_ISCHR(st.st_mode)) {
-                    type_char = 'c';
-                } else if (S_ISBLK(st.st_mode)) {
-                    type_char = 'b';
-                } else if (S_ISFIFO(st.st_mode)) {
-                    type_char = 'p';
-                }
+                format_mode_string(st.st_mode, mode_str);
             }
 
             const char* suffix = (d->d_type == DT_DIR) ? "/" : "";
-            printf("  %c %8lld %s%s\r\n", type_char, size, d->d_name, suffix);
+            printf("  %s %8lld %s%s\r\n", mode_str, size, d->d_name, suffix);
             bpos += d->d_reclen;
         }
     }
