@@ -328,9 +328,6 @@ int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u_stat, 
     if (kpath[0] != '/') {
         return syscall::EINVAL;
     }
-    if (dirfd != AT_FDCWD) {
-        return syscall::EINVAL;
-    }
 
     fs::vattr attr = {};
     int32_t fs_rc = fs::stat(kpath, &attr);
@@ -562,7 +559,7 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
         &task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) {
-        return (rc == resource::HANDLE_ERR_ACCESS) ? syscall::EBADF : syscall::EBADF;
+        return syscall::EBADF;
     }
 
     if (obj->type != resource::resource_type::FILE) {
