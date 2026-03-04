@@ -109,6 +109,18 @@
 
     STLX_A64_CAPTURE_SYSREGS
     STLX_A64_CALL_C \handler
+
+    /* If returning to a mode that uses SP_EL0 (EL0t/EL1t), honor trap_frame.sp.
+     * This is required when the scheduler switches tasks from an EL1h context:
+     * load_cpu_context() updates trap_frame.sp for the selected task, and we
+     * must publish it to SP_EL0 before eret. */
+    ldr x16, [sp, #TF_SPSR]
+    tst x16, #1
+    b.ne 1f
+    ldr x16, [sp, #TF_SP]
+    msr sp_el0, x16
+1:
+
     STLX_A64_WRITEBACK_SYSREGS
     isb
     STLX_A64_RESTORE_GPRS
