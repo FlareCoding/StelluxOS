@@ -4,7 +4,8 @@
 #include "line_edit.h"
 
 /* Try to execute a builtin command. Returns 1 if handled, 0 if not a builtin.
-   Returns -1 if the shell should exit. */
-int try_builtin(int argc, const char* argv[], line_edit_state* editor);
+   Returns -1 if the shell should exit (exit code written to *out_exit_code). */
+int try_builtin(int argc, const char* argv[], line_edit_state* editor,
+                int last_status, int* out_exit_code);
 
 #endif /* STLX_BUILTINS_H */
