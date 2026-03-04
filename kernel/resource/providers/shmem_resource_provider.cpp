@@ -80,6 +80,7 @@ static const resource_ops g_shmem_resource_ops = {
     shmem_resource_read,
     shmem_resource_write,
     shmem_resource_close,
+    nullptr,
 };
 
 int32_t create_shmem_resource(

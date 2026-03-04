@@ -22,6 +22,10 @@ ssize_t console_node::write(fs::file*, const void* buf, size_t count) {
     return static_cast<ssize_t>(count);
 }
 
+int32_t console_node::ioctl(fs::file*, uint32_t cmd, uint64_t) {
+    return terminal::set_mode(cmd);
+}
+
 int32_t console_node::getattr(fs::vattr* attr) {
     if (!attr) return fs::ERR_INVAL;
     attr->type = fs::node_type::char_device;

@@ -7,6 +7,7 @@
 #include "fs/fstypes.h"
 #include "fs/devfs/devfs.h"
 #include "mm/heap.h"
+#include "sync/spinlock.h"
 
 namespace terminal {
 
@@ -20,6 +21,7 @@ __PRIVILEGED_BSS static struct {
     char line_buf[LINE_BUF_MAX + 1];
     size_t line_len;
     char prev_char;
+    sync::spinlock lock;
 } g_console;
 
 __PRIVILEGED_CODE int32_t init() {
@@ -51,14 +53,17 @@ __PRIVILEGED_CODE int32_t init() {
 }
 
 __PRIVILEGED_CODE void input_char(char c) {
-    // CR/LF coalescing: skip \n immediately after \r
+    sync::irq_state irq = sync::spin_lock_irqsave(g_console.lock);
+
     if (g_console.prev_char == '\r' && c == '\n') {
         g_console.prev_char = c;
+        sync::spin_unlock_irqrestore(g_console.lock, irq);
         return;
     }
     g_console.prev_char = c;
 
     if (g_console.mode == MODE_RAW) {
+        sync::spin_unlock_irqrestore(g_console.lock, irq);
         uint8_t byte = static_cast<uint8_t>(c);
         (void)ring_buffer_write(g_console.input_rb, &byte, 1, true);
         return;
@@ -67,24 +72,34 @@ __PRIVILEGED_CODE void input_char(char c) {
     // Cooked mode
     if (c == '\r' || c == '\n') {
         g_console.line_buf[g_console.line_len] = '\n';
+        size_t len = g_console.line_len + 1;
+        sync::spin_unlock_irqrestore(g_console.lock, irq);
         (void)ring_buffer_write(g_console.input_rb,
                                reinterpret_cast<const uint8_t*>(g_console.line_buf),
-                               g_console.line_len + 1, true);
+                               len, true);
         g_console.line_len = 0;
         serial::write_char('\r');
         serial::write_char('\n');
     } else if (c == 0x7F || c == 0x08) {
         if (g_console.line_len > 0) {
             g_console.line_len--;
+            sync::spin_unlock_irqrestore(g_console.lock, irq);
             serial::write_char('\b');
             serial::write_char(' ');
             serial::write_char('\b');
+        } else {
+            sync::spin_unlock_irqrestore(g_console.lock, irq);
         }
     } else if (c >= 0x20 && c <= 0x7E) {
         if (g_console.line_len < LINE_BUF_MAX) {
             g_console.line_buf[g_console.line_len++] = c;
+            sync::spin_unlock_irqrestore(g_console.lock, irq);
             serial::write_char(c);
+        } else {
+            sync::spin_unlock_irqrestore(g_console.lock, irq);
         }
+    } else {
+        sync::spin_unlock_irqrestore(g_console.lock, irq);
     }
 }
 
@@ -118,10 +133,30 @@ static const resource::resource_ops g_terminal_ops = {
     terminal_read,
     terminal_write,
     terminal_close,
+    nullptr,
 };
 
 __PRIVILEGED_CODE const resource::resource_ops* get_terminal_ops() {
     return &g_terminal_ops;
+}
+
+__PRIVILEGED_CODE int32_t set_mode(uint32_t cmd) {
+    uint32_t new_mode;
+    if (cmd == STLX_TCSETS_RAW) {
+        new_mode = MODE_RAW;
+    } else if (cmd == STLX_TCSETS_COOKED) {
+        new_mode = 0;
+    } else {
+        return ERR;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(g_console.lock);
+    if (g_console.mode != new_mode) {
+        g_console.line_len = 0;
+        g_console.mode = new_mode;
+    }
+    sync::spin_unlock_irqrestore(g_console.lock, irq);
+    return OK;
 }
 
 } // namespace terminal

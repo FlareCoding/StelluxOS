@@ -101,6 +101,13 @@ DEFINE_SYSCALL3(writev, fd, iov_ptr, iovcnt) {
     return total > 0 ? total : (err ? err : total);
 }
 
-DEFINE_SYSCALL0(ioctl) {
-    return syscall::ENOTTY;
+DEFINE_SYSCALL3(ioctl, fd, cmd, arg) {
+    sched::task* task = sched::current();
+    if (!task) return syscall::EIO;
+
+    int32_t rc = resource::ioctl(
+        task, static_cast<resource::handle_t>(fd),
+        static_cast<uint32_t>(cmd), arg);
+    if (rc == resource::OK) return 0;
+    return map_resource_error(rc);
 }

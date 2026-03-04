@@ -179,6 +179,35 @@ __PRIVILEGED_CODE ssize_t write(
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE int32_t ioctl(
+    sched::task* owner,
+    handle_t handle,
+    uint32_t cmd,
+    uint64_t arg
+) {
+    if (!owner) {
+        return ERR_INVAL;
+    }
+
+    resource_object* obj = nullptr;
+    uint32_t handle_flags = 0;
+    int32_t rc = get_handle_object(&owner->handles, handle, 0, &obj, &handle_flags);
+    if (rc != HANDLE_OK) {
+        return ERR_BADF;
+    }
+
+    int32_t result = ERR_UNSUP;
+    if (obj->ops && obj->ops->ioctl) {
+        result = obj->ops->ioctl(obj, cmd, arg);
+    }
+
+    resource_release(obj);
+    return result;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t close(
     sched::task* owner,
     handle_t handle

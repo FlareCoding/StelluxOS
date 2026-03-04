@@ -133,6 +133,7 @@ TEST(resource_test, missing_provider_ops_return_err_unsup) {
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
     };
 
     auto* read_obj = heap::kalloc_new<resource::resource_object>();
@@ -192,6 +193,7 @@ TEST(resource_test, terminal_release_invokes_close_once) {
         nullptr,
         nullptr,
         close_counter_close,
+        nullptr,
     };
 
     close_counter counter{0};

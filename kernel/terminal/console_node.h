@@ -11,6 +11,7 @@ public:
 
     ssize_t read(fs::file* f, void* buf, size_t count) override;
     ssize_t write(fs::file* f, const void* buf, size_t count) override;
+    int32_t ioctl(fs::file* f, uint32_t cmd, uint64_t arg) override;
     int32_t getattr(fs::vattr* attr) override;
 };
 

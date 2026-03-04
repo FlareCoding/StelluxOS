@@ -70,10 +70,23 @@ __PRIVILEGED_CODE static void file_close(resource_object* obj) {
     obj->impl = nullptr;
 }
 
+__PRIVILEGED_CODE static int32_t file_ioctl(resource_object* obj, uint32_t cmd, uint64_t arg) {
+    if (!obj || !obj->impl) {
+        return ERR_INVAL;
+    }
+    auto* impl = static_cast<file_resource_impl*>(obj->impl);
+    int32_t rc = fs::ioctl(impl->file, cmd, arg);
+    if (rc < 0) {
+        return map_fs_error_to_resource(rc);
+    }
+    return rc;
+}
+
 static const resource_ops g_file_ops = {
     file_read,
     file_write,
     file_close,
+    file_ioctl,
 };
 
 /**

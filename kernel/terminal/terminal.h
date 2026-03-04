@@ -11,6 +11,9 @@ namespace terminal {
 constexpr int32_t OK  = 0;
 constexpr int32_t ERR = -1;
 
+constexpr uint32_t STLX_TCSETS_RAW    = 0x5401;
+constexpr uint32_t STLX_TCSETS_COOKED = 0x5402;
+
 /**
  * @brief Initialize the global console terminal. Creates the input ring
  * buffer, registers as the serial RX callback, enables serial RX
@@ -33,6 +36,15 @@ __PRIVILEGED_CODE void input_char(char c);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE ring_buffer* console_input_rb();
+
+/**
+ * @brief Switch the console terminal between raw and cooked mode.
+ * Synchronized with the serial RX ISR via spinlock.
+ * @param cmd STLX_TCSETS_RAW or STLX_TCSETS_COOKED.
+ * @return OK on success, ERR on invalid cmd.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t set_mode(uint32_t cmd);
 
 /**
  * @brief Get the terminal resource ops table for creating resource_objects.

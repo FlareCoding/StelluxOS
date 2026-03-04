@@ -14,11 +14,13 @@ struct resource_object;
 using read_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint32_t flags);
 using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint32_t flags);
 using close_fn = void (*)(resource_object* obj);
+using ioctl_fn = int32_t (*)(resource_object* obj, uint32_t cmd, uint64_t arg);
 
 struct resource_ops {
-    read_fn read;
+    read_fn  read;
     write_fn write;
     close_fn close;
+    ioctl_fn ioctl; // nullable -- returns ERR_UNSUP if null
 };
 
 struct resource_object : rc::ref_counted<resource_object> {
@@ -89,6 +91,17 @@ __PRIVILEGED_CODE ssize_t write(
     handle_t handle,
     const void* ksrc,
     size_t count
+);
+
+/**
+ * @brief Invoke ioctl on a handle.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t ioctl(
+    sched::task* owner,
+    handle_t handle,
+    uint32_t cmd,
+    uint64_t arg
 );
 
 /**
