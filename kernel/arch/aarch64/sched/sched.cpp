@@ -61,6 +61,9 @@ __PRIVILEGED_CODE static void save_cpu_context(
     for (int i = 0; i < 31; i++) {
         ctx->x[i] = tf->x[i];
     }
+    // ctx->sp tracks the interrupted stack pointer for the return mode in ctx->pstate:
+    // - EL0t / EL1t: SP_EL0
+    // - EL1h:        SP_EL1
     ctx->sp = tf->sp;
     ctx->pc = tf->elr;
     ctx->pstate = tf->spsr;
@@ -78,6 +81,29 @@ __PRIVILEGED_CODE static void load_cpu_context(
     tf->sp = ctx->sp;
     tf->elr = ctx->pc;
     tf->spsr = ctx->pstate;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void prepare_trap_return_stacks(
+    aarch64::trap_frame* tf, const task* next
+) {
+    // trap_frame.sp is consumed as the return stack for the selected mode:
+    // - EL0t / EL1t -> SP_EL0
+    // - EL1h        -> SP_EL1
+    //
+    // trap_frame.sp_el1 is consumed by vector epilogue when returning to
+    // EL0t/EL1t, establishing the selected task's EL1 exception stack for
+    // subsequent traps.
+    tf->sp_el1 = next->exec.system_stack_top;
+
+#ifdef DEBUG
+    uint64_t mode = tf->spsr & aarch64::SPSR_MODE_MASK;
+    if (mode != aarch64::SPSR_EL1H && tf->sp_el1 == 0) {
+        log::fatal("sched/aarch64: missing system_stack_top for non-EL1h return");
+    }
+#endif
 }
 
 /**
@@ -138,6 +164,7 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     fpu::restore(&next->exec.fpu_ctx);
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
+    prepare_trap_return_stacks(tf, next);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
     // Defer prev->on_cpu clear until switch teardown is complete.
@@ -173,6 +200,7 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     fpu::restore(&next->exec.fpu_ctx);
 
     load_cpu_context(&next->exec.cpu_ctx, tf);
+    prepare_trap_return_stacks(tf, next);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
     // Prevent early off-CPU publication while trap exit still depends on prev context.

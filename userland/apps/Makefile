@@ -2,7 +2,7 @@
 # Stellux Userland - Applications
 #
 
-APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest
+APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest date clockbench
 APP_COUNT := $(words $(APP_DIRS))
 
 all:

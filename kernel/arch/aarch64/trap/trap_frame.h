@@ -8,13 +8,22 @@ namespace aarch64 {
 struct alignas(16) trap_frame {
     uint64_t x[31]; // x0-x30
     uint64_t sp;    // interrupted-context SP (EL0 traps store SP_EL0)
+    uint64_t sp_el1; // EL1 exception stack pointer to use after trap return
     uint64_t elr;
     uint64_t spsr;
     uint64_t esr;
     uint64_t far;
+    uint64_t _reserved0;
 };
 
-static_assert(sizeof(trap_frame) == 0x120);
+static_assert(__builtin_offsetof(trap_frame, x) == 0x00);
+static_assert(__builtin_offsetof(trap_frame, sp) == 0xF8);
+static_assert(__builtin_offsetof(trap_frame, sp_el1) == 0x100);
+static_assert(__builtin_offsetof(trap_frame, elr) == 0x108);
+static_assert(__builtin_offsetof(trap_frame, spsr) == 0x110);
+static_assert(__builtin_offsetof(trap_frame, esr) == 0x118);
+static_assert(__builtin_offsetof(trap_frame, far) == 0x120);
+static_assert(sizeof(trap_frame) == 0x130);
 
 inline uint64_t get_ip(const trap_frame* tf) {
     return tf->elr;

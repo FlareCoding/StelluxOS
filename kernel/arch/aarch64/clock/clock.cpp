@@ -1,5 +1,6 @@
 #include "clock/clock.h"
 #include "hwtimer/hwtimer_arch.h"
+#include "hw/rtc.h"
 #include "common/logging.h"
 
 namespace clock {
@@ -8,6 +9,7 @@ static uint64_t g_cnt_freq;
 static uint64_t g_mult;
 static uint32_t g_shift;
 static bool g_calibrated;
+static uint64_t g_boot_realtime_ns;
 
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
 
@@ -56,6 +58,7 @@ __PRIVILEGED_CODE int32_t init() {
     }
 
     compute_mult_shift(g_cnt_freq, &g_mult, &g_shift);
+    g_boot_realtime_ns = rtc::boot_unix_ns();
     enable_el0_counter_access();
     __atomic_store_n(&g_calibrated, true, __ATOMIC_RELEASE);
 
@@ -88,6 +91,10 @@ uint64_t now_ns() {
 
 uint64_t freq_hz() {
     return g_cnt_freq;
+}
+
+uint64_t boot_realtime_ns() {
+    return g_boot_realtime_ns;
 }
 
 } // namespace clock

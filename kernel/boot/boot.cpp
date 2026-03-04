@@ -17,6 +17,7 @@
 #include "exec/elf.h"
 #include "syscall/syscall_table.h"
 #include "terminal/terminal.h"
+#include "hw/rtc.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -55,6 +56,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (acpi::init() != acpi::OK) {
         log::fatal("acpi::init failed");
+    }
+
+    if (rtc::init() != rtc::OK) {
+        log::warn("rtc::init failed, wall-clock time unavailable");
     }
 
     if (irq::init() != irq::OK) {
