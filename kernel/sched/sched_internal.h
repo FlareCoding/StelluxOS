@@ -14,7 +14,8 @@ __PRIVILEGED_CODE void arch_init_task_context(
 
 /**
  * Arch-specific: called after picking the next task, before returning
- * to trap exit. Updates TSS.RSP0 on x86 (no-op on aarch64).
+ * to trap exit. Updates architecture-specific post-switch state
+ * (e.g. TSS.RSP0 on x86, translation roots on aarch64).
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void arch_post_switch(task* next);
