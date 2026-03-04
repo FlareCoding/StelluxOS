@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_proc.h"
+#include "syscall/handlers/sys_error_map.h"
 #include "resource/providers/proc_provider.h"
 #include "resource/resource.h"
 #include "resource/handle_table.h"
@@ -43,23 +44,6 @@ __PRIVILEGED_CODE static int64_t map_elf_error(int32_t rc) {
             return syscall::EIO;
         default:
             return syscall::EINVAL;
-    }
-}
-
-__PRIVILEGED_CODE static int64_t map_fs_error(int32_t rc) {
-    switch (rc) {
-        case fs::ERR_NOENT:
-            return syscall::ENOENT;
-        case fs::ERR_NOTDIR:
-            return syscall::ENOTDIR;
-        case fs::ERR_NAMETOOLONG:
-            return syscall::ENAMETOOLONG;
-        case fs::ERR_NOMEM:
-            return syscall::ENOMEM;
-        case fs::ERR_INVAL:
-            return syscall::EINVAL;
-        default:
-            return syscall::EIO;
     }
 }
 
@@ -150,7 +134,7 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
     }
     if (cwd_rc != fs::OK || !inherited_cwd) {
         resource::proc_provider::destroy_unstarted_task(child);
-        return map_fs_error(cwd_rc);
+        return syscall::error_map::map_fs_error(cwd_rc);
     }
     child->cwd = inherited_cwd;
 

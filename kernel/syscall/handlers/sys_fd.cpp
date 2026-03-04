@@ -4,6 +4,7 @@
 #include "resource/providers/file_provider.h"
 #include "resource/providers/shmem_resource_provider.h"
 #include "resource/providers/shm_provider.h"
+#include "syscall/handlers/sys_error_map.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/uaccess.h"
@@ -136,38 +137,6 @@ inline int64_t map_resource_error(int64_t rc) {
     }
 }
 
-inline int64_t map_fs_error(int32_t rc) {
-    switch (rc) {
-        case fs::ERR_NOENT:
-            return syscall::ENOENT;
-        case fs::ERR_EXIST:
-            return syscall::EEXIST;
-        case fs::ERR_NOTDIR:
-            return syscall::ENOTDIR;
-        case fs::ERR_ISDIR:
-            return syscall::EISDIR;
-        case fs::ERR_NOMEM:
-            return syscall::ENOMEM;
-        case fs::ERR_INVAL:
-            return syscall::EINVAL;
-        case fs::ERR_NAMETOOLONG:
-            return syscall::ENAMETOOLONG;
-        case fs::ERR_NOTEMPTY:
-            return syscall::ENOTEMPTY;
-        case fs::ERR_NOSYS:
-            return syscall::ENOSYS;
-        case fs::ERR_BUSY:
-            return syscall::EBUSY;
-        case fs::ERR_LOOP:
-            return syscall::ELOOP;
-        case fs::ERR_BADF:
-            return syscall::EBADF;
-        case fs::ERR_IO:
-        default:
-            return syscall::EIO;
-    }
-}
-
 inline uint8_t node_type_to_dirent_type(fs::node_type t) {
     switch (t) {
         case fs::node_type::regular:
@@ -260,7 +229,7 @@ int64_t acquire_task_cwd_node(sched::task* task, fs::node** out_node) {
     fs::node* root = nullptr;
     int32_t fs_rc = fs::lookup("/", &root);
     if (fs_rc != fs::OK) {
-        return map_fs_error(fs_rc);
+        return syscall::error_map::map_fs_error(fs_rc);
     }
     *out_node = root;
     return 0;
@@ -458,7 +427,7 @@ int64_t normalize_path_for_dirfd(
     release_node_ref(base_node);
     if (base_path_rc != fs::OK) {
         heap::kfree(base_path);
-        return map_fs_error(base_path_rc);
+        return syscall::error_map::map_fs_error(base_path_rc);
     }
 
     int64_t norm_rc = normalize_absolute_path(base_path, input_path, out_path, out_cap);
@@ -493,7 +462,7 @@ int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
         int32_t fs_rc = fs::fstat(kfile, &attr);
         resource::resource_release(obj);
         if (fs_rc != fs::OK) {
-            return map_fs_error(fs_rc);
+            return syscall::error_map::map_fs_error(fs_rc);
         }
         return copy_stat_to_user(attr, u_stat);
     }
@@ -562,7 +531,7 @@ int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u_stat, 
             int32_t fs_rc = cwd->getattr(&attr);
             release_node_ref(cwd);
             if (fs_rc != fs::OK) {
-                return map_fs_error(fs_rc);
+                return syscall::error_map::map_fs_error(fs_rc);
             }
             return copy_stat_to_user(attr, u_stat);
         }
@@ -593,7 +562,7 @@ int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u_stat, 
     int32_t fs_rc = fs::stat(normalized_path, &attr);
     heap::kfree(normalized_path);
     if (fs_rc != fs::OK) {
-        return map_fs_error(fs_rc);
+        return syscall::error_map::map_fs_error(fs_rc);
     }
 
     return copy_stat_to_user(attr, u_stat);
@@ -819,7 +788,7 @@ DEFINE_SYSCALL2(getcwd, buf, size) {
     int32_t path_rc = fs::path_from_node(cwd, cwd_path, sizeof(cwd_path));
     release_node_ref(cwd);
     if (path_rc != fs::OK) {
-        return map_fs_error(path_rc);
+        return syscall::error_map::map_fs_error(path_rc);
     }
 
     size_t required = string::strnlen(cwd_path, sizeof(cwd_path)) + 1;
@@ -872,7 +841,7 @@ DEFINE_SYSCALL1(chdir, pathname) {
     int32_t fs_rc = fs::lookup_at(base, kpath, &target);
     release_node_ref(base);
     if (fs_rc != fs::OK) {
-        return map_fs_error(fs_rc);
+        return syscall::error_map::map_fs_error(fs_rc);
     }
 
     int64_t set_rc = replace_task_cwd_node(task, target);
@@ -959,7 +928,7 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
             if (bytes_written > 0) {
                 return static_cast<int64_t>(bytes_written);
             }
-            return map_fs_error(static_cast<int32_t>(nread));
+            return syscall::error_map::map_fs_error(static_cast<int32_t>(nread));
         }
         if (nread == 0) {
             break;
@@ -1092,7 +1061,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
     int32_t rc = fs::unlink(normalized_path);
     heap::kfree(normalized_path);
     if (rc != fs::OK) {
-        return map_fs_error(rc);
+        return syscall::error_map::map_fs_error(rc);
     }
     return 0;
 }

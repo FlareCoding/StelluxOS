@@ -36,19 +36,6 @@ private:
     size_t m_len;
 };
 
-/**
- * Extract the parent path and final component from a full path.
- * E.g. "/foo/bar/baz" -> parent_end=8 (points past "/foo/bar"), name="baz", name_len=3.
- *
- * @param path Full absolute path.
- * @param out_name Pointer to the last component within path.
- * @param out_name_len Length of the last component.
- * @param out_parent_len Length of the parent portion (including leading /).
- * @return OK on success, ERR_INVAL if path is empty or has no components.
- */
-int32_t path_parent(const char* path, const char*& out_name,
-                    size_t& out_name_len, size_t& out_parent_len);
-
 } // namespace fs
 
 #endif // STELLUX_FS_PATH_H
