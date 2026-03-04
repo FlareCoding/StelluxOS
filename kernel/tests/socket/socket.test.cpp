@@ -2,7 +2,7 @@
 
 #include "stlx_unit_test.h"
 #include "socket/unix_socket.h"
-#include "socket/ring_buffer.h"
+#include "common/ring_buffer.h"
 #include "socket/listener.h"
 #include "resource/resource.h"
 #include "resource/handle_table.h"
@@ -19,179 +19,179 @@ TEST_SUITE(socket_test);
 // ---------------------------------------------------------------------------
 
 TEST(socket_test, ring_buffer_create_destroy) {
-    auto* rb = socket::ring_buffer_create(socket::DEFAULT_CAPACITY);
+    auto* rb = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
     ASSERT_NOT_NULL(rb);
     ASSERT_NOT_NULL(rb->data);
-    EXPECT_GT(rb->capacity, socket::DEFAULT_CAPACITY);
+    EXPECT_GT(rb->capacity, RING_BUFFER_DEFAULT_CAPACITY);
     EXPECT_EQ(rb->head, 0u);
     EXPECT_EQ(rb->tail, 0u);
     EXPECT_FALSE(rb->writer_closed);
     EXPECT_FALSE(rb->reader_closed);
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_write_read_basic) {
-    auto* rb = socket::ring_buffer_create(64);
+    auto* rb = ring_buffer_create(64);
     ASSERT_NOT_NULL(rb);
 
     const uint8_t msg[] = "hello ring";
-    ssize_t nw = socket::ring_buffer_write(rb, msg, 10);
+    ssize_t nw = ring_buffer_write(rb, msg, 10);
     EXPECT_EQ(nw, static_cast<ssize_t>(10));
 
     uint8_t buf[32] = {};
-    ssize_t nr = socket::ring_buffer_read(rb, buf, sizeof(buf));
+    ssize_t nr = ring_buffer_read(rb, buf, sizeof(buf));
     EXPECT_EQ(nr, static_cast<ssize_t>(10));
     EXPECT_EQ(string::memcmp(buf, msg, 10), 0);
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_multiple_writes_single_read) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("aaa"), 3),
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("aaa"), 3),
         static_cast<ssize_t>(3));
-    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("bbb"), 3),
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("bbb"), 3),
         static_cast<ssize_t>(3));
-    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ccc"), 3),
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ccc"), 3),
         static_cast<ssize_t>(3));
 
     uint8_t buf[32] = {};
-    ssize_t nr = socket::ring_buffer_read(rb, buf, sizeof(buf));
+    ssize_t nr = ring_buffer_read(rb, buf, sizeof(buf));
     EXPECT_EQ(nr, static_cast<ssize_t>(9));
     EXPECT_EQ(string::memcmp(buf, "aaabbbccc", 9), 0);
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_short_read) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("xyz"), 3),
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("xyz"), 3),
         static_cast<ssize_t>(3));
 
     uint8_t buf[1] = {};
-    ssize_t nr = socket::ring_buffer_read(rb, buf, 1);
+    ssize_t nr = ring_buffer_read(rb, buf, 1);
     EXPECT_EQ(nr, static_cast<ssize_t>(1));
     EXPECT_EQ(buf[0], static_cast<uint8_t>('x'));
 
-    nr = socket::ring_buffer_read(rb, buf, 1);
+    nr = ring_buffer_read(rb, buf, 1);
     EXPECT_EQ(nr, static_cast<ssize_t>(1));
     EXPECT_EQ(buf[0], static_cast<uint8_t>('y'));
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_eof_after_close_write) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ab"), 2),
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("ab"), 2),
         static_cast<ssize_t>(2));
-    socket::ring_buffer_close_write(rb);
+    ring_buffer_close_write(rb);
 
     uint8_t buf[32] = {};
-    ssize_t nr = socket::ring_buffer_read(rb, buf, sizeof(buf));
+    ssize_t nr = ring_buffer_read(rb, buf, sizeof(buf));
     EXPECT_EQ(nr, static_cast<ssize_t>(2));
 
-    nr = socket::ring_buffer_read(rb, buf, sizeof(buf));
+    nr = ring_buffer_read(rb, buf, sizeof(buf));
     EXPECT_EQ(nr, static_cast<ssize_t>(0)); // EOF
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_epipe_after_close_read) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    socket::ring_buffer_close_read(rb);
+    ring_buffer_close_read(rb);
 
-    ssize_t nw = socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("x"), 1);
-    EXPECT_EQ(nw, static_cast<ssize_t>(resource::ERR_PIPE));
+    ssize_t nw = ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("x"), 1);
+    EXPECT_EQ(nw, static_cast<ssize_t>(RB_ERR_PIPE));
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_nonblock_empty_returns_eagain) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
     uint8_t buf[8] = {};
-    ssize_t nr = socket::ring_buffer_read(rb, buf, sizeof(buf), true);
-    EXPECT_EQ(nr, static_cast<ssize_t>(resource::ERR_AGAIN));
+    ssize_t nr = ring_buffer_read(rb, buf, sizeof(buf), true);
+    EXPECT_EQ(nr, static_cast<ssize_t>(RB_ERR_AGAIN));
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_nonblock_full_returns_eagain) {
-    auto* rb = socket::ring_buffer_create(16);
+    auto* rb = ring_buffer_create(16);
     ASSERT_NOT_NULL(rb);
 
     uint8_t fill[64];
     string::memset(fill, 'A', sizeof(fill));
 
     // Fill the buffer
-    ssize_t nw = socket::ring_buffer_write(rb, fill, sizeof(fill));
+    ssize_t nw = ring_buffer_write(rb, fill, sizeof(fill));
     EXPECT_GT(nw, static_cast<ssize_t>(0));
 
     // Now try non-blocking write when full
-    nw = socket::ring_buffer_write(rb, fill, 1, true);
-    EXPECT_EQ(nw, static_cast<ssize_t>(resource::ERR_AGAIN));
+    nw = ring_buffer_write(rb, fill, 1, true);
+    EXPECT_EQ(nw, static_cast<ssize_t>(RB_ERR_AGAIN));
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_nonblock_with_data_returns_data) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    ASSERT_EQ(socket::ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("test"), 4),
+    ASSERT_EQ(ring_buffer_write(rb, reinterpret_cast<const uint8_t*>("test"), 4),
         static_cast<ssize_t>(4));
 
     uint8_t buf[32] = {};
-    ssize_t nr = socket::ring_buffer_read(rb, buf, sizeof(buf), true);
+    ssize_t nr = ring_buffer_read(rb, buf, sizeof(buf), true);
     EXPECT_EQ(nr, static_cast<ssize_t>(4));
     EXPECT_EQ(string::memcmp(buf, "test", 4), 0);
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_nonblock_eof_returns_zero) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    socket::ring_buffer_close_write(rb);
+    ring_buffer_close_write(rb);
 
     uint8_t buf[8] = {};
-    ssize_t nr = socket::ring_buffer_read(rb, buf, sizeof(buf), true);
+    ssize_t nr = ring_buffer_read(rb, buf, sizeof(buf), true);
     EXPECT_EQ(nr, static_cast<ssize_t>(0)); // EOF, not EAGAIN
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_zero_length_returns_inval) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
     uint8_t buf[1] = {};
-    EXPECT_EQ(socket::ring_buffer_read(rb, buf, 0), static_cast<ssize_t>(resource::ERR_INVAL));
-    EXPECT_EQ(socket::ring_buffer_write(rb, buf, 0), static_cast<ssize_t>(resource::ERR_INVAL));
+    EXPECT_EQ(ring_buffer_read(rb, buf, 0), static_cast<ssize_t>(RB_ERR_INVAL));
+    EXPECT_EQ(ring_buffer_write(rb, buf, 0), static_cast<ssize_t>(RB_ERR_INVAL));
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 TEST(socket_test, ring_buffer_null_args_returns_inval) {
-    auto* rb = socket::ring_buffer_create(256);
+    auto* rb = ring_buffer_create(256);
     ASSERT_NOT_NULL(rb);
 
-    EXPECT_EQ(socket::ring_buffer_read(nullptr, nullptr, 1), static_cast<ssize_t>(resource::ERR_INVAL));
-    EXPECT_EQ(socket::ring_buffer_read(rb, nullptr, 1), static_cast<ssize_t>(resource::ERR_INVAL));
-    EXPECT_EQ(socket::ring_buffer_write(nullptr, nullptr, 1), static_cast<ssize_t>(resource::ERR_INVAL));
-    EXPECT_EQ(socket::ring_buffer_write(rb, nullptr, 1), static_cast<ssize_t>(resource::ERR_INVAL));
+    EXPECT_EQ(ring_buffer_read(nullptr, nullptr, 1), static_cast<ssize_t>(RB_ERR_INVAL));
+    EXPECT_EQ(ring_buffer_read(rb, nullptr, 1), static_cast<ssize_t>(RB_ERR_INVAL));
+    EXPECT_EQ(ring_buffer_write(nullptr, nullptr, 1), static_cast<ssize_t>(RB_ERR_INVAL));
+    EXPECT_EQ(ring_buffer_write(rb, nullptr, 1), static_cast<ssize_t>(RB_ERR_INVAL));
 
-    socket::ring_buffer_destroy(rb);
+    ring_buffer_destroy(rb);
 }
 
 // ---------------------------------------------------------------------------

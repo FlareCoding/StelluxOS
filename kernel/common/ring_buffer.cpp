@@ -1,9 +1,6 @@
-#include "socket/ring_buffer.h"
+#include "common/ring_buffer.h"
 #include "mm/heap.h"
 #include "common/string.h"
-#include "resource/resource.h"
-
-namespace socket {
 
 static inline size_t readable_bytes(const ring_buffer* rb) {
     return (rb->head - rb->tail) & (rb->capacity - 1);
@@ -68,7 +65,7 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb) {
  */
 __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t len, bool nonblock) {
     if (!rb || !buf || len == 0) {
-        return resource::ERR_INVAL;
+        return RB_ERR_INVAL;
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
@@ -76,7 +73,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
     if (readable_bytes(rb) == 0 && !rb->writer_closed) {
         if (nonblock) {
             sync::spin_unlock_irqrestore(rb->lock, irq);
-            return resource::ERR_AGAIN;
+            return RB_ERR_AGAIN;
         }
         while (readable_bytes(rb) == 0 && !rb->writer_closed) {
             irq = sync::wait(rb->read_wq, rb->lock, irq);
@@ -114,7 +111,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
  */
 __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock) {
     if (!rb || !buf || len == 0) {
-        return resource::ERR_INVAL;
+        return RB_ERR_INVAL;
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
@@ -122,7 +119,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
     if (writable_bytes(rb) == 0 && !rb->reader_closed) {
         if (nonblock) {
             sync::spin_unlock_irqrestore(rb->lock, irq);
-            return resource::ERR_AGAIN;
+            return RB_ERR_AGAIN;
         }
         while (writable_bytes(rb) == 0 && !rb->reader_closed) {
             irq = sync::wait(rb->write_wq, rb->lock, irq);
@@ -131,7 +128,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
 
     if (rb->reader_closed) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
-        return resource::ERR_PIPE;
+        return RB_ERR_PIPE;
     }
 
     size_t space = writable_bytes(rb);
@@ -184,5 +181,3 @@ __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb) {
 
     sync::wake_all(rb->write_wq);
 }
-
-} // namespace socket

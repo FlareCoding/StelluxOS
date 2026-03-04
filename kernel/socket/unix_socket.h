@@ -5,7 +5,7 @@
 #include "rc/ref_counted.h"
 #include "rc/strong_ref.h"
 #include "sync/spinlock.h"
-#include "socket/ring_buffer.h"
+#include "common/ring_buffer.h"
 #include "socket/listener.h"
 #include "resource/resource.h"
 #include "fs/node.h"

@@ -6,11 +6,12 @@
 namespace resource {
 
 enum class resource_type : uint16_t {
-    UNKNOWN = 0,
-    FILE    = 1,
-    SOCKET  = 2,
-    SHMEM   = 3,
-    PROCESS = 4,
+    UNKNOWN  = 0,
+    FILE     = 1,
+    SOCKET   = 2,
+    SHMEM    = 3,
+    PROCESS  = 4,
+    TERMINAL = 5,
 };
 
 using handle_t = int32_t;

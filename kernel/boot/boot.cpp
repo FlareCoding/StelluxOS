@@ -1,6 +1,7 @@
 #include "boot_services.h"
 #include "io/serial.h"
 #include "common/logging.h"
+#include "common/ring_buffer.h"
 #include "hw/cpu.h"
 #include "arch/arch_init.h"
 #include "mm/mm.h"
@@ -16,14 +17,26 @@
 #include "fs/fs.h"
 #include "exec/elf.h"
 #include "syscall/syscall_table.h"
+#include "terminal/terminal.h"
+#include "dynpriv/dynpriv.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
 #endif
 
-__PRIVILEGED_CODE static void serial_echo(char c) {
-    // serial::write_char(c);
-    log::info("serial_echo: %c", c);
+static void terminal_test_fn(void*) {
+    RUN_ELEVATED({
+        ring_buffer* rb = terminal::console_input_rb();
+        uint8_t buf[256];
+        while (true) {
+            ssize_t n = ring_buffer_read(rb, buf, sizeof(buf) - 1, false);
+            if (n > 0) {
+                buf[n] = '\0';
+                log::info("terminal: \"%s\"",
+                          reinterpret_cast<char*>(buf));
+            }
+        }
+    });
 }
 
 /**
@@ -65,9 +78,8 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("irq::init failed");
     }
 
-    serial::set_rx_callback(serial_echo);
-    if (serial::enable_rx_interrupt() != serial::OK) {
-        log::warn("serial: RX interrupt setup failed");
+    if (terminal::init() != terminal::OK) {
+        log::warn("terminal::init failed");
     }
 
     if (sched::init() != sched::OK) {
@@ -88,6 +100,12 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (timer::init(100) != timer::OK) {
         log::fatal("timer::init failed");
+    }
+
+    sched::task* term_test = sched::create_kernel_task(
+        terminal_test_fn, nullptr, "term_test");
+    if (term_test) {
+        sched::enqueue(term_test);
     }
 
     syscall::init_syscall_table();

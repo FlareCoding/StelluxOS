@@ -360,13 +360,13 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
     chan->buf_a_to_b = nullptr;
     chan->buf_b_to_a = nullptr;
 
-    chan->buf_a_to_b = socket::ring_buffer_create(socket::DEFAULT_CAPACITY);
+    chan->buf_a_to_b = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
     if (!chan->buf_a_to_b) {
         resource::resource_release(client_obj);
         return syscall::ENOMEM;
     }
 
-    chan->buf_b_to_a = socket::ring_buffer_create(socket::DEFAULT_CAPACITY);
+    chan->buf_b_to_a = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
     if (!chan->buf_b_to_a) {
         resource::resource_release(client_obj);
         return syscall::ENOMEM;

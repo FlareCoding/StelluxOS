@@ -1,13 +1,15 @@
-#ifndef STELLUX_SOCKET_RING_BUFFER_H
-#define STELLUX_SOCKET_RING_BUFFER_H
+#ifndef STELLUX_COMMON_RING_BUFFER_H
+#define STELLUX_COMMON_RING_BUFFER_H
 
 #include "common/types.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 
-namespace socket {
+constexpr size_t RING_BUFFER_DEFAULT_CAPACITY = 8192;
 
-constexpr size_t DEFAULT_CAPACITY = 8192;
+constexpr ssize_t RB_ERR_INVAL = -1;
+constexpr ssize_t RB_ERR_AGAIN = -16;
+constexpr ssize_t RB_ERR_PIPE  = -11;
 
 struct ring_buffer {
     uint8_t* data;
@@ -37,14 +39,14 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 
 /**
  * Read from ring buffer. Blocks when empty unless nonblock is true.
- * @return Bytes read (> 0), 0 on EOF, ERR_AGAIN if nonblock and empty, or negative error.
+ * @return Bytes read (> 0), 0 on EOF, RB_ERR_AGAIN if nonblock and empty, or negative error.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t len, bool nonblock = false);
 
 /**
  * Write to ring buffer. Blocks when full unless nonblock is true.
- * @return Bytes written (> 0), ERR_AGAIN if nonblock and full, ERR_PIPE if reader closed.
+ * @return Bytes written (> 0), RB_ERR_AGAIN if nonblock and full, RB_ERR_PIPE if reader closed.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock = false);
@@ -56,11 +58,9 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 __PRIVILEGED_CODE void ring_buffer_close_write(ring_buffer* rb);
 
 /**
- * Mark the read side as closed. Wakes all blocked writers so they get ERR_PIPE.
+ * Mark the read side as closed. Wakes all blocked writers so they get RB_ERR_PIPE.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb);
 
-} // namespace socket
-
-#endif // STELLUX_SOCKET_RING_BUFFER_H
+#endif // STELLUX_COMMON_RING_BUFFER_H
