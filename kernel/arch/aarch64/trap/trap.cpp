@@ -8,6 +8,7 @@
 #include "dynpriv/dynpriv.h"
 #include "irq/irq.h"
 #include "irq/irq_arch.h"
+#include "io/serial.h"
 #include "hwtimer/hwtimer_arch.h"
 #include "timer/timer.h"
 
@@ -77,6 +78,14 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         return;
     }
 
+    if (irq_id == serial::irq_id()) {
+        serial::on_rx_irq();
+        irq::eoi(irq_id);
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
     if (irq_id != irq::GIC_SPURIOUS_ID) {
         irq::eoi(irq_id);
     }
@@ -129,6 +138,14 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
         if (tick) {
             sched::on_tick(tf);
         }
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
+    if (irq_id == serial::irq_id()) {
+        serial::on_rx_irq();
+        irq::eoi(irq_id);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;

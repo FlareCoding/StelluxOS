@@ -10,6 +10,8 @@ constexpr int32_t OK = 0;
 constexpr int32_t ERR_NO_DATA = -1;
 constexpr int32_t ERR_NO_DEVICE = -2;
 
+using rx_callback_t = void (*)(char c);
+
 /**
  * @brief Initialize the serial port hardware.
  * @return OK on success, negative error code on failure.
@@ -42,6 +44,36 @@ void write(const char* data, size_t len);
  * @return 0-255 on success (the byte read), or ERR_NO_DATA if no data available.
  */
 int32_t read_char();
+
+/**
+ * @brief Register a callback invoked for each received character.
+ * Called from interrupt context; the callback must be __PRIVILEGED_CODE.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_rx_callback(rx_callback_t cb);
+
+/**
+ * @brief Enable the hardware RX interrupt and route it through the
+ * interrupt controller. Must be called after irq::init().
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t enable_rx_interrupt();
+
+/**
+ * @brief Serial RX interrupt service routine. Drains the hardware FIFO
+ * and invokes the registered callback for each byte.
+ * Called from the arch trap handler.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void on_rx_irq();
+
+/**
+ * @brief Get the platform IRQ ID used by the serial port.
+ * On x86_64: returns the IDT vector (e.g. 0x24).
+ * On AArch64: returns the GIC INTID (e.g. 33 for QEMU virt).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t irq_id();
 
 } // namespace serial
 

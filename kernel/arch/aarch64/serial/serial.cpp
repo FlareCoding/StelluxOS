@@ -1,5 +1,7 @@
 #include "io/serial.h"
 #include "hw/mmio.h"
+#include "irq/irq.h"
+#include "irq/irq_arch.h"
 #include "mm/early_mmu.h"
 #include "mm/vmm.h"
 #include "mm/paging_types.h"
@@ -30,10 +32,23 @@ constexpr uintptr_t REG_FBRD = 0x28;  // Fractional baud rate divisor
 constexpr uintptr_t REG_LCR = 0x2C;   // Line control register
 constexpr uintptr_t REG_CR = 0x30;    // Control register
 constexpr uintptr_t REG_IMSC = 0x38;  // Interrupt mask set/clear
+constexpr uintptr_t REG_MIS = 0x40;   // Masked interrupt status
+constexpr uintptr_t REG_ICR = 0x44;   // Interrupt clear register
 
 // Flag register bits
 constexpr uint32_t FR_RXFE = (1 << 4); // Receive FIFO empty
 constexpr uint32_t FR_TXFF = (1 << 5); // Transmit FIFO full
+
+// IMSC / MIS / ICR bits
+constexpr uint32_t INT_RX      = (1 << 4); // Receive interrupt
+constexpr uint32_t INT_RT      = (1 << 6); // Receive timeout interrupt
+
+// Platform GIC interrupt ID for PL011 UART
+#if defined(STLX_PLATFORM_RPI4)
+constexpr uint32_t PL011_GIC_INTID = 57; // SPI 25
+#else
+constexpr uint32_t PL011_GIC_INTID = 33; // QEMU virt: SPI 1
+#endif
 
 // Control register bits
 constexpr uint32_t CR_UARTEN = (1 << 0); // UART enable
@@ -46,6 +61,8 @@ constexpr uint32_t LCR_WLEN_8 = (3 << 5); // 8-bit word length
 
 // UART base virtual address (set during init)
 static uintptr_t uart_base = 0;
+
+__PRIVILEGED_BSS static rx_callback_t g_rx_callback;
 
 int32_t init() {
     // Map UART if not already mapped
@@ -114,6 +131,37 @@ int32_t remap() {
 
     uart_base = kva_va;
     return OK;
+}
+
+__PRIVILEGED_CODE void set_rx_callback(rx_callback_t cb) {
+    g_rx_callback = cb;
+}
+
+__PRIVILEGED_CODE int32_t enable_rx_interrupt() {
+    irq::set_spi_target(PL011_GIC_INTID, 0x01);
+    irq::unmask(PL011_GIC_INTID);
+    mmio::write32(uart_base + REG_IMSC, INT_RX | INT_RT);
+    return OK;
+}
+
+__PRIVILEGED_CODE void on_rx_irq() {
+    uint32_t mis = mmio::read32(uart_base + REG_MIS);
+
+    if (mis & (INT_RX | INT_RT)) {
+        while ((mmio::read32(uart_base + REG_FR) & FR_RXFE) == 0) {
+            char c = static_cast<char>(mmio::read32(uart_base + REG_DR) & 0xFF);
+            if (g_rx_callback) {
+                g_rx_callback(c);
+            }
+        }
+        if (mis & INT_RT) {
+            mmio::write32(uart_base + REG_ICR, INT_RT);
+        }
+    }
+}
+
+__PRIVILEGED_CODE uint32_t irq_id() {
+    return PL011_GIC_INTID;
 }
 
 } // namespace serial

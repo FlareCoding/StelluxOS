@@ -1,5 +1,6 @@
 #include "irq/irq.h"
 #include "irq/irq_arch.h"
+#include "irq/ioapic.h"
 #include "acpi/madt_arch.h"
 #include "defs/vectors.h"
 #include "hw/portio.h"
@@ -72,6 +73,12 @@ __PRIVILEGED_CODE int32_t init() {
     log::info("irq: LAPIC enabled at 0x%lx (spurious=0x%02x)",
               madt.lapic_base,
               static_cast<uint32_t>(x86::VEC_SPURIOUS));
+
+    int32_t ioapic_rc = ioapic::init();
+    if (ioapic_rc != ioapic::OK && ioapic_rc != ioapic::ERR_NONE) {
+        log::error("irq: IOAPIC init failed");
+        return ERR_MAP;
+    }
 
     return OK;
 }

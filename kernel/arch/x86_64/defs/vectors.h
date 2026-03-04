@@ -36,6 +36,9 @@ constexpr uint8_t VEC_IRQ_BASE = 0x20;
 // LAPIC timer interrupt
 constexpr uint8_t VEC_TIMER = 0x20;
 
+// COM1 serial RX (IOAPIC-routed ISA IRQ 4)
+constexpr uint8_t VEC_SERIAL = 0x24;
+
 // LAPIC spurious interrupt
 constexpr uint8_t VEC_SPURIOUS = 0xFF;
 

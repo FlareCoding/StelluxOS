@@ -11,6 +11,7 @@ constexpr uint32_t GICD_TYPER      = 0x004;
 constexpr uint32_t GICD_ISENABLER  = 0x100;
 constexpr uint32_t GICD_ICENABLER  = 0x180;
 constexpr uint32_t GICD_IPRIORITYR = 0x400;
+constexpr uint32_t GICD_ITARGETSR  = 0x800;
 
 // GICC (CPU Interface) register offsets
 constexpr uint32_t GICC_CTLR       = 0x000;
@@ -27,6 +28,15 @@ constexpr uint32_t GIC_INTID_MASK  = 0x3FF;
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t acknowledge();
+
+/**
+ * @brief Set target CPU mask for an SPI.
+ * SPIs (INTID >= 32) default to no target; must be configured explicitly.
+ * @param irq GIC interrupt ID (INTID).
+ * @param cpu_mask Bitmask of target CPUs (bit 0 = CPU 0, etc.).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_spi_target(uint32_t irq, uint8_t cpu_mask);
 
 } // namespace irq
 

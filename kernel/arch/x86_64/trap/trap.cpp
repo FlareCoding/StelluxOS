@@ -1,6 +1,7 @@
 #include "trap_frame.h"
 #include "defs/vectors.h"
 #include "irq/irq.h"
+#include "io/serial.h"
 #include "timer/timer.h"
 #include "debug/panic.h"
 #include "sched/task_exec_core.h"
@@ -46,6 +47,14 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
             sched::on_tick(tf);
         }
         // Clear IRQ state on the interrupted task to avoid stale IN_IRQ ownership.
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
+    if (tf->vector == x86::VEC_SERIAL) {
+        irq::eoi(0);
+        serial::on_rx_irq();
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;

@@ -1,5 +1,7 @@
 #include "io/serial.h"
 #include "hw/portio.h"
+#include "irq/ioapic.h"
+#include "defs/vectors.h"
 
 namespace serial {
 
@@ -32,6 +34,13 @@ constexpr uint8_t FCR_TRIGGER_14 = 0xC0;  // 14-byte trigger level
 constexpr uint8_t MCR_DTR = 0x01;         // Data terminal ready
 constexpr uint8_t MCR_RTS = 0x02;         // Request to send
 constexpr uint8_t MCR_OUT2 = 0x08;        // OUT2 (enables IRQs)
+
+// IER bits
+constexpr uint8_t IER_RX_AVAIL = 0x01;    // Received data available
+
+constexpr uint8_t COM1_LEGACY_IRQ = 4;
+
+__PRIVILEGED_BSS static rx_callback_t g_rx_callback;
 
 int32_t init() {
     // Disable all interrupts
@@ -87,6 +96,32 @@ int32_t read_char() {
 
 int32_t remap() {
     return OK;
+}
+
+__PRIVILEGED_CODE void set_rx_callback(rx_callback_t cb) {
+    g_rx_callback = cb;
+}
+
+__PRIVILEGED_CODE int32_t enable_rx_interrupt() {
+    int32_t rc = ioapic::route_irq(COM1_LEGACY_IRQ, x86::VEC_SERIAL, 0);
+    if (rc != ioapic::OK) {
+        return rc;
+    }
+    portio::out8(COM1_BASE + REG_IER, IER_RX_AVAIL);
+    return OK;
+}
+
+__PRIVILEGED_CODE void on_rx_irq() {
+    while ((portio::in8(COM1_BASE + REG_LSR) & LSR_DATA_READY) != 0) {
+        char c = static_cast<char>(portio::in8(COM1_BASE + REG_DATA));
+        if (g_rx_callback) {
+            g_rx_callback(c);
+        }
+    }
+}
+
+__PRIVILEGED_CODE uint32_t irq_id() {
+    return x86::VEC_SERIAL;
 }
 
 } // namespace serial

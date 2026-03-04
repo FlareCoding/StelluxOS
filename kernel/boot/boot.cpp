@@ -21,6 +21,11 @@
 #include "runner.h"
 #endif
 
+__PRIVILEGED_CODE static void serial_echo(char c) {
+    // serial::write_char(c);
+    log::info("serial_echo: %c", c);
+}
+
 /**
  * @brief Kernel entry point called by bootloader.
  * @note Privilege: **required**
@@ -58,6 +63,11 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (irq::init() != irq::OK) {
         log::fatal("irq::init failed");
+    }
+
+    serial::set_rx_callback(serial_echo);
+    if (serial::enable_rx_interrupt() != serial::OK) {
+        log::warn("serial: RX interrupt setup failed");
     }
 
     if (sched::init() != sched::OK) {
