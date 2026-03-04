@@ -4,6 +4,7 @@
 #include "mm/vma.h"
 #include "mm/vmm.h"
 #include "mm/heap.h"
+#include "fs/node.h"
 #include "common/logging.h"
 
 namespace resource::proc_provider {
@@ -126,6 +127,12 @@ __PRIVILEGED_CODE proc_resource* get_proc_resource(resource_object* obj) {
 
 __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
     resource::close_all(t);
+    if (t->cwd) {
+        if (t->cwd->release()) {
+            fs::node::ref_destroy(t->cwd);
+        }
+        t->cwd = nullptr;
+    }
 
     if (t->exec.mm_ctx) {
         mm::mm_context_release(t->exec.mm_ctx);

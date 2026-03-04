@@ -7,6 +7,7 @@
 #include "resource/handle_table.h"
 
 namespace resource::proc_provider { struct proc_resource; }
+namespace fs { class node; }
 
 namespace sched {
 
@@ -52,6 +53,7 @@ struct task {
     rc::reaper::dead_node reaper_node;
     resource::handle_table handles;
     resource::proc_provider::proc_resource* proc_res;
+    fs::node* cwd;
 };
 
 // Assembly accesses task_exec_core fields via offsets from the task pointer.

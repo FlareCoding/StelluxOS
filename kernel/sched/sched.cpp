@@ -23,6 +23,7 @@
 #include "common/string.h"
 #include "resource/resource.h"
 #include "resource/providers/proc_provider.h"
+#include "fs/node.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -137,6 +138,12 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
     }
 
     resource::close_all(t);
+    if (t->cwd) {
+        if (t->cwd->release()) {
+            fs::node::ref_destroy(t->cwd);
+        }
+        t->cwd = nullptr;
+    }
 
     if (t->exec.mm_ctx) {
         mm::mm_context_release(t->exec.mm_ctx);
@@ -461,6 +468,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->reaper_node.init(reap_task_thunk);
     resource::init_task_handles(t);
     t->proc_res = nullptr;
+    t->cwd = nullptr;
 
     return t;
 }
@@ -657,6 +665,7 @@ __PRIVILEGED_CODE task* create_user_task(
 
     resource::init_task_handles(t);
     t->proc_res = nullptr;
+    t->cwd = nullptr;
 
     image->mm_ctx = nullptr;
     image->pt_root = 0;
@@ -702,6 +711,7 @@ __PRIVILEGED_CODE int32_t init() {
     fpu::init_state(&idle->exec.fpu_ctx);
     resource::init_task_handles(idle);
     idle->proc_res = nullptr;
+    idle->cwd = nullptr;
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
@@ -762,6 +772,8 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
     resource::init_task_handles(idle);
+    idle->proc_res = nullptr;
+    idle->cwd = nullptr;
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
