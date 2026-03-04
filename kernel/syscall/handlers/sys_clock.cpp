@@ -117,6 +117,9 @@ DEFINE_SYSCALL2(clock_getres, clock_id, u_tp) {
 
 DEFINE_SYSCALL2(gettimeofday, u_tv, u_tz) {
     if (u_tv != 0) {
+        if (clock::boot_realtime_ns() == 0) {
+            return syscall::EINVAL;
+        }
         uint64_t ns = get_realtime_ns();
         kernel_timeval tv;
         tv.tv_sec = static_cast<int64_t>(ns / NS_PER_SEC);

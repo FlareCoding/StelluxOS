@@ -97,8 +97,4 @@ uint64_t boot_realtime_ns() {
     return g_boot_realtime_ns;
 }
 
-void set_boot_realtime_ns(uint64_t ns) {
-    g_boot_realtime_ns = ns;
-}
-
 } // namespace clock

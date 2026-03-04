@@ -48,11 +48,6 @@ uint64_t freq_hz();
  */
 uint64_t boot_realtime_ns();
 
-/**
- * @brief Set the boot realtime epoch (called once during boot after RTC init).
- */
-void set_boot_realtime_ns(uint64_t ns);
-
 } // namespace clock
 
 #endif // STELLUX_CLOCK_CLOCK_H
