@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 
 #ifndef SYS_getdents64
 #ifdef __NR_getdents64
@@ -80,8 +81,38 @@ static int list_directory(const char* path) {
                 return -1;
             }
 
+            char full_path[512];
+            int path_len = snprintf(full_path, sizeof(full_path), "%s/%s", path, d->d_name);
+            if (path_len < 0 || path_len >= (int)sizeof(full_path)) {
+                printf("  ? ? %s (path too long)\r\n", d->d_name);
+                bpos += d->d_reclen;
+                continue;
+            }
+
+            struct stat st;
+            char type_char = '?';
+            long long size = -1;
+            if (stat(full_path, &st) == 0) {
+                size = (long long)st.st_size;
+                if (S_ISDIR(st.st_mode)) {
+                    type_char = 'd';
+                } else if (S_ISREG(st.st_mode)) {
+                    type_char = '-';
+                } else if (S_ISSOCK(st.st_mode)) {
+                    type_char = 's';
+                } else if (S_ISLNK(st.st_mode)) {
+                    type_char = 'l';
+                } else if (S_ISCHR(st.st_mode)) {
+                    type_char = 'c';
+                } else if (S_ISBLK(st.st_mode)) {
+                    type_char = 'b';
+                } else if (S_ISFIFO(st.st_mode)) {
+                    type_char = 'p';
+                }
+            }
+
             const char* suffix = (d->d_type == DT_DIR) ? "/" : "";
-            printf("  %s%s\r\n", d->d_name, suffix);
+            printf("  %c %8lld %s%s\r\n", type_char, size, d->d_name, suffix);
             bpos += d->d_reclen;
         }
     }

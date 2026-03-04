@@ -23,10 +23,13 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::READ,            read);
     REGISTER_SYSCALL(linux_nr::WRITE,           write);
     REGISTER_SYSCALL(linux_nr::CLOSE,           close);
+    REGISTER_SYSCALL(linux_nr::FSTAT,           fstat);
+    REGISTER_SYSCALL(linux_nr::NEWFSTATAT,      newfstatat);
     REGISTER_SYSCALL(linux_nr::GETDENTS64,      getdents64);
     REGISTER_SYSCALL(linux_nr::OPENAT,          openat);
 #if defined(__x86_64__)
     REGISTER_SYSCALL(linux_nr::OPEN,            open);
+    REGISTER_SYSCALL(linux_nr::STAT,            stat);
 #endif
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
     REGISTER_SYSCALL(linux_nr::MPROTECT,        mprotect);
