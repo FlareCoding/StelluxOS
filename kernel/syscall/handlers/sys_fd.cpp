@@ -26,7 +26,6 @@ constexpr uint32_t ST_IFDIR  = 0040000;
 constexpr uint32_t ST_IFCHR  = 0020000;
 constexpr uint32_t ST_IFBLK  = 0060000;
 constexpr uint32_t ST_IFREG  = 0100000;
-constexpr uint32_t ST_IFIFO  = 0010000;
 constexpr uint32_t ST_IFLNK  = 0120000;
 constexpr uint32_t ST_IFSOCK = 0140000;
 
@@ -203,7 +202,7 @@ inline uint32_t node_type_to_mode_bits(fs::node_type t) {
         case fs::node_type::socket:
             return ST_IFSOCK;
         default:
-            return ST_IFIFO;
+            return 0;
     }
 }
 
