@@ -9,6 +9,8 @@
 
 namespace resource::proc_provider {
 
+constexpr int32_t PROC_FORCED_EXIT_CODE = 137;
+
 __PRIVILEGED_CODE void proc_resource::ref_destroy(proc_resource* self) {
     heap::kfree_delete(self);
 }
@@ -37,21 +39,33 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
 
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
 
-    if (pr->child && pr->child->state == sched::TASK_STATE_CREATED) {
-        auto* child = pr->child;
-        pr->child = nullptr;
-        sync::spin_unlock_irqrestore(pr->lock, irq);
+    if (!pr->detached && !pr->exited && pr->child) {
+        if (pr->child->state == sched::TASK_STATE_CREATED) {
+            auto* child = pr->child;
+            pr->child = nullptr;
+            pr->exit_code = PROC_FORCED_EXIT_CODE;
+            pr->exited = true;
+            sync::wake_all(pr->wait_queue);
+            sync::spin_unlock_irqrestore(pr->lock, irq);
 
-        if (child->proc_res) {
-            (void)child->proc_res->release();
-            child->proc_res = nullptr;
+            if (child->proc_res) {
+                (void)child->proc_res->release();
+                child->proc_res = nullptr;
+            }
+            destroy_unstarted_task(child);
+        } else {
+            sched::task* child = pr->child;
+            sync::spin_unlock_irqrestore(pr->lock, irq);
+
+            (void)sched::request_task_terminate(child, PROC_FORCED_EXIT_CODE);
+
+            irq = sync::spin_lock_irqsave(pr->lock);
+            while (!pr->exited) {
+                irq = sync::wait(pr->wait_queue, pr->lock, irq);
+                sched::terminate_if_requested();
+            }
+            sync::spin_unlock_irqrestore(pr->lock, irq);
         }
-        destroy_unstarted_task(child);
-    } else if (pr->child && !pr->exited && !pr->detached) {
-        uint32_t child_tid = pr->child->tid;
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-        log::fatal("proc_close: parent exiting with running attached child tid=%u",
-                   child_tid);
     } else {
         sync::spin_unlock_irqrestore(pr->lock, irq);
     }

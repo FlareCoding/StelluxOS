@@ -452,6 +452,8 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
         __atomic_store_n(&task->blocking_kind, TASK_BLOCKING_NONE, __ATOMIC_RELEASE);
         __atomic_store_n(&task->blocking_object, nullptr, __ATOMIC_RELEASE);
 
+        resource::close_all(task);
+
         if (task->proc_res) {
             auto* pr = task->proc_res;
             sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
