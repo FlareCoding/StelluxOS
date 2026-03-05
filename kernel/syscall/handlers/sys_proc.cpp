@@ -313,7 +313,7 @@ DEFINE_SYSCALL1(proc_kill, u_handle) {
     }
 
     int32_t kill_rc = resource::proc_provider::terminate_proc_resource(
-        pr, resource::proc_provider::PROC_KILL_EXIT_CODE, true);
+        pr, resource::proc_provider::PROC_KILL_EXIT_CODE);
     resource::resource_release(obj);
 
     if (kill_rc != resource::OK) {

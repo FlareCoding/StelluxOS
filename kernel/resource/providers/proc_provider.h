@@ -59,14 +59,13 @@ __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t);
 /**
  * @brief Terminate a process resource and descendants recursively.
  * For CREATED tasks, destroys the task immediately and marks the proc
- * as exited. For started tasks, requests termination and optionally
- * blocks until the task has exited.
+ * as exited. For started tasks, requests termination and blocks until
+ * the task has exited.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t terminate_proc_resource(
     proc_resource* pr,
-    int32_t exit_code,
-    bool wait_for_exit
+    int32_t exit_code
 );
 
 } // namespace resource::proc_provider
