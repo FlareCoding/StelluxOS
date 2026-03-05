@@ -13,8 +13,10 @@ struct proc_resource : rc::ref_counted<proc_resource> {
     sched::task*      child;
     sync::wait_queue  wait_queue;
     int32_t           exit_code;
+    uint32_t          terminate_epoch;
     bool              exited;
     bool              detached;
+    bool              terminate_in_progress;
 
     /**
      * @brief Free a proc_resource when the last reference is released.

@@ -170,6 +170,64 @@ static int run_kill_invalid_test(void) {
     return 0;
 }
 
+static int run_kill_cycle_test(void) {
+    const char* sleep_argv[] = { "sleep", "5000", NULL };
+
+    int a = proc_create("/initrd/bin/proctest", sleep_argv);
+    if (a < 0) {
+        printf("proctest(kill-cycle): create A failed errno=%d\r\n", errno);
+        return 80;
+    }
+
+    int b = proc_create("/initrd/bin/proctest", sleep_argv);
+    if (b < 0) {
+        printf("proctest(kill-cycle): create B failed errno=%d\r\n", errno);
+        return 81;
+    }
+
+    if (proc_set_handle(a, 10, b) < 0) {
+        printf("proctest(kill-cycle): set A->B failed errno=%d\r\n", errno);
+        return 82;
+    }
+    if (proc_set_handle(b, 10, a) < 0) {
+        printf("proctest(kill-cycle): set B->A failed errno=%d\r\n", errno);
+        return 83;
+    }
+
+    if (proc_start(a) < 0 || proc_start(b) < 0) {
+        printf("proctest(kill-cycle): start failed errno=%d\r\n", errno);
+        return 84;
+    }
+
+    sleep_ms(100);
+
+    if (proc_kill(a) < 0) {
+        printf("proctest(kill-cycle): proc_kill(A) failed errno=%d\r\n", errno);
+        return 85;
+    }
+
+    int exit_a = -1;
+    int exit_b = -1;
+    if (proc_wait(a, &exit_a) < 0) {
+        printf("proctest(kill-cycle): wait A failed errno=%d\r\n", errno);
+        return 86;
+    }
+    if (proc_wait(b, &exit_b) < 0) {
+        printf("proctest(kill-cycle): wait B failed errno=%d\r\n", errno);
+        return 87;
+    }
+
+    printf("proctest(kill-cycle): exitA=%d exitB=%d expected=%d\r\n",
+           exit_a, exit_b, PROC_KILL_EXPECTED_EXIT);
+    if (exit_a != PROC_KILL_EXPECTED_EXIT || exit_b != PROC_KILL_EXPECTED_EXIT) {
+        printf("proctest(kill-cycle): FAIL\r\n");
+        return 88;
+    }
+
+    printf("proctest(kill-cycle): PASS\r\n");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -221,6 +279,10 @@ int main(int argc, char** argv) {
         return run_kill_invalid_test();
     }
 
-    printf("usage: proctest [kill-recursive|kill-created|kill-invalid|orphan-exit|detach|chain <d> <ms>|sleep <ms>]\r\n");
+    if (strcmp(argv[1], "kill-cycle") == 0) {
+        return run_kill_cycle_test();
+    }
+
+    printf("usage: proctest [kill-recursive|kill-created|kill-invalid|kill-cycle|orphan-exit|detach|chain <d> <ms>|sleep <ms>]\r\n");
     return 1;
 }
