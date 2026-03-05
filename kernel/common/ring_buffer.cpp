@@ -1,4 +1,5 @@
 #include "common/ring_buffer.h"
+#include "sched/sched.h"
 #include "mm/heap.h"
 #include "common/string.h"
 
@@ -77,6 +78,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
         }
         while (readable_bytes(rb) == 0 && !rb->writer_closed) {
             irq = sync::wait(rb->read_wq, rb->lock, irq);
+            sched::terminate_if_requested();
         }
     }
 
@@ -123,6 +125,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
         }
         while (writable_bytes(rb) == 0 && !rb->reader_closed) {
             irq = sync::wait(rb->write_wq, rb->lock, irq);
+            sched::terminate_if_requested();
         }
     }
 

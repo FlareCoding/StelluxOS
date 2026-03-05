@@ -26,6 +26,7 @@ __PRIVILEGED_CODE void mutex_lock(mutex& m) {
         MUTEX_ASSERT(!(self->exec.flags & sched::TASK_FLAG_IDLE),
                      "idle task blocked on contended mutex");
         irq = wait(m.wq, m.lock, irq);
+        sched::terminate_if_requested();
     }
 
     m.owner = self;

@@ -18,6 +18,8 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
     }
 
     spin_lock(wq.lock);
+    __atomic_store_n(&self->blocking_kind, sched::TASK_BLOCKING_WAIT_QUEUE, __ATOMIC_RELEASE);
+    __atomic_store_n(&self->blocking_object, &wq, __ATOMIC_RELEASE);
     self->state = sched::TASK_STATE_BLOCKED;
     wq.waiters.push_back(self);
     spin_unlock(wq.lock);
@@ -26,7 +28,10 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
 
     sched::yield();
 
-    return spin_lock_irqsave(lock);
+    irq_state irq = spin_lock_irqsave(lock);
+    __atomic_store_n(&self->blocking_kind, sched::TASK_BLOCKING_NONE, __ATOMIC_RELEASE);
+    __atomic_store_n(&self->blocking_object, nullptr, __ATOMIC_RELEASE);
+    return irq;
 }
 
 /**
@@ -58,6 +63,32 @@ __PRIVILEGED_CODE void wake_all(wait_queue& wq) {
     while (sched::task* t = batch.pop_front()) {
         sched::wake(t);
     }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool cancel_wait(wait_queue& wq, sched::task* t) {
+    if (!t) {
+        return false;
+    }
+
+    irq_state irq = spin_lock_irqsave(wq.lock);
+    bool matches_queue =
+        __atomic_load_n(&t->blocking_kind, __ATOMIC_ACQUIRE) == sched::TASK_BLOCKING_WAIT_QUEUE &&
+        __atomic_load_n(&t->blocking_object, __ATOMIC_ACQUIRE) == &wq;
+    bool linked = t->wait_link.prev != nullptr && t->wait_link.next != nullptr;
+
+    if (matches_queue && linked) {
+        wq.waiters.remove(t);
+        __atomic_store_n(&t->blocking_kind, sched::TASK_BLOCKING_NONE, __ATOMIC_RELEASE);
+        __atomic_store_n(&t->blocking_object, nullptr, __ATOMIC_RELEASE);
+        spin_unlock_irqrestore(wq.lock, irq);
+        return true;
+    }
+
+    spin_unlock_irqrestore(wq.lock, irq);
+    return false;
 }
 
 } // namespace sync

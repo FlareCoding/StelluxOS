@@ -1,5 +1,6 @@
 #include "syscall/syscall.h"
 #include "syscall/syscall_table.h"
+#include "sched/sched.h"
 #include "sched/task_exec_core.h"
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
@@ -34,6 +35,8 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     } else {
         result = syscall::ENOSYS;
     }
+
+    sched::terminate_if_requested();
 
     // Return-boundary restore: dynamic runtime elevation follows the selected
     // task mode once syscall handling and switch teardown are complete.

@@ -56,6 +56,14 @@ __PRIVILEGED_CODE bool on_interrupt();
  */
 __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns);
 
+/**
+ * @brief Cancel a pending sleep for the given task if it is currently queued.
+ * Safe from IRQ context.
+ * @return true if the task was removed from a sleep queue.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE bool cancel_sleep(sched::task* t);
+
 } // namespace timer
 
 #endif // STELLUX_TIMER_TIMER_H

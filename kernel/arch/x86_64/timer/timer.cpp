@@ -113,6 +113,19 @@ __PRIVILEGED_CODE static void program_oneshot(uint64_t deadline_ns) {
     mmio::write32(lapic + irq::LAPIC_TIMER_ICR, count);
 }
 
+__PRIVILEGED_CODE static void program_next_event(timer_cpu_state& state) {
+    uint64_t next_event = state.next_tick_ns;
+    if (!state.sleep_queue.empty()) {
+        uint64_t front_deadline = state.sleep_queue.front()->timer_deadline;
+        if (front_deadline < next_event) {
+            next_event = front_deadline;
+        }
+    }
+
+    state.programmed_ns = next_event;
+    program_oneshot(next_event);
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -231,16 +244,7 @@ __PRIVILEGED_CODE bool on_interrupt() {
         }
     }
 
-    uint64_t next_event = state.next_tick_ns;
-    if (!state.sleep_queue.empty()) {
-        uint64_t front_deadline = state.sleep_queue.front()->timer_deadline;
-        if (front_deadline < next_event) {
-            next_event = front_deadline;
-        }
-    }
-
-    state.programmed_ns = next_event;
-    program_oneshot(next_event);
+    program_next_event(state);
 
     sync::spin_unlock_irqrestore(state.lock, irq);
 
@@ -266,6 +270,33 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
     }
 
     sync::spin_unlock_irqrestore(state.lock, irq);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool cancel_sleep(sched::task* t) {
+    if (!t) {
+        return false;
+    }
+
+    uint32_t cpu_id = __atomic_load_n(&t->exec.cpu, __ATOMIC_ACQUIRE);
+    timer_cpu_state& state = per_cpu_on(cpu_timer_state, cpu_id);
+    sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
+
+    bool linked = t->timer_link.prev != nullptr && t->timer_link.next != nullptr;
+    bool queued = t->timer_deadline != 0 && linked;
+    if (!queued) {
+        sync::spin_unlock_irqrestore(state.lock, irq);
+        return false;
+    }
+
+    state.sleep_queue.remove(t);
+    t->timer_deadline = 0;
+    program_next_event(state);
+
+    sync::spin_unlock_irqrestore(state.lock, irq);
+    return true;
 }
 
 } // namespace timer

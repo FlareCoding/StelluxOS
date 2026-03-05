@@ -90,6 +90,31 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id);
 __PRIVILEGED_CODE void wake(task* t);
 
 /**
+ * @brief Request asynchronous termination of a task.
+ * Records exit intent and wakes/cancels supported blocking states, but does
+ * not wait for completion or reclaim task memory.
+ * @param t Target task.
+ * @param exit_code Terminal exit code to use if the request wins.
+ * @return true if a new termination request was recorded, false if the task
+ *   was already terminating, dead, or otherwise unchanged.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE bool request_task_terminate(task* t, int exit_code);
+
+/**
+ * @brief Check whether the current task has a pending termination request.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE bool termination_requested();
+
+/**
+ * @brief Exit the current task immediately if termination was requested.
+ * No-op otherwise.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void terminate_if_requested();
+
+/**
  * @brief Yield the current CPU to the scheduler (cooperative switch).
  * Triggers a software interrupt that routes through the trap path.
  */

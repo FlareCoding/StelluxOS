@@ -25,6 +25,15 @@ constexpr uint32_t TASK_CLEANUP_STAGE_SCHEDULER_DETACHED    = 2;
 constexpr uint32_t TASK_CLEANUP_STAGE_WAITING_FOR_TLB_SYNC  = 3;
 constexpr uint32_t TASK_CLEANUP_STAGE_READY_TO_RECLAIM      = 4;
 
+constexpr uint32_t TASK_TERMINATION_NONE      = 0;
+constexpr uint32_t TASK_TERMINATION_ARMING    = 1;
+constexpr uint32_t TASK_TERMINATION_REQUESTED = 2;
+constexpr uint32_t TASK_TERMINATION_EXITING   = 3;
+
+constexpr uint32_t TASK_BLOCKING_NONE       = 0;
+constexpr uint32_t TASK_BLOCKING_WAIT_QUEUE = 1;
+constexpr uint32_t TASK_BLOCKING_TIMER      = 2;
+
 /**
  * Per-task TLB sync ticket used by reaper before reclaiming task stacks.
  *
@@ -42,6 +51,10 @@ struct task {
     int32_t        exit_code;
     uint32_t       state;
     uint32_t       cleanup_stage;
+    uint32_t       termination_state;
+    int32_t        termination_exit_code;
+    uint32_t       blocking_kind;
+    void*          blocking_object;
     uintptr_t      task_stack_base;
     uintptr_t      sys_stack_base;
     list::node     sched_link;

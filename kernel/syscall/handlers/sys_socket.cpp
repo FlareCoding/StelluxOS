@@ -473,6 +473,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     }
     while (ls->accept_queue.empty() && !ls->closed) {
         irq = sync::wait(ls->accept_wq, ls->lock, irq);
+        sched::terminate_if_requested();
     }
     if (ls->accept_queue.empty()) {
         sync::spin_unlock_irqrestore(ls->lock, irq);

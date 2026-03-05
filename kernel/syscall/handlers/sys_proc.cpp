@@ -239,6 +239,7 @@ DEFINE_SYSCALL2(proc_wait, u_handle, u_exit_code_ptr) {
     }
     while (!pr->exited) {
         irq = sync::wait(pr->wait_queue, pr->lock, irq);
+        sched::terminate_if_requested();
     }
     int32_t child_exit_code = pr->exit_code;
     sync::spin_unlock_irqrestore(pr->lock, irq);

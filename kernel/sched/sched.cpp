@@ -12,6 +12,7 @@
 #include "mm/paging.h"
 #include "common/logging.h"
 #include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 #include "smp/smp.h"
 #include "hw/cpu.h"
 #include "clock/clock.h"
@@ -60,6 +61,18 @@ static uint32_t load_cleanup_stage(const task* t) {
 
 static void store_cleanup_stage(task* t, uint32_t stage) {
     __atomic_store_n(&t->cleanup_stage, stage, __ATOMIC_RELEASE);
+}
+
+static uint32_t load_termination_state(const task* t) {
+    return __atomic_load_n(&t->termination_state, __ATOMIC_ACQUIRE);
+}
+
+static void store_termination_state(task* t, uint32_t state) {
+    __atomic_store_n(&t->termination_state, state, __ATOMIC_RELEASE);
+}
+
+static int32_t load_termination_exit_code(const task* t) {
+    return __atomic_load_n(&t->termination_exit_code, __ATOMIC_ACQUIRE);
 }
 
 #ifdef DEBUG
@@ -342,6 +355,66 @@ __PRIVILEGED_CODE void wake(task* t) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE bool request_task_terminate(task* t, int exit_code) {
+    if (!t) {
+        return false;
+    }
+
+    if (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) == TASK_STATE_DEAD) {
+        return false;
+    }
+
+    uint32_t expected = TASK_TERMINATION_NONE;
+    if (!__atomic_compare_exchange_n(&t->termination_state, &expected,
+                                      TASK_TERMINATION_ARMING,
+                                      false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return false;
+    }
+
+    __atomic_store_n(&t->termination_exit_code, exit_code, __ATOMIC_RELEASE);
+    store_termination_state(t, TASK_TERMINATION_REQUESTED);
+
+    uint32_t blocking_kind = __atomic_load_n(&t->blocking_kind, __ATOMIC_ACQUIRE);
+    void* blocking_object = __atomic_load_n(&t->blocking_object, __ATOMIC_ACQUIRE);
+
+    if (blocking_kind == TASK_BLOCKING_WAIT_QUEUE && blocking_object) {
+        (void)sync::cancel_wait(*reinterpret_cast<sync::wait_queue*>(blocking_object), t);
+        wake(t);
+    } else if (blocking_kind == TASK_BLOCKING_TIMER) {
+        (void)timer::cancel_sleep(t);
+        wake(t);
+    }
+
+    return true;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool termination_requested() {
+    task* self = current();
+    return self && load_termination_state(self) == TASK_TERMINATION_REQUESTED;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void terminate_if_requested() {
+    task* self = current();
+    if (!self) {
+        return;
+    }
+
+    if (load_termination_state(self) != TASK_TERMINATION_REQUESTED) {
+        return;
+    }
+
+    exit(load_termination_exit_code(self));
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void sleep_ns(uint64_t ns) {
     if (ns == 0) {
         yield();
@@ -354,9 +427,13 @@ __PRIVILEGED_CODE void sleep_ns(uint64_t ns) {
     }
 
     uint64_t deadline = clock::now_ns() + ns;
+    __atomic_store_n(&self->blocking_kind, TASK_BLOCKING_TIMER, __ATOMIC_RELEASE);
+    __atomic_store_n(&self->blocking_object, nullptr, __ATOMIC_RELEASE);
     self->state = TASK_STATE_BLOCKED;
     timer::schedule_sleep(self, deadline);
     yield();
+    __atomic_store_n(&self->blocking_kind, TASK_BLOCKING_NONE, __ATOMIC_RELEASE);
+    __atomic_store_n(&self->blocking_object, nullptr, __ATOMIC_RELEASE);
 }
 
 __PRIVILEGED_CODE void sleep_us(uint64_t us) {
@@ -370,6 +447,10 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
 [[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
         sched::task* task = current();
+        store_termination_state(task, TASK_TERMINATION_EXITING);
+        __atomic_store_n(&task->termination_exit_code, exit_code, __ATOMIC_RELEASE);
+        __atomic_store_n(&task->blocking_kind, TASK_BLOCKING_NONE, __ATOMIC_RELEASE);
+        __atomic_store_n(&task->blocking_object, nullptr, __ATOMIC_RELEASE);
 
         if (task->proc_res) {
             auto* pr = task->proc_res;
@@ -460,6 +541,10 @@ __PRIVILEGED_CODE task* create_kernel_task(
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    t->termination_state = TASK_TERMINATION_NONE;
+    t->termination_exit_code = 0;
+    t->blocking_kind = TASK_BLOCKING_NONE;
+    t->blocking_object = nullptr;
     t->tlb_sync_ticket.armed = 0;
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
@@ -656,6 +741,10 @@ __PRIVILEGED_CODE task* create_user_task(
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    t->termination_state = TASK_TERMINATION_NONE;
+    t->termination_exit_code = 0;
+    t->blocking_kind = TASK_BLOCKING_NONE;
+    t->blocking_object = nullptr;
     t->tlb_sync_ticket.armed = 0;
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
@@ -707,6 +796,10 @@ __PRIVILEGED_CODE int32_t init() {
     string::memcpy(idle->name, "idle", 4);
     idle->name[4] = '\0';
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    idle->termination_state = TASK_TERMINATION_NONE;
+    idle->termination_exit_code = 0;
+    idle->blocking_kind = TASK_BLOCKING_NONE;
+    idle->blocking_object = nullptr;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
     resource::init_task_handles(idle);
@@ -769,6 +862,10 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     string::memcpy(idle->name, "idle", 4);
     idle->name[4] = '\0';
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    idle->termination_state = TASK_TERMINATION_NONE;
+    idle->termination_exit_code = 0;
+    idle->blocking_kind = TASK_BLOCKING_NONE;
+    idle->blocking_object = nullptr;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
     resource::init_task_handles(idle);
