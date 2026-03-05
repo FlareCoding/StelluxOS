@@ -125,6 +125,51 @@ static int run_detach_test(void) {
     return 0;
 }
 
+static int run_kill_created_test(void) {
+    const char* child_argv[] = { "sleep", "5000", NULL };
+    int child = proc_create("/initrd/bin/proctest", child_argv);
+    if (child < 0) {
+        printf("proctest(kill-created): proc_create failed errno=%d\r\n", errno);
+        return 60;
+    }
+
+    if (proc_kill(child) < 0) {
+        printf("proctest(kill-created): proc_kill failed errno=%d\r\n", errno);
+        return 61;
+    }
+
+    int exit_code = -1;
+    if (proc_wait(child, &exit_code) < 0) {
+        printf("proctest(kill-created): proc_wait failed errno=%d\r\n", errno);
+        return 62;
+    }
+
+    printf("proctest(kill-created): child exit=%d expected=%d\r\n",
+           exit_code, PROC_KILL_EXPECTED_EXIT);
+    if (exit_code != PROC_KILL_EXPECTED_EXIT) {
+        printf("proctest(kill-created): FAIL\r\n");
+        return 63;
+    }
+
+    printf("proctest(kill-created): PASS\r\n");
+    return 0;
+}
+
+static int run_kill_invalid_test(void) {
+    errno = 0;
+    int rc = proc_kill(-1);
+    if (rc == 0) {
+        printf("proctest(kill-invalid): expected failure but succeeded\r\n");
+        return 70;
+    }
+    if (errno == 0) {
+        printf("proctest(kill-invalid): expected errno to be set\r\n");
+        return 71;
+    }
+    printf("proctest(kill-invalid): PASS errno=%d\r\n", errno);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -168,6 +213,14 @@ int main(int argc, char** argv) {
         return run_detach_test();
     }
 
-    printf("usage: proctest [kill-recursive|orphan-exit|detach|chain <d> <ms>|sleep <ms>]\r\n");
+    if (strcmp(argv[1], "kill-created") == 0) {
+        return run_kill_created_test();
+    }
+
+    if (strcmp(argv[1], "kill-invalid") == 0) {
+        return run_kill_invalid_test();
+    }
+
+    printf("usage: proctest [kill-recursive|kill-created|kill-invalid|orphan-exit|detach|chain <d> <ms>|sleep <ms>]\r\n");
     return 1;
 }
