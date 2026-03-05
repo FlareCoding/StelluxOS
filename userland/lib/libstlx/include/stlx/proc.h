@@ -43,6 +43,14 @@ int proc_wait(int handle, int* exit_code);
 int proc_detach(int handle);
 
 /**
+ * Request termination of a child process without consuming the handle.
+ * If the child is still live, it will exit with a forced-termination code.
+ * The caller may later use proc_wait() to reap it and collect the exit code.
+ * Returns 0 on success, -1 on failure with errno set.
+ */
+int proc_kill(int handle);
+
+/**
  * Query process information. Handle must still be valid (call before
  * proc_wait/proc_detach). Returns 0 on success, -1 on failure with
  * errno set.

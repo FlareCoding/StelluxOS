@@ -32,6 +32,10 @@ int proc_detach(int handle) {
     return (int)syscall(SYS_PROC_DETACH, handle);
 }
 
+int proc_kill(int handle) {
+    return (int)syscall(SYS_PROC_KILL, handle);
+}
+
 int proc_info(int handle, process_info* info) {
     return (int)syscall(SYS_PROC_INFO, handle, info);
 }

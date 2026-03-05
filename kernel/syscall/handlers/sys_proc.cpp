@@ -23,6 +23,7 @@ struct process_info {
 constexpr uint32_t MAX_PROC_ARGC = 64;
 constexpr size_t MAX_PROC_ARG_LEN = 256;
 constexpr size_t MAX_PROC_ARGV_TOTAL = 3500;
+constexpr int32_t PROC_KILLED_EXIT_CODE = 137;
 
 __PRIVILEGED_CODE static const char* path_basename(const char* path) {
     const char* base = path;
@@ -288,6 +289,60 @@ DEFINE_SYSCALL1(proc_detach, u_handle) {
 
     resource::resource_release(obj);
     resource::close(caller, handle);
+    return 0;
+}
+
+DEFINE_SYSCALL1(proc_kill, u_handle) {
+    int32_t handle = static_cast<int32_t>(u_handle);
+
+    sched::task* caller = sched::current();
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &caller->handles, handle, 0, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    if (obj->type != resource::resource_type::PROCESS) {
+        resource::resource_release(obj);
+        return syscall::EBADF;
+    }
+
+    auto* pr = resource::proc_provider::get_proc_resource(obj);
+    if (!pr) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    if (pr->exited || !pr->child) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(obj);
+        return 0;
+    }
+
+    if (pr->child->state == sched::TASK_STATE_CREATED) {
+        sched::task* child = pr->child;
+        pr->child = nullptr;
+        pr->exit_code = PROC_KILLED_EXIT_CODE;
+        pr->exited = true;
+        sync::wake_all(pr->wait_queue);
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+
+        if (child->proc_res) {
+            (void)child->proc_res->release();
+            child->proc_res = nullptr;
+        }
+        resource::proc_provider::destroy_unstarted_task(child);
+        resource::resource_release(obj);
+        return 0;
+    }
+
+    sched::task* child = pr->child;
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+
+    (void)sched::request_task_terminate(child, PROC_KILLED_EXIT_CODE);
+    resource::resource_release(obj);
     return 0;
 }
 

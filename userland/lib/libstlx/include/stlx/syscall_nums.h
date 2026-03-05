@@ -7,6 +7,7 @@
 #define SYS_PROC_DETACH  1013
 #define SYS_PROC_INFO       1014
 #define SYS_PROC_SET_HANDLE 1015
+#define SYS_PROC_KILL       1016
 #define SYS_PTY_CREATE      1020
 
 #endif /* STLX_SYSCALL_NUMS_H */

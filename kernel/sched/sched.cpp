@@ -376,7 +376,6 @@ __PRIVILEGED_CODE bool request_task_terminate(task* t, int exit_code) {
 
     uint32_t blocking_kind = __atomic_load_n(&t->blocking_kind, __ATOMIC_ACQUIRE);
     void* blocking_object = __atomic_load_n(&t->blocking_object, __ATOMIC_ACQUIRE);
-
     if (blocking_kind == TASK_BLOCKING_WAIT_QUEUE && blocking_object) {
         (void)sync::cancel_wait(*reinterpret_cast<sync::wait_queue*>(blocking_object), t);
         wake(t);
