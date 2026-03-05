@@ -6,16 +6,32 @@
 #include <string.h>
 #include <time.h>
 
+static uint64_t monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) {
+        return 0;
+    }
+
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+
 static void sleep_ms(int ms) {
     if (ms <= 0) {
         return;
     }
 
-    struct timespec ts = {
-        .tv_sec = ms / 1000,
-        .tv_nsec = (ms % 1000) * 1000000L,
-    };
-    nanosleep(&ts, NULL);
+    uint64_t start = monotonic_ms();
+    if (start == 0) {
+        volatile uint64_t spins = (uint64_t)ms * 500000ULL;
+        while (spins-- > 0) {
+            __asm__ volatile("" ::: "memory");
+        }
+        return;
+    }
+
+    while ((monotonic_ms() - start) < (uint64_t)ms) {
+        __asm__ volatile("" ::: "memory");
+    }
 }
 
 static int wait_for_code(int handle, int expected_code) {
@@ -197,6 +213,9 @@ static int mode_selftest(void) {
     failures += report_case("kill-sleep", run_kill_sleep());
     failures += report_case("kill-created", run_kill_created());
     failures += report_case("reject-transfer", run_reject_transfer());
+    failures += report_case("recursive-kill", run_recursive_kill());
+    failures += report_case("detach", run_detach());
+    failures += report_case("parent-exit-helper", run_parent_exit_helper_wait());
 
     if (failures == 0) {
         printf("proctest: SELFTEST PASS\r\n");
