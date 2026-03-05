@@ -27,6 +27,8 @@ struct proc_resource_impl {
     rc::strong_ref<proc_resource> proc;
 };
 
+constexpr int32_t PROC_KILL_EXIT_CODE = 137;
+
 /**
  * @brief Create a PROCESS resource wrapping a child task.
  * Sets child_task->proc_res and gives the child an owned ref on proc_resource.
@@ -51,6 +53,19 @@ __PRIVILEGED_CODE int32_t create_proc_resource(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t);
+
+/**
+ * @brief Terminate a process resource and descendants recursively.
+ * For CREATED tasks, destroys the task immediately and marks the proc
+ * as exited. For started tasks, requests termination and optionally
+ * blocks until the task has exited.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t terminate_proc_resource(
+    proc_resource* pr,
+    int32_t exit_code,
+    bool wait_for_exit
+);
 
 } // namespace resource::proc_provider
 

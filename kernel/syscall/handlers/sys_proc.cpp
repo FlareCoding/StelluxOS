@@ -290,6 +290,42 @@ DEFINE_SYSCALL1(proc_detach, u_handle) {
     return 0;
 }
 
+DEFINE_SYSCALL1(proc_kill, u_handle) {
+    int32_t handle = static_cast<int32_t>(u_handle);
+
+    sched::task* caller = sched::current();
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &caller->handles, handle, 0, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    if (obj->type != resource::resource_type::PROCESS) {
+        resource::resource_release(obj);
+        return syscall::EBADF;
+    }
+
+    auto* pr = resource::proc_provider::get_proc_resource(obj);
+    if (!pr) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    int32_t kill_rc = resource::proc_provider::terminate_proc_resource(
+        pr, resource::proc_provider::PROC_KILL_EXIT_CODE, true);
+    resource::resource_release(obj);
+
+    if (kill_rc != resource::OK) {
+        if (kill_rc == resource::ERR_INVAL) {
+            return syscall::EINVAL;
+        }
+        return syscall::EIO;
+    }
+
+    return 0;
+}
+
 DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
     if (u_info_ptr == 0) {
         return syscall::EFAULT;

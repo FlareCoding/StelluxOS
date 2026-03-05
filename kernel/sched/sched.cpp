@@ -12,6 +12,7 @@
 #include "mm/paging.h"
 #include "common/logging.h"
 #include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 #include "smp/smp.h"
 #include "hw/cpu.h"
 #include "clock/clock.h"
@@ -164,6 +165,60 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task_thunk(
 
 task* current() {
     return this_cpu(current_task);
+}
+
+__PRIVILEGED_CODE bool termination_requested(task* t, int* out_exit_code) {
+    if (!t) {
+        return false;
+    }
+
+    if (__atomic_load_n(&t->terminate_requested, __ATOMIC_ACQUIRE) == 0) {
+        return false;
+    }
+
+    if (out_exit_code) {
+        *out_exit_code = __atomic_load_n(&t->terminate_exit_code, __ATOMIC_ACQUIRE);
+    }
+    return true;
+}
+
+__PRIVILEGED_CODE void request_terminate(task* t, int exit_code) {
+    if (!t) {
+        return;
+    }
+    if (t->exec.flags & TASK_FLAG_KERNEL) {
+        return;
+    }
+
+    __atomic_store_n(&t->terminate_exit_code, exit_code, __ATOMIC_RELEASE);
+    __atomic_store_n(&t->terminate_requested, 1, __ATOMIC_RELEASE);
+
+    if (t == current()) {
+        return;
+    }
+
+    uint32_t state = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
+    if (state != TASK_STATE_BLOCKED) {
+        return;
+    }
+
+    uint32_t block_kind = __atomic_load_n(&t->block_kind, __ATOMIC_ACQUIRE);
+    if (block_kind == TASK_BLOCK_WAIT_QUEUE) {
+        sync::wait_queue* wq = __atomic_load_n(&t->blocked_wait_queue, __ATOMIC_ACQUIRE);
+        if (wq) {
+            sync::cancel_wait(*wq, t);
+        }
+    } else if (block_kind == TASK_BLOCK_TIMER) {
+        timer::cancel_sleep(t);
+    }
+}
+
+__PRIVILEGED_CODE void maybe_terminate_current() {
+    task* t = current();
+    int exit_code = 0;
+    if (termination_requested(t, &exit_code)) {
+        exit(exit_code);
+    }
 }
 
 /**
@@ -343,8 +398,11 @@ __PRIVILEGED_CODE void wake(task* t) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void sleep_ns(uint64_t ns) {
+    maybe_terminate_current();
+
     if (ns == 0) {
         yield();
+        maybe_terminate_current();
         return;
     }
 
@@ -357,6 +415,7 @@ __PRIVILEGED_CODE void sleep_ns(uint64_t ns) {
     self->state = TASK_STATE_BLOCKED;
     timer::schedule_sleep(self, deadline);
     yield();
+    maybe_terminate_current();
 }
 
 __PRIVILEGED_CODE void sleep_us(uint64_t us) {
@@ -392,6 +451,9 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
         store_cleanup_stage(task, TASK_CLEANUP_STAGE_EXIT_REQUESTED);
         task->state = TASK_STATE_DEAD;
         task->exit_code = exit_code;
+        task->block_kind = TASK_BLOCK_NONE;
+        task->blocked_wait_queue = nullptr;
+        task->terminate_requested = 0;
     });
     yield();
     __builtin_unreachable();
@@ -457,6 +519,10 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
+    t->block_kind = TASK_BLOCK_NONE;
+    t->terminate_requested = 0;
+    t->terminate_exit_code = 0;
+    t->blocked_wait_queue = nullptr;
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
@@ -653,6 +719,10 @@ __PRIVILEGED_CODE task* create_user_task(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
+    t->block_kind = TASK_BLOCK_NONE;
+    t->terminate_requested = 0;
+    t->terminate_exit_code = 0;
+    t->blocked_wait_queue = nullptr;
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
@@ -704,6 +774,10 @@ __PRIVILEGED_CODE int32_t init() {
     idle->wait_link = {};
     idle->timer_link = {};
     idle->timer_deadline = 0;
+    idle->block_kind = TASK_BLOCK_NONE;
+    idle->terminate_requested = 0;
+    idle->terminate_exit_code = 0;
+    idle->blocked_wait_queue = nullptr;
     string::memcpy(idle->name, "idle", 4);
     idle->name[4] = '\0';
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
@@ -766,6 +840,10 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->sys_stack_base = 0;
     idle->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     idle->state = TASK_STATE_RUNNING;
+    idle->block_kind = TASK_BLOCK_NONE;
+    idle->terminate_requested = 0;
+    idle->terminate_exit_code = 0;
+    idle->blocked_wait_queue = nullptr;
     string::memcpy(idle->name, "idle", 4);
     idle->name[4] = '\0';
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;

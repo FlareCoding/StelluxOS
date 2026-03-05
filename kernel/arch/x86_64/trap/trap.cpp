@@ -4,6 +4,7 @@
 #include "io/serial.h"
 #include "timer/timer.h"
 #include "debug/panic.h"
+#include "sched/sched.h"
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
 #include "dynpriv/dynpriv.h"
@@ -36,6 +37,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         sched::on_yield(tf);
         // Clear the IRQ flag on the originally interrupted task, not the post-switch task.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        sched::maybe_terminate_current();
         restore_post_trap_elevation_state();
         return;
     }
@@ -48,6 +50,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         }
         // Clear IRQ state on the interrupted task to avoid stale IN_IRQ ownership.
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        sched::maybe_terminate_current();
         restore_post_trap_elevation_state();
         return;
     }
@@ -56,6 +59,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         irq::eoi(0);
         serial::on_rx_irq();
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        sched::maybe_terminate_current();
         restore_post_trap_elevation_state();
         return;
     }

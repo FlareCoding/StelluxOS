@@ -56,4 +56,13 @@ int proc_info(int handle, process_info* info);
  */
 int proc_set_handle(int proc_handle, int slot, int resource_handle);
 
+/**
+ * Request termination of a process and all of its descendants reachable
+ * through PROCESS handles. This call blocks until the target process has
+ * exited. The process handle remains valid so callers may still query
+ * proc_info/proc_wait afterwards.
+ * Returns 0 on success, -1 on failure with errno set.
+ */
+int proc_kill(int handle);
+
 #endif /* STLX_PROC_H */

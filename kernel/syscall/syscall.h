@@ -19,6 +19,7 @@ constexpr uint64_t SYS_PROC_WAIT   = 1012;
 constexpr uint64_t SYS_PROC_DETACH = 1013;
 constexpr uint64_t SYS_PROC_INFO       = 1014;
 constexpr uint64_t SYS_PROC_SET_HANDLE = 1015;
+constexpr uint64_t SYS_PROC_KILL       = 1016;
 
 // PTY
 constexpr uint64_t SYS_PTY_CREATE = 1020;

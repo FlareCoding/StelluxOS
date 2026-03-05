@@ -8,6 +8,7 @@
 
 namespace resource::proc_provider { struct proc_resource; }
 namespace fs { class node; }
+namespace sync { struct wait_queue; }
 
 namespace sched {
 
@@ -18,6 +19,10 @@ constexpr uint32_t TASK_STATE_READY   = 1; // on a runqueue
 constexpr uint32_t TASK_STATE_RUNNING = 2; // executing on a CPU
 constexpr uint32_t TASK_STATE_BLOCKED = 3; // on a wait queue
 constexpr uint32_t TASK_STATE_DEAD    = 4; // terminated
+
+constexpr uint32_t TASK_BLOCK_NONE       = 0;
+constexpr uint32_t TASK_BLOCK_WAIT_QUEUE = 1;
+constexpr uint32_t TASK_BLOCK_TIMER      = 2;
 
 constexpr uint32_t TASK_CLEANUP_STAGE_ACTIVE                = 0;
 constexpr uint32_t TASK_CLEANUP_STAGE_EXIT_REQUESTED        = 1;
@@ -48,6 +53,10 @@ struct task {
     list::node     wait_link;
     list::node     timer_link;
     uint64_t       timer_deadline;
+    uint32_t       block_kind;
+    uint32_t       terminate_requested;
+    int32_t        terminate_exit_code;
+    sync::wait_queue* blocked_wait_queue;
     char           name[TASK_NAME_MAX];
     task_tlb_sync_ticket tlb_sync_ticket;
     rc::reaper::dead_node reaper_node;

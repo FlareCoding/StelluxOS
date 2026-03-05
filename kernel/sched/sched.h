@@ -103,6 +103,29 @@ void yield();
 [[noreturn]] void exit(int exit_code);
 
 /**
+ * @brief Request termination of a task from another context.
+ * Sets a pending-terminate flag and wakes blocked tasks so they can
+ * converge to sched::exit() at the next safe point.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void request_terminate(task* t, int exit_code);
+
+/**
+ * @brief Query whether termination has been requested for a task.
+ * If out_exit_code is non-null and a request exists, writes the
+ * requested exit code.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool termination_requested(task* t, int* out_exit_code = nullptr);
+
+/**
+ * @brief Terminate current task if a pending request exists.
+ * Safe-point helper for trap/syscall/blocking return paths.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void maybe_terminate_current();
+
+/**
  * @brief Get the current task on this CPU.
  */
 task* current();

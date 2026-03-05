@@ -154,6 +154,8 @@ __PRIVILEGED_CODE bool on_interrupt() {
         if (t->timer_deadline > now) break;
         state.sleep_queue.pop_front();
         t->timer_deadline = 0;
+        t->block_kind = sched::TASK_BLOCK_NONE;
+        t->blocked_wait_queue = nullptr;
         sched::wake(t);
     }
 
@@ -188,6 +190,8 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
     timer_cpu_state& state = this_cpu(cpu_timer_state);
     sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
 
+    t->block_kind = sched::TASK_BLOCK_TIMER;
+    t->blocked_wait_queue = nullptr;
     t->timer_deadline = deadline_ns;
     state.sleep_queue.insert_sorted(t,
         [](sched::task* a, sched::task* b) {
@@ -200,6 +204,49 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
     }
 
     sync::spin_unlock_irqrestore(state.lock, irq);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cancel_sleep(sched::task* t) {
+    if (!t) {
+        return;
+    }
+
+    uint32_t target_cpu = __atomic_load_n(&t->exec.cpu, __ATOMIC_ACQUIRE);
+    if (target_cpu >= MAX_CPUS) {
+        return;
+    }
+
+    timer_cpu_state& state = per_cpu_on(cpu_timer_state, target_cpu);
+    bool should_wake = false;
+
+    sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
+    if (t->state == sched::TASK_STATE_BLOCKED &&
+        t->block_kind == sched::TASK_BLOCK_TIMER &&
+        t->timer_link.prev && t->timer_link.next) {
+        state.sleep_queue.remove(t);
+        t->timer_deadline = 0;
+        t->block_kind = sched::TASK_BLOCK_NONE;
+        t->blocked_wait_queue = nullptr;
+        should_wake = true;
+
+        uint64_t next_event = state.next_tick_ns;
+        if (!state.sleep_queue.empty()) {
+            uint64_t front_deadline = state.sleep_queue.front()->timer_deadline;
+            if (front_deadline < next_event) {
+                next_event = front_deadline;
+            }
+        }
+        state.programmed_ns = next_event;
+        program_oneshot(next_event);
+    }
+    sync::spin_unlock_irqrestore(state.lock, irq);
+
+    if (should_wake) {
+        sched::wake(t);
+    }
 }
 
 } // namespace timer

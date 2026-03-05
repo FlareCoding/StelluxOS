@@ -56,6 +56,14 @@ __PRIVILEGED_CODE void wake_one(wait_queue& wq);
  */
 __PRIVILEGED_CODE void wake_all(wait_queue& wq);
 
+/**
+ * Remove a specific blocked task from this wait queue and wake it.
+ * No-op if the task is not currently queued on this wait queue.
+ * Safe from IRQ context.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cancel_wait(wait_queue& wq, sched::task* task);
+
 } // namespace sync
 
 #endif // STELLUX_SYNC_WAIT_QUEUE_H

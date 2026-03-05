@@ -3,6 +3,7 @@
 #include "common/types.h"
 #include "common/logging.h"
 #include "debug/panic.h"
+#include "sched/sched.h"
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
 #include "dynpriv/dynpriv.h"
@@ -74,6 +75,7 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
             sched::on_tick(tf);
         }
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        sched::maybe_terminate_current();
         restore_post_trap_elevation_state();
         return;
     }
@@ -82,6 +84,7 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         serial::on_rx_irq();
         irq::eoi(irq_id);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        sched::maybe_terminate_current();
         restore_post_trap_elevation_state();
         return;
     }
@@ -139,6 +142,7 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
             sched::on_tick(tf);
         }
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        sched::maybe_terminate_current();
         restore_post_trap_elevation_state();
         return;
     }
@@ -147,6 +151,7 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
         serial::on_rx_irq();
         irq::eoi(irq_id);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        sched::maybe_terminate_current();
         restore_post_trap_elevation_state();
         return;
     }

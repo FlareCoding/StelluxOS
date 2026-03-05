@@ -27,6 +27,49 @@ __PRIVILEGED_CODE static ssize_t proc_write(
     return ERR_UNSUP;
 }
 
+__PRIVILEGED_CODE int32_t terminate_proc_resource(
+    proc_resource* pr,
+    int32_t exit_code,
+    bool wait_for_exit
+) {
+    if (!pr) {
+        return ERR_INVAL;
+    }
+
+    sched::task* created_child = nullptr;
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+
+    if (!pr->child || pr->exited) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        return OK;
+    }
+
+    if (pr->child->state == sched::TASK_STATE_CREATED) {
+        created_child = pr->child;
+        pr->exit_code = exit_code;
+        pr->exited = true;
+        pr->child = nullptr;
+        sync::wake_all(pr->wait_queue);
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+
+        if (created_child->proc_res) {
+            (void)created_child->proc_res->release();
+            created_child->proc_res = nullptr;
+        }
+        destroy_unstarted_task(created_child);
+        return OK;
+    }
+
+    sched::request_terminate(pr->child, exit_code);
+    if (wait_for_exit) {
+        while (!pr->exited) {
+            irq = sync::wait(pr->wait_queue, pr->lock, irq);
+        }
+    }
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+    return OK;
+}
+
 __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
     if (!obj || !obj->impl) {
         return;
@@ -35,25 +78,17 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
     auto* impl = static_cast<proc_resource_impl*>(obj->impl);
     auto* pr = impl->proc.ptr();
 
+    bool should_terminate = false;
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
-
     if (pr->child && pr->child->state == sched::TASK_STATE_CREATED) {
-        auto* child = pr->child;
-        pr->child = nullptr;
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-
-        if (child->proc_res) {
-            (void)child->proc_res->release();
-            child->proc_res = nullptr;
-        }
-        destroy_unstarted_task(child);
+        should_terminate = true;
     } else if (pr->child && !pr->exited && !pr->detached) {
-        uint32_t child_tid = pr->child->tid;
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-        log::fatal("proc_close: parent exiting with running attached child tid=%u",
-                   child_tid);
-    } else {
-        sync::spin_unlock_irqrestore(pr->lock, irq);
+        should_terminate = true;
+    }
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+
+    if (should_terminate) {
+        (void)terminate_proc_resource(pr, PROC_KILL_EXIT_CODE, true);
     }
 
     heap::kfree_delete(impl);

@@ -9,5 +9,6 @@ DECLARE_SYSCALL(proc_wait);
 DECLARE_SYSCALL(proc_detach);
 DECLARE_SYSCALL(proc_info);
 DECLARE_SYSCALL(proc_set_handle);
+DECLARE_SYSCALL(proc_kill);
 
 #endif // STELLUX_SYSCALL_HANDLERS_SYS_PROC_H
