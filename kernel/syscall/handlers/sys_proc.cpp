@@ -383,6 +383,13 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
         return syscall::EBADF;
     }
 
+    if (res_obj->type == resource::resource_type::PROCESS) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(res_obj);
+        resource::resource_release(proc_obj);
+        return syscall::EINVAL;
+    }
+
     rc = resource::install_handle_at(
         &pr->child->handles, static_cast<resource::handle_t>(slot),
         res_obj, res_obj->type, res_rights);
