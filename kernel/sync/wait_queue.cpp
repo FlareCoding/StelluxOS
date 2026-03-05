@@ -20,7 +20,10 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
     int terminate_exit = 0;
     if (sched::termination_requested(self, &terminate_exit)) {
         spin_unlock_irqrestore(lock, saved);
-        sched::exit(terminate_exit);
+        sched::maybe_terminate_current();
+        for (;;) {
+            cpu::halt();
+        }
     }
 
     spin_lock(wq.lock);

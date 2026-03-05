@@ -63,6 +63,35 @@ static void store_cleanup_stage(task* t, uint32_t stage) {
     __atomic_store_n(&t->cleanup_stage, stage, __ATOMIC_RELEASE);
 }
 
+static void do_exit_current(int exit_code) {
+    sched::task* task = current();
+
+    if (task->proc_res) {
+        auto* pr = task->proc_res;
+        sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+        if (!pr->detached) {
+            pr->exit_code = exit_code;
+            pr->exited = true;
+            pr->child = nullptr;
+            sync::wake_all(pr->wait_queue);
+        } else {
+            pr->child = nullptr;
+        }
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        task->proc_res = nullptr;
+        if (pr->release()) {
+            resource::proc_provider::proc_resource::ref_destroy(pr);
+        }
+    }
+
+    store_cleanup_stage(task, TASK_CLEANUP_STAGE_EXIT_REQUESTED);
+    task->state = TASK_STATE_DEAD;
+    task->exit_code = exit_code;
+    task->block_kind = TASK_BLOCK_NONE;
+    task->blocked_wait_queue = nullptr;
+    task->terminate_requested = 0;
+}
+
 #ifdef DEBUG
 [[noreturn]] __PRIVILEGED_CODE static void panic_invalid_privilege_state(
     const char* site
@@ -217,7 +246,9 @@ __PRIVILEGED_CODE void maybe_terminate_current() {
     task* t = current();
     int exit_code = 0;
     if (termination_requested(t, &exit_code)) {
-        exit(exit_code);
+        do_exit_current(exit_code);
+        yield();
+        __builtin_unreachable();
     }
 }
 
@@ -428,32 +459,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
 
 [[noreturn]] void exit(int exit_code) {
     RUN_ELEVATED({
-        sched::task* task = current();
-
-        if (task->proc_res) {
-            auto* pr = task->proc_res;
-            sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
-            if (!pr->detached) {
-                pr->exit_code = exit_code;
-                pr->exited = true;
-                pr->child = nullptr;
-                sync::wake_all(pr->wait_queue);
-            } else {
-                pr->child = nullptr;
-            }
-            sync::spin_unlock_irqrestore(pr->lock, irq);
-            task->proc_res = nullptr;
-            if (pr->release()) {
-                resource::proc_provider::proc_resource::ref_destroy(pr);
-            }
-        }
-
-        store_cleanup_stage(task, TASK_CLEANUP_STAGE_EXIT_REQUESTED);
-        task->state = TASK_STATE_DEAD;
-        task->exit_code = exit_code;
-        task->block_kind = TASK_BLOCK_NONE;
-        task->blocked_wait_queue = nullptr;
-        task->terminate_requested = 0;
+        do_exit_current(exit_code);
     });
     yield();
     __builtin_unreachable();

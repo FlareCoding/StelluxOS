@@ -407,3 +407,75 @@ TEST(wait_queue, wake_with_condition_recheck) {
     ASSERT_TRUE(spin_wait_ge(&g_recheck_done_count, 2));
     EXPECT_EQ(__atomic_load_n(&g_recheck_done_count, __ATOMIC_ACQUIRE), 2u);
 }
+
+// --- cancel_wait_wakes_specific_task ---
+// Two tasks block on the same queue. cancel_wait() is used to remove and
+// wake exactly one waiter, verifying targeted cancellation semantics.
+
+constexpr uint32_t CANCEL_WAIT_TASKS = 2;
+
+static sync::wait_queue g_cancel_wq;
+static sync::spinlock g_cancel_lock;
+static volatile uint32_t g_cancel_go[CANCEL_WAIT_TASKS];
+static volatile uint32_t g_cancel_ready[CANCEL_WAIT_TASKS];
+static volatile uint32_t g_cancel_done[CANCEL_WAIT_TASKS];
+static sched::task* g_cancel_tasks[CANCEL_WAIT_TASKS];
+
+static void cancel_wait_worker_fn(void* arg) {
+    uint32_t idx = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_cancel_lock);
+        __atomic_store_n(&g_cancel_ready[idx], 1, __ATOMIC_RELEASE);
+        while (!__atomic_load_n(&g_cancel_go[idx], __ATOMIC_ACQUIRE)) {
+            irq = sync::wait(g_cancel_wq, g_cancel_lock, irq);
+        }
+        sync::spin_unlock_irqrestore(g_cancel_lock, irq);
+    });
+    __atomic_store_n(&g_cancel_done[idx], 1, __ATOMIC_RELEASE);
+    sched::exit(0);
+}
+
+TEST(wait_queue, cancel_wait_wakes_specific_task) {
+    g_cancel_wq.init();
+    g_cancel_lock = sync::SPINLOCK_INIT;
+    for (uint32_t i = 0; i < CANCEL_WAIT_TASKS; i++) {
+        g_cancel_go[i] = 0;
+        g_cancel_ready[i] = 0;
+        g_cancel_done[i] = 0;
+        g_cancel_tasks[i] = nullptr;
+    }
+
+    RUN_ELEVATED({
+        for (uint32_t i = 0; i < CANCEL_WAIT_TASKS; i++) {
+            g_cancel_tasks[i] = sched::create_kernel_task(
+                cancel_wait_worker_fn,
+                reinterpret_cast<void*>(static_cast<uintptr_t>(i)),
+                "wq_cancel");
+            ASSERT_NOT_NULL(g_cancel_tasks[i]);
+            sched::enqueue(g_cancel_tasks[i]);
+        }
+    });
+
+    ASSERT_TRUE(spin_wait(&g_cancel_ready[0]));
+    ASSERT_TRUE(spin_wait(&g_cancel_ready[1]));
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_cancel_lock);
+        __atomic_store_n(&g_cancel_go[0], 1, __ATOMIC_RELEASE);
+        sync::spin_unlock_irqrestore(g_cancel_lock, irq);
+        sync::cancel_wait(g_cancel_wq, g_cancel_tasks[0]);
+    });
+
+    ASSERT_TRUE(spin_wait(&g_cancel_done[0]));
+    brief_delay();
+    EXPECT_EQ(__atomic_load_n(&g_cancel_done[1], __ATOMIC_ACQUIRE), 0u);
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_cancel_lock);
+        __atomic_store_n(&g_cancel_go[1], 1, __ATOMIC_RELEASE);
+        sync::spin_unlock_irqrestore(g_cancel_lock, irq);
+        sync::wake_all(g_cancel_wq);
+    });
+
+    ASSERT_TRUE(spin_wait(&g_cancel_done[1]));
+}
