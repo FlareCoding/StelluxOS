@@ -27,9 +27,15 @@ int main(void) {
             continue;
         }
 
-        int shell_exit = -1;
-        proc_wait(shell_handle, &shell_exit);
-        printf("init: shell exited with code %d, restarting...\r\n", shell_exit);
+        int shell_status = 0;
+        proc_wait(shell_handle, &shell_status);
+        if (STLX_WIFSIGNALED(shell_status)) {
+            printf("init: shell killed (signal %d), restarting...\r\n",
+                   STLX_WTERMSIG(shell_status));
+        } else {
+            printf("init: shell exited with code %d, restarting...\r\n",
+                   STLX_WEXITSTATUS(shell_status));
+        }
         nanosleep(&delay, NULL);
     }
 

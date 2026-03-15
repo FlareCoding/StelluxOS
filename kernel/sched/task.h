@@ -42,6 +42,7 @@ struct task {
     int32_t        exit_code;
     uint32_t       state;
     uint32_t       cleanup_stage;
+    uint32_t       kill_pending;
     uintptr_t      task_stack_base;
     uintptr_t      sys_stack_base;
     list::node     sched_link;

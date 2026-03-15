@@ -5,6 +5,7 @@
 #include "resource/handle_table.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "dynpriv/dynpriv.h"
 #include "exec/elf.h"
 #include "mm/uaccess.h"
 #include "fs/fs.h"
@@ -237,17 +238,22 @@ DEFINE_SYSCALL2(proc_wait, u_handle, u_exit_code_ptr) {
         resource::resource_release(obj);
         return syscall::EINVAL;
     }
-    while (!pr->exited) {
+    while (!pr->exited && !__atomic_load_n(&caller->kill_pending, __ATOMIC_ACQUIRE)) {
         irq = sync::wait(pr->wait_queue, pr->lock, irq);
     }
-    int32_t child_exit_code = pr->exit_code;
+    if (__atomic_load_n(&caller->kill_pending, __ATOMIC_ACQUIRE)) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(obj);
+        return syscall::EINTR;
+    }
+    int32_t child_wait_status = pr->wait_status;
     sync::spin_unlock_irqrestore(pr->lock, irq);
 
     if (u_exit_code_ptr != 0) {
         int32_t copy_rc = mm::uaccess::copy_to_user(
             reinterpret_cast<void*>(u_exit_code_ptr),
-            &child_exit_code,
-            sizeof(child_exit_code));
+            &child_wait_status,
+            sizeof(child_wait_status));
         if (copy_rc != mm::uaccess::OK) {
             resource::resource_release(obj);
             return syscall::EFAULT;
@@ -393,5 +399,43 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     if (rc != resource::HANDLE_OK) {
         return syscall::EINVAL;
     }
+    return 0;
+}
+
+DEFINE_SYSCALL1(proc_kill, u_handle) {
+    int32_t handle = static_cast<int32_t>(u_handle);
+    sched::task* caller = sched::current();
+    if (!caller) {
+        return syscall::EIO;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(&caller->handles, handle, 0, &obj);
+    if (rc != resource::HANDLE_OK || !obj) {
+        return syscall::EBADF;
+    }
+    if (obj->type != resource::resource_type::PROCESS) {
+        resource::resource_release(obj);
+        return syscall::EBADF;
+    }
+
+    auto* pr = resource::proc_provider::get_proc_resource(obj);
+    if (!pr) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    if (!pr->child || pr->exited) {
+        sync::spin_unlock_irqrestore(pr->lock, irq);
+        resource::resource_release(obj);
+        return pr->exited ? 0 : syscall::EINVAL;
+    }
+    sched::task* child = pr->child;
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+
+    RUN_ELEVATED(sched::force_wake_for_kill(child));
+
+    resource::resource_release(obj);
     return 0;
 }

@@ -3,6 +3,12 @@
 
 #include <stdint.h>
 
+/* Wait status decode macros (Linux-compatible bit layout). */
+#define STLX_WIFEXITED(s)    (((s) & 0x7F) == 0)
+#define STLX_WEXITSTATUS(s)  (((s) >> 8) & 0xFF)
+#define STLX_WIFSIGNALED(s)  (((s) & 0x7F) != 0)
+#define STLX_WTERMSIG(s)     ((s) & 0x7F)
+
 typedef struct {
     char name[256];
     int pid;
@@ -55,5 +61,12 @@ int proc_info(int handle, process_info* info);
  * existing handle at that slot. Returns 0 on success, -1 on failure.
  */
 int proc_set_handle(int proc_handle, int slot, int resource_handle);
+
+/**
+ * Kill a child process. The child is terminated asynchronously. The
+ * handle remains valid; call proc_wait() afterward to collect the
+ * exit status. Returns 0 on success, -1 on failure.
+ */
+int proc_kill(int handle);
 
 #endif /* STLX_PROC_H */

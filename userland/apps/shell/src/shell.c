@@ -70,9 +70,15 @@ int main(void) {
             continue;
         }
 
-        int exit_code = -1;
-        proc_wait(handle, &exit_code);
-        last_status = exit_code;
+        int status = 0;
+        proc_wait(handle, &status);
+        if (STLX_WIFEXITED(status)) {
+            last_status = STLX_WEXITSTATUS(status);
+        } else if (STLX_WIFSIGNALED(status)) {
+            last_status = 128 + STLX_WTERMSIG(status);
+        } else {
+            last_status = status;
+        }
     }
 
     free(path_buf);

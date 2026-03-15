@@ -29,6 +29,7 @@ namespace list {
 struct node {
     node* prev = nullptr;
     node* next = nullptr;
+    bool is_linked() const { return prev != nullptr && next != nullptr; }
 };
 
 // Convert a list::node pointer back to the containing struct.

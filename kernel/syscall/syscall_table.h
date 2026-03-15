@@ -11,6 +11,7 @@ using handler_t = int64_t (*)(uint64_t, uint64_t, uint64_t,
 constexpr uint64_t MAX_SYSCALL_NUM = 2048;
 constexpr int64_t ENOENT = -2;
 constexpr int64_t ESRCH  = -3;
+constexpr int64_t EINTR  = -4;
 constexpr int64_t EIO    = -5;
 constexpr int64_t EBADF  = -9;
 constexpr int64_t ENOMEM = -12;

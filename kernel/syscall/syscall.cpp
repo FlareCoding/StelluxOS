@@ -1,6 +1,8 @@
 #include "syscall/syscall.h"
 #include "syscall/syscall_table.h"
 #include "sched/task_exec_core.h"
+#include "sched/sched.h"
+#include "sched/task.h"
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 
@@ -33,6 +35,12 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
         result = syscall::g_syscall_table[syscall_num](arg1, arg2, arg3, arg4, arg5, arg6);
     } else {
         result = syscall::ENOSYS;
+    }
+
+    sched::task* self = sched::current();
+    if (self && __atomic_load_n(&self->kill_pending, __ATOMIC_ACQUIRE)
+        && !(self->exec.flags & sched::TASK_FLAG_KERNEL)) {
+        sched::exit(0x9);
     }
 
     // Return-boundary restore: dynamic runtime elevation follows the selected

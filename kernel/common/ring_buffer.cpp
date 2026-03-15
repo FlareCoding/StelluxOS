@@ -1,6 +1,7 @@
 #include "common/ring_buffer.h"
 #include "mm/heap.h"
 #include "common/string.h"
+#include "sched/sched.h"
 
 static inline size_t readable_bytes(const ring_buffer* rb) {
     return (rb->head - rb->tail) & (rb->capacity - 1);
@@ -75,7 +76,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
             sync::spin_unlock_irqrestore(rb->lock, irq);
             return RB_ERR_AGAIN;
         }
-        while (readable_bytes(rb) == 0 && !rb->writer_closed) {
+        while (readable_bytes(rb) == 0 && !rb->writer_closed && !sched::is_kill_pending()) {
             irq = sync::wait(rb->read_wq, rb->lock, irq);
         }
     }
@@ -121,7 +122,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
             sync::spin_unlock_irqrestore(rb->lock, irq);
             return RB_ERR_AGAIN;
         }
-        while (writable_bytes(rb) == 0 && !rb->reader_closed) {
+        while (writable_bytes(rb) == 0 && !rb->reader_closed && !sched::is_kill_pending()) {
             irq = sync::wait(rb->write_wq, rb->lock, irq);
         }
     }

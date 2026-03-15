@@ -166,6 +166,17 @@ task* current() {
     return this_cpu(current_task);
 }
 
+bool is_kill_pending() {
+    task* t = current();
+    return t && __atomic_load_n(&t->kill_pending, __ATOMIC_ACQUIRE);
+}
+
+__PRIVILEGED_CODE void force_wake_for_kill(task* t) {
+    __atomic_store_n(&t->kill_pending, 1, __ATOMIC_RELEASE);
+    timer::cancel_sleep(t);
+    wake(t);
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -375,7 +386,11 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
             auto* pr = task->proc_res;
             sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
             if (!pr->detached) {
-                pr->exit_code = exit_code;
+                if (__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+                    pr->wait_status = exit_code & 0x7F;
+                } else {
+                    pr->wait_status = (exit_code & 0xFF) << 8;
+                }
                 pr->exited = true;
                 pr->child = nullptr;
                 sync::wake_all(pr->wait_queue);
@@ -469,6 +484,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     resource::init_task_handles(t);
     t->proc_res = nullptr;
     t->cwd = nullptr;
+    t->kill_pending = 0;
 
     return t;
 }
@@ -666,6 +682,7 @@ __PRIVILEGED_CODE task* create_user_task(
     resource::init_task_handles(t);
     t->proc_res = nullptr;
     t->cwd = nullptr;
+    t->kill_pending = 0;
 
     image->mm_ctx = nullptr;
     image->pt_root = 0;
