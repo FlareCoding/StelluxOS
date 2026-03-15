@@ -45,7 +45,7 @@ constexpr uint32_t INT_RT      = (1 << 6); // Receive timeout interrupt
 
 // Platform GIC interrupt ID for PL011 UART
 #if defined(STLX_PLATFORM_RPI4)
-constexpr uint32_t PL011_GIC_INTID = 57; // SPI 25
+constexpr uint32_t PL011_GIC_INTID = 153; // GIC SPI 121 (VC IRQ 57 + 64 offset + 32 INTID base)
 #else
 constexpr uint32_t PL011_GIC_INTID = 33; // QEMU virt: SPI 1
 #endif
@@ -139,6 +139,10 @@ __PRIVILEGED_CODE void set_rx_callback(rx_callback_t cb) {
 
 __PRIVILEGED_CODE int32_t enable_rx_interrupt() {
     irq::set_spi_target(PL011_GIC_INTID, 0x01);
+#if defined(STLX_PLATFORM_RPI4)
+    irq::set_group1(PL011_GIC_INTID);
+    irq::set_level_triggered(PL011_GIC_INTID);
+#endif
     irq::unmask(PL011_GIC_INTID);
     mmio::write32(uart_base + REG_IMSC, INT_RX | INT_RT);
     return OK;

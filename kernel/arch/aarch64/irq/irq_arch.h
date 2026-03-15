@@ -10,8 +10,10 @@ constexpr uint32_t GICD_CTLR       = 0x000;
 constexpr uint32_t GICD_TYPER      = 0x004;
 constexpr uint32_t GICD_ISENABLER  = 0x100;
 constexpr uint32_t GICD_ICENABLER  = 0x180;
+constexpr uint32_t GICD_IGROUPR    = 0x080;
 constexpr uint32_t GICD_IPRIORITYR = 0x400;
 constexpr uint32_t GICD_ITARGETSR  = 0x800;
+constexpr uint32_t GICD_ICFGR      = 0xC00;
 
 // GICC (CPU Interface) register offsets
 constexpr uint32_t GICC_CTLR       = 0x000;
@@ -37,6 +39,23 @@ __PRIVILEGED_CODE uint32_t acknowledge();
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void set_spi_target(uint32_t irq, uint8_t cpu_mask);
+
+/**
+ * @brief Assign an interrupt to Group 1 (non-secure IRQ).
+ * Required on platforms where TF-A runs at EL3 and the kernel at EL1
+ * can only receive Group 1 interrupts.
+ * @param irq GIC interrupt ID (INTID).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_group1(uint32_t irq);
+
+/**
+ * @brief Configure an SPI as level-triggered (default GIC reset value
+ * may differ on real hardware vs QEMU).
+ * @param irq GIC interrupt ID (INTID).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_level_triggered(uint32_t irq);
 
 } // namespace irq
 
