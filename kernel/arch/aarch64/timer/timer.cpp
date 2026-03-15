@@ -202,4 +202,15 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
     sync::spin_unlock_irqrestore(state.lock, irq);
 }
 
+__PRIVILEGED_CODE void cancel_sleep(sched::task* t) {
+    uint32_t cpu = __atomic_load_n(&t->exec.cpu, __ATOMIC_RELAXED);
+    timer_cpu_state& state = per_cpu_on(cpu_timer_state, cpu);
+    sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
+    if (t->timer_link.is_linked()) {
+        state.sleep_queue.remove(t);
+        t->timer_deadline = 0;
+    }
+    sync::spin_unlock_irqrestore(state.lock, irq);
+}
+
 } // namespace timer

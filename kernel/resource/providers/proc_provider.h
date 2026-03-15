@@ -12,7 +12,7 @@ struct proc_resource : rc::ref_counted<proc_resource> {
     sync::spinlock    lock;
     sched::task*      child;
     sync::wait_queue  wait_queue;
-    int32_t           exit_code;
+    int32_t           wait_status;
     bool              exited;
     bool              detached;
 

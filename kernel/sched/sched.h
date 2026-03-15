@@ -90,6 +90,20 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id);
 __PRIVILEGED_CODE void wake(task* t);
 
 /**
+ * @brief Mark a task for termination and wake it if blocked.
+ * Sets kill_pending, cancels any timer sleep, and wakes via CAS.
+ * Fire-and-forget: does not wait for the task to actually die.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void force_wake_for_kill(task* t);
+
+/**
+ * @brief Check if the current task has been marked for termination.
+ * Safe to call from any kernel context with a valid per-CPU base.
+ */
+bool is_kill_pending();
+
+/**
  * @brief Yield the current CPU to the scheduler (cooperative switch).
  * Triggers a software interrupt that routes through the trap path.
  */

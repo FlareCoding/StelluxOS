@@ -48,10 +48,9 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
         }
         destroy_unstarted_task(child);
     } else if (pr->child && !pr->exited && !pr->detached) {
-        uint32_t child_tid = pr->child->tid;
+        sched::task* child = pr->child;
         sync::spin_unlock_irqrestore(pr->lock, irq);
-        log::fatal("proc_close: parent exiting with running attached child tid=%u",
-                   child_tid);
+        sched::force_wake_for_kill(child);
     } else {
         sync::spin_unlock_irqrestore(pr->lock, irq);
     }
@@ -83,7 +82,7 @@ __PRIVILEGED_CODE int32_t create_proc_resource(
     pr->lock = sync::SPINLOCK_INIT;
     pr->child = child_task;
     pr->wait_queue.init();
-    pr->exit_code = 0;
+    pr->wait_status = 0;
     pr->exited = false;
     pr->detached = false;
 

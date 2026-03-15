@@ -128,8 +128,16 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
+    if (__atomic_load_n(&prev->kill_pending, __ATOMIC_ACQUIRE)
+        && !(prev->exec.flags & TASK_FLAG_KERNEL)
+        && prev->state != TASK_STATE_DEAD) {
+        sched::exit(0x9);
+    }
+
     task* next = pick_next_and_switch(prev);
-    if (next == prev) return;
+    if (next == prev) {
+        return;
+    }
 
     next->exec.cpu = percpu::current_cpu_id();
     __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
@@ -160,6 +168,12 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
 
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
+
+    if (__atomic_load_n(&prev->kill_pending, __ATOMIC_ACQUIRE)
+        && !(prev->exec.flags & TASK_FLAG_KERNEL)
+        && prev->state != TASK_STATE_DEAD) {
+        sched::exit(0x9);
+    }
 
     task* next = pick_next_and_switch(prev);
     if (next == prev) {

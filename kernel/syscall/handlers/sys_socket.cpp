@@ -471,8 +471,14 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
             return syscall::EAGAIN;
         }
     }
-    while (ls->accept_queue.empty() && !ls->closed) {
+    while (ls->accept_queue.empty() && !ls->closed
+           && !__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
         irq = sync::wait(ls->accept_wq, ls->lock, irq);
+    }
+    if (__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+        sync::spin_unlock_irqrestore(ls->lock, irq);
+        resource::resource_release(listen_obj);
+        return syscall::EINTR;
     }
     if (ls->accept_queue.empty()) {
         sync::spin_unlock_irqrestore(ls->lock, irq);
