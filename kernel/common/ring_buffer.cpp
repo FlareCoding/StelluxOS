@@ -127,7 +127,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
         }
     }
 
-    if (rb->reader_closed) {
+    if (rb->reader_closed || sched::is_kill_pending()) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_PIPE;
     }
