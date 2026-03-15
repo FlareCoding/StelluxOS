@@ -108,6 +108,7 @@ TEST(kill, force_wake_kills_blocked_on_wq) {
     });
 
     ASSERT_TRUE(spin_wait(&g_wq_kill_waiting));
+    brief_delay();
 
     RUN_ELEVATED({
         sched::force_wake_for_kill(t);
@@ -152,6 +153,7 @@ TEST(kill, self_removal_cleans_wq) {
     });
 
     ASSERT_TRUE(spin_wait(&g_sr_waiting));
+    brief_delay();
 
     RUN_ELEVATED({
         sched::force_wake_for_kill(t);
@@ -201,6 +203,7 @@ TEST(kill, double_kill_is_harmless) {
     });
 
     ASSERT_TRUE(spin_wait(&g_double_waiting));
+    brief_delay();
 
     RUN_ELEVATED({
         sched::force_wake_for_kill(t);
