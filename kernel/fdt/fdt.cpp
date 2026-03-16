@@ -42,7 +42,7 @@ static bool compatible_match(const uint8_t* data, uint32_t len, const char* targ
     uint32_t pos = 0;
     while (pos < len) {
         const char* entry = reinterpret_cast<const char*>(data + pos);
-        uint32_t elen = string::strlen(entry);
+        uint32_t elen = string::strnlen(entry, len - pos);
         if (elen == tlen && string::memcmp(entry, target, tlen) == 0) return true;
         pos += elen + 1;
     }
@@ -62,6 +62,7 @@ static const void* node_get_prop(uint32_t node_offset, const char* name, uint32_
     // Walk properties (all props come before child nodes per spec)
     while (offset < g_struct_size) {
         uint32_t tok = read_token(offset);
+        if (tok == FDT_NOP) { offset += 4; continue; }
         if (tok != FDT_PROP) break;
         offset += 4;
 
@@ -202,7 +203,7 @@ __PRIVILEGED_CODE int32_t get_reg(int32_t node_offset, uint64_t* out_base, uint6
     constexpr uint32_t MAX_DEPTH = 16;
     uint32_t parent_stack[MAX_DEPTH] = {};
 
-    while (offset < g_struct_size && offset < target) {
+    while (offset < g_struct_size && offset <= target) {
         uint32_t tok = read_token(offset);
 
         if (tok == FDT_BEGIN_NODE) {

@@ -48,16 +48,10 @@ void free_test_va(paging::virt_addr_t va) {
     kva::free(static_cast<uintptr_t>(va));
 }
 
-// Pick a low-canonical VA outside current physical span so kernel HHDM aliases
-// are expected to be unmapped, making it suitable for user-root isolation tests.
+// Low-canonical VA guaranteed unmapped in the kernel root. 32TB is well above
+// any physical address or firmware MMIO region but within the 47-bit canonical range.
 paging::virt_addr_t user_test_va() {
-    constexpr uint64_t LOW_CANONICAL_MAX = (1ULL << 47) - paging::PAGE_SIZE_4KB;
-    uint64_t candidate = pmm::page_align_up(
-        g_boot_info.max_phys_addr + paging::PAGE_SIZE_2MB);
-    if (candidate == 0 || candidate > LOW_CANONICAL_MAX) {
-        candidate = 0x0000004000000000ULL; // 256 GB
-    }
-    return static_cast<paging::virt_addr_t>(candidate);
+    return 0x0000200000000000ULL;
 }
 
 } // namespace

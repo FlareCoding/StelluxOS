@@ -52,6 +52,9 @@ __PRIVILEGED_DATA static device g_devices[MAX_DEVICES] = {};
 __PRIVILEGED_DATA static uint32_t g_device_count = 0;
 __PRIVILEGED_DATA static config_backend g_backend = config_backend::ECAM;
 __PRIVILEGED_DATA static uintptr_t g_ecam_va = 0;
+__PRIVILEGED_DATA static uint8_t g_ecam_start_bus = 0;
+__PRIVILEGED_DATA static uint8_t g_ecam_end_bus = 0;
+__PRIVILEGED_DATA static uint8_t g_start_bus = 0;
 __PRIVILEGED_DATA static uintptr_t g_brcm_base = 0;
 
 static const bar g_null_bar = {0, 0, BAR_NONE, false};
@@ -64,7 +67,7 @@ static inline uintptr_t bdf_to_ecam_offset(uint8_t bus, uint8_t slot, uint8_t fu
 
 static inline uintptr_t dev_base_for(uint8_t bus, uint8_t slot, uint8_t func) {
     if (g_backend == config_backend::ECAM) {
-        return g_ecam_va + bdf_to_ecam_offset(bus, slot, func);
+        return g_ecam_va + bdf_to_ecam_offset(bus - g_ecam_start_bus, slot, func);
     }
     // Broadcom: root complex at 0:0.0 uses sentinel 0; downstream uses INDEX value
     if (bus == 0 && slot == 0 && func == 0) return 0;
@@ -343,6 +346,12 @@ __PRIVILEGED_CODE static void enumerate_bridges() {
         uint8_t secondary = dev.config_read8(CFG_SECONDARY_BUS);
         if (secondary == 0 || secondary == dev.bus()) continue;
 
+        // For ECAM, ensure secondary bus is within the mapped range
+        if (g_backend == config_backend::ECAM &&
+            (secondary < g_ecam_start_bus || secondary > g_ecam_end_bus)) {
+            continue;
+        }
+
         if (g_backend == config_backend::BROADCOM && !brcm_link_up()) {
             log::warn("pci: PCIe link down, skipping bus %u", secondary);
             continue;
@@ -382,8 +391,11 @@ __PRIVILEGED_CODE static int32_t init_ecam() {
 
     g_backend = config_backend::ECAM;
     g_ecam_va = ecam_va_out;
+    g_ecam_start_bus = seg.start_bus;
+    g_ecam_end_bus = seg.end_bus;
+    g_start_bus = seg.start_bus;
 
-    log::info("pci: ECAM at phys 0x%lx, %u bus(es)", seg.base_address, num_buses);
+    log::info("pci: ECAM at phys 0x%lx, buses %u-%u", seg.base_address, seg.start_bus, seg.end_bus);
     return OK;
 }
 
@@ -431,6 +443,7 @@ __PRIVILEGED_CODE static int32_t init_broadcom() {
 
     g_backend = config_backend::BROADCOM;
     g_brcm_base = map_va;
+    g_start_bus = 0;
 
     log::info("pci: BCM2711 PCIe at phys 0x%lx", ctrl_base);
     return OK;
@@ -452,7 +465,7 @@ __PRIVILEGED_CODE int32_t init() {
         return rc;
     }
 
-    enumerate_bus(0);
+    enumerate_bus(g_start_bus);
     enumerate_bridges();
 
     for (uint32_t i = 0; i < g_device_count; i++) {
