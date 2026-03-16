@@ -23,6 +23,8 @@ struct boot_info {
 
     // Device Tree Blob (virtual address, nullptr if not available)
     void* dtb_ptr;
+    uint64_t dtb_phys; // physical address (computed from dtb_ptr - hhdm_offset)
+    uint32_t dtb_size; // totalsize from FDT header (0 if unavailable)
 
     // Kernel file info (nullptr if not available)
     struct limine_file* kernel_file;

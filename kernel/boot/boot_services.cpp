@@ -124,10 +124,16 @@ __PRIVILEGED_CODE int32_t init() {
     }
 
     // Get DTB (optional - typically only on aarch64)
-    if (LIMINE_REQUEST_FULFILLED(dtb_request)) {
+    if (LIMINE_REQUEST_FULFILLED(dtb_request) && dtb_request.response->dtb_ptr) {
         g_boot_info.dtb_ptr = dtb_request.response->dtb_ptr;
+        g_boot_info.dtb_phys = reinterpret_cast<uintptr_t>(g_boot_info.dtb_ptr)
+                             - g_boot_info.hhdm_offset;
+        auto* hdr = static_cast<const uint32_t*>(g_boot_info.dtb_ptr);
+        g_boot_info.dtb_size = __builtin_bswap32(hdr[1]);
     } else {
         g_boot_info.dtb_ptr = nullptr;
+        g_boot_info.dtb_phys = 0;
+        g_boot_info.dtb_size = 0;
     }
 
     // Get kernel file info (optional)

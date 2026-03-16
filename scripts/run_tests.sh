@@ -73,6 +73,8 @@ if [[ "$ARCH" == "x86_64" ]]; then
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$OVMF_VARS" \
         -drive format=raw,file="$IMAGE" \
+        -device qemu-xhci \
+        -device usb-kbd \
         -serial file:"$SERIAL_LOG" \
         -display none \
         -no-reboot \
@@ -93,6 +95,8 @@ elif [[ "$ARCH" == "aarch64" ]]; then
         -smp 4 \
         -bios "$QEMU_EFI" \
         -drive format=raw,file="$IMAGE" \
+        -device qemu-xhci \
+        -device usb-kbd \
         -serial file:"$SERIAL_LOG" \
         -display none \
         -no-reboot \

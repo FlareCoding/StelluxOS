@@ -18,6 +18,7 @@
 #include "syscall/syscall_table.h"
 #include "terminal/terminal.h"
 #include "hw/rtc.h"
+#include "pci/pci.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -56,6 +57,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (acpi::init() != acpi::OK) {
         log::fatal("acpi::init failed");
+    }
+
+    if (pci::init() != pci::OK) {
+        log::warn("pci::init failed, PCI devices unavailable");
     }
 
     if (rtc::init() != rtc::OK) {
