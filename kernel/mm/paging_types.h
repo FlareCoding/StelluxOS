@@ -26,9 +26,10 @@ constexpr uint32_t PAGE_LARGE_2MB = (1 << 5);
 constexpr uint32_t PAGE_HUGE_1GB  = (1 << 6);
 
 // Memory type flags (bits 8-9, mutually exclusive)
-constexpr uint32_t PAGE_NORMAL    = (0 << 8);  // Write-back cacheable
-constexpr uint32_t PAGE_DEVICE    = (1 << 8);  // Uncached, strongly ordered
-constexpr uint32_t PAGE_WC        = (2 << 8);  // Write-combining
+constexpr uint32_t PAGE_NORMAL    = (0 << 8);  // Write-back cacheable (regular RAM)
+constexpr uint32_t PAGE_DEVICE    = (1 << 8);  // Uncached, strongly ordered (MMIO)
+constexpr uint32_t PAGE_WC        = (2 << 8);  // Write-combining (framebuffer)
+constexpr uint32_t PAGE_DMA       = (3 << 8);  // Non-cacheable (DMA buffers)
 
 constexpr uint32_t PAGE_TYPE_MASK = (3 << 8);
 
@@ -49,6 +50,7 @@ enum class mem_attr : uint8_t {
     NORMAL = 0,        // Write-back cacheable (regular RAM)
     DEVICE = 1,        // Uncached, strongly ordered (MMIO)
     WRITE_COMBINE = 2, // Write-combining (framebuffer)
+    DMA = 3,           // Non-cacheable (DMA buffers)
 };
 
 // Result codes

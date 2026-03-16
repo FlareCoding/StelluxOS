@@ -138,13 +138,13 @@ __PRIVILEGED_CODE static page_desc_t flags_to_page_desc(pmm::phys_addr_t phys, p
     uint32_t mem_type = flags & PAGE_TYPE_MASK;
     if (mem_type == PAGE_DEVICE) {
         desc.attr_idx = mair_idx::DEVICE_nGnRnE;
-        desc.sh = sh::OUTER_SHAREABLE;  // Device memory uses outer shareable
-    } else if (mem_type == PAGE_WC) {
+        desc.sh = sh::OUTER_SHAREABLE;
+    } else if (mem_type == PAGE_WC || mem_type == PAGE_DMA) {
         desc.attr_idx = mair_idx::NORMAL_NC;
-        desc.sh = sh::INNER_SHAREABLE;  // Inner shareable for cacheable memory
+        desc.sh = sh::INNER_SHAREABLE;
     } else {
         desc.attr_idx = mair_idx::NORMAL_WB;
-        desc.sh = sh::INNER_SHAREABLE;  // Inner shareable for cacheable memory
+        desc.sh = sh::INNER_SHAREABLE;
     }
 
     return desc;
@@ -214,7 +214,7 @@ __PRIVILEGED_CODE static block_desc_t flags_to_block_desc_2mb(pmm::phys_addr_t p
     if (mem_type == PAGE_DEVICE) {
         desc.attr_idx = mair_idx::DEVICE_nGnRnE;
         desc.sh = sh::OUTER_SHAREABLE;
-    } else if (mem_type == PAGE_WC) {
+    } else if (mem_type == PAGE_WC || mem_type == PAGE_DMA) {
         desc.attr_idx = mair_idx::NORMAL_NC;
     } else {
         desc.attr_idx = mair_idx::NORMAL_WB;
@@ -280,7 +280,7 @@ __PRIVILEGED_CODE static block_desc_t flags_to_block_desc_1gb(pmm::phys_addr_t p
     if (mem_type == PAGE_DEVICE) {
         desc.attr_idx = mair_idx::DEVICE_nGnRnE;
         desc.sh = sh::OUTER_SHAREABLE;
-    } else if (mem_type == PAGE_WC) {
+    } else if (mem_type == PAGE_WC || mem_type == PAGE_DMA) {
         desc.attr_idx = mair_idx::NORMAL_NC;
     } else {
         desc.attr_idx = mair_idx::NORMAL_WB;
