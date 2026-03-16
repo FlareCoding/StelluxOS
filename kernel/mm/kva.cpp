@@ -411,7 +411,9 @@ __PRIVILEGED_CODE static const char* tag_name(tag t) {
         case tag::privileged_stack:   return "privileged_stack";
         case tag::unprivileged_stack: return "unprivileged_stack";
         case tag::mmio:               return "mmio";
+        case tag::phys_map:           return "phys_map";
         case tag::boot:               return "boot";
+        case tag::dma:                return "dma";
         default:                      return "unknown";
     }
 }

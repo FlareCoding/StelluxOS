@@ -27,6 +27,7 @@ enum class tag : uint16_t {
     mmio,
     phys_map,
     boot,
+    dma,
 };
 
 // Describes a KVA allocation returned from alloc() and query().

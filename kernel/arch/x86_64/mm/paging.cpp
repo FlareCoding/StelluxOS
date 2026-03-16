@@ -83,15 +83,11 @@ __PRIVILEGED_CODE static pte_t flags_to_pte(pmm::phys_addr_t phys, page_flags_t 
 
     // Memory type handling via PAT/PCD/PWT
     uint32_t mem_type = flags & PAGE_TYPE_MASK;
-    if (mem_type == PAGE_DEVICE) {
-        // Uncached: PCD=1, PWT=0, PAT=0
+    if (mem_type == PAGE_DEVICE || mem_type == PAGE_DMA) {
         pte.page_cache_disable = 1;
     } else if (mem_type == PAGE_WC) {
-        // Write-combining: Depends on PAT configuration
-        // Assuming PAT index 1 is WC: PAT=0, PCD=0, PWT=1
         pte.page_write_through = 1;
     }
-    // PAGE_NORMAL: PCD=0, PWT=0, PAT=0 (default, write-back)
 
     return pte;
 }
@@ -149,7 +145,7 @@ __PRIVILEGED_CODE static pde_2mb_t flags_to_pde_2mb(pmm::phys_addr_t phys, page_
 
     // Memory type via PAT/PCD/PWT (PAT bit at position 12 for large pages)
     uint32_t mem_type = flags & PAGE_TYPE_MASK;
-    if (mem_type == PAGE_DEVICE) {
+    if (mem_type == PAGE_DEVICE || mem_type == PAGE_DMA) {
         pde.page_cache_disable = 1;
     } else if (mem_type == PAGE_WC) {
         pde.page_write_through = 1;
@@ -210,7 +206,7 @@ __PRIVILEGED_CODE static pdpte_1gb_t flags_to_pdpte_1gb(pmm::phys_addr_t phys, p
 
     // Memory type via PAT/PCD/PWT (PAT bit at position 12 for huge pages)
     uint32_t mem_type = flags & PAGE_TYPE_MASK;
-    if (mem_type == PAGE_DEVICE) {
+    if (mem_type == PAGE_DEVICE || mem_type == PAGE_DMA) {
         pdpte.page_cache_disable = 1;
     } else if (mem_type == PAGE_WC) {
         pdpte.page_write_through = 1;
