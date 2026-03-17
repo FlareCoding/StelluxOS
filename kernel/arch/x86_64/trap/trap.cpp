@@ -7,6 +7,7 @@
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
 #include "dynpriv/dynpriv.h"
+#include "msi/msi.h"
 
 namespace sched {
 __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf);
@@ -55,6 +56,15 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
     if (tf->vector == x86::VEC_SERIAL) {
         irq::eoi(0);
         serial::on_rx_irq();
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
+    if (tf->vector >= x86::VEC_MSI_BASE &&
+        tf->vector < x86::VEC_MSI_BASE + msi::capacity()) {
+        irq::eoi(0);
+        msi::dispatch(static_cast<uint32_t>(tf->vector - x86::VEC_MSI_BASE));
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
