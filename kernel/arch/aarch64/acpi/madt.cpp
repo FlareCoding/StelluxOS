@@ -43,6 +43,7 @@ __PRIVILEGED_CODE int32_t parse() {
     g_madt.cpu_count = 0;
     g_madt.gicr_base = 0;
     g_madt.gicr_length = 0;
+    g_madt.msi_frame = {};
 
     uint32_t table_length = read_u32_safe(&table->length);
     const auto* base = reinterpret_cast<const uint8_t*>(m);
@@ -71,6 +72,21 @@ __PRIVILEGED_CODE int32_t parse() {
             const auto* e = reinterpret_cast<const madt_gicd*>(ptr);
             g_madt.gicd_base = read_u64_safe(&e->base_address);
             g_madt.gic_version = e->version;
+            break;
+        }
+        case MADT_TYPE_GIC_MSI_FRAME: {
+            if (entry->length < sizeof(madt_gic_msi_frame)) {
+                break;
+            }
+            if (g_madt.msi_frame.base_address != 0) {
+                break;
+            }
+            const auto* e = reinterpret_cast<const madt_gic_msi_frame*>(ptr);
+            g_madt.msi_frame.base_address = read_u64_safe(&e->base_address);
+            g_madt.msi_frame.flags = read_u32_safe(&e->flags);
+            uint32_t spi_field = read_u32_safe(&e->spi_count);
+            g_madt.msi_frame.spi_count = static_cast<uint16_t>(spi_field & 0xFFFF);
+            g_madt.msi_frame.spi_base = static_cast<uint16_t>(spi_field >> 16);
             break;
         }
         case MADT_TYPE_GICR: {

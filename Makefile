@@ -246,7 +246,7 @@ run-qemu-aarch64: $(IMAGE_DIR)/stellux-aarch64.img
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
 	qemu-system-aarch64 \
-		-machine virt \
+		-machine virt,gic-version=2 \
 		-cpu cortex-a57 \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
@@ -285,7 +285,7 @@ run-qemu-aarch64-headless: $(IMAGE_DIR)/stellux-aarch64.img
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
 	qemu-system-aarch64 \
-		-machine virt \
+		-machine virt,gic-version=2 \
 		-cpu cortex-a57 \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
@@ -353,7 +353,7 @@ run-qemu-aarch64-debug: $(IMAGE_DIR)/stellux-aarch64.img
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
 	qemu-system-aarch64 \
-		-machine virt \
+		-machine virt,gic-version=2 \
 		-cpu cortex-a57 \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
@@ -375,7 +375,7 @@ run-qemu-aarch64-debug-headless: $(IMAGE_DIR)/stellux-aarch64.img
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
 	qemu-system-aarch64 \
-		-machine virt \
+		-machine virt,gic-version=2 \
 		-cpu cortex-a57 \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \

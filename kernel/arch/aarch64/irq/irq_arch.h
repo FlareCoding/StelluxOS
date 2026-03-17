@@ -57,6 +57,13 @@ __PRIVILEGED_CODE void set_group1(uint32_t irq);
  */
 __PRIVILEGED_CODE void set_level_triggered(uint32_t irq);
 
+/**
+ * Configure an SPI as edge-triggered. Sets GICD_ICFGR field to 0b10.
+ * @param irq GIC interrupt ID (INTID).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void set_edge_triggered(uint32_t irq);
+
 } // namespace irq
 
 #endif // STELLUX_AARCH64_IRQ_IRQ_ARCH_H
