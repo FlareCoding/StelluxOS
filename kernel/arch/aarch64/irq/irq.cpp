@@ -142,6 +142,19 @@ __PRIVILEGED_CODE void set_level_triggered(uint32_t irq) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE void set_edge_triggered(uint32_t irq) {
+    uint32_t reg_index = irq / 16;
+    uint32_t field_shift = (irq % 16) * 2;
+    uintptr_t addr = g_gicd_va + GICD_ICFGR + reg_index * 4;
+    uint32_t val = mmio::read32(addr);
+    val &= ~(0x3u << field_shift);
+    val |= (0x2u << field_shift);
+    mmio::write32(addr, val);
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t init_ap() {
     mmio::write32(g_gicc_va + GICC_PMR, 0xFF);
     mmio::write32(g_gicc_va + GICC_CTLR, 0x1);

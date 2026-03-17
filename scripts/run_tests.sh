@@ -89,7 +89,7 @@ elif [[ "$ARCH" == "aarch64" ]]; then
     fi
 
     qemu-system-aarch64 \
-        -machine virt \
+        -machine virt,gic-version=2 \
         -cpu cortex-a57 \
         -m 4G \
         -smp 4 \

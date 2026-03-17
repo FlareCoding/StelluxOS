@@ -46,6 +46,20 @@ struct __attribute__((packed)) madt_gicd {
 
 static_assert(sizeof(madt_gicd) == 24, "GICD entry must be 24 bytes");
 
+struct __attribute__((packed)) madt_gic_msi_frame {
+    madt_entry_header header; // type=0x0D, length=24
+    uint16_t reserved;
+    uint32_t gic_msi_frame_id;
+    uint64_t base_address;
+    uint32_t flags;
+    uint16_t spi_count;
+    uint16_t spi_base;
+};
+
+static_assert(sizeof(madt_gic_msi_frame) == 24, "GIC MSI Frame entry must be 24 bytes");
+
+constexpr uint32_t GIC_MSI_FRAME_FLAG_SPI_SELECT = (1 << 0);
+
 struct __attribute__((packed)) madt_gicr {
     madt_entry_header header; // type=0x0E, length=16
     uint8_t  flags;
@@ -64,6 +78,13 @@ struct gicc_entry {
     bool     enabled;
 };
 
+struct gic_msi_frame_entry {
+    uint64_t base_address;
+    uint32_t flags;
+    uint16_t spi_count;
+    uint16_t spi_base;
+};
+
 struct madt_info {
     uint64_t gicd_base;
     uint8_t  gic_version;
@@ -73,6 +94,8 @@ struct madt_info {
 
     uint64_t gicr_base;
     uint32_t gicr_length;
+
+    gic_msi_frame_entry msi_frame;
 };
 
 /**

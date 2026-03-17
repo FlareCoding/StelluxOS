@@ -15,6 +15,10 @@
 // Forward declaration of syscall dispatch
 extern "C" void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf);
 
+namespace arch {
+__PRIVILEGED_CODE bool msi_handle_irq(uint32_t irq_id);
+} // namespace arch
+
 namespace sched {
 __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf);
 } // namespace sched
@@ -86,6 +90,12 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         return;
     }
 
+    if (arch::msi_handle_irq(irq_id)) {
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
     if (irq_id != irq::GIC_SPURIOUS_ID) {
         irq::eoi(irq_id);
     }
@@ -146,6 +156,12 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
     if (irq_id == serial::irq_id()) {
         serial::on_rx_irq();
         irq::eoi(irq_id);
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
+    if (arch::msi_handle_irq(irq_id)) {
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;

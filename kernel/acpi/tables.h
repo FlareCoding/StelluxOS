@@ -64,6 +64,7 @@ constexpr uint8_t MADT_TYPE_LOCAL_APIC_NMI       = 0x04;
 constexpr uint8_t MADT_TYPE_LAPIC_ADDR_OVERRIDE  = 0x05;
 constexpr uint8_t MADT_TYPE_GICC                 = 0x0B;
 constexpr uint8_t MADT_TYPE_GICD                 = 0x0C;
+constexpr uint8_t MADT_TYPE_GIC_MSI_FRAME        = 0x0D;
 constexpr uint8_t MADT_TYPE_GICR                 = 0x0E;
 
 /**
