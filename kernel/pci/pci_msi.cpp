@@ -177,7 +177,7 @@ __PRIVILEGED_CODE int32_t device::enable_msix(uint32_t requested_count,
     uintptr_t table_va = 0;
     int32_t rc = vmm::map_device(
         static_cast<pmm::phys_addr_t>(table_bar.phys + table_offset),
-        static_cast<size_t>(count) * MSIX_ENTRY_SIZE,
+        static_cast<size_t>(table_size) * MSIX_ENTRY_SIZE,
         paging::PAGE_READ | paging::PAGE_WRITE,
         map_base, table_va);
     if (rc != vmm::OK) {
