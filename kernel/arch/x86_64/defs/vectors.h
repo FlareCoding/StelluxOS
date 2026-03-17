@@ -45,6 +45,10 @@ constexpr uint8_t VEC_SPURIOUS = 0xFF;
 // Scheduler yield (software interrupt)
 constexpr uint8_t VEC_SCHED_YIELD = 0x81;
 
+// MSI/MSI-X vector range (64 vectors, 0x40-0x7F)
+constexpr uint8_t VEC_MSI_BASE  = 0x40;
+constexpr uint8_t VEC_MSI_COUNT = 64;
+
 // IST (Interrupt Stack Table) indices
 // IST1-IST7 are valid; 0 means use current stack
 constexpr uint8_t IST_DF  = 1; // Double Fault
