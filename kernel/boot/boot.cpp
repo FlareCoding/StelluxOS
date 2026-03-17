@@ -19,6 +19,7 @@
 #include "terminal/terminal.h"
 #include "hw/rtc.h"
 #include "pci/pci.h"
+#include "msi/msi.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -69,6 +70,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (irq::init() != irq::OK) {
         log::fatal("irq::init failed");
+    }
+
+    if (msi::init() != msi::OK) {
+        log::warn("msi::init failed, MSI unavailable");
     }
 
     if (sched::init() != sched::OK) {

@@ -9,6 +9,12 @@ constexpr int32_t OK          = 0;
 constexpr int32_t ERR_NO_MCFG = -1;
 constexpr int32_t ERR_MAP     = -2;
 
+constexpr int32_t ERR_MSI_NO_CAP  = -10;
+constexpr int32_t ERR_MSI_MAP     = -11;
+constexpr int32_t ERR_MSI_ALREADY = -12;
+constexpr int32_t ERR_MSI_ALLOC   = -13;
+constexpr int32_t ERR_MSI_COMPOSE = -14;
+
 // Config space register offsets
 constexpr uint16_t CFG_VENDOR_ID      = 0x00;
 constexpr uint16_t CFG_DEVICE_ID      = 0x02;
@@ -74,6 +80,19 @@ struct capability {
     uint8_t offset;
 };
 
+constexpr uint8_t MSI_MODE_NONE = 0;
+constexpr uint8_t MSI_MODE_MSI  = 1;
+constexpr uint8_t MSI_MODE_MSIX = 2;
+
+struct msi_state {
+    uint32_t  base_vector;
+    uint16_t  vector_count;
+    uint8_t   mode;
+    uint8_t   cap_offset;
+    uintptr_t msix_table_va;
+};
+static_assert(sizeof(msi_state) <= 24, "msi_state should stay compact");
+
 class device {
 public:
     uint8_t bus() const { return m_bus; }
@@ -111,6 +130,17 @@ public:
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE void disable();
 
+    /** @note Privilege: **required** */
+    __PRIVILEGED_CODE int32_t enable_msi(uint32_t requested_count,
+                                         uint32_t target_cpu);
+    /** @note Privilege: **required** */
+    __PRIVILEGED_CODE int32_t enable_msix(uint32_t requested_count,
+                                          uint32_t target_cpu);
+    /** @note Privilege: **required** */
+    __PRIVILEGED_CODE void disable_msi();
+
+    const msi_state& get_msi_state() const { return m_msi; }
+
 private:
     /** @note Privilege: **required** */
     friend __PRIVILEGED_CODE int32_t init();
@@ -135,6 +165,7 @@ private:
     bar        m_bars[MAX_BARS];
     capability m_caps[MAX_CAPS];
     uint8_t   m_cap_count;
+    msi_state m_msi;
 };
 
 /**
