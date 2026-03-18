@@ -58,7 +58,8 @@ int32_t pci_driver::detach() {
     return 0;
 }
 
-int32_t pci_driver::map_bar(uint8_t index, uintptr_t& out_va) {
+int32_t pci_driver::map_bar(uint8_t index, uintptr_t& out_va,
+                            paging::page_flags_t flags) {
     if (index >= pci::MAX_BARS) {
         return ERR_INVALID_BAR;
     }
@@ -81,7 +82,7 @@ int32_t pci_driver::map_bar(uint8_t index, uintptr_t& out_va) {
         rc = vmm::map_device(
             static_cast<pmm::phys_addr_t>(b.phys),
             static_cast<size_t>(b.size),
-            paging::PAGE_READ | paging::PAGE_WRITE,
+            paging::PAGE_READ | paging::PAGE_WRITE | flags,
             base, va)
     );
 

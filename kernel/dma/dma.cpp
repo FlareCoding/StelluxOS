@@ -27,13 +27,14 @@ static inline uint64_t make_bitmap(uint16_t count) {
 }
 
 [[nodiscard]] __PRIVILEGED_CODE
-int32_t alloc_pages(size_t pages, buffer& out, pmm::zone_mask_t zone) {
+int32_t alloc_pages(size_t pages, buffer& out, pmm::zone_mask_t zone,
+                    paging::page_flags_t flags) {
     if (pages == 0) {
         return ERR_INVALID_ARG;
     }
 
     int32_t rc = vmm::alloc_contiguous(
-        pages, zone, DMA_PAGE_FLAGS, vmm::ALLOC_ZERO,
+        pages, zone, DMA_PAGE_FLAGS | flags, vmm::ALLOC_ZERO,
         kva::tag::dma, out.virt, out.phys
     );
     if (rc != vmm::OK) {

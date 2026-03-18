@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "mm/pmm_types.h"
+#include "mm/paging_types.h"
 #include "sync/spinlock.h"
 
 namespace dma {
@@ -26,7 +27,8 @@ struct buffer {
  */
 [[nodiscard]] __PRIVILEGED_CODE
 int32_t alloc_pages(size_t pages, buffer& out,
-                    pmm::zone_mask_t zone = pmm::ZONE_ANY);
+                    pmm::zone_mask_t zone = pmm::ZONE_ANY,
+                    paging::page_flags_t flags = 0);
 
 /**
  * Free a DMA page-level allocation. Zeroes the buffer struct.

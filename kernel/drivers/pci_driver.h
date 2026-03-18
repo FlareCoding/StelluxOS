@@ -4,7 +4,7 @@
 #include "pci/pci.h"
 #include "drivers/device_driver.h"
 #include "sync/wait_queue.h"
-#include "mm/heap.h"
+#include "mm/paging_types.h"
 
 namespace drivers {
 
@@ -94,7 +94,8 @@ protected:
      * @param out_va Receives the mapped virtual address.
      * @return 0 on success, negative error code on failure.
      */
-    int32_t map_bar(uint8_t index, uintptr_t& out_va);
+    int32_t map_bar(uint8_t index, uintptr_t& out_va,
+                    paging::page_flags_t flags = 0);
 
     /**
      * Unmap a previously mapped BAR. No-op if not mapped.
