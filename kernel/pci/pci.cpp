@@ -514,10 +514,6 @@ device* find_by_progif(uint8_t class_code, uint8_t subclass, uint8_t prog_if) {
     return nullptr;
 }
 
-bool is_broadcom_backend() {
-    return g_backend == config_backend::BROADCOM;
-}
-
 uintptr_t brcm_controller_base() {
     return g_brcm_base;
 }
