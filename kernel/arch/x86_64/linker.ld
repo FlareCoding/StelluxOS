@@ -107,6 +107,13 @@ SECTIONS {
         __stlx_unit_test_hooks_end = .;
     } :data
 
+    /* PCI driver registration entries */
+    .pci_drivers : AT(ADDR(.pci_drivers) - KERNEL_VADDR) SUBALIGN(8) {
+        __pci_drivers_start = .;
+        KEEP(*(.pci_drivers))
+        __pci_drivers_end = .;
+    } :data
+
     /* Ensure end symbols are page-aligned to avoid partial page issues */
     . = ALIGN(4096);
     __stlx_kern_priv_end = .;

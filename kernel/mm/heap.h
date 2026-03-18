@@ -57,10 +57,10 @@ int32_t ufree(void* ptr);
  * @brief Allocate and construct a T from the privileged heap.
  * @note Privilege: **required**
  */
-template<typename T>
-[[nodiscard]] __PRIVILEGED_CODE T* kalloc_new() {
+template<typename T, typename... Args>
+[[nodiscard]] __PRIVILEGED_CODE T* kalloc_new(Args&&... args) {
     void* p = kzalloc(sizeof(T));
-    return p ? new (p) T : nullptr;
+    return p ? new (p) T(static_cast<Args&&>(args)...) : nullptr;
 }
 
 /**
@@ -76,10 +76,10 @@ __PRIVILEGED_CODE void kfree_delete(T* p) {
  * @brief Allocate and construct a T from the unprivileged heap.
  * Auto-elevates if called from unprivileged kernel context.
  */
-template<typename T>
-[[nodiscard]] T* ualloc_new() {
+template<typename T, typename... Args>
+[[nodiscard]] T* ualloc_new(Args&&... args) {
     void* p = uzalloc(sizeof(T));
-    return p ? new (p) T : nullptr;
+    return p ? new (p) T(static_cast<Args&&>(args)...) : nullptr;
 }
 
 /**

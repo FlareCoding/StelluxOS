@@ -20,6 +20,7 @@
 #include "hw/rtc.h"
 #include "pci/pci.h"
 #include "msi/msi.h"
+#include "drivers/pci_driver.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -112,6 +113,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         cpu::halt();
     }
 #endif
+
+    if (drivers::init() != drivers::OK) {
+        log::warn("drivers::init failed");
+    }
 
     exec::loaded_image loaded;
     int32_t load_result = exec::load_elf("/initrd/bin/init", &loaded);
