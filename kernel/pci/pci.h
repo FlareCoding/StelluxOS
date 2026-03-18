@@ -180,6 +180,9 @@ device* get_device(uint32_t index);
 [[nodiscard]] device* find_by_class(uint8_t class_code, uint8_t subclass);
 [[nodiscard]] device* find_by_progif(uint8_t class_code, uint8_t subclass, uint8_t prog_if);
 
+bool is_broadcom_backend();
+uintptr_t brcm_controller_base();
+
 } // namespace pci
 
 #endif // STELLUX_PCI_PCI_H
