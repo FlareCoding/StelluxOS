@@ -46,8 +46,9 @@ public:
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
 
 private:
-    // Host controller MMIO virtual base address
+    // Host controller MMIO virtual base address and mapped size
     uintptr_t m_xhc_base = 0;
+    size_t    m_xhc_bar_size = 0;
 
     // xHCI register sets
     volatile xhci::xhci_capability_registers*   m_xhc_cap_regs = nullptr;

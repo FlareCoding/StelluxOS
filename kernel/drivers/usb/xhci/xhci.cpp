@@ -5,21 +5,42 @@
 #include "mm/heap.h"
 #include "clock/clock.h"
 #include "hw/delay.h"
+#include "dynpriv/dynpriv.h"
 
 using namespace drivers::xhci;
 
 namespace drivers {
 
 int32_t xhci_hcd::attach() {
+    // Enable PCI memory space + bus mastering before any MMIO access
+    RUN_ELEVATED({
+        dev().enable();
+        dev().enable_bus_mastering();
+    });
+
     int32_t rc = map_bar(0, m_xhc_base, paging::PAGE_USER);
     if (rc != 0) {
         log::error("xhci: failed to map BAR0: %d", rc);
         return rc;
     }
 
+    m_xhc_bar_size = dev().get_bar(0).size;
+
     m_xhc_cap_regs = reinterpret_cast<volatile xhci_capability_registers*>(m_xhc_base);
-    m_xhc_op_regs = reinterpret_cast<volatile xhci_operational_registers*>(m_xhc_base + m_xhc_cap_regs->caplength);
-    m_doorbells = reinterpret_cast<volatile uint32_t*>(m_xhc_base + m_xhc_cap_regs->dboff);
+
+    // Validate that critical MMIO offsets fall within the mapped BAR
+    uint32_t caplength = m_xhc_cap_regs->caplength;
+    uint32_t dboff = m_xhc_cap_regs->dboff;
+    uint32_t rtsoff = m_xhc_cap_regs->rtsoff;
+
+    if (caplength >= m_xhc_bar_size || dboff >= m_xhc_bar_size || rtsoff >= m_xhc_bar_size) {
+        log::error("xhci: MMIO offsets exceed BAR size (caplength=0x%x, dboff=0x%x, rtsoff=0x%x, bar_size=0x%lx)",
+                   caplength, dboff, rtsoff, m_xhc_bar_size);
+        return -1;
+    }
+
+    m_xhc_op_regs = reinterpret_cast<volatile xhci_operational_registers*>(m_xhc_base + caplength);
+    m_doorbells = reinterpret_cast<volatile uint32_t*>(m_xhc_base + dboff);
 
     m_hc_params.max_device_slots = XHCI_MAX_DEVICE_SLOTS(m_xhc_cap_regs);
     m_hc_params.max_interrupters = XHCI_MAX_INTERRUPTERS(m_xhc_cap_regs);
@@ -142,10 +163,24 @@ __PRIVILEGED_CODE void xhci_hcd::on_interrupt(uint32_t) {
 void xhci_hcd::_parse_extended_capabilities() {
     if (m_hc_params.extended_capabilities_offset == 0) return;
 
+    if (m_hc_params.extended_capabilities_offset >= m_xhc_bar_size) {
+        log::warn("xhci: XECP offset 0x%x exceeds BAR size 0x%lx, skipping extended capabilities",
+                  m_hc_params.extended_capabilities_offset, m_xhc_bar_size);
+        return;
+    }
+
     volatile uint32_t* cap_ptr = reinterpret_cast<volatile uint32_t*>(
         m_xhc_base + m_hc_params.extended_capabilities_offset);
 
     while (true) {
+        // Validate that this capability entry is within the mapped BAR
+        uintptr_t offset = reinterpret_cast<uintptr_t>(cap_ptr) - m_xhc_base;
+        if (offset + sizeof(uint32_t) > m_xhc_bar_size) {
+            log::warn("xhci: extended capability at offset 0x%lx exceeds BAR size, stopping walk",
+                       offset);
+            break;
+        }
+
         xhci_extended_capability_entry entry;
         entry.raw = *cap_ptr;
 
