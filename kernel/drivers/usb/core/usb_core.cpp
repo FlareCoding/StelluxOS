@@ -6,6 +6,7 @@
 #include "common/logging.h"
 #include "mm/heap.h"
 #include "sched/sched.h"
+#include "dynpriv/dynpriv.h"
 
 extern "C" const usb::class_driver_entry __usb_class_drivers_start[];
 extern "C" const usb::class_driver_entry __usb_class_drivers_end[];
@@ -101,50 +102,51 @@ void device_configured(drivers::xhci_hcd* hcd,
 
     g_devices[slot_id] = dev;
 
-    const class_driver_entry* reg_start = __usb_class_drivers_start;
-    const class_driver_entry* reg_end = __usb_class_drivers_end;
+    RUN_ELEVATED({
+        const class_driver_entry* reg_start = __usb_class_drivers_start;
+        const class_driver_entry* reg_end = __usb_class_drivers_end;
 
-    for (uint8_t i = 0; i < dev->num_interfaces; i++) {
-        auto* iface = &dev->interfaces[i];
+        for (uint8_t i = 0; i < dev->num_interfaces; i++) {
+            auto* iface = &dev->interfaces[i];
 
-        for (const class_driver_entry* reg = reg_start; reg < reg_end; reg++) {
-            if (!match_interface(reg->match, iface)) {
-                continue;
+            for (const class_driver_entry* reg = reg_start; reg < reg_end; reg++) {
+                if (!match_interface(reg->match, iface)) {
+                    continue;
+                }
+
+                auto* drv = reg->create(dev, iface);
+                if (!drv) {
+                    continue;
+                }
+
+                if (drv->probe(dev, iface) != 0) {
+                    heap::ufree_delete(drv);
+                    continue;
+                }
+
+                sched::task* t = sched::create_kernel_task(
+                    class_driver_task_entry, drv, drv->name());
+                if (!t) {
+                    log::error("usb: failed to create task for %s", drv->name());
+                    heap::ufree_delete(drv);
+                    continue;
+                }
+
+                drv->m_task = t;
+                sched::enqueue(t);
+
+                log::info("usb: bound %s to interface %u (class=0x%02x)",
+                           drv->name(), iface->interface_number, iface->interface_class);
+
+                uint16_t drv_idx = static_cast<uint16_t>(slot_id) * 16 + i;
+                if (drv_idx < MAX_USB_DEVICES * 16) {
+                    g_bound_drivers[drv_idx] = drv;
+                }
+
+                break;
             }
-
-            auto* drv = reg->create(dev, iface);
-            if (!drv) {
-                continue;
-            }
-
-            if (drv->probe(dev, iface) != 0) {
-                heap::ufree_delete(drv);
-                continue;
-            }
-
-            sched::task* t = sched::create_kernel_task(
-                class_driver_task_entry, drv, drv->name());
-            if (!t) {
-                log::error("usb: failed to create task for %s", drv->name());
-                heap::ufree_delete(drv);
-                continue;
-            }
-
-            drv->m_task = t;
-            sched::enqueue(t);
-
-            log::info("usb: bound %s to interface %u (class=0x%02x)",
-                       drv->name(), iface->interface_number, iface->interface_class);
-
-            // Track bound driver for disconnect notification
-            uint16_t drv_idx = static_cast<uint16_t>(slot_id) * 16 + i;
-            if (drv_idx < MAX_USB_DEVICES * 16) {
-                g_bound_drivers[drv_idx] = drv;
-            }
-
-            break; // first match per interface
         }
-    }
+    });
 }
 
 void device_disconnected(drivers::xhci_hcd*,

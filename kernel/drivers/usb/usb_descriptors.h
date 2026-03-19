@@ -45,6 +45,27 @@ constexpr uint8_t USB_CLASS_MASS_STORAGE   = 0x08;
 constexpr uint8_t USB_CLASS_HUB            = 0x09;
 constexpr uint8_t USB_CLASS_VENDOR         = 0xFF;
 
+// USB Standard Request Codes (bRequest)
+constexpr uint8_t USB_REQUEST_GET_DESCRIPTOR     = 0x06;
+constexpr uint8_t USB_REQUEST_SET_CONFIGURATION  = 0x09;
+constexpr uint8_t USB_REQUEST_SET_INTERFACE      = 0x0B;
+
+// HID Class-Specific Request Codes (bRequest)
+constexpr uint8_t HID_REQUEST_GET_REPORT         = 0x01;
+constexpr uint8_t HID_REQUEST_GET_IDLE           = 0x02;
+constexpr uint8_t HID_REQUEST_GET_PROTOCOL       = 0x03;
+constexpr uint8_t HID_REQUEST_SET_REPORT         = 0x09;
+constexpr uint8_t HID_REQUEST_SET_IDLE           = 0x0A;
+constexpr uint8_t HID_REQUEST_SET_PROTOCOL       = 0x0B;
+
+// USB bmRequestType field construction
+constexpr uint8_t USB_REQTYPE_DIR_IN             = 0x80;
+constexpr uint8_t USB_REQTYPE_DIR_OUT            = 0x00;
+constexpr uint8_t USB_REQTYPE_TYPE_STANDARD      = 0x00;
+constexpr uint8_t USB_REQTYPE_TYPE_CLASS         = 0x20;
+constexpr uint8_t USB_REQTYPE_RECIP_DEVICE       = 0x00;
+constexpr uint8_t USB_REQTYPE_RECIP_INTERFACE    = 0x01;
+
 constexpr uint16_t USB_DESCRIPTOR_REQUEST(uint8_t type, uint8_t index) {
     return (type << 8) | index;
 }
