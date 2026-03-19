@@ -57,6 +57,15 @@ __PRIVILEGED_DATA static uint8_t g_ecam_end_bus = 0;
 __PRIVILEGED_DATA static uint8_t g_start_bus = 0;
 __PRIVILEGED_DATA static uintptr_t g_brcm_base = 0;
 
+// PCI bus -> CPU physical address translation for non-ECAM backends.
+// On x86 and QEMU virt these are identity-mapped; on BCM2711 (RPi4) the
+// PCIe outbound window remaps a PCI bus address range to a different CPU
+// physical address range.  parse_bars() applies this so bar.phys always
+// holds the CPU physical address that vmm::map_device() expects.
+__PRIVILEGED_DATA static uint64_t g_pci_mem_base = 0;
+__PRIVILEGED_DATA static uint64_t g_cpu_mem_base = 0;
+__PRIVILEGED_DATA static uint64_t g_pci_mem_size = 0;
+
 static const bar g_null_bar = {0, 0, BAR_NONE, false};
 
 static inline uintptr_t bdf_to_ecam_offset(uint8_t bus, uint8_t slot, uint8_t func) {
@@ -132,6 +141,82 @@ __PRIVILEGED_CODE static void cfg_write32(uintptr_t base, uint16_t offset, uint3
 __PRIVILEGED_CODE static bool brcm_link_up() {
     uint32_t status = mmio::read32(g_brcm_base + BRCM_PCIE_STATUS);
     return (status & BRCM_PHYLINKUP) && (status & BRCM_DL_ACTIVE);
+}
+
+static uint32_t fdt_read_be32(const void* p) {
+    uint32_t raw;
+    string::memcpy(&raw, p, 4);
+    return __builtin_bswap32(raw);
+}
+
+/**
+ * Parse the PCIe node's "ranges" property from the FDT to discover
+ * the outbound window mapping (PCI bus address -> CPU physical address).
+ * Looks for the first 32-bit or 64-bit memory space entry.
+ */
+__PRIVILEGED_CODE static void parse_pcie_ranges(int32_t node) {
+    // Read #address-cells / #size-cells from the PCIe node itself
+    uint32_t ac_len = 0, sc_len = 0;
+    const void* ac_data = fdt::get_prop(node, "#address-cells", &ac_len);
+    const void* sc_data = fdt::get_prop(node, "#size-cells", &sc_len);
+
+    uint32_t addr_cells = 3; // PCI default: phys.hi + phys.mid + phys.lo
+    uint32_t size_cells = 2;
+    uint32_t parent_addr_cells = 2; // SoC-level default
+
+    if (ac_data && ac_len >= 4) addr_cells = fdt_read_be32(ac_data);
+    if (sc_data && sc_len >= 4) size_cells = fdt_read_be32(sc_data);
+
+    uint32_t ranges_len = 0;
+    const void* ranges_data = fdt::get_prop(node, "ranges", &ranges_len);
+    if (!ranges_data || ranges_len == 0) return;
+
+    uint32_t entry_cells = addr_cells + parent_addr_cells + size_cells;
+    uint32_t entry_bytes = entry_cells * 4;
+    const uint8_t* rp = static_cast<const uint8_t*>(ranges_data);
+
+    for (uint32_t off = 0; off + entry_bytes <= ranges_len; off += entry_bytes) {
+        uint32_t phys_hi = fdt_read_be32(rp + off);
+        uint8_t space_type = (phys_hi >> 24) & 0x3;
+
+        // 0x2 = 32-bit memory, 0x3 = 64-bit prefetchable memory
+        if (space_type != 2 && space_type != 3) continue;
+
+        // PCI address from phys.mid + phys.lo (skip phys.hi)
+        uint64_t pci_addr = 0;
+        for (uint32_t i = 1; i < addr_cells; i++) {
+            pci_addr = (pci_addr << 32) | fdt_read_be32(rp + off + i * 4);
+        }
+
+        uint64_t cpu_addr = 0;
+        for (uint32_t i = 0; i < parent_addr_cells; i++) {
+            cpu_addr = (cpu_addr << 32)
+                     | fdt_read_be32(rp + off + addr_cells * 4 + i * 4);
+        }
+
+        uint64_t range_size = 0;
+        for (uint32_t i = 0; i < size_cells; i++) {
+            range_size = (range_size << 32)
+                       | fdt_read_be32(rp + off + (addr_cells + parent_addr_cells) * 4 + i * 4);
+        }
+
+        g_pci_mem_base = pci_addr;
+        g_cpu_mem_base = cpu_addr;
+        g_pci_mem_size = range_size;
+
+        log::info("pci: outbound window: PCI 0x%lx -> CPU 0x%lx, size 0x%lx",
+                  pci_addr, cpu_addr, range_size);
+        return;
+    }
+}
+
+static uint64_t pci_bus_to_cpu(uint64_t pci_addr) {
+    if (g_pci_mem_size == 0) return pci_addr;
+    if (pci_addr >= g_pci_mem_base &&
+        pci_addr < g_pci_mem_base + g_pci_mem_size) {
+        return pci_addr - g_pci_mem_base + g_cpu_mem_base;
+    }
+    return pci_addr;
 }
 
 
@@ -249,7 +334,7 @@ __PRIVILEGED_CODE void parse_bars(device& dev) {
                 uint64_t phys =
                     (static_cast<uint64_t>(original_hi) << 32) |
                     (original & BAR_ADDR_MASK_MEM);
-                dev.m_bars[i] = {phys, sz, BAR_MMIO64, prefetch};
+                dev.m_bars[i] = {pci_bus_to_cpu(phys), sz, BAR_MMIO64, prefetch};
                 i++;
                 dev.m_bars[i] = {0, 0, BAR_NONE, false};
             } else {
@@ -257,7 +342,7 @@ __PRIVILEGED_CODE void parse_bars(device& dev) {
                 if (masked == 0) { dev.m_bars[i] = {0, 0, BAR_NONE, false}; continue; }
                 uint32_t sz = (~masked) + 1;
                 uint64_t phys = original & BAR_ADDR_MASK_MEM;
-                dev.m_bars[i] = {phys, sz, BAR_MMIO32, prefetch};
+                dev.m_bars[i] = {pci_bus_to_cpu(phys), sz, BAR_MMIO32, prefetch};
             }
         }
     }
@@ -411,15 +496,21 @@ __PRIVILEGED_CODE static bool is_rpi4_firmware() {
         && string::memcmp(fadt->oem_table_id, "RPI4", 4) == 0;
 }
 
+// Known RPi4 outbound window (from upstream bcm2711 device tree)
+constexpr uint64_t BCM2711_PCI_MEM_BASE = 0xf8000000;
+constexpr uint64_t BCM2711_CPU_MEM_BASE = 0x600000000;
+constexpr uint64_t BCM2711_MEM_SIZE     = 0x4000000; // 64 MB
+
 __PRIVILEGED_CODE static int32_t init_broadcom() {
     uint64_t ctrl_base = 0, ctrl_size = 0;
+    int32_t pcie_node = -1;
 
     // Try DTB first
     int32_t fdt_rc = fdt::init();
     if (fdt_rc == fdt::OK) {
-        int32_t node = fdt::find_compatible("brcm,bcm2711-pcie");
-        if (node >= 0) {
-            fdt::get_reg(node, &ctrl_base, &ctrl_size);
+        pcie_node = fdt::find_compatible("brcm,bcm2711-pcie");
+        if (pcie_node >= 0) {
+            fdt::get_reg(pcie_node, &ctrl_base, &ctrl_size);
         }
     }
 
@@ -444,6 +535,18 @@ __PRIVILEGED_CODE static int32_t init_broadcom() {
     g_backend = config_backend::BROADCOM;
     g_brcm_base = map_va;
     g_start_bus = 0;
+
+    // Discover the PCI bus -> CPU physical address translation
+    if (pcie_node >= 0) {
+        parse_pcie_ranges(pcie_node);
+    }
+    if (g_pci_mem_size == 0 && is_rpi4_firmware()) {
+        g_pci_mem_base = BCM2711_PCI_MEM_BASE;
+        g_cpu_mem_base = BCM2711_CPU_MEM_BASE;
+        g_pci_mem_size = BCM2711_MEM_SIZE;
+        log::info("pci: using known RPi4 outbound window: PCI 0x%lx -> CPU 0x%lx",
+                  g_pci_mem_base, g_cpu_mem_base);
+    }
 
     log::info("pci: BCM2711 PCIe at phys 0x%lx", ctrl_base);
     return OK;
