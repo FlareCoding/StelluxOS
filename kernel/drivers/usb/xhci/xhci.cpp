@@ -879,70 +879,142 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
 
 void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_descriptor& desc) {
     (void)desc;
+    uint8_t slot_id = device->slot_id();
 
     usb::usb_configuration_descriptor config = {};
     if (_get_configuration_descriptor(device, &config) != 0) {
-        log::error("xhci: failed to read config descriptor for slot %u", device->slot_id());
+        log::error("xhci: failed to read config descriptor for slot %u", slot_id);
         return;
     }
 
     log::info("xhci: slot %u config: %u interface(s), totalLength=%u",
-              device->slot_id(), config.bNumInterfaces, config.wTotalLength);
+              slot_id, config.bNumInterfaces, config.wTotalLength);
 
-    // Parse interface and endpoint descriptors from the configuration descriptor
+    // Sync the input context with the xHC's current output context
+    // so slot and EP0 state are up-to-date before we add new endpoints
+    device->sync_input_ctx();
+
+    // Reset input control context flags (clear stale bits from ADDRESS_DEVICE)
+    auto* input_ctrl = device->input_ctrl_ctx();
+    input_ctrl->add_flags = (1u << 0); // Start with slot context only
+    input_ctrl->drop_flags = 0;
+
+    // Parse descriptors and create endpoints
     uint16_t offset = 0;
-    uint16_t data_length = config.wTotalLength - sizeof(usb::usb_descriptor_header) - 5;
-    // 5 = config descriptor fields after header (wTotalLength + bNumInterfaces + bConfigurationValue + iConfiguration + bmAttributes + bMaxPower = 7, minus the 2 for header already subtracted)
+    uint16_t data_length = config.wTotalLength - 9; // 9 = config descriptor header size
 
     while (offset < data_length) {
         auto* hdr = reinterpret_cast<usb::usb_descriptor_header*>(&config.data[offset]);
         if (hdr->bLength == 0) break;
 
-        switch (hdr->bDescriptorType) {
-        case usb::USB_DESCRIPTOR_INTERFACE: {
-            auto* iface = reinterpret_cast<usb::usb_interface_descriptor*>(hdr);
-            log::info("xhci:   interface %u: class=0x%02x subclass=0x%02x protocol=0x%02x endpoints=%u",
-                       iface->bInterfaceNumber, iface->bInterfaceClass,
-                       iface->bInterfaceSubClass, iface->bInterfaceProtocol,
-                       iface->bNumEndpoints);
-            break;
-        }
-        case usb::USB_DESCRIPTOR_ENDPOINT: {
-            auto* ep = reinterpret_cast<usb::usb_endpoint_descriptor*>(hdr);
-            uint8_t ep_addr = ep->bEndpointAddress;
-            bool is_in = (ep_addr & 0x80) != 0;
-            uint8_t ep_num = ep_addr & 0x0F;
-            uint8_t ep_type = ep->bmAttributes & 0x03;
-
-            const char* type_str = "unknown";
-            switch (ep_type) {
-            case 0: type_str = "control"; break;
-            case 1: type_str = "isochronous"; break;
-            case 2: type_str = "bulk"; break;
-            case 3: type_str = "interrupt"; break;
+        if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_ENDPOINT) {
+            auto* ep_desc = reinterpret_cast<usb::usb_endpoint_descriptor*>(hdr);
+            auto* ep = _create_endpoint(device, ep_desc);
+            if (ep) {
+                _configure_endpoint_context(device, ep);
             }
-
-            log::info("xhci:     endpoint %u %s (%s), maxPacket=%u, interval=%u",
-                       ep_num, is_in ? "IN" : "OUT", type_str,
-                       ep->wMaxPacketSize, ep->bInterval);
-            break;
-        }
-        case usb::USB_DESCRIPTOR_HID: {
-            auto* hid = reinterpret_cast<usb::usb_hid_descriptor*>(hdr);
-            log::info("xhci:   HID descriptor: version=%x.%02x, reportDescLen=%u",
-                       hid->bcdHID >> 8, hid->bcdHID & 0xFF,
-                       hid->desc[0].wDescriptorLength);
-            break;
-        }
-        default:
-            break;
         }
 
         offset += hdr->bLength;
     }
 
-    // TODO: configure endpoint command
-    // TODO: set configuration
+    if (_configure_endpoints(device) != 0) {
+        return;
+    }
+
+    if (_set_configuration(device, config.bConfigurationValue) != 0) {
+        return;
+    }
+
+    log::info("xhci: slot %u configured", slot_id);
+}
+
+xhci_endpoint* xhci_hcd::_create_endpoint(xhci_device* device, const usb::usb_endpoint_descriptor* desc) {
+    auto* ep = heap::ualloc_new<xhci_endpoint>();
+    if (!ep) {
+        log::error("xhci: failed to allocate endpoint for slot %u", device->slot_id());
+        return nullptr;
+    }
+
+    if (ep->init(device->slot_id(), desc) != 0) {
+        heap::ufree_delete(ep);
+        return nullptr;
+    }
+
+    device->set_endpoint(ep->dci(), ep);
+
+    log::info("xhci:   EP%u %s (DCI %u), maxPacket=%u",
+               ep->endpoint_num(), ep->is_in() ? "IN" : "OUT",
+               ep->dci(), ep->max_packet_size());
+
+    return ep;
+}
+
+void xhci_hcd::_configure_endpoint_context(xhci_device* device, xhci_endpoint* ep) {
+    auto* input_ctrl = device->input_ctrl_ctx();
+    auto* slot_ctx = device->input_slot_ctx();
+
+    // Set the add flag for this endpoint's DCI
+    input_ctrl->add_flags |= (1u << ep->dci());
+
+    // Update context_entries to the highest DCI
+    if (ep->dci() > slot_ctx->context_entries) {
+        slot_ctx->context_entries = ep->dci();
+    }
+
+    // Zero the endpoint context before filling to clear any stale data
+    auto* ep_ctx = device->input_ep_ctx(ep->dci());
+    string::memset(ep_ctx, 0, sizeof(xhci_endpoint_context32));
+
+    // Compute xHCI interval from USB bInterval
+    // For HS/SS interrupt/isoch: xHCI interval = bInterval - 1
+    // For FS/LS interrupt: use raw bInterval (clamped to valid range)
+    uint8_t xhci_interval = ep->interval();
+    uint8_t speed = device->speed();
+    if (speed == XHCI_USB_SPEED_HIGH_SPEED ||
+        speed == XHCI_USB_SPEED_SUPER_SPEED ||
+        speed == XHCI_USB_SPEED_SUPER_SPEED_PLUS) {
+        if (xhci_interval > 0) {
+            xhci_interval--;
+        }
+    }
+
+    ep_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
+    ep_ctx->endpoint_type = ep->xhc_ep_type();
+    ep_ctx->max_packet_size = ep->max_packet_size();
+    ep_ctx->max_burst_size = 0;
+    ep_ctx->error_count = 3;
+    ep_ctx->interval = xhci_interval;
+    ep_ctx->average_trb_length = ep->max_packet_size();
+    ep_ctx->max_esit_payload_lo = ep->max_packet_size();
+    ep_ctx->max_esit_payload_hi = 0;
+    ep_ctx->transfer_ring_dequeue_ptr = ep->ring()->get_physical_base();
+    ep_ctx->dcs = ep->ring()->get_cycle_bit();
+}
+
+int32_t xhci_hcd::_configure_endpoints(xhci_device* device) {
+    // Ensure slot context is included in the input context
+    auto* input_ctrl = device->input_ctrl_ctx();
+    input_ctrl->add_flags |= (1u << 0);
+    input_ctrl->drop_flags = 0;
+
+    xhci_configure_endpoint_command_trb_t trb = {};
+    trb.trb_type = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
+    trb.input_context_physical_base = device->input_ctx_phys();
+    trb.slot_id = device->slot_id();
+
+    return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
+}
+
+int32_t xhci_hcd::_set_configuration(xhci_device* device, uint8_t config_value) {
+    xhci_device_request_packet req = {};
+    req.bRequestType = 0x00; // Host to Device, Standard, Device
+    req.bRequest = 9;        // SET_CONFIGURATION
+    req.wValue = config_value;
+    req.wIndex = 0;
+    req.wLength = 0;
+
+    return _send_control_transfer(device, req, nullptr, 0);
 }
 
 void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {

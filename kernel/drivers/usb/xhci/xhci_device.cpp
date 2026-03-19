@@ -44,6 +44,15 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
 }
 
 void xhci_device::destroy() {
+    // Destroy non-control endpoints
+    for (uint8_t i = 0; i <= MAX_ENDPOINTS; i++) {
+        if (m_endpoints[i]) {
+            m_endpoints[i]->destroy();
+            heap::ufree_delete(m_endpoints[i]);
+            m_endpoints[i] = nullptr;
+        }
+    }
+
     if (m_ctrl_ring) {
         m_ctrl_ring->destroy();
         heap::ufree_delete(m_ctrl_ring);

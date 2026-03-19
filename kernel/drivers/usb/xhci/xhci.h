@@ -128,6 +128,10 @@ private:
     void _setup_device(uint8_t port_index);
     void _configure_device(xhci::xhci_device* device, const usb::usb_device_descriptor& desc);
     void _configure_ctrl_ep_input_context(xhci::xhci_device* device, uint16_t max_packet_size);
+    xhci::xhci_endpoint* _create_endpoint(xhci::xhci_device* device, const usb::usb_endpoint_descriptor* desc);
+    void _configure_endpoint_context(xhci::xhci_device* device, xhci::xhci_endpoint* ep);
+    int32_t _configure_endpoints(xhci::xhci_device* device);
+    int32_t _set_configuration(xhci::xhci_device* device, uint8_t config_value);
     int32_t _address_device(xhci::xhci_device* device, bool bsr);
     uint16_t _initial_max_packet_size(uint8_t speed);
 

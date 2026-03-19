@@ -3,6 +3,7 @@
 
 #include "xhci_device_ctx.h"
 #include "xhci_rings.h"
+#include "xhci_endpoint.h"
 
 namespace drivers::xhci {
 
@@ -35,6 +36,10 @@ public:
     // Control transfer ring
     inline xhci_transfer_ring* ctrl_ring() { return m_ctrl_ring; }
 
+    // Non-control endpoints (indexed by DCI)
+    xhci_endpoint* endpoint(uint8_t dci) { return m_endpoints[dci]; }
+    void set_endpoint(uint8_t dci, xhci_endpoint* ep) { m_endpoints[dci] = ep; }
+
 private:
     uint8_t   m_port_id = 0;     // 1-based port ID
     uint8_t   m_slot_id = 0;     // Slot index in the DCBAA
@@ -47,6 +52,10 @@ private:
     void*     m_output_ctx = nullptr;
 
     xhci_transfer_ring* m_ctrl_ring = nullptr;
+
+    // Non-control endpoints (DCI 2-31, index 0-1 unused)
+    static constexpr uint8_t MAX_ENDPOINTS = 31;
+    xhci_endpoint* m_endpoints[MAX_ENDPOINTS + 1] = {};
 };
 
 } // namespace drivers::xhci
