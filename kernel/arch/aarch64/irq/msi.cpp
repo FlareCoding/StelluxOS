@@ -25,19 +25,22 @@ __PRIVILEGED_BSS static uintptr_t g_frame_va;
 __PRIVILEGED_BSS static uint32_t  g_spi_base;
 
 // BCM2711 constants
-static constexpr uint32_t BCM_MSI_BAR_CONFIG_LO  = 0x4044;
-static constexpr uint32_t BCM_MSI_BAR_CONFIG_HI  = 0x4048;
-static constexpr uint32_t BCM_MSI_DATA_CONFIG     = 0x404C;
-static constexpr uint32_t BCM_MSI_DATA_CONFIG_VAL = 0xFFE06540;
-static constexpr uint64_t BCM_MSI_TARGET_ADDR     = 0x0FFFFFFFCULL;
-static constexpr uint32_t BCM_MSI_INTR2_STATUS    = 0x4500;
-static constexpr uint32_t BCM_MSI_INTR2_CLR       = 0x4508;
-static constexpr uint32_t BCM_MSI_INTR2_MASK_CLR  = 0x4514;
-static constexpr uint32_t BCM_MSI_SPI_INTID       = 180;
-static constexpr uint32_t BCM_MSI_VECTOR_COUNT    = 32;
+static constexpr uint32_t BCM_MSI_BAR_CONFIG_LO         = 0x4044;
+static constexpr uint32_t BCM_MSI_BAR_CONFIG_HI         = 0x4048;
+static constexpr uint32_t BCM_MSI_DATA_CONFIG           = 0x404C;
+static constexpr uint32_t BCM_MSI_DATA_CONFIG_VAL       = 0xFFE06540;
+static constexpr uint64_t BCM_MSI_TARGET_ADDR_LT_4GB    = 0x0FFFFFFFCULL;
+static constexpr uint64_t BCM_MSI_TARGET_ADDR_GT_4GB    = 0xFFFFFFFFCULL;
+static constexpr uint32_t BCM_RC_BAR2_CONFIG_LO         = 0x4034;
+static constexpr uint32_t BCM_MSI_INTR2_STATUS          = 0x4500;
+static constexpr uint32_t BCM_MSI_INTR2_CLR             = 0x4508;
+static constexpr uint32_t BCM_MSI_INTR2_MASK_CLR        = 0x4514;
+static constexpr uint32_t BCM_MSI_SPI_INTID             = 180;
+static constexpr uint32_t BCM_MSI_VECTOR_COUNT          = 32;
 
 // BCM2711 state
 __PRIVILEGED_BSS static uintptr_t g_brcm_base;
+__PRIVILEGED_BSS static uint64_t  g_msi_target_addr;
 
 // Shared state (used by both backends)
 __PRIVILEGED_BSS static uint32_t g_spi_count;
@@ -106,6 +109,25 @@ __PRIVILEGED_CODE static int32_t msi_init_gicv2m(const acpi::madt_info& madt,
 __PRIVILEGED_CODE static int32_t msi_init_bcm2711(uint32_t* out_capacity) {
     g_brcm_base = pci::brcm_controller_base();
 
+    // Determine MSI target address based on the inbound DMA window.
+    // Match Linux's pcie-brcmstb logic: use LT_4GB only when the target
+    // is guaranteed outside the window (offset >= 4GB, or window ends < 4GB).
+    uint32_t bar2_lo = mmio::read32(g_brcm_base + BCM_RC_BAR2_CONFIG_LO);
+    uint32_t bar2_hi = mmio::read32(g_brcm_base + 0x4038);
+    uint32_t size_enc = bar2_lo & 0x1F;
+    uint64_t inbound_size = (size_enc == 0) ? 0 :
+        (size_enc >= 0x1C) ? (1ULL << (size_enc - 0x1C + 12)) :
+                             (1ULL << (size_enc + 15));
+    uint64_t inbound_offset = static_cast<uint64_t>(bar2_hi) << 32;
+
+    uint64_t msi_target;
+    if (inbound_offset >= 0x100000000ULL ||
+        (inbound_size + inbound_offset) < 0x100000000ULL) {
+        msi_target = BCM_MSI_TARGET_ADDR_LT_4GB;
+    } else {
+        msi_target = BCM_MSI_TARGET_ADDR_GT_4GB;
+    }
+
     // Unmask all 32 MSI vectors
     mmio::write32(g_brcm_base + BCM_MSI_INTR2_MASK_CLR, 0xFFFFFFFF);
 
@@ -113,9 +135,11 @@ __PRIVILEGED_CODE static int32_t msi_init_bcm2711(uint32_t* out_capacity) {
     mmio::write32(g_brcm_base + BCM_MSI_INTR2_CLR, 0xFFFFFFFF);
 
     // Program MSI target address (bit 0 = enable)
+    g_msi_target_addr = msi_target;
     mmio::write32(g_brcm_base + BCM_MSI_BAR_CONFIG_LO,
-                  static_cast<uint32_t>(BCM_MSI_TARGET_ADDR) | 0x1);
-    mmio::write32(g_brcm_base + BCM_MSI_BAR_CONFIG_HI, 0);
+                  static_cast<uint32_t>(msi_target) | 0x1);
+    mmio::write32(g_brcm_base + BCM_MSI_BAR_CONFIG_HI,
+                  static_cast<uint32_t>(msi_target >> 32));
 
     // Program data match config (32-vector mode)
     mmio::write32(g_brcm_base + BCM_MSI_DATA_CONFIG, BCM_MSI_DATA_CONFIG_VAL);
@@ -188,7 +212,7 @@ __PRIVILEGED_CODE int32_t msi_compose(uint32_t vector, uint32_t target_cpu,
     }
 
     if (g_backend == msi_backend::BCM2711) {
-        out->address = BCM_MSI_TARGET_ADDR;
+        out->address = g_msi_target_addr;
         out->data = (0xFFFF & BCM_MSI_DATA_CONFIG_VAL) | vector;
         return msi::OK;
     }
