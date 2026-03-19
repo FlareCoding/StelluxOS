@@ -10,6 +10,21 @@
 
 namespace drivers {
 namespace xhci {
+
+enum class hub_event_type : uint8_t {
+    enumerate,
+    disconnect,
+};
+
+struct hub_event {
+    hub_event_type type;
+    uint8_t        hub_slot_id; // Slot ID of the hub device
+    uint8_t        hub_port;    // 1-based port number on the hub
+    uint8_t        speed;       // Device speed (for enumerate events)
+};
+
+static constexpr uint8_t HUB_EVENT_QUEUE_SIZE = 32;
+
 struct xhci_hc_params {
     uint8_t  max_device_slots;
     uint16_t max_interrupters;
@@ -38,7 +53,9 @@ struct xhci_cmd_state {
 
 class xhci_hcd : public pci_driver {
 public:
-    xhci_hcd(pci::device* dev) : pci_driver("xhci_hcd", dev) {}
+    xhci_hcd(pci::device* dev) : pci_driver("xhci_hcd", dev) {
+        m_hub_event_lock = sync::SPINLOCK_INIT;
+    }
 
     int32_t attach() override;
     int32_t detach() override;
@@ -55,6 +72,17 @@ public:
 
     int32_t usb_submit_transfer(xhci::xhci_device* device, uint8_t endpoint_addr,
                                 void* buffer, uint32_t length);
+
+    // Queue a hub port enumeration request. Called from the hub driver task.
+    // The HCD processes this asynchronously from its own task context.
+    void queue_hub_enumerate(xhci::xhci_device* hub_device, uint8_t hub_port, uint8_t speed);
+
+    // Queue a hub port disconnect request. Called from the hub driver task.
+    void queue_hub_disconnect(xhci::xhci_device* hub_device, uint8_t hub_port);
+
+    // Update the slot context to reflect that this device is a hub.
+    // Called synchronously from the hub driver's probe() which runs on the HCD task.
+    int32_t configure_as_hub(xhci::xhci_device* device, uint8_t num_ports, uint8_t tt_think_time, bool mtt);
 
 private:
     // Host controller MMIO virtual base address and mapped size
@@ -96,6 +124,12 @@ private:
     // USB3 port bitmap (bit N = port N is USB3)
     uint32_t m_usb3_port_map[8] = {};
 
+    // Hub event queue (hub driver posts events, HCD processes them)
+    xhci::hub_event m_hub_events[xhci::HUB_EVENT_QUEUE_SIZE];
+    uint8_t         m_hub_event_head = 0;
+    uint8_t         m_hub_event_tail = 0;
+    sync::spinlock  m_hub_event_lock;
+
 private:
     void _parse_extended_capabilities();
     void _request_bios_handoff(volatile uint32_t* usblegsup);
@@ -128,6 +162,14 @@ private:
     bool _is_usb3_port(uint8_t port_index);
 
 private:
+    // Shared device setup logic (root hub and hub-connected devices)
+    void _enumerate_device(xhci::xhci_device* device);
+
+    // Hub event processing (called from HCD task context)
+    void _process_hub_events();
+    void _setup_hub_device(xhci::xhci_device* hub_device, uint8_t hub_port, uint8_t speed);
+    void _teardown_hub_device(xhci::xhci_device* hub_device, uint8_t hub_port);
+
     // Device setup and management
     void _setup_device(uint8_t port_index);
     void _teardown_device(uint8_t port_index);

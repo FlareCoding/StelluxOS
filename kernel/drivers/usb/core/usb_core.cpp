@@ -60,6 +60,8 @@ static usb::device* build_usb_device(
     dev->speed = xdev->speed();
     dev->config_value = 0;
     dev->num_interfaces = xdev->num_interfaces();
+    dev->is_hub = xdev->is_hub();
+    dev->hub_num_ports = xdev->hub_num_ports();
     dev->hcd = hcd;
     dev->hcd_device = xdev;
 
