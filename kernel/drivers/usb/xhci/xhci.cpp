@@ -1180,24 +1180,23 @@ int32_t xhci_hcd::configure_as_hub(xhci_device* device, uint8_t num_ports,
     device->set_tt_think_time(tt_think_time);
     device->set_mtt(mtt);
 
-    // Sync current output context into the input context
-    device->sync_input_ctx();
+    RUN_ELEVATED({
+        device->sync_input_ctx();
 
-    auto* input_ctrl = device->input_ctrl_ctx();
-    auto* slot_ctx = device->input_slot_ctx();
+        auto* input_ctrl = device->input_ctrl_ctx();
+        auto* slot_ctx = device->input_slot_ctx();
 
-    // Only updating the slot context
-    input_ctrl->add_flags = (1u << 0);
-    input_ctrl->drop_flags = 0;
+        input_ctrl->add_flags = (1u << 0);
+        input_ctrl->drop_flags = 0;
 
-    slot_ctx->hub = 1;
-    slot_ctx->port_count = num_ports;
-    slot_ctx->mtt = mtt ? 1 : 0;
-    if (device->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
-        slot_ctx->tt_think_time = tt_think_time;
-    }
+        slot_ctx->hub = 1;
+        slot_ctx->port_count = num_ports;
+        slot_ctx->mtt = mtt ? 1 : 0;
+        if (device->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
+            slot_ctx->tt_think_time = tt_think_time;
+        }
+    });
 
-    // Issue Evaluate Context to update the xHC's internal state
     xhci_evaluate_context_command_trb_t eval_ctx = {};
     eval_ctx.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
     eval_ctx.input_context_physical_base = device->input_ctx_phys();
@@ -1258,7 +1257,7 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     if (_address_device(device, false) != 0)
         ENUM_FAIL("xhci: address device (BSR=0) failed for slot %u", slot_id);
 
-    device->sync_input_ctx();
+    RUN_ELEVATED({ device->sync_input_ctx(); });
 
     if (_get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor)) != 0)
         ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
@@ -1286,14 +1285,13 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
     log::info("xhci: slot %u config: %u interface(s), totalLength=%u",
               slot_id, config.bNumInterfaces, config.wTotalLength);
 
-    // Sync the input context with the xHC's current output context
-    // so slot and EP0 state are up-to-date before we add new endpoints
-    device->sync_input_ctx();
+    RUN_ELEVATED({
+        device->sync_input_ctx();
 
-    // Reset input control context flags (clear stale bits from ADDRESS_DEVICE)
-    auto* input_ctrl = device->input_ctrl_ctx();
-    input_ctrl->add_flags = (1u << 0); // Start with slot context only
-    input_ctrl->drop_flags = 0;
+        auto* input_ctrl = device->input_ctrl_ctx();
+        input_ctrl->add_flags = (1u << 0);
+        input_ctrl->drop_flags = 0;
+    });
 
     // Parse descriptors: track interfaces and associate endpoints
     uint16_t offset = 0;
@@ -1376,53 +1374,50 @@ xhci_endpoint* xhci_hcd::_create_endpoint(xhci_device* device, const usb::usb_en
 }
 
 void xhci_hcd::_configure_endpoint_context(xhci_device* device, xhci_endpoint* ep) {
-    auto* input_ctrl = device->input_ctrl_ctx();
-    auto* slot_ctx = device->input_slot_ctx();
+    RUN_ELEVATED({
+        auto* input_ctrl = device->input_ctrl_ctx();
+        auto* slot_ctx = device->input_slot_ctx();
 
-    // Set the add flag for this endpoint's DCI
-    input_ctrl->add_flags |= (1u << ep->dci());
+        input_ctrl->add_flags |= (1u << ep->dci());
 
-    // Update context_entries to the highest DCI
-    if (ep->dci() > slot_ctx->context_entries) {
-        slot_ctx->context_entries = ep->dci();
-    }
-
-    // Zero the endpoint context before filling to clear any stale data
-    auto* ep_ctx = device->input_ep_ctx(ep->dci());
-    size_t ep_ctx_size = m_hc_params.csz ? sizeof(xhci_endpoint_context64) : sizeof(xhci_endpoint_context32);
-    string::memset(ep_ctx, 0, ep_ctx_size);
-
-    // Compute xHCI interval from USB bInterval
-    // For HS/SS interrupt/isoch: xHCI interval = bInterval - 1
-    // For FS/LS interrupt: use raw bInterval (clamped to valid range)
-    uint8_t xhci_interval = ep->interval();
-    uint8_t speed = device->speed();
-    if (speed == XHCI_USB_SPEED_HIGH_SPEED ||
-        speed == XHCI_USB_SPEED_SUPER_SPEED ||
-        speed == XHCI_USB_SPEED_SUPER_SPEED_PLUS) {
-        if (xhci_interval > 0) {
-            xhci_interval--;
+        if (ep->dci() > slot_ctx->context_entries) {
+            slot_ctx->context_entries = ep->dci();
         }
-    }
 
-    ep_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
-    ep_ctx->endpoint_type = ep->xhc_ep_type();
-    ep_ctx->max_packet_size = ep->max_packet_size();
-    ep_ctx->max_burst_size = 0;
-    ep_ctx->error_count = 3;
-    ep_ctx->interval = xhci_interval;
-    ep_ctx->average_trb_length = ep->max_packet_size();
-    ep_ctx->max_esit_payload_lo = ep->max_packet_size();
-    ep_ctx->max_esit_payload_hi = 0;
-    ep_ctx->transfer_ring_dequeue_ptr = ep->ring()->get_physical_base();
-    ep_ctx->dcs = ep->ring()->get_cycle_bit();
+        auto* ep_ctx = device->input_ep_ctx(ep->dci());
+        size_t ep_ctx_size = m_hc_params.csz ? sizeof(xhci_endpoint_context64) : sizeof(xhci_endpoint_context32);
+        string::memset(ep_ctx, 0, ep_ctx_size);
+
+        uint8_t xhci_interval = ep->interval();
+        uint8_t speed = device->speed();
+        if (speed == XHCI_USB_SPEED_HIGH_SPEED ||
+            speed == XHCI_USB_SPEED_SUPER_SPEED ||
+            speed == XHCI_USB_SPEED_SUPER_SPEED_PLUS) {
+            if (xhci_interval > 0) {
+                xhci_interval--;
+            }
+        }
+
+        ep_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
+        ep_ctx->endpoint_type = ep->xhc_ep_type();
+        ep_ctx->max_packet_size = ep->max_packet_size();
+        ep_ctx->max_burst_size = 0;
+        ep_ctx->error_count = 3;
+        ep_ctx->interval = xhci_interval;
+        ep_ctx->average_trb_length = ep->max_packet_size();
+        ep_ctx->max_esit_payload_lo = ep->max_packet_size();
+        ep_ctx->max_esit_payload_hi = 0;
+        ep_ctx->transfer_ring_dequeue_ptr = ep->ring()->get_physical_base();
+        ep_ctx->dcs = ep->ring()->get_cycle_bit();
+    });
 }
 
 int32_t xhci_hcd::_configure_endpoints(xhci_device* device) {
-    // Ensure slot context is included in the input context
-    auto* input_ctrl = device->input_ctrl_ctx();
-    input_ctrl->add_flags |= (1u << 0);
-    input_ctrl->drop_flags = 0;
+    RUN_ELEVATED({
+        auto* input_ctrl = device->input_ctrl_ctx();
+        input_ctrl->add_flags |= (1u << 0);
+        input_ctrl->drop_flags = 0;
+    });
 
     xhci_configure_endpoint_command_trb_t trb = {};
     trb.trb_type = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
@@ -1447,51 +1442,53 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
     size_t ctx_size = m_hc_params.csz
         ? sizeof(xhci::xhci_input_context64)
         : sizeof(xhci::xhci_input_context32);
-    string::memset(device->input_ctrl_ctx(), 0, ctx_size);
+
+    void* ctrl_ctx_ptr = device->input_ctrl_ctx();
+    uintptr_t ring_phys = device->ctrl_ring()->get_physical_base();
+    uint8_t ring_cycle = device->ctrl_ring()->get_cycle_bit();
+
+    RUN_ELEVATED({
+        string::memset(ctrl_ctx_ptr, 0, ctx_size);
+    });
 
     auto* input_ctrl = device->input_ctrl_ctx();
     auto* slot_ctx = device->input_slot_ctx();
     auto* ep0_ctx = device->input_ctrl_ep_ctx();
 
-    // Enable slot context (A0) and control endpoint context (A1)
-    input_ctrl->add_flags = (1 << 0) | (1 << 1);
-    input_ctrl->drop_flags = 0;
+    RUN_ELEVATED({
+        input_ctrl->add_flags = (1 << 0) | (1 << 1);
+        input_ctrl->drop_flags = 0;
 
-    // Slot context
-    slot_ctx->route_string = device->route_string();
-    slot_ctx->speed = device->speed();
-    slot_ctx->context_entries = 1;
-    slot_ctx->interrupter_target = 0;
+        slot_ctx->route_string = device->route_string();
+        slot_ctx->speed = device->speed();
+        slot_ctx->context_entries = 1;
+        slot_ctx->interrupter_target = 0;
 
-    if (device->parent_slot_id() == 0) {
-        // Root hub device
-        slot_ctx->root_hub_port_num = device->port_id();
-    } else {
-        // Hub-downstream device
-        slot_ctx->root_hub_port_num = device->root_port_id();
-        slot_ctx->parent_hub_slot_id = device->parent_slot_id();
-        slot_ctx->parent_port_number = device->parent_port_num();
+        if (device->parent_slot_id() == 0) {
+            slot_ctx->root_hub_port_num = device->port_id();
+        } else {
+            slot_ctx->root_hub_port_num = device->root_port_id();
+            slot_ctx->parent_hub_slot_id = device->parent_slot_id();
+            slot_ctx->parent_port_number = device->parent_port_num();
 
-        // TT fields for LS/FS devices behind HS hubs
-        if (device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
-            device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
-            slot_ctx->mtt = device->mtt() ? 1 : 0;
-            slot_ctx->tt_think_time = device->tt_think_time();
+            if (device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
+                device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
+                slot_ctx->mtt = device->mtt() ? 1 : 0;
+                slot_ctx->tt_think_time = device->tt_think_time();
+            }
         }
-    }
 
-    // Control endpoint context (EP0, bidirectional)
-    ep0_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
-    ep0_ctx->endpoint_type = XHCI_ENDPOINT_TYPE_CONTROL;
-    ep0_ctx->max_packet_size = max_packet_size;
-    ep0_ctx->max_burst_size = 0;
-    ep0_ctx->error_count = 3;
-    ep0_ctx->interval = 0;
-    ep0_ctx->average_trb_length = 8;
-    ep0_ctx->max_esit_payload_lo = 0;
-    ep0_ctx->transfer_ring_dequeue_ptr =
-        device->ctrl_ring()->get_physical_base();
-    ep0_ctx->dcs = device->ctrl_ring()->get_cycle_bit();
+        ep0_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
+        ep0_ctx->endpoint_type = XHCI_ENDPOINT_TYPE_CONTROL;
+        ep0_ctx->max_packet_size = max_packet_size;
+        ep0_ctx->max_burst_size = 0;
+        ep0_ctx->error_count = 3;
+        ep0_ctx->interval = 0;
+        ep0_ctx->average_trb_length = 8;
+        ep0_ctx->max_esit_payload_lo = 0;
+        ep0_ctx->transfer_ring_dequeue_ptr = ring_phys;
+        ep0_ctx->dcs = ring_cycle;
+    });
 }
 
 int32_t xhci_hcd::_address_device(xhci_device* device, bool bsr) {
