@@ -1230,9 +1230,7 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     uint8_t slot_id = device->slot_id();
     uint8_t port_speed = device->speed();
 
-    // Determine root-hub port index for _teardown_device on root-hub devices
-    // For hub-connected devices, we don't use m_port_devices
-    bool is_root_device = (device->parent_slot_id() == 0);
+    bool is_root_device = (device->route_string() == 0);
     uint8_t port_index = port_id - 1;
 
     #define ENUM_FAIL(msg, ...) do { \
