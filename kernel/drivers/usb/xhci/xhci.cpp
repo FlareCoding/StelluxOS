@@ -978,7 +978,10 @@ void xhci_hcd::queue_hub_enumerate(xhci_device* hub_device, uint8_t hub_port, ui
             log::error("xhci: hub event queue full");
         }
         sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
+
+        sync::irq_state irq2 = sync::spin_lock_irqsave(m_irq_lock);
         m_event_pending = true;
+        sync::spin_unlock_irqrestore(m_irq_lock, irq2);
         sync::wake_one(m_irq_wq);
     });
 }
@@ -1000,7 +1003,10 @@ void xhci_hcd::queue_hub_disconnect(xhci_device* hub_device, uint8_t hub_port) {
             log::error("xhci: hub event queue full");
         }
         sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
+
+        sync::irq_state irq2 = sync::spin_lock_irqsave(m_irq_lock);
         m_event_pending = true;
+        sync::spin_unlock_irqrestore(m_irq_lock, irq2);
         sync::wake_one(m_irq_wq);
     });
 }
@@ -1106,11 +1112,8 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
     device->set_parent_port_num(hub_port);
     device->set_root_port_id(hub_device->root_port_id());
 
-    // For LS/FS devices behind a HS hub, set TT fields
-    if (hub_device->speed() == XHCI_USB_SPEED_HIGH_SPEED &&
-        (speed == XHCI_USB_SPEED_LOW_SPEED || speed == XHCI_USB_SPEED_FULL_SPEED)) {
-        device->set_parent_slot_id(hub_device->slot_id());
-        device->set_parent_port_num(hub_port);
+    // Propagate TT fields for LS/FS devices behind a HS hub
+    if (hub_device->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
         device->set_tt_think_time(hub_device->tt_think_time());
         device->set_mtt(hub_device->mtt());
     }
@@ -1453,11 +1456,14 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
         slot_ctx->root_hub_port_num = device->port_id();
     } else {
         slot_ctx->root_hub_port_num = device->root_port_id();
-        slot_ctx->parent_hub_slot_id = device->parent_slot_id();
-        slot_ctx->parent_port_number = device->parent_port_num();
 
+        // xHCI spec Section 6.2.2: parent_hub_slot_id and parent_port_number
+        // shall only be set for LS/FS devices behind a HS hub (TT routing).
+        // For HS/SS devices, these fields shall be 0.
         if (device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
             device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
+            slot_ctx->parent_hub_slot_id = device->parent_slot_id();
+            slot_ctx->parent_port_number = device->parent_port_num();
             slot_ctx->mtt = device->mtt() ? 1 : 0;
             slot_ctx->tt_think_time = device->tt_think_time();
         }
