@@ -458,12 +458,30 @@ static_assert(sizeof(xhci_porthlpmc_register_usb3) == sizeof(uint32_t));
 // PORTSC RW1C change bits (bits 17-23): writing 1 clears these status bits.
 // Always mask these out on normal PORTSC writes to avoid accidental clearing.
 // Use explicit writes with these bits set only when intentionally acknowledging changes.
-constexpr uint32_t PORTSC_RW1C_BITS = (1u << 17) | (1u << 18) | (1u << 19) |
+constexpr uint32_t PORTSC_RW1C_BITS =  (1u << 1)  |
+                                       (1u << 17) | (1u << 18) | (1u << 19) |
                                        (1u << 20) | (1u << 21) | (1u << 22) | (1u << 23);
 
 // Port register set offsets from the port base address
 constexpr uint16_t PORT_REGS_BASE_OFFSET = 0x400;
 constexpr uint16_t PORT_REGS_STRIDE      = 0x10;
+
+// xHCI spec 5.5: "If a system is incapable of issuing Qword references, then
+// writes to the Qword address fields shall be performed using 2 Dword
+// references; low Dword-first, high-Dword second."
+// BCM2711 PCIe RC and VL805 do not support 64-bit MMIO transactions.
+inline void xhci_write64(volatile uint64_t* reg, uint64_t val) {
+    volatile uint32_t* r32 = reinterpret_cast<volatile uint32_t*>(reg);
+    r32[0] = static_cast<uint32_t>(val);
+    r32[1] = static_cast<uint32_t>(val >> 32);
+}
+
+inline uint64_t xhci_read64(volatile uint64_t* reg) {
+    volatile uint32_t* r32 = reinterpret_cast<volatile uint32_t*>(reg);
+    uint32_t lo = r32[0];
+    uint32_t hi = r32[1];
+    return static_cast<uint64_t>(lo) | (static_cast<uint64_t>(hi) << 32);
+}
 
 } // namespace drivers::xhci
 
