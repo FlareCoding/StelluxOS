@@ -1102,13 +1102,18 @@ __PRIVILEGED_CODE int32_t init() {
     log::info("paging: kernel image mapped 0x%lx-0x%lx (%zu pages, %zu KB)",
               kern_start, kern_priv_end, total_kernel_pages, total_kernel_pages * 4);
 
-    // Clear SCTLR RES0 bit 20 if set (can cause spurious faults on some cores)
     uint64_t sctlr = read_sctlr_el1();
+
+    // Clear RES0 bit 20 if set (can cause spurious faults on some cores)
     constexpr uint64_t SCTLR_RES0_BIT20 = 1ULL << 20;
-    if (sctlr & SCTLR_RES0_BIT20) {
-        sctlr &= ~SCTLR_RES0_BIT20;
-        write_sctlr_el1(sctlr);
-    }
+    sctlr &= ~SCTLR_RES0_BIT20;
+
+    // Allow WFE at EL0 so cpu::relax() (wfe) works in unprivileged tasks.
+    // Without this, WFE traps to EL1 on Cortex-A72 and similar cores.
+    constexpr uint64_t SCTLR_nTWE = 1ULL << 18;
+    sctlr |= SCTLR_nTWE;
+
+    write_sctlr_el1(sctlr);
 
     // Switch to new page tables
     set_kernel_pt_root(new_root);
