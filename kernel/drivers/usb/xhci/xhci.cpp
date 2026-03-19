@@ -1,6 +1,7 @@
 #include "drivers/usb/xhci/xhci.h"
 #include "drivers/usb/xhci/xhci_common.h"
 #include "drivers/usb/xhci/xhci_ext_cap.h"
+#include "drivers/usb/core/usb_core.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
@@ -819,6 +820,9 @@ void xhci_hcd::_teardown_device(uint8_t port_index) {
         sync::wake_all(device->ctrl_completion_wq());
     });
 
+    // Notify USB Core to let bound class drivers call disconnect()
+    usb::core::device_disconnected(this, device);
+
     _disable_slot(slot_id); // tolerate failure (device may be gone)
 
     // Save output_ctx before destroy() clears it
@@ -1000,7 +1004,6 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
 }
 
 void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_descriptor& desc) {
-    (void)desc;
     uint8_t slot_id = device->slot_id();
 
     usb::usb_configuration_descriptor config = {};
@@ -1075,6 +1078,9 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
     }
 
     log::info("xhci: slot %u configured", slot_id);
+
+    // Hand off to USB Core for class driver matching and binding
+    usb::core::device_configured(this, device, desc);
 }
 
 xhci_endpoint* xhci_hcd::_create_endpoint(xhci_device* device, const usb::usb_endpoint_descriptor* desc) {
@@ -1452,6 +1458,34 @@ int32_t xhci_hcd::_submit_normal_transfer(
     }
 
     return 0;
+}
+
+int32_t xhci_hcd::usb_control_transfer(
+    xhci_device* device,
+    uint8_t request_type, uint8_t request,
+    uint16_t value, uint16_t index,
+    void* data, uint16_t length
+) {
+    xhci_device_request_packet req = {};
+    req.bRequestType = request_type;
+    req.bRequest = request;
+    req.wValue = value;
+    req.wIndex = index;
+    req.wLength = length;
+    return _send_control_transfer(device, req, data, length);
+}
+
+int32_t xhci_hcd::usb_submit_transfer(
+    xhci_device* device, uint8_t endpoint_addr,
+    void* buffer, uint32_t length
+) {
+    auto* ep = device->endpoint_by_address(endpoint_addr);
+    if (!ep) {
+        log::error("xhci: no endpoint for address 0x%02x on slot %u",
+                   endpoint_addr, device->slot_id());
+        return -1;
+    }
+    return _submit_normal_transfer(device, ep, buffer, length);
 }
 
 REGISTER_PCI_DRIVER(xhci_hcd,

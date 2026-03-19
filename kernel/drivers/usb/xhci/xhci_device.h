@@ -65,6 +65,15 @@ public:
     xhci_endpoint* endpoint(uint8_t dci) { return m_endpoints[dci]; }
     void set_endpoint(uint8_t dci, xhci_endpoint* ep) { m_endpoints[dci] = ep; }
 
+    // Lookup endpoint by USB endpoint address (e.g. 0x81 = EP1 IN)
+    xhci_endpoint* endpoint_by_address(uint8_t address) {
+        uint8_t ep_num = address & 0x0F;
+        bool is_in = (address & 0x80) != 0;
+        uint8_t dci = static_cast<uint8_t>(ep_num * 2 + (is_in ? 1 : 0));
+        if (dci < 2 || dci > MAX_ENDPOINTS) return nullptr;
+        return m_endpoints[dci];
+    }
+
     // Interface tracking
     static constexpr uint8_t MAX_INTERFACES = 16;
     inline uint8_t num_interfaces() const { return m_num_interfaces; }

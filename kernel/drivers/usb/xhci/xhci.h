@@ -47,6 +47,15 @@ public:
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
 
+    // Public transfer API for USB Core
+    int32_t usb_control_transfer(xhci::xhci_device* device,
+                                 uint8_t request_type, uint8_t request,
+                                 uint16_t value, uint16_t index,
+                                 void* data, uint16_t length);
+
+    int32_t usb_submit_transfer(xhci::xhci_device* device, uint8_t endpoint_addr,
+                                void* buffer, uint32_t length);
+
 private:
     // Host controller MMIO virtual base address and mapped size
     uintptr_t m_xhc_base = 0;

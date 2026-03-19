@@ -114,6 +114,13 @@ SECTIONS {
         __pci_drivers_end = .;
     } :data
 
+    /* USB class driver registration entries */
+    .usb_class_drivers : AT(ADDR(.usb_class_drivers) - KERNEL_VADDR) SUBALIGN(8) {
+        __usb_class_drivers_start = .;
+        KEEP(*(.usb_class_drivers))
+        __usb_class_drivers_end = .;
+    } :data
+
     /* Ensure end symbols are page-aligned to avoid partial page issues */
     . = ALIGN(4096);
     __stlx_kern_priv_end = .;
