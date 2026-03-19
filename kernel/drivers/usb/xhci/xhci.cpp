@@ -1108,15 +1108,29 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
     }
 
     device->set_route_string(rs);
-    device->set_parent_slot_id(hub_device->slot_id());
-    device->set_parent_port_num(hub_port);
     device->set_root_port_id(hub_device->root_port_id());
 
-    // Propagate TT fields for LS/FS devices behind a HS hub
+    // TT routing (xHCI spec Section 6.2.2): parent_hub_slot_id must reference
+    // the nearest HS hub that provides the Transaction Translator. These fields
+    // are only used for LS/FS devices; _configure_ctrl_ep_input_context gates
+    // writing them to the slot context on the device speed.
+    //
+    // For multi-tier topologies (HS hub -> FS hub -> LS device), the FS hub
+    // inherits TT info from the HS hub, so downstream devices correctly
+    // reference the HS ancestor rather than the intermediate FS hub.
     if (hub_device->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
+        device->set_parent_slot_id(hub_device->slot_id());
+        device->set_parent_port_num(hub_port);
+        device->set_tt_think_time(hub_device->tt_think_time());
+        device->set_mtt(hub_device->mtt());
+    } else if (hub_device->parent_slot_id() != 0) {
+        // LS/FS/SS hub with a parent: propagate TT info from the ancestor
+        device->set_parent_slot_id(hub_device->parent_slot_id());
+        device->set_parent_port_num(hub_device->parent_port_num());
         device->set_tt_think_time(hub_device->tt_think_time());
         device->set_mtt(hub_device->mtt());
     }
+    // else: hub is on the root port with no HS ancestor — no TT fields needed
 
     device->set_output_ctx(output_ctx);
     hub_device->set_hub_child(hub_port, device);
@@ -1452,16 +1466,19 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
     slot_ctx->context_entries = 1;
     slot_ctx->interrupter_target = 0;
 
-    if (device->parent_slot_id() == 0) {
+    if (device->route_string() == 0) {
+        // Root hub device: port_id is the root hub port number
         slot_ctx->root_hub_port_num = device->port_id();
     } else {
+        // Hub-downstream device: use the root port of the topology chain
         slot_ctx->root_hub_port_num = device->root_port_id();
 
         // xHCI spec Section 6.2.2: parent_hub_slot_id and parent_port_number
-        // shall only be set for LS/FS devices behind a HS hub (TT routing).
-        // For HS/SS devices, these fields shall be 0.
-        if (device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
-            device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
+        // shall only be set for LS/FS devices that need TT routing through
+        // a HS hub. For HS/SS devices these fields shall be 0.
+        if ((device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
+             device->speed() == XHCI_USB_SPEED_FULL_SPEED) &&
+            device->parent_slot_id() != 0) {
             slot_ctx->parent_hub_slot_id = device->parent_slot_id();
             slot_ctx->parent_port_number = device->parent_port_num();
             slot_ctx->mtt = device->mtt() ? 1 : 0;
