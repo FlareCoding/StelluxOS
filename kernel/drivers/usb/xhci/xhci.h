@@ -4,6 +4,7 @@
 #include "drivers/pci_driver.h"
 #include "drivers/usb/xhci/xhci_regs.h"
 #include "drivers/usb/xhci/xhci_rings.h"
+#include "drivers/usb/xhci/xhci_device.h"
 #include "drivers/usb/xhci/xhci_mem.h"
 
 namespace drivers {
@@ -76,6 +77,9 @@ private:
     // Pending command state (single in-flight command)
     xhci::xhci_cmd_state m_cmd_state;
 
+    // Per-port device tracking (indexed by 0-based port_index)
+    xhci::xhci_device** m_port_devices = nullptr;
+
     // USB3 port bitmap (bit N = port N is USB3)
     uint32_t m_usb3_port_map[8] = {};
 
@@ -98,6 +102,7 @@ private:
 
     // Port operations
     int32_t _reset_port(uint8_t port_index);
+    void _scan_ports();
 
     // Doorbell helpers
     void _ring_doorbell(uint8_t slot_id, uint8_t target);
@@ -108,6 +113,13 @@ private:
     void _write_portsc(uint8_t port_index, uint32_t value);
     void _ack_portsc_changes(uint8_t port_index, uint32_t change_bits);
     bool _is_usb3_port(uint8_t port_index);
+
+private:
+    // Device setup and management
+    void _setup_device(uint8_t port_index);
+    void _configure_ctrl_ep_input_context(xhci::xhci_device* device, uint16_t max_packet_size);
+    int32_t _address_device(xhci::xhci_device* device, bool bsr);
+    uint16_t _initial_max_packet_size(uint8_t speed);
 };
 }
 

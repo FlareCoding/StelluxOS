@@ -20,7 +20,7 @@ int32_t xhci_hcd::attach() {
 
     int32_t rc = map_bar(0, m_xhc_base, paging::PAGE_USER);
     if (rc != 0) {
-        log::error("xhci: failed to map BAR0: %d", rc);
+        log::error("xhci: failed to map BAR: %d", rc);
         return rc;
     }
 
@@ -73,6 +73,14 @@ int32_t xhci_hcd::attach() {
         return rt_rc;
     }
 
+    // Allocate per-port device tracking array
+    m_port_devices = static_cast<xhci_device**>(
+        heap::uzalloc(static_cast<size_t>(m_hc_params.max_ports) * sizeof(xhci_device*)));
+    if (!m_port_devices) {
+        log::error("xhci: failed to allocate port device tracking array");
+        return -1;
+    }
+
     // Setup MSI/MSI-X interrupts
     int32_t msi_rc = -1;
     if (dev().has_capability(pci::CAP_MSIX)) {
@@ -92,6 +100,19 @@ int32_t xhci_hcd::detach() {
     // Stop the controller (halt + disable interrupts)
     if (m_xhc_op_regs) {
         _stop_host_controller();
+    }
+
+    // Destroy per-port devices
+    if (m_port_devices) {
+        for (uint8_t i = 0; i < m_hc_params.max_ports; i++) {
+            if (m_port_devices[i]) {
+                m_port_devices[i]->destroy();
+                heap::ufree_delete(m_port_devices[i]);
+                m_port_devices[i] = nullptr;
+            }
+        }
+        heap::ufree(m_port_devices);
+        m_port_devices = nullptr;
     }
 
     // Destroy event ring
@@ -147,6 +168,11 @@ void xhci_hcd::run() {
         log::error("xhci: failed to start controller");
         return;
     }
+
+    // Scan for devices connected before the controller started
+    // QEMU and some hardware platform don't generate PSC events
+    // for boot-attached devices.
+    _scan_ports();
 
     while (true) {
         wait_for_event();
@@ -535,14 +561,17 @@ void xhci_hcd::_process_event_ring() {
 
             xhci_portsc_register portsc;
             portsc.raw = *_portsc(port_id - 1);
-            log::info("xhci: port %u status change, PORTSC=0x%x, %s",
-                       port_id, portsc.raw, portsc.ccs ? "connected" : "disconnected");
+
+            if (portsc.csc && portsc.ccs) {
+                _setup_device(port_id - 1);
+            } else if (portsc.csc && !portsc.ccs) {
+                log::info("xhci: device disconnected from port %u", port_id);
+                _ack_portsc_changes(port_id - 1, PORTSC_RW1C_BITS);
+            }
             break;
         }
         case XHCI_TRB_TYPE_CMD_COMPLETION_EVENT: {
             auto* cce = reinterpret_cast<xhci_command_completion_trb_t*>(trb);
-            log::debug("xhci: command completion, code=%s, slot=%u",
-                        trb_completion_code_to_string(cce->completion_code), cce->slot_id);
             m_cmd_ring->process_event(cce);
 
             if (m_cmd_state.pending) {
@@ -682,6 +711,17 @@ int32_t xhci_hcd::_reset_port(uint8_t port_index) {
     return 0;
 }
 
+void xhci_hcd::_scan_ports() {
+    for (uint8_t i = 0; i < m_hc_params.max_ports; i++) {
+        xhci_portsc_register portsc;
+        portsc.raw = *_portsc(i);
+
+        if (portsc.ccs) {
+            _setup_device(i);
+        }
+    }
+}
+
 void xhci_hcd::_ring_doorbell(uint8_t slot_id, uint8_t target) {
     m_doorbells[slot_id] = static_cast<uint32_t>(target);
 }
@@ -707,6 +747,154 @@ void xhci_hcd::_ack_portsc_changes(uint8_t port_index, uint32_t change_bits) {
 
 bool xhci_hcd::_is_usb3_port(uint8_t port_index) {
     return (m_usb3_port_map[port_index / 32] & (1u << (port_index % 32))) != 0;
+}
+
+void xhci_hcd::_setup_device(uint8_t port_index) {
+    uint8_t port_id = port_index + 1; // 1-based for logging and slot context
+
+    // Idempotent: skip if this port already has a device
+    if (m_port_devices[port_index]) {
+        return;
+    }
+
+    // Reset the port
+    if (_reset_port(port_index) != 0) {
+        log::error("xhci: failed to reset port %u", port_id);
+        return;
+    }
+
+    // Read port speed after reset
+    xhci_portsc_register portsc;
+    portsc.raw = *_portsc(port_index);
+    uint8_t port_speed = static_cast<uint8_t>(portsc.port_speed);
+
+    // Enable a device slot
+    xhci_trb_t enable_slot = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+    xhci_command_completion_trb_t completion = {};
+
+    if (_send_command(&enable_slot, &completion) != 0) {
+        log::error("xhci: enable slot failed for port %u", port_id);
+        return;
+    }
+
+    uint8_t slot_id = completion.slot_id;
+
+    // Allocate the output device context
+    size_t dev_ctx_size = m_hc_params.csz
+        ? sizeof(xhci_device_context64)
+        : sizeof(xhci_device_context32);
+
+    void* output_ctx = alloc_xhci_memory(dev_ctx_size);
+    if (!output_ctx) {
+        log::error("xhci: failed to allocate device context for slot %u", slot_id);
+        return;
+    }
+
+    // Write the physical address into DCBAA[slot_id]
+    m_dcbaa[slot_id] = xhci_get_physical_addr(output_ctx);
+
+    // Create and initialize the device object
+    auto* device = heap::ualloc_new<xhci_device>();
+    if (!device) {
+        log::error("xhci: failed to allocate xhci_device for slot %u", slot_id);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        return;
+    }
+
+    if (device->init(port_id, slot_id, port_speed, m_hc_params.csz) != 0) {
+        log::error("xhci: failed to init xhci_device for slot %u", slot_id);
+        heap::ufree_delete(device);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        return;
+    }
+
+    device->set_output_ctx(output_ctx);
+    m_port_devices[port_index] = device;
+
+    // Configure the input context for Address Device command
+    uint16_t max_packet_size = _initial_max_packet_size(port_speed);
+    _configure_ctrl_ep_input_context(device, max_packet_size);
+
+    // First address device with BSR=1, essentially blocking the SET_ADDRESS request,
+    // but still enables the control endpoint which we can use to get the device descriptor.
+    // Some legacy devices require their descriptor to be read before sending them a SET_ADDRESS command.
+    if (_address_device(device, true) != 0) {
+        log::error("xhci: address device (BSR=1) failed for slot %u", slot_id);
+        return;
+    }
+
+    log::info("xhci: port %u slot %u addressed (speed=%u, mps=%u)",
+              port_id, slot_id, port_speed, max_packet_size);
+}
+
+void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
+    auto* input_ctrl = device->input_ctrl_ctx();
+    auto* slot_ctx = device->input_slot_ctx();
+    auto* ep0_ctx = device->input_ctrl_ep_ctx();
+
+    // Enable slot context (A0) and control endpoint context (A1)
+    input_ctrl->add_flags = (1 << 0) | (1 << 1);
+    input_ctrl->drop_flags = 0;
+
+    // Slot context
+    slot_ctx->route_string = 0;
+    slot_ctx->speed = device->speed();
+    slot_ctx->context_entries = 1;
+    slot_ctx->root_hub_port_num = device->port_id();
+    slot_ctx->interrupter_target = 0;
+
+    // Control endpoint context (EP0, bidirectional)
+    ep0_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
+    ep0_ctx->endpoint_type = XHCI_ENDPOINT_TYPE_CONTROL;
+    ep0_ctx->max_packet_size = max_packet_size;
+    ep0_ctx->max_burst_size = 0;
+    ep0_ctx->error_count = 3;
+    ep0_ctx->interval = 0;
+    ep0_ctx->average_trb_length = 8;
+    ep0_ctx->max_esit_payload_lo = 0;
+    ep0_ctx->transfer_ring_dequeue_ptr =
+        device->ctrl_ring()->get_physical_base();
+    ep0_ctx->dcs = device->ctrl_ring()->get_cycle_bit();
+}
+
+int32_t xhci_hcd::_address_device(xhci_device* device, bool bsr) {
+    // Construct the Address Device TRB
+    xhci_address_device_command_trb_t address_trb;
+    address_trb.input_context_physical_base = device->input_ctx_phys();
+    address_trb.rsvd = 0;
+    address_trb.cycle_bit = 0;
+    address_trb.rsvd1 = 0;
+
+    /*
+        Block Set Address Request (BSR). When this flag is set to '0' the Address Device Command shall
+        generate a USB SET_ADDRESS request to the device. When this flag is set to '1' the Address
+        Device Command shall not generate a USB SET_ADDRESS request. Refer to section 4.6.5 for
+        more information on the use of this flag.
+    */
+    address_trb.bsr = bsr ? 1 : 0;
+
+    address_trb.trb_type = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
+    address_trb.rsvd2 = 0;
+    address_trb.slot_id = device->slot_id();
+
+    return _send_command(reinterpret_cast<xhci_trb_t*>(&address_trb));
+}
+
+uint16_t xhci_hcd::_initial_max_packet_size(uint8_t speed) {
+    switch (speed) {
+    case XHCI_USB_SPEED_LOW_SPEED:
+        return 8;
+    case XHCI_USB_SPEED_FULL_SPEED:
+    case XHCI_USB_SPEED_HIGH_SPEED:
+        return 64;
+    case XHCI_USB_SPEED_SUPER_SPEED:
+    case XHCI_USB_SPEED_SUPER_SPEED_PLUS:
+        return 512;
+    default:
+        return 8;
+    }
 }
 
 REGISTER_PCI_DRIVER(xhci_hcd,
