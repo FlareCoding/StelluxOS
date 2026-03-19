@@ -55,21 +55,46 @@ int32_t hub_driver::probe(usb::device* dev, usb::interface* /*iface*/) {
 
 void hub_driver::run() {
     uint8_t ep_addr = find_interrupt_in_endpoint();
+    auto* hcd = static_cast<drivers::xhci_hcd*>(m_dev->hcd);
+    auto* xdev = static_cast<drivers::xhci::xhci_device*>(m_dev->hcd_device);
 
     // Power on all ports
     power_on_ports();
 
-    // Initial port scan after power-on
+    // Initial port scan after power-on.
+    // Devices already physically connected won't have PORT_CHANGE_CONNECTION
+    // set, so we enumerate based on PORT_STATUS_CONNECTION directly.
     delay::us(m_hub_desc.bPwrOn2PwrGood * 2000 + 50000);
 
     for (uint8_t port = 1; port <= m_hub_desc.bNbrPorts; port++) {
         hub_port_status status = {};
-        if (get_port_status(port, &status) == 0) {
-            if (status.status & PORT_STATUS_CONNECTION) {
-                log::info("hub: device present on port %u at startup", port);
-                handle_port_change(port);
-            }
+        if (get_port_status(port, &status) != 0) continue;
+
+        // Clear any stale change bits from before we took ownership
+        if (status.change & PORT_CHANGE_CONNECTION)
+            clear_port_feature(port, PORT_FEATURE_C_CONNECTION);
+        if (status.change & PORT_CHANGE_RESET)
+            clear_port_feature(port, PORT_FEATURE_C_RESET);
+        if (status.change & PORT_CHANGE_ENABLE)
+            clear_port_feature(port, PORT_FEATURE_C_ENABLE);
+
+        if (!(status.status & PORT_STATUS_CONNECTION)) continue;
+
+        log::info("hub: device present on port %u at startup", port);
+
+        if (reset_port(port) != 0) {
+            log::error("hub: port %u initial reset failed", port);
+            continue;
         }
+
+        if (get_port_status(port, &status) != 0) continue;
+        if (!(status.status & PORT_STATUS_ENABLE)) {
+            log::warn("hub: port %u not enabled after initial reset", port);
+            continue;
+        }
+
+        uint8_t speed = hub_speed_to_xhci_speed(status.status);
+        hcd->queue_hub_enumerate(xdev, port, speed);
     }
 
     if (ep_addr == 0) {
