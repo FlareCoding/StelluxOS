@@ -22,10 +22,22 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
     }
     m_input_ctx_phys = xhci_get_physical_addr(m_input_ctx);
 
+    // Allocate a persistent DMA page for control transfer payloads.
+    m_ctrl_transfer_buffer = alloc_xhci_memory(paging::PAGE_SIZE_4KB);
+    if (!m_ctrl_transfer_buffer) {
+        log::error("xhci: failed to allocate control transfer buffer for slot %u", slot_id);
+        free_xhci_memory(m_input_ctx);
+        m_input_ctx = nullptr;
+        return -1;
+    }
+    m_ctrl_transfer_buffer_phys = xhci_get_physical_addr(m_ctrl_transfer_buffer);
+
     // Allocate and init the control transfer ring
     m_ctrl_ring = heap::ualloc_new<xhci_transfer_ring>();
     if (!m_ctrl_ring) {
         log::error("xhci: failed to allocate control transfer ring for slot %u", slot_id);
+        free_xhci_memory(m_ctrl_transfer_buffer);
+        m_ctrl_transfer_buffer = nullptr;
         free_xhci_memory(m_input_ctx);
         m_input_ctx = nullptr;
         return -1;
@@ -35,6 +47,8 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
         log::error("xhci: failed to init control transfer ring for slot %u", slot_id);
         heap::ufree_delete(m_ctrl_ring);
         m_ctrl_ring = nullptr;
+        free_xhci_memory(m_ctrl_transfer_buffer);
+        m_ctrl_transfer_buffer = nullptr;
         free_xhci_memory(m_input_ctx);
         m_input_ctx = nullptr;
         return -1;
@@ -57,6 +71,11 @@ void xhci_device::destroy() {
         m_ctrl_ring->destroy();
         heap::ufree_delete(m_ctrl_ring);
         m_ctrl_ring = nullptr;
+    }
+    if (m_ctrl_transfer_buffer) {
+        free_xhci_memory(m_ctrl_transfer_buffer);
+        m_ctrl_transfer_buffer = nullptr;
+        m_ctrl_transfer_buffer_phys = 0;
     }
     if (m_input_ctx) {
         free_xhci_memory(m_input_ctx);

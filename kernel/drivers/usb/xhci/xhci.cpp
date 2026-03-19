@@ -1095,12 +1095,19 @@ int32_t xhci_hcd::_send_control_transfer(
 ) {
     xhci_transfer_ring* ring = device->ctrl_ring();
 
-    // Allocate a DMA buffer for the data stage
-    void* dma_buffer = alloc_xhci_memory(length > 0 ? length : 1);
-    if (!dma_buffer) {
-        log::error("xhci: failed to allocate control transfer buffer");
+    // Use the device's persistent DMA buffer
+    void* dma_buffer = device->ctrl_transfer_buffer();
+    uintptr_t dma_buffer_phys = device->ctrl_transfer_buffer_phys();
+    if (!dma_buffer || dma_buffer_phys == 0) {
+        log::error("xhci: missing control transfer buffer for slot %u", device->slot_id());
         return -1;
     }
+    if (length > paging::PAGE_SIZE_4KB) {
+        log::error("xhci: control transfer too large (%u bytes)", length);
+        return -1;
+    }
+
+    string::memset(dma_buffer, 0, paging::PAGE_SIZE_4KB);
 
     // Setup Stage TRB
     xhci_setup_stage_trb_t setup = {};
@@ -1116,7 +1123,7 @@ int32_t xhci_hcd::_send_control_transfer(
     xhci_data_stage_trb_t data = {};
     if (length > 0) {
         data.trb_type = XHCI_TRB_TYPE_DATA_STAGE;
-        data.data_buffer = xhci_get_physical_addr(dma_buffer);
+        data.data_buffer = dma_buffer_phys;
         data.trb_transfer_length = length;
         data.td_size = 0;
         data.interrupter_target = 0;
@@ -1166,14 +1173,12 @@ int32_t xhci_hcd::_send_control_transfer(
 
     if (!m_xfer_state.completed) {
         log::error("xhci: control transfer timed out");
-        free_xhci_memory(dma_buffer);
         return -1;
     }
 
     if (m_xfer_state.result.completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
         log::warn("xhci: control transfer failed: %s",
                    trb_completion_code_to_string(m_xfer_state.result.completion_code));
-        free_xhci_memory(dma_buffer);
         return -1;
     }
 
@@ -1182,7 +1187,6 @@ int32_t xhci_hcd::_send_control_transfer(
         string::memcpy(buffer, dma_buffer, length);
     }
 
-    free_xhci_memory(dma_buffer);
     return 0;
 }
 

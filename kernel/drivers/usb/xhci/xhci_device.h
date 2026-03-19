@@ -33,6 +33,10 @@ public:
     // Copy output device context into the input context's device context portion
     void sync_input_ctx();
 
+    // Persistent DMA buffer for control transfers
+    inline void* ctrl_transfer_buffer() const { return m_ctrl_transfer_buffer; }
+    inline uintptr_t ctrl_transfer_buffer_phys() const { return m_ctrl_transfer_buffer_phys; }
+
     // Control transfer ring
     inline xhci_transfer_ring* ctrl_ring() { return m_ctrl_ring; }
 
@@ -50,6 +54,9 @@ private:
     uintptr_t m_input_ctx_phys = 0;
 
     void*     m_output_ctx = nullptr;
+
+    void*     m_ctrl_transfer_buffer = nullptr;
+    uintptr_t m_ctrl_transfer_buffer_phys = 0;
 
     xhci_transfer_ring* m_ctrl_ring = nullptr;
 
