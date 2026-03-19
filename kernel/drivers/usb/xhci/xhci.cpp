@@ -872,6 +872,77 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
               desc.bcdUsb >> 8, (desc.bcdUsb >> 4) & 0xF,
               desc.idVendor, desc.idProduct, desc.bMaxPacketSize0,
               desc.bNumConfigurations);
+
+    // Configure the device (read config descriptor, set up endpoints)
+    _configure_device(device, desc);
+}
+
+void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_descriptor& desc) {
+    (void)desc;
+
+    usb::usb_configuration_descriptor config = {};
+    if (_get_configuration_descriptor(device, &config) != 0) {
+        log::error("xhci: failed to read config descriptor for slot %u", device->slot_id());
+        return;
+    }
+
+    log::info("xhci: slot %u config: %u interface(s), totalLength=%u",
+              device->slot_id(), config.bNumInterfaces, config.wTotalLength);
+
+    // Parse interface and endpoint descriptors from the configuration descriptor
+    uint16_t offset = 0;
+    uint16_t data_length = config.wTotalLength - sizeof(usb::usb_descriptor_header) - 5;
+    // 5 = config descriptor fields after header (wTotalLength + bNumInterfaces + bConfigurationValue + iConfiguration + bmAttributes + bMaxPower = 7, minus the 2 for header already subtracted)
+
+    while (offset < data_length) {
+        auto* hdr = reinterpret_cast<usb::usb_descriptor_header*>(&config.data[offset]);
+        if (hdr->bLength == 0) break;
+
+        switch (hdr->bDescriptorType) {
+        case usb::USB_DESCRIPTOR_INTERFACE: {
+            auto* iface = reinterpret_cast<usb::usb_interface_descriptor*>(hdr);
+            log::info("xhci:   interface %u: class=0x%02x subclass=0x%02x protocol=0x%02x endpoints=%u",
+                       iface->bInterfaceNumber, iface->bInterfaceClass,
+                       iface->bInterfaceSubClass, iface->bInterfaceProtocol,
+                       iface->bNumEndpoints);
+            break;
+        }
+        case usb::USB_DESCRIPTOR_ENDPOINT: {
+            auto* ep = reinterpret_cast<usb::usb_endpoint_descriptor*>(hdr);
+            uint8_t ep_addr = ep->bEndpointAddress;
+            bool is_in = (ep_addr & 0x80) != 0;
+            uint8_t ep_num = ep_addr & 0x0F;
+            uint8_t ep_type = ep->bmAttributes & 0x03;
+
+            const char* type_str = "unknown";
+            switch (ep_type) {
+            case 0: type_str = "control"; break;
+            case 1: type_str = "isochronous"; break;
+            case 2: type_str = "bulk"; break;
+            case 3: type_str = "interrupt"; break;
+            }
+
+            log::info("xhci:     endpoint %u %s (%s), maxPacket=%u, interval=%u",
+                       ep_num, is_in ? "IN" : "OUT", type_str,
+                       ep->wMaxPacketSize, ep->bInterval);
+            break;
+        }
+        case usb::USB_DESCRIPTOR_HID: {
+            auto* hid = reinterpret_cast<usb::usb_hid_descriptor*>(hdr);
+            log::info("xhci:   HID descriptor: version=%x.%02x, reportDescLen=%u",
+                       hid->bcdHID >> 8, hid->bcdHID & 0xFF,
+                       hid->desc[0].wDescriptorLength);
+            break;
+        }
+        default:
+            break;
+        }
+
+        offset += hdr->bLength;
+    }
+
+    // TODO: configure endpoint command
+    // TODO: set configuration
 }
 
 void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
@@ -1049,6 +1120,35 @@ int32_t xhci_hcd::_get_device_descriptor(xhci_device* device, void* out, uint16_
     req.wLength = length;
 
     return _send_control_transfer(device, req, out, length);
+}
+
+int32_t xhci_hcd::_get_configuration_descriptor(
+    xhci_device* device,
+    usb::usb_configuration_descriptor* out,
+    uint8_t config_index
+) {
+    xhci_device_request_packet req = {};
+    req.bRequestType = 0x80;
+    req.bRequest = 6; // GET_DESCRIPTOR
+    req.wValue = usb::USB_DESCRIPTOR_REQUEST(usb::USB_DESCRIPTOR_CONFIGURATION, config_index);
+    req.wIndex = 0;
+
+    // First pass: read the 9-byte config descriptor header to get wTotalLength
+    constexpr uint16_t CONFIG_HDR_SIZE = 9; // bLength + bDescriptorType + wTotalLength + 5 fields
+    req.wLength = CONFIG_HDR_SIZE;
+    if (_send_control_transfer(device, req, out, CONFIG_HDR_SIZE) != 0) {
+        return -1;
+    }
+
+    // Second pass: read the full descriptor
+    uint16_t total_length = out->wTotalLength;
+    if (total_length > sizeof(usb::usb_configuration_descriptor)) {
+        log::warn("xhci: config descriptor too large (%u bytes), clamping", total_length);
+        total_length = sizeof(usb::usb_configuration_descriptor);
+    }
+
+    req.wLength = total_length;
+    return _send_control_transfer(device, req, out, total_length);
 }
 
 REGISTER_PCI_DRIVER(xhci_hcd,

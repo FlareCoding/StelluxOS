@@ -126,6 +126,7 @@ private:
 private:
     // Device setup and management
     void _setup_device(uint8_t port_index);
+    void _configure_device(xhci::xhci_device* device, const usb::usb_device_descriptor& desc);
     void _configure_ctrl_ep_input_context(xhci::xhci_device* device, uint16_t max_packet_size);
     int32_t _address_device(xhci::xhci_device* device, bool bsr);
     uint16_t _initial_max_packet_size(uint8_t speed);
@@ -135,6 +136,9 @@ private:
                                    xhci::xhci_device_request_packet& request,
                                    void* buffer, uint32_t length);
     int32_t _get_device_descriptor(xhci::xhci_device* device, void* out, uint16_t length);
+    int32_t _get_configuration_descriptor(xhci::xhci_device* device,
+                                           usb::usb_configuration_descriptor* out,
+                                           uint8_t config_index = 0);
 };
 }
 
