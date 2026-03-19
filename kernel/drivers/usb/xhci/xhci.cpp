@@ -6,6 +6,7 @@
 #include "mm/heap.h"
 #include "clock/clock.h"
 #include "hw/delay.h"
+#include "hw/barrier.h"
 #include "dynpriv/dynpriv.h"
 
 using namespace drivers::xhci;
@@ -126,7 +127,7 @@ int32_t xhci_hcd::detach() {
     // Destroy command ring and clear CRCR
     if (m_cmd_ring) {
         if (m_xhc_op_regs) {
-            m_xhc_op_regs->crcr = 0;
+            xhci_write64(&m_xhc_op_regs->crcr, 0);
         }
         m_cmd_ring->destroy();
         heap::ufree_delete(m_cmd_ring);
@@ -153,7 +154,7 @@ int32_t xhci_hcd::detach() {
 
     // Clear DCBAAP and free DCBAA
     if (m_xhc_op_regs) {
-        m_xhc_op_regs->dcbaap = 0;
+        xhci_write64(&m_xhc_op_regs->dcbaap, 0);
     }
     if (m_dcbaa) {
         free_xhci_memory(m_dcbaa);
@@ -170,8 +171,13 @@ void xhci_hcd::run() {
         return;
     }
 
-    // Scan for devices connected before the controller started
-    // QEMU and some hardware platform don't generate PSC events
+    // Let ports stabilize after the controller transitions to running.
+    // Real hardware (especially VL805 behind PCIe) needs time for link
+    // training and device detection before port status is meaningful.
+    delay::us(100000);
+
+    // Scan for devices connected before the controller started.
+    // QEMU and some hardware platforms don't generate PSC events
     // for boot-attached devices.
     _scan_ports();
 
@@ -328,8 +334,8 @@ int32_t xhci_hcd::_reset_host_controller() {
     // Verify operational registers returned to defaults
     if (m_xhc_op_regs->usbcmd != 0 ||
         m_xhc_op_regs->dnctrl != 0 ||
-        m_xhc_op_regs->crcr != 0 ||
-        m_xhc_op_regs->dcbaap != 0 ||
+        xhci_read64(&m_xhc_op_regs->crcr) != 0 ||
+        xhci_read64(&m_xhc_op_regs->dcbaap) != 0 ||
         m_xhc_op_regs->config != 0) {
         log::error("xhci: operational registers not at defaults after reset");
         return -1;
@@ -476,8 +482,9 @@ int32_t xhci_hcd::_configure_operational_registers() {
         m_dcbaa[0] = xhci_get_physical_addr(m_scratchpad.table);
     }
 
-    // Program DCBAAP only after all allocations succeed
-    m_xhc_op_regs->dcbaap = xhci_get_physical_addr(m_dcbaa);
+    // Ensure all DCBAA/scratchpad writes (Normal NC) are visible before DCBAAP (Device)
+    barrier::dma_write();
+    xhci_write64(&m_xhc_op_regs->dcbaap, xhci_get_physical_addr(m_dcbaa));
 
     // Setup the command ring
     m_cmd_ring = heap::ualloc_new<xhci_command_ring>();
@@ -493,13 +500,15 @@ int32_t xhci_hcd::_configure_operational_registers() {
         goto fail_dcbaap;
     }
 
-    // Write CRCR with the command ring's physical base and cycle bit
-    m_xhc_op_regs->crcr = m_cmd_ring->get_physical_base() | m_cmd_ring->get_cycle_bit();
+    // Ensure command ring link TRB (Normal NC) is visible before CRCR (Device)
+    barrier::dma_write();
+    xhci_write64(&m_xhc_op_regs->crcr,
+                 m_cmd_ring->get_physical_base() | m_cmd_ring->get_cycle_bit());
 
     return 0;
 
 fail_dcbaap:
-    m_xhc_op_regs->dcbaap = 0;
+    xhci_write64(&m_xhc_op_regs->dcbaap, 0);
 fail_scratchpad_va:
     heap::ufree(m_scratchpad.page_vaddrs);
     m_scratchpad.page_vaddrs = nullptr;
@@ -613,21 +622,23 @@ int32_t xhci_hcd::_send_command(xhci_trb_t* trb, xhci_command_completion_trb_t* 
     _process_event_ring();
     m_event_ring->finish_processing();
 
-    // Wait loop: block until command completion or timeout
-    constexpr uint64_t CMD_TIMEOUT_MS = 5000;
-    uint64_t deadline = clock::now_ns() + CMD_TIMEOUT_MS * 1000000ULL;
+    if (!m_cmd_state.completed) {
+        constexpr uint64_t CMD_TIMEOUT_MS = 5000;
+        uint64_t deadline = clock::now_ns() + CMD_TIMEOUT_MS * 1000000ULL;
 
-    while (!m_cmd_state.completed && clock::now_ns() < deadline) {
-        wait_for_event();
-        _process_event_ring();
-        m_event_ring->finish_processing();
+        while (!m_cmd_state.completed && clock::now_ns() < deadline) {
+            wait_for_event();
+            _process_event_ring();
+            m_event_ring->finish_processing();
+        }
     }
 
     m_cmd_state.pending = false;
 
     if (!m_cmd_state.completed) {
-        log::error("xhci: command timed out (type=%u)",
-                   (trb->control >> XHCI_TRB_TYPE_SHIFT) & 0x3F);
+        log::error("xhci: command timed out (type=%u, USBSTS=0x%08x)",
+                   (trb->control >> XHCI_TRB_TYPE_SHIFT) & 0x3F,
+                   m_xhc_op_regs->usbsts);
         return -1;
     }
 
@@ -678,7 +689,7 @@ int32_t xhci_hcd::_reset_port(uint8_t port_index) {
     _write_portsc(port_index, portsc.raw);
 
     // Wait for reset completion (PRC for USB2, WRC for USB3)
-    constexpr uint32_t RESET_TIMEOUT_US = 100000; // 100ms
+    constexpr uint32_t RESET_TIMEOUT_US = 500000; // 500ms
     constexpr uint32_t POLL_US = 1000;
     uint32_t elapsed = 0;
 
@@ -726,6 +737,7 @@ void xhci_hcd::_scan_ports() {
 }
 
 void xhci_hcd::_ring_doorbell(uint8_t slot_id, uint8_t target) {
+    barrier::dma_write();
     m_doorbells[slot_id] = static_cast<uint32_t>(target);
 }
 
@@ -742,10 +754,15 @@ volatile uint32_t* xhci_hcd::_portsc(uint8_t port_index) {
 
 void xhci_hcd::_write_portsc(uint8_t port_index, uint32_t value) {
     *_portsc(port_index) = value & ~PORTSC_RW1C_BITS;
+    (void)*_portsc(port_index); // read-back flushes posted PCIe write
 }
 
 void xhci_hcd::_ack_portsc_changes(uint8_t port_index, uint32_t change_bits) {
-    *_portsc(port_index) = change_bits & PORTSC_RW1C_BITS;
+    uint32_t portsc = *_portsc(port_index);
+    portsc &= ~PORTSC_RW1C_BITS;                // preserve R/W bits, zero all RW1C
+    portsc |= (change_bits & PORTSC_RW1C_BITS); // write-1-to-clear the targeted ones
+    *_portsc(port_index) = portsc;
+    (void)*_portsc(port_index);                 // flush posted writes
 }
 
 bool xhci_hcd::_is_usb3_port(uint8_t port_index) {
@@ -1021,6 +1038,11 @@ int32_t xhci_hcd::_set_configuration(xhci_device* device, uint8_t config_value) 
 }
 
 void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
+    size_t ctx_size = m_hc_params.csz
+        ? sizeof(xhci::xhci_input_context64)
+        : sizeof(xhci::xhci_input_context32);
+    string::memset(device->input_ctrl_ctx(), 0, ctx_size);
+
     auto* input_ctrl = device->input_ctrl_ctx();
     auto* slot_ctx = device->input_slot_ctx();
     auto* ep0_ctx = device->input_ctrl_ep_ctx();

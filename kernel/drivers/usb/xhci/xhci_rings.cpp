@@ -1,5 +1,6 @@
 #include "drivers/usb/xhci/xhci_rings.h"
 #include "common/logging.h"
+#include "hw/barrier.h"
 
 namespace drivers::xhci {
 
@@ -137,8 +138,9 @@ int32_t xhci_event_ring::init(
     // Configure the Event Ring Segment Table Size (ERSTSZ) register
     m_interrupter_regs->erstsz = 1;
 
-    // Write to ERSTBA register (must be before ERDP per spec)
-    m_interrupter_regs->erstba = xhci_get_physical_addr(m_segment_table);
+    // Ensure segment table entries (Normal NC) are visible before ERSTBA (Device)
+    barrier::dma_write();
+    xhci_write64(&m_interrupter_regs->erstba, xhci_get_physical_addr(m_segment_table));
 
     // Initialize and set ERDP
     _update_erdp_interrupter_register();
@@ -180,11 +182,10 @@ xhci_trb_t* xhci_event_ring::dequeue_trb() {
 }
 
 void xhci_event_ring::finish_processing() {
-    // Write the updated dequeue pointer with EHB set (write-1-to-clear)
-    // in a single ERDP write per xHCI spec section 5.5.2.3.3
     uint64_t dequeue_address =
         m_primary_segment_ring_physical_base + (m_dequeue_ptr * sizeof(xhci_trb_t));
-    m_interrupter_regs->erdp = dequeue_address | XHCI_ERDP_EHB;
+    barrier::dma_write();
+    xhci_write64(&m_interrupter_regs->erdp, dequeue_address | XHCI_ERDP_EHB);
 }
 
 void xhci_event_ring::flush_unprocessed_events() {
@@ -199,7 +200,8 @@ void xhci_event_ring::flush_unprocessed_events() {
 void xhci_event_ring::_update_erdp_interrupter_register() {
     uint64_t dequeue_address =
         m_primary_segment_ring_physical_base + (m_dequeue_ptr * sizeof(xhci_trb_t));
-    m_interrupter_regs->erdp = dequeue_address;
+    barrier::dma_write();
+    xhci_write64(&m_interrupter_regs->erdp, dequeue_address);
 }
 
 int32_t xhci_transfer_ring::init(size_t max_trbs, uint8_t doorbell_id) {
