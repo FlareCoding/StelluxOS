@@ -91,7 +91,8 @@ public:
     inline uint8_t  get_cycle_bit() const { return m_rcs_bit; }
     inline uint8_t get_doorbell_id() const { return m_doorbell_id; }
     
-    uintptr_t get_physical_dequeue_pointer_base() const;
+    uintptr_t get_enqueue_phys() const;
+    bool can_enqueue(size_t n) const;
 
     void enqueue(xhci_trb_t* trb);
 

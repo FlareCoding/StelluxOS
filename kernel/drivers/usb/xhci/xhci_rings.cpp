@@ -237,8 +237,17 @@ void xhci_transfer_ring::destroy() {
     }
 }
 
-uintptr_t xhci_transfer_ring::get_physical_dequeue_pointer_base() const {
+uintptr_t xhci_transfer_ring::get_enqueue_phys() const {
     return m_physical_base + m_enqueue_ptr * sizeof(xhci_trb_t);
+}
+
+bool xhci_transfer_ring::can_enqueue(size_t n) const {
+    // Usable slots = m_max_trb_count - 1 (last slot is the Link TRB)
+    size_t usable = m_max_trb_count - 1;
+    size_t available = (m_enqueue_ptr < usable)
+        ? (usable - m_enqueue_ptr)
+        : 0;
+    return n <= available;
 }
 
 void xhci_transfer_ring::enqueue(xhci_trb_t* trb) {

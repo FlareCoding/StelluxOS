@@ -4,8 +4,20 @@
 #include "xhci_device_ctx.h"
 #include "xhci_rings.h"
 #include "xhci_endpoint.h"
+#include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 
 namespace drivers::xhci {
+
+struct xhci_interface_info {
+    uint8_t interface_number = 0;
+    uint8_t alternate_setting = 0;
+    uint8_t interface_class = 0;
+    uint8_t interface_subclass = 0;
+    uint8_t interface_protocol = 0;
+    uint8_t num_endpoints = 0;
+    uint8_t endpoint_dcis[16] = {};
+};
 
 class xhci_device {
 public:
@@ -40,9 +52,29 @@ public:
     // Control transfer ring
     inline xhci_transfer_ring* ctrl_ring() { return m_ctrl_ring; }
 
+    // EP0 completion state accessors
+    inline sync::spinlock&   ctrl_completion_lock() { return m_ctrl_completion_lock; }
+    inline sync::wait_queue& ctrl_completion_wq() { return m_ctrl_completion_wq; }
+    inline bool              ctrl_completed() const { return m_ctrl_completed; }
+    inline bool*             ctrl_completed_ptr() { return &m_ctrl_completed; }
+    inline void              set_ctrl_completed(bool v) { m_ctrl_completed = v; }
+    inline xhci_transfer_completion_trb_t& ctrl_result() { return m_ctrl_result; }
+
     // Non-control endpoints (indexed by DCI)
+    static constexpr uint8_t MAX_ENDPOINTS = 31;
     xhci_endpoint* endpoint(uint8_t dci) { return m_endpoints[dci]; }
     void set_endpoint(uint8_t dci, xhci_endpoint* ep) { m_endpoints[dci] = ep; }
+
+    // Interface tracking
+    static constexpr uint8_t MAX_INTERFACES = 16;
+    inline uint8_t num_interfaces() const { return m_num_interfaces; }
+    inline const xhci_interface_info& interface_info(uint8_t index) const {
+        return m_interfaces[index];
+    }
+    inline xhci_interface_info& interface_info_mut(uint8_t index) {
+        return m_interfaces[index];
+    }
+    inline void set_num_interfaces(uint8_t n) { m_num_interfaces = n; }
 
 private:
     uint8_t   m_port_id = 0;     // 1-based port ID
@@ -60,9 +92,18 @@ private:
 
     xhci_transfer_ring* m_ctrl_ring = nullptr;
 
+    // EP0 completion tracking
+    sync::wait_queue m_ctrl_completion_wq;
+    sync::spinlock   m_ctrl_completion_lock;
+    bool             m_ctrl_completed = false;
+    xhci_transfer_completion_trb_t m_ctrl_result = {};
+
     // Non-control endpoints (DCI 2-31, index 0-1 unused)
-    static constexpr uint8_t MAX_ENDPOINTS = 31;
     xhci_endpoint* m_endpoints[MAX_ENDPOINTS + 1] = {};
+
+    // Interface tracking (populated by _configure_device)
+    xhci_interface_info m_interfaces[MAX_INTERFACES] = {};
+    uint8_t m_num_interfaces = 0;
 };
 
 } // namespace drivers::xhci

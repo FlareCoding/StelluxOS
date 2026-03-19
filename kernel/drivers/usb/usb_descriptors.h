@@ -37,6 +37,14 @@ constexpr uint8_t USB_DESCRIPTOR_BILLBOARD                       = 0x0D;
 // Type-C Bridge Descriptor Type
 constexpr uint8_t USB_DESCRIPTOR_TYPE_C_BRIDGE                   = 0x0E;
 
+// USB Interface Class Codes
+constexpr uint8_t USB_CLASS_AUDIO          = 0x01;
+constexpr uint8_t USB_CLASS_CDC            = 0x02;
+constexpr uint8_t USB_CLASS_HID            = 0x03;
+constexpr uint8_t USB_CLASS_MASS_STORAGE   = 0x08;
+constexpr uint8_t USB_CLASS_HUB            = 0x09;
+constexpr uint8_t USB_CLASS_VENDOR         = 0xFF;
+
 constexpr uint16_t USB_DESCRIPTOR_REQUEST(uint8_t type, uint8_t index) {
     return (type << 8) | index;
 }

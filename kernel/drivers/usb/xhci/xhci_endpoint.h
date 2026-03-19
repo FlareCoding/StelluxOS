@@ -2,7 +2,10 @@
 #define STELLUX_DRIVERS_USB_XHCI_XHCI_ENDPOINT_H
 
 #include "xhci_rings.h"
+#include "xhci_trb.h"
 #include "drivers/usb/usb_descriptors.h"
+#include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 
 namespace drivers::xhci {
 
@@ -27,6 +30,18 @@ public:
     // Transfer ring
     inline xhci_transfer_ring* ring() { return m_ring; }
 
+    // Persistent DMA buffer for transfers
+    inline void*     dma_buffer() { return m_dma_buffer; }
+    inline uintptr_t dma_buffer_phys() const { return m_dma_buffer_phys; }
+
+    // Completion state accessors (used by xhci_hcd for event dispatch)
+    inline sync::spinlock&   completion_lock() { return m_completion_lock; }
+    inline sync::wait_queue& completion_wq() { return m_completion_wq; }
+    inline bool              completed() const { return m_completed; }
+    inline bool*             completed_ptr() { return &m_completed; }
+    inline void              set_completed(bool v) { m_completed = v; }
+    inline xhci_transfer_completion_trb_t& result() { return m_result; }
+
 private:
     uint8_t   m_endpoint_addr = 0;
     uint8_t   m_attributes = 0;
@@ -36,6 +51,14 @@ private:
     uint8_t   m_xhc_ep_type = 0;     // xHCI endpoint type for context programming
 
     xhci_transfer_ring* m_ring = nullptr;
+
+    void*     m_dma_buffer = nullptr;
+    uintptr_t m_dma_buffer_phys = 0;
+
+    sync::wait_queue m_completion_wq;
+    sync::spinlock   m_completion_lock;
+    bool             m_completed = false;
+    xhci_transfer_completion_trb_t m_result = {};
 };
 
 } // namespace drivers::xhci

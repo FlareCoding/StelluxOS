@@ -4,6 +4,7 @@
 #include "common/string.h"
 #include "common/logging.h"
 #include "mm/heap.h"
+#include "sync/spinlock.h"
 
 namespace drivers::xhci {
 
@@ -12,6 +13,9 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
     m_slot_id = slot_id;
     m_speed = speed;
     m_csz = csz;
+
+    m_ctrl_completion_wq.init();
+    m_ctrl_completion_lock = sync::SPINLOCK_INIT;
 
     // Allocate input context (DMA)
     size_t input_ctx_size = csz ? sizeof(xhci_input_context64) : sizeof(xhci_input_context32);

@@ -5,7 +5,8 @@
 #include "drivers/usb/xhci/xhci_regs.h"
 #include "drivers/usb/xhci/xhci_rings.h"
 #include "drivers/usb/xhci/xhci_device.h"
-#include "drivers/usb/xhci/xhci_mem.h"
+#include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 
 namespace drivers {
 namespace xhci {
@@ -33,12 +34,6 @@ struct xhci_cmd_state {
     bool completed = false;
     xhci_command_completion_trb_t result = {};
 };
-
-struct xhci_transfer_state {
-    bool pending = false;
-    bool completed = false;
-    xhci_transfer_completion_trb_t result = {};
-};
 } // namespace xhci
 
 class xhci_hcd : public pci_driver {
@@ -49,7 +44,7 @@ public:
     int32_t detach() override;
     void run() override;
 
-    /** * @note Privilege: **required** */
+    /** @note Privilege: **required** */
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
 
 private:
@@ -83,11 +78,11 @@ private:
     // Pending command state (single in-flight command)
     xhci::xhci_cmd_state m_cmd_state;
 
-    // Pending transfer state (single in-flight control/bulk/interrupt transfer)
-    xhci::xhci_transfer_state m_xfer_state;
-
     // Per-port device tracking (indexed by 0-based port_index)
     xhci::xhci_device** m_port_devices = nullptr;
+
+    // Per-slot device lookup (indexed by 1-based slot_id, 0 unused)
+    xhci::xhci_device* m_slot_devices[256] = {};
 
     // USB3 port bitmap (bit N = port N is USB3)
     uint32_t m_usb3_port_map[8] = {};
@@ -126,6 +121,7 @@ private:
 private:
     // Device setup and management
     void _setup_device(uint8_t port_index);
+    void _teardown_device(uint8_t port_index);
     void _configure_device(xhci::xhci_device* device, const usb::usb_device_descriptor& desc);
     void _configure_ctrl_ep_input_context(xhci::xhci_device* device, uint16_t max_packet_size);
     xhci::xhci_endpoint* _create_endpoint(xhci::xhci_device* device, const usb::usb_endpoint_descriptor* desc);
@@ -135,6 +131,19 @@ private:
     int32_t _address_device(xhci::xhci_device* device, bool bsr);
     uint16_t _initial_max_packet_size(uint8_t speed);
 
+    // Slot and endpoint management commands
+    int32_t _disable_slot(uint8_t slot_id);
+    int32_t _reset_endpoint(xhci::xhci_device* device, uint8_t dci);
+    int32_t _stop_endpoint(xhci::xhci_device* device, uint8_t dci);
+    int32_t _set_tr_dequeue_ptr(xhci::xhci_device* device, uint8_t dci,
+                                uintptr_t new_dequeue_phys, uint8_t dcs);
+
+    // Transfer event completion dispatch
+    void _complete_endpoint_transfer(sync::spinlock& lock, sync::wait_queue& wq,
+                                     xhci::xhci_transfer_completion_trb_t& result_out,
+                                     bool* completed_out,
+                                     const xhci::xhci_transfer_completion_trb_t* event);
+
     // Control transfers
     int32_t _send_control_transfer(xhci::xhci_device* device,
                                    xhci::xhci_device_request_packet& request,
@@ -143,6 +152,10 @@ private:
     int32_t _get_configuration_descriptor(xhci::xhci_device* device,
                                            usb::usb_configuration_descriptor* out,
                                            uint8_t config_index = 0);
+
+    // Normal (interrupt/bulk) transfers
+    int32_t _submit_normal_transfer(xhci::xhci_device* device, xhci::xhci_endpoint* ep,
+                                    void* buffer, uint32_t length);
 };
 }
 

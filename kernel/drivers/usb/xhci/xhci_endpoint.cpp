@@ -1,7 +1,9 @@
 #include "drivers/usb/xhci/xhci_endpoint.h"
 #include "drivers/usb/xhci/xhci_common.h"
+#include "drivers/usb/xhci/xhci_mem.h"
 #include "common/logging.h"
 #include "mm/heap.h"
+#include "mm/paging_types.h"
 
 namespace drivers::xhci {
 
@@ -32,6 +34,9 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
     m_dci = compute_dci(m_endpoint_addr);
     m_xhc_ep_type = usb_to_xhci_ep_type(transfer_type(), is_in());
 
+    m_completion_wq.init();
+    m_completion_lock = sync::SPINLOCK_INIT;
+
     m_ring = heap::ualloc_new<xhci_transfer_ring>();
     if (!m_ring) {
         log::error("xhci: failed to allocate transfer ring for EP %u", endpoint_num());
@@ -45,10 +50,25 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
         return -1;
     }
 
+    m_dma_buffer = alloc_xhci_memory(paging::PAGE_SIZE_4KB);
+    if (!m_dma_buffer) {
+        log::error("xhci: failed to allocate DMA buffer for EP %u", endpoint_num());
+        m_ring->destroy();
+        heap::ufree_delete(m_ring);
+        m_ring = nullptr;
+        return -1;
+    }
+    m_dma_buffer_phys = xhci_get_physical_addr(m_dma_buffer);
+
     return 0;
 }
 
 void xhci_endpoint::destroy() {
+    if (m_dma_buffer) {
+        free_xhci_memory(m_dma_buffer);
+        m_dma_buffer = nullptr;
+        m_dma_buffer_phys = 0;
+    }
     if (m_ring) {
         m_ring->destroy();
         heap::ufree_delete(m_ring);
