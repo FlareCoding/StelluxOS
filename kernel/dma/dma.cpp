@@ -4,6 +4,7 @@
 #include "mm/paging_types.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "hw/cache.h"
 
 namespace dma {
 
@@ -42,6 +43,12 @@ int32_t alloc_pages(size_t pages, buffer& out, pmm::zone_mask_t zone,
     }
 
     out.size = pages * pmm::PAGE_SIZE;
+
+    // Flush any stale dirty cache lines from prior Normal WB usage of these
+    // physical pages. Without this, evicted dirty lines can overwrite the
+    // DMA buffer with stale data after the NC mapping is active.
+    cache::clean_dcache_poc(out.virt, out.size);
+
     return OK;
 }
 

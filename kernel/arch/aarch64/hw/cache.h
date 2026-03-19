@@ -33,6 +33,24 @@ inline void flush_icache_range(uintptr_t start, size_t size) {
     asm volatile("dsb ish\n" "isb" ::: "memory");
 }
 
+/**
+ * Clean data cache to Point of Coherency for a physical address range.
+ * Ensures any dirty cache lines are written back to DRAM and invalidated.
+ * Required before remapping pages as Normal NC for DMA, so that stale
+ * dirty lines from prior Normal WB usage don't corrupt DMA buffers.
+ */
+inline void clean_dcache_poc(uintptr_t start, size_t size) {
+    if (size == 0) return;
+
+    uintptr_t end = start + size;
+    uintptr_t addr = start & ~(CACHE_LINE_SIZE - 1);
+
+    for (; addr < end; addr += CACHE_LINE_SIZE) {
+        asm volatile("dc civac, %0" :: "r"(addr) : "memory");
+    }
+    asm volatile("dsb sy" ::: "memory");
+}
+
 } // namespace cache
 
 #endif // STELLUX_ARCH_AARCH64_HW_CACHE_H
