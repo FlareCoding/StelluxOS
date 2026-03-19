@@ -11,6 +11,7 @@
 #include "hw/barrier.h"
 #include "sync/wait_queue.h"
 #include "dynpriv/dynpriv.h"
+#include "sched/sched.h"
 
 using namespace drivers::xhci;
 
@@ -1734,13 +1735,113 @@ int32_t xhci_hcd::usb_control_transfer(
     uint16_t value, uint16_t index,
     void* data, uint16_t length
 ) {
+    // If called from the HCD task, use the internal event-processing path.
+    // If called from a class driver task, use the wait-queue path so we
+    // don't compete with the HCD for event ring processing.
+    if (sched::current() == m_task) {
+        xhci_device_request_packet req = {};
+        req.bRequestType = request_type;
+        req.bRequest = request;
+        req.wValue = value;
+        req.wIndex = index;
+        req.wLength = length;
+        return _send_control_transfer(device, req, data, length);
+    }
+
+    xhci_transfer_ring* ring = device->ctrl_ring();
+
+    void* dma_buffer = device->ctrl_transfer_buffer();
+    uintptr_t dma_buffer_phys = device->ctrl_transfer_buffer_phys();
+    if (!dma_buffer || dma_buffer_phys == 0) {
+        log::error("xhci: missing control transfer buffer for slot %u", device->slot_id());
+        return -1;
+    }
+    if (length > paging::PAGE_SIZE_4KB) {
+        log::error("xhci: control transfer too large (%u bytes)", length);
+        return -1;
+    }
+
     xhci_device_request_packet req = {};
     req.bRequestType = request_type;
     req.bRequest = request;
     req.wValue = value;
     req.wIndex = index;
     req.wLength = length;
-    return _send_control_transfer(device, req, data, length);
+
+    bool is_in = (req.transfer_direction != 0);
+
+    if (length > 0 && !is_in && data) {
+        string::memcpy(dma_buffer, data, length);
+    } else {
+        string::memset(dma_buffer, 0, length > 0 ? length : 1);
+    }
+
+    xhci_setup_stage_trb_t setup = {};
+    setup.trb_type = XHCI_TRB_TYPE_SETUP_STAGE;
+    setup.request_packet = req;
+    setup.trb_transfer_length = 8;
+    setup.interrupter_target = 0;
+    setup.idt = 1;
+    setup.ioc = 0;
+    setup.trt = (length > 0) ? (is_in ? 3 : 2) : 0;
+
+    xhci_data_stage_trb_t data_trb = {};
+    if (length > 0) {
+        data_trb.trb_type = XHCI_TRB_TYPE_DATA_STAGE;
+        data_trb.data_buffer = dma_buffer_phys;
+        data_trb.trb_transfer_length = length;
+        data_trb.td_size = 0;
+        data_trb.interrupter_target = 0;
+        data_trb.dir = is_in ? 1 : 0;
+        data_trb.ioc = 0;
+        data_trb.idt = 0;
+        data_trb.chain = 0;
+    }
+
+    xhci_status_stage_trb_t status = {};
+    status.trb_type = XHCI_TRB_TYPE_STATUS_STAGE;
+    status.interrupter_target = 0;
+    status.ioc = 1;
+    status.dir = (length > 0) ? (is_in ? 0 : 1) : 1;
+
+    // Reset EP0 completion under the lock before ringing the doorbell
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->set_ctrl_completed(false);
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+    });
+
+    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&setup));
+    if (length > 0) {
+        ring->enqueue(reinterpret_cast<xhci_trb_t*>(&data_trb));
+    }
+    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&status));
+
+    _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
+
+    // Block on the per-device EP0 completion wait queue.
+    // The HCD event loop processes the transfer completion and wakes us.
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        while (!device->ctrl_completed()) {
+            irq = sync::wait(device->ctrl_completion_wq(),
+                             device->ctrl_completion_lock(), irq);
+        }
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+    });
+
+    if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        log::warn("xhci: control transfer failed: %s",
+                   trb_completion_code_to_string(device->ctrl_result().completion_code));
+        return -1;
+    }
+
+    if (data && length > 0 && is_in) {
+        barrier::dma_read();
+        string::memcpy(data, dma_buffer, length);
+    }
+
+    return 0;
 }
 
 int32_t xhci_hcd::usb_submit_transfer(
