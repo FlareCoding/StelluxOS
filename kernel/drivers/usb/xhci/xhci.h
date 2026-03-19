@@ -33,6 +33,12 @@ struct xhci_cmd_state {
     bool completed = false;
     xhci_command_completion_trb_t result = {};
 };
+
+struct xhci_transfer_state {
+    bool pending = false;
+    bool completed = false;
+    xhci_transfer_completion_trb_t result = {};
+};
 } // namespace xhci
 
 class xhci_hcd : public pci_driver {
@@ -77,6 +83,9 @@ private:
     // Pending command state (single in-flight command)
     xhci::xhci_cmd_state m_cmd_state;
 
+    // Pending transfer state (single in-flight control/bulk/interrupt transfer)
+    xhci::xhci_transfer_state m_xfer_state;
+
     // Per-port device tracking (indexed by 0-based port_index)
     xhci::xhci_device** m_port_devices = nullptr;
 
@@ -120,6 +129,12 @@ private:
     void _configure_ctrl_ep_input_context(xhci::xhci_device* device, uint16_t max_packet_size);
     int32_t _address_device(xhci::xhci_device* device, bool bsr);
     uint16_t _initial_max_packet_size(uint8_t speed);
+
+    // Control transfers
+    int32_t _send_control_transfer(xhci::xhci_device* device,
+                                   xhci::xhci_device_request_packet& request,
+                                   void* buffer, uint32_t length);
+    int32_t _get_device_descriptor(xhci::xhci_device* device, void* out, uint16_t length);
 };
 }
 

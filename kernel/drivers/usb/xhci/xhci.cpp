@@ -2,6 +2,7 @@
 #include "drivers/usb/xhci/xhci_common.h"
 #include "drivers/usb/xhci/xhci_ext_cap.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "mm/heap.h"
 #include "clock/clock.h"
 #include "hw/delay.h"
@@ -582,9 +583,11 @@ void xhci_hcd::_process_event_ring() {
         }
         case XHCI_TRB_TYPE_TRANSFER_EVENT: {
             auto* e = reinterpret_cast<xhci_transfer_completion_trb_t*>(trb);
-            log::info("xhci: transfer event, code=%s, slot=%u, ep=%u",
-                       trb_completion_code_to_string(e->completion_code),
-                       e->slot_id, e->endpoint_id);
+
+            if (m_xfer_state.pending) {
+                m_xfer_state.result = *e;
+                m_xfer_state.completed = true;
+            }
             break;
         }
         default:
@@ -825,8 +828,50 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
         return;
     }
 
-    log::info("xhci: port %u slot %u addressed (speed=%u, mps=%u)",
-              port_id, slot_id, port_speed, max_packet_size);
+    // Read the first 8 bytes of the device descriptor to get bMaxPacketSize0
+    usb::usb_device_descriptor desc = {};
+    if (_get_device_descriptor(device, &desc, 8) != 0) {
+        log::error("xhci: failed to read device descriptor for slot %u", slot_id);
+        return;
+    }
+
+    // If the device reported a different max packet size, update the input context
+    if (desc.bMaxPacketSize0 != max_packet_size) {
+        max_packet_size = desc.bMaxPacketSize0;
+        _configure_ctrl_ep_input_context(device, max_packet_size);
+
+        // Send Evaluate Context to update the xHC's internal state
+        xhci_evaluate_context_command_trb_t eval_ctx = {};
+        eval_ctx.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
+        eval_ctx.input_context_physical_base = device->input_ctx_phys();
+        eval_ctx.slot_id = slot_id;
+
+        if (_send_command(reinterpret_cast<xhci_trb_t*>(&eval_ctx)) != 0) {
+            log::error("xhci: evaluate context failed for slot %u", slot_id);
+            return;
+        }
+    }
+
+    // Send the address device command again with BSR=0 this time
+    if (_address_device(device, false) != 0) {
+        log::error("xhci: address device (BSR=0) failed for slot %u", slot_id);
+        return;
+    }
+
+    // Sync the output device context into the input context
+    device->sync_input_ctx();
+
+    // Read the full device descriptor
+    if (_get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor)) != 0) {
+        log::error("xhci: failed to read full device descriptor for slot %u", slot_id);
+        return;
+    }
+
+    log::info("xhci: port %u slot %u: USB %x.%x vid=0x%04x pid=0x%04x mps0=%u configs=%u",
+              port_id, slot_id,
+              desc.bcdUsb >> 8, (desc.bcdUsb >> 4) & 0xF,
+              desc.idVendor, desc.idProduct, desc.bMaxPacketSize0,
+              desc.bNumConfigurations);
 }
 
 void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
@@ -895,6 +940,115 @@ uint16_t xhci_hcd::_initial_max_packet_size(uint8_t speed) {
     default:
         return 8;
     }
+}
+
+int32_t xhci_hcd::_send_control_transfer(
+    xhci_device* device,
+    xhci_device_request_packet& request,
+    void* buffer, uint32_t length
+) {
+    xhci_transfer_ring* ring = device->ctrl_ring();
+
+    // Allocate a DMA buffer for the data stage
+    void* dma_buffer = alloc_xhci_memory(length > 0 ? length : 1);
+    if (!dma_buffer) {
+        log::error("xhci: failed to allocate control transfer buffer");
+        return -1;
+    }
+
+    // Setup Stage TRB
+    xhci_setup_stage_trb_t setup = {};
+    setup.trb_type = XHCI_TRB_TYPE_SETUP_STAGE;
+    setup.request_packet = request;
+    setup.trb_transfer_length = 8;
+    setup.interrupter_target = 0;
+    setup.idt = 1;
+    setup.ioc = 0;
+    setup.trt = (length > 0) ? 3 : 0; // 3 = IN Data Stage, 0 = No Data Stage
+
+    // Data Stage TRB (if there's data to transfer)
+    xhci_data_stage_trb_t data = {};
+    if (length > 0) {
+        data.trb_type = XHCI_TRB_TYPE_DATA_STAGE;
+        data.data_buffer = xhci_get_physical_addr(dma_buffer);
+        data.trb_transfer_length = length;
+        data.td_size = 0;
+        data.interrupter_target = 0;
+        data.dir = 1; // IN (Device to Host)
+        data.ioc = 0;
+        data.idt = 0;
+        data.chain = 0;
+    }
+
+    // Status Stage TRB
+    xhci_status_stage_trb_t status = {};
+    status.trb_type = XHCI_TRB_TYPE_STATUS_STAGE;
+    status.interrupter_target = 0;
+    status.ioc = 1; // Interrupt on completion
+    status.dir = (length > 0) ? 0 : 1; // Opposite direction of data stage
+
+    // Enqueue all TRBs before ringing the doorbell
+    // (required for QEMU compatibility, also safe on real hardware)
+    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&setup));
+    if (length > 0) {
+        ring->enqueue(reinterpret_cast<xhci_trb_t*>(&data));
+    }
+    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&status));
+
+    // Set up transfer completion tracking
+    m_xfer_state.pending = true;
+    m_xfer_state.completed = false;
+
+    // Ring the control endpoint doorbell
+    _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
+
+    // Wait for transfer completion
+    constexpr uint64_t XFER_TIMEOUT_MS = 5000;
+    uint64_t deadline = clock::now_ns() + XFER_TIMEOUT_MS * 1000000ULL;
+
+    // Fast path
+    _process_event_ring();
+    m_event_ring->finish_processing();
+
+    while (!m_xfer_state.completed && clock::now_ns() < deadline) {
+        wait_for_event();
+        _process_event_ring();
+        m_event_ring->finish_processing();
+    }
+
+    m_xfer_state.pending = false;
+
+    if (!m_xfer_state.completed) {
+        log::error("xhci: control transfer timed out");
+        free_xhci_memory(dma_buffer);
+        return -1;
+    }
+
+    if (m_xfer_state.result.completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        log::warn("xhci: control transfer failed: %s",
+                   trb_completion_code_to_string(m_xfer_state.result.completion_code));
+        free_xhci_memory(dma_buffer);
+        return -1;
+    }
+
+    // Copy result to caller's buffer
+    if (buffer && length > 0) {
+        string::memcpy(buffer, dma_buffer, length);
+    }
+
+    free_xhci_memory(dma_buffer);
+    return 0;
+}
+
+int32_t xhci_hcd::_get_device_descriptor(xhci_device* device, void* out, uint16_t length) {
+    xhci_device_request_packet req = {};
+    req.bRequestType = 0x80; // Device to Host, Standard, Device
+    req.bRequest = 6;        // GET_DESCRIPTOR
+    req.wValue = usb::USB_DESCRIPTOR_REQUEST(usb::USB_DESCRIPTOR_DEVICE, 0);
+    req.wIndex = 0;
+    req.wLength = length;
+
+    return _send_control_transfer(device, req, out, length);
 }
 
 REGISTER_PCI_DRIVER(xhci_hcd,
