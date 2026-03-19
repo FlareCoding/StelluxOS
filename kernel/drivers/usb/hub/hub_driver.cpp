@@ -58,7 +58,6 @@ void hub_driver::run() {
     auto* hcd = static_cast<drivers::xhci_hcd*>(m_dev->hcd);
     auto* xdev = static_cast<drivers::xhci::xhci_device*>(m_dev->hcd_device);
 
-    // Power on all ports
     power_on_ports();
 
     // Initial port scan after power-on.
