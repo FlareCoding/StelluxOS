@@ -225,3 +225,10 @@ DEFINE_SYSCALL3(mprotect, addr, length, prot) {
     }
     return 0;
 }
+
+DEFINE_SYSCALL1(brk, addr) {
+    (void)addr;
+    // Minimal brk: always return 0 (break at address 0).
+    // musl interprets this as "brk not available" and falls back to mmap.
+    return 0;
+}

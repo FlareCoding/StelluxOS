@@ -36,6 +36,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::OPEN,            open);
     REGISTER_SYSCALL(linux_nr::STAT,            stat);
 #endif
+    REGISTER_SYSCALL(linux_nr::BRK,             brk);
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
     REGISTER_SYSCALL(linux_nr::MPROTECT,        mprotect);
     REGISTER_SYSCALL(linux_nr::MUNMAP,          munmap);

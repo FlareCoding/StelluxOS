@@ -13,6 +13,7 @@ constexpr uint64_t STAT             = 4;
 constexpr uint64_t FSTAT            = 5;
 constexpr uint64_t LSTAT            = 6;
 constexpr uint64_t MMAP             = 9;
+constexpr uint64_t BRK              = 12;
 constexpr uint64_t MPROTECT         = 10;
 constexpr uint64_t MUNMAP           = 11;
 constexpr uint64_t IOCTL            = 16;

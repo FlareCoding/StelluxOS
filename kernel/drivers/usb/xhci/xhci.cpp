@@ -901,7 +901,10 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
 
     // Parse descriptors and create endpoints
     uint16_t offset = 0;
-    uint16_t data_length = config.wTotalLength - 9; // 9 = config descriptor header size
+    uint16_t data_length = config.wTotalLength > 9 ? config.wTotalLength - 9 : 0;
+    if (data_length > sizeof(config.data)) {
+        data_length = sizeof(config.data);
+    }
 
     while (offset < data_length) {
         auto* hdr = reinterpret_cast<usb::usb_descriptor_header*>(&config.data[offset]);

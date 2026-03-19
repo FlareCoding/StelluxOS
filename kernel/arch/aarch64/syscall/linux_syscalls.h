@@ -33,6 +33,7 @@ constexpr uint64_t BIND             = 200;
 constexpr uint64_t LISTEN           = 201;
 constexpr uint64_t ACCEPT           = 202;
 constexpr uint64_t CONNECT          = 203;
+constexpr uint64_t BRK              = 214;
 constexpr uint64_t MUNMAP           = 215;
 constexpr uint64_t MMAP             = 222;
 constexpr uint64_t MPROTECT         = 226;

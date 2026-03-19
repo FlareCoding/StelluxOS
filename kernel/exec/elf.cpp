@@ -8,6 +8,7 @@
 #include "mm/vma.h"
 #include "dynpriv/dynpriv.h"
 #include "common/string.h"
+#include "hw/cache.h"
 
 namespace exec {
 
@@ -200,6 +201,13 @@ __PRIVILEGED_CODE static int32_t load_segments(
                 if (file_offset + copy_len <= buffer_size) {
                     string::memcpy(page_ptr + page_offset, base + file_offset, copy_len);
                 }
+            }
+
+            // Flush I-cache for executable pages so the CPU doesn't execute
+            // stale instructions from the I-cache (required on AArch64)
+            if (seg.flags & elf64::PF_X) {
+                cache::flush_icache_range(
+                    reinterpret_cast<uintptr_t>(page_ptr), pmm::PAGE_SIZE);
             }
         }
     }
