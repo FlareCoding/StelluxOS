@@ -1,5 +1,6 @@
 #include "drivers/usb/hid/hid_driver.h"
 #include "drivers/usb/hid/hid_mouse_handler.h"
+#include "drivers/usb/hid/hid_keyboard_handler.h"
 #include "drivers/usb/hid/hid_constants.h"
 #include "drivers/usb/core/usb_transfer.h"
 #include "drivers/usb/usb_descriptors.h"
@@ -103,7 +104,8 @@ uint8_t hid_driver::find_interrupt_in_endpoint() const {
 hid_handler* hid_driver::create_handler() {
     auto gd = static_cast<uint16_t>(usage_page::generic_desktop);
 
-    bool has_x = false, has_y = false;
+    auto kb = static_cast<uint16_t>(usage_page::keyboard);
+    bool has_x = false, has_y = false, has_keyboard = false;
 
     for (uint16_t i = 0; i < m_layout.num_fields; i++) {
         auto& f = m_layout.fields[i];
@@ -111,12 +113,21 @@ hid_handler* hid_driver::create_handler() {
             if (f.usage == static_cast<uint16_t>(generic_desktop_usage::x_axis)) has_x = true;
             if (f.usage == static_cast<uint16_t>(generic_desktop_usage::y_axis)) has_y = true;
         }
+        if (f.usage_page == kb) {
+            has_keyboard = true;
+        }
     }
 
-    // If we have X and Y axes, it's a pointing device
+    // Pointing device: has X and Y axes
     if (has_x && has_y) {
         log::info("hid: detected mouse/pointing device");
         return heap::ualloc_new<hid_mouse_handler>();
+    }
+
+    // Keyboard: has keyboard usage page fields
+    if (has_keyboard) {
+        log::info("hid: detected keyboard");
+        return heap::ualloc_new<hid_keyboard_handler>();
     }
 
     log::warn("hid: unrecognized device type (no matching handler)");
