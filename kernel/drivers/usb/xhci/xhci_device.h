@@ -30,6 +30,25 @@ public:
     inline uint8_t slot_id() const { return m_slot_id; }
     inline uint8_t speed() const { return m_speed; }
 
+    // Hub topology (set before Address Device for hub-downstream devices)
+    inline uint32_t route_string() const { return m_route_string; }
+    inline uint8_t  parent_slot_id() const { return m_parent_slot_id; }
+    inline uint8_t  parent_port_num() const { return m_parent_port_num; }
+    inline uint8_t  root_port_id() const { return m_root_port_id; }
+    inline bool     is_hub() const { return m_is_hub; }
+    inline uint8_t  hub_num_ports() const { return m_hub_num_ports; }
+    inline uint8_t  tt_think_time() const { return m_tt_think_time; }
+    inline bool     mtt() const { return m_mtt; }
+
+    void set_route_string(uint32_t rs) { m_route_string = rs; }
+    void set_parent_slot_id(uint8_t s) { m_parent_slot_id = s; }
+    void set_parent_port_num(uint8_t p) { m_parent_port_num = p; }
+    void set_root_port_id(uint8_t rp) { m_root_port_id = rp; }
+    void set_is_hub(bool h) { m_is_hub = h; }
+    void set_hub_num_ports(uint8_t n) { m_hub_num_ports = n; }
+    void set_tt_think_time(uint8_t t) { m_tt_think_time = t; }
+    void set_mtt(bool m) { m_mtt = m; }
+
     // Input context (DMA, used for Address Device / Configure Endpoint commands)
     inline uintptr_t input_ctx_phys() const { return m_input_ctx_phys; }
 
@@ -85,11 +104,33 @@ public:
     }
     inline void set_num_interfaces(uint8_t n) { m_num_interfaces = n; }
 
+    // Hub downstream device tracking (hub_port is 1-based, array is 0-based)
+    static constexpr uint8_t MAX_HUB_PORTS = 16;
+    xhci_device* hub_child(uint8_t hub_port) {
+        if (hub_port < 1 || hub_port > MAX_HUB_PORTS) return nullptr;
+        return m_hub_children[hub_port - 1];
+    }
+    void set_hub_child(uint8_t hub_port, xhci_device* child) {
+        if (hub_port >= 1 && hub_port <= MAX_HUB_PORTS) {
+            m_hub_children[hub_port - 1] = child;
+        }
+    }
+
 private:
-    uint8_t   m_port_id = 0;     // 1-based port ID
+    uint8_t   m_port_id = 0;     // 1-based port ID (root hub port for root devices)
     uint8_t   m_slot_id = 0;     // Slot index in the DCBAA
     uint8_t   m_speed = 0;       // Port speed
     bool      m_csz = false;     // 64-byte context size (from HCCPARAMS1.CSZ)
+
+    // Hub topology tracking
+    uint32_t  m_route_string = 0;      // xHCI route string for this device
+    uint8_t   m_parent_slot_id = 0;    // Slot ID of parent hub (0 = root hub)
+    uint8_t   m_parent_port_num = 0;   // Port number on parent hub (0 = root hub)
+    uint8_t   m_root_port_id = 0;      // Root hub port ID this device is ultimately behind
+    bool      m_is_hub = false;        // True if this device is a hub
+    uint8_t   m_hub_num_ports = 0;     // Number of downstream ports (hubs only)
+    uint8_t   m_tt_think_time = 0;     // TT think time (HS hubs only)
+    bool      m_mtt = false;           // Multi-TT support
 
     void*     m_input_ctx = nullptr;
     uintptr_t m_input_ctx_phys = 0;
@@ -113,6 +154,9 @@ private:
     // Interface tracking (populated by _configure_device)
     xhci_interface_info m_interfaces[MAX_INTERFACES] = {};
     uint8_t m_num_interfaces = 0;
+
+    // Hub downstream devices (indexed by hub_port - 1)
+    xhci_device* m_hub_children[MAX_HUB_PORTS] = {};
 };
 
 } // namespace drivers::xhci

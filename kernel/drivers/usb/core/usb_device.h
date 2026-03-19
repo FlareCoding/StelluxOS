@@ -40,6 +40,10 @@ struct device {
     uint8_t  num_interfaces;
     interface interfaces[16];
 
+    // Hub topology
+    bool     is_hub;
+    uint8_t  hub_num_ports;
+
     // Opaque handles for the USB Core transfer API
     void* hcd;          // host controller driver instance (xhci_hcd*)
     void* hcd_device;   // HCD-private device handle (xhci_device*)

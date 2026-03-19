@@ -230,9 +230,10 @@ run-qemu-x86_64: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
 		-device virtio-gpu-pci \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
 		-serial mon:stdio \
 		-no-reboot \
 		-no-shutdown
@@ -254,9 +255,10 @@ run-qemu-aarch64: $(IMAGE_DIR)/stellux-aarch64.img
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
 		-serial mon:stdio \
 		-no-reboot \
 		-no-shutdown
@@ -275,9 +277,10 @@ run-qemu-x86_64-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
 		-nographic \
 		-no-reboot \
 		-no-shutdown
@@ -294,9 +297,10 @@ run-qemu-aarch64-headless: $(IMAGE_DIR)/stellux-aarch64.img
 		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
 		-nographic \
 		-no-reboot \
 		-no-shutdown
@@ -320,9 +324,10 @@ run-qemu-x86_64-debug: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
 		-device virtio-gpu-pci \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
 		-serial mon:stdio \
 		-gdb tcp::$(GDB_PORT) \
 		-S \
@@ -343,9 +348,10 @@ run-qemu-x86_64-debug-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVM
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
 		-nographic \
 		-gdb tcp::$(GDB_PORT) \
 		-S \
@@ -366,9 +372,10 @@ run-qemu-aarch64-debug: $(IMAGE_DIR)/stellux-aarch64.img
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
 		-serial mon:stdio \
 		-gdb tcp::$(GDB_PORT) \
 		-S \
@@ -388,9 +395,10 @@ run-qemu-aarch64-debug-headless: $(IMAGE_DIR)/stellux-aarch64.img
 		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
 		-nographic \
 		-gdb tcp::$(GDB_PORT) \
 		-S \

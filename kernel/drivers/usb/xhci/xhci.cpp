@@ -2,6 +2,7 @@
 #include "drivers/usb/xhci/xhci_common.h"
 #include "drivers/usb/xhci/xhci_ext_cap.h"
 #include "drivers/usb/core/usb_core.h"
+#include "drivers/usb/hub/hub_descriptors.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
@@ -184,6 +185,8 @@ void xhci_hcd::run() {
 
         _process_event_ring();
         m_event_ring->finish_processing();
+
+        _process_hub_events();
     }
 }
 
@@ -802,6 +805,13 @@ void xhci_hcd::_teardown_device(uint8_t port_index) {
 
     uint8_t slot_id = device->slot_id();
 
+    // If this device is a hub, tear down all downstream devices first
+    if (device->is_hub()) {
+        for (uint8_t i = 1; i <= device->hub_num_ports(); i++) {
+            _teardown_hub_device(device, i);
+        }
+    }
+
     // Wake any endpoint waiters so they don't hang (e.g., on disconnect)
     RUN_ELEVATED({
         for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
@@ -940,14 +950,284 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
         return;
     }
 
+    // Root hub device: route_string=0, root_port_id=port_id, no parent
+    device->set_root_port_id(port_id);
+
     device->set_output_ctx(output_ctx);
     m_port_devices[port_index] = device;
     m_slot_devices[slot_id] = device;
 
-    // From this point, _teardown_device() handles all cleanup on failure
-    #define SETUP_FAIL(msg, ...) do { \
+    _enumerate_device(device);
+}
+
+void xhci_hcd::queue_hub_enumerate(xhci_device* hub_device, uint8_t hub_port, uint8_t speed) {
+    xhci::hub_event evt;
+    evt.type = xhci::hub_event_type::enumerate;
+    evt.hub_slot_id = hub_device->slot_id();
+    evt.hub_port = hub_port;
+    evt.speed = speed;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_hub_event_lock);
+        uint8_t next_tail = (m_hub_event_tail + 1) % xhci::HUB_EVENT_QUEUE_SIZE;
+        if (next_tail != m_hub_event_head) {
+            m_hub_events[m_hub_event_tail] = evt;
+            m_hub_event_tail = next_tail;
+        } else {
+            log::error("xhci: hub event queue full");
+        }
+        sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
+        m_event_pending = true;
+        sync::wake_one(m_irq_wq);
+    });
+}
+
+void xhci_hcd::queue_hub_disconnect(xhci_device* hub_device, uint8_t hub_port) {
+    xhci::hub_event evt;
+    evt.type = xhci::hub_event_type::disconnect;
+    evt.hub_slot_id = hub_device->slot_id();
+    evt.hub_port = hub_port;
+    evt.speed = 0;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_hub_event_lock);
+        uint8_t next_tail = (m_hub_event_tail + 1) % xhci::HUB_EVENT_QUEUE_SIZE;
+        if (next_tail != m_hub_event_head) {
+            m_hub_events[m_hub_event_tail] = evt;
+            m_hub_event_tail = next_tail;
+        } else {
+            log::error("xhci: hub event queue full");
+        }
+        sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
+        m_event_pending = true;
+        sync::wake_one(m_irq_wq);
+    });
+}
+
+void xhci_hcd::_process_hub_events() {
+    while (true) {
+        xhci::hub_event evt;
+        bool has_event = false;
+
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_hub_event_lock);
+            if (m_hub_event_head != m_hub_event_tail) {
+                evt = m_hub_events[m_hub_event_head];
+                m_hub_event_head = (m_hub_event_head + 1) % xhci::HUB_EVENT_QUEUE_SIZE;
+                has_event = true;
+            }
+            sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
+        });
+
+        if (!has_event) break;
+
+        auto* hub_device = m_slot_devices[evt.hub_slot_id];
+        if (!hub_device) continue;
+
+        if (evt.type == xhci::hub_event_type::enumerate) {
+            _setup_hub_device(hub_device, evt.hub_port, evt.speed);
+        } else if (evt.type == xhci::hub_event_type::disconnect) {
+            _teardown_hub_device(hub_device, evt.hub_port);
+        }
+    }
+}
+
+void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint8_t speed) {
+    if (!hub_device || hub_port == 0 || hub_port > xhci_device::MAX_HUB_PORTS) {
+        return;
+    }
+
+    // Don't re-enumerate if already present
+    if (hub_device->hub_child(hub_port)) {
+        return;
+    }
+
+    // Enable a device slot
+    xhci_trb_t enable_slot = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+    xhci_command_completion_trb_t completion = {};
+
+    if (_send_command(&enable_slot, &completion) != 0) {
+        log::error("xhci: enable slot failed for hub slot %u port %u",
+                   hub_device->slot_id(), hub_port);
+        return;
+    }
+
+    uint8_t slot_id = completion.slot_id;
+
+    // Allocate the output device context
+    size_t dev_ctx_size = m_hc_params.csz
+        ? sizeof(xhci_device_context64)
+        : sizeof(xhci_device_context32);
+
+    void* output_ctx = alloc_xhci_memory(dev_ctx_size);
+    if (!output_ctx) {
+        log::error("xhci: failed to allocate device context for slot %u", slot_id);
+        _disable_slot(slot_id);
+        return;
+    }
+
+    m_dcbaa[slot_id] = xhci_get_physical_addr(output_ctx);
+
+    auto* device = heap::ualloc_new<xhci_device>();
+    if (!device) {
+        log::error("xhci: failed to allocate xhci_device for slot %u", slot_id);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        _disable_slot(slot_id);
+        return;
+    }
+
+    // Use 1-based hub_port as port_id for logging context
+    if (device->init(hub_port, slot_id, speed, m_hc_params.csz) != 0) {
+        log::error("xhci: failed to init xhci_device for slot %u", slot_id);
+        heap::ufree_delete(device);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        _disable_slot(slot_id);
+        return;
+    }
+
+    // Compute route string: parent's route string with this hub_port in the
+    // lowest available nibble. Each tier occupies 4 bits of the route string
+    // (USB 3.1 spec Section 8.9, xHCI spec Section 6.2.2).
+    uint32_t parent_rs = hub_device->route_string();
+    uint32_t rs = parent_rs;
+    uint8_t port_nibble = (hub_port > 15) ? 15 : hub_port;
+    for (uint8_t shift = 0; shift < 20; shift += 4) {
+        if (((rs >> shift) & 0xF) == 0) {
+            rs |= (static_cast<uint32_t>(port_nibble) << shift);
+            break;
+        }
+    }
+
+    device->set_route_string(rs);
+    device->set_parent_slot_id(hub_device->slot_id());
+    device->set_parent_port_num(hub_port);
+    device->set_root_port_id(hub_device->root_port_id());
+
+    // For LS/FS devices behind a HS hub, set TT fields
+    if (hub_device->speed() == XHCI_USB_SPEED_HIGH_SPEED &&
+        (speed == XHCI_USB_SPEED_LOW_SPEED || speed == XHCI_USB_SPEED_FULL_SPEED)) {
+        device->set_parent_slot_id(hub_device->slot_id());
+        device->set_parent_port_num(hub_port);
+        device->set_tt_think_time(hub_device->tt_think_time());
+        device->set_mtt(hub_device->mtt());
+    }
+
+    device->set_output_ctx(output_ctx);
+    hub_device->set_hub_child(hub_port, device);
+    m_slot_devices[slot_id] = device;
+
+    log::info("xhci: hub slot %u port %u -> slot %u (route=0x%05x, speed=%u)",
+              hub_device->slot_id(), hub_port, slot_id, rs, speed);
+
+    _enumerate_device(device);
+}
+
+void xhci_hcd::_teardown_hub_device(xhci_device* hub_device, uint8_t hub_port) {
+    if (!hub_device || hub_port == 0 || hub_port > xhci_device::MAX_HUB_PORTS) {
+        return;
+    }
+
+    auto* device = hub_device->hub_child(hub_port);
+    if (!device) return;
+
+    uint8_t slot_id = device->slot_id();
+
+    // If this device is itself a hub, tear down its children first
+    if (device->is_hub()) {
+        for (uint8_t i = 1; i <= device->hub_num_ports(); i++) {
+            _teardown_hub_device(device, i);
+        }
+    }
+
+    // Wake any endpoint waiters
+    RUN_ELEVATED({
+        for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
+            auto* ep = device->endpoint(i);
+            if (!ep) continue;
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            ep->set_completed(true);
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+            sync::wake_all(ep->completion_wq());
+        }
+
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->set_ctrl_completed(true);
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+        sync::wake_all(device->ctrl_completion_wq());
+    });
+
+    usb::core::device_disconnected(this, device);
+    _disable_slot(slot_id);
+
+    void* output_ctx = device->output_ctx();
+    device->destroy();
+    free_xhci_memory(output_ctx);
+    m_dcbaa[slot_id] = 0;
+    hub_device->set_hub_child(hub_port, nullptr);
+    m_slot_devices[slot_id] = nullptr;
+    heap::ufree_delete(device);
+
+    log::info("xhci: hub slot %u port %u device disconnected (slot %u)",
+              hub_device->slot_id(), hub_port, slot_id);
+}
+
+int32_t xhci_hcd::configure_as_hub(xhci_device* device, uint8_t num_ports,
+                                    uint8_t tt_think_time, bool mtt) {
+    device->set_is_hub(true);
+    device->set_hub_num_ports(num_ports);
+    device->set_tt_think_time(tt_think_time);
+    device->set_mtt(mtt);
+
+    // Sync current output context into the input context
+    device->sync_input_ctx();
+
+    auto* input_ctrl = device->input_ctrl_ctx();
+    auto* slot_ctx = device->input_slot_ctx();
+
+    // Only updating the slot context
+    input_ctrl->add_flags = (1u << 0);
+    input_ctrl->drop_flags = 0;
+
+    slot_ctx->hub = 1;
+    slot_ctx->port_count = num_ports;
+    slot_ctx->mtt = mtt ? 1 : 0;
+    if (device->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
+        slot_ctx->tt_think_time = tt_think_time;
+    }
+
+    // Issue Evaluate Context to update the xHC's internal state
+    xhci_evaluate_context_command_trb_t eval_ctx = {};
+    eval_ctx.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
+    eval_ctx.input_context_physical_base = device->input_ctx_phys();
+    eval_ctx.slot_id = device->slot_id();
+
+    int32_t rc = _send_command(reinterpret_cast<xhci_trb_t*>(&eval_ctx));
+    if (rc != 0) {
+        log::error("xhci: failed to evaluate context for hub slot %u", device->slot_id());
+    }
+    return rc;
+}
+
+void xhci_hcd::_enumerate_device(xhci_device* device) {
+    uint8_t port_id = device->port_id();
+    uint8_t slot_id = device->slot_id();
+    uint8_t port_speed = device->speed();
+
+    // Determine root-hub port index for _teardown_device on root-hub devices
+    // For hub-connected devices, we don't use m_port_devices
+    bool is_root_device = (device->parent_slot_id() == 0);
+    uint8_t port_index = port_id - 1;
+
+    #define ENUM_FAIL(msg, ...) do { \
         log::error(msg, ##__VA_ARGS__); \
-        _teardown_device(port_index); \
+        if (is_root_device) { \
+            _teardown_device(port_index); \
+        } else { \
+            auto* parent = m_slot_devices[device->parent_slot_id()]; \
+            if (parent) _teardown_hub_device(parent, device->parent_port_num()); \
+        } \
         return; \
     } while (0)
 
@@ -955,44 +1235,35 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
     uint16_t max_packet_size = _initial_max_packet_size(port_speed);
     _configure_ctrl_ep_input_context(device, max_packet_size);
 
-    // First address device with BSR=1, essentially blocking the SET_ADDRESS request,
-    // but still enables the control endpoint which we can use to get the device descriptor.
-    // Some legacy devices require their descriptor to be read before sending them a SET_ADDRESS command.
     if (_address_device(device, true) != 0)
-        SETUP_FAIL("xhci: address device (BSR=1) failed for slot %u", slot_id);
+        ENUM_FAIL("xhci: address device (BSR=1) failed for slot %u", slot_id);
 
-    // Read the first 8 bytes of the device descriptor to get bMaxPacketSize0
     usb::usb_device_descriptor desc = {};
     if (_get_device_descriptor(device, &desc, 8) != 0)
-        SETUP_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
+        ENUM_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
 
-    // If the device reported a different max packet size, update the input context
     if (desc.bMaxPacketSize0 != max_packet_size) {
         max_packet_size = desc.bMaxPacketSize0;
         _configure_ctrl_ep_input_context(device, max_packet_size);
 
-        // Send Evaluate Context to update the xHC's internal state
         xhci_evaluate_context_command_trb_t eval_ctx = {};
         eval_ctx.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
         eval_ctx.input_context_physical_base = device->input_ctx_phys();
         eval_ctx.slot_id = slot_id;
 
         if (_send_command(reinterpret_cast<xhci_trb_t*>(&eval_ctx)) != 0)
-            SETUP_FAIL("xhci: evaluate context failed for slot %u", slot_id);
+            ENUM_FAIL("xhci: evaluate context failed for slot %u", slot_id);
     }
 
-    // Send the address device command again with BSR=0 this time
     if (_address_device(device, false) != 0)
-        SETUP_FAIL("xhci: address device (BSR=0) failed for slot %u", slot_id);
+        ENUM_FAIL("xhci: address device (BSR=0) failed for slot %u", slot_id);
 
-    // Sync the output device context into the input context
     device->sync_input_ctx();
 
-    // Read the full device descriptor
     if (_get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor)) != 0)
-        SETUP_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
+        ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
 
-    #undef SETUP_FAIL
+    #undef ENUM_FAIL
 
     log::info("xhci: port %u slot %u: USB %x.%x vid=0x%04x pid=0x%04x mps0=%u configs=%u",
               port_id, slot_id,
@@ -1187,11 +1458,27 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
     input_ctrl->drop_flags = 0;
 
     // Slot context
-    slot_ctx->route_string = 0;
+    slot_ctx->route_string = device->route_string();
     slot_ctx->speed = device->speed();
     slot_ctx->context_entries = 1;
-    slot_ctx->root_hub_port_num = device->port_id();
     slot_ctx->interrupter_target = 0;
+
+    if (device->parent_slot_id() == 0) {
+        // Root hub device
+        slot_ctx->root_hub_port_num = device->port_id();
+    } else {
+        // Hub-downstream device
+        slot_ctx->root_hub_port_num = device->root_port_id();
+        slot_ctx->parent_hub_slot_id = device->parent_slot_id();
+        slot_ctx->parent_port_number = device->parent_port_num();
+
+        // TT fields for LS/FS devices behind HS hubs
+        if (device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
+            device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
+            slot_ctx->mtt = device->mtt() ? 1 : 0;
+            slot_ctx->tt_think_time = device->tt_think_time();
+        }
+    }
 
     // Control endpoint context (EP0, bidirectional)
     ep0_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
