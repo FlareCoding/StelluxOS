@@ -1124,13 +1124,11 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
         device->set_tt_think_time(hub_device->tt_think_time());
         device->set_mtt(hub_device->mtt());
     } else if (hub_device->parent_slot_id() != 0) {
-        // LS/FS/SS hub with a parent: propagate TT info from the ancestor
         device->set_parent_slot_id(hub_device->parent_slot_id());
         device->set_parent_port_num(hub_device->parent_port_num());
         device->set_tt_think_time(hub_device->tt_think_time());
         device->set_mtt(hub_device->mtt());
     }
-    // else: hub is on the root port with no HS ancestor — no TT fields needed
 
     device->set_output_ctx(output_ctx);
     hub_device->set_hub_child(hub_port, device);
@@ -1213,14 +1211,14 @@ int32_t xhci_hcd::configure_as_hub(xhci_device* device, uint8_t num_ports,
         slot_ctx->tt_think_time = tt_think_time;
     }
 
-    xhci_evaluate_context_command_trb_t eval_ctx = {};
-    eval_ctx.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
-    eval_ctx.input_context_physical_base = device->input_ctx_phys();
-    eval_ctx.slot_id = device->slot_id();
+    xhci_configure_endpoint_command_trb_t cfg_ep = {};
+    cfg_ep.trb_type = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
+    cfg_ep.input_context_physical_base = device->input_ctx_phys();
+    cfg_ep.slot_id = device->slot_id();
 
-    int32_t rc = _send_command(reinterpret_cast<xhci_trb_t*>(&eval_ctx));
+    int32_t rc = _send_command(reinterpret_cast<xhci_trb_t*>(&cfg_ep));
     if (rc != 0) {
-        log::error("xhci: failed to evaluate context for hub slot %u", device->slot_id());
+        log::error("xhci: failed to configure hub slot %u", device->slot_id());
     }
     return rc;
 }
@@ -1401,12 +1399,24 @@ void xhci_hcd::_configure_endpoint_context(xhci_device* device, xhci_endpoint* e
 
     uint8_t xhci_interval = ep->interval();
     uint8_t speed = device->speed();
+    uint8_t xfer_type = ep->transfer_type(); // 1=isoch, 3=interrupt
     if (speed == XHCI_USB_SPEED_HIGH_SPEED ||
         speed == XHCI_USB_SPEED_SUPER_SPEED ||
         speed == XHCI_USB_SPEED_SUPER_SPEED_PLUS) {
         if (xhci_interval > 0) {
             xhci_interval--;
         }
+    } else if ((speed == XHCI_USB_SPEED_FULL_SPEED || speed == XHCI_USB_SPEED_LOW_SPEED) &&
+               (xfer_type == 3 || xfer_type == 1)) {
+        // FS/LS interrupt and isochronous: bInterval is in frames (1ms).
+        // xHCI Interval is an exponent: period = 2^Interval * 125μs.
+        // Convert: microframes = bInterval * 8, Interval = floor(log2(microframes)).
+        uint32_t microframes = static_cast<uint32_t>(xhci_interval > 0 ? xhci_interval : 1) * 8;
+        uint8_t exponent = 0;
+        for (uint32_t v = microframes; v > 1; v >>= 1) exponent++;
+        if (exponent < 3) exponent = 3;
+        if (exponent > 10) exponent = 10;
+        xhci_interval = exponent;
     }
 
     ep_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
@@ -1480,7 +1490,6 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
             slot_ctx->parent_hub_slot_id = device->parent_slot_id();
             slot_ctx->parent_port_number = device->parent_port_num();
             slot_ctx->mtt = device->mtt() ? 1 : 0;
-            slot_ctx->tt_think_time = device->tt_think_time();
         }
     }
 
