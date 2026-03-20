@@ -192,7 +192,13 @@ void xhci_hcd::run() {
 }
 
 __PRIVILEGED_CODE void xhci_hcd::on_interrupt(uint32_t) {
+    // Clear USBSTS.EINT first, then IMAN.IP (RW1C). Clearing IP allows the
+    // 0->1 transition needed to generate the next MSI. Without this, real xHCs
+    // (including VL805) won't generate subsequent interrupts.
     m_xhc_op_regs->usbsts = XHCI_USBSTS_EINT;
+    volatile xhci::xhci_interrupter_registers* ir = &m_xhc_runtime_regs->ir[0];
+    ir->iman = XHCI_IMAN_INTERRUPT_PENDING | XHCI_IMAN_INTERRUPT_ENABLE;
+    (void)ir->iman; // read-back flushes posted PCIe write
 }
 
 void xhci_hcd::_parse_extended_capabilities() {
@@ -763,6 +769,7 @@ void xhci_hcd::_scan_ports() {
 void xhci_hcd::_ring_doorbell(uint8_t slot_id, uint8_t target) {
     barrier::dma_write();
     m_doorbells[slot_id] = static_cast<uint32_t>(target);
+    (void)m_doorbells[slot_id]; // read-back flushes posted PCIe write
 }
 
 void xhci_hcd::_ring_cmd_doorbell() {

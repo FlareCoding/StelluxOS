@@ -186,6 +186,7 @@ void xhci_event_ring::finish_processing() {
         m_primary_segment_ring_physical_base + (m_dequeue_ptr * sizeof(xhci_trb_t));
     barrier::dma_write();
     xhci_write64(&m_interrupter_regs->erdp, dequeue_address | XHCI_ERDP_EHB);
+    (void)m_interrupter_regs->iman; // read-back flushes posted PCIe write
 }
 
 void xhci_event_ring::flush_unprocessed_events() {
