@@ -13,8 +13,8 @@ int32_t xhci_command_ring::init(size_t max_trbs) {
 
     const size_t ring_size = max_trbs * sizeof(xhci_trb_t);
 
-    // Create the command ring memory block
-    m_trbs = static_cast<xhci_trb_t*>(alloc_xhci_memory(ring_size));
+    m_trbs = static_cast<xhci_trb_t*>(
+        alloc_xhci_memory(ring_size + XHCI_TRB_OVERFETCH_GUARD_SIZE));
     if (!m_trbs) {
         log::error("xhci: failed to allocate command ring (%lu TRBs)", max_trbs);
         return -1;
@@ -102,9 +102,8 @@ int32_t xhci_event_ring::init(
     const size_t event_ring_segment_size = max_trbs * sizeof(xhci_trb_t);
     const size_t event_ring_segment_table_size = m_segment_count * sizeof(xhci_erst_entry);
 
-    // Create the event ring segment memory block
     m_primary_segment_ring = static_cast<xhci_trb_t*>(
-        alloc_xhci_memory(event_ring_segment_size));
+        alloc_xhci_memory(event_ring_segment_size + XHCI_TRB_OVERFETCH_GUARD_SIZE));
     if (!m_primary_segment_ring) {
         log::error("xhci: failed to allocate event ring segment (%lu TRBs)", max_trbs);
         return -1;
@@ -214,8 +213,8 @@ int32_t xhci_transfer_ring::init(size_t max_trbs, uint8_t doorbell_id) {
 
     const size_t ring_size = max_trbs * sizeof(xhci_trb_t);
 
-    // Create the transfer ring memory block
-    m_trbs = static_cast<xhci_trb_t*>(alloc_xhci_memory(ring_size));
+    m_trbs = static_cast<xhci_trb_t*>(
+        alloc_xhci_memory(ring_size + XHCI_TRB_OVERFETCH_GUARD_SIZE));
     if (!m_trbs) {
         log::error("xhci: failed to allocate transfer ring (%lu TRBs)", max_trbs);
         return -1;

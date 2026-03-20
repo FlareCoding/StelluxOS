@@ -8,6 +8,15 @@
 #define XHCI_EVENT_RING_TRB_COUNT       256
 #define XHCI_TRANSFER_RING_TRB_COUNT    256
 
+// VL805 (and Zhaoxin) TRB overfetch workaround.
+// These controllers prefetch up to 4 TRBs (64 bytes) past the end of a ring
+// segment, even beyond link TRBs at page boundaries. If the prefetched memory
+// belongs to another ring with a stale cycle bit, the controller may treat
+// the ring as empty and silently stop polling. Allocating an extra page of
+// zeroed DMA memory after each ring segment provides a safe prefetch buffer.
+// Matches Linux's XHCI_TRB_OVERFETCH quirk.
+#define XHCI_TRB_OVERFETCH_GUARD_SIZE  4096
+
 /*
 // xHci Spec Section 5.4.1 USB Table 5-20: USB Command Register Bit Definitions (USBCMD) (page 358)
 
