@@ -1213,14 +1213,17 @@ int32_t xhci_hcd::configure_as_hub(xhci_device* device, uint8_t num_ports,
         slot_ctx->tt_think_time = tt_think_time;
     }
 
-    xhci_configure_endpoint_command_trb_t cfg_ep = {};
-    cfg_ep.trb_type = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
-    cfg_ep.input_context_physical_base = device->input_ctx_phys();
-    cfg_ep.slot_id = device->slot_id();
+    // xHCI spec Section 6.2.2.3: if the Hub field was not set before the
+    // first Configure Endpoint Command (which already ran in _configure_device),
+    // software must use Evaluate Context to update Hub/MTT/Ports/TTT fields.
+    xhci_evaluate_context_command_trb_t eval = {};
+    eval.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
+    eval.input_context_physical_base = device->input_ctx_phys();
+    eval.slot_id = device->slot_id();
 
-    int32_t rc = _send_command(reinterpret_cast<xhci_trb_t*>(&cfg_ep));
+    int32_t rc = _send_command(reinterpret_cast<xhci_trb_t*>(&eval));
     if (rc != 0) {
-        log::error("xhci: failed to configure hub slot %u", device->slot_id());
+        log::error("xhci: failed to evaluate hub context for slot %u", device->slot_id());
     }
     return rc;
 }
@@ -1498,7 +1501,7 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
             if (hub && hub->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
                 slot_ctx->parent_hub_slot_id = hub->slot_id();
                 slot_ctx->parent_port_number = port_on_hub;
-                slot_ctx->mtt = device->mtt() ? 1 : 0;
+                slot_ctx->mtt = hub->mtt() ? 1 : 0;
             }
         }
     }
