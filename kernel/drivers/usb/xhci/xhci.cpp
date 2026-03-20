@@ -1117,22 +1117,17 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
     device->set_route_string(rs);
     device->set_root_port_id(hub_device->root_port_id());
 
-    // TT routing (xHCI spec Section 6.2.2): parent_hub_slot_id must reference
-    // the nearest HS hub that provides the Transaction Translator. These fields
-    // are only used for LS/FS devices; _configure_ctrl_ep_input_context gates
-    // writing them to the slot context on the device speed.
-    //
-    // For multi-tier topologies (HS hub -> FS hub -> LS device), the FS hub
-    // inherits TT info from the HS hub, so downstream devices correctly
-    // reference the HS ancestor rather than the intermediate FS hub.
+    // Always track the direct parent for teardown/cleanup
+    device->set_parent_slot_id(hub_device->slot_id());
+    device->set_parent_port_num(hub_port);
+
+    // Propagate TT fields from the nearest HS hub ancestor.
+    // _configure_ctrl_ep_input_context uses these for the slot context's
+    // parent_hub_slot_id/parent_port_number fields (only for LS/FS devices).
     if (hub_device->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
-        device->set_parent_slot_id(hub_device->slot_id());
-        device->set_parent_port_num(hub_port);
         device->set_tt_think_time(hub_device->tt_think_time());
         device->set_mtt(hub_device->mtt());
-    } else if (hub_device->parent_slot_id() != 0) {
-        device->set_parent_slot_id(hub_device->parent_slot_id());
-        device->set_parent_port_num(hub_device->parent_port_num());
+    } else {
         device->set_tt_think_time(hub_device->tt_think_time());
         device->set_mtt(hub_device->mtt());
     }
@@ -1489,14 +1484,22 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
         slot_ctx->root_hub_port_num = device->root_port_id();
 
         // xHCI spec Section 6.2.2: parent_hub_slot_id and parent_port_number
-        // shall only be set for LS/FS devices that need TT routing through
-        // a HS hub. For HS/SS devices these fields shall be 0.
-        if ((device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
-             device->speed() == XHCI_USB_SPEED_FULL_SPEED) &&
-            device->parent_slot_id() != 0) {
-            slot_ctx->parent_hub_slot_id = device->parent_slot_id();
-            slot_ctx->parent_port_number = device->parent_port_num();
-            slot_ctx->mtt = device->mtt() ? 1 : 0;
+        // shall reference the nearest HS hub providing the TT, only for LS/FS
+        // devices. Walk up the hub chain to find it.
+        if (device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
+            device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
+            auto* hub = m_slot_devices[device->parent_slot_id()];
+            uint8_t port_on_hub = device->parent_port_num();
+            while (hub && hub->speed() != XHCI_USB_SPEED_HIGH_SPEED
+                       && hub->parent_slot_id() != 0) {
+                port_on_hub = hub->parent_port_num();
+                hub = m_slot_devices[hub->parent_slot_id()];
+            }
+            if (hub && hub->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
+                slot_ctx->parent_hub_slot_id = hub->slot_id();
+                slot_ctx->parent_port_number = port_on_hub;
+                slot_ctx->mtt = device->mtt() ? 1 : 0;
+            }
         }
     }
 
