@@ -1,7 +1,7 @@
 #ifndef STELLUX_DRIVERS_USB_CORE_USB_DEVICE_H
 #define STELLUX_DRIVERS_USB_CORE_USB_DEVICE_H
 
-#include "common/types.h"
+#include "sync/spinlock.h"
 
 namespace usb {
 
@@ -21,6 +21,7 @@ struct interface {
     uint8_t  interface_class;
     uint8_t  interface_subclass;
     uint8_t  interface_protocol;
+    uint16_t hid_report_desc_length;
     uint8_t  num_endpoints;
     endpoint endpoints[16];
 };
@@ -47,6 +48,13 @@ struct device {
     // Opaque handles for the USB Core transfer API
     void* hcd;          // host controller driver instance (xhci_hcd*)
     void* hcd_device;   // HCD-private device handle (xhci_device*)
+
+    // Driver-task lifetime tracking for safe disconnect teardown.
+    sync::spinlock lifetime_lock;
+    uint8_t active_driver_count;
+    bool disconnect_pending;
+    bool hcd_teardown_complete; // HCD is done dereferencing hcd_device.
+    bool finalize_started;      // Final release path has claimed ownership.
 };
 
 } // namespace usb

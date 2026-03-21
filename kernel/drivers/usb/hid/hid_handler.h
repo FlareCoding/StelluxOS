@@ -13,9 +13,10 @@ public:
     virtual ~hid_handler() = default;
 
     // Called once after the report descriptor is parsed, before
-    // the interrupt transfer loop begins. The handler should
-    // locate its fields of interest in the layout.
-    virtual void init(const report_layout& layout) = 0;
+    // the interrupt transfer loop begins. The handler is initialized
+    // against a single input report within the interface layout.
+    virtual int32_t init(const report_layout& layout,
+                         const input_report_info& report) = 0;
 
     // Called each time a new HID report arrives from the device.
     // data points to the raw interrupt IN buffer, length is

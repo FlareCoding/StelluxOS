@@ -3,11 +3,44 @@
 
 #include "xhci_rings.h"
 #include "xhci_trb.h"
+#include "drivers/usb/core/usb_transfer.h"
 #include "drivers/usb/usb_descriptors.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 
 namespace drivers::xhci {
+
+struct interrupt_in_payload {
+    uint32_t seq = 0;
+    uint16_t mfindex = 0xffff;
+    uint16_t len = 0;
+    uint64_t queued_t_us = 0;
+    uint8_t* data = nullptr;
+};
+
+struct interrupt_in_stream_state {
+    bool active = false;
+    bool closing = false;
+    uint32_t payload_length = 0;
+    uint8_t queue_depth = 0;
+    interrupt_in_payload* payloads = nullptr;
+    uint8_t* payload_storage = nullptr;
+    uint8_t head = 0;
+    uint8_t count = 0;
+    uint32_t next_seq = 1;
+    uint32_t dropped = 0;
+    sync::wait_queue available_wq;
+};
+
+struct endpoint_async_state {
+    bool async_enabled = false;
+    usb::transfer_request* active_request = nullptr;
+    usb::transfer_request* pending_head = nullptr;
+    usb::transfer_request* pending_tail = nullptr;
+    bool disconnecting = false;
+    bool active_request_cancelled = false;
+    interrupt_in_stream_state interrupt_in_stream = {};
+};
 
 class xhci_endpoint {
 public:
@@ -41,6 +74,8 @@ public:
     inline bool*             completed_ptr() { return &m_completed; }
     inline void              set_completed(bool v) { m_completed = v; }
     inline xhci_transfer_completion_trb_t& result() { return m_result; }
+    inline endpoint_async_state* async_state() { return m_async_state; }
+    endpoint_async_state* ensure_async_state();
 
 private:
     uint8_t   m_endpoint_addr = 0;
@@ -59,6 +94,7 @@ private:
     sync::spinlock   m_completion_lock;
     bool             m_completed = false;
     xhci_transfer_completion_trb_t m_result = {};
+    endpoint_async_state* m_async_state = nullptr;
 };
 
 } // namespace drivers::xhci

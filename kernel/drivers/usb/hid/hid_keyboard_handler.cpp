@@ -2,6 +2,7 @@
 #include "drivers/usb/hid/hid_constants.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "mm/heap.h"
 
 namespace usb::hid {
 
@@ -55,77 +56,178 @@ static const char* modifier_names[8] = {
     "RCTRL", "RSHIFT", "RALT", "RGUI",
 };
 
-static const field_info* find_field(const report_layout& layout,
-                                    uint16_t usage_pg, uint16_t usage_val) {
-    for (uint16_t i = 0; i < layout.num_fields; i++) {
-        if (layout.fields[i].usage_page == usage_pg &&
-            layout.fields[i].usage == usage_val) {
-            return &layout.fields[i];
-        }
-    }
-    return nullptr;
+bool hid_keyboard_handler::is_modifier_usage(uint16_t usage) {
+    return usage >= 0xE0u && usage <= 0xE7u;
 }
 
-void hid_keyboard_handler::init(const report_layout& layout) {
+bool hid_keyboard_handler::is_reserved_array_usage(uint16_t usage) {
+    return usage >= 0x01u && usage <= 0x03u;
+}
+
+hid_keyboard_handler::~hid_keyboard_handler() {
+    reset_state();
+}
+
+void hid_keyboard_handler::reset_state() {
+    if (m_key_fields) {
+        heap::ufree(m_key_fields);
+        m_key_fields = nullptr;
+    }
+    if (m_prev_keycodes) {
+        heap::ufree(m_prev_keycodes);
+        m_prev_keycodes = nullptr;
+    }
+    if (m_curr_keycodes) {
+        heap::ufree(m_curr_keycodes);
+        m_curr_keycodes = nullptr;
+    }
+
+    for (uint8_t i = 0; i < 8; i++) {
+        m_modifier_fields[i] = nullptr;
+    }
+
+    m_key_field_count = 0;
+    m_prev_modifiers = 0;
+    m_report_id = 0;
+    m_ready = false;
+}
+
+uint32_t hid_keyboard_handler::read_unsigned_field(const uint8_t* data, uint32_t length,
+                                                   uint32_t bit_offset, uint16_t bit_size) {
+    if (!data || bit_size == 0) {
+        return 0;
+    }
+
+    uint32_t byte_offset = bit_offset / 8u;
+    uint32_t bit_shift = bit_offset % 8u;
+    uint32_t bytes_needed = (bit_shift + bit_size + 7u) / 8u;
+    if (byte_offset >= length) {
+        return 0;
+    }
+    if (byte_offset + bytes_needed > length) {
+        bytes_needed = length - byte_offset;
+    }
+
+    uint32_t raw = 0;
+    string::memcpy(&raw, data + byte_offset, bytes_needed > 4 ? 4 : bytes_needed);
+    raw >>= bit_shift;
+    if (bit_size >= 32) {
+        return raw;
+    }
+    return raw & ((1u << bit_size) - 1u);
+}
+
+bool hid_keyboard_handler::contains_keycode(const uint16_t* keycodes,
+                                            uint16_t count, uint16_t keycode) {
+    if (!keycodes || keycode == 0) {
+        return false;
+    }
+
+    for (uint16_t i = 0; i < count; i++) {
+        if (keycodes[i] == keycode) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int32_t hid_keyboard_handler::init(const report_layout& layout,
+                                   const input_report_info& report) {
+    reset_state();
+
     auto kb = static_cast<uint16_t>(usage_page::keyboard);
-
-    // Modifiers are typically the first field on the keyboard usage page
-    // (Usage Min 0xE0 to Usage Max 0xE7 = 8 modifier bits)
-    auto* mod_field = find_field(layout, kb, 0xE0);
-    if (mod_field) {
-        m_layout.modifier_offset = mod_field->bit_offset;
-        // Count consecutive keyboard-page fields starting at 0xE0
-        uint16_t mod_bits = 0;
-        for (uint16_t i = 0; i < layout.num_fields; i++) {
-            if (layout.fields[i].usage_page == kb &&
-                layout.fields[i].usage >= 0xE0 && layout.fields[i].usage <= 0xE7) {
-                mod_bits += layout.fields[i].bit_size;
-            }
-        }
-        m_layout.modifier_size = mod_bits;
+    const field_info* fields = report_fields(layout, report);
+    if (!fields || report.field_count == 0) {
+        return -1;
     }
 
-    // Keycodes: find the first non-modifier keyboard field (usage 0x00-0xDF range)
-    // These are typically 6 slots of 8 bits each (boot keyboard layout)
-    for (uint16_t i = 0; i < layout.num_fields; i++) {
-        auto& f = layout.fields[i];
-        if (f.usage_page == kb && f.usage < 0xE0) {
-            m_layout.keycode_offset = f.bit_offset;
-            m_layout.keycode_size = f.bit_size;
-            // Count how many consecutive keycode slots exist
-            uint8_t count = 0;
-            for (uint16_t j = i; j < layout.num_fields; j++) {
-                if (layout.fields[j].usage_page == kb &&
-                    layout.fields[j].usage < 0xE0 &&
-                    layout.fields[j].bit_size == f.bit_size) {
-                    count++;
-                } else {
-                    break;
-                }
+    uint16_t key_field_count = 0;
+    for (uint16_t i = 0; i < report.field_count; i++) {
+        const auto& field = fields[i];
+        if (field.usage_page != kb || field.is_constant()) {
+            continue;
+        }
+
+        if (field.is_variable() && is_modifier_usage(field.usage)) {
+            if (field.usage >= 0xE0 && field.usage <= 0xE7) {
+                m_modifier_fields[field.usage - 0xE0] = &field;
             }
-            m_layout.keycode_count = count > 6 ? 6 : count;
-            break;
+            continue;
+        }
+
+        key_field_count++;
+    }
+
+    if (key_field_count == 0) {
+        reset_state();
+        return -1;
+    }
+
+    m_key_fields = static_cast<const field_info**>(
+        heap::ualloc(key_field_count * sizeof(field_info*)));
+    m_prev_keycodes = static_cast<uint16_t*>(
+        heap::ualloc(key_field_count * sizeof(uint16_t)));
+    m_curr_keycodes = static_cast<uint16_t*>(
+        heap::ualloc(key_field_count * sizeof(uint16_t)));
+    if (!m_key_fields || !m_prev_keycodes || !m_curr_keycodes) {
+        reset_state();
+        return -1;
+    }
+
+    uint16_t slot = 0;
+    for (uint16_t i = 0; i < report.field_count; i++) {
+        const auto& field = fields[i];
+        if (field.usage_page != kb || field.is_constant()) {
+            continue;
+        }
+        if (field.is_variable() && is_modifier_usage(field.usage)) {
+            continue;
+        }
+        if (slot < key_field_count) {
+            m_key_fields[slot++] = &field;
         }
     }
 
-    log::info("hid-kbd: modifiers=%u bits @ %u, keycodes=%u slots of %u bits @ %u",
-              m_layout.modifier_size, m_layout.modifier_offset,
-              m_layout.keycode_count, m_layout.keycode_size, m_layout.keycode_offset);
+    string::memset(m_prev_keycodes, 0, key_field_count * sizeof(uint16_t));
+    string::memset(m_curr_keycodes, 0, key_field_count * sizeof(uint16_t));
+
+    m_key_field_count = key_field_count;
+    m_report_id = report.report_id;
+    m_ready = true;
+
+    uint8_t modifier_count = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+        if (m_modifier_fields[i]) {
+            modifier_count++;
+        }
+    }
+
+    log::info("hid-kbd: report=%u modifiers=%u key-fields=%u",
+              m_report_id, modifier_count, m_key_field_count);
+    return 0;
 }
 
-void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t) {
-    // Read modifier byte
-    uint8_t modifiers = 0;
-    if (m_layout.modifier_size > 0) {
-        uint32_t byte_off = m_layout.modifier_offset / 8;
-        modifiers = data[byte_off];
+void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t length) {
+    if (!m_ready) {
+        return;
     }
 
-    // Detect modifier changes
+    uint8_t modifiers = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+        const auto* field = m_modifier_fields[i];
+        if (!field) {
+            continue;
+        }
+
+        if (read_unsigned_field(data, length, field->bit_offset, field->bit_size) != 0) {
+            modifiers |= static_cast<uint8_t>(1u << i);
+        }
+    }
+
     uint8_t mod_changed = modifiers ^ m_prev_modifiers;
     if (mod_changed) {
         for (int b = 0; b < 8; b++) {
-            if (mod_changed & (1u << b)) {
+            if ((mod_changed & (1u << b)) != 0) {
                 bool pressed = (modifiers & (1u << b)) != 0;
                 log::info("hid-kbd: %s %s", modifier_names[b], pressed ? "pressed" : "released");
             }
@@ -133,55 +235,56 @@ void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t) {
         m_prev_modifiers = modifiers;
     }
 
-    // Read keycodes (each slot is keycode_size bits, typically 8)
-    uint8_t keycodes[6] = {};
-    for (uint8_t i = 0; i < m_layout.keycode_count; i++) {
-        uint32_t bit_off = m_layout.keycode_offset + i * m_layout.keycode_size;
-        uint32_t byte_off = bit_off / 8;
-        keycodes[i] = data[byte_off];
-    }
+    for (uint16_t i = 0; i < m_key_field_count; i++) {
+        const auto* field = m_key_fields[i];
+        uint32_t raw = read_unsigned_field(data, length, field->bit_offset, field->bit_size);
+        uint16_t keycode = 0;
 
-    // Detect newly pressed keys (in current but not in previous)
-    for (uint8_t i = 0; i < m_layout.keycode_count; i++) {
-        if (keycodes[i] == 0) {
-            continue;
-        }
-        bool was_pressed = false;
-        for (uint8_t j = 0; j < 6; j++) {
-            if (m_prev_keycodes[j] == keycodes[i]) {
-                was_pressed = true;
-                break;
+        if (field->is_variable()) {
+            keycode = raw != 0 ? field->usage : 0;
+        } else if (raw <= 0xFFFFu) {
+            keycode = static_cast<uint16_t>(raw);
+            if (is_reserved_array_usage(keycode)) {
+                keycode = 0;
             }
         }
-        if (!was_pressed) {
-            const char* name = scancode_to_name(keycodes[i]);
-            log::info("hid-kbd: key pressed: %s (0x%02x)", name ? name : "?", keycodes[i]);
-        }
+
+        m_curr_keycodes[i] = keycode;
     }
 
-    // Detect released keys (in previous but not in current)
-    for (uint8_t i = 0; i < 6; i++) {
-        if (m_prev_keycodes[i] == 0) {
+    for (uint16_t i = 0; i < m_key_field_count; i++) {
+        uint16_t keycode = m_curr_keycodes[i];
+        if (keycode == 0 || contains_keycode(m_curr_keycodes, i, keycode)) {
             continue;
         }
-        bool still_pressed = false;
-        for (uint8_t j = 0; j < m_layout.keycode_count; j++) {
-            if (keycodes[j] == m_prev_keycodes[i]) {
-                still_pressed = true;
-                break;
-            }
-        }
-        if (!still_pressed) {
-            const char* name = scancode_to_name(m_prev_keycodes[i]);
-            log::info("hid-kbd: key released: %s (0x%02x)", name ? name : "?", m_prev_keycodes[i]);
+        if (!contains_keycode(m_prev_keycodes, m_key_field_count, keycode)) {
+            const char* name = scancode_to_name(keycode);
+            log::info("hid-kbd: key pressed: %s (0x%04x)", name ? name : "?",
+                      static_cast<uint32_t>(keycode));
         }
     }
 
-    string::memcpy(m_prev_keycodes, keycodes, 6);
+    for (uint16_t i = 0; i < m_key_field_count; i++) {
+        uint16_t keycode = m_prev_keycodes[i];
+        if (keycode == 0 || contains_keycode(m_prev_keycodes, i, keycode)) {
+            continue;
+        }
+        if (!contains_keycode(m_curr_keycodes, m_key_field_count, keycode)) {
+            const char* name = scancode_to_name(keycode);
+            log::info("hid-kbd: key released: %s (0x%04x)", name ? name : "?",
+                      static_cast<uint32_t>(keycode));
+        }
+    }
+
+    string::memcpy(m_prev_keycodes, m_curr_keycodes,
+                   m_key_field_count * sizeof(uint16_t));
 }
 
-const char* hid_keyboard_handler::scancode_to_name(uint8_t scancode) {
-    return scancode_to_name_lookup(scancode);
+const char* hid_keyboard_handler::scancode_to_name(uint16_t scancode) {
+    if (scancode > 0xFFu) {
+        return nullptr;
+    }
+    return scancode_to_name_lookup(static_cast<uint8_t>(scancode));
 }
 
 } // namespace usb::hid

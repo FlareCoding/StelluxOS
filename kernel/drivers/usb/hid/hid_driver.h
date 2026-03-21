@@ -2,6 +2,7 @@
 #define STELLUX_DRIVERS_USB_HID_HID_DRIVER_H
 
 #include "drivers/usb/core/usb_driver.h"
+#include "drivers/usb/core/usb_transfer.h"
 #include "drivers/usb/hid/hid_parser.h"
 #include "drivers/usb/hid/hid_handler.h"
 
@@ -17,17 +18,32 @@ public:
     void disconnect() override;
 
 private:
-    usb::device*    m_dev;
+    enum class binding_kind : uint8_t {
+        keyboard,
+        mouse,
+    };
+
+    struct handler_binding {
+        uint8_t report_id = 0;
+        binding_kind kind = binding_kind::keyboard;
+        hid_handler* handler = nullptr;
+    };
+
     usb::interface* m_iface;
     report_layout   m_layout;
-    hid_handler*    m_handler = nullptr;
+    handler_binding* m_bindings = nullptr;
+    uint16_t         m_binding_count = 0;
     bool            m_disconnected = false;
+    uint32_t        m_payload_length = 0;
+    usb::interrupt_in_stream* m_stream = nullptr;
 
-    // Find the interrupt IN endpoint address from the interface
-    uint8_t find_interrupt_in_endpoint() const;
+    const usb::endpoint* find_interrupt_in_endpoint() const;
+    uint32_t max_input_report_bytes(const usb::endpoint& ep) const;
+    void destroy_bindings();
+    int32_t create_handlers();
+    void apply_idle_policy(usb::device* dev);
+    void dispatch_report(uint8_t report_id, const uint8_t* data, uint32_t length);
 
-    // Detect device type from the parsed report layout and create the handler
-    hid_handler* create_handler();
 };
 
 } // namespace usb::hid

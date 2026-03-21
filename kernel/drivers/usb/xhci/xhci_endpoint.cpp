@@ -36,10 +36,34 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
 
     m_completion_wq.init();
     m_completion_lock = sync::SPINLOCK_INIT;
+    m_async_state = heap::ualloc_new<endpoint_async_state>();
+    if (!m_async_state) {
+        log::error("xhci: failed to allocate async endpoint state for EP %u", endpoint_num());
+        return -1;
+    }
+    m_async_state->active_request = nullptr;
+    m_async_state->pending_head = nullptr;
+    m_async_state->pending_tail = nullptr;
+    m_async_state->async_enabled = false;
+    m_async_state->disconnecting = false;
+    m_async_state->active_request_cancelled = false;
+    m_async_state->interrupt_in_stream.active = false;
+    m_async_state->interrupt_in_stream.closing = false;
+    m_async_state->interrupt_in_stream.payload_length = 0;
+    m_async_state->interrupt_in_stream.queue_depth = 0;
+    m_async_state->interrupt_in_stream.payloads = nullptr;
+    m_async_state->interrupt_in_stream.payload_storage = nullptr;
+    m_async_state->interrupt_in_stream.head = 0;
+    m_async_state->interrupt_in_stream.count = 0;
+    m_async_state->interrupt_in_stream.next_seq = 1;
+    m_async_state->interrupt_in_stream.dropped = 0;
+    m_async_state->interrupt_in_stream.available_wq.init();
 
     m_ring = heap::ualloc_new<xhci_transfer_ring>();
     if (!m_ring) {
         log::error("xhci: failed to allocate transfer ring for EP %u", endpoint_num());
+        heap::ufree_delete(m_async_state);
+        m_async_state = nullptr;
         return -1;
     }
 
@@ -47,6 +71,8 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
         log::error("xhci: failed to init transfer ring for EP %u", endpoint_num());
         heap::ufree_delete(m_ring);
         m_ring = nullptr;
+        heap::ufree_delete(m_async_state);
+        m_async_state = nullptr;
         return -1;
     }
 
@@ -56,6 +82,8 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
         m_ring->destroy();
         heap::ufree_delete(m_ring);
         m_ring = nullptr;
+        heap::ufree_delete(m_async_state);
+        m_async_state = nullptr;
         return -1;
     }
     m_dma_buffer_phys = xhci_get_physical_addr(m_dma_buffer);
@@ -64,6 +92,18 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
 }
 
 void xhci_endpoint::destroy() {
+    if (m_async_state) {
+        if (m_async_state->interrupt_in_stream.payload_storage) {
+            heap::ufree(m_async_state->interrupt_in_stream.payload_storage);
+            m_async_state->interrupt_in_stream.payload_storage = nullptr;
+        }
+        if (m_async_state->interrupt_in_stream.payloads) {
+            heap::ufree(m_async_state->interrupt_in_stream.payloads);
+            m_async_state->interrupt_in_stream.payloads = nullptr;
+        }
+        heap::ufree_delete(m_async_state);
+        m_async_state = nullptr;
+    }
     if (m_dma_buffer) {
         free_xhci_memory(m_dma_buffer);
         m_dma_buffer = nullptr;
@@ -74,6 +114,10 @@ void xhci_endpoint::destroy() {
         heap::ufree_delete(m_ring);
         m_ring = nullptr;
     }
+}
+
+endpoint_async_state* xhci_endpoint::ensure_async_state() {
+    return m_async_state;
 }
 
 } // namespace drivers::xhci

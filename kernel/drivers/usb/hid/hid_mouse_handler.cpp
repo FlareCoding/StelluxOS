@@ -2,133 +2,211 @@
 #include "drivers/usb/hid/hid_constants.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "mm/heap.h"
 
 namespace usb::hid {
 
-static const field_info* find_field(const report_layout& layout,
-                                    uint16_t usage_pg, uint16_t usage_val) {
-    for (uint16_t i = 0; i < layout.num_fields; i++) {
-        if (layout.fields[i].usage_page == usage_pg &&
-            layout.fields[i].usage == usage_val) {
-            return &layout.fields[i];
-        }
-    }
-    return nullptr;
+hid_mouse_handler::~hid_mouse_handler() {
+    reset_state();
 }
 
-static uint16_t total_bits_for_page(const report_layout& layout, uint16_t usage_pg) {
-    uint16_t total = 0;
-    for (uint16_t i = 0; i < layout.num_fields; i++) {
-        if (layout.fields[i].usage_page == usage_pg) {
-            total += layout.fields[i].bit_size;
-        }
+void hid_mouse_handler::reset_state() {
+    if (m_button_fields) {
+        heap::ufree(m_button_fields);
+        m_button_fields = nullptr;
     }
-    return total;
+    if (m_prev_buttons) {
+        heap::ufree(m_prev_buttons);
+        m_prev_buttons = nullptr;
+    }
+
+    m_x_field = nullptr;
+    m_y_field = nullptr;
+    m_wheel_field = nullptr;
+    m_button_count = 0;
+    m_report_id = 0;
+    m_ready = false;
 }
 
-void hid_mouse_handler::init(const report_layout& layout) {
+int32_t hid_mouse_handler::init(const report_layout& layout,
+                                const input_report_info& report) {
+    reset_state();
+
     auto gd = static_cast<uint16_t>(usage_page::generic_desktop);
     auto btn = static_cast<uint16_t>(usage_page::buttons);
-
-    // Buttons: find the first button field and use total bits for the page
-    auto* btn_field = find_field(layout, btn, 1);
-    if (btn_field) {
-        m_layout.buttons_offset = btn_field->bit_offset;
-        m_layout.buttons_size = total_bits_for_page(layout, btn);
+    const field_info* fields = report_fields(layout, report);
+    if (!fields || report.field_count == 0) {
+        return -1;
     }
 
-    // X axis
-    auto* x_field = find_field(layout, gd, static_cast<uint16_t>(generic_desktop_usage::x_axis));
-    if (x_field) {
-        m_layout.x_offset = x_field->bit_offset;
-        m_layout.x_size = x_field->bit_size;
+    uint16_t button_count = 0;
+    for (uint16_t i = 0; i < report.field_count; i++) {
+        const auto& field = fields[i];
+        if (field.is_constant()) {
+            continue;
+        }
+
+        if (!m_x_field &&
+            field.usage_page == gd &&
+            field.usage == static_cast<uint16_t>(generic_desktop_usage::x_axis)) {
+            m_x_field = &field;
+            continue;
+        }
+        if (!m_y_field &&
+            field.usage_page == gd &&
+            field.usage == static_cast<uint16_t>(generic_desktop_usage::y_axis)) {
+            m_y_field = &field;
+            continue;
+        }
+        if (!m_wheel_field &&
+            field.usage_page == gd &&
+            field.usage == static_cast<uint16_t>(generic_desktop_usage::wheel)) {
+            m_wheel_field = &field;
+            continue;
+        }
+        if (field.usage_page == btn && field.is_variable()) {
+            button_count++;
+        }
     }
 
-    // Y axis
-    auto* y_field = find_field(layout, gd, static_cast<uint16_t>(generic_desktop_usage::y_axis));
-    if (y_field) {
-        m_layout.y_offset = y_field->bit_offset;
-        m_layout.y_size = y_field->bit_size;
+    if (!m_x_field || !m_y_field) {
+        reset_state();
+        return -1;
     }
 
-    // Scroll wheel
-    auto* wheel_field = find_field(layout, gd, static_cast<uint16_t>(generic_desktop_usage::wheel));
-    if (wheel_field) {
-        m_layout.wheel_offset = wheel_field->bit_offset;
-        m_layout.wheel_size = wheel_field->bit_size;
+    if (button_count > 0) {
+        m_button_fields = static_cast<const field_info**>(
+            heap::ualloc(button_count * sizeof(field_info*)));
+        m_prev_buttons = static_cast<uint8_t*>(
+            heap::ualloc(button_count * sizeof(uint8_t)));
+        if (!m_button_fields || !m_prev_buttons) {
+            reset_state();
+            return -1;
+        }
+
+        uint16_t button_index = 0;
+        for (uint16_t i = 0; i < report.field_count; i++) {
+            const auto& field = fields[i];
+            if (!field.is_constant() &&
+                field.usage_page == btn &&
+                field.is_variable()) {
+                m_button_fields[button_index++] = &field;
+            }
+        }
+        string::memset(m_prev_buttons, 0, button_count * sizeof(uint8_t));
     }
 
-    log::info("hid-mouse: buttons=%u bits @ %u, x=%u bits @ %u, y=%u bits @ %u, wheel=%u bits @ %u",
-              m_layout.buttons_size, m_layout.buttons_offset,
-              m_layout.x_size, m_layout.x_offset,
-              m_layout.y_size, m_layout.y_offset,
-              m_layout.wheel_size, m_layout.wheel_offset);
+    m_button_count = button_count;
+    m_report_id = report.report_id;
+    m_ready = true;
+
+    log::info("hid-mouse: report=%u buttons=%u wheel=%s",
+              m_report_id, m_button_count, m_wheel_field ? "yes" : "no");
+    return 0;
 }
 
-void hid_mouse_handler::on_report(const uint8_t* data, uint32_t) {
-    int32_t dx = 0, dy = 0, scroll = 0;
-    uint32_t buttons = 0;
+void hid_mouse_handler::on_report(const uint8_t* data, uint32_t length) {
+    if (!m_ready) {
+        return;
+    }
 
-    if (m_layout.x_size > 0) {
-        dx = read_signed_field(data, m_layout.x_offset, m_layout.x_size);
+    int32_t dx = 0;
+    int32_t dy = 0;
+    int32_t scroll = 0;
+
+    if (m_x_field) {
+        dx = (m_x_field->logical_minimum < 0 || m_x_field->is_relative())
+            ? read_signed_field(data, length, m_x_field->bit_offset, m_x_field->bit_size)
+            : static_cast<int32_t>(read_unsigned_field(
+                data, length, m_x_field->bit_offset, m_x_field->bit_size));
     }
-    if (m_layout.y_size > 0) {
-        dy = read_signed_field(data, m_layout.y_offset, m_layout.y_size);
+    if (m_y_field) {
+        dy = (m_y_field->logical_minimum < 0 || m_y_field->is_relative())
+            ? read_signed_field(data, length, m_y_field->bit_offset, m_y_field->bit_size)
+            : static_cast<int32_t>(read_unsigned_field(
+                data, length, m_y_field->bit_offset, m_y_field->bit_size));
     }
-    if (m_layout.buttons_size > 0) {
-        buttons = read_unsigned_field(data, m_layout.buttons_offset, m_layout.buttons_size);
-    }
-    if (m_layout.wheel_size > 0) {
-        scroll = read_signed_field(data, m_layout.wheel_offset, m_layout.wheel_size);
+    if (m_wheel_field) {
+        scroll = (m_wheel_field->logical_minimum < 0 || m_wheel_field->is_relative())
+            ? read_signed_field(data, length, m_wheel_field->bit_offset, m_wheel_field->bit_size)
+            : static_cast<int32_t>(read_unsigned_field(
+                data, length, m_wheel_field->bit_offset, m_wheel_field->bit_size));
     }
 
     if (dx != 0 || dy != 0) {
-        log::debug("hid-mouse: dx=%d dy=%d", dx, dy);
+        log::info("hid-mouse: dx=%d dy=%d", dx, dy);
     }
 
-    uint32_t changed = buttons ^ m_prev_buttons;
-    if (changed != 0) {
-        for (int b = 0; b < 8; b++) {
-            if (changed & (1u << b)) {
-                bool pressed = (buttons & (1u << b)) != 0;
-                log::info("hid-mouse: button %d %s", b + 1, pressed ? "pressed" : "released");
-            }
+    for (uint16_t i = 0; i < m_button_count; i++) {
+        const auto* field = m_button_fields[i];
+        bool pressed = read_unsigned_field(data, length, field->bit_offset, field->bit_size) != 0;
+        bool was_pressed = m_prev_buttons[i] != 0;
+        if (pressed != was_pressed) {
+            log::info("hid-mouse: button %u %s",
+                      field->usage != 0 ? static_cast<uint32_t>(field->usage)
+                                        : static_cast<uint32_t>(i + 1),
+                      pressed ? "pressed" : "released");
+            m_prev_buttons[i] = pressed ? 1 : 0;
         }
-        m_prev_buttons = buttons;
     }
 
     if (scroll != 0) {
-        log::debug("hid-mouse: scroll=%d", scroll);
+        log::info("hid-mouse: scroll=%d", scroll);
     }
 }
 
-int32_t hid_mouse_handler::read_signed_field(const uint8_t* data,
-                                              uint16_t bit_offset, uint16_t bit_size) {
-    uint32_t byte_offset = bit_offset / 8;
-    uint32_t bit_shift = bit_offset % 8;
+int32_t hid_mouse_handler::read_signed_field(const uint8_t* data, uint32_t length,
+                                             uint32_t bit_offset, uint16_t bit_size) {
+    if (!data || bit_size == 0) {
+        return 0;
+    }
+
+    uint32_t byte_offset = bit_offset / 8u;
+    uint32_t bit_shift = bit_offset % 8u;
+    uint32_t bytes_needed = (bit_shift + bit_size + 7u) / 8u;
+    if (byte_offset >= length) {
+        return 0;
+    }
+    if (byte_offset + bytes_needed > length) {
+        bytes_needed = length - byte_offset;
+    }
 
     uint32_t raw = 0;
-    uint32_t bytes_needed = (bit_shift + bit_size + 7) / 8;
     string::memcpy(&raw, data + byte_offset, bytes_needed > 4 ? 4 : bytes_needed);
     raw >>= bit_shift;
-    raw &= (1u << bit_size) - 1;
+    if (bit_size >= 32) {
+        return static_cast<int32_t>(raw);
+    }
+    if (bit_size < 32) {
+        raw &= (1u << bit_size) - 1u;
+    }
 
-    // Sign-extend
     int32_t shift = 32 - bit_size;
     return static_cast<int32_t>(raw << shift) >> shift;
 }
 
-uint32_t hid_mouse_handler::read_unsigned_field(const uint8_t* data,
-                                                 uint16_t bit_offset, uint16_t bit_size) {
-    uint32_t byte_offset = bit_offset / 8;
-    uint32_t bit_shift = bit_offset % 8;
+uint32_t hid_mouse_handler::read_unsigned_field(const uint8_t* data, uint32_t length,
+                                                uint32_t bit_offset, uint16_t bit_size) {
+    if (!data || bit_size == 0) {
+        return 0;
+    }
+
+    uint32_t byte_offset = bit_offset / 8u;
+    uint32_t bit_shift = bit_offset % 8u;
+    uint32_t bytes_needed = (bit_shift + bit_size + 7u) / 8u;
+    if (byte_offset >= length) {
+        return 0;
+    }
+    if (byte_offset + bytes_needed > length) {
+        bytes_needed = length - byte_offset;
+    }
 
     uint32_t raw = 0;
-    uint32_t bytes_needed = (bit_shift + bit_size + 7) / 8;
     string::memcpy(&raw, data + byte_offset, bytes_needed > 4 ? 4 : bytes_needed);
     raw >>= bit_shift;
-    raw &= (1u << bit_size) - 1;
-
+    if (bit_size < 32) {
+        raw &= (1u << bit_size) - 1u;
+    }
     return raw;
 }
 

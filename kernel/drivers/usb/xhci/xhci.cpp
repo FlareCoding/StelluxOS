@@ -2,7 +2,6 @@
 #include "drivers/usb/xhci/xhci_common.h"
 #include "drivers/usb/xhci/xhci_ext_cap.h"
 #include "drivers/usb/core/usb_core.h"
-#include "drivers/usb/hub/hub_descriptors.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
@@ -184,8 +183,14 @@ void xhci_hcd::run() {
     while (true) {
         wait_for_event();
 
+        m_pending_doorbell_count = 0;
         _process_event_ring();
         m_event_ring->finish_processing();
+
+        for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
+            _ring_doorbell(m_pending_doorbells[i].slot_id,
+                           m_pending_doorbells[i].target);
+        }
 
         _process_hub_events();
     }
@@ -622,6 +627,24 @@ void xhci_hcd::_process_event_ring() {
             } else {
                 auto* ep = dev->endpoint(ep_id);
                 if (!ep) break;
+                if (ep->async_state()) {
+                    auto* state = ep->async_state();
+                    if (state->async_enabled) {
+                        if (state->interrupt_in_stream.active ||
+                            state->interrupt_in_stream.closing ||
+                            state->interrupt_in_stream.payloads ||
+                            state->interrupt_in_stream.payload_storage) {
+                            _complete_interrupt_in_stream(dev, ep, *state, e);
+                        } else if (state->active_request) {
+                            _complete_async_request(dev, ep, *state, e);
+                        }
+                    } else {
+                        _complete_endpoint_transfer(
+                            ep->completion_lock(), ep->completion_wq(),
+                            ep->result(), ep->completed_ptr(), e);
+                    }
+                    break;
+                }
                 _complete_endpoint_transfer(
                     ep->completion_lock(), ep->completion_wq(),
                     ep->result(), ep->completed_ptr(), e);
@@ -775,6 +798,21 @@ void xhci_hcd::_ring_cmd_doorbell() {
     _ring_doorbell(0, XHCI_DOORBELL_TARGET_COMMAND_RING);
 }
 
+uint32_t xhci_hcd::_read_mfindex() const {
+    if (!m_xhc_runtime_regs) {
+        return 0xffffu;
+    }
+    return m_xhc_runtime_regs->mf_index & 0x3fff;
+}
+
+void xhci_hcd::_queue_deferred_doorbell(uint8_t slot_id, uint8_t target) {
+    if (m_pending_doorbell_count >= (sizeof(m_pending_doorbells) / sizeof(m_pending_doorbells[0]))) {
+        _ring_doorbell(slot_id, target);
+        return;
+    }
+    m_pending_doorbells[m_pending_doorbell_count++] = {slot_id, target};
+}
+
 volatile uint32_t* xhci_hcd::_portsc(uint8_t port_index) {
     return reinterpret_cast<volatile uint32_t*>(
         reinterpret_cast<uintptr_t>(m_xhc_op_regs) +
@@ -819,12 +857,22 @@ void xhci_hcd::_teardown_device(uint8_t port_index) {
         }
     }
 
+    _mark_async_endpoints_for_device_disconnecting(device);
+
+    // Notify USB Core before legacy waiters are woken so class drivers see
+    // disconnect state before they can retry transfers.
+    usb::core::device_disconnected(this, device);
+
+    _clear_async_endpoints_for_device(device, usb::transfer_status::device_gone);
+
     // Wake any endpoint waiters so they don't hang (e.g., on disconnect)
     RUN_ELEVATED({
         for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
             auto* ep = device->endpoint(i);
             if (!ep) continue;
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            ep->result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+            ep->result().transfer_length = 0;
             ep->set_completed(true);
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
             sync::wake_all(ep->completion_wq());
@@ -832,24 +880,21 @@ void xhci_hcd::_teardown_device(uint8_t port_index) {
 
         // Also wake any EP0 waiter
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->ctrl_result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+        device->ctrl_result().transfer_length = 0;
         device->set_ctrl_completed(true);
         sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
         sync::wake_all(device->ctrl_completion_wq());
     });
 
-    // Notify USB Core to let bound class drivers call disconnect()
-    usb::core::device_disconnected(this, device);
-
     _disable_slot(slot_id); // tolerate failure (device may be gone)
 
-    // Save output_ctx before destroy() clears it
-    void* output_ctx = device->output_ctx();
-    device->destroy();
-    free_xhci_memory(output_ctx);
+    // Clear slot-indexed HCD state before the USB core is allowed
+    // to release the underlying xhci_device.
     m_dcbaa[slot_id] = 0;
     m_port_devices[port_index] = nullptr;
     m_slot_devices[slot_id] = nullptr;
-    heap::ufree_delete(device);
+    usb::core::finalize_disconnected_device(this, device);
 }
 
 void xhci_hcd::_complete_endpoint_transfer(
@@ -891,6 +936,34 @@ int32_t xhci_hcd::_set_tr_dequeue_ptr(xhci_device* device, uint8_t dci,
     trb.new_dequeue_ptr = (new_dequeue_phys & ~static_cast<uintptr_t>(0xF))
                         | (static_cast<uintptr_t>(dcs) & 1);
     return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
+}
+
+int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
+    if (!device || !device->ctrl_ring()) {
+        return -1;
+    }
+
+    // When a control transfer stalls, the next SETUP transaction clears the
+    // USB-level stall, but xHCI still needs its EP0 state repaired. Reset the
+    // endpoint and then advance the hardware dequeue pointer past the failed TD
+    // so the controller does not try to replay it on the next doorbell ring.
+    xhci_transfer_ring* ring = device->ctrl_ring();
+    uintptr_t dequeue_phys = ring->get_enqueue_phys();
+    uint8_t dequeue_cycle = ring->get_cycle_bit();
+
+    if (_reset_endpoint(device, 1) != 0) {
+        log::warn("xhci: failed to reset stalled control endpoint for slot %u",
+                  device->slot_id());
+        return -1;
+    }
+
+    if (_set_tr_dequeue_ptr(device, 1, dequeue_phys, dequeue_cycle) != 0) {
+        log::warn("xhci: failed to advance stalled control endpoint ring for slot %u",
+                  device->slot_id());
+        return -1;
+    }
+
+    return 0;
 }
 
 void xhci_hcd::_setup_device(uint8_t port_index) {
@@ -1145,6 +1218,7 @@ void xhci_hcd::_teardown_hub_device(xhci_device* hub_device, uint8_t hub_port) {
     auto* device = hub_device->hub_child(hub_port);
     if (!device) return;
 
+    uint8_t hub_slot_id = hub_device->slot_id();
     uint8_t slot_id = device->slot_id();
 
     // If this device is itself a hub, tear down its children first
@@ -1154,36 +1228,41 @@ void xhci_hcd::_teardown_hub_device(xhci_device* hub_device, uint8_t hub_port) {
         }
     }
 
+    _mark_async_endpoints_for_device_disconnecting(device);
+
+    usb::core::device_disconnected(this, device);
+
+    _clear_async_endpoints_for_device(device, usb::transfer_status::device_gone);
+
     // Wake any endpoint waiters
     RUN_ELEVATED({
         for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
             auto* ep = device->endpoint(i);
             if (!ep) continue;
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            ep->result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+            ep->result().transfer_length = 0;
             ep->set_completed(true);
             sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
             sync::wake_all(ep->completion_wq());
         }
 
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->ctrl_result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+        device->ctrl_result().transfer_length = 0;
         device->set_ctrl_completed(true);
         sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
         sync::wake_all(device->ctrl_completion_wq());
     });
-
-    usb::core::device_disconnected(this, device);
     _disable_slot(slot_id);
 
-    void* output_ctx = device->output_ctx();
-    device->destroy();
-    free_xhci_memory(output_ctx);
     m_dcbaa[slot_id] = 0;
     hub_device->set_hub_child(hub_port, nullptr);
     m_slot_devices[slot_id] = nullptr;
-    heap::ufree_delete(device);
+    usb::core::finalize_disconnected_device(this, device);
 
     log::info("xhci: hub slot %u port %u device disconnected (slot %u)",
-              hub_device->slot_id(), hub_port, slot_id);
+              hub_slot_id, hub_port, slot_id);
 }
 
 int32_t xhci_hcd::configure_as_hub(xhci_device* device, uint8_t num_ports,
@@ -1324,12 +1403,23 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
 
     xhci_interface_info* current_iface = nullptr;
 
-    while (offset < data_length) {
+    while (offset + sizeof(usb::usb_descriptor_header) <= data_length) {
         auto* hdr = reinterpret_cast<usb::usb_descriptor_header*>(&config.data[offset]);
-        if (hdr->bLength == 0) break;
+        if (hdr->bLength < sizeof(usb::usb_descriptor_header)) {
+            log::warn("xhci: malformed descriptor with short length %u at offset %u",
+                      hdr->bLength, offset);
+            break;
+        }
+        if (offset + hdr->bLength > data_length) {
+            log::warn("xhci: descriptor overruns config buffer at offset %u (len=%u, remaining=%u)",
+                      offset, hdr->bLength,
+                      static_cast<unsigned>(data_length - offset));
+            break;
+        }
 
         if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_INTERFACE) {
-            if (device->num_interfaces() < xhci_device::MAX_INTERFACES) {
+            if (hdr->bLength >= sizeof(usb::usb_interface_descriptor) &&
+                device->num_interfaces() < xhci_device::MAX_INTERFACES) {
                 auto* iface_desc = reinterpret_cast<usb::usb_interface_descriptor*>(hdr);
                 uint8_t idx = device->num_interfaces();
                 device->set_num_interfaces(idx + 1);
@@ -1339,6 +1429,7 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
                 current_iface->interface_class = iface_desc->bInterfaceClass;
                 current_iface->interface_subclass = iface_desc->bInterfaceSubClass;
                 current_iface->interface_protocol = iface_desc->bInterfaceProtocol;
+                current_iface->hid_report_desc_length = 0;
                 current_iface->num_endpoints = 0;
                 log::info("xhci:   interface %u: class=0x%02x subclass=0x%02x protocol=0x%02x",
                           iface_desc->bInterfaceNumber,
@@ -1346,13 +1437,33 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
                           iface_desc->bInterfaceSubClass,
                           iface_desc->bInterfaceProtocol);
             }
+        } else if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_HID) {
+            if (current_iface && hdr->bLength >= 6) {
+                const uint8_t* hid_bytes = reinterpret_cast<const uint8_t*>(hdr);
+                uint8_t num_desc = hid_bytes[5];
+                for (uint8_t i = 0; i < num_desc; i++) {
+                    uint16_t desc_offset = static_cast<uint16_t>(6 + (i * 3));
+                    if (desc_offset + 3 > hdr->bLength) {
+                        break;
+                    }
+                    uint8_t desc_type = hid_bytes[desc_offset];
+                    uint16_t desc_len = static_cast<uint16_t>(hid_bytes[desc_offset + 1]) |
+                                        (static_cast<uint16_t>(hid_bytes[desc_offset + 2]) << 8);
+                    if (desc_type == usb::USB_DESCRIPTOR_HID_REPORT) {
+                        current_iface->hid_report_desc_length = desc_len;
+                        break;
+                    }
+                }
+            }
         } else if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_ENDPOINT) {
-            auto* ep_desc = reinterpret_cast<usb::usb_endpoint_descriptor*>(hdr);
-            auto* ep = _create_endpoint(device, ep_desc);
-            if (ep) {
-                _configure_endpoint_context(device, ep);
-                if (current_iface && current_iface->num_endpoints < 16) {
-                    current_iface->endpoint_dcis[current_iface->num_endpoints++] = ep->dci();
+            if (hdr->bLength >= sizeof(usb::usb_endpoint_descriptor)) {
+                auto* ep_desc = reinterpret_cast<usb::usb_endpoint_descriptor*>(hdr);
+                auto* ep = _create_endpoint(device, ep_desc);
+                if (ep) {
+                    _configure_endpoint_context(device, ep);
+                    if (current_iface && current_iface->num_endpoints < 16) {
+                        current_iface->endpoint_dcis[current_iface->num_endpoints++] = ep->dci();
+                    }
                 }
             }
         }
@@ -1473,6 +1584,759 @@ int32_t xhci_hcd::_set_configuration(xhci_device* device, uint8_t config_value) 
     req.wLength = 0;
 
     return _send_control_transfer(device, req, nullptr, 0);
+}
+
+xhci::endpoint_async_state* xhci_hcd::_ensure_endpoint_async_state(xhci_endpoint* ep) {
+    if (!ep) {
+        return nullptr;
+    }
+    return ep->ensure_async_state();
+}
+
+void xhci_hcd::_enqueue_pending_request(xhci::endpoint_async_state& state,
+                                        usb::transfer_request& request) {
+    request.next = nullptr;
+    if (!state.pending_tail) {
+        state.pending_head = &request;
+        state.pending_tail = &request;
+        return;
+    }
+    state.pending_tail->next = &request;
+    state.pending_tail = &request;
+}
+
+void xhci_hcd::_finish_request(usb::transfer_request& request,
+                               usb::transfer_status status,
+                               uint32_t actual_length) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(request.lock);
+        request.status = status;
+        request.actual_length = actual_length;
+        request.pending = false;
+        request.next = nullptr;
+        request.hcd_private = nullptr;
+        sync::spin_unlock_irqrestore(request.lock, irq);
+        sync::wake_all(request.complete_wq);
+    });
+}
+
+int32_t xhci_hcd::_start_async_request(xhci_device* device,
+                                       xhci_endpoint* ep,
+                                       xhci::endpoint_async_state& state,
+                                       usb::transfer_request& request,
+                                       bool defer_doorbell) {
+    if (!device || !ep || request.requested_length > paging::PAGE_SIZE_4KB) {
+        return -1;
+    }
+
+    int32_t rc = 0;
+    xhci_normal_trb_t normal = {};
+    normal.trb_type = XHCI_TRB_TYPE_NORMAL;
+    normal.data_buffer_physical_base = ep->dma_buffer_phys();
+    normal.trb_transfer_length = request.requested_length;
+    normal.td_size = 0;
+    normal.interrupter_target = 0;
+    normal.ioc = 1;
+    normal.isp = ep->is_in() ? 1 : 0;
+    normal.chain = 0;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.disconnecting || state.interrupt_in_stream.active ||
+            state.active_request != &request || !ep->ring() ||
+            !ep->ring()->can_enqueue(1)) {
+            rc = -1;
+        } else {
+            if (!ep->is_in() && request.buffer && request.requested_length > 0) {
+                string::memcpy(ep->dma_buffer(), request.buffer, request.requested_length);
+            }
+            request.hcd_private = ep;
+            ep->ring()->enqueue(reinterpret_cast<xhci_trb_t*>(&normal));
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (rc != 0) {
+        return rc;
+    }
+
+    if (defer_doorbell) {
+        _queue_deferred_doorbell(device->slot_id(), ep->dci());
+    } else {
+        _ring_doorbell(device->slot_id(), ep->dci());
+    }
+    return 0;
+}
+
+void xhci_hcd::_kick_async_request_queue(xhci_device* device,
+                                         xhci_endpoint* ep,
+                                         xhci::endpoint_async_state& state,
+                                         bool defer_doorbell) {
+    while (true) {
+        usb::transfer_request* next = nullptr;
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (!state.disconnecting &&
+                !state.interrupt_in_stream.active &&
+                !state.active_request &&
+                state.pending_head) {
+                next = state.pending_head;
+                state.pending_head = next->next;
+                if (!state.pending_head) {
+                    state.pending_tail = nullptr;
+                }
+                next->next = nullptr;
+                state.active_request = next;
+                state.active_request_cancelled = false;
+            }
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+
+        if (!next) {
+            return;
+        }
+
+        if (_start_async_request(device, ep, state, *next, defer_doorbell) == 0) {
+            return;
+        }
+
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (state.active_request == next) {
+                state.active_request = nullptr;
+                state.active_request_cancelled = false;
+            }
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+        _finish_request(*next, usb::transfer_status::io_error, 0);
+    }
+}
+
+void xhci_hcd::_complete_async_request(xhci_device* device,
+                                       xhci_endpoint* ep,
+                                       xhci::endpoint_async_state& state,
+                                       const xhci_transfer_completion_trb_t* event) {
+    usb::transfer_request* request = nullptr;
+    bool cancelled = false;
+    uint32_t requested = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        request = state.active_request;
+        cancelled = state.active_request_cancelled;
+        if (request) {
+            requested = request->requested_length;
+        }
+        state.active_request = nullptr;
+        state.active_request_cancelled = false;
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (!request) {
+        return;
+    }
+
+    if (cancelled) {
+        _finish_request(*request, usb::transfer_status::cancelled, 0);
+        _kick_async_request_queue(device, ep, state, ep->transfer_type() == 3 && ep->is_in());
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (!state.active_request && !state.pending_head &&
+                !state.interrupt_in_stream.active &&
+                !state.interrupt_in_stream.closing &&
+                !state.interrupt_in_stream.payloads &&
+                !state.interrupt_in_stream.payload_storage) {
+                state.async_enabled = false;
+            }
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+        return;
+    }
+
+    uint32_t residual = event->transfer_length;
+    uint32_t actual = residual <= requested ? (requested - residual) : 0;
+    usb::transfer_status status = usb::transfer_status::io_error;
+    if (event->completion_code == XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        status = usb::transfer_status::ok;
+    } else if (event->completion_code == XHCI_TRB_COMPLETION_CODE_SHORT_PACKET) {
+        status = (request->flags & usb::allow_short)
+            ? usb::transfer_status::short_packet
+            : usb::transfer_status::io_error;
+        if (status == usb::transfer_status::io_error) {
+            actual = 0;
+        }
+    } else if (event->completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+        status = usb::transfer_status::stalled;
+        actual = 0;
+    } else {
+        actual = 0;
+    }
+
+    if (ep->is_in() && request->buffer && request->requested_length > 0) {
+        string::memset(request->buffer, 0, request->requested_length);
+        if ((status == usb::transfer_status::ok || status == usb::transfer_status::short_packet) &&
+            actual > 0) {
+            barrier::dma_read();
+            string::memcpy(request->buffer, ep->dma_buffer(), actual);
+        }
+    }
+
+    _finish_request(*request, status, actual);
+    _kick_async_request_queue(device, ep, state, ep->transfer_type() == 3 && ep->is_in());
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (!state.active_request && !state.pending_head &&
+            !state.interrupt_in_stream.active &&
+            !state.interrupt_in_stream.closing &&
+            !state.interrupt_in_stream.payloads &&
+            !state.interrupt_in_stream.payload_storage) {
+            state.async_enabled = false;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+}
+
+int32_t xhci_hcd::_queue_interrupt_in_stream_td(xhci_device* device,
+                                                xhci_endpoint* ep,
+                                                xhci::endpoint_async_state& state,
+                                                bool defer_doorbell) {
+    if (!device || !ep || !state.interrupt_in_stream.active) {
+        return -1;
+    }
+
+    uint32_t length = state.interrupt_in_stream.payload_length;
+    if (length == 0 || length > paging::PAGE_SIZE_4KB) {
+        return -1;
+    }
+
+    int32_t rc = 0;
+    xhci_normal_trb_t normal = {};
+    normal.trb_type = XHCI_TRB_TYPE_NORMAL;
+    normal.data_buffer_physical_base = ep->dma_buffer_phys();
+    normal.trb_transfer_length = length;
+    normal.td_size = 0;
+    normal.interrupter_target = 0;
+    normal.ioc = 1;
+    normal.isp = 1;
+    normal.chain = 0;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.disconnecting || state.active_request || !ep->ring() ||
+            !ep->ring()->can_enqueue(1)) {
+            rc = -1;
+        } else {
+            ep->ring()->enqueue(reinterpret_cast<xhci_trb_t*>(&normal));
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (rc != 0) {
+        return rc;
+    }
+
+    if (defer_doorbell) {
+        _queue_deferred_doorbell(device->slot_id(), ep->dci());
+    } else {
+        _ring_doorbell(device->slot_id(), ep->dci());
+    }
+    return 0;
+}
+
+bool xhci_hcd::_queue_interrupt_in_stream_payload(xhci::interrupt_in_stream_state& stream,
+                                                  const uint8_t* data,
+                                                  uint32_t length,
+                                                  uint16_t mfindex,
+                                                  uint64_t queued_t_us,
+                                                  uint32_t* seq_out) {
+    if (!stream.active || !stream.payloads || !stream.payload_storage || stream.queue_depth == 0) {
+        return false;
+    }
+
+    if (stream.count >= stream.queue_depth) {
+        stream.head = static_cast<uint8_t>((stream.head + 1) % stream.queue_depth);
+        stream.count--;
+        stream.dropped++;
+    }
+
+    uint8_t idx = static_cast<uint8_t>((stream.head + stream.count) % stream.queue_depth);
+    auto& payload = stream.payloads[idx];
+    payload.seq = stream.next_seq++;
+    payload.mfindex = mfindex;
+    payload.len = static_cast<uint16_t>(length);
+    payload.queued_t_us = queued_t_us;
+    string::memset(payload.data, 0, stream.payload_length);
+    if (length > 0) {
+        string::memcpy(payload.data, data, length);
+    }
+    stream.count++;
+    if (seq_out) {
+        *seq_out = payload.seq;
+    }
+    return true;
+}
+
+void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
+                                             xhci_endpoint* ep,
+                                             xhci::endpoint_async_state& state,
+                                             const xhci::xhci_transfer_completion_trb_t* event) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.interrupt_in_stream.closing) {
+            state.interrupt_in_stream.closing = false;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+            return;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (!state.interrupt_in_stream.active) {
+        return;
+    }
+
+    if (event->completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS &&
+        event->completion_code != XHCI_TRB_COMPLETION_CODE_SHORT_PACKET) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            state.interrupt_in_stream.active = false;
+            state.interrupt_in_stream.closing = false;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+            sync::wake_all(state.interrupt_in_stream.available_wq);
+        });
+        return;
+    }
+
+    uint32_t requested = state.interrupt_in_stream.payload_length;
+    uint32_t residual = event->transfer_length;
+    uint32_t actual = residual <= requested ? (requested - residual) : 0;
+    if (actual > requested) {
+        actual = requested;
+    }
+
+    barrier::dma_read();
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.interrupt_in_stream.active) {
+            _queue_interrupt_in_stream_payload(
+                state.interrupt_in_stream,
+                static_cast<const uint8_t*>(ep->dma_buffer()),
+                actual,
+                static_cast<uint16_t>(_read_mfindex()),
+                clock::now_ns() / 1000,
+                nullptr);
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (_queue_interrupt_in_stream_td(device, ep, state, true) != 0) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            state.interrupt_in_stream.active = false;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+    }
+
+    RUN_ELEVATED(sync::wake_one(state.interrupt_in_stream.available_wq));
+}
+
+void xhci_hcd::_clear_async_endpoint_state(xhci_device* /*device*/,
+                                           xhci_endpoint* ep,
+                                           usb::transfer_status status) {
+    if (!ep || !ep->async_state()) {
+        return;
+    }
+
+    auto* state = ep->async_state();
+    usb::transfer_request* active = nullptr;
+    usb::transfer_request* pending = nullptr;
+    bool wake_stream = false;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        state->disconnecting = true;
+        state->async_enabled = false;
+        active = state->active_request;
+        pending = state->pending_head;
+        state->active_request = nullptr;
+        state->pending_head = nullptr;
+        state->pending_tail = nullptr;
+        state->active_request_cancelled = false;
+        if (state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
+            state->interrupt_in_stream.payloads || state->interrupt_in_stream.payload_storage) {
+            state->interrupt_in_stream.active = false;
+            state->interrupt_in_stream.closing = false;
+            state->interrupt_in_stream.head = 0;
+            state->interrupt_in_stream.count = 0;
+            wake_stream = true;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (active) {
+        _finish_request(*active, status, 0);
+    }
+    while (pending) {
+        usb::transfer_request* next = pending->next;
+        _finish_request(*pending, status, 0);
+        pending = next;
+    }
+    if (wake_stream) {
+        RUN_ELEVATED(sync::wake_all(state->interrupt_in_stream.available_wq));
+    }
+}
+
+void xhci_hcd::_mark_async_endpoints_for_device_disconnecting(xhci_device* device) {
+    if (!device) {
+        return;
+    }
+    for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
+        auto* ep = device->endpoint(i);
+        if (!ep || !ep->async_state()) {
+            continue;
+        }
+        auto* state = ep->async_state();
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            state->disconnecting = true;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+    }
+}
+
+void xhci_hcd::_clear_async_endpoints_for_device(xhci_device* device,
+                                                 usb::transfer_status status) {
+    if (!device) {
+        return;
+    }
+    for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
+        _clear_async_endpoint_state(device, device->endpoint(i), status);
+    }
+}
+
+int32_t xhci_hcd::usb_submit_transfer_async(xhci_device* device,
+                                            usb::transfer_request& request) {
+    if (!device) {
+        return -1;
+    }
+
+    auto* ep = device->endpoint_by_address(request.endpoint_addr);
+    if (!ep || ep->endpoint_num() == 0 || request.requested_length > paging::PAGE_SIZE_4KB ||
+        (!request.buffer && request.requested_length > 0)) {
+        return -1;
+    }
+
+    auto* state = _ensure_endpoint_async_state(ep);
+    if (!state) {
+        return -1;
+    }
+
+    int32_t rc = 0;
+    bool start_now = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state->disconnecting || state->interrupt_in_stream.active ||
+            state->interrupt_in_stream.closing ||
+            state->interrupt_in_stream.payloads ||
+            state->interrupt_in_stream.payload_storage ||
+            request.pending || request.next != nullptr || request.hcd_private != nullptr) {
+            rc = -1;
+        } else {
+            state->async_enabled = true;
+            request.actual_length = 0;
+            request.status = usb::transfer_status::invalid;
+            request.pending = true;
+            request.next = nullptr;
+            if (!state->active_request) {
+                state->active_request = &request;
+                state->active_request_cancelled = false;
+                start_now = true;
+            } else {
+                _enqueue_pending_request(*state, request);
+            }
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (rc != 0) {
+        return rc;
+    }
+
+    if (start_now && _start_async_request(device, ep, *state, request, false) != 0) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (state->active_request == &request) {
+                state->active_request = nullptr;
+                state->active_request_cancelled = false;
+            }
+            request.pending = false;
+            request.status = usb::transfer_status::io_error;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+        request.hcd_private = nullptr;
+        return -1;
+    }
+
+    return 0;
+}
+
+void xhci_hcd::usb_cancel_transfer(xhci_device* device,
+                                   usb::transfer_request& request) {
+    if (!device) {
+        return;
+    }
+
+    auto* ep = device->endpoint_by_address(request.endpoint_addr);
+    if (!ep || !ep->async_state()) {
+        return;
+    }
+    auto* state = ep->async_state();
+
+    usb::transfer_request* prev = nullptr;
+    usb::transfer_request* cur = nullptr;
+    bool queued = false;
+    bool active = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        cur = state->pending_head;
+        while (cur) {
+            if (cur == &request) {
+                if (prev) {
+                    prev->next = cur->next;
+                } else {
+                    state->pending_head = cur->next;
+                }
+                if (state->pending_tail == cur) {
+                    state->pending_tail = prev;
+                }
+                cur->next = nullptr;
+                queued = true;
+                break;
+            }
+            prev = cur;
+            cur = cur->next;
+        }
+
+        if (!queued && state->active_request == &request) {
+            state->active_request_cancelled = true;
+            active = true;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (queued) {
+        _finish_request(request, usb::transfer_status::cancelled, 0);
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (!state->active_request && !state->pending_head &&
+                !state->interrupt_in_stream.active &&
+                !state->interrupt_in_stream.closing &&
+                !state->interrupt_in_stream.payloads &&
+                !state->interrupt_in_stream.payload_storage) {
+                state->async_enabled = false;
+            }
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+    } else if (active) {
+        log::warn("xhci: cancel requested for active transfer on EP%u, will complete when hardware retires it",
+                  ep->endpoint_num());
+    }
+}
+
+int32_t xhci_hcd::usb_open_interrupt_in_stream(xhci_device* device,
+                                               uint8_t endpoint_addr,
+                                               uint32_t payload_length) {
+    if (!device) {
+        return -1;
+    }
+    auto* ep = device->endpoint_by_address(endpoint_addr);
+    if (!ep || !ep->is_in() || ep->transfer_type() != 3 ||
+        payload_length == 0 || payload_length > paging::PAGE_SIZE_4KB) {
+        return -1;
+    }
+
+    auto* state = _ensure_endpoint_async_state(ep);
+    if (!state) {
+        return -1;
+    }
+
+    constexpr uint8_t STREAM_QUEUE_DEPTH = 2;
+    auto* payloads = static_cast<xhci::interrupt_in_payload*>(
+        heap::ualloc(static_cast<size_t>(STREAM_QUEUE_DEPTH) * sizeof(xhci::interrupt_in_payload)));
+    auto* storage = static_cast<uint8_t*>(
+        heap::ualloc(static_cast<size_t>(STREAM_QUEUE_DEPTH) * payload_length));
+    if (!payloads || !storage) {
+        if (payloads) heap::ufree(payloads);
+        if (storage) heap::ufree(storage);
+        return -1;
+    }
+
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state->disconnecting || state->active_request || state->pending_head ||
+            state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
+            state->interrupt_in_stream.payloads || state->interrupt_in_stream.payload_storage) {
+            rc = -1;
+        } else {
+            state->async_enabled = true;
+            state->interrupt_in_stream.active = true;
+            state->interrupt_in_stream.closing = false;
+            state->interrupt_in_stream.payload_length = payload_length;
+            state->interrupt_in_stream.queue_depth = STREAM_QUEUE_DEPTH;
+            state->interrupt_in_stream.payloads = payloads;
+            state->interrupt_in_stream.payload_storage = storage;
+            state->interrupt_in_stream.head = 0;
+            state->interrupt_in_stream.count = 0;
+            state->interrupt_in_stream.next_seq = 1;
+            state->interrupt_in_stream.dropped = 0;
+            state->interrupt_in_stream.available_wq.init();
+            for (uint8_t i = 0; i < STREAM_QUEUE_DEPTH; i++) {
+                state->interrupt_in_stream.payloads[i].data =
+                    storage + (static_cast<size_t>(i) * payload_length);
+                state->interrupt_in_stream.payloads[i].seq = 0;
+                state->interrupt_in_stream.payloads[i].mfindex = 0xffff;
+                state->interrupt_in_stream.payloads[i].len = 0;
+                state->interrupt_in_stream.payloads[i].queued_t_us = 0;
+            }
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (rc != 0) {
+        heap::ufree(payloads);
+        heap::ufree(storage);
+        return rc;
+    }
+
+    rc = _queue_interrupt_in_stream_td(device, ep, *state, false);
+    if (rc != 0) {
+        usb_close_interrupt_in_stream(device, endpoint_addr);
+        return rc;
+    }
+
+    return 0;
+}
+
+int32_t xhci_hcd::usb_read_interrupt_in_stream(xhci_device* device,
+                                               uint8_t endpoint_addr,
+                                               void* buffer,
+                                               uint32_t buffer_len,
+                                               uint32_t* out_length) {
+    if (!device || !buffer || buffer_len == 0) {
+        return -1;
+    }
+    auto* ep = device->endpoint_by_address(endpoint_addr);
+    if (!ep || !ep->async_state()) {
+        return -1;
+    }
+    auto* state = ep->async_state();
+
+    bool got_payload = false;
+    uint32_t actual = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        while (true) {
+            if (!state->interrupt_in_stream.active) {
+                break;
+            }
+            if (state->interrupt_in_stream.count > 0) {
+                auto& payload = state->interrupt_in_stream.payloads[state->interrupt_in_stream.head];
+                state->interrupt_in_stream.head = static_cast<uint8_t>(
+                    (state->interrupt_in_stream.head + 1) %
+                    state->interrupt_in_stream.queue_depth);
+                state->interrupt_in_stream.count--;
+                actual = payload.len < buffer_len ? payload.len : buffer_len;
+                string::memset(buffer, 0, buffer_len);
+                if (actual > 0) {
+                    string::memcpy(buffer, payload.data, actual);
+                }
+                got_payload = true;
+                break;
+            }
+            irq = sync::wait(state->interrupt_in_stream.available_wq,
+                             ep->completion_lock(), irq);
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (!got_payload) {
+        if (out_length) *out_length = 0;
+        return -1;
+    }
+
+    if (out_length) {
+        *out_length = actual;
+    }
+    return 0;
+}
+
+void xhci_hcd::usb_close_interrupt_in_stream(xhci_device* device,
+                                             uint8_t endpoint_addr) {
+    if (!device) {
+        return;
+    }
+    auto* ep = device->endpoint_by_address(endpoint_addr);
+    if (!ep || !ep->async_state()) {
+        return;
+    }
+    auto* state = ep->async_state();
+
+    uint8_t* storage = nullptr;
+    xhci::interrupt_in_payload* payloads = nullptr;
+    bool need_stop = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
+            state->interrupt_in_stream.payload_storage || state->interrupt_in_stream.payloads) {
+            need_stop = state->interrupt_in_stream.active;
+            state->interrupt_in_stream.active = false;
+            state->interrupt_in_stream.closing = true;
+            storage = state->interrupt_in_stream.payload_storage;
+            payloads = state->interrupt_in_stream.payloads;
+            state->interrupt_in_stream.payload_storage = nullptr;
+            state->interrupt_in_stream.payloads = nullptr;
+            state->interrupt_in_stream.payload_length = 0;
+            state->interrupt_in_stream.queue_depth = 0;
+            state->interrupt_in_stream.head = 0;
+            state->interrupt_in_stream.count = 0;
+            state->interrupt_in_stream.next_seq = 1;
+            state->interrupt_in_stream.dropped = 0;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        sync::wake_all(state->interrupt_in_stream.available_wq);
+    });
+
+    if (need_stop) {
+        (void)_stop_endpoint(device, ep->dci());
+    }
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        state->interrupt_in_stream.closing = false;
+        if (!state->active_request && !state->pending_head) {
+            state->async_enabled = false;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (payloads) {
+        heap::ufree(payloads);
+    }
+    if (storage) {
+        heap::ufree(storage);
+    }
+}
+
+void xhci_hcd::release_disconnected_device(xhci_device* device) {
+    if (!device) {
+        return;
+    }
+
+    void* output_ctx = device->output_ctx();
+    device->destroy();
+    if (output_ctx) {
+        free_xhci_memory(output_ctx);
+    }
+    heap::ufree_delete(device);
 }
 
 void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
@@ -1665,6 +2529,9 @@ int32_t xhci_hcd::_send_control_transfer(
     }
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+            (void)_recover_stalled_control_endpoint(device);
+        }
         log::warn("xhci: control transfer failed: %s",
                    trb_completion_code_to_string(device->ctrl_result().completion_code));
         return -1;
@@ -1732,11 +2599,18 @@ int32_t xhci_hcd::_submit_normal_transfer(
     }
 
     // Reset completion state before doorbell to avoid race with HCD event dispatch
+    int32_t state_rc = 0;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (ep->async_state() && ep->async_state()->async_enabled) {
+            state_rc = -1;
+        }
         ep->set_completed(false);
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
     });
+    if (state_rc != 0) {
+        return state_rc;
+    }
 
     // Copy OUT data into DMA buffer before enqueue
     if (!ep->is_in() && buffer && length > 0) {
@@ -1889,6 +2763,9 @@ int32_t xhci_hcd::usb_control_transfer(
     });
 
     if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+            (void)_recover_stalled_control_endpoint(device);
+        }
         log::warn("xhci: control transfer failed: %s",
                    trb_completion_code_to_string(device->ctrl_result().completion_code));
         return -1;
@@ -1906,6 +2783,9 @@ int32_t xhci_hcd::usb_submit_transfer(
     xhci_device* device, uint8_t endpoint_addr,
     void* buffer, uint32_t length
 ) {
+    if (!device || (!buffer && length > 0)) {
+        return -1;
+    }
     auto* ep = device->endpoint_by_address(endpoint_addr);
     if (!ep) {
         log::error("xhci: no endpoint for address 0x%02x on slot %u",
