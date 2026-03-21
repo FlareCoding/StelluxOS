@@ -86,6 +86,7 @@ void xhci_device::destroy() {
         m_input_ctx = nullptr;
     }
     m_output_ctx = nullptr;
+    m_core_device = nullptr;
 }
 
 xhci_input_control_context32* xhci_device::input_ctrl_ctx() {

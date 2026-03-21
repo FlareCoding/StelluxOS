@@ -17,6 +17,13 @@ namespace usb::core {
 static constexpr uint16_t MAX_USB_DEVICES = 256;
 static usb::device* g_devices[MAX_USB_DEVICES] = {};
 static usb::class_driver* g_bound_drivers[MAX_USB_DEVICES * 16] = {};
+static sync::spinlock g_usb_core_lock = sync::SPINLOCK_INIT;
+
+struct finalization_ticket {
+    usb::device* dev = nullptr;
+    drivers::xhci_hcd* hcd = nullptr;
+    drivers::xhci::xhci_device* xdev = nullptr;
+};
 
 static bool match_interface(const class_match& match, const usb::interface* iface) {
     if (match.interface_class != USB_MATCH_ANY &&
@@ -34,9 +41,130 @@ static bool match_interface(const class_match& match, const usb::interface* ifac
     return true;
 }
 
+static void publish_usb_device(uint8_t slot_id, usb::device* dev) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_usb_core_lock);
+        g_devices[slot_id] = dev;
+        sync::spin_unlock_irqrestore(g_usb_core_lock, irq);
+    });
+}
+
+static void clear_usb_device_if_current(uint8_t slot_id, usb::device* dev) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_usb_core_lock);
+        if (g_devices[slot_id] == dev) {
+            g_devices[slot_id] = nullptr;
+        }
+        sync::spin_unlock_irqrestore(g_usb_core_lock, irq);
+    });
+}
+
+static void publish_bound_driver(uint16_t drv_idx, usb::class_driver* drv) {
+    if (drv_idx >= MAX_USB_DEVICES * 16) {
+        return;
+    }
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_usb_core_lock);
+        g_bound_drivers[drv_idx] = drv;
+        sync::spin_unlock_irqrestore(g_usb_core_lock, irq);
+    });
+}
+
+static void clear_bound_driver_if_current(uint16_t drv_idx, usb::class_driver* drv) {
+    if (drv_idx >= MAX_USB_DEVICES * 16) {
+        return;
+    }
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_usb_core_lock);
+        if (g_bound_drivers[drv_idx] == drv) {
+            g_bound_drivers[drv_idx] = nullptr;
+        }
+        sync::spin_unlock_irqrestore(g_usb_core_lock, irq);
+    });
+}
+
+static usb::class_driver* take_bound_driver_for_device(uint16_t drv_idx, usb::device* dev) {
+    if (!dev || drv_idx >= MAX_USB_DEVICES * 16) {
+        return nullptr;
+    }
+
+    usb::class_driver* drv = nullptr;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_usb_core_lock);
+        auto* current = g_bound_drivers[drv_idx];
+        if (current && current->bound_device() == dev) {
+            drv = current;
+            g_bound_drivers[drv_idx] = nullptr;
+        }
+        sync::spin_unlock_irqrestore(g_usb_core_lock, irq);
+    });
+    return drv;
+}
+
+static finalization_ticket claim_finalization_if_ready_locked(usb::device* dev) {
+    finalization_ticket ticket = {};
+    if (!dev ||
+        !dev->disconnect_pending ||
+        !dev->hcd_teardown_complete ||
+        dev->active_driver_count != 0 ||
+        dev->finalize_started) {
+        return ticket;
+    }
+
+    dev->finalize_started = true;
+    ticket.dev = dev;
+    ticket.xdev = static_cast<drivers::xhci::xhci_device*>(dev->hcd_device);
+    ticket.hcd = static_cast<drivers::xhci_hcd*>(dev->hcd);
+    dev->hcd_device = nullptr;
+    dev->hcd = nullptr;
+    return ticket;
+}
+
+static void finish_claimed_finalization(finalization_ticket ticket) {
+    if (!ticket.dev) {
+        return;
+    }
+
+    uint8_t slot_id = ticket.xdev ? ticket.xdev->slot_id() : 0;
+    if (ticket.xdev && ticket.xdev->core_device() == ticket.dev) {
+        ticket.xdev->set_core_device(nullptr);
+    }
+    clear_usb_device_if_current(slot_id, ticket.dev);
+
+    if (ticket.hcd && ticket.xdev) {
+        ticket.hcd->release_disconnected_device(ticket.xdev);
+    }
+    heap::ufree_delete(ticket.dev);
+}
+
 static void class_driver_task_entry(void* arg) {
     auto* drv = static_cast<usb::class_driver*>(arg);
+    uint8_t slot_id = drv->bound_slot_id();
+    uint8_t iface_index = drv->bound_interface_index();
+    auto* dev = drv->bound_device();
     drv->run();
+
+    uint16_t drv_idx = static_cast<uint16_t>(slot_id) * 16 + iface_index;
+    clear_bound_driver_if_current(drv_idx, drv);
+
+    finalization_ticket ticket = {};
+    if (dev) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(dev->lifetime_lock);
+            if (dev->active_driver_count > 0) {
+                dev->active_driver_count--;
+            }
+            ticket = claim_finalization_if_ready_locked(dev);
+            sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
+        });
+    }
+
+    heap::ufree_delete(drv);
+
+    finish_claimed_finalization(ticket);
+
     sched::exit(0);
 }
 
@@ -64,6 +192,12 @@ static usb::device* build_usb_device(
     dev->hub_num_ports = xdev->hub_num_ports();
     dev->hcd = hcd;
     dev->hcd_device = xdev;
+    dev->lifetime_lock = sync::SPINLOCK_INIT;
+    dev->active_driver_count = 0;
+    dev->disconnect_pending = false;
+    dev->hcd_teardown_complete = false;
+    dev->finalize_started = false;
+    xdev->set_core_device(dev);
 
     for (uint8_t i = 0; i < xdev->num_interfaces(); i++) {
         const auto& xi = xdev->interface_info(i);
@@ -73,6 +207,7 @@ static usb::device* build_usb_device(
         iface.interface_class = xi.interface_class;
         iface.interface_subclass = xi.interface_subclass;
         iface.interface_protocol = xi.interface_protocol;
+        iface.hid_report_desc_length = xi.hid_report_desc_length;
         iface.num_endpoints = xi.num_endpoints;
 
         for (uint8_t j = 0; j < xi.num_endpoints && j < 16; j++) {
@@ -102,7 +237,7 @@ void device_configured(drivers::xhci_hcd* hcd,
         return;
     }
 
-    g_devices[slot_id] = dev;
+    publish_usb_device(slot_id, dev);
 
     RUN_ELEVATED({
         const class_driver_entry* reg_start = __usb_class_drivers_start;
@@ -135,15 +270,19 @@ void device_configured(drivers::xhci_hcd* hcd,
                 }
 
                 drv->m_task = t;
+                drv->m_bound_device = dev;
+                drv->m_bound_slot_id = slot_id;
+                drv->m_bound_interface_index = i;
+                sync::irq_state dev_irq = sync::spin_lock_irqsave(dev->lifetime_lock);
+                dev->active_driver_count++;
+                sync::spin_unlock_irqrestore(dev->lifetime_lock, dev_irq);
+
+                uint16_t drv_idx = static_cast<uint16_t>(slot_id) * 16 + i;
+                publish_bound_driver(drv_idx, drv);
                 sched::enqueue(t);
 
                 log::info("usb: bound %s to interface %u (class=0x%02x)",
                            drv->name(), iface->interface_number, iface->interface_class);
-
-                uint16_t drv_idx = static_cast<uint16_t>(slot_id) * 16 + i;
-                if (drv_idx < MAX_USB_DEVICES * 16) {
-                    g_bound_drivers[drv_idx] = drv;
-                }
 
                 break;
             }
@@ -153,30 +292,57 @@ void device_configured(drivers::xhci_hcd* hcd,
 
 void device_disconnected(drivers::xhci_hcd*,
                          drivers::xhci::xhci_device* xdev) {
-    uint8_t slot_id = xdev->slot_id();
-    auto* dev = g_devices[slot_id];
+    if (!xdev) {
+        return;
+    }
+
+    auto* dev = xdev->core_device();
     if (!dev) {
         return;
     }
 
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(dev->lifetime_lock);
+        dev->disconnect_pending = true;
+        sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
+    });
+
     // Notify bound class drivers
+    uint8_t slot_id = xdev->slot_id();
     for (uint8_t i = 0; i < dev->num_interfaces; i++) {
         uint16_t drv_idx = static_cast<uint16_t>(slot_id) * 16 + i;
-        if (drv_idx >= MAX_USB_DEVICES * 16) {
-            continue;
-        }
-
-        auto* drv = g_bound_drivers[drv_idx];
+        auto* drv = take_bound_driver_for_device(drv_idx, dev);
         if (!drv) {
             continue;
         }
 
         drv->disconnect();
-        g_bound_drivers[drv_idx] = nullptr;
+    }
+}
+
+void finalize_disconnected_device(drivers::xhci_hcd* hcd,
+                                  drivers::xhci::xhci_device* xdev) {
+    if (!xdev) {
+        return;
     }
 
-    g_devices[slot_id] = nullptr;
-    heap::ufree_delete(dev);
+    auto* dev = xdev->core_device();
+    if (!dev) {
+        xdev->set_core_device(nullptr);
+        if (hcd) {
+            hcd->release_disconnected_device(xdev);
+        }
+        return;
+    }
+
+    finalization_ticket ticket = {};
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(dev->lifetime_lock);
+        dev->hcd_teardown_complete = true;
+        ticket = claim_finalization_if_ready_locked(dev);
+        sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
+    });
+    finish_claimed_finalization(ticket);
 }
 
 } // namespace usb::core

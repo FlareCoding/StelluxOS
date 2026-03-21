@@ -16,9 +16,14 @@ void device_configured(drivers::xhci_hcd* hcd,
                        const usb::usb_device_descriptor& desc);
 
 // Called by the HCD when a device is being torn down (disconnect or detach).
-// Notifies bound class drivers via disconnect() and frees the usb::device.
+// Notifies bound class drivers via disconnect() and marks the device pending
+// teardown. Final release happens later once both the HCD and the class-driver
+// tasks have dropped their references.
 void device_disconnected(drivers::xhci_hcd* hcd,
                          drivers::xhci::xhci_device* xdev);
+
+void finalize_disconnected_device(drivers::xhci_hcd* hcd,
+                                  drivers::xhci::xhci_device* xdev);
 
 } // namespace usb::core
 

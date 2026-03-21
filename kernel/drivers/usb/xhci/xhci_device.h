@@ -7,6 +7,8 @@
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 
+namespace usb { struct device; }
+
 namespace drivers::xhci {
 
 struct xhci_interface_info {
@@ -15,6 +17,7 @@ struct xhci_interface_info {
     uint8_t interface_class = 0;
     uint8_t interface_subclass = 0;
     uint8_t interface_protocol = 0;
+    uint16_t hid_report_desc_length = 0;
     uint8_t num_endpoints = 0;
     uint8_t endpoint_dcis[16] = {};
 };
@@ -104,6 +107,10 @@ public:
     }
     inline void set_num_interfaces(uint8_t n) { m_num_interfaces = n; }
 
+    // USB-core identity for disconnect/finalize, independent of slot reuse.
+    inline usb::device* core_device() const { return m_core_device; }
+    inline void set_core_device(usb::device* dev) { m_core_device = dev; }
+
     // Hub downstream device tracking (hub_port is 1-based, array is 0-based)
     static constexpr uint8_t MAX_HUB_PORTS = 16;
     xhci_device* hub_child(uint8_t hub_port) {
@@ -154,6 +161,9 @@ private:
     // Interface tracking (populated by _configure_device)
     xhci_interface_info m_interfaces[MAX_INTERFACES] = {};
     uint8_t m_num_interfaces = 0;
+
+    // USB core backpointer, set once the logical usb::device is published.
+    usb::device* m_core_device = nullptr;
 
     // Hub downstream devices (indexed by hub_port - 1)
     xhci_device* m_hub_children[MAX_HUB_PORTS] = {};
