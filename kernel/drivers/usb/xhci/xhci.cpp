@@ -193,8 +193,7 @@ void xhci_hcd::run() {
 
 __PRIVILEGED_CODE void xhci_hcd::on_interrupt(uint32_t) {
     // Clear USBSTS.EINT first, then IMAN.IP (RW1C). Clearing IP allows the
-    // 0->1 transition needed to generate the next MSI. Without this, real xHCs
-    // (including VL805) won't generate subsequent interrupts.
+    // 0->1 transition needed to generate the next MSI.
     m_xhc_op_regs->usbsts = XHCI_USBSTS_EINT;
     volatile xhci::xhci_interrupter_registers* ir = &m_xhc_runtime_regs->ir[0];
     ir->iman = XHCI_IMAN_INTERRUPT_PENDING | XHCI_IMAN_INTERRUPT_ENABLE;
@@ -1247,17 +1246,23 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     uint16_t max_packet_size = _initial_max_packet_size(port_speed);
     _configure_ctrl_ep_input_context(device, max_packet_size);
 
+    // First address device with BSR=1, essentially blocking the SET_ADDRESS request,
+    // but still enables the control endpoint which we can use to get the device descriptor.
+    // Some legacy devices require their descriptor to be read before sending them a SET_ADDRESS command.
     if (_address_device(device, true) != 0)
         ENUM_FAIL("xhci: address device (BSR=1) failed for slot %u", slot_id);
 
+    // Read the first 8 bytes of the device descriptor to get bMaxPacketSize0
     usb::usb_device_descriptor desc = {};
     if (_get_device_descriptor(device, &desc, 8) != 0)
         ENUM_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
 
+    // If the device reported a different max packet size, update the input context
     if (desc.bMaxPacketSize0 != max_packet_size) {
         max_packet_size = desc.bMaxPacketSize0;
         _configure_ctrl_ep_input_context(device, max_packet_size);
 
+        // Send Evaluate Context to update the xHC's internal state
         xhci_evaluate_context_command_trb_t eval_ctx = {};
         eval_ctx.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
         eval_ctx.input_context_physical_base = device->input_ctx_phys();
@@ -1267,11 +1272,14 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
             ENUM_FAIL("xhci: evaluate context failed for slot %u", slot_id);
     }
 
+    // Send the address device command again with BSR=0 this time
     if (_address_device(device, false) != 0)
         ENUM_FAIL("xhci: address device (BSR=0) failed for slot %u", slot_id);
 
+    // Sync the output device context into the input context
     device->sync_input_ctx();
 
+    // Read the full device descriptor
     if (_get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor)) != 0)
         ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
 
@@ -1298,8 +1306,11 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
     log::info("xhci: slot %u config: %u interface(s), totalLength=%u",
               slot_id, config.bNumInterfaces, config.wTotalLength);
 
+    // Sync the input context with the xHC's current output context
+    // so slot and EP0 state are up-to-date before we add new endpoints
     device->sync_input_ctx();
 
+    // Reset input control context flags (clear stale bits from ADDRESS_DEVICE)
     auto* input_ctrl = device->input_ctrl_ctx();
     input_ctrl->add_flags = (1u << 0);
     input_ctrl->drop_flags = 0;
@@ -1388,16 +1399,22 @@ void xhci_hcd::_configure_endpoint_context(xhci_device* device, xhci_endpoint* e
     auto* input_ctrl = device->input_ctrl_ctx();
     auto* slot_ctx = device->input_slot_ctx();
 
+    // Set the add flag for this endpoint's DCI
     input_ctrl->add_flags |= (1u << ep->dci());
 
+    // Update context_entries to the highest DCI
     if (ep->dci() > slot_ctx->context_entries) {
         slot_ctx->context_entries = ep->dci();
     }
 
+    // Zero the endpoint context before filling to clear any stale data
     auto* ep_ctx = device->input_ep_ctx(ep->dci());
     size_t ep_ctx_size = m_hc_params.csz ? sizeof(xhci_endpoint_context64) : sizeof(xhci_endpoint_context32);
     string::memset(ep_ctx, 0, ep_ctx_size);
 
+    // Compute xHCI interval from USB bInterval
+    // For HS/SS interrupt/isoch: xHCI interval = bInterval - 1
+    // For FS/LS interrupt: use raw bInterval (clamped to valid range)
     uint8_t xhci_interval = ep->interval();
     uint8_t speed = device->speed();
     uint8_t xfer_type = ep->transfer_type(); // 1=isoch, 3=interrupt
@@ -1434,6 +1451,7 @@ void xhci_hcd::_configure_endpoint_context(xhci_device* device, xhci_endpoint* e
 }
 
 int32_t xhci_hcd::_configure_endpoints(xhci_device* device) {
+    // Ensure slot context is included in the input context
     auto* input_ctrl = device->input_ctrl_ctx();
     input_ctrl->add_flags |= (1u << 0);
     input_ctrl->drop_flags = 0;
@@ -1467,6 +1485,7 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
     auto* slot_ctx = device->input_slot_ctx();
     auto* ep0_ctx = device->input_ctrl_ep_ctx();
 
+    // Enable slot context (A0) and control endpoint context (A1)
     input_ctrl->add_flags = (1 << 0) | (1 << 1);
     input_ctrl->drop_flags = 0;
 
