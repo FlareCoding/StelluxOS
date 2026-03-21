@@ -1121,16 +1121,12 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
     device->set_parent_slot_id(hub_device->slot_id());
     device->set_parent_port_num(hub_port);
 
-    // Propagate TT fields from the nearest HS hub ancestor.
-    // _configure_ctrl_ep_input_context uses these for the slot context's
-    // parent_hub_slot_id/parent_port_number fields (only for LS/FS devices).
-    if (hub_device->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
-        device->set_tt_think_time(hub_device->tt_think_time());
-        device->set_mtt(hub_device->mtt());
-    } else {
-        device->set_tt_think_time(hub_device->tt_think_time());
-        device->set_mtt(hub_device->mtt());
-    }
+    // Propagate TT fields down the chain. For a HS hub these come from the
+    // hub descriptor; for non-HS hubs they were already inherited from the
+    // nearest HS ancestor. _configure_ctrl_ep_input_context walks up to find
+    // the actual HS hub when building the slot context.
+    device->set_tt_think_time(hub_device->tt_think_time());
+    device->set_mtt(hub_device->mtt());
 
     device->set_output_ctx(output_ctx);
     hub_device->set_hub_child(hub_port, device);
