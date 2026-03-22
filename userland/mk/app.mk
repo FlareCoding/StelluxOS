@@ -13,6 +13,8 @@ SRC_DIR   := src
 BUILD_DIR := build/$(ARCH)
 BIN_DIR   := $(USERLAND_ROOT)/build/$(ARCH)/bin
 
+APP_LIBS ?=
+
 SOURCES := $(wildcard $(SRC_DIR)/*.c)
 OBJECTS := $(SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 TARGET  := $(BIN_DIR)/$(APP_NAME)
@@ -26,7 +28,7 @@ $(TARGET): $(OBJECTS)
 		-static -o $@ \
 		$(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
 		$(OBJECTS) \
-		-L$(SYSROOT)/lib -Wl,--start-group -lstlx -lc $(BUILTINS_LIB) -Wl,--end-group \
+		-L$(SYSROOT)/lib -Wl,--start-group -lstlx $(addprefix -l,$(APP_LIBS)) -lc $(BUILTINS_LIB) -Wl,--end-group \
 		$(SYSROOT)/lib/crtn.o
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
