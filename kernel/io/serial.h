@@ -46,6 +46,16 @@ void write(const char* data, size_t len);
 int32_t read_char();
 
 /**
+ * @brief Redirect serial output to a different I/O port.
+ * On x86_64: initializes the new port as a 16550 UART and redirects all
+ * subsequent write_char()/write() calls to it. Used to redirect output to
+ * a PCI serial adapter on machines without a built-in COM port.
+ * On AArch64: no-op (serial uses PL011 MMIO, not port I/O).
+ * @param port I/O port base address of the new UART (e.g. from a PCI BAR).
+ */
+void set_port(uint16_t port);
+
+/**
  * @brief Register a callback invoked for each received character.
  * Called from interrupt context; the callback must be __PRIVILEGED_CODE.
  * @note Privilege: **required**
