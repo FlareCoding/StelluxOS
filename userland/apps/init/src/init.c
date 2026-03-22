@@ -17,6 +17,14 @@ int main(void) {
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    int dm_handle = proc_exec("/initrd/bin/stlxdm", NULL);
+    if (dm_handle >= 0) {
+        proc_detach(dm_handle);
+        printf("init: stlxdm started\r\n");
+    } else {
+        printf("init: stlxdm not available, continuing without graphics\r\n");
+    }
+
     struct timespec delay = { .tv_sec = 0, .tv_nsec = 600000000L }; // 600ms
 
     while (1) {
