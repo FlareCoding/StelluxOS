@@ -69,7 +69,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 
     // Probe for a PCI serial adapter and redirect serial output to it.
-    // On machines without a built-in COM port, COM1 writes go nowhere --
+    // On machines without a built-in COM port, COM1 writes go nowhere -
     // this finds the adapter's I/O port and makes all serial output visible.
     pci::device* serial_dev = pci::find_by_class(
         pci::CLASS_SIMPLE_COMM, pci::SUB_COMM_SERIAL);
