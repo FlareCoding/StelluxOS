@@ -137,8 +137,10 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
 
     char surface_path[128];
     char sync_path[128];
+    char events_path[128];
     snprintf(surface_path, sizeof(surface_path), "/dev/shm/%s", resp.surface_name);
     snprintf(sync_path, sizeof(sync_path), "/dev/shm/%s", resp.sync_name);
+    snprintf(events_path, sizeof(events_path), "/dev/shm/%s", resp.events_name);
 
     int sync_fd = open(sync_path, O_RDWR);
     if (sync_fd < 0) {
@@ -152,11 +154,29 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
         return NULL;
     }
 
+    int events_fd = open(events_path, O_RDWR);
+    if (events_fd < 0) {
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+    stlxgfx_event_ring_t* event_ring = mmap(NULL, sizeof(stlxgfx_event_ring_t),
+                                             PROT_READ | PROT_WRITE, MAP_SHARED,
+                                             events_fd, 0);
+    if (event_ring == MAP_FAILED) {
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+
     size_t single_buf = (size_t)resp.pitch * resp.height;
     size_t surface_size = single_buf * 3;
 
     int surface_fd = open(surface_path, O_RDWR);
     if (surface_fd < 0) {
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
         munmap(sync, sizeof(stlxgfx_window_sync_t));
         close(sync_fd);
         return NULL;
@@ -166,6 +186,8 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
                                 surface_fd, 0);
     if (surface_buf == MAP_FAILED) {
         close(surface_fd);
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
         munmap(sync, sizeof(stlxgfx_window_sync_t));
         close(sync_fd);
         return NULL;
@@ -175,16 +197,20 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
     if (!win) {
         munmap(surface_buf, surface_size);
         close(surface_fd);
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
         munmap(sync, sizeof(stlxgfx_window_sync_t));
         close(sync_fd);
         return NULL;
     }
 
     win->sync = sync;
+    win->event_ring = event_ring;
     win->surface_buf = surface_buf;
     win->surface_size = surface_size;
     win->surface_fd = surface_fd;
     win->sync_fd = sync_fd;
+    win->events_fd = events_fd;
     win->window_id = resp.window_id;
     win->width = resp.width;
     win->height = resp.height;
@@ -203,6 +229,8 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
     if (!win->back) {
         munmap(surface_buf, surface_size);
         close(surface_fd);
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
         munmap(sync, sizeof(stlxgfx_window_sync_t));
         close(sync_fd);
         free(win);
@@ -224,8 +252,14 @@ void stlxgfx_window_close(stlxgfx_window_t* window) {
     if (window->back) {
         stlxgfx_destroy_surface(window->back);
     }
+    if (window->event_ring) {
+        munmap(window->event_ring, sizeof(stlxgfx_event_ring_t));
+    }
     if (window->surface_buf) {
         munmap(window->surface_buf, window->surface_size);
+    }
+    if (window->events_fd >= 0) {
+        close(window->events_fd);
     }
     if (window->surface_fd >= 0) {
         close(window->surface_fd);
@@ -358,6 +392,7 @@ int stlxgfx_dm_read_request(int client_fd, stlxgfx_msg_header_t* header,
 }
 
 static uint32_t g_next_window_id = 1;
+static int32_t  g_cascade_offset = 0;
 
 stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
     int client_fd, const stlxgfx_msg_header_t* req_header,
@@ -374,13 +409,17 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
 
     char surface_name[64];
     char sync_name[64];
+    char events_name[64];
     snprintf(surface_name, sizeof(surface_name), "stlxgfx_surface_%u", wid);
     snprintf(sync_name, sizeof(sync_name), "stlxgfx_sync_%u", wid);
+    snprintf(events_name, sizeof(events_name), "stlxgfx_events_%u", wid);
 
     char surface_path[128];
     char sync_path[128];
+    char events_path[128];
     snprintf(surface_path, sizeof(surface_path), "/dev/shm/%s", surface_name);
     snprintf(sync_path, sizeof(sync_path), "/dev/shm/%s", sync_name);
+    snprintf(events_path, sizeof(events_path), "/dev/shm/%s", events_name);
 
     int surface_fd = open(surface_path, O_CREAT | O_RDWR, 0);
     if (surface_fd < 0) {
@@ -421,6 +460,35 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
         return NULL;
     }
 
+    int events_fd = open(events_path, O_CREAT | O_RDWR, 0);
+    if (events_fd < 0) {
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    if (ftruncate(events_fd, (off_t)sizeof(stlxgfx_event_ring_t)) < 0) {
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    stlxgfx_event_ring_t* event_ring = mmap(NULL, sizeof(stlxgfx_event_ring_t),
+                                             PROT_READ | PROT_WRITE, MAP_SHARED,
+                                             events_fd, 0);
+    if (event_ring == MAP_FAILED) {
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    stlxgfx_event_ring_init(event_ring);
+
     atomic_store_explicit(&sync->front_index, 0, memory_order_relaxed);
     atomic_store_explicit(&sync->back_index, 1, memory_order_relaxed);
     atomic_store_explicit(&sync->ready_index, 2, memory_order_relaxed);
@@ -431,6 +499,8 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
 
     stlxgfx_dm_window_t* win = malloc(sizeof(stlxgfx_dm_window_t));
     if (!win) {
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
         munmap(sync, sizeof(stlxgfx_window_sync_t));
         close(sync_fd);
         munmap(surface_buf, surface_size);
@@ -443,6 +513,8 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
         req->width, req->height, pitch, fb->bpp,
         fb->red_shift, fb->green_shift, fb->blue_shift);
     if (!win->front) {
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
         munmap(sync, sizeof(stlxgfx_window_sync_t));
         close(sync_fd);
         munmap(surface_buf, surface_size);
@@ -452,24 +524,36 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
     }
 
     win->sync = sync;
+    win->event_ring = event_ring;
     win->surface_buf = surface_buf;
     win->surface_size = surface_size;
     win->surface_fd = surface_fd;
     win->sync_fd = sync_fd;
+    win->events_fd = events_fd;
     win->window_id = wid;
     win->width = req->width;
     win->height = req->height;
     win->pitch = pitch;
-    win->x = 50;
-    win->y = 50;
+
+    int32_t cx = 50 + g_cascade_offset * 30;
+    int32_t cy = 50 + g_cascade_offset * 30;
+    g_cascade_offset = (g_cascade_offset + 1) % 8;
+    win->x = cx;
+    win->y = cy;
+
     strncpy(win->surface_path, surface_path, sizeof(win->surface_path) - 1);
+    win->surface_path[sizeof(win->surface_path) - 1] = '\0';
     strncpy(win->sync_path, sync_path, sizeof(win->sync_path) - 1);
+    win->sync_path[sizeof(win->sync_path) - 1] = '\0';
+    strncpy(win->events_path, events_path, sizeof(win->events_path) - 1);
+    win->events_path[sizeof(win->events_path) - 1] = '\0';
 
     stlxgfx_create_window_resp_t resp;
     memset(&resp, 0, sizeof(resp));
     resp.window_id = wid;
     strncpy(resp.surface_name, surface_name, sizeof(resp.surface_name) - 1);
     strncpy(resp.sync_name, sync_name, sizeof(resp.sync_name) - 1);
+    strncpy(resp.events_name, events_name, sizeof(resp.events_name) - 1);
     resp.width = req->width;
     resp.height = req->height;
     resp.pitch = pitch;
@@ -496,17 +580,26 @@ void stlxgfx_dm_destroy_window(stlxgfx_dm_window_t* window) {
     if (window->front) {
         stlxgfx_destroy_surface(window->front);
     }
+    if (window->event_ring) {
+        munmap(window->event_ring, sizeof(stlxgfx_event_ring_t));
+    }
     if (window->sync) {
         munmap(window->sync, sizeof(stlxgfx_window_sync_t));
     }
     if (window->surface_buf) {
         munmap(window->surface_buf, window->surface_size);
     }
+    if (window->events_fd >= 0) {
+        close(window->events_fd);
+    }
     if (window->surface_fd >= 0) {
         close(window->surface_fd);
     }
     if (window->sync_fd >= 0) {
         close(window->sync_fd);
+    }
+    if (window->events_path[0]) {
+        unlink(window->events_path);
     }
     if (window->surface_path[0]) {
         unlink(window->surface_path);

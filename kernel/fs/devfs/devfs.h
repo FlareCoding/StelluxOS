@@ -24,6 +24,20 @@ __PRIVILEGED_CODE int32_t init();
  */
 __PRIVILEGED_CODE int32_t add_char_device(const char* name, fs::node* dev_node);
 
+/**
+ * @brief Ensure a subdirectory exists under the devfs root.
+ * Creates it if it does not already exist. Returns a pointer
+ * to the directory node on success.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE fs::node* ensure_dir(const char* name);
+
+/**
+ * @brief Add a char_device node under a specific devfs directory.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t add_char_device_at(fs::node* dir, fs::node* dev_node);
+
 } // namespace devfs
 
 #endif // STELLUX_FS_DEVFS_DEVFS_H

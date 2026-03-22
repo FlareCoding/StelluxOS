@@ -2,6 +2,7 @@
 #define STLXGFX_WINDOW_H
 
 #include <stlxgfx/fb.h>
+#include <stlxgfx/event.h>
 #include <stdatomic.h>
 
 /* --- Socket path --- */
@@ -37,6 +38,7 @@ typedef struct {
     uint32_t window_id;
     char     surface_name[64];
     char     sync_name[64];
+    char     events_name[64];
     uint32_t width;
     uint32_t height;
     uint32_t pitch;
@@ -77,12 +79,14 @@ typedef struct {
 
 /* --- Client-side API --- */
 
-typedef struct {
+typedef struct stlxgfx_window_t_tag {
     stlxgfx_window_sync_t* sync;
+    stlxgfx_event_ring_t*  event_ring;
     uint8_t* surface_buf;
     size_t   surface_size;
     int      surface_fd;
     int      sync_fd;
+    int      events_fd;
     uint32_t window_id;
     uint32_t width;
     uint32_t height;
@@ -111,10 +115,12 @@ int stlxgfx_window_should_close(stlxgfx_window_t* window);
 
 typedef struct {
     stlxgfx_window_sync_t* sync;
+    stlxgfx_event_ring_t*  event_ring;
     uint8_t* surface_buf;
     size_t   surface_size;
     int      surface_fd;
     int      sync_fd;
+    int      events_fd;
     uint32_t window_id;
     uint32_t width;
     uint32_t height;
@@ -123,6 +129,7 @@ typedef struct {
     int32_t  x, y;
     char     surface_path[128];
     char     sync_path[128];
+    char     events_path[128];
 } stlxgfx_dm_window_t;
 
 int stlxgfx_dm_listen(const char* socket_path);

@@ -3,17 +3,16 @@
 #include <stlxgfx/surface.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/window.h>
+#include <stlxgfx/event.h>
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
 
-typedef struct {
-    int fd;
-    stlxgfx_dm_window_t* window;
-} dm_client_t;
+#include "stlxdm_input.h"
 
 static dm_client_t g_clients[STLXGFX_DM_MAX_CLIENTS];
 static int g_client_count;
+static stlxdm_input_t g_input;
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -51,10 +50,11 @@ int main(void) {
         g_clients[i].window = NULL;
     }
 
+    stlxdm_input_init(&g_input, (int32_t)fb.width, (int32_t)fb.height);
+
     struct timespec ts = { 0, 33000000 };
 
     while (1) {
-        /* Accept new connections */
         if (g_client_count < STLXGFX_DM_MAX_CLIENTS) {
             int client_fd = stlxgfx_dm_accept(listen_fd);
             if (client_fd >= 0) {
@@ -70,7 +70,6 @@ int main(void) {
             }
         }
 
-        /* Handle client messages */
         for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
             if (g_clients[i].fd < 0) {
                 continue;
@@ -82,6 +81,7 @@ int main(void) {
             if (rc < 0) {
                 printf("stlxdm: client disconnected (slot %d)\r\n", i);
                 if (g_clients[i].window) {
+                    stlxdm_input_remove_window(&g_input, i);
                     stlxgfx_dm_destroy_window(g_clients[i].window);
                     g_clients[i].window = NULL;
                 }
@@ -100,42 +100,47 @@ int main(void) {
                     g_clients[i].fd, &hdr, req, &fb);
                 if (win) {
                     g_clients[i].window = win;
+                    stlxdm_input_add_window(&g_input, i);
                     printf("stlxdm: created window %u (%ux%u)\r\n",
                            win->window_id, win->width, win->height);
                 }
             } else if (hdr.message_type == STLXGFX_MSG_DESTROY_WINDOW_REQ) {
                 if (g_clients[i].window) {
+                    stlxdm_input_remove_window(&g_input, i);
                     stlxgfx_dm_destroy_window(g_clients[i].window);
                     g_clients[i].window = NULL;
                 }
             }
         }
 
-        /* Sync all windows */
+        stlxdm_input_process(&g_input, g_clients, STLXGFX_DM_MAX_CLIENTS);
+
         for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
             if (g_clients[i].window) {
                 stlxgfx_dm_sync(g_clients[i].window);
             }
         }
 
-        /* Composite */
         stlxgfx_clear(backbuf, 0xFF2D2D30);
         stlxgfx_draw_text(backbuf, 10, 10, "Stellux Display Manager", 16, 0xFFFFFFFF);
 
-        for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
-            if (!g_clients[i].window) {
+        for (int i = 0; i < g_input.z_count; i++) {
+            int slot = stlxdm_input_z_order(&g_input, i);
+            if (slot < 0 || !g_clients[slot].window) {
                 continue;
             }
-            stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(g_clients[i].window);
+            stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(g_clients[slot].window);
             if (front) {
-                stlxgfx_blit(backbuf, g_clients[i].window->x, g_clients[i].window->y,
+                stlxgfx_blit(backbuf, g_clients[slot].window->x,
+                             g_clients[slot].window->y,
                              front, 0, 0, front->width, front->height);
             }
         }
 
+        stlxdm_input_draw_cursor(&g_input, backbuf);
+
         stlxgfx_fb_present(&fb, backbuf);
 
-        /* Finish sync */
         for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
             if (g_clients[i].window) {
                 stlxgfx_dm_finish_sync(g_clients[i].window);

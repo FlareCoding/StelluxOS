@@ -145,6 +145,35 @@ __PRIVILEGED_CODE int32_t add_char_device(const char*, fs::node* dev_node) {
     return OK;
 }
 
+__PRIVILEGED_CODE fs::node* ensure_dir(const char* name) {
+    if (!g_devfs_root || !name) {
+        return nullptr;
+    }
+
+    size_t len = string::strlen(name);
+    fs::node* existing = nullptr;
+    if (g_devfs_root->lookup(name, len, &existing) == fs::OK) {
+        return existing;
+    }
+
+    void* mem = heap::kzalloc(sizeof(devfs_dir_node));
+    if (!mem) {
+        return nullptr;
+    }
+    auto* dir = new (mem) devfs_dir_node(g_devfs_instance, name);
+    g_devfs_root->add_child(dir);
+    return dir;
+}
+
+__PRIVILEGED_CODE int32_t add_char_device_at(fs::node* dir, fs::node* dev_node) {
+    if (!dir || !dev_node) {
+        return ERR;
+    }
+    auto* ddir = static_cast<devfs_dir_node*>(dir);
+    ddir->add_child(dev_node);
+    return OK;
+}
+
 } // namespace devfs
 
 extern "C" __PRIVILEGED_CODE int32_t devfs_init_driver() {

@@ -1,5 +1,6 @@
 #include "drivers/usb/hid/hid_mouse_handler.h"
 #include "drivers/usb/hid/hid_constants.h"
+#include "drivers/input/input.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
@@ -133,25 +134,31 @@ void hid_mouse_handler::on_report(const uint8_t* data, uint32_t length) {
                 data, length, m_wheel_field->bit_offset, m_wheel_field->bit_size));
     }
 
-    if (dx != 0 || dy != 0) {
-        log::info("hid-mouse: dx=%d dy=%d", dx, dy);
-    }
-
+    uint16_t buttons = 0;
+    bool buttons_changed = false;
     for (uint16_t i = 0; i < m_button_count; i++) {
         const auto* field = m_button_fields[i];
         bool pressed = read_field_unsigned(data, length, field->bit_offset, field->bit_size) != 0;
+        if (pressed) {
+            buttons |= static_cast<uint16_t>(1u << i);
+        }
         bool was_pressed = m_prev_buttons[i] != 0;
         if (pressed != was_pressed) {
-            log::info("hid-mouse: button %u %s",
-                      field->usage != 0 ? static_cast<uint32_t>(field->usage)
-                                        : static_cast<uint32_t>(i + 1),
-                      pressed ? "pressed" : "released");
-            m_prev_buttons[i] = pressed ? 1 : 0;
+            buttons_changed = true;
         }
+        m_prev_buttons[i] = pressed ? 1 : 0;
     }
 
-    if (scroll != 0) {
-        log::info("hid-mouse: scroll=%d", scroll);
+    bool is_relative = m_x_field && (m_x_field->logical_minimum < 0 || m_x_field->is_relative());
+
+    if (dx != 0 || dy != 0 || scroll != 0 || buttons_changed) {
+        input::mouse_event evt{};
+        evt.x_value = dx;
+        evt.y_value = dy;
+        evt.wheel = static_cast<int16_t>(scroll);
+        evt.buttons = buttons;
+        evt.flags = is_relative ? input::MOUSE_FLAG_RELATIVE : 0;
+        input::push_mouse_event(evt);
     }
 }
 

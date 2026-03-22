@@ -25,6 +25,7 @@ constexpr int32_t ERR_IO        = -10;
 constexpr int32_t ERR_BUSY      = -11;
 constexpr int32_t ERR_LOOP      = -12;
 constexpr int32_t ERR_BADF      = -13;
+constexpr int32_t ERR_AGAIN     = -14;
 
 /**
  * @brief Initialize the filesystem subsystem. Registers ramfs,

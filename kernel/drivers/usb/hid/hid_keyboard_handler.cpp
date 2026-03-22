@@ -1,5 +1,6 @@
 #include "drivers/usb/hid/hid_keyboard_handler.h"
 #include "drivers/usb/hid/hid_constants.h"
+#include "drivers/input/input.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
@@ -204,7 +205,11 @@ void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t length) {
         for (int b = 0; b < 8; b++) {
             if ((mod_changed & (1u << b)) != 0) {
                 bool pressed = (modifiers & (1u << b)) != 0;
-                log::info("hid-kbd: %s %s", modifier_names[b], pressed ? "pressed" : "released");
+                input::kbd_event mevt{};
+                mevt.action = pressed ? input::KBD_ACTION_DOWN : input::KBD_ACTION_UP;
+                mevt.modifiers = modifiers;
+                mevt.usage = static_cast<uint16_t>(0xE0u + b);
+                input::push_kbd_event(mevt);
             }
         }
         m_prev_modifiers = modifiers;
@@ -233,9 +238,11 @@ void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t length) {
             continue;
         }
         if (!contains_keycode(m_prev_keycodes, m_key_field_count, keycode)) {
-            const char* name = scancode_to_name(keycode);
-            log::info("hid-kbd: key pressed: %s (0x%04x)", name ? name : "?",
-                      static_cast<uint32_t>(keycode));
+            input::kbd_event evt{};
+            evt.action = input::KBD_ACTION_DOWN;
+            evt.modifiers = modifiers;
+            evt.usage = keycode;
+            input::push_kbd_event(evt);
         }
     }
 
@@ -245,9 +252,11 @@ void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t length) {
             continue;
         }
         if (!contains_keycode(m_curr_keycodes, m_key_field_count, keycode)) {
-            const char* name = scancode_to_name(keycode);
-            log::info("hid-kbd: key released: %s (0x%04x)", name ? name : "?",
-                      static_cast<uint32_t>(keycode));
+            input::kbd_event evt{};
+            evt.action = input::KBD_ACTION_UP;
+            evt.modifiers = modifiers;
+            evt.usage = keycode;
+            input::push_kbd_event(evt);
         }
     }
 

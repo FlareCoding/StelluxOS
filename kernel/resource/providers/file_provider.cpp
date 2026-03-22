@@ -26,6 +26,8 @@ __PRIVILEGED_CODE static int32_t map_fs_error_to_resource(int32_t fs_err) {
             return ERR_BADF;
         case fs::ERR_NOSYS:
             return ERR_UNSUP;
+        case fs::ERR_AGAIN:
+            return ERR_AGAIN;
         default:
             return ERR_IO;
     }

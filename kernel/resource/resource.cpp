@@ -59,7 +59,7 @@ __PRIVILEGED_CODE static bool valid_open_flags(uint32_t flags) {
 }
 
 __PRIVILEGED_CODE static uint32_t normalize_open_flags(uint32_t flags) {
-    return flags & (fs::ACCESS_MODE_MASK | fs::O_CREAT | fs::O_EXCL | fs::O_TRUNC | fs::O_APPEND);
+    return flags & (fs::ACCESS_MODE_MASK | fs::O_CREAT | fs::O_EXCL | fs::O_TRUNC | fs::O_APPEND | fs::O_NONBLOCK);
 }
 
 __PRIVILEGED_CODE static uint32_t rights_from_open_flags(uint32_t flags) {

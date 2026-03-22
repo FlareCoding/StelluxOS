@@ -22,6 +22,7 @@
 #include "msi/msi.h"
 #include "drivers/pci_driver.h"
 #include "drivers/graphics/gfxfb.h"
+#include "drivers/input/input.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -96,6 +97,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (gfxfb::init() != gfxfb::OK) {
         log::warn("gfxfb::init failed, framebuffer unavailable");
+    }
+
+    if (input::init() != input::OK) {
+        log::warn("input::init failed, input devices unavailable");
     }
 
     if (clock::init() != clock::OK) {
