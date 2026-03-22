@@ -44,8 +44,10 @@ constexpr uint16_t BAUD_9600 = 0x0C;
 
 constexpr uint8_t COM1_LEGACY_IRQ = 4;
 
-// Active UART port base - defaults to COM1, can be redirected to a PCI serial adapter
-__PRIVILEGED_DATA static uint16_t g_port_base = COM1_BASE;
+// Active UART port base - defaults to COM1, can be redirected to a PCI serial adapter.
+// Not __PRIVILEGED_DATA: must be readable from non-elevated serial::write_char().
+// Privileged code (on_rx_irq, enable_rx_interrupt) can access regular data.
+static uint16_t g_port_base = COM1_BASE;
 
 __PRIVILEGED_BSS static rx_callback_t g_rx_callback;
 
