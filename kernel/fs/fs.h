@@ -3,6 +3,8 @@
 
 #include "fs/fstypes.h"
 
+namespace mm { struct mm_context; }
+
 namespace fs {
 
 class node;
@@ -59,6 +61,8 @@ ssize_t write(file* f, const void* buf, size_t count);
 int64_t seek(file* f, int64_t offset, int whence);
 int32_t close(file* f);
 int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
+int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr, size_t length,
+             uint32_t prot, uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
 
 int32_t stat(const char* path, vattr* attr);
 int32_t fstat(file* f, vattr* attr);

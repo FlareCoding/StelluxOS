@@ -2,6 +2,7 @@
 #include "fs/fs.h"
 #include "fs/file.h"
 #include "mm/heap.h"
+#include "mm/vma.h"
 
 namespace resource::file_provider {
 
@@ -82,11 +83,39 @@ __PRIVILEGED_CODE static int32_t file_ioctl(resource_object* obj, uint32_t cmd, 
     return rc;
 }
 
+__PRIVILEGED_CODE static int32_t file_mmap(
+    resource_object* obj, mm::mm_context* mm_ctx,
+    uintptr_t addr, size_t length, uint32_t prot,
+    uint32_t map_flags, uint64_t offset, uintptr_t* out_addr
+) {
+    if (!obj || !obj->impl) {
+        return mm::MM_CTX_ERR_INVALID_ARG;
+    }
+
+    auto* impl = static_cast<file_resource_impl*>(obj->impl);
+    int32_t rc = fs::mmap(impl->file, mm_ctx, addr, length, prot, map_flags, offset, out_addr);
+    if (rc == 0) {
+        return mm::MM_CTX_OK;
+    }
+    switch (rc) {
+    case mm::MM_CTX_ERR_INVALID_ARG:
+    case mm::MM_CTX_ERR_NO_MEM:
+    case mm::MM_CTX_ERR_NO_VIRT:
+    case mm::MM_CTX_ERR_EXISTS:
+    case mm::MM_CTX_ERR_MAP_FAILED:
+    case mm::MM_CTX_ERR_NOT_MAPPED:
+        return rc;
+    default:
+        return mm::MM_CTX_ERR_INVALID_ARG;
+    }
+}
+
 static const resource_ops g_file_ops = {
     file_read,
     file_write,
     file_close,
     file_ioctl,
+    file_mmap,
 };
 
 /**

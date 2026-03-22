@@ -6,6 +6,7 @@
 #include "rc/ref_counted.h"
 
 namespace sched { struct task; }
+namespace mm { struct mm_context; }
 
 namespace resource {
 
@@ -15,12 +16,16 @@ using read_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint
 using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint32_t flags);
 using close_fn = void (*)(resource_object* obj);
 using ioctl_fn = int32_t (*)(resource_object* obj, uint32_t cmd, uint64_t arg);
+using mmap_fn = int32_t (*)(resource_object* obj, mm::mm_context* mm_ctx,
+                            uintptr_t addr, size_t length, uint32_t prot,
+                            uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
 
 struct resource_ops {
     read_fn  read;
     write_fn write;
     close_fn close;
     ioctl_fn ioctl; // nullable -- returns ERR_UNSUP if null
+    mmap_fn  mmap;  // nullable -- returns MM_CTX_* error codes
 };
 
 struct resource_object : rc::ref_counted<resource_object> {

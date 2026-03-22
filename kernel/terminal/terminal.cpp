@@ -92,6 +92,7 @@ static const resource::resource_ops g_terminal_ops = {
     terminal_write,
     terminal_close,
     nullptr,
+    nullptr,
 };
 
 const resource::resource_ops* get_terminal_ops() {

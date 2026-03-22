@@ -64,6 +64,7 @@ static const resource_ops g_proc_ops = {
     proc_write,
     proc_close,
     nullptr,
+    nullptr,
 };
 
 __PRIVILEGED_CODE int32_t create_proc_resource(

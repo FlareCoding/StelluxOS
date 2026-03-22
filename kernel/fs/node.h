@@ -6,6 +6,8 @@
 #include "sync/spinlock.h"
 #include "common/list.h"
 
+namespace mm { struct mm_context; }
+
 namespace fs {
 
 class file;
@@ -40,6 +42,9 @@ public:
     virtual int64_t seek(file* f, int64_t offset, int whence);
     virtual ssize_t readdir(file* f, dirent* entries, size_t count);
     virtual int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
+    virtual int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr,
+                         size_t length, uint32_t prot, uint32_t map_flags,
+                         uint64_t offset, uintptr_t* out_addr);
 
     // --- Lifecycle hooks (called on open/close) ---
     virtual int32_t open(file* f, uint32_t flags);

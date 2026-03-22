@@ -115,35 +115,52 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
                    syscall::EACCES : syscall::EBADF;
         }
 
-        if (obj->type != resource::resource_type::SHMEM) {
-            resource::resource_release(obj);
-            return syscall::EINVAL;
-        }
-
-        mm::shmem* backing = resource::shmem_resource_provider::get_shmem_backing(obj);
-        if (!backing) {
-            resource::resource_release(obj);
-            return syscall::EINVAL;
-        }
-
         uintptr_t mapped_addr = 0;
-        int32_t map_rc = mm::mm_context_map_shared(
-            task->exec.mm_ctx,
-            backing,
-            static_cast<uint64_t>(offset),
-            static_cast<size_t>(length),
-            linux_prot_to_mm(prot),
-            linux_map_to_mm(flags),
-            static_cast<uintptr_t>(addr),
-            &mapped_addr
-        );
 
-        resource::resource_release(obj);
+        if (obj->type == resource::resource_type::SHMEM) {
+            mm::shmem* backing = resource::shmem_resource_provider::get_shmem_backing(obj);
+            if (!backing) {
+                resource::resource_release(obj);
+                return syscall::EINVAL;
+            }
 
-        if (map_rc != mm::MM_CTX_OK) {
-            return mm_status_to_errno(map_rc);
+            int32_t map_rc = mm::mm_context_map_shared(
+                task->exec.mm_ctx,
+                backing,
+                static_cast<uint64_t>(offset),
+                static_cast<size_t>(length),
+                linux_prot_to_mm(prot),
+                linux_map_to_mm(flags),
+                static_cast<uintptr_t>(addr),
+                &mapped_addr
+            );
+
+            resource::resource_release(obj);
+
+            if (map_rc != mm::MM_CTX_OK) {
+                return mm_status_to_errno(map_rc);
+            }
+            return static_cast<int64_t>(mapped_addr);
+        } else if (obj->ops && obj->ops->mmap) {
+            int32_t map_rc = obj->ops->mmap(
+                obj, task->exec.mm_ctx,
+                static_cast<uintptr_t>(addr),
+                static_cast<size_t>(length),
+                linux_prot_to_mm(prot),
+                linux_map_to_mm(flags),
+                static_cast<uint64_t>(offset),
+                &mapped_addr);
+
+            resource::resource_release(obj);
+
+            if (map_rc != 0) {
+                return mm_status_to_errno(map_rc);
+            }
+            return static_cast<int64_t>(mapped_addr);
+        } else {
+            resource::resource_release(obj);
+            return syscall::EINVAL;
         }
-        return static_cast<int64_t>(mapped_addr);
     }
 
     if (!has_private) {

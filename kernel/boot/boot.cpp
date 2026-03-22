@@ -21,6 +21,7 @@
 #include "pci/pci.h"
 #include "msi/msi.h"
 #include "drivers/pci_driver.h"
+#include "drivers/graphics/gfxfb.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -91,6 +92,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (terminal::init() != terminal::OK) {
         log::warn("terminal::init failed");
+    }
+
+    if (gfxfb::init() != gfxfb::OK) {
+        log::warn("gfxfb::init failed, framebuffer unavailable");
     }
 
     if (clock::init() != clock::OK) {

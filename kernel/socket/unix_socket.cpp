@@ -102,6 +102,7 @@ static const resource::resource_ops g_socket_ops = {
     socket_write,
     socket_close,
     nullptr,
+    nullptr,
 };
 
 const resource::resource_ops* get_socket_ops() {

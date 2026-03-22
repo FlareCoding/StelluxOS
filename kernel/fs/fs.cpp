@@ -58,6 +58,7 @@ ssize_t node::write(file*, const void*, size_t)     { return ERR_NOSYS; }
 int64_t node::seek(file*, int64_t, int)             { return ERR_NOSYS; }
 ssize_t node::readdir(file*, dirent*, size_t)       { return ERR_NOSYS; }
 int32_t node::ioctl(file*, uint32_t, uint64_t)      { return ERR_NOSYS; }
+int32_t node::mmap(file*, mm::mm_context*, uintptr_t, size_t, uint32_t, uint32_t, uint64_t, uintptr_t*) { return ERR_NOSYS; }
 int32_t node::open(file*, uint32_t)                 { return OK; }
 int32_t node::on_close(file*)                       { return OK; }
 int32_t node::readlink(char*, size_t, size_t*)      { return ERR_NOSYS; }
@@ -713,6 +714,17 @@ int32_t ioctl(file* f, uint32_t cmd, uint64_t arg) {
     int32_t result;
     RUN_ELEVATED({
         result = f->get_node()->ioctl(f, cmd, arg);
+    });
+    return result;
+}
+
+int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr, size_t length,
+             uint32_t prot, uint32_t map_flags, uint64_t offset, uintptr_t* out_addr) {
+    if (!f || !mm_ctx || !out_addr) return ERR_INVAL;
+
+    int32_t result;
+    RUN_ELEVATED({
+        result = f->get_node()->mmap(f, mm_ctx, addr, length, prot, map_flags, offset, out_addr);
     });
     return result;
 }
