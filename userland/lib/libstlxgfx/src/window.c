@@ -1,28 +1,388 @@
 #define _GNU_SOURCE
 #include <stlxgfx/window.h>
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
-/* --- DM-side implementation --- */
+/* --- I/O helpers --- */
 
-stlxgfx_dm_window_t* stlxgfx_dm_create_window(uint32_t width, uint32_t height,
-                                               int32_t x, int32_t y,
-                                               const stlxgfx_fb_t* fb) {
-    if (!fb || width == 0 || height == 0) {
+static int read_full(int fd, void* buf, size_t count) {
+    uint8_t* p = (uint8_t*)buf;
+    size_t remaining = count;
+    while (remaining > 0) {
+        ssize_t n = read(fd, p, remaining);
+        if (n < 0) {
+            if (errno == EAGAIN) {
+                continue;
+            }
+            return -1;
+        }
+        if (n == 0) {
+            return -1;
+        }
+        p += (size_t)n;
+        remaining -= (size_t)n;
+    }
+    return 0;
+}
+
+static int write_full(int fd, const void* buf, size_t count) {
+    const uint8_t* p = (const uint8_t*)buf;
+    size_t remaining = count;
+    while (remaining > 0) {
+        ssize_t n = write(fd, p, remaining);
+        if (n <= 0) {
+            return -1;
+        }
+        p += (size_t)n;
+        remaining -= (size_t)n;
+    }
+    return 0;
+}
+
+static int send_message(int fd, uint32_t type, uint32_t seq,
+                        const void* payload, uint32_t payload_size) {
+    stlxgfx_msg_header_t hdr;
+    hdr.protocol_version = STLXGFX_PROTOCOL_VERSION;
+    hdr.message_type = type;
+    hdr.sequence_number = seq;
+    hdr.payload_size = payload_size;
+    hdr.flags = 0;
+    if (write_full(fd, &hdr, sizeof(hdr)) != 0) {
+        return -1;
+    }
+    if (payload_size > 0 && payload) {
+        if (write_full(fd, payload, payload_size) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* --- Client-side implementation --- */
+
+int stlxgfx_connect(const char* socket_path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+void stlxgfx_disconnect(int conn_fd) {
+    if (conn_fd >= 0) {
+        close(conn_fd);
+    }
+}
+
+stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
+                                          uint32_t height, const char* title) {
+    if (conn_fd < 0 || width == 0 || height == 0) {
         return NULL;
     }
 
-    uint32_t bytes_pp = fb->bpp / 8;
-    uint32_t pitch = width * bytes_pp;
-    size_t single_buf = (size_t)pitch * height;
-    size_t surface_size = single_buf * 2;
-    size_t sync_size = sizeof(stlxgfx_window_sync_t);
+    stlxgfx_create_window_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.width = width;
+    req.height = height;
+    if (title) {
+        size_t len = strlen(title);
+        if (len > 255) len = 255;
+        memcpy(req.title, title, len);
+        req.title_length = (uint32_t)len;
+    }
 
-    int surface_fd = memfd_create("stlxgfx_surface", 0);
+    if (send_message(conn_fd, STLXGFX_MSG_CREATE_WINDOW_REQ, 1,
+                     &req, sizeof(req)) != 0) {
+        return NULL;
+    }
+
+    stlxgfx_msg_header_t resp_hdr;
+    if (read_full(conn_fd, &resp_hdr, sizeof(resp_hdr)) != 0) {
+        return NULL;
+    }
+    if (resp_hdr.protocol_version != STLXGFX_PROTOCOL_VERSION) {
+        return NULL;
+    }
+    if (resp_hdr.message_type != STLXGFX_MSG_CREATE_WINDOW_RESP) {
+        return NULL;
+    }
+
+    stlxgfx_create_window_resp_t resp;
+    if (read_full(conn_fd, &resp, sizeof(resp)) != 0) {
+        return NULL;
+    }
+    if (resp.result_code != 0) {
+        return NULL;
+    }
+
+    char surface_path[128];
+    char sync_path[128];
+    snprintf(surface_path, sizeof(surface_path), "/dev/shm/%s", resp.surface_name);
+    snprintf(sync_path, sizeof(sync_path), "/dev/shm/%s", resp.sync_name);
+
+    int sync_fd = open(sync_path, O_RDWR);
+    if (sync_fd < 0) {
+        return NULL;
+    }
+    stlxgfx_window_sync_t* sync = mmap(NULL, sizeof(stlxgfx_window_sync_t),
+                                        PROT_READ | PROT_WRITE, MAP_SHARED,
+                                        sync_fd, 0);
+    if (sync == MAP_FAILED) {
+        close(sync_fd);
+        return NULL;
+    }
+
+    size_t single_buf = (size_t)resp.pitch * resp.height;
+    size_t surface_size = single_buf * 3;
+
+    int surface_fd = open(surface_path, O_RDWR);
+    if (surface_fd < 0) {
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+    uint8_t* surface_buf = mmap(NULL, surface_size,
+                                PROT_READ | PROT_WRITE, MAP_SHARED,
+                                surface_fd, 0);
+    if (surface_buf == MAP_FAILED) {
+        close(surface_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+
+    stlxgfx_window_t* win = malloc(sizeof(stlxgfx_window_t));
+    if (!win) {
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+
+    win->sync = sync;
+    win->surface_buf = surface_buf;
+    win->surface_size = surface_size;
+    win->surface_fd = surface_fd;
+    win->sync_fd = sync_fd;
+    win->window_id = resp.window_id;
+    win->width = resp.width;
+    win->height = resp.height;
+    win->pitch = resp.pitch;
+    win->bpp = resp.bpp;
+    win->red_shift = resp.red_shift;
+    win->green_shift = resp.green_shift;
+    win->blue_shift = resp.blue_shift;
+    win->conn_fd = conn_fd;
+
+    uint32_t bi = atomic_load_explicit(&sync->back_index, memory_order_acquire);
+    win->back = stlxgfx_surface_from_buffer(
+        surface_buf + bi * single_buf,
+        resp.width, resp.height, resp.pitch, resp.bpp,
+        resp.red_shift, resp.green_shift, resp.blue_shift);
+    if (!win->back) {
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        free(win);
+        return NULL;
+    }
+
+    return win;
+}
+
+void stlxgfx_window_close(stlxgfx_window_t* window) {
+    if (!window) {
+        return;
+    }
+    if (window->conn_fd >= 0) {
+        stlxgfx_destroy_window_req_t req = { .window_id = window->window_id };
+        send_message(window->conn_fd, STLXGFX_MSG_DESTROY_WINDOW_REQ, 0,
+                     &req, sizeof(req));
+    }
+    if (window->back) {
+        stlxgfx_destroy_surface(window->back);
+    }
+    if (window->surface_buf) {
+        munmap(window->surface_buf, window->surface_size);
+    }
+    if (window->surface_fd >= 0) {
+        close(window->surface_fd);
+    }
+    if (window->sync) {
+        munmap(window->sync, sizeof(stlxgfx_window_sync_t));
+    }
+    if (window->sync_fd >= 0) {
+        close(window->sync_fd);
+    }
+    free(window);
+}
+
+stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
+    if (!window || !window->sync || !window->back) {
+        return NULL;
+    }
+    uint32_t bi = atomic_load_explicit(&window->sync->back_index,
+                                       memory_order_acquire);
+    size_t single_buf = (size_t)window->pitch * window->height;
+    window->back->pixels = window->surface_buf + bi * single_buf;
+    return window->back;
+}
+
+int stlxgfx_window_swap_buffers(stlxgfx_window_t* window) {
+    if (!window || !window->sync) {
+        return -1;
+    }
+    stlxgfx_window_sync_t* s = window->sync;
+
+    if (atomic_load_explicit(&s->swap_pending, memory_order_acquire)) {
+        return -1;
+    }
+
+    uint32_t bi = atomic_load_explicit(&s->back_index, memory_order_relaxed);
+    atomic_store_explicit(&s->ready_index, bi, memory_order_relaxed);
+    atomic_store_explicit(&s->frame_ready, 1, memory_order_relaxed);
+    atomic_store_explicit(&s->swap_pending, 1, memory_order_release);
+
+    uint32_t next = (bi + 1) % 3;
+    uint32_t fi = atomic_load_explicit(&s->front_index, memory_order_acquire);
+    if (next == fi) {
+        next = (next + 1) % 3;
+    }
+    atomic_store_explicit(&s->back_index, next, memory_order_release);
+
+    return 0;
+}
+
+int stlxgfx_window_should_close(stlxgfx_window_t* window) {
+    if (!window || !window->sync) {
+        return 1;
+    }
+    return atomic_load_explicit(&window->sync->close_requested,
+                                memory_order_acquire) != 0;
+}
+
+/* --- DM-side implementation --- */
+
+int stlxgfx_dm_listen(const char* socket_path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        fprintf(stderr, "stlxgfx_dm_listen: socket() failed (errno=%d)\r\n", errno);
+        return -1;
+    }
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+
+    unlink(socket_path);
+
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "stlxgfx_dm_listen: bind(%s) failed (errno=%d)\r\n", socket_path, errno);
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, STLXGFX_DM_MAX_CLIENTS) < 0) {
+        fprintf(stderr, "stlxgfx_dm_listen: listen() failed (errno=%d)\r\n", errno);
+        close(fd);
+        return -1;
+    }
+
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    return fd;
+}
+
+int stlxgfx_dm_accept(int listen_fd) {
+    int fd = accept(listen_fd, NULL, NULL);
+    if (fd < 0) {
+        return -1;
+    }
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    return fd;
+}
+
+int stlxgfx_dm_read_request(int client_fd, stlxgfx_msg_header_t* header,
+                             void* payload, size_t max_payload) {
+    ssize_t n = read(client_fd, header, sizeof(*header));
+    if (n < 0) {
+        if (errno == EAGAIN) {
+            return 0;
+        }
+        return -1;
+    }
+    if (n == 0) {
+        return -1;
+    }
+    if ((size_t)n < sizeof(*header)) {
+        uint8_t* p = (uint8_t*)header + n;
+        size_t remaining = sizeof(*header) - (size_t)n;
+        if (read_full(client_fd, p, remaining) != 0) {
+            return -1;
+        }
+    }
+
+    if (header->protocol_version != STLXGFX_PROTOCOL_VERSION) {
+        return -1;
+    }
+    if (header->payload_size > 0) {
+        if (header->payload_size > max_payload || !payload) {
+            return -1;
+        }
+        if (read_full(client_fd, payload, header->payload_size) != 0) {
+            return -1;
+        }
+    }
+    return 1;
+}
+
+static uint32_t g_next_window_id = 1;
+
+stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
+    int client_fd, const stlxgfx_msg_header_t* req_header,
+    const stlxgfx_create_window_req_t* req, const stlxgfx_fb_t* fb) {
+    if (!req || !fb || req->width == 0 || req->height == 0) {
+        return NULL;
+    }
+
+    uint32_t wid = g_next_window_id++;
+    uint32_t bytes_pp = fb->bpp / 8;
+    uint32_t pitch = req->width * bytes_pp;
+    size_t single_buf = (size_t)pitch * req->height;
+    size_t surface_size = single_buf * 3;
+
+    char surface_name[64];
+    char sync_name[64];
+    snprintf(surface_name, sizeof(surface_name), "stlxgfx_surface_%u", wid);
+    snprintf(sync_name, sizeof(sync_name), "stlxgfx_sync_%u", wid);
+
+    char surface_path[128];
+    char sync_path[128];
+    snprintf(surface_path, sizeof(surface_path), "/dev/shm/%s", surface_name);
+    snprintf(sync_path, sizeof(sync_path), "/dev/shm/%s", sync_name);
+
+    int surface_fd = open(surface_path, O_CREAT | O_RDWR, 0);
     if (surface_fd < 0) {
         return NULL;
     }
@@ -30,77 +390,99 @@ stlxgfx_dm_window_t* stlxgfx_dm_create_window(uint32_t width, uint32_t height,
         close(surface_fd);
         return NULL;
     }
-
-    int sync_fd = memfd_create("stlxgfx_sync", 0);
-    if (sync_fd < 0) {
-        close(surface_fd);
-        return NULL;
-    }
-    if (ftruncate(sync_fd, (off_t)sync_size) < 0) {
-        close(sync_fd);
-        close(surface_fd);
-        return NULL;
-    }
-
     uint8_t* surface_buf = mmap(NULL, surface_size,
                                 PROT_READ | PROT_WRITE, MAP_SHARED,
                                 surface_fd, 0);
     if (surface_buf == MAP_FAILED) {
-        close(sync_fd);
         close(surface_fd);
         return NULL;
     }
+    memset(surface_buf, 0, surface_size);
 
-    stlxgfx_window_sync_t* sync = mmap(NULL, sync_size,
+    int sync_fd = open(sync_path, O_CREAT | O_RDWR, 0);
+    if (sync_fd < 0) {
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    if (ftruncate(sync_fd, (off_t)sizeof(stlxgfx_window_sync_t)) < 0) {
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    stlxgfx_window_sync_t* sync = mmap(NULL, sizeof(stlxgfx_window_sync_t),
                                         PROT_READ | PROT_WRITE, MAP_SHARED,
                                         sync_fd, 0);
     if (sync == MAP_FAILED) {
-        munmap(surface_buf, surface_size);
         close(sync_fd);
+        munmap(surface_buf, surface_size);
         close(surface_fd);
         return NULL;
     }
 
-    memset(surface_buf, 0, surface_size);
-
     atomic_store_explicit(&sync->front_index, 0, memory_order_relaxed);
+    atomic_store_explicit(&sync->back_index, 1, memory_order_relaxed);
+    atomic_store_explicit(&sync->ready_index, 2, memory_order_relaxed);
     atomic_store_explicit(&sync->frame_ready, 0, memory_order_relaxed);
-    sync->width       = width;
-    sync->height      = height;
-    sync->pitch       = pitch;
-    sync->bpp         = fb->bpp;
-    sync->red_shift   = fb->red_shift;
-    sync->green_shift = fb->green_shift;
-    sync->blue_shift  = fb->blue_shift;
-    atomic_store_explicit(&sync->close_requested, 0, memory_order_relaxed);
+    atomic_store_explicit(&sync->dm_consuming, 0, memory_order_relaxed);
+    atomic_store_explicit(&sync->swap_pending, 0, memory_order_relaxed);
+    atomic_store_explicit(&sync->close_requested, 0, memory_order_release);
 
     stlxgfx_dm_window_t* win = malloc(sizeof(stlxgfx_dm_window_t));
     if (!win) {
-        munmap(sync, sync_size);
-        munmap(surface_buf, surface_size);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
         close(sync_fd);
+        munmap(surface_buf, surface_size);
         close(surface_fd);
         return NULL;
     }
 
-    win->sync         = sync;
-    win->surface_buf  = surface_buf;
-    win->surface_size = surface_size;
-    win->surface_fd   = surface_fd;
-    win->sync_fd      = sync_fd;
-    win->x            = x;
-    win->y            = y;
-
     win->front = stlxgfx_surface_from_buffer(
         surface_buf,
-        width, height, pitch, fb->bpp,
+        req->width, req->height, pitch, fb->bpp,
         fb->red_shift, fb->green_shift, fb->blue_shift);
     if (!win->front) {
-        munmap(sync, sync_size);
-        munmap(surface_buf, surface_size);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
         close(sync_fd);
+        munmap(surface_buf, surface_size);
         close(surface_fd);
         free(win);
+        return NULL;
+    }
+
+    win->sync = sync;
+    win->surface_buf = surface_buf;
+    win->surface_size = surface_size;
+    win->surface_fd = surface_fd;
+    win->sync_fd = sync_fd;
+    win->window_id = wid;
+    win->width = req->width;
+    win->height = req->height;
+    win->pitch = pitch;
+    win->x = 50;
+    win->y = 50;
+    strncpy(win->surface_path, surface_path, sizeof(win->surface_path) - 1);
+    strncpy(win->sync_path, sync_path, sizeof(win->sync_path) - 1);
+
+    stlxgfx_create_window_resp_t resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.window_id = wid;
+    strncpy(resp.surface_name, surface_name, sizeof(resp.surface_name) - 1);
+    strncpy(resp.sync_name, sync_name, sizeof(resp.sync_name) - 1);
+    resp.width = req->width;
+    resp.height = req->height;
+    resp.pitch = pitch;
+    resp.bpp = fb->bpp;
+    resp.red_shift = fb->red_shift;
+    resp.green_shift = fb->green_shift;
+    resp.blue_shift = fb->blue_shift;
+    resp.result_code = 0;
+
+    if (send_message(client_fd, STLXGFX_MSG_CREATE_WINDOW_RESP,
+                     req_header->sequence_number,
+                     &resp, sizeof(resp)) != 0) {
+        stlxgfx_dm_destroy_window(win);
         return NULL;
     }
 
@@ -126,6 +508,12 @@ void stlxgfx_dm_destroy_window(stlxgfx_dm_window_t* window) {
     if (window->sync_fd >= 0) {
         close(window->sync_fd);
     }
+    if (window->surface_path[0]) {
+        unlink(window->surface_path);
+    }
+    if (window->sync_path[0]) {
+        unlink(window->sync_path);
+    }
     free(window);
 }
 
@@ -133,26 +521,30 @@ int stlxgfx_dm_sync(stlxgfx_dm_window_t* window) {
     if (!window || !window->sync) {
         return 0;
     }
+    stlxgfx_window_sync_t* s = window->sync;
 
-    uint32_t ready = atomic_load_explicit(&window->sync->frame_ready,
-                                          memory_order_acquire);
-    if (!ready) {
-        return 0;
+    uint32_t ready = atomic_load_explicit(&s->frame_ready, memory_order_acquire);
+    uint32_t pending = atomic_load_explicit(&s->swap_pending, memory_order_acquire);
+
+    if (ready && pending) {
+        uint32_t ri = atomic_load_explicit(&s->ready_index, memory_order_acquire);
+        atomic_store_explicit(&s->front_index, ri, memory_order_relaxed);
+        atomic_store_explicit(&s->frame_ready, 0, memory_order_relaxed);
+        atomic_store_explicit(&s->swap_pending, 0, memory_order_release);
+
+        size_t single_buf = (size_t)window->pitch * window->height;
+        window->front->pixels = window->surface_buf + ri * single_buf;
     }
 
-    uint32_t old_front = atomic_load_explicit(&window->sync->front_index,
-                                              memory_order_relaxed);
-    uint32_t new_front = 1 - old_front;
-
-    atomic_store_explicit(&window->sync->front_index, new_front,
-                          memory_order_relaxed);
-    atomic_store_explicit(&window->sync->frame_ready, 0,
-                          memory_order_release);
-
-    size_t single_buf = (size_t)window->sync->pitch * window->sync->height;
-    window->front->pixels = window->surface_buf + new_front * single_buf;
-
+    atomic_store_explicit(&s->dm_consuming, 1, memory_order_release);
     return 1;
+}
+
+void stlxgfx_dm_finish_sync(stlxgfx_dm_window_t* window) {
+    if (!window || !window->sync) {
+        return;
+    }
+    atomic_store_explicit(&window->sync->dm_consuming, 0, memory_order_release);
 }
 
 stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window) {
@@ -160,103 +552,4 @@ stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window) {
         return NULL;
     }
     return window->front;
-}
-
-/* --- Client-side implementation --- */
-
-stlxgfx_window_t* stlxgfx_window_open(int surface_fd, int sync_fd) {
-    stlxgfx_window_sync_t* sync = mmap(NULL, sizeof(stlxgfx_window_sync_t),
-                                        PROT_READ | PROT_WRITE, MAP_SHARED,
-                                        sync_fd, 0);
-    if (sync == MAP_FAILED) {
-        return NULL;
-    }
-
-    size_t single_buf = (size_t)sync->pitch * sync->height;
-    size_t surface_size = single_buf * 2;
-
-    uint8_t* surface_buf = mmap(NULL, surface_size,
-                                PROT_READ | PROT_WRITE, MAP_SHARED,
-                                surface_fd, 0);
-    if (surface_buf == MAP_FAILED) {
-        munmap(sync, sizeof(stlxgfx_window_sync_t));
-        return NULL;
-    }
-
-    stlxgfx_window_t* win = malloc(sizeof(stlxgfx_window_t));
-    if (!win) {
-        munmap(surface_buf, surface_size);
-        munmap(sync, sizeof(stlxgfx_window_sync_t));
-        return NULL;
-    }
-
-    win->sync         = sync;
-    win->surface_buf  = surface_buf;
-    win->surface_size = surface_size;
-
-    uint32_t fi = atomic_load_explicit(&sync->front_index, memory_order_acquire);
-    win->back = stlxgfx_surface_from_buffer(
-        surface_buf + (1 - fi) * single_buf,
-        sync->width, sync->height, sync->pitch, sync->bpp,
-        sync->red_shift, sync->green_shift, sync->blue_shift);
-    if (!win->back) {
-        munmap(surface_buf, surface_size);
-        munmap(sync, sizeof(stlxgfx_window_sync_t));
-        free(win);
-        return NULL;
-    }
-
-    return win;
-}
-
-void stlxgfx_window_close(stlxgfx_window_t* window) {
-    if (!window) {
-        return;
-    }
-    if (window->back) {
-        stlxgfx_destroy_surface(window->back);
-    }
-    if (window->surface_buf) {
-        munmap(window->surface_buf, window->surface_size);
-    }
-    if (window->sync) {
-        munmap(window->sync, sizeof(stlxgfx_window_sync_t));
-    }
-    free(window);
-}
-
-stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
-    if (!window || !window->sync || !window->back) {
-        return NULL;
-    }
-
-    uint32_t ready = atomic_load_explicit(&window->sync->frame_ready,
-                                          memory_order_acquire);
-    if (ready) {
-        return NULL;
-    }
-
-    uint32_t fi = atomic_load_explicit(&window->sync->front_index,
-                                       memory_order_acquire);
-    size_t single_buf = (size_t)window->sync->pitch * window->sync->height;
-    window->back->pixels = window->surface_buf + (1 - fi) * single_buf;
-
-    return window->back;
-}
-
-int stlxgfx_window_present(stlxgfx_window_t* window) {
-    if (!window || !window->sync) {
-        return -1;
-    }
-    atomic_store_explicit(&window->sync->frame_ready, 1,
-                          memory_order_release);
-    return 0;
-}
-
-int stlxgfx_window_should_close(stlxgfx_window_t* window) {
-    if (!window || !window->sync) {
-        return 1;
-    }
-    return atomic_load_explicit(&window->sync->close_requested,
-                                memory_order_acquire) != 0;
 }

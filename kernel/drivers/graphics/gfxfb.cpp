@@ -58,16 +58,24 @@ public:
                  uint64_t offset, uintptr_t* out_addr) override {
         size_t aligned_len = pmm::page_align_up(length);
         if (aligned_len < length) {
+            log::error("gfxfb: mmap: aligned_len < length");
             return mm::MM_CTX_ERR_INVALID_ARG;
         }
         if (offset + aligned_len < aligned_len) {
+            log::error("gfxfb: mmap: offset overflow");
             return mm::MM_CTX_ERR_INVALID_ARG;
         }
-        if (offset + aligned_len > m_fb_size) {
+        size_t aligned_fb_size = pmm::page_align_up(m_fb_size);
+        if (offset + aligned_len > aligned_fb_size) {
+            log::error("gfxfb: mmap: offset+aligned_len=%lu > aligned_fb_size=%lu",
+                       offset + aligned_len, aligned_fb_size);
             return mm::MM_CTX_ERR_INVALID_ARG;
         }
 
-        return mm::mm_context_map_device(
+        log::info("gfxfb: mmap: phys=0x%lx len=%lu prot=%u cache=%u",
+                   m_phys + offset, length, prot, paging::PAGE_WC);
+
+        int32_t rc = mm::mm_context_map_device(
             mm_ctx,
             m_phys + offset,
             length,
@@ -77,6 +85,10 @@ public:
             addr,
             out_addr
         );
+        if (rc != mm::MM_CTX_OK) {
+            log::error("gfxfb: mmap: mm_context_map_device failed rc=%d", rc);
+        }
+        return rc;
     }
 
     int32_t getattr(fs::vattr* attr) override {
@@ -130,8 +142,9 @@ __PRIVILEGED_CODE int32_t init() {
         return ERR;
     }
 
-    log::info("gfxfb: %lux%lu %ubpp, registered /dev/gfxfb",
-              fb.width, fb.height, static_cast<unsigned int>(fb.bpp));
+    log::info("gfxfb: %lux%lu %ubpp phys=0x%lx size=%lu, registered /dev/gfxfb",
+              fb.width, fb.height, static_cast<unsigned int>(fb.bpp),
+              fb.fb_phys, fb.pitch * fb.height);
     return OK;
 }
 

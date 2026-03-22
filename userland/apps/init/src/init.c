@@ -21,6 +21,15 @@ int main(void) {
     if (dm_handle >= 0) {
         proc_detach(dm_handle);
         printf("init: stlxdm started\r\n");
+
+        struct timespec dm_delay = { .tv_sec = 0, .tv_nsec = 200000000L };
+        nanosleep(&dm_delay, NULL);
+
+        int client_handle = proc_exec("/initrd/bin/gfxclient", NULL);
+        if (client_handle >= 0) {
+            proc_detach(client_handle);
+            printf("init: gfxclient started\r\n");
+        }
     } else {
         printf("init: stlxdm not available, continuing without graphics\r\n");
     }

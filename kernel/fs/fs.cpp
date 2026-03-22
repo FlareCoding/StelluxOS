@@ -889,6 +889,9 @@ __PRIVILEGED_CODE int32_t init() {
         return err;
     }
 
+    // Proactively create the system runtime /tmp directory
+    mkdir("/tmp", 0);
+
     return OK;
 }
 

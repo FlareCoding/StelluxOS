@@ -95,8 +95,13 @@ compile-commands:
 	@first=1; \
 	for src in $(CC_SOURCES); do \
 		if [ $$first -eq 1 ]; then first=0; else echo "," >> compile_commands.json; fi; \
+		extra_flags=""; \
+		case "$$src" in \
+			lib/libstlxgfx/*) extra_flags="-Ilib/libstlxgfx/include" ;; \
+			lib/libstlx/*) extra_flags="-Ilib/libstlx/include" ;; \
+		esac; \
 		args="\"$(CC)\""; \
-		for flag in $(CC_FLAGS); do args="$$args, \"$$flag\""; done; \
+		for flag in $(CC_FLAGS) $$extra_flags; do args="$$args, \"$$flag\""; done; \
 		args="$$args, \"-c\", \"$$src\""; \
 		echo "  {" >> compile_commands.json; \
 		echo "    \"directory\": \"$$(pwd)\"," >> compile_commands.json; \

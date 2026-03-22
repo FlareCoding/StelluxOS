@@ -2,7 +2,7 @@
 # Stellux Userland - Applications
 #
 
-APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest date clockbench fbtest stlxdm gfxclient
+APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest date clockbench stlxdm gfxclient
 APP_COUNT := $(words $(APP_DIRS))
 
 all:

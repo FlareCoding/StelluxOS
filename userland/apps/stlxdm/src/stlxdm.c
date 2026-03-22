@@ -3,9 +3,17 @@
 #include <stlxgfx/surface.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/window.h>
-#include <stlx/proc.h>
 #include <stdio.h>
 #include <time.h>
+#include <unistd.h>
+
+typedef struct {
+    int fd;
+    stlxgfx_dm_window_t* window;
+} dm_client_t;
+
+static dm_client_t g_clients[STLXGFX_DM_MAX_CLIENTS];
+static int g_client_count;
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -18,6 +26,10 @@ int main(void) {
     printf("stlxdm: framebuffer %ux%u %ubpp\r\n",
            fb.width, fb.height, (unsigned int)fb.bpp);
 
+    if (stlxgfx_font_init(STLXGFX_FONT_PATH) != 0) {
+        printf("stlxdm: font init failed\r\n");
+    }
+
     stlxgfx_surface_t* backbuf = stlxgfx_fb_create_surface(&fb, fb.width, fb.height);
     if (!backbuf) {
         printf("stlxdm: failed to create back buffer\r\n");
@@ -25,41 +37,111 @@ int main(void) {
         return 1;
     }
 
-    stlxgfx_dm_window_t* win = stlxgfx_dm_create_window(400, 300, 50, 50, &fb);
-    if (!win) {
-        printf("stlxdm: failed to create client window\r\n");
+    int listen_fd = stlxgfx_dm_listen(STLXGFX_DM_SOCKET_PATH);
+    if (listen_fd < 0) {
+        printf("stlxdm: failed to bind socket\r\n");
         stlxgfx_destroy_surface(backbuf);
         stlxgfx_fb_close(&fb);
         return 1;
     }
+    printf("stlxdm: listening on %s\r\n", STLXGFX_DM_SOCKET_PATH);
 
-    int proc = proc_create("/initrd/bin/gfxclient", NULL);
-    if (proc < 0) {
-        printf("stlxdm: failed to create gfxclient process\r\n");
-    } else {
-        proc_set_handle(proc, STLXGFX_WINDOW_SURFACE_FD, win->surface_fd);
-        proc_set_handle(proc, STLXGFX_WINDOW_SYNC_FD, win->sync_fd);
-        proc_start(proc);
-        proc_detach(proc);
-        printf("stlxdm: spawned gfxclient\r\n");
+    for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
+        g_clients[i].fd = -1;
+        g_clients[i].window = NULL;
     }
 
     struct timespec ts = { 0, 33000000 };
 
     while (1) {
-        stlxgfx_dm_sync(win);
+        /* Accept new connections */
+        if (g_client_count < STLXGFX_DM_MAX_CLIENTS) {
+            int client_fd = stlxgfx_dm_accept(listen_fd);
+            if (client_fd >= 0) {
+                for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
+                    if (g_clients[i].fd < 0) {
+                        g_clients[i].fd = client_fd;
+                        g_clients[i].window = NULL;
+                        g_client_count++;
+                        printf("stlxdm: client connected (slot %d)\r\n", i);
+                        break;
+                    }
+                }
+            }
+        }
 
+        /* Handle client messages */
+        for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
+            if (g_clients[i].fd < 0) {
+                continue;
+            }
+
+            stlxgfx_msg_header_t hdr;
+            uint8_t payload[512];
+            int rc = stlxgfx_dm_read_request(g_clients[i].fd, &hdr, payload, sizeof(payload));
+            if (rc < 0) {
+                printf("stlxdm: client disconnected (slot %d)\r\n", i);
+                if (g_clients[i].window) {
+                    stlxgfx_dm_destroy_window(g_clients[i].window);
+                    g_clients[i].window = NULL;
+                }
+                close(g_clients[i].fd);
+                g_clients[i].fd = -1;
+                g_client_count--;
+                continue;
+            }
+            if (rc == 0) {
+                continue;
+            }
+
+            if (hdr.message_type == STLXGFX_MSG_CREATE_WINDOW_REQ && !g_clients[i].window) {
+                stlxgfx_create_window_req_t* req = (stlxgfx_create_window_req_t*)payload;
+                stlxgfx_dm_window_t* win = stlxgfx_dm_handle_create_window(
+                    g_clients[i].fd, &hdr, req, &fb);
+                if (win) {
+                    g_clients[i].window = win;
+                    printf("stlxdm: created window %u (%ux%u)\r\n",
+                           win->window_id, win->width, win->height);
+                }
+            } else if (hdr.message_type == STLXGFX_MSG_DESTROY_WINDOW_REQ) {
+                if (g_clients[i].window) {
+                    stlxgfx_dm_destroy_window(g_clients[i].window);
+                    g_clients[i].window = NULL;
+                }
+            }
+        }
+
+        /* Sync all windows */
+        for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
+            if (g_clients[i].window) {
+                stlxgfx_dm_sync(g_clients[i].window);
+            }
+        }
+
+        /* Composite */
         stlxgfx_clear(backbuf, 0xFF2D2D30);
-        stlxgfx_draw_text(backbuf, 10, 10, "Stellux Display Manager", 0xFFFFFFFF, 0x00000000);
+        stlxgfx_draw_text(backbuf, 10, 10, "Stellux Display Manager", 16, 0xFFFFFFFF);
 
-        stlxgfx_surface_t* client_front = stlxgfx_dm_front_buffer(win);
-        if (client_front) {
-            stlxgfx_blit(backbuf, win->x, win->y,
-                         client_front, 0, 0,
-                         client_front->width, client_front->height);
+        for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
+            if (!g_clients[i].window) {
+                continue;
+            }
+            stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(g_clients[i].window);
+            if (front) {
+                stlxgfx_blit(backbuf, g_clients[i].window->x, g_clients[i].window->y,
+                             front, 0, 0, front->width, front->height);
+            }
         }
 
         stlxgfx_fb_present(&fb, backbuf);
+
+        /* Finish sync */
+        for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
+            if (g_clients[i].window) {
+                stlxgfx_dm_finish_sync(g_clients[i].window);
+            }
+        }
+
         nanosleep(&ts, NULL);
     }
 }

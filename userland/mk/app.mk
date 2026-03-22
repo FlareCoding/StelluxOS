@@ -28,7 +28,7 @@ $(TARGET): $(OBJECTS)
 		-static -o $@ \
 		$(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
 		$(OBJECTS) \
-		-L$(SYSROOT)/lib -Wl,--start-group -lstlx $(addprefix -l,$(APP_LIBS)) -lc $(BUILTINS_LIB) -Wl,--end-group \
+		-L$(SYSROOT)/lib -Wl,--start-group -lstlx $(addprefix -l,$(APP_LIBS)) -lc -lm $(BUILTINS_LIB) -Wl,--end-group \
 		$(SYSROOT)/lib/crtn.o
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
