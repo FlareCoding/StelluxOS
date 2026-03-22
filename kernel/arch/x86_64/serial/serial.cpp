@@ -104,11 +104,16 @@ __PRIVILEGED_CODE void set_rx_callback(rx_callback_t cb) {
 }
 
 __PRIVILEGED_CODE int32_t enable_rx_interrupt() {
+    if (g_port_base != COM1_BASE) {
+        // PCI serial adapters use PCI interrupt lines, not legacy IRQ 4.
+        // RX interrupt routing for PCI UARTs is not supported.
+        return ERR_NO_DEVICE;
+    }
     int32_t rc = ioapic::route_irq(COM1_LEGACY_IRQ, x86::VEC_SERIAL, 0);
     if (rc != ioapic::OK) {
         return rc;
     }
-    portio::out8(g_port_base + REG_IER, IER_RX_AVAIL);
+    portio::out8(COM1_BASE + REG_IER, IER_RX_AVAIL);
     return OK;
 }
 
