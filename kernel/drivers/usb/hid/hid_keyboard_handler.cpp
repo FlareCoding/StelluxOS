@@ -52,11 +52,6 @@ static const char* scancode_to_name_lookup(uint8_t sc) {
     }
 }
 
-static const char* modifier_names[8] = {
-    "LCTRL", "LSHIFT", "LALT", "LGUI",
-    "RCTRL", "RSHIFT", "RALT", "RGUI",
-};
-
 bool hid_keyboard_handler::is_modifier_usage(uint16_t usage) {
     return usage >= 0xE0u && usage <= 0xE7u;
 }
