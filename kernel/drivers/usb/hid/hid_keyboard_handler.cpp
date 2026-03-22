@@ -92,31 +92,6 @@ void hid_keyboard_handler::reset_state() {
     m_ready = false;
 }
 
-uint32_t hid_keyboard_handler::read_unsigned_field(const uint8_t* data, uint32_t length,
-                                                   uint32_t bit_offset, uint16_t bit_size) {
-    if (!data || bit_size == 0) {
-        return 0;
-    }
-
-    uint32_t byte_offset = bit_offset / 8u;
-    uint32_t bit_shift = bit_offset % 8u;
-    uint32_t bytes_needed = (bit_shift + bit_size + 7u) / 8u;
-    if (byte_offset >= length) {
-        return 0;
-    }
-    if (byte_offset + bytes_needed > length) {
-        bytes_needed = length - byte_offset;
-    }
-
-    uint32_t raw = 0;
-    string::memcpy(&raw, data + byte_offset, bytes_needed > 4 ? 4 : bytes_needed);
-    raw >>= bit_shift;
-    if (bit_size >= 32) {
-        return raw;
-    }
-    return raw & ((1u << bit_size) - 1u);
-}
-
 bool hid_keyboard_handler::contains_keycode(const uint16_t* keycodes,
                                             uint16_t count, uint16_t keycode) {
     if (!keycodes || keycode == 0) {
@@ -219,7 +194,7 @@ void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t length) {
             continue;
         }
 
-        if (read_unsigned_field(data, length, field->bit_offset, field->bit_size) != 0) {
+        if (read_field_unsigned(data, length, field->bit_offset, field->bit_size) != 0) {
             modifiers |= static_cast<uint8_t>(1u << i);
         }
     }
@@ -237,7 +212,7 @@ void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t length) {
 
     for (uint16_t i = 0; i < m_key_field_count; i++) {
         const auto* field = m_key_fields[i];
-        uint32_t raw = read_unsigned_field(data, length, field->bit_offset, field->bit_size);
+        uint32_t raw = read_field_unsigned(data, length, field->bit_offset, field->bit_size);
         uint16_t keycode = 0;
 
         if (field->is_variable()) {

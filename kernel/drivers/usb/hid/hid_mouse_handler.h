@@ -24,10 +24,6 @@ private:
     bool               m_ready = false;
 
     void reset_state();
-    static int32_t read_signed_field(const uint8_t* data, uint32_t length,
-                                     uint32_t bit_offset, uint16_t bit_size);
-    static uint32_t read_unsigned_field(const uint8_t* data, uint32_t length,
-                                        uint32_t bit_offset, uint16_t bit_size);
 };
 
 } // namespace usb::hid

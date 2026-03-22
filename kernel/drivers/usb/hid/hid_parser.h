@@ -80,6 +80,12 @@ inline const field_info* report_fields(const report_layout& layout,
 int32_t parse_report_descriptor(const uint8_t* descriptor, size_t length,
                                 report_layout& out);
 
+// Bitfield extraction utilities for reading values from HID report bodies.
+uint32_t read_field_unsigned(const uint8_t* data, uint32_t length,
+                             uint32_t bit_offset, uint16_t bit_size);
+int32_t  read_field_signed(const uint8_t* data, uint32_t length,
+                           uint32_t bit_offset, uint16_t bit_size);
+
 } // namespace usb::hid
 
 #endif // STELLUX_DRIVERS_USB_HID_HID_PARSER_H

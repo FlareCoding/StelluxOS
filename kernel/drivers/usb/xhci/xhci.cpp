@@ -1879,15 +1879,18 @@ void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
                                              xhci_endpoint* ep,
                                              xhci::endpoint_async_state& state,
                                              const xhci::xhci_transfer_completion_trb_t* event) {
+    bool was_closing = false;
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
         if (state.interrupt_in_stream.closing) {
             state.interrupt_in_stream.closing = false;
-            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
-            return;
+            was_closing = true;
         }
         sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
     });
+    if (was_closing) {
+        return;
+    }
 
     if (!state.interrupt_in_stream.active) {
         return;

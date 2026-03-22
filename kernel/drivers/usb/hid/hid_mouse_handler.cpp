@@ -116,20 +116,20 @@ void hid_mouse_handler::on_report(const uint8_t* data, uint32_t length) {
 
     if (m_x_field) {
         dx = (m_x_field->logical_minimum < 0 || m_x_field->is_relative())
-            ? read_signed_field(data, length, m_x_field->bit_offset, m_x_field->bit_size)
-            : static_cast<int32_t>(read_unsigned_field(
+            ? read_field_signed(data, length, m_x_field->bit_offset, m_x_field->bit_size)
+            : static_cast<int32_t>(read_field_unsigned(
                 data, length, m_x_field->bit_offset, m_x_field->bit_size));
     }
     if (m_y_field) {
         dy = (m_y_field->logical_minimum < 0 || m_y_field->is_relative())
-            ? read_signed_field(data, length, m_y_field->bit_offset, m_y_field->bit_size)
-            : static_cast<int32_t>(read_unsigned_field(
+            ? read_field_signed(data, length, m_y_field->bit_offset, m_y_field->bit_size)
+            : static_cast<int32_t>(read_field_unsigned(
                 data, length, m_y_field->bit_offset, m_y_field->bit_size));
     }
     if (m_wheel_field) {
         scroll = (m_wheel_field->logical_minimum < 0 || m_wheel_field->is_relative())
-            ? read_signed_field(data, length, m_wheel_field->bit_offset, m_wheel_field->bit_size)
-            : static_cast<int32_t>(read_unsigned_field(
+            ? read_field_signed(data, length, m_wheel_field->bit_offset, m_wheel_field->bit_size)
+            : static_cast<int32_t>(read_field_unsigned(
                 data, length, m_wheel_field->bit_offset, m_wheel_field->bit_size));
     }
 
@@ -139,7 +139,7 @@ void hid_mouse_handler::on_report(const uint8_t* data, uint32_t length) {
 
     for (uint16_t i = 0; i < m_button_count; i++) {
         const auto* field = m_button_fields[i];
-        bool pressed = read_unsigned_field(data, length, field->bit_offset, field->bit_size) != 0;
+        bool pressed = read_field_unsigned(data, length, field->bit_offset, field->bit_size) != 0;
         bool was_pressed = m_prev_buttons[i] != 0;
         if (pressed != was_pressed) {
             log::info("hid-mouse: button %u %s",
@@ -153,61 +153,6 @@ void hid_mouse_handler::on_report(const uint8_t* data, uint32_t length) {
     if (scroll != 0) {
         log::info("hid-mouse: scroll=%d", scroll);
     }
-}
-
-int32_t hid_mouse_handler::read_signed_field(const uint8_t* data, uint32_t length,
-                                             uint32_t bit_offset, uint16_t bit_size) {
-    if (!data || bit_size == 0) {
-        return 0;
-    }
-
-    uint32_t byte_offset = bit_offset / 8u;
-    uint32_t bit_shift = bit_offset % 8u;
-    uint32_t bytes_needed = (bit_shift + bit_size + 7u) / 8u;
-    if (byte_offset >= length) {
-        return 0;
-    }
-    if (byte_offset + bytes_needed > length) {
-        bytes_needed = length - byte_offset;
-    }
-
-    uint32_t raw = 0;
-    string::memcpy(&raw, data + byte_offset, bytes_needed > 4 ? 4 : bytes_needed);
-    raw >>= bit_shift;
-    if (bit_size >= 32) {
-        return static_cast<int32_t>(raw);
-    }
-    if (bit_size < 32) {
-        raw &= (1u << bit_size) - 1u;
-    }
-
-    int32_t shift = 32 - bit_size;
-    return static_cast<int32_t>(raw << shift) >> shift;
-}
-
-uint32_t hid_mouse_handler::read_unsigned_field(const uint8_t* data, uint32_t length,
-                                                uint32_t bit_offset, uint16_t bit_size) {
-    if (!data || bit_size == 0) {
-        return 0;
-    }
-
-    uint32_t byte_offset = bit_offset / 8u;
-    uint32_t bit_shift = bit_offset % 8u;
-    uint32_t bytes_needed = (bit_shift + bit_size + 7u) / 8u;
-    if (byte_offset >= length) {
-        return 0;
-    }
-    if (byte_offset + bytes_needed > length) {
-        bytes_needed = length - byte_offset;
-    }
-
-    uint32_t raw = 0;
-    string::memcpy(&raw, data + byte_offset, bytes_needed > 4 ? 4 : bytes_needed);
-    raw >>= bit_shift;
-    if (bit_size < 32) {
-        raw &= (1u << bit_size) - 1u;
-    }
-    return raw;
 }
 
 } // namespace usb::hid

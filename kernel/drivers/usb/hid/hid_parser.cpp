@@ -1,4 +1,5 @@
 #include "drivers/usb/hid/hid_parser.h"
+#include "common/string.h"
 #include "mm/heap.h"
 
 namespace usb::hid {
@@ -653,6 +654,59 @@ int32_t parse_report_descriptor(const uint8_t* descriptor, size_t length,
     }
 
     return 0;
+}
+
+uint32_t read_field_unsigned(const uint8_t* data, uint32_t length,
+                             uint32_t bit_offset, uint16_t bit_size) {
+    if (!data || bit_size == 0) {
+        return 0;
+    }
+
+    uint32_t byte_offset = bit_offset / 8u;
+    uint32_t bit_shift = bit_offset % 8u;
+    uint32_t bytes_needed = (bit_shift + bit_size + 7u) / 8u;
+    if (byte_offset >= length) {
+        return 0;
+    }
+    if (byte_offset + bytes_needed > length) {
+        bytes_needed = length - byte_offset;
+    }
+
+    uint32_t raw = 0;
+    string::memcpy(&raw, data + byte_offset, bytes_needed > 4 ? 4 : bytes_needed);
+    raw >>= bit_shift;
+    if (bit_size < 32) {
+        raw &= (1u << bit_size) - 1u;
+    }
+    return raw;
+}
+
+int32_t read_field_signed(const uint8_t* data, uint32_t length,
+                          uint32_t bit_offset, uint16_t bit_size) {
+    if (!data || bit_size == 0) {
+        return 0;
+    }
+
+    uint32_t byte_offset = bit_offset / 8u;
+    uint32_t bit_shift = bit_offset % 8u;
+    uint32_t bytes_needed = (bit_shift + bit_size + 7u) / 8u;
+    if (byte_offset >= length) {
+        return 0;
+    }
+    if (byte_offset + bytes_needed > length) {
+        bytes_needed = length - byte_offset;
+    }
+
+    uint32_t raw = 0;
+    string::memcpy(&raw, data + byte_offset, bytes_needed > 4 ? 4 : bytes_needed);
+    raw >>= bit_shift;
+    if (bit_size >= 32) {
+        return static_cast<int32_t>(raw);
+    }
+    raw &= (1u << bit_size) - 1u;
+
+    int32_t shift = 32 - bit_size;
+    return static_cast<int32_t>(raw << shift) >> shift;
 }
 
 } // namespace usb::hid

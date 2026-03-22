@@ -24,8 +24,6 @@ private:
     bool    m_ready = false;
 
     void reset_state();
-    static uint32_t read_unsigned_field(const uint8_t* data, uint32_t length,
-                                        uint32_t bit_offset, uint16_t bit_size);
     static bool is_modifier_usage(uint16_t usage);
     static bool is_reserved_array_usage(uint16_t usage);
     static bool contains_keycode(const uint16_t* keycodes, uint16_t count, uint16_t keycode);
