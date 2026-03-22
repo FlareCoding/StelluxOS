@@ -24,14 +24,6 @@ int main(void) {
 
         struct timespec dm_delay = { .tv_sec = 0, .tv_nsec = 200000000L };
         nanosleep(&dm_delay, NULL);
-
-        int term_handle = proc_exec("/initrd/bin/stlxterm", NULL);
-        if (term_handle >= 0) {
-            proc_detach(term_handle);
-            printf("init: stlxterm started\r\n");
-        } else {
-            printf("init: stlxterm not available\r\n");
-        }
     } else {
         printf("init: stlxdm not available, continuing without graphics\r\n");
     }

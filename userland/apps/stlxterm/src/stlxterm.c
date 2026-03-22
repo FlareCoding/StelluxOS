@@ -10,7 +10,6 @@
 #include <unistd.h>
 #include <time.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <sys/ioctl.h>
 
 #define STLX_TCSETS_RAW 0x5401
@@ -21,19 +20,6 @@
 #define TERM_WIN_WIDTH   720
 #define TERM_WIN_HEIGHT  480
 
-#define TERM_CONNECT_RETRIES    20
-#define TERM_CONNECT_DELAY_MS   200
-
-static int connect_with_retry(void) {
-    struct timespec delay = { 0, TERM_CONNECT_DELAY_MS * 1000000L };
-    for (int i = 0; i < TERM_CONNECT_RETRIES; i++) {
-        int conn = stlxgfx_connect(STLXGFX_DM_SOCKET_PATH);
-        if (conn >= 0) return conn;
-        nanosleep(&delay, NULL);
-    }
-    return -1;
-}
-
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -41,7 +27,7 @@ int main(void) {
         printf("stlxterm: font init failed\r\n");
     }
 
-    int conn = connect_with_retry();
+    int conn = stlxgfx_connect(STLXGFX_DM_SOCKET_PATH);
     if (conn < 0) {
         printf("stlxterm: failed to connect to DM\r\n");
         return 1;

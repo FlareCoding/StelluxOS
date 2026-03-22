@@ -4,6 +4,7 @@
 #include <stlxgfx/font.h>
 #include <stlxgfx/window.h>
 #include <stlxgfx/event.h>
+#include <stlx/proc.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -240,6 +241,14 @@ int main(void) {
         return 1;
     }
     printf("stlxdm: listening on %s\r\n", STLXGFX_DM_SOCKET_PATH);
+
+    int term_handle = proc_exec("/initrd/bin/stlxterm", NULL);
+    if (term_handle >= 0) {
+        proc_detach(term_handle);
+        printf("stlxdm: stlxterm launched\r\n");
+    } else {
+        printf("stlxdm: stlxterm not available\r\n");
+    }
 
     stlxdm_server_t server;
     stlxdm_server_init(&server, listen_fd);
