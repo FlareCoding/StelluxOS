@@ -21,9 +21,10 @@ typedef struct {
 } term_attr;
 
 typedef struct {
-    char     ch;
     uint32_t fg;
     uint32_t bg;
+    char     ch;
+    char     _pad[3];
 } term_cell;
 
 typedef struct {
