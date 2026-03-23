@@ -52,17 +52,19 @@ static void render_term(stlxgfx_surface_t* buf, term_state* t) {
     for (int r = 0; r < t->rows; r++) {
         int32_t py = origin_y + (int32_t)(r * g_cell_h);
         for (int c = 0; c < t->cols; c++) {
-            term_cell* cell = &t->cells[r][c];
+            uint32_t fg = t->cells[r][c].fg;
+            uint32_t bg = t->cells[r][c].bg;
+            char ch = t->cells[r][c].ch;
 
-            if (cell->bg != COL_BASE) {
+            if (bg != COL_BASE) {
                 int32_t px = origin_x + (int32_t)(c * g_cell_w);
-                stlxgfx_fill_rect(buf, px, py, g_cell_w, g_cell_h, cell->bg);
+                stlxgfx_fill_rect(buf, px, py, g_cell_w, g_cell_h, bg);
             }
 
-            if (cell->ch <= ' ') continue;
-            ch_str[0] = cell->ch;
+            if (ch <= ' ') continue;
+            ch_str[0] = ch;
             int32_t px = origin_x + (int32_t)(c * g_cell_w);
-            stlxgfx_draw_text(buf, px, py, ch_str, FONT_SIZE, cell->fg);
+            stlxgfx_draw_text(buf, px, py, ch_str, FONT_SIZE, fg);
         }
     }
 
@@ -71,9 +73,9 @@ static void render_term(stlxgfx_surface_t* buf, term_state* t) {
     stlxgfx_fill_rect(buf, cx, cy, g_cell_w, g_cell_h - LINE_PAD,
                        COL_ROSEWATER);
 
-    term_cell* cursor_cell = &t->cells[t->cursor_row][t->cursor_col];
-    if (cursor_cell->ch > ' ') {
-        ch_str[0] = cursor_cell->ch;
+    char cursor_ch = t->cells[t->cursor_row][t->cursor_col].ch;
+    if (cursor_ch > ' ') {
+        ch_str[0] = cursor_ch;
         stlxgfx_draw_text(buf, cx, cy, ch_str, FONT_SIZE, COL_CRUST);
     }
 }
