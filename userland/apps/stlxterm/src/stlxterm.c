@@ -107,7 +107,7 @@ int main(void) {
     if (term_cols < 1) term_cols = 1;
     if (term_rows < 1) term_rows = 1;
 
-    term_state term;
+    static term_state term;
     term_init(&term, term_rows, term_cols, COL_TEXT, COL_BASE);
 
     printf("stlxterm: grid %dx%d (cell %ux%u, font %d)\r\n",

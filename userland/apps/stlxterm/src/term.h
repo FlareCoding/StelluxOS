@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#define TERM_MAX_COLS 200
-#define TERM_MAX_ROWS 80
+#define TERM_MAX_COLS 120
+#define TERM_MAX_ROWS 40
 #define TERM_CSI_MAX  32
 #define TERM_CSI_MAX_PARAMS 8
 
