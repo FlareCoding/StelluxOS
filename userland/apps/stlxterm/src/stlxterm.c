@@ -45,6 +45,8 @@ static void measure_cell(void) {
 
 #define CURSOR_BLINK_FRAMES 30  /* ~500ms at 60 FPS */
 
+#define SCROLL_LINES_PER_TICK 3
+
 static void render_term(stlxgfx_surface_t* buf, term_state* t, int cursor_on) {
     stlxgfx_clear(buf, COL_BASE);
 
@@ -53,23 +55,28 @@ static void render_term(stlxgfx_surface_t* buf, term_state* t, int cursor_on) {
 
     char ch_str[2] = {0, 0};
     for (int r = 0; r < t->rows; r++) {
+        const char* line_ch;
+        const uint32_t* line_fg;
+        const uint32_t* line_bg;
+        term_get_display_line(t, r, &line_ch, &line_fg, &line_bg);
+
         int32_t py = origin_y + (int32_t)(r * g_cell_h);
         for (int c = 0; c < t->cols; c++) {
-            uint32_t bg = t->bg[r][c];
+            uint32_t bg = line_bg[c];
             if (bg != COL_BASE) {
                 int32_t px = origin_x + (int32_t)(c * g_cell_w);
                 stlxgfx_fill_rect(buf, px, py, g_cell_w, g_cell_h, bg);
             }
 
-            char ch = t->chars[r][c];
+            char ch = line_ch[c];
             if (ch <= ' ') continue;
             ch_str[0] = ch;
             int32_t px = origin_x + (int32_t)(c * g_cell_w);
-            stlxgfx_draw_text(buf, px, py, ch_str, FONT_SIZE, t->fg[r][c]);
+            stlxgfx_draw_text(buf, px, py, ch_str, FONT_SIZE, line_fg[c]);
         }
     }
 
-    if (cursor_on) {
+    if (cursor_on && t->scroll_offset == 0) {
         int32_t cx = origin_x + (int32_t)(t->cursor_col * g_cell_w);
         int32_t cy = origin_y + (int32_t)(t->cursor_row * g_cell_h);
         stlxgfx_fill_rect(buf, cx, cy, g_cell_w, g_cell_h - LINE_PAD,
@@ -181,6 +188,13 @@ int main(void) {
                     write(master_fd, seq, (size_t)len);
                     blink_counter = 0;
                     cursor_visible = 1;
+                    term_scroll_to_bottom(term);
+                }
+            } else if (evt.type == STLXGFX_EVT_POINTER_SCROLL) {
+                if (evt.pointer.wheel > 0) {
+                    term_scroll_up_view(term, SCROLL_LINES_PER_TICK);
+                } else if (evt.pointer.wheel < 0) {
+                    term_scroll_down_view(term, SCROLL_LINES_PER_TICK);
                 }
             }
         }

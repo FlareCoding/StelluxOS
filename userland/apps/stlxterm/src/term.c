@@ -1,4 +1,5 @@
 #include "term.h"
+#include <stdlib.h>
 #include <string.h>
 
 static const uint32_t ANSI_COLORS[16] = {
@@ -24,6 +25,7 @@ void term_init(term_state* t, int rows, int cols,
     t->current_attr.fg = default_fg;
     t->current_attr.bg = default_bg;
     t->current_attr.bold = 0;
+    t->scroll_offset = 0;
 
     memset(t->chars, ' ', sizeof(t->chars));
     for (int r = 0; r < TERM_MAX_ROWS; r++) {
@@ -31,6 +33,12 @@ void term_init(term_state* t, int rows, int cols,
             t->fg[r][c] = default_fg;
             t->bg[r][c] = default_bg;
         }
+    }
+
+    t->scrollback = (term_scrollback*)calloc(1, sizeof(term_scrollback));
+    if (t->scrollback) {
+        t->scrollback->head = 0;
+        t->scrollback->count = 0;
     }
 }
 
@@ -42,7 +50,31 @@ static void clear_row(term_state* t, int row) {
     }
 }
 
+static void save_line_to_scrollback(term_state* t, int row) {
+    if (!t->scrollback) return;
+
+    term_scrollback* sb = t->scrollback;
+    term_line* dst = &sb->lines[sb->head];
+
+    memcpy(dst->ch, t->chars[row], (size_t)t->cols);
+    memcpy(dst->fg, t->fg[row], (size_t)t->cols * sizeof(uint32_t));
+    memcpy(dst->bg, t->bg[row], (size_t)t->cols * sizeof(uint32_t));
+
+    for (int c = t->cols; c < TERM_MAX_COLS; c++) {
+        dst->ch[c] = ' ';
+        dst->fg[c] = t->default_fg;
+        dst->bg[c] = t->default_bg;
+    }
+
+    sb->head = (sb->head + 1) % TERM_SCROLLBACK_LINES;
+    if (sb->count < TERM_SCROLLBACK_LINES) {
+        sb->count++;
+    }
+}
+
 static void scroll_up(term_state* t) {
+    save_line_to_scrollback(t, 0);
+
     for (int r = 0; r < t->rows - 1; r++) {
         memcpy(t->chars[r], t->chars[r + 1], (size_t)t->cols);
         memcpy(t->fg[r], t->fg[r + 1], (size_t)t->cols * sizeof(uint32_t));
@@ -240,5 +272,74 @@ void term_feed(term_state* t, const char* data, int len) {
     for (int i = 0; i < len; i++) {
         feed_byte(t, data[i]);
     }
+    if (t->scroll_offset > 0) {
+        term_scroll_to_bottom(t);
+    }
     t->dirty = 1;
+}
+
+void term_scroll_up_view(term_state* t, int lines) {
+    if (!t->scrollback) return;
+    t->scroll_offset += lines;
+    if (t->scroll_offset > t->scrollback->count) {
+        t->scroll_offset = t->scrollback->count;
+    }
+    t->dirty = 1;
+}
+
+void term_scroll_down_view(term_state* t, int lines) {
+    t->scroll_offset -= lines;
+    if (t->scroll_offset < 0) {
+        t->scroll_offset = 0;
+    }
+    t->dirty = 1;
+}
+
+void term_scroll_to_bottom(term_state* t) {
+    t->scroll_offset = 0;
+    t->dirty = 1;
+}
+
+int term_get_display_line(term_state* t, int screen_row,
+                          const char** out_ch,
+                          const uint32_t** out_fg,
+                          const uint32_t** out_bg) {
+    if (t->scroll_offset == 0) {
+        *out_ch = t->chars[screen_row];
+        *out_fg = t->fg[screen_row];
+        *out_bg = t->bg[screen_row];
+        return 1;
+    }
+
+    int scrollback_rows_visible = t->scroll_offset;
+    if (scrollback_rows_visible > t->rows) {
+        scrollback_rows_visible = t->rows;
+    }
+
+    if (screen_row < scrollback_rows_visible) {
+        if (!t->scrollback) {
+            *out_ch = t->chars[screen_row];
+            *out_fg = t->fg[screen_row];
+            *out_bg = t->bg[screen_row];
+            return 1;
+        }
+        int sb_index = t->scroll_offset - scrollback_rows_visible + screen_row;
+        int pos = t->scrollback->head - t->scrollback->count + (t->scrollback->count - 1 - sb_index);
+        if (pos < 0) pos += TERM_SCROLLBACK_LINES;
+        pos = pos % TERM_SCROLLBACK_LINES;
+
+        *out_ch = t->scrollback->lines[pos].ch;
+        *out_fg = t->scrollback->lines[pos].fg;
+        *out_bg = t->scrollback->lines[pos].bg;
+        return 0;
+    }
+
+    int live_row = screen_row - scrollback_rows_visible;
+    if (live_row < 0) live_row = 0;
+    if (live_row >= t->rows) live_row = t->rows - 1;
+
+    *out_ch = t->chars[live_row];
+    *out_fg = t->fg[live_row];
+    *out_bg = t->bg[live_row];
+    return 1;
 }
