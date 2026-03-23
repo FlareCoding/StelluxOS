@@ -6,6 +6,7 @@
 #include <stlx/pty.h>
 #include <stlx/proc.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
@@ -107,8 +108,14 @@ int main(void) {
     if (term_cols < 1) term_cols = 1;
     if (term_rows < 1) term_rows = 1;
 
-    static term_state term;
-    term_init(&term, term_rows, term_cols, COL_TEXT, COL_BASE);
+    term_state* term = (term_state*)malloc(sizeof(term_state));
+    if (!term) {
+        printf("stlxterm: failed to allocate term_state\r\n");
+        stlxgfx_window_close(win);
+        stlxgfx_disconnect(conn);
+        return 1;
+    }
+    term_init(term, term_rows, term_cols, COL_TEXT, COL_BASE);
 
     printf("stlxterm: grid %dx%d (cell %ux%u, font %d)\r\n",
            term_cols, term_rows, g_cell_w, g_cell_h, FONT_SIZE);
@@ -168,17 +175,17 @@ int main(void) {
         char pty_buf[512];
         ssize_t n = read(master_fd, pty_buf, sizeof(pty_buf));
         if (n > 0) {
-            term_feed(&term, pty_buf, (int)n);
+            term_feed(term, pty_buf, (int)n);
         } else if (n == 0) {
             shell_alive = 0;
         }
 
-        if (term.dirty) {
+        if (term->dirty) {
             stlxgfx_surface_t* buf = stlxgfx_window_back_buffer(win);
             if (buf) {
-                render_term(buf, &term);
+                render_term(buf, term);
                 stlxgfx_window_swap_buffers(win);
-                term.dirty = 0;
+                term->dirty = 0;
             }
         }
 
