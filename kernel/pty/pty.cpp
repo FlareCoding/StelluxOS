@@ -3,7 +3,18 @@
 #include "common/ring_buffer.h"
 #include "fs/fstypes.h"
 #include "mm/heap.h"
+#include "mm/uaccess.h"
 #include "dynpriv/dynpriv.h"
+
+namespace {
+constexpr uint32_t STLX_TIOCGWINSZ = 0x5413;
+constexpr uint32_t STLX_TIOCSWINSZ = 0x5414;
+
+struct stlx_winsize {
+    uint16_t ws_row;
+    uint16_t ws_col;
+};
+} // anonymous namespace
 
 namespace pty {
 
@@ -129,11 +140,38 @@ static void pty_slave_close(resource::resource_object* obj) {
 static int32_t pty_slave_ioctl(
     resource::resource_object* obj, uint32_t cmd, uint64_t arg
 ) {
-    (void)arg;
     if (!obj || !obj->impl) {
         return resource::ERR_INVAL;
     }
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
+
+    if (cmd == STLX_TIOCGWINSZ) {
+        if (arg == 0) return resource::ERR_INVAL;
+        stlx_winsize ws;
+        ws.ws_row = ep->channel->m_ws_row;
+        ws.ws_col = ep->channel->m_ws_col;
+        int32_t rc;
+        RUN_ELEVATED({
+            rc = mm::uaccess::copy_to_user(reinterpret_cast<void*>(arg),
+                                           &ws, sizeof(ws));
+        });
+        return rc == 0 ? resource::OK : resource::ERR_INVAL;
+    }
+
+    if (cmd == STLX_TIOCSWINSZ) {
+        if (arg == 0) return resource::ERR_INVAL;
+        stlx_winsize ws;
+        int32_t rc;
+        RUN_ELEVATED({
+            rc = mm::uaccess::copy_from_user(&ws, reinterpret_cast<const void*>(arg),
+                                             sizeof(ws));
+        });
+        if (rc != 0) return resource::ERR_INVAL;
+        ep->channel->m_ws_row = ws.ws_row;
+        ep->channel->m_ws_col = ws.ws_col;
+        return resource::OK;
+    }
+
     return terminal::ld_set_mode(&ep->channel->m_ld, cmd);
 }
 
@@ -185,6 +223,8 @@ __PRIVILEGED_CODE int32_t create_pair(
     terminal::ld_init(&chan->m_ld);
     chan->m_echo = { pty_echo_fn, chan.ptr() };
     chan->m_id = __atomic_fetch_add(&g_next_pty_id, 1, __ATOMIC_RELAXED);
+    chan->m_ws_row = 0;
+    chan->m_ws_col = 0;
 
     auto* ep_master = heap::kalloc_new<pty_endpoint>();
     if (!ep_master) {

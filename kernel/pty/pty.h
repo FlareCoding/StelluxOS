@@ -21,6 +21,8 @@ struct pty_channel : rc::ref_counted<pty_channel> {
     terminal::line_discipline m_ld;
     terminal::echo_target m_echo;
     uint32_t m_id;
+    uint16_t m_ws_row;
+    uint16_t m_ws_col;
 
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE static void ref_destroy(pty_channel* self);

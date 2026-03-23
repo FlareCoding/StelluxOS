@@ -46,9 +46,16 @@ static const char SHIFTED[256] = {
     [0x36] = '<',  [0x37] = '>',  [0x38] = '?',
 };
 
+static int g_caps_lock = 0;
+
 int keymap_translate(uint16_t usage, uint8_t modifiers,
                      char* out_buf, int buf_size) {
     if (!out_buf || buf_size < 4) {
+        return 0;
+    }
+
+    if (usage == 0x39) { /* Caps Lock */
+        g_caps_lock = !g_caps_lock;
         return 0;
     }
 
@@ -56,6 +63,12 @@ int keymap_translate(uint16_t usage, uint8_t modifiers,
                 (modifiers & STLX_INPUT_MOD_RSHIFT);
     int ctrl  = (modifiers & STLX_INPUT_MOD_LCTRL) ||
                 (modifiers & STLX_INPUT_MOD_RCTRL);
+
+    /* Caps Lock inverts shift for letter keys */
+    int effective_shift = shift;
+    if (g_caps_lock && usage >= 0x04 && usage <= 0x1D) {
+        effective_shift = !effective_shift;
+    }
 
     /* Arrow keys and special keys -> ANSI escape sequences */
     switch (usage) {
@@ -91,7 +104,8 @@ int keymap_translate(uint16_t usage, uint8_t modifiers,
         return 0;
     }
 
-    char ch = shift ? SHIFTED[usage] : UNSHIFTED[usage];
+    int use_shift = (usage >= 0x04 && usage <= 0x1D) ? effective_shift : shift;
+    char ch = use_shift ? SHIFTED[usage] : UNSHIFTED[usage];
     if (ch == 0) {
         return 0;
     }

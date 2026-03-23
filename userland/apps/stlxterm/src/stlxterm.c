@@ -16,7 +16,8 @@
 #include "keymap.h"
 #include "term.h"
 
-#define STLX_TCSETS_RAW 0x5401
+#define STLX_TCSETS_RAW  0x5401
+#define STLX_TIOCSWINSZ 0x5414
 
 /* Catppuccin Mocha palette */
 #define COL_BASE       0xFF1E1E2E
@@ -42,7 +43,9 @@ static void measure_cell(void) {
     g_cell_h += LINE_PAD;
 }
 
-static void render_term(stlxgfx_surface_t* buf, term_state* t) {
+#define CURSOR_BLINK_FRAMES 30  /* ~500ms at 60 FPS */
+
+static void render_term(stlxgfx_surface_t* buf, term_state* t, int cursor_on) {
     stlxgfx_clear(buf, COL_BASE);
 
     int32_t origin_x = CONTENT_PAD_X;
@@ -66,15 +69,17 @@ static void render_term(stlxgfx_surface_t* buf, term_state* t) {
         }
     }
 
-    int32_t cx = origin_x + (int32_t)(t->cursor_col * g_cell_w);
-    int32_t cy = origin_y + (int32_t)(t->cursor_row * g_cell_h);
-    stlxgfx_fill_rect(buf, cx, cy, g_cell_w, g_cell_h - LINE_PAD,
-                       COL_ROSEWATER);
+    if (cursor_on) {
+        int32_t cx = origin_x + (int32_t)(t->cursor_col * g_cell_w);
+        int32_t cy = origin_y + (int32_t)(t->cursor_row * g_cell_h);
+        stlxgfx_fill_rect(buf, cx, cy, g_cell_w, g_cell_h - LINE_PAD,
+                           COL_ROSEWATER);
 
-    char cursor_ch = t->chars[t->cursor_row][t->cursor_col];
-    if (cursor_ch > ' ') {
-        ch_str[0] = cursor_ch;
-        stlxgfx_draw_text(buf, cx, cy, ch_str, FONT_SIZE, COL_CRUST);
+        char cursor_ch = t->chars[t->cursor_row][t->cursor_col];
+        if (cursor_ch > ' ') {
+            ch_str[0] = cursor_ch;
+            stlxgfx_draw_text(buf, cx, cy, ch_str, FONT_SIZE, COL_CRUST);
+        }
     }
 }
 
@@ -131,6 +136,9 @@ int main(void) {
     fcntl(master_fd, F_SETFL, O_NONBLOCK);
     ioctl(slave_fd, STLX_TCSETS_RAW, 0);
 
+    uint16_t ws[2] = { (uint16_t)term_rows, (uint16_t)term_cols };
+    ioctl(slave_fd, STLX_TIOCSWINSZ, (unsigned long)ws);
+
     int shell_handle = proc_create("/initrd/bin/shell", NULL);
     if (shell_handle < 0) {
         printf("stlxterm: failed to create shell process\r\n");
@@ -158,6 +166,9 @@ int main(void) {
 
     struct timespec frame_interval = { 0, 16000000 };
     int shell_alive = 1;
+    int blink_counter = 0;
+    int cursor_visible = 1;
+    int prev_cursor_visible = 1;
 
     while (!stlxgfx_window_should_close(win) && shell_alive) {
         stlxgfx_event_t evt;
@@ -168,6 +179,8 @@ int main(void) {
                                            seq, sizeof(seq));
                 if (len > 0) {
                     write(master_fd, seq, (size_t)len);
+                    blink_counter = 0;
+                    cursor_visible = 1;
                 }
             }
         }
@@ -176,14 +189,26 @@ int main(void) {
         ssize_t n = read(master_fd, pty_buf, sizeof(pty_buf));
         if (n > 0) {
             term_feed(term, pty_buf, (int)n);
+            blink_counter = 0;
+            cursor_visible = 1;
         } else if (n == 0) {
             shell_alive = 0;
         }
 
-        if (term->dirty) {
+        blink_counter++;
+        if (blink_counter >= CURSOR_BLINK_FRAMES) {
+            blink_counter = 0;
+            cursor_visible = !cursor_visible;
+        }
+
+        int needs_redraw = term->dirty ||
+                           (cursor_visible != prev_cursor_visible);
+        prev_cursor_visible = cursor_visible;
+
+        if (needs_redraw) {
             stlxgfx_surface_t* buf = stlxgfx_window_back_buffer(win);
             if (buf) {
-                render_term(buf, term);
+                render_term(buf, term, cursor_visible);
                 stlxgfx_window_swap_buffers(win);
                 term->dirty = 0;
             }
