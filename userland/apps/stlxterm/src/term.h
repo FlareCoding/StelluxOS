@@ -21,14 +21,9 @@ typedef struct {
 } term_attr;
 
 typedef struct {
-    uint32_t fg;
-    uint32_t bg;
-    char     ch;
-    char     _pad[3];
-} term_cell;
-
-typedef struct {
-    term_cell cells[TERM_MAX_ROWS][TERM_MAX_COLS];
+    char     chars[TERM_MAX_ROWS][TERM_MAX_COLS];
+    uint32_t fg[TERM_MAX_ROWS][TERM_MAX_COLS];
+    uint32_t bg[TERM_MAX_ROWS][TERM_MAX_COLS];
     int rows;
     int cols;
     int cursor_row;

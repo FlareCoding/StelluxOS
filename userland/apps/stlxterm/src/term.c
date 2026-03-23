@@ -1,24 +1,11 @@
 #include "term.h"
 #include <string.h>
 
-/* Standard 8-color ANSI palette + bright variants (Catppuccin Mocha inspired) */
 static const uint32_t ANSI_COLORS[16] = {
-    0xFF45475A, /* 0  black   (Surface1)   */
-    0xFFF38BA8, /* 1  red     (Red)        */
-    0xFFA6E3A1, /* 2  green   (Green)      */
-    0xFFF9E2AF, /* 3  yellow  (Yellow)     */
-    0xFF89B4FA, /* 4  blue    (Blue)       */
-    0xFFF5C2E7, /* 5  magenta (Pink)       */
-    0xFF94E2D5, /* 6  cyan    (Teal)       */
-    0xFFBAC2DE, /* 7  white   (Subtext1)   */
-    0xFF585B70, /* 8  bright black  (Surface2)  */
-    0xFFF38BA8, /* 9  bright red    (Red)       */
-    0xFFA6E3A1, /* 10 bright green  (Green)     */
-    0xFFF9E2AF, /* 11 bright yellow (Yellow)    */
-    0xFF89B4FA, /* 12 bright blue   (Blue)      */
-    0xFFF5C2E7, /* 13 bright magenta(Pink)      */
-    0xFF94E2D5, /* 14 bright cyan   (Teal)      */
-    0xFFCDD6F4, /* 15 bright white  (Text)      */
+    0xFF45475A, 0xFFF38BA8, 0xFFA6E3A1, 0xFFF9E2AF,
+    0xFF89B4FA, 0xFFF5C2E7, 0xFF94E2D5, 0xFFBAC2DE,
+    0xFF585B70, 0xFFF38BA8, 0xFFA6E3A1, 0xFFF9E2AF,
+    0xFF89B4FA, 0xFFF5C2E7, 0xFF94E2D5, 0xFFCDD6F4,
 };
 
 void term_init(term_state* t, int rows, int cols,
@@ -38,26 +25,28 @@ void term_init(term_state* t, int rows, int cols,
     t->current_attr.bg = default_bg;
     t->current_attr.bold = 0;
 
+    memset(t->chars, ' ', sizeof(t->chars));
     for (int r = 0; r < TERM_MAX_ROWS; r++) {
         for (int c = 0; c < TERM_MAX_COLS; c++) {
-            t->cells[r][c].ch = ' ';
-            t->cells[r][c].fg = default_fg;
-            t->cells[r][c].bg = default_bg;
+            t->fg[r][c] = default_fg;
+            t->bg[r][c] = default_bg;
         }
     }
 }
 
 static void clear_row(term_state* t, int row) {
+    memset(t->chars[row], ' ', (size_t)t->cols);
     for (int c = 0; c < t->cols; c++) {
-        t->cells[row][c].ch = ' ';
-        t->cells[row][c].fg = t->default_fg;
-        t->cells[row][c].bg = t->default_bg;
+        t->fg[row][c] = t->default_fg;
+        t->bg[row][c] = t->default_bg;
     }
 }
 
 static void scroll_up(term_state* t) {
     for (int r = 0; r < t->rows - 1; r++) {
-        memcpy(t->cells[r], t->cells[r + 1], (size_t)t->cols * sizeof(term_cell));
+        memcpy(t->chars[r], t->chars[r + 1], (size_t)t->cols);
+        memcpy(t->fg[r], t->fg[r + 1], (size_t)t->cols * sizeof(uint32_t));
+        memcpy(t->bg[r], t->bg[r + 1], (size_t)t->cols * sizeof(uint32_t));
     }
     clear_row(t, t->rows - 1);
 }
@@ -175,20 +164,21 @@ static void handle_csi(term_state* t, char final) {
     }
     case 'K': {
         int mode = (count > 0) ? params[0] : 0;
+        int row = t->cursor_row;
         if (mode == 0) {
             for (int c = t->cursor_col; c < t->cols; c++) {
-                t->cells[t->cursor_row][c].ch = ' ';
-                t->cells[t->cursor_row][c].fg = t->default_fg;
-                t->cells[t->cursor_row][c].bg = t->default_bg;
+                t->chars[row][c] = ' ';
+                t->fg[row][c] = t->default_fg;
+                t->bg[row][c] = t->default_bg;
             }
         } else if (mode == 1) {
             for (int c = 0; c <= t->cursor_col; c++) {
-                t->cells[t->cursor_row][c].ch = ' ';
-                t->cells[t->cursor_row][c].fg = t->default_fg;
-                t->cells[t->cursor_row][c].bg = t->default_bg;
+                t->chars[row][c] = ' ';
+                t->fg[row][c] = t->default_fg;
+                t->bg[row][c] = t->default_bg;
             }
         } else if (mode == 2) {
-            clear_row(t, t->cursor_row);
+            clear_row(t, row);
         }
         break;
     }
@@ -210,17 +200,17 @@ static void feed_byte(term_state* t, char c) {
         } else if (c == '\n') {
             newline(t);
         } else if (c == '\b' || c == '\x7f') {
-            if (t->cursor_col > 0) {
-                t->cursor_col--;
-            }
+            if (t->cursor_col > 0) t->cursor_col--;
         } else if (c == '\t') {
             int next = (t->cursor_col + 8) & ~7;
             if (next >= t->cols) next = t->cols - 1;
             t->cursor_col = next;
         } else if (c >= 0x20 && c <= 0x7e) {
-            t->cells[t->cursor_row][t->cursor_col].ch = c;
-            t->cells[t->cursor_row][t->cursor_col].fg = t->current_attr.fg;
-            t->cells[t->cursor_row][t->cursor_col].bg = t->current_attr.bg;
+            int row = t->cursor_row;
+            int col = t->cursor_col;
+            t->chars[row][col] = c;
+            t->fg[row][col] = t->current_attr.fg;
+            t->bg[row][col] = t->current_attr.bg;
             advance_cursor(t);
         }
         break;
@@ -236,9 +226,8 @@ static void feed_byte(term_state* t, char c) {
 
     case TERM_PARSE_CSI:
         if ((c >= '0' && c <= '9') || c == ';') {
-            if (t->csi_len < TERM_CSI_MAX - 1) {
+            if (t->csi_len < TERM_CSI_MAX - 1)
                 t->csi_buf[t->csi_len++] = c;
-            }
         } else {
             handle_csi(t, c);
             t->parse_state = TERM_PARSE_NORMAL;
