@@ -5,6 +5,8 @@
 
 #define TERM_MAX_COLS 200
 #define TERM_MAX_ROWS 80
+#define TERM_CSI_MAX  32
+#define TERM_CSI_MAX_PARAMS 8
 
 typedef enum {
     TERM_PARSE_NORMAL,
@@ -13,29 +15,37 @@ typedef enum {
 } term_parse_state;
 
 typedef struct {
-    char cells[TERM_MAX_ROWS][TERM_MAX_COLS];
+    uint32_t fg;
+    uint32_t bg;
+    uint8_t  bold;
+} term_attr;
+
+typedef struct {
+    char     ch;
+    uint32_t fg;
+    uint32_t bg;
+} term_cell;
+
+typedef struct {
+    term_cell cells[TERM_MAX_ROWS][TERM_MAX_COLS];
     int rows;
     int cols;
     int cursor_row;
     int cursor_col;
     int dirty;
 
+    term_attr current_attr;
+    uint32_t default_fg;
+    uint32_t default_bg;
+
     term_parse_state parse_state;
-    char csi_buf[32];
+    char csi_buf[TERM_CSI_MAX];
     int csi_len;
 } term_state;
 
-/**
- * Initialize terminal state with given grid dimensions.
- * Clears all cells to spaces and places cursor at (0,0).
- */
-void term_init(term_state* t, int rows, int cols);
+void term_init(term_state* t, int rows, int cols,
+               uint32_t default_fg, uint32_t default_bg);
 
-/**
- * Feed a buffer of bytes from the PTY master into the terminal.
- * Updates the screen buffer and cursor position. Sets t->dirty = 1
- * if any visible state changed.
- */
 void term_feed(term_state* t, const char* data, int len);
 
 #endif /* STLXTERM_TERM_H */

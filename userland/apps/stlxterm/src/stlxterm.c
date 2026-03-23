@@ -51,11 +51,17 @@ static void render_term(stlxgfx_surface_t* buf, term_state* t) {
     for (int r = 0; r < t->rows; r++) {
         int32_t py = origin_y + (int32_t)(r * g_cell_h);
         for (int c = 0; c < t->cols; c++) {
-            char ch = t->cells[r][c];
-            if (ch <= ' ') continue;
-            ch_str[0] = ch;
+            term_cell* cell = &t->cells[r][c];
+
+            if (cell->bg != COL_BASE) {
+                int32_t px = origin_x + (int32_t)(c * g_cell_w);
+                stlxgfx_fill_rect(buf, px, py, g_cell_w, g_cell_h, cell->bg);
+            }
+
+            if (cell->ch <= ' ') continue;
+            ch_str[0] = cell->ch;
             int32_t px = origin_x + (int32_t)(c * g_cell_w);
-            stlxgfx_draw_text(buf, px, py, ch_str, FONT_SIZE, COL_TEXT);
+            stlxgfx_draw_text(buf, px, py, ch_str, FONT_SIZE, cell->fg);
         }
     }
 
@@ -64,9 +70,9 @@ static void render_term(stlxgfx_surface_t* buf, term_state* t) {
     stlxgfx_fill_rect(buf, cx, cy, g_cell_w, g_cell_h - LINE_PAD,
                        COL_ROSEWATER);
 
-    char under = t->cells[t->cursor_row][t->cursor_col];
-    if (under > ' ') {
-        ch_str[0] = under;
+    term_cell* cursor_cell = &t->cells[t->cursor_row][t->cursor_col];
+    if (cursor_cell->ch > ' ') {
+        ch_str[0] = cursor_cell->ch;
         stlxgfx_draw_text(buf, cx, cy, ch_str, FONT_SIZE, COL_CRUST);
     }
 }
@@ -102,7 +108,7 @@ int main(void) {
     if (term_rows < 1) term_rows = 1;
 
     term_state term;
-    term_init(&term, term_rows, term_cols);
+    term_init(&term, term_rows, term_cols, COL_TEXT, COL_BASE);
 
     printf("stlxterm: grid %dx%d (cell %ux%u, font %d)\r\n",
            term_cols, term_rows, g_cell_w, g_cell_h, FONT_SIZE);

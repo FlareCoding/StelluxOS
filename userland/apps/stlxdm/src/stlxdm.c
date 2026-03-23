@@ -10,6 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "stlxdm_decor.h"
 #include "stlxdm_input.h"
 #include "stlxdm_splash.h"
 
@@ -23,16 +24,6 @@
 #define STLXDM_BAR_TEXT_COLOR      0xFFCCCCCC
 #define STLXDM_BAR_ACCENT_COLOR   0xFF888888
 
-/* Window decoration constants */
-#define STLXDM_DECOR_TITLEBAR_H    28
-#define STLXDM_DECOR_BORDER_W      1
-#define STLXDM_DECOR_TITLE_FONT    13
-#define STLXDM_DECOR_TITLE_COLOR   0xFFBBBBBB
-#define STLXDM_DECOR_TITLEBAR_BG   0xFF252530
-#define STLXDM_DECOR_TITLEBAR_FOCUSED_BG 0xFF2A2A3A
-#define STLXDM_DECOR_BORDER_COLOR  0xFF3A3A4A
-#define STLXDM_DECOR_BORDER_FOCUSED 0xFF5A5A7A
-#define STLXDM_DECOR_SEPARATOR     0xFF444455
 
 /* --- Server layer --- */
 

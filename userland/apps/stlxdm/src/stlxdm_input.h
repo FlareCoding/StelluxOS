@@ -8,6 +8,10 @@
 
 #define STLXDM_INPUT_MAX_RAW_PER_FRAME 64
 
+/* Key repeat timing (nanoseconds) */
+#define STLXDM_KEY_REPEAT_DELAY_NS   400000000LL  /* 400ms before first repeat */
+#define STLXDM_KEY_REPEAT_RATE_NS     33000000LL  /* ~30 repeats/sec */
+
 typedef struct {
     int kbd_fd;
     int mouse_fd;
@@ -20,6 +24,17 @@ typedef struct {
     int focused_slot;
     int capture_slot;
     uint16_t capture_buttons;
+
+    /* Window dragging */
+    int drag_slot;
+    int32_t drag_offset_x;
+    int32_t drag_offset_y;
+
+    /* Key repeat */
+    int repeat_active;
+    stlx_input_kbd_event_t repeat_key;
+    uint64_t repeat_next_ns;
+    int repeat_phase; /* 0 = delay, 1 = repeating */
 
     int z_order[STLXGFX_DM_MAX_CLIENTS];
     int z_count;
