@@ -90,6 +90,10 @@ int stlxdm_input_z_order(const stlxdm_input_t* inp, int idx) {
     return inp->z_order[idx];
 }
 
+/* Must match stlxdm.c decoration constants */
+#define STLXDM_DECOR_TITLEBAR_H 28
+#define STLXDM_DECOR_BORDER_W   1
+
 static int hit_test(const stlxdm_input_t* inp, const dm_client_t* clients,
                     int32_t px, int32_t py) {
     for (int i = inp->z_count - 1; i >= 0; i--) {
@@ -98,8 +102,11 @@ static int hit_test(const stlxdm_input_t* inp, const dm_client_t* clients,
         if (!w) {
             continue;
         }
-        if (px >= w->x && px < w->x + (int32_t)w->width &&
-            py >= w->y && py < w->y + (int32_t)w->height) {
+        int32_t total_w = (int32_t)w->width + 2 * STLXDM_DECOR_BORDER_W;
+        int32_t total_h = (int32_t)w->height + STLXDM_DECOR_TITLEBAR_H
+                          + 2 * STLXDM_DECOR_BORDER_W;
+        if (px >= w->x && px < w->x + total_w &&
+            py >= w->y && py < w->y + total_h) {
             return slot;
         }
     }
@@ -179,8 +186,8 @@ static void deliver_pointer(dm_client_t* clients, int slot,
     stlxgfx_event_t evt = {0};
     evt.type = type;
     evt.window_id = w->window_id;
-    evt.pointer.x = inp->ptr_x - w->x;
-    evt.pointer.y = inp->ptr_y - w->y;
+    evt.pointer.x = inp->ptr_x - w->x - STLXDM_DECOR_BORDER_W;
+    evt.pointer.y = inp->ptr_y - w->y - STLXDM_DECOR_TITLEBAR_H;
     evt.pointer.wheel = wheel;
     evt.pointer.buttons = buttons;
     stlxgfx_event_ring_write(w->event_ring, &evt);

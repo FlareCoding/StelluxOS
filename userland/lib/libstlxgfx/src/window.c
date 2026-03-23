@@ -541,6 +541,13 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
     win->x = cx;
     win->y = cy;
 
+    memset(win->title, 0, sizeof(win->title));
+    if (req->title_length > 0) {
+        uint32_t len = req->title_length;
+        if (len > sizeof(win->title) - 1) len = sizeof(win->title) - 1;
+        memcpy(win->title, req->title, len);
+    }
+
     strncpy(win->surface_path, surface_path, sizeof(win->surface_path) - 1);
     win->surface_path[sizeof(win->surface_path) - 1] = '\0';
     strncpy(win->sync_path, sync_path, sizeof(win->sync_path) - 1);

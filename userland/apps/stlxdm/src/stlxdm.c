@@ -23,6 +23,17 @@
 #define STLXDM_BAR_TEXT_COLOR      0xFFCCCCCC
 #define STLXDM_BAR_ACCENT_COLOR   0xFF888888
 
+/* Window decoration constants */
+#define STLXDM_DECOR_TITLEBAR_H    28
+#define STLXDM_DECOR_BORDER_W      1
+#define STLXDM_DECOR_TITLE_FONT    13
+#define STLXDM_DECOR_TITLE_COLOR   0xFFBBBBBB
+#define STLXDM_DECOR_TITLEBAR_BG   0xFF252530
+#define STLXDM_DECOR_TITLEBAR_FOCUSED_BG 0xFF2A2A3A
+#define STLXDM_DECOR_BORDER_COLOR  0xFF3A3A4A
+#define STLXDM_DECOR_BORDER_FOCUSED 0xFF5A5A7A
+#define STLXDM_DECOR_SEPARATOR     0xFF444455
+
 /* --- Server layer --- */
 
 typedef struct {
@@ -171,6 +182,53 @@ static void stlxdm_compositor_draw_bar(stlxdm_compositor_t* comp) {
     }
 }
 
+static void stlxdm_compositor_draw_window_decor(stlxdm_compositor_t* comp,
+                                                 stlxgfx_dm_window_t* win,
+                                                 int focused) {
+    int32_t wx = win->x;
+    int32_t wy = win->y;
+    int32_t total_w = (int32_t)win->width + 2 * STLXDM_DECOR_BORDER_W;
+    int32_t total_h = (int32_t)win->height + STLXDM_DECOR_TITLEBAR_H
+                      + 2 * STLXDM_DECOR_BORDER_W;
+
+    uint32_t border_col = focused ? STLXDM_DECOR_BORDER_FOCUSED
+                                  : STLXDM_DECOR_BORDER_COLOR;
+    uint32_t titlebar_bg = focused ? STLXDM_DECOR_TITLEBAR_FOCUSED_BG
+                                   : STLXDM_DECOR_TITLEBAR_BG;
+
+    /* Outer border */
+    stlxgfx_fill_rect(comp->backbuf, wx, wy, (uint32_t)total_w,
+                       (uint32_t)total_h, border_col);
+
+    /* Title bar background */
+    stlxgfx_fill_rect(comp->backbuf,
+                       wx + STLXDM_DECOR_BORDER_W,
+                       wy + STLXDM_DECOR_BORDER_W,
+                       win->width,
+                       STLXDM_DECOR_TITLEBAR_H - STLXDM_DECOR_BORDER_W,
+                       titlebar_bg);
+
+    /* Separator between title bar and content */
+    stlxgfx_fill_rect(comp->backbuf,
+                       wx + STLXDM_DECOR_BORDER_W,
+                       wy + STLXDM_DECOR_TITLEBAR_H - 1,
+                       win->width, 1,
+                       STLXDM_DECOR_SEPARATOR);
+
+    /* Title text */
+    const char* title = win->title[0] ? win->title : "Untitled";
+    int32_t text_x = wx + STLXDM_DECOR_BORDER_W + 10;
+    int32_t text_y = wy + STLXDM_DECOR_BORDER_W + 6;
+    stlxgfx_draw_text(comp->backbuf, text_x, text_y, title,
+                       STLXDM_DECOR_TITLE_FONT, STLXDM_DECOR_TITLE_COLOR);
+
+    /* Close indicator dot (right side) */
+    int32_t dot_x = wx + (int32_t)total_w - STLXDM_DECOR_BORDER_W - 16;
+    int32_t dot_y = wy + STLXDM_DECOR_BORDER_W + 8;
+    stlxgfx_fill_rect(comp->backbuf, dot_x, dot_y, 8, 8,
+                       focused ? 0xFF6C7086 : 0xFF45475A);
+}
+
 static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                                        stlxdm_input_t* inp,
                                        dm_client_t* clients) {
@@ -183,10 +241,17 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
         if (slot < 0 || !clients[slot].window) {
             continue;
         }
-        stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(clients[slot].window);
+
+        stlxgfx_dm_window_t* win = clients[slot].window;
+        int focused = (slot == inp->focused_slot);
+
+        stlxdm_compositor_draw_window_decor(comp, win, focused);
+
+        stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(win);
         if (front) {
-            stlxgfx_blit(comp->backbuf,
-                          clients[slot].window->x, clients[slot].window->y,
+            int32_t content_x = win->x + STLXDM_DECOR_BORDER_W;
+            int32_t content_y = win->y + STLXDM_DECOR_TITLEBAR_H;
+            stlxgfx_blit(comp->backbuf, content_x, content_y,
                           front, 0, 0, front->width, front->height);
         }
     }

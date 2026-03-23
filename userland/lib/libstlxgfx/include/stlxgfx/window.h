@@ -127,6 +127,7 @@ typedef struct {
     uint32_t pitch;
     stlxgfx_surface_t* front;
     int32_t  x, y;
+    char     title[256];
     char     surface_path[128];
     char     sync_path[128];
     char     events_path[128];
