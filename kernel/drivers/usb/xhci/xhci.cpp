@@ -993,6 +993,22 @@ int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
         return -1;
     }
 
+    // For FS/LS devices behind a HS hub, clear the hub's TT buffer so the
+    // shared Transaction Translator does not remain stuck from the stalled
+    // split transaction. Without this, a single-TT hub can block enumeration
+    // and traffic for all other downstream FS/LS devices.
+    if (device->output_ctx()) {
+        uint8_t dev_addr = 0;
+        if (m_hc_params.csz) {
+            auto* ctx = static_cast<xhci_device_context64*>(device->output_ctx());
+            dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+        } else {
+            auto* ctx = static_cast<xhci_device_context32*>(device->output_ctx());
+            dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+        }
+        _clear_tt_buffer(device, dev_addr);
+    }
+
     return 0;
 }
 
