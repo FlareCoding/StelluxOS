@@ -2,6 +2,7 @@
 #include "drivers/usb/xhci/xhci_common.h"
 #include "drivers/usb/xhci/xhci_ext_cap.h"
 #include "drivers/usb/core/usb_core.h"
+#include "drivers/usb/hub/hub_descriptors.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
@@ -193,6 +194,19 @@ void xhci_hcd::run() {
         }
 
         _process_hub_events();
+
+        // Hub event processing (and the device enumeration / class-driver
+        // probing it triggers) can call _process_event_ring() internally,
+        // which may complete interrupt-in stream TDs and queue deferred
+        // doorbells.  Flush any that accumulated during that work so the
+        // next interrupt TD is actually scheduled on the hardware ring.
+        if (m_pending_doorbell_count > 0) {
+            for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
+                _ring_doorbell(m_pending_doorbells[i].slot_id,
+                               m_pending_doorbells[i].target);
+            }
+            m_pending_doorbell_count = 0;
+        }
     }
 }
 
@@ -947,23 +961,64 @@ int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
     // USB-level stall, but xHCI still needs its EP0 state repaired. Reset the
     // endpoint and then advance the hardware dequeue pointer past the failed TD
     // so the controller does not try to replay it on the next doorbell ring.
+    //
+    // Match Linux behavior: always proceed with Set TR Dequeue even if Reset
+    // Endpoint fails — the command will only fail if the endpoint wasn't
+    // halted, and in that case we still need the dequeue pointer advanced.
     xhci_transfer_ring* ring = device->ctrl_ring();
     uintptr_t dequeue_phys = ring->get_enqueue_phys();
     uint8_t dequeue_cycle = ring->get_cycle_bit();
 
-    if (_reset_endpoint(device, 1) != 0) {
-        log::warn("xhci: failed to reset stalled control endpoint for slot %u",
+    // VL805 (Raspberry Pi 4) quirk: the controller cannot handle Set TR
+    // Dequeue Pointer pointing at a Link TRB. If the enqueue pointer wrapped
+    // and is now at index 0, the physical address is the segment start which
+    // is safe; but if for any reason it points at the Link TRB slot, skip
+    // past it to the segment start with the toggled cycle bit.
+    uintptr_t link_phys = ring->get_physical_base()
+                        + (ring->get_max_trb_count() - 1) * sizeof(xhci_trb_t);
+    if (dequeue_phys == link_phys) {
+        dequeue_phys = ring->get_physical_base();
+        dequeue_cycle = !dequeue_cycle;
+    }
+
+    int32_t rc = _reset_endpoint(device, 1);
+    if (rc != 0) {
+        log::warn("xhci: recovering stalled EP0 slot %u: reset endpoint failed (ignored)",
                   device->slot_id());
-        return -1;
     }
 
     if (_set_tr_dequeue_ptr(device, 1, dequeue_phys, dequeue_cycle) != 0) {
-        log::warn("xhci: failed to advance stalled control endpoint ring for slot %u",
+        log::warn("xhci: recovering stalled EP0 slot %u: set dequeue pointer failed",
                   device->slot_id());
         return -1;
     }
 
     return 0;
+}
+
+void xhci_hcd::_clear_tt_buffer(xhci_device* device, uint8_t dev_addr) {
+    if (!device || device->route_string() == 0)
+        return;
+    if (device->speed() != XHCI_USB_SPEED_LOW_SPEED &&
+        device->speed() != XHCI_USB_SPEED_FULL_SPEED)
+        return;
+
+    auto* hub = m_slot_devices[device->parent_slot_id()];
+    if (!hub || hub->speed() != XHCI_USB_SPEED_HIGH_SPEED)
+        return;
+
+    // USB 2.0 Section 11.24.2.3: CLEAR_TT_BUFFER
+    //   wValue: bits[3:0]=EP_Num, bits[10:4]=Dev_Addr, bits[12:11]=EP_Type, bit[15]=Dir
+    //   wIndex: 1 for single-TT hubs, port number for multi-TT
+    using namespace usb::hub;
+    uint16_t windex = hub->mtt() ? device->parent_port_num() : 1;
+    uint16_t base = static_cast<uint16_t>((dev_addr & 0x7F) << 4); // EP0, control type=0
+    // Clear IN direction (bit 15)
+    usb_control_transfer(hub, HUB_REQTYPE_SET_PORT,
+        8 /* CLEAR_TT_BUFFER */, base | 0x8000, windex, nullptr, 0);
+    // Clear OUT/SETUP direction
+    usb_control_transfer(hub, HUB_REQTYPE_SET_PORT,
+        8 /* CLEAR_TT_BUFFER */, base, windex, nullptr, 0);
 }
 
 void xhci_hcd::_setup_device(uint8_t port_index) {
@@ -984,6 +1039,9 @@ void xhci_hcd::_setup_device(uint8_t port_index) {
     xhci_portsc_register portsc;
     portsc.raw = *_portsc(port_index);
     uint8_t port_speed = static_cast<uint8_t>(portsc.port_speed);
+
+    log::info("xhci: root port %u PORTSC=0x%08x speed=%u",
+              port_id, portsc.raw, port_speed);
 
     // Enable a device slot
     xhci_trb_t enable_slot = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
@@ -1126,6 +1184,23 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
     // Don't re-enumerate if already present
     if (hub_device->hub_child(hub_port)) {
         return;
+    }
+
+    // Diagnostic: read current hub port status to verify connection and speed
+    // before committing a slot. This does NOT re-reset the port.
+    {
+        using namespace usb::hub;
+        hub_port_status ps = {};
+        if (usb_control_transfer(hub_device,
+                HUB_REQTYPE_GET_PORT, HUB_REQUEST_GET_STATUS,
+                0, hub_port, &ps, sizeof(ps)) == 0) {
+            log::info("xhci: hub slot %u port %u pre-enum status=0x%04x change=0x%04x "
+                      "speed=%u (LS=%u HS=%u conn=%u ena=%u)",
+                      hub_device->slot_id(), hub_port,
+                      ps.status, ps.change, speed,
+                      (ps.status >> 9) & 1, (ps.status >> 10) & 1,
+                      ps.status & 1, (ps.status >> 1) & 1);
+        }
     }
 
     // Enable a device slot
@@ -1312,6 +1387,14 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
 
     #define ENUM_FAIL(msg, ...) do { \
         log::error(msg, ##__VA_ARGS__); \
+        if (!is_root_device) { \
+            /* RESET_TT as a last resort to unblock the TT for other devices */ \
+            auto* _hub = m_slot_devices[device->parent_slot_id()]; \
+            if (_hub && _hub->speed() == XHCI_USB_SPEED_HIGH_SPEED) { \
+                uint16_t _wi = _hub->mtt() ? device->parent_port_num() : 1; \
+                usb_control_transfer(_hub, 0x23, 9 /* RESET_TT */, 0, _wi, nullptr, 0); \
+            } \
+        } \
         if (is_root_device) { \
             _teardown_device(port_index); \
         } else { \
@@ -1331,10 +1414,21 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     if (_address_device(device, true) != 0)
         ENUM_FAIL("xhci: address device (BSR=1) failed for slot %u", slot_id);
 
-    // Read the first 8 bytes of the device descriptor to get bMaxPacketSize0
+    // Read the first 8 bytes of the device descriptor to get bMaxPacketSize0.
+    // On VL805/VL817 the hub TT can babble under concurrent periodic traffic,
+    // so retry with CLEAR_TT_BUFFER between attempts.
     usb::usb_device_descriptor desc = {};
-    if (_get_device_descriptor(device, &desc, 8) != 0)
-        ENUM_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
+    {
+        int32_t rc = -1;
+        for (uint8_t attempt = 0; attempt < 3; attempt++) {
+            rc = _get_device_descriptor(device, &desc, 8);
+            if (rc == 0) break;
+            _clear_tt_buffer(device);
+            delay::us(10000);
+        }
+        if (rc != 0)
+            ENUM_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
+    }
 
     // If the device reported a different max packet size, update the input context
     if (desc.bMaxPacketSize0 != max_packet_size) {
@@ -1355,12 +1449,36 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     if (_address_device(device, false) != 0)
         ENUM_FAIL("xhci: address device (BSR=0) failed for slot %u", slot_id);
 
+    // USB 2.0 spec Section 9.2.6.3: the device needs a 2 ms recovery interval
+    // after SET_ADDRESS completes before it can accept the next SETUP packet.
+    delay::us(10000);
+
     // Sync the output device context into the input context
     device->sync_input_ctx();
 
-    // Read the full device descriptor
-    if (_get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor)) != 0)
-        ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
+    // Read the full device descriptor (retry with CLEAR_TT_BUFFER on failure).
+    // After BSR=0 the device has a real USB address; read it from the output
+    // slot context so CLEAR_TT_BUFFER targets the correct TT buffer entry.
+    {
+        uint8_t dev_addr = 0;
+        if (m_hc_params.csz) {
+            auto* ctx = static_cast<xhci_device_context64*>(device->output_ctx());
+            dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+        } else {
+            auto* ctx = static_cast<xhci_device_context32*>(device->output_ctx());
+            dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+        }
+
+        int32_t rc = -1;
+        for (uint8_t attempt = 0; attempt < 3; attempt++) {
+            rc = _get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor));
+            if (rc == 0) break;
+            _clear_tt_buffer(device, dev_addr);
+            delay::us(10000);
+        }
+        if (rc != 0)
+            ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
+    }
 
     #undef ENUM_FAIL
 
@@ -2384,9 +2502,20 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
                 slot_ctx->parent_hub_slot_id = hub->slot_id();
                 slot_ctx->parent_port_number = port_on_hub;
                 slot_ctx->mtt = hub->mtt() ? 1 : 0;
+                log::info("xhci: slot %u TT: hub_slot=%u hub_port=%u mtt=%u",
+                          device->slot_id(), hub->slot_id(), port_on_hub,
+                          hub->mtt() ? 1 : 0);
+            } else {
+                log::info("xhci: slot %u TT: no HS hub found (parent slot %u speed=%u)",
+                          device->slot_id(), device->parent_slot_id(),
+                          hub ? hub->speed() : 0xFF);
             }
         }
     }
+
+    log::info("xhci: slot %u input ctx: route=0x%05x speed=%u root_port=%u mps=%u",
+              device->slot_id(), slot_ctx->route_string, slot_ctx->speed,
+              slot_ctx->root_hub_port_num, max_packet_size);
 
     ep0_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
     ep0_ctx->endpoint_type = XHCI_ENDPOINT_TYPE_CONTROL;
@@ -2499,21 +2628,31 @@ int32_t xhci_hcd::_send_control_transfer(
     status.ioc = 1; // Interrupt on completion
     status.dir = (length > 0) ? (is_in ? 0 : 1) : 1;
 
-    // Reset EP0 completion state before doorbell
+    // Serialize EP0 enqueue+doorbell+wait against concurrent callers
+    // (e.g. hub task and HCD task both sending control transfers to the hub).
+    RUN_ELEVATED(sync::mutex_lock(device->ctrl_transfer_mutex()));
+
     device->set_ctrl_completed(false);
 
-    // Enqueue all TRBs before ringing the doorbell
-    // (required for QEMU compatibility, also safe on real hardware)
     ring->enqueue(reinterpret_cast<xhci_trb_t*>(&setup));
     if (length > 0) {
         ring->enqueue(reinterpret_cast<xhci_trb_t*>(&data));
     }
     ring->enqueue(reinterpret_cast<xhci_trb_t*>(&status));
 
-    // Ring the control endpoint doorbell
+    // VL805 quirk: avoid ringing the doorbell near the SOF boundary for
+    // FS non-periodic transfers behind a hub (TT babble avoidance).
+    if (device->route_string() != 0 &&
+        device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
+        for (uint32_t tries = 0; tries < 20; tries++) {
+            if ((_read_mfindex() & 0x7) != 0)
+                break;
+            delay::us(10);
+        }
+    }
+
     _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
 
-    // Wait for transfer completion
     constexpr uint64_t XFER_TIMEOUT_MS = 5000;
     uint64_t deadline = clock::now_ns() + XFER_TIMEOUT_MS * 1000000ULL;
 
@@ -2527,6 +2666,7 @@ int32_t xhci_hcd::_send_control_transfer(
     }
 
     if (!device->ctrl_completed()) {
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
         log::error("xhci: control transfer timed out");
         return -1;
     }
@@ -2535,12 +2675,14 @@ int32_t xhci_hcd::_send_control_transfer(
         if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
             (void)_recover_stalled_control_endpoint(device);
         }
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
         log::warn("xhci: control transfer failed: %s",
                    trb_completion_code_to_string(device->ctrl_result().completion_code));
         return -1;
     }
 
-    // Copy IN data to caller's buffer
+    RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+
     if (buffer && length > 0 && is_in) {
         barrier::dma_read();
         string::memcpy(buffer, dma_buffer, length);
@@ -2739,7 +2881,9 @@ int32_t xhci_hcd::usb_control_transfer(
     status.ioc = 1;
     status.dir = (length > 0) ? (is_in ? 0 : 1) : 1;
 
-    // Reset EP0 completion under the lock before ringing the doorbell
+    // Serialize EP0 enqueue+doorbell+wait against concurrent callers
+    RUN_ELEVATED(sync::mutex_lock(device->ctrl_transfer_mutex()));
+
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
         device->set_ctrl_completed(false);
@@ -2754,8 +2898,6 @@ int32_t xhci_hcd::usb_control_transfer(
 
     _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
 
-    // Block on the per-device EP0 completion wait queue.
-    // The HCD event loop processes the transfer completion and wakes us.
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
         while (!device->ctrl_completed()) {
@@ -2769,10 +2911,13 @@ int32_t xhci_hcd::usb_control_transfer(
         if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
             (void)_recover_stalled_control_endpoint(device);
         }
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
         log::warn("xhci: control transfer failed: %s",
                    trb_completion_code_to_string(device->ctrl_result().completion_code));
         return -1;
     }
+
+    RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
 
     if (data && length > 0 && is_in) {
         barrier::dma_read();

@@ -1,7 +1,6 @@
 #include "syscall/syscall.h"
 #include "defs/segments.h"
 #include "hw/msr.h"
-#include "common/logging.h"
 
 extern "C" void stlx_x86_syscall_entry();
 
@@ -19,6 +18,23 @@ constexpr uint64_t RFLAGS_IF = (1 << 9);
 constexpr uint64_t RFLAGS_DF = (1 << 10);
 constexpr uint64_t RFLAGS_TF = (1 << 8);
 
+// SYSRET derives selectors from IA32_STAR[63:48]:
+//   CS = STAR[63:48] + 16 (then CPL/RPL = 3)
+//   SS = STAR[63:48] + 8
+//
+// Linux programs this field using a user-space selector base, not a kernel one.
+// On this machine the old KERNEL_DS-based programming empirically returned with
+// SS=0x18 instead of USER_DS=0x1B, leading to #GP on the next IRETQ. Using the
+// user selector base makes both derived selectors land on the intended user
+// segments:
+//   base + 8  == USER_DS
+//   base + 16 == USER_CS
+constexpr uint16_t SYSRET_SEL_BASE = static_cast<uint16_t>(x86::USER_DS - 8);
+static_assert(static_cast<uint16_t>(SYSRET_SEL_BASE + 8) == x86::USER_DS,
+              "SYSRET base must derive USER_DS");
+static_assert(static_cast<uint16_t>(SYSRET_SEL_BASE + 16) == x86::USER_CS,
+              "SYSRET base must derive USER_CS");
+
 } // anonymous namespace
 
 namespace syscall {
@@ -34,23 +50,16 @@ __PRIVILEGED_CODE int32_t init_arch_syscalls() {
      *   bits 47:32 - SYSCALL CS/SS base (CS = value, SS = value + 8)
      *   bits 63:48 - SYSRET CS/SS base (64-bit: CS = value + 16, SS = value + 8)
      *
-     * Our GDT layout (selectors with RPL=0 or RPL=3):
+     * Our GDT layout:
      *   0x08 = KERNEL_CS
      *   0x10 = KERNEL_DS
-     *   0x1B = USER_DS (GDT index 3, RPL=3)
-     *   0x23 = USER_CS (GDT index 4, RPL=3)
+     *   0x1B = USER_DS
+     *   0x23 = USER_CS
      *
-     * For SYSCALL (to kernel): We want CS=0x08 (KERNEL_CS), SS=0x10 (KERNEL_DS)
-     *   -> STAR[47:32] = 0x08
-     *
-     * For SYSRET (64-bit to user): We want CS=0x23 (USER_CS), SS=0x1B (USER_DS)
-     *   Hardware applies RPL=3 automatically. Base value should be such that:
-     *   base + 16 = 0x20 (USER_CS selector without RPL)
-     *   base + 8  = 0x18 (USER_DS selector without RPL)
-     *   -> base = 0x10 (GDT_KERNEL_DS_IDX * 8)
-     *   -> STAR[63:48] = 0x10
+     * For SYSCALL (to kernel): STAR[47:32] = KERNEL_CS.
+     * For SYSRET (to user): use a base that derives USER_DS/USER_CS directly.
      */
-    uint64_t star = (static_cast<uint64_t>(x86::KERNEL_DS) << 48) | // SYSRET base
+    uint64_t star = (static_cast<uint64_t>(SYSRET_SEL_BASE) << 48) | // SYSRET base
                     (static_cast<uint64_t>(x86::KERNEL_CS) << 32);  // SYSCALL base
     msr::write(MSR_STAR, star);
 

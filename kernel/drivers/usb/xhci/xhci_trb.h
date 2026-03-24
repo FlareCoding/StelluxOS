@@ -117,11 +117,10 @@ typedef struct xhci_set_tr_dequeue_ptr_command_request_block {
     uint32_t rsvd0;
     struct {
         uint32_t cycle_bit    : 1;
-        uint32_t rsvd1        : 8;
-        uint32_t sct          : 2;
+        uint32_t rsvd1        : 9;
         uint32_t trb_type     : 6;
         uint32_t endpoint_id  : 5;
-        uint32_t rsvd2        : 2;
+        uint32_t rsvd2        : 3;
         uint32_t slot_id      : 8;
     };
 } xhci_set_tr_dequeue_ptr_command_trb_t;

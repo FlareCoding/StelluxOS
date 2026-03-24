@@ -16,6 +16,7 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
 
     m_ctrl_completion_wq.init();
     m_ctrl_completion_lock = sync::SPINLOCK_INIT;
+    m_ctrl_transfer_mutex.init();
 
     // Allocate input context (DMA)
     size_t input_ctx_size = csz ? sizeof(xhci_input_context64) : sizeof(xhci_input_context32);

@@ -19,7 +19,6 @@
 #include "terminal/terminal.h"
 #include "hw/rtc.h"
 #include "pci/pci.h"
-#include "pci/pci_class_codes.h"
 #include "msi/msi.h"
 #include "drivers/pci_driver.h"
 #include "drivers/graphics/gfxfb.h"
@@ -66,20 +65,6 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (pci::init() != pci::OK) {
         log::warn("pci::init failed, PCI devices unavailable");
-    }
-
-    // Probe for a PCI serial adapter and redirect serial output to it.
-    // On machines without a built-in COM port, COM1 writes go nowhere -
-    // this finds the adapter's I/O port and makes all serial output visible.
-    pci::device* serial_dev = pci::find_by_class(
-        pci::CLASS_SIMPLE_COMM, pci::SUB_COMM_SERIAL);
-    if (serial_dev) {
-        const pci::bar& b = serial_dev->get_bar(0);
-        if (b.type == pci::BAR_IO && b.phys != 0 && b.phys != 0x3F8) {
-            serial_dev->enable();
-            serial::set_port(static_cast<uint16_t>(b.phys));
-            log::info("serial: redirected to PCI adapter at I/O 0x%x", static_cast<uint16_t>(b.phys));
-        }
     }
 
     if (rtc::init() != rtc::OK) {

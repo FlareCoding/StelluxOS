@@ -253,6 +253,7 @@ private:
     int32_t _set_tr_dequeue_ptr(xhci::xhci_device* device, uint8_t dci,
                                 uintptr_t new_dequeue_phys, uint8_t dcs);
     int32_t _recover_stalled_control_endpoint(xhci::xhci_device* device);
+    void _clear_tt_buffer(xhci::xhci_device* device, uint8_t dev_addr = 0);
 
     // Transfer event completion dispatch
     void _complete_endpoint_transfer(sync::spinlock& lock, sync::wait_queue& wq,
