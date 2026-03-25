@@ -111,8 +111,12 @@ int stlxgfx_fill_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
     int32_t y0 = y < 0 ? 0 : y;
     int32_t x1 = (int32_t)(x + w);
     int32_t y1 = (int32_t)(y + h);
-    if (x1 > (int32_t)s->width)  x1 = (int32_t)s->width;
-    if (y1 > (int32_t)s->height) y1 = (int32_t)s->height;
+    if (x1 > (int32_t)s->width) {
+        x1 = (int32_t)s->width;
+    }
+    if (y1 > (int32_t)s->height) {
+        y1 = (int32_t)s->height;
+    }
     if (x0 >= x1 || y0 >= y1) {
         return 0;
     }
@@ -165,10 +169,18 @@ int stlxgfx_blit(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
         return 0;
     }
 
-    if ((uint32_t)sx + (uint32_t)sw > src->width)  sw = (int32_t)(src->width  - (uint32_t)sx);
-    if ((uint32_t)sy + (uint32_t)sh > src->height) sh = (int32_t)(src->height - (uint32_t)sy);
-    if ((uint32_t)dx + (uint32_t)sw > dst->width)  sw = (int32_t)(dst->width  - (uint32_t)dx);
-    if ((uint32_t)dy + (uint32_t)sh > dst->height) sh = (int32_t)(dst->height - (uint32_t)dy);
+    if ((uint32_t)sx + (uint32_t)sw > src->width) {
+        sw = (int32_t)(src->width  - (uint32_t)sx);
+    }
+    if ((uint32_t)sy + (uint32_t)sh > src->height) {
+        sh = (int32_t)(src->height - (uint32_t)sy);
+    }
+    if ((uint32_t)dx + (uint32_t)sw > dst->width) {
+        sw = (int32_t)(dst->width  - (uint32_t)dx);
+    }
+    if ((uint32_t)dy + (uint32_t)sh > dst->height) {
+        sh = (int32_t)(dst->height - (uint32_t)dy);
+    }
 
     if (sw <= 0 || sh <= 0) {
         return 0;
@@ -231,7 +243,9 @@ int stlxgfx_fill_rounded_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
         return -1;
     }
     uint32_t max_r = (w < h ? w : h) / 2;
-    if (radius > max_r) radius = max_r;
+    if (radius > max_r) {
+        radius = max_r;
+    }
     if (radius == 0) {
         return stlxgfx_fill_rect(s, x, y, w, h, color);
     }
@@ -280,7 +294,9 @@ int stlxgfx_fill_rounded_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
 static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
                                 uint32_t src_color) {
     uint8_t sa = (src_color >> 24) & 0xFF;
-    if (sa == 0) return;
+    if (sa == 0) {
+        return;
+    }
     if (sa == 255) {
         write_pixel(dst_px, dst, src_color);
         return;
@@ -302,7 +318,9 @@ static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
 int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
                         const stlxgfx_surface_t* src, int32_t sx, int32_t sy,
                         uint32_t w, uint32_t h) {
-    if (!dst || !dst->pixels || !src || !src->pixels) return -1;
+    if (!dst || !dst->pixels || !src || !src->pixels) {
+        return -1;
+    }
 
     int32_t sw = (int32_t)w;
     int32_t sh = (int32_t)h;
@@ -311,13 +329,25 @@ int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     if (sy < 0) { sh += sy; dy -= sy; sy = 0; }
     if (dx < 0) { sw += dx; sx -= dx; dx = 0; }
     if (dy < 0) { sh += dy; sy -= dy; dy = 0; }
-    if (sw <= 0 || sh <= 0) return 0;
+    if (sw <= 0 || sh <= 0) {
+        return 0;
+    }
 
-    if ((uint32_t)sx + (uint32_t)sw > src->width)  sw = (int32_t)(src->width  - (uint32_t)sx);
-    if ((uint32_t)sy + (uint32_t)sh > src->height) sh = (int32_t)(src->height - (uint32_t)sy);
-    if ((uint32_t)dx + (uint32_t)sw > dst->width)  sw = (int32_t)(dst->width  - (uint32_t)dx);
-    if ((uint32_t)dy + (uint32_t)sh > dst->height) sh = (int32_t)(dst->height - (uint32_t)dy);
-    if (sw <= 0 || sh <= 0) return 0;
+    if ((uint32_t)sx + (uint32_t)sw > src->width) {
+        sw = (int32_t)(src->width  - (uint32_t)sx);
+    }
+    if ((uint32_t)sy + (uint32_t)sh > src->height) {
+        sh = (int32_t)(src->height - (uint32_t)sy);
+    }
+    if ((uint32_t)dx + (uint32_t)sw > dst->width) {
+        sw = (int32_t)(dst->width  - (uint32_t)dx);
+    }
+    if ((uint32_t)dy + (uint32_t)sh > dst->height) {
+        sh = (int32_t)(dst->height - (uint32_t)dy);
+    }
+    if (sw <= 0 || sh <= 0) {
+        return 0;
+    }
 
     uint32_t dst_bpp = dst->bpp / 8;
     uint32_t src_bpp = src->bpp / 8;
@@ -337,7 +367,9 @@ int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
 
 int stlxgfx_draw_line(stlxgfx_surface_t* s, int32_t x0, int32_t y0,
                        int32_t x1, int32_t y1, uint32_t color) {
-    if (!s || !s->pixels) return -1;
+    if (!s || !s->pixels) {
+        return -1;
+    }
 
     int32_t dx = x1 - x0;
     int32_t dy = y1 - y0;
