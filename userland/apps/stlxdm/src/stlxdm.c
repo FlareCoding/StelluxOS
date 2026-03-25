@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 199309L
 #include <stlxgfx/fb.h>
 #include <stlxgfx/surface.h>
+#include <stlxgfx/ctx.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/window.h>
 #include <stlxgfx/event.h>
@@ -139,13 +140,10 @@ static void stlxdm_compositor_sync(stlxdm_compositor_t* comp,
     }
 }
 
-static void stlxdm_compositor_draw_bar(stlxdm_compositor_t* comp) {
-    stlxgfx_fill_rect(comp->backbuf, 0, 0,
-                       comp->width, STLXDM_BAR_HEIGHT, STLXDM_BAR_COLOR);
-    stlxgfx_fill_rect(comp->backbuf, 0, STLXDM_BAR_HEIGHT,
-                       comp->width, 1, STLXDM_BAR_ACCENT_COLOR);
-    stlxgfx_draw_text(comp->backbuf, 10, 6,
-                       "Stellux", STLXDM_BAR_FONT_SIZE, STLXDM_BAR_TEXT_COLOR);
+static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width) {
+    stlxgfx_ctx_fill_rect(ctx, 0, 0, width, STLXDM_BAR_HEIGHT, STLXDM_BAR_COLOR);
+    stlxgfx_ctx_fill_rect(ctx, 0, STLXDM_BAR_HEIGHT, width, 1, STLXDM_BAR_ACCENT_COLOR);
+    stlxgfx_ctx_draw_text(ctx, 10, 6, "Stellux", STLXDM_BAR_FONT_SIZE, STLXDM_BAR_TEXT_COLOR);
 
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
@@ -154,16 +152,15 @@ static void stlxdm_compositor_draw_bar(stlxdm_compositor_t* comp) {
             char time_str[64];
             strftime(time_str, sizeof(time_str), "%a %b %e  %H:%M:%S", t);
             uint32_t tw = 0, th = 0;
-            stlxgfx_text_size(time_str, STLXDM_BAR_FONT_SIZE, &tw, &th);
-            int32_t tx = ((int32_t)comp->width - (int32_t)tw) / 2;
-            stlxgfx_draw_text(comp->backbuf, tx, 6,
-                               time_str, STLXDM_BAR_FONT_SIZE,
-                               STLXDM_BAR_TEXT_COLOR);
+            stlxgfx_ctx_text_size(time_str, STLXDM_BAR_FONT_SIZE, &tw, &th);
+            int32_t tx = ((int32_t)width - (int32_t)tw) / 2;
+            stlxgfx_ctx_draw_text(ctx, tx, 6, time_str, STLXDM_BAR_FONT_SIZE,
+                                   STLXDM_BAR_TEXT_COLOR);
         }
     }
 }
 
-static void stlxdm_draw_window_frame(stlxgfx_surface_t* buf,
+static void stlxdm_draw_window_frame(stlxgfx_ctx_t* ctx,
                                       stlxgfx_dm_window_t* w,
                                       int focused, int dragging,
                                       int close_hover, int close_pressed) {
@@ -182,47 +179,41 @@ static void stlxdm_draw_window_frame(stlxgfx_surface_t* buf,
                                 : STLXDM_TITLE_BG_UNFOCUSED;
 
     if (dragging) {
-        stlxgfx_fill_rounded_rect(buf, ox - 1, oy - 1,
-                                   outer_w + 2, outer_h + 2,
-                                   cr + 1, STLXDM_BORDER_DRAGGING);
+        stlxgfx_ctx_fill_rounded_rect(ctx, ox - 1, oy - 1,
+                                       outer_w + 2, outer_h + 2,
+                                       cr + 1, STLXDM_BORDER_DRAGGING);
     }
 
-    // Outer border: all four corners rounded
-    stlxgfx_fill_rounded_rect(buf, ox, oy, outer_w, outer_h,
-                               cr, border_color);
+    stlxgfx_ctx_fill_rounded_rect(ctx, ox, oy, outer_w, outer_h,
+                                   cr, border_color);
 
-    // Title bar: rounded top corners, straight bottom
     uint32_t inner_cr = cr > bw ? cr - bw : 0;
-    stlxgfx_fill_rounded_rect(buf, ox + (int32_t)bw, oy + (int32_t)bw,
-                               outer_w - 2 * bw,
-                               STLXDM_TITLE_HEIGHT - bw,
-                               inner_cr, title_bg);
-    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
-                       oy + STLXDM_TITLE_HEIGHT - (int32_t)inner_cr,
-                       outer_w - 2 * bw, inner_cr, title_bg);
+    stlxgfx_ctx_fill_rounded_rect(ctx, ox + (int32_t)bw, oy + (int32_t)bw,
+                                   outer_w - 2 * bw,
+                                   STLXDM_TITLE_HEIGHT - bw,
+                                   inner_cr, title_bg);
+    stlxgfx_ctx_fill_rect(ctx, ox + (int32_t)bw,
+                           oy + STLXDM_TITLE_HEIGHT - (int32_t)inner_cr,
+                           outer_w - 2 * bw, inner_cr, title_bg);
 
-    // Content area background (straight rect, no rounding needed here)
-    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
-                       oy + STLXDM_TITLE_HEIGHT,
-                       outer_w - 2 * bw,
-                       outer_h - STLXDM_TITLE_HEIGHT - bw,
-                       STLXDM_BG_COLOR);
+    stlxgfx_ctx_fill_rect(ctx, ox + (int32_t)bw,
+                           oy + STLXDM_TITLE_HEIGHT,
+                           outer_w - 2 * bw,
+                           outer_h - STLXDM_TITLE_HEIGHT - bw,
+                           STLXDM_BG_COLOR);
 
-    // Title/content separator
-    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
-                       oy + STLXDM_TITLE_HEIGHT - 1,
-                       outer_w - 2 * bw, 1, border_color);
+    stlxgfx_ctx_fill_rect(ctx, ox + (int32_t)bw,
+                           oy + STLXDM_TITLE_HEIGHT - 1,
+                           outer_w - 2 * bw, 1, border_color);
 
-    // Title text: vertically centered
     uint32_t tw = 0, th = 0;
-    stlxgfx_text_size(w->title, STLXDM_TITLE_FONT_SIZE, &tw, &th);
+    stlxgfx_ctx_text_size(w->title, STLXDM_TITLE_FONT_SIZE, &tw, &th);
     int32_t title_y = oy + (int32_t)(STLXDM_TITLE_HEIGHT - th) / 2;
     uint32_t text_color = focused ? STLXDM_TITLE_TEXT_FOCUSED
                                   : STLXDM_TITLE_TEXT_UNFOCUSED;
-    stlxgfx_draw_text(buf, ox + 12, title_y,
-                       w->title, STLXDM_TITLE_FONT_SIZE, text_color);
+    stlxgfx_ctx_draw_text(ctx, ox + 12, title_y,
+                           w->title, STLXDM_TITLE_FONT_SIZE, text_color);
 
-    // Close button
     if (focused) {
         int32_t ccx = ox + (int32_t)outer_w - STLXDM_CLOSE_BTN_MARGIN
                      - STLXDM_CLOSE_BTN_RADIUS - (int32_t)bw;
@@ -232,75 +223,24 @@ static void stlxdm_draw_window_frame(stlxgfx_surface_t* buf,
                        :                 STLXDM_CLOSE_NORMAL_BG;
         uint32_t cb_fg = (close_hover || close_pressed) ? STLXDM_CLOSE_X_HOVER
                                                         : STLXDM_CLOSE_X_NORMAL;
-        stlxgfx_fill_circle(buf, ccx, ccy, STLXDM_CLOSE_BTN_RADIUS, cb_bg);
+        stlxgfx_ctx_fill_circle(ctx, ccx, ccy, STLXDM_CLOSE_BTN_RADIUS, cb_bg);
 
         uint32_t xw = 0, xh = 0;
-        stlxgfx_text_size("x", STLXDM_TITLE_FONT_SIZE, &xw, &xh);
-        stlxgfx_draw_text(buf, ccx - (int32_t)xw / 2,
-                           ccy - (int32_t)xh / 2,
-                           "x", STLXDM_TITLE_FONT_SIZE, cb_fg);
-    }
-}
-
-static void stlxdm_repair_bottom_corners(stlxgfx_surface_t* buf,
-                                          stlxgfx_dm_window_t* w) {
-    uint32_t bw = STLXDM_BORDER_WIDTH;
-    uint32_t outer_w = w->width + 2 * bw;
-    uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
-    int32_t r = (int32_t)STLXDM_CORNER_RADIUS;
-    int32_t ox = w->x;
-    int32_t oy = w->y;
-    int32_t right_edge = ox + (int32_t)outer_w;
-    int32_t bot_edge = oy + (int32_t)outer_h;
-
-    // Build a lookup: for each row offset dy (0..r), store the arc x-extent.
-    // arc_x[dy] = number of pixels from corner center to the arc edge.
-    int32_t arc_x[32];
-    if (r > 31) r = 31;
-    {
-        int32_t px2 = 0, py2 = r, d2 = 1 - r;
-        for (int i = 0; i <= r; i++) arc_x[i] = r;
-        while (px2 <= py2) {
-            if (py2 <= r) arc_x[py2] = px2;
-            if (px2 <= r) arc_x[px2] = py2;
-            px2++;
-            if (d2 < 0) { d2 += 2 * px2 + 1; }
-            else { py2--; d2 += 2 * (px2 - py2) + 1; }
-        }
-    }
-
-    int32_t cy_center = bot_edge - r - 1;
-    int32_t blit_bot = oy + STLXDM_TITLE_HEIGHT + (int32_t)w->height;
-
-    for (int32_t dy = 0; dy <= r; dy++) {
-        int32_t sy = cy_center + dy;
-        if (sy < blit_bot - 1) continue;
-        if (sy >= bot_edge) break;
-
-        int32_t extent = arc_x[dy];
-
-        // The filled arc spans (cx - extent) to (cx + extent) inclusive.
-        // cx_bl = ox + r, so left edge of arc = ox + r - extent.
-        // Pixels from ox to ox + r - extent - 1 are outside the arc.
-        int32_t left_cut = r - extent;
-        if (left_cut > 0)
-            stlxgfx_fill_rect(buf, ox, sy,
-                               (uint32_t)left_cut, 1, STLXDM_BG_COLOR);
-
-        // cx_br = right_edge - r - 1, right edge of arc = cx_br + extent.
-        // Pixels from cx_br + extent + 1 to right_edge - 1 are outside.
-        int32_t right_cut = r - extent;
-        if (right_cut > 0)
-            stlxgfx_fill_rect(buf, right_edge - right_cut, sy,
-                               (uint32_t)right_cut, 1, STLXDM_BG_COLOR);
+        stlxgfx_ctx_text_size("x", STLXDM_TITLE_FONT_SIZE, &xw, &xh);
+        stlxgfx_ctx_draw_text(ctx, ccx - (int32_t)xw / 2,
+                               ccy - (int32_t)xh / 2,
+                               "x", STLXDM_TITLE_FONT_SIZE, cb_fg);
     }
 }
 
 static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                                        stlxdm_input_t* inp,
                                        dm_client_t* clients) {
-    stlxgfx_clear(comp->backbuf, STLXDM_BG_COLOR);
-    stlxdm_compositor_draw_bar(comp);
+    stlxgfx_ctx_t ctx;
+    stlxgfx_ctx_init(&ctx, comp->backbuf);
+
+    stlxgfx_ctx_clear(&ctx, STLXDM_BG_COLOR);
+    stlxdm_compositor_draw_bar(&ctx, comp->width);
 
     for (int i = 0; i < inp->z_count; i++) {
         int slot = stlxdm_input_z_order(inp, i);
@@ -312,17 +252,65 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
         int close_hover = (focused && inp->close_hover_slot == slot);
         int close_pressed = (inp->close_press_slot == slot);
 
-        stlxdm_draw_window_frame(comp->backbuf, w,
+        stlxdm_draw_window_frame(&ctx, w,
                                   focused, dragging, close_hover, close_pressed);
 
         stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(w);
         if (front) {
-            stlxgfx_blit(comp->backbuf,
-                          w->x + STLXDM_BORDER_WIDTH,
-                          w->y + STLXDM_TITLE_HEIGHT,
-                          front, 0, 0, front->width, front->height);
+            int32_t content_x = w->x + STLXDM_BORDER_WIDTH;
+            int32_t content_y = w->y + STLXDM_TITLE_HEIGHT;
 
-            stlxdm_repair_bottom_corners(comp->backbuf, w);
+            uint32_t bw = STLXDM_BORDER_WIDTH;
+            uint32_t outer_w = w->width + 2 * bw;
+            uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
+            uint32_t cr = STLXDM_CORNER_RADIUS;
+
+            stlxgfx_ctx_save(&ctx);
+            stlxgfx_ctx_clip(&ctx, w->x + (int32_t)bw,
+                              content_y,
+                              outer_w - 2 * bw,
+                              outer_h - STLXDM_TITLE_HEIGHT - bw);
+
+            stlxgfx_ctx_blit(&ctx, content_x, content_y,
+                              front, 0, 0, front->width, front->height);
+            stlxgfx_ctx_restore(&ctx);
+
+            /* Repair bottom corners by overdrawing the background
+               outside the rounded border arc */
+            int32_t r = (int32_t)cr;
+            int32_t right_edge = w->x + (int32_t)outer_w;
+            int32_t bot_edge = w->y + (int32_t)outer_h;
+            int32_t blit_bot = content_y + (int32_t)w->height;
+
+            int32_t arc_x[32];
+            int32_t clamp_r = r > 31 ? 31 : r;
+            {
+                int32_t px2 = 0, py2 = clamp_r, d2 = 1 - clamp_r;
+                for (int j = 0; j <= clamp_r; j++) arc_x[j] = clamp_r;
+                while (px2 <= py2) {
+                    if (py2 <= clamp_r) arc_x[py2] = px2;
+                    if (px2 <= clamp_r) arc_x[px2] = py2;
+                    px2++;
+                    if (d2 < 0) { d2 += 2 * px2 + 1; }
+                    else { py2--; d2 += 2 * (px2 - py2) + 1; }
+                }
+            }
+
+            int32_t cy_center = bot_edge - clamp_r - 1;
+            for (int32_t dy = 0; dy <= clamp_r; dy++) {
+                int32_t sy = cy_center + dy;
+                if (sy < blit_bot - 1) continue;
+                if (sy >= bot_edge) break;
+                int32_t extent = arc_x[dy];
+                int32_t left_cut = clamp_r - extent;
+                if (left_cut > 0)
+                    stlxgfx_ctx_fill_rect(&ctx, w->x, sy,
+                                           (uint32_t)left_cut, 1, STLXDM_BG_COLOR);
+                int32_t right_cut = clamp_r - extent;
+                if (right_cut > 0)
+                    stlxgfx_ctx_fill_rect(&ctx, right_edge - right_cut, sy,
+                                           (uint32_t)right_cut, 1, STLXDM_BG_COLOR);
+            }
         }
     }
 
