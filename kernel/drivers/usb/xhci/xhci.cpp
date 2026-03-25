@@ -1202,23 +1202,6 @@ void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint
         return;
     }
 
-    // Diagnostic: read current hub port status to verify connection and speed
-    // before committing a slot. This does NOT re-reset the port.
-    {
-        using namespace usb::hub;
-        hub_port_status ps = {};
-        if (usb_control_transfer(hub_device,
-                HUB_REQTYPE_GET_PORT, HUB_REQUEST_GET_STATUS,
-                0, hub_port, &ps, sizeof(ps)) == 0) {
-            log::info("xhci: hub slot %u port %u pre-enum status=0x%04x change=0x%04x "
-                      "speed=%u (LS=%u HS=%u conn=%u ena=%u)",
-                      hub_device->slot_id(), hub_port,
-                      ps.status, ps.change, speed,
-                      (ps.status >> 9) & 1, (ps.status >> 10) & 1,
-                      ps.status & 1, (ps.status >> 1) & 1);
-        }
-    }
-
     // Enable a device slot
     xhci_trb_t enable_slot = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
     xhci_command_completion_trb_t completion = {};
@@ -1403,14 +1386,6 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
 
     #define ENUM_FAIL(msg, ...) do { \
         log::error(msg, ##__VA_ARGS__); \
-        if (!is_root_device) { \
-            /* RESET_TT as a last resort to unblock the TT for other devices */ \
-            auto* _hub = m_slot_devices[device->parent_slot_id()]; \
-            if (_hub && _hub->speed() == XHCI_USB_SPEED_HIGH_SPEED) { \
-                uint16_t _wi = _hub->mtt() ? device->parent_port_num() : 1; \
-                usb_control_transfer(_hub, 0x23, 9 /* RESET_TT */, 0, _wi, nullptr, 0); \
-            } \
-        } \
         if (is_root_device) { \
             _teardown_device(port_index); \
         } else { \
