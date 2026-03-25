@@ -454,7 +454,7 @@ int main(void) {
         return 1;
     }
 
-    stlxdm_spawn_doom();
+    stlxdm_spawn_terminal();
 
     stlxdm_server_t server;
     stlxdm_server_init(&server, listen_fd);
