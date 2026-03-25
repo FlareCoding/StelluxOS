@@ -4,6 +4,7 @@
 #include "common/types.h"
 
 namespace mm { struct mm_context; }
+namespace fs { class node; }
 
 namespace exec {
 
@@ -63,8 +64,9 @@ int32_t parse_elf(const void* buffer, size_t size, elf_image* out);
 /**
  * Parse an ELF64 binary from a file path.
  * Opens the file, reads it into a temporary buffer, parses, and cleans up.
+ * If base_dir is non-null, path is resolved relative to it.
  */
-int32_t parse_elf(const char* path, elf_image* out);
+int32_t parse_elf(const char* path, elf_image* out, fs::node* base_dir = nullptr);
 
 /**
  * Load an ELF64 binary from a memory buffer into a new user address space.
@@ -76,8 +78,9 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out);
 /**
  * Load an ELF64 binary from a file path into a new user address space.
  * Elevates internally for privileged operations (PMM, paging).
+ * If base_dir is non-null, path is resolved relative to it.
  */
-int32_t load_elf(const char* path, loaded_image* out);
+int32_t load_elf(const char* path, loaded_image* out, fs::node* base_dir = nullptr);
 
 /**
  * Unload a previously loaded ELF image.

@@ -94,8 +94,8 @@ int32_t parse_elf(const void* buffer, size_t size, elf_image* out) {
     return OK;
 }
 
-int32_t parse_elf(const char* path, elf_image* out) {
-    fs::file* f = fs::open(path, fs::O_RDONLY);
+int32_t parse_elf(const char* path, elf_image* out, fs::node* base_dir) {
+    fs::file* f = fs::open_at(base_dir, path, fs::O_RDONLY);
     if (!f) {
         return ERR_FILE_OPEN;
     }
@@ -318,8 +318,8 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
     return OK;
 }
 
-int32_t load_elf(const char* path, loaded_image* out) {
-    fs::file* f = fs::open(path, fs::O_RDONLY);
+int32_t load_elf(const char* path, loaded_image* out, fs::node* base_dir) {
+    fs::file* f = fs::open_at(base_dir, path, fs::O_RDONLY);
     if (!f) {
         return ERR_FILE_OPEN;
     }

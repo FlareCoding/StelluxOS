@@ -584,17 +584,30 @@ __PRIVILEGED_CODE int32_t unmount(const char* target) {
 
 
 file* open(const char* path, uint32_t flags) {
-    return open(path, flags, nullptr);
+    return open_at(nullptr, path, flags, nullptr);
 }
 
 file* open(const char* path, uint32_t flags, int32_t* out_err) {
+    return open_at(nullptr, path, flags, out_err);
+}
+
+file* open_at(node* base_dir, const char* path, uint32_t flags) {
+    return open_at(base_dir, path, flags, nullptr);
+}
+
+file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err) {
     auto set_err = [out_err](int32_t err) {
         if (out_err) {
             *out_err = err;
         }
     };
 
-    if (!path || path[0] != '/') {
+    if (!path || path[0] == '\0') {
+        set_err(ERR_INVAL);
+        return nullptr;
+    }
+
+    if (path[0] != '/' && !base_dir) {
         set_err(ERR_INVAL);
         return nullptr;
     }
@@ -609,7 +622,7 @@ file* open(const char* path, uint32_t flags, int32_t* out_err) {
             size_t name_len;
 
             err = resolve_parent_at_internal(
-                nullptr, path, &parent, &name, &name_len);
+                base_dir, path, &parent, &name, &name_len);
             if (err == OK) {
                 err = parent->lookup(name, name_len, &n);
                 if (err == ERR_NOENT) {
@@ -623,7 +636,7 @@ file* open(const char* path, uint32_t flags, int32_t* out_err) {
                 }
             }
         } else {
-            err = lookup(path, &n);
+            err = resolve_path_at_internal(base_dir, path, &n);
         }
     });
 
@@ -632,8 +645,6 @@ file* open(const char* path, uint32_t flags, int32_t* out_err) {
         return nullptr;
     }
 
-    // Allocate file from unprivileged heap
-    // strong_ref::adopt just stores the pointer -- no privileged access
     void* mem = heap::uzalloc(sizeof(file));
     if (!mem) {
         RUN_ELEVATED({
@@ -646,7 +657,6 @@ file* open(const char* path, uint32_t flags, int32_t* out_err) {
     }
     auto* f = new (mem) file(rc::strong_ref<node>::adopt(n), flags);
 
-    // Call node->open for per-open setup
     RUN_ELEVATED({
         err = n->open(f, flags);
     });

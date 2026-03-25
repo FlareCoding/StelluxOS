@@ -112,7 +112,7 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
     }
 
     exec::loaded_image loaded;
-    int32_t elf_rc = exec::load_elf(kpath, &loaded);
+    int32_t elf_rc = exec::load_elf(kpath, &loaded, caller->cwd);
     if (elf_rc != exec::OK) {
         return map_elf_error(elf_rc);
     }
