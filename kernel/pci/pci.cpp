@@ -423,27 +423,30 @@ __PRIVILEGED_CODE static void enumerate_bus(uint8_t bus, uint8_t max_slots = SLO
 
 // Follow PCI-to-PCI bridges to discover devices on secondary buses
 __PRIVILEGED_CODE static void enumerate_bridges() {
-    uint32_t initial_count = g_device_count;
-    for (uint32_t i = 0; i < initial_count; i++) {
-        device& dev = g_devices[i];
-        if (dev.header_type() != HDR_TYPE_BRIDGE) continue;
+    uint32_t scan_from = 0;
 
-        uint8_t secondary = dev.config_read8(CFG_SECONDARY_BUS);
-        if (secondary == 0 || secondary == dev.bus()) continue;
+    while (scan_from < g_device_count) {
+        uint32_t sweep_end = g_device_count;
+        for (uint32_t i = scan_from; i < sweep_end; i++) {
+            device& dev = g_devices[i];
+            if (dev.header_type() != HDR_TYPE_BRIDGE) continue;
 
-        // For ECAM, ensure secondary bus is within the mapped range
-        if (g_backend == config_backend::ECAM &&
-            (secondary < g_ecam_start_bus || secondary > g_ecam_end_bus)) {
-            continue;
+            uint8_t secondary = dev.config_read8(CFG_SECONDARY_BUS);
+            if (secondary == 0 || secondary == dev.bus()) continue;
+
+            if (g_backend == config_backend::ECAM &&
+                (secondary < g_ecam_start_bus || secondary > g_ecam_end_bus)) {
+                continue;
+            }
+
+            if (g_backend == config_backend::BROADCOM && !brcm_link_up()) {
+                log::warn("pci: PCIe link down, skipping bus %u", secondary);
+                continue;
+            }
+
+            enumerate_bus(secondary);
         }
-
-        if (g_backend == config_backend::BROADCOM && !brcm_link_up()) {
-            log::warn("pci: PCIe link down, skipping bus %u", secondary);
-            continue;
-        }
-
-        // PCIe links are point-to-point: only device 0 exists on secondary buses
-        enumerate_bus(secondary, 1);
+        scan_from = sweep_end;
     }
 }
 
