@@ -1426,17 +1426,15 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     // On VL805/VL817 the hub TT can babble under concurrent periodic traffic,
     // so retry with CLEAR_TT_BUFFER between attempts.
     usb::usb_device_descriptor desc = {};
-    {
-        int32_t rc = -1;
-        for (uint8_t attempt = 0; attempt < 3; attempt++) {
-            rc = _get_device_descriptor(device, &desc, 8);
-            if (rc == 0) break;
-            _clear_tt_buffer(device);
-            delay::us(10000);
-        }
-        if (rc != 0)
-            ENUM_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
+    int32_t rc = -1;
+    for (uint8_t attempt = 0; attempt < 3; attempt++) {
+        rc = _get_device_descriptor(device, &desc, 8);
+        if (rc == 0) break;
+        _clear_tt_buffer(device);
+        delay::us(10000);
     }
+    if (rc != 0)
+        ENUM_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
 
     // If the device reported a different max packet size, update the input context
     if (desc.bMaxPacketSize0 != max_packet_size) {
@@ -1465,28 +1463,26 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     device->sync_input_ctx();
 
     // Read the full device descriptor (retry with CLEAR_TT_BUFFER on failure).
-    // After BSR=0 the device has a real USB address; read it from the output
+    // After BSR=0 the device has a real USB address, read it from the output
     // slot context so CLEAR_TT_BUFFER targets the correct TT buffer entry.
-    {
-        uint8_t dev_addr = 0;
-        if (m_hc_params.csz) {
-            auto* ctx = static_cast<xhci_device_context64*>(device->output_ctx());
-            dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
-        } else {
-            auto* ctx = static_cast<xhci_device_context32*>(device->output_ctx());
-            dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
-        }
-
-        int32_t rc = -1;
-        for (uint8_t attempt = 0; attempt < 3; attempt++) {
-            rc = _get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor));
-            if (rc == 0) break;
-            _clear_tt_buffer(device, dev_addr);
-            delay::us(10000);
-        }
-        if (rc != 0)
-            ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
+    uint8_t dev_addr = 0;
+    if (m_hc_params.csz) {
+        auto* ctx = static_cast<xhci_device_context64*>(device->output_ctx());
+        dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+    } else {
+        auto* ctx = static_cast<xhci_device_context32*>(device->output_ctx());
+        dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
     }
+
+    rc = -1;
+    for (uint8_t attempt = 0; attempt < 3; attempt++) {
+        rc = _get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor));
+        if (rc == 0) break;
+        _clear_tt_buffer(device, dev_addr);
+        delay::us(10000);
+    }
+    if (rc != 0)
+        ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
 
     #undef ENUM_FAIL
 
