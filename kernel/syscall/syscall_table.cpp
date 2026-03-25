@@ -25,6 +25,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::READ,            read);
     REGISTER_SYSCALL(linux_nr::WRITE,           write);
     REGISTER_SYSCALL(linux_nr::CLOSE,           close);
+    REGISTER_SYSCALL(linux_nr::LSEEK,           lseek);
     REGISTER_SYSCALL(linux_nr::FSTAT,           fstat);
     REGISTER_SYSCALL(linux_nr::NEWFSTATAT,      newfstatat);
     REGISTER_SYSCALL(linux_nr::GETDENTS64,      getdents64);
