@@ -51,9 +51,13 @@ static void stlxdm_server_init(stlxdm_server_t* srv, int listen_fd) {
 }
 
 static void stlxdm_server_accept(stlxdm_server_t* srv) {
-    if (srv->client_count >= STLXGFX_DM_MAX_CLIENTS) return;
+    if (srv->client_count >= STLXGFX_DM_MAX_CLIENTS) {
+        return;
+    }
     int client_fd = stlxgfx_dm_accept(srv->listen_fd);
-    if (client_fd < 0) return;
+    if (client_fd < 0) {
+        return;
+    }
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
         if (srv->clients[i].fd < 0) {
             srv->clients[i].fd = client_fd;
@@ -69,7 +73,9 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
                                             stlxdm_input_t* inp,
                                             const stlxgfx_fb_t* fb) {
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
-        if (srv->clients[i].fd < 0) continue;
+        if (srv->clients[i].fd < 0) {
+            continue;
+        }
 
         stlxgfx_msg_header_t hdr;
         uint8_t payload[512];
@@ -86,7 +92,9 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
             srv->client_count--;
             continue;
         }
-        if (rc == 0) continue;
+        if (rc == 0) {
+            continue;
+        }
 
         if (hdr.message_type == STLXGFX_MSG_CREATE_WINDOW_REQ &&
             !srv->clients[i].window) {
@@ -121,7 +129,9 @@ static int stlxdm_compositor_init(stlxdm_compositor_t* comp,
     comp->width = fb->width;
     comp->height = fb->height;
     comp->backbuf = stlxgfx_fb_create_surface(fb, fb->width, fb->height);
-    if (!comp->backbuf) return -1;
+    if (!comp->backbuf) {
+        return -1;
+    }
     return 0;
 }
 
@@ -158,8 +168,12 @@ static void stlxdm_build_arc_lut(int32_t r, int32_t* lut) {
     for (int32_t i = 0; i <= r; i++) lut[i] = 0;
     int32_t px = 0, py = r, d = 1 - r;
     while (px <= py) {
-        if (py <= r && px > lut[py]) lut[py] = px;
-        if (px <= r && py > lut[px]) lut[px] = py;
+        if (py <= r && px > lut[py]) {
+            lut[py] = px;
+        }
+        if (px <= r && py > lut[px]) {
+            lut[px] = py;
+        }
         px++;
         if (d < 0) { d += 2 * px + 1; }
         else { py--; d += 2 * (px - py) + 1; }
@@ -218,7 +232,9 @@ static void stlxdm_draw_window_frame(stlxgfx_ctx_t* ctx,
 
         int32_t ir = (int32_t)inner_cr;
         int32_t arc_lut[32];
-        if (ir > 31) ir = 31;
+        if (ir > 31) {
+            ir = 31;
+        }
         stlxdm_build_arc_lut(ir, arc_lut);
 
         int32_t bl_cx = ci_x + ir;
@@ -283,7 +299,9 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
 
     for (int i = 0; i < inp->z_count; i++) {
         int slot = stlxdm_input_z_order(inp, i);
-        if (slot < 0 || !clients[slot].window) continue;
+        if (slot < 0 || !clients[slot].window) {
+            continue;
+        }
 
         stlxgfx_dm_window_t* w = clients[slot].window;
         int focused = (slot == inp->focused_slot);
@@ -307,12 +325,18 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
             uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
             int32_t ro = (int32_t)STLXDM_CORNER_RADIUS;
             int32_t ri = (int32_t)(STLXDM_CORNER_RADIUS > bw ? STLXDM_CORNER_RADIUS - bw : 0);
-            if (ro > 31) ro = 31;
-            if (ri > 31) ri = 31;
+            if (ro > 31) {
+                ro = 31;
+            }
+            if (ri > 31) {
+                ri = 31;
+            }
 
             int32_t outer_lut[32], inner_lut[32];
             stlxdm_build_arc_lut(ro, outer_lut);
-            if (ri > 0) stlxdm_build_arc_lut(ri, inner_lut);
+            if (ri > 0) {
+                stlxdm_build_arc_lut(ri, inner_lut);
+            }
 
             int32_t bot_edge = w->y + (int32_t)outer_h;
             int32_t right_edge = w->x + (int32_t)outer_w;
@@ -326,7 +350,9 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
 
             for (int32_t sy = outer_cy; sy < bot_edge; sy++) {
                 int32_t ody = sy - outer_cy;
-                if (ody < 0 || ody > ro) continue;
+                if (ody < 0 || ody > ro) {
+                    continue;
+                }
                 int32_t outer_ext = outer_lut[ody];
 
                 int32_t left_bg = ro - outer_ext;
