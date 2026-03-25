@@ -55,7 +55,7 @@ static int collect_entries(const char* path, int flag_all,
                            int* out_max_name_len) {
     DIR* dir = opendir(path);
     if (!dir) {
-        printf("ls: cannot open '%s'\r\n", path);
+        printf("ls: cannot open '%s'\n", path);
         return 1;
     }
 
@@ -130,7 +130,7 @@ static void print_columns(struct ls_entry* entries, int count, int max_display_l
         print_entry_name(&entries[i]);
 
         if (last_in_row) {
-            printf("\r\n");
+            printf("\n");
         } else {
             int padding = col_width - display_len;
             for (int p = 0; p < padding; p++) putchar(' ');
@@ -145,11 +145,11 @@ static void print_long(struct ls_entry* entries, int count) {
         if (e->have_stat) format_mode(e->mode, mode_str);
 
         if (e->color) {
-            printf("  %s %8lld %s%s%s%s\r\n",
+            printf("  %s %8lld %s%s%s%s\n",
                    mode_str, e->size, e->color, e->name,
                    e->is_dir ? "/" : "", COL_RESET);
         } else {
-            printf("  %s %8lld %s%s\r\n",
+            printf("  %s %8lld %s%s\n",
                    mode_str, e->size, e->name,
                    e->is_dir ? "/" : "");
         }
@@ -159,7 +159,7 @@ static void print_long(struct ls_entry* entries, int count) {
 static int list_dir(const char* path, int flag_long, int flag_all) {
     struct ls_entry* entries = malloc(MAX_ENTRIES * sizeof(struct ls_entry));
     if (!entries) {
-        printf("ls: out of memory\r\n");
+        printf("ls: out of memory\n");
         return 1;
     }
 
@@ -195,7 +195,7 @@ int main(int argc, char* argv[]) {
                 case 'l': flag_long = 1; break;
                 case 'a': flag_all = 1; break;
                 default:
-                    printf("ls: unknown option '-%c'\r\n", argv[i][j]);
+                    printf("ls: unknown option '-%c'\n", argv[i][j]);
                     return 1;
                 }
             }

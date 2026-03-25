@@ -113,7 +113,7 @@ int main(void) {
     stlxgfx_window_t *win = stlxgfx_create_window(
         STLXTERM_WIDTH, STLXTERM_HEIGHT, "stlxterm");
     if (!win) {
-        printf("stlxterm: failed to create window\r\n");
+        printf("stlxterm: failed to create window\n");
         return 1;
     }
 
@@ -130,7 +130,7 @@ int main(void) {
 
     term_state_t *term = malloc(sizeof(term_state_t));
     if (!term) {
-        printf("stlxterm: failed to allocate terminal state\r\n");
+        printf("stlxterm: failed to allocate terminal state\n");
         stlxgfx_window_destroy(win);
         return 1;
     }
@@ -138,7 +138,7 @@ int main(void) {
 
     int master_fd, slave_fd;
     if (pty_create(&master_fd, &slave_fd) < 0) {
-        printf("stlxterm: failed to create PTY\r\n");
+        printf("stlxterm: failed to create PTY\n");
         free(term);
         stlxgfx_window_destroy(win);
         return 1;
@@ -149,7 +149,7 @@ int main(void) {
 
     int shell_proc = proc_create("/initrd/bin/shell", NULL);
     if (shell_proc < 0) {
-        printf("stlxterm: failed to create shell\r\n");
+        printf("stlxterm: failed to create shell\n");
         close(master_fd);
         close(slave_fd);
         free(term);
@@ -160,7 +160,7 @@ int main(void) {
     proc_set_handle(shell_proc, 1, slave_fd);
     proc_set_handle(shell_proc, 2, slave_fd);
     if (proc_start(shell_proc) < 0) {
-        printf("stlxterm: failed to start shell\r\n");
+        printf("stlxterm: failed to start shell\n");
         close(shell_proc);
         close(master_fd);
         close(slave_fd);

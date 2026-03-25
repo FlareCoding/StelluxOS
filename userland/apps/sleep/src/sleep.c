@@ -6,7 +6,7 @@
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         setvbuf(stdout, NULL, _IONBF, 0);
-        printf("sleep: missing operand\r\n");
+        printf("sleep: missing operand\n");
         return 1;
     }
 

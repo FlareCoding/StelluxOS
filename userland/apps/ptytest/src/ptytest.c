@@ -12,28 +12,28 @@ int main(void) {
 
     int master_fd, slave_fd;
     if (pty_create(&master_fd, &slave_fd) < 0) {
-        printf("ptytest: pty_create failed\r\n");
+        printf("ptytest: pty_create failed\n");
         return 1;
     }
-    printf("ptytest: created PTY pair (master=%d, slave=%d)\r\n", master_fd, slave_fd);
+    printf("ptytest: created PTY pair (master=%d, slave=%d)\n", master_fd, slave_fd);
 
     ioctl(slave_fd, STLX_TCSETS_RAW, 0);
 
     const char* msg = "hello from master";
     ssize_t w = write(master_fd, msg, strlen(msg));
-    printf("ptytest: wrote %ld bytes to master\r\n", (long)w);
+    printf("ptytest: wrote %ld bytes to master\n", (long)w);
 
     char buf[64] = {};
     ssize_t r = read(slave_fd, buf, sizeof(buf) - 1);
-    printf("ptytest: read %ld bytes from slave: \"%s\"\r\n", (long)r, buf);
+    printf("ptytest: read %ld bytes from slave: \"%s\"\n", (long)r, buf);
 
     const char* reply = "hello from slave";
     w = write(slave_fd, reply, strlen(reply));
-    printf("ptytest: wrote %ld bytes to slave\r\n", (long)w);
+    printf("ptytest: wrote %ld bytes to slave\n", (long)w);
 
     memset(buf, 0, sizeof(buf));
     r = read(master_fd, buf, sizeof(buf) - 1);
-    printf("ptytest: read %ld bytes from master: \"%s\"\r\n", (long)r, buf);
+    printf("ptytest: read %ld bytes from master: \"%s\"\n", (long)r, buf);
 
     // Test proc_set_handle: launch hello with PTY slave as stdio
     int proc = proc_create("/initrd/bin/hello", NULL);
@@ -45,15 +45,15 @@ int main(void) {
 
         memset(buf, 0, sizeof(buf));
         r = read(master_fd, buf, sizeof(buf) - 1);
-        printf("ptytest: child output via PTY: \"%s\"\r\n", buf);
+        printf("ptytest: child output via PTY: \"%s\"\n", buf);
 
         int exit_code = -1;
         proc_wait(proc, &exit_code);
-        printf("ptytest: child exited with code %d\r\n", exit_code);
+        printf("ptytest: child exited with code %d\n", exit_code);
     }
 
     close(slave_fd);
     close(master_fd);
-    printf("ptytest: all tests passed\r\n");
+    printf("ptytest: all tests passed\n");
     return 0;
 }

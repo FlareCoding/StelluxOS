@@ -181,7 +181,7 @@ char* line_edit_read(line_edit_state* s, const char* prompt) {
         }
 
         if (c == '\r' || c == '\n') {
-            write(1, "\r\n", 2);
+            write(1, "\n", 1);
             s->line_buf[s->line_len] = '\0';
             history_add(s, s->line_buf);
             return s->line_buf;

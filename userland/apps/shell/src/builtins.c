@@ -12,7 +12,7 @@ static int builtin_cd(int argc, const char* argv[]) {
     if (chdir(path) < 0) {
         shell_write("cd: ");
         shell_write(path);
-        shell_write(": no such directory\r\n");
+        shell_write(": no such directory\n");
     }
     return 1;
 }
@@ -21,9 +21,9 @@ static int builtin_pwd(void) {
     char buf[512];
     if (getcwd(buf, sizeof(buf))) {
         shell_write(buf);
-        write(1, "\r\n", 2);
+        write(1, "\n", 1);
     } else {
-        shell_write("pwd: error\r\n");
+        shell_write("pwd: error\n");
     }
     return 1;
 }
@@ -47,7 +47,7 @@ static int builtin_history(line_edit_state* editor) {
         shell_write(num);
         write(1, "  ", 2);
         shell_write(editor->history[slot]);
-        write(1, "\r\n", 2);
+        write(1, "\n", 1);
     }
     return 1;
 }
@@ -70,7 +70,7 @@ int try_builtin(int argc, const char* argv[], line_edit_state* editor,
 
     if (strcmp(argv[0], "$?") == 0) {
         write_int(last_status);
-        write(1, "\r\n", 2);
+        write(1, "\n", 1);
         return 1;
     }
 
@@ -83,7 +83,7 @@ int try_builtin(int argc, const char* argv[], line_edit_state* editor,
                 write(1, argv[i], strlen(argv[i]));
             }
         }
-        write(1, "\r\n", 2);
+        write(1, "\n", 1);
         return 1;
     }
 

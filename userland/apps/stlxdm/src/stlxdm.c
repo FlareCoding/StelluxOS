@@ -408,9 +408,9 @@ static void stlxdm_spawn_terminal(void) {
     int handle = proc_exec("/initrd/bin/stlxterm", NULL);
     if (handle >= 0) {
         proc_detach(handle);
-        printf("stlxdm: spawned new terminal\r\n");
+        printf("stlxdm: spawned new terminal\n");
     } else {
-        printf("stlxdm: failed to spawn terminal\r\n");
+        printf("stlxdm: failed to spawn terminal\n");
     }
 }
 
@@ -419,17 +419,17 @@ int main(void) {
 
     stlxgfx_fb_t fb;
     if (stlxgfx_fb_open(&fb) != 0) {
-        printf("stlxdm: failed to open framebuffer\r\n");
+        printf("stlxdm: failed to open framebuffer\n");
         return 1;
     }
 
     if (stlxgfx_font_init(STLXGFX_FONT_PATH) != 0) {
-        printf("stlxdm: font init failed\r\n");
+        printf("stlxdm: font init failed\n");
     }
 
     stlxdm_compositor_t compositor;
     if (stlxdm_compositor_init(&compositor, &fb) != 0) {
-        printf("stlxdm: failed to create compositor\r\n");
+        printf("stlxdm: failed to create compositor\n");
         stlxgfx_fb_close(&fb);
         return 1;
     }
@@ -438,7 +438,7 @@ int main(void) {
 
     int listen_fd = stlxgfx_dm_listen(STLXGFX_DM_SOCKET_PATH);
     if (listen_fd < 0) {
-        printf("stlxdm: failed to bind socket\r\n");
+        printf("stlxdm: failed to bind socket\n");
         stlxgfx_fb_close(&fb);
         return 1;
     }

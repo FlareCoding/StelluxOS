@@ -27,7 +27,7 @@ int main(int argc, char* argv[]) {
         if (sleep_ms > 0) {
             nanosleep(&ts, NULL);
         }
-        printf("hello\r\n");
+        printf("hello\n");
     }
 
     return count;
