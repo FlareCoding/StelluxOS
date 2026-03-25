@@ -172,6 +172,28 @@ void hub_driver::handle_port_change(uint8_t port) {
         clear_port_feature(port, PORT_FEATURE_C_SUSPEND);
     }
 
+    // USB 2.0 Section 11.8.1: if the hub disabled a port due to babble or
+    // error (C_PORT_ENABLE set, PORT_ENABLE cleared, device still connected),
+    // treat it as a connect change so we re-enumerate.  Matches Linux's
+    // "disabled by hub (EMI?), re-enabling..." path.
+    if ((status.change & PORT_CHANGE_ENABLE) && !(status.change & PORT_CHANGE_CONNECTION)) {
+        if (!(status.status & PORT_STATUS_ENABLE) &&
+            (status.status & PORT_STATUS_CONNECTION)) {
+            log::warn("hub: port %u disabled by hub (babble?), re-enabling", port);
+            if (reset_port(port) != 0) {
+                log::error("hub: port %u re-enable reset failed", port);
+                return;
+            }
+            if (get_port_status(port, &status) != 0) return;
+            if (status.status & PORT_STATUS_ENABLE) {
+                uint8_t speed = hub_speed_to_xhci_speed(status.status);
+                hcd->queue_hub_disconnect(xdev, port);
+                hcd->queue_hub_enumerate(xdev, port, speed);
+            }
+            return;
+        }
+    }
+
     if (status.change & PORT_CHANGE_CONNECTION) {
         if (status.status & PORT_STATUS_CONNECTION) {
             log::info("hub: device connected on port %u", port);
@@ -181,7 +203,6 @@ void hub_driver::handle_port_change(uint8_t port) {
                 return;
             }
 
-            // Re-read status after reset to get speed
             if (get_port_status(port, &status) != 0) {
                 log::error("hub: failed to read post-reset status for port %u", port);
                 return;

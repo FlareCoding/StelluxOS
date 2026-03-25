@@ -46,6 +46,14 @@ void write(const char* data, size_t len);
 int32_t read_char();
 
 /**
+ * @brief Redirect serial output to a different I/O port.
+ * Initializes the new port at 115200 baud and redirects
+ * all subsequent I/O to it.
+ * @param port I/O port base address of the new UART (e.g. from a PCI BAR).
+ */
+void set_port(uint16_t port);
+
+/**
  * @brief Register a callback invoked for each received character.
  * Called from interrupt context; the callback must be __PRIVILEGED_CODE.
  * @note Privilege: **required**

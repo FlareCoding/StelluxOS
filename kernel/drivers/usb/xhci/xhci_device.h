@@ -6,6 +6,7 @@
 #include "xhci_endpoint.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
+#include "sync/mutex.h"
 
 namespace usb { struct device; }
 
@@ -73,6 +74,9 @@ public:
 
     // Control transfer ring
     inline xhci_transfer_ring* ctrl_ring() { return m_ctrl_ring; }
+
+    // EP0 transfer mutex — serializes enqueue+doorbell+wait across tasks
+    inline sync::mutex& ctrl_transfer_mutex() { return m_ctrl_transfer_mutex; }
 
     // EP0 completion state accessors
     inline sync::spinlock&   ctrl_completion_lock() { return m_ctrl_completion_lock; }
@@ -148,6 +152,9 @@ private:
     uintptr_t m_ctrl_transfer_buffer_phys = 0;
 
     xhci_transfer_ring* m_ctrl_ring = nullptr;
+
+    // EP0 transfer mutex — protects enqueue+doorbell+wait against concurrent callers
+    sync::mutex m_ctrl_transfer_mutex;
 
     // EP0 completion tracking
     sync::wait_queue m_ctrl_completion_wq;

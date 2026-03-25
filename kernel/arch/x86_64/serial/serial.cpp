@@ -38,46 +38,46 @@ constexpr uint8_t MCR_OUT2 = 0x08;        // OUT2 (enables IRQs)
 // IER bits
 constexpr uint8_t IER_RX_AVAIL = 0x01;    // Received data available
 
+// Baud rate divisors
+constexpr uint16_t BAUD_115200 = 0x01;
+
 constexpr uint8_t COM1_LEGACY_IRQ = 4;
+
+static uint16_t g_port_base = COM1_BASE;
 
 __PRIVILEGED_BSS static rx_callback_t g_rx_callback;
 
+static void init_uart(uint16_t port, uint16_t baud_divisor = BAUD_115200) {
+    portio::out8(port + REG_IER, 0x00);
+    portio::out8(port + REG_LCR, LCR_DLAB);
+    portio::out8(port + REG_DATA, static_cast<uint8_t>(baud_divisor & 0xFF));
+    portio::out8(port + REG_IER, static_cast<uint8_t>((baud_divisor >> 8) & 0xFF));
+    portio::out8(port + REG_LCR, LCR_8N1);
+    portio::out8(port + REG_FCR, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX | FCR_TRIGGER_14);
+    portio::out8(port + REG_MCR, MCR_DTR | MCR_RTS | MCR_OUT2);
+}
+
 int32_t init() {
-    // Disable all interrupts
-    portio::out8(COM1_BASE + REG_IER, 0x00);
+    init_uart(g_port_base);
 
-    // Enable DLAB to set baud rate divisor
-    portio::out8(COM1_BASE + REG_LCR, LCR_DLAB);
-
-    // Set divisor to 1 (115200 baud with 1.8432 MHz clock)
-    portio::out8(COM1_BASE + REG_DATA, 0x01); // Divisor low byte
-    portio::out8(COM1_BASE + REG_IER, 0x00);  // Divisor high byte
-
-    // Configure 8N1, disable DLAB
-    portio::out8(COM1_BASE + REG_LCR, LCR_8N1);
-
-    // Enable and clear FIFOs, set 14-byte trigger
-    portio::out8(COM1_BASE + REG_FCR, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX | FCR_TRIGGER_14);
-
-    // Enable DTR, RTS, and OUT2 (for interrupts, though we use polling)
-    portio::out8(COM1_BASE + REG_MCR, MCR_DTR | MCR_RTS | MCR_OUT2);
-
-    // Verify the UART is working by checking if we can read LSR
-    uint8_t lsr = portio::in8(COM1_BASE + REG_LSR);
+    uint8_t lsr = portio::in8(g_port_base + REG_LSR);
     if (lsr == 0xFF) {
-        // No UART present (all bits high typically means no device)
         return ERR_NO_DEVICE;
     }
 
     return OK;
 }
 
+void set_port(uint16_t port) {
+    init_uart(port);
+    g_port_base = port;
+}
+
 void write_char(char c) {
-    // Wait for transmit buffer to be empty
-    while ((portio::in8(COM1_BASE + REG_LSR) & LSR_TX_EMPTY) == 0) {
+    while ((portio::in8(g_port_base + REG_LSR) & LSR_TX_EMPTY) == 0) {
         asm volatile ("pause");
     }
-    portio::out8(COM1_BASE + REG_DATA, static_cast<uint8_t>(c));
+    portio::out8(g_port_base + REG_DATA, static_cast<uint8_t>(c));
 }
 
 void write(const char* data, size_t len) {
@@ -87,11 +87,10 @@ void write(const char* data, size_t len) {
 }
 
 int32_t read_char() {
-    // Check if data is available
-    if ((portio::in8(COM1_BASE + REG_LSR) & LSR_DATA_READY) == 0) {
+    if ((portio::in8(g_port_base + REG_LSR) & LSR_DATA_READY) == 0) {
         return ERR_NO_DATA;
     }
-    return portio::in8(COM1_BASE + REG_DATA);
+    return portio::in8(g_port_base + REG_DATA);
 }
 
 int32_t remap() {
@@ -103,6 +102,11 @@ __PRIVILEGED_CODE void set_rx_callback(rx_callback_t cb) {
 }
 
 __PRIVILEGED_CODE int32_t enable_rx_interrupt() {
+    if (g_port_base != COM1_BASE) {
+        // PCI serial adapters use PCI interrupt lines, not legacy IRQ 4.
+        // RX interrupt routing for PCI UARTs is not supported.
+        return ERR_NO_DEVICE;
+    }
     int32_t rc = ioapic::route_irq(COM1_LEGACY_IRQ, x86::VEC_SERIAL, 0);
     if (rc != ioapic::OK) {
         return rc;
@@ -112,8 +116,8 @@ __PRIVILEGED_CODE int32_t enable_rx_interrupt() {
 }
 
 __PRIVILEGED_CODE void on_rx_irq() {
-    while ((portio::in8(COM1_BASE + REG_LSR) & LSR_DATA_READY) != 0) {
-        char c = static_cast<char>(portio::in8(COM1_BASE + REG_DATA));
+    while ((portio::in8(g_port_base + REG_LSR) & LSR_DATA_READY) != 0) {
+        char c = static_cast<char>(portio::in8(g_port_base + REG_DATA));
         if (g_rx_callback) {
             g_rx_callback(c);
         }

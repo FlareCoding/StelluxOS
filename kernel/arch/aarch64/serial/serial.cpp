@@ -168,4 +168,8 @@ __PRIVILEGED_CODE uint32_t irq_id() {
     return PL011_GIC_INTID;
 }
 
+void set_port(uint16_t) {
+    // No-op: AArch64 uses PL011 MMIO, not x86 port I/O
+}
+
 } // namespace serial

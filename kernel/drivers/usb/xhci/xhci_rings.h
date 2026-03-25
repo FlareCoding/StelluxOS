@@ -90,6 +90,7 @@ public:
     inline uintptr_t get_physical_base() const { return m_physical_base; }
     inline uint8_t  get_cycle_bit() const { return m_rcs_bit; }
     inline uint8_t get_doorbell_id() const { return m_doorbell_id; }
+    inline size_t  get_max_trb_count() const { return m_max_trb_count; }
     
     uintptr_t get_enqueue_phys() const;
     bool can_enqueue(size_t n) const;
