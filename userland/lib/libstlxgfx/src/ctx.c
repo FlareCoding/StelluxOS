@@ -15,13 +15,17 @@ void stlxgfx_ctx_init(stlxgfx_ctx_t *ctx, stlxgfx_surface_t *target) {
 }
 
 int stlxgfx_ctx_save(stlxgfx_ctx_t *ctx) {
-    if (ctx->stack_depth >= STLXGFX_CTX_MAX_SAVE_DEPTH) return -1;
+    if (ctx->stack_depth >= STLXGFX_CTX_MAX_SAVE_DEPTH) {
+        return -1;
+    }
     ctx->stack[ctx->stack_depth++] = ctx->state;
     return 0;
 }
 
 int stlxgfx_ctx_restore(stlxgfx_ctx_t *ctx) {
-    if (ctx->stack_depth <= 0) return -1;
+    if (ctx->stack_depth <= 0) {
+        return -1;
+    }
     ctx->state = ctx->stack[--ctx->stack_depth];
     return 0;
 }
@@ -84,7 +88,9 @@ static int ctx_clip_rect(const stlxgfx_ctx_t *ctx,
     int32_t rx1 = ax1 < cx1 ? ax1 : cx1;
     int32_t ry1 = ay1 < cy1 ? ay1 : cy1;
 
-    if (rx0 >= rx1 || ry0 >= ry1) return 0;
+    if (rx0 >= rx1 || ry0 >= ry1) {
+        return 0;
+    }
 
     *ox = rx0;
     *oy = ry0;
@@ -94,37 +100,50 @@ static int ctx_clip_rect(const stlxgfx_ctx_t *ctx,
 }
 
 void stlxgfx_ctx_clear(stlxgfx_ctx_t *ctx, uint32_t color) {
-    if (!ctx || !ctx->target) return;
+    if (!ctx || !ctx->target) {
+        return;
+    }
     const stlxgfx_clip_t *c = &ctx->state.clip;
-    if (c->w == 0 || c->h == 0) return;
+    if (c->w == 0 || c->h == 0) {
+        return;
+    }
     stlxgfx_fill_rect(ctx->target, c->x, c->y, c->w, c->h, color);
 }
 
 void stlxgfx_ctx_fill_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
                             uint32_t w, uint32_t h, uint32_t color) {
-    if (!ctx || !ctx->target) return;
+    if (!ctx || !ctx->target) {
+        return;
+    }
     int32_t ox, oy;
     uint32_t ow, oh;
-    if (ctx_clip_rect(ctx, x, y, w, h, &ox, &oy, &ow, &oh))
+    if (ctx_clip_rect(ctx, x, y, w, h, &ox, &oy, &ow, &oh)) {
         stlxgfx_fill_rect(ctx->target, ox, oy, ow, oh, color);
+    }
 }
 
 void stlxgfx_ctx_draw_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
                             uint32_t w, uint32_t h, uint32_t color) {
-    if (!ctx || !ctx->target || w == 0 || h == 0) return;
+    if (!ctx || !ctx->target || w == 0 || h == 0) {
+        return;
+    }
     stlxgfx_ctx_fill_rect(ctx, x, y, w, 1, color);
-    if (h > 1)
+    if (h > 1) {
         stlxgfx_ctx_fill_rect(ctx, x, y + (int32_t)h - 1, w, 1, color);
+    }
     if (h > 2) {
         stlxgfx_ctx_fill_rect(ctx, x, y + 1, 1, h - 2, color);
-        if (w > 1)
+        if (w > 1) {
             stlxgfx_ctx_fill_rect(ctx, x + (int32_t)w - 1, y + 1, 1, h - 2, color);
+        }
     }
 }
 
 void stlxgfx_ctx_fill_circle(stlxgfx_ctx_t *ctx, int32_t cx, int32_t cy,
                               uint32_t radius, uint32_t color) {
-    if (!ctx || !ctx->target || radius == 0) return;
+    if (!ctx || !ctx->target || radius == 0) {
+        return;
+    }
 
     int32_t r = (int32_t)radius;
     int32_t px = 0, py = r, d = 1 - r;
@@ -132,8 +151,12 @@ void stlxgfx_ctx_fill_circle(stlxgfx_ctx_t *ctx, int32_t cx, int32_t cy,
     stlxgfx_ctx_fill_rect(ctx, cx - r, cy, (uint32_t)(2 * r + 1), 1, color);
     while (px < py) {
         px++;
-        if (d < 0) { d += 2 * px + 1; }
-        else { py--; d += 2 * (px - py) + 1; }
+        if (d < 0) {
+            d += 2 * px + 1;
+        } else {
+            py--;
+            d += 2 * (px - py) + 1;
+        }
         stlxgfx_ctx_fill_rect(ctx, cx - px, cy + py, (uint32_t)(2 * px + 1), 1, color);
         stlxgfx_ctx_fill_rect(ctx, cx - px, cy - py, (uint32_t)(2 * px + 1), 1, color);
         stlxgfx_ctx_fill_rect(ctx, cx - py, cy + px, (uint32_t)(2 * py + 1), 1, color);
@@ -144,9 +167,13 @@ void stlxgfx_ctx_fill_circle(stlxgfx_ctx_t *ctx, int32_t cx, int32_t cy,
 void stlxgfx_ctx_fill_rounded_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
                                     uint32_t w, uint32_t h, uint32_t radius,
                                     uint32_t color) {
-    if (!ctx || !ctx->target || w == 0 || h == 0) return;
+    if (!ctx || !ctx->target || w == 0 || h == 0) {
+        return;
+    }
     uint32_t max_r = (w < h ? w : h) / 2;
-    if (radius > max_r) radius = max_r;
+    if (radius > max_r) {
+        radius = max_r;
+    }
     if (radius == 0) {
         stlxgfx_ctx_fill_rect(ctx, x, y, w, h, color);
         return;
@@ -176,14 +203,20 @@ void stlxgfx_ctx_fill_rounded_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
         stlxgfx_ctx_fill_rect(ctx, cx_br,      cy_br + px, (uint32_t)(py + 1), 1, color);
 
         px++;
-        if (d < 0) { d += 2 * px + 1; }
-        else { py--; d += 2 * (px - py) + 1; }
+        if (d < 0) {
+            d += 2 * px + 1;
+        } else {
+            py--;
+            d += 2 * (px - py) + 1;
+        }
     }
 }
 
 void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
                             int32_t x1, int32_t y1, uint32_t color) {
-    if (!ctx || !ctx->target) return;
+    if (!ctx || !ctx->target) {
+        return;
+    }
 
     int32_t ax0 = ctx->state.ox + x0;
     int32_t ay0 = ctx->state.oy + y0;
@@ -213,11 +246,15 @@ void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
                 px[s->red_shift   / 8] = (color >> 16) & 0xFF;
                 px[s->green_shift / 8] = (color >>  8) & 0xFF;
                 px[s->blue_shift  / 8] =  color        & 0xFF;
-                if (bytes_pp == 4)
+                if (bytes_pp == 4) {
                     px[stlxgfx_alpha_byte_index(s)] = (color >> 24) & 0xFF;
+                }
             }
             err -= abs_dy;
-            if (err < 0) { y += sy; err += abs_dx; }
+            if (err < 0) {
+                y += sy;
+                err += abs_dx;
+            }
         }
     } else {
         int32_t err = abs_dy / 2;
@@ -228,11 +265,15 @@ void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
                 px[s->red_shift   / 8] = (color >> 16) & 0xFF;
                 px[s->green_shift / 8] = (color >>  8) & 0xFF;
                 px[s->blue_shift  / 8] =  color        & 0xFF;
-                if (bytes_pp == 4)
+                if (bytes_pp == 4) {
                     px[stlxgfx_alpha_byte_index(s)] = (color >> 24) & 0xFF;
+                }
             }
             err -= abs_dx;
-            if (err < 0) { x += sx; err += abs_dy; }
+            if (err < 0) {
+                x += sx;
+                err += abs_dy;
+            }
         }
     }
 }
@@ -240,9 +281,13 @@ void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
 void stlxgfx_ctx_draw_text(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
                             const char *text, uint32_t font_size,
                             uint32_t color) {
-    if (!ctx || !ctx->target) return;
+    if (!ctx || !ctx->target) {
+        return;
+    }
     const stlxgfx_clip_t *c = &ctx->state.clip;
-    if (c->w == 0 || c->h == 0) return;
+    if (c->w == 0 || c->h == 0) {
+        return;
+    }
     stlxgfx_draw_text_clipped(ctx->target,
                                ctx->state.ox + x, ctx->state.oy + y,
                                text, font_size, color,
@@ -257,7 +302,9 @@ void stlxgfx_ctx_text_size(const char *text, uint32_t font_size,
 void stlxgfx_ctx_blit(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
                        const stlxgfx_surface_t *src, int32_t sx, int32_t sy,
                        uint32_t w, uint32_t h) {
-    if (!ctx || !ctx->target || !src) return;
+    if (!ctx || !ctx->target || !src) {
+        return;
+    }
 
     int32_t adx = ctx->state.ox + dx;
     int32_t ady = ctx->state.oy + dy;
@@ -269,11 +316,27 @@ void stlxgfx_ctx_blit(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
     int32_t sw = (int32_t)w;
     int32_t sh = (int32_t)h;
 
-    if (adx < c->x) { int32_t d = c->x - adx; sx += d; sw -= d; adx = c->x; }
-    if (ady < c->y) { int32_t d = c->y - ady; sy += d; sh -= d; ady = c->y; }
-    if (adx + sw > cx1) sw = cx1 - adx;
-    if (ady + sh > cy1) sh = cy1 - ady;
-    if (sw <= 0 || sh <= 0) return;
+    if (adx < c->x) {
+        int32_t d = c->x - adx;
+        sx += d;
+        sw -= d;
+        adx = c->x;
+    }
+    if (ady < c->y) {
+        int32_t d = c->y - ady;
+        sy += d;
+        sh -= d;
+        ady = c->y;
+    }
+    if (adx + sw > cx1) {
+        sw = cx1 - adx;
+    }
+    if (ady + sh > cy1) {
+        sh = cy1 - ady;
+    }
+    if (sw <= 0 || sh <= 0) {
+        return;
+    }
 
     stlxgfx_blit(ctx->target, adx, ady, src, sx, sy, (uint32_t)sw, (uint32_t)sh);
 }
@@ -281,7 +344,9 @@ void stlxgfx_ctx_blit(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
 void stlxgfx_ctx_blit_alpha(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
                              const stlxgfx_surface_t *src, int32_t sx, int32_t sy,
                              uint32_t w, uint32_t h) {
-    if (!ctx || !ctx->target || !src) return;
+    if (!ctx || !ctx->target || !src) {
+        return;
+    }
 
     int32_t adx = ctx->state.ox + dx;
     int32_t ady = ctx->state.oy + dy;
@@ -293,11 +358,27 @@ void stlxgfx_ctx_blit_alpha(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
     int32_t sw = (int32_t)w;
     int32_t sh = (int32_t)h;
 
-    if (adx < c->x) { int32_t d = c->x - adx; sx += d; sw -= d; adx = c->x; }
-    if (ady < c->y) { int32_t d = c->y - ady; sy += d; sh -= d; ady = c->y; }
-    if (adx + sw > cx1) sw = cx1 - adx;
-    if (ady + sh > cy1) sh = cy1 - ady;
-    if (sw <= 0 || sh <= 0) return;
+    if (adx < c->x) {
+        int32_t d = c->x - adx;
+        sx += d;
+        sw -= d;
+        adx = c->x;
+    }
+    if (ady < c->y) {
+        int32_t d = c->y - ady;
+        sy += d;
+        sh -= d;
+        ady = c->y;
+    }
+    if (adx + sw > cx1) {
+        sw = cx1 - adx;
+    }
+    if (ady + sh > cy1) {
+        sh = cy1 - ady;
+    }
+    if (sw <= 0 || sh <= 0) {
+        return;
+    }
 
     stlxgfx_blit_alpha(ctx->target, adx, ady, src, sx, sy, (uint32_t)sw, (uint32_t)sh);
 }
