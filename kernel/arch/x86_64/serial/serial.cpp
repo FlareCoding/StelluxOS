@@ -40,72 +40,14 @@ constexpr uint8_t IER_RX_AVAIL = 0x01;    // Received data available
 
 // Baud rate divisors
 constexpr uint16_t BAUD_115200 = 0x01;
-constexpr uint16_t BAUD_9600 = 0x0C;
 
 constexpr uint8_t COM1_LEGACY_IRQ = 4;
-
-// PCI Configuration Mechanism 1 (0xCF8/0xCFC) for early boot device setup.
-// Used before pci::init() to enable the PCI serial adapter.
-constexpr uint16_t PCI_CONFIG_ADDR = 0x0CF8;
-constexpr uint16_t PCI_CONFIG_DATA = 0x0CFC;
-
-static uint32_t pci_cfg_read32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg) {
-    portio::out32(PCI_CONFIG_ADDR, 0x80000000u
-        | (static_cast<uint32_t>(bus) << 16)
-        | (static_cast<uint32_t>(dev) << 11)
-        | (static_cast<uint32_t>(fn) << 8)
-        | (reg & 0xFCu));
-    return portio::in32(PCI_CONFIG_DATA);
-}
-
-static void pci_cfg_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t reg, uint32_t val) {
-    portio::out32(PCI_CONFIG_ADDR, 0x80000000u
-        | (static_cast<uint32_t>(bus) << 16)
-        | (static_cast<uint32_t>(dev) << 11)
-        | (static_cast<uint32_t>(fn) << 8)
-        | (reg & 0xFCu));
-    portio::out32(PCI_CONFIG_DATA, val);
-}
-
-// MCS9922 PCI location (lspci: 05:00.0) and identity
-constexpr uint8_t  SERIAL_PCI_BUS = 0x05;
-constexpr uint8_t  SERIAL_PCI_DEV = 0x00;
-constexpr uint8_t  SERIAL_PCI_FN  = 0x00;
-constexpr uint16_t MOSCHIP_VENDOR = 0x9710;
-
-constexpr uint8_t PCI_REG_ID  = 0x00;
-constexpr uint8_t PCI_REG_CMD = 0x04;
-constexpr uint8_t PCI_REG_BAR0 = 0x10;
-constexpr uint16_t PCI_CMD_IO = 0x0001;
-constexpr uint16_t PCI_CMD_MEM = 0x0002;
-constexpr uint16_t PCI_CMD_BM = 0x0004;
-
-// Probe the MCS9922 via raw config space: verify vendor ID, enable I/O
-// space in the Command register, and return BAR0's I/O port address.
-// Returns 0 on failure (wrong device / not an I/O BAR).
-static uint16_t enable_pci_serial() {
-    uint32_t id = pci_cfg_read32(SERIAL_PCI_BUS, SERIAL_PCI_DEV, SERIAL_PCI_FN, PCI_REG_ID);
-    if ((id & 0xFFFF) != MOSCHIP_VENDOR)
-        return 0;
-
-    uint32_t cmd_status = pci_cfg_read32(SERIAL_PCI_BUS, SERIAL_PCI_DEV, SERIAL_PCI_FN, PCI_REG_CMD);
-    uint16_t cmd = static_cast<uint16_t>(cmd_status & 0xFFFF);
-    cmd |= PCI_CMD_IO | PCI_CMD_MEM | PCI_CMD_BM;
-    pci_cfg_write32(SERIAL_PCI_BUS, SERIAL_PCI_DEV, SERIAL_PCI_FN, PCI_REG_CMD,
-                    (cmd_status & 0xFFFF0000u) | cmd);
-
-    uint32_t bar0 = pci_cfg_read32(SERIAL_PCI_BUS, SERIAL_PCI_DEV, SERIAL_PCI_FN, PCI_REG_BAR0);
-    if ((bar0 & 0x1) == 0)
-        return 0;
-
-    return static_cast<uint16_t>(bar0 & ~0x3u);
-}
 
 static uint16_t g_port_base = COM1_BASE;
 
 __PRIVILEGED_BSS static rx_callback_t g_rx_callback;
 
-static void init_uart(uint16_t port, uint16_t baud_divisor) {
+static void init_uart(uint16_t port, uint16_t baud_divisor = BAUD_115200) {
     portio::out8(port + REG_IER, 0x00);
     portio::out8(port + REG_LCR, LCR_DLAB);
     portio::out8(port + REG_DATA, static_cast<uint8_t>(baud_divisor & 0xFF));
@@ -116,11 +58,7 @@ static void init_uart(uint16_t port, uint16_t baud_divisor) {
 }
 
 int32_t init() {
-    uint16_t pci_port = enable_pci_serial();
-    if (pci_port != 0)
-        g_port_base = pci_port;
-
-    init_uart(g_port_base, BAUD_115200);
+    init_uart(g_port_base);
 
     uint8_t lsr = portio::in8(g_port_base + REG_LSR);
     if (lsr == 0xFF) {
@@ -131,7 +69,7 @@ int32_t init() {
 }
 
 void set_port(uint16_t port) {
-    init_uart(port, BAUD_9600);
+    init_uart(port);
     g_port_base = port;
 }
 

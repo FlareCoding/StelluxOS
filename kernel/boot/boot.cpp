@@ -19,6 +19,7 @@
 #include "terminal/terminal.h"
 #include "hw/rtc.h"
 #include "pci/pci.h"
+#include "dynpriv/dynpriv.h"
 #include "msi/msi.h"
 #include "drivers/pci_driver.h"
 #include "drivers/graphics/gfxfb.h"
@@ -65,6 +66,22 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (pci::init() != pci::OK) {
         log::warn("pci::init failed, PCI devices unavailable");
+    } else {
+        // Many x86 machines (especially desktops) lack a built-in COM1 port,
+        // making serial debugging an issue. A PCI serial adapter plugged
+        // into a motherboard slot provides one. If we find a PCI serial
+        // controller, redirect all serial output to it.
+        pci::device* serial_pci = pci::find_by_class(0x07, 0x00);
+        if (serial_pci) {
+            const auto& bar = serial_pci->get_bar(0);
+            if (bar.type == pci::BAR_IO && bar.phys != 0 && bar.phys != 0x3F8) {
+                RUN_ELEVATED(serial_pci->enable());
+                serial::set_port(static_cast<uint16_t>(bar.phys));
+                log::info("serial: redirected to PCI adapter at %02x:%02x.%x (port 0x%x)",
+                          serial_pci->bus(), serial_pci->slot(), serial_pci->func(),
+                          static_cast<uint32_t>(bar.phys));
+            }
+        }
     }
 
     if (rtc::init() != rtc::OK) {

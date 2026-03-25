@@ -47,10 +47,8 @@ int32_t read_char();
 
 /**
  * @brief Redirect serial output to a different I/O port.
- * On x86_64: initializes the new port as a 16550 UART and redirects all
- * subsequent write_char()/write() calls to it. Used to redirect output to
- * a PCI serial adapter on machines without a built-in COM port.
- * On AArch64: no-op (serial uses PL011 MMIO, not port I/O).
+ * Initializes the new port at 115200 baud and redirects
+ * all subsequent I/O to it.
  * @param port I/O port base address of the new UART (e.g. from a PCI BAR).
  */
 void set_port(uint16_t port);
