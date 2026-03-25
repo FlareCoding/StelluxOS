@@ -36,7 +36,7 @@ int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
     if (argc < 2) {
-        printf("stat: missing operand\r\n");
+        printf("stat: missing operand\n");
         return 1;
     }
 
@@ -44,7 +44,7 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         struct stat st;
         if (stat(argv[i], &st) < 0) {
-            printf("stat: cannot stat '%s'\r\n", argv[i]);
+            printf("stat: cannot stat '%s'\n", argv[i]);
             rc = 1;
             continue;
         }
@@ -52,12 +52,12 @@ int main(int argc, char* argv[]) {
         char mode_str[11];
         format_mode(st.st_mode, mode_str);
 
-        printf("  File: %s\r\n", argv[i]);
-        printf("  Size: %lld\r\n", (long long)st.st_size);
-        printf("  Type: %s\r\n", file_type(st.st_mode));
-        printf("Access: %s (0%o)\r\n", mode_str, (unsigned)(st.st_mode & 0777));
-        printf(" Inode: %llu\r\n", (unsigned long long)st.st_ino);
-        if (i < argc - 1) printf("\r\n");
+        printf("  File: %s\n", argv[i]);
+        printf("  Size: %lld\n", (long long)st.st_size);
+        printf("  Type: %s\n", file_type(st.st_mode));
+        printf("Access: %s (0%o)\n", mode_str, (unsigned)(st.st_mode & 0777));
+        printf(" Inode: %llu\n", (unsigned long long)st.st_ino);
+        if (i < argc - 1) printf("\n");
     }
     return rc;
 }

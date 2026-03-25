@@ -154,6 +154,64 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
 }
 
 /**
+ * All-or-nothing write: either writes all `len` bytes atomically or
+ * writes nothing. In nonblock mode returns RB_ERR_AGAIN when
+ * insufficient space; in blocking mode waits until space is available.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock) {
+    if (!rb || !buf || len == 0) {
+        return RB_ERR_INVAL;
+    }
+
+    // Reject writes that can never succeed (len exceeds max writable space)
+    if (len > rb->capacity - 1) {
+        return RB_ERR_INVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+
+    if (writable_bytes(rb) < len && !rb->reader_closed) {
+        if (nonblock) {
+            sync::spin_unlock_irqrestore(rb->lock, irq);
+            return RB_ERR_AGAIN;
+        }
+        while (writable_bytes(rb) < len && !rb->reader_closed && !sched::is_kill_pending()) {
+            irq = sync::wait(rb->write_wq, rb->lock, irq);
+        }
+    }
+
+    if (rb->reader_closed || sched::is_kill_pending()) {
+        sync::spin_unlock_irqrestore(rb->lock, irq);
+        return RB_ERR_PIPE;
+    }
+
+    size_t space = writable_bytes(rb);
+    if (space < len) {
+        sync::spin_unlock_irqrestore(rb->lock, irq);
+        return RB_ERR_AGAIN;
+    }
+
+    size_t head_idx = rb->head & (rb->capacity - 1);
+    size_t first = rb->capacity - head_idx;
+    if (first > len) {
+        first = len;
+    }
+
+    string::memcpy(rb->data + head_idx, buf, first);
+    if (first < len) {
+        string::memcpy(rb->data, buf + first, len - first);
+    }
+
+    rb->head += len;
+
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+    sync::wake_one(rb->read_wq);
+
+    return static_cast<ssize_t>(len);
+}
+
+/**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void ring_buffer_close_write(ring_buffer* rb) {
