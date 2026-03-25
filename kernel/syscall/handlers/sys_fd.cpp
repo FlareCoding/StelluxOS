@@ -801,6 +801,9 @@ DEFINE_SYSCALL3(lseek, fd, offset, whence) {
     int64_t result = fs::seek(f, static_cast<int64_t>(offset),
                               static_cast<int>(whence));
     resource::resource_release(obj);
+    if (result < 0) {
+        return syscall::error_map::map_fs_error(static_cast<int32_t>(result));
+    }
     return result;
 }
 

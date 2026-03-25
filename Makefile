@@ -556,7 +556,7 @@ doom-wad:
 		echo "initrd/res/doom1.wad already exists ($$(wc -c < initrd/res/doom1.wad) bytes)"; \
 	else \
 		echo "Downloading DOOM1.WAD (shareware, ~4.1 MB)..."; \
-		curl -L -o initrd/res/doom1.wad \
+		curl -fL -o initrd/res/doom1.wad \
 			"https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad"; \
 		echo ""; \
 		echo "Downloaded: initrd/res/doom1.wad ($$(wc -c < initrd/res/doom1.wad) bytes)"; \
