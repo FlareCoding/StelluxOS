@@ -550,6 +550,18 @@ rpi4-firmware:
 	@echo ""
 	@echo "RPi4 UEFI firmware ready in $(RPI4_UEFI_DIR)/"
 
+doom-wad:
+	@mkdir -p initrd/res
+	@if [ -f initrd/res/doom1.wad ]; then \
+		echo "initrd/res/doom1.wad already exists ($$(wc -c < initrd/res/doom1.wad) bytes)"; \
+	else \
+		echo "Downloading DOOM1.WAD (shareware, ~4.1 MB)..."; \
+		curl -fL -o initrd/res/doom1.wad \
+			"https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad"; \
+		echo ""; \
+		echo "Downloaded: initrd/res/doom1.wad ($$(wc -c < initrd/res/doom1.wad) bytes)"; \
+	fi
+
 toolchain-check:
 	@echo "=== Toolchain Check ==="
 	@echo ""
@@ -622,6 +634,7 @@ help:
 	@echo "  make limine                  Download Limine bootloader"
 	@echo "  make musl                    Build musl libc for both architectures"
 	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
+	@echo "  make doom-wad                Download DOOM1.WAD shareware"
 	@echo "  make toolchain-check         Verify tools are installed"
 	@echo ""
 	@echo "Build:"

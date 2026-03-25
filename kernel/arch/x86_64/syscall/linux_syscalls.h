@@ -10,6 +10,7 @@ constexpr uint64_t WRITE            = 1;
 constexpr uint64_t OPEN             = 2;
 constexpr uint64_t CLOSE            = 3;
 constexpr uint64_t STAT             = 4;
+constexpr uint64_t LSEEK            = 8;
 constexpr uint64_t FSTAT            = 5;
 constexpr uint64_t LSTAT            = 6;
 constexpr uint64_t MMAP             = 9;

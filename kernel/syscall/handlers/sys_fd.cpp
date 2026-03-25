@@ -774,6 +774,39 @@ DEFINE_SYSCALL3(open, pathname, flags, mode) {
     return do_open_common(AT_FDCWD, pathname, flags, mode);
 }
 
+DEFINE_SYSCALL3(lseek, fd, offset, whence) {
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
+    if (rc != resource::HANDLE_OK || !obj) {
+        return syscall::EBADF;
+    }
+
+    if (obj->type != resource::resource_type::FILE) {
+        resource::resource_release(obj);
+        return syscall::ESPIPE;
+    }
+
+    fs::file* f = resource::file_provider::get_file(obj);
+    if (!f) {
+        resource::resource_release(obj);
+        return syscall::EBADF;
+    }
+
+    int64_t result = fs::seek(f, static_cast<int64_t>(offset),
+                              static_cast<int>(whence));
+    resource::resource_release(obj);
+    if (result < 0) {
+        return syscall::error_map::map_fs_error(static_cast<int32_t>(result));
+    }
+    return result;
+}
+
 DEFINE_SYSCALL3(read, fd, buf, count) {
     if (count == 0) {
         return 0;
