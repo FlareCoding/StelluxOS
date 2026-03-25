@@ -96,6 +96,45 @@ static ssize_t pty_slave_read(
     return result;
 }
 
+static ssize_t pty_slave_write_onlcr(pty_channel* chan,
+                                      const uint8_t* src, size_t count,
+                                      bool nonblock) {
+    size_t written = 0;
+    size_t i = 0;
+
+    while (i < count) {
+        // Find the next \n (or end of buffer)
+        size_t chunk_start = i;
+        while (i < count && src[i] != '\n') {
+            i++;
+        }
+
+        // Write the chunk before the \n
+        if (i > chunk_start) {
+            ssize_t n = ring_buffer_write(chan->m_output_rb,
+                                          src + chunk_start,
+                                          i - chunk_start, nonblock);
+            if (n < 0) {
+                return written > 0 ? static_cast<ssize_t>(written) : n;
+            }
+            written += static_cast<size_t>(n);
+        }
+
+        // If we hit a \n, write \r\n
+        if (i < count && src[i] == '\n') {
+            static const uint8_t crlf[2] = {'\r', '\n'};
+            ssize_t n = ring_buffer_write(chan->m_output_rb,
+                                          crlf, 2, nonblock);
+            if (n < 0) {
+                return written > 0 ? static_cast<ssize_t>(written) : n;
+            }
+            written++;  // count the original \n byte consumed
+            i++;
+        }
+    }
+    return static_cast<ssize_t>(written);
+}
+
 static ssize_t pty_slave_write(
     resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags
 ) {
@@ -104,10 +143,17 @@ static ssize_t pty_slave_write(
     }
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
+    auto* chan = ep->channel.ptr();
     ssize_t result;
+
     RUN_ELEVATED({
-        result = ring_buffer_write(ep->channel->m_output_rb,
-                                   static_cast<const uint8_t*>(ksrc), count, nonblock);
+        if (chan->m_oflags & PTY_OFLAG_ONLCR) {
+            result = pty_slave_write_onlcr(chan,
+                         static_cast<const uint8_t*>(ksrc), count, nonblock);
+        } else {
+            result = ring_buffer_write(chan->m_output_rb,
+                         static_cast<const uint8_t*>(ksrc), count, nonblock);
+        }
     });
     return result;
 }
@@ -185,6 +231,7 @@ __PRIVILEGED_CODE int32_t create_pair(
     terminal::ld_init(&chan->m_ld);
     chan->m_echo = { pty_echo_fn, chan.ptr() };
     chan->m_id = __atomic_fetch_add(&g_next_pty_id, 1, __ATOMIC_RELAXED);
+    chan->m_oflags = PTY_OFLAG_ONLCR;
 
     auto* ep_master = heap::kalloc_new<pty_endpoint>();
     if (!ep_master) {
