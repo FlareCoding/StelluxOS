@@ -99,7 +99,7 @@ static ssize_t pty_slave_read(
 static ssize_t pty_slave_write_onlcr(pty_channel* chan,
                                       const uint8_t* src, size_t count,
                                       bool nonblock) {
-    size_t written = 0;
+    size_t consumed = 0;   // bytes consumed from src
     size_t i = 0;
 
     while (i < count) {
@@ -111,28 +111,37 @@ static ssize_t pty_slave_write_onlcr(pty_channel* chan,
 
         // Write the chunk before the \n
         if (i > chunk_start) {
+            size_t chunk_len = i - chunk_start;
             ssize_t n = ring_buffer_write(chan->m_output_rb,
                                           src + chunk_start,
-                                          i - chunk_start, nonblock);
+                                          chunk_len, nonblock);
             if (n < 0) {
-                return written > 0 ? static_cast<ssize_t>(written) : n;
+                return consumed > 0 ? static_cast<ssize_t>(consumed) : n;
             }
-            written += static_cast<size_t>(n);
+            consumed += static_cast<size_t>(n);
+            // Short write: rewind i to retry remaining bytes next time
+            if (static_cast<size_t>(n) < chunk_len) {
+                return static_cast<ssize_t>(consumed);
+            }
         }
 
-        // If we hit a \n, write \r\n
+        // If we hit a \n, write \r\n atomically
         if (i < count && src[i] == '\n') {
             static const uint8_t crlf[2] = {'\r', '\n'};
             ssize_t n = ring_buffer_write(chan->m_output_rb,
                                           crlf, 2, nonblock);
             if (n < 0) {
-                return written > 0 ? static_cast<ssize_t>(written) : n;
+                return consumed > 0 ? static_cast<ssize_t>(consumed) : n;
             }
-            written++;  // count the original \n byte consumed
+            // Partial CRLF (only \r written): don't consume the \n
+            if (n < 2) {
+                return consumed > 0 ? static_cast<ssize_t>(consumed) : -1;
+            }
+            consumed++;  // count the original \n byte consumed
             i++;
         }
     }
-    return static_cast<ssize_t>(written);
+    return static_cast<ssize_t>(consumed);
 }
 
 static ssize_t pty_slave_write(

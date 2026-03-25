@@ -138,13 +138,13 @@ void DG_Init(void)
     s_window = stlxgfx_create_window(DOOMGENERIC_RESX, DOOMGENERIC_RESY,
                                       "DOOM");
     if (!s_window) {
-        printf("doom: failed to create window\n");
+        printf("doom: failed to create window\r\n");
         exit(1);
     }
 
     clock_gettime(CLOCK_MONOTONIC, &s_start_time);
 
-    printf("doom: initialized %dx%d window\n",
+    printf("doom: initialized %dx%d window\r\n",
            DOOMGENERIC_RESX, DOOMGENERIC_RESY);
 }
 
@@ -260,7 +260,7 @@ int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    printf("doom: starting (doomgeneric on Stellux)\n");
+    printf("doom: starting (doomgeneric on Stellux)\r\n");
 
     doomgeneric_Create(argc, argv);
 
