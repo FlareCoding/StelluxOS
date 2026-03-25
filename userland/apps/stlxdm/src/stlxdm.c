@@ -414,6 +414,17 @@ static void stlxdm_spawn_terminal(void) {
     }
 }
 
+static void stlxdm_spawn_doom(void) {
+    const char *argv[] = {"/initrd/bin/doom", "-iwad", "/initrd/res/doom1.wad", NULL};
+    int handle = proc_exec("/initrd/bin/doom", argv);
+    if (handle >= 0) {
+        proc_detach(handle);
+        printf("stlxdm: spawned doom\r\n");
+    } else {
+        printf("stlxdm: failed to spawn doom\r\n");
+    }
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -443,7 +454,7 @@ int main(void) {
         return 1;
     }
 
-    stlxdm_spawn_terminal();
+    stlxdm_spawn_doom();
 
     stlxdm_server_t server;
     stlxdm_server_init(&server, listen_fd);
