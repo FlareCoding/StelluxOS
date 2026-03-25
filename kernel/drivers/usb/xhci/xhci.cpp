@@ -193,12 +193,13 @@ void xhci_hcd::run() {
                            m_pending_doorbells[i].target);
         }
 
+        _process_pending_port_changes();
         _process_hub_events();
 
         // Hub event processing (and the device enumeration / class-driver
         // probing it triggers) can call _process_event_ring() internally,
         // which may complete interrupt-in stream TDs and queue deferred
-        // doorbells.  Flush any that accumulated during that work so the
+        // doorbells. Flush any that accumulated during that work so the
         // next interrupt TD is actually scheduled on the hardware ring.
         if (m_pending_doorbell_count > 0) {
             for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
@@ -597,15 +598,9 @@ void xhci_hcd::_process_event_ring() {
                 break;
             }
 
-            xhci_portsc_register portsc;
-            portsc.raw = *_portsc(port_id - 1);
-
-            if (portsc.csc && portsc.ccs) {
-                _setup_device(port_id - 1);
-            } else if (portsc.csc && !portsc.ccs) {
-                log::info("xhci: device disconnected from port %u", port_id);
-                _teardown_device(port_id - 1);
-                _ack_portsc_changes(port_id - 1, PORTSC_RW1C_BITS);
+            uint8_t port_index = port_id - 1;
+            if (port_index < 32) {
+                m_psc_pending_bitmap |= (1u << port_index);
             }
             break;
         }
@@ -669,6 +664,28 @@ void xhci_hcd::_process_event_ring() {
             log::debug("xhci: unhandled event TRB type: %s",
                         trb_type_to_string(static_cast<uint8_t>(trb->trb_type)));
             break;
+        }
+    }
+}
+
+void xhci_hcd::_process_pending_port_changes() {
+    while (m_psc_pending_bitmap != 0) {
+        uint32_t bitmap = m_psc_pending_bitmap;
+        m_psc_pending_bitmap = 0;
+
+        for (uint8_t i = 0; i < m_hc_params.max_ports && bitmap != 0; i++) {
+            if (!(bitmap & (1u << i))) continue;
+
+            xhci_portsc_register portsc;
+            portsc.raw = *_portsc(i);
+
+            if (portsc.csc && portsc.ccs) {
+                _setup_device(i);
+            } else if (portsc.csc && !portsc.ccs) {
+                log::info("xhci: device disconnected from port %u", i + 1);
+                _teardown_device(i);
+                _ack_portsc_changes(i, PORTSC_RW1C_BITS);
+            }
         }
     }
 }

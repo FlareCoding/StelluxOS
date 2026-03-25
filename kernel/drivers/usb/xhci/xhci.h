@@ -151,6 +151,12 @@ private:
     pending_doorbell m_pending_doorbells[32] = {};
     uint8_t          m_pending_doorbell_count = 0;
 
+    // Deferred port status change bitmap. PSC events set bits here during
+    // _process_event_ring(); the main loop drains them via
+    // _process_pending_port_changes(). This avoids re-entrant _setup_device
+    // calls when _process_event_ring is invoked from _send_command.
+    uint32_t m_psc_pending_bitmap = 0;
+
 private:
     void _parse_extended_capabilities();
     void _request_bios_handoff(volatile uint32_t* usblegsup);
@@ -164,6 +170,7 @@ private:
     int32_t _configure_runtime_registers();
 
     void _process_event_ring();
+    void _process_pending_port_changes();
 
     // Command submission
     int32_t _send_command(xhci::xhci_trb_t* trb, xhci::xhci_command_completion_trb_t* out = nullptr);
