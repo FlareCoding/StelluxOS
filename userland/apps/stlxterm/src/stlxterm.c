@@ -169,6 +169,7 @@ int main(void) {
     struct timespec frame_interval = { 0, STLXTERM_FRAME_NS };
     int blink_counter = 0;
     int cursor_visible = 1;
+    int focused = 1;
 
     while (stlxgfx_window_is_open(win)) {
         stlxgfx_event_t evt;
@@ -177,6 +178,17 @@ int main(void) {
                 stlxgfx_window_destroy(win);
                 win = NULL;
                 break;
+            }
+            if (evt.type == STLXGFX_EVT_FOCUS_IN) {
+                focused = 1;
+                cursor_visible = 1;
+                blink_counter = 0;
+                term->dirty = 1;
+            }
+            if (evt.type == STLXGFX_EVT_FOCUS_OUT) {
+                focused = 0;
+                cursor_visible = 0;
+                term->dirty = 1;
             }
             if (evt.type == STLXGFX_EVT_KEY_DOWN) {
                 char seq[8];
@@ -197,15 +209,19 @@ int main(void) {
         if (n == 0) break;
         if (n > 0) {
             term_feed(term, pty_buf, (int)n);
-            cursor_visible = 1;
-            blink_counter = 0;
+            if (focused) {
+                cursor_visible = 1;
+                blink_counter = 0;
+            }
         }
 
-        blink_counter++;
-        if (blink_counter >= STLXTERM_BLINK_FRAMES) {
-            blink_counter = 0;
-            cursor_visible = !cursor_visible;
-            term->dirty = 1;
+        if (focused) {
+            blink_counter++;
+            if (blink_counter >= STLXTERM_BLINK_FRAMES) {
+                blink_counter = 0;
+                cursor_visible = !cursor_visible;
+                term->dirty = 1;
+            }
         }
 
         if (term->dirty) {

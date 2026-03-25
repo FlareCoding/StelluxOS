@@ -102,7 +102,7 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
                 srv->clients[i].fd, &hdr, req, fb);
             if (win) {
                 srv->clients[i].window = win;
-                stlxdm_input_add_window(inp, i);
+                stlxdm_input_add_window_with_focus(inp, i, srv->clients);
             }
         } else if (hdr.message_type == STLXGFX_MSG_DESTROY_WINDOW_REQ) {
             if (srv->clients[i].window) {

@@ -20,6 +20,8 @@ typedef enum {
     HIT_CLIENT
 } hit_zone_t;
 
+static void set_focus(stlxdm_input_t* inp, dm_client_t* clients, int new_slot);
+
 static const char* g_cursor_shape[16] = {
     "X                 ",
     "XX                ",
@@ -55,6 +57,17 @@ void stlxdm_input_init(stlxdm_input_t* inp, int32_t fb_w, int32_t fb_h) {
     inp->z_count = 0;
 }
 
+void stlxdm_input_add_window_with_focus(stlxdm_input_t* inp, int slot,
+                                         dm_client_t* clients) {
+    for (int i = 0; i < inp->z_count; i++) {
+        if (inp->z_order[i] == slot) return;
+    }
+    if (inp->z_count < STLXGFX_DM_MAX_CLIENTS) {
+        inp->z_order[inp->z_count++] = slot;
+    }
+    set_focus(inp, clients, slot);
+}
+
 void stlxdm_input_add_window(stlxdm_input_t* inp, int slot) {
     for (int i = 0; i < inp->z_count; i++) {
         if (inp->z_order[i] == slot) return;
@@ -62,9 +75,7 @@ void stlxdm_input_add_window(stlxdm_input_t* inp, int slot) {
     if (inp->z_count < STLXGFX_DM_MAX_CLIENTS) {
         inp->z_order[inp->z_count++] = slot;
     }
-    if (inp->focused_slot < 0) {
-        inp->focused_slot = slot;
-    }
+    inp->focused_slot = slot;
 }
 
 void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot) {
