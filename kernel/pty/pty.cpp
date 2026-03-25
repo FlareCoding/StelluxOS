@@ -125,19 +125,22 @@ static ssize_t pty_slave_write_onlcr(pty_channel* chan,
             }
         }
 
-        // If we hit a \n, write \r\n
+        // If we hit a \n, write \r\n atomically.
+        // Pre-check that at least 2 bytes of space are available so
+        // ring_buffer_write cannot produce a partial 1-byte write.
         if (i < count && src[i] == '\n') {
+            if (ring_buffer_writable(chan->m_output_rb) < 2) {
+                // Not enough space for the full \r\n pair.
+                return consumed > 0 ? static_cast<ssize_t>(consumed)
+                                    : static_cast<ssize_t>(RB_ERR_AGAIN);
+            }
             static const uint8_t crlf[2] = {'\r', '\n'};
             ssize_t n = ring_buffer_write(chan->m_output_rb,
-                                          crlf, 2, nonblock);
-            if (n < 0) {
-                return consumed > 0 ? static_cast<ssize_t>(consumed) : n;
-            }
-            if (n == 1) {
-                // Only \r was written; complete the pair by writing \n.
-                // Use blocking write to guarantee the \n follows the \r.
-                static const uint8_t lf = '\n';
-                ring_buffer_write(chan->m_output_rb, &lf, 1, false);
+                                          crlf, 2, true);
+            if (n < 2) {
+                // Should not happen after the space check, but be safe.
+                return consumed > 0 ? static_cast<ssize_t>(consumed)
+                                    : static_cast<ssize_t>(RB_ERR_AGAIN);
             }
             consumed++;  // count the original \n byte consumed
             i++;
