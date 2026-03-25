@@ -2,6 +2,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+static inline uint32_t read_pixel(const uint8_t* pixel, const stlxgfx_surface_t* s) {
+    uint8_t r = pixel[s->red_shift   / 8];
+    uint8_t g = pixel[s->green_shift / 8];
+    uint8_t b = pixel[s->blue_shift  / 8];
+    uint8_t a = 0xFF;
+    if (s->bpp == 32) {
+        uint8_t alpha_byte = 3;
+        if (s->red_shift != 0 && s->green_shift != 0 && s->blue_shift != 0)
+            alpha_byte = 0;
+        a = pixel[alpha_byte];
+    }
+    return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
 static inline void write_pixel(uint8_t* pixel, const stlxgfx_surface_t* s, uint32_t color) {
     uint8_t r = (color >> 16) & 0xFF;
     uint8_t g = (color >>  8) & 0xFF;
@@ -258,6 +272,113 @@ int stlxgfx_fill_rounded_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
         } else {
             py--;
             d += 2 * (px - py) + 1;
+        }
+    }
+    return 0;
+}
+
+static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
+                                uint32_t src_color) {
+    uint8_t sa = (src_color >> 24) & 0xFF;
+    if (sa == 0) return;
+    if (sa == 255) {
+        write_pixel(dst_px, dst, src_color);
+        return;
+    }
+    uint8_t sr = (src_color >> 16) & 0xFF;
+    uint8_t sg = (src_color >>  8) & 0xFF;
+    uint8_t sb =  src_color        & 0xFF;
+    uint8_t dr = dst_px[dst->red_shift   / 8];
+    uint8_t dg = dst_px[dst->green_shift / 8];
+    uint8_t db = dst_px[dst->blue_shift  / 8];
+    uint8_t inv = 255 - sa;
+    dst_px[dst->red_shift   / 8] = (uint8_t)((sr * sa + dr * inv) / 255);
+    dst_px[dst->green_shift / 8] = (uint8_t)((sg * sa + dg * inv) / 255);
+    dst_px[dst->blue_shift  / 8] = (uint8_t)((sb * sa + db * inv) / 255);
+    if (dst->bpp == 32) {
+        uint8_t alpha_byte = 3;
+        if (dst->red_shift != 0 && dst->green_shift != 0 && dst->blue_shift != 0)
+            alpha_byte = 0;
+        dst_px[alpha_byte] = 0xFF;
+    }
+}
+
+int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
+                        const stlxgfx_surface_t* src, int32_t sx, int32_t sy,
+                        uint32_t w, uint32_t h) {
+    if (!dst || !dst->pixels || !src || !src->pixels) return -1;
+
+    int32_t sw = (int32_t)w;
+    int32_t sh = (int32_t)h;
+
+    if (sx < 0) { sw += sx; dx -= sx; sx = 0; }
+    if (sy < 0) { sh += sy; dy -= sy; sy = 0; }
+    if (dx < 0) { sw += dx; sx -= dx; dx = 0; }
+    if (dy < 0) { sh += dy; sy -= dy; dy = 0; }
+    if (sw <= 0 || sh <= 0) return 0;
+
+    if ((uint32_t)sx + (uint32_t)sw > src->width)  sw = (int32_t)(src->width  - (uint32_t)sx);
+    if ((uint32_t)sy + (uint32_t)sh > src->height) sh = (int32_t)(src->height - (uint32_t)sy);
+    if ((uint32_t)dx + (uint32_t)sw > dst->width)  sw = (int32_t)(dst->width  - (uint32_t)dx);
+    if ((uint32_t)dy + (uint32_t)sh > dst->height) sh = (int32_t)(dst->height - (uint32_t)dy);
+    if (sw <= 0 || sh <= 0) return 0;
+
+    uint32_t dst_bpp = dst->bpp / 8;
+    uint32_t src_bpp = src->bpp / 8;
+
+    for (int32_t row = 0; row < sh; row++) {
+        const uint8_t* src_row = src->pixels + ((uint32_t)sy + (uint32_t)row) * src->pitch + (uint32_t)sx * src_bpp;
+        uint8_t* dst_row = dst->pixels + ((uint32_t)dy + (uint32_t)row) * dst->pitch + (uint32_t)dx * dst_bpp;
+        for (int32_t col = 0; col < sw; col++) {
+            uint32_t sc = read_pixel(src_row, src);
+            blend_pixel(dst_row, dst, sc);
+            src_row += src_bpp;
+            dst_row += dst_bpp;
+        }
+    }
+    return 0;
+}
+
+int stlxgfx_draw_line(stlxgfx_surface_t* s, int32_t x0, int32_t y0,
+                       int32_t x1, int32_t y1, uint32_t color) {
+    if (!s || !s->pixels) return -1;
+
+    int32_t dx = x1 - x0;
+    int32_t dy = y1 - y0;
+    int32_t abs_dx = dx < 0 ? -dx : dx;
+    int32_t abs_dy = dy < 0 ? -dy : dy;
+    int32_t sx = dx < 0 ? -1 : 1;
+    int32_t sy = dy < 0 ? -1 : 1;
+
+    uint32_t bytes_pp = s->bpp / 8;
+
+    if (abs_dx >= abs_dy) {
+        int32_t err = abs_dx / 2;
+        int32_t y = y0;
+        for (int32_t x = x0; x != x1 + sx; x += sx) {
+            if (x >= 0 && x < (int32_t)s->width && y >= 0 && y < (int32_t)s->height) {
+                uint8_t* px = s->pixels + (uint32_t)y * s->pitch + (uint32_t)x * bytes_pp;
+                write_pixel(px, s, color);
+            }
+            err -= abs_dy;
+            if (err < 0) {
+                y += sy;
+                err += abs_dx;
+            }
+        }
+    } else {
+        int32_t err = abs_dy / 2;
+        int32_t x = x0;
+        for (int32_t y = y0; y != y1 + sy; y += sy) {
+            if (x >= 0 && x < (int32_t)s->width && y >= 0 && y < (int32_t)s->height) {
+                uint8_t* px = s->pixels + (uint32_t)y * s->pitch + (uint32_t)x * bytes_pp;
+                write_pixel(px, s, color);
+            }
+            err -= abs_dx;
+            if (err < 0) {
+                x += sx;
+                err += abs_dy;
+            }
         }
     }
     return 0;

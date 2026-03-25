@@ -14,8 +14,8 @@
 #include <stlxgfx/internal/stb_truetype.h>
 #pragma GCC diagnostic pop
 
-#define CHAR_CACHE_SIZE 128
-#define CHAR_CACHE_BASE 32
+#define CACHE_BUCKETS    512
+#define CACHE_MAX_FILL   384
 
 typedef struct {
     unsigned char* bitmap;
@@ -24,42 +24,44 @@ typedef struct {
     int xoff;
     int yoff;
     uint32_t font_size;
+    int codepoint;
     int valid;
-} char_cache_entry_t;
+} cache_entry_t;
 
 static stbtt_fontinfo g_font_info;
 static void*          g_font_data;
 static int            g_font_loaded;
-static char_cache_entry_t g_cache[CHAR_CACHE_SIZE];
-static uint32_t       g_cached_font_size;
+static cache_entry_t  g_cache[CACHE_BUCKETS];
+static int            g_cache_fill;
+
+static int font_ensure_loaded(void) {
+    if (g_font_loaded) return 0;
+    return stlxgfx_font_init(STLXGFX_FONT_PATH);
+}
+
+static uint32_t cache_hash(int codepoint, uint32_t font_size) {
+    uint32_t h = (uint32_t)codepoint * 2654435761u;
+    h ^= font_size * 2246822519u;
+    return h % CACHE_BUCKETS;
+}
 
 static void cache_clear(void) {
-    for (int i = 0; i < CHAR_CACHE_SIZE; i++) {
+    for (int i = 0; i < CACHE_BUCKETS; i++) {
         if (g_cache[i].bitmap) {
             free(g_cache[i].bitmap);
             g_cache[i].bitmap = NULL;
         }
         g_cache[i].valid = 0;
     }
-    g_cached_font_size = 0;
+    g_cache_fill = 0;
 }
 
 static unsigned char* cache_get(int codepoint, uint32_t font_size,
                                 int* w, int* h, int* xoff, int* yoff) {
-    if (codepoint < CHAR_CACHE_BASE ||
-        codepoint >= CHAR_CACHE_BASE + CHAR_CACHE_SIZE) {
-        return NULL;
-    }
+    uint32_t idx = cache_hash(codepoint, font_size);
+    cache_entry_t* e = &g_cache[idx];
 
-    if (g_cached_font_size != font_size) {
-        cache_clear();
-        g_cached_font_size = font_size;
-    }
-
-    int idx = codepoint - CHAR_CACHE_BASE;
-    char_cache_entry_t* e = &g_cache[idx];
-
-    if (e->valid && e->font_size == font_size) {
+    if (e->valid && e->codepoint == codepoint && e->font_size == font_size) {
         *w = e->width;
         *h = e->height;
         *xoff = e->xoff;
@@ -74,6 +76,16 @@ static unsigned char* cache_get(int codepoint, uint32_t font_size,
         return NULL;
     }
 
+    if (g_cache_fill >= CACHE_MAX_FILL) {
+        cache_clear();
+    }
+
+    if (e->bitmap) {
+        free(e->bitmap);
+        e->bitmap = NULL;
+        if (e->valid) g_cache_fill--;
+    }
+
     size_t bmp_size = (size_t)(*w) * (size_t)(*h);
     e->bitmap = malloc(bmp_size);
     if (e->bitmap) {
@@ -83,7 +95,9 @@ static unsigned char* cache_get(int codepoint, uint32_t font_size,
         e->xoff = *xoff;
         e->yoff = *yoff;
         e->font_size = font_size;
+        e->codepoint = codepoint;
         e->valid = 1;
+        g_cache_fill++;
     }
 
     stbtt_FreeBitmap(bmp, NULL);
@@ -200,7 +214,10 @@ static inline void alpha_blend_pixel(uint8_t* pixel, const stlxgfx_surface_t* s,
 
 int stlxgfx_draw_text(stlxgfx_surface_t* s, int32_t x, int32_t y,
                       const char* text, uint32_t font_size, uint32_t color) {
-    if (!s || !s->pixels || !text || !g_font_loaded || font_size == 0) {
+    if (!s || !s->pixels || !text || font_size == 0) {
+        return -1;
+    }
+    if (font_ensure_loaded() != 0) {
         return -1;
     }
 
@@ -265,7 +282,12 @@ int stlxgfx_draw_text(stlxgfx_surface_t* s, int32_t x, int32_t y,
 
 void stlxgfx_text_size(const char* text, uint32_t font_size,
                        uint32_t* out_w, uint32_t* out_h) {
-    if (!text || !g_font_loaded || font_size == 0) {
+    if (!text || font_size == 0) {
+        if (out_w) *out_w = 0;
+        if (out_h) *out_h = 0;
+        return;
+    }
+    if (font_ensure_loaded() != 0) {
         if (out_w) *out_w = 0;
         if (out_h) *out_h = 0;
         return;

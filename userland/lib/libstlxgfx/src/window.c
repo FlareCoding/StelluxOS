@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <stlxgfx/window.h>
+#include <stlxgfx/font.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -94,8 +95,9 @@ void stlxgfx_disconnect(int conn_fd) {
     }
 }
 
-stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
-                                          uint32_t height, const char* title) {
+static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
+                                                  uint32_t height, const char* title,
+                                                  int owns_connection) {
     if (conn_fd < 0 || width == 0 || height == 0) {
         return NULL;
     }
@@ -218,7 +220,8 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
     win->red_shift = resp.red_shift;
     win->green_shift = resp.green_shift;
     win->blue_shift = resp.blue_shift;
-    win->conn_fd = conn_fd;
+    win->conn_fd = owns_connection ? conn_fd : -1;
+    win->open = 1;
 
     uint32_t bi = atomic_load_explicit(&sync->back_index, memory_order_acquire);
     win->back = stlxgfx_surface_from_buffer(
@@ -239,41 +242,81 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
     return win;
 }
 
-void stlxgfx_window_close(stlxgfx_window_t* window) {
-    if (!window) {
-        return;
+stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
+                                          const char* title) {
+    stlxgfx_font_init(STLXGFX_FONT_PATH);
+
+    int conn_fd = stlxgfx_connect(STLXGFX_DM_SOCKET_PATH);
+    if (conn_fd < 0) return NULL;
+
+    stlxgfx_window_t* win = create_window_internal(conn_fd, width, height, title, 1);
+    if (!win) {
+        close(conn_fd);
+        return NULL;
     }
-    if (window->conn_fd >= 0) {
+    return win;
+}
+
+stlxgfx_window_t* stlxgfx_create_window_ex(int conn_fd, uint32_t width,
+                                             uint32_t height, const char* title) {
+    return create_window_internal(conn_fd, width, height, title, 0);
+}
+
+static void window_cleanup(stlxgfx_window_t* window) {
+    if (!window) return;
+
+    int owned_conn = window->conn_fd;
+
+    if (owned_conn >= 0) {
         stlxgfx_destroy_window_req_t req = { .window_id = window->window_id };
-        send_message(window->conn_fd, STLXGFX_MSG_DESTROY_WINDOW_REQ, 0,
+        send_message(owned_conn, STLXGFX_MSG_DESTROY_WINDOW_REQ, 0,
                      &req, sizeof(req));
     }
-    if (window->back) {
+    if (window->back)
         stlxgfx_destroy_surface(window->back);
-    }
-    if (window->event_ring) {
+    if (window->event_ring)
         munmap(window->event_ring, sizeof(stlxgfx_event_ring_t));
-    }
-    if (window->surface_buf) {
+    if (window->surface_buf)
         munmap(window->surface_buf, window->surface_size);
-    }
-    if (window->events_fd >= 0) {
+    if (window->events_fd >= 0)
         close(window->events_fd);
-    }
-    if (window->surface_fd >= 0) {
+    if (window->surface_fd >= 0)
         close(window->surface_fd);
-    }
-    if (window->sync) {
+    if (window->sync)
         munmap(window->sync, sizeof(stlxgfx_window_sync_t));
-    }
-    if (window->sync_fd >= 0) {
+    if (window->sync_fd >= 0)
         close(window->sync_fd);
-    }
+    if (owned_conn >= 0)
+        close(owned_conn);
+
+    window->open = 0;
+}
+
+void stlxgfx_window_destroy(stlxgfx_window_t* window) {
+    if (!window) return;
+    window_cleanup(window);
     free(window);
 }
 
+void stlxgfx_window_close(stlxgfx_window_t* window) {
+    stlxgfx_window_destroy(window);
+}
+
+int stlxgfx_window_is_open(stlxgfx_window_t* window) {
+    if (!window) return 0;
+    return window->open;
+}
+
+int stlxgfx_window_should_close(stlxgfx_window_t* window) {
+    if (!window || !window->sync) {
+        return 1;
+    }
+    return atomic_load_explicit(&window->sync->close_requested,
+                                memory_order_acquire) != 0;
+}
+
 stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
-    if (!window || !window->sync || !window->back) {
+    if (!window || !window->sync || !window->back || !window->open) {
         return NULL;
     }
     uint32_t bi = atomic_load_explicit(&window->sync->back_index,
@@ -284,7 +327,7 @@ stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
 }
 
 int stlxgfx_window_swap_buffers(stlxgfx_window_t* window) {
-    if (!window || !window->sync) {
+    if (!window || !window->sync || !window->open) {
         return -1;
     }
     stlxgfx_window_sync_t* s = window->sync;
@@ -308,12 +351,24 @@ int stlxgfx_window_swap_buffers(stlxgfx_window_t* window) {
     return 0;
 }
 
-int stlxgfx_window_should_close(stlxgfx_window_t* window) {
-    if (!window || !window->sync) {
+int stlxgfx_window_next_event(stlxgfx_window_t* window,
+                               stlxgfx_event_t* event) {
+    if (!window || !window->event_ring || !event) return 0;
+
+    if (window->sync &&
+        atomic_load_explicit(&window->sync->close_requested,
+                             memory_order_acquire)) {
+        stlxgfx_event_t close_evt;
+        memset(&close_evt, 0, sizeof(close_evt));
+        close_evt.type = STLXGFX_EVT_CLOSE_REQUESTED;
+        close_evt.window_id = window->window_id;
+        *event = close_evt;
+        atomic_store_explicit(&window->sync->close_requested, 0,
+                              memory_order_release);
         return 1;
     }
-    return atomic_load_explicit(&window->sync->close_requested,
-                                memory_order_acquire) != 0;
+
+    return stlxgfx_event_ring_read(window->event_ring, event);
 }
 
 /* --- DM-side implementation --- */
@@ -651,4 +706,34 @@ stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window) {
         return NULL;
     }
     return window->front;
+}
+
+/* --- DM damage tracking --- */
+
+void stlxgfx_dm_damage_init(stlxgfx_dm_damage_t *dmg) {
+    dmg->count = 0;
+    dmg->full = 1;
+}
+
+void stlxgfx_dm_damage_add(stlxgfx_dm_damage_t *dmg, int32_t x, int32_t y,
+                            uint32_t w, uint32_t h) {
+    if (dmg->full) return;
+    if (dmg->count >= STLXGFX_DM_MAX_DAMAGE_RECTS) {
+        dmg->full = 1;
+        return;
+    }
+    stlxgfx_dm_rect_t *r = &dmg->rects[dmg->count++];
+    r->x = x;
+    r->y = y;
+    r->w = w;
+    r->h = h;
+}
+
+void stlxgfx_dm_damage_full(stlxgfx_dm_damage_t *dmg) {
+    dmg->full = 1;
+}
+
+void stlxgfx_dm_damage_reset(stlxgfx_dm_damage_t *dmg) {
+    dmg->count = 0;
+    dmg->full = 0;
 }

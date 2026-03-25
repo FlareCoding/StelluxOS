@@ -6,14 +6,16 @@
 
 /* --- Window event types --- */
 
-#define STLXGFX_EVT_KEY_DOWN          1
-#define STLXGFX_EVT_KEY_UP            2
-#define STLXGFX_EVT_POINTER_MOVE      3
-#define STLXGFX_EVT_POINTER_BTN_DOWN  4
-#define STLXGFX_EVT_POINTER_BTN_UP    5
-#define STLXGFX_EVT_POINTER_SCROLL    6
-#define STLXGFX_EVT_FOCUS_IN          7
-#define STLXGFX_EVT_FOCUS_OUT         8
+#define STLXGFX_EVT_KEY_DOWN          0x0001
+#define STLXGFX_EVT_KEY_UP            0x0002
+#define STLXGFX_EVT_POINTER_MOVE      0x0010
+#define STLXGFX_EVT_POINTER_BTN_DOWN  0x0011
+#define STLXGFX_EVT_POINTER_BTN_UP    0x0012
+#define STLXGFX_EVT_POINTER_SCROLL    0x0013
+#define STLXGFX_EVT_FOCUS_IN          0x0020
+#define STLXGFX_EVT_FOCUS_OUT         0x0021
+#define STLXGFX_EVT_CLOSE_REQUESTED   0x0040
+#define STLXGFX_EVT_RESIZE            0x0050
 
 /* --- Window event record --- */
 
@@ -32,6 +34,10 @@ typedef struct {
             int16_t wheel;
             uint16_t buttons;
         } pointer;
+        struct {
+            uint32_t new_width;
+            uint32_t new_height;
+        } resize;
     };
 } stlxgfx_event_t;
 
