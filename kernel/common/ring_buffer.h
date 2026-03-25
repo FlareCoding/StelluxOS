@@ -24,15 +24,6 @@ struct ring_buffer {
 };
 
 /**
- * Return the number of bytes that can be written without blocking.
- * Caller must hold rb->lock or be in a context where head/tail are stable.
- */
-static inline size_t ring_buffer_writable(const ring_buffer* rb) {
-    size_t used = (rb->head - rb->tail) & (rb->capacity - 1);
-    return rb->capacity - 1 - used;
-}
-
-/**
  * Allocate and initialize a ring buffer.
  * Control struct from privileged heap, data from unprivileged heap.
  * @return Ring buffer pointer on success, nullptr on allocation failure.
@@ -59,6 +50,15 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock = false);
+
+/**
+ * All-or-nothing write: writes all `len` bytes atomically or none.
+ * In nonblock mode returns RB_ERR_AGAIN when insufficient space;
+ * in blocking mode waits until enough space is available.
+ * @return len on success, or negative error.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock = false);
 
 /**
  * Mark the write side as closed. Wakes all blocked readers so they can see EOF.
