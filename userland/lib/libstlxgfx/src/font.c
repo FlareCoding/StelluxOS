@@ -35,7 +35,9 @@ static cache_entry_t  g_cache[CACHE_BUCKETS];
 static int            g_cache_fill;
 
 static int font_ensure_loaded(void) {
-    if (g_font_loaded) return 0;
+    if (g_font_loaded) {
+        return 0;
+    }
     return stlxgfx_font_init(STLXGFX_FONT_PATH);
 }
 
@@ -83,7 +85,9 @@ static unsigned char* cache_get(int codepoint, uint32_t font_size,
     if (e->bitmap) {
         free(e->bitmap);
         e->bitmap = NULL;
-        if (e->valid) g_cache_fill--;
+        if (e->valid) {
+            g_cache_fill--;
+        }
     }
 
     size_t bmp_size = (size_t)(*w) * (size_t)(*h);
@@ -169,7 +173,9 @@ void stlxgfx_font_cleanup(void) {
 
 static inline void alpha_blend_pixel(uint8_t* pixel, const stlxgfx_surface_t* s,
                                      uint32_t color, uint8_t alpha) {
-    if (alpha == 0) return;
+    if (alpha == 0) {
+        return;
+    }
 
     uint8_t src_r = (color >> 16) & 0xFF;
     uint8_t src_g = (color >>  8) & 0xFF;
@@ -231,10 +237,14 @@ static int draw_text_internal(stlxgfx_surface_t* s, int32_t x, int32_t y,
 
             for (int py = 0; py < char_h; py++) {
                 int32_t sy = gy + py;
-                if (sy < cy0 || sy >= cy1) continue;
+                if (sy < cy0 || sy >= cy1) {
+                    continue;
+                }
                 for (int px = 0; px < char_w; px++) {
                     int32_t sx = gx + px;
-                    if (sx < cx0 || sx >= cx1) continue;
+                    if (sx < cx0 || sx >= cx1) {
+                        continue;
+                    }
 
                     uint8_t coverage = bitmap[py * char_w + px];
                     if (coverage > 0) {
@@ -258,8 +268,12 @@ static int draw_text_internal(stlxgfx_surface_t* s, int32_t x, int32_t y,
 
 int stlxgfx_draw_text(stlxgfx_surface_t* s, int32_t x, int32_t y,
                       const char* text, uint32_t font_size, uint32_t color) {
-    if (!s || !s->pixels || !text || font_size == 0) return -1;
-    if (font_ensure_loaded() != 0) return -1;
+    if (!s || !s->pixels || !text || font_size == 0) {
+        return -1;
+    }
+    if (font_ensure_loaded() != 0) {
+        return -1;
+    }
     return draw_text_internal(s, x, y, text, font_size, color,
                                0, 0, (int32_t)s->width, (int32_t)s->height);
 }
@@ -269,12 +283,20 @@ int stlxgfx_draw_text_clipped(stlxgfx_surface_t* s, int32_t x, int32_t y,
                                uint32_t color,
                                int32_t clip_x, int32_t clip_y,
                                uint32_t clip_w, uint32_t clip_h) {
-    if (!s || !s->pixels || !text || font_size == 0) return -1;
-    if (font_ensure_loaded() != 0) return -1;
+    if (!s || !s->pixels || !text || font_size == 0) {
+        return -1;
+    }
+    if (font_ensure_loaded() != 0) {
+        return -1;
+    }
     int32_t cx1 = clip_x + (int32_t)clip_w;
     int32_t cy1 = clip_y + (int32_t)clip_h;
-    if (cx1 > (int32_t)s->width) cx1 = (int32_t)s->width;
-    if (cy1 > (int32_t)s->height) cy1 = (int32_t)s->height;
+    if (cx1 > (int32_t)s->width) {
+        cx1 = (int32_t)s->width;
+    }
+    if (cy1 > (int32_t)s->height) {
+        cy1 = (int32_t)s->height;
+    }
     return draw_text_internal(s, x, y, text, font_size, color,
                                clip_x, clip_y, cx1, cy1);
 }
@@ -282,13 +304,21 @@ int stlxgfx_draw_text_clipped(stlxgfx_surface_t* s, int32_t x, int32_t y,
 void stlxgfx_text_size(const char* text, uint32_t font_size,
                        uint32_t* out_w, uint32_t* out_h) {
     if (!text || font_size == 0) {
-        if (out_w) *out_w = 0;
-        if (out_h) *out_h = 0;
+        if (out_w) {
+            *out_w = 0;
+        }
+        if (out_h) {
+            *out_h = 0;
+        }
         return;
     }
     if (font_ensure_loaded() != 0) {
-        if (out_w) *out_w = 0;
-        if (out_h) *out_h = 0;
+        if (out_w) {
+            *out_w = 0;
+        }
+        if (out_h) {
+            *out_h = 0;
+        }
         return;
     }
 
@@ -304,6 +334,10 @@ void stlxgfx_text_size(const char* text, uint32_t font_size,
         width += (int)((float)advance * scale);
     }
 
-    if (out_w) *out_w = (uint32_t)(width > 0 ? width : 0);
-    if (out_h) *out_h = (uint32_t)((int)((float)(ascent - descent) * scale));
+    if (out_w) {
+        *out_w = (uint32_t)(width > 0 ? width : 0);
+    }
+    if (out_h) {
+        *out_h = (uint32_t)((int)((float)(ascent - descent) * scale));
+    }
 }

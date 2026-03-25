@@ -77,7 +77,7 @@ typedef struct {
     atomic_uint_least32_t close_requested;
 } stlxgfx_window_sync_t;
 
-/* --- Client-side API --- */
+/* --- Client API --- */
 
 typedef struct stlxgfx_window_t_tag {
     stlxgfx_window_sync_t* sync;

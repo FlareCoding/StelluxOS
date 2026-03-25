@@ -119,8 +119,12 @@ int main(void) {
 
     uint32_t cell_w, cell_h;
     stlxgfx_text_size("M", STLXTERM_FONT_SIZE, &cell_w, &cell_h);
-    if (cell_w == 0) cell_w = 8;
-    if (cell_h == 0) cell_h = 16;
+    if (cell_w == 0) {
+        cell_w = 8;
+    }
+    if (cell_h == 0) {
+        cell_h = 16;
+    }
     int term_cols = (int)((STLXTERM_WIDTH  - 2 * STLXTERM_PADDING) / cell_w);
     int term_rows = (int)((STLXTERM_HEIGHT - 2 * STLXTERM_PADDING) / cell_h);
 
@@ -202,11 +206,15 @@ int main(void) {
                 }
             }
         }
-        if (!win) break;
+        if (!win) {
+            break;
+        }
 
         char pty_buf[512];
         ssize_t n = read(master_fd, pty_buf, sizeof(pty_buf));
-        if (n == 0) break;
+        if (n == 0) {
+            break;
+        }
         if (n > 0) {
             term_feed(term, pty_buf, (int)n);
             if (focused) {
@@ -241,6 +249,8 @@ int main(void) {
     proc_detach(shell_proc);
     close(master_fd);
     free(term);
-    if (win) stlxgfx_window_destroy(win);
+    if (win) {
+        stlxgfx_window_destroy(win);
+    }
     return 0;
 }
