@@ -125,7 +125,7 @@ static ssize_t pty_slave_write_onlcr(pty_channel* chan,
             }
         }
 
-        // If we hit a \n, write \r\n atomically
+        // If we hit a \n, write \r\n
         if (i < count && src[i] == '\n') {
             static const uint8_t crlf[2] = {'\r', '\n'};
             ssize_t n = ring_buffer_write(chan->m_output_rb,
@@ -133,9 +133,11 @@ static ssize_t pty_slave_write_onlcr(pty_channel* chan,
             if (n < 0) {
                 return consumed > 0 ? static_cast<ssize_t>(consumed) : n;
             }
-            // Partial CRLF (only \r written): don't consume the \n
-            if (n < 2) {
-                return consumed > 0 ? static_cast<ssize_t>(consumed) : -1;
+            if (n == 1) {
+                // Only \r was written; complete the pair by writing \n.
+                // Use blocking write to guarantee the \n follows the \r.
+                static const uint8_t lf = '\n';
+                ring_buffer_write(chan->m_output_rb, &lf, 1, false);
             }
             consumed++;  // count the original \n byte consumed
             i++;
