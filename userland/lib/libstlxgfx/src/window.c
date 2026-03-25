@@ -102,7 +102,9 @@ static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
     req.height = height;
     if (title) {
         size_t len = strlen(title);
-        if (len > 255) len = 255;
+        if (len > 255) {
+            len = 255;
+        }
         memcpy(req.title, title, len);
         req.title_length = (uint32_t)len;
     }
@@ -241,7 +243,9 @@ stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
     stlxgfx_font_init(STLXGFX_FONT_PATH);
 
     int conn_fd = stlxgfx_connect(STLXGFX_DM_SOCKET_PATH);
-    if (conn_fd < 0) return NULL;
+    if (conn_fd < 0) {
+        return NULL;
+    }
 
     stlxgfx_window_t* win = create_window_internal(conn_fd, width, height, title, 1);
     if (!win) {
@@ -252,7 +256,9 @@ stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
 }
 
 static void window_cleanup(stlxgfx_window_t* window) {
-    if (!window) return;
+    if (!window) {
+        return;
+    }
 
     int owned_conn = window->conn_fd;
 
@@ -282,13 +288,17 @@ static void window_cleanup(stlxgfx_window_t* window) {
 }
 
 void stlxgfx_window_destroy(stlxgfx_window_t* window) {
-    if (!window) return;
+    if (!window) {
+        return;
+    }
     window_cleanup(window);
     free(window);
 }
 
 int stlxgfx_window_is_open(stlxgfx_window_t* window) {
-    if (!window) return 0;
+    if (!window) {
+        return 0;
+    }
     return window->open;
 }
 
@@ -330,7 +340,9 @@ int stlxgfx_window_swap_buffers(stlxgfx_window_t* window) {
 
 int stlxgfx_window_next_event(stlxgfx_window_t* window,
                                stlxgfx_event_t* event) {
-    if (!window || !window->event_ring || !event) return 0;
+    if (!window || !window->event_ring || !event) {
+        return 0;
+    }
 
     if (window->sync &&
         atomic_load_explicit(&window->sync->close_requested,
@@ -575,7 +587,9 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
     memset(win->title, 0, sizeof(win->title));
     if (req->title_length > 0) {
         size_t tlen = req->title_length;
-        if (tlen > sizeof(win->title) - 1) tlen = sizeof(win->title) - 1;
+        if (tlen > sizeof(win->title) - 1) {
+            tlen = sizeof(win->title) - 1;
+        }
         memcpy(win->title, req->title, tlen);
     }
 
