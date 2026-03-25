@@ -18,15 +18,11 @@ constexpr uint64_t RFLAGS_IF = (1 << 9);
 constexpr uint64_t RFLAGS_DF = (1 << 10);
 constexpr uint64_t RFLAGS_TF = (1 << 8);
 
+//
 // SYSRET derives selectors from IA32_STAR[63:48]:
 //   CS = STAR[63:48] + 16 (then CPL/RPL = 3)
 //   SS = STAR[63:48] + 8
 //
-// Linux programs this field using a user-space selector base, not a kernel one.
-// On this machine the old KERNEL_DS-based programming empirically returned with
-// SS=0x18 instead of USER_DS=0x1B, leading to #GP on the next IRETQ. Using the
-// user selector base makes both derived selectors land on the intended user
-// segments:
 //   base + 8  == USER_DS
 //   base + 16 == USER_CS
 constexpr uint16_t SYSRET_SEL_BASE = static_cast<uint16_t>(x86::USER_DS - 8);
