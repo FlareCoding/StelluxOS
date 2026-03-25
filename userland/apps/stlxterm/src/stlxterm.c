@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 199309L
 #include <stlxgfx/window.h>
+#include <stlxgfx/ctx.h>
 #include <stlxgfx/font.h>
 #include <stlx/proc.h>
 #include <stlx/pty.h>
@@ -65,9 +66,9 @@ static const uint32_t BG_PALETTE[17] = {
     0xFFA6ADC8, // 16: bright white (107)
 };
 
-static void render_term(stlxgfx_surface_t *buf, const term_state_t *t,
+static void render_term(stlxgfx_ctx_t *ctx, const term_state_t *t,
                         uint32_t cell_w, uint32_t cell_h, int cursor_visible) {
-    stlxgfx_clear(buf, STLXTERM_BG_COLOR);
+    stlxgfx_ctx_clear(ctx, STLXTERM_BG_COLOR);
 
     int32_t pad = STLXTERM_PADDING;
     char ch_buf[2] = {0, 0};
@@ -77,13 +78,13 @@ static void render_term(stlxgfx_surface_t *buf, const term_state_t *t,
             int32_t py = pad + (int32_t)(r * cell_h);
             uint8_t bg_idx = t->attrs[r][c].bg;
             if (bg_idx != 0) {
-                stlxgfx_fill_rect(buf, px, py,
+                stlxgfx_ctx_fill_rect(ctx, px, py,
                     cell_w, cell_h, BG_PALETTE[bg_idx]);
             }
             if (t->cells[r][c] != ' ') {
                 uint8_t fg_idx = t->attrs[r][c].fg;
                 ch_buf[0] = t->cells[r][c];
-                stlxgfx_draw_text(buf, px, py,
+                stlxgfx_ctx_draw_text(ctx, px, py,
                     ch_buf, STLXTERM_FONT_SIZE, FG_PALETTE[fg_idx]);
             }
         }
@@ -95,12 +96,12 @@ static void render_term(stlxgfx_surface_t *buf, const term_state_t *t,
         int32_t cx = pad + (int32_t)(cc * cell_w);
         int32_t cy = pad + (int32_t)(cr * cell_h);
 
-        stlxgfx_fill_rect(buf, cx, cy,
+        stlxgfx_ctx_fill_rect(ctx, cx, cy,
             cell_w, cell_h, STLXTERM_CURSOR_COLOR);
 
         if (t->cells[cr][cc] != ' ') {
             ch_buf[0] = t->cells[cr][cc];
-            stlxgfx_draw_text(buf, cx, cy,
+            stlxgfx_ctx_draw_text(ctx, cx, cy,
                 ch_buf, STLXTERM_FONT_SIZE, STLXTERM_BG_COLOR);
         }
     }
@@ -109,40 +110,28 @@ static void render_term(stlxgfx_surface_t *buf, const term_state_t *t,
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    if (stlxgfx_font_init(STLXGFX_FONT_PATH) != 0) {
-        printf("stlxterm: failed to load font\r\n");
-        return 1;
-    }
-
-    int conn = stlxgfx_connect(STLXGFX_DM_SOCKET_PATH);
-    if (conn < 0) {
-        printf("stlxterm: failed to connect to DM\r\n");
-        stlxgfx_font_cleanup();
-        return 1;
-    }
-
-    stlxgfx_window_t *win = stlxgfx_create_window(conn,
+    stlxgfx_window_t *win = stlxgfx_create_window(
         STLXTERM_WIDTH, STLXTERM_HEIGHT, "stlxterm");
     if (!win) {
         printf("stlxterm: failed to create window\r\n");
-        stlxgfx_disconnect(conn);
-        stlxgfx_font_cleanup();
         return 1;
     }
 
     uint32_t cell_w, cell_h;
     stlxgfx_text_size("M", STLXTERM_FONT_SIZE, &cell_w, &cell_h);
-    if (cell_w == 0) cell_w = 8;
-    if (cell_h == 0) cell_h = 16;
+    if (cell_w == 0) {
+        cell_w = 8;
+    }
+    if (cell_h == 0) {
+        cell_h = 16;
+    }
     int term_cols = (int)((STLXTERM_WIDTH  - 2 * STLXTERM_PADDING) / cell_w);
     int term_rows = (int)((STLXTERM_HEIGHT - 2 * STLXTERM_PADDING) / cell_h);
 
     term_state_t *term = malloc(sizeof(term_state_t));
     if (!term) {
         printf("stlxterm: failed to allocate terminal state\r\n");
-        stlxgfx_window_close(win);
-        stlxgfx_disconnect(conn);
-        stlxgfx_font_cleanup();
+        stlxgfx_window_destroy(win);
         return 1;
     }
     term_init(term, term_rows, term_cols);
@@ -151,9 +140,7 @@ int main(void) {
     if (pty_create(&master_fd, &slave_fd) < 0) {
         printf("stlxterm: failed to create PTY\r\n");
         free(term);
-        stlxgfx_window_close(win);
-        stlxgfx_disconnect(conn);
-        stlxgfx_font_cleanup();
+        stlxgfx_window_destroy(win);
         return 1;
     }
 
@@ -166,9 +153,7 @@ int main(void) {
         close(master_fd);
         close(slave_fd);
         free(term);
-        stlxgfx_window_close(win);
-        stlxgfx_disconnect(conn);
-        stlxgfx_font_cleanup();
+        stlxgfx_window_destroy(win);
         return 1;
     }
     proc_set_handle(shell_proc, 0, slave_fd);
@@ -180,21 +165,35 @@ int main(void) {
         close(master_fd);
         close(slave_fd);
         free(term);
-        stlxgfx_window_close(win);
-        stlxgfx_disconnect(conn);
-        stlxgfx_font_cleanup();
+        stlxgfx_window_destroy(win);
         return 1;
     }
     close(slave_fd);
 
     struct timespec frame_interval = { 0, STLXTERM_FRAME_NS };
-    int running = 1;
     int blink_counter = 0;
     int cursor_visible = 1;
+    int focused = 1;
 
-    while (running && !stlxgfx_window_should_close(win)) {
+    while (stlxgfx_window_is_open(win)) {
         stlxgfx_event_t evt;
         while (stlxgfx_window_next_event(win, &evt) == 1) {
+            if (evt.type == STLXGFX_EVT_CLOSE_REQUESTED) {
+                stlxgfx_window_destroy(win);
+                win = NULL;
+                break;
+            }
+            if (evt.type == STLXGFX_EVT_FOCUS_IN) {
+                focused = 1;
+                cursor_visible = 1;
+                blink_counter = 0;
+                term->dirty = 1;
+            }
+            if (evt.type == STLXGFX_EVT_FOCUS_OUT) {
+                focused = 0;
+                cursor_visible = 0;
+                term->dirty = 1;
+            }
             if (evt.type == STLXGFX_EVT_KEY_DOWN) {
                 char seq[8];
                 int len = keymap_translate(evt.key.usage, evt.key.modifiers,
@@ -207,30 +206,38 @@ int main(void) {
                 }
             }
         }
+        if (!win) {
+            break;
+        }
 
         char pty_buf[512];
         ssize_t n = read(master_fd, pty_buf, sizeof(pty_buf));
         if (n == 0) {
-            running = 0;
-            continue;
+            break;
         }
         if (n > 0) {
             term_feed(term, pty_buf, (int)n);
-            cursor_visible = 1;
-            blink_counter = 0;
+            if (focused) {
+                cursor_visible = 1;
+                blink_counter = 0;
+            }
         }
 
-        blink_counter++;
-        if (blink_counter >= STLXTERM_BLINK_FRAMES) {
-            blink_counter = 0;
-            cursor_visible = !cursor_visible;
-            term->dirty = 1;
+        if (focused) {
+            blink_counter++;
+            if (blink_counter >= STLXTERM_BLINK_FRAMES) {
+                blink_counter = 0;
+                cursor_visible = !cursor_visible;
+                term->dirty = 1;
+            }
         }
 
         if (term->dirty) {
             stlxgfx_surface_t *buf = stlxgfx_window_back_buffer(win);
             if (buf) {
-                render_term(buf, term, cell_w, cell_h, cursor_visible);
+                stlxgfx_ctx_t ctx;
+                stlxgfx_ctx_init(&ctx, buf);
+                render_term(&ctx, term, cell_w, cell_h, cursor_visible);
                 stlxgfx_window_swap_buffers(win);
                 term->dirty = 0;
             }
@@ -242,8 +249,8 @@ int main(void) {
     proc_detach(shell_proc);
     close(master_fd);
     free(term);
-    stlxgfx_window_close(win);
-    stlxgfx_disconnect(conn);
-    stlxgfx_font_cleanup();
+    if (win) {
+        stlxgfx_window_destroy(win);
+    }
     return 0;
 }

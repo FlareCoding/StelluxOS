@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <stlxgfx/window.h>
+#include <stlxgfx/font.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -70,7 +71,7 @@ static int send_message(int fd, uint32_t type, uint32_t seq,
 
 /* --- Client-side implementation --- */
 
-int stlxgfx_connect(const char* socket_path) {
+static int stlxgfx_connect(const char* socket_path) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         return -1;
@@ -88,14 +89,9 @@ int stlxgfx_connect(const char* socket_path) {
     return fd;
 }
 
-void stlxgfx_disconnect(int conn_fd) {
-    if (conn_fd >= 0) {
-        close(conn_fd);
-    }
-}
-
-stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
-                                          uint32_t height, const char* title) {
+static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
+                                                  uint32_t height, const char* title,
+                                                  int owns_connection) {
     if (conn_fd < 0 || width == 0 || height == 0) {
         return NULL;
     }
@@ -106,7 +102,9 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
     req.height = height;
     if (title) {
         size_t len = strlen(title);
-        if (len > 255) len = 255;
+        if (len > 255) {
+            len = 255;
+        }
         memcpy(req.title, title, len);
         req.title_length = (uint32_t)len;
     }
@@ -218,7 +216,8 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
     win->red_shift = resp.red_shift;
     win->green_shift = resp.green_shift;
     win->blue_shift = resp.blue_shift;
-    win->conn_fd = conn_fd;
+    win->conn_fd = owns_connection ? conn_fd : -1;
+    win->open = 1;
 
     uint32_t bi = atomic_load_explicit(&sync->back_index, memory_order_acquire);
     win->back = stlxgfx_surface_from_buffer(
@@ -239,41 +238,72 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
     return win;
 }
 
-void stlxgfx_window_close(stlxgfx_window_t* window) {
+stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
+                                          const char* title) {
+    stlxgfx_font_init(STLXGFX_FONT_PATH);
+
+    int conn_fd = stlxgfx_connect(STLXGFX_DM_SOCKET_PATH);
+    if (conn_fd < 0) {
+        return NULL;
+    }
+
+    stlxgfx_window_t* win = create_window_internal(conn_fd, width, height, title, 1);
+    if (!win) {
+        close(conn_fd);
+        return NULL;
+    }
+    return win;
+}
+
+static void window_cleanup(stlxgfx_window_t* window) {
     if (!window) {
         return;
     }
-    if (window->conn_fd >= 0) {
+
+    int owned_conn = window->conn_fd;
+
+    if (owned_conn >= 0) {
         stlxgfx_destroy_window_req_t req = { .window_id = window->window_id };
-        send_message(window->conn_fd, STLXGFX_MSG_DESTROY_WINDOW_REQ, 0,
+        send_message(owned_conn, STLXGFX_MSG_DESTROY_WINDOW_REQ, 0,
                      &req, sizeof(req));
     }
-    if (window->back) {
+    if (window->back)
         stlxgfx_destroy_surface(window->back);
-    }
-    if (window->event_ring) {
+    if (window->event_ring)
         munmap(window->event_ring, sizeof(stlxgfx_event_ring_t));
-    }
-    if (window->surface_buf) {
+    if (window->surface_buf)
         munmap(window->surface_buf, window->surface_size);
-    }
-    if (window->events_fd >= 0) {
+    if (window->events_fd >= 0)
         close(window->events_fd);
-    }
-    if (window->surface_fd >= 0) {
+    if (window->surface_fd >= 0)
         close(window->surface_fd);
-    }
-    if (window->sync) {
+    if (window->sync)
         munmap(window->sync, sizeof(stlxgfx_window_sync_t));
-    }
-    if (window->sync_fd >= 0) {
+    if (window->sync_fd >= 0)
         close(window->sync_fd);
+    if (owned_conn >= 0)
+        close(owned_conn);
+
+    window->open = 0;
+}
+
+void stlxgfx_window_destroy(stlxgfx_window_t* window) {
+    if (!window) {
+        return;
     }
+    window_cleanup(window);
     free(window);
 }
 
+int stlxgfx_window_is_open(stlxgfx_window_t* window) {
+    if (!window) {
+        return 0;
+    }
+    return window->open;
+}
+
 stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
-    if (!window || !window->sync || !window->back) {
+    if (!window || !window->sync || !window->back || !window->open) {
         return NULL;
     }
     uint32_t bi = atomic_load_explicit(&window->sync->back_index,
@@ -284,7 +314,7 @@ stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
 }
 
 int stlxgfx_window_swap_buffers(stlxgfx_window_t* window) {
-    if (!window || !window->sync) {
+    if (!window || !window->sync || !window->open) {
         return -1;
     }
     stlxgfx_window_sync_t* s = window->sync;
@@ -308,12 +338,26 @@ int stlxgfx_window_swap_buffers(stlxgfx_window_t* window) {
     return 0;
 }
 
-int stlxgfx_window_should_close(stlxgfx_window_t* window) {
-    if (!window || !window->sync) {
+int stlxgfx_window_next_event(stlxgfx_window_t* window,
+                               stlxgfx_event_t* event) {
+    if (!window || !window->event_ring || !event) {
+        return 0;
+    }
+
+    if (window->sync &&
+        atomic_load_explicit(&window->sync->close_requested,
+                             memory_order_acquire)) {
+        stlxgfx_event_t close_evt;
+        memset(&close_evt, 0, sizeof(close_evt));
+        close_evt.type = STLXGFX_EVT_CLOSE_REQUESTED;
+        close_evt.window_id = window->window_id;
+        *event = close_evt;
+        atomic_store_explicit(&window->sync->close_requested, 0,
+                              memory_order_release);
         return 1;
     }
-    return atomic_load_explicit(&window->sync->close_requested,
-                                memory_order_acquire) != 0;
+
+    return stlxgfx_event_ring_read(window->event_ring, event);
 }
 
 /* --- DM-side implementation --- */
@@ -534,16 +578,18 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
     win->height = req->height;
     win->pitch = pitch;
 
-    int32_t cx = 50 + g_cascade_offset * 30;
-    int32_t cy = 50 + g_cascade_offset * 30;
-    g_cascade_offset = (g_cascade_offset + 1) % 8;
+    int32_t cx = 60 + g_cascade_offset * 32;
+    int32_t cy = 48 + g_cascade_offset * 32;
+    g_cascade_offset = (g_cascade_offset + 1) % 10;
     win->x = cx;
     win->y = cy;
 
     memset(win->title, 0, sizeof(win->title));
     if (req->title_length > 0) {
         size_t tlen = req->title_length;
-        if (tlen > sizeof(win->title) - 1) tlen = sizeof(win->title) - 1;
+        if (tlen > sizeof(win->title) - 1) {
+            tlen = sizeof(win->title) - 1;
+        }
         memcpy(win->title, req->title, tlen);
     }
 
@@ -652,3 +698,5 @@ stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window) {
     }
     return window->front;
 }
+
+

@@ -77,7 +77,7 @@ typedef struct {
     atomic_uint_least32_t close_requested;
 } stlxgfx_window_sync_t;
 
-/* --- Client-side API --- */
+/* --- Client API --- */
 
 typedef struct stlxgfx_window_t_tag {
     stlxgfx_window_sync_t* sync;
@@ -97,17 +97,19 @@ typedef struct stlxgfx_window_t_tag {
     uint8_t  blue_shift;
     stlxgfx_surface_t* back;
     int      conn_fd;
+    int      open;
 } stlxgfx_window_t;
 
-int stlxgfx_connect(const char* socket_path);
-void stlxgfx_disconnect(int conn_fd);
+stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
+                                          const char* title);
+void stlxgfx_window_destroy(stlxgfx_window_t* window);
+int  stlxgfx_window_is_open(stlxgfx_window_t* window);
 
-stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
-                                          uint32_t height, const char* title);
-void stlxgfx_window_close(stlxgfx_window_t* window);
+int stlxgfx_window_next_event(stlxgfx_window_t* window,
+                               stlxgfx_event_t* event);
+
 stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window);
 int stlxgfx_window_swap_buffers(stlxgfx_window_t* window);
-int stlxgfx_window_should_close(stlxgfx_window_t* window);
 
 /* --- DM-side API --- */
 

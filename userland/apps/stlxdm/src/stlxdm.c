@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 199309L
 #include <stlxgfx/fb.h>
 #include <stlxgfx/surface.h>
+#include <stlxgfx/ctx.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/window.h>
 #include <stlxgfx/event.h>
@@ -9,22 +10,16 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "stlxdm_decor.h"
 #include "stlxdm_input.h"
 #include "stlxdm_splash.h"
 
 #define STLXDM_FRAME_INTERVAL_NS    16666667
 #define STLXDM_BG_COLOR             0xFF2D2D30
 #define STLXDM_BAR_COLOR            0xFF1E1E1E
-#define STLXDM_BAR_HEIGHT           28
 #define STLXDM_BAR_FONT_SIZE        14
 #define STLXDM_BAR_TEXT_COLOR        0xFFCCCCCC
 #define STLXDM_BAR_ACCENT_COLOR     0xFF888888
-
-#define STLXDM_TITLE_HEIGHT          32
-#define STLXDM_BORDER_WIDTH          2
-#define STLXDM_CORNER_RADIUS         8
-#define STLXDM_CLOSE_BTN_RADIUS      10
-#define STLXDM_CLOSE_BTN_MARGIN      8
 #define STLXDM_TITLE_FONT_SIZE       13
 
 #define STLXDM_TITLE_BG_FOCUSED      0xFF313244
@@ -56,9 +51,13 @@ static void stlxdm_server_init(stlxdm_server_t* srv, int listen_fd) {
 }
 
 static void stlxdm_server_accept(stlxdm_server_t* srv) {
-    if (srv->client_count >= STLXGFX_DM_MAX_CLIENTS) return;
+    if (srv->client_count >= STLXGFX_DM_MAX_CLIENTS) {
+        return;
+    }
     int client_fd = stlxgfx_dm_accept(srv->listen_fd);
-    if (client_fd < 0) return;
+    if (client_fd < 0) {
+        return;
+    }
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
         if (srv->clients[i].fd < 0) {
             srv->clients[i].fd = client_fd;
@@ -74,7 +73,9 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
                                             stlxdm_input_t* inp,
                                             const stlxgfx_fb_t* fb) {
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
-        if (srv->clients[i].fd < 0) continue;
+        if (srv->clients[i].fd < 0) {
+            continue;
+        }
 
         stlxgfx_msg_header_t hdr;
         uint8_t payload[512];
@@ -91,7 +92,9 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
             srv->client_count--;
             continue;
         }
-        if (rc == 0) continue;
+        if (rc == 0) {
+            continue;
+        }
 
         if (hdr.message_type == STLXGFX_MSG_CREATE_WINDOW_REQ &&
             !srv->clients[i].window) {
@@ -101,7 +104,7 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
                 srv->clients[i].fd, &hdr, req, fb);
             if (win) {
                 srv->clients[i].window = win;
-                stlxdm_input_add_window(inp, i);
+                stlxdm_input_add_window(inp, i, srv->clients);
             }
         } else if (hdr.message_type == STLXGFX_MSG_DESTROY_WINDOW_REQ) {
             if (srv->clients[i].window) {
@@ -126,7 +129,9 @@ static int stlxdm_compositor_init(stlxdm_compositor_t* comp,
     comp->width = fb->width;
     comp->height = fb->height;
     comp->backbuf = stlxgfx_fb_create_surface(fb, fb->width, fb->height);
-    if (!comp->backbuf) return -1;
+    if (!comp->backbuf) {
+        return -1;
+    }
     return 0;
 }
 
@@ -139,13 +144,10 @@ static void stlxdm_compositor_sync(stlxdm_compositor_t* comp,
     }
 }
 
-static void stlxdm_compositor_draw_bar(stlxdm_compositor_t* comp) {
-    stlxgfx_fill_rect(comp->backbuf, 0, 0,
-                       comp->width, STLXDM_BAR_HEIGHT, STLXDM_BAR_COLOR);
-    stlxgfx_fill_rect(comp->backbuf, 0, STLXDM_BAR_HEIGHT,
-                       comp->width, 1, STLXDM_BAR_ACCENT_COLOR);
-    stlxgfx_draw_text(comp->backbuf, 10, 6,
-                       "Stellux", STLXDM_BAR_FONT_SIZE, STLXDM_BAR_TEXT_COLOR);
+static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width) {
+    stlxgfx_ctx_fill_rect(ctx, 0, 0, width, STLXDM_BAR_HEIGHT, STLXDM_BAR_COLOR);
+    stlxgfx_ctx_fill_rect(ctx, 0, STLXDM_BAR_HEIGHT, width, 1, STLXDM_BAR_ACCENT_COLOR);
+    stlxgfx_ctx_draw_text(ctx, 10, 6, "Stellux", STLXDM_BAR_FONT_SIZE, STLXDM_BAR_TEXT_COLOR);
 
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
@@ -154,16 +156,31 @@ static void stlxdm_compositor_draw_bar(stlxdm_compositor_t* comp) {
             char time_str[64];
             strftime(time_str, sizeof(time_str), "%a %b %e  %H:%M:%S", t);
             uint32_t tw = 0, th = 0;
-            stlxgfx_text_size(time_str, STLXDM_BAR_FONT_SIZE, &tw, &th);
-            int32_t tx = ((int32_t)comp->width - (int32_t)tw) / 2;
-            stlxgfx_draw_text(comp->backbuf, tx, 6,
-                               time_str, STLXDM_BAR_FONT_SIZE,
-                               STLXDM_BAR_TEXT_COLOR);
+            stlxgfx_ctx_text_size(time_str, STLXDM_BAR_FONT_SIZE, &tw, &th);
+            int32_t tx = ((int32_t)width - (int32_t)tw) / 2;
+            stlxgfx_ctx_draw_text(ctx, tx, 6, time_str, STLXDM_BAR_FONT_SIZE,
+                                   STLXDM_BAR_TEXT_COLOR);
         }
     }
 }
 
-static void stlxdm_draw_window_frame(stlxgfx_surface_t* buf,
+static void stlxdm_build_arc_lut(int32_t r, int32_t* lut) {
+    for (int32_t i = 0; i <= r; i++) lut[i] = 0;
+    int32_t px = 0, py = r, d = 1 - r;
+    while (px <= py) {
+        if (py <= r && px > lut[py]) {
+            lut[py] = px;
+        }
+        if (px <= r && py > lut[px]) {
+            lut[px] = py;
+        }
+        px++;
+        if (d < 0) { d += 2 * px + 1; }
+        else { py--; d += 2 * (px - py) + 1; }
+    }
+}
+
+static void stlxdm_draw_window_frame(stlxgfx_ctx_t* ctx,
                                       stlxgfx_dm_window_t* w,
                                       int focused, int dragging,
                                       int close_hover, int close_pressed) {
@@ -182,47 +199,76 @@ static void stlxdm_draw_window_frame(stlxgfx_surface_t* buf,
                                 : STLXDM_TITLE_BG_UNFOCUSED;
 
     if (dragging) {
-        stlxgfx_fill_rounded_rect(buf, ox - 1, oy - 1,
-                                   outer_w + 2, outer_h + 2,
-                                   cr + 1, STLXDM_BORDER_DRAGGING);
+        stlxgfx_ctx_fill_rounded_rect(ctx, ox - 1, oy - 1,
+                                       outer_w + 2, outer_h + 2,
+                                       cr + 1, STLXDM_BORDER_DRAGGING);
     }
 
-    // Outer border: all four corners rounded
-    stlxgfx_fill_rounded_rect(buf, ox, oy, outer_w, outer_h,
-                               cr, border_color);
+    stlxgfx_ctx_fill_rounded_rect(ctx, ox, oy, outer_w, outer_h,
+                                   cr, border_color);
 
-    // Title bar: rounded top corners, straight bottom
     uint32_t inner_cr = cr > bw ? cr - bw : 0;
-    stlxgfx_fill_rounded_rect(buf, ox + (int32_t)bw, oy + (int32_t)bw,
-                               outer_w - 2 * bw,
-                               STLXDM_TITLE_HEIGHT - bw,
-                               inner_cr, title_bg);
-    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
-                       oy + STLXDM_TITLE_HEIGHT - (int32_t)inner_cr,
-                       outer_w - 2 * bw, inner_cr, title_bg);
 
-    // Content area background (straight rect, no rounding needed here)
-    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
-                       oy + STLXDM_TITLE_HEIGHT,
-                       outer_w - 2 * bw,
-                       outer_h - STLXDM_TITLE_HEIGHT - bw,
-                       STLXDM_BG_COLOR);
+    /* Title bar: rounded top corners, flat bottom */
+    stlxgfx_ctx_fill_rounded_rect(ctx, ox + (int32_t)bw, oy + (int32_t)bw,
+                                   outer_w - 2 * bw,
+                                   STLXDM_TITLE_HEIGHT - bw,
+                                   inner_cr, title_bg);
+    stlxgfx_ctx_fill_rect(ctx, ox + (int32_t)bw,
+                           oy + STLXDM_TITLE_HEIGHT - (int32_t)inner_cr,
+                           outer_w - 2 * bw, inner_cr, title_bg);
 
-    // Title/content separator
-    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
-                       oy + STLXDM_TITLE_HEIGHT - 1,
-                       outer_w - 2 * bw, 1, border_color);
+    /* Content background: flat top, rounded bottom corners */
+    uint32_t content_inner_w = outer_w - 2 * bw;
+    uint32_t content_inner_h = outer_h - STLXDM_TITLE_HEIGHT - bw;
+    int32_t ci_x = ox + (int32_t)bw;
+    int32_t ci_y = oy + STLXDM_TITLE_HEIGHT;
 
-    // Title text: vertically centered
+    if (inner_cr > 0 && content_inner_h > inner_cr) {
+        stlxgfx_ctx_fill_rect(ctx, ci_x, ci_y,
+                               content_inner_w,
+                               content_inner_h - inner_cr,
+                               STLXDM_BG_COLOR);
+
+        int32_t ir = (int32_t)inner_cr;
+        int32_t arc_lut[32];
+        if (ir > 31) {
+            ir = 31;
+        }
+        stlxdm_build_arc_lut(ir, arc_lut);
+
+        int32_t bl_cx = ci_x + ir;
+        int32_t br_cx = ci_x + (int32_t)content_inner_w - ir - 1;
+        int32_t bot_cy = ci_y + (int32_t)content_inner_h - ir - 1;
+
+        for (int32_t dy = 0; dy <= ir; dy++) {
+            int32_t extent = arc_lut[dy];
+            int32_t sy = bot_cy + dy;
+            stlxgfx_ctx_fill_rect(ctx, bl_cx - extent, sy,
+                                   (uint32_t)(extent + 1 + (br_cx - bl_cx) + extent),
+                                   1, STLXDM_BG_COLOR);
+        }
+    } else {
+        stlxgfx_ctx_fill_rect(ctx, ci_x, ci_y,
+                               content_inner_w, content_inner_h,
+                               STLXDM_BG_COLOR);
+    }
+
+    /* Title/content separator */
+    stlxgfx_ctx_fill_rect(ctx, ox + (int32_t)bw,
+                           oy + STLXDM_TITLE_HEIGHT - 1,
+                           outer_w - 2 * bw, 1, border_color);
+
+    /* Title text */
     uint32_t tw = 0, th = 0;
-    stlxgfx_text_size(w->title, STLXDM_TITLE_FONT_SIZE, &tw, &th);
+    stlxgfx_ctx_text_size(w->title, STLXDM_TITLE_FONT_SIZE, &tw, &th);
     int32_t title_y = oy + (int32_t)(STLXDM_TITLE_HEIGHT - th) / 2;
     uint32_t text_color = focused ? STLXDM_TITLE_TEXT_FOCUSED
                                   : STLXDM_TITLE_TEXT_UNFOCUSED;
-    stlxgfx_draw_text(buf, ox + 12, title_y,
-                       w->title, STLXDM_TITLE_FONT_SIZE, text_color);
+    stlxgfx_ctx_draw_text(ctx, ox + 12, title_y,
+                           w->title, STLXDM_TITLE_FONT_SIZE, text_color);
 
-    // Close button
+    /* Close button */
     if (focused) {
         int32_t ccx = ox + (int32_t)outer_w - STLXDM_CLOSE_BTN_MARGIN
                      - STLXDM_CLOSE_BTN_RADIUS - (int32_t)bw;
@@ -232,79 +278,30 @@ static void stlxdm_draw_window_frame(stlxgfx_surface_t* buf,
                        :                 STLXDM_CLOSE_NORMAL_BG;
         uint32_t cb_fg = (close_hover || close_pressed) ? STLXDM_CLOSE_X_HOVER
                                                         : STLXDM_CLOSE_X_NORMAL;
-        stlxgfx_fill_circle(buf, ccx, ccy, STLXDM_CLOSE_BTN_RADIUS, cb_bg);
+        stlxgfx_ctx_fill_circle(ctx, ccx, ccy, STLXDM_CLOSE_BTN_RADIUS, cb_bg);
 
         uint32_t xw = 0, xh = 0;
-        stlxgfx_text_size("x", STLXDM_TITLE_FONT_SIZE, &xw, &xh);
-        stlxgfx_draw_text(buf, ccx - (int32_t)xw / 2,
-                           ccy - (int32_t)xh / 2,
-                           "x", STLXDM_TITLE_FONT_SIZE, cb_fg);
-    }
-}
-
-static void stlxdm_repair_bottom_corners(stlxgfx_surface_t* buf,
-                                          stlxgfx_dm_window_t* w) {
-    uint32_t bw = STLXDM_BORDER_WIDTH;
-    uint32_t outer_w = w->width + 2 * bw;
-    uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
-    int32_t r = (int32_t)STLXDM_CORNER_RADIUS;
-    int32_t ox = w->x;
-    int32_t oy = w->y;
-    int32_t right_edge = ox + (int32_t)outer_w;
-    int32_t bot_edge = oy + (int32_t)outer_h;
-
-    // Build a lookup: for each row offset dy (0..r), store the arc x-extent.
-    // arc_x[dy] = number of pixels from corner center to the arc edge.
-    int32_t arc_x[32];
-    if (r > 31) r = 31;
-    {
-        int32_t px2 = 0, py2 = r, d2 = 1 - r;
-        for (int i = 0; i <= r; i++) arc_x[i] = r;
-        while (px2 <= py2) {
-            if (py2 <= r) arc_x[py2] = px2;
-            if (px2 <= r) arc_x[px2] = py2;
-            px2++;
-            if (d2 < 0) { d2 += 2 * px2 + 1; }
-            else { py2--; d2 += 2 * (px2 - py2) + 1; }
-        }
-    }
-
-    int32_t cy_center = bot_edge - r - 1;
-    int32_t blit_bot = oy + STLXDM_TITLE_HEIGHT + (int32_t)w->height;
-
-    for (int32_t dy = 0; dy <= r; dy++) {
-        int32_t sy = cy_center + dy;
-        if (sy < blit_bot - 1) continue;
-        if (sy >= bot_edge) break;
-
-        int32_t extent = arc_x[dy];
-
-        // The filled arc spans (cx - extent) to (cx + extent) inclusive.
-        // cx_bl = ox + r, so left edge of arc = ox + r - extent.
-        // Pixels from ox to ox + r - extent - 1 are outside the arc.
-        int32_t left_cut = r - extent;
-        if (left_cut > 0)
-            stlxgfx_fill_rect(buf, ox, sy,
-                               (uint32_t)left_cut, 1, STLXDM_BG_COLOR);
-
-        // cx_br = right_edge - r - 1, right edge of arc = cx_br + extent.
-        // Pixels from cx_br + extent + 1 to right_edge - 1 are outside.
-        int32_t right_cut = r - extent;
-        if (right_cut > 0)
-            stlxgfx_fill_rect(buf, right_edge - right_cut, sy,
-                               (uint32_t)right_cut, 1, STLXDM_BG_COLOR);
+        stlxgfx_ctx_text_size("x", STLXDM_TITLE_FONT_SIZE, &xw, &xh);
+        stlxgfx_ctx_draw_text(ctx, ccx - (int32_t)xw / 2,
+                               ccy - (int32_t)xh / 2,
+                               "x", STLXDM_TITLE_FONT_SIZE, cb_fg);
     }
 }
 
 static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                                        stlxdm_input_t* inp,
                                        dm_client_t* clients) {
-    stlxgfx_clear(comp->backbuf, STLXDM_BG_COLOR);
-    stlxdm_compositor_draw_bar(comp);
+    stlxgfx_ctx_t ctx;
+    stlxgfx_ctx_init(&ctx, comp->backbuf);
+
+    stlxgfx_ctx_clear(&ctx, STLXDM_BG_COLOR);
+    stlxdm_compositor_draw_bar(&ctx, comp->width);
 
     for (int i = 0; i < inp->z_count; i++) {
         int slot = stlxdm_input_z_order(inp, i);
-        if (slot < 0 || !clients[slot].window) continue;
+        if (slot < 0 || !clients[slot].window) {
+            continue;
+        }
 
         stlxgfx_dm_window_t* w = clients[slot].window;
         int focused = (slot == inp->focused_slot);
@@ -312,17 +309,82 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
         int close_hover = (focused && inp->close_hover_slot == slot);
         int close_pressed = (inp->close_press_slot == slot);
 
-        stlxdm_draw_window_frame(comp->backbuf, w,
+        stlxdm_draw_window_frame(&ctx, w,
                                   focused, dragging, close_hover, close_pressed);
 
         stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(w);
         if (front) {
-            stlxgfx_blit(comp->backbuf,
-                          w->x + STLXDM_BORDER_WIDTH,
-                          w->y + STLXDM_TITLE_HEIGHT,
-                          front, 0, 0, front->width, front->height);
+            int32_t content_x = w->x + STLXDM_BORDER_WIDTH;
+            int32_t content_y = w->y + STLXDM_TITLE_HEIGHT;
 
-            stlxdm_repair_bottom_corners(comp->backbuf, w);
+            stlxgfx_ctx_blit(&ctx, content_x, content_y,
+                              front, 0, 0, front->width, front->height);
+
+            uint32_t bw = STLXDM_BORDER_WIDTH;
+            uint32_t outer_w = w->width + 2 * bw;
+            uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
+            int32_t ro = (int32_t)STLXDM_CORNER_RADIUS;
+            int32_t ri = (int32_t)(STLXDM_CORNER_RADIUS > bw ? STLXDM_CORNER_RADIUS - bw : 0);
+            if (ro > 31) {
+                ro = 31;
+            }
+            if (ri > 31) {
+                ri = 31;
+            }
+
+            int32_t outer_lut[32], inner_lut[32];
+            stlxdm_build_arc_lut(ro, outer_lut);
+            if (ri > 0) {
+                stlxdm_build_arc_lut(ri, inner_lut);
+            }
+
+            int32_t bot_edge = w->y + (int32_t)outer_h;
+            int32_t right_edge = w->x + (int32_t)outer_w;
+
+            int32_t outer_cy = bot_edge - ro - 1;
+            int32_t inner_cy = bot_edge - (int32_t)bw - ri - 1;
+
+            uint32_t border_c = dragging ? STLXDM_BORDER_DRAGGING
+                              : focused  ? STLXDM_BORDER_FOCUSED
+                              :            STLXDM_BORDER_UNFOCUSED;
+
+            for (int32_t sy = outer_cy; sy < bot_edge; sy++) {
+                int32_t ody = sy - outer_cy;
+                if (ody < 0 || ody > ro) {
+                    continue;
+                }
+                int32_t outer_ext = outer_lut[ody];
+
+                int32_t left_bg = ro - outer_ext;
+                if (left_bg > 0) {
+                    stlxgfx_ctx_fill_rect(&ctx, w->x, sy,
+                                           (uint32_t)left_bg, 1, STLXDM_BG_COLOR);
+                    stlxgfx_ctx_fill_rect(&ctx, right_edge - left_bg, sy,
+                                           (uint32_t)left_bg, 1, STLXDM_BG_COLOR);
+                }
+
+                if (ri > 0) {
+                    int32_t idy = sy - inner_cy;
+                    int32_t inner_ext = 0;
+                    if (idy >= 0 && idy <= ri) {
+                        inner_ext = inner_lut[idy];
+                    } else if (idy < 0) {
+                        inner_ext = ri;
+                    }
+
+                    int32_t inner_left = (int32_t)bw + ri - inner_ext;
+                    int32_t outer_left = ro - outer_ext;
+                    if (inner_left > outer_left) {
+                        int32_t fill_w = inner_left - outer_left;
+                        stlxgfx_ctx_fill_rect(&ctx,
+                            w->x + outer_left, sy,
+                            (uint32_t)fill_w, 1, border_c);
+                        stlxgfx_ctx_fill_rect(&ctx,
+                            right_edge - inner_left, sy,
+                            (uint32_t)fill_w, 1, border_c);
+                    }
+                }
+            }
         }
     }
 
@@ -339,6 +401,16 @@ static void stlxdm_compositor_finish_sync(stlxdm_compositor_t* comp,
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
         if (clients[i].window)
             stlxgfx_dm_finish_sync(clients[i].window);
+    }
+}
+
+static void stlxdm_spawn_terminal(void) {
+    int handle = proc_exec("/initrd/bin/stlxterm", NULL);
+    if (handle >= 0) {
+        proc_detach(handle);
+        printf("stlxdm: spawned new terminal\r\n");
+    } else {
+        printf("stlxdm: failed to spawn terminal\r\n");
     }
 }
 
@@ -371,12 +443,7 @@ int main(void) {
         return 1;
     }
 
-    int term_handle = proc_exec("/initrd/bin/stlxterm", NULL);
-    if (term_handle >= 0) {
-        proc_detach(term_handle);
-    } else {
-        printf("stlxdm: failed to spawn stlxterm\r\n");
-    }
+    stlxdm_spawn_terminal();
 
     stlxdm_server_t server;
     stlxdm_server_init(&server, listen_fd);
@@ -390,6 +457,11 @@ int main(void) {
         stlxdm_server_accept(&server);
         stlxdm_server_process_messages(&server, &input, &fb);
         stlxdm_input_process(&input, server.clients, STLXGFX_DM_MAX_CLIENTS);
+
+        if (input.spawn_terminal_requested) {
+            stlxdm_spawn_terminal();
+        }
+
         stlxdm_compositor_sync(&compositor, server.clients);
         stlxdm_compositor_compose(&compositor, &input, server.clients);
         stlxdm_compositor_present(&compositor);
