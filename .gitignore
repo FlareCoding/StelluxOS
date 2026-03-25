@@ -37,5 +37,5 @@ initrd/bin/*
 .DS_Store
 Thumbs.db
 
-# DOOM WAD file (download via instructions in README)
+# DOOM WAD file (downloadable via 'make doom-wad')
 initrd/res/doom1.wad
