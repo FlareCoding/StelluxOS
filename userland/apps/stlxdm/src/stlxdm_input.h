@@ -29,6 +29,8 @@ typedef struct {
 
     int z_order[STLXGFX_DM_MAX_CLIENTS];
     int z_count;
+
+    int spawn_terminal_requested;
 } stlxdm_input_t;
 
 typedef struct {

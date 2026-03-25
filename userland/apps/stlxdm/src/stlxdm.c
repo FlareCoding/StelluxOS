@@ -260,51 +260,49 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
             int32_t content_x = w->x + STLXDM_BORDER_WIDTH;
             int32_t content_y = w->y + STLXDM_TITLE_HEIGHT;
 
+            stlxgfx_ctx_blit(&ctx, content_x, content_y,
+                              front, 0, 0, front->width, front->height);
+
             uint32_t bw = STLXDM_BORDER_WIDTH;
             uint32_t outer_w = w->width + 2 * bw;
             uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
-
-            stlxgfx_ctx_save(&ctx);
-            stlxgfx_ctx_clip(&ctx, w->x + (int32_t)bw,
-                              content_y,
-                              outer_w - 2 * bw,
-                              outer_h - STLXDM_TITLE_HEIGHT - bw);
-
-            stlxgfx_ctx_blit(&ctx, content_x, content_y,
-                              front, 0, 0, front->width, front->height);
-            stlxgfx_ctx_restore(&ctx);
-
             int32_t r = (int32_t)STLXDM_CORNER_RADIUS;
             if (r > 31) r = 31;
+
             int32_t right_edge = w->x + (int32_t)outer_w;
             int32_t bot_edge = w->y + (int32_t)outer_h;
+            int32_t cx_br = right_edge - r - 1;
+            int32_t cy_bl = bot_edge - r - 1;
 
-            int32_t arc_lut[32];
-            {
-                int32_t px2 = 0, py2 = r, d2 = 1 - r;
-                for (int j = 0; j <= r; j++) arc_lut[j] = r;
-                while (px2 <= py2) {
-                    if (py2 <= r) arc_lut[py2] = px2;
-                    if (px2 <= r) arc_lut[px2] = py2;
-                    px2++;
-                    if (d2 < 0) { d2 += 2 * px2 + 1; }
-                    else { py2--; d2 += 2 * (px2 - py2) + 1; }
+            int32_t px2 = 0, py2 = r, d2 = 1 - r;
+            while (px2 <= py2) {
+                /* Bottom-left scanlines */
+                stlxgfx_ctx_fill_rect(&ctx, w->x, cy_bl - px2,
+                                       (uint32_t)(r - py2), 1, STLXDM_BG_COLOR);
+                stlxgfx_ctx_fill_rect(&ctx, w->x, cy_bl + px2,
+                                       (uint32_t)(r - py2), 1, STLXDM_BG_COLOR);
+                if (px2 != py2) {
+                    stlxgfx_ctx_fill_rect(&ctx, w->x, cy_bl - py2,
+                                           (uint32_t)(r - px2), 1, STLXDM_BG_COLOR);
+                    stlxgfx_ctx_fill_rect(&ctx, w->x, cy_bl + py2,
+                                           (uint32_t)(r - px2), 1, STLXDM_BG_COLOR);
                 }
-            }
 
-            int32_t cy_arc = bot_edge - r - 1;
-            for (int32_t dy = 0; dy <= r; dy++) {
-                int32_t sy = cy_arc + dy;
-                if (sy >= bot_edge) break;
-                int32_t extent = arc_lut[dy];
-                int32_t left_cut = r - extent;
-                if (left_cut > 0)
-                    stlxgfx_ctx_fill_rect(&ctx, w->x, sy,
-                                           (uint32_t)left_cut, 1, STLXDM_BG_COLOR);
-                int32_t right_cut = r - extent;
-                if (right_cut > 0)
-                    stlxgfx_ctx_fill_rect(&ctx, right_edge - right_cut, sy,
-                                           (uint32_t)right_cut, 1, STLXDM_BG_COLOR);
+                /* Bottom-right scanlines */
+                stlxgfx_ctx_fill_rect(&ctx, cx_br + py2 + 1, cy_bl - px2,
+                                       (uint32_t)(r - py2), 1, STLXDM_BG_COLOR);
+                stlxgfx_ctx_fill_rect(&ctx, cx_br + py2 + 1, cy_bl + px2,
+                                       (uint32_t)(r - py2), 1, STLXDM_BG_COLOR);
+                if (px2 != py2) {
+                    stlxgfx_ctx_fill_rect(&ctx, cx_br + px2 + 1, cy_bl - py2,
+                                           (uint32_t)(r - px2), 1, STLXDM_BG_COLOR);
+                    stlxgfx_ctx_fill_rect(&ctx, cx_br + px2 + 1, cy_bl + py2,
+                                           (uint32_t)(r - px2), 1, STLXDM_BG_COLOR);
+                }
+
+                px2++;
+                if (d2 < 0) { d2 += 2 * px2 + 1; }
+                else { py2--; d2 += 2 * (px2 - py2) + 1; }
             }
         }
     }
@@ -322,6 +320,16 @@ static void stlxdm_compositor_finish_sync(stlxdm_compositor_t* comp,
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
         if (clients[i].window)
             stlxgfx_dm_finish_sync(clients[i].window);
+    }
+}
+
+static void stlxdm_spawn_terminal(void) {
+    int handle = proc_exec("/initrd/bin/stlxterm", NULL);
+    if (handle >= 0) {
+        proc_detach(handle);
+        printf("stlxdm: spawned new terminal\r\n");
+    } else {
+        printf("stlxdm: failed to spawn terminal\r\n");
     }
 }
 
@@ -354,12 +362,7 @@ int main(void) {
         return 1;
     }
 
-    int term_handle = proc_exec("/initrd/bin/stlxterm", NULL);
-    if (term_handle >= 0) {
-        proc_detach(term_handle);
-    } else {
-        printf("stlxdm: failed to spawn stlxterm\r\n");
-    }
+    stlxdm_spawn_terminal();
 
     stlxdm_server_t server;
     stlxdm_server_init(&server, listen_fd);
@@ -373,6 +376,11 @@ int main(void) {
         stlxdm_server_accept(&server);
         stlxdm_server_process_messages(&server, &input, &fb);
         stlxdm_input_process(&input, server.clients, STLXGFX_DM_MAX_CLIENTS);
+
+        if (input.spawn_terminal_requested) {
+            stlxdm_spawn_terminal();
+        }
+
         stlxdm_compositor_sync(&compositor, server.clients);
         stlxdm_compositor_compose(&compositor, &input, server.clients);
         stlxdm_compositor_present(&compositor);

@@ -196,9 +196,29 @@ static void deliver_pointer(dm_client_t* clients, int slot,
     stlxgfx_event_ring_write(w->event_ring, &evt);
 }
 
+static int is_global_shortcut(const stlx_input_kbd_event_t* evt,
+                              stlxdm_input_t* inp) {
+    if (evt->action != STLX_INPUT_KBD_ACTION_DOWN) return 0;
+
+    uint8_t ctrl = STLX_INPUT_MOD_LCTRL | STLX_INPUT_MOD_RCTRL;
+    uint8_t alt  = STLX_INPUT_MOD_LALT  | STLX_INPUT_MOD_RALT;
+
+    int has_ctrl = (evt->modifiers & ctrl) != 0;
+    int has_alt  = (evt->modifiers & alt)  != 0;
+
+    if (has_ctrl && has_alt && evt->usage == 0x17) {
+        inp->spawn_terminal_requested = 1;
+        return 1;
+    }
+
+    return 0;
+}
+
 void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                            int max_clients) {
     (void)max_clients;
+
+    inp->spawn_terminal_requested = 0;
 
     stlx_input_kbd_event_t kbd_buf[STLXDM_INPUT_MAX_RAW_PER_FRAME];
     if (inp->kbd_fd >= 0) {
@@ -206,6 +226,8 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
         if (n > 0) {
             int count = (int)(n / (ssize_t)sizeof(stlx_input_kbd_event_t));
             for (int i = 0; i < count; i++) {
+                if (is_global_shortcut(&kbd_buf[i], inp))
+                    continue;
                 if (inp->focused_slot >= 0)
                     deliver_key(clients, inp->focused_slot, &kbd_buf[i]);
             }

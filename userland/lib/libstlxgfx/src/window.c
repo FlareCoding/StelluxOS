@@ -589,9 +589,9 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
     win->height = req->height;
     win->pitch = pitch;
 
-    int32_t cx = 50 + g_cascade_offset * 30;
-    int32_t cy = 50 + g_cascade_offset * 30;
-    g_cascade_offset = (g_cascade_offset + 1) % 8;
+    int32_t cx = 60 + g_cascade_offset * 32;
+    int32_t cy = 48 + g_cascade_offset * 32;
+    g_cascade_offset = (g_cascade_offset + 1) % 10;
     win->x = cx;
     win->y = cy;
 
