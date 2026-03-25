@@ -263,7 +263,6 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
             uint32_t bw = STLXDM_BORDER_WIDTH;
             uint32_t outer_w = w->width + 2 * bw;
             uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
-            uint32_t cr = STLXDM_CORNER_RADIUS;
 
             stlxgfx_ctx_save(&ctx);
             stlxgfx_ctx_clip(&ctx, w->x + (int32_t)bw,
@@ -275,38 +274,34 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                               front, 0, 0, front->width, front->height);
             stlxgfx_ctx_restore(&ctx);
 
-            /* Repair bottom corners by overdrawing the background
-               outside the rounded border arc */
-            int32_t r = (int32_t)cr;
+            int32_t r = (int32_t)STLXDM_CORNER_RADIUS;
+            if (r > 31) r = 31;
             int32_t right_edge = w->x + (int32_t)outer_w;
             int32_t bot_edge = w->y + (int32_t)outer_h;
-            int32_t blit_bot = content_y + (int32_t)w->height;
 
-            int32_t arc_x[32];
-            int32_t clamp_r = r > 31 ? 31 : r;
+            int32_t arc_lut[32];
             {
-                int32_t px2 = 0, py2 = clamp_r, d2 = 1 - clamp_r;
-                for (int j = 0; j <= clamp_r; j++) arc_x[j] = clamp_r;
+                int32_t px2 = 0, py2 = r, d2 = 1 - r;
+                for (int j = 0; j <= r; j++) arc_lut[j] = r;
                 while (px2 <= py2) {
-                    if (py2 <= clamp_r) arc_x[py2] = px2;
-                    if (px2 <= clamp_r) arc_x[px2] = py2;
+                    if (py2 <= r) arc_lut[py2] = px2;
+                    if (px2 <= r) arc_lut[px2] = py2;
                     px2++;
                     if (d2 < 0) { d2 += 2 * px2 + 1; }
                     else { py2--; d2 += 2 * (px2 - py2) + 1; }
                 }
             }
 
-            int32_t cy_center = bot_edge - clamp_r - 1;
-            for (int32_t dy = 0; dy <= clamp_r; dy++) {
-                int32_t sy = cy_center + dy;
-                if (sy < blit_bot - 1) continue;
+            int32_t cy_arc = bot_edge - r - 1;
+            for (int32_t dy = 0; dy <= r; dy++) {
+                int32_t sy = cy_arc + dy;
                 if (sy >= bot_edge) break;
-                int32_t extent = arc_x[dy];
-                int32_t left_cut = clamp_r - extent;
+                int32_t extent = arc_lut[dy];
+                int32_t left_cut = r - extent;
                 if (left_cut > 0)
                     stlxgfx_ctx_fill_rect(&ctx, w->x, sy,
                                            (uint32_t)left_cut, 1, STLXDM_BG_COLOR);
-                int32_t right_cut = clamp_r - extent;
+                int32_t right_cut = r - extent;
                 if (right_cut > 0)
                     stlxgfx_ctx_fill_rect(&ctx, right_edge - right_cut, sy,
                                            (uint32_t)right_cut, 1, STLXDM_BG_COLOR);
