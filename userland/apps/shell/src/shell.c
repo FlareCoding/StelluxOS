@@ -58,14 +58,14 @@ int main(void) {
         int handle = proc_create(cmd, argv + 1);
         if (handle < 0) {
             write(1, argv[0], strlen(argv[0]));
-            write(1, ": command not found\n", 20);
+            write(1, ": command not found\r\n", 21);
             last_status = 127;
             continue;
         }
 
         int err = proc_start(handle);
         if (err < 0) {
-            write(1, "shell: failed to start process\n", 31);
+            write(1, "shell: failed to start process\r\n", 32);
             last_status = 126;
             continue;
         }

@@ -164,6 +164,11 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* 
         return RB_ERR_INVAL;
     }
 
+    // Reject writes that can never succeed (len exceeds max writable space)
+    if (len > rb->capacity - 1) {
+        return RB_ERR_INVAL;
+    }
+
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
 
     if (writable_bytes(rb) < len && !rb->reader_closed) {
