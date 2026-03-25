@@ -444,7 +444,11 @@ __PRIVILEGED_CODE static void enumerate_bridges() {
                 continue;
             }
 
-            enumerate_bus(secondary);
+            // Broadcom (RPi4) is a point-to-point link with one downstream
+            // device at slot 0. ECAM systems may have PCIe switches whose
+            // internal buses have downstream ports at arbitrary slots.
+            uint8_t max_slots = (g_backend == config_backend::BROADCOM) ? 1 : SLOTS_PER_BUS;
+            enumerate_bus(secondary, max_slots);
         }
         scan_from = sweep_end;
     }
