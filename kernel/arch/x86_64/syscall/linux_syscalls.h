@@ -32,6 +32,7 @@ constexpr uint64_t FTRUNCATE        = 77;
 constexpr uint64_t GETCWD           = 79;
 constexpr uint64_t CHDIR            = 80;
 constexpr uint64_t FCHDIR           = 81;
+constexpr uint64_t MKDIR            = 83;
 constexpr uint64_t RMDIR            = 84;
 constexpr uint64_t UNLINK           = 87;
 constexpr uint64_t GETTIMEOFDAY     = 96;
@@ -43,6 +44,7 @@ constexpr uint64_t CLOCK_GETRES     = 229;
 constexpr uint64_t EXIT_GROUP       = 231;
 constexpr uint64_t OPENAT           = 257;
 constexpr uint64_t NEWFSTATAT       = 262;
+constexpr uint64_t MKDIRAT          = 258;
 constexpr uint64_t UNLINKAT         = 263;
 constexpr uint64_t MEMFD_CREATE     = 319;
 
