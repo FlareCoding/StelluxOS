@@ -1303,3 +1303,54 @@ DEFINE_SYSCALL1(rmdir, pathname) {
         static_cast<uint64_t>(-100), // AT_FDCWD
         pathname, AT_REMOVEDIR, 0, 0, 0);
 }
+
+DEFINE_SYSCALL3(mkdirat, dirfd, pathname, mode) {
+    char kpath[fs::PATH_MAX];
+    int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
+        kpath, sizeof(kpath),
+        reinterpret_cast<const char*>(pathname));
+    if (copy_rc != mm::uaccess::OK) {
+        if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
+            return syscall::ENAMETOOLONG;
+        }
+        return syscall::EFAULT;
+    }
+
+    if (kpath[0] == '\0') {
+        return syscall::ENOENT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    fs::node* parent = nullptr;
+    const char* name = nullptr;
+    size_t name_len = 0;
+    int64_t parent_rc = resolve_parent_for_dirfd_path(
+        task, static_cast<int64_t>(dirfd), kpath,
+        &parent, &name, &name_len);
+    if (parent_rc != 0) {
+        return parent_rc;
+    }
+
+    fs::node* child = nullptr;
+    int32_t rc = parent->mkdir(name, name_len, static_cast<uint32_t>(mode), &child);
+    if (child) {
+        if (child->release()) {
+            fs::node::ref_destroy(child);
+        }
+    }
+    release_node_ref(parent);
+    if (rc != fs::OK) {
+        return syscall::error_map::map_fs_error(rc);
+    }
+    return 0;
+}
+
+DEFINE_SYSCALL2(mkdir, pathname, mode) {
+    return sys_mkdirat(
+        static_cast<uint64_t>(-100), // AT_FDCWD
+        pathname, mode, 0, 0, 0);
+}
