@@ -21,6 +21,12 @@ typedef struct {
     int capture_slot;
     uint16_t capture_buttons;
 
+    int drag_slot;
+    int32_t drag_offset_x;
+    int32_t drag_offset_y;
+    int close_hover_slot;
+    int close_press_slot;
+
     int z_order[STLXGFX_DM_MAX_CLIENTS];
     int z_count;
 } stlxdm_input_t;

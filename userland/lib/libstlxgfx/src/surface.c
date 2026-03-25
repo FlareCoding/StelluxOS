@@ -181,3 +181,84 @@ int stlxgfx_blit(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     }
     return 0;
 }
+
+int stlxgfx_fill_circle(stlxgfx_surface_t* s, int32_t cx, int32_t cy,
+                         uint32_t radius, uint32_t color) {
+    if (!s || !s->pixels || radius == 0) {
+        return -1;
+    }
+    int32_t r = (int32_t)radius;
+    int32_t x = 0;
+    int32_t y = r;
+    int32_t d = 1 - r;
+
+    stlxgfx_fill_rect(s, cx - r, cy, (uint32_t)(2 * r + 1), 1, color);
+
+    while (x < y) {
+        x++;
+        if (d < 0) {
+            d += 2 * x + 1;
+        } else {
+            y--;
+            d += 2 * (x - y) + 1;
+        }
+        stlxgfx_fill_rect(s, cx - x, cy + y, (uint32_t)(2 * x + 1), 1, color);
+        stlxgfx_fill_rect(s, cx - x, cy - y, (uint32_t)(2 * x + 1), 1, color);
+        stlxgfx_fill_rect(s, cx - y, cy + x, (uint32_t)(2 * y + 1), 1, color);
+        stlxgfx_fill_rect(s, cx - y, cy - x, (uint32_t)(2 * y + 1), 1, color);
+    }
+    return 0;
+}
+
+int stlxgfx_fill_rounded_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
+                               uint32_t w, uint32_t h, uint32_t radius,
+                               uint32_t color) {
+    if (!s || !s->pixels || w == 0 || h == 0) {
+        return -1;
+    }
+    uint32_t max_r = (w < h ? w : h) / 2;
+    if (radius > max_r) radius = max_r;
+    if (radius == 0) {
+        return stlxgfx_fill_rect(s, x, y, w, h, color);
+    }
+
+    int32_t r = (int32_t)radius;
+
+    stlxgfx_fill_rect(s, x + r, y, w - 2 * radius, h, color);
+    stlxgfx_fill_rect(s, x, y + r, (uint32_t)r, h - 2 * radius, color);
+    stlxgfx_fill_rect(s, x + (int32_t)w - r, y + r, (uint32_t)r, h - 2 * radius, color);
+
+    int32_t cx_tl = x + r;
+    int32_t cy_tl = y + r;
+    int32_t cx_tr = x + (int32_t)w - r - 1;
+    int32_t cy_tr = y + r;
+    int32_t cx_bl = x + r;
+    int32_t cy_bl = y + (int32_t)h - r - 1;
+    int32_t cx_br = x + (int32_t)w - r - 1;
+    int32_t cy_br = y + (int32_t)h - r - 1;
+
+    int32_t px = 0;
+    int32_t py = r;
+    int32_t d = 1 - r;
+
+    while (px <= py) {
+        stlxgfx_fill_rect(s, cx_tl - px, cy_tl - py, (uint32_t)(px + 1), 1, color);
+        stlxgfx_fill_rect(s, cx_tr,      cy_tr - py, (uint32_t)(px + 1), 1, color);
+        stlxgfx_fill_rect(s, cx_bl - px, cy_bl + py, (uint32_t)(px + 1), 1, color);
+        stlxgfx_fill_rect(s, cx_br,      cy_br + py, (uint32_t)(px + 1), 1, color);
+
+        stlxgfx_fill_rect(s, cx_tl - py, cy_tl - px, (uint32_t)(py + 1), 1, color);
+        stlxgfx_fill_rect(s, cx_tr,      cy_tr - px, (uint32_t)(py + 1), 1, color);
+        stlxgfx_fill_rect(s, cx_bl - py, cy_bl + px, (uint32_t)(py + 1), 1, color);
+        stlxgfx_fill_rect(s, cx_br,      cy_br + px, (uint32_t)(py + 1), 1, color);
+
+        px++;
+        if (d < 0) {
+            d += 2 * px + 1;
+        } else {
+            py--;
+            d += 2 * (px - py) + 1;
+        }
+    }
+    return 0;
+}

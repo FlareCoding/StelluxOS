@@ -37,4 +37,10 @@ int stlxgfx_blit(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
                  const stlxgfx_surface_t* src, int32_t sx, int32_t sy,
                  uint32_t w, uint32_t h);
 
+int stlxgfx_fill_circle(stlxgfx_surface_t* s, int32_t cx, int32_t cy,
+                         uint32_t radius, uint32_t color);
+int stlxgfx_fill_rounded_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
+                               uint32_t w, uint32_t h, uint32_t radius,
+                               uint32_t color);
+
 #endif /* STLXGFX_SURFACE_H */
