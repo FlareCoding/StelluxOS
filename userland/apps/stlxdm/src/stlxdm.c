@@ -4,8 +4,8 @@
 #include <stlxgfx/font.h>
 #include <stlxgfx/window.h>
 #include <stlxgfx/event.h>
+#include <stlx/proc.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -14,7 +14,7 @@
 
 /* --- Constants --- */
 
-#define STLXDM_FRAME_INTERVAL_NS   33000000
+#define STLXDM_FRAME_INTERVAL_NS   16666667
 #define STLXDM_BG_COLOR            0xFF2D2D30
 #define STLXDM_BAR_COLOR           0xFF1E1E1E
 #define STLXDM_BAR_HEIGHT          28
@@ -240,6 +240,13 @@ int main(void) {
         return 1;
     }
     printf("stlxdm: listening on %s\r\n", STLXGFX_DM_SOCKET_PATH);
+
+    int term_handle = proc_exec("/initrd/bin/stlxterm", NULL);
+    if (term_handle >= 0) {
+        proc_detach(term_handle);
+    } else {
+        printf("stlxdm: failed to spawn stlxterm\r\n");
+    }
 
     stlxdm_server_t server;
     stlxdm_server_init(&server, listen_fd);
