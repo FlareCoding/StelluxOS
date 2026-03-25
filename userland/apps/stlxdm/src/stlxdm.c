@@ -10,22 +10,16 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "stlxdm_decor.h"
 #include "stlxdm_input.h"
 #include "stlxdm_splash.h"
 
 #define STLXDM_FRAME_INTERVAL_NS    16666667
 #define STLXDM_BG_COLOR             0xFF2D2D30
 #define STLXDM_BAR_COLOR            0xFF1E1E1E
-#define STLXDM_BAR_HEIGHT           28
 #define STLXDM_BAR_FONT_SIZE        14
 #define STLXDM_BAR_TEXT_COLOR        0xFFCCCCCC
 #define STLXDM_BAR_ACCENT_COLOR     0xFF888888
-
-#define STLXDM_TITLE_HEIGHT          32
-#define STLXDM_BORDER_WIDTH          2
-#define STLXDM_CORNER_RADIUS         8
-#define STLXDM_CLOSE_BTN_RADIUS      10
-#define STLXDM_CLOSE_BTN_MARGIN      8
 #define STLXDM_TITLE_FONT_SIZE       13
 
 #define STLXDM_TITLE_BG_FOCUSED      0xFF313244
@@ -102,7 +96,7 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
                 srv->clients[i].fd, &hdr, req, fb);
             if (win) {
                 srv->clients[i].window = win;
-                stlxdm_input_add_window_with_focus(inp, i, srv->clients);
+                stlxdm_input_add_window(inp, i, srv->clients);
             }
         } else if (hdr.message_type == STLXGFX_MSG_DESTROY_WINDOW_REQ) {
             if (srv->clients[i].window) {

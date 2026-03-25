@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 199309L
+#include "stlxdm_decor.h"
 #include "stlxdm_input.h"
 #include <stlxgfx/surface.h>
 #include <fcntl.h>
@@ -6,12 +7,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-
-#define DECOR_TITLE_HEIGHT    32
-#define DECOR_BORDER_WIDTH    2
-#define DECOR_CLOSE_BTN_RADIUS 10
-#define DECOR_CLOSE_BTN_MARGIN 8
-#define DECOR_SYSBAR_HEIGHT   28
 
 typedef enum {
     HIT_NONE,
@@ -57,25 +52,14 @@ void stlxdm_input_init(stlxdm_input_t* inp, int32_t fb_w, int32_t fb_h) {
     inp->z_count = 0;
 }
 
-void stlxdm_input_add_window_with_focus(stlxdm_input_t* inp, int slot,
-                                         dm_client_t* clients) {
+void stlxdm_input_add_window(stlxdm_input_t* inp, int slot,
+                              dm_client_t* clients) {
     for (int i = 0; i < inp->z_count; i++) {
         if (inp->z_order[i] == slot) return;
     }
-    if (inp->z_count < STLXGFX_DM_MAX_CLIENTS) {
-        inp->z_order[inp->z_count++] = slot;
-    }
+    if (inp->z_count >= STLXGFX_DM_MAX_CLIENTS) return;
+    inp->z_order[inp->z_count++] = slot;
     set_focus(inp, clients, slot);
-}
-
-void stlxdm_input_add_window(stlxdm_input_t* inp, int slot) {
-    for (int i = 0; i < inp->z_count; i++) {
-        if (inp->z_order[i] == slot) return;
-    }
-    if (inp->z_count < STLXGFX_DM_MAX_CLIENTS) {
-        inp->z_order[inp->z_count++] = slot;
-    }
-    inp->focused_slot = slot;
 }
 
 void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot) {
@@ -116,8 +100,8 @@ static hit_zone_t hit_test_zone(const stlxdm_input_t* inp,
         stlxgfx_dm_window_t* w = clients[slot].window;
         if (!w) continue;
 
-        int32_t outer_w = (int32_t)w->width + 2 * DECOR_BORDER_WIDTH;
-        int32_t outer_h = (int32_t)w->height + DECOR_TITLE_HEIGHT + DECOR_BORDER_WIDTH;
+        int32_t outer_w = (int32_t)w->width + 2 * STLXDM_BORDER_WIDTH;
+        int32_t outer_h = (int32_t)w->height + STLXDM_TITLE_HEIGHT + STLXDM_BORDER_WIDTH;
 
         if (px < w->x || px >= w->x + outer_w ||
             py < w->y || py >= w->y + outer_h)
@@ -125,13 +109,13 @@ static hit_zone_t hit_test_zone(const stlxdm_input_t* inp,
 
         *out_slot = slot;
 
-        if (py < w->y + DECOR_TITLE_HEIGHT) {
-            int32_t ccx = w->x + outer_w - DECOR_CLOSE_BTN_MARGIN
-                        - DECOR_CLOSE_BTN_RADIUS - DECOR_BORDER_WIDTH;
-            int32_t ccy = w->y + DECOR_TITLE_HEIGHT / 2;
+        if (py < w->y + STLXDM_TITLE_HEIGHT) {
+            int32_t ccx = w->x + outer_w - STLXDM_CLOSE_BTN_MARGIN
+                        - STLXDM_CLOSE_BTN_RADIUS - STLXDM_BORDER_WIDTH;
+            int32_t ccy = w->y + STLXDM_TITLE_HEIGHT / 2;
             int32_t dx = px - ccx;
             int32_t dy = py - ccy;
-            if (dx * dx + dy * dy <= DECOR_CLOSE_BTN_RADIUS * DECOR_CLOSE_BTN_RADIUS)
+            if (dx * dx + dy * dy <= STLXDM_CLOSE_BTN_RADIUS * STLXDM_CLOSE_BTN_RADIUS)
                 return HIT_CLOSE_BUTTON;
             return HIT_TITLE_BAR;
         }
@@ -200,8 +184,8 @@ static void deliver_pointer(dm_client_t* clients, int slot,
     stlxgfx_event_t evt = {0};
     evt.type = type;
     evt.window_id = w->window_id;
-    evt.pointer.x = inp->ptr_x - w->x - DECOR_BORDER_WIDTH;
-    evt.pointer.y = inp->ptr_y - w->y - DECOR_TITLE_HEIGHT;
+    evt.pointer.x = inp->ptr_x - w->x - STLXDM_BORDER_WIDTH;
+    evt.pointer.y = inp->ptr_y - w->y - STLXDM_TITLE_HEIGHT;
     evt.pointer.wheel = wheel;
     evt.pointer.buttons = buttons;
     stlxgfx_event_ring_write(w->event_ring, &evt);
@@ -275,8 +259,8 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                     if (dw) {
                         dw->x = inp->ptr_x - inp->drag_offset_x;
                         dw->y = inp->ptr_y - inp->drag_offset_y;
-                        if (dw->y < (int32_t)DECOR_SYSBAR_HEIGHT)
-                            dw->y = (int32_t)DECOR_SYSBAR_HEIGHT;
+                        if (dw->y < (int32_t)STLXDM_BAR_HEIGHT)
+                            dw->y = (int32_t)STLXDM_BAR_HEIGHT;
                     }
                     if (cur_buttons == 0) {
                         inp->drag_slot = -1;

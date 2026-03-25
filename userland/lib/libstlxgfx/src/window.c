@@ -71,7 +71,7 @@ static int send_message(int fd, uint32_t type, uint32_t seq,
 
 /* --- Client-side implementation --- */
 
-int stlxgfx_connect(const char* socket_path) {
+static int stlxgfx_connect(const char* socket_path) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         return -1;
@@ -87,12 +87,6 @@ int stlxgfx_connect(const char* socket_path) {
         return -1;
     }
     return fd;
-}
-
-void stlxgfx_disconnect(int conn_fd) {
-    if (conn_fd >= 0) {
-        close(conn_fd);
-    }
 }
 
 static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
@@ -257,11 +251,6 @@ stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
     return win;
 }
 
-stlxgfx_window_t* stlxgfx_create_window_ex(int conn_fd, uint32_t width,
-                                             uint32_t height, const char* title) {
-    return create_window_internal(conn_fd, width, height, title, 0);
-}
-
 static void window_cleanup(stlxgfx_window_t* window) {
     if (!window) return;
 
@@ -298,21 +287,9 @@ void stlxgfx_window_destroy(stlxgfx_window_t* window) {
     free(window);
 }
 
-void stlxgfx_window_close(stlxgfx_window_t* window) {
-    stlxgfx_window_destroy(window);
-}
-
 int stlxgfx_window_is_open(stlxgfx_window_t* window) {
     if (!window) return 0;
     return window->open;
-}
-
-int stlxgfx_window_should_close(stlxgfx_window_t* window) {
-    if (!window || !window->sync) {
-        return 1;
-    }
-    return atomic_load_explicit(&window->sync->close_requested,
-                                memory_order_acquire) != 0;
 }
 
 stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
@@ -708,32 +685,4 @@ stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window) {
     return window->front;
 }
 
-/* --- DM damage tracking --- */
 
-void stlxgfx_dm_damage_init(stlxgfx_dm_damage_t *dmg) {
-    dmg->count = 0;
-    dmg->full = 1;
-}
-
-void stlxgfx_dm_damage_add(stlxgfx_dm_damage_t *dmg, int32_t x, int32_t y,
-                            uint32_t w, uint32_t h) {
-    if (dmg->full) return;
-    if (dmg->count >= STLXGFX_DM_MAX_DAMAGE_RECTS) {
-        dmg->full = 1;
-        return;
-    }
-    stlxgfx_dm_rect_t *r = &dmg->rects[dmg->count++];
-    r->x = x;
-    r->y = y;
-    r->w = w;
-    r->h = h;
-}
-
-void stlxgfx_dm_damage_full(stlxgfx_dm_damage_t *dmg) {
-    dmg->full = 1;
-}
-
-void stlxgfx_dm_damage_reset(stlxgfx_dm_damage_t *dmg) {
-    dmg->count = 0;
-    dmg->full = 0;
-}

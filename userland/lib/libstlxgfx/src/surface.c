@@ -7,12 +7,8 @@ static inline uint32_t read_pixel(const uint8_t* pixel, const stlxgfx_surface_t*
     uint8_t g = pixel[s->green_shift / 8];
     uint8_t b = pixel[s->blue_shift  / 8];
     uint8_t a = 0xFF;
-    if (s->bpp == 32) {
-        uint8_t alpha_byte = 3;
-        if (s->red_shift != 0 && s->green_shift != 0 && s->blue_shift != 0)
-            alpha_byte = 0;
-        a = pixel[alpha_byte];
-    }
+    if (s->bpp == 32)
+        a = pixel[stlxgfx_alpha_byte_index(s)];
     return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
 
@@ -21,18 +17,11 @@ static inline void write_pixel(uint8_t* pixel, const stlxgfx_surface_t* s, uint3
     uint8_t g = (color >>  8) & 0xFF;
     uint8_t b =  color        & 0xFF;
 
-    uint32_t bytes_pp = s->bpp / 8;
     pixel[s->red_shift   / 8] = r;
     pixel[s->green_shift / 8] = g;
     pixel[s->blue_shift  / 8] = b;
-    if (bytes_pp == 4) {
-        uint8_t a = (color >> 24) & 0xFF;
-        uint8_t alpha_byte = 3;
-        if (s->red_shift != 0 && s->green_shift != 0 && s->blue_shift != 0) {
-            alpha_byte = 0;
-        }
-        pixel[alpha_byte] = a;
-    }
+    if (s->bpp / 8 == 4)
+        pixel[stlxgfx_alpha_byte_index(s)] = (color >> 24) & 0xFF;
 }
 
 stlxgfx_surface_t* stlxgfx_create_surface(uint32_t width, uint32_t height,
@@ -185,13 +174,24 @@ int stlxgfx_blit(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
         return 0;
     }
 
-    uint32_t bytes_pp = dst->bpp / 8;
-    size_t row_bytes = (size_t)(uint32_t)sw * bytes_pp;
+    uint32_t dst_bpp = dst->bpp / 8;
+    uint32_t src_bpp = src->bpp / 8;
+    uint32_t copy_bpp = dst_bpp < src_bpp ? dst_bpp : src_bpp;
+    size_t row_bytes = (size_t)(uint32_t)sw * copy_bpp;
 
     for (int32_t row = 0; row < sh; row++) {
-        uint8_t* src_row = src->pixels + ((uint32_t)sy + (uint32_t)row) * src->pitch + (uint32_t)sx * bytes_pp;
-        uint8_t* dst_row = dst->pixels + ((uint32_t)dy + (uint32_t)row) * dst->pitch + (uint32_t)dx * bytes_pp;
-        memcpy(dst_row, src_row, row_bytes);
+        uint8_t* src_row = src->pixels + ((uint32_t)sy + (uint32_t)row) * src->pitch + (uint32_t)sx * src_bpp;
+        uint8_t* dst_row = dst->pixels + ((uint32_t)dy + (uint32_t)row) * dst->pitch + (uint32_t)dx * dst_bpp;
+        if (src_bpp == dst_bpp) {
+            memcpy(dst_row, src_row, row_bytes);
+        } else {
+            for (int32_t col = 0; col < sw; col++) {
+                uint32_t c = read_pixel(src_row, src);
+                write_pixel(dst_row, dst, c);
+                src_row += src_bpp;
+                dst_row += dst_bpp;
+            }
+        }
     }
     return 0;
 }
@@ -295,12 +295,8 @@ static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
     dst_px[dst->red_shift   / 8] = (uint8_t)((sr * sa + dr * inv) / 255);
     dst_px[dst->green_shift / 8] = (uint8_t)((sg * sa + dg * inv) / 255);
     dst_px[dst->blue_shift  / 8] = (uint8_t)((sb * sa + db * inv) / 255);
-    if (dst->bpp == 32) {
-        uint8_t alpha_byte = 3;
-        if (dst->red_shift != 0 && dst->green_shift != 0 && dst->blue_shift != 0)
-            alpha_byte = 0;
-        dst_px[alpha_byte] = 0xFF;
-    }
+    if (dst->bpp == 32)
+        dst_px[stlxgfx_alpha_byte_index(dst)] = 0xFF;
 }
 
 int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,

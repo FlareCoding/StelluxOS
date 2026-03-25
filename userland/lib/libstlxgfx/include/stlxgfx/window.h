@@ -77,9 +77,7 @@ typedef struct {
     atomic_uint_least32_t close_requested;
 } stlxgfx_window_sync_t;
 
-/* --- Client-side API (simplified) --- */
-
-struct stlxgfx_ctx_t_tag;
+/* --- Client-side API --- */
 
 typedef struct stlxgfx_window_t_tag {
     stlxgfx_window_sync_t* sync;
@@ -112,14 +110,6 @@ int stlxgfx_window_next_event(stlxgfx_window_t* window,
 
 stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window);
 int stlxgfx_window_swap_buffers(stlxgfx_window_t* window);
-
-/* Legacy API (kept for compatibility during transition) */
-int  stlxgfx_connect(const char* socket_path);
-void stlxgfx_disconnect(int conn_fd);
-stlxgfx_window_t* stlxgfx_create_window_ex(int conn_fd, uint32_t width,
-                                             uint32_t height, const char* title);
-void stlxgfx_window_close(stlxgfx_window_t* window);
-int  stlxgfx_window_should_close(stlxgfx_window_t* window);
 
 /* --- DM-side API --- */
 
@@ -156,26 +146,5 @@ void stlxgfx_dm_destroy_window(stlxgfx_dm_window_t* window);
 int stlxgfx_dm_sync(stlxgfx_dm_window_t* window);
 void stlxgfx_dm_finish_sync(stlxgfx_dm_window_t* window);
 stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window);
-
-/* --- DM damage tracking --- */
-
-#define STLXGFX_DM_MAX_DAMAGE_RECTS 32
-
-typedef struct {
-    int32_t  x, y;
-    uint32_t w, h;
-} stlxgfx_dm_rect_t;
-
-typedef struct {
-    stlxgfx_dm_rect_t rects[STLXGFX_DM_MAX_DAMAGE_RECTS];
-    int                count;
-    int                full;
-} stlxgfx_dm_damage_t;
-
-void stlxgfx_dm_damage_init(stlxgfx_dm_damage_t *dmg);
-void stlxgfx_dm_damage_add(stlxgfx_dm_damage_t *dmg, int32_t x, int32_t y,
-                            uint32_t w, uint32_t h);
-void stlxgfx_dm_damage_full(stlxgfx_dm_damage_t *dmg);
-void stlxgfx_dm_damage_reset(stlxgfx_dm_damage_t *dmg);
 
 #endif /* STLXGFX_WINDOW_H */

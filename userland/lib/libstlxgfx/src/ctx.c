@@ -213,11 +213,8 @@ void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
                 px[s->red_shift   / 8] = (color >> 16) & 0xFF;
                 px[s->green_shift / 8] = (color >>  8) & 0xFF;
                 px[s->blue_shift  / 8] =  color        & 0xFF;
-                if (bytes_pp == 4) {
-                    uint8_t ab = 3;
-                    if (s->red_shift != 0 && s->green_shift != 0 && s->blue_shift != 0) ab = 0;
-                    px[ab] = (color >> 24) & 0xFF;
-                }
+                if (bytes_pp == 4)
+                    px[stlxgfx_alpha_byte_index(s)] = (color >> 24) & 0xFF;
             }
             err -= abs_dy;
             if (err < 0) { y += sy; err += abs_dx; }
@@ -231,11 +228,8 @@ void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
                 px[s->red_shift   / 8] = (color >> 16) & 0xFF;
                 px[s->green_shift / 8] = (color >>  8) & 0xFF;
                 px[s->blue_shift  / 8] =  color        & 0xFF;
-                if (bytes_pp == 4) {
-                    uint8_t ab = 3;
-                    if (s->red_shift != 0 && s->green_shift != 0 && s->blue_shift != 0) ab = 0;
-                    px[ab] = (color >> 24) & 0xFF;
-                }
+                if (bytes_pp == 4)
+                    px[stlxgfx_alpha_byte_index(s)] = (color >> 24) & 0xFF;
             }
             err -= abs_dx;
             if (err < 0) { x += sx; err += abs_dy; }
@@ -247,9 +241,12 @@ void stlxgfx_ctx_draw_text(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
                             const char *text, uint32_t font_size,
                             uint32_t color) {
     if (!ctx || !ctx->target) return;
-    stlxgfx_draw_text(ctx->target,
-                       ctx->state.ox + x, ctx->state.oy + y,
-                       text, font_size, color);
+    const stlxgfx_clip_t *c = &ctx->state.clip;
+    if (c->w == 0 || c->h == 0) return;
+    stlxgfx_draw_text_clipped(ctx->target,
+                               ctx->state.ox + x, ctx->state.oy + y,
+                               text, font_size, color,
+                               c->x, c->y, c->w, c->h);
 }
 
 void stlxgfx_ctx_text_size(const char *text, uint32_t font_size,

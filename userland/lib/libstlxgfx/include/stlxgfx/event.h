@@ -61,12 +61,4 @@ int  stlxgfx_event_ring_write(stlxgfx_event_ring_t* ring,
 int  stlxgfx_event_ring_read(stlxgfx_event_ring_t* ring,
                               stlxgfx_event_t* event);
 
-/* --- Client API --- */
-
-struct stlxgfx_window_t_tag;
-typedef struct stlxgfx_window_t_tag stlxgfx_window_t;
-
-int stlxgfx_window_next_event(stlxgfx_window_t* window,
-                               stlxgfx_event_t* event);
-
 #endif /* STLXGFX_EVENT_H */

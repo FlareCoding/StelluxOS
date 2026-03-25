@@ -16,6 +16,12 @@ typedef struct {
     int      owned;
 } stlxgfx_surface_t;
 
+static inline uint8_t stlxgfx_alpha_byte_index(const stlxgfx_surface_t* s) {
+    if (s->red_shift != 0 && s->green_shift != 0 && s->blue_shift != 0)
+        return 0;
+    return 3;
+}
+
 stlxgfx_surface_t* stlxgfx_create_surface(uint32_t width, uint32_t height,
                                            uint32_t bpp, uint8_t red_shift,
                                            uint8_t green_shift, uint8_t blue_shift);
