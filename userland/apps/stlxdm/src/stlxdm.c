@@ -12,17 +12,33 @@
 #include "stlxdm_input.h"
 #include "stlxdm_splash.h"
 
-/* --- Constants --- */
+#define STLXDM_FRAME_INTERVAL_NS    16666667
+#define STLXDM_BG_COLOR             0xFF2D2D30
+#define STLXDM_BAR_COLOR            0xFF1E1E1E
+#define STLXDM_BAR_HEIGHT           28
+#define STLXDM_BAR_FONT_SIZE        14
+#define STLXDM_BAR_TEXT_COLOR        0xFFCCCCCC
+#define STLXDM_BAR_ACCENT_COLOR     0xFF888888
 
-#define STLXDM_FRAME_INTERVAL_NS   16666667
-#define STLXDM_BG_COLOR            0xFF2D2D30
-#define STLXDM_BAR_COLOR           0xFF1E1E1E
-#define STLXDM_BAR_HEIGHT          28
-#define STLXDM_BAR_FONT_SIZE       14
-#define STLXDM_BAR_TEXT_COLOR      0xFFCCCCCC
-#define STLXDM_BAR_ACCENT_COLOR   0xFF888888
+#define STLXDM_TITLE_HEIGHT          32
+#define STLXDM_BORDER_WIDTH          2
+#define STLXDM_CORNER_RADIUS         8
+#define STLXDM_CLOSE_BTN_RADIUS      10
+#define STLXDM_CLOSE_BTN_MARGIN      8
+#define STLXDM_TITLE_FONT_SIZE       13
 
-/* --- Server layer --- */
+#define STLXDM_TITLE_BG_FOCUSED      0xFF313244
+#define STLXDM_TITLE_BG_UNFOCUSED    0xFF1E1E2E
+#define STLXDM_TITLE_TEXT_FOCUSED     0xFFBAC2DE
+#define STLXDM_TITLE_TEXT_UNFOCUSED   0xFF585B70
+#define STLXDM_BORDER_FOCUSED        0xFF585B70
+#define STLXDM_BORDER_DRAGGING       0xFF89B4FA
+#define STLXDM_BORDER_UNFOCUSED      0xFF313244
+#define STLXDM_CLOSE_NORMAL_BG       0xFF45475A
+#define STLXDM_CLOSE_HOVER_BG        0xFFF38BA8
+#define STLXDM_CLOSE_PRESS_BG        0xFFD06080
+#define STLXDM_CLOSE_X_NORMAL        0xFFBAC2DE
+#define STLXDM_CLOSE_X_HOVER         0xFFFFFFFF
 
 typedef struct {
     int            listen_fd;
@@ -40,19 +56,14 @@ static void stlxdm_server_init(stlxdm_server_t* srv, int listen_fd) {
 }
 
 static void stlxdm_server_accept(stlxdm_server_t* srv) {
-    if (srv->client_count >= STLXGFX_DM_MAX_CLIENTS) {
-        return;
-    }
+    if (srv->client_count >= STLXGFX_DM_MAX_CLIENTS) return;
     int client_fd = stlxgfx_dm_accept(srv->listen_fd);
-    if (client_fd < 0) {
-        return;
-    }
+    if (client_fd < 0) return;
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
         if (srv->clients[i].fd < 0) {
             srv->clients[i].fd = client_fd;
             srv->clients[i].window = NULL;
             srv->client_count++;
-            printf("stlxdm: client connected (slot %d)\r\n", i);
             return;
         }
     }
@@ -63,16 +74,13 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
                                             stlxdm_input_t* inp,
                                             const stlxgfx_fb_t* fb) {
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
-        if (srv->clients[i].fd < 0) {
-            continue;
-        }
+        if (srv->clients[i].fd < 0) continue;
 
         stlxgfx_msg_header_t hdr;
         uint8_t payload[512];
         int rc = stlxgfx_dm_read_request(srv->clients[i].fd, &hdr,
                                           payload, sizeof(payload));
         if (rc < 0) {
-            printf("stlxdm: client disconnected (slot %d)\r\n", i);
             if (srv->clients[i].window) {
                 stlxdm_input_remove_window(inp, i);
                 stlxgfx_dm_destroy_window(srv->clients[i].window);
@@ -83,9 +91,7 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
             srv->client_count--;
             continue;
         }
-        if (rc == 0) {
-            continue;
-        }
+        if (rc == 0) continue;
 
         if (hdr.message_type == STLXGFX_MSG_CREATE_WINDOW_REQ &&
             !srv->clients[i].window) {
@@ -96,8 +102,6 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
             if (win) {
                 srv->clients[i].window = win;
                 stlxdm_input_add_window(inp, i);
-                printf("stlxdm: created window %u (%ux%u)\r\n",
-                       win->window_id, win->width, win->height);
             }
         } else if (hdr.message_type == STLXGFX_MSG_DESTROY_WINDOW_REQ) {
             if (srv->clients[i].window) {
@@ -108,8 +112,6 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
         }
     }
 }
-
-/* --- Compositor layer --- */
 
 typedef struct {
     stlxgfx_fb_t*       fb;
@@ -124,9 +126,7 @@ static int stlxdm_compositor_init(stlxdm_compositor_t* comp,
     comp->width = fb->width;
     comp->height = fb->height;
     comp->backbuf = stlxgfx_fb_create_surface(fb, fb->width, fb->height);
-    if (!comp->backbuf) {
-        return -1;
-    }
+    if (!comp->backbuf) return -1;
     return 0;
 }
 
@@ -134,23 +134,18 @@ static void stlxdm_compositor_sync(stlxdm_compositor_t* comp,
                                     dm_client_t* clients) {
     (void)comp;
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
-        if (clients[i].window) {
+        if (clients[i].window)
             stlxgfx_dm_sync(clients[i].window);
-        }
     }
 }
 
 static void stlxdm_compositor_draw_bar(stlxdm_compositor_t* comp) {
     stlxgfx_fill_rect(comp->backbuf, 0, 0,
-                       (int32_t)comp->width, STLXDM_BAR_HEIGHT,
-                       STLXDM_BAR_COLOR);
-
+                       comp->width, STLXDM_BAR_HEIGHT, STLXDM_BAR_COLOR);
     stlxgfx_fill_rect(comp->backbuf, 0, STLXDM_BAR_HEIGHT,
-                       (int32_t)comp->width, 1, STLXDM_BAR_ACCENT_COLOR);
-
+                       comp->width, 1, STLXDM_BAR_ACCENT_COLOR);
     stlxgfx_draw_text(comp->backbuf, 10, 6,
-                       "Stellux", STLXDM_BAR_FONT_SIZE,
-                       STLXDM_BAR_TEXT_COLOR);
+                       "Stellux", STLXDM_BAR_FONT_SIZE, STLXDM_BAR_TEXT_COLOR);
 
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
@@ -158,9 +153,7 @@ static void stlxdm_compositor_draw_bar(stlxdm_compositor_t* comp) {
         if (t) {
             char time_str[64];
             strftime(time_str, sizeof(time_str), "%a %b %e  %H:%M:%S", t);
-
-            uint32_t tw = 0;
-            uint32_t th = 0;
+            uint32_t tw = 0, th = 0;
             stlxgfx_text_size(time_str, STLXDM_BAR_FONT_SIZE, &tw, &th);
             int32_t tx = ((int32_t)comp->width - (int32_t)tw) / 2;
             stlxgfx_draw_text(comp->backbuf, tx, 6,
@@ -170,23 +163,166 @@ static void stlxdm_compositor_draw_bar(stlxdm_compositor_t* comp) {
     }
 }
 
+static void stlxdm_draw_window_frame(stlxgfx_surface_t* buf,
+                                      stlxgfx_dm_window_t* w,
+                                      int focused, int dragging,
+                                      int close_hover, int close_pressed) {
+    int32_t ox = w->x;
+    int32_t oy = w->y;
+    uint32_t bw = STLXDM_BORDER_WIDTH;
+    uint32_t outer_w = w->width + 2 * bw;
+    uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
+    uint32_t cr = STLXDM_CORNER_RADIUS;
+
+    uint32_t border_color = dragging ? STLXDM_BORDER_DRAGGING
+                          : focused  ? STLXDM_BORDER_FOCUSED
+                          :            STLXDM_BORDER_UNFOCUSED;
+
+    uint32_t title_bg = focused ? STLXDM_TITLE_BG_FOCUSED
+                                : STLXDM_TITLE_BG_UNFOCUSED;
+
+    if (dragging) {
+        stlxgfx_fill_rounded_rect(buf, ox - 1, oy - 1,
+                                   outer_w + 2, outer_h + 2,
+                                   cr + 1, STLXDM_BORDER_DRAGGING);
+    }
+
+    // Outer border: all four corners rounded
+    stlxgfx_fill_rounded_rect(buf, ox, oy, outer_w, outer_h,
+                               cr, border_color);
+
+    // Title bar: rounded top corners, straight bottom
+    uint32_t inner_cr = cr > bw ? cr - bw : 0;
+    stlxgfx_fill_rounded_rect(buf, ox + (int32_t)bw, oy + (int32_t)bw,
+                               outer_w - 2 * bw,
+                               STLXDM_TITLE_HEIGHT - bw,
+                               inner_cr, title_bg);
+    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
+                       oy + STLXDM_TITLE_HEIGHT - (int32_t)inner_cr,
+                       outer_w - 2 * bw, inner_cr, title_bg);
+
+    // Content area background (straight rect, no rounding needed here)
+    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
+                       oy + STLXDM_TITLE_HEIGHT,
+                       outer_w - 2 * bw,
+                       outer_h - STLXDM_TITLE_HEIGHT - bw,
+                       STLXDM_BG_COLOR);
+
+    // Title/content separator
+    stlxgfx_fill_rect(buf, ox + (int32_t)bw,
+                       oy + STLXDM_TITLE_HEIGHT - 1,
+                       outer_w - 2 * bw, 1, border_color);
+
+    // Title text: vertically centered
+    uint32_t tw = 0, th = 0;
+    stlxgfx_text_size(w->title, STLXDM_TITLE_FONT_SIZE, &tw, &th);
+    int32_t title_y = oy + (int32_t)(STLXDM_TITLE_HEIGHT - th) / 2;
+    uint32_t text_color = focused ? STLXDM_TITLE_TEXT_FOCUSED
+                                  : STLXDM_TITLE_TEXT_UNFOCUSED;
+    stlxgfx_draw_text(buf, ox + 12, title_y,
+                       w->title, STLXDM_TITLE_FONT_SIZE, text_color);
+
+    // Close button
+    if (focused) {
+        int32_t ccx = ox + (int32_t)outer_w - STLXDM_CLOSE_BTN_MARGIN
+                     - STLXDM_CLOSE_BTN_RADIUS - (int32_t)bw;
+        int32_t ccy = oy + STLXDM_TITLE_HEIGHT / 2;
+        uint32_t cb_bg = close_pressed ? STLXDM_CLOSE_PRESS_BG
+                       : close_hover   ? STLXDM_CLOSE_HOVER_BG
+                       :                 STLXDM_CLOSE_NORMAL_BG;
+        uint32_t cb_fg = (close_hover || close_pressed) ? STLXDM_CLOSE_X_HOVER
+                                                        : STLXDM_CLOSE_X_NORMAL;
+        stlxgfx_fill_circle(buf, ccx, ccy, STLXDM_CLOSE_BTN_RADIUS, cb_bg);
+
+        uint32_t xw = 0, xh = 0;
+        stlxgfx_text_size("x", STLXDM_TITLE_FONT_SIZE, &xw, &xh);
+        stlxgfx_draw_text(buf, ccx - (int32_t)xw / 2,
+                           ccy - (int32_t)xh / 2,
+                           "x", STLXDM_TITLE_FONT_SIZE, cb_fg);
+    }
+}
+
+static void stlxdm_repair_bottom_corners(stlxgfx_surface_t* buf,
+                                          stlxgfx_dm_window_t* w) {
+    uint32_t bw = STLXDM_BORDER_WIDTH;
+    uint32_t outer_w = w->width + 2 * bw;
+    uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
+    int32_t r = (int32_t)STLXDM_CORNER_RADIUS;
+    int32_t ox = w->x;
+    int32_t oy = w->y;
+    int32_t right_edge = ox + (int32_t)outer_w;
+    int32_t bot_edge = oy + (int32_t)outer_h;
+
+    // Build a lookup: for each row offset dy (0..r), store the arc x-extent.
+    // arc_x[dy] = number of pixels from corner center to the arc edge.
+    int32_t arc_x[32];
+    if (r > 31) r = 31;
+    {
+        int32_t px2 = 0, py2 = r, d2 = 1 - r;
+        for (int i = 0; i <= r; i++) arc_x[i] = r;
+        while (px2 <= py2) {
+            if (py2 <= r) arc_x[py2] = px2;
+            if (px2 <= r) arc_x[px2] = py2;
+            px2++;
+            if (d2 < 0) { d2 += 2 * px2 + 1; }
+            else { py2--; d2 += 2 * (px2 - py2) + 1; }
+        }
+    }
+
+    int32_t cy_center = bot_edge - r - 1;
+    int32_t blit_bot = oy + STLXDM_TITLE_HEIGHT + (int32_t)w->height;
+
+    for (int32_t dy = 0; dy <= r; dy++) {
+        int32_t sy = cy_center + dy;
+        if (sy < blit_bot - 1) continue;
+        if (sy >= bot_edge) break;
+
+        int32_t extent = arc_x[dy];
+
+        // The filled arc spans (cx - extent) to (cx + extent) inclusive.
+        // cx_bl = ox + r, so left edge of arc = ox + r - extent.
+        // Pixels from ox to ox + r - extent - 1 are outside the arc.
+        int32_t left_cut = r - extent;
+        if (left_cut > 0)
+            stlxgfx_fill_rect(buf, ox, sy,
+                               (uint32_t)left_cut, 1, STLXDM_BG_COLOR);
+
+        // cx_br = right_edge - r - 1, right edge of arc = cx_br + extent.
+        // Pixels from cx_br + extent + 1 to right_edge - 1 are outside.
+        int32_t right_cut = r - extent;
+        if (right_cut > 0)
+            stlxgfx_fill_rect(buf, right_edge - right_cut, sy,
+                               (uint32_t)right_cut, 1, STLXDM_BG_COLOR);
+    }
+}
+
 static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                                        stlxdm_input_t* inp,
                                        dm_client_t* clients) {
     stlxgfx_clear(comp->backbuf, STLXDM_BG_COLOR);
-
     stlxdm_compositor_draw_bar(comp);
 
     for (int i = 0; i < inp->z_count; i++) {
         int slot = stlxdm_input_z_order(inp, i);
-        if (slot < 0 || !clients[slot].window) {
-            continue;
-        }
-        stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(clients[slot].window);
+        if (slot < 0 || !clients[slot].window) continue;
+
+        stlxgfx_dm_window_t* w = clients[slot].window;
+        int focused = (slot == inp->focused_slot);
+        int dragging = (slot == inp->drag_slot);
+        int close_hover = (focused && inp->close_hover_slot == slot);
+        int close_pressed = (inp->close_press_slot == slot);
+
+        stlxdm_draw_window_frame(comp->backbuf, w,
+                                  focused, dragging, close_hover, close_pressed);
+
+        stlxgfx_surface_t* front = stlxgfx_dm_front_buffer(w);
         if (front) {
             stlxgfx_blit(comp->backbuf,
-                          clients[slot].window->x, clients[slot].window->y,
+                          w->x + STLXDM_BORDER_WIDTH,
+                          w->y + STLXDM_TITLE_HEIGHT,
                           front, 0, 0, front->width, front->height);
+
+            stlxdm_repair_bottom_corners(comp->backbuf, w);
         }
     }
 
@@ -201,13 +337,10 @@ static void stlxdm_compositor_finish_sync(stlxdm_compositor_t* comp,
                                             dm_client_t* clients) {
     (void)comp;
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
-        if (clients[i].window) {
+        if (clients[i].window)
             stlxgfx_dm_finish_sync(clients[i].window);
-        }
     }
 }
-
-/* --- Main --- */
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -217,8 +350,6 @@ int main(void) {
         printf("stlxdm: failed to open framebuffer\r\n");
         return 1;
     }
-    printf("stlxdm: framebuffer %ux%u %ubpp\r\n",
-           fb.width, fb.height, (unsigned int)fb.bpp);
 
     if (stlxgfx_font_init(STLXGFX_FONT_PATH) != 0) {
         printf("stlxdm: font init failed\r\n");
@@ -239,7 +370,6 @@ int main(void) {
         stlxgfx_fb_close(&fb);
         return 1;
     }
-    printf("stlxdm: listening on %s\r\n", STLXGFX_DM_SOCKET_PATH);
 
     int term_handle = proc_exec("/initrd/bin/stlxterm", NULL);
     if (term_handle >= 0) {

@@ -141,7 +141,6 @@ stlxgfx_window_t* stlxgfx_create_window(int conn_fd, uint32_t width,
     snprintf(surface_path, sizeof(surface_path), "/dev/shm/%s", resp.surface_name);
     snprintf(sync_path, sizeof(sync_path), "/dev/shm/%s", resp.sync_name);
     snprintf(events_path, sizeof(events_path), "/dev/shm/%s", resp.events_name);
-
     int sync_fd = open(sync_path, O_RDWR);
     if (sync_fd < 0) {
         return NULL;
@@ -540,6 +539,13 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
     g_cascade_offset = (g_cascade_offset + 1) % 8;
     win->x = cx;
     win->y = cy;
+
+    memset(win->title, 0, sizeof(win->title));
+    if (req->title_length > 0) {
+        size_t tlen = req->title_length;
+        if (tlen > sizeof(win->title) - 1) tlen = sizeof(win->title) - 1;
+        memcpy(win->title, req->title, tlen);
+    }
 
     strncpy(win->surface_path, surface_path, sizeof(win->surface_path) - 1);
     win->surface_path[sizeof(win->surface_path) - 1] = '\0';

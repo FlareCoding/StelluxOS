@@ -21,6 +21,7 @@
 #define STLXTERM_FG_COLOR     0xFFCDD6F4
 #define STLXTERM_CURSOR_COLOR 0xFFF5E0DC
 #define STLXTERM_FONT_SIZE    16
+#define STLXTERM_PADDING      4
 #define STLXTERM_FRAME_NS     33000000
 #define STLXTERM_BLINK_FRAMES 15
 
@@ -68,20 +69,21 @@ static void render_term(stlxgfx_surface_t *buf, const term_state_t *t,
                         uint32_t cell_w, uint32_t cell_h, int cursor_visible) {
     stlxgfx_clear(buf, STLXTERM_BG_COLOR);
 
+    int32_t pad = STLXTERM_PADDING;
     char ch_buf[2] = {0, 0};
     for (int r = 0; r < t->rows; r++) {
         for (int c = 0; c < t->cols; c++) {
+            int32_t px = pad + (int32_t)(c * cell_w);
+            int32_t py = pad + (int32_t)(r * cell_h);
             uint8_t bg_idx = t->attrs[r][c].bg;
             if (bg_idx != 0) {
-                stlxgfx_fill_rect(buf,
-                    (int32_t)(c * cell_w), (int32_t)(r * cell_h),
+                stlxgfx_fill_rect(buf, px, py,
                     cell_w, cell_h, BG_PALETTE[bg_idx]);
             }
             if (t->cells[r][c] != ' ') {
                 uint8_t fg_idx = t->attrs[r][c].fg;
                 ch_buf[0] = t->cells[r][c];
-                stlxgfx_draw_text(buf,
-                    (int32_t)(c * cell_w), (int32_t)(r * cell_h),
+                stlxgfx_draw_text(buf, px, py,
                     ch_buf, STLXTERM_FONT_SIZE, FG_PALETTE[fg_idx]);
             }
         }
@@ -90,15 +92,15 @@ static void render_term(stlxgfx_surface_t *buf, const term_state_t *t,
     if (cursor_visible) {
         int cc = t->cursor_col < t->cols ? t->cursor_col : t->cols - 1;
         int cr = t->cursor_row;
+        int32_t cx = pad + (int32_t)(cc * cell_w);
+        int32_t cy = pad + (int32_t)(cr * cell_h);
 
-        stlxgfx_fill_rect(buf,
-            (int32_t)(cc * cell_w), (int32_t)(cr * cell_h),
+        stlxgfx_fill_rect(buf, cx, cy,
             cell_w, cell_h, STLXTERM_CURSOR_COLOR);
 
         if (t->cells[cr][cc] != ' ') {
             ch_buf[0] = t->cells[cr][cc];
-            stlxgfx_draw_text(buf,
-                (int32_t)(cc * cell_w), (int32_t)(cr * cell_h),
+            stlxgfx_draw_text(buf, cx, cy,
                 ch_buf, STLXTERM_FONT_SIZE, STLXTERM_BG_COLOR);
         }
     }
@@ -132,8 +134,8 @@ int main(void) {
     stlxgfx_text_size("M", STLXTERM_FONT_SIZE, &cell_w, &cell_h);
     if (cell_w == 0) cell_w = 8;
     if (cell_h == 0) cell_h = 16;
-    int term_cols = (int)(STLXTERM_WIDTH / cell_w);
-    int term_rows = (int)(STLXTERM_HEIGHT / cell_h);
+    int term_cols = (int)((STLXTERM_WIDTH  - 2 * STLXTERM_PADDING) / cell_w);
+    int term_rows = (int)((STLXTERM_HEIGHT - 2 * STLXTERM_PADDING) / cell_h);
 
     term_state_t *term = malloc(sizeof(term_state_t));
     if (!term) {
