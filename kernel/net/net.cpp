@@ -5,6 +5,7 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
+#include "dynpriv/dynpriv.h"
 
 namespace net {
 
@@ -46,14 +47,14 @@ int32_t register_netif(netif* iface) {
     iface->configured = false;
     iface->next = nullptr;
 
-    {
+    RUN_ELEVATED({
         sync::irq_lock_guard guard(g_net_lock);
         iface->next = g_iface_list;
         g_iface_list = iface;
         if (!g_default_iface) {
             g_default_iface = iface;
         }
-    }
+    });
 
     log::info("net: registered interface %s (%02x:%02x:%02x:%02x:%02x:%02x)",
               iface->name,
@@ -65,20 +66,22 @@ int32_t register_netif(netif* iface) {
 int32_t unregister_netif(netif* iface) {
     if (!iface) return ERR_INVAL;
 
-    sync::irq_lock_guard guard(g_net_lock);
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_net_lock);
 
-    netif** pp = &g_iface_list;
-    while (*pp) {
-        if (*pp == iface) {
-            *pp = iface->next;
-            break;
+        netif** pp = &g_iface_list;
+        while (*pp) {
+            if (*pp == iface) {
+                *pp = iface->next;
+                break;
+            }
+            pp = &(*pp)->next;
         }
-        pp = &(*pp)->next;
-    }
 
-    if (g_default_iface == iface) {
-        g_default_iface = g_iface_list;
-    }
+        if (g_default_iface == iface) {
+            g_default_iface = g_iface_list;
+        }
+    });
 
     iface->next = nullptr;
     return OK;
@@ -120,20 +123,19 @@ void queue_deferred_tx(netif* iface, uint32_t dst_ip, uint8_t protocol,
         return;
     }
 
-    sync::irq_lock_guard guard(g_deferred_tx_lock);
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_deferred_tx_lock);
 
-    if (g_deferred_tx_count >= DEFERRED_TX_MAX) {
-        // Queue full — silently drop. ICMP replies are best-effort.
-        return;
-    }
-
-    auto& entry = g_deferred_tx[g_deferred_tx_count];
-    entry.iface = iface;
-    entry.dst_ip = dst_ip;
-    entry.protocol = protocol;
-    entry.len = len;
-    string::memcpy(entry.data, data, len);
-    g_deferred_tx_count++;
+        if (g_deferred_tx_count < DEFERRED_TX_MAX) {
+            auto& entry = g_deferred_tx[g_deferred_tx_count];
+            entry.iface = iface;
+            entry.dst_ip = dst_ip;
+            entry.protocol = protocol;
+            entry.len = len;
+            string::memcpy(entry.data, data, len);
+            g_deferred_tx_count++;
+        }
+    });
 }
 
 void drain_deferred_tx() {
@@ -143,14 +145,14 @@ void drain_deferred_tx() {
     deferred_tx_entry local[DEFERRED_TX_MAX];
     uint32_t count = 0;
 
-    {
+    RUN_ELEVATED({
         sync::irq_lock_guard guard(g_deferred_tx_lock);
         count = g_deferred_tx_count;
         if (count > 0) {
             string::memcpy(local, g_deferred_tx, count * sizeof(deferred_tx_entry));
             g_deferred_tx_count = 0;
         }
-    }
+    });
 
     // Send each queued packet at the top level. ipv4_send may call
     // arp_resolve which may poll — this is safe because we are not

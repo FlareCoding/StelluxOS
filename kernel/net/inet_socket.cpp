@@ -208,24 +208,32 @@ int32_t create_inet_icmp_socket(resource::resource_object** out) {
 }
 
 void register_icmp_socket(inet_socket* sock) {
-    sync::irq_lock_guard guard(g_icmp_reg_lock);
-    for (uint32_t i = 0; i < MAX_ICMP_SOCKETS; i++) {
-        if (!g_icmp_sockets[i]) {
-            g_icmp_sockets[i] = sock;
-            return;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_icmp_reg_lock);
+        bool registered = false;
+        for (uint32_t i = 0; i < MAX_ICMP_SOCKETS; i++) {
+            if (!g_icmp_sockets[i]) {
+                g_icmp_sockets[i] = sock;
+                registered = true;
+                break;
+            }
         }
-    }
-    log::warn("inet: ICMP socket registry full");
+        if (!registered) {
+            log::warn("inet: ICMP socket registry full");
+        }
+    });
 }
 
 void unregister_icmp_socket(inet_socket* sock) {
-    sync::irq_lock_guard guard(g_icmp_reg_lock);
-    for (uint32_t i = 0; i < MAX_ICMP_SOCKETS; i++) {
-        if (g_icmp_sockets[i] == sock) {
-            g_icmp_sockets[i] = nullptr;
-            return;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_icmp_reg_lock);
+        for (uint32_t i = 0; i < MAX_ICMP_SOCKETS; i++) {
+            if (g_icmp_sockets[i] == sock) {
+                g_icmp_sockets[i] = nullptr;
+                break;
+            }
         }
-    }
+    });
 }
 
 void deliver_to_icmp_sockets(uint32_t src_ip, const uint8_t* data, size_t len) {
@@ -244,14 +252,14 @@ void deliver_to_icmp_sockets(uint32_t src_ip, const uint8_t* data, size_t len) {
     string::memcpy(entry + 4, &payload_len, 2);
     string::memcpy(entry + RX_ENTRY_HEADER, data, len);
 
-    sync::irq_lock_guard guard(g_icmp_reg_lock);
-    for (uint32_t i = 0; i < MAX_ICMP_SOCKETS; i++) {
-        inet_socket* sock = g_icmp_sockets[i];
-        if (!sock || !sock->rx_buf) continue;
-
-        // All-or-nothing write; drop packet if buffer has insufficient space
-        (void)ring_buffer_write_all(sock->rx_buf, entry, entry_len, true);
-    }
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_icmp_reg_lock);
+        for (uint32_t i = 0; i < MAX_ICMP_SOCKETS; i++) {
+            inet_socket* sock = g_icmp_sockets[i];
+            if (!sock || !sock->rx_buf) continue;
+            (void)ring_buffer_write_all(sock->rx_buf, entry, entry_len, true);
+        }
+    });
 
     heap::kfree(entry);
 }

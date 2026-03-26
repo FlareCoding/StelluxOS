@@ -29,51 +29,53 @@ void arp_init() {
 }
 
 static void arp_table_update(uint32_t ip, const uint8_t* mac) {
-    sync::irq_state irq = sync::spin_lock_irqsave(g_arp_lock);
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_arp_lock);
 
-    // Update existing entry
-    bool updated = false;
-    for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
-        if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
-            string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
-            updated = true;
-            break;
-        }
-    }
-
-    if (!updated) {
-        // Insert into first free slot
+        bool updated = false;
         for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
-            if (!g_arp_table[i].valid) {
-                g_arp_table[i].ip = ip;
+            if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
                 string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
-                g_arp_table[i].valid = true;
                 updated = true;
                 break;
             }
         }
-    }
 
-    if (!updated) {
-        // Table full — overwrite slot 0
-        g_arp_table[0].ip = ip;
-        string::memcpy(g_arp_table[0].mac, mac, MAC_ADDR_LEN);
-        g_arp_table[0].valid = true;
-    }
+        if (!updated) {
+            for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
+                if (!g_arp_table[i].valid) {
+                    g_arp_table[i].ip = ip;
+                    string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
+                    g_arp_table[i].valid = true;
+                    updated = true;
+                    break;
+                }
+            }
+        }
 
-    sync::spin_unlock_irqrestore(g_arp_lock, irq);
+        if (!updated) {
+            g_arp_table[0].ip = ip;
+            string::memcpy(g_arp_table[0].mac, mac, MAC_ADDR_LEN);
+            g_arp_table[0].valid = true;
+        }
+
+        sync::spin_unlock_irqrestore(g_arp_lock, irq);
+    });
 }
 
 static bool arp_table_lookup(uint32_t ip, uint8_t* out_mac) {
-    sync::irq_lock_guard guard(g_arp_lock);
-
-    for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
-        if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
-            string::memcpy(out_mac, g_arp_table[i].mac, MAC_ADDR_LEN);
-            return true;
+    bool found = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_arp_lock);
+        for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
+            if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
+                string::memcpy(out_mac, g_arp_table[i].mac, MAC_ADDR_LEN);
+                found = true;
+                break;
+            }
         }
-    }
-    return false;
+    });
+    return found;
 }
 
 void arp_recv(netif* iface, const uint8_t* data, size_t len) {
