@@ -11,7 +11,12 @@ namespace net {
 
 namespace {
 
-__PRIVILEGED_DATA static uint16_t g_ipv4_id_counter = 0;
+__PRIVILEGED_DATA static volatile uint32_t g_ipv4_id_counter = 0;
+
+static uint16_t next_ipv4_id() {
+    return static_cast<uint16_t>(
+        __atomic_fetch_add(&g_ipv4_id_counter, 1, __ATOMIC_RELAXED));
+}
 
 } // anonymous namespace
 
@@ -85,7 +90,7 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     hdr->ver_ihl = (4 << 4) | 5; // IPv4, IHL=5 (20 bytes)
     hdr->tos = 0;
     hdr->total_len = htons(static_cast<uint16_t>(sizeof(ipv4_header) + payload_len));
-    hdr->id = htons(g_ipv4_id_counter++);
+    hdr->id = htons(next_ipv4_id());
     hdr->flags_frag = htons(0x4000); // Don't Fragment
     hdr->ttl = IPV4_DEFAULT_TTL;
     hdr->protocol = protocol;
