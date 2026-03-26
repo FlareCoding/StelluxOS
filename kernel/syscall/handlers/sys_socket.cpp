@@ -2,6 +2,7 @@
 
 #include "socket/unix_socket.h"
 #include "socket/listener.h"
+#include "net/inet_socket.h"
 #include "fs/fs.h"
 #include "fs/socket_node.h"
 #include "resource/resource.h"
@@ -15,8 +16,14 @@
 namespace {
 
 constexpr uint64_t AF_UNIX     = 1;
+constexpr uint64_t AF_INET     = 2;
 constexpr uint64_t SOCK_STREAM = 1;
+constexpr uint64_t SOCK_DGRAM  = 2;
+constexpr uint64_t IPPROTO_ICMP = 1;
+constexpr uint64_t MSG_DONTWAIT = 0x40;
 constexpr size_t   SUN_PATH_OFFSET = 2;
+constexpr size_t   SENDTO_MAX_ADDR = 128;
+constexpr size_t   SENDTO_MAX_BUF  = 4096;
 
 struct sockaddr_un {
     uint16_t sun_family;
@@ -72,23 +79,29 @@ int64_t parse_sockaddr_un(uint64_t addr, uint64_t addrlen, char* kpath_out) {
 } // anonymous namespace
 
 DEFINE_SYSCALL3(socket, domain, type, protocol) {
-    if (domain != AF_UNIX) {
-        return syscall::EINVAL;
-    }
-    if (type != SOCK_STREAM) {
-        return syscall::EINVAL;
-    }
-    if (protocol != 0) {
-        return syscall::EINVAL;
-    }
-
     sched::task* task = sched::current();
     if (!task) {
         return syscall::EIO;
     }
 
     resource::resource_object* obj = nullptr;
-    int32_t rc = socket::create_unbound_socket(&obj);
+    int32_t rc;
+
+    if (domain == AF_UNIX) {
+        if (type != SOCK_STREAM || protocol != 0) {
+            return syscall::EINVAL;
+        }
+        rc = socket::create_unbound_socket(&obj);
+    } else if (domain == AF_INET) {
+        if (type == SOCK_DGRAM && protocol == IPPROTO_ICMP) {
+            rc = net::create_inet_icmp_socket(&obj);
+        } else {
+            return syscall::EPROTONOSUPPORT;
+        }
+    } else {
+        return syscall::EAFNOSUPPORT;
+    }
+
     if (rc != resource::OK) {
         return syscall::ENOMEM;
     }
@@ -514,4 +527,154 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     }
 
     return new_handle;
+}
+
+DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
+    if (buf == 0 || len == 0) {
+        return syscall::EINVAL;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &task->handles, static_cast<resource::handle_t>(fd),
+        resource::RIGHT_WRITE, &obj
+    );
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+    if (!obj->ops || !obj->ops->sendto) {
+        resource::resource_release(obj);
+        return syscall::EOPNOTSUPP;
+    }
+
+    // Copy data from userspace
+    size_t data_len = static_cast<size_t>(len);
+    if (data_len > SENDTO_MAX_BUF) {
+        resource::resource_release(obj);
+        return syscall::EMSGSIZE;
+    }
+
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(data_len));
+    if (!kbuf) {
+        resource::resource_release(obj);
+        return syscall::ENOMEM;
+    }
+
+    int32_t copy_rc = mm::uaccess::copy_from_user(kbuf, reinterpret_cast<const void*>(buf), data_len);
+    if (copy_rc != mm::uaccess::OK) {
+        heap::kfree(kbuf);
+        resource::resource_release(obj);
+        return syscall::EFAULT;
+    }
+
+    // Copy sockaddr from userspace
+    uint8_t kaddr[SENDTO_MAX_ADDR] = {};
+    size_t addr_len = 0;
+    if (dest_addr != 0 && addrlen > 0) {
+        addr_len = static_cast<size_t>(addrlen);
+        if (addr_len > SENDTO_MAX_ADDR) {
+            heap::kfree(kbuf);
+            resource::resource_release(obj);
+            return syscall::EINVAL;
+        }
+        copy_rc = mm::uaccess::copy_from_user(kaddr, reinterpret_cast<const void*>(dest_addr), addr_len);
+        if (copy_rc != mm::uaccess::OK) {
+            heap::kfree(kbuf);
+            resource::resource_release(obj);
+            return syscall::EFAULT;
+        }
+    }
+
+    ssize_t result = obj->ops->sendto(obj, kbuf, data_len,
+                                       static_cast<uint32_t>(flags),
+                                       kaddr, addr_len);
+    heap::kfree(kbuf);
+    resource::resource_release(obj);
+
+    if (result < 0) {
+        return syscall::EIO;
+    }
+    return result;
+}
+
+DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
+    if (buf == 0 || len == 0) {
+        return syscall::EINVAL;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &task->handles, static_cast<resource::handle_t>(fd),
+        resource::RIGHT_READ, &obj
+    );
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+    if (!obj->ops || !obj->ops->recvfrom) {
+        resource::resource_release(obj);
+        return syscall::EOPNOTSUPP;
+    }
+
+    size_t data_len = static_cast<size_t>(len);
+    if (data_len > SENDTO_MAX_BUF) {
+        data_len = SENDTO_MAX_BUF;
+    }
+
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(data_len));
+    if (!kbuf) {
+        resource::resource_release(obj);
+        return syscall::ENOMEM;
+    }
+
+    uint8_t kaddr[SENDTO_MAX_ADDR] = {};
+    size_t kaddr_len = sizeof(kaddr);
+
+    ssize_t result = obj->ops->recvfrom(obj, kbuf, data_len,
+                                         static_cast<uint32_t>(flags),
+                                         kaddr, &kaddr_len);
+
+    if (result < 0) {
+        heap::kfree(kbuf);
+        resource::resource_release(obj);
+        if (result == resource::ERR_AGAIN) {
+            return syscall::EAGAIN;
+        }
+        return syscall::EIO;
+    }
+
+    // Copy data to userspace
+    int32_t copy_rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(buf), kbuf, static_cast<size_t>(result));
+    heap::kfree(kbuf);
+    if (copy_rc != mm::uaccess::OK) {
+        resource::resource_release(obj);
+        return syscall::EFAULT;
+    }
+
+    // Copy source address to userspace if requested
+    if (src_addr != 0 && addrlen != 0) {
+        uint32_t user_addrlen = 0;
+        mm::uaccess::copy_from_user(&user_addrlen, reinterpret_cast<const void*>(addrlen), sizeof(user_addrlen));
+
+        size_t copy_addr_len = kaddr_len < user_addrlen ? kaddr_len : user_addrlen;
+        if (copy_addr_len > 0) {
+            mm::uaccess::copy_to_user(reinterpret_cast<void*>(src_addr), kaddr, copy_addr_len);
+        }
+
+        uint32_t out_len = static_cast<uint32_t>(kaddr_len);
+        mm::uaccess::copy_to_user(reinterpret_cast<void*>(addrlen), &out_len, sizeof(out_len));
+    }
+
+    resource::resource_release(obj);
+    return result;
 }

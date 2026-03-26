@@ -32,10 +32,14 @@ constexpr int64_t EAGAIN    = -11;
 constexpr int64_t EBUSY     = -16;
 constexpr int64_t ESPIPE = -29;
 constexpr int64_t EPIPE  = -32;
-constexpr int64_t EADDRINUSE   = -98;
-constexpr int64_t EISCONN      = -106;
-constexpr int64_t ENOTCONN     = -107;
-constexpr int64_t ECONNREFUSED = -111;
+constexpr int64_t EMSGSIZE         = -90;
+constexpr int64_t EPROTONOSUPPORT  = -93;
+constexpr int64_t EOPNOTSUPP       = -95;
+constexpr int64_t EAFNOSUPPORT     = -97;
+constexpr int64_t EADDRINUSE       = -98;
+constexpr int64_t EISCONN          = -106;
+constexpr int64_t ENOTCONN         = -107;
+constexpr int64_t ECONNREFUSED     = -111;
 
 extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
 

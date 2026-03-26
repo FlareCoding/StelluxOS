@@ -14,35 +14,11 @@ constexpr int32_t ERR_TIMEOUT = -5;
 constexpr int32_t ERR_NOARP   = -6;
 constexpr int32_t ERR_NOREPLY = -7;
 
-// Ioctl commands for /dev/net0
-constexpr uint32_t NET_PING       = 0x4E01;
-constexpr uint32_t NET_GET_CONFIG = 0x4E02;
-
 // Maximum Ethernet frame size (without FCS)
 constexpr size_t ETH_FRAME_MAX = 1514;
 constexpr size_t ETH_MTU       = 1500;
 constexpr size_t MAC_ADDR_LEN  = 6;
 constexpr size_t MAX_INTERFACES = 8;
-
-// Ping request structure (userland ↔ kernel ioctl interface)
-struct net_ping_req {
-    uint32_t dst_ip;       // in: target IP (network byte order)
-    uint16_t id;           // in: ICMP identifier
-    uint16_t seq;          // in: ICMP sequence number
-    uint32_t timeout_ms;   // in: timeout in milliseconds
-    int32_t  result;       // out: 0=success, negative=error
-    uint32_t rtt_us;       // out: round-trip time in microseconds
-} __attribute__((packed));
-
-// Network config info structure (userland ↔ kernel ioctl)
-struct net_config_info {
-    uint8_t  mac[MAC_ADDR_LEN];
-    uint8_t  padding[2];
-    uint32_t ipv4_addr;    // network byte order
-    uint32_t ipv4_netmask; // network byte order
-    uint32_t ipv4_gateway; // network byte order
-    char     name[16];
-} __attribute__((packed));
 
 // Forward declaration
 struct netif;

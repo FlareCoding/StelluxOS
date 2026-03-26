@@ -55,6 +55,8 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::LISTEN,      listen);
     REGISTER_SYSCALL(linux_nr::ACCEPT,      accept);
     REGISTER_SYSCALL(linux_nr::CONNECT,     connect);
+    REGISTER_SYSCALL(linux_nr::SENDTO,      sendto);
+    REGISTER_SYSCALL(linux_nr::RECVFROM,    recvfrom);
     REGISTER_SYSCALL(linux_nr::FCNTL,       fcntl);
 
     REGISTER_SYSCALL(linux_nr::MEMFD_CREATE, memfd_create);

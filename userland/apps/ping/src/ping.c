@@ -3,32 +3,43 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
 #include <time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <errno.h>
 
-// Must match kernel/net/net.h definitions
-#define NET_PING       0x4E01
-#define NET_GET_CONFIG 0x4E02
-
-struct net_ping_req {
-    uint32_t dst_ip;
+// ICMP header structure
+struct icmp_hdr {
+    uint8_t  type;
+    uint8_t  code;
+    uint16_t checksum;
     uint16_t id;
     uint16_t seq;
-    uint32_t timeout_ms;
-    int32_t  result;
-    uint32_t rtt_us;
-} __attribute__((packed));
+};
 
-struct net_config_info {
-    uint8_t  mac[6];
-    uint8_t  padding[2];
-    uint32_t ipv4_addr;
-    uint32_t ipv4_netmask;
-    uint32_t ipv4_gateway;
-    char     name[16];
-} __attribute__((packed));
+#define ICMP_ECHO_REQUEST 8
+#define ICMP_ECHO_REPLY   0
+#define ICMP_PAYLOAD_LEN  56
+#define ICMP_PACKET_LEN   (sizeof(struct icmp_hdr) + ICMP_PAYLOAD_LEN)
+
+static uint16_t inet_checksum(const void* data, size_t len) {
+    const uint8_t* ptr = (const uint8_t*)data;
+    uint32_t sum = 0;
+    while (len > 1) {
+        uint16_t word = (uint16_t)ptr[0] | ((uint16_t)ptr[1] << 8);
+        sum += word;
+        ptr += 2;
+        len -= 2;
+    }
+    if (len == 1) {
+        sum += (uint16_t)ptr[0];
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
 
 static uint32_t parse_ipv4(const char* str) {
     int field = 0;
@@ -49,23 +60,26 @@ static uint32_t parse_ipv4(const char* str) {
     if (field != 3 || val > 255) return 0;
     parts[3] = val;
 
-    // Return in big-endian order (most significant octet first)
     return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
 }
 
-static void format_ip(uint32_t ip_net, char* buf, size_t buf_size) {
-    // ip_net is in network byte order (big-endian)
-    uint8_t a = (ip_net >> 24) & 0xFF;
-    uint8_t b = (ip_net >> 16) & 0xFF;
-    uint8_t c = (ip_net >>  8) & 0xFF;
-    uint8_t d =  ip_net        & 0xFF;
-    snprintf(buf, buf_size, "%u.%u.%u.%u", a, b, c, d);
+static void format_ip(uint32_t ip_host, char* buf, size_t buf_size) {
+    snprintf(buf, buf_size, "%u.%u.%u.%u",
+             (ip_host >> 24) & 0xFF, (ip_host >> 16) & 0xFF,
+             (ip_host >>  8) & 0xFF, ip_host & 0xFF);
 }
 
-// htonl for converting host to network byte order
 static uint32_t my_htonl(uint32_t v) {
     return ((v & 0xFF) << 24) | ((v & 0xFF00) << 8) |
            ((v & 0xFF0000) >> 8) | ((v & 0xFF000000) >> 24);
+}
+
+static uint16_t my_htons(uint16_t v) {
+    return (uint16_t)((v >> 8) | (v << 8));
+}
+
+static uint16_t my_ntohs(uint16_t v) {
+    return (uint16_t)((v >> 8) | (v << 8));
 }
 
 int main(int argc, char* argv[]) {
@@ -73,13 +87,11 @@ int main(int argc, char* argv[]) {
 
     if (argc < 2) {
         printf("Usage: ping <ip_address> [count]\r\n");
-        printf("Example: ping 10.0.2.2\r\n");
-        printf("         ping 10.0.2.2 5\r\n");
         return 1;
     }
 
-    uint32_t dst_ip = parse_ipv4(argv[1]);
-    if (dst_ip == 0) {
+    uint32_t dst_ip_host = parse_ipv4(argv[1]);
+    if (dst_ip_host == 0) {
         printf("ping: invalid IP address '%s'\r\n", argv[1]);
         return 1;
     }
@@ -93,51 +105,103 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    int fd = open("/dev/net0", O_RDWR);
+    // Open an ICMP datagram socket
+    int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
     if (fd < 0) {
-        printf("ping: cannot open /dev/net0 (no network interface?)\r\n");
+        printf("ping: socket() failed (errno=%d)\r\n", errno);
         return 1;
     }
 
     char ip_str[32];
-    format_ip(dst_ip, ip_str, sizeof(ip_str));
-    printf("PING %s: %d data bytes\r\n", ip_str, 56);
+    format_ip(dst_ip_host, ip_str, sizeof(ip_str));
+    printf("PING %s: %d data bytes\r\n", ip_str, ICMP_PAYLOAD_LEN);
+
+    struct sockaddr_in dst;
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_addr.s_addr = my_htonl(dst_ip_host);
 
     int sent = 0;
     int received = 0;
     uint32_t rtt_min = 0xFFFFFFFF;
     uint32_t rtt_max = 0;
     uint64_t rtt_total = 0;
-
-    // Convert to network byte order for the kernel
-    uint32_t dst_ip_net = my_htonl(dst_ip);
+    uint16_t ping_id = (uint16_t)(uintptr_t)&fd; // unique-ish per process
 
     for (int i = 0; i < count; i++) {
-        struct net_ping_req req;
-        memset(&req, 0, sizeof(req));
-        req.dst_ip = dst_ip_net;
-        req.id = (uint16_t)(i + 1);
-        req.seq = (uint16_t)i;
-        req.timeout_ms = 3000;
-        req.result = -1;
-        req.rtt_us = 0;
+        // Build ICMP echo request
+        uint8_t packet[ICMP_PACKET_LEN];
+        memset(packet, 0, sizeof(packet));
 
-        int rc = ioctl(fd, NET_PING, &req);
+        struct icmp_hdr* hdr = (struct icmp_hdr*)packet;
+        hdr->type = ICMP_ECHO_REQUEST;
+        hdr->code = 0;
+        hdr->id = my_htons(ping_id);
+        hdr->seq = my_htons((uint16_t)i);
+        hdr->checksum = 0;
+
+        // Fill payload with pattern
+        for (int j = 0; j < ICMP_PAYLOAD_LEN; j++) {
+            packet[sizeof(struct icmp_hdr) + j] = (uint8_t)(j & 0xFF);
+        }
+
+        // Compute ICMP checksum
+        hdr->checksum = inet_checksum(packet, sizeof(packet));
+
+        // Record send time
+        struct timespec t0;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+
+        // Send
+        ssize_t nsent = sendto(fd, packet, sizeof(packet), 0,
+                               (struct sockaddr*)&dst, sizeof(dst));
         sent++;
 
-        if (rc == 0 && req.result == 0) {
-            received++;
-            uint32_t rtt = req.rtt_us;
-            rtt_total += rtt;
-            if (rtt < rtt_min) rtt_min = rtt;
-            if (rtt > rtt_max) rtt_max = rtt;
+        if (nsent < 0) {
+            printf("ping: sendto failed (errno=%d)\r\n", errno);
+            if (i < count - 1) {
+                struct timespec delay = { .tv_sec = 1, .tv_nsec = 0 };
+                nanosleep(&delay, NULL);
+            }
+            continue;
+        }
 
-            uint32_t ms = rtt / 1000;
-            uint32_t us_frac = rtt % 1000;
-            printf("64 bytes from %s: icmp_seq=%d time=%u.%03u ms\r\n",
-                   ip_str, i, ms, us_frac);
-        } else {
+        // Wait for reply (blocking recvfrom)
+        uint8_t reply_buf[256];
+        struct sockaddr_in src;
+        socklen_t srclen = sizeof(src);
+
+        ssize_t nrecv = recvfrom(fd, reply_buf, sizeof(reply_buf), 0,
+                                 (struct sockaddr*)&src, &srclen);
+
+        struct timespec t1;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+
+        if (nrecv < (ssize_t)sizeof(struct icmp_hdr)) {
             printf("Request timeout for icmp_seq=%d\r\n", i);
+        } else {
+            struct icmp_hdr* reply_hdr = (struct icmp_hdr*)reply_buf;
+
+            if (reply_hdr->type == ICMP_ECHO_REPLY &&
+                my_ntohs(reply_hdr->id) == ping_id &&
+                my_ntohs(reply_hdr->seq) == (uint16_t)i) {
+
+                uint64_t rtt_ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ULL +
+                                  (uint64_t)(t1.tv_nsec - t0.tv_nsec);
+                uint32_t rtt_us = (uint32_t)(rtt_ns / 1000);
+
+                received++;
+                rtt_total += rtt_us;
+                if (rtt_us < rtt_min) rtt_min = rtt_us;
+                if (rtt_us > rtt_max) rtt_max = rtt_us;
+
+                uint32_t ms = rtt_us / 1000;
+                uint32_t us_frac = rtt_us % 1000;
+                printf("64 bytes from %s: icmp_seq=%d time=%u.%03u ms\r\n",
+                       ip_str, i, ms, us_frac);
+            } else {
+                printf("Request timeout for icmp_seq=%d\r\n", i);
+            }
         }
 
         if (i < count - 1) {
@@ -147,10 +211,7 @@ int main(int argc, char* argv[]) {
     }
 
     printf("--- %s ping statistics ---\r\n", ip_str);
-    int loss = 0;
-    if (sent > 0) {
-        loss = ((sent - received) * 100) / sent;
-    }
+    int loss = (sent > 0) ? ((sent - received) * 100) / sent : 0;
     printf("%d packets transmitted, %d received, %d%% packet loss\r\n",
            sent, received, loss);
 

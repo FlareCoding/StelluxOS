@@ -579,7 +579,7 @@ void virtio_net_driver::run() {
             drain_rx_locked(batch);
             process_tx_completions();
         });
-        deliver_rx_batch(batch);
+        RUN_ELEVATED(deliver_rx_batch(batch));
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
             replenish_rx();
@@ -654,7 +654,7 @@ void virtio_net_driver::poll_callback(net::netif* iface) {
         drv->drain_rx_locked(batch);
         drv->process_tx_completions();
     });
-    drv->deliver_rx_batch(batch);
+    RUN_ELEVATED(drv->deliver_rx_batch(batch));
     RUN_ELEVATED({
         sync::irq_lock_guard guard(drv->m_vq_lock);
         drv->replenish_rx();
