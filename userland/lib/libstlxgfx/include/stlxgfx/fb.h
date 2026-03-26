@@ -25,4 +25,9 @@ stlxgfx_surface_t* stlxgfx_fb_create_surface(const stlxgfx_fb_t* fb,
 
 void stlxgfx_fb_present(stlxgfx_fb_t* fb, const stlxgfx_surface_t* surface);
 
+void stlxgfx_fb_present_region(stlxgfx_fb_t* fb,
+                                const stlxgfx_surface_t* surface,
+                                int32_t x, int32_t y,
+                                uint32_t w, uint32_t h);
+
 #endif /* STLXGFX_FB_H */

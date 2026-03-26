@@ -668,6 +668,7 @@ int stlxgfx_dm_sync(stlxgfx_dm_window_t* window) {
     }
     stlxgfx_window_sync_t* s = window->sync;
 
+    int new_frame = 0;
     uint32_t ready = atomic_load_explicit(&s->frame_ready, memory_order_acquire);
     uint32_t pending = atomic_load_explicit(&s->swap_pending, memory_order_acquire);
 
@@ -679,10 +680,11 @@ int stlxgfx_dm_sync(stlxgfx_dm_window_t* window) {
 
         size_t single_buf = (size_t)window->pitch * window->height;
         window->front->pixels = window->surface_buf + ri * single_buf;
+        new_frame = 1;
     }
 
     atomic_store_explicit(&s->dm_consuming, 1, memory_order_release);
-    return 1;
+    return new_frame;
 }
 
 void stlxgfx_dm_finish_sync(stlxgfx_dm_window_t* window) {
