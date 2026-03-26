@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 199309L
 #include "stlxdm_decor.h"
 #include "stlxdm_input.h"
+#include "stlxdm_taskbar.h"
 #include <stlxgfx/surface.h>
 #include <fcntl.h>
 #include <stdatomic.h>
@@ -66,7 +67,8 @@ void stlxdm_input_add_window(stlxdm_input_t* inp, int slot,
     set_focus(inp, clients, slot);
 }
 
-void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot) {
+void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot,
+                                dm_client_t* clients) {
     int found = -1;
     for (int i = 0; i < inp->z_count; i++) {
         if (inp->z_order[i] == slot) { found = i; break; }
@@ -76,8 +78,12 @@ void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot) {
             inp->z_order[i] = inp->z_order[i + 1];
         inp->z_count--;
     }
-    if (inp->focused_slot == slot)
-        inp->focused_slot = inp->z_count > 0 ? inp->z_order[inp->z_count - 1] : -1;
+    if (inp->focused_slot == slot) {
+        inp->focused_slot = -1;
+        int new_top = inp->z_count > 0 ? inp->z_order[inp->z_count - 1] : -1;
+        if (new_top >= 0)
+            set_focus(inp, clients, new_top);
+    }
     if (inp->capture_slot == slot) {
         inp->capture_slot = -1;
         inp->capture_buttons = 0;
@@ -229,7 +235,8 @@ static int is_global_shortcut(const stlx_input_kbd_event_t* evt,
 }
 
 void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
-                           int max_clients) {
+                           int max_clients,
+                           stlxdm_taskbar_t* taskbar) {
     (void)max_clients;
 
     inp->spawn_terminal_requested = 0;
@@ -290,6 +297,12 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                         if (dw->y < (int32_t)STLXDM_BAR_HEIGHT) {
                             dw->y = (int32_t)STLXDM_BAR_HEIGHT;
                         }
+                        if (inp->taskbar_height > 0) {
+                            int32_t max_y = inp->fb_height - inp->taskbar_height;
+                            if (dw->y + STLXDM_TITLE_HEIGHT > max_y) {
+                                dw->y = max_y - STLXDM_TITLE_HEIGHT;
+                            }
+                        }
                     }
                     if (cur_buttons == 0) {
                         inp->drag_slot = -1;
@@ -300,6 +313,15 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                 }
 
                 if ((cur_buttons & 1) && !(prev_buttons & 1)) {
+                    if (taskbar &&
+                        stlxdm_taskbar_hit_test(taskbar,
+                                                inp->ptr_x, inp->ptr_y)) {
+                        stlxdm_taskbar_on_press(taskbar,
+                                                inp->ptr_x, inp->ptr_y);
+                        inp->capture_buttons = cur_buttons;
+                        continue;
+                    }
+
                     int target = -1;
                     hit_zone_t zone = hit_test_zone(inp, clients,
                                                      inp->ptr_x, inp->ptr_y, &target);
@@ -324,6 +346,12 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                         }
                     }
                 } else if ((prev_buttons & 1) && !(cur_buttons & 1)) {
+                    if (taskbar && taskbar->press_index >= 0) {
+                        stlxdm_taskbar_on_release(taskbar,
+                                                   inp->ptr_x, inp->ptr_y);
+                        inp->capture_buttons = cur_buttons;
+                        continue;
+                    }
                     if (inp->close_press_slot >= 0) {
                         int rel_slot = -1;
                         hit_zone_t rel_zone = hit_test_zone(inp, clients,
@@ -385,6 +413,10 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
         if (zone == HIT_CLOSE_BUTTON && hover_slot == inp->focused_slot) {
             inp->close_hover_slot = hover_slot;
         }
+    }
+
+    if (taskbar) {
+        stlxdm_taskbar_update_hover(taskbar, inp->ptr_x, inp->ptr_y);
     }
 }
 

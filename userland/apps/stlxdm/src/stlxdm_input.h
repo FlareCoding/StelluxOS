@@ -8,6 +8,8 @@
 
 #define STLXDM_INPUT_MAX_RAW_PER_FRAME 64
 
+struct stlxdm_taskbar_t_tag;
+
 typedef struct {
     int kbd_fd;
     int mouse_fd;
@@ -31,6 +33,8 @@ typedef struct {
     int z_count;
 
     int spawn_terminal_requested;
+
+    int32_t taskbar_height;
 } stlxdm_input_t;
 
 typedef struct {
@@ -39,10 +43,13 @@ typedef struct {
 } dm_client_t;
 
 void stlxdm_input_init(stlxdm_input_t* inp, int32_t fb_w, int32_t fb_h);
-void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients, int max_clients);
+void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
+                           int max_clients,
+                           struct stlxdm_taskbar_t_tag* taskbar);
 void stlxdm_input_add_window(stlxdm_input_t* inp, int slot,
                               dm_client_t* clients);
-void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot);
+void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot,
+                                dm_client_t* clients);
 void stlxdm_input_draw_cursor(stlxdm_input_t* inp, stlxgfx_surface_t* surface);
 int  stlxdm_input_z_order(const stlxdm_input_t* inp, int idx);
 

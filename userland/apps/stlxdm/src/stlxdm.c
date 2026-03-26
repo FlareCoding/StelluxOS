@@ -10,16 +10,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "stlxdm_conf.h"
 #include "stlxdm_decor.h"
 #include "stlxdm_input.h"
 #include "stlxdm_splash.h"
+#include "stlxdm_taskbar.h"
 
 #define STLXDM_FRAME_INTERVAL_NS    16666667
 #define STLXDM_BG_COLOR             0xFF2D2D30
-#define STLXDM_BAR_COLOR            0xFF1E1E1E
-#define STLXDM_BAR_FONT_SIZE        14
-#define STLXDM_BAR_TEXT_COLOR        0xFFCCCCCC
-#define STLXDM_BAR_ACCENT_COLOR     0xFF888888
 #define STLXDM_TITLE_FONT_SIZE       13
 
 #define STLXDM_TITLE_BG_FOCUSED      0xFF313244
@@ -83,7 +81,7 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
                                           payload, sizeof(payload));
         if (rc < 0) {
             if (srv->clients[i].window) {
-                stlxdm_input_remove_window(inp, i);
+                stlxdm_input_remove_window(inp, i, srv->clients);
                 stlxgfx_dm_destroy_window(srv->clients[i].window);
                 srv->clients[i].window = NULL;
             }
@@ -108,7 +106,7 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
             }
         } else if (hdr.message_type == STLXGFX_MSG_DESTROY_WINDOW_REQ) {
             if (srv->clients[i].window) {
-                stlxdm_input_remove_window(inp, i);
+                stlxdm_input_remove_window(inp, i, srv->clients);
                 stlxgfx_dm_destroy_window(srv->clients[i].window);
                 srv->clients[i].window = NULL;
             }
@@ -144,10 +142,14 @@ static void stlxdm_compositor_sync(stlxdm_compositor_t* comp,
     }
 }
 
-static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width) {
-    stlxgfx_ctx_fill_rect(ctx, 0, 0, width, STLXDM_BAR_HEIGHT, STLXDM_BAR_COLOR);
-    stlxgfx_ctx_fill_rect(ctx, 0, STLXDM_BAR_HEIGHT, width, 1, STLXDM_BAR_ACCENT_COLOR);
-    stlxgfx_ctx_draw_text(ctx, 10, 6, "Stellux", STLXDM_BAR_FONT_SIZE, STLXDM_BAR_TEXT_COLOR);
+static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
+                                        const stlxdm_config_t* conf) {
+    stlxgfx_ctx_fill_rect(ctx, 0, 0, width, STLXDM_BAR_HEIGHT,
+                           conf->bar_color);
+    stlxgfx_ctx_fill_rect(ctx, 0, STLXDM_BAR_HEIGHT, width, 1,
+                           conf->accent_color);
+    stlxgfx_ctx_draw_text(ctx, 10, 6, "Stellux", conf->bar_font_size,
+                           conf->text_color);
 
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
@@ -156,10 +158,10 @@ static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width) {
             char time_str[64];
             strftime(time_str, sizeof(time_str), "%a %b %e  %H:%M:%S", t);
             uint32_t tw = 0, th = 0;
-            stlxgfx_ctx_text_size(time_str, STLXDM_BAR_FONT_SIZE, &tw, &th);
+            stlxgfx_ctx_text_size(time_str, conf->bar_font_size, &tw, &th);
             int32_t tx = ((int32_t)width - (int32_t)tw) / 2;
-            stlxgfx_ctx_draw_text(ctx, tx, 6, time_str, STLXDM_BAR_FONT_SIZE,
-                                   STLXDM_BAR_TEXT_COLOR);
+            stlxgfx_ctx_draw_text(ctx, tx, 6, time_str, conf->bar_font_size,
+                                   conf->text_color);
         }
     }
 }
@@ -290,12 +292,14 @@ static void stlxdm_draw_window_frame(stlxgfx_ctx_t* ctx,
 
 static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                                        stlxdm_input_t* inp,
-                                       dm_client_t* clients) {
+                                       dm_client_t* clients,
+                                       const stlxdm_config_t* conf,
+                                       stlxdm_taskbar_t* taskbar) {
     stlxgfx_ctx_t ctx;
     stlxgfx_ctx_init(&ctx, comp->backbuf);
 
-    stlxgfx_ctx_clear(&ctx, STLXDM_BG_COLOR);
-    stlxdm_compositor_draw_bar(&ctx, comp->width);
+    stlxgfx_ctx_clear(&ctx, conf->bg_color);
+    stlxdm_compositor_draw_bar(&ctx, comp->width, conf);
 
     for (int i = 0; i < inp->z_count; i++) {
         int slot = stlxdm_input_z_order(inp, i);
@@ -358,9 +362,11 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                 int32_t left_bg = ro - outer_ext;
                 if (left_bg > 0) {
                     stlxgfx_ctx_fill_rect(&ctx, w->x, sy,
-                                           (uint32_t)left_bg, 1, STLXDM_BG_COLOR);
+                                           (uint32_t)left_bg, 1,
+                                           conf->bg_color);
                     stlxgfx_ctx_fill_rect(&ctx, right_edge - left_bg, sy,
-                                           (uint32_t)left_bg, 1, STLXDM_BG_COLOR);
+                                           (uint32_t)left_bg, 1,
+                                           conf->bg_color);
                 }
 
                 if (ri > 0) {
@@ -388,6 +394,7 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
         }
     }
 
+    stlxdm_taskbar_draw(taskbar, &ctx);
     stlxdm_input_draw_cursor(inp, comp->backbuf);
 }
 
@@ -404,13 +411,13 @@ static void stlxdm_compositor_finish_sync(stlxdm_compositor_t* comp,
     }
 }
 
-static void stlxdm_spawn_terminal(void) {
-    int handle = proc_exec("/initrd/bin/stlxterm", NULL);
+static void stlxdm_spawn_app(const char* path) {
+    int handle = proc_exec(path, NULL);
     if (handle >= 0) {
         proc_detach(handle);
-        printf("stlxdm: spawned new terminal\r\n");
+        printf("stlxdm: spawned %s\r\n", path);
     } else {
-        printf("stlxdm: failed to spawn terminal\r\n");
+        printf("stlxdm: failed to spawn %s\r\n", path);
     }
 }
 
@@ -425,6 +432,12 @@ int main(void) {
 
     if (stlxgfx_font_init(STLXGFX_FONT_PATH) != 0) {
         printf("stlxdm: font init failed\r\n");
+    }
+
+    stlxdm_config_t config;
+    if (stlxdm_conf_load(&config, STLXDM_CONF_PATH) != 0) {
+        printf("stlxdm: no config file, using defaults\r\n");
+        stlxdm_conf_defaults(&config);
     }
 
     stlxdm_compositor_t compositor;
@@ -443,27 +456,43 @@ int main(void) {
         return 1;
     }
 
-    stlxdm_spawn_terminal();
+    if (config.autostart_count > 0) {
+        for (int i = 0; i < config.autostart_count; i++)
+            stlxdm_spawn_app(config.autostart[i].path);
+    } else {
+        stlxdm_spawn_app("/initrd/bin/stlxterm");
+    }
 
     stlxdm_server_t server;
     stlxdm_server_init(&server, listen_fd);
 
     stlxdm_input_t input;
     stlxdm_input_init(&input, (int32_t)fb.width, (int32_t)fb.height);
+    input.taskbar_height = (int32_t)config.taskbar_height;
+
+    stlxdm_taskbar_t taskbar;
+    stlxdm_taskbar_init(&taskbar, &config, fb.width, fb.height);
 
     struct timespec frame_interval = { 0, STLXDM_FRAME_INTERVAL_NS };
 
     while (1) {
         stlxdm_server_accept(&server);
         stlxdm_server_process_messages(&server, &input, &fb);
-        stlxdm_input_process(&input, server.clients, STLXGFX_DM_MAX_CLIENTS);
+        stlxdm_input_process(&input, server.clients, STLXGFX_DM_MAX_CLIENTS,
+                              &taskbar);
 
         if (input.spawn_terminal_requested) {
-            stlxdm_spawn_terminal();
+            stlxdm_spawn_app("/initrd/bin/stlxterm");
+        }
+
+        if (taskbar.launch_path[0] != '\0') {
+            stlxdm_spawn_app(taskbar.launch_path);
+            taskbar.launch_path[0] = '\0';
         }
 
         stlxdm_compositor_sync(&compositor, server.clients);
-        stlxdm_compositor_compose(&compositor, &input, server.clients);
+        stlxdm_compositor_compose(&compositor, &input, server.clients,
+                                   &config, &taskbar);
         stlxdm_compositor_present(&compositor);
         stlxdm_compositor_finish_sync(&compositor, server.clients);
         nanosleep(&frame_interval, NULL);
