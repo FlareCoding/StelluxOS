@@ -20,7 +20,9 @@ public:
         , m_device_cfg(nullptr)
         , m_rx_notify_addr(0)
         , m_tx_notify_addr(0) {
-        string::memset(&m_netif, 0, sizeof(m_netif));
+        // Zero ALL of netif including any padding
+        uint8_t* p = reinterpret_cast<uint8_t*>(&m_netif);
+        for (size_t i = 0; i < sizeof(m_netif); i++) p[i] = 0;
     }
 
     int32_t attach() override;
@@ -41,6 +43,7 @@ private:
     // Packet I/O
     static int32_t tx_callback(net::netif* iface, const uint8_t* frame, size_t len);
     static bool link_callback(net::netif* iface);
+    static void poll_callback(net::netif* iface);
     void process_rx();
     void process_tx_completions();
     void replenish_rx();
@@ -73,9 +76,9 @@ private:
     struct rx_buf_info {
         uintptr_t vaddr;
         pmm::phys_addr_t phys;
+        int16_t desc_id; // virtqueue descriptor currently using this buf, or -1
     };
     rx_buf_info m_rx_bufs[RX_BUF_COUNT];
-    uint16_t m_rx_buf_posted = 0;
 
     // TX buffer pool
     static constexpr uint16_t TX_BUF_COUNT = 64;

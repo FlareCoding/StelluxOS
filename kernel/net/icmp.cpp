@@ -5,9 +5,8 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
-#include "sync/wait_queue.h"
-#include "sched/sched.h"
 #include "clock/clock.h" // clock::now_ns()
+#include "hw/cpu.h"
 #include "dynpriv/dynpriv.h"
 
 namespace net {
@@ -21,7 +20,6 @@ struct icmp_waiter {
     bool              replied;
     uint64_t          send_time_ns;
     uint64_t          recv_time_ns;
-    sync::wait_queue  wq;
 };
 
 __PRIVILEGED_DATA static icmp_waiter g_waiters[ICMP_MAX_WAITERS] = {};
@@ -33,7 +31,6 @@ void icmp_init() {
     for (uint32_t i = 0; i < ICMP_MAX_WAITERS; i++) {
         g_waiters[i].active = false;
         g_waiters[i].replied = false;
-        g_waiters[i].wq.init();
     }
 }
 
@@ -96,7 +93,6 @@ void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len) {
                 g_waiters[i].seq == reply_seq) {
                 g_waiters[i].replied = true;
                 g_waiters[i].recv_time_ns = now;
-                RUN_ELEVATED(sync::wake_one(g_waiters[i].wq));
                 break;
             }
         }
@@ -126,6 +122,10 @@ int32_t icmp_send_echo_request(netif* iface, uint32_t dst_ip,
 
     // Compute ICMP checksum
     hdr->checksum = inet_checksum(packet, sizeof(packet));
+
+    log::debug("icmp: sending echo request to %u.%u.%u.%u id=%u seq=%u",
+               (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
+               (dst_ip >> 8) & 0xFF, dst_ip & 0xFF, id, seq);
 
     return ipv4_send(iface, dst_ip, IPV4_PROTO_ICMP, packet, sizeof(packet));
 }
@@ -169,25 +169,27 @@ int32_t icmp_ping(netif* iface, uint32_t dst_ip,
         return send_rc;
     }
 
-    // Wait for reply with timeout
-    uint64_t deadline_ns = send_time + static_cast<uint64_t>(timeout_ms) * 1000000ULL;
+    // Poll for reply with timeout.
+    // Explicitly poll the driver's RX path to process incoming packets,
+    // since yield/sleep don't work from syscall context on x86.
+    {
+        uint64_t deadline_ns = send_time + static_cast<uint64_t>(timeout_ms) * 1000000ULL;
 
-    RUN_ELEVATED({
-        sync::irq_state irq = sync::spin_lock_irqsave(g_icmp_lock);
         while (!g_waiters[slot].replied) {
             uint64_t now = clock::now_ns();
             if (now >= deadline_ns) {
-                break; // timeout
+                break;
             }
-            sync::spin_unlock_irqrestore(g_icmp_lock, irq);
-
-            // Sleep briefly then re-check
-            sched::sleep_ms(1);
-
-            irq = sync::spin_lock_irqsave(g_icmp_lock);
+            // Poll the driver's RX
+            RUN_ELEVATED({
+                if (iface->poll) {
+                    iface->poll(iface);
+                }
+            });
+            // Brief relaxation
+            for (volatile uint32_t j = 0; j < 100; j++) { }
         }
-        sync::spin_unlock_irqrestore(g_icmp_lock, irq);
-    });
+    }
 
     // Collect result
     int32_t result;

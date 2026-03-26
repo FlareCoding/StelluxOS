@@ -23,10 +23,11 @@ void eth_recv(netif* iface, const uint8_t* data, size_t len) {
         arp_recv(iface, payload, payload_len);
         break;
     case ETH_TYPE_IPV4:
+        log::debug("eth: received IPv4 frame (%u bytes)", static_cast<uint32_t>(payload_len));
         ipv4_recv(iface, payload, payload_len);
         break;
     default:
-        // Unknown ethertype — silently drop
+        log::debug("eth: unknown ethertype 0x%04x", ethertype);
         break;
     }
 }

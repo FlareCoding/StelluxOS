@@ -50,6 +50,7 @@ struct netif;
 // Driver callback types
 using netif_tx_fn   = int32_t (*)(netif* iface, const uint8_t* frame, size_t len);
 using netif_link_fn = bool (*)(netif* iface);
+using netif_poll_fn = void (*)(netif* iface);
 
 /**
  * Network interface descriptor.
@@ -62,9 +63,10 @@ struct netif {
     uint8_t      mac[MAC_ADDR_LEN];
 
     // --- Driver callbacks (set by driver before registration) ---
-    netif_tx_fn  transmit;     // send a raw Ethernet frame
+    netif_tx_fn   transmit;    // send a raw Ethernet frame
     netif_link_fn link_up;     // query link status
-    void*        driver_data;  // opaque pointer back to driver instance
+    void*         driver_data; // opaque pointer back to driver instance
+    netif_poll_fn poll;        // synchronously process pending RX (optional)
 
     // --- Stack-managed state (set by net::configure()) ---
     uint32_t     ipv4_addr;    // host byte order
@@ -118,6 +120,7 @@ netif* get_default_netif();
  * @param len   Length of the frame in bytes.
  */
 void rx_frame(netif* iface, const uint8_t* data, size_t len);
+
 
 } // namespace net
 

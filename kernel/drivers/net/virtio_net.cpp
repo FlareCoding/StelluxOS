@@ -298,6 +298,7 @@ int32_t virtio_net_driver::init_queues() {
     for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
         m_rx_bufs[i].vaddr = 0;
         m_rx_bufs[i].phys = 0;
+        m_rx_bufs[i].desc_id = -1;
 
         int32_t alloc_rc = 0;
         RUN_ELEVATED(
@@ -337,17 +338,16 @@ int32_t virtio_net_driver::init_queues() {
 }
 
 void virtio_net_driver::fill_rx_queue() {
-    for (uint16_t i = m_rx_buf_posted; i < RX_BUF_COUNT; i++) {
-        // Each RX buffer gets: virtio_net_hdr (device writes) + packet data
+    for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
+        if (m_rx_bufs[i].desc_id >= 0) continue; // already posted
+
         int32_t desc_id = m_rxq.add_buf(
             m_rx_bufs[i].phys, RX_BUF_SIZE, VRING_DESC_F_WRITE);
         if (desc_id < 0) break;
-        m_rx_buf_posted++;
+        m_rx_bufs[i].desc_id = static_cast<int16_t>(desc_id);
     }
 
-    if (m_rx_buf_posted > 0) {
-        m_rxq.kick(m_rx_notify_addr);
-    }
+    m_rxq.kick(m_rx_notify_addr);
 }
 
 int32_t virtio_net_driver::attach() {
@@ -450,6 +450,7 @@ int32_t virtio_net_driver::attach() {
     string::memcpy(m_netif.name, "eth0", 5);
     m_netif.transmit = tx_callback;
     m_netif.link_up = link_callback;
+    m_netif.poll = poll_callback;
     m_netif.driver_data = this;
 
     net::register_netif(&m_netif);
@@ -482,38 +483,53 @@ void virtio_net_driver::process_rx() {
     uint32_t len;
 
     while (m_rxq.get_used(&desc_id, &len)) {
-        if (desc_id >= RX_BUF_COUNT) {
+        // Find which buffer this descriptor belongs to
+        int buf_idx = -1;
+        for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
+            if (m_rx_bufs[i].desc_id == static_cast<int16_t>(desc_id)) {
+                buf_idx = static_cast<int>(i);
+                break;
+            }
+        }
+
+        if (buf_idx < 0) {
+            log::warn("virtio-net: RX used desc %u not found in buffer table", desc_id);
             m_rxq.free_desc(desc_id);
             continue;
         }
 
         // The buffer contains: virtio_net_hdr + Ethernet frame
-        uintptr_t buf_vaddr = m_rx_bufs[desc_id].vaddr;
+        uintptr_t buf_vaddr = m_rx_bufs[buf_idx].vaddr;
         size_t hdr_size = sizeof(virtio_net_hdr);
 
         if (len > hdr_size) {
             const uint8_t* frame = reinterpret_cast<const uint8_t*>(buf_vaddr + hdr_size);
             size_t frame_len = len - hdr_size;
+            log::debug("virtio-net: RX %u bytes (desc=%u buf=%d)", static_cast<uint32_t>(frame_len), desc_id, buf_idx);
             net::rx_frame(&m_netif, frame, frame_len);
         }
 
-        // Return this descriptor to the free list and re-post
+        // Return this descriptor to the free list and mark buffer as unposted
         m_rxq.free_desc(desc_id);
-        m_rx_buf_posted--;
+        m_rx_bufs[buf_idx].desc_id = -1;
     }
 }
 
 void virtio_net_driver::replenish_rx() {
-    while (m_rx_buf_posted < RX_BUF_COUNT) {
-        // Find a buffer to post (use the index as the buffer ID)
-        uint16_t buf_idx = m_rx_buf_posted;
-        int32_t rc = m_rxq.add_buf(
-            m_rx_bufs[buf_idx].phys, RX_BUF_SIZE, VRING_DESC_F_WRITE);
-        if (rc < 0) break;
-        m_rx_buf_posted++;
+    bool posted_any = false;
+    for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
+        if (m_rx_bufs[i].desc_id >= 0) continue; // already posted
+
+        int32_t desc_id = m_rxq.add_buf(
+            m_rx_bufs[i].phys, RX_BUF_SIZE, VRING_DESC_F_WRITE);
+        if (desc_id < 0) break;
+        m_rx_bufs[i].desc_id = static_cast<int16_t>(desc_id);
+        posted_any = true;
     }
 
-    m_rxq.kick(m_rx_notify_addr);
+    if (posted_any) {
+        m_rxq.kick(m_rx_notify_addr);
+    }
 }
 
 void virtio_net_driver::process_tx_completions() {
@@ -538,18 +554,23 @@ void virtio_net_driver::process_tx_completions() {
 void virtio_net_driver::run() {
     log::info("virtio-net: driver task running");
 
+    // Check MSI mode once at start (elevated because m_dev is in privileged memory)
+    bool has_msi = false;
+    RUN_ELEVATED(has_msi = m_dev->get_msi_state().mode != pci::MSI_MODE_NONE);
+
     while (true) {
         // Wait for interrupt or poll periodically
-        if (m_dev->get_msi_state().mode != pci::MSI_MODE_NONE) {
+        if (has_msi) {
             wait_for_event();
         } else {
-            // Polling fallback
             RUN_ELEVATED(sched::sleep_ms(1));
         }
 
-        process_rx();
-        replenish_rx();
-        process_tx_completions();
+        RUN_ELEVATED({
+            process_rx();
+            replenish_rx();
+            process_tx_completions();
+        });
     }
 }
 
@@ -559,54 +580,68 @@ int32_t virtio_net_driver::tx_callback(net::netif* iface, const uint8_t* frame, 
     auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
     if (!drv) return -1;
 
-    // Find a free TX buffer
-    int32_t buf_idx = -1;
-    for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
-        if (!drv->m_tx_bufs[i].in_use) {
-            buf_idx = static_cast<int32_t>(i);
-            break;
-        }
-    }
-
-    if (buf_idx < 0) {
-        // Process completions and try again
-        drv->process_tx_completions();
+    int32_t result = -1;
+    RUN_ELEVATED({
+        // Find a free TX buffer
+        int32_t buf_idx = -1;
         for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
             if (!drv->m_tx_bufs[i].in_use) {
                 buf_idx = static_cast<int32_t>(i);
                 break;
             }
         }
+
         if (buf_idx < 0) {
-            return -1; // no buffers available
+            // Process completions and try again
+            drv->process_tx_completions();
+            for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
+                if (!drv->m_tx_bufs[i].in_use) {
+                    buf_idx = static_cast<int32_t>(i);
+                    break;
+                }
+            }
         }
-    }
 
-    auto& buf = drv->m_tx_bufs[buf_idx];
+        if (buf_idx >= 0) {
+            auto& buf = drv->m_tx_bufs[buf_idx];
 
-    // Prepare the buffer: virtio_net_hdr + frame data
-    size_t hdr_size = sizeof(virtio_net_hdr);
-    if (hdr_size + len > TX_BUF_SIZE) {
-        return -1; // frame too large
-    }
+            // Prepare the buffer: virtio_net_hdr + frame data
+            size_t hdr_size = sizeof(virtio_net_hdr);
+            if (hdr_size + len <= TX_BUF_SIZE) {
+                auto* nethdr = reinterpret_cast<virtio_net_hdr*>(buf.vaddr);
+                string::memset(nethdr, 0, hdr_size);
+                nethdr->gso_type = VIRTIO_NET_HDR_GSO_NONE;
 
-    auto* nethdr = reinterpret_cast<virtio_net_hdr*>(buf.vaddr);
-    string::memset(nethdr, 0, hdr_size);
-    nethdr->gso_type = VIRTIO_NET_HDR_GSO_NONE;
+                string::memcpy(reinterpret_cast<uint8_t*>(buf.vaddr + hdr_size), frame, len);
 
-    string::memcpy(reinterpret_cast<uint8_t*>(buf.vaddr + hdr_size), frame, len);
+                buf.in_use = true;
 
-    buf.in_use = true;
+                int32_t rc = drv->m_txq.add_buf(buf.phys, static_cast<uint32_t>(hdr_size + len), 0);
+                if (rc < 0) {
+                    buf.in_use = false;
+                } else {
+                    drv->m_txq.kick(drv->m_tx_notify_addr);
+                    log::debug("virtio-net: TX %u bytes (desc=%d buf=%d)",
+                               static_cast<uint32_t>(hdr_size + len), rc, buf_idx);
+                    result = 0;
+                }
+            }
+        }
+    });
 
-    // Add to TX virtqueue as a single descriptor
-    int32_t rc = drv->m_txq.add_buf(buf.phys, static_cast<uint32_t>(hdr_size + len), 0);
-    if (rc < 0) {
-        buf.in_use = false;
-        return -1;
-    }
+    return result;
+}
 
-    drv->m_txq.kick(drv->m_tx_notify_addr);
-    return 0;
+void virtio_net_driver::poll_callback(net::netif* iface) {
+    if (!iface) return;
+    auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
+    if (!drv) return;
+
+    RUN_ELEVATED({
+        drv->process_rx();
+        drv->replenish_rx();
+        drv->process_tx_completions();
+    });
 }
 
 bool virtio_net_driver::link_callback(net::netif* iface) {
@@ -614,11 +649,11 @@ bool virtio_net_driver::link_callback(net::netif* iface) {
     auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
     if (!drv) return false;
 
+    bool up = true;
     if (drv->m_has_status && drv->m_device_cfg) {
-        return (drv->m_device_cfg->status & 1) != 0;
+        RUN_ELEVATED(up = (drv->m_device_cfg->status & 1) != 0);
     }
-    // If no status feature, assume link is up
-    return true;
+    return up;
 }
 
 // PCI driver registration

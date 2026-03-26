@@ -4,7 +4,7 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
-#include "sched/sched.h"
+#include "hw/cpu.h"
 #include "dynpriv/dynpriv.h"
 
 namespace net {
@@ -29,30 +29,39 @@ void arp_init() {
 }
 
 static void arp_table_update(uint32_t ip, const uint8_t* mac) {
-    sync::irq_lock_guard guard(g_arp_lock);
+    sync::irq_state irq = sync::spin_lock_irqsave(g_arp_lock);
 
     // Update existing entry
+    bool updated = false;
     for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
         if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
             string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
-            return;
+            updated = true;
+            break;
         }
     }
 
-    // Insert into first free slot
-    for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
-        if (!g_arp_table[i].valid) {
-            g_arp_table[i].ip = ip;
-            string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
-            g_arp_table[i].valid = true;
-            return;
+    if (!updated) {
+        // Insert into first free slot
+        for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
+            if (!g_arp_table[i].valid) {
+                g_arp_table[i].ip = ip;
+                string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
+                g_arp_table[i].valid = true;
+                updated = true;
+                break;
+            }
         }
     }
 
-    // Table full — overwrite slot 0
-    g_arp_table[0].ip = ip;
-    string::memcpy(g_arp_table[0].mac, mac, MAC_ADDR_LEN);
-    g_arp_table[0].valid = true;
+    if (!updated) {
+        // Table full — overwrite slot 0
+        g_arp_table[0].ip = ip;
+        string::memcpy(g_arp_table[0].mac, mac, MAC_ADDR_LEN);
+        g_arp_table[0].valid = true;
+    }
+
+    sync::spin_unlock_irqrestore(g_arp_lock, irq);
 }
 
 static bool arp_table_lookup(uint32_t ip, uint8_t* out_mac) {
@@ -145,15 +154,29 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
         return OK;
     }
 
-    // Send ARP request and retry
+    // Send ARP request and poll for reply.
+    // We explicitly poll the driver's RX path to process incoming packets
+    // synchronously, since yield/sleep don't work from syscall context
+    // (x86 trap frame issue with same-privilege int instruction).
     for (uint32_t attempt = 0; attempt < ARP_RETRY_COUNT; attempt++) {
         arp_send_request(iface, target_ip);
 
-        // Sleep briefly to allow reply to arrive
-        RUN_ELEVATED(sched::sleep_ms(ARP_RETRY_DELAY_MS));
+        for (uint32_t poll = 0; poll < 5000; poll++) {
+            // Let the driver process any pending RX packets
+            RUN_ELEVATED({
+                if (iface->poll) {
+                    iface->poll(iface);
+                }
+            });
 
-        if (arp_table_lookup(target_ip, out_mac)) {
-            return OK;
+            if (arp_table_lookup(target_ip, out_mac)) {
+                return OK;
+            }
+
+            // Brief relaxation between polls
+            for (uint32_t j = 0; j < 100; j++) {
+                cpu::relax();
+            }
         }
     }
 

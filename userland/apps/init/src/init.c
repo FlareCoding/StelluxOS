@@ -17,6 +17,25 @@ int main(void) {
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    // Test networking: run ping before starting DM
+    printf("init: testing ping...\r\n");
+    {
+        const char* ping_args[] = {"10.0.2.2", "2", NULL};
+        int ping_handle = proc_create("/initrd/bin/ping", ping_args);
+        if (ping_handle >= 0) {
+            int ping_err = proc_start(ping_handle);
+            if (ping_err >= 0) {
+                int ping_status = 0;
+                proc_wait(ping_handle, &ping_status);
+                printf("init: ping exited with status %d\r\n", STLX_WEXITSTATUS(ping_status));
+            } else {
+                printf("init: ping start failed\r\n");
+            }
+        } else {
+            printf("init: ping create failed\r\n");
+        }
+    }
+
     int dm_handle = proc_exec("/initrd/bin/stlxdm", NULL);
     if (dm_handle >= 0) {
         proc_detach(dm_handle);
