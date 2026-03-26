@@ -473,9 +473,10 @@ int main(void) {
     stlxdm_taskbar_t taskbar;
     stlxdm_taskbar_init(&taskbar, &config, fb.width, fb.height);
 
-    struct timespec frame_interval = { 0, STLXDM_FRAME_INTERVAL_NS };
-
     while (1) {
+        struct timespec frame_start;
+        clock_gettime(CLOCK_MONOTONIC, &frame_start);
+
         stlxdm_server_accept(&server);
         stlxdm_server_process_messages(&server, &input, &fb);
         stlxdm_input_process(&input, server.clients, STLXGFX_DM_MAX_CLIENTS,
@@ -495,6 +496,17 @@ int main(void) {
                                    &config, &taskbar);
         stlxdm_compositor_present(&compositor);
         stlxdm_compositor_finish_sync(&compositor, server.clients);
-        nanosleep(&frame_interval, NULL);
+
+        struct timespec frame_end;
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        uint64_t elapsed_ns = (uint64_t)(frame_end.tv_sec - frame_start.tv_sec)
+                                  * 1000000000ULL
+                            + (uint64_t)(frame_end.tv_nsec - frame_start.tv_nsec);
+        if (elapsed_ns < STLXDM_FRAME_INTERVAL_NS) {
+            struct timespec rem = {
+                0, (long)(STLXDM_FRAME_INTERVAL_NS - elapsed_ns)
+            };
+            nanosleep(&rem, NULL);
+        }
     }
 }
