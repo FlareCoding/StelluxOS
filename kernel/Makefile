@@ -79,6 +79,7 @@ CXX_SOURCES += $(shell find terminal -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find pty -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find pci -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find msi -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find net -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find drivers -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
 
