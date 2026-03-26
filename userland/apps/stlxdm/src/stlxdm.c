@@ -622,10 +622,18 @@ int main(void) {
             prev_close_hover = input.close_hover_slot;
         }
 
-        /* Taskbar hover changed */
+        /* Taskbar hover changed — include tooltip area above bar */
         if (taskbar.hover_index != prev_taskbar_hover) {
-            stlxdm_dirty_add_rect(&dirty, 0, taskbar.bar_y,
-                                   fb.width, config.taskbar_height);
+            /* Tooltips are drawn above the taskbar icons.  Expand the
+             * dirty region upward by a generous margin so the tooltip
+             * (and its disappearance) are always captured. */
+            int32_t tooltip_margin = 48;
+            int32_t dirty_y = taskbar.bar_y - tooltip_margin;
+            if (dirty_y < 0) dirty_y = 0;
+            uint32_t dirty_h = config.taskbar_height
+                             + (uint32_t)(taskbar.bar_y - dirty_y);
+            stlxdm_dirty_add_rect(&dirty, 0, dirty_y,
+                                   fb.width, dirty_h);
             prev_taskbar_hover = taskbar.hover_index;
         }
 
