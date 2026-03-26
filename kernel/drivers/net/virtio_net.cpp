@@ -245,7 +245,7 @@ int32_t virtio_net_driver::init_queues() {
     // Set the queue size we want
     m_common_cfg->queue_size = rx_size;
 
-    int32_t rc = m_rxq.init(rx_size);
+    int32_t rc = m_rxq.init(rx_size, VIRTIO_NET_QUEUE_RX);
     if (rc != 0) {
         log::error("virtio-net: RX virtqueue init failed");
         return rc;
@@ -275,7 +275,7 @@ int32_t virtio_net_driver::init_queues() {
     }
     m_common_cfg->queue_size = tx_size;
 
-    rc = m_txq.init(tx_size);
+    rc = m_txq.init(tx_size, VIRTIO_NET_QUEUE_TX);
     if (rc != 0) {
         log::error("virtio-net: TX virtqueue init failed");
         return rc;
@@ -479,11 +479,15 @@ __PRIVILEGED_CODE void virtio_net_driver::on_interrupt(uint32_t vector) {
     }
 }
 
-void virtio_net_driver::process_rx() {
+void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
+    // Phase 1: drain used buffers from the virtqueue. MUST be called with m_vq_lock held.
+    // Frames are stored in the batch for delivery outside the lock.
+    batch.count = 0;
+
     uint16_t desc_id;
     uint32_t len;
 
-    while (m_rxq.get_used(&desc_id, &len)) {
+    while (batch.count < RX_BATCH_MAX && m_rxq.get_used(&desc_id, &len)) {
         // Find which buffer this descriptor belongs to
         int buf_idx = -1;
         for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
@@ -504,14 +508,27 @@ void virtio_net_driver::process_rx() {
         size_t hdr_size = sizeof(virtio_net_hdr);
 
         if (len > hdr_size) {
-            const uint8_t* frame = reinterpret_cast<const uint8_t*>(buf_vaddr + hdr_size);
-            size_t frame_len = len - hdr_size;
-            net::rx_frame(&m_netif, frame, frame_len);
+            // Record frame pointer for delivery after lock release.
+            // The buffer memory remains valid until replenish_rx re-posts it,
+            // which only happens under the lock in a subsequent call.
+            batch.entries[batch.count].data =
+                reinterpret_cast<const uint8_t*>(buf_vaddr + hdr_size);
+            batch.entries[batch.count].len = len - hdr_size;
+            batch.count++;
         }
 
-        // Return this descriptor to the free list and mark buffer as unposted
+        // Return descriptor to free list and mark buffer as unposted
         m_rxq.free_desc(desc_id);
         m_rx_bufs[buf_idx].desc_id = -1;
+    }
+}
+
+void virtio_net_driver::deliver_rx_batch(rx_batch& batch) {
+    // Phase 2: deliver drained frames to the protocol stack.
+    // MUST be called WITHOUT m_vq_lock held — protocol processing may
+    // call back into tx_callback which needs to acquire the lock.
+    for (uint16_t i = 0; i < batch.count; i++) {
+        net::rx_frame(&m_netif, batch.entries[i].data, batch.entries[i].len);
     }
 }
 
@@ -567,12 +584,19 @@ void virtio_net_driver::run() {
             RUN_ELEVATED(sched::sleep_ms(1));
         }
 
+        // Two-phase RX: drain under lock, deliver without lock.
+        // This prevents deadlock when protocol processing (ARP reply,
+        // ICMP echo reply) calls back into tx_callback.
+        rx_batch batch;
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
-            process_rx();
+            drain_rx_locked(batch);
             replenish_rx();
             process_tx_completions();
         });
+        // Deliver frames outside the lock — safe for protocol stack
+        // to call tx_callback which re-acquires m_vq_lock.
+        deliver_rx_batch(batch);
     }
 }
 
@@ -637,12 +661,15 @@ void virtio_net_driver::poll_callback(net::netif* iface) {
     auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
     if (!drv) return;
 
+    // Two-phase RX: drain under lock, deliver without lock.
+    rx_batch batch;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(drv->m_vq_lock);
-        drv->process_rx();
+        drv->drain_rx_locked(batch);
         drv->replenish_rx();
         drv->process_tx_completions();
     });
+    drv->deliver_rx_batch(batch);
 }
 
 bool virtio_net_driver::link_callback(net::netif* iface) {

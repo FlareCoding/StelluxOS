@@ -43,13 +43,26 @@ private:
     void fill_rx_queue();
     int32_t read_mac();
 
+    // Batch of received frames drained from the virtqueue under lock,
+    // then delivered to the protocol stack without the lock held.
+    static constexpr uint16_t RX_BATCH_MAX = 16;
+    struct rx_batch_entry {
+        const uint8_t* data;
+        size_t len;
+    };
+    struct rx_batch {
+        rx_batch_entry entries[RX_BATCH_MAX];
+        uint16_t count;
+    };
+
     // Packet I/O
     static int32_t tx_callback(net::netif* iface, const uint8_t* frame, size_t len);
     static bool link_callback(net::netif* iface);
     static void poll_callback(net::netif* iface);
-    void process_rx();
-    void process_tx_completions();
-    void replenish_rx();
+    void drain_rx_locked(rx_batch& batch);     // phase 1: under lock
+    void deliver_rx_batch(rx_batch& batch);    // phase 2: lock released
+    void process_tx_completions();             // under lock
+    void replenish_rx();                       // under lock
 
     // Virtio config access
     void write_status(uint8_t status);

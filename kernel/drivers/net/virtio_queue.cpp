@@ -17,7 +17,7 @@ static size_t align_up(size_t val, size_t align) {
     return (val + align - 1) & ~(align - 1);
 }
 
-int32_t virtqueue::init(uint16_t queue_size) {
+int32_t virtqueue::init(uint16_t queue_size, uint16_t queue_index) {
     if (queue_size == 0 || (queue_size & (queue_size - 1)) != 0) {
         log::error("virtqueue: size %u is not a power of 2", queue_size);
         return -1;
@@ -27,6 +27,7 @@ int32_t virtqueue::init(uint16_t queue_size) {
     }
 
     m_size = queue_size;
+    m_queue_index = queue_index;
 
     // Calculate memory layout sizes
     size_t desc_size = static_cast<size_t>(queue_size) * sizeof(vring_desc);
@@ -202,7 +203,7 @@ bool virtqueue::get_used(uint16_t* out_id, uint32_t* out_len) {
 
 void virtqueue::kick(uintptr_t notify_addr) {
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    mmio::write16(notify_addr, 0); // queue index is encoded in address
+    mmio::write16(notify_addr, m_queue_index);
 }
 
 } // namespace drivers::virtio

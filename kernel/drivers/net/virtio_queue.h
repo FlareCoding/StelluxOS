@@ -54,9 +54,10 @@ public:
      * Initialize the virtqueue. Allocates DMA memory for descriptor table,
      * available ring, and used ring.
      * @param queue_size Number of descriptors (must be power of 2).
+     * @param queue_index Virtio queue index (0=RX, 1=TX, etc.) for spec-compliant notification.
      * @return 0 on success, negative on failure.
      */
-    int32_t init(uint16_t queue_size);
+    int32_t init(uint16_t queue_size, uint16_t queue_index = 0);
 
     /**
      * Add a single buffer (one descriptor) to the available ring.
@@ -109,6 +110,7 @@ private:
     uint16_t alloc_desc();
 
     uint16_t          m_size = 0;
+    uint16_t          m_queue_index = 0;
     vring_desc*       m_desc = nullptr;
     vring_avail*      m_avail = nullptr;
     vring_used*       m_used = nullptr;
