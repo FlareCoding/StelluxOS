@@ -16,8 +16,6 @@ typedef struct {
 
     int32_t ptr_x;
     int32_t ptr_y;
-    int32_t prev_ptr_x;
-    int32_t prev_ptr_y;
     int32_t fb_width;
     int32_t fb_height;
 

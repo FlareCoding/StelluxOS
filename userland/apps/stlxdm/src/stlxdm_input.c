@@ -78,8 +78,6 @@ void stlxdm_input_init(stlxdm_input_t* inp, int32_t fb_w, int32_t fb_h) {
     inp->fb_height = fb_h;
     inp->ptr_x = fb_w / 2;
     inp->ptr_y = fb_h / 2;
-    inp->prev_ptr_x = inp->ptr_x;
-    inp->prev_ptr_y = inp->ptr_y;
     inp->focused_slot = -1;
     inp->capture_slot = -1;
     inp->drag_slot = -1;
