@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 199309L
 #include "stlxdm_decor.h"
 #include "stlxdm_input.h"
+#include "stlxdm_taskbar.h"
 #include <stlxgfx/surface.h>
 #include <fcntl.h>
 #include <stdatomic.h>
@@ -300,6 +301,19 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                 }
 
                 if ((cur_buttons & 1) && !(prev_buttons & 1)) {
+                    /* Taskbar gets first priority */
+                    if (inp->taskbar &&
+                        stlxdm_taskbar_contains(inp->taskbar,
+                                                inp->ptr_x, inp->ptr_y)) {
+                        int tb_idx = stlxdm_taskbar_hit_test(
+                            inp->taskbar, inp->ptr_x, inp->ptr_y);
+                        if (tb_idx >= 0) {
+                            inp->taskbar->press_index = tb_idx;
+                        }
+                        inp->capture_buttons = cur_buttons;
+                        continue;
+                    }
+
                     int target = -1;
                     hit_zone_t zone = hit_test_zone(inp, clients,
                                                      inp->ptr_x, inp->ptr_y, &target);
@@ -324,6 +338,18 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                         }
                     }
                 } else if ((prev_buttons & 1) && !(cur_buttons & 1)) {
+                    /* Taskbar button release */
+                    if (inp->taskbar && inp->taskbar->press_index >= 0) {
+                        int tb_idx = stlxdm_taskbar_hit_test(
+                            inp->taskbar, inp->ptr_x, inp->ptr_y);
+                        if (tb_idx == inp->taskbar->press_index) {
+                            inp->taskbar->launch_index = tb_idx;
+                        }
+                        inp->taskbar->press_index = -1;
+                        inp->capture_buttons = cur_buttons;
+                        continue;
+                    }
+
                     if (inp->close_press_slot >= 0) {
                         int rel_slot = -1;
                         hit_zone_t rel_zone = hit_test_zone(inp, clients,
@@ -385,6 +411,10 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
         if (zone == HIT_CLOSE_BUTTON && hover_slot == inp->focused_slot) {
             inp->close_hover_slot = hover_slot;
         }
+    }
+
+    if (inp->taskbar) {
+        stlxdm_taskbar_set_hover(inp->taskbar, inp->ptr_x, inp->ptr_y);
     }
 }
 

@@ -10,9 +10,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "stlxdm_conf.h"
 #include "stlxdm_decor.h"
 #include "stlxdm_input.h"
 #include "stlxdm_splash.h"
+#include "stlxdm_taskbar.h"
 
 #define STLXDM_FRAME_INTERVAL_NS    16666667
 #define STLXDM_BG_COLOR             0xFF2D2D30
@@ -290,7 +292,8 @@ static void stlxdm_draw_window_frame(stlxgfx_ctx_t* ctx,
 
 static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                                        stlxdm_input_t* inp,
-                                       dm_client_t* clients) {
+                                       dm_client_t* clients,
+                                       stlxdm_taskbar_t* taskbar) {
     stlxgfx_ctx_t ctx;
     stlxgfx_ctx_init(&ctx, comp->backbuf);
 
@@ -388,6 +391,8 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
         }
     }
 
+    stlxdm_taskbar_draw(taskbar, &ctx);
+
     stlxdm_input_draw_cursor(inp, comp->backbuf);
 }
 
@@ -404,13 +409,13 @@ static void stlxdm_compositor_finish_sync(stlxdm_compositor_t* comp,
     }
 }
 
-static void stlxdm_spawn_terminal(void) {
-    int handle = proc_exec("/initrd/bin/stlxterm", NULL);
+static void stlxdm_spawn(const char* path) {
+    int handle = proc_exec(path, NULL);
     if (handle >= 0) {
         proc_detach(handle);
-        printf("stlxdm: spawned new terminal\r\n");
+        printf("stlxdm: spawned %s\r\n", path);
     } else {
-        printf("stlxdm: failed to spawn terminal\r\n");
+        printf("stlxdm: failed to spawn %s\r\n", path);
     }
 }
 
@@ -426,6 +431,9 @@ int main(void) {
     if (stlxgfx_font_init(STLXGFX_FONT_PATH) != 0) {
         printf("stlxdm: font init failed\r\n");
     }
+
+    stlxdm_conf_t conf;
+    stlxdm_conf_load(&conf, STLXDM_CONF_PATH);
 
     stlxdm_compositor_t compositor;
     if (stlxdm_compositor_init(&compositor, &fb) != 0) {
@@ -443,13 +451,17 @@ int main(void) {
         return 1;
     }
 
-    stlxdm_spawn_terminal();
+    stlxdm_taskbar_t taskbar;
+    stlxdm_taskbar_load(&taskbar, &conf, fb.width, fb.height);
+
+    stlxdm_spawn("/initrd/bin/stlxterm");
 
     stlxdm_server_t server;
     stlxdm_server_init(&server, listen_fd);
 
     stlxdm_input_t input;
     stlxdm_input_init(&input, (int32_t)fb.width, (int32_t)fb.height);
+    input.taskbar = &taskbar;
 
     struct timespec frame_interval = { 0, STLXDM_FRAME_INTERVAL_NS };
 
@@ -459,11 +471,17 @@ int main(void) {
         stlxdm_input_process(&input, server.clients, STLXGFX_DM_MAX_CLIENTS);
 
         if (input.spawn_terminal_requested) {
-            stlxdm_spawn_terminal();
+            stlxdm_spawn("/initrd/bin/stlxterm");
+        }
+
+        if (taskbar.launch_index >= 0) {
+            stlxdm_spawn(taskbar.items[taskbar.launch_index].path);
+            taskbar.launch_index = -1;
         }
 
         stlxdm_compositor_sync(&compositor, server.clients);
-        stlxdm_compositor_compose(&compositor, &input, server.clients);
+        stlxdm_compositor_compose(&compositor, &input, server.clients,
+                                   &taskbar);
         stlxdm_compositor_present(&compositor);
         stlxdm_compositor_finish_sync(&compositor, server.clients);
         nanosleep(&frame_interval, NULL);

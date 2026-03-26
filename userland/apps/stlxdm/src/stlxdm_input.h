@@ -8,6 +8,8 @@
 
 #define STLXDM_INPUT_MAX_RAW_PER_FRAME 64
 
+struct stlxdm_taskbar_t;
+
 typedef struct {
     int kbd_fd;
     int mouse_fd;
@@ -31,6 +33,8 @@ typedef struct {
     int z_count;
 
     int spawn_terminal_requested;
+
+    struct stlxdm_taskbar_t* taskbar;
 } stlxdm_input_t;
 
 typedef struct {
