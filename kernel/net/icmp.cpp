@@ -123,10 +123,6 @@ int32_t icmp_send_echo_request(netif* iface, uint32_t dst_ip,
     // Compute ICMP checksum
     hdr->checksum = inet_checksum(packet, sizeof(packet));
 
-    log::debug("icmp: sending echo request to %u.%u.%u.%u id=%u seq=%u",
-               (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
-               (dst_ip >> 8) & 0xFF, dst_ip & 0xFF, id, seq);
-
     return ipv4_send(iface, dst_ip, IPV4_PROTO_ICMP, packet, sizeof(packet));
 }
 

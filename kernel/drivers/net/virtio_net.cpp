@@ -505,7 +505,6 @@ void virtio_net_driver::process_rx() {
         if (len > hdr_size) {
             const uint8_t* frame = reinterpret_cast<const uint8_t*>(buf_vaddr + hdr_size);
             size_t frame_len = len - hdr_size;
-            log::debug("virtio-net: RX %u bytes (desc=%u buf=%d)", static_cast<uint32_t>(frame_len), desc_id, buf_idx);
             net::rx_frame(&m_netif, frame, frame_len);
         }
 
@@ -621,8 +620,6 @@ int32_t virtio_net_driver::tx_callback(net::netif* iface, const uint8_t* frame, 
                     buf.in_use = false;
                 } else {
                     drv->m_txq.kick(drv->m_tx_notify_addr);
-                    log::debug("virtio-net: TX %u bytes (desc=%d buf=%d)",
-                               static_cast<uint32_t>(hdr_size + len), rc, buf_idx);
                     result = 0;
                 }
             }

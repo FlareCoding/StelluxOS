@@ -60,14 +60,9 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
 
     switch (hdr->protocol) {
     case IPV4_PROTO_ICMP:
-        log::debug("ipv4: ICMP from %u.%u.%u.%u (%u bytes)",
-                   (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-                   (src_ip >> 8) & 0xFF, src_ip & 0xFF,
-                   static_cast<uint32_t>(payload_len));
         icmp_recv(iface, src_ip, payload, payload_len);
         break;
     default:
-        log::debug("ipv4: unknown protocol %u", hdr->protocol);
         break;
     }
 }
@@ -115,26 +110,12 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     uint8_t dst_mac[MAC_ADDR_LEN];
     int32_t arp_rc = arp_resolve(iface, next_hop, dst_mac);
     if (arp_rc != OK) {
-        log::debug("ipv4: ARP resolve failed for %u.%u.%u.%u (%d)",
-                   (next_hop >> 24) & 0xFF, (next_hop >> 16) & 0xFF,
-                   (next_hop >> 8) & 0xFF, next_hop & 0xFF, arp_rc);
         return arp_rc;
     }
 
-    log::debug("ipv4: sending %u bytes to %u.%u.%u.%u via %02x:%02x:%02x:%02x:%02x:%02x",
-               static_cast<uint32_t>(sizeof(ipv4_header) + payload_len),
-               (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
-               (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
-               dst_mac[0], dst_mac[1], dst_mac[2],
-               dst_mac[3], dst_mac[4], dst_mac[5]);
-
     // Send via Ethernet
-    int32_t send_rc = eth_send(iface, dst_mac, ETH_TYPE_IPV4,
-                               packet, sizeof(ipv4_header) + payload_len);
-    if (send_rc != OK) {
-        log::debug("ipv4: eth_send failed (%d)", send_rc);
-    }
-    return send_rc;
+    return eth_send(iface, dst_mac, ETH_TYPE_IPV4,
+                    packet, sizeof(ipv4_header) + payload_len);
 }
 
 } // namespace net
