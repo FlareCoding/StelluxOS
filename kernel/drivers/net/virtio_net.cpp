@@ -496,7 +496,8 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
 
         if (len > hdr_size) {
             // Record frame pointer for delivery after the lock is released.
-            // Buffer memory stays valid until replenish_rx re-posts it.
+            // Replenish is deferred until after delivery, so the buffer
+            // memory remains valid and won't be overwritten by the device.
             batch.entries[batch.count].data =
                 reinterpret_cast<const uint8_t*>(buf_vaddr + hdr_size);
             batch.entries[batch.count].len = len - hdr_size;
@@ -570,16 +571,19 @@ void virtio_net_driver::run() {
             RUN_ELEVATED(sched::sleep_ms(1));
         }
 
-        // Drain RX under lock, then deliver frames without the lock
-        // so protocol handlers can transmit (e.g. ARP replies).
+        // Drain RX under lock, deliver frames without the lock so
+        // protocol handlers can transmit, then re-lock to replenish.
         rx_batch batch;
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
             drain_rx_locked(batch);
-            replenish_rx();
             process_tx_completions();
         });
         deliver_rx_batch(batch);
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(m_vq_lock);
+            replenish_rx();
+        });
     }
 }
 
@@ -648,10 +652,13 @@ void virtio_net_driver::poll_callback(net::netif* iface) {
     RUN_ELEVATED({
         sync::irq_lock_guard guard(drv->m_vq_lock);
         drv->drain_rx_locked(batch);
-        drv->replenish_rx();
         drv->process_tx_completions();
     });
     drv->deliver_rx_batch(batch);
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(drv->m_vq_lock);
+        drv->replenish_rx();
+    });
 }
 
 bool virtio_net_driver::link_callback(net::netif* iface) {
