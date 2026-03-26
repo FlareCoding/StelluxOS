@@ -188,9 +188,10 @@ int32_t virtio_net_driver::negotiate_features() {
         driver_features |= VIRTIO_NET_F_STATUS;
         m_has_status = true;
     }
-    // Always negotiate VERSION_1 if available
     if (device_features & VIRTIO_F_VERSION_1) {
         driver_features |= VIRTIO_F_VERSION_1;
+        m_version_1 = true;
+        m_net_hdr_size = 12; // includes num_buffers field
     }
 
     log::info("virtio-net: device features=0x%lx, driver features=0x%lx",
@@ -491,9 +492,8 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
             continue;
         }
 
-        // The buffer contains: virtio_net_hdr + Ethernet frame
         uintptr_t buf_vaddr = m_rx_bufs[buf_idx].vaddr;
-        size_t hdr_size = sizeof(virtio_net_hdr);
+        size_t hdr_size = m_net_hdr_size;
 
         // Return descriptor to free list
         m_rxq.free_desc(desc_id);
@@ -629,8 +629,7 @@ int32_t virtio_net_driver::tx_callback(net::netif* iface, const uint8_t* frame, 
         if (buf_idx >= 0) {
             auto& buf = drv->m_tx_bufs[buf_idx];
 
-            // Prepare the buffer: virtio_net_hdr + frame data
-            size_t hdr_size = sizeof(virtio_net_hdr);
+            size_t hdr_size = drv->m_net_hdr_size;
             if (hdr_size + len <= TX_BUF_SIZE) {
                 auto* nethdr = reinterpret_cast<virtio_net_hdr*>(buf.vaddr);
                 string::memset(nethdr, 0, hdr_size);

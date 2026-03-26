@@ -120,6 +120,10 @@ private:
     // Feature flags
     bool m_has_mac = false;
     bool m_has_status = false;
+    bool m_version_1 = false;
+
+    // Virtio-net header size: 12 bytes with VIRTIO_F_VERSION_1, 10 without
+    size_t m_net_hdr_size = 10;
 };
 
 } // namespace drivers
