@@ -318,6 +318,7 @@ int32_t virtio_net_driver::init_queues() {
     for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
         m_tx_bufs[i].vaddr = 0;
         m_tx_bufs[i].phys = 0;
+        m_tx_bufs[i].desc_id = -1;
         m_tx_bufs[i].in_use = false;
 
         int32_t alloc_rc = 0;
@@ -536,15 +537,16 @@ void virtio_net_driver::process_tx_completions() {
     uint32_t len;
 
     while (m_txq.get_used(&desc_id, &len)) {
-        // Free the descriptor chain
+        // Free the descriptor chain in the virtqueue
         m_txq.free_desc(desc_id);
 
-        // Find and release the TX buffer
+        // Find the TX buffer that was assigned this descriptor
         for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
-            // The descriptor's phys might match one of our TX buffers
-            if (m_tx_bufs[i].in_use) {
+            if (m_tx_bufs[i].in_use &&
+                m_tx_bufs[i].desc_id == static_cast<int16_t>(desc_id)) {
                 m_tx_bufs[i].in_use = false;
-                break; // one completion per used entry
+                m_tx_bufs[i].desc_id = -1;
+                break;
             }
         }
     }
@@ -566,6 +568,7 @@ void virtio_net_driver::run() {
         }
 
         RUN_ELEVATED({
+            sync::irq_lock_guard guard(m_vq_lock);
             process_rx();
             replenish_rx();
             process_tx_completions();
@@ -581,6 +584,8 @@ int32_t virtio_net_driver::tx_callback(net::netif* iface, const uint8_t* frame, 
 
     int32_t result = -1;
     RUN_ELEVATED({
+        sync::irq_lock_guard guard(drv->m_vq_lock);
+
         // Find a free TX buffer
         int32_t buf_idx = -1;
         for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
@@ -613,12 +618,10 @@ int32_t virtio_net_driver::tx_callback(net::netif* iface, const uint8_t* frame, 
 
                 string::memcpy(reinterpret_cast<uint8_t*>(buf.vaddr + hdr_size), frame, len);
 
-                buf.in_use = true;
-
                 int32_t rc = drv->m_txq.add_buf(buf.phys, static_cast<uint32_t>(hdr_size + len), 0);
-                if (rc < 0) {
-                    buf.in_use = false;
-                } else {
+                if (rc >= 0) {
+                    buf.in_use = true;
+                    buf.desc_id = static_cast<int16_t>(rc);
                     drv->m_txq.kick(drv->m_tx_notify_addr);
                     result = 0;
                 }
@@ -635,6 +638,7 @@ void virtio_net_driver::poll_callback(net::netif* iface) {
     if (!drv) return;
 
     RUN_ELEVATED({
+        sync::irq_lock_guard guard(drv->m_vq_lock);
         drv->process_rx();
         drv->replenish_rx();
         drv->process_tx_completions();

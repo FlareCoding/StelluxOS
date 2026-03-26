@@ -6,6 +6,7 @@
 #include "drivers/net/virtio_queue.h"
 #include "net/net.h"
 #include "common/string.h"
+#include "sync/spinlock.h"
 
 namespace drivers {
 
@@ -23,6 +24,7 @@ public:
         // Zero ALL of netif including any padding
         uint8_t* p = reinterpret_cast<uint8_t*>(&m_netif);
         for (size_t i = 0; i < sizeof(m_netif); i++) p[i] = 0;
+        m_vq_lock = sync::SPINLOCK_INIT;
     }
 
     int32_t attach() override;
@@ -87,9 +89,15 @@ private:
     struct tx_buf_info {
         uintptr_t vaddr;
         pmm::phys_addr_t phys;
+        int16_t desc_id; // virtqueue descriptor assigned to this buf, or -1
         bool in_use;
     };
     tx_buf_info m_tx_bufs[TX_BUF_COUNT];
+
+    // Spinlock protecting all virtqueue and buffer pool state.
+    // Must be held by poll_callback, run(), tx_callback, and any
+    // code that touches m_rxq, m_txq, m_rx_bufs, or m_tx_bufs.
+    sync::spinlock m_vq_lock;
 
     // Network interface
     net::netif m_netif;
