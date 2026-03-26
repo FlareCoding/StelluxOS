@@ -369,39 +369,30 @@ int32_t virtio_net_driver::attach() {
     rc = map_config_regions();
     if (rc != 0) return rc;
 
-    // === Virtio device initialization sequence ===
-
-    // 1. Reset
+    // Reset device
     write_status(0);
-    // Wait for reset to complete
-    while (read_status() != 0) {
-        // spin
-    }
+    while (read_status() != 0) { }
 
-    // 2. Acknowledge
+    // Acknowledge and identify as a driver
     write_status(VIRTIO_STATUS_ACKNOWLEDGE);
-
-    // 3. Driver
     write_status(read_status() | VIRTIO_STATUS_DRIVER);
 
-    // 4. Negotiate features
+    // Negotiate features
     rc = negotiate_features();
     if (rc != 0) {
         write_status(read_status() | VIRTIO_STATUS_FAILED);
         return rc;
     }
 
-    // 5. Set FEATURES_OK
+    // Finalize feature negotiation
     write_status(read_status() | VIRTIO_STATUS_FEATURES_OK);
-
-    // 6. Verify FEATURES_OK
     if (!(read_status() & VIRTIO_STATUS_FEATURES_OK)) {
         log::error("virtio-net: device did not accept features");
         write_status(read_status() | VIRTIO_STATUS_FAILED);
         return -1;
     }
 
-    // 7. Device-specific setup: read MAC, init queues
+    // Read MAC address and initialize virtqueues
     rc = read_mac();
     if (rc != 0) return rc;
 
@@ -411,11 +402,10 @@ int32_t virtio_net_driver::attach() {
         return rc;
     }
 
-    // Fill RX queue with buffers
     fill_rx_queue();
 
-    // Set up MSI-X interrupts (try MSI-X first, then MSI, then poll)
-    int32_t irq_rc = setup_msix(2); // 2 vectors: one for RX, one for TX
+    // Set up MSI-X interrupts (fall back to MSI, then polling)
+    int32_t irq_rc = setup_msix(2);
     if (irq_rc != 0) {
         irq_rc = setup_msi(1);
     }
@@ -423,26 +413,23 @@ int32_t virtio_net_driver::attach() {
         log::warn("virtio-net: MSI setup failed, will use polling");
     }
 
-    // Configure MSI-X vectors for queues if MSI-X is active
+    // Assign MSI-X vectors to queues
     if (m_dev->get_msi_state().mode == pci::MSI_MODE_MSIX) {
-        // Config vector
         m_common_cfg->msix_config = 0;
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
-        // RX queue vector
         m_common_cfg->queue_select = VIRTIO_NET_QUEUE_RX;
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
         m_common_cfg->queue_msix_vector = 0;
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
-        // TX queue vector
         m_common_cfg->queue_select = VIRTIO_NET_QUEUE_TX;
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
         m_common_cfg->queue_msix_vector = (m_dev->get_msi_state().vector_count > 1) ? 1 : 0;
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
     }
 
-    // 8. DRIVER_OK — device is live
+    // Mark device as ready
     write_status(read_status() | VIRTIO_STATUS_DRIVER_OK);
 
     log::info("virtio-net: DRIVER_OK, device is live");
@@ -480,8 +467,8 @@ __PRIVILEGED_CODE void virtio_net_driver::on_interrupt(uint32_t vector) {
 }
 
 void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
-    // Phase 1: drain used buffers from the virtqueue. MUST be called with m_vq_lock held.
-    // Frames are stored in the batch for delivery outside the lock.
+    // Drain used buffers from the virtqueue into a local batch.
+    // Caller must hold m_vq_lock.
     batch.count = 0;
 
     uint16_t desc_id;
@@ -508,9 +495,8 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
         size_t hdr_size = sizeof(virtio_net_hdr);
 
         if (len > hdr_size) {
-            // Record frame pointer for delivery after lock release.
-            // The buffer memory remains valid until replenish_rx re-posts it,
-            // which only happens under the lock in a subsequent call.
+            // Record frame pointer for delivery after the lock is released.
+            // Buffer memory stays valid until replenish_rx re-posts it.
             batch.entries[batch.count].data =
                 reinterpret_cast<const uint8_t*>(buf_vaddr + hdr_size);
             batch.entries[batch.count].len = len - hdr_size;
@@ -524,9 +510,9 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
 }
 
 void virtio_net_driver::deliver_rx_batch(rx_batch& batch) {
-    // Phase 2: deliver drained frames to the protocol stack.
-    // MUST be called WITHOUT m_vq_lock held — protocol processing may
-    // call back into tx_callback which needs to acquire the lock.
+    // Deliver drained frames to the protocol stack.
+    // Called without m_vq_lock held so protocol processing can
+    // call back into tx_callback (e.g. ARP replies) without deadlock.
     for (uint16_t i = 0; i < batch.count; i++) {
         net::rx_frame(&m_netif, batch.entries[i].data, batch.entries[i].len);
     }
@@ -584,9 +570,8 @@ void virtio_net_driver::run() {
             RUN_ELEVATED(sched::sleep_ms(1));
         }
 
-        // Two-phase RX: drain under lock, deliver without lock.
-        // This prevents deadlock when protocol processing (ARP reply,
-        // ICMP echo reply) calls back into tx_callback.
+        // Drain RX under lock, then deliver frames without the lock
+        // so protocol handlers can transmit (e.g. ARP replies).
         rx_batch batch;
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
@@ -594,8 +579,6 @@ void virtio_net_driver::run() {
             replenish_rx();
             process_tx_completions();
         });
-        // Deliver frames outside the lock — safe for protocol stack
-        // to call tx_callback which re-acquires m_vq_lock.
         deliver_rx_batch(batch);
     }
 }
@@ -661,7 +644,6 @@ void virtio_net_driver::poll_callback(net::netif* iface) {
     auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
     if (!drv) return;
 
-    // Two-phase RX: drain under lock, deliver without lock.
     rx_batch batch;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(drv->m_vq_lock);

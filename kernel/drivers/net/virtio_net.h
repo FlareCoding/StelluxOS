@@ -21,7 +21,7 @@ public:
         , m_device_cfg(nullptr)
         , m_rx_notify_addr(0)
         , m_tx_notify_addr(0) {
-        // Zero ALL of netif including any padding
+        // Zero netif including any padding
         uint8_t* p = reinterpret_cast<uint8_t*>(&m_netif);
         for (size_t i = 0; i < sizeof(m_netif); i++) p[i] = 0;
         m_vq_lock = sync::SPINLOCK_INIT;
@@ -59,8 +59,8 @@ private:
     static int32_t tx_callback(net::netif* iface, const uint8_t* frame, size_t len);
     static bool link_callback(net::netif* iface);
     static void poll_callback(net::netif* iface);
-    void drain_rx_locked(rx_batch& batch);     // phase 1: under lock
-    void deliver_rx_batch(rx_batch& batch);    // phase 2: lock released
+    void drain_rx_locked(rx_batch& batch);     // requires m_vq_lock
+    void deliver_rx_batch(rx_batch& batch);    // called without m_vq_lock
     void process_tx_completions();             // under lock
     void replenish_rx();                       // under lock
 
