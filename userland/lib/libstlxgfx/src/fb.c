@@ -101,11 +101,52 @@ void stlxgfx_fb_present(stlxgfx_fb_t* fb, const stlxgfx_surface_t* surface) {
     }
 
     uint32_t copy_h = surface->height < fb->height ? surface->height : fb->height;
-    uint32_t copy_w_bytes = surface->pitch < fb->pitch ? surface->pitch : fb->pitch;
 
+    /* Fast path: if pitches match, copy entire buffer in one memcpy */
+    if (surface->pitch == fb->pitch) {
+        memcpy(fb->buffer, surface->pixels, (size_t)fb->pitch * copy_h);
+        return;
+    }
+
+    uint32_t copy_w_bytes = surface->pitch < fb->pitch ? surface->pitch : fb->pitch;
     for (uint32_t y = 0; y < copy_h; y++) {
         const uint8_t* src = surface->pixels + y * surface->pitch;
         uint8_t* dst = fb->buffer + y * fb->pitch;
         memcpy(dst, src, copy_w_bytes);
+    }
+}
+
+void stlxgfx_fb_present_region(stlxgfx_fb_t* fb,
+                                const stlxgfx_surface_t* surface,
+                                int32_t x, int32_t y,
+                                uint32_t w, uint32_t h) {
+    if (!fb || !fb->buffer || !surface || !surface->pixels) {
+        return;
+    }
+
+    /* Clip to framebuffer and surface bounds */
+    int32_t x0 = x < 0 ? 0 : x;
+    int32_t y0 = y < 0 ? 0 : y;
+    int32_t x1 = x + (int32_t)w;
+    int32_t y1 = y + (int32_t)h;
+
+    int32_t max_w = (int32_t)(surface->width < fb->width
+                              ? surface->width : fb->width);
+    int32_t max_h = (int32_t)(surface->height < fb->height
+                              ? surface->height : fb->height);
+
+    if (x1 > max_w) x1 = max_w;
+    if (y1 > max_h) y1 = max_h;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    uint32_t bpp = fb->bpp / 8;
+    uint32_t region_bytes = (uint32_t)(x1 - x0) * bpp;
+
+    for (int32_t row = y0; row < y1; row++) {
+        const uint8_t* src = surface->pixels + (uint32_t)row * surface->pitch
+                           + (uint32_t)x0 * bpp;
+        uint8_t* dst = fb->buffer + (uint32_t)row * fb->pitch
+                     + (uint32_t)x0 * bpp;
+        memcpy(dst, src, region_bytes);
     }
 }

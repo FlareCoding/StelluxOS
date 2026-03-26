@@ -122,6 +122,28 @@ int stlxgfx_fill_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
     }
 
     uint32_t bytes_pp = s->bpp / 8;
+
+    /* Fast path for 32bpp: single uint32_t write per pixel */
+    if (bytes_pp == 4) {
+        uint32_t native_pixel;
+        uint8_t* np = (uint8_t*)&native_pixel;
+        np[s->red_shift   / 8] = (color >> 16) & 0xFF;
+        np[s->green_shift / 8] = (color >>  8) & 0xFF;
+        np[s->blue_shift  / 8] =  color        & 0xFF;
+        np[stlxgfx_alpha_byte_index(s)] = (color >> 24) & 0xFF;
+
+        uint32_t count = (uint32_t)(x1 - x0);
+        for (int32_t row = y0; row < y1; row++) {
+            uint32_t* row_ptr = (uint32_t*)(s->pixels + (uint32_t)row * s->pitch)
+                              + (uint32_t)x0;
+            for (uint32_t i = 0; i < count; i++) {
+                row_ptr[i] = native_pixel;
+            }
+        }
+        return 0;
+    }
+
+    /* Fallback for 24bpp */
     for (int32_t row = y0; row < y1; row++) {
         uint8_t* row_ptr = s->pixels + (uint32_t)row * s->pitch + (uint32_t)x0 * bytes_pp;
         for (int32_t col = x0; col < x1; col++) {

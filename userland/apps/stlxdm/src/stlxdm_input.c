@@ -37,6 +37,47 @@ static const char* g_cursor_shape[16] = {
     "XX                "
 };
 
+#define CURSOR_W 18
+#define CURSOR_H 16
+
+static void build_cursor_sprites(stlxdm_input_t* inp) {
+    /*
+     * Pre-render the cursor shape into two small ARGB surfaces so that
+     * drawing the cursor each frame is a single blit_alpha instead of
+     * hundreds of individual fill_rect(1,1) calls.
+     */
+    inp->cursor_sprite = stlxgfx_create_surface(CURSOR_W, CURSOR_H, 32, 16, 8, 0);
+    inp->cursor_shadow = stlxgfx_create_surface(CURSOR_W, CURSOR_H, 32, 16, 8, 0);
+    if (!inp->cursor_sprite || !inp->cursor_shadow) {
+        if (inp->cursor_sprite) {
+            stlxgfx_destroy_surface(inp->cursor_sprite);
+            inp->cursor_sprite = NULL;
+        }
+        if (inp->cursor_shadow) {
+            stlxgfx_destroy_surface(inp->cursor_shadow);
+            inp->cursor_shadow = NULL;
+        }
+        return;
+    }
+
+    /* Clear to fully transparent */
+    stlxgfx_clear(inp->cursor_sprite, 0x00000000);
+    stlxgfx_clear(inp->cursor_shadow, 0x00000000);
+
+    for (int row = 0; row < CURSOR_H; row++) {
+        for (int col = 0; col < CURSOR_W; col++) {
+            char px = g_cursor_shape[row][col];
+            if (px == 'X') {
+                stlxgfx_fill_rect(inp->cursor_sprite, col, row, 1, 1, 0xFF000000);
+                stlxgfx_fill_rect(inp->cursor_shadow, col, row, 1, 1, 0x80000000);
+            } else if (px == '.') {
+                stlxgfx_fill_rect(inp->cursor_sprite, col, row, 1, 1, 0xFFFFFFFF);
+                stlxgfx_fill_rect(inp->cursor_shadow, col, row, 1, 1, 0x80000000);
+            }
+        }
+    }
+}
+
 void stlxdm_input_init(stlxdm_input_t* inp, int32_t fb_w, int32_t fb_h) {
     memset(inp, 0, sizeof(*inp));
     inp->kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
@@ -51,6 +92,7 @@ void stlxdm_input_init(stlxdm_input_t* inp, int32_t fb_w, int32_t fb_h) {
     inp->close_hover_slot = -1;
     inp->close_press_slot = -1;
     inp->z_count = 0;
+    build_cursor_sprites(inp);
 }
 
 void stlxdm_input_add_window(stlxdm_input_t* inp, int slot,
@@ -424,23 +466,31 @@ void stlxdm_input_draw_cursor(stlxdm_input_t* inp, stlxgfx_surface_t* surface) {
     int32_t x = inp->ptr_x;
     int32_t y = inp->ptr_y;
 
-    for (int row = 0; row < 16; row++) {
-        for (int col = 0; col < 18; col++) {
-            char px = g_cursor_shape[row][col];
-            if (px == 'X' || px == '.') {
-                stlxgfx_fill_rect(surface, x + col + 1, y + row + 1,
-                                   1, 1, 0x80000000);
+    if (inp->cursor_shadow && inp->cursor_sprite) {
+        /* Fast path: pre-rendered cursor sprites */
+        stlxgfx_blit_alpha(surface, x + 1, y + 1,
+                            inp->cursor_shadow, 0, 0, CURSOR_W, CURSOR_H);
+        stlxgfx_blit_alpha(surface, x, y,
+                            inp->cursor_sprite, 0, 0, CURSOR_W, CURSOR_H);
+    } else {
+        /* Fallback: pixel-by-pixel (only if sprite alloc failed) */
+        for (int row = 0; row < CURSOR_H; row++) {
+            for (int col = 0; col < CURSOR_W; col++) {
+                char px = g_cursor_shape[row][col];
+                if (px == 'X' || px == '.') {
+                    stlxgfx_fill_rect(surface, x + col + 1, y + row + 1,
+                                       1, 1, 0x80000000);
+                }
             }
         }
-    }
-
-    for (int row = 0; row < 16; row++) {
-        for (int col = 0; col < 18; col++) {
-            char px = g_cursor_shape[row][col];
-            if (px == 'X') {
-                stlxgfx_fill_rect(surface, x + col, y + row, 1, 1, 0xFF000000);
-            } else if (px == '.') {
-                stlxgfx_fill_rect(surface, x + col, y + row, 1, 1, 0xFFFFFFFF);
+        for (int row = 0; row < CURSOR_H; row++) {
+            for (int col = 0; col < CURSOR_W; col++) {
+                char px = g_cursor_shape[row][col];
+                if (px == 'X') {
+                    stlxgfx_fill_rect(surface, x + col, y + row, 1, 1, 0xFF000000);
+                } else if (px == '.') {
+                    stlxgfx_fill_rect(surface, x + col, y + row, 1, 1, 0xFFFFFFFF);
+                }
             }
         }
     }

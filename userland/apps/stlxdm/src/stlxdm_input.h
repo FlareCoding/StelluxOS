@@ -35,6 +35,9 @@ typedef struct {
     int spawn_terminal_requested;
 
     int32_t taskbar_height;
+
+    stlxgfx_surface_t* cursor_sprite;
+    stlxgfx_surface_t* cursor_shadow;
 } stlxdm_input_t;
 
 typedef struct {

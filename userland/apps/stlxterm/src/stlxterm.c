@@ -23,8 +23,8 @@
 #define STLXTERM_CURSOR_COLOR 0xFFF5E0DC
 #define STLXTERM_FONT_SIZE    16
 #define STLXTERM_PADDING      4
-#define STLXTERM_FRAME_NS     33000000
-#define STLXTERM_BLINK_FRAMES 15
+#define STLXTERM_FRAME_NS     16666667
+#define STLXTERM_BLINK_FRAMES 30
 
 static const uint32_t FG_PALETTE[17] = {
     0xFFCDD6F4, // 0: default foreground
@@ -170,12 +170,14 @@ int main(void) {
     }
     close(slave_fd);
 
-    struct timespec frame_interval = { 0, STLXTERM_FRAME_NS };
     int blink_counter = 0;
     int cursor_visible = 1;
     int focused = 1;
 
     while (stlxgfx_window_is_open(win)) {
+        struct timespec frame_start;
+        clock_gettime(CLOCK_MONOTONIC, &frame_start);
+
         stlxgfx_event_t evt;
         while (stlxgfx_window_next_event(win, &evt) == 1) {
             if (evt.type == STLXGFX_EVT_CLOSE_REQUESTED) {
@@ -243,7 +245,17 @@ int main(void) {
             }
         }
 
-        nanosleep(&frame_interval, NULL);
+        struct timespec frame_end;
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        uint64_t elapsed_ns = (uint64_t)(frame_end.tv_sec - frame_start.tv_sec)
+                                  * 1000000000ULL
+                            + (uint64_t)(frame_end.tv_nsec - frame_start.tv_nsec);
+        if (elapsed_ns < STLXTERM_FRAME_NS) {
+            struct timespec rem = {
+                0, (long)(STLXTERM_FRAME_NS - elapsed_ns)
+            };
+            nanosleep(&rem, NULL);
+        }
     }
 
     proc_detach(shell_proc);
