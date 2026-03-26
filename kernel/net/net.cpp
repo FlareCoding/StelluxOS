@@ -5,6 +5,7 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
+#include "mm/heap.h"
 #include "dynpriv/dynpriv.h"
 
 namespace net {
@@ -140,10 +141,12 @@ void queue_deferred_tx(netif* iface, uint32_t dst_ip, uint8_t protocol,
 
 void drain_deferred_tx() {
     // Snapshot and clear the queue under the lock, then send outside it.
-    // This prevents any re-entrant queue_deferred_tx (from a new echo
-    // request arriving during ARP resolution) from deadlocking.
-    deferred_tx_entry local[DEFERRED_TX_MAX];
     uint32_t count = 0;
+
+    // Heap-allocate the snapshot to avoid putting ~12KB on the kernel stack.
+    auto* local = static_cast<deferred_tx_entry*>(
+        heap::kzalloc(DEFERRED_TX_MAX * sizeof(deferred_tx_entry)));
+    if (!local) return;
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_deferred_tx_lock);
@@ -154,13 +157,12 @@ void drain_deferred_tx() {
         }
     });
 
-    // Send each queued packet at the top level. ipv4_send may call
-    // arp_resolve which may poll — this is safe because we are not
-    // inside deliver_rx_batch.
     for (uint32_t i = 0; i < count; i++) {
         ipv4_send(local[i].iface, local[i].dst_ip, local[i].protocol,
                   local[i].data, local[i].len);
     }
+
+    heap::kfree(local);
 }
 
 } // namespace net

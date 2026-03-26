@@ -4,6 +4,7 @@
 #include "net/byteorder.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "mm/heap.h"
 
 namespace net {
 
@@ -41,17 +42,21 @@ int32_t eth_send(netif* iface, const uint8_t* dst_mac,
         return ERR_INVAL;
     }
 
-    // Build frame on stack
-    uint8_t frame[ETH_FRAME_MAX];
-    auto* hdr = reinterpret_cast<eth_header*>(frame);
+    auto* frame = static_cast<uint8_t*>(heap::kzalloc(frame_len));
+    if (!frame) {
+        return ERR_NOMEM;
+    }
 
+    auto* hdr = reinterpret_cast<eth_header*>(frame);
     string::memcpy(hdr->dst, dst_mac, MAC_ADDR_LEN);
     string::memcpy(hdr->src, iface->mac, MAC_ADDR_LEN);
     hdr->ethertype = htons(ethertype);
 
     string::memcpy(frame + sizeof(eth_header), payload, payload_len);
 
-    return iface->transmit(iface, frame, frame_len);
+    int32_t rc = iface->transmit(iface, frame, frame_len);
+    heap::kfree(frame);
+    return rc;
 }
 
 } // namespace net

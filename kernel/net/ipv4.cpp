@@ -6,6 +6,7 @@
 #include "net/checksum.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "mm/heap.h"
 
 namespace net {
 
@@ -79,48 +80,45 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     }
 
     if (payload_len > ETH_MTU - sizeof(ipv4_header)) {
-        return ERR_INVAL; // too large (no fragmentation support)
+        return ERR_INVAL;
     }
 
-    // Build IPv4 header
-    uint8_t packet[ETH_MTU];
-    auto* hdr = reinterpret_cast<ipv4_header*>(packet);
-    string::memset(hdr, 0, sizeof(ipv4_header));
+    size_t total_len = sizeof(ipv4_header) + payload_len;
+    auto* packet = static_cast<uint8_t*>(heap::kzalloc(total_len));
+    if (!packet) {
+        return ERR_NOMEM;
+    }
 
-    hdr->ver_ihl = (4 << 4) | 5; // IPv4, IHL=5 (20 bytes)
+    auto* hdr = reinterpret_cast<ipv4_header*>(packet);
+    hdr->ver_ihl = (4 << 4) | 5;
     hdr->tos = 0;
-    hdr->total_len = htons(static_cast<uint16_t>(sizeof(ipv4_header) + payload_len));
+    hdr->total_len = htons(static_cast<uint16_t>(total_len));
     hdr->id = htons(next_ipv4_id());
-    hdr->flags_frag = htons(0x4000); // Don't Fragment
+    hdr->flags_frag = htons(0x4000);
     hdr->ttl = IPV4_DEFAULT_TTL;
     hdr->protocol = protocol;
-    hdr->checksum = 0; // computed below
+    hdr->checksum = 0;
     hdr->src_ip = htonl(iface->ipv4_addr);
     hdr->dst_ip = htonl(dst_ip);
-
-    // Compute header checksum
     hdr->checksum = inet_checksum(hdr, sizeof(ipv4_header));
 
-    // Copy payload after header
     string::memcpy(packet + sizeof(ipv4_header), payload, payload_len);
 
-    // Determine next-hop IP
     uint32_t next_hop = dst_ip;
     if ((dst_ip & iface->ipv4_netmask) != (iface->ipv4_addr & iface->ipv4_netmask)) {
-        // Off-subnet — use gateway
         next_hop = iface->ipv4_gateway;
     }
 
-    // Resolve MAC via ARP
     uint8_t dst_mac[MAC_ADDR_LEN];
     int32_t arp_rc = arp_resolve(iface, next_hop, dst_mac);
     if (arp_rc != OK) {
+        heap::kfree(packet);
         return arp_rc;
     }
 
-    // Send via Ethernet
-    return eth_send(iface, dst_mac, ETH_TYPE_IPV4,
-                    packet, sizeof(ipv4_header) + payload_len);
+    int32_t rc = eth_send(iface, dst_mac, ETH_TYPE_IPV4, packet, total_len);
+    heap::kfree(packet);
+    return rc;
 }
 
 } // namespace net
