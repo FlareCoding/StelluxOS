@@ -551,6 +551,7 @@ int main(void) {
     int prev_close_hover = -1;
     int prev_drag = -1;
     int prev_taskbar_hover = -1;
+    int prev_taskbar_press = -1;
     int first_frame = 1;
 
     while (1) {
@@ -622,8 +623,9 @@ int main(void) {
             prev_close_hover = input.close_hover_slot;
         }
 
-        /* Taskbar hover changed — include tooltip area above bar */
-        if (taskbar.hover_index != prev_taskbar_hover) {
+        /* Taskbar hover or press changed — include tooltip area above bar */
+        if (taskbar.hover_index != prev_taskbar_hover ||
+            taskbar.press_index != prev_taskbar_press) {
             /* Tooltips are drawn above the taskbar icons.  Expand the
              * dirty region upward by a generous margin so the tooltip
              * (and its disappearance) are always captured. */
@@ -635,6 +637,7 @@ int main(void) {
             stlxdm_dirty_add_rect(&dirty, 0, dirty_y,
                                    fb.width, dirty_h);
             prev_taskbar_hover = taskbar.hover_index;
+            prev_taskbar_press = taskbar.press_index;
         }
 
         /* Always dirty the top status bar (clock updates) */

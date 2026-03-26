@@ -24,7 +24,7 @@
 #define STLXTERM_FONT_SIZE    16
 #define STLXTERM_PADDING      4
 #define STLXTERM_FRAME_NS     16666667
-#define STLXTERM_BLINK_FRAMES 15
+#define STLXTERM_BLINK_FRAMES 30
 
 static const uint32_t FG_PALETTE[17] = {
     0xFFCDD6F4, // 0: default foreground

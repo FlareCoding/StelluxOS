@@ -49,6 +49,14 @@ static void build_cursor_sprites(stlxdm_input_t* inp) {
     inp->cursor_sprite = stlxgfx_create_surface(CURSOR_W, CURSOR_H, 32, 16, 8, 0);
     inp->cursor_shadow = stlxgfx_create_surface(CURSOR_W, CURSOR_H, 32, 16, 8, 0);
     if (!inp->cursor_sprite || !inp->cursor_shadow) {
+        if (inp->cursor_sprite) {
+            stlxgfx_destroy_surface(inp->cursor_sprite);
+            inp->cursor_sprite = NULL;
+        }
+        if (inp->cursor_shadow) {
+            stlxgfx_destroy_surface(inp->cursor_shadow);
+            inp->cursor_shadow = NULL;
+        }
         return;
     }
 
