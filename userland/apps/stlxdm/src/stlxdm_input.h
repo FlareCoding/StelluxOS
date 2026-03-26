@@ -16,6 +16,8 @@ typedef struct {
 
     int32_t ptr_x;
     int32_t ptr_y;
+    int32_t prev_ptr_x;
+    int32_t prev_ptr_y;
     int32_t fb_width;
     int32_t fb_height;
 
@@ -35,6 +37,9 @@ typedef struct {
     int spawn_terminal_requested;
 
     int32_t taskbar_height;
+
+    stlxgfx_surface_t* cursor_sprite;
+    stlxgfx_surface_t* cursor_shadow;
 } stlxdm_input_t;
 
 typedef struct {
