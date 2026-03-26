@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #define STLXDM_CONF_PATH              "/initrd/etc/stlxdm/stlxdm.conf"
+#define STLXDM_CONF_DEFAULT_ICON_PATH "/initrd/res/icons/icon_unknown_32x32.bmp"
 #define STLXDM_CONF_MAX_TASKBAR_ITEMS 16
 #define STLXDM_CONF_MAX_SHORTCUTS     8
 #define STLXDM_CONF_MAX_AUTOSTART     8

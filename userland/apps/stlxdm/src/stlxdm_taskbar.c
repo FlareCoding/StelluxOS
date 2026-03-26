@@ -1,4 +1,5 @@
 #include "stlxdm_taskbar.h"
+#include <stlxgfx/bmp.h>
 #include <string.h>
 
 #define TB_ITEM_BG          0xFF313244
@@ -31,6 +32,27 @@ void stlxdm_taskbar_init(stlxdm_taskbar_t* tb, const stlxdm_config_t* conf,
     tb->hover_index = -1;
     tb->press_index = -1;
     tb->launch_path[0] = '\0';
+
+    tb->default_icon = stlxgfx_load_bmp(STLXDM_CONF_DEFAULT_ICON_PATH);
+
+    for (int i = 0; i < conf->taskbar_item_count; i++) {
+        const char* icon_path = conf->taskbar_items[i].icon_path;
+        if (icon_path[0])
+            tb->icon_surfaces[i] = stlxgfx_load_bmp(icon_path);
+    }
+}
+
+void stlxdm_taskbar_cleanup(stlxdm_taskbar_t* tb) {
+    for (int i = 0; i < STLXDM_CONF_MAX_TASKBAR_ITEMS; i++) {
+        if (tb->icon_surfaces[i]) {
+            stlxgfx_destroy_surface(tb->icon_surfaces[i]);
+            tb->icon_surfaces[i] = NULL;
+        }
+    }
+    if (tb->default_icon) {
+        stlxgfx_destroy_surface(tb->default_icon);
+        tb->default_icon = NULL;
+    }
 }
 
 static void taskbar_item_rect(const stlxdm_taskbar_t* tb, int idx,
@@ -136,10 +158,16 @@ void stlxdm_taskbar_draw(stlxdm_taskbar_t* tb, stlxgfx_ctx_t* ctx) {
                            sizeof(g_item_accent_colors[0]))];
 
         const stlxdm_conf_taskbar_item_t* it = &c->taskbar_items[i];
-        if (it->label[0])
+        stlxgfx_surface_t* icon = tb->icon_surfaces[i];
+        if (!icon) icon = tb->default_icon;
+
+        if (icon) {
+            stlxgfx_ctx_blit(ctx, ix, iy, icon, 0, 0, iw, ih);
+        } else if (it->label[0]) {
             draw_label_icon(ctx, ix, iy, iw, it->label, accent);
-        else
+        } else {
             draw_default_icon(ctx, ix, iy, iw, TB_DEFAULT_ICON_COLOR);
+        }
     }
 
     if (tb->hover_index >= 0 &&
