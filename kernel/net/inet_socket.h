@@ -9,41 +9,30 @@ struct ring_buffer;
 
 namespace net {
 
-constexpr uint32_t MAX_ICMP_SOCKETS = 8;
+// Kernel representation of sockaddr_in (matches Linux/musl layout).
+// Used by sendto/recvfrom syscall handlers and inet socket ops.
+struct kernel_sockaddr_in {
+    uint16_t sin_family; // AF_INET = 2
+    uint16_t sin_port;   // network byte order
+    uint32_t sin_addr;   // network byte order
+    uint8_t  sin_zero[8];
+};
+
+constexpr uint16_t AF_INET_VAL = 2;
 
 struct inet_socket {
-    uint8_t       protocol;  // e.g. IPPROTO_ICMP (1)
-    uint32_t      bound_addr; // 0 = any (host byte order)
-    ring_buffer*  rx_buf;    // incoming packets queued here
+    uint8_t        protocol;   // e.g. IPPROTO_ICMP (1)
+    uint32_t       bound_addr; // 0 = any (host byte order)
+    ring_buffer*   rx_buf;     // incoming packets queued here
     sync::spinlock lock;
+    inet_socket*   next;       // linked list for protocol registry
 };
 
 /**
  * Create an AF_INET SOCK_DGRAM IPPROTO_ICMP socket.
- * Returns a resource_object with the inet socket ops.
+ * Registers the socket with the ICMP protocol layer for packet delivery.
  */
 int32_t create_inet_icmp_socket(resource::resource_object** out);
-
-/**
- * Register an ICMP socket to receive incoming packets.
- * Called during socket creation.
- */
-void register_icmp_socket(inet_socket* sock);
-
-/**
- * Unregister an ICMP socket. Called during socket close.
- */
-void unregister_icmp_socket(inet_socket* sock);
-
-/**
- * Deliver an ICMP packet to all registered ICMP sockets.
- * Called by icmp_recv() when a packet arrives that should be
- * delivered to userland (e.g. echo replies).
- * @param src_ip  Source IP in host byte order.
- * @param data    ICMP packet data (starting with icmp_header).
- * @param len     Length of ICMP packet.
- */
-void deliver_to_icmp_sockets(uint32_t src_ip, const uint8_t* data, size_t len);
 
 } // namespace net
 

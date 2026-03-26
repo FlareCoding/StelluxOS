@@ -19,16 +19,26 @@ struct icmp_header {
 
 static_assert(sizeof(icmp_header) == 8, "icmp_header must be 8 bytes");
 
+struct inet_socket;
+
 /**
  * Process a received ICMP packet (after IPv4 header is stripped).
- * Handles echo requests (kernel replies automatically) and delivers
- * all ICMP packets to registered AF_INET sockets.
- * @param iface  Interface the packet arrived on.
- * @param src_ip Source IP in host byte order.
- * @param data   ICMP packet data (starting with icmp_header).
- * @param len    Length of ICMP packet.
+ * Handles echo requests (kernel replies via deferred TX) and delivers
+ * all ICMP packets to registered sockets.
  */
 void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len);
+
+/**
+ * Register an inet socket to receive ICMP packets.
+ * Called during ICMP socket creation.
+ */
+void icmp_register_socket(inet_socket* sock);
+
+/**
+ * Unregister an inet socket from ICMP delivery.
+ * Called during ICMP socket close.
+ */
+void icmp_unregister_socket(inet_socket* sock);
 
 } // namespace net
 
