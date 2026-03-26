@@ -97,6 +97,27 @@ netif* get_default_netif();
  */
 void rx_frame(netif* iface, const uint8_t* data, size_t len);
 
+/**
+ * Queue a protocol-generated response (e.g. ICMP echo reply) for
+ * deferred transmission. Called from RX processing context where
+ * inline TX would cause recursion through the ARP/poll path.
+ * Packets are sent later by drain_deferred_tx().
+ * @param iface    Interface to send on.
+ * @param dst_ip   Destination IP in host byte order.
+ * @param protocol IPv4 protocol number.
+ * @param data     Payload data (copied into the queue).
+ * @param len      Payload length.
+ */
+void queue_deferred_tx(netif* iface, uint32_t dst_ip, uint8_t protocol,
+                       const uint8_t* data, size_t len);
+
+/**
+ * Send all packets queued by queue_deferred_tx().
+ * Called from the driver's run() or poll_callback after RX delivery
+ * is complete. Runs at the top level, outside any RX processing,
+ * so ipv4_send and ARP resolution are safe.
+ */
+void drain_deferred_tx();
 
 } // namespace net
 

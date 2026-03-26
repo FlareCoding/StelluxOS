@@ -19,7 +19,6 @@ struct arp_entry {
 
 __PRIVILEGED_DATA static arp_entry g_arp_table[ARP_TABLE_SIZE] = {};
 __PRIVILEGED_DATA static sync::spinlock g_arp_lock = sync::SPINLOCK_INIT;
-__PRIVILEGED_DATA static bool g_poll_active = false;
 
 } // anonymous namespace
 
@@ -155,24 +154,7 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
         return OK;
     }
 
-    // If we're already inside a poll loop (recursive call from ICMP reply
-    // path during poll processing), skip polling to avoid stack overflow.
-    // The caller's poll loop will pick up the ARP reply on the next iteration.
-    if (g_poll_active) {
-        // Just check the table without polling — the outer loop handles RX
-        for (uint32_t spin = 0; spin < 1000; spin++) {
-            if (arp_table_lookup(target_ip, out_mac)) {
-                return OK;
-            }
-            cpu::relax();
-        }
-        return ERR_NOARP;
-    }
-
     // Poll the driver's RX path to process incoming packets synchronously.
-    g_poll_active = true;
-
-    int32_t resolve_result = ERR_NOARP;
     for (uint32_t attempt = 0; attempt < ARP_RETRY_COUNT; attempt++) {
         arp_send_request(iface, target_ip);
 
@@ -184,26 +166,19 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
             });
 
             if (arp_table_lookup(target_ip, out_mac)) {
-                resolve_result = OK;
-                break;
+                return OK;
             }
 
             for (uint32_t j = 0; j < 100; j++) {
                 cpu::relax();
             }
         }
-
-        if (resolve_result == OK) break;
     }
 
-    g_poll_active = false;
-
-    if (resolve_result != OK) {
-        log::warn("arp: failed to resolve %u.%u.%u.%u",
-                  (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
-                  (target_ip >> 8) & 0xFF, target_ip & 0xFF);
-    }
-    return resolve_result;
+    log::warn("arp: failed to resolve %u.%u.%u.%u",
+              (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
+              (target_ip >> 8) & 0xFF, target_ip & 0xFF);
+    return ERR_NOARP;
 }
 
 } // namespace net

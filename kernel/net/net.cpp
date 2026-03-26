@@ -1,5 +1,6 @@
 #include "net/net.h"
 #include "net/ethernet.h"
+#include "net/ipv4.h"
 #include "net/arp.h"
 #include "common/logging.h"
 #include "common/string.h"
@@ -12,6 +13,22 @@ namespace {
 __PRIVILEGED_DATA static netif* g_iface_list = nullptr;
 __PRIVILEGED_DATA static netif* g_default_iface = nullptr;
 __PRIVILEGED_DATA static sync::spinlock g_net_lock = sync::SPINLOCK_INIT;
+
+// Deferred TX queue: protocol-generated responses (e.g. ICMP echo replies)
+// that cannot be sent inline from RX processing context.
+constexpr uint32_t DEFERRED_TX_MAX = 8;
+
+struct deferred_tx_entry {
+    netif*   iface;
+    uint32_t dst_ip;       // host byte order
+    uint8_t  protocol;
+    size_t   len;
+    uint8_t  data[ETH_MTU];
+};
+
+__PRIVILEGED_DATA static deferred_tx_entry g_deferred_tx[DEFERRED_TX_MAX] = {};
+__PRIVILEGED_DATA static uint32_t g_deferred_tx_count = 0;
+__PRIVILEGED_DATA static sync::spinlock g_deferred_tx_lock = sync::SPINLOCK_INIT;
 
 } // anonymous namespace
 
@@ -95,6 +112,53 @@ void rx_frame(netif* iface, const uint8_t* data, size_t len) {
         return;
     }
     eth_recv(iface, data, len);
+}
+
+void queue_deferred_tx(netif* iface, uint32_t dst_ip, uint8_t protocol,
+                       const uint8_t* data, size_t len) {
+    if (!iface || !data || len == 0 || len > ETH_MTU) {
+        return;
+    }
+
+    sync::irq_lock_guard guard(g_deferred_tx_lock);
+
+    if (g_deferred_tx_count >= DEFERRED_TX_MAX) {
+        // Queue full — silently drop. ICMP replies are best-effort.
+        return;
+    }
+
+    auto& entry = g_deferred_tx[g_deferred_tx_count];
+    entry.iface = iface;
+    entry.dst_ip = dst_ip;
+    entry.protocol = protocol;
+    entry.len = len;
+    string::memcpy(entry.data, data, len);
+    g_deferred_tx_count++;
+}
+
+void drain_deferred_tx() {
+    // Snapshot and clear the queue under the lock, then send outside it.
+    // This prevents any re-entrant queue_deferred_tx (from a new echo
+    // request arriving during ARP resolution) from deadlocking.
+    deferred_tx_entry local[DEFERRED_TX_MAX];
+    uint32_t count = 0;
+
+    {
+        sync::irq_lock_guard guard(g_deferred_tx_lock);
+        count = g_deferred_tx_count;
+        if (count > 0) {
+            string::memcpy(local, g_deferred_tx, count * sizeof(deferred_tx_entry));
+            g_deferred_tx_count = 0;
+        }
+    }
+
+    // Send each queued packet at the top level. ipv4_send may call
+    // arp_resolve which may poll — this is safe because we are not
+    // inside deliver_rx_batch.
+    for (uint32_t i = 0; i < count; i++) {
+        ipv4_send(local[i].iface, local[i].dst_ip, local[i].protocol,
+                  local[i].data, local[i].len);
+    }
 }
 
 } // namespace net

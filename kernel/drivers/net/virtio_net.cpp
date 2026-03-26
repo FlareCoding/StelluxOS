@@ -588,6 +588,11 @@ void virtio_net_driver::run() {
             sync::irq_lock_guard guard(m_vq_lock);
             replenish_rx();
         });
+        // Send any protocol-generated responses (e.g. ICMP echo replies)
+        // that were queued during RX delivery. This runs at the top level,
+        // so ipv4_send and ARP resolution are safe — no recursion into
+        // deliver_rx_batch.
+        RUN_ELEVATED(net::drain_deferred_tx());
     }
 }
 
@@ -663,6 +668,7 @@ void virtio_net_driver::poll_callback(net::netif* iface) {
         sync::irq_lock_guard guard(drv->m_vq_lock);
         drv->replenish_rx();
     });
+    RUN_ELEVATED(net::drain_deferred_tx());
 }
 
 bool virtio_net_driver::link_callback(net::netif* iface) {
