@@ -49,6 +49,7 @@ private:
     struct rx_batch_entry {
         const uint8_t* data;
         size_t len;
+        uint16_t buf_idx; // index into m_rx_bufs for clearing delivering flag
     };
     struct rx_batch {
         rx_batch_entry entries[RX_BATCH_MAX];
@@ -92,7 +93,8 @@ private:
     struct rx_buf_info {
         uintptr_t vaddr;
         pmm::phys_addr_t phys;
-        int16_t desc_id; // virtqueue descriptor currently using this buf, or -1
+        int16_t desc_id;  // virtqueue descriptor currently using this buf, or -1
+        bool delivering;  // true while frame data is being read by deliver_rx_batch
     };
     rx_buf_info m_rx_bufs[RX_BUF_COUNT];
 

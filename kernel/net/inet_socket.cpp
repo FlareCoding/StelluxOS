@@ -235,22 +235,25 @@ void deliver_to_icmp_sockets(uint32_t src_ip, const uint8_t* data, size_t len) {
     uint32_t src_ip_net = htonl(src_ip);
     uint16_t payload_len = static_cast<uint16_t>(len);
 
+    // Build a single contiguous entry: [src_ip(4)] [payload_len(2)] [data(N)]
+    size_t entry_len = RX_ENTRY_HEADER + len;
+    uint8_t* entry = static_cast<uint8_t*>(heap::kzalloc(entry_len));
+    if (!entry) return;
+
+    string::memcpy(entry, &src_ip_net, 4);
+    string::memcpy(entry + 4, &payload_len, 2);
+    string::memcpy(entry + RX_ENTRY_HEADER, data, len);
+
     sync::irq_lock_guard guard(g_icmp_reg_lock);
     for (uint32_t i = 0; i < MAX_ICMP_SOCKETS; i++) {
         inet_socket* sock = g_icmp_sockets[i];
         if (!sock || !sock->rx_buf) continue;
 
-        // Write header + payload atomically so partial reads don't happen
-        uint8_t hdr[RX_ENTRY_HEADER];
-        string::memcpy(hdr, &src_ip_net, 4);
-        string::memcpy(hdr + 4, &payload_len, 2);
-
-        // Use non-blocking write; drop packet if buffer is full
-        ssize_t rc = ring_buffer_write(sock->rx_buf, hdr, RX_ENTRY_HEADER, true);
-        if (rc < static_cast<ssize_t>(RX_ENTRY_HEADER)) continue;
-
-        (void)ring_buffer_write(sock->rx_buf, data, len, true);
+        // All-or-nothing write; drop packet if buffer has insufficient space
+        (void)ring_buffer_write_all(sock->rx_buf, entry, entry_len, true);
     }
+
+    heap::kfree(entry);
 }
 
 } // namespace net

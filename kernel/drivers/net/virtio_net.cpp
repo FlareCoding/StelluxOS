@@ -299,6 +299,7 @@ int32_t virtio_net_driver::init_queues() {
         m_rx_bufs[i].vaddr = 0;
         m_rx_bufs[i].phys = 0;
         m_rx_bufs[i].desc_id = -1;
+        m_rx_bufs[i].delivering = false;
 
         int32_t alloc_rc = 0;
         RUN_ELEVATED(
@@ -494,19 +495,19 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
         uintptr_t buf_vaddr = m_rx_bufs[buf_idx].vaddr;
         size_t hdr_size = sizeof(virtio_net_hdr);
 
+        // Return descriptor to free list
+        m_rxq.free_desc(desc_id);
+        m_rx_bufs[buf_idx].desc_id = -1;
+
         if (len > hdr_size) {
-            // Record frame pointer for delivery after the lock is released.
-            // Replenish is deferred until after delivery, so the buffer
-            // memory remains valid and won't be overwritten by the device.
+            // Mark buffer as being delivered so replenish_rx skips it
+            m_rx_bufs[buf_idx].delivering = true;
             batch.entries[batch.count].data =
                 reinterpret_cast<const uint8_t*>(buf_vaddr + hdr_size);
             batch.entries[batch.count].len = len - hdr_size;
+            batch.entries[batch.count].buf_idx = static_cast<uint16_t>(buf_idx);
             batch.count++;
         }
-
-        // Return descriptor to free list and mark buffer as unposted
-        m_rxq.free_desc(desc_id);
-        m_rx_bufs[buf_idx].desc_id = -1;
     }
 }
 
@@ -516,6 +517,8 @@ void virtio_net_driver::deliver_rx_batch(rx_batch& batch) {
     // call back into tx_callback (e.g. ARP replies) without deadlock.
     for (uint16_t i = 0; i < batch.count; i++) {
         net::rx_frame(&m_netif, batch.entries[i].data, batch.entries[i].len);
+        // Clear delivering flag so replenish_rx can re-post this buffer
+        m_rx_bufs[batch.entries[i].buf_idx].delivering = false;
     }
 }
 
@@ -523,6 +526,7 @@ void virtio_net_driver::replenish_rx() {
     bool posted_any = false;
     for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
         if (m_rx_bufs[i].desc_id >= 0) continue; // already posted
+        if (m_rx_bufs[i].delivering) continue;    // being read by deliver_rx_batch
 
         int32_t desc_id = m_rxq.add_buf(
             m_rx_bufs[i].phys, RX_BUF_SIZE, VRING_DESC_F_WRITE);
