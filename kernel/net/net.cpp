@@ -99,6 +99,15 @@ int32_t register_netif(netif* iface) {
 int32_t unregister_netif(netif* iface) {
     if (!iface) return ERR_INVAL;
 
+    // Clean up routing table entries BEFORE removing from the interface
+    // list. route_del_host removes the LOCAL /32 route that points to
+    // loopback (not to this interface), and route_del_iface removes the
+    // CONNECTED and GATEWAY routes that point to this interface directly.
+    if (iface->configured && iface->ipv4_addr != 0) {
+        route_del_host(iface->ipv4_addr);
+    }
+    route_del_iface(iface);
+
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_net_lock);
 

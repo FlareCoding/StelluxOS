@@ -56,16 +56,19 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
     // Check if packet is for us
     uint32_t dst_ip = ntohl(hdr->dst_ip);
 
-    // On the loopback interface, accept any address in the loopback subnet
-    // (127.0.0.0/8), per RFC 1122 §3.2.1.3. On other interfaces, only
-    // accept our exact IP, global broadcast, or subnet broadcast.
-    bool is_loopback = (string::strncmp(iface->name, "lo", 3) == 0);
+    // On the loopback interface, accept:
+    //   - Any address in the loopback subnet (127.0.0.0/8) per RFC 1122 §3.2.1.3
+    //   - Any locally-configured IP (delivered via LOCAL routes for self-addressed
+    //     traffic, e.g. sending to our own eth0 IP routes through loopback)
+    // On other interfaces, only accept our exact IP, broadcast, or subnet broadcast.
+    bool is_loopback = (iface->flags & NETIF_LOOPBACK) != 0;
 
     if (iface->configured && dst_ip != iface->ipv4_addr &&
         dst_ip != 0xFFFFFFFF &&
         dst_ip != (iface->ipv4_addr | ~iface->ipv4_netmask) &&
-        !(is_loopback && (dst_ip & iface->ipv4_netmask) ==
-                         (iface->ipv4_addr & iface->ipv4_netmask))) {
+        !(is_loopback && ((dst_ip & iface->ipv4_netmask) ==
+                          (iface->ipv4_addr & iface->ipv4_netmask) ||
+                          is_local_ip(dst_ip)))) {
         return; // not for us
     }
 
@@ -143,7 +146,18 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     hdr->ttl = IPV4_DEFAULT_TTL;
     hdr->protocol = protocol;
     hdr->checksum = 0;
-    hdr->src_ip = htonl(out_iface->ipv4_addr);
+
+    // For LOCAL routes (sending to our own non-loopback IP), use the
+    // destination IP as the source. The packet is self-addressed, so
+    // src = dst = our local address. Without this, the source would be
+    // 127.0.0.1 (loopback's IP) which is incorrect.
+    // For all other routes, use the outgoing interface's IP as source.
+    if (rt.type == route_type::LOCAL) {
+        hdr->src_ip = htonl(dst_ip);
+    } else {
+        hdr->src_ip = htonl(out_iface->ipv4_addr);
+    }
+
     hdr->dst_ip = htonl(dst_ip);
     hdr->checksum = inet_checksum(hdr, sizeof(ipv4_header));
 

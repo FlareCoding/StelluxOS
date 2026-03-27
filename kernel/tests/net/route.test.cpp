@@ -562,3 +562,46 @@ TEST(route_test, ipv4_send_via_route_table) {
     // Drain deferred TX (ICMP echo reply)
     net::drain_deferred_tx();
 }
+
+// ============================================================================
+// unregister_netif cleans up routes (Bug 1 regression test)
+// ============================================================================
+
+TEST(route_test, unregister_cleans_routes) {
+    net::netif mock = {};
+    string::memcpy(mock.name, "unreg0", 7);
+    mock.transmit = mock_tx;
+    mock.link_up = mock_link_up;
+
+    int32_t rc = net::register_netif(&mock);
+    ASSERT_EQ(rc, net::OK);
+
+    uint32_t before = net::route_count();
+
+    // Configure adds LOCAL + CONNECTED + GATEWAY = 3 routes
+    rc = net::configure(&mock,
+                        net::ipv4_addr(10, 99, 0, 50),
+                        net::ipv4_addr(255, 255, 255, 0),
+                        net::ipv4_addr(10, 99, 0, 1));
+    ASSERT_EQ(rc, net::OK);
+    EXPECT_EQ(net::route_count(), before + 3);
+
+    // Verify routes exist
+    net::route_result rt;
+    rc = net::route_lookup(net::ipv4_addr(10, 99, 0, 50), &rt);
+    ASSERT_EQ(rc, net::OK);
+
+    // Unregister should clean up ALL routes (including LOCAL → loopback)
+    rc = net::unregister_netif(&mock);
+    ASSERT_EQ(rc, net::OK);
+    EXPECT_EQ(net::route_count(), before);
+
+    // The old routes should no longer match
+    rc = net::route_lookup(net::ipv4_addr(10, 99, 0, 50), &rt);
+    // Should not find a LOCAL route to our old IP any more
+    // (may match a default gateway from another test if one exists,
+    // but must not return the unregistered interface)
+    if (rc == net::OK) {
+        EXPECT_NE(rt.iface, &mock);
+    }
+}

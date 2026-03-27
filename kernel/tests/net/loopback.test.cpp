@@ -4,6 +4,7 @@
 #include "net/net.h"
 #include "net/loopback.h"
 #include "net/netinfo.h"
+#include "net/route.h"
 #include "net/ipv4.h"
 #include "net/icmp.h"
 #include "net/arp.h"
@@ -476,4 +477,97 @@ TEST(loopback_test, transmit_null_iface) {
     uint8_t dummy[64] = {};
     int32_t rc = lo->transmit(nullptr, dummy, sizeof(dummy));
     EXPECT_EQ(rc, net::ERR_INVAL);
+}
+
+// ============================================================================
+// LOCAL route delivery for non-127 own IP (Bug 2 regression test)
+// ============================================================================
+
+TEST(loopback_test, local_route_delivers_own_ip) {
+    // Simulate having a configured eth0-like interface with a LOCAL route.
+    // Sending to that interface's own IP should be delivered via loopback
+    // (through the LOCAL route) and received correctly by ipv4_recv.
+
+    // Create and configure a mock interface
+    static net::netif mock_eth = {};
+    string::memcpy(mock_eth.name, "mock0", 6);
+    mock_eth.mac[0] = 0xAA; mock_eth.mac[1] = 0xBB;
+    mock_eth.mac[2] = 0xCC; mock_eth.mac[3] = 0xDD;
+    mock_eth.mac[4] = 0xEE; mock_eth.mac[5] = 0xFF;
+    // Transmit callback — not used for LOCAL delivery, but required for register
+    mock_eth.transmit = [](net::netif*, const uint8_t*, size_t) -> int32_t {
+        return net::OK;
+    };
+    mock_eth.link_up = [](net::netif*) -> bool { return true; };
+    mock_eth.poll = nullptr;
+    mock_eth.driver_data = nullptr;
+
+    int32_t rc = net::register_netif(&mock_eth);
+    ASSERT_EQ(rc, net::OK);
+
+    // Configure with a non-loopback IP. This creates:
+    //   LOCAL 10.0.88.100/32 → lo
+    //   CONNECTED 10.0.88.0/24 → mock_eth
+    rc = net::configure(&mock_eth,
+                        net::ipv4_addr(10, 0, 88, 100),
+                        net::ipv4_addr(255, 255, 255, 0),
+                        0);
+    ASSERT_EQ(rc, net::OK);
+
+    // Create an ICMP socket to receive packets
+    resource::resource_object* obj = nullptr;
+    rc = net::create_inet_icmp_socket(&obj);
+    ASSERT_EQ(rc, resource::OK);
+    ASSERT_NOT_NULL(obj);
+
+    auto* sock = static_cast<net::inet_socket*>(obj->impl);
+    ASSERT_NOT_NULL(sock);
+    ASSERT_NOT_NULL(sock->rx_buf);
+
+    // Send ICMP echo request to our own mock_eth IP (10.0.88.100).
+    // This should route via LOCAL → loopback, be accepted by ipv4_recv,
+    // and delivered to the socket.
+    uint8_t icmp_pkt[8];
+    string::memset(icmp_pkt, 0, sizeof(icmp_pkt));
+    auto* icmp_hdr = reinterpret_cast<net::icmp_header*>(icmp_pkt);
+    icmp_hdr->type = net::ICMP_TYPE_ECHO_REQUEST;
+    icmp_hdr->code = 0;
+    icmp_hdr->id = net::htons(0xBEEF);
+    icmp_hdr->sequence = net::htons(1);
+    icmp_hdr->checksum = 0;
+    icmp_hdr->checksum = net::inet_checksum(icmp_pkt, sizeof(icmp_pkt));
+
+    // Send to 10.0.88.100 — route_lookup should find LOCAL /32 route
+    rc = net::ipv4_send(&mock_eth, net::ipv4_addr(10, 0, 88, 100),
+                        net::IPV4_PROTO_ICMP, icmp_pkt, sizeof(icmp_pkt));
+    EXPECT_EQ(rc, net::OK);
+
+    // Drain deferred TX (echo reply)
+    net::drain_deferred_tx();
+
+    // Read from the socket — should have received the echo request
+    uint8_t read_buf[128];
+    ssize_t nread = ring_buffer_read(sock->rx_buf, read_buf, sizeof(read_buf), true);
+    EXPECT_GT(nread, static_cast<ssize_t>(0));
+
+    if (nread >= 6) {
+        // Parse framing: [4 bytes src_ip_net][2 bytes payload_len]
+        uint32_t src_ip_net;
+        string::memcpy(&src_ip_net, read_buf, 4);
+        uint32_t src_ip = net::ntohl(src_ip_net);
+        // Source IP should be 10.0.88.100 (our own address), NOT 127.0.0.1
+        EXPECT_EQ(src_ip, net::ipv4_addr(10, 0, 88, 100));
+    }
+
+    // Clean up
+    net::icmp_unregister_socket(sock);
+    if (sock->rx_buf) {
+        ring_buffer_destroy(sock->rx_buf);
+        sock->rx_buf = nullptr;
+    }
+    heap::kfree_delete(sock);
+    heap::kfree_delete(obj);
+
+    net::route_del_iface(&mock_eth);
+    net::unregister_netif(&mock_eth);
 }
