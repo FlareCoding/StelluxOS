@@ -82,18 +82,171 @@ static uint16_t my_ntohs(uint16_t v) {
     return (uint16_t)((v >> 8) | (v << 8));
 }
 
+#define DNS_SERVER_IP     0x0A000203  // 10.0.2.3 (QEMU user-mode DNS forwarder)
+#define DNS_PORT          53
+#define DNS_HEADER_LEN    12
+#define DNS_TYPE_A        1
+#define DNS_CLASS_IN      1
+#define DNS_FLAG_RD       0x0100      // Recursion Desired
+#define DNS_FLAG_QR       0x8000      // Response flag
+#define DNS_RCODE_MASK    0x000F
+#define DNS_MAX_PACKET    512
+#define DNS_RECV_TIMEOUT_MS  100
+#define DNS_RECV_RETRIES     50       // 50 * 100ms = 5s per attempt
+#define DNS_SEND_ATTEMPTS    2
+
+static int dns_encode_name(const char* name, uint8_t* buf, size_t buf_size) {
+    size_t name_len = strlen(name);
+    if (name_len == 0 || name_len > 253) return -1;
+
+    size_t pos = 0;
+    const char* seg = name;
+
+    while (*seg) {
+        const char* dot = seg;
+        while (*dot && *dot != '.') dot++;
+        size_t seg_len = (size_t)(dot - seg);
+        if (seg_len == 0 || seg_len > 63) return -1;
+        if (pos + 1 + seg_len + 1 > buf_size) return -1;
+
+        buf[pos++] = (uint8_t)seg_len;
+        memcpy(buf + pos, seg, seg_len);
+        pos += seg_len;
+
+        seg = (*dot == '.') ? dot + 1 : dot;
+    }
+    buf[pos++] = 0;
+    return (int)pos;
+}
+
+static int dns_skip_name(const uint8_t* pkt, size_t pkt_len, size_t offset) {
+    size_t pos = offset;
+    while (pos < pkt_len) {
+        uint8_t label_len = pkt[pos];
+        if (label_len == 0) { pos++; break; }
+        if ((label_len & 0xC0) == 0xC0) { pos += 2; break; }
+        pos += 1 + label_len;
+    }
+    if (pos > pkt_len) return -1;
+    return (int)pos;
+}
+
+static uint32_t dns_resolve(const char* hostname) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return 0;
+
+    // Build DNS query
+    uint8_t query[DNS_MAX_PACKET];
+    memset(query, 0, sizeof(query));
+
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint16_t txn_id = (uint16_t)(ts.tv_nsec & 0xFFFF);
+
+    // Header
+    query[0] = (uint8_t)(txn_id >> 8);
+    query[1] = (uint8_t)(txn_id & 0xFF);
+    query[2] = (uint8_t)(DNS_FLAG_RD >> 8);
+    query[3] = (uint8_t)(DNS_FLAG_RD & 0xFF);
+    query[4] = 0; query[5] = 1; // qdcount = 1
+
+    // Question: QNAME
+    int name_len = dns_encode_name(hostname, query + DNS_HEADER_LEN,
+                                   sizeof(query) - DNS_HEADER_LEN - 4);
+    if (name_len < 0) { close(fd); return 0; }
+
+    size_t q_end = (size_t)(DNS_HEADER_LEN + name_len);
+    // QTYPE = A (1), QCLASS = IN (1)
+    query[q_end]     = 0; query[q_end + 1] = DNS_TYPE_A;
+    query[q_end + 2] = 0; query[q_end + 3] = DNS_CLASS_IN;
+    size_t query_len = q_end + 4;
+
+    struct sockaddr_in dns_addr;
+    memset(&dns_addr, 0, sizeof(dns_addr));
+    dns_addr.sin_family = AF_INET;
+    dns_addr.sin_port = my_htons(DNS_PORT);
+    dns_addr.sin_addr.s_addr = my_htonl(DNS_SERVER_IP);
+
+    uint32_t result = 0;
+
+    for (int attempt = 0; attempt < DNS_SEND_ATTEMPTS && result == 0; attempt++) {
+        ssize_t nsent = sendto(fd, query, query_len, 0,
+                               (struct sockaddr*)&dns_addr, sizeof(dns_addr));
+        if (nsent < 0) continue;
+
+        for (int poll = 0; poll < DNS_RECV_RETRIES; poll++) {
+            uint8_t resp[DNS_MAX_PACKET];
+            struct sockaddr_in from;
+            socklen_t fromlen = sizeof(from);
+            ssize_t nrecv = recvfrom(fd, resp, sizeof(resp), MSG_DONTWAIT,
+                                     (struct sockaddr*)&from, &fromlen);
+            if (nrecv < DNS_HEADER_LEN) {
+                struct timespec delay = { .tv_sec = 0,
+                                          .tv_nsec = DNS_RECV_TIMEOUT_MS * 1000000L };
+                nanosleep(&delay, NULL);
+                continue;
+            }
+
+            // Verify transaction ID
+            uint16_t resp_id = ((uint16_t)resp[0] << 8) | resp[1];
+            if (resp_id != txn_id) continue;
+
+            // Check flags: must be a response with no error
+            uint16_t flags = ((uint16_t)resp[2] << 8) | resp[3];
+            if (!(flags & DNS_FLAG_QR)) continue;
+            if ((flags & DNS_RCODE_MASK) != 0) break;
+
+            uint16_t ancount = ((uint16_t)resp[6] << 8) | resp[7];
+            if (ancount == 0) break;
+
+            // Skip question section
+            int pos = dns_skip_name(resp, (size_t)nrecv, DNS_HEADER_LEN);
+            if (pos < 0) break;
+            pos += 4; // skip QTYPE + QCLASS
+
+            // Parse answer RRs looking for type A
+            for (uint16_t a = 0; a < ancount && pos > 0; a++) {
+                pos = dns_skip_name(resp, (size_t)nrecv, (size_t)pos);
+                if (pos < 0 || pos + 10 > nrecv) break;
+
+                uint16_t rr_type = ((uint16_t)resp[pos] << 8) | resp[pos + 1];
+                uint16_t rdlength = ((uint16_t)resp[pos + 8] << 8) | resp[pos + 9];
+                pos += 10;
+
+                if (rr_type == DNS_TYPE_A && rdlength == 4 && pos + 4 <= nrecv) {
+                    result = ((uint32_t)resp[pos] << 24) |
+                             ((uint32_t)resp[pos + 1] << 16) |
+                             ((uint32_t)resp[pos + 2] << 8) |
+                             (uint32_t)resp[pos + 3];
+                    break;
+                }
+                if (pos + (int)rdlength > (int)nrecv) break;
+                pos += rdlength;
+            }
+            break;
+        }
+    }
+
+    close(fd);
+    return result;
+}
+
 int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
     if (argc < 2) {
-        printf("Usage: ping <ip_address> [count]\r\n");
+        printf("Usage: ping <host> [count]\r\n");
         return 1;
     }
 
-    uint32_t dst_ip_host = parse_ipv4(argv[1]);
+    const char* target = argv[1];
+    uint32_t dst_ip_host = parse_ipv4(target);
     if (dst_ip_host == 0) {
-        printf("ping: invalid IP address '%s'\r\n", argv[1]);
-        return 1;
+        dst_ip_host = dns_resolve(target);
+        if (dst_ip_host == 0) {
+            printf("ping: cannot resolve '%s'\r\n", target);
+            return 1;
+        }
     }
 
     int count = 4;
@@ -114,7 +267,11 @@ int main(int argc, char* argv[]) {
 
     char ip_str[32];
     format_ip(dst_ip_host, ip_str, sizeof(ip_str));
-    printf("PING %s: %d data bytes\r\n", ip_str, ICMP_PAYLOAD_LEN);
+    if (parse_ipv4(target) != 0) {
+        printf("PING %s: %d data bytes\r\n", ip_str, ICMP_PAYLOAD_LEN);
+    } else {
+        printf("PING %s (%s): %d data bytes\r\n", target, ip_str, ICMP_PAYLOAD_LEN);
+    }
 
     struct sockaddr_in dst;
     memset(&dst, 0, sizeof(dst));

@@ -20,7 +20,7 @@ constexpr uint64_t AF_INET     = 2;
 constexpr uint64_t SOCK_STREAM = 1;
 constexpr uint64_t SOCK_DGRAM  = 2;
 constexpr uint64_t IPPROTO_ICMP = 1;
-constexpr uint64_t MSG_DONTWAIT = 0x40;
+constexpr uint64_t IPPROTO_UDP  = 17;
 constexpr size_t   SUN_PATH_OFFSET = 2;
 constexpr size_t   SENDTO_MAX_ADDR = 128;
 constexpr size_t   SENDTO_MAX_BUF  = 4096;
@@ -95,6 +95,8 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
     } else if (domain == AF_INET) {
         if (type == SOCK_DGRAM && protocol == IPPROTO_ICMP) {
             rc = net::create_inet_icmp_socket(&obj);
+        } else if (type == SOCK_DGRAM && (protocol == 0 || protocol == IPPROTO_UDP)) {
+            rc = net::create_inet_udp_socket(&obj);
         } else {
             return syscall::EPROTONOSUPPORT;
         }
