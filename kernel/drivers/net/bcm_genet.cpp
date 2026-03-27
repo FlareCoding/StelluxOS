@@ -75,7 +75,7 @@ void bcm_genet_driver::reg_write(uint32_t offset, uint32_t value) {
 // 100 iterations ≈ ~0.1-1μs depending on CPU frequency.
 static void delay_us(uint32_t us) {
     for (uint32_t i = 0; i < us; i++) {
-        for (volatile uint32_t j = 0; j < 100; j++) {
+        for (uint32_t j = 0; j < 100; j++) {
             cpu::relax();
         }
     }
@@ -779,7 +779,7 @@ void bcm_genet_driver::teardown_interrupts() {
     m_has_irq = false;
 }
 
-void bcm_genet_driver::isr(uint32_t irq, void* context) {
+void bcm_genet_driver::isr(uint32_t /* irq */, void* context) {
     auto* drv = static_cast<bcm_genet_driver*>(context);
     if (!drv) return;
 

@@ -73,17 +73,24 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
     uint32_t irqs[2] = { 0, 0 };
 
     // Try FDT first
+    bool found = false;
     int32_t fdt_rc = fdt::init();
     if (fdt_rc == fdt::OK) {
         int32_t node = fdt::find_compatible("brcm,bcm2711-genet-v5");
         if (node >= 0) {
+            found = true;
             fdt::get_reg(node, &reg_phys, &reg_size);
 
             int32_t nirqs = fdt::get_interrupts(node, irqs, 2);
             if (nirqs < 2) {
-                // Fall back to known IRQ numbers
                 irqs[0] = BCM2711_GENET_IRQ0;
                 irqs[1] = BCM2711_GENET_IRQ1;
+            }
+
+            // Use known addresses as fallback if FDT reg was empty
+            if (reg_phys == 0) {
+                reg_phys = BCM2711_GENET_BASE;
+                reg_size = BCM2711_GENET_SIZE;
             }
 
             log::info("platform: found GENET via FDT at 0x%lx size 0x%lx, IRQs %u,%u",
@@ -91,13 +98,7 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
         }
     }
 
-    // Fall back to known addresses on RPi4 if FDT didn't provide them
-    if (reg_phys == 0) {
-        // Check if we're on an RPi4 via ACPI OEM ID
-        // (The PCI code already does this check — reuse the pattern)
-        // For now, only try if FDT found a genet node but couldn't get reg
-        // or if we detect RPi4 through other means.
-        // We won't hardcode-probe blindly on non-RPi4 hardware.
+    if (!found) {
         return -1;
     }
 
