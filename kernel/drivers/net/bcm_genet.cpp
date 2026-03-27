@@ -433,7 +433,7 @@ int32_t bcm_genet_driver::dma_alloc() {
     RUN_ELEVATED(
         rc = vmm::alloc_contiguous(
             rx_pages, pmm::ZONE_DMA32,
-            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_DMA,
+            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_DMA,
             vmm::ALLOC_ZERO, kva::tag::generic,
             m_rx_buf_vaddr, m_rx_buf_phys)
     );
@@ -449,7 +449,7 @@ int32_t bcm_genet_driver::dma_alloc() {
     RUN_ELEVATED(
         rc = vmm::alloc_contiguous(
             tx_pages, pmm::ZONE_DMA32,
-            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_DMA,
+            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_DMA,
             vmm::ALLOC_ZERO, kva::tag::generic,
             m_tx_buf_vaddr, m_tx_buf_phys)
     );

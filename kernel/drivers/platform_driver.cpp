@@ -18,10 +18,14 @@ __PRIVILEGED_CODE uintptr_t platform_driver::map_regs() {
         return m_reg_va; // already mapped
     }
 
+    // Map as user-accessible so the driver task (which runs at EL0/Ring 3)
+    // can access MMIO registers directly without RUN_ELEVATED on every
+    // register read/write. This matches how device MMIO is typically
+    // handled — the memory region is not security-sensitive kernel data.
     int32_t rc = vmm::map_device(
         static_cast<pmm::phys_addr_t>(m_reg_phys),
         m_reg_size,
-        paging::PAGE_READ | paging::PAGE_WRITE,
+        paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER,
         m_reg_map_base,
         m_reg_va);
 
