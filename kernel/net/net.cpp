@@ -4,6 +4,7 @@
 #include "net/ipv4.h"
 #include "net/arp.h"
 #include "net/loopback.h"
+#include "net/route.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
@@ -50,6 +51,7 @@ __PRIVILEGED_DATA static sync::spinlock g_deferred_tx_lock = sync::SPINLOCK_INIT
 
 __PRIVILEGED_CODE int32_t init() {
     arp_init();
+    route_init();
 
     int32_t lo_rc = loopback_init();
     if (lo_rc != OK) {
@@ -115,10 +117,22 @@ int32_t unregister_netif(netif* iface) {
 int32_t configure(netif* iface, uint32_t ip, uint32_t netmask, uint32_t gateway) {
     if (!iface) return ERR_INVAL;
 
+    // Clear any existing routes for this interface (handles reconfiguration).
+    // Also remove LOCAL routes that were created for this interface's old IP
+    // (those routes point to loopback, not this interface, so route_del_iface
+    // alone wouldn't remove them).
+    if (iface->configured && iface->ipv4_addr != 0) {
+        route_del_host(iface->ipv4_addr);
+    }
+    route_del_iface(iface);
+
     iface->ipv4_addr = ip;
     iface->ipv4_netmask = netmask;
     iface->ipv4_gateway = gateway;
     iface->configured = true;
+
+    // Auto-populate routes for this interface
+    route_add_interface_routes(iface);
 
     log::info("net: %s configured %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u",
               iface->name,

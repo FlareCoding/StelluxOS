@@ -4,6 +4,7 @@
 #include "net/icmp.h"
 #include "net/udp.h"
 #include "net/loopback.h"
+#include "net/route.h"
 #include "net/byteorder.h"
 #include "net/checksum.h"
 #include "common/logging.h"
@@ -94,21 +95,33 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
         return ERR_INVAL;
     }
 
-    // Determine the outgoing interface.
-    // For loopback destinations (127.0.0.0/8), always route through the
-    // loopback interface, regardless of what the caller specified.
-    netif* out_iface = iface;
-    bool via_loopback = ((dst_ip >> 24) == 127);
-
-    if (via_loopback) {
-        out_iface = get_loopback_netif();
-        if (!out_iface || !out_iface->configured) {
+    // Route lookup determines outgoing interface and next hop.
+    route_result rt;
+    int32_t rt_rc = route_lookup(dst_ip, &rt);
+    if (rt_rc != OK) {
+        // No route found — if caller specified an interface, fall back
+        // to direct delivery on that interface (preserves behavior for
+        // callers that set up interfaces without configuring routes).
+        if (!iface || !iface->configured) {
             return ERR_NOIF;
         }
+        rt.iface = iface;
+        rt.next_hop = dst_ip;
+        rt.type = route_type::CONNECTED;
+    }
+
+    // Determine the outgoing interface:
+    // - For LOCAL routes, always use the route's interface (loopback)
+    //   regardless of what the caller specified
+    // - For other routes, prefer the caller's interface if specified
+    //   (e.g. deferred TX entries store a specific interface)
+    netif* out_iface = rt.iface;
+    if (iface && rt.type != route_type::LOCAL) {
+        out_iface = iface;
     }
 
     if (!out_iface || !out_iface->configured) {
-        return ERR_INVAL;
+        return ERR_NOIF;
     }
 
     size_t total_len = sizeof(ipv4_header) + payload_len;
@@ -132,26 +145,19 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
 
     string::memcpy(packet + sizeof(ipv4_header), payload, payload_len);
 
-    // Loopback delivery — no ARP needed. Use the interface's own MAC as
-    // destination (all zeros for lo). This applies to any packet sent
-    // through the loopback interface, whether the destination is 127.x.x.x
-    // or an interface's own IP.
-    if (via_loopback || string::strncmp(out_iface->name, "lo", 3) == 0) {
+    // Local or loopback delivery — no ARP needed. Use the interface's
+    // own MAC as destination (all zeros for lo).
+    bool is_loopback_iface = (string::strncmp(out_iface->name, "lo", 3) == 0);
+    if (rt.type == route_type::LOCAL || is_loopback_iface) {
         int32_t rc = eth_send(out_iface, out_iface->mac, ETH_TYPE_IPV4,
                               packet, total_len);
         heap::kfree(packet);
         return rc;
     }
 
-    // Normal (non-loopback) path: determine next hop and resolve via ARP
-    uint32_t next_hop = dst_ip;
-    if ((dst_ip & out_iface->ipv4_netmask) !=
-        (out_iface->ipv4_addr & out_iface->ipv4_netmask)) {
-        next_hop = out_iface->ipv4_gateway;
-    }
-
+    // For CONNECTED and GATEWAY routes, resolve the next hop via ARP
     uint8_t dst_mac[MAC_ADDR_LEN];
-    int32_t arp_rc = arp_resolve(out_iface, next_hop, dst_mac);
+    int32_t arp_rc = arp_resolve(out_iface, rt.next_hop, dst_mac);
     if (arp_rc != OK) {
         heap::kfree(packet);
         return arp_rc;

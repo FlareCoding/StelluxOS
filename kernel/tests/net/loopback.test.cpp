@@ -19,11 +19,11 @@
 
 TEST_SUITE(loopback_test);
 
-namespace {
+// Shared initialization flag — used by both loopback_test and route_test
+// since tests run before boot code reaches net::init().
+bool g_net_initialized = false;
 
-// We must call net::init() ourselves because tests run before
-// the boot code reaches net::init().
-static bool g_net_initialized = false;
+namespace {
 
 int32_t loopback_before_all() {
     if (!g_net_initialized) {
