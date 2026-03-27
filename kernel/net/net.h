@@ -56,7 +56,6 @@ struct netif {
 
 /**
  * Initialize the network subsystem.
- * Registers /dev/net0 in devfs.
  * Must be called before drivers::init() so interfaces can register.
  * @note Privilege: **required**
  */

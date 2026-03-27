@@ -44,8 +44,6 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
     if (total_len < header_len) return;
 
     // Verify header checksum
-    uint16_t saved_cksum = hdr->checksum;
-    // Compute checksum over the header with checksum field included
     uint16_t computed = inet_checksum(data, header_len);
     if (computed != 0) {
         log::debug("ipv4: bad header checksum, dropping");
