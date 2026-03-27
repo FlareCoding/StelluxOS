@@ -404,8 +404,6 @@ int32_t virtio_net_driver::attach() {
         return rc;
     }
 
-    fill_rx_queue();
-
     // Set up MSI-X interrupts (fall back to MSI, then polling)
     int32_t irq_rc = setup_msix(2);
     if (irq_rc != 0) {
@@ -433,6 +431,10 @@ int32_t virtio_net_driver::attach() {
 
     // Mark device as ready
     write_status(read_status() | VIRTIO_STATUS_DRIVER_OK);
+
+    // Post RX buffers after DRIVER_OK — the virtio spec (§3.1.1) forbids
+    // sending buffer available notifications before DRIVER_OK is set.
+    fill_rx_queue();
 
     log::info("virtio-net: DRIVER_OK, device is live");
 
