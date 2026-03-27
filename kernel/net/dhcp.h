@@ -144,6 +144,21 @@ bool dhcp_parse_response(const dhcp_packet* pkt, size_t pkt_len,
                          dhcp_config* out);
 
 // ============================================================================
+// DHCP Receive Hook (called by udp_recv, runs at Ring 0)
+// ============================================================================
+
+/**
+ * Called by udp_recv() when a UDP packet arrives on port 68 (DHCP client).
+ * Copies the UDP payload (DHCP message) into an internal static buffer
+ * for the DHCP client to poll. Uses unprivileged data so it is callable
+ * from any privilege level.
+ *
+ * @param data UDP payload (DHCP packet, after UDP header is stripped).
+ * @param len  Length of the DHCP payload.
+ */
+void dhcp_rx_hook(const uint8_t* data, size_t len);
+
+// ============================================================================
 // DHCP Client API
 // ============================================================================
 
