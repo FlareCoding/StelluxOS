@@ -63,14 +63,6 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
     const uint8_t* payload = data + header_len;
     size_t payload_len = total_len - header_len;
 
-    log::info("TRACE ipv4_recv: proto=%u src=%u.%u.%u.%u dst=%u.%u.%u.%u len=%u",
-              hdr->protocol,
-              (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-              (src_ip >> 8) & 0xFF, src_ip & 0xFF,
-              (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
-              (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
-              static_cast<uint32_t>(payload_len));
-
     switch (hdr->protocol) {
     case IPV4_PROTO_ICMP:
         icmp_recv(iface, src_ip, payload, payload_len);
@@ -85,12 +77,6 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
 
 int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
                   const uint8_t* payload, size_t payload_len) {
-    log::info("TRACE ipv4_send: proto=%u dst=%u.%u.%u.%u len=%u",
-              protocol,
-              (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
-              (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
-              static_cast<uint32_t>(payload_len));
-
     if (!iface || !iface->configured || !payload) {
         return ERR_INVAL;
     }
@@ -133,7 +119,6 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     }
 
     int32_t rc = eth_send(iface, dst_mac, ETH_TYPE_IPV4, packet, total_len);
-    log::info("TRACE ipv4_send: eth_send rc=%d", rc);
     heap::kfree(packet);
     return rc;
 }

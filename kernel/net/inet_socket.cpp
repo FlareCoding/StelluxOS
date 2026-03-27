@@ -48,27 +48,18 @@ __PRIVILEGED_CODE static ssize_t inet_sendto(
 
     uint32_t dst_ip = ntohl(addr->sin_addr);
 
-    log::info("TRACE icmp_sendto: dst=%u.%u.%u.%u len=%u",
-              (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
-              (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
-              static_cast<uint32_t>(count));
-
     netif* iface = get_default_netif();
     if (!iface || !iface->configured) {
-        log::info("TRACE icmp_sendto: no configured iface");
         return resource::ERR_IO;
     }
 
     // Trigger RX processing so pending incoming packets are delivered
     if (iface->poll) {
-        log::info("TRACE icmp_sendto: polling before send");
         RUN_ELEVATED(iface->poll(iface));
-        log::info("TRACE icmp_sendto: poll done");
     }
 
     int32_t rc = ipv4_send(iface, dst_ip, IPV4_PROTO_ICMP,
                            static_cast<const uint8_t*>(ksrc), count);
-    log::info("TRACE icmp_sendto: ipv4_send rc=%d", rc);
     if (rc != OK) {
         return resource::ERR_IO;
     }
@@ -87,14 +78,10 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
     auto* sock = static_cast<inet_socket*>(obj->impl);
     bool nonblock = (flags & 0x40) != 0; // MSG_DONTWAIT
 
-    log::info("TRACE icmp_recvfrom: enter nonblock=%d", nonblock ? 1 : 0);
-
     // Trigger RX processing to deliver pending packets
     netif* iface = get_default_netif();
     if (iface && iface->poll) {
-        log::info("TRACE icmp_recvfrom: polling");
         RUN_ELEVATED(iface->poll(iface));
-        log::info("TRACE icmp_recvfrom: poll done");
     }
 
     // The header read may block if no data is available. Since entries
@@ -104,9 +91,7 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
     // read/write, and the atomic write ensures the header and payload
     // are always a complete unit.
     uint8_t hdr[RX_ENTRY_HEADER];
-    log::info("TRACE icmp_recvfrom: about to ring_buffer_read (WILL BLOCK if empty)");
     ssize_t hdr_rc = ring_buffer_read(sock->rx_buf, hdr, RX_ENTRY_HEADER, nonblock);
-    log::info("TRACE icmp_recvfrom: ring_buffer_read returned %d", static_cast<int>(hdr_rc));
     if (hdr_rc == RB_ERR_AGAIN) {
         return resource::ERR_AGAIN;
     }

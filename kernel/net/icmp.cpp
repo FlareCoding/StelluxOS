@@ -36,23 +36,14 @@ static void deliver_to_sockets(uint32_t src_ip, const uint8_t* data, size_t len)
     string::memcpy(entry + 4, &payload_len, 2);
     string::memcpy(entry + RX_ENTRY_HEADER, data, len);
 
-    uint32_t sock_count = 0;
-    uint32_t write_ok = 0;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_icmp_sock_lock);
         for (inet_socket* s = g_icmp_sock_list; s; s = s->next) {
-            sock_count++;
             if (s->rx_buf) {
-                ssize_t wrc = ring_buffer_write_all(s->rx_buf, entry, entry_len, true);
-                if (wrc > 0) write_ok++;
+                (void)ring_buffer_write_all(s->rx_buf, entry, entry_len, true);
             }
         }
     });
-
-    log::info("TRACE icmp_deliver: src=%u.%u.%u.%u len=%u socks=%u written=%u",
-              (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-              (src_ip >> 8) & 0xFF, src_ip & 0xFF,
-              static_cast<uint32_t>(len), sock_count, write_ok);
 
     heap::kfree(entry);
 }
@@ -69,17 +60,8 @@ void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len) {
     // Verify ICMP checksum
     uint16_t computed = inet_checksum(data, len);
     if (computed != 0) {
-        log::info("TRACE icmp_recv: BAD CHECKSUM from %u.%u.%u.%u type=%u",
-                  (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-                  (src_ip >> 8) & 0xFF, src_ip & 0xFF, hdr->type);
         return;
     }
-
-    log::info("TRACE icmp_recv: type=%u code=%u src=%u.%u.%u.%u len=%u",
-              hdr->type, hdr->code,
-              (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-              (src_ip >> 8) & 0xFF, src_ip & 0xFF,
-              static_cast<uint32_t>(len));
 
     if (hdr->type == ICMP_TYPE_ECHO_REQUEST && hdr->code == 0) {
         // Build the echo reply and queue it for deferred transmission.
