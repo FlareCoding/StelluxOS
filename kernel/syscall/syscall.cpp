@@ -6,11 +6,15 @@
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 
+constexpr uint32_t ELEVATION_CONTEXT_MASK =
+    sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL | sched::TASK_FLAG_IN_IRQ;
+
 __PRIVILEGED_CODE static inline void restore_post_syscall_elevation_state() {
     // Return-boundary restoration: select runtime elevation based on the
-    // currently selected task's privilege-mode bit.
+    // currently selected task's privilege-mode bit, plus any active
+    // elevated context (in-syscall or in-IRQ).
     this_cpu(percpu_is_elevated) =
-        (this_cpu(current_task_exec)->flags & sched::TASK_FLAG_ELEVATED) != 0;
+        (this_cpu(current_task_exec)->flags & ELEVATION_CONTEXT_MASK) != 0;
 }
 
 /**
@@ -27,6 +31,9 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
 ) {
     // Mark as elevated so RUN_ELEVATED inside handlers skips nested SYSCALL.
     // The SYSCALL entry already switched to Ring 0 and the system stack.
+    // IN_SYSCALL ensures percpu_is_elevated is correctly restored if the
+    // handler sleeps and a context switch occurs mid-syscall.
+    this_cpu(current_task_exec)->flags |= sched::TASK_FLAG_IN_SYSCALL;
     this_cpu(percpu_is_elevated) = true;
 
     int64_t result;
@@ -45,6 +52,7 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
 
     // Return-boundary restore: dynamic runtime elevation follows the selected
     // task mode once syscall handling and switch teardown are complete.
+    this_cpu(current_task_exec)->flags &= ~sched::TASK_FLAG_IN_SYSCALL;
     restore_post_syscall_elevation_state();
 
     return result;
