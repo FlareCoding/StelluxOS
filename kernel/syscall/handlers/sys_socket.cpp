@@ -1,6 +1,5 @@
 #include "syscall/handlers/sys_socket.h"
 
-#include "common/logging.h"
 #include "socket/unix_socket.h"
 #include "socket/listener.h"
 #include "net/inet_socket.h"
@@ -80,10 +79,6 @@ int64_t parse_sockaddr_un(uint64_t addr, uint64_t addrlen, char* kpath_out) {
 } // anonymous namespace
 
 DEFINE_SYSCALL3(socket, domain, type, protocol) {
-    log::info("TRACE sys_socket: domain=%u type=%u proto=%u",
-              static_cast<uint32_t>(domain), static_cast<uint32_t>(type),
-              static_cast<uint32_t>(protocol));
-
     sched::task* task = sched::current();
     if (!task) {
         return syscall::EIO;
@@ -537,8 +532,6 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
 }
 
 DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
-    log::info("TRACE sys_sendto: fd=%d len=%u flags=0x%x", static_cast<int>(fd),
-              static_cast<uint32_t>(len), static_cast<uint32_t>(flags));
     if (buf == 0 || len == 0) {
         return syscall::EINVAL;
     }
@@ -602,7 +595,6 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
     ssize_t result = obj->ops->sendto(obj, kbuf, data_len,
                                        static_cast<uint32_t>(flags),
                                        kaddr, addr_len);
-    log::info("TRACE sys_sendto: ops->sendto returned %d", static_cast<int>(result));
     heap::kfree(kbuf);
     resource::resource_release(obj);
 
@@ -613,8 +605,6 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
 }
 
 DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
-    log::info("TRACE sys_recvfrom: fd=%d len=%u flags=0x%x", static_cast<int>(fd),
-              static_cast<uint32_t>(len), static_cast<uint32_t>(flags));
     if (buf == 0 || len == 0) {
         return syscall::EINVAL;
     }
@@ -654,7 +644,6 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
     ssize_t result = obj->ops->recvfrom(obj, kbuf, data_len,
                                          static_cast<uint32_t>(flags),
                                          kaddr, &kaddr_len);
-    log::info("TRACE sys_recvfrom: ops->recvfrom returned %d", static_cast<int>(result));
 
     if (result < 0) {
         heap::kfree(kbuf);
