@@ -580,10 +580,13 @@ void virtio_net_driver::run() {
     bool has_msi = false;
     RUN_ELEVATED(has_msi = m_dev->get_msi_state().mode != pci::MSI_MODE_NONE);
 
+    uint32_t loop_iter = 0;
     while (true) {
         // Wait for interrupt or poll periodically
         if (has_msi) {
+            log::info("TRACE virtio_run: iter=%u waiting for MSI event...", loop_iter);
             wait_for_event();
+            log::info("TRACE virtio_run: iter=%u MSI event received", loop_iter);
         } else {
             RUN_ELEVATED(sched::sleep_ms(1));
         }
@@ -596,6 +599,9 @@ void virtio_net_driver::run() {
             drain_rx_locked(batch);
             process_tx_completions();
         });
+        if (batch.count > 0) {
+            log::info("TRACE virtio_run: iter=%u drained %u RX frames", loop_iter, batch.count);
+        }
         RUN_ELEVATED(deliver_rx_batch(batch));
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
@@ -606,6 +612,7 @@ void virtio_net_driver::run() {
         // so ipv4_send and ARP resolution are safe — no recursion into
         // deliver_rx_batch.
         RUN_ELEVATED(net::drain_deferred_tx());
+        loop_iter++;
     }
 }
 
@@ -675,6 +682,9 @@ void virtio_net_driver::poll_callback(net::netif* iface) {
         drv->drain_rx_locked(batch);
         drv->process_tx_completions();
     });
+    if (batch.count > 0) {
+        log::info("TRACE poll_cb: drained %u RX frames", batch.count);
+    }
     RUN_ELEVATED(drv->deliver_rx_batch(batch));
     RUN_ELEVATED({
         sync::irq_lock_guard guard(drv->m_vq_lock);

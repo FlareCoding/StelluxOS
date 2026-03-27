@@ -152,8 +152,15 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
 
     // Check cache first
     if (arp_table_lookup(target_ip, out_mac)) {
+        log::info("TRACE arp_resolve: cache HIT for %u.%u.%u.%u",
+                  (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
+                  (target_ip >> 8) & 0xFF, target_ip & 0xFF);
         return OK;
     }
+
+    log::info("TRACE arp_resolve: cache MISS for %u.%u.%u.%u, sending request",
+              (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
+              (target_ip >> 8) & 0xFF, target_ip & 0xFF);
 
     // Sleep between polls so the scheduler can run other tasks and interrupts can fire
     constexpr uint32_t POLLS_PER_ATTEMPT = 100;
@@ -172,6 +179,7 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
             });
 
             if (arp_table_lookup(target_ip, out_mac)) {
+                log::info("TRACE arp_resolve: resolved after %u polls", poll + 1);
                 return OK;
             }
         }
