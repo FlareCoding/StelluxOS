@@ -46,8 +46,8 @@ static dhcp_rx_context g_dhcp_rx = {};
 // interrupt-driven path. NOT __PRIVILEGED_CODE because the buffer
 // is in regular .bss (accessible from both Ring 0 and Ring 3).
 void dhcp_rx_hook(const uint8_t* data, size_t len) {
-    if (!g_dhcp_rx.active) return;
-    if (g_dhcp_rx.ready) return; // previous packet not consumed yet
+    if (!__atomic_load_n(&g_dhcp_rx.active, __ATOMIC_ACQUIRE)) return;
+    if (__atomic_load_n(&g_dhcp_rx.ready, __ATOMIC_ACQUIRE)) return;
 
     size_t copy_len = len < DHCP_PACKET_MAX ? len : DHCP_PACKET_MAX;
     string::memcpy(g_dhcp_rx.buffer, data, copy_len);
@@ -633,8 +633,8 @@ int32_t dhcp_configure(netif* iface) {
                   (dns >> 8) & 0xFF, dns & 0xFF,
                   ack.lease_time ? ack.lease_time : offer.lease_time);
 
-        configure(iface, ip, mask, gw);
         iface->ipv4_dns = dns;
+        configure(iface, ip, mask, gw);
 
         result = OK;
         break;
