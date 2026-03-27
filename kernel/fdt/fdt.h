@@ -63,13 +63,8 @@ __PRIVILEGED_CODE int32_t get_reg(int32_t node_offset,
                                   uint64_t* out_base, uint64_t* out_size);
 
 /**
- * Read GIC SPI interrupt numbers from a node's "interrupts" property.
- * The standard GIC interrupt-cell format is { type spi_num flags }.
- * Only SPI (type=0) interrupts are extracted.
- * @param node_offset  Node offset returned by find_compatible().
- * @param out_irqs     Array to receive GIC IRQ numbers (SPI + 32).
- * @param max_irqs     Maximum number of entries in out_irqs.
- * @return Number of IRQs found, or negative error code.
+ * Read GIC interrupt numbers from a node's "interrupts" property.
+ * Returns the number of IRQs found, or a negative error code.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t get_interrupts(int32_t node_offset,

@@ -12,11 +12,9 @@ namespace drivers {
 /**
  * BCM GENET v5 Gigabit Ethernet driver for Raspberry Pi 4.
  *
- * Platform device discovered via FDT (compatible "brcm,bcm2711-genet-v5").
- * Uses MMIO registers, DMA descriptor rings, MDIO bus for PHY management,
- * and GIC SPI interrupts.
- *
- * Integrates with the net::netif abstraction — same interface as virtio-net.
+ * Platform device discovered via FDT (compatible "brcm,bcm2711-genet-v5")
+ * or ACPI OEM detection. Uses MMIO registers, DMA descriptor rings, MDIO
+ * bus for PHY management, and GIC SPI interrupts.
  */
 class bcm_genet_driver : public platform_driver {
 public:
@@ -28,11 +26,11 @@ public:
     void run() override;
 
 private:
-    // ===== Register access =====
+    // Register access
     uint32_t reg_read(uint32_t offset);
     void reg_write(uint32_t offset, uint32_t value);
 
-    // ===== MDIO / PHY =====
+    // MDIO / PHY
     int32_t mdio_read(uint8_t phy_addr, uint8_t reg, uint16_t* out);
     int32_t mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t data);
     int32_t phy_detect();
@@ -42,13 +40,13 @@ private:
     int32_t phy_update_link();
     void phy_configure_mac(phy::phy_speed speed, phy::phy_duplex duplex);
 
-    // ===== Controller init / reset =====
+    // Controller init / reset
     void genet_reset();
     void read_mac_address();
     void write_mac_address();
     void set_phy_mode();
 
-    // ===== DMA =====
+    // DMA
     int32_t dma_alloc();
     void dma_free();
     void dma_init_rings();
@@ -56,33 +54,31 @@ private:
     void dma_enable_tx_rx();
     void dma_disable_tx_rx();
 
-    // ===== TX path =====
+    // TX path
     static int32_t tx_callback(net::netif* iface, const uint8_t* frame, size_t len);
     void process_tx_completions();
 
-    // ===== RX path =====
+    // RX path
     void process_rx();
     void rx_remap_descriptor(uint16_t desc_idx);
 
-    // ===== Interrupts =====
+    // Interrupts
     int32_t setup_interrupts();
     void teardown_interrupts();
     static void isr(uint32_t irq, void* context);
     void enable_interrupts();
     void disable_interrupts();
 
-    // ===== Net interface callbacks =====
+    // Net interface callbacks
     static bool link_callback(net::netif* iface);
     static void poll_callback(net::netif* iface);
 
-    // ===== MAC filter =====
+    // MAC filter
     void set_promisc(bool enable);
     void setup_rx_filter();
 
-    // ===== Debug =====
+    // Debug
     void dump_state();
-
-    // ===== Member data =====
 
     // PHY state
     uint8_t          m_phy_addr;

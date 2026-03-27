@@ -6,13 +6,6 @@
  *
  * Used in BCM2711 (Raspberry Pi 4). These registers are MMIO-mapped starting
  * at the controller base address (0xfd580000 on RPi4, 64KB region).
- *
- * Cross-referenced against:
- *   - EDK2 BcmGenetDxe.h
- *   - FreeBSD if_genetreg.h
- *   - Linux bcmgenet.h
- *
- * All three sources agree on the offsets below.
  */
 
 #include "common/types.h"
@@ -49,7 +42,7 @@ constexpr uint32_t  EXT_RGMII_OOB_OOB_DIS     = (1u << 5);
 constexpr uint32_t  EXT_RGMII_OOB_RGMII_LINK  = (1u << 4);
 
 // ============================================================================
-// Interrupt registers (INTRL2 bank 0 — CPU interrupts)
+// Interrupt registers (INTRL2 bank 0, CPU interrupts)
 // ============================================================================
 
 constexpr uint32_t INTRL2_CPU_STAT           = 0x200;
@@ -146,10 +139,10 @@ inline constexpr uint32_t UMAC_MDF_ADDR1(uint32_t n) {
 // ============================================================================
 // DMA descriptor layout
 //
-// Descriptors are MMIO-mapped at RX_BASE/TX_BASE. Each descriptor is 12 bytes:
-//   [0x00] STATUS   — length, flags
-//   [0x04] ADDR_LO  — low 32 bits of buffer physical address
-//   [0x08] ADDR_HI  — high 32 bits of buffer physical address
+// Descriptors are MMIO-mapped at RX_BASE/TX_BASE. Each is 12 bytes:
+//   [0x00] STATUS   - length and flags
+//   [0x04] ADDR_LO  - low 32 bits of buffer physical address
+//   [0x08] ADDR_HI  - high 32 bits of buffer physical address
 // ============================================================================
 
 constexpr uint32_t DMA_DESC_COUNT            = 256;
@@ -216,7 +209,7 @@ constexpr uint32_t TX_DESC_CRC               = (1u << 6);
 constexpr uint32_t TX_DESC_CKSUM             = (1u << 4);
 
 // ============================================================================
-// DMA ring registers — per-queue
+// DMA ring registers (per-queue)
 //
 // Each queue has a 0x40-byte control block. We only use the default queue (16).
 // ============================================================================

@@ -2,10 +2,8 @@
 #define STELLUX_DRIVERS_NET_PHY_REGS_H
 
 /**
- * Standard IEEE 802.3 MII PHY registers + Broadcom BCM54213PE specific
- * shadow registers used for RGMII clock delay configuration.
- *
- * Cross-referenced against EDK2 GenericPhy.h and BcmGenetDxe.h.
+ * Standard IEEE 802.3 MII PHY registers and Broadcom BCM54213PE
+ * shadow registers for RGMII clock delay configuration.
  */
 
 #include "common/types.h"

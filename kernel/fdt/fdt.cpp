@@ -322,11 +322,8 @@ __PRIVILEGED_CODE int32_t get_interrupts(int32_t node_offset,
                                      "interrupts", &len);
     if (!data) return ERR_NOT_FOUND;
 
-    // Standard GIC interrupt cells: 3 cells per interrupt
-    //   cell 0: type (0 = SPI, 1 = PPI)
-    //   cell 1: interrupt number (SPI number for type 0)
-    //   cell 2: flags (trigger type, etc.)
-    // GIC SPI numbers map to GIC IRQ IDs as: SPI N = IRQ (N + 32)
+    // GIC interrupt cells: 3 cells each (type, number, flags).
+    // SPI N maps to GIC IRQ (N + 32), PPI N maps to (N + 16).
     constexpr uint32_t GIC_SPI_OFFSET = 32;
     constexpr uint32_t CELLS_PER_IRQ = 3;
     constexpr uint32_t BYTES_PER_IRQ = CELLS_PER_IRQ * 4;

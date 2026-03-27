@@ -53,7 +53,6 @@ __PRIVILEGED_CODE bool dispatch(uint32_t irq) {
         return false;
     }
 
-    // Acquire fence ensures we see the context written before fn.
     irq_handler_fn fn = g_irq_table[irq].fn;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 

@@ -20,10 +20,7 @@ __PRIVILEGED_CODE uintptr_t platform_driver::map_regs() {
         return m_reg_va; // already mapped
     }
 
-    // Map as user-accessible so the driver task (which runs at EL0/Ring 3)
-    // can access MMIO registers directly without RUN_ELEVATED on every
-    // register read/write. This matches how device MMIO is typically
-    // handled — the memory region is not security-sensitive kernel data.
+    // User-accessible so the driver task can access registers at EL0.
     int32_t rc = vmm::map_device(
         static_cast<pmm::phys_addr_t>(m_reg_phys),
         m_reg_size,
@@ -65,9 +62,7 @@ __PRIVILEGED_CODE void platform_driver::notify_event() {
 static void platform_task_entry(void* arg) {
     auto* drv = static_cast<platform_driver*>(arg);
 
-    // Perform hardware attach in the driver's own kernel task, not on the
-    // boot thread. This avoids blocking init/shell/DM startup during slow
-    // hardware initialization (MDIO scan, PHY reset, DMA allocation).
+    // Run attach() here (off the boot thread) to avoid blocking init.
     int32_t rc = drv->attach();
     if (rc != 0) {
         log::error("platform: %s attach failed (%d), task exiting", drv->name(), rc);
@@ -77,8 +72,7 @@ static void platform_task_entry(void* arg) {
     drv->run();
 }
 
-// Check if we're running on a Raspberry Pi 4 via ACPI FADT OEM IDs.
-// Same check used by the PCI subsystem for BCM2711 detection.
+// Detect RPi4 via ACPI FADT OEM IDs (same check as PCI subsystem).
 static bool is_rpi4() {
     const auto* fadt = acpi::find_table("FACP");
     if (!fadt) return false;
@@ -124,21 +118,16 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
     }
 
     if (!found) {
-        // FDT didn't have a GENET node. Only fall back to hardcoded
-        // addresses if we can confirm this is actually an RPi4 board.
-        // Without this check, we'd probe 0xfd580000 on QEMU virt or
-        // other aarch64 platforms where that address is unmapped.
-        if (!is_rpi4()) {
+        // No FDT node; only probe if we can confirm RPi4 via ACPI.
+        if (!is_rpi4())
             return -1;
-        }
 
         reg_phys = BCM2711_GENET_BASE;
         reg_size = BCM2711_GENET_SIZE;
         irqs[0] = BCM2711_GENET_IRQ0;
         irqs[1] = BCM2711_GENET_IRQ1;
-        log::info("platform: GENET not in FDT, RPi4 detected via ACPI OEM — "
-                  "using known BCM2711 addresses (0x%lx, IRQs %u,%u)",
-                  reg_phys, irqs[0], irqs[1]);
+        log::info("platform: GENET not in FDT, using known BCM2711 addresses "
+                  "(0x%lx, IRQs %u,%u)", reg_phys, irqs[0], irqs[1]);
     }
 
     auto* drv = create_bcm_genet(reg_phys, reg_size, irqs[0], irqs[1]);
@@ -147,9 +136,7 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
         return -1;
     }
 
-    // Spawn a kernel task for the driver. attach() runs inside the task
-    // (not here) so we don't block the boot thread during slow hardware
-    // initialization (MDIO scan, PHY reset, DMA allocation, etc.).
+    // attach() runs inside the spawned task, not on the boot thread.
     sched::task* t = sched::create_kernel_task(
         platform_task_entry, drv, drv->name());
     if (!t) {

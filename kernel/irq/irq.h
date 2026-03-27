@@ -52,41 +52,31 @@ __PRIVILEGED_CODE void unmask(uint32_t irq);
  */
 __PRIVILEGED_CODE void mask(uint32_t irq);
 
-// ============================================================================
-// Generic IRQ handler dispatch
-// ============================================================================
+// Generic IRQ handler dispatch table
 
 constexpr int32_t ERR_INVAL    = -3;
 constexpr int32_t ERR_BUSY     = -4;
 constexpr uint32_t MAX_IRQ     = 1024;
 
-/**
- * Callback signature for registered IRQ handlers.
- * Called from interrupt context with interrupts acknowledged.
- * @param irq     The interrupt number that fired.
- * @param context Opaque pointer passed during registration.
- */
 using irq_handler_fn = void (*)(uint32_t irq, void* context);
 
 /**
- * Register an IRQ handler for a specific interrupt number.
- * Only one handler per IRQ is supported; returns ERR_BUSY if already
- * registered. The handler is called from interrupt context.
+ * @brief Register an IRQ handler. One handler per IRQ number.
+ * @return OK on success, ERR_BUSY if already registered.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t register_handler(uint32_t irq, irq_handler_fn fn,
                                            void* context);
 
 /**
- * Unregister a previously registered IRQ handler.
+ * @brief Unregister an IRQ handler.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void unregister_handler(uint32_t irq);
 
 /**
- * Dispatch an interrupt to a registered handler.
- * Called from the architecture trap handler. Returns true if a handler
- * was registered and invoked, false otherwise.
+ * @brief Dispatch an interrupt to a registered handler.
+ * Called from the trap handler. Returns true if handled.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE bool dispatch(uint32_t irq);

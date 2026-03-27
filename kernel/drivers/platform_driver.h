@@ -8,15 +8,8 @@
 namespace drivers {
 
 /**
- * Base class for platform (non-PCI) device drivers.
- *
- * Platform devices are discovered via FDT or hardcoded addresses rather
- * than PCI bus enumeration. They use wired GIC SPI interrupts instead
- * of MSI/MSI-X. Examples: SoC-integrated Ethernet (BCM GENET),
- * on-chip peripherals, etc.
- *
- * Concrete platform drivers inherit from this class and implement
- * attach() and run().
+ * Base class for platform (non-PCI) device drivers discovered via
+ * FDT or hardcoded addresses. Uses wired GIC SPI interrupts.
  */
 class platform_driver : public device_driver {
 public:
@@ -74,9 +67,7 @@ protected:
 };
 
 /**
- * Initialize platform device drivers.
- * Probes FDT (and hardcoded addresses) for known platform devices,
- * instantiates matching drivers, calls attach(), and spawns kernel tasks.
+ * Probe for platform devices and spawn driver tasks.
  * Called after PCI driver init.
  * @note Privilege: **required**
  */

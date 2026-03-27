@@ -11,7 +11,6 @@
 #include "net/net.h"
 #include "net/ipv4.h"
 
-// On AArch64, include arch-specific IRQ helpers for SPI configuration.
 #if defined(__aarch64__)
 #include "irq/irq_arch.h"
 #endif
@@ -22,7 +21,7 @@ using namespace genet;
 using namespace phy;
 
 // ============================================================================
-// Construction / Factory
+// Construction / factory
 // ============================================================================
 
 bcm_genet_driver::bcm_genet_driver(uint64_t reg_phys, uint64_t reg_size,
@@ -43,7 +42,6 @@ bcm_genet_driver::bcm_genet_driver(uint64_t reg_phys, uint64_t reg_size,
     , m_tx_queued(0)
     , m_has_irq(false) {
     m_lock = sync::SPINLOCK_INIT;
-    // Zero the netif struct
     uint8_t* p = reinterpret_cast<uint8_t*>(&m_netif);
     for (size_t i = 0; i < sizeof(m_netif); i++) p[i] = 0;
 }
@@ -67,12 +65,10 @@ void bcm_genet_driver::reg_write(uint32_t offset, uint32_t value) {
 }
 
 // ============================================================================
-// MDIO bus — PHY register read/write
+// MDIO bus
 // ============================================================================
 
-// Microsecond-scale delay using cpu::relax() in a loop.
-// On AArch64, a single cpu::relax() is a YIELD which takes ~1ns.
-// 100 iterations ≈ ~0.1-1μs depending on CPU frequency.
+// Approximate microsecond-level busy-wait delay.
 static void delay_us(uint32_t us) {
     for (uint32_t i = 0; i < us; i++) {
         for (uint32_t j = 0; j < 100; j++) {
@@ -90,9 +86,8 @@ int32_t bcm_genet_driver::mdio_read(uint8_t phy_addr, uint8_t reg, uint16_t* out
     for (uint32_t retry = 0; retry < 1000; retry++) {
         uint32_t val = reg_read(MDIO_CMD);
         if ((val & MDIO_START_BUSY) == 0) {
-            if (val & MDIO_READ_FAIL) {
+            if (val & MDIO_READ_FAIL)
                 return -1;
-            }
             *out = static_cast<uint16_t>(val & MDIO_VAL_MASK);
             return 0;
         }
@@ -112,9 +107,8 @@ int32_t bcm_genet_driver::mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t dat
 
     for (uint32_t retry = 0; retry < 1000; retry++) {
         uint32_t val = reg_read(MDIO_CMD);
-        if ((val & MDIO_START_BUSY) == 0) {
+        if ((val & MDIO_START_BUSY) == 0)
             return 0;
-        }
         delay_us(10);
     }
 
@@ -123,11 +117,10 @@ int32_t bcm_genet_driver::mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t dat
 }
 
 // ============================================================================
-// PHY detection, reset, auto-negotiation, link management
+// PHY management
 // ============================================================================
 
 int32_t bcm_genet_driver::phy_detect() {
-    // Scan MDIO addresses 0-31 for a valid PHY
     for (uint8_t addr = 0; addr < 32; addr++) {
         uint16_t id1 = 0, id2 = 0;
         if (mdio_read(addr, PHYIDR1, &id1) != 0) continue;
@@ -135,33 +128,30 @@ int32_t bcm_genet_driver::phy_detect() {
 
         if (id1 != 0xFFFF && id2 != 0xFFFF && id1 != 0 && id2 != 0) {
             m_phy_addr = addr;
-            log::info("genet: PHY detected at MDIO address %u (ID: 0x%04x:0x%04x)",
+            log::info("genet: PHY at MDIO address %u (ID 0x%04x:0x%04x)",
                       addr, id1, id2);
             return 0;
         }
     }
 
-    log::error("genet: no PHY detected on MDIO bus");
+    log::error("genet: no PHY found on MDIO bus");
     return -1;
 }
 
 int32_t bcm_genet_driver::phy_reset() {
-    // Write BMCR reset bit
     int32_t rc = mdio_write(m_phy_addr, BMCR, BMCR_RESET);
     if (rc != 0) return rc;
 
-    // Poll until reset bit clears (up to 500ms)
+    // Poll until reset completes (up to 500 ms)
     for (uint32_t i = 0; i < 500; i++) {
         uint16_t bmcr = 0;
         rc = mdio_read(m_phy_addr, BMCR, &bmcr);
         if (rc != 0) return rc;
-
         if ((bmcr & BMCR_RESET) == 0) {
-            log::debug("genet: PHY reset complete after %u ms", i);
-            // Run post-reset actions for Broadcom PHY
+            log::debug("genet: PHY reset complete (%u ms)", i);
             return phy_reset_post_action();
         }
-        delay_us(1000); // 1ms
+        delay_us(1000);
     }
 
     log::error("genet: PHY reset timeout");
@@ -169,14 +159,12 @@ int32_t bcm_genet_driver::phy_reset() {
 }
 
 int32_t bcm_genet_driver::phy_reset_post_action() {
-    // Configure RGMII clock delays via Broadcom shadow registers.
-    // This is specific to the BCM54213PE PHY on RPi4.
-    // Reference: EDK2 GenetPhyResetAction()
-
+    // Configure RGMII clock delays via BCM54213PE shadow registers.
+    // RPi4 uses RGMII-RXID: enable RX skew, disable TX delay.
     int32_t rc;
     uint16_t val;
 
-    // Read AUXCTL shadow misc register
+    // Select and read AUXCTL shadow misc register
     rc = mdio_write(m_phy_addr, BRGPHY_AUXCTL,
                     BRGPHY_AUXCTL_SHADOW_MISC |
                     (BRGPHY_AUXCTL_SHADOW_MISC << BRGPHY_AUXCTL_MISC_READ_SHIFT));
@@ -186,15 +174,13 @@ int32_t bcm_genet_driver::phy_reset_post_action() {
     if (rc != 0) return rc;
 
     val &= BRGPHY_AUXCTL_MISC_DATA_MASK;
-
-    // RPi4 uses RGMII-RXID mode: enable RX skew
-    val |= BRGPHY_AUXCTL_MISC_RGMII_SKEW_EN;
+    val |= BRGPHY_AUXCTL_MISC_RGMII_SKEW_EN;  // enable RX clock skew
 
     rc = mdio_write(m_phy_addr, BRGPHY_AUXCTL,
                     BRGPHY_AUXCTL_MISC_WRITE_EN | BRGPHY_AUXCTL_SHADOW_MISC | val);
     if (rc != 0) return rc;
 
-    // Read shadow 1C clock control register
+    // Select and read shadow 1C clock alignment control register
     rc = mdio_write(m_phy_addr, BRGPHY_SHADOW_1C, BRGPHY_SHADOW_1C_CLK_CTRL);
     if (rc != 0) return rc;
 
@@ -202,15 +188,13 @@ int32_t bcm_genet_driver::phy_reset_post_action() {
     if (rc != 0) return rc;
 
     val &= BRGPHY_SHADOW_1C_DATA_MASK;
-
-    // RGMII-RXID: do NOT enable TX clock delay
-    val &= ~BRGPHY_SHADOW_1C_GTXCLK_EN;
+    val &= ~BRGPHY_SHADOW_1C_GTXCLK_EN;  // no TX clock delay for RGMII-RXID
 
     rc = mdio_write(m_phy_addr, BRGPHY_SHADOW_1C,
                     BRGPHY_SHADOW_1C_WRITE_EN | BRGPHY_SHADOW_1C_CLK_CTRL | val);
     if (rc != 0) return rc;
 
-    log::debug("genet: PHY post-reset clock delays configured (RGMII-RXID)");
+    log::debug("genet: PHY clock delays configured (RGMII-RXID)");
     return 0;
 }
 
@@ -221,26 +205,20 @@ int32_t bcm_genet_driver::phy_auto_negotiate() {
     // Advertise 10/100 capabilities
     rc = mdio_read(m_phy_addr, ANAR, &val);
     if (rc != 0) return rc;
-
-    val |= ANAR_100BASETX_FDX | ANAR_100BASETX |
-           ANAR_10BASET_FDX | ANAR_10BASET;
-
+    val |= ANAR_100BASETX_FDX | ANAR_100BASETX | ANAR_10BASET_FDX | ANAR_10BASET;
     rc = mdio_write(m_phy_addr, ANAR, val);
     if (rc != 0) return rc;
 
     // Advertise 1000 capabilities
     rc = mdio_read(m_phy_addr, GBCR, &val);
     if (rc != 0) return rc;
-
     val |= GBCR_1000BASET_FDX | GBCR_1000BASET;
-
     rc = mdio_write(m_phy_addr, GBCR, val);
     if (rc != 0) return rc;
 
-    // Enable and restart auto-negotiation
+    // Restart auto-negotiation
     rc = mdio_read(m_phy_addr, BMCR, &val);
     if (rc != 0) return rc;
-
     val |= BMCR_ANE | BMCR_RESTART_AN;
     rc = mdio_write(m_phy_addr, BMCR, val);
     if (rc != 0) return rc;
@@ -255,11 +233,9 @@ int32_t bcm_genet_driver::phy_update_link() {
     if (rc != 0) return rc;
 
     bool was_up = m_link_up;
-    m_link_up = (bmsr & BMSR_LINK_STATUS) != 0 &&
-                (bmsr & BMSR_ANEG_COMPLETE) != 0;
+    m_link_up = (bmsr & BMSR_LINK_STATUS) && (bmsr & BMSR_ANEG_COMPLETE);
 
     if (m_link_up && !was_up) {
-        // Link just came up — read negotiated speed/duplex
         uint16_t gbcr = 0, gbsr = 0, anlpar = 0, anar = 0;
         mdio_read(m_phy_addr, GBCR, &gbcr);
         mdio_read(m_phy_addr, GBSR, &gbsr);
@@ -294,37 +270,21 @@ int32_t bcm_genet_driver::phy_update_link() {
 }
 
 void bcm_genet_driver::phy_configure_mac(phy_speed speed, phy_duplex duplex) {
-    // Configure RGMII OOB control
     uint32_t oob = reg_read(EXT_RGMII_OOB_CTRL);
     oob &= ~EXT_RGMII_OOB_OOB_DIS;
-    oob |= EXT_RGMII_OOB_RGMII_LINK;
-    oob |= EXT_RGMII_OOB_RGMII_MODE;
-    // RGMII-RXID: do not disable ID mode
-    oob &= ~EXT_RGMII_OOB_ID_MODE_DIS;
+    oob |= EXT_RGMII_OOB_RGMII_LINK | EXT_RGMII_OOB_RGMII_MODE;
+    oob &= ~EXT_RGMII_OOB_ID_MODE_DIS;  // keep ID mode enabled for RGMII-RXID
     reg_write(EXT_RGMII_OOB_CTRL, oob);
 
-    // Configure UMAC speed
     uint32_t cmd = reg_read(UMAC_CMD);
     cmd &= ~UMAC_CMD_SPEED_MASK;
-
     switch (speed) {
-    case phy_speed::SPEED_1000:
-        cmd |= UMAC_CMD_SPEED_1000;
-        break;
-    case phy_speed::SPEED_100:
-        cmd |= UMAC_CMD_SPEED_100;
-        break;
-    default:
-        cmd |= UMAC_CMD_SPEED_10;
-        break;
+    case phy_speed::SPEED_1000: cmd |= UMAC_CMD_SPEED_1000; break;
+    case phy_speed::SPEED_100:  cmd |= UMAC_CMD_SPEED_100;  break;
+    default:                    cmd |= UMAC_CMD_SPEED_10;    break;
     }
-
-    if (duplex == phy_duplex::FULL) {
-        cmd &= ~UMAC_CMD_HD_EN;
-    } else {
-        cmd |= UMAC_CMD_HD_EN;
-    }
-
+    if (duplex == phy_duplex::FULL) cmd &= ~UMAC_CMD_HD_EN;
+    else                           cmd |= UMAC_CMD_HD_EN;
     reg_write(UMAC_CMD, cmd);
 }
 
@@ -333,47 +293,40 @@ void bcm_genet_driver::phy_configure_mac(phy_speed speed, phy_duplex duplex) {
 // ============================================================================
 
 void bcm_genet_driver::genet_reset() {
-    // RBUF flush reset sequence (from EDK2 GenetReset)
+    // RBUF flush
     uint32_t val = reg_read(SYS_RBUF_FLUSH_CTRL);
     val |= SYS_RBUF_FLUSH_RESET;
     reg_write(SYS_RBUF_FLUSH_CTRL, val);
     delay_us(10);
-
     val &= ~SYS_RBUF_FLUSH_RESET;
     reg_write(SYS_RBUF_FLUSH_CTRL, val);
     delay_us(10);
-
     reg_write(SYS_RBUF_FLUSH_CTRL, 0);
     delay_us(10);
 
-    // UMAC reset
+    // UMAC software reset
     reg_write(UMAC_CMD, 0);
     reg_write(UMAC_CMD, UMAC_CMD_LCL_LOOP_EN | UMAC_CMD_SW_RESET);
     delay_us(10);
     reg_write(UMAC_CMD, 0);
 
-    // Reset MIB counters
-    reg_write(UMAC_MIB_CTRL, UMAC_MIB_RESET_RUNT |
-              UMAC_MIB_RESET_RX | UMAC_MIB_RESET_TX);
+    // Clear MIB counters
+    reg_write(UMAC_MIB_CTRL,
+              UMAC_MIB_RESET_RUNT | UMAC_MIB_RESET_RX | UMAC_MIB_RESET_TX);
     reg_write(UMAC_MIB_CTRL, 0);
 
-    // Set max frame length
+    // Max frame length and buffer configuration
     reg_write(UMAC_MAX_FRAME_LEN, MAX_PACKET_SIZE);
-
-    // Enable 2-byte alignment (aligns IP headers to 4-byte boundary)
     val = reg_read(RBUF_CTRL);
-    val |= RBUF_ALIGN_2B;
+    val |= RBUF_ALIGN_2B;  // 2-byte padding so IP headers land on 4-byte boundary
     reg_write(RBUF_CTRL, val);
-
-    // Set RBUF/TBUF size control
     reg_write(RBUF_TBUF_SIZE_CTRL, 1);
 
     log::debug("genet: controller reset complete");
 }
 
 void bcm_genet_driver::read_mac_address() {
-    // Read MAC address from UMAC registers.
-    // The RPi4 UEFI firmware writes the MAC address here before OS boot.
+    // Firmware (UEFI) programs the MAC address into these registers at boot.
     uint32_t mac0 = reg_read(UMAC_MAC0);
     uint32_t mac1 = reg_read(UMAC_MAC1);
 
@@ -384,22 +337,16 @@ void bcm_genet_driver::read_mac_address() {
     m_netif.mac[4] = static_cast<uint8_t>((mac1 >> 8) & 0xFF);
     m_netif.mac[5] = static_cast<uint8_t>(mac1 & 0xFF);
 
-    // Check if MAC is valid (not all zeros or all FFs)
     bool all_zero = true, all_ff = true;
     for (int i = 0; i < 6; i++) {
         if (m_netif.mac[i] != 0x00) all_zero = false;
         if (m_netif.mac[i] != 0xFF) all_ff = false;
     }
-
     if (all_zero || all_ff) {
-        // Use a fallback MAC (locally administered)
-        m_netif.mac[0] = 0xDC;
-        m_netif.mac[1] = 0xA6;
-        m_netif.mac[2] = 0x32;
-        m_netif.mac[3] = 0x01;
-        m_netif.mac[4] = 0x02;
-        m_netif.mac[5] = 0x03;
-        log::warn("genet: invalid MAC from firmware, using fallback");
+        // Locally administered fallback
+        m_netif.mac[0] = 0xDC; m_netif.mac[1] = 0xA6; m_netif.mac[2] = 0x32;
+        m_netif.mac[3] = 0x01; m_netif.mac[4] = 0x02; m_netif.mac[5] = 0x03;
+        log::warn("genet: firmware MAC invalid, using fallback");
     }
 }
 
@@ -410,62 +357,52 @@ void bcm_genet_driver::write_mac_address() {
                     static_cast<uint32_t>(m_netif.mac[3]);
     uint32_t mac1 = (static_cast<uint32_t>(m_netif.mac[4]) << 8) |
                     static_cast<uint32_t>(m_netif.mac[5]);
-
     reg_write(UMAC_MAC0, mac0);
     reg_write(UMAC_MAC1, mac1);
 }
 
 void bcm_genet_driver::set_phy_mode() {
-    // Set port mode to external GPHY (RGMII)
     reg_write(SYS_PORT_CTRL, SYS_PORT_MODE_EXT_GPHY);
 }
 
 // ============================================================================
-// DMA — buffer allocation and ring setup
+// DMA buffer allocation and ring setup
 // ============================================================================
 
 int32_t bcm_genet_driver::dma_alloc() {
-    // Allocate RX buffer pool: DMA_DESC_COUNT × MAX_PACKET_SIZE
-    size_t rx_total = static_cast<size_t>(DMA_DESC_COUNT) * MAX_PACKET_SIZE;
-    size_t rx_pages = (rx_total + 0xFFF) / 0x1000;
+    size_t buf_total = static_cast<size_t>(DMA_DESC_COUNT) * MAX_PACKET_SIZE;
+    size_t pages = (buf_total + 0xFFF) / 0x1000;
+    constexpr auto flags = paging::PAGE_READ | paging::PAGE_WRITE |
+                           paging::PAGE_USER | paging::PAGE_DMA;
 
     int32_t rc = 0;
     RUN_ELEVATED(
-        rc = vmm::alloc_contiguous(
-            rx_pages, pmm::ZONE_DMA32,
-            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_DMA,
-            vmm::ALLOC_ZERO, kva::tag::generic,
-            m_rx_buf_vaddr, m_rx_buf_phys)
+        rc = vmm::alloc_contiguous(pages, pmm::ZONE_DMA32, flags,
+                                   vmm::ALLOC_ZERO, kva::tag::generic,
+                                   m_rx_buf_vaddr, m_rx_buf_phys)
     );
     if (rc != vmm::OK) {
-        log::error("genet: failed to allocate RX buffers (%d)", rc);
+        log::error("genet: RX buffer allocation failed (%d)", rc);
         return -1;
     }
-
-    // Allocate TX buffer pool: DMA_DESC_COUNT × MAX_PACKET_SIZE
-    size_t tx_total = static_cast<size_t>(DMA_DESC_COUNT) * MAX_PACKET_SIZE;
-    size_t tx_pages = (tx_total + 0xFFF) / 0x1000;
 
     RUN_ELEVATED(
-        rc = vmm::alloc_contiguous(
-            tx_pages, pmm::ZONE_DMA32,
-            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_DMA,
-            vmm::ALLOC_ZERO, kva::tag::generic,
-            m_tx_buf_vaddr, m_tx_buf_phys)
+        rc = vmm::alloc_contiguous(pages, pmm::ZONE_DMA32, flags,
+                                   vmm::ALLOC_ZERO, kva::tag::generic,
+                                   m_tx_buf_vaddr, m_tx_buf_phys)
     );
     if (rc != vmm::OK) {
-        log::error("genet: failed to allocate TX buffers (%d)", rc);
+        log::error("genet: TX buffer allocation failed (%d)", rc);
         return -1;
     }
 
-    log::debug("genet: allocated RX %lu pages at phys 0x%lx, TX %lu pages at phys 0x%lx",
-               rx_pages, m_rx_buf_phys, tx_pages, m_tx_buf_phys);
+    log::debug("genet: DMA buffers: RX phys=0x%lx TX phys=0x%lx (%lu pages each)",
+               m_rx_buf_phys, m_tx_buf_phys, pages);
     return 0;
 }
 
 void bcm_genet_driver::dma_free() {
-    // TODO: implement vmm::free_contiguous if needed
-    // For now, these are permanent allocations
+    // Permanent allocations; freed only if vmm supports it in the future.
 }
 
 void bcm_genet_driver::dma_init_rings() {
@@ -477,14 +414,13 @@ void bcm_genet_driver::dma_init_rings() {
     m_rx_cons_index = 0;
     m_rx_prod_index = 0;
 
-    // ===== TX ring =====
+    // TX ring
     reg_write(TX_SCB_BURST_SIZE, BCM2711_SCB_BURST_SIZE);
     reg_write(TX_DMA_READ_PTR_LO(Q), 0);
     reg_write(TX_DMA_READ_PTR_HI(Q), 0);
     reg_write(TX_DMA_CONS_INDEX(Q), 0);
     reg_write(TX_DMA_PROD_INDEX(Q), 0);
-    reg_write(TX_DMA_RING_BUF_SIZE(Q),
-              RING_BUF_SIZE_VAL(DMA_DESC_COUNT, MAX_PACKET_SIZE));
+    reg_write(TX_DMA_RING_BUF_SIZE(Q), RING_BUF_SIZE_VAL(DMA_DESC_COUNT, MAX_PACKET_SIZE));
     reg_write(TX_DMA_START_ADDR_LO(Q), 0);
     reg_write(TX_DMA_START_ADDR_HI(Q), 0);
     reg_write(TX_DMA_END_ADDR_LO(Q), DMA_END_ADDR(DMA_DESC_COUNT));
@@ -493,91 +429,72 @@ void bcm_genet_driver::dma_init_rings() {
     reg_write(TX_DMA_FLOW_PERIOD(Q), 0);
     reg_write(TX_DMA_WRITE_PTR_LO(Q), 0);
     reg_write(TX_DMA_WRITE_PTR_HI(Q), 0);
-
-    // Enable TX ring
     reg_write(TX_DMA_RING_CFG, (1u << Q));
 
-    // ===== RX ring =====
+    // RX ring
     reg_write(RX_SCB_BURST_SIZE, BCM2711_SCB_BURST_SIZE);
     reg_write(RX_DMA_WRITE_PTR_LO(Q), 0);
     reg_write(RX_DMA_WRITE_PTR_HI(Q), 0);
     reg_write(RX_DMA_PROD_INDEX(Q), 0);
     reg_write(RX_DMA_CONS_INDEX(Q), 0);
-    reg_write(RX_DMA_RING_BUF_SIZE(Q),
-              RING_BUF_SIZE_VAL(DMA_DESC_COUNT, MAX_PACKET_SIZE));
+    reg_write(RX_DMA_RING_BUF_SIZE(Q), RING_BUF_SIZE_VAL(DMA_DESC_COUNT, MAX_PACKET_SIZE));
     reg_write(RX_DMA_START_ADDR_LO(Q), 0);
     reg_write(RX_DMA_START_ADDR_HI(Q), 0);
     reg_write(RX_DMA_END_ADDR_LO(Q), DMA_END_ADDR(DMA_DESC_COUNT));
     reg_write(RX_DMA_END_ADDR_HI(Q), 0);
-    reg_write(RX_DMA_XON_XOFF(Q),
-              XON_XOFF_VAL(5, DMA_DESC_COUNT >> 4));
+    reg_write(RX_DMA_XON_XOFF(Q), XON_XOFF_VAL(5, DMA_DESC_COUNT >> 4));
     reg_write(RX_DMA_READ_PTR_LO(Q), 0);
     reg_write(RX_DMA_READ_PTR_HI(Q), 0);
-
-    // Enable RX ring
     reg_write(RX_DMA_RING_CFG, (1u << Q));
 
     log::debug("genet: DMA rings initialized (queue %u, %u descriptors)", Q, DMA_DESC_COUNT);
 }
 
 int32_t bcm_genet_driver::dma_map_rx_descriptors() {
-    // Program each RX descriptor with the physical address of its buffer.
     for (uint32_t i = 0; i < DMA_DESC_COUNT; i++) {
-        uint64_t buf_phys = m_rx_buf_phys + static_cast<uint64_t>(i) * MAX_PACKET_SIZE;
-        reg_write(RX_DESC_ADDR_LO(i), static_cast<uint32_t>(buf_phys & 0xFFFFFFFF));
-        reg_write(RX_DESC_ADDR_HI(i), static_cast<uint32_t>(buf_phys >> 32));
+        uint64_t phys = m_rx_buf_phys + static_cast<uint64_t>(i) * MAX_PACKET_SIZE;
+        reg_write(RX_DESC_ADDR_LO(i), static_cast<uint32_t>(phys & 0xFFFFFFFF));
+        reg_write(RX_DESC_ADDR_HI(i), static_cast<uint32_t>(phys >> 32));
         reg_write(RX_DESC_STATUS(i), 0);
     }
-
     log::debug("genet: %u RX descriptors mapped", DMA_DESC_COUNT);
     return 0;
 }
 
 void bcm_genet_driver::dma_enable_tx_rx() {
-    // Enable TX DMA on default queue
     uint32_t val = reg_read(TX_DMA_CTRL);
     val |= DMA_CTRL_EN | DMA_CTRL_RING_EN(DMA_DEFAULT_QUEUE);
     reg_write(TX_DMA_CTRL, val);
 
-    // Enable RX DMA on default queue
     val = reg_read(RX_DMA_CTRL);
     val |= DMA_CTRL_EN | DMA_CTRL_RING_EN(DMA_DEFAULT_QUEUE);
     reg_write(RX_DMA_CTRL, val);
 
-    // Enable UMAC transmitter and receiver
     val = reg_read(UMAC_CMD);
     val |= UMAC_CMD_TXEN | UMAC_CMD_RXEN;
     reg_write(UMAC_CMD, val);
 }
 
 void bcm_genet_driver::dma_disable_tx_rx() {
-    // Mask all interrupts
     reg_write(INTRL2_CPU_SET_MASK, 0xFFFFFFFF);
     reg_write(INTRL2_CPU_CLEAR, 0xFFFFFFFF);
 
-    // Disable UMAC receiver
     uint32_t val = reg_read(UMAC_CMD);
     val &= ~UMAC_CMD_RXEN;
     reg_write(UMAC_CMD, val);
 
-    // Stop RX DMA
     val = reg_read(RX_DMA_CTRL);
-    val &= ~DMA_CTRL_EN;
-    val &= ~DMA_CTRL_RING_EN(DMA_DEFAULT_QUEUE);
+    val &= ~(DMA_CTRL_EN | DMA_CTRL_RING_EN(DMA_DEFAULT_QUEUE));
     reg_write(RX_DMA_CTRL, val);
 
-    // Stop TX DMA
     val = reg_read(TX_DMA_CTRL);
-    val &= ~DMA_CTRL_EN;
-    val &= ~DMA_CTRL_RING_EN(DMA_DEFAULT_QUEUE);
+    val &= ~(DMA_CTRL_EN | DMA_CTRL_RING_EN(DMA_DEFAULT_QUEUE));
     reg_write(TX_DMA_CTRL, val);
 
-    // Flush TX FIFO
     reg_write(UMAC_TX_FLUSH, 1);
     delay_us(10);
     reg_write(UMAC_TX_FLUSH, 0);
 
-    // Disable UMAC transmitter
     val = reg_read(UMAC_CMD);
     val &= ~UMAC_CMD_TXEN;
     reg_write(UMAC_CMD, val);
@@ -589,73 +506,48 @@ void bcm_genet_driver::dma_disable_tx_rx() {
 
 int32_t bcm_genet_driver::tx_callback(net::netif* iface, const uint8_t* frame, size_t len) {
     if (!iface || !frame || len == 0) return -1;
-
     auto* drv = static_cast<bcm_genet_driver*>(iface->driver_data);
     if (!drv) return -1;
 
     int32_t result = -1;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(drv->m_lock);
-
-        // Process any completed TX descriptors first
         drv->process_tx_completions();
 
-        if (drv->m_tx_queued >= DMA_DESC_COUNT) {
-            // Ring full
-            result = -1;
-        } else if (len > MAX_PACKET_SIZE) {
+        if (drv->m_tx_queued >= DMA_DESC_COUNT || len > MAX_PACKET_SIZE) {
             result = -1;
         } else {
-            uint16_t desc_idx = drv->m_tx_prod_index % DMA_DESC_COUNT;
+            uint16_t idx = drv->m_tx_prod_index % DMA_DESC_COUNT;
 
-            // Copy frame data into TX DMA buffer
             uintptr_t buf_va = drv->m_tx_buf_vaddr +
-                               static_cast<uintptr_t>(desc_idx) * MAX_PACKET_SIZE;
+                               static_cast<uintptr_t>(idx) * MAX_PACKET_SIZE;
             string::memcpy(reinterpret_cast<uint8_t*>(buf_va), frame, len);
 
-            // Program descriptor
             uint64_t buf_phys = drv->m_tx_buf_phys +
-                                static_cast<uint64_t>(desc_idx) * MAX_PACKET_SIZE;
+                                static_cast<uint64_t>(idx) * MAX_PACKET_SIZE;
 
-            uint32_t desc_status = TX_DESC_SOP | TX_DESC_EOP | TX_DESC_CRC |
-                                   TX_DESC_QTAG_MASK |
-                                   (static_cast<uint32_t>(len) << TX_DESC_BUFLEN_SHIFT);
+            uint32_t status = TX_DESC_SOP | TX_DESC_EOP | TX_DESC_CRC |
+                              TX_DESC_QTAG_MASK |
+                              (static_cast<uint32_t>(len) << TX_DESC_BUFLEN_SHIFT);
 
-            drv->reg_write(TX_DESC_ADDR_LO(desc_idx),
-                           static_cast<uint32_t>(buf_phys & 0xFFFFFFFF));
-            drv->reg_write(TX_DESC_ADDR_HI(desc_idx),
-                           static_cast<uint32_t>(buf_phys >> 32));
-            drv->reg_write(TX_DESC_STATUS(desc_idx), desc_status);
+            drv->reg_write(TX_DESC_ADDR_LO(idx), static_cast<uint32_t>(buf_phys & 0xFFFFFFFF));
+            drv->reg_write(TX_DESC_ADDR_HI(idx), static_cast<uint32_t>(buf_phys >> 32));
+            drv->reg_write(TX_DESC_STATUS(idx), status);
 
-            // Advance producer index and notify hardware
             drv->m_tx_prod_index = (drv->m_tx_prod_index + 1) & DMA_INDEX_MASK;
-            drv->reg_write(TX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE),
-                           drv->m_tx_prod_index);
-
+            drv->reg_write(TX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE), drv->m_tx_prod_index);
             drv->m_tx_queued++;
             result = 0;
-
-            // Log first TX for debugging
-            static bool s_first_tx_logged = false;
-            if (!s_first_tx_logged) {
-                log::info("genet: === FIRST TX === len=%lu desc=%u prod=%u phys=0x%lx status=0x%08x",
-                          len, desc_idx, drv->m_tx_prod_index, buf_phys, desc_status);
-                s_first_tx_logged = true;
-            }
         }
     });
-
     return result;
 }
 
 void bcm_genet_driver::process_tx_completions() {
     uint32_t hw_cons = reg_read(TX_DMA_CONS_INDEX(DMA_DEFAULT_QUEUE)) & DMA_INDEX_MASK;
     uint32_t completed = (hw_cons - m_tx_cons_index) & DMA_INDEX_MASK;
-
     if (completed > 0) {
-        if (completed > m_tx_queued) {
-            completed = m_tx_queued; // sanity
-        }
+        if (completed > m_tx_queued) completed = m_tx_queued;
         m_tx_queued -= static_cast<uint16_t>(completed);
         m_tx_cons_index = static_cast<uint16_t>(hw_cons);
     }
@@ -669,100 +561,72 @@ void bcm_genet_driver::process_rx() {
     uint32_t hw_prod = reg_read(RX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE)) & DMA_INDEX_MASK;
     uint32_t pending = (hw_prod - m_rx_cons_index) & DMA_INDEX_MASK;
 
-    // Log first RX activity for debugging
-    static bool s_first_rx_logged = false;
-    if (pending > 0 && !s_first_rx_logged) {
-        log::info("genet: === FIRST RX ACTIVITY === pending=%u hw_prod=%u sw_cons=%u",
-                  pending, hw_prod, m_rx_cons_index);
-        s_first_rx_logged = true;
-    }
-
     for (uint32_t i = 0; i < pending; i++) {
-        uint16_t desc_idx = m_rx_cons_index % DMA_DESC_COUNT;
-
-        uint32_t desc_status = reg_read(RX_DESC_STATUS(desc_idx));
+        uint16_t idx = m_rx_cons_index % DMA_DESC_COUNT;
+        uint32_t desc_status = reg_read(RX_DESC_STATUS(idx));
         uint32_t buf_len = (desc_status & RX_DESC_BUFLEN_MASK) >> RX_DESC_BUFLEN_SHIFT;
 
-        // Check for errors
         if (desc_status & RX_DESC_RX_ERROR) {
-            log::warn("genet: RX error on desc %u (status=0x%08x)", desc_idx, desc_status);
-            goto next;
+            log::warn("genet: RX error on desc %u (status=0x%08x)", idx, desc_status);
+            goto recycle;
         }
 
-        // Check SOP+EOP (we don't support multi-descriptor frames)
         if ((desc_status & (RX_DESC_SOP | RX_DESC_EOP)) != (RX_DESC_SOP | RX_DESC_EOP)) {
-            log::warn("genet: RX multi-desc frame on desc %u (status=0x%08x), dropping",
-                      desc_idx, desc_status);
-            goto next;
+            log::warn("genet: RX multi-descriptor frame on desc %u, dropping", idx);
+            goto recycle;
         }
 
-        if (buf_len > MAX_PACKET_SIZE || buf_len <= 2) {
-            log::warn("genet: RX bad length %u on desc %u (status=0x%08x)",
-                      buf_len, desc_idx, desc_status);
-            goto next;
-        }
+        if (buf_len > MAX_PACKET_SIZE || buf_len <= 2)
+            goto recycle;
 
         {
-            // Get buffer virtual address
             uintptr_t buf_va = m_rx_buf_vaddr +
-                               static_cast<uintptr_t>(desc_idx) * MAX_PACKET_SIZE;
-
-            // RBUF_ALIGN_2B: skip 2-byte alignment padding
-            const uint8_t* frame_data = reinterpret_cast<const uint8_t*>(buf_va + 2);
-            size_t frame_len = buf_len - 2;
-
-            // Deliver to protocol stack
-            net::rx_frame(&m_netif, frame_data, frame_len);
+                               static_cast<uintptr_t>(idx) * MAX_PACKET_SIZE;
+            // Skip 2-byte RBUF alignment padding
+            const uint8_t* frame = reinterpret_cast<const uint8_t*>(buf_va + 2);
+            net::rx_frame(&m_netif, frame, buf_len - 2);
         }
 
-    next:
-        // Re-program descriptor for reuse
-        rx_remap_descriptor(desc_idx);
-
-        // Advance consumer index
+    recycle:
+        rx_remap_descriptor(idx);
         m_rx_cons_index = (m_rx_cons_index + 1) & DMA_INDEX_MASK;
         reg_write(RX_DMA_CONS_INDEX(DMA_DEFAULT_QUEUE), m_rx_cons_index);
     }
 }
 
-void bcm_genet_driver::rx_remap_descriptor(uint16_t desc_idx) {
-    uint64_t buf_phys = m_rx_buf_phys +
-                        static_cast<uint64_t>(desc_idx) * MAX_PACKET_SIZE;
-    reg_write(RX_DESC_ADDR_LO(desc_idx), static_cast<uint32_t>(buf_phys & 0xFFFFFFFF));
-    reg_write(RX_DESC_ADDR_HI(desc_idx), static_cast<uint32_t>(buf_phys >> 32));
-    reg_write(RX_DESC_STATUS(desc_idx), 0);
+void bcm_genet_driver::rx_remap_descriptor(uint16_t idx) {
+    uint64_t phys = m_rx_buf_phys + static_cast<uint64_t>(idx) * MAX_PACKET_SIZE;
+    reg_write(RX_DESC_ADDR_LO(idx), static_cast<uint32_t>(phys & 0xFFFFFFFF));
+    reg_write(RX_DESC_ADDR_HI(idx), static_cast<uint32_t>(phys >> 32));
+    reg_write(RX_DESC_STATUS(idx), 0);
 }
 
 // ============================================================================
-// Interrupt handling
+// Interrupts
 // ============================================================================
 
 int32_t bcm_genet_driver::setup_interrupts() {
     if (m_irq[0] == 0) {
-        log::warn("genet: no IRQ configured, will use polling");
+        log::warn("genet: no IRQ configured, using polling");
         return -1;
     }
 
     int32_t rc = 0;
-    RUN_ELEVATED({
-        rc = irq::register_handler(m_irq[0], isr, this);
-    });
+    RUN_ELEVATED({ rc = irq::register_handler(m_irq[0], isr, this); });
     if (rc != irq::OK) {
-        log::warn("genet: failed to register IRQ %u handler (%d)", m_irq[0], rc);
+        log::warn("genet: failed to register IRQ %u (%d)", m_irq[0], rc);
         return -1;
     }
 
-    // Configure and unmask the GIC SPI
     RUN_ELEVATED({
 #if defined(__aarch64__)
         irq::set_level_triggered(m_irq[0]);
-        irq::set_spi_target(m_irq[0], 0x01); // target CPU 0
+        irq::set_spi_target(m_irq[0], 0x01);
         irq::set_group1(m_irq[0]);
 #endif
         irq::unmask(m_irq[0]);
     });
 
-    // Register second IRQ if available
     if (m_irq[1] != 0 && m_irq[1] != m_irq[0]) {
         RUN_ELEVATED({
             rc = irq::register_handler(m_irq[1], isr, this);
@@ -783,17 +647,13 @@ int32_t bcm_genet_driver::setup_interrupts() {
 }
 
 void bcm_genet_driver::teardown_interrupts() {
-    if (m_irq[0] != 0) {
-        RUN_ELEVATED({
-            irq::mask(m_irq[0]);
-            irq::unregister_handler(m_irq[0]);
-        });
-    }
-    if (m_irq[1] != 0 && m_irq[1] != m_irq[0]) {
-        RUN_ELEVATED({
-            irq::mask(m_irq[1]);
-            irq::unregister_handler(m_irq[1]);
-        });
+    for (int i = 0; i < 2; i++) {
+        if (m_irq[i] != 0) {
+            RUN_ELEVATED({
+                irq::mask(m_irq[i]);
+                irq::unregister_handler(m_irq[i]);
+            });
+        }
     }
     m_has_irq = false;
 }
@@ -802,26 +662,14 @@ void bcm_genet_driver::isr(uint32_t /* irq */, void* context) {
     auto* drv = static_cast<bcm_genet_driver*>(context);
     if (!drv) return;
 
-    // Read and clear interrupt status
     uint32_t status = drv->reg_read(INTRL2_CPU_STAT);
-    if (status != 0) {
+    if (status != 0)
         drv->reg_write(INTRL2_CPU_CLEAR, status);
 
-        // Log first interrupt for debugging
-        static bool s_first_irq_logged = false;
-        if (!s_first_irq_logged) {
-            // Note: this is ISR context — log::info may not be safe on all platforms.
-            // But for initial bring-up debugging it's invaluable.
-            s_first_irq_logged = true;
-        }
-    }
-
-    // Wake the driver task
     drv->notify_event();
 }
 
 void bcm_genet_driver::enable_interrupts() {
-    // Unmask RXDMA and TXDMA done interrupts
     reg_write(INTRL2_CPU_CLEAR_MASK, IRQ_TXDMA_DONE | IRQ_RXDMA_DONE);
 }
 
@@ -837,8 +685,7 @@ void bcm_genet_driver::disable_interrupts() {
 bool bcm_genet_driver::link_callback(net::netif* iface) {
     if (!iface) return false;
     auto* drv = static_cast<bcm_genet_driver*>(iface->driver_data);
-    if (!drv) return false;
-    return drv->m_link_up;
+    return drv ? drv->m_link_up : false;
 }
 
 void bcm_genet_driver::poll_callback(net::netif* iface) {
@@ -855,36 +702,32 @@ void bcm_genet_driver::poll_callback(net::netif* iface) {
 }
 
 // ============================================================================
-// MAC filter / promiscuous
+// MAC filter
 // ============================================================================
 
 void bcm_genet_driver::set_promisc(bool enable) {
     uint32_t val = reg_read(UMAC_CMD);
-    if (enable) {
-        val |= UMAC_CMD_PROMISC;
-    } else {
-        val &= ~UMAC_CMD_PROMISC;
-    }
+    if (enable) val |= UMAC_CMD_PROMISC;
+    else        val &= ~UMAC_CMD_PROMISC;
     reg_write(UMAC_CMD, val);
 }
 
 void bcm_genet_driver::setup_rx_filter() {
-    // Program unicast filter (slot 0) and broadcast filter (slot 1)
-    // Slot 0: our MAC address
+    // Slot 0: unicast (our MAC)
     reg_write(UMAC_MDF_ADDR0(0),
-              (static_cast<uint32_t>(m_netif.mac[1])) |
+              static_cast<uint32_t>(m_netif.mac[1]) |
               (static_cast<uint32_t>(m_netif.mac[0]) << 8));
     reg_write(UMAC_MDF_ADDR1(0),
-              (static_cast<uint32_t>(m_netif.mac[5])) |
+              static_cast<uint32_t>(m_netif.mac[5]) |
               (static_cast<uint32_t>(m_netif.mac[4]) << 8) |
               (static_cast<uint32_t>(m_netif.mac[3]) << 16) |
               (static_cast<uint32_t>(m_netif.mac[2]) << 24));
 
-    // Slot 1: broadcast (FF:FF:FF:FF:FF:FF)
+    // Slot 1: broadcast
     reg_write(UMAC_MDF_ADDR0(1), 0xFFFF);
     reg_write(UMAC_MDF_ADDR1(1), 0xFFFFFFFF);
 
-    // Enable filters 0 and 1
+    // Enable both filter slots
     reg_write(UMAC_MDF_CTRL, (1u << 16) | (1u << 15));
 }
 
@@ -893,292 +736,165 @@ void bcm_genet_driver::setup_rx_filter() {
 // ============================================================================
 
 void bcm_genet_driver::dump_state() {
-    log::info("genet: ===== State Dump =====");
-
-    // System / revision
-    log::info("genet: SYS_REV_CTRL   = 0x%08x", reg_read(SYS_REV_CTRL));
-    log::info("genet: SYS_PORT_CTRL  = 0x%08x", reg_read(SYS_PORT_CTRL));
-
-    // UMAC
-    log::info("genet: UMAC_CMD       = 0x%08x", reg_read(UMAC_CMD));
-    log::info("genet: UMAC_MAC0      = 0x%08x", reg_read(UMAC_MAC0));
-    log::info("genet: UMAC_MAC1      = 0x%08x", reg_read(UMAC_MAC1));
-    log::info("genet: MAX_FRAME_LEN  = %u", reg_read(UMAC_MAX_FRAME_LEN));
-
-    // RBUF
-    log::info("genet: RBUF_CTRL      = 0x%08x", reg_read(RBUF_CTRL));
-    log::info("genet: RBUF_TBUF_SIZE = 0x%08x", reg_read(RBUF_TBUF_SIZE_CTRL));
-
-    // RGMII OOB
-    log::info("genet: EXT_RGMII_OOB  = 0x%08x", reg_read(EXT_RGMII_OOB_CTRL));
-
-    // Interrupts
-    log::info("genet: INTRL2_STAT    = 0x%08x", reg_read(INTRL2_CPU_STAT));
-    log::info("genet: INTRL2_MASK    = 0x%08x", reg_read(INTRL2_CPU_STAT_MASK));
-
-    // DMA control
-    log::info("genet: TX_DMA_CTRL    = 0x%08x", reg_read(TX_DMA_CTRL));
-    log::info("genet: RX_DMA_CTRL    = 0x%08x", reg_read(RX_DMA_CTRL));
-    log::info("genet: TX_RING_CFG    = 0x%08x", reg_read(TX_DMA_RING_CFG));
-    log::info("genet: RX_RING_CFG    = 0x%08x", reg_read(RX_DMA_RING_CFG));
-
-    // DMA ring indices
     constexpr uint32_t Q = DMA_DEFAULT_QUEUE;
-    log::info("genet: TX hw_prod=%u hw_cons=%u sw_prod=%u sw_cons=%u queued=%u",
+
+    log::info("genet: --- register dump ---");
+    log::info("genet:  SYS_REV_CTRL  = 0x%08x", reg_read(SYS_REV_CTRL));
+    log::info("genet:  UMAC_CMD      = 0x%08x", reg_read(UMAC_CMD));
+    log::info("genet:  UMAC_MAC0     = 0x%08x  MAC1 = 0x%08x",
+              reg_read(UMAC_MAC0), reg_read(UMAC_MAC1));
+    log::info("genet:  MAX_FRAME_LEN = %u", reg_read(UMAC_MAX_FRAME_LEN));
+    log::info("genet:  RBUF_CTRL     = 0x%08x", reg_read(RBUF_CTRL));
+    log::info("genet:  RGMII_OOB     = 0x%08x", reg_read(EXT_RGMII_OOB_CTRL));
+    log::info("genet:  INTRL2 stat=0x%08x mask=0x%08x",
+              reg_read(INTRL2_CPU_STAT), reg_read(INTRL2_CPU_STAT_MASK));
+    log::info("genet:  TX_DMA_CTRL=0x%08x  RX_DMA_CTRL=0x%08x",
+              reg_read(TX_DMA_CTRL), reg_read(RX_DMA_CTRL));
+    log::info("genet:  TX hw_prod=%u hw_cons=%u sw_prod=%u sw_cons=%u queued=%u",
               reg_read(TX_DMA_PROD_INDEX(Q)) & DMA_INDEX_MASK,
               reg_read(TX_DMA_CONS_INDEX(Q)) & DMA_INDEX_MASK,
               m_tx_prod_index, m_tx_cons_index, m_tx_queued);
-    log::info("genet: RX hw_prod=%u hw_cons=%u sw_cons=%u",
+    log::info("genet:  RX hw_prod=%u hw_cons=%u sw_cons=%u",
               reg_read(RX_DMA_PROD_INDEX(Q)) & DMA_INDEX_MASK,
               reg_read(RX_DMA_CONS_INDEX(Q)) & DMA_INDEX_MASK,
               m_rx_cons_index);
-
-    // DMA ring configuration
-    log::info("genet: TX_BUF_SIZE    = 0x%08x", reg_read(TX_DMA_RING_BUF_SIZE(Q)));
-    log::info("genet: RX_BUF_SIZE    = 0x%08x", reg_read(RX_DMA_RING_BUF_SIZE(Q)));
-    log::info("genet: TX_SCB_BURST   = 0x%08x", reg_read(TX_SCB_BURST_SIZE));
-    log::info("genet: RX_SCB_BURST   = 0x%08x", reg_read(RX_SCB_BURST_SIZE));
-
-    // MDF filter
-    log::info("genet: MDF_CTRL       = 0x%08x", reg_read(UMAC_MDF_CTRL));
-
-    // DMA buffer addresses
-    log::info("genet: RX buf phys=0x%lx vaddr=0x%lx", m_rx_buf_phys, m_rx_buf_vaddr);
-    log::info("genet: TX buf phys=0x%lx vaddr=0x%lx", m_tx_buf_phys, m_tx_buf_vaddr);
-
-    // PHY status
-    uint16_t bmcr = 0, bmsr = 0;
-    if (mdio_read(m_phy_addr, BMCR, &bmcr) == 0) {
-        log::info("genet: PHY BMCR = 0x%04x", bmcr);
-    }
-    if (mdio_read(m_phy_addr, BMSR, &bmsr) == 0) {
-        log::info("genet: PHY BMSR = 0x%04x (link=%s aneg=%s)",
-                  bmsr,
-                  (bmsr & BMSR_LINK_STATUS) ? "up" : "down",
-                  (bmsr & BMSR_ANEG_COMPLETE) ? "done" : "pending");
-    }
-
-    // First RX descriptor (sanity check that descriptors are programmed)
-    log::info("genet: RX desc[0] status=0x%08x addr_lo=0x%08x addr_hi=0x%08x",
+    log::info("genet:  RX desc[0] status=0x%08x lo=0x%08x hi=0x%08x",
               reg_read(RX_DESC_STATUS(0)),
-              reg_read(RX_DESC_ADDR_LO(0)),
-              reg_read(RX_DESC_ADDR_HI(0)));
+              reg_read(RX_DESC_ADDR_LO(0)), reg_read(RX_DESC_ADDR_HI(0)));
 
-    log::info("genet: IRQ mode=%s, link=%s, speed=%u, duplex=%s",
-              m_has_irq ? "interrupt" : "polling",
-              m_link_up ? "up" : "down",
-              static_cast<uint32_t>(m_speed),
-              m_duplex == phy_duplex::FULL ? "full" : "half");
-
-    log::info("genet: ===== End Dump =====");
+    uint16_t bmcr = 0, bmsr = 0;
+    mdio_read(m_phy_addr, BMCR, &bmcr);
+    mdio_read(m_phy_addr, BMSR, &bmsr);
+    log::info("genet:  PHY BMCR=0x%04x BMSR=0x%04x link=%s aneg=%s",
+              bmcr, bmsr,
+              (bmsr & BMSR_LINK_STATUS) ? "up" : "down",
+              (bmsr & BMSR_ANEG_COMPLETE) ? "done" : "pending");
+    log::info("genet: --- end dump ---");
 }
 
 // ============================================================================
-// Driver lifecycle — attach / detach / run
+// Driver lifecycle
 // ============================================================================
 
 int32_t bcm_genet_driver::attach() {
-    log::info("genet: ========================================");
-    log::info("genet: BCM GENET v5 Ethernet driver attaching");
-    log::info("genet: phys=0x%lx size=0x%lx IRQs=%u,%u",
+    log::info("genet: attaching (phys=0x%lx size=0x%lx IRQs=%u,%u)",
               m_reg_phys, m_reg_size, m_irq[0], m_irq[1]);
-    log::info("genet: ========================================");
 
-    // Step 1: Map MMIO registers
-    log::info("genet: [1/16] mapping MMIO registers...");
-    RUN_ELEVATED({
-        map_regs();
-    });
+    // Map MMIO registers
+    RUN_ELEVATED({ map_regs(); });
     if (m_reg_va == 0) {
-        log::error("genet: [1/16] FAILED to map registers");
+        log::error("genet: failed to map MMIO registers");
         return -1;
     }
-    log::info("genet: [1/16] mapped at VA 0x%lx", m_reg_va);
+    log::info("genet: MMIO mapped at VA 0x%lx", m_reg_va);
 
-    // Step 2: Verify GENET v5
-    log::info("genet: [2/16] checking hardware revision...");
+    // Verify hardware revision
     uint32_t rev = reg_read(SYS_REV_CTRL);
     uint32_t major = (rev & SYS_REV_MAJOR_MASK) >> SYS_REV_MAJOR_SHIFT;
     uint32_t minor = (rev & SYS_REV_MINOR_MASK) >> SYS_REV_MINOR_SHIFT;
-    log::info("genet: [2/16] SYS_REV_CTRL=0x%08x → revision %u.%u", rev, major, minor);
-
+    log::info("genet: hardware rev %u.%u (SYS_REV_CTRL=0x%08x)", major, minor, rev);
     if (major != SYS_REV_MAJOR_V5) {
-        log::error("genet: [2/16] FAILED: expected GENET v5 (major=6), got major=%u", major);
+        log::error("genet: expected GENET v5 (major=6), got %u", major);
         return -1;
     }
 
-    // Step 3: Read MAC address from firmware BEFORE reset
-    // (More defensive: UMAC reset *should* preserve MAC registers on BCM2711,
-    //  but reading beforehand avoids any possibility of losing the firmware MAC.)
-    log::info("genet: [3/16] reading MAC address from firmware...");
+    // Read MAC before reset (in case reset clears the firmware-programmed value)
     read_mac_address();
-    log::info("genet: [3/16] MAC %02x:%02x:%02x:%02x:%02x:%02x",
+    log::info("genet: MAC %02x:%02x:%02x:%02x:%02x:%02x",
               m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
               m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
 
-    // Step 4: Reset controller
-    log::info("genet: [4/16] resetting controller...");
+    // Reset controller and stop any DMA left running by firmware
     genet_reset();
-    log::info("genet: [4/16] reset complete");
-
-    // Step 5: Disable DMA engine before configuring rings.
-    // Critical: if UEFI firmware or bootloader left DMA running, writing
-    // to ring registers while DMA is active can corrupt descriptors.
-    // Reference: FreeBSD gen_dma_disable() called right after gen_reset().
-    log::info("genet: [5/16] disabling DMA engine...");
     dma_disable_tx_rx();
-    log::info("genet: [5/16] DMA disabled");
 
-    // Step 6: Write MAC address back to hardware (after reset cleared it)
-    log::info("genet: [6/16] programming MAC address...");
+    // Restore MAC and set PHY mode
     write_mac_address();
-
-    // Step 7: Set PHY mode to external GPHY (RGMII)
-    log::info("genet: [7/16] setting PHY mode (RGMII)...");
     set_phy_mode();
 
-    // Step 8: Initialize PHY via MDIO
-    log::info("genet: [8/16] detecting PHY on MDIO bus...");
+    // PHY init
     int32_t rc = phy_detect();
-    if (rc != 0) {
-        log::error("genet: [8/16] FAILED: no PHY found");
-        return rc;
-    }
-
-    log::info("genet: [9/16] resetting PHY (with RGMII clock delay config)...");
+    if (rc != 0) return rc;
     rc = phy_reset();
-    if (rc != 0) {
-        log::error("genet: [9/16] FAILED: PHY reset error");
-        return rc;
-    }
-
-    log::info("genet: [10/16] starting auto-negotiation...");
+    if (rc != 0) return rc;
     rc = phy_auto_negotiate();
-    if (rc != 0) {
-        log::error("genet: [10/16] FAILED: auto-negotiation error");
-        return rc;
-    }
+    if (rc != 0) return rc;
 
-    // Step 11: Allocate DMA buffers
-    log::info("genet: [11/16] allocating DMA buffers (%u RX + %u TX × %u bytes)...",
-              DMA_DESC_COUNT, DMA_DESC_COUNT, MAX_PACKET_SIZE);
+    // DMA setup
     rc = dma_alloc();
-    if (rc != 0) {
-        log::error("genet: [11/16] FAILED: DMA buffer allocation error");
-        return rc;
-    }
-
-    // Step 12: Initialize DMA rings
-    log::info("genet: [12/16] initializing DMA rings...");
+    if (rc != 0) return rc;
     dma_init_rings();
-
-    // Step 13: Map RX descriptors to buffers
-    log::info("genet: [13/16] mapping RX descriptors to DMA buffers...");
     rc = dma_map_rx_descriptors();
-    if (rc != 0) {
-        log::error("genet: [13/16] FAILED: RX descriptor mapping error");
-        return rc;
-    }
+    if (rc != 0) return rc;
 
-    // Step 14: Set up interrupts
-    log::info("genet: [14/16] setting up interrupts...");
-    setup_interrupts(); // non-fatal if it fails — we'll poll
+    // Interrupts (non-fatal if it fails; we fall back to polling)
+    setup_interrupts();
 
-    // Step 15: Set up receive filter + enable TX/RX
-    log::info("genet: [15/16] configuring receive filter and enabling TX/RX...");
+    // Enable hardware
     setup_rx_filter();
     dma_enable_tx_rx();
-    if (m_has_irq) {
+    if (m_has_irq)
         enable_interrupts();
-    }
 
-    // Step 16: Register with network stack
-    log::info("genet: [16/16] registering with network stack...");
+    // Register with network stack
     string::memcpy(m_netif.name, "eth0", 5);
     m_netif.transmit = tx_callback;
     m_netif.link_up = link_callback;
     m_netif.poll = poll_callback;
     m_netif.driver_data = this;
-
     net::register_netif(&m_netif);
 
-    // Configure static IP — adjust for your network or replace with DHCP.
+    // Static IP (replace with DHCP when available)
     net::configure(&m_netif,
-                   net::ipv4_addr(10, 0, 0, 200),       // IP
-                   net::ipv4_addr(255, 255, 255, 0),     // Netmask
-                   net::ipv4_addr(10, 0, 0, 1));         // Gateway
+                   net::ipv4_addr(10, 0, 0, 200),
+                   net::ipv4_addr(255, 255, 255, 0),
+                   net::ipv4_addr(10, 0, 0, 1));
 
-    log::info("genet: driver attached successfully!");
-
+    log::info("genet: attached successfully");
+    dump_state();
     return 0;
 }
 
 int32_t bcm_genet_driver::detach() {
     log::info("genet: detaching");
-
-    // Disable TX/RX and interrupts
     dma_disable_tx_rx();
     disable_interrupts();
     teardown_interrupts();
-
-    // Unregister from network stack
     net::unregister_netif(&m_netif);
-
-    // Free DMA buffers
     dma_free();
-
     return 0;
 }
 
 void bcm_genet_driver::run() {
-    log::info("genet: driver task running (mode=%s)",
+    log::info("genet: driver task running (%s)",
               m_has_irq ? "interrupt-driven" : "polling");
 
-    // Wait briefly for auto-negotiation to complete, then do a link check
+    // Allow time for auto-negotiation before first link check
     RUN_ELEVATED(sched::sleep_ms(2000));
-    log::info("genet: initial link check after 2s delay...");
     RUN_ELEVATED(phy_update_link());
-    if (!m_link_up) {
-        log::info("genet: link not yet up, will keep polling");
-    }
+    if (!m_link_up)
+        log::info("genet: link not yet up, will keep checking");
 
-    // Periodic counters
     uint32_t link_poll_counter = 0;
-    uint32_t loop_counter = 0;
-    constexpr uint32_t LINK_POLL_INTERVAL = 100; // ~1s at 10ms/iteration
+    constexpr uint32_t LINK_POLL_INTERVAL = 100;
 
     while (true) {
-        if (m_has_irq) {
-            // Use a short sleep instead of indefinite wait so that the
-            // link poll below always runs, even when no interrupts fire
-            // (e.g. link is down and no packets are arriving).
+        if (m_has_irq)
             RUN_ELEVATED(sched::sleep_ms(10));
-        } else {
+        else
             RUN_ELEVATED(sched::sleep_ms(1));
-        }
 
-        // Process RX and TX under lock
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_lock);
             process_rx();
             process_tx_completions();
         });
 
-        // Drain deferred TX (ICMP echo replies, ARP replies, etc.)
         RUN_ELEVATED(net::drain_deferred_tx());
 
-        // Periodic link status check (~1s in IRQ mode, ~1s in polling mode)
-        link_poll_counter++;
-        if (link_poll_counter >= LINK_POLL_INTERVAL) {
+        if (++link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;
             RUN_ELEVATED(phy_update_link());
-        }
-
-        // Periodic state dump (once at loop iteration 5000, ~5 seconds in polling mode)
-        loop_counter++;
-        if (loop_counter == 5000) {
-            log::info("genet: periodic check at ~5s:");
-            RUN_ELEVATED(dump_state());
         }
     }
 }
