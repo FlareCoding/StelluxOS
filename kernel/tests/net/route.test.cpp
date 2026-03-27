@@ -605,3 +605,58 @@ TEST(route_test, unregister_cleans_routes) {
         EXPECT_NE(rt.iface, &mock);
     }
 }
+
+// ============================================================================
+// Reconfiguring loopback does NOT destroy other interfaces' LOCAL routes
+// (Bug 4 regression test — owner-based route deletion)
+// ============================================================================
+
+TEST(route_test, loopback_reconfig_preserves_other_local_routes) {
+    // Set up a mock interface with a LOCAL route through loopback
+    net::netif mock = {};
+    string::memcpy(mock.name, "own0", 5);
+    mock.transmit = mock_tx;
+    mock.link_up = mock_link_up;
+
+    int32_t rc = net::register_netif(&mock);
+    ASSERT_EQ(rc, net::OK);
+
+    rc = net::configure(&mock,
+                        net::ipv4_addr(10, 50, 0, 100),
+                        net::ipv4_addr(255, 255, 255, 0),
+                        0);
+    ASSERT_EQ(rc, net::OK);
+
+    // Verify the LOCAL route exists and points through loopback
+    net::route_result rt;
+    rc = net::route_lookup(net::ipv4_addr(10, 50, 0, 100), &rt);
+    ASSERT_EQ(rc, net::OK);
+    EXPECT_EQ(static_cast<uint8_t>(rt.type),
+              static_cast<uint8_t>(net::route_type::LOCAL));
+
+    net::netif* lo = net::get_loopback_netif();
+    ASSERT_NOT_NULL(lo);
+    EXPECT_EQ(rt.iface, lo);
+
+    uint32_t count_before = net::route_count();
+
+    // Simulate reconfiguring loopback (e.g. changing its IP).
+    // This calls route_del_iface(lo) which should only remove routes
+    // OWNED by loopback, not the LOCAL route owned by mock.
+    rc = net::configure(lo,
+                        net::ipv4_addr(127, 0, 0, 1),
+                        net::ipv4_addr(255, 0, 0, 0),
+                        0);
+    ASSERT_EQ(rc, net::OK);
+
+    // The LOCAL route for mock's IP (10.50.0.100) should still exist
+    rc = net::route_lookup(net::ipv4_addr(10, 50, 0, 100), &rt);
+    ASSERT_EQ(rc, net::OK);
+    EXPECT_EQ(static_cast<uint8_t>(rt.type),
+              static_cast<uint8_t>(net::route_type::LOCAL));
+    EXPECT_EQ(rt.iface, lo);
+
+    // Clean up
+    net::route_del_iface(&mock);
+    net::unregister_netif(&mock);
+}

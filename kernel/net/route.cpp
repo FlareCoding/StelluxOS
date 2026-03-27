@@ -31,9 +31,15 @@ __PRIVILEGED_CODE void route_init() {
 }
 
 int32_t route_add(uint32_t dest, uint32_t netmask, uint32_t gateway,
-                  netif* iface, route_type type, uint16_t metric) {
+                  netif* iface, route_type type, uint16_t metric,
+                  netif* owner) {
     if (!iface) {
         return ERR_INVAL;
+    }
+
+    // Default owner to iface if not specified
+    if (!owner) {
+        owner = iface;
     }
 
     int32_t result = ERR_NOMEM;
@@ -47,6 +53,7 @@ int32_t route_add(uint32_t dest, uint32_t netmask, uint32_t gateway,
                 g_route_table[i].netmask = netmask;
                 g_route_table[i].gateway = gateway;
                 g_route_table[i].iface   = iface;
+                g_route_table[i].owner   = owner;
                 g_route_table[i].type    = type;
                 g_route_table[i].metric  = metric;
                 g_route_table[i].valid   = true;
@@ -65,8 +72,11 @@ void route_del_iface(netif* iface) {
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_route_lock);
 
+        // Match on the owner field so that LOCAL routes (which point to
+        // loopback as their outgoing interface) are correctly associated
+        // with the interface whose configure() created them.
         for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
-            if (g_route_table[i].valid && g_route_table[i].iface == iface) {
+            if (g_route_table[i].valid && g_route_table[i].owner == iface) {
                 g_route_table[i].valid = false;
             }
         }
@@ -157,11 +167,14 @@ void route_add_interface_routes(netif* iface) {
 
     // Add a LOCAL host route for the interface's own IP (→ loopback).
     // This enables local delivery when sending to our own address.
+    // The route's outgoing interface is loopback, but the owner is the
+    // configured interface — so route_del_iface(iface) correctly cleans
+    // it up without affecting other interfaces' LOCAL routes.
     // Skip this for the loopback interface itself — its CONNECTED route
     // (127.0.0.0/8) already covers local delivery.
     if (lo && iface != lo) {
         route_add(iface->ipv4_addr, 0xFFFFFFFF, 0,
-                  lo, route_type::LOCAL, METRIC_LOCAL);
+                  lo, route_type::LOCAL, METRIC_LOCAL, iface);
     }
 
     // Add a CONNECTED subnet route for the interface's subnet.

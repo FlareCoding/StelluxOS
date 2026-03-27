@@ -23,6 +23,9 @@ struct route_entry {
     uint32_t    netmask;    // network mask, host byte order
     uint32_t    gateway;    // next hop IP (0 for connected/local), host byte order
     netif*      iface;      // outgoing interface
+    netif*      owner;      // interface whose configure() created this route
+                            // (may differ from iface for LOCAL routes that
+                            // point to loopback but belong to another iface)
     route_type  type;       // LOCAL, CONNECTED, GATEWAY
     uint8_t     _pad[1];
     uint16_t    metric;     // lower = preferred
@@ -55,14 +58,22 @@ __PRIVILEGED_CODE void route_init();
 
 /**
  * Add a route to the routing table.
+ * @param owner The interface whose configure() call created this route.
+ *              For LOCAL routes, owner is the configured interface while
+ *              iface is loopback. For other routes, owner == iface.
+ *              If nullptr, defaults to iface.
  * @return net::OK on success, ERR_NOMEM if table is full, ERR_INVAL on bad args.
  */
 int32_t route_add(uint32_t dest, uint32_t netmask, uint32_t gateway,
-                  netif* iface, route_type type, uint16_t metric);
+                  netif* iface, route_type type, uint16_t metric,
+                  netif* owner = nullptr);
 
 /**
- * Remove all routes associated with a given interface.
- * Called when an interface is unregistered or reconfigured.
+ * Remove all routes owned by the given interface.
+ * Matches on the owner field, not the outgoing interface. This ensures
+ * that LOCAL routes (which point to loopback) are correctly removed
+ * when their owning interface is unregistered or reconfigured, without
+ * accidentally removing LOCAL routes belonging to other interfaces.
  */
 void route_del_iface(netif* iface);
 

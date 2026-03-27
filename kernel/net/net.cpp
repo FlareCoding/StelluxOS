@@ -99,13 +99,11 @@ int32_t register_netif(netif* iface) {
 int32_t unregister_netif(netif* iface) {
     if (!iface) return ERR_INVAL;
 
-    // Clean up routing table entries BEFORE removing from the interface
-    // list. route_del_host removes the LOCAL /32 route that points to
-    // loopback (not to this interface), and route_del_iface removes the
-    // CONNECTED and GATEWAY routes that point to this interface directly.
-    if (iface->configured && iface->ipv4_addr != 0) {
-        route_del_host(iface->ipv4_addr);
-    }
+    // Clean up all routing table entries owned by this interface BEFORE
+    // removing from the interface list. route_del_iface matches on the
+    // owner field, so LOCAL routes (which point to loopback but are owned
+    // by this interface) are correctly removed without affecting other
+    // interfaces' LOCAL routes.
     route_del_iface(iface);
 
     RUN_ELEVATED({
@@ -140,13 +138,10 @@ int32_t unregister_netif(netif* iface) {
 int32_t configure(netif* iface, uint32_t ip, uint32_t netmask, uint32_t gateway) {
     if (!iface) return ERR_INVAL;
 
-    // Clear any existing routes for this interface (handles reconfiguration).
-    // Also remove LOCAL routes that were created for this interface's old IP
-    // (those routes point to loopback, not this interface, so route_del_iface
-    // alone wouldn't remove them).
-    if (iface->configured && iface->ipv4_addr != 0) {
-        route_del_host(iface->ipv4_addr);
-    }
+    // Clear any existing routes owned by this interface (handles reconfiguration).
+    // route_del_iface matches on the owner field, so LOCAL routes (which point
+    // to loopback) are correctly cleaned up without affecting other interfaces'
+    // LOCAL routes.
     route_del_iface(iface);
 
     iface->ipv4_addr = ip;
