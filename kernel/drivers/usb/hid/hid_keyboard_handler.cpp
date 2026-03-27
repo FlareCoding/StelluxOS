@@ -121,7 +121,9 @@ int32_t hid_keyboard_handler::init(const report_layout& layout,
 
         if (field.is_variable() && is_modifier_usage(field.usage)) {
             if (field.usage >= 0xE0 && field.usage <= 0xE7) {
-                m_modifier_fields[field.usage - 0xE0] = &field;
+                if (!m_modifier_fields[field.usage - 0xE0]) {
+                    m_modifier_fields[field.usage - 0xE0] = &field;
+                }
             }
             continue;
         }
