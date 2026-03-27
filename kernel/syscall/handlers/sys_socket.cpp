@@ -664,15 +664,30 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
     // Copy source address to userspace if requested
     if (src_addr != 0 && addrlen != 0) {
         uint32_t user_addrlen = 0;
-        mm::uaccess::copy_from_user(&user_addrlen, reinterpret_cast<const void*>(addrlen), sizeof(user_addrlen));
+        copy_rc = mm::uaccess::copy_from_user(
+            &user_addrlen, reinterpret_cast<const void*>(addrlen), sizeof(user_addrlen));
+        if (copy_rc != mm::uaccess::OK) {
+            resource::resource_release(obj);
+            return syscall::EFAULT;
+        }
 
         size_t copy_addr_len = kaddr_len < user_addrlen ? kaddr_len : user_addrlen;
         if (copy_addr_len > 0) {
-            mm::uaccess::copy_to_user(reinterpret_cast<void*>(src_addr), kaddr, copy_addr_len);
+            copy_rc = mm::uaccess::copy_to_user(
+                reinterpret_cast<void*>(src_addr), kaddr, copy_addr_len);
+            if (copy_rc != mm::uaccess::OK) {
+                resource::resource_release(obj);
+                return syscall::EFAULT;
+            }
         }
 
         uint32_t out_len = static_cast<uint32_t>(kaddr_len);
-        mm::uaccess::copy_to_user(reinterpret_cast<void*>(addrlen), &out_len, sizeof(out_len));
+        copy_rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(addrlen), &out_len, sizeof(out_len));
+        if (copy_rc != mm::uaccess::OK) {
+            resource::resource_release(obj);
+            return syscall::EFAULT;
+        }
     }
 
     resource::resource_release(obj);
