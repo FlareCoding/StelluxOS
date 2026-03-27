@@ -1,22 +1,26 @@
 #include "net/arp.h"
 #include "net/net.h"
+#include "net/netinfo.h"
 #include "net/ethernet.h"
 #include "net/byteorder.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
+#include "clock/clock.h"
 #include "sched/sched.h"
-#include "hw/cpu.h"
 #include "dynpriv/dynpriv.h"
 
 namespace net {
 
 namespace {
 
+constexpr uint64_t ARP_ENTRY_TTL_NS = 60ULL * 1000000000ULL; // 60 seconds
+
 struct arp_entry {
     uint32_t ip;                // host byte order
     uint8_t  mac[MAC_ADDR_LEN];
     bool     valid;
+    uint64_t last_updated_ns;
 };
 
 __PRIVILEGED_DATA static arp_entry g_arp_table[ARP_TABLE_SIZE] = {};
@@ -33,11 +37,13 @@ void arp_init() {
 static void arp_table_update(uint32_t ip, const uint8_t* mac) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(g_arp_lock);
+        uint64_t now = clock::now_ns();
 
         bool updated = false;
         for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
             if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
                 string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
+                g_arp_table[i].last_updated_ns = now;
                 updated = true;
                 break;
             }
@@ -49,16 +55,25 @@ static void arp_table_update(uint32_t ip, const uint8_t* mac) {
                     g_arp_table[i].ip = ip;
                     string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
                     g_arp_table[i].valid = true;
+                    g_arp_table[i].last_updated_ns = now;
                     updated = true;
                     break;
                 }
             }
         }
 
+        // Table full: evict the oldest entry
         if (!updated) {
-            g_arp_table[0].ip = ip;
-            string::memcpy(g_arp_table[0].mac, mac, MAC_ADDR_LEN);
-            g_arp_table[0].valid = true;
+            uint32_t oldest = 0;
+            for (uint32_t i = 1; i < ARP_TABLE_SIZE; i++) {
+                if (g_arp_table[i].last_updated_ns < g_arp_table[oldest].last_updated_ns) {
+                    oldest = i;
+                }
+            }
+            g_arp_table[oldest].ip = ip;
+            string::memcpy(g_arp_table[oldest].mac, mac, MAC_ADDR_LEN);
+            g_arp_table[oldest].valid = true;
+            g_arp_table[oldest].last_updated_ns = now;
         }
 
         sync::spin_unlock_irqrestore(g_arp_lock, irq);
@@ -69,8 +84,12 @@ static bool arp_table_lookup(uint32_t ip, uint8_t* out_mac) {
     bool found = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_arp_lock);
+        uint64_t now = clock::now_ns();
         for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
             if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
+                if (now - g_arp_table[i].last_updated_ns > ARP_ENTRY_TTL_NS) {
+                    break; // stale — force re-resolution
+                }
                 string::memcpy(out_mac, g_arp_table[i].mac, MAC_ADDR_LEN);
                 found = true;
                 break;
@@ -182,6 +201,33 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
               (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
               (target_ip >> 8) & 0xFF, target_ip & 0xFF);
     return ERR_NOARP;
+}
+
+__PRIVILEGED_CODE int32_t query_arp_table(arp_table_status* out) {
+    if (!out) return ERR_INVAL;
+
+    string::memset(out, 0, sizeof(arp_table_status));
+    uint32_t count = 0;
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_arp_lock);
+        uint64_t now = clock::now_ns();
+
+        for (uint32_t i = 0; i < ARP_TABLE_SIZE && count < ARP_QUERY_MAX; i++) {
+            if (!g_arp_table[i].valid) continue;
+
+            auto& e = out->entries[count];
+            e.ipv4_addr = g_arp_table[i].ip;
+            string::memcpy(e.mac, g_arp_table[i].mac, MAC_ADDR_LEN);
+            uint64_t age_ns = now - g_arp_table[i].last_updated_ns;
+            e.age_ms = static_cast<uint32_t>(age_ns / 1000000ULL);
+            e.flags = 0;
+            count++;
+        }
+    });
+
+    out->entry_count = count;
+    return OK;
 }
 
 } // namespace net

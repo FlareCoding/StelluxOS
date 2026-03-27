@@ -53,4 +53,35 @@ stlx_net_default_if(const struct stlx_net_status* st) {
     return NULL;
 }
 
+/* --- ARP table query --- */
+
+#define STLX_ARP_TABLE_SIZE   32
+#define STLX_SIOCGARPTABLE    0x4E02
+
+struct stlx_arp_entry {
+    uint32_t ipv4_addr;
+    uint8_t  mac[6];
+    uint8_t  _pad[2];
+    uint32_t age_ms;
+    uint32_t flags;
+};
+
+_Static_assert(sizeof(struct stlx_arp_entry) == 20, "stlx_arp_entry ABI size mismatch");
+
+struct stlx_arp_table {
+    uint32_t              entry_count;
+    uint32_t              _reserved;
+    struct stlx_arp_entry entries[STLX_ARP_TABLE_SIZE];
+};
+
+_Static_assert(sizeof(struct stlx_arp_table) == 648, "stlx_arp_table ABI size mismatch");
+
+static inline int stlx_arp_get_table(struct stlx_arp_table* out) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    int rc = ioctl(fd, STLX_SIOCGARPTABLE, out);
+    close(fd);
+    return rc;
+}
+
 #endif /* STLX_NET_H */

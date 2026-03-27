@@ -149,6 +149,13 @@ __PRIVILEGED_CODE static int32_t inet_ioctl(
             reinterpret_cast<void*>(arg), &status, sizeof(status));
         return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
     }
+    if (cmd == STLX_SIOCGARPTABLE) {
+        arp_table_status table = {};
+        query_arp_table(&table);
+        int32_t rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(arg), &table, sizeof(table));
+        return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+    }
     return resource::ERR_UNSUP;
 }
 

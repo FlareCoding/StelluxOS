@@ -41,6 +41,34 @@ static_assert(sizeof(net_status) == 360, "net_status ABI size mismatch");
  */
 __PRIVILEGED_CODE int32_t query_status(net_status* out);
 
+constexpr uint32_t STLX_SIOCGARPTABLE = 0x4E02;
+constexpr uint32_t ARP_QUERY_MAX = 32;
+
+struct arp_table_entry {
+    uint32_t ipv4_addr; // host byte order
+    uint8_t  mac[6];
+    uint8_t  _pad[2];
+    uint32_t age_ms;    // ms since last update
+    uint32_t flags;     // reserved
+};
+
+static_assert(sizeof(arp_table_entry) == 20, "arp_table_entry ABI size mismatch");
+
+struct arp_table_status {
+    uint32_t        entry_count;
+    uint32_t        _reserved;
+    arp_table_entry entries[ARP_QUERY_MAX];
+};
+
+static_assert(sizeof(arp_table_status) == 648, "arp_table_status ABI size mismatch");
+
+/**
+ * Snapshot the ARP cache into out->entries[].
+ * Computes age_ms from internal timestamps at query time.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t query_arp_table(arp_table_status* out);
+
 } // namespace net
 
 #endif // STELLUX_NET_NETINFO_H
