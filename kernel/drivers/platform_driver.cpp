@@ -58,6 +58,16 @@ __PRIVILEGED_CODE void platform_driver::notify_event() {
 
 static void platform_task_entry(void* arg) {
     auto* drv = static_cast<platform_driver*>(arg);
+
+    // Perform hardware attach in the driver's own kernel task, not on the
+    // boot thread. This avoids blocking init/shell/DM startup during slow
+    // hardware initialization (MDIO scan, PHY reset, DMA allocation).
+    int32_t rc = drv->attach();
+    if (rc != 0) {
+        log::error("platform: %s attach failed (%d), task exiting", drv->name(), rc);
+        return;
+    }
+
     drv->run();
 }
 
@@ -115,24 +125,20 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
         return -1;
     }
 
-    int32_t rc = drv->attach();
-    if (rc != 0) {
-        log::error("platform: GENET attach failed: %d", rc);
-        heap::ufree_delete(drv);
-        return -1;
-    }
-
+    // Spawn a kernel task for the driver. attach() runs inside the task
+    // (not here) so we don't block the boot thread during slow hardware
+    // initialization (MDIO scan, PHY reset, DMA allocation, etc.).
     sched::task* t = sched::create_kernel_task(
         platform_task_entry, drv, drv->name());
     if (!t) {
         log::error("platform: task creation failed for %s", drv->name());
-        drv->detach();
         heap::ufree_delete(drv);
         return -1;
     }
 
     drv->set_task(t);
     sched::enqueue(t);
+    log::info("platform: GENET driver task spawned (attach will run asynchronously)");
     return 0;
 }
 
