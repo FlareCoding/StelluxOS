@@ -12,7 +12,6 @@ constexpr uint16_t ARP_OP_REPLY    = 2;
 
 constexpr uint32_t ARP_TABLE_SIZE  = 32;
 constexpr uint32_t ARP_RETRY_COUNT = 3;
-constexpr uint32_t ARP_RETRY_DELAY_MS = 100;
 
 struct arp_header {
     uint16_t hw_type;      // network byte order

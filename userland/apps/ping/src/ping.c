@@ -186,8 +186,13 @@ int main(int argc, char* argv[]) {
                 my_ntohs(reply_hdr->id) == ping_id &&
                 my_ntohs(reply_hdr->seq) == (uint16_t)i) {
 
-                uint64_t rtt_ns = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ULL +
-                                  (uint64_t)(t1.tv_nsec - t0.tv_nsec);
+                long sec_diff = t1.tv_sec - t0.tv_sec;
+                long nsec_diff = t1.tv_nsec - t0.tv_nsec;
+                if (nsec_diff < 0) {
+                    sec_diff--;
+                    nsec_diff += 1000000000L;
+                }
+                uint64_t rtt_ns = (uint64_t)sec_diff * 1000000000ULL + (uint64_t)nsec_diff;
                 uint32_t rtt_us = (uint32_t)(rtt_ns / 1000);
 
                 received++;

@@ -106,9 +106,12 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
     ssize_t data_rc = ring_buffer_read(sock->rx_buf, static_cast<uint8_t*>(kdst),
                                        to_read, true);
 
-    // Drain excess if user buffer was smaller than the packet
-    if (data_rc >= 0 && to_read < payload_len) {
-        size_t discard = payload_len - to_read;
+    // Always drain remaining bytes from this entry to keep the stream
+    // synchronized, even if the payload read failed or the user buffer
+    // was smaller than the packet.
+    size_t consumed = (data_rc > 0) ? static_cast<size_t>(data_rc) : 0;
+    if (consumed < payload_len) {
+        size_t discard = payload_len - consumed;
         uint8_t trash[64];
         while (discard > 0) {
             size_t chunk = discard < sizeof(trash) ? discard : sizeof(trash);
