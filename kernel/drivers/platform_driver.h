@@ -37,6 +37,9 @@ public:
     int32_t attach() override = 0;
     void run() override = 0;
 
+    /** Set the driver's kernel task. Called by platform_init(). */
+    void set_task(sched::task* t) { m_task = t; }
+
 protected:
     /**
      * Map the device register region into kernel virtual address space.
@@ -65,6 +68,9 @@ protected:
     sync::wait_queue m_irq_wq;
     sync::spinlock   m_irq_lock;
     bool             m_event_pending;
+
+    /** @note Privilege: **required** */
+    friend __PRIVILEGED_CODE int32_t platform_init();
 };
 
 /**

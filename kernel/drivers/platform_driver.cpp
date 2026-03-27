@@ -1,17 +1,11 @@
 #include "drivers/platform_driver.h"
+#include "drivers/net/bcm_genet.h"
 #include "mm/vmm.h"
 #include "mm/heap.h"
 #include "sched/sched.h"
 #include "fdt/fdt.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
-
-// Forward declaration — the GENET driver is instantiated here
-namespace drivers {
-class bcm_genet_driver;
-bcm_genet_driver* create_bcm_genet(uint64_t reg_phys, uint64_t reg_size,
-                                    uint32_t irq0, uint32_t irq1);
-} // namespace drivers
 
 namespace drivers {
 
@@ -129,7 +123,7 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
         return -1;
     }
 
-    drv->m_task = t;
+    drv->set_task(t);
     sched::enqueue(t);
     return 0;
 }
@@ -145,7 +139,7 @@ __PRIVILEGED_CODE int32_t platform_init() {
         log::info("platform: %u device(s) bound", bound);
     }
 
-    return OK;
+    return 0;
 }
 
 } // namespace drivers
