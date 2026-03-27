@@ -1,4 +1,5 @@
 #include "net/arp.h"
+#include "net/net.h"
 #include "net/ethernet.h"
 #include "net/byteorder.h"
 #include "common/logging.h"
@@ -98,11 +99,8 @@ void arp_recv(netif* iface, const uint8_t* data, size_t len) {
     arp_table_update(sender_ip, arp->sender_mac);
 
     if (opcode == ARP_OP_REQUEST && iface->configured && target_ip == iface->ipv4_addr) {
-        // Send ARP reply
-        log::debug("arp: replying to request from %u.%u.%u.%u",
-                   (sender_ip >> 24) & 0xFF, (sender_ip >> 16) & 0xFF,
-                   (sender_ip >> 8) & 0xFF, sender_ip & 0xFF);
-
+        // Queue ARP reply for deferred transmission (same principle as
+        // ICMP echo replies — no inline TX from RX processing context).
         arp_header reply = {};
         reply.hw_type = htons(ARP_HW_ETHERNET);
         reply.proto_type = htons(ETH_TYPE_IPV4);
@@ -114,8 +112,8 @@ void arp_recv(netif* iface, const uint8_t* data, size_t len) {
         string::memcpy(reply.target_mac, arp->sender_mac, MAC_ADDR_LEN);
         reply.target_ip = arp->sender_ip;
 
-        eth_send(iface, arp->sender_mac, ETH_TYPE_ARP,
-                 reinterpret_cast<const uint8_t*>(&reply), sizeof(reply));
+        queue_deferred_eth_tx(iface, arp->sender_mac, ETH_TYPE_ARP,
+                              reinterpret_cast<const uint8_t*>(&reply), sizeof(reply));
     } else if (opcode == ARP_OP_REPLY) {
         log::debug("arp: got reply from %u.%u.%u.%u",
                    (sender_ip >> 24) & 0xFF, (sender_ip >> 16) & 0xFF,

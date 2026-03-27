@@ -20,12 +20,24 @@ __PRIVILEGED_DATA static sync::spinlock g_net_lock = sync::SPINLOCK_INIT;
 // that cannot be sent inline from RX processing context.
 constexpr uint32_t DEFERRED_TX_MAX = 8;
 
+enum class deferred_tx_kind : uint8_t {
+    ipv4,     // send via ipv4_send (dst_ip + protocol + payload)
+    ethernet, // send via eth_send (dst_mac + ethertype + payload)
+};
+
 struct deferred_tx_entry {
-    netif*   iface;
-    uint32_t dst_ip;       // host byte order
+    netif*           iface;
+    deferred_tx_kind kind;
+    size_t           len;
+    uint8_t          data[ETH_MTU];
+
+    // IPv4-level fields
+    uint32_t dst_ip;
     uint8_t  protocol;
-    size_t   len;
-    uint8_t  data[ETH_MTU];
+
+    // Ethernet-level fields
+    uint8_t  dst_mac[MAC_ADDR_LEN];
+    uint16_t ethertype;
 };
 
 __PRIVILEGED_DATA static deferred_tx_entry g_deferred_tx[DEFERRED_TX_MAX] = {};
@@ -130,8 +142,31 @@ void queue_deferred_tx(netif* iface, uint32_t dst_ip, uint8_t protocol,
         if (g_deferred_tx_count < DEFERRED_TX_MAX) {
             auto& entry = g_deferred_tx[g_deferred_tx_count];
             entry.iface = iface;
+            entry.kind = deferred_tx_kind::ipv4;
             entry.dst_ip = dst_ip;
             entry.protocol = protocol;
+            entry.len = len;
+            string::memcpy(entry.data, data, len);
+            g_deferred_tx_count++;
+        }
+    });
+}
+
+void queue_deferred_eth_tx(netif* iface, const uint8_t* dst_mac,
+                           uint16_t ethertype, const uint8_t* data, size_t len) {
+    if (!iface || !dst_mac || !data || len == 0 || len > ETH_MTU) {
+        return;
+    }
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_deferred_tx_lock);
+
+        if (g_deferred_tx_count < DEFERRED_TX_MAX) {
+            auto& entry = g_deferred_tx[g_deferred_tx_count];
+            entry.iface = iface;
+            entry.kind = deferred_tx_kind::ethernet;
+            string::memcpy(entry.dst_mac, dst_mac, MAC_ADDR_LEN);
+            entry.ethertype = ethertype;
             entry.len = len;
             string::memcpy(entry.data, data, len);
             g_deferred_tx_count++;
@@ -158,8 +193,13 @@ void drain_deferred_tx() {
     });
 
     for (uint32_t i = 0; i < count; i++) {
-        ipv4_send(local[i].iface, local[i].dst_ip, local[i].protocol,
-                  local[i].data, local[i].len);
+        if (local[i].kind == deferred_tx_kind::ipv4) {
+            ipv4_send(local[i].iface, local[i].dst_ip, local[i].protocol,
+                      local[i].data, local[i].len);
+        } else if (local[i].kind == deferred_tx_kind::ethernet) {
+            eth_send(local[i].iface, local[i].dst_mac, local[i].ethertype,
+                     local[i].data, local[i].len);
+        }
     }
 
     heap::kfree(local);

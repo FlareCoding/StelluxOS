@@ -112,6 +112,13 @@ void queue_deferred_tx(netif* iface, uint32_t dst_ip, uint8_t protocol,
                        const uint8_t* data, size_t len);
 
 /**
+ * Queue a raw Ethernet frame for deferred transmission.
+ * Used by ARP replies which bypass the IPv4 layer.
+ */
+void queue_deferred_eth_tx(netif* iface, const uint8_t* dst_mac,
+                           uint16_t ethertype, const uint8_t* data, size_t len);
+
+/**
  * Send all packets queued by queue_deferred_tx().
  * Called from the driver's run() or poll_callback after RX delivery
  * is complete. Runs at the top level, outside any RX processing,

@@ -82,7 +82,12 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
         RUN_ELEVATED(iface->poll(iface));
     }
 
-    // Read the entry header (src_ip + payload_len)
+    // The header read may block if no data is available. Since entries
+    // are written atomically via ring_buffer_write_all, once the header
+    // is available the payload is guaranteed to be there too. No lock
+    // is needed because the ring buffer has its own internal lock per
+    // read/write, and the atomic write ensures the header and payload
+    // are always a complete unit.
     uint8_t hdr[RX_ENTRY_HEADER];
     ssize_t hdr_rc = ring_buffer_read(sock->rx_buf, hdr, RX_ENTRY_HEADER, nonblock);
     if (hdr_rc == RB_ERR_AGAIN) {
@@ -100,12 +105,9 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
     size_t to_read = payload_len < count ? payload_len : count;
     ssize_t data_rc = ring_buffer_read(sock->rx_buf, static_cast<uint8_t*>(kdst),
                                        to_read, true);
-    if (data_rc < 0) {
-        return resource::ERR_IO;
-    }
 
     // Drain excess if user buffer was smaller than the packet
-    if (to_read < payload_len) {
+    if (data_rc >= 0 && to_read < payload_len) {
         size_t discard = payload_len - to_read;
         uint8_t trash[64];
         while (discard > 0) {
@@ -113,6 +115,10 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
             (void)ring_buffer_read(sock->rx_buf, trash, chunk, true);
             discard -= chunk;
         }
+    }
+
+    if (data_rc < 0) {
+        return resource::ERR_IO;
     }
 
     // Fill in source address
