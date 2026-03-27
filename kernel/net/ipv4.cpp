@@ -165,7 +165,7 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
 
     // Local or loopback delivery — no ARP needed. Use the interface's
     // own MAC as destination (all zeros for lo).
-    bool is_loopback_iface = (string::strncmp(out_iface->name, "lo", 3) == 0);
+    bool is_loopback_iface = (out_iface->flags & NETIF_LOOPBACK) != 0;
     if (rt.type == route_type::LOCAL || is_loopback_iface) {
         int32_t rc = eth_send(out_iface, out_iface->mac, ETH_TYPE_IPV4,
                               packet, total_len);

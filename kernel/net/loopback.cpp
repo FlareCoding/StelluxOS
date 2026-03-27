@@ -13,6 +13,11 @@ namespace {
 // registered into g_iface_list which is __PRIVILEGED_DATA.
 __PRIVILEGED_DATA static netif g_lo_netif = {};
 
+// Set to true only after loopback_init() completes successfully.
+// get_loopback_netif() returns nullptr if this is false, preventing
+// other code from using an unregistered/unconfigured loopback.
+__PRIVILEGED_DATA static bool g_lo_initialized = false;
+
 /**
  * Loopback transmit callback.
  * Feeds the frame directly back to the receive path.
@@ -92,12 +97,13 @@ __PRIVILEGED_CODE int32_t loopback_init() {
         return rc;
     }
 
+    g_lo_initialized = true;
     log::info("loopback: initialized lo (127.0.0.1/8)");
     return OK;
 }
 
 netif* get_loopback_netif() {
-    return &g_lo_netif;
+    return g_lo_initialized ? &g_lo_netif : nullptr;
 }
 
 } // namespace net
