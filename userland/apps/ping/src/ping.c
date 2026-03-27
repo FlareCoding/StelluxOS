@@ -341,7 +341,16 @@ int main(int argc, char* argv[]) {
             nrecv = recvfrom(fd, reply_buf, sizeof(reply_buf), MSG_DONTWAIT,
                              (struct sockaddr*)&src, &srclen);
             if (nrecv >= (ssize_t)sizeof(struct icmp_hdr)) {
-                break;  // got a reply
+                // Check if this is actually an echo reply (not a request
+                // echoed back by the loopback interface). Skip non-reply
+                // packets and continue polling.
+                struct icmp_hdr* peek = (struct icmp_hdr*)reply_buf;
+                if (peek->type == ICMP_ECHO_REPLY) {
+                    break;  // got a reply
+                }
+                // Not a reply — discard and keep looking
+                nrecv = -1;
+                continue;
             }
             // No data yet — sleep briefly and retry
             struct timespec poll_delay = { .tv_sec = 0,

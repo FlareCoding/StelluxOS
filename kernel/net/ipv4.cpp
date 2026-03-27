@@ -111,12 +111,16 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     }
 
     // Determine the outgoing interface:
-    // - For LOCAL routes, always use the route's interface (loopback)
-    //   regardless of what the caller specified
+    // - If the route goes through loopback (LOCAL type or loopback interface),
+    //   always use the route's interface regardless of what the caller specified.
+    //   This ensures packets to 127.x.x.x always go through loopback even when
+    //   the caller passes eth0 (e.g. inet_sendto uses get_default_netif()).
     // - For other routes, prefer the caller's interface if specified
-    //   (e.g. deferred TX entries store a specific interface)
+    //   (e.g. deferred TX entries store a specific interface).
+    bool route_is_loopback = (rt.type == route_type::LOCAL) ||
+                             (rt.iface && (rt.iface->flags & NETIF_LOOPBACK));
     netif* out_iface = rt.iface;
-    if (iface && rt.type != route_type::LOCAL) {
+    if (iface && !route_is_loopback) {
         out_iface = iface;
     }
 
