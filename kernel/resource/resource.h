@@ -19,13 +19,19 @@ using ioctl_fn = int32_t (*)(resource_object* obj, uint32_t cmd, uint64_t arg);
 using mmap_fn = int32_t (*)(resource_object* obj, mm::mm_context* mm_ctx,
                             uintptr_t addr, size_t length, uint32_t prot,
                             uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
+using sendto_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count,
+                              uint32_t flags, const void* kaddr, size_t addrlen);
+using recvfrom_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count,
+                                uint32_t flags, void* kaddr, size_t* addrlen);
 
 struct resource_ops {
-    read_fn  read;
-    write_fn write;
-    close_fn close;
-    ioctl_fn ioctl; // nullable -- returns ERR_UNSUP if null
-    mmap_fn  mmap;  // nullable -- returns MM_CTX_* error codes
+    read_fn     read;
+    write_fn    write;
+    close_fn    close;
+    ioctl_fn    ioctl;    // nullable
+    mmap_fn     mmap;     // nullable
+    sendto_fn   sendto;   // nullable — for datagram/raw sockets
+    recvfrom_fn recvfrom; // nullable — for datagram/raw sockets
 };
 
 struct resource_object : rc::ref_counted<resource_object> {

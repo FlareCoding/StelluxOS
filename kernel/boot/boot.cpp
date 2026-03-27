@@ -24,6 +24,7 @@
 #include "drivers/pci_driver.h"
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
+#include "net/net.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -140,6 +141,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         cpu::halt();
     }
 #endif
+
+    if (net::init() != net::OK) {
+        log::warn("net::init failed, networking unavailable");
+    }
 
     if (drivers::init() != drivers::OK) {
         log::warn("drivers::init failed");
