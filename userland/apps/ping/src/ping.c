@@ -23,6 +23,10 @@ struct icmp_hdr {
 #define ICMP_PAYLOAD_LEN  56
 #define ICMP_PACKET_LEN   (sizeof(struct icmp_hdr) + ICMP_PAYLOAD_LEN)
 
+// Receive timeout: poll interval and total wait time per ping
+#define PING_RECV_POLL_MS    50       // poll every 50ms
+#define PING_RECV_TIMEOUT_MS 3000     // give up after 3 seconds
+
 static uint16_t inet_checksum(const void* data, size_t len) {
     const uint8_t* ptr = (const uint8_t*)data;
     uint32_t sum = 0;
@@ -323,13 +327,29 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // Wait for reply (blocking recvfrom)
+        // Wait for reply using non-blocking poll/sleep loop with timeout.
+        // This avoids blocking forever when replies never arrive (e.g.
+        // unreachable host, firewall, QEMU SLIRP ICMP limitation).
         uint8_t reply_buf[256];
         struct sockaddr_in src;
         socklen_t srclen = sizeof(src);
+        ssize_t nrecv = -1;
 
-        ssize_t nrecv = recvfrom(fd, reply_buf, sizeof(reply_buf), 0,
-                                 (struct sockaddr*)&src, &srclen);
+        int elapsed_ms = 0;
+        while (elapsed_ms < PING_RECV_TIMEOUT_MS) {
+            srclen = sizeof(src);
+            nrecv = recvfrom(fd, reply_buf, sizeof(reply_buf), MSG_DONTWAIT,
+                             (struct sockaddr*)&src, &srclen);
+            if (nrecv >= (ssize_t)sizeof(struct icmp_hdr)) {
+                break;  // got a reply
+            }
+            // No data yet — sleep briefly and retry
+            struct timespec poll_delay = { .tv_sec = 0,
+                                           .tv_nsec = PING_RECV_POLL_MS * 1000000L };
+            nanosleep(&poll_delay, NULL);
+            elapsed_ms += PING_RECV_POLL_MS;
+            nrecv = -1;  // ensure timeout path is taken if loop exhausts
+        }
 
         struct timespec t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
