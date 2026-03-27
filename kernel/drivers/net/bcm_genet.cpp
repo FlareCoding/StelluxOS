@@ -1104,20 +1104,11 @@ int32_t bcm_genet_driver::attach() {
 
     // Configure static IP — adjust for your network or replace with DHCP.
     net::configure(&m_netif,
-                   net::ipv4_addr(192, 168, 1, 100),    // IP
+                   net::ipv4_addr(10, 0, 0, 200),       // IP
                    net::ipv4_addr(255, 255, 255, 0),     // Netmask
-                   net::ipv4_addr(192, 168, 1, 1));      // Gateway
+                   net::ipv4_addr(10, 0, 0, 1));         // Gateway
 
-    log::info("genet: ========================================");
     log::info("genet: driver attached successfully!");
-    log::info("genet: IP configured: 192.168.1.100/24 gw 192.168.1.1");
-    log::info("genet: ========================================");
-
-    // Full state dump for debugging
-    dump_state();
-
-    // Initial link check (auto-negotiation may still be in progress)
-    phy_update_link();
 
     return 0;
 }
@@ -1154,11 +1145,14 @@ void bcm_genet_driver::run() {
     // Periodic counters
     uint32_t link_poll_counter = 0;
     uint32_t loop_counter = 0;
-    constexpr uint32_t LINK_POLL_INTERVAL = 1000;
+    constexpr uint32_t LINK_POLL_INTERVAL = 100; // ~1s at 10ms/iteration
 
     while (true) {
         if (m_has_irq) {
-            wait_for_event();
+            // Use a short sleep instead of indefinite wait so that the
+            // link poll below always runs, even when no interrupts fire
+            // (e.g. link is down and no packets are arriving).
+            RUN_ELEVATED(sched::sleep_ms(10));
         } else {
             RUN_ELEVATED(sched::sleep_ms(1));
         }
@@ -1173,7 +1167,7 @@ void bcm_genet_driver::run() {
         // Drain deferred TX (ICMP echo replies, ARP replies, etc.)
         RUN_ELEVATED(net::drain_deferred_tx());
 
-        // Periodic link status check
+        // Periodic link status check (~1s in IRQ mode, ~1s in polling mode)
         link_poll_counter++;
         if (link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;
@@ -1184,7 +1178,7 @@ void bcm_genet_driver::run() {
         loop_counter++;
         if (loop_counter == 5000) {
             log::info("genet: periodic check at ~5s:");
-            dump_state();
+            RUN_ELEVATED(dump_state());
         }
     }
 }

@@ -99,7 +99,14 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
     }
 
     if (!found) {
-        return -1;
+        // ACPI-booted RPi4 (via UEFI) may not pass FDT to the kernel.
+        // Fall back to the known BCM2711 GENET MMIO address.
+        reg_phys = BCM2711_GENET_BASE;
+        reg_size = BCM2711_GENET_SIZE;
+        irqs[0] = BCM2711_GENET_IRQ0;
+        irqs[1] = BCM2711_GENET_IRQ1;
+        log::info("platform: GENET not in FDT, using known BCM2711 addresses "
+                  "(0x%lx, IRQs %u,%u)", reg_phys, irqs[0], irqs[1]);
     }
 
     auto* drv = create_bcm_genet(reg_phys, reg_size, irqs[0], irqs[1]);
