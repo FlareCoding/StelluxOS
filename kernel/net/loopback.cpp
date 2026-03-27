@@ -57,6 +57,7 @@ __PRIVILEGED_CODE int32_t loopback_init() {
     g_lo_netif.link_up     = lo_link_up;
     g_lo_netif.poll        = nullptr;  // no polling needed
     g_lo_netif.driver_data = nullptr;
+    g_lo_netif.flags       = NETIF_UP | NETIF_RUNNING | NETIF_LOOPBACK;
 
     // Register with the network stack.
     // Note: register_netif() uses RUN_ELEVATED internally, but we're

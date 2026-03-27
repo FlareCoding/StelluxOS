@@ -391,6 +391,83 @@ TEST(loopback_test, transmit_zero_length) {
     EXPECT_EQ(rc, net::ERR_INVAL);
 }
 
+// ============================================================================
+// Phase 3: Interface flags
+// ============================================================================
+
+TEST(loopback_test, has_netif_flags) {
+    net::netif* lo = net::get_loopback_netif();
+    ASSERT_NOT_NULL(lo);
+    EXPECT_BITS_SET(lo->flags, net::NETIF_UP);
+    EXPECT_BITS_SET(lo->flags, net::NETIF_RUNNING);
+    EXPECT_BITS_SET(lo->flags, net::NETIF_LOOPBACK);
+}
+
+TEST(loopback_test, iff_loopback_in_status) {
+    net::net_status status = {};
+    int32_t rc = net::query_status(&status);
+    ASSERT_EQ(rc, net::OK);
+
+    bool found_lo = false;
+    for (uint32_t i = 0; i < status.if_count; i++) {
+        if (string::strcmp(status.interfaces[i].name, "lo") == 0) {
+            found_lo = true;
+            EXPECT_BITS_SET(status.interfaces[i].flags, net::IFF_LOOPBACK);
+            break;
+        }
+    }
+    EXPECT_TRUE(found_lo);
+}
+
+// ============================================================================
+// Phase 3: Interface lookup
+// ============================================================================
+
+TEST(loopback_test, find_netif_by_name) {
+    net::netif* lo = net::find_netif("lo");
+    ASSERT_NOT_NULL(lo);
+    EXPECT_STREQ(lo->name, "lo");
+    EXPECT_EQ(lo, net::get_loopback_netif());
+}
+
+TEST(loopback_test, find_netif_not_found) {
+    net::netif* eth99 = net::find_netif("eth99");
+    EXPECT_TRUE(eth99 == nullptr);
+}
+
+TEST(loopback_test, find_netif_null_name) {
+    net::netif* result = net::find_netif(nullptr);
+    EXPECT_TRUE(result == nullptr);
+}
+
+TEST(loopback_test, find_netif_by_ip_loopback) {
+    net::netif* lo = net::find_netif_by_ip(net::ipv4_addr(127, 0, 0, 1));
+    ASSERT_NOT_NULL(lo);
+    EXPECT_STREQ(lo->name, "lo");
+}
+
+TEST(loopback_test, find_netif_by_ip_not_found) {
+    net::netif* result = net::find_netif_by_ip(net::ipv4_addr(8, 8, 8, 8));
+    EXPECT_TRUE(result == nullptr);
+}
+
+TEST(loopback_test, find_netif_by_ip_zero) {
+    net::netif* result = net::find_netif_by_ip(0);
+    EXPECT_TRUE(result == nullptr);
+}
+
+TEST(loopback_test, is_local_ip_loopback) {
+    EXPECT_TRUE(net::is_local_ip(net::ipv4_addr(127, 0, 0, 1)));
+}
+
+TEST(loopback_test, is_local_ip_unknown) {
+    EXPECT_FALSE(net::is_local_ip(net::ipv4_addr(8, 8, 8, 8)));
+}
+
+// ============================================================================
+// Loopback transmit with null/invalid args
+// ============================================================================
+
 TEST(loopback_test, transmit_null_iface) {
     net::netif* lo = net::get_loopback_netif();
     ASSERT_NOT_NULL(lo);

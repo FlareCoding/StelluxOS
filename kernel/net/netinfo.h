@@ -10,6 +10,7 @@ constexpr uint32_t STLX_SIOCGNETSTATUS = 0x4E01;
 constexpr uint32_t IFF_UP        = (1u << 0);
 constexpr uint32_t IFF_CONFIGURED = (1u << 1);
 constexpr uint32_t IFF_DEFAULT   = (1u << 2);
+constexpr uint32_t IFF_LOOPBACK  = (1u << 3);
 
 struct net_status_entry {
     char     name[16];
