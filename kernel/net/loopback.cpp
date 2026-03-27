@@ -8,14 +8,17 @@ namespace net {
 
 namespace {
 
-// Static loopback interface — lives in privileged data because it's
-// registered into g_iface_list which is __PRIVILEGED_DATA.
-__PRIVILEGED_DATA static netif g_lo_netif = {};
+// Static loopback interface. NOT __PRIVILEGED_DATA because the netif
+// struct is accessed from both privileged (IRQ lock guards in
+// register_netif) and unprivileged (get_loopback_netif, configure,
+// route_add_interface_routes) contexts. This matches the virtio-net
+// driver which also stores its netif in regular memory.
+static netif g_lo_netif = {};
 
 // Set to true only after loopback_init() completes successfully.
 // get_loopback_netif() returns nullptr if this is false, preventing
 // other code from using an unregistered/unconfigured loopback.
-__PRIVILEGED_DATA static bool g_lo_initialized = false;
+static bool g_lo_initialized = false;
 
 /**
  * Loopback transmit callback.
