@@ -123,6 +123,14 @@ netif* get_default_netif() {
     return g_default_iface;
 }
 
+uint32_t get_dns_server() {
+    netif* iface = g_default_iface;
+    if (iface && iface->configured) {
+        return iface->ipv4_dns;
+    }
+    return 0;
+}
+
 void rx_frame(netif* iface, const uint8_t* data, size_t len) {
     if (!iface || !data || len < sizeof(eth_header)) {
         return;
