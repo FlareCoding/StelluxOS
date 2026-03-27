@@ -2,6 +2,7 @@
 #include "net/ethernet.h"
 #include "net/arp.h"
 #include "net/icmp.h"
+#include "net/udp.h"
 #include "net/byteorder.h"
 #include "net/checksum.h"
 #include "common/logging.h"
@@ -65,6 +66,9 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
     switch (hdr->protocol) {
     case IPV4_PROTO_ICMP:
         icmp_recv(iface, src_ip, payload, payload_len);
+        break;
+    case IPV4_PROTO_UDP:
+        udp_recv(iface, src_ip, dst_ip, payload, payload_len);
         break;
     default:
         break;
