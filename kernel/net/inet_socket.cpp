@@ -1,14 +1,15 @@
 #include "net/inet_socket.h"
 #include "net/net.h"
+#include "net/netinfo.h"
 #include "net/ipv4.h"
 #include "net/icmp.h"
 #include "net/udp.h"
 #include "net/byteorder.h"
 #include "net/checksum.h"
 #include "common/ring_buffer.h"
-#include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
+#include "mm/uaccess.h"
 #include "sync/spinlock.h"
 #include "dynpriv/dynpriv.h"
 
@@ -138,6 +139,19 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
     return data_rc;
 }
 
+__PRIVILEGED_CODE static int32_t inet_ioctl(
+    resource::resource_object* obj, uint32_t cmd, uint64_t arg) {
+    (void)obj;
+    if (cmd == STLX_SIOCGNETSTATUS) {
+        net_status status = {};
+        query_status(&status);
+        int32_t rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(arg), &status, sizeof(status));
+        return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+    }
+    return resource::ERR_UNSUP;
+}
+
 __PRIVILEGED_CODE static void inet_close(resource::resource_object* obj) {
     if (!obj || !obj->impl) {
         return;
@@ -163,7 +177,7 @@ static const resource::resource_ops g_inet_icmp_ops = {
     nullptr,        // read
     nullptr,        // write
     inet_close,
-    nullptr,        // ioctl
+    inet_ioctl,
     nullptr,        // mmap
     inet_sendto,
     inet_recvfrom,
@@ -313,7 +327,7 @@ static const resource::resource_ops g_inet_udp_ops = {
     nullptr,            // read
     nullptr,            // write
     inet_close,
-    nullptr,            // ioctl
+    inet_ioctl,
     nullptr,            // mmap
     inet_udp_sendto,
     inet_udp_recvfrom,

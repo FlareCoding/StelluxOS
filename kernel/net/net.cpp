@@ -1,4 +1,5 @@
 #include "net/net.h"
+#include "net/netinfo.h"
 #include "net/ethernet.h"
 #include "net/ipv4.h"
 #include "net/arp.h"
@@ -211,6 +212,62 @@ void drain_deferred_tx() {
     }
 
     heap::kfree(local);
+}
+
+__PRIVILEGED_CODE int32_t query_status(net_status* out) {
+    if (!out) return ERR_INVAL;
+
+    string::memset(out, 0, sizeof(net_status));
+
+    // Snapshot interface data under the lock.
+    // Save link_up callback + netif pointer for each interface so we
+    // can query live link status outside the lock (avoids calling
+    // driver callbacks while holding g_net_lock).
+    struct snapshot_entry {
+        netif* iface;
+        netif_link_fn link_fn;
+        bool is_default;
+    };
+    snapshot_entry snap[MAX_INTERFACES];
+    uint32_t count = 0;
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_net_lock);
+
+        netif* cur = g_iface_list;
+        while (cur && count < MAX_INTERFACES) {
+            auto& e = out->interfaces[count];
+            string::memcpy(e.name, cur->name, 16);
+            string::memcpy(e.mac, cur->mac, MAC_ADDR_LEN);
+            e.ipv4_addr    = cur->ipv4_addr;
+            e.ipv4_netmask = cur->ipv4_netmask;
+            e.ipv4_gateway = cur->ipv4_gateway;
+            e.ipv4_dns     = cur->ipv4_dns;
+            e.flags = 0;
+            if (cur->configured) {
+                e.flags |= IFF_CONFIGURED;
+            }
+
+            snap[count].iface = cur;
+            snap[count].link_fn = cur->link_up;
+            snap[count].is_default = (cur == g_default_iface);
+            count++;
+            cur = cur->next;
+        }
+    });
+
+    // Query live link status outside the lock.
+    for (uint32_t i = 0; i < count; i++) {
+        if (snap[i].link_fn && snap[i].link_fn(snap[i].iface)) {
+            out->interfaces[i].flags |= IFF_UP;
+        }
+        if (snap[i].is_default) {
+            out->interfaces[i].flags |= IFF_DEFAULT;
+        }
+    }
+
+    out->if_count = count;
+    return OK;
 }
 
 } // namespace net

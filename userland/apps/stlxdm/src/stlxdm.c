@@ -6,7 +6,9 @@
 #include <stlxgfx/window.h>
 #include <stlxgfx/event.h>
 #include <stlx/proc.h>
+#include <stlx/net.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -203,6 +205,35 @@ static void stlxdm_compositor_sync(stlxdm_compositor_t* comp,
     }
 }
 
+static char g_net_status_str[32] = "no network";
+static struct timespec g_net_last_query = {0, 0};
+
+static void stlxdm_update_net_status(void) {
+    struct stlx_net_status st;
+    if (stlx_net_get_status(&st) != 0 || st.if_count == 0) {
+        strcpy(g_net_status_str, "no network");
+        return;
+    }
+
+    const struct stlx_ifinfo* def = stlx_net_default_if(&st);
+    if (!def) {
+        strcpy(g_net_status_str, "no network");
+        return;
+    }
+
+    if (!(def->flags & STLX_IFF_UP)) {
+        strcpy(g_net_status_str, "disconnected");
+    } else if (!(def->flags & STLX_IFF_CONFIGURED)) {
+        strcpy(g_net_status_str, "unconfigured");
+    } else {
+        uint32_t ip = def->ipv4_addr;
+        snprintf(g_net_status_str, sizeof(g_net_status_str),
+                 "%u.%u.%u.%u",
+                 (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                 (ip >> 8) & 0xFF, ip & 0xFF);
+    }
+}
+
 static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
                                         const stlxdm_config_t* conf) {
     stlxgfx_ctx_fill_rect(ctx, 0, 0, width, STLXDM_BAR_HEIGHT,
@@ -212,6 +243,18 @@ static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
     stlxgfx_ctx_draw_text(ctx, 10, 6, "Stellux", conf->bar_font_size,
                            conf->text_color);
 
+    // Refresh network status every 3 seconds
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+        int64_t elapsed = (now.tv_sec - g_net_last_query.tv_sec);
+        if (elapsed >= 3 || g_net_last_query.tv_sec == 0) {
+            stlxdm_update_net_status();
+            g_net_last_query = now;
+        }
+    }
+
+    // Center: clock
+    int32_t time_end_x = 0;
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
         struct tm* t = gmtime(&ts.tv_sec);
@@ -223,7 +266,17 @@ static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
             int32_t tx = ((int32_t)width - (int32_t)tw) / 2;
             stlxgfx_ctx_draw_text(ctx, tx, 6, time_str, conf->bar_font_size,
                                    conf->text_color);
+            time_end_x = tx + (int32_t)tw;
         }
+    }
+
+    // Right: network status (only if it won't overlap the clock)
+    uint32_t nw = 0, nh = 0;
+    stlxgfx_ctx_text_size(g_net_status_str, conf->bar_font_size, &nw, &nh);
+    int32_t nx = (int32_t)width - (int32_t)nw - 10;
+    if (nx > time_end_x + 8) {
+        stlxgfx_ctx_draw_text(ctx, nx, 6, g_net_status_str,
+                               conf->bar_font_size, conf->text_color);
     }
 }
 
