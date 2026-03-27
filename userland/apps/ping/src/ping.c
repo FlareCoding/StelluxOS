@@ -82,7 +82,7 @@ static uint16_t my_ntohs(uint16_t v) {
     return (uint16_t)((v >> 8) | (v << 8));
 }
 
-#define DNS_SERVER_IP     0x0A000203  // 10.0.2.3 (QEMU user-mode DNS forwarder)
+#define DNS_SERVER_IP     0x08080808  // 8.8.8.8 (Google Public DNS)
 #define DNS_PORT          53
 #define DNS_HEADER_LEN    12
 #define DNS_TYPE_A        1
