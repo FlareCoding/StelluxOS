@@ -4,7 +4,9 @@
 #include "mm/heap.h"
 #include "sched/sched.h"
 #include "fdt/fdt.h"
+#include "acpi/acpi.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "dynpriv/dynpriv.h"
 
 namespace drivers {
@@ -75,6 +77,15 @@ static void platform_task_entry(void* arg) {
     drv->run();
 }
 
+// Check if we're running on a Raspberry Pi 4 via ACPI FADT OEM IDs.
+// Same check used by the PCI subsystem for BCM2711 detection.
+static bool is_rpi4() {
+    const auto* fadt = acpi::find_table("FACP");
+    if (!fadt) return false;
+    return string::memcmp(fadt->oem_id, "RPIFDN", 6) == 0
+        && string::memcmp(fadt->oem_table_id, "RPI4", 4) == 0;
+}
+
 // Known RPi4 GENET addresses (used when FDT doesn't have them or ACPI is used)
 constexpr uint64_t BCM2711_GENET_BASE = 0xfd580000;
 constexpr uint64_t BCM2711_GENET_SIZE = 0x10000;
@@ -113,14 +124,21 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
     }
 
     if (!found) {
-        // ACPI-booted RPi4 (via UEFI) may not pass FDT to the kernel.
-        // Fall back to the known BCM2711 GENET MMIO address.
+        // FDT didn't have a GENET node. Only fall back to hardcoded
+        // addresses if we can confirm this is actually an RPi4 board.
+        // Without this check, we'd probe 0xfd580000 on QEMU virt or
+        // other aarch64 platforms where that address is unmapped.
+        if (!is_rpi4()) {
+            return -1;
+        }
+
         reg_phys = BCM2711_GENET_BASE;
         reg_size = BCM2711_GENET_SIZE;
         irqs[0] = BCM2711_GENET_IRQ0;
         irqs[1] = BCM2711_GENET_IRQ1;
-        log::info("platform: GENET not in FDT, using known BCM2711 addresses "
-                  "(0x%lx, IRQs %u,%u)", reg_phys, irqs[0], irqs[1]);
+        log::info("platform: GENET not in FDT, RPi4 detected via ACPI OEM — "
+                  "using known BCM2711 addresses (0x%lx, IRQs %u,%u)",
+                  reg_phys, irqs[0], irqs[1]);
     }
 
     auto* drv = create_bcm_genet(reg_phys, reg_size, irqs[0], irqs[1]);
