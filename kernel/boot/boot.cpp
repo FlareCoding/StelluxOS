@@ -22,6 +22,7 @@
 #include "dynpriv/dynpriv.h"
 #include "msi/msi.h"
 #include "drivers/pci_driver.h"
+#include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
 #include "net/net.h"
@@ -148,6 +149,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (drivers::init() != drivers::OK) {
         log::warn("drivers::init failed");
+    }
+
+    if (drivers::platform_init() != drivers::OK) {
+        log::warn("drivers::platform_init failed");
     }
 
     exec::loaded_image loaded;

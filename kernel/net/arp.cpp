@@ -5,6 +5,7 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
+#include "sched/sched.h"
 #include "hw/cpu.h"
 #include "dynpriv/dynpriv.h"
 
@@ -154,12 +155,17 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
         return OK;
     }
 
-    // Poll the driver's RX path to process incoming packets synchronously.
+    // Sleep between polls so the scheduler can run other tasks and interrupts can fire
+    constexpr uint32_t POLLS_PER_ATTEMPT = 100;
+    constexpr uint64_t POLL_SLEEP_MS = 10;
+
     for (uint32_t attempt = 0; attempt < ARP_RETRY_COUNT; attempt++) {
         arp_send_request(iface, target_ip);
 
-        for (uint32_t poll = 0; poll < 5000; poll++) {
+        for (uint32_t poll = 0; poll < POLLS_PER_ATTEMPT; poll++) {
             RUN_ELEVATED({
+                sched::sleep_ms(POLL_SLEEP_MS);
+                
                 if (iface->poll) {
                     iface->poll(iface);
                 }
@@ -168,11 +174,8 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
             if (arp_table_lookup(target_ip, out_mac)) {
                 return OK;
             }
-
-            for (uint32_t j = 0; j < 100; j++) {
-                cpu::relax();
-            }
         }
+
     }
 
     log::warn("arp: failed to resolve %u.%u.%u.%u",

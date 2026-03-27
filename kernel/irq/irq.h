@@ -52,6 +52,35 @@ __PRIVILEGED_CODE void unmask(uint32_t irq);
  */
 __PRIVILEGED_CODE void mask(uint32_t irq);
 
+// Generic IRQ handler dispatch table
+
+constexpr int32_t ERR_INVAL    = -3;
+constexpr int32_t ERR_BUSY     = -4;
+constexpr uint32_t MAX_IRQ     = 1024;
+
+using irq_handler_fn = void (*)(uint32_t irq, void* context);
+
+/**
+ * @brief Register an IRQ handler. One handler per IRQ number.
+ * @return OK on success, ERR_BUSY if already registered.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t register_handler(uint32_t irq, irq_handler_fn fn,
+                                           void* context);
+
+/**
+ * @brief Unregister an IRQ handler.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void unregister_handler(uint32_t irq);
+
+/**
+ * @brief Dispatch an interrupt to a registered handler.
+ * Called from the trap handler. Returns true if handled.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool dispatch(uint32_t irq);
+
 } // namespace irq
 
 #endif // STELLUX_IRQ_IRQ_H
