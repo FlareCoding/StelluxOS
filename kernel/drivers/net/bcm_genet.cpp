@@ -634,6 +634,14 @@ int32_t bcm_genet_driver::tx_callback(net::netif* iface, const uint8_t* frame, s
 
             drv->m_tx_queued++;
             result = 0;
+
+            // Log first TX for debugging
+            static bool s_first_tx_logged = false;
+            if (!s_first_tx_logged) {
+                log::info("genet: === FIRST TX === len=%lu desc=%u prod=%u phys=0x%lx status=0x%08x",
+                          len, desc_idx, drv->m_tx_prod_index, buf_phys, desc_status);
+                s_first_tx_logged = true;
+            }
         }
     });
 
@@ -661,6 +669,14 @@ void bcm_genet_driver::process_rx() {
     uint32_t hw_prod = reg_read(RX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE)) & DMA_INDEX_MASK;
     uint32_t pending = (hw_prod - m_rx_cons_index) & DMA_INDEX_MASK;
 
+    // Log first RX activity for debugging
+    static bool s_first_rx_logged = false;
+    if (pending > 0 && !s_first_rx_logged) {
+        log::info("genet: === FIRST RX ACTIVITY === pending=%u hw_prod=%u sw_cons=%u",
+                  pending, hw_prod, m_rx_cons_index);
+        s_first_rx_logged = true;
+    }
+
     for (uint32_t i = 0; i < pending; i++) {
         uint16_t desc_idx = m_rx_cons_index % DMA_DESC_COUNT;
 
@@ -669,17 +685,20 @@ void bcm_genet_driver::process_rx() {
 
         // Check for errors
         if (desc_status & RX_DESC_RX_ERROR) {
-            log::debug("genet: RX error on desc %u (status=0x%08x)", desc_idx, desc_status);
+            log::warn("genet: RX error on desc %u (status=0x%08x)", desc_idx, desc_status);
             goto next;
         }
 
         // Check SOP+EOP (we don't support multi-descriptor frames)
         if ((desc_status & (RX_DESC_SOP | RX_DESC_EOP)) != (RX_DESC_SOP | RX_DESC_EOP)) {
-            log::debug("genet: RX multi-desc frame on desc %u, dropping", desc_idx);
+            log::warn("genet: RX multi-desc frame on desc %u (status=0x%08x), dropping",
+                      desc_idx, desc_status);
             goto next;
         }
 
         if (buf_len > MAX_PACKET_SIZE || buf_len <= 2) {
+            log::warn("genet: RX bad length %u on desc %u (status=0x%08x)",
+                      buf_len, desc_idx, desc_status);
             goto next;
         }
 
@@ -787,6 +806,14 @@ void bcm_genet_driver::isr(uint32_t /* irq */, void* context) {
     uint32_t status = drv->reg_read(INTRL2_CPU_STAT);
     if (status != 0) {
         drv->reg_write(INTRL2_CPU_CLEAR, status);
+
+        // Log first interrupt for debugging
+        static bool s_first_irq_logged = false;
+        if (!s_first_irq_logged) {
+            // Note: this is ISR context — log::info may not be safe on all platforms.
+            // But for initial bring-up debugging it's invaluable.
+            s_first_irq_logged = true;
+        }
     }
 
     // Wake the driver task
@@ -866,27 +893,84 @@ void bcm_genet_driver::setup_rx_filter() {
 // ============================================================================
 
 void bcm_genet_driver::dump_state() {
-    log::info("genet: === State Dump ===");
+    log::info("genet: ===== State Dump =====");
+
+    // System / revision
+    log::info("genet: SYS_REV_CTRL   = 0x%08x", reg_read(SYS_REV_CTRL));
+    log::info("genet: SYS_PORT_CTRL  = 0x%08x", reg_read(SYS_PORT_CTRL));
+
+    // UMAC
     log::info("genet: UMAC_CMD       = 0x%08x", reg_read(UMAC_CMD));
     log::info("genet: UMAC_MAC0      = 0x%08x", reg_read(UMAC_MAC0));
     log::info("genet: UMAC_MAC1      = 0x%08x", reg_read(UMAC_MAC1));
     log::info("genet: MAX_FRAME_LEN  = %u", reg_read(UMAC_MAX_FRAME_LEN));
+
+    // RBUF
+    log::info("genet: RBUF_CTRL      = 0x%08x", reg_read(RBUF_CTRL));
+    log::info("genet: RBUF_TBUF_SIZE = 0x%08x", reg_read(RBUF_TBUF_SIZE_CTRL));
+
+    // RGMII OOB
+    log::info("genet: EXT_RGMII_OOB  = 0x%08x", reg_read(EXT_RGMII_OOB_CTRL));
+
+    // Interrupts
     log::info("genet: INTRL2_STAT    = 0x%08x", reg_read(INTRL2_CPU_STAT));
     log::info("genet: INTRL2_MASK    = 0x%08x", reg_read(INTRL2_CPU_STAT_MASK));
-    log::info("genet: TX prod=%u cons=%u queued=%u",
-              m_tx_prod_index, m_tx_cons_index, m_tx_queued);
-    log::info("genet: RX cons=%u hw_prod=%u",
-              m_rx_cons_index,
-              reg_read(RX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE)) & DMA_INDEX_MASK);
 
-    uint16_t bmsr = 0;
+    // DMA control
+    log::info("genet: TX_DMA_CTRL    = 0x%08x", reg_read(TX_DMA_CTRL));
+    log::info("genet: RX_DMA_CTRL    = 0x%08x", reg_read(RX_DMA_CTRL));
+    log::info("genet: TX_RING_CFG    = 0x%08x", reg_read(TX_DMA_RING_CFG));
+    log::info("genet: RX_RING_CFG    = 0x%08x", reg_read(RX_DMA_RING_CFG));
+
+    // DMA ring indices
+    constexpr uint32_t Q = DMA_DEFAULT_QUEUE;
+    log::info("genet: TX hw_prod=%u hw_cons=%u sw_prod=%u sw_cons=%u queued=%u",
+              reg_read(TX_DMA_PROD_INDEX(Q)) & DMA_INDEX_MASK,
+              reg_read(TX_DMA_CONS_INDEX(Q)) & DMA_INDEX_MASK,
+              m_tx_prod_index, m_tx_cons_index, m_tx_queued);
+    log::info("genet: RX hw_prod=%u hw_cons=%u sw_cons=%u",
+              reg_read(RX_DMA_PROD_INDEX(Q)) & DMA_INDEX_MASK,
+              reg_read(RX_DMA_CONS_INDEX(Q)) & DMA_INDEX_MASK,
+              m_rx_cons_index);
+
+    // DMA ring configuration
+    log::info("genet: TX_BUF_SIZE    = 0x%08x", reg_read(TX_DMA_RING_BUF_SIZE(Q)));
+    log::info("genet: RX_BUF_SIZE    = 0x%08x", reg_read(RX_DMA_RING_BUF_SIZE(Q)));
+    log::info("genet: TX_SCB_BURST   = 0x%08x", reg_read(TX_SCB_BURST_SIZE));
+    log::info("genet: RX_SCB_BURST   = 0x%08x", reg_read(RX_SCB_BURST_SIZE));
+
+    // MDF filter
+    log::info("genet: MDF_CTRL       = 0x%08x", reg_read(UMAC_MDF_CTRL));
+
+    // DMA buffer addresses
+    log::info("genet: RX buf phys=0x%lx vaddr=0x%lx", m_rx_buf_phys, m_rx_buf_vaddr);
+    log::info("genet: TX buf phys=0x%lx vaddr=0x%lx", m_tx_buf_phys, m_tx_buf_vaddr);
+
+    // PHY status
+    uint16_t bmcr = 0, bmsr = 0;
+    if (mdio_read(m_phy_addr, BMCR, &bmcr) == 0) {
+        log::info("genet: PHY BMCR = 0x%04x", bmcr);
+    }
     if (mdio_read(m_phy_addr, BMSR, &bmsr) == 0) {
         log::info("genet: PHY BMSR = 0x%04x (link=%s aneg=%s)",
                   bmsr,
                   (bmsr & BMSR_LINK_STATUS) ? "up" : "down",
                   (bmsr & BMSR_ANEG_COMPLETE) ? "done" : "pending");
     }
-    log::info("genet: === End Dump ===");
+
+    // First RX descriptor (sanity check that descriptors are programmed)
+    log::info("genet: RX desc[0] status=0x%08x addr_lo=0x%08x addr_hi=0x%08x",
+              reg_read(RX_DESC_STATUS(0)),
+              reg_read(RX_DESC_ADDR_LO(0)),
+              reg_read(RX_DESC_ADDR_HI(0)));
+
+    log::info("genet: IRQ mode=%s, link=%s, speed=%u, duplex=%s",
+              m_has_irq ? "interrupt" : "polling",
+              m_link_up ? "up" : "down",
+              static_cast<uint32_t>(m_speed),
+              m_duplex == phy_duplex::FULL ? "full" : "half");
+
+    log::info("genet: ===== End Dump =====");
 }
 
 // ============================================================================
@@ -894,80 +978,122 @@ void bcm_genet_driver::dump_state() {
 // ============================================================================
 
 int32_t bcm_genet_driver::attach() {
-    log::info("genet: attaching (phys=0x%lx size=0x%lx IRQs=%u,%u)",
+    log::info("genet: ========================================");
+    log::info("genet: BCM GENET v5 Ethernet driver attaching");
+    log::info("genet: phys=0x%lx size=0x%lx IRQs=%u,%u",
               m_reg_phys, m_reg_size, m_irq[0], m_irq[1]);
+    log::info("genet: ========================================");
 
     // Step 1: Map MMIO registers
+    log::info("genet: [1/16] mapping MMIO registers...");
     RUN_ELEVATED({
         map_regs();
     });
     if (m_reg_va == 0) {
-        log::error("genet: failed to map registers");
+        log::error("genet: [1/16] FAILED to map registers");
         return -1;
     }
+    log::info("genet: [1/16] mapped at VA 0x%lx", m_reg_va);
 
     // Step 2: Verify GENET v5
+    log::info("genet: [2/16] checking hardware revision...");
     uint32_t rev = reg_read(SYS_REV_CTRL);
     uint32_t major = (rev & SYS_REV_MAJOR_MASK) >> SYS_REV_MAJOR_SHIFT;
     uint32_t minor = (rev & SYS_REV_MINOR_MASK) >> SYS_REV_MINOR_SHIFT;
-    log::info("genet: hardware revision %u.%u", major, minor);
+    log::info("genet: [2/16] SYS_REV_CTRL=0x%08x → revision %u.%u", rev, major, minor);
 
     if (major != SYS_REV_MAJOR_V5) {
-        log::error("genet: expected GENET v5 (major=6), got major=%u", major);
+        log::error("genet: [2/16] FAILED: expected GENET v5 (major=6), got major=%u", major);
         return -1;
     }
 
-    // Step 3: Reset controller
-    genet_reset();
-
-    // Step 4: Read MAC address from firmware
+    // Step 3: Read MAC address from firmware BEFORE reset
+    // (More defensive: UMAC reset *should* preserve MAC registers on BCM2711,
+    //  but reading beforehand avoids any possibility of losing the firmware MAC.)
+    log::info("genet: [3/16] reading MAC address from firmware...");
     read_mac_address();
-    log::info("genet: MAC %02x:%02x:%02x:%02x:%02x:%02x",
+    log::info("genet: [3/16] MAC %02x:%02x:%02x:%02x:%02x:%02x",
               m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
               m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
 
-    // Step 5: Write MAC back (in case we used fallback)
+    // Step 4: Reset controller
+    log::info("genet: [4/16] resetting controller...");
+    genet_reset();
+    log::info("genet: [4/16] reset complete");
+
+    // Step 5: Disable DMA engine before configuring rings.
+    // Critical: if UEFI firmware or bootloader left DMA running, writing
+    // to ring registers while DMA is active can corrupt descriptors.
+    // Reference: FreeBSD gen_dma_disable() called right after gen_reset().
+    log::info("genet: [5/16] disabling DMA engine...");
+    dma_disable_tx_rx();
+    log::info("genet: [5/16] DMA disabled");
+
+    // Step 6: Write MAC address back to hardware (after reset cleared it)
+    log::info("genet: [6/16] programming MAC address...");
     write_mac_address();
 
-    // Step 6: Set PHY mode
+    // Step 7: Set PHY mode to external GPHY (RGMII)
+    log::info("genet: [7/16] setting PHY mode (RGMII)...");
     set_phy_mode();
 
-    // Step 7: Initialize PHY
+    // Step 8: Initialize PHY via MDIO
+    log::info("genet: [8/16] detecting PHY on MDIO bus...");
     int32_t rc = phy_detect();
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        log::error("genet: [8/16] FAILED: no PHY found");
+        return rc;
+    }
 
+    log::info("genet: [9/16] resetting PHY (with RGMII clock delay config)...");
     rc = phy_reset();
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        log::error("genet: [9/16] FAILED: PHY reset error");
+        return rc;
+    }
 
+    log::info("genet: [10/16] starting auto-negotiation...");
     rc = phy_auto_negotiate();
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        log::error("genet: [10/16] FAILED: auto-negotiation error");
+        return rc;
+    }
 
-    // Step 8: Allocate DMA buffers
+    // Step 11: Allocate DMA buffers
+    log::info("genet: [11/16] allocating DMA buffers (%u RX + %u TX × %u bytes)...",
+              DMA_DESC_COUNT, DMA_DESC_COUNT, MAX_PACKET_SIZE);
     rc = dma_alloc();
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        log::error("genet: [11/16] FAILED: DMA buffer allocation error");
+        return rc;
+    }
 
-    // Step 9: Initialize DMA rings
+    // Step 12: Initialize DMA rings
+    log::info("genet: [12/16] initializing DMA rings...");
     dma_init_rings();
 
-    // Step 10: Map RX descriptors to buffers
+    // Step 13: Map RX descriptors to buffers
+    log::info("genet: [13/16] mapping RX descriptors to DMA buffers...");
     rc = dma_map_rx_descriptors();
-    if (rc != 0) return rc;
+    if (rc != 0) {
+        log::error("genet: [13/16] FAILED: RX descriptor mapping error");
+        return rc;
+    }
 
-    // Step 11: Set up interrupts
+    // Step 14: Set up interrupts
+    log::info("genet: [14/16] setting up interrupts...");
     setup_interrupts(); // non-fatal if it fails — we'll poll
 
-    // Step 12: Set up receive filter
+    // Step 15: Set up receive filter + enable TX/RX
+    log::info("genet: [15/16] configuring receive filter and enabling TX/RX...");
     setup_rx_filter();
-
-    // Step 13: Enable TX/RX
     dma_enable_tx_rx();
-
-    // Step 14: Enable hardware interrupts
     if (m_has_irq) {
         enable_interrupts();
     }
 
-    // Step 15: Register with network stack
+    // Step 16: Register with network stack
+    log::info("genet: [16/16] registering with network stack...");
     string::memcpy(m_netif.name, "eth0", 5);
     m_netif.transmit = tx_callback;
     m_netif.link_up = link_callback;
@@ -976,21 +1102,22 @@ int32_t bcm_genet_driver::attach() {
 
     net::register_netif(&m_netif);
 
-    // Step 16: Configure static IP (same as QEMU user-mode networking for now)
-    // On a real network, this would be replaced by DHCP.
-    // Using a common private range: 192.168.1.100/24
+    // Configure static IP — adjust for your network or replace with DHCP.
     net::configure(&m_netif,
                    net::ipv4_addr(192, 168, 1, 100),    // IP
                    net::ipv4_addr(255, 255, 255, 0),     // Netmask
                    net::ipv4_addr(192, 168, 1, 1));      // Gateway
 
-    log::info("genet: driver attached successfully");
+    log::info("genet: ========================================");
+    log::info("genet: driver attached successfully!");
+    log::info("genet: IP configured: 192.168.1.100/24 gw 192.168.1.1");
+    log::info("genet: ========================================");
 
-    // Initial link check
+    // Full state dump for debugging
+    dump_state();
+
+    // Initial link check (auto-negotiation may still be in progress)
     phy_update_link();
-    if (m_link_up) {
-        dump_state();
-    }
 
     return 0;
 }
@@ -1013,12 +1140,21 @@ int32_t bcm_genet_driver::detach() {
 }
 
 void bcm_genet_driver::run() {
-    log::info("genet: driver task running (IRQ=%s)",
-              m_has_irq ? "yes" : "polling");
+    log::info("genet: driver task running (mode=%s)",
+              m_has_irq ? "interrupt-driven" : "polling");
 
-    // Link polling counter
+    // Wait briefly for auto-negotiation to complete, then do a link check
+    RUN_ELEVATED(sched::sleep_ms(2000));
+    log::info("genet: initial link check after 2s delay...");
+    RUN_ELEVATED(phy_update_link());
+    if (!m_link_up) {
+        log::info("genet: link not yet up, will keep polling");
+    }
+
+    // Periodic counters
     uint32_t link_poll_counter = 0;
-    constexpr uint32_t LINK_POLL_INTERVAL = 1000; // check link every ~1 second
+    uint32_t loop_counter = 0;
+    constexpr uint32_t LINK_POLL_INTERVAL = 1000;
 
     while (true) {
         if (m_has_irq) {
@@ -1042,6 +1178,13 @@ void bcm_genet_driver::run() {
         if (link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;
             RUN_ELEVATED(phy_update_link());
+        }
+
+        // Periodic state dump (once at loop iteration 5000, ~5 seconds in polling mode)
+        loop_counter++;
+        if (loop_counter == 5000) {
+            log::info("genet: periodic check at ~5s:");
+            dump_state();
         }
     }
 }
