@@ -3,6 +3,7 @@
 #include "net/ethernet.h"
 #include "net/ipv4.h"
 #include "net/arp.h"
+#include "net/loopback.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
@@ -49,6 +50,12 @@ __PRIVILEGED_DATA static sync::spinlock g_deferred_tx_lock = sync::SPINLOCK_INIT
 
 __PRIVILEGED_CODE int32_t init() {
     arp_init();
+
+    int32_t lo_rc = loopback_init();
+    if (lo_rc != OK) {
+        log::warn("net: loopback init failed");
+    }
+
     log::info("net: initialized");
     return OK;
 }
@@ -65,7 +72,11 @@ int32_t register_netif(netif* iface) {
         sync::irq_lock_guard guard(g_net_lock);
         iface->next = g_iface_list;
         g_iface_list = iface;
-        if (!g_default_iface) {
+        // Set as default only if no default exists AND this is not loopback.
+        // Loopback should never be the default outbound interface — external
+        // traffic must go through a real NIC. If loopback is the only
+        // interface, g_default_iface stays nullptr until a real NIC registers.
+        if (!g_default_iface && string::strncmp(iface->name, "lo", 3) != 0) {
             g_default_iface = iface;
         }
     });

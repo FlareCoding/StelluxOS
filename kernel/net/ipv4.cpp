@@ -3,6 +3,7 @@
 #include "net/arp.h"
 #include "net/icmp.h"
 #include "net/udp.h"
+#include "net/loopback.h"
 #include "net/byteorder.h"
 #include "net/checksum.h"
 #include "common/logging.h"
@@ -53,9 +54,17 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
 
     // Check if packet is for us
     uint32_t dst_ip = ntohl(hdr->dst_ip);
+
+    // On the loopback interface, accept any address in the loopback subnet
+    // (127.0.0.0/8), per RFC 1122 §3.2.1.3. On other interfaces, only
+    // accept our exact IP, global broadcast, or subnet broadcast.
+    bool is_loopback = (string::strncmp(iface->name, "lo", 3) == 0);
+
     if (iface->configured && dst_ip != iface->ipv4_addr &&
         dst_ip != 0xFFFFFFFF &&
-        dst_ip != (iface->ipv4_addr | ~iface->ipv4_netmask)) {
+        dst_ip != (iface->ipv4_addr | ~iface->ipv4_netmask) &&
+        !(is_loopback && (dst_ip & iface->ipv4_netmask) ==
+                         (iface->ipv4_addr & iface->ipv4_netmask))) {
         return; // not for us
     }
 
@@ -77,11 +86,28 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
 
 int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
                   const uint8_t* payload, size_t payload_len) {
-    if (!iface || !iface->configured || !payload) {
+    if (!payload) {
         return ERR_INVAL;
     }
 
     if (payload_len > ETH_MTU - sizeof(ipv4_header)) {
+        return ERR_INVAL;
+    }
+
+    // Determine the outgoing interface.
+    // For loopback destinations (127.0.0.0/8), always route through the
+    // loopback interface, regardless of what the caller specified.
+    netif* out_iface = iface;
+    bool via_loopback = ((dst_ip >> 24) == 127);
+
+    if (via_loopback) {
+        out_iface = get_loopback_netif();
+        if (!out_iface || !out_iface->configured) {
+            return ERR_NOIF;
+        }
+    }
+
+    if (!out_iface || !out_iface->configured) {
         return ERR_INVAL;
     }
 
@@ -100,25 +126,38 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     hdr->ttl = IPV4_DEFAULT_TTL;
     hdr->protocol = protocol;
     hdr->checksum = 0;
-    hdr->src_ip = htonl(iface->ipv4_addr);
+    hdr->src_ip = htonl(out_iface->ipv4_addr);
     hdr->dst_ip = htonl(dst_ip);
     hdr->checksum = inet_checksum(hdr, sizeof(ipv4_header));
 
     string::memcpy(packet + sizeof(ipv4_header), payload, payload_len);
 
+    // Loopback delivery — no ARP needed. Use the interface's own MAC as
+    // destination (all zeros for lo). This applies to any packet sent
+    // through the loopback interface, whether the destination is 127.x.x.x
+    // or an interface's own IP.
+    if (via_loopback || string::strncmp(out_iface->name, "lo", 3) == 0) {
+        int32_t rc = eth_send(out_iface, out_iface->mac, ETH_TYPE_IPV4,
+                              packet, total_len);
+        heap::kfree(packet);
+        return rc;
+    }
+
+    // Normal (non-loopback) path: determine next hop and resolve via ARP
     uint32_t next_hop = dst_ip;
-    if ((dst_ip & iface->ipv4_netmask) != (iface->ipv4_addr & iface->ipv4_netmask)) {
-        next_hop = iface->ipv4_gateway;
+    if ((dst_ip & out_iface->ipv4_netmask) !=
+        (out_iface->ipv4_addr & out_iface->ipv4_netmask)) {
+        next_hop = out_iface->ipv4_gateway;
     }
 
     uint8_t dst_mac[MAC_ADDR_LEN];
-    int32_t arp_rc = arp_resolve(iface, next_hop, dst_mac);
+    int32_t arp_rc = arp_resolve(out_iface, next_hop, dst_mac);
     if (arp_rc != OK) {
         heap::kfree(packet);
         return arp_rc;
     }
 
-    int32_t rc = eth_send(iface, dst_mac, ETH_TYPE_IPV4, packet, total_len);
+    int32_t rc = eth_send(out_iface, dst_mac, ETH_TYPE_IPV4, packet, total_len);
     heap::kfree(packet);
     return rc;
 }
