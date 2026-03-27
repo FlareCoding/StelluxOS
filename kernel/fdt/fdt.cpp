@@ -312,4 +312,44 @@ __PRIVILEGED_CODE int32_t get_reg(int32_t node_offset, uint64_t* out_base, uint6
     return OK;
 }
 
+__PRIVILEGED_CODE int32_t get_interrupts(int32_t node_offset,
+                                         uint32_t* out_irqs, uint32_t max_irqs) {
+    if (!g_initialized || node_offset < 0) return ERR_NO_DTB;
+    if (!out_irqs || max_irqs == 0) return ERR_BAD_DATA;
+
+    uint32_t len = 0;
+    const void* data = node_get_prop(static_cast<uint32_t>(node_offset),
+                                     "interrupts", &len);
+    if (!data) return ERR_NOT_FOUND;
+
+    // Standard GIC interrupt cells: 3 cells per interrupt
+    //   cell 0: type (0 = SPI, 1 = PPI)
+    //   cell 1: interrupt number (SPI number for type 0)
+    //   cell 2: flags (trigger type, etc.)
+    // GIC SPI numbers map to GIC IRQ IDs as: SPI N = IRQ (N + 32)
+    constexpr uint32_t GIC_SPI_OFFSET = 32;
+    constexpr uint32_t CELLS_PER_IRQ = 3;
+    constexpr uint32_t BYTES_PER_IRQ = CELLS_PER_IRQ * 4;
+
+    const uint8_t* cells = static_cast<const uint8_t*>(data);
+    uint32_t count = 0;
+
+    for (uint32_t off = 0; off + BYTES_PER_IRQ <= len && count < max_irqs;
+         off += BYTES_PER_IRQ) {
+        uint32_t type = read_cell32(cells + off);
+        uint32_t num  = read_cell32(cells + off + 4);
+        // uint32_t flags = read_cell32(cells + off + 8);  // unused for now
+
+        if (type == 0) {
+            // SPI interrupt
+            out_irqs[count++] = num + GIC_SPI_OFFSET;
+        } else if (type == 1) {
+            // PPI interrupt
+            out_irqs[count++] = num + 16;
+        }
+    }
+
+    return static_cast<int32_t>(count);
+}
+
 } // namespace fdt

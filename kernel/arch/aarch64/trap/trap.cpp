@@ -97,6 +97,13 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         return;
     }
 
+    if (irq::dispatch(irq_id)) {
+        irq::eoi(irq_id);
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
     if (irq_id != irq::GIC_SPURIOUS_ID) {
         irq::eoi(irq_id);
     }
@@ -163,6 +170,13 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
     }
 
     if (arch::msi_handle_irq(irq_id)) {
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
+    if (irq::dispatch(irq_id)) {
+        irq::eoi(irq_id);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;

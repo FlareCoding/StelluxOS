@@ -62,6 +62,19 @@ __PRIVILEGED_CODE const void* get_prop(int32_t node_offset, const char* name,
 __PRIVILEGED_CODE int32_t get_reg(int32_t node_offset,
                                   uint64_t* out_base, uint64_t* out_size);
 
+/**
+ * Read GIC SPI interrupt numbers from a node's "interrupts" property.
+ * The standard GIC interrupt-cell format is { type spi_num flags }.
+ * Only SPI (type=0) interrupts are extracted.
+ * @param node_offset  Node offset returned by find_compatible().
+ * @param out_irqs     Array to receive GIC IRQ numbers (SPI + 32).
+ * @param max_irqs     Maximum number of entries in out_irqs.
+ * @return Number of IRQs found, or negative error code.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t get_interrupts(int32_t node_offset,
+                                         uint32_t* out_irqs, uint32_t max_irqs);
+
 } // namespace fdt
 
 #endif // STELLUX_FDT_FDT_H
