@@ -6,8 +6,7 @@
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 
-constexpr uint32_t ELEVATION_CONTEXT_MASK =
-    sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL | sched::TASK_FLAG_IN_IRQ;
+constexpr uint32_t ELEVATION_CONTEXT_MASK = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
 
 __PRIVILEGED_CODE static inline void restore_post_syscall_elevation_state() {
     // Return-boundary restoration: select runtime elevation based on the

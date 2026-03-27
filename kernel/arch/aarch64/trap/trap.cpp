@@ -42,7 +42,7 @@ static void trap_fatal(const char* kind, const aarch64::trap_frame* tf) {
 __PRIVILEGED_CODE static inline void restore_post_trap_elevation_state() {
     // Return-boundary restoration: select runtime elevation based on the
     // currently selected task's privilege-mode bit.
-    constexpr uint32_t mask = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL | sched::TASK_FLAG_IN_IRQ;
+    constexpr uint32_t mask = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
     this_cpu(percpu_is_elevated) =
         (this_cpu(current_task_exec)->flags & mask) != 0;
 }
