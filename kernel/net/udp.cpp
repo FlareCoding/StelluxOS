@@ -1,5 +1,6 @@
 #include "net/udp.h"
 #include "net/inet_socket.h"
+#include "net/dhcp.h"
 #include "net/byteorder.h"
 #include "net/checksum.h"
 #include "net/net.h"
@@ -52,6 +53,14 @@ void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     uint16_t dst_port_net = hdr->dst_port;
     const uint8_t* payload = data + sizeof(udp_header);
     size_t payload_len = udp_len - sizeof(udp_header);
+
+    // DHCP receive hook: deliver port-68 packets to the DHCP client
+    // via a static buffer, bypassing the socket/ring_buffer path.
+    // This runs before socket delivery so the DHCP client gets the
+    // packet even when no socket is registered on port 68.
+    if (ntohs(dst_port_net) == DHCP_CLIENT_PORT && payload_len > 0) {
+        dhcp_rx_hook(payload, payload_len);
+    }
 
     // Build the framed ring buffer entry before taking the lock.
     // This keeps heap alloc/free outside the IRQ-disabled critical section.

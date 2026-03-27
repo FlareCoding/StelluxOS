@@ -8,6 +8,7 @@
 #include "sched/sched.h"
 #include "net/net.h"
 #include "net/ipv4.h"
+#include "net/dhcp.h"
 
 namespace drivers {
 
@@ -447,11 +448,8 @@ int32_t virtio_net_driver::attach() {
 
     net::register_netif(&m_netif);
 
-    // Static IP configuration for QEMU user-mode networking
-    net::configure(&m_netif,
-                   net::ipv4_addr(10, 0, 2, 15),     // IP
-                   net::ipv4_addr(255, 255, 255, 0),  // Netmask
-                   net::ipv4_addr(10, 0, 2, 2));      // Gateway
+    // IP configuration is deferred to run(), where DHCP runs in a
+    // proper kernel task context with sched::sleep_ms() available.
 
     return 0;
 }
@@ -564,6 +562,19 @@ void virtio_net_driver::process_tx_completions() {
 
 void virtio_net_driver::run() {
     log::info("virtio-net: driver task running");
+
+    // Run DHCP to dynamically configure the interface.
+    // This runs here (in the driver's kernel task) rather than in attach()
+    // because sched::sleep_ms() is needed for DHCP timeouts, and attach()
+    // runs on the boot CPU before the task is spawned.
+    int32_t dhcp_rc = net::dhcp_configure(&m_netif);
+    if (dhcp_rc != net::OK) {
+        log::warn("virtio-net: DHCP failed (%d), using static fallback", dhcp_rc);
+        net::configure(&m_netif,
+                       net::ipv4_addr(10, 0, 2, 15),     // IP
+                       net::ipv4_addr(255, 255, 255, 0),  // Netmask
+                       net::ipv4_addr(10, 0, 2, 2));      // Gateway
+    }
 
     // Check MSI mode once at start (elevated because m_dev is in privileged memory)
     bool has_msi = false;

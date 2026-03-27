@@ -48,6 +48,7 @@ struct netif {
     uint32_t     ipv4_addr;    // host byte order
     uint32_t     ipv4_netmask; // host byte order
     uint32_t     ipv4_gateway; // host byte order
+    uint32_t     ipv4_dns;     // DNS server, host byte order (from DHCP)
     bool         configured;
 
     // --- Internal linkage (managed by net subsystem) ---
@@ -86,6 +87,12 @@ int32_t configure(netif* iface, uint32_t ip, uint32_t netmask, uint32_t gateway)
  * Returns nullptr if no interface is registered.
  */
 netif* get_default_netif();
+
+/**
+ * Get the DNS server IP from the default interface.
+ * Returns the address in HOST byte order, or 0 if none is configured.
+ */
+uint32_t get_dns_server();
 
 /**
  * Called by NIC drivers when a complete Ethernet frame is received.
