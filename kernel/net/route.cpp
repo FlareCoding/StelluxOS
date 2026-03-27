@@ -1,7 +1,5 @@
 #include "net/route.h"
 #include "net/loopback.h"
-#include "common/logging.h"
-#include "common/string.h"
 #include "sync/spinlock.h"
 #include "dynpriv/dynpriv.h"
 
@@ -77,21 +75,6 @@ void route_del_iface(netif* iface) {
         // with the interface whose configure() created them.
         for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
             if (g_route_table[i].valid && g_route_table[i].owner == iface) {
-                g_route_table[i].valid = false;
-            }
-        }
-    });
-}
-
-void route_del_host(uint32_t ip) {
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_route_lock);
-
-        for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
-            if (g_route_table[i].valid &&
-                g_route_table[i].type == route_type::LOCAL &&
-                g_route_table[i].dest == ip &&
-                g_route_table[i].netmask == 0xFFFFFFFF) {
                 g_route_table[i].valid = false;
             }
         }

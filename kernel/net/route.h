@@ -78,14 +78,6 @@ int32_t route_add(uint32_t dest, uint32_t netmask, uint32_t gateway,
 void route_del_iface(netif* iface);
 
 /**
- * Remove a LOCAL host route (/32) for a specific IP address.
- * Used during interface reconfiguration to clean up the old LOCAL route
- * which points to loopback (not the reconfigured interface itself).
- * @param ip Host IP address in host byte order.
- */
-void route_del_host(uint32_t ip);
-
-/**
  * Lookup a route for a destination IP (host byte order).
  * Uses longest prefix match, then lowest metric for ties.
  * @param dst_ip Destination IP in host byte order.

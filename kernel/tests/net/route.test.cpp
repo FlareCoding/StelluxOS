@@ -638,8 +638,6 @@ TEST(route_test, loopback_reconfig_preserves_other_local_routes) {
     ASSERT_NOT_NULL(lo);
     EXPECT_EQ(rt.iface, lo);
 
-    uint32_t count_before = net::route_count();
-
     // Simulate reconfiguring loopback (e.g. changing its IP).
     // This calls route_del_iface(lo) which should only remove routes
     // OWNED by loopback, not the LOCAL route owned by mock.

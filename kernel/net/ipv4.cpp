@@ -3,7 +3,6 @@
 #include "net/arp.h"
 #include "net/icmp.h"
 #include "net/udp.h"
-#include "net/loopback.h"
 #include "net/route.h"
 #include "net/byteorder.h"
 #include "net/checksum.h"
