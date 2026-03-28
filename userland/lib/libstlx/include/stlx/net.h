@@ -12,6 +12,7 @@
 #define STLX_IFF_UP           (1u << 0)
 #define STLX_IFF_CONFIGURED   (1u << 1)
 #define STLX_IFF_DEFAULT      (1u << 2)
+#define STLX_IFF_LOOPBACK     (1u << 3)
 
 #define STLX_SIOCGNETSTATUS   0x4E01
 

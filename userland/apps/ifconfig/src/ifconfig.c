@@ -12,6 +12,7 @@ static void print_flags(uint32_t flags) {
     if (flags & STLX_IFF_UP)         { printf("%sUP", first ? "" : ","); first = 0; }
     if (flags & STLX_IFF_CONFIGURED) { printf("%sCONFIGURED", first ? "" : ","); first = 0; }
     if (flags & STLX_IFF_DEFAULT)    { printf("%sDEFAULT", first ? "" : ","); first = 0; }
+    if (flags & STLX_IFF_LOOPBACK)   { printf("%sLOOPBACK", first ? "" : ","); first = 0; }
     if (first) printf("NONE");
 }
 

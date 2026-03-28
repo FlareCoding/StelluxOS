@@ -4,6 +4,7 @@
 #include "net/ipv4.h"
 #include "net/icmp.h"
 #include "net/udp.h"
+#include "net/route.h"
 #include "net/byteorder.h"
 #include "net/checksum.h"
 #include "common/ring_buffer.h"
@@ -240,6 +241,27 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
         RUN_ELEVATED(iface->poll(iface));
     }
 
+    // Determine the actual source IP by consulting the routing table.
+    // ipv4_send() may override the outgoing interface and source IP
+    // (e.g. LOCAL routes use dst_ip as src, loopback routes use lo's IP).
+    // The UDP pseudo-header checksum must use the same source IP that
+    // will appear in the IP header, so we resolve routing first.
+    uint32_t src_ip = iface->ipv4_addr;
+    route_result rt;
+    if (route_lookup(dst_ip, &rt) == OK) {
+        if (rt.type == route_type::LOCAL) {
+            // LOCAL delivery: ipv4_send sets src_ip = dst_ip
+            src_ip = dst_ip;
+        } else if (rt.iface && (rt.iface->flags & NETIF_LOOPBACK)) {
+            // Routed through loopback: ipv4_send uses lo's IP
+            src_ip = rt.iface->ipv4_addr;
+        } else if (rt.iface && iface) {
+            // Normal route: ipv4_send prefers caller's interface for
+            // non-loopback routes, so src_ip stays as iface->ipv4_addr
+            src_ip = iface->ipv4_addr;
+        }
+    }
+
     // Build UDP packet: header + payload
     size_t udp_total = sizeof(udp_header) + count;
     auto* udp_pkt = static_cast<uint8_t*>(heap::kzalloc(udp_total));
@@ -255,7 +277,7 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
     string::memcpy(udp_pkt + sizeof(udp_header), ksrc, count);
 
     uint16_t csum = udp_checksum(
-        htonl(iface->ipv4_addr), htonl(dst_ip), udp_pkt, udp_total);
+        htonl(src_ip), htonl(dst_ip), udp_pkt, udp_total);
     uhdr->checksum = (csum == 0) ? static_cast<uint16_t>(0xFFFF) : csum;
 
     int32_t rc = ipv4_send(iface, dst_ip, IPV4_PROTO_UDP, udp_pkt, udp_total);

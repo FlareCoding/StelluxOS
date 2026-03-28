@@ -3,6 +3,8 @@
 #include "net/ethernet.h"
 #include "net/ipv4.h"
 #include "net/arp.h"
+#include "net/loopback.h"
+#include "net/route.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
@@ -49,6 +51,13 @@ __PRIVILEGED_DATA static sync::spinlock g_deferred_tx_lock = sync::SPINLOCK_INIT
 
 __PRIVILEGED_CODE int32_t init() {
     arp_init();
+    route_init();
+
+    int32_t lo_rc = loopback_init();
+    if (lo_rc != OK) {
+        log::warn("net: loopback init failed");
+    }
+
     log::info("net: initialized");
     return OK;
 }
@@ -61,11 +70,21 @@ int32_t register_netif(netif* iface) {
     iface->configured = false;
     iface->next = nullptr;
 
+    // Mark as administratively up on registration (unless already set
+    // with specific flags, e.g. loopback sets flags before registration).
+    if (!(iface->flags & NETIF_UP)) {
+        iface->flags |= NETIF_UP;
+    }
+
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_net_lock);
         iface->next = g_iface_list;
         g_iface_list = iface;
-        if (!g_default_iface) {
+        // Set as default only if no default exists AND this is not loopback.
+        // Loopback should never be the default outbound interface — external
+        // traffic must go through a real NIC. If loopback is the only
+        // interface, g_default_iface stays nullptr until a real NIC registers.
+        if (!g_default_iface && !(iface->flags & NETIF_LOOPBACK)) {
             g_default_iface = iface;
         }
     });
@@ -80,6 +99,13 @@ int32_t register_netif(netif* iface) {
 int32_t unregister_netif(netif* iface) {
     if (!iface) return ERR_INVAL;
 
+    // Clean up all routing table entries owned by this interface BEFORE
+    // removing from the interface list. route_del_iface matches on the
+    // owner field, so LOCAL routes (which point to loopback but are owned
+    // by this interface) are correctly removed without affecting other
+    // interfaces' LOCAL routes.
+    route_del_iface(iface);
+
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_net_lock);
 
@@ -92,8 +118,16 @@ int32_t unregister_netif(netif* iface) {
             pp = &(*pp)->next;
         }
 
+        // Re-evaluate the default interface: pick the first non-loopback
+        // configured interface, or nullptr if none exists.
         if (g_default_iface == iface) {
-            g_default_iface = g_iface_list;
+            g_default_iface = nullptr;
+            for (netif* cur = g_iface_list; cur; cur = cur->next) {
+                if (!(cur->flags & NETIF_LOOPBACK) && cur->configured) {
+                    g_default_iface = cur;
+                    break;
+                }
+            }
         }
     });
 
@@ -104,10 +138,19 @@ int32_t unregister_netif(netif* iface) {
 int32_t configure(netif* iface, uint32_t ip, uint32_t netmask, uint32_t gateway) {
     if (!iface) return ERR_INVAL;
 
+    // Clear any existing routes owned by this interface (handles reconfiguration).
+    // route_del_iface matches on the owner field, so LOCAL routes (which point
+    // to loopback) are correctly cleaned up without affecting other interfaces'
+    // LOCAL routes.
+    route_del_iface(iface);
+
     iface->ipv4_addr = ip;
     iface->ipv4_netmask = netmask;
     iface->ipv4_gateway = gateway;
     iface->configured = true;
+
+    // Auto-populate routes for this interface
+    route_add_interface_routes(iface);
 
     log::info("net: %s configured %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u",
               iface->name,
@@ -130,6 +173,42 @@ uint32_t get_dns_server() {
         return iface->ipv4_dns;
     }
     return 0;
+}
+
+netif* find_netif(const char* name) {
+    if (!name) return nullptr;
+
+    netif* result = nullptr;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_net_lock);
+        for (netif* cur = g_iface_list; cur; cur = cur->next) {
+            if (string::strcmp(cur->name, name) == 0) {
+                result = cur;
+                break;
+            }
+        }
+    });
+    return result;
+}
+
+netif* find_netif_by_ip(uint32_t ip) {
+    if (ip == 0) return nullptr;
+
+    netif* result = nullptr;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_net_lock);
+        for (netif* cur = g_iface_list; cur; cur = cur->next) {
+            if (cur->configured && cur->ipv4_addr == ip) {
+                result = cur;
+                break;
+            }
+        }
+    });
+    return result;
+}
+
+bool is_local_ip(uint32_t ip) {
+    return find_netif_by_ip(ip) != nullptr;
 }
 
 void rx_frame(netif* iface, const uint8_t* data, size_t len) {
@@ -187,10 +266,13 @@ void drain_deferred_tx() {
     // Snapshot and clear the queue under the lock, then send outside it.
     uint32_t count = 0;
 
-    // Heap-allocate the snapshot to avoid putting ~12KB on the kernel stack.
+    // Heap-allocate the snapshot
     auto* local = static_cast<deferred_tx_entry*>(
-        heap::kzalloc(DEFERRED_TX_MAX * sizeof(deferred_tx_entry)));
-    if (!local) return;
+        heap::kzalloc(DEFERRED_TX_MAX * sizeof(deferred_tx_entry))
+    );
+    if (!local) {
+        return;
+    }
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_deferred_tx_lock);
@@ -246,6 +328,9 @@ __PRIVILEGED_CODE int32_t query_status(net_status* out) {
             e.flags = 0;
             if (cur->configured) {
                 e.flags |= IFF_CONFIGURED;
+            }
+            if (cur->flags & NETIF_LOOPBACK) {
+                e.flags |= IFF_LOOPBACK;
             }
 
             snap[count].iface = cur;

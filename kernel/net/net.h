@@ -20,6 +20,11 @@ constexpr size_t ETH_MTU       = 1500;
 constexpr size_t MAC_ADDR_LEN  = 6;
 constexpr size_t MAX_INTERFACES = 8;
 
+// Interface flags
+constexpr uint32_t NETIF_UP       = (1u << 0);  // administratively up
+constexpr uint32_t NETIF_RUNNING  = (1u << 1);  // link is up (carrier detected)
+constexpr uint32_t NETIF_LOOPBACK = (1u << 2);  // virtual loopback device
+
 // Forward declaration
 struct netif;
 
@@ -44,11 +49,12 @@ struct netif {
     void*         driver_data; // opaque pointer back to driver instance
     netif_poll_fn poll;        // synchronously process pending RX (optional)
 
-    // --- Stack-managed state (set by net::configure()) ---
+    // --- Stack-managed state (set by net::configure() or register_netif()) ---
     uint32_t     ipv4_addr;    // host byte order
     uint32_t     ipv4_netmask; // host byte order
     uint32_t     ipv4_gateway; // host byte order
     uint32_t     ipv4_dns;     // DNS server, host byte order (from DHCP)
+    uint32_t     flags;        // NETIF_* flags
     bool         configured;
 
     // --- Internal linkage (managed by net subsystem) ---
@@ -93,6 +99,26 @@ netif* get_default_netif();
  * Returns the address in HOST byte order, or 0 if none is configured.
  */
 uint32_t get_dns_server();
+
+/**
+ * Find a network interface by name.
+ * @return Pointer to the netif, or nullptr if not found.
+ */
+netif* find_netif(const char* name);
+
+/**
+ * Find a network interface by configured IPv4 address.
+ * @param ip IPv4 address in host byte order.
+ * @return Pointer to the netif, or nullptr if not found.
+ */
+netif* find_netif_by_ip(uint32_t ip);
+
+/**
+ * Check if an IPv4 address is configured on any local interface.
+ * @param ip IPv4 address in host byte order.
+ * @return true if the address is local.
+ */
+bool is_local_ip(uint32_t ip);
 
 /**
  * Called by NIC drivers when a complete Ethernet frame is received.
