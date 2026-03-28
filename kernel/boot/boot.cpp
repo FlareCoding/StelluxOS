@@ -136,16 +136,16 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::warn("smp::init failed, continuing with single CPU");
     }
 
+    if (net::init() != net::OK) {
+        log::warn("net::init failed, networking unavailable");
+    }
+
 #ifdef STLX_UNIT_TESTS_ENABLED
     stlx_test::run_all();
     while (true) {
         cpu::halt();
     }
 #endif
-
-    if (net::init() != net::OK) {
-        log::warn("net::init failed, networking unavailable");
-    }
 
     if (drivers::init() != drivers::OK) {
         log::warn("drivers::init failed");
