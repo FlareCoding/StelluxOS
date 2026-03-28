@@ -56,7 +56,7 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
     uint32_t dst_ip = ntohl(hdr->dst_ip);
 
     // On the loopback interface, accept:
-    //   - Any address in the loopback subnet (127.0.0.0/8) per RFC 1122 §3.2.1.3
+    //   - Any address in the loopback subnet (127.0.0.0/8) per RFC 1122 section 3.2.1.3
     //   - Any locally-configured IP (delivered via LOCAL routes for self-addressed
     //     traffic, e.g. sending to our own eth0 IP routes through loopback)
     // On other interfaces, only accept our exact IP, broadcast, or subnet broadcast.

@@ -266,10 +266,13 @@ void drain_deferred_tx() {
     // Snapshot and clear the queue under the lock, then send outside it.
     uint32_t count = 0;
 
-    // Heap-allocate the snapshot to avoid putting ~12KB on the kernel stack.
+    // Heap-allocate the snapshot
     auto* local = static_cast<deferred_tx_entry*>(
-        heap::kzalloc(DEFERRED_TX_MAX * sizeof(deferred_tx_entry)));
-    if (!local) return;
+        heap::kzalloc(DEFERRED_TX_MAX * sizeof(deferred_tx_entry))
+    );
+    if (!local) {
+        return;
+    }
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_deferred_tx_lock);

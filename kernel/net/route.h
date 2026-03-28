@@ -45,7 +45,7 @@ struct route_result {
 constexpr uint32_t ROUTE_TABLE_SIZE = 32;
 
 // Metric constants — lower = higher priority
-constexpr uint16_t METRIC_LOCAL     = 0;      // own IPs → loopback
+constexpr uint16_t METRIC_LOCAL     = 0;      // own IPs -> loopback
 constexpr uint16_t METRIC_CONNECTED = 100;    // directly connected subnets
 constexpr uint16_t METRIC_STATIC    = 200;    // manually added routes
 constexpr uint16_t METRIC_DEFAULT   = 1024;   // default gateway
@@ -89,7 +89,7 @@ int32_t route_lookup(uint32_t dst_ip, route_result* result);
 /**
  * Auto-populate routes for a newly configured interface.
  * Adds:
- *   - LOCAL host route for the interface's own IP (→ loopback)
+ *   - LOCAL host route for the interface's own IP (loopback)
  *   - CONNECTED subnet route for the interface's subnet
  *   - GATEWAY default route if gateway != 0
  *
@@ -98,7 +98,7 @@ int32_t route_lookup(uint32_t dst_ip, route_result* result);
 void route_add_interface_routes(netif* iface);
 
 /**
- * Count the number of valid routes in the table. For testing/debugging.
+ * Count the number of valid routes in the table. (For testing/debugging)
  */
 uint32_t route_count();
 
