@@ -161,6 +161,28 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
         }
         sync::wake_all(sock->accept_wq);
 
+        // Destroy all SYN_RECEIVED children whose parent is this listener.
+        // Without this, half-open connections linger in the port registry
+        // with a dangling parent pointer (use-after-free on late ACK).
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(g_tcp_sock_lock);
+            tcp_socket** pp = &g_tcp_sock_list;
+            while (*pp) {
+                tcp_socket* child = *pp;
+                if (child->parent == sock) {
+                    *pp = child->next;
+                    child->next = nullptr;
+                    child->parent = nullptr;
+                    if (child->rx_buf) {
+                        ring_buffer_destroy(child->rx_buf);
+                    }
+                    heap::kfree_delete(child);
+                } else {
+                    pp = &(*pp)->next;
+                }
+            }
+        });
+
         if (sock->local_port != 0) {
             tcp_unregister_socket(sock);
         }
@@ -482,6 +504,7 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
         log::debug("tcp: backlog full, dropping SYN");
         return;
     }
+    listener->pending_count++;
     sync::spin_unlock_irqrestore(listener->lock, irq);
 
     // Create child socket for this connection
@@ -584,7 +607,6 @@ static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num) {
 
     irq = sync::spin_lock_irqsave(parent->lock);
     parent->accept_queue.push_back(pc);
-    parent->pending_count++;
     sync::spin_unlock_irqrestore(parent->lock, irq);
     sync::wake_one(parent->accept_wq);
 }
