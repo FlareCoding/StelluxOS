@@ -36,20 +36,18 @@ inline uint16_t inet_checksum(const void* data, size_t len) {
 }
 
 /**
- * Compute UDP checksum over pseudo-header + UDP packet (RFC 768).
- * IP addresses must be in network byte order (read as byte arrays for
- * consistency with the LE 16-bit word sum used by inet_checksum).
- * Returns the raw one's complement: 0 means the data sums to all-ones.
+ * Compute transport-layer checksum over pseudo-header + payload.
+ * Used by both UDP (protocol=17) and TCP (protocol=6).
+ * IP addresses must be in network byte order.
  *
- * TX usage: if result is 0, transmit 0xFFFF (RFC 768 convention).
- * RX usage: pass full UDP including checksum field; result == 0 means valid.
+ * TX usage: if result is 0, transmit 0xFFFF.
+ * RX usage: pass full segment including checksum field; result == 0 means valid.
  */
-inline uint16_t udp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
-                              const uint8_t* udp_packet, size_t udp_len) {
+inline uint16_t transport_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
+                                   uint8_t protocol,
+                                   const uint8_t* payload, size_t payload_len) {
     uint32_t sum = 0;
 
-    // Pseudo-header IP addresses: read bytes of the network-order uint32_t
-    // as LE 16-bit words (same convention as inet_checksum's data loop).
     const auto* s = reinterpret_cast<const uint8_t*>(&src_ip_net);
     const auto* d = reinterpret_cast<const uint8_t*>(&dst_ip_net);
     sum += static_cast<uint16_t>(s[0]) | (static_cast<uint16_t>(s[1]) << 8);
@@ -57,16 +55,15 @@ inline uint16_t udp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
     sum += static_cast<uint16_t>(d[0]) | (static_cast<uint16_t>(d[1]) << 8);
     sum += static_cast<uint16_t>(d[2]) | (static_cast<uint16_t>(d[3]) << 8);
 
-    // Zero + protocol 17: network bytes [0x00, 0x11], LE word = 0x1100
-    sum += static_cast<uint16_t>(0x1100);
+    // Zero + protocol as LE word: network bytes [0x00, proto]
+    sum += static_cast<uint16_t>(protocol) << 8;
 
-    // UDP length in network byte order as LE word
-    uint16_t ul = static_cast<uint16_t>(udp_len);
-    sum += static_cast<uint16_t>((ul >> 8) | ((ul & 0xFF) << 8));
+    // Payload length in network byte order as LE word
+    uint16_t pl = static_cast<uint16_t>(payload_len);
+    sum += static_cast<uint16_t>((pl >> 8) | ((pl & 0xFF) << 8));
 
-    // Sum the UDP header + data
-    const uint8_t* ptr = udp_packet;
-    size_t remaining = udp_len;
+    const uint8_t* ptr = payload;
+    size_t remaining = payload_len;
     while (remaining > 1) {
         uint16_t word = static_cast<uint16_t>(ptr[0]) |
                         (static_cast<uint16_t>(ptr[1]) << 8);
@@ -85,50 +82,14 @@ inline uint16_t udp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
     return static_cast<uint16_t>(~sum);
 }
 
-/**
- * Compute TCP checksum over pseudo-header + TCP segment (RFC 9293).
- * Identical to udp_checksum except protocol = 6.
- * IP addresses must be in network byte order.
- *
- * TX usage: if result is 0, transmit 0xFFFF.
- * RX usage: pass full TCP segment including checksum field, result == 0 means valid.
- */
+inline uint16_t udp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
+                              const uint8_t* udp_packet, size_t udp_len) {
+    return transport_checksum(src_ip_net, dst_ip_net, 17, udp_packet, udp_len);
+}
+
 inline uint16_t tcp_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
                               const uint8_t* tcp_segment, size_t tcp_len) {
-    uint32_t sum = 0;
-
-    const auto* s = reinterpret_cast<const uint8_t*>(&src_ip_net);
-    const auto* d = reinterpret_cast<const uint8_t*>(&dst_ip_net);
-    sum += static_cast<uint16_t>(s[0]) | (static_cast<uint16_t>(s[1]) << 8);
-    sum += static_cast<uint16_t>(s[2]) | (static_cast<uint16_t>(s[3]) << 8);
-    sum += static_cast<uint16_t>(d[0]) | (static_cast<uint16_t>(d[1]) << 8);
-    sum += static_cast<uint16_t>(d[2]) | (static_cast<uint16_t>(d[3]) << 8);
-
-    // Zero + protocol 6: network bytes [0x00, 0x06], LE word = 0x0600
-    sum += static_cast<uint16_t>(0x0600);
-
-    // TCP length in network byte order as LE word
-    uint16_t tl = static_cast<uint16_t>(tcp_len);
-    sum += static_cast<uint16_t>((tl >> 8) | ((tl & 0xFF) << 8));
-
-    const uint8_t* ptr = tcp_segment;
-    size_t remaining = tcp_len;
-    while (remaining > 1) {
-        uint16_t word = static_cast<uint16_t>(ptr[0]) |
-                        (static_cast<uint16_t>(ptr[1]) << 8);
-        sum += word;
-        ptr += 2;
-        remaining -= 2;
-    }
-    if (remaining == 1) {
-        sum += static_cast<uint16_t>(ptr[0]);
-    }
-
-    while (sum >> 16) {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    return static_cast<uint16_t>(~sum);
+    return transport_checksum(src_ip_net, dst_ip_net, 6, tcp_segment, tcp_len);
 }
 
 } // namespace net
