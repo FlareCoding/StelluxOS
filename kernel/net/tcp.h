@@ -2,6 +2,10 @@
 #define STELLUX_NET_TCP_H
 
 #include "net/net.h"
+#include "resource/resource.h"
+#include "sync/spinlock.h"
+#include "sync/wait_queue.h"
+#include "common/list.h"
 
 namespace net {
 
@@ -34,6 +38,71 @@ static_assert(sizeof(tcp_header) == 20, "tcp_header must be 20 bytes");
 inline constexpr size_t tcp_header_len(const tcp_header* hdr) {
     return static_cast<size_t>((hdr->data_off >> 4) & 0xF) * 4;
 }
+
+// TCP connection states (RFC 9293 Section 3.3.2)
+enum class tcp_state : uint8_t {
+    CLOSED,
+    LISTEN,
+    SYN_SENT,
+    SYN_RECEIVED,
+    ESTABLISHED,
+    FIN_WAIT_1,
+    FIN_WAIT_2,
+    CLOSE_WAIT,
+    LAST_ACK,
+    TIME_WAIT,
+    CLOSING,
+};
+
+// Entry in a LISTEN socket's accept queue.
+struct tcp_pending_conn {
+    list::node link;
+    resource::resource_object* conn_obj;
+};
+
+// TCP socket: one per connection (or one per listening port).
+struct tcp_socket {
+    tcp_state      state;
+
+    // Local endpoint (set by bind or connect)
+    uint32_t       local_addr;  // host byte order, 0 = any
+    uint16_t       local_port;  // host byte order, 0 = unbound
+
+    // Remote endpoint (set by connect or accept, 0 for LISTEN sockets)
+    uint32_t       remote_addr; // host byte order
+    uint16_t       remote_port; // host byte order
+
+    // Sequence number tracking (RFC 9293 Section 3.3.1)
+    uint32_t       snd_una;     // oldest unacknowledged seq (Send Unacknowledged)
+    uint32_t       snd_nxt;     // next seq we will send (Send Next)
+    uint32_t       rcv_nxt;     // next seq we expect to receive (Receive Next)
+
+    // LISTEN state: accept queue for completed connections
+    tcp_socket*    parent;        // backpointer to LISTEN socket (for child sockets)
+    uint32_t       backlog;       // max pending connections
+    uint32_t       pending_count; // current pending connections
+    list::head<tcp_pending_conn, &tcp_pending_conn::link> accept_queue;
+    sync::wait_queue accept_wq;
+
+    sync::spinlock lock;
+    tcp_socket*    next;        // linked list for port registry
+};
+
+/**
+ * Create an AF_INET SOCK_STREAM socket in CLOSED state.
+ */
+int32_t create_tcp_socket(resource::resource_object** out);
+
+/**
+ * Atomically check for binding conflicts and register if none found.
+ * @return true if registered, false if conflict.
+ */
+bool tcp_try_register(tcp_socket* sock);
+
+/**
+ * Unregister a TCP socket from the port registry.
+ */
+void tcp_unregister_socket(tcp_socket* sock);
 
 /**
  * Process a received TCP segment (after IPv4 header is stripped).
