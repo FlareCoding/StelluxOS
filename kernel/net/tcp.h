@@ -7,6 +7,8 @@
 #include "sync/wait_queue.h"
 #include "common/list.h"
 
+struct ring_buffer;
+
 namespace net {
 
 // TCP header flags (RFC 9293 Section 3.1)
@@ -76,6 +78,10 @@ struct tcp_socket {
     uint32_t       snd_una;     // oldest unacknowledged seq (Send Unacknowledged)
     uint32_t       snd_nxt;     // next seq we will send (Send Next)
     uint32_t       rcv_nxt;     // next seq we expect to receive (Receive Next)
+
+    // ESTABLISHED state: receive buffer for incoming data
+    ring_buffer*   rx_buf;
+    sync::wait_queue rx_wq;
 
     // LISTEN state: accept queue for completed connections
     tcp_socket*    parent;        // backpointer to LISTEN socket (for child sockets)

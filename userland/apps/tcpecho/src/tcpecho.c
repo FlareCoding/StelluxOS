@@ -65,8 +65,15 @@ static int run_server(uint16_t port) {
         printf("tcpecho: connection from %s:%u (fd=%d)\r\n",
                ip_str, client_port, client_fd);
 
-        // TODO: read/write echo loop
-        printf("tcpecho: closing connection (read/write not yet implemented)\r\n");
+        char buf[1024];
+        ssize_t n;
+        while ((n = read(client_fd, buf, sizeof(buf))) > 0) {
+            buf[n < (ssize_t)sizeof(buf) ? n : (ssize_t)sizeof(buf) - 1] = '\0';
+            printf("  recv %zd bytes: \"%s\"\r\n", n, buf);
+            write(client_fd, buf, (size_t)n);
+        }
+
+        printf("tcpecho: connection closed\r\n");
         close(client_fd);
     }
 
