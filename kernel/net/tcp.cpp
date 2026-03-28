@@ -118,12 +118,11 @@ __PRIVILEGED_CODE static int32_t tcp_send_data(
     return rc;
 }
 
-__PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
-    if (!obj || !obj->impl) {
-        return;
-    }
-
-    auto* sock = static_cast<tcp_socket*>(obj->impl);
+// Destroy an orphaned tcp_socket (no resource_object attached).
+// Called from tcp_recv when the state machine reaches CLOSED after
+// the application has already called close().
+static void tcp_destroy_socket(tcp_socket* sock) {
+    if (!sock) return;
 
     if (sock->local_port != 0) {
         tcp_unregister_socket(sock);
@@ -134,6 +133,24 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
         sock->rx_buf = nullptr;
     }
 
+    log::debug("tcp: socket destroyed :%u <-> %u.%u.%u.%u:%u",
+              sock->local_port,
+              (sock->remote_addr >> 24) & 0xFF,
+              (sock->remote_addr >> 16) & 0xFF,
+              (sock->remote_addr >> 8) & 0xFF,
+              sock->remote_addr & 0xFF,
+              sock->remote_port);
+
+    heap::kfree_delete(sock);
+}
+
+__PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
+    if (!obj || !obj->impl) {
+        return;
+    }
+
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
     // Drain accept queue if this was a LISTEN socket
     if (sock->state == tcp_state::LISTEN) {
         while (tcp_pending_conn* pc = sock->accept_queue.pop_front()) {
@@ -143,8 +160,73 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
             heap::kfree(pc);
         }
         sync::wake_all(sock->accept_wq);
+
+        if (sock->local_port != 0) {
+            tcp_unregister_socket(sock);
+        }
+        if (sock->rx_buf) {
+            ring_buffer_destroy(sock->rx_buf);
+        }
+        heap::kfree_delete(sock);
+        obj->impl = nullptr;
+        return;
     }
 
+    // For ESTABLISHED or CLOSE_WAIT: send FIN and let the socket linger
+    // in the port registry until the FIN handshake completes.
+    if (sock->state == tcp_state::ESTABLISHED) {
+        uint32_t fin_seq = sock->snd_nxt;
+        sock->snd_nxt++;
+        sock->state = tcp_state::FIN_WAIT_1;
+        obj->impl = nullptr;
+
+        log::debug("tcp: close() -> FIN_WAIT_1 :%u <-> %u.%u.%u.%u:%u",
+                  sock->local_port,
+                  (sock->remote_addr >> 24) & 0xFF,
+                  (sock->remote_addr >> 16) & 0xFF,
+                  (sock->remote_addr >> 8) & 0xFF,
+                  sock->remote_addr & 0xFF,
+                  sock->remote_port);
+
+        tcp_send_segment(
+            sock->local_addr, sock->local_port,
+            sock->remote_addr, sock->remote_port,
+            fin_seq, sock->rcv_nxt,
+            TCP_FIN | TCP_ACK, TCP_DEFAULT_WINDOW,
+            nullptr, 0);
+        return;
+    }
+
+    if (sock->state == tcp_state::CLOSE_WAIT) {
+        uint32_t fin_seq = sock->snd_nxt;
+        sock->snd_nxt++;
+        sock->state = tcp_state::LAST_ACK;
+        obj->impl = nullptr;
+
+        log::debug("tcp: close() -> LAST_ACK :%u <-> %u.%u.%u.%u:%u",
+                  sock->local_port,
+                  (sock->remote_addr >> 24) & 0xFF,
+                  (sock->remote_addr >> 16) & 0xFF,
+                  (sock->remote_addr >> 8) & 0xFF,
+                  sock->remote_addr & 0xFF,
+                  sock->remote_port);
+
+        tcp_send_segment(
+            sock->local_addr, sock->local_port,
+            sock->remote_addr, sock->remote_port,
+            fin_seq, sock->rcv_nxt,
+            TCP_FIN | TCP_ACK, TCP_DEFAULT_WINDOW,
+            nullptr, 0);
+        return;
+    }
+
+    // All other states (CLOSED, SYN_RECEIVED, etc.): immediate cleanup
+    if (sock->local_port != 0) {
+        tcp_unregister_socket(sock);
+    }
+    if (sock->rx_buf) {
+        ring_buffer_destroy(sock->rx_buf);
+    }
     heap::kfree_delete(sock);
     obj->impl = nullptr;
 }
@@ -649,14 +731,26 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
         return;
     }
 
-    log::info("tcp: %u.%u.%u.%u:%u -> :%u [%s] seq=%u ack=%u len=%u (%s)",
+    const char* state_str = "?";
+    switch (sock->state) {
+    case tcp_state::CLOSED:       state_str = "CLOSED"; break;
+    case tcp_state::LISTEN:       state_str = "LISTEN"; break;
+    case tcp_state::SYN_SENT:     state_str = "SYN_SENT"; break;
+    case tcp_state::SYN_RECEIVED: state_str = "SYN_RCVD"; break;
+    case tcp_state::ESTABLISHED:  state_str = "ESTAB"; break;
+    case tcp_state::FIN_WAIT_1:   state_str = "FIN_W1"; break;
+    case tcp_state::FIN_WAIT_2:   state_str = "FIN_W2"; break;
+    case tcp_state::CLOSE_WAIT:   state_str = "CLS_WAIT"; break;
+    case tcp_state::LAST_ACK:     state_str = "LAST_ACK"; break;
+    case tcp_state::TIME_WAIT:    state_str = "TIME_WAIT"; break;
+    case tcp_state::CLOSING:      state_str = "CLOSING"; break;
+    }
+
+    log::debug("tcp: %u.%u.%u.%u:%u -> :%u [%s] seq=%u ack=%u len=%u (%s)",
               (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
               (src_ip >> 8) & 0xFF, src_ip & 0xFF, src_port,
               dst_port, flag_str, seq, ack_num,
-              static_cast<uint32_t>(payload_len),
-              sock->state == tcp_state::LISTEN ? "LISTEN" :
-              sock->state == tcp_state::SYN_RECEIVED ? "SYN_RCVD" :
-              sock->state == tcp_state::ESTABLISHED ? "ESTAB" : "other");
+              static_cast<uint32_t>(payload_len), state_str);
 
     // State machine dispatch
     switch (sock->state) {
@@ -738,6 +832,144 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
         }
         break;
     }
+
+    case tcp_state::FIN_WAIT_1: {
+        // We sent FIN, waiting for peer's ACK and/or FIN
+
+        // ACK processing
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            bool fin_acked = (sock->snd_una == sock->snd_nxt);
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            if (fin_acked && !(flags & TCP_FIN)) {
+                sock->state = tcp_state::FIN_WAIT_2;
+                log::info("tcp: -> FIN_WAIT_2 :%u", sock->local_port);
+            }
+        }
+
+        // FIN processing
+        if (flags & TCP_FIN) {
+            sock->rcv_nxt++;
+            tcp_send_segment(
+                sock->local_addr, sock->local_port,
+                sock->remote_addr, sock->remote_port,
+                sock->snd_nxt, sock->rcv_nxt,
+                TCP_ACK, TCP_DEFAULT_WINDOW,
+                nullptr, 0);
+
+            bool fin_acked = (sock->snd_una == sock->snd_nxt);
+            if (fin_acked) {
+                // Our FIN was ACKed (maybe in this segment) -> TIME_WAIT
+                log::info("tcp: -> TIME_WAIT :%u", sock->local_port);
+                tcp_destroy_socket(sock);
+            } else {
+                // Simultaneous close: peer sent FIN before ACKing ours
+                sock->state = tcp_state::CLOSING;
+                log::info("tcp: -> CLOSING :%u", sock->local_port);
+            }
+        }
+        break;
+    }
+
+    case tcp_state::FIN_WAIT_2: {
+        // Our FIN ACKed, waiting for peer's FIN
+
+        // Can still receive data per RFC
+        if (payload_len > 0 && sock->rx_buf) {
+            if (seq == sock->rcv_nxt) {
+                ssize_t written = ring_buffer_write(
+                    sock->rx_buf, data + hdr_len, payload_len, true);
+                if (written > 0) {
+                    sock->rcv_nxt += static_cast<uint32_t>(written);
+                }
+                tcp_send_segment(
+                    sock->local_addr, sock->local_port,
+                    sock->remote_addr, sock->remote_port,
+                    sock->snd_nxt, sock->rcv_nxt,
+                    TCP_ACK, TCP_DEFAULT_WINDOW,
+                    nullptr, 0);
+            }
+        }
+
+        // FIN processing
+        if (flags & TCP_FIN) {
+            sock->rcv_nxt++;
+            tcp_send_segment(
+                sock->local_addr, sock->local_port,
+                sock->remote_addr, sock->remote_port,
+                sock->snd_nxt, sock->rcv_nxt,
+                TCP_ACK, TCP_DEFAULT_WINDOW,
+                nullptr, 0);
+
+            // TIME_WAIT -> immediate CLOSED (simplified, no 2*MSL timer)
+            log::info("tcp: -> TIME_WAIT -> CLOSED :%u", sock->local_port);
+            tcp_destroy_socket(sock);
+        }
+        break;
+    }
+
+    case tcp_state::CLOSE_WAIT:
+        // Peer sent FIN, we haven't closed yet. Process ACKs for data
+        // we may have sent. No data to receive (FIN was already received).
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+        }
+        break;
+
+    case tcp_state::LAST_ACK:
+        // We sent FIN after CLOSE_WAIT, waiting for peer's ACK
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            bool fin_acked = (sock->snd_una == sock->snd_nxt);
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            if (fin_acked) {
+                log::info("tcp: LAST_ACK -> CLOSED :%u", sock->local_port);
+                tcp_destroy_socket(sock);
+            }
+        }
+        break;
+
+    case tcp_state::CLOSING:
+        // Simultaneous close: we sent FIN, peer sent FIN, waiting for ACK of our FIN
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            bool fin_acked = (sock->snd_una == sock->snd_nxt);
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            if (fin_acked) {
+                // TIME_WAIT -> immediate CLOSED (simplified)
+                log::info("tcp: CLOSING -> CLOSED :%u", sock->local_port);
+                tcp_destroy_socket(sock);
+            }
+        }
+        break;
+
+    case tcp_state::TIME_WAIT:
+        // Retransmitted FIN from peer: re-ACK it
+        if (flags & TCP_FIN) {
+            tcp_send_segment(
+                sock->local_addr, sock->local_port,
+                sock->remote_addr, sock->remote_port,
+                sock->snd_nxt, sock->rcv_nxt,
+                TCP_ACK, TCP_DEFAULT_WINDOW,
+                nullptr, 0);
+        }
+        break;
 
     default:
         break;
