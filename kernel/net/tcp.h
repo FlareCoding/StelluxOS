@@ -90,6 +90,7 @@ struct tcp_socket {
     list::head<tcp_pending_conn, &tcp_pending_conn::link> accept_queue;
     sync::wait_queue accept_wq;
 
+    uint32_t       so_options;   // bitmask of socket options
     sync::spinlock lock;
     tcp_socket*    next;        // linked list for port registry
 };

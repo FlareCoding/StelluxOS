@@ -604,6 +604,42 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
     return resource::ERR_CONNREFUSED;
 }
 
+__PRIVILEGED_CODE static int32_t tcp_setsockopt(
+    resource::resource_object* obj, int32_t level,
+    int32_t optname, const void* optval, size_t optlen
+) {
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
+    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
+    if (optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    int32_t val = 0;
+    string::memcpy(&val, optval, sizeof(val));
+
+    sync::irq_lock_guard guard(sock->lock);
+    if (val)
+        sock->so_options |= static_cast<uint32_t>(SO_REUSEADDR);
+    else
+        sock->so_options &= ~static_cast<uint32_t>(SO_REUSEADDR);
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t tcp_getsockopt(
+    resource::resource_object* obj, int32_t level,
+    int32_t optname, void* optval, size_t* optlen
+) {
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
+    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
+    if (!optlen || *optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    sync::irq_lock_guard guard(sock->lock);
+    int32_t val = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) ? 1 : 0;
+    string::memcpy(optval, &val, sizeof(val));
+    *optlen = sizeof(val);
+    return resource::OK;
+}
+
 static const resource::resource_ops g_tcp_ops = {
     tcp_read,
     tcp_write,
@@ -616,6 +652,8 @@ static const resource::resource_ops g_tcp_ops = {
     tcp_listen,
     tcp_accept,
     tcp_connect,
+    tcp_setsockopt,
+    tcp_getsockopt,
 };
 
 // Look up a TCP socket matching an incoming segment.
@@ -684,6 +722,7 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
     child->pending_count = 0;
     child->accept_queue.init();
     child->accept_wq.init();
+    child->so_options = 0;
     child->lock = sync::SPINLOCK_INIT;
     child->next = nullptr;
 
@@ -771,6 +810,7 @@ bool tcp_try_register(tcp_socket* sock) {
     if (!sock || sock->local_port == 0) {
         return false;
     }
+    bool reuse = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) != 0;
     bool registered = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_tcp_sock_lock);
@@ -779,11 +819,16 @@ bool tcp_try_register(tcp_socket* sock) {
         for (tcp_socket* s = g_tcp_sock_list; s; s = s->next) {
             if (s == sock) continue;
             if (s->local_port != sock->local_port) continue;
-            if (sock->local_addr == 0 || s->local_addr == 0
-                || s->local_addr == sock->local_addr) {
-                conflict = true;
-                break;
+            if (sock->local_addr != 0 && s->local_addr != 0
+                && s->local_addr != sock->local_addr) continue;
+
+            if (reuse && (s->state == tcp_state::TIME_WAIT
+                          || s->state == tcp_state::CLOSED)) {
+                continue;
             }
+
+            conflict = true;
+            break;
         }
 
         if (!conflict) {
@@ -836,6 +881,7 @@ int32_t create_tcp_socket(resource::resource_object** out) {
     sock->pending_count = 0;
     sock->accept_queue.init();
     sock->accept_wq.init();
+    sock->so_options = 0;
     sock->lock = sync::SPINLOCK_INIT;
     sock->next = nullptr;
 

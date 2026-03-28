@@ -28,19 +28,25 @@ using listen_fn = int32_t (*)(resource_object* obj, int32_t backlog);
 using accept_fn = int32_t (*)(resource_object* obj, resource_object** new_obj,
                               void* kaddr, size_t* addrlen, bool nonblock);
 using connect_fn = int32_t (*)(resource_object* obj, const void* kaddr, size_t addrlen);
+using setsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
+                                  int32_t optname, const void* optval, size_t optlen);
+using getsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
+                                  int32_t optname, void* optval, size_t* optlen);
 
 struct resource_ops {
     read_fn     read;
     write_fn    write;
     close_fn    close;
-    ioctl_fn    ioctl;    // nullable
-    mmap_fn     mmap;     // nullable
-    sendto_fn   sendto;   // nullable — for datagram/raw sockets
-    recvfrom_fn recvfrom; // nullable — for datagram/raw sockets
-    bind_fn     bind;     // nullable — for sockets
-    listen_fn   listen;   // nullable — for stream sockets
-    accept_fn   accept;   // nullable — for listening sockets
-    connect_fn  connect;  // nullable — for stream sockets
+    ioctl_fn    ioctl;       // nullable
+    mmap_fn     mmap;        // nullable
+    sendto_fn   sendto;      // nullable — for datagram/raw sockets
+    recvfrom_fn recvfrom;    // nullable — for datagram/raw sockets
+    bind_fn     bind;        // nullable — for sockets
+    listen_fn   listen;      // nullable — for stream sockets
+    accept_fn   accept;      // nullable — for listening sockets
+    connect_fn  connect;     // nullable — for stream sockets
+    setsockopt_fn setsockopt; // nullable — for sockets
+    getsockopt_fn getsockopt; // nullable — for sockets
 };
 
 struct resource_object : rc::ref_counted<resource_object> {
@@ -74,6 +80,7 @@ constexpr int32_t ERR_ISCONN      = -15;
 constexpr int32_t ERR_AGAIN       = -16;
 constexpr int32_t ERR_EXIST       = -17;
 constexpr int32_t ERR_INTR        = -18;
+constexpr int32_t ERR_NOPROTOOPT  = -19;
 
 /**
  * @brief Initialize handle table storage in task.

@@ -33,6 +33,7 @@ inline int64_t map_socket_op_error(int32_t rc) {
     case resource::ERR_NOENT:       return syscall::ENOENT;
     case resource::ERR_NOTDIR:      return syscall::ENOTDIR;
     case resource::ERR_INTR:        return syscall::EINTR;
+    case resource::ERR_NOPROTOOPT:  return syscall::ENOPROTOOPT;
     default:                        return syscall::EIO;
     }
 }
@@ -470,4 +471,105 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
 
     resource::resource_release(obj);
     return result;
+}
+
+DEFINE_SYSCALL5(setsockopt, fd, level, optname, optval, optlen) {
+    sched::task* task = sched::current();
+    if (!task) return syscall::EIO;
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &task->handles, static_cast<resource::handle_t>(fd),
+        resource::RIGHT_READ, &obj);
+    if (rc != resource::HANDLE_OK) return syscall::EBADF;
+    if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+    if (!obj->ops || !obj->ops->setsockopt) {
+        resource::resource_release(obj);
+        return syscall::ENOPROTOOPT;
+    }
+
+    size_t klen = static_cast<size_t>(optlen);
+    if (klen == 0 || klen > 64) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    uint8_t kval[64] = {};
+    int32_t copy_rc = mm::uaccess::copy_from_user(
+        kval, reinterpret_cast<const void*>(optval), klen);
+    if (copy_rc != mm::uaccess::OK) {
+        resource::resource_release(obj);
+        return syscall::EFAULT;
+    }
+
+    int32_t result = obj->ops->setsockopt(
+        obj, static_cast<int32_t>(level), static_cast<int32_t>(optname),
+        kval, klen);
+    resource::resource_release(obj);
+    return (result == resource::OK) ? 0 : map_socket_op_error(result);
+}
+
+DEFINE_SYSCALL5(getsockopt, fd, level, optname, optval, optlen) {
+    sched::task* task = sched::current();
+    if (!task) return syscall::EIO;
+
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        &task->handles, static_cast<resource::handle_t>(fd),
+        resource::RIGHT_READ, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+    if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+    if (!obj->ops || !obj->ops->getsockopt) {
+        resource::resource_release(obj);
+        return syscall::ENOPROTOOPT;
+    }
+
+    uint32_t user_len = 0;
+    int32_t copy_rc = mm::uaccess::copy_from_user(
+        &user_len, reinterpret_cast<const void*>(optlen), sizeof(user_len));
+    if (copy_rc != mm::uaccess::OK) {
+        resource::resource_release(obj);
+        return syscall::EFAULT;
+    }
+
+    size_t klen = user_len;
+    if (klen == 0 || klen > 64) {
+        resource::resource_release(obj);
+        return syscall::EINVAL;
+    }
+
+    uint8_t kval[64] = {};
+    int32_t result = obj->ops->getsockopt(
+        obj, static_cast<int32_t>(level), static_cast<int32_t>(optname),
+        kval, &klen);
+    if (result != resource::OK) {
+        resource::resource_release(obj);
+        return map_socket_op_error(result);
+    }
+
+    copy_rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(optval), kval, klen);
+    if (copy_rc != mm::uaccess::OK) {
+        resource::resource_release(obj);
+        return syscall::EFAULT;
+    }
+
+    uint32_t out_len = static_cast<uint32_t>(klen);
+    copy_rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(optlen), &out_len, sizeof(out_len));
+    if (copy_rc != mm::uaccess::OK) {
+        resource::resource_release(obj);
+        return syscall::EFAULT;
+    }
+
+    resource::resource_release(obj);
+    return 0;
 }
