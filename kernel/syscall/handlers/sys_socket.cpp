@@ -144,9 +144,8 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
 }
 
 DEFINE_SYSCALL3(bind, fd, addr, addrlen) {
-    if (addr == 0 || addrlen < sizeof(uint16_t)) {
-        return syscall::EFAULT;
-    }
+    if (addr == 0) return syscall::EFAULT;
+    if (addrlen < sizeof(uint16_t)) return syscall::EINVAL;
 
     sched::task* task = sched::current();
     if (!task) return syscall::EIO;
@@ -204,9 +203,8 @@ DEFINE_SYSCALL2(listen, fd, backlog) {
 }
 
 DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
-    if (addr == 0 || addrlen < sizeof(uint16_t)) {
-        return syscall::EFAULT;
-    }
+    if (addr == 0) return syscall::EFAULT;
+    if (addrlen < sizeof(uint16_t)) return syscall::EINVAL;
 
     sched::task* task = sched::current();
     if (!task) return syscall::EIO;

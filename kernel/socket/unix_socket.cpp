@@ -206,15 +206,18 @@ __PRIVILEGED_CODE static int32_t unix_listen(
     }
 
     auto ls = rc::make_kref<listener_state>();
-    if (!ls) return resource::ERR_NOMEM;
+    if (!ls) {
+        return resource::ERR_NOMEM;
+    }
 
     ls->lock = sync::SPINLOCK_INIT;
     ls->closed = false;
     ls->accept_queue.init();
     ls->accept_wq.init();
-    uint32_t bl = static_cast<uint32_t>(backlog);
-    if (bl == 0) bl = DEFAULT_BACKLOG;
-    if (bl > MAX_BACKLOG) bl = MAX_BACKLOG;
+    uint32_t bl = (backlog <= 0) ? DEFAULT_BACKLOG : static_cast<uint32_t>(backlog);
+    if (bl > MAX_BACKLOG) {
+        bl = MAX_BACKLOG;
+    }
     ls->backlog = bl;
     ls->pending_count = 0;
 
