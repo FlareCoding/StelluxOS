@@ -83,7 +83,9 @@ void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_udp_sock_lock);
         for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
-            if (htons(s->bound_port) == dst_port_net && s->rx_buf) {
+            if (htons(s->bound_port) == dst_port_net
+                && (s->bound_addr == 0 || s->bound_addr == dst_ip)
+                && s->rx_buf) {
                 (void)ring_buffer_write_all(s->rx_buf, entry, entry_len, true);
                 break;
             }
@@ -118,6 +120,34 @@ void udp_unregister_socket(inet_socket* sock) {
             pp = &(*pp)->next;
         }
     });
+}
+
+bool udp_try_register(inet_socket* sock) {
+    if (!sock || sock->bound_port == 0) {
+        return false;
+    }
+    bool registered = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_udp_sock_lock);
+
+        bool conflict = false;
+        for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
+            if (s == sock) continue;
+            if (s->bound_port != sock->bound_port) continue;
+            if (sock->bound_addr == 0 || s->bound_addr == 0
+                || s->bound_addr == sock->bound_addr) {
+                conflict = true;
+                break;
+            }
+        }
+
+        if (!conflict) {
+            sock->next = g_udp_sock_list;
+            g_udp_sock_list = sock;
+            registered = true;
+        }
+    });
+    return registered;
 }
 
 uint16_t udp_alloc_ephemeral_port() {

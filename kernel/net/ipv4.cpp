@@ -88,7 +88,8 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
 }
 
 int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
-                  const uint8_t* payload, size_t payload_len) {
+                  const uint8_t* payload, size_t payload_len,
+                  uint32_t src_ip_override) {
     if (!payload) {
         return ERR_INVAL;
     }
@@ -146,12 +147,13 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     hdr->protocol = protocol;
     hdr->checksum = 0;
 
-    // For LOCAL routes (sending to our own non-loopback IP), use the
-    // destination IP as the source. The packet is self-addressed, so
-    // src = dst = our local address. Without this, the source would be
-    // 127.0.0.1 (loopback's IP) which is incorrect.
-    // For all other routes, use the outgoing interface's IP as source.
-    if (rt.type == route_type::LOCAL) {
+    // Source IP selection:
+    // 1. Explicit override from caller (e.g. bound socket address)
+    // 2. LOCAL routes: use dst_ip (packet is self-addressed, src = dst)
+    // 3. Default: use the outgoing interface's IP
+    if (src_ip_override != 0) {
+        hdr->src_ip = htonl(src_ip_override);
+    } else if (rt.type == route_type::LOCAL) {
         hdr->src_ip = htonl(dst_ip);
     } else {
         hdr->src_ip = htonl(out_iface->ipv4_addr);

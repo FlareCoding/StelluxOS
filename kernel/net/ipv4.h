@@ -51,10 +51,14 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len);
  * @param protocol IP protocol number (e.g., IPV4_PROTO_ICMP).
  * @param payload  Payload data.
  * @param payload_len Length of payload.
+ * @param src_ip_override Source IP in HOST byte order, or 0 to let
+ *        routing decide. When non-zero, this address is stamped into
+ *        the IPv4 header instead of the route-derived source.
  * @return 0 on success, negative error code on failure.
  */
 int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
-                  const uint8_t* payload, size_t payload_len);
+                  const uint8_t* payload, size_t payload_len,
+                  uint32_t src_ip_override = 0);
 
 } // namespace net
 

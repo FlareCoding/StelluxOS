@@ -245,24 +245,20 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
         RUN_ELEVATED(iface->poll(iface));
     }
 
-    // Determine the actual source IP by consulting the routing table.
-    // ipv4_send() may override the outgoing interface and source IP
-    // (e.g. LOCAL routes use dst_ip as src, loopback routes use lo's IP).
-    // The UDP pseudo-header checksum must use the same source IP that
-    // will appear in the IP header, so we resolve routing first.
-    uint32_t src_ip = iface->ipv4_addr;
-    route_result rt;
-    if (route_lookup(dst_ip, &rt) == OK) {
-        if (rt.type == route_type::LOCAL) {
-            // LOCAL delivery: ipv4_send sets src_ip = dst_ip
-            src_ip = dst_ip;
-        } else if (rt.iface && (rt.iface->flags & NETIF_LOOPBACK)) {
-            // Routed through loopback: ipv4_send uses lo's IP
-            src_ip = rt.iface->ipv4_addr;
-        } else if (rt.iface && iface) {
-            // Normal route: ipv4_send prefers caller's interface for
-            // non-loopback routes, so src_ip stays as iface->ipv4_addr
-            src_ip = iface->ipv4_addr;
+    // Determine source IP for the UDP pseudo-header checksum.
+    // If the socket is bound to a specific address, use it directly and
+    // pass it to ipv4_send as an override so the IP header matches.
+    // Otherwise, mirror ipv4_send's route-based source selection.
+    uint32_t src_ip = sock->bound_addr;
+    if (src_ip == 0) {
+        src_ip = iface->ipv4_addr;
+        route_result rt;
+        if (route_lookup(dst_ip, &rt) == OK) {
+            if (rt.type == route_type::LOCAL) {
+                src_ip = dst_ip;
+            } else if (rt.iface && (rt.iface->flags & NETIF_LOOPBACK)) {
+                src_ip = rt.iface->ipv4_addr;
+            }
         }
     }
 
@@ -284,7 +280,8 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
         htonl(src_ip), htonl(dst_ip), udp_pkt, udp_total);
     uhdr->checksum = (csum == 0) ? static_cast<uint16_t>(0xFFFF) : csum;
 
-    int32_t rc = ipv4_send(iface, dst_ip, IPV4_PROTO_UDP, udp_pkt, udp_total);
+    int32_t rc = ipv4_send(iface, dst_ip, IPV4_PROTO_UDP, udp_pkt, udp_total,
+                           sock->bound_addr);
     heap::kfree(udp_pkt);
 
     if (rc != OK) {
@@ -356,6 +353,58 @@ __PRIVILEGED_CODE static ssize_t inet_udp_recvfrom(
     return data_rc;
 }
 
+__PRIVILEGED_CODE static int32_t inet_udp_bind(
+    resource::resource_object* obj, const void* kaddr, size_t addrlen
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<inet_socket*>(obj->impl);
+    if (sock->protocol != IPV4_PROTO_UDP) {
+        return resource::ERR_INVAL;
+    }
+
+    if (!kaddr || addrlen < sizeof(kernel_sockaddr_in)) {
+        return resource::ERR_INVAL;
+    }
+    const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
+    if (addr->sin_family != AF_INET_VAL) {
+        return resource::ERR_INVAL;
+    }
+
+    uint32_t bind_addr = ntohl(addr->sin_addr);
+    uint16_t bind_port = ntohs(addr->sin_port);
+
+    if (bind_addr != 0 && !is_local_ip(bind_addr)) {
+        return resource::ERR_INVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+    if (sock->bound_port != 0) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_INVAL;
+    }
+
+    if (bind_port == 0) {
+        bind_port = udp_alloc_ephemeral_port();
+    }
+
+    sock->bound_addr = bind_addr;
+    sock->bound_port = bind_port;
+
+    if (!udp_try_register(sock)) {
+        sock->bound_addr = 0;
+        sock->bound_port = 0;
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_ADDRINUSE;
+    }
+
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+    return resource::OK;
+}
+
 static const resource::resource_ops g_inet_udp_ops = {
     nullptr,                    // read
     nullptr,                   // write
@@ -364,7 +413,7 @@ static const resource::resource_ops g_inet_udp_ops = {
     nullptr,                    // mmap
     inet_udp_sendto,
     inet_udp_recvfrom,
-    nullptr,                    // bind
+    inet_udp_bind,              // bind
     nullptr,                  // listen
     nullptr,                  // accept
     nullptr,                 // connect

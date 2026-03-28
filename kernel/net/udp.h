@@ -43,6 +43,15 @@ void udp_register_socket(inet_socket* sock);
 void udp_unregister_socket(inet_socket* sock);
 
 /**
+ * Atomically check for binding conflicts and register if none found.
+ * Uses POSIX overlap rule: conflict if ports match AND addresses overlap
+ * (a == 0 || b == 0 || a == b). All values in host byte order.
+ * The caller must have set sock->bound_port and sock->bound_addr before calling.
+ * @return true if registered successfully, false if a conflicting binding exists.
+ */
+bool udp_try_register(inet_socket* sock);
+
+/**
  * Allocate an ephemeral port number (49152-65535).
  * Thread-safe via atomic counter.
  * @return Port number in host byte order.
