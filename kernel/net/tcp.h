@@ -3,6 +3,7 @@
 
 #include "net/net.h"
 #include "resource/resource.h"
+#include "rc/ref_counted.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 #include "common/list.h"
@@ -62,8 +63,8 @@ struct tcp_pending_conn {
     resource::resource_object* conn_obj;
 };
 
-// TCP socket: one per connection (or one per listening port).
-struct tcp_socket {
+// TCP socket: one per connection (or one per listening port)
+struct tcp_socket : rc::ref_counted<tcp_socket> {
     tcp_state      state;
 
     // Local endpoint (set by bind or connect)
@@ -93,6 +94,11 @@ struct tcp_socket {
     uint32_t       so_options;   // bitmask of socket options
     sync::spinlock lock;
     tcp_socket*    next;        // linked list for port registry
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void ref_destroy(tcp_socket* self);
 };
 
 /**
@@ -108,8 +114,9 @@ bool tcp_try_register(tcp_socket* sock);
 
 /**
  * Unregister a TCP socket from the port registry.
+ * @return true if the socket was found and removed, false if not found.
  */
-void tcp_unregister_socket(tcp_socket* sock);
+bool tcp_unregister_socket(tcp_socket* sock);
 
 /**
  * Process a received TCP segment (after IPv4 header is stripped).

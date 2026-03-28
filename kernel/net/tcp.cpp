@@ -119,30 +119,23 @@ __PRIVILEGED_CODE static int32_t tcp_send_data(
                     seq, ack_num, flags, window, data, data_len, false);
 }
 
-// Destroy an orphaned tcp_socket (no resource_object attached).
-// Called from tcp_recv when the state machine reaches CLOSED after
-// the application has already called close().
-static void tcp_destroy_socket(tcp_socket* sock) {
-    if (!sock) return;
+__PRIVILEGED_CODE static void tcp_sock_release(tcp_socket* sock) {
+    if (!sock) {
+        return;
+    }
+    if (sock->release()) {
+        tcp_socket::ref_destroy(sock);
+    }
+}
 
+static void tcp_destroy_socket(tcp_socket* sock) {
+    if (!sock) {
+        return;
+    }
     if (sock->local_port != 0) {
         tcp_unregister_socket(sock);
     }
-
-    if (sock->rx_buf) {
-        ring_buffer_destroy(sock->rx_buf);
-        sock->rx_buf = nullptr;
-    }
-
-    log::debug("tcp: socket destroyed :%u <-> %u.%u.%u.%u:%u",
-              sock->local_port,
-              (sock->remote_addr >> 24) & 0xFF,
-              (sock->remote_addr >> 16) & 0xFF,
-              (sock->remote_addr >> 8) & 0xFF,
-              sock->remote_addr & 0xFF,
-              sock->remote_port);
-
-    heap::kfree_delete(sock);
+    tcp_sock_release(sock);
 }
 
 __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
@@ -154,53 +147,73 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
 
     // Drain accept queue if this was a LISTEN socket
     if (sock->state == tcp_state::LISTEN) {
-        // Mark as CLOSED first so new SYNs (tcp_listen_recv_syn) bail out
-        // when they re-check the listener state after the backlog check.
+        constexpr uint32_t MAX_DRAIN = 256;
+        tcp_pending_conn* drain_list[MAX_DRAIN];
+        uint32_t drain_count = 0;
+        tcp_socket* destroy_list = nullptr;
+
+        sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+        if (sock->state != tcp_state::LISTEN) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            goto cleanup;
+        }
         sock->state = tcp_state::CLOSED;
 
-        while (tcp_pending_conn* pc = sock->accept_queue.pop_front()) {
-            if (pc->conn_obj) {
-                resource::resource_release(pc->conn_obj);
-            }
-            heap::kfree(pc);
-        }
-        sync::wake_all(sock->accept_wq);
-
-        // Destroy SYN_RECEIVED children whose parent is this listener.
-        // Only SYN_RECEIVED children are cleaned up here, ESTABLISHED
-        // and later states have their own lifecycle (detached from the
-        // resource_object, lingering for FIN handshake completion).
-        // Also null out parent on any non-SYN_RECEIVED children to
-        // prevent dangling pointer dereference.
         RUN_ELEVATED({
             sync::irq_lock_guard guard(g_tcp_sock_lock);
+
+            while (tcp_pending_conn* pc = sock->accept_queue.pop_front()) {
+                if (drain_count < MAX_DRAIN) {
+                    drain_list[drain_count++] = pc;
+                }
+            }
+
             tcp_socket** pp = &g_tcp_sock_list;
             while (*pp) {
                 tcp_socket* child = *pp;
                 if (child->parent == sock) {
                     if (child->state == tcp_state::SYN_RECEIVED) {
                         *pp = child->next;
-                        child->next = nullptr;
+                        child->next = destroy_list;
+                        destroy_list = child;
                         child->parent = nullptr;
-                        if (child->rx_buf) {
-                            ring_buffer_destroy(child->rx_buf);
-                        }
-                        heap::kfree_delete(child);
                         continue;
                     }
                     child->parent = nullptr;
                 }
                 pp = &(*pp)->next;
             }
-        });
 
-        if (sock->local_port != 0) {
-            tcp_unregister_socket(sock);
+            // Unlink listener itself from the global list
+            pp = &g_tcp_sock_list;
+            while (*pp) {
+                if (*pp == sock) {
+                    *pp = sock->next;
+                    sock->next = nullptr;
+                    break;
+                }
+                pp = &(*pp)->next;
+            }
+        });
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+
+        sync::wake_all(sock->accept_wq);
+
+        for (uint32_t i = 0; i < drain_count; i++) {
+            if (drain_list[i]->conn_obj) {
+                resource::resource_release(drain_list[i]->conn_obj);
+            }
+            heap::kfree(drain_list[i]);
         }
-        if (sock->rx_buf) {
-            ring_buffer_destroy(sock->rx_buf);
+
+        while (destroy_list) {
+            tcp_socket* child = destroy_list;
+            destroy_list = child->next;
+            child->next = nullptr;
+            tcp_sock_release(child);
         }
-        heap::kfree_delete(sock);
+
+        tcp_sock_release(sock);
         obj->impl = nullptr;
         return;
     }
@@ -212,8 +225,7 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
 
         sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
 
-        // Re-check under lock, tcp_recv may have transitioned the state
-        // between our first read and acquiring the lock.
+        // Re-check under lock
         tcp_state cur = sock->state;
         if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
             sync::spin_unlock_irqrestore(sock->lock, irq);
@@ -237,22 +249,18 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
 
         obj->impl = nullptr;
 
-        log::debug("tcp: close() -> %s :%u <-> %u.%u.%u.%u:%u",
-                  (next_state == tcp_state::FIN_WAIT_1) ? "FIN_WAIT_1" : "LAST_ACK",
-                  l_port,
-                  (r_addr >> 24) & 0xFF, (r_addr >> 16) & 0xFF,
-                  (r_addr >> 8) & 0xFF, r_addr & 0xFF, r_port);
-
-        tcp_send_segment(l_addr, l_port, r_addr, r_port,
-                         fin_seq, r_nxt,
-                         TCP_FIN | TCP_ACK, TCP_DEFAULT_WINDOW,
-                         nullptr, 0);
+        tcp_send_data(l_addr, l_port, r_addr, r_port,
+                      fin_seq, r_nxt,
+                      TCP_FIN | TCP_ACK, TCP_DEFAULT_WINDOW,
+                      nullptr, 0);
         return;
     }
 
     // SYN_SENT: wake blocked connect() before cleanup
     if (sock->state == tcp_state::SYN_SENT) {
+        sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
         sock->state = tcp_state::CLOSED;
+        sync::spin_unlock_irqrestore(sock->lock, irq);
         sync::wake_one(sock->accept_wq);
     }
 
@@ -261,10 +269,7 @@ cleanup:
     if (sock->local_port != 0) {
         tcp_unregister_socket(sock);
     }
-    if (sock->rx_buf) {
-        ring_buffer_destroy(sock->rx_buf);
-    }
-    heap::kfree_delete(sock);
+    tcp_sock_release(sock);
     obj->impl = nullptr;
 }
 
@@ -387,12 +392,17 @@ __PRIVILEGED_CODE static int32_t tcp_accept(
         sync::spin_unlock_irqrestore(sock->lock, irq);
         return resource::ERR_INTR;
     }
-    if (sock->accept_queue.empty()) {
+
+    tcp_pending_conn* pc = nullptr;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_tcp_sock_lock);
+        pc = sock->accept_queue.pop_front();
+    });
+
+    if (!pc) {
         sync::spin_unlock_irqrestore(sock->lock, irq);
         return resource::ERR_INVAL;
     }
-
-    tcp_pending_conn* pc = sock->accept_queue.pop_front();
     sock->pending_count--;
     sync::spin_unlock_irqrestore(sock->lock, irq);
 
@@ -421,7 +431,9 @@ __PRIVILEGED_CODE static ssize_t tcp_read(
     }
 
     auto* sock = static_cast<tcp_socket*>(obj->impl);
-    if (sock->state != tcp_state::ESTABLISHED && sock->state != tcp_state::CLOSE_WAIT) {
+
+    tcp_state cur = sock->state;
+    if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
         return resource::ERR_NOTCONN;
     }
 
@@ -442,12 +454,13 @@ __PRIVILEGED_CODE static ssize_t tcp_write(
     }
 
     auto* sock = static_cast<tcp_socket*>(obj->impl);
-    if (sock->state != tcp_state::ESTABLISHED && sock->state != tcp_state::CLOSE_WAIT) {
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+    tcp_state cur = sock->state;
+    if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
         return resource::ERR_NOTCONN;
     }
-
-    // Stamp with current snd_nxt, then advance
-    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
     uint32_t seq = sock->snd_nxt;
     uint32_t ack_val = sock->rcv_nxt;
     uint32_t src_ip = sock->local_addr;
@@ -507,8 +520,9 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
 
     sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
 
-    // Allocate ephemeral port if not already bound
-    if (sock->local_port == 0) {
+    bool already_registered = (sock->local_port != 0);
+
+    if (!already_registered) {
         sock->local_port = tcp_alloc_ephemeral_port();
     }
 
@@ -516,26 +530,8 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
     sock->remote_addr = dst_ip;
     sock->remote_port = dst_port;
 
-    // Generate ISN and set sequence numbers
-    uint32_t isn = tcp_generate_isn();
-    sock->snd_una = isn;
-    sock->snd_nxt = isn + 1;
-
-    sock->state = tcp_state::SYN_SENT;
-    sock->accept_wq.init();
-
-    // Register after state is set so tcp_recv sees SYN_SENT, not CLOSED
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_tcp_sock_lock);
-        sock->next = g_tcp_sock_list;
-        g_tcp_sock_list = sock;
-    });
-    sync::spin_unlock_irqrestore(sock->lock, irq);
-
-    // Resolve actual source IP if local_addr is 0 (INADDR_ANY).
-    // Set it on the socket so all future sends (write, ACKs) use it.
-    // Without this, the TCP checksum is computed with 0.0.0.0 but the
-    // IP header uses the real interface IP leading to a checksum mismatch.
+    // Resolve source IP before registration so tcp_recv can't
+    // observe a half-initialized local_addr.
     if (sock->local_addr == 0) {
         route_result rt;
         if (route_lookup(dst_ip, &rt) == OK) {
@@ -556,6 +552,22 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
             }
         }
     }
+
+    uint32_t isn = tcp_generate_isn();
+    sock->snd_una = isn;
+    sock->snd_nxt = isn + 1;
+
+    sock->state = tcp_state::SYN_SENT;
+    sock->accept_wq.init();
+
+    if (!already_registered) {
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(g_tcp_sock_lock);
+            sock->next = g_tcp_sock_list;
+            g_tcp_sock_list = sock;
+        });
+    }
+    sync::spin_unlock_irqrestore(sock->lock, irq);
 
     int32_t send_rc = tcp_send_data(
         sock->local_addr, sock->local_port,
@@ -646,6 +658,7 @@ static const resource::resource_ops g_tcp_ops = {
 // Look up a TCP socket matching an incoming segment.
 // For LISTEN sockets: match on local port (and optionally local addr).
 // For established connections: match on the full 4-tuple.
+// Caller must hold g_tcp_sock_lock. Returns a ref'd pointer or nullptr.
 static tcp_socket* tcp_lookup(uint32_t src_ip, uint16_t src_port,
                               uint32_t dst_ip, uint16_t dst_port) {
     tcp_socket* listen_match = nullptr;
@@ -656,12 +669,17 @@ static tcp_socket* tcp_lookup(uint32_t src_ip, uint16_t src_port,
 
         // Exact 4-tuple match (established connections) takes priority
         if (s->remote_port == src_port && s->remote_addr == src_ip) {
-            return s;
+            if (s->try_add_ref()) {
+                if (listen_match) tcp_sock_release(listen_match);
+                return s;
+            }
+            return listen_match;
         }
 
-        // LISTEN socket (remote == 0) is a fallback match
         if (s->state == tcp_state::LISTEN && !listen_match) {
-            listen_match = s;
+            if (s->try_add_ref()) {
+                listen_match = s;
+            }
         }
     }
 
@@ -680,7 +698,6 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
     }
     if (listener->pending_count >= listener->backlog) {
         sync::spin_unlock_irqrestore(listener->lock, irq);
-        log::debug("tcp: backlog full, dropping SYN");
         return;
     }
     listener->pending_count++;
@@ -707,7 +724,7 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
     child->snd_nxt = our_isn + 1;
     child->rx_buf = nullptr;
     child->rx_wq.init();
-    child->parent = listener;
+    child->parent = nullptr;
     child->backlog = 0;
     child->pending_count = 0;
     child->accept_queue.init();
@@ -716,18 +733,24 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
     child->lock = sync::SPINLOCK_INIT;
     child->next = nullptr;
 
-    // Register in the port registry so the ACK finds this socket by 4-tuple
+    bool registered = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_tcp_sock_lock);
-        child->next = g_tcp_sock_list;
-        g_tcp_sock_list = child;
+        child->parent = listener;
+        if (listener->state == tcp_state::LISTEN) {
+            child->next = g_tcp_sock_list;
+            g_tcp_sock_list = child;
+            registered = true;
+        }
     });
 
-    log::info("tcp: SYN on :%u from %u.%u.%u.%u:%u -> SYN_RECEIVED (isn=%u)",
-              dst_port,
-              (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-              (src_ip >> 8) & 0xFF, src_ip & 0xFF, src_port,
-              our_isn);
+    if (!registered) {
+        sync::irq_state irq2 = sync::spin_lock_irqsave(listener->lock);
+        listener->pending_count--;
+        sync::spin_unlock_irqrestore(listener->lock, irq2);
+        tcp_sock_release(child);
+        return;
+    }
 
     // Send SYN-ACK
     tcp_send_segment(dst_ip, dst_port, src_ip, src_port,
@@ -743,8 +766,6 @@ static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num) {
     // Verify the ACK acknowledges our SYN
     if (ack_num != sock->snd_nxt) {
         sync::spin_unlock_irqrestore(sock->lock, irq);
-        log::debug("tcp: bad ACK in SYN_RECEIVED (expected %u, got %u)",
-                   sock->snd_nxt, ack_num);
         return;
     }
 
@@ -758,27 +779,12 @@ static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num) {
 
     sync::spin_unlock_irqrestore(sock->lock, irq);
 
-    log::info("tcp: connection ESTABLISHED :%u <-> %u.%u.%u.%u:%u",
-              sock->local_port,
-              (sock->remote_addr >> 24) & 0xFF,
-              (sock->remote_addr >> 16) & 0xFF,
-              (sock->remote_addr >> 8) & 0xFF,
-              sock->remote_addr & 0xFF,
-              sock->remote_port);
-
-    // Wrap in a resource_object and enqueue on parent's accept queue
-    tcp_socket* parent = sock->parent;
-    if (!parent || parent->state != tcp_state::LISTEN) {
-        return;
-    }
-
     auto* obj = heap::kalloc_new<resource::resource_object>();
     if (!obj) {
-        if (parent) {
-            sync::irq_state irq2 = sync::spin_lock_irqsave(parent->lock);
-            parent->pending_count--;
-            sync::spin_unlock_irqrestore(parent->lock, irq2);
-        }
+        tcp_send_segment(sock->local_addr, sock->local_port,
+                         sock->remote_addr, sock->remote_port,
+                         sock->snd_nxt, 0, TCP_RST, 0, nullptr, 0);
+        tcp_destroy_socket(sock);
         return;
     }
     obj->type = resource::resource_type::SOCKET;
@@ -788,23 +794,48 @@ static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num) {
     auto* pc = static_cast<tcp_pending_conn*>(
         heap::kzalloc(sizeof(tcp_pending_conn)));
     if (!pc) {
+        obj->impl = nullptr;
         heap::kfree_delete(obj);
-        if (parent) {
-            sync::irq_state irq2 = sync::spin_lock_irqsave(parent->lock);
-            parent->pending_count--;
-            sync::spin_unlock_irqrestore(parent->lock, irq2);
-        }
+        tcp_send_segment(sock->local_addr, sock->local_port,
+                         sock->remote_addr, sock->remote_port,
+                         sock->snd_nxt, 0, TCP_RST, 0, nullptr, 0);
+        tcp_destroy_socket(sock);
         return;
     }
     pc->conn_obj = obj;
 
-    irq = sync::spin_lock_irqsave(parent->lock);
-    parent->accept_queue.push_back(pc);
-    sync::spin_unlock_irqrestore(parent->lock, irq);
-    sync::wake_one(parent->accept_wq);
+    bool enqueued = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_tcp_sock_lock);
+        tcp_socket* parent = sock->parent;
+        if (parent && parent->state == tcp_state::LISTEN) {
+            parent->accept_queue.push_back(pc);
+            enqueued = true;
+            sync::wake_one(parent->accept_wq);
+        }
+    });
+
+    if (!enqueued) {
+        obj->impl = nullptr;
+        heap::kfree_delete(obj);
+        heap::kfree(pc);
+        tcp_send_segment(sock->local_addr, sock->local_port,
+                         sock->remote_addr, sock->remote_port,
+                         sock->snd_nxt, 0, TCP_RST, 0, nullptr, 0);
+        tcp_destroy_socket(sock);
+    }
 }
 
 } // anonymous namespace
+
+__PRIVILEGED_CODE void tcp_socket::ref_destroy(tcp_socket* self) {
+    if (!self) return;
+    if (self->rx_buf) {
+        ring_buffer_destroy(self->rx_buf);
+        self->rx_buf = nullptr;
+    }
+    heap::kfree_delete(self);
+}
 
 bool tcp_try_register(tcp_socket* sock) {
     if (!sock || sock->local_port == 0) {
@@ -840,9 +871,10 @@ bool tcp_try_register(tcp_socket* sock) {
     return registered;
 }
 
-void tcp_unregister_socket(tcp_socket* sock) {
-    if (!sock) return;
+bool tcp_unregister_socket(tcp_socket* sock) {
+    if (!sock) return false;
 
+    bool found = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_tcp_sock_lock);
         tcp_socket** pp = &g_tcp_sock_list;
@@ -850,11 +882,13 @@ void tcp_unregister_socket(tcp_socket* sock) {
             if (*pp == sock) {
                 *pp = sock->next;
                 sock->next = nullptr;
+                found = true;
                 break;
             }
             pp = &(*pp)->next;
         }
     });
+    return found;
 }
 
 int32_t create_tcp_socket(resource::resource_object** out) {
@@ -925,18 +959,6 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     uint8_t flags = hdr->flags;
     size_t payload_len = len - hdr_len;
 
-    // Build a human-readable flag string for logging
-    char flag_str[24];
-    int pos = 0;
-    if (flags & TCP_SYN) { flag_str[pos++] = 'S'; }
-    if (flags & TCP_ACK) { flag_str[pos++] = 'A'; }
-    if (flags & TCP_FIN) { flag_str[pos++] = 'F'; }
-    if (flags & TCP_RST) { flag_str[pos++] = 'R'; }
-    if (flags & TCP_PSH) { flag_str[pos++] = 'P'; }
-    if (flags & TCP_URG) { flag_str[pos++] = 'U'; }
-    if (pos == 0) { flag_str[pos++] = '-'; }
-    flag_str[pos] = '\0';
-
     // Look up matching socket
     tcp_socket* sock = nullptr;
     RUN_ELEVATED({
@@ -945,34 +967,8 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     });
 
     if (!sock) {
-        log::info("tcp: %u.%u.%u.%u:%u -> :%u [%s] seq=%u ack=%u len=%u (no socket)",
-                  (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-                  (src_ip >> 8) & 0xFF, src_ip & 0xFF, src_port,
-                  dst_port, flag_str, seq, ack_num,
-                  static_cast<uint32_t>(payload_len));
         return;
     }
-
-    const char* state_str = "?";
-    switch (sock->state) {
-    case tcp_state::CLOSED:       state_str = "CLOSED"; break;
-    case tcp_state::LISTEN:       state_str = "LISTEN"; break;
-    case tcp_state::SYN_SENT:     state_str = "SYN_SENT"; break;
-    case tcp_state::SYN_RECEIVED: state_str = "SYN_RCVD"; break;
-    case tcp_state::ESTABLISHED:  state_str = "ESTAB"; break;
-    case tcp_state::FIN_WAIT_1:   state_str = "FIN_W1"; break;
-    case tcp_state::FIN_WAIT_2:   state_str = "FIN_W2"; break;
-    case tcp_state::CLOSE_WAIT:   state_str = "CLS_WAIT"; break;
-    case tcp_state::LAST_ACK:     state_str = "LAST_ACK"; break;
-    case tcp_state::TIME_WAIT:    state_str = "TIME_WAIT"; break;
-    case tcp_state::CLOSING:      state_str = "CLOSING"; break;
-    }
-
-    log::debug("tcp: %u.%u.%u.%u:%u -> :%u [%s] seq=%u ack=%u len=%u (%s)",
-              (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF,
-              (src_ip >> 8) & 0xFF, src_ip & 0xFF, src_port,
-              dst_port, flag_str, seq, ack_num,
-              static_cast<uint32_t>(payload_len), state_str);
 
     // State machine dispatch
     switch (sock->state) {
@@ -1036,14 +1032,6 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 uint32_t s_nxt = sock->snd_nxt;
                 uint32_t r_nxt = sock->rcv_nxt;
                 sync::spin_unlock_irqrestore(sock->lock, irq);
-
-                log::info("tcp: connect ESTABLISHED :%u <-> %u.%u.%u.%u:%u",
-                          l_port,
-                          (r_addr >> 24) & 0xFF,
-                          (r_addr >> 16) & 0xFF,
-                          (r_addr >> 8) & 0xFF,
-                          r_addr & 0xFF,
-                          r_port);
 
                 // Send ACK via deferred TX (RX context)
                 tcp_send_segment(l_addr, l_port, r_addr, r_port,
@@ -1119,6 +1107,10 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
             }
+            if (seq + static_cast<uint32_t>(payload_len) != sock->rcv_nxt) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
             sock->rcv_nxt++;
             sock->state = tcp_state::CLOSE_WAIT;
 
@@ -1138,10 +1130,6 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
             if (sock->rx_buf) {
                 ring_buffer_close_write(sock->rx_buf);
             }
-            log::info("tcp: FIN received, -> CLOSE_WAIT :%u <-> %u.%u.%u.%u:%u",
-                      l_port,
-                      (r_addr >> 24) & 0xFF, (r_addr >> 16) & 0xFF,
-                      (r_addr >> 8) & 0xFF, r_addr & 0xFF, r_port);
         }
         break;
     }
@@ -1162,15 +1150,15 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 sock->state = tcp_state::FIN_WAIT_2;
             }
             sync::spin_unlock_irqrestore(sock->lock, irq);
-
-            if (fw1_fin_acked && !(flags & TCP_FIN)) {
-                log::info("tcp: -> FIN_WAIT_2 :%u", sock->local_port);
-            }
         }
 
         // FIN processing
         if (flags & TCP_FIN) {
             sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (seq + static_cast<uint32_t>(payload_len) != sock->rcv_nxt) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
             sock->rcv_nxt++;
             fw1_fin_acked = (sock->snd_una == sock->snd_nxt);
 
@@ -1192,10 +1180,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                              nullptr, 0);
 
             if (fw1_fin_acked) {
-                log::info("tcp: -> TIME_WAIT :%u", l_port);
                 tcp_destroy_socket(sock);
-            } else {
-                log::info("tcp: -> CLOSING :%u", l_port);
             }
         }
         break;
@@ -1233,6 +1218,10 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
         // FIN processing
         if (flags & TCP_FIN) {
             sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (seq + static_cast<uint32_t>(payload_len) != sock->rcv_nxt) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
             sock->rcv_nxt++;
             uint32_t l_addr = sock->local_addr;
             uint16_t l_port = sock->local_port;
@@ -1247,8 +1236,6 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                              TCP_ACK, TCP_DEFAULT_WINDOW,
                              nullptr, 0);
 
-            // TIME_WAIT -> immediate CLOSED (simplified, no 2*MSL timer)
-            log::info("tcp: -> TIME_WAIT -> CLOSED :%u", l_port);
             tcp_destroy_socket(sock);
         }
         break;
@@ -1277,7 +1264,6 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
             sync::spin_unlock_irqrestore(sock->lock, irq);
 
             if (fin_acked) {
-                log::info("tcp: LAST_ACK -> CLOSED :%u", sock->local_port);
                 tcp_destroy_socket(sock);
             }
         }
@@ -1294,8 +1280,6 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
             sync::spin_unlock_irqrestore(sock->lock, irq);
 
             if (fin_acked) {
-                // TIME_WAIT -> immediate CLOSED
-                log::info("tcp: CLOSING -> CLOSED :%u", sock->local_port);
                 tcp_destroy_socket(sock);
             }
         }
@@ -1316,6 +1300,8 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     default:
         break;
     }
+
+    tcp_sock_release(sock);
 }
 
 } // namespace net
