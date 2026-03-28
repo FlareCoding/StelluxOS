@@ -4,6 +4,7 @@
 #include "net/byteorder.h"
 #include "net/checksum.h"
 #include "net/net.h"
+#include "resource/resource.h"
 #include "common/string.h"
 #include "common/ring_buffer.h"
 #include "mm/heap.h"
@@ -83,10 +84,15 @@ void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_udp_sock_lock);
         for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
-            if (htons(s->bound_port) == dst_port_net && s->rx_buf) {
-                (void)ring_buffer_write_all(s->rx_buf, entry, entry_len, true);
-                break;
+            if (htons(s->bound_port) != dst_port_net || !s->rx_buf) {
+                continue;
             }
+            // If bound to a specific address, only deliver matching packets
+            if (s->bound_addr != 0 && s->bound_addr != dst_ip) {
+                continue;
+            }
+            (void)ring_buffer_write_all(s->rx_buf, entry, entry_len, true);
+            break;
         }
     });
 
@@ -125,6 +131,33 @@ uint16_t udp_alloc_ephemeral_port() {
     uint32_t range = UDP_PORT_EPHEMERAL_MAX - UDP_PORT_EPHEMERAL_MIN + 1;
     return static_cast<uint16_t>(
         UDP_PORT_EPHEMERAL_MIN + (port - UDP_PORT_EPHEMERAL_MIN) % range);
+}
+
+int32_t udp_bind_port(inet_socket* sock, uint16_t port) {
+    if (!sock || port == 0) {
+        return ERR_INVAL;
+    }
+
+    int32_t result = OK;
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_udp_sock_lock);
+
+        for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
+            if (s->bound_port == port) {
+                result = resource::ERR_ADDRINUSE;
+                break;
+            }
+        }
+
+        if (result == OK) {
+            sock->bound_port = port;
+            sock->next = g_udp_sock_list;
+            g_udp_sock_list = sock;
+        }
+    });
+
+    return result;
 }
 
 } // namespace net

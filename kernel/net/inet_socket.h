@@ -20,10 +20,15 @@ struct kernel_sockaddr_in {
 
 constexpr uint16_t AF_INET_VAL = 2;
 
+// INET socket states
+constexpr uint8_t INET_STATE_UNBOUND = 0;
+constexpr uint8_t INET_STATE_BOUND   = 1;
+
 struct inet_socket {
-    uint8_t        protocol;   // e.g. IPPROTO_ICMP (1), IPPROTO_UDP (17)
-    uint32_t       bound_addr; // 0 = any (host byte order)
-    uint16_t       bound_port; // host byte order, 0 = unbound (UDP)
+    uint8_t        protocol;   // IPPROTO_ICMP (1), IPPROTO_UDP (17)
+    uint8_t        state;      // INET_STATE_*
+    uint16_t       bound_port; // host byte order, 0 = unbound
+    uint32_t       bound_addr; // host byte order, 0 = any
     ring_buffer*   rx_buf;     // incoming packets queued here
     sync::spinlock lock;
     inet_socket*   next;       // linked list for protocol registry

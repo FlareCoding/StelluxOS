@@ -356,6 +356,53 @@ __PRIVILEGED_CODE static ssize_t inet_udp_recvfrom(
     return data_rc;
 }
 
+__PRIVILEGED_CODE static int32_t inet_dgram_bind(
+    resource::resource_object* obj, const void* kaddr, size_t addrlen
+) {
+    if (!obj || !obj->impl || !kaddr) {
+        return resource::ERR_INVAL;
+    }
+    if (addrlen < sizeof(kernel_sockaddr_in)) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<inet_socket*>(obj->impl);
+    const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
+
+    if (addr->sin_family != AF_INET_VAL) {
+        return resource::ERR_INVAL;
+    }
+    if (sock->state != INET_STATE_UNBOUND) {
+        return resource::ERR_INVAL;
+    }
+    // sendto may have already auto-assigned an ephemeral port
+    if (sock->bound_port != 0) {
+        return resource::ERR_INVAL;
+    }
+
+    uint16_t port = ntohs(addr->sin_port);
+    uint32_t bind_addr = ntohl(addr->sin_addr);
+
+    // Port 0 = kernel assigns ephemeral port
+    if (port == 0) {
+        port = udp_alloc_ephemeral_port();
+    }
+
+    // Bind address must be INADDR_ANY or a locally configured IP
+    if (bind_addr != 0 && !is_local_ip(bind_addr)) {
+        return resource::ERR_INVAL;
+    }
+
+    int32_t rc = udp_bind_port(sock, port);
+    if (rc != OK) {
+        return rc;
+    }
+
+    sock->bound_addr = bind_addr;
+    sock->state = INET_STATE_BOUND;
+    return resource::OK;
+}
+
 static const resource::resource_ops g_inet_udp_ops = {
     nullptr,            // read
     nullptr,            // write
@@ -364,7 +411,7 @@ static const resource::resource_ops g_inet_udp_ops = {
     nullptr,            // mmap
     inet_udp_sendto,
     inet_udp_recvfrom,
-    nullptr,            // bind  (updated to inet_dgram_bind in Phase 2)
+    inet_dgram_bind,
     nullptr,            // listen
     nullptr,            // accept
     nullptr,            // connect
@@ -382,8 +429,9 @@ int32_t create_inet_icmp_socket(resource::resource_object** out) {
         return resource::ERR_NOMEM;
     }
     sock->protocol = IPV4_PROTO_ICMP;
-    sock->bound_addr = 0;
+    sock->state = INET_STATE_UNBOUND;
     sock->bound_port = 0;
+    sock->bound_addr = 0;
     sock->lock = sync::SPINLOCK_INIT;
     sock->next = nullptr;
 
@@ -420,8 +468,9 @@ int32_t create_inet_udp_socket(resource::resource_object** out) {
         return resource::ERR_NOMEM;
     }
     sock->protocol = IPV4_PROTO_UDP;
-    sock->bound_addr = 0;
+    sock->state = INET_STATE_UNBOUND;
     sock->bound_port = 0;
+    sock->bound_addr = 0;
     sock->lock = sync::SPINLOCK_INIT;
     sock->next = nullptr;
 

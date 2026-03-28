@@ -49,6 +49,15 @@ void udp_unregister_socket(inet_socket* sock);
  */
 uint16_t udp_alloc_ephemeral_port();
 
+/**
+ * Bind a UDP socket to a specific port with conflict detection.
+ * Registers the socket for packet delivery on that port.
+ * @param sock Socket to bind (must not already be in the socket list).
+ * @param port Port in host byte order, must be > 0.
+ * @return net::OK on success, resource::ERR_ADDRINUSE if port taken.
+ */
+int32_t udp_bind_port(inet_socket* sock, uint16_t port);
+
 } // namespace net
 
 #endif // STELLUX_NET_UDP_H
