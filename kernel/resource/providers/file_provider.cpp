@@ -120,6 +120,10 @@ static const resource_ops g_file_ops = {
     file_mmap,
     nullptr,
     nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
 };
 
 /**

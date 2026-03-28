@@ -67,6 +67,10 @@ static const resource_ops g_proc_ops = {
     nullptr,
     nullptr,
     nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
 };
 
 __PRIVILEGED_CODE int32_t create_proc_resource(

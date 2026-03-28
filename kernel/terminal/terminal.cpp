@@ -95,6 +95,10 @@ static const resource::resource_ops g_terminal_ops = {
     nullptr,
     nullptr,
     nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
 };
 
 const resource::resource_ops* get_terminal_ops() {

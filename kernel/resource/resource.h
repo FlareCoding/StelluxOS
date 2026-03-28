@@ -23,6 +23,11 @@ using sendto_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t cou
                               uint32_t flags, const void* kaddr, size_t addrlen);
 using recvfrom_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count,
                                 uint32_t flags, void* kaddr, size_t* addrlen);
+using bind_fn = int32_t (*)(resource_object* obj, const void* kaddr, size_t addrlen);
+using listen_fn = int32_t (*)(resource_object* obj, int32_t backlog);
+using accept_fn = int32_t (*)(resource_object* obj, resource_object** new_obj,
+                              void* kaddr, size_t* addrlen, bool nonblock);
+using connect_fn = int32_t (*)(resource_object* obj, const void* kaddr, size_t addrlen);
 
 struct resource_ops {
     read_fn     read;
@@ -32,6 +37,10 @@ struct resource_ops {
     mmap_fn     mmap;     // nullable
     sendto_fn   sendto;   // nullable — for datagram/raw sockets
     recvfrom_fn recvfrom; // nullable — for datagram/raw sockets
+    bind_fn     bind;     // nullable — for sockets
+    listen_fn   listen;   // nullable — for stream sockets
+    accept_fn   accept;   // nullable — for listening sockets
+    connect_fn  connect;  // nullable — for stream sockets
 };
 
 struct resource_object : rc::ref_counted<resource_object> {
@@ -64,6 +73,7 @@ constexpr int32_t ERR_ADDRINUSE   = -14;
 constexpr int32_t ERR_ISCONN      = -15;
 constexpr int32_t ERR_AGAIN       = -16;
 constexpr int32_t ERR_EXIST       = -17;
+constexpr int32_t ERR_INTR        = -18;
 
 /**
  * @brief Initialize handle table storage in task.
