@@ -372,13 +372,6 @@ __PRIVILEGED_CODE static int32_t inet_dgram_bind(
     if (addr->sin_family != AF_INET_VAL) {
         return resource::ERR_INVAL;
     }
-    if (sock->state != INET_STATE_UNBOUND) {
-        return resource::ERR_INVAL;
-    }
-    // sendto may have already auto-assigned an ephemeral port
-    if (sock->bound_port != 0) {
-        return resource::ERR_INVAL;
-    }
 
     uint16_t port = ntohs(addr->sin_port);
     uint32_t bind_addr = ntohl(addr->sin_addr);
@@ -393,13 +386,25 @@ __PRIVILEGED_CODE static int32_t inet_dgram_bind(
         return resource::ERR_INVAL;
     }
 
+    // Hold sock->lock to serialize with sendto's ephemeral assignment.
+    // Both paths check bound_port == 0 before assigning, so the lock
+    // prevents a race where bind and sendto both see port == 0.
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+    if (sock->state != INET_STATE_UNBOUND || sock->bound_port != 0) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_INVAL;
+    }
+
     int32_t rc = udp_bind_port(sock, port);
     if (rc != OK) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
         return rc;
     }
 
     sock->bound_addr = bind_addr;
     sock->state = INET_STATE_BOUND;
+    sync::spin_unlock_irqrestore(sock->lock, irq);
     return resource::OK;
 }
 

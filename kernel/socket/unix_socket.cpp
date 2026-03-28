@@ -292,7 +292,7 @@ __PRIVILEGED_CODE static int32_t unix_accept(
     }
     if (task && __atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
         sync::spin_unlock_irqrestore(ls->lock, irq);
-        return resource::ERR_INVAL;  // caller translates to EINTR
+        return resource::ERR_INTR;
     }
     if (ls->accept_queue.empty()) {
         sync::spin_unlock_irqrestore(ls->lock, irq);

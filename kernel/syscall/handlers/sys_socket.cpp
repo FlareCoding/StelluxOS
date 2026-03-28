@@ -34,6 +34,7 @@ int64_t translate_err(int32_t rc) {
     case resource::ERR_NOENT:       return syscall::ENOENT;
     case resource::ERR_UNSUP:       return syscall::EOPNOTSUPP;
     case resource::ERR_EXIST:       return syscall::EADDRINUSE;
+    case resource::ERR_INTR:        return syscall::EINTR;
     default:                        return syscall::EIO;
     }
 }
@@ -292,22 +293,24 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     resource::resource_release(new_conn);
     resource::resource_release(obj);
 
-    // Copy peer address to userspace if requested
+    // Copy peer address to userspace if requested.
+    // Best-effort: the connection is already accepted; address copy
+    // failure does not close the new socket (matches Linux behavior).
     if (addr != 0 && addrlen != 0) {
         uint32_t user_addrlen = 0;
-        mm::uaccess::copy_from_user(
+        int32_t copy_rc = mm::uaccess::copy_from_user(
             &user_addrlen, reinterpret_cast<const void*>(addrlen),
             sizeof(user_addrlen));
-
-        size_t copy_len = kaddr_len < user_addrlen ? kaddr_len : user_addrlen;
-        if (copy_len > 0) {
+        if (copy_rc == mm::uaccess::OK && user_addrlen > 0) {
+            size_t copy_len = kaddr_len < user_addrlen ? kaddr_len : user_addrlen;
+            if (copy_len > 0) {
+                mm::uaccess::copy_to_user(
+                    reinterpret_cast<void*>(addr), kaddr, copy_len);
+            }
+            uint32_t out_len = static_cast<uint32_t>(kaddr_len);
             mm::uaccess::copy_to_user(
-                reinterpret_cast<void*>(addr), kaddr, copy_len);
+                reinterpret_cast<void*>(addrlen), &out_len, sizeof(out_len));
         }
-
-        uint32_t out_len = static_cast<uint32_t>(kaddr_len);
-        mm::uaccess::copy_to_user(
-            reinterpret_cast<void*>(addrlen), &out_len, sizeof(out_len));
     }
 
     return new_handle;
