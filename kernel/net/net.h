@@ -158,6 +158,10 @@ void queue_deferred_eth_tx(netif* iface, const uint8_t* dst_mac,
  */
 void drain_deferred_tx();
 
+// Socket option constants (matching Linux/musl ABI)
+constexpr int32_t SOL_SOCKET   = 1;
+constexpr int32_t SO_REUSEADDR = 2;
+
 } // namespace net
 
 #endif // STELLUX_NET_NET_H

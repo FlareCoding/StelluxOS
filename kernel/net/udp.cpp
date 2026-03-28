@@ -126,6 +126,7 @@ bool udp_try_register(inet_socket* sock) {
     if (!sock || sock->bound_port == 0) {
         return false;
     }
+    bool reuse = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) != 0;
     bool registered = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_udp_sock_lock);
@@ -134,11 +135,15 @@ bool udp_try_register(inet_socket* sock) {
         for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
             if (s == sock) continue;
             if (s->bound_port != sock->bound_port) continue;
-            if (sock->bound_addr == 0 || s->bound_addr == 0
-                || s->bound_addr == sock->bound_addr) {
-                conflict = true;
-                break;
+            if (sock->bound_addr != 0 && s->bound_addr != 0
+                && s->bound_addr != sock->bound_addr) continue;
+
+            if (reuse && (s->so_options & static_cast<uint32_t>(SO_REUSEADDR))) {
+                continue;
             }
+
+            conflict = true;
+            break;
         }
 
         if (!conflict) {

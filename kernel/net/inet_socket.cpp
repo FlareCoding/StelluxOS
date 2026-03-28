@@ -193,6 +193,8 @@ static const resource::resource_ops g_inet_icmp_ops = {
     nullptr,              // listen
     nullptr,              // accept
     nullptr,             // connect
+    nullptr,            // setsockopt
+    nullptr,           // getsockopt
 };
 
 // UDP ring buffer entry framing:
@@ -405,6 +407,42 @@ __PRIVILEGED_CODE static int32_t inet_udp_bind(
     return resource::OK;
 }
 
+__PRIVILEGED_CODE static int32_t inet_setsockopt(
+    resource::resource_object* obj, int32_t level,
+    int32_t optname, const void* optval, size_t optlen
+) {
+    auto* sock = static_cast<inet_socket*>(obj->impl);
+    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
+    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
+    if (optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    int32_t val = 0;
+    string::memcpy(&val, optval, sizeof(val));
+
+    sync::irq_lock_guard guard(sock->lock);
+    if (val)
+        sock->so_options |= static_cast<uint32_t>(SO_REUSEADDR);
+    else
+        sock->so_options &= ~static_cast<uint32_t>(SO_REUSEADDR);
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t inet_getsockopt(
+    resource::resource_object* obj, int32_t level,
+    int32_t optname, void* optval, size_t* optlen
+) {
+    auto* sock = static_cast<inet_socket*>(obj->impl);
+    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
+    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
+    if (!optlen || *optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    sync::irq_lock_guard guard(sock->lock);
+    int32_t val = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) ? 1 : 0;
+    string::memcpy(optval, &val, sizeof(val));
+    *optlen = sizeof(val);
+    return resource::OK;
+}
+
 static const resource::resource_ops g_inet_udp_ops = {
     nullptr,                    // read
     nullptr,                   // write
@@ -417,6 +455,8 @@ static const resource::resource_ops g_inet_udp_ops = {
     nullptr,                  // listen
     nullptr,                  // accept
     nullptr,                 // connect
+    inet_setsockopt,
+    inet_getsockopt,
 };
 
 } // anonymous namespace
@@ -433,6 +473,7 @@ int32_t create_inet_icmp_socket(resource::resource_object** out) {
     sock->protocol = IPV4_PROTO_ICMP;
     sock->bound_addr = 0;
     sock->bound_port = 0;
+    sock->so_options = 0;
     sock->lock = sync::SPINLOCK_INIT;
     sock->next = nullptr;
 
@@ -471,6 +512,7 @@ int32_t create_inet_udp_socket(resource::resource_object** out) {
     sock->protocol = IPV4_PROTO_UDP;
     sock->bound_addr = 0;
     sock->bound_port = 0;
+    sock->so_options = 0;
     sock->lock = sync::SPINLOCK_INIT;
     sock->next = nullptr;
 

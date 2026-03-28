@@ -47,6 +47,11 @@ static int run_server(uint16_t port) {
     }
     printf("tcpecho: socket created (fd=%d)\r\n", fd);
 
+    int optval = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+        printf("tcpecho: setsockopt(SO_REUSEADDR) failed (errno=%d)\r\n", errno);
+    }
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;

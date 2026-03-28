@@ -66,6 +66,11 @@ static int run_server(uint16_t port) {
         return 1;
     }
 
+    int optval = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+        printf("udpecho: setsockopt(SO_REUSEADDR) failed (errno=%d)\r\n", errno);
+    }
+
     struct sockaddr_in bind_addr;
     memset(&bind_addr, 0, sizeof(bind_addr));
     bind_addr.sin_family = AF_INET;
