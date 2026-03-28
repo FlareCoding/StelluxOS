@@ -13,25 +13,7 @@
 
 TEST_SUITE(route_test);
 
-// Shared initialization flag defined in loopback.test.cpp.
-// net::init() is idempotent with this guard, ensuring the network
-// subsystem is initialized exactly once across all test suites.
-extern bool g_net_initialized;
-
 namespace {
-
-int32_t route_before_all() {
-    if (!g_net_initialized) {
-        int32_t rc = net::init();
-        if (rc != net::OK) return -1;
-        g_net_initialized = true;
-    }
-    return 0;
-}
-
-int32_t route_after_all() {
-    return 0;
-}
 
 // Dummy transmit callback for mock interfaces
 static int32_t mock_tx(net::netif* /*iface*/, const uint8_t* /*frame*/,
@@ -45,9 +27,6 @@ static bool mock_link_up(net::netif* /*iface*/) {
 }
 
 } // namespace
-
-BEFORE_ALL(route_test, route_before_all);
-AFTER_ALL(route_test, route_after_all);
 
 // ============================================================================
 // Basic route table state after init
