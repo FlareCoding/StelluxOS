@@ -182,16 +182,20 @@ __PRIVILEGED_CODE static void inet_close(resource::resource_object* obj) {
 }
 
 static const resource::resource_ops g_inet_icmp_ops = {
-    nullptr,        // read
-    nullptr,        // write
+    nullptr,                // read
+    nullptr,               // write
     inet_close,
     inet_ioctl,
-    nullptr,        // mmap
+    nullptr,                // mmap
     inet_sendto,
     inet_recvfrom,
+    nullptr,                // bind
+    nullptr,              // listen
+    nullptr,              // accept
+    nullptr,             // connect
 };
 
-// UDP ring buffer entry framing (must match udp.cpp delivery format):
+// UDP ring buffer entry framing:
 //   [4 bytes: src_ip in network byte order]
 //   [2 bytes: src_port in network byte order]
 //   [2 bytes: payload length in host byte order]
@@ -353,13 +357,17 @@ __PRIVILEGED_CODE static ssize_t inet_udp_recvfrom(
 }
 
 static const resource::resource_ops g_inet_udp_ops = {
-    nullptr,            // read
-    nullptr,            // write
+    nullptr,                    // read
+    nullptr,                   // write
     inet_close,
     inet_ioctl,
-    nullptr,            // mmap
+    nullptr,                    // mmap
     inet_udp_sendto,
     inet_udp_recvfrom,
+    nullptr,                    // bind
+    nullptr,                  // listen
+    nullptr,                  // accept
+    nullptr,                 // connect
 };
 
 } // anonymous namespace

@@ -198,6 +198,10 @@ static const resource::resource_ops g_pty_master_ops = {
     nullptr,
     nullptr,
     nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
 };
 
 static const resource::resource_ops g_pty_slave_ops = {
@@ -205,6 +209,10 @@ static const resource::resource_ops g_pty_slave_ops = {
     pty_slave_write,
     pty_slave_close,
     pty_slave_ioctl,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
     nullptr,
     nullptr,
     nullptr,
