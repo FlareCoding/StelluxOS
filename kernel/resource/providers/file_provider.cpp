@@ -118,8 +118,12 @@ static const resource_ops g_file_ops = {
     file_close,
     file_ioctl,
     file_mmap,
-    nullptr,
-    nullptr,
+    nullptr,        // sendto
+    nullptr,        // recvfrom
+    nullptr,        // bind
+    nullptr,        // listen
+    nullptr,        // accept
+    nullptr,        // connect
 };
 
 /**

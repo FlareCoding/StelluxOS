@@ -63,10 +63,14 @@ static const resource_ops g_proc_ops = {
     proc_read,
     proc_write,
     proc_close,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
+    nullptr,        // ioctl
+    nullptr,        // mmap
+    nullptr,        // sendto
+    nullptr,        // recvfrom
+    nullptr,        // bind
+    nullptr,        // listen
+    nullptr,        // accept
+    nullptr,        // connect
 };
 
 __PRIVILEGED_CODE int32_t create_proc_resource(

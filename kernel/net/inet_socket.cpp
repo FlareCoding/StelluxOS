@@ -189,6 +189,10 @@ static const resource::resource_ops g_inet_icmp_ops = {
     nullptr,        // mmap
     inet_sendto,
     inet_recvfrom,
+    nullptr,        // bind
+    nullptr,        // listen
+    nullptr,        // accept
+    nullptr,        // connect
 };
 
 // UDP ring buffer entry framing (must match udp.cpp delivery format):
@@ -360,6 +364,10 @@ static const resource::resource_ops g_inet_udp_ops = {
     nullptr,            // mmap
     inet_udp_sendto,
     inet_udp_recvfrom,
+    nullptr,            // bind  (updated to inet_dgram_bind in Phase 2)
+    nullptr,            // listen
+    nullptr,            // accept
+    nullptr,            // connect
 };
 
 } // anonymous namespace

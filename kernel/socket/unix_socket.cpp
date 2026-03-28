@@ -2,8 +2,61 @@
 #include "mm/heap.h"
 #include "sync/spinlock.h"
 #include "fs/fstypes.h"
+#include "fs/fs.h"
+#include "fs/socket_node.h"
+#include "sched/sched.h"
+#include "sched/task.h"
+#include "common/string.h"
+#include "hw/barrier.h"
 
 namespace socket {
+
+namespace {
+
+constexpr uint16_t AF_UNIX_VAL     = 1;
+constexpr size_t   SUN_PATH_OFFSET = 2;
+
+struct sockaddr_un {
+    uint16_t sun_family;
+    char sun_path[UNIX_PATH_MAX];
+};
+
+// Parse a kernel-space copy of sockaddr_un into a validated path.
+// Returns resource::OK or an appropriate error code.
+static int32_t parse_unix_addr(const void* kaddr, size_t addrlen,
+                               char* path_out) {
+    if (!kaddr || addrlen < sizeof(uint16_t)) {
+        return resource::ERR_INVAL;
+    }
+
+    const auto* addr = static_cast<const sockaddr_un*>(kaddr);
+    if (addr->sun_family != AF_UNIX_VAL) {
+        return resource::ERR_INVAL;
+    }
+
+    size_t copy_len = addrlen < sizeof(sockaddr_un)
+        ? addrlen : sizeof(sockaddr_un);
+    size_t path_max = copy_len - SUN_PATH_OFFSET;
+    if (path_max == 0) {
+        return resource::ERR_INVAL;
+    }
+
+    bool found_null = false;
+    for (size_t i = 0; i < path_max; i++) {
+        if (addr->sun_path[i] == '\0') {
+            found_null = true;
+            break;
+        }
+    }
+    if (!found_null || addr->sun_path[0] == '\0' || addr->sun_path[0] != '/') {
+        return resource::ERR_INVAL;
+    }
+
+    string::memcpy(path_out, addr->sun_path, UNIX_PATH_MAX);
+    return resource::OK;
+}
+
+} // anonymous namespace
 
 __PRIVILEGED_CODE void unix_channel::ref_destroy(unix_channel* self) {
     if (!self) {
@@ -97,15 +150,293 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
     obj->impl = nullptr;
 }
 
+// Forward declarations — the ops table references these functions, and
+// unix_connect references the ops table (to create server-side sockets).
+__PRIVILEGED_CODE static int32_t unix_bind(
+    resource::resource_object* obj, const void* kaddr, size_t addrlen);
+__PRIVILEGED_CODE static int32_t unix_listen(
+    resource::resource_object* obj, int32_t backlog);
+__PRIVILEGED_CODE static int32_t unix_accept(
+    resource::resource_object* obj, resource::resource_object** new_conn,
+    void* kaddr, size_t* addrlen, bool nonblock);
+__PRIVILEGED_CODE static int32_t unix_connect(
+    resource::resource_object* obj, const void* kaddr, size_t addrlen);
+
 static const resource::resource_ops g_socket_ops = {
     socket_read,
     socket_write,
     socket_close,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
+    nullptr,        // ioctl
+    nullptr,        // mmap
+    nullptr,        // sendto
+    nullptr,        // recvfrom
+    unix_bind,
+    unix_listen,
+    unix_accept,
+    unix_connect,
 };
+
+__PRIVILEGED_CODE static int32_t unix_bind(
+    resource::resource_object* obj, const void* kaddr, size_t addrlen
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    char kpath[UNIX_PATH_MAX];
+    int32_t rc = parse_unix_addr(kaddr, addrlen, kpath);
+    if (rc != resource::OK) {
+        return rc;
+    }
+
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+    if (sock->state != SOCK_STATE_UNBOUND) {
+        return resource::ERR_INVAL;
+    }
+
+    fs::node* parent = nullptr;
+    const char* name = nullptr;
+    size_t name_len = 0;
+    rc = fs::resolve_parent_path(kpath, &parent, &name, &name_len);
+    if (rc != fs::OK) {
+        if (rc == fs::ERR_NOENT) return resource::ERR_NOENT;
+        if (rc == fs::ERR_NOTDIR) return resource::ERR_INVAL;
+        return resource::ERR_INVAL;
+    }
+
+    fs::node* sock_node = nullptr;
+    rc = parent->create_socket(name, name_len, nullptr, &sock_node);
+    if (parent->release()) {
+        fs::node::ref_destroy(parent);
+    }
+    if (rc != fs::OK) {
+        if (rc == fs::ERR_EXIST) return resource::ERR_ADDRINUSE;
+        if (rc == fs::ERR_NOMEM) return resource::ERR_NOMEM;
+        return resource::ERR_IO;
+    }
+
+    string::memcpy(sock->bound_path, kpath, UNIX_PATH_MAX);
+    sock->bound_node = rc::strong_ref<fs::node>::adopt(sock_node);
+    sock->state = SOCK_STATE_BOUND;
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t unix_listen(
+    resource::resource_object* obj, int32_t backlog
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+    if (sock->state != SOCK_STATE_BOUND) {
+        return resource::ERR_INVAL;
+    }
+
+    auto ls = rc::make_kref<listener_state>();
+    if (!ls) {
+        return resource::ERR_NOMEM;
+    }
+    ls->lock = sync::SPINLOCK_INIT;
+    ls->closed = false;
+    ls->accept_queue.init();
+    ls->accept_wq.init();
+    uint32_t bl = static_cast<uint32_t>(backlog);
+    if (bl == 0) bl = DEFAULT_BACKLOG;
+    if (bl > MAX_BACKLOG) bl = MAX_BACKLOG;
+    ls->backlog = bl;
+    ls->pending_count = 0;
+
+    sock->listener = ls;
+
+    if (sock->bound_node) {
+        auto* sn = static_cast<fs::socket_node*>(sock->bound_node.ptr());
+        rc::strong_ref<listener_state> ls_copy = ls;
+        sn->set_listener(static_cast<rc::strong_ref<listener_state>&&>(ls_copy));
+    }
+
+    sock->state = SOCK_STATE_LISTENING;
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t unix_accept(
+    resource::resource_object* obj, resource::resource_object** new_conn,
+    void* kaddr, size_t* addrlen, bool nonblock
+) {
+    if (!obj || !obj->impl || !new_conn) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+    if (sock->state != SOCK_STATE_LISTENING || !sock->listener) {
+        return resource::ERR_INVAL;
+    }
+
+    sched::task* task = sched::current();
+    listener_state* ls = sock->listener.ptr();
+
+    sync::irq_state irq = sync::spin_lock_irqsave(ls->lock);
+    if (ls->accept_queue.empty()) {
+        if (ls->closed) {
+            sync::spin_unlock_irqrestore(ls->lock, irq);
+            return resource::ERR_INVAL;
+        }
+        if (nonblock) {
+            sync::spin_unlock_irqrestore(ls->lock, irq);
+            return resource::ERR_AGAIN;
+        }
+    }
+    while (ls->accept_queue.empty() && !ls->closed
+           && (!task || !__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE))) {
+        irq = sync::wait(ls->accept_wq, ls->lock, irq);
+    }
+    if (task && __atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+        sync::spin_unlock_irqrestore(ls->lock, irq);
+        return resource::ERR_INVAL;  // caller translates to EINTR
+    }
+    if (ls->accept_queue.empty()) {
+        sync::spin_unlock_irqrestore(ls->lock, irq);
+        return resource::ERR_INVAL;
+    }
+
+    pending_conn* pc = ls->accept_queue.pop_front();
+    ls->pending_count--;
+    sync::spin_unlock_irqrestore(ls->lock, irq);
+
+    *new_conn = pc->server_obj;
+    heap::kfree(pc);
+
+    // Fill peer address if requested
+    if (kaddr && addrlen && *addrlen >= sizeof(uint16_t)) {
+        auto* out = static_cast<uint16_t*>(kaddr);
+        *out = AF_UNIX_VAL;
+        *addrlen = sizeof(uint16_t);
+    }
+
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t unix_connect(
+    resource::resource_object* obj, const void* kaddr, size_t addrlen
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    char kpath[UNIX_PATH_MAX];
+    int32_t rc = parse_unix_addr(kaddr, addrlen, kpath);
+    if (rc != resource::OK) {
+        return rc;
+    }
+
+    auto* client_sock = static_cast<unix_socket*>(obj->impl);
+    if (client_sock->state == SOCK_STATE_CONNECTED) {
+        return resource::ERR_ISCONN;
+    }
+    if (client_sock->state == SOCK_STATE_LISTENING) {
+        return resource::ERR_INVAL;
+    }
+
+    fs::node* target_node = nullptr;
+    rc = fs::lookup(kpath, &target_node);
+    if (rc != fs::OK) {
+        if (rc == fs::ERR_NOENT) return resource::ERR_NOENT;
+        return resource::ERR_CONNREFUSED;
+    }
+    if (target_node->type() != fs::node_type::socket) {
+        if (target_node->release()) {
+            fs::node::ref_destroy(target_node);
+        }
+        return resource::ERR_CONNREFUSED;
+    }
+
+    auto* sn = static_cast<fs::socket_node*>(target_node);
+    listener_state* raw_ls = sn->get_listener();
+    if (!raw_ls) {
+        if (target_node->release()) {
+            fs::node::ref_destroy(target_node);
+        }
+        return resource::ERR_CONNREFUSED;
+    }
+
+    rc::strong_ref<listener_state> ls_ref =
+        rc::strong_ref<listener_state>::try_from_raw(raw_ls);
+    if (target_node->release()) {
+        fs::node::ref_destroy(target_node);
+    }
+    if (!ls_ref) {
+        return resource::ERR_CONNREFUSED;
+    }
+
+    // Allocate everything before acquiring the listener lock
+    auto chan = rc::make_kref<unix_channel>();
+    if (!chan) {
+        return resource::ERR_NOMEM;
+    }
+    chan->buf_a_to_b = nullptr;
+    chan->buf_b_to_a = nullptr;
+
+    chan->buf_a_to_b = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
+    if (!chan->buf_a_to_b) {
+        return resource::ERR_NOMEM;
+    }
+
+    chan->buf_b_to_a = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
+    if (!chan->buf_b_to_a) {
+        return resource::ERR_NOMEM;
+    }
+
+    auto* server_sock = heap::kalloc_new<unix_socket>();
+    if (!server_sock) {
+        return resource::ERR_NOMEM;
+    }
+    server_sock->state = SOCK_STATE_CONNECTED;
+    server_sock->lock = sync::SPINLOCK_INIT;
+    server_sock->is_side_a = true;
+    server_sock->channel = chan;
+
+    auto* server_obj = heap::kalloc_new<resource::resource_object>();
+    if (!server_obj) {
+        heap::kfree_delete(server_sock);
+        return resource::ERR_NOMEM;
+    }
+    server_obj->type = resource::resource_type::SOCKET;
+    server_obj->ops = &g_socket_ops;
+    server_obj->impl = server_sock;
+
+    auto* pc = static_cast<pending_conn*>(
+        heap::kzalloc(sizeof(pending_conn)));
+    if (!pc) {
+        heap::kfree_delete(server_obj);
+        heap::kfree_delete(server_sock);
+        return resource::ERR_NOMEM;
+    }
+
+    // Lock listener, re-check state, enqueue
+    sync::irq_state irq = sync::spin_lock_irqsave(ls_ref->lock);
+    if (ls_ref->closed || ls_ref->pending_count >= ls_ref->backlog) {
+        sync::spin_unlock_irqrestore(ls_ref->lock, irq);
+        heap::kfree(pc);
+        heap::kfree_delete(server_obj);
+        heap::kfree_delete(server_sock);
+        return resource::ERR_CONNREFUSED;
+    }
+
+    // Set client to CONNECTED (side B) before waking accept so that
+    // readers on AArch64 never see state == CONNECTED with null channel.
+    client_sock->channel = static_cast<rc::strong_ref<unix_channel>&&>(chan);
+    client_sock->is_side_a = false;
+    barrier::smp_write();
+    client_sock->state = SOCK_STATE_CONNECTED;
+
+    pc->server_obj = server_obj;
+    ls_ref->accept_queue.push_back(pc);
+    ls_ref->pending_count++;
+    sync::spin_unlock_irqrestore(ls_ref->lock, irq);
+    sync::wake_one(ls_ref->accept_wq);
+
+    return resource::OK;
+}
 
 const resource::resource_ops* get_socket_ops() {
     return &g_socket_ops;

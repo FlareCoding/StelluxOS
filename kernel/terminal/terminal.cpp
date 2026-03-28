@@ -91,10 +91,14 @@ static const resource::resource_ops g_terminal_ops = {
     terminal_read,
     terminal_write,
     terminal_close,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
+    nullptr,        // ioctl
+    nullptr,        // mmap
+    nullptr,        // sendto
+    nullptr,        // recvfrom
+    nullptr,        // bind
+    nullptr,        // listen
+    nullptr,        // accept
+    nullptr,        // connect
 };
 
 const resource::resource_ops* get_terminal_ops() {
