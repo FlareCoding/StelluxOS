@@ -258,8 +258,6 @@ int main(void) {
         }
     }
 
-    proc_detach(shell_proc);
-    close(master_fd);
     free(term);
     if (win) {
         stlxgfx_window_destroy(win);
