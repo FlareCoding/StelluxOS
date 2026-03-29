@@ -2,7 +2,9 @@
 # Stellux Userland - Applications
 #
 
-APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest date clockbench stlxdm stlxterm doom ping ifconfig nslookup arp udpecho tcpecho
+APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest date \
+			clockbench stlxdm stlxterm doom ping ifconfig nslookup arp udpecho tcpecho \
+			httpfetch
 APP_COUNT := $(words $(APP_DIRS))
 
 all:
