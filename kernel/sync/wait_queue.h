@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include "common/list.h"
 #include "sync/spinlock.h"
+#include "sync/poll.h"
 #include "sched/task.h"
 
 namespace sync {
@@ -11,10 +12,12 @@ namespace sync {
 struct wait_queue {
     spinlock lock;
     list::head<sched::task, &sched::task::wait_link> waiters;
+    list::head<poll_entry, &poll_entry::observer_link> observers;
 
     void init() {
         lock = SPINLOCK_INIT;
         waiters.init();
+        observers.init();
     }
 };
 
