@@ -98,6 +98,7 @@ static const resource_ops g_shmem_resource_ops = {
     nullptr,
     nullptr,
     shmem_resource_poll,
+    nullptr,
 };
 
 int32_t create_shmem_resource(

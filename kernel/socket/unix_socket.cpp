@@ -441,6 +441,7 @@ static const resource::resource_ops g_socket_ops = {
     nullptr, // setsockopt
     nullptr, // getsockopt
     socket_poll,
+    nullptr, // shutdown
 };
 
 const resource::resource_ops* get_socket_ops() {

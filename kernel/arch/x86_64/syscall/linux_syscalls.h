@@ -26,6 +26,7 @@ constexpr uint64_t CONNECT          = 42;
 constexpr uint64_t ACCEPT           = 43;
 constexpr uint64_t SENDTO           = 44;
 constexpr uint64_t RECVFROM         = 45;
+constexpr uint64_t SHUTDOWN         = 48;
 constexpr uint64_t BIND             = 49;
 constexpr uint64_t LISTEN           = 50;
 constexpr uint64_t SOCKETPAIR       = 53;

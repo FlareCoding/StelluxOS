@@ -137,6 +137,7 @@ static const resource_ops g_file_ops = {
     nullptr,
     nullptr,
     file_poll,
+    nullptr,
 };
 
 /**
