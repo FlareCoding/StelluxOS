@@ -40,27 +40,17 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
         sched::wake(batch[i]);
     }
 
-    // Overflow: process remaining observers one at a time.
-    // Between lock cycles, concurrent poll_cleanup may remove entries,
-    // shrinking the list. If skip overshoots the current list size the
-    // inner loop finds nothing — the removed task is already awake
-    // (it must be running to execute cleanup), so we stop.
-    uint32_t remaining = total - n;
-    uint32_t skip = n;
-    while (remaining > 0) {
+    // Overflow: re-scan and wake all observers under the lock.
+    // Some were already woken above — sched::wake() is idempotent.
+    // sched::wake() only acquires rq.lock (never wq.lock), so holding
+    // wq.lock here is deadlock-free. This path is extremely rare
+    // (requires >16 concurrent pollers on one wait queue).
+    if (total > n) {
         irq = spin_lock_irqsave(wq.lock);
-        sched::task* t = nullptr;
-        uint32_t idx = 0;
         for (auto& obs : wq.observers) {
-            if (idx++ < skip) continue;
-            t = obs.table->task;
-            skip++;
-            remaining--;
-            break;
+            sched::wake(obs.table->task);
         }
         spin_unlock_irqrestore(wq.lock, irq);
-        if (!t) break;
-        sched::wake(t);
     }
 }
 
