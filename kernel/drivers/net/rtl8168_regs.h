@@ -188,7 +188,7 @@ constexpr uint32_t MISC_PWM_EN               = (1u << 22);
 // ============================================================================
 
 constexpr uint32_t TCR_HWVERID_SHIFT         = 20;
-constexpr uint32_t TCR_XID_MASK              = 0x00000FCF; // after >> 20
+constexpr uint32_t TCR_XID_MASK              = 0x000007CF; // bits [30:28,26,23,22:20] after >> 20
 
 // Common RTL8168 chip versions.
 enum class chip_version : uint16_t {
@@ -215,10 +215,20 @@ enum class chip_version : uint16_t {
     RTL8168FP_1           = 0x5C8,  // 8168FP (DASH)
 };
 
-// 8168G+ chips (XID >= 0x4C0) use the RXDV gate to block RX data
-// during initialization. The gate must be opened after setup completes.
+// 8168G and later chips use the RXDV gate to block RX data during
+// initialization. XIDs are not monotonically ordered by generation,
+// so we check explicitly rather than using a >= comparison.
 inline constexpr bool chip_is_8168g_plus(chip_version ver) {
-    return static_cast<uint16_t>(ver) >= static_cast<uint16_t>(chip_version::RTL8168G_1);
+    switch (ver) {
+    case chip_version::RTL8168G_1:
+    case chip_version::RTL8168G_2:
+    case chip_version::RTL8168H_1:
+    case chip_version::RTL8168H_2:
+    case chip_version::RTL8168FP_1:
+        return true;
+    default:
+        return false;
+    }
 }
 
 // ============================================================================
