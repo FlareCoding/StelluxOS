@@ -30,6 +30,7 @@ constexpr uint64_t NANOSLEEP        = 101;
 constexpr uint64_t CLOCK_GETTIME    = 113;
 constexpr uint64_t CLOCK_GETRES     = 114;
 constexpr uint64_t GETTIMEOFDAY     = 169;
+constexpr uint64_t GETPID           = 172;
 constexpr uint64_t SOCKET           = 198;
 constexpr uint64_t SOCKETPAIR       = 199;
 constexpr uint64_t BIND             = 200;

@@ -3,6 +3,10 @@
 #include "sched/task.h"
 #include "mm/uaccess.h"
 
+DEFINE_SYSCALL0(getpid) {
+    return static_cast<int64_t>(sched::current()->tid);
+}
+
 DEFINE_SYSCALL0(set_tid_address) {
     return static_cast<int64_t>(sched::current()->tid);
 }

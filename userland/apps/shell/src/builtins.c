@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/types.h>
 
 static void shell_write(const char* s) {
     write(1, s, strlen(s));
@@ -74,11 +75,19 @@ int try_builtin(int argc, const char* argv[], line_edit_state* editor,
         return 1;
     }
 
+    if (strcmp(argv[0], "$$") == 0) {
+        write_int((int)getpid());
+        write(1, "\r\n", 2);
+        return 1;
+    }
+
     if (strcmp(argv[0], "echo") == 0) {
         for (int i = 1; i < argc; i++) {
             if (i > 1) write(1, " ", 1);
             if (strcmp(argv[i], "$?") == 0) {
                 write_int(last_status);
+            } else if (strcmp(argv[i], "$$") == 0) {
+                write_int((int)getpid());
             } else {
                 write(1, argv[i], strlen(argv[i]));
             }

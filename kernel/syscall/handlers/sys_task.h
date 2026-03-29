@@ -3,6 +3,7 @@
 
 #include "syscall/syscall_table.h"
 
+DECLARE_SYSCALL(getpid);
 DECLARE_SYSCALL(exit);
 DECLARE_SYSCALL(exit_group);
 DECLARE_SYSCALL(set_tid_address);
