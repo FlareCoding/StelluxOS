@@ -8,6 +8,7 @@
 #include "fs/fstypes.h"
 #include "fs/devfs/devfs.h"
 #include "mm/heap.h"
+#include "sync/poll.h"
 
 namespace terminal {
 
@@ -87,6 +88,15 @@ __PRIVILEGED_CODE static ssize_t terminal_write(
 __PRIVILEGED_CODE static void terminal_close(resource::resource_object*) {
 }
 
+__PRIVILEGED_CODE static uint32_t terminal_poll(
+    resource::resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* rb = static_cast<ring_buffer*>(obj->impl);
+    sync::poll_entry entry = {};
+    return ring_buffer_poll_read(rb, pt, &entry) | sync::POLL_OUT;
+}
+
 static const resource::resource_ops g_terminal_ops = {
     terminal_read,
     terminal_write,
@@ -101,7 +111,7 @@ static const resource::resource_ops g_terminal_ops = {
     nullptr,
     nullptr,
     nullptr,
-    nullptr,
+    terminal_poll,
 };
 
 const resource::resource_ops* get_terminal_ops() {

@@ -3,6 +3,7 @@
 #include "mm/heap.h"
 #include "mm/shmem.h"
 #include "rc/strong_ref.h"
+#include "sync/poll.h"
 
 namespace resource::shmem_resource_provider {
 
@@ -76,6 +77,12 @@ static void shmem_resource_close(resource_object* obj) {
     });
 }
 
+static uint32_t shmem_resource_poll(
+    resource::resource_object*, sync::poll_table*
+) {
+    return sync::POLL_IN | sync::POLL_OUT;
+}
+
 static const resource_ops g_shmem_resource_ops = {
     shmem_resource_read,
     shmem_resource_write,
@@ -90,7 +97,7 @@ static const resource_ops g_shmem_resource_ops = {
     nullptr,
     nullptr,
     nullptr,
-    nullptr,
+    shmem_resource_poll,
 };
 
 int32_t create_shmem_resource(

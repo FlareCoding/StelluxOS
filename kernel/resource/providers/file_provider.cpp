@@ -3,6 +3,7 @@
 #include "fs/file.h"
 #include "mm/heap.h"
 #include "mm/vma.h"
+#include "sync/poll.h"
 
 namespace resource::file_provider {
 
@@ -112,6 +113,15 @@ __PRIVILEGED_CODE static int32_t file_mmap(
     }
 }
 
+__PRIVILEGED_CODE static uint32_t file_poll(
+    resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* impl = static_cast<file_resource_impl*>(obj->impl);
+    if (!impl->file || !impl->file->get_node()) return sync::POLL_NVAL;
+    return impl->file->get_node()->poll(impl->file, pt);
+}
+
 static const resource_ops g_file_ops = {
     file_read,
     file_write,
@@ -126,7 +136,7 @@ static const resource_ops g_file_ops = {
     nullptr,
     nullptr,
     nullptr,
-    nullptr,
+    file_poll,
 };
 
 /**
