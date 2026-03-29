@@ -13,6 +13,7 @@ constexpr uint64_t STAT             = 4;
 constexpr uint64_t LSEEK            = 8;
 constexpr uint64_t FSTAT            = 5;
 constexpr uint64_t LSTAT            = 6;
+constexpr uint64_t POLL             = 7;
 constexpr uint64_t MMAP             = 9;
 constexpr uint64_t BRK              = 12;
 constexpr uint64_t MPROTECT         = 10;
@@ -50,6 +51,7 @@ constexpr uint64_t OPENAT           = 257;
 constexpr uint64_t NEWFSTATAT       = 262;
 constexpr uint64_t MKDIRAT          = 258;
 constexpr uint64_t UNLINKAT         = 263;
+constexpr uint64_t PPOLL            = 271;
 constexpr uint64_t GETRANDOM        = 318;
 constexpr uint64_t MEMFD_CREATE     = 319;
 

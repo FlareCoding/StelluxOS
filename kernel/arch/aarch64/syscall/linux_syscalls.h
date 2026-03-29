@@ -14,6 +14,7 @@ constexpr uint64_t LSEEK            = 62;
 constexpr uint64_t FTRUNCATE        = 46;
 constexpr uint64_t CHDIR            = 49;
 constexpr uint64_t FCHDIR           = 50;
+constexpr uint64_t PPOLL            = 73;
 constexpr uint64_t OPENAT           = 56;
 constexpr uint64_t CLOSE            = 57;
 constexpr uint64_t GETDENTS64       = 61;
