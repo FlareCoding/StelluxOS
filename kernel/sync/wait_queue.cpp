@@ -5,26 +5,60 @@
 
 namespace sync {
 
-// Max observer tasks to batch on stack per wake call.
-// Bounded to avoid unbounded stack usage in IRQ context.
-constexpr uint32_t MAX_OBSERVER_BATCH = 8;
-
 /**
- * Collect observer tasks to wake. Called under wq.lock.
- * Sets triggered flag on each observer's poll_table and snapshots
- * the task pointer for deferred wake after lock release.
+ * Set triggered on all observers and wake their tasks.
+ *
+ * Under wq.lock: set triggered on every observer and snapshot all task
+ * pointers into a stack batch. After releasing the lock, wake each task.
+ *
+ * The observer count per wait_queue is bounded in practice by the number
+ * of tasks simultaneously polling the same source (typically 1-2).
+ * The batch is sized to 16 which covers all realistic cases. If more
+ * observers exist, the excess are handled by a single-entry fallback
+ * that re-scans under the lock.
  */
-__PRIVILEGED_CODE static uint32_t collect_observer_tasks(
-    wait_queue& wq, sched::task** out, uint32_t capacity
+constexpr uint32_t OBSERVER_BATCH_SIZE = 16;
+
+__PRIVILEGED_CODE static void notify_observers_and_unlock(
+    wait_queue& wq, irq_state irq
 ) {
-    uint32_t count = 0;
+    sched::task* batch[OBSERVER_BATCH_SIZE];
+    uint32_t n = 0;
+    uint32_t total = 0;
+
     for (auto& obs : wq.observers) {
         __atomic_store_n(&obs.table->triggered, 1, __ATOMIC_RELEASE);
-        if (count < capacity) {
-            out[count++] = obs.table->task;
+        if (n < OBSERVER_BATCH_SIZE) {
+            batch[n++] = obs.table->task;
         }
+        total++;
     }
-    return count;
+
+    spin_unlock_irqrestore(wq.lock, irq);
+
+    for (uint32_t i = 0; i < n; i++) {
+        sched::wake(batch[i]);
+    }
+
+    // Overflow: re-acquire lock and process remaining one at a time.
+    // Each iteration grabs one pointer, releases the lock, wakes, reacquires.
+    // Uses a skip counter rather than persistent iterators across unlock.
+    uint32_t remaining = total - n;
+    uint32_t skip = n;
+    while (remaining > 0) {
+        irq = spin_lock_irqsave(wq.lock);
+        sched::task* t = nullptr;
+        uint32_t idx = 0;
+        for (auto& obs : wq.observers) {
+            if (idx++ < skip) continue;
+            t = obs.table->task;
+            skip++;
+            remaining--;
+            break;
+        }
+        spin_unlock_irqrestore(wq.lock, irq);
+        if (t) sched::wake(t);
+    }
 }
 
 /**
@@ -62,21 +96,18 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake_one(wait_queue& wq) {
-    sched::task* observer_tasks[MAX_OBSERVER_BATCH];
-    uint32_t observer_count = 0;
-
     irq_state irq = spin_lock_irqsave(wq.lock);
     sched::task* t = wq.waiters.pop_front();
+
     if (!wq.observers.empty()) {
-        observer_count = collect_observer_tasks(wq, observer_tasks, MAX_OBSERVER_BATCH);
+        // notify_observers_and_unlock releases wq.lock
+        notify_observers_and_unlock(wq, irq);
+    } else {
+        spin_unlock_irqrestore(wq.lock, irq);
     }
-    spin_unlock_irqrestore(wq.lock, irq);
 
     if (t) {
         sched::wake(t);
-    }
-    for (uint32_t i = 0; i < observer_count; i++) {
-        sched::wake(observer_tasks[i]);
     }
 }
 
@@ -84,26 +115,22 @@ __PRIVILEGED_CODE void wake_one(wait_queue& wq) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake_all(wait_queue& wq) {
-    list::head<sched::task, &sched::task::wait_link> batch;
-    batch.init();
-
-    sched::task* observer_tasks[MAX_OBSERVER_BATCH];
-    uint32_t observer_count = 0;
+    list::head<sched::task, &sched::task::wait_link> waiter_batch;
+    waiter_batch.init();
 
     irq_state irq = spin_lock_irqsave(wq.lock);
     while (sched::task* t = wq.waiters.pop_front()) {
-        batch.push_back(t);
+        waiter_batch.push_back(t);
     }
-    if (!wq.observers.empty()) {
-        observer_count = collect_observer_tasks(wq, observer_tasks, MAX_OBSERVER_BATCH);
-    }
-    spin_unlock_irqrestore(wq.lock, irq);
 
-    while (sched::task* t = batch.pop_front()) {
-        sched::wake(t);
+    if (!wq.observers.empty()) {
+        notify_observers_and_unlock(wq, irq);
+    } else {
+        spin_unlock_irqrestore(wq.lock, irq);
     }
-    for (uint32_t i = 0; i < observer_count; i++) {
-        sched::wake(observer_tasks[i]);
+
+    while (sched::task* t = waiter_batch.pop_front()) {
+        sched::wake(t);
     }
 }
 

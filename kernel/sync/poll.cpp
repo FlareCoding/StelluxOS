@@ -32,11 +32,15 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
 
     self->state = sched::TASK_STATE_BLOCKED;
 
-    // Check again after setting BLOCKED to close the race where a source
-    // fires between the first check and the state transition.
+    // Re-check after setting BLOCKED to close races where a source fires
+    // or kill arrives between the initial checks and the state transition.
     if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
         self->state = sched::TASK_STATE_RUNNING;
         return true;
+    }
+    if (__atomic_load_n(&self->kill_pending, __ATOMIC_ACQUIRE)) {
+        self->state = sched::TASK_STATE_RUNNING;
+        return false;
     }
 
     if (timeout_ns > 0) {
