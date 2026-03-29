@@ -12,6 +12,7 @@
 #include "mm/heap.h"
 #include "mm/uaccess.h"
 #include "sync/spinlock.h"
+#include "sync/poll.h"
 #include "dynpriv/dynpriv.h"
 
 namespace net {
@@ -181,6 +182,15 @@ __PRIVILEGED_CODE static void inet_close(resource::resource_object* obj) {
     obj->impl = nullptr;
 }
 
+static uint32_t inet_poll(
+    resource::resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* sock = static_cast<inet_socket*>(obj->impl);
+    sync::poll_entry entry = {};
+    return ring_buffer_poll_read(sock->rx_buf, pt, &entry) | sync::POLL_OUT;
+}
+
 static const resource::resource_ops g_inet_icmp_ops = {
     nullptr,                // read
     nullptr,               // write
@@ -195,7 +205,7 @@ static const resource::resource_ops g_inet_icmp_ops = {
     nullptr,             // connect
     nullptr,            // setsockopt
     nullptr,           // getsockopt
-    nullptr,
+    inet_poll,
 };
 
 // UDP ring buffer entry framing:
@@ -458,7 +468,7 @@ static const resource::resource_ops g_inet_udp_ops = {
     nullptr,                 // connect
     inet_setsockopt,
     inet_getsockopt,
-    nullptr,
+    inet_poll,
 };
 
 } // anonymous namespace
