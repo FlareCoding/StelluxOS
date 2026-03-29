@@ -1,0 +1,9 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_SOCKADDR_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_SOCKADDR_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(getsockname);
+DECLARE_SYSCALL(getpeername);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_SOCKADDR_H

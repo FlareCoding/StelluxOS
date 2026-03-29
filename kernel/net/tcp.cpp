@@ -18,8 +18,6 @@
 
 namespace net {
 
-namespace {
-
 // TCP port registry: global linked list of all TCP sockets that have
 // a local port assigned (via bind). Used by tcp_recv to find the
 // matching socket for incoming segments.
@@ -824,7 +822,7 @@ __PRIVILEGED_CODE static int32_t tcp_shutdown(
     return resource::OK;
 }
 
-static const resource::resource_ops g_tcp_ops = {
+const resource::resource_ops g_tcp_ops = {
     tcp_read,
     tcp_write,
     tcp_close,
@@ -1016,8 +1014,6 @@ static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num,
         tcp_destroy_socket(sock);
     }
 }
-
-} // anonymous namespace
 
 __PRIVILEGED_CODE void tcp_socket::ref_destroy(tcp_socket* self) {
     if (!self) return;

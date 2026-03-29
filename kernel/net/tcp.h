@@ -130,6 +130,8 @@ bool tcp_unregister_socket(tcp_socket* sock);
 void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
               const uint8_t* data, size_t len);
 
+extern const resource::resource_ops g_tcp_ops;
+
 } // namespace net
 
 #endif // STELLUX_NET_TCP_H
