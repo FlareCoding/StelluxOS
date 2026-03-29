@@ -32,7 +32,7 @@ constexpr uint8_t  RTL_MMIO_BAR              = 2;
 // ============================================================================
 // MAC registers (offsets from MMIO base)
 //
-// Cross-referenced: datasheet §2.1, Linux enum rtl_registers,
+// Cross-referenced: datasheet 2.1, Linux enum rtl_registers,
 // FreeBSD RL_IDR0 etc.
 // ============================================================================
 
@@ -185,15 +185,12 @@ constexpr uint32_t MISC_PWM_EN               = (1u << 22);
 // Chip version identification
 //
 // The hardware version is encoded in TxConfig[30:28,26,23,22:20].
-// Linux reads (TxConfig >> 20) & 0xFCF to extract the version ID (XID).
 // ============================================================================
 
 constexpr uint32_t TCR_HWVERID_SHIFT         = 20;
 constexpr uint32_t TCR_XID_MASK              = 0x00000FCF; // after >> 20
 
-// Common RTL8168 chip versions (XID values after extraction).
-// Only listing versions likely to be encountered with PCI ID 10ec:8168.
-// Ref: Linux r8169.h enum mac_version + rtl_chip_infos[].
+// Common RTL8168 chip versions.
 enum class chip_version : uint16_t {
     UNKNOWN               = 0x000,
     RTL8168B_1            = 0x380,  // 8168B, early

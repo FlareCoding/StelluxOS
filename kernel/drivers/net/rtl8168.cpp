@@ -3,21 +3,17 @@
 #include "mm/heap.h"
 #include "hw/mmio.h"
 #include "hw/cpu.h"
+#include "hw/delay.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
 #include "net/net.h"
-#include "net/ipv4.h"
 #include "net/dhcp.h"
 
 namespace drivers {
 
 using namespace rtl8168;
-
-// ============================================================================
-// Construction
-// ============================================================================
 
 rtl8168_driver::rtl8168_driver(pci::device* dev)
     : pci_driver("rtl8168", dev)
@@ -41,13 +37,8 @@ rtl8168_driver::rtl8168_driver(pci::device* dev)
     , m_has_msi(false)
     , m_imr(INT_MASK_DEFAULT) {
     m_lock = sync::SPINLOCK_INIT;
-    uint8_t* p = reinterpret_cast<uint8_t*>(&m_netif);
-    for (size_t i = 0; i < sizeof(m_netif); i++) p[i] = 0;
+    string::memset(&m_netif, 0, sizeof(m_netif));
 }
-
-// ============================================================================
-// Register access helpers
-// ============================================================================
 
 uint8_t rtl8168_driver::reg_read8(uint16_t offset) {
     return mmio::read8(m_mmio_va + offset);
@@ -62,23 +53,16 @@ uint32_t rtl8168_driver::reg_read32(uint16_t offset) {
 }
 
 void rtl8168_driver::reg_write8(uint16_t offset, uint8_t value) {
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     mmio::write8(m_mmio_va + offset, value);
 }
 
 void rtl8168_driver::reg_write16(uint16_t offset, uint16_t value) {
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     mmio::write16(m_mmio_va + offset, value);
 }
 
 void rtl8168_driver::reg_write32(uint16_t offset, uint32_t value) {
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     mmio::write32(m_mmio_va + offset, value);
 }
-
-// ============================================================================
-// Chip version identification
-// ============================================================================
 
 chip_version rtl8168_driver::identify_chip() {
     uint32_t tcr = reg_read32(REG_TCR);
@@ -86,9 +70,6 @@ chip_version rtl8168_driver::identify_chip() {
 
     log::info("rtl8168: TxConfig=0x%08x XID=0x%03x", tcr, xid);
 
-    // Map known XID values to chip versions. This table is derived from
-    // Linux r8169_main.c rtl_chip_infos[] and FreeBSD if_re.c.
-    // For unknown variants we proceed with a generic code path.
     switch (xid) {
     case 0x380: return chip_version::RTL8168B_1;
     case 0x3C0: return chip_version::RTL8168C_1;
@@ -114,13 +95,7 @@ chip_version rtl8168_driver::identify_chip() {
     }
 }
 
-// ============================================================================
-// Config register lock/unlock
-//
-// Per datasheet §2.9: set EEM=11 (0xC0) to enable writes to CONFIG0-5,
-// set EEM=00 (0x00) to re-lock.
-// ============================================================================
-
+// Per datasheet section 2.9: EEM=11 (0xC0) unlocks CONFIG0-5 writes.
 void rtl8168_driver::config_unlock() {
     reg_write8(REG_9346CR, CFG_9346_UNLOCK);
 }
@@ -129,14 +104,10 @@ void rtl8168_driver::config_lock() {
     reg_write8(REG_9346CR, CFG_9346_LOCK);
 }
 
-// ============================================================================
-// Hardware reset
-//
-// Per datasheet §2.3: set CMD.RST, poll until self-cleared.
-// Disables TX/RX, reinitializes FIFOs, resets descriptor pointers.
-// MAC address (IDR0-5), MAR, and PCI config space are preserved.
-// ============================================================================
-
+/**
+ * Per datasheet section 2.3: set CMD.RST, poll until self-cleared.
+ * Preserves MAC address, MAR, and PCI config space.
+ */
 void rtl8168_driver::hw_reset() {
     reg_write8(REG_CMD, CMD_RST);
 
@@ -151,19 +122,14 @@ void rtl8168_driver::hw_reset() {
     log::warn("rtl8168: hardware reset timeout (CMD still has RST set)");
 }
 
-// ============================================================================
-// MAC address
-//
-// Read from IDR0-IDR5 (offsets 0x00-0x05). The EEPROM autoloads
-// the Ethernet ID into these registers at power-on.
-// ============================================================================
-
+/**
+ * Read MAC from IDR0-IDR5 (EEPROM autoloaded at power-on).
+ * Falls back to a fixed address if EEPROM is blank.
+ */
 void rtl8168_driver::read_mac_address() {
     uint32_t idr0 = reg_read32(REG_IDR0);
     uint32_t idr4 = reg_read32(REG_IDR4);
 
-    // IDR0 is at the lowest address; on little-endian x86, byte 0 is
-    // the LSB of the 32-bit read at offset 0x00.
     m_netif.mac[0] = static_cast<uint8_t>(idr0 & 0xFF);
     m_netif.mac[1] = static_cast<uint8_t>((idr0 >> 8) & 0xFF);
     m_netif.mac[2] = static_cast<uint8_t>((idr0 >> 16) & 0xFF);
@@ -183,52 +149,20 @@ void rtl8168_driver::read_mac_address() {
     }
 }
 
-// ============================================================================
-// RX filtering
-//
-// Accept our own unicast + broadcast. Enable RX checksum offload.
-// ============================================================================
-
-void rtl8168_driver::set_rx_mode() {
-    // Accept broadcast + physical match + multicast
-    uint32_t rcr = reg_read32(REG_RCR);
-    rcr &= ~(RCR_AAP | RCR_AER | RCR_AR);
-    rcr |= RCR_AB | RCR_APM | RCR_AM;
-    reg_write32(REG_RCR, rcr);
-
-    // Accept all multicast for now (set all MAR bits)
-    reg_write32(REG_MAR0, 0xFFFFFFFF);
-    reg_write32(REG_MAR4, 0xFFFFFFFF);
-}
-
-// ============================================================================
-// PHY access via PHYAR
-//
-// Per datasheet §2.16: PHYAR at offset 0x60.
-//   Write: set bit 31 + reg[20:16] + data[15:0]. Bit 31 auto-clears on done.
-//   Read:  clear bit 31 + reg[20:16]. Bit 31 auto-sets when data ready.
-//
-// FreeBSD adds a mandatory 20us delay between PHYAR operations.
-// ============================================================================
-
-static void delay_us(uint32_t us) {
-    for (uint32_t i = 0; i < us; i++) {
-        for (uint32_t j = 0; j < 100; j++) {
-            cpu::relax();
-        }
-    }
-}
-
+/**
+ * Per datasheet section 2.16: PHYAR at offset 0x60.
+ * FreeBSD mandates a 20us inter-operation delay.
+ */
 int32_t rtl8168_driver::phy_read(uint8_t reg, uint16_t* out) {
     uint32_t cmd = (static_cast<uint32_t>(reg) << PHYAR_REG_SHIFT) & PHYAR_REG_MASK;
     reg_write32(REG_PHYAR, cmd);
 
     for (uint32_t i = 0; i < 2000; i++) {
-        delay_us(1);
+        delay::us(1);
         uint32_t val = reg_read32(REG_PHYAR);
         if (val & PHYAR_FLAG) {
             *out = static_cast<uint16_t>(val & PHYAR_DATA_MASK);
-            delay_us(20);
+            delay::us(20);
             return 0;
         }
     }
@@ -244,10 +178,10 @@ int32_t rtl8168_driver::phy_write(uint8_t reg, uint16_t data) {
     reg_write32(REG_PHYAR, cmd);
 
     for (uint32_t i = 0; i < 2000; i++) {
-        delay_us(1);
+        delay::us(1);
         uint32_t val = reg_read32(REG_PHYAR);
         if ((val & PHYAR_FLAG) == 0) {
-            delay_us(20);
+            delay::us(20);
             return 0;
         }
     }
@@ -268,7 +202,7 @@ int32_t rtl8168_driver::phy_reset() {
             log::debug("rtl8168: PHY reset complete (%u ms)", i);
             return 0;
         }
-        delay_us(1000);
+        delay::us(1000);
     }
 
     log::error("rtl8168: PHY reset timeout");
@@ -279,7 +213,6 @@ int32_t rtl8168_driver::phy_auto_negotiate() {
     int32_t rc;
     uint16_t val;
 
-    // Advertise 10/100 capabilities with PAUSE
     rc = phy_read(phy::ANAR, &val);
     if (rc != 0) return rc;
     val |= phy::ANAR_100BASETX_FDX | phy::ANAR_100BASETX |
@@ -289,14 +222,12 @@ int32_t rtl8168_driver::phy_auto_negotiate() {
     rc = phy_write(phy::ANAR, val);
     if (rc != 0) return rc;
 
-    // Advertise 1000Base-T capabilities
     rc = phy_read(phy::GBCR, &val);
     if (rc != 0) return rc;
     val |= phy::GBCR_1000BASET_FDX | phy::GBCR_1000BASET;
     rc = phy_write(phy::GBCR, val);
     if (rc != 0) return rc;
 
-    // Restart auto-negotiation
     rc = phy_read(phy::BMCR, &val);
     if (rc != 0) return rc;
     val |= phy::BMCR_ANE | phy::BMCR_RESTART_AN;
@@ -308,8 +239,6 @@ int32_t rtl8168_driver::phy_auto_negotiate() {
 }
 
 void rtl8168_driver::phy_update_link() {
-    // Use the hardware PHYStatus register at offset 0x6C for fast,
-    // non-MDIO link status. It is continuously updated by the chip.
     uint8_t sts = reg_read8(REG_PHYSTATUS);
     bool was_up = m_link_up;
     m_link_up = (sts & PHYSTS_LINK) != 0;
@@ -336,21 +265,10 @@ void rtl8168_driver::phy_update_link() {
     }
 }
 
-// ============================================================================
-// DMA descriptor ring allocation
-//
-// TX and RX each need:
-//   1. A descriptor ring (array of tx_desc/rx_desc, 256-byte aligned)
-//   2. A contiguous buffer pool (DESC_COUNT * buffer_size)
-//
-// All memory is physically contiguous for DMA (ZONE_DMA32).
-// ============================================================================
-
 int32_t rtl8168_driver::alloc_rings() {
-    constexpr auto flags = paging::PAGE_READ | paging::PAGE_WRITE |
-                           paging::PAGE_USER | paging::PAGE_DMA;
+    constexpr auto DMA_FLAGS = paging::PAGE_READ | paging::PAGE_WRITE |
+                               paging::PAGE_USER | paging::PAGE_DMA;
 
-    // TX descriptor ring
     size_t tx_ring_bytes = TX_DESC_COUNT * sizeof(tx_desc);
     size_t tx_ring_pages = (tx_ring_bytes + 0xFFF) / 0x1000;
     uintptr_t tx_ring_va = 0;
@@ -358,7 +276,7 @@ int32_t rtl8168_driver::alloc_rings() {
     int32_t rc = 0;
 
     RUN_ELEVATED(
-        rc = vmm::alloc_contiguous(tx_ring_pages, pmm::ZONE_DMA32, flags,
+        rc = vmm::alloc_contiguous(tx_ring_pages, pmm::ZONE_DMA32, DMA_FLAGS,
                                    vmm::ALLOC_ZERO, kva::tag::generic,
                                    tx_ring_va, tx_ring_pa)
     );
@@ -369,11 +287,10 @@ int32_t rtl8168_driver::alloc_rings() {
     m_tx_ring = reinterpret_cast<tx_desc*>(tx_ring_va);
     m_tx_ring_phys = tx_ring_pa;
 
-    // TX buffer pool
     size_t tx_buf_total = static_cast<size_t>(TX_DESC_COUNT) * net::ETH_FRAME_MAX;
     size_t tx_buf_pages = (tx_buf_total + 0xFFF) / 0x1000;
     RUN_ELEVATED(
-        rc = vmm::alloc_contiguous(tx_buf_pages, pmm::ZONE_DMA32, flags,
+        rc = vmm::alloc_contiguous(tx_buf_pages, pmm::ZONE_DMA32, DMA_FLAGS,
                                    vmm::ALLOC_ZERO, kva::tag::generic,
                                    m_tx_buf_vaddr, m_tx_buf_phys)
     );
@@ -382,13 +299,12 @@ int32_t rtl8168_driver::alloc_rings() {
         return -1;
     }
 
-    // RX descriptor ring
     size_t rx_ring_bytes = RX_DESC_COUNT * sizeof(rx_desc);
     size_t rx_ring_pages = (rx_ring_bytes + 0xFFF) / 0x1000;
     uintptr_t rx_ring_va = 0;
     uint64_t rx_ring_pa = 0;
     RUN_ELEVATED(
-        rc = vmm::alloc_contiguous(rx_ring_pages, pmm::ZONE_DMA32, flags,
+        rc = vmm::alloc_contiguous(rx_ring_pages, pmm::ZONE_DMA32, DMA_FLAGS,
                                    vmm::ALLOC_ZERO, kva::tag::generic,
                                    rx_ring_va, rx_ring_pa)
     );
@@ -399,11 +315,10 @@ int32_t rtl8168_driver::alloc_rings() {
     m_rx_ring = reinterpret_cast<rx_desc*>(rx_ring_va);
     m_rx_ring_phys = rx_ring_pa;
 
-    // RX buffer pool
     size_t rx_buf_total = static_cast<size_t>(RX_DESC_COUNT) * RX_BUF_SIZE;
     size_t rx_buf_pages = (rx_buf_total + 0xFFF) / 0x1000;
     RUN_ELEVATED(
-        rc = vmm::alloc_contiguous(rx_buf_pages, pmm::ZONE_DMA32, flags,
+        rc = vmm::alloc_contiguous(rx_buf_pages, pmm::ZONE_DMA32, DMA_FLAGS,
                                    vmm::ALLOC_ZERO, kva::tag::generic,
                                    m_rx_buf_vaddr, m_rx_buf_phys)
     );
@@ -420,15 +335,27 @@ int32_t rtl8168_driver::alloc_rings() {
 }
 
 void rtl8168_driver::free_rings() {
-    // Permanent allocations; freed only if vmm supports it in the future.
+    if (m_tx_ring) {
+        RUN_ELEVATED(vmm::free(reinterpret_cast<uintptr_t>(m_tx_ring)));
+        m_tx_ring = nullptr;
+        m_tx_ring_phys = 0;
+    }
+    if (m_tx_buf_vaddr) {
+        RUN_ELEVATED(vmm::free(m_tx_buf_vaddr));
+        m_tx_buf_vaddr = 0;
+        m_tx_buf_phys = 0;
+    }
+    if (m_rx_ring) {
+        RUN_ELEVATED(vmm::free(reinterpret_cast<uintptr_t>(m_rx_ring)));
+        m_rx_ring = nullptr;
+        m_rx_ring_phys = 0;
+    }
+    if (m_rx_buf_vaddr) {
+        RUN_ELEVATED(vmm::free(m_rx_buf_vaddr));
+        m_rx_buf_vaddr = 0;
+        m_rx_buf_phys = 0;
+    }
 }
-
-// ============================================================================
-// Descriptor ring initialization
-//
-// TX ring: all descriptors start host-owned (OWN=0). Last has EOR set.
-// RX ring: all descriptors NIC-owned (OWN=1) with buffer pointers. Last has EOR.
-// ============================================================================
 
 void rtl8168_driver::init_tx_ring() {
     m_tx_prod = 0;
@@ -441,7 +368,6 @@ void rtl8168_driver::init_tx_ring() {
         m_tx_ring[i].addr_lo = 0;
         m_tx_ring[i].addr_hi = 0;
     }
-    // Set EOR on last descriptor to form a ring
     m_tx_ring[TX_DESC_COUNT - 1].opts1 = TX_EOR;
 }
 
@@ -466,7 +392,6 @@ int32_t rtl8168_driver::fill_rx_ring() {
         uint32_t flags = RX_OWN | (RX_BUF_SIZE & RX_BUF_SIZE_MASK);
         if (i == RX_DESC_COUNT - 1)
             flags |= RX_EOR;
-        // Write opts1 last with OWN set to hand to NIC
         __atomic_thread_fence(__ATOMIC_RELEASE);
         m_rx_ring[i].opts1 = flags;
     }
@@ -476,20 +401,15 @@ int32_t rtl8168_driver::fill_rx_ring() {
 }
 
 void rtl8168_driver::set_descriptor_addresses() {
-    // TX Normal Priority Descriptor Start Address (256-byte aligned)
     reg_write32(REG_TNPDS, static_cast<uint32_t>(m_tx_ring_phys & 0xFFFFFFFF));
     reg_write32(REG_TNPDS + 4, static_cast<uint32_t>(m_tx_ring_phys >> 32));
-
-    // RX Descriptor Start Address (256-byte aligned)
     reg_write32(REG_RDSAR, static_cast<uint32_t>(m_rx_ring_phys & 0xFFFFFFFF));
     reg_write32(REG_RDSAR + 4, static_cast<uint32_t>(m_rx_ring_phys >> 32));
 }
 
-// ============================================================================
-// TX path
-// ============================================================================
-
-int32_t rtl8168_driver::tx_callback(net::netif* iface, const uint8_t* frame, size_t len) {
+int32_t rtl8168_driver::tx_callback(
+    net::netif* iface, const uint8_t* frame, size_t len
+) {
     if (!iface || !frame || len == 0) return -1;
     auto* drv = static_cast<rtl8168_driver*>(iface->driver_data);
     if (!drv) return -1;
@@ -505,7 +425,6 @@ int32_t rtl8168_driver::tx_callback(net::netif* iface, const uint8_t* frame, siz
         } else {
             uint32_t idx = drv->m_tx_prod;
 
-            // Copy frame into the pre-allocated TX buffer for this slot
             uintptr_t buf_va = drv->m_tx_buf_vaddr +
                                static_cast<uintptr_t>(idx) * net::ETH_FRAME_MAX;
             string::memcpy(reinterpret_cast<uint8_t*>(buf_va), frame, len);
@@ -517,22 +436,18 @@ int32_t rtl8168_driver::tx_callback(net::netif* iface, const uint8_t* frame, siz
             drv->m_tx_ring[idx].addr_hi = static_cast<uint32_t>(buf_phys >> 32);
             drv->m_tx_ring[idx].opts2 = 0;
 
-            // Build opts1: OWN | FS | LS | length, preserve EOR if last slot
             uint32_t opts1 = TX_OWN | TX_FS | TX_LS |
                              (static_cast<uint32_t>(len) & TX_LEN_MASK);
             if (idx == TX_DESC_COUNT - 1)
                 opts1 |= TX_EOR;
 
-            // Write opts1 last with a release fence so the NIC sees
-            // the buffer address and opts2 before OWN is set.
+            // Release fence: NIC must see addr/opts2 before OWN is set.
             __atomic_thread_fence(__ATOMIC_RELEASE);
             drv->m_tx_ring[idx].opts1 = opts1;
 
-            // Advance producer
             drv->m_tx_prod = (idx + 1) % TX_DESC_COUNT;
             drv->m_tx_queued++;
 
-            // Ring the doorbell: write NPQ bit to TPPoll
             drv->reg_write8(REG_TPPOLL, TPPOLL_NPQ);
 
             result = 0;
@@ -547,11 +462,9 @@ void rtl8168_driver::process_tx_completions() {
         uint32_t idx = m_tx_cons;
         uint32_t opts1 = m_tx_ring[idx].opts1;
 
-        // If OWN is still set, NIC hasn't finished this descriptor yet
         if (opts1 & TX_OWN)
             break;
 
-        // Descriptor completed (OWN cleared by NIC)
         m_tx_ring[idx].opts1 = (idx == TX_DESC_COUNT - 1) ? TX_EOR : 0;
         m_tx_ring[idx].addr_lo = 0;
         m_tx_ring[idx].addr_hi = 0;
@@ -561,14 +474,6 @@ void rtl8168_driver::process_tx_completions() {
     }
 }
 
-// ============================================================================
-// RX path
-//
-// The NIC fills RX descriptors in order, clearing OWN when a frame is
-// written. We walk the ring from m_rx_cur, deliver frames to the stack,
-// and re-arm each descriptor.
-// ============================================================================
-
 void rtl8168_driver::process_rx() {
     uint32_t budget = RX_DESC_COUNT;
 
@@ -576,21 +481,18 @@ void rtl8168_driver::process_rx() {
         uint32_t idx = m_rx_cur;
         uint32_t opts1 = m_rx_ring[idx].opts1;
 
-        // Acquire fence to ensure we see the NIC's writes to the descriptor
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
 
         if (opts1 & RX_OWN)
-            break;  // NIC still owns this descriptor
+            break;
 
         budget--;
 
-        // Check for errors
         if (opts1 & RX_RES) {
             log::warn("rtl8168: RX error on desc %u (opts1=0x%08x)", idx, opts1);
             goto recycle;
         }
 
-        // We only handle single-descriptor frames (FS+LS both set)
         if ((opts1 & (RX_FS | RX_LS)) != (RX_FS | RX_LS)) {
             log::warn("rtl8168: RX multi-desc frame on desc %u, dropping", idx);
             goto recycle;
@@ -599,7 +501,7 @@ void rtl8168_driver::process_rx() {
         {
             uint32_t frame_len = opts1 & RX_FRAME_LEN_MASK;
 
-            // Frame length includes 4-byte CRC; strip it
+            // Frame length includes 4-byte CRC
             if (frame_len > 4)
                 frame_len -= 4;
             else
@@ -617,7 +519,6 @@ void rtl8168_driver::process_rx() {
 
     recycle:
         {
-            // Re-arm descriptor: set buffer address, buffer size, OWN, and EOR
             uint64_t phys = m_rx_buf_phys + static_cast<uint64_t>(idx) * RX_BUF_SIZE;
             m_rx_ring[idx].addr_lo = static_cast<uint32_t>(phys & 0xFFFFFFFF);
             m_rx_ring[idx].addr_hi = static_cast<uint32_t>(phys >> 32);
@@ -635,23 +536,18 @@ void rtl8168_driver::process_rx() {
     }
 }
 
-// ============================================================================
-// Interrupt handling
-// ============================================================================
-
+/**
+ * MSI interrupt handler. Masks IMR before ACKing ISR to prevent the
+ * RTL8168's edge-triggered MSI from becoming permanently stuck: the
+ * chip only fires an MSI on a 0->nonzero transition of (ISR & IMR).
+ * The main loop re-enables IMR after draining all work.
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void rtl8168_driver::on_interrupt(uint32_t) {
-    // Mask all interrupt sources before acknowledging ISR.
-    // The RTL8168 generates an MSI only when (ISR & IMR) transitions from
-    // all-zero to non-zero. If we ACK ISR while IMR is enabled, a new event
-    // arriving between the ISR read and the W1C write-back leaves a stranded
-    // bit, so (ISR & IMR) never returns to zero and no MSI fires again.
-    // Masking IMR first forces (ISR & IMR) to zero regardless of ISR state.
-    // The main loop re-enables IMR after draining all work, at which point
-    // any accumulated ISR bits create a clean 0->non-zero transition.
-    mmio::write16(m_mmio_va + REG_IMR, 0);
-    uint16_t status = mmio::read16(m_mmio_va + REG_ISR);
+    reg_write16(REG_IMR, 0);
+    uint16_t status = reg_read16(REG_ISR);
     if (status)
-        mmio::write16(m_mmio_va + REG_ISR, status);
+        reg_write16(REG_ISR, status);
 }
 
 void rtl8168_driver::enable_interrupts() {
@@ -660,17 +556,11 @@ void rtl8168_driver::enable_interrupts() {
 
 void rtl8168_driver::disable_interrupts() {
     reg_write16(REG_IMR, 0);
-    // Read back to flush
-    reg_read16(REG_IMR);
-    // Clear any pending interrupts
+    reg_read16(REG_IMR); // flush
     uint16_t isr = reg_read16(REG_ISR);
     if (isr)
         reg_write16(REG_ISR, isr);
 }
-
-// ============================================================================
-// Network interface callbacks
-// ============================================================================
 
 bool rtl8168_driver::link_callback(net::netif* iface) {
     if (!iface) return false;
@@ -691,64 +581,36 @@ void rtl8168_driver::poll_callback(net::netif* iface) {
     RUN_ELEVATED(net::drain_deferred_tx());
 }
 
-// ============================================================================
-// Hardware start/stop
-//
-// Start sequence (datasheet §7 Driver Programming Note):
-//   1. Configure C+ Command Register
-//   2. Configure Command Register (enable TX+RX)
-//   3. Configure other registers (RCR, TCR, RMS, MTPS, IMR, etc.)
-//
-// We follow Linux's approach of configuring most registers while TX/RX
-// are still disabled, then enabling them last, which is safer.
-// ============================================================================
-
+/**
+ * Start sequence per datasheet section 7: configure C+CR, CMD, TCR, RCR.
+ * TX+RX engines are enabled before writing TCR/RCR (datasheet requirement).
+ */
 void rtl8168_driver::hw_start() {
-    // Disable interrupts during setup
     disable_interrupts();
-
-    // Reset to clear any stale state
     hw_reset();
 
     config_unlock();
-
-    // Set the C+ Command Register: enable RX checksum offload
     reg_write16(REG_CPCR, CPCR_RXCHKSUM);
-
-    // Set max RX packet size
     reg_write16(REG_RMS, static_cast<uint16_t>(RX_BUF_SIZE));
-
-    // Set max TX packet size (units of 128 bytes, 0x0C covers up to 1536)
     reg_write8(REG_MTPS, MTPS_NORMAL);
-
-    // Program descriptor ring physical addresses before enabling TX/RX
     set_descriptor_addresses();
-
     config_lock();
 
-    // Per datasheet §7 and Linux rtl_hw_start(): enable TX+RX engines
-    // BEFORE writing TCR/RCR. The datasheet states "The Transmit
-    // Configuration register can only be changed after having set TE."
     reg_write8(REG_CMD, CMD_TE | CMD_RE);
 
-    // TX Configuration: unlimited DMA burst, standard IFG.
-    // Read-modify-write to preserve the hardware version ID bits.
+    // Preserve hardware version ID bits in TCR
     uint32_t tcr = reg_read32(REG_TCR);
     tcr &= ~(TCR_IFG_MASK | TCR_MXDMA_MASK);
     tcr |= TCR_IFG_DEFAULT | TCR_MXDMA_UNLIMITED;
     reg_write32(REG_TCR, tcr);
 
-    // RX Configuration: unlimited DMA burst, no FIFO threshold,
-    // accept broadcast + our MAC + multicast
     reg_write32(REG_RCR, RCR_RXFTH_NONE | RCR_MXDMA_UNLIMITED |
                           RCR_AB | RCR_APM | RCR_AM);
 
-    // Set multicast filter (accept all for now)
     reg_write32(REG_MAR0, 0xFFFFFFFF);
     reg_write32(REG_MAR4, 0xFFFFFFFF);
 
-    // On 8168G+ chips, open the RXDV gate to allow received frames to
-    // reach the DMA engine. Without this, the NIC silently drops all RX.
+    // 8168G+ chips gate RX behind the RXDV bit; open it.
     if (chip_is_8168g_plus(m_chip_version)) {
         uint32_t misc = reg_read32(REG_MISC);
         misc &= ~MISC_RXDV_GATED;
@@ -756,66 +618,56 @@ void rtl8168_driver::hw_start() {
         log::debug("rtl8168: RXDV gate opened (8168G+ chip)");
     }
 
-    // Enable interrupts
     enable_interrupts();
-
     log::debug("rtl8168: hardware started");
 }
 
 void rtl8168_driver::hw_stop() {
     disable_interrupts();
 
-    // On 8168G+ chips, close the RXDV gate before stopping DMA
     if (chip_is_8168g_plus(m_chip_version)) {
         uint32_t misc = reg_read32(REG_MISC);
         misc |= MISC_RXDV_GATED;
         reg_write32(REG_MISC, misc);
-        delay_us(2000);
+        delay::us(2000);
     }
 
-    // Disable TX and RX
     reg_write8(REG_CMD, 0);
-
-    // Reset to ensure clean state
     hw_reset();
 
     log::debug("rtl8168: hardware stopped");
 }
 
-// ============================================================================
-// Diagnostic dump
-// ============================================================================
-
 void rtl8168_driver::dump_state() {
-    log::info("rtl8168: --- register dump ---");
-    log::info("rtl8168:  TxConfig    = 0x%08x", reg_read32(REG_TCR));
-    log::info("rtl8168:  RxConfig    = 0x%08x", reg_read32(REG_RCR));
-    log::info("rtl8168:  CMD         = 0x%02x", reg_read8(REG_CMD));
-    log::info("rtl8168:  IMR         = 0x%04x  ISR = 0x%04x",
+    log::debug("rtl8168: --- register dump ---");
+    log::debug("rtl8168:  TxConfig    = 0x%08x", reg_read32(REG_TCR));
+    log::debug("rtl8168:  RxConfig    = 0x%08x", reg_read32(REG_RCR));
+    log::debug("rtl8168:  CMD         = 0x%02x", reg_read8(REG_CMD));
+    log::debug("rtl8168:  IMR         = 0x%04x  ISR = 0x%04x",
               reg_read16(REG_IMR), reg_read16(REG_ISR));
-    log::info("rtl8168:  PHYStatus   = 0x%02x", reg_read8(REG_PHYSTATUS));
-    log::info("rtl8168:  C+CR        = 0x%04x", reg_read16(REG_CPCR));
-    log::info("rtl8168:  RMS         = 0x%04x", reg_read16(REG_RMS));
-    log::info("rtl8168:  MTPS        = 0x%02x", reg_read8(REG_MTPS));
-    log::info("rtl8168:  MISC        = 0x%08x (RXDV_GATED=%s)",
+    log::debug("rtl8168:  PHYStatus   = 0x%02x", reg_read8(REG_PHYSTATUS));
+    log::debug("rtl8168:  C+CR        = 0x%04x", reg_read16(REG_CPCR));
+    log::debug("rtl8168:  RMS         = 0x%04x", reg_read16(REG_RMS));
+    log::debug("rtl8168:  MTPS        = 0x%02x", reg_read8(REG_MTPS));
+    log::debug("rtl8168:  MISC        = 0x%08x (RXDV_GATED=%s)",
               reg_read32(REG_MISC),
               (reg_read32(REG_MISC) & MISC_RXDV_GATED) ? "ON" : "off");
-    log::info("rtl8168:  MAC %02x:%02x:%02x:%02x:%02x:%02x",
+    log::debug("rtl8168:  MAC %02x:%02x:%02x:%02x:%02x:%02x",
               m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
               m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
-    log::info("rtl8168:  chip=0x%03x link=%s speed=%u duplex=%s",
+    log::debug("rtl8168:  chip=0x%03x link=%s speed=%u duplex=%s",
               static_cast<uint16_t>(m_chip_version),
               m_link_up ? "up" : "down",
               m_speed,
               m_full_duplex ? "full" : "half");
-    log::info("rtl8168:  TX prod=%u cons=%u queued=%u",
+    log::debug("rtl8168:  TX prod=%u cons=%u queued=%u",
               m_tx_prod, m_tx_cons, m_tx_queued);
-    log::info("rtl8168:  TX ring phys=0x%lx bufs phys=0x%lx",
+    log::debug("rtl8168:  TX ring phys=0x%lx bufs phys=0x%lx",
               m_tx_ring_phys, m_tx_buf_phys);
-    log::info("rtl8168:  RX cur=%u", m_rx_cur);
-    log::info("rtl8168:  RX ring phys=0x%lx bufs phys=0x%lx",
+    log::debug("rtl8168:  RX cur=%u", m_rx_cur);
+    log::debug("rtl8168:  RX ring phys=0x%lx bufs phys=0x%lx",
               m_rx_ring_phys, m_rx_buf_phys);
-    log::info("rtl8168:  RX desc[0] opts1=0x%08x lo=0x%08x hi=0x%08x",
+    log::debug("rtl8168:  RX desc[0] opts1=0x%08x lo=0x%08x hi=0x%08x",
               m_rx_ring[0].opts1, m_rx_ring[0].addr_lo, m_rx_ring[0].addr_hi);
 
     uint16_t bmcr = 0, bmsr = 0, id1 = 0, id2 = 0;
@@ -823,46 +675,35 @@ void rtl8168_driver::dump_state() {
     phy_read(phy::BMSR, &bmsr);
     phy_read(phy::PHYIDR1, &id1);
     phy_read(phy::PHYIDR2, &id2);
-    log::info("rtl8168:  PHY ID=0x%04x:0x%04x BMCR=0x%04x BMSR=0x%04x",
+    log::debug("rtl8168:  PHY ID=0x%04x:0x%04x BMCR=0x%04x BMSR=0x%04x",
               id1, id2, bmcr, bmsr);
-    log::info("rtl8168: --- end dump ---");
+    log::debug("rtl8168: --- end dump ---");
 }
-
-// ============================================================================
-// Driver lifecycle
-// ============================================================================
 
 int32_t rtl8168_driver::attach() {
     log::info("rtl8168: attaching to %02x:%02x.%x (10EC:8168)",
               m_dev->bus(), m_dev->slot(), m_dev->func());
 
-    // Enable PCI device and bus mastering (required for DMA)
     RUN_ELEVATED({
         m_dev->enable();
         m_dev->enable_bus_mastering();
     });
 
-    // Map MMIO BAR (BAR 2 for RTL8168 — 64-bit memory BAR at config 0x18)
-    int32_t rc = map_bar(RTL_MMIO_BAR, m_mmio_va);
+    int32_t rc = map_bar(RTL_MMIO_BAR, m_mmio_va, paging::PAGE_USER);
     if (rc != 0) {
         log::error("rtl8168: failed to map BAR %u (%d)", RTL_MMIO_BAR, rc);
         return rc;
     }
     log::info("rtl8168: MMIO mapped at VA 0x%lx", m_mmio_va);
 
-    // Reset the chip before reading anything else
     hw_reset();
-
-    // Identify chip version from TxConfig register
     m_chip_version = identify_chip();
 
-    // Read MAC address from hardware (EEPROM autoloaded to IDR)
     read_mac_address();
     log::info("rtl8168: MAC %02x:%02x:%02x:%02x:%02x:%02x",
               m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
               m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
 
-    // PHY initialization
     rc = phy_reset();
     if (rc != 0) {
         log::warn("rtl8168: PHY reset failed (%d), continuing anyway", rc);
@@ -873,17 +714,14 @@ int32_t rtl8168_driver::attach() {
         log::warn("rtl8168: PHY auto-negotiation start failed (%d)", rc);
     }
 
-    // Allocate DMA descriptor rings and buffers
     rc = alloc_rings();
     if (rc != 0) return rc;
 
-    // Initialize descriptor rings
     init_tx_ring();
     init_rx_ring();
     rc = fill_rx_ring();
     if (rc != 0) return rc;
 
-    // Try MSI, fall back to polling if it fails
     int32_t msi_rc = setup_msi(1);
     if (msi_rc != 0) {
         log::warn("rtl8168: MSI setup failed, will use polling");
@@ -893,10 +731,8 @@ int32_t rtl8168_driver::attach() {
         log::info("rtl8168: MSI configured");
     }
 
-    // Configure and start the hardware
     hw_start();
 
-    // Register with the network stack
     string::memcpy(m_netif.name, "eth0", 5);
     m_netif.transmit = tx_callback;
     m_netif.link_up = link_callback;
@@ -922,13 +758,12 @@ void rtl8168_driver::run() {
     log::info("rtl8168: driver task running (%s)",
               m_has_msi ? "interrupt-driven" : "polling");
 
-    // Wait for PHY auto-negotiation to complete before attempting DHCP.
-    // Gigabit auto-negotiation on real hardware typically takes 2-4 seconds.
+    // Wait for PHY auto-negotiation (gigabit typically takes 2-4s)
     log::info("rtl8168: waiting for link...");
     bool got_link = false;
     for (uint32_t i = 0; i < 50; i++) {
         RUN_ELEVATED(sched::sleep_ms(100));
-        RUN_ELEVATED(phy_update_link());
+        phy_update_link();
         if (m_link_up) {
             got_link = true;
             break;
@@ -938,14 +773,9 @@ void rtl8168_driver::run() {
         log::warn("rtl8168: link not up after 5 seconds, proceeding anyway");
     }
 
-    // Run DHCP to configure the interface dynamically.
     int32_t dhcp_rc = net::dhcp_configure(&m_netif);
     if (dhcp_rc != net::OK) {
-        log::warn("rtl8168: DHCP failed (%d), using static fallback", dhcp_rc);
-        net::configure(&m_netif,
-                       net::ipv4_addr(10, 0, 2, 15),
-                       net::ipv4_addr(255, 255, 255, 0),
-                       net::ipv4_addr(10, 0, 2, 2));
+        log::warn("rtl8168: DHCP failed (%d), interface left unconfigured", dhcp_rc);
     }
 
     uint32_t link_poll_counter = 0;
@@ -968,24 +798,17 @@ void rtl8168_driver::run() {
 
         if (++link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;
-            RUN_ELEVATED(phy_update_link());
+            phy_update_link();
         }
 
-        // Re-enable interrupt sources after draining all work.
-        // If ISR bits accumulated while IMR was masked, restoring IMR
-        // creates a 0→non-zero transition on (ISR & IMR), firing a
-        // fresh MSI that will wake the next wait_for_event() call.
+        // Re-enable IMR after draining work. If ISR bits accumulated
+        // while masked, this creates a 0->nonzero (ISR & IMR) transition
+        // that fires a fresh MSI.
         if (m_has_msi) {
-            RUN_ELEVATED(reg_write16(REG_IMR, m_imr));
+            reg_write16(REG_IMR, m_imr);
         }
     }
 }
-
-// ============================================================================
-// PCI driver registration
-//
-// Match: vendor 10EC, device 8168, class 02 (network), subclass 00 (Ethernet)
-// ============================================================================
 
 REGISTER_PCI_DRIVER(rtl8168_driver,
     PCI_MATCH(RTL_VENDOR_ID, RTL_DEVICE_ID_8168, 0x02, 0x00, PCI_MATCH_ANY_8),
