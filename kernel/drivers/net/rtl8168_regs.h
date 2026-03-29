@@ -178,6 +178,8 @@ constexpr uint8_t  MTPS_JUMBO                = 0x3B;    // >=7440 bytes
 // Miscellaneous register (used on 8168G+ for RXDV gating)
 constexpr uint16_t REG_MISC                  = 0x00F0;  // 32-bit
 constexpr uint32_t MISC_RXDV_GATED           = (1u << 19);
+constexpr uint32_t MISC_EARLY_TALLY_EN       = (1u << 16);
+constexpr uint32_t MISC_PWM_EN               = (1u << 22);
 
 // ============================================================================
 // Chip version identification
@@ -215,6 +217,12 @@ enum class chip_version : uint16_t {
     RTL8168H_2            = 0x5C0,  // 8168H
     RTL8168FP_1           = 0x5C8,  // 8168FP (DASH)
 };
+
+// 8168G+ chips (XID >= 0x4C0) use the RXDV gate to block RX data
+// during initialization. The gate must be opened after setup completes.
+inline constexpr bool chip_is_8168g_plus(chip_version ver) {
+    return static_cast<uint16_t>(ver) >= static_cast<uint16_t>(chip_version::RTL8168G_1);
+}
 
 // ============================================================================
 // TX descriptor format (16 bytes)

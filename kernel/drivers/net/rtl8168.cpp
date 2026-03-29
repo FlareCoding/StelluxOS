@@ -713,25 +713,40 @@ void rtl8168_driver::hw_start() {
     // Set max TX packet size (units of 128 bytes, 0x0C covers up to 1536)
     reg_write8(REG_MTPS, MTPS_NORMAL);
 
-    // TX Configuration: unlimited DMA burst, standard IFG
-    reg_write32(REG_TCR, TCR_IFG_DEFAULT | TCR_MXDMA_UNLIMITED);
+    // Program descriptor ring physical addresses before enabling TX/RX
+    set_descriptor_addresses();
+
+    config_lock();
+
+    // Per datasheet §7 and Linux rtl_hw_start(): enable TX+RX engines
+    // BEFORE writing TCR/RCR. The datasheet states "The Transmit
+    // Configuration register can only be changed after having set TE."
+    reg_write8(REG_CMD, CMD_TE | CMD_RE);
+
+    // TX Configuration: unlimited DMA burst, standard IFG.
+    // Read-modify-write to preserve the hardware version ID bits.
+    uint32_t tcr = reg_read32(REG_TCR);
+    tcr &= ~(TCR_IFG_MASK | TCR_MXDMA_MASK);
+    tcr |= TCR_IFG_DEFAULT | TCR_MXDMA_UNLIMITED;
+    reg_write32(REG_TCR, tcr);
 
     // RX Configuration: unlimited DMA burst, no FIFO threshold,
     // accept broadcast + our MAC + multicast
     reg_write32(REG_RCR, RCR_RXFTH_NONE | RCR_MXDMA_UNLIMITED |
                           RCR_AB | RCR_APM | RCR_AM);
 
-    // Program descriptor ring physical addresses
-    set_descriptor_addresses();
-
     // Set multicast filter (accept all for now)
     reg_write32(REG_MAR0, 0xFFFFFFFF);
     reg_write32(REG_MAR4, 0xFFFFFFFF);
 
-    config_lock();
-
-    // Enable TX and RX engines
-    reg_write8(REG_CMD, CMD_TE | CMD_RE);
+    // On 8168G+ chips, open the RXDV gate to allow received frames to
+    // reach the DMA engine. Without this, the NIC silently drops all RX.
+    if (chip_is_8168g_plus(m_chip_version)) {
+        uint32_t misc = reg_read32(REG_MISC);
+        misc &= ~MISC_RXDV_GATED;
+        reg_write32(REG_MISC, misc);
+        log::debug("rtl8168: RXDV gate opened (8168G+ chip)");
+    }
 
     // Enable interrupts
     enable_interrupts();
@@ -741,6 +756,14 @@ void rtl8168_driver::hw_start() {
 
 void rtl8168_driver::hw_stop() {
     disable_interrupts();
+
+    // On 8168G+ chips, close the RXDV gate before stopping DMA
+    if (chip_is_8168g_plus(m_chip_version)) {
+        uint32_t misc = reg_read32(REG_MISC);
+        misc |= MISC_RXDV_GATED;
+        reg_write32(REG_MISC, misc);
+        delay_us(2000);
+    }
 
     // Disable TX and RX
     reg_write8(REG_CMD, 0);
@@ -766,6 +789,9 @@ void rtl8168_driver::dump_state() {
     log::info("rtl8168:  C+CR        = 0x%04x", reg_read16(REG_CPCR));
     log::info("rtl8168:  RMS         = 0x%04x", reg_read16(REG_RMS));
     log::info("rtl8168:  MTPS        = 0x%02x", reg_read8(REG_MTPS));
+    log::info("rtl8168:  MISC        = 0x%08x (RXDV_GATED=%s)",
+              reg_read32(REG_MISC),
+              (reg_read32(REG_MISC) & MISC_RXDV_GATED) ? "ON" : "off");
     log::info("rtl8168:  MAC %02x:%02x:%02x:%02x:%02x:%02x",
               m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
               m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
@@ -888,6 +914,22 @@ void rtl8168_driver::run() {
     log::info("rtl8168: driver task running (%s)",
               m_has_msi ? "interrupt-driven" : "polling");
 
+    // Wait for PHY auto-negotiation to complete before attempting DHCP.
+    // Gigabit auto-negotiation on real hardware typically takes 2-4 seconds.
+    log::info("rtl8168: waiting for link...");
+    bool got_link = false;
+    for (uint32_t i = 0; i < 50; i++) {
+        RUN_ELEVATED(sched::sleep_ms(100));
+        RUN_ELEVATED(phy_update_link());
+        if (m_link_up) {
+            got_link = true;
+            break;
+        }
+    }
+    if (!got_link) {
+        log::warn("rtl8168: link not up after 5 seconds, proceeding anyway");
+    }
+
     // Run DHCP to configure the interface dynamically.
     int32_t dhcp_rc = net::dhcp_configure(&m_netif);
     if (dhcp_rc != net::OK) {
@@ -897,10 +939,6 @@ void rtl8168_driver::run() {
                        net::ipv4_addr(255, 255, 255, 0),
                        net::ipv4_addr(10, 0, 2, 2));
     }
-
-    // Wait for auto-negotiation, then check link
-    RUN_ELEVATED(sched::sleep_ms(2000));
-    RUN_ELEVATED(phy_update_link());
 
     uint32_t link_poll_counter = 0;
     constexpr uint32_t LINK_POLL_INTERVAL = 100;
