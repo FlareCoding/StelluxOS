@@ -40,9 +40,11 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
         sched::wake(batch[i]);
     }
 
-    // Overflow: re-acquire lock and process remaining one at a time.
-    // Each iteration grabs one pointer, releases the lock, wakes, reacquires.
-    // Uses a skip counter rather than persistent iterators across unlock.
+    // Overflow: process remaining observers one at a time.
+    // Between lock cycles, concurrent poll_cleanup may remove entries,
+    // shrinking the list. If skip overshoots the current list size the
+    // inner loop finds nothing — the removed task is already awake
+    // (it must be running to execute cleanup), so we stop.
     uint32_t remaining = total - n;
     uint32_t skip = n;
     while (remaining > 0) {
@@ -57,7 +59,8 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
             break;
         }
         spin_unlock_irqrestore(wq.lock, irq);
-        if (t) sched::wake(t);
+        if (!t) break;
+        sched::wake(t);
     }
 }
 
