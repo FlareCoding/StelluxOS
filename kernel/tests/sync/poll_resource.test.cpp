@@ -93,6 +93,30 @@ TEST(poll_resource, ring_buffer_poll_hup) {
 }
 
 // ---------------------------------------------------------------------------
+// ring_buffer_poll_hup_with_data
+// Writer closed but data remains: both POLL_IN and POLL_HUP must be set.
+// ---------------------------------------------------------------------------
+
+TEST(poll_resource, ring_buffer_poll_hup_with_data) {
+    ring_buffer* rb = nullptr;
+    RUN_ELEVATED({ rb = ring_buffer_create(256); });
+    ASSERT_NOT_NULL(rb);
+
+    uint8_t data[] = {1, 2, 3};
+    RUN_ELEVATED({ ring_buffer_write(rb, data, 3, true); });
+    RUN_ELEVATED({ ring_buffer_close_write(rb); });
+
+    uint32_t mask = 0;
+    RUN_ELEVATED({
+        mask = ring_buffer_poll_read(rb, nullptr);
+    });
+    EXPECT_BITS_SET(mask, sync::POLL_IN);
+    EXPECT_BITS_SET(mask, sync::POLL_HUP);
+
+    RUN_ELEVATED({ ring_buffer_destroy(rb); });
+}
+
+// ---------------------------------------------------------------------------
 // ring_buffer_poll_err
 // ---------------------------------------------------------------------------
 

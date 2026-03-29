@@ -256,7 +256,7 @@ __PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_tab
         mask |= sync::POLL_IN;
     }
     if (rb->writer_closed) {
-        mask |= (readable_bytes(rb) > 0) ? sync::POLL_IN : sync::POLL_HUP;
+        mask |= sync::POLL_HUP;
     }
     sync::spin_unlock_irqrestore(rb->lock, irq);
     return mask;
