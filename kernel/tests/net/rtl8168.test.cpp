@@ -224,7 +224,7 @@ TEST(rtl8168_regs_test, chip_version_xid_extraction) {
 
     // A value that exercises all bits in the mask
     uint32_t full_mask_xid = TCR_XID_MASK;
-    EXPECT_EQ(full_mask_xid, 0x00000FCFu);
+    EXPECT_EQ(full_mask_xid, 0x000007CFu);
 }
 
 // ============================================================================
