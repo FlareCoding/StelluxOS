@@ -132,6 +132,7 @@ TEST(poll_resource, ring_buffer_poll_err) {
         mask = ring_buffer_poll_write(rb, nullptr);
     });
     EXPECT_BITS_SET(mask, sync::POLL_ERR);
+    EXPECT_BITS_SET(mask, sync::POLL_OUT);
 
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }

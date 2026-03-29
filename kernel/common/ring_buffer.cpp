@@ -271,10 +271,11 @@ __PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_ta
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
     uint32_t mask = 0;
+    if (writable_bytes(rb) > 0) {
+        mask |= sync::POLL_OUT;
+    }
     if (rb->reader_closed) {
         mask |= sync::POLL_ERR;
-    } else if (writable_bytes(rb) > 0) {
-        mask |= sync::POLL_OUT;
     }
     sync::spin_unlock_irqrestore(rb->lock, irq);
     return mask;
