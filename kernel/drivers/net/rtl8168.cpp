@@ -639,8 +639,16 @@ void rtl8168_driver::process_rx() {
 // Interrupt handling
 // ============================================================================
 
-__PRIVILEGED_CODE void rtl8168_driver::on_interrupt(uint32_t /* vector */) {
-    // Read and acknowledge the interrupt status by writing back the bits
+__PRIVILEGED_CODE void rtl8168_driver::on_interrupt(uint32_t) {
+    // Mask all interrupt sources before acknowledging ISR.
+    // The RTL8168 generates an MSI only when (ISR & IMR) transitions from
+    // all-zero to non-zero. If we ACK ISR while IMR is enabled, a new event
+    // arriving between the ISR read and the W1C write-back leaves a stranded
+    // bit, so (ISR & IMR) never returns to zero and no MSI fires again.
+    // Masking IMR first forces (ISR & IMR) to zero regardless of ISR state.
+    // The main loop re-enables IMR after draining all work, at which point
+    // any accumulated ISR bits create a clean 0->non-zero transition.
+    mmio::write16(m_mmio_va + REG_IMR, 0);
     uint16_t status = mmio::read16(m_mmio_va + REG_ISR);
     if (status)
         mmio::write16(m_mmio_va + REG_ISR, status);
@@ -961,6 +969,14 @@ void rtl8168_driver::run() {
         if (++link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;
             RUN_ELEVATED(phy_update_link());
+        }
+
+        // Re-enable interrupt sources after draining all work.
+        // If ISR bits accumulated while IMR was masked, restoring IMR
+        // creates a 0→non-zero transition on (ISR & IMR), firing a
+        // fresh MSI that will wake the next wait_for_event() call.
+        if (m_has_msi) {
+            RUN_ELEVATED(reg_write16(REG_IMR, m_imr));
         }
     }
 }

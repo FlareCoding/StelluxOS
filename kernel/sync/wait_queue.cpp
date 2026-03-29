@@ -26,11 +26,11 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
 
     sched::yield();
 
-    spin_lock(wq.lock);
+    irq_state wq_irq = spin_lock_irqsave(wq.lock);
     if (self->wait_link.is_linked()) {
         wq.waiters.remove(self);
     }
-    spin_unlock(wq.lock);
+    spin_unlock_irqrestore(wq.lock, wq_irq);
 
     return spin_lock_irqsave(lock);
 }

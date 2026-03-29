@@ -22,9 +22,10 @@ struct wait_queue {
  * Block current task until woken, atomically releasing a held lock.
  *
  * Caller MUST hold `lock` via spin_lock_irqsave (IRQs disabled).
- * Internally acquires wq.lock using plain spin_lock (safe: IRQs
- * already disabled), registers the task, then releases both locks
- * before yielding.
+ * Internally acquires wq.lock via spin_lock_irqsave for both the
+ * enqueue and post-yield cleanup, ensuring it is
+ * safe to call from any context, including paths where an ISR may
+ * concurrently call wake_one() or wake_all().
  *
  * On wake, re-acquires `lock` via spin_lock_irqsave and returns
  * the new irq_state. Caller MUST re-check its condition (spurious
