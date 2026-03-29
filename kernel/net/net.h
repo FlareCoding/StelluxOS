@@ -162,6 +162,11 @@ void drain_deferred_tx();
 constexpr int32_t SOL_SOCKET   = 1;
 constexpr int32_t SO_REUSEADDR = 2;
 
+// Socket shutdown flags
+constexpr int32_t SHUT_RD   = 0;
+constexpr int32_t SHUT_WR   = 1;
+constexpr int32_t SHUT_RDWR = 2;
+
 } // namespace net
 
 #endif // STELLUX_NET_NET_H

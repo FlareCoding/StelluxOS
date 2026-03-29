@@ -93,6 +93,8 @@ struct tcp_socket : rc::ref_counted<tcp_socket> {
     sync::wait_queue accept_wq;
 
     uint32_t       so_options;   // bitmask of socket options
+    bool           shut_rd;     // read side shutdown (SHUT_RD)
+    bool           shut_wr;     // write side shutdown (SHUT_WR / FIN sent)
     sync::spinlock lock;
     tcp_socket*    next;        // linked list for port registry
 

@@ -13,6 +13,7 @@
 #include "syscall/handlers/sys_clock.h"
 #include "syscall/handlers/sys_random.h"
 #include "syscall/handlers/sys_poll.h"
+#include "syscall/handlers/sys_shutdown.h"
 
 namespace syscall {
 
@@ -62,6 +63,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::RECVFROM,    recvfrom);
     REGISTER_SYSCALL(linux_nr::SETSOCKOPT,  setsockopt);
     REGISTER_SYSCALL(linux_nr::GETSOCKOPT,  getsockopt);
+    REGISTER_SYSCALL(linux_nr::SHUTDOWN,    shutdown);
     REGISTER_SYSCALL(linux_nr::FCNTL,       fcntl);
     REGISTER_SYSCALL(linux_nr::GETRANDOM,   getrandom);
     REGISTER_SYSCALL(linux_nr::PPOLL,       ppoll);

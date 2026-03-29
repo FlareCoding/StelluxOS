@@ -233,6 +233,7 @@ static const resource::resource_ops g_pty_master_ops = {
     nullptr,
     nullptr,
     pty_master_poll,
+    nullptr,
 };
 
 static const resource::resource_ops g_pty_slave_ops = {
@@ -250,6 +251,7 @@ static const resource::resource_ops g_pty_slave_ops = {
     nullptr,
     nullptr,
     pty_slave_poll,
+    nullptr,
 };
 
 // Pair creation

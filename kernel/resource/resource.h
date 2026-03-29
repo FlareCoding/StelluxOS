@@ -34,6 +34,7 @@ using setsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
 using getsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
                                   int32_t optname, void* optval, size_t* optlen);
 using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
+using shutdown_fn = int32_t (*)(resource_object* obj, int32_t how);
 
 struct resource_ops {
     read_fn     read;
@@ -50,6 +51,7 @@ struct resource_ops {
     setsockopt_fn setsockopt; // nullable — for sockets
     getsockopt_fn getsockopt; // nullable — for sockets
     poll_fn       poll;       // nullable — returns readiness mask, subscribes on wait queues
+    shutdown_fn   shutdown;   // nullable — for sockets
 };
 
 struct resource_object : rc::ref_counted<resource_object> {
