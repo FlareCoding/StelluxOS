@@ -7,6 +7,7 @@
 #include "common/string.h"
 #include "mm/heap.h"
 #include "sync/spinlock.h"
+#include "sync/poll.h"
 #include "dynpriv/dynpriv.h"
 #include "fs/cpio/cpio.h"
 #include "boot/boot_services.h"
@@ -59,6 +60,7 @@ int64_t node::seek(file*, int64_t, int)             { return ERR_NOSYS; }
 ssize_t node::readdir(file*, dirent*, size_t)       { return ERR_NOSYS; }
 int32_t node::ioctl(file*, uint32_t, uint64_t)      { return ERR_NOSYS; }
 int32_t node::mmap(file*, mm::mm_context*, uintptr_t, size_t, uint32_t, uint32_t, uint64_t, uintptr_t*) { return ERR_NOSYS; }
+uint32_t node::poll(file*, sync::poll_table*)       { return sync::POLL_IN | sync::POLL_OUT; }
 int32_t node::open(file*, uint32_t)                 { return OK; }
 int32_t node::on_close(file*)                       { return OK; }
 int32_t node::readlink(char*, size_t, size_t*)      { return ERR_NOSYS; }

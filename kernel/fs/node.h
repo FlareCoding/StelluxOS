@@ -7,6 +7,7 @@
 #include "common/list.h"
 
 namespace mm { struct mm_context; }
+namespace sync { struct poll_table; struct poll_entry; }
 
 namespace fs {
 
@@ -45,6 +46,7 @@ public:
     virtual int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr,
                          size_t length, uint32_t prot, uint32_t map_flags,
                          uint64_t offset, uintptr_t* out_addr);
+    virtual uint32_t poll(file* f, sync::poll_table* pt);
 
     // --- Lifecycle hooks (called on open/close) ---
     virtual int32_t open(file* f, uint32_t flags);

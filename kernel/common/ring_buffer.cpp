@@ -1,4 +1,6 @@
 #include "common/ring_buffer.h"
+#include "sync/poll.h"
+#include "sync/wait_queue.h"
 #include "mm/heap.h"
 #include "common/string.h"
 #include "sched/sched.h"
@@ -239,4 +241,45 @@ __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb) {
     sync::spin_unlock_irqrestore(rb->lock, irq);
 
     sync::wake_all(rb->write_wq);
+}
+
+__PRIVILEGED_CODE uint32_t ring_buffer_poll_read(
+    ring_buffer* rb, sync::poll_table* pt, sync::poll_entry* entry
+) {
+    if (!rb) return 0;
+
+    if (pt && entry) {
+        sync::poll_subscribe(*pt, rb->read_wq, *entry);
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+    uint32_t mask = 0;
+    if (readable_bytes(rb) > 0) {
+        mask |= sync::POLL_IN;
+    }
+    if (rb->writer_closed) {
+        mask |= (readable_bytes(rb) > 0) ? sync::POLL_IN : sync::POLL_HUP;
+    }
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+    return mask;
+}
+
+__PRIVILEGED_CODE uint32_t ring_buffer_poll_write(
+    ring_buffer* rb, sync::poll_table* pt, sync::poll_entry* entry
+) {
+    if (!rb) return 0;
+
+    if (pt && entry) {
+        sync::poll_subscribe(*pt, rb->write_wq, *entry);
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
+    uint32_t mask = 0;
+    if (rb->reader_closed) {
+        mask |= sync::POLL_ERR;
+    } else if (writable_bytes(rb) > 0) {
+        mask |= sync::POLL_OUT;
+    }
+    sync::spin_unlock_irqrestore(rb->lock, irq);
+    return mask;
 }
