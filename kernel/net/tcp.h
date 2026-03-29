@@ -79,6 +79,7 @@ struct tcp_socket : rc::ref_counted<tcp_socket> {
     uint32_t       snd_una;     // oldest unacknowledged seq (Send Unacknowledged)
     uint32_t       snd_nxt;     // next seq we will send (Send Next)
     uint32_t       rcv_nxt;     // next seq we expect to receive (Receive Next)
+    uint16_t       snd_wnd;     // peer's advertised receive window
 
     // ESTABLISHED state: receive buffer for incoming data
     ring_buffer*   rx_buf;

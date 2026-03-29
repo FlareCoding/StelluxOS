@@ -29,6 +29,8 @@ __PRIVILEGED_DATA static sync::spinlock g_tcp_sock_lock = sync::SPINLOCK_INIT;
 // for security (RFC 6528), but a monotonic counter is correct for now.
 __PRIVILEGED_DATA static volatile uint32_t g_tcp_isn_counter = 1000;
 
+constexpr size_t TCP_MSS = ETH_MTU - sizeof(ipv4_header) - sizeof(tcp_header);
+
 static uint32_t tcp_generate_isn() {
     return __atomic_fetch_add(&g_tcp_isn_counter, 64000, __ATOMIC_RELAXED);
 }
@@ -454,31 +456,75 @@ __PRIVILEGED_CODE static ssize_t tcp_write(
     }
 
     auto* sock = static_cast<tcp_socket*>(obj->impl);
+    const auto* src = static_cast<const uint8_t*>(ksrc);
+    size_t remaining = count;
 
-    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
-    tcp_state cur = sock->state;
-    if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
+    while (remaining > 0) {
+        size_t chunk = remaining < TCP_MSS ? remaining : TCP_MSS;
+
+        sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+        tcp_state cur = sock->state;
+        if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            return (count > remaining)
+                ? static_cast<ssize_t>(count - remaining)
+                : resource::ERR_NOTCONN;
+        }
+
+        // Respect peer's advertised receive window. snd_wnd is always set from
+        // the handshake before ESTABLISHED, so 0 here is a real zero window.
+        uint32_t in_flight = sock->snd_nxt - sock->snd_una;
+        uint32_t wnd = sock->snd_wnd;
+        if (wnd == 0) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            if (count > remaining) {
+                return static_cast<ssize_t>(count - remaining);
+            }
+            return resource::ERR_AGAIN;
+        }
+        if (in_flight >= wnd) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            if (count > remaining) {
+                return static_cast<ssize_t>(count - remaining);
+            }
+            return resource::ERR_AGAIN;
+        }
+        if (chunk > wnd - in_flight) {
+            chunk = wnd - in_flight;
+        }
+
+        uint32_t seq = sock->snd_nxt;
+        sock->snd_nxt += static_cast<uint32_t>(chunk);
+        uint32_t ack_val = sock->rcv_nxt;
+        uint32_t src_ip = sock->local_addr;
+        uint16_t src_port = sock->local_port;
+        uint32_t dst_ip = sock->remote_addr;
+        uint16_t dst_port = sock->remote_port;
         sync::spin_unlock_irqrestore(sock->lock, irq);
-        return resource::ERR_NOTCONN;
-    }
-    uint32_t seq = sock->snd_nxt;
-    uint32_t ack_val = sock->rcv_nxt;
-    uint32_t src_ip = sock->local_addr;
-    uint16_t src_port = sock->local_port;
-    uint32_t dst_ip = sock->remote_addr;
-    uint16_t dst_port = sock->remote_port;
-    sock->snd_nxt += static_cast<uint32_t>(count);
-    sync::spin_unlock_irqrestore(sock->lock, irq);
 
-    int32_t rc = tcp_send_data(
-        src_ip, src_port, dst_ip, dst_port,
-        seq, ack_val,
-        TCP_PSH | TCP_ACK, TCP_DEFAULT_WINDOW,
-        static_cast<const uint8_t*>(ksrc), count);
+        uint8_t seg_flags = TCP_ACK;
+        if (chunk == remaining) {
+            seg_flags |= TCP_PSH;
+        }
 
-    if (rc != OK) {
-        return resource::ERR_IO;
+        int32_t rc = tcp_send_data(
+            src_ip, src_port, dst_ip, dst_port,
+            seq, ack_val, seg_flags, TCP_DEFAULT_WINDOW,
+            src, chunk);
+
+        if (rc != OK) {
+            sync::irq_state irq2 = sync::spin_lock_irqsave(sock->lock);
+            sock->snd_nxt -= static_cast<uint32_t>(chunk);
+            sync::spin_unlock_irqrestore(sock->lock, irq2);
+            return (count > remaining)
+                ? static_cast<ssize_t>(count - remaining)
+                : resource::ERR_IO;
+        }
+
+        src += chunk;
+        remaining -= chunk;
     }
+
     return static_cast<ssize_t>(count);
 }
 
@@ -720,6 +766,7 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
     child->remote_addr = src_ip;
     child->remote_port = src_port;
     child->rcv_nxt = their_seq + 1;
+    child->snd_wnd = 0;
     child->snd_una = our_isn;
     child->snd_nxt = our_isn + 1;
     child->rx_buf = nullptr;
@@ -760,16 +807,17 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
 }
 
 // Handle an ACK arriving on a SYN_RECEIVED socket (completes handshake)
-static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num) {
+static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num,
+                                 uint16_t peer_wnd) {
     sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
 
-    // Verify the ACK acknowledges our SYN
     if (ack_num != sock->snd_nxt) {
         sync::spin_unlock_irqrestore(sock->lock, irq);
         return;
     }
 
     sock->snd_una = ack_num;
+    sock->snd_wnd = peer_wnd;
     sock->state = tcp_state::ESTABLISHED;
 
     // Allocate receive buffer for data transfer
@@ -908,6 +956,7 @@ int32_t create_tcp_socket(resource::resource_object** out) {
     sock->snd_una = 0;
     sock->snd_nxt = 0;
     sock->rcv_nxt = 0;
+    sock->snd_wnd = 0;
     sock->rx_buf = nullptr;
     sock->rx_wq.init();
     sock->parent = nullptr;
@@ -980,7 +1029,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
 
     case tcp_state::SYN_RECEIVED:
         if (flags & TCP_ACK) {
-            tcp_synrcvd_recv_ack(sock, ack_num);
+            tcp_synrcvd_recv_ack(sock, ack_num, ntohs(hdr->window));
         }
         break;
 
@@ -1022,6 +1071,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
             // which is > ISN (= ISS). So ack_acceptable implies SYN ACKed.
             if (ack_acceptable) {
                 sock->state = tcp_state::ESTABLISHED;
+                sock->snd_wnd = ntohs(hdr->window);
                 sock->rx_buf = ring_buffer_create(TCP_RX_BUF_CAPACITY);
 
                 // Snapshot for send after unlock (avoid use-after-free)
@@ -1055,13 +1105,13 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
         if (flags & TCP_ACK) {
             sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
             if (ack_num > sock->snd_nxt) {
-                // ACKs something not yet sent - drop
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
             }
             if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
                 sock->snd_una = ack_num;
             }
+            sock->snd_wnd = ntohs(hdr->window);
             sync::spin_unlock_irqrestore(sock->lock, irq);
         }
 
@@ -1077,7 +1127,9 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 break;
             }
 
-            ssize_t written = ring_buffer_write(
+            // All-or-nothing: accept the full segment or none of it.
+            // Partial writes would desync rcv_nxt with the segment boundary.
+            ssize_t written = ring_buffer_write_all(
                 sock->rx_buf,
                 data + hdr_len,
                 payload_len, true);
@@ -1193,7 +1245,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
         if (payload_len > 0 && sock->rx_buf) {
             sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
             if (seq == sock->rcv_nxt) {
-                ssize_t written = ring_buffer_write(
+                ssize_t written = ring_buffer_write_all(
                     sock->rx_buf, data + hdr_len, payload_len, true);
                 if (written > 0) {
                     sock->rcv_nxt += static_cast<uint32_t>(written);
@@ -1242,13 +1294,12 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     }
 
     case tcp_state::CLOSE_WAIT:
-        // Peer sent FIN, we haven't closed yet. Process ACKs for data
-        // we may have sent. No data to receive (FIN was already received).
         if (flags & TCP_ACK) {
             sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
             if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
                 sock->snd_una = ack_num;
             }
+            sock->snd_wnd = ntohs(hdr->window);
             sync::spin_unlock_irqrestore(sock->lock, irq);
         }
         break;
