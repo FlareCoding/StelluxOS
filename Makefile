@@ -223,7 +223,7 @@ run-qemu-x86_64: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 	@echo ""
 	qemu-system-x86_64 \
 		-machine q35 \
-		-cpu qemu64,+fsgsbase \
+		-cpu qemu64,+fsgsbase,+rdrand \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
@@ -275,7 +275,7 @@ run-qemu-x86_64-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS
 	@echo ""
 	qemu-system-x86_64 \
 		-machine q35 \
-		-cpu qemu64,+fsgsbase \
+		-cpu qemu64,+fsgsbase,+rdrand \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
@@ -325,7 +325,7 @@ run-qemu-x86_64-debug: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 	@echo ""
 	qemu-system-x86_64 \
 		-machine q35 \
-		-cpu qemu64,+fsgsbase \
+		-cpu qemu64,+fsgsbase,+rdrand \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
@@ -352,7 +352,7 @@ run-qemu-x86_64-debug-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVM
 	@echo ""
 	qemu-system-x86_64 \
 		-machine q35 \
-		-cpu qemu64,+fsgsbase \
+		-cpu qemu64,+fsgsbase,+rdrand \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \

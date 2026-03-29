@@ -26,6 +26,7 @@
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
 #include "net/net.h"
+#include "random/random.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -108,6 +109,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (fs::init() != fs::OK) {
         log::fatal("fs::init failed");
+    }
+
+    if (random::init() != random::OK) {
+        log::warn("random::init failed, /dev/urandom unavailable");
     }
 
     if (terminal::init() != terminal::OK) {

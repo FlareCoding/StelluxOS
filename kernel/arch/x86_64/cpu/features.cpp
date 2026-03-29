@@ -27,6 +27,7 @@ constexpr uint32_t CPUID_1_ECX_TSC_DEADLINE = 1 << 24;
 constexpr uint32_t CPUID_1_ECX_XSAVE       = 1 << 26;
 constexpr uint32_t CPUID_1_ECX_AVX         = 1 << 28;
 constexpr uint32_t CPUID_1_ECX_PCID        = 1 << 17;
+constexpr uint32_t CPUID_1_ECX_RDRAND     = 1 << 30;
 
 // CPUID leaf 7 EBX bits
 constexpr uint32_t CPUID_7_EBX_FSGSBASE = 1 << 0;
@@ -34,6 +35,7 @@ constexpr uint32_t CPUID_7_EBX_SMEP     = 1 << 7;
 constexpr uint32_t CPUID_7_EBX_AVX2     = 1 << 5;
 constexpr uint32_t CPUID_7_EBX_SMAP     = 1 << 20;
 constexpr uint32_t CPUID_7_EBX_INVPCID  = 1 << 10;
+constexpr uint32_t CPUID_7_EBX_RDSEED   = 1 << 18;
 
 // CPUID extended leaf 0x80000001 EDX bits
 constexpr uint32_t CPUID_EXT1_EDX_NX      = 1 << 20;
@@ -92,6 +94,7 @@ __PRIVILEGED_CODE static void detect() {
     if (ecx & CPUID_1_ECX_TSC_DEADLINE) g_features.flags |= TSC_DEADLINE;
     if (ecx & CPUID_1_ECX_XSAVE)        g_features.flags |= XSAVE;
     if (ecx & CPUID_1_ECX_AVX)          g_features.flags |= AVX;
+    if (ecx & CPUID_1_ECX_RDRAND)       g_features.flags |= RDRAND;
 
     // Leaf 7: Extended features
     if (max_leaf >= 7) {
@@ -102,6 +105,7 @@ __PRIVILEGED_CODE static void detect() {
         if (ebx & CPUID_7_EBX_SMAP)     g_features.flags |= SMAP;
         if (ebx & CPUID_7_EBX_AVX2)     g_features.flags |= AVX2;
         if (ebx & CPUID_7_EBX_INVPCID)  g_features.flags |= INVPCID;
+        if (ebx & CPUID_7_EBX_RDSEED)   g_features.flags |= RDSEED;
         if (ecx & CPUID_7_ECX_LA57)     g_features.flags |= LA57;
     }
 

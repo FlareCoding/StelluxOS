@@ -50,6 +50,7 @@ constexpr uint64_t OPENAT           = 257;
 constexpr uint64_t NEWFSTATAT       = 262;
 constexpr uint64_t MKDIRAT          = 258;
 constexpr uint64_t UNLINKAT         = 263;
+constexpr uint64_t GETRANDOM        = 318;
 constexpr uint64_t MEMFD_CREATE     = 319;
 
 } // namespace syscall::linux_nr

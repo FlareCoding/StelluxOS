@@ -67,7 +67,7 @@ if [[ "$ARCH" == "x86_64" ]]; then
 
     qemu-system-x86_64 \
         -machine q35 \
-        -cpu qemu64,+fsgsbase \
+        -cpu qemu64,+fsgsbase,+rdrand \
         -m 4G \
         -smp 4 \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \

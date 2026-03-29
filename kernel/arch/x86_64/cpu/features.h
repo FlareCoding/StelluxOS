@@ -26,6 +26,8 @@ constexpr uint64_t AVX        = 1ULL << 15;  // AVX instructions
 constexpr uint64_t AVX2       = 1ULL << 16;  // AVX2 instructions
 constexpr uint64_t INVARIANT_TSC = 1ULL << 17; // Invariant TSC (constant rate across P/C states)
 constexpr uint64_t RDTSCP     = 1ULL << 18;  // RDTSCP instruction
+constexpr uint64_t RDRAND     = 1ULL << 19;  // RDRAND instruction (hardware RNG)
+constexpr uint64_t RDSEED     = 1ULL << 20;  // RDSEED instruction (hardware entropy)
 
 // Features required for Stellux to boot
 constexpr uint64_t REQUIRED = FSGSBASE | NX | APIC | PAT;

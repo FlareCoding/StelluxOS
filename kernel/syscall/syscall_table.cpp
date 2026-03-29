@@ -11,6 +11,7 @@
 #include "syscall/handlers/sys_proc.h"
 #include "syscall/handlers/sys_pty.h"
 #include "syscall/handlers/sys_clock.h"
+#include "syscall/handlers/sys_random.h"
 
 namespace syscall {
 
@@ -60,6 +61,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::SETSOCKOPT,  setsockopt);
     REGISTER_SYSCALL(linux_nr::GETSOCKOPT,  getsockopt);
     REGISTER_SYSCALL(linux_nr::FCNTL,       fcntl);
+    REGISTER_SYSCALL(linux_nr::GETRANDOM,   getrandom);
 
     REGISTER_SYSCALL(linux_nr::MEMFD_CREATE, memfd_create);
     REGISTER_SYSCALL(linux_nr::FTRUNCATE,   ftruncate);

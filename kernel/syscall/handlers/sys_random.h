@@ -1,0 +1,8 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_RANDOM_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_RANDOM_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(getrandom);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_RANDOM_H
