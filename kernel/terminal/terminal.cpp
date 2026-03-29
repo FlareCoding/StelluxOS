@@ -93,8 +93,7 @@ __PRIVILEGED_CODE static uint32_t terminal_poll(
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
     auto* rb = static_cast<ring_buffer*>(obj->impl);
-    sync::poll_entry entry = {};
-    return ring_buffer_poll_read(rb, pt, &entry) | sync::POLL_OUT;
+    return ring_buffer_poll_read(rb, pt) | sync::POLL_OUT;
 }
 
 static const resource::resource_ops g_terminal_ops = {

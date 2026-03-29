@@ -187,8 +187,7 @@ static uint32_t inet_poll(
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
     auto* sock = static_cast<inet_socket*>(obj->impl);
-    sync::poll_entry entry = {};
-    return ring_buffer_poll_read(sock->rx_buf, pt, &entry) | sync::POLL_OUT;
+    return ring_buffer_poll_read(sock->rx_buf, pt) | sync::POLL_OUT;
 }
 
 static const resource::resource_ops g_inet_icmp_ops = {

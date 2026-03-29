@@ -72,20 +72,20 @@ __PRIVILEGED_CODE void ring_buffer_close_write(ring_buffer* rb);
  */
 __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb);
 
-namespace sync { struct poll_table; struct poll_entry; }
+namespace sync { struct poll_table; }
 
 /**
  * Check read-direction readiness and optionally subscribe for wakeup.
  * @return Bitmask: POLL_IN if data available, POLL_HUP if writer closed and empty.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_table* pt, sync::poll_entry* entry);
+__PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_table* pt);
 
 /**
  * Check write-direction readiness and optionally subscribe for wakeup.
  * @return Bitmask: POLL_OUT if space available, POLL_ERR if reader closed.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_table* pt, sync::poll_entry* entry);
+__PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_table* pt);
 
 #endif // STELLUX_COMMON_RING_BUFFER_H

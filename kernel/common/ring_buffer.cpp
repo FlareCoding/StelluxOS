@@ -243,13 +243,11 @@ __PRIVILEGED_CODE void ring_buffer_close_read(ring_buffer* rb) {
     sync::wake_all(rb->write_wq);
 }
 
-__PRIVILEGED_CODE uint32_t ring_buffer_poll_read(
-    ring_buffer* rb, sync::poll_table* pt, sync::poll_entry* entry
-) {
+__PRIVILEGED_CODE uint32_t ring_buffer_poll_read(ring_buffer* rb, sync::poll_table* pt) {
     if (!rb) return 0;
 
-    if (pt && entry) {
-        sync::poll_subscribe(*pt, rb->read_wq, *entry);
+    if (pt) {
+        sync::poll_subscribe(*pt, rb->read_wq);
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);
@@ -264,13 +262,11 @@ __PRIVILEGED_CODE uint32_t ring_buffer_poll_read(
     return mask;
 }
 
-__PRIVILEGED_CODE uint32_t ring_buffer_poll_write(
-    ring_buffer* rb, sync::poll_table* pt, sync::poll_entry* entry
-) {
+__PRIVILEGED_CODE uint32_t ring_buffer_poll_write(ring_buffer* rb, sync::poll_table* pt) {
     if (!rb) return 0;
 
-    if (pt && entry) {
-        sync::poll_subscribe(*pt, rb->write_wq, *entry);
+    if (pt) {
+        sync::poll_subscribe(*pt, rb->write_wq);
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(rb->lock);

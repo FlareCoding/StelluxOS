@@ -29,7 +29,7 @@ TEST(poll_resource, ring_buffer_poll_readable) {
 
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_read(rb, nullptr, nullptr);
+        mask = ring_buffer_poll_read(rb, nullptr);
     });
     EXPECT_BITS_SET(mask, sync::POLL_IN);
 
@@ -47,7 +47,7 @@ TEST(poll_resource, ring_buffer_poll_not_readable) {
 
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_read(rb, nullptr, nullptr);
+        mask = ring_buffer_poll_read(rb, nullptr);
     });
     EXPECT_EQ(mask, 0u);
 
@@ -65,7 +65,7 @@ TEST(poll_resource, ring_buffer_poll_writable) {
 
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_write(rb, nullptr, nullptr);
+        mask = ring_buffer_poll_write(rb, nullptr);
     });
     EXPECT_BITS_SET(mask, sync::POLL_OUT);
 
@@ -85,7 +85,7 @@ TEST(poll_resource, ring_buffer_poll_hup) {
 
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_read(rb, nullptr, nullptr);
+        mask = ring_buffer_poll_read(rb, nullptr);
     });
     EXPECT_BITS_SET(mask, sync::POLL_HUP);
 
@@ -105,7 +105,7 @@ TEST(poll_resource, ring_buffer_poll_err) {
 
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_write(rb, nullptr, nullptr);
+        mask = ring_buffer_poll_write(rb, nullptr);
     });
     EXPECT_BITS_SET(mask, sync::POLL_ERR);
 
@@ -125,10 +125,9 @@ static void rb_poll_waiter_fn(void* arg) {
     auto* rb = static_cast<ring_buffer*>(arg);
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entry = {};
         pt.init(sched::current());
 
-        uint32_t mask = ring_buffer_poll_read(rb, &pt, &entry);
+        uint32_t mask = ring_buffer_poll_read(rb, &pt);
         if (mask & sync::POLL_IN) {
             __atomic_store_n(&g_rb_poll_result, 1, __ATOMIC_RELEASE);
             sync::poll_cleanup(pt);
@@ -140,7 +139,7 @@ static void rb_poll_waiter_fn(void* arg) {
         __atomic_store_n(&g_rb_poll_waiting, 1, __ATOMIC_RELEASE);
         sync::poll_wait(pt, 0);
         // Re-check after wake
-        mask = ring_buffer_poll_read(rb, nullptr, nullptr);
+        mask = ring_buffer_poll_read(rb, nullptr);
         __atomic_store_n(&g_rb_poll_result, (mask & sync::POLL_IN) ? 1 : 0, __ATOMIC_RELEASE);
         sync::poll_cleanup(pt);
     });
@@ -263,7 +262,7 @@ TEST(poll_resource, null_poll_table_just_probes) {
     // Pass null pt — should just probe, no subscription
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_read(rb, nullptr, nullptr);
+        mask = ring_buffer_poll_read(rb, nullptr);
     });
     EXPECT_BITS_SET(mask, sync::POLL_IN);
 

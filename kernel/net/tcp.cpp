@@ -697,17 +697,15 @@ static uint32_t tcp_poll(
     sync::spin_unlock_irqrestore(sock->lock, irq);
 
     if (st == tcp_state::ESTABLISHED || st == tcp_state::CLOSE_WAIT) {
-        sync::poll_entry entry = {};
-        uint32_t mask = ring_buffer_poll_read(sock->rx_buf, pt, &entry);
+        uint32_t mask = ring_buffer_poll_read(sock->rx_buf, pt);
         mask |= sync::POLL_OUT;
         if (st == tcp_state::CLOSE_WAIT) mask |= sync::POLL_HUP;
         return mask;
     }
 
     if (st == tcp_state::LISTEN) {
-        sync::poll_entry entry = {};
         if (pt) {
-            sync::poll_subscribe(*pt, sock->accept_wq, entry);
+            sync::poll_subscribe(*pt, sock->accept_wq);
         }
         irq = sync::spin_lock_irqsave(sock->lock);
         uint32_t mask = sock->accept_queue.empty() ? 0 : sync::POLL_IN;
@@ -716,9 +714,8 @@ static uint32_t tcp_poll(
     }
 
     if (st == tcp_state::SYN_SENT || st == tcp_state::SYN_RECEIVED) {
-        sync::poll_entry entry = {};
         if (pt) {
-            sync::poll_subscribe(*pt, sock->accept_wq, entry);
+            sync::poll_subscribe(*pt, sock->accept_wq);
         }
         return 0;
     }

@@ -50,8 +50,7 @@ public:
     }
 
     uint32_t poll(fs::file*, sync::poll_table* pt) override {
-        sync::poll_entry entry = {};
-        return ring_buffer_poll_read(m_rb, pt, &entry);
+        return ring_buffer_poll_read(m_rb, pt);
     }
 
     int32_t getattr(fs::vattr* attr) override {

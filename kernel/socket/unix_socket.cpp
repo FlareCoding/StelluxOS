@@ -403,21 +403,19 @@ __PRIVILEGED_CODE static uint32_t socket_poll(
     auto* sock = static_cast<unix_socket*>(obj->impl);
 
     if (sock->state == SOCK_STATE_CONNECTED) {
-        sync::poll_entry rd_entry = {}, wr_entry = {};
         ring_buffer* rx = sock->is_side_a
             ? sock->channel->buf_b_to_a
             : sock->channel->buf_a_to_b;
         ring_buffer* tx = sock->is_side_a
             ? sock->channel->buf_a_to_b
             : sock->channel->buf_b_to_a;
-        return ring_buffer_poll_read(rx, pt, &rd_entry)
-             | ring_buffer_poll_write(tx, pt, &wr_entry);
+        return ring_buffer_poll_read(rx, pt)
+             | ring_buffer_poll_write(tx, pt);
     }
 
     if (sock->state == SOCK_STATE_LISTENING && sock->listener) {
-        sync::poll_entry entry = {};
         if (pt) {
-            sync::poll_subscribe(*pt, sock->listener->accept_wq, entry);
+            sync::poll_subscribe(*pt, sock->listener->accept_wq);
         }
         sync::irq_state irq = sync::spin_lock_irqsave(sock->listener->lock);
         uint32_t mask = sock->listener->accept_queue.empty() ? 0 : sync::POLL_IN;

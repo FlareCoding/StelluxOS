@@ -69,9 +69,8 @@ static uint32_t proc_poll(
     auto* pr = impl->proc.ptr();
     if (!pr) return sync::POLL_HUP;
 
-    sync::poll_entry entry = {};
     if (pt) {
-        sync::poll_subscribe(*pt, pr->wait_queue, entry);
+        sync::poll_subscribe(*pt, pr->wait_queue);
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);

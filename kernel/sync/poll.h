@@ -42,12 +42,12 @@ struct poll_table {
 };
 
 /**
- * Register an observer on a wait queue. After this call, any wake_one
- * or wake_all on wq will also wake pt.task.
- * Caller provides the poll_entry storage (stack or heap).
+ * Register an observer on a wait queue. Allocates a poll_entry
+ * internally; the entry lives until poll_cleanup frees it.
+ * After this call, any wake_one/wake_all on wq will also wake pt.task.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq, poll_entry& entry);
+__PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq);
 
 /**
  * Block until any subscribed source fires or timeout expires.

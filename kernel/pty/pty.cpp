@@ -195,11 +195,10 @@ static uint32_t pty_master_poll(
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
-    sync::poll_entry rd_entry = {}, wr_entry = {};
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_read(ep->channel->m_output_rb, pt, &rd_entry)
-             | ring_buffer_poll_write(ep->channel->m_input_rb, pt, &wr_entry);
+        mask = ring_buffer_poll_read(ep->channel->m_output_rb, pt)
+             | ring_buffer_poll_write(ep->channel->m_input_rb, pt);
     });
     return mask;
 }
@@ -209,11 +208,10 @@ static uint32_t pty_slave_poll(
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
-    sync::poll_entry rd_entry = {}, wr_entry = {};
     uint32_t mask = 0;
     RUN_ELEVATED({
-        mask = ring_buffer_poll_read(ep->channel->m_input_rb, pt, &rd_entry)
-             | ring_buffer_poll_write(ep->channel->m_output_rb, pt, &wr_entry);
+        mask = ring_buffer_poll_read(ep->channel->m_input_rb, pt)
+             | ring_buffer_poll_write(ep->channel->m_output_rb, pt);
     });
     return mask;
 }
