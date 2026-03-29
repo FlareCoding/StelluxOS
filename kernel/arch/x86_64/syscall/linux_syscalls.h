@@ -20,6 +20,7 @@ constexpr uint64_t MUNMAP           = 11;
 constexpr uint64_t IOCTL            = 16;
 constexpr uint64_t WRITEV           = 20;
 constexpr uint64_t NANOSLEEP        = 35;
+constexpr uint64_t GETPID           = 39;
 constexpr uint64_t SOCKET           = 41;
 constexpr uint64_t CONNECT          = 42;
 constexpr uint64_t ACCEPT           = 43;
