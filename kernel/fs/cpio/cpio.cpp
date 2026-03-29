@@ -86,8 +86,6 @@ __PRIVILEGED_CODE int32_t load_initrd() {
     const auto* archive = reinterpret_cast<const uint8_t*>(usable_va);
     size_t archive_len = static_cast<size_t>(size);
 
-    fs::mkdir("/initrd", 0);
-
     uint32_t files_extracted = 0;
     uint32_t dirs_created = 0;
     size_t offset = 0;
@@ -140,9 +138,9 @@ __PRIVILEGED_CODE int32_t load_initrd() {
             continue;
         }
 
-        constexpr size_t PREFIX_LEN = 8;
+        constexpr size_t PREFIX_LEN = 1;
         char path_buf[fs::PATH_MAX];
-        string::memcpy(path_buf, "/initrd/", PREFIX_LEN);
+        path_buf[0] = '/';
 
         size_t name_len = string::strnlen(name, fs::PATH_MAX - PREFIX_LEN - 1);
         string::memcpy(path_buf + PREFIX_LEN, name, name_len);
@@ -174,7 +172,7 @@ __PRIVILEGED_CODE int32_t load_initrd() {
 
     vmm::free(base_va);
 
-    log::info("cpio: extracted %u files and %u directories into /initrd/",
+    log::info("cpio: extracted %u files and %u directories into /",
               files_extracted, dirs_created);
     return OK;
 }

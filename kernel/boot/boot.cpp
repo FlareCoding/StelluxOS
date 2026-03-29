@@ -156,7 +156,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 
     exec::loaded_image loaded;
-    int32_t load_result = exec::load_elf("/initrd/bin/init", &loaded);
+    int32_t load_result = exec::load_elf("/bin/init", &loaded);
     if (load_result == exec::OK) {
         sched::task* user_task = sched::create_user_task(&loaded, "init");
         if (user_task) {
@@ -166,7 +166,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
             exec::unload_elf(&loaded);
         }
     } else {
-        log::error("ELF load of /initrd/bin/init failed: %d", load_result);
+        log::error("ELF load of /bin/init failed: %d", load_result);
     }
 
     while (true) {

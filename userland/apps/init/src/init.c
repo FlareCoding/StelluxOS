@@ -17,7 +17,7 @@ int main(void) {
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    int dm_handle = proc_exec("/initrd/bin/stlxdm", NULL);
+    int dm_handle = proc_exec("/bin/stlxdm", NULL);
     if (dm_handle >= 0) {
         proc_detach(dm_handle);
         printf("init: stlxdm started\r\n");
@@ -31,7 +31,7 @@ int main(void) {
     struct timespec delay = { .tv_sec = 0, .tv_nsec = 600000000L }; // 600ms
 
     while (1) {
-        int shell_handle = proc_exec("/initrd/bin/shell", NULL);
+        int shell_handle = proc_exec("/bin/shell", NULL);
         if (shell_handle < 0) {
             printf("init: failed to create shell (errno=%d)\r\n", errno);
             nanosleep(&delay, NULL);

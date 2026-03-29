@@ -36,7 +36,7 @@ int main(void) {
     printf("ptytest: read %ld bytes from master: \"%s\"\n", (long)r, buf);
 
     // Test proc_set_handle: launch hello with PTY slave as stdio
-    int proc = proc_create("/initrd/bin/hello", NULL);
+    int proc = proc_create("/bin/hello", NULL);
     if (proc >= 0) {
         proc_set_handle(proc, 0, slave_fd);
         proc_set_handle(proc, 1, slave_fd);

@@ -586,7 +586,7 @@ int main(void) {
         for (int i = 0; i < config.autostart_count; i++)
             stlxdm_spawn_app(config.autostart[i].path);
     } else {
-        stlxdm_spawn_app("/initrd/bin/stlxterm");
+        stlxdm_spawn_app("/bin/stlxterm");
     }
 
     stlxdm_server_t server;
@@ -630,7 +630,7 @@ int main(void) {
                               &taskbar);
 
         if (input.spawn_terminal_requested) {
-            stlxdm_spawn_app("/initrd/bin/stlxterm");
+            stlxdm_spawn_app("/bin/stlxterm");
         }
 
         if (taskbar.launch_path[0] != '\0') {

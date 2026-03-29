@@ -28,7 +28,7 @@ struct cpio_newc_header {
 };
 
 /**
- * Load initrd from the first Limine boot module into the ramfs at /initrd/.
+ * Load initrd from the first Limine boot module into the root ramfs.
  * Maps the module's physical pages via vmm::map_phys(), parses the CPIO
  * newc archive, extracts files and directories, then unmaps.
  * Called from fs::init() when modules are present.

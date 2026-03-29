@@ -567,15 +567,15 @@ rpi4-firmware:
 	@echo "RPi4 UEFI firmware ready in $(RPI4_UEFI_DIR)/"
 
 doom-wad:
-	@mkdir -p initrd/res
-	@if [ -f initrd/res/doom1.wad ]; then \
-		echo "initrd/res/doom1.wad already exists ($$(wc -c < initrd/res/doom1.wad) bytes)"; \
+	@mkdir -p initrd/etc/res/doom
+	@if [ -f initrd/etc/res/doom/doom1.wad ]; then \
+		echo "initrd/etc/res/doom/doom1.wad already exists ($$(wc -c < initrd/etc/res/doom/doom1.wad) bytes)"; \
 	else \
 		echo "Downloading DOOM1.WAD (shareware, ~4.1 MB)..."; \
-		curl -fL -o initrd/res/doom1.wad \
+		curl -fL -o initrd/etc/res/doom/doom1.wad \
 			"https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad"; \
 		echo ""; \
-		echo "Downloaded: initrd/res/doom1.wad ($$(wc -c < initrd/res/doom1.wad) bytes)"; \
+		echo "Downloaded: initrd/etc/res/doom/doom1.wad ($$(wc -c < initrd/etc/res/doom/doom1.wad) bytes)"; \
 	fi
 
 toolchain-check:

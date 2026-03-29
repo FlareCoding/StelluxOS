@@ -97,4 +97,4 @@
 #undef ORIGCODE
 
 /* Define to the directory where all game files are located */
-#define FILES_DIR "/initrd/res"
+#define FILES_DIR "/etc/res/doom"

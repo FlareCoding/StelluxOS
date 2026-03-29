@@ -902,22 +902,6 @@ __PRIVILEGED_CODE int32_t init() {
     // Proactively create the system runtime /tmp directory
     mkdir("/tmp", 0);
 
-    // Bootstrap /etc from initrd so libc (musl) can find resolv.conf
-    mkdir("/etc", 0);
-    file* src = open("/initrd/etc/resolv.conf", O_RDONLY);
-    if (src) {
-        file* dst = open("/etc/resolv.conf", O_CREAT | O_WRONLY);
-        if (dst) {
-            uint8_t buf[256];
-            ssize_t n;
-            while ((n = read(src, buf, sizeof(buf))) > 0) {
-                write(dst, buf, static_cast<size_t>(n));
-            }
-            close(dst);
-        }
-        close(src);
-    }
-
     return OK;
 }
 

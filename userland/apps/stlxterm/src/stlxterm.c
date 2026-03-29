@@ -147,7 +147,7 @@ int main(void) {
     ioctl(slave_fd, STLX_TCSETS_RAW, 0);
     fcntl(master_fd, F_SETFL, O_NONBLOCK);
 
-    int shell_proc = proc_create("/initrd/bin/shell", NULL);
+    int shell_proc = proc_create("/bin/shell", NULL);
     if (shell_proc < 0) {
         printf("stlxterm: failed to create shell\r\n");
         close(master_fd);

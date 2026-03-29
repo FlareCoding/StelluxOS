@@ -49,7 +49,7 @@ int main(void) {
 
         const char* cmd = argv[0];
         if (!strchr(cmd, '/')) {
-            int n = snprintf(path_buf, 256, "/initrd/bin/%s", cmd);
+            int n = snprintf(path_buf, 256, "/bin/%s", cmd);
             if (n > 0 && n < 256) {
                 cmd = path_buf;
             }

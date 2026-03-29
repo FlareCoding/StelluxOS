@@ -3,7 +3,7 @@
 
 #include <stlxgfx/surface.h>
 
-#define STLXGFX_FONT_PATH "/initrd/res/fonts/UbuntuMono-Regular.ttf"
+#define STLXGFX_FONT_PATH "/etc/res/fonts/UbuntuMono-Regular.ttf"
 
 int stlxgfx_font_init(const char* font_path);
 void stlxgfx_font_cleanup(void);
