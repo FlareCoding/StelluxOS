@@ -29,6 +29,7 @@ public:
     int32_t detach() override;
     void run() override;
 
+    /** @note Privilege: **required** */
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
 
 private:
