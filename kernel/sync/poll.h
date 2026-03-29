@@ -30,12 +30,14 @@ struct poll_entry {
 struct poll_table {
     sched::task* task;
     uint32_t triggered;
+    uint32_t error;
     spinlock lock;
     list::head<poll_entry, &poll_entry::table_link> entries;
 
     void init(sched::task* t) {
         task = t;
         triggered = 0;
+        error = 0;
         lock = SPINLOCK_INIT;
         entries.init();
     }

@@ -10,7 +10,10 @@ namespace sync {
 
 __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
     auto* entry = heap::kalloc_new<poll_entry>();
-    if (!entry) return;
+    if (!entry) {
+        __atomic_store_n(&pt.error, 1, __ATOMIC_RELEASE);
+        return;
+    }
 
     entry->table = &pt;
     entry->source = &wq;
@@ -27,6 +30,10 @@ __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
 __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
     if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
         return true;
+    }
+
+    if (__atomic_load_n(&pt.error, __ATOMIC_ACQUIRE)) {
+        return false;
     }
 
     sched::task* self = pt.task;
