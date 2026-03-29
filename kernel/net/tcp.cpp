@@ -10,6 +10,7 @@
 #include "common/ring_buffer.h"
 #include "mm/heap.h"
 #include "sync/spinlock.h"
+#include "sync/poll.h"
 #include "fs/fstypes.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -685,6 +686,43 @@ __PRIVILEGED_CODE static int32_t tcp_getsockopt(
     return resource::OK;
 }
 
+__PRIVILEGED_CODE static uint32_t tcp_poll(
+    resource::resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+    tcp_state st = sock->state;
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    if (st == tcp_state::ESTABLISHED || st == tcp_state::CLOSE_WAIT) {
+        uint32_t mask = ring_buffer_poll_read(sock->rx_buf, pt);
+        mask |= sync::POLL_OUT;
+        if (st == tcp_state::CLOSE_WAIT) mask |= sync::POLL_HUP;
+        return mask;
+    }
+
+    if (st == tcp_state::LISTEN) {
+        if (pt) {
+            sync::poll_subscribe(*pt, sock->accept_wq);
+        }
+        irq = sync::spin_lock_irqsave(sock->lock);
+        uint32_t mask = sock->accept_queue.empty() ? 0 : sync::POLL_IN;
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return mask;
+    }
+
+    if (st == tcp_state::SYN_SENT || st == tcp_state::SYN_RECEIVED) {
+        if (pt) {
+            sync::poll_subscribe(*pt, sock->accept_wq);
+        }
+        return 0;
+    }
+
+    return sync::POLL_HUP;
+}
+
 static const resource::resource_ops g_tcp_ops = {
     tcp_read,
     tcp_write,
@@ -699,6 +737,7 @@ static const resource::resource_ops g_tcp_ops = {
     tcp_connect,
     tcp_setsockopt,
     tcp_getsockopt,
+    tcp_poll,
 };
 
 // Look up a TCP socket matching an incoming segment.

@@ -30,9 +30,8 @@ static volatile uint32_t g_xcpu_done;
 static void xcpu_poll_fn(void*) {
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entry = {};
         pt.init(sched::current());
-        sync::poll_subscribe(pt, g_xcpu_wq, entry);
+        sync::poll_subscribe(pt, g_xcpu_wq);
 
         __atomic_store_n(&g_xcpu_waiting, 1, __ATOMIC_RELEASE);
         bool triggered = sync::poll_wait(pt, 0);
@@ -84,10 +83,9 @@ static volatile uint32_t g_xmulti_done;
 static void xmulti_poll_fn(void*) {
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entries[3] = {};
         pt.init(sched::current());
         for (int i = 0; i < 3; i++) {
-            sync::poll_subscribe(pt, g_xmulti_wq[i], entries[i]);
+            sync::poll_subscribe(pt, g_xmulti_wq[i]);
         }
 
         __atomic_store_n(&g_xmulti_waiting, 1, __ATOMIC_RELEASE);
@@ -141,9 +139,8 @@ static volatile uint32_t g_xrace_done;
 static void xrace_poll_fn(void*) {
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entry = {};
         pt.init(sched::current());
-        sync::poll_subscribe(pt, g_xrace_wq, entry);
+        sync::poll_subscribe(pt, g_xrace_wq);
 
         // Short timeout — will expire before the source fires
         sync::poll_wait(pt, 10000000ULL); // 10ms

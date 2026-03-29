@@ -7,6 +7,7 @@
 #include "fs/socket_node.h"
 #include "common/string.h"
 #include "common/ring_buffer.h"
+#include "sync/poll.h"
 #include "hw/barrier.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -395,6 +396,36 @@ __PRIVILEGED_CODE static int32_t unix_connect(
     return resource::OK;
 }
 
+__PRIVILEGED_CODE static uint32_t socket_poll(
+    resource::resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* sock = static_cast<unix_socket*>(obj->impl);
+
+    if (sock->state == SOCK_STATE_CONNECTED) {
+        ring_buffer* rx = sock->is_side_a
+            ? sock->channel->buf_b_to_a
+            : sock->channel->buf_a_to_b;
+        ring_buffer* tx = sock->is_side_a
+            ? sock->channel->buf_a_to_b
+            : sock->channel->buf_b_to_a;
+        return ring_buffer_poll_read(rx, pt)
+             | ring_buffer_poll_write(tx, pt);
+    }
+
+    if (sock->state == SOCK_STATE_LISTENING && sock->listener) {
+        if (pt) {
+            sync::poll_subscribe(*pt, sock->listener->accept_wq);
+        }
+        sync::irq_state irq = sync::spin_lock_irqsave(sock->listener->lock);
+        uint32_t mask = sock->listener->accept_queue.empty() ? 0 : sync::POLL_IN;
+        sync::spin_unlock_irqrestore(sock->listener->lock, irq);
+        return mask;
+    }
+
+    return 0;
+}
+
 static const resource::resource_ops g_socket_ops = {
     socket_read,
     socket_write,
@@ -409,6 +440,7 @@ static const resource::resource_ops g_socket_ops = {
     unix_connect,
     nullptr, // setsockopt
     nullptr, // getsockopt
+    socket_poll,
 };
 
 const resource::resource_ops* get_socket_ops() {

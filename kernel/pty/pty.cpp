@@ -4,6 +4,8 @@
 #include "fs/fstypes.h"
 #include "mm/heap.h"
 #include "dynpriv/dynpriv.h"
+#include "sync/poll.h"
+#include "sync/wait_queue.h"
 
 namespace pty {
 
@@ -188,6 +190,32 @@ static int32_t pty_slave_ioctl(
     return terminal::ld_set_mode(&ep->channel->m_ld, cmd);
 }
 
+static uint32_t pty_master_poll(
+    resource::resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* ep = static_cast<pty_endpoint*>(obj->impl);
+    uint32_t mask = 0;
+    RUN_ELEVATED({
+        mask = ring_buffer_poll_read(ep->channel->m_output_rb, pt)
+             | ring_buffer_poll_write(ep->channel->m_input_rb, pt);
+    });
+    return mask;
+}
+
+static uint32_t pty_slave_poll(
+    resource::resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* ep = static_cast<pty_endpoint*>(obj->impl);
+    uint32_t mask = 0;
+    RUN_ELEVATED({
+        mask = ring_buffer_poll_read(ep->channel->m_input_rb, pt)
+             | ring_buffer_poll_write(ep->channel->m_output_rb, pt);
+    });
+    return mask;
+}
+
 // Ops tables
 
 static const resource::resource_ops g_pty_master_ops = {
@@ -204,6 +232,7 @@ static const resource::resource_ops g_pty_master_ops = {
     nullptr,
     nullptr,
     nullptr,
+    pty_master_poll,
 };
 
 static const resource::resource_ops g_pty_slave_ops = {
@@ -220,6 +249,7 @@ static const resource::resource_ops g_pty_slave_ops = {
     nullptr,
     nullptr,
     nullptr,
+    pty_slave_poll,
 };
 
 // Pair creation

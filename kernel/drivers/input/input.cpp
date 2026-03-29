@@ -7,6 +7,7 @@
 #include "common/logging.h"
 #include "mm/heap.h"
 #include "dynpriv/dynpriv.h"
+#include "sync/poll.h"
 
 namespace input {
 
@@ -46,6 +47,10 @@ public:
         size_t got = static_cast<size_t>(rc);
         size_t whole = (got / rec_size) * rec_size;
         return static_cast<ssize_t>(whole > 0 ? whole : 0);
+    }
+
+    uint32_t poll(fs::file*, sync::poll_table* pt) override {
+        return ring_buffer_poll_read(m_rb, pt);
     }
 
     int32_t getattr(fs::vattr* attr) override {

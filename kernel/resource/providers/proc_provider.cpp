@@ -6,6 +6,8 @@
 #include "mm/heap.h"
 #include "fs/node.h"
 #include "common/logging.h"
+#include "sync/poll.h"
+#include "sync/wait_queue.h"
 
 namespace resource::proc_provider {
 
@@ -59,6 +61,24 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
     obj->impl = nullptr;
 }
 
+__PRIVILEGED_CODE static uint32_t proc_poll(
+    resource::resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* impl = static_cast<proc_resource_impl*>(obj->impl);
+    auto* pr = impl->proc.ptr();
+    if (!pr) return sync::POLL_HUP;
+
+    if (pt) {
+        sync::poll_subscribe(*pt, pr->wait_queue);
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    uint32_t mask = pr->exited ? sync::POLL_IN : 0;
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+    return mask;
+}
+
 static const resource_ops g_proc_ops = {
     proc_read,
     proc_write,
@@ -73,6 +93,7 @@ static const resource_ops g_proc_ops = {
     nullptr,
     nullptr,
     nullptr,
+    proc_poll,
 };
 
 __PRIVILEGED_CODE int32_t create_proc_resource(

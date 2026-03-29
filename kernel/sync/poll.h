@@ -9,6 +9,14 @@ namespace sched { struct task; }
 
 namespace sync {
 
+// Linux-compatible poll event bitmask values.
+constexpr uint32_t POLL_IN   = 0x0001;
+constexpr uint32_t POLL_PRI  = 0x0002;
+constexpr uint32_t POLL_OUT  = 0x0004;
+constexpr uint32_t POLL_ERR  = 0x0008;
+constexpr uint32_t POLL_HUP  = 0x0010;
+constexpr uint32_t POLL_NVAL = 0x0020;
+
 struct wait_queue;
 struct poll_table;
 
@@ -22,24 +30,26 @@ struct poll_entry {
 struct poll_table {
     sched::task* task;
     uint32_t triggered;
+    uint32_t error;
     spinlock lock;
     list::head<poll_entry, &poll_entry::table_link> entries;
 
     void init(sched::task* t) {
         task = t;
         triggered = 0;
+        error = 0;
         lock = SPINLOCK_INIT;
         entries.init();
     }
 };
 
 /**
- * Register an observer on a wait queue. After this call, any wake_one
- * or wake_all on wq will also wake pt.task.
- * Caller provides the poll_entry storage (stack or heap).
+ * Register an observer on a wait queue. Allocates a poll_entry
+ * internally; the entry lives until poll_cleanup frees it.
+ * After this call, any wake_one/wake_all on wq will also wake pt.task.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq, poll_entry& entry);
+__PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq);
 
 /**
  * Block until any subscribed source fires or timeout expires.

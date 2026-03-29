@@ -7,6 +7,7 @@
 
 namespace sched { struct task; }
 namespace mm { struct mm_context; }
+namespace sync { struct poll_table; }
 
 namespace resource {
 
@@ -32,6 +33,7 @@ using setsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
                                   int32_t optname, const void* optval, size_t optlen);
 using getsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
                                   int32_t optname, void* optval, size_t* optlen);
+using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
 
 struct resource_ops {
     read_fn     read;
@@ -47,6 +49,7 @@ struct resource_ops {
     connect_fn  connect;     // nullable — for stream sockets
     setsockopt_fn setsockopt; // nullable — for sockets
     getsockopt_fn getsockopt; // nullable — for sockets
+    poll_fn       poll;       // nullable — returns readiness mask, subscribes on wait queues
 };
 
 struct resource_object : rc::ref_counted<resource_object> {

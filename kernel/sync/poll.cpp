@@ -4,25 +4,36 @@
 #include "sched/task.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
+#include "mm/heap.h"
 
 namespace sync {
 
-__PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq, poll_entry& entry) {
-    entry.table = &pt;
-    entry.source = &wq;
+__PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
+    auto* entry = heap::kalloc_new<poll_entry>();
+    if (!entry) {
+        __atomic_store_n(&pt.error, 1, __ATOMIC_RELEASE);
+        return;
+    }
+
+    entry->table = &pt;
+    entry->source = &wq;
 
     irq_state irq = spin_lock_irqsave(pt.lock);
-    pt.entries.push_back(&entry);
+    pt.entries.push_back(entry);
     spin_unlock_irqrestore(pt.lock, irq);
 
     irq = spin_lock_irqsave(wq.lock);
-    wq.observers.push_back(&entry);
+    wq.observers.push_back(entry);
     spin_unlock_irqrestore(wq.lock, irq);
 }
 
 __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
     if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
         return true;
+    }
+
+    if (__atomic_load_n(&pt.error, __ATOMIC_ACQUIRE)) {
+        return false;
     }
 
     sched::task* self = pt.task;
@@ -62,6 +73,7 @@ __PRIVILEGED_CODE void poll_cleanup(poll_table& pt) {
             entry->source->observers.remove(entry);
         }
         spin_unlock_irqrestore(entry->source->lock, wq_irq);
+        heap::kfree_delete(entry);
     }
     spin_unlock_irqrestore(pt.lock, pt_irq);
 }

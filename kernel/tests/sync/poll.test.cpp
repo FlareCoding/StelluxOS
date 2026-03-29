@@ -28,9 +28,8 @@ static volatile uint32_t g_basic_done;
 static void basic_poll_fn(void*) {
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entry = {};
         pt.init(sched::current());
-        sync::poll_subscribe(pt, g_basic_wq, entry);
+        sync::poll_subscribe(pt, g_basic_wq);
 
         __atomic_store_n(&g_basic_waiting, 1, __ATOMIC_RELEASE);
         bool triggered = sync::poll_wait(pt, 0);
@@ -78,10 +77,9 @@ static volatile uint32_t g_multi_first_done;
 static void multi_first_fn(void*) {
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entries[3] = {};
         pt.init(sched::current());
         for (int i = 0; i < 3; i++) {
-            sync::poll_subscribe(pt, g_multi_wq[i], entries[i]);
+            sync::poll_subscribe(pt, g_multi_wq[i]);
         }
 
         __atomic_store_n(&g_multi_first_waiting, 1, __ATOMIC_RELEASE);
@@ -129,10 +127,9 @@ static volatile uint32_t g_multi_last_done;
 static void multi_last_fn(void*) {
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entries[3] = {};
         pt.init(sched::current());
         for (int i = 0; i < 3; i++) {
-            sync::poll_subscribe(pt, g_multi_wq[i], entries[i]);
+            sync::poll_subscribe(pt, g_multi_wq[i]);
         }
 
         __atomic_store_n(&g_multi_last_waiting, 1, __ATOMIC_RELEASE);
@@ -180,10 +177,9 @@ static volatile uint32_t g_multi_all_done;
 static void multi_all_fn(void*) {
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entries[3] = {};
         pt.init(sched::current());
         for (int i = 0; i < 3; i++) {
-            sync::poll_subscribe(pt, g_multi_wq[i], entries[i]);
+            sync::poll_subscribe(pt, g_multi_wq[i]);
         }
 
         __atomic_store_n(&g_multi_all_waiting, 1, __ATOMIC_RELEASE);
@@ -234,9 +230,8 @@ static void timeout_fn(void*) {
         sync::wait_queue wq;
         wq.init();
         sync::poll_table pt;
-        sync::poll_entry entry = {};
         pt.init(sched::current());
-        sync::poll_subscribe(pt, wq, entry);
+        sync::poll_subscribe(pt, wq);
 
         bool triggered = sync::poll_wait(pt, 50000000ULL); // 50ms
         __atomic_store_n(&g_timeout_result, triggered ? 1 : 0, __ATOMIC_RELEASE);
@@ -274,9 +269,8 @@ static void immediate_fn(void*) {
         sync::wait_queue wq;
         wq.init();
         sync::poll_table pt;
-        sync::poll_entry entry = {};
         pt.init(sched::current());
-        sync::poll_subscribe(pt, wq, entry);
+        sync::poll_subscribe(pt, wq);
 
         // Fire the source before waiting
         sync::wake_one(wq);
@@ -317,10 +311,9 @@ static void cleanup_fn(void*) {
         for (int i = 0; i < 3; i++) wqs[i].init();
 
         sync::poll_table pt;
-        sync::poll_entry entries[3] = {};
         pt.init(sched::current());
         for (int i = 0; i < 3; i++) {
-            sync::poll_subscribe(pt, wqs[i], entries[i]);
+            sync::poll_subscribe(pt, wqs[i]);
         }
 
         sync::poll_cleanup(pt);
@@ -368,9 +361,8 @@ static volatile uint32_t g_kill_done;
 static void kill_poll_fn(void*) {
     RUN_ELEVATED({
         sync::poll_table pt;
-        sync::poll_entry entry = {};
         pt.init(sched::current());
-        sync::poll_subscribe(pt, g_kill_wq, entry);
+        sync::poll_subscribe(pt, g_kill_wq);
 
         __atomic_store_n(&g_kill_waiting, 1, __ATOMIC_RELEASE);
         bool triggered = sync::poll_wait(pt, 0);
@@ -428,9 +420,8 @@ static void repeat_poll_fn(void*) {
     for (uint32_t iter = 0; iter < REPEAT_CYCLES; iter++) {
         RUN_ELEVATED({
             sync::poll_table pt;
-            sync::poll_entry entry = {};
             pt.init(sched::current());
-            sync::poll_subscribe(pt, g_repeat_wq, entry);
+            sync::poll_subscribe(pt, g_repeat_wq);
 
             __atomic_store_n(&g_repeat_waiting, iter + 1, __ATOMIC_RELEASE);
             sync::poll_wait(pt, 0);
