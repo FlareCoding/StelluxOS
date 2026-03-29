@@ -195,6 +195,7 @@ static const resource::resource_ops g_inet_icmp_ops = {
     nullptr,             // connect
     nullptr,            // setsockopt
     nullptr,           // getsockopt
+    nullptr,
 };
 
 // UDP ring buffer entry framing:
@@ -457,6 +458,7 @@ static const resource::resource_ops g_inet_udp_ops = {
     nullptr,                 // connect
     inet_setsockopt,
     inet_getsockopt,
+    nullptr,
 };
 
 } // anonymous namespace

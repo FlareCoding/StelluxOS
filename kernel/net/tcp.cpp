@@ -699,6 +699,7 @@ static const resource::resource_ops g_tcp_ops = {
     tcp_connect,
     tcp_setsockopt,
     tcp_getsockopt,
+    nullptr,
 };
 
 // Look up a TCP socket matching an incoming segment.

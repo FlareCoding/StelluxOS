@@ -409,6 +409,7 @@ static const resource::resource_ops g_socket_ops = {
     unix_connect,
     nullptr, // setsockopt
     nullptr, // getsockopt
+    nullptr,
 };
 
 const resource::resource_ops* get_socket_ops() {
