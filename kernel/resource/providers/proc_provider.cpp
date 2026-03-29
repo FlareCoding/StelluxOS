@@ -61,7 +61,7 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
     obj->impl = nullptr;
 }
 
-static uint32_t proc_poll(
+__PRIVILEGED_CODE static uint32_t proc_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;

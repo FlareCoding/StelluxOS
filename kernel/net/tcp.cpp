@@ -686,7 +686,7 @@ __PRIVILEGED_CODE static int32_t tcp_getsockopt(
     return resource::OK;
 }
 
-static uint32_t tcp_poll(
+__PRIVILEGED_CODE static uint32_t tcp_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;

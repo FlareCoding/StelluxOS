@@ -182,7 +182,7 @@ __PRIVILEGED_CODE static void inet_close(resource::resource_object* obj) {
     obj->impl = nullptr;
 }
 
-static uint32_t inet_poll(
+__PRIVILEGED_CODE static uint32_t inet_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
