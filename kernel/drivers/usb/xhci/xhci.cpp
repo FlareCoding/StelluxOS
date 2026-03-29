@@ -181,6 +181,16 @@ void xhci_hcd::run() {
     // for boot-attached devices.
     _scan_ports();
 
+    // Flush deferred doorbells accumulated during _scan_ports().
+    // Transfer events processed re-entrantly inside _send_command()
+    // defer their re-arm doorbells, which would otherwise be discarded
+    // by the m_pending_doorbell_count = 0 reset at the top of the loop.
+    for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
+        _ring_doorbell(m_pending_doorbells[i].slot_id,
+                       m_pending_doorbells[i].target);
+    }
+    m_pending_doorbell_count = 0;
+
     while (true) {
         wait_for_event();
 
@@ -2015,6 +2025,20 @@ void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
     }
 
     if (!state.interrupt_in_stream.active) {
+        return;
+    }
+
+    if (event->completion_code == XHCI_TRB_COMPLETION_CODE_MISSED_SERVICE) {
+        // The xHC found no TD at the scheduled polling interval. This is
+        // recoverable: re-arm with an immediate doorbell so the endpoint
+        // resumes at the next interval without killing the stream.
+        if (_queue_interrupt_in_stream_td(device, ep, state, false) != 0) {
+            RUN_ELEVATED({
+                sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+                state.interrupt_in_stream.active = false;
+                sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+            });
+        }
         return;
     }
 
