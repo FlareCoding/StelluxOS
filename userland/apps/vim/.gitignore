@@ -1,0 +1,13 @@
+# Ignore everything in upstream Vim source tree
+src/*
+runtime/
+
+# But track Stellux-specific files
+!src/auto/
+src/auto/*
+!src/auto/config.h
+!src/auto/pathdef.c
+!src/stellux_stubs.c
+
+# Build artifacts
+build/
