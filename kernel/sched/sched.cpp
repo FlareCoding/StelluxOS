@@ -520,7 +520,20 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     constexpr size_t AUXV_ENTRIES = 5;
     constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
 
-    size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1 + 1 + AUXV_WORDS;
+    // Default environment variables for all Stellux processes
+    static const char* const default_env[] = {
+        "TERM=xterm",
+        "HOME=/",
+        "PATH=/bin",
+        "SHELL=/bin/shell",
+        "LANG=C",
+        nullptr, // sentinel
+    };
+    int env_count = 0;
+    for (const char* const* e = default_env; *e; e++) env_count++;
+
+    size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1
+                         + static_cast<size_t>(env_count) + 1 + AUXV_WORDS;
     size_t struct_bytes = struct_words * sizeof(uint64_t);
 
     // Pre-compute total string space needed (8-byte aligned per arg)
@@ -529,6 +542,11 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     for (int i = 0; i < user_argc; i++) {
         size_t arg_len = string::strnlen(user_argv[i], 255) + 1;
         total_string_bytes += (arg_len + 7) & ~7ULL;
+    }
+    // Account for environment variable strings
+    for (int i = 0; i < env_count; i++) {
+        size_t env_len = string::strnlen(default_env[i], 255) + 1;
+        total_string_bytes += (env_len + 7) & ~7ULL;
     }
 
     if (total_string_bytes + struct_bytes + 16 > pmm::PAGE_SIZE) {
@@ -554,15 +572,29 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         argv_vas[1 + i] = str_cursor;
     }
 
+    // Write environment variable strings
+    constexpr size_t MAX_ENV_PTRS = 16;
+    uintptr_t env_vas[MAX_ENV_PTRS];
+    for (int i = 0; i < env_count && i < static_cast<int>(MAX_ENV_PTRS); i++) {
+        size_t env_len = string::strnlen(default_env[i], 255) + 1;
+        size_t env_padded = (env_len + 7) & ~7ULL;
+        str_cursor -= env_padded;
+        write(str_cursor, default_env[i], env_len);
+        env_vas[i] = str_cursor;
+    }
+
     uintptr_t sp = (str_cursor - struct_bytes) & ~0xFULL;
 
-    uint64_t data[1 + MAX_ARGV_PTRS + 1 + 1 + AUXV_WORDS];
+    uint64_t data[1 + MAX_ARGV_PTRS + 1 + MAX_ENV_PTRS + 1 + AUXV_WORDS];
     size_t idx = 0;
     data[idx++] = static_cast<uint64_t>(total_argc);
     for (int i = 0; i < total_argc; i++) {
         data[idx++] = argv_vas[i];
     }
     data[idx++] = 0; // argv terminator (NULL)
+    for (int i = 0; i < env_count; i++) {
+        data[idx++] = env_vas[i];
+    }
     data[idx++] = 0; // envp terminator (NULL)
     data[idx++] = AT_PAGESZ; data[idx++] = pmm::PAGE_SIZE;
     data[idx++] = AT_PHDR;   data[idx++] = image.phdr_vaddr;
