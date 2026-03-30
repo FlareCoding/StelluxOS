@@ -264,39 +264,26 @@ int main(void) {
             int argc = parse_line(stages[0], argv);
             if (argc <= 0) continue;
 
-            /* Builtins: open redirect fd for data output */
-            int builtin_out = STDOUT_FILENO;
+            /* Try builtins first. Open redirect fds so builtin output
+               can be redirected, then close them regardless of result. */
             int redir_in = -1, redir_out = -1;
+            if (open_redirect_fds(&redir, &redir_in, &redir_out) < 0) {
+                last_status = 1;
+                continue;
+            }
+            int builtin_out = (redir_out >= 0) ? redir_out : STDOUT_FILENO;
 
-            int builtin_rc = 0;
-            int is_builtin_candidate = (strcmp(argv[0], "cd") == 0 ||
-                                        strcmp(argv[0], "pwd") == 0 ||
-                                        strcmp(argv[0], "history") == 0 ||
-                                        strcmp(argv[0], "echo") == 0 ||
-                                        strcmp(argv[0], "exit") == 0 ||
-                                        strcmp(argv[0], "$?") == 0 ||
-                                        strcmp(argv[0], "$$") == 0);
-
-            if (is_builtin_candidate) {
-                if (open_redirect_fds(&redir, &redir_in, &redir_out) < 0) {
-                    last_status = 1;
-                    continue;
-                }
-                if (redir_out >= 0) builtin_out = redir_out;
-
-                builtin_rc = try_builtin(argc, argv, editor,
+            int builtin_rc = try_builtin(argc, argv, editor,
                                          last_status, &shell_exit_code, builtin_out);
+            close_redirect_fds(redir_in, redir_out);
 
-                close_redirect_fds(redir_in, redir_out);
-
-                if (builtin_rc < 0) break;            /* exit */
-                if (builtin_rc > 0) {
-                    last_status = 0;
-                    continue;
-                }
-                /* builtin_rc == 0: wasn't actually a builtin, fall through */
+            if (builtin_rc < 0) break;            /* exit */
+            if (builtin_rc > 0) {
+                last_status = 0;
+                continue;
             }
 
+            /* Not a builtin — run as external command */
             last_status = run_single(argv, path_buf, &redir);
         } else {
             last_status = run_pipeline(stages, nstages, path_buf);

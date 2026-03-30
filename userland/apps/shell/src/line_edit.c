@@ -233,6 +233,15 @@ static int collect_candidates(const char* dir_path, const char* prefix,
 }
 
 /*
+ * Sort completion entries alphabetically for display.
+ */
+static int completion_cmp(const void* a, const void* b) {
+    const completion_entry* ea = (const completion_entry*)a;
+    const completion_entry* eb = (const completion_entry*)b;
+    return strcmp(ea->name, eb->name);
+}
+
+/*
  * Compute the longest common prefix among all candidates.
  * Returns the length of the common prefix (at least prefix_len).
  */
@@ -381,6 +390,9 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
 
     int count = collect_candidates(dir_path, name_prefix, name_prefix_len,
                                     entries, COMPLETE_MAX);
+
+    if (count > 1)
+        qsort(entries, (size_t)count, sizeof(completion_entry), completion_cmp);
 
     if (count == 0) {
         /* no matches */

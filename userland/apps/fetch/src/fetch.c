@@ -308,7 +308,13 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
             break;
         }
 
-        /* Advance the \r\n\r\n state machine */
+        /* Advance the \r\n\r\n state machine.
+         *
+         * The boundary \r\n\r\n consists of: the end of the last header
+         * line (\r\n) followed by a blank separator line (\r\n).
+         * We print the first \r\n (header content) but suppress the
+         * second \r\n (separator) from stdout output.
+         */
         switch (hs->state) {
         case 0:
             if (c == '\r') hs->state = 1;
@@ -320,18 +326,26 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
             else                hs->state = 0;
             break;
         case 2: /* seen \r\n */
-            if (c == '\r') hs->state = 3;
-            else            hs->state = 0;
+            if (c == '\r') {
+                hs->state = 3;
+                continue; /* suppress separator \r from stdout */
+            } else {
+                hs->state = 0;
+            }
             break;
         case 3: /* seen \r\n\r */
             if (c == '\n') {
                 hs->state = 4;
                 hs->headers_done = 1;
-                /* Don't write the boundary byte to stdout */
-                continue;
+                continue; /* suppress separator \n from stdout */
             } else if (c == '\r') {
+                /* False alarm: the \r at state 2 was content.
+                   Flush the suppressed \r, then stay in state 1. */
+                write(STDOUT_FILENO, "\r", 1);
                 hs->state = 1;
             } else {
+                /* False alarm: flush suppressed \r, reset. */
+                write(STDOUT_FILENO, "\r", 1);
                 hs->state = 0;
             }
             break;
