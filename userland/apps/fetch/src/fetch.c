@@ -718,6 +718,8 @@ int main(int argc, char *argv[]) {
     int save_mode = 0;
     int auto_name = 0;
 
+    int explicit_output = 0; /* set when -o provides an explicit filename */
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) {
@@ -725,6 +727,7 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             save_mode = 1;
+            explicit_output = 1;
             snprintf(output_file, sizeof(output_file), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--save") == 0) {
             save_mode = 1;
@@ -748,9 +751,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Handle --save auto filename derivation */
+    /* Handle --save auto filename derivation.
+     * Explicit -o takes priority: if both -o and --save are given,
+     * use the -o filename and ignore --save's auto-derivation. */
     if (save_mode) {
-        if (auto_name) {
+        if (auto_name && !explicit_output) {
             derive_filename(params.path, output_file, sizeof(output_file));
         }
         snprintf(params.output_file, sizeof(params.output_file), "%s", output_file);
