@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/random.h>
 #include <netinet/in.h>
@@ -267,9 +268,87 @@ static int build_http_request(char *req, size_t req_size,
         path, host);
 }
 
+/* ---- HTTP header/body separation ----
+ *
+ * State machine to find the \r\n\r\n boundary between HTTP headers and
+ * body. Handles the boundary being split across read() calls.
+ *
+ * States: 0=normal, 1=seen \r, 2=seen \r\n, 3=seen \r\n\r
+ * When state reaches 4: boundary found.
+ */
+typedef struct {
+    int state;        /* 0-3: matching progress for \r\n\r\n */
+    int headers_done; /* 1 once the boundary has been found */
+} http_split_state;
+
+/*
+ * Process a buffer of HTTP response data. Routes header bytes to stdout
+ * and body bytes to out_fd.
+ *
+ * Returns the number of body bytes written to out_fd, or -1 on write error.
+ */
+static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
+                                       const char *buf, size_t len) {
+    size_t body_written = 0;
+
+    if (hs->headers_done) {
+        /* Entire buffer is body */
+        if (write_all(out_fd, buf, len) < 0) return -1;
+        return (ssize_t)len;
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        char c = buf[i];
+
+        if (hs->headers_done) {
+            /* Rest of buffer is body */
+            size_t remaining = len - i;
+            if (write_all(out_fd, buf + i, remaining) < 0) return -1;
+            body_written += remaining;
+            break;
+        }
+
+        /* Advance the \r\n\r\n state machine */
+        switch (hs->state) {
+        case 0:
+            if (c == '\r') hs->state = 1;
+            else            hs->state = 0;
+            break;
+        case 1: /* seen \r */
+            if (c == '\n') hs->state = 2;
+            else if (c == '\r') hs->state = 1;
+            else                hs->state = 0;
+            break;
+        case 2: /* seen \r\n */
+            if (c == '\r') hs->state = 3;
+            else            hs->state = 0;
+            break;
+        case 3: /* seen \r\n\r */
+            if (c == '\n') {
+                hs->state = 4;
+                hs->headers_done = 1;
+                /* Don't write the boundary byte to stdout */
+                continue;
+            } else if (c == '\r') {
+                hs->state = 1;
+            } else {
+                hs->state = 0;
+            }
+            break;
+        }
+
+        /* Header bytes go to stdout for user feedback */
+        if (!hs->headers_done) {
+            write(STDOUT_FILENO, &c, 1);
+        }
+    }
+
+    return (ssize_t)body_written;
+}
+
 /* ---- Plain HTTP fetch ---- */
 
-static int fetch_plain(int fd, const char *host, const char *path) {
+static int fetch_plain(int fd, const char *host, const char *path, int out_fd) {
     char req[HTTP_REQ_SIZE];
     int req_len = build_http_request(req, sizeof(req), host, path);
 
@@ -282,15 +361,35 @@ static int fetch_plain(int fd, const char *host, const char *path) {
     char buf[FETCH_BUF_SIZE];
     ssize_t n;
     size_t total = 0;
-    while ((n = read(fd, buf, sizeof(buf))) > 0) {
-        write(STDOUT_FILENO, buf, (size_t)n);
-        total += (size_t)n;
+
+    if (out_fd >= 0) {
+        /* Save mode: separate headers from body */
+        http_split_state hs = {0, 0};
+        while ((n = read(fd, buf, sizeof(buf))) > 0) {
+            ssize_t body = process_response_chunk(&hs, out_fd, buf, (size_t)n);
+            if (body < 0) {
+                printf("\r\nfetch: write error\r\n");
+                close(fd);
+                return 1;
+            }
+            total += (size_t)body;
+        }
+    } else {
+        /* Stdout mode: dump everything (existing behavior) */
+        while ((n = read(fd, buf, sizeof(buf))) > 0) {
+            write(STDOUT_FILENO, buf, (size_t)n);
+            total += (size_t)n;
+        }
     }
 
-    if (total == 0)
+    if (total == 0 && out_fd < 0)
         printf("fetch: empty response\r\n");
 
-    printf("\r\n--- %zu bytes received ---\r\n", total);
+    if (out_fd >= 0)
+        printf("\r\n--- %zu body bytes saved ---\r\n", total);
+    else
+        printf("\r\n--- %zu bytes received ---\r\n", total);
+
     close(fd);
     return 0;
 }
@@ -386,7 +485,7 @@ static int sock_write(void *ctx, const unsigned char *buf, size_t len) {
 
 /* ---- HTTPS (TLS) fetch ---- */
 
-static int fetch_tls(int fd, const char *host, const char *path) {
+static int fetch_tls(int fd, const char *host, const char *path, int out_fd) {
     br_ssl_client_context sc;
     br_x509_minimal_context xc;
 
@@ -439,9 +538,25 @@ static int fetch_tls(int fd, const char *host, const char *path) {
     char buf[FETCH_BUF_SIZE];
     int n;
     size_t total = 0;
-    while ((n = br_sslio_read(&ioc, buf, sizeof(buf))) > 0) {
-        write(STDOUT_FILENO, buf, (size_t)n);
-        total += (size_t)n;
+
+    if (out_fd >= 0) {
+        /* Save mode: separate headers from body */
+        http_split_state hs = {0, 0};
+        while ((n = br_sslio_read(&ioc, buf, sizeof(buf))) > 0) {
+            ssize_t body = process_response_chunk(&hs, out_fd, buf, (size_t)n);
+            if (body < 0) {
+                printf("\r\nfetch: write error\r\n");
+                close(fd);
+                return 1;
+            }
+            total += (size_t)body;
+        }
+    } else {
+        /* Stdout mode: dump everything (existing behavior) */
+        while ((n = br_sslio_read(&ioc, buf, sizeof(buf))) > 0) {
+            write(STDOUT_FILENO, buf, (size_t)n);
+            total += (size_t)n;
+        }
     }
 
     /* Check for TLS-level errors (as opposed to normal close) */
@@ -453,10 +568,13 @@ static int fetch_tls(int fd, const char *host, const char *path) {
         return 1;
     }
 
-    if (total == 0)
+    if (total == 0 && out_fd < 0)
         printf("fetch: empty response\r\n");
 
-    printf("\r\n--- %zu bytes received (TLS) ---\r\n", total);
+    if (out_fd >= 0)
+        printf("\r\n--- %zu body bytes saved ---\r\n", total);
+    else
+        printf("\r\n--- %zu bytes received (TLS) ---\r\n", total);
 
     br_sslio_close(&ioc);
     close(fd);
@@ -468,17 +586,36 @@ static int fetch_tls(int fd, const char *host, const char *path) {
 struct fetch_params {
     char host[256];
     char path[1024];
+    char output_file[512];  /* empty = stdout */
     uint16_t port;
     int use_tls;
+    int save_mode;          /* 1 = save body to file */
 };
 
-static int parse_url(int argc, char *argv[], struct fetch_params *out) {
+/*
+ * Derive a filename from the URL path.
+ * "/path/to/file.txt" -> "file.txt"
+ * "/" or "/path/to/dir/" -> "index.html"
+ */
+static void derive_filename(const char *url_path, char *out, size_t out_size) {
+    const char *last_slash = strrchr(url_path, '/');
+    const char *name = NULL;
+    if (last_slash && last_slash[1] != '\0') {
+        name = last_slash + 1;
+    }
+    if (!name || name[0] == '\0') {
+        name = "index.html";
+    }
+    snprintf(out, out_size, "%s", name);
+}
+
+static int parse_url(int url_argc, char *url_argv[], struct fetch_params *out) {
     memset(out, 0, sizeof(*out));
 
-    if (argc < 2)
+    if (url_argc < 1)
         return -1;
 
-    const char *arg = argv[1];
+    const char *arg = url_argv[0];
     int scheme_explicit = 0;
 
     /* Strip scheme prefix if present */
@@ -512,16 +649,16 @@ static int parse_url(int argc, char *argv[], struct fetch_params *out) {
     }
 
     /* Legacy positional syntax: fetch <host> <port> [path] */
-    if (argc >= 3 && !scheme_explicit) {
-        out->port = (uint16_t)atoi(argv[2]);
+    if (url_argc >= 2 && !scheme_explicit) {
+        out->port = (uint16_t)atoi(url_argv[1]);
         if (out->port == 0) {
-            printf("fetch: invalid port '%s'\r\n", argv[2]);
+            printf("fetch: invalid port '%s'\r\n", url_argv[1]);
             return -1;
         }
         out->use_tls = (out->port == DEFAULT_HTTPS_PORT) ? 1 : 0;
     }
-    if (argc >= 4 && !scheme_explicit) {
-        snprintf(out->path, sizeof(out->path), "%s", argv[3]);
+    if (url_argc >= 3 && !scheme_explicit) {
+        snprintf(out->path, sizeof(out->path), "%s", url_argv[2]);
     }
 
     /* Remove trailing slash from empty paths */
@@ -531,27 +668,78 @@ static int parse_url(int argc, char *argv[], struct fetch_params *out) {
     return 0;
 }
 
+static void print_usage(void) {
+    printf("Usage: fetch [options] <url>\r\n");
+    printf("       fetch [options] <host> [port] [path]\r\n");
+    printf("\r\n");
+    printf("Options:\r\n");
+    printf("  -o <file>    Save response body to file\r\n");
+    printf("  --save       Save response body (auto-derive filename from URL)\r\n");
+    printf("\r\n");
+    printf("Examples:\r\n");
+    printf("  fetch google.com                       HTTPS to stdout\r\n");
+    printf("  fetch https://example.com/page         HTTPS with path\r\n");
+    printf("  fetch http://example.com               HTTP explicit\r\n");
+    printf("  fetch https://example.com -o page.html Save body to page.html\r\n");
+    printf("  fetch https://example.com/f.tar --save Save body to f.tar\r\n");
+}
+
 int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    struct fetch_params params;
-    if (parse_url(argc, argv, &params) < 0) {
-        printf("Usage: fetch <url>\r\n");
-        printf("       fetch <host> [port] [path]\r\n");
-        printf("\r\n");
-        printf("Examples:\r\n");
-        printf("  fetch google.com               HTTPS (default)\r\n");
-        printf("  fetch cursor.com/agents        HTTPS with path\r\n");
-        printf("  fetch https://example.com/page HTTPS explicit\r\n");
-        printf("  fetch http://example.com       HTTP explicit\r\n");
-        printf("  fetch example.com 80           HTTP (port override)\r\n");
-        printf("  fetch example.com 443 /path    HTTPS (legacy syntax)\r\n");
+    /* Pre-scan argv for flags, collect remaining args for URL parsing */
+    char *url_args[8];
+    int url_argc = 0;
+    char output_file[512] = {0};
+    int save_mode = 0;
+    int auto_name = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0) {
+            if (i + 1 >= argc) {
+                printf("fetch: -o requires a filename\r\n");
+                return 1;
+            }
+            save_mode = 1;
+            snprintf(output_file, sizeof(output_file), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--save") == 0) {
+            save_mode = 1;
+            auto_name = 1;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage();
+            return 0;
+        } else {
+            if (url_argc < 8) url_args[url_argc++] = argv[i];
+        }
+    }
+
+    if (url_argc == 0) {
+        print_usage();
         return 1;
+    }
+
+    struct fetch_params params;
+    if (parse_url(url_argc, url_args, &params) < 0) {
+        print_usage();
+        return 1;
+    }
+
+    /* Handle --save auto filename derivation */
+    if (save_mode) {
+        if (auto_name) {
+            derive_filename(params.path, output_file, sizeof(output_file));
+        }
+        snprintf(params.output_file, sizeof(params.output_file), "%s", output_file);
+        params.save_mode = 1;
     }
 
     printf("fetch: %s://%s:%u%s\r\n",
            params.use_tls ? "https" : "http",
            params.host, params.port, params.path);
+
+    if (params.save_mode) {
+        printf("fetch: saving to %s\r\n", params.output_file);
+    }
 
     /* Resolve hostname */
     uint32_t ip;
@@ -574,12 +762,33 @@ int main(int argc, char *argv[]) {
     }
 
     /* Open TCP connection */
-    int fd = tcp_connect(ip, params.port);
-    if (fd < 0)
+    int sock_fd = tcp_connect(ip, params.port);
+    if (sock_fd < 0)
         return 1;
 
+    /* Open output file if saving */
+    int out_fd = -1;
+    if (params.save_mode) {
+        out_fd = open(params.output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (out_fd < 0) {
+            printf("fetch: cannot open '%s' for writing (errno=%d)\r\n",
+                   params.output_file, errno);
+            close(sock_fd);
+            return 1;
+        }
+    }
+
+    int rc;
     if (params.use_tls)
-        return fetch_tls(fd, params.host, params.path);
+        rc = fetch_tls(sock_fd, params.host, params.path, out_fd);
     else
-        return fetch_plain(fd, params.host, params.path);
+        rc = fetch_plain(sock_fd, params.host, params.path, out_fd);
+
+    if (out_fd >= 0) {
+        close(out_fd);
+        if (rc == 0)
+            printf("fetch: saved to %s\r\n", params.output_file);
+    }
+
+    return rc;
 }
