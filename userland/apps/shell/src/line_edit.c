@@ -322,15 +322,17 @@ static void show_candidates(const completion_entry* entries, int count,
     redraw(s, prompt);
 }
 
+static int is_token_boundary(char c) {
+    return c == ' ' || c == '\t' || c == '|' || c == '>' || c == '<';
+}
+
 static void handle_tab(line_edit_state* s, const char* prompt) {
     /* Find the start of the current token.
-     * Split on space, tab, and '|' (pipeline delimiter) so that
-     * e.g. "ls|gr<Tab>" correctly extracts "gr" as the token. */
+     * Split on whitespace and shell operators (|, >, <) so that
+     * e.g. "ls|gr<Tab>" extracts "gr" and "cmd >fo<Tab>" extracts "fo",
+     * matching how parse_pipeline and parse_redirects delimit tokens. */
     int tok_start = s->cursor_pos;
-    while (tok_start > 0 &&
-           s->line_buf[tok_start - 1] != ' ' &&
-           s->line_buf[tok_start - 1] != '\t' &&
-           s->line_buf[tok_start - 1] != '|')
+    while (tok_start > 0 && !is_token_boundary(s->line_buf[tok_start - 1]))
         tok_start--;
 
     int tok_len = s->cursor_pos - tok_start;

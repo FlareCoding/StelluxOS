@@ -3,6 +3,9 @@
 
 #include "line_edit.h"
 
+/* Check if a command name is a shell builtin (without executing it). */
+int is_builtin(const char* name);
+
 /* Try to execute a builtin command. Returns 1 if handled, 0 if not a builtin.
    Returns -1 if the shell should exit (exit code written to *out_exit_code).
    out_fd: file descriptor for data output (echo, pwd, etc.). Error messages

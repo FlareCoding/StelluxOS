@@ -264,32 +264,29 @@ int main(void) {
             int argc = parse_line(stages[0], argv);
             if (argc <= 0) continue;
 
-            /*
-             * Try builtins first. We open redirect fds upfront so
-             * builtin output can go to the redirect target. If it
-             * turns out not to be a builtin, we close the fds and
-             * let run_single() handle opening them for the child
-             * process (run_single needs its own fds to pass via
-             * proc_set_handle).
-             */
-            int redir_in = -1, redir_out = -1;
-            if (open_redirect_fds(&redir, &redir_in, &redir_out) < 0) {
-                last_status = 1;
-                continue;
-            }
-            int builtin_out = (redir_out >= 0) ? redir_out : STDOUT_FILENO;
+            if (is_builtin(argv[0])) {
+                /* Open redirect fds only for builtins, which write
+                   output directly in-process. External commands use
+                   run_single() which opens its own fds to pass via
+                   proc_set_handle(). */
+                int redir_in = -1, redir_out = -1;
+                if (open_redirect_fds(&redir, &redir_in, &redir_out) < 0) {
+                    last_status = 1;
+                    continue;
+                }
+                int builtin_out = (redir_out >= 0) ? redir_out : STDOUT_FILENO;
 
-            int builtin_rc = try_builtin(argc, argv, editor,
-                                         last_status, &shell_exit_code, builtin_out);
-            close_redirect_fds(redir_in, redir_out);
+                int builtin_rc = try_builtin(argc, argv, editor,
+                                             last_status, &shell_exit_code,
+                                             builtin_out);
+                close_redirect_fds(redir_in, redir_out);
 
-            if (builtin_rc < 0) break;            /* exit */
-            if (builtin_rc > 0) {
+                if (builtin_rc < 0) break;            /* exit */
                 last_status = 0;
                 continue;
             }
 
-            /* Not a builtin — run as external command */
+            /* External command */
             last_status = run_single(argv, path_buf, &redir);
         } else {
             last_status = run_pipeline(stages, nstages, path_buf);

@@ -67,6 +67,16 @@ static void write_int_fd(int fd, int val) {
     while (pos > 0) write(fd, &buf[--pos], 1);
 }
 
+int is_builtin(const char* name) {
+    return strcmp(name, "cd") == 0 ||
+           strcmp(name, "pwd") == 0 ||
+           strcmp(name, "history") == 0 ||
+           strcmp(name, "echo") == 0 ||
+           strcmp(name, "exit") == 0 ||
+           strcmp(name, "$?") == 0 ||
+           strcmp(name, "$$") == 0;
+}
+
 int try_builtin(int argc, const char* argv[], line_edit_state* editor,
                 int last_status, int* out_exit_code, int out_fd) {
     if (argc <= 0) return 0;
