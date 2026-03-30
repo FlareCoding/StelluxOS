@@ -2,7 +2,7 @@
 # Stellux Userland - Libraries
 #
 
-LIB_DIRS := libstlx libstlxgfx
+LIB_DIRS := libstlx libstlxgfx libbearssl
 LIB_COUNT := $(words $(LIB_DIRS))
 
 all:
