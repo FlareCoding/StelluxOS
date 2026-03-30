@@ -7,6 +7,11 @@ DEFINE_SYSCALL0(getpid) {
     return static_cast<int64_t>(sched::current()->tid);
 }
 
+DEFINE_SYSCALL0(getuid)  { return 0; }
+DEFINE_SYSCALL0(geteuid) { return 0; }
+DEFINE_SYSCALL0(getgid)  { return 0; }
+DEFINE_SYSCALL0(getegid) { return 0; }
+
 DEFINE_SYSCALL0(set_tid_address) {
     return static_cast<int64_t>(sched::current()->tid);
 }

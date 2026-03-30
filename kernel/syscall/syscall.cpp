@@ -5,6 +5,7 @@
 #include "sched/task.h"
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
+#include "common/logging.h"
 
 constexpr uint32_t ELEVATION_CONTEXT_MASK = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
 
@@ -40,6 +41,9 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     if (syscall_num < syscall::MAX_SYSCALL_NUM && syscall::g_syscall_table[syscall_num]) {
         result = syscall::g_syscall_table[syscall_num](arg1, arg2, arg3, arg4, arg5, arg6);
     } else {
+        sched::task* caller = sched::current();
+        log::warn("syscall: unimplemented nr=%lu from tid=%d",
+                  syscall_num, caller ? caller->tid : -1);
         result = syscall::ENOSYS;
     }
 

@@ -234,7 +234,7 @@ run-qemu-x86_64: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
 		-device usb-mouse,bus=xhci.0,port=1.2 \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
 		-device virtio-net-pci,netdev=net0 \
 		-serial mon:stdio \
 		-no-reboot \
@@ -261,7 +261,7 @@ run-qemu-aarch64: $(IMAGE_DIR)/stellux-aarch64.img
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
 		-device usb-mouse,bus=xhci.0,port=1.2 \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
 		-device virtio-net-pci,netdev=net0 \
 		-serial mon:stdio \
 		-no-reboot \
@@ -285,7 +285,7 @@ run-qemu-x86_64-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
 		-device usb-mouse,bus=xhci.0,port=1.2 \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
 		-device virtio-net-pci,netdev=net0 \
 		-nographic \
 		-no-reboot \
@@ -307,7 +307,7 @@ run-qemu-aarch64-headless: $(IMAGE_DIR)/stellux-aarch64.img
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
 		-device usb-mouse,bus=xhci.0,port=1.2 \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
 		-device virtio-net-pci,netdev=net0 \
 		-nographic \
 		-no-reboot \
@@ -336,7 +336,7 @@ run-qemu-x86_64-debug: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
 		-device usb-mouse,bus=xhci.0,port=1.2 \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
 		-device virtio-net-pci,netdev=net0 \
 		-serial mon:stdio \
 		-gdb tcp::$(GDB_PORT) \
@@ -362,7 +362,7 @@ run-qemu-x86_64-debug-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVM
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
 		-device usb-mouse,bus=xhci.0,port=1.2 \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
 		-device virtio-net-pci,netdev=net0 \
 		-nographic \
 		-gdb tcp::$(GDB_PORT) \
@@ -388,7 +388,7 @@ run-qemu-aarch64-debug: $(IMAGE_DIR)/stellux-aarch64.img
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
 		-device usb-mouse,bus=xhci.0,port=1.2 \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
 		-device virtio-net-pci,netdev=net0 \
 		-serial mon:stdio \
 		-gdb tcp::$(GDB_PORT) \
@@ -413,7 +413,7 @@ run-qemu-aarch64-debug-headless: $(IMAGE_DIR)/stellux-aarch64.img
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
 		-device usb-mouse,bus=xhci.0,port=1.2 \
-		-netdev user,id=net0 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
 		-device virtio-net-pci,netdev=net0 \
 		-nographic \
 		-gdb tcp::$(GDB_PORT) \

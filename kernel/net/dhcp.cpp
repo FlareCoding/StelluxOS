@@ -282,6 +282,13 @@ size_t dhcp_build_discover(uint8_t* out, size_t out_size,
     if (n == 0) return 0;
     pos += n;
 
+    // Option 12: Hostname
+    static const char hostname[] = "stellux";
+    n = append_option(opts, pos, opts_max, DHCP_OPT_HOSTNAME,
+                      reinterpret_cast<const uint8_t*>(hostname), sizeof(hostname) - 1);
+    if (n == 0) return 0;
+    pos += n;
+
     // Option 55: Parameter Request List
     uint8_t param_list[] = {
         DHCP_OPT_SUBNET_MASK,
@@ -319,6 +326,13 @@ size_t dhcp_build_request(uint8_t* out, size_t out_size,
 
     // Option 53: DHCP Message Type = REQUEST
     n = append_option_u8(opts, pos, opts_max, DHCP_OPT_MSG_TYPE, DHCP_MSG_REQUEST);
+    if (n == 0) return 0;
+    pos += n;
+
+    // Option 12: Hostname
+    static const char hostname[] = "stellux";
+    n = append_option(opts, pos, opts_max, DHCP_OPT_HOSTNAME,
+                      reinterpret_cast<const uint8_t*>(hostname), sizeof(hostname) - 1);
     if (n == 0) return 0;
     pos += n;
 

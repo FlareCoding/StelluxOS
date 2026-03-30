@@ -1354,3 +1354,9 @@ DEFINE_SYSCALL2(mkdir, pathname, mode) {
         static_cast<uint64_t>(-100), // AT_FDCWD
         pathname, mode, 0, 0, 0);
 }
+
+// fsync - no-op on ramfs (data is always in memory)
+DEFINE_SYSCALL1(fsync, fd) {
+    (void)fd;
+    return 0;
+}

@@ -496,14 +496,7 @@ __PRIVILEGED_CODE static ssize_t tcp_write(
         // the handshake before ESTABLISHED, so 0 here is a real zero window.
         uint32_t in_flight = sock->snd_nxt - sock->snd_una;
         uint32_t wnd = sock->snd_wnd;
-        if (wnd == 0) {
-            sync::spin_unlock_irqrestore(sock->lock, irq);
-            if (count > remaining) {
-                return static_cast<ssize_t>(count - remaining);
-            }
-            return resource::ERR_AGAIN;
-        }
-        if (in_flight >= wnd) {
+        if (wnd == 0 || in_flight >= wnd) {
             sync::spin_unlock_irqrestore(sock->lock, irq);
             if (count > remaining) {
                 return static_cast<ssize_t>(count - remaining);

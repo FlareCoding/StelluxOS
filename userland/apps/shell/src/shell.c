@@ -33,7 +33,14 @@ int main(void) {
     int shell_exit_code = 0;
 
     for (;;) {
-        char* line = line_edit_read(editor, "$ ");
+        char cwd[256];
+        char prompt[300];
+        if (getcwd(cwd, sizeof(cwd))) {
+            snprintf(prompt, sizeof(prompt), "%s $ ", cwd);
+        } else {
+            snprintf(prompt, sizeof(prompt), "$ ");
+        }
+        char* line = line_edit_read(editor, prompt);
         if (!line) break;
 
         if (line[0] == '\0') continue;
@@ -70,8 +77,12 @@ int main(void) {
             continue;
         }
 
+        ioctl(0, STLX_TCSETS_COOKED, 0);
+
         int status = 0;
         proc_wait(handle, &status);
+
+        ioctl(0, STLX_TCSETS_RAW, 0);
         if (STLX_WIFEXITED(status)) {
             last_status = STLX_WEXITSTATUS(status);
         } else if (STLX_WIFSIGNALED(status)) {

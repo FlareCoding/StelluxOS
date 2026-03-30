@@ -15,6 +15,8 @@
 #include "syscall/handlers/sys_poll.h"
 #include "syscall/handlers/sys_shutdown.h"
 #include "syscall/handlers/sys_sockaddr.h"
+#include "syscall/handlers/sys_signal.h"
+#include "syscall/handlers/sys_select.h"
 
 namespace syscall {
 
@@ -39,16 +41,23 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::OPENAT,          openat);
 #if defined(__x86_64__)
     REGISTER_SYSCALL(linux_nr::POLL,            poll);
+    REGISTER_SYSCALL(linux_nr::SELECT,          select);
     REGISTER_SYSCALL(linux_nr::OPEN,            open);
     REGISTER_SYSCALL(linux_nr::STAT,            stat);
 #endif
     REGISTER_SYSCALL(linux_nr::BRK,             brk);
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
+    REGISTER_SYSCALL(linux_nr::RT_SIGACTION,    rt_sigaction);
+    REGISTER_SYSCALL(linux_nr::RT_SIGPROCMASK,  rt_sigprocmask);
     REGISTER_SYSCALL(linux_nr::MPROTECT,        mprotect);
     REGISTER_SYSCALL(linux_nr::MUNMAP,          munmap);
     REGISTER_SYSCALL(linux_nr::EXIT,            exit);
     REGISTER_SYSCALL(linux_nr::EXIT_GROUP,      exit_group);
     REGISTER_SYSCALL(linux_nr::GETPID,          getpid);
+    REGISTER_SYSCALL(linux_nr::GETUID,          getuid);
+    REGISTER_SYSCALL(linux_nr::GETEUID,         geteuid);
+    REGISTER_SYSCALL(linux_nr::GETGID,          getgid);
+    REGISTER_SYSCALL(linux_nr::GETEGID,         getegid);
     REGISTER_SYSCALL(linux_nr::SET_TID_ADDRESS, set_tid_address);
     REGISTER_SYSCALL(linux_nr::NANOSLEEP,       nanosleep);
     REGISTER_SYSCALL(linux_nr::CLOCK_GETTIME,   clock_gettime);
@@ -70,9 +79,11 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::SHUTDOWN,    shutdown);
     REGISTER_SYSCALL(linux_nr::FCNTL,       fcntl);
     REGISTER_SYSCALL(linux_nr::GETRANDOM,   getrandom);
+    REGISTER_SYSCALL(linux_nr::PSELECT6,    pselect6);
     REGISTER_SYSCALL(linux_nr::PPOLL,       ppoll);
 
     REGISTER_SYSCALL(linux_nr::MEMFD_CREATE, memfd_create);
+    REGISTER_SYSCALL(linux_nr::FSYNC,       fsync);
     REGISTER_SYSCALL(linux_nr::FTRUNCATE,   ftruncate);
     REGISTER_SYSCALL(linux_nr::MKDIRAT,     mkdirat);
     REGISTER_SYSCALL(linux_nr::UNLINKAT,    unlinkat);
