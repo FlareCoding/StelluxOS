@@ -353,9 +353,10 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
         /* Command mode: search /bin/ for matching executables */
         strncpy(dir_path, "/bin", sizeof(dir_path) - 1);
         dir_path[sizeof(dir_path) - 1] = '\0';
-        strncpy(name_prefix, prefix, COMPLETE_NAME_MAX - 1);
-        name_prefix[COMPLETE_NAME_MAX - 1] = '\0';
-        name_prefix_len = tok_len;
+        int cap = tok_len < COMPLETE_NAME_MAX - 1 ? tok_len : COMPLETE_NAME_MAX - 1;
+        memcpy(name_prefix, prefix, (size_t)cap);
+        name_prefix[cap] = '\0';
+        name_prefix_len = cap;
     } else {
         /* File/path mode: split on last '/' */
         const char* last_slash = NULL;
@@ -378,9 +379,10 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
         } else {
             strncpy(dir_path, ".", sizeof(dir_path) - 1);
             dir_path[sizeof(dir_path) - 1] = '\0';
-            strncpy(name_prefix, prefix, COMPLETE_NAME_MAX - 1);
-            name_prefix[COMPLETE_NAME_MAX - 1] = '\0';
-            name_prefix_len = tok_len;
+            int cap = tok_len < COMPLETE_NAME_MAX - 1 ? tok_len : COMPLETE_NAME_MAX - 1;
+            memcpy(name_prefix, prefix, (size_t)cap);
+            name_prefix[cap] = '\0';
+            name_prefix_len = cap;
         }
     }
 
@@ -405,6 +407,7 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
         const char* match = entries[0].name;
         int match_len = (int)strlen(match);
         int insert_len = match_len - name_prefix_len;
+        if (insert_len < 0) insert_len = 0;
         if (insert_len > 0) {
             insert_text(s, match + name_prefix_len, insert_len);
         }
@@ -423,6 +426,7 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
     /* Multiple matches */
     int lcp = longest_common_prefix(entries, count, name_prefix_len);
     int insert_len = lcp - name_prefix_len;
+    if (insert_len < 0) insert_len = 0;
 
     if (insert_len > 0) {
         /* Complete the common prefix */

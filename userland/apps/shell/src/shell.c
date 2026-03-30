@@ -264,8 +264,14 @@ int main(void) {
             int argc = parse_line(stages[0], argv);
             if (argc <= 0) continue;
 
-            /* Try builtins first. Open redirect fds so builtin output
-               can be redirected, then close them regardless of result. */
+            /*
+             * Try builtins first. We open redirect fds upfront so
+             * builtin output can go to the redirect target. If it
+             * turns out not to be a builtin, we close the fds and
+             * let run_single() handle opening them for the child
+             * process (run_single needs its own fds to pass via
+             * proc_set_handle).
+             */
             int redir_in = -1, redir_out = -1;
             if (open_redirect_fds(&redir, &redir_in, &redir_out) < 0) {
                 last_status = 1;

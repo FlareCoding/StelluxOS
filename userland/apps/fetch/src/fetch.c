@@ -365,6 +365,11 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
 static int fetch_plain(int fd, const char *host, const char *path, int out_fd) {
     char req[HTTP_REQ_SIZE];
     int req_len = build_http_request(req, sizeof(req), host, path);
+    if (req_len < 0 || req_len >= (int)sizeof(req)) {
+        printf("fetch: request too large\r\n");
+        close(fd);
+        return 1;
+    }
 
     if (write_all(fd, req, (size_t)req_len) < 0) {
         printf("fetch: failed to send request (errno=%d)\r\n", errno);
@@ -531,6 +536,11 @@ static int fetch_tls(int fd, const char *host, const char *path, int out_fd) {
     /* Build and send the HTTP request through TLS */
     char req[HTTP_REQ_SIZE];
     int req_len = build_http_request(req, sizeof(req), host, path);
+    if (req_len < 0 || req_len >= (int)sizeof(req)) {
+        printf("fetch: request too large\r\n");
+        close(fd);
+        return 1;
+    }
 
     if (br_sslio_write_all(&ioc, req, (size_t)req_len) < 0) {
         int err = br_ssl_engine_last_error(&sc.eng);
