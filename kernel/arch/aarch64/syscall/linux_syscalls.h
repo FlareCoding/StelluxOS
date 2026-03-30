@@ -6,6 +6,8 @@
 namespace syscall::linux_nr {
 
 constexpr uint64_t GETCWD           = 17;
+constexpr uint64_t DUP              = 23;
+constexpr uint64_t DUP3             = 24;
 constexpr uint64_t FCNTL            = 25;
 constexpr uint64_t IOCTL            = 29;
 constexpr uint64_t MKDIRAT          = 34;

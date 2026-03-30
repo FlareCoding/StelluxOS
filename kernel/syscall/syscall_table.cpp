@@ -18,6 +18,7 @@
 #include "syscall/handlers/sys_signal.h"
 #include "syscall/handlers/sys_select.h"
 #include "syscall/handlers/sys_pipe.h"
+#include "syscall/handlers/sys_dup.h"
 
 namespace syscall {
 
@@ -40,13 +41,16 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::CHDIR,           chdir);
     REGISTER_SYSCALL(linux_nr::FCHDIR,          fchdir);
     REGISTER_SYSCALL(linux_nr::OPENAT,          openat);
+    REGISTER_SYSCALL(linux_nr::DUP,             dup);
 #if defined(__x86_64__)
+    REGISTER_SYSCALL(linux_nr::DUP2,            dup2);
     REGISTER_SYSCALL(linux_nr::PIPE,            pipe);
     REGISTER_SYSCALL(linux_nr::POLL,            poll);
     REGISTER_SYSCALL(linux_nr::SELECT,          select);
     REGISTER_SYSCALL(linux_nr::OPEN,            open);
     REGISTER_SYSCALL(linux_nr::STAT,            stat);
 #endif
+    REGISTER_SYSCALL(linux_nr::DUP3,            dup3);
     REGISTER_SYSCALL(linux_nr::BRK,             brk);
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
     REGISTER_SYSCALL(linux_nr::RT_SIGACTION,    rt_sigaction);
