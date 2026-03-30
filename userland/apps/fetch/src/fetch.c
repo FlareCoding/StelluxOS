@@ -520,7 +520,7 @@ static int parse_url(int argc, char *argv[], struct fetch_params *out) {
         }
         out->use_tls = (out->port == DEFAULT_HTTPS_PORT) ? 1 : 0;
     }
-    if (argc >= 4) {
+    if (argc >= 4 && !scheme_explicit) {
         snprintf(out->path, sizeof(out->path), "%s", argv[3]);
     }
 
