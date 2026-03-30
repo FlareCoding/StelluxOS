@@ -158,6 +158,8 @@
 #include "dbutil.h"
 #include "atomicio.h"
 
+extern int ttyslot(void);
+
 /**
  ** prototypes for helper functions in this file
  **/

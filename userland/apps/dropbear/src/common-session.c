@@ -92,13 +92,10 @@ void common_session_init(int sock_in, int sock_out) {
 	if (!fuzz.fuzzing)
 #endif
 	{
-	if (pipe(ses.signal_pipe) < 0) {
-		dropbear_exit("Signal pipe failed");
-	}
-	setnonblocking(ses.signal_pipe[0]);
-	setnonblocking(ses.signal_pipe[1]);
-	ses.maxfd = MAX(ses.maxfd, ses.signal_pipe[0]);
-	ses.maxfd = MAX(ses.maxfd, ses.signal_pipe[1]);
+	/* Stellux: no signal delivery, so no signal pipe needed.
+	   Set to -1 so FD_SET/FD_ISSET skip them. */
+	ses.signal_pipe[0] = -1;
+	ses.signal_pipe[1] = -1;
 	}
 	
 	ses.writepayload = buf_new(TRANS_MAX_PAYLOAD_LEN);
@@ -180,7 +177,9 @@ void session_loop(void(*loophandler)(void)) {
 		if (!fuzz.fuzzing) 
 #endif
 		{
-		FD_SET(ses.signal_pipe[0], &readfd);
+		if (ses.signal_pipe[0] >= 0) {
+			FD_SET(ses.signal_pipe[0], &readfd);
+		}
 		}
 
 		/* set up for channels which can be read/written */
@@ -230,7 +229,7 @@ void session_loop(void(*loophandler)(void)) {
 		any thing with the data, since the pipe's purpose is purely to
 		wake up the select() above. */
 		ses.channel_signal_pending = 0;
-		if (FD_ISSET(ses.signal_pipe[0], &readfd)) {
+		if (ses.signal_pipe[0] >= 0 && FD_ISSET(ses.signal_pipe[0], &readfd)) {
 			char x;
 			TRACE(("signal pipe set"))
 			while (read(ses.signal_pipe[0], &x, 1) > 0) {}

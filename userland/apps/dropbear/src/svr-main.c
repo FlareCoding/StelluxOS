@@ -23,6 +23,7 @@
  * SOFTWARE. */
 
 #include "includes.h"
+#include <poll.h>
 #include "dbutil.h"
 #include "session.h"
 #include "buffer.h"
@@ -124,7 +125,6 @@ static void main_inetd() {
 
 #if NON_INETD_MODE
 static void main_noinetd(int argc, char ** argv, const char* multipath) {
-	fd_set fds;
 	unsigned int i, j;
 	int val;
 	int maxsock = -1;
@@ -135,6 +135,9 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 
 	int childpipes[MAX_UNAUTH_CLIENTS];
 	char * preauth_addrs[MAX_UNAUTH_CLIENTS];
+
+	struct pollfd pollfds[MAX_LISTEN_ADDR + MAX_UNAUTH_CLIENTS];
+	nfds_t npollfds;
 
 	int childsock;
 	int childpipe[2];
@@ -156,13 +159,8 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 
 	/* Set up the listening sockets */
 	listensockcount = listensockets(listensocks, MAX_LISTEN_ADDR, &maxsock);
-	if (listensockcount == 0)
-	{
+	if (listensockcount == 0) {
 		dropbear_exit("No listening ports available.");
-	}
-
-	for (i = 0; i < listensockcount; i++) {
-		FD_SET(listensocks[i], &fds);
 	}
 
 #if DROPBEAR_DO_REEXEC
@@ -204,25 +202,30 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 		fclose(pidfile);
 	}
 
-	/* incoming connection select loop */
+	/* incoming connection poll loop */
 	for(;;) {
 
-		DROPBEAR_FD_ZERO(&fds);
+		npollfds = 0;
 
 		/* listening sockets */
 		for (i = 0; i < listensockcount; i++) {
-			FD_SET(listensocks[i], &fds);
+			pollfds[npollfds].fd = listensocks[i];
+			pollfds[npollfds].events = POLLIN;
+			pollfds[npollfds].revents = 0;
+			npollfds++;
 		}
 
 		/* pre-authentication clients */
 		for (i = 0; i < MAX_UNAUTH_CLIENTS; i++) {
 			if (childpipes[i] >= 0) {
-				FD_SET(childpipes[i], &fds);
-				maxsock = MAX(maxsock, childpipes[i]);
+				pollfds[npollfds].fd = childpipes[i];
+				pollfds[npollfds].events = POLLIN;
+				pollfds[npollfds].revents = 0;
+				npollfds++;
 			}
 		}
 
-		val = select(maxsock+1, &fds, NULL, NULL, NULL);
+		val = poll(pollfds, npollfds, -1);
 
 		if (ses.exitflag) {
 			unlink(svr_opts.pidfile);
@@ -230,7 +233,6 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 		}
 
 		if (val == 0) {
-			/* timeout reached - shouldn't happen. eh */
 			continue;
 		}
 
@@ -241,17 +243,21 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 			dropbear_exit("Listening socket error");
 		}
 
-		/* close fds which have been authed or closed - svr-auth.c handles
-		 * closing the auth sockets on success */
+		/* close fds which have been authed or closed */
 		for (i = 0; i < MAX_UNAUTH_CLIENTS; i++) {
-			if (childpipes[i] >= 0 && FD_ISSET(childpipes[i], &fds)) {
-				m_close(childpipes[i]);
-				childpipes[i] = -1;
-				m_free(preauth_addrs[i]);
+			if (childpipes[i] >= 0) {
+				for (j = 0; j < npollfds; j++) {
+					if (pollfds[j].fd == childpipes[i] && pollfds[j].revents) {
+						m_close(childpipes[i]);
+						childpipes[i] = -1;
+						m_free(preauth_addrs[i]);
+						break;
+					}
+				}
 			}
 		}
 
-		/* handle each socket which has something to say */
+		/* handle each listening socket which has a new connection */
 		for (i = 0; i < listensockcount; i++) {
 			size_t num_unauthed_for_addr = 0;
 			size_t num_unauthed_total = 0;
@@ -261,7 +267,7 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 			struct sockaddr_storage remoteaddr;
 			socklen_t remoteaddrlen;
 
-			if (!FD_ISSET(listensocks[i], &fds)) 
+			if (!(pollfds[i].revents & POLLIN))
 				continue;
 
 			remoteaddrlen = sizeof(remoteaddr);
@@ -297,14 +303,16 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 
 			seedrandom();
 
+#if DEBUG_NOFORK
+			childpipe[0] = -1;
+			childpipe[1] = -1;
+			fork_ret = 0;
+#else
 			if (pipe(childpipe) < 0) {
 				TRACE(("error creating child pipe"))
 				goto out;
 			}
 
-#if DEBUG_NOFORK
-			fork_ret = 0;
-#else
 			fork_ret = fork();
 #endif
 			if (fork_ret < 0) {

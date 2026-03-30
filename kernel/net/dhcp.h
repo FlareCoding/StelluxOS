@@ -36,6 +36,7 @@ constexpr uint8_t DHCP_OPT_PAD           = 0;
 constexpr uint8_t DHCP_OPT_SUBNET_MASK   = 1;
 constexpr uint8_t DHCP_OPT_ROUTER        = 3;
 constexpr uint8_t DHCP_OPT_DNS           = 6;
+constexpr uint8_t DHCP_OPT_HOSTNAME      = 12;
 constexpr uint8_t DHCP_OPT_REQUESTED_IP  = 50;
 constexpr uint8_t DHCP_OPT_LEASE_TIME    = 51;
 constexpr uint8_t DHCP_OPT_MSG_TYPE      = 53;

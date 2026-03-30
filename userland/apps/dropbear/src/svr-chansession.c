@@ -81,6 +81,14 @@ static int sesscheckclose(struct Channel *channel) {
 	if (chansess->exit.exitpid != -1) {
 		channel->flushing = 1;
 	}
+
+	/* Stellux: no waitpid/SIGCHLD, so detect child exit via PTY EOF.
+	   When the shell exits, the slave closes, master gets EOF, and
+	   Dropbear closes readfd (set to -1). Allow close at that point. */
+	if (chansess->pid != 0 && channel->readfd < 0) {
+		return 1;
+	}
+
 	return chansess->pid == 0 || chansess->exit.exitpid != -1;
 }
 
@@ -793,127 +801,60 @@ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
 	return DROPBEAR_SUCCESS;
 }
 
-/* Execute a command or shell within a pty environment, and set up
- * redirection as appropriate.
+/* Stellux: execute a command or shell within a pty environment using
+ * Stellux's proc_create/proc_set_handle/proc_start instead of fork+exec.
  * Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
+
+#include <stlx/proc.h>
+
 static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
 
-	pid_t pid;
-	struct logininfo *li = NULL;
-#if DO_MOTD
-	buffer * motdbuf = NULL;
-	int len;
-	struct stat sb;
-	char *hushpath = NULL;
-#endif
+	int proc_handle;
+	const char *shell_path;
 
 	TRACE(("enter ptycommand"))
 
-	/* we need to have a pty allocated */
 	if (chansess->master == -1 || chansess->tty == NULL) {
 		dropbear_log(LOG_WARNING, "No pty was allocated, couldn't execute");
 		return DROPBEAR_FAILURE;
 	}
-	
-#if DROPBEAR_VFORK
-	pid = vfork();
-#else
-	pid = fork();
-#endif
-	if (pid < 0)
-		return DROPBEAR_FAILURE;
 
-	if (pid == 0) {
-		/* child */
-		
-		TRACE(("back to normal sigchld"))
-		/* Revert to normal sigchld handling */
-		if (signal(SIGCHLD, SIG_DFL) == SIG_ERR) {
-			dropbear_exit("signal() error");
-		}
-		
-		/* redirect stdin/stdout/stderr */
-		close(chansess->master);
+	shell_path = get_user_shell();
 
-		pty_make_controlling_tty(&chansess->slave, chansess->tty);
-		
-		if ((dup2(chansess->slave, STDIN_FILENO) < 0) ||
-			(dup2(chansess->slave, STDOUT_FILENO) < 0)) {
-			TRACE(("leave ptycommand: error redirecting filedesc"))
-			return DROPBEAR_FAILURE;
-			}
-
-		/* write the utmp/wtmp login record - must be after changing the
-		 * terminal used for stdout with the dup2 above, otherwise
-		 * the wtmp login will not be recorded */
-		li = chansess_login_alloc(chansess);
-		login_login(li);
-		login_free_entry(li);
-
-		/* Can now dup2 stderr. Messages from login_login() have gone
-		to the parent stderr */
-		if (dup2(chansess->slave, STDERR_FILENO) < 0) {
-			TRACE(("leave ptycommand: error redirecting filedesc"))
-			return DROPBEAR_FAILURE;
-		}
-
-		close(chansess->slave);
-
-#if DO_MOTD
-		if (svr_opts.domotd && !chansess->cmd) {
-			/* don't show the motd if ~/.hushlogin exists */
-
-			/* 12 == strlen("/.hushlogin\0") */
-			len = strlen(ses.authstate.pw_dir) + 12; 
-
-			hushpath = m_malloc(len);
-			snprintf(hushpath, len, "%s/.hushlogin", ses.authstate.pw_dir);
-
-			if (stat(hushpath, &sb) < 0) {
-				char *expand_path = NULL;
-				/* more than a screenful is stupid IMHO */
-				motdbuf = buf_new(MOTD_MAXSIZE);
-				expand_path = expand_homedir_path(MOTD_FILENAME);
-				if (buf_readfile(motdbuf, expand_path) == DROPBEAR_SUCCESS) {
-					/* incase it is full size, add LF at last position */
-					if (motdbuf->len == motdbuf->size) motdbuf->data[motdbuf->len - 1]=10;
-					buf_setpos(motdbuf, 0);
-					while (motdbuf->pos != motdbuf->len) {
-						len = motdbuf->len - motdbuf->pos;
-						len = write(STDOUT_FILENO, 
-								buf_getptr(motdbuf, len), len);
-						buf_incrpos(motdbuf, len);
-					}
-				}
-				m_free(expand_path);
-				buf_free(motdbuf);
-
-			}
-			m_free(hushpath);
-		}
-#endif /* DO_MOTD */
-
-		execchild(chansess);
-		/* not reached */
-
+	if (chansess->cmd) {
+		const char *argv[] = { shell_path, "-c", chansess->cmd, NULL };
+		proc_handle = proc_create(shell_path, argv);
 	} else {
-		/* parent */
-		TRACE(("continue ptycommand: parent"))
-		chansess->pid = pid;
-
-		/* add a child pid */
-		addchildpid(chansess, pid);
-
-		close(chansess->slave);
-		channel->writefd = chansess->master;
-		channel->readfd = chansess->master;
-		/* don't need to set stderr here */
-		ses.maxfd = MAX(ses.maxfd, chansess->master);
-		channel->bidir_fd = 0;
-
-		setnonblocking(chansess->master);
-
+		proc_handle = proc_create(shell_path, NULL);
 	}
+
+	if (proc_handle < 0) {
+		dropbear_log(LOG_WARNING, "proc_create(%s) failed", shell_path);
+		return DROPBEAR_FAILURE;
+	}
+
+	proc_set_handle(proc_handle, STDIN_FILENO,  chansess->slave);
+	proc_set_handle(proc_handle, STDOUT_FILENO, chansess->slave);
+	proc_set_handle(proc_handle, STDERR_FILENO, chansess->slave);
+
+	if (proc_start(proc_handle) < 0) {
+		dropbear_log(LOG_WARNING, "proc_start failed");
+		close(proc_handle);
+		return DROPBEAR_FAILURE;
+	}
+
+	chansess->pid = 1;
+	proc_detach(proc_handle);
+
+	close(chansess->slave);
+	chansess->slave = -1;
+
+	channel->writefd = chansess->master;
+	channel->readfd = chansess->master;
+	ses.maxfd = MAX(ses.maxfd, chansess->master);
+	channel->bidir_fd = 0;
+
+	setnonblocking(chansess->master);
 
 	TRACE(("leave ptycommand"))
 	return DROPBEAR_SUCCESS;

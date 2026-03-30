@@ -10,6 +10,7 @@
 #include "dynpriv/dynpriv.h"
 #include "net/net.h"
 #include "net/ipv4.h"
+#include "net/dhcp.h"
 
 #if defined(__aarch64__)
 #include "irq/irq_arch.h"
@@ -844,11 +845,28 @@ int32_t bcm_genet_driver::attach() {
     m_netif.driver_data = this;
     net::register_netif(&m_netif);
 
-    // Static IP (replace with DHCP when available)
-    net::configure(&m_netif,
-                   net::ipv4_addr(10, 0, 0, 200),
-                   net::ipv4_addr(255, 255, 255, 0),
-                   net::ipv4_addr(10, 0, 0, 1));
+    // Wait for PHY link before DHCP - auto-negotiation takes time
+    bool got_link = false;
+    for (int i = 0; i < 50; i++) {
+        if (m_link_up) {
+            got_link = true;
+            break;
+        }
+        RUN_ELEVATED(sched::sleep_ms(100));
+        phy_update_link();
+    }
+    if (!got_link) {
+        log::warn("genet: link not up after 5 seconds, proceeding anyway");
+    }
+
+    int32_t dhcp_rc = net::dhcp_configure(&m_netif);
+    if (dhcp_rc != net::OK) {
+        log::warn("genet: DHCP failed (%d), using static fallback", dhcp_rc);
+        net::configure(&m_netif,
+                       net::ipv4_addr(10, 0, 0, 200),
+                       net::ipv4_addr(255, 255, 255, 0),
+                       net::ipv4_addr(10, 0, 0, 1));
+    }
 
     log::info("genet: attached successfully");
     dump_state();

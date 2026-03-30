@@ -159,6 +159,7 @@ static void svr_ensure_hostkey() {
 	ret = readhostkey(expand_fn, svr_opts.hostkey, &type);
 
 	if (ret == DROPBEAR_SUCCESS) {
+#if DROPBEAR_SIGNKEY_VERIFY
 		char *fp = NULL;
 		unsigned int len;
 		buffer *key_buf = buf_new(MAX_PUBKEY_SIZE);
@@ -170,6 +171,9 @@ static void svr_ensure_hostkey() {
 			expand_fn, fp);
 		m_free(fp);
 		buf_free(key_buf);
+#else
+		dropbear_log(LOG_INFO, "Generated hostkey %s", expand_fn);
+#endif
 	}
 
 out:

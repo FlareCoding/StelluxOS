@@ -6,10 +6,66 @@
 #include "fs/devfs/devfs.h"
 #include "mm/heap.h"
 #include "common/logging.h"
+#include "clock/clock.h"
 
 namespace random {
 
 namespace {
+
+// xoshiro256** software PRNG - used as fallback when no hardware RNG exists.
+
+uint64_t g_sw_state[4];
+bool g_use_sw_prng = false;
+
+inline uint64_t rotl(uint64_t x, int k) {
+    return (x << k) | (x >> (64 - k));
+}
+
+uint64_t xoshiro256ss() {
+    uint64_t result = rotl(g_sw_state[1] * 5, 7) * 9;
+    uint64_t t = g_sw_state[1] << 17;
+    g_sw_state[2] ^= g_sw_state[0];
+    g_sw_state[3] ^= g_sw_state[1];
+    g_sw_state[1] ^= g_sw_state[2];
+    g_sw_state[0] ^= g_sw_state[3];
+    g_sw_state[2] ^= t;
+    g_sw_state[3] = rotl(g_sw_state[3], 45);
+    return result;
+}
+
+// splitmix64 to expand a single seed into the full xoshiro state
+uint64_t splitmix64(uint64_t* state) {
+    uint64_t z = (*state += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
+void sw_prng_init() {
+    uint64_t seed = clock::now_ns();
+    seed ^= reinterpret_cast<uintptr_t>(&seed);
+    if (seed == 0) seed = 0xdeadbeefcafe1234ULL;
+    g_sw_state[0] = splitmix64(&seed);
+    g_sw_state[1] = splitmix64(&seed);
+    g_sw_state[2] = splitmix64(&seed);
+    g_sw_state[3] = splitmix64(&seed);
+    g_use_sw_prng = true;
+}
+
+void sw_prng_fill(void* buf, size_t len) {
+    auto* dst = static_cast<uint8_t*>(buf);
+    size_t offset = 0;
+    while (offset < len) {
+        uint64_t val = xoshiro256ss();
+        size_t remaining = len - offset;
+        size_t chunk = remaining < sizeof(val) ? remaining : sizeof(val);
+        auto* src = reinterpret_cast<const uint8_t*>(&val);
+        for (size_t i = 0; i < chunk; i++) {
+            dst[offset + i] = src[i];
+        }
+        offset += chunk;
+    }
+}
 
 class urandom_node : public fs::node {
 public:
@@ -35,22 +91,25 @@ public:
 } // anonymous namespace
 
 int32_t fill(void* buf, size_t len) {
-    if (!hw::rng::available()) {
-        return ERR_NOSRC;
+    if (hw::rng::available()) {
+        if (hw::rng::fill(buf, len)) {
+            return OK;
+        }
     }
-    if (!hw::rng::fill(buf, len)) {
-        return ERR_NOSRC;
+    if (g_use_sw_prng) {
+        sw_prng_fill(buf, len);
+        return OK;
     }
-    return OK;
+    return ERR_NOSRC;
 }
 
 __PRIVILEGED_CODE int32_t init() {
-    if (!hw::rng::available()) {
-        log::warn("random: no hardware RNG detected");
-        return ERR_NOSRC;
+    if (hw::rng::available()) {
+        log::info("random: hardware RNG available");
+    } else {
+        log::warn("random: no hardware RNG, using software PRNG fallback");
+        sw_prng_init();
     }
-
-    log::info("random: hardware RNG available");
 
     void* urandom_mem = heap::kzalloc(sizeof(urandom_node));
     if (!urandom_mem) {
