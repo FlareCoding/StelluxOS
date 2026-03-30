@@ -20,7 +20,6 @@
 /fuzzer-*.options
 /scp
 /scp-progress
-default_options_guard.h
 tags
 .pytest*
 *.pyc
