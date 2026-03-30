@@ -1,11 +1,15 @@
 #include "pty/pty.h"
 #include "resource/resource.h"
 #include "common/ring_buffer.h"
+#include "common/string.h"
 #include "fs/fstypes.h"
 #include "mm/heap.h"
+#include "mm/uaccess.h"
 #include "dynpriv/dynpriv.h"
 #include "sync/poll.h"
 #include "sync/wait_queue.h"
+#include "terminal/terminal.h"
+#include "terminal/termios.h"
 
 namespace pty {
 
@@ -179,15 +183,147 @@ static void pty_slave_close(resource::resource_object* obj) {
     obj->impl = nullptr;
 }
 
+/**
+ * @brief Apply current termios settings to the line discipline.
+ * Updates the LD mode (raw vs cooked) and output processing flags
+ * based on the termios c_lflag and c_oflag fields.
+ */
+static void apply_termios_to_ld(pty_channel* chan) {
+    // Determine line discipline mode from c_lflag
+    bool canon = (chan->m_termios.c_lflag & terminal::ICANON) != 0;
+    uint32_t new_ld_mode = canon ? 0 : terminal::LD_MODE_RAW;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(chan->m_ld.lock);
+        if (chan->m_ld.mode != new_ld_mode) {
+            chan->m_ld.line_len = 0;
+            chan->m_ld.mode = new_ld_mode;
+        }
+        sync::spin_unlock_irqrestore(chan->m_ld.lock, irq);
+    });
+
+    // Update output processing flags from c_oflag
+    if ((chan->m_termios.c_oflag & terminal::OPOST) &&
+        (chan->m_termios.c_oflag & terminal::ONLCR)) {
+        chan->m_oflags = PTY_OFLAG_ONLCR;
+    } else {
+        chan->m_oflags = 0;
+    }
+
+    // Update echo target: if ECHO is off, null the echo callback
+    bool echo_on = (chan->m_termios.c_lflag & terminal::ECHO_F) != 0;
+    if (echo_on) {
+        chan->m_echo.write = pty_echo_fn;
+        chan->m_echo.ctx = chan;
+    } else {
+        chan->m_echo.write = nullptr;
+        chan->m_echo.ctx = nullptr;
+    }
+}
+
 static int32_t pty_slave_ioctl(
     resource::resource_object* obj, uint32_t cmd, uint64_t arg
 ) {
-    (void)arg;
     if (!obj || !obj->impl) {
         return resource::ERR_INVAL;
     }
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
-    return terminal::ld_set_mode(&ep->channel->m_ld, cmd);
+    auto* chan = ep->channel.ptr();
+
+    switch (cmd) {
+    case terminal::TCGETS: {
+        // If arg == 0, treat as legacy STLX_TCSETS_RAW (backward compat)
+        if (arg == 0) {
+            return terminal::ld_set_mode(&chan->m_ld, terminal::STLX_TCSETS_RAW);
+        }
+        // Copy current termios to user space
+        int32_t rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(arg), &chan->m_termios, sizeof(chan->m_termios));
+        return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+    }
+
+    case terminal::TCSETS:
+    case terminal::TCSETSW:
+    case terminal::TCSETSF: {
+        // If arg == 0, treat as legacy STLX_TCSETS_COOKED (backward compat)
+        if (arg == 0) {
+            return terminal::ld_set_mode(&chan->m_ld, terminal::STLX_TCSETS_COOKED);
+        }
+        // Copy termios from user space
+        terminal::kernel_termios new_termios;
+        int32_t rc = mm::uaccess::copy_from_user(
+            &new_termios, reinterpret_cast<const void*>(arg), sizeof(new_termios));
+        if (rc != mm::uaccess::OK) {
+            return resource::ERR_INVAL;
+        }
+        chan->m_termios = new_termios;
+        apply_termios_to_ld(chan);
+        return resource::OK;
+    }
+
+    case terminal::TIOCGWINSZ: {
+        if (arg == 0) return resource::ERR_INVAL;
+        int32_t rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(arg), &chan->m_winsize, sizeof(chan->m_winsize));
+        return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+    }
+
+    case terminal::TIOCSWINSZ: {
+        if (arg == 0) return resource::ERR_INVAL;
+        terminal::winsize ws;
+        int32_t rc = mm::uaccess::copy_from_user(
+            &ws, reinterpret_cast<const void*>(arg), sizeof(ws));
+        if (rc != mm::uaccess::OK) return resource::ERR_INVAL;
+        chan->m_winsize = ws;
+        return resource::OK;
+    }
+
+    case terminal::TIOCGPGRP: {
+        // Stub: return 0 (no process groups). This makes isatty() succeed
+        // since isatty() is implemented as ioctl(fd, TIOCGPGRP, &pgrp)
+        // and checks for != -1.
+        if (arg == 0) return resource::OK;
+        int32_t pgrp = 0;
+        int32_t rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(arg), &pgrp, sizeof(pgrp));
+        return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+    }
+
+    default:
+        return resource::ERR_UNSUP;
+    }
+}
+
+static int32_t pty_master_ioctl(
+    resource::resource_object* obj, uint32_t cmd, uint64_t arg
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+    auto* ep = static_cast<pty_endpoint*>(obj->impl);
+    auto* chan = ep->channel.ptr();
+
+    switch (cmd) {
+    case terminal::TIOCSWINSZ: {
+        if (arg == 0) return resource::ERR_INVAL;
+        terminal::winsize ws;
+        int32_t rc = mm::uaccess::copy_from_user(
+            &ws, reinterpret_cast<const void*>(arg), sizeof(ws));
+        if (rc != mm::uaccess::OK) return resource::ERR_INVAL;
+        chan->m_winsize = ws;
+        return resource::OK;
+    }
+
+    case terminal::TIOCGWINSZ: {
+        if (arg == 0) return resource::ERR_INVAL;
+        int32_t rc = mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(arg), &chan->m_winsize, sizeof(chan->m_winsize));
+        return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+    }
+
+    default:
+        return resource::ERR_UNSUP;
+    }
 }
 
 static uint32_t pty_master_poll(
@@ -222,7 +358,7 @@ static const resource::resource_ops g_pty_master_ops = {
     pty_master_read,
     pty_master_write,
     pty_master_close,
-    nullptr,
+    pty_master_ioctl,
     nullptr,
     nullptr,
     nullptr,
@@ -285,6 +421,15 @@ __PRIVILEGED_CODE int32_t create_pair(
     chan->m_echo = { pty_echo_fn, chan.ptr() };
     chan->m_id = __atomic_fetch_add(&g_next_pty_id, 1, __ATOMIC_RELAXED);
     chan->m_oflags = PTY_OFLAG_ONLCR;
+
+    // Initialize termios to cooked defaults
+    terminal::termios_init_default(&chan->m_termios);
+
+    // Initialize winsize to a reasonable default (80x24)
+    chan->m_winsize.ws_row = 24;
+    chan->m_winsize.ws_col = 80;
+    chan->m_winsize.ws_xpixel = 0;
+    chan->m_winsize.ws_ypixel = 0;
 
     auto* ep_master = heap::kalloc_new<pty_endpoint>();
     if (!ep_master) {

@@ -5,6 +5,7 @@
 #include "rc/ref_counted.h"
 #include "rc/strong_ref.h"
 #include "terminal/line_discipline.h"
+#include "terminal/termios.h"
 
 struct ring_buffer;
 namespace resource { struct resource_object; }
@@ -25,6 +26,8 @@ struct pty_channel : rc::ref_counted<pty_channel> {
     terminal::echo_target m_echo;
     uint32_t m_id;
     uint32_t m_oflags;                    // output processing flags
+    terminal::kernel_termios m_termios;   // current termios settings
+    terminal::winsize m_winsize;          // terminal window size
 
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE static void ref_destroy(pty_channel* self);
