@@ -17,6 +17,7 @@
 #include "syscall/handlers/sys_sockaddr.h"
 #include "syscall/handlers/sys_signal.h"
 #include "syscall/handlers/sys_select.h"
+#include "syscall/handlers/sys_pipe.h"
 
 namespace syscall {
 
@@ -40,6 +41,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::FCHDIR,          fchdir);
     REGISTER_SYSCALL(linux_nr::OPENAT,          openat);
 #if defined(__x86_64__)
+    REGISTER_SYSCALL(linux_nr::PIPE,            pipe);
     REGISTER_SYSCALL(linux_nr::POLL,            poll);
     REGISTER_SYSCALL(linux_nr::SELECT,          select);
     REGISTER_SYSCALL(linux_nr::OPEN,            open);
@@ -81,6 +83,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::GETRANDOM,   getrandom);
     REGISTER_SYSCALL(linux_nr::PSELECT6,    pselect6);
     REGISTER_SYSCALL(linux_nr::PPOLL,       ppoll);
+    REGISTER_SYSCALL(linux_nr::PIPE2,      pipe2);
 
     REGISTER_SYSCALL(linux_nr::MEMFD_CREATE, memfd_create);
     REGISTER_SYSCALL(linux_nr::FSYNC,       fsync);
