@@ -147,6 +147,16 @@ int main(void) {
     ioctl(slave_fd, STLX_TCSETS_RAW, 0);
     fcntl(master_fd, F_SETFL, O_NONBLOCK);
 
+    /* Set window size on PTY so child processes can query it */
+    {
+        struct { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; } ws;
+        ws.ws_row = (unsigned short)term_rows;
+        ws.ws_col = (unsigned short)term_cols;
+        ws.ws_xpixel = STLXTERM_WIDTH;
+        ws.ws_ypixel = STLXTERM_HEIGHT;
+        ioctl(master_fd, 0x5414, (unsigned long)&ws);  /* TIOCSWINSZ */
+    }
+
     int shell_proc = proc_create("/bin/shell", NULL);
     if (shell_proc < 0) {
         printf("stlxterm: failed to create shell\r\n");
@@ -239,7 +249,9 @@ int main(void) {
             if (buf) {
                 stlxgfx_ctx_t ctx;
                 stlxgfx_ctx_init(&ctx, buf);
-                render_term(&ctx, term, cell_w, cell_h, cursor_visible);
+                /* Only show cursor if terminal says visible AND blink says visible */
+                int show_cursor = cursor_visible && term->cursor_visible;
+                render_term(&ctx, term, cell_w, cell_h, show_cursor);
                 stlxgfx_window_swap_buffers(win);
                 term->dirty = 0;
             }
