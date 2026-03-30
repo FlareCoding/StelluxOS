@@ -14,6 +14,18 @@ static void data_write(int fd, const char* s) {
     write(fd, s, strlen(s));
 }
 
+/*
+ * Write a newline to the given fd.
+ * Terminal (fd 1) is in raw mode and needs \r\n.
+ * Redirect files should get \n only (no spurious \r).
+ */
+static void data_newline(int fd) {
+    if (fd == STDOUT_FILENO)
+        write(fd, "\r\n", 2);
+    else
+        write(fd, "\n", 1);
+}
+
 static int builtin_cd(int argc, const char* argv[]) {
     const char* path = (argc >= 2) ? argv[1] : "/";
     if (chdir(path) < 0) {
@@ -28,7 +40,7 @@ static int builtin_pwd(int out_fd) {
     char buf[512];
     if (getcwd(buf, sizeof(buf))) {
         data_write(out_fd, buf);
-        write(out_fd, "\r\n", 2);
+        data_newline(out_fd);
     } else {
         shell_write("pwd: error\n");
     }
@@ -54,7 +66,7 @@ static int builtin_history(line_edit_state* editor, int out_fd) {
         data_write(out_fd, num);
         write(out_fd, "  ", 2);
         data_write(out_fd, editor->history[slot]);
-        write(out_fd, "\r\n", 2);
+        data_newline(out_fd);
     }
     return 1;
 }
@@ -87,13 +99,13 @@ int try_builtin(int argc, const char* argv[], line_edit_state* editor,
 
     if (strcmp(argv[0], "$?") == 0) {
         write_int_fd(out_fd, last_status);
-        write(out_fd, "\r\n", 2);
+        data_newline(out_fd);
         return 1;
     }
 
     if (strcmp(argv[0], "$$") == 0) {
         write_int_fd(out_fd, (int)getpid());
-        write(out_fd, "\r\n", 2);
+        data_newline(out_fd);
         return 1;
     }
 
@@ -108,7 +120,7 @@ int try_builtin(int argc, const char* argv[], line_edit_state* editor,
                 write(out_fd, argv[i], strlen(argv[i]));
             }
         }
-        write(out_fd, "\r\n", 2);
+        data_newline(out_fd);
         return 1;
     }
 
