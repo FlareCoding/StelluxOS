@@ -282,8 +282,12 @@ int main(void) {
                 close_redirect_fds(redir_in, redir_out);
 
                 if (builtin_rc < 0) break;            /* exit */
-                last_status = 0;
-                continue;
+                if (builtin_rc > 0) {
+                    last_status = 0;
+                    continue;
+                }
+                /* builtin_rc == 0: is_builtin/try_builtin disagree
+                   (defensive: fall through to external command). */
             }
 
             /* External command */

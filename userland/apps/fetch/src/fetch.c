@@ -273,13 +273,27 @@ static int build_http_request(char *req, size_t req_size,
  * State machine to find the \r\n\r\n boundary between HTTP headers and
  * body. Handles the boundary being split across read() calls.
  *
+ * The boundary \r\n\r\n has 4 bytes that may be part of the separator.
+ * We buffer pending bytes (up to 3: \r\n\r) until we can confirm whether
+ * they're separator or content. On confirmation as content, they're
+ * flushed to stdout. On confirmation as separator, they're discarded.
+ *
  * States: 0=normal, 1=seen \r, 2=seen \r\n, 3=seen \r\n\r
- * When state reaches 4: boundary found.
  */
 typedef struct {
     int state;        /* 0-3: matching progress for \r\n\r\n */
     int headers_done; /* 1 once the boundary has been found */
+    char pending[3];  /* buffered bytes not yet written to stdout */
+    int pending_len;  /* number of valid bytes in pending[] */
 } http_split_state;
+
+/* Flush all pending bytes to stdout and reset the pending buffer. */
+static void flush_pending(http_split_state *hs) {
+    if (hs->pending_len > 0) {
+        write(STDOUT_FILENO, hs->pending, (size_t)hs->pending_len);
+        hs->pending_len = 0;
+    }
+}
 
 /*
  * Process a buffer of HTTP response data. Routes header bytes to stdout
@@ -310,50 +324,83 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
 
         /* Advance the \r\n\r\n state machine.
          *
-         * The boundary \r\n\r\n consists of: the end of the last header
-         * line (\r\n) followed by a blank separator line (\r\n).
-         * We print the first \r\n (header content) but suppress the
-         * second \r\n (separator) from stdout output.
+         * Bytes that might be part of the separator are buffered in
+         * pending[] and only flushed to stdout when we confirm they
+         * are not the separator. This avoids prematurely printing
+         * separator bytes to stdout.
          */
         switch (hs->state) {
         case 0:
-            if (c == '\r') hs->state = 1;
-            else            hs->state = 0;
-            break;
-        case 1: /* seen \r */
-            if (c == '\n') hs->state = 2;
-            else if (c == '\r') hs->state = 1;
-            else                hs->state = 0;
-            break;
-        case 2: /* seen \r\n */
             if (c == '\r') {
-                hs->state = 3;
-                continue; /* suppress separator \r from stdout */
-            } else {
-                hs->state = 0;
-            }
-            break;
-        case 3: /* seen \r\n\r */
-            if (c == '\n') {
-                hs->state = 4;
-                hs->headers_done = 1;
-                continue; /* suppress separator \n from stdout */
-            } else if (c == '\r') {
-                /* False alarm: the \r at state 2 was content.
-                   Flush the suppressed \r, then stay in state 1. */
-                write(STDOUT_FILENO, "\r", 1);
+                hs->pending[0] = '\r';
+                hs->pending_len = 1;
                 hs->state = 1;
             } else {
-                /* False alarm: flush suppressed \r, reset. */
-                write(STDOUT_FILENO, "\r", 1);
+                write(STDOUT_FILENO, &c, 1);
+            }
+            break;
+
+        case 1: /* seen \r (pending: \r) */
+            if (c == '\n') {
+                hs->pending[1] = '\n';
+                hs->pending_len = 2;
+                hs->state = 2;
+            } else if (c == '\r') {
+                /* The previous \r was content, flush it.
+                   Start fresh tracking this \r. */
+                write(STDOUT_FILENO, hs->pending, 1);
+                hs->pending[0] = '\r';
+                hs->pending_len = 1;
+                hs->state = 1;
+            } else {
+                /* Not a boundary — flush pending \r and this byte */
+                flush_pending(hs);
+                write(STDOUT_FILENO, &c, 1);
                 hs->state = 0;
             }
             break;
-        }
 
-        /* Header bytes go to stdout for user feedback */
-        if (!hs->headers_done) {
-            write(STDOUT_FILENO, &c, 1);
+        case 2: /* seen \r\n (pending: \r\n) */
+            if (c == '\r') {
+                hs->pending[2] = '\r';
+                hs->pending_len = 3;
+                hs->state = 3;
+            } else {
+                /* Not a boundary — flush pending \r\n and this byte */
+                flush_pending(hs);
+                write(STDOUT_FILENO, &c, 1);
+                hs->state = 0;
+            }
+            break;
+
+        case 3: /* seen \r\n\r (pending: \r\n\r) */
+            if (c == '\n') {
+                /* Full boundary \r\n\r\n found! Discard all pending
+                   bytes (they were the separator). */
+                hs->pending_len = 0;
+                hs->state = 4;
+                hs->headers_done = 1;
+            } else if (c == '\r') {
+                /* False alarm: the pending \r\n\r was not a separator.
+                   The first \r\n is content (end of a header line).
+                   Flush those two bytes, then start tracking a new
+                   potential boundary from \r (the byte at pending[2])
+                   followed by this new \r. */
+                write(STDOUT_FILENO, hs->pending, 2); /* flush \r\n */
+                /* pending[2] was \r — that's content too since it
+                   wasn't followed by \n. Flush it. */
+                write(STDOUT_FILENO, "\r", 1);
+                /* Now track the current \r as a new potential start. */
+                hs->pending[0] = '\r';
+                hs->pending_len = 1;
+                hs->state = 1;
+            } else {
+                /* False alarm: flush all pending and this byte. */
+                flush_pending(hs);
+                write(STDOUT_FILENO, &c, 1);
+                hs->state = 0;
+            }
+            break;
         }
     }
 
@@ -383,7 +430,7 @@ static int fetch_plain(int fd, const char *host, const char *path, int out_fd) {
 
     if (out_fd >= 0) {
         /* Save mode: separate headers from body */
-        http_split_state hs = {0, 0};
+        http_split_state hs = {0, 0, {0}, 0};
         while ((n = read(fd, buf, sizeof(buf))) > 0) {
             ssize_t body = process_response_chunk(&hs, out_fd, buf, (size_t)n);
             if (body < 0) {
@@ -565,7 +612,7 @@ static int fetch_tls(int fd, const char *host, const char *path, int out_fd) {
 
     if (out_fd >= 0) {
         /* Save mode: separate headers from body */
-        http_split_state hs = {0, 0};
+        http_split_state hs = {0, 0, {0}, 0};
         while ((n = br_sslio_read(&ioc, buf, sizeof(buf))) > 0) {
             ssize_t body = process_response_chunk(&hs, out_fd, buf, (size_t)n);
             if (body < 0) {
