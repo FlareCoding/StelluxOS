@@ -4,8 +4,26 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
+/* Error output — always goes to the terminal (fd 1) */
 static void shell_write(const char* s) {
     write(1, s, strlen(s));
+}
+
+/* Data output — goes to the specified fd (may be a redirect target) */
+static void data_write(int fd, const char* s) {
+    write(fd, s, strlen(s));
+}
+
+/*
+ * Write a newline to the given fd.
+ * Terminal (fd 1) is in raw mode and needs \r\n.
+ * Redirect files should get \n only (no spurious \r).
+ */
+static void data_newline(int fd) {
+    if (fd == STDOUT_FILENO)
+        write(fd, "\r\n", 2);
+    else
+        write(fd, "\n", 1);
 }
 
 static int builtin_cd(int argc, const char* argv[]) {
@@ -18,18 +36,18 @@ static int builtin_cd(int argc, const char* argv[]) {
     return 1;
 }
 
-static int builtin_pwd(void) {
+static int builtin_pwd(int out_fd) {
     char buf[512];
     if (getcwd(buf, sizeof(buf))) {
-        shell_write(buf);
-        write(1, "\r\n", 2);
+        data_write(out_fd, buf);
+        data_newline(out_fd);
     } else {
         shell_write("pwd: error\n");
     }
     return 1;
 }
 
-static int builtin_history(line_edit_state* editor) {
+static int builtin_history(line_edit_state* editor, int out_fd) {
     int total = editor->history_count < HISTORY_MAX ? editor->history_count : HISTORY_MAX;
     int base = editor->history_count > HISTORY_MAX ? editor->history_count - HISTORY_MAX : 0;
 
@@ -44,55 +62,65 @@ static int builtin_history(line_edit_state* editor) {
         num[pos++] = '0' + n % 10;
         num[pos] = '\0';
 
-        write(1, "  ", 2);
-        shell_write(num);
-        write(1, "  ", 2);
-        shell_write(editor->history[slot]);
-        write(1, "\r\n", 2);
+        write(out_fd, "  ", 2);
+        data_write(out_fd, num);
+        write(out_fd, "  ", 2);
+        data_write(out_fd, editor->history[slot]);
+        data_newline(out_fd);
     }
     return 1;
 }
 
-static void write_int(int val) {
+static void write_int_fd(int fd, int val) {
     char buf[12];
     int pos = 0;
-    if (val < 0) { write(1, "-", 1); val = -val; }
+    if (val < 0) { write(fd, "-", 1); val = -val; }
     do { buf[pos++] = '0' + (val % 10); val /= 10; } while (val > 0);
-    while (pos > 0) write(1, &buf[--pos], 1);
+    while (pos > 0) write(fd, &buf[--pos], 1);
+}
+
+int is_builtin(const char* name) {
+    return strcmp(name, "cd") == 0 ||
+           strcmp(name, "pwd") == 0 ||
+           strcmp(name, "history") == 0 ||
+           strcmp(name, "echo") == 0 ||
+           strcmp(name, "exit") == 0 ||
+           strcmp(name, "$?") == 0 ||
+           strcmp(name, "$$") == 0;
 }
 
 int try_builtin(int argc, const char* argv[], line_edit_state* editor,
-                int last_status, int* out_exit_code) {
+                int last_status, int* out_exit_code, int out_fd) {
     if (argc <= 0) return 0;
 
     if (strcmp(argv[0], "cd") == 0) return builtin_cd(argc, argv);
-    if (strcmp(argv[0], "pwd") == 0) return builtin_pwd();
-    if (strcmp(argv[0], "history") == 0) return builtin_history(editor);
+    if (strcmp(argv[0], "pwd") == 0) return builtin_pwd(out_fd);
+    if (strcmp(argv[0], "history") == 0) return builtin_history(editor, out_fd);
 
     if (strcmp(argv[0], "$?") == 0) {
-        write_int(last_status);
-        write(1, "\r\n", 2);
+        write_int_fd(out_fd, last_status);
+        data_newline(out_fd);
         return 1;
     }
 
     if (strcmp(argv[0], "$$") == 0) {
-        write_int((int)getpid());
-        write(1, "\r\n", 2);
+        write_int_fd(out_fd, (int)getpid());
+        data_newline(out_fd);
         return 1;
     }
 
     if (strcmp(argv[0], "echo") == 0) {
         for (int i = 1; i < argc; i++) {
-            if (i > 1) write(1, " ", 1);
+            if (i > 1) write(out_fd, " ", 1);
             if (strcmp(argv[i], "$?") == 0) {
-                write_int(last_status);
+                write_int_fd(out_fd, last_status);
             } else if (strcmp(argv[i], "$$") == 0) {
-                write_int((int)getpid());
+                write_int_fd(out_fd, (int)getpid());
             } else {
-                write(1, argv[i], strlen(argv[i]));
+                write(out_fd, argv[i], strlen(argv[i]));
             }
         }
-        write(1, "\r\n", 2);
+        data_newline(out_fd);
         return 1;
     }
 

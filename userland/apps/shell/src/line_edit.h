@@ -11,6 +11,7 @@ typedef struct {
     char history[HISTORY_MAX][LINE_MAX];
     int  history_count;
     int  history_index;
+    int  tab_pressed;    /* double-Tab detection: 1 after first Tab */
 } line_edit_state;
 
 line_edit_state* line_edit_create(void);
