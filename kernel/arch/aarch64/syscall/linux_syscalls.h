@@ -36,6 +36,7 @@ constexpr uint64_t CLOCK_GETTIME    = 113;
 constexpr uint64_t CLOCK_GETRES     = 114;
 constexpr uint64_t RT_SIGACTION     = 134;
 constexpr uint64_t RT_SIGPROCMASK   = 135;
+constexpr uint64_t UNAME            = 160;
 constexpr uint64_t GETTIMEOFDAY     = 169;
 constexpr uint64_t GETPID           = 172;
 constexpr uint64_t GETUID           = 174;

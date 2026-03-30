@@ -19,6 +19,7 @@
 #include "syscall/handlers/sys_select.h"
 #include "syscall/handlers/sys_pipe.h"
 #include "syscall/handlers/sys_dup.h"
+#include "syscall/handlers/sys_misc.h"
 
 namespace syscall {
 
@@ -42,8 +43,11 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::FCHDIR,          fchdir);
     REGISTER_SYSCALL(linux_nr::OPENAT,          openat);
     REGISTER_SYSCALL(linux_nr::DUP,             dup);
+    REGISTER_SYSCALL(linux_nr::UNAME,           uname);
 #if defined(__x86_64__)
     REGISTER_SYSCALL(linux_nr::DUP2,            dup2);
+    REGISTER_SYSCALL(linux_nr::ACCESS,          access);
+    REGISTER_SYSCALL(linux_nr::RENAME,          rename);
     REGISTER_SYSCALL(linux_nr::PIPE,            pipe);
     REGISTER_SYSCALL(linux_nr::POLL,            poll);
     REGISTER_SYSCALL(linux_nr::SELECT,          select);
