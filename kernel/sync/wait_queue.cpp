@@ -18,6 +18,7 @@ namespace sync {
  * that re-scans under the lock.
  */
 constexpr uint32_t OBSERVER_BATCH_SIZE = 16;
+constexpr uint32_t WAITER_BATCH_SIZE   = 16;
 
 __PRIVILEGED_CODE static void notify_observers_and_unlock(
     wait_queue& wq, irq_state irq
@@ -105,25 +106,37 @@ __PRIVILEGED_CODE void wake_one(wait_queue& wq) {
 }
 
 /**
+ * Wake all waiting tasks. Snapshots waiter pointers into a stack batch
+ * so wait_link is fully unlinked (prev=next=nullptr) before any task
+ * can be scheduled. This prevents a concurrent force_wake_for_kill from
+ * racing with post-yield cleanup in sync::wait, which assumes is_linked
+ * means "still on wq.waiters".
+ *
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake_all(wait_queue& wq) {
-    list::head<sched::task, &sched::task::wait_link> waiter_batch;
-    waiter_batch.init();
+    sched::task* batch[WAITER_BATCH_SIZE];
 
-    irq_state irq = spin_lock_irqsave(wq.lock);
-    while (sched::task* t = wq.waiters.pop_front()) {
-        waiter_batch.push_back(t);
-    }
+    for (;;) {
+        uint32_t n = 0;
+        irq_state irq = spin_lock_irqsave(wq.lock);
 
-    if (!wq.observers.empty()) {
-        notify_observers_and_unlock(wq, irq);
-    } else {
-        spin_unlock_irqrestore(wq.lock, irq);
-    }
+        while (!wq.waiters.empty() && n < WAITER_BATCH_SIZE) {
+            batch[n++] = wq.waiters.pop_front();
+        }
+        bool drained = wq.waiters.empty();
 
-    while (sched::task* t = waiter_batch.pop_front()) {
-        sched::wake(t);
+        if (drained && !wq.observers.empty()) {
+            notify_observers_and_unlock(wq, irq);
+        } else {
+            spin_unlock_irqrestore(wq.lock, irq);
+        }
+
+        for (uint32_t i = 0; i < n; i++) {
+            sched::wake(batch[i]);
+        }
+
+        if (drained) break;
     }
 }
 
