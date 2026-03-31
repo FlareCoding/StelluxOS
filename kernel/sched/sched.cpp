@@ -40,6 +40,10 @@ __PRIVILEGED_DATA static uint32_t g_lb_next_cpu = 0;
 
 namespace sched {
 
+__PRIVILEGED_CODE void thread_group::ref_destroy(thread_group* self) {
+    heap::kfree_delete(self);
+}
+
 constexpr size_t TASK_STACK_PAGES = 4;
 constexpr uint16_t TASK_GUARD_PAGES = 1;
 
@@ -149,6 +153,12 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
         mm::mm_context_release(t->exec.mm_ctx);
         t->exec.mm_ctx = nullptr;
         t->exec.user_pt_root = 0;
+    }
+    if (t->group) {
+        if (t->group->release()) {
+            thread_group::ref_destroy(t->group);
+        }
+        t->group = nullptr;
     }
     vmm::free(t->task_stack_base);
     vmm::free(t->sys_stack_base);
@@ -485,6 +495,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->proc_res = nullptr;
     t->cwd = nullptr;
     t->kill_pending = 0;
+    t->group = nullptr;
+    t->group_link = {};
 
     return t;
 }
@@ -684,6 +696,22 @@ __PRIVILEGED_CODE task* create_user_task(
     t->cwd = nullptr;
     t->kill_pending = 0;
 
+    auto* tg = heap::kalloc_new<thread_group>();
+    if (!tg) {
+        log::error("sched: failed to allocate thread_group");
+        resource::close_all(t);
+        t->exec.mm_ctx = nullptr;
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
+    tg->lock = sync::SPINLOCK_INIT;
+    tg->leader = t;
+    tg->threads.init();
+    tg->thread_count = 0;
+    t->group = tg; // task takes ownership of the initial ref (refcount=1)
+    t->group_link = {};
+
     image->mm_ctx = nullptr;
     image->pt_root = 0;
 
@@ -729,6 +757,8 @@ __PRIVILEGED_CODE int32_t init() {
     resource::init_task_handles(idle);
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
+    idle->group = nullptr;
+    idle->group_link = {};
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
