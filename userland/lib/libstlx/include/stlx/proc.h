@@ -69,4 +69,24 @@ int proc_set_handle(int proc_handle, int slot, int resource_handle);
  */
 int proc_kill(int handle);
 
+/**
+ * Create a thread in the caller's address space. The thread shares the
+ * caller's mm_context and gets a copy of the caller's handle table and cwd.
+ * Returns a handle in CREATED state; call proc_thread_start() to schedule.
+ * The entry function MUST call _exit() -- returning from it is undefined.
+ *
+ * @param entry  User-space function pointer (thread entry point).
+ * @param arg    Argument passed via first register.
+ * @param stack_top  Top of the caller-allocated stack (stacks grow down).
+ * @param name   Debug name for the thread.
+ * @return Handle on success, negative errno on failure.
+ */
+int proc_create_thread(void (*entry)(void*), void* arg,
+                       void* stack_top, const char* name);
+
+static inline int proc_thread_start(int handle) { return proc_start(handle); }
+static inline int proc_thread_join(int handle, int* exit_code) { return proc_wait(handle, exit_code); }
+static inline int proc_thread_detach(int handle) { return proc_detach(handle); }
+static inline int proc_thread_kill(int handle) { return proc_kill(handle); }
+
 #endif /* STLX_PROC_H */

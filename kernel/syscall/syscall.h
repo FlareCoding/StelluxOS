@@ -13,13 +13,14 @@ constexpr uint64_t SYS_YIELD   = 1000;
 constexpr uint64_t SYS_ELEVATE = 1001;
 
 // Process management
-constexpr uint64_t SYS_PROC_CREATE      = 1010;
-constexpr uint64_t SYS_PROC_START       = 1011;
-constexpr uint64_t SYS_PROC_WAIT        = 1012;
-constexpr uint64_t SYS_PROC_DETACH      = 1013;
-constexpr uint64_t SYS_PROC_INFO        = 1014;
-constexpr uint64_t SYS_PROC_SET_HANDLE  = 1015;
-constexpr uint64_t SYS_PROC_KILL        = 1016;
+constexpr uint64_t SYS_PROC_CREATE          = 1010;
+constexpr uint64_t SYS_PROC_START           = 1011;
+constexpr uint64_t SYS_PROC_WAIT            = 1012;
+constexpr uint64_t SYS_PROC_DETACH          = 1013;
+constexpr uint64_t SYS_PROC_INFO            = 1014;
+constexpr uint64_t SYS_PROC_SET_HANDLE      = 1015;
+constexpr uint64_t SYS_PROC_KILL            = 1016;
+constexpr uint64_t SYS_PROC_THREAD_CREATE   = 1017;
 
 // PTY
 constexpr uint64_t SYS_PTY_CREATE = 1020;
