@@ -674,6 +674,7 @@ __PRIVILEGED_CODE task* create_user_task(
     arch_init_task_context(t, entry, nullptr);
 
     t->exec.on_cpu = 0;
+    fpu::init_state(&t->exec.fpu_ctx);
 
     t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     t->state = TASK_STATE_CREATED;
@@ -688,7 +689,6 @@ __PRIVILEGED_CODE task* create_user_task(
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
     }
-    fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
 
     resource::init_task_handles(t);
@@ -714,6 +714,111 @@ __PRIVILEGED_CODE task* create_user_task(
 
     image->mm_ctx = nullptr;
     image->pt_root = 0;
+
+    return t;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE task* create_user_thread(
+    task* creator, uintptr_t entry, uintptr_t arg,
+    uintptr_t stack_top, const char* name
+) {
+    if (!creator || !creator->exec.mm_ctx || !creator->group) {
+        log::error("sched: invalid creator provided for user thread creation");
+        return nullptr;
+    }
+
+    task* t = heap::kalloc_new<task>();
+    if (!t) {
+        log::error("sched: failed to allocate user thread task struct");
+        return nullptr;
+    }
+
+    // System stack in kernel VA
+    uintptr_t sys_stack_base = 0;
+    uintptr_t sys_stack_top = 0;
+    if (vmm::alloc_stack(SYSTEM_STACK_PAGES, SYSTEM_GUARD_PAGES,
+            kva::tag::privileged_stack, sys_stack_base, sys_stack_top) != vmm::OK) {
+        log::error("sched: failed to allocate system stack for user thread task");
+        heap::kfree_delete(t);
+        return nullptr;
+    }
+
+    t->exec.flags = TASK_FLAG_PREEMPTIBLE;
+    t->exec.cpu = 0;
+    t->exec.on_cpu = 0;
+    t->exec.task_stack_top = stack_top;
+    t->exec.system_stack_top = sys_stack_top;
+    t->exec.pt_root = paging::supervisor_pt_root_for_user_task(creator->exec.mm_ctx->pt_root);
+    t->exec.user_pt_root = creator->exec.mm_ctx->pt_root;
+    t->exec.tls_base = 0;
+    t->task_stack_base = 0; // user stack is not VMM-allocated
+    t->sys_stack_base = sys_stack_base;
+
+    creator->exec.mm_ctx->add_ref(); // thread takes a shared reference to the mm context
+    t->exec.mm_ctx = creator->exec.mm_ctx;
+
+    fpu::init_state(&t->exec.fpu_ctx);
+
+    uint8_t* ctx_bytes = reinterpret_cast<uint8_t*>(&t->exec.cpu_ctx);
+    for (size_t i = 0; i < sizeof(thread_cpu_context); i++) {
+        ctx_bytes[i] = 0;
+    }
+    arch_init_task_context(t, reinterpret_cast<void (*)(void *)>(entry), reinterpret_cast<void*>(arg));
+
+    t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
+    t->state = TASK_STATE_CREATED;
+    t->exit_code = 0;
+    t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    t->kill_pending = 0;
+    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
+    t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
+
+    t->sched_link = {};
+    t->wait_link = {};
+    t->timer_link = {};
+    t->timer_deadline = 0;
+    t->tlb_sync_ticket.armed = 0;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
+    }
+    t->reaper_node.init(reap_task_thunk);
+
+    // Join the process's thread group
+    thread_group* tg = creator->group;
+    tg->add_ref(); // thread takes a shared reference to the group
+    t->group = tg;
+    t->group_link = {};
+
+    sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+    tg->threads.push_back(t);
+    tg->thread_count++;
+    sync::spin_unlock_irqrestore(tg->lock, irq);
+
+    // Allocate a new resource handle table and copy the resources from the caller's task
+    resource::init_task_handles(t);
+    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+        const auto& src = creator->handles.entries[i];
+        if (!src.used || !src.obj) continue;
+        auto& dst = t->handles.entries[i];
+        dst.used = true;
+        dst.generation = src.generation;
+        dst.flags = src.flags;
+        dst.rights = src.rights;
+        dst.type = src.type;
+        dst.obj = src.obj;
+        resource::resource_add_ref(dst.obj);
+    }
+
+    t->proc_res = nullptr;
+
+    // Copy the creator's cwd
+    t->cwd = creator->cwd;
+    if (t->cwd) {
+        t->cwd->add_ref();
+    }
 
     return t;
 }
