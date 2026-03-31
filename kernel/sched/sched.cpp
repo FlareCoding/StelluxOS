@@ -403,10 +403,25 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                 while (it != end) {
                     sched::task& thread = *it;
                     ++it; // advance before potential removal
-                    if (thread.state == TASK_STATE_CREATED) {
+                    uint32_t expected = TASK_STATE_CREATED;
+                    if (__atomic_compare_exchange_n(&thread.state, &expected,
+                            TASK_STATE_DEAD, false,
+                            __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
                         tg->threads.remove(&thread);
                         tg->thread_count--;
-                        thread.state = TASK_STATE_DEAD;
+                        if (thread.proc_res) {
+                            auto* pr = thread.proc_res;
+                            sync::irq_state pr_irq = sync::spin_lock_irqsave(pr->lock);
+                            pr->wait_status = TASK_KILL_STATUS;
+                            pr->exited = true;
+                            pr->child = nullptr;
+                            sync::wake_all(pr->wait_queue);
+                            sync::spin_unlock_irqrestore(pr->lock, pr_irq);
+                            thread.proc_res = nullptr;
+                            if (pr->release()) {
+                                resource::proc_provider::proc_resource::ref_destroy(pr);
+                            }
+                        }
                         store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
                         rc::reaper::defer(&thread.reaper_node);
                     } else {
@@ -731,7 +746,13 @@ __PRIVILEGED_CODE task* create_user_task(
     if (!tg) {
         log::error("sched: failed to allocate thread_group");
         resource::close_all(t);
-        t->exec.mm_ctx = nullptr;
+        if (t->exec.mm_ctx) {
+            mm::mm_context_release(t->exec.mm_ctx);
+            t->exec.mm_ctx = nullptr;
+            t->exec.user_pt_root = 0;
+            image->mm_ctx = nullptr;
+            image->pt_root = 0;
+        }
         vmm::free(sys_stack_base);
         heap::kfree_delete(t);
         return nullptr;
@@ -780,7 +801,12 @@ __PRIVILEGED_CODE task* create_user_thread(
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
     t->exec.on_cpu = 0;
+#if defined(__x86_64__)
+    // x86_64: entry RSP must be 8 mod 16
+    t->exec.task_stack_top = stack_top - 0x8;
+#else
     t->exec.task_stack_top = stack_top;
+#endif
     t->exec.system_stack_top = sys_stack_top;
     t->exec.pt_root = paging::supervisor_pt_root_for_user_task(creator->exec.mm_ctx->pt_root);
     t->exec.user_pt_root = creator->exec.mm_ctx->pt_root;
