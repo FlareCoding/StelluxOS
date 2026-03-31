@@ -10,9 +10,9 @@
 #define DROPBEAR_SERVER 1
 #define DROPBEAR_CLIENT 0
 
-/* Non-inetd mode only */
+/* Both modes: listener uses non-inetd, spawned children use inetd */
 #define NON_INETD_MODE 1
-#define INETD_MODE 0
+#define INETD_MODE 1
 
 /* Disable features we don't need */
 #define DROPBEAR_X11FWD 0
@@ -36,8 +36,8 @@
 /* Disable re-exec (no fexecve) */
 #define DROPBEAR_REEXEC 0
 
-/* Single-process mode: don't fork per connection */
-#define DEBUG_NOFORK 1
+/* Multi-process mode: spawn child process per connection via proc_create */
+#define DEBUG_NOFORK 0
 
 /* Enable verbose trace output (run with -v) */
 #define DEBUG_TRACE 1

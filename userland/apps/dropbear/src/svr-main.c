@@ -31,6 +31,7 @@
 #include "runopts.h"
 #include "dbrandom.h"
 #include "crypto_desc.h"
+#include <stlx/proc.h>
 
 static size_t listensockets(int *sock, size_t sockcount, int *maxfd);
 static void sigchld_handler(int dummy);
@@ -307,14 +308,7 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 			childpipe[0] = -1;
 			childpipe[1] = -1;
 			fork_ret = 0;
-#else
-			if (pipe(childpipe) < 0) {
-				TRACE(("error creating child pipe"))
-				goto out;
-			}
 
-			fork_ret = fork();
-#endif
 			if (fork_ret < 0) {
 				dropbear_log(LOG_WARNING, "Error forking: %s", strerror(errno));
 				goto out;
@@ -322,78 +316,60 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 
 			addrandom((void*)&fork_ret, sizeof(fork_ret));
 
-			if (fork_ret > 0) {
+			/* child - single-process debug mode */
+			getaddrstring(&remoteaddr, NULL, &remote_port, 0);
+			dropbear_log(LOG_INFO, "Child connection from %s:%s", remote_host, remote_port);
+			m_free(remote_host);
+			m_free(remote_port);
 
-				/* parent */
-				childpipes[conn_idx] = childpipe[0];
-				m_close(childpipe[1]);
-				preauth_addrs[conn_idx] = remote_host;
-				remote_host = NULL;
+			for (j = 0; j < listensockcount; j++) {
+				m_close(listensocks[j]);
+			}
 
-			} else {
+			svr_session(childsock, childpipe[1]);
+			dropbear_assert(0);
+#else
+			/* Stellux: spawn a child dropbear process via proc_create.
+			 * The child runs in inetd mode (-i) using the accepted socket
+			 * as its stdin/stdout. Each connection gets full process
+			 * isolation — no shared global state. */
+			{
+				int child_handle;
+				const char *child_argv[] = { "-i", "-F", "-E", "-R", NULL };
 
-				/* child */
 				getaddrstring(&remoteaddr, NULL, &remote_port, 0);
-				dropbear_log(LOG_INFO, "Child connection from %s:%s", remote_host, remote_port);
-				m_free(remote_host);
+				dropbear_log(LOG_INFO, "Child connection from %s:%s",
+					remote_host, remote_port);
 				m_free(remote_port);
 
-#if !DEBUG_NOFORK
-				if (setsid() < 0) {
-					dropbear_exit("setsid: %s", strerror(errno));
-				}
-#endif
-
-				/* make sure we close sockets */
-				for (j = 0; j < listensockcount; j++) {
-					m_close(listensocks[j]);
+				child_handle = proc_create("/bin/dropbear", child_argv);
+				if (child_handle < 0) {
+					dropbear_log(LOG_WARNING,
+						"proc_create failed for connection from %s",
+						remote_host);
+					goto out;
 				}
 
-				m_close(childpipe[0]);
+				/* Give the child the accepted socket as stdin and stdout */
+				proc_set_handle(child_handle, STDIN_FILENO, childsock);
+				proc_set_handle(child_handle, STDOUT_FILENO, childsock);
 
-				if (execfd >= 0) {
-#if DROPBEAR_DO_REEXEC
-					/* Add "-2 childpipe[1]" to the args and re-execute ourself. */
-					char **new_argv = m_malloc(sizeof(char*) * (argc+4));
-					char buf[10];
-					int pos0 = 0, new_argc = argc+2;
-
-					/* We need to specially handle "dropbearmulti dropbear". */
-					if (multipath) {
-						new_argv[0] = (char*)multipath;
-						pos0 = 1;
-						new_argc++;
-					}
-
-					memcpy(&new_argv[pos0], argv, sizeof(char*) * argc);
-					new_argv[new_argc-2] = "-2";
-					snprintf(buf, sizeof(buf), "%d", childpipe[1]);
-					new_argv[new_argc-1] = buf;
-					new_argv[new_argc] = NULL;
-
-					if ((dup2(childsock, STDIN_FILENO) < 0)) {
-						dropbear_exit("dup2 failed: %s", strerror(errno));
-					}
-					if (fcntl(childsock, F_SETFD, FD_CLOEXEC) < 0) {
-						TRACE(("cloexec for childsock %d failed: %s", childsock, strerror(errno)))
-					}
-					/* Re-execute ourself */
-					fexecve(execfd, new_argv, environ);
-					/* Not reached on success */
-
-					/* Fall back on plain fork otherwise.
-					 * To be removed in future once re-exec has been well tested */
-					dropbear_log(LOG_WARNING, "fexecve failed, disabling re-exec: %s", strerror(errno));
-					m_close(STDIN_FILENO);
-					m_free(new_argv);
-#endif /* DROPBEAR_DO_REEXEC */
+				if (proc_start(child_handle) < 0) {
+					dropbear_log(LOG_WARNING,
+						"proc_start failed for connection from %s",
+						remote_host);
+					close(child_handle);
+					goto out;
 				}
 
-				/* start the session */
-				svr_session(childsock, childpipe[1]);
-				/* don't return */
-				dropbear_assert(0);
+				/* Detach: child runs independently, cleaned up on exit */
+				proc_detach(child_handle);
 			}
+			/* Parent continues accepting — no childpipe tracking needed */
+			childpipes[conn_idx] = -1;
+			preauth_addrs[conn_idx] = remote_host;
+			remote_host = NULL;
+#endif
 
 out:
 			/* This section is important for the parent too */
