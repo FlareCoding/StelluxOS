@@ -350,14 +350,18 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 					goto out;
 				}
 
-				/* Give the child the accepted socket as stdin and stdout */
+				/* Give the child the accepted socket as stdin/stdout/stderr.
+				 * stderr is needed for -E (log-to-stderr) in the child. */
 				proc_set_handle(child_handle, STDIN_FILENO, childsock);
 				proc_set_handle(child_handle, STDOUT_FILENO, childsock);
+				proc_set_handle(child_handle, STDERR_FILENO, STDERR_FILENO);
 
 				if (proc_start(child_handle) < 0) {
 					dropbear_log(LOG_WARNING,
 						"proc_start failed for connection from %s",
 						remote_host);
+					/* proc handle is closed implicitly when the resource
+					 * is cleaned up; close it via the handle API */
 					close(child_handle);
 					goto out;
 				}
@@ -365,10 +369,10 @@ static void main_noinetd(int argc, char ** argv, const char* multipath) {
 				/* Detach: child runs independently, cleaned up on exit */
 				proc_detach(child_handle);
 			}
-			/* Parent continues accepting — no childpipe tracking needed */
-			childpipes[conn_idx] = -1;
-			preauth_addrs[conn_idx] = remote_host;
-			remote_host = NULL;
+			/* Note: pre-auth connection tracking (childpipes/preauth_addrs)
+			 * relies on pipe FDs from fork() which we don't use. With
+			 * proc_create, each child is fully independent. The per-IP
+			 * rate limiter is not active in this mode. */
 #endif
 
 out:
