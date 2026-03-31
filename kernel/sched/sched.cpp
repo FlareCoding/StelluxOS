@@ -392,6 +392,37 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
     RUN_ELEVATED({
         sched::task* task = current();
 
+        // Thread group handling: leader kills all threads, non-leader removes itself
+        if (task->group) {
+            thread_group* tg = task->group;
+
+            if (tg->leader == task) {
+                sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+                auto it = tg->threads.begin();
+                auto end = tg->threads.end();
+                while (it != end) {
+                    sched::task& thread = *it;
+                    ++it; // advance before potential removal
+                    if (thread.state == TASK_STATE_CREATED) {
+                        tg->threads.remove(&thread);
+                        tg->thread_count--;
+                        thread.state = TASK_STATE_DEAD;
+                        store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
+                        rc::reaper::defer(&thread.reaper_node);
+                    } else {
+                        force_wake_for_kill(&thread);
+                    }
+                }
+                tg->leader = nullptr;
+                sync::spin_unlock_irqrestore(tg->lock, irq);
+            } else if (task->group_link.is_linked()) {
+                sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+                tg->threads.remove(task);
+                tg->thread_count--;
+                sync::spin_unlock_irqrestore(tg->lock, irq);
+            }
+        }
+
         if (task->proc_res) {
             auto* pr = task->proc_res;
             sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
