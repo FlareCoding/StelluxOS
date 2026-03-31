@@ -105,6 +105,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(SYS_PROC_INFO,   proc_info);
     REGISTER_SYSCALL(SYS_PROC_SET_HANDLE, proc_set_handle);
     REGISTER_SYSCALL(SYS_PROC_KILL, proc_kill);
+    REGISTER_SYSCALL(SYS_PROC_THREAD_CREATE, proc_create_thread);
 
     REGISTER_SYSCALL(SYS_PTY_CREATE, pty_create);
 

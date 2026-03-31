@@ -43,3 +43,8 @@ int proc_set_handle(int proc_handle, int slot, int resource_handle) {
 int proc_kill(int handle) {
     return (int)syscall(SYS_PROC_KILL, handle);
 }
+
+int proc_create_thread(void (*entry)(void*), void* arg,
+                       void* stack_top, const char* name) {
+    return (int)syscall(SYS_PROC_THREAD_CREATE, entry, arg, stack_top, name);
+}

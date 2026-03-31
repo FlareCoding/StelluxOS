@@ -439,3 +439,53 @@ DEFINE_SYSCALL1(proc_kill, u_handle) {
     resource::resource_release(obj);
     return 0;
 }
+
+DEFINE_SYSCALL4(proc_create_thread, u_entry, u_arg, u_stack_top, u_name) {
+    sched::task* caller = sched::current();
+    if (!caller) {
+        return syscall::EIO;
+    }
+
+    if (u_stack_top == 0) {
+        return syscall::EINVAL;
+    }
+
+    char kname[sched::TASK_NAME_MAX];
+    if (u_name != 0) {
+        int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
+            kname, sizeof(kname),
+            reinterpret_cast<const char*>(u_name));
+        if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
+            return syscall::ENAMETOOLONG;
+        }
+        if (copy_rc != mm::uaccess::OK) {
+            return syscall::EFAULT;
+        }
+    } else {
+        kname[0] = '\0';
+    }
+
+    sched::task* child = sched::create_user_thread(
+        caller, u_entry, u_arg, u_stack_top, kname);
+    if (!child) {
+        return syscall::ENOMEM;
+    }
+
+    resource::resource_object* obj = nullptr;
+    int32_t pr_rc = resource::proc_provider::create_proc_resource(child, &obj);
+    if (pr_rc != resource::OK) {
+        resource::proc_provider::destroy_unstarted_task(child);
+        return syscall::ENOMEM;
+    }
+
+    resource::handle_t handle = -1;
+    int32_t h_rc = resource::alloc_handle(
+        &caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
+    if (h_rc != resource::HANDLE_OK) {
+        resource::resource_release(obj);
+        return syscall::EMFILE;
+    }
+
+    resource::resource_release(obj);
+    return static_cast<int64_t>(handle);
+}
