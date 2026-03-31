@@ -170,6 +170,19 @@ __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
         t->exec.mm_ctx = nullptr;
     }
 
+    if (t->group) {
+        if (t->group->leader != t && t->group_link.is_linked()) {
+            sync::irq_state irq = sync::spin_lock_irqsave(t->group->lock);
+            t->group->threads.remove(t);
+            t->group->thread_count--;
+            sync::spin_unlock_irqrestore(t->group->lock, irq);
+        }
+        if (t->group->release()) {
+            sched::thread_group::ref_destroy(t->group);
+        }
+        t->group = nullptr;
+    }
+
     vmm::free(t->sys_stack_base);
     heap::kfree_delete(t);
 }

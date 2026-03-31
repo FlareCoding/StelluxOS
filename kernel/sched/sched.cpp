@@ -40,6 +40,10 @@ __PRIVILEGED_DATA static uint32_t g_lb_next_cpu = 0;
 
 namespace sched {
 
+__PRIVILEGED_CODE void thread_group::ref_destroy(thread_group* self) {
+    heap::kfree_delete(self);
+}
+
 constexpr size_t TASK_STACK_PAGES = 4;
 constexpr uint16_t TASK_GUARD_PAGES = 1;
 
@@ -149,6 +153,12 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
         mm::mm_context_release(t->exec.mm_ctx);
         t->exec.mm_ctx = nullptr;
         t->exec.user_pt_root = 0;
+    }
+    if (t->group) {
+        if (t->group->release()) {
+            thread_group::ref_destroy(t->group);
+        }
+        t->group = nullptr;
     }
     vmm::free(t->task_stack_base);
     vmm::free(t->sys_stack_base);
@@ -382,6 +392,37 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
     RUN_ELEVATED({
         sched::task* task = current();
 
+        // Thread group handling: leader kills all threads, non-leader removes itself
+        if (task->group) {
+            thread_group* tg = task->group;
+
+            if (tg->leader == task) {
+                sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+                auto it = tg->threads.begin();
+                auto end = tg->threads.end();
+                while (it != end) {
+                    sched::task& thread = *it;
+                    ++it; // advance before potential removal
+                    if (thread.state == TASK_STATE_CREATED) {
+                        tg->threads.remove(&thread);
+                        tg->thread_count--;
+                        thread.state = TASK_STATE_DEAD;
+                        store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
+                        rc::reaper::defer(&thread.reaper_node);
+                    } else {
+                        force_wake_for_kill(&thread);
+                    }
+                }
+                tg->leader = nullptr;
+                sync::spin_unlock_irqrestore(tg->lock, irq);
+            } else if (task->group_link.is_linked()) {
+                sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+                tg->threads.remove(task);
+                tg->thread_count--;
+                sync::spin_unlock_irqrestore(tg->lock, irq);
+            }
+        }
+
         if (task->proc_res) {
             auto* pr = task->proc_res;
             sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
@@ -485,6 +526,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->proc_res = nullptr;
     t->cwd = nullptr;
     t->kill_pending = 0;
+    t->group = nullptr;
+    t->group_link = {};
 
     return t;
 }
@@ -662,6 +705,7 @@ __PRIVILEGED_CODE task* create_user_task(
     arch_init_task_context(t, entry, nullptr);
 
     t->exec.on_cpu = 0;
+    fpu::init_state(&t->exec.fpu_ctx);
 
     t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     t->state = TASK_STATE_CREATED;
@@ -676,7 +720,6 @@ __PRIVILEGED_CODE task* create_user_task(
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
     }
-    fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
 
     resource::init_task_handles(t);
@@ -684,8 +727,129 @@ __PRIVILEGED_CODE task* create_user_task(
     t->cwd = nullptr;
     t->kill_pending = 0;
 
+    auto* tg = heap::kalloc_new<thread_group>();
+    if (!tg) {
+        log::error("sched: failed to allocate thread_group");
+        resource::close_all(t);
+        t->exec.mm_ctx = nullptr;
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
+    tg->lock = sync::SPINLOCK_INIT;
+    tg->leader = t;
+    tg->threads.init();
+    tg->thread_count = 0;
+    t->group = tg; // task takes ownership of the initial ref (refcount=1)
+    t->group_link = {};
+
     image->mm_ctx = nullptr;
     image->pt_root = 0;
+
+    return t;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE task* create_user_thread(
+    task* creator, uintptr_t entry, uintptr_t arg,
+    uintptr_t stack_top, const char* name
+) {
+    if (!creator || !creator->exec.mm_ctx || !creator->group) {
+        log::error("sched: invalid creator provided for user thread creation");
+        return nullptr;
+    }
+
+    task* t = heap::kalloc_new<task>();
+    if (!t) {
+        log::error("sched: failed to allocate user thread task struct");
+        return nullptr;
+    }
+
+    // System stack in kernel VA
+    uintptr_t sys_stack_base = 0;
+    uintptr_t sys_stack_top = 0;
+    if (vmm::alloc_stack(SYSTEM_STACK_PAGES, SYSTEM_GUARD_PAGES,
+            kva::tag::privileged_stack, sys_stack_base, sys_stack_top) != vmm::OK) {
+        log::error("sched: failed to allocate system stack for user thread task");
+        heap::kfree_delete(t);
+        return nullptr;
+    }
+
+    t->exec.flags = TASK_FLAG_PREEMPTIBLE;
+    t->exec.cpu = 0;
+    t->exec.on_cpu = 0;
+    t->exec.task_stack_top = stack_top;
+    t->exec.system_stack_top = sys_stack_top;
+    t->exec.pt_root = paging::supervisor_pt_root_for_user_task(creator->exec.mm_ctx->pt_root);
+    t->exec.user_pt_root = creator->exec.mm_ctx->pt_root;
+    t->exec.tls_base = 0;
+    t->task_stack_base = 0; // user stack is not VMM-allocated
+    t->sys_stack_base = sys_stack_base;
+
+    creator->exec.mm_ctx->add_ref(); // thread takes a shared reference to the mm context
+    t->exec.mm_ctx = creator->exec.mm_ctx;
+
+    fpu::init_state(&t->exec.fpu_ctx);
+
+    uint8_t* ctx_bytes = reinterpret_cast<uint8_t*>(&t->exec.cpu_ctx);
+    for (size_t i = 0; i < sizeof(thread_cpu_context); i++) {
+        ctx_bytes[i] = 0;
+    }
+    arch_init_task_context(t, reinterpret_cast<void (*)(void *)>(entry), reinterpret_cast<void*>(arg));
+
+    t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
+    t->state = TASK_STATE_CREATED;
+    t->exit_code = 0;
+    t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    t->kill_pending = 0;
+    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
+    t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
+
+    t->sched_link = {};
+    t->wait_link = {};
+    t->timer_link = {};
+    t->timer_deadline = 0;
+    t->tlb_sync_ticket.armed = 0;
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
+    }
+    t->reaper_node.init(reap_task_thunk);
+
+    // Join the process's thread group
+    thread_group* tg = creator->group;
+    tg->add_ref(); // thread takes a shared reference to the group
+    t->group = tg;
+    t->group_link = {};
+
+    sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+    tg->threads.push_back(t);
+    tg->thread_count++;
+    sync::spin_unlock_irqrestore(tg->lock, irq);
+
+    // Allocate a new resource handle table and copy the resources from the caller's task
+    resource::init_task_handles(t);
+    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+        const auto& src = creator->handles.entries[i];
+        if (!src.used || !src.obj) continue;
+        auto& dst = t->handles.entries[i];
+        dst.used = true;
+        dst.generation = src.generation;
+        dst.flags = src.flags;
+        dst.rights = src.rights;
+        dst.type = src.type;
+        dst.obj = src.obj;
+        resource::resource_add_ref(dst.obj);
+    }
+
+    t->proc_res = nullptr;
+
+    // Copy the creator's cwd
+    t->cwd = creator->cwd;
+    if (t->cwd) {
+        t->cwd->add_ref();
+    }
 
     return t;
 }
@@ -729,6 +893,8 @@ __PRIVILEGED_CODE int32_t init() {
     resource::init_task_handles(idle);
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
+    idle->group = nullptr;
+    idle->group_link = {};
 
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;

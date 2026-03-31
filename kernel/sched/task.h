@@ -3,7 +3,9 @@
 
 #include "sched/task_exec_core.h"
 #include "common/list.h"
+#include "rc/ref_counted.h"
 #include "rc/reaper.h"
+#include "sync/spinlock.h"
 #include "resource/handle_table.h"
 
 namespace resource::proc_provider { struct proc_resource; }
@@ -36,31 +38,67 @@ struct task_tlb_sync_ticket {
     uint32_t armed;
 };
 
+struct thread_group;
+
 struct task {
+    // Execution core
     task_exec_core exec;
-    uint32_t       tid;
+
+    // Thread group (non-null for userland tasks, null for kernel tasks)
+    thread_group*  group;
+    list::node     group_link; // link in thread_group::threads (non-leaders only)
+
+    // Identity
+    uint32_t    tid;
+    char        name[TASK_NAME_MAX];
+    fs::node*   cwd;
+
+    // Lifecycle
     int32_t        exit_code;
     uint32_t       state;
     uint32_t       cleanup_stage;
     uint32_t       kill_pending;
+
+    // Stacks
     uintptr_t      task_stack_base;
     uintptr_t      sys_stack_base;
-    list::node     sched_link;
-    list::node     wait_link;
-    list::node     timer_link;
-    uint64_t       timer_deadline;
-    char           name[TASK_NAME_MAX];
-    task_tlb_sync_ticket tlb_sync_ticket;
-    rc::reaper::dead_node reaper_node;
-    resource::handle_table handles;
+
+    // Scheduler state
+    list::node              sched_link;
+    list::node              wait_link;
+    list::node              timer_link;
+    uint64_t                timer_deadline;
+    task_tlb_sync_ticket    tlb_sync_ticket;
+    rc::reaper::dead_node   reaper_node;
+
+    // Resources
+    resource::handle_table  handles;
     resource::proc_provider::proc_resource* proc_res;
-    fs::node* cwd;
 };
 
 // Assembly accesses task_exec_core fields via offsets from the task pointer.
 // exec must be at offset 0 so &task == &task.exec.
 static_assert(__builtin_offsetof(task, exec) == 0,
     "task.exec must be at offset 0 for assembly compatibility");
+
+/**
+ * Groups all tasks sharing an address space. Every userland task belongs to
+ * exactly one thread_group. The leader creates the group at process
+ * creation, threads are added when spawned. The group outlives any
+ * individual task via ref-counting and is freed when the last task
+ * (leader or thread) releases its reference.
+ */
+struct thread_group : rc::ref_counted<thread_group> {
+    sync::spinlock lock;
+    task*          leader;
+    list::head<task, &task::group_link> threads; // non-leader threads only
+    uint32_t       thread_count; // number of live non-leader threads
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void ref_destroy(thread_group* self);
+};
 
 } // namespace sched
 

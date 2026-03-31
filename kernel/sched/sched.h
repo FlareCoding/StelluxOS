@@ -63,6 +63,25 @@ task* create_user_task(exec::loaded_image* image, const char* name,
                        int argc = 0, const char* const* argv = nullptr);
 
 /**
+ * @brief Create a new user thread in an existing user process.
+ * The thread shares the creator's address space (mm_context) and joins its
+ * thread_group. System stack is allocated in kernel VA, the caller supplies
+ * the user stack. Returns in TASK_STATE_CREATED (not yet enqueued).
+ * @param creator Any task in the target process, its resource handle table
+ *   and mm_context are inherited by the new thread.
+ * @param entry User-space entry point address.
+ * @param arg Argument passed to entry via first register.
+ * @param stack_top Top of the caller-allocated user stack in the shared
+ *   address space.
+ * @param name Debug name (copied into embedded task storage).
+ * @return task pointer on success, nullptr on failure.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE
+task* create_user_thread(task* creator, uintptr_t entry, uintptr_t arg,
+                        uintptr_t stack_top, const char* name);
+
+/**
  * @brief Add a task to a runqueue, distributing across CPUs via round-robin.
  * Atomically transitions the task from CREATED to READY via CAS.
  * Rejects tasks that are already enqueued, running, or dead.
