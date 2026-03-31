@@ -50,7 +50,7 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     sched::task* self = sched::current();
     if (self && __atomic_load_n(&self->kill_pending, __ATOMIC_ACQUIRE)
         && !(self->exec.flags & sched::TASK_FLAG_KERNEL)) {
-        sched::exit(0x9);
+        sched::exit(sched::TASK_KILL_STATUS);
     }
 
     // Return-boundary restore: dynamic runtime elevation follows the selected

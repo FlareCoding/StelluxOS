@@ -131,7 +131,7 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     if (__atomic_load_n(&prev->kill_pending, __ATOMIC_ACQUIRE)
         && !(prev->exec.flags & TASK_FLAG_KERNEL)
         && prev->state != TASK_STATE_DEAD) {
-        sched::exit(0x9);
+        sched::exit(sched::TASK_KILL_STATUS);
     }
 
     task* next = pick_next_and_switch(prev);
@@ -172,7 +172,7 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     if (__atomic_load_n(&prev->kill_pending, __ATOMIC_ACQUIRE)
         && !(prev->exec.flags & TASK_FLAG_KERNEL)
         && prev->state != TASK_STATE_DEAD) {
-        sched::exit(0x9);
+        sched::exit(sched::TASK_KILL_STATUS);
     }
 
     task* next = pick_next_and_switch(prev);

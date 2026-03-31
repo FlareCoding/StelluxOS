@@ -21,6 +21,8 @@ constexpr uint32_t TASK_STATE_RUNNING = 2; // executing on a CPU
 constexpr uint32_t TASK_STATE_BLOCKED = 3; // on a wait queue
 constexpr uint32_t TASK_STATE_DEAD    = 4; // terminated
 
+constexpr int32_t TASK_KILL_STATUS    = 9; // wait-status for forcibly killed tasks
+
 constexpr uint32_t TASK_CLEANUP_STAGE_ACTIVE                = 0;
 constexpr uint32_t TASK_CLEANUP_STAGE_EXIT_REQUESTED        = 1;
 constexpr uint32_t TASK_CLEANUP_STAGE_SCHEDULER_DETACHED    = 2;
