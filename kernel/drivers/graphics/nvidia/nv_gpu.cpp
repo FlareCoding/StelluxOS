@@ -186,7 +186,7 @@ __PRIVILEGED_CODE void nv_gpu::on_interrupt(uint32_t vector) {
 
 int32_t nv_gpu::map_bars() {
     // Map BAR0 — 16MB MMIO control space
-    int32_t rc = map_bar(0, m_bar0_va);
+    int32_t rc = map_bar(0, m_bar0_va, paging::PAGE_USER);
     if (rc != 0) {
         log::error("nvidia: failed to map BAR0 (MMIO): %d", rc);
         return ERR_MAP_FAILED;
@@ -217,7 +217,7 @@ int32_t nv_gpu::map_bars() {
             rc = vmm::map_device(
                 static_cast<pmm::phys_addr_t>(bar1.phys),
                 static_cast<size_t>(map_size),
-                paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_WC,
+                paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_WC,
                 base, va)
         );
 
@@ -601,7 +601,7 @@ int32_t nv_gpu::read_vbios_pci_rom() {
     RUN_ELEVATED(rc = vmm::map_phys(
         static_cast<pmm::phys_addr_t>(rom_phys),
         static_cast<size_t>(size),
-        paging::PAGE_READ,
+        paging::PAGE_READ | paging::PAGE_USER,
         rom_base, rom_va));
 
     if (rc != vmm::OK) {
