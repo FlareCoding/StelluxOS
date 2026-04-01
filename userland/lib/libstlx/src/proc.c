@@ -44,6 +44,10 @@ int proc_kill(int handle) {
     return (int)syscall(SYS_PROC_KILL, handle);
 }
 
+int proc_kill_tid(int tid) {
+    return (int)syscall(SYS_PROC_KILL_TID, tid);
+}
+
 int proc_create_thread(void (*entry)(void*), void* arg,
                        void* stack_top, const char* name) {
     return (int)syscall(SYS_PROC_THREAD_CREATE, entry, arg, stack_top, name);

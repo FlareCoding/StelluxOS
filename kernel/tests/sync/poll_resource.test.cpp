@@ -25,7 +25,7 @@ TEST(poll_resource, ring_buffer_poll_readable) {
     ASSERT_NOT_NULL(rb);
 
     uint8_t data[] = {1, 2, 3};
-    RUN_ELEVATED({ ring_buffer_write(rb, data, 3, true); });
+    RUN_ELEVATED({ (void)ring_buffer_write(rb, data, 3, true); });
 
     uint32_t mask = 0;
     RUN_ELEVATED({
@@ -103,7 +103,7 @@ TEST(poll_resource, ring_buffer_poll_hup_with_data) {
     ASSERT_NOT_NULL(rb);
 
     uint8_t data[] = {1, 2, 3};
-    RUN_ELEVATED({ ring_buffer_write(rb, data, 3, true); });
+    RUN_ELEVATED({ (void)ring_buffer_write(rb, data, 3, true); });
     RUN_ELEVATED({ ring_buffer_close_write(rb); });
 
     uint32_t mask = 0;
@@ -192,7 +192,7 @@ TEST(poll_resource, ring_buffer_poll_subscribes_read_wq) {
 
     // Write data to trigger the observer
     uint8_t data[] = {42};
-    RUN_ELEVATED({ ring_buffer_write(rb, data, 1, true); });
+    RUN_ELEVATED({ (void)ring_buffer_write(rb, data, 1, true); });
 
     ASSERT_TRUE(test_helpers::spin_wait(&g_rb_poll_done));
     EXPECT_EQ(__atomic_load_n(&g_rb_poll_result, __ATOMIC_ACQUIRE), 1u);
@@ -282,7 +282,7 @@ TEST(poll_resource, null_poll_table_just_probes) {
     ASSERT_NOT_NULL(rb);
 
     uint8_t data[] = {1};
-    RUN_ELEVATED({ ring_buffer_write(rb, data, 1, true); });
+    RUN_ELEVATED({ (void)ring_buffer_write(rb, data, 1, true); });
 
     // Pass null pt — should just probe, no subscription
     uint32_t mask = 0;

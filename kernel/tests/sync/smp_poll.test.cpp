@@ -128,6 +128,80 @@ TEST(smp_poll, cross_cpu_multi_source) {
 }
 
 // ---------------------------------------------------------------------------
+// cross_cpu_immediate_wake_preserves_scheduler_state
+// Fire immediately after the waiter announces readiness so the wake races the
+// BLOCKED transition. poll_wait must still return with the current task
+// RUNNING and not leave sched_link queued.
+// ---------------------------------------------------------------------------
+
+static sync::wait_queue g_xfast_wq;
+static volatile uint32_t g_xfast_waiting;
+static volatile uint32_t g_xfast_done;
+static volatile uint32_t g_xfast_trigger_failures;
+static volatile uint32_t g_xfast_state_failures;
+static volatile uint32_t g_xfast_link_failures;
+
+constexpr uint32_t XFAST_ITERS = 128;
+
+static void xfast_poll_fn(void*) {
+    for (uint32_t iter = 0; iter < XFAST_ITERS; iter++) {
+        RUN_ELEVATED({
+            sync::poll_table pt;
+            pt.init(sched::current());
+            sync::poll_subscribe(pt, g_xfast_wq);
+
+            __atomic_store_n(&g_xfast_waiting, iter + 1, __ATOMIC_RELEASE);
+            bool triggered = sync::poll_wait(pt, 0);
+
+            sched::task* self = sched::current();
+            if (!triggered) {
+                __atomic_fetch_add(&g_xfast_trigger_failures, 1, __ATOMIC_ACQ_REL);
+            }
+            if (self->state != sched::TASK_STATE_RUNNING) {
+                __atomic_fetch_add(&g_xfast_state_failures, 1, __ATOMIC_ACQ_REL);
+            }
+            if (self->sched_link.is_linked()) {
+                __atomic_fetch_add(&g_xfast_link_failures, 1, __ATOMIC_ACQ_REL);
+            }
+
+            sync::poll_cleanup(pt);
+        });
+        __atomic_store_n(&g_xfast_done, iter + 1, __ATOMIC_RELEASE);
+    }
+    sched::exit(0);
+}
+
+TEST(smp_poll, cross_cpu_immediate_wake_preserves_scheduler_state) {
+    uint32_t cpus = smp::cpu_count();
+    if (cpus < 2) return;
+
+    g_xfast_wq.init();
+    g_xfast_waiting = 0;
+    g_xfast_done = 0;
+    g_xfast_trigger_failures = 0;
+    g_xfast_state_failures = 0;
+    g_xfast_link_failures = 0;
+
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(xfast_poll_fn, nullptr, "smp_pollf");
+        ASSERT_NOT_NULL(t);
+        sched::enqueue_on(t, 1);
+    });
+
+    for (uint32_t iter = 0; iter < XFAST_ITERS; iter++) {
+        ASSERT_TRUE(spin_wait_ge(&g_xfast_waiting, iter + 1));
+        RUN_ELEVATED({
+            sync::wake_one(g_xfast_wq);
+        });
+        ASSERT_TRUE(spin_wait_ge(&g_xfast_done, iter + 1));
+    }
+
+    EXPECT_EQ(__atomic_load_n(&g_xfast_trigger_failures, __ATOMIC_ACQUIRE), 0u);
+    EXPECT_EQ(__atomic_load_n(&g_xfast_state_failures, __ATOMIC_ACQUIRE), 0u);
+    EXPECT_EQ(__atomic_load_n(&g_xfast_link_failures, __ATOMIC_ACQUIRE), 0u);
+}
+
+// ---------------------------------------------------------------------------
 // cross_cpu_cleanup_race
 // Polling task on CPU 1 times out and enters cleanup.
 // Source on CPU 0 fires concurrently. No crash, no corruption.

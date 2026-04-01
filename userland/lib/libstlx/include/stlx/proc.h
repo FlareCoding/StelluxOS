@@ -70,6 +70,13 @@ int proc_set_handle(int proc_handle, int slot, int resource_handle);
 int proc_kill(int handle);
 
 /**
+ * Kill a task by its thread ID. Only userland tasks can be targeted,
+ * kernel and idle tasks return EPERM. Returns 0 on success, negative
+ * errno on failure (ESRCH if not found, EINVAL for self or TID 0).
+ */
+int proc_kill_tid(int tid);
+
+/**
  * Create a thread in the caller's address space. The thread shares the
  * caller's mm_context and gets a copy of the caller's handle table and cwd.
  * Returns a handle in CREATED state; call proc_thread_start() to schedule.

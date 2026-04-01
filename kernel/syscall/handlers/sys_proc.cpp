@@ -5,6 +5,7 @@
 #include "resource/handle_table.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "sched/task_registry.h"
 #include "dynpriv/dynpriv.h"
 #include "exec/elf.h"
 #include "mm/uaccess.h"
@@ -488,4 +489,35 @@ DEFINE_SYSCALL4(proc_create_thread, u_entry, u_arg, u_stack_top, u_name) {
 
     resource::resource_release(obj);
     return static_cast<int64_t>(handle);
+}
+
+DEFINE_SYSCALL1(proc_kill_tid, u_tid) {
+    uint32_t tid = static_cast<uint32_t>(u_tid);
+
+    sched::task* self = sched::current();
+    if (!self) {
+        return syscall::EIO;
+    }
+
+    if (self->tid == tid || tid == 0) {
+        return syscall::EINVAL;
+    }
+
+    int64_t result = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sched::g_task_registry.lock();
+        sched::task* target = sched::g_task_registry.find_locked(tid);
+
+        if (!target) {
+            result = syscall::ESRCH;
+        } else if (target->exec.flags & (sched::TASK_FLAG_IDLE | sched::TASK_FLAG_KERNEL)) {
+            result = syscall::EPERM;
+        } else {
+            sched::force_wake_for_kill(target);
+        }
+
+        sched::g_task_registry.unlock(irq);
+    });
+
+    return result;
 }
