@@ -3,6 +3,7 @@
 
 #include "sched/task_exec_core.h"
 #include "common/list.h"
+#include "common/hashmap.h"
 #include "rc/ref_counted.h"
 #include "rc/reaper.h"
 #include "sync/spinlock.h"
@@ -51,9 +52,10 @@ struct task {
     list::node     group_link; // link in thread_group::threads (non-leaders only)
 
     // Identity
-    uint32_t    tid;
-    char        name[TASK_NAME_MAX];
-    fs::node*   cwd;
+    uint32_t        tid;
+    char            name[TASK_NAME_MAX];
+    fs::node*       cwd;
+    hashmap::node   task_registry_link;
 
     // Lifecycle
     int32_t        exit_code;
