@@ -14,10 +14,18 @@ ifeq ($(STLX_QUIET),1)
 	@idx=0; \
 	for app in $(APP_DIRS); do \
 		idx=$$((idx + 1)); \
+		( while true; do \
+			printf "\r    %-48s .  " "$$app"; sleep 0.3; \
+			printf "\r    %-48s .. " "$$app"; sleep 0.3; \
+			printf "\r    %-48s ..." "$$app"; sleep 0.3; \
+		done ) & \
+		anim_pid=$$!; \
 		if $(MAKE) --no-print-directory -C $$app ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) STLX_QUIET=1 > /tmp/stlx-build-$$app.log 2>&1; then \
-			printf "    %-48s ok  (%d/%d)\n" "$$app" $$idx $(APP_COUNT); \
+			kill $$anim_pid 2>/dev/null; wait $$anim_pid 2>/dev/null; \
+			printf "\r    %-48s ok  (%d/%d)\n" "$$app" $$idx $(APP_COUNT); \
 		else \
-			printf "    %-48s FAIL\n" "$$app"; \
+			kill $$anim_pid 2>/dev/null; wait $$anim_pid 2>/dev/null; \
+			printf "\r    %-48s FAIL\n" "$$app"; \
 			echo ""; \
 			cat /tmp/stlx-build-$$app.log; \
 			exit 1; \
