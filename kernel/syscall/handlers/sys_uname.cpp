@@ -2,8 +2,6 @@
 #include "mm/uaccess.h"
 #include "common/string.h"
 
-namespace {
-
 constexpr size_t UTS_FIELD_LEN = 65;
 
 struct new_utsname {
@@ -20,8 +18,6 @@ __PRIVILEGED_CODE static void fill_field(char* dst, const char* src) {
     string::memcpy(dst, src, len);
     string::memset(dst + len, 0, UTS_FIELD_LEN - len);
 }
-
-} // anonymous namespace
 
 /**
  * @note Privilege: **required**
