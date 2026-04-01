@@ -180,19 +180,48 @@ int32_t firmware_parse_booter(const uint8_t* data, uint32_t size, booter_fw& out
               out.app.offset, out.app.size,
               out.app.data_offset, out.app.data_size);
 
-    // Step 5: Read signature metadata if present
+    // Step 5: Read signature metadata (fuse version, engine ID, ucode ID)
+    string::memset(&out.sig_meta, 0, sizeof(hs_sig_params));
     if (out.hs_hdr.meta_data_offset + sizeof(hs_sig_params) <= size) {
-        hs_sig_params sig_meta;
-        string::memcpy(&sig_meta, data + out.hs_hdr.meta_data_offset, sizeof(hs_sig_params));
+        string::memcpy(&out.sig_meta, data + out.hs_hdr.meta_data_offset, sizeof(hs_sig_params));
         log::info("nvidia: fw: SigParams: fuse_ver=%u engine_id_mask=0x%x ucode_id=%u",
-                  sig_meta.fuse_ver, sig_meta.engine_id_mask, sig_meta.ucode_id);
+                  out.sig_meta.fuse_ver, out.sig_meta.engine_id_mask, out.sig_meta.ucode_id);
     }
 
-    // Step 6: Read indirect values (patch_loc, patch_sig, num_sig are offsets to u32 values)
-    if (out.hs_hdr.num_sig < size - 3) {
-        uint32_t num_sigs = rd32(data, out.hs_hdr.num_sig);
-        log::info("nvidia: fw: signature count (indirect): %u", num_sigs);
+    // Step 6: Dereference indirect values
+    // patch_loc, patch_sig, num_sig are OFFSETS to u32 values in the data, not direct values
+    out.patch_loc_val = 0;
+    out.patch_sig_val = 0;
+    out.num_sig_val = 0;
+    out.per_sig_size = 0;
+
+    if (out.hs_hdr.patch_loc + 4 <= size) {
+        out.patch_loc_val = rd32(data, out.hs_hdr.patch_loc);
+        log::info("nvidia: fw: patch_loc (indirect at 0x%x): DMEM offset = 0x%x",
+                  out.hs_hdr.patch_loc, out.patch_loc_val);
     }
+    if (out.hs_hdr.patch_sig + 4 <= size) {
+        out.patch_sig_val = rd32(data, out.hs_hdr.patch_sig);
+        log::info("nvidia: fw: patch_sig (indirect at 0x%x): sig base index = 0x%x",
+                  out.hs_hdr.patch_sig, out.patch_sig_val);
+    }
+    if (out.hs_hdr.num_sig + 4 <= size) {
+        out.num_sig_val = rd32(data, out.hs_hdr.num_sig);
+        log::info("nvidia: fw: num_sig (indirect at 0x%x): count = %u",
+                  out.hs_hdr.num_sig, out.num_sig_val);
+    }
+
+    // Calculate per-signature size (sig_prod_size / sig_count)
+    if (out.num_sig_val > 0) {
+        out.per_sig_size = out.hs_hdr.sig_prod_size / out.num_sig_val;
+        log::info("nvidia: fw: per-signature size: %u bytes (%u total / %u sigs)",
+                  out.per_sig_size, out.hs_hdr.sig_prod_size, out.num_sig_val);
+    }
+
+    // Step 7: Set boot address
+    // GA102: boot_addr = app[0].offset
+    out.boot_addr = out.app.offset;
+    log::info("nvidia: fw: boot address: 0x%x", out.boot_addr);
 
     // Set payload pointers
     out.payload = data + out.hdr.data_offset;
@@ -250,13 +279,17 @@ int32_t firmware_parse_bootloader(const uint8_t* data, uint32_t size, bootloader
 // GSP-RM Firmware ELF Parsing
 // ============================================================================
 
-// Helper: compare a string from a buffer to a target string
+// Helper: exact string comparison from a buffer against a target string
+// (not prefix match — verifies the buffer string is null-terminated at the right point)
 static bool str_eq(const uint8_t* buf, uint32_t buf_size, uint32_t offset,
                    const char* target) {
-    for (uint32_t i = 0; target[i] != '\0'; i++) {
+    uint32_t i = 0;
+    for (; target[i] != '\0'; i++) {
         if (offset + i >= buf_size) return false;
         if (buf[offset + i] != static_cast<uint8_t>(target[i])) return false;
     }
+    // Verify exact match: next char in buffer must be NUL (not a prefix match)
+    if (offset + i < buf_size && buf[offset + i] != '\0') return false;
     return true;
 }
 
@@ -472,12 +505,14 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         return ERR_NOT_FOUND;
     }
 
+    // BIT header: byte 8 = header_size, byte 9 = entry_size, byte 10 = entry_count
+    uint8_t bit_hdr_size = vbios[bit_offset + 8];
     uint8_t entry_size = vbios[bit_offset + 9];
     uint8_t entry_count = vbios[bit_offset + 10];
     uint32_t falcon_data_ptr = 0;
 
     for (uint8_t i = 0; i < entry_count; i++) {
-        uint32_t entry_off = bit_offset + 12 + i * entry_size;
+        uint32_t entry_off = bit_offset + bit_hdr_size + i * entry_size;
         if (entry_off + 6 > vbios_size) break;
 
         uint8_t token_id = vbios[entry_off];
@@ -498,16 +533,27 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         return ERR_NOT_FOUND;
     }
 
-    // Step 3: Adjust falcon_data_ptr to be relative to the second FwSec image
-    // The pointer is relative to the start of the contiguous PciAt+FwSec space,
-    // but there may be EFI and other images in between
-    uint32_t pmu_table_offset_in_fwsec = falcon_data_ptr - pciat_image_size - first_fwsec_size;
-    uint32_t pmu_table_abs = fwsec_image_offset + pmu_table_offset_in_fwsec;
+    // Step 3: Adjust falcon_data_ptr to be relative to the correct FwSec image.
+    // The pointer assumes contiguous [PciAt][FwSec1][FwSec2] layout (ignoring EFI image).
+    // Subtract PciAt size first, then check if the offset falls in FwSec1 or FwSec2.
+    uint32_t adjusted = falcon_data_ptr - pciat_image_size;
+    uint32_t pmu_table_abs;
 
-    log::info("nvidia: fw: PMU Lookup Table: fwsec_relative=0x%x absolute=0x%x "
-              "(pciat_size=0x%x, first_fwsec=0x%x)",
-              pmu_table_offset_in_fwsec, pmu_table_abs,
-              pciat_image_size, first_fwsec_size);
+    if (adjusted < first_fwsec_size) {
+        // PMU table is in the first FwSec image (edge case on some GPUs)
+        pmu_table_abs = (fwsec_image_offset - first_fwsec_size) + adjusted;
+        log::info("nvidia: fw: PMU Lookup Table in FIRST FwSec: adjusted=0x%x abs=0x%x",
+                  adjusted, pmu_table_abs);
+    } else {
+        // PMU table is in the second FwSec image (common case for GA102)
+        uint32_t offset_in_fwsec2 = adjusted - first_fwsec_size;
+        pmu_table_abs = fwsec_image_offset + offset_in_fwsec2;
+        log::info("nvidia: fw: PMU Lookup Table in second FwSec: adjusted=0x%x offset=0x%x abs=0x%x",
+                  adjusted, offset_in_fwsec2, pmu_table_abs);
+    }
+
+    log::info("nvidia: fw: PMU table adjustment: falcon_ptr=0x%x pciat=0x%x fwsec1=0x%x",
+              falcon_data_ptr, pciat_image_size, first_fwsec_size);
 
     if (pmu_table_abs + 4 > vbios_size) {
         log::error("nvidia: fw: PMU Lookup Table out of bounds");
@@ -538,9 +584,14 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
 
         if (app_id == 0x85) { // FWSEC_PROD
             // Adjust offset same way as falcon_data_ptr
-            fwsec_desc_offset = fwsec_image_offset +
-                                (desc_ptr - pciat_image_size - first_fwsec_size);
-            log::info("nvidia: fw: FWSEC_PROD descriptor at absolute offset 0x%x", fwsec_desc_offset);
+            uint32_t desc_adjusted = desc_ptr - pciat_image_size;
+            if (desc_adjusted < first_fwsec_size) {
+                log::error("nvidia: fw: FWSEC descriptor falls in first FwSec image — unsupported");
+                return ERR_UNSUPPORTED;
+            }
+            fwsec_desc_offset = fwsec_image_offset + (desc_adjusted - first_fwsec_size);
+            log::info("nvidia: fw: FWSEC_PROD descriptor: raw=0x%x adjusted=0x%x abs=0x%x",
+                      desc_ptr, desc_adjusted, fwsec_desc_offset);
             break;
         }
     }
@@ -577,14 +628,27 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         return ERR_UNSUPPORTED;
     }
 
-    // Step 7: Extract signatures (immediately after descriptor header)
+    // Validate hdr bit 0 (must be set per nouveau)
+    if (!(out.desc.hdr & 0x00000001)) {
+        log::error("nvidia: fw: FalconUCodeDescV3 hdr bit 0 not set (hdr=0x%08x)", out.desc.hdr);
+        return ERR_INVALID;
+    }
+
+    // Step 7: Extract signatures
+    // Layout: [FalconUCodeDescV3 (44 bytes)] [Signatures] [IMEM + DMEM ucode]
+    // Signatures start at: desc_offset + sizeof(falcon_ucode_desc_v3) = desc_offset + 44
+    // Ucode starts at: desc_offset + desc_hdr_size (hdr_size includes struct + signatures)
     out.sig_count = out.desc.signature_count;
     out.sig_size = RSA3K_SIG_SIZE;
-    uint32_t sigs_offset = fwsec_desc_offset + desc_hdr_size;
+    uint32_t sigs_offset = fwsec_desc_offset + static_cast<uint32_t>(sizeof(falcon_ucode_desc_v3));
     uint32_t sigs_total = out.sig_count * out.sig_size;
 
+    log::info("nvidia: fw: FWSEC sigs: offset=0x%x (desc+%lu), count=%u, total=%u bytes",
+              sigs_offset, sizeof(falcon_ucode_desc_v3), out.sig_count, sigs_total);
+
     if (sigs_offset + sigs_total > vbios_size) {
-        log::error("nvidia: fw: FWSEC signatures out of bounds");
+        log::error("nvidia: fw: FWSEC signatures out of bounds (0x%x + 0x%x > 0x%x)",
+                   sigs_offset, sigs_total, vbios_size);
         return ERR_INVALID;
     }
 
@@ -596,9 +660,17 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
     string::memcpy(out.signatures, vbios + sigs_offset, sigs_total);
     log::info("nvidia: fw: FWSEC: %u signatures extracted (%u bytes each)", out.sig_count, out.sig_size);
 
-    // Step 8: Extract ucode (IMEM + DMEM, immediately after signatures)
-    uint32_t ucode_offset = sigs_offset + sigs_total;
-    out.ucode_size = out.desc.imem_load_size + out.desc.dmem_load_size;
+    // Step 8: Extract ucode (IMEM + DMEM)
+    // Ucode starts at desc_offset + desc_hdr_size (NOT + sigs_total; hdr_size includes sigs)
+    uint32_t ucode_offset = fwsec_desc_offset + desc_hdr_size;
+    // Align DMEM load size to 256 bytes (falcon DMA requirement)
+    uint32_t dmem_aligned = (out.desc.dmem_load_size + (DMEM_ALIGN - 1)) & ~(DMEM_ALIGN - 1);
+    out.ucode_size = out.desc.imem_load_size + dmem_aligned;
+
+    log::info("nvidia: fw: FWSEC ucode: offset=0x%x (desc+hdr_size=%u), "
+              "imem=%u + dmem=%u (aligned %u) = %u bytes",
+              ucode_offset, desc_hdr_size,
+              out.desc.imem_load_size, out.desc.dmem_load_size, dmem_aligned, out.ucode_size);
 
     if (ucode_offset + out.ucode_size > vbios_size) {
         log::error("nvidia: fw: FWSEC ucode out of bounds (0x%x + 0x%x > 0x%x)",

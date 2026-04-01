@@ -201,6 +201,20 @@ struct booter_fw {
     hs_load_header_v2 load_hdr;
     hs_load_app_v2   app;        // First (and typically only) app entry
 
+    // Dereferenced indirect values from HsHeaderV2
+    uint32_t patch_loc_val;      // DMEM offset for signature patching
+    uint32_t patch_sig_val;      // Base index into signatures array
+    uint32_t num_sig_val;        // Number of available signatures
+
+    // Signature metadata (for fuse-version-based signature selection)
+    hs_sig_params sig_meta;
+
+    // Boot address (falcon entry point)
+    uint32_t boot_addr;
+
+    // Per-signature size (sig_prod_size / num_sig_val)
+    uint32_t per_sig_size;
+
     // Payload info
     const uint8_t* payload;      // Points into raw_data at hdr.data_offset
     uint32_t       payload_size; // = hdr.data_size
