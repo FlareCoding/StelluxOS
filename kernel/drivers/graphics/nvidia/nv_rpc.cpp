@@ -4,6 +4,7 @@
 #include "hw/barrier.h"
 #include "clock/clock.h"
 #include "dynpriv/dynpriv.h"
+#include "mm/heap.h"
 #include "common/logging.h"
 #include "common/string.h"
 
@@ -46,10 +47,13 @@ int32_t rpc_send(nv_gpu* gpu, gsp_boot_state& state,
         return ERR_IO;
     }
 
-    // Build the message in a temporary buffer first, then copy to queue
+    // Build the message in a heap-allocated temporary buffer, then copy to queue
     // handling wrap-around if the message spans the end of the ring buffer
-    uint8_t temp_buf[16 * GSP_PAGE_SIZE_VAL]; // Max 16 pages
-    string::memset(temp_buf, 0, padded_len);
+    uint8_t* temp_buf = static_cast<uint8_t*>(heap::kzalloc(padded_len));
+    if (!temp_buf) {
+        log::error("nvidia: rpc: failed to allocate %u bytes for message buffer", padded_len);
+        return ERR_NOT_FOUND;
+    }
 
     // Fill transport header
     uint8_t* entry = temp_buf;
@@ -106,6 +110,9 @@ int32_t rpc_send(nv_gpu* gpu, gsp_boot_state& state,
     barrier::smp_write(); // ensure all writes are visible before updating wptr
     cmdq_hdr->tx.write_ptr = (wptr + elem_count) % msg_count;
     barrier::smp_full(); // full barrier before doorbell
+
+    // Free temporary buffer
+    heap::kfree(temp_buf);
 
     // Ring doorbell — write to falcon MAILBOX0 at GSP base + 0xC00
     gpu->reg_wr32(reg::FALCON_GSP_BASE + FALCON_DOORBELL, 0x00000000);
@@ -223,13 +230,12 @@ int32_t rm_alloc(nv_gpu* gpu, gsp_boot_state& state,
                  uint32_t h_class, const void* params, uint32_t params_size) {
     // Build the rm_alloc payload: header + class-specific params
     uint32_t total = sizeof(rm_alloc_params) + params_size;
-    uint8_t buf[4096]; // Stack buffer (max 4KB payload)
-    if (total > sizeof(buf)) {
-        log::error("nvidia: rm_alloc: payload too large (%u)", total);
-        return ERR_INVALID;
+    uint8_t* buf = static_cast<uint8_t*>(heap::kzalloc(total));
+    if (!buf) {
+        log::error("nvidia: rm_alloc: failed to allocate %u bytes", total);
+        return ERR_NOT_FOUND;
     }
 
-    string::memset(buf, 0, total);
     rm_alloc_params* alloc = reinterpret_cast<rm_alloc_params*>(buf);
     alloc->h_client = h_client;
     alloc->h_parent = h_parent;
@@ -238,6 +244,7 @@ int32_t rm_alloc(nv_gpu* gpu, gsp_boot_state& state,
     alloc->status = 0;
     alloc->params_size = params_size;
     alloc->flags = 0;
+    string::memset(alloc->reserved, 0, sizeof(alloc->reserved));
 
     if (params && params_size > 0) {
         string::memcpy(buf + sizeof(rm_alloc_params), params, params_size);
@@ -246,13 +253,16 @@ int32_t rm_alloc(nv_gpu* gpu, gsp_boot_state& state,
     log::info("nvidia: rm_alloc: client=0x%x parent=0x%x object=0x%x class=0x%04x params=%u",
               h_client, h_parent, h_object, h_class, params_size);
 
-    // Send and receive
-    uint8_t reply[4096];
+    // Send and receive (allocate reply on heap too)
+    uint8_t* reply = static_cast<uint8_t*>(heap::kzalloc(total + 256));
     uint32_t reply_size = 0;
     int32_t rc = rpc_call(gpu, state, NV_VGPU_MSG_FUNCTION_RM_ALLOC,
-                          buf, total, reply, sizeof(reply), &reply_size, 4000);
+                          buf, total, reply, total + 256, &reply_size, 4000);
+    heap::kfree(buf);
+
     if (rc != OK) {
         log::error("nvidia: rm_alloc: RPC failed: %d", rc);
+        heap::kfree(reply);
         return rc;
     }
 
@@ -262,10 +272,12 @@ int32_t rm_alloc(nv_gpu* gpu, gsp_boot_state& state,
         if (result->status != 0) {
             log::error("nvidia: rm_alloc: GSP returned status 0x%x for class 0x%04x",
                        result->status, h_class);
+            heap::kfree(reply);
             return ERR_IO;
         }
     }
 
+    heap::kfree(reply);
     log::info("nvidia: rm_alloc: success — handle 0x%x (class 0x%04x)", h_object, h_class);
     return OK;
 }
@@ -278,13 +290,12 @@ int32_t rm_control(nv_gpu* gpu, gsp_boot_state& state,
                    uint32_t h_client, uint32_t h_object,
                    uint32_t cmd, void* params, uint32_t params_size) {
     uint32_t total = sizeof(rm_control_params) + params_size;
-    uint8_t buf[8192]; // Stack buffer
-    if (total > sizeof(buf)) {
-        log::error("nvidia: rm_control: payload too large (%u)", total);
-        return ERR_INVALID;
+    uint8_t* buf = static_cast<uint8_t*>(heap::kzalloc(total));
+    if (!buf) {
+        log::error("nvidia: rm_control: failed to allocate %u bytes", total);
+        return ERR_NOT_FOUND;
     }
 
-    string::memset(buf, 0, total);
     rm_control_params* ctrl = reinterpret_cast<rm_control_params*>(buf);
     ctrl->h_client = h_client;
     ctrl->h_object = h_object;
@@ -300,11 +311,17 @@ int32_t rm_control(nv_gpu* gpu, gsp_boot_state& state,
     log::debug("nvidia: rm_control: client=0x%x obj=0x%x cmd=0x%08x params=%u",
                h_client, h_object, cmd, params_size);
 
-    uint8_t reply[8192];
+    uint32_t reply_max = total + 256;
+    uint8_t* reply = static_cast<uint8_t*>(heap::kzalloc(reply_max));
     uint32_t reply_size = 0;
     int32_t rc = rpc_call(gpu, state, NV_VGPU_MSG_FUNCTION_RM_CONTROL,
-                          buf, total, reply, sizeof(reply), &reply_size, 4000);
-    if (rc != OK) return rc;
+                          buf, total, reply, reply_max, &reply_size, 4000);
+    heap::kfree(buf);
+
+    if (rc != OK) {
+        heap::kfree(reply);
+        return rc;
+    }
 
     // Copy output params back to caller
     if (reply_size >= sizeof(rm_control_params) + params_size && params && params_size > 0) {
@@ -316,10 +333,12 @@ int32_t rm_control(nv_gpu* gpu, gsp_boot_state& state,
         rm_control_params* result = reinterpret_cast<rm_control_params*>(reply);
         if (result->status != 0) {
             log::warn("nvidia: rm_control: cmd 0x%08x returned status 0x%x", cmd, result->status);
+            heap::kfree(reply);
             return ERR_IO;
         }
     }
 
+    heap::kfree(reply);
     return OK;
 }
 
@@ -361,34 +380,40 @@ struct __attribute__((packed)) gsp_system_info_minimal {
 int32_t rpc_set_system_info(nv_gpu* gpu, gsp_boot_state& state) {
     log::info("nvidia: rpc: sending SET_SYSTEM_INFO");
 
-    gsp_system_info_minimal info;
-    string::memset(&info, 0, sizeof(info));
+    gsp_system_info_minimal* info = static_cast<gsp_system_info_minimal*>(
+        heap::kzalloc(sizeof(gsp_system_info_minimal)));
+    if (!info) {
+        log::error("nvidia: rpc: failed to allocate system info buffer");
+        return ERR_NOT_FOUND;
+    }
 
     // Fill critical fields from PCI device
     const pci::bar& bar0 = gpu->dev().get_bar(0);
     const pci::bar& bar1 = gpu->dev().get_bar(1);
     const pci::bar& bar3 = gpu->dev().get_bar(3);
 
-    info.gpu_phys_addr = bar0.phys;
-    info.gpu_phys_fb_addr = bar1.phys;
-    info.gpu_phys_inst_addr = bar3.phys;
+    info->gpu_phys_addr = bar0.phys;
+    info->gpu_phys_fb_addr = bar1.phys;
+    info->gpu_phys_inst_addr = bar3.phys;
 
     // PCI BDF encoding: (bus << 8) | (slot << 3) | func
-    info.nv_domain_bus_device_func =
+    info->nv_domain_bus_device_func =
         (static_cast<uint64_t>(gpu->dev().bus()) << 8) |
         (static_cast<uint64_t>(gpu->dev().slot()) << 3) |
         gpu->dev().func();
 
-    info.max_user_va = 0x800000000000ULL; // x86_64 TASK_SIZE equivalent
-    info.pci_config_mirror_base = 0x088000;
-    info.pci_config_mirror_size = 0x001000;
+    info->max_user_va = 0x800000000000ULL; // x86_64 TASK_SIZE equivalent
+    info->pci_config_mirror_base = 0x088000;
+    info->pci_config_mirror_size = 0x001000;
 
     log::info("nvidia: rpc: sysinfo: bar0=0x%lx bar1=0x%lx bar3=0x%lx bdf=0x%lx",
-              info.gpu_phys_addr, info.gpu_phys_fb_addr,
-              info.gpu_phys_inst_addr, info.nv_domain_bus_device_func);
+              info->gpu_phys_addr, info->gpu_phys_fb_addr,
+              info->gpu_phys_inst_addr, info->nv_domain_bus_device_func);
 
-    return rpc_send(gpu, state, NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO,
-                    &info, sizeof(info));
+    int32_t rc = rpc_send(gpu, state, NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO,
+                          info, sizeof(gsp_system_info_minimal));
+    heap::kfree(info);
+    return rc;
 }
 
 // ============================================================================
@@ -432,27 +457,32 @@ int32_t rpc_set_registry(nv_gpu* gpu, gsp_boot_state& state) {
 int32_t rpc_get_gsp_static_info(nv_gpu* gpu, gsp_boot_state& state) {
     log::info("nvidia: rpc: requesting GET_GSP_STATIC_INFO");
 
-    // Send empty request
-    uint8_t reply[8192]; // GspStaticConfigInfo is large
-    uint32_t reply_size = 0;
+    // Send empty request — reply is large (GspStaticConfigInfo)
+    constexpr uint32_t STATIC_INFO_MAX = 16384; // 16KB should be enough
+    uint8_t* reply = static_cast<uint8_t*>(heap::kzalloc(STATIC_INFO_MAX));
+    if (!reply) {
+        log::error("nvidia: rpc: failed to allocate static info reply buffer");
+        return ERR_NOT_FOUND;
+    }
 
+    uint32_t reply_size = 0;
     int32_t rc = rpc_call(gpu, state, NV_VGPU_MSG_FUNCTION_GET_STATIC_INFO,
-                          nullptr, 0, reply, sizeof(reply), &reply_size, 4000);
+                          nullptr, 0, reply, STATIC_INFO_MAX, &reply_size, 4000);
     if (rc != OK) {
         log::error("nvidia: rpc: GET_GSP_STATIC_INFO failed: %d", rc);
+        heap::kfree(reply);
         return rc;
     }
 
     log::info("nvidia: rpc: GET_GSP_STATIC_INFO received (%u bytes)", reply_size);
 
     // Extract a few key fields for logging (offsets depend on exact struct version)
-    // For now, just log that we received it successfully
     if (reply_size >= 8) {
-        // The first u64 should contain the FB length
         uint64_t fb_length = *reinterpret_cast<uint64_t*>(reply);
         log::info("nvidia: rpc: static info: fb_length=0x%lx", fb_length);
     }
 
+    heap::kfree(reply);
     return OK;
 }
 
