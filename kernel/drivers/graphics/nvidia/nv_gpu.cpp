@@ -1004,6 +1004,35 @@ int32_t nv_gpu::probe_monitors() {
     log::info("nvidia: Phase 3: Probing connected monitors");
     log::info("nvidia: ========================================");
 
+    // Dump initial state of all I2C/AUX/pad registers for diagnostics
+    log::info("nvidia: ---- Pre-probe register state dump ----");
+    for (uint8_t i = 0; i < m_i2c.count; i++) {
+        const i2c_port& p = m_i2c.ports[i];
+        if (!p.valid) continue;
+
+        uint32_t i2c_reg = reg::I2C_PORT_BASE + p.port * reg::I2C_PORT_STRIDE;
+        uint32_t i2c_val = reg_rd32(i2c_reg);
+        log::info("nvidia: I2C[%u] port=%u reg=0x%06x val=0x%08x (SCL=%s SDA=%s)",
+                  i, p.port, i2c_reg, i2c_val,
+                  (i2c_val & reg::I2C_SCL_SENSE) ? "H" : "L",
+                  (i2c_val & reg::I2C_SDA_SENSE) ? "H" : "L");
+
+        if (p.hybrid && p.aux_port != 0x1F) {
+            uint32_t aux_base = reg::AUX_CH_BASE + p.aux_port * reg::AUX_CH_STRIDE;
+            uint32_t aux_ctrl = reg_rd32(aux_base + reg::AUX_CTRL);
+            uint32_t aux_stat = reg_rd32(aux_base + reg::AUX_STAT);
+            uint32_t pad_base = reg::I2C_PAD_BASE + p.aux_port * reg::I2C_PAD_STRIDE;
+            uint32_t pad_mode = reg_rd32(pad_base + reg::I2C_PAD_MODE);
+            uint32_t pad_en   = reg_rd32(pad_base + reg::I2C_PAD_ENABLE);
+            log::info("nvidia:   AUX ch=%u CTRL=0x%08x STAT=0x%08x (HPD=%s)",
+                      p.aux_port, aux_ctrl, aux_stat,
+                      (aux_stat & reg::AUX_STAT_SINK_DET) ? "yes" : "no");
+            log::info("nvidia:   PAD %u mode=0x%08x en=0x%08x (base 0x%06x)",
+                      p.aux_port, pad_mode, pad_en, pad_base);
+        }
+    }
+    log::info("nvidia: ---- End pre-probe dump ----");
+
     m_edid_count = 0;
 
     for (uint8_t i = 0; i < m_dcb.count; i++) {
@@ -1317,42 +1346,56 @@ int32_t nv_gpu::i2c_read_edid(uint8_t port, uint8_t* edid_buf) {
 void nv_gpu::pad_set_i2c_mode(uint8_t pad) {
     uint32_t pad_base = reg::I2C_PAD_BASE + pad * reg::I2C_PAD_STRIDE;
 
+    uint32_t mode_before = reg_rd32(pad_base + reg::I2C_PAD_MODE);
+    uint32_t en_before = reg_rd32(pad_base + reg::I2C_PAD_ENABLE);
+
     // Disable pad first
     reg_mask32(pad_base + reg::I2C_PAD_ENABLE, reg::I2C_PAD_ENABLE_BIT,
                reg::I2C_PAD_ENABLE_BIT);
-    delay::us(10);
+    delay::us(20);
 
     // Switch to I2C mode
     reg_mask32(pad_base + reg::I2C_PAD_MODE, reg::I2C_PAD_MODE_I2C_MASK,
                reg::I2C_PAD_MODE_I2C_VAL);
-    delay::us(10);
+    delay::us(20);
 
     // Re-enable pad
     reg_mask32(pad_base + reg::I2C_PAD_ENABLE, reg::I2C_PAD_ENABLE_BIT, 0);
-    delay::us(10);
+    delay::us(20);
 
-    log::debug("nvidia: pad %u: switched to I2C mode (base 0x%06x)", pad, pad_base);
+    uint32_t mode_after = reg_rd32(pad_base + reg::I2C_PAD_MODE);
+    uint32_t en_after = reg_rd32(pad_base + reg::I2C_PAD_ENABLE);
+
+    log::info("nvidia: pad %u → I2C mode (base 0x%06x): mode 0x%08x→0x%08x, en 0x%08x→0x%08x",
+              pad, pad_base, mode_before, mode_after, en_before, en_after);
 }
 
 // Switch a hybrid I2C/AUX pad to AUX mode
 void nv_gpu::pad_set_aux_mode(uint8_t pad) {
     uint32_t pad_base = reg::I2C_PAD_BASE + pad * reg::I2C_PAD_STRIDE;
 
+    uint32_t mode_before = reg_rd32(pad_base + reg::I2C_PAD_MODE);
+    uint32_t en_before = reg_rd32(pad_base + reg::I2C_PAD_ENABLE);
+
     // Disable pad first
     reg_mask32(pad_base + reg::I2C_PAD_ENABLE, reg::I2C_PAD_ENABLE_BIT,
                reg::I2C_PAD_ENABLE_BIT);
-    delay::us(10);
+    delay::us(20);
 
     // Switch to AUX mode
     reg_mask32(pad_base + reg::I2C_PAD_MODE, reg::I2C_PAD_MODE_AUX_MASK,
                reg::I2C_PAD_MODE_AUX_VAL);
-    delay::us(10);
+    delay::us(20);
 
     // Re-enable pad
     reg_mask32(pad_base + reg::I2C_PAD_ENABLE, reg::I2C_PAD_ENABLE_BIT, 0);
-    delay::us(10);
+    delay::us(20);
 
-    log::debug("nvidia: pad %u: switched to AUX mode (base 0x%06x)", pad, pad_base);
+    uint32_t mode_after = reg_rd32(pad_base + reg::I2C_PAD_MODE);
+    uint32_t en_after = reg_rd32(pad_base + reg::I2C_PAD_ENABLE);
+
+    log::info("nvidia: pad %u → AUX mode (base 0x%06x): mode 0x%08x→0x%08x, en 0x%08x→0x%08x",
+              pad, pad_base, mode_before, mode_after, en_before, en_after);
 }
 
 int32_t nv_gpu::aux_init(uint8_t ch) {
@@ -1435,6 +1478,7 @@ int32_t nv_gpu::aux_init(uint8_t ch) {
 int32_t nv_gpu::aux_xfer(uint8_t ch, uint32_t type, uint32_t addr,
                           uint8_t* buf, uint32_t len, uint32_t* reply) {
     uint32_t base = reg::AUX_CH_BASE + ch * reg::AUX_CH_STRIDE;
+    uint32_t ctrl_reg = base + reg::AUX_CTRL;
 
     // For write: load TX buffer
     if (type == reg::AUX_TYPE_I2C_WR || type == reg::AUX_TYPE_NATIVE_WR) {
@@ -1450,36 +1494,54 @@ int32_t nv_gpu::aux_xfer(uint8_t ch, uint32_t type, uint32_t addr,
     // Set address
     reg_wr32(base + reg::AUX_ADDR, addr);
 
-    // Build control word
-    uint32_t ctrl = (type << reg::AUX_CTRL_TYPE_SHIFT) | ((len > 0) ? (len - 1) : 0);
+    // Build control word: type + size, preserving ownership bits
+    // Read current CTRL to preserve ownership state
+    uint32_t cur_ctrl = reg_rd32(ctrl_reg);
+    uint32_t own_bits = cur_ctrl & 0x00300000; // Preserve ownership request bits
 
-    // Reset, clear, trigger
-    reg_wr32(base + reg::AUX_CTRL, reg::AUX_CTRL_RESET | ctrl);
-    reg_wr32(base + reg::AUX_CTRL, ctrl);
-    reg_wr32(base + reg::AUX_CTRL, reg::AUX_CTRL_TRIGGER | ctrl);
+    uint32_t xfer = (type << reg::AUX_CTRL_TYPE_SHIFT);
+    if (len > 0) {
+        xfer |= (len - 1); // Size field = byte count - 1
+    } else {
+        xfer |= reg::AUX_CTRL_ADDR_ONLY; // Address-only transaction (bit 8)
+    }
 
-    // Wait for completion
-    uint64_t deadline = clock::now_ns() + 2000000; // 2ms
+    // Sequence from nouveau g94_aux_xfer():
+    // 1. Reset (bit 31) + ownership + xfer params
+    // 2. Clear reset, keep ownership + xfer params
+    // 3. Trigger (bit 16) + ownership + xfer params
+    reg_wr32(ctrl_reg, reg::AUX_CTRL_RESET | own_bits | xfer);
+    reg_wr32(ctrl_reg, own_bits | xfer);
+    reg_wr32(ctrl_reg, reg::AUX_CTRL_TRIGGER | own_bits | xfer);
+
+    // Wait for completion (trigger bit clears)
+    uint64_t deadline = clock::now_ns() + 10000000; // 10ms (generous for I2C-over-AUX)
     while (true) {
-        uint32_t c = reg_rd32(base + reg::AUX_CTRL);
+        uint32_t c = reg_rd32(ctrl_reg);
         if (!(c & reg::AUX_CTRL_TRIGGER)) break;
         if (clock::now_ns() >= deadline) {
+            log::warn("nvidia: AUX ch %u xfer timeout (CTRL=0x%08x)", ch, reg_rd32(ctrl_reg));
             return ERR_TIMEOUT;
         }
         delay::us(10);
     }
 
-    // Read status
+    // Read and clear status (write 0 to clear it, as nouveau does with mask(stat, 0, 0))
     uint32_t stat = reg_rd32(base + reg::AUX_STAT);
+    reg_wr32(base + reg::AUX_STAT, 0); // Clear status for next xfer
     *reply = (stat & reg::AUX_STAT_REPLY_MASK) >> reg::AUX_STAT_REPLY_SHIFT;
 
     if (stat & reg::AUX_STAT_TIMEOUT) {
+        log::debug("nvidia: AUX ch %u: xfer AUX timeout (stat=0x%08x)", ch, stat);
         return ERR_TIMEOUT;
     }
 
     // For read: copy RX buffer
     if (type == reg::AUX_TYPE_I2C_RD || type == reg::AUX_TYPE_NATIVE_RD) {
         uint32_t rx_size = stat & reg::AUX_STAT_RX_SIZE_MASK;
+        if (rx_size == 0 && len > 0) {
+            log::debug("nvidia: AUX ch %u: read returned 0 bytes (stat=0x%08x)", ch, stat);
+        }
         for (uint32_t i = 0; i < rx_size && i < len; i += 4) {
             uint32_t word = reg_rd32(base + reg::AUX_RX_DATA + i);
             for (uint32_t j = 0; j < 4 && (i + j) < rx_size && (i + j) < len; j++) {
@@ -1496,22 +1558,50 @@ int32_t nv_gpu::aux_read_edid(uint8_t aux_ch, uint8_t* edid_buf) {
     if (rc != OK) return rc;
 
     uint32_t base = reg::AUX_CH_BASE + aux_ch * reg::AUX_CH_STRIDE;
-
-    // Read EDID via I2C-over-AUX
-    // Write: address 0x50, offset 0x00
-    uint8_t offset = 0x00;
     uint32_t reply = 0;
 
-    // Send I2C write with address (start)
+    // Step 0: Probe basic AUX connectivity with a native DPCD read.
+    // Read DPCD revision at address 0x00000 (1 byte). This tests the AUX
+    // channel itself without relying on I2C-over-AUX.
+    uint8_t dpcd_rev = 0;
+    rc = aux_xfer(aux_ch, reg::AUX_TYPE_NATIVE_RD, 0x00000, &dpcd_rev, 1, &reply);
+    if (rc == OK && reply == reg::AUX_REPLY_ACK) {
+        log::info("nvidia: AUX ch %u: DPCD rev=0x%02x (native AUX works!)", aux_ch, dpcd_rev);
+
+        // Also read link caps at DPCD 0x00001 (max link rate) and 0x00002 (max lane count)
+        uint8_t dpcd_buf[4] = {};
+        aux_xfer(aux_ch, reg::AUX_TYPE_NATIVE_RD, 0x00001, dpcd_buf, 2, &reply);
+        if (reply == reg::AUX_REPLY_ACK) {
+            log::info("nvidia: AUX ch %u: max link rate=0x%02x, max lanes=%u",
+                      aux_ch, dpcd_buf[0], dpcd_buf[1] & 0x1F);
+        }
+    } else {
+        log::info("nvidia: AUX ch %u: native DPCD read failed (rc=%d reply=%u) — "
+                  "not a DP sink or AUX not functional", aux_ch, rc, reply);
+        // Don't abort — try I2C-over-AUX anyway (some passive DP-to-HDMI adapters
+        // don't respond to native AUX but do support I2C-over-AUX)
+    }
+
+    // Step 1: Read EDID via I2C-over-AUX
+    // Write: address 0x50, offset 0x00 (set EDID pointer to start)
+    uint8_t offset = 0x00;
+
+    // I2C-over-AUX: type 0 = I2C_WR (with MOT=0 for stop, MOT=1 for repeated start)
+    // For DDC: write the offset byte to address 0x50, then read back 128 bytes.
+    // Type 0 (I2C_WR without STOP/MOT bit) = middle-of-transaction
+    // Type 4 would be I2C_WR with STOP. But the NVIDIA HW encoding uses:
+    //   bits[15:12] = 0: I2C write (MOT=1, no stop)
+    //   The stop is sent by a separate address-only transaction.
     rc = aux_xfer(aux_ch, reg::AUX_TYPE_I2C_WR, reg::I2C_DDC_ADDR, &offset, 1, &reply);
     if (rc != OK || reply != reg::AUX_REPLY_ACK) {
-        log::debug("nvidia: AUX ch %u: I2C write addr failed (rc=%d reply=%u)", aux_ch, rc, reply);
+        log::info("nvidia: AUX ch %u: I2C-over-AUX write addr failed (rc=%d reply=%u)",
+                  aux_ch, rc, reply);
         // Release ownership
         reg_mask32(base + reg::AUX_CTRL, 0x00310000, 0x00000000);
         return (rc != OK) ? rc : ERR_NACK;
     }
 
-    // Read EDID in 16-byte chunks (AUX max payload)
+    // Step 2: Read EDID in 16-byte chunks (AUX max payload)
     for (uint32_t off = 0; off < EDID_BLOCK_SIZE; off += 16) {
         uint32_t chunk = 16;
         if (off + chunk > EDID_BLOCK_SIZE) chunk = EDID_BLOCK_SIZE - off;
@@ -1519,16 +1609,18 @@ int32_t nv_gpu::aux_read_edid(uint8_t aux_ch, uint8_t* edid_buf) {
         rc = aux_xfer(aux_ch, reg::AUX_TYPE_I2C_RD, reg::I2C_DDC_ADDR,
                       &edid_buf[off], chunk, &reply);
         if (rc != OK || reply != reg::AUX_REPLY_ACK) {
-            log::debug("nvidia: AUX ch %u: I2C read failed at off=%u (rc=%d reply=%u)",
-                       aux_ch, off, rc, reply);
+            log::info("nvidia: AUX ch %u: I2C-over-AUX read failed at off=%u (rc=%d reply=%u)",
+                      aux_ch, off, rc, reply);
             reg_mask32(base + reg::AUX_CTRL, 0x00310000, 0x00000000);
             return (rc != OK) ? rc : ERR_NACK;
         }
     }
 
-    // I2C stop (address-only with no data)
+    // Step 3: I2C stop — send address-only write to signal end of I2C transaction.
+    // Use I2C_WR_STOP (type 4 = MOT=0, meaning "last transaction, send STOP")
+    // with size=0 (address-only).
     uint8_t dummy = 0;
-    aux_xfer(aux_ch, reg::AUX_TYPE_I2C_WR | 0x4, reg::I2C_DDC_ADDR, &dummy, 0, &reply);
+    aux_xfer(aux_ch, reg::AUX_TYPE_I2C_WR_STOP, reg::I2C_DDC_ADDR, &dummy, 0, &reply);
 
     // Release ownership
     reg_mask32(base + reg::AUX_CTRL, 0x00310000, 0x00000000);

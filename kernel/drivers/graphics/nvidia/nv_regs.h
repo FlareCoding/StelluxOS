@@ -144,11 +144,14 @@ constexpr uint32_t AUX_CTRL_TYPE_SHIFT    = 12;
 constexpr uint32_t AUX_CTRL_TYPE_MASK     = (0xF << 12);
 constexpr uint32_t AUX_CTRL_ADDR_ONLY     = (1 << 8);
 
-// AUX transaction types (for CTRL_TYPE field)
+// AUX transaction types (value goes into bits [15:12] via CTRL_TYPE_SHIFT)
+// Per nouveau g94_aux_xfer(): cmd is placed in bits [15:12] of CTRL
 constexpr uint32_t AUX_TYPE_I2C_WR        = 0x0;
 constexpr uint32_t AUX_TYPE_I2C_RD        = 0x1;
-constexpr uint32_t AUX_TYPE_NATIVE_WR     = 0x8; // Actually 0x4 shifted
-constexpr uint32_t AUX_TYPE_NATIVE_RD     = 0x9; // Actually 0x5 shifted
+constexpr uint32_t AUX_TYPE_I2C_WR_STOP   = 0x4; // I2C write with STOP (MOT=0)
+constexpr uint32_t AUX_TYPE_I2C_RD_STOP   = 0x5; // I2C read with STOP (MOT=0)
+constexpr uint32_t AUX_TYPE_NATIVE_WR     = 0x8; // Native AUX write
+constexpr uint32_t AUX_TYPE_NATIVE_RD     = 0x9; // Native AUX read
 
 // AUX status register bits
 constexpr uint32_t AUX_STAT_SINK_DET      = (1 << 28); // Sink/HPD detected
