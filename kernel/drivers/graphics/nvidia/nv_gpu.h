@@ -52,6 +52,7 @@ public:
     // VBIOS data accessors
     const uint8_t* vbios_data() const { return m_vbios; }
     uint32_t vbios_size() const { return m_vbios_size; }
+    uint32_t bit_offset() const { return m_bit_offset; }
 
     // Parsed tables
     dcb_table& get_dcb() { return m_dcb; }
