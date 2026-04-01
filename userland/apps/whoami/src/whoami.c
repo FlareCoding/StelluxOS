@@ -4,6 +4,8 @@
 #include <unistd.h>
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     uid_t uid = getuid();
 
     FILE* fp = fopen("/etc/passwd", "r");

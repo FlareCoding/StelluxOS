@@ -4,6 +4,15 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+static int is_all_digits(const char* s) {
+    if (!*s) return 0;
+    while (*s) {
+        if (*s < '0' || *s > '9') return 0;
+        s++;
+    }
+    return 1;
+}
+
 static void head_stream(FILE* fp, int n) {
     char line[4096];
     int count = 0;
@@ -25,6 +34,9 @@ int main(int argc, char* argv[]) {
             if (n <= 0) n = 10;
         } else if (argv[i][0] == '-' && argv[i][1] >= '0' && argv[i][1] <= '9') {
             n = atoi(argv[i] + 1);
+            if (n <= 0) n = 10;
+        } else if (file_start < 0 && is_all_digits(argv[i])) {
+            n = atoi(argv[i]);
             if (n <= 0) n = 10;
         } else {
             file_start = i;

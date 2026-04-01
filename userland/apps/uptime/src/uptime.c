@@ -3,6 +3,8 @@
 #include <time.h>
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
         fprintf(stderr, "uptime: clock_gettime failed\n");
