@@ -142,6 +142,13 @@ CXXFLAGS_CONFIG := -DMAX_CPUS=$(MAX_CPUS)
 CXXFLAGS_CONFIG += -DSTLX_BUILD_EPOCH=$(STLX_BUILD_EPOCH)
 CXXFLAGS_CONFIG += -DSTLX_VERSION='"$(STLX_VERSION)"'
 
+# uname release / version (version: mode, platform, UTC time from STLX_BUILD_EPOCH)
+STLX_BUILD_DATE := $(shell date -u -d @$(STLX_BUILD_EPOCH) +'%Y-%m-%d %H:%M UTC' 2>/dev/null || date -u -r $(STLX_BUILD_EPOCH) +'%Y-%m-%d %H:%M UTC' 2>/dev/null || echo unknown)
+STLX_UNAME_RELEASE := $(STLX_VERSION)-$(ARCH)-$(MODE_NAME)
+STLX_UNAME_VERSION := $(STLX_BUILD_DATE)
+CXXFLAGS_CONFIG += -DSTLX_UNAME_RELEASE='"$(STLX_UNAME_RELEASE)"'
+CXXFLAGS_CONFIG += -DSTLX_UNAME_VERSION='"$(STLX_UNAME_VERSION)"'
+
 # Platform define (e.g., PLATFORM=rpi4 → -DSTLX_PLATFORM_RPI4)
 ifneq ($(PLATFORM),qemu-virt)
 PLATFORM_UPPER := $(shell echo '$(PLATFORM)' | tr 'a-z-' 'A-Z_')
