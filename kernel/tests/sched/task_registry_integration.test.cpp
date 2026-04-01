@@ -89,12 +89,13 @@ static void multi_fn(void*) {
 TEST(task_registry_integration, multiple_tasks_appear) {
     g_multi_done = 0;
     uint32_t tids[MULTI_COUNT];
+    sched::task* tasks[MULTI_COUNT] = {};
 
     RUN_ELEVATED({
         for (uint32_t i = 0; i < MULTI_COUNT; i++) {
-            sched::task* t = sched::create_kernel_task(multi_fn, nullptr, "reg_multi");
-            ASSERT_NOT_NULL(t);
-            tids[i] = t->tid;
+            tasks[i] = sched::create_kernel_task(multi_fn, nullptr, "reg_multi");
+            ASSERT_NOT_NULL(tasks[i]);
+            tids[i] = tasks[i]->tid;
         }
     });
 
@@ -103,12 +104,14 @@ TEST(task_registry_integration, multiple_tasks_appear) {
         EXPECT_TRUE(tid_in_snapshot(tids[i]));
     }
 
-    // Enqueue all so they can run and exit
-    // NOTE: we need to re-find the tasks to enqueue them. Since we didn't
-    // save pointers across the RUN_ELEVATED block boundary, we'll use a
-    // different approach: create and enqueue in one block.
-    // Actually, we already verified the key property. Let the tasks run.
-    // Re-create and enqueue to clean up.
+    // Enqueue all so they can run, exit, and be reaped (no leak)
+    RUN_ELEVATED({
+        for (uint32_t i = 0; i < MULTI_COUNT; i++) {
+            sched::enqueue(tasks[i]);
+        }
+    });
+
+    ASSERT_TRUE(spin_wait_ge(&g_multi_done, MULTI_COUNT));
 }
 
 // --- count_increases_on_create ---
