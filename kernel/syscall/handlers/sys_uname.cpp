@@ -19,9 +19,6 @@ __PRIVILEGED_CODE static void fill_field(char* dst, const char* src) {
     string::memset(dst + len, 0, UTS_FIELD_LEN - len);
 }
 
-/**
- * @note Privilege: **required**
- */
 DEFINE_SYSCALL1(uname, u_buf) {
     if (u_buf == 0) {
         return syscall::EFAULT;
