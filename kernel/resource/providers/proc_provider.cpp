@@ -1,6 +1,7 @@
 #include "resource/providers/proc_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "sched/task_registry.h"
 #include "mm/vma.h"
 #include "mm/vmm.h"
 #include "mm/heap.h"
@@ -184,6 +185,7 @@ __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
     }
 
     vmm::free(t->sys_stack_base);
+    sched::g_task_registry.remove(*t);
     heap::kfree_delete(t);
 }
 

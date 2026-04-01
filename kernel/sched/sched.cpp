@@ -1,6 +1,7 @@
 #include "sched/sched.h"
 #include "sched/sched_internal.h"
 #include "sched/task.h"
+#include "sched/task_registry.h"
 #include "sched/sched_policy.h"
 #include "sched/runqueue.h"
 #include "sched/fpu.h"
@@ -141,6 +142,7 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
         return rc::reaper::RETRY_LATER;
     }
 
+    g_task_registry.remove(*t);
     resource::close_all(t);
     if (t->cwd) {
         if (t->cwd->release()) {
@@ -524,6 +526,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
 
     t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     t->state = TASK_STATE_CREATED;
+    t->task_registry_link = {};
     t->sched_link = {};
     t->wait_link = {};
     t->timer_link = {};
@@ -544,6 +547,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->group = nullptr;
     t->group_link = {};
 
+    g_task_registry.insert(t);
     return t;
 }
 
@@ -724,6 +728,7 @@ __PRIVILEGED_CODE task* create_user_task(
 
     t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     t->state = TASK_STATE_CREATED;
+    t->task_registry_link = {};
     t->sched_link = {};
     t->wait_link = {};
     t->timer_link = {};
@@ -767,6 +772,7 @@ __PRIVILEGED_CODE task* create_user_task(
     image->mm_ctx = nullptr;
     image->pt_root = 0;
 
+    g_task_registry.insert(t);
     return t;
 }
 
@@ -833,6 +839,7 @@ __PRIVILEGED_CODE task* create_user_thread(
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
 
+    t->task_registry_link = {};
     t->sched_link = {};
     t->wait_link = {};
     t->timer_link = {};
@@ -877,6 +884,7 @@ __PRIVILEGED_CODE task* create_user_thread(
         t->cwd->add_ref();
     }
 
+    g_task_registry.insert(t);
     return t;
 }
 
@@ -907,6 +915,7 @@ __PRIVILEGED_CODE int32_t init() {
     idle->state = TASK_STATE_RUNNING;
     idle->task_stack_base = 0;
     idle->sys_stack_base = 0;
+    idle->task_registry_link = {};
     idle->sched_link = {};
     idle->wait_link = {};
     idle->timer_link = {};
@@ -942,6 +951,11 @@ __PRIVILEGED_CODE int32_t init() {
     }
     policy->init();
     rq.policy = policy;
+
+    if (g_task_registry.init() != 0) {
+        log::error("sched: task registry init failed");
+        return ERR_NO_MEM;
+    }
 
     log::info("sched: initialized (round-robin, tid0=idle)");
     return OK;
