@@ -226,6 +226,91 @@ constexpr uint32_t PCI_ROM_ADDR_MASK      = 0xFFFFF800;
 // PDISPLAY — Display Engine (0x610000+)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Falcon Microcontroller Registers (relative to falcon base)
+// GSP Falcon base: 0x110000, SEC2 Falcon base: 0x840000
+// ---------------------------------------------------------------------------
+
+constexpr uint32_t FALCON_GSP_BASE           = 0x110000;
+constexpr uint32_t FALCON_SEC2_BASE          = 0x840000;
+
+// Core control
+constexpr uint32_t FALCON_IRQSCLR            = 0x004;
+constexpr uint32_t FALCON_IRQSTAT            = 0x008;
+constexpr uint32_t FALCON_IRQMASK            = 0x014;
+constexpr uint32_t FALCON_MAILBOX0           = 0x040;
+constexpr uint32_t FALCON_MAILBOX1           = 0x044;
+constexpr uint32_t FALCON_IRQMODE            = 0x048;
+constexpr uint32_t FALCON_RM                 = 0x084;
+constexpr uint32_t FALCON_HWCFG2             = 0x0F4;
+constexpr uint32_t FALCON_CPUCTL             = 0x100;
+constexpr uint32_t FALCON_BOOTVEC            = 0x104;
+constexpr uint32_t FALCON_HWCFG_CODE_DATA    = 0x108;
+constexpr uint32_t FALCON_DMACTL             = 0x10C;
+constexpr uint32_t FALCON_DMATRFBASE         = 0x110;
+constexpr uint32_t FALCON_DMATRFMOFFS        = 0x114;
+constexpr uint32_t FALCON_DMATRFCMD          = 0x118;
+constexpr uint32_t FALCON_DMATRFFBOFFS       = 0x11C;
+constexpr uint32_t FALCON_DMATRFBASE1        = 0x128;
+constexpr uint32_t FALCON_CPUCTL_ALIAS       = 0x130;
+constexpr uint32_t FALCON_ENGINE             = 0x3C0;
+
+// FBIF (Framebuffer Interface)
+constexpr uint32_t FALCON_FBIF_TRANSCFG      = 0x600;
+constexpr uint32_t FALCON_FBIF_CTL           = 0x624;
+
+// DMEM PIO access
+constexpr uint32_t FALCON_DMEMC0             = 0x1C0;
+constexpr uint32_t FALCON_DMEMD0             = 0x1C4;
+
+// BROM registers (at base + 0x1000)
+constexpr uint32_t FALCON_BROM_MOD_SEL       = 0x1180;
+constexpr uint32_t FALCON_BROM_UCODE_ID      = 0x1198;
+constexpr uint32_t FALCON_BROM_ENGIDMASK     = 0x119C;
+constexpr uint32_t FALCON_BROM_PARAADDR      = 0x1210;
+
+// RISC-V core select (GA102+)
+constexpr uint32_t FALCON_RISCV_BCR_CTRL     = 0x1668;
+
+// CPUCTL bits
+constexpr uint32_t FALCON_CPUCTL_STARTCPU    = (1 << 1);
+constexpr uint32_t FALCON_CPUCTL_HALTED      = (1 << 4);
+constexpr uint32_t FALCON_CPUCTL_ALIAS_EN    = (1 << 6);
+
+// HWCFG2 bits
+constexpr uint32_t FALCON_HWCFG2_RESET_READY = (1u << 31);
+constexpr uint32_t FALCON_HWCFG2_MEM_SCRUB   = (1 << 12);
+
+// DMA transfer command bits
+constexpr uint32_t FALCON_DMA_IDLE           = (1 << 1);
+constexpr uint32_t FALCON_DMA_SEC            = (1 << 2);
+constexpr uint32_t FALCON_DMA_IMEM           = (1 << 4);
+constexpr uint32_t FALCON_DMA_SIZE_256       = (6 << 8); // ilog2(256) - 2 = 6
+
+// FBIF TRANSCFG values
+constexpr uint32_t FALCON_FBIF_TARGET_COHERENT = 0x01; // bits[1:0]
+constexpr uint32_t FALCON_FBIF_MEM_PHYSICAL    = 0x04; // bit[2]
+constexpr uint32_t FALCON_FBIF_CTL_ALLOW_PHYS  = (1 << 7);
+
+// Fuse version registers (absolute BAR0 addresses)
+constexpr uint32_t FUSE_GSP_BASE             = 0x8241C0; // + (ucode_id-1)*4
+constexpr uint32_t FUSE_SEC2_BASE            = 0x824140; // + (ucode_id-1)*4
+
+// FWSEC error/status registers (absolute BAR0 addresses)
+constexpr uint32_t FWSEC_SCRATCH_E           = 0x001438; // FRTS error (upper 16 bits)
+constexpr uint32_t WPR2_ADDR_LO              = 0x1FA824; // WPR2 lower bound
+constexpr uint32_t WPR2_ADDR_HI              = 0x1FA828; // WPR2 upper bound
+
+// VRAM size register (GA102+)
+constexpr uint32_t VIDMEM_SIZE_GA102         = 0x1183A4; // value << 20 = bytes
+
+// VGA workspace register
+constexpr uint32_t VGA_WORKSPACE_BASE        = 0x625F04;
+
+// ---------------------------------------------------------------------------
+// PDISPLAY — Display Engine (0x610000+)
+// ---------------------------------------------------------------------------
+
 // Display global control
 constexpr uint32_t DISP_CAPS_HEAD_MASK    = 0x610060; // bits [7:0] = head present
 constexpr uint32_t DISP_CAPS_SOR_MASK     = 0x610060; // bits [15:8] = SOR present
