@@ -33,6 +33,9 @@ userland/build/
 initrd/bin/*
 !initrd/bin/.gitkeep
 
+# GPU firmware blobs (tracked despite *.bin rule)
+!initrd/lib/firmware/**/*.bin
+
 # OS files
 .DS_Store
 Thumbs.db
