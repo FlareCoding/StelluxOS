@@ -46,14 +46,13 @@ int32_t rpc_send(nv_gpu* gpu, gsp_boot_state& state,
         return ERR_IO;
     }
 
-    // Build the message at the write pointer position
-    uint32_t slot = wptr % msg_count;
-    uint8_t* entry = cmdq_base + entry_off + slot * QUEUE_ENTRY_SIZE;
-
-    // Zero the entire padded area
-    string::memset(entry, 0, padded_len);
+    // Build the message in a temporary buffer first, then copy to queue
+    // handling wrap-around if the message spans the end of the ring buffer
+    uint8_t temp_buf[16 * GSP_PAGE_SIZE_VAL]; // Max 16 pages
+    string::memset(temp_buf, 0, padded_len);
 
     // Fill transport header
+    uint8_t* entry = temp_buf;
     gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(entry);
     msg->elem_count = elem_count;
     msg->seq_num = state.cmdq_seq++;
@@ -62,7 +61,7 @@ int32_t rpc_send(nv_gpu* gpu, gsp_boot_state& state,
     // Fill RPC header
     rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
     rpc->header_version = RPC_HDR_VERSION;
-    rpc->signature = 0x56525043; // 'V'<<24 | 'R'<<16 | 'P'<<8 | 'C'
+    rpc->signature = RPC_SIGNATURE; // 0x43505256 = ('C'<<24)|('P'<<16)|('R'<<8)|'V'
     rpc->length = rpc_len;
     rpc->function = function;
     rpc->rpc_result = 0xFFFFFFFF;
@@ -83,6 +82,25 @@ int32_t rpc_send(nv_gpu* gpu, gsp_boot_state& state,
         csum ^= reinterpret_cast<volatile uint64_t*>(entry)[i];
     }
     msg->checksum = static_cast<uint32_t>((csum >> 32) ^ (csum & 0xFFFFFFFF));
+
+    // Copy message to queue, handling ring buffer wrap-around
+    uint32_t slot = wptr % msg_count;
+    uint32_t off = 0;
+    uint32_t remaining = padded_len;
+    uint32_t cur_slot = slot;
+
+    while (remaining > 0) {
+        uint32_t step_pages = msg_count - cur_slot; // Pages until end of ring
+        uint32_t step_bytes = step_pages * QUEUE_ENTRY_SIZE;
+        if (step_bytes > remaining) step_bytes = remaining;
+
+        uint8_t* dst = cmdq_base + entry_off + cur_slot * QUEUE_ENTRY_SIZE;
+        string::memcpy(dst, temp_buf + off, step_bytes);
+
+        off += step_bytes;
+        remaining -= step_bytes;
+        cur_slot = (cur_slot + step_bytes / QUEUE_ENTRY_SIZE) % msg_count;
+    }
 
     // Update write pointer (with memory barriers)
     barrier::smp_write(); // ensure all writes are visible before updating wptr
@@ -310,10 +328,11 @@ int32_t rm_control(nv_gpu* gpu, gsp_boot_state& state,
 // ============================================================================
 
 int32_t rm_free(nv_gpu* gpu, gsp_boot_state& state,
-                uint32_t h_client, uint32_t h_object) {
+                uint32_t h_client, uint32_t h_parent, uint32_t h_object) {
     rm_free_params params;
-    params.h_client = h_client;
-    params.h_object = h_object;
+    params.h_root = h_client;
+    params.h_object_parent = h_parent;
+    params.h_object_old = h_object;
     params.status = 0;
 
     return rpc_send(gpu, state, NV_VGPU_MSG_FUNCTION_RM_FREE, &params, sizeof(params));
@@ -475,8 +494,8 @@ int32_t rm_init(nv_gpu* gpu, gsp_boot_state& state, rm_state& rm) {
 
     // Step 3: Allocate device (NV01_DEVICE_0 = 0x0080)
     rm.h_device = rm.next_handle++;
-    // NV0080_ALLOC_PARAMETERS: 48 bytes
-    uint8_t dev_params[48];
+    // NV0080_ALLOC_PARAMETERS: 56 bytes (with alignment padding)
+    uint8_t dev_params[56];
     string::memset(dev_params, 0, sizeof(dev_params));
     // deviceId at offset 0 = 0 (device 0)
     // hClientShare at offset 4 = h_client

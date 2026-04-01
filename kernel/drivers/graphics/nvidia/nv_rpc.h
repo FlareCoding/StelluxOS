@@ -59,7 +59,7 @@ int32_t rpc_call(nv_gpu* gpu, gsp_boot_state& state,
 // RM Object Management
 // ============================================================================
 
-// RM Alloc RPC payload (function 103)
+// RM Alloc RPC payload (function 103) — rpc_gsp_rm_alloc_v03_00
 struct __attribute__((packed)) rm_alloc_params {
     uint32_t h_client;     // Client handle
     uint32_t h_parent;     // Parent object handle
@@ -68,9 +68,10 @@ struct __attribute__((packed)) rm_alloc_params {
     uint32_t status;       // Result status (filled by GSP)
     uint32_t params_size;  // Size of class-specific params
     uint32_t flags;        // Allocation flags
+    uint8_t  reserved[4];  // Padding (required by GSP-RM binary layout)
     // Followed by params_size bytes of class-specific parameters
 };
-static_assert(sizeof(rm_alloc_params) == 28);
+static_assert(sizeof(rm_alloc_params) == 32);
 
 // RM Control RPC payload (function 76)
 struct __attribute__((packed)) rm_control_params {
@@ -84,13 +85,14 @@ struct __attribute__((packed)) rm_control_params {
 };
 static_assert(sizeof(rm_control_params) == 24);
 
-// RM Free RPC payload (function 104)
+// RM Free RPC payload (function 10) — wraps NVOS00_PARAMETERS_v03_00
 struct __attribute__((packed)) rm_free_params {
-    uint32_t h_client;
-    uint32_t h_object;
-    uint32_t status;
+    uint32_t h_root;          // Client handle
+    uint32_t h_object_parent; // Parent object handle
+    uint32_t h_object_old;    // Object to free
+    uint32_t status;          // Result status
 };
-static_assert(sizeof(rm_free_params) == 12);
+static_assert(sizeof(rm_free_params) == 16);
 
 // RM class numbers
 constexpr uint32_t NV01_ROOT          = 0x0000;
@@ -100,7 +102,7 @@ constexpr uint32_t NV04_DISPLAY_COMMON = 0x0073;
 
 // RM function numbers
 constexpr uint32_t NV_VGPU_MSG_FUNCTION_RM_CONTROL = 76;
-constexpr uint32_t NV_VGPU_MSG_FUNCTION_RM_FREE    = 104;
+constexpr uint32_t NV_VGPU_MSG_FUNCTION_RM_FREE    = 10;
 
 /**
  * Allocate an RM object via GSP.
@@ -139,7 +141,7 @@ int32_t rm_control(nv_gpu* gpu, gsp_boot_state& state,
  * Free an RM object via GSP.
  */
 int32_t rm_free(nv_gpu* gpu, gsp_boot_state& state,
-                uint32_t h_client, uint32_t h_object);
+                uint32_t h_client, uint32_t h_parent, uint32_t h_object);
 
 // ============================================================================
 // High-Level Init RPCs
