@@ -1,7 +1,7 @@
 # NVIDIA GSP Firmware Binary Format Reference (GA102 / Ampere)
 
 Comprehensive reference for parsing NVIDIA GSP firmware binary blobs, derived from the
-Linux kernel nouveau driver (`drivers/gpu/drm/nouveau/include/nvfw/`), the nova-core
+Linux kernel nouveau driver (`drivers/gpu/drm/nouveau/nvkm/subdev/gsp/`), the nova-core
 Rust driver (`drivers/gpu/nova-core/`), and the NVIDIA open-gpu-kernel-modules source.
 
 All multi-byte fields are **little-endian**. All offsets are in bytes unless noted.
@@ -26,6 +26,9 @@ All multi-byte fields are **little-endian**. All offsets are in bytes unless not
 14. [ACR / WPR Structures](#14-acr--wpr-structures)
 15. [Falcon Bootloader DMEM Descriptors](#15-falcon-bootloader-dmem-descriptors)
 16. [Boot Flow Summary](#16-boot-flow-summary)
+17. [Nouveau Kernel Driver: Firmware Loading](#17-nouveau-kernel-driver-firmware-loading)
+18. [GspFwWprMeta: WPR2 Metadata Structure](#18-gspfwwprmeta-wpr2-metadata-structure)
+19. [Memory Requirements and DMA Layout](#19-memory-requirements-and-dma-layout)
 
 ---
 
@@ -891,42 +894,67 @@ These structures are used for the Write Protected Region and firmware signatures
 ### Ampere (GA102) GSP Boot Sequence
 
 ```
-1. Driver reads VBIOS from BAR0+0x300000
-   └─> Extracts FWSEC-FRTS firmware
+1. Firmware Loading (tu102_gsp_load)
+   ├── nvkm_gsp_load_fw("gsp", "535.113.01")       → gsp->fws.rm  (~23MB ELF)
+   ├── nvkm_gsp_load_fw("bootloader", "535.113.01") → gsp->fws.bl  (~4KB)
+   ├── nvkm_gsp_load_fw("booter_load", "535.113.01")   → gsp->fws.booter.load (~57KB)
+   └── nvkm_gsp_load_fw("booter_unload", "535.113.01") → gsp->fws.booter.unload (~37KB)
 
-2. Driver loads firmware files from /lib/firmware/nvidia/VERSION/:
-   ├── gsp_ga10x.bin       (ELF: GSP firmware)
-   ├── bootloader-VERSION.bin  (BinHdr+RISC-V: GSP bootloader)
-   ├── booter_load-VERSION.bin (BinHdr+HS: SEC2 booter)
-   └── booter_unload-VERSION.bin (BinHdr+HS: SEC2 booter)
+2. Driver reads VBIOS from BAR0+0x300000
+   └─> Extracts FWSEC-FRTS firmware (from second FwSec ROM image)
 
-3. FWSEC-FRTS runs on GSP (Heavy-Secure mode)
+3. Firmware Processing (r535_gsp_oneinit)
+   ├── Parse gsp-535.113.01.bin ELF → extract .fwimage + .fwsignature_ga10x
+   ├── DMA-map .fwimage via scatter-gather table
+   ├── Build radix3 page table (level 0/1/2) pointing to firmware DMA pages
+   ├── DMA-map bootloader ucode (from BinHdr.data_offset..data_offset+data_size)
+   ├── DMA-map GSP signatures
+   ├── Parse booter_load BinHdr → HsHeaderV2 → HsLoadHeaderV2 → IMEM/DMEM layout
+   ├── Patch correct signature into booter_load payload
+   ├── DMA-map booter_load payload
+   ├── Compute FB layout (WPR2, heap, FRTS regions)
+   ├── Populate GspFwWprMeta with DMA addrs + FB layout
+   └── Release raw firmware blobs (nvkm_gsp_dtor_fws)
+
+4. FWSEC-FRTS runs on GSP (Heavy-Secure mode)
    ├── Patches FWSEC with FRTS command (0x15)
    ├── Patches correct RSA-3K signature
-   ├── Loads IMEM+DMEM into GSP falcon
-   ├── Runs: carves WPR2 region, copies FRTS data
+   ├── Loads IMEM+DMEM into GSP falcon via DMA
+   ├── Runs: carves WPR2 region, copies FRTS data to VRAM
    └── Result: WPR2 region established in VRAM
 
-4. Booter (booter_load) runs on SEC2
-   ├── Patches correct signature from fuse register
-   ├── Loaded into SEC2 falcon IMEM+DMEM
-   ├── SEC2 loads GSP bootloader into GSP RISC-V core
-   └── SEC2 loads GSP firmware page tables
+5. Booter (booter_load) runs on SEC2
+   ├── Loaded into SEC2 falcon IMEM+DMEM via DMA
+   ├── Reads GspFwWprMeta from system memory
+   ├── Copies GSP bootloader from system RAM to VRAM (bootBinOffset)
+   ├── Copies GSP firmware from system RAM to VRAM (gspFwOffset)
+   ├── Verifies and locks WPR2 region
+   └── Launches GSP bootloader on GSP RISC-V core
 
-5. GSP Bootloader runs on GSP (RISC-V)
+6. GSP Bootloader runs on GSP (RISC-V)
    ├── Accesses GSP firmware via radix-3 page table
-   ├── Verifies GSP firmware signatures
+   ├── Verifies GSP firmware signatures (manifest_offset)
    └── Loads and starts GSP-RM firmware
 
-6. GSP-RM firmware running
-   └── Full GPU management from GSP processor
+7. GSP-RM firmware running
+   ├── Full GPU management from GSP processor
+   ├── Driver frees temporary DMA buffers (booter, bootloader, radix3, wpr_meta)
+   └── WPR2 region in VRAM persists for lifetime of GSP-RM
 ```
 
 ### Firmware Version String
 
 The firmware version (e.g., `"535.113.01"`) is embedded in the file path:
 ```
-/lib/firmware/nvidia/535.113.01/gsp_ga10x.bin
+/lib/firmware/nvidia/{chip}/gsp/{name}-535.113.01.bin
+```
+
+Examples for GA102:
+```
+/lib/firmware/nvidia/ga102/gsp/gsp-535.113.01.bin
+/lib/firmware/nvidia/ga102/gsp/bootloader-535.113.01.bin
+/lib/firmware/nvidia/ga102/gsp/booter_load-535.113.01.bin
+/lib/firmware/nvidia/ga102/gsp/booter_unload-535.113.01.bin
 ```
 
 There is no separate version header within the binary files themselves, but the
@@ -962,3 +990,377 @@ There is no separate version header within the binary files themselves, but the
 | `RSA3K_SIG_SIZE` | `384` | Size of each RSA-3K signature (96 * 4 bytes) |
 | `GSP_PAGE_SIZE` | `4096` | GSP page size |
 | `DMEM_ALIGN` | `256` | DMEM load size alignment |
+
+---
+
+## 17. Nouveau Kernel Driver: Firmware Loading
+
+**Source:** `drivers/gpu/drm/nouveau/nvkm/subdev/gsp/tu102.c`, `base.c`, `ga102.c`, `priv.h`
+
+### Firmware File Naming Convention
+
+Firmware files live under `/lib/firmware/nvidia/{chip}/gsp/` with version-tagged names:
+
+```
+nvidia/{chip}/gsp/{name}-{version}.bin
+```
+
+The `NVKM_GSP_FIRMWARE_BOOTER` macro declares all four firmware files per chip:
+
+```c
+#define NVKM_GSP_FIRMWARE_BOOTER(chip, vers)                      \
+MODULE_FIRMWARE("nvidia/"#chip"/gsp/booter_load-"#vers".bin");    \
+MODULE_FIRMWARE("nvidia/"#chip"/gsp/booter_unload-"#vers".bin");  \
+MODULE_FIRMWARE("nvidia/"#chip"/gsp/bootloader-"#vers".bin");     \
+MODULE_FIRMWARE("nvidia/"#chip"/gsp/gsp-"#vers".bin")
+```
+
+### Complete Firmware File List (per chip, version 535.113.01)
+
+| File | Approx Size | Format | Target |
+|------|-------------|--------|--------|
+| `nvidia/ga102/gsp/booter_load-535.113.01.bin` | ~57 KB | BinHdr + HS v2 | SEC2 falcon |
+| `nvidia/ga102/gsp/booter_unload-535.113.01.bin` | ~37 KB | BinHdr + HS v2 | SEC2 falcon |
+| `nvidia/ga102/gsp/bootloader-535.113.01.bin` | ~4 KB | BinHdr + RISC-V | GSP RISC-V core |
+| `nvidia/ga102/gsp/gsp-535.113.01.bin` | ~23 MB | ELF64 | GSP (via page tables) |
+
+### Supported Chips (all using 535.113.01)
+
+**Turing:** tu102, tu104, tu106, tu116, tu117
+**Ampere:** ga100, ga102, ga103, ga104, ga106, ga107
+**Ada:** ad102, ad103, ad104, ad106, ad107
+
+### Loading Function: `nvkm_gsp_load_fw()`
+
+```c
+// From drivers/gpu/drm/nouveau/nvkm/subdev/gsp/base.c
+int nvkm_gsp_load_fw(struct nvkm_gsp *gsp, const char *name, const char *ver,
+                     const struct firmware **pfw)
+{
+    char fwname[64];
+    snprintf(fwname, sizeof(fwname), "gsp/%s-%s", name, ver);
+    return nvkm_firmware_get(&gsp->subdev, fwname, 0, pfw);
+}
+```
+
+`nvkm_firmware_get()` internally calls the kernel's `request_firmware()` API with
+the device-specific firmware path prefix. For a GA102, this resolves to:
+```
+/lib/firmware/nvidia/ga102/gsp/{name}-{ver}.bin
+```
+
+### GPU-Specific Loading: `tu102_gsp_load()`
+
+All Turing/Ampere/Ada chips use the same loading function:
+
+```c
+// From drivers/gpu/drm/nouveau/nvkm/subdev/gsp/tu102.c
+static int tu102_gsp_load_rm(struct nvkm_gsp *gsp, const struct nvkm_gsp_fwif *fwif)
+{
+    struct nvkm_subdev *subdev = &gsp->subdev;
+    bool enable_gsp = fwif->enable;
+
+    if (!nvkm_boolopt(subdev->device->cfgopt, "NvGspRm", enable_gsp))
+        return -EINVAL;
+
+    ret = nvkm_gsp_load_fw(gsp, "gsp", fwif->ver, &gsp->fws.rm);
+    if (ret) return ret;
+
+    ret = nvkm_gsp_load_fw(gsp, "bootloader", fwif->ver, &gsp->fws.bl);
+    if (ret) return ret;
+
+    return 0;
+}
+
+int tu102_gsp_load(struct nvkm_gsp *gsp, int ver, const struct nvkm_gsp_fwif *fwif)
+{
+    int ret;
+
+    ret = tu102_gsp_load_rm(gsp, fwif);     // Loads gsp + bootloader
+    if (ret) goto done;
+
+    ret = nvkm_gsp_load_fw(gsp, "booter_load", fwif->ver,
+                           &gsp->fws.booter.load);
+    if (ret) goto done;
+
+    ret = nvkm_gsp_load_fw(gsp, "booter_unload", fwif->ver,
+                           &gsp->fws.booter.unload);
+done:
+    if (ret)
+        nvkm_gsp_dtor_fws(gsp);
+    return ret;
+}
+```
+
+### Firmware Structure in `struct nvkm_gsp`
+
+```c
+struct nvkm_gsp {
+    // ... other fields ...
+    struct {
+        const struct firmware *rm;    // gsp-535.113.01.bin (ELF64, ~23MB)
+        const struct firmware *bl;    // bootloader-535.113.01.bin (~4KB)
+        struct {
+            const struct firmware *load;   // booter_load-535.113.01.bin (~57KB)
+            const struct firmware *unload; // booter_unload-535.113.01.bin (~37KB)
+        } booter;
+    } fws;
+    // ... other fields ...
+};
+```
+
+### Version Matching
+
+The firmware interface table (`nvkm_gsp_fwif`) ties GPU chip → loader function → version:
+
+```c
+// From drivers/gpu/drm/nouveau/nvkm/subdev/gsp/ga102.c
+static struct nvkm_gsp_fwif ga102_gsps[] = {
+    { 0, tu102_gsp_load, &ga102_gsp_r535_113_01, "535.113.01" },
+    { -1, gv100_gsp_nofw, &ga102_gsp },
+    {}
+};
+```
+
+The version string `"535.113.01"` from the `fwif->ver` field is concatenated into the
+firmware filename. There is no runtime binary version validation of the firmware contents
+beyond the `BinHdr` magic check (`0x10DE`) for the booter/bootloader files. The GSP
+firmware ELF is validated by the GSP bootloader itself (using the manifest and signatures).
+
+The `NvGspRm` module option controls whether GSP-RM is enabled:
+- Ada: enabled by default (`enable = true`)
+- Turing/Ampere: disabled by default, enable with `config=NvGspRm=1`
+
+### Firmware Cleanup
+
+```c
+void nvkm_gsp_dtor_fws(struct nvkm_gsp *gsp)
+{
+    nvkm_firmware_put(gsp->fws.bl);       gsp->fws.bl = NULL;
+    nvkm_firmware_put(gsp->fws.booter.unload); gsp->fws.booter.unload = NULL;
+    nvkm_firmware_put(gsp->fws.booter.load);   gsp->fws.booter.load = NULL;
+    nvkm_firmware_put(gsp->fws.rm);       gsp->fws.rm = NULL;
+}
+```
+
+Firmware blobs are released after being copied to DMA buffers in `r535_gsp_oneinit()`.
+
+---
+
+## 18. GspFwWprMeta: WPR2 Metadata Structure
+
+**Source:** `src/nvidia/arch/nvalloc/common/inc/gsp/gsp_fw_wpr_meta.h` (NVIDIA open-gpu-kernel-modules)
+
+This structure is initialized by the CPU-side driver (nouveau/nova-core) and DMA'd to
+framebuffer memory at the start of the WPR2 region. Booter verifies and locks it.
+
+### Memory Layout Diagram
+
+```
+---------------------------- <- fbSize (end of FB, 1M aligned)
+| VGA WORKSPACE            |
+---------------------------- <- vgaWorkspaceOffset (64K? aligned)
+| (potential align. gap)   |
+---------------------------- <- gspFwWprEnd + frtsSize + pmuReservedSize
+| PMU mem reservation      |
+---------------------------- <- gspFwWprEnd (128K aligned) + frtsSize
+| FRTS data                | (frtsSize is 0 on GA100)
+| ------------------------ | <- frtsOffset
+| BOOT BIN (SK + BL)      |
+---------------------------- <- bootBinOffset
+| GSP FW ELF               |
+---------------------------- <- gspFwOffset
+| GSP FW (WPR) HEAP        |
+---------------------------- <- gspFwHeapOffset
+| Booter-placed metadata   |
+| (struct GspFwWprMeta)    |
+---------------------------- <- gspFwWprStart (128K aligned)
+| GSP FW (non-WPR) HEAP    |
+---------------------------- <- nonWprHeapOffset, gspFwRsvdStart
+(GSP_CARVEOUT_SIZE bytes from end of FB)
+```
+
+### struct GspFwWprMeta (256 bytes total)
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0x00 | 8 | `magic` | Must be `0xdc3aae21371a60b3` |
+| 0x08 | 8 | `revision` | Interface revision, must be `1` |
+| 0x10 | 8 | `sysmemAddrOfRadix3Elf` | DMA addr of radix3 level-0 page table for GSP FW |
+| 0x18 | 8 | `sizeOfRadix3Elf` | Size of GSP firmware image in bytes |
+| 0x20 | 8 | `sysmemAddrOfBootloader` | DMA addr of GSP bootloader ucode |
+| 0x28 | 8 | `sizeOfBootloader` | Size of bootloader ucode in bytes |
+| 0x30 | 8 | `bootloaderCodeOffset` | Code offset within bootloader image |
+| 0x38 | 8 | `bootloaderDataOffset` | Data offset within bootloader image |
+| 0x40 | 8 | `bootloaderManifestOffset` | Manifest offset within bootloader image |
+| 0x48 | 8 | `sysmemAddrOfSignature` | DMA addr of GSP firmware signatures (boot) |
+| 0x50 | 8 | `sizeOfSignature` | Size of signatures in bytes |
+| 0x58 | 8 | `gspFwRsvdStart` | Start of GSP reserved FB region |
+| 0x60 | 8 | `nonWprHeapOffset` | Start of non-WPR heap in FB |
+| 0x68 | 8 | `nonWprHeapSize` | Size of non-WPR heap |
+| 0x70 | 8 | `gspFwWprStart` | Start of WPR2 region (128K aligned) |
+| 0x78 | 8 | `gspFwHeapOffset` | GSP firmware heap start in FB |
+| 0x80 | 8 | `gspFwHeapSize` | GSP firmware heap size |
+| 0x88 | 8 | `gspFwOffset` | GSP firmware ELF location in FB |
+| 0x90 | 8 | `bootBinOffset` | Boot binary (SK + bootloader) location in FB |
+| 0x98 | 8 | `frtsOffset` | FRTS data offset in FB |
+| 0xA0 | 8 | `frtsSize` | FRTS region size |
+| 0xA8 | 8 | `gspFwWprEnd` | End of WPR2 region |
+| 0xB0 | 8 | `fbSize` | Total framebuffer size |
+| 0xB8 | 8 | `vgaWorkspaceOffset` | VGA workspace offset in FB |
+| 0xC0 | 8 | `vgaWorkspaceSize` | VGA workspace size |
+| 0xC8 | 8 | `bootCount` | Boot count (determines FW image loading) |
+| 0xD0 | 8 | `partitionRpcAddr` | Shared partition RPC memory (phys addr) |
+| 0xD8 | 2 | `partitionRpcRequestOffset` | RPC request offset |
+| 0xDA | 2 | `partitionRpcReplyOffset` | RPC reply offset |
+| 0xDC | 4 | `elfCodeOffset` | Code section offset in ELF |
+| 0xE0 | 4 | `elfDataOffset` | Data section offset in ELF |
+| 0xE4 | 4 | `elfCodeSize` | Code section size |
+| 0xE8 | 4 | `elfDataSize` | Data section size |
+| 0xEC | 4 | `lsUcodeVersion` | LS ucode version (checked at resume) |
+| 0xF0 | 1 | `gspFwHeapVfPartitionCount` | Number of VF partitions |
+| 0xF1 | 1 | `flags` | Flags (see GSP_FW_FLAGS_*) |
+| 0xF2 | 2 | `padding` | Padding (zeroed) |
+| 0xF4 | 4 | `pmuReservedSize` | PMU reserved memory size |
+| 0xF8 | 8 | `verified` | Verification status: `0xa0a0a0a0a0a0a0a0` = verified |
+
+**Total: 256 bytes (0x100)**
+
+**Note:** Offset 0x48 is a union — at initial boot it holds `sysmemAddrOfSignature` /
+`sizeOfSignature`, but at suspend/resume it holds `gspFwHeapFreeListWprOffset`.
+
+### Key Constants
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `GSP_FW_WPR_META_MAGIC` | `0xdc3aae21371a60b3` | Magic for validation |
+| `GSP_FW_WPR_META_REVISION` | `1` | Current interface revision |
+| `GSP_FW_WPR_META_VERIFIED` | `0xa0a0a0a0a0a0a0a0` | Set by Booter after verification |
+
+### Populating GspFwWprMeta (from nova-core)
+
+```rust
+GspFwWprMeta {
+    magic: GSP_FW_WPR_META_MAGIC as u64,
+    revision: u64::from(GSP_FW_WPR_META_REVISION),
+    sysmemAddrOfRadix3Elf: fw.gsp.lvl0_dma_handle(),    // DMA addr of radix3 level 0
+    sizeOfRadix3Elf: fw.gsp.size as u64,                 // Size of .fwimage section
+    sysmemAddrOfBootloader: fw.gsp_bootloader.ucode.dma_handle(),
+    sizeOfBootloader: fw.gsp_bootloader.ucode.size() as u64,
+    bootloaderCodeOffset: fw.gsp_bootloader.code_offset as u64,
+    bootloaderDataOffset: fw.gsp_bootloader.data_offset as u64,
+    bootloaderManifestOffset: fw.gsp_bootloader.manifest_offset as u64,
+    sysmemAddrOfSignature: fw.gsp_sigs.dma_handle(),
+    sizeOfSignature: fw.gsp_sigs.size() as u64,
+    gspFwRsvdStart: fb_layout.heap.start,
+    nonWprHeapOffset: fb_layout.heap.start,
+    nonWprHeapSize: fb_layout.heap.end - fb_layout.heap.start,
+    gspFwWprStart: fb_layout.wpr2.start,
+    gspFwHeapOffset: fb_layout.wpr2_heap.start,
+    gspFwHeapSize: fb_layout.wpr2_heap.end - fb_layout.wpr2_heap.start,
+    gspFwOffset: fb_layout.elf.start,
+    bootBinOffset: fb_layout.boot.start,
+    frtsOffset: fb_layout.frts.start,
+    frtsSize: fb_layout.frts.end - fb_layout.frts.start,
+    gspFwWprEnd: fb_layout.vga_workspace.start.align_down(128K),
+    gspFwHeapVfPartitionCount: fb_layout.vf_partition_count,
+    fbSize: fb_layout.fb.end - fb_layout.fb.start,
+    vgaWorkspaceOffset: fb_layout.vga_workspace.start,
+    vgaWorkspaceSize: fb_layout.vga_workspace.end - fb_layout.vga_workspace.start,
+    ..Default::default()
+}
+```
+
+---
+
+## 19. Memory Requirements and DMA Layout
+
+### Firmware DMA Memory Requirements
+
+| Component | Size | DMA Type | Notes |
+|-----------|------|----------|-------|
+| `gsp-535.113.01.bin` (.fwimage) | ~23 MB | SG table (scatter-gather) | Non-contiguous OK |
+| `.fwsignature_ga10x` | Variable (~KB) | Coherent DMA (contiguous) | Extracted from ELF |
+| `bootloader-535.113.01.bin` data | ~4 KB | Coherent DMA (contiguous) | RISC-V ucode |
+| `booter_load` data payload | ~57 KB | Coherent DMA (contiguous) | HS firmware for SEC2 |
+| `booter_unload` data payload | ~37 KB | Coherent DMA (contiguous) | HS firmware for SEC2 |
+| Radix3 Level 0 | 4 KB (1 page) | Coherent DMA (contiguous) | Single entry |
+| Radix3 Level 1 | N pages | SG table | Depends on FW size |
+| Radix3 Level 2 | M pages | SG table | Depends on FW size |
+| GspFwWprMeta | 256 bytes | Coherent DMA (contiguous) | Padded to allocation granularity |
+
+### Radix3 Page Table Sizing
+
+For a ~23 MB GSP firmware image:
+
+```
+Pages needed      = ceil(23MB / 4KB) = ~5888 pages
+Level 2 entries   = 5888 entries × 8 bytes = ~46 KB (12 pages)
+Level 1 entries   = ceil(12 / 512) = 1 entry × 8 bytes = 8 bytes (1 page)
+Level 0 entries   = 1 entry × 8 bytes = 8 bytes (1 page)
+```
+
+Level 0 and Level 1 use coherent DMA (single page each). Level 2 uses the SG allocator
+to avoid needing large contiguous allocations.
+
+### Alignment Requirements
+
+| Memory Region | Alignment | Source |
+|---------------|-----------|--------|
+| GSP page size | 4096 bytes (4 KB) | `GSP_PAGE_SIZE` |
+| DMEM load size | 256 bytes | Falcon DMA engine requirement |
+| Falcon IMEM/DMEM block | 256 bytes | `MEM_BLOCK_ALIGNMENT` |
+| WPR2 start/end | 128 KB | Hardware requirement |
+| FRTS region | Page-aligned (4 KB) | FWSEC-FRTS input format |
+| VGA workspace | 64 KB | Hardware requirement |
+| FB end | 1 MB | Hardware requirement |
+
+### DMA Flow: System RAM → VRAM
+
+The GSP firmware follows a multi-stage loading path:
+
+1. **request_firmware()** loads blobs from `/lib/firmware/` into **system RAM** (kernel pages).
+2. **DMA mapping**: Each blob is mapped for DMA access by the GPU:
+   - Small blobs (bootloader, booter, signatures, wpr_meta): `dma_alloc_coherent()` allocates
+     contiguous physical memory and provides a DMA address.
+   - Large blob (GSP firmware ~23 MB): Scatter-gather table (`SGTable`) maps potentially
+     non-contiguous kernel pages as a single DMA-addressable entity.
+3. **Radix3 page table** is constructed in system RAM, pointing to the DMA addresses of the
+   firmware pages.
+4. **Booter (SEC2)** copies the bootloader + firmware from system RAM (DMA) to **VRAM**
+   (framebuffer) at the offsets specified in `GspFwWprMeta`:
+   - Bootloader → `bootBinOffset` in FB
+   - GSP FW ELF → `gspFwOffset` in FB
+5. **GSP Bootloader** (RISC-V) reads the firmware from VRAM via the radix3 page table,
+   verifies signatures, and starts GSP-RM.
+
+### GSP Heap Sizing
+
+From `gsp_fw_heap.h` (NVIDIA open-gpu-kernel-modules):
+
+```
+Base heap (Turing–Ada):  8 MB
+Base heap (Hopper+):     14 MB
+Per-GB of VRAM:          96 KB
+Client channels:         48 KB × 2048 = 96 MB
+LibOS overhead:          22 MB (baremetal)
+```
+
+For a GA102 with 12 GB VRAM:
+```
+Heap ≈ 8 MB + (12 × 96 KB) + 96 MB + 22 MB ≈ 127 MB
+```
+
+### Lifetime of Firmware Allocations
+
+| Component | Lifetime | Can Free After |
+|-----------|----------|---------------|
+| GSP firmware ELF (system RAM) | Temporary | After DMA to VRAM by Booter |
+| Radix3 page tables | Temporary | After GSP boot + suspend buffer setup |
+| GSP signatures | Temporary | After GSP boot |
+| Bootloader ucode | Temporary | After GSP boot |
+| Booter firmware | Temporary | After SEC2 loads GSP |
+| GspFwWprMeta | Temporary | After Booter verifies and locks WPR2 |
+| Kernel firmware blobs (`fws.*`) | Temporary | After copy to DMA buffers (`r535_gsp_oneinit`) |
+| WPR2 region (VRAM) | Permanent | Lives as long as GSP-RM runs |
+| Non-WPR heap (VRAM) | Permanent | Lives as long as GSP-RM runs |
