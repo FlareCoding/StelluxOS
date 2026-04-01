@@ -18,6 +18,7 @@
 #include "syscall/handlers/sys_signal.h"
 #include "syscall/handlers/sys_select.h"
 #include "syscall/handlers/sys_pipe.h"
+#include "syscall/handlers/sys_uname.h"
 
 namespace syscall {
 
@@ -65,6 +66,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::CLOCK_GETTIME,   clock_gettime);
     REGISTER_SYSCALL(linux_nr::CLOCK_GETRES,    clock_getres);
     REGISTER_SYSCALL(linux_nr::GETTIMEOFDAY,    gettimeofday);
+    REGISTER_SYSCALL(linux_nr::UNAME,           uname);
 
     REGISTER_SYSCALL(linux_nr::SOCKET,      socket);
     REGISTER_SYSCALL(linux_nr::SOCKETPAIR,  socketpair);

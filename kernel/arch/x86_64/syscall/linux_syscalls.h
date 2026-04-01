@@ -40,6 +40,7 @@ constexpr uint64_t SOCKETPAIR       = 53;
 constexpr uint64_t SETSOCKOPT       = 54;
 constexpr uint64_t GETSOCKOPT       = 55;
 constexpr uint64_t EXIT             = 60;
+constexpr uint64_t UNAME            = 63;
 constexpr uint64_t FCNTL            = 72;
 constexpr uint64_t FSYNC            = 74;
 constexpr uint64_t FTRUNCATE        = 77;
