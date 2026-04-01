@@ -47,6 +47,26 @@ public:
     __PRIVILEGED_CODE uint32_t snapshot_tids(uint32_t* buf, uint32_t max);
 
     /**
+     * Acquire the registry lock. Must be paired with unlock().
+     * @note Privilege: **required**
+     */
+    [[nodiscard]] __PRIVILEGED_CODE sync::irq_state lock();
+
+    /**
+     * Release the registry lock.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void unlock(sync::irq_state irq);
+
+    /**
+     * Find a task by TID. Caller must hold the registry lock.
+     * The returned pointer is valid only while the lock is held.
+     * @return task pointer, or nullptr if not found.
+     * @note Privilege: **required**
+     */
+    [[nodiscard]] __PRIVILEGED_CODE task* find_locked(uint32_t tid);
+
+    /**
      * Advisory task count. May be stale under concurrent mutation.
      */
     uint32_t count() const;

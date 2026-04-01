@@ -38,6 +38,18 @@ __PRIVILEGED_CODE uint32_t task_registry::snapshot_tids(uint32_t* buf, uint32_t 
     return written;
 }
 
+__PRIVILEGED_CODE sync::irq_state task_registry::lock() {
+    return sync::spin_lock_irqsave(m_lock);
+}
+
+__PRIVILEGED_CODE void task_registry::unlock(sync::irq_state irq) {
+    sync::spin_unlock_irqrestore(m_lock, irq);
+}
+
+__PRIVILEGED_CODE task* task_registry::find_locked(uint32_t tid) {
+    return m_map.find(tid);
+}
+
 uint32_t task_registry::count() const {
     return m_map.size();
 }
