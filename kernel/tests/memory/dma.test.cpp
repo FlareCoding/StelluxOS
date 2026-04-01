@@ -73,7 +73,7 @@ TEST(dma_test, page_alloc_free_no_leak) {
     uint64_t before = pmm::free_page_count();
     dma::buffer buf = {};
     RUN_ELEVATED({
-        dma::alloc_pages(1, buf);
+        (void)dma::alloc_pages(1, buf);
         dma::free_pages(buf);
     });
     uint64_t after = pmm::free_page_count();
