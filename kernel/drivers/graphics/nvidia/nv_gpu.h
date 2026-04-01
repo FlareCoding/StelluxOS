@@ -122,7 +122,7 @@ private:
     int32_t setup_display_interrupts();
     int32_t program_head(uint8_t head, const edid_info& mode, uint8_t sor_id);
     int32_t program_sor(uint8_t sor_id, uint8_t head,
-                        dcb_output_type type, bool hdmi);
+                        dcb_output_type type, bool hdmi, uint8_t or_mask);
     int32_t program_vpll(uint8_t head, uint32_t pixel_clock_khz);
     int32_t power_up_sor(uint8_t sor_id);
     int32_t setup_scanout(uint8_t head, uint32_t width, uint32_t height,
@@ -162,8 +162,9 @@ private:
     i2c_table       m_i2c;
     connector_table m_connectors;
 
-    // EDID results
+    // EDID results (indexed by m_edid_count, not DCB index)
     edid_info m_edid[MAX_DCB_ENTRIES];
+    uint8_t   m_edid_dcb_index[MAX_DCB_ENTRIES]; // DCB entry index for each EDID
     uint32_t  m_edid_count;
 
     // Display capabilities
@@ -171,6 +172,10 @@ private:
     uint8_t m_sor_mask;   // Bitmask of available SORs
     uint8_t m_head_count;
     uint8_t m_sor_count;
+
+    // Active display output state (for multi-monitor)
+    uint8_t m_active_heads;  // Bitmask of heads currently driving outputs
+    uint8_t m_active_sors;   // Bitmask of SORs currently in use
 };
 
 } // namespace nv

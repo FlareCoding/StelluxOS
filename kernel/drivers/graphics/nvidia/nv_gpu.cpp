@@ -44,12 +44,15 @@ nv_gpu::nv_gpu(pci::device* dev)
     , m_head_mask(0)
     , m_sor_mask(0)
     , m_head_count(0)
-    , m_sor_count(0) {
+    , m_sor_count(0)
+    , m_active_heads(0)
+    , m_active_sors(0) {
     string::memset(m_vbios, 0, sizeof(m_vbios));
     string::memset(&m_dcb, 0, sizeof(m_dcb));
     string::memset(&m_i2c, 0, sizeof(m_i2c));
     string::memset(&m_connectors, 0, sizeof(m_connectors));
     string::memset(m_edid, 0, sizeof(m_edid));
+    string::memset(m_edid_dcb_index, 0, sizeof(m_edid_dcb_index));
 }
 
 // ============================================================================
@@ -1053,6 +1056,7 @@ int32_t nv_gpu::probe_monitors() {
             rc = parse_edid(edid_buf, &info);
             if (rc == OK && info.valid) {
                 m_edid[m_edid_count] = info;
+                m_edid_dcb_index[m_edid_count] = i; // Track which DCB entry
                 log_edid(m_edid_count, info);
                 m_edid_count++;
             } else {
@@ -1559,7 +1563,7 @@ int32_t nv_gpu::parse_edid(const uint8_t* raw, edid_info* out) {
 
 int32_t nv_gpu::init_display() {
     log::info("nvidia: ========================================");
-    log::info("nvidia: Phase 4: Display engine initialization");
+    log::info("nvidia: Phase 4+5: Display engine initialization (multi-monitor)");
     log::info("nvidia: ========================================");
 
     int32_t rc;
@@ -1576,125 +1580,207 @@ int32_t nv_gpu::init_display() {
     rc = enable_display_engine();
     if (rc != OK) return rc;
 
-    // Step 4: Find first available output with a detected monitor
-    // Match DCB entry → monitor EDID → SOR → head
-    int32_t chosen_dcb = -1;
-    int32_t chosen_edid = -1;
-    int32_t chosen_sor = -1;
-    int32_t chosen_head = -1;
+    // Step 4: Build output assignments — one per detected monitor
+    // Each monitor needs: a DCB entry, a SOR, a head, and VRAM for its framebuffer.
+    // We assign distinct heads and SORs to avoid conflicts.
 
-    // We iterate DCB entries and match them with EDID results
-    // For now, use the first output that has a detected monitor
-    uint32_t edid_idx = 0;
-    for (uint8_t i = 0; i < m_dcb.count && edid_idx < m_edid_count; i++) {
-        const dcb_entry& e = m_dcb.entries[i];
-        if (e.type == dcb_output_type::TV ||
-            e.type == dcb_output_type::EOL ||
-            e.type == dcb_output_type::UNUSED) {
+    // Per-output assignment record
+    struct output_assignment {
+        uint8_t dcb_index;
+        uint8_t edid_index;
+        uint8_t sor_id;
+        uint8_t head_id;
+        uint32_t fb_vram_offset;
+        uint32_t fb_color;
+        bool valid;
+    };
+
+    output_assignment assignments[MAX_HEADS];
+    uint32_t num_outputs = 0;
+    uint8_t heads_used = 0; // Bitmask of assigned heads
+    uint8_t sors_used = 0;  // Bitmask of assigned SORs
+
+    // Distinct colors for each monitor to prove independence
+    static const uint32_t monitor_colors[] = {
+        0xFF0000FF, // Blue (monitor 0)
+        0xFFFF0000, // Red (monitor 1)
+        0xFF00FF00, // Green (monitor 2)
+        0xFFFFFF00, // Yellow (monitor 3)
+    };
+
+    // VRAM offset accumulator — each framebuffer gets its own region
+    uint32_t vram_offset_cursor = 0;
+
+    for (uint32_t ei = 0; ei < m_edid_count && num_outputs < MAX_HEADS; ei++) {
+        if (!m_edid[ei].valid) continue;
+
+        uint8_t dcb_idx = m_edid_dcb_index[ei];
+        if (dcb_idx >= m_dcb.count) continue;
+
+        const dcb_entry& e = m_dcb.entries[dcb_idx];
+
+        // Find an available SOR from the DCB or_mask
+        int32_t sor_id = -1;
+        for (int s = 0; s < 8; s++) {
+            if ((e.or_mask & (1 << s)) && !(sors_used & (1 << s)) &&
+                (m_sor_mask & (1 << s))) {
+                sor_id = s;
+                break;
+            }
+        }
+        if (sor_id < 0) {
+            log::warn("nvidia: output %u (DCB[%u]): no available SOR (or_mask=0x%x used=0x%x)",
+                      ei, dcb_idx, e.or_mask, sors_used);
             continue;
         }
 
-        // Check if this output has a valid EDID (detected monitor)
-        // We probed in DCB order, so match sequentially
-        if (e.i2c_index < m_i2c.count && m_i2c.ports[e.i2c_index].valid) {
-            if (m_edid[edid_idx].valid) {
-                chosen_dcb = i;
-                chosen_edid = edid_idx;
-                // SOR: find first set bit in or_mask
-                for (int s = 0; s < 8; s++) {
-                    if (e.or_mask & (1 << s)) {
-                        chosen_sor = s;
-                        break;
-                    }
-                }
-                // Head: find first set bit in head_mask
-                for (int h = 0; h < 4; h++) {
-                    if (e.head_mask & (1 << h)) {
-                        chosen_head = h;
-                        break;
-                    }
-                }
+        // Find an available head from the DCB head_mask
+        int32_t head_id = -1;
+        for (int h = 0; h < static_cast<int>(m_head_count); h++) {
+            if ((e.head_mask & (1 << h)) && !(heads_used & (1 << h)) &&
+                (m_head_mask & (1 << h))) {
+                head_id = h;
                 break;
             }
-            edid_idx++;
         }
+        if (head_id < 0) {
+            log::warn("nvidia: output %u (DCB[%u]): no available head (head_mask=0x%x used=0x%x)",
+                      ei, dcb_idx, e.head_mask, heads_used);
+            continue;
+        }
+
+        // Calculate VRAM framebuffer offset (aligned to 4KB)
+        uint32_t fb_width = m_edid[ei].h_active;
+        uint32_t fb_height = m_edid[ei].v_active;
+        uint32_t fb_pitch = fb_width * 4; // ARGB8888
+        uint32_t fb_size = fb_pitch * fb_height;
+        uint32_t fb_offset = (vram_offset_cursor + 0xFFF) & ~0xFFFu; // Align to 4KB
+
+        // Verify VRAM space
+        if (m_bar1_va != 0 && (fb_offset + fb_size) > m_bar1_size) {
+            log::warn("nvidia: output %u: framebuffer would exceed VRAM aperture "
+                      "(offset 0x%x + size 0x%x > 0x%lx)",
+                      ei, fb_offset, fb_size, m_bar1_size);
+            continue;
+        }
+
+        // Record assignment
+        output_assignment& a = assignments[num_outputs];
+        a.dcb_index = dcb_idx;
+        a.edid_index = static_cast<uint8_t>(ei);
+        a.sor_id = static_cast<uint8_t>(sor_id);
+        a.head_id = static_cast<uint8_t>(head_id);
+        a.fb_vram_offset = fb_offset;
+        a.fb_color = monitor_colors[num_outputs % 4];
+        a.valid = true;
+
+        heads_used |= (1 << head_id);
+        sors_used |= (1 << sor_id);
+        vram_offset_cursor = fb_offset + fb_size;
+
+        log::info("nvidia: assigned: monitor %u (%s) → head %d, SOR %d, VRAM 0x%x, color 0x%08x",
+                  num_outputs, m_edid[ei].display_name[0] ? m_edid[ei].display_name : "(unnamed)",
+                  head_id, sor_id, fb_offset, a.fb_color);
+
+        num_outputs++;
     }
 
-    if (chosen_dcb < 0 || chosen_sor < 0 || chosen_head < 0) {
-        log::error("nvidia: no suitable output/SOR/head combination found");
+    if (num_outputs == 0) {
+        log::error("nvidia: no valid output assignments could be made");
         return ERR_NOT_FOUND;
     }
 
-    const dcb_entry& output = m_dcb.entries[chosen_dcb];
-    const edid_info& mode = m_edid[chosen_edid];
+    log::info("nvidia: %u output(s) assigned, programming hardware...", num_outputs);
 
-    log::info("nvidia: selected output: DCB[%d] type=%s SOR=%d head=%d",
-              chosen_dcb, output_type_name(output.type), chosen_sor, chosen_head);
-    log::info("nvidia: target mode: %ux%u @%uHz (pixel clock %u kHz)",
-              mode.h_active, mode.v_active, mode.refresh_hz, mode.pixel_clock_khz);
+    // Step 5: Program each output
+    uint32_t outputs_active = 0;
 
-    // Step 5: Program VPLL (pixel clock)
-    rc = program_vpll(static_cast<uint8_t>(chosen_head), mode.pixel_clock_khz);
-    if (rc != OK) {
-        log::error("nvidia: VPLL programming failed: %d", rc);
-        return rc;
-    }
+    for (uint32_t o = 0; o < num_outputs; o++) {
+        const output_assignment& a = assignments[o];
+        const dcb_entry& output = m_dcb.entries[a.dcb_index];
+        const edid_info& mode = m_edid[a.edid_index];
 
-    // Step 6: Power up SOR
-    rc = power_up_sor(static_cast<uint8_t>(chosen_sor));
-    if (rc != OK) {
-        log::error("nvidia: SOR %d power-up failed: %d", chosen_sor, rc);
-        return rc;
-    }
+        log::info("nvidia: ---- Programming output %u/%u ----", o + 1, num_outputs);
+        log::info("nvidia:   DCB[%u] type=%s → head %u, SOR %u",
+                  a.dcb_index, output_type_name(output.type), a.head_id, a.sor_id);
+        log::info("nvidia:   mode: %ux%u @%uHz (pixel clock %u kHz)",
+                  mode.h_active, mode.v_active, mode.refresh_hz, mode.pixel_clock_khz);
 
-    // Step 7: Configure SOR output
-    rc = program_sor(static_cast<uint8_t>(chosen_sor),
-                     static_cast<uint8_t>(chosen_head),
-                     output.type, output.hdmi_enable);
-    if (rc != OK) {
-        log::error("nvidia: SOR %d programming failed: %d", chosen_sor, rc);
-        return rc;
-    }
+        // 5a: Program VPLL
+        rc = program_vpll(a.head_id, mode.pixel_clock_khz);
+        if (rc != OK) {
+            log::error("nvidia:   VPLL programming failed for head %u: %d", a.head_id, rc);
+            continue;
+        }
 
-    // Step 8: Set up framebuffer in VRAM
-    uint32_t fb_width = mode.h_active;
-    uint32_t fb_height = mode.v_active;
-    uint32_t fb_pitch = fb_width * 4; // ARGB8888
-    uint32_t fb_vram_offset = 0; // Start of VRAM
+        // 5b: Power up SOR
+        rc = power_up_sor(a.sor_id);
+        if (rc != OK) {
+            log::error("nvidia:   SOR %u power-up failed: %d", a.sor_id, rc);
+            continue;
+        }
 
-    rc = fill_framebuffer(fb_vram_offset, fb_width, fb_height, fb_pitch, 0xFF0000FF);
-    if (rc != OK) {
-        log::error("nvidia: framebuffer fill failed: %d", rc);
-        return rc;
-    }
+        // 5c: Configure SOR
+        rc = program_sor(a.sor_id, a.head_id, output.type, output.hdmi_enable, output.or_mask);
+        if (rc != OK) {
+            log::error("nvidia:   SOR %u programming failed: %d", a.sor_id, rc);
+            continue;
+        }
 
-    // Step 9: Program head with mode timing and scanout
-    rc = program_head(static_cast<uint8_t>(chosen_head), mode,
-                      static_cast<uint8_t>(chosen_sor));
-    if (rc != OK) {
-        log::error("nvidia: head %d programming failed: %d", chosen_head, rc);
-        return rc;
-    }
+        // 5d: Fill framebuffer with distinct color
+        uint32_t fb_width = mode.h_active;
+        uint32_t fb_height = mode.v_active;
+        uint32_t fb_pitch = fb_width * 4;
 
-    // Step 10: Set up scanout surface
-    rc = setup_scanout(static_cast<uint8_t>(chosen_head),
-                       fb_width, fb_height, fb_pitch, fb_vram_offset);
-    if (rc != OK) {
-        log::error("nvidia: scanout setup failed: %d", rc);
-        return rc;
+        rc = fill_framebuffer(a.fb_vram_offset, fb_width, fb_height, fb_pitch, a.fb_color);
+        if (rc != OK) {
+            log::error("nvidia:   framebuffer fill failed for head %u: %d", a.head_id, rc);
+            continue;
+        }
+
+        // 5e: Program head timing
+        rc = program_head(a.head_id, mode, a.sor_id);
+        if (rc != OK) {
+            log::error("nvidia:   head %u programming failed: %d", a.head_id, rc);
+            continue;
+        }
+
+        // 5f: Setup scanout
+        rc = setup_scanout(a.head_id, fb_width, fb_height, fb_pitch, a.fb_vram_offset);
+        if (rc != OK) {
+            log::error("nvidia:   scanout setup failed for head %u: %d", a.head_id, rc);
+            continue;
+        }
+
+        m_active_heads |= (1 << a.head_id);
+        m_active_sors |= (1 << a.sor_id);
+        outputs_active++;
+
+        log::info("nvidia:   output %u ACTIVE: head %u → SOR %u → %s (%ux%u @%uHz, color 0x%08x)",
+                  o, a.head_id, a.sor_id, output_type_name(output.type),
+                  mode.h_active, mode.v_active, mode.refresh_hz, a.fb_color);
     }
 
     log::info("nvidia: ========================================");
-    log::info("nvidia: Display output configured!");
-    log::info("nvidia: Head %d → SOR %d → %s output",
-              chosen_head, chosen_sor, output_type_name(output.type));
-    log::info("nvidia: Mode: %ux%u @%uHz",
-              mode.h_active, mode.v_active, mode.refresh_hz);
-    log::info("nvidia: Framebuffer: VRAM offset 0x%x, %ux%u, pitch=%u, ARGB8888",
-              fb_vram_offset, fb_width, fb_height, fb_pitch);
+    log::info("nvidia: Display initialization complete!");
+    log::info("nvidia: %u of %u output(s) active", outputs_active, num_outputs);
+    for (uint32_t o = 0; o < num_outputs; o++) {
+        const output_assignment& a = assignments[o];
+        if (!(m_active_heads & (1 << a.head_id))) continue;
+        const edid_info& mode = m_edid[a.edid_index];
+        const char* color_name = (o == 0) ? "BLUE" : (o == 1) ? "RED" :
+                                 (o == 2) ? "GREEN" : "YELLOW";
+        log::info("nvidia:   Monitor %u: %s — %ux%u @%uHz → %s",
+                  o,
+                  mode.display_name[0] ? mode.display_name : "(unnamed)",
+                  mode.h_active, mode.v_active, mode.refresh_hz,
+                  color_name);
+    }
+    log::info("nvidia: active heads: 0x%02x, active SORs: 0x%02x",
+              m_active_heads, m_active_sors);
     log::info("nvidia: ========================================");
 
-    return OK;
+    return (outputs_active > 0) ? OK : ERR_NOT_FOUND;
 }
 
 int32_t nv_gpu::discover_display_caps() {
@@ -1869,7 +1955,7 @@ int32_t nv_gpu::power_up_sor(uint8_t sor_id) {
 }
 
 int32_t nv_gpu::program_sor(uint8_t sor_id, uint8_t head,
-                             dcb_output_type type, bool hdmi) {
+                             dcb_output_type type, bool hdmi, uint8_t or_mask) {
     // Set SOR protocol in core channel state
     uint32_t proto;
     if (type == dcb_output_type::DP) {
@@ -1902,14 +1988,21 @@ int32_t nv_gpu::program_sor(uint8_t sor_id, uint8_t head,
     log::info("nvidia: SOR %u: clock configured (div2=%u)", sor_id, div2);
 
     // SOR routing (GM200+): route output_or → SOR
-    // The DCB or_mask tells us the output OR index
+    // The DCB or_mask tells us the output OR index (__ffs of mask)
     // Route link A: 0x612308 + (output_or * 0x100)
-    uint32_t route_reg = reg::SOR_ROUTE_LINK_A;
+    uint8_t output_or = 0;
+    for (int b = 0; b < 8; b++) {
+        if (or_mask & (1 << b)) {
+            output_or = static_cast<uint8_t>(b);
+            break;
+        }
+    }
+    uint32_t route_reg = reg::SOR_ROUTE_LINK_A + output_or * reg::SOR_ROUTE_STRIDE;
     uint32_t route_val = (sor_id + 1); // SOR index + 1 (0 = disconnected)
     reg_mask32(route_reg, 0x0000001F, route_val);
 
-    log::info("nvidia: SOR routing: output → SOR %u (reg 0x%06x = 0x%08x)",
-              sor_id, route_reg, route_val);
+    log::info("nvidia: SOR routing: output_or %u → SOR %u (reg 0x%06x = 0x%08x)",
+              output_or, sor_id, route_reg, route_val);
 
     return OK;
 }
