@@ -111,8 +111,10 @@ int32_t fwsec_select_signature(nv_gpu* gpu, const fwsec_fw& fwsec, uint32_t& out
     log::info("nvidia: fwsec: reg_fuse_version = %u (fls of 0x%08x)", reg_fuse_version, fuse_val);
 
     // Check the firmware's signature_versions bitmask
+    // The bit to check is 1 << fls(fuse_val), matching nouveau's BIT(fls(reg_fuse_version))
+    // and nova-core's (1 << reg_fuse_version)
     uint16_t sig_versions = fwsec.desc.signature_versions;
-    uint32_t reg_fuse_bit = (reg_fuse_version > 0) ? (1u << (reg_fuse_version - 1)) : 1u;
+    uint32_t reg_fuse_bit = 1u << reg_fuse_version;
 
     log::info("nvidia: fwsec: signature_versions bitmask = 0x%04x, target bit = 0x%08x",
               sig_versions, reg_fuse_bit);
@@ -283,6 +285,14 @@ int32_t fwsec_run_frts(nv_gpu* gpu, fwsec_fw& fwsec, falcon& gsp) {
 
     int32_t rc;
 
+    // Step 0: Check if WPR2 already exists (would indicate stale GPU state)
+    uint32_t wpr2_hi_check = gpu->reg_rd32(reg::WPR2_ADDR_HI);
+    if ((wpr2_hi_check & 0xFFFFFFF0u) != 0) {
+        log::warn("nvidia: fwsec: WPR2 already exists (HI=0x%08x) — GPU may need full reset",
+                  wpr2_hi_check);
+        // Don't error out — the WPR2 may be from a previous boot and FWSEC will re-establish it
+    }
+
     // Step 1: Compute FRTS region in VRAM
     uint64_t frts_addr = 0, frts_size = 0;
     rc = fwsec_compute_frts_region(gpu, frts_addr, frts_size);
@@ -363,6 +373,12 @@ int32_t fwsec_run_frts(nv_gpu* gpu, fwsec_fw& fwsec, falcon& gsp) {
     }
 
     // Step 9: Verify FWSEC-FRTS success
+    // Check mailbox0 return value (should be 0 on success)
+    if (mbox0_out != 0) {
+        log::error("nvidia: fwsec: FWSEC-FRTS mailbox0 error: 0x%08x", mbox0_out);
+        return ERR_IO;
+    }
+
     uint32_t scratch_e = gpu->reg_rd32(reg::FWSEC_SCRATCH_E);
     uint32_t error_code = scratch_e >> 16;
 

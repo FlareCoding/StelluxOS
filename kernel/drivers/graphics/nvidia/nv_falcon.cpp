@@ -64,11 +64,14 @@ void falcon::set_mailbox1(uint32_t val) { wr32(reg::FALCON_MAILBOX1, val); }
 int32_t falcon::reset() {
     log::info("nvidia: falcon: resetting %s...", name());
 
-    // Step 1: Disable IRQs
-    wr32(reg::FALCON_IRQMODE, 0x00000000);
+    // Step 1: Disable IRQs (use mask to preserve other bits)
+    mask32(reg::FALCON_IRQMODE, 0x00000003, 0x00000000);
     wr32(reg::FALCON_IRQMASK, 0xFFFFFFFF);
 
     // Step 2: Wait for reset ready (may not assert on Ampere — 150µs timeout)
+    // Gratuitous read before the wait loop (hardware sync, per ga102_flcn_reset_prep)
+    (void)rd32(reg::FALCON_HWCFG2);
+
     uint64_t deadline = clock::now_ns() + 150000; // 150µs
     while (!(rd32(reg::FALCON_HWCFG2) & reg::FALCON_HWCFG2_RESET_READY)) {
         if (clock::now_ns() >= deadline) {
@@ -78,10 +81,10 @@ int32_t falcon::reset() {
         delay::us(1);
     }
 
-    // Step 3: Assert and deassert engine reset
-    wr32(reg::FALCON_ENGINE, 0x00000001); // Assert reset
+    // Step 3: Assert and deassert engine reset (use mask to preserve other bits)
+    mask32(reg::FALCON_ENGINE, 0x00000001, 0x00000001); // Assert reset
     delay::us(10);
-    wr32(reg::FALCON_ENGINE, 0x00000000); // Deassert reset
+    mask32(reg::FALCON_ENGINE, 0x00000001, 0x00000000); // Deassert reset
     delay::us(10);
 
     // Step 4: Wait for memory scrubbing to complete
@@ -104,6 +107,9 @@ int32_t falcon::reset() {
 }
 
 int32_t falcon::wait_mem_scrub() {
+    // Dummy mailbox read-modify-write (hardware sync barrier, per upstream)
+    mask32(reg::FALCON_MAILBOX0, 0, 0);
+
     uint64_t deadline = clock::now_ns() + 20000000; // 20ms
     while (rd32(reg::FALCON_HWCFG2) & reg::FALCON_HWCFG2_MEM_SCRUB) {
         if (clock::now_ns() >= deadline) {
@@ -146,9 +152,9 @@ int32_t falcon::configure_fbif() {
     // Clear DMA control
     wr32(reg::FALCON_DMACTL, 0x00000000);
 
-    // Configure transfer: CoherentSysmem, Physical
+    // Configure transfer: CoherentSysmem, Physical (use mask to preserve upper bits)
     uint32_t transcfg = reg::FALCON_FBIF_TARGET_COHERENT | reg::FALCON_FBIF_MEM_PHYSICAL;
-    wr32(reg::FALCON_FBIF_TRANSCFG, transcfg);
+    mask32(reg::FALCON_FBIF_TRANSCFG, 0x00010007, transcfg);
 
     return OK;
 }
