@@ -1,4 +1,8 @@
 #include "drivers/graphics/nvidia/nv_gpu.h"
+#include "drivers/graphics/nvidia/nv_firmware.h"
+#include "drivers/graphics/nvidia/nv_gsp_boot.h"
+#include "drivers/graphics/nvidia/nv_rpc.h"
+#include "drivers/graphics/nvidia/nv_gsp_disp.h"
 #include "hw/mmio.h"
 #include "hw/cpu.h"
 #include "hw/delay.h"
@@ -144,28 +148,92 @@ int32_t nv_gpu::attach() {
 
 void nv_gpu::run() {
     log::info("nvidia: driver task started");
+    log::info("nvidia: ========================================");
+    log::info("nvidia: GSP-RM Boot Pipeline");
+    log::info("nvidia: ========================================");
 
-    // Phase 3: Probe connected monitors via I2C/EDID
-    int32_t rc = probe_monitors();
+    int32_t rc;
+
+    // ================================================================
+    // Phase A: Load GSP firmware from filesystem
+    // ================================================================
+    gsp_firmware fw;
+    rc = firmware_load_all(this, fw);
     if (rc != OK) {
-        log::warn("nvidia: monitor probing returned %d", rc);
+        log::error("nvidia: Phase A FAILED: firmware loading: %d", rc);
+        log::info("nvidia: ensure firmware files are at /lib/firmware/nvidia/ga102/gsp/");
+        goto idle;
     }
 
-    // Phase 4: Initialize display engine and scanout
-    if (m_edid_count > 0) {
-        rc = init_display();
+    // ================================================================
+    // Phase B+C: GSP Boot (FWSEC-FRTS + SEC2 Booter + INIT_DONE)
+    // ================================================================
+    {
+        gsp_boot_state boot;
+        rc = gsp_boot(this, fw, boot);
         if (rc != OK) {
-            log::error("nvidia: display initialization failed: %d", rc);
+            log::error("nvidia: Phase C FAILED: GSP boot: %d", rc);
+            firmware_free_all(fw);
+            goto idle;
         }
-    } else {
-        log::warn("nvidia: no monitors detected, skipping display init");
+
+        // ================================================================
+        // Phase D: RM Object Initialization
+        // ================================================================
+        rm_state rm;
+        rc = rm_init(this, boot, rm);
+        if (rc != OK) {
+            log::error("nvidia: Phase D FAILED: RM init: %d", rc);
+            firmware_free_all(fw);
+            goto idle;
+        }
+
+        // ================================================================
+        // Phase E: Display Discovery via GSP-RM
+        // ================================================================
+        display_state disp;
+        rc = gsp_display_probe(this, boot, rm, disp);
+        if (rc != OK) {
+            log::warn("nvidia: Phase E: display probe returned %d", rc);
+        }
+
+        // ================================================================
+        // Phase F: Display output (future — requires display channel alloc)
+        // ================================================================
+        if (disp.initialized && disp.display_count > 0) {
+            log::info("nvidia: ========================================");
+            log::info("nvidia: DISPLAY PIPELINE COMPLETE");
+            log::info("nvidia: %u monitor(s) detected via GSP-RM:", disp.display_count);
+            for (uint32_t i = 0; i < disp.display_count; i++) {
+                const display_info& d = disp.displays[i];
+                if (d.has_edid && d.edid.valid) {
+                    log::info("nvidia:   [%u] %s — %ux%u @%uHz (display_id=0x%08x)",
+                              i, d.edid.display_name[0] ? d.edid.display_name : "(unnamed)",
+                              d.edid.h_active, d.edid.v_active, d.edid.refresh_hz,
+                              d.display_id);
+                } else {
+                    log::info("nvidia:   [%u] (no EDID) display_id=0x%08x", i, d.display_id);
+                }
+            }
+            log::info("nvidia: ========================================");
+            // TODO Phase F: Allocate display channels, set mode, scanout
+            // This requires NV50_DISPLAY (class 0x9070+) allocation,
+            // core/window/cursor channel setup, and mode programming
+            // via EVO/NVDisplay push buffer commands through GSP-RM.
+            // The display channel architecture is complex and will be
+            // implemented as a follow-up once basic GSP communication
+            // is verified on hardware.
+        } else {
+            log::warn("nvidia: no displays detected, skipping display output");
+        }
+
+        log::info("nvidia: ========================================");
+        log::info("nvidia: GSP-RM driver initialization complete");
+        log::info("nvidia: ========================================");
     }
 
-    log::info("nvidia: ========================================");
-    log::info("nvidia: driver initialization complete");
-    log::info("nvidia: ========================================");
-
-    // Idle loop — wait for events (future: handle hotplug, mode changes)
+idle:
+    // Idle loop — wait for events (hotplug, mode changes, etc.)
     for (;;) {
         wait_for_event();
     }
