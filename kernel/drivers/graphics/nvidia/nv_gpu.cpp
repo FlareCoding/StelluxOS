@@ -186,7 +186,7 @@ __PRIVILEGED_CODE void nv_gpu::on_interrupt(uint32_t vector) {
 
 int32_t nv_gpu::map_bars() {
     // Map BAR0 — 16MB MMIO control space
-    int32_t rc = map_bar(0, m_bar0_va);
+    int32_t rc = map_bar(0, m_bar0_va, paging::PAGE_USER);
     if (rc != 0) {
         log::error("nvidia: failed to map BAR0 (MMIO): %d", rc);
         return ERR_MAP_FAILED;
@@ -217,7 +217,7 @@ int32_t nv_gpu::map_bars() {
             rc = vmm::map_device(
                 static_cast<pmm::phys_addr_t>(bar1.phys),
                 static_cast<size_t>(map_size),
-                paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_WC,
+                paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_WC,
                 base, va)
         );
 
@@ -601,7 +601,7 @@ int32_t nv_gpu::read_vbios_pci_rom() {
     RUN_ELEVATED(rc = vmm::map_phys(
         static_cast<pmm::phys_addr_t>(rom_phys),
         static_cast<size_t>(size),
-        paging::PAGE_READ,
+        paging::PAGE_READ | paging::PAGE_USER,
         rom_base, rom_va));
 
     if (rc != vmm::OK) {
@@ -1481,7 +1481,8 @@ int32_t nv_gpu::aux_xfer(uint8_t ch, uint32_t type, uint32_t addr,
     uint32_t ctrl_reg = base + reg::AUX_CTRL;
 
     // For write: load TX buffer
-    if (type == reg::AUX_TYPE_I2C_WR || type == reg::AUX_TYPE_NATIVE_WR) {
+    if (type == reg::AUX_TYPE_I2C_WR || type == reg::AUX_TYPE_I2C_WR_STOP ||
+        type == reg::AUX_TYPE_NATIVE_WR) {
         for (uint32_t i = 0; i < len; i += 4) {
             uint32_t word = 0;
             for (uint32_t j = 0; j < 4 && (i + j) < len; j++) {
@@ -1537,7 +1538,8 @@ int32_t nv_gpu::aux_xfer(uint8_t ch, uint32_t type, uint32_t addr,
     }
 
     // For read: copy RX buffer
-    if (type == reg::AUX_TYPE_I2C_RD || type == reg::AUX_TYPE_NATIVE_RD) {
+    if (type == reg::AUX_TYPE_I2C_RD || type == reg::AUX_TYPE_I2C_RD_STOP ||
+        type == reg::AUX_TYPE_NATIVE_RD) {
         uint32_t rx_size = stat & reg::AUX_STAT_RX_SIZE_MASK;
         if (rx_size == 0 && len > 0) {
             log::debug("nvidia: AUX ch %u: read returned 0 bytes (stat=0x%08x)", ch, stat);
