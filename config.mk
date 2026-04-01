@@ -60,6 +60,9 @@ endif
 # Kernel Configuration
 # ============================================================================
 
+# Kernel version string (used by uname and boot logging)
+STLX_VERSION ?= 3.0.1
+
 # Maximum number of CPUs supported
 MAX_CPUS ?= 64
 

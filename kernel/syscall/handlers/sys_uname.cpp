@@ -31,8 +31,8 @@ DEFINE_SYSCALL1(uname, u_buf) {
 
     fill_field(kbuf.sysname,    "Stellux");
     fill_field(kbuf.nodename,   "stellux");
-    fill_field(kbuf.release,    "3.0.0");
-    fill_field(kbuf.version,    "Stellux 3.0.0");
+    fill_field(kbuf.release,    STLX_VERSION);
+    fill_field(kbuf.version,    "Stellux " STLX_VERSION);
 #if defined(__x86_64__)
     fill_field(kbuf.machine,    "x86_64");
 #elif defined(__aarch64__)
