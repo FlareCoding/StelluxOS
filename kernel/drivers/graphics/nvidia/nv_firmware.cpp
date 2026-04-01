@@ -56,7 +56,7 @@ int32_t firmware_load_file(const char* path, uint8_t*& out_data,
     }
 
     // Allocate buffer
-    uint8_t* buf = static_cast<uint8_t*>(heap::kzalloc(static_cast<size_t>(file_size)));
+    uint8_t* buf = static_cast<uint8_t*>(heap::uzalloc(static_cast<size_t>(file_size)));
     if (!buf) {
         log::error("nvidia: fw: failed to allocate %lu bytes for %s", file_size, path);
         return ERR_NOT_FOUND;
@@ -67,7 +67,7 @@ int32_t firmware_load_file(const char* path, uint8_t*& out_data,
     fs::file* f = fs::open(path, fs::O_RDONLY, &open_err);
     if (!f) {
         log::error("nvidia: fw: open(%s) failed: %d", path, open_err);
-        heap::kfree(buf);
+        heap::ufree(buf);
         return ERR_NOT_FOUND;
     }
 
@@ -77,7 +77,7 @@ int32_t firmware_load_file(const char* path, uint8_t*& out_data,
     if (bytes_read < 0 || static_cast<uint64_t>(bytes_read) != file_size) {
         log::error("nvidia: fw: read(%s) returned %ld (expected %lu)",
                    path, bytes_read, file_size);
-        heap::kfree(buf);
+        heap::ufree(buf);
         return ERR_IO;
     }
 
@@ -652,7 +652,7 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         return ERR_INVALID;
     }
 
-    out.signatures = static_cast<uint8_t*>(heap::kzalloc(sigs_total));
+    out.signatures = static_cast<uint8_t*>(heap::uzalloc(sigs_total));
     if (!out.signatures) {
         log::error("nvidia: fw: failed to allocate %u bytes for FWSEC signatures", sigs_total);
         return ERR_NOT_FOUND;
@@ -675,15 +675,15 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
     if (ucode_offset + out.ucode_size > vbios_size) {
         log::error("nvidia: fw: FWSEC ucode out of bounds (0x%x + 0x%x > 0x%x)",
                    ucode_offset, out.ucode_size, vbios_size);
-        heap::kfree(out.signatures);
+        heap::ufree(out.signatures);
         out.signatures = nullptr;
         return ERR_INVALID;
     }
 
-    out.ucode_data = static_cast<uint8_t*>(heap::kzalloc(out.ucode_size));
+    out.ucode_data = static_cast<uint8_t*>(heap::uzalloc(out.ucode_size));
     if (!out.ucode_data) {
         log::error("nvidia: fw: failed to allocate %u bytes for FWSEC ucode", out.ucode_size);
-        heap::kfree(out.signatures);
+        heap::ufree(out.signatures);
         out.signatures = nullptr;
         return ERR_NOT_FOUND;
     }
@@ -810,21 +810,21 @@ int32_t firmware_load_all(nv_gpu* gpu, gsp_firmware& fw) {
 // ============================================================================
 
 static void free_booter(booter_fw& b) {
-    if (b.raw_data) { heap::kfree(b.raw_data); b.raw_data = nullptr; }
+    if (b.raw_data) { heap::ufree(b.raw_data); b.raw_data = nullptr; }
     if (b.dma_valid) { dma::free_pages(b.dma); b.dma_valid = false; }
     b.payload = nullptr;
     b.payload_size = 0;
 }
 
 static void free_bootloader(bootloader_fw& b) {
-    if (b.raw_data) { heap::kfree(b.raw_data); b.raw_data = nullptr; }
+    if (b.raw_data) { heap::ufree(b.raw_data); b.raw_data = nullptr; }
     if (b.dma_valid) { dma::free_pages(b.dma); b.dma_valid = false; }
     b.payload = nullptr;
     b.payload_size = 0;
 }
 
 static void free_gsp(gsp_fw& g) {
-    if (g.raw_data) { heap::kfree(g.raw_data); g.raw_data = nullptr; }
+    if (g.raw_data) { heap::ufree(g.raw_data); g.raw_data = nullptr; }
     g.fwimage = nullptr;
     g.fwimage_size = 0;
     g.fwsig = nullptr;
@@ -833,8 +833,8 @@ static void free_gsp(gsp_fw& g) {
 }
 
 static void free_fwsec(fwsec_fw& f) {
-    if (f.ucode_data) { heap::kfree(f.ucode_data); f.ucode_data = nullptr; }
-    if (f.signatures) { heap::kfree(f.signatures); f.signatures = nullptr; }
+    if (f.ucode_data) { heap::ufree(f.ucode_data); f.ucode_data = nullptr; }
+    if (f.signatures) { heap::ufree(f.signatures); f.signatures = nullptr; }
     if (f.dma_valid) { dma::free_pages(f.dma); f.dma_valid = false; }
     f.valid = false;
 }

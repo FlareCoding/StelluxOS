@@ -324,7 +324,7 @@ void firmware_free_all(gsp_firmware& fw);
 
 /**
  * Load a single firmware file from the filesystem.
- * Allocates memory via heap::kzalloc() and reads the file contents.
+ * Allocates memory via heap::uzalloc() and reads the file contents.
  *
  * @param path     Filesystem path (e.g., "/lib/firmware/nvidia/ga102/gsp/gsp-535.113.01.bin")
  * @param out_data Output: allocated buffer with file contents

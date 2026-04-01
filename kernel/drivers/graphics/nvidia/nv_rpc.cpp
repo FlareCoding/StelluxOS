@@ -49,7 +49,7 @@ int32_t rpc_send(nv_gpu* gpu, gsp_boot_state& state,
 
     // Build the message in a heap-allocated temporary buffer, then copy to queue
     // handling wrap-around if the message spans the end of the ring buffer
-    uint8_t* temp_buf = static_cast<uint8_t*>(heap::kzalloc(padded_len));
+    uint8_t* temp_buf = static_cast<uint8_t*>(heap::uzalloc(padded_len));
     if (!temp_buf) {
         log::error("nvidia: rpc: failed to allocate %u bytes for message buffer", padded_len);
         return ERR_NOT_FOUND;
@@ -112,7 +112,7 @@ int32_t rpc_send(nv_gpu* gpu, gsp_boot_state& state,
     barrier::smp_full(); // full barrier before doorbell
 
     // Free temporary buffer
-    heap::kfree(temp_buf);
+    heap::ufree(temp_buf);
 
     // Ring doorbell — write to falcon MAILBOX0 at GSP base + 0xC00
     gpu->reg_wr32(reg::FALCON_GSP_BASE + FALCON_DOORBELL, 0x00000000);
@@ -230,7 +230,7 @@ int32_t rm_alloc(nv_gpu* gpu, gsp_boot_state& state,
                  uint32_t h_class, const void* params, uint32_t params_size) {
     // Build the rm_alloc payload: header + class-specific params
     uint32_t total = sizeof(rm_alloc_params) + params_size;
-    uint8_t* buf = static_cast<uint8_t*>(heap::kzalloc(total));
+    uint8_t* buf = static_cast<uint8_t*>(heap::uzalloc(total));
     if (!buf) {
         log::error("nvidia: rm_alloc: failed to allocate %u bytes", total);
         return ERR_NOT_FOUND;
@@ -254,15 +254,15 @@ int32_t rm_alloc(nv_gpu* gpu, gsp_boot_state& state,
               h_client, h_parent, h_object, h_class, params_size);
 
     // Send and receive (allocate reply on heap too)
-    uint8_t* reply = static_cast<uint8_t*>(heap::kzalloc(total + 256));
+    uint8_t* reply = static_cast<uint8_t*>(heap::uzalloc(total + 256));
     uint32_t reply_size = 0;
     int32_t rc = rpc_call(gpu, state, NV_VGPU_MSG_FUNCTION_RM_ALLOC,
                           buf, total, reply, total + 256, &reply_size, 4000);
-    heap::kfree(buf);
+    heap::ufree(buf);
 
     if (rc != OK) {
         log::error("nvidia: rm_alloc: RPC failed: %d", rc);
-        heap::kfree(reply);
+        heap::ufree(reply);
         return rc;
     }
 
@@ -272,12 +272,12 @@ int32_t rm_alloc(nv_gpu* gpu, gsp_boot_state& state,
         if (result->status != 0) {
             log::error("nvidia: rm_alloc: GSP returned status 0x%x for class 0x%04x",
                        result->status, h_class);
-            heap::kfree(reply);
+            heap::ufree(reply);
             return ERR_IO;
         }
     }
 
-    heap::kfree(reply);
+    heap::ufree(reply);
     log::info("nvidia: rm_alloc: success — handle 0x%x (class 0x%04x)", h_object, h_class);
     return OK;
 }
@@ -290,7 +290,7 @@ int32_t rm_control(nv_gpu* gpu, gsp_boot_state& state,
                    uint32_t h_client, uint32_t h_object,
                    uint32_t cmd, void* params, uint32_t params_size) {
     uint32_t total = sizeof(rm_control_params) + params_size;
-    uint8_t* buf = static_cast<uint8_t*>(heap::kzalloc(total));
+    uint8_t* buf = static_cast<uint8_t*>(heap::uzalloc(total));
     if (!buf) {
         log::error("nvidia: rm_control: failed to allocate %u bytes", total);
         return ERR_NOT_FOUND;
@@ -312,14 +312,14 @@ int32_t rm_control(nv_gpu* gpu, gsp_boot_state& state,
                h_client, h_object, cmd, params_size);
 
     uint32_t reply_max = total + 256;
-    uint8_t* reply = static_cast<uint8_t*>(heap::kzalloc(reply_max));
+    uint8_t* reply = static_cast<uint8_t*>(heap::uzalloc(reply_max));
     uint32_t reply_size = 0;
     int32_t rc = rpc_call(gpu, state, NV_VGPU_MSG_FUNCTION_RM_CONTROL,
                           buf, total, reply, reply_max, &reply_size, 4000);
-    heap::kfree(buf);
+    heap::ufree(buf);
 
     if (rc != OK) {
-        heap::kfree(reply);
+        heap::ufree(reply);
         return rc;
     }
 
@@ -333,12 +333,12 @@ int32_t rm_control(nv_gpu* gpu, gsp_boot_state& state,
         rm_control_params* result = reinterpret_cast<rm_control_params*>(reply);
         if (result->status != 0) {
             log::warn("nvidia: rm_control: cmd 0x%08x returned status 0x%x", cmd, result->status);
-            heap::kfree(reply);
+            heap::ufree(reply);
             return ERR_IO;
         }
     }
 
-    heap::kfree(reply);
+    heap::ufree(reply);
     return OK;
 }
 
@@ -381,7 +381,7 @@ int32_t rpc_set_system_info(nv_gpu* gpu, gsp_boot_state& state) {
     log::info("nvidia: rpc: sending SET_SYSTEM_INFO");
 
     gsp_system_info_minimal* info = static_cast<gsp_system_info_minimal*>(
-        heap::kzalloc(sizeof(gsp_system_info_minimal)));
+        heap::uzalloc(sizeof(gsp_system_info_minimal)));
     if (!info) {
         log::error("nvidia: rpc: failed to allocate system info buffer");
         return ERR_NOT_FOUND;
@@ -412,7 +412,7 @@ int32_t rpc_set_system_info(nv_gpu* gpu, gsp_boot_state& state) {
 
     int32_t rc = rpc_send(gpu, state, NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO,
                           info, sizeof(gsp_system_info_minimal));
-    heap::kfree(info);
+    heap::ufree(info);
     return rc;
 }
 
@@ -459,7 +459,7 @@ int32_t rpc_get_gsp_static_info(nv_gpu* gpu, gsp_boot_state& state) {
 
     // Send empty request — reply is large (GspStaticConfigInfo)
     constexpr uint32_t STATIC_INFO_MAX = 16384; // 16KB should be enough
-    uint8_t* reply = static_cast<uint8_t*>(heap::kzalloc(STATIC_INFO_MAX));
+    uint8_t* reply = static_cast<uint8_t*>(heap::uzalloc(STATIC_INFO_MAX));
     if (!reply) {
         log::error("nvidia: rpc: failed to allocate static info reply buffer");
         return ERR_NOT_FOUND;
@@ -470,7 +470,7 @@ int32_t rpc_get_gsp_static_info(nv_gpu* gpu, gsp_boot_state& state) {
                           nullptr, 0, reply, STATIC_INFO_MAX, &reply_size, 4000);
     if (rc != OK) {
         log::error("nvidia: rpc: GET_GSP_STATIC_INFO failed: %d", rc);
-        heap::kfree(reply);
+        heap::ufree(reply);
         return rc;
     }
 
@@ -482,7 +482,7 @@ int32_t rpc_get_gsp_static_info(nv_gpu* gpu, gsp_boot_state& state) {
         log::info("nvidia: rpc: static info: fb_length=0x%lx", fb_length);
     }
 
-    heap::kfree(reply);
+    heap::ufree(reply);
     return OK;
 }
 
