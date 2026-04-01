@@ -20,11 +20,17 @@ constexpr uint64_t GSP_FW_WPR_META_REVISION = 1;
 constexpr uint64_t GSP_FW_WPR_META_VERIFIED = 0xa0a0a0a0a0a0a0a0ULL;
 
 // GSP heap sizing parameters
-constexpr uint32_t GSP_FW_HEAP_OS_CARVEOUT_SIZE = (22 << 20); // 22 MB (baremetal libos3)
+// LIBOS2 (Turing, GA100): carveout=0, min=64MB, max=256MB
+// LIBOS3 (GA102+, baremetal): carveout=22MB, min=88MB, max=280MB
+constexpr uint32_t GSP_FW_HEAP_OS_CARVEOUT_LIBOS3 = (22 << 20); // 22 MB
+constexpr uint32_t GSP_FW_HEAP_OS_CARVEOUT_LIBOS2 = 0;           // 0 MB
 constexpr uint32_t GSP_FW_HEAP_BASE_SIZE        = (8 << 20);  // 8 MB (Turing-Ada)
 constexpr uint32_t GSP_FW_HEAP_PER_GB_SIZE      = (96 << 10); // 96 KB per GB VRAM
 constexpr uint32_t GSP_FW_HEAP_CLIENT_ALLOC     = ((48 << 10) * 2048); // 96 MB
-constexpr uint32_t GSP_FW_HEAP_MIN_SIZE         = (64 << 20); // 64 MB minimum
+constexpr uint32_t GSP_FW_HEAP_MIN_LIBOS3       = (88 << 20); // 88 MB (GA102+)
+constexpr uint32_t GSP_FW_HEAP_MIN_LIBOS2       = (64 << 20); // 64 MB (Turing)
+constexpr uint32_t GSP_FW_HEAP_MAX_LIBOS3       = (280 << 20); // 280 MB (GA102+)
+constexpr uint32_t GSP_FW_HEAP_MAX_LIBOS2       = (256 << 20); // 256 MB (Turing)
 
 // Alignment constants
 constexpr uint64_t ALIGN_128K = 0x20000;
@@ -185,30 +191,32 @@ struct __attribute__((packed)) rpc_header {
 static_assert(sizeof(rpc_header) == 32);
 
 // MESSAGE_QUEUE_INIT_ARGUMENTS — passed in GSP_ARGUMENTS_CACHED
+// NvLength = NvU64 on 64-bit platforms (including GSP RISC-V)
 struct __attribute__((packed)) msg_queue_init_args {
-    uint64_t shared_mem_phys_addr;         // DMA addr of shared memory
-    uint32_t page_table_entry_count;       // PTE count
-    uint32_t cmd_queue_offset;             // Byte offset of cmdq in shared mem
-    uint32_t stat_queue_offset;            // Byte offset of msgq in shared mem
-    uint32_t lockless_cmd_queue_offset;    // 0
-    uint32_t lockless_stat_queue_offset;   // 0
+    uint64_t shared_mem_phys_addr;         // 0x00: DMA addr of shared memory
+    uint32_t page_table_entry_count;       // 0x08: PTE count
+    uint32_t _pad0;                        // 0x0C: alignment padding
+    uint64_t cmd_queue_offset;             // 0x10: Byte offset of cmdq in shared mem
+    uint64_t stat_queue_offset;            // 0x18: Byte offset of msgq in shared mem
+    uint64_t lockless_cmd_queue_offset;    // 0x20: 0 (unused in r535)
+    uint64_t lockless_stat_queue_offset;   // 0x28: 0 (unused in r535)
 };
-static_assert(sizeof(msg_queue_init_args) == 28);
+static_assert(sizeof(msg_queue_init_args) == 48);
 
 // GSP_SR_INIT_ARGUMENTS
 struct __attribute__((packed)) gsp_sr_init_args {
     uint32_t old_level;          // 0 = fresh boot
     uint32_t flags;              // 0
-    uint32_t b_in_pm_transition; // 0
+    uint8_t  b_in_pm_transition; // NvBool = NvU8, 0 = not resuming
+    uint8_t  _pad[3];            // padding to 12 bytes
 };
 static_assert(sizeof(gsp_sr_init_args) == 12);
 
-// GSP_ARGUMENTS_CACHED — rmargs content
-struct __attribute__((packed)) gsp_arguments_cached {
-    msg_queue_init_args mq_init;   // 28 bytes
+// GSP_ARGUMENTS_CACHED — rmargs content (natural alignment, no packed needed)
+struct gsp_arguments_cached {
+    msg_queue_init_args mq_init;   // 48 bytes
     gsp_sr_init_args    sr_init;   // 12 bytes
     uint32_t            gpu_instance; // 0
-    uint8_t             pad[4];    // alignment
     uint64_t            profiler_pa;  // 0
     uint64_t            profiler_size; // 0
 };
@@ -243,7 +251,8 @@ struct fb_layout {
 // ============================================================================
 
 struct radix3 {
-    dma::buffer lvl[3];  // [0]=root, [1]=middle, [2]=leaf
+    dma::buffer lvl[3];      // [0]=root, [1]=middle, [2]=leaf
+    dma::buffer fw_data_dma; // DMA buffer for firmware data (radix3 entries point into this)
     bool valid;
 };
 

@@ -101,15 +101,26 @@ int32_t gsp_compute_fb_layout(nv_gpu* gpu, const gsp_firmware& fw, fb_layout& la
               layout.elf.addr, layout.elf.addr + layout.elf.size, layout.elf.size >> 20);
 
     // GSP heap: computed from FB size
+    // GA102+ (chipset >= 0x172) uses LIBOS3, Turing/GA100 uses LIBOS2
+    bool is_libos3 = (gpu->chipset() >= 0x172);
+    uint32_t os_carveout = is_libos3 ? GSP_FW_HEAP_OS_CARVEOUT_LIBOS3 : GSP_FW_HEAP_OS_CARVEOUT_LIBOS2;
+    uint32_t heap_min = is_libos3 ? GSP_FW_HEAP_MIN_LIBOS3 : GSP_FW_HEAP_MIN_LIBOS2;
+    uint32_t heap_max = is_libos3 ? GSP_FW_HEAP_MAX_LIBOS3 : GSP_FW_HEAP_MAX_LIBOS2;
+
     uint64_t fb_size_gb = div_round_up(layout.fb_size, 1ULL << 30);
-    uint64_t heap_size = GSP_FW_HEAP_OS_CARVEOUT_SIZE +
+    uint64_t heap_size = os_carveout +
                          GSP_FW_HEAP_BASE_SIZE +
                          align_up(static_cast<uint64_t>(GSP_FW_HEAP_PER_GB_SIZE) * fb_size_gb, ALIGN_1M) +
                          align_up(GSP_FW_HEAP_CLIENT_ALLOC, ALIGN_1M);
 
-    if (heap_size < GSP_FW_HEAP_MIN_SIZE) {
-        heap_size = GSP_FW_HEAP_MIN_SIZE;
-    }
+    // Clamp to [min, max]
+    if (heap_size < heap_min) heap_size = heap_min;
+    if (heap_size > heap_max) heap_size = heap_max;
+
+    log::info("nvidia: gsp: heap sizing: libos%s carveout=%uMB base=8MB per_gb=%luMB client=96MB → %luMB (clamped [%u,%u]MB)",
+              is_libos3 ? "3" : "2", os_carveout >> 20, 
+              align_up(static_cast<uint64_t>(GSP_FW_HEAP_PER_GB_SIZE) * fb_size_gb, ALIGN_1M) >> 20,
+              heap_size >> 20, heap_min >> 20, heap_max >> 20);
 
     layout.heap.addr = align_down(layout.elf.addr - heap_size, ALIGN_1M);
     layout.heap.size = align_down(layout.elf.addr - layout.heap.addr, ALIGN_1M);
@@ -226,14 +237,12 @@ int32_t gsp_build_radix3(nv_gpu* /*gpu*/, const gsp_fw& fw_data, radix3& r3) {
     volatile uint64_t* l0 = reinterpret_cast<volatile uint64_t*>(r3.lvl[0].virt);
     l0[0] = r3.lvl[1].phys;
 
+    // Store firmware DMA buffer in radix3 struct (must persist while GSP runs)
+    r3.fw_data_dma = fw_dma;
     r3.valid = true;
 
     log::info("nvidia: gsp: radix3 built: lvl0=0x%lx → lvl1=0x%lx → lvl2=0x%lx → fw=0x%lx",
-              r3.lvl[0].phys, r3.lvl[1].phys, r3.lvl[2].phys, fw_dma.phys);
-
-    // Note: fw_dma is intentionally NOT freed — it must persist while GSP is running.
-    // The radix3 page table entries point into it.
-    // We store it as an additional member... but for now the DMA allocator tracks it.
+              r3.lvl[0].phys, r3.lvl[1].phys, r3.lvl[2].phys, r3.fw_data_dma.phys);
 
     return OK;
 }
@@ -443,8 +452,11 @@ int32_t gsp_init_libos(nv_gpu* /*gpu*/, gsp_boot_state& state) {
 
     rmargs->mq_init.shared_mem_phys_addr = state.shm_dma.phys;
     rmargs->mq_init.page_table_entry_count = state.pte_count;
-    rmargs->mq_init.cmd_queue_offset = state.cmdq_offset;
-    rmargs->mq_init.stat_queue_offset = state.msgq_offset;
+    rmargs->mq_init._pad0 = 0;
+    rmargs->mq_init.cmd_queue_offset = static_cast<uint64_t>(state.cmdq_offset);
+    rmargs->mq_init.stat_queue_offset = static_cast<uint64_t>(state.msgq_offset);
+    rmargs->mq_init.lockless_cmd_queue_offset = 0;
+    rmargs->mq_init.lockless_stat_queue_offset = 0;
     rmargs->sr_init.old_level = 0;
     rmargs->sr_init.flags = 0;
     rmargs->sr_init.b_in_pm_transition = 0;
@@ -815,8 +827,83 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
         return rc;
     }
 
-    // Step 9: Reset GSP falcon into RISC-V mode
-    log::info("nvidia: gsp: resetting GSP falcon to RISC-V mode");
+    // Step 9: Write pre-boot RPCs to command queue
+    // GSP-RM reads these from the command queue during initialization.
+    // SET_SYSTEM_INFO (fn=72) and SET_REGISTRY (fn=73) must be present.
+    {
+        // Write SET_SYSTEM_INFO RPC to command queue
+        uint8_t* cmdq_base = reinterpret_cast<uint8_t*>(state.shm_dma.virt + state.cmdq_offset);
+        queue_header* cmdq_hdr_ptr = reinterpret_cast<queue_header*>(cmdq_base);
+        uint32_t entry_off_val = cmdq_hdr_ptr->tx.entry_off;
+
+        // RPC 1: SET_SYSTEM_INFO (function 72)
+        {
+            uint8_t* entry = cmdq_base + entry_off_val + state.cmdq_seq * QUEUE_ENTRY_SIZE;
+            string::memset(entry, 0, QUEUE_ENTRY_SIZE);
+
+            gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(entry);
+            rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
+
+            msg->elem_count = 1;
+            msg->seq_num = state.cmdq_seq;
+            rpc->header_version = RPC_HDR_VERSION;
+            rpc->signature = RPC_SIGNATURE;
+            rpc->length = sizeof(rpc_header); // Header-only, minimal payload
+            rpc->function = NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO;
+            rpc->rpc_result = 0xFFFFFFFF;
+            rpc->rpc_result_private = 0xFFFFFFFF;
+            rpc->sequence = state.rpc_seq++;
+
+            // Compute XOR checksum
+            msg->pad = 0;
+            msg->checksum = 0;
+            uint64_t csum = 0;
+            for (uint32_t i = 0; i < QUEUE_ENTRY_SIZE / sizeof(uint64_t); i++) {
+                csum ^= reinterpret_cast<volatile uint64_t*>(entry)[i];
+            }
+            msg->checksum = static_cast<uint32_t>((csum >> 32) ^ (csum & 0xFFFFFFFF));
+
+            state.cmdq_seq++;
+            cmdq_hdr_ptr->tx.write_ptr = state.cmdq_seq;
+            log::info("nvidia: gsp: queued SET_SYSTEM_INFO (fn=%u) at cmdq slot %u",
+                      NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO, state.cmdq_seq - 1);
+        }
+
+        // RPC 2: SET_REGISTRY (function 73)
+        {
+            uint8_t* entry = cmdq_base + entry_off_val + state.cmdq_seq * QUEUE_ENTRY_SIZE;
+            string::memset(entry, 0, QUEUE_ENTRY_SIZE);
+
+            gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(entry);
+            rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
+
+            msg->elem_count = 1;
+            msg->seq_num = state.cmdq_seq;
+            rpc->header_version = RPC_HDR_VERSION;
+            rpc->signature = RPC_SIGNATURE;
+            rpc->length = sizeof(rpc_header);
+            rpc->function = NV_VGPU_MSG_FUNCTION_SET_REGISTRY;
+            rpc->rpc_result = 0xFFFFFFFF;
+            rpc->rpc_result_private = 0xFFFFFFFF;
+            rpc->sequence = state.rpc_seq++;
+
+            msg->pad = 0;
+            msg->checksum = 0;
+            uint64_t csum = 0;
+            for (uint32_t i = 0; i < QUEUE_ENTRY_SIZE / sizeof(uint64_t); i++) {
+                csum ^= reinterpret_cast<volatile uint64_t*>(entry)[i];
+            }
+            msg->checksum = static_cast<uint32_t>((csum >> 32) ^ (csum & 0xFFFFFFFF));
+
+            state.cmdq_seq++;
+            cmdq_hdr_ptr->tx.write_ptr = state.cmdq_seq;
+            log::info("nvidia: gsp: queued SET_REGISTRY (fn=%u) at cmdq slot %u",
+                      NV_VGPU_MSG_FUNCTION_SET_REGISTRY, state.cmdq_seq - 1);
+        }
+    }
+
+    // Step 10: Reset GSP falcon into RISC-V mode
+    log::info("nvidia: gsp: step 10: resetting GSP falcon to RISC-V mode");
     rc = gsp_flcn.reset();
     if (rc != OK) {
         log::error("nvidia: gsp: GSP reset failed: %d", rc);
@@ -882,6 +969,7 @@ void gsp_boot_free(gsp_boot_state& state) {
             for (int i = 0; i < 3; i++) {
                 if (state.r3.lvl[i].virt) { RUN_ELEVATED(dma::free_pages(state.r3.lvl[i])); }
             }
+            if (state.r3.fw_data_dma.virt) { RUN_ELEVATED(dma::free_pages(state.r3.fw_data_dma)); }
         }
     }
 
