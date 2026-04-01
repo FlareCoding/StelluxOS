@@ -105,6 +105,10 @@ private:
     bool i2c_write_byte(uint8_t port, uint8_t byte);
     uint8_t i2c_read_byte(uint8_t port, bool ack);
 
+    // Pad mode switching (hybrid I2C/AUX pads)
+    void pad_set_i2c_mode(uint8_t pad);
+    void pad_set_aux_mode(uint8_t pad);
+
     // DP AUX channel
     int32_t aux_init(uint8_t ch);
     int32_t aux_xfer(uint8_t ch, uint32_t type, uint32_t addr,

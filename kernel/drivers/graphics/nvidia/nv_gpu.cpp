@@ -1026,24 +1026,41 @@ int32_t nv_gpu::probe_monitors() {
         // Determine how to read EDID based on output type and I2C table
         if (e.i2c_index < m_i2c.count && m_i2c.ports[e.i2c_index].valid) {
             const i2c_port& port = m_i2c.ports[e.i2c_index];
+            bool is_hybrid = port.hybrid && port.aux_port != 0x1F;
 
+            // Try DP AUX first (preferred for DP outputs)
             if (port.type == dcb_i2c_type::NVIO_AUX ||
                 (port.type == dcb_i2c_type::PMGR && port.aux_port != 0x1F)) {
-                // Use DP AUX for EDID
                 uint8_t aux_ch = (port.type == dcb_i2c_type::PMGR)
                     ? port.aux_port : port.port;
+
+                // Switch hybrid pad to AUX mode before AUX transaction
+                if (is_hybrid) {
+                    pad_set_aux_mode(aux_ch);
+                }
+
                 log::info("nvidia:   trying DP AUX channel %u for EDID...", aux_ch);
                 rc = aux_read_edid(aux_ch, edid_buf);
             }
 
+            // If AUX failed, try I2C DDC
             if (rc != OK && (port.type == dcb_i2c_type::NVIO_BIT ||
                              port.type == dcb_i2c_type::PMGR ||
                              port.type == dcb_i2c_type::NV04_BIT)) {
-                // Use I2C DDC for EDID
                 uint8_t i2c_port_num = port.port;
                 if (i2c_port_num != 0x1F) {
+                    // Switch hybrid pad to I2C mode before bit-bang
+                    if (is_hybrid) {
+                        pad_set_i2c_mode(port.aux_port);
+                    }
+
                     log::info("nvidia:   trying I2C port %u for DDC/EDID...", i2c_port_num);
                     rc = i2c_read_edid(i2c_port_num, edid_buf);
+
+                    // Restore pad to AUX mode after I2C (leave in DP-ready state)
+                    if (is_hybrid) {
+                        pad_set_aux_mode(port.aux_port);
+                    }
                 }
             }
         } else {
@@ -1296,45 +1313,116 @@ int32_t nv_gpu::i2c_read_edid(uint8_t port, uint8_t* edid_buf) {
 // Phase 3: DP AUX Channel
 // ============================================================================
 
+// Switch a hybrid I2C/AUX pad to I2C mode
+void nv_gpu::pad_set_i2c_mode(uint8_t pad) {
+    uint32_t pad_base = reg::I2C_PAD_BASE + pad * reg::I2C_PAD_STRIDE;
+
+    // Disable pad first
+    reg_mask32(pad_base + reg::I2C_PAD_ENABLE, reg::I2C_PAD_ENABLE_BIT,
+               reg::I2C_PAD_ENABLE_BIT);
+    delay::us(10);
+
+    // Switch to I2C mode
+    reg_mask32(pad_base + reg::I2C_PAD_MODE, reg::I2C_PAD_MODE_I2C_MASK,
+               reg::I2C_PAD_MODE_I2C_VAL);
+    delay::us(10);
+
+    // Re-enable pad
+    reg_mask32(pad_base + reg::I2C_PAD_ENABLE, reg::I2C_PAD_ENABLE_BIT, 0);
+    delay::us(10);
+
+    log::debug("nvidia: pad %u: switched to I2C mode (base 0x%06x)", pad, pad_base);
+}
+
+// Switch a hybrid I2C/AUX pad to AUX mode
+void nv_gpu::pad_set_aux_mode(uint8_t pad) {
+    uint32_t pad_base = reg::I2C_PAD_BASE + pad * reg::I2C_PAD_STRIDE;
+
+    // Disable pad first
+    reg_mask32(pad_base + reg::I2C_PAD_ENABLE, reg::I2C_PAD_ENABLE_BIT,
+               reg::I2C_PAD_ENABLE_BIT);
+    delay::us(10);
+
+    // Switch to AUX mode
+    reg_mask32(pad_base + reg::I2C_PAD_MODE, reg::I2C_PAD_MODE_AUX_MASK,
+               reg::I2C_PAD_MODE_AUX_VAL);
+    delay::us(10);
+
+    // Re-enable pad
+    reg_mask32(pad_base + reg::I2C_PAD_ENABLE, reg::I2C_PAD_ENABLE_BIT, 0);
+    delay::us(10);
+
+    log::debug("nvidia: pad %u: switched to AUX mode (base 0x%06x)", pad, pad_base);
+}
+
 int32_t nv_gpu::aux_init(uint8_t ch) {
     uint32_t base = reg::AUX_CH_BASE + ch * reg::AUX_CH_STRIDE;
+    uint32_t ctrl_reg = base + reg::AUX_CTRL;
 
-    // Wait for idle
-    uint64_t deadline = clock::now_ns() + 10000000; // 10ms
+    // Log initial AUX state for diagnostics
+    uint32_t init_ctrl = reg_rd32(ctrl_reg);
+    uint32_t init_stat = reg_rd32(base + reg::AUX_STAT);
+    log::info("nvidia: AUX ch %u: init state CTRL=0x%08x STAT=0x%08x", ch, init_ctrl, init_stat);
+
+    // Step 1: Force-reset the AUX channel to clear any stale EFI GOP state.
+    // Write bit 31 (reset), then clear it.
+    reg_wr32(ctrl_reg, reg::AUX_CTRL_RESET);
+    delay::us(100);
+    reg_wr32(ctrl_reg, 0x00000000);
+    delay::us(100);
+
+    // Step 2: Release any stale ownership from EFI GOP.
+    // Clear ownership request bits [21:20] and trigger bit [16].
+    reg_wr32(ctrl_reg, 0x00000000);
+    delay::us(100);
+
+    // Step 3: Disable auto-DPCD (GM200+) BEFORE acquiring ownership.
+    // auto-DPCD auto-polls the DP sink and can interfere with manual transactions.
+    uint32_t auto_dpcd_reg = reg::AUX_AUTO_DPCD_BASE + ch * reg::AUX_CH_STRIDE;
+    reg_mask32(auto_dpcd_reg, reg::AUX_AUTO_DPCD_DISABLE, 0);
+    delay::us(100);
+
+    // Step 4: Wait for idle — should be fast after reset.
+    uint64_t deadline = clock::now_ns() + 50000000; // 50ms (generous)
     while (true) {
-        uint32_t ctrl = reg_rd32(base + reg::AUX_CTRL);
+        uint32_t ctrl = reg_rd32(ctrl_reg);
         if ((ctrl & 0x03010000) == 0) break;
         if (clock::now_ns() >= deadline) {
-            log::warn("nvidia: AUX ch %u: timeout waiting for idle", ch);
-            return ERR_TIMEOUT;
+            log::warn("nvidia: AUX ch %u: still not idle after reset (CTRL=0x%08x)",
+                      ch, reg_rd32(ctrl_reg));
+            // Force it
+            reg_wr32(ctrl_reg, 0x00000000);
+            delay::us(1000);
+            break;
         }
         delay::us(100);
     }
 
-    // Disable auto-DPCD (GM200+)
-    uint32_t auto_dpcd_reg = reg::AUX_AUTO_DPCD_BASE + ch * reg::AUX_CH_STRIDE;
-    reg_mask32(auto_dpcd_reg, reg::AUX_AUTO_DPCD_DISABLE, 0);
+    // Step 5: Request ownership.
+    reg_mask32(ctrl_reg, 0x00300000, 0x00100000);
 
-    // Request ownership
-    uint32_t ctrl_reg = base + reg::AUX_CTRL;
-    reg_mask32(ctrl_reg, 0x00300000, 0x00100000); // Request
-
-    // Wait for ack
-    deadline = clock::now_ns() + 10000000; // 10ms
+    // Step 6: Wait for ownership acknowledgement.
+    deadline = clock::now_ns() + 50000000; // 50ms
     while (true) {
         uint32_t ctrl = reg_rd32(ctrl_reg);
         if ((ctrl & 0x03000000) == 0x01000000) break;
         if (clock::now_ns() >= deadline) {
-            log::warn("nvidia: AUX ch %u: ownership timeout", ch);
-            return ERR_TIMEOUT;
+            uint32_t final_ctrl = reg_rd32(ctrl_reg);
+            log::warn("nvidia: AUX ch %u: ownership timeout (CTRL=0x%08x)", ch, final_ctrl);
+            // Try to proceed anyway — on some firmware paths ownership may not ACK
+            // but the channel still works
+            break;
         }
         delay::us(100);
     }
 
-    // Check sink present
-    uint32_t stat = reg_rd32(base + reg::AUX_STAT);
-    if (!(stat & reg::AUX_STAT_SINK_DET)) {
-        log::debug("nvidia: AUX ch %u: no sink detected (stat=0x%08x)", ch, stat);
+    uint32_t post_ctrl = reg_rd32(ctrl_reg);
+    uint32_t post_stat = reg_rd32(base + reg::AUX_STAT);
+    log::info("nvidia: AUX ch %u: post-init CTRL=0x%08x STAT=0x%08x", ch, post_ctrl, post_stat);
+
+    // Step 7: Check sink present (HPD).
+    if (!(post_stat & reg::AUX_STAT_SINK_DET)) {
+        log::info("nvidia: AUX ch %u: no sink detected (HPD not asserted)", ch);
         // Release ownership
         reg_mask32(ctrl_reg, 0x00310000, 0x00000000);
         return ERR_NOT_FOUND;
