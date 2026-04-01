@@ -1,0 +1,8 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_UNAME_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_UNAME_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(uname);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_UNAME_H
