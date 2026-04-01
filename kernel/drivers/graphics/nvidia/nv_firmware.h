@@ -42,10 +42,10 @@ constexpr uint32_t DMEM_ALIGN = 256;
 constexpr const char* GSP_FW_VERSION = "535.113.01";
 
 // Firmware file paths (relative to filesystem root)
-constexpr const char* FW_PATH_GSP         = "/lib/firmware/nvidia/ga102/gsp/gsp-535.113.01.bin";
-constexpr const char* FW_PATH_BOOTLOADER  = "/lib/firmware/nvidia/ga102/gsp/bootloader-535.113.01.bin";
-constexpr const char* FW_PATH_BOOTER_LOAD = "/lib/firmware/nvidia/ga102/gsp/booter_load-535.113.01.bin";
-constexpr const char* FW_PATH_BOOTER_UNLOAD = "/lib/firmware/nvidia/ga102/gsp/booter_unload-535.113.01.bin";
+constexpr const char* FW_PATH_GSP         = "/firmware/nvidia/ga102/gsp/gsp-535.113.01.bin";
+constexpr const char* FW_PATH_BOOTLOADER  = "/firmware/nvidia/ga102/gsp/bootloader-535.113.01.bin";
+constexpr const char* FW_PATH_BOOTER_LOAD = "/firmware/nvidia/ga102/gsp/booter_load-535.113.01.bin";
+constexpr const char* FW_PATH_BOOTER_UNLOAD = "/firmware/nvidia/ga102/gsp/booter_unload-535.113.01.bin";
 
 // Maximum firmware file sizes (sanity checks)
 constexpr uint32_t FW_MAX_SIZE_GSP        = 32 * 1024 * 1024; // 32MB
