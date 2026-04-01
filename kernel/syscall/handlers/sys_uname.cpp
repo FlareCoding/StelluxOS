@@ -34,6 +34,8 @@ DEFINE_SYSCALL1(uname, u_buf) {
     fill_field(kbuf.machine,    "x86_64");
 #elif defined(__aarch64__)
     fill_field(kbuf.machine,    "aarch64");
+#else
+#error "unsupported architecture for uname"
 #endif
     fill_field(kbuf.domainname, "(none)");
 
