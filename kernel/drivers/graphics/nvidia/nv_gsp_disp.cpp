@@ -136,7 +136,22 @@ int32_t gsp_display_probe(nv_gpu* gpu, gsp_boot_state& boot,
         disp.connected_mask = disp.supported_mask;
     }
 
-    // Step 4: For each connected display, get OR info and read EDID
+    // Step 4: Tell GSP we manage DP link training manually
+    if (disp.supported_mask != 0) {
+        dp_set_manual_dp_params manual_p;
+        string::memset(&manual_p, 0, sizeof(manual_p));
+        manual_p.display_id = disp.supported_mask; // All supported displays
+        rc = rm_control(gpu, boot, rm.h_client, rm.h_display,
+                        NV0073_CMD_DP_SET_MANUAL_DISPLAYPORT, &manual_p, sizeof(manual_p));
+        if (rc == OK) {
+            log::info("nvidia: disp: DP_SET_MANUAL_DISPLAYPORT set for mask 0x%08x",
+                      disp.supported_mask);
+        } else {
+            log::warn("nvidia: disp: DP_SET_MANUAL_DISPLAYPORT failed (%d, non-fatal)", rc);
+        }
+    }
+
+    // Step 5: For each connected display, get OR info and read EDID
     disp.display_count = 0;
 
     for (uint32_t bit = 0; bit < 32 && disp.display_count < MAX_DISPLAYS; bit++) {

@@ -14,14 +14,16 @@ class nv_gpu;
 // Display RM Control Commands
 // ============================================================================
 
-constexpr uint32_t NV0073_CMD_SYSTEM_GET_SUPPORTED     = 0x00730120;
+constexpr uint32_t NV0073_CMD_SYSTEM_GET_SUPPORTED     = 0x00730107; // NOT 0x730120!
 constexpr uint32_t NV0073_CMD_SYSTEM_GET_NUM_HEADS     = 0x00730102;
-constexpr uint32_t NV0073_CMD_SYSTEM_GET_CONNECT_STATE = 0x00730122;
+constexpr uint32_t NV0073_CMD_SYSTEM_GET_CONNECT_STATE = 0x00730108; // NOT 0x730122!
 constexpr uint32_t NV0073_CMD_SPECIFIC_GET_EDID_V2     = 0x00730245;
 constexpr uint32_t NV0073_CMD_SPECIFIC_GET_CONNECTOR_DATA = 0x00730250;
 constexpr uint32_t NV0073_CMD_SPECIFIC_OR_GET_INFO     = 0x0073028B;
 constexpr uint32_t NV0073_CMD_DP_AUXCH_CTRL            = 0x00731341;
 constexpr uint32_t NV0073_CMD_DP_GET_CAPS              = 0x00731369;
+constexpr uint32_t NV0073_CMD_DP_SET_MANUAL_DISPLAYPORT = 0x00731365;
+constexpr uint32_t NV0073_CMD_DFP_GET_INFO             = 0x00730202;
 
 // ============================================================================
 // Display RM Control Parameter Structs
@@ -100,6 +102,15 @@ struct __attribute__((packed)) or_get_info_params {
     uint8_t  b_is_disp_dynamic;
     uint8_t  pad[6];       // Alignment padding
 };
+
+static_assert(sizeof(or_get_info_params) == 56);
+
+// DP_SET_MANUAL_DISPLAYPORT — tell GSP driver manages DP link training
+struct __attribute__((packed)) dp_set_manual_dp_params {
+    uint32_t sub_device_instance; // IN: 0
+    uint32_t display_id;          // IN: display mask (all DP displays OR'd)
+};
+static_assert(sizeof(dp_set_manual_dp_params) == 8);
 
 // OR protocol values
 constexpr uint32_t OR_PROTOCOL_SOR_DP_A       = 0x08;
