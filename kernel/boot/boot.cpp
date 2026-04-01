@@ -146,6 +146,13 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 
 #ifdef STLX_UNIT_TESTS_ENABLED
+    /*
+     * Some CI runners use slow machines and smp::init() may not be able to
+     * initialize all CPUs quickly enough. Sleep for 1 second to give the CPUs
+     * a chance to initialize.
+     */
+    sched::sleep_ms(1000);
+
     stlx_test::run_all();
     while (true) {
         cpu::halt();
