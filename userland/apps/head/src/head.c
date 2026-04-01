@@ -27,17 +27,21 @@ int main(int argc, char* argv[]) {
 
     int n = 10;
     int file_start = -1;
+    int have_explicit_n = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
             n = atoi(argv[++i]);
             if (n <= 0) n = 10;
+            have_explicit_n = 1;
         } else if (argv[i][0] == '-' && argv[i][1] >= '0' && argv[i][1] <= '9') {
             n = atoi(argv[i] + 1);
             if (n <= 0) n = 10;
-        } else if (file_start < 0 && is_all_digits(argv[i])) {
+            have_explicit_n = 1;
+        } else if (!have_explicit_n && file_start < 0 && is_all_digits(argv[i])) {
             n = atoi(argv[i]);
             if (n <= 0) n = 10;
+            have_explicit_n = 1;
         } else {
             file_start = i;
             break;
