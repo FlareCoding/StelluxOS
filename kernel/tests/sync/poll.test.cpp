@@ -356,6 +356,8 @@ static sync::wait_queue g_kill_wq;
 static volatile uint32_t g_kill_waiting;
 static volatile uint32_t g_kill_result;
 static volatile uint32_t g_kill_kp;
+static volatile uint32_t g_kill_sched_linked;
+static volatile uint32_t g_kill_state_after_wait;
 static volatile uint32_t g_kill_done;
 
 static void kill_poll_fn(void*) {
@@ -369,6 +371,10 @@ static void kill_poll_fn(void*) {
         __atomic_store_n(&g_kill_result, triggered ? 1 : 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_kill_kp,
             sched::is_kill_pending() ? 1 : 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_kill_sched_linked,
+            sched::current()->sched_link.is_linked() ? 1 : 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_kill_state_after_wait,
+            sched::current()->state, __ATOMIC_RELEASE);
 
         sync::poll_cleanup(pt);
     });
@@ -381,6 +387,8 @@ TEST(poll, kill_pending_wakes_poll) {
     g_kill_waiting = 0;
     g_kill_result = 0;
     g_kill_kp = 0;
+    g_kill_sched_linked = 0;
+    g_kill_state_after_wait = 0;
     g_kill_done = 0;
 
     sched::task* t = nullptr;
@@ -401,6 +409,9 @@ TEST(poll, kill_pending_wakes_poll) {
     // Source was not fired, so triggered should be 0
     EXPECT_EQ(__atomic_load_n(&g_kill_result, __ATOMIC_ACQUIRE), 0u);
     EXPECT_EQ(__atomic_load_n(&g_kill_kp, __ATOMIC_ACQUIRE), 1u);
+    EXPECT_EQ(__atomic_load_n(&g_kill_sched_linked, __ATOMIC_ACQUIRE), 0u);
+    EXPECT_EQ(__atomic_load_n(&g_kill_state_after_wait, __ATOMIC_ACQUIRE),
+              sched::TASK_STATE_RUNNING);
 }
 
 // ---------------------------------------------------------------------------
