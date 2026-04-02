@@ -573,23 +573,15 @@ int32_t nv_gpu::read_vbios_prom() {
         // We continue scanning until we find no more valid ROM signatures.
     }
 
-    // Use PCI ROM BAR size if the chain walk found fewer bytes
-    if (pci_rom_size > rom_size && pci_rom_size <= VBIOS_MAX_SIZE) {
-        log::info("nvidia: PROM: chain walk found %u bytes, PCI ROM BAR says %u — using larger",
-                  rom_size, pci_rom_size);
-        rom_size = pci_rom_size;
-    }
+    // Read the full PROM window (VBIOS_MAX_SIZE = 1MB). The PCI ROM BAR
+    // only reports the standard PCI-compliant portion (typically 512KB),
+    // but NVIDIA's FWSEC data (NPDS images) extends beyond that in the
+    // 1MB PROM aperture at BAR0+0x300000. Nouveau reads the full window.
+    // The chain walk result is logged but not used to limit the read.
+    rom_size = VBIOS_MAX_SIZE;
 
-    if (rom_size == 0) {
-        rom_size = 64 * 1024;
-        log::warn("nvidia: PROM: ROM chain walk failed, falling back to 64KB read");
-    }
-
-    if (rom_size > VBIOS_MAX_SIZE) {
-        rom_size = VBIOS_MAX_SIZE;
-    }
-
-    log::info("nvidia: PROM: reading %u bytes (%u KB)", rom_size, rom_size / 1024);
+    log::info("nvidia: PROM: chain walk found %u bytes, PCI ROM BAR=%u, reading full %u bytes (%u KB)",
+              scan_offset, pci_rom_size, rom_size, rom_size / 1024);
 
     // Read entire ROM
     for (uint32_t i = 0; i < rom_size; i += 4) {
