@@ -437,78 +437,17 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
 
     log::info("nvidia: fw: extracting FWSEC from VBIOS (%u bytes)", vbios_size);
 
-    // Step 1: Walk ALL ROM images to find the second FwSec (type 0xE0) image.
-    // NVIDIA stores FWSEC images BEYOND the PCI ROM chain's LAST flag,
-    // so we must NOT stop at the LAST flag — same approach as read_vbios_prom().
-    uint32_t offset = 0;
-    uint32_t fwsec_image_offset = 0;
-    uint32_t fwsec_image_size = 0;
-    uint32_t pciat_image_size = 0;
-    uint32_t first_fwsec_size = 0;
-    uint32_t fwsec_count = 0;
-
-    while (offset < vbios_size) {
-        if (offset + 0x1A > vbios_size) break;
-
-        uint16_t sig = rd16(vbios, offset);
-        if (sig != 0xAA55 && sig != 0xBB77 && sig != 0x4E56) {
-            log::info("nvidia: fw: end of ROM images at offset 0x%x (sig=0x%04x)", offset, sig);
-            break;
-        }
-
-        uint16_t pcir_off = rd16(vbios, offset + 0x18);
-        uint32_t pcir_abs = offset + pcir_off;
-        if (pcir_abs + 24 > vbios_size) break;
-
-        uint32_t pcir_sig = rd32(vbios, pcir_abs);
-        if (pcir_sig != 0x52494350) { // "PCIR"
-            log::warn("nvidia: fw: expected PCIR at 0x%x, got 0x%08x", pcir_abs, pcir_sig);
-            break;
-        }
-
-        uint16_t image_len_blocks = rd16(vbios, pcir_abs + 0x10);
-        uint8_t code_type = vbios[pcir_abs + 0x14];
-        uint8_t last_image = vbios[pcir_abs + 0x15];
-        uint32_t image_size = image_len_blocks * 512;
-
-        log::info("nvidia: fw: ROM image at 0x%x: type=0x%02x size=%u blocks=%u%s",
-                  offset, code_type, image_size, image_len_blocks,
-                  (last_image & 0x80) ? " [LAST]" : "");
-
-        if (image_size == 0) break;
-
-        if (code_type == 0x00) {
-            pciat_image_size = image_size;
-        } else if (code_type == 0xE0) {
-            fwsec_count++;
-            if (fwsec_count == 1) {
-                first_fwsec_size = image_size;
-            } else if (fwsec_count == 2) {
-                fwsec_image_offset = offset;
-                fwsec_image_size = image_size;
-                log::info("nvidia: fw: found second FwSec image at offset 0x%x (size=%u)",
-                          fwsec_image_offset, fwsec_image_size);
-            }
-        }
-
-        offset += image_size;
-        // Do NOT break on last_image & 0x80 — FWSEC is beyond the PCI chain
-    }
-
-    if (fwsec_count < 2 || fwsec_image_size == 0) {
-        log::error("nvidia: fw: could not find second FwSec image in VBIOS (found %u)", fwsec_count);
-        return ERR_NOT_FOUND;
-    }
-
-    // Step 2: Find BIT token 0x70 (Falcon Data) in the PciAt image
-    // We already have the BIT table from Phase 2 parsing
+    // Step 1: Find BIT token 0x70 (Falcon Data) — the PMU falcon ucode table.
+    // On GA102, FWSEC images use NVIDIA's NPDS format (not PCIR code_type=0xE0),
+    // so we cannot find them by walking the PCI ROM chain. Instead, we use the
+    // BIT 'p' token which provides an absolute VBIOS offset to the falcon ucode
+    // lookup table — the same approach nouveau uses (nvbios_falcon_table).
     uint32_t bit_offset = gpu->bit_offset();
     if (bit_offset == 0) {
         log::error("nvidia: fw: BIT table not available");
         return ERR_NOT_FOUND;
     }
 
-    // BIT header: byte 8 = header_size, byte 9 = entry_size, byte 10 = entry_count
     uint8_t bit_hdr_size = vbios[bit_offset + 8];
     uint8_t entry_size = vbios[bit_offset + 9];
     uint8_t entry_count = vbios[bit_offset + 10];
@@ -519,7 +458,7 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         if (entry_off + 6 > vbios_size) break;
 
         uint8_t token_id = vbios[entry_off];
-        if (token_id == 0x70) { // Falcon Data token
+        if (token_id == 0x70) {
             uint16_t data_off = rd16(vbios, entry_off + 4);
             uint16_t data_len = rd16(vbios, entry_off + 2);
             if (data_len >= 4 && data_off + 4 <= vbios_size) {
@@ -536,43 +475,27 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         return ERR_NOT_FOUND;
     }
 
-    // Step 3: Adjust falcon_data_ptr to be relative to the correct FwSec image.
-    // The pointer assumes contiguous [PciAt][FwSec1][FwSec2] layout (ignoring EFI image).
-    // Subtract PciAt size first, then check if the offset falls in FwSec1 or FwSec2.
-    uint32_t adjusted = falcon_data_ptr - pciat_image_size;
-    uint32_t pmu_table_abs;
-
-    if (adjusted < first_fwsec_size) {
-        // PMU table is in the first FwSec image (edge case on some GPUs)
-        pmu_table_abs = (fwsec_image_offset - first_fwsec_size) + adjusted;
-        log::info("nvidia: fw: PMU Lookup Table in FIRST FwSec: adjusted=0x%x abs=0x%x",
-                  adjusted, pmu_table_abs);
-    } else {
-        // PMU table is in the second FwSec image (common case for GA102)
-        uint32_t offset_in_fwsec2 = adjusted - first_fwsec_size;
-        pmu_table_abs = fwsec_image_offset + offset_in_fwsec2;
-        log::info("nvidia: fw: PMU Lookup Table in second FwSec: adjusted=0x%x offset=0x%x abs=0x%x",
-                  adjusted, offset_in_fwsec2, pmu_table_abs);
-    }
-
-    log::info("nvidia: fw: PMU table adjustment: falcon_ptr=0x%x pciat=0x%x fwsec1=0x%x",
-              falcon_data_ptr, pciat_image_size, first_fwsec_size);
+    // Step 2: Use falcon_data_ptr as an absolute VBIOS offset to the PMU lookup table.
+    // nouveau's nvbios_falcon_table() uses this value directly — no image-relative adjustment.
+    uint32_t pmu_table_abs = falcon_data_ptr;
 
     if (pmu_table_abs + 4 > vbios_size) {
-        log::error("nvidia: fw: PMU Lookup Table out of bounds");
+        log::error("nvidia: fw: PMU Lookup Table out of bounds (0x%x > 0x%x)",
+                   pmu_table_abs, vbios_size);
         return ERR_INVALID;
     }
 
-    // Step 4: Parse PMU Lookup Table header
+    // Step 3: Parse PMU Lookup Table header
     uint8_t pmu_version = vbios[pmu_table_abs];
     uint8_t pmu_hdr_len = vbios[pmu_table_abs + 1];
     uint8_t pmu_entry_len = vbios[pmu_table_abs + 2];
     uint8_t pmu_entry_count = vbios[pmu_table_abs + 3];
 
-    log::info("nvidia: fw: PMU Lookup: ver=%u hdr=%u entry_len=%u entries=%u",
-              pmu_version, pmu_hdr_len, pmu_entry_len, pmu_entry_count);
+    log::info("nvidia: fw: PMU Lookup Table at 0x%x: ver=%u hdr=%u entry_len=%u entries=%u",
+              pmu_table_abs, pmu_version, pmu_hdr_len, pmu_entry_len, pmu_entry_count);
 
-    // Step 5: Find entry with app_id = 0x85 (FWSEC_PROD)
+    // Step 4: Find entry with app_id = 0x85 (FWSEC_PROD).
+    // desc_ptr values are absolute VBIOS offsets (same as nouveau's nvbios_falcon_entry).
     uint32_t fwsec_desc_offset = 0;
     for (uint8_t i = 0; i < pmu_entry_count; i++) {
         uint32_t entry_abs = pmu_table_abs + pmu_hdr_len + i * pmu_entry_len;
@@ -582,24 +505,17 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         uint8_t target_id = vbios[entry_abs + 1];
         uint32_t desc_ptr = rd32(vbios, entry_abs + 2);
 
-        log::info("nvidia: fw: PMU entry[%u]: app_id=0x%02x target=0x%02x data=0x%08x",
+        log::info("nvidia: fw: PMU entry[%u]: app_id=0x%02x target=0x%02x desc_ptr=0x%08x",
                   i, app_id, target_id, desc_ptr);
 
-        if (app_id == 0x85) { // FWSEC_PROD
-            // Adjust offset same way as falcon_data_ptr
-            uint32_t desc_adjusted = desc_ptr - pciat_image_size;
-            if (desc_adjusted < first_fwsec_size) {
-                log::error("nvidia: fw: FWSEC descriptor falls in first FwSec image — unsupported");
-                return ERR_UNSUPPORTED;
-            }
-            fwsec_desc_offset = fwsec_image_offset + (desc_adjusted - first_fwsec_size);
-            log::info("nvidia: fw: FWSEC_PROD descriptor: raw=0x%x adjusted=0x%x abs=0x%x",
-                      desc_ptr, desc_adjusted, fwsec_desc_offset);
+        if (app_id == 0x85) {
+            fwsec_desc_offset = desc_ptr;
+            log::info("nvidia: fw: FWSEC_PROD found: descriptor at VBIOS offset 0x%x", fwsec_desc_offset);
             break;
         }
     }
 
-    if (fwsec_desc_offset == 0) {
+    if (fwsec_desc_offset == 0 || fwsec_desc_offset >= vbios_size) {
         log::error("nvidia: fw: FWSEC_PROD (app_id=0x85) not found in PMU table");
         return ERR_NOT_FOUND;
     }
