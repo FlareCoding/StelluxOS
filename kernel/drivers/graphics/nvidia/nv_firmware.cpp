@@ -437,11 +437,67 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
 
     log::info("nvidia: fw: extracting FWSEC from VBIOS (%u bytes)", vbios_size);
 
-    // Step 1: Find BIT token 0x70 (Falcon Data) — the PMU falcon ucode table.
-    // On GA102, FWSEC images use NVIDIA's NPDS format (not PCIR code_type=0xE0),
-    // so we cannot find them by walking the PCI ROM chain. Instead, we use the
-    // BIT 'p' token which provides an absolute VBIOS offset to the falcon ucode
-    // lookup table — the same approach nouveau uses (nvbios_falcon_table).
+    // ================================================================
+    // Step 1: Walk the PCIR chain to determine the offset adjustment.
+    //
+    // falcon_data_ptr and DescPtr from the BIT 'p' token assume a virtual
+    // contiguous layout of [PciAt][FwSec1][FwSec2] — the EFI image between
+    // PciAt and FwSec is NOT counted. To convert these virtual offsets to
+    // actual VBIOS buffer offsets, we must add the total size of non-PciAt,
+    // non-FwSec images (the "EFI gap").
+    //
+    // Reference: nova-core firmware/fwsec.rs setup_falcon_data() subtracts
+    // pci_at_image.len() from falcon_data_ptr to get FwSec-relative offsets.
+    // OpenRM kernel_gsp_fwsec.c adds expansionRomOffset to the same pointers.
+    // Both compensate for the gap between PciAt and FwSec in the actual ROM.
+    // ================================================================
+    uint32_t pciat_size = 0;
+    uint32_t efi_gap = 0;  // total size of images between PciAt and FwSec
+    {
+        uint32_t off = 0;
+        while (off + 0x1A < vbios_size) {
+            uint16_t sig = rd16(vbios, off);
+            if (sig != 0xAA55 && sig != 0xBB77 && sig != 0x4E56) break;
+
+            uint16_t pcir_rel = rd16(vbios, off + 0x18);
+            uint32_t pcir_abs = off + pcir_rel;
+            if (pcir_abs + 24 > vbios_size) break;
+
+            uint32_t pcir_sig = rd32(vbios, pcir_abs);
+            if (pcir_sig != 0x52494350) break; // not "PCIR" → reached NPDS
+
+            uint16_t blocks = rd16(vbios, pcir_abs + 0x10);
+            uint8_t code_type = vbios[pcir_abs + 0x14];
+            uint32_t img_size = blocks * 512;
+            if (img_size == 0) break;
+
+            if (code_type == 0x00) {
+                pciat_size = img_size;
+            } else {
+                efi_gap += img_size;
+            }
+
+            log::info("nvidia: fw: PCIR image at 0x%x: type=0x%02x size=%u", off, code_type, img_size);
+            off += img_size;
+        }
+    }
+
+    log::info("nvidia: fw: PciAt size=%u, EFI gap=%u, FwSec data starts at VBIOS offset 0x%x",
+              pciat_size, efi_gap, pciat_size + efi_gap);
+
+    if (pciat_size == 0) {
+        log::error("nvidia: fw: no PciAt image found in VBIOS");
+        return ERR_NOT_FOUND;
+    }
+
+    // ================================================================
+    // Step 2: Read BIT token 0x70 (BIT_TOKEN_FALCON_DATA) to get the
+    // falcon ucode table pointer.
+    //
+    // Reference: OpenRM BIT_TOKEN_FALCON_DATA / BIT_DATA_FALCON_DATA_V2
+    //            nova-core BIT_TOKEN_ID_FALCON_DATA (0x70)
+    //            nouveau nvbios_falcon_table() via BIT 'p' token
+    // ================================================================
     uint32_t bit_offset = gpu->bit_offset();
     if (bit_offset == 0) {
         log::error("nvidia: fw: BIT table not available");
@@ -463,7 +519,7 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
             uint16_t data_len = rd16(vbios, entry_off + 2);
             if (data_len >= 4 && data_off + 4 <= vbios_size) {
                 falcon_data_ptr = rd32(vbios, data_off);
-                log::info("nvidia: fw: BIT token 0x70 (Falcon): data_off=0x%04x → falcon_data_ptr=0x%08x",
+                log::info("nvidia: fw: BIT 0x70: data_off=0x%04x → FalconUcodeTablePtr=0x%08x",
                           data_off, falcon_data_ptr);
             }
             break;
@@ -475,9 +531,25 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         return ERR_NOT_FOUND;
     }
 
-    // Step 2: Use falcon_data_ptr as an absolute VBIOS offset to the PMU lookup table.
-    // nouveau's nvbios_falcon_table() uses this value directly — no image-relative adjustment.
-    uint32_t pmu_table_abs = falcon_data_ptr;
+    // ================================================================
+    // Step 3: Convert falcon_data_ptr to actual VBIOS offset.
+    //
+    // The pointer assumes [PciAt][FwSec...] layout without EFI. When it
+    // points beyond PciAt, add the EFI gap to get the real buffer offset.
+    //
+    // Reference: nova-core subtracts pci_at_image.len() then indexes into
+    //            FwSec buffer. OpenRM adds expansionRomOffset. Both account
+    //            for the EFI gap between PciAt and FwSec.
+    // ================================================================
+    uint32_t pmu_table_abs;
+    if (falcon_data_ptr < pciat_size) {
+        pmu_table_abs = falcon_data_ptr;
+    } else {
+        pmu_table_abs = falcon_data_ptr + efi_gap;
+    }
+
+    log::info("nvidia: fw: PMU table: virtual=0x%x → actual=0x%x (gap=%u)",
+              falcon_data_ptr, pmu_table_abs, efi_gap);
 
     if (pmu_table_abs + 4 > vbios_size) {
         log::error("nvidia: fw: PMU Lookup Table out of bounds (0x%x > 0x%x)",
@@ -485,17 +557,36 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         return ERR_INVALID;
     }
 
-    // Step 3: Parse PMU Lookup Table header
+    // ================================================================
+    // Step 4: Parse FALCON_UCODE_TABLE_HDR_V1.
+    //
+    // Reference: OpenRM FALCON_UCODE_TABLE_HDR_V1 (version, header_size,
+    //            entry_size, entry_count, desc_version, desc_size — 6 bytes)
+    //            nova-core PmuLookupTableHeader
+    // ================================================================
     uint8_t pmu_version = vbios[pmu_table_abs];
     uint8_t pmu_hdr_len = vbios[pmu_table_abs + 1];
     uint8_t pmu_entry_len = vbios[pmu_table_abs + 2];
     uint8_t pmu_entry_count = vbios[pmu_table_abs + 3];
 
-    log::info("nvidia: fw: PMU Lookup Table at 0x%x: ver=%u hdr=%u entry_len=%u entries=%u",
+    log::info("nvidia: fw: PMU table at 0x%x: ver=%u hdr=%u entry_len=%u entries=%u",
               pmu_table_abs, pmu_version, pmu_hdr_len, pmu_entry_len, pmu_entry_count);
 
-    // Step 4: Find entry with app_id = 0x85 (FWSEC_PROD).
-    // desc_ptr values are absolute VBIOS offsets (same as nouveau's nvbios_falcon_entry).
+    if (pmu_version != 1 || pmu_hdr_len < 4 || pmu_entry_len < 6 || pmu_entry_count == 0) {
+        log::error("nvidia: fw: PMU table format unexpected (ver=%u hdr=%u elen=%u ecnt=%u)",
+                   pmu_version, pmu_hdr_len, pmu_entry_len, pmu_entry_count);
+        return ERR_INVALID;
+    }
+
+    // ================================================================
+    // Step 5: Find FALCON_UCODE_TABLE_ENTRY_V1 with app_id = 0x85
+    // (FWSEC_PROD). Convert DescPtr with the same EFI gap adjustment.
+    //
+    // Reference: OpenRM FALCON_UCODE_ENTRY_APPID_FWSEC_PROD = 0x85
+    //            nova-core PmuLookupTableEntry { application_id, target_id, data }
+    //            OpenRM: expansionRomOffset + ucodeEntry.DescPtr
+    //            nova-core: entry.data - pci_at.len - first_fwsec.len
+    // ================================================================
     uint32_t fwsec_desc_offset = 0;
     for (uint8_t i = 0; i < pmu_entry_count; i++) {
         uint32_t entry_abs = pmu_table_abs + pmu_hdr_len + i * pmu_entry_len;
@@ -505,12 +596,16 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         uint8_t target_id = vbios[entry_abs + 1];
         uint32_t desc_ptr = rd32(vbios, entry_abs + 2);
 
-        log::info("nvidia: fw: PMU entry[%u]: app_id=0x%02x target=0x%02x desc_ptr=0x%08x",
+        log::info("nvidia: fw: PMU entry[%u]: app_id=0x%02x target=0x%02x DescPtr=0x%08x",
                   i, app_id, target_id, desc_ptr);
 
         if (app_id == 0x85) {
-            fwsec_desc_offset = desc_ptr;
-            log::info("nvidia: fw: FWSEC_PROD found: descriptor at VBIOS offset 0x%x", fwsec_desc_offset);
+            if (desc_ptr < pciat_size) {
+                fwsec_desc_offset = desc_ptr;
+            } else {
+                fwsec_desc_offset = desc_ptr + efi_gap;
+            }
+            log::info("nvidia: fw: FWSEC_PROD: DescPtr=0x%x → actual=0x%x", desc_ptr, fwsec_desc_offset);
             break;
         }
     }
@@ -520,7 +615,8 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         return ERR_NOT_FOUND;
     }
 
-    // Step 6: Parse FalconUCodeDescV3
+    // Step 6: Parse FALCON_UCODE_DESC_V3 (44 bytes).
+    // Reference: OpenRM FALCON_UCODE_DESC_V3, nova-core FalconUcodeDescV3
     if (fwsec_desc_offset + sizeof(falcon_ucode_desc_v3) > vbios_size) {
         log::error("nvidia: fw: FalconUCodeDescV3 out of bounds at 0x%x", fwsec_desc_offset);
         return ERR_INVALID;
