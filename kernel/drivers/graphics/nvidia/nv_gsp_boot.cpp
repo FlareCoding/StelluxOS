@@ -772,17 +772,24 @@ int32_t gsp_wait_init_done(nv_gpu* gpu, gsp_boot_state& state) {
         if (elapsed_s > last_status_s) {
             last_status_s = elapsed_s;
 
-            // Read GSP falcon registers for liveness
+            // Read GSP falcon registers for liveness + RISC-V PC for stall diagnosis
             falcon gsp_flcn;
             gsp_flcn.init(gpu, falcon::engine_type::GSP);
             uint32_t riscv_stat = gsp_flcn.rd32(FALCON_RISCV_STATUS);
             uint32_t mbox0 = gsp_flcn.rd32(0x040);
-            uint32_t mbox1 = gsp_flcn.rd32(0x044);
+            uint32_t riscv_pc = gsp_flcn.rd32(0x1400);
+            uint32_t riscv_pc2 = gsp_flcn.rd32(0x1400);
+            uint32_t mq_flags = msgq_hdr->tx.flags;
 
-            log::info("nvidia: gsp: [%us] msgq wptr=%u rptr=%u | cmdq wptr=%u rptr=%u | GSP RISCV=0x%08x mbox0=0x%08x mbox1=0x%08x",
-                      elapsed_s, wptr, rptr,
-                      cmdq_hdr->tx.write_ptr, cmdq_hdr->rx.read_ptr,
-                      riscv_stat, mbox0, mbox1);
+            // Read cmdq consumer rptr from msgq rx (swap mode)
+            volatile uint32_t* cmdq_consumer = reinterpret_cast<volatile uint32_t*>(
+                state.shm_dma.virt + state.msgq_offset + sizeof(msgq_tx_header));
+            uint32_t cmdq_rptr_real = *cmdq_consumer;
+
+            log::info("nvidia: gsp: [%us] msgq wptr=%u rptr=%u mq_flags=%u | cmdq wptr=%u consumed=%u | RISCV=0x%x PC=0x%08x→0x%08x mbox0=0x%x",
+                      elapsed_s, wptr, rptr, mq_flags,
+                      cmdq_hdr->tx.write_ptr, cmdq_rptr_real,
+                      riscv_stat, riscv_pc, riscv_pc2, mbox0);
         }
 
         if (wptr == rptr) {
@@ -847,9 +854,18 @@ int32_t gsp_wait_init_done(nv_gpu* gpu, gsp_boot_state& state) {
         uint32_t mbox0 = gsp_flcn.rd32(0x040);
         uint32_t mbox1 = gsp_flcn.rd32(0x044);
         uint32_t cpuctl = gsp_flcn.rd32(0x100);
+        // Sample PC multiple times to detect if stuck or progressing
+        uint32_t pc_samples[4];
+        for (int s = 0; s < 4; s++) {
+            pc_samples[s] = gsp_flcn.rd32(0x1400);
+            delay::us(100);
+        }
 
         log::info("nvidia: gsp: falcon RISCV_STATUS=0x%08x CPUCTL=0x%08x MBOX0=0x%08x MBOX1=0x%08x",
                   riscv_stat, cpuctl, mbox0, mbox1);
+        log::info("nvidia: gsp: RISC-V PC samples: 0x%08x 0x%08x 0x%08x 0x%08x %s",
+                  pc_samples[0], pc_samples[1], pc_samples[2], pc_samples[3],
+                  (pc_samples[0] == pc_samples[3]) ? "(STUCK)" : "(progressing)");
     }
 
     // 3. Dump first 64 bytes of msgq to see if GSP wrote anything raw
