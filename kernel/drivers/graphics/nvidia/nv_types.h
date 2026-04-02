@@ -84,7 +84,7 @@ constexpr uint32_t MAX_I2C_PORTS      = 16;
 constexpr uint32_t MAX_CONNECTORS     = 8;
 constexpr uint32_t MAX_HEADS          = 4;
 constexpr uint32_t MAX_SORS           = 8;
-constexpr uint32_t VBIOS_MAX_SIZE     = 256 * 1024; // 256KB max VBIOS
+constexpr uint32_t VBIOS_MAX_SIZE     = 1024 * 1024; // 1MB max VBIOS (PROM window is 1MB)
 constexpr uint32_t EDID_BLOCK_SIZE    = 128;
 
 // DCB parsed entry

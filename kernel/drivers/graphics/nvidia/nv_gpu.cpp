@@ -505,34 +505,68 @@ int32_t nv_gpu::read_vbios_prom() {
         return ERR_INVALID;
     }
 
-    // Read the ROM image — find size from PCIR structure
-    // PCIR pointer is at ROM offset 0x18 (16-bit LE)
-    uint32_t pcir_ptr_word = reg_rd32(reg::PROM_BASE + 0x18);
-    uint16_t pcir_offset = static_cast<uint16_t>(pcir_ptr_word & 0xFFFF);
+    // Walk the entire ROM image chain to find total size.
+    // The VBIOS consists of multiple chained images: PciAt → EFI → FwSec → FwSec.
+    // Each image has a PCIR structure with image_len and a last_image flag.
+    // We need ALL images (especially the FwSec ones for FWSEC-FRTS).
+    uint32_t rom_size = 0;
+    uint32_t scan_offset = 0;
 
-    // Read ROM — start with a reasonable chunk to find size
-    // Copy in 4-byte aligned reads
-    uint32_t rom_size = 64 * 1024; // Start with 64KB, adjust if PCIR tells us more
+    while (scan_offset < VBIOS_MAX_SIZE) {
+        // Check for ROM signature at this image's start
+        uint32_t img_first = reg_rd32(reg::PROM_BASE + scan_offset);
+        uint16_t img_sig = static_cast<uint16_t>(img_first & 0xFFFF);
 
-    // Validate PCIR
-    if (pcir_offset >= 4 && pcir_offset < rom_size - 24) {
-        uint32_t pcir_sig = reg_rd32(reg::PROM_BASE + pcir_offset);
-        if (pcir_sig == reg::PCIR_SIGNATURE) {
-            // Image size at PCIR + 0x10, in 512-byte units (16-bit LE)
-            uint32_t size_word = reg_rd32(reg::PROM_BASE + pcir_offset + 0x10);
-            uint32_t img_blocks = static_cast<uint16_t>(size_word & 0xFFFF);
-            uint32_t img_size = img_blocks * 512;
-            if (img_size > 0 && img_size <= VBIOS_MAX_SIZE) {
-                rom_size = img_size;
-            }
-            log::info("nvidia: PROM: PCIR found at 0x%04x, image size=%u bytes (%u blocks)",
-                      pcir_offset, rom_size, img_blocks);
+        if (img_sig != reg::ROM_SIG_PCI && img_sig != reg::ROM_SIG_ALT1 && img_sig != reg::ROM_SIG_NV) {
+            // No more images
+            break;
         }
+
+        // Find PCIR structure (pointer at image_start + 0x18)
+        uint32_t pcir_ptr_word = reg_rd32(reg::PROM_BASE + scan_offset + 0x18);
+        uint16_t pcir_rel = static_cast<uint16_t>(pcir_ptr_word & 0xFFFF);
+        uint32_t pcir_abs = scan_offset + pcir_rel;
+
+        if (pcir_abs + 24 > VBIOS_MAX_SIZE) break;
+
+        uint32_t pcir_sig = reg_rd32(reg::PROM_BASE + pcir_abs);
+        if (pcir_sig != reg::PCIR_SIGNATURE) {
+            log::warn("nvidia: PROM: expected PCIR at 0x%x, got 0x%08x", pcir_abs, pcir_sig);
+            break;
+        }
+
+        // Image size at PCIR + 0x10, in 512-byte units
+        uint32_t size_word = reg_rd32(reg::PROM_BASE + pcir_abs + 0x10);
+        uint32_t img_blocks = static_cast<uint16_t>(size_word & 0xFFFF);
+        uint32_t img_size = img_blocks * 512;
+        uint8_t code_type = static_cast<uint8_t>((size_word >> 16) & 0xFF); // PCIR + 0x14 is in same dword shifted
+        // Actually code_type is at pcir_abs + 0x14, let's read it properly
+        uint32_t type_word = reg_rd32(reg::PROM_BASE + pcir_abs + 0x14);
+        code_type = static_cast<uint8_t>(type_word & 0xFF);
+        uint8_t last_image = static_cast<uint8_t>((type_word >> 8) & 0xFF);
+
+        log::info("nvidia: PROM: image at 0x%x: type=0x%02x size=%u (%u blocks)%s",
+                  scan_offset, code_type, img_size, img_blocks,
+                  (last_image & 0x80) ? " [LAST]" : "");
+
+        if (img_size == 0) break;
+
+        scan_offset += img_size;
+        rom_size = scan_offset;
+
+        if (last_image & 0x80) break; // Last image in chain
+    }
+
+    if (rom_size == 0) {
+        rom_size = 64 * 1024; // Fallback: read 64KB
+        log::warn("nvidia: PROM: ROM chain walk failed, falling back to 64KB read");
     }
 
     if (rom_size > VBIOS_MAX_SIZE) {
         rom_size = VBIOS_MAX_SIZE;
     }
+
+    log::info("nvidia: PROM: total ROM chain size: %u bytes", rom_size);
 
     // Read entire ROM
     for (uint32_t i = 0; i < rom_size; i += 4) {
