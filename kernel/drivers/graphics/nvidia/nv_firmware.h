@@ -48,7 +48,7 @@ constexpr const char* FW_PATH_BOOTER_LOAD = "/firmware/nvidia/ga102/gsp/booter_l
 constexpr const char* FW_PATH_BOOTER_UNLOAD = "/firmware/nvidia/ga102/gsp/booter_unload-535.113.01.bin";
 
 // Maximum firmware file sizes (sanity checks)
-constexpr uint32_t FW_MAX_SIZE_GSP        = 32 * 1024 * 1024; // 32MB
+constexpr uint32_t FW_MAX_SIZE_GSP        = 48 * 1024 * 1024; // 48MB (actual r535 is ~38MB)
 constexpr uint32_t FW_MAX_SIZE_BOOTLOADER = 64 * 1024;        // 64KB
 constexpr uint32_t FW_MAX_SIZE_BOOTER     = 128 * 1024;       // 128KB
 
