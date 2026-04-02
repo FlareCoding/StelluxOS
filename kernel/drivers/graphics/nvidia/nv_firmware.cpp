@@ -2,6 +2,7 @@
 #include "drivers/graphics/nvidia/nv_gpu.h"
 #include "fs/fs.h"
 #include "mm/heap.h"
+#include "dynpriv/dynpriv.h"
 #include "common/logging.h"
 #include "common/string.h"
 
@@ -826,14 +827,14 @@ int32_t firmware_load_all(nv_gpu* gpu, gsp_firmware& fw) {
 
 static void free_booter(booter_fw& b) {
     if (b.raw_data) { heap::ufree(b.raw_data); b.raw_data = nullptr; }
-    if (b.dma_valid) { dma::free_pages(b.dma); b.dma_valid = false; }
+    if (b.dma_valid) { RUN_ELEVATED(dma::free_pages(b.dma)); b.dma_valid = false; }
     b.payload = nullptr;
     b.payload_size = 0;
 }
 
 static void free_bootloader(bootloader_fw& b) {
     if (b.raw_data) { heap::ufree(b.raw_data); b.raw_data = nullptr; }
-    if (b.dma_valid) { dma::free_pages(b.dma); b.dma_valid = false; }
+    if (b.dma_valid) { RUN_ELEVATED(dma::free_pages(b.dma)); b.dma_valid = false; }
     b.payload = nullptr;
     b.payload_size = 0;
 }
@@ -850,7 +851,7 @@ static void free_gsp(gsp_fw& g) {
 static void free_fwsec(fwsec_fw& f) {
     if (f.ucode_data) { heap::ufree(f.ucode_data); f.ucode_data = nullptr; }
     if (f.signatures) { heap::ufree(f.signatures); f.signatures = nullptr; }
-    if (f.dma_valid) { dma::free_pages(f.dma); f.dma_valid = false; }
+    if (f.dma_valid) { RUN_ELEVATED(dma::free_pages(f.dma)); f.dma_valid = false; }
     f.valid = false;
 }
 
