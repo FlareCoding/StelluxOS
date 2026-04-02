@@ -735,11 +735,13 @@ int32_t gsp_wait_init_done(nv_gpu* gpu, gsp_boot_state& state) {
     volatile queue_header* cmdq_hdr = reinterpret_cast<volatile queue_header*>(
         state.shm_dma.virt + state.cmdq_offset);
 
-    // In nouveau's queue model, the msgq write pointer is written by GSP,
-    // and the read pointer is maintained by the host in the msgq rx header.
-    // rx.read_ptr is at byte 32 in queue_header (after 32-byte tx header).
+    // Both queues use "swap RX" mode (flags=1): each queue's read pointer
+    // is stored in the OTHER queue's rx header area. This is the nouveau model
+    // (r535_gsp_msgq_peek reads cmdq->rx as the msgq rptr).
+    //   msgq rptr → stored at cmdq + sizeof(msgq_tx_header)
+    //   cmdq rptr → stored at msgq + sizeof(msgq_tx_header)
     volatile uint32_t* msgq_rptr = reinterpret_cast<volatile uint32_t*>(
-        state.shm_dma.virt + state.msgq_offset + sizeof(msgq_tx_header));
+        state.shm_dma.virt + state.cmdq_offset + sizeof(msgq_tx_header));
 
     // Log initial queue state for diagnostics
     log::info("nvidia: gsp: cmdq header: ver=%u size=0x%x msg_size=0x%x count=%u wptr=%u flags=0x%x rx_off=%u entry_off=0x%x",
