@@ -690,18 +690,29 @@ static void dump_gsp_log_buffer(const char* name, const dma::buffer& buf, uint32
     // The log data region starts after the PTE array header.
     // For a 64KB buffer with 16 pages: PTEs at offset 8, 16 entries × 8 bytes = 128 bytes.
     // Data starts at offset ~136 (8 + 128). But the put pointer is buffer-relative.
-    // Scan for printable ASCII sequences in the buffer to find any GSP log text.
+    // Hex dump first 256 bytes of the log buffer for raw inspection.
     const uint8_t* data = reinterpret_cast<const uint8_t*>(buf.virt);
+    uint32_t dump_limit = (put < 256) ? static_cast<uint32_t>(put) : 256;
+    if (dump_limit > buf_size) dump_limit = buf_size;
+    for (uint32_t i = 0; i < dump_limit; i += 16) {
+        const uint32_t* w = reinterpret_cast<const uint32_t*>(data + i);
+        uint32_t remaining = dump_limit - i;
+        if (remaining >= 16) {
+            log::info("nvidia: gsp: %s[0x%03x]: %08x %08x %08x %08x",
+                      name, i, w[0], w[1], w[2], w[3]);
+        }
+    }
+
+    // Scan for printable ASCII sequences in the buffer to find any GSP log text.
     uint32_t scan_limit = buf_size;
     if (put < scan_limit) scan_limit = static_cast<uint32_t>(put);
 
-    // Find and print runs of printable ASCII (GSP log messages)
     uint32_t run_start = 0;
     bool in_run = false;
     uint32_t lines_printed = 0;
     constexpr uint32_t MAX_LOG_LINES = 40;
 
-    for (uint32_t i = 256; i < scan_limit && lines_printed < MAX_LOG_LINES; i++) {
+    for (uint32_t i = 8; i < scan_limit && lines_printed < MAX_LOG_LINES; i++) {
         uint8_t c = data[i];
         bool printable = (c >= 0x20 && c < 0x7F) || c == '\n' || c == '\r' || c == '\t';
 
@@ -975,78 +986,178 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
         return rc;
     }
 
-    // Step 9: Write pre-boot RPCs to command queue
-    // GSP-RM reads these from the command queue during initialization.
-    // SET_SYSTEM_INFO (fn=72) and SET_REGISTRY (fn=73) must be present.
+    // Step 9: Write pre-boot RPCs to command queue.
+    // GSP-RM reads these during initialization. Both require real payloads.
+    // Reference: nouveau r535_gsp_set_system_info() and r535_gsp_rpc_set_registry()
     {
-        // Write SET_SYSTEM_INFO RPC to command queue
         uint8_t* cmdq_base = reinterpret_cast<uint8_t*>(state.shm_dma.virt + state.cmdq_offset);
         queue_header* cmdq_hdr_ptr = reinterpret_cast<queue_header*>(cmdq_base);
         uint32_t entry_off_val = cmdq_hdr_ptr->tx.entry_off;
 
+        // Helper: compute checksum and write queue entry
+        auto finalize_entry = [&](uint8_t* entry, uint32_t rpc_total_len) {
+            gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(entry);
+            uint32_t total_msg = GSP_MSG_HDR_SIZE + rpc_total_len;
+            uint32_t aligned_len = (total_msg + GSP_PAGE_SIZE_VAL - 1) & ~(GSP_PAGE_SIZE_VAL - 1);
+
+            msg->elem_count = aligned_len / GSP_PAGE_SIZE_VAL;
+            msg->seq_num = state.cmdq_seq;
+            msg->pad = 0;
+            msg->checksum = 0;
+
+            uint64_t csum = 0;
+            for (uint32_t i = 0; i < aligned_len / sizeof(uint64_t); i++) {
+                csum ^= reinterpret_cast<volatile uint64_t*>(entry)[i];
+            }
+            msg->checksum = static_cast<uint32_t>((csum >> 32) ^ (csum & 0xFFFFFFFF));
+
+            state.cmdq_seq++;
+            cmdq_hdr_ptr->tx.write_ptr = state.cmdq_seq;
+        };
+
+        // ================================================================
         // RPC 1: SET_SYSTEM_INFO (function 72)
+        // Payload: GspSystemInfo — BAR addresses, PCI BDF, user VA limit.
+        // Reference: nouveau r535_gsp_set_system_info() populates 7 fields,
+        // rest zeroed. GSP needs BAR0 to access GPU registers.
+        //
+        // GspSystemInfo layout (first 72 bytes, natural alignment):
+        //   +0x00 u64 gpuPhysAddr         (BAR0)
+        //   +0x08 u64 gpuPhysFbAddr       (BAR1)
+        //   +0x10 u64 gpuPhysInstAddr     (BAR2/3)
+        //   +0x18 u64 nvDomainBusDeviceFunc
+        //   +0x20 u64 simAccessBufPhysAddr (0)
+        //   +0x28 u64 pcieAtomicsOpMask    (0)
+        //   +0x30 u64 consoleMemSize       (0)
+        //   +0x38 u64 maxUserVa
+        //   +0x40 u32 pciConfigMirrorBase
+        //   +0x44 u32 pciConfigMirrorSize
+        // The struct continues with oorArch, BUSINFO, ACPI, etc. — all zero.
+        // We use a generous 2048-byte payload to cover any struct size.
+        // ================================================================
         {
+            constexpr uint32_t GSP_SYSTEM_INFO_SIZE = 2048;
             uint8_t* entry = cmdq_base + entry_off_val + state.cmdq_seq * QUEUE_ENTRY_SIZE;
             string::memset(entry, 0, QUEUE_ENTRY_SIZE);
 
-            gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(entry);
             rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
-
-            msg->elem_count = 1;
-            msg->seq_num = state.cmdq_seq;
             rpc->header_version = RPC_HDR_VERSION;
             rpc->signature = RPC_SIGNATURE;
-            rpc->length = sizeof(rpc_header); // Header-only, minimal payload
+            rpc->length = sizeof(rpc_header) + GSP_SYSTEM_INFO_SIZE;
             rpc->function = NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO;
             rpc->rpc_result = 0xFFFFFFFF;
             rpc->rpc_result_private = 0xFFFFFFFF;
-            rpc->sequence = state.rpc_seq++;
+            rpc->sequence = 0;
 
-            // Compute XOR checksum
-            msg->pad = 0;
-            msg->checksum = 0;
-            uint64_t csum = 0;
-            for (uint32_t i = 0; i < QUEUE_ENTRY_SIZE / sizeof(uint64_t); i++) {
-                csum ^= reinterpret_cast<volatile uint64_t*>(entry)[i];
-            }
-            msg->checksum = static_cast<uint32_t>((csum >> 32) ^ (csum & 0xFFFFFFFF));
+            uint8_t* payload = entry + sizeof(gsp_msg_element) + sizeof(rpc_header);
+            const pci::bar& bar0 = gpu->dev().get_bar(0);
+            const pci::bar& bar1 = gpu->dev().get_bar(1);
+            const pci::bar& bar3 = gpu->dev().get_bar(3);
 
-            state.cmdq_seq++;
-            cmdq_hdr_ptr->tx.write_ptr = state.cmdq_seq;
-            log::info("nvidia: gsp: queued SET_SYSTEM_INFO (fn=%u) at cmdq slot %u",
-                      NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO, state.cmdq_seq - 1);
+            auto wr64 = [&](uint32_t off, uint64_t val) {
+                string::memcpy(payload + off, &val, 8);
+            };
+            auto wr32 = [&](uint32_t off, uint32_t val) {
+                string::memcpy(payload + off, &val, 4);
+            };
+
+            wr64(0x00, bar0.phys);                    // gpuPhysAddr
+            wr64(0x08, bar1.phys);                    // gpuPhysFbAddr
+            wr64(0x10, bar3.phys);                    // gpuPhysInstAddr
+            uint64_t bdf = (static_cast<uint64_t>(gpu->dev().bus()) << 8) |
+                           (static_cast<uint64_t>(gpu->dev().slot()) << 3) |
+                           gpu->dev().func();
+            wr64(0x18, bdf);                          // nvDomainBusDeviceFunc
+            wr64(0x38, 0x800000000000ULL);            // maxUserVa (x86_64 TASK_SIZE)
+            wr32(0x40, 0x088000);                     // pciConfigMirrorBase
+            wr32(0x44, 0x001000);                     // pciConfigMirrorSize
+
+            finalize_entry(entry, rpc->length);
+
+            log::info("nvidia: gsp: queued SET_SYSTEM_INFO (fn=%u, payload=%u) at cmdq slot %u",
+                      NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO, GSP_SYSTEM_INFO_SIZE, state.cmdq_seq - 1);
+            log::info("nvidia: gsp:   BAR0=0x%lx BAR1=0x%lx BAR3=0x%lx BDF=0x%lx",
+                      bar0.phys, bar1.phys, bar3.phys, bdf);
         }
 
+        // ================================================================
         // RPC 2: SET_REGISTRY (function 73)
+        // Payload: PACKED_REGISTRY_TABLE with 3 entries + key strings.
+        // Reference: nouveau r535_gsp_rpc_set_registry() sends:
+        //   RMSecBusResetEnable=1, RMForcePcieConfigSave=1, RMDevidCheckIgnore=1
+        //
+        // PACKED_REGISTRY_TABLE layout:
+        //   +0x00 u32 size        (total RPC payload size)
+        //   +0x04 u32 numEntries  (3)
+        // PACKED_REGISTRY_ENTRY (13 bytes packed per nouveau):
+        //   +0x00 u32 nameOffset  (byte offset from table start to NUL string)
+        //   +0x04 u8  type        (1 = DWORD)
+        //   +0x05 u32 data        (value)
+        //   +0x09 u32 length      (4 for DWORD)
+        // ================================================================
         {
             uint8_t* entry = cmdq_base + entry_off_val + state.cmdq_seq * QUEUE_ENTRY_SIZE;
             string::memset(entry, 0, QUEUE_ENTRY_SIZE);
 
-            gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(entry);
             rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
+            uint8_t* payload = entry + sizeof(gsp_msg_element) + sizeof(rpc_header);
 
-            msg->elem_count = 1;
-            msg->seq_num = state.cmdq_seq;
+            static const char* reg_keys[] = {
+                "RMSecBusResetEnable",
+                "RMForcePcieConfigSave",
+                "RMDevidCheckIgnore",
+            };
+            static const uint32_t reg_vals[] = { 1, 1, 1 };
+            constexpr uint32_t NUM_REG = 3;
+            constexpr uint32_t ENTRY_SIZE = 13; // packed: u32+u8+u32+u32
+
+            uint32_t header_size = 8;
+            uint32_t entries_size = NUM_REG * ENTRY_SIZE;
+            uint32_t str_offset = header_size + entries_size;
+
+            // Compute total strings size
+            uint32_t total_str_size = 0;
+            for (uint32_t i = 0; i < NUM_REG; i++) {
+                uint32_t klen = 0;
+                while (reg_keys[i][klen]) klen++;
+                total_str_size += klen + 1;
+            }
+            uint32_t reg_payload_size = str_offset + total_str_size;
+
+            // Write table header
+            auto wr32p = [&](uint32_t off, uint32_t val) {
+                string::memcpy(payload + off, &val, 4);
+            };
+            wr32p(0x00, reg_payload_size); // size = total payload
+            wr32p(0x04, NUM_REG);          // numEntries
+
+            // Write entries and strings
+            uint32_t cur_str = str_offset;
+            for (uint32_t i = 0; i < NUM_REG; i++) {
+                uint32_t e = header_size + i * ENTRY_SIZE;
+                wr32p(e + 0, cur_str);     // nameOffset
+                payload[e + 4] = 1;        // type = DWORD
+                wr32p(e + 5, reg_vals[i]); // data
+                wr32p(e + 9, 4);           // length = 4 (DWORD)
+
+                uint32_t klen = 0;
+                while (reg_keys[i][klen]) { payload[cur_str + klen] = reg_keys[i][klen]; klen++; }
+                payload[cur_str + klen] = 0;
+                cur_str += klen + 1;
+            }
+
             rpc->header_version = RPC_HDR_VERSION;
             rpc->signature = RPC_SIGNATURE;
-            rpc->length = sizeof(rpc_header);
+            rpc->length = sizeof(rpc_header) + reg_payload_size;
             rpc->function = NV_VGPU_MSG_FUNCTION_SET_REGISTRY;
             rpc->rpc_result = 0xFFFFFFFF;
             rpc->rpc_result_private = 0xFFFFFFFF;
-            rpc->sequence = state.rpc_seq++;
+            rpc->sequence = 0;
 
-            msg->pad = 0;
-            msg->checksum = 0;
-            uint64_t csum = 0;
-            for (uint32_t i = 0; i < QUEUE_ENTRY_SIZE / sizeof(uint64_t); i++) {
-                csum ^= reinterpret_cast<volatile uint64_t*>(entry)[i];
-            }
-            msg->checksum = static_cast<uint32_t>((csum >> 32) ^ (csum & 0xFFFFFFFF));
+            finalize_entry(entry, rpc->length);
 
-            state.cmdq_seq++;
-            cmdq_hdr_ptr->tx.write_ptr = state.cmdq_seq;
-            log::info("nvidia: gsp: queued SET_REGISTRY (fn=%u) at cmdq slot %u",
-                      NV_VGPU_MSG_FUNCTION_SET_REGISTRY, state.cmdq_seq - 1);
+            log::info("nvidia: gsp: queued SET_REGISTRY (fn=%u, %u entries, payload=%u) at cmdq slot %u",
+                      NV_VGPU_MSG_FUNCTION_SET_REGISTRY, NUM_REG, reg_payload_size, state.cmdq_seq - 1);
         }
     }
 
