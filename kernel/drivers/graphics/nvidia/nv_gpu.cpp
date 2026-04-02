@@ -554,7 +554,10 @@ int32_t nv_gpu::read_vbios_prom() {
         scan_offset += img_size;
         rom_size = scan_offset;
 
-        if (last_image & 0x80) break; // Last image in chain
+        // NOTE: Do NOT stop at last_image flag! On NVIDIA GPUs, the EFI image
+        // (type 0x03) often has last_image set, but FwSec images (type 0xE0)
+        // follow after it. Nova-core scans the entire 1MB ROM window.
+        // We continue scanning until we find no more valid ROM signatures.
     }
 
     if (rom_size == 0) {
