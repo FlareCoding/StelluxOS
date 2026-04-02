@@ -1093,13 +1093,15 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
 
         // ================================================================
         // RPC 2: SET_REGISTRY (function 73)
-        // Payload: PACKED_REGISTRY_TABLE with 3 entries + key strings.
-        // Reference: nouveau r535_gsp_rpc_set_registry() sends:
-        //   RMSecBusResetEnable=1, RMForcePcieConfigSave=1, RMDevidCheckIgnore=1
+        // Payload: PACKED_REGISTRY_TABLE with 2 DWORD entries + key strings.
+        // Reference: nouveau r535_gsp_rpc_set_registry() / NVIDIA OpenRM
+        // send only the required defaults:
+        //   RMSecBusResetEnable=1
+        //   RMForcePcieConfigSave=1
         //
         // PACKED_REGISTRY_TABLE layout:
-        //   +0x00 u32 size        (total RPC payload size)
-        //   +0x04 u32 numEntries  (3)
+        //   +0x00 u32 size        (total serialized table size)
+        //   +0x04 u32 numEntries  (2)
         // PACKED_REGISTRY_ENTRY (13 bytes packed per nouveau):
         //   +0x00 u32 nameOffset  (byte offset from table start to NUL string)
         //   +0x04 u8  type        (1 = DWORD)
@@ -1113,49 +1115,46 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
             rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
             uint8_t* payload = entry + sizeof(gsp_msg_element) + sizeof(rpc_header);
 
-            constexpr uint32_t NUM_REG = 3;
+            constexpr uint32_t NUM_REG = 2;
             constexpr uint32_t ENTRY_SIZE = 13; // packed: u32+u8+u32+u32
 
-            uint32_t header_size = 8;
+            constexpr uint32_t TABLE_HEADER_SIZE = 8;
+            constexpr uint32_t STR0_LEN = 20; // "RMSecBusResetEnable" + '\0'
+            constexpr uint32_t STR1_LEN = 22; // "RMForcePcieConfigSave" + '\0'
+
             uint32_t entries_size = NUM_REG * ENTRY_SIZE;
-            uint32_t str_base = header_size + entries_size; // 8 + 39 = 47
+            uint32_t str0_off = TABLE_HEADER_SIZE + entries_size;
+            uint32_t str1_off = str0_off + STR0_LEN;
+            uint32_t reg_payload_size = str1_off + STR1_LEN;
 
-            // String literals are in kernel .rodata — need RUN_ELEVATED to read them.
-            // Writes go to DMA buffer (PAGE_USER), safe from elevated mode.
-            uint32_t str0_off = str_base;
-            uint32_t str1_off = str0_off + 20;
-            uint32_t str2_off = str1_off + 22;
-            uint32_t reg_payload_size = str2_off + 19;
-
+            // String literals are in kernel .rodata, so read them from elevated mode.
             RUN_ELEVATED({
                 auto write_str = [&](uint32_t off, const char* s) {
-                    for (uint32_t j = 0; s[j]; j++) payload[off + j] = static_cast<uint8_t>(s[j]);
+                    for (uint32_t j = 0;; j++) {
+                        payload[off + j] = static_cast<uint8_t>(s[j]);
+                        if (s[j] == '\0') break;
+                    }
                 };
                 write_str(str0_off, "RMSecBusResetEnable");
                 write_str(str1_off, "RMForcePcieConfigSave");
-                write_str(str2_off, "RMDevidCheckIgnore");
             });
 
             auto wr32p = [&](uint32_t off, uint32_t val) {
                 string::memcpy(payload + off, &val, 4);
             };
 
-            // Table header: size = header size (8), not total payload
-            // Reference: nouveau sets rpc->size = sizeof(*rpc) = 8
-            wr32p(0x00, header_size);
+            // Official packing uses the total serialized table size, not just
+            // the 8-byte table header.
+            wr32p(0x00, reg_payload_size);
             wr32p(0x04, NUM_REG);
 
             // Entry 0: RMSecBusResetEnable = 1
-            uint32_t e0 = header_size;
+            uint32_t e0 = TABLE_HEADER_SIZE;
             wr32p(e0 + 0, str0_off); payload[e0 + 4] = 1; wr32p(e0 + 5, 1); wr32p(e0 + 9, 4);
 
             // Entry 1: RMForcePcieConfigSave = 1
-            uint32_t e1 = header_size + ENTRY_SIZE;
+            uint32_t e1 = TABLE_HEADER_SIZE + ENTRY_SIZE;
             wr32p(e1 + 0, str1_off); payload[e1 + 4] = 1; wr32p(e1 + 5, 1); wr32p(e1 + 9, 4);
-
-            // Entry 2: RMDevidCheckIgnore = 1
-            uint32_t e2 = header_size + 2 * ENTRY_SIZE;
-            wr32p(e2 + 0, str2_off); payload[e2 + 4] = 1; wr32p(e2 + 5, 1); wr32p(e2 + 9, 4);
 
             rpc->header_version = RPC_HDR_VERSION;
             rpc->signature = RPC_SIGNATURE;
