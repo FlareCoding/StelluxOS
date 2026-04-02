@@ -1125,8 +1125,9 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
                 string::memcpy(payload + off, &val, 4);
             };
 
-            // Table header
-            wr32p(0x00, reg_payload_size);
+            // Table header: size = header size (8), not total payload
+            // Reference: nouveau sets rpc->size = sizeof(*rpc) = 8
+            wr32p(0x00, header_size);
             wr32p(0x04, NUM_REG);
 
             // Entry 0: RMSecBusResetEnable = 1
