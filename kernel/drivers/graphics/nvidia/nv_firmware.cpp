@@ -437,7 +437,9 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
 
     log::info("nvidia: fw: extracting FWSEC from VBIOS (%u bytes)", vbios_size);
 
-    // Step 1: Walk the ROM image chain to find the second FwSec (type 0xE0) image
+    // Step 1: Walk ALL ROM images to find the second FwSec (type 0xE0) image.
+    // NVIDIA stores FWSEC images BEYOND the PCI ROM chain's LAST flag,
+    // so we must NOT stop at the LAST flag — same approach as read_vbios_prom().
     uint32_t offset = 0;
     uint32_t fwsec_image_offset = 0;
     uint32_t fwsec_image_size = 0;
@@ -446,19 +448,18 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
     uint32_t fwsec_count = 0;
 
     while (offset < vbios_size) {
-        // Check ROM signature
+        if (offset + 0x1A > vbios_size) break;
+
         uint16_t sig = rd16(vbios, offset);
         if (sig != 0xAA55 && sig != 0xBB77 && sig != 0x4E56) {
-            log::info("nvidia: fw: end of ROM chain at offset 0x%x (sig=0x%04x)", offset, sig);
+            log::info("nvidia: fw: end of ROM images at offset 0x%x (sig=0x%04x)", offset, sig);
             break;
         }
 
-        // Find PCIR structure
         uint16_t pcir_off = rd16(vbios, offset + 0x18);
         uint32_t pcir_abs = offset + pcir_off;
         if (pcir_abs + 24 > vbios_size) break;
 
-        // Validate PCIR signature
         uint32_t pcir_sig = rd32(vbios, pcir_abs);
         if (pcir_sig != 0x52494350) { // "PCIR"
             log::warn("nvidia: fw: expected PCIR at 0x%x, got 0x%08x", pcir_abs, pcir_sig);
@@ -474,9 +475,11 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
                   offset, code_type, image_size, image_len_blocks,
                   (last_image & 0x80) ? " [LAST]" : "");
 
-        if (code_type == 0x00) { // PciAt
+        if (image_size == 0) break;
+
+        if (code_type == 0x00) {
             pciat_image_size = image_size;
-        } else if (code_type == 0xE0) { // FwSec
+        } else if (code_type == 0xE0) {
             fwsec_count++;
             if (fwsec_count == 1) {
                 first_fwsec_size = image_size;
@@ -489,7 +492,7 @@ int32_t firmware_extract_fwsec(nv_gpu* gpu, fwsec_fw& out) {
         }
 
         offset += image_size;
-        if (last_image & 0x80) break;
+        // Do NOT break on last_image & 0x80 — FWSEC is beyond the PCI chain
     }
 
     if (fwsec_count < 2 || fwsec_image_size == 0) {

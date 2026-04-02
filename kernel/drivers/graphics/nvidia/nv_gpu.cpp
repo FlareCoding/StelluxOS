@@ -505,10 +505,23 @@ int32_t nv_gpu::read_vbios_prom() {
         return ERR_INVALID;
     }
 
-    // Walk the entire ROM image chain to find total size.
-    // The VBIOS consists of multiple chained images: PciAt → EFI → FwSec → FwSec.
-    // Each image has a PCIR structure with image_len and a last_image flag.
-    // We need ALL images (especially the FwSec ones for FWSEC-FRTS).
+    // Probe the actual expansion ROM size via PCI config space as a safety net.
+    uint32_t pci_rom_size = 0;
+    {
+        uint32_t saved_bar = 0;
+        RUN_ELEVATED(saved_bar = m_dev->config_read32(reg::PCI_EXPANSION_ROM_BAR));
+        RUN_ELEVATED(m_dev->config_write32(reg::PCI_EXPANSION_ROM_BAR, reg::PCI_ROM_ADDR_MASK));
+        uint32_t probe = 0;
+        RUN_ELEVATED(probe = m_dev->config_read32(reg::PCI_EXPANSION_ROM_BAR));
+        RUN_ELEVATED(m_dev->config_write32(reg::PCI_EXPANSION_ROM_BAR, saved_bar));
+
+        if (probe & reg::PCI_ROM_ADDR_MASK) {
+            pci_rom_size = ~(probe & reg::PCI_ROM_ADDR_MASK) + 1;
+            log::info("nvidia: PROM: PCI ROM BAR reports %u bytes (%u KB)", pci_rom_size, pci_rom_size / 1024);
+        }
+    }
+
+    // Walk ALL ROM images (PciAt, EFI, FwSec, ...) scanning past the LAST flag.
     uint32_t rom_size = 0;
     uint32_t scan_offset = 0;
 
@@ -560,8 +573,15 @@ int32_t nv_gpu::read_vbios_prom() {
         // We continue scanning until we find no more valid ROM signatures.
     }
 
+    // Use PCI ROM BAR size if the chain walk found fewer bytes
+    if (pci_rom_size > rom_size && pci_rom_size <= VBIOS_MAX_SIZE) {
+        log::info("nvidia: PROM: chain walk found %u bytes, PCI ROM BAR says %u — using larger",
+                  rom_size, pci_rom_size);
+        rom_size = pci_rom_size;
+    }
+
     if (rom_size == 0) {
-        rom_size = 64 * 1024; // Fallback: read 64KB
+        rom_size = 64 * 1024;
         log::warn("nvidia: PROM: ROM chain walk failed, falling back to 64KB read");
     }
 
@@ -569,7 +589,7 @@ int32_t nv_gpu::read_vbios_prom() {
         rom_size = VBIOS_MAX_SIZE;
     }
 
-    log::info("nvidia: PROM: total ROM chain size: %u bytes", rom_size);
+    log::info("nvidia: PROM: reading %u bytes (%u KB)", rom_size, rom_size / 1024);
 
     // Read entire ROM
     for (uint32_t i = 0; i < rom_size; i += 4) {
