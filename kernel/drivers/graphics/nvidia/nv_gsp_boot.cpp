@@ -671,51 +671,134 @@ int32_t gsp_run_booter(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
 // 7. Wait for INIT_DONE
 // ============================================================================
 
-int32_t gsp_wait_init_done(nv_gpu* /*gpu*/, gsp_boot_state& state) {
-    log::info("nvidia: gsp: waiting for GSP INIT_DONE (timeout 4s)...");
+// Dump GSP log buffers (LOGINIT, LOGRM) to serial for debugging.
+// GSP-RM writes text logs to these DMA buffers during initialization.
+// Layout: [put_pointer:u64 at offset 0] [data follows]
+static void dump_gsp_log_buffer(const char* name, const dma::buffer& buf, uint32_t buf_size) {
+    if (!buf.virt) return;
 
-    // The status/message queue is at state.shm_dma.virt + state.msgq_offset
-    // GSP writes messages here. We poll for a message with function == 0x1001.
+    volatile uint64_t* put_ptr = reinterpret_cast<volatile uint64_t*>(buf.virt);
+    uint64_t put = *put_ptr;
+
+    log::info("nvidia: gsp: %s: put_pointer=0x%lx", name, put);
+
+    if (put == 0) {
+        log::info("nvidia: gsp: %s: (empty — GSP wrote nothing)", name);
+        return;
+    }
+
+    // The log data region starts after the PTE array header.
+    // For a 64KB buffer with 16 pages: PTEs at offset 8, 16 entries × 8 bytes = 128 bytes.
+    // Data starts at offset ~136 (8 + 128). But the put pointer is buffer-relative.
+    // Scan for printable ASCII sequences in the buffer to find any GSP log text.
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(buf.virt);
+    uint32_t scan_limit = buf_size;
+    if (put < scan_limit) scan_limit = static_cast<uint32_t>(put);
+
+    // Find and print runs of printable ASCII (GSP log messages)
+    uint32_t run_start = 0;
+    bool in_run = false;
+    uint32_t lines_printed = 0;
+    constexpr uint32_t MAX_LOG_LINES = 40;
+
+    for (uint32_t i = 256; i < scan_limit && lines_printed < MAX_LOG_LINES; i++) {
+        uint8_t c = data[i];
+        bool printable = (c >= 0x20 && c < 0x7F) || c == '\n' || c == '\r' || c == '\t';
+
+        if (printable && !in_run) {
+            run_start = i;
+            in_run = true;
+        } else if (!printable && in_run) {
+            uint32_t run_len = i - run_start;
+            if (run_len >= 8) {
+                // Print up to 120 chars of this string run
+                char line[121];
+                uint32_t copy_len = (run_len > 120) ? 120 : run_len;
+                for (uint32_t j = 0; j < copy_len; j++) {
+                    char ch = static_cast<char>(data[run_start + j]);
+                    line[j] = (ch == '\n' || ch == '\r') ? ' ' : ch;
+                }
+                line[copy_len] = '\0';
+                log::info("nvidia: gsp: %s[0x%x]: %s", name, run_start, line);
+                lines_printed++;
+            }
+            in_run = false;
+        }
+    }
+}
+
+int32_t gsp_wait_init_done(nv_gpu* gpu, gsp_boot_state& state) {
+    log::info("nvidia: gsp: waiting for GSP INIT_DONE (timeout 10s)...");
 
     volatile queue_header* msgq_hdr = reinterpret_cast<volatile queue_header*>(
         state.shm_dma.virt + state.msgq_offset);
+    volatile queue_header* cmdq_hdr = reinterpret_cast<volatile queue_header*>(
+        state.shm_dma.virt + state.cmdq_offset);
 
-    // The cmdq RX header (where our read pointer for the msgq lives)
-    // is at the cmdq header's rx field. But per the cross-queue pointer layout:
-    // msgq.rptr = cmdq.rx.read_ptr
-    volatile uint32_t* msgq_rptr = &reinterpret_cast<volatile queue_header*>(
-        state.shm_dma.virt + state.cmdq_offset)->rx.read_ptr;
+    // In nouveau's queue model, the msgq write pointer is written by GSP,
+    // and the read pointer is maintained by the host in the msgq rx header.
+    // rx.read_ptr is at byte 32 in queue_header (after 32-byte tx header).
+    volatile uint32_t* msgq_rptr = reinterpret_cast<volatile uint32_t*>(
+        state.shm_dma.virt + state.msgq_offset + sizeof(msgq_tx_header));
 
-    uint64_t deadline = clock::now_ns() + 4000000000ULL; // 4 seconds
+    // Log initial queue state for diagnostics
+    log::info("nvidia: gsp: cmdq header: ver=%u size=0x%x msg_size=0x%x count=%u wptr=%u flags=0x%x rx_off=%u entry_off=0x%x",
+              cmdq_hdr->tx.version, cmdq_hdr->tx.size, cmdq_hdr->tx.msg_size,
+              cmdq_hdr->tx.msg_count, cmdq_hdr->tx.write_ptr, cmdq_hdr->tx.flags,
+              cmdq_hdr->tx.rx_hdr_off, cmdq_hdr->tx.entry_off);
+    log::info("nvidia: gsp: cmdq rx.read_ptr=%u", cmdq_hdr->rx.read_ptr);
+    log::info("nvidia: gsp: msgq header: ver=%u size=0x%x msg_size=0x%x count=%u wptr=%u flags=0x%x rx_off=%u entry_off=0x%x",
+              msgq_hdr->tx.version, msgq_hdr->tx.size, msgq_hdr->tx.msg_size,
+              msgq_hdr->tx.msg_count, msgq_hdr->tx.write_ptr, msgq_hdr->tx.flags,
+              msgq_hdr->tx.rx_hdr_off, msgq_hdr->tx.entry_off);
+    log::info("nvidia: gsp: msgq rx.read_ptr=%u", msgq_hdr->rx.read_ptr);
+
+    uint64_t deadline = clock::now_ns() + 10000000000ULL; // 10 seconds
     uint32_t msg_count = msgq_hdr->tx.msg_count;
     uint32_t entry_off = msgq_hdr->tx.entry_off;
+    uint32_t last_status_s = 0;
 
     while (clock::now_ns() < deadline) {
-        // Check if there's a message: wptr != rptr
         uint32_t wptr = msgq_hdr->tx.write_ptr;
         uint32_t rptr = *msgq_rptr;
 
+        // Periodic status every 2 seconds
+        uint64_t elapsed_ns = 10000000000ULL - (deadline - clock::now_ns());
+        uint32_t elapsed_s = static_cast<uint32_t>(elapsed_ns / 1000000000ULL);
+        if (elapsed_s > last_status_s) {
+            last_status_s = elapsed_s;
+
+            // Read GSP falcon registers for liveness
+            falcon gsp_flcn;
+            gsp_flcn.init(gpu, falcon::engine_type::GSP);
+            uint32_t riscv_stat = gsp_flcn.rd32(FALCON_RISCV_STATUS);
+            uint32_t mbox0 = gsp_flcn.rd32(0x040);
+            uint32_t mbox1 = gsp_flcn.rd32(0x044);
+
+            log::info("nvidia: gsp: [%us] msgq wptr=%u rptr=%u | cmdq wptr=%u rptr=%u | GSP RISCV=0x%08x mbox0=0x%08x mbox1=0x%08x",
+                      elapsed_s, wptr, rptr,
+                      cmdq_hdr->tx.write_ptr, cmdq_hdr->rx.read_ptr,
+                      riscv_stat, mbox0, mbox1);
+        }
+
         if (wptr == rptr) {
-            delay::us(1000); // 1ms poll interval
+            delay::us(1000);
             continue;
         }
 
-        // Read message at rptr
         uint8_t* entry = reinterpret_cast<uint8_t*>(state.shm_dma.virt +
                          state.msgq_offset + entry_off + rptr * QUEUE_ENTRY_SIZE);
 
-        // Parse message element header
         gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(entry);
         rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
 
-        log::info("nvidia: gsp: received message: func=0x%04x result=0x%x seq=%u",
-                  rpc->function, rpc->rpc_result, rpc->sequence);
+        log::info("nvidia: gsp: recv msg: func=0x%04x result=0x%x seq=%u len=%u elem_count=%u checksum=0x%08x",
+                  rpc->function, rpc->rpc_result, rpc->sequence, rpc->length,
+                  msg->elem_count, msg->checksum);
 
-        // Advance read pointer
         uint32_t new_rptr = (rptr + msg->elem_count) % msg_count;
         *msgq_rptr = new_rptr;
 
-        // Check for INIT_DONE
         if (rpc->function == NV_VGPU_MSG_EVENT_GSP_INIT_DONE) {
             if (rpc->rpc_result != 0) {
                 log::error("nvidia: gsp: INIT_DONE with error: result=0x%x", rpc->rpc_result);
@@ -727,21 +810,76 @@ int32_t gsp_wait_init_done(nv_gpu* /*gpu*/, gsp_boot_state& state) {
             return OK;
         }
 
-        // Handle sequencer events
         if (rpc->function == NV_VGPU_MSG_EVENT_GSP_RUN_CPU_SEQ) {
-            log::info("nvidia: gsp: received CPU sequencer request (processing...)");
-            // TODO: Process sequencer opcodes
-            // For initial boot, these are typically suspend/resume related
-            // and may not appear during first boot
+            log::info("nvidia: gsp: received CPU sequencer request");
         }
-
-        // Handle error events
         if (rpc->function == NV_VGPU_MSG_EVENT_OS_ERROR_LOG) {
             log::warn("nvidia: gsp: received OS error log from GSP");
         }
     }
 
-    log::error("nvidia: gsp: INIT_DONE timeout (4 seconds)");
+    // ================================================================
+    // TIMEOUT — Dump everything for diagnostics
+    // ================================================================
+    log::error("nvidia: gsp: INIT_DONE timeout (10 seconds)");
+
+    log::info("nvidia: gsp: ---- POST-TIMEOUT DIAGNOSTICS ----");
+
+    // 1. Final queue state
+    log::info("nvidia: gsp: cmdq: wptr=%u rx.rptr=%u", cmdq_hdr->tx.write_ptr, cmdq_hdr->rx.read_ptr);
+    log::info("nvidia: gsp: msgq: wptr=%u rx.rptr=%u", msgq_hdr->tx.write_ptr, msgq_hdr->rx.read_ptr);
+
+    // 2. GSP falcon registers
+    {
+        falcon gsp_flcn;
+        gsp_flcn.init(gpu, falcon::engine_type::GSP);
+        uint32_t riscv_stat = gsp_flcn.rd32(FALCON_RISCV_STATUS);
+        uint32_t mbox0 = gsp_flcn.rd32(0x040);
+        uint32_t mbox1 = gsp_flcn.rd32(0x044);
+        uint32_t cpuctl = gsp_flcn.rd32(0x100);
+
+        log::info("nvidia: gsp: falcon RISCV_STATUS=0x%08x CPUCTL=0x%08x MBOX0=0x%08x MBOX1=0x%08x",
+                  riscv_stat, cpuctl, mbox0, mbox1);
+    }
+
+    // 3. Dump first 64 bytes of msgq to see if GSP wrote anything raw
+    {
+        log::info("nvidia: gsp: msgq raw header (64 bytes at shm+0x%x):", state.msgq_offset);
+        volatile uint32_t* raw = reinterpret_cast<volatile uint32_t*>(state.shm_dma.virt + state.msgq_offset);
+        for (int i = 0; i < 16; i += 4) {
+            log::info("nvidia: gsp:   +0x%02x: %08x %08x %08x %08x",
+                      i * 4, raw[i], raw[i+1], raw[i+2], raw[i+3]);
+        }
+    }
+
+    // 4. Dump first 64 bytes of cmdq to see if GSP read our RPCs
+    {
+        log::info("nvidia: gsp: cmdq raw header (64 bytes at shm+0x%x):", state.cmdq_offset);
+        volatile uint32_t* raw = reinterpret_cast<volatile uint32_t*>(state.shm_dma.virt + state.cmdq_offset);
+        for (int i = 0; i < 16; i += 4) {
+            log::info("nvidia: gsp:   +0x%02x: %08x %08x %08x %08x",
+                      i * 4, raw[i], raw[i+1], raw[i+2], raw[i+3]);
+        }
+    }
+
+    // 5. Dump GSP log buffers
+    dump_gsp_log_buffer("LOGINIT", state.loginit_dma, LOG_BUF_SIZE);
+    dump_gsp_log_buffer("LOGRM", state.logrm_dma, LOG_BUF_SIZE);
+
+    // 6. Check if msgq has any data at the first entry (even if wptr says 0)
+    {
+        uint8_t* first_entry = reinterpret_cast<uint8_t*>(state.shm_dma.virt +
+                               state.msgq_offset + entry_off);
+        gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(first_entry);
+        rpc_header* rpc = reinterpret_cast<rpc_header*>(first_entry + sizeof(gsp_msg_element));
+        log::info("nvidia: gsp: msgq entry[0] raw: elem_count=%u seq=%u checksum=0x%08x",
+                  msg->elem_count, msg->seq_num, msg->checksum);
+        log::info("nvidia: gsp: msgq entry[0] rpc: hdr_ver=0x%08x sig=0x%08x len=%u func=0x%04x result=0x%x",
+                  rpc->header_version, rpc->signature, rpc->length, rpc->function, rpc->rpc_result);
+    }
+
+    log::info("nvidia: gsp: ---- END DIAGNOSTICS ----");
+
     return ERR_TIMEOUT;
 }
 
