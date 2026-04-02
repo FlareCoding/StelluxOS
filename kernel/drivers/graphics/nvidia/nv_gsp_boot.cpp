@@ -376,23 +376,16 @@ int32_t gsp_init_shared_mem(nv_gpu* /*gpu*/, gsp_boot_state& state) {
     cmdq_hdr->tx.entry_off  = QUEUE_ENTRY_SIZE; // 0x1000
     cmdq_hdr->rx.read_ptr   = 0;
 
-    // Initialize message/status queue header
-    queue_header* msgq_hdr = reinterpret_cast<queue_header*>(state.shm_dma.virt + state.msgq_offset);
-    msgq_hdr->tx.version   = 0;
-    msgq_hdr->tx.size      = MSGQ_SIZE;
-    msgq_hdr->tx.msg_size  = QUEUE_ENTRY_SIZE;
-    msgq_hdr->tx.msg_count = (MSGQ_SIZE - QUEUE_ENTRY_SIZE) / QUEUE_ENTRY_SIZE; // 63
-    msgq_hdr->tx.write_ptr = 0;
-    msgq_hdr->tx.flags     = 0;
-    msgq_hdr->tx.rx_hdr_off = sizeof(msgq_tx_header); // 32
-    msgq_hdr->tx.entry_off  = QUEUE_ENTRY_SIZE;
-    msgq_hdr->rx.read_ptr   = 0;
+    // The msgq (status queue) area is left ZEROED — GSP initializes it via
+    // msgqTxCreate during its own boot. Nouveau only initializes the cmdq header.
+    // The msgq rx header (at msgq + sizeof(msgq_tx_header)) is where GSP writes
+    // the cmdq consumer read pointer (swap mode).
 
     state.cmdq_seq = 0;
     state.rpc_seq = 0;
 
-    log::info("nvidia: gsp: queues initialized: cmdq_count=%u msgq_count=%u",
-              cmdq_hdr->tx.msg_count, msgq_hdr->tx.msg_count);
+    log::info("nvidia: gsp: queues initialized: cmdq_count=%u (msgq left zeroed for GSP)",
+              cmdq_hdr->tx.msg_count);
 
     return OK;
 }
@@ -767,8 +760,6 @@ int32_t gsp_wait_init_done(nv_gpu* gpu, gsp_boot_state& state) {
     log::info("nvidia: gsp: msgq rx.read_ptr=%u", msgq_hdr->rx.read_ptr);
 
     uint64_t deadline = clock::now_ns() + 10000000000ULL; // 10 seconds
-    uint32_t msg_count = msgq_hdr->tx.msg_count;
-    uint32_t entry_off = msgq_hdr->tx.entry_off;
     uint32_t last_status_s = 0;
 
     while (clock::now_ns() < deadline) {
@@ -799,8 +790,14 @@ int32_t gsp_wait_init_done(nv_gpu* gpu, gsp_boot_state& state) {
             continue;
         }
 
+        // Read entry_off and msg_count live from GSP-initialized msgq header
+        uint32_t cur_entry_off = msgq_hdr->tx.entry_off;
+        uint32_t cur_msg_count = msgq_hdr->tx.msg_count;
+        if (cur_entry_off == 0) cur_entry_off = QUEUE_ENTRY_SIZE;
+        if (cur_msg_count == 0) cur_msg_count = 63;
+
         uint8_t* entry = reinterpret_cast<uint8_t*>(state.shm_dma.virt +
-                         state.msgq_offset + entry_off + rptr * QUEUE_ENTRY_SIZE);
+                         state.msgq_offset + cur_entry_off + rptr * QUEUE_ENTRY_SIZE);
 
         gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(entry);
         rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
@@ -809,7 +806,7 @@ int32_t gsp_wait_init_done(nv_gpu* gpu, gsp_boot_state& state) {
                   rpc->function, rpc->rpc_result, rpc->sequence, rpc->length,
                   msg->elem_count, msg->checksum);
 
-        uint32_t new_rptr = (rptr + msg->elem_count) % msg_count;
+        uint32_t new_rptr = (rptr + msg->elem_count) % cur_msg_count;
         *msgq_rptr = new_rptr;
 
         if (rpc->function == NV_VGPU_MSG_EVENT_GSP_INIT_DONE) {
@@ -881,8 +878,10 @@ int32_t gsp_wait_init_done(nv_gpu* gpu, gsp_boot_state& state) {
 
     // 6. Check if msgq has any data at the first entry (even if wptr says 0)
     {
+        uint32_t diag_entry_off = msgq_hdr->tx.entry_off;
+        if (diag_entry_off == 0) diag_entry_off = QUEUE_ENTRY_SIZE;
         uint8_t* first_entry = reinterpret_cast<uint8_t*>(state.shm_dma.virt +
-                               state.msgq_offset + entry_off);
+                               state.msgq_offset + diag_entry_off);
         gsp_msg_element* msg = reinterpret_cast<gsp_msg_element*>(first_entry);
         rpc_header* rpc = reinterpret_cast<rpc_header*>(first_entry + sizeof(gsp_msg_element));
         log::info("nvidia: gsp: msgq entry[0] raw: elem_count=%u seq=%u checksum=0x%08x",
@@ -1036,7 +1035,7 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
         // We use a generous 2048-byte payload to cover any struct size.
         // ================================================================
         {
-            constexpr uint32_t GSP_SYSTEM_INFO_SIZE = 2048;
+            constexpr uint32_t GSP_SYSTEM_INFO_SIZE = 664;
             uint8_t* entry = cmdq_base + entry_off_val + state.cmdq_seq * QUEUE_ENTRY_SIZE;
             string::memset(entry, 0, QUEUE_ENTRY_SIZE);
 
