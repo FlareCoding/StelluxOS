@@ -576,17 +576,19 @@ int32_t gsp_run_booter(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
     log::info("nvidia: gsp: booter sig: fuse_ver=%u num_sigs=%u → idx=%u",
               fuse_ver, num_sigs, idx);
 
-    // Patch signature into the DMA payload at dmem_sign offset
+    // dmem_sign_offset: offset within DMEM where the signature lives (for BROM_PARAADDR)
+    // patch_loc_val: absolute offset in the payload where the signature must be patched
     uint32_t dmem_sign_offset = booter.patch_loc_val - booter.load_hdr.os_data_offset;
+    uint32_t sig_patch_offset = booter.patch_loc_val;
     uint32_t sig_offset = booter.hs_hdr.sig_prod_offset + booter.patch_sig_val +
                           idx * booter.per_sig_size;
 
     if (sig_offset + booter.per_sig_size <= booter.raw_size &&
-        dmem_sign_offset + booter.per_sig_size <= booter.payload_size) {
-        string::memcpy(reinterpret_cast<void*>(booter_dma.virt + dmem_sign_offset),
+        sig_patch_offset + booter.per_sig_size <= booter.payload_size) {
+        string::memcpy(reinterpret_cast<void*>(booter_dma.virt + sig_patch_offset),
                        booter.raw_data + sig_offset, booter.per_sig_size);
-        log::info("nvidia: gsp: booter sig patched: %u bytes at payload offset 0x%x",
-                  booter.per_sig_size, dmem_sign_offset);
+        log::info("nvidia: gsp: booter sig patched: %u bytes at payload offset 0x%x (DMEM offset 0x%x)",
+                  booter.per_sig_size, sig_patch_offset, dmem_sign_offset);
     } else {
         log::error("nvidia: gsp: booter sig patch out of bounds");
         RUN_ELEVATED(dma::free_pages(booter_dma));
