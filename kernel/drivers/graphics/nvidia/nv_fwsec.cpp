@@ -319,7 +319,7 @@ int32_t fwsec_run_frts(nv_gpu* gpu, fwsec_fw& fwsec, falcon& gsp) {
     // Step 4: Allocate DMA buffer for the patched ucode
     uint32_t dma_pages = (fwsec.ucode_size + 4095) / 4096;
     rc = 0;
-    RUN_ELEVATED(rc = dma::alloc_pages(dma_pages, fwsec.dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(dma_pages, fwsec.dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: fwsec: DMA allocation failed (%u pages): %d", dma_pages, rc);
         return ERR_NOT_FOUND;

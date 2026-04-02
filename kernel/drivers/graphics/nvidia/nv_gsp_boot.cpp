@@ -172,7 +172,7 @@ int32_t gsp_build_radix3(nv_gpu* /*gpu*/, const gsp_fw& fw_data, radix3& r3) {
 
     // Allocate level 2 (leaf) — needs to hold fw_pages entries
     uint32_t lvl2_size = align_up(lvl2_entries * sizeof(uint64_t), GSP_PAGE_SIZE_VAL);
-    RUN_ELEVATED(rc = dma::alloc_pages(lvl2_size / pmm::PAGE_SIZE, r3.lvl[2], pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(lvl2_size / pmm::PAGE_SIZE, r3.lvl[2], pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: gsp: radix3 level 2 alloc failed (%u bytes): %d", lvl2_size, rc);
         return ERR_NOT_FOUND;
@@ -180,7 +180,7 @@ int32_t gsp_build_radix3(nv_gpu* /*gpu*/, const gsp_fw& fw_data, radix3& r3) {
 
     // Allocate level 1 (middle) — needs lvl2_pages entries
     uint32_t lvl1_size = align_up(lvl1_entries * sizeof(uint64_t), GSP_PAGE_SIZE_VAL);
-    RUN_ELEVATED(rc = dma::alloc_pages(lvl1_size / pmm::PAGE_SIZE, r3.lvl[1], pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(lvl1_size / pmm::PAGE_SIZE, r3.lvl[1], pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: gsp: radix3 level 1 alloc failed: %d", rc);
         RUN_ELEVATED(dma::free_pages(r3.lvl[2]));
@@ -188,7 +188,7 @@ int32_t gsp_build_radix3(nv_gpu* /*gpu*/, const gsp_fw& fw_data, radix3& r3) {
     }
 
     // Allocate level 0 (root) — 1 page, 1 entry
-    RUN_ELEVATED(rc = dma::alloc_pages(1, r3.lvl[0], pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(1, r3.lvl[0], pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: gsp: radix3 level 0 alloc failed: %d", rc);
         RUN_ELEVATED(dma::free_pages(r3.lvl[1]));
@@ -202,7 +202,7 @@ int32_t gsp_build_radix3(nv_gpu* /*gpu*/, const gsp_fw& fw_data, radix3& r3) {
     // entries pointing to individual pages within it.
     dma::buffer fw_dma = {};
     uint32_t fw_dma_pages = div_round_up(fw_data.fwimage_size, pmm::PAGE_SIZE);
-    RUN_ELEVATED(rc = dma::alloc_pages(fw_dma_pages, fw_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(fw_dma_pages, fw_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: gsp: firmware DMA alloc failed (%u pages): %d", fw_dma_pages, rc);
         RUN_ELEVATED(dma::free_pages(r3.lvl[0]));
@@ -257,7 +257,7 @@ int32_t gsp_init_wpr_meta(nv_gpu* /*gpu*/, const gsp_firmware& /*fw*/,
 
     // Allocate 4KB DMA page for WPR meta
     int32_t rc;
-    RUN_ELEVATED(rc = dma::alloc_pages(1, state.wpr_meta_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(1, state.wpr_meta_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: gsp: WPR meta alloc failed: %d", rc);
         return ERR_NOT_FOUND;
@@ -346,7 +346,7 @@ int32_t gsp_init_shared_mem(nv_gpu* /*gpu*/, gsp_boot_state& state) {
 
     // Allocate shared memory (must be contiguous for DMA)
     int32_t rc;
-    RUN_ELEVATED(rc = dma::alloc_pages(shm_pages, state.shm_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(shm_pages, state.shm_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: gsp: shared memory alloc failed (%u pages): %d", shm_pages, rc);
         return ERR_NOT_FOUND;
@@ -414,21 +414,21 @@ int32_t gsp_init_libos(nv_gpu* /*gpu*/, gsp_boot_state& state) {
     int32_t rc;
 
     // Allocate libos page (4KB, holds 4 × 32-byte entries)
-    RUN_ELEVATED(rc = dma::alloc_pages(1, state.libos_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(1, state.libos_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) { log::error("nvidia: gsp: libos alloc failed"); return ERR_NOT_FOUND; }
 
     // Allocate log buffers (64KB each)
-    RUN_ELEVATED(rc = dma::alloc_pages(LOG_BUF_SIZE / pmm::PAGE_SIZE, state.loginit_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(LOG_BUF_SIZE / pmm::PAGE_SIZE, state.loginit_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) { log::error("nvidia: gsp: loginit alloc failed"); return ERR_NOT_FOUND; }
 
-    RUN_ELEVATED(rc = dma::alloc_pages(LOG_BUF_SIZE / pmm::PAGE_SIZE, state.logintr_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(LOG_BUF_SIZE / pmm::PAGE_SIZE, state.logintr_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) { log::error("nvidia: gsp: logintr alloc failed"); return ERR_NOT_FOUND; }
 
-    RUN_ELEVATED(rc = dma::alloc_pages(LOG_BUF_SIZE / pmm::PAGE_SIZE, state.logrm_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(LOG_BUF_SIZE / pmm::PAGE_SIZE, state.logrm_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) { log::error("nvidia: gsp: logrm alloc failed"); return ERR_NOT_FOUND; }
 
     // Allocate rmargs (4KB)
-    RUN_ELEVATED(rc = dma::alloc_pages(1, state.rmargs_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(1, state.rmargs_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) { log::error("nvidia: gsp: rmargs alloc failed"); return ERR_NOT_FOUND; }
 
     // Zero all buffers
@@ -526,7 +526,7 @@ int32_t gsp_run_booter(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
     booter_fw& booter = fw.booter_load;
     uint32_t payload_pages = div_round_up(booter.payload_size, pmm::PAGE_SIZE);
     dma::buffer booter_dma = {};
-    RUN_ELEVATED(rc = dma::alloc_pages(payload_pages, booter_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(payload_pages, booter_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: gsp: booter DMA alloc failed: %d", rc);
         return ERR_NOT_FOUND;
@@ -767,7 +767,7 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
 
     // Step 3: Allocate DMA for bootloader ucode
     uint32_t bl_pages = div_round_up(fw.bootloader.payload_size, pmm::PAGE_SIZE);
-    RUN_ELEVATED(rc = dma::alloc_pages(bl_pages, state.bootloader_dma, pmm::ZONE_DMA32));
+    RUN_ELEVATED(rc = dma::alloc_pages(bl_pages, state.bootloader_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
     if (rc != dma::OK) {
         log::error("nvidia: gsp: bootloader DMA alloc failed: %d", rc);
         return ERR_NOT_FOUND;
@@ -787,7 +787,7 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
     if (fw.gsp.fwsig && fw.gsp.fwsig_size > 0) {
         uint32_t sig_size = align_up(fw.gsp.fwsig_size, DMEM_ALIGN);
         uint32_t sig_pages = div_round_up(sig_size, pmm::PAGE_SIZE);
-        RUN_ELEVATED(rc = dma::alloc_pages(sig_pages, state.sig_dma, pmm::ZONE_DMA32));
+        RUN_ELEVATED(rc = dma::alloc_pages(sig_pages, state.sig_dma, pmm::ZONE_DMA32, paging::PAGE_USER));
         if (rc != dma::OK) {
             log::error("nvidia: gsp: signature DMA alloc failed: %d", rc);
             return ERR_NOT_FOUND;
