@@ -545,30 +545,36 @@ int32_t gsp_run_booter(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
     log::info("nvidia: gsp: booter fuse: addr=0x%06x val=0x%08x (engine=0x%x ucode=%u)",
               fuse_addr, fuse_val, booter.sig_meta.engine_id_mask, booter.sig_meta.ucode_id);
 
-    // Signature selection: BIT(fls(fuse_val)) and walk bits
-    uint32_t reg_fuse = fuse_val;
-    // fls: find last set (1-based position of highest set bit)
-    uint32_t fls_val = 0;
+    // Booter signature selection uses OpenRM's reverse-index scheme:
+    //   fuseVer = fls(fuse_val)  (1-based highest set bit position)
+    //   sigIndex = numSigs - 1 - fuseVer
+    // Reference: OpenRM s_patchBooterUcodeSignature in kernel_gsp_fwsec.c
+    // This is DIFFERENT from FWSEC's popcount-based selection.
+    uint32_t fuse_ver = 0;
     {
-        uint32_t tmp = reg_fuse;
-        while (tmp) { fls_val++; tmp >>= 1; }
+        uint32_t tmp = fuse_val;
+        while (tmp) { fuse_ver++; tmp >>= 1; }
     }
-    uint32_t reg_fuse_bit = 1u << fls_val; // BIT(fls())
 
-    // Walk bits to find signature index (matching nouveau's algorithm)
-    uint32_t sig_fuse_version = booter.sig_meta.fuse_ver;
+    uint32_t num_sigs = booter.num_sig_val;
+    if (num_sigs == 0) {
+        log::error("nvidia: gsp: booter has 0 signatures");
+        RUN_ELEVATED(dma::free_pages(booter_dma));
+        return ERR_INVALID;
+    }
+
     uint32_t idx = 0;
-    uint32_t rf = reg_fuse_bit;
-    uint32_t sf = sig_fuse_version;
-
-    while (!(rf & sf & 1)) {
-        idx += (sf & 1);
-        rf >>= 1;
-        sf >>= 1;
+    if (num_sigs > 1) {
+        if (fuse_ver > num_sigs - 1) {
+            log::error("nvidia: gsp: booter fuse_ver %u exceeds num_sigs %u", fuse_ver, num_sigs);
+            RUN_ELEVATED(dma::free_pages(booter_dma));
+            return ERR_INVALID;
+        }
+        idx = num_sigs - 1 - fuse_ver;
     }
 
-    log::info("nvidia: gsp: booter sig: fls=%u reg_fuse_bit=0x%x sig_fuse_ver=0x%x → idx=%u",
-              fls_val, reg_fuse_bit, sig_fuse_version, idx);
+    log::info("nvidia: gsp: booter sig: fuse_ver=%u num_sigs=%u → idx=%u",
+              fuse_ver, num_sigs, idx);
 
     // Patch signature into the DMA payload at dmem_sign offset
     uint32_t dmem_sign_offset = booter.patch_loc_val - booter.load_hdr.os_data_offset;
