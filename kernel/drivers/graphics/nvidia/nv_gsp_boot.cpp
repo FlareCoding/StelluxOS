@@ -1172,8 +1172,36 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
         }
     }
 
-    // Step 10: Reset GSP falcon into RISC-V mode
-    log::info("nvidia: gsp: step 10: resetting GSP falcon to RISC-V mode");
+    // Step 10: PMC-level engine reset + switch to RISC-V mode.
+    // CRITICAL: After FWSEC runs on the GSP falcon in Heavy-Secure mode,
+    // residual engine state (DMA controller, security state, FBIF config)
+    // persists. A falcon-local ENGINE register reset (0x3C0) only resets the
+    // microcontroller core. Nouveau uses PMC-level engine reset via register
+    // 0x600 (ga100_mc_device_disable/enable) which resets the ENTIRE engine.
+    // Without this, the RISC-V core boots into corrupted state and halts at
+    // the firmware's panic handler (PC=0xFF00).
+    // Reference: nouveau gp102_flcn_reset_eng() → nvkm_mc_device_reset()
+    log::info("nvidia: gsp: step 10: PMC engine cycle + reset GSP to RISC-V mode");
+    {
+        uint32_t pmc_cur = gpu->reg_rd32(reg::PMC_ENABLE);
+        log::info("nvidia: gsp: PMC_ENABLE (0x600) before cycle: 0x%08x", pmc_cur);
+
+        // Disable all GPU engines via PMC (clears all residual FWSEC state)
+        gpu->reg_wr32(reg::PMC_ENABLE, 0x00000000);
+        gpu->reg_rd32(reg::PMC_ENABLE); // flush
+        gpu->reg_rd32(reg::PMC_ENABLE); // double flush (per nouveau)
+        delay::us(20);
+
+        // Re-enable all engines
+        gpu->reg_wr32(reg::PMC_ENABLE, pmc_cur);
+        gpu->reg_rd32(reg::PMC_ENABLE);
+        gpu->reg_rd32(reg::PMC_ENABLE);
+        delay::us(20);
+
+        log::info("nvidia: gsp: PMC_ENABLE (0x600) after cycle: 0x%08x", gpu->reg_rd32(reg::PMC_ENABLE));
+    }
+
+    // Now do the falcon-level reset + RISC-V mode switch
     rc = gsp_flcn.reset();
     if (rc != OK) {
         log::error("nvidia: gsp: GSP reset failed: %d", rc);
