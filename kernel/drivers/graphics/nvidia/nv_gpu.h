@@ -48,6 +48,10 @@ public:
     uintptr_t bar0_va() const { return m_bar0_va; }
     uintptr_t bar1_va() const { return m_bar1_va; }
     uint64_t  bar1_size() const { return m_bar1_size; }
+    uint64_t  bar0_phys() const { return m_bar0_phys; }
+    uint64_t  bar1_phys() const { return m_bar1_phys; }
+    uint64_t  bar3_phys() const { return m_bar3_phys; }
+    uint32_t  pci_bdf() const { return m_pci_bdf; }
 
     // VBIOS data accessors
     const uint8_t* vbios_data() const { return m_vbios; }
@@ -146,10 +150,14 @@ private:
     static const char* output_type_name(dcb_output_type type);
     static const char* connector_type_name(dcb_connector_type type);
 
-    // BAR mappings
+    // BAR mappings (VA for MMIO access, phys for GSP-RM RPC payloads)
     uintptr_t m_bar0_va;
     uintptr_t m_bar1_va;
     uint64_t  m_bar1_size;
+    uint64_t  m_bar0_phys;
+    uint64_t  m_bar1_phys;
+    uint64_t  m_bar3_phys;
+    uint32_t  m_pci_bdf;
 
     // Chip identification
     uint32_t   m_boot0;

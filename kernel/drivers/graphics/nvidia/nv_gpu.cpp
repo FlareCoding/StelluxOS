@@ -38,6 +38,10 @@ nv_gpu::nv_gpu(pci::device* dev)
     , m_bar0_va(0)
     , m_bar1_va(0)
     , m_bar1_size(0)
+    , m_bar0_phys(0)
+    , m_bar1_phys(0)
+    , m_bar3_phys(0)
+    , m_pci_bdf(0)
     , m_boot0(0)
     , m_chipset(0)
     , m_chiprev(0)
@@ -261,8 +265,18 @@ int32_t nv_gpu::map_bars() {
     }
 
     const pci::bar& bar0 = m_dev->get_bar(0);
+    m_bar0_phys = bar0.phys;
     log::info("nvidia: BAR0 mapped: phys=0x%lx size=0x%lx va=0x%lx (MMIO registers)",
               bar0.phys, bar0.size, m_bar0_va);
+
+    // Cache BAR physical addresses and PCI BDF for GSP-RM RPCs (accessed from user mode)
+    const pci::bar& bar1_info = m_dev->get_bar(1);
+    m_bar1_phys = bar1_info.phys;
+    const pci::bar& bar3_info = m_dev->get_bar(3);
+    m_bar3_phys = bar3_info.phys;
+    m_pci_bdf = (static_cast<uint32_t>(m_dev->bus()) << 8) |
+                (static_cast<uint32_t>(m_dev->slot()) << 3) |
+                m_dev->func();
 
     // Map BAR1 — VRAM aperture (write-combining for framebuffer access)
     const pci::bar& bar1 = m_dev->get_bar(1);

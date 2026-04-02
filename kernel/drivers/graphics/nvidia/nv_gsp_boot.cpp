@@ -1050,10 +1050,9 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
             rpc->sequence = 0;
 
             uint8_t* payload = entry + sizeof(gsp_msg_element) + sizeof(rpc_header);
-            const pci::bar& bar0 = gpu->dev().get_bar(0);
-            const pci::bar& bar1 = gpu->dev().get_bar(1);
-            const pci::bar& bar3 = gpu->dev().get_bar(3);
 
+            // Use cached BAR physical addresses (m_dev is in kernel memory,
+            // can't be dereferenced from user mode)
             auto wr64 = [&](uint32_t off, uint64_t val) {
                 string::memcpy(payload + off, &val, 8);
             };
@@ -1061,13 +1060,10 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
                 string::memcpy(payload + off, &val, 4);
             };
 
-            wr64(0x00, bar0.phys);                    // gpuPhysAddr
-            wr64(0x08, bar1.phys);                    // gpuPhysFbAddr
-            wr64(0x10, bar3.phys);                    // gpuPhysInstAddr
-            uint64_t bdf = (static_cast<uint64_t>(gpu->dev().bus()) << 8) |
-                           (static_cast<uint64_t>(gpu->dev().slot()) << 3) |
-                           gpu->dev().func();
-            wr64(0x18, bdf);                          // nvDomainBusDeviceFunc
+            wr64(0x00, gpu->bar0_phys());             // gpuPhysAddr
+            wr64(0x08, gpu->bar1_phys());             // gpuPhysFbAddr
+            wr64(0x10, gpu->bar3_phys());             // gpuPhysInstAddr
+            wr64(0x18, static_cast<uint64_t>(gpu->pci_bdf())); // nvDomainBusDeviceFunc
             wr64(0x38, 0x800000000000ULL);            // maxUserVa (x86_64 TASK_SIZE)
             wr32(0x40, 0x088000);                     // pciConfigMirrorBase
             wr32(0x44, 0x001000);                     // pciConfigMirrorSize
@@ -1076,8 +1072,8 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
 
             log::info("nvidia: gsp: queued SET_SYSTEM_INFO (fn=%u, payload=%u) at cmdq slot %u",
                       NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO, GSP_SYSTEM_INFO_SIZE, state.cmdq_seq - 1);
-            log::info("nvidia: gsp:   BAR0=0x%lx BAR1=0x%lx BAR3=0x%lx BDF=0x%lx",
-                      bar0.phys, bar1.phys, bar3.phys, bdf);
+            log::info("nvidia: gsp:   BAR0=0x%lx BAR1=0x%lx BAR3=0x%lx BDF=0x%x",
+                      gpu->bar0_phys(), gpu->bar1_phys(), gpu->bar3_phys(), gpu->pci_bdf());
         }
 
         // ================================================================
@@ -1102,49 +1098,48 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
             rpc_header* rpc = reinterpret_cast<rpc_header*>(entry + sizeof(gsp_msg_element));
             uint8_t* payload = entry + sizeof(gsp_msg_element) + sizeof(rpc_header);
 
-            static const char* reg_keys[] = {
-                "RMSecBusResetEnable",
-                "RMForcePcieConfigSave",
-                "RMDevidCheckIgnore",
-            };
-            static const uint32_t reg_vals[] = { 1, 1, 1 };
             constexpr uint32_t NUM_REG = 3;
             constexpr uint32_t ENTRY_SIZE = 13; // packed: u32+u8+u32+u32
 
             uint32_t header_size = 8;
             uint32_t entries_size = NUM_REG * ENTRY_SIZE;
-            uint32_t str_offset = header_size + entries_size;
+            uint32_t str_base = header_size + entries_size; // 8 + 39 = 47
 
-            // Compute total strings size
-            uint32_t total_str_size = 0;
-            for (uint32_t i = 0; i < NUM_REG; i++) {
-                uint32_t klen = 0;
-                while (reg_keys[i][klen]) klen++;
-                total_str_size += klen + 1;
-            }
-            uint32_t reg_payload_size = str_offset + total_str_size;
+            // String literals are in kernel .rodata — need RUN_ELEVATED to read them.
+            // Writes go to DMA buffer (PAGE_USER), safe from elevated mode.
+            uint32_t str0_off = str_base;
+            uint32_t str1_off = str0_off + 20;
+            uint32_t str2_off = str1_off + 22;
+            uint32_t reg_payload_size = str2_off + 19;
 
-            // Write table header
+            RUN_ELEVATED({
+                auto write_str = [&](uint32_t off, const char* s) {
+                    for (uint32_t j = 0; s[j]; j++) payload[off + j] = static_cast<uint8_t>(s[j]);
+                };
+                write_str(str0_off, "RMSecBusResetEnable");
+                write_str(str1_off, "RMForcePcieConfigSave");
+                write_str(str2_off, "RMDevidCheckIgnore");
+            });
+
             auto wr32p = [&](uint32_t off, uint32_t val) {
                 string::memcpy(payload + off, &val, 4);
             };
-            wr32p(0x00, reg_payload_size); // size = total payload
-            wr32p(0x04, NUM_REG);          // numEntries
 
-            // Write entries and strings
-            uint32_t cur_str = str_offset;
-            for (uint32_t i = 0; i < NUM_REG; i++) {
-                uint32_t e = header_size + i * ENTRY_SIZE;
-                wr32p(e + 0, cur_str);     // nameOffset
-                payload[e + 4] = 1;        // type = DWORD
-                wr32p(e + 5, reg_vals[i]); // data
-                wr32p(e + 9, 4);           // length = 4 (DWORD)
+            // Table header
+            wr32p(0x00, reg_payload_size);
+            wr32p(0x04, NUM_REG);
 
-                uint32_t klen = 0;
-                while (reg_keys[i][klen]) { payload[cur_str + klen] = reg_keys[i][klen]; klen++; }
-                payload[cur_str + klen] = 0;
-                cur_str += klen + 1;
-            }
+            // Entry 0: RMSecBusResetEnable = 1
+            uint32_t e0 = header_size;
+            wr32p(e0 + 0, str0_off); payload[e0 + 4] = 1; wr32p(e0 + 5, 1); wr32p(e0 + 9, 4);
+
+            // Entry 1: RMForcePcieConfigSave = 1
+            uint32_t e1 = header_size + ENTRY_SIZE;
+            wr32p(e1 + 0, str1_off); payload[e1 + 4] = 1; wr32p(e1 + 5, 1); wr32p(e1 + 9, 4);
+
+            // Entry 2: RMDevidCheckIgnore = 1
+            uint32_t e2 = header_size + 2 * ENTRY_SIZE;
+            wr32p(e2 + 0, str2_off); payload[e2 + 4] = 1; wr32p(e2 + 5, 1); wr32p(e2 + 9, 4);
 
             rpc->header_version = RPC_HDR_VERSION;
             rpc->signature = RPC_SIGNATURE;
