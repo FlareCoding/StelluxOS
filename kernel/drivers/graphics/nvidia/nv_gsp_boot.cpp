@@ -661,7 +661,54 @@ int32_t gsp_run_booter(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
 }
 
 // ============================================================================
-// 7. Wait for INIT_DONE
+// 7. Upstream-faithful GA102 reset-to-RISC-V transition
+// ============================================================================
+
+static int32_t gsp_reset_riscv_upstream_ga102(falcon& gsp_flcn) {
+    log::info("nvidia: gsp: step 10: upstream GA102 reset + RISC-V select");
+
+    // Match ga102_flcn_reset_prep(): gratuitous read, then wait briefly for
+    // RESET_READY. Ampere frequently never asserts it, so timeout is not fatal.
+    (void)gsp_flcn.rd32(reg::FALCON_HWCFG2);
+
+    uint64_t prep_deadline = clock::now_ns() + 150000; // 150 us
+    while (!(gsp_flcn.rd32(reg::FALCON_HWCFG2) & reg::FALCON_HWCFG2_RESET_READY)) {
+        if (clock::now_ns() >= prep_deadline) {
+            log::info("nvidia: gsp: GSP reset_ready not asserted (normal on Ampere)");
+            break;
+        }
+        delay::us(1);
+    }
+
+    // Match gp102_flcn_reset_eng(): assert + deassert engine reset only.
+    gsp_flcn.mask32(reg::FALCON_ENGINE, 0x00000001, 0x00000001);
+    delay::us(10);
+    gsp_flcn.mask32(reg::FALCON_ENGINE, 0x00000001, 0x00000000);
+
+    // Match ga102_flcn_reset_wait_mem_scrubbing(): dummy mailbox RMW barrier,
+    // then wait for HWCFG2.MEM_SCRUB to clear.
+    gsp_flcn.mask32(reg::FALCON_MAILBOX0, 0, 0);
+
+    uint64_t scrub_deadline = clock::now_ns() + 20000000ULL; // 20 ms
+    while (gsp_flcn.rd32(reg::FALCON_HWCFG2) & reg::FALCON_HWCFG2_MEM_SCRUB) {
+        if (clock::now_ns() >= scrub_deadline) {
+            log::error("nvidia: gsp: GSP memory scrubbing timeout (HWCFG2=0x%08x)",
+                       gsp_flcn.rd32(reg::FALCON_HWCFG2));
+            return ERR_TIMEOUT;
+        }
+        delay::us(10);
+    }
+
+    // Match ga102_gsp_reset(): set core_select=RISC-V, valid=1, br_fetch=1.
+    gsp_flcn.mask32(reg::FALCON_RISCV_BCR_CTRL, 0x00000111, 0x00000111);
+    delay::us(100);
+    log::info("nvidia: gsp: GSP RISCV_BCR_CTRL updated with mask 0x111");
+
+    return OK;
+}
+
+// ============================================================================
+// 8. Wait for INIT_DONE
 // ============================================================================
 
 // Dump GSP log buffers (LOGINIT, LOGRM) to serial for debugging.
@@ -1171,45 +1218,12 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
         }
     }
 
-    // Step 10: PMC-level engine reset + switch to RISC-V mode.
-    // CRITICAL: After FWSEC runs on the GSP falcon in Heavy-Secure mode,
-    // residual engine state (DMA controller, security state, FBIF config)
-    // persists. A falcon-local ENGINE register reset (0x3C0) only resets the
-    // microcontroller core. Nouveau uses PMC-level engine reset via register
-    // 0x600 (ga100_mc_device_disable/enable) which resets the ENTIRE engine.
-    // Without this, the RISC-V core boots into corrupted state and halts at
-    // the firmware's panic handler (PC=0xFF00).
-    // Reference: nouveau gp102_flcn_reset_eng() → nvkm_mc_device_reset()
-    log::info("nvidia: gsp: step 10: PMC engine cycle + reset GSP to RISC-V mode");
-    {
-        uint32_t pmc_cur = gpu->reg_rd32(reg::PMC_ENABLE);
-        log::info("nvidia: gsp: PMC_ENABLE (0x600) before cycle: 0x%08x", pmc_cur);
-
-        // Disable all GPU engines via PMC (clears all residual FWSEC state)
-        gpu->reg_wr32(reg::PMC_ENABLE, 0x00000000);
-        gpu->reg_rd32(reg::PMC_ENABLE); // flush
-        gpu->reg_rd32(reg::PMC_ENABLE); // double flush (per nouveau)
-        delay::us(20);
-
-        // Re-enable all engines
-        gpu->reg_wr32(reg::PMC_ENABLE, pmc_cur);
-        gpu->reg_rd32(reg::PMC_ENABLE);
-        gpu->reg_rd32(reg::PMC_ENABLE);
-        delay::us(20);
-
-        log::info("nvidia: gsp: PMC_ENABLE (0x600) after cycle: 0x%08x", gpu->reg_rd32(reg::PMC_ENABLE));
-    }
-
-    // Now do the falcon-level reset + RISC-V mode switch
-    rc = gsp_flcn.reset();
+    // Step 10: Use the narrow upstream GA102 reset-to-RISC-V sequence.
+    rc = gsp_reset_riscv_upstream_ga102(gsp_flcn);
     if (rc != OK) {
         log::error("nvidia: gsp: GSP reset failed: %d", rc);
         return rc;
     }
-    // Set RISC-V mode: core_select=RISC-V, valid=1, br_fetch=1
-    gsp_flcn.wr32(reg::FALCON_RISCV_BCR_CTRL, 0x00000111);
-    delay::us(100);
-    log::info("nvidia: gsp: GSP RISCV_BCR_CTRL set to 0x111");
 
     // Step 10: Write LibOS address to GSP mailboxes
     gsp_flcn.set_mailbox0(static_cast<uint32_t>(state.libos_dma.phys & 0xFFFFFFFF));
