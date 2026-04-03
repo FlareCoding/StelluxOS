@@ -1,0 +1,100 @@
+{
+  "name": "stellux-dynpriv",
+  "displayName": "Stellux Dynamic Privilege",
+  "description": "Visualize privileged kernel code regions in Stellux 3.0",
+  "version": "0.1.0",
+  "publisher": "stellux",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization"
+  ],
+  "activationEvents": [
+    "onLanguage:cpp",
+    "onLanguage:c"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "stellux.dynpriv.toggle",
+        "title": "Toggle Dynamic Privilege View",
+        "category": "Stellux"
+      }
+    ],
+    "colors": [
+      {
+        "id": "dynpriv.borderColor",
+        "description": "Privileged region border color",
+        "defaults": {
+          "dark": "#F59E0B",
+          "light": "#D97706"
+        }
+      },
+      {
+        "id": "dynpriv.badgeColor",
+        "description": "File tree badge color for files containing privileged code",
+        "defaults": {
+          "dark": "#F59E0B",
+          "light": "#D97706"
+        }
+      }
+    ],
+    "configuration": {
+      "title": "Stellux Dynamic Privilege",
+      "properties": {
+        "stellux.dynpriv.defaultMode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "subtle",
+            "enhanced"
+          ],
+          "default": "subtle",
+          "description": "Default visualization mode on startup"
+        },
+        "stellux.dynpriv.borderColor": {
+          "type": "string",
+          "default": "#b8860b",
+          "description": "Left border color for privileged regions (hex color, use color picker)"
+        },
+        "stellux.dynpriv.borderWidth": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Left border width in pixels"
+        },
+        "stellux.dynpriv.markerHighlightColor": {
+          "type": "string",
+          "default": "rgba(184, 134, 11, 0.08)",
+          "description": "Background highlight on __PRIVILEGED_* marker lines (rgba or hex)"
+        },
+        "stellux.dynpriv.tintColor": {
+          "type": "string",
+          "default": "rgba(184, 134, 11, 0.04)",
+          "description": "Background tint for Enhanced mode (rgba or hex)"
+        },
+        "stellux.dynpriv.showOverviewRuler": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show colored marks in the right-side scrollbar for privileged regions"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "node esbuild.js && vsce package --allow-missing-repository",
+    "repackage": "node esbuild.js && vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.7.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}

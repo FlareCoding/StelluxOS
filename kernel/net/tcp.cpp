@@ -1,0 +1,1526 @@
+#include "net/tcp.h"
+#include "net/inet_socket.h"
+#include "net/ipv4.h"
+#include "net/route.h"
+#include "net/byteorder.h"
+#include "net/checksum.h"
+#include "net/net.h"
+#include "common/logging.h"
+#include "common/string.h"
+#include "common/ring_buffer.h"
+#include "mm/heap.h"
+#include "sync/spinlock.h"
+#include "sync/poll.h"
+#include "fs/fstypes.h"
+#include "sched/sched.h"
+#include "sched/task.h"
+#include "dynpriv/dynpriv.h"
+
+namespace net {
+
+// TCP port registry: global linked list of all TCP sockets that have
+// a local port assigned (via bind). Used by tcp_recv to find the
+// matching socket for incoming segments.
+__PRIVILEGED_DATA static tcp_socket* g_tcp_sock_list = nullptr;
+__PRIVILEGED_DATA static sync::spinlock g_tcp_sock_lock = sync::SPINLOCK_INIT;
+
+// Simple ISN generator. A real implementation uses a clock-based scheme
+// for security (RFC 6528), but a monotonic counter is correct for now.
+__PRIVILEGED_DATA static volatile uint32_t g_tcp_isn_counter = 1000;
+
+constexpr size_t TCP_MSS = ETH_MTU - sizeof(ipv4_header) - sizeof(tcp_header);
+
+static uint32_t tcp_generate_isn() {
+    return __atomic_fetch_add(&g_tcp_isn_counter, 64000, __ATOMIC_RELAXED);
+}
+
+constexpr uint16_t TCP_DEFAULT_WINDOW = 8192;
+constexpr uint32_t TCP_DEFAULT_BACKLOG = 16;
+constexpr uint32_t TCP_MAX_BACKLOG = 128;
+constexpr size_t TCP_RX_BUF_CAPACITY = 16384;
+constexpr uint16_t TCP_PORT_EPHEMERAL_MIN = 49152;
+constexpr uint16_t TCP_PORT_EPHEMERAL_MAX = 65535;
+
+__PRIVILEGED_DATA static volatile uint32_t g_tcp_ephemeral_next = TCP_PORT_EPHEMERAL_MIN;
+
+static uint16_t tcp_alloc_ephemeral_port() {
+    uint32_t port = __atomic_fetch_add(&g_tcp_ephemeral_next, 1, __ATOMIC_RELAXED);
+    uint32_t range = TCP_PORT_EPHEMERAL_MAX - TCP_PORT_EPHEMERAL_MIN + 1;
+    return static_cast<uint16_t>(
+        TCP_PORT_EPHEMERAL_MIN + (port - TCP_PORT_EPHEMERAL_MIN) % range);
+}
+
+// Build a TCP segment and send it.
+// deferred=true: use queue_deferred_tx (safe from RX/IRQ context).
+// deferred=false: use ipv4_send directly (syscall context only).
+__PRIVILEGED_CODE static int32_t tcp_send(
+    uint32_t src_ip, uint16_t src_port,
+    uint32_t dst_ip, uint16_t dst_port,
+    uint32_t seq, uint32_t ack_num,
+    uint8_t flags, uint16_t window,
+    const uint8_t* data, size_t data_len,
+    bool deferred
+) {
+    size_t seg_len = sizeof(tcp_header) + data_len;
+    auto* buf = static_cast<uint8_t*>(heap::kzalloc(seg_len));
+    if (!buf) {
+        return ERR_NOMEM;
+    }
+
+    auto* hdr = reinterpret_cast<tcp_header*>(buf);
+    hdr->src_port = htons(src_port);
+    hdr->dst_port = htons(dst_port);
+    hdr->seq = htonl(seq);
+    hdr->ack = htonl(ack_num);
+    hdr->data_off = (5 << 4); // 5 * 4 = 20 bytes, no options
+    hdr->flags = flags;
+    hdr->window = htons(window);
+    hdr->checksum = 0;
+    hdr->urgent_ptr = 0;
+
+    if (data && data_len > 0) {
+        string::memcpy(buf + sizeof(tcp_header), data, data_len);
+    }
+
+    uint16_t csum = tcp_checksum(htonl(src_ip), htonl(dst_ip), buf, seg_len);
+    hdr->checksum = (csum == 0) ? static_cast<uint16_t>(0xFFFF) : csum;
+
+    netif* iface = get_default_netif();
+    int32_t rc;
+    if (deferred) {
+        queue_deferred_tx(iface, dst_ip, IPV4_PROTO_TCP, buf, seg_len);
+        rc = OK;
+    } else {
+        rc = ipv4_send(iface, dst_ip, IPV4_PROTO_TCP, buf, seg_len, src_ip);
+    }
+    heap::kfree(buf);
+    return rc;
+}
+
+// Convenience wrappers with clear intent.
+__PRIVILEGED_CODE static int32_t tcp_send_segment(
+    uint32_t src_ip, uint16_t src_port,
+    uint32_t dst_ip, uint16_t dst_port,
+    uint32_t seq, uint32_t ack_num,
+    uint8_t flags, uint16_t window,
+    const uint8_t* data, size_t data_len
+) {
+    return tcp_send(src_ip, src_port, dst_ip, dst_port,
+                    seq, ack_num, flags, window, data, data_len, true);
+}
+
+__PRIVILEGED_CODE static int32_t tcp_send_data(
+    uint32_t src_ip, uint16_t src_port,
+    uint32_t dst_ip, uint16_t dst_port,
+    uint32_t seq, uint32_t ack_num,
+    uint8_t flags, uint16_t window,
+    const uint8_t* data, size_t data_len
+) {
+    return tcp_send(src_ip, src_port, dst_ip, dst_port,
+                    seq, ack_num, flags, window, data, data_len, false);
+}
+
+__PRIVILEGED_CODE static void tcp_sock_release(tcp_socket* sock) {
+    if (!sock) {
+        return;
+    }
+    if (sock->release()) {
+        tcp_socket::ref_destroy(sock);
+    }
+}
+
+static void tcp_destroy_socket(tcp_socket* sock) {
+    if (!sock) {
+        return;
+    }
+    if (sock->local_port != 0) {
+        tcp_unregister_socket(sock);
+    }
+    tcp_sock_release(sock);
+}
+
+__PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
+    if (!obj || !obj->impl) {
+        return;
+    }
+
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
+    // Drain accept queue if this was a LISTEN socket
+    if (sock->state == tcp_state::LISTEN) {
+        constexpr uint32_t MAX_DRAIN = 256;
+        tcp_pending_conn* drain_list[MAX_DRAIN];
+        uint32_t drain_count = 0;
+        tcp_socket* destroy_list = nullptr;
+
+        sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+        if (sock->state != tcp_state::LISTEN) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            goto cleanup;
+        }
+        sock->state = tcp_state::CLOSED;
+
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(g_tcp_sock_lock);
+
+            while (tcp_pending_conn* pc = sock->accept_queue.pop_front()) {
+                if (drain_count < MAX_DRAIN) {
+                    drain_list[drain_count++] = pc;
+                }
+            }
+
+            tcp_socket** pp = &g_tcp_sock_list;
+            while (*pp) {
+                tcp_socket* child = *pp;
+                if (child->parent == sock) {
+                    if (child->state == tcp_state::SYN_RECEIVED) {
+                        *pp = child->next;
+                        child->next = destroy_list;
+                        destroy_list = child;
+                        child->parent = nullptr;
+                        continue;
+                    }
+                    child->parent = nullptr;
+                }
+                pp = &(*pp)->next;
+            }
+
+            // Unlink listener itself from the global list
+            pp = &g_tcp_sock_list;
+            while (*pp) {
+                if (*pp == sock) {
+                    *pp = sock->next;
+                    sock->next = nullptr;
+                    break;
+                }
+                pp = &(*pp)->next;
+            }
+        });
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+
+        sync::wake_all(sock->accept_wq);
+
+        for (uint32_t i = 0; i < drain_count; i++) {
+            if (drain_list[i]->conn_obj) {
+                resource::resource_release(drain_list[i]->conn_obj);
+            }
+            heap::kfree(drain_list[i]);
+        }
+
+        while (destroy_list) {
+            tcp_socket* child = destroy_list;
+            destroy_list = child->next;
+            child->next = nullptr;
+            tcp_sock_release(child);
+        }
+
+        tcp_sock_release(sock);
+        obj->impl = nullptr;
+        return;
+    }
+
+    // For ESTABLISHED or CLOSE_WAIT: send FIN and let the socket linger
+    // in the port registry until the FIN handshake completes.
+    if (sock->state == tcp_state::ESTABLISHED
+        || sock->state == tcp_state::CLOSE_WAIT) {
+
+        sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+        // Re-check under lock
+        tcp_state cur = sock->state;
+        if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            goto cleanup;
+        }
+
+        uint32_t fin_seq = sock->snd_nxt;
+        sock->snd_nxt++;
+
+        tcp_state next_state = (cur == tcp_state::ESTABLISHED)
+            ? tcp_state::FIN_WAIT_1
+            : tcp_state::LAST_ACK;
+        sock->state = next_state;
+
+        uint32_t l_addr = sock->local_addr;
+        uint16_t l_port = sock->local_port;
+        uint32_t r_addr = sock->remote_addr;
+        uint16_t r_port = sock->remote_port;
+        uint32_t r_nxt  = sock->rcv_nxt;
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+
+        obj->impl = nullptr;
+
+        tcp_send_data(l_addr, l_port, r_addr, r_port,
+                      fin_seq, r_nxt,
+                      TCP_FIN | TCP_ACK, TCP_DEFAULT_WINDOW,
+                      nullptr, 0);
+        return;
+    }
+
+    // Post-shutdown states: fd is being closed but FIN handshake is in progress.
+    // Just detach the fd and release the user-held ref that shutdown() took.
+    // The creation ref keeps the socket alive until tcp_recv finishes teardown.
+    if (sock->state == tcp_state::FIN_WAIT_1 ||
+        sock->state == tcp_state::FIN_WAIT_2 ||
+        sock->state == tcp_state::CLOSING ||
+        sock->state == tcp_state::LAST_ACK) {
+        obj->impl = nullptr;
+        tcp_sock_release(sock);
+        return;
+    }
+
+    // SYN_SENT: wake blocked connect() before cleanup
+    if (sock->state == tcp_state::SYN_SENT) {
+        sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+        sock->state = tcp_state::CLOSED;
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        sync::wake_one(sock->accept_wq);
+    }
+
+cleanup:
+    // All other states (CLOSED, SYN_RECEIVED, etc.): immediate cleanup
+    if (sock->local_port != 0) {
+        tcp_unregister_socket(sock);
+    }
+    tcp_sock_release(sock);
+    obj->impl = nullptr;
+}
+
+__PRIVILEGED_CODE static int32_t tcp_bind(
+    resource::resource_object* obj, const void* kaddr, size_t addrlen
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
+    if (!kaddr || addrlen < sizeof(kernel_sockaddr_in)) {
+        return resource::ERR_INVAL;
+    }
+    const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
+    if (addr->sin_family != AF_INET_VAL) {
+        return resource::ERR_INVAL;
+    }
+
+    uint32_t bind_addr = ntohl(addr->sin_addr);
+    uint16_t bind_port = ntohs(addr->sin_port);
+
+    if (bind_addr != 0 && !is_local_ip(bind_addr)) {
+        return resource::ERR_INVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+    if (sock->local_port != 0) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_INVAL;
+    }
+
+    if (sock->state != tcp_state::CLOSED) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_INVAL;
+    }
+
+    sock->local_addr = bind_addr;
+    sock->local_port = bind_port;
+
+    if (!tcp_try_register(sock)) {
+        sock->local_addr = 0;
+        sock->local_port = 0;
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_ADDRINUSE;
+    }
+
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t tcp_listen(
+    resource::resource_object* obj, int32_t backlog
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+    if (sock->state != tcp_state::CLOSED || sock->local_port == 0) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_INVAL;
+    }
+
+    uint32_t bl = (backlog <= 0) ? TCP_DEFAULT_BACKLOG
+                                 : static_cast<uint32_t>(backlog);
+    if (bl > TCP_MAX_BACKLOG) {
+        bl = TCP_MAX_BACKLOG;
+    }
+
+    sock->backlog = bl;
+    sock->pending_count = 0;
+    sock->accept_queue.init();
+    sock->accept_wq.init();
+    sock->state = tcp_state::LISTEN;
+
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    log::info("tcp: listening on port %u (backlog %u)", sock->local_port, bl);
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t tcp_accept(
+    resource::resource_object* obj, resource::resource_object** new_obj,
+    void* kaddr, size_t* addrlen, bool nonblock
+) {
+    if (!obj || !obj->impl || !new_obj) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+    if (sock->state != tcp_state::LISTEN) {
+        return resource::ERR_INVAL;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return resource::ERR_IO;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+    if (sock->accept_queue.empty()) {
+        if (nonblock) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            return resource::ERR_AGAIN;
+        }
+    }
+    while (sock->accept_queue.empty()
+           && sock->state == tcp_state::LISTEN
+           && !__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+        irq = sync::wait(sock->accept_wq, sock->lock, irq);
+    }
+    if (__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_INTR;
+    }
+
+    tcp_pending_conn* pc = nullptr;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_tcp_sock_lock);
+        pc = sock->accept_queue.pop_front();
+    });
+
+    if (!pc) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return resource::ERR_INVAL;
+    }
+    sock->pending_count--;
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    *new_obj = pc->conn_obj;
+    auto* child = static_cast<tcp_socket*>(pc->conn_obj->impl);
+    heap::kfree(pc);
+
+    // Fill in peer address for the accept() syscall
+    if (kaddr && addrlen && *addrlen >= sizeof(kernel_sockaddr_in)) {
+        auto* peer = static_cast<kernel_sockaddr_in*>(kaddr);
+        string::memset(peer, 0, sizeof(*peer));
+        peer->sin_family = AF_INET_VAL;
+        peer->sin_port = htons(child->remote_port);
+        peer->sin_addr = htonl(child->remote_addr);
+        *addrlen = sizeof(kernel_sockaddr_in);
+    }
+
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static ssize_t tcp_read(
+    resource::resource_object* obj, void* kdst, size_t count, uint32_t flags
+) {
+    if (!obj || !obj->impl || !kdst) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+    tcp_state cur = sock->state;
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT &&
+        cur != tcp_state::FIN_WAIT_1 && cur != tcp_state::FIN_WAIT_2) {
+        return resource::ERR_NOTCONN;
+    }
+
+    if (!sock->rx_buf) {
+        return resource::ERR_IO;
+    }
+
+    bool nonblock = (flags & fs::O_NONBLOCK) != 0;
+    return ring_buffer_read(sock->rx_buf, static_cast<uint8_t*>(kdst), count, nonblock);
+}
+
+__PRIVILEGED_CODE static ssize_t tcp_write(
+    resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags
+) {
+    (void)flags;
+    if (!obj || !obj->impl || !ksrc) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+    const auto* src = static_cast<const uint8_t*>(ksrc);
+    size_t remaining = count;
+
+    while (remaining > 0) {
+        size_t chunk = remaining < TCP_MSS ? remaining : TCP_MSS;
+
+        sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+        if (sock->shut_wr) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            return (count > remaining)
+                ? static_cast<ssize_t>(count - remaining)
+                : resource::ERR_PIPE;
+        }
+        tcp_state cur = sock->state;
+        if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            return (count > remaining)
+                ? static_cast<ssize_t>(count - remaining)
+                : resource::ERR_NOTCONN;
+        }
+
+        // Respect peer's advertised receive window. snd_wnd is always set from
+        // the handshake before ESTABLISHED, so 0 here is a real zero window.
+        uint32_t in_flight = sock->snd_nxt - sock->snd_una;
+        uint32_t wnd = sock->snd_wnd;
+        if (wnd == 0 || in_flight >= wnd) {
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+            if (count > remaining) {
+                return static_cast<ssize_t>(count - remaining);
+            }
+            return resource::ERR_AGAIN;
+        }
+        if (chunk > wnd - in_flight) {
+            chunk = wnd - in_flight;
+        }
+
+        uint32_t seq = sock->snd_nxt;
+        sock->snd_nxt += static_cast<uint32_t>(chunk);
+        uint32_t ack_val = sock->rcv_nxt;
+        uint32_t src_ip = sock->local_addr;
+        uint16_t src_port = sock->local_port;
+        uint32_t dst_ip = sock->remote_addr;
+        uint16_t dst_port = sock->remote_port;
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+
+        uint8_t seg_flags = TCP_ACK;
+        if (chunk == remaining) {
+            seg_flags |= TCP_PSH;
+        }
+
+        int32_t rc = tcp_send_data(
+            src_ip, src_port, dst_ip, dst_port,
+            seq, ack_val, seg_flags, TCP_DEFAULT_WINDOW,
+            src, chunk);
+
+        if (rc != OK) {
+            sync::irq_state irq2 = sync::spin_lock_irqsave(sock->lock);
+            sock->snd_nxt -= static_cast<uint32_t>(chunk);
+            sync::spin_unlock_irqrestore(sock->lock, irq2);
+            return (count > remaining)
+                ? static_cast<ssize_t>(count - remaining)
+                : resource::ERR_IO;
+        }
+
+        src += chunk;
+        remaining -= chunk;
+    }
+
+    return static_cast<ssize_t>(count);
+}
+
+__PRIVILEGED_CODE static int32_t tcp_connect(
+    resource::resource_object* obj, const void* kaddr, size_t addrlen
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
+    // State validation
+    if (sock->state == tcp_state::ESTABLISHED) {
+        return resource::ERR_ISCONN;
+    }
+    if (sock->state != tcp_state::CLOSED) {
+        return resource::ERR_INVAL;
+    }
+
+    if (!kaddr || addrlen < sizeof(kernel_sockaddr_in)) {
+        return resource::ERR_INVAL;
+    }
+    const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
+    if (addr->sin_family != AF_INET_VAL) {
+        return resource::ERR_INVAL;
+    }
+
+    uint32_t dst_ip = ntohl(addr->sin_addr);
+    uint16_t dst_port = ntohs(addr->sin_port);
+    if (dst_port == 0) {
+        return resource::ERR_INVAL;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return resource::ERR_IO;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+    bool already_registered = (sock->local_port != 0);
+
+    if (!already_registered) {
+        sock->local_port = tcp_alloc_ephemeral_port();
+    }
+
+    // Fill in remote endpoint
+    sock->remote_addr = dst_ip;
+    sock->remote_port = dst_port;
+
+    // Resolve source IP before registration so tcp_recv can't
+    // observe a half-initialized local_addr.
+    if (sock->local_addr == 0) {
+        route_result rt;
+        if (route_lookup(dst_ip, &rt) == OK) {
+            if (rt.type == route_type::LOCAL) {
+                sock->local_addr = dst_ip;
+            } else if (rt.iface && (rt.iface->flags & NETIF_LOOPBACK)) {
+                sock->local_addr = rt.iface->ipv4_addr;
+            } else {
+                netif* def = get_default_netif();
+                if (def) {
+                    sock->local_addr = def->ipv4_addr;
+                }
+            }
+        } else {
+            netif* def = get_default_netif();
+            if (def) {
+                sock->local_addr = def->ipv4_addr;
+            }
+        }
+    }
+
+    uint32_t isn = tcp_generate_isn();
+    sock->snd_una = isn;
+    sock->snd_nxt = isn + 1;
+
+    sock->state = tcp_state::SYN_SENT;
+    sock->accept_wq.init();
+
+    if (!already_registered) {
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(g_tcp_sock_lock);
+            sock->next = g_tcp_sock_list;
+            g_tcp_sock_list = sock;
+        });
+    }
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    int32_t send_rc = tcp_send_data(
+        sock->local_addr, sock->local_port,
+        dst_ip, dst_port,
+        isn, 0,
+        TCP_SYN, TCP_DEFAULT_WINDOW,
+        nullptr, 0);
+
+    if (send_rc != OK) {
+        tcp_unregister_socket(sock);
+        sock->state = tcp_state::CLOSED;
+        sock->remote_addr = 0;
+        sock->remote_port = 0;
+        return resource::ERR_IO;
+    }
+
+    // Block until state changes from SYN_SENT
+    irq = sync::spin_lock_irqsave(sock->lock);
+    while (sock->state == tcp_state::SYN_SENT
+           && !__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+        irq = sync::wait(sock->accept_wq, sock->lock, irq);
+    }
+
+    tcp_state final_state = sock->state;
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    if (__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+        return resource::ERR_INTR;
+    }
+    if (final_state == tcp_state::ESTABLISHED) {
+        return resource::OK;
+    }
+    return resource::ERR_CONNREFUSED;
+}
+
+__PRIVILEGED_CODE static int32_t tcp_setsockopt(
+    resource::resource_object* obj, int32_t level,
+    int32_t optname, const void* optval, size_t optlen
+) {
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
+    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
+    if (optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    int32_t val = 0;
+    string::memcpy(&val, optval, sizeof(val));
+
+    sync::irq_lock_guard guard(sock->lock);
+    if (val)
+        sock->so_options |= static_cast<uint32_t>(SO_REUSEADDR);
+    else
+        sock->so_options &= ~static_cast<uint32_t>(SO_REUSEADDR);
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t tcp_getsockopt(
+    resource::resource_object* obj, int32_t level,
+    int32_t optname, void* optval, size_t* optlen
+) {
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
+    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
+    if (!optlen || *optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    sync::irq_lock_guard guard(sock->lock);
+    int32_t val = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) ? 1 : 0;
+    string::memcpy(optval, &val, sizeof(val));
+    *optlen = sizeof(val);
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static uint32_t tcp_poll(
+    resource::resource_object* obj, sync::poll_table* pt
+) {
+    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+    tcp_state st = sock->state;
+    bool wr_shut = sock->shut_wr;
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    if (st == tcp_state::ESTABLISHED || st == tcp_state::CLOSE_WAIT) {
+        uint32_t mask = ring_buffer_poll_read(sock->rx_buf, pt);
+        if (!wr_shut) {
+            mask |= sync::POLL_OUT;
+        }
+        if (st == tcp_state::CLOSE_WAIT) {
+            mask |= sync::POLL_HUP;
+        }
+        return mask;
+    }
+
+    if (st == tcp_state::FIN_WAIT_1 || st == tcp_state::FIN_WAIT_2) {
+        uint32_t mask = sock->rx_buf ? ring_buffer_poll_read(sock->rx_buf, pt) : 0;
+        return mask;
+    }
+
+    if (st == tcp_state::CLOSING || st == tcp_state::LAST_ACK) {
+        uint32_t mask = sock->rx_buf ? ring_buffer_poll_read(sock->rx_buf, pt) : 0;
+        mask |= sync::POLL_HUP;
+        return mask;
+    }
+
+    if (st == tcp_state::LISTEN) {
+        if (pt) {
+            sync::poll_subscribe(*pt, sock->accept_wq);
+        }
+        irq = sync::spin_lock_irqsave(sock->lock);
+        uint32_t mask = sock->accept_queue.empty() ? 0 : sync::POLL_IN;
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return mask;
+    }
+
+    if (st == tcp_state::SYN_SENT || st == tcp_state::SYN_RECEIVED) {
+        if (pt) {
+            sync::poll_subscribe(*pt, sock->accept_wq);
+        }
+        return 0;
+    }
+
+    return sync::POLL_HUP;
+}
+
+__PRIVILEGED_CODE static int32_t tcp_shutdown(
+    resource::resource_object* obj, int32_t how
+) {
+    if (!obj || !obj->impl) {
+        return resource::ERR_NOTCONN;
+    }
+    auto* sock = static_cast<tcp_socket*>(obj->impl);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+    uint32_t l_addr = 0, r_addr = 0, fin_seq = 0, r_nxt = 0;
+    uint16_t l_port = 0, r_port = 0;
+    bool send_fin = false;
+
+    if (how == net::SHUT_WR || how == net::SHUT_RDWR) {
+        if (!sock->shut_wr) {
+            tcp_state cur = sock->state;
+            if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                return resource::ERR_NOTCONN;
+            } else {
+                sock->shut_wr = true;
+                fin_seq = sock->snd_nxt;
+                sock->snd_nxt++;
+                sock->state = (cur == tcp_state::ESTABLISHED)
+                    ? tcp_state::FIN_WAIT_1
+                    : tcp_state::LAST_ACK;
+                l_addr = sock->local_addr;
+                l_port = sock->local_port;
+                r_addr = sock->remote_addr;
+                r_port = sock->remote_port;
+                r_nxt  = sock->rcv_nxt;
+                send_fin = true;
+                sock->add_ref();
+            }
+        }
+    }
+
+    if (how == net::SHUT_RD || how == net::SHUT_RDWR) {
+        tcp_state cur = sock->state;
+        if (!sock->shut_rd &&
+            (cur == tcp_state::ESTABLISHED || cur == tcp_state::CLOSE_WAIT ||
+             cur == tcp_state::FIN_WAIT_1 || cur == tcp_state::FIN_WAIT_2 ||
+             cur == tcp_state::CLOSING || cur == tcp_state::LAST_ACK)) {
+            sock->shut_rd = true;
+            if (sock->rx_buf) {
+                ring_buffer_close_write(sock->rx_buf);
+            }
+        }
+    }
+
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    if (send_fin) {
+        tcp_send_data(l_addr, l_port, r_addr, r_port,
+                      fin_seq, r_nxt,
+                      TCP_FIN | TCP_ACK, TCP_DEFAULT_WINDOW,
+                      nullptr, 0);
+    }
+
+    return resource::OK;
+}
+
+const resource::resource_ops g_tcp_ops = {
+    tcp_read,
+    tcp_write,
+    tcp_close,
+    nullptr, // ioctl
+    nullptr, // mmap
+    nullptr, // sendto
+    nullptr, // recvfrom
+    tcp_bind,
+    tcp_listen,
+    tcp_accept,
+    tcp_connect,
+    tcp_setsockopt,
+    tcp_getsockopt,
+    tcp_poll,
+    tcp_shutdown,
+};
+
+// Look up a TCP socket matching an incoming segment.
+// For LISTEN sockets: match on local port (and optionally local addr).
+// For established connections: match on the full 4-tuple.
+// Caller must hold g_tcp_sock_lock. Returns a ref'd pointer or nullptr.
+static tcp_socket* tcp_lookup(uint32_t src_ip, uint16_t src_port,
+                              uint32_t dst_ip, uint16_t dst_port) {
+    tcp_socket* listen_match = nullptr;
+
+    for (tcp_socket* s = g_tcp_sock_list; s; s = s->next) {
+        if (s->local_port != dst_port) continue;
+        if (s->local_addr != 0 && s->local_addr != dst_ip) continue;
+
+        // Exact 4-tuple match (established connections) takes priority
+        if (s->remote_port == src_port && s->remote_addr == src_ip) {
+            if (s->try_add_ref()) {
+                if (listen_match) tcp_sock_release(listen_match);
+                return s;
+            }
+            return listen_match;
+        }
+
+        if (s->state == tcp_state::LISTEN && !listen_match) {
+            if (s->try_add_ref()) {
+                listen_match = s;
+            }
+        }
+    }
+
+    return listen_match;
+}
+
+// Handle a SYN arriving on a LISTEN socket (RFC 9293 Section 3.10.7.2)
+static void tcp_listen_recv_syn(tcp_socket* listener,
+                                uint32_t src_ip, uint16_t src_port,
+                                uint32_t dst_ip, uint16_t dst_port,
+                                uint32_t their_seq) {
+    sync::irq_state irq = sync::spin_lock_irqsave(listener->lock);
+    if (listener->state != tcp_state::LISTEN) {
+        sync::spin_unlock_irqrestore(listener->lock, irq);
+        return;
+    }
+    if (listener->pending_count >= listener->backlog) {
+        sync::spin_unlock_irqrestore(listener->lock, irq);
+        return;
+    }
+    listener->pending_count++;
+    sync::spin_unlock_irqrestore(listener->lock, irq);
+
+    // Create child socket for this connection
+    auto* child = heap::kalloc_new<tcp_socket>();
+    if (!child) {
+        sync::irq_state irq2 = sync::spin_lock_irqsave(listener->lock);
+        listener->pending_count--;
+        sync::spin_unlock_irqrestore(listener->lock, irq2);
+        return;
+    }
+
+    uint32_t our_isn = tcp_generate_isn();
+
+    child->state = tcp_state::SYN_RECEIVED;
+    child->local_addr = dst_ip;
+    child->local_port = dst_port;
+    child->remote_addr = src_ip;
+    child->remote_port = src_port;
+    child->rcv_nxt = their_seq + 1;
+    child->snd_wnd = 0;
+    child->snd_una = our_isn;
+    child->snd_nxt = our_isn + 1;
+    child->rx_buf = nullptr;
+    child->rx_wq.init();
+    child->parent = nullptr;
+    child->backlog = 0;
+    child->pending_count = 0;
+    child->accept_queue.init();
+    child->accept_wq.init();
+    child->so_options = 0;
+    child->shut_rd = false;
+    child->shut_wr = false;
+    child->lock = sync::SPINLOCK_INIT;
+    child->next = nullptr;
+
+    bool registered = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_tcp_sock_lock);
+        child->parent = listener;
+        if (listener->state == tcp_state::LISTEN) {
+            child->next = g_tcp_sock_list;
+            g_tcp_sock_list = child;
+            registered = true;
+        }
+    });
+
+    if (!registered) {
+        sync::irq_state irq2 = sync::spin_lock_irqsave(listener->lock);
+        listener->pending_count--;
+        sync::spin_unlock_irqrestore(listener->lock, irq2);
+        tcp_sock_release(child);
+        return;
+    }
+
+    // Send SYN-ACK
+    tcp_send_segment(dst_ip, dst_port, src_ip, src_port,
+                     our_isn, child->rcv_nxt,
+                     TCP_SYN | TCP_ACK, TCP_DEFAULT_WINDOW,
+                     nullptr, 0);
+}
+
+// Handle an ACK arriving on a SYN_RECEIVED socket (completes handshake)
+static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num,
+                                 uint16_t peer_wnd) {
+    sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+    if (ack_num != sock->snd_nxt) {
+        sync::spin_unlock_irqrestore(sock->lock, irq);
+        return;
+    }
+
+    sock->snd_una = ack_num;
+    sock->snd_wnd = peer_wnd;
+    sock->state = tcp_state::ESTABLISHED;
+
+    // Allocate receive buffer for data transfer
+    if (!sock->rx_buf) {
+        sock->rx_buf = ring_buffer_create(TCP_RX_BUF_CAPACITY);
+    }
+
+    sync::spin_unlock_irqrestore(sock->lock, irq);
+
+    auto* obj = heap::kalloc_new<resource::resource_object>();
+    if (!obj) {
+        tcp_send_segment(sock->local_addr, sock->local_port,
+                         sock->remote_addr, sock->remote_port,
+                         sock->snd_nxt, 0, TCP_RST, 0, nullptr, 0);
+        tcp_destroy_socket(sock);
+        return;
+    }
+    obj->type = resource::resource_type::SOCKET;
+    obj->ops = &g_tcp_ops;
+    obj->impl = sock;
+
+    auto* pc = static_cast<tcp_pending_conn*>(
+        heap::kzalloc(sizeof(tcp_pending_conn)));
+    if (!pc) {
+        obj->impl = nullptr;
+        heap::kfree_delete(obj);
+        tcp_send_segment(sock->local_addr, sock->local_port,
+                         sock->remote_addr, sock->remote_port,
+                         sock->snd_nxt, 0, TCP_RST, 0, nullptr, 0);
+        tcp_destroy_socket(sock);
+        return;
+    }
+    pc->conn_obj = obj;
+
+    bool enqueued = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_tcp_sock_lock);
+        tcp_socket* parent = sock->parent;
+        if (parent && parent->state == tcp_state::LISTEN) {
+            parent->accept_queue.push_back(pc);
+            enqueued = true;
+            sync::wake_one(parent->accept_wq);
+        }
+    });
+
+    if (!enqueued) {
+        obj->impl = nullptr;
+        heap::kfree_delete(obj);
+        heap::kfree(pc);
+        tcp_send_segment(sock->local_addr, sock->local_port,
+                         sock->remote_addr, sock->remote_port,
+                         sock->snd_nxt, 0, TCP_RST, 0, nullptr, 0);
+        tcp_destroy_socket(sock);
+    }
+}
+
+__PRIVILEGED_CODE void tcp_socket::ref_destroy(tcp_socket* self) {
+    if (!self) return;
+    if (self->rx_buf) {
+        ring_buffer_destroy(self->rx_buf);
+        self->rx_buf = nullptr;
+    }
+    heap::kfree_delete(self);
+}
+
+bool tcp_try_register(tcp_socket* sock) {
+    if (!sock || sock->local_port == 0) {
+        return false;
+    }
+    bool reuse = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) != 0;
+    bool registered = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_tcp_sock_lock);
+
+        bool conflict = false;
+        for (tcp_socket* s = g_tcp_sock_list; s; s = s->next) {
+            if (s == sock) continue;
+            if (s->local_port != sock->local_port) continue;
+            if (sock->local_addr != 0 && s->local_addr != 0
+                && s->local_addr != sock->local_addr) continue;
+
+            if (reuse && (s->state == tcp_state::TIME_WAIT
+                          || s->state == tcp_state::CLOSED)) {
+                continue;
+            }
+
+            conflict = true;
+            break;
+        }
+
+        if (!conflict) {
+            sock->next = g_tcp_sock_list;
+            g_tcp_sock_list = sock;
+            registered = true;
+        }
+    });
+    return registered;
+}
+
+bool tcp_unregister_socket(tcp_socket* sock) {
+    if (!sock) return false;
+
+    bool found = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_tcp_sock_lock);
+        tcp_socket** pp = &g_tcp_sock_list;
+        while (*pp) {
+            if (*pp == sock) {
+                *pp = sock->next;
+                sock->next = nullptr;
+                found = true;
+                break;
+            }
+            pp = &(*pp)->next;
+        }
+    });
+    return found;
+}
+
+int32_t create_tcp_socket(resource::resource_object** out) {
+    if (!out) {
+        return resource::ERR_INVAL;
+    }
+
+    auto* sock = heap::kalloc_new<tcp_socket>();
+    if (!sock) {
+        return resource::ERR_NOMEM;
+    }
+    sock->state = tcp_state::CLOSED;
+    sock->local_addr = 0;
+    sock->local_port = 0;
+    sock->remote_addr = 0;
+    sock->remote_port = 0;
+    sock->snd_una = 0;
+    sock->snd_nxt = 0;
+    sock->rcv_nxt = 0;
+    sock->snd_wnd = 0;
+    sock->rx_buf = nullptr;
+    sock->rx_wq.init();
+    sock->parent = nullptr;
+    sock->backlog = 0;
+    sock->pending_count = 0;
+    sock->accept_queue.init();
+    sock->accept_wq.init();
+    sock->so_options = 0;
+    sock->shut_rd = false;
+    sock->shut_wr = false;
+    sock->lock = sync::SPINLOCK_INIT;
+    sock->next = nullptr;
+
+    auto* obj = heap::kalloc_new<resource::resource_object>();
+    if (!obj) {
+        heap::kfree_delete(sock);
+        return resource::ERR_NOMEM;
+    }
+    obj->type = resource::resource_type::SOCKET;
+    obj->ops = &g_tcp_ops;
+    obj->impl = sock;
+
+    *out = obj;
+    return resource::OK;
+}
+
+void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
+              const uint8_t* data, size_t len) {
+    if (!iface || !data || len < sizeof(tcp_header)) {
+        return;
+    }
+
+    const auto* hdr = reinterpret_cast<const tcp_header*>(data);
+
+    size_t hdr_len = tcp_header_len(hdr);
+    if (hdr_len < sizeof(tcp_header) || hdr_len > len) {
+        return;
+    }
+
+    // Verify checksum over pseudo-header + full TCP segment
+    uint16_t computed = tcp_checksum(htonl(src_ip), htonl(dst_ip), data, len);
+    if (computed != 0) {
+        log::debug("tcp: bad checksum, dropping");
+        return;
+    }
+
+    uint16_t src_port = ntohs(hdr->src_port);
+    uint16_t dst_port = ntohs(hdr->dst_port);
+    uint32_t seq = ntohl(hdr->seq);
+    uint32_t ack_num = ntohl(hdr->ack);
+    uint8_t flags = hdr->flags;
+    size_t payload_len = len - hdr_len;
+
+    // Look up matching socket
+    tcp_socket* sock = nullptr;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_tcp_sock_lock);
+        sock = tcp_lookup(src_ip, src_port, dst_ip, dst_port);
+    });
+
+    if (!sock) {
+        return;
+    }
+
+    // State machine dispatch
+    switch (sock->state) {
+    case tcp_state::LISTEN:
+        if (flags & TCP_SYN) {
+            tcp_listen_recv_syn(sock, src_ip, src_port, dst_ip, dst_port, seq);
+        }
+        break;
+
+    case tcp_state::SYN_RECEIVED:
+        if (flags & TCP_ACK) {
+            tcp_synrcvd_recv_ack(sock, ack_num, ntohs(hdr->window));
+        }
+        break;
+
+    case tcp_state::SYN_SENT: {
+        // RFC 9293 Section 3.10.7.3 - SYN_SENT state processing (active open)
+
+        // First, check ACK
+        bool ack_acceptable = false;
+        if (flags & TCP_ACK) {
+            // Unacceptable if SEG.ACK <= ISS (snd_una) or SEG.ACK > snd_nxt
+            if (ack_num <= sock->snd_una || ack_num > sock->snd_nxt) {
+                break; // drop segment
+            }
+            ack_acceptable = true;
+        }
+
+        // Second, check RST
+        if (flags & TCP_RST) {
+            if (ack_acceptable) {
+                sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+                sock->state = tcp_state::CLOSED;
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                sync::wake_one(sock->accept_wq);
+            }
+            break;
+        }
+
+        // Fourth, check SYN (this is the SYN-ACK we expect)
+        if (flags & TCP_SYN) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+
+            sock->rcv_nxt = seq + 1;
+            if (ack_acceptable) {
+                sock->snd_una = ack_num;
+            }
+
+            // RFC: "If SND.UNA > ISS, our SYN has been ACKed" -> ESTABLISHED.
+            // With an acceptable ACK, snd_una was set to ack_num (= ISN+1),
+            // which is > ISN (= ISS). So ack_acceptable implies SYN ACKed.
+            if (ack_acceptable) {
+                sock->state = tcp_state::ESTABLISHED;
+                sock->snd_wnd = ntohs(hdr->window);
+                sock->rx_buf = ring_buffer_create(TCP_RX_BUF_CAPACITY);
+
+                // Snapshot for send after unlock (avoid use-after-free)
+                uint32_t l_addr = sock->local_addr;
+                uint16_t l_port = sock->local_port;
+                uint32_t r_addr = sock->remote_addr;
+                uint16_t r_port = sock->remote_port;
+                uint32_t s_nxt = sock->snd_nxt;
+                uint32_t r_nxt = sock->rcv_nxt;
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+
+                // Send ACK via deferred TX (RX context)
+                tcp_send_segment(l_addr, l_port, r_addr, r_port,
+                                 s_nxt, r_nxt,
+                                 TCP_ACK, TCP_DEFAULT_WINDOW,
+                                 nullptr, 0);
+
+                sync::wake_one(sock->accept_wq);
+            } else {
+                // Simultaneous open (SYN without acceptable ACK)
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+            }
+        }
+        break;
+    }
+
+    case tcp_state::ESTABLISHED: {
+        // RFC 9293 Section 3.10.7.4 - ESTABLISHED state processing
+
+        // ACK processing
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_nxt) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            sock->snd_wnd = ntohs(hdr->window);
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+        }
+
+        // Process segment text (data)
+        if (payload_len > 0 && sock->rx_buf) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (sock->state != tcp_state::ESTABLISHED) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
+            if (seq != sock->rcv_nxt) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
+
+            // All-or-nothing: accept the full segment or none of it.
+            // Partial writes would desync rcv_nxt with the segment boundary.
+            ssize_t written = ring_buffer_write_all(
+                sock->rx_buf,
+                data + hdr_len,
+                payload_len, true);
+
+            if (written > 0) {
+                sock->rcv_nxt += static_cast<uint32_t>(written);
+            }
+
+            uint32_t l_addr = sock->local_addr;
+            uint16_t l_port = sock->local_port;
+            uint32_t r_addr = sock->remote_addr;
+            uint16_t r_port = sock->remote_port;
+            uint32_t s_nxt  = sock->snd_nxt;
+            uint32_t r_nxt  = sock->rcv_nxt;
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            tcp_send_segment(l_addr, l_port, r_addr, r_port,
+                             s_nxt, r_nxt,
+                             TCP_ACK, TCP_DEFAULT_WINDOW,
+                             nullptr, 0);
+        }
+
+        // FIN processing
+        if (flags & TCP_FIN) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (sock->state != tcp_state::ESTABLISHED) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
+            if (seq + static_cast<uint32_t>(payload_len) != sock->rcv_nxt) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
+            sock->rcv_nxt++;
+            sock->state = tcp_state::CLOSE_WAIT;
+
+            uint32_t l_addr = sock->local_addr;
+            uint16_t l_port = sock->local_port;
+            uint32_t r_addr = sock->remote_addr;
+            uint16_t r_port = sock->remote_port;
+            uint32_t s_nxt  = sock->snd_nxt;
+            uint32_t r_nxt  = sock->rcv_nxt;
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            tcp_send_segment(l_addr, l_port, r_addr, r_port,
+                             s_nxt, r_nxt,
+                             TCP_ACK, TCP_DEFAULT_WINDOW,
+                             nullptr, 0);
+
+            if (sock->rx_buf) {
+                ring_buffer_close_write(sock->rx_buf);
+            }
+        }
+        break;
+    }
+
+    case tcp_state::FIN_WAIT_1: {
+        // We sent FIN, waiting for peer's ACK and/or FIN
+
+        // Peer can still send data per RFC 9293 section 3.6
+        if (payload_len > 0 && sock->rx_buf) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (seq == sock->rcv_nxt) {
+                ssize_t written = ring_buffer_write_all(
+                    sock->rx_buf, data + hdr_len, payload_len, true);
+                if (written > 0) {
+                    sock->rcv_nxt += static_cast<uint32_t>(written);
+                }
+                uint32_t l_addr = sock->local_addr;
+                uint16_t l_port = sock->local_port;
+                uint32_t r_addr = sock->remote_addr;
+                uint16_t r_port = sock->remote_port;
+                uint32_t s_nxt  = sock->snd_nxt;
+                uint32_t r_nxt  = sock->rcv_nxt;
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+
+                tcp_send_segment(l_addr, l_port, r_addr, r_port,
+                                 s_nxt, r_nxt,
+                                 TCP_ACK, TCP_DEFAULT_WINDOW,
+                                 nullptr, 0);
+            } else {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+            }
+        }
+
+        // ACK processing
+        bool fw1_fin_acked = false;
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            fw1_fin_acked = (sock->snd_una == sock->snd_nxt);
+
+            if (fw1_fin_acked && !(flags & TCP_FIN)) {
+                sock->state = tcp_state::FIN_WAIT_2;
+            }
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+        }
+
+        // FIN processing
+        if (flags & TCP_FIN) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (seq + static_cast<uint32_t>(payload_len) != sock->rcv_nxt) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
+            sock->rcv_nxt++;
+            fw1_fin_acked = (sock->snd_una == sock->snd_nxt);
+
+            uint32_t l_addr = sock->local_addr;
+            uint16_t l_port = sock->local_port;
+            uint32_t r_addr = sock->remote_addr;
+            uint16_t r_port = sock->remote_port;
+            uint32_t s_nxt  = sock->snd_nxt;
+            uint32_t r_nxt  = sock->rcv_nxt;
+
+            if (!fw1_fin_acked) {
+                sock->state = tcp_state::CLOSING;
+            }
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            tcp_send_segment(l_addr, l_port, r_addr, r_port,
+                             s_nxt, r_nxt,
+                             TCP_ACK, TCP_DEFAULT_WINDOW,
+                             nullptr, 0);
+
+            if (sock->rx_buf) {
+                ring_buffer_close_write(sock->rx_buf);
+            }
+
+            if (fw1_fin_acked) {
+                tcp_destroy_socket(sock);
+            }
+        }
+        break;
+    }
+
+    case tcp_state::FIN_WAIT_2: {
+        // Our FIN ACKed, waiting for peer's FIN
+
+        // Can still receive data per RFC
+        if (payload_len > 0 && sock->rx_buf) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (seq == sock->rcv_nxt) {
+                ssize_t written = ring_buffer_write_all(
+                    sock->rx_buf, data + hdr_len, payload_len, true);
+                if (written > 0) {
+                    sock->rcv_nxt += static_cast<uint32_t>(written);
+                }
+                uint32_t l_addr = sock->local_addr;
+                uint16_t l_port = sock->local_port;
+                uint32_t r_addr = sock->remote_addr;
+                uint16_t r_port = sock->remote_port;
+                uint32_t s_nxt  = sock->snd_nxt;
+                uint32_t r_nxt  = sock->rcv_nxt;
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+
+                tcp_send_segment(l_addr, l_port, r_addr, r_port,
+                                 s_nxt, r_nxt,
+                                 TCP_ACK, TCP_DEFAULT_WINDOW,
+                                 nullptr, 0);
+            } else {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+            }
+        }
+
+        // FIN processing
+        if (flags & TCP_FIN) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (seq + static_cast<uint32_t>(payload_len) != sock->rcv_nxt) {
+                sync::spin_unlock_irqrestore(sock->lock, irq);
+                break;
+            }
+            sock->rcv_nxt++;
+            uint32_t l_addr = sock->local_addr;
+            uint16_t l_port = sock->local_port;
+            uint32_t r_addr = sock->remote_addr;
+            uint16_t r_port = sock->remote_port;
+            uint32_t s_nxt  = sock->snd_nxt;
+            uint32_t r_nxt  = sock->rcv_nxt;
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            tcp_send_segment(l_addr, l_port, r_addr, r_port,
+                             s_nxt, r_nxt,
+                             TCP_ACK, TCP_DEFAULT_WINDOW,
+                             nullptr, 0);
+
+            if (sock->rx_buf) {
+                ring_buffer_close_write(sock->rx_buf);
+            }
+
+            tcp_destroy_socket(sock);
+        }
+        break;
+    }
+
+    case tcp_state::CLOSE_WAIT:
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            sock->snd_wnd = ntohs(hdr->window);
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+        }
+        break;
+
+    case tcp_state::LAST_ACK:
+        // We sent FIN after CLOSE_WAIT, waiting for peer's ACK
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            bool fin_acked = (sock->snd_una == sock->snd_nxt);
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            if (fin_acked) {
+                tcp_destroy_socket(sock);
+            }
+        }
+        break;
+
+    case tcp_state::CLOSING:
+        // Simultaneous close: we sent FIN, peer sent FIN, waiting for ACK of our FIN
+        if (flags & TCP_ACK) {
+            sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
+            if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
+                sock->snd_una = ack_num;
+            }
+            bool fin_acked = (sock->snd_una == sock->snd_nxt);
+            sync::spin_unlock_irqrestore(sock->lock, irq);
+
+            if (fin_acked) {
+                tcp_destroy_socket(sock);
+            }
+        }
+        break;
+
+    case tcp_state::TIME_WAIT:
+        // Retransmitted FIN from peer: re-ACK it
+        if (flags & TCP_FIN) {
+            tcp_send_segment(
+                sock->local_addr, sock->local_port,
+                sock->remote_addr, sock->remote_port,
+                sock->snd_nxt, sock->rcv_nxt,
+                TCP_ACK, TCP_DEFAULT_WINDOW,
+                nullptr, 0);
+        }
+        break;
+
+    default:
+        break;
+    }
+
+    tcp_sock_release(sock);
+}
+
+} // namespace net

@@ -1,52 +1,45 @@
-# ================================
-# STLXGFX Graphics Library Makefile
-# ================================
-# Uses exported variables from parent Makefiles
+#
+# Stellux Userland - libstlxgfx Static Library
+#
 
-# Library configuration
-LIB_NAME := stlxgfx
-SRC_DIR := src
-INC_DIR := include
-BUILD_DIR := build
-OBJ_DIR := $(BUILD_DIR)/obj
+USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
+include $(USERLAND_ROOT)/mk/toolchain.mk
 
-# Source files and objects
+AR ?= llvm-ar
+
+SRC_DIR     := src
+INCLUDE_DIR := include
+BUILD_DIR   := build/$(ARCH)
+LIB_NAME    := libstlxgfx.a
+TARGET      := $(BUILD_DIR)/$(LIB_NAME)
+
+SYSROOT_LIB := $(USERLAND_ROOT)/sysroot/$(ARCH)/lib
+SYSROOT_INC := $(USERLAND_ROOT)/sysroot/$(ARCH)/include/stlxgfx
+
 SOURCES := $(wildcard $(SRC_DIR)/*.c)
-OBJECTS := $(SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
+OBJECTS := $(SOURCES:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
-# Output library (static)
-TARGET := $(USERLAND_LIB_DIR)/lib$(LIB_NAME).a
+all: $(TARGET) install-headers
 
-# Use exported flags from parent with local include directory
-CFLAGS := $(CFLAGS_COMMON) -I$(INC_DIR)
-
-# Default target
-all: $(TARGET)
-
-# Build the static library
 $(TARGET): $(OBJECTS)
-	@mkdir -p $(dir $@)
-	@echo "[AR] Creating static library $@"
-	@$(AR) rcs $@ $(OBJECTS)
-	@$(RANLIB) $@
-	@echo "Built lib$(LIB_NAME).a successfully"
+	$(UQ)mkdir -p $(dir $@)
+	@echo "[AR]  libstlxgfx.a ($(ARCH))"
+	$(UQ)$(AR) crs $@ $(OBJECTS)
+	$(UQ)mkdir -p $(SYSROOT_LIB)
+	$(UQ)cp $@ $(SYSROOT_LIB)/
 
-# Compile C source files
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
-	@mkdir -p $(dir $@)
-	@echo "[CC] Compiling $<"
-	@$(CC) $(CFLAGS) -c $< -o $@
-
-# Clean build artifacts
-clean:
-	@echo "Cleaning lib$(LIB_NAME)..."
-	@rm -rf $(BUILD_DIR)
-	@rm -f $(TARGET)
-
-# Install headers (copy to a common include location if needed)
 install-headers:
-	@mkdir -p $(USERLAND_INCLUDE_DIR)
-	@cp -r $(INC_DIR)/* $(USERLAND_INCLUDE_DIR)/
-	@echo "Installed $(LIB_NAME) headers"
+	$(UQ)mkdir -p $(SYSROOT_INC)
+	$(UQ)cp $(INCLUDE_DIR)/stlxgfx/*.h $(SYSROOT_INC)/
 
-.PHONY: all clean install-headers
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+	$(UQ)mkdir -p $(dir $@)
+	@echo "[CC]  $< ($(ARCH))"
+	$(UQ)$(CC) $(CFLAGS_COMMON) -I$(INCLUDE_DIR) -c $< -o $@
+
+clean:
+	$(UQ)rm -rf build
+	$(UQ)rm -f $(SYSROOT_LIB)/$(LIB_NAME)
+	$(UQ)rm -rf $(SYSROOT_INC)
+
+.PHONY: all install-headers clean

@@ -1,0 +1,2978 @@
+#include "drivers/usb/xhci/xhci.h"
+#include "drivers/usb/xhci/xhci_common.h"
+#include "drivers/usb/xhci/xhci_ext_cap.h"
+#include "drivers/usb/core/usb_core.h"
+#include "drivers/usb/hub/hub_descriptors.h"
+#include "common/logging.h"
+#include "common/string.h"
+#include "mm/heap.h"
+#include "clock/clock.h"
+#include "hw/delay.h"
+#include "hw/barrier.h"
+#include "sync/wait_queue.h"
+#include "dynpriv/dynpriv.h"
+#include "sched/sched.h"
+
+using namespace drivers::xhci;
+
+namespace drivers {
+
+int32_t xhci_hcd::attach() {
+    // Enable PCI memory space + bus mastering before any MMIO access
+    RUN_ELEVATED({
+        dev().enable();
+        dev().enable_bus_mastering();
+    });
+
+    int32_t rc = map_bar(0, m_xhc_base, paging::PAGE_USER);
+    if (rc != 0) {
+        log::error("xhci: failed to map BAR: %d", rc);
+        return rc;
+    }
+
+    m_xhc_bar_size = dev().get_bar(0).size;
+
+    m_xhc_cap_regs = reinterpret_cast<volatile xhci_capability_registers*>(m_xhc_base);
+
+    // Validate that critical MMIO offsets fall within the mapped BAR
+    uint32_t caplength = m_xhc_cap_regs->caplength;
+    uint32_t dboff = m_xhc_cap_regs->dboff;
+    uint32_t rtsoff = m_xhc_cap_regs->rtsoff;
+
+    if (caplength >= m_xhc_bar_size || dboff >= m_xhc_bar_size || rtsoff >= m_xhc_bar_size) {
+        log::error("xhci: MMIO offsets exceed BAR size (caplength=0x%x, dboff=0x%x, rtsoff=0x%x, bar_size=0x%lx)",
+                   caplength, dboff, rtsoff, m_xhc_bar_size);
+        return -1;
+    }
+
+    m_xhc_op_regs = reinterpret_cast<volatile xhci_operational_registers*>(m_xhc_base + caplength);
+    m_doorbells = reinterpret_cast<volatile uint32_t*>(m_xhc_base + dboff);
+
+    m_hc_params.max_device_slots = XHCI_MAX_DEVICE_SLOTS(m_xhc_cap_regs);
+    m_hc_params.max_interrupters = XHCI_MAX_INTERRUPTERS(m_xhc_cap_regs);
+    m_hc_params.max_ports = XHCI_MAX_PORTS(m_xhc_cap_regs);
+    m_hc_params.ist = XHCI_IST(m_xhc_cap_regs);
+    m_hc_params.erst_max = XHCI_ERST_MAX(m_xhc_cap_regs);
+    m_hc_params.max_scratchpad_buffers = XHCI_MAX_SCRATCHPAD_BUFFERS(m_xhc_cap_regs);
+    m_hc_params.extended_capabilities_offset = XHCI_XECP(m_xhc_cap_regs) * sizeof(uint32_t);
+    m_hc_params.ac64 = XHCI_AC64(m_xhc_cap_regs);
+    m_hc_params.csz = XHCI_CSZ(m_xhc_cap_regs);
+    m_hc_params.ppc = XHCI_PPC(m_xhc_cap_regs);
+
+    _parse_extended_capabilities();
+
+    int32_t reset_rc = _reset_host_controller();
+    if (reset_rc != 0) {
+        log::error("xhci: host controller reset failed");
+        return reset_rc;
+    }
+
+    int32_t op_rc = _configure_operational_registers();
+    if (op_rc != 0) {
+        log::error("xhci: failed to configure operational registers");
+        return op_rc;
+    }
+
+    int32_t rt_rc = _configure_runtime_registers();
+    if (rt_rc != 0) {
+        log::error("xhci: failed to configure runtime registers");
+        return rt_rc;
+    }
+
+    // Allocate per-port device tracking array
+    m_port_devices = static_cast<xhci_device**>(
+        heap::uzalloc(static_cast<size_t>(m_hc_params.max_ports) * sizeof(xhci_device*)));
+    if (!m_port_devices) {
+        log::error("xhci: failed to allocate port device tracking array");
+        return -1;
+    }
+
+    // Setup MSI/MSI-X interrupts
+    int32_t msi_rc = -1;
+    if (dev().has_capability(pci::CAP_MSIX)) {
+        msi_rc = setup_msix(1);
+    } else if (dev().has_capability(pci::CAP_MSI)) {
+        msi_rc = setup_msi(1);
+    }
+
+    if (msi_rc != 0) {
+        log::warn("xhci: MSI/MSI-X setup failed, interrupts unavailable");
+    }
+
+    return drivers::OK;
+}
+
+int32_t xhci_hcd::detach() {
+    // Stop the controller (halt + disable interrupts)
+    if (m_xhc_op_regs) {
+        _stop_host_controller();
+    }
+
+    // Destroy per-port devices
+    if (m_port_devices) {
+        for (uint8_t i = 0; i < m_hc_params.max_ports; i++) {
+            _teardown_device(i);
+        }
+        heap::ufree(m_port_devices);
+        m_port_devices = nullptr;
+    }
+
+    // Destroy event ring
+    if (m_event_ring) {
+        m_event_ring->destroy();
+        heap::ufree_delete(m_event_ring);
+        m_event_ring = nullptr;
+    }
+
+    // Destroy command ring and clear CRCR
+    if (m_cmd_ring) {
+        if (m_xhc_op_regs) {
+            xhci_write64(&m_xhc_op_regs->crcr, 0);
+        }
+        m_cmd_ring->destroy();
+        heap::ufree_delete(m_cmd_ring);
+        m_cmd_ring = nullptr;
+    }
+
+    // Free scratchpad buffers
+    if (m_scratchpad.count > 0) {
+        for (uint16_t i = 0; i < m_scratchpad.count; i++) {
+            if (m_scratchpad.page_vaddrs && m_scratchpad.page_vaddrs[i]) {
+                free_xhci_memory(m_scratchpad.page_vaddrs[i]);
+            }
+        }
+        if (m_scratchpad.page_vaddrs) {
+            heap::ufree(m_scratchpad.page_vaddrs);
+            m_scratchpad.page_vaddrs = nullptr;
+        }
+        if (m_scratchpad.table) {
+            free_xhci_memory(m_scratchpad.table);
+            m_scratchpad.table = nullptr;
+        }
+        m_scratchpad.count = 0;
+    }
+
+    // Clear DCBAAP and free DCBAA
+    if (m_xhc_op_regs) {
+        xhci_write64(&m_xhc_op_regs->dcbaap, 0);
+    }
+    if (m_dcbaa) {
+        free_xhci_memory(m_dcbaa);
+        m_dcbaa = nullptr;
+    }
+
+    // Base class tears down MSI and unmaps BARs
+    return pci_driver::detach();
+}
+
+void xhci_hcd::run() {
+    if (_start_host_controller() != 0) {
+        log::error("xhci: failed to start controller");
+        return;
+    }
+
+    // Let ports stabilize after the controller transitions to running.
+    // Real hardware (especially VL805 behind PCIe) needs time for link
+    // training and device detection before port status is meaningful.
+    delay::us(100000);
+
+    // Scan for devices connected before the controller started.
+    // QEMU and some hardware platforms don't generate PSC events
+    // for boot-attached devices.
+    _scan_ports();
+
+    // Flush deferred doorbells accumulated during _scan_ports().
+    // Transfer events processed re-entrantly inside _send_command()
+    // defer their re-arm doorbells, which would otherwise be discarded
+    // by the m_pending_doorbell_count = 0 reset at the top of the loop.
+    for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
+        _ring_doorbell(m_pending_doorbells[i].slot_id,
+                       m_pending_doorbells[i].target);
+    }
+    m_pending_doorbell_count = 0;
+
+    while (true) {
+        wait_for_event();
+
+        m_pending_doorbell_count = 0;
+        _process_event_ring();
+        m_event_ring->finish_processing();
+
+        for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
+            _ring_doorbell(m_pending_doorbells[i].slot_id,
+                           m_pending_doorbells[i].target);
+        }
+
+        _process_pending_port_changes();
+        _process_hub_events();
+
+        // Hub event processing (and the device enumeration / class-driver
+        // probing it triggers) can call _process_event_ring() internally,
+        // which may complete interrupt-in stream TDs and queue deferred
+        // doorbells. Flush any that accumulated during that work so the
+        // next interrupt TD is actually scheduled on the hardware ring.
+        if (m_pending_doorbell_count > 0) {
+            for (uint8_t i = 0; i < m_pending_doorbell_count; i++) {
+                _ring_doorbell(m_pending_doorbells[i].slot_id,
+                               m_pending_doorbells[i].target);
+            }
+            m_pending_doorbell_count = 0;
+        }
+    }
+}
+
+__PRIVILEGED_CODE void xhci_hcd::on_interrupt(uint32_t) {
+    // Clear USBSTS.EINT first, then IMAN.IP (RW1C). Clearing IP allows the
+    // 0->1 transition needed to generate the next MSI.
+    m_xhc_op_regs->usbsts = XHCI_USBSTS_EINT;
+    volatile xhci::xhci_interrupter_registers* ir = &m_xhc_runtime_regs->ir[0];
+    ir->iman = XHCI_IMAN_INTERRUPT_PENDING | XHCI_IMAN_INTERRUPT_ENABLE;
+    (void)ir->iman; // read-back flushes posted PCIe write
+}
+
+void xhci_hcd::_parse_extended_capabilities() {
+    if (m_hc_params.extended_capabilities_offset == 0) return;
+
+    if (m_hc_params.extended_capabilities_offset >= m_xhc_bar_size) {
+        log::warn("xhci: XECP offset 0x%x exceeds BAR size 0x%lx, skipping extended capabilities",
+                  m_hc_params.extended_capabilities_offset, m_xhc_bar_size);
+        return;
+    }
+
+    volatile uint32_t* cap_ptr = reinterpret_cast<volatile uint32_t*>(
+        m_xhc_base + m_hc_params.extended_capabilities_offset);
+
+    while (true) {
+        // Validate that this capability entry is within the mapped BAR
+        uintptr_t offset = reinterpret_cast<uintptr_t>(cap_ptr) - m_xhc_base;
+        if (offset + sizeof(uint32_t) > m_xhc_bar_size) {
+            log::warn("xhci: extended capability at offset 0x%lx exceeds BAR size, stopping walk",
+                       offset);
+            break;
+        }
+
+        xhci_extended_capability_entry entry;
+        entry.raw = *cap_ptr;
+
+        auto cap_id = static_cast<xhci_extended_capability_code>(entry.id);
+
+        if (cap_id == xhci_extended_capability_code::usb_legacy_support) {
+            _request_bios_handoff(cap_ptr);
+        } else if (cap_id == xhci_extended_capability_code::supported_protocol) {
+            _parse_supported_protocol(cap_ptr);
+        }
+
+        if (entry.next == 0) break;
+        cap_ptr = XHCI_NEXT_EXT_CAP_PTR(cap_ptr, entry.next);
+    }
+}
+
+void xhci_hcd::_request_bios_handoff(volatile uint32_t* usblegsup) {
+    volatile uint32_t* usblegctlsts = usblegsup + 1;
+
+    // Disable all SMIs to prevent crashes
+    uint32_t legctlsts = *usblegctlsts;
+    legctlsts &= ~XHCI_LEGACY_SMI_ENABLE_BITS;
+    *usblegctlsts = legctlsts;
+    delay::us(10000);
+
+    // Set the OS Owned Semaphore in USBLEGSUP
+    log::info("xhci: requesting BIOS handoff");
+    uint32_t legsup = *usblegsup;
+    legsup |= XHCI_LEGACY_OS_OWNED_SEMAPHORE;
+    *usblegsup = legsup;
+    delay::us(10000);
+
+    // Wait for BIOS to clear the BIOS Owned Semaphore
+    constexpr uint32_t HANDOFF_TIMEOUT_US = 5000000; // 5 seconds
+    constexpr uint32_t POLL_INTERVAL_US = 1000;       // 1 ms
+    uint32_t elapsed = 0;
+
+    while ((*usblegsup & XHCI_LEGACY_BIOS_OWNED_SEMAPHORE) && elapsed < HANDOFF_TIMEOUT_US) {
+        delay::us(POLL_INTERVAL_US);
+        elapsed += POLL_INTERVAL_US;
+    }
+
+    if (*usblegsup & XHCI_LEGACY_BIOS_OWNED_SEMAPHORE) {
+        log::warn("xhci: BIOS did not release ownership within %ums, forcing takeover",
+                  HANDOFF_TIMEOUT_US / 1000);
+
+        uint32_t forced = *usblegsup;
+        forced &= ~XHCI_LEGACY_BIOS_OWNED_SEMAPHORE;
+        *usblegsup = forced;
+        delay::us(10000);
+    } else {
+        log::info("xhci: BIOS handoff complete");
+    }
+}
+
+void xhci_hcd::_parse_supported_protocol(volatile uint32_t* cap_ptr) {
+    xhci_usb_supported_protocol_capability proto(cap_ptr);
+
+    // Port offsets in the capability are 1-based, convert to 0-based
+    uint8_t first_port = proto.compatible_port_offset - 1;
+    uint8_t port_count = proto.compatible_port_count;
+
+    if (proto.major_revision_version == 3) {
+        for (uint8_t i = 0; i < port_count; i++) {
+            uint8_t port = first_port + i;
+            m_usb3_port_map[port / 32] |= (1u << (port % 32));
+        }
+        log::info("xhci: USB3 ports %u-%u", first_port, first_port + port_count - 1);
+    } else if (proto.major_revision_version == 2) {
+        log::info("xhci: USB2 ports %u-%u", first_port, first_port + port_count - 1);
+    }
+}
+
+// xHCI Spec Section 4.2: Host Controller Initialization
+int32_t xhci_hcd::_reset_host_controller() {
+    // Clear Run/Stop to halt the controller
+    uint32_t usbcmd = m_xhc_op_regs->usbcmd;
+    usbcmd &= ~XHCI_USBCMD_RUN_STOP;
+    m_xhc_op_regs->usbcmd = usbcmd;
+
+    // Wait for HCHalted bit (xHC shall halt within 16ms per spec)
+    constexpr uint32_t HALT_TIMEOUT_US = 200000; // 200ms generous timeout
+    constexpr uint32_t POLL_US = 1000;           // 1ms poll interval
+    uint32_t elapsed = 0;
+
+    while (!(m_xhc_op_regs->usbsts & XHCI_USBSTS_HCH)) {
+        if (elapsed >= HALT_TIMEOUT_US) {
+            log::error("xhci: controller did not halt within %ums", HALT_TIMEOUT_US / 1000);
+            return -1;
+        }
+        delay::us(POLL_US);
+        elapsed += POLL_US;
+    }
+
+    // Assert HCRESET
+    usbcmd = m_xhc_op_regs->usbcmd;
+    usbcmd |= XHCI_USBCMD_HCRESET;
+    m_xhc_op_regs->usbcmd = usbcmd;
+
+    // Wait for HCRESET and CNR (Controller Not Ready) to clear
+    constexpr uint32_t RESET_TIMEOUT_US = 1000000; // 1 second
+    elapsed = 0;
+
+    while (m_xhc_op_regs->usbcmd & XHCI_USBCMD_HCRESET ||
+           m_xhc_op_regs->usbsts & XHCI_USBSTS_CNR) {
+        if (elapsed >= RESET_TIMEOUT_US) {
+            log::error("xhci: controller did not complete reset within %ums",
+                       RESET_TIMEOUT_US / 1000);
+            return -1;
+        }
+        delay::us(POLL_US);
+        elapsed += POLL_US;
+    }
+
+    // Post-reset settling time
+    delay::us(50000);
+
+    // Verify operational registers returned to defaults
+    if (m_xhc_op_regs->usbcmd != 0 ||
+        m_xhc_op_regs->dnctrl != 0 ||
+        xhci_read64(&m_xhc_op_regs->crcr) != 0 ||
+        xhci_read64(&m_xhc_op_regs->dcbaap) != 0 ||
+        m_xhc_op_regs->config != 0) {
+        log::error("xhci: operational registers not at defaults after reset");
+        return -1;
+    }
+
+    return 0;
+}
+
+int32_t xhci_hcd::_start_host_controller() {
+    // Set Run/Stop, enable interrupter, and host system error reporting
+    uint32_t usbcmd = m_xhc_op_regs->usbcmd;
+    usbcmd |= XHCI_USBCMD_RUN_STOP;
+    usbcmd |= XHCI_USBCMD_INTERRUPTER_ENABLE;
+    usbcmd |= XHCI_USBCMD_HOSTSYS_ERROR_ENABLE;
+    m_xhc_op_regs->usbcmd = usbcmd;
+
+    // Wait for the controller to transition out of halted state
+    constexpr uint32_t START_TIMEOUT_US = 1000000; // 1 second
+    constexpr uint32_t POLL_US = 1000;
+    uint32_t elapsed = 0;
+
+    while (m_xhc_op_regs->usbsts & XHCI_USBSTS_HCH) {
+        if (elapsed >= START_TIMEOUT_US) {
+            log::error("xhci: controller did not start within %ums", START_TIMEOUT_US / 1000);
+            return -1;
+        }
+        delay::us(POLL_US);
+        elapsed += POLL_US;
+    }
+
+    // Verify CNR (Controller Not Ready) bit is clear
+    if (m_xhc_op_regs->usbsts & XHCI_USBSTS_CNR) {
+        log::error("xhci: controller not ready after start");
+        return -1;
+    }
+
+    return 0;
+}
+
+// xHCI Spec Section 4.2 / 5.4.1: Stopping the Host Controller
+int32_t xhci_hcd::_stop_host_controller() {
+    // Clear Run/Stop and disable interrupter + host system error
+    uint32_t usbcmd = m_xhc_op_regs->usbcmd;
+    usbcmd &= ~XHCI_USBCMD_RUN_STOP;
+    usbcmd &= ~XHCI_USBCMD_INTERRUPTER_ENABLE;
+    usbcmd &= ~XHCI_USBCMD_HOSTSYS_ERROR_ENABLE;
+    m_xhc_op_regs->usbcmd = usbcmd;
+
+    // Wait for HCHalted (xHC shall halt within 16ms per spec)
+    constexpr uint32_t HALT_TIMEOUT_US = 200000; // 200ms generous timeout
+    constexpr uint32_t POLL_US = 1000;
+    uint32_t elapsed = 0;
+
+    while (!(m_xhc_op_regs->usbsts & XHCI_USBSTS_HCH)) {
+        if (elapsed >= HALT_TIMEOUT_US) {
+            log::error("xhci: controller did not halt within %ums", HALT_TIMEOUT_US / 1000);
+            return -1;
+        }
+        delay::us(POLL_US);
+        elapsed += POLL_US;
+    }
+
+    // Clear any pending EINT so no stale interrupts remain
+    m_xhc_op_regs->usbsts = XHCI_USBSTS_EINT;
+
+    // Disable the primary interrupter
+    volatile xhci_interrupter_registers* primary = &m_xhc_runtime_regs->ir[0];
+    uint32_t iman = primary->iman;
+    iman &= ~XHCI_IMAN_INTERRUPT_ENABLE;
+    iman |= XHCI_IMAN_INTERRUPT_PENDING; // W1C: clear any pending IP
+    primary->iman = iman;
+
+    return 0;
+}
+
+int32_t xhci_hcd::_configure_operational_registers() {
+    // Validate that the controller supports 4KB pages
+    if (!(m_xhc_op_regs->pagesize & 0x1)) {
+        log::error("xhci: controller does not support 4KB page size");
+        return -1;
+    }
+
+    // Enable device notifications
+    m_xhc_op_regs->dnctrl = 0xffff;
+
+    // Configure the max device slots
+    m_xhc_op_regs->config = static_cast<uint32_t>(m_hc_params.max_device_slots);
+
+    // Allocate the Device Context Base Address Array
+    size_t dcbaa_entries = static_cast<size_t>(m_hc_params.max_device_slots) + 1;
+    size_t dcbaa_size = dcbaa_entries * sizeof(uint64_t);
+
+    m_dcbaa = static_cast<uint64_t*>(alloc_xhci_memory(dcbaa_size));
+    if (!m_dcbaa) {
+        log::error("xhci: failed to allocate DCBAA (%lu entries)", dcbaa_entries);
+        return -1;
+    }
+
+    /*
+    // xHci Spec Section 6.1 (page 404)
+    If the Max Scratchpad Buffers field of the HCSPARAMS2 register is > '0', then
+    the first entry (entry_0) in the DCBAA shall contain a pointer to the Scratchpad
+    Buffer Array. If the Max Scratchpad Buffers field of the HCSPARAMS2 register is
+    = '0', then the first entry (entry_0) in the DCBAA is reserved and shall be
+    cleared to '0' by software.
+    */
+    if (m_hc_params.max_scratchpad_buffers > 0) {
+        uint16_t scratchpad_count = m_hc_params.max_scratchpad_buffers;
+        m_scratchpad.count = scratchpad_count;
+
+        // Allocate the scratchpad pointer array (DMA: array of physical addresses)
+        m_scratchpad.table = alloc_xhci_memory(
+            static_cast<size_t>(scratchpad_count) * sizeof(uint64_t));
+        if (!m_scratchpad.table) {
+            log::error("xhci: failed to allocate scratchpad pointer array (%u entries)", scratchpad_count);
+            goto fail_dcbaa;
+        }
+
+        // Allocate tracking array for virtual addresses (heap, for cleanup)
+        m_scratchpad.page_vaddrs = static_cast<void**>(
+            heap::uzalloc(static_cast<size_t>(scratchpad_count) * sizeof(void*)));
+        if (!m_scratchpad.page_vaddrs) {
+            log::error("xhci: failed to allocate scratchpad VA tracking array");
+            goto fail_scratchpad_table;
+        }
+
+        // Allocate each scratchpad page
+        auto* scratchpad_phys_array = static_cast<uint64_t*>(m_scratchpad.table);
+        for (uint16_t i = 0; i < scratchpad_count; i++) {
+            void* page = alloc_xhci_memory(paging::PAGE_SIZE_4KB);
+            if (!page) {
+                log::error("xhci: failed to allocate scratchpad page %u/%u", i, scratchpad_count);
+                // Free previously allocated pages
+                for (uint16_t j = 0; j < i; j++) {
+                    free_xhci_memory(m_scratchpad.page_vaddrs[j]);
+                }
+                goto fail_scratchpad_va;
+            }
+            m_scratchpad.page_vaddrs[i] = page;
+            scratchpad_phys_array[i] = xhci_get_physical_addr(page);
+        }
+
+        // Point DCBAA[0] to the scratchpad pointer array
+        m_dcbaa[0] = xhci_get_physical_addr(m_scratchpad.table);
+    }
+
+    // Ensure all DCBAA/scratchpad writes (Normal NC) are visible before DCBAAP (Device)
+    barrier::dma_write();
+    xhci_write64(&m_xhc_op_regs->dcbaap, xhci_get_physical_addr(m_dcbaa));
+
+    // Setup the command ring
+    m_cmd_ring = heap::ualloc_new<xhci_command_ring>();
+    if (!m_cmd_ring) {
+        log::error("xhci: failed to allocate command ring object");
+        goto fail_dcbaap;
+    }
+
+    if (m_cmd_ring->init(XHCI_COMMAND_RING_TRB_COUNT) != 0) {
+        log::error("xhci: failed to initialize command ring");
+        heap::ufree_delete(m_cmd_ring);
+        m_cmd_ring = nullptr;
+        goto fail_dcbaap;
+    }
+
+    // Ensure command ring link TRB (Normal NC) is visible before CRCR (Device)
+    barrier::dma_write();
+    xhci_write64(&m_xhc_op_regs->crcr,
+                 m_cmd_ring->get_physical_base() | m_cmd_ring->get_cycle_bit());
+
+    return 0;
+
+fail_dcbaap:
+    xhci_write64(&m_xhc_op_regs->dcbaap, 0);
+fail_scratchpad_va:
+    heap::ufree(m_scratchpad.page_vaddrs);
+    m_scratchpad.page_vaddrs = nullptr;
+fail_scratchpad_table:
+    free_xhci_memory(m_scratchpad.table);
+    m_scratchpad.table = nullptr;
+    m_scratchpad.count = 0;
+fail_dcbaa:
+    free_xhci_memory(m_dcbaa);
+    m_dcbaa = nullptr;
+    return -1;
+}
+
+int32_t xhci_hcd::_configure_runtime_registers() {
+    // Compute the runtime register base from capability registers
+    m_xhc_runtime_regs = reinterpret_cast<volatile xhci_runtime_registers*>(
+        m_xhc_base + m_xhc_cap_regs->rtsoff);
+
+    // Get the primary interrupter register set
+    volatile xhci_interrupter_registers* primary_interrupter = &m_xhc_runtime_regs->ir[0];
+
+    // Enable interrupts on the primary interrupter
+    uint32_t iman = primary_interrupter->iman;
+    iman |= XHCI_IMAN_INTERRUPT_ENABLE;
+    primary_interrupter->iman = iman;
+
+    // Setup the event ring (programs ERSTSZ, ERSTBA, ERDP)
+    m_event_ring = heap::ualloc_new<xhci_event_ring>();
+    if (!m_event_ring) {
+        log::error("xhci: failed to allocate event ring object");
+        return -1;
+    }
+
+    if (m_event_ring->init(XHCI_EVENT_RING_TRB_COUNT, primary_interrupter) != 0) {
+        log::error("xhci: failed to initialize event ring");
+        heap::ufree_delete(m_event_ring);
+        m_event_ring = nullptr;
+        return -1;
+    }
+
+    return 0;
+}
+
+void xhci_hcd::_process_event_ring() {
+    barrier::dma_read();
+
+    while (m_event_ring->has_unprocessed_events()) {
+        xhci_trb_t* trb = m_event_ring->dequeue_trb();
+        if (!trb) {
+            break;
+        }
+
+        switch (trb->trb_type) {
+        case XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT: {
+            auto* psc = reinterpret_cast<xhci_port_status_change_trb_t*>(trb);
+            uint8_t port_id = psc->port_id; // 1-based
+
+            if (port_id < 1 || port_id > m_hc_params.max_ports) {
+                log::warn("xhci: port status change for invalid port %u", port_id);
+                break;
+            }
+
+            uint8_t port_index = port_id - 1;
+            if (port_index < 32) {
+                m_psc_pending_bitmap |= (1u << port_index);
+            }
+            break;
+        }
+        case XHCI_TRB_TYPE_CMD_COMPLETION_EVENT: {
+            auto* cce = reinterpret_cast<xhci_command_completion_trb_t*>(trb);
+            m_cmd_ring->process_event(cce);
+
+            if (m_cmd_state.pending) {
+                m_cmd_state.result = *cce;
+                m_cmd_state.completed = true;
+            }
+            break;
+        }
+        case XHCI_TRB_TYPE_TRANSFER_EVENT: {
+            auto* e = reinterpret_cast<xhci_transfer_completion_trb_t*>(trb);
+            uint8_t slot = e->slot_id;
+            uint8_t ep_id = e->endpoint_id;
+
+            if (slot == 0 || slot > 255 || ep_id == 0 || ep_id > 31) {
+                log::warn("xhci: transfer event with invalid slot=%u ep=%u", slot, ep_id);
+                break;
+            }
+
+            auto* dev = m_slot_devices[slot];
+            if (!dev) {
+                break;
+            }
+
+            if (ep_id == 1) {
+                _complete_endpoint_transfer(
+                    dev->ctrl_completion_lock(), dev->ctrl_completion_wq(),
+                    dev->ctrl_result(), dev->ctrl_completed_ptr(), e);
+            } else {
+                auto* ep = dev->endpoint(ep_id);
+                if (!ep) break;
+                if (ep->async_state()) {
+                    auto* state = ep->async_state();
+                    if (state->async_enabled) {
+                        if (state->interrupt_in_stream.active ||
+                            state->interrupt_in_stream.closing ||
+                            state->interrupt_in_stream.payloads ||
+                            state->interrupt_in_stream.payload_storage) {
+                            _complete_interrupt_in_stream(dev, ep, *state, e);
+                        } else if (state->active_request) {
+                            _complete_async_request(dev, ep, *state, e);
+                        }
+                    } else {
+                        _complete_endpoint_transfer(
+                            ep->completion_lock(), ep->completion_wq(),
+                            ep->result(), ep->completed_ptr(), e);
+                    }
+                    break;
+                }
+                _complete_endpoint_transfer(
+                    ep->completion_lock(), ep->completion_wq(),
+                    ep->result(), ep->completed_ptr(), e);
+            }
+            break;
+        }
+        default:
+            log::debug("xhci: unhandled event TRB type: %s",
+                        trb_type_to_string(static_cast<uint8_t>(trb->trb_type)));
+            break;
+        }
+    }
+}
+
+void xhci_hcd::_process_pending_port_changes() {
+    while (m_psc_pending_bitmap != 0) {
+        uint32_t bitmap = m_psc_pending_bitmap;
+        m_psc_pending_bitmap = 0;
+
+        for (uint8_t i = 0; i < m_hc_params.max_ports && bitmap != 0; i++) {
+            if (!(bitmap & (1u << i))) continue;
+
+            xhci_portsc_register portsc;
+            portsc.raw = *_portsc(i);
+
+            if (portsc.csc && portsc.ccs) {
+                _setup_device(i);
+            } else if (portsc.csc && !portsc.ccs) {
+                log::info("xhci: device disconnected from port %u", i + 1);
+                _teardown_device(i);
+                _ack_portsc_changes(i, PORTSC_RW1C_BITS);
+            }
+        }
+    }
+}
+
+int32_t xhci_hcd::_send_command(xhci_trb_t* trb, xhci_command_completion_trb_t* out) {
+    if (!m_cmd_ring->enqueue(trb)) {
+        log::error("xhci: command ring full");
+        return -1;
+    }
+
+    m_cmd_state.pending = true;
+    m_cmd_state.completed = false;
+
+    _ring_cmd_doorbell();
+
+    // Fast path: check if completion already arrived
+    _process_event_ring();
+    m_event_ring->finish_processing();
+
+    if (!m_cmd_state.completed) {
+        constexpr uint64_t CMD_TIMEOUT_MS = 5000;
+        uint64_t deadline = clock::now_ns() + CMD_TIMEOUT_MS * 1000000ULL;
+
+        while (!m_cmd_state.completed && clock::now_ns() < deadline) {
+            wait_for_event();
+            _process_event_ring();
+            m_event_ring->finish_processing();
+        }
+    }
+
+    m_cmd_state.pending = false;
+
+    if (!m_cmd_state.completed) {
+        log::error("xhci: command timed out (type=%u, USBSTS=0x%08x)",
+                   (trb->control >> XHCI_TRB_TYPE_SHIFT) & 0x3F,
+                   m_xhc_op_regs->usbsts);
+        return -1;
+    }
+
+    if (out) {
+        *out = m_cmd_state.result;
+    }
+
+    if (m_cmd_state.result.completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        log::warn("xhci: command failed: %s",
+                   trb_completion_code_to_string(m_cmd_state.result.completion_code));
+        return -1;
+    }
+
+    return 0;
+}
+
+// xHCI Spec Section 4.19.5: Port Reset
+int32_t xhci_hcd::_reset_port(uint8_t port_index) {
+    bool usb3 = _is_usb3_port(port_index);
+
+    xhci_portsc_register portsc;
+    portsc.raw = *_portsc(port_index);
+
+    // Power on the port if necessary (spec requires PP=1 before any state change)
+    if (portsc.pp == 0) {
+        portsc.pp = 1;
+        _write_portsc(port_index, portsc.raw);
+        delay::us(20000); // 20ms power stabilization
+        portsc.raw = *_portsc(port_index);
+
+        if (portsc.pp == 0) {
+            log::warn("xhci: port %u failed to power on", port_index);
+            return -1;
+        }
+    }
+
+    // Clear any lingering change bits before initiating the reset
+    _ack_portsc_changes(port_index,
+        PORTSC_RW1C_BITS); // Clear all change bits
+
+    // Re-read and initiate the port reset
+    portsc.raw = *_portsc(port_index);
+    if (usb3) {
+        portsc.wpr = 1; // Warm port reset for USB 3.x
+    } else {
+        portsc.pr = 1;  // Standard port reset for USB 2.0
+    }
+    _write_portsc(port_index, portsc.raw);
+
+    // Wait for reset completion (PRC for USB2, WRC for USB3)
+    constexpr uint32_t RESET_TIMEOUT_US = 500000; // 500ms
+    constexpr uint32_t POLL_US = 1000;
+    uint32_t elapsed = 0;
+
+    while (elapsed < RESET_TIMEOUT_US) {
+        portsc.raw = *_portsc(port_index);
+
+        if (usb3 && portsc.wrc) break;
+        if (!usb3 && portsc.prc) break;
+
+        delay::us(POLL_US);
+        elapsed += POLL_US;
+    }
+
+    if (elapsed >= RESET_TIMEOUT_US) {
+        log::warn("xhci: port %u reset timed out", port_index);
+        return -1;
+    }
+
+    delay::us(3000); // Post-reset settling
+
+    // Clear the reset completion and status change bits
+    _ack_portsc_changes(port_index,
+        (1u << 17) | (1u << 18) | (1u << 19) | (1u << 21)); // CSC|PEC|WRC|PRC
+
+    delay::us(3000);
+
+    // Verify the port is enabled after reset
+    portsc.raw = *_portsc(port_index);
+    if (portsc.ped == 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+void xhci_hcd::_scan_ports() {
+    for (uint8_t i = 0; i < m_hc_params.max_ports; i++) {
+        xhci_portsc_register portsc;
+        portsc.raw = *_portsc(i);
+
+        if (portsc.ccs) {
+            _setup_device(i);
+        }
+    }
+}
+
+void xhci_hcd::_ring_doorbell(uint8_t slot_id, uint8_t target) {
+    barrier::dma_write();
+    m_doorbells[slot_id] = static_cast<uint32_t>(target);
+    (void)m_doorbells[slot_id]; // read-back flushes posted PCIe write
+}
+
+void xhci_hcd::_ring_cmd_doorbell() {
+    _ring_doorbell(0, XHCI_DOORBELL_TARGET_COMMAND_RING);
+}
+
+uint32_t xhci_hcd::_read_mfindex() const {
+    if (!m_xhc_runtime_regs) {
+        return 0xffffu;
+    }
+    return m_xhc_runtime_regs->mf_index & 0x3fff;
+}
+
+void xhci_hcd::_queue_deferred_doorbell(uint8_t slot_id, uint8_t target) {
+    if (m_pending_doorbell_count >= (sizeof(m_pending_doorbells) / sizeof(m_pending_doorbells[0]))) {
+        _ring_doorbell(slot_id, target);
+        return;
+    }
+    m_pending_doorbells[m_pending_doorbell_count++] = {slot_id, target};
+}
+
+volatile uint32_t* xhci_hcd::_portsc(uint8_t port_index) {
+    return reinterpret_cast<volatile uint32_t*>(
+        reinterpret_cast<uintptr_t>(m_xhc_op_regs) +
+        PORT_REGS_BASE_OFFSET + (static_cast<uint32_t>(port_index) * PORT_REGS_STRIDE)
+    );
+}
+
+void xhci_hcd::_write_portsc(uint8_t port_index, uint32_t value) {
+    *_portsc(port_index) = value & ~PORTSC_RW1C_BITS;
+    (void)*_portsc(port_index); // read-back flushes posted PCIe write
+}
+
+void xhci_hcd::_ack_portsc_changes(uint8_t port_index, uint32_t change_bits) {
+    uint32_t portsc = *_portsc(port_index);
+    portsc &= ~PORTSC_RW1C_BITS;                // preserve R/W bits, zero all RW1C
+    portsc |= (change_bits & PORTSC_RW1C_BITS); // write-1-to-clear the targeted ones
+    *_portsc(port_index) = portsc;
+    (void)*_portsc(port_index);                 // flush posted writes
+}
+
+bool xhci_hcd::_is_usb3_port(uint8_t port_index) {
+    return (m_usb3_port_map[port_index / 32] & (1u << (port_index % 32))) != 0;
+}
+
+int32_t xhci_hcd::_disable_slot(uint8_t slot_id) {
+    xhci_disable_slot_command_trb_t trb = {};
+    trb.trb_type = XHCI_TRB_TYPE_DISABLE_SLOT_CMD;
+    trb.slot_id = slot_id;
+    return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
+}
+
+void xhci_hcd::_teardown_device(uint8_t port_index) {
+    auto* device = m_port_devices[port_index];
+    if (!device) return;
+
+    uint8_t slot_id = device->slot_id();
+
+    // If this device is a hub, tear down all downstream devices first
+    if (device->is_hub()) {
+        for (uint8_t i = 1; i <= device->hub_num_ports(); i++) {
+            _teardown_hub_device(device, i);
+        }
+    }
+
+    _mark_async_endpoints_for_device_disconnecting(device);
+
+    // Notify USB Core before legacy waiters are woken so class drivers see
+    // disconnect state before they can retry transfers.
+    usb::core::device_disconnected(this, device);
+
+    _clear_async_endpoints_for_device(device, usb::transfer_status::device_gone);
+
+    // Wake any endpoint waiters so they don't hang (e.g., on disconnect)
+    RUN_ELEVATED({
+        for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
+            auto* ep = device->endpoint(i);
+            if (!ep) continue;
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            ep->result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+            ep->result().transfer_length = 0;
+            ep->set_completed(true);
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+            sync::wake_all(ep->completion_wq());
+        }
+
+        // Also wake any EP0 waiter
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->ctrl_result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+        device->ctrl_result().transfer_length = 0;
+        device->set_ctrl_completed(true);
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+        sync::wake_all(device->ctrl_completion_wq());
+    });
+
+    _disable_slot(slot_id); // tolerate failure (device may be gone)
+
+    // Clear slot-indexed HCD state before the USB core is allowed
+    // to release the underlying xhci_device.
+    m_dcbaa[slot_id] = 0;
+    m_port_devices[port_index] = nullptr;
+    m_slot_devices[slot_id] = nullptr;
+    usb::core::finalize_disconnected_device(this, device);
+}
+
+void xhci_hcd::_complete_endpoint_transfer(
+    sync::spinlock& lock, sync::wait_queue& wq,
+    xhci_transfer_completion_trb_t& result_out, bool* completed_out,
+    const xhci_transfer_completion_trb_t* event
+) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(lock);
+        result_out = *event;
+        *completed_out = true;
+        sync::spin_unlock_irqrestore(lock, irq);
+        sync::wake_one(wq);
+    });
+}
+
+int32_t xhci_hcd::_reset_endpoint(xhci_device* device, uint8_t dci) {
+    xhci_reset_endpoint_command_trb_t trb = {};
+    trb.trb_type = XHCI_TRB_TYPE_RESET_ENDPOINT_CMD;
+    trb.endpoint_id = dci;
+    trb.slot_id = device->slot_id();
+    return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
+}
+
+int32_t xhci_hcd::_stop_endpoint(xhci_device* device, uint8_t dci) {
+    xhci_stop_endpoint_command_trb_t trb = {};
+    trb.trb_type = XHCI_TRB_TYPE_STOP_ENDPOINT_CMD;
+    trb.endpoint_id = dci;
+    trb.slot_id = device->slot_id();
+    return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
+}
+
+int32_t xhci_hcd::_set_tr_dequeue_ptr(xhci_device* device, uint8_t dci,
+                                       uintptr_t new_dequeue_phys, uint8_t dcs) {
+    xhci_set_tr_dequeue_ptr_command_trb_t trb = {};
+    trb.trb_type = XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD;
+    trb.endpoint_id = dci;
+    trb.slot_id = device->slot_id();
+    trb.new_dequeue_ptr = (new_dequeue_phys & ~static_cast<uintptr_t>(0xF))
+                        | (static_cast<uintptr_t>(dcs) & 1);
+    return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
+}
+
+int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
+    if (!device || !device->ctrl_ring()) {
+        return -1;
+    }
+
+    // When a control transfer stalls, the next SETUP transaction clears the
+    // USB-level stall, but xHCI still needs its EP0 state repaired. Reset the
+    // endpoint and then advance the hardware dequeue pointer past the failed TD
+    // so the controller does not try to replay it on the next doorbell ring.
+    //
+    // Match Linux behavior: always proceed with Set TR Dequeue even if Reset
+    // Endpoint fails — the command will only fail if the endpoint wasn't
+    // halted, and in that case we still need the dequeue pointer advanced.
+    xhci_transfer_ring* ring = device->ctrl_ring();
+    uintptr_t dequeue_phys = ring->get_enqueue_phys();
+    uint8_t dequeue_cycle = ring->get_cycle_bit();
+
+    // VL805 (Raspberry Pi 4) quirk: the controller cannot handle Set TR
+    // Dequeue Pointer pointing at a Link TRB. If the enqueue pointer wrapped
+    // and is now at index 0, the physical address is the segment start which
+    // is safe; but if for any reason it points at the Link TRB slot, skip
+    // past it to the segment start with the toggled cycle bit.
+    uintptr_t link_phys = ring->get_physical_base()
+                        + (ring->get_max_trb_count() - 1) * sizeof(xhci_trb_t);
+    if (dequeue_phys == link_phys) {
+        dequeue_phys = ring->get_physical_base();
+        dequeue_cycle = !dequeue_cycle;
+    }
+
+    int32_t rc = _reset_endpoint(device, 1);
+    if (rc != 0) {
+        log::warn("xhci: recovering stalled EP0 slot %u: reset endpoint failed (ignored)",
+                  device->slot_id());
+    }
+
+    if (_set_tr_dequeue_ptr(device, 1, dequeue_phys, dequeue_cycle) != 0) {
+        log::warn("xhci: recovering stalled EP0 slot %u: set dequeue pointer failed",
+                  device->slot_id());
+        return -1;
+    }
+
+    // For FS/LS devices behind a HS hub, clear the hub's TT buffer so the
+    // shared Transaction Translator does not remain stuck from the stalled
+    // split transaction. Without this, a single-TT hub can block enumeration
+    // and traffic for all other downstream FS/LS devices.
+    if (device->output_ctx()) {
+        uint8_t dev_addr = 0;
+        if (m_hc_params.csz) {
+            auto* ctx = static_cast<xhci_device_context64*>(device->output_ctx());
+            dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+        } else {
+            auto* ctx = static_cast<xhci_device_context32*>(device->output_ctx());
+            dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+        }
+        _clear_tt_buffer(device, dev_addr);
+    }
+
+    return 0;
+}
+
+void xhci_hcd::_clear_tt_buffer(xhci_device* device, uint8_t dev_addr) {
+    if (!device || device->route_string() == 0)
+        return;
+    if (device->speed() != XHCI_USB_SPEED_LOW_SPEED &&
+        device->speed() != XHCI_USB_SPEED_FULL_SPEED)
+        return;
+
+    auto* hub = m_slot_devices[device->parent_slot_id()];
+    if (!hub || hub->speed() != XHCI_USB_SPEED_HIGH_SPEED)
+        return;
+
+    // USB 2.0 Section 11.24.2.3: CLEAR_TT_BUFFER
+    //   wValue: bits[3:0]=EP_Num, bits[10:4]=Dev_Addr, bits[12:11]=EP_Type, bit[15]=Dir
+    //   wIndex: 1 for single-TT hubs, port number for multi-TT
+    using namespace usb::hub;
+    uint16_t windex = hub->mtt() ? device->parent_port_num() : 1;
+    uint16_t base = static_cast<uint16_t>((dev_addr & 0x7F) << 4); // EP0, control type=0
+    // Clear IN direction (bit 15)
+    usb_control_transfer(hub, HUB_REQTYPE_SET_PORT,
+        8 /* CLEAR_TT_BUFFER */, base | 0x8000, windex, nullptr, 0);
+    // Clear OUT/SETUP direction
+    usb_control_transfer(hub, HUB_REQTYPE_SET_PORT,
+        8 /* CLEAR_TT_BUFFER */, base, windex, nullptr, 0);
+}
+
+void xhci_hcd::_setup_device(uint8_t port_index) {
+    uint8_t port_id = port_index + 1; // 1-based for logging and slot context
+
+    // Idempotent: skip if this port already has a device
+    if (m_port_devices[port_index]) {
+        return;
+    }
+
+    // Reset the port
+    if (_reset_port(port_index) != 0) {
+        log::error("xhci: failed to reset port %u", port_id);
+        return;
+    }
+
+    // Read port speed after reset
+    xhci_portsc_register portsc;
+    portsc.raw = *_portsc(port_index);
+    uint8_t port_speed = static_cast<uint8_t>(portsc.port_speed);
+
+    log::info("xhci: root port %u PORTSC=0x%08x speed=%u",
+              port_id, portsc.raw, port_speed);
+
+    // Enable a device slot
+    xhci_trb_t enable_slot = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+    xhci_command_completion_trb_t completion = {};
+
+    if (_send_command(&enable_slot, &completion) != 0) {
+        log::error("xhci: enable slot failed for port %u", port_id);
+        return;
+    }
+
+    uint8_t slot_id = completion.slot_id;
+
+    // Allocate the output device context
+    size_t dev_ctx_size = m_hc_params.csz
+        ? sizeof(xhci_device_context64)
+        : sizeof(xhci_device_context32);
+
+    void* output_ctx = alloc_xhci_memory(dev_ctx_size);
+    if (!output_ctx) {
+        log::error("xhci: failed to allocate device context for slot %u", slot_id);
+        _disable_slot(slot_id);
+        return;
+    }
+
+    // Write the physical address into DCBAA[slot_id]
+    m_dcbaa[slot_id] = xhci_get_physical_addr(output_ctx);
+
+    // Create and initialize the device object
+    auto* device = heap::ualloc_new<xhci_device>();
+    if (!device) {
+        log::error("xhci: failed to allocate xhci_device for slot %u", slot_id);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        _disable_slot(slot_id);
+        return;
+    }
+
+    if (device->init(port_id, slot_id, port_speed, m_hc_params.csz) != 0) {
+        log::error("xhci: failed to init xhci_device for slot %u", slot_id);
+        heap::ufree_delete(device);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        _disable_slot(slot_id);
+        return;
+    }
+
+    // Root hub device: route_string=0, root_port_id=port_id, no parent
+    device->set_root_port_id(port_id);
+
+    device->set_output_ctx(output_ctx);
+    m_port_devices[port_index] = device;
+    m_slot_devices[slot_id] = device;
+
+    _enumerate_device(device);
+}
+
+void xhci_hcd::queue_hub_enumerate(xhci_device* hub_device, uint8_t hub_port, uint8_t speed) {
+    xhci::hub_event evt;
+    evt.type = xhci::hub_event_type::enumerate;
+    evt.hub_slot_id = hub_device->slot_id();
+    evt.hub_port = hub_port;
+    evt.speed = speed;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_hub_event_lock);
+        uint8_t next_tail = (m_hub_event_tail + 1) % xhci::HUB_EVENT_QUEUE_SIZE;
+        if (next_tail != m_hub_event_head) {
+            m_hub_events[m_hub_event_tail] = evt;
+            m_hub_event_tail = next_tail;
+        } else {
+            log::error("xhci: hub event queue full");
+        }
+        sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
+
+        sync::irq_state irq2 = sync::spin_lock_irqsave(m_irq_lock);
+        m_event_pending = true;
+        sync::spin_unlock_irqrestore(m_irq_lock, irq2);
+        sync::wake_one(m_irq_wq);
+    });
+}
+
+void xhci_hcd::queue_hub_disconnect(xhci_device* hub_device, uint8_t hub_port) {
+    xhci::hub_event evt;
+    evt.type = xhci::hub_event_type::disconnect;
+    evt.hub_slot_id = hub_device->slot_id();
+    evt.hub_port = hub_port;
+    evt.speed = 0;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(m_hub_event_lock);
+        uint8_t next_tail = (m_hub_event_tail + 1) % xhci::HUB_EVENT_QUEUE_SIZE;
+        if (next_tail != m_hub_event_head) {
+            m_hub_events[m_hub_event_tail] = evt;
+            m_hub_event_tail = next_tail;
+        } else {
+            log::error("xhci: hub event queue full");
+        }
+        sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
+
+        sync::irq_state irq2 = sync::spin_lock_irqsave(m_irq_lock);
+        m_event_pending = true;
+        sync::spin_unlock_irqrestore(m_irq_lock, irq2);
+        sync::wake_one(m_irq_wq);
+    });
+}
+
+void xhci_hcd::_process_hub_events() {
+    while (true) {
+        xhci::hub_event evt;
+        bool has_event = false;
+
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(m_hub_event_lock);
+            if (m_hub_event_head != m_hub_event_tail) {
+                evt = m_hub_events[m_hub_event_head];
+                m_hub_event_head = (m_hub_event_head + 1) % xhci::HUB_EVENT_QUEUE_SIZE;
+                has_event = true;
+            }
+            sync::spin_unlock_irqrestore(m_hub_event_lock, irq);
+        });
+
+        if (!has_event) break;
+
+        auto* hub_device = m_slot_devices[evt.hub_slot_id];
+        if (!hub_device) continue;
+
+        if (evt.type == xhci::hub_event_type::enumerate) {
+            _setup_hub_device(hub_device, evt.hub_port, evt.speed);
+        } else if (evt.type == xhci::hub_event_type::disconnect) {
+            _teardown_hub_device(hub_device, evt.hub_port);
+        }
+    }
+}
+
+void xhci_hcd::_setup_hub_device(xhci_device* hub_device, uint8_t hub_port, uint8_t speed) {
+    if (!hub_device || hub_port == 0 || hub_port > xhci_device::MAX_HUB_PORTS) {
+        return;
+    }
+
+    // Don't re-enumerate if already present
+    if (hub_device->hub_child(hub_port)) {
+        return;
+    }
+
+    // Enable a device slot
+    xhci_trb_t enable_slot = XHCI_CONSTRUCT_CMD_TRB(XHCI_TRB_TYPE_ENABLE_SLOT_CMD);
+    xhci_command_completion_trb_t completion = {};
+
+    if (_send_command(&enable_slot, &completion) != 0) {
+        log::error("xhci: enable slot failed for hub slot %u port %u",
+                   hub_device->slot_id(), hub_port);
+        return;
+    }
+
+    uint8_t slot_id = completion.slot_id;
+
+    // Allocate the output device context
+    size_t dev_ctx_size = m_hc_params.csz
+        ? sizeof(xhci_device_context64)
+        : sizeof(xhci_device_context32);
+
+    void* output_ctx = alloc_xhci_memory(dev_ctx_size);
+    if (!output_ctx) {
+        log::error("xhci: failed to allocate device context for slot %u", slot_id);
+        _disable_slot(slot_id);
+        return;
+    }
+
+    m_dcbaa[slot_id] = xhci_get_physical_addr(output_ctx);
+
+    auto* device = heap::ualloc_new<xhci_device>();
+    if (!device) {
+        log::error("xhci: failed to allocate xhci_device for slot %u", slot_id);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        _disable_slot(slot_id);
+        return;
+    }
+
+    // Use 1-based hub_port as port_id for logging context
+    if (device->init(hub_port, slot_id, speed, m_hc_params.csz) != 0) {
+        log::error("xhci: failed to init xhci_device for slot %u", slot_id);
+        heap::ufree_delete(device);
+        free_xhci_memory(output_ctx);
+        m_dcbaa[slot_id] = 0;
+        _disable_slot(slot_id);
+        return;
+    }
+
+    // Compute route string: parent's route string with this hub_port in the
+    // lowest available nibble. Each tier occupies 4 bits of the route string
+    // (USB 3.1 spec Section 8.9, xHCI spec Section 6.2.2).
+    uint32_t parent_rs = hub_device->route_string();
+    uint32_t rs = parent_rs;
+    uint8_t port_nibble = (hub_port > 15) ? 15 : hub_port;
+    for (uint8_t shift = 0; shift < 20; shift += 4) {
+        if (((rs >> shift) & 0xF) == 0) {
+            rs |= (static_cast<uint32_t>(port_nibble) << shift);
+            break;
+        }
+    }
+
+    device->set_route_string(rs);
+    device->set_root_port_id(hub_device->root_port_id());
+
+    // Always track the direct parent for teardown/cleanup
+    device->set_parent_slot_id(hub_device->slot_id());
+    device->set_parent_port_num(hub_port);
+
+    // Propagate TT fields down the chain. For a HS hub these come from the
+    // hub descriptor; for non-HS hubs they were already inherited from the
+    // nearest HS ancestor. _configure_ctrl_ep_input_context walks up to find
+    // the actual HS hub when building the slot context.
+    device->set_tt_think_time(hub_device->tt_think_time());
+    device->set_mtt(hub_device->mtt());
+
+    device->set_output_ctx(output_ctx);
+    hub_device->set_hub_child(hub_port, device);
+    m_slot_devices[slot_id] = device;
+
+    log::info("xhci: hub slot %u port %u -> slot %u (route=0x%05x, speed=%u)",
+              hub_device->slot_id(), hub_port, slot_id, rs, speed);
+
+    _enumerate_device(device);
+}
+
+void xhci_hcd::_teardown_hub_device(xhci_device* hub_device, uint8_t hub_port) {
+    if (!hub_device || hub_port == 0 || hub_port > xhci_device::MAX_HUB_PORTS) {
+        return;
+    }
+
+    auto* device = hub_device->hub_child(hub_port);
+    if (!device) return;
+
+    uint8_t hub_slot_id = hub_device->slot_id();
+    uint8_t slot_id = device->slot_id();
+
+    // If this device is itself a hub, tear down its children first
+    if (device->is_hub()) {
+        for (uint8_t i = 1; i <= device->hub_num_ports(); i++) {
+            _teardown_hub_device(device, i);
+        }
+    }
+
+    _mark_async_endpoints_for_device_disconnecting(device);
+
+    usb::core::device_disconnected(this, device);
+
+    _clear_async_endpoints_for_device(device, usb::transfer_status::device_gone);
+
+    // Wake any endpoint waiters
+    RUN_ELEVATED({
+        for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
+            auto* ep = device->endpoint(i);
+            if (!ep) continue;
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            ep->result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+            ep->result().transfer_length = 0;
+            ep->set_completed(true);
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+            sync::wake_all(ep->completion_wq());
+        }
+
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->ctrl_result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
+        device->ctrl_result().transfer_length = 0;
+        device->set_ctrl_completed(true);
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+        sync::wake_all(device->ctrl_completion_wq());
+    });
+    _disable_slot(slot_id);
+
+    m_dcbaa[slot_id] = 0;
+    hub_device->set_hub_child(hub_port, nullptr);
+    m_slot_devices[slot_id] = nullptr;
+    usb::core::finalize_disconnected_device(this, device);
+
+    log::info("xhci: hub slot %u port %u device disconnected (slot %u)",
+              hub_slot_id, hub_port, slot_id);
+}
+
+int32_t xhci_hcd::configure_as_hub(xhci_device* device, uint8_t num_ports,
+                                    uint8_t tt_think_time, bool mtt) {
+    device->set_is_hub(true);
+    device->set_hub_num_ports(num_ports);
+    device->set_tt_think_time(tt_think_time);
+    device->set_mtt(mtt);
+
+    device->sync_input_ctx();
+
+    auto* input_ctrl = device->input_ctrl_ctx();
+    auto* slot_ctx = device->input_slot_ctx();
+
+    input_ctrl->add_flags = (1u << 0);
+    input_ctrl->drop_flags = 0;
+
+    slot_ctx->hub = 1;
+    slot_ctx->port_count = num_ports;
+    slot_ctx->mtt = mtt ? 1 : 0;
+    if (device->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
+        slot_ctx->tt_think_time = tt_think_time;
+    }
+
+    // xHCI spec Section 6.2.2.3: if the Hub field was not set before the
+    // first Configure Endpoint Command (which already ran in _configure_device),
+    // software must use Evaluate Context to update Hub/MTT/Ports/TTT fields.
+    xhci_evaluate_context_command_trb_t eval = {};
+    eval.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
+    eval.input_context_physical_base = device->input_ctx_phys();
+    eval.slot_id = device->slot_id();
+
+    int32_t rc = _send_command(reinterpret_cast<xhci_trb_t*>(&eval));
+    if (rc != 0) {
+        log::error("xhci: failed to evaluate hub context for slot %u", device->slot_id());
+    }
+    return rc;
+}
+
+void xhci_hcd::_enumerate_device(xhci_device* device) {
+    uint8_t port_id = device->port_id();
+    uint8_t slot_id = device->slot_id();
+    uint8_t port_speed = device->speed();
+
+    bool is_root_device = (device->route_string() == 0);
+    uint8_t port_index = port_id - 1;
+
+    #define ENUM_FAIL(msg, ...) do { \
+        log::error(msg, ##__VA_ARGS__); \
+        if (is_root_device) { \
+            _teardown_device(port_index); \
+        } else { \
+            auto* parent = m_slot_devices[device->parent_slot_id()]; \
+            if (parent) _teardown_hub_device(parent, device->parent_port_num()); \
+        } \
+        return; \
+    } while (0)
+
+    // Configure the input context for Address Device command
+    uint16_t max_packet_size = _initial_max_packet_size(port_speed);
+    _configure_ctrl_ep_input_context(device, max_packet_size);
+
+    // First address device with BSR=1, essentially blocking the SET_ADDRESS request,
+    // but still enables the control endpoint which we can use to get the device descriptor.
+    // Some legacy devices require their descriptor to be read before sending them a SET_ADDRESS command.
+    if (_address_device(device, true) != 0)
+        ENUM_FAIL("xhci: address device (BSR=1) failed for slot %u", slot_id);
+
+    // Read the first 8 bytes of the device descriptor to get bMaxPacketSize0.
+    // On VL805/VL817 the hub TT can babble under concurrent periodic traffic,
+    // so retry with CLEAR_TT_BUFFER between attempts.
+    usb::usb_device_descriptor desc = {};
+    int32_t rc = -1;
+    for (uint8_t attempt = 0; attempt < 3; attempt++) {
+        rc = _get_device_descriptor(device, &desc, 8);
+        if (rc == 0) break;
+        _clear_tt_buffer(device);
+        delay::us(10000);
+    }
+    if (rc != 0)
+        ENUM_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
+
+    // If the device reported a different max packet size, update the input context
+    if (desc.bMaxPacketSize0 != max_packet_size) {
+        max_packet_size = desc.bMaxPacketSize0;
+        _configure_ctrl_ep_input_context(device, max_packet_size);
+
+        // Send Evaluate Context to update the xHC's internal state
+        xhci_evaluate_context_command_trb_t eval_ctx = {};
+        eval_ctx.trb_type = XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD;
+        eval_ctx.input_context_physical_base = device->input_ctx_phys();
+        eval_ctx.slot_id = slot_id;
+
+        if (_send_command(reinterpret_cast<xhci_trb_t*>(&eval_ctx)) != 0)
+            ENUM_FAIL("xhci: evaluate context failed for slot %u", slot_id);
+    }
+
+    // Send the address device command again with BSR=0 this time
+    if (_address_device(device, false) != 0)
+        ENUM_FAIL("xhci: address device (BSR=0) failed for slot %u", slot_id);
+
+    // USB 2.0 spec Section 9.2.6.3: the device needs a 2 ms recovery interval
+    // after SET_ADDRESS completes before it can accept the next SETUP packet.
+    delay::us(10000);
+
+    // Sync the output device context into the input context
+    device->sync_input_ctx();
+
+    // Read the full device descriptor (retry with CLEAR_TT_BUFFER on failure).
+    // After BSR=0 the device has a real USB address, read it from the output
+    // slot context so CLEAR_TT_BUFFER targets the correct TT buffer entry.
+    uint8_t dev_addr = 0;
+    if (m_hc_params.csz) {
+        auto* ctx = static_cast<xhci_device_context64*>(device->output_ctx());
+        dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+    } else {
+        auto* ctx = static_cast<xhci_device_context32*>(device->output_ctx());
+        dev_addr = static_cast<uint8_t>(ctx->slot_context.device_address);
+    }
+
+    rc = -1;
+    for (uint8_t attempt = 0; attempt < 3; attempt++) {
+        rc = _get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor));
+        if (rc == 0) break;
+        _clear_tt_buffer(device, dev_addr);
+        delay::us(10000);
+    }
+    if (rc != 0)
+        ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
+
+    #undef ENUM_FAIL
+
+    log::info("xhci: port %u slot %u: USB %x.%x vid=0x%04x pid=0x%04x mps0=%u configs=%u",
+              port_id, slot_id,
+              desc.bcdUsb >> 8, (desc.bcdUsb >> 4) & 0xF,
+              desc.idVendor, desc.idProduct, desc.bMaxPacketSize0,
+              desc.bNumConfigurations);
+
+    _configure_device(device, desc);
+}
+
+void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_descriptor& desc) {
+    uint8_t slot_id = device->slot_id();
+
+    usb::usb_configuration_descriptor config = {};
+    if (_get_configuration_descriptor(device, &config) != 0) {
+        log::error("xhci: failed to read config descriptor for slot %u", slot_id);
+        return;
+    }
+
+    log::info("xhci: slot %u config: %u interface(s), totalLength=%u",
+              slot_id, config.bNumInterfaces, config.wTotalLength);
+
+    // Sync the input context with the xHC's current output context
+    // so slot and EP0 state are up-to-date before we add new endpoints
+    device->sync_input_ctx();
+
+    // Reset input control context flags (clear stale bits from ADDRESS_DEVICE)
+    auto* input_ctrl = device->input_ctrl_ctx();
+    input_ctrl->add_flags = (1u << 0);
+    input_ctrl->drop_flags = 0;
+
+    // Parse descriptors: track interfaces and associate endpoints
+    uint16_t offset = 0;
+    uint16_t data_length = config.wTotalLength > 9 ? config.wTotalLength - 9 : 0;
+    if (data_length > sizeof(config.data)) {
+        data_length = sizeof(config.data);
+    }
+
+    xhci_interface_info* current_iface = nullptr;
+
+    while (offset + sizeof(usb::usb_descriptor_header) <= data_length) {
+        auto* hdr = reinterpret_cast<usb::usb_descriptor_header*>(&config.data[offset]);
+        if (hdr->bLength < sizeof(usb::usb_descriptor_header)) {
+            log::warn("xhci: malformed descriptor with short length %u at offset %u",
+                      hdr->bLength, offset);
+            break;
+        }
+        if (offset + hdr->bLength > data_length) {
+            log::warn("xhci: descriptor overruns config buffer at offset %u (len=%u, remaining=%u)",
+                      offset, hdr->bLength,
+                      static_cast<unsigned>(data_length - offset));
+            break;
+        }
+
+        if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_INTERFACE) {
+            if (hdr->bLength >= sizeof(usb::usb_interface_descriptor) &&
+                device->num_interfaces() < xhci_device::MAX_INTERFACES) {
+                auto* iface_desc = reinterpret_cast<usb::usb_interface_descriptor*>(hdr);
+                uint8_t idx = device->num_interfaces();
+                device->set_num_interfaces(idx + 1);
+                current_iface = &device->interface_info_mut(idx);
+                current_iface->interface_number = iface_desc->bInterfaceNumber;
+                current_iface->alternate_setting = iface_desc->bAlternateSetting;
+                current_iface->interface_class = iface_desc->bInterfaceClass;
+                current_iface->interface_subclass = iface_desc->bInterfaceSubClass;
+                current_iface->interface_protocol = iface_desc->bInterfaceProtocol;
+                current_iface->hid_report_desc_length = 0;
+                current_iface->num_endpoints = 0;
+                log::info("xhci:   interface %u: class=0x%02x subclass=0x%02x protocol=0x%02x",
+                          iface_desc->bInterfaceNumber,
+                          iface_desc->bInterfaceClass,
+                          iface_desc->bInterfaceSubClass,
+                          iface_desc->bInterfaceProtocol);
+            }
+        } else if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_HID) {
+            if (current_iface && hdr->bLength >= 6) {
+                const uint8_t* hid_bytes = reinterpret_cast<const uint8_t*>(hdr);
+                uint8_t num_desc = hid_bytes[5];
+                for (uint8_t i = 0; i < num_desc; i++) {
+                    uint16_t desc_offset = static_cast<uint16_t>(6 + (i * 3));
+                    if (desc_offset + 3 > hdr->bLength) {
+                        break;
+                    }
+                    uint8_t desc_type = hid_bytes[desc_offset];
+                    uint16_t desc_len = static_cast<uint16_t>(hid_bytes[desc_offset + 1]) |
+                                        (static_cast<uint16_t>(hid_bytes[desc_offset + 2]) << 8);
+                    if (desc_type == usb::USB_DESCRIPTOR_HID_REPORT) {
+                        current_iface->hid_report_desc_length = desc_len;
+                        break;
+                    }
+                }
+            }
+        } else if (hdr->bDescriptorType == usb::USB_DESCRIPTOR_ENDPOINT) {
+            if (hdr->bLength >= sizeof(usb::usb_endpoint_descriptor)) {
+                auto* ep_desc = reinterpret_cast<usb::usb_endpoint_descriptor*>(hdr);
+                auto* ep = _create_endpoint(device, ep_desc);
+                if (ep) {
+                    _configure_endpoint_context(device, ep);
+                    if (current_iface && current_iface->num_endpoints < 16) {
+                        current_iface->endpoint_dcis[current_iface->num_endpoints++] = ep->dci();
+                    }
+                }
+            }
+        }
+
+        offset += hdr->bLength;
+    }
+
+    if (_configure_endpoints(device) != 0) {
+        return;
+    }
+
+    if (_set_configuration(device, config.bConfigurationValue) != 0) {
+        return;
+    }
+
+    log::info("xhci: slot %u configured", slot_id);
+
+    // Hand off to USB Core for class driver matching and binding
+    usb::core::device_configured(this, device, desc);
+}
+
+xhci_endpoint* xhci_hcd::_create_endpoint(xhci_device* device, const usb::usb_endpoint_descriptor* desc) {
+    auto* ep = heap::ualloc_new<xhci_endpoint>();
+    if (!ep) {
+        log::error("xhci: failed to allocate endpoint for slot %u", device->slot_id());
+        return nullptr;
+    }
+
+    if (ep->init(device->slot_id(), desc) != 0) {
+        heap::ufree_delete(ep);
+        return nullptr;
+    }
+
+    device->set_endpoint(ep->dci(), ep);
+
+    log::info("xhci:   EP%u %s (DCI %u), maxPacket=%u",
+               ep->endpoint_num(), ep->is_in() ? "IN" : "OUT",
+               ep->dci(), ep->max_packet_size());
+
+    return ep;
+}
+
+void xhci_hcd::_configure_endpoint_context(xhci_device* device, xhci_endpoint* ep) {
+    auto* input_ctrl = device->input_ctrl_ctx();
+    auto* slot_ctx = device->input_slot_ctx();
+
+    // Set the add flag for this endpoint's DCI
+    input_ctrl->add_flags |= (1u << ep->dci());
+
+    // Update context_entries to the highest DCI
+    if (ep->dci() > slot_ctx->context_entries) {
+        slot_ctx->context_entries = ep->dci();
+    }
+
+    // Zero the endpoint context before filling to clear any stale data
+    auto* ep_ctx = device->input_ep_ctx(ep->dci());
+    size_t ep_ctx_size = m_hc_params.csz ? sizeof(xhci_endpoint_context64) : sizeof(xhci_endpoint_context32);
+    string::memset(ep_ctx, 0, ep_ctx_size);
+
+    // Compute xHCI interval from USB bInterval
+    // For HS/SS interrupt/isoch: xHCI interval = bInterval - 1
+    // For FS/LS interrupt: use raw bInterval (clamped to valid range)
+    uint8_t xhci_interval = ep->interval();
+    uint8_t speed = device->speed();
+    uint8_t xfer_type = ep->transfer_type(); // 1=isoch, 3=interrupt
+    if (speed == XHCI_USB_SPEED_HIGH_SPEED ||
+        speed == XHCI_USB_SPEED_SUPER_SPEED ||
+        speed == XHCI_USB_SPEED_SUPER_SPEED_PLUS) {
+        if (xhci_interval > 0) {
+            xhci_interval--;
+        }
+    } else if ((speed == XHCI_USB_SPEED_FULL_SPEED || speed == XHCI_USB_SPEED_LOW_SPEED) &&
+               (xfer_type == 3 || xfer_type == 1)) {
+        // FS/LS interrupt and isochronous: bInterval is in frames (1ms).
+        // xHCI Interval is an exponent: period = 2^Interval * 125μs.
+        // Convert: microframes = bInterval * 8, Interval = floor(log2(microframes)).
+        uint32_t microframes = static_cast<uint32_t>(xhci_interval > 0 ? xhci_interval : 1) * 8;
+        uint8_t exponent = 0;
+        for (uint32_t v = microframes; v > 1; v >>= 1) exponent++;
+        if (exponent < 3) exponent = 3;
+        if (exponent > 10) exponent = 10;
+        xhci_interval = exponent;
+    }
+
+    ep_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
+    ep_ctx->endpoint_type = ep->xhc_ep_type();
+    ep_ctx->max_packet_size = ep->max_packet_size();
+    ep_ctx->max_burst_size = 0;
+    ep_ctx->error_count = 3;
+    ep_ctx->interval = xhci_interval;
+    ep_ctx->average_trb_length = ep->max_packet_size();
+    ep_ctx->max_esit_payload_lo = ep->max_packet_size();
+    ep_ctx->max_esit_payload_hi = 0;
+    ep_ctx->transfer_ring_dequeue_ptr = ep->ring()->get_physical_base();
+    ep_ctx->dcs = ep->ring()->get_cycle_bit();
+}
+
+int32_t xhci_hcd::_configure_endpoints(xhci_device* device) {
+    // Ensure slot context is included in the input context
+    auto* input_ctrl = device->input_ctrl_ctx();
+    input_ctrl->add_flags |= (1u << 0);
+    input_ctrl->drop_flags = 0;
+
+    xhci_configure_endpoint_command_trb_t trb = {};
+    trb.trb_type = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
+    trb.input_context_physical_base = device->input_ctx_phys();
+    trb.slot_id = device->slot_id();
+
+    return _send_command(reinterpret_cast<xhci_trb_t*>(&trb));
+}
+
+int32_t xhci_hcd::_set_configuration(xhci_device* device, uint8_t config_value) {
+    xhci_device_request_packet req = {};
+    req.bRequestType = 0x00; // Host to Device, Standard, Device
+    req.bRequest = 9;        // SET_CONFIGURATION
+    req.wValue = config_value;
+    req.wIndex = 0;
+    req.wLength = 0;
+
+    return _send_control_transfer(device, req, nullptr, 0);
+}
+
+xhci::endpoint_async_state* xhci_hcd::_ensure_endpoint_async_state(xhci_endpoint* ep) {
+    if (!ep) {
+        return nullptr;
+    }
+    return ep->ensure_async_state();
+}
+
+void xhci_hcd::_enqueue_pending_request(xhci::endpoint_async_state& state,
+                                        usb::transfer_request& request) {
+    request.next = nullptr;
+    if (!state.pending_tail) {
+        state.pending_head = &request;
+        state.pending_tail = &request;
+        return;
+    }
+    state.pending_tail->next = &request;
+    state.pending_tail = &request;
+}
+
+void xhci_hcd::_finish_request(usb::transfer_request& request,
+                               usb::transfer_status status,
+                               uint32_t actual_length) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(request.lock);
+        request.status = status;
+        request.actual_length = actual_length;
+        request.pending = false;
+        request.next = nullptr;
+        request.hcd_private = nullptr;
+        sync::spin_unlock_irqrestore(request.lock, irq);
+        sync::wake_all(request.complete_wq);
+    });
+}
+
+int32_t xhci_hcd::_start_async_request(xhci_device* device,
+                                       xhci_endpoint* ep,
+                                       xhci::endpoint_async_state& state,
+                                       usb::transfer_request& request,
+                                       bool defer_doorbell) {
+    if (!device || !ep || request.requested_length > paging::PAGE_SIZE_4KB) {
+        return -1;
+    }
+
+    int32_t rc = 0;
+    xhci_normal_trb_t normal = {};
+    normal.trb_type = XHCI_TRB_TYPE_NORMAL;
+    normal.data_buffer_physical_base = ep->dma_buffer_phys();
+    normal.trb_transfer_length = request.requested_length;
+    normal.td_size = 0;
+    normal.interrupter_target = 0;
+    normal.ioc = 1;
+    normal.isp = ep->is_in() ? 1 : 0;
+    normal.chain = 0;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.disconnecting || state.interrupt_in_stream.active ||
+            state.active_request != &request || !ep->ring() ||
+            !ep->ring()->can_enqueue(1)) {
+            rc = -1;
+        } else {
+            if (!ep->is_in() && request.buffer && request.requested_length > 0) {
+                string::memcpy(ep->dma_buffer(), request.buffer, request.requested_length);
+            }
+            request.hcd_private = ep;
+            ep->ring()->enqueue(reinterpret_cast<xhci_trb_t*>(&normal));
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (rc != 0) {
+        return rc;
+    }
+
+    if (defer_doorbell) {
+        _queue_deferred_doorbell(device->slot_id(), ep->dci());
+    } else {
+        _ring_doorbell(device->slot_id(), ep->dci());
+    }
+    return 0;
+}
+
+void xhci_hcd::_kick_async_request_queue(xhci_device* device,
+                                         xhci_endpoint* ep,
+                                         xhci::endpoint_async_state& state,
+                                         bool defer_doorbell) {
+    while (true) {
+        usb::transfer_request* next = nullptr;
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (!state.disconnecting &&
+                !state.interrupt_in_stream.active &&
+                !state.active_request &&
+                state.pending_head) {
+                next = state.pending_head;
+                state.pending_head = next->next;
+                if (!state.pending_head) {
+                    state.pending_tail = nullptr;
+                }
+                next->next = nullptr;
+                state.active_request = next;
+                state.active_request_cancelled = false;
+            }
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+
+        if (!next) {
+            return;
+        }
+
+        if (_start_async_request(device, ep, state, *next, defer_doorbell) == 0) {
+            return;
+        }
+
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (state.active_request == next) {
+                state.active_request = nullptr;
+                state.active_request_cancelled = false;
+            }
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+        _finish_request(*next, usb::transfer_status::io_error, 0);
+    }
+}
+
+void xhci_hcd::_complete_async_request(xhci_device* device,
+                                       xhci_endpoint* ep,
+                                       xhci::endpoint_async_state& state,
+                                       const xhci_transfer_completion_trb_t* event) {
+    usb::transfer_request* request = nullptr;
+    bool cancelled = false;
+    uint32_t requested = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        request = state.active_request;
+        cancelled = state.active_request_cancelled;
+        if (request) {
+            requested = request->requested_length;
+        }
+        state.active_request = nullptr;
+        state.active_request_cancelled = false;
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (!request) {
+        return;
+    }
+
+    if (cancelled) {
+        _finish_request(*request, usb::transfer_status::cancelled, 0);
+        _kick_async_request_queue(device, ep, state, ep->transfer_type() == 3 && ep->is_in());
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (!state.active_request && !state.pending_head &&
+                !state.interrupt_in_stream.active &&
+                !state.interrupt_in_stream.closing &&
+                !state.interrupt_in_stream.payloads &&
+                !state.interrupt_in_stream.payload_storage) {
+                state.async_enabled = false;
+            }
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+        return;
+    }
+
+    uint32_t residual = event->transfer_length;
+    uint32_t actual = residual <= requested ? (requested - residual) : 0;
+    usb::transfer_status status = usb::transfer_status::io_error;
+    if (event->completion_code == XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        status = usb::transfer_status::ok;
+    } else if (event->completion_code == XHCI_TRB_COMPLETION_CODE_SHORT_PACKET) {
+        status = (request->flags & usb::allow_short)
+            ? usb::transfer_status::short_packet
+            : usb::transfer_status::io_error;
+        if (status == usb::transfer_status::io_error) {
+            actual = 0;
+        }
+    } else if (event->completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+        status = usb::transfer_status::stalled;
+        actual = 0;
+    } else {
+        actual = 0;
+    }
+
+    if (ep->is_in() && request->buffer && request->requested_length > 0) {
+        string::memset(request->buffer, 0, request->requested_length);
+        if ((status == usb::transfer_status::ok || status == usb::transfer_status::short_packet) &&
+            actual > 0) {
+            barrier::dma_read();
+            string::memcpy(request->buffer, ep->dma_buffer(), actual);
+        }
+    }
+
+    _finish_request(*request, status, actual);
+    _kick_async_request_queue(device, ep, state, ep->transfer_type() == 3 && ep->is_in());
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (!state.active_request && !state.pending_head &&
+            !state.interrupt_in_stream.active &&
+            !state.interrupt_in_stream.closing &&
+            !state.interrupt_in_stream.payloads &&
+            !state.interrupt_in_stream.payload_storage) {
+            state.async_enabled = false;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+}
+
+int32_t xhci_hcd::_queue_interrupt_in_stream_td(xhci_device* device,
+                                                xhci_endpoint* ep,
+                                                xhci::endpoint_async_state& state,
+                                                bool defer_doorbell) {
+    if (!device || !ep || !state.interrupt_in_stream.active) {
+        return -1;
+    }
+
+    uint32_t length = state.interrupt_in_stream.payload_length;
+    if (length == 0 || length > paging::PAGE_SIZE_4KB) {
+        return -1;
+    }
+
+    int32_t rc = 0;
+    xhci_normal_trb_t normal = {};
+    normal.trb_type = XHCI_TRB_TYPE_NORMAL;
+    normal.data_buffer_physical_base = ep->dma_buffer_phys();
+    normal.trb_transfer_length = length;
+    normal.td_size = 0;
+    normal.interrupter_target = 0;
+    normal.ioc = 1;
+    normal.isp = 1;
+    normal.chain = 0;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.disconnecting || state.active_request || !ep->ring() ||
+            !ep->ring()->can_enqueue(1)) {
+            rc = -1;
+        } else {
+            ep->ring()->enqueue(reinterpret_cast<xhci_trb_t*>(&normal));
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (rc != 0) {
+        return rc;
+    }
+
+    if (defer_doorbell) {
+        _queue_deferred_doorbell(device->slot_id(), ep->dci());
+    } else {
+        _ring_doorbell(device->slot_id(), ep->dci());
+    }
+    return 0;
+}
+
+bool xhci_hcd::_queue_interrupt_in_stream_payload(xhci::interrupt_in_stream_state& stream,
+                                                  const uint8_t* data,
+                                                  uint32_t length,
+                                                  uint16_t mfindex,
+                                                  uint64_t queued_t_us,
+                                                  uint32_t* seq_out) {
+    if (!stream.active || !stream.payloads || !stream.payload_storage || stream.queue_depth == 0) {
+        return false;
+    }
+
+    if (stream.count >= stream.queue_depth) {
+        stream.head = static_cast<uint8_t>((stream.head + 1) % stream.queue_depth);
+        stream.count--;
+        stream.dropped++;
+    }
+
+    uint8_t idx = static_cast<uint8_t>((stream.head + stream.count) % stream.queue_depth);
+    auto& payload = stream.payloads[idx];
+    payload.seq = stream.next_seq++;
+    payload.mfindex = mfindex;
+    payload.len = static_cast<uint16_t>(length);
+    payload.queued_t_us = queued_t_us;
+    string::memset(payload.data, 0, stream.payload_length);
+    if (length > 0) {
+        string::memcpy(payload.data, data, length);
+    }
+    stream.count++;
+    if (seq_out) {
+        *seq_out = payload.seq;
+    }
+    return true;
+}
+
+void xhci_hcd::_complete_interrupt_in_stream(xhci_device* device,
+                                             xhci_endpoint* ep,
+                                             xhci::endpoint_async_state& state,
+                                             const xhci::xhci_transfer_completion_trb_t* event) {
+    bool was_closing = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.interrupt_in_stream.closing) {
+            state.interrupt_in_stream.closing = false;
+            was_closing = true;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+    if (was_closing) {
+        return;
+    }
+
+    if (!state.interrupt_in_stream.active) {
+        return;
+    }
+
+    if (event->completion_code == XHCI_TRB_COMPLETION_CODE_MISSED_SERVICE) {
+        // The xHC found no TD at the scheduled polling interval. This is
+        // recoverable: re-arm with an immediate doorbell so the endpoint
+        // resumes at the next interval without killing the stream.
+        if (_queue_interrupt_in_stream_td(device, ep, state, false) != 0) {
+            RUN_ELEVATED({
+                sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+                state.interrupt_in_stream.active = false;
+                sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+            });
+        }
+        return;
+    }
+
+    if (event->completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS &&
+        event->completion_code != XHCI_TRB_COMPLETION_CODE_SHORT_PACKET) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            state.interrupt_in_stream.active = false;
+            state.interrupt_in_stream.closing = false;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+            sync::wake_all(state.interrupt_in_stream.available_wq);
+        });
+        return;
+    }
+
+    uint32_t requested = state.interrupt_in_stream.payload_length;
+    uint32_t residual = event->transfer_length;
+    uint32_t actual = residual <= requested ? (requested - residual) : 0;
+    if (actual > requested) {
+        actual = requested;
+    }
+
+    barrier::dma_read();
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state.interrupt_in_stream.active) {
+            _queue_interrupt_in_stream_payload(
+                state.interrupt_in_stream,
+                static_cast<const uint8_t*>(ep->dma_buffer()),
+                actual,
+                static_cast<uint16_t>(_read_mfindex()),
+                clock::now_ns() / 1000,
+                nullptr);
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (_queue_interrupt_in_stream_td(device, ep, state, true) != 0) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            state.interrupt_in_stream.active = false;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+    }
+
+    RUN_ELEVATED(sync::wake_one(state.interrupt_in_stream.available_wq));
+}
+
+void xhci_hcd::_clear_async_endpoint_state(xhci_device* /*device*/,
+                                           xhci_endpoint* ep,
+                                           usb::transfer_status status) {
+    if (!ep || !ep->async_state()) {
+        return;
+    }
+
+    auto* state = ep->async_state();
+    usb::transfer_request* active = nullptr;
+    usb::transfer_request* pending = nullptr;
+    bool wake_stream = false;
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        state->disconnecting = true;
+        state->async_enabled = false;
+        active = state->active_request;
+        pending = state->pending_head;
+        state->active_request = nullptr;
+        state->pending_head = nullptr;
+        state->pending_tail = nullptr;
+        state->active_request_cancelled = false;
+        if (state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
+            state->interrupt_in_stream.payloads || state->interrupt_in_stream.payload_storage) {
+            state->interrupt_in_stream.active = false;
+            state->interrupt_in_stream.closing = false;
+            state->interrupt_in_stream.head = 0;
+            state->interrupt_in_stream.count = 0;
+            wake_stream = true;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (active) {
+        _finish_request(*active, status, 0);
+    }
+    while (pending) {
+        usb::transfer_request* next = pending->next;
+        _finish_request(*pending, status, 0);
+        pending = next;
+    }
+    if (wake_stream) {
+        RUN_ELEVATED(sync::wake_all(state->interrupt_in_stream.available_wq));
+    }
+}
+
+void xhci_hcd::_mark_async_endpoints_for_device_disconnecting(xhci_device* device) {
+    if (!device) {
+        return;
+    }
+    for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
+        auto* ep = device->endpoint(i);
+        if (!ep || !ep->async_state()) {
+            continue;
+        }
+        auto* state = ep->async_state();
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            state->disconnecting = true;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+    }
+}
+
+void xhci_hcd::_clear_async_endpoints_for_device(xhci_device* device,
+                                                 usb::transfer_status status) {
+    if (!device) {
+        return;
+    }
+    for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
+        _clear_async_endpoint_state(device, device->endpoint(i), status);
+    }
+}
+
+int32_t xhci_hcd::usb_submit_transfer_async(xhci_device* device,
+                                            usb::transfer_request& request) {
+    if (!device) {
+        return -1;
+    }
+
+    auto* ep = device->endpoint_by_address(request.endpoint_addr);
+    if (!ep || ep->endpoint_num() == 0 || request.requested_length > paging::PAGE_SIZE_4KB ||
+        (!request.buffer && request.requested_length > 0)) {
+        return -1;
+    }
+
+    auto* state = _ensure_endpoint_async_state(ep);
+    if (!state) {
+        return -1;
+    }
+
+    int32_t rc = 0;
+    bool start_now = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state->disconnecting || state->interrupt_in_stream.active ||
+            state->interrupt_in_stream.closing ||
+            state->interrupt_in_stream.payloads ||
+            state->interrupt_in_stream.payload_storage ||
+            request.pending || request.next != nullptr || request.hcd_private != nullptr) {
+            rc = -1;
+        } else {
+            state->async_enabled = true;
+            request.actual_length = 0;
+            request.status = usb::transfer_status::invalid;
+            request.pending = true;
+            request.next = nullptr;
+            if (!state->active_request) {
+                state->active_request = &request;
+                state->active_request_cancelled = false;
+                start_now = true;
+            } else {
+                _enqueue_pending_request(*state, request);
+            }
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (rc != 0) {
+        return rc;
+    }
+
+    if (start_now && _start_async_request(device, ep, *state, request, false) != 0) {
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (state->active_request == &request) {
+                state->active_request = nullptr;
+                state->active_request_cancelled = false;
+            }
+            request.pending = false;
+            request.status = usb::transfer_status::io_error;
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+        request.hcd_private = nullptr;
+        return -1;
+    }
+
+    return 0;
+}
+
+void xhci_hcd::usb_cancel_transfer(xhci_device* device,
+                                   usb::transfer_request& request) {
+    if (!device) {
+        return;
+    }
+
+    auto* ep = device->endpoint_by_address(request.endpoint_addr);
+    if (!ep || !ep->async_state()) {
+        return;
+    }
+    auto* state = ep->async_state();
+
+    usb::transfer_request* prev = nullptr;
+    usb::transfer_request* cur = nullptr;
+    bool queued = false;
+    bool active = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        cur = state->pending_head;
+        while (cur) {
+            if (cur == &request) {
+                if (prev) {
+                    prev->next = cur->next;
+                } else {
+                    state->pending_head = cur->next;
+                }
+                if (state->pending_tail == cur) {
+                    state->pending_tail = prev;
+                }
+                cur->next = nullptr;
+                queued = true;
+                break;
+            }
+            prev = cur;
+            cur = cur->next;
+        }
+
+        if (!queued && state->active_request == &request) {
+            state->active_request_cancelled = true;
+            active = true;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (queued) {
+        _finish_request(request, usb::transfer_status::cancelled, 0);
+        RUN_ELEVATED({
+            sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+            if (!state->active_request && !state->pending_head &&
+                !state->interrupt_in_stream.active &&
+                !state->interrupt_in_stream.closing &&
+                !state->interrupt_in_stream.payloads &&
+                !state->interrupt_in_stream.payload_storage) {
+                state->async_enabled = false;
+            }
+            sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        });
+    } else if (active) {
+        log::warn("xhci: cancel requested for active transfer on EP%u, will complete when hardware retires it",
+                  ep->endpoint_num());
+    }
+}
+
+int32_t xhci_hcd::usb_open_interrupt_in_stream(xhci_device* device,
+                                               uint8_t endpoint_addr,
+                                               uint32_t payload_length) {
+    if (!device) {
+        return -1;
+    }
+    auto* ep = device->endpoint_by_address(endpoint_addr);
+    if (!ep || !ep->is_in() || ep->transfer_type() != 3 ||
+        payload_length == 0 || payload_length > paging::PAGE_SIZE_4KB) {
+        return -1;
+    }
+
+    auto* state = _ensure_endpoint_async_state(ep);
+    if (!state) {
+        return -1;
+    }
+
+    constexpr uint8_t STREAM_QUEUE_DEPTH = 2;
+    auto* payloads = static_cast<xhci::interrupt_in_payload*>(
+        heap::ualloc(static_cast<size_t>(STREAM_QUEUE_DEPTH) * sizeof(xhci::interrupt_in_payload)));
+    auto* storage = static_cast<uint8_t*>(
+        heap::ualloc(static_cast<size_t>(STREAM_QUEUE_DEPTH) * payload_length));
+    if (!payloads || !storage) {
+        if (payloads) heap::ufree(payloads);
+        if (storage) heap::ufree(storage);
+        return -1;
+    }
+
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state->disconnecting || state->active_request || state->pending_head ||
+            state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
+            state->interrupt_in_stream.payloads || state->interrupt_in_stream.payload_storage) {
+            rc = -1;
+        } else {
+            state->async_enabled = true;
+            state->interrupt_in_stream.active = true;
+            state->interrupt_in_stream.closing = false;
+            state->interrupt_in_stream.payload_length = payload_length;
+            state->interrupt_in_stream.queue_depth = STREAM_QUEUE_DEPTH;
+            state->interrupt_in_stream.payloads = payloads;
+            state->interrupt_in_stream.payload_storage = storage;
+            state->interrupt_in_stream.head = 0;
+            state->interrupt_in_stream.count = 0;
+            state->interrupt_in_stream.next_seq = 1;
+            state->interrupt_in_stream.dropped = 0;
+            state->interrupt_in_stream.available_wq.init();
+            for (uint8_t i = 0; i < STREAM_QUEUE_DEPTH; i++) {
+                state->interrupt_in_stream.payloads[i].data =
+                    storage + (static_cast<size_t>(i) * payload_length);
+                state->interrupt_in_stream.payloads[i].seq = 0;
+                state->interrupt_in_stream.payloads[i].mfindex = 0xffff;
+                state->interrupt_in_stream.payloads[i].len = 0;
+                state->interrupt_in_stream.payloads[i].queued_t_us = 0;
+            }
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (rc != 0) {
+        heap::ufree(payloads);
+        heap::ufree(storage);
+        return rc;
+    }
+
+    rc = _queue_interrupt_in_stream_td(device, ep, *state, false);
+    if (rc != 0) {
+        usb_close_interrupt_in_stream(device, endpoint_addr);
+        return rc;
+    }
+
+    return 0;
+}
+
+int32_t xhci_hcd::usb_read_interrupt_in_stream(xhci_device* device,
+                                               uint8_t endpoint_addr,
+                                               void* buffer,
+                                               uint32_t buffer_len,
+                                               uint32_t* out_length) {
+    if (!device || !buffer || buffer_len == 0) {
+        return -1;
+    }
+    auto* ep = device->endpoint_by_address(endpoint_addr);
+    if (!ep || !ep->async_state()) {
+        return -1;
+    }
+    auto* state = ep->async_state();
+
+    bool got_payload = false;
+    uint32_t actual = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        while (true) {
+            if (!state->interrupt_in_stream.active) {
+                break;
+            }
+            if (state->interrupt_in_stream.count > 0) {
+                auto& payload = state->interrupt_in_stream.payloads[state->interrupt_in_stream.head];
+                state->interrupt_in_stream.head = static_cast<uint8_t>(
+                    (state->interrupt_in_stream.head + 1) %
+                    state->interrupt_in_stream.queue_depth);
+                state->interrupt_in_stream.count--;
+                actual = payload.len < buffer_len ? payload.len : buffer_len;
+                string::memset(buffer, 0, buffer_len);
+                if (actual > 0) {
+                    string::memcpy(buffer, payload.data, actual);
+                }
+                got_payload = true;
+                break;
+            }
+            irq = sync::wait(state->interrupt_in_stream.available_wq,
+                             ep->completion_lock(), irq);
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (!got_payload) {
+        if (out_length) *out_length = 0;
+        return -1;
+    }
+
+    if (out_length) {
+        *out_length = actual;
+    }
+    return 0;
+}
+
+void xhci_hcd::usb_close_interrupt_in_stream(xhci_device* device,
+                                             uint8_t endpoint_addr) {
+    if (!device) {
+        return;
+    }
+    auto* ep = device->endpoint_by_address(endpoint_addr);
+    if (!ep || !ep->async_state()) {
+        return;
+    }
+    auto* state = ep->async_state();
+
+    uint8_t* storage = nullptr;
+    xhci::interrupt_in_payload* payloads = nullptr;
+    bool need_stop = false;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (state->interrupt_in_stream.active || state->interrupt_in_stream.closing ||
+            state->interrupt_in_stream.payload_storage || state->interrupt_in_stream.payloads) {
+            need_stop = state->interrupt_in_stream.active;
+            state->interrupt_in_stream.active = false;
+            state->interrupt_in_stream.closing = true;
+            storage = state->interrupt_in_stream.payload_storage;
+            payloads = state->interrupt_in_stream.payloads;
+            state->interrupt_in_stream.payload_storage = nullptr;
+            state->interrupt_in_stream.payloads = nullptr;
+            state->interrupt_in_stream.payload_length = 0;
+            state->interrupt_in_stream.queue_depth = 0;
+            state->interrupt_in_stream.head = 0;
+            state->interrupt_in_stream.count = 0;
+            state->interrupt_in_stream.next_seq = 1;
+            state->interrupt_in_stream.dropped = 0;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+        sync::wake_all(state->interrupt_in_stream.available_wq);
+    });
+
+    if (need_stop) {
+        (void)_stop_endpoint(device, ep->dci());
+    }
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        state->interrupt_in_stream.closing = false;
+        if (!state->active_request && !state->pending_head) {
+            state->async_enabled = false;
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    if (payloads) {
+        heap::ufree(payloads);
+    }
+    if (storage) {
+        heap::ufree(storage);
+    }
+}
+
+void xhci_hcd::release_disconnected_device(xhci_device* device) {
+    if (!device) {
+        return;
+    }
+
+    void* output_ctx = device->output_ctx();
+    device->destroy();
+    if (output_ctx) {
+        free_xhci_memory(output_ctx);
+    }
+    heap::ufree_delete(device);
+}
+
+void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t max_packet_size) {
+    size_t ctx_size = m_hc_params.csz
+        ? sizeof(xhci::xhci_input_context64)
+        : sizeof(xhci::xhci_input_context32);
+    string::memset(device->input_ctrl_ctx(), 0, ctx_size);
+
+    auto* input_ctrl = device->input_ctrl_ctx();
+    auto* slot_ctx = device->input_slot_ctx();
+    auto* ep0_ctx = device->input_ctrl_ep_ctx();
+
+    // Enable slot context (A0) and control endpoint context (A1)
+    input_ctrl->add_flags = (1 << 0) | (1 << 1);
+    input_ctrl->drop_flags = 0;
+
+    slot_ctx->route_string = device->route_string();
+    slot_ctx->speed = device->speed();
+    slot_ctx->context_entries = 1;
+    slot_ctx->interrupter_target = 0;
+
+    if (device->route_string() == 0) {
+        // Root hub device: port_id is the root hub port number
+        slot_ctx->root_hub_port_num = device->port_id();
+    } else {
+        // Hub-downstream device: use the root port of the topology chain
+        slot_ctx->root_hub_port_num = device->root_port_id();
+
+        // xHCI spec Section 6.2.2: parent_hub_slot_id and parent_port_number
+        // shall reference the nearest HS hub providing the TT, only for LS/FS
+        // devices. Walk up the hub chain to find it.
+        if (device->speed() == XHCI_USB_SPEED_LOW_SPEED ||
+            device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
+            auto* hub = m_slot_devices[device->parent_slot_id()];
+            uint8_t port_on_hub = device->parent_port_num();
+            while (hub && hub->speed() != XHCI_USB_SPEED_HIGH_SPEED
+                       && hub->parent_slot_id() != 0) {
+                port_on_hub = hub->parent_port_num();
+                hub = m_slot_devices[hub->parent_slot_id()];
+            }
+            if (hub && hub->speed() == XHCI_USB_SPEED_HIGH_SPEED) {
+                slot_ctx->parent_hub_slot_id = hub->slot_id();
+                slot_ctx->parent_port_number = port_on_hub;
+                slot_ctx->mtt = hub->mtt() ? 1 : 0;
+                log::info("xhci: slot %u TT: hub_slot=%u hub_port=%u mtt=%u",
+                          device->slot_id(), hub->slot_id(), port_on_hub,
+                          hub->mtt() ? 1 : 0);
+            } else {
+                log::info("xhci: slot %u TT: no HS hub found (parent slot %u speed=%u)",
+                          device->slot_id(), device->parent_slot_id(),
+                          hub ? hub->speed() : 0xFF);
+            }
+        }
+    }
+
+    log::info("xhci: slot %u input ctx: route=0x%05x speed=%u root_port=%u mps=%u",
+              device->slot_id(), slot_ctx->route_string, slot_ctx->speed,
+              slot_ctx->root_hub_port_num, max_packet_size);
+
+    ep0_ctx->endpoint_state = XHCI_ENDPOINT_STATE_DISABLED;
+    ep0_ctx->endpoint_type = XHCI_ENDPOINT_TYPE_CONTROL;
+    ep0_ctx->max_packet_size = max_packet_size;
+    ep0_ctx->max_burst_size = 0;
+    ep0_ctx->error_count = 3;
+    ep0_ctx->interval = 0;
+    ep0_ctx->average_trb_length = 8;
+    ep0_ctx->max_esit_payload_lo = 0;
+    ep0_ctx->transfer_ring_dequeue_ptr =
+        device->ctrl_ring()->get_physical_base();
+    ep0_ctx->dcs = device->ctrl_ring()->get_cycle_bit();
+}
+
+int32_t xhci_hcd::_address_device(xhci_device* device, bool bsr) {
+    // Construct the Address Device TRB
+    xhci_address_device_command_trb_t address_trb;
+    address_trb.input_context_physical_base = device->input_ctx_phys();
+    address_trb.rsvd = 0;
+    address_trb.cycle_bit = 0;
+    address_trb.rsvd1 = 0;
+
+    /*
+        Block Set Address Request (BSR). When this flag is set to '0' the Address Device Command shall
+        generate a USB SET_ADDRESS request to the device. When this flag is set to '1' the Address
+        Device Command shall not generate a USB SET_ADDRESS request. Refer to section 4.6.5 for
+        more information on the use of this flag.
+    */
+    address_trb.bsr = bsr ? 1 : 0;
+
+    address_trb.trb_type = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
+    address_trb.rsvd2 = 0;
+    address_trb.slot_id = device->slot_id();
+
+    return _send_command(reinterpret_cast<xhci_trb_t*>(&address_trb));
+}
+
+uint16_t xhci_hcd::_initial_max_packet_size(uint8_t speed) {
+    switch (speed) {
+    case XHCI_USB_SPEED_LOW_SPEED:
+        return 8;
+    case XHCI_USB_SPEED_FULL_SPEED:
+    case XHCI_USB_SPEED_HIGH_SPEED:
+        return 64;
+    case XHCI_USB_SPEED_SUPER_SPEED:
+    case XHCI_USB_SPEED_SUPER_SPEED_PLUS:
+        return 512;
+    default:
+        return 8;
+    }
+}
+
+int32_t xhci_hcd::_send_control_transfer(
+    xhci_device* device,
+    xhci_device_request_packet& request,
+    void* buffer, uint32_t length
+) {
+    xhci_transfer_ring* ring = device->ctrl_ring();
+
+    // Use the device's persistent DMA buffer
+    void* dma_buffer = device->ctrl_transfer_buffer();
+    uintptr_t dma_buffer_phys = device->ctrl_transfer_buffer_phys();
+    if (!dma_buffer || dma_buffer_phys == 0) {
+        log::error("xhci: missing control transfer buffer for slot %u", device->slot_id());
+        return -1;
+    }
+    if (length > paging::PAGE_SIZE_4KB) {
+        log::error("xhci: control transfer too large (%u bytes)", length);
+        return -1;
+    }
+
+    bool is_in = (request.transfer_direction != 0);
+
+    // For OUT data stage, copy caller data into DMA buffer before enqueue
+    if (length > 0 && !is_in && buffer) {
+        string::memcpy(dma_buffer, buffer, length);
+    } else {
+        string::memset(dma_buffer, 0, length > 0 ? length : 1);
+    }
+
+    // Setup Stage TRB
+    xhci_setup_stage_trb_t setup = {};
+    setup.trb_type = XHCI_TRB_TYPE_SETUP_STAGE;
+    setup.request_packet = request;
+    setup.trb_transfer_length = 8;
+    setup.interrupter_target = 0;
+    setup.idt = 1;
+    setup.ioc = 0;
+    // TRT: 0=No Data, 2=OUT Data, 3=IN Data
+    setup.trt = (length > 0) ? (is_in ? 3 : 2) : 0;
+
+    // Data Stage TRB (if there's data to transfer)
+    xhci_data_stage_trb_t data = {};
+    if (length > 0) {
+        data.trb_type = XHCI_TRB_TYPE_DATA_STAGE;
+        data.data_buffer = dma_buffer_phys;
+        data.trb_transfer_length = length;
+        data.td_size = 0;
+        data.interrupter_target = 0;
+        data.dir = is_in ? 1 : 0;
+        data.ioc = 0;
+        data.idt = 0;
+        data.chain = 0;
+    }
+
+    // Status Stage TRB (direction opposite to data stage)
+    xhci_status_stage_trb_t status = {};
+    status.trb_type = XHCI_TRB_TYPE_STATUS_STAGE;
+    status.interrupter_target = 0;
+    status.ioc = 1; // Interrupt on completion
+    status.dir = (length > 0) ? (is_in ? 0 : 1) : 1;
+
+    // Serialize EP0 enqueue+doorbell+wait against concurrent callers
+    // (e.g. hub task and HCD task both sending control transfers to the hub).
+    RUN_ELEVATED(sync::mutex_lock(device->ctrl_transfer_mutex()));
+
+    device->set_ctrl_completed(false);
+
+    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&setup));
+    if (length > 0) {
+        ring->enqueue(reinterpret_cast<xhci_trb_t*>(&data));
+    }
+    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&status));
+
+    // VL805 quirk: avoid ringing the doorbell near the SOF boundary for
+    // FS non-periodic transfers behind a hub (TT babble avoidance).
+    if (device->route_string() != 0 &&
+        device->speed() == XHCI_USB_SPEED_FULL_SPEED) {
+        for (uint32_t tries = 0; tries < 20; tries++) {
+            if ((_read_mfindex() & 0x7) != 0)
+                break;
+            delay::us(10);
+        }
+    }
+
+    _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
+
+    constexpr uint64_t XFER_TIMEOUT_MS = 5000;
+    uint64_t deadline = clock::now_ns() + XFER_TIMEOUT_MS * 1000000ULL;
+
+    _process_event_ring();
+    m_event_ring->finish_processing();
+
+    while (!device->ctrl_completed() && clock::now_ns() < deadline) {
+        wait_for_event();
+        _process_event_ring();
+        m_event_ring->finish_processing();
+    }
+
+    if (!device->ctrl_completed()) {
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+        log::error("xhci: control transfer timed out");
+        return -1;
+    }
+
+    if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+            (void)_recover_stalled_control_endpoint(device);
+        }
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+        log::warn("xhci: control transfer failed: %s",
+                   trb_completion_code_to_string(device->ctrl_result().completion_code));
+        return -1;
+    }
+
+    RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+
+    if (buffer && length > 0 && is_in) {
+        barrier::dma_read();
+        string::memcpy(buffer, dma_buffer, length);
+    }
+
+    return 0;
+}
+
+int32_t xhci_hcd::_get_device_descriptor(xhci_device* device, void* out, uint16_t length) {
+    xhci_device_request_packet req = {};
+    req.bRequestType = 0x80; // Device to Host, Standard, Device
+    req.bRequest = 6;        // GET_DESCRIPTOR
+    req.wValue = usb::USB_DESCRIPTOR_REQUEST(usb::USB_DESCRIPTOR_DEVICE, 0);
+    req.wIndex = 0;
+    req.wLength = length;
+
+    return _send_control_transfer(device, req, out, length);
+}
+
+int32_t xhci_hcd::_get_configuration_descriptor(
+    xhci_device* device,
+    usb::usb_configuration_descriptor* out,
+    uint8_t config_index
+) {
+    xhci_device_request_packet req = {};
+    req.bRequestType = 0x80;
+    req.bRequest = 6; // GET_DESCRIPTOR
+    req.wValue = usb::USB_DESCRIPTOR_REQUEST(usb::USB_DESCRIPTOR_CONFIGURATION, config_index);
+    req.wIndex = 0;
+
+    // First pass: read the 9-byte config descriptor header to get wTotalLength
+    constexpr uint16_t CONFIG_HDR_SIZE = 9; // bLength + bDescriptorType + wTotalLength + 5 fields
+    req.wLength = CONFIG_HDR_SIZE;
+    if (_send_control_transfer(device, req, out, CONFIG_HDR_SIZE) != 0) {
+        return -1;
+    }
+
+    // Second pass: read the full descriptor
+    uint16_t total_length = out->wTotalLength;
+    if (total_length > sizeof(usb::usb_configuration_descriptor)) {
+        log::warn("xhci: config descriptor too large (%u bytes), clamping", total_length);
+        total_length = sizeof(usb::usb_configuration_descriptor);
+    }
+
+    req.wLength = total_length;
+    return _send_control_transfer(device, req, out, total_length);
+}
+
+int32_t xhci_hcd::_submit_normal_transfer(
+    xhci_device* device, xhci_endpoint* ep,
+    void* buffer, uint32_t length
+) {
+    if (!ep || !ep->ring() || !ep->dma_buffer()) {
+        return -1;
+    }
+    if (length > paging::PAGE_SIZE_4KB) {
+        log::error("xhci: normal transfer too large (%u bytes)", length);
+        return -1;
+    }
+
+    // Reset completion state before doorbell to avoid race with HCD event dispatch
+    int32_t state_rc = 0;
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        if (ep->async_state() && ep->async_state()->async_enabled) {
+            state_rc = -1;
+        }
+        ep->set_completed(false);
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+    if (state_rc != 0) {
+        return state_rc;
+    }
+
+    // Copy OUT data into DMA buffer before enqueue
+    if (!ep->is_in() && buffer && length > 0) {
+        string::memcpy(ep->dma_buffer(), buffer, length);
+    }
+
+    if (!ep->ring()->can_enqueue(1)) {
+        log::error("xhci: transfer ring full for EP%u", ep->endpoint_num());
+        return -1;
+    }
+
+    xhci_normal_trb_t normal = {};
+    normal.trb_type = XHCI_TRB_TYPE_NORMAL;
+    normal.data_buffer_physical_base = ep->dma_buffer_phys();
+    normal.trb_transfer_length = length;
+    normal.td_size = 0;
+    normal.interrupter_target = 0;
+    normal.ioc = 1;
+    normal.isp = ep->is_in() ? 1 : 0;
+    normal.chain = 0;
+
+    ep->ring()->enqueue(reinterpret_cast<xhci_trb_t*>(&normal));
+    _ring_doorbell(device->slot_id(), ep->dci());
+
+    // Wait for transfer completion (HCD task processes events and wakes us)
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
+        while (!ep->completed()) {
+            irq = sync::wait(ep->completion_wq(), ep->completion_lock(), irq);
+        }
+        sync::spin_unlock_irqrestore(ep->completion_lock(), irq);
+    });
+
+    // Copy IN data from DMA buffer to caller
+    if (ep->is_in() && buffer && length > 0) {
+        barrier::dma_read();
+        string::memcpy(buffer, ep->dma_buffer(), length);
+    }
+
+    if (ep->result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS &&
+        ep->result().completion_code != XHCI_TRB_COMPLETION_CODE_SHORT_PACKET) {
+        log::warn("xhci: normal transfer failed on EP%u: %s",
+                   ep->endpoint_num(),
+                   trb_completion_code_to_string(ep->result().completion_code));
+        return -1;
+    }
+
+    return 0;
+}
+
+int32_t xhci_hcd::usb_control_transfer(
+    xhci_device* device,
+    uint8_t request_type, uint8_t request,
+    uint16_t value, uint16_t index,
+    void* data, uint16_t length
+) {
+    // If called from the HCD task, use the internal event-processing path.
+    // If called from a class driver task, use the wait-queue path so we
+    // don't compete with the HCD for event ring processing.
+    if (sched::current() == m_task) {
+        xhci_device_request_packet req = {};
+        req.bRequestType = request_type;
+        req.bRequest = request;
+        req.wValue = value;
+        req.wIndex = index;
+        req.wLength = length;
+        return _send_control_transfer(device, req, data, length);
+    }
+
+    xhci_transfer_ring* ring = device->ctrl_ring();
+
+    void* dma_buffer = device->ctrl_transfer_buffer();
+    uintptr_t dma_buffer_phys = device->ctrl_transfer_buffer_phys();
+    if (!dma_buffer || dma_buffer_phys == 0) {
+        log::error("xhci: missing control transfer buffer for slot %u", device->slot_id());
+        return -1;
+    }
+    if (length > paging::PAGE_SIZE_4KB) {
+        log::error("xhci: control transfer too large (%u bytes)", length);
+        return -1;
+    }
+
+    xhci_device_request_packet req = {};
+    req.bRequestType = request_type;
+    req.bRequest = request;
+    req.wValue = value;
+    req.wIndex = index;
+    req.wLength = length;
+
+    bool is_in = (req.transfer_direction != 0);
+
+    if (length > 0 && !is_in && data) {
+        string::memcpy(dma_buffer, data, length);
+    } else {
+        string::memset(dma_buffer, 0, length > 0 ? length : 1);
+    }
+
+    xhci_setup_stage_trb_t setup = {};
+    setup.trb_type = XHCI_TRB_TYPE_SETUP_STAGE;
+    setup.request_packet = req;
+    setup.trb_transfer_length = 8;
+    setup.interrupter_target = 0;
+    setup.idt = 1;
+    setup.ioc = 0;
+    setup.trt = (length > 0) ? (is_in ? 3 : 2) : 0;
+
+    xhci_data_stage_trb_t data_trb = {};
+    if (length > 0) {
+        data_trb.trb_type = XHCI_TRB_TYPE_DATA_STAGE;
+        data_trb.data_buffer = dma_buffer_phys;
+        data_trb.trb_transfer_length = length;
+        data_trb.td_size = 0;
+        data_trb.interrupter_target = 0;
+        data_trb.dir = is_in ? 1 : 0;
+        data_trb.ioc = 0;
+        data_trb.idt = 0;
+        data_trb.chain = 0;
+    }
+
+    xhci_status_stage_trb_t status = {};
+    status.trb_type = XHCI_TRB_TYPE_STATUS_STAGE;
+    status.interrupter_target = 0;
+    status.ioc = 1;
+    status.dir = (length > 0) ? (is_in ? 0 : 1) : 1;
+
+    // Serialize EP0 enqueue+doorbell+wait against concurrent callers
+    RUN_ELEVATED(sync::mutex_lock(device->ctrl_transfer_mutex()));
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        device->set_ctrl_completed(false);
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+    });
+
+    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&setup));
+    if (length > 0) {
+        ring->enqueue(reinterpret_cast<xhci_trb_t*>(&data_trb));
+    }
+    ring->enqueue(reinterpret_cast<xhci_trb_t*>(&status));
+
+    _ring_doorbell(device->slot_id(), XHCI_DOORBELL_TARGET_CONTROL_EP_RING);
+
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(device->ctrl_completion_lock());
+        while (!device->ctrl_completed()) {
+            irq = sync::wait(device->ctrl_completion_wq(),
+                             device->ctrl_completion_lock(), irq);
+        }
+        sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
+    });
+
+    if (device->ctrl_result().completion_code != XHCI_TRB_COMPLETION_CODE_SUCCESS) {
+        if (device->ctrl_result().completion_code == XHCI_TRB_COMPLETION_CODE_STALL_ERROR) {
+            (void)_recover_stalled_control_endpoint(device);
+        }
+        RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+        log::warn("xhci: control transfer failed: %s",
+                   trb_completion_code_to_string(device->ctrl_result().completion_code));
+        return -1;
+    }
+
+    RUN_ELEVATED(sync::mutex_unlock(device->ctrl_transfer_mutex()));
+
+    if (data && length > 0 && is_in) {
+        barrier::dma_read();
+        string::memcpy(data, dma_buffer, length);
+    }
+
+    return 0;
+}
+
+int32_t xhci_hcd::usb_submit_transfer(
+    xhci_device* device, uint8_t endpoint_addr,
+    void* buffer, uint32_t length
+) {
+    if (!device || (!buffer && length > 0)) {
+        return -1;
+    }
+    auto* ep = device->endpoint_by_address(endpoint_addr);
+    if (!ep) {
+        log::error("xhci: no endpoint for address 0x%02x on slot %u",
+                   endpoint_addr, device->slot_id());
+        return -1;
+    }
+    return _submit_normal_transfer(device, ep, buffer, length);
+}
+
+REGISTER_PCI_DRIVER(xhci_hcd,
+    PCI_MATCH(PCI_MATCH_ANY, PCI_MATCH_ANY, 0x0C, 0x03, 0x30),
+    PCI_DRIVER_FACTORY(xhci_hcd));
+
+} // namespace drivers

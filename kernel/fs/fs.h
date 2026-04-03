@@ -1,0 +1,126 @@
+#ifndef STELLUX_FS_FS_H
+#define STELLUX_FS_FS_H
+
+#include "fs/fstypes.h"
+
+namespace mm { struct mm_context; }
+
+namespace fs {
+
+class node;
+class file;
+struct driver;
+
+constexpr int32_t OK            =  0;
+constexpr int32_t ERR_NOENT     = -1;
+constexpr int32_t ERR_EXIST     = -2;
+constexpr int32_t ERR_NOTDIR    = -3;
+constexpr int32_t ERR_ISDIR     = -4;
+constexpr int32_t ERR_NOMEM     = -5;
+constexpr int32_t ERR_INVAL     = -6;
+constexpr int32_t ERR_NAMETOOLONG = -7;
+constexpr int32_t ERR_NOTEMPTY  = -8;
+constexpr int32_t ERR_NOSYS     = -9;
+constexpr int32_t ERR_IO        = -10;
+constexpr int32_t ERR_BUSY      = -11;
+constexpr int32_t ERR_LOOP      = -12;
+constexpr int32_t ERR_BADF      = -13;
+constexpr int32_t ERR_AGAIN     = -14;
+
+/**
+ * @brief Initialize the filesystem subsystem. Registers ramfs,
+ * mounts empty rootfs at /.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init();
+
+/**
+ * @brief Register a filesystem driver.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t register_driver(driver* drv);
+
+/**
+ * @brief Mount a filesystem at a target path.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t mount(const char* source, const char* target,
+                                const char* fs_name, uint32_t flags);
+
+/**
+ * @brief Unmount a filesystem at a target path.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t unmount(const char* target);
+
+// --- Consumer API ---
+
+file* open(const char* path, uint32_t flags);
+file* open(const char* path, uint32_t flags, int32_t* out_err);
+file* open_at(node* base_dir, const char* path, uint32_t flags);
+file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err);
+ssize_t read(file* f, void* buf, size_t count);
+ssize_t write(file* f, const void* buf, size_t count);
+int64_t seek(file* f, int64_t offset, int whence);
+int32_t close(file* f);
+int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
+int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr, size_t length,
+             uint32_t prot, uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
+
+int32_t stat(const char* path, vattr* attr);
+int32_t fstat(file* f, vattr* attr);
+
+int32_t mkdir(const char* path, uint32_t mode);
+int32_t rmdir(const char* path);
+int32_t unlink(const char* path);
+ssize_t readdir(file* f, dirent* entries, size_t count);
+
+/**
+ * @brief Resolve path relative to base_dir when path is not absolute.
+ * If path is absolute, base_dir is ignored.
+ * On success, *out has add_ref() called; caller must release.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, node** out);
+
+/**
+ * @brief Resolve parent directory of path relative to base_dir.
+ * If path is absolute, base_dir is ignored.
+ * On success, *out_parent has add_ref() called; caller must release.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t resolve_parent_path_at(
+    node* base_dir, const char* path, node** out_parent,
+    const char** out_name, size_t* out_name_len
+);
+
+/**
+ * @brief Reconstruct absolute path for an existing node.
+ * Writes a null-terminated absolute path into out_path.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t path_from_node(
+    node* target, char* out_path, size_t out_cap
+);
+
+/**
+ * @brief Resolve a path to a node.
+ * On success, the returned node has add_ref() called.
+ * Caller must release() when done (or adopt into a strong_ref).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t lookup(const char* path, node** out);
+
+/**
+ * @brief Resolve the parent directory of a path and extract the final component.
+ * On success, *out_parent has add_ref() called; caller must release.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t resolve_parent_path(
+    const char* path, node** out_parent,
+    const char** out_name, size_t* out_name_len
+);
+
+} // namespace fs
+
+#endif // STELLUX_FS_FS_H

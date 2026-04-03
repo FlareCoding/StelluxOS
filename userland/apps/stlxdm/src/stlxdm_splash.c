@@ -1,354 +1,274 @@
 #define _POSIX_C_SOURCE 199309L
 #include "stlxdm_splash.h"
-#include "stlxdm_sys.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+#include <stlxgfx/font.h>
+#include <stlx/input.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
+#include <string.h>
 #include <time.h>
-#include <stlxgfx/internal/stlxgfx_dm.h>
-#include <stlxgfx/surface.h>
-#include <stlibc/stlibc.h>
+#include <unistd.h>
 
-// Splash screen configuration
-#define SPLASH_FRAME_RATE 60  // Target 60 FPS
-#define SPLASH_FRAME_DELAY_MS (1000 / SPLASH_FRAME_RATE)
+/* --- Configuration --- */
 
-// Typing animation configuration
-#define TYPING_SPEED_MS 14  // <n> ms per character
-#define TYPING_DISPLAY_TIME_MS 1200  // <n>> seconds display time
-#define TYPING_DELETE_SPEED_MS 10  // <n> ms per character deletion
+#define SPLASH_TARGET_FPS       60
+#define SPLASH_FRAME_NS         (1000000000 / SPLASH_TARGET_FPS)
+#define SPLASH_BG_COLOR         0xFF050508
+#define SPLASH_STAR_COUNT       800
+#define SPLASH_TITLE_FONT_SIZE  36
+#define SPLASH_HINT_FONT_SIZE   16
 
-// Color definitions
-#define SPLASH_BG_DARK        0xFF0A0A0A
-#define SPLASH_CYAN_BORDER    0xFF00FFFF
-#define SPLASH_WHITE_BRIGHT   0xFFFFFFFF
-#define SPLASH_WHITE_MIN      0xFF808080
+/* --- Starfield --- */
 
-// Logo dimensions
-#define LOGO_WIDTH            600
-#define LOGO_HEIGHT           80
-#define LOGO_BORDER_WIDTH     10
-#define LOGO_BORDER_RADIUS    15
+typedef struct {
+    float x, y, z;
+    uint8_t tint;
+} splash_star_t;
 
-// Typing animation states
-typedef enum {
-    TYPING_STATE_IDLE,
-    TYPING_STATE_TYPING,
-    TYPING_STATE_DISPLAY,
-    TYPING_STATE_DELETING
-} typing_state_t;
+static splash_star_t g_stars[SPLASH_STAR_COUNT];
 
-static void create_dark_background(stlxgfx_surface_t* surface) {
-    if (!surface) return;
-    stlxgfx_clear_surface(surface, SPLASH_BG_DARK);
+static uint32_t g_rng_state = 0xDEADBEEF;
+
+static uint32_t splash_rand(void) {
+    g_rng_state ^= g_rng_state << 13;
+    g_rng_state ^= g_rng_state >> 17;
+    g_rng_state ^= g_rng_state << 5;
+    return g_rng_state;
 }
 
-static void draw_animated_gradient_logo(stlxgfx_surface_t* surface, uint32_t frame) {
-    if (!surface) return;
-    
-    uint32_t center_x = surface->width / 2;
-    uint32_t logo_y = surface->height / 3;
-    uint32_t logo_x = center_x - LOGO_WIDTH / 2;
-    
-    // Create flowing gradient animation
-    for (uint32_t y = logo_y; y < logo_y + LOGO_HEIGHT; y++) {
-        for (uint32_t x = logo_x; x < logo_x + LOGO_WIDTH; x++) {
-            float progress_x = (float)(x - logo_x) / LOGO_WIDTH;
-            float progress_y = (float)(y - logo_y) / LOGO_HEIGHT;
-            
-            // Add flowing animation to the gradient
-            float flow_offset = sinf((float)frame * 0.02f + progress_x * 3.14159f) * 0.1f;
-            progress_x += flow_offset;
-            
-            if (progress_x < 0.0f) progress_x = 0.0f;
-            if (progress_x > 1.0f) progress_x = 1.0f;
-            
-            // Deep purple to magenta gradient with vertical variation
-            uint32_t red = (uint32_t)(40 + progress_x * 140 + progress_y * 15);
-            uint32_t green = (uint32_t)(0 + progress_y * 20);
-            uint32_t blue = (uint32_t)(80 + progress_x * 120 + progress_y * 10);
-            
-            if (red > 255) red = 255;
-            if (green > 255) green = 255;
-            if (blue > 255) blue = 255;
-            
-            uint32_t color = 0xFF000000 | (red << 16) | (green << 8) | blue;
-            stlxgfx_draw_pixel(surface, x, y, color);
+static float splash_randf(void) {
+    return (float)(splash_rand() & 0xFFFF) / 65535.0f;
+}
+
+static void splash_init_star(splash_star_t* s, int full_depth) {
+    s->x = (splash_randf() - 0.5f) * 2.0f;
+    s->y = (splash_randf() - 0.5f) * 2.0f;
+    s->z = full_depth ? splash_randf() : (0.001f + splash_randf() * 0.05f);
+    s->tint = (uint8_t)(splash_rand() % 4);
+}
+
+static void splash_init_stars(void) {
+    for (int i = 0; i < SPLASH_STAR_COUNT; i++) {
+        splash_init_star(&g_stars[i], 1);
+    }
+}
+
+static void splash_update_stars(float speed) {
+    for (int i = 0; i < SPLASH_STAR_COUNT; i++) {
+        g_stars[i].z -= speed;
+        if (g_stars[i].z <= 0.001f) {
+            splash_init_star(&g_stars[i], 0);
+            g_stars[i].z = 0.9f + splash_randf() * 0.1f;
         }
     }
 }
 
-static void draw_cyan_border(stlxgfx_surface_t* surface) {
-    if (!surface) return;
-    
-    uint32_t center_x = surface->width / 2;
-    uint32_t logo_y = surface->height / 3;
-    uint32_t logo_x = center_x - LOGO_WIDTH / 2;
-    
-    stlxgfx_draw_rounded_rect(surface, 
-                              logo_x - LOGO_BORDER_WIDTH, 
-                              logo_y - LOGO_BORDER_WIDTH,
-                              LOGO_WIDTH + (2 * LOGO_BORDER_WIDTH), 
-                              LOGO_HEIGHT + (2 * LOGO_BORDER_WIDTH), 
-                              LOGO_BORDER_RADIUS, 
-                              SPLASH_CYAN_BORDER);
-}
+static void splash_draw_nebula(stlxgfx_surface_t* buf, uint32_t w, uint32_t h,
+                                uint32_t frame) {
+    float t = (float)frame * 0.003f;
+    float cx = (float)w * 0.5f;
+    float cy = (float)h * 0.5f;
 
-static void draw_static_title(stlxgfx_surface_t* surface, stlxgfx_context_t* gfx_ctx) {
-    if (!surface || !gfx_ctx) return;
-    
-    const char* title = "Display Manager v0.1.0";
-    uint32_t center_x = surface->width / 2;
-    uint32_t logo_y = surface->height / 3;
-    uint32_t title_y = logo_y + LOGO_HEIGHT + 30;
-    
-    uint32_t text_width = strlen(title) * 28 * 0.6f;
-    uint32_t title_x = center_x - text_width / 2;
-    
-    stlxgfx_render_text(gfx_ctx, surface, title, title_x, title_y, 28, SPLASH_WHITE_BRIGHT);
-}
+    for (int32_t py = 0; py < (int32_t)h; py += 4) {
+        for (int32_t px = 0; px < (int32_t)w; px += 4) {
+            float dx = ((float)px - cx) / cx;
+            float dy = ((float)py - cy) / cy;
+            float dist = sqrtf(dx * dx + dy * dy);
 
-static void draw_breathing_text(stlxgfx_surface_t* surface, stlxgfx_context_t* gfx_ctx,
-                               uint32_t frame) {
-    if (!surface || !gfx_ctx) return;
-    
-    const char* text = "Press Enter to continue...";
-    uint32_t center_x = surface->width / 2;
-    uint32_t logo_y = surface->height / 3;
-    uint32_t text_y = logo_y + LOGO_HEIGHT + 130;
-    
-    // Slower breathing effect
-    float breath = 0.5f + 0.5f * sinf((float)frame * 0.15f);
-    
-    // Interpolate between minimum brightness and full brightness
-    uint8_t min_intensity = 0x80;
-    uint8_t max_intensity = 0xFF;
-    uint8_t intensity = (uint8_t)(min_intensity + (max_intensity - min_intensity) * breath);
-    
-    uint32_t text_color = 0xFF000000 | (intensity << 16) | (intensity << 8) | intensity;
-    
-    uint32_t text_width = strlen(text) * 16 * 0.6f;
-    uint32_t text_x = center_x - text_width / 2;
-    
-    stlxgfx_render_text(gfx_ctx, surface, text, text_x, text_y, 16, text_color);
-}
+            float n1 = sinf(dx * 2.5f + t) * cosf(dy * 3.0f - t * 0.7f);
+            float n2 = sinf((dx + dy) * 1.8f + t * 0.5f);
+            float v = (n1 + n2) * 0.5f;
 
-static void add_modern_decorative_elements(stlxgfx_surface_t* surface, uint32_t frame) {
-    if (!surface) return;
-    
-    uint32_t center_x = surface->width / 2;
-    uint32_t logo_y = surface->height / 3;
-    uint32_t logo_x = center_x - LOGO_WIDTH / 2;
-    
-    // Add breathing corner accents
-    float breath = 0.5f + 0.5f * sinf((float)frame * 0.15f);
-    uint8_t min_intensity = 0x40;
-    uint8_t max_intensity = 0xFF;
-    uint8_t corner_intensity = (uint8_t)(min_intensity + (max_intensity - min_intensity) * breath);
-    uint32_t corner_color = 0xFF000000 | (corner_intensity << 16) | (corner_intensity << 8) | corner_intensity;
-    
-    uint32_t corner_size = 8;
-    
-    // Top-left corner
-    stlxgfx_fill_rect(surface, logo_x - LOGO_BORDER_WIDTH - corner_size, 
-                      logo_y - LOGO_BORDER_WIDTH - corner_size, corner_size, 2, corner_color);
-    stlxgfx_fill_rect(surface, logo_x - LOGO_BORDER_WIDTH - corner_size, 
-                      logo_y - LOGO_BORDER_WIDTH - corner_size, 2, corner_size, corner_color);
-    
-    // Top-right corner
-    stlxgfx_fill_rect(surface, logo_x + LOGO_WIDTH + LOGO_BORDER_WIDTH, 
-                      logo_y - LOGO_BORDER_WIDTH - corner_size, corner_size, 2, corner_color);
-    stlxgfx_fill_rect(surface, logo_x + LOGO_WIDTH + LOGO_BORDER_WIDTH + corner_size - 2, 
-                      logo_y - LOGO_BORDER_WIDTH - corner_size, 2, corner_size, corner_color);
-    
-    // Bottom-left corner (rotated 90 degrees clockwise from top-left)
-    stlxgfx_fill_rect(surface, logo_x - LOGO_BORDER_WIDTH - corner_size, 
-                      logo_y + LOGO_HEIGHT + LOGO_BORDER_WIDTH, 2, corner_size, corner_color);
-    stlxgfx_fill_rect(surface, logo_x - LOGO_BORDER_WIDTH - corner_size, 
-                      logo_y + LOGO_HEIGHT + LOGO_BORDER_WIDTH + corner_size - 2, corner_size, 2, corner_color);
-    
-    // Bottom-right corner (rotated 90 degrees clockwise from top-right)
-    stlxgfx_fill_rect(surface, logo_x + LOGO_WIDTH + LOGO_BORDER_WIDTH + corner_size - 2, 
-                      logo_y + LOGO_HEIGHT + LOGO_BORDER_WIDTH, 2, corner_size, corner_color);
-    stlxgfx_fill_rect(surface, logo_x + LOGO_WIDTH + LOGO_BORDER_WIDTH, 
-                      logo_y + LOGO_HEIGHT + LOGO_BORDER_WIDTH + corner_size - 2, corner_size, 2, corner_color);
-}
+            float falloff = 1.0f - dist * 0.7f;
+            if (falloff < 0.0f) {
+                falloff = 0.0f;
+            }
+            v *= falloff;
+            if (v < 0.0f) {
+                v = 0.0f;
+            }
 
-static void draw_typing_animation(stlxgfx_surface_t* surface, stlxgfx_context_t* gfx_ctx,
-                                 uint32_t frame, uint32_t elapsed_ms) {
-    if (!surface || !gfx_ctx) return;
-    
-    static typing_state_t state = TYPING_STATE_IDLE;
-    static uint32_t state_start_time = 0;
-    static uint32_t current_length = 0;
-    static uint32_t last_animation_time = 0;
-    (void) frame;
-    
-    const char* full_text = "User: root";
-    const uint32_t full_length = strlen(full_text);
-    
-    // Initialize state timing
-    if (state == TYPING_STATE_IDLE) {
-        state = TYPING_STATE_TYPING;
-        state_start_time = elapsed_ms;
-        current_length = 0;
-        last_animation_time = elapsed_ms;
+            uint8_t r = (uint8_t)(v * 18.0f);
+            uint8_t g = (uint8_t)(v * 8.0f);
+            uint8_t b = (uint8_t)(v * 30.0f);
+            uint32_t color = 0xFF000000 | ((uint32_t)r << 16) |
+                             ((uint32_t)g << 8) | (uint32_t)b;
+            stlxgfx_fill_rect(buf, px, py, 4, 4, color);
+        }
     }
-    
-    // Calculate position in the middle of the gradient rectangle
-    uint32_t center_x = surface->width / 2;
-    uint32_t logo_y = surface->height / 3;
-    uint32_t logo_x = center_x - LOGO_WIDTH / 2;
-    uint32_t text_x = logo_x + LOGO_WIDTH / 2;
-    uint32_t text_y = logo_y + LOGO_HEIGHT / 2 - 4;
-    
-    // Handle state transitions
-    switch (state) {
-        case TYPING_STATE_TYPING: {
-            // Type out characters
-            if (elapsed_ms - last_animation_time >= TYPING_SPEED_MS) {
-                if (current_length < full_length) {
-                    current_length++;
-                    last_animation_time = elapsed_ms;
-                } else {
-                    // Finished typing, move to display state
-                    state = TYPING_STATE_DISPLAY;
-                    state_start_time = elapsed_ms;
-                }
-            }
-            break;
+}
+
+static void splash_draw_stars(stlxgfx_surface_t* buf, uint32_t w, uint32_t h) {
+    float cx = (float)w * 0.5f;
+    float cy = (float)h * 0.5f;
+
+    for (int i = 0; i < SPLASH_STAR_COUNT; i++) {
+        splash_star_t* s = &g_stars[i];
+        float inv_z = 1.0f / s->z;
+        int32_t sx = (int32_t)(cx + s->x * inv_z * cx);
+        int32_t sy = (int32_t)(cy + s->y * inv_z * cy);
+
+        if (sx < 0 || sy < 0 || sx >= (int32_t)w || sy >= (int32_t)h) {
+            continue;
         }
-        
-        case TYPING_STATE_DISPLAY: {
-            // Display full text for 2 seconds
-            if (elapsed_ms - state_start_time >= TYPING_DISPLAY_TIME_MS) {
-                state = TYPING_STATE_DELETING;
-                state_start_time = elapsed_ms;
-                last_animation_time = elapsed_ms;
-            }
-            break;
+
+        float brightness = (1.0f - s->z);
+        if (brightness < 0.0f) {
+            brightness = 0.0f;
         }
-        
-        case TYPING_STATE_DELETING: {
-            // Delete characters one by one
-            if (elapsed_ms - last_animation_time >= TYPING_DELETE_SPEED_MS) {
-                if (current_length > 0) {
-                    current_length--;
-                    last_animation_time = elapsed_ms;
-                } else {
-                    // Finished deleting, restart typing
-                    state = TYPING_STATE_TYPING;
-                    state_start_time = elapsed_ms;
-                    last_animation_time = elapsed_ms;
-                }
-            }
-            break;
+        if (brightness > 1.0f) {
+            brightness = 1.0f;
         }
-        
+        brightness = brightness * brightness;
+
+        uint8_t r, g, b;
+        switch (s->tint) {
+        case 0:
+            r = (uint8_t)(brightness * 255.0f);
+            g = (uint8_t)(brightness * 240.0f);
+            b = (uint8_t)(brightness * 255.0f);
+            break;
+        case 1:
+            r = (uint8_t)(brightness * 200.0f);
+            g = (uint8_t)(brightness * 220.0f);
+            b = (uint8_t)(brightness * 255.0f);
+            break;
+        case 2:
+            r = (uint8_t)(brightness * 255.0f);
+            g = (uint8_t)(brightness * 200.0f);
+            b = (uint8_t)(brightness * 180.0f);
+            break;
         default:
+            r = (uint8_t)(brightness * 255.0f);
+            g = (uint8_t)(brightness * 255.0f);
+            b = (uint8_t)(brightness * 255.0f);
             break;
-    }
-    
-    // Draw the current text
-    if (current_length > 0) {
-        // Create temporary string with current length
-        char temp_text[32];
-        strncpy(temp_text, full_text, current_length);
-        temp_text[current_length] = '\0';
-        
-        // Calculate text width for centering
-        uint32_t text_width = current_length * 16 * 0.6f; // Approximate width
-        uint32_t draw_x = text_x - text_width / 2;
-        
-        // Draw the typing text in bright green
-        stlxgfx_render_text(gfx_ctx, surface, temp_text, draw_x, text_y, 18, SPLASH_WHITE_BRIGHT);
-    }
-}
+        }
 
-static int check_for_enter_key() {
-    input_event_t events[16];
-    int n = stlx_read_input_events(STLXGFX_INPUT_QUEUE_ID_SYSTEM, 0, events, 16);
-    
-    if (n > 0) {
-        for (int i = 0; i < n; i++) {
-            if (events[i].type == STLXGFX_KBD_EVT_KEY_PRESSED) {
-                if (events[i].udata1 == 40) {
-                    return 1; // Enter pressed
-                }
-            }
+        uint32_t color = 0xFF000000 | ((uint32_t)r << 16) |
+                         ((uint32_t)g << 8) | (uint32_t)b;
+
+        int32_t size = 1;
+        if (brightness > 0.6f) {
+            size = 2;
+        }
+        if (brightness > 0.85f) {
+            size = 3;
+        }
+
+        stlxgfx_fill_rect(buf, sx, sy, size, size, color);
+
+        if (brightness > 0.92f) {
+            uint32_t glow = 0xFF000000 | ((uint32_t)(r / 4) << 16) |
+                            ((uint32_t)(g / 4) << 8) | (uint32_t)(b / 4);
+            stlxgfx_fill_rect(buf, sx - 1, sy, 1, 1, glow);
+            stlxgfx_fill_rect(buf, sx + size, sy, 1, 1, glow);
+            stlxgfx_fill_rect(buf, sx, sy - 1, 1, 1, glow);
+            stlxgfx_fill_rect(buf, sx, sy + size, 1, 1, glow);
         }
     }
-    
-    return 0; // No Enter key
 }
 
-int stlxdm_show_splash_screen(stlxdm_compositor_t* compositor) {
-    if (!compositor || !compositor->initialized) {
-        printf("[STLXDM_SPLASH] ERROR: Invalid compositor for splash screen\n");
-        return -1;
-    }
+/* --- Text rendering --- */
 
-    const struct gfx_framebuffer_info* fb_info = stlxdm_compositor_get_fb_info(compositor);
-    if (!fb_info) {
-        printf("[STLXDM_SPLASH] ERROR: No framebuffer info available\n");
-        return -1;
-    }
+static void splash_draw_centered(stlxgfx_surface_t* buf, uint32_t screen_w,
+                                  int32_t y, const char* text,
+                                  uint32_t font_size, uint32_t color) {
+    uint32_t tw = 0;
+    uint32_t th = 0;
+    stlxgfx_text_size(text, font_size, &tw, &th);
+    int32_t tx = ((int32_t)screen_w - (int32_t)tw) / 2;
+    stlxgfx_draw_text(buf, tx, y, text, font_size, color);
+}
 
-    stlxgfx_surface_t* splash_surface = stlxgfx_dm_create_surface(
-        compositor->gfx_ctx,
-        fb_info->width,
-        fb_info->height,
-        compositor->gop_format
-    );
-    
-    if (!splash_surface) {
-        printf("[STLXDM_SPLASH] ERROR: Failed to create splash surface\n");
-        return -1;
+static uint32_t splash_pulse_color(uint32_t frame) {
+    float t = (float)frame * (2.0f * 3.14159f) / (float)SPLASH_TARGET_FPS;
+    float pulse = 0.5f + 0.5f * sinf(t * 0.8f);
+    uint8_t lo = 0x90;
+    uint8_t hi = 0xFF;
+    uint8_t val = (uint8_t)(lo + (hi - lo) * pulse);
+    return 0xFF000000 | ((uint32_t)val << 16) |
+           ((uint32_t)val << 8) | (uint32_t)val;
+}
+
+/* --- Input --- */
+
+static int splash_check_enter(int kbd_fd) {
+    if (kbd_fd < 0) {
+        return 0;
     }
-    
+    stlx_input_kbd_event_t buf[16];
+    ssize_t n = read(kbd_fd, buf, sizeof(buf));
+    if (n <= 0) {
+        return 0;
+    }
+    int count = (int)(n / (ssize_t)sizeof(stlx_input_kbd_event_t));
+    for (int i = 0; i < count; i++) {
+        if (buf[i].action == STLX_INPUT_KBD_ACTION_DOWN && buf[i].usage == 0x28) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* --- Timing --- */
+
+static uint64_t splash_clock_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+/* --- Public entry point --- */
+
+void stlxdm_show_splash(stlxgfx_fb_t* fb, stlxgfx_surface_t* backbuf) {
+    int kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
+
+    splash_init_stars();
+
+    uint32_t w = fb->width;
+    uint32_t h = fb->height;
+    int32_t title_y = (int32_t)(h / 2) - 30;
+    int32_t hint_y  = (int32_t)(h / 2) + 30;
+
     uint32_t frame = 0;
-    uint32_t elapsed_ms = 0;
 
     while (1) {
-        create_dark_background(splash_surface);
-        draw_animated_gradient_logo(splash_surface, frame);
-        draw_typing_animation(splash_surface, compositor->gfx_ctx, frame, elapsed_ms);
-        draw_cyan_border(splash_surface);
-        draw_static_title(splash_surface, compositor->gfx_ctx);
-        draw_breathing_text(splash_surface, compositor->gfx_ctx, frame);
-        add_modern_decorative_elements(splash_surface, frame);
-        
-        stlxdm_begin_frame();
-        int present_result = stlxgfx_blit_surface_to_buffer(
-            splash_surface, 
-            compositor->framebuffer, 
-            fb_info->pitch
-        );
-        stlxdm_end_frame();
-        
-        if (present_result != 0) {
-            printf("[STLXDM_SPLASH] Warning: Failed to present splash frame\n");
-        }
-        
-        if (check_for_enter_key()) {
+        uint64_t frame_start = splash_clock_ns();
+
+        if (splash_check_enter(kbd_fd)) {
             break;
         }
-        
-        struct timespec delay = {
-            .tv_sec = 0,
-            .tv_nsec = SPLASH_FRAME_DELAY_MS * 1000000
-        };
-        nanosleep(&delay, NULL);
-        
+
+        splash_update_stars(0.004f);
+
+        stlxgfx_clear(backbuf, SPLASH_BG_COLOR);
+        splash_draw_nebula(backbuf, w, h, frame);
+        splash_draw_stars(backbuf, w, h);
+
+        uint32_t title_color = splash_pulse_color(frame);
+        splash_draw_centered(backbuf, w, title_y, "Stellux 3.0",
+                              SPLASH_TITLE_FONT_SIZE, title_color);
+
+        uint32_t hint_color = splash_pulse_color(frame + SPLASH_TARGET_FPS / 4);
+        splash_draw_centered(backbuf, w, hint_y, "Press Enter to continue",
+                              SPLASH_HINT_FONT_SIZE, hint_color);
+
+        stlxgfx_fb_present(fb, backbuf);
         frame++;
-        elapsed_ms += SPLASH_FRAME_DELAY_MS;
+
+        uint64_t frame_end = splash_clock_ns();
+        uint64_t elapsed = frame_end - frame_start;
+        if (elapsed < SPLASH_FRAME_NS) {
+            struct timespec rem = {
+                .tv_sec = 0,
+                .tv_nsec = (long)(SPLASH_FRAME_NS - elapsed)
+            };
+            nanosleep(&rem, NULL);
+        }
     }
-    
-    // Launch terminal after splash screen exits
-    stlxdm_launch_terminal();
-    
-    stlxgfx_dm_destroy_surface(compositor->gfx_ctx, splash_surface);
-    return 0;
+
+    if (kbd_fd >= 0) {
+        close(kbd_fd);
+    }
 }

@@ -1,0 +1,9 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_POLL_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_POLL_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(ppoll);
+DECLARE_SYSCALL(poll);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_POLL_H

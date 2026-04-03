@@ -1,0 +1,84 @@
+#include "percpu/percpu.h"
+#include "common/types.h"
+#include "common/string.h"
+#include "common/logging.h"
+#include "boot/boot_services.h"
+
+DEFINE_PER_CPU_BASE(uintptr_t, percpu_offset);
+
+static constexpr uintptr_t CPU0_AREA_SIZE = 0x2000; // 8KB
+
+alignas(0x1000) static uint8_t g_cpu0_area[CPU0_AREA_SIZE];
+
+uintptr_t __per_cpu_offset[MAX_CPUS];
+
+namespace percpu {
+
+uintptr_t this_cpu_offset() {
+    uintptr_t off;
+    asm volatile("mrs %0, tpidrro_el0" : "=r"(off));
+    return off;
+}
+
+__PRIVILEGED_CODE int32_t init_bsp() {
+    if (size() > CPU0_AREA_SIZE) {
+        log::fatal("Per-CPU area too large: %lu > %lu", size(), CPU0_AREA_SIZE);
+        return ERR_SIZE_MISMATCH;
+    }
+
+    for (uintptr_t i = 0; i < CPU0_AREA_SIZE; i++) {
+        g_cpu0_area[i] = 0;
+    }
+
+    const uintptr_t base = reinterpret_cast<uintptr_t>(g_cpu0_area);
+    const uintptr_t tmpl = reinterpret_cast<uintptr_t>(__percpu_start);
+    const uintptr_t delta = base - tmpl;
+
+    const uintptr_t percpu_off_off =
+        reinterpret_cast<uintptr_t>(&percpu_offset) - tmpl;
+    if (percpu_off_off != 0) {
+        log::fatal("percpu_offset not at offset 0 (got %lu)", percpu_off_off);
+        return ERR_LAYOUT;
+    }
+
+    *reinterpret_cast<uintptr_t*>(base + percpu_off_off) = delta;
+
+    __per_cpu_offset[0] = delta;
+
+    asm volatile("msr tpidr_el1, %0" :: "r"(delta) : "memory");
+    asm volatile("msr tpidrro_el0, %0" :: "r"(delta) : "memory");
+    asm volatile("isb" ::: "memory");
+
+    return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t base_va) {
+    const uintptr_t tmpl = reinterpret_cast<uintptr_t>(__percpu_start);
+
+    const uintptr_t percpu_off_off =
+        reinterpret_cast<uintptr_t>(&percpu_offset) - tmpl;
+    if (percpu_off_off != 0) {
+        return ERR_LAYOUT;
+    }
+
+    const uintptr_t delta = base_va - tmpl;
+
+    string::memcpy(reinterpret_cast<void*>(base_va), __percpu_start, size());
+
+    *reinterpret_cast<uintptr_t*>(base_va) = delta;
+
+    __per_cpu_offset[cpu_id] = delta;
+
+    asm volatile("msr tpidr_el1, %0" :: "r"(delta) : "memory");
+    asm volatile("msr tpidrro_el0, %0" :: "r"(delta) : "memory");
+    asm volatile("isb" ::: "memory");
+
+    this_cpu(percpu_cpu_id) = cpu_id;
+
+    return OK;
+}
+
+} // namespace percpu

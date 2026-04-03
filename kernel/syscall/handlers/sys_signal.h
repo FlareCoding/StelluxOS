@@ -1,0 +1,9 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_SIGNAL_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_SIGNAL_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(rt_sigaction);
+DECLARE_SYSCALL(rt_sigprocmask);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_SIGNAL_H

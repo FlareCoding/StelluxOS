@@ -1,123 +1,150 @@
 #ifndef STLXGFX_WINDOW_H
 #define STLXGFX_WINDOW_H
 
-#include <stddef.h>
-#include <stdint.h>
-#include <stlxgfx/surface.h>
-#include <stlxgfx/internal/stlxgfx_protocol.h>
-#include <stlxgfx/internal/stlxgfx_event_ring.h>
-#include <stlibc/ipc/shm.h>
+#include <stlxgfx/fb.h>
+#include <stlxgfx/event.h>
+#include <stdatomic.h>
 
-#define WINDOW_TITLE_BAR_HEIGHT     32
-#define WINDOW_BORDER_WIDTH         1
+/* --- Socket path --- */
 
-typedef struct stlxgfx_context stlxgfx_context_t;
+#define STLXGFX_DM_SOCKET_PATH "/tmp/stlxgfxdm.socket"
 
-// Window structure (shared between DM and applications)
-struct stlxgfx_window {
-    // Window properties
+/* --- Protocol --- */
+
+#define STLXGFX_PROTOCOL_VERSION 1
+
+#define STLXGFX_MSG_CREATE_WINDOW_REQ   0x0001
+#define STLXGFX_MSG_CREATE_WINDOW_RESP  0x0002
+#define STLXGFX_MSG_DESTROY_WINDOW_REQ  0x0003
+#define STLXGFX_MSG_DESTROY_WINDOW_RESP 0x0004
+#define STLXGFX_MSG_ERROR_RESP          0xFFFF
+
+typedef struct {
+    uint32_t protocol_version;
+    uint32_t message_type;
+    uint32_t sequence_number;
+    uint32_t payload_size;
+    uint32_t flags;
+} __attribute__((packed)) stlxgfx_msg_header_t;
+
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t title_length;
+    char     title[256];
+} __attribute__((packed)) stlxgfx_create_window_req_t;
+
+typedef struct {
     uint32_t window_id;
-    uint32_t width, height;
-    int32_t posx, posy;
-    char title[256];
-    stlxgfx_pixel_format_t format;
-    
-    // Shared memory handles (same across processes)
-    shm_handle_t sync_shm_handle;     // Synchronization data
-    shm_handle_t surface_shm_handle;  // All three surfaces
-    shm_handle_t event_shm_handle;    // Event ring buffer
-    
-    // Local pointers (different virtual addresses per process)
-    stlxgfx_window_sync_t* sync_data;    // Mapped sync memory
-    stlxgfx_surface_t* surface0;         // First surface buffer
-    stlxgfx_surface_t* surface1;         // Second surface buffer
-    stlxgfx_surface_t* surface2;         // Third surface buffer
-    stlxgfx_event_ring_t* event_ring;    // Mapped event ring buffer
-    
-    // State
-    int initialized;
-};
+    char     surface_name[64];
+    char     sync_name[64];
+    char     events_name[64];
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t bpp;
+    uint8_t  red_shift;
+    uint8_t  green_shift;
+    uint8_t  blue_shift;
+    uint8_t  padding;
+    uint32_t result_code;
+} __attribute__((packed)) stlxgfx_create_window_resp_t;
 
-// Window handle typedef
-typedef struct stlxgfx_window stlxgfx_window_t;
+typedef struct {
+    uint32_t window_id;
+} __attribute__((packed)) stlxgfx_destroy_window_req_t;
 
-/**
- * Create a window
- * @param ctx - graphics context (must be in APPLICATION mode)
- * @param width - window width in pixels
- * @param height - window height in pixels
- * @param posx - window X position in pixels
- * @param posy - window Y position in pixels
- * @param title - window title (can be NULL for no title)
- * @return window handle or NULL on error
- */
-stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, uint32_t height, 
-                                       int32_t posx, int32_t posy, const char* title);
+typedef struct {
+    uint32_t window_id;
+    uint32_t result_code;
+} __attribute__((packed)) stlxgfx_destroy_window_resp_t;
 
-/**
- * Destroy a window
- * @param ctx - graphics context
- * @param window - window to destroy
- */
-void stlxgfx_destroy_window(stlxgfx_context_t* ctx, stlxgfx_window_t* window);
+typedef struct {
+    uint32_t error_code;
+    uint32_t original_sequence;
+    char     error_message[128];
+} __attribute__((packed)) stlxgfx_error_resp_t;
 
-/**
- * Get the active drawing surface for a window (back buffer)
- * @param window - target window
- * @return pointer to back buffer surface, NULL on error
- */
-stlxgfx_surface_t* stlxgfx_get_active_surface(stlxgfx_window_t* window);
+/* --- Triple-buffer sync (shared memory) --- */
 
-/**
- * Get the current application surface (for drawing)
- * @param window - target window
- * @return pointer to app surface based on app_buffer_index, NULL on error
- */
-stlxgfx_surface_t* stlxgfx_get_app_surface(stlxgfx_window_t* window);
+typedef struct {
+    atomic_uint_least32_t front_index;
+    atomic_uint_least32_t back_index;
+    atomic_uint_least32_t ready_index;
+    atomic_uint_least32_t frame_ready;
+    atomic_uint_least32_t dm_consuming;
+    atomic_uint_least32_t swap_pending;
+    atomic_uint_least32_t close_requested;
+} stlxgfx_window_sync_t;
 
-/**
- * Get the current display manager surface (for compositing)
- * @param window - target window
- * @return pointer to DM surface based on dm_buffer_index, NULL on error
- */
-stlxgfx_surface_t* stlxgfx_get_dm_surface(stlxgfx_window_t* window);
+/* --- Client API --- */
 
-/**
- * Swap front and back buffers (non-blocking in triple buffer mode)
- * @param window - target window
- * @return 0 on success, -3 if swap pending (try again later), negative on other errors
- */
-int stlxgfx_swap_buffers(stlxgfx_window_t* window);
+typedef struct stlxgfx_window_t_tag {
+    stlxgfx_window_sync_t* sync;
+    stlxgfx_event_ring_t*  event_ring;
+    uint8_t* surface_buf;
+    size_t   surface_size;
+    int      surface_fd;
+    int      sync_fd;
+    int      events_fd;
+    uint32_t window_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t bpp;
+    uint8_t  red_shift;
+    uint8_t  green_shift;
+    uint8_t  blue_shift;
+    stlxgfx_surface_t* back;
+    int      conn_fd;
+    int      open;
+} stlxgfx_window_t;
 
-/**
- * Check if buffer swap is available (no pending swap)
- * @param window - target window
- * @return 1 if swap available, 0 if not available or error
- */
-int stlxgfx_can_swap_buffers(stlxgfx_window_t* window);
+stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
+                                          const char* title);
+void stlxgfx_window_destroy(stlxgfx_window_t* window);
+int  stlxgfx_window_is_open(stlxgfx_window_t* window);
 
-/**
- * Check if a window is still opened/visible
- * @param window - target window
- * @return 1 if window is opened, 0 if window is closed or error
- */
-int stlxgfx_is_window_opened(stlxgfx_window_t* window);
+int stlxgfx_window_next_event(stlxgfx_window_t* window,
+                               stlxgfx_event_t* event);
 
-/**
- * Handle window synchronization for display manager (compositor)
- * Should be called before compositing a window to ensure proper synchronization
- * @param window - target window
- * @return 1 if window is ready to composite, 0 if not ready, negative on error
- */
-int stlxgfx_dm_sync_window(stlxgfx_window_t* window);
+stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window);
+int stlxgfx_window_swap_buffers(stlxgfx_window_t* window);
 
-/**
- * Finish window synchronization for display manager (compositor)
- * Should be called after compositing a window to signal completion
- * @param window - target window
- * @return 0 on success, negative on error
- */
-int stlxgfx_dm_finish_sync_window(stlxgfx_window_t* window);
+/* --- DM-side API --- */
 
-#endif // STLXGFX_WINDOW_H
- 
+#define STLXGFX_DM_MAX_CLIENTS 16
+
+typedef struct {
+    stlxgfx_window_sync_t* sync;
+    stlxgfx_event_ring_t*  event_ring;
+    uint8_t* surface_buf;
+    size_t   surface_size;
+    int      surface_fd;
+    int      sync_fd;
+    int      events_fd;
+    uint32_t window_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    stlxgfx_surface_t* front;
+    int32_t  x, y;
+    char     title[64];
+    char     surface_path[128];
+    char     sync_path[128];
+    char     events_path[128];
+} stlxgfx_dm_window_t;
+
+int stlxgfx_dm_listen(const char* socket_path);
+int stlxgfx_dm_accept(int listen_fd);
+int stlxgfx_dm_read_request(int client_fd, stlxgfx_msg_header_t* header,
+                             void* payload, size_t max_payload);
+stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
+    int client_fd, const stlxgfx_msg_header_t* req_header,
+    const stlxgfx_create_window_req_t* req, const stlxgfx_fb_t* fb);
+void stlxgfx_dm_destroy_window(stlxgfx_dm_window_t* window);
+int stlxgfx_dm_sync(stlxgfx_dm_window_t* window);
+void stlxgfx_dm_finish_sync(stlxgfx_dm_window_t* window);
+stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window);
+
+#endif /* STLXGFX_WINDOW_H */

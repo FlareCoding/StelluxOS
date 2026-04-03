@@ -1,52 +1,41 @@
-# Directories
-.vscode/
+# Build artifacts
 build/
-bin/
-__pycache__/
-docs/output/
-
-# Toolchain build artifacts and fetched sources (keep scripts/ directory)
-toolchain/dist/
-toolchain/build/
-toolchain/src/
-
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
 *.o
-*.obj
+*.elf
+*.bin
 
-# Precompiled Headers
-*.gch
-*.pch
+# Generated images
+images/*.img
+images/*.iso
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+# Downloaded Limine binaries (reproducible via make limine)
+boot/limine/*.EFI
+boot/limine/limine
 
-# Fortran module files
-*.mod
-*.smod
+# Downloaded RPi4 UEFI firmware (reproducible via make rpi4-firmware)
+boot/rpi4-uefi/*
+!boot/rpi4-uefi/config.txt
 
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*~
 
-# Executables
-*.exe
-*.out
-*.app
-*.efi
+# Clangd
+.cache/
+compile_commands.json
 
-# QEMU/Debug files
-usb_debug.log
-com1.serial
-com2.serial
-dev_os_output.log
-uart_pci.log
+# Userland build artifacts
+userland/sysroot/
+userland/musl-*
+userland/build/
+initrd/bin/*
+!initrd/bin/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# DOOM WAD file (downloadable via 'make doom-wad')
+initrd/etc/res/doom/doom1.wad

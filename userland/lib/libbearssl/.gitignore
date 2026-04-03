@@ -1,0 +1,8 @@
+# Native build artifacts (brssl host tool)
+bearssl/build/
+
+# Downloaded CA bundle (regenerate with gen_trust_anchors.sh)
+cacert.pem
+
+# Cross-compiled build artifacts
+build/

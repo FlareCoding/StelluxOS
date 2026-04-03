@@ -1,29 +1,40 @@
-# =========================
-# Userland Libraries Makefile
-# =========================
-# Uses exported variables from parent Makefile
+#
+# Stellux Userland - Libraries
+#
 
-# Sub-libraries
-STLIBC_DIR := stlibc
-LIBSTLXGFX_DIR := libstlxgfx
+LIB_DIRS := libstlx libstlxgfx libbearssl
+LIB_COUNT := $(words $(LIB_DIRS))
 
-# Default target - build all libraries
-all: stlibc libstlxgfx
+all:
+ifeq ($(STLX_QUIET),1)
+	@echo "  Libraries:"
+	@idx=0; \
+	for lib in $(LIB_DIRS); do \
+		idx=$$((idx + 1)); \
+		( while true; do \
+			printf "\r    %-48s .  " "$$lib"; sleep 0.3; \
+			printf "\r    %-48s .. " "$$lib"; sleep 0.3; \
+			printf "\r    %-48s ..." "$$lib"; sleep 0.3; \
+		done ) & \
+		anim_pid=$$!; \
+		if $(MAKE) --no-print-directory -C $$lib ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) STLX_QUIET=1 > /dev/null 2>&1; then \
+			kill $$anim_pid 2>/dev/null; wait $$anim_pid 2>/dev/null; \
+			printf "\r    %-48s ok  (%d/%d)\n" "$$lib" $$idx $(LIB_COUNT); \
+		else \
+			kill $$anim_pid 2>/dev/null; wait $$anim_pid 2>/dev/null; \
+			printf "\r    %-48s FAIL\n" "$$lib"; \
+			exit 1; \
+		fi; \
+	done
+else
+	@for lib in $(LIB_DIRS); do \
+		$(MAKE) -C $$lib ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V); \
+	done
+endif
 
-# Build stlibc
-stlibc:
-	@echo "Building stlibc..."
-	@$(MAKE) -C $(STLIBC_DIR)
-
-# Build libstlxgfx
-libstlxgfx:
-	@echo "Building libstlxgfx..."
-	@$(MAKE) -C $(LIBSTLXGFX_DIR)
-
-# Clean all libraries
 clean:
-	@echo "Cleaning libraries..."
-	@$(MAKE) -C $(STLIBC_DIR) clean
-	@$(MAKE) -C $(LIBSTLXGFX_DIR) clean
+	@for lib in $(LIB_DIRS); do \
+		$(MAKE) -C $$lib clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT); \
+	done
 
-.PHONY: all stlibc libstlxgfx clean
+.PHONY: all clean

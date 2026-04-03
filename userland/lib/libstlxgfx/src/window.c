@@ -1,407 +1,704 @@
+#define _GNU_SOURCE
+#include <stlxgfx/window.h>
+#include <stlxgfx/font.h>
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "stlxgfx/window.h"
-#include "stlxgfx/surface.h"
-#include "stlxgfx/internal/stlxgfx_ctx.h"
-#include "stlxgfx/internal/stlxgfx_comm.h"
-#include "stlxgfx/internal/stlxgfx_protocol.h"
-#include "stlxgfx/internal/stlxgfx_event_dm.h"
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
 
-#define _POSIX_C_SOURCE 199309L
-#include <time.h>
+/* --- I/O helpers --- */
 
-// Forward declaration for internal event registration
-extern int stlxgfx_register_window_for_events(stlxgfx_window_t* window);
-extern int stlxgfx_unregister_window_from_events(stlxgfx_window_t* window);
-
-stlxgfx_window_t* stlxgfx_create_window(stlxgfx_context_t* ctx, uint32_t width, uint32_t height, 
-                                       int32_t posx, int32_t posy, const char* title) {
-    if (!ctx || !ctx->initialized) {
-        printf("STLXGFX: Invalid context\n");
-        return NULL;
-    }
-    
-    if (ctx->mode != STLXGFX_MODE_APPLICATION) {
-        printf("STLXGFX: Window creation only available in application mode\n");
-        return NULL;
-    }
-    
-    if (!ctx->connected_to_dm) {
-        printf("STLXGFX: Not connected to display manager\n");
-        return NULL;
-    }
-    
-    if (width == 0 || height == 0 || width > 4096 || height > 4096) {
-        printf("STLXGFX: Invalid window dimensions: %ux%u\n", width, height);
-        return NULL;
-    }
-    
-    // Prepare CREATE_WINDOW_REQUEST
-    stlxgfx_message_header_t header = {
-        .protocol_version = STLXGFX_PROTOCOL_VERSION,
-        .message_type = STLXGFX_MSG_CREATE_WINDOW_REQUEST,
-        .sequence_number = ctx->next_sequence_number++,
-        .payload_size = sizeof(stlxgfx_create_window_request_t),
-        .flags = 0
-    };
-    
-    stlxgfx_create_window_request_t request = {
-        .width = width,
-        .height = height,
-        .posx = posx,
-        .posy = posy,
-        .title_length = 0,
-        .title = {0}
-    };
-    
-    // Handle title
-    if (title && title[0] != '\0') {
-        size_t title_len = strlen(title);
-        if (title_len >= sizeof(request.title)) {
-            title_len = sizeof(request.title) - 1; // Leave room for null terminator
-        }
-        memcpy(request.title, title, title_len);
-        request.title[title_len] = '\0';
-        request.title_length = title_len;
-    }
-    
-    // Send request to display manager
-    if (stlxgfx_send_message(ctx->socket_fd, &header, &request) != 0) {
-        printf("STLXGFX: Failed to send CREATE_WINDOW_REQUEST\n");
-        return NULL;
-    }
-    
-    // Wait for response
-    stlxgfx_message_header_t response_header;
-    stlxgfx_create_window_response_t response;
-    
-    if (stlxgfx_receive_message(ctx->socket_fd, &response_header, &response, sizeof(response)) != 0) {
-        printf("STLXGFX: Failed to receive CREATE_WINDOW_RESPONSE\n");
-        return NULL;
-    }
-    
-    // Validate response
-    if (response_header.message_type == STLXGFX_MSG_ERROR_RESPONSE) {
-        stlxgfx_error_response_t* error = (stlxgfx_error_response_t*)&response;
-        printf("STLXGFX: Error response: %s\n", error->error_message);
-        return NULL;
-    }
-    
-    if (response_header.message_type != STLXGFX_MSG_CREATE_WINDOW_RESPONSE) {
-        printf("STLXGFX: Unexpected response type: %u\n", response_header.message_type);
-        return NULL;
-    }
-    
-    if (response_header.sequence_number != header.sequence_number) {
-        printf("STLXGFX: Sequence number mismatch: sent %u, got %u\n", 
-               header.sequence_number, response_header.sequence_number);
-        return NULL;
-    }
-    
-    if (response.result_code != STLXGFX_ERROR_SUCCESS) {
-        printf("STLXGFX: Window creation failed: %d\n", response.result_code);
-        return NULL;
-    }
-    
-    // Validate that we received valid SHM handles
-    if (response.sync_shm_handle == 0 || response.surface_shm_handle == 0 || response.event_shm_handle == 0) {
-        printf("STLXGFX: Invalid SHM handles in response\n");
-        return NULL;
-    }
-    
-    // Map window sync shared memory
-    stlxgfx_window_sync_t* sync_data;
-    if (stlxgfx_map_window_sync_shm(response.sync_shm_handle, &sync_data) != 0) {
-        printf("STLXGFX: Failed to map window sync SHM\n");
-        return NULL;
-    }
-    
-    // Map surface set shared memory
-    stlxgfx_surface_t* surface0;
-    stlxgfx_surface_t* surface1;
-    stlxgfx_surface_t* surface2;
-    if (stlxgfx_map_shared_surface_set(response.surface_shm_handle, &surface0, &surface1, &surface2) != 0) {
-        printf("STLXGFX: Failed to map surface set SHM\n");
-        // Clean up sync mapping
-        stlxgfx_unmap_window_sync_shm(response.sync_shm_handle, sync_data);
-        return NULL;
-    }
-    
-    // Map event ring buffer shared memory
-    stlxgfx_event_ring_t* event_ring;
-    if (stlxgfx_map_event_ring_shm(response.event_shm_handle, &event_ring) != 0) {
-        printf("STLXGFX: Failed to map event ring SHM\n");
-        // Clean up surface set mapping
-        stlxgfx_unmap_shared_surface_set(response.surface_shm_handle, surface0, surface1, surface2);
-        // Clean up sync mapping
-        stlxgfx_unmap_window_sync_shm(response.sync_shm_handle, sync_data);
-        return NULL;
-    }
-    
-    // Create window structure
-    stlxgfx_window_t* window = malloc(sizeof(stlxgfx_window_t));
-    if (!window) {
-        printf("STLXGFX: Failed to allocate window structure\n");
-        // Clean up all mappings
-        stlxgfx_unmap_event_ring_shm(response.event_shm_handle, event_ring);
-        stlxgfx_unmap_shared_surface_set(response.surface_shm_handle, surface0, surface1, surface2);
-        stlxgfx_unmap_window_sync_shm(response.sync_shm_handle, sync_data);
-        return NULL;
-    }
-    
-    // Initialize window structure with all mapped data
-    window->window_id = response.window_id;
-    window->width = width;
-    window->height = height;
-    window->posx = posx;
-    window->posy = posy;
-    if (request.title_length > 0) {
-        memcpy(window->title, request.title, request.title_length);
-        window->title[request.title_length] = '\0';
-    } else {
-        window->title[0] = '\0';
-    }
-    window->format = (stlxgfx_pixel_format_t)response.surface_format;
-    window->sync_shm_handle = response.sync_shm_handle;
-    window->surface_shm_handle = response.surface_shm_handle;
-    window->event_shm_handle = response.event_shm_handle;
-    window->sync_data = sync_data;
-    
-    // Store surface pointers directly - triple buffering uses indices to determine which surface each side uses
-    window->surface0 = surface0;
-    window->surface1 = surface1;
-    window->surface2 = surface2;
-    
-    // Store event ring buffer pointer
-    window->event_ring = event_ring;
-    
-    window->initialized = 1;
-    
-    // Register this window for event processing
-    if (stlxgfx_register_window_for_events(window) != 0) {
-        printf("STLXGFX: Warning - Failed to register window for event processing\n");
-        // Continue anyway - window creation succeeded
-    }
-    
-    return window;
-}
-
-void stlxgfx_destroy_window(stlxgfx_context_t* ctx, stlxgfx_window_t* window) {
-    if (!ctx || !window) {
-        return;
-    }
-    
-    // Unregister this window from event processing
-    stlxgfx_unregister_window_from_events(window);
-    
-    // Send DESTROY_WINDOW_REQUEST to display manager if connected
-    if (ctx->connected_to_dm && window->initialized) {
-        stlxgfx_message_header_t header = {
-            .protocol_version = STLXGFX_PROTOCOL_VERSION,
-            .message_type = STLXGFX_MSG_DESTROY_WINDOW_REQUEST,
-            .sequence_number = ctx->next_sequence_number++,
-            .payload_size = sizeof(stlxgfx_destroy_window_request_t),
-            .flags = 0
-        };
-        
-        stlxgfx_destroy_window_request_t request = {
-            .window_id = window->window_id
-        };
-        
-        // Send request to display manager
-        if (stlxgfx_send_message(ctx->socket_fd, &header, &request) == 0) {
-            // Wait for response
-            stlxgfx_message_header_t response_header;
-            stlxgfx_destroy_window_response_t response;
-            
-            if (stlxgfx_receive_message(ctx->socket_fd, &response_header, &response, sizeof(response)) == 0) {
-                // Validate response
-                if (response_header.message_type == STLXGFX_MSG_ERROR_RESPONSE) {
-                    stlxgfx_error_response_t* error = (stlxgfx_error_response_t*)&response;
-                    printf("STLXGFX: Error destroying window: %s\n", error->error_message);
-                } else if (response_header.message_type != STLXGFX_MSG_DESTROY_WINDOW_RESPONSE) {
-                    printf("STLXGFX: Unexpected response type during window destruction: %u\n", response_header.message_type);
-                } else if (response_header.sequence_number != header.sequence_number) {
-                    printf("STLXGFX: Sequence number mismatch during window destruction: sent %u, got %u\n", 
-                           header.sequence_number, response_header.sequence_number);
-                } else if (response.result_code != STLXGFX_ERROR_SUCCESS) {
-                    printf("STLXGFX: Window destruction failed: %d\n", response.result_code);
-                }
-            } else {
-                printf("STLXGFX: Warning - Failed to receive destroy window response, proceeding with local cleanup\n");
+static int read_full(int fd, void* buf, size_t count) {
+    uint8_t* p = (uint8_t*)buf;
+    size_t remaining = count;
+    while (remaining > 0) {
+        ssize_t n = read(fd, p, remaining);
+        if (n < 0) {
+            if (errno == EAGAIN) {
+                continue;
             }
-        } else {
-            printf("STLXGFX: Warning - Failed to send destroy window request, proceeding with local cleanup\n");
+            return -1;
         }
-    }
-    
-    // Clean up shared memory mappings if they exist
-    if (window->initialized) {
-        // Clean up event ring buffer shared memory
-        if (window->event_shm_handle != 0 && window->event_ring) {
-            stlxgfx_unmap_event_ring_shm(window->event_shm_handle, window->event_ring);
+        if (n == 0) {
+            return -1;
         }
-        
-        if (window->surface_shm_handle != 0 && window->surface0) {
-            stlxgfx_unmap_shared_surface_set(window->surface_shm_handle, 
-                                             window->surface0, window->surface1, window->surface2);
-        }
-        
-        if (window->sync_shm_handle != 0 && window->sync_data) {
-            stlxgfx_unmap_window_sync_shm(window->sync_shm_handle, window->sync_data);
-        }
+        p += (size_t)n;
+        remaining -= (size_t)n;
     }
-    
-    free(window);
-}
-
-stlxgfx_surface_t* stlxgfx_get_active_surface(stlxgfx_window_t* window) {
-    if (!window || !window->initialized) {
-        printf("STLXGFX: Invalid window for get_active_surface\n");
-        return NULL;
-    }
-    
-    if (!window->surface0 || !window->surface1 || !window->sync_data) {
-        printf("STLXGFX: No surfaces available for window ID=%u\n", window->window_id);
-        return NULL;
-    }
-    
-    // Return the surface the application should draw to based on app_buffer_index
-    return stlxgfx_get_app_surface(window);
-}
-
-stlxgfx_surface_t* stlxgfx_get_app_surface(stlxgfx_window_t* window) {
-    if (!window || !window->initialized || !window->sync_data) {
-        return NULL;
-    }
-    
-    // App draws to the surface indicated by back_buffer_index
-    uint32_t index = window->sync_data->back_buffer_index;
-    if (index == 0) {
-        return window->surface0;
-    } else if (index == 1) {
-        return window->surface1;
-    } else {
-        return window->surface2;
-    }
-}
-
-stlxgfx_surface_t* stlxgfx_get_dm_surface(stlxgfx_window_t* window) {
-    if (!window || !window->initialized || !window->sync_data) {
-        return NULL;
-    }
-    
-    // DM reads from the surface indicated by front_buffer_index
-    uint32_t index = window->sync_data->front_buffer_index;
-    if (index == 0) {
-        return window->surface0;
-    } else if (index == 1) {
-        return window->surface1;
-    } else {
-        return window->surface2;
-    }
-}
-
-int stlxgfx_swap_buffers(stlxgfx_window_t* window) {
-    if (!window || !window->initialized) {
-        printf("STLXGFX: Invalid window for swap_buffers\n");
-        return -1;
-    }
-    
-    if (!window->sync_data) {
-        printf("STLXGFX: No sync data available for window ID=%u\n", window->window_id);
-        return -1;
-    }
-    
-    // Check if there's already a swap pending - if so, we can't swap yet
-    if (window->sync_data->swap_pending) {
-        return -3; // Swap pending error - app should retry later or drop frame
-    }
-    
-    // Move current back buffer to ready position
-    window->sync_data->ready_buffer_index = window->sync_data->back_buffer_index;
-    
-    // Signal that a new frame is ready and a swap is pending
-    window->sync_data->frame_ready = 1;
-    window->sync_data->swap_pending = 1;
-    
-    // Find the next free buffer for the app to draw to
-    // In triple buffering, we cycle through buffers: 0 -> 1 -> 2 -> 0
-    uint32_t next_back = (window->sync_data->back_buffer_index + 1) % 3;
-    
-    // Make sure the next buffer isn't currently being consumed by DM
-    // If DM is consuming the buffer we want to use, we need to pick a different one
-    if (window->sync_data->dm_consuming && next_back == window->sync_data->front_buffer_index) {
-        // DM is consuming our preferred next buffer, use the other free buffer
-        next_back = (next_back + 1) % 3;
-    }
-    
-    // Update to the new back buffer
-    window->sync_data->back_buffer_index = next_back;
-    
-    return 0; // Success - app can immediately start drawing next frame
-}
-
-int stlxgfx_can_swap_buffers(stlxgfx_window_t* window) {
-    if (!window || !window->initialized || !window->sync_data) {
-        return 0; // Cannot swap
-    }
-    
-    // In triple buffering, we can swap as long as there's no pending swap
-    return !window->sync_data->swap_pending;
-}
-
-int stlxgfx_is_window_opened(stlxgfx_window_t* window) {
-    if (!window || !window->initialized || !window->sync_data) {
-        return 0; // Window is not opened (invalid window)
-    }
-    
-    // Check if the display manager has requested window closure
-    // The close_requested field is set by the DM when close button is clicked
-    return !window->sync_data->close_requested;
-}
-
-int stlxgfx_dm_sync_window(stlxgfx_window_t* window) {
-    if (!window || !window->initialized) {
-        printf("STLXGFX_DM: Invalid window for sync\n");
-        return -1;
-    }
-    
-    if (!window->sync_data) {
-        printf("STLXGFX_DM: No sync data available for window ID=%u\n", window->window_id);
-        return -1;
-    }
-    
-    // Check if there's a pending swap to process
-    if (window->sync_data->swap_pending && window->sync_data->frame_ready) {
-        // Perform the swap: move ready buffer to front
-        window->sync_data->front_buffer_index = window->sync_data->ready_buffer_index;
-        
-        // Clear the swap flags
-        window->sync_data->frame_ready = 0;
-        window->sync_data->swap_pending = 0;
-    }
-    
-    // Always return 1 to composite the current front buffer
-    // In triple buffering, we always have a valid front buffer to display
-    
-    // Signal that DM is consuming the front buffer
-    window->sync_data->dm_consuming = 1;
-    
-    return 1; // Ready to composite
-}
-
-int stlxgfx_dm_finish_sync_window(stlxgfx_window_t* window) {
-    if (!window || !window->initialized || !window->sync_data) {
-        return -1;
-    }
-    
-    // Signal that DM has finished consuming the frame
-    window->sync_data->dm_consuming = 0;
-    
     return 0;
 }
 
+static int write_full(int fd, const void* buf, size_t count) {
+    const uint8_t* p = (const uint8_t*)buf;
+    size_t remaining = count;
+    while (remaining > 0) {
+        ssize_t n = write(fd, p, remaining);
+        if (n <= 0) {
+            return -1;
+        }
+        p += (size_t)n;
+        remaining -= (size_t)n;
+    }
+    return 0;
+}
 
- 
+static int send_message(int fd, uint32_t type, uint32_t seq,
+                        const void* payload, uint32_t payload_size) {
+    stlxgfx_msg_header_t hdr;
+    hdr.protocol_version = STLXGFX_PROTOCOL_VERSION;
+    hdr.message_type = type;
+    hdr.sequence_number = seq;
+    hdr.payload_size = payload_size;
+    hdr.flags = 0;
+    if (write_full(fd, &hdr, sizeof(hdr)) != 0) {
+        return -1;
+    }
+    if (payload_size > 0 && payload) {
+        if (write_full(fd, payload, payload_size) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* --- Client-side implementation --- */
+
+static int stlxgfx_connect(const char* socket_path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
+                                                  uint32_t height, const char* title,
+                                                  int owns_connection) {
+    if (conn_fd < 0 || width == 0 || height == 0) {
+        return NULL;
+    }
+
+    stlxgfx_create_window_req_t req;
+    memset(&req, 0, sizeof(req));
+    req.width = width;
+    req.height = height;
+    if (title) {
+        size_t len = strlen(title);
+        if (len > 255) {
+            len = 255;
+        }
+        memcpy(req.title, title, len);
+        req.title_length = (uint32_t)len;
+    }
+
+    if (send_message(conn_fd, STLXGFX_MSG_CREATE_WINDOW_REQ, 1,
+                     &req, sizeof(req)) != 0) {
+        return NULL;
+    }
+
+    stlxgfx_msg_header_t resp_hdr;
+    if (read_full(conn_fd, &resp_hdr, sizeof(resp_hdr)) != 0) {
+        return NULL;
+    }
+    if (resp_hdr.protocol_version != STLXGFX_PROTOCOL_VERSION) {
+        return NULL;
+    }
+    if (resp_hdr.message_type != STLXGFX_MSG_CREATE_WINDOW_RESP) {
+        return NULL;
+    }
+
+    stlxgfx_create_window_resp_t resp;
+    if (read_full(conn_fd, &resp, sizeof(resp)) != 0) {
+        return NULL;
+    }
+    if (resp.result_code != 0) {
+        return NULL;
+    }
+
+    char surface_path[128];
+    char sync_path[128];
+    char events_path[128];
+    snprintf(surface_path, sizeof(surface_path), "/dev/shm/%s", resp.surface_name);
+    snprintf(sync_path, sizeof(sync_path), "/dev/shm/%s", resp.sync_name);
+    snprintf(events_path, sizeof(events_path), "/dev/shm/%s", resp.events_name);
+    int sync_fd = open(sync_path, O_RDWR);
+    if (sync_fd < 0) {
+        return NULL;
+    }
+    stlxgfx_window_sync_t* sync = mmap(NULL, sizeof(stlxgfx_window_sync_t),
+                                        PROT_READ | PROT_WRITE, MAP_SHARED,
+                                        sync_fd, 0);
+    if (sync == MAP_FAILED) {
+        close(sync_fd);
+        return NULL;
+    }
+
+    int events_fd = open(events_path, O_RDWR);
+    if (events_fd < 0) {
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+    stlxgfx_event_ring_t* event_ring = mmap(NULL, sizeof(stlxgfx_event_ring_t),
+                                             PROT_READ | PROT_WRITE, MAP_SHARED,
+                                             events_fd, 0);
+    if (event_ring == MAP_FAILED) {
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+
+    size_t single_buf = (size_t)resp.pitch * resp.height;
+    size_t surface_size = single_buf * 3;
+
+    int surface_fd = open(surface_path, O_RDWR);
+    if (surface_fd < 0) {
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+    uint8_t* surface_buf = mmap(NULL, surface_size,
+                                PROT_READ | PROT_WRITE, MAP_SHARED,
+                                surface_fd, 0);
+    if (surface_buf == MAP_FAILED) {
+        close(surface_fd);
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+
+    stlxgfx_window_t* win = malloc(sizeof(stlxgfx_window_t));
+    if (!win) {
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        return NULL;
+    }
+
+    win->sync = sync;
+    win->event_ring = event_ring;
+    win->surface_buf = surface_buf;
+    win->surface_size = surface_size;
+    win->surface_fd = surface_fd;
+    win->sync_fd = sync_fd;
+    win->events_fd = events_fd;
+    win->window_id = resp.window_id;
+    win->width = resp.width;
+    win->height = resp.height;
+    win->pitch = resp.pitch;
+    win->bpp = resp.bpp;
+    win->red_shift = resp.red_shift;
+    win->green_shift = resp.green_shift;
+    win->blue_shift = resp.blue_shift;
+    win->conn_fd = owns_connection ? conn_fd : -1;
+    win->open = 1;
+
+    uint32_t bi = atomic_load_explicit(&sync->back_index, memory_order_acquire);
+    win->back = stlxgfx_surface_from_buffer(
+        surface_buf + bi * single_buf,
+        resp.width, resp.height, resp.pitch, resp.bpp,
+        resp.red_shift, resp.green_shift, resp.blue_shift);
+    if (!win->back) {
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        free(win);
+        return NULL;
+    }
+
+    return win;
+}
+
+stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
+                                          const char* title) {
+    stlxgfx_font_init(STLXGFX_FONT_PATH);
+
+    int conn_fd = stlxgfx_connect(STLXGFX_DM_SOCKET_PATH);
+    if (conn_fd < 0) {
+        return NULL;
+    }
+
+    stlxgfx_window_t* win = create_window_internal(conn_fd, width, height, title, 1);
+    if (!win) {
+        close(conn_fd);
+        return NULL;
+    }
+    return win;
+}
+
+static void window_cleanup(stlxgfx_window_t* window) {
+    if (!window) {
+        return;
+    }
+
+    int owned_conn = window->conn_fd;
+
+    if (owned_conn >= 0) {
+        stlxgfx_destroy_window_req_t req = { .window_id = window->window_id };
+        send_message(owned_conn, STLXGFX_MSG_DESTROY_WINDOW_REQ, 0,
+                     &req, sizeof(req));
+    }
+    if (window->back)
+        stlxgfx_destroy_surface(window->back);
+    if (window->event_ring)
+        munmap(window->event_ring, sizeof(stlxgfx_event_ring_t));
+    if (window->surface_buf)
+        munmap(window->surface_buf, window->surface_size);
+    if (window->events_fd >= 0)
+        close(window->events_fd);
+    if (window->surface_fd >= 0)
+        close(window->surface_fd);
+    if (window->sync)
+        munmap(window->sync, sizeof(stlxgfx_window_sync_t));
+    if (window->sync_fd >= 0)
+        close(window->sync_fd);
+    if (owned_conn >= 0)
+        close(owned_conn);
+
+    window->open = 0;
+}
+
+void stlxgfx_window_destroy(stlxgfx_window_t* window) {
+    if (!window) {
+        return;
+    }
+    window_cleanup(window);
+    free(window);
+}
+
+int stlxgfx_window_is_open(stlxgfx_window_t* window) {
+    if (!window) {
+        return 0;
+    }
+    return window->open;
+}
+
+stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
+    if (!window || !window->sync || !window->back || !window->open) {
+        return NULL;
+    }
+    uint32_t bi = atomic_load_explicit(&window->sync->back_index,
+                                       memory_order_acquire);
+    size_t single_buf = (size_t)window->pitch * window->height;
+    window->back->pixels = window->surface_buf + bi * single_buf;
+    return window->back;
+}
+
+int stlxgfx_window_swap_buffers(stlxgfx_window_t* window) {
+    if (!window || !window->sync || !window->open) {
+        return -1;
+    }
+    stlxgfx_window_sync_t* s = window->sync;
+
+    if (atomic_load_explicit(&s->swap_pending, memory_order_acquire)) {
+        return -1;
+    }
+
+    uint32_t bi = atomic_load_explicit(&s->back_index, memory_order_relaxed);
+    atomic_store_explicit(&s->ready_index, bi, memory_order_relaxed);
+    atomic_store_explicit(&s->frame_ready, 1, memory_order_relaxed);
+    atomic_store_explicit(&s->swap_pending, 1, memory_order_release);
+
+    uint32_t next = (bi + 1) % 3;
+    uint32_t fi = atomic_load_explicit(&s->front_index, memory_order_acquire);
+    if (next == fi) {
+        next = (next + 1) % 3;
+    }
+    atomic_store_explicit(&s->back_index, next, memory_order_release);
+
+    return 0;
+}
+
+int stlxgfx_window_next_event(stlxgfx_window_t* window,
+                               stlxgfx_event_t* event) {
+    if (!window || !window->event_ring || !event) {
+        return 0;
+    }
+
+    if (window->sync &&
+        atomic_load_explicit(&window->sync->close_requested,
+                             memory_order_acquire)) {
+        stlxgfx_event_t close_evt;
+        memset(&close_evt, 0, sizeof(close_evt));
+        close_evt.type = STLXGFX_EVT_CLOSE_REQUESTED;
+        close_evt.window_id = window->window_id;
+        *event = close_evt;
+        atomic_store_explicit(&window->sync->close_requested, 0,
+                              memory_order_release);
+        return 1;
+    }
+
+    return stlxgfx_event_ring_read(window->event_ring, event);
+}
+
+/* --- DM-side implementation --- */
+
+int stlxgfx_dm_listen(const char* socket_path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        fprintf(stderr, "stlxgfx_dm_listen: socket() failed (errno=%d)\r\n", errno);
+        return -1;
+    }
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
+
+    unlink(socket_path);
+
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        fprintf(stderr, "stlxgfx_dm_listen: bind(%s) failed (errno=%d)\r\n", socket_path, errno);
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, STLXGFX_DM_MAX_CLIENTS) < 0) {
+        fprintf(stderr, "stlxgfx_dm_listen: listen() failed (errno=%d)\r\n", errno);
+        close(fd);
+        return -1;
+    }
+
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    return fd;
+}
+
+int stlxgfx_dm_accept(int listen_fd) {
+    int fd = accept(listen_fd, NULL, NULL);
+    if (fd < 0) {
+        return -1;
+    }
+    fcntl(fd, F_SETFL, O_NONBLOCK);
+    return fd;
+}
+
+int stlxgfx_dm_read_request(int client_fd, stlxgfx_msg_header_t* header,
+                             void* payload, size_t max_payload) {
+    ssize_t n = read(client_fd, header, sizeof(*header));
+    if (n < 0) {
+        if (errno == EAGAIN) {
+            return 0;
+        }
+        return -1;
+    }
+    if (n == 0) {
+        return -1;
+    }
+    if ((size_t)n < sizeof(*header)) {
+        uint8_t* p = (uint8_t*)header + n;
+        size_t remaining = sizeof(*header) - (size_t)n;
+        if (read_full(client_fd, p, remaining) != 0) {
+            return -1;
+        }
+    }
+
+    if (header->protocol_version != STLXGFX_PROTOCOL_VERSION) {
+        return -1;
+    }
+    if (header->payload_size > 0) {
+        if (header->payload_size > max_payload || !payload) {
+            return -1;
+        }
+        if (read_full(client_fd, payload, header->payload_size) != 0) {
+            return -1;
+        }
+    }
+    return 1;
+}
+
+static uint32_t g_next_window_id = 1;
+static int32_t  g_cascade_offset = 0;
+
+stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
+    int client_fd, const stlxgfx_msg_header_t* req_header,
+    const stlxgfx_create_window_req_t* req, const stlxgfx_fb_t* fb) {
+    if (!req || !fb || req->width == 0 || req->height == 0) {
+        return NULL;
+    }
+
+    uint32_t wid = g_next_window_id++;
+    uint32_t bytes_pp = fb->bpp / 8;
+    uint32_t pitch = req->width * bytes_pp;
+    size_t single_buf = (size_t)pitch * req->height;
+    size_t surface_size = single_buf * 3;
+
+    char surface_name[64];
+    char sync_name[64];
+    char events_name[64];
+    snprintf(surface_name, sizeof(surface_name), "stlxgfx_surface_%u", wid);
+    snprintf(sync_name, sizeof(sync_name), "stlxgfx_sync_%u", wid);
+    snprintf(events_name, sizeof(events_name), "stlxgfx_events_%u", wid);
+
+    char surface_path[128];
+    char sync_path[128];
+    char events_path[128];
+    snprintf(surface_path, sizeof(surface_path), "/dev/shm/%s", surface_name);
+    snprintf(sync_path, sizeof(sync_path), "/dev/shm/%s", sync_name);
+    snprintf(events_path, sizeof(events_path), "/dev/shm/%s", events_name);
+
+    int surface_fd = open(surface_path, O_CREAT | O_RDWR, 0);
+    if (surface_fd < 0) {
+        return NULL;
+    }
+    if (ftruncate(surface_fd, (off_t)surface_size) < 0) {
+        close(surface_fd);
+        return NULL;
+    }
+    uint8_t* surface_buf = mmap(NULL, surface_size,
+                                PROT_READ | PROT_WRITE, MAP_SHARED,
+                                surface_fd, 0);
+    if (surface_buf == MAP_FAILED) {
+        close(surface_fd);
+        return NULL;
+    }
+    memset(surface_buf, 0, surface_size);
+
+    int sync_fd = open(sync_path, O_CREAT | O_RDWR, 0);
+    if (sync_fd < 0) {
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    if (ftruncate(sync_fd, (off_t)sizeof(stlxgfx_window_sync_t)) < 0) {
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    stlxgfx_window_sync_t* sync = mmap(NULL, sizeof(stlxgfx_window_sync_t),
+                                        PROT_READ | PROT_WRITE, MAP_SHARED,
+                                        sync_fd, 0);
+    if (sync == MAP_FAILED) {
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+
+    int events_fd = open(events_path, O_CREAT | O_RDWR, 0);
+    if (events_fd < 0) {
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    if (ftruncate(events_fd, (off_t)sizeof(stlxgfx_event_ring_t)) < 0) {
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    stlxgfx_event_ring_t* event_ring = mmap(NULL, sizeof(stlxgfx_event_ring_t),
+                                             PROT_READ | PROT_WRITE, MAP_SHARED,
+                                             events_fd, 0);
+    if (event_ring == MAP_FAILED) {
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+    stlxgfx_event_ring_init(event_ring);
+
+    atomic_store_explicit(&sync->front_index, 0, memory_order_relaxed);
+    atomic_store_explicit(&sync->back_index, 1, memory_order_relaxed);
+    atomic_store_explicit(&sync->ready_index, 2, memory_order_relaxed);
+    atomic_store_explicit(&sync->frame_ready, 0, memory_order_relaxed);
+    atomic_store_explicit(&sync->dm_consuming, 0, memory_order_relaxed);
+    atomic_store_explicit(&sync->swap_pending, 0, memory_order_relaxed);
+    atomic_store_explicit(&sync->close_requested, 0, memory_order_release);
+
+    stlxgfx_dm_window_t* win = malloc(sizeof(stlxgfx_dm_window_t));
+    if (!win) {
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        return NULL;
+    }
+
+    win->front = stlxgfx_surface_from_buffer(
+        surface_buf,
+        req->width, req->height, pitch, fb->bpp,
+        fb->red_shift, fb->green_shift, fb->blue_shift);
+    if (!win->front) {
+        munmap(event_ring, sizeof(stlxgfx_event_ring_t));
+        close(events_fd);
+        munmap(sync, sizeof(stlxgfx_window_sync_t));
+        close(sync_fd);
+        munmap(surface_buf, surface_size);
+        close(surface_fd);
+        free(win);
+        return NULL;
+    }
+
+    win->sync = sync;
+    win->event_ring = event_ring;
+    win->surface_buf = surface_buf;
+    win->surface_size = surface_size;
+    win->surface_fd = surface_fd;
+    win->sync_fd = sync_fd;
+    win->events_fd = events_fd;
+    win->window_id = wid;
+    win->width = req->width;
+    win->height = req->height;
+    win->pitch = pitch;
+
+    int32_t cx = 60 + g_cascade_offset * 32;
+    int32_t cy = 48 + g_cascade_offset * 32;
+    g_cascade_offset = (g_cascade_offset + 1) % 10;
+    win->x = cx;
+    win->y = cy;
+
+    memset(win->title, 0, sizeof(win->title));
+    if (req->title_length > 0) {
+        size_t tlen = req->title_length;
+        if (tlen > sizeof(win->title) - 1) {
+            tlen = sizeof(win->title) - 1;
+        }
+        memcpy(win->title, req->title, tlen);
+    }
+
+    strncpy(win->surface_path, surface_path, sizeof(win->surface_path) - 1);
+    win->surface_path[sizeof(win->surface_path) - 1] = '\0';
+    strncpy(win->sync_path, sync_path, sizeof(win->sync_path) - 1);
+    win->sync_path[sizeof(win->sync_path) - 1] = '\0';
+    strncpy(win->events_path, events_path, sizeof(win->events_path) - 1);
+    win->events_path[sizeof(win->events_path) - 1] = '\0';
+
+    stlxgfx_create_window_resp_t resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.window_id = wid;
+    strncpy(resp.surface_name, surface_name, sizeof(resp.surface_name) - 1);
+    strncpy(resp.sync_name, sync_name, sizeof(resp.sync_name) - 1);
+    strncpy(resp.events_name, events_name, sizeof(resp.events_name) - 1);
+    resp.width = req->width;
+    resp.height = req->height;
+    resp.pitch = pitch;
+    resp.bpp = fb->bpp;
+    resp.red_shift = fb->red_shift;
+    resp.green_shift = fb->green_shift;
+    resp.blue_shift = fb->blue_shift;
+    resp.result_code = 0;
+
+    if (send_message(client_fd, STLXGFX_MSG_CREATE_WINDOW_RESP,
+                     req_header->sequence_number,
+                     &resp, sizeof(resp)) != 0) {
+        stlxgfx_dm_destroy_window(win);
+        return NULL;
+    }
+
+    return win;
+}
+
+void stlxgfx_dm_destroy_window(stlxgfx_dm_window_t* window) {
+    if (!window) {
+        return;
+    }
+    if (window->front) {
+        stlxgfx_destroy_surface(window->front);
+    }
+    if (window->event_ring) {
+        munmap(window->event_ring, sizeof(stlxgfx_event_ring_t));
+    }
+    if (window->sync) {
+        munmap(window->sync, sizeof(stlxgfx_window_sync_t));
+    }
+    if (window->surface_buf) {
+        munmap(window->surface_buf, window->surface_size);
+    }
+    if (window->events_fd >= 0) {
+        close(window->events_fd);
+    }
+    if (window->surface_fd >= 0) {
+        close(window->surface_fd);
+    }
+    if (window->sync_fd >= 0) {
+        close(window->sync_fd);
+    }
+    if (window->events_path[0]) {
+        unlink(window->events_path);
+    }
+    if (window->surface_path[0]) {
+        unlink(window->surface_path);
+    }
+    if (window->sync_path[0]) {
+        unlink(window->sync_path);
+    }
+    free(window);
+}
+
+int stlxgfx_dm_sync(stlxgfx_dm_window_t* window) {
+    if (!window || !window->sync) {
+        return 0;
+    }
+    stlxgfx_window_sync_t* s = window->sync;
+
+    int new_frame = 0;
+    uint32_t ready = atomic_load_explicit(&s->frame_ready, memory_order_acquire);
+    uint32_t pending = atomic_load_explicit(&s->swap_pending, memory_order_acquire);
+
+    if (ready && pending) {
+        uint32_t ri = atomic_load_explicit(&s->ready_index, memory_order_acquire);
+        atomic_store_explicit(&s->front_index, ri, memory_order_relaxed);
+        atomic_store_explicit(&s->frame_ready, 0, memory_order_relaxed);
+        atomic_store_explicit(&s->swap_pending, 0, memory_order_release);
+
+        size_t single_buf = (size_t)window->pitch * window->height;
+        window->front->pixels = window->surface_buf + ri * single_buf;
+        new_frame = 1;
+    }
+
+    atomic_store_explicit(&s->dm_consuming, 1, memory_order_release);
+    return new_frame;
+}
+
+void stlxgfx_dm_finish_sync(stlxgfx_dm_window_t* window) {
+    if (!window || !window->sync) {
+        return;
+    }
+    atomic_store_explicit(&window->sync->dm_consuming, 0, memory_order_release);
+}
+
+stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window) {
+    if (!window) {
+        return NULL;
+    }
+    return window->front;
+}
+
+

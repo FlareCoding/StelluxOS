@@ -1,74 +1,53 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 199309L
+#include <stlx/proc.h>
 #include <stdio.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
 #include <time.h>
 
-#include <stlibc/stlibc.h>
+int main(void) {
+    int fd0 = open("/dev/console", O_RDWR);
+    if (fd0 < 0) {
+        return 99;
+    }
+    open("/dev/console", O_RDWR); // fd 1
+    open("/dev/console", O_RDWR); // fd 2
 
-// Function prototypes
-int launch_process(const char* process_name);
-int wait_for_process(int handle, const char* process_name);
+    setvbuf(stdout, NULL, _IONBF, 0);
 
-int main() {
-    // Launch system processes
-    int stlxdm_handle = launch_process("stlxdm");
-    if (stlxdm_handle < 0) {
-        printf("Failed to launch the display manager process\n");
-        return -1;
+    int dm_handle = proc_exec("/bin/stlxdm", NULL);
+    if (dm_handle >= 0) {
+        proc_detach(dm_handle);
+        printf("init: stlxdm started\r\n");
+
+        struct timespec dm_delay = { .tv_sec = 0, .tv_nsec = 200000000L };
+        nanosleep(&dm_delay, NULL);
+    } else {
+        printf("init: stlxdm not available, continuing without graphics\r\n");
     }
 
-    // We don't need to wait for the display manager
-    stlx_proc_close(stlxdm_handle);
-    return 0;
-}
+    struct timespec delay = { .tv_sec = 0, .tv_nsec = 600000000L }; // 600ms
 
-/**
- * @brief Launches a process by name and returns its handle.
- * @param process_name The name of the process to launch (without path or extension)
- * @return Process handle on success, -1 on failure
- */
-int launch_process(const char* process_name) {
-    if (!process_name) {
-        printf("[-] Invalid process name\n");
-        return -1;
-    }
+    while (1) {
+        int shell_handle = proc_exec("/bin/shell", NULL);
+        if (shell_handle < 0) {
+            printf("init: failed to create shell (errno=%d)\r\n", errno);
+            nanosleep(&delay, NULL);
+            continue;
+        }
 
-    // Construct full path: /initrd/bin/<process_name>
-    char full_path[256];
-    int ret = snprintf(full_path, sizeof(full_path), "/initrd/bin/%s", process_name);
-    if (ret < 0 || ret >= (int)sizeof(full_path)) {
-        printf("[-] Process path too long for '%s'\n", process_name);
-        return -1;
-    }
-    
-    int handle = stlx_proc_create(full_path, PROC_NEW_ENV, PROC_ACCESS_ALL, PROC_HANDLE_NONE, NULL);
-    if (handle < 0) {
-        printf("[-] Failed to launch %s process (handle: %d)\n", process_name, handle);
-        return -1;
-    }
-
-    return handle;
-}
-
-/**
- * @brief Waits for a process to complete and reports its exit status.
- * @param handle The process handle to wait for
- * @param process_name The name of the process (for logging)
- * @return 0 on success, -1 on failure
- */
-int wait_for_process(int handle, const char* process_name) {
-    if (handle < 0 || !process_name) {
-        printf("[-] Invalid handle or process name\n");
-        return -1;
-    }
-    
-    int exit_code = 0;
-    if (stlx_proc_wait(handle, &exit_code) != 0) {
-        printf("[-] Failed to wait for '%s' process\n", process_name);
-        return -1;
+        int shell_status = 0;
+        proc_wait(shell_handle, &shell_status);
+        if (STLX_WIFSIGNALED(shell_status)) {
+            printf("init: shell killed (signal %d), restarting...\r\n",
+                   STLX_WTERMSIG(shell_status));
+        } else {
+            printf("init: shell exited with code %d, restarting...\r\n",
+                   STLX_WEXITSTATUS(shell_status));
+        }
+        nanosleep(&delay, NULL);
     }
 
     return 0;

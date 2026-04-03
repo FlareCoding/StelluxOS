@@ -1,0 +1,9 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_MEMFD_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_MEMFD_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(memfd_create);
+DECLARE_SYSCALL(ftruncate);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_MEMFD_H

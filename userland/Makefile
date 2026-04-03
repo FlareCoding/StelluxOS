@@ -1,139 +1,115 @@
-# =========================
-# Userland Master Makefile
-# =========================
+#
+# Stellux 3.0 - Userland Master Makefile
+#
+# Builds userland applications and installs them to the initrd.
+# Requires musl sysroot to be set up first (make musl from top-level).
+#
+# Usage:
+#   make ARCH=x86_64          # Build all userland apps
+#   make clean ARCH=x86_64    # Clean build artifacts
+#
 
-# Toolchain Configuration
-TOOLCHAIN_DIR := $(realpath ../toolchain/dist)
-TOOLCHAIN_PREFIX := x86_64-linux-musl
-
-# =========================
-# Exported Toolchain Variables
-# =========================
-export CC := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-gcc
-export CXX := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-g++
-export LD := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-ld
-export AR := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-ar
-export RANLIB := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-ranlib
-export STRIP := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-strip
-export OBJCOPY := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-objcopy
-export OBJDUMP := $(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-objdump
-
-# =========================
-# Exported Directory Variables
-# =========================
 export USERLAND_ROOT := $(CURDIR)
-export USERLAND_BUILD_DIR := $(USERLAND_ROOT)/build
-export USERLAND_LIB_DIR := $(USERLAND_BUILD_DIR)/lib
-export USERLAND_BIN_DIR := $(USERLAND_BUILD_DIR)/bin
-export USERLAND_INCLUDE_DIR := $(USERLAND_ROOT)/lib/stlibc/include
-export USERLAND_SYSROOT := $(TOOLCHAIN_DIR)/$(TOOLCHAIN_PREFIX)
-export INITRD_BIN_DIR := $(USERLAND_ROOT)/../initrd/bin
 
-# =========================
-# Exported Compiler Flags
-# =========================
-# Architecture and basic flags
-export ARCH_FLAGS := -m64 -march=x86-64
-export DEBUG_FLAGS := -g -O2
-export WARNING_FLAGS := -Wall -Wextra -Werror
+SUPPORTED_ARCHS := x86_64 aarch64
 
-# Include paths
-export LIBSTLXGFX_INCLUDE_DIR := $(USERLAND_ROOT)/lib/libstlxgfx/include
-export INCLUDE_FLAGS := -I$(USERLAND_INCLUDE_DIR) -I$(USERLAND_SYSROOT)/include
+# ARCH validation
+ifndef ARCH
+  $(error ARCH is required. Use: make ARCH=x86_64 or ARCH=aarch64)
+endif
+ifeq ($(filter $(ARCH),$(SUPPORTED_ARCHS)),)
+  $(error Invalid ARCH=$(ARCH). Supported: $(SUPPORTED_ARCHS))
+endif
 
-# Standard C flags
-export CFLAGS_COMMON := $(ARCH_FLAGS) $(DEBUG_FLAGS) $(WARNING_FLAGS) $(INCLUDE_FLAGS) \
-                       -std=c11 -fno-stack-protector -nostartfiles
+# Sysroot check
+SYSROOT := $(USERLAND_ROOT)/sysroot/$(ARCH)
+ifeq ($(wildcard $(SYSROOT)/lib/libc.a),)
+  $(error musl sysroot not found at $(SYSROOT). Run 'make musl' from the top-level directory first)
+endif
 
-# Standard C++ flags  
-export CXXFLAGS_COMMON := $(ARCH_FLAGS) $(DEBUG_FLAGS) $(WARNING_FLAGS) $(INCLUDE_FLAGS) \
-                         -std=c++17 -fno-stack-protector -nostartfiles -fno-exceptions -fno-rtti
+# Output directories
+BIN_DIR   := $(USERLAND_ROOT)/build/$(ARCH)/bin
+INITRD_BIN := $(USERLAND_ROOT)/../initrd/bin
 
-# =========================
-# Exported Linker Flags
-# =========================
-export LDFLAGS_COMMON := -L$(USERLAND_LIB_DIR) -L$(USERLAND_SYSROOT)/lib
-export LIBS_COMMON := -lstlibc -lc
-export LIBS_STLXGFX := -lstlxgfx
-export LINKER_SCRIPT := $(USERLAND_ROOT)/userland.ld
-export LDFLAGS_EXE := -T$(LINKER_SCRIPT) $(LDFLAGS_COMMON)
+# Verbosity
+ifeq ($(V),1)
+  SUBMAKE_FLAGS :=
+  export STLX_QUIET :=
+else
+  SUBMAKE_FLAGS := --no-print-directory
+  export STLX_QUIET := 1
+endif
 
-# =========================
-# Exported Build Configuration
-# =========================
-export USERLAND_CRT_START := $(USERLAND_LIB_DIR)/crt0.o
-export USERLAND_CRT_END := $(USERLAND_LIB_DIR)/crtn.o
+all: build install-summary
 
-# =========================
-# Local Directories
-# =========================
-LIBS_DIR := lib
-APPS_DIR := apps
+build:
+ifeq ($(V),1)
+	@$(MAKE) -C lib ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V)
+	@$(MAKE) -C apps ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT) V=$(V)
+else
+	@echo ""
+	@echo "  Userland ($(ARCH))"
+	@echo ""
+	@$(MAKE) $(SUBMAKE_FLAGS) -C lib ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
+	@echo ""
+	@$(MAKE) $(SUBMAKE_FLAGS) -C apps ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
+	@echo ""
+endif
 
-# =========================
-# Helper Functions
-# =========================
-
-# Function to check if toolchain exists (only for build targets)
-define check_toolchain
-	@if [ ! -f "$(TOOLCHAIN_DIR)/bin/$(TOOLCHAIN_PREFIX)-gcc" ]; then \
-		echo "Error: Toolchain not found at $(TOOLCHAIN_DIR)"; \
-		echo "Please run: cd ../toolchain/scripts && source env.sh && ./build-toolchain.sh"; \
-		exit 1; \
-	fi
-endef
-
-# =========================
-# Build Targets
-# =========================
-
-# Default target - build everything and install to initrd
-all: create_dirs libs apps install_to_initrd
-
-# Create necessary directories
-create_dirs:
-	$(call check_toolchain)
-	@mkdir -p $(USERLAND_BUILD_DIR) $(USERLAND_LIB_DIR) $(USERLAND_BIN_DIR) $(INITRD_BIN_DIR)
-
-# Build libraries first (apps depend on them)
-libs: create_dirs
-	@echo "Building userland libraries..."
-	@$(MAKE) -C $(LIBS_DIR)
-
-# Build applications (depends on libraries)
-apps: libs
-	@echo "Building userland applications..."
-	@$(MAKE) -C $(APPS_DIR)
-
-# Install binaries to initrd
-install_to_initrd: apps
-	@echo "Installing binaries to initrd..."
-	@if [ -n "$$(ls -A $(USERLAND_BIN_DIR)/ 2>/dev/null)" ]; then \
-		cp $(USERLAND_BIN_DIR)/* $(INITRD_BIN_DIR)/; \
-		echo "Binaries installed to initrd"; \
+install-summary: build
+	@mkdir -p $(INITRD_BIN)
+ifeq ($(V),1)
+	@echo "Installing userland binaries to initrd..."
+	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
+		cp $(BIN_DIR)/* $(INITRD_BIN)/; \
+		echo "Installed: $$(ls $(BIN_DIR)/)"; \
 	else \
 		echo "No binaries to install"; \
 	fi
+else
+	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
+		cp $(BIN_DIR)/* $(INITRD_BIN)/; \
+		bincount=$$(ls -1 $(BIN_DIR)/ | wc -l); \
+		libcount=$$(ls -1 $(SYSROOT)/lib/libstlx.a 2>/dev/null | wc -l); \
+		if [ $$libcount -eq 1 ]; then libword="library"; else libword="libraries"; fi; \
+		printf "  $$libcount $$libword, $$bincount binaries installed to initrd/bin/\n"; \
+	else \
+		echo "  No binaries to install"; \
+	fi
+endif
 
-# Clean all build artifacts (no toolchain check needed)
 clean:
 	@echo "Cleaning userland build artifacts..."
-	@$(MAKE) -C $(LIBS_DIR) clean || true
-	@$(MAKE) -C $(APPS_DIR) clean || true
-	@rm -rf $(USERLAND_BUILD_DIR)
+	@$(MAKE) -C lib clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
+	@$(MAKE) -C apps clean ARCH=$(ARCH) USERLAND_ROOT=$(USERLAND_ROOT)
+	@rm -rf build
 
-# Debug target to show exported variables (requires toolchain)
-debug-vars:
-	$(call check_toolchain)
-	@echo "=== Exported Build Variables ==="
-	@echo "CC: $(CC)"
-	@echo "CXX: $(CXX)"
-	@echo "CFLAGS_COMMON: $(CFLAGS_COMMON)"
-	@echo "CXXFLAGS_COMMON: $(CXXFLAGS_COMMON)"
-	@echo "LDFLAGS_COMMON: $(LDFLAGS_COMMON)"
-	@echo "LIBS_COMMON: $(LIBS_COMMON)"
-	@echo "USERLAND_INCLUDE_DIR: $(USERLAND_INCLUDE_DIR)"
-	@echo "USERLAND_LIB_DIR: $(USERLAND_LIB_DIR)"
-	@echo "USERLAND_BIN_DIR: $(USERLAND_BIN_DIR)"
+include mk/toolchain.mk
 
-.PHONY: all clean create_dirs libs apps install_to_initrd debug-vars
+CC_SOURCES := $(shell find apps lib -name '*.c' 2>/dev/null | sort)
+CC_FLAGS := $(CFLAGS_COMMON)
+
+compile-commands:
+	@echo "Generating userland compile_commands.json..."
+	@echo "[" > compile_commands.json
+	@first=1; \
+	for src in $(CC_SOURCES); do \
+		if [ $$first -eq 1 ]; then first=0; else echo "," >> compile_commands.json; fi; \
+		extra_flags=""; \
+		case "$$src" in \
+			lib/libstlxgfx/*) extra_flags="-Ilib/libstlxgfx/include" ;; \
+			lib/libstlx/*) extra_flags="-Ilib/libstlx/include" ;; \
+		esac; \
+		args="\"$(CC)\""; \
+		for flag in $(CC_FLAGS) $$extra_flags; do args="$$args, \"$$flag\""; done; \
+		args="$$args, \"-c\", \"$$src\""; \
+		echo "  {" >> compile_commands.json; \
+		echo "    \"directory\": \"$$(pwd)\"," >> compile_commands.json; \
+		echo "    \"file\": \"$$src\"," >> compile_commands.json; \
+		echo "    \"arguments\": [$$args]" >> compile_commands.json; \
+		echo "  }" >> compile_commands.json; \
+	done
+	@echo "]" >> compile_commands.json
+	@echo "Created userland/compile_commands.json"
+
+.PHONY: all build install-summary clean compile-commands

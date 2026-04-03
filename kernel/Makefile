@@ -1,91 +1,296 @@
-# Define tools
-AS := gcc
-CC := g++
-LD := ld
+#
+# Stellux Kernel Makefile
+#
+# Auto-discovers all *.cpp and *.S files recursively and builds the kernel.
+# Requires ARCH to be set. Include config.mk before calling.
+#
+# Usage:
+#   make -C kernel ARCH=x86_64 BUILD_DIR=../build
+#
 
-# Directories
-SRC_DIR := src
-INC_DIR := include
-BUILD_DIR := build
-OBJ_DIR := $(BUILD_DIR)/obj
+# ============================================================================
+# Configuration Check
+# ============================================================================
 
-# Architecture
-TARGET_ARCH := X86_64
-
-# Pre-processor Defines
-PREPROCESSOR_DEFINES := -DARCH_$(TARGET_ARCH)
-
-# Output files
-KERNEL := $(BUILD_DIR)/stellux
-LINKER_SCRIPT := stellux.ld
-
-# Function to recursively find files in subdirectories
-rwildcard = $(foreach d,$(wildcard $(1)/*), \
-             $(call rwildcard,$d,$2)) \
-             $(filter $(subst *,%,$2),$d)
-
-# Source and header files
-ASM_SRCS := $(call rwildcard, $(SRC_DIR), *.S)
-CPP_SRCS := $(call rwildcard, $(SRC_DIR), *.cpp)
-HEADERS  := $(call rwildcard, $(SRC_DIR), *.h)
-
-# Conditionally exclude .test.cpp files if BUILD_UNIT_TESTS is not set
-ifndef BUILD_UNIT_TESTS
-CPP_SRCS := $(filter-out %.test.cpp, $(CPP_SRCS))
+# Allow 'clean' target without ARCH
+ifneq ($(MAKECMDGOALS),clean)
+ifndef ARCH
+$(error ARCH is required. Use: make ARCH=x86_64 or make ARCH=aarch64)
 endif
 
-# Object files
-ASM_OBJS := $(ASM_SRCS:$(SRC_DIR)/%.S=$(OBJ_DIR)/%.o)
-CPP_OBJS := $(CPP_SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
-OBJS     := $(ASM_OBJS) $(CPP_OBJS)
-
-# Optimization level [0, 1, 2, or 3]
-COMPILER_OPTIMIZATION_LEVEL := 2
-
-# Compiler and linker flags
-ASFLAGS   := -m64 -g -ffreestanding -nostdlib -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES)
-CXXFLAGS  := -m64 -g -O$(COMPILER_OPTIMIZATION_LEVEL) -I$(INC_DIR) -I$(INC_DIR)/core $(PREPROCESSOR_DEFINES) \
-			 -ffreestanding -Wall -Werror -Wextra -nostdlib -fno-exceptions -fno-rtti -std=c++20 -mno-red-zone \
-			 -fno-allow-store-data-races -fno-reorder-blocks -fno-ipa-cp-clone -fno-partial-inlining -Wframe-larger-than=2048 \
-			 -Wimplicit-fallthrough=5 -Wno-unused-but-set-variable -Wno-unused-const-variable -fno-omit-frame-pointer -fno-optimize-sibling-calls \
-			 -fno-stack-clash-protection -Wno-stringop-truncation -Wno-zero-length-bounds -Wno-array-bounds -Wno-stringop-overflow -Wno-restrict \
-			 -Wno-maybe-uninitialized -fno-strict-overflow -fno-stack-check -fconserve-stack -fno-stack-protector -mno-sse -mno-mmx
-LDFLAGS   := -m elf_x86_64 -T $(LINKER_SCRIPT) -g
-
-ifdef BUILD_UNIT_TESTS
-CXXFLAGS += -DBUILD_UNIT_TESTS
-ASFLAGS  += -DBUILD_UNIT_TESTS
+# Validate architecture
+ifeq ($(filter $(ARCH),x86_64 aarch64),)
+$(error Invalid ARCH=$(ARCH). Supported: x86_64, aarch64)
+endif
 endif
 
-# Default target
-all: $(KERNEL)
+# ============================================================================
+# Paths
+# ============================================================================
 
-# Create build directories
-$(OBJ_DIR):
-	mkdir -p $(OBJ_DIR)
+# Build directory (passed from top-level, default for standalone use)
+BUILD_DIR ?= ../build
+KERNEL_BUILD_DIR := $(BUILD_DIR)/kernel/$(ARCH)
+OBJ_DIR := $(KERNEL_BUILD_DIR)/obj
 
-$(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
+# Output
+KERNEL_ELF := $(KERNEL_BUILD_DIR)/kernel.elf
 
-# Compile assembly files to object files
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.S $(HEADERS)
-	@mkdir -p $(dir $@)
-	@echo "[AS] Compiling $<"
-	@$(AS) $(ASFLAGS) -c $< -o $@
+# Linker script
+LINKER_SCRIPT := arch/$(ARCH)/linker.ld
 
-# Compile C++ files to object files
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp $(HEADERS)
-	@mkdir -p $(dir $@)
-	@echo "[CXX] Compiling $<"
-	@$(CC) $(CXXFLAGS) -c $< -o $@
+# ============================================================================
+# Include Configuration and Pretty Output
+# ============================================================================
 
-# Link the kernel
-$(KERNEL): $(OBJS) $(LINKER_SCRIPT) | $(BUILD_DIR)
-	@echo "[LD] Linking $@"
-	@$(LD) $(LDFLAGS) -o $@ $(OBJS)
+# Pretty output helpers
+include ../scripts/pretty.mk
 
-# Clean up build files
+# Common configuration (toolchain, build mode, limits)
+include ../config.mk
+
+# Architecture-specific flags
+include arch/$(ARCH)/defconfig
+
+# ============================================================================
+# Source Discovery
+# ============================================================================
+
+# Find all C++ sources
+CXX_SOURCES := $(shell find boot -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find common -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find io -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find mm -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find percpu -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find sched -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find syscall -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find acpi -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find debug -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find dma -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find exec -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find fdt -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find sync -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find smp -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find rc -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find fs -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find resource -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find socket -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find terminal -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find pty -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find pipe -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find pci -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find msi -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find irq -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find net -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find random -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find drivers -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find arch/$(ARCH) -name '*.cpp' 2>/dev/null | sort)
+
+# Unit test sources (only when STLX_UNIT_TESTS_ENABLED=1)
+ifeq ($(STLX_UNIT_TESTS_ENABLED),1)
+CXX_SOURCES += $(shell find tests -name '*.cpp' 2>/dev/null | sort)
+endif
+
+# Find all assembly sources (arch-specific only typically)
+ASM_SOURCES := $(shell find arch/$(ARCH) -name '*.S' 2>/dev/null | sort)
+
+# Unit test assembly sources (e.g., FPU test helpers)
+ifeq ($(STLX_UNIT_TESTS_ENABLED),1)
+ASM_SOURCES += $(shell find tests -name '*.S' 2>/dev/null | sort)
+endif
+
+# Generate object file paths
+CXX_OBJECTS := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(CXX_SOURCES))
+ASM_OBJECTS := $(patsubst %.S,$(OBJ_DIR)/%.o,$(ASM_SOURCES))
+OBJECTS := $(CXX_OBJECTS) $(ASM_OBJECTS)
+
+# Total file count for progress
+TOTAL_FILES := $(words $(OBJECTS))
+CURRENT_FILE := 0
+
+# ============================================================================
+# Compiler Flags
+# ============================================================================
+
+# Base C++ flags
+CXXFLAGS_STD ?= -std=c++20
+
+CXXFLAGS_FREESTANDING ?= \
+	-ffreestanding \
+	-fno-builtin \
+	-nostdinc++ \
+	-nostdlib
+
+CXXFLAGS_KERNEL ?= \
+	-fno-exceptions \
+	-fno-rtti \
+	-fno-stack-protector \
+	-fno-stack-check \
+	-fno-PIE \
+	-fno-PIC
+
+CXXFLAGS_WARN ?= \
+	-Wall \
+	-Wextra
+
+
+# Log level config flag
+CXXFLAGS_LOG := -DLOG_LEVEL=$(LOG_LEVEL)
+
+# Configuration defines (from config.mk)
+CXXFLAGS_CONFIG := -DMAX_CPUS=$(MAX_CPUS)
+CXXFLAGS_CONFIG += -DSTLX_BUILD_EPOCH=$(STLX_BUILD_EPOCH)
+CXXFLAGS_CONFIG += -DSTLX_VERSION='"$(STLX_VERSION)"'
+
+# uname release / version (version: mode, platform, UTC time from STLX_BUILD_EPOCH)
+STLX_BUILD_DATE := $(shell date -u -d @$(STLX_BUILD_EPOCH) +'%Y-%m-%d %H:%M UTC' 2>/dev/null || date -u -r $(STLX_BUILD_EPOCH) +'%Y-%m-%d %H:%M UTC' 2>/dev/null || echo unknown)
+STLX_UNAME_RELEASE := $(STLX_VERSION)-$(ARCH)-$(MODE_NAME)
+STLX_UNAME_VERSION := $(STLX_BUILD_DATE)
+CXXFLAGS_CONFIG += -DSTLX_UNAME_RELEASE='"$(STLX_UNAME_RELEASE)"'
+CXXFLAGS_CONFIG += -DSTLX_UNAME_VERSION='"$(STLX_UNAME_VERSION)"'
+
+# Platform define (e.g., PLATFORM=rpi4 → -DSTLX_PLATFORM_RPI4)
+ifneq ($(PLATFORM),qemu-virt)
+PLATFORM_UPPER := $(shell echo '$(PLATFORM)' | tr 'a-z-' 'A-Z_')
+CXXFLAGS_CONFIG += -DSTLX_PLATFORM_$(PLATFORM_UPPER)
+endif
+
+# Include paths
+# Note: -Iarch/$(ARCH) allows arch-specific headers to be included with paths
+# like #include "hw/barrier.h" - the build system picks the right arch directory
+CXXFLAGS_INCLUDES := -I. -Icommon -Iarch/$(ARCH)
+
+# Unit test flags
+ifeq ($(STLX_UNIT_TESTS_ENABLED),1)
+CXXFLAGS_EXTRA += -DSTLX_UNIT_TESTS_ENABLED
+CXXFLAGS_INCLUDES += -Itests/framework
+endif
+
+# Combine all C++ flags
+CXXFLAGS := \
+	$(CXXFLAGS_STD) \
+	$(CXXFLAGS_FREESTANDING) \
+	$(CXXFLAGS_KERNEL) \
+	$(CXXFLAGS_ARCH) \
+	$(CXXFLAGS_WARN) \
+	$(CXXFLAGS_MODE) \
+	$(CXXFLAGS_LOG) \
+	$(CXXFLAGS_CONFIG) \
+	$(CXXFLAGS_INCLUDES) \
+	$(CXXFLAGS_EXTRA)
+
+# Assembly flags
+ASFLAGS := \
+	-ffreestanding \
+	$(ASFLAGS_ARCH) \
+	$(CXXFLAGS_INCLUDES)
+
+# Linker flags
+LDFLAGS := \
+	-nostdlib \
+	-static \
+	-T $(LINKER_SCRIPT)
+
+# For header display (truncated)
+CXXFLAGS_DISPLAY := $(CXXFLAGS_STD) $(CXXFLAGS_ARCH) $(CXXFLAGS_MODE)
+
+# ============================================================================
+# Targets
+# ============================================================================
+
+.PHONY: all clean header
+
+all: header $(KERNEL_ELF)
+	@printf "\n  $(COLOR_BOLD)$(COLOR_GREEN)Kernel built:$(COLOR_RESET) $(KERNEL_ELF)\n\n"
+
+# Print build configuration header
+header:
+ifeq ($(V),1)
+	@echo "=== Verbose Build ==="
+	@echo "ARCH=$(ARCH)"
+	@echo "CXXFLAGS=$(CXXFLAGS)"
+	@echo "ASFLAGS=$(ASFLAGS)"
+	@echo "LDFLAGS=$(LDFLAGS)"
+	@echo "SOURCES=$(CXX_SOURCES) $(ASM_SOURCES)"
+	@echo ""
+else
+	$(call print_header)
+endif
+
+# Link kernel ELF
+$(KERNEL_ELF): $(OBJECTS) $(LINKER_SCRIPT)
+	$(call ensure_dir,$@)
+	$(call link_elf,$@,$(OBJECTS),$(TOTAL_FILES)/$(TOTAL_FILES))
+
+# ============================================================================
+# Pattern Rules with Progress Counter
+# ============================================================================
+
+# We use a marker file approach to track progress across separate make invocations
+# Each compile rule increments the counter
+
+# Compile C++ files
+$(OBJ_DIR)/%.o: %.cpp
+	$(call ensure_dir,$@)
+	$(eval CURRENT_FILE := $(shell echo $$(($(CURRENT_FILE) + 1))))
+	$(call compile_cxx,$<,$@,$(CURRENT_FILE)/$(TOTAL_FILES))
+
+# Compile assembly files
+$(OBJ_DIR)/%.o: %.S
+	$(call ensure_dir,$@)
+	$(eval CURRENT_FILE := $(shell echo $$(($(CURRENT_FILE) + 1))))
+	$(call compile_asm,$<,$@,$(CURRENT_FILE)/$(TOTAL_FILES))
+
+# ============================================================================
+# Clean
+# ============================================================================
+
 clean:
-	rm -rf $(BUILD_DIR)
+	@printf "  [CLEAN]  $(BUILD_DIR)/kernel\n"
+	$(Q)rm -rf $(BUILD_DIR)/kernel
 
-.PHONY: all clean
+# ============================================================================
+# Debug helpers
+# ============================================================================
+
+.PHONY: show-sources show-objects
+
+show-sources:
+	@echo "C++ Sources:"
+	@for f in $(CXX_SOURCES); do echo "  $$f"; done
+	@echo "Assembly Sources:"
+	@for f in $(ASM_SOURCES); do echo "  $$f"; done
+
+show-objects:
+	@echo "Objects:"
+	@for f in $(OBJECTS); do echo "  $$f"; done
+
+# ============================================================================
+# Compile Commands (for clangd/IDE support)
+# ============================================================================
+
+.PHONY: compile-commands
+
+compile-commands:
+	@echo "Generating compile_commands.json (includes test sources)..."
+	$(eval CC_SOURCES := $(CXX_SOURCES))
+	$(eval CC_FLAGS := $(CXXFLAGS))
+ifeq ($(STLX_UNIT_TESTS_ENABLED),)
+	$(eval CC_SOURCES += $(shell find tests -name '*.cpp' 2>/dev/null | sort))
+	$(eval CC_FLAGS += -DSTLX_UNIT_TESTS_ENABLED -Itests/framework)
+endif
+	@echo "[" > compile_commands.json
+	@first=1; \
+	for src in $(CC_SOURCES); do \
+		if [ $$first -eq 1 ]; then first=0; else echo "," >> compile_commands.json; fi; \
+		args="\"$(CXX)\""; \
+		for flag in $(CC_FLAGS); do args="$$args, \"$$flag\""; done; \
+		args="$$args, \"-c\", \"$$src\""; \
+		echo "  {" >> compile_commands.json; \
+		echo "    \"directory\": \"$$(pwd)\"," >> compile_commands.json; \
+		echo "    \"file\": \"$$src\"," >> compile_commands.json; \
+		echo "    \"arguments\": [$$args]" >> compile_commands.json; \
+		echo "  }" >> compile_commands.json; \
+	done
+	@echo "]" >> compile_commands.json
+	@echo "Created compile_commands.json"

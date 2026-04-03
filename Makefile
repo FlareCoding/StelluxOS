@@ -1,368 +1,697 @@
-# =========================
-# Variables
-# =========================
+#
+# Stellux 3.0 Prototype - Top-Level Makefile
+#
+# Orchestrates kernel building, image creation, and QEMU execution.
+# Delegates kernel compilation to kernel/Makefile.
+#
+# Usage:
+#   make kernel ARCH=x86_64       # Build kernel
+#   make image ARCH=x86_64        # Create bootable image
+#   make image ARCH=x86_64        # Create disk image
+#   make run ARCH=x86_64          # Run in QEMU
+#   make V=1 ...                  # Verbose output
+#   make RELEASE=1 ...            # Release build
+#
 
-# Directories and Files
-KERNEL_DIR      := kernel
-USERLAND_DIR    := userland
-GRUB_DIR        := grub
-BUILD_DIR       := build
-INITRD_DIR  	:= initrd
-IMAGE_DIR       := $(BUILD_DIR)/image
-STELLUX_IMAGE   := $(IMAGE_DIR)/stellux.img
-KERNEL_FILE     := $(BUILD_DIR)/stellux
-GRUB_CFG_PATH   := $(GRUB_DIR)/grub.cfg
-GRUB_FONT_PATH  := $(GRUB_DIR)/fonts/unicode.pf2
-INITRD_ARCHIVE  := $(BUILD_DIR)/initrd
+# ============================================================================
+# Configuration
+# ============================================================================
 
-# OVMF Firmware Files
-OVMF_DIR        := ovmf
-OVMF_CODE       := $(OVMF_DIR)/OVMF_CODE.fd
-OVMF_VARS       := $(OVMF_DIR)/OVMF_VARS.fd
+# Output directories
+BUILD_DIR := build
+IMAGE_DIR := images
 
-# Image Configuration
-IMAGE_SIZE_MB    := 60
-ESP_SIZE_MB      := 40
+# Boot files
+BOOT_DIR := boot/limine
+LIMINE_BRANCH := v8.x-binary
 
-# QEMU Configuration
-QEMU             := qemu-system-x86_64
-QEMU_CORES       := 8
-QEMU_RAM         := 4G
-QEMU_FLAGS       := \
-    -machine q35 \
-	-cpu qemu64,+fsgsbase \
-    -m $(QEMU_RAM) \
-    -serial mon:stdio \
-	-serial pty \
-    -drive file=$(STELLUX_IMAGE),format=raw \
-    -net none \
-    -smp $(QEMU_CORES) \
-    -drive if=pflash,format=raw,readonly=on,file="$(OVMF_CODE)" \
-    -drive if=pflash,format=raw,file="$(OVMF_VARS)" \
-    -boot order=c \
-	-device qemu-xhci,id=xhci \
-	-trace usb_xhci_* -D /tmp/stellux-qemu-xhci.log
+# RPi4 UEFI firmware
+RPI4_UEFI_DIR := boot/rpi4-uefi
+RPI4_UEFI_VERSION := v1.41
 
-# Sample connected USB 2.0 devices
-QEMU_FLAGS += -device usb-kbd,id=usbkbd
-QEMU_FLAGS += -device usb-mouse,id=usbmouse
+# QEMU firmware paths (auto-detect)
+OVMF_CODE := $(firstword $(wildcard \
+	/usr/share/OVMF/OVMF_CODE_4M.fd \
+	/usr/share/OVMF/OVMF_CODE.fd \
+	/usr/share/ovmf/OVMF.fd \
+	/usr/share/qemu/OVMF.fd))
+OVMF_VARS := $(firstword $(wildcard \
+	/usr/share/OVMF/OVMF_VARS_4M.fd \
+	/usr/share/OVMF/OVMF_VARS.fd))
+QEMU_EFI_AARCH64 := /usr/share/qemu-efi-aarch64/QEMU_EFI.fd
 
-# Unit test execution duration timeout (all tests)
-UNIT_TESTS_RUN_TIMEOUT := 5m
+# GDB setup script
+GDB_SETUP := scripts/gdb_setup.gdb
+GDB_PORT := 4554
 
-# Name of the unit test result output file
-UNIT_TESTS_LOG_FILENAME := unit_tests.out
+# QEMU settings
+QEMU_MEMORY := 4G
+QEMU_CPU_CORES ?= 4
 
-# QEMU_FLAGS += -device pci-serial,bus=pcie.0,addr=0x3,chardev=serial_pci -chardev file,id=serial_pci,path=uart_pci.log
-
-# GDB Configuration
-GDB_SETUP       := gdb_setup.gdb
-
-# =========================
-# Tools
-# =========================
-LOSETUP         := losetup
-GRUB_INSTALL    := grub-install
-MKFS_FAT        := mkfs.fat
-PARTED          := parted
-MOUNT           := mount
-UMOUNT          := umount
-RM              := rm
-MKDIR           := mkdir -p
-CP              := cp
-
-# =========================
-# Targets
-# =========================
-
-# Default Target: Show Help
-all: help
-
-# Help Target: Displays available targets
-help:
-	@echo "---- Stellux Makefile Options ----"
-	@echo ""
-	@echo "Available Targets:"
-	@echo "  make help            		Show this help message"
-	@echo "  make install-dependencies	Installs the necessary tools and packages for the current Linux distribution"
-	@echo "  make kernel          		Build the Stellux kernel"
-	@echo "  make userland          	Build the userspace Stellux applications (requires custom toolchain)"
-	@echo "  make image           		Create the UEFI-compatible disk image (requires sudo)"
-	@echo "  make initrd           		Rebuild and package an initrd cpio ramdisk"
-	@echo "  make run             		Run the Stellux image in QEMU"
-	@echo "  make run-headless    		Run QEMU without graphical output"
-	@echo "  make run-debug       		Run QEMU with GDB support"
-	@echo "  make connect-gdb     		Connect GDB to a running QEMU instance"
-	@echo "  make execute-unit-tests	Build and run a special image version with unit tests"
-	@echo "  make generate-docs	        Generate Doxygen documentation in the docs/ directory"
-	@echo "  make clean-docs           	Clean up and remove the Doxygen-generated docs"
-	@echo "  make clean           		Clean build artifacts and disk image"
-	@echo ""
-	@echo "For first-time setup:"
-	@echo "  1. make install-dependencies"
-	@echo "  2. cd toolchain/scripts && source env.sh && ./fetch-sources.sh && ./build-toolchain.sh"
-	@echo "  3. make image"
-	@echo ""
-	@echo "Build flags:"
-	@echo "  NO_USERLAND_BUILD=1     Skip building userland applications (kernel only)"
-	@echo "  BUILD_UNIT_TESTS=1      Include unit tests in kernel build"
-	@echo "  COMPILER_OPTIMIZATION_LEVEL=N  Set compiler optimization (0-3, default: 2)"
-	@echo ""
-
-# Builds the kernel
-kernel:
-	@$(MKDIR) $(BUILD_DIR)
-	@$(MAKE) -C kernel
-	@cp $(KERNEL_DIR)/build/stellux $(KERNEL_FILE)
-
-# Builds userland applications and modules
-ifdef NO_USERLAND_BUILD
-userland:
-	@echo "Skipping userland build (NO_USERLAND_BUILD is set)"
+# Verbosity (V=1 for verbose)
+ifeq ($(V),1)
+  Q :=
 else
-userland: $(KERNEL_FILE)
-	@$(MAKE) -C userland
+  Q := @
 endif
 
-# Builds the initrd ramdisk
-initrd:
-	@echo "Building initrd from $(INITRD_DIR)"
-	@mkdir -p $(BUILD_DIR)
-	@cd $(INITRD_DIR) && find . | cpio -o --format=newc > ../$(INITRD_ARCHIVE)
-	@echo "Initrd created at $(INITRD_ARCHIVE)"
+# Export variables for sub-makes
+export V
+export DEBUG
+export RELEASE
+export BUILD_DIR
+export STLX_UNIT_TESTS_ENABLED
 
-# Builds the final .img stellux image
-image: kernel userland initrd $(STELLUX_IMAGE)
+# ============================================================================
+# Supported Architectures
+# ============================================================================
 
-$(BUILD_DIR):
-	@$(MKDIR) $(BUILD_DIR)
+SUPPORTED_ARCHS := x86_64 aarch64
 
-$(IMAGE_DIR): $(BUILD_DIR)
-	@$(MKDIR) $(IMAGE_DIR)
+# ============================================================================
+# ARCH Validation
+# ============================================================================
 
-$(KERNEL_FILE): $(BUILD_DIR)
-	$(MAKE) -C $(KERNEL_DIR)
-	@cp $(KERNEL_DIR)/build/stellux $(KERNEL_FILE)
+# Targets that require ARCH
+ARCH_REQUIRED_TARGETS := kernel userland image run test
 
-$(INITRD_ARCHIVE): $(BUILD_DIR)
-	$(MAKE) initrd
+# Check if current target requires ARCH
+CURRENT_GOALS := $(MAKECMDGOALS)
+ifeq ($(CURRENT_GOALS),)
+  CURRENT_GOALS := help
+endif
 
-$(STELLUX_IMAGE): $(IMAGE_DIR) $(KERNEL_FILE) $(INITRD_ARCHIVE) $(GRUB_CFG_PATH)
-	@echo "Creating raw disk image..."
-	@dd if=/dev/zero of=$(STELLUX_IMAGE) bs=1M count=$(IMAGE_SIZE_MB)
+NEEDS_ARCH := $(filter $(ARCH_REQUIRED_TARGETS),$(CURRENT_GOALS))
 
-	@echo "Partitioning the disk image with GPT and creating EFI System Partition (ESP)..."
-	@sudo $(PARTED) $(STELLUX_IMAGE) --script mklabel gpt \
-		mkpart ESP fat32 1MiB $$(($(ESP_SIZE_MB)+1))MiB \
-		set 1 boot on
+ifneq ($(NEEDS_ARCH),)
+  ifndef ARCH
+    $(error ARCH is required for '$(NEEDS_ARCH)'. Use: make $(firstword $(NEEDS_ARCH)) ARCH=x86_64 or ARCH=aarch64)
+  endif
+  ifeq ($(filter $(ARCH),$(SUPPORTED_ARCHS)),)
+    $(error Invalid ARCH=$(ARCH). Supported: $(SUPPORTED_ARCHS))
+  endif
+endif
 
-	@echo "Setting up loop device, formatting ESP, mounting, installing GRUB, and copying files..."
-	@set -e; \
-	LOOP_DEV=$$(sudo $(LOSETUP) -Pf --show $(STELLUX_IMAGE)); \
-	echo "Loop device: $$LOOP_DEV"; \
-	sudo $(MKFS_FAT) -F32 $${LOOP_DEV}p1; \
-	sudo $(MKDIR) /mnt/efi; \
-	sudo $(MOUNT) $${LOOP_DEV}p1 /mnt/efi; \
-	trap "sudo umount /mnt/efi && sudo rmdir /mnt/efi && sudo losetup -d $${LOOP_DEV}" EXIT; \
-	sudo $(GRUB_INSTALL) \
-		--target=x86_64-efi \
-		--efi-directory=/mnt/efi \
-		--boot-directory=/mnt/efi/boot \
-		--removable \
-		--recheck \
-		--no-floppy; \
-	sudo $(MKDIR) /mnt/efi/boot/grub; \
-	sudo $(CP) $(GRUB_CFG_PATH) /mnt/efi/boot/grub/grub.cfg; \
-	sudo $(CP) $(GRUB_FONT_PATH) /mnt/efi/boot/grub/fonts/; \
-	sudo $(CP) $(KERNEL_FILE) /mnt/efi/boot/stellux; \
-	sudo $(CP) $(INITRD_ARCHIVE) /mnt/efi/boot/initrd;
-	sudo $(UMOUNT) /mnt/efi; \
-	sudo $(RM) -rf /mnt/efi; \
-	sudo $(LOSETUP) -d $${LOOP_DEV}; \
-	trap - EXIT; \
-	echo "Final image '$(STELLUX_IMAGE)' is ready."
+# ============================================================================
+# Derived Paths (when ARCH is set)
+# ============================================================================
 
-# Clean Up Build Files and Image
-clean:
-	@echo "Cleaning up build files and disk image..."
-	$(MAKE) -C $(KERNEL_DIR) clean
-	$(MAKE) -C $(USERLAND_DIR) clean
-	@rm -rf $(BUILD_DIR)
-	@rm -rf *.log
-	@rm -rf $(UNIT_TESTS_LOG_FILENAME)
-	@rm -rf $(INITRD_DIR)/bin
+ifdef ARCH
+  KERNEL_ELF := $(BUILD_DIR)/kernel/$(ARCH)/kernel.elf
+  DISK_IMAGE := $(IMAGE_DIR)/stellux-$(ARCH).img
+endif
 
-# Run the Disk Image in QEMU
-run: $(STELLUX_IMAGE)
-	$(QEMU) $(QEMU_FLAGS)
+# ============================================================================
+# Primary Targets
+# ============================================================================
 
-# Run the Disk Image in QEMU Headless
-run-headless: $(STELLUX_IMAGE)
-	$(QEMU) $(QEMU_FLAGS) -nographic
+.PHONY: all kernel userland image run run-headless clean test \
+        image-x86_64 image-aarch64 \
+        run-qemu-x86_64 run-qemu-aarch64 \
+        run-qemu-x86_64-headless run-qemu-aarch64-headless \
+        run-qemu-x86_64-debug run-qemu-aarch64-debug \
+        run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
+        connect-gdb-x86_64 connect-gdb-aarch64 \
+        deps limine musl rpi4-firmware toolchain-check \
+        help
 
-# Run QEMU with GDB Support
-run-debug: $(STELLUX_IMAGE)
-	$(QEMU) $(QEMU_FLAGS) -gdb tcp::4554 -S -no-reboot -no-shutdown
+# Default target
+all: help
 
-# Run QEMU Headless with GDB Support
-run-debug-headless: $(STELLUX_IMAGE)
-	$(QEMU) $(QEMU_FLAGS) -gdb tcp::4554 -S -nographic -no-reboot -no-shutdown
+# ============================================================================
+# Kernel Build (delegates to kernel/Makefile)
+# ============================================================================
 
-# Connect GDB to a Running QEMU Instance
-connect-gdb:
-	gdb -ex "source ./$(GDB_SETUP)" \
-	    -ex "target remote localhost:4554" \
-	    -ex "add-symbol-file $(KERNEL_FILE)" \
-	    -ex "b init.cpp:init"
+kernel: check-lld
+	$(Q)$(MAKE) -C kernel ARCH=$(ARCH) BUILD_DIR=../$(BUILD_DIR) \
+		$(if $(RELEASE),RELEASE=1) \
+		$(if $(DEBUG),DEBUG=1) \
+		$(if $(STLX_UNIT_TESTS_ENABLED),STLX_UNIT_TESTS_ENABLED=1) \
+		$(if $(V),V=1)
 
-# Connect GDB to a Running QEMU Instance through a serial connection
-connect-gdb-serial:
-	gdb -ex "source ./$(GDB_SETUP)" \
-	    -ex "add-symbol-file $(KERNEL_FILE)" \
-		-ex "set architecture i386:x86-64" \
-	    -ex "target remote /dev/ttyS1"
+# ============================================================================
+# Userland Build (delegates to userland/Makefile)
+# ============================================================================
 
-# Builds and runs a clean image of the OS with appropriate unit test flags
-execute-unit-tests:
-	@echo "[LOG] Preparing a clean build environment"
-	@$(MAKE) clean > /dev/null
+userland:
+	$(Q)$(MAKE) --no-print-directory -C userland ARCH=$(ARCH) $(if $(V),V=1)
 
-	@echo "[LOG] Building the kernel with unit tests"
-	@$(MAKE) image BUILD_UNIT_TESTS=1 NO_USERLAND_BUILD=1 > /dev/null
+# ============================================================================
+# Unit Tests
+# ============================================================================
 
-	@echo "[LOG] Launching the StelluxOS image in a VM"
-	@timeout $(UNIT_TESTS_RUN_TIMEOUT) setsid bash -c '$(QEMU) $(QEMU_FLAGS) -nographic | tee $(UNIT_TESTS_LOG_FILENAME)'
-
+test:
+	$(Q)$(MAKE) clean
+	$(Q)$(MAKE) image ARCH=$(ARCH) STLX_UNIT_TESTS_ENABLED=1
 	@echo ""
-	@echo "[LOG] Parsing unit test results"
-	@bash -c '\
-		bash ./tools/parse_unit_test_results.sh; \
-		RESULT=$$?; \
-		echo "[LOG] Cleaning up"; \
-		$(MAKE) clean > /dev/null; \
-		exit $$RESULT \
-	'
+	$(Q)./scripts/run_tests.sh $(ARCH)
 
-# Install all necessary dependencies based on the Linux distribution
-install-dependencies:
-	@echo "Installing dependencies..."
-	@if [ -f /etc/debian_version ]; then \
-		echo "Detected Debian-based system."; \
-		sudo apt-get update && sudo apt-get install -y \
-			build-essential \
-			grub2 \
-			dosfstools \
-			parted \
-			qemu-system-x86 \
-			gdb \
-			ovmf \
-			cpio \
-			doxygen \
-			curl \
-			wget \
-			file \
-			texinfo \
-			bison \
-			flex \
-			gawk \
-			autoconf \
-			automake \
-			libtool \
-			pkg-config \
-			libgmp-dev \
-			libmpfr-dev \
-			libmpc-dev \
-			zlib1g-dev \
-			$$( [ -f /usr/lib/grub/x86_64-efi/modinfo.sh ] && echo "" || echo "grub-efi-amd64" ); \
-	elif [ -f /etc/redhat-release ]; then \
-		echo "Detected RedHat-based system."; \
-		sudo dnf groupinstall -y "Development Tools" && \
-		sudo dnf install -y \
-			dosfstools \
-			parted \
-			qemu-system-x86_64 \
-			gdb \
-			edk2-ovmf \
-			cpio \
-			doxygen \
-			grub2-efi-x64 \
-			curl \
-			wget \
-			file \
-			texinfo \
-			bison \
-			flex \
-			gawk \
-			autoconf \
-			automake \
-			libtool \
-			pkgconf \
-			gmp-devel \
-			mpfr-devel \
-			libmpc-devel \
-			zlib-devel; \
-	elif [ -f /etc/arch-release ]; then \
-		echo "Detected Arch-based system."; \
-		sudo pacman -Sy --noconfirm \
-			base-devel \
-			grub \
-			dosfstools \
-			parted \
-			qemu \
-			gdb \
-			ovmf \
-			cpio \
-			doxygen \
-			curl \
-			wget \
-			file \
-			texinfo \
-			bison \
-			flex \
-			gawk \
-			autoconf \
-			automake \
-			libtool \
-			pkgconf \
-			gmp \
-			mpfr \
-			libmpc \
-			zlib; \
+# ============================================================================
+# Disk Image Creation
+# ============================================================================
+
+image: kernel userland check-limine $(DISK_IMAGE)
+	@echo ""
+	@echo "Disk image ready: $(DISK_IMAGE)"
+
+# Convenience targets (no ARCH= required)
+image-x86_64:
+	$(Q)$(MAKE) image ARCH=x86_64
+
+image-aarch64:
+	$(Q)$(MAKE) image ARCH=aarch64
+
+INITRD_DIR  := initrd
+INITRD_CPIO := $(BUILD_DIR)/initrd.cpio
+
+.PHONY: $(INITRD_CPIO)
+$(INITRD_CPIO):
+	@mkdir -p $(BUILD_DIR)
+	@echo "Creating initrd.cpio..."
+	$(Q)cd $(INITRD_DIR) && find . -mindepth 1 | cpio -o -H newc > ../$(INITRD_CPIO) 2>/dev/null
+	@echo "Created: $(INITRD_CPIO)"
+
+$(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
+	@mkdir -p $(IMAGE_DIR)
+	@echo "Creating x86_64 UEFI disk image..."
+	$(Q)dd if=/dev/zero of=$@ bs=1M count=64 status=none
+	$(Q)/sbin/sgdisk --clear --new=1:2048:131038 --typecode=1:ef00 $@ > /dev/null
+	$(Q)mformat -i $@@@1M -F -v STELLUX ::
+	$(Q)mmd -i $@@@1M ::/EFI
+	$(Q)mmd -i $@@@1M ::/EFI/BOOT
+	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+	$(Q)mcopy -i $@@@1M $< ::/kernel.elf
+	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/limine.conf ::/limine.conf
+	$(Q)mcopy -i $@@@1M $(INITRD_CPIO) ::/initrd.cpio
+	@echo "Created: $@"
+
+$(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
+	@mkdir -p $(IMAGE_DIR)
+	@echo "Creating AArch64 UEFI disk image..."
+	$(Q)dd if=/dev/zero of=$@ bs=1M count=64 status=none
+	$(Q)/sbin/sgdisk --clear --new=1:2048:131038 --typecode=1:ef00 $@ > /dev/null
+	$(Q)mformat -i $@@@1M -F -v STELLUX ::
+	$(Q)mmd -i $@@@1M ::/EFI
+	$(Q)mmd -i $@@@1M ::/EFI/BOOT
+	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/BOOTAA64.EFI ::/EFI/BOOT/BOOTAA64.EFI
+	$(Q)mcopy -i $@@@1M $< ::/kernel.elf
+	$(Q)mcopy -i $@@@1M $(BOOT_DIR)/limine.conf ::/limine.conf
+	$(Q)mcopy -i $@@@1M $(INITRD_CPIO) ::/initrd.cpio
+	@echo "Created: $@"
+
+# ============================================================================
+# QEMU Execution
+# ============================================================================
+
+run: image
+ifeq ($(ARCH),x86_64)
+	$(Q)$(MAKE) run-qemu-x86_64
+else ifeq ($(ARCH),aarch64)
+	$(Q)$(MAKE) run-qemu-aarch64
+endif
+
+run-headless: image
+ifeq ($(ARCH),x86_64)
+	$(Q)$(MAKE) run-qemu-x86_64-headless
+else ifeq ($(ARCH),aarch64)
+	$(Q)$(MAKE) run-qemu-aarch64-headless
+endif
+
+run-qemu-x86_64: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
+	@echo ""
+	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
+	@echo ""
+	qemu-system-x86_64 \
+		-machine q35 \
+		-cpu qemu64,+fsgsbase,+rdrand \
+		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
+		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
+		-device virtio-gpu-pci \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-serial mon:stdio \
+		-no-reboot \
+		-no-shutdown
+
+$(BUILD_DIR)/OVMF_VARS.fd: $(OVMF_VARS)
+	@mkdir -p $(BUILD_DIR)
+	$(Q)cp $< $@
+
+run-qemu-aarch64: $(IMAGE_DIR)/stellux-aarch64.img
+	@echo "Starting QEMU AArch64 (TCG emulation)..."
+	@echo ""
+	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
+	@echo ""
+	qemu-system-aarch64 \
+		-machine virt,gic-version=2 \
+		-cpu cortex-a57 \
+		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
+		-bios $(QEMU_EFI_AARCH64) \
+		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
+		-device ramfb \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-serial mon:stdio \
+		-no-reboot \
+		-no-shutdown
+
+# Headless QEMU (for SSH/no display)
+run-qemu-x86_64-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
+	@echo "Starting QEMU x86_64 (headless)..."
+	@echo ""
+	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
+	@echo ""
+	qemu-system-x86_64 \
+		-machine q35 \
+		-cpu qemu64,+fsgsbase,+rdrand \
+		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
+		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-nographic \
+		-no-reboot \
+		-no-shutdown
+
+run-qemu-aarch64-headless: $(IMAGE_DIR)/stellux-aarch64.img
+	@echo "Starting QEMU AArch64 (headless, TCG emulation)..."
+	@echo ""
+	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
+	@echo ""
+	qemu-system-aarch64 \
+		-machine virt,gic-version=2 \
+		-cpu cortex-a57 \
+		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
+		-bios $(QEMU_EFI_AARCH64) \
+		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-nographic \
+		-no-reboot \
+		-no-shutdown
+
+# ============================================================================
+# QEMU Debug (with GDB support)
+# ============================================================================
+
+run-qemu-x86_64-debug: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
+	@echo "Starting QEMU x86_64 (debug, waiting for GDB on port $(GDB_PORT))..."
+	@echo "Connect with: make connect-gdb-x86_64"
+	@echo ""
+	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
+	@echo ""
+	qemu-system-x86_64 \
+		-machine q35 \
+		-cpu qemu64,+fsgsbase,+rdrand \
+		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
+		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
+		-device virtio-gpu-pci \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-serial mon:stdio \
+		-gdb tcp::$(GDB_PORT) \
+		-S \
+		-no-reboot \
+		-no-shutdown
+
+run-qemu-x86_64-debug-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
+	@echo "Starting QEMU x86_64 (debug headless, waiting for GDB on port $(GDB_PORT))..."
+	@echo "Connect with: make connect-gdb-x86_64"
+	@echo ""
+	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
+	@echo ""
+	qemu-system-x86_64 \
+		-machine q35 \
+		-cpu qemu64,+fsgsbase,+rdrand \
+		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
+		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-nographic \
+		-gdb tcp::$(GDB_PORT) \
+		-S \
+		-no-reboot \
+		-no-shutdown
+
+run-qemu-aarch64-debug: $(IMAGE_DIR)/stellux-aarch64.img
+	@echo "Starting QEMU AArch64 (debug, waiting for GDB on port $(GDB_PORT))..."
+	@echo "Connect with: make connect-gdb-aarch64"
+	@echo ""
+	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
+	@echo ""
+	qemu-system-aarch64 \
+		-machine virt,gic-version=2 \
+		-cpu cortex-a57 \
+		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
+		-bios $(QEMU_EFI_AARCH64) \
+		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
+		-device ramfb \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-serial mon:stdio \
+		-gdb tcp::$(GDB_PORT) \
+		-S \
+		-no-reboot \
+		-no-shutdown
+
+run-qemu-aarch64-debug-headless: $(IMAGE_DIR)/stellux-aarch64.img
+	@echo "Starting QEMU AArch64 (debug headless, waiting for GDB on port $(GDB_PORT))..."
+	@echo "Connect with: make connect-gdb-aarch64"
+	@echo ""
+	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
+	@echo ""
+	qemu-system-aarch64 \
+		-machine virt,gic-version=2 \
+		-cpu cortex-a57 \
+		-m $(QEMU_MEMORY) \
+		-smp $(QEMU_CPU_CORES) \
+		-bios $(QEMU_EFI_AARCH64) \
+		-drive format=raw,file=$(IMAGE_DIR)/stellux-aarch64.img \
+		-device qemu-xhci,id=xhci \
+		-device usb-hub,bus=xhci.0,port=1 \
+		-device usb-kbd,bus=xhci.0,port=1.1 \
+		-device usb-mouse,bus=xhci.0,port=1.2 \
+		-netdev user,id=net0,hostfwd=tcp::2222-:22 \
+		-device virtio-net-pci,netdev=net0 \
+		-nographic \
+		-gdb tcp::$(GDB_PORT) \
+		-S \
+		-no-reboot \
+		-no-shutdown
+
+# ============================================================================
+# GDB Connection
+# ============================================================================
+
+connect-gdb-x86_64:
+	gdb -ex "source ./$(GDB_SETUP)" \
+	    -ex "target remote localhost:$(GDB_PORT)" \
+	    -ex "add-symbol-file $(BUILD_DIR)/kernel/x86_64/kernel.elf" \
+	    -ex "b boot/boot.cpp:stlx_init"
+
+connect-gdb-aarch64:
+	gdb-multiarch -ex "source ./$(GDB_SETUP)" \
+	    -ex "set architecture aarch64" \
+	    -ex "target remote localhost:$(GDB_PORT)" \
+	    -ex "add-symbol-file $(BUILD_DIR)/kernel/aarch64/kernel.elf" \
+	    -ex "b boot/boot.cpp:stlx_init"
+
+# ============================================================================
+# USB Boot
+# ============================================================================
+
+usb: image
+	@echo ""
+	@echo "=== USB Boot Instructions ==="
+	@echo ""
+	@echo "The disk image is ready: $(DISK_IMAGE)"
+	@echo ""
+	@echo "To write to a USB drive:"
+	@echo ""
+	@echo "  1. Identify your USB device (use 'lsblk' to find it)"
+	@echo "     Example: /dev/sdb (NOT a partition like /dev/sdb1)"
+	@echo ""
+	@echo "  2. Unmount any mounted partitions:"
+	@echo "     sudo umount /dev/sdX*"
+	@echo ""
+	@echo "  3. Write the image (DESTRUCTIVE - double-check the device!):"
+	@echo "     sudo dd if=$(DISK_IMAGE) of=/dev/sdX bs=4M status=progress conv=fsync"
+	@echo ""
+	@echo "  4. Boot your PC from USB (check BIOS/UEFI boot menu)"
+	@echo ""
+	@echo "WARNING: This will ERASE the USB drive!"
+	@echo ""
+
+# ============================================================================
+# Clean
+# ============================================================================
+
+clean:
+	@echo "Cleaning build artifacts..."
+	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
+	$(Q)rm -rf userland/build
+	$(Q)find initrd/bin -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
+	@echo "Done."
+
+# ============================================================================
+# Prerequisites
+# ============================================================================
+
+check-lld:
+	@which ld.lld > /dev/null 2>&1 || \
+		(echo ""; echo "ERROR: ld.lld not found. Run: make deps"; echo ""; exit 1)
+
+check-limine:
+	@test -f $(BOOT_DIR)/BOOTX64.EFI || \
+		(echo ""; echo "ERROR: Limine not found. Run: make limine"; echo ""; exit 1)
+	@test -f $(BOOT_DIR)/BOOTAA64.EFI || \
+		(echo ""; echo "ERROR: Limine not found. Run: make limine"; echo ""; exit 1)
+
+# ============================================================================
+# Setup Targets (no ARCH required)
+# ============================================================================
+
+deps:
+	@echo "Installing required packages (Debian/Ubuntu)..."
+	sudo apt install -y clang lld llvm \
+		libclang-rt-dev \
+		gcc-aarch64-linux-gnu \
+		qemu-system-x86 qemu-system-arm \
+		ovmf qemu-efi-aarch64 \
+		mtools gdisk xorriso \
+		gdb-multiarch
+	@echo ""
+	@echo "Done. Run 'make toolchain-check' to verify."
+
+MUSL_VERSION := 1.2.5
+MUSL_URL     := https://musl.libc.org/releases/musl-$(MUSL_VERSION).tar.gz
+MUSL_DIR     := userland/musl-$(MUSL_VERSION)
+MUSL_TARBALL := userland/musl-$(MUSL_VERSION).tar.gz
+
+musl:
+	@echo "Building musl $(MUSL_VERSION) for x86_64 and aarch64..."
+	@mkdir -p userland
+	@test -f $(MUSL_TARBALL) || \
+		(echo "Downloading musl $(MUSL_VERSION)..." && \
+		 curl -L -o $(MUSL_TARBALL) $(MUSL_URL))
+	@test -d $(MUSL_DIR) || \
+		(echo "Extracting..." && \
+		 cd userland && tar xf musl-$(MUSL_VERSION).tar.gz)
+	@echo ""
+	@echo "Building musl for x86_64..."
+	@mkdir -p $(MUSL_DIR)/build-x86_64
+	cd $(MUSL_DIR)/build-x86_64 && \
+		CC="clang --target=x86_64-linux-musl" \
+		../configure --prefix=$(abspath userland/sysroot/x86_64) --disable-shared > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-x86_64 -j$$(nproc) > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-x86_64 install > /dev/null
+	@echo "musl x86_64 installed to userland/sysroot/x86_64/"
+	@echo ""
+	@echo "Building musl for aarch64..."
+	@mkdir -p $(MUSL_DIR)/build-aarch64
+	cd $(MUSL_DIR)/build-aarch64 && \
+		CC="clang --target=aarch64-linux-musl" \
+		../configure --prefix=$(abspath userland/sysroot/aarch64) --disable-shared > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-aarch64 -j$$(nproc) > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-aarch64 install > /dev/null
+	@echo "musl aarch64 installed to userland/sysroot/aarch64/"
+	@echo ""
+	@echo "musl $(MUSL_VERSION) ready for both architectures."
+
+limine:
+	@echo "Downloading Limine ($(LIMINE_BRANCH))..."
+	@mkdir -p $(BOOT_DIR)
+	curl -L -o $(BOOT_DIR)/BOOTX64.EFI \
+		"https://raw.githubusercontent.com/limine-bootloader/limine/$(LIMINE_BRANCH)/BOOTX64.EFI"
+	curl -L -o $(BOOT_DIR)/BOOTAA64.EFI \
+		"https://raw.githubusercontent.com/limine-bootloader/limine/$(LIMINE_BRANCH)/BOOTAA64.EFI"
+	@echo ""
+	@ls -la $(BOOT_DIR)/*.EFI
+	@echo ""
+	@echo "Limine ready in $(BOOT_DIR)/"
+
+rpi4-firmware:
+	@echo "Downloading RPi4 UEFI firmware ($(RPI4_UEFI_VERSION))..."
+	@mkdir -p $(RPI4_UEFI_DIR)/overlays
+	$(Q)curl -L -o $(RPI4_UEFI_DIR)/firmware.zip \
+		"https://github.com/pftf/RPi4/releases/download/$(RPI4_UEFI_VERSION)/RPi4_UEFI_Firmware_$(RPI4_UEFI_VERSION).zip"
+	$(Q)cd $(RPI4_UEFI_DIR) && unzip -o firmware.zip \
+		RPI_EFI.fd start4.elf fixup4.dat bcm2711-rpi-4-b.dtb \
+		overlays/miniuart-bt.dtbo overlays/upstream-pi4.dtbo
+	$(Q)rm -f $(RPI4_UEFI_DIR)/firmware.zip
+	@echo ""
+	@ls -la $(RPI4_UEFI_DIR)/RPI_EFI.fd $(RPI4_UEFI_DIR)/start4.elf
+	@echo ""
+	@echo "RPi4 UEFI firmware ready in $(RPI4_UEFI_DIR)/"
+
+doom-wad:
+	@mkdir -p initrd/etc/res/doom
+	@if [ -f initrd/etc/res/doom/doom1.wad ]; then \
+		echo "initrd/etc/res/doom/doom1.wad already exists ($$(wc -c < initrd/etc/res/doom/doom1.wad) bytes)"; \
 	else \
-		echo "Unsupported Linux distribution. Please install the following packages manually:"; \
-		echo "  Core build tools:"; \
-		echo "    - build-essential / Development Tools / base-devel"; \
-		echo "    - grub2 / grub / grub2-efi-x64"; \
-		echo "    - dosfstools, parted, cpio"; \
-		echo "    - qemu-system-x86 / qemu-system-x86_64 / qemu"; \
-		echo "    - gdb, ovmf / edk2-ovmf, doxygen"; \
-		echo "  Toolchain build dependencies:"; \
-		echo "    - curl, wget, file"; \
-		echo "    - texinfo, bison, flex, gawk"; \
-		echo "    - autoconf, automake, libtool, pkg-config"; \
-		echo "    - libgmp-dev, libmpfr-dev, libmpc-dev, zlib1g-dev"; \
-		exit 1; \
+		echo "Downloading DOOM1.WAD (shareware, ~4.1 MB)..."; \
+		curl -fL -o initrd/etc/res/doom/doom1.wad \
+			"https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad"; \
+		echo ""; \
+		echo "Downloaded: initrd/etc/res/doom/doom1.wad ($$(wc -c < initrd/etc/res/doom/doom1.wad) bytes)"; \
 	fi
 
-# Builds the doxygen documentation
-generate-docs:
-	@echo "Generating documentation using Doxygen..."
-	@if [ -f docs/Doxyfile ]; then \
-		cd docs && doxygen Doxyfile; \
-		echo "Documentation generated successfully. Check the docs/output/html directory."; \
-	else \
-		echo "Error: Doxyfile not found in docs/ directory. Please create it first."; \
-		exit 1; \
-	fi
+toolchain-check:
+	@echo "=== Toolchain Check ==="
+	@echo ""
+	@printf "%-24s" "clang:" && \
+		(which clang > /dev/null 2>&1 && clang --version | head -1 || echo "NOT FOUND")
+	@printf "%-24s" "clang++:" && \
+		(which clang++ > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "aarch64-linux-gnu-gcc:" && \
+		(which aarch64-linux-gnu-gcc > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "ld.lld:" && \
+		(which ld.lld > /dev/null 2>&1 && ld.lld --version | head -1 || echo "NOT FOUND")
+	@printf "%-24s" "llvm-objcopy:" && \
+		(which llvm-objcopy > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND (optional)")
+	@printf "%-24s" "qemu-system-x86_64:" && \
+		(which qemu-system-x86_64 > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "qemu-system-aarch64:" && \
+		(which qemu-system-aarch64 > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "OVMF (x86_64):" && \
+		(test -n "$(OVMF_CODE)" && test -f "$(OVMF_CODE)" && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "QEMU_EFI (AArch64):" && \
+		(test -f $(QEMU_EFI_AARCH64) && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "mformat:" && \
+		(which mformat > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "sgdisk:" && \
+		(which sgdisk > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "gdb-multiarch:" && \
+		(which gdb-multiarch > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND (for AArch64 debugging)")
+	@printf "%-24s" "Limine BOOTX64.EFI:" && \
+		(test -f $(BOOT_DIR)/BOOTX64.EFI && echo "OK" || echo "NOT FOUND - run 'make limine'")
+	@printf "%-24s" "Limine BOOTAA64.EFI:" && \
+		(test -f $(BOOT_DIR)/BOOTAA64.EFI && echo "OK" || echo "NOT FOUND - run 'make limine'")
+	@printf "%-24s" "RPi4 UEFI firmware:" && \
+		(test -f $(RPI4_UEFI_DIR)/RPI_EFI.fd && echo "OK" || echo "NOT FOUND - run 'make rpi4-firmware'")
+	@printf "%-24s" "musl (x86_64):" && \
+		(test -f userland/sysroot/x86_64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
+	@printf "%-24s" "musl (aarch64):" && \
+		(test -f userland/sysroot/aarch64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
+	@printf "%-24s" "builtins (x86_64):" && \
+		(BRT=$$(clang --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+		 if [ -f "$$BRT" ]; then \
+			echo "$$BRT"; \
+		 elif which x86_64-linux-gnu-gcc > /dev/null 2>&1; then \
+			BGCC=$$(x86_64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
+			[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND"; \
+		 else \
+			echo "NOT FOUND"; \
+		 fi)
+	@printf "%-24s" "builtins (aarch64):" && \
+		(BRT=$$(clang --target=aarch64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+		 if [ -f "$$BRT" ]; then \
+			echo "$$BRT"; \
+		 elif which aarch64-linux-gnu-gcc > /dev/null 2>&1; then \
+			BGCC=$$(aarch64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
+			[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND"; \
+		 else \
+			echo "NOT FOUND"; \
+		 fi)
+	@echo ""
+	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', and/or 'make rpi4-firmware'"
 
-clean-docs:
-	@echo "Cleaning generated documentation..."
-	@rm -rf docs/output
+# ============================================================================
+# Help
+# ============================================================================
 
-# =========================
-# Phony Targets
-# =========================
-
-.PHONY: all help kernel initrd clean run run-headless run-debug \
-        run-debug-headless connect-gdb install-dependencies \
-        generate-docs clean-docs
+help:
+	@echo "Stellux 3.0 - Build System"
+	@echo ""
+	@echo "Setup (run once):"
+	@echo "  make deps                    Install required packages"
+	@echo "  make limine                  Download Limine bootloader"
+	@echo "  make musl                    Build musl libc for both architectures"
+	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
+	@echo "  make doom-wad                Download DOOM1.WAD shareware"
+	@echo "  make toolchain-check         Verify tools are installed"
+	@echo ""
+	@echo "Build:"
+	@echo "  make kernel ARCH=<arch>      Build kernel"
+	@echo "  make userland ARCH=<arch>    Build userland applications"
+	@echo "  make image ARCH=<arch>       Build kernel + userland + create disk image"
+	@echo "  make image-x86_64            Build x86_64 disk image (shortcut)"
+	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
+	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
+	@echo "  make run-headless ARCH=<arch> Build + run headless (for SSH)"
+	@echo "  make usb ARCH=<arch>         Build + print USB instructions"
+	@echo ""
+	@echo "Debugging (run QEMU target in one terminal, connect-gdb in another):"
+	@echo "  make run-qemu-x86_64-debug           QEMU x86_64 with GDB (with display)"
+	@echo "  make run-qemu-x86_64-debug-headless  QEMU x86_64 with GDB (headless)"
+	@echo "  make run-qemu-aarch64-debug          QEMU AArch64 with GDB (with display)"
+	@echo "  make run-qemu-aarch64-debug-headless QEMU AArch64 with GDB (headless)"
+	@echo "  make connect-gdb-x86_64              Connect GDB to running x86_64 QEMU"
+	@echo "  make connect-gdb-aarch64             Connect GDB to running AArch64 QEMU"
+	@echo ""
+	@echo "Options:"
+	@echo "  V=1                          Verbose output (show commands)"
+	@echo "  DEBUG=1                      Debug build (default)"
+	@echo "  RELEASE=1                    Release build (-O2)"
+	@echo ""
+	@echo "Architectures: $(SUPPORTED_ARCHS)"
+	@echo ""
+	@echo "First-time setup:"
+	@echo "  1. make deps"
+	@echo "  2. make limine"
+	@echo "  3. make musl"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make kernel ARCH=x86_64"
+	@echo "  make run ARCH=aarch64"
+	@echo "  make kernel ARCH=x86_64 RELEASE=1 V=1"
+	@echo ""
+	@echo "IDE Support:"
+	@echo "  make -C kernel compile-commands ARCH=<arch>"
+	@echo "                               Generate compile_commands.json for clangd"
+	@echo ""
+	@echo "Other:"
+	@echo "  make clean                   Remove all build artifacts"
+	@echo "  make help                    Show this help"
