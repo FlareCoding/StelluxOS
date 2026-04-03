@@ -27,6 +27,7 @@
 #include "drivers/input/input.h"
 #include "net/net.h"
 #include "random/random.h"
+#include "sync/futex.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -106,6 +107,8 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     if (rc::reaper::init() != rc::reaper::OK) {
         log::fatal("rc::reaper::init failed");
     }
+
+    sync::futex_init();
 
     if (fs::init() != fs::OK) {
         log::fatal("fs::init failed");

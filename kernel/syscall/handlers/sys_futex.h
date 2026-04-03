@@ -1,0 +1,10 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_FUTEX_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_FUTEX_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(futex_wait);
+DECLARE_SYSCALL(futex_wake);
+DECLARE_SYSCALL(futex_wake_all);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_FUTEX_H

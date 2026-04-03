@@ -42,6 +42,7 @@ constexpr int64_t EAFNOSUPPORT     = -97;
 constexpr int64_t EADDRINUSE       = -98;
 constexpr int64_t EISCONN          = -106;
 constexpr int64_t ENOTCONN         = -107;
+constexpr int64_t ETIMEDOUT        = -110;
 constexpr int64_t ECONNREFUSED     = -111;
 
 extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
