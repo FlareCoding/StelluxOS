@@ -1,0 +1,25 @@
+#ifndef STLX_BARRIER_H
+#define STLX_BARRIER_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+    uint64_t count;
+    uint32_t generation;
+    uint32_t total;
+} stlx_barrier_t;
+
+void stlx_barrier_init(stlx_barrier_t* b, uint32_t count);
+
+/* Block until all count threads have called barrier_wait. Reusable. */
+void stlx_barrier_wait(stlx_barrier_t* b);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* STLX_BARRIER_H */

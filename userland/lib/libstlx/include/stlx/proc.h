@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Wait status decode macros (Linux-compatible bit layout). */
 #define STLX_WIFEXITED(s)    (((s) & 0x7F) == 0)
 #define STLX_WEXITSTATUS(s)  (((s) >> 8) & 0xFF)
@@ -95,5 +99,9 @@ static inline int proc_thread_start(int handle) { return proc_start(handle); }
 static inline int proc_thread_join(int handle, int* exit_code) { return proc_wait(handle, exit_code); }
 static inline int proc_thread_detach(int handle) { return proc_detach(handle); }
 static inline int proc_thread_kill(int handle) { return proc_kill(handle); }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* STLX_PROC_H */
