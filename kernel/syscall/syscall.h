@@ -26,6 +26,11 @@ constexpr uint64_t SYS_PROC_KILL_TID        = 1018;
 // PTY
 constexpr uint64_t SYS_PTY_CREATE = 1020;
 
+// Futex
+constexpr uint64_t SYS_FUTEX_WAIT     = 1030;
+constexpr uint64_t SYS_FUTEX_WAKE     = 1031;
+constexpr uint64_t SYS_FUTEX_WAKE_ALL = 1032;
+
 /**
  * Architecture-specific syscall initialization (MSRs on x86, etc.)
  * @note Privilege: **required**

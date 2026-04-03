@@ -19,6 +19,7 @@
 #include "syscall/handlers/sys_select.h"
 #include "syscall/handlers/sys_pipe.h"
 #include "syscall/handlers/sys_uname.h"
+#include "syscall/handlers/sys_futex.h"
 
 namespace syscall {
 
@@ -111,6 +112,10 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(SYS_PROC_KILL_TID, proc_kill_tid);
 
     REGISTER_SYSCALL(SYS_PTY_CREATE, pty_create);
+
+    REGISTER_SYSCALL(SYS_FUTEX_WAIT,     futex_wait);
+    REGISTER_SYSCALL(SYS_FUTEX_WAKE,     futex_wake);
+    REGISTER_SYSCALL(SYS_FUTEX_WAKE_ALL, futex_wake_all);
 
     register_arch_syscalls();
 }
