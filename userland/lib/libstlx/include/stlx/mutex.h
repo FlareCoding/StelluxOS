@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* State 0: unlocked, 1: locked (no waiters), 2: locked (with waiters) */
 typedef struct { uint32_t state; } stlx_mutex_t;
 
@@ -13,5 +17,9 @@ void stlx_mutex_unlock(stlx_mutex_t* m);
 
 /* Returns 0 if acquired, -1 if already held. */
 int stlx_mutex_trylock(stlx_mutex_t* m);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* STLX_MUTEX_H */

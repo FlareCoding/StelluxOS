@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <new>
 
 namespace stlxstd {
 namespace detail {
