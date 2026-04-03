@@ -816,7 +816,7 @@ __PRIVILEGED_CODE task* create_user_thread(
     t->exec.system_stack_top = sys_stack_top;
     t->exec.pt_root = paging::supervisor_pt_root_for_user_task(creator->exec.mm_ctx->pt_root);
     t->exec.user_pt_root = creator->exec.mm_ctx->pt_root;
-    t->exec.tls_base = 0;
+    t->exec.tls_base = creator->exec.tls_base;
     t->task_stack_base = 0; // user stack is not VMM-allocated
     t->sys_stack_base = sys_stack_base;
 

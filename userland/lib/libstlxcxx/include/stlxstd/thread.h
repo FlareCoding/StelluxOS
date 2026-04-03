@@ -18,11 +18,13 @@ template<typename Fn>
 struct thread_context_impl : thread_context {
     Fn fn;
 
+    static void call(thread_context* base) {
+        auto* self = static_cast<thread_context_impl*>(base);
+        self->fn();
+    }
+
     explicit thread_context_impl(Fn&& f) : fn(static_cast<Fn&&>(f)) {
-        invoke = [](thread_context* base) {
-            auto* self = static_cast<thread_context_impl*>(base);
-            self->fn();
-        };
+        invoke = &call;
     }
 };
 
