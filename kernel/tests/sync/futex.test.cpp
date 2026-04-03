@@ -140,21 +140,40 @@ TEST(futex, wake_count_respected) {
 // --- wait with timeout ---
 
 static volatile uint32_t g_timeout_val = 0;
+static volatile int32_t g_timeout_rc = 0;
+static volatile uint64_t g_timeout_elapsed = 0;
+static volatile uint32_t g_timeout_done = 0;
 
-TEST(futex, wait_timeout) {
-    g_timeout_val = 0;
+static void timeout_waiter_fn(void*) {
     uint64_t before = clock::now_ns();
-    int32_t rc = 0;
-
     RUN_ELEVATED({
-        rc = sync::futex_wait(
+        g_timeout_rc = sync::futex_wait(
             reinterpret_cast<uintptr_t>(&g_timeout_val), 0,
             50000000ULL); // 50ms
     });
+    __atomic_store_n(&g_timeout_elapsed,
+        clock::now_ns() - before, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_timeout_done, 1, __ATOMIC_RELEASE);
+    sched::exit(0);
+}
 
-    uint64_t elapsed = clock::now_ns() - before;
-    EXPECT_EQ(rc, static_cast<int32_t>(-110)); // ETIMEDOUT
-    EXPECT_GE(elapsed, 10000000ULL); // at least ~10ms (timer granularity varies)
+TEST(futex, wait_timeout) {
+    g_timeout_val = 0;
+    g_timeout_rc = 0;
+    g_timeout_elapsed = 0;
+    g_timeout_done = 0;
+
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(
+            timeout_waiter_fn, nullptr, "ftx_tmo");
+        ASSERT_NOT_NULL(t);
+        sched::enqueue(t);
+    });
+
+    ASSERT_TRUE(spin_wait(&g_timeout_done));
+    EXPECT_EQ(static_cast<int32_t>(g_timeout_rc),
+              static_cast<int32_t>(-110)); // ETIMEDOUT
+    EXPECT_GE(g_timeout_elapsed, 10000000ULL);
 }
 
 // --- killed thread unblocks ---

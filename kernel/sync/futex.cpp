@@ -68,16 +68,18 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
         return -11; // EAGAIN
     }
 
-    // Value matches: enqueue and sleep
+    // Value matches: enqueue and sleep.
+    // Arm the timer before releasing the lock to avoid a preemption window
+    // between setting BLOCKED and schedule_sleep.
     self->state = sched::TASK_STATE_BLOCKED;
     bucket->waiters.push_back(&waiter);
-    spin_unlock_irqrestore(bucket->lock, irq);
 
     if (timeout_ns > 0) {
         uint64_t deadline = clock::now_ns() + timeout_ns;
         timer::schedule_sleep(self, deadline);
     }
 
+    spin_unlock_irqrestore(bucket->lock, irq);
     sched::yield();
 
     // Woken up. Remove self from bucket if still linked (timeout or kill).
