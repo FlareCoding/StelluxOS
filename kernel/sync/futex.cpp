@@ -5,6 +5,7 @@
 #include "mm/uaccess.h"
 #include "mm/vma.h"
 #include "common/hash.h"
+#include "common/string.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
 
@@ -26,6 +27,18 @@ __PRIVILEGED_CODE static uint32_t futex_hash(mm::mm_context* mm, uintptr_t addr)
     return static_cast<uint32_t>(h) & FUTEX_BUCKET_MASK;
 }
 
+// Read uint32_t from addr. For user tasks, validates via uaccess.
+// For kernel tasks (no mm_ctx), reads directly.
+__PRIVILEGED_CODE static int32_t read_futex_val(uintptr_t addr, uint32_t* out) {
+    sched::task* self = sched::current();
+    if (self->exec.mm_ctx) {
+        return mm::uaccess::copy_from_user(
+            out, reinterpret_cast<const void*>(addr), sizeof(uint32_t));
+    }
+    string::memcpy(out, reinterpret_cast<const void*>(addr), sizeof(uint32_t));
+    return 0;
+}
+
 __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
                                      uint64_t timeout_ns) {
     sched::task* self = sched::current();
@@ -44,9 +57,8 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     irq_state irq = spin_lock_irqsave(bucket->lock);
 
     uint32_t current_val;
-    int32_t rc = mm::uaccess::copy_from_user(
-        &current_val, reinterpret_cast<const void*>(uaddr), sizeof(uint32_t));
-    if (rc != mm::uaccess::OK) {
+    int32_t rc = read_futex_val(uaddr, &current_val);
+    if (rc != 0) {
         spin_unlock_irqrestore(bucket->lock, irq);
         return -14; // EFAULT
     }
