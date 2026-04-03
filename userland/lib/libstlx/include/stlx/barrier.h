@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 typedef struct {
-    uint32_t count;
+    uint64_t count;
     uint32_t generation;
     uint32_t total;
 } stlx_barrier_t;

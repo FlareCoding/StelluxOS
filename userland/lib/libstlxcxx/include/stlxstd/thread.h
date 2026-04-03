@@ -8,6 +8,11 @@
 #include <new>
 
 namespace stlxstd {
+
+template<typename T> struct remove_ref { using type = T; };
+template<typename T> struct remove_ref<T&> { using type = T; };
+template<typename T> struct remove_ref<T&&> { using type = T; };
+
 namespace detail {
 
 struct thread_context {
@@ -47,7 +52,10 @@ public:
 
     template<typename Fn>
     explicit thread(Fn&& fn) {
-        using ctx_t = detail::thread_context_impl<Fn>;
+        // Decay Fn so lvalue references become value types (same as std::thread).
+        // Without this, passing an lvalue stores a reference that can dangle.
+        using Decayed = typename remove_ref<Fn>::type;
+        using ctx_t = detail::thread_context_impl<Decayed>;
         auto* ctx = static_cast<ctx_t*>(malloc(sizeof(ctx_t)));
         if (!ctx) abort();
         new (ctx) ctx_t(static_cast<Fn&&>(fn));

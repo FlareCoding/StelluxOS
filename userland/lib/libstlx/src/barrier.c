@@ -13,7 +13,7 @@ void stlx_barrier_wait(stlx_barrier_t* b) {
     // Count grows monotonically (no reset). The last thread in each round
     // is identified by count being a multiple of total. This eliminates
     // the race between resetting count and advancing generation.
-    uint32_t arrived = __atomic_fetch_add(&b->count, 1, __ATOMIC_ACQ_REL) + 1;
+    uint64_t arrived = __atomic_fetch_add(&b->count, 1, __ATOMIC_ACQ_REL) + 1;
 
     if (arrived % b->total == 0) {
         __atomic_fetch_add(&b->generation, 1, __ATOMIC_RELEASE);
