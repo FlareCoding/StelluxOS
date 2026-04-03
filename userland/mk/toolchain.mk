@@ -5,7 +5,8 @@
 # Included by app.mk and other build rules.
 #
 
-CC := clang
+CC  := clang
+CXX := clang++
 
 SYSROOT := $(USERLAND_ROOT)/sysroot/$(ARCH)
 TARGET_TRIPLE := $(ARCH)-linux-musl
@@ -26,6 +27,18 @@ CFLAGS_COMMON := \
 	-nostdlibinc \
 	-isystem $(SYSROOT)/include \
 	-std=c11 -O2 -g \
+	-Wall -Wextra -Werror \
+	-fno-stack-protector
+
+# C++ flags for userland applications (requires 'make libcxx' sysroot).
+# libc++ headers must come before musl C headers in the include path.
+CXXFLAGS_COMMON := \
+	--target=$(TARGET_TRIPLE) \
+	--sysroot=$(SYSROOT) \
+	-nostdlibinc \
+	-isystem $(SYSROOT)/include/c++/v1 \
+	-isystem $(SYSROOT)/include \
+	-std=c++20 -O2 -g \
 	-Wall -Wextra -Werror \
 	-fno-stack-protector
 

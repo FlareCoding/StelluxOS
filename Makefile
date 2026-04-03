@@ -612,8 +612,10 @@ libcxx:
 		-DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
 		-DCMAKE_C_COMPILER=clang \
 		-DCMAKE_CXX_COMPILER=clang++ \
+		-DCMAKE_ASM_COMPILER=clang \
 		-DCMAKE_C_COMPILER_TARGET=aarch64-linux-musl \
 		-DCMAKE_CXX_COMPILER_TARGET=aarch64-linux-musl \
+		-DCMAKE_ASM_COMPILER_TARGET=aarch64-linux-musl \
 		-DCMAKE_SYSROOT=$(abspath userland/sysroot/aarch64) \
 		-DCMAKE_INSTALL_PREFIX=$(abspath userland/sysroot/aarch64) \
 		-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
@@ -636,8 +638,9 @@ libcxx:
 		-DLIBUNWIND_ENABLE_STATIC=ON \
 		-DLIBUNWIND_ENABLE_THREADS=ON \
 		-DLIBUNWIND_USE_COMPILER_RT=ON \
-		'-DCMAKE_C_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64)' \
-		'-DCMAKE_CXX_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdinc++ -nostdlib++' \
+		'-DCMAKE_C_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include' \
+		'-DCMAKE_CXX_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include -nostdinc++ -nostdlib++' \
+		'-DCMAKE_ASM_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64)' \
 		> /dev/null
 	$(MAKE) -C $(LLVM_DIR)/build-aarch64 -j$$(nproc) cxx cxxabi unwind > /dev/null
 	$(MAKE) -C $(LLVM_DIR)/build-aarch64 install-cxx install-cxxabi install-unwind > /dev/null
@@ -720,6 +723,10 @@ toolchain-check:
 		(test -f userland/sysroot/x86_64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
 	@printf "%-24s" "musl (aarch64):" && \
 		(test -f userland/sysroot/aarch64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
+	@printf "%-24s" "libc++ (x86_64):" && \
+		(test -f userland/sysroot/x86_64/lib/libc++.a && echo "OK" || echo "NOT FOUND - run 'make libcxx'")
+	@printf "%-24s" "libc++ (aarch64):" && \
+		(test -f userland/sysroot/aarch64/lib/libc++.a && echo "OK" || echo "NOT FOUND - run 'make libcxx'")
 	@printf "%-24s" "builtins (x86_64):" && \
 		(BRT=$$(clang --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
 		 if [ -f "$$BRT" ]; then \
@@ -741,7 +748,7 @@ toolchain-check:
 			echo "NOT FOUND"; \
 		 fi)
 	@echo ""
-	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', and/or 'make rpi4-firmware'"
+	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', 'make libcxx', and/or 'make rpi4-firmware'"
 
 # ============================================================================
 # Help
@@ -754,6 +761,7 @@ help:
 	@echo "  make deps                    Install required packages"
 	@echo "  make limine                  Download Limine bootloader"
 	@echo "  make musl                    Build musl libc for both architectures"
+	@echo "  make libcxx                  Build libc++ for C++ userland support"
 	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
 	@echo "  make doom-wad                Download DOOM1.WAD shareware"
 	@echo "  make toolchain-check         Verify tools are installed"
@@ -787,6 +795,7 @@ help:
 	@echo "  1. make deps"
 	@echo "  2. make limine"
 	@echo "  3. make musl"
+	@echo "  4. make libcxx               (optional, for C++ userland apps)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make kernel ARCH=x86_64"
