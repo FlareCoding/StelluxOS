@@ -111,7 +111,7 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
     uint32_t idx = futex_hash(mm, uaddr);
     futex_bucket* bucket = &g_futex_table[idx];
 
-    int32_t total_woken = 0;
+    uint32_t total_woken = 0;
 
     for (;;) {
         sched::task* batch[WAKE_BATCH_SIZE];
@@ -128,8 +128,7 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
             if (w.mm == mm && w.addr == uaddr) {
                 bucket->waiters.remove(&w);
                 batch[n++] = w.task;
-                if (total_woken + static_cast<int32_t>(n) >=
-                    static_cast<int32_t>(count)) {
+                if (total_woken + n >= count) {
                     done = true;
                     break;
                 }
@@ -142,12 +141,12 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
         for (uint32_t i = 0; i < n; i++) {
             sched::wake(batch[i]);
         }
-        total_woken += static_cast<int32_t>(n);
+        total_woken += n;
 
         if (done) break;
     }
 
-    return total_woken;
+    return static_cast<int32_t>(total_woken);
 }
 
 __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr) {
@@ -158,7 +157,7 @@ __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr) {
     uint32_t idx = futex_hash(mm, uaddr);
     futex_bucket* bucket = &g_futex_table[idx];
 
-    int32_t total_woken = 0;
+    uint32_t total_woken = 0;
 
     for (;;) {
         sched::task* batch[WAKE_BATCH_SIZE];
@@ -183,12 +182,12 @@ __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr) {
         for (uint32_t i = 0; i < n; i++) {
             sched::wake(batch[i]);
         }
-        total_woken += static_cast<int32_t>(n);
+        total_woken += n;
 
         if (drained) break;
     }
 
-    return total_woken;
+    return static_cast<int32_t>(total_woken);
 }
 
 } // namespace sync
