@@ -112,7 +112,7 @@ endif
         run-qemu-x86_64-debug run-qemu-aarch64-debug \
         run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
         connect-gdb-x86_64 connect-gdb-aarch64 \
-        deps limine musl rpi4-firmware toolchain-check \
+        deps limine musl libcxx rpi4-firmware toolchain-check \
         help
 
 # Default target
@@ -498,6 +498,8 @@ deps:
 	sudo apt install -y clang lld llvm \
 		libclang-rt-dev \
 		gcc-aarch64-linux-gnu \
+		linux-libc-dev-arm64-cross \
+		cmake \
 		qemu-system-x86 qemu-system-arm \
 		ovmf qemu-efi-aarch64 \
 		mtools gdisk xorriso \
@@ -539,6 +541,112 @@ musl:
 	@echo "musl aarch64 installed to userland/sysroot/aarch64/"
 	@echo ""
 	@echo "musl $(MUSL_VERSION) ready for both architectures."
+
+LLVM_VERSION := 18.1.8
+LLVM_URL     := https://github.com/llvm/llvm-project/releases/download/llvmorg-$(LLVM_VERSION)/llvm-project-$(LLVM_VERSION).src.tar.xz
+LLVM_DIR     := userland/llvm-project-$(LLVM_VERSION).src
+LLVM_TARBALL := userland/llvm-project-$(LLVM_VERSION).src.tar.xz
+
+libcxx:
+	@echo "Building libc++ $(LLVM_VERSION) for x86_64 and aarch64..."
+	@test -f userland/sysroot/x86_64/lib/libc.a || \
+		(echo "ERROR: musl sysroot not found. Run 'make musl' first." && exit 1)
+	@test -f userland/sysroot/aarch64/lib/libc.a || \
+		(echo "ERROR: musl sysroot not found. Run 'make musl' first." && exit 1)
+	@mkdir -p userland
+	@test -f $(LLVM_TARBALL) || \
+		(echo "Downloading LLVM $(LLVM_VERSION) source (~130MB)..." && \
+		 curl -L -o $(LLVM_TARBALL) $(LLVM_URL))
+	@test -d $(LLVM_DIR) || \
+		(echo "Extracting..." && \
+		 cd userland && tar xf llvm-project-$(LLVM_VERSION).src.tar.xz)
+	@echo ""
+	@echo "Installing Linux kernel headers into sysroots..."
+	@cp -r /usr/include/linux userland/sysroot/x86_64/include/
+	@cp -r /usr/include/asm-generic userland/sysroot/x86_64/include/
+	@cp -r /usr/include/x86_64-linux-gnu/asm userland/sysroot/x86_64/include/
+	@cp -r /usr/aarch64-linux-gnu/include/linux userland/sysroot/aarch64/include/
+	@cp -r /usr/aarch64-linux-gnu/include/asm-generic userland/sysroot/aarch64/include/
+	@cp -r /usr/aarch64-linux-gnu/include/asm userland/sysroot/aarch64/include/
+	@echo ""
+	@echo "Building libc++ for x86_64..."
+	@mkdir -p $(LLVM_DIR)/build-x86_64
+	cd $(LLVM_DIR)/build-x86_64 && cmake -G "Unix Makefiles" ../runtimes \
+		-DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+		-DCMAKE_C_COMPILER=clang \
+		-DCMAKE_CXX_COMPILER=clang++ \
+		-DCMAKE_C_COMPILER_TARGET=x86_64-linux-musl \
+		-DCMAKE_CXX_COMPILER_TARGET=x86_64-linux-musl \
+		-DCMAKE_SYSROOT=$(abspath userland/sysroot/x86_64) \
+		-DCMAKE_INSTALL_PREFIX=$(abspath userland/sysroot/x86_64) \
+		-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+		-DLLVM_DEFAULT_TARGET_TRIPLE=x86_64-linux-musl \
+		-DLIBCXX_HAS_MUSL_LIBC=ON \
+		-DLIBCXX_ENABLE_SHARED=OFF \
+		-DLIBCXX_ENABLE_STATIC=ON \
+		-DLIBCXX_ENABLE_EXCEPTIONS=ON \
+		-DLIBCXX_ENABLE_RTTI=ON \
+		-DLIBCXX_ENABLE_THREADS=ON \
+		-DLIBCXX_ENABLE_MONOTONIC_CLOCK=ON \
+		-DLIBCXX_CXX_ABI=libcxxabi \
+		-DLIBCXX_USE_COMPILER_RT=ON \
+		-DLIBCXXABI_ENABLE_SHARED=OFF \
+		-DLIBCXXABI_ENABLE_STATIC=ON \
+		-DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+		-DLIBCXXABI_ENABLE_THREADS=ON \
+		-DLIBCXXABI_USE_COMPILER_RT=ON \
+		-DLIBUNWIND_ENABLE_SHARED=OFF \
+		-DLIBUNWIND_ENABLE_STATIC=ON \
+		-DLIBUNWIND_ENABLE_THREADS=ON \
+		-DLIBUNWIND_USE_COMPILER_RT=ON \
+		'-DCMAKE_C_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64)' \
+		'-DCMAKE_CXX_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64) -nostdinc++ -nostdlib++' \
+		> /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-x86_64 -j$$(nproc) cxx cxxabi unwind > /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-x86_64 install-cxx install-cxxabi install-unwind > /dev/null
+	@echo "libc++ x86_64 installed to userland/sysroot/x86_64/"
+	@echo ""
+	@echo "Building libc++ for aarch64..."
+	@mkdir -p $(LLVM_DIR)/build-aarch64
+	cd $(LLVM_DIR)/build-aarch64 && cmake -G "Unix Makefiles" ../runtimes \
+		-DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+		-DCMAKE_C_COMPILER=clang \
+		-DCMAKE_CXX_COMPILER=clang++ \
+		-DCMAKE_ASM_COMPILER=clang \
+		-DCMAKE_C_COMPILER_TARGET=aarch64-linux-musl \
+		-DCMAKE_CXX_COMPILER_TARGET=aarch64-linux-musl \
+		-DCMAKE_ASM_COMPILER_TARGET=aarch64-linux-musl \
+		-DCMAKE_SYSROOT=$(abspath userland/sysroot/aarch64) \
+		-DCMAKE_INSTALL_PREFIX=$(abspath userland/sysroot/aarch64) \
+		-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+		-DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-linux-musl \
+		-DLIBCXX_HAS_MUSL_LIBC=ON \
+		-DLIBCXX_ENABLE_SHARED=OFF \
+		-DLIBCXX_ENABLE_STATIC=ON \
+		-DLIBCXX_ENABLE_EXCEPTIONS=ON \
+		-DLIBCXX_ENABLE_RTTI=ON \
+		-DLIBCXX_ENABLE_THREADS=ON \
+		-DLIBCXX_ENABLE_MONOTONIC_CLOCK=ON \
+		-DLIBCXX_CXX_ABI=libcxxabi \
+		-DLIBCXX_USE_COMPILER_RT=ON \
+		-DLIBCXXABI_ENABLE_SHARED=OFF \
+		-DLIBCXXABI_ENABLE_STATIC=ON \
+		-DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+		-DLIBCXXABI_ENABLE_THREADS=ON \
+		-DLIBCXXABI_USE_COMPILER_RT=ON \
+		-DLIBUNWIND_ENABLE_SHARED=OFF \
+		-DLIBUNWIND_ENABLE_STATIC=ON \
+		-DLIBUNWIND_ENABLE_THREADS=ON \
+		-DLIBUNWIND_USE_COMPILER_RT=ON \
+		'-DCMAKE_C_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include' \
+		'-DCMAKE_CXX_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include -nostdinc++ -nostdlib++' \
+		'-DCMAKE_ASM_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64)' \
+		> /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-aarch64 -j$$(nproc) cxx cxxabi unwind > /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-aarch64 install-cxx install-cxxabi install-unwind > /dev/null
+	@echo "libc++ aarch64 installed to userland/sysroot/aarch64/"
+	@echo ""
+	@echo "libc++ $(LLVM_VERSION) ready for both architectures."
 
 limine:
 	@echo "Downloading Limine ($(LIMINE_BRANCH))..."
@@ -615,6 +723,10 @@ toolchain-check:
 		(test -f userland/sysroot/x86_64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
 	@printf "%-24s" "musl (aarch64):" && \
 		(test -f userland/sysroot/aarch64/lib/libc.a && echo "OK" || echo "NOT FOUND - run 'make musl'")
+	@printf "%-24s" "libc++ (x86_64):" && \
+		(test -f userland/sysroot/x86_64/lib/libc++.a && echo "OK" || echo "NOT FOUND - run 'make libcxx'")
+	@printf "%-24s" "libc++ (aarch64):" && \
+		(test -f userland/sysroot/aarch64/lib/libc++.a && echo "OK" || echo "NOT FOUND - run 'make libcxx'")
 	@printf "%-24s" "builtins (x86_64):" && \
 		(BRT=$$(clang --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
 		 if [ -f "$$BRT" ]; then \
@@ -636,7 +748,7 @@ toolchain-check:
 			echo "NOT FOUND"; \
 		 fi)
 	@echo ""
-	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', and/or 'make rpi4-firmware'"
+	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', 'make libcxx', and/or 'make rpi4-firmware'"
 
 # ============================================================================
 # Help
@@ -649,6 +761,7 @@ help:
 	@echo "  make deps                    Install required packages"
 	@echo "  make limine                  Download Limine bootloader"
 	@echo "  make musl                    Build musl libc for both architectures"
+	@echo "  make libcxx                  Build libc++ for C++ userland support"
 	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
 	@echo "  make doom-wad                Download DOOM1.WAD shareware"
 	@echo "  make toolchain-check         Verify tools are installed"
@@ -682,6 +795,7 @@ help:
 	@echo "  1. make deps"
 	@echo "  2. make limine"
 	@echo "  3. make musl"
+	@echo "  4. make libcxx"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make kernel ARCH=x86_64"

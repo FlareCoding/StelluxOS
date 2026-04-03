@@ -72,6 +72,8 @@ jobs:
             clang lld llvm \
             libclang-rt-dev \
             gcc-aarch64-linux-gnu \
+            linux-libc-dev-arm64-cross \
+            cmake \
             mtools gdisk xorriso
 
       - name: Fetch Limine EFI binaries
@@ -87,6 +89,25 @@ jobs:
       - name: Build musl libc
         if: steps.musl-cache.outputs.cache-hit != 'true'
         run: make musl
+
+      - name: Cache libc++ sysroot
+        uses: actions/cache@v4
+        id: libcxx-cache
+        with:
+          path: |
+            userland/sysroot/x86_64/lib/libc++.a
+            userland/sysroot/x86_64/lib/libc++abi.a
+            userland/sysroot/x86_64/lib/libunwind.a
+            userland/sysroot/x86_64/include/c++
+            userland/sysroot/aarch64/lib/libc++.a
+            userland/sysroot/aarch64/lib/libc++abi.a
+            userland/sysroot/aarch64/lib/libunwind.a
+            userland/sysroot/aarch64/include/c++
+          key: libcxx-sysroot-18.1.8
+
+      - name: Build libc++
+        if: steps.libcxx-cache.outputs.cache-hit != 'true'
+        run: make libcxx
 
       - name: Build kernel
         run: |
@@ -131,6 +152,8 @@ jobs:
             clang lld llvm \
             libclang-rt-dev \
             gcc-aarch64-linux-gnu \
+            linux-libc-dev-arm64-cross \
+            cmake \
             qemu-system-x86 qemu-system-arm \
             ovmf qemu-efi-aarch64 \
             mtools gdisk xorriso
@@ -148,6 +171,25 @@ jobs:
       - name: Build musl libc
         if: steps.musl-cache.outputs.cache-hit != 'true'
         run: make musl
+
+      - name: Cache libc++ sysroot
+        uses: actions/cache@v4
+        id: libcxx-cache
+        with:
+          path: |
+            userland/sysroot/x86_64/lib/libc++.a
+            userland/sysroot/x86_64/lib/libc++abi.a
+            userland/sysroot/x86_64/lib/libunwind.a
+            userland/sysroot/x86_64/include/c++
+            userland/sysroot/aarch64/lib/libc++.a
+            userland/sysroot/aarch64/lib/libc++abi.a
+            userland/sysroot/aarch64/lib/libunwind.a
+            userland/sysroot/aarch64/include/c++
+          key: libcxx-sysroot-18.1.8
+
+      - name: Build libc++
+        if: steps.libcxx-cache.outputs.cache-hit != 'true'
+        run: make libcxx
 
       - name: Run unit tests
         run: make test ARCH=${{ matrix.arch }} 2>&1 | tee test-log-${{ matrix.arch }}.txt

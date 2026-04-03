@@ -89,11 +89,14 @@ cd StelluxOS
 make deps
 make limine
 make musl
+make libcxx
 ```
 
 `make deps` installs system packages (clang, lld, llvm, qemu, ovmf, mtools,
 etc.). `make limine` downloads the Limine bootloader binaries. `make musl`
-builds musl 1.2.5 for both x86_64 and aarch64.
+builds musl 1.2.5 for both x86_64 and aarch64. `make libcxx` builds the
+LLVM C++ runtime (libc++, libc++abi, libunwind) against the musl sysroot
+for C++ userland application support.
 
 Run `make toolchain-check` to verify everything is in place.
 

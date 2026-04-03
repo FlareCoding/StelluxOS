@@ -29,6 +29,7 @@ compile_commands.json
 # Userland build artifacts
 userland/sysroot/
 userland/musl-*
+userland/llvm-project-*
 userland/build/
 initrd/bin/*
 !initrd/bin/.gitkeep
