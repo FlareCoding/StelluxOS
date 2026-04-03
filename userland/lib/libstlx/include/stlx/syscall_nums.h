@@ -12,4 +12,8 @@
 #define SYS_PROC_KILL_TID       1018
 #define SYS_PTY_CREATE          1020
 
+#define SYS_FUTEX_WAIT          1030
+#define SYS_FUTEX_WAKE          1031
+#define SYS_FUTEX_WAKE_ALL      1032
+
 #endif /* STLX_SYSCALL_NUMS_H */
