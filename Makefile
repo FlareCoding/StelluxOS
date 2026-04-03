@@ -795,7 +795,7 @@ help:
 	@echo "  1. make deps"
 	@echo "  2. make limine"
 	@echo "  3. make musl"
-	@echo "  4. make libcxx               (optional, for C++ userland apps)"
+	@echo "  4. make libcxx"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make kernel ARCH=x86_64"
