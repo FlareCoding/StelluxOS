@@ -9,6 +9,7 @@
 #include "common/string.h"
 #include "mm/heap.h"
 #include "mm/pmm_types.h"
+#include "acpi/acpi.h"
 
 namespace nv {
 
@@ -1094,11 +1095,23 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
         //   +0x38 u64 maxUserVa
         //   +0x40 u32 pciConfigMirrorBase
         //   +0x44 u32 pciConfigMirrorSize
-        // The struct continues with oorArch, BUSINFO, ACPI, etc. — all zero.
-        // We use a generous 2048-byte payload to cover any struct size.
+        // The struct continues with oorArch, BUSINFO, ACPI, etc.
+        //
+        // ACPI note:
+        // Upstream Linux/OpenRM populate acpiMethodData on x86 when ACPI is
+        // present, and they use 0x0000ffff as the default "method unsupported"
+        // status for DOD/JT/CAPS. Zero-filling the entire ACPI block is a
+        // semantic mismatch, so initialize the same top-level validity/status
+        // fields even though we do not yet evaluate AML methods ourselves.
         // ================================================================
         {
             constexpr uint32_t GSP_SYSTEM_INFO_SIZE = 664;
+            constexpr uint32_t GSP_SYSINFO_ACPI_OFF        = 0x78;
+            constexpr uint32_t GSP_SYSINFO_ACPI_DOD_STATUS = GSP_SYSINFO_ACPI_OFF + 0x04;
+            constexpr uint32_t GSP_SYSINFO_ACPI_JT_STATUS  = GSP_SYSINFO_ACPI_OFF + 0x4C;
+            constexpr uint32_t GSP_SYSINFO_ACPI_CAPS_STATUS = GSP_SYSINFO_ACPI_OFF + 0x1DC;
+            constexpr uint32_t ACPI_STATUS_UNSUPPORTED     = 0x0000FFFF;
+
             uint8_t* entry = cmdq_base + entry_off_val + state.cmdq_seq * QUEUE_ENTRY_SIZE;
             string::memset(entry, 0, QUEUE_ENTRY_SIZE);
 
@@ -1130,12 +1143,28 @@ int32_t gsp_boot(nv_gpu* gpu, gsp_firmware& fw, gsp_boot_state& state) {
             wr32(0x40, 0x088000);                     // pciConfigMirrorBase
             wr32(0x44, 0x001000);                     // pciConfigMirrorSize
 
+            // Match upstream ACPI presence / default status semantics more
+            // closely. We do not yet evaluate AML methods, so if ACPI exists
+            // we mark the block valid but initialize DOD/JT/CAPS statuses to
+            // NV_ERR_NOT_SUPPORTED (0x0000ffff), which is what upstream does
+            // before attempting those method calls.
+            bool acpi_present = false;
+            RUN_ELEVATED(acpi_present = acpi::find_table("FACP") != nullptr;);
+            if (acpi_present) {
+                payload[GSP_SYSINFO_ACPI_OFF] = 1; // acpiMethodData.bValid
+                wr32(GSP_SYSINFO_ACPI_DOD_STATUS, ACPI_STATUS_UNSUPPORTED);
+                wr32(GSP_SYSINFO_ACPI_JT_STATUS, ACPI_STATUS_UNSUPPORTED);
+                wr32(GSP_SYSINFO_ACPI_CAPS_STATUS, ACPI_STATUS_UNSUPPORTED);
+            }
+
             finalize_entry(entry, rpc->length);
 
             log::info("nvidia: gsp: queued SET_SYSTEM_INFO (fn=%u, payload=%u) at cmdq slot %u",
                       NV_VGPU_MSG_FUNCTION_SET_SYSTEM_INFO, GSP_SYSTEM_INFO_SIZE, state.cmdq_seq - 1);
             log::info("nvidia: gsp:   BAR0=0x%lx BAR1=0x%lx BAR3=0x%lx BDF=0x%x",
                       gpu->bar0_phys(), gpu->bar1_phys(), gpu->bar3_phys(), gpu->pci_bdf());
+            log::info("nvidia: gsp:   ACPI system-info block: %s (DOD/JT/CAPS status preset to 0x%04x)",
+                      acpi_present ? "present" : "absent", ACPI_STATUS_UNSUPPORTED);
         }
 
         // ================================================================
