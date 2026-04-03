@@ -46,7 +46,7 @@ in the design space and potentially offer a new avenue for operating system rese
 
 ### Research Basis
 
-The design and motivation behind StelluxOS are described in my SOSP 2024 project poster:
+The design and motivation behind StelluxOS are described in my SOSP 2024 poster:
 
 <div align="center">
   <a href="specs/stellux.pdf">
