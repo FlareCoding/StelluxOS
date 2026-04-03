@@ -27,23 +27,28 @@ __PRIVILEGED_CODE static uint32_t futex_hash(mm::mm_context* mm, uintptr_t addr)
     return static_cast<uint32_t>(h) & FUTEX_BUCKET_MASK;
 }
 
-// Read uint32_t from addr. For user tasks, validates via uaccess.
-// For kernel tasks (no mm_ctx), reads directly.
-__PRIVILEGED_CODE static int32_t read_futex_val(uintptr_t addr, uint32_t* out) {
-    sched::task* self = sched::current();
-    if (self->exec.mm_ctx) {
-        return mm::uaccess::copy_from_user(
-            out, reinterpret_cast<const void*>(addr), sizeof(uint32_t));
-    }
-    string::memcpy(out, reinterpret_cast<const void*>(addr), sizeof(uint32_t));
-    return 0;
-}
-
 __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
                                      uint64_t timeout_ns) {
     sched::task* self = sched::current();
     mm::mm_context* mm = self->exec.mm_ctx;
     if (uaddr & 0x3) return -22; // EINVAL
+
+    // Read the value before taking the bucket lock. copy_from_user
+    // acquires mm_ctx->lock (a sleeping mutex) so it must not be called
+    // under a spinlock. This also faults in the page so the re-read
+    // under the spinlock below is safe.
+    uint32_t pre_val;
+    if (mm) {
+        int32_t rc = mm::uaccess::copy_from_user(
+            &pre_val, reinterpret_cast<const void*>(uaddr), sizeof(uint32_t));
+        if (rc != 0) return -14; // EFAULT
+    } else {
+        string::memcpy(&pre_val, reinterpret_cast<const void*>(uaddr),
+                       sizeof(uint32_t));
+    }
+
+    // Early exit: if the value already changed, no need to lock the bucket.
+    if (pre_val != expected) return -11; // EAGAIN
 
     uint32_t idx = futex_hash(mm, uaddr);
     futex_bucket* bucket = &g_futex_table[idx];
@@ -56,21 +61,18 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
 
     irq_state irq = spin_lock_irqsave(bucket->lock);
 
+    // Re-read the futex word under the bucket lock. The page is already
+    // validated/faulted by the copy_from_user above, so a direct read
+    // is safe here. This atomic check-and-enqueue prevents lost wakeups.
     uint32_t current_val;
-    int32_t rc = read_futex_val(uaddr, &current_val);
-    if (rc != 0) {
-        spin_unlock_irqrestore(bucket->lock, irq);
-        return -14; // EFAULT
-    }
+    string::memcpy(&current_val, reinterpret_cast<const void*>(uaddr),
+                   sizeof(uint32_t));
 
     if (current_val != expected) {
         spin_unlock_irqrestore(bucket->lock, irq);
         return -11; // EAGAIN
     }
 
-    // Value matches: enqueue and sleep.
-    // Arm the timer before releasing the lock to avoid a preemption window
-    // between setting BLOCKED and schedule_sleep.
     self->state = sched::TASK_STATE_BLOCKED;
     bucket->waiters.push_back(&waiter);
 
@@ -82,7 +84,11 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     spin_unlock_irqrestore(bucket->lock, irq);
     sched::yield();
 
-    // Woken up. Remove self from bucket if still linked (timeout or kill).
+    // Cancel any outstanding timer to prevent spurious wakes of future
+    // blocking operations if we were woken by futex_wake before timeout.
+    timer::cancel_sleep(self);
+
+    // Remove self from bucket if still linked (timeout or kill wakeup).
     bool was_linked = false;
     irq = spin_lock_irqsave(bucket->lock);
     if (waiter.link.is_linked()) {
