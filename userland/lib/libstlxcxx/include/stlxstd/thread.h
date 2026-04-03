@@ -12,6 +12,7 @@ namespace detail {
 
 struct thread_context {
     void (*invoke)(thread_context*);
+    void (*destroy)(thread_context*);
 };
 
 template<typename Fn>
@@ -23,8 +24,13 @@ struct thread_context_impl : thread_context {
         self->fn();
     }
 
+    static void destruct(thread_context* base) {
+        static_cast<thread_context_impl*>(base)->~thread_context_impl();
+    }
+
     explicit thread_context_impl(Fn&& f) : fn(static_cast<Fn&&>(f)) {
         invoke = &call;
+        destroy = &destruct;
     }
 };
 
