@@ -21,8 +21,10 @@ constexpr uint64_t GSP_FW_WPR_META_VERIFIED = 0xa0a0a0a0a0a0a0a0ULL;
 
 // GSP heap sizing parameters
 // LIBOS2 (Turing, GA100): carveout=0, min=64MB, max=256MB
-// LIBOS3 (GA102+, baremetal): carveout=22MB, min=88MB, max=280MB
-constexpr uint32_t GSP_FW_HEAP_OS_CARVEOUT_LIBOS3 = (22 << 20); // 22 MB
+// LIBOS3 (GA102+, baremetal): carveout=20MB, min=88MB, max=280MB
+// Direct OpenRM 535.113.01 generated source sets fwHeapParamOsCarveoutSize
+// to 20MB for GA102+ baremetal (PF_KERNEL_ONLY), not 22MB.
+constexpr uint32_t GSP_FW_HEAP_OS_CARVEOUT_LIBOS3 = (20 << 20); // 20 MB
 constexpr uint32_t GSP_FW_HEAP_OS_CARVEOUT_LIBOS2 = 0;           // 0 MB
 constexpr uint32_t GSP_FW_HEAP_BASE_SIZE        = (8 << 20);  // 8 MB (Turing-Ada)
 constexpr uint32_t GSP_FW_HEAP_PER_GB_SIZE      = (96 << 10); // 96 KB per GB VRAM
