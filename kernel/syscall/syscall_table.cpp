@@ -31,6 +31,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
 
     REGISTER_SYSCALL(linux_nr::IOCTL,           ioctl);
     REGISTER_SYSCALL(linux_nr::PREAD64,         pread64);
+    REGISTER_SYSCALL(linux_nr::READV,           readv);
     REGISTER_SYSCALL(linux_nr::WRITEV,          writev);
     REGISTER_SYSCALL(linux_nr::READ,            read);
     REGISTER_SYSCALL(linux_nr::WRITE,           write);
@@ -60,6 +61,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::EXIT,            exit);
     REGISTER_SYSCALL(linux_nr::EXIT_GROUP,      exit_group);
     REGISTER_SYSCALL(linux_nr::GETPID,          getpid);
+    REGISTER_SYSCALL(linux_nr::GETTID,          gettid);
     REGISTER_SYSCALL(linux_nr::GETUID,          getuid);
     REGISTER_SYSCALL(linux_nr::GETEUID,         geteuid);
     REGISTER_SYSCALL(linux_nr::GETGID,          getgid);

@@ -12,6 +12,10 @@ DEFINE_SYSCALL0(getpid) {
     return static_cast<int64_t>(sched::current()->tid);
 }
 
+DEFINE_SYSCALL0(gettid) {
+    return static_cast<int64_t>(sched::current()->tid);
+}
+
 DEFINE_SYSCALL0(getuid)  { return 0; }
 DEFINE_SYSCALL0(geteuid) { return 0; }
 DEFINE_SYSCALL0(getgid)  { return 0; }

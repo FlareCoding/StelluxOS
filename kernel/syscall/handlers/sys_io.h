@@ -3,6 +3,7 @@
 
 #include "syscall/syscall_table.h"
 
+DECLARE_SYSCALL(readv);
 DECLARE_SYSCALL(writev);
 DECLARE_SYSCALL(ioctl);
 DECLARE_SYSCALL(pread64);
