@@ -33,7 +33,9 @@ DEFINES := \
 	-DGGML_VERSION='"stellux"' \
 	-DGGML_COMMIT='"stellux"' \
 	-DGGML_ABORT_CALLBACK=1 \
-	-DGGML_CPU_GENERIC=1
+	-DGGML_CPU_GENERIC=1 \
+	-D__stellux__=1 \
+	-U__gnu_linux__
 
 # Override warning flags: llama.cpp has some we can't fix upstream
 WARN_FLAGS := -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function

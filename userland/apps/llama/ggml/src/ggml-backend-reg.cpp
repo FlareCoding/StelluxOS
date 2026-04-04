@@ -4,7 +4,9 @@
 #include "ggml-impl.h"
 #include <algorithm>
 #include <cstring>
+#ifndef __stellux__
 #include <filesystem>
+#endif
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -86,6 +88,7 @@
 #include "ggml-openvino.h"
 #endif
 
+#ifndef __stellux__
 namespace fs = std::filesystem;
 
 static std::string path_str(const fs::path & path) {
@@ -102,6 +105,7 @@ static std::string path_str(const fs::path & path) {
         return std::string();
     }
 }
+#endif // !__stellux__
 
 struct ggml_backend_reg_entry {
     ggml_backend_reg_t reg;
@@ -199,6 +203,10 @@ struct ggml_backend_registry {
     }
 
     ggml_backend_reg_t load_backend(const fs::path & path, bool silent) {
+#if defined(__stellux__)
+        (void)path; (void)silent;
+        return nullptr;
+#else
         dl_handle_ptr handle { dl_load_library(path) };
         if (!handle) {
             if (!silent) {
@@ -242,6 +250,7 @@ struct ggml_backend_registry {
         register_backend(reg, std::move(handle));
 
         return reg;
+#endif // !__stellux__
     }
 
     void unload_backend(ggml_backend_reg_t reg, bool silent) {
@@ -370,6 +379,11 @@ ggml_backend_t ggml_backend_init_best(void) {
     return ggml_backend_dev_init(dev, nullptr);
 }
 
+#if defined(__stellux__)
+// Stellux: no dynamic backend loading
+ggml_backend_reg_t ggml_backend_load(const char *) { return nullptr; }
+void ggml_backend_unload(ggml_backend_reg_t) {}
+#else
 // Dynamic loading
 ggml_backend_reg_t ggml_backend_load(const char * path) {
     return get_reg().load_backend(path, false);
@@ -539,12 +553,17 @@ static ggml_backend_reg_t ggml_backend_load_best(const char * name, bool silent,
 
     return get_reg().load_backend(best_path, silent);
 }
+#endif // !__stellux__
 
 void ggml_backend_load_all() {
     ggml_backend_load_all_from_path(nullptr);
 }
 
 void ggml_backend_load_all_from_path(const char * dir_path) {
+#if defined(__stellux__)
+    (void)dir_path;
+    return;
+#else
 #ifdef NDEBUG
     bool silent = true;
 #else
@@ -571,4 +590,5 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
     if (backend_path) {
         ggml_backend_load(backend_path);
     }
+#endif // !__stellux__
 }

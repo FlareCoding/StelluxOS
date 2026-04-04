@@ -176,6 +176,75 @@ static int sched_yield (void) {
     Sleep (0);
     return 0;
 }
+#elif defined(__stellux__)
+
+#include <stdatomic.h>
+#include <stlx/proc.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+typedef void * thread_ret_t;
+
+typedef struct {
+    int handle;
+    void * stack;
+} ggml_stlx_thread_t;
+
+#define GGML_STLX_STACK_SIZE (64 * 1024)
+
+static void ggml_stlx_trampoline(void * arg);
+
+struct ggml_stlx_thread_arg {
+    thread_ret_t (*func)(void *);
+    void * arg;
+};
+
+static void ggml_stlx_trampoline(void * arg) {
+    struct ggml_stlx_thread_arg * ta = (struct ggml_stlx_thread_arg *)arg;
+    ta->func(ta->arg);
+    _exit(0);
+}
+
+static int ggml_stlx_thread_create(ggml_stlx_thread_t * out, void * unused,
+                                    thread_ret_t (*func)(void *), void * arg) {
+    (void)unused;
+    void * stack = mmap(NULL, GGML_STLX_STACK_SIZE, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    if (stack == MAP_FAILED) return -1;
+
+    // Heap-allocate the trampoline arg so it outlives this function.
+    // The trampoline thread reads it before _exit, so it's safe.
+    struct ggml_stlx_thread_arg * ta = (struct ggml_stlx_thread_arg *)
+        malloc(sizeof(struct ggml_stlx_thread_arg));
+    if (!ta) { munmap(stack, GGML_STLX_STACK_SIZE); return -1; }
+    ta->func = func;
+    ta->arg = arg;
+
+    void * stack_top = (char *)stack + GGML_STLX_STACK_SIZE;
+    int h = proc_create_thread(ggml_stlx_trampoline, ta, stack_top, "ggml");
+    if (h < 0) {
+        free(ta);
+        munmap(stack, GGML_STLX_STACK_SIZE);
+        return -1;
+    }
+    proc_thread_start(h);
+
+    out->handle = h;
+    out->stack = stack;
+    return 0;
+}
+
+static int ggml_stlx_thread_join(ggml_stlx_thread_t thread, void * unused) {
+    (void)unused;
+    proc_thread_join(thread.handle, NULL);
+    if (thread.stack) {
+        munmap(thread.stack, GGML_STLX_STACK_SIZE);
+    }
+    return 0;
+}
+
+typedef ggml_stlx_thread_t ggml_thread_t;
+
 #else
 
 #include <pthread.h>
@@ -193,7 +262,11 @@ typedef void * thread_ret_t;
 
 #endif
 
+#if defined(__stellux__)
+// ggml_thread_t is ggml_stlx_thread_t (defined above)
+#else
 typedef pthread_t ggml_thread_t;
+#endif
 
 #define GGML_THREADPOOL_N_THREADS_MASK (0xffffU)
 #define GGML_THREADPOOL_N_THREADS_BITS (16)
@@ -403,9 +476,40 @@ const struct ggml_type_traits_cpu * ggml_get_type_traits_cpu(enum ggml_type type
 // Threading defs
 //
 
-typedef pthread_t          ggml_thread_t;
+#if defined(__stellux__)
 
-#if defined(_WIN32)
+// ggml_thread_t already defined as ggml_stlx_thread_t above
+
+#include <stlx/mutex.h>
+#include <stlx/cond.h>
+
+typedef stlx_mutex_t       ggml_mutex_t;
+typedef stlx_cond_t        ggml_cond_t;
+
+#define ggml_mutex_init(m)          do { *(m) = (stlx_mutex_t)STLX_MUTEX_INIT; } while(0)
+#define ggml_mutex_destroy(m)       ((void)(m))
+#define ggml_mutex_lock(m)          stlx_mutex_lock(m)
+#define ggml_mutex_unlock(m)        stlx_mutex_unlock(m)
+#define ggml_mutex_lock_shared(m)   stlx_mutex_lock(m)
+#define ggml_mutex_unlock_shared(m) stlx_mutex_unlock(m)
+
+#define ggml_lock_init(x)    UNUSED(x)
+#define ggml_lock_destroy(x) UNUSED(x)
+#define ggml_lock_lock(x)    UNUSED(x)
+#define ggml_lock_unlock(x)  UNUSED(x)
+#define GGML_LOCK_INITIALIZER 0
+
+#define ggml_cond_init(c)      do { *(c) = (stlx_cond_t)STLX_COND_INIT; } while(0)
+#define ggml_cond_destroy(c)   ((void)(c))
+#define ggml_cond_wait(c, m)   stlx_cond_wait(c, m)
+#define ggml_cond_broadcast(c) stlx_cond_broadcast(c)
+
+#define ggml_thread_create ggml_stlx_thread_create
+#define ggml_thread_join   ggml_stlx_thread_join
+
+#elif defined(_WIN32)
+
+typedef pthread_t          ggml_thread_t;
 
 typedef CONDITION_VARIABLE ggml_cond_t;
 typedef SRWLOCK            ggml_mutex_t;
@@ -427,6 +531,7 @@ typedef SRWLOCK            ggml_mutex_t;
 
 #else
 
+typedef pthread_t          ggml_thread_t;
 typedef pthread_cond_t     ggml_cond_t;
 typedef pthread_mutex_t    ggml_mutex_t;
 

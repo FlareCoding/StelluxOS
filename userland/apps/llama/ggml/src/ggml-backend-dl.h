@@ -1,5 +1,22 @@
 #pragma once
 
+#if defined(__stellux__)
+#include <string>
+#include <memory>
+
+// Minimal fs::path shim for Stellux (dynamic loading is a no-op)
+namespace fs {
+    using path = std::string;
+}
+
+using dl_handle = void;
+struct dl_handle_deleter {
+    void operator()(void *) {}
+};
+using dl_handle_ptr = std::unique_ptr<dl_handle, dl_handle_deleter>;
+
+#else // !__stellux__
+
 #ifdef _WIN32
 #   define WIN32_LEAN_AND_MEAN
 #   ifndef NOMINMAX
@@ -39,7 +56,8 @@ struct dl_handle_deleter {
 
 using dl_handle_ptr = std::unique_ptr<dl_handle, dl_handle_deleter>;
 
+#endif // __stellux__
+
 dl_handle * dl_load_library(const fs::path & path);
 void * dl_get_sym(dl_handle * handle, const char * name);
 const char * dl_error();
-

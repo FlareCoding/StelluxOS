@@ -10,7 +10,9 @@
 #include <cinttypes>
 #include <cstdint>
 #include <cstring>
+#ifndef __stellux__
 #include <future>
+#endif
 #include <regex>
 
 static const size_t kiB = 1024;
@@ -1408,7 +1410,9 @@ bool llama_model_loader::load_all_data(
     GGML_ASSERT(size_data != 0 && "call init_mappings() first");
 
     std::vector<no_init<uint8_t>> read_buf;
+#ifndef __stellux__
     std::vector<std::future<std::pair<ggml_tensor *, bool>>> validation_result;
+#endif
 
     // 4 staging buffers for async uploads, each sized 1MB seems to be a good default for single NVMe drives.
     // NVMe raid configurations might require more / larger buffers.
@@ -1532,9 +1536,15 @@ bool llama_model_loader::load_all_data(
             uint8_t * data = (uint8_t *) mapping->addr() + weight->offs;
 
             if (check_tensors) {
+#ifdef __stellux__
+                if (!ggml_validate_row_data(cur->type, data, n_size)) {
+                    throw std::runtime_error(format("tensor '%s': invalid data", ggml_get_name(cur)));
+                }
+#else
                 validation_result.emplace_back(std::async(std::launch::async, [cur, data, n_size] {
                     return std::make_pair(cur, ggml_validate_row_data(cur->type, data, n_size));
                 }));
+#endif
             }
 
             GGML_ASSERT(buf_mmap || cur->data); // either we have a buffer to allocate the tensor in, or it is already allocated
@@ -1558,9 +1568,15 @@ bool llama_model_loader::load_all_data(
                 file->seek(weight->offs, SEEK_SET);
                 file->read_raw(cur->data, n_size);
                 if (check_tensors) {
+#ifdef __stellux__
+                    if (!ggml_validate_row_data(cur->type, cur->data, n_size)) {
+                        throw std::runtime_error(format("tensor '%s': invalid data", ggml_get_name(cur)));
+                    }
+#else
                     validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
                         return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
                     }));
+#endif
                 }
             } else {
                 // If upload_backend is valid load the tensor in chunks to pinned memory and upload the buffers asynchronously to the GPU.
@@ -1641,6 +1657,7 @@ bool llama_model_loader::load_all_data(
     }
     ggml_backend_free(upload_backend);
 
+#ifndef __stellux__
     // check validation results
     bool validation_failed = false;
     for (auto & future : validation_result) {
@@ -1653,6 +1670,7 @@ bool llama_model_loader::load_all_data(
     if (validation_failed) {
         throw std::runtime_error("found tensors with invalid data");
     }
+#endif
 
     // check if this is the last call and do final cleanup
     if (size_done >= size_data) {

@@ -1,33 +1,31 @@
 #include "ggml-backend-dl.h"
 
-#ifdef _WIN32
+#if defined(__stellux__)
+
+// Stellux: no dynamic backend loading
+dl_handle * dl_load_library(const fs::path &) { return nullptr; }
+void * dl_get_sym(dl_handle *, const char *) { return nullptr; }
+const char * dl_error() { return "dynamic loading not supported"; }
+
+#elif defined(_WIN32)
 
 dl_handle * dl_load_library(const fs::path & path) {
-    // suppress error dialogs for missing DLLs
     DWORD old_mode = SetErrorMode(SEM_FAILCRITICALERRORS);
     SetErrorMode(old_mode | SEM_FAILCRITICALERRORS);
-
     HMODULE handle = LoadLibraryW(path.wstring().c_str());
-
     SetErrorMode(old_mode);
-
     return handle;
 }
 
 void * dl_get_sym(dl_handle * handle, const char * name) {
     DWORD old_mode = SetErrorMode(SEM_FAILCRITICALERRORS);
     SetErrorMode(old_mode | SEM_FAILCRITICALERRORS);
-
     void * p = (void *) GetProcAddress(handle, name);
-
     SetErrorMode(old_mode);
-
     return p;
 }
 
-const char * dl_error() {
-    return "";
-}
+const char * dl_error() { return ""; }
 
 #else
 
