@@ -249,3 +249,11 @@ DEFINE_SYSCALL1(brk, addr) {
     // musl interprets this as "brk not available" and falls back to mmap.
     return 0;
 }
+
+// No-op: madvise is a performance hint. Safe to ignore.
+DEFINE_SYSCALL3(madvise, addr, length, advice) {
+    (void)addr;
+    (void)length;
+    (void)advice;
+    return 0;
+}

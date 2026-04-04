@@ -30,6 +30,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
         g_syscall_table[i] = nullptr;
 
     REGISTER_SYSCALL(linux_nr::IOCTL,           ioctl);
+    REGISTER_SYSCALL(linux_nr::PREAD64,         pread64);
     REGISTER_SYSCALL(linux_nr::WRITEV,          writev);
     REGISTER_SYSCALL(linux_nr::READ,            read);
     REGISTER_SYSCALL(linux_nr::WRITE,           write);
@@ -50,6 +51,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::STAT,            stat);
 #endif
     REGISTER_SYSCALL(linux_nr::BRK,             brk);
+    REGISTER_SYSCALL(linux_nr::MADVISE,         madvise);
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
     REGISTER_SYSCALL(linux_nr::RT_SIGACTION,    rt_sigaction);
     REGISTER_SYSCALL(linux_nr::RT_SIGPROCMASK,  rt_sigprocmask);
@@ -67,7 +69,9 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::CLOCK_GETTIME,   clock_gettime);
     REGISTER_SYSCALL(linux_nr::CLOCK_GETRES,    clock_getres);
     REGISTER_SYSCALL(linux_nr::GETTIMEOFDAY,    gettimeofday);
+    REGISTER_SYSCALL(linux_nr::SYSINFO,         sysinfo);
     REGISTER_SYSCALL(linux_nr::UNAME,           uname);
+    REGISTER_SYSCALL(linux_nr::SCHED_GETAFFINITY, sched_getaffinity);
 
     REGISTER_SYSCALL(linux_nr::SOCKET,      socket);
     REGISTER_SYSCALL(linux_nr::SOCKETPAIR,  socketpair);

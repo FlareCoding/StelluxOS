@@ -12,5 +12,7 @@ DECLARE_SYSCALL(exit);
 DECLARE_SYSCALL(exit_group);
 DECLARE_SYSCALL(set_tid_address);
 DECLARE_SYSCALL(nanosleep);
+DECLARE_SYSCALL(sysinfo);
+DECLARE_SYSCALL(sched_getaffinity);
 
 #endif // STELLUX_SYSCALL_HANDLERS_SYS_TASK_H
