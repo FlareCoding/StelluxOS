@@ -18,11 +18,13 @@ constexpr uint64_t LINUX_MAP_SHARED          = 0x00000001;
 constexpr uint64_t LINUX_MAP_PRIVATE         = 0x00000002;
 constexpr uint64_t LINUX_MAP_FIXED           = 0x00000010;
 constexpr uint64_t LINUX_MAP_ANONYMOUS       = 0x00000020;
+constexpr uint64_t LINUX_MAP_POPULATE        = 0x00008000;
 constexpr uint64_t LINUX_MAP_STACK           = 0x00020000;
 constexpr uint64_t LINUX_MAP_FIXED_NOREPLACE = 0x00100000;
 constexpr uint64_t LINUX_MAP_ALLOWED_MASK =
     LINUX_MAP_SHARED | LINUX_MAP_PRIVATE | LINUX_MAP_FIXED |
-    LINUX_MAP_ANONYMOUS | LINUX_MAP_STACK | LINUX_MAP_FIXED_NOREPLACE;
+    LINUX_MAP_ANONYMOUS | LINUX_MAP_POPULATE | LINUX_MAP_STACK |
+    LINUX_MAP_FIXED_NOREPLACE;
 
 inline uint32_t linux_prot_to_mm(uint64_t prot) {
     uint32_t mm_prot = 0;
