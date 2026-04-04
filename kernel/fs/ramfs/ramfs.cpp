@@ -5,7 +5,9 @@
 #include "mm/heap.h"
 #include "mm/pmm.h"
 #include "mm/paging.h"
+#include "mm/vma.h"
 #include "boot/boot_services.h"
+
 
 namespace ramfs {
 
@@ -530,6 +532,96 @@ int32_t file_node::truncate(size_t size) {
 
     m_size = size;
     return fs::OK;
+}
+
+int32_t file_node::mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
+                        size_t length, uint32_t prot, uint32_t map_flags,
+                        uint64_t offset, uintptr_t* out_addr) {
+    (void)f;
+    if (!mm_ctx || !out_addr || length == 0) return fs::ERR_INVAL;
+
+    size_t aligned_len = pmm::page_align_up(length);
+    if (offset % pmm::PAGE_SIZE != 0) return fs::ERR_INVAL;
+    if (offset + aligned_len > pmm::page_align_up(m_size)) return fs::ERR_INVAL;
+
+    bool fixed = (map_flags & mm::MM_MAP_FIXED) != 0;
+
+    sync::mutex_lock(mm_ctx->lock);
+
+    uintptr_t start;
+    if (fixed) {
+        if (addr % pmm::PAGE_SIZE != 0) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return fs::ERR_INVAL;
+        }
+        start = addr;
+    } else {
+        start = mm::vma_find_gap_topdown_locked(mm_ctx, aligned_len);
+        if (start == 0) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return fs::ERR_NOMEM;
+        }
+    }
+
+    paging::page_flags_t page_flags = paging::PAGE_USER | paging::PAGE_READ;
+    if (prot & mm::MM_PROT_WRITE) page_flags |= paging::PAGE_WRITE;
+    if (prot & mm::MM_PROT_EXEC) page_flags |= paging::PAGE_EXEC;
+
+    size_t pages = aligned_len / pmm::PAGE_SIZE;
+    size_t page_offset = offset / pmm::PAGE_SIZE;
+
+    for (size_t i = 0; i < pages; i++) {
+        uint32_t pidx = static_cast<uint32_t>(page_offset + i);
+        if (pidx >= m_page_count || !m_pages[pidx]) {
+            // Unmap any pages we already mapped
+            for (size_t j = 0; j < i; j++) {
+                paging::unmap_page(start + j * pmm::PAGE_SIZE, mm_ctx->pt_root);
+            }
+            sync::mutex_unlock(mm_ctx->lock);
+            return fs::ERR_IO;
+        }
+
+        pmm::phys_addr_t phys =
+            reinterpret_cast<uintptr_t>(m_pages[pidx]) - g_boot_info.hhdm_offset;
+        uintptr_t vaddr = start + i * pmm::PAGE_SIZE;
+
+        if (paging::map_page(vaddr, phys, page_flags, mm_ctx->pt_root) != paging::OK) {
+            for (size_t j = 0; j < i; j++) {
+                paging::unmap_page(start + j * pmm::PAGE_SIZE, mm_ctx->pt_root);
+            }
+            sync::mutex_unlock(mm_ctx->lock);
+            return fs::ERR_IO;
+        }
+    }
+
+    // VMA_FLAG_SHARED prevents page freeing on unmap (ramfs owns the pages)
+    auto* node = heap::kalloc_new<mm::vma>();
+    if (!node) {
+        for (size_t i = 0; i < pages; i++) {
+            paging::unmap_page(start + i * pmm::PAGE_SIZE, mm_ctx->pt_root);
+        }
+        sync::mutex_unlock(mm_ctx->lock);
+        return fs::ERR_NOMEM;
+    }
+    node->start = start;
+    node->end = start + aligned_len;
+    node->prot = prot;
+    node->flags = mm::VMA_FLAG_SHARED;
+    node->addr_link = {};
+    node->backing_offset = 0;
+
+    if (!mm::vma_insert_locked(mm_ctx, node)) {
+        for (size_t i = 0; i < pages; i++) {
+            paging::unmap_page(start + i * pmm::PAGE_SIZE, mm_ctx->pt_root);
+        }
+        heap::kfree_delete(node);
+        sync::mutex_unlock(mm_ctx->lock);
+        return fs::ERR_NOMEM;
+    }
+
+    sync::mutex_unlock(mm_ctx->lock);
+    *out_addr = start;
+    return 0;
 }
 
 } // namespace ramfs

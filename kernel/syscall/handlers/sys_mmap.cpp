@@ -250,10 +250,18 @@ DEFINE_SYSCALL1(brk, addr) {
     return 0;
 }
 
-// No-op: madvise is a performance hint. Safe to ignore.
+// No-op: performance hints. Safe to ignore.
 DEFINE_SYSCALL3(madvise, addr, length, advice) {
     (void)addr;
     (void)length;
+    (void)advice;
+    return 0;
+}
+
+DEFINE_SYSCALL4(fadvise64, fd, offset, len, advice) {
+    (void)fd;
+    (void)offset;
+    (void)len;
     (void)advice;
     return 0;
 }

@@ -63,6 +63,7 @@ constexpr uint64_t BRK              = 214;
 constexpr uint64_t MUNMAP           = 215;
 constexpr uint64_t MMAP             = 222;
 constexpr uint64_t MPROTECT         = 226;
+constexpr uint64_t FADVISE64        = 223;
 constexpr uint64_t MADVISE          = 233;
 constexpr uint64_t GETRANDOM        = 278;
 constexpr uint64_t MEMFD_CREATE     = 279;

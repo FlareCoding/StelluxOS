@@ -53,6 +53,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
 #endif
     REGISTER_SYSCALL(linux_nr::BRK,             brk);
     REGISTER_SYSCALL(linux_nr::MADVISE,         madvise);
+    REGISTER_SYSCALL(linux_nr::FADVISE64,       fadvise64);
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
     REGISTER_SYSCALL(linux_nr::RT_SIGACTION,    rt_sigaction);
     REGISTER_SYSCALL(linux_nr::RT_SIGPROCMASK,  rt_sigprocmask);

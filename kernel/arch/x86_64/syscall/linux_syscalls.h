@@ -62,6 +62,7 @@ constexpr uint64_t GETEGID          = 108;
 constexpr uint64_t ARCH_PRCTL       = 158;
 constexpr uint64_t GETTID           = 186;
 constexpr uint64_t SCHED_GETAFFINITY = 204;
+constexpr uint64_t FADVISE64        = 221;
 constexpr uint64_t GETDENTS64       = 217;
 constexpr uint64_t SET_TID_ADDRESS  = 218;
 constexpr uint64_t CLOCK_GETTIME    = 228;

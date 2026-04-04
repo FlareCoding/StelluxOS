@@ -46,6 +46,9 @@ public:
     int64_t seek(fs::file* f, int64_t offset, int whence) override;
     int32_t getattr(fs::vattr* attr) override;
     int32_t truncate(size_t size) override;
+    int32_t mmap(fs::file* f, mm::mm_context* mm_ctx, uintptr_t addr,
+                 size_t length, uint32_t prot, uint32_t map_flags,
+                 uint64_t offset, uintptr_t* out_addr) override;
 
 private:
     int32_t ensure_capacity(uint32_t needed_pages);
