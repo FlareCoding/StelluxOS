@@ -40,3 +40,6 @@ Thumbs.db
 
 # DOOM WAD file (downloadable via 'make doom-wad')
 initrd/etc/res/doom/doom1.wad
+
+# GGUF model files (large, downloadable)
+initrd/etc/models/*.gguf
