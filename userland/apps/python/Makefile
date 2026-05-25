@@ -77,9 +77,14 @@ STELLUX_LIBS := \
 	-Wl,--end-group \
 	$(SYSROOT)/lib/crtn.o
 
+# Timestamp-files so make can use mtime-based incremental rebuilds.
+EXTRACT_STAMP   := $(SRC_DIR)/.stellux-extracted
+PATCH_STAMP     := $(SRC_DIR)/.stellux-patched
 CONFIGURE_STAMP := $(BUILD_DIR)/.configured
-BUILD_STAMP := $(BUILD_DIR)/.built
-PATCH_STAMP := $(SRC_DIR)/.stellux-patched
+BUILD_STAMP     := $(BUILD_DIR)/.built
+
+# The staged interpreter in the rootfs is the install "stamp"
+ROOTFS_PYTHON := $(ROOTFS_DIR)/usr/bin/python$(PY_MAJOR_MINOR)
 
 .PHONY: all fetch extract patch configure build install verify clean distclean print-vars
 
@@ -97,23 +102,27 @@ print-vars:
 	@echo "ROOTFS_DIR=$(ROOTFS_DIR)"
 	@echo "BUILTINS_LIB=$(BUILTINS_LIB)"
 
-fetch: $(DL_DIR)/$(PY_TARBALL)
+fetch:     $(DL_DIR)/$(PY_TARBALL)
+extract:   $(EXTRACT_STAMP)
+patch:     $(PATCH_STAMP)
+configure: $(CONFIGURE_STAMP)
+build:     $(BUILD_STAMP)
+install:   $(ROOTFS_PYTHON)
 
 $(DL_DIR)/$(PY_TARBALL):
 	@mkdir -p $(DL_DIR)
 	@echo "[FETCH] CPython $(PY_VER)"
 	@curl -L "$(PY_URL)" -o "$@"
 
-extract: fetch
+$(EXTRACT_STAMP): $(DL_DIR)/$(PY_TARBALL)
+	@mkdir -p $(SRC_ROOT)
 	@if [ ! -d "$(SRC_DIR)" ]; then \
-		mkdir -p $(SRC_ROOT); \
 		echo "[EXTRACT] $(PY_TARBALL)"; \
 		tar -C $(SRC_ROOT) -xf "$(DL_DIR)/$(PY_TARBALL)"; \
 	fi
+	@touch $@
 
-patch: extract $(PATCH_STAMP)
-
-$(PATCH_STAMP):
+$(PATCH_STAMP): | $(EXTRACT_STAMP)
 	@echo "[PATCH] CPython for Stellux"
 	@cd $(SRC_DIR) && for p in ../../patches/*.patch; do \
 		if [ -f "$$p" ]; then \
@@ -124,9 +133,7 @@ $(PATCH_STAMP):
 	@cp Modules.Setup.local $(SRC_DIR)/Modules/Setup.local
 	@touch $@
 
-configure: $(CONFIGURE_STAMP)
-
-$(CONFIGURE_STAMP): patch
+$(CONFIGURE_STAMP): $(PATCH_STAMP) config.site Modules.Setup.local
 	@mkdir -p $(BUILD_DIR)
 	@echo "[CONF] CPython $(PY_VER) ($(ARCH))"
 	@echo "  SYSROOT=$(SYSROOT)"
@@ -152,14 +159,12 @@ $(CONFIGURE_STAMP): patch
 	@cp Modules.Setup.local $(BUILD_DIR)/Modules/Setup.local
 	@touch $@
 
-build: $(BUILD_STAMP)
-
-$(BUILD_STAMP): configure
+$(BUILD_STAMP): $(CONFIGURE_STAMP)
 	@echo "[MAKE] CPython $(PY_VER) ($(ARCH))"
 	@$(MAKE) -C $(BUILD_DIR) LINKFORSHARED=""
 	@touch $@
 
-install: build
+$(ROOTFS_PYTHON): $(BUILD_STAMP)
 	@echo "[INSTALL] CPython $(PY_VER)"
 	@rm -rf $(INSTALL_DIR)
 
@@ -224,6 +229,10 @@ install: build
 	# Convenience command path.
 	@mkdir -p $(ROOTFS_DIR)/bin
 	@ln -sf /usr/bin/python$(PY_MAJOR_MINOR) $(ROOTFS_DIR)/bin/python3
+
+	# `cp -a` preserves source mtimes, which can be older than $(BUILD_STAMP).
+	# Bump $(ROOTFS_PYTHON) so make sees this stamp as up-to-date next run.
+	@touch $@
 
 	@echo "[OK] Staged Python $(PY_VER) rootfs overlay for Stellux"
 	@$(MAKE) --no-print-directory verify
