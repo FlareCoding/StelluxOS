@@ -113,6 +113,13 @@ __PRIVILEGED_CODE int32_t open(
         return (rc == HANDLE_ERR_NOSPC) ? ERR_TABLEFULL : ERR_IO;
     }
 
+    if (flags & fs::O_CLOEXEC) {
+        uint32_t handle_flags = 0;
+        get_handle_flags(&owner->handles, *out_handle, &handle_flags);
+        set_handle_flags(&owner->handles, *out_handle,
+                         handle_flags | RESOURCE_HANDLE_CLOEXEC);
+    }
+
     // Table now owns one reference.
     resource_release(obj);
     return OK;

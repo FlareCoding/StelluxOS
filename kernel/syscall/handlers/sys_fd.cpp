@@ -1184,7 +1184,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
-        return FD_CLOEXEC;
+        return (flags & resource::RESOURCE_HANDLE_CLOEXEC) ? FD_CLOEXEC : 0;
     }
 
     if (cmd == F_SETFD) {
@@ -1194,7 +1194,18 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
-        (void)arg;
+
+        flags &= ~resource::RESOURCE_HANDLE_CLOEXEC;
+        if (arg & FD_CLOEXEC) {
+            flags |= resource::RESOURCE_HANDLE_CLOEXEC;
+        }
+        
+        rc = resource::set_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), flags);
+        
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
         return 0;
     }
 
@@ -1202,16 +1213,27 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         uint32_t flags = 0;
         int32_t rc = resource::get_handle_flags(
             &task->handles, static_cast<resource::handle_t>(fd), &flags);
+        
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
-        return static_cast<int64_t>(flags);
+        
+        return static_cast<int64_t>(flags & ~resource::RESOURCE_HANDLE_CLOEXEC);
     }
 
     if (cmd == F_SETFL) {
-        uint32_t flags = static_cast<uint32_t>(arg) & SETFL_MASK;
-        int32_t rc = resource::set_handle_flags(
+        uint32_t flags = 0;
+        int32_t rc = resource::get_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+        
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+        
+        flags = (flags & ~SETFL_MASK) | (static_cast<uint32_t>(arg) & SETFL_MASK);
+        rc = resource::set_handle_flags(
             &task->handles, static_cast<resource::handle_t>(fd), flags);
+        
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }

@@ -10,6 +10,9 @@ struct resource_object;
 
 constexpr uint32_t MAX_TASK_HANDLES = 128;
 
+// Private high bit in handle_entry::flags reserved for FD_CLOEXEC state
+constexpr uint32_t RESOURCE_HANDLE_CLOEXEC = 0x80000000;
+
 struct handle_entry {
     bool used;
     uint16_t generation;
