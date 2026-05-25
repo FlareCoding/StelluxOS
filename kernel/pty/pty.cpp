@@ -3,11 +3,39 @@
 #include "common/ring_buffer.h"
 #include "fs/fstypes.h"
 #include "mm/heap.h"
+#include "mm/uaccess.h"
 #include "dynpriv/dynpriv.h"
 #include "sync/poll.h"
 #include "sync/wait_queue.h"
+#include "terminal/terminal.h"
 
 namespace pty {
+
+constexpr uint32_t TCGETS      = 0x5401;
+constexpr uint32_t TCSETS      = 0x5402;
+constexpr uint32_t TCSETSW     = 0x5403;
+constexpr uint32_t TCSETSF     = 0x5404;
+constexpr uint32_t TIOCGWINSZ  = 0x5413;
+constexpr uint32_t TIOCSWINSZ  = 0x5414;
+
+constexpr uint32_t LINUX_ECHO   = 0x0008;
+constexpr uint32_t LINUX_ICANON = 0x0002;
+
+struct linux_termios {
+    uint32_t c_iflag;
+    uint32_t c_oflag;
+    uint32_t c_cflag;
+    uint32_t c_lflag;
+    uint8_t  c_line;
+    uint8_t  c_cc[19];
+};
+
+struct linux_winsize {
+    uint16_t ws_row;
+    uint16_t ws_col;
+    uint16_t ws_xpixel;
+    uint16_t ws_ypixel;
+};
 
 __PRIVILEGED_BSS static uint32_t g_next_pty_id;
 
@@ -179,15 +207,66 @@ static void pty_slave_close(resource::resource_object* obj) {
     obj->impl = nullptr;
 }
 
+static int32_t do_tcgets(pty_channel* chan, uint64_t arg) {
+    linux_termios t = {};
+
+    if (chan->m_ld.mode != terminal::LD_MODE_RAW) {
+        t.c_lflag = LINUX_ICANON | LINUX_ECHO;
+    }
+
+    int32_t rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(arg), &t, sizeof(t));
+
+    return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+}
+
+static int32_t do_tcsets(pty_channel* chan, uint64_t arg) {
+    linux_termios t = {};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &t, reinterpret_cast<const void*>(arg), sizeof(t));
+    
+    if (rc != mm::uaccess::OK) {
+        return resource::ERR_INVAL;
+    }
+
+    uint32_t mode = (t.c_lflag & LINUX_ICANON)
+        ? terminal::STLX_TCSETS_COOKED
+        : terminal::STLX_TCSETS_RAW;
+
+    terminal::ld_set_mode(&chan->m_ld, mode);
+    return resource::OK;
+}
+
+static int32_t do_tiocgwinsz(uint64_t arg) {
+    linux_winsize w = { 24, 80, 0, 0 };
+    int32_t rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(arg), &w, sizeof(w));
+
+    return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+}
+
+static int32_t pty_termios_ioctl(pty_channel* chan, uint32_t cmd, uint64_t arg) {
+    switch (cmd) {
+        case TCGETS:                       return do_tcgets(chan, arg);
+        case TCSETS:
+        case TCSETSW:
+        case TCSETSF:                      return do_tcsets(chan, arg);
+        case TIOCGWINSZ:                   return do_tiocgwinsz(arg);
+        case TIOCSWINSZ:                   return resource::OK;
+        case terminal::STLX_TCSETS_RAW:
+        case terminal::STLX_TCSETS_COOKED: return terminal::ld_set_mode(&chan->m_ld, cmd);
+        default:                           return resource::ERR_INVAL;
+    }
+}
+
 static int32_t pty_slave_ioctl(
     resource::resource_object* obj, uint32_t cmd, uint64_t arg
 ) {
-    (void)arg;
     if (!obj || !obj->impl) {
         return resource::ERR_INVAL;
     }
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
-    return terminal::ld_set_mode(&ep->channel->m_ld, cmd);
+    return pty_termios_ioctl(ep->channel.ptr(), cmd, arg);
 }
 
 static uint32_t pty_master_poll(
