@@ -29,7 +29,23 @@ ROOTFS_DIR := $(USERLAND_ROOT)/build/$(ARCH)/rootfs
 CC := clang
 HOST_PYTHON := python3
 
-BUILTINS_LIB := $(shell $(CC) --target=$(TARGET_TRIPLE) --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null)
+# Runtime builtins discovery: prefer the sysroot-bundled compiler-rt (built by
+# 'make compiler-rt' at repo root), then the host's system compiler-rt, then
+# the target GCC libgcc archive. Mirrors userland/mk/toolchain.mk so that
+# every userland app sees the same builtins.
+SYSROOT_BUILTINS     := $(SYSROOT)/lib/libclang_rt.builtins-$(ARCH).a
+COMPILER_RT_BUILTINS := $(shell $(CC) --target=$(TARGET_TRIPLE) --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null)
+GCC_BUILTINS         := $(shell $(ARCH)-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null)
+
+ifneq ($(wildcard $(SYSROOT_BUILTINS)),)
+  BUILTINS_LIB := $(SYSROOT_BUILTINS)
+else ifneq ($(wildcard $(COMPILER_RT_BUILTINS)),)
+  BUILTINS_LIB := $(COMPILER_RT_BUILTINS)
+else ifneq ($(wildcard $(GCC_BUILTINS)),)
+  BUILTINS_LIB := $(GCC_BUILTINS)
+else
+  $(error Missing runtime builtins for ARCH=$(ARCH). Run 'make compiler-rt' or install dependencies with 'make deps')
+endif
 
 COMMON_CFLAGS := \
 	--target=$(TARGET_TRIPLE) \

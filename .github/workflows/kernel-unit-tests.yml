@@ -109,6 +109,19 @@ jobs:
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
         run: make libcxx
 
+      - name: Cache compiler-rt builtins
+        uses: actions/cache@v4
+        id: compiler-rt-cache
+        with:
+          path: |
+            userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
+            userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
+          key: compiler-rt-builtins-18.1.8
+
+      - name: Build compiler-rt builtins
+        if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
+        run: make compiler-rt
+
       - name: Build kernel
         run: |
           make kernel ARCH=${{ matrix.arch }} \
@@ -190,6 +203,19 @@ jobs:
       - name: Build libc++
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
         run: make libcxx
+
+      - name: Cache compiler-rt builtins
+        uses: actions/cache@v4
+        id: compiler-rt-cache
+        with:
+          path: |
+            userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
+            userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
+          key: compiler-rt-builtins-18.1.8
+
+      - name: Build compiler-rt builtins
+        if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
+        run: make compiler-rt
 
       - name: Run unit tests
         run: make test ARCH=${{ matrix.arch }} 2>&1 | tee test-log-${{ matrix.arch }}.txt
