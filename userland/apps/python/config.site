@@ -1,0 +1,34 @@
+# Stellux CPython configure cache
+
+# No dynamic loading or dynamic extension support
+ac_cv_func_dlopen=no
+ac_cv_lib_dl_dlopen=no
+ac_cv_header_dlfcn_h=no
+ac_cv_func_shl_load=no
+ac_cv_header_dl_h=no
+
+# No external compression/database/crypto libs initially
+ac_cv_header_zlib_h=no
+ac_cv_lib_z_compress=no
+ac_cv_header_lzma_h=no
+ac_cv_lib_lzma_lzma_code=no
+ac_cv_header_bzlib_h=no
+ac_cv_lib_bz2_BZ2_bzCompress=no
+ac_cv_header_zstd_h=no
+ac_cv_lib_zstd_ZSTD_versionNumber=no
+ac_cv_header_sqlite3_h=no
+ac_cv_lib_sqlite3_sqlite3_open=no
+ac_cv_header_openssl_ssl_h=no
+ac_cv_lib_ssl_SSL_new=no
+ac_cv_lib_crypto_EVP_MD_fetch=no
+ac_cv_header_ffi_h=no
+ac_cv_lib_ffi_ffi_call=no
+
+# Avoid readline/curses
+ac_cv_header_readline_readline_h=no
+ac_cv_lib_readline_readline=no
+ac_cv_header_curses_h=no
+ac_cv_lib_curses_initscr=no
+
+# Stellux quirk: avoid CPython's runtime getaddrinfo IPv6 probe during cross/custom builds
+ac_cv_buggy_getaddrinfo=no

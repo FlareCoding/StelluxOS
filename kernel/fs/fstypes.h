@@ -26,6 +26,7 @@ constexpr uint32_t O_EXCL   = 0x80;
 constexpr uint32_t O_TRUNC  = 0x200;
 constexpr uint32_t O_APPEND   = 0x400;
 constexpr uint32_t O_NONBLOCK = 0x800;
+constexpr uint32_t O_CLOEXEC  = 0x80000;
 
 constexpr uint32_t ACCESS_MODE_MASK = 0x3;
 

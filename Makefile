@@ -648,6 +648,80 @@ libcxx:
 	@echo ""
 	@echo "libc++ $(LLVM_VERSION) ready for both architectures."
 
+# Build the compiler-rt builtins runtime for both supported architectures and
+# install it into the per-arch sysroot as a flat archive
+# (libclang_rt.builtins-<arch>.a alongside libc.a, libstlx.a, etc.). This frees
+# downstream apps (notably the static CPython link) from depending on the host
+# toolchain shipping cross-arch builtins, which Ubuntu's libclang-rt-dev does
+# not provide for aarch64.
+compiler-rt:
+	@echo "Building compiler-rt builtins $(LLVM_VERSION) for x86_64 and aarch64..."
+	@test -f userland/sysroot/x86_64/lib/libc.a || \
+		(echo "ERROR: musl sysroot not found. Run 'make musl' first." && exit 1)
+	@test -f userland/sysroot/aarch64/lib/libc.a || \
+		(echo "ERROR: musl sysroot not found. Run 'make musl' first." && exit 1)
+	@mkdir -p userland
+	@test -f $(LLVM_TARBALL) || \
+		(echo "Downloading LLVM $(LLVM_VERSION) source (~130MB)..." && \
+		 curl -L -o $(LLVM_TARBALL) $(LLVM_URL))
+	@test -d $(LLVM_DIR) || \
+		(echo "Extracting..." && \
+		 cd userland && tar xf llvm-project-$(LLVM_VERSION).src.tar.xz)
+	@echo ""
+	@echo "Building compiler-rt builtins for x86_64..."
+	@mkdir -p $(LLVM_DIR)/build-compiler-rt-x86_64
+	cd $(LLVM_DIR)/build-compiler-rt-x86_64 && cmake -G "Unix Makefiles" ../compiler-rt \
+		-DCMAKE_C_COMPILER=clang \
+		-DCMAKE_ASM_COMPILER=clang \
+		-DCMAKE_C_COMPILER_TARGET=x86_64-linux-musl \
+		-DCMAKE_ASM_COMPILER_TARGET=x86_64-linux-musl \
+		-DCMAKE_SYSROOT=$(abspath userland/sysroot/x86_64) \
+		-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+		-DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
+		-DCOMPILER_RT_BUILD_BUILTINS=ON \
+		-DCOMPILER_RT_BUILD_SANITIZERS=OFF \
+		-DCOMPILER_RT_BUILD_XRAY=OFF \
+		-DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
+		-DCOMPILER_RT_BUILD_PROFILE=OFF \
+		-DCOMPILER_RT_BUILD_MEMPROF=OFF \
+		-DCOMPILER_RT_BUILD_ORC=OFF \
+		-DCOMPILER_RT_INCLUDE_TESTS=OFF \
+		'-DCMAKE_C_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64) -nostdlibinc -isystem $(abspath userland/sysroot/x86_64)/include' \
+		'-DCMAKE_ASM_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64) -nostdlibinc -isystem $(abspath userland/sysroot/x86_64)/include' \
+		> /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-compiler-rt-x86_64 -j$$(nproc) builtins > /dev/null
+	@cp "$$(find $(LLVM_DIR)/build-compiler-rt-x86_64 -name 'libclang_rt.builtins*.a' -print -quit)" \
+		userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
+	@echo "compiler-rt builtins x86_64 installed to userland/sysroot/x86_64/lib/"
+	@echo ""
+	@echo "Building compiler-rt builtins for aarch64..."
+	@mkdir -p $(LLVM_DIR)/build-compiler-rt-aarch64
+	cd $(LLVM_DIR)/build-compiler-rt-aarch64 && cmake -G "Unix Makefiles" ../compiler-rt \
+		-DCMAKE_C_COMPILER=clang \
+		-DCMAKE_ASM_COMPILER=clang \
+		-DCMAKE_C_COMPILER_TARGET=aarch64-linux-musl \
+		-DCMAKE_ASM_COMPILER_TARGET=aarch64-linux-musl \
+		-DCMAKE_SYSROOT=$(abspath userland/sysroot/aarch64) \
+		-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+		-DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON \
+		-DCOMPILER_RT_BUILD_BUILTINS=ON \
+		-DCOMPILER_RT_BUILD_SANITIZERS=OFF \
+		-DCOMPILER_RT_BUILD_XRAY=OFF \
+		-DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
+		-DCOMPILER_RT_BUILD_PROFILE=OFF \
+		-DCOMPILER_RT_BUILD_MEMPROF=OFF \
+		-DCOMPILER_RT_BUILD_ORC=OFF \
+		-DCOMPILER_RT_INCLUDE_TESTS=OFF \
+		'-DCMAKE_C_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include' \
+		'-DCMAKE_ASM_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include' \
+		> /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-compiler-rt-aarch64 -j$$(nproc) builtins > /dev/null
+	@cp "$$(find $(LLVM_DIR)/build-compiler-rt-aarch64 -name 'libclang_rt.builtins*.a' -print -quit)" \
+		userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
+	@echo "compiler-rt builtins aarch64 installed to userland/sysroot/aarch64/lib/"
+	@echo ""
+	@echo "compiler-rt builtins $(LLVM_VERSION) ready for both architectures."
+
 limine:
 	@echo "Downloading Limine ($(LIMINE_BRANCH))..."
 	@mkdir -p $(BOOT_DIR)
@@ -728,24 +802,34 @@ toolchain-check:
 	@printf "%-24s" "libc++ (aarch64):" && \
 		(test -f userland/sysroot/aarch64/lib/libc++.a && echo "OK" || echo "NOT FOUND - run 'make libcxx'")
 	@printf "%-24s" "builtins (x86_64):" && \
-		(BRT=$$(clang --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
-		 if [ -f "$$BRT" ]; then \
-			echo "$$BRT"; \
-		 elif which x86_64-linux-gnu-gcc > /dev/null 2>&1; then \
-			BGCC=$$(x86_64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
-			[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND"; \
+		(SR=userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a; \
+		 if [ -f "$$SR" ]; then \
+			echo "$$SR"; \
 		 else \
-			echo "NOT FOUND"; \
+			BRT=$$(clang --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+			if [ -f "$$BRT" ]; then \
+				echo "$$BRT"; \
+			elif which x86_64-linux-gnu-gcc > /dev/null 2>&1; then \
+				BGCC=$$(x86_64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
+				[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND - run 'make compiler-rt'"; \
+			else \
+				echo "NOT FOUND - run 'make compiler-rt'"; \
+			fi; \
 		 fi)
 	@printf "%-24s" "builtins (aarch64):" && \
-		(BRT=$$(clang --target=aarch64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
-		 if [ -f "$$BRT" ]; then \
-			echo "$$BRT"; \
-		 elif which aarch64-linux-gnu-gcc > /dev/null 2>&1; then \
-			BGCC=$$(aarch64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
-			[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND"; \
+		(SR=userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a; \
+		 if [ -f "$$SR" ]; then \
+			echo "$$SR"; \
 		 else \
-			echo "NOT FOUND"; \
+			BRT=$$(clang --target=aarch64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+			if [ -f "$$BRT" ]; then \
+				echo "$$BRT"; \
+			elif which aarch64-linux-gnu-gcc > /dev/null 2>&1; then \
+				BGCC=$$(aarch64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
+				[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND - run 'make compiler-rt'"; \
+			else \
+				echo "NOT FOUND - run 'make compiler-rt'"; \
+			fi; \
 		 fi)
 	@echo ""
 	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', 'make libcxx', and/or 'make rpi4-firmware'"
@@ -762,6 +846,7 @@ help:
 	@echo "  make limine                  Download Limine bootloader"
 	@echo "  make musl                    Build musl libc for both architectures"
 	@echo "  make libcxx                  Build libc++ for C++ userland support"
+	@echo "  make compiler-rt             Build compiler-rt builtins (required for cross-arch static linking)"
 	@echo "  make rpi4-firmware           Download RPi4 UEFI firmware"
 	@echo "  make doom-wad                Download DOOM1.WAD shareware"
 	@echo "  make toolchain-check         Verify tools are installed"
@@ -796,6 +881,7 @@ help:
 	@echo "  2. make limine"
 	@echo "  3. make musl"
 	@echo "  4. make libcxx"
+	@echo "  5. make compiler-rt"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make kernel ARCH=x86_64"

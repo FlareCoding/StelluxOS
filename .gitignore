@@ -32,6 +32,7 @@ userland/musl-*
 userland/llvm-project-*
 userland/build/
 initrd/bin/*
+initrd/usr/
 !initrd/bin/.gitkeep
 
 # OS files

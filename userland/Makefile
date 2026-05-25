@@ -30,6 +30,8 @@ endif
 # Output directories
 BIN_DIR   := $(USERLAND_ROOT)/build/$(ARCH)/bin
 INITRD_BIN := $(USERLAND_ROOT)/../initrd/bin
+ROOTFS_DIR := $(USERLAND_ROOT)/build/$(ARCH)/rootfs
+INITRD_ROOT := $(USERLAND_ROOT)/../initrd
 
 # Verbosity
 ifeq ($(V),1)
@@ -59,23 +61,35 @@ endif
 install-summary: build
 	@mkdir -p $(INITRD_BIN)
 ifeq ($(V),1)
-	@echo "Installing userland binaries to initrd..."
+	@echo "Installing userland binaries/rootfs to initrd..."
 	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
 		cp $(BIN_DIR)/* $(INITRD_BIN)/; \
-		echo "Installed: $$(ls $(BIN_DIR)/)"; \
+		echo "Installed binaries: $$(ls $(BIN_DIR)/)"; \
 	else \
 		echo "No binaries to install"; \
+	fi
+	@if [ -d "$(ROOTFS_DIR)" ] && [ -n "$$(ls -A $(ROOTFS_DIR) 2>/dev/null)" ]; then \
+		cp -a $(ROOTFS_DIR)/. $(INITRD_ROOT)/; \
+		echo "Installed rootfs overlay from $(ROOTFS_DIR)"; \
+	else \
+		echo "No rootfs overlay to install"; \
 	fi
 else
 	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
 		cp $(BIN_DIR)/* $(INITRD_BIN)/; \
 		bincount=$$(ls -1 $(BIN_DIR)/ | wc -l); \
-		libcount=$$(ls -1 $(SYSROOT)/lib/libstlx.a 2>/dev/null | wc -l); \
-		if [ $$libcount -eq 1 ]; then libword="library"; else libword="libraries"; fi; \
-		printf "  $$libcount $$libword, $$bincount binaries installed to initrd/bin/\n"; \
 	else \
-		echo "  No binaries to install"; \
-	fi
+		bincount=0; \
+	fi; \
+	if [ -d "$(ROOTFS_DIR)" ] && [ -n "$$(ls -A $(ROOTFS_DIR) 2>/dev/null)" ]; then \
+		cp -a $(ROOTFS_DIR)/. $(INITRD_ROOT)/; \
+		rootfsword=", rootfs overlay installed"; \
+	else \
+		rootfsword=""; \
+	fi; \
+	libcount=$$(ls -1 $(SYSROOT)/lib/libstlx.a 2>/dev/null | wc -l); \
+	if [ $$libcount -eq 1 ]; then libword="library"; else libword="libraries"; fi; \
+	printf "  $$libcount $$libword, $$bincount binaries installed to initrd/bin/$$rootfsword\n"
 endif
 
 clean:

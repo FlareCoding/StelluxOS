@@ -1161,8 +1161,13 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
 }
 
 namespace {
+constexpr uint64_t F_GETFD = 1;
+constexpr uint64_t F_SETFD = 2;
 constexpr uint64_t F_GETFL = 3;
 constexpr uint64_t F_SETFL = 4;
+
+constexpr int64_t FD_CLOEXEC = 1;
+
 constexpr uint32_t SETFL_MASK = fs::O_NONBLOCK | fs::O_APPEND;
 } // anonymous namespace
 
@@ -1172,20 +1177,63 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         return syscall::EIO;
     }
 
-    if (cmd == F_GETFL) {
+    if (cmd == F_GETFD) {
         uint32_t flags = 0;
         int32_t rc = resource::get_handle_flags(
             &task->handles, static_cast<resource::handle_t>(fd), &flags);
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
-        return static_cast<int64_t>(flags);
+        return (flags & resource::RESOURCE_HANDLE_CLOEXEC) ? FD_CLOEXEC : 0;
+    }
+
+    if (cmd == F_SETFD) {
+        uint32_t flags = 0;
+        int32_t rc = resource::get_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+
+        flags &= ~resource::RESOURCE_HANDLE_CLOEXEC;
+        if (arg & FD_CLOEXEC) {
+            flags |= resource::RESOURCE_HANDLE_CLOEXEC;
+        }
+        
+        rc = resource::set_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), flags);
+        
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+        return 0;
+    }
+
+    if (cmd == F_GETFL) {
+        uint32_t flags = 0;
+        int32_t rc = resource::get_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+        
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+        
+        return static_cast<int64_t>(flags & ~resource::RESOURCE_HANDLE_CLOEXEC);
     }
 
     if (cmd == F_SETFL) {
-        uint32_t flags = static_cast<uint32_t>(arg) & SETFL_MASK;
-        int32_t rc = resource::set_handle_flags(
+        uint32_t flags = 0;
+        int32_t rc = resource::get_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+        
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+        
+        flags = (flags & ~SETFL_MASK) | (static_cast<uint32_t>(arg) & SETFL_MASK);
+        rc = resource::set_handle_flags(
             &task->handles, static_cast<resource::handle_t>(fd), flags);
+        
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
