@@ -1,0 +1,84 @@
+*static*
+
+array arraymodule.c
+_bisect _bisectmodule.c
+_csv _csv.c
+_heapq _heapqmodule.c
+_json _json.c
+_random _randommodule.c
+_struct _struct.c
+math mathmodule.c
+cmath cmathmodule.c
+fcntl fcntlmodule.c
+grp grpmodule.c
+mmap mmapmodule.c
+pwd pwdmodule.c
+resource resource.c
+select selectmodule.c
+_socket socketmodule.c
+termios termios.c
+unicodedata unicodedata.c
+
+*disabled*
+
+_asyncio
+_contextvars
+_codecs_cn
+_codecs_hk
+_codecs_iso2022
+_codecs_jp
+_codecs_kr
+_codecs_tw
+_crypt
+_datetime
+_decimal
+_elementtree
+_lsprof
+_md5
+_multiprocessing
+_opcode
+_posixshmem
+_posixsubprocess
+_queue
+_sha1
+_sha2
+_sha3
+_statistics
+_xxinterpchannels
+_xxsubinterpreters
+_zoneinfo
+audioop
+binascii
+ossaudiodev
+pyexpat
+spwd
+syslog
+
+_bz2
+_ctypes
+_ctypes_test
+_curses
+_curses_panel
+_dbm
+_gdbm
+_hashlib
+_lzma
+_ssl
+_sqlite3
+_tkinter
+_uuid
+nis
+readline
+xxlimited
+xxlimited_35
+
+_testbuffer
+_testcapi
+_testclinic
+_testimportmultiple
+_testinternalcapi
+_testmultiphase
+_xxtestfuzz
+xxsubtype
+zlib
+
