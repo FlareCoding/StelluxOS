@@ -5,7 +5,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 
-#define STLX_TCSETS_RAW 0x5401
+#define STLX_TCSETS_RAW 0x7301
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);

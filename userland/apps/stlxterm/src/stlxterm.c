@@ -14,7 +14,7 @@
 #include "keymap.h"
 #include "term.h"
 
-#define STLX_TCSETS_RAW       0x5401
+#define STLX_TCSETS_RAW       0x7301
 
 #define STLXTERM_WIDTH        800
 #define STLXTERM_HEIGHT       600

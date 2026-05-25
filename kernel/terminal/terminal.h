@@ -11,8 +11,10 @@ namespace terminal {
 constexpr int32_t OK  = 0;
 constexpr int32_t ERR = -1;
 
-constexpr uint32_t STLX_TCSETS_RAW    = 0x5401;
-constexpr uint32_t STLX_TCSETS_COOKED = 0x5402;
+// Stellux-internal line-discipline mode-switch ioctls.
+// Encoded as _IO('s', N) so they do not collide with Linux's tty ioctl
+constexpr uint32_t STLX_TCSETS_RAW    = 0x7301;
+constexpr uint32_t STLX_TCSETS_COOKED = 0x7302;
 
 /**
  * @brief Initialize the global console terminal. Creates the input ring

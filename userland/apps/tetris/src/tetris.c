@@ -7,8 +7,8 @@
 #include <time.h>
 #include <sys/ioctl.h>
 
-#define STLX_TCSETS_RAW    0x5401
-#define STLX_TCSETS_COOKED 0x5402
+#define STLX_TCSETS_RAW    0x7301
+#define STLX_TCSETS_COOKED 0x7302
 
 #define BW 10
 #define BH 20

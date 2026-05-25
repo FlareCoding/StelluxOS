@@ -11,8 +11,8 @@
 #include "parse.h"
 #include "builtins.h"
 
-#define STLX_TCSETS_RAW    0x5401
-#define STLX_TCSETS_COOKED 0x5402
+#define STLX_TCSETS_RAW    0x7301
+#define STLX_TCSETS_COOKED 0x7302
 
 static void shell_err(const char* s) {
     write(1, s, strlen(s));
