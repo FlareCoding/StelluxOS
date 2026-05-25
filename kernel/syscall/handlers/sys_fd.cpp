@@ -1161,8 +1161,13 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
 }
 
 namespace {
+constexpr uint64_t F_GETFD = 1;
+constexpr uint64_t F_SETFD = 2;
 constexpr uint64_t F_GETFL = 3;
 constexpr uint64_t F_SETFL = 4;
+
+constexpr int64_t FD_CLOEXEC = 1;
+
 constexpr uint32_t SETFL_MASK = fs::O_NONBLOCK | fs::O_APPEND;
 } // anonymous namespace
 
@@ -1170,6 +1175,27 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     sched::task* task = sched::current();
     if (!task) {
         return syscall::EIO;
+    }
+
+    if (cmd == F_GETFD) {
+        uint32_t flags = 0;
+        int32_t rc = resource::get_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+        return FD_CLOEXEC;
+    }
+
+    if (cmd == F_SETFD) {
+        uint32_t flags = 0;
+        int32_t rc = resource::get_handle_flags(
+            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+        if (rc != resource::HANDLE_OK) {
+            return syscall::EBADF;
+        }
+        (void)arg;
+        return 0;
     }
 
     if (cmd == F_GETFL) {
