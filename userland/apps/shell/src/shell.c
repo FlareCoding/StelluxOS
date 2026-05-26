@@ -18,6 +18,26 @@ static void shell_err(const char* s) {
     write(1, s, strlen(s));
 }
 
+static int reap_status(int status) {
+    if (STLX_WIFEXITED(status)) return STLX_WEXITSTATUS(status);
+    if (STLX_WIFSIGNALED(status)) {
+        int sig = STLX_WTERMSIG(status);
+        const char* name;
+        switch (sig) {
+            case 4:  name = "Illegal instruction";       break;
+            case 7:  name = "Bus error";                 break;
+            case 8:  name = "Floating point exception"; break;
+            case 9:  name = "Killed";                    break;
+            case 11: name = "Segmentation fault";        break;
+            default: name = "Terminated by signal";      break;
+        }
+        shell_err(name);
+        shell_err("\r\n");
+        return 128 + sig;
+    }
+    return status;
+}
+
 static const char* resolve_cmd(const char* name, char* path_buf, int buf_size) {
     if (strchr(name, '/')) return name;
     int n = snprintf(path_buf, buf_size, "/bin/%s", name);
@@ -105,23 +125,7 @@ static int run_single(const char* argv[], char* path_buf,
     proc_wait(handle, &status);
     ioctl(0, STLX_TCSETS_RAW, 0);
 
-    if (STLX_WIFEXITED(status)) return STLX_WEXITSTATUS(status);
-    if (STLX_WIFSIGNALED(status)) {
-        int sig = STLX_WTERMSIG(status);
-        const char* name;
-        switch (sig) {
-            case 4:  name = "Illegal instruction";    break;
-            case 7:  name = "Bus error";              break;
-            case 8:  name = "Floating point exception"; break;
-            case 9:  name = "Killed";                 break;
-            case 11: name = "Segmentation fault";     break;
-            default: name = "Terminated by signal";   break;
-        }
-        shell_err(name);
-        shell_err("\r\n");
-        return 128 + sig;
-    }
-    return status;
+    return reap_status(status);
 }
 
 static int run_pipeline(char* stages[], int nstages, char* path_buf) {
@@ -227,9 +231,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
     proc_wait(handles[nstages - 1], &status);
     ioctl(0, STLX_TCSETS_RAW, 0);
 
-    if (STLX_WIFEXITED(status)) return STLX_WEXITSTATUS(status);
-    if (STLX_WIFSIGNALED(status)) return 128 + STLX_WTERMSIG(status);
-    return status;
+    return reap_status(status);
 }
 
 int main(void) {
