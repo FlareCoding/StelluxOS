@@ -2,6 +2,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sched/task_registry.h"
+#include "mm/mm.h"
 #include "mm/vma.h"
 #include "mm/vmm.h"
 #include "mm/heap.h"

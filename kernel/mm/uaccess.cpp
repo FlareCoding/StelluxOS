@@ -1,6 +1,7 @@
 #include "mm/uaccess.h"
 #include "mm/pmm.h"
 #include "mm/vma.h"
+#include "mm/mm.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sync/mutex.h"
@@ -64,6 +65,22 @@ __PRIVILEGED_CODE int32_t validate_user_range(
     }
 
     sync::mutex_unlock(mm_ctx->lock);
+
+    // Pre-fault any lazy pages in the validated range so that the kernel-mode
+    // memcpy in copy_from_user/copy_to_user doesn't fault on a not-present PTE.
+    uintptr_t end_page = end & ~(pmm::PAGE_SIZE - 1);
+    for (uintptr_t page = start & ~(pmm::PAGE_SIZE - 1);
+         page <= end_page;
+         page += pmm::PAGE_SIZE) {
+        if (paging::get_physical(page, mm_ctx->pt_root) != 0) {
+            continue;
+        }
+
+        if (!handle_user_pf(mm_ctx, page, 0)) {
+            return ERR_FAULT;
+        }
+    }
+
     return OK;
 }
 

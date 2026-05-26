@@ -1,6 +1,7 @@
 #define STLX_TEST_TIER TIER_MM_CORE
 
 #include "stlx_unit_test.h"
+#include "mm/mm.h"
 #include "mm/vma.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"

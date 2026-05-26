@@ -13,6 +13,7 @@
 #include "timer/timer.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "mm/mm.h"
 
 // Forward declaration of syscall dispatch
 extern "C" void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf);
@@ -77,6 +78,35 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
         stlx_aarch64_syscall_dispatch(tf);
         restore_post_trap_elevation_state();
         return;
+    }
+
+    // If it's a page fault, attempt to handle it for on-demand paging
+    if (in_user_code && (
+        ec == aarch64::EC_DATA_ABORT_LOWER ||
+        ec == aarch64::EC_INST_ABORT_LOWER)
+    ) {
+        uintptr_t fault_addr = aarch64::get_far(tf);
+        uint32_t pf_flags = 0;
+
+        // DFSC[5:0] is in ESR.ISS bits [5:0] for data/instruction aborts.
+        uint32_t dfsc = esr & 0x3F;
+        uint32_t fault_class = dfsc >> 2; // top 4 bits identify the class
+        if (fault_class == 0b0011) pf_flags |= mm::PF_FLAG_PRESENT; // permission fault
+
+        // ESR.ISS bit 6 = WnR (Write not Read) for data aborts.
+        if (ec == aarch64::EC_DATA_ABORT_LOWER && (esr & (1u << 6))) {
+            pf_flags |= mm::PF_FLAG_WRITE;
+        }
+
+        if (ec == aarch64::EC_INST_ABORT_LOWER) {
+            pf_flags |= mm::PF_FLAG_INSTRUCTION;
+        }
+
+        if (mm::handle_user_pf(guard.task_core->mm_ctx, fault_addr, pf_flags)) {
+            // Fault has been handled successfully, restart instruction
+            restore_post_trap_elevation_state();
+            return;
+        }
     }
 
     if (in_user_code && (

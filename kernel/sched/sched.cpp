@@ -10,6 +10,7 @@
 #include "mm/heap.h"
 #include "mm/vmm.h"
 #include "mm/kva.h"
+#include "mm/mm.h"
 #include "mm/paging.h"
 #include "common/logging.h"
 #include "sync/spinlock.h"
@@ -666,20 +667,52 @@ __PRIVILEGED_CODE task* create_user_task(
         return nullptr;
     }
 
-    uintptr_t user_stack_base = mm::USER_STACK_TOP - mm::USER_STACK_PAGES * pmm::PAGE_SIZE;
-    uintptr_t mapped_stack_addr = 0;
-    uint32_t stack_map_flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS |
+    // Stack region layout: a single coalesced MM_MAP_STACK vma spanning
+    // USER_STACK_MAX_PAGES at the top of user VA. The bottom portion is
+    // reserved lazily (no eager pages) so userland faults grow it on demand.
+    // The top USER_STACK_PAGES window is eagerly mapped so the kernel can
+    // write argv/envp into it (+ performance) before the user task ever runs.
+    uintptr_t stack_max_base = mm::USER_STACK_TOP - mm::USER_STACK_MAX_PAGES * pmm::PAGE_SIZE;
+    uintptr_t eager_base     = mm::USER_STACK_TOP - mm::USER_STACK_PAGES     * pmm::PAGE_SIZE;
+    size_t    lazy_bytes     = (mm::USER_STACK_MAX_PAGES - mm::USER_STACK_PAGES) * pmm::PAGE_SIZE;
+    size_t    eager_bytes    = mm::USER_STACK_PAGES     * pmm::PAGE_SIZE;
+    size_t    total_bytes    = mm::USER_STACK_MAX_PAGES * pmm::PAGE_SIZE;
+
+    uint32_t base_stack_flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS |
         mm::MM_MAP_FIXED | mm::MM_MAP_STACK;
-    int32_t map_rc = mm::mm_context_map_anonymous(
+
+    // Reserve the lower (lazy) portion of the stack VMA - no eager pages.
+    uintptr_t reserved_addr = 0;
+    int32_t lazy_rc = mm::mm_context_map_anonymous(
         mm_ctx,
-        user_stack_base,
-        mm::USER_STACK_PAGES * pmm::PAGE_SIZE,
+        stack_max_base,
+        lazy_bytes,
         mm::MM_PROT_READ | mm::MM_PROT_WRITE,
-        stack_map_flags,
+        base_stack_flags | mm::MM_MAP_LAZY,
+        &reserved_addr
+    );
+    if (lazy_rc != mm::MM_CTX_OK) {
+        log::error("sched: failed to reserve user stack VMA (rc=%d)", lazy_rc);
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
+
+    // Eagerly map the top window so argv/envp setup can write into it.
+    // Coalesce in mm_context_map_anonymous will merge this with the lazy
+    // reservation into one STACK vma covering [stack_max_base, USER_STACK_TOP).
+    uintptr_t mapped_stack_addr = 0;
+    int32_t eager_rc = mm::mm_context_map_anonymous(
+        mm_ctx,
+        eager_base,
+        eager_bytes,
+        mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+        base_stack_flags,
         &mapped_stack_addr
     );
-    if (map_rc != mm::MM_CTX_OK) {
-        log::error("sched: failed to map user stack VMA (rc=%d)", map_rc);
+    if (eager_rc != mm::MM_CTX_OK) {
+        log::error("sched: failed to map user stack window (rc=%d)", eager_rc);
+        mm::mm_context_unmap(mm_ctx, stack_max_base, lazy_bytes);
         vmm::free(sys_stack_base);
         heap::kfree_delete(t);
         return nullptr;
@@ -689,7 +722,7 @@ __PRIVILEGED_CODE task* create_user_task(
         paging::get_physical(mm::USER_STACK_TOP - pmm::PAGE_SIZE, mm_ctx->pt_root);
     if (last_stack_page_phys == 0) {
         log::error("sched: failed to resolve user stack top page");
-        mm::mm_context_unmap(mm_ctx, mapped_stack_addr, mm::USER_STACK_PAGES * pmm::PAGE_SIZE);
+        mm::mm_context_unmap(mm_ctx, stack_max_base, total_bytes);
         vmm::free(sys_stack_base);
         heap::kfree_delete(t);
         return nullptr;
@@ -699,7 +732,7 @@ __PRIVILEGED_CODE task* create_user_task(
         last_stack_page_phys, mm::USER_STACK_TOP, *image, name, argc, argv);
     if (user_sp == 0) {
         log::error("sched: user stack setup failed (argv too large?)");
-        mm::mm_context_unmap(mm_ctx, mapped_stack_addr, mm::USER_STACK_PAGES * pmm::PAGE_SIZE);
+        mm::mm_context_unmap(mm_ctx, stack_max_base, total_bytes);
         vmm::free(sys_stack_base);
         heap::kfree_delete(t);
         return nullptr;
@@ -836,7 +869,7 @@ __PRIVILEGED_CODE task* create_user_thread(
     t->exit_code = 0;
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     t->kill_pending = 0;
-    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
+    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1)); 
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
 
     t->task_registry_link = {};

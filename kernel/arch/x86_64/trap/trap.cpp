@@ -1,4 +1,4 @@
-#include "trap_frame.h"
+#include "trap/trap_frame.h"
 #include "defs/vectors.h"
 #include "irq/irq.h"
 #include "io/serial.h"
@@ -10,6 +10,7 @@
 #include "msi/msi.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "mm/mm.h"
 
 namespace sched {
 __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf);
@@ -88,6 +89,23 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
+    }
+
+    // If it's a page fault, attempt to handle it for on-demand paging
+    if (in_user_code && tf->vector == x86::EXC_PAGE_FAULT) {
+        uintptr_t fault_addr = x86::read_cr2();
+        uint64_t ec = tf->error_code;
+        uint32_t pf_flags = 0;
+        if (ec & 0x1)  pf_flags |= mm::PF_FLAG_PRESENT;
+        if (ec & 0x2)  pf_flags |= mm::PF_FLAG_WRITE;
+        if (ec & 0x10) pf_flags |= mm::PF_FLAG_INSTRUCTION;
+
+        if (mm::handle_user_pf(irq_task_core->mm_ctx, fault_addr, pf_flags)) {
+            // Fault has been handled successfully, restart instruction
+            irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+            restore_post_trap_elevation_state();
+            return;
+        }
     }
 
     if (in_user_code && (
