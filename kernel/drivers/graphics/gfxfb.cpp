@@ -6,6 +6,7 @@
 #include "fs/fs.h"
 #include "fs/node.h"
 #include "mm/heap.h"
+#include "mm/mm.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
 #include "mm/uaccess.h"

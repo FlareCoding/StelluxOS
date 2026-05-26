@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "common/rb_tree.h"
+#include "mm/paging.h"
 #include "mm/pmm_types.h"
 #include "mm/shmem.h"
 #include "sync/mutex.h"
@@ -30,6 +31,11 @@ constexpr uint32_t MM_MAP_FIXED            = 0x00000010u;
 constexpr uint32_t MM_MAP_ANONYMOUS        = 0x00000020u;
 constexpr uint32_t MM_MAP_STACK            = 0x00020000u;
 constexpr uint32_t MM_MAP_FIXED_NOREPLACE  = 0x00100000u;
+constexpr uint32_t MM_MAP_LAZY             = 0x00200000u;
+
+constexpr uint32_t MM_MAP_ALLOWED_FLAGS =
+    MM_MAP_SHARED | MM_MAP_PRIVATE | MM_MAP_ANONYMOUS | MM_MAP_FIXED |
+    MM_MAP_FIXED_NOREPLACE | MM_MAP_STACK | MM_MAP_LAZY;
 
 constexpr uint32_t VMA_FLAG_PRIVATE   = (1u << 0);
 constexpr uint32_t VMA_FLAG_ANONYMOUS = (1u << 1);
@@ -40,8 +46,11 @@ constexpr uint32_t VMA_FLAG_DEVICE    = (1u << 5);
 
 constexpr uintptr_t MMAP_BASE_DEFAULT = 0x00000080000000ULL;
 constexpr uintptr_t USER_STACK_TOP    = 0x00007FFFFFF00000ULL;
-constexpr size_t    USER_STACK_PAGES  = 8; // 32 KiB
+constexpr size_t    USER_STACK_PAGES  = 8;       // 32 KiB
+constexpr size_t    USER_STACK_MAX_PAGES = 2048; // 8 MiB max stack space via lazy on-demand paging
 constexpr size_t    USER_STACK_GUARD_PAGES = 1;
+
+struct mm_context;
 
 struct vma {
     uintptr_t start;
@@ -64,38 +73,50 @@ struct vma_addr_cmp {
 
 using vma_tree = rbt::tree<vma, &vma::addr_link, vma_addr_cmp>;
 
-struct mm_context final : rc::ref_counted<mm_context> {
-    pmm::phys_addr_t pt_root;
-    uintptr_t        mmap_base;
-    uintptr_t        mmap_end;
-    sync::mutex      lock;
-    vma_tree         vmas;
-
-    /**
-     * @brief Destroy mm_context and reclaim all mapped resources.
-     * @note Privilege: **required**
-     */
-    __PRIVILEGED_CODE static void ref_destroy(mm_context* self);
-};
+/**
+ * @brief Check whether an address is aligned to the system page size.
+ */
+[[nodiscard]] inline bool is_page_aligned(uintptr_t value) {
+    return (value & (pmm::PAGE_SIZE - 1)) == 0;
+}
 
 /**
- * @brief Create a user address-space context with a new user page-table root.
- * @return New mm_context on success, nullptr on failure.
- * @note Privilege: **required**
+ * @brief Compute the inclusive-end address of a [start, start+length) range.
+ * Rejects zero length and any overflow.
+ * @return true and writes end into end_out on success, false otherwise.
  */
-[[nodiscard]] __PRIVILEGED_CODE mm_context* mm_context_create();
+[[nodiscard]] inline bool range_from_len(uintptr_t start, size_t length, uintptr_t& end_out) {
+    if (length == 0) {
+        return false;
+    }
+    uintptr_t end = start + length;
+    if (end < start) {
+        return false;
+    }
+    end_out = end;
+    return true;
+}
 
 /**
- * @brief Increment mm_context reference count.
- * @note Privilege: **required**
+ * @brief Convert MM_PROT_* protection bits into architecture-specific page-table flags.
  */
-__PRIVILEGED_CODE void mm_context_add_ref(mm_context* mm_ctx);
+[[nodiscard]] paging::page_flags_t prot_to_page_flags(uint32_t prot);
 
 /**
- * @brief Decrement mm_context reference count and destroy on last reference.
+ * @brief Allocate a VMA node and initialize its fields.
+ * Does not insert into any tree.
+ * @return New VMA on success, nullptr on allocation failure.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void mm_context_release(mm_context* mm_ctx);
+[[nodiscard]] __PRIVILEGED_CODE vma* alloc_vma(
+    uintptr_t start, uintptr_t end, uint32_t prot, uint32_t flags);
+
+/**
+ * @brief Free a VMA node previously returned by alloc_vma.
+ * No-op on nullptr. Does not detach from any tree.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void free_vma(vma* node);
 
 /**
  * @brief Find VMA containing address.
@@ -137,109 +158,75 @@ __PRIVILEGED_CODE void vma_remove_locked(mm_context* mm_ctx, vma& node);
     mm_context* mm_ctx, size_t length);
 
 /**
- * @brief Track an already-mapped user range as a VMA.
- * Does not map physical pages.
+ * @brief Unmap [start, end) from a user mm_context, freeing physical pages.
+ * Iterates page-by-page; pages that aren't mapped are skipped.
+ * Used for anonymous/stack mappings the kernel owns.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t mm_context_add_vma(
-    mm_context* mm_ctx,
-    uintptr_t start,
-    size_t length,
-    uint32_t prot,
-    uint32_t vma_flags
-);
+__PRIVILEGED_CODE void unmap_and_free_pages(
+    mm_context* mm_ctx, uintptr_t start, uintptr_t end);
 
 /**
- * @brief Map anonymous pages into a user mm_context and track as VMA.
- * Supports fixed and non-fixed allocation modes.
+ * @brief Unmap [start, end) from a user mm_context without freeing pages.
+ * For shared and device mappings whose physical pages are owned elsewhere.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t mm_context_map_anonymous(
-    mm_context* mm_ctx,
-    uintptr_t addr,
-    size_t length,
-    uint32_t prot,
-    uint32_t map_flags,
-    uintptr_t* out_addr
-);
+__PRIVILEGED_CODE void unmap_pages_only(
+    mm_context* mm_ctx, uintptr_t start, uintptr_t end);
 
 /**
- * @brief Unmap [addr, addr+length) from a user mm_context.
- * Idempotent when the range is already unmapped.
+ * @brief Roll back a partially-completed eager allocation.
+ * Equivalent to unmap_and_free_pages over the [start, mapped_end) prefix.
+ * Used when an mm_context_map_* call needs to undo work after an error.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t mm_context_unmap(
-    mm_context* mm_ctx,
-    uintptr_t addr,
-    size_t length
-);
+__PRIVILEGED_CODE void rollback_new_pages(
+    mm_context* mm_ctx, uintptr_t start, uintptr_t mapped_end);
 
 /**
- * @brief Change protection of an existing mapped range.
- * Returns ERR_NOT_MAPPED when any part of the range is unmapped.
+ * @brief Merge adjacent VMAs with identical prot/flags/backing.
+ * Idempotent. Caller must hold mm_ctx->lock.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t mm_context_mprotect(
-    mm_context* mm_ctx,
-    uintptr_t addr,
-    size_t length,
-    uint32_t prot
-);
+__PRIVILEGED_CODE void coalesce_all_locked(mm_context* mm_ctx);
 
 /**
- * @brief Map a shmem backing into a user mm_context with MAP_SHARED semantics.
- * Pages come from the backing; they are not allocated per-mapping.
- * @param backing Shmem backing. Must have sufficient size for offset+length.
- * @param offset Byte offset into backing (must be page-aligned).
- * @param length Number of bytes to map (rounded up to page boundary).
- * @param prot MM_PROT_READ / MM_PROT_WRITE / MM_PROT_EXEC.
- * @param map_flags MM_MAP_SHARED, optionally MM_MAP_FIXED / MM_MAP_FIXED_NOREPLACE.
- * @param addr Hint or fixed address.
- * @param out_addr Receives the mapped virtual address.
- * @return MM_CTX_OK on success, error code on failure.
+ * @brief Split a VMA at split_addr into two adjacent VMAs.
+ * The left part keeps the original node; the right part is freshly allocated
+ * and inserted into the tree. Caller must hold mm_ctx->lock.
+ * @return The newly-allocated right-hand VMA, or nullptr on allocation failure
+ *         or out-of-range split_addr.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t mm_context_map_shared(
-    mm_context* mm_ctx,
-    shmem* backing,
-    uint64_t offset,
-    size_t length,
-    uint32_t prot,
-    uint32_t map_flags,
-    uintptr_t addr,
-    uintptr_t* out_addr
-);
+[[nodiscard]] __PRIVILEGED_CODE vma* split_vma_locked(
+    mm_context* mm_ctx, vma* node, uintptr_t split_addr);
 
 /**
- * @brief Map a contiguous physical address range into a user mm_context.
- * Pages are not owned by the kernel — they are not freed on unmap.
- * Useful for framebuffers, MMIO regions, and other device memory.
- * @param phys_base Physical base address (must be page-aligned).
- * @param length Number of bytes to map (rounded up to page boundary).
- * @param prot MM_PROT_READ / MM_PROT_WRITE / MM_PROT_EXEC.
- * @param cache_type Paging memory type (e.g. paging::PAGE_WC, paging::PAGE_DEVICE).
- * @param map_flags MM_MAP_SHARED, optionally MM_MAP_FIXED / MM_MAP_FIXED_NOREPLACE.
- * @param addr Hint or fixed address.
- * @param out_addr Receives the mapped virtual address.
- * @return MM_CTX_OK on success, error code on failure.
+ * @brief Unmap every VMA overlapping [start, end), splitting at the edges.
+ * Frees pages for owned VMAs and releases backing refs for shared/device VMAs.
+ * Idempotent over already-unmapped regions. Caller must hold mm_ctx->lock.
+ * @return MM_CTX_OK on success, MM_CTX_ERR_NO_MEM if an edge split fails.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t mm_context_map_device(
-    mm_context* mm_ctx,
-    pmm::phys_addr_t phys_base,
-    size_t length,
-    uint32_t prot,
-    uint32_t cache_type,
-    uint32_t map_flags,
-    uintptr_t addr,
-    uintptr_t* out_addr
-);
+__PRIVILEGED_CODE int32_t unmap_range_locked(
+    mm_context* mm_ctx, uintptr_t start, uintptr_t end);
 
 /**
- * @brief Return current VMA count.
+ * @brief Check whether every page in [start, end) is covered by a VMA.
+ * Caller must hold mm_ctx->lock.
+ */
+[[nodiscard]] bool range_fully_mapped_locked(
+    mm_context* mm_ctx, uintptr_t start, uintptr_t end);
+
+/**
+ * @brief Apply new protection bits to the existing PTEs for [start, end).
+ * Does not change VMA records; caller is responsible for VMA updates.
+ * @return MM_CTX_OK on success, MM_CTX_ERR_NOT_MAPPED if any page is unmapped,
+ *         MM_CTX_ERR_MAP_FAILED on PTE-update failure.
  * @note Privilege: **required**
  */
-[[nodiscard]] __PRIVILEGED_CODE size_t mm_context_vma_count(mm_context* mm_ctx);
+__PRIVILEGED_CODE int32_t apply_page_protection(
+    mm_context* mm_ctx, uintptr_t start, uintptr_t end, uint32_t prot);
 
 } // namespace mm
 

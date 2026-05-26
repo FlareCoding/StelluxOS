@@ -5,6 +5,7 @@
 #include "mm/heap.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "mm/mm.h"
 #include "mm/vma.h"
 #include "dynpriv/dynpriv.h"
 #include "common/string.h"

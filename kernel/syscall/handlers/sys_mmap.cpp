@@ -1,5 +1,6 @@
 #include "syscall/handlers/sys_mmap.h"
 
+#include "mm/mm.h"
 #include "mm/vma.h"
 #include "mm/shmem.h"
 #include "resource/resource.h"

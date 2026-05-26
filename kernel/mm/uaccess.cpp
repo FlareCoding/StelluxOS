@@ -1,6 +1,7 @@
 #include "mm/uaccess.h"
 #include "mm/pmm.h"
 #include "mm/vma.h"
+#include "mm/mm.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sync/mutex.h"
