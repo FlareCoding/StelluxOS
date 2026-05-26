@@ -106,7 +106,21 @@ static int run_single(const char* argv[], char* path_buf,
     ioctl(0, STLX_TCSETS_RAW, 0);
 
     if (STLX_WIFEXITED(status)) return STLX_WEXITSTATUS(status);
-    if (STLX_WIFSIGNALED(status)) return 128 + STLX_WTERMSIG(status);
+    if (STLX_WIFSIGNALED(status)) {
+        int sig = STLX_WTERMSIG(status);
+        const char* name;
+        switch (sig) {
+            case 4:  name = "Illegal instruction";    break;
+            case 7:  name = "Bus error";              break;
+            case 8:  name = "Floating point exception"; break;
+            case 9:  name = "Killed";                 break;
+            case 11: name = "Segmentation fault";     break;
+            default: name = "Terminated by signal";   break;
+        }
+        shell_err(name);
+        shell_err("\r\n");
+        return 128 + sig;
+    }
     return status;
 }
 

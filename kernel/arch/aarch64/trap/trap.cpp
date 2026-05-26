@@ -11,6 +11,8 @@
 #include "io/serial.h"
 #include "hwtimer/hwtimer_arch.h"
 #include "timer/timer.h"
+#include "sched/sched.h"
+#include "sched/task.h"
 
 // Forward declaration of syscall dispatch
 extern "C" void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf);
@@ -47,11 +49,27 @@ __PRIVILEGED_CODE static inline void restore_post_trap_elevation_state() {
         (this_cpu(current_task_exec)->flags & mask) != 0;
 }
 
+static inline int ec_to_signal(uint8_t ec) {
+    switch (ec) {
+        case aarch64::EC_DATA_ABORT_LOWER:
+        case aarch64::EC_INST_ABORT_LOWER:
+        case aarch64::EC_SP_ALIGN:           return 11;  // SIGSEGV
+        case aarch64::EC_UNKNOWN:
+        case aarch64::EC_BRK_A64:            return 4;   // SIGILL
+        case aarch64::EC_FP_A64:             return 8;   // SIGFPE
+        case aarch64::EC_PC_ALIGN:           return 7;   // SIGBUS
+        default:                             return 11;  // SIGSEGV fallback
+    }
+}
+
 extern "C" __PRIVILEGED_CODE 
 void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
     this_cpu(percpu_is_elevated) = true;
     irq_context_guard guard;
     
+    // Detect if this is a userland task vs a kernel thread that might be running under lowered CPL
+    uint8_t in_user_code = aarch64::from_user(tf) && !(guard.task_core->flags & sched::TASK_FLAG_KERNEL);
+
     const uint64_t esr = tf->esr;
     const uint8_t ec = static_cast<uint8_t>((esr >> aarch64::ESR_EC_SHIFT) & aarch64::ESR_EC_MASK);
 
@@ -59,6 +77,20 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
         stlx_aarch64_syscall_dispatch(tf);
         restore_post_trap_elevation_state();
         return;
+    }
+
+    if (in_user_code && (
+        ec == aarch64::EC_DATA_ABORT_LOWER ||
+        ec == aarch64::EC_INST_ABORT_LOWER ||
+        ec == aarch64::EC_UNKNOWN          ||
+        ec == aarch64::EC_PC_ALIGN         ||
+        ec == aarch64::EC_SP_ALIGN         ||
+        ec == aarch64::EC_FP_A64           ||
+        ec == aarch64::EC_BRK_A64)
+    ) {
+        int sig = ec_to_signal(ec);
+        __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
+        sched::exit(sig);
     }
 
     trap_fatal("el0 sync", tf);

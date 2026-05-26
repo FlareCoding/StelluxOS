@@ -8,6 +8,8 @@
 #include "percpu/percpu.h"
 #include "dynpriv/dynpriv.h"
 #include "msi/msi.h"
+#include "sched/sched.h"
+#include "sched/task.h"
 
 namespace sched {
 __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf);
@@ -22,6 +24,20 @@ __PRIVILEGED_CODE static inline void restore_post_trap_elevation_state() {
         (this_cpu(current_task_exec)->flags & mask) != 0;
 }
 
+static inline int vector_to_signal(uint64_t vec) {
+    switch (vec) {
+        case x86::EXC_PAGE_FAULT:
+        case x86::EXC_GENERAL_PROTECTION:
+        case x86::EXC_STACK_FAULT:
+        case x86::EXC_BOUND_RANGE:        return 11;  // SIGSEGV
+        case x86::EXC_INVALID_OPCODE:     return 4;   // SIGILL
+        case x86::EXC_DIVIDE_ERROR:
+        case x86::EXC_OVERFLOW:           return 8;   // SIGFPE
+        case x86::EXC_ALIGNMENT_CHECK:    return 7;   // SIGBUS
+        default:                          return 11;  // SIGSEGV fallback
+    }
+}
+
 /**
  * @brief x86_64 trap handler called from assembly.
  * @note Privilege: **required**
@@ -31,6 +47,9 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
 
     sched::task_exec_core* irq_task_core = this_cpu(current_task_exec);
     
+    // Detect if this is a userland task vs a kernel thread that might be running under lowered CPL
+    uint8_t in_user_code = x86::from_user(tf) && !(irq_task_core->flags & sched::TASK_FLAG_KERNEL);
+
     // Mark as in interrupt context
     irq_task_core->flags |= sched::TASK_FLAG_IN_IRQ;
 
@@ -69,6 +88,21 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
+    }
+
+    if (in_user_code && (
+        tf->vector == x86::EXC_PAGE_FAULT ||
+        tf->vector == x86::EXC_GENERAL_PROTECTION ||
+        tf->vector == x86::EXC_INVALID_OPCODE || 
+        tf->vector == x86::EXC_DIVIDE_ERROR ||
+        tf->vector == x86::EXC_OVERFLOW ||
+        tf->vector == x86::EXC_BOUND_RANGE ||
+        tf->vector == x86::EXC_STACK_FAULT ||
+        tf->vector == x86::EXC_ALIGNMENT_CHECK)
+    ) {
+        int sig = vector_to_signal(tf->vector);
+        __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
+        sched::exit(sig); // POSIX-compatible SIGSEGV
     }
 
     panic::on_trap(tf);
