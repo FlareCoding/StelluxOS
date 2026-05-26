@@ -76,18 +76,20 @@ __PRIVILEGED_CODE
 bool handle_user_pf(
     mm_context* mm_ctx,
     uintptr_t fault_address,
-    uint64_t error_code
+    uint64_t pf_flags
 ) {
-    (void)error_code;
     if (!mm_ctx) {
         return false;
     }
 
     /**
-     * For now, on-demand paging is not yet fully complete,
-     * so the only lazy operation that's supported is lazy
-     * stack growing.
+     * For now, on-demand paging is not yet fully complete, so
+     * the only operation that's supported is lazy stack growing.
      */
+    if (pf_flags & PF_FLAG_PRESENT) {
+        return false;
+    }
+
     uintptr_t page_addr = fault_address & ~(pmm::PAGE_SIZE - 1);
 
     sync::mutex_lock(mm_ctx->lock);

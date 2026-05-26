@@ -8,6 +8,11 @@ namespace mm {
 constexpr int32_t OK  = 0;
 constexpr int32_t ERR = -1;
 
+// Page-fault classification, arch-translated by the trap handlers
+constexpr uint64_t PF_FLAG_PRESENT     = (1u << 0); // page was present, so must be a protection violation
+constexpr uint64_t PF_FLAG_WRITE       = (1u << 1); // write access violation
+constexpr uint64_t PF_FLAG_INSTRUCTION = (1u << 2); // instruction fetch (NX violation)
+
 struct mm_context final : rc::ref_counted<mm_context> {
     pmm::phys_addr_t pt_root;
     uintptr_t        mmap_base;
@@ -36,7 +41,7 @@ __PRIVILEGED_CODE int32_t init();
  * @param mm_ctx Address-space context of the faulting task.
  * @param fault_address Linear address that triggered the fault
  *                      (x86 CR2, aarch64 FAR_EL1).
- * @param error_code Arch-specific fault status (x86 PF error code, aarch64 ESR).
+ * @param pf_flags Generic page fault flags describing the fault.
  * @return true if the fault was resolved and the instruction may safely retry,
  *         false if the access was invalid.
  * @note Privilege: **required**
@@ -44,7 +49,7 @@ __PRIVILEGED_CODE int32_t init();
 __PRIVILEGED_CODE bool handle_user_pf(
     mm_context* mm_ctx,
     uintptr_t fault_address,
-    uint64_t error_code
+    uint64_t pf_flags
 );
 
 /**
