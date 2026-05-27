@@ -1,0 +1,55 @@
+#ifndef STELLUX_TRACE_H
+#define STELLUX_TRACE_H
+
+#include "trace_internal.h"
+#include "trace_categories.h"
+
+namespace trace {
+
+constexpr int32_t OK            =  0;
+constexpr int32_t ERR_NO_MEM    = -1;
+constexpr int32_t ERR_NOT_READY = -2;
+constexpr int32_t ERR_IO        = -3;
+constexpr int32_t ERR_BUSY      = -4;
+
+int32_t     init(); // must be called per-cpu
+void        set_enabled_categories(category mask);
+uint16_t    enabled_categories();
+
+int32_t     begin_dump();    // pause capture for a consistent snapshot, ERR_BUSY if active
+void        end_dump();      // resume capture after a dump completes
+void        reset_buffers(); // clear all per-CPU ring buffers
+
+void        emit_record(const record& rec);
+
+class scope {
+public:
+    scope(uint16_t category, const char* name);
+    ~scope();
+
+    scope(const scope&) = delete;
+    scope& operator=(const scope&) = delete;
+
+private:
+    uint64_t    m_start_ts;
+    uint16_t    m_category;
+    const char* m_name;
+};
+
+} // namespace trace
+
+#define STLX_TRACE_CAT_(a, b) a##b
+#define STLX_TRACE_CAT(a, b)  STLX_TRACE_CAT_(a, b)
+
+#ifdef STLX_TRACING_ENABLED
+
+#define TRACE_SCOPE(cat, name) \
+    ::trace::scope STLX_TRACE_CAT(_trace_scope_, __LINE__){cat, name}
+
+#else
+
+#define TRACE_SCOPE(cat, name) ((void)0)
+
+#endif // STLX_TRACING_ENABLED
+
+#endif // STELLUX_TRACE_H

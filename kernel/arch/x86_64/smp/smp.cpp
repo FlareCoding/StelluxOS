@@ -20,6 +20,7 @@
 #include "sched/sched.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
+#include "trace/trace.h"
 
 extern "C" {
     extern char asm_ap_trampoline[];
@@ -123,6 +124,12 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     smp::cpu_info* info = smp::get_cpu_info(cpu_id);
     __atomic_store_n(&info->state, smp::CPU_ONLINE, __ATOMIC_RELEASE);
+
+#ifdef STLX_TRACING_ENABLED
+    if (trace::init() != trace::OK) {
+        log::fatal("trace::init failed");
+    }
+#endif
 
     while (true) {
         cpu::halt();

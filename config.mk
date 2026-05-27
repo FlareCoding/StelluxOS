@@ -72,6 +72,9 @@ LOG_LEVEL ?= 0
 # Build epoch (Unix timestamp for RTC fallback on platforms without hardware RTC)
 STLX_BUILD_EPOCH ?= $(shell date +%s)
 
+# Enable kernel span-based tracing
+STLX_TRACING_ENABLED ?= 1
+
 # ============================================================================
 # Platform Selection
 # ============================================================================

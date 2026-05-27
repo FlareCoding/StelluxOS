@@ -28,6 +28,7 @@
 #include "net/net.h"
 #include "random/random.h"
 #include "sync/futex.h"
+#include "trace/trace.h"
 
 #ifdef STLX_UNIT_TESTS_ENABLED
 #include "runner.h"
@@ -107,6 +108,12 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     if (rc::reaper::init() != rc::reaper::OK) {
         log::fatal("rc::reaper::init failed");
     }
+
+#ifdef STLX_TRACING_ENABLED
+    if (trace::init() != trace::OK) {
+        log::fatal("trace::init failed");
+    }
+#endif
 
     sync::futex_init();
 

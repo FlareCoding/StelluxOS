@@ -20,6 +20,7 @@
 #include "hwtimer/hwtimer_arch.h"
 #include "common/string.h"
 #include "common/logging.h"
+#include "trace/trace.h"
 
 extern "C" {
     extern char asm_ap_trampoline[];
@@ -217,6 +218,12 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     smp::cpu_info* info = smp::get_cpu_info(cpu_id);
     __atomic_store_n(&info->state, smp::CPU_ONLINE, __ATOMIC_RELEASE);
+
+#ifdef STLX_TRACING_ENABLED
+    if (trace::init() != trace::OK) {
+        log::fatal("trace::init failed");
+    }
+#endif
 
     while (true) { cpu::halt(); }
 }

@@ -66,6 +66,7 @@ CXX_SOURCES += $(shell find sched -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find syscall -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find acpi -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find debug -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find trace -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find dma -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find exec -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find fdt -name '*.cpp' 2>/dev/null | sort)
@@ -97,6 +98,11 @@ ASM_SOURCES := $(shell find arch/$(ARCH) -name '*.S' 2>/dev/null | sort)
 # Unit test assembly sources (e.g., FPU test helpers)
 ifeq ($(STLX_UNIT_TESTS_ENABLED),1)
 ASM_SOURCES += $(shell find tests -name '*.S' 2>/dev/null | sort)
+endif
+
+# Enable span-based kernel tracing
+ifeq ($(STLX_TRACING_ENABLED),1)
+CXXFLAGS_EXTRA += -DSTLX_TRACING_ENABLED
 endif
 
 # Generate object file paths
