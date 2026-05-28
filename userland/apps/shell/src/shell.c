@@ -234,7 +234,58 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
     return reap_status(status);
 }
 
-int main(void) {
+/* Execute one command line (a pipeline, optionally with builtins and
+ * redirections). editor may be NULL when there is no interactive editor
+ * (e.g. -c mode). Returns the command's exit status. Sets *should_exit for
+ * the `exit` builtin, with *shell_exit_code holding the code. */
+static int execute_line(char* line, char* path_buf, line_edit_state* editor,
+                        int last_status, int* shell_exit_code, int* should_exit) {
+    char* stages[MAX_PIPE_STAGES];
+    int nstages = parse_pipeline(line, stages);
+
+    if (nstages != 1) {
+        return run_pipeline(stages, nstages, path_buf);
+    }
+
+    redirect_info redir;
+    if (parse_redirects(stages[0], &redir) < 0) {
+        shell_err("shell: syntax error in redirection\r\n");
+        return 1;
+    }
+
+    const char* argv[MAX_ARGS + 1];
+    int argc = parse_line(stages[0], argv);
+    if (argc <= 0) return last_status;
+
+    if (is_builtin(argv[0])) {
+        int redir_in = -1, redir_out = -1;
+        if (open_redirect_fds(&redir, &redir_in, &redir_out) < 0) {
+            return 1;
+        }
+        int builtin_out = (redir_out >= 0) ? redir_out : STDOUT_FILENO;
+        int builtin_rc = try_builtin(argc, argv, editor,
+                                     last_status, shell_exit_code, builtin_out);
+        close_redirect_fds(redir_in, redir_out);
+        if (builtin_rc < 0) { *should_exit = 1; return *shell_exit_code; }
+        if (builtin_rc > 0) return 0;
+        /* fall through to external command */
+    }
+
+    return run_single(argv, path_buf, &redir);
+}
+
+int main(int argc, char** argv) {
+    /* Non-interactive command mode: `shell -c "command line"` (ssh exec). */
+    if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
+        char* cpath = malloc(256);
+        if (!cpath) return 1;
+        int exit_code = 0, should_exit = 0;
+        /* argv strings are modifiable; execute_line tokenizes in place */
+        int status = execute_line(argv[2], cpath, NULL, 0, &exit_code, &should_exit);
+        free(cpath);
+        return should_exit ? exit_code : status;
+    }
+
     ioctl(0, STLX_TCSETS_RAW, 0);
 
     line_edit_state* editor = line_edit_create();
@@ -265,52 +316,10 @@ int main(void) {
         if (!line) break;
         if (line[0] == '\0') continue;
 
-        char* stages[MAX_PIPE_STAGES];
-        int nstages = parse_pipeline(line, stages);
-
-        if (nstages == 1) {
-            /* Parse redirections before tokenizing */
-            redirect_info redir;
-            if (parse_redirects(stages[0], &redir) < 0) {
-                shell_err("shell: syntax error in redirection\r\n");
-                continue;
-            }
-
-            const char* argv[MAX_ARGS + 1];
-            int argc = parse_line(stages[0], argv);
-            if (argc <= 0) continue;
-
-            if (is_builtin(argv[0])) {
-                /* Open redirect fds only for builtins, which write
-                   output directly in-process. External commands use
-                   run_single() which opens its own fds to pass via
-                   proc_set_handle(). */
-                int redir_in = -1, redir_out = -1;
-                if (open_redirect_fds(&redir, &redir_in, &redir_out) < 0) {
-                    last_status = 1;
-                    continue;
-                }
-                int builtin_out = (redir_out >= 0) ? redir_out : STDOUT_FILENO;
-
-                int builtin_rc = try_builtin(argc, argv, editor,
-                                             last_status, &shell_exit_code,
-                                             builtin_out);
-                close_redirect_fds(redir_in, redir_out);
-
-                if (builtin_rc < 0) break;            /* exit */
-                if (builtin_rc > 0) {
-                    last_status = 0;
-                    continue;
-                }
-                /* builtin_rc == 0: is_builtin/try_builtin disagree
-                   (defensive: fall through to external command). */
-            }
-
-            /* External command */
-            last_status = run_single(argv, path_buf, &redir);
-        } else {
-            last_status = run_pipeline(stages, nstages, path_buf);
-        }
+        int should_exit = 0;
+        last_status = execute_line(line, path_buf, editor, last_status,
+                                   &shell_exit_code, &should_exit);
+        if (should_exit) break;
     }
 
     free(path_buf);
