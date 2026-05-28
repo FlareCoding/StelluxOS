@@ -5,9 +5,11 @@
 
 namespace trace {
 
+constexpr uint32_t ARCH_ID = 1;
+
 inline uint64_t timestamp() {
     uint32_t lo, hi, _aux;
-    asm volatile("rdtscp" : "=a"(lo), "=d"(hi), "=c"(_aux));
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi), "=c"(_aux));
     return (static_cast<uint64_t>(hi) << 32) | lo;
 }
 

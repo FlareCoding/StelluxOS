@@ -12,6 +12,9 @@ constexpr int32_t ERR_NOT_READY = -2;
 constexpr int32_t ERR_IO        = -3;
 constexpr int32_t ERR_BUSY      = -4;
 
+constexpr uint32_t KTRACE_IOCTL_SET_CATEGORIES = 0x4b01;
+constexpr uint32_t KTRACE_IOCTL_RESET          = 0x4b02;
+
 int32_t     init(); // must be called per-cpu
 void        set_enabled_categories(category mask);
 uint16_t    enabled_categories();
@@ -19,6 +22,14 @@ uint16_t    enabled_categories();
 int32_t     begin_dump();    // pause capture for a consistent snapshot, ERR_BUSY if active
 void        end_dump();      // resume capture after a dump completes
 void        reset_buffers(); // clear all per-CPU ring buffers
+
+size_t      dump_read(uint64_t offset, void* buf, size_t count);
+uint64_t    dump_size();
+
+/*
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t register_device();
 
 void        emit_record(const record& rec);
 

@@ -109,17 +109,21 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("rc::reaper::init failed");
     }
 
-#ifdef STLX_TRACING_ENABLED
-    if (trace::init() != trace::OK) {
-        log::fatal("trace::init failed");
-    }
-#endif
-
     sync::futex_init();
 
     if (fs::init() != fs::OK) {
         log::fatal("fs::init failed");
     }
+
+#ifdef STLX_TRACING_ENABLED
+    if (trace::init() != trace::OK) {
+        log::fatal("trace::init failed");
+    }
+
+    if (trace::register_device() != trace::OK) {
+        log::warn("trace::register_device failed, /dev/ktrace unavailable");
+    }
+#endif
 
     if (random::init() != random::OK) {
         log::warn("random::init failed, /dev/urandom unavailable");

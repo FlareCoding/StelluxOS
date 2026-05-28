@@ -5,6 +5,8 @@
 
 namespace trace {
 
+constexpr uint32_t ARCH_ID = 2;
+
 inline uint64_t timestamp() {
     uint64_t ts;
     asm volatile("isb; mrs %0, cntvct_el0" : "=r"(ts));
