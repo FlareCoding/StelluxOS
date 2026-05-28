@@ -38,6 +38,8 @@
 #include "runopts.h"
 #include "auth.h"
 
+#include <stlx/proc.h>
+
 /* Handles sessions (either shells or programs) requested by the client */
 
 static int sessioncommand(struct Channel *channel, struct ChanSess *chansess,
@@ -47,8 +49,6 @@ static int sessionsignal(const struct ChanSess *chansess);
 static int noptycommand(struct Channel *channel, struct ChanSess *chansess);
 static int ptycommand(struct Channel *channel, struct ChanSess *chansess);
 static int sessionwinchange(const struct ChanSess *chansess);
-static void execchild(const void *user_data_chansess);
-static void addchildpid(struct ChanSess *chansess, pid_t pid);
 static void sesssigchild_handler(int val);
 static void closechansess(const struct Channel *channel);
 static void cleanupchansess(const struct Channel *channel);
@@ -763,39 +763,81 @@ static int sessioncommand(struct Channel *channel, struct ChanSess *chansess,
  * pty.
  * Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
 static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
-	int ret;
+	int proc_handle;
+	const char *shell_path;
+	/* [0] = read end, [1] = write end */
+	int in_pipe[2], out_pipe[2], err_pipe[2];
 
 	TRACE(("enter noptycommand"))
-	ret = spawn_command(execchild, chansess, 
-			&channel->writefd, &channel->readfd, &channel->errfd,
-			&chansess->pid);
 
-	if (ret == DROPBEAR_FAILURE) {
-		return ret;
+	if (pipe(in_pipe) < 0) {
+		dropbear_log(LOG_WARNING, "pipe() failed for command stdin");
+		return DROPBEAR_FAILURE;
 	}
+	if (pipe(out_pipe) < 0) {
+		dropbear_log(LOG_WARNING, "pipe() failed for command stdout");
+		close(in_pipe[0]); close(in_pipe[1]);
+		return DROPBEAR_FAILURE;
+	}
+	if (pipe(err_pipe) < 0) {
+		dropbear_log(LOG_WARNING, "pipe() failed for command stderr");
+		close(in_pipe[0]); close(in_pipe[1]);
+		close(out_pipe[0]); close(out_pipe[1]);
+		return DROPBEAR_FAILURE;
+	}
+
+	shell_path = get_user_shell();
+
+	if (chansess->cmd) {
+		const char *argv[] = { "-c", chansess->cmd, NULL };
+		proc_handle = proc_create(shell_path, argv);
+	} else {
+		proc_handle = proc_create(shell_path, NULL);
+	}
+
+	if (proc_handle < 0) {
+		dropbear_log(LOG_WARNING, "proc_create(%s) failed", shell_path);
+		close(in_pipe[0]); close(in_pipe[1]);
+		close(out_pipe[0]); close(out_pipe[1]);
+		close(err_pipe[0]); close(err_pipe[1]);
+		return DROPBEAR_FAILURE;
+	}
+
+	/* child: stdin from in_pipe read end, stdout/stderr to pipe write ends */
+	proc_set_handle(proc_handle, STDIN_FILENO,  in_pipe[0]);
+	proc_set_handle(proc_handle, STDOUT_FILENO, out_pipe[1]);
+	proc_set_handle(proc_handle, STDERR_FILENO, err_pipe[1]);
+
+	if (proc_start(proc_handle) < 0) {
+		dropbear_log(LOG_WARNING, "proc_start failed");
+		close(proc_handle);
+		close(in_pipe[0]); close(in_pipe[1]);
+		close(out_pipe[0]); close(out_pipe[1]);
+		close(err_pipe[0]); close(err_pipe[1]);
+		return DROPBEAR_FAILURE;
+	}
+
+	/* fire-and-forget, matching ptycommand (no unix pid / exit tracking) */
+	chansess->pid = 1;
+	proc_detach(proc_handle);
+
+	/* drop our copies of the child ends; keep the parent ends */
+	close(in_pipe[0]);
+	close(out_pipe[1]);
+	close(err_pipe[1]);
+
+	channel->writefd = in_pipe[1];   /* server -> command stdin */
+	channel->readfd  = out_pipe[0];  /* command stdout -> server */
+	channel->errfd   = err_pipe[0];  /* command stderr -> server */
+	channel->bidir_fd = 0;
+
+	setnonblocking(channel->writefd);
+	setnonblocking(channel->readfd);
+	setnonblocking(channel->errfd);
 
 	ses.maxfd = MAX(ses.maxfd, channel->writefd);
 	ses.maxfd = MAX(ses.maxfd, channel->readfd);
 	ses.maxfd = MAX(ses.maxfd, channel->errfd);
-	channel->bidir_fd = 0;
-
-	addchildpid(chansess, chansess->pid);
-
-	if (svr_ses.lastexit.exitpid != -1) {
-		unsigned int i;
-		TRACE(("parent side: lastexitpid is %d", svr_ses.lastexit.exitpid))
-		/* The child probably exited and the signal handler triggered
-		 * possibly before we got around to adding the childpid. So we fill
-		 * out its data manually */
-		for (i = 0; i < svr_ses.childpidsize; i++) {
-			if (svr_ses.childpids[i].pid == svr_ses.lastexit.exitpid) {
-				TRACE(("found match for lastexitpid"))
-				svr_ses.childpids[i].chansess->exit = svr_ses.lastexit;
-				svr_ses.lastexit.exitpid = -1;
-				break;
-			}
-		}
-	}
 
 	TRACE(("leave noptycommand"))
 	return DROPBEAR_SUCCESS;
@@ -804,8 +846,6 @@ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
 /* Stellux: execute a command or shell within a pty environment using
  * Stellux's proc_create/proc_set_handle/proc_start instead of fork+exec.
  * Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
-
-#include <stlx/proc.h>
 
 static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
 
@@ -822,7 +862,7 @@ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
 	shell_path = get_user_shell();
 
 	if (chansess->cmd) {
-		const char *argv[] = { shell_path, "-c", chansess->cmd, NULL };
+		const char *argv[] = { "-c", chansess->cmd, NULL };
 		proc_handle = proc_create(shell_path, argv);
 	} else {
 		proc_handle = proc_create(shell_path, NULL);
@@ -858,158 +898,6 @@ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
 
 	TRACE(("leave ptycommand"))
 	return DROPBEAR_SUCCESS;
-}
-
-/* Add the pid of a child to the list for exit-handling */
-static void addchildpid(struct ChanSess *chansess, pid_t pid) {
-
-	unsigned int i;
-	for (i = 0; i < svr_ses.childpidsize; i++) {
-		if (svr_ses.childpids[i].pid == -1) {
-			break;
-		}
-	}
-
-	/* need to increase size */
-	if (i == svr_ses.childpidsize) {
-		svr_ses.childpids = (struct ChildPid*)m_realloc(svr_ses.childpids,
-				sizeof(struct ChildPid) * (svr_ses.childpidsize+1));
-		svr_ses.childpidsize++;
-	}
-	
-	TRACE(("addchildpid %d pid %d for chansess %p", i, pid, chansess))
-	svr_ses.childpids[i].pid = pid;
-	svr_ses.childpids[i].chansess = chansess;
-
-}
-
-/* Clean up, drop to user privileges, set up the environment and execute
- * the command/shell. This function does not return. */
-static void execchild(const void *user_data) {
-	const struct ChanSess *chansess = user_data;
-	char *usershell = NULL;
-	char *cp = NULL;
-	char *envcp = getenv("LANG");
-	if (envcp != NULL) {
-		cp = m_strdup(envcp);
-	}
-
-	/* with uClinux we'll have vfork()ed, so don't want to overwrite the
-	 * hostkey. can't think of a workaround to clear it */
-#if !DROPBEAR_VFORK
-	/* wipe the hostkey */
-	sign_key_free(svr_opts.hostkey);
-	svr_opts.hostkey = NULL;
-
-	/* overwrite the prng state */
-	seedrandom();
-#endif
-
-	/* clear environment if -e was not set */
-	/* if we're debugging using valgrind etc, we need to keep the LD_PRELOAD
-	 * etc. This is hazardous, so should only be used for debugging. */
-	if ( !svr_opts.pass_on_env) {
-#ifndef DEBUG_VALGRIND
-#ifdef HAVE_CLEARENV
-		clearenv();
-#else /* don't HAVE_CLEARENV */
-		/* Yay for posix. */
-		if (environ) {
-			environ[0] = NULL;
-		}
-#endif /* HAVE_CLEARENV */
-#endif /* DEBUG_VALGRIND */
-	}
-
-#if DROPBEAR_SVR_MULTIUSER
-	/* We can only change uid/gid as root ... */
-	if (getuid() == 0) {
-
-		if ((setgid(ses.authstate.pw_gid) < 0) ||
-			(initgroups(ses.authstate.pw_name, 
-						ses.authstate.pw_gid) < 0)) {
-			dropbear_exit("Error changing user group");
-		}
-		if (setuid(ses.authstate.pw_uid) < 0) {
-			dropbear_exit("Error changing user");
-		}
-	} else {
-		/* ... but if the daemon is the same uid as the requested uid, we don't
-		 * need to */
-
-		/* XXX - there is a minor issue here, in that if there are multiple
-		 * usernames with the same uid, but differing groups, then the
-		 * differing groups won't be set (as with initgroups()). The solution
-		 * is for the sysadmin not to give out the UID twice */
-		if (getuid() != ses.authstate.pw_uid) {
-			dropbear_exit("Couldn't	change user as non-root");
-		}
-	}
-#endif
-
-	/* set env vars */
-	addnewvar("USER", ses.authstate.pw_name);
-	addnewvar("LOGNAME", ses.authstate.pw_name);
-	addnewvar("HOME", ses.authstate.pw_dir);
-	addnewvar("SHELL", get_user_shell());
-	if (getuid() == 0) {
-		addnewvar("PATH", DEFAULT_ROOT_PATH);
-	} else {
-		addnewvar("PATH", DEFAULT_PATH);
-	}
-	if (cp != NULL) {
-		addnewvar("LANG", cp);
-		m_free(cp);
-	}	
-	if (chansess->term != NULL) {
-		addnewvar("TERM", chansess->term);
-	}
-
-	if (chansess->tty) {
-		addnewvar("SSH_TTY", chansess->tty);
-	}
-	
-	if (chansess->connection_string) {
-		addnewvar("SSH_CONNECTION", chansess->connection_string);
-	}
-
-	if (chansess->client_string) {
-		addnewvar("SSH_CLIENT", chansess->client_string);
-	}
-	
-	if (chansess->original_command) {
-		addnewvar("SSH_ORIGINAL_COMMAND", chansess->original_command);
-	}
-#if DROPBEAR_SVR_PUBKEY_OPTIONS_BUILT
-	if (ses.authstate.pubkey_info != NULL) {
-		addnewvar("SSH_PUBKEYINFO", ses.authstate.pubkey_info);
-	}
-#endif
-
-	/* change directory */
-	if (chdir(ses.authstate.pw_dir) < 0) {
-		int e = errno;
-		if (chdir("/") < 0) {
-			dropbear_exit("chdir(\"/\") failed");
-		}
-		fprintf(stderr, "Failed chdir '%s': %s\n", ses.authstate.pw_dir, strerror(e));
-	}
-
-
-#if DROPBEAR_X11FWD
-	/* set up X11 forwarding if enabled */
-	x11setauth(chansess);
-#endif
-#if DROPBEAR_SVR_AGENTFWD
-	/* set up agent env variable */
-	svr_agentset(chansess);
-#endif
-
-	usershell = m_strdup(get_user_shell());
-	run_shell_command(chansess->cmd, ses.maxfd, usershell);
-
-	/* only reached on error */
-	dropbear_exit("Child failed");
 }
 
 /* Set up the general chansession environment, in particular child-exit
