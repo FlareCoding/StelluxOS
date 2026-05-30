@@ -37,11 +37,10 @@ static bool category_enabled(category cat) {
  *  |                 cpu_count, total_size                          |
  *  |    count table: cpu_count x { cpu_id u32, record_count u32 }   |
  *  +================================================================+
- *  |  RECORDS  (streamed straight from the frozen ring buffers)     |
- *  |    cpu[0]: record_count[0] x 32B record                        |
- *  |    cpu[1]: record_count[1] x 32B record                        |
- *  |    ...                                                         |
- *  |    record.name carries an interned u32 id, never a kptr        |
+ *  |  RECORDS  (streamed from the frozen ring buffers, 48B each)    |
+ *  |    record: ts, name(id), arg0, arg1, tid, pid, cat, ph, fl     |
+ *  |    name = interned id, never a kptr                            |
+ *  |    arg0/arg1 = duration / next_tid / waker / prev_state        |
  *  +================================================================+
  *  |  STRINGS  (materialized in str_buf)                            |
  *  |    name_count u32, then name_count x { len u16, bytes[len] }   |
@@ -50,7 +49,7 @@ static bool category_enabled(category cat) {
  *
  *  total_size = header + every record + string table (the fstat size)
  */
-constexpr uint32_t DUMP_VERSION = 1;
+constexpr uint32_t DUMP_VERSION = 2;
 constexpr uint32_t MAX_NAMES    = 1024;
 constexpr uint32_t MAX_NAME_LEN = 64;
 
@@ -278,6 +277,22 @@ void emit_record(const record& rec) {
     }
 }
 
+void emit_event(category cat, const char* name, phase ph,
+                uint32_t tid, uint32_t pid,
+                uint64_t arg0, uint64_t arg1, flags fl) {
+    record rec {};
+    rec.ts = timestamp();
+    rec.name = name;
+    rec.arg0 = arg0;
+    rec.arg1 = arg1;
+    rec.tid = tid;
+    rec.pid = pid;
+    rec.category = cat;
+    rec.ph = ph;
+    rec.fl = fl;
+    emit_record(rec);
+}
+
 scope::scope(uint16_t category, const char* name) : m_category(category), m_name(name) {
     m_start_ts = timestamp();
 }
@@ -288,8 +303,9 @@ scope::~scope() {
     record rec {};
     rec.ts = m_start_ts;
     rec.name = m_name;
-    rec.arg = timestamp() - m_start_ts;
+    rec.arg0 = timestamp() - m_start_ts;
     rec.tid = current_task ? current_task->tid : static_cast<uint32_t>(-1);
+    rec.pid = current_task ? sched::process_id(current_task) : 0;
     rec.category = m_category;
     rec.ph = phase::complete;
     rec.fl = flags::none;

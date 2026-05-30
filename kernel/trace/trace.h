@@ -32,6 +32,9 @@ uint64_t    dump_size();
 __PRIVILEGED_CODE int32_t register_device();
 
 void        emit_record(const record& rec);
+void        emit_event(category cat, const char* name, phase ph,
+                       uint32_t tid, uint32_t pid,
+                       uint64_t arg0, uint64_t arg1, flags fl = flags::none);
 
 class scope {
 public:
@@ -57,9 +60,19 @@ private:
 #define TRACE_SCOPE(cat, name) \
     ::trace::scope STLX_TRACE_CAT(_trace_scope_, __LINE__){cat, name}
 
+#define TRACE_EVENT(cat, name, tid, pid, a0, a1, fl) \
+    ::trace::emit_event((cat), (name), ::trace::phase::instant, (tid), (pid), (a0), (a1), (fl))
+
+#define TRACE_INSTANT(cat, name) \
+    ::trace::emit_event((cat), (name), ::trace::phase::instant, \
+        ::sched::current() ? ::sched::current()->tid : 0, \
+        ::sched::current() ? ::sched::process_id(::sched::current()) : 0, 0, 0)
+
 #else
 
 #define TRACE_SCOPE(cat, name) ((void)0)
+#define TRACE_EVENT(cat, name, tid, pid, a0, a1, fl) ((void)0)
+#define TRACE_INSTANT(cat, name) ((void)0)
 
 #endif // STLX_TRACING_ENABLED
 

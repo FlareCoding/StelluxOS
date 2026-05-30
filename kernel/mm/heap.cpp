@@ -6,6 +6,7 @@
 #include "dynpriv/dynpriv.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "trace/trace.h"
 
 namespace heap {
 
@@ -112,6 +113,11 @@ __PRIVILEGED_CODE static void link_slab(slab_header* header, slab_class& sc) {
 }
 
 __PRIVILEGED_CODE static void* alloc_internal(size_t size, heap_state* state) {
+    TRACE_SCOPE(trace::mm,
+        state->type == heap_type::privileged ?
+        "mm:kalloc:alloc_internal" :
+        "mm:ualloc:alloc_internal");
+    
     if (size == 0) return nullptr;
 
     sync::irq_lock_guard guard(state->lock);

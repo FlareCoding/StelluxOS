@@ -6,6 +6,7 @@
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 #include "common/logging.h"
+#include "trace/trace.h"
 
 constexpr uint32_t ELEVATION_CONTEXT_MASK = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
 
@@ -29,6 +30,8 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     uint64_t arg5,
     uint64_t arg6
 ) {
+    TRACE_SCOPE(trace::syscall, "syscall:dispatch");
+
     // Mark as elevated so RUN_ELEVATED inside handlers skips nested SYSCALL.
     // The SYSCALL entry already switched to Ring 0 and the system stack.
     // IN_SYSCALL ensures percpu_is_elevated is correctly restored if the

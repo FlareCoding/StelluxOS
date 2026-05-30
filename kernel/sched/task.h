@@ -104,6 +104,18 @@ struct thread_group : rc::ref_counted<thread_group> {
     __PRIVILEGED_CODE static void ref_destroy(thread_group* self);
 };
 
+// Process id for tracing/grouping: the thread-group leader's tid, or 0 for
+// group-less kernel tasks. A leader nulls tg->leader during its own exit()
+// teardown while the group (and this task's reference to it) stays alive, so
+// the leader deref must be guarded. In that window this task is the exiting
+// leader, so its own tid is the correct process id.
+inline uint32_t process_id(const task* t) {
+    if (!t || !t->group) {
+        return 0;
+    }
+    return t->group->leader ? t->group->leader->tid : t->tid;
+}
+
 } // namespace sched
 
 #endif // STELLUX_SCHED_TASK_H

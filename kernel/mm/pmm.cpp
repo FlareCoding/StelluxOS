@@ -5,6 +5,7 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
+#include "trace/trace.h"
 
 // Linker symbols for kernel boundaries
 extern "C" {
@@ -581,6 +582,8 @@ __PRIVILEGED_CODE int32_t init() {
 __PRIVILEGED_CODE phys_addr_t alloc_pages(uint8_t order, zone_mask_t zones) {
     if (!g_pmm.initialized) return 0;
     if (order > MAX_ORDER) return 0;
+
+    TRACE_SCOPE(trace::mm, "mm:pmm:alloc_pages");
 
     if (zones & ZONE_NORMAL) {
         size_t zi = static_cast<size_t>(zone_id::NORMAL);
