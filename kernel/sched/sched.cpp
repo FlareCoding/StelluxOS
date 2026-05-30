@@ -3,6 +3,7 @@
 #include "sched/task.h"
 #include "sched/task_registry.h"
 #include "sched/sched_policy.h"
+#include "trace/trace.h"
 #include "sched/runqueue.h"
 #include "sched/fpu.h"
 #include "dynpriv/dynpriv.h"
@@ -297,6 +298,11 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
 
+    TRACE_EVENT(trace::sched, "sched:switch",
+                prev->tid, sched::process_id(prev),
+                next->tid, prev->state,
+                next == rq.idle_task ? trace::flags::idle : trace::flags::none);
+
     return next;
 }
 
@@ -310,6 +316,11 @@ __PRIVILEGED_CODE void enqueue(task* t) {
         log::warn("sched: enqueue rejected tid=%u (state=%u)", t->tid, expected);
         return;
     }
+
+    TRACE_EVENT(trace::sched, "sched:wakeup",
+                t->tid, sched::process_id(t),
+                sched::current() ? sched::current()->tid : 0, 0,
+                trace::flags::none);
 
     uint32_t cpu = load_balance_select_cpu();
     t->exec.cpu = cpu;
@@ -331,6 +342,11 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id) {
         return;
     }
 
+    TRACE_EVENT(trace::sched, "sched:wakeup",
+                t->tid, sched::process_id(t),
+                sched::current() ? sched::current()->tid : 0, 0,
+                trace::flags::none);
+
     t->exec.cpu = cpu_id;
     runqueue& rq = per_cpu_on(cpu_rq, cpu_id);
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
@@ -348,6 +364,20 @@ __PRIVILEGED_CODE void wake(task* t) {
                                       false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         return;
     }
+
+    TRACE_EVENT(trace::sched, "sched:wakeup",
+                t->tid, sched::process_id(t),
+                sched::current() ? sched::current()->tid : 0, 0,
+                trace::flags::none);
+
+    // Publish this CPU's own deferred off-CPU task before the spin-wait below.
+    // A switched-out task's on_cpu is cleared lazily at the CPU's next scheduler
+    // trap. Two CPUs that each wake a task still pending-off-CPU on the other
+    // would otherwise spin forever on each other's on_cpu, neither reaching a
+    // trap to run finalize_pending_off_cpu(). Publishing here breaks that cycle.
+    // It is safe because wake() always runs after the switch-out trap that
+    // created the pending task has already exited.
+    finalize_pending_off_cpu();
 
     uint32_t task_cpu = __atomic_load_n(&t->exec.cpu, __ATOMIC_RELAXED);
     if (task_cpu != percpu::current_cpu_id()) {
