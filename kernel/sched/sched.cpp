@@ -349,6 +349,20 @@ __PRIVILEGED_CODE void wake(task* t) {
         return;
     }
 
+    // Publish this CPU's own deferred off-CPU task before the spin-wait below.
+    // A switched-out task's on_cpu is cleared lazily at the owning CPU's next
+    // scheduler trap. Two CPUs that each wake a task still pending-off-CPU on
+    // the other would otherwise spin forever on each other's on_cpu, neither
+    // reaching a trap to run finalize_pending_off_cpu(). Publishing here breaks
+    // that cycle. finalize_pending_off_cpu() mutates per-CPU state non-atomically
+    // and is otherwise only ever called from the IRQ-masked scheduler trap
+    // paths; wake() is reachable with interrupts enabled (futex / wait-queue /
+    // mutex wakeups), so the call must run with interrupts disabled to keep that
+    // contract and avoid a timer tick corrupting pending_off_cpu_task.
+    uint64_t irq_flags = cpu::irq_save();
+    finalize_pending_off_cpu();
+    cpu::irq_restore(irq_flags);
+
     uint32_t task_cpu = __atomic_load_n(&t->exec.cpu, __ATOMIC_RELAXED);
     if (task_cpu != percpu::current_cpu_id()) {
         while (__atomic_load_n(&t->exec.on_cpu, __ATOMIC_ACQUIRE)) {
