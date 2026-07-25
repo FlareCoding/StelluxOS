@@ -24,6 +24,7 @@ typedef struct {
 
 typedef struct {
     char     path[256];
+    char     args[256];  /* optional space-separated arguments */
 } stlxdm_conf_autostart_t;
 
 typedef struct {

@@ -537,8 +537,22 @@ static void stlxdm_compositor_finish_sync(stlxdm_compositor_t* comp,
     }
 }
 
-static void stlxdm_spawn_app(const char* path) {
-    int handle = proc_exec(path, NULL);
+/* Spawn a detached app. args is an optional space-separated argument
+ * string (no quoting support), tokenized in place; may be NULL. */
+static void stlxdm_spawn_app(const char* path, char* args) {
+    const char* argv[16];
+    int argc = 0;
+
+    for (char* p = args; p && *p && argc < 15;) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        argv[argc++] = p;
+        while (*p && *p != ' ') p++;
+        if (*p) *p++ = '\0';
+    }
+    argv[argc] = NULL;
+
+    int handle = proc_exec(path, argc > 0 ? argv : NULL);
     if (handle >= 0) {
         proc_detach(handle);
         printf("stlxdm: spawned %s\r\n", path);
@@ -584,9 +598,10 @@ int main(void) {
 
     if (config.autostart_count > 0) {
         for (int i = 0; i < config.autostart_count; i++)
-            stlxdm_spawn_app(config.autostart[i].path);
+            stlxdm_spawn_app(config.autostart[i].path,
+                             config.autostart[i].args);
     } else {
-        stlxdm_spawn_app("/bin/stlxterm");
+        stlxdm_spawn_app("/bin/stlxterm", NULL);
     }
 
     stlxdm_server_t server;
@@ -630,11 +645,11 @@ int main(void) {
                               &taskbar);
 
         if (input.spawn_terminal_requested) {
-            stlxdm_spawn_app("/bin/stlxterm");
+            stlxdm_spawn_app("/bin/stlxterm", NULL);
         }
 
         if (taskbar.launch_path[0] != '\0') {
-            stlxdm_spawn_app(taskbar.launch_path);
+            stlxdm_spawn_app(taskbar.launch_path, NULL);
             taskbar.launch_path[0] = '\0';
         }
 

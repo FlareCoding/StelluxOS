@@ -172,6 +172,8 @@ static void parse_line(stlxdm_config_t* conf, const char* line,
             stlxdm_conf_autostart_t* as = &conf->autostart[*item_idx];
             if (strcmp(key, "path") == 0)
                 safe_copy(as->path, val, sizeof(as->path));
+            else if (strcmp(key, "args") == 0)
+                safe_copy(as->args, val, sizeof(as->args));
         }
         break;
 
