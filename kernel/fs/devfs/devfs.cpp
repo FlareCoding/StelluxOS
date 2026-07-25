@@ -99,6 +99,26 @@ private:
     uint32_t m_child_count;
 };
 
+/* Built-in /dev/null: reads return EOF, writes are discarded. */
+class devfs_null_node : public fs::node {
+public:
+    devfs_null_node(fs::instance* fs, const char* name)
+        : fs::node(fs::node_type::char_device, fs, name) {}
+
+    ssize_t read(fs::file*, void*, size_t) override { return 0; }
+
+    ssize_t write(fs::file*, const void*, size_t count) override {
+        return static_cast<ssize_t>(count);
+    }
+
+    int32_t getattr(fs::vattr* attr) override {
+        if (!attr) return fs::ERR_INVAL;
+        attr->type = fs::node_type::char_device;
+        attr->size = 0;
+        return fs::OK;
+    }
+};
+
 __PRIVILEGED_BSS static devfs_dir_node* g_devfs_root;
 __PRIVILEGED_BSS static fs::instance*   g_devfs_instance;
 
@@ -122,6 +142,11 @@ __PRIVILEGED_CODE static int32_t devfs_mount_fn(
 
     g_devfs_root = root;
     g_devfs_instance = inst;
+
+    void* null_mem = heap::kzalloc(sizeof(devfs_null_node));
+    if (null_mem) {
+        root->add_child(new (null_mem) devfs_null_node(inst, "null"));
+    }
 
     *out = inst;
     return fs::OK;
