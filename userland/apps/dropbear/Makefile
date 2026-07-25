@@ -82,9 +82,16 @@ LTC_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(LTC_SRCS))
 LTM_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(LTM_SRCS))
 ALL_OBJS := $(DROPBEAR_OBJS) $(LTC_OBJS) $(LTM_OBJS)
 
-TARGET := $(OUTDIR)/$(APP_NAME)
+SCP_SRCS := \
+	src/scp.c src/scpmisc.c src/progressmeter.c \
+	src/atomicio.c src/compat.c
 
-all: $(TARGET)
+SCP_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(SCP_SRCS))
+
+TARGET := $(OUTDIR)/$(APP_NAME)
+SCP_TARGET := $(OUTDIR)/scp
+
+all: $(TARGET) $(SCP_TARGET)
 
 $(TARGET): $(ALL_OBJS)
 	@mkdir -p $(dir $@)
@@ -92,6 +99,15 @@ $(TARGET): $(ALL_OBJS)
 	@$(CC) $(LDFLAGS) -o $@ \
 		$(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
 		$(ALL_OBJS) \
+		-L$(SYSROOT)/lib -Wl,--start-group -lstlx -lc -lm $(BUILTINS_LIB) -Wl,--end-group \
+		$(SYSROOT)/lib/crtn.o
+
+$(SCP_TARGET): $(SCP_OBJS)
+	@mkdir -p $(dir $@)
+	@echo "[LD]  scp ($(ARCH))"
+	@$(CC) $(LDFLAGS) -o $@ \
+		$(SYSROOT)/lib/crt1.o $(SYSROOT)/lib/crti.o \
+		$(SCP_OBJS) \
 		-L$(SYSROOT)/lib -Wl,--start-group -lstlx -lc -lm $(BUILTINS_LIB) -Wl,--end-group \
 		$(SYSROOT)/lib/crtn.o
 
