@@ -229,7 +229,7 @@ run-qemu-x86_64: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
-		-device virtio-gpu-pci \
+		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
@@ -331,7 +331,7 @@ run-qemu-x86_64-debug: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS.fd
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive if=pflash,format=raw,file=$(BUILD_DIR)/OVMF_VARS.fd \
 		-drive format=raw,file=$(IMAGE_DIR)/stellux-x86_64.img \
-		-device virtio-gpu-pci \
+		-vga std \
 		-device qemu-xhci,id=xhci \
 		-device usb-hub,bus=xhci.0,port=1 \
 		-device usb-kbd,bus=xhci.0,port=1.1 \
