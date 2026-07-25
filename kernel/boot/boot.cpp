@@ -24,6 +24,7 @@
 #include "drivers/pci_driver.h"
 #include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
+#include "drivers/gpu/nvidia/nv_gpu.h"
 #include "drivers/input/input.h"
 #include "net/net.h"
 #include "random/random.h"
@@ -162,6 +163,11 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     if (drivers::platform_init() != drivers::OK) {
         log::warn("drivers::platform_init failed");
     }
+
+    // NVIDIA RTX 3080 (GA102) bring-up now runs as a first-class PCI driver (nvidia_gpu : pci_driver,
+    // see drivers/gpu/nvidia/nv_driver.cpp): the framework discovered + bound it during drivers::init()
+    // above and runs nvidia::init() on its own kernel task (Step 4.2). Running off the boot/idle thread
+    // is what lets its post-INIT_DONE RPC waits sleep on the GSP SWGEN0 interrupt instead of busy-polling.
 
     exec::loaded_image loaded;
     int32_t load_result = exec::load_elf("/bin/init", &loaded);

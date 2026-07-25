@@ -8,6 +8,10 @@
 
 #define STLXDM_INPUT_MAX_RAW_PER_FRAME 64
 
+/* /dev/nvdisp hardware-cursor ioctl ABI (must match kernel nv_display.h). */
+#define NVDISP_SET_CURSOR_POS 0x4e440001u
+typedef struct { int32_t x; int32_t y; } nvdisp_cursor_pos_t;
+
 struct stlxdm_taskbar_t_tag;
 
 typedef struct {
@@ -38,6 +42,10 @@ typedef struct {
 
     stlxgfx_surface_t* cursor_sprite;
     stlxgfx_surface_t* cursor_shadow;
+
+    int cursor_fd;        /* /dev/nvdisp -- hardware cursor control (-1 if unavailable) */
+    int32_t last_hw_x;    /* last position pushed to the HW cursor (avoid redundant ioctls) */
+    int32_t last_hw_y;
 } stlxdm_input_t;
 
 typedef struct {

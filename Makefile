@@ -164,6 +164,12 @@ image-aarch64:
 INITRD_DIR  := initrd
 INITRD_CPIO := $(BUILD_DIR)/initrd.cpio
 
+# Disk image geometry. The initrd carries the ~38 MB NVIDIA GSP firmware blob,
+# so the image must be far larger than the historical 64 MB default.
+IMAGE_SIZE_MB  := 256
+# Last usable GPT sector = IMAGE_SIZE_MB*2048 - 34 (reserve GPT backup header/table).
+IMAGE_PART_END := 524254
+
 .PHONY: $(INITRD_CPIO)
 $(INITRD_CPIO):
 	@mkdir -p $(BUILD_DIR)
@@ -174,8 +180,8 @@ $(INITRD_CPIO):
 $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating x86_64 UEFI disk image..."
-	$(Q)dd if=/dev/zero of=$@ bs=1M count=64 status=none
-	$(Q)/sbin/sgdisk --clear --new=1:2048:131038 --typecode=1:ef00 $@ > /dev/null
+	$(Q)dd if=/dev/zero of=$@ bs=1M count=$(IMAGE_SIZE_MB) status=none
+	$(Q)/sbin/sgdisk --clear --new=1:2048:$(IMAGE_PART_END) --typecode=1:ef00 $@ > /dev/null
 	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT
@@ -188,8 +194,8 @@ $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DI
 $(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_DIR)/limine.conf $(INITRD_CPIO)
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating AArch64 UEFI disk image..."
-	$(Q)dd if=/dev/zero of=$@ bs=1M count=64 status=none
-	$(Q)/sbin/sgdisk --clear --new=1:2048:131038 --typecode=1:ef00 $@ > /dev/null
+	$(Q)dd if=/dev/zero of=$@ bs=1M count=$(IMAGE_SIZE_MB) status=none
+	$(Q)/sbin/sgdisk --clear --new=1:2048:$(IMAGE_PART_END) --typecode=1:ef00 $@ > /dev/null
 	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT

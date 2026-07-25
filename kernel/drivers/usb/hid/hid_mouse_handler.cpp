@@ -159,6 +159,16 @@ void hid_mouse_handler::on_report(const uint8_t* data, uint32_t length) {
         evt.buttons = buttons;
         evt.flags = is_relative ? input::MOUSE_FLAG_RELATIVE : 0;
         input::push_mouse_event(evt);
+
+        // Diagnostic: prove the mouse is actually delivering movement into the kernel input
+        // layer (upstream of stlxdm + the HW cursor). Throttled per-device: first 20 events
+        // then every 64th. report_id identifies WHICH HID device produced the event.
+        if (m_event_count < 20 || (m_event_count % 64) == 0) {
+            log::info("hid-mouse: report=%u event #%u dx=%d dy=%d wheel=%d buttons=0x%x %s -> input",
+                      m_report_id, m_event_count, dx, dy, scroll, buttons,
+                      is_relative ? "REL" : "ABS");
+        }
+        m_event_count++;
     }
 }
 

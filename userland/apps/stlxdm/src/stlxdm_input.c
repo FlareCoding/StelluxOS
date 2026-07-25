@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 
 typedef enum {
     HIT_NONE,
@@ -82,6 +83,9 @@ void stlxdm_input_init(stlxdm_input_t* inp, int32_t fb_w, int32_t fb_h) {
     memset(inp, 0, sizeof(*inp));
     inp->kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
     inp->mouse_fd = open("/dev/input/mouse", O_RDONLY | O_NONBLOCK);
+    inp->cursor_fd = open("/dev/nvdisp", O_WRONLY); /* hardware cursor (optional) */
+    inp->last_hw_x = -1;
+    inp->last_hw_y = -1;
     inp->fb_width = fb_w;
     inp->fb_height = fb_h;
     inp->ptr_x = fb_w / 2;
@@ -459,6 +463,17 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
 
     if (taskbar) {
         stlxdm_taskbar_update_hover(taskbar, inp->ptr_x, inp->ptr_y);
+    }
+
+    /* Drive the hardware cursor (display-engine overlay) to the current pointer position.
+     * Only ioctl when it actually moved -- moving the HW cursor is two register writes the
+     * kernel does on our behalf; the display engine re-overlays it every frame for free. */
+    if (inp->cursor_fd >= 0 &&
+        (inp->ptr_x != inp->last_hw_x || inp->ptr_y != inp->last_hw_y)) {
+        nvdisp_cursor_pos_t cp = { inp->ptr_x, inp->ptr_y };
+        ioctl(inp->cursor_fd, NVDISP_SET_CURSOR_POS, &cp);
+        inp->last_hw_x = inp->ptr_x;
+        inp->last_hw_y = inp->ptr_y;
     }
 }
 

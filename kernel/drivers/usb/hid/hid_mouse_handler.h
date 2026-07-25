@@ -22,6 +22,7 @@ private:
     uint16_t           m_button_count = 0;
     uint8_t            m_report_id = 0;
     bool               m_ready = false;
+    uint32_t           m_event_count = 0; // diagnostic: # of movement/button events pushed
 
     void reset_state();
 };
