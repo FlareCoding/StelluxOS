@@ -48,11 +48,15 @@ echo ""
 if [[ "$ARCH" == "x86_64" ]]; then
     OVMF_CODE=""
     for f in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd \
-             /usr/share/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd; do
+             /usr/share/ovmf/OVMF.fd /usr/share/qemu/OVMF.fd \
+             /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+             /usr/local/share/qemu/edk2-x86_64-code.fd; do
         if [[ -f "$f" ]]; then OVMF_CODE="$f"; break; fi
     done
     OVMF_VARS_SRC=""
-    for f in /usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/OVMF/OVMF_VARS.fd; do
+    for f in /usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/OVMF/OVMF_VARS.fd \
+             /opt/homebrew/share/qemu/edk2-i386-vars.fd \
+             /usr/local/share/qemu/edk2-i386-vars.fd; do
         if [[ -f "$f" ]]; then OVMF_VARS_SRC="$f"; break; fi
     done
 
@@ -82,9 +86,14 @@ if [[ "$ARCH" == "x86_64" ]]; then
     QEMU_PID=$!
 
 elif [[ "$ARCH" == "aarch64" ]]; then
-    QEMU_EFI="/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
-    if [[ ! -f "$QEMU_EFI" ]]; then
-        echo -e "${RED}Error: AArch64 EFI firmware not found at $QEMU_EFI. Run: make deps${NC}"
+    QEMU_EFI=""
+    for f in /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+             /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+             /usr/local/share/qemu/edk2-aarch64-code.fd; do
+        if [[ -f "$f" ]]; then QEMU_EFI="$f"; break; fi
+    done
+    if [[ -z "$QEMU_EFI" ]]; then
+        echo -e "${RED}Error: AArch64 EFI firmware not found. Run: make deps${NC}"
         exit 1
     fi
 

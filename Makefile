@@ -29,16 +29,28 @@ LIMINE_BRANCH := v8.x-binary
 RPI4_UEFI_DIR := boot/rpi4-uefi
 RPI4_UEFI_VERSION := v1.41
 
-# QEMU firmware paths (auto-detect)
+# Host tool and command resolution
+include scripts/host.mk
+
+# QEMU UEFI firmware paths (auto-detect): Linux OVMF/AAVMF packages first,
+# then the edk2 images bundled with Homebrew QEMU on macOS.
 OVMF_CODE := $(firstword $(wildcard \
 	/usr/share/OVMF/OVMF_CODE_4M.fd \
 	/usr/share/OVMF/OVMF_CODE.fd \
 	/usr/share/ovmf/OVMF.fd \
-	/usr/share/qemu/OVMF.fd))
+	/usr/share/qemu/OVMF.fd \
+	/opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+	/usr/local/share/qemu/edk2-x86_64-code.fd))
 OVMF_VARS := $(firstword $(wildcard \
 	/usr/share/OVMF/OVMF_VARS_4M.fd \
-	/usr/share/OVMF/OVMF_VARS.fd))
-QEMU_EFI_AARCH64 := /usr/share/qemu-efi-aarch64/QEMU_EFI.fd
+	/usr/share/OVMF/OVMF_VARS.fd \
+	/opt/homebrew/share/qemu/edk2-i386-vars.fd \
+	/usr/local/share/qemu/edk2-i386-vars.fd))
+QEMU_EFI_AARCH64 := $(firstword $(wildcard \
+	/usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
+	/opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+	/usr/local/share/qemu/edk2-aarch64-code.fd) \
+	/usr/share/qemu-efi-aarch64/QEMU_EFI.fd)
 
 # GDB setup script
 GDB_SETUP := scripts/gdb_setup.gdb
@@ -175,7 +187,7 @@ $(IMAGE_DIR)/stellux-x86_64.img: $(BUILD_DIR)/kernel/x86_64/kernel.elf $(BOOT_DI
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating x86_64 UEFI disk image..."
 	$(Q)dd if=/dev/zero of=$@ bs=1M count=256 status=none
-	$(Q)/sbin/sgdisk --clear --new=1:2048:524254 --typecode=1:ef00 $@ > /dev/null
+	$(Q)$(SGDISK) --clear --new=1:2048:524254 --typecode=1:ef00 $@ > /dev/null
 	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT
@@ -189,7 +201,7 @@ $(IMAGE_DIR)/stellux-aarch64.img: $(BUILD_DIR)/kernel/aarch64/kernel.elf $(BOOT_
 	@mkdir -p $(IMAGE_DIR)
 	@echo "Creating AArch64 UEFI disk image..."
 	$(Q)dd if=/dev/zero of=$@ bs=1M count=256 status=none
-	$(Q)/sbin/sgdisk --clear --new=1:2048:524254 --typecode=1:ef00 $@ > /dev/null
+	$(Q)$(SGDISK) --clear --new=1:2048:524254 --typecode=1:ef00 $@ > /dev/null
 	$(Q)mformat -i $@@@1M -F -v STELLUX ::
 	$(Q)mmd -i $@@@1M ::/EFI
 	$(Q)mmd -i $@@@1M ::/EFI/BOOT
@@ -432,7 +444,7 @@ connect-gdb-x86_64:
 	    -ex "b boot/boot.cpp:stlx_init"
 
 connect-gdb-aarch64:
-	gdb-multiarch -ex "source ./$(GDB_SETUP)" \
+	$(GDB_MULTIARCH) -ex "source ./$(GDB_SETUP)" \
 	    -ex "set architecture aarch64" \
 	    -ex "target remote localhost:$(GDB_PORT)" \
 	    -ex "add-symbol-file $(BUILD_DIR)/kernel/aarch64/kernel.elf" \
@@ -450,16 +462,7 @@ usb: image
 	@echo ""
 	@echo "To write to a USB drive:"
 	@echo ""
-	@echo "  1. Identify your USB device (use 'lsblk' to find it)"
-	@echo "     Example: /dev/sdb (NOT a partition like /dev/sdb1)"
-	@echo ""
-	@echo "  2. Unmount any mounted partitions:"
-	@echo "     sudo umount /dev/sdX*"
-	@echo ""
-	@echo "  3. Write the image (DESTRUCTIVE - double-check the device!):"
-	@echo "     sudo dd if=$(DISK_IMAGE) of=/dev/sdX bs=4M status=progress conv=fsync"
-	@echo ""
-	@echo "  4. Boot your PC from USB (check BIOS/UEFI boot menu)"
+	$(HOST_USB_INSTRUCTIONS)
 	@echo ""
 	@echo "WARNING: This will ERASE the USB drive!"
 	@echo ""
@@ -480,7 +483,7 @@ clean:
 # ============================================================================
 
 check-lld:
-	@which ld.lld > /dev/null 2>&1 || \
+	@command -v $(STLX_LLD) > /dev/null 2>&1 || \
 		(echo ""; echo "ERROR: ld.lld not found. Run: make deps"; echo ""; exit 1)
 
 check-limine:
