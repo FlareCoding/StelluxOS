@@ -9,9 +9,11 @@ APP_NAME := dropbear
 ARCH ?= x86_64
 USERLAND_ROOT ?= ../..
 
+include $(USERLAND_ROOT)/../scripts/host.mk
+
 SYSROOT := $(USERLAND_ROOT)/sysroot/$(ARCH)
 TARGET_TRIPLE := $(ARCH)-linux-musl
-CC := clang
+CC := $(STLX_CC)
 BUILD_DIR := build/$(ARCH)
 OUTDIR := $(USERLAND_ROOT)/build/$(ARCH)/bin
 
@@ -36,8 +38,21 @@ CFLAGS := \
 LDFLAGS := \
 	-nostdlib -fuse-ld=lld --target=$(TARGET_TRIPLE) -static
 
-BUILTINS_LIB := $(shell $(CC) --target=$(TARGET_TRIPLE) -print-libgcc-file-name 2>/dev/null || \
-	$(CC) --target=$(TARGET_TRIPLE) --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null)
+# Runtime builtins discovery: sysroot compiler-rt first, then the host's
+# compiler-rt, then target libgcc. Mirrors userland/mk/toolchain.mk.
+SYSROOT_BUILTINS     := $(SYSROOT)/lib/libclang_rt.builtins-$(ARCH).a
+COMPILER_RT_BUILTINS := $(shell $(CC) --target=$(TARGET_TRIPLE) --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null)
+GCC_BUILTINS         := $(shell $(ARCH)-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null)
+
+ifneq ($(wildcard $(SYSROOT_BUILTINS)),)
+  BUILTINS_LIB := $(SYSROOT_BUILTINS)
+else ifneq ($(wildcard $(COMPILER_RT_BUILTINS)),)
+  BUILTINS_LIB := $(COMPILER_RT_BUILTINS)
+else ifneq ($(wildcard $(GCC_BUILTINS)),)
+  BUILTINS_LIB := $(GCC_BUILTINS)
+else
+  $(error Missing runtime builtins for ARCH=$(ARCH). Run 'make compiler-rt' or install dependencies with 'make deps')
+endif
 
 # Dropbear server sources (no client, no scp, no fuzz)
 DROPBEAR_SRCS := \
