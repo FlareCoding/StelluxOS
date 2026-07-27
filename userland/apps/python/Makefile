@@ -26,8 +26,12 @@ INSTALL_DIR := install/$(ARCH)
 
 ROOTFS_DIR := $(USERLAND_ROOT)/build/$(ARCH)/rootfs
 
-CC := clang
-HOST_PYTHON := python3
+include $(USERLAND_ROOT)/../scripts/host.mk
+
+CC := $(STLX_CC)
+
+# The build interpreter must match the target's major.minor version.
+HOST_PYTHON := $(if $(shell command -v python$(PY_MAJOR_MINOR) 2>/dev/null),python$(PY_MAJOR_MINOR),python3)
 
 # Runtime builtins discovery: prefer the sysroot-bundled compiler-rt (built by
 # 'make compiler-rt' at repo root), then the host's system compiler-rt, then
@@ -212,7 +216,7 @@ $(ROOTFS_PYTHON): $(BUILD_STAMP)
 	@find $(INSTALL_DIR) -name '*.o' -delete
 
 	# Optional: strip the runtime interpreter to reduce initrd size.
-	@llvm-strip $(INSTALL_DIR)/usr/bin/python$(PY_MAJOR_MINOR) 2>/dev/null || \
+	@$(STLX_STRIP) $(INSTALL_DIR)/usr/bin/python$(PY_MAJOR_MINOR) 2>/dev/null || \
 		strip $(INSTALL_DIR)/usr/bin/python$(PY_MAJOR_MINOR) 2>/dev/null || true
 
 	# Stage as a rootfs overlay. Remove stale Python artifacts first.
@@ -241,7 +245,7 @@ verify:
 	@echo "[VERIFY] built interpreter"
 	@if [ -x "$(BUILD_DIR)/python" ]; then \
 		file "$(BUILD_DIR)/python"; \
-		readelf -l "$(BUILD_DIR)/python" | grep INTERP || echo "no PT_INTERP"; \
+		$(STLX_READELF) -l "$(BUILD_DIR)/python" | grep INTERP || echo "no PT_INTERP"; \
 	else \
 		echo "missing $(BUILD_DIR)/python"; \
 		exit 1; \

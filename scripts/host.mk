@@ -24,6 +24,8 @@ STLX_LLD     := $(call stlx_llvm_tool,ld.lld,ld.lld)
 STLX_AR      := $(call stlx_llvm_tool,llvm-ar,llvm-ar)
 STLX_RANLIB  := $(call stlx_llvm_tool,llvm-ranlib,llvm-ranlib)
 STLX_OBJCOPY := $(call stlx_llvm_tool,llvm-objcopy,llvm-objcopy)
+STLX_STRIP   := $(call stlx_llvm_tool,llvm-strip,llvm-strip)
+STLX_READELF := $(call stlx_llvm_tool,llvm-readelf,llvm-readelf)
 
 define HOST_USB_INSTRUCTIONS
 	@echo "  1. Identify your USB device (use 'diskutil list' to find it)"
@@ -86,6 +88,8 @@ STLX_LLD     := ld.lld
 STLX_AR      := llvm-ar
 STLX_RANLIB  := llvm-ranlib
 STLX_OBJCOPY := llvm-objcopy
+STLX_STRIP   := llvm-strip
+STLX_READELF := readelf
 
 define HOST_USB_INSTRUCTIONS
 	@echo "  1. Identify your USB device (use 'lsblk' to find it)"
@@ -129,6 +133,7 @@ NPROC := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 # Fail at parse time if the interface is incomplete for this host.
 # CMAKE_HOST_FLAGS is exempt: it is legitimately empty on Linux.
 $(foreach v,HOST_OS STLX_CC STLX_CXX STLX_LLD STLX_AR STLX_RANLIB STLX_OBJCOPY \
+	STLX_STRIP STLX_READELF \
 	SGDISK GDB_MULTIARCH NPROC HOST_USB_INSTRUCTIONS HOST_SYSROOT_HEADERS_INSTALL,\
 	$(if $(value $(v)),,$(error scripts/host.mk: $(v) is undefined for host '$(HOST_OS)')))
 
