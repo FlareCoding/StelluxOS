@@ -19,10 +19,14 @@ RELEASE ?= 0
 # Toolchain
 # ============================================================================
 
-CXX := clang++
-AS := clang
-LD := ld.lld
-OBJCOPY := llvm-objcopy
+# Host toolchain resolution (Linux: PATH names, macOS: Homebrew LLVM keg).
+# Path is computed from this file's location since it is included from kernel/.
+include $(dir $(lastword $(MAKEFILE_LIST)))scripts/host.mk
+
+CXX := $(STLX_CXX)
+AS := $(STLX_CC)
+LD := $(STLX_LLD)
+OBJCOPY := $(STLX_OBJCOPY)
 
 # ============================================================================
 # Debug Flags

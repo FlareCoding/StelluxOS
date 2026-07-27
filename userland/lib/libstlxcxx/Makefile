@@ -7,8 +7,6 @@
 USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
 include $(USERLAND_ROOT)/mk/toolchain.mk
 
-AR ?= llvm-ar
-
 SRC_DIR     := src
 INCLUDE_DIR := include
 BUILD_DIR   := build/$(ARCH)
