@@ -5,8 +5,12 @@
 # Included by app.mk and other build rules.
 #
 
-CC  := clang
-CXX := clang++
+# Host toolchain resolution via the shared host interface.
+include $(USERLAND_ROOT)/../scripts/host.mk
+
+CC  := $(STLX_CC)
+CXX := $(STLX_CXX)
+AR  := $(STLX_AR)
 
 SYSROOT := $(USERLAND_ROOT)/sysroot/$(ARCH)
 TARGET_TRIPLE := $(ARCH)-linux-musl

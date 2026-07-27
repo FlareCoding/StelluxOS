@@ -12,8 +12,6 @@
 USERLAND_ROOT ?= $(shell cd $(dir $(lastword $(MAKEFILE_LIST)))/../.. && pwd)
 include $(USERLAND_ROOT)/mk/toolchain.mk
 
-AR ?= llvm-ar
-
 BUILD_DIR   := build/$(ARCH)
 LIB_NAME    := libbearssl.a
 TARGET      := $(BUILD_DIR)/$(LIB_NAME)
