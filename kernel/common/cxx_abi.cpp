@@ -22,3 +22,8 @@ void operator delete(void*, unsigned long) noexcept {
 void operator delete(void*, std::align_val_t) noexcept {
     log::fatal("operator delete(void*, align_val_t) called in freestanding kernel");
 }
+
+// Emitted by clang >= 19, which enables C++14 sized deallocation by default.
+void operator delete(void*, unsigned long, std::align_val_t) noexcept {
+    log::fatal("operator delete(void*, size_t, align_val_t) called in freestanding kernel");
+}
