@@ -40,6 +40,16 @@ define HOST_USB_INSTRUCTIONS
 	@echo "  4. Eject: diskutil eject /dev/diskN, then boot the PC from USB"
 endef
 
+define HOST_DEPS_INSTALL
+	@echo "Installing required packages (Homebrew)..."
+	@command -v brew > /dev/null 2>&1 || \
+		{ echo "ERROR: Homebrew not found. Install it from https://brew.sh first."; exit 1; }
+	brew install llvm lld cmake qemu mtools gptfdisk coreutils bash gdb
+	@echo ""
+	@echo "Note: the 'python' userland app also needs a host python3.12"
+	@echo "(e.g. 'brew install python@3.12')."
+endef
+
 # Extra CMake flags for cross-building the LLVM runtimes from a Darwin
 # host: force cross mode so CMake applies no Apple platform rules.
 CMAKE_HOST_FLAGS := \
@@ -104,6 +114,19 @@ define HOST_USB_INSTRUCTIONS
 	@echo "  4. Boot your PC from USB (check BIOS/UEFI boot menu)"
 endef
 
+define HOST_DEPS_INSTALL
+	@echo "Installing required packages (Debian/Ubuntu)..."
+	sudo apt install -y clang lld llvm \
+		libclang-rt-dev \
+		gcc-aarch64-linux-gnu \
+		linux-libc-dev-arm64-cross \
+		cmake \
+		qemu-system-x86 qemu-system-arm \
+		ovmf qemu-efi-aarch64 \
+		mtools gdisk xorriso \
+		gdb-multiarch
+endef
+
 # No extra CMake flags: the LLVM runtimes cross-build natively on Linux.
 CMAKE_HOST_FLAGS :=
 
@@ -134,7 +157,8 @@ NPROC := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 # CMAKE_HOST_FLAGS is exempt: it is legitimately empty on Linux.
 $(foreach v,HOST_OS STLX_CC STLX_CXX STLX_LLD STLX_AR STLX_RANLIB STLX_OBJCOPY \
 	STLX_STRIP STLX_READELF \
-	SGDISK GDB_MULTIARCH NPROC HOST_USB_INSTRUCTIONS HOST_SYSROOT_HEADERS_INSTALL,\
+	SGDISK GDB_MULTIARCH NPROC \
+	HOST_USB_INSTRUCTIONS HOST_SYSROOT_HEADERS_INSTALL HOST_DEPS_INSTALL,\
 	$(if $(value $(v)),,$(error scripts/host.mk: $(v) is undefined for host '$(HOST_OS)')))
 
 endif # STLX_HOST_MK_INCLUDED

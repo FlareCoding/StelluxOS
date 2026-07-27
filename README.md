@@ -78,8 +78,10 @@ the [pftf/RPi4](https://github.com/pftf/RPi4) project.
 
 ### Prerequisites
 
-Debian/Ubuntu is the primary development environment. The kernel is built with
-Clang/LLD; userland applications link against a statically-built musl libc.
+Linux (Debian/Ubuntu) and macOS are both supported development
+environments, with the same commands on either OS. The kernel is built
+with Clang/LLD; userland applications link against a statically-built
+musl libc.
 
 Clone the repository and run the one-time setup:
 
@@ -90,13 +92,20 @@ make deps
 make limine
 make musl
 make libcxx
+make compiler-rt
 ```
 
-`make deps` installs system packages (clang, lld, llvm, qemu, ovmf, mtools,
-etc.). `make limine` downloads the Limine bootloader binaries. `make musl`
-builds musl 1.2.5 for both x86_64 and aarch64. `make libcxx` builds the
-LLVM C++ runtime (libc++, libc++abi, libunwind) against the musl sysroot
-for C++ userland application support.
+`make deps` installs system packages -- via apt on Linux (clang, lld,
+llvm, qemu, ovmf, mtools, etc.) and via [Homebrew](https://brew.sh) on
+macOS (llvm, lld, qemu, mtools, gptfdisk, etc.). `make limine` downloads
+the Limine bootloader binaries. `make musl` builds musl 1.2.5 for both
+x86_64 and aarch64. `make libcxx` builds the LLVM C++ runtime (libc++,
+libc++abi, libunwind) against the musl sysroot for C++ userland
+application support. `make compiler-rt` builds the compiler runtime
+builtins for both architectures.
+
+The optional CPython userland app additionally requires a host
+`python3.12` (e.g. `brew install python@3.12` / `apt install python3.12`).
 
 Run `make toolchain-check` to verify everything is in place.
 
@@ -151,7 +160,8 @@ make connect-gdb-x86_64
 ```
 
 The same pattern applies for AArch64 (`run-qemu-aarch64-debug-headless`,
-`connect-gdb-aarch64`). On AArch64, the Makefile uses `gdb-multiarch`.
+`connect-gdb-aarch64`). On AArch64, the Makefile uses `gdb-multiarch`
+where available (Linux) and multi-target `gdb` otherwise (macOS).
 
 ### Baremetal Debugging
 

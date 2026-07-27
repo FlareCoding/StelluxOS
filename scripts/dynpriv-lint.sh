@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # dynpriv-lint.sh — Lint dynamic privilege annotations for consistency.
 #
@@ -12,6 +12,12 @@
 #   scripts/dynpriv-lint.sh kernel/mm  # scan only kernel/mm/
 
 set -euo pipefail
+
+# mapfile requires bash >= 4; macOS ships 3.2 (brew install bash).
+if (( BASH_VERSINFO[0] < 4 )); then
+    echo "error: this script requires bash >= 4 (on macOS: brew install bash)" >&2
+    exit 1
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
