@@ -30,6 +30,7 @@ compile_commands.json
 userland/sysroot/
 userland/musl-*
 userland/llvm-project-*
+userland/linux-headers-*
 userland/build/
 initrd/bin/*
 initrd/usr/

@@ -38,6 +38,46 @@ define HOST_USB_INSTRUCTIONS
 	@echo "  4. Eject: diskutil eject /dev/diskN, then boot the PC from USB"
 endef
 
+# Extra CMake flags for cross-building the LLVM runtimes from a Darwin
+# host: force cross mode so CMake applies no Apple platform rules.
+CMAKE_HOST_FLAGS := \
+	-DCMAKE_SYSTEM_NAME=Linux \
+	-DCMAKE_AR=$(STLX_AR) \
+	-DCMAKE_RANLIB=$(STLX_RANLIB)
+
+# Alpine's linux-headers package (plain tar.gz, one per arch). Alpine keeps
+# only the latest version per branch: on a stale pin, bump version + sha256s.
+LINUX_HEADERS_ALPINE  := v3.22
+LINUX_HEADERS_VERSION := 6.14.2-r0
+LINUX_HEADERS_SHA256_x86_64  := b0d7184f0e8d926961b82dff3d8a6a1f85db100dfc97e3fa1e6a25bbe9fd0f71
+LINUX_HEADERS_SHA256_aarch64 := 08bc7264055d4ceca249e21f47875ccd7ae2dc7eaf49e235a83b1059e06d9089
+
+# $(1) = target arch
+define stlx_install_alpine_headers
+	@apk="userland/linux-headers-$(LINUX_HEADERS_VERSION)-$(1).apk"; \
+	url="https://dl-cdn.alpinelinux.org/alpine/$(LINUX_HEADERS_ALPINE)/main/$(1)/linux-headers-$(LINUX_HEADERS_VERSION).apk"; \
+	if [ ! -f "$$apk" ]; then \
+		curl -sfL -o "$$apk" "$$url" || { rm -f "$$apk"; \
+			echo "ERROR: download failed: $$url"; \
+			echo "The Alpine linux-headers pin is likely stale; bump it in scripts/host.mk."; \
+			exit 1; }; \
+	fi && \
+	{ echo "$(LINUX_HEADERS_SHA256_$(1))  $$apk" | shasum -a 256 -c - > /dev/null || { \
+		echo "ERROR: sha256 mismatch for $$apk; bump the pin in scripts/host.mk."; exit 1; }; } && \
+	tmp="userland/linux-headers-extract-$(1)" && \
+	rm -rf "$$tmp" && mkdir -p "$$tmp" && \
+	tar -xzf "$$apk" -C "$$tmp" usr/include 2>/dev/null && \
+	cp -R "$$tmp/usr/include/linux" "$$tmp/usr/include/asm" "$$tmp/usr/include/asm-generic" \
+		"userland/sysroot/$(1)/include/" && \
+	rm -rf "$$tmp" && \
+	echo "  $(1): Alpine linux-headers $(LINUX_HEADERS_VERSION) installed"
+endef
+
+define HOST_SYSROOT_HEADERS_INSTALL
+$(call stlx_install_alpine_headers,x86_64)
+$(call stlx_install_alpine_headers,aarch64)
+endef
+
 else
 
 STLX_CC      := clang
@@ -60,6 +100,19 @@ define HOST_USB_INSTRUCTIONS
 	@echo "  4. Boot your PC from USB (check BIOS/UEFI boot menu)"
 endef
 
+# No extra CMake flags: the LLVM runtimes cross-build natively on Linux.
+CMAKE_HOST_FLAGS :=
+
+# Linux UAPI headers come from the distro packages (make deps).
+define HOST_SYSROOT_HEADERS_INSTALL
+	@cp -r /usr/include/linux userland/sysroot/x86_64/include/
+	@cp -r /usr/include/asm-generic userland/sysroot/x86_64/include/
+	@cp -r /usr/include/x86_64-linux-gnu/asm userland/sysroot/x86_64/include/
+	@cp -r /usr/aarch64-linux-gnu/include/linux userland/sysroot/aarch64/include/
+	@cp -r /usr/aarch64-linux-gnu/include/asm-generic userland/sysroot/aarch64/include/
+	@cp -r /usr/aarch64-linux-gnu/include/asm userland/sysroot/aarch64/include/
+endef
+
 endif
 
 # Host-neutral command detection (existence-based, not OS-based).
@@ -70,9 +123,13 @@ SGDISK := $(firstword $(shell command -v sgdisk 2>/dev/null) \
 # Debian ships aarch64 support in gdb-multiarch; Homebrew gdb is multi-target.
 GDB_MULTIARCH := $(if $(shell command -v gdb-multiarch 2>/dev/null),gdb-multiarch,gdb)
 
+# Logical CPU count for third-party builds (getconf works on both hosts).
+NPROC := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+
 # Fail at parse time if the interface is incomplete for this host.
+# CMAKE_HOST_FLAGS is exempt: it is legitimately empty on Linux.
 $(foreach v,HOST_OS STLX_CC STLX_CXX STLX_LLD STLX_AR STLX_RANLIB STLX_OBJCOPY \
-	SGDISK GDB_MULTIARCH HOST_USB_INSTRUCTIONS,\
+	SGDISK GDB_MULTIARCH NPROC HOST_USB_INSTRUCTIONS HOST_SYSROOT_HEADERS_INSTALL,\
 	$(if $(value $(v)),,$(error scripts/host.mk: $(v) is undefined for host '$(HOST_OS)')))
 
 endif # STLX_HOST_MK_INCLUDED

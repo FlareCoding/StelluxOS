@@ -515,6 +515,9 @@ MUSL_URL     := https://musl.libc.org/releases/musl-$(MUSL_VERSION).tar.gz
 MUSL_DIR     := userland/musl-$(MUSL_VERSION)
 MUSL_TARBALL := userland/musl-$(MUSL_VERSION).tar.gz
 
+# LLVM archive tools work on ELF from any host (Apple's ar/ranlib do not).
+MUSL_TOOL_OVERRIDES := AR=$(STLX_AR) RANLIB=$(STLX_RANLIB)
+
 musl:
 	@echo "Building musl $(MUSL_VERSION) for x86_64 and aarch64..."
 	@mkdir -p userland
@@ -528,19 +531,19 @@ musl:
 	@echo "Building musl for x86_64..."
 	@mkdir -p $(MUSL_DIR)/build-x86_64
 	cd $(MUSL_DIR)/build-x86_64 && \
-		CC="clang --target=x86_64-linux-musl" \
+		CC="$(STLX_CC) --target=x86_64-linux-musl" \
 		../configure --prefix=$(abspath userland/sysroot/x86_64) --disable-shared > /dev/null
-	$(MAKE) -C $(MUSL_DIR)/build-x86_64 -j$$(nproc) > /dev/null
-	$(MAKE) -C $(MUSL_DIR)/build-x86_64 install > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-x86_64 $(MUSL_TOOL_OVERRIDES) -j$(NPROC) > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-x86_64 $(MUSL_TOOL_OVERRIDES) install > /dev/null
 	@echo "musl x86_64 installed to userland/sysroot/x86_64/"
 	@echo ""
 	@echo "Building musl for aarch64..."
 	@mkdir -p $(MUSL_DIR)/build-aarch64
 	cd $(MUSL_DIR)/build-aarch64 && \
-		CC="clang --target=aarch64-linux-musl" \
+		CC="$(STLX_CC) --target=aarch64-linux-musl" \
 		../configure --prefix=$(abspath userland/sysroot/aarch64) --disable-shared > /dev/null
-	$(MAKE) -C $(MUSL_DIR)/build-aarch64 -j$$(nproc) > /dev/null
-	$(MAKE) -C $(MUSL_DIR)/build-aarch64 install > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-aarch64 $(MUSL_TOOL_OVERRIDES) -j$(NPROC) > /dev/null
+	$(MAKE) -C $(MUSL_DIR)/build-aarch64 $(MUSL_TOOL_OVERRIDES) install > /dev/null
 	@echo "musl aarch64 installed to userland/sysroot/aarch64/"
 	@echo ""
 	@echo "musl $(MUSL_VERSION) ready for both architectures."
@@ -549,6 +552,17 @@ LLVM_VERSION := 18.1.8
 LLVM_URL     := https://github.com/llvm/llvm-project/releases/download/llvmorg-$(LLVM_VERSION)/llvm-project-$(LLVM_VERSION).src.tar.xz
 LLVM_DIR     := userland/llvm-project-$(LLVM_VERSION).src
 LLVM_TARBALL := userland/llvm-project-$(LLVM_VERSION).src.tar.xz
+
+# Linux UAPI headers for userland apps that include <linux/...>; the
+# per-host sourcing strategy lives in scripts/host.mk.
+.PHONY: linux-headers
+linux-headers:
+	@test -f userland/sysroot/x86_64/lib/libc.a || \
+		(echo "ERROR: musl sysroot not found. Run 'make musl' first." && exit 1)
+	@test -f userland/sysroot/aarch64/lib/libc.a || \
+		(echo "ERROR: musl sysroot not found. Run 'make musl' first." && exit 1)
+	@echo "Installing Linux kernel headers into sysroots..."
+	$(HOST_SYSROOT_HEADERS_INSTALL)
 
 libcxx:
 	@echo "Building libc++ $(LLVM_VERSION) for x86_64 and aarch64..."
@@ -564,22 +578,19 @@ libcxx:
 		(echo "Extracting..." && \
 		 cd userland && tar xf llvm-project-$(LLVM_VERSION).src.tar.xz)
 	@echo ""
-	@echo "Installing Linux kernel headers into sysroots..."
-	@cp -r /usr/include/linux userland/sysroot/x86_64/include/
-	@cp -r /usr/include/asm-generic userland/sysroot/x86_64/include/
-	@cp -r /usr/include/x86_64-linux-gnu/asm userland/sysroot/x86_64/include/
-	@cp -r /usr/aarch64-linux-gnu/include/linux userland/sysroot/aarch64/include/
-	@cp -r /usr/aarch64-linux-gnu/include/asm-generic userland/sysroot/aarch64/include/
-	@cp -r /usr/aarch64-linux-gnu/include/asm userland/sysroot/aarch64/include/
+	$(Q)$(MAKE) --no-print-directory linux-headers
 	@echo ""
 	@echo "Building libc++ for x86_64..."
 	@mkdir -p $(LLVM_DIR)/build-x86_64
 	cd $(LLVM_DIR)/build-x86_64 && cmake -G "Unix Makefiles" ../runtimes \
+		$(CMAKE_HOST_FLAGS) \
 		-DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
-		-DCMAKE_C_COMPILER=clang \
-		-DCMAKE_CXX_COMPILER=clang++ \
+		-DCMAKE_C_COMPILER=$(STLX_CC) \
+		-DCMAKE_CXX_COMPILER=$(STLX_CXX) \
+		-DCMAKE_ASM_COMPILER=$(STLX_CC) \
 		-DCMAKE_C_COMPILER_TARGET=x86_64-linux-musl \
 		-DCMAKE_CXX_COMPILER_TARGET=x86_64-linux-musl \
+		-DCMAKE_ASM_COMPILER_TARGET=x86_64-linux-musl \
 		-DCMAKE_SYSROOT=$(abspath userland/sysroot/x86_64) \
 		-DCMAKE_INSTALL_PREFIX=$(abspath userland/sysroot/x86_64) \
 		-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
@@ -604,18 +615,20 @@ libcxx:
 		-DLIBUNWIND_USE_COMPILER_RT=ON \
 		'-DCMAKE_C_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64)' \
 		'-DCMAKE_CXX_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64) -nostdinc++ -nostdlib++' \
+		'-DCMAKE_ASM_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64)' \
 		> /dev/null
-	$(MAKE) -C $(LLVM_DIR)/build-x86_64 -j$$(nproc) cxx cxxabi unwind > /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-x86_64 -j$(NPROC) cxx cxxabi unwind > /dev/null
 	$(MAKE) -C $(LLVM_DIR)/build-x86_64 install-cxx install-cxxabi install-unwind > /dev/null
 	@echo "libc++ x86_64 installed to userland/sysroot/x86_64/"
 	@echo ""
 	@echo "Building libc++ for aarch64..."
 	@mkdir -p $(LLVM_DIR)/build-aarch64
 	cd $(LLVM_DIR)/build-aarch64 && cmake -G "Unix Makefiles" ../runtimes \
+		$(CMAKE_HOST_FLAGS) \
 		-DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
-		-DCMAKE_C_COMPILER=clang \
-		-DCMAKE_CXX_COMPILER=clang++ \
-		-DCMAKE_ASM_COMPILER=clang \
+		-DCMAKE_C_COMPILER=$(STLX_CC) \
+		-DCMAKE_CXX_COMPILER=$(STLX_CXX) \
+		-DCMAKE_ASM_COMPILER=$(STLX_CC) \
 		-DCMAKE_C_COMPILER_TARGET=aarch64-linux-musl \
 		-DCMAKE_CXX_COMPILER_TARGET=aarch64-linux-musl \
 		-DCMAKE_ASM_COMPILER_TARGET=aarch64-linux-musl \
@@ -645,7 +658,7 @@ libcxx:
 		'-DCMAKE_CXX_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include -nostdinc++ -nostdlib++' \
 		'-DCMAKE_ASM_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64)' \
 		> /dev/null
-	$(MAKE) -C $(LLVM_DIR)/build-aarch64 -j$$(nproc) cxx cxxabi unwind > /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-aarch64 -j$(NPROC) cxx cxxabi unwind > /dev/null
 	$(MAKE) -C $(LLVM_DIR)/build-aarch64 install-cxx install-cxxabi install-unwind > /dev/null
 	@echo "libc++ aarch64 installed to userland/sysroot/aarch64/"
 	@echo ""
@@ -674,8 +687,9 @@ compiler-rt:
 	@echo "Building compiler-rt builtins for x86_64..."
 	@mkdir -p $(LLVM_DIR)/build-compiler-rt-x86_64
 	cd $(LLVM_DIR)/build-compiler-rt-x86_64 && cmake -G "Unix Makefiles" ../compiler-rt \
-		-DCMAKE_C_COMPILER=clang \
-		-DCMAKE_ASM_COMPILER=clang \
+		$(CMAKE_HOST_FLAGS) \
+		-DCMAKE_C_COMPILER=$(STLX_CC) \
+		-DCMAKE_ASM_COMPILER=$(STLX_CC) \
 		-DCMAKE_C_COMPILER_TARGET=x86_64-linux-musl \
 		-DCMAKE_ASM_COMPILER_TARGET=x86_64-linux-musl \
 		-DCMAKE_SYSROOT=$(abspath userland/sysroot/x86_64) \
@@ -692,7 +706,7 @@ compiler-rt:
 		'-DCMAKE_C_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64) -nostdlibinc -isystem $(abspath userland/sysroot/x86_64)/include' \
 		'-DCMAKE_ASM_FLAGS=--target=x86_64-linux-musl --sysroot=$(abspath userland/sysroot/x86_64) -nostdlibinc -isystem $(abspath userland/sysroot/x86_64)/include' \
 		> /dev/null
-	$(MAKE) -C $(LLVM_DIR)/build-compiler-rt-x86_64 -j$$(nproc) builtins > /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-compiler-rt-x86_64 -j$(NPROC) builtins > /dev/null
 	@cp "$$(find $(LLVM_DIR)/build-compiler-rt-x86_64 -name 'libclang_rt.builtins*.a' -print -quit)" \
 		userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
 	@echo "compiler-rt builtins x86_64 installed to userland/sysroot/x86_64/lib/"
@@ -700,8 +714,9 @@ compiler-rt:
 	@echo "Building compiler-rt builtins for aarch64..."
 	@mkdir -p $(LLVM_DIR)/build-compiler-rt-aarch64
 	cd $(LLVM_DIR)/build-compiler-rt-aarch64 && cmake -G "Unix Makefiles" ../compiler-rt \
-		-DCMAKE_C_COMPILER=clang \
-		-DCMAKE_ASM_COMPILER=clang \
+		$(CMAKE_HOST_FLAGS) \
+		-DCMAKE_C_COMPILER=$(STLX_CC) \
+		-DCMAKE_ASM_COMPILER=$(STLX_CC) \
 		-DCMAKE_C_COMPILER_TARGET=aarch64-linux-musl \
 		-DCMAKE_ASM_COMPILER_TARGET=aarch64-linux-musl \
 		-DCMAKE_SYSROOT=$(abspath userland/sysroot/aarch64) \
@@ -718,7 +733,7 @@ compiler-rt:
 		'-DCMAKE_C_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include' \
 		'-DCMAKE_ASM_FLAGS=--target=aarch64-linux-musl --sysroot=$(abspath userland/sysroot/aarch64) -nostdlibinc -isystem $(abspath userland/sysroot/aarch64)/include' \
 		> /dev/null
-	$(MAKE) -C $(LLVM_DIR)/build-compiler-rt-aarch64 -j$$(nproc) builtins > /dev/null
+	$(MAKE) -C $(LLVM_DIR)/build-compiler-rt-aarch64 -j$(NPROC) builtins > /dev/null
 	@cp "$$(find $(LLVM_DIR)/build-compiler-rt-aarch64 -name 'libclang_rt.builtins*.a' -print -quit)" \
 		userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
 	@echo "compiler-rt builtins aarch64 installed to userland/sysroot/aarch64/lib/"
