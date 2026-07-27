@@ -497,16 +497,7 @@ check-limine:
 # ============================================================================
 
 deps:
-	@echo "Installing required packages (Debian/Ubuntu)..."
-	sudo apt install -y clang lld llvm \
-		libclang-rt-dev \
-		gcc-aarch64-linux-gnu \
-		linux-libc-dev-arm64-cross \
-		cmake \
-		qemu-system-x86 qemu-system-arm \
-		ovmf qemu-efi-aarch64 \
-		mtools gdisk xorriso \
-		gdb-multiarch
+	$(HOST_DEPS_INSTALL)
 	@echo ""
 	@echo "Done. Run 'make toolchain-check' to verify."
 
@@ -779,18 +770,20 @@ doom-wad:
 	fi
 
 toolchain-check:
-	@echo "=== Toolchain Check ==="
+	@echo "=== Toolchain Check ($(HOST_OS)) ==="
 	@echo ""
 	@printf "%-24s" "clang:" && \
-		(which clang > /dev/null 2>&1 && clang --version | head -1 || echo "NOT FOUND")
+		(command -v $(STLX_CC) > /dev/null 2>&1 && $(STLX_CC) --version | head -1 || echo "NOT FOUND")
 	@printf "%-24s" "clang++:" && \
-		(which clang++ > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+		(command -v $(STLX_CXX) > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
 	@printf "%-24s" "aarch64-linux-gnu-gcc:" && \
-		(which aarch64-linux-gnu-gcc > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+		(which aarch64-linux-gnu-gcc > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND (Linux builtins fallback)")
 	@printf "%-24s" "ld.lld:" && \
-		(which ld.lld > /dev/null 2>&1 && ld.lld --version | head -1 || echo "NOT FOUND")
+		(command -v $(STLX_LLD) > /dev/null 2>&1 && $(STLX_LLD) --version | head -1 || echo "NOT FOUND")
+	@printf "%-24s" "llvm-ar:" && \
+		(command -v $(STLX_AR) > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
 	@printf "%-24s" "llvm-objcopy:" && \
-		(which llvm-objcopy > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND (optional)")
+		(command -v $(STLX_OBJCOPY) > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND (optional)")
 	@printf "%-24s" "qemu-system-x86_64:" && \
 		(which qemu-system-x86_64 > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
 	@printf "%-24s" "qemu-system-aarch64:" && \
@@ -802,9 +795,9 @@ toolchain-check:
 	@printf "%-24s" "mformat:" && \
 		(which mformat > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
 	@printf "%-24s" "sgdisk:" && \
-		(which sgdisk > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
-	@printf "%-24s" "gdb-multiarch:" && \
-		(which gdb-multiarch > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND (for AArch64 debugging)")
+		(command -v $(SGDISK) > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
+	@printf "%-24s" "gdb (aarch64-capable):" && \
+		(which $(GDB_MULTIARCH) > /dev/null 2>&1 && echo "OK ($(GDB_MULTIARCH))" || echo "NOT FOUND (for AArch64 debugging)")
 	@printf "%-24s" "Limine BOOTX64.EFI:" && \
 		(test -f $(BOOT_DIR)/BOOTX64.EFI && echo "OK" || echo "NOT FOUND - run 'make limine'")
 	@printf "%-24s" "Limine BOOTAA64.EFI:" && \
@@ -824,7 +817,7 @@ toolchain-check:
 		 if [ -f "$$SR" ]; then \
 			echo "$$SR"; \
 		 else \
-			BRT=$$(clang --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+			BRT=$$($(STLX_CC) --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
 			if [ -f "$$BRT" ]; then \
 				echo "$$BRT"; \
 			elif which x86_64-linux-gnu-gcc > /dev/null 2>&1; then \
@@ -839,7 +832,7 @@ toolchain-check:
 		 if [ -f "$$SR" ]; then \
 			echo "$$SR"; \
 		 else \
-			BRT=$$(clang --target=aarch64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+			BRT=$$($(STLX_CC) --target=aarch64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
 			if [ -f "$$BRT" ]; then \
 				echo "$$BRT"; \
 			elif which aarch64-linux-gnu-gcc > /dev/null 2>&1; then \
