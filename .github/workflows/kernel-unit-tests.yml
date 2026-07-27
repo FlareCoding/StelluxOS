@@ -11,7 +11,7 @@
 #        │
 #        ├──────────────────────────────┐
 #        ▼                              ▼
-#      build     (4 jobs: arch × mode)  macos-tests  (2 jobs: arch)
+#      build     (4 jobs: arch × mode)  macos-build  (2 jobs: arch)
 #        │
 #        ▼
 #    unit-tests  (2 jobs: arch)
@@ -141,14 +141,14 @@ jobs:
           echo "Kernel ELF: $(ls -lh "$elf")"
 
   # ============================================================================
-  # macOS Host Build + Unit Tests (arm64 runner, arch matrix)
+  # macOS Host Build (arm64 runner, arch matrix; unit tests run on Linux)
   # ============================================================================
 
-  macos-tests:
-    name: macos-tests (${{ matrix.arch }})
+  macos-build:
+    name: macos-build (${{ matrix.arch }})
     runs-on: macos-15
     needs: dynpriv-lint
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     strategy:
       fail-fast: false
@@ -216,18 +216,17 @@ jobs:
         if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
         run: make compiler-rt
 
-      - name: Run unit tests
-        env:
-          STLX_TEST_TIMEOUT: "300"
-        run: make test ARCH=${{ matrix.arch }} 2>&1 | tee test-log-macos-${{ matrix.arch }}.txt
+      - name: Build kernel, userland, and disk image
+        run: make image ARCH=${{ matrix.arch }}
 
-      - name: Upload test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-log-macos-${{ matrix.arch }}
-          path: test-log-macos-${{ matrix.arch }}.txt
-          if-no-files-found: ignore
+      - name: Verify build artifacts
+        run: |
+          for f in "build/kernel/${{ matrix.arch }}/kernel.elf" "images/stellux-${{ matrix.arch }}.img"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error::missing artifact: $f"
+              exit 1
+            fi
+          done
 
   # ============================================================================
   # Unit Tests (arch matrix)
