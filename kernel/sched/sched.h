@@ -110,11 +110,32 @@ __PRIVILEGED_CODE void wake(task* t);
 
 /**
  * @brief Mark a task for termination and wake it if blocked.
- * Sets kill_pending, cancels any timer sleep, and wakes via CAS.
- * Fire-and-forget: does not wait for the task to actually die.
+ * Fire-and-forget: the target is force-woken now or observes the kill
+ * at its next killable blocking attempt (sleep, futex, poll).
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void force_wake_for_kill(task* t);
+
+/**
+ * @brief Publish intent to block: moves the current task to BLOCKED.
+ * Pair with block_task_interrupted_by_kill before yielding.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void prepare_to_block_task();
+
+/**
+ * @brief True if a kill arrived since prepare_to_block_task.
+ * On true, the caller must unwind its wait entry and call cancel_block_task.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool block_task_interrupted_by_kill();
+
+/**
+ * @brief Revert an unfinished block after the caller unwound its entry.
+ * Yields once if a concurrent wake already claimed the task.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cancel_block_task();
 
 /**
  * @brief Check if the current task has been marked for termination.

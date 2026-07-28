@@ -27,20 +27,6 @@ __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
     spin_unlock_irqrestore(wq.lock, irq);
 }
 
-__PRIVILEGED_CODE static void resolve_aborted_poll_block(sched::task* self) {
-    uint32_t expected = sched::TASK_STATE_BLOCKED;
-    if (__atomic_compare_exchange_n(&self->state, &expected,
-            sched::TASK_STATE_RUNNING, false,
-            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        return;
-    }
-
-    // A concurrent wake already moved us to READY and queued a runqueue entry.
-    // Yield once so the scheduler can consume that entry instead of leaving
-    // sched_link live while we keep executing in C.
-    sched::yield();
-}
-
 __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
     if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
         return true;
@@ -55,17 +41,18 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
         return false;
     }
 
-    self->state = sched::TASK_STATE_BLOCKED;
+    sched::prepare_to_block_task();
 
-    // Re-check after setting BLOCKED to close races where a source fires
-    // or kill arrives between the initial checks and the state transition.
-    if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
-        resolve_aborted_poll_block(self);
-        return true;
-    }
-    if (__atomic_load_n(&self->kill_pending, __ATOMIC_ACQUIRE)) {
-        resolve_aborted_poll_block(self);
+    if (sched::block_task_interrupted_by_kill()) {
+        sched::cancel_block_task();
         return false;
+    }
+
+    // The kill check's fence also orders this re-check against the BLOCKED
+    // store, closing the race where a source fires during the transition.
+    if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
+        sched::cancel_block_task();
+        return true;
     }
 
     if (timeout_ns > 0) {

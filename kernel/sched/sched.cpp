@@ -186,8 +186,42 @@ bool is_kill_pending() {
 
 __PRIVILEGED_CODE void force_wake_for_kill(task* t) {
     __atomic_store_n(&t->kill_pending, 1, __ATOMIC_RELEASE);
+
+    // Pairs with block_task_interrupted_by_kill: the wake below sees BLOCKED,
+    // or the blocker's kill check sees kill_pending. Never neither.
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     timer::cancel_sleep(t);
     wake(t);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void prepare_to_block_task() {
+    __atomic_store_n(&current()->state, TASK_STATE_BLOCKED, __ATOMIC_RELEASE);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool block_task_interrupted_by_kill() {
+    // Fence pairs with the one in force_wake_for_kill.
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    return __atomic_load_n(&current()->kill_pending, __ATOMIC_ACQUIRE);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cancel_block_task() {
+    task* self = current();
+    uint32_t expected = TASK_STATE_BLOCKED;
+    if (!__atomic_compare_exchange_n(&self->state, &expected, TASK_STATE_RUNNING,
+                                      false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        // A wake already claimed this task READY and will requeue it once
+        // it is off-CPU. Yield so that handoff can complete.
+        yield();
+    }
 }
 
 /**
@@ -378,8 +412,17 @@ __PRIVILEGED_CODE void sleep_ns(uint64_t ns) {
     }
 
     uint64_t deadline = clock::now_ns() + ns;
-    self->state = TASK_STATE_BLOCKED;
+
+    prepare_to_block_task();
     timer::schedule_sleep(self, deadline);
+
+    if (block_task_interrupted_by_kill()) {
+        // Killed before or during sleep entry: do not serve the sleep.
+        timer::cancel_sleep(self);
+        cancel_block_task();
+        return;
+    }
+
     yield();
 }
 

@@ -2,23 +2,25 @@
 #define STELLUX_TESTS_FRAMEWORK_HELPERS_H
 
 #include "common/types.h"
+#include "clock/clock.h"
 
 namespace test_helpers {
 
-constexpr uint64_t SPIN_TIMEOUT = 100000000;
+// Wall-clock bound: iteration counts vary ~100x across hosts and emulators.
+constexpr uint64_t SPIN_TIMEOUT_NS = 20000000000ULL; // 20s
 
 inline bool spin_wait(volatile uint32_t* flag) {
-    uint64_t spins = 0;
+    uint64_t deadline = clock::now_ns() + SPIN_TIMEOUT_NS;
     while (!__atomic_load_n(flag, __ATOMIC_ACQUIRE)) {
-        if (++spins > SPIN_TIMEOUT) return false;
+        if (clock::now_ns() > deadline) return false;
     }
     return true;
 }
 
 inline bool spin_wait_ge(volatile uint32_t* value, uint32_t target) {
-    uint64_t spins = 0;
+    uint64_t deadline = clock::now_ns() + SPIN_TIMEOUT_NS;
     while (__atomic_load_n(value, __ATOMIC_ACQUIRE) < target) {
-        if (++spins > SPIN_TIMEOUT) return false;
+        if (clock::now_ns() > deadline) return false;
     }
     return true;
 }

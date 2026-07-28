@@ -56,6 +56,8 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
 }
 
 /**
+ * Not kill-interruptible on its own: a force-woken waiter re-blocks unless
+ * the caller loops on sched::is_kill_pending().
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE
@@ -69,7 +71,7 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved) {
     }
 
     spin_lock(wq.lock);
-    self->state = sched::TASK_STATE_BLOCKED;
+    sched::prepare_to_block_task();
     wq.waiters.push_back(self);
     spin_unlock(wq.lock);
 

@@ -73,7 +73,7 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
         return -11; // EAGAIN
     }
 
-    self->state = sched::TASK_STATE_BLOCKED;
+    sched::prepare_to_block_task();
     bucket->waiters.push_back(&waiter);
 
     if (timeout_ns > 0) {
@@ -82,6 +82,18 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     }
 
     spin_unlock_irqrestore(bucket->lock, irq);
+
+    if (sched::block_task_interrupted_by_kill()) {
+        // Killed during futex entry: unwind waiter and timer, don't block.
+        timer::cancel_sleep(self);
+        irq = spin_lock_irqsave(bucket->lock);
+        if (waiter.link.is_linked()) {
+            bucket->waiters.remove(&waiter);
+        }
+        spin_unlock_irqrestore(bucket->lock, irq);
+        sched::cancel_block_task();
+        return -4; // EINTR
+    }
     sched::yield();
 
     // Cancel any outstanding timer to prevent spurious wakes of future
