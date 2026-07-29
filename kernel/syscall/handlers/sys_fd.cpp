@@ -1403,6 +1403,58 @@ DEFINE_SYSCALL2(mkdir, pathname, mode) {
         pathname, mode, 0, 0, 0);
 }
 
+DEFINE_SYSCALL3(faccessat, dirfd, pathname, mode) {
+    // F_OK is zero and R_OK, W_OK, X_OK occupy the low three bits
+    if (mode & ~7ULL) {
+        return syscall::EINVAL;
+    }
+
+    char kpath[fs::PATH_MAX];
+    int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
+        kpath, sizeof(kpath),
+        reinterpret_cast<const char*>(pathname));
+    if (copy_rc != mm::uaccess::OK) {
+        if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
+            return syscall::ENAMETOOLONG;
+        }
+        return syscall::EFAULT;
+    }
+
+    if (kpath[0] == '\0') {
+        return syscall::ENOENT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    fs::node* node = nullptr;
+    int64_t lookup_rc = lookup_node_for_dirfd_path(
+        task, static_cast<int64_t>(dirfd), kpath, &node);
+    if (lookup_rc != 0) {
+        return lookup_rc;
+    }
+
+    // No permission model exists, so any resolvable node satisfies every mode
+    release_node_ref(node);
+    return 0;
+}
+
+DEFINE_SYSCALL2(access, pathname, mode) {
+    return sys_faccessat(
+        static_cast<uint64_t>(-100), // AT_FDCWD
+        pathname, mode, 0, 0, 0);
+}
+
+DEFINE_SYSCALL4(renameat, olddirfd, oldpath, newdirfd, newpath) {
+    (void)olddirfd;
+    (void)oldpath;
+    (void)newdirfd;
+    (void)newpath;
+    return syscall::ENOSYS;
+}
+
 // fsync - no-op on ramfs (data is always in memory)
 DEFINE_SYSCALL1(fsync, fd) {
     (void)fd;

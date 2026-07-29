@@ -3,6 +3,7 @@
 #include "stlx_unit_test.h"
 #include "resource/resource.h"
 #include "syscall/handlers/sys_dup.h"
+#include "syscall/handlers/sys_fd.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/heap.h"
@@ -402,4 +403,19 @@ TEST(resource_test, dup_flag_inheritance_and_dup3_cloexec) {
 
     ASSERT_EQ(resource::close(task, f), resource::OK);
     ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(t)), resource::OK);
+}
+
+// Only pre-copy validation is reachable here since kernel-space path
+// pointers fail the uaccess gate before resolution
+TEST(resource_test, faccessat_validates_mode_before_path) {
+    constexpr uint64_t at_fdcwd = static_cast<uint64_t>(-100);
+    uint64_t kpath = reinterpret_cast<uint64_t>("/");
+
+    EXPECT_EQ(sys_faccessat(at_fdcwd, kpath, 8, 0, 0, 0), syscall::EINVAL);
+    EXPECT_EQ(sys_access(kpath, 8, 0, 0, 0, 0), syscall::EINVAL);
+    EXPECT_EQ(sys_faccessat(at_fdcwd, kpath, 0, 0, 0, 0), syscall::EFAULT);
+}
+
+TEST(resource_test, renameat_returns_enosys) {
+    EXPECT_EQ(sys_renameat(0, 0, 0, 0, 0, 0), syscall::ENOSYS);
 }
