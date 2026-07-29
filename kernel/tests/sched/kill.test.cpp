@@ -13,6 +13,15 @@ using test_helpers::spin_wait;
 using test_helpers::spin_wait_ge;
 using test_helpers::brief_delay;
 
+// Deterministic handshake: wait until the task has actually blocked.
+static bool wait_until_blocked(sched::task* t) {
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != sched::TASK_STATE_BLOCKED) {
+        if (clock::now_ns() > deadline) return false;
+    }
+    return true;
+}
+
 TEST_SUITE(kill);
 
 // --- force_wake_kills_sleeping_task ---
@@ -52,7 +61,7 @@ TEST(kill, force_wake_kills_sleeping_task) {
         sched::enqueue(t);
     });
 
-    brief_delay();
+    ASSERT_TRUE(wait_until_blocked(t));
 
     RUN_ELEVATED({
         sched::force_wake_for_kill(t);
@@ -62,6 +71,28 @@ TEST(kill, force_wake_kills_sleeping_task) {
     EXPECT_EQ(__atomic_load_n(&g_sleep_kill_was_pending, __ATOMIC_ACQUIRE), 1u);
     EXPECT_LT(__atomic_load_n(&g_sleep_kill_elapsed_ns, __ATOMIC_ACQUIRE),
               static_cast<uint64_t>(2000000000)); // woke in < 2s, not 5s
+}
+
+// --- kill_before_sleep_aborts_sleep ---
+// A kill issued before the task ever runs must abort its sleep attempt
+// at the block commit point instead of being lost until natural expiry.
+
+TEST(kill, kill_before_sleep_aborts_sleep) {
+    g_sleep_kill_done = 0;
+    g_sleep_kill_was_pending = 0;
+    g_sleep_kill_elapsed_ns = 0;
+
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(sleep_kill_fn, nullptr, "kill_presleep");
+        ASSERT_NOT_NULL(t);
+        sched::force_wake_for_kill(t);
+        sched::enqueue(t);
+    });
+
+    ASSERT_TRUE(spin_wait(&g_sleep_kill_done));
+    EXPECT_EQ(__atomic_load_n(&g_sleep_kill_was_pending, __ATOMIC_ACQUIRE), 1u);
+    EXPECT_LT(__atomic_load_n(&g_sleep_kill_elapsed_ns, __ATOMIC_ACQUIRE),
+              static_cast<uint64_t>(2000000000)); // aborted, not slept for 5s
 }
 
 // --- force_wake_kills_blocked_on_wq ---
@@ -221,6 +252,7 @@ static volatile uint32_t g_ikp_before = 0xFF;
 static volatile uint32_t g_ikp_after = 0xFF;
 static volatile uint32_t g_ikp_done = 0;
 static volatile uint32_t g_ikp_flag_set = 0;
+static volatile uint32_t g_ikp_started = 0;
 
 static void ikp_fn(void*) {
     uint32_t before = 0;
@@ -228,6 +260,7 @@ static void ikp_fn(void*) {
         before = sched::is_kill_pending() ? 1 : 0;
     });
     __atomic_store_n(&g_ikp_before, before, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_ikp_started, 1, __ATOMIC_RELEASE);
 
     while (!__atomic_load_n(&g_ikp_flag_set, __ATOMIC_ACQUIRE)) {
         // busy wait for test driver to set kill_pending
@@ -247,6 +280,7 @@ TEST(kill, is_kill_pending_accessor) {
     g_ikp_after = 0xFF;
     g_ikp_done = 0;
     g_ikp_flag_set = 0;
+    g_ikp_started = 0;
 
     sched::task* t = nullptr;
     RUN_ELEVATED({
@@ -255,7 +289,7 @@ TEST(kill, is_kill_pending_accessor) {
         sched::enqueue(t);
     });
 
-    brief_delay();
+    ASSERT_TRUE(spin_wait(&g_ikp_started));
 
     RUN_ELEVATED({
         __atomic_store_n(&t->kill_pending, 1, __ATOMIC_RELEASE);
