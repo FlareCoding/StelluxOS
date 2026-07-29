@@ -2,6 +2,7 @@
 
 #include "stlx_unit_test.h"
 #include "resource/resource.h"
+#include "syscall/handlers/sys_dup.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/heap.h"
@@ -244,4 +245,161 @@ TEST(resource_test, open_returns_tablefull_when_handle_space_exhausted) {
     for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
         EXPECT_EQ(resource::close(task, handles[i]), resource::OK);
     }
+}
+
+// Direct handler invocation, since tests run as a kernel task with a
+// live handle table
+static int64_t call_dup(resource::handle_t h) {
+    return sys_dup(static_cast<uint64_t>(h), 0, 0, 0, 0, 0);
+}
+
+static int64_t call_dup2(resource::handle_t old_h, resource::handle_t new_h) {
+    return sys_dup2(static_cast<uint64_t>(old_h),
+                    static_cast<uint64_t>(new_h), 0, 0, 0, 0);
+}
+
+static int64_t call_dup3(resource::handle_t old_h, resource::handle_t new_h,
+                         uint64_t flags) {
+    return sys_dup3(static_cast<uint64_t>(old_h),
+                    static_cast<uint64_t>(new_h), flags, 0, 0, 0);
+}
+
+TEST(resource_test, dup_shares_offset) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t setup = -1;
+    ASSERT_EQ(resource::open(task, "/dup_offsets", fs::O_CREAT | fs::O_RDWR, &setup), resource::OK);
+    ASSERT_EQ(resource::write(task, setup, "abc", 3), static_cast<ssize_t>(3));
+    ASSERT_EQ(resource::close(task, setup), resource::OK);
+
+    resource::handle_t h1 = -1;
+    ASSERT_EQ(resource::open(task, "/dup_offsets", fs::O_RDONLY, &h1), resource::OK);
+
+    int64_t h2 = call_dup(h1);
+    ASSERT_TRUE(h2 >= 0);
+
+    char c1[2] = {};
+    char c2[2] = {};
+    ASSERT_EQ(resource::read(task, h1, c1, 1), static_cast<ssize_t>(1));
+    ASSERT_EQ(resource::read(task, static_cast<resource::handle_t>(h2), c2, 1), static_cast<ssize_t>(1));
+    EXPECT_STREQ(c1, "a");
+    EXPECT_STREQ(c2, "b");
+
+    ASSERT_EQ(resource::close(task, h1), resource::OK);
+    ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(h2)), resource::OK);
+}
+
+TEST(resource_test, dup_returns_lowest_free_slot) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t a = -1;
+    resource::handle_t b = -1;
+    ASSERT_EQ(resource::open(task, "/dup_lowest_a", fs::O_CREAT | fs::O_RDWR, &a), resource::OK);
+    ASSERT_EQ(resource::open(task, "/dup_lowest_b", fs::O_CREAT | fs::O_RDWR, &b), resource::OK);
+    ASSERT_TRUE(a < b);
+
+    ASSERT_EQ(resource::close(task, a), resource::OK);
+
+    int64_t d = call_dup(b);
+    EXPECT_EQ(d, static_cast<int64_t>(a));
+
+    ASSERT_EQ(resource::close(task, b), resource::OK);
+    ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(d)), resource::OK);
+}
+
+TEST(resource_test, dup2_replaces_and_closes_target) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    static const resource::resource_ops victim_ops = {
+        nullptr, nullptr, close_counter_close, nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+        nullptr,
+    };
+
+    close_counter counter{0};
+
+    auto* victim_obj = heap::kalloc_new<resource::resource_object>();
+    ASSERT_NOT_NULL(victim_obj);
+    victim_obj->type = resource::resource_type::FILE;
+    victim_obj->ops = &victim_ops;
+    victim_obj->impl = &counter;
+
+    resource::handle_t victim = -1;
+    ASSERT_EQ(
+        resource::alloc_handle(&task->handles, victim_obj, resource::resource_type::FILE, resource::RIGHT_READ, &victim),
+        resource::HANDLE_OK
+    );
+    resource::resource_release(victim_obj);
+
+    resource::handle_t f = -1;
+    ASSERT_EQ(resource::open(task, "/dup2_evict", fs::O_CREAT | fs::O_RDWR, &f), resource::OK);
+
+    EXPECT_EQ(call_dup2(f, victim), static_cast<int64_t>(victim));
+    EXPECT_EQ(counter.closes, 1u);
+
+    ASSERT_EQ(resource::close(task, f), resource::OK);
+    ASSERT_EQ(resource::close(task, victim), resource::OK);
+}
+
+TEST(resource_test, dup2_same_fd_is_validated_noop) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t f = -1;
+    ASSERT_EQ(resource::open(task, "/dup2_same", fs::O_CREAT | fs::O_RDWR, &f), resource::OK);
+
+    EXPECT_EQ(call_dup2(f, f), static_cast<int64_t>(f));
+    EXPECT_EQ(call_dup2(f, static_cast<resource::handle_t>(resource::MAX_TASK_HANDLES)), syscall::EBADF);
+
+    ASSERT_EQ(resource::close(task, f), resource::OK);
+
+    EXPECT_EQ(call_dup2(f, f), syscall::EBADF);
+    EXPECT_EQ(call_dup(f), syscall::EBADF);
+}
+
+TEST(resource_test, dup3_validates_flags_and_fds) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t f = -1;
+    ASSERT_EQ(resource::open(task, "/dup3_validate", fs::O_CREAT | fs::O_RDWR, &f), resource::OK);
+
+    EXPECT_EQ(call_dup3(f, f, 0), syscall::EINVAL);
+    EXPECT_EQ(call_dup3(f, f + 1, fs::O_NONBLOCK), syscall::EINVAL);
+
+    ASSERT_EQ(resource::close(task, f), resource::OK);
+}
+
+TEST(resource_test, dup_flag_inheritance_and_dup3_cloexec) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t f = -1;
+    ASSERT_EQ(resource::open(task, "/dup_flags", fs::O_CREAT | fs::O_RDWR, &f), resource::OK);
+    ASSERT_EQ(
+        resource::set_handle_flags(&task->handles, f, resource::RESOURCE_HANDLE_CLOEXEC | fs::O_NONBLOCK),
+        resource::HANDLE_OK
+    );
+
+    int64_t d = call_dup(f);
+    ASSERT_TRUE(d >= 0);
+
+    uint32_t dflags = 0;
+    ASSERT_EQ(resource::get_handle_flags(&task->handles, static_cast<resource::handle_t>(d), &dflags), resource::HANDLE_OK);
+    EXPECT_EQ(dflags, static_cast<uint32_t>(fs::O_NONBLOCK));
+
+    ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(d)), resource::OK);
+
+    int64_t t = call_dup3(f, static_cast<resource::handle_t>(d), fs::O_CLOEXEC);
+    EXPECT_EQ(t, d);
+
+    uint32_t tflags = 0;
+    ASSERT_EQ(resource::get_handle_flags(&task->handles, static_cast<resource::handle_t>(t), &tflags), resource::HANDLE_OK);
+    EXPECT_EQ(tflags, static_cast<uint32_t>(fs::O_NONBLOCK | resource::RESOURCE_HANDLE_CLOEXEC));
+
+    ASSERT_EQ(resource::close(task, f), resource::OK);
+    ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(t)), resource::OK);
 }

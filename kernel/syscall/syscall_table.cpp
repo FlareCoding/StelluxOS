@@ -4,6 +4,7 @@
 #include "syscall/handlers/sys_task.h"
 #include "syscall/handlers/sys_elevate.h"
 #include "syscall/handlers/sys_io.h"
+#include "syscall/handlers/sys_dup.h"
 #include "syscall/handlers/sys_fd.h"
 #include "syscall/handlers/sys_mmap.h"
 #include "syscall/handlers/sys_socket.h"
@@ -42,12 +43,15 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::CHDIR,           chdir);
     REGISTER_SYSCALL(linux_nr::FCHDIR,          fchdir);
     REGISTER_SYSCALL(linux_nr::OPENAT,          openat);
+    REGISTER_SYSCALL(linux_nr::DUP,             dup);
+    REGISTER_SYSCALL(linux_nr::DUP3,            dup3);
 #if defined(__x86_64__)
     REGISTER_SYSCALL(linux_nr::PIPE,            pipe);
     REGISTER_SYSCALL(linux_nr::POLL,            poll);
     REGISTER_SYSCALL(linux_nr::SELECT,          select);
     REGISTER_SYSCALL(linux_nr::OPEN,            open);
     REGISTER_SYSCALL(linux_nr::STAT,            stat);
+    REGISTER_SYSCALL(linux_nr::DUP2,            dup2);
 #endif
     REGISTER_SYSCALL(linux_nr::BRK,             brk);
     REGISTER_SYSCALL(linux_nr::MMAP,            mmap);
