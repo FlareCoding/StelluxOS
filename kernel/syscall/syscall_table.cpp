@@ -97,10 +97,14 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::FTRUNCATE,   ftruncate);
     REGISTER_SYSCALL(linux_nr::MKDIRAT,     mkdirat);
     REGISTER_SYSCALL(linux_nr::UNLINKAT,    unlinkat);
+    REGISTER_SYSCALL(linux_nr::FACCESSAT,   faccessat);
+    REGISTER_SYSCALL(linux_nr::RENAMEAT,    renameat);
 #if defined(__x86_64__)
     REGISTER_SYSCALL(linux_nr::MKDIR,       mkdir);
     REGISTER_SYSCALL(linux_nr::UNLINK,      unlink);
     REGISTER_SYSCALL(linux_nr::RMDIR,       rmdir);
+    REGISTER_SYSCALL(linux_nr::ACCESS,      access);
+    REGISTER_SYSCALL(linux_nr::RENAME,      renameat);
 #endif
 
     REGISTER_SYSCALL(SYS_ELEVATE, elevate);
