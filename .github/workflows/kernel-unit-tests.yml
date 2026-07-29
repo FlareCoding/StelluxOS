@@ -9,8 +9,9 @@
 #
 #   dynpriv-lint  (fast gate)
 #        │
-#        ▼
-#      build     (4 jobs: arch × mode)
+#        ├──────────────────────────────┐
+#        ▼                              ▼
+#      build     (4 jobs: arch × mode)  macos-build  (2 jobs: arch)
 #        │
 #        ▼
 #    unit-tests  (2 jobs: arch)
@@ -138,6 +139,94 @@ jobs:
             exit 1
           fi
           echo "Kernel ELF: $(ls -lh "$elf")"
+
+  # ============================================================================
+  # macOS Host Build (arm64 runner, arch matrix; unit tests run on Linux)
+  # ============================================================================
+
+  macos-build:
+    name: macos-build (${{ matrix.arch }})
+    runs-on: macos-15
+    needs: dynpriv-lint
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Runner diagnostics
+        run: |
+          sw_vers
+          sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
+          df -h / | tail -1
+
+      - name: Install build dependencies
+        run: |
+          make deps
+          brew install python@3.12
+
+      - name: Fetch Limine EFI binaries
+        run: make limine
+
+      - name: Cache musl sysroot
+        uses: actions/cache@v4
+        id: musl-cache
+        with:
+          path: userland/sysroot
+          key: macos-musl-sysroot-1.2.5-v2
+
+      - name: Build musl libc
+        if: steps.musl-cache.outputs.cache-hit != 'true'
+        run: make musl
+
+      - name: Cache libc++ sysroot
+        uses: actions/cache@v4
+        id: libcxx-cache
+        with:
+          path: |
+            userland/sysroot/x86_64/lib/libc++.a
+            userland/sysroot/x86_64/lib/libc++abi.a
+            userland/sysroot/x86_64/lib/libunwind.a
+            userland/sysroot/x86_64/include/c++
+            userland/sysroot/aarch64/lib/libc++.a
+            userland/sysroot/aarch64/lib/libc++abi.a
+            userland/sysroot/aarch64/lib/libunwind.a
+            userland/sysroot/aarch64/include/c++
+          key: macos-libcxx-sysroot-18.1.8-v2
+
+      - name: Build libc++
+        if: steps.libcxx-cache.outputs.cache-hit != 'true'
+        run: make libcxx
+
+      - name: Cache compiler-rt builtins
+        uses: actions/cache@v4
+        id: compiler-rt-cache
+        with:
+          path: |
+            userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
+            userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
+          key: macos-compiler-rt-builtins-18.1.8-v2
+
+      - name: Build compiler-rt builtins
+        if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
+        run: make compiler-rt
+
+      - name: Build kernel, userland, and disk image
+        run: make image ARCH=${{ matrix.arch }}
+
+      - name: Verify build artifacts
+        run: |
+          for f in "build/kernel/${{ matrix.arch }}/kernel.elf" "images/stellux-${{ matrix.arch }}.img"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::error::missing artifact: $f"
+              exit 1
+            fi
+          done
 
   # ============================================================================
   # Unit Tests (arch matrix)
