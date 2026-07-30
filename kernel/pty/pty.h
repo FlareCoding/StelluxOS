@@ -18,6 +18,14 @@ constexpr size_t PTY_RING_CAPACITY = 4096;
 /** Output processing flags (applied in the slave→master direction). */
 constexpr uint32_t PTY_OFLAG_ONLCR = (1u << 0);   // map NL → CR+NL
 
+/** Terminal geometry, Linux winsize layout. */
+struct pty_winsize {
+    uint16_t ws_row;
+    uint16_t ws_col;
+    uint16_t ws_xpixel;
+    uint16_t ws_ypixel;
+};
+
 struct pty_channel : rc::ref_counted<pty_channel> {
     ring_buffer* m_input_rb;              // master write -> ld -> slave read
     ring_buffer* m_output_rb;             // slave write -> master read
@@ -25,6 +33,7 @@ struct pty_channel : rc::ref_counted<pty_channel> {
     terminal::echo_target m_echo;
     uint32_t m_id;
     uint32_t m_oflags;                    // output processing flags
+    pty_winsize m_winsize;                // set via TIOCSWINSZ from either end
 
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE static void ref_destroy(pty_channel* self);
