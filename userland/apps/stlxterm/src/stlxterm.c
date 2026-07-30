@@ -147,6 +147,10 @@ int main(void) {
     ioctl(slave_fd, STLX_TCSETS_RAW, 0);
     fcntl(master_fd, F_SETFL, O_NONBLOCK);
 
+    // Report the real grid so pty clients see correct geometry
+    struct winsize ws = { (unsigned short)term_rows, (unsigned short)term_cols, 0, 0 };
+    ioctl(master_fd, TIOCSWINSZ, &ws);
+
     // Declare the escape dialect this terminal implements
     setenv("TERM", "xterm", 1);
 
@@ -242,7 +246,8 @@ int main(void) {
             if (buf) {
                 stlxgfx_ctx_t ctx;
                 stlxgfx_ctx_init(&ctx, buf);
-                render_term(&ctx, term, cell_w, cell_h, cursor_visible);
+                render_term(&ctx, term, cell_w, cell_h,
+                            cursor_visible && term->cursor_visible);
                 stlxgfx_window_swap_buffers(win);
                 term->dirty = 0;
             }
