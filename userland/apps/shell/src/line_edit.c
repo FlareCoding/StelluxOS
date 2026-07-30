@@ -355,9 +355,7 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
     int name_prefix_len;
 
     if (cmd_mode) {
-        /* Command mode: search /bin/ for matching executables */
-        strncpy(dir_path, "/bin", sizeof(dir_path) - 1);
-        dir_path[sizeof(dir_path) - 1] = '\0';
+        /* Command mode: search every PATH directory for executables */
         int cap = tok_len < COMPLETE_NAME_MAX - 1 ? tok_len : COMPLETE_NAME_MAX - 1;
         memcpy(name_prefix, prefix, (size_t)cap);
         name_prefix[cap] = '\0';
@@ -395,11 +393,41 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
     completion_entry* entries = malloc(COMPLETE_MAX * sizeof(completion_entry));
     if (!entries) return;
 
-    int count = collect_candidates(dir_path, name_prefix, name_prefix_len,
-                                    entries, COMPLETE_MAX);
+    int count = 0;
+    if (cmd_mode) {
+        const char* path = getenv("PATH");
+        if (!path || !*path) path = "/bin";
 
-    if (count > 1)
+        while (*path && count < COMPLETE_MAX) {
+            const char* sep = strchr(path, ':');
+            int dir_len = sep ? (int)(sep - path) : (int)strlen(path);
+
+            if (dir_len > 0 && dir_len < (int)sizeof(dir_path)) {
+                memcpy(dir_path, path, (size_t)dir_len);
+                dir_path[dir_len] = '\0';
+                count += collect_candidates(dir_path, name_prefix, name_prefix_len,
+                                            entries + count, COMPLETE_MAX - count);
+            }
+
+            if (!sep) break;
+            path = sep + 1;
+        }
+    } else {
+        count = collect_candidates(dir_path, name_prefix, name_prefix_len,
+                                   entries, COMPLETE_MAX);
+    }
+
+    if (count > 1) {
         qsort(entries, (size_t)count, sizeof(completion_entry), completion_cmp);
+
+        /* Drop duplicate names collected from multiple PATH directories */
+        int unique = 1;
+        for (int i = 1; i < count; i++) {
+            if (strcmp(entries[i].name, entries[unique - 1].name) != 0)
+                entries[unique++] = entries[i];
+        }
+        count = unique;
+    }
 
     if (count == 0) {
         /* no matches */
