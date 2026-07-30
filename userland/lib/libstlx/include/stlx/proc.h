@@ -21,10 +21,17 @@ typedef struct {
 
 /**
  * Create a process from an ELF binary. Loads the ELF, creates a task in
- * TASK_STATE_CREATED (not scheduled). Returns a handle on success, -1 on
- * failure with errno set.
+ * TASK_STATE_CREATED (not scheduled). The child inherits the caller's
+ * environment. Returns a handle on success, -1 on failure with errno set.
  */
 int proc_create(const char* path, const char* argv[]);
+
+/**
+ * Like proc_create, but with an explicit NULL-terminated environment
+ * instead of inheriting the caller's.
+ */
+int proc_create_with_env(const char* path, const char* argv[],
+                         const char* envp[]);
 
 /**
  * Convenience: proc_create + proc_start in one call. Returns handle on

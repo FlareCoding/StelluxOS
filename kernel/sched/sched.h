@@ -12,6 +12,10 @@ struct task;
 constexpr int32_t OK         = 0;
 constexpr int32_t ERR_NO_MEM = -1;
 
+// Exec-style string limits shared by proc_create copying and the user stack builder
+constexpr size_t MAX_ARG_STRLEN  = 256; // bytes per argv/envp string, including NUL
+constexpr size_t MAX_ARG_STRINGS = 64;  // strings per argv/envp array
+
 /**
  * @brief Initialize the scheduler for the BSP. Creates idle task,
  * per-CPU runqueue, and scheduling policy. Call after mm::init().
@@ -55,12 +59,15 @@ task* create_kernel_task(void (*entry)(void*), void* arg, const char* name,
  * @param name Debug name (copied into embedded task storage).
  * @param argc Number of user-provided arguments (excluding program name).
  * @param argv Array of kernel-copied argument strings, or nullptr for none.
+ * @param envc Number of environment strings.
+ * @param envp Array of kernel-copied environment strings, or nullptr for none.
  * @return task pointer on success, nullptr on failure.
  * @note Privilege: **required**
  */
 [[nodiscard]] __PRIVILEGED_CODE
 task* create_user_task(exec::loaded_image* image, const char* name,
-                       int argc = 0, const char* const* argv = nullptr);
+                       int argc = 0, const char* const* argv = nullptr,
+                       int envc = 0, const char* const* envp = nullptr);
 
 /**
  * @brief Create a new user thread in an existing user process.

@@ -602,6 +602,8 @@ __PRIVILEGED_CODE task* create_kernel_task(
  *
  * @param user_argc Number of user-provided args (excluding program name).
  * @param user_argv Kernel-copied argument strings, or nullptr for none.
+ * @param user_envc Number of environment strings.
+ * @param user_envp Kernel-copied environment strings, or nullptr for none.
  * @return 16-byte-aligned user stack pointer pointing to argc, or 0 on error.
  * @note Privilege: **required**
  */
@@ -611,7 +613,9 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     const exec::loaded_image& image,
     const char* name,
     int user_argc,
-    const char* const* user_argv
+    const char* const* user_argv,
+    int user_envc,
+    const char* const* user_envp
 ) {
     uint8_t* page_kva = static_cast<uint8_t*>(paging::phys_to_virt(last_page_phys));
     uintptr_t page_base_va = pmm::page_align_down(stack_top - 1);
@@ -622,19 +626,25 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
 
     int total_argc = 1 + user_argc; // argv[0] = name, argv[1..] = user args
 
-    constexpr size_t MAX_ARGV_PTRS = 66; // 1 name + 64 user args + slack
+    constexpr size_t MAX_ARGV_PTRS = 1 + MAX_ARG_STRINGS; // program name + user args
+    constexpr size_t MAX_ENVP_PTRS = MAX_ARG_STRINGS;
     constexpr size_t AUXV_ENTRIES = 5;
     constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
 
-    size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1 + 1 + AUXV_WORDS;
+    size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1
+                        + static_cast<size_t>(user_envc) + 1 + AUXV_WORDS;
     size_t struct_bytes = struct_words * sizeof(uint64_t);
 
     // Pre-compute total string space needed (8-byte aligned per arg)
     size_t name_len = string::strnlen(name, TASK_NAME_MAX - 1) + 1;
     size_t total_string_bytes = (name_len + 7) & ~7ULL;
     for (int i = 0; i < user_argc; i++) {
-        size_t arg_len = string::strnlen(user_argv[i], 255) + 1;
+        size_t arg_len = string::strnlen(user_argv[i], MAX_ARG_STRLEN - 1) + 1;
         total_string_bytes += (arg_len + 7) & ~7ULL;
+    }
+    for (int i = 0; i < user_envc; i++) {
+        size_t env_len = string::strnlen(user_envp[i], MAX_ARG_STRLEN - 1) + 1;
+        total_string_bytes += (env_len + 7) & ~7ULL;
     }
 
     if (total_string_bytes + struct_bytes + 16 > pmm::PAGE_SIZE) {
@@ -653,22 +663,34 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
 
     // argv[1..user_argc] = user-provided args
     for (int i = 0; i < user_argc; i++) {
-        size_t arg_len = string::strnlen(user_argv[i], 255) + 1;
+        size_t arg_len = string::strnlen(user_argv[i], MAX_ARG_STRLEN - 1) + 1;
         size_t arg_padded = (arg_len + 7) & ~7ULL;
         str_cursor -= arg_padded;
         write(str_cursor, user_argv[i], arg_len);
         argv_vas[1 + i] = str_cursor;
     }
 
+    uintptr_t envp_vas[MAX_ENVP_PTRS];
+    for (int i = 0; i < user_envc; i++) {
+        size_t env_len = string::strnlen(user_envp[i], MAX_ARG_STRLEN - 1) + 1;
+        size_t env_padded = (env_len + 7) & ~7ULL;
+        str_cursor -= env_padded;
+        write(str_cursor, user_envp[i], env_len);
+        envp_vas[i] = str_cursor;
+    }
+
     uintptr_t sp = (str_cursor - struct_bytes) & ~0xFULL;
 
-    uint64_t data[1 + MAX_ARGV_PTRS + 1 + 1 + AUXV_WORDS];
+    uint64_t data[1 + MAX_ARGV_PTRS + 1 + MAX_ENVP_PTRS + 1 + AUXV_WORDS];
     size_t idx = 0;
     data[idx++] = static_cast<uint64_t>(total_argc);
     for (int i = 0; i < total_argc; i++) {
         data[idx++] = argv_vas[i];
     }
     data[idx++] = 0; // argv terminator (NULL)
+    for (int i = 0; i < user_envc; i++) {
+        data[idx++] = envp_vas[i];
+    }
     data[idx++] = 0; // envp terminator (NULL)
     data[idx++] = AT_PAGESZ; data[idx++] = pmm::PAGE_SIZE;
     data[idx++] = AT_PHDR;   data[idx++] = image.phdr_vaddr;
@@ -685,7 +707,8 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
  */
 __PRIVILEGED_CODE task* create_user_task(
     exec::loaded_image* image, const char* name,
-    int argc, const char* const* argv
+    int argc, const char* const* argv,
+    int envc, const char* const* envp
 ) {
     if (!image || !image->mm_ctx) {
         log::error("sched: invalid loaded image for user task");
@@ -772,9 +795,10 @@ __PRIVILEGED_CODE task* create_user_task(
     }
 
     uintptr_t user_sp = setup_user_stack(
-        last_stack_page_phys, mm::USER_STACK_TOP, *image, name, argc, argv);
+        last_stack_page_phys, mm::USER_STACK_TOP, *image, name,
+        argc, argv, envc, envp);
     if (user_sp == 0) {
-        log::error("sched: user stack setup failed (argv too large?)");
+        log::error("sched: user stack setup failed (argv/envp too large?)");
         mm::mm_context_unmap(mm_ctx, stack_max_base, total_bytes);
         vmm::free(sys_stack_base);
         heap::kfree_delete(t);

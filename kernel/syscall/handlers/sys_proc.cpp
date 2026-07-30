@@ -9,6 +9,7 @@
 #include "dynpriv/dynpriv.h"
 #include "exec/elf.h"
 #include "mm/uaccess.h"
+#include "mm/heap.h"
 #include "fs/fs.h"
 #include "fs/node.h"
 #include "fs/fstypes.h"
@@ -22,9 +23,83 @@ struct process_info {
     int cpu;
 };
 
-constexpr uint32_t MAX_PROC_ARGC = 64;
-constexpr size_t MAX_PROC_ARG_LEN = 256;
 constexpr size_t MAX_PROC_ARGV_TOTAL = 3500;
+
+// One bounded user string array copied into kernel storage
+struct proc_string_array {
+    char buf[MAX_PROC_ARGV_TOTAL];
+    const char* ptrs[sched::MAX_ARG_STRINGS];
+    int count;
+};
+
+// Everything proc_create copies out of user string arrays, heap-held
+// because the buffers dwarf the system stack
+struct proc_create_strings {
+    proc_string_array argv;
+    proc_string_array envp;
+};
+
+// Copies a NULL-terminated user pointer array of strings into arr. The
+// user address stays an opaque integer until uaccess validates each access.
+int64_t copy_proc_string_array_from_user(
+    proc_string_array& arr, uint64_t u_array
+) {
+    arr.count = 0;
+    if (u_array == 0) {
+        return 0;
+    }
+
+    size_t buf_offset = 0;
+    for (size_t i = 0; i < sched::MAX_ARG_STRINGS; i++) {
+        uintptr_t uptr = 0;
+        int32_t rc = mm::uaccess::copy_from_user(
+            &uptr,
+            reinterpret_cast<const uintptr_t*>(u_array) + i,
+            sizeof(uptr));
+        if (rc != mm::uaccess::OK) {
+            return syscall::EFAULT;
+        }
+        if (uptr == 0) {
+            break;
+        }
+
+        size_t remaining = MAX_PROC_ARGV_TOTAL - buf_offset;
+        if (remaining == 0) {
+            return syscall::ENAMETOOLONG;
+        }
+        size_t cap = remaining < sched::MAX_ARG_STRLEN
+                   ? remaining : sched::MAX_ARG_STRLEN;
+
+        rc = mm::uaccess::copy_cstr_from_user(
+            arr.buf + buf_offset, cap,
+            reinterpret_cast<const char*>(uptr));
+        if (rc == mm::uaccess::ERR_NAMETOOLONG) {
+            return syscall::ENAMETOOLONG;
+        }
+        if (rc != mm::uaccess::OK) {
+            return syscall::EFAULT;
+        }
+
+        size_t len = string::strnlen(arr.buf + buf_offset, cap);
+
+        arr.ptrs[arr.count] = arr.buf + buf_offset;
+        buf_offset += len + 1;
+        arr.count++;
+    }
+
+    return 0;
+}
+
+// Copies the full proc_create string payload in one step
+int64_t copy_proc_create_strings_from_user(
+    proc_create_strings& strs, uint64_t u_argv, uint64_t u_envp
+) {
+    int64_t rc = copy_proc_string_array_from_user(strs.argv, u_argv);
+    if (rc != 0) {
+        return rc;
+    }
+    return copy_proc_string_array_from_user(strs.envp, u_envp);
+}
 
 __PRIVILEGED_CODE static const char* path_basename(const char* path) {
     const char* base = path;
@@ -51,7 +126,7 @@ __PRIVILEGED_CODE static int64_t map_elf_error(int32_t rc) {
 
 } // anonymous namespace
 
-DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
+DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
     sched::task* caller = sched::current();
     if (!caller) {
         return syscall::EIO;
@@ -68,59 +143,30 @@ DEFINE_SYSCALL2(proc_create, u_path, u_argv) {
         return syscall::EFAULT;
     }
 
-    char kargv_buf[MAX_PROC_ARGV_TOTAL];
-    const char* kargv_ptrs[MAX_PROC_ARGC];
-    int kargc = 0;
+    auto* strs = heap::kalloc_new<proc_create_strings>();
+    if (!strs) {
+        return syscall::ENOMEM;
+    }
 
-    if (u_argv != 0) {
-        size_t buf_offset = 0;
-        for (uint32_t i = 0; i < MAX_PROC_ARGC; i++) {
-            uintptr_t uptr = 0;
-            int32_t rc = mm::uaccess::copy_from_user(
-                &uptr,
-                reinterpret_cast<const uintptr_t*>(u_argv) + i,
-                sizeof(uptr));
-            if (rc != mm::uaccess::OK) {
-                return syscall::EFAULT;
-            }
-            if (uptr == 0) {
-                break;
-            }
-
-            size_t remaining = MAX_PROC_ARGV_TOTAL - buf_offset;
-            if (remaining == 0) {
-                return syscall::ENAMETOOLONG;
-            }
-            size_t cap = remaining < MAX_PROC_ARG_LEN ? remaining : MAX_PROC_ARG_LEN;
-
-            rc = mm::uaccess::copy_cstr_from_user(
-                kargv_buf + buf_offset,
-                cap,
-                reinterpret_cast<const char*>(uptr));
-            if (rc == mm::uaccess::ERR_NAMETOOLONG) {
-                return syscall::ENAMETOOLONG;
-            }
-            if (rc != mm::uaccess::OK) {
-                return syscall::EFAULT;
-            }
-
-            size_t len = string::strnlen(kargv_buf + buf_offset, cap);
-
-            kargv_ptrs[kargc] = kargv_buf + buf_offset;
-            buf_offset += len + 1;
-            kargc++;
-        }
+    int64_t rc = copy_proc_create_strings_from_user(*strs, u_argv, u_envp);
+    if (rc != 0) {
+        heap::kfree_delete(strs);
+        return rc;
     }
 
     exec::loaded_image loaded;
     int32_t elf_rc = exec::load_elf(kpath, &loaded, caller->cwd);
     if (elf_rc != exec::OK) {
+        heap::kfree_delete(strs);
         return map_elf_error(elf_rc);
     }
 
     const char* name = path_basename(kpath);
     sched::task* child = sched::create_user_task(
-        &loaded, name, kargc, kargc > 0 ? kargv_ptrs : nullptr);
+        &loaded, name,
+        strs->argv.count, strs->argv.count > 0 ? strs->argv.ptrs : nullptr,
+        strs->envp.count, strs->envp.count > 0 ? strs->envp.ptrs : nullptr);
+    heap::kfree_delete(strs);
     if (!child) {
         exec::unload_elf(&loaded);
         return syscall::ENOMEM;
