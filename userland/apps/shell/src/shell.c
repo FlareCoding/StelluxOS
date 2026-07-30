@@ -38,8 +38,31 @@ static int reap_status(int status) {
     return status;
 }
 
+/*
+ * Resolve a bare command name against PATH, falling back to /bin.
+ * Names containing '/' are used as-is.
+ */
 static const char* resolve_cmd(const char* name, char* path_buf, int buf_size) {
     if (strchr(name, '/')) return name;
+
+    const char* path = getenv("PATH");
+    if (!path || !*path) path = "/bin";
+
+    while (*path) {
+        const char* sep = strchr(path, ':');
+        int dir_len = sep ? (int)(sep - path) : (int)strlen(path);
+
+        if (dir_len > 0) {
+            int n = snprintf(path_buf, buf_size, "%.*s/%s", dir_len, path, name);
+            if (n > 0 && n < buf_size && access(path_buf, X_OK) == 0)
+                return path_buf;
+        }
+
+        if (!sep) break;
+        path = sep + 1;
+    }
+
+    /* Keep the historical candidate so failure messaging is unchanged */
     int n = snprintf(path_buf, buf_size, "/bin/%s", name);
     return (n > 0 && n < buf_size) ? path_buf : name;
 }
