@@ -4,7 +4,12 @@
 #include <unistd.h>
 
 int proc_create(const char* path, const char* argv[]) {
-    return (int)syscall(SYS_PROC_CREATE, path, argv);
+    return proc_create_with_env(path, argv, (const char**)environ);
+}
+
+int proc_create_with_env(const char* path, const char* argv[],
+                         const char* envp[]) {
+    return (int)syscall(SYS_PROC_CREATE, path, argv, envp);
 }
 
 int proc_exec(const char* path, const char* argv[]) {
