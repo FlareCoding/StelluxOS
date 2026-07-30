@@ -30,13 +30,6 @@ struct linux_termios {
     uint8_t  c_cc[19];
 };
 
-struct linux_winsize {
-    uint16_t ws_row;
-    uint16_t ws_col;
-    uint16_t ws_xpixel;
-    uint16_t ws_ypixel;
-};
-
 __PRIVILEGED_BSS static uint32_t g_next_pty_id;
 
 __PRIVILEGED_CODE void pty_channel::ref_destroy(pty_channel* self) {
@@ -237,12 +230,23 @@ static int32_t do_tcsets(pty_channel* chan, uint64_t arg) {
     return resource::OK;
 }
 
-static int32_t do_tiocgwinsz(uint64_t arg) {
-    linux_winsize w = { 24, 80, 0, 0 };
+static int32_t do_tiocgwinsz(pty_channel* chan, uint64_t arg) {
     int32_t rc = mm::uaccess::copy_to_user(
-        reinterpret_cast<void*>(arg), &w, sizeof(w));
+        reinterpret_cast<void*>(arg), &chan->m_winsize, sizeof(chan->m_winsize));
 
     return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+}
+
+static int32_t do_tiocswinsz(pty_channel* chan, uint64_t arg) {
+    pty_winsize w = {};
+    int32_t rc = mm::uaccess::copy_from_user(
+        &w, reinterpret_cast<const void*>(arg), sizeof(w));
+    if (rc != mm::uaccess::OK) {
+        return resource::ERR_INVAL;
+    }
+
+    chan->m_winsize = w;
+    return resource::OK;
 }
 
 static int32_t pty_termios_ioctl(pty_channel* chan, uint32_t cmd, uint64_t arg) {
@@ -251,15 +255,16 @@ static int32_t pty_termios_ioctl(pty_channel* chan, uint32_t cmd, uint64_t arg) 
         case TCSETS:
         case TCSETSW:
         case TCSETSF:                      return do_tcsets(chan, arg);
-        case TIOCGWINSZ:                   return do_tiocgwinsz(arg);
-        case TIOCSWINSZ:                   return resource::OK;
+        case TIOCGWINSZ:                   return do_tiocgwinsz(chan, arg);
+        case TIOCSWINSZ:                   return do_tiocswinsz(chan, arg);
         case terminal::STLX_TCSETS_RAW:
         case terminal::STLX_TCSETS_COOKED: return terminal::ld_set_mode(&chan->m_ld, cmd);
         default:                           return resource::ERR_INVAL;
     }
 }
 
-static int32_t pty_slave_ioctl(
+// Termios and winsize state is channel-level, shared by both endpoints
+static int32_t pty_ioctl(
     resource::resource_object* obj, uint32_t cmd, uint64_t arg
 ) {
     if (!obj || !obj->impl) {
@@ -301,7 +306,7 @@ static const resource::resource_ops g_pty_master_ops = {
     pty_master_read,
     pty_master_write,
     pty_master_close,
-    nullptr,
+    pty_ioctl,
     nullptr,
     nullptr,
     nullptr,
@@ -319,7 +324,7 @@ static const resource::resource_ops g_pty_slave_ops = {
     pty_slave_read,
     pty_slave_write,
     pty_slave_close,
-    pty_slave_ioctl,
+    pty_ioctl,
     nullptr,
     nullptr,
     nullptr,
@@ -364,6 +369,7 @@ __PRIVILEGED_CODE int32_t create_pair(
     chan->m_echo = { pty_echo_fn, chan.ptr() };
     chan->m_id = __atomic_fetch_add(&g_next_pty_id, 1, __ATOMIC_RELAXED);
     chan->m_oflags = PTY_OFLAG_ONLCR;
+    chan->m_winsize = { 24, 80, 0, 0 };
 
     auto* ep_master = heap::kalloc_new<pty_endpoint>();
     if (!ep_master) {
