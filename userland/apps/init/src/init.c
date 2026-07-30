@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 199309L
 #include <stlx/proc.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -16,6 +17,12 @@ int main(void) {
     open("/dev/console", O_RDWR); // fd 2
 
     setvbuf(stdout, NULL, _IONBF, 0);
+
+    // Base environment inherited by every descendant process
+    setenv("PATH", "/bin:/usr/bin", 1);
+    setenv("HOME", "/", 1);
+    setenv("SHELL", "/bin/shell", 1);
+    setenv("LANG", "C", 1);
 
     int dm_handle = proc_exec("/bin/stlxdm", NULL);
     if (dm_handle >= 0) {
