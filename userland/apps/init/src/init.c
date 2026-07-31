@@ -23,6 +23,7 @@ int main(void) {
     setenv("HOME", "/", 1);
     setenv("SHELL", "/bin/shell", 1);
     setenv("LANG", "C", 1);
+    setenv("PYTHONHOME", "/usr", 1);
 
     int dm_handle = proc_exec("/bin/stlxdm", NULL);
     if (dm_handle >= 0) {
