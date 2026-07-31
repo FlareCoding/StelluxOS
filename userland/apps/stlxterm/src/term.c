@@ -184,6 +184,9 @@ static void csi_dispatch_private(term_state_t *t, char cmd) {
 
     if (cmd == 'h') {
         switch (p0) {
+        case 1:    /* DECCKM: application cursor keys */
+            t->app_cursor_keys = 1;
+            break;
         case 25:   /* DECTCEM: show cursor */
             t->cursor_visible = 1;
             break;
@@ -200,6 +203,9 @@ static void csi_dispatch_private(term_state_t *t, char cmd) {
         }
     } else if (cmd == 'l') {
         switch (p0) {
+        case 1:    /* DECCKM: normal cursor keys */
+            t->app_cursor_keys = 0;
+            break;
         case 25:   /* DECTCEM: hide cursor */
             t->cursor_visible = 0;
             break;
@@ -450,7 +456,10 @@ static void feed_byte(term_state_t *t, unsigned char ch) {
             t->csi_param_count = 0;
             t->csi_current_param = 0;
             t->csi_private = 0;
+            t->csi_discard = 0;
             t->state = TERM_ST_CSI;
+        } else if (ch == ']') { /* OSC: consume until BEL or ST */
+            t->state = TERM_ST_OSC;
         } else if (ch == '7') { /* DECSC: save cursor */
             save_cursor(t);
             t->state = TERM_ST_NORMAL;
@@ -477,13 +486,21 @@ static void feed_byte(term_state_t *t, unsigned char ch) {
     case TERM_ST_CSI:
         if (ch == '?' && t->csi_param_count == 0 && t->csi_current_param == 0) {
             t->csi_private = 1;
+        } else if (ch == '<' || ch == '=' || ch == '>') {
+            /* Prefixed protocol sequences are consumed and ignored */
+            t->csi_discard = 1;
         } else if (ch >= '0' && ch <= '9') {
             t->csi_current_param = t->csi_current_param * 10 + (ch - '0');
         } else if (ch == ';') {
             csi_push_param(t);
+        } else if (ch >= 0x20 && ch <= 0x2F) {
+            /* Intermediate bytes mark sequences we do not implement */
+            t->csi_discard = 1;
         } else if (ch >= 0x40 && ch <= 0x7E) {
             csi_push_param(t);
-            if (t->csi_private) {
+            if (t->csi_discard) {
+                /* Fully consumed, deliberately ignored */
+            } else if (t->csi_private) {
                 csi_dispatch_private(t, (char)ch);
             } else {
                 csi_dispatch(t, (char)ch);
@@ -493,6 +510,25 @@ static void feed_byte(term_state_t *t, unsigned char ch) {
             t->state = TERM_ST_ESC;
         } else {
             t->state = TERM_ST_NORMAL;
+        }
+        break;
+
+    case TERM_ST_OSC:
+        if (ch == '\x07') {
+            t->state = TERM_ST_NORMAL;
+        } else if (ch == '\x1b') {
+            t->state = TERM_ST_OSC_ESC;
+        }
+        break;
+
+    case TERM_ST_OSC_ESC:
+        /* ESC backslash is ST, anything else starts a new escape whose
+           follower byte must be reprocessed */
+        if (ch == '\\') {
+            t->state = TERM_ST_NORMAL;
+        } else {
+            t->state = TERM_ST_ESC;
+            feed_byte(t, ch);
         }
         break;
     }
@@ -520,10 +556,12 @@ void term_init(term_state_t *t, int rows, int cols) {
     t->saved_bold = 0;
     t->saved_reverse = 0;
     t->using_alt_screen = 0;
+    t->app_cursor_keys = 0;
     t->state = TERM_ST_NORMAL;
     t->csi_param_count = 0;
     t->csi_current_param = 0;
     t->csi_private = 0;
+    t->csi_discard = 0;
     for (int r = 0; r < TERM_MAX_ROWS; r++) {
         memset(&t->cells[r], ' ', TERM_MAX_COLS);
         memset(&t->attrs[r], 0, TERM_MAX_COLS * sizeof(term_attr_t));

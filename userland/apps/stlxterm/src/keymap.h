@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-int keymap_translate(uint16_t usage, uint8_t modifiers,
+int keymap_translate(uint16_t usage, uint8_t modifiers, int app_cursor,
                      char *out, int out_size);
 
 #endif // STLXTERM_KEYMAP_H

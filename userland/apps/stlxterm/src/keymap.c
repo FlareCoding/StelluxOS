@@ -20,7 +20,7 @@ static int emit(char *out, int out_size, const char *seq, int len) {
     return len;
 }
 
-int keymap_translate(uint16_t usage, uint8_t modifiers,
+int keymap_translate(uint16_t usage, uint8_t modifiers, int app_cursor,
                      char *out, int out_size) {
     if (!out || out_size < 1) return 0;
 
@@ -57,16 +57,17 @@ int keymap_translate(uint16_t usage, uint8_t modifiers,
     switch (usage) {
     case 0x28: out[0] = '\r';   return 1;
     case 0x29: out[0] = '\x1b'; return 1;
-    case 0x2A: out[0] = '\x7f'; return 1;
+    case 0x2A: out[0] = '\b';   return 1;
     case 0x2B: out[0] = '\t';   return 1;
     case 0x2C: out[0] = ' ';    return 1;
 
-    case 0x4F: return emit(out, out_size, "\x1b[C",  3);
-    case 0x50: return emit(out, out_size, "\x1b[D",  3);
-    case 0x51: return emit(out, out_size, "\x1b[B",  3);
-    case 0x52: return emit(out, out_size, "\x1b[A",  3);
-    case 0x4A: return emit(out, out_size, "\x1b[H",  3);
-    case 0x4D: return emit(out, out_size, "\x1b[F",  3);
+    /* Arrows follow DECCKM: CSI form normally, SS3 form in application mode */
+    case 0x4F: return emit(out, out_size, app_cursor ? "\x1bOC" : "\x1b[C", 3);
+    case 0x50: return emit(out, out_size, app_cursor ? "\x1bOD" : "\x1b[D", 3);
+    case 0x51: return emit(out, out_size, app_cursor ? "\x1bOB" : "\x1b[B", 3);
+    case 0x52: return emit(out, out_size, app_cursor ? "\x1bOA" : "\x1b[A", 3);
+    case 0x4A: return emit(out, out_size, app_cursor ? "\x1bOH" : "\x1b[H", 3);
+    case 0x4D: return emit(out, out_size, app_cursor ? "\x1bOF" : "\x1b[F", 3);
     case 0x4C: return emit(out, out_size, "\x1b[3~", 4);
     case 0x49: return emit(out, out_size, "\x1b[2~", 4);  /* Insert */
     case 0x4B: return emit(out, out_size, "\x1b[5~", 4);  /* Page Up */
