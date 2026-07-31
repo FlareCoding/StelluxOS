@@ -109,5 +109,8 @@ DEFINE_SYSCALL3(ioctl, fd, cmd, arg) {
         task, static_cast<resource::handle_t>(fd),
         static_cast<uint32_t>(cmd), arg);
     if (rc == resource::OK) return 0;
+
+    // POSIX: an unsupported request on any fd is ENOTTY, not ENOSYS
+    if (rc == resource::ERR_UNSUP) return syscall::ENOTTY;
     return map_resource_error(rc);
 }
