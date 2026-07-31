@@ -764,7 +764,7 @@ doom-wad:
 	else \
 		echo "Downloading DOOM1.WAD (shareware, ~4.1 MB)..."; \
 		curl -fL -o initrd/etc/res/doom/doom1.wad \
-			"https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad"; \
+			"https://github.com/Akbar30Bill/DOOM_wads/raw/master/doom1.wad"; \
 		echo ""; \
 		echo "Downloaded: initrd/etc/res/doom/doom1.wad ($$(wc -c < initrd/etc/res/doom/doom1.wad) bytes)"; \
 	fi
