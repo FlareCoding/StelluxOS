@@ -24,6 +24,8 @@ DECLARE_SYSCALL(mkdirat);
 DECLARE_SYSCALL(mkdir);
 DECLARE_SYSCALL(faccessat);
 DECLARE_SYSCALL(access);
+DECLARE_SYSCALL(readlinkat);
+DECLARE_SYSCALL(readlink);
 DECLARE_SYSCALL(renameat);
 DECLARE_SYSCALL(fsync);
 

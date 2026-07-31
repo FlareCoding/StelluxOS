@@ -27,6 +27,7 @@ constexpr uint64_t WRITE            = 64;
 constexpr uint64_t WRITEV           = 66;
 constexpr uint64_t PSELECT6         = 72;
 constexpr uint64_t PPOLL            = 73;
+constexpr uint64_t READLINKAT       = 78;
 constexpr uint64_t NEWFSTATAT       = 79;
 constexpr uint64_t FSTAT            = 80;
 constexpr uint64_t FSYNC            = 82;

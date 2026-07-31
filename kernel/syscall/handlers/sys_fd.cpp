@@ -1447,6 +1447,73 @@ DEFINE_SYSCALL2(access, pathname, mode) {
         pathname, mode, 0, 0, 0);
 }
 
+static int64_t do_readlinkat(int64_t dirfd, uint64_t pathname,
+                             uint64_t u_buf, uint64_t bufsize) {
+    if (bufsize == 0) {
+        return syscall::EINVAL;
+    }
+
+    char kpath[fs::PATH_MAX];
+    int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
+        kpath, sizeof(kpath),
+        reinterpret_cast<const char*>(pathname));
+    if (copy_rc != mm::uaccess::OK) {
+        if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
+            return syscall::ENAMETOOLONG;
+        }
+        return syscall::EFAULT;
+    }
+
+    if (kpath[0] == '\0') {
+        return syscall::ENOENT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    fs::node* node = nullptr;
+    int64_t lookup_rc = lookup_node_for_dirfd_path(task, dirfd, kpath, &node);
+    if (lookup_rc != 0) {
+        return lookup_rc;
+    }
+
+    // Only symbolic links have a target to read
+    if (node->type() != fs::node_type::symlink) {
+        release_node_ref(node);
+        return syscall::EINVAL;
+    }
+
+    // The input path is no longer needed, so reuse kpath for the target
+    size_t cap = bufsize < sizeof(kpath) ? bufsize : sizeof(kpath);
+    size_t target_len = 0;
+    int32_t fs_rc = node->readlink(kpath, cap, &target_len);
+    release_node_ref(node);
+    if (fs_rc != fs::OK) {
+        return syscall::error_map::map_fs_error(fs_rc);
+    }
+
+    // Guard against a provider reporting more than it wrote
+    if (target_len > cap) {
+        target_len = cap;
+    }
+
+    if (mm::uaccess::copy_to_user(reinterpret_cast<void*>(u_buf),
+                                  kpath, target_len) != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+    return static_cast<int64_t>(target_len);
+}
+
+DEFINE_SYSCALL4(readlinkat, dirfd, pathname, buf, bufsize) {
+    return do_readlinkat(static_cast<int64_t>(dirfd), pathname, buf, bufsize);
+}
+
+DEFINE_SYSCALL3(readlink, pathname, buf, bufsize) {
+    return do_readlinkat(static_cast<int64_t>(-100), pathname, buf, bufsize);
+}
+
 DEFINE_SYSCALL4(renameat, olddirfd, oldpath, newdirfd, newpath) {
     (void)olddirfd;
     (void)oldpath;
