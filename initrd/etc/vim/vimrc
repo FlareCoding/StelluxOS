@@ -1,0 +1,3 @@
+" Stellux system defaults
+set nocompatible
+set backspace=indent,eol,start

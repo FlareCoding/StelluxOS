@@ -46,12 +46,16 @@ typedef struct {
     int alt_cursor_col;
     int using_alt_screen;
 
+    // DECCKM application cursor keys, consulted by the key encoder
+    int app_cursor_keys;
+
     // Parser state
-    enum { TERM_ST_NORMAL, TERM_ST_ESC, TERM_ST_CSI } state;
+    enum { TERM_ST_NORMAL, TERM_ST_ESC, TERM_ST_CSI, TERM_ST_OSC, TERM_ST_OSC_ESC } state;
     int csi_params[TERM_CSI_MAX_PARAMS];
     int csi_param_count;
     int csi_current_param;
     int csi_private;
+    int csi_discard;
 } term_state_t;
 
 void term_init(term_state_t *t, int rows, int cols);

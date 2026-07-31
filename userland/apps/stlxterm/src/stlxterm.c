@@ -206,6 +206,7 @@ int main(void) {
             if (evt.type == STLXGFX_EVT_KEY_DOWN) {
                 char seq[8];
                 int len = keymap_translate(evt.key.usage, evt.key.modifiers,
+                                           term->app_cursor_keys,
                                            seq, sizeof(seq));
                 if (len > 0) {
                     write(master_fd, seq, (size_t)len);
