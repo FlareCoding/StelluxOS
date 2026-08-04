@@ -588,6 +588,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->proc_res = nullptr;
     t->cwd = nullptr;
     t->kill_pending = 0;
+    t->sig = {};
     t->group = nullptr;
     t->group_link = {};
 
@@ -846,6 +847,7 @@ __PRIVILEGED_CODE task* create_user_task(
     t->proc_res = nullptr;
     t->cwd = nullptr;
     t->kill_pending = 0;
+    t->sig = {};
 
     auto* tg = heap::kalloc_new<thread_group>();
     if (!tg) {
@@ -864,6 +866,7 @@ __PRIVILEGED_CODE task* create_user_task(
     }
     tg->lock = sync::SPINLOCK_INIT;
     tg->leader = t;
+    tg->pid = t->tid;
     tg->threads.init();
     tg->thread_count = 0;
     t->group = tg; // task takes ownership of the initial ref (refcount=1)
@@ -936,6 +939,8 @@ __PRIVILEGED_CODE task* create_user_thread(
     t->exit_code = 0;
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     t->kill_pending = 0;
+    t->sig = {};
+    t->sig.blocked = __atomic_load_n(&creator->sig.blocked, __ATOMIC_ACQUIRE);
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1)); 
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
 
@@ -1028,6 +1033,7 @@ __PRIVILEGED_CODE int32_t init() {
     resource::init_task_handles(idle);
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
+    idle->sig = {};
     idle->group = nullptr;
     idle->group_link = {};
 
