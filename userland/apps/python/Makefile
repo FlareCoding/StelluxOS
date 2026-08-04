@@ -138,10 +138,11 @@ $(PATCH_STAMP): | $(EXTRACT_STAMP)
 	@touch $@
 
 $(CONFIGURE_STAMP): $(PATCH_STAMP) config.site Modules.Setup.local
-	@mkdir -p $(BUILD_DIR)
+	@mkdir -p $(BUILD_DIR)/Modules
 	@echo "[CONF] CPython $(PY_VER) ($(ARCH))"
 	@echo "  SYSROOT=$(SYSROOT)"
 	@echo "  BUILTINS_LIB=$(BUILTINS_LIB)"
+	@cp Modules.Setup.local $(BUILD_DIR)/Modules/Setup.local
 	@cd $(BUILD_DIR) && \
 	CONFIG_SITE=$(CURDIR)/config.site \
 	CC="$(CC)" \
@@ -160,7 +161,6 @@ $(CONFIGURE_STAMP): $(PATCH_STAMP) config.site Modules.Setup.local
 		--disable-ipv6 \
 		--without-ensurepip \
 		--with-build-python=$$(command -v $(HOST_PYTHON))
-	@cp Modules.Setup.local $(BUILD_DIR)/Modules/Setup.local
 	@touch $@
 
 $(BUILD_STAMP): $(CONFIGURE_STAMP)
