@@ -19,6 +19,14 @@ _socket socketmodule.c
 termios termios.c
 unicodedata unicodedata.c
 
+# datetime, base64/binascii, and hashlib support
+_datetime _datetimemodule.c
+binascii binascii.c
+_md5 md5module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_MD5.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
+_sha1 sha1module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_SHA1.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
+_sha2 sha2module.c -I$(srcdir)/Modules/_hacl/include Modules/_hacl/libHacl_Hash_SHA2.a
+_sha3 sha3module.c -I$(srcdir)/Modules/_hacl/include _hacl/Hacl_Hash_SHA3.c -D_BSD_SOURCE -D_DEFAULT_SOURCE
+
 *disabled*
 
 _asyncio
@@ -30,25 +38,19 @@ _codecs_jp
 _codecs_kr
 _codecs_tw
 _crypt
-_datetime
 _decimal
 _elementtree
 _lsprof
-_md5
 _multiprocessing
 _opcode
 _posixshmem
 _posixsubprocess
 _queue
-_sha1
-_sha2
-_sha3
 _statistics
 _xxinterpchannels
 _xxsubinterpreters
 _zoneinfo
 audioop
-binascii
 ossaudiodev
 pyexpat
 spwd
