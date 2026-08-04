@@ -7,6 +7,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef enum {
@@ -199,6 +200,9 @@ static void set_focus(stlxdm_input_t* inp, dm_client_t* clients, int new_slot) {
         return;
     }
 
+    /* A held key must not repeat into a different window */
+    inp->repeat_usage = 0;
+
     if (inp->focused_slot >= 0) {
         stlxgfx_dm_window_t* old_win = clients[inp->focused_slot].window;
         if (old_win && old_win->event_ring) {
@@ -222,20 +226,50 @@ static void set_focus(stlxdm_input_t* inp, dm_client_t* clients, int new_slot) {
     }
 }
 
-static void deliver_key(dm_client_t* clients, int slot,
-                        const stlx_input_kbd_event_t* raw) {
+static void emit_key_event(dm_client_t* clients, int slot, uint16_t usage,
+                           uint8_t modifiers, uint32_t type) {
     stlxgfx_dm_window_t* w = clients[slot].window;
     if (!w || !w->event_ring) {
         return;
     }
 
     stlxgfx_event_t evt = {0};
-    evt.type = (raw->action == STLX_INPUT_KBD_ACTION_DOWN)
-               ? STLXGFX_EVT_KEY_DOWN : STLXGFX_EVT_KEY_UP;
+    evt.type = type;
     evt.window_id = w->window_id;
-    evt.key.usage = raw->usage;
-    evt.key.modifiers = raw->modifiers;
+    evt.key.usage = usage;
+    evt.key.modifiers = modifiers;
     stlxgfx_event_ring_write(w->event_ring, &evt);
+}
+
+static void deliver_key(dm_client_t* clients, int slot,
+                        const stlx_input_kbd_event_t* raw) {
+    uint32_t type = (raw->action == STLX_INPUT_KBD_ACTION_DOWN)
+                    ? STLXGFX_EVT_KEY_DOWN : STLXGFX_EVT_KEY_UP;
+    emit_key_event(clients, slot, raw->usage, raw->modifiers, type);
+}
+
+static uint64_t monotonic_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+/* Arm repeat on a non-modifier press, last key wins, disarm on its release. */
+static void update_key_repeat(stlxdm_input_t* inp,
+                              const stlx_input_kbd_event_t* raw, uint64_t now) {
+    /* Modifier changes keep the held key's repeat modifiers current */
+    if (raw->usage >= 0xE0u && raw->usage <= 0xE7u) {
+        inp->repeat_modifiers = raw->modifiers;
+        return;
+    }
+
+    if (raw->action == STLX_INPUT_KBD_ACTION_DOWN) {
+        inp->repeat_usage = raw->usage;
+        inp->repeat_modifiers = raw->modifiers;
+        inp->repeat_next_ns = now + inp->key_repeat_delay_ns;
+    } else if (raw->usage == inp->repeat_usage) {
+        inp->repeat_usage = 0;
+    }
 }
 
 static void deliver_pointer(dm_client_t* clients, int slot,
@@ -283,6 +317,8 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
 
     inp->spawn_terminal_requested = 0;
 
+    uint64_t now = monotonic_ns();
+
     stlx_input_kbd_event_t kbd_buf[STLXDM_INPUT_MAX_RAW_PER_FRAME];
     if (inp->kbd_fd >= 0) {
         ssize_t n = read(inp->kbd_fd, kbd_buf, sizeof(kbd_buf));
@@ -292,10 +328,21 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                 if (is_global_shortcut(&kbd_buf[i], inp)) {
                     continue;
                 }
-                if (inp->focused_slot >= 0)
-                    deliver_key(clients, inp->focused_slot, &kbd_buf[i]);
+                if (inp->focused_slot < 0) {
+                    continue;
+                }
+                deliver_key(clients, inp->focused_slot, &kbd_buf[i]);
+                update_key_repeat(inp, &kbd_buf[i], now);
             }
         }
+    }
+
+    /* Synthesize a repeat for the held key once its interval elapses */
+    if (inp->repeat_usage != 0 && inp->key_repeat_delay_ns != 0 &&
+        inp->focused_slot >= 0 && now >= inp->repeat_next_ns) {
+        emit_key_event(clients, inp->focused_slot, inp->repeat_usage,
+                       inp->repeat_modifiers, STLXGFX_EVT_KEY_REPEAT);
+        inp->repeat_next_ns = now + inp->key_repeat_interval_ns;
     }
 
     inp->close_hover_slot = -1;

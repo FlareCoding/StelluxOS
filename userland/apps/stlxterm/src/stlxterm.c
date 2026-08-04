@@ -203,7 +203,8 @@ int main(void) {
                 cursor_visible = 0;
                 term->dirty = 1;
             }
-            if (evt.type == STLXGFX_EVT_KEY_DOWN) {
+            if (evt.type == STLXGFX_EVT_KEY_DOWN ||
+                evt.type == STLXGFX_EVT_KEY_REPEAT) {
                 char seq[8];
                 int len = keymap_translate(evt.key.usage, evt.key.modifiers,
                                            term->app_cursor_keys,
