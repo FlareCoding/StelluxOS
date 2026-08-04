@@ -19,6 +19,9 @@ void stlxdm_conf_defaults(stlxdm_config_t* conf) {
     conf->taskbar_icon_size = 32;
     conf->taskbar_spacing   = 8;
 
+    conf->key_repeat_delay_ms    = 400;
+    conf->key_repeat_interval_ms = 40;
+
     conf->taskbar_item_count = 0;
     conf->shortcut_count     = 0;
     conf->autostart_count    = 0;
@@ -47,6 +50,7 @@ typedef enum {
     SEC_THEME,
     SEC_TASKBAR_GLOBAL,
     SEC_TASKBAR_ITEM,
+    SEC_INPUT,
     SEC_SHORTCUT,
     SEC_AUTOSTART
 } section_type_t;
@@ -72,6 +76,8 @@ static void parse_line(stlxdm_config_t* conf, const char* line,
             *sec = SEC_THEME;
         } else if (strcmp(section, "taskbar") == 0) {
             *sec = SEC_TASKBAR_GLOBAL;
+        } else if (strcmp(section, "input") == 0) {
+            *sec = SEC_INPUT;
         } else if (strncmp(section, "taskbar:", 8) == 0) {
             *sec = SEC_TASKBAR_ITEM;
             if (conf->taskbar_item_count < STLXDM_CONF_MAX_TASKBAR_ITEMS) {
@@ -137,6 +143,13 @@ static void parse_line(stlxdm_config_t* conf, const char* line,
             conf->taskbar_icon_size = (uint32_t)strtoul(val, NULL, 10);
         else if (strcmp(key, "spacing") == 0)
             conf->taskbar_spacing = (uint32_t)strtoul(val, NULL, 10);
+        break;
+
+    case SEC_INPUT:
+        if (strcmp(key, "key_repeat_delay_ms") == 0)
+            conf->key_repeat_delay_ms = (uint32_t)strtoul(val, NULL, 10);
+        else if (strcmp(key, "key_repeat_interval_ms") == 0)
+            conf->key_repeat_interval_ms = (uint32_t)strtoul(val, NULL, 10);
         break;
 
     case SEC_TASKBAR_ITEM:

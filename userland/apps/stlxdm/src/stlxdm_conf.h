@@ -42,6 +42,10 @@ typedef struct {
     uint32_t taskbar_icon_size;
     uint32_t taskbar_spacing;
 
+    /* [input] keyboard repeat, delay of 0 disables it */
+    uint32_t key_repeat_delay_ms;
+    uint32_t key_repeat_interval_ms;
+
     /* [taskbar:*] items (order preserved from file) */
     stlxdm_conf_taskbar_item_t taskbar_items[STLXDM_CONF_MAX_TASKBAR_ITEMS];
     int taskbar_item_count;

@@ -36,6 +36,13 @@ typedef struct {
 
     int32_t taskbar_height;
 
+    /* Key repeat, delay and interval in ns with 0 delay disabling it */
+    uint64_t key_repeat_delay_ns;
+    uint64_t key_repeat_interval_ns;
+    uint16_t repeat_usage;
+    uint8_t  repeat_modifiers;
+    uint64_t repeat_next_ns;
+
     stlxgfx_surface_t* cursor_sprite;
     stlxgfx_surface_t* cursor_shadow;
 } stlxdm_input_t;

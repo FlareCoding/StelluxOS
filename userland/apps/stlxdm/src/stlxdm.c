@@ -610,6 +610,10 @@ int main(void) {
     stlxdm_input_t input;
     stlxdm_input_init(&input, (int32_t)fb.width, (int32_t)fb.height);
     input.taskbar_height = (int32_t)config.taskbar_height;
+    input.key_repeat_delay_ns =
+        (uint64_t)config.key_repeat_delay_ms * 1000000ULL;
+    input.key_repeat_interval_ns =
+        (uint64_t)config.key_repeat_interval_ms * 1000000ULL;
 
     stlxdm_taskbar_t taskbar;
     stlxdm_taskbar_init(&taskbar, &config, fb.width, fb.height);
