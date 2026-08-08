@@ -1,7 +1,17 @@
 #include "signals/signal.h"
+#include "sched/sched.h"
 #include "sched/task.h"
+#include "timer/timer.h"
+#include "common/logging.h"
 
 namespace signals {
+
+// What a send must do for sig, given the process's installed action
+enum class send_verdict : uint8_t {
+    FATAL,     // default-terminate, wake the target so it can die
+    IGNORABLE, // droppable unless the target blocks it
+    HANDLED,   // a user handler is installed, leave it pending
+};
 
 /**
  * Clear pending instances of sig from the shared set and every thread.
@@ -86,6 +96,148 @@ __PRIVILEGED_CODE sig_set_t pending_blocked_set(sched::task* t) {
         pend |= __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE);
     }
     return pend & __atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static send_verdict classify_send(sched::thread_group* tg,
+                                                    uint32_t sig) {
+    sync::irq_state irq = sync::spin_lock_irqsave(tg->sig.lock);
+    uintptr_t handler = tg->sig.actions[sig - 1].handler;
+    sync::spin_unlock_irqrestore(tg->sig.lock, irq);
+
+    if (handler != SIG_DFL && handler != SIG_IGN) {
+        return send_verdict::HANDLED;
+    }
+    if (handler == SIG_IGN) {
+        return send_verdict::IGNORABLE;
+    }
+    switch (dfl_action(sig)) {
+        case default_action::TERM:
+            return send_verdict::FATAL;
+        case default_action::STOP:
+            log::warn("signals: stop/continue unsupported, ignoring signal %u", sig);
+            return send_verdict::IGNORABLE;
+        case default_action::IGNORE:
+        default:
+            return send_verdict::IGNORABLE;
+    }
+}
+
+/**
+ * Wake a blocked task so it observes a newly pending signal. The fence
+ * pairs with the interruption re-check after prepare_to_block_task.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void wake_for_signal(sched::task* t) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    timer::cancel_sleep(t);
+    sched::wake(t);
+}
+
+__PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
+    if (!t || !sig_valid(sig)) {
+        return ERR_INVAL;
+    }
+    if ((t->exec.flags & (sched::TASK_FLAG_KERNEL | sched::TASK_FLAG_IDLE)) || !t->group) {
+        return ERR_PERM;
+    }
+
+    if (sig == SIGKILL) {
+        // SIGKILL is process-wide: the shared bit is fatal for every thread
+        // at its next kernel crossing, not only after leader teardown
+        sched::thread_group* tg = t->group;
+        __atomic_fetch_or(&tg->sig.shared_pending, sig_bit(SIGKILL), __ATOMIC_ACQ_REL);
+        sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+        if (tg->leader && tg->leader != t) {
+            sched::force_wake_for_kill(tg->leader);
+        }
+        sync::spin_unlock_irqrestore(tg->lock, irq);
+        sched::force_wake_for_kill(t);
+        return OK;
+    }
+
+    send_verdict verdict = classify_send(t->group, sig);
+    sig_set_t blocked = __atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+    bool is_blocked = (blocked & sig_bit(sig)) != 0;
+
+    // Ignored signals are dropped unless blocked (the action may change
+    // before the target unblocks them)
+    if (verdict == send_verdict::IGNORABLE && !is_blocked) {
+        return OK;
+    }
+
+    __atomic_fetch_or(&t->sig.pending, sig_bit(sig), __ATOMIC_ACQ_REL);
+    if (verdict == send_verdict::FATAL && !is_blocked) {
+        wake_for_signal(t);
+    }
+    return OK;
+}
+
+__PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
+    if (!tg || !sig_valid(sig)) {
+        return ERR_INVAL;
+    }
+
+    if (sig == SIGKILL) {
+        __atomic_fetch_or(&tg->sig.shared_pending, sig_bit(SIGKILL), __ATOMIC_ACQ_REL);
+        sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+        if (tg->leader) {
+            sched::force_wake_for_kill(tg->leader); // leader exit reaps the group
+        }
+        sync::spin_unlock_irqrestore(tg->lock, irq);
+        return OK;
+    }
+
+    send_verdict verdict = classify_send(tg, sig);
+    const sig_set_t bit = sig_bit(sig);
+
+    sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+
+    if (verdict == send_verdict::IGNORABLE) {
+        // Droppable only if no thread has it blocked
+        bool blocked_somewhere = false;
+        if (tg->leader &&
+            (__atomic_load_n(&tg->leader->sig.blocked, __ATOMIC_ACQUIRE) & bit)) {
+            blocked_somewhere = true;
+        }
+        for (sched::task& thread : tg->threads) {
+            if (__atomic_load_n(&thread.sig.blocked, __ATOMIC_ACQUIRE) & bit) {
+                blocked_somewhere = true;
+                break;
+            }
+        }
+        if (blocked_somewhere) {
+            __atomic_fetch_or(&tg->sig.shared_pending, bit, __ATOMIC_ACQ_REL);
+        }
+        sync::spin_unlock_irqrestore(tg->lock, irq);
+        return OK;
+    }
+
+    __atomic_fetch_or(&tg->sig.shared_pending, bit, __ATOMIC_ACQ_REL);
+
+    if (verdict == send_verdict::FATAL) {
+        // Wake one thread with the signal unblocked, leader preferred
+        sched::task* target = nullptr;
+        if (tg->leader &&
+            !(__atomic_load_n(&tg->leader->sig.blocked, __ATOMIC_ACQUIRE) & bit)) {
+            target = tg->leader;
+        } else {
+            for (sched::task& thread : tg->threads) {
+                if (!(__atomic_load_n(&thread.sig.blocked, __ATOMIC_ACQUIRE) & bit)) {
+                    target = &thread;
+                    break;
+                }
+            }
+        }
+        if (target) {
+            wake_for_signal(target);
+        }
+    }
+
+    sync::spin_unlock_irqrestore(tg->lock, irq);
+    return OK;
 }
 
 } // namespace signals
