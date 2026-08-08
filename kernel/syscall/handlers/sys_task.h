@@ -4,6 +4,7 @@
 #include "syscall/syscall_table.h"
 
 DECLARE_SYSCALL(getpid);
+DECLARE_SYSCALL(gettid);
 DECLARE_SYSCALL(getuid);
 DECLARE_SYSCALL(geteuid);
 DECLARE_SYSCALL(getgid);

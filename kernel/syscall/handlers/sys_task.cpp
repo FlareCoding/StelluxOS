@@ -4,6 +4,11 @@
 #include "mm/uaccess.h"
 
 DEFINE_SYSCALL0(getpid) {
+    sched::task* t = sched::current();
+    return static_cast<int64_t>(t->group ? t->group->pid : t->tid);
+}
+
+DEFINE_SYSCALL0(gettid) {
     return static_cast<int64_t>(sched::current()->tid);
 }
 
