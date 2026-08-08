@@ -137,12 +137,15 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_PIPE;
     }
-    if (signals::interrupt_pending(sched::current())) {
+
+    // Progress wins over interruption: only a waited-out interruption
+    // leaves no space here while the reader is still open
+    size_t space = writable_bytes(rb);
+    if (space == 0) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_INTR;
     }
 
-    size_t space = writable_bytes(rb);
     size_t to_write = space < len ? space : len;
     size_t head_idx = rb->head & (rb->capacity - 1);
     size_t first = rb->capacity - head_idx;
@@ -195,15 +198,13 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* 
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_PIPE;
     }
-    if (signals::interrupt_pending(sched::current())) {
-        sync::spin_unlock_irqrestore(rb->lock, irq);
-        return RB_ERR_INTR;
-    }
 
+    // Progress wins over interruption, AGAIN covers spurious exits
     size_t space = writable_bytes(rb);
     if (space < len) {
+        bool intr = signals::interrupt_pending(sched::current());
         sync::spin_unlock_irqrestore(rb->lock, irq);
-        return RB_ERR_AGAIN;
+        return intr ? RB_ERR_INTR : RB_ERR_AGAIN;
     }
 
     size_t head_idx = rb->head & (rb->capacity - 1);

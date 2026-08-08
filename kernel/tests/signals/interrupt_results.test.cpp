@@ -49,17 +49,40 @@ TEST(interrupt_results, closed_writer_read_stays_eof_when_interrupted) {
     EXPECT_EQ(rc, 0LL);
 }
 
+// Fill regardless of how create rounds the requested capacity up
+static void fill_buffer(ring_buffer* rb) {
+    uint8_t byte = 0;
+    ssize_t rc = 1;
+    RUN_ELEVATED({
+        while (rc == 1) {
+            rc = ring_buffer_write(rb, &byte, 1, true);
+        }
+    });
+}
+
 TEST(interrupt_results, interrupted_full_write_is_not_epipe) {
-    uint8_t big[64];
+    uint8_t buf[8];
     ssize_t rc = 0;
-    RUN_ELEVATED({ ring_buffer_write(g_rb, big, 63, true); }); // fill it
+    fill_buffer(g_rb);
     __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
-    RUN_ELEVATED({ rc = ring_buffer_write(g_rb, big, 8, false); });
+    RUN_ELEVATED({ rc = ring_buffer_write(g_rb, buf, sizeof(buf), false); });
     EXPECT_EQ(rc, RB_ERR_INTR);
 
     rc = 0;
-    RUN_ELEVATED({ rc = ring_buffer_write_all(g_rb, big, 8, false); });
+    RUN_ELEVATED({ rc = ring_buffer_write_all(g_rb, buf, sizeof(buf), false); });
     EXPECT_EQ(rc, RB_ERR_INTR);
+}
+
+TEST(interrupt_results, interrupted_write_with_space_still_writes) {
+    uint8_t buf[8];
+    ssize_t rc = 0;
+    __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
+    RUN_ELEVATED({ rc = ring_buffer_write(g_rb, buf, sizeof(buf), false); });
+    EXPECT_EQ(rc, 8LL);
+
+    rc = 0;
+    RUN_ELEVATED({ rc = ring_buffer_write_all(g_rb, buf, sizeof(buf), false); });
+    EXPECT_EQ(rc, 8LL);
 }
 
 TEST(interrupt_results, closed_reader_write_stays_epipe_when_interrupted) {
