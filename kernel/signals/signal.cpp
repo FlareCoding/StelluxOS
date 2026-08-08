@@ -35,11 +35,18 @@ __PRIVILEGED_CODE int32_t set_action(sched::thread_group* tg, uint32_t sig,
         *old = tg->sig.actions[sig - 1];
     }
     if (act) {
-        tg->sig.actions[sig - 1] = *act;
-        // Discard while holding sig.lock so a concurrent sigaction cannot
-        // install a handler between the install and the flush. Nests
-        // tg->lock inside sig.lock, no path takes them in reverse order.
-        if (act->handler == SIG_IGN) {
+        k_sigaction stored = *act;
+
+        // POSIX: the handler mask can never block SIGKILL/SIGSTOP
+        stored.mask &= ~UNBLOCKABLE_MASK;
+        tg->sig.actions[sig - 1] = stored;
+
+        // POSIX: an ignoring disposition discards pending instances. Doing
+        // it under sig.lock keeps install and flush atomic (nests tg->lock).
+        bool ignores = stored.handler == SIG_IGN ||
+            (stored.handler == SIG_DFL && dfl_action(sig) == default_action::IGNORE);
+
+        if (ignores) {
             discard_pending(tg, sig);
         }
     }
