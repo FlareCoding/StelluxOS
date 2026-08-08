@@ -133,6 +133,9 @@ CXXFLAGS_WARN ?= \
 	-Wall \
 	-Wextra
 
+# Header dependency generation (consumed by the -include at file end)
+CXXFLAGS_DEPS ?= -MMD -MP
+
 
 # Log level config flag
 CXXFLAGS_LOG := -DLOG_LEVEL=$(LOG_LEVEL)
@@ -177,13 +180,15 @@ CXXFLAGS := \
 	$(CXXFLAGS_LOG) \
 	$(CXXFLAGS_CONFIG) \
 	$(CXXFLAGS_INCLUDES) \
+	$(CXXFLAGS_DEPS) \
 	$(CXXFLAGS_EXTRA)
 
 # Assembly flags
 ASFLAGS := \
 	-ffreestanding \
 	$(ASFLAGS_ARCH) \
-	$(CXXFLAGS_INCLUDES)
+	$(CXXFLAGS_INCLUDES) \
+	$(CXXFLAGS_DEPS)
 
 # Linker flags
 LDFLAGS := \
@@ -294,3 +299,5 @@ endif
 	done
 	@echo "]" >> compile_commands.json
 	@echo "Created compile_commands.json"
+
+-include $(OBJECTS:.o=.d)

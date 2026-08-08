@@ -71,6 +71,8 @@ $(BUILD_DIR)/%.o: %.c
 	@echo "[CC]  $< ($(ARCH))"
 	$(UQ)$(CC) $(EXTRA_CFLAGS) -c $< -o $@
 
+-include $(ALL_OBJS:.o=.d)
+
 clean:
 	$(UQ)rm -rf build
 	$(UQ)rm -f $(SYSROOT_LIB)/$(LIB_NAME)

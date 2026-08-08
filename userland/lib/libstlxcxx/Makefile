@@ -37,6 +37,8 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@echo "[CXX] $< ($(ARCH))"
 	$(UQ)$(CXX) $(CXXFLAGS_COMMON) -I$(INCLUDE_DIR) -c $< -o $@
 
+-include $(OBJECTS:.o=.d)
+
 clean:
 	$(UQ)rm -rf build
 	$(UQ)rm -f $(SYSROOT_LIB)/$(LIB_NAME)
