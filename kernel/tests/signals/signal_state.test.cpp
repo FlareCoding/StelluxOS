@@ -170,6 +170,61 @@ TEST(signal_state, set_action_allows_query_of_kill) {
     EXPECT_EQ(old.handler, signals::SIG_DFL);
 }
 
+TEST(signal_state, dfl_action_classification) {
+    EXPECT_TRUE(signals::dfl_action(signals::SIGTERM) == signals::default_action::TERM);
+    EXPECT_TRUE(signals::dfl_action(signals::SIGKILL) == signals::default_action::TERM);
+    EXPECT_TRUE(signals::dfl_action(signals::SIGSEGV) == signals::default_action::TERM);
+    EXPECT_TRUE(signals::dfl_action(signals::SIGCHLD) == signals::default_action::IGNORE);
+    EXPECT_TRUE(signals::dfl_action(signals::SIGCONT) == signals::default_action::IGNORE);
+    EXPECT_TRUE(signals::dfl_action(signals::SIGURG) == signals::default_action::IGNORE);
+    EXPECT_TRUE(signals::dfl_action(signals::SIGWINCH) == signals::default_action::IGNORE);
+    EXPECT_TRUE(signals::dfl_action(signals::SIGSTOP) == signals::default_action::STOP);
+    EXPECT_TRUE(signals::dfl_action(signals::SIGTSTP) == signals::default_action::STOP);
+    EXPECT_TRUE(signals::dfl_action(64) == signals::default_action::TERM);
+}
+
+TEST(signal_state, set_action_strips_unblockables_from_mask) {
+    signals::k_sigaction act = {};
+    act.handler = 0x400000;
+    act.mask = signals::sig_bit(signals::SIGUSR1) | signals::UNBLOCKABLE_MASK;
+
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        rc = signals::set_action(g_tg, signals::SIGINT, &act, nullptr);
+    });
+    EXPECT_EQ(rc, signals::OK);
+
+    signals::k_sigaction old = {};
+    RUN_ELEVATED({
+        rc = signals::set_action(g_tg, signals::SIGINT, nullptr, &old);
+    });
+    EXPECT_EQ(rc, signals::OK);
+    EXPECT_EQ(old.mask, signals::sig_bit(signals::SIGUSR1));
+}
+
+TEST(signal_state, dfl_on_default_ignore_signal_discards_pending) {
+    const signals::sig_set_t sigchld = signals::sig_bit(signals::SIGCHLD);
+    const signals::sig_set_t sigtstp = signals::sig_bit(signals::SIGTSTP);
+
+    g_tg->sig.shared_pending = sigchld | sigtstp;
+    g_leader->sig.pending    = sigchld | sigtstp;
+
+    signals::k_sigaction act = {};
+    act.handler = signals::SIG_DFL;
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        rc = signals::set_action(g_tg, signals::SIGCHLD, &act, nullptr);
+        if (rc == signals::OK) {
+            rc = signals::set_action(g_tg, signals::SIGTSTP, &act, nullptr);
+        }
+    });
+    EXPECT_EQ(rc, signals::OK);
+
+    // Default-ignore SIGCHLD is discarded, stop-class SIGTSTP is not
+    EXPECT_EQ(g_tg->sig.shared_pending, sigtstp);
+    EXPECT_EQ(g_leader->sig.pending, sigtstp);
+}
+
 TEST(signal_state, sig_ign_discards_pending) {
     const signals::sig_set_t sigusr1 = signals::sig_bit(signals::SIGUSR1);
     const signals::sig_set_t sigterm = signals::sig_bit(signals::SIGTERM);
