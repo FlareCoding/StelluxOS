@@ -96,12 +96,12 @@ done
 
 info "Building kernel (ARCH=aarch64 PLATFORM=rpi4)..."
 make -C "$PROJECT_DIR" clean
-make -C "$PROJECT_DIR" kernel ARCH=aarch64 PLATFORM=rpi4
+make -C "$PROJECT_DIR" kernel ARCH=aarch64 PLATFORM=rpi4 RELEASE=1
 
 [[ -f "$KERNEL" ]] || die "Kernel build failed: $KERNEL not found"
 
 info "Building userland (ARCH=aarch64)..."
-make -C "$PROJECT_DIR" userland ARCH=aarch64
+make -C "$PROJECT_DIR" userland ARCH=aarch64 RELEASE=1
 
 # --- Step 2: Create image ---
 

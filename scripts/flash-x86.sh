@@ -94,12 +94,12 @@ done
 
 info "Building kernel (ARCH=x86_64)..."
 make -C "$PROJECT_DIR" clean
-make -C "$PROJECT_DIR" kernel ARCH=x86_64
+make -C "$PROJECT_DIR" kernel ARCH=x86_64 RELEASE=1
 
 [[ -f "$KERNEL" ]] || die "Kernel build failed: $KERNEL not found"
 
 info "Building userland (ARCH=x86_64)..."
-make -C "$PROJECT_DIR" userland ARCH=x86_64
+make -C "$PROJECT_DIR" userland ARCH=x86_64 RELEASE=1
 
 # --- Step 2: Create image ---
 
