@@ -35,6 +35,8 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	@echo "[CC]  $< ($(ARCH))"
 	$(UQ)$(CC) $(CFLAGS_COMMON) -I$(INCLUDE_DIR) -c $< -o $@
 
+-include $(OBJECTS:.o=.d)
+
 clean:
 	$(UQ)rm -rf build
 	$(UQ)rm -f $(SYSROOT_LIB)/$(LIB_NAME)

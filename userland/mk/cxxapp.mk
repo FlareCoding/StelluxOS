@@ -56,6 +56,8 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@echo "[CXX] $< ($(ARCH))"
 	$(UQ)$(CXX) $(CXXFLAGS_COMMON) -c $< -o $@
 
+-include $(OBJECTS:.o=.d)
+
 clean:
 	$(UQ)rm -rf build
 	$(UQ)rm -f $(TARGET)
