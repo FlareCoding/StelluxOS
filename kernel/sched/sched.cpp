@@ -5,6 +5,7 @@
 #include "sched/sched_policy.h"
 #include "sched/runqueue.h"
 #include "sched/fpu.h"
+#include "signals/signal.h"
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 #include "mm/heap.h"
@@ -187,8 +188,8 @@ bool is_kill_pending() {
 __PRIVILEGED_CODE void force_wake_for_kill(task* t) {
     __atomic_store_n(&t->kill_pending, 1, __ATOMIC_RELEASE);
 
-    // Pairs with block_task_interrupted_by_kill: the wake below sees BLOCKED,
-    // or the blocker's kill check sees kill_pending. Never neither.
+    // Pairs with block_task_interrupted: the wake below sees BLOCKED,
+    // or the blocker's interrupt check sees kill_pending. Never neither.
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     timer::cancel_sleep(t);
     wake(t);
@@ -204,10 +205,10 @@ __PRIVILEGED_CODE void prepare_to_block_task() {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool block_task_interrupted_by_kill() {
-    // Fence pairs with the one in force_wake_for_kill.
+__PRIVILEGED_CODE bool block_task_interrupted() {
+    // Fence pairs with force_wake_for_kill and signals wake_for_signal.
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-    return __atomic_load_n(&current()->kill_pending, __ATOMIC_ACQUIRE);
+    return signals::interrupt_pending(current());
 }
 
 /**
@@ -400,15 +401,15 @@ __PRIVILEGED_CODE void wake(task* t) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void sleep_ns(uint64_t ns) {
+__PRIVILEGED_CODE uint64_t sleep_ns(uint64_t ns) {
     if (ns == 0) {
         yield();
-        return;
+        return 0;
     }
 
     task* self = current();
     if (self->exec.flags & TASK_FLAG_IDLE) {
-        return;
+        return 0;
     }
 
     uint64_t deadline = clock::now_ns() + ns;
@@ -416,14 +417,16 @@ __PRIVILEGED_CODE void sleep_ns(uint64_t ns) {
     prepare_to_block_task();
     timer::schedule_sleep(self, deadline);
 
-    if (block_task_interrupted_by_kill()) {
-        // Killed before or during sleep entry: do not serve the sleep.
+    if (block_task_interrupted()) {
+        // Interrupted before or during sleep entry: do not serve the sleep.
         timer::cancel_sleep(self);
         cancel_block_task();
-        return;
+    } else {
+        yield();
     }
 
-    yield();
+    uint64_t now = clock::now_ns();
+    return deadline > now ? deadline - now : 0;
 }
 
 __PRIVILEGED_CODE void sleep_us(uint64_t us) {

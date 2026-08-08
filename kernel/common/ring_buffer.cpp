@@ -4,6 +4,7 @@
 #include "mm/heap.h"
 #include "common/string.h"
 #include "sched/sched.h"
+#include "signals/signal.h"
 
 static inline size_t readable_bytes(const ring_buffer* rb) {
     return (rb->head - rb->tail) & (rb->capacity - 1);
@@ -78,7 +79,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
             sync::spin_unlock_irqrestore(rb->lock, irq);
             return RB_ERR_AGAIN;
         }
-        while (readable_bytes(rb) == 0 && !rb->writer_closed && !sched::is_kill_pending()) {
+        while (readable_bytes(rb) == 0 && !rb->writer_closed && !signals::interrupt_pending(sched::current())) {
             irq = sync::wait(rb->read_wq, rb->lock, irq);
         }
     }
@@ -124,12 +125,12 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
             sync::spin_unlock_irqrestore(rb->lock, irq);
             return RB_ERR_AGAIN;
         }
-        while (writable_bytes(rb) == 0 && !rb->reader_closed && !sched::is_kill_pending()) {
+        while (writable_bytes(rb) == 0 && !rb->reader_closed && !signals::interrupt_pending(sched::current())) {
             irq = sync::wait(rb->write_wq, rb->lock, irq);
         }
     }
 
-    if (rb->reader_closed || sched::is_kill_pending()) {
+    if (rb->reader_closed || signals::interrupt_pending(sched::current())) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_PIPE;
     }
@@ -178,12 +179,12 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* 
             sync::spin_unlock_irqrestore(rb->lock, irq);
             return RB_ERR_AGAIN;
         }
-        while (writable_bytes(rb) < len && !rb->reader_closed && !sched::is_kill_pending()) {
+        while (writable_bytes(rb) < len && !rb->reader_closed && !signals::interrupt_pending(sched::current())) {
             irq = sync::wait(rb->write_wq, rb->lock, irq);
         }
     }
 
-    if (rb->reader_closed || sched::is_kill_pending()) {
+    if (rb->reader_closed || signals::interrupt_pending(sched::current())) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_PIPE;
     }

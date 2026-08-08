@@ -74,6 +74,7 @@ __PRIVILEGED_CODE int32_t set_blocked(sched::task* t, uint32_t how,
     if (old) {
         *old = cur;
     }
+
     if (!set) {
         return OK;
     }
@@ -85,6 +86,7 @@ __PRIVILEGED_CODE int32_t set_blocked(sched::task* t, uint32_t how,
         case SIG_SETMASK: next = *set;        break;
         default:          return ERR_INVAL;
     }
+
     next &= ~UNBLOCKABLE_MASK;
     __atomic_store_n(&t->sig.blocked, next, __ATOMIC_RELEASE);
     return OK;
@@ -113,6 +115,7 @@ __PRIVILEGED_CODE static send_verdict classify_send(sched::thread_group* tg,
     if (handler == SIG_IGN) {
         return send_verdict::IGNORABLE;
     }
+
     switch (dfl_action(sig)) {
         case default_action::TERM:
             return send_verdict::FATAL;
@@ -140,6 +143,7 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
     if (!t || !sig_valid(sig)) {
         return ERR_INVAL;
     }
+
     if ((t->exec.flags & (sched::TASK_FLAG_KERNEL | sched::TASK_FLAG_IDLE)) || !t->group) {
         return ERR_PERM;
     }
@@ -150,9 +154,11 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
         sched::thread_group* tg = t->group;
         __atomic_fetch_or(&tg->sig.shared_pending, sig_bit(SIGKILL), __ATOMIC_ACQ_REL);
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+
         if (tg->leader && tg->leader != t) {
             sched::force_wake_for_kill(tg->leader);
         }
+
         sync::spin_unlock_irqrestore(tg->lock, irq);
         sched::force_wake_for_kill(t);
         return OK;
@@ -183,9 +189,11 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
     if (sig == SIGKILL) {
         __atomic_fetch_or(&tg->sig.shared_pending, sig_bit(SIGKILL), __ATOMIC_ACQ_REL);
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+
         if (tg->leader) {
             sched::force_wake_for_kill(tg->leader); // leader exit reaps the group
         }
+
         sync::spin_unlock_irqrestore(tg->lock, irq);
         return OK;
     }
@@ -202,12 +210,14 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
             (__atomic_load_n(&tg->leader->sig.blocked, __ATOMIC_ACQUIRE) & bit)) {
             blocked_somewhere = true;
         }
+
         for (sched::task& thread : tg->threads) {
             if (__atomic_load_n(&thread.sig.blocked, __ATOMIC_ACQUIRE) & bit) {
                 blocked_somewhere = true;
                 break;
             }
         }
+
         if (blocked_somewhere) {
             __atomic_fetch_or(&tg->sig.shared_pending, bit, __ATOMIC_ACQ_REL);
         }
@@ -238,6 +248,49 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 
     sync::spin_unlock_irqrestore(tg->lock, irq);
     return OK;
+}
+
+__PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t) {
+    if (__atomic_load_n(&t->kill_pending, __ATOMIC_ACQUIRE)) {
+        return SIGKILL;
+    }
+
+    if (!t->group) {
+        return 0;
+    }
+
+    sig_set_t deliverable =
+        (__atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE) |
+         __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE)) &
+        ~__atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+    if (!deliverable) {
+        return 0;
+    }
+
+    // SIGKILL outranks every other pending signal
+    if (deliverable & sig_bit(SIGKILL)) {
+        return SIGKILL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(t->group->sig.lock);
+    uint32_t fatal_sig = 0;
+    while (deliverable) {
+        uint32_t sig = static_cast<uint32_t>(__builtin_ctzll(deliverable)) + 1;
+        deliverable &= deliverable - 1;
+
+        uintptr_t handler = t->group->sig.actions[sig - 1].handler;
+        if (handler == SIG_DFL && dfl_action(sig) == default_action::TERM) {
+            fatal_sig = sig;
+            break;
+        }
+    }
+
+    sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
+    return fatal_sig;
+}
+
+__PRIVILEGED_CODE bool interrupt_pending(sched::task* t) {
+    return t && fatal_pending(t) != 0;
 }
 
 } // namespace signals

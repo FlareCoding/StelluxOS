@@ -14,6 +14,7 @@
 #include "fs/fstypes.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "dynpriv/dynpriv.h"
 
 namespace net {
@@ -398,10 +399,10 @@ __PRIVILEGED_CODE static int32_t tcp_accept(
     }
     while (sock->accept_queue.empty()
            && sock->state == tcp_state::LISTEN
-           && !__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+           && !signals::interrupt_pending(task)) {
         irq = sync::wait(sock->accept_wq, sock->lock, irq);
     }
-    if (__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+    if (signals::interrupt_pending(task)) {
         sync::spin_unlock_irqrestore(sock->lock, irq);
         return resource::ERR_INTR;
     }
@@ -647,14 +648,14 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
     // Block until state changes from SYN_SENT
     irq = sync::spin_lock_irqsave(sock->lock);
     while (sock->state == tcp_state::SYN_SENT
-           && !__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+           && !signals::interrupt_pending(task)) {
         irq = sync::wait(sock->accept_wq, sock->lock, irq);
     }
 
     tcp_state final_state = sock->state;
     sync::spin_unlock_irqrestore(sock->lock, irq);
 
-    if (__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+    if (signals::interrupt_pending(task)) {
         return resource::ERR_INTR;
     }
     if (final_state == tcp_state::ESTABLISHED) {

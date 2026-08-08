@@ -32,8 +32,6 @@ DEFINE_SYSCALL1(exit_group, status) {
 }
 
 DEFINE_SYSCALL2(nanosleep, u_req, u_rem) {
-    (void)u_rem;
-
     struct kernel_timespec {
         int64_t tv_sec;
         int64_t tv_nsec;
@@ -56,6 +54,20 @@ DEFINE_SYSCALL2(nanosleep, u_req, u_rem) {
 
     uint64_t ns = static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL
                 + static_cast<uint64_t>(ts.tv_nsec);
-    sched::sleep_ns(ns);
-    return 0;
+    uint64_t rem_ns = sched::sleep_ns(ns);
+    if (rem_ns == 0) {
+        return 0;
+    }
+
+    if (u_rem != 0) {
+        kernel_timespec rem = {
+            static_cast<int64_t>(rem_ns / 1000000000ULL),
+            static_cast<int64_t>(rem_ns % 1000000000ULL),
+        };
+        if (mm::uaccess::copy_to_user(
+                reinterpret_cast<void*>(u_rem), &rem, sizeof(rem)) != mm::uaccess::OK) {
+            return syscall::EFAULT;
+        }
+    }
+    return syscall::EINTR;
 }

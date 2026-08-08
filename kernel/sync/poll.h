@@ -55,7 +55,7 @@ __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq);
  * Block until any subscribed source fires or timeout expires.
  * @param timeout_ns 0 = infinite wait (no timeout).
  * @return true if triggered by a source, false on timeout.
- * Caller must check sched::is_kill_pending() after return.
+ * Caller must check signals::interrupt_pending() after return.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns);
