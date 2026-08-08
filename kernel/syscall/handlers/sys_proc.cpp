@@ -6,6 +6,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sched/task_registry.h"
+#include "signals/signal.h"
 #include "dynpriv/dynpriv.h"
 #include "exec/elf.h"
 #include "mm/uaccess.h"
@@ -285,10 +286,10 @@ DEFINE_SYSCALL2(proc_wait, u_handle, u_exit_code_ptr) {
         resource::resource_release(obj);
         return syscall::EINVAL;
     }
-    while (!pr->exited && !__atomic_load_n(&caller->kill_pending, __ATOMIC_ACQUIRE)) {
+    while (!pr->exited && !signals::interrupt_pending(caller)) {
         irq = sync::wait(pr->wait_queue, pr->lock, irq);
     }
-    if (__atomic_load_n(&caller->kill_pending, __ATOMIC_ACQUIRE)) {
+    if (!pr->exited) {
         sync::spin_unlock_irqrestore(pr->lock, irq);
         resource::resource_release(obj);
         return syscall::EINTR;

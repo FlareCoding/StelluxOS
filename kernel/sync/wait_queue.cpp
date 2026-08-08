@@ -56,8 +56,8 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
 }
 
 /**
- * Not kill-interruptible on its own: a force-woken waiter re-blocks unless
- * the caller loops on sched::is_kill_pending().
+ * Not interruptible on its own: a force-woken waiter re-blocks unless
+ * the caller loops on signals::interrupt_pending().
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE

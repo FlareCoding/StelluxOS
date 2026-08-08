@@ -125,17 +125,17 @@ __PRIVILEGED_CODE void force_wake_for_kill(task* t);
 
 /**
  * @brief Publish intent to block: moves the current task to BLOCKED.
- * Pair with block_task_interrupted_by_kill before yielding.
+ * Pair with block_task_interrupted before yielding.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void prepare_to_block_task();
 
 /**
- * @brief True if a kill arrived since prepare_to_block_task.
+ * @brief True if a kill or fatal signal arrived since prepare_to_block_task.
  * On true, the caller must unwind its wait entry and call cancel_block_task.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool block_task_interrupted_by_kill();
+__PRIVILEGED_CODE bool block_task_interrupted();
 
 /**
  * @brief Revert an unfinished block after the caller unwound its entry.
@@ -174,9 +174,11 @@ task* current();
  * timer interrupt when the deadline expires.
  * Must not be called from the idle task.
  * @param ns Duration in nanoseconds. If 0, yields without blocking.
+ * @return Nanoseconds left if interrupted by a kill or fatal signal,
+ *   0 if the full duration elapsed.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void sleep_ns(uint64_t ns);
+__PRIVILEGED_CODE uint64_t sleep_ns(uint64_t ns);
 
 /**
  * @note Privilege: **required**

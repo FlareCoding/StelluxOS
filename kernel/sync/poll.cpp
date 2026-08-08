@@ -2,6 +2,7 @@
 #include "sync/wait_queue.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
 #include "mm/heap.h"
@@ -37,19 +38,19 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
     }
 
     sched::task* self = pt.task;
-    if (__atomic_load_n(&self->kill_pending, __ATOMIC_ACQUIRE)) {
+    if (signals::interrupt_pending(self)) {
         return false;
     }
 
     sched::prepare_to_block_task();
 
-    if (sched::block_task_interrupted_by_kill()) {
+    if (sched::block_task_interrupted()) {
         sched::cancel_block_task();
         return false;
     }
 
-    // The kill check's fence also orders this re-check against the BLOCKED
-    // store, closing the race where a source fires during the transition.
+    // The interrupt check's fence also orders this re-check against the
+    // BLOCKED store, closing the race where a source fires during the transition.
     if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
         sched::cancel_block_task();
         return true;

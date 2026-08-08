@@ -69,6 +69,22 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig);
  */
 __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig);
 
+/**
+ * @brief Fatal signal the task must die from, or 0.
+ * A set kill flag reports SIGKILL. Otherwise the lowest pending
+ * unblocked signal whose action resolves to default-terminate, with
+ * SIGKILL outranking every other pending signal.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t);
+
+/**
+ * @brief True if a blocking wait must unwind and return EINTR.
+ * Covers kills and fatal signals (handler delivery extends this later).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool interrupt_pending(sched::task* t);
+
 } // namespace signals
 
 #endif // STELLUX_SIGNALS_SIGNAL_H

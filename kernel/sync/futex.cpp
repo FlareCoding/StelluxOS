@@ -2,6 +2,7 @@
 #include "sync/spinlock.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "mm/uaccess.h"
 #include "mm/vma.h"
 #include "common/hash.h"
@@ -83,8 +84,8 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
 
     spin_unlock_irqrestore(bucket->lock, irq);
 
-    if (sched::block_task_interrupted_by_kill()) {
-        // Killed during futex entry: unwind waiter and timer, don't block.
+    if (sched::block_task_interrupted()) {
+        // Interrupted during futex entry: unwind waiter and timer, don't block.
         timer::cancel_sleep(self);
         irq = spin_lock_irqsave(bucket->lock);
         if (waiter.link.is_linked()) {
@@ -100,7 +101,7 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     // blocking operations if we were woken by futex_wake before timeout.
     timer::cancel_sleep(self);
 
-    // Remove self from bucket if still linked (timeout or kill wakeup).
+    // Remove self from bucket if still linked (timeout or interrupt wakeup).
     bool was_linked = false;
     irq = spin_lock_irqsave(bucket->lock);
     if (waiter.link.is_linked()) {
@@ -109,7 +110,7 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     }
     spin_unlock_irqrestore(bucket->lock, irq);
 
-    if (sched::is_kill_pending()) return -4; // EINTR
+    if (signals::interrupt_pending(self)) return -4; // EINTR
     if (was_linked) return -110; // ETIMEDOUT
     return 0;
 }

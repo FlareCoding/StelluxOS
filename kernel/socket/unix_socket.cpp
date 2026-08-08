@@ -11,6 +11,7 @@
 #include "hw/barrier.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 
 namespace socket {
 
@@ -262,10 +263,10 @@ __PRIVILEGED_CODE static int32_t unix_accept(
         }
     }
     while (ls->accept_queue.empty() && !ls->closed
-           && !__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+           && !signals::interrupt_pending(task)) {
         irq = sync::wait(ls->accept_wq, ls->lock, irq);
     }
-    if (__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+    if (signals::interrupt_pending(task)) {
         sync::spin_unlock_irqrestore(ls->lock, irq);
         return resource::ERR_INTR;
     }
