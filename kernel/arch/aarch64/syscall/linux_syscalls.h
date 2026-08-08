@@ -47,6 +47,7 @@ constexpr uint64_t GETUID           = 174;
 constexpr uint64_t GETEUID          = 175;
 constexpr uint64_t GETGID           = 176;
 constexpr uint64_t GETEGID          = 177;
+constexpr uint64_t GETTID           = 178;
 constexpr uint64_t SOCKET           = 198;
 constexpr uint64_t SOCKETPAIR       = 199;
 constexpr uint64_t BIND             = 200;
