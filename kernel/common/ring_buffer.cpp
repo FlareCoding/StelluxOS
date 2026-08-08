@@ -86,8 +86,11 @@ __PRIVILEGED_CODE ssize_t ring_buffer_read(ring_buffer* rb, uint8_t* buf, size_t
 
     size_t avail = readable_bytes(rb);
     if (avail == 0) {
+        // A closed writer is genuine EOF, an interrupted wait is not
+        bool intr = !rb->writer_closed
+                  && signals::interrupt_pending(sched::current());
         sync::spin_unlock_irqrestore(rb->lock, irq);
-        return 0; // EOF
+        return intr ? RB_ERR_INTR : 0;
     }
 
     size_t to_read = avail < len ? avail : len;
@@ -130,9 +133,13 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
         }
     }
 
-    if (rb->reader_closed || signals::interrupt_pending(sched::current())) {
+    if (rb->reader_closed) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_PIPE;
+    }
+    if (signals::interrupt_pending(sched::current())) {
+        sync::spin_unlock_irqrestore(rb->lock, irq);
+        return RB_ERR_INTR;
     }
 
     size_t space = writable_bytes(rb);
@@ -184,9 +191,13 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* 
         }
     }
 
-    if (rb->reader_closed || signals::interrupt_pending(sched::current())) {
+    if (rb->reader_closed) {
         sync::spin_unlock_irqrestore(rb->lock, irq);
         return RB_ERR_PIPE;
+    }
+    if (signals::interrupt_pending(sched::current())) {
+        sync::spin_unlock_irqrestore(rb->lock, irq);
+        return RB_ERR_INTR;
     }
 
     size_t space = writable_bytes(rb);
