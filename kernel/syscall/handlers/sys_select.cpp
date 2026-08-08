@@ -4,6 +4,7 @@
 #include "resource/resource.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 
@@ -37,7 +38,7 @@ __PRIVILEGED_CODE static int64_t do_select(
         pt.init(task);
         sync::poll_wait(pt, timeout_ns);
         sync::poll_cleanup(pt);
-        return 0;
+        return signals::interrupt_pending(task) ? syscall::EINTR : 0;
     }
 
     size_t nwords = (static_cast<size_t>(nfds) + BITS_PER_LONG - 1) / BITS_PER_LONG;
@@ -158,6 +159,12 @@ __PRIVILEGED_CODE static int64_t do_select(
 
     heap::kfree(fdmap);
     heap::kfree(pollfds);
+
+    // An interrupted wait with nothing ready is EINTR, not a timeout.
+    // Zero-timeout probes never slept and keep reporting 0.
+    if (ready == 0 && !immediate && signals::interrupt_pending(task)) {
+        return syscall::EINTR;
+    }
     return ready;
 }
 

@@ -7,9 +7,11 @@
 
 constexpr size_t RING_BUFFER_DEFAULT_CAPACITY = 8192;
 
+// Values mirror the resource layer error codes and flow untranslated
 constexpr ssize_t RB_ERR_INVAL = -1;
 constexpr ssize_t RB_ERR_AGAIN = -16;
 constexpr ssize_t RB_ERR_PIPE  = -11;
+constexpr ssize_t RB_ERR_INTR  = -18;
 
 struct ring_buffer {
     uint8_t* data;

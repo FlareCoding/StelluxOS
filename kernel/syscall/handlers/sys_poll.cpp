@@ -4,6 +4,7 @@
 #include "resource/resource.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 
@@ -96,6 +97,11 @@ __PRIVILEGED_CODE static int64_t do_poll(
     }
 
     sync::poll_cleanup(pt);
+
+    // An interrupted wait with nothing ready is EINTR, not a timeout
+    if (ready == 0 && signals::interrupt_pending(task)) {
+        return syscall::EINTR;
+    }
     return ready;
 }
 
