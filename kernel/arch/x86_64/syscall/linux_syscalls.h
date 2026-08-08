@@ -60,6 +60,7 @@ constexpr uint64_t GETUID           = 102;
 constexpr uint64_t GETGID           = 104;
 constexpr uint64_t GETEUID          = 107;
 constexpr uint64_t GETEGID          = 108;
+constexpr uint64_t RT_SIGPENDING    = 127;
 constexpr uint64_t ARCH_PRCTL       = 158;
 constexpr uint64_t GETDENTS64       = 217;
 constexpr uint64_t SET_TID_ADDRESS  = 218;
