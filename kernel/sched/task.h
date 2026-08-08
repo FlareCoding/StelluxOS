@@ -6,6 +6,7 @@
 #include "common/hashmap.h"
 #include "rc/ref_counted.h"
 #include "rc/reaper.h"
+#include "signals/signal_types.h"
 #include "sync/spinlock.h"
 #include "resource/handle_table.h"
 
@@ -67,6 +68,9 @@ struct task {
     uintptr_t      task_stack_base;
     uintptr_t      sys_stack_base;
 
+    // Signals (per-thread blocked mask and pending set)
+    signals::task_signals sig;
+
     // Scheduler state
     list::node              sched_link;
     list::node              wait_link;
@@ -95,8 +99,12 @@ static_assert(__builtin_offsetof(task, exec) == 0,
 struct thread_group : rc::ref_counted<thread_group> {
     sync::spinlock lock;
     task*          leader;
+    uint32_t       pid; // process leader tid
     list::head<task, &task::group_link> threads; // non-leader threads only
     uint32_t       thread_count; // number of live non-leader threads
+
+    // Signals (per-process action table and shared pending set)
+    signals::group_signals sig;
 
     /**
      * @note Privilege: **required**
