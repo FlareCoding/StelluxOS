@@ -12,6 +12,7 @@ namespace signals {
 
 constexpr int32_t OK        = 0;
 constexpr int32_t ERR_INVAL = -1;
+constexpr int32_t ERR_PERM  = -2;
 
 // rt_sigprocmask how values (musl ABI)
 constexpr uint32_t SIG_BLOCK   = 0;
@@ -46,6 +47,27 @@ __PRIVILEGED_CODE int32_t set_blocked(sched::task* t, uint32_t how,
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE sig_set_t pending_blocked_set(sched::task* t);
+
+/**
+ * @brief Send a thread-directed signal (tkill semantics).
+ * SIGKILL terminates the whole process via the kill machinery. Signals
+ * resolving to ignore are dropped unless the target blocks them. Fatal
+ * signals wake a blocked target so it can act promptly. Signals with a
+ * handler installed are left pending for delivery.
+ * @return OK, ERR_INVAL for a bad signal, ERR_PERM for kernel/idle tasks.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig);
+
+/**
+ * @brief Send a process-directed signal (kill semantics).
+ * Same drop, pend, and wake rules as send_to_task applied group-wide:
+ * the signal lands in the shared pending set and one thread with it
+ * unblocked is woken (leader preferred).
+ * @return OK or ERR_INVAL.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig);
 
 } // namespace signals
 

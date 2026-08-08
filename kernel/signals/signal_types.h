@@ -47,17 +47,6 @@ constexpr uint64_t SA_RESETHAND = 0x80000000;
 // Bitmask of signals 1..64: bit (N-1) represents signal N
 using sig_set_t = uint64_t;
 
-constexpr sig_set_t sig_bit(uint32_t sig) {
-    return 1ULL << (sig - 1);
-}
-
-constexpr bool sig_valid(uint32_t sig) {
-    return sig >= 1 && sig <= NSIG;
-}
-
-// POSIX: SIGKILL and SIGSTOP can never be blocked, caught, or ignored
-constexpr sig_set_t UNBLOCKABLE_MASK = sig_bit(SIGKILL) | sig_bit(SIGSTOP);
-
 // What SIG_DFL means for each signal. Stop-class defaults are not
 // implemented, so callers pick their own fallback where one is needed.
 enum class default_action : uint8_t {
@@ -65,23 +54,6 @@ enum class default_action : uint8_t {
     IGNORE,
     STOP,
 };
-
-constexpr default_action dfl_action(uint32_t sig) {
-    switch (sig) {
-        case SIGCHLD:
-        case SIGCONT:
-        case SIGURG:
-        case SIGWINCH:
-            return default_action::IGNORE;
-        case SIGSTOP:
-        case SIGTSTP:
-        case SIGTTIN:
-        case SIGTTOU:
-            return default_action::STOP;
-        default:
-            return default_action::TERM;
-    }
-}
 
 // Kernel-side layout matches the musl k_sigaction struct
 // passed to rt_sigaction (handler, flags, restorer, 64-bit mask).
@@ -107,6 +79,34 @@ struct group_signals {
     sig_set_t shared_pending;
     k_sigaction actions[NSIG];
 };
+
+constexpr sig_set_t sig_bit(uint32_t sig) {
+    return 1ULL << (sig - 1);
+}
+
+constexpr bool sig_valid(uint32_t sig) {
+    return sig >= 1 && sig <= NSIG;
+}
+
+// POSIX: SIGKILL and SIGSTOP can never be blocked, caught, or ignored
+constexpr sig_set_t UNBLOCKABLE_MASK = sig_bit(SIGKILL) | sig_bit(SIGSTOP);
+
+constexpr default_action dfl_action(uint32_t sig) {
+    switch (sig) {
+        case SIGCHLD:
+        case SIGCONT:
+        case SIGURG:
+        case SIGWINCH:
+            return default_action::IGNORE;
+        case SIGSTOP:
+        case SIGTSTP:
+        case SIGTTIN:
+        case SIGTTOU:
+            return default_action::STOP;
+        default:
+            return default_action::TERM;
+    }
+}
 
 } // namespace signals
 
