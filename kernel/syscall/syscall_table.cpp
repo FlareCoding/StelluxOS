@@ -68,6 +68,8 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::GETEUID,         geteuid);
     REGISTER_SYSCALL(linux_nr::GETGID,          getgid);
     REGISTER_SYSCALL(linux_nr::GETEGID,         getegid);
+    REGISTER_SYSCALL(linux_nr::SETPGID,         setpgid);
+    REGISTER_SYSCALL(linux_nr::GETPGID,         getpgid);
     REGISTER_SYSCALL(linux_nr::SET_TID_ADDRESS, set_tid_address);
     REGISTER_SYSCALL(linux_nr::NANOSLEEP,       nanosleep);
     REGISTER_SYSCALL(linux_nr::CLOCK_GETTIME,   clock_gettime);

@@ -886,6 +886,13 @@ __PRIVILEGED_CODE task* create_user_task(
     tg->pid = t->tid;
     tg->threads.init();
     tg->thread_count = 0;
+
+    // POSIX inheritance: a new process joins its creator's process group
+    task* creator = current();
+    tg->group_id = (creator && creator->group)
+        ? __atomic_load_n(&creator->group->group_id, __ATOMIC_ACQUIRE)
+        : t->tid;
+
     t->group = tg; // task takes ownership of the initial ref (refcount=1)
     t->group_link = {};
 
