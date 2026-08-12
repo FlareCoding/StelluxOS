@@ -294,6 +294,37 @@ __PRIVILEGED_CODE bool interrupt_pending(sched::task* t) {
     return t && fatal_pending(t) != 0;
 }
 
+__PRIVILEGED_CODE uint32_t next_deliverable(sched::task* t) {
+    if (!t || !t->group) {
+        return 0;
+    }
+
+    sig_set_t pending = __atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE)
+        | __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE);
+    sig_set_t deliverable = pending
+        & ~__atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+
+    if (!deliverable) {
+        return 0;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(t->group->sig.lock);
+    uint32_t result = 0;
+    while (deliverable) {
+        uint32_t sig = static_cast<uint32_t>(__builtin_ctzll(deliverable)) + 1;
+        deliverable &= deliverable - 1;
+
+        uintptr_t handler = t->group->sig.actions[sig - 1].handler;
+        if (handler != SIG_DFL && handler != SIG_IGN) {
+            result = sig;
+            break;
+        }
+    }
+
+    sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
+    return result;
+}
+
 __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
     sched::task* self = sched::current();
     sched::thread_group* tg = self->group;

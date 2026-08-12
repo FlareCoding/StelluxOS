@@ -86,6 +86,15 @@ __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t);
 __PRIVILEGED_CODE bool interrupt_pending(sched::task* t);
 
 /**
+ * @brief Lowest-numbered signal ready for handler delivery, or 0.
+ * A signal qualifies when pending (thread or shared set), unblocked, and
+ * carrying an installed user handler. Selects what to deliver at a return
+ * to user mode.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t next_deliverable(sched::task* t);
+
+/**
  * @brief Terminate the current task because of signal sig.
  * Fatal signals kill the whole process: a non-leader records sig as the
  * group exit signal and force-kills the leader so teardown reaps every
