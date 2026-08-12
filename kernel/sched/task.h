@@ -100,6 +100,7 @@ struct thread_group : rc::ref_counted<thread_group> {
     sync::spinlock lock;
     task*          leader;
     uint32_t       pid; // process leader tid
+    uint32_t       group_id; // process group this process belongs to
     list::head<task, &task::group_link> threads; // non-leader threads only
     uint32_t       thread_count; // number of live non-leader threads
 

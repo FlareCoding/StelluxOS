@@ -159,6 +159,10 @@ __PRIVILEGED_CODE proc_resource* get_proc_resource(resource_object* obj) {
 }
 
 __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
+    // Leave the registry before the group teardown so registry walkers
+    // never see a task whose group is being freed (same order as reap_task)
+    sched::g_task_registry.remove(*t);
+
     resource::close_all(t);
     if (t->cwd) {
         if (t->cwd->release()) {
@@ -186,7 +190,6 @@ __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
     }
 
     vmm::free(t->sys_stack_base);
-    sched::g_task_registry.remove(*t);
     heap::kfree_delete(t);
 }
 

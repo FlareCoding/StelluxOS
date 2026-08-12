@@ -67,6 +67,16 @@ public:
     [[nodiscard]] __PRIVILEGED_CODE task* find_locked(uint32_t tid);
 
     /**
+     * Visit every registered task. Caller must hold the registry lock,
+     * and visited pointers are valid only while it is held.
+     * @note Privilege: **required**
+     */
+    template <typename Fn>
+    __PRIVILEGED_CODE void for_each_locked(Fn fn) {
+        m_map.for_each(fn);
+    }
+
+    /**
      * Advisory task count. May be stale under concurrent mutation.
      */
     uint32_t count() const;
