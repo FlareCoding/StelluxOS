@@ -453,6 +453,15 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
             thread_group* tg = task->group;
 
             if (tg->leader == task) {
+                // Reaped never-started threads report the recorded group
+                // exit signal so every member exposes the same death cause
+                int32_t reap_status = TASK_KILL_STATUS;
+                uint32_t es = __atomic_load_n(&tg->sig.exit_signal,
+                                              __ATOMIC_ACQUIRE);
+                if (es != 0) {
+                    reap_status = static_cast<int32_t>(es) & 0x7F;
+                }
+
                 sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
                 auto it = tg->threads.begin();
                 auto end = tg->threads.end();
@@ -468,7 +477,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                         if (thread.proc_res) {
                             auto* pr = thread.proc_res;
                             sync::irq_state pr_irq = sync::spin_lock_irqsave(pr->lock);
-                            pr->wait_status = TASK_KILL_STATUS;
+                            pr->wait_status = reap_status;
                             pr->exited = true;
                             pr->child = nullptr;
                             sync::wake_all(pr->wait_queue);
