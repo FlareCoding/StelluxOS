@@ -21,7 +21,8 @@ static int32_t setup_rb() {
 }
 
 static int32_t teardown_rb() {
-    __atomic_store_n(&sched::current()->kill_pending, 0, __ATOMIC_RELEASE);
+    __atomic_fetch_and(&sched::current()->sig.pending,
+                       ~signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
     RUN_ELEVATED({
         if (g_rb) ring_buffer_destroy(g_rb);
     });
@@ -35,7 +36,8 @@ AFTER_EACH(interrupt_results, teardown_rb);
 TEST(interrupt_results, interrupted_empty_read_is_not_eof) {
     uint8_t buf[8];
     ssize_t rc = 0;
-    __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&sched::current()->sig.pending,
+                      signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
     RUN_ELEVATED({ rc = ring_buffer_read(g_rb, buf, sizeof(buf), false); });
     EXPECT_EQ(rc, RB_ERR_INTR);
 }
@@ -44,7 +46,8 @@ TEST(interrupt_results, closed_writer_read_stays_eof_when_interrupted) {
     uint8_t buf[8];
     ssize_t rc = -100;
     RUN_ELEVATED({ ring_buffer_close_write(g_rb); });
-    __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&sched::current()->sig.pending,
+                      signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
     RUN_ELEVATED({ rc = ring_buffer_read(g_rb, buf, sizeof(buf), false); });
     EXPECT_EQ(rc, 0LL);
 }
@@ -64,7 +67,8 @@ TEST(interrupt_results, interrupted_full_write_is_not_epipe) {
     uint8_t buf[8];
     ssize_t rc = 0;
     fill_buffer(g_rb);
-    __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&sched::current()->sig.pending,
+                      signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
     RUN_ELEVATED({ rc = ring_buffer_write(g_rb, buf, sizeof(buf), false); });
     EXPECT_EQ(rc, RB_ERR_INTR);
 
@@ -76,7 +80,8 @@ TEST(interrupt_results, interrupted_full_write_is_not_epipe) {
 TEST(interrupt_results, interrupted_write_with_space_still_writes) {
     uint8_t buf[8];
     ssize_t rc = 0;
-    __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&sched::current()->sig.pending,
+                      signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
     RUN_ELEVATED({ rc = ring_buffer_write(g_rb, buf, sizeof(buf), false); });
     EXPECT_EQ(rc, 8LL);
 
@@ -89,7 +94,8 @@ TEST(interrupt_results, closed_reader_write_stays_epipe_when_interrupted) {
     uint8_t buf[8];
     ssize_t rc = 0;
     RUN_ELEVATED({ ring_buffer_close_read(g_rb); });
-    __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&sched::current()->sig.pending,
+                      signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
     RUN_ELEVATED({ rc = ring_buffer_write(g_rb, buf, sizeof(buf), false); });
     EXPECT_EQ(rc, RB_ERR_PIPE);
 }

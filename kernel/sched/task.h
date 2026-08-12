@@ -62,13 +62,13 @@ struct task {
     int32_t        exit_code;
     uint32_t       state;
     uint32_t       cleanup_stage;
-    uint32_t       kill_pending;
 
     // Stacks
     uintptr_t      task_stack_base;
     uintptr_t      sys_stack_base;
 
-    // Signals (per-thread blocked mask and pending set)
+    // Signals (per-thread blocked mask and pending set). A
+    // pending SIGKILL bit is the task's "kill pending" marker.
     signals::task_signals sig;
 
     // Scheduler state

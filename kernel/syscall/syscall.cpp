@@ -3,6 +3,7 @@
 #include "sched/task_exec_core.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
 #include "common/logging.h"
@@ -48,9 +49,11 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     }
 
     sched::task* self = sched::current();
-    if (self && __atomic_load_n(&self->kill_pending, __ATOMIC_ACQUIRE)
-        && !(self->exec.flags & sched::TASK_FLAG_KERNEL)) {
-        sched::exit(sched::TASK_KILL_STATUS);
+    if (self && !(self->exec.flags & sched::TASK_FLAG_KERNEL)) {
+        uint32_t fsig = signals::fatal_pending(self);
+        if (fsig) {
+            signals::die_from_signal(fsig);
+        }
     }
 
     // Return-boundary restore: dynamic runtime elevation follows the selected

@@ -10,6 +10,7 @@
 #include "msi/msi.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "mm/mm.h"
 
 namespace sched {
@@ -118,9 +119,7 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         tf->vector == x86::EXC_STACK_FAULT ||
         tf->vector == x86::EXC_ALIGNMENT_CHECK)
     ) {
-        int sig = vector_to_signal(tf->vector);
-        __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
-        sched::exit(sig); // POSIX-compatible SIGSEGV
+        signals::die_from_signal(static_cast<uint32_t>(vector_to_signal(tf->vector)));
     }
 
     panic::on_trap(tf);

@@ -251,25 +251,26 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 }
 
 __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t) {
-    if (__atomic_load_n(&t->kill_pending, __ATOMIC_ACQUIRE)) {
-        return SIGKILL;
+    sig_set_t pending = __atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE);
+    sig_set_t shared = t->group
+        ? __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE) : 0;
+
+    // A pending SIGKILL is the "must terminate" marker and outranks all.
+    // Report the signal that began group termination if one was recorded.
+    if ((pending | shared) & sig_bit(SIGKILL)) {
+        uint32_t es = t->group
+            ? __atomic_load_n(&t->group->sig.exit_signal, __ATOMIC_ACQUIRE) : 0;
+        return es ? es : SIGKILL;
     }
 
     if (!t->group) {
         return 0;
     }
 
-    sig_set_t deliverable =
-        (__atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE) |
-         __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE)) &
-        ~__atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+    sig_set_t deliverable = (pending | shared)
+        & ~__atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
     if (!deliverable) {
         return 0;
-    }
-
-    // SIGKILL outranks every other pending signal
-    if (deliverable & sig_bit(SIGKILL)) {
-        return SIGKILL;
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(t->group->sig.lock);
@@ -291,6 +292,40 @@ __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t) {
 
 __PRIVILEGED_CODE bool interrupt_pending(sched::task* t) {
     return t && fatal_pending(t) != 0;
+}
+
+__PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
+    sched::task* self = sched::current();
+    sched::thread_group* tg = self->group;
+
+    // Native kills (proc_kill, proc_kill_tid) stay thread-scoped: the
+    // SIGKILL bit is set without recording a group exit signal
+    bool native_kill =
+        (__atomic_load_n(&self->sig.pending, __ATOMIC_ACQUIRE) & sig_bit(SIGKILL)) &&
+        (!tg || __atomic_load_n(&tg->sig.exit_signal, __ATOMIC_ACQUIRE) == 0);
+
+    if (tg && !native_kill) {
+        // First recorded signal wins so every group member reports it,
+        // including this thread if another already recorded one
+        uint32_t expected = 0;
+        if (!__atomic_compare_exchange_n(&tg->sig.exit_signal, &expected, sig,
+                                         false, __ATOMIC_ACQ_REL,
+                                         __ATOMIC_ACQUIRE)) {
+            sig = expected;
+        }
+
+        // A dying non-leader force-kills the leader, whose exit reaps
+        // every remaining thread
+        sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+        if (tg->leader && tg->leader != self) {
+            sched::force_wake_for_kill(tg->leader);
+        }
+        sync::spin_unlock_irqrestore(tg->lock, irq);
+    }
+
+    // The SIGKILL bit makes exit() encode a killed-by-signal wait status
+    __atomic_fetch_or(&self->sig.pending, sig_bit(SIGKILL), __ATOMIC_RELEASE);
+    sched::exit(static_cast<int32_t>(sig));
 }
 
 } // namespace signals

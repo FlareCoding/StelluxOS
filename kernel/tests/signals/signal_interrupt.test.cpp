@@ -49,10 +49,11 @@ static int32_t teardown_group() {
 BEFORE_EACH(signal_interrupt, setup_group);
 AFTER_EACH(signal_interrupt, teardown_group);
 
-TEST(signal_interrupt, kill_flag_reports_sigkill) {
+TEST(signal_interrupt, pending_sigkill_reports_sigkill) {
     uint32_t fatal = 0;
-    g_leader->kill_pending = 1;
-    g_leader->sig.pending = signals::sig_bit(signals::SIGTERM);
+    // SIGKILL wins over a lower pending signal
+    g_leader->sig.pending = signals::sig_bit(signals::SIGKILL)
+                          | signals::sig_bit(signals::SIGTERM);
     RUN_ELEVATED({ fatal = signals::fatal_pending(g_leader); });
     EXPECT_EQ(fatal, signals::SIGKILL);
 }

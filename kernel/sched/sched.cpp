@@ -180,16 +180,23 @@ task* current() {
     return this_cpu(current_task);
 }
 
+// A pending SIGKILL bit is the task's "must terminate" marker
+static inline bool task_kill_bit_set(const task* t) {
+    return (__atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE)
+            & signals::sig_bit(signals::SIGKILL)) != 0;
+}
+
 bool is_kill_pending() {
     task* t = current();
-    return t && __atomic_load_n(&t->kill_pending, __ATOMIC_ACQUIRE);
+    return t && task_kill_bit_set(t);
 }
 
 __PRIVILEGED_CODE void force_wake_for_kill(task* t) {
-    __atomic_store_n(&t->kill_pending, 1, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&t->sig.pending, signals::sig_bit(signals::SIGKILL),
+                      __ATOMIC_ACQ_REL);
 
     // Pairs with block_task_interrupted: the wake below sees BLOCKED,
-    // or the blocker's interrupt check sees kill_pending. Never neither.
+    // or the blocker's interrupt check sees the SIGKILL bit. Never neither.
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     timer::cancel_sleep(t);
     wake(t);
@@ -491,7 +498,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
             auto* pr = task->proc_res;
             sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
             if (!pr->detached) {
-                if (__atomic_load_n(&task->kill_pending, __ATOMIC_ACQUIRE)) {
+                if (task_kill_bit_set(task)) {
                     pr->wait_status = exit_code & 0x7F;
                 } else {
                     pr->wait_status = (exit_code & 0xFF) << 8;
@@ -590,7 +597,6 @@ __PRIVILEGED_CODE task* create_kernel_task(
     resource::init_task_handles(t);
     t->proc_res = nullptr;
     t->cwd = nullptr;
-    t->kill_pending = 0;
     t->sig = {};
     t->group = nullptr;
     t->group_link = {};
@@ -849,7 +855,6 @@ __PRIVILEGED_CODE task* create_user_task(
     resource::init_task_handles(t);
     t->proc_res = nullptr;
     t->cwd = nullptr;
-    t->kill_pending = 0;
     t->sig = {};
 
     auto* tg = heap::kalloc_new<thread_group>();
@@ -941,7 +946,6 @@ __PRIVILEGED_CODE task* create_user_thread(
     t->state = TASK_STATE_CREATED;
     t->exit_code = 0;
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
-    t->kill_pending = 0;
     t->sig = {};
     t->sig.blocked = __atomic_load_n(&creator->sig.blocked, __ATOMIC_ACQUIRE);
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1)); 
