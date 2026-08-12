@@ -92,6 +92,12 @@ __PRIVILEGED_CODE int32_t build_signal_frame(syscall_frame* ctx, uint32_t sig,
                                              const signals::k_sigaction* act,
                                              signals::sig_set_t old_blocked,
                                              int64_t saved_result) {
+    // SYSRET faults in Ring 0 on a non-canonical RIP, so a handler outside
+    // the user half must never reach the return path
+    if (act->handler >= USER_ADDR_LIMIT) {
+        return -1;
+    }
+
     // FXSAVE image above the frame, frame base at RSP % 16 == 8 so the
     // handler entry sees the ABI-required alignment after its return slot.
     uint64_t sp = ctx->rsp - RED_ZONE;
@@ -165,6 +171,7 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
             heap::kfree_delete(frame);
             signals::die_from_signal(signals::SIGSEGV);
         }
+        fpu::sanitize_user_mxcsr(&fp);
         fpu::restore(&fp);
     }
 

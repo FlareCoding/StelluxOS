@@ -33,7 +33,8 @@ __PRIVILEGED_CODE bool unpack_sigframe(const rt_sigframe* frame,
 
 /**
  * @brief Build a signal frame on the user stack and redirect ctx to the
- * handler. Returns 0 on success, negative when the user stack is unwritable.
+ * handler. Returns 0 on success, negative when the handler sits outside the
+ * user address space or the user stack is unwritable.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t build_signal_frame(syscall_frame* ctx, uint32_t sig,
