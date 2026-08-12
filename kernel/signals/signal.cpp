@@ -298,8 +298,8 @@ __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
     sched::task* self = sched::current();
     sched::thread_group* tg = self->group;
 
-    // Native kills (proc_kill, proc_kill_tid) stay thread-scoped: the
-    // SIGKILL bit is set without recording a group exit signal
+    // Native kills (proc_kill) stay thread-scoped: the SIGKILL bit
+    // is set without recording a group exit signal
     bool native_kill =
         (__atomic_load_n(&self->sig.pending, __ATOMIC_ACQUIRE) & sig_bit(SIGKILL)) &&
         (!tg || __atomic_load_n(&tg->sig.exit_signal, __ATOMIC_ACQUIRE) == 0);

@@ -89,7 +89,7 @@ __PRIVILEGED_CODE bool interrupt_pending(sched::task* t);
  * @brief Terminate the current task because of signal sig.
  * Fatal signals kill the whole process: a non-leader records sig as the
  * group exit signal and force-kills the leader so teardown reaps every
- * thread. Native kills (proc_kill, proc_kill_tid) stay thread-scoped.
+ * thread. Native kills (proc_kill) stay thread-scoped.
  * The wait status reports death by sig.
  * @note Privilege: **required**
  */
