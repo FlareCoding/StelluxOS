@@ -6,5 +6,8 @@
 DECLARE_SYSCALL(rt_sigaction);
 DECLARE_SYSCALL(rt_sigprocmask);
 DECLARE_SYSCALL(rt_sigpending);
+DECLARE_SYSCALL(kill);
+DECLARE_SYSCALL(tkill);
+DECLARE_SYSCALL(tgkill);
 
 #endif // STELLUX_SYSCALL_HANDLERS_SYS_SIGNAL_H

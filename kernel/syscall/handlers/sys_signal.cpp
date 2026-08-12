@@ -2,10 +2,81 @@
 #include "signals/signal.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "sched/task_registry.h"
 #include "mm/uaccess.h"
 
 // musl passes sigsetsize = _NSIG/8 = 8 (64-bit sigset)
 static constexpr uint64_t SIGSET_SIZE = 8;
+
+// Highest value representable as a task or group id
+static constexpr int64_t TASK_ID_LIMIT = 0xFFFFFFFF;
+
+// Distinct groups remembered during one group kill. Signals coalesce, so
+// duplicate sends past this window are harmless extra wakes, never misses.
+static constexpr uint32_t MAX_KILL_GROUPS = 64;
+
+static int64_t map_send_error(int32_t rc) {
+    switch (rc) {
+        case signals::OK:       return 0;
+        case signals::ERR_PERM: return syscall::EPERM;
+        default:                return syscall::EINVAL;
+    }
+}
+
+// Send sig to every process in the group, where sig 0 only probes existence.
+// Group pointers stay valid because registered tasks pin their groups.
+static int64_t kill_process_group(uint32_t group_id, uint32_t sig) {
+    sched::thread_group* seen[MAX_KILL_GROUPS];
+    uint32_t seen_count = 0;
+    bool found = false;
+
+    sync::irq_state irq = sched::g_task_registry.lock();
+    sched::g_task_registry.for_each_locked([&](sched::task& t) {
+        sched::thread_group* tg = t.group;
+        if (!tg || __atomic_load_n(&tg->group_id, __ATOMIC_ACQUIRE) != group_id) {
+            return;
+        }
+
+        for (uint32_t i = 0; i < seen_count; i++) {
+            if (seen[i] == tg) {
+                return;
+            }
+        }
+        if (seen_count < MAX_KILL_GROUPS) {
+            seen[seen_count++] = tg;
+        }
+
+        found = true;
+        if (sig != 0) {
+            signals::send_to_group(tg, sig);
+        }
+    });
+    sched::g_task_registry.unlock(irq);
+
+    return found ? 0 : syscall::ESRCH;
+}
+
+// Thread-directed send shared by tkill and tgkill, tgid 0 skips the pair check
+static int64_t send_to_thread(uint32_t tgid, uint32_t tid, uint32_t sig) {
+    int64_t result = syscall::ESRCH;
+
+    sync::irq_state irq = sched::g_task_registry.lock();
+    sched::task* t = sched::g_task_registry.find_locked(tid);
+    if (t && (tgid == 0 || (t->group && t->group->pid == tgid))) {
+        if (sig != 0) {
+            result = map_send_error(signals::send_to_task(t, sig));
+        } else {
+            // The null probe reports the same permission gate a send would
+            bool denied = (t->exec.flags &
+                           (sched::TASK_FLAG_KERNEL | sched::TASK_FLAG_IDLE)) ||
+                          !t->group;
+            result = denied ? syscall::EPERM : 0;
+        }
+    }
+    sched::g_task_registry.unlock(irq);
+
+    return result;
+}
 
 DEFINE_SYSCALL4(rt_sigaction, signum, u_act, u_oldact, sigsetsize) {
     if (sigsetsize != SIGSET_SIZE) {
@@ -100,4 +171,83 @@ DEFINE_SYSCALL2(rt_sigpending, u_set, sigsetsize) {
         return syscall::EFAULT;
     }
     return 0;
+}
+
+DEFINE_SYSCALL2(kill, u_pid, u_sig) {
+    if (u_sig > signals::NSIG) {
+        return syscall::EINVAL;
+    }
+    uint32_t sig = static_cast<uint32_t>(u_sig);
+    int64_t pid  = static_cast<int64_t>(u_pid);
+
+    // Broadcast kill is not supported
+    if (pid == -1) {
+        return syscall::EINVAL;
+    }
+
+    if (pid > 0) {
+        if (pid > TASK_ID_LIMIT) {
+            return syscall::ESRCH;
+        }
+
+        // Any thread id resolves to its containing process (kill semantics
+        // on Linux), and the signal is delivered process-wide
+        int64_t result = syscall::ESRCH;
+        sync::irq_state irq = sched::g_task_registry.lock();
+        sched::task* t =
+            sched::g_task_registry.find_locked(static_cast<uint32_t>(pid));
+        if (t && t->group) {
+            result = sig ? map_send_error(signals::send_to_group(t->group, sig))
+                         : 0;
+        }
+        sched::g_task_registry.unlock(irq);
+        return result;
+    }
+
+    // pid 0 targets the caller's group, below -1 the group named by -pid
+    uint32_t group_id = 0;
+    if (pid == 0) {
+        sched::task* caller = sched::current();
+        if (!caller->group) {
+            return syscall::ESRCH;
+        }
+        group_id = __atomic_load_n(&caller->group->group_id, __ATOMIC_ACQUIRE);
+    } else {
+        if (pid < -TASK_ID_LIMIT) {
+            return syscall::ESRCH;
+        }
+        group_id = static_cast<uint32_t>(-pid);
+    }
+
+    return kill_process_group(group_id, sig);
+}
+
+DEFINE_SYSCALL2(tkill, u_tid, u_sig) {
+    if (u_sig > signals::NSIG) {
+        return syscall::EINVAL;
+    }
+
+    int64_t tid = static_cast<int64_t>(u_tid);
+    if (tid <= 0 || tid > TASK_ID_LIMIT) {
+        return syscall::EINVAL;
+    }
+
+    return send_to_thread(0, static_cast<uint32_t>(tid),
+                          static_cast<uint32_t>(u_sig));
+}
+
+DEFINE_SYSCALL3(tgkill, u_tgid, u_tid, u_sig) {
+    if (u_sig > signals::NSIG) {
+        return syscall::EINVAL;
+    }
+
+    int64_t tgid = static_cast<int64_t>(u_tgid);
+    int64_t tid  = static_cast<int64_t>(u_tid);
+    if (tgid <= 0 || tid <= 0 || tgid > TASK_ID_LIMIT || tid > TASK_ID_LIMIT) {
+        return syscall::EINVAL;
+    }
+
+    return send_to_thread(static_cast<uint32_t>(tgid),
+                          static_cast<uint32_t>(tid),
+                          static_cast<uint32_t>(u_sig));
 }
