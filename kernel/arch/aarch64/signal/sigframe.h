@@ -30,7 +30,7 @@ constexpr uint32_t FPSIMD_MAGIC = 0x46508001;
 
 // FP/SIMD block for the mcontext reserved area. Field order is the kernel
 // ABI (fpsr/fpcr before vregs), unlike sched::fpu_state, so delivery converts.
-struct fpsimd_context {
+struct alignas(16) fpsimd_context {
     uint32_t magic;
     uint32_t size;
     uint32_t fpsr;
@@ -42,6 +42,7 @@ static_assert(__builtin_offsetof(fpsimd_context, fpsr) == 0x08);
 static_assert(__builtin_offsetof(fpsimd_context, fpcr) == 0x0C);
 static_assert(__builtin_offsetof(fpsimd_context, vregs) == 0x10);
 static_assert(sizeof(fpsimd_context) == 528);
+static_assert(alignof(fpsimd_context) == 16);
 
 // Interrupted registers, matching the kernel sigcontext / musl mcontext_t.
 // __reserved holds the fpsimd_context, 16-byte aligned per the ABI.
