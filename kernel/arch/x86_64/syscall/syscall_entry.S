@@ -16,6 +16,9 @@
  * switch RSP. After the switch, the caller's stack is never
  * touched again.
  *
+ * The saved region below system_stack_top is described by
+ * x86::syscall_frame (syscall_frame.h), keep the layout in sync.
+ *
  * Exit path:
  *   - Elevated tasks return via RET (stay in Ring 0, keep kernel GS)
  *   - Non-elevated tasks return via swapgs + SYSRET (Ring 3)
