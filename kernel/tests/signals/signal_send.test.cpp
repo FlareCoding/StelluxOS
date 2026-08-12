@@ -78,8 +78,8 @@ TEST(signal_send, fatal_send_pends_without_kill_flag) {
     RUN_ELEVATED({ rc = signals::send_to_task(g_thread, signals::SIGTERM); });
     EXPECT_EQ(rc, signals::OK);
     EXPECT_EQ(g_thread->sig.pending, signals::sig_bit(signals::SIGTERM));
-    EXPECT_EQ(g_thread->kill_pending, 0U);
-    EXPECT_EQ(g_leader->kill_pending, 0U);
+    EXPECT_BITS_CLEAR(g_thread->sig.pending, signals::sig_bit(signals::SIGKILL));
+    EXPECT_BITS_CLEAR(g_leader->sig.pending, signals::sig_bit(signals::SIGKILL));
 }
 
 TEST(signal_send, ignored_unblocked_send_drops) {
@@ -109,7 +109,7 @@ TEST(signal_send, handled_send_pends_only) {
     });
     EXPECT_EQ(rc, signals::OK);
     EXPECT_EQ(g_thread->sig.pending, signals::sig_bit(signals::SIGTERM));
-    EXPECT_EQ(g_thread->kill_pending, 0U);
+    EXPECT_BITS_CLEAR(g_thread->sig.pending, signals::sig_bit(signals::SIGKILL));
 }
 
 TEST(signal_send, sigkill_to_thread_kills_group) {
@@ -118,8 +118,8 @@ TEST(signal_send, sigkill_to_thread_kills_group) {
     EXPECT_EQ(rc, signals::OK);
     // SIGKILL is process-wide: target and leader are marked, and the
     // shared bit makes it fatal for every other thread immediately
-    EXPECT_EQ(g_thread->kill_pending, 1U);
-    EXPECT_EQ(g_leader->kill_pending, 1U);
+    EXPECT_BITS_SET(g_thread->sig.pending, signals::sig_bit(signals::SIGKILL));
+    EXPECT_BITS_SET(g_leader->sig.pending, signals::sig_bit(signals::SIGKILL));
     EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGKILL));
 }
 
@@ -127,7 +127,7 @@ TEST(signal_send, sigkill_to_group_marks_leader) {
     int32_t rc = 0;
     RUN_ELEVATED({ rc = signals::send_to_group(g_tg, signals::SIGKILL); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_leader->kill_pending, 1U);
+    EXPECT_BITS_SET(g_leader->sig.pending, signals::sig_bit(signals::SIGKILL));
     EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGKILL));
 }
 
@@ -136,7 +136,7 @@ TEST(signal_send, group_fatal_send_sets_shared) {
     RUN_ELEVATED({ rc = signals::send_to_group(g_tg, signals::SIGTERM); });
     EXPECT_EQ(rc, signals::OK);
     EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGTERM));
-    EXPECT_EQ(g_leader->kill_pending, 0U);
+    EXPECT_BITS_CLEAR(g_leader->sig.pending, signals::sig_bit(signals::SIGKILL));
 }
 
 TEST(signal_send, group_ignored_send_drops_unless_blocked) {

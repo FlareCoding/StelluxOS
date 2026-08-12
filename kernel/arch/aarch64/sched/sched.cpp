@@ -2,6 +2,7 @@
 #include "sched/task.h"
 #include "sched/sched.h"
 #include "sched/sched_internal.h"
+#include "signals/signal.h"
 #include "sched/fpu.h"
 #include "dynpriv/dynpriv.h"
 #include "syscall/syscall.h"
@@ -154,10 +155,11 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
-    if (__atomic_load_n(&prev->kill_pending, __ATOMIC_ACQUIRE)
-        && !(prev->exec.flags & TASK_FLAG_KERNEL)
-        && prev->state != TASK_STATE_DEAD) {
-        sched::exit(sched::TASK_KILL_STATUS);
+    if (!(prev->exec.flags & TASK_FLAG_KERNEL) && prev->state != TASK_STATE_DEAD) {
+        uint32_t fsig = signals::fatal_pending(prev);
+        if (fsig) {
+            signals::die_from_signal(fsig);
+        }
     }
 
     task* next = pick_next_and_switch(prev);
@@ -196,10 +198,11 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
-    if (__atomic_load_n(&prev->kill_pending, __ATOMIC_ACQUIRE)
-        && !(prev->exec.flags & TASK_FLAG_KERNEL)
-        && prev->state != TASK_STATE_DEAD) {
-        sched::exit(sched::TASK_KILL_STATUS);
+    if (!(prev->exec.flags & TASK_FLAG_KERNEL) && prev->state != TASK_STATE_DEAD) {
+        uint32_t fsig = signals::fatal_pending(prev);
+        if (fsig) {
+            signals::die_from_signal(fsig);
+        }
     }
 
     task* next = pick_next_and_switch(prev);

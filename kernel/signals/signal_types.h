@@ -77,6 +77,7 @@ struct task_signals {
 struct group_signals {
     sync::spinlock lock; // guards actions
     sig_set_t shared_pending;
+    uint32_t exit_signal; // first fatal signal that began group termination, 0 if none
     k_sigaction actions[NSIG];
 };
 

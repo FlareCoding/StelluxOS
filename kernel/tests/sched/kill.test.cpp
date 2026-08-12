@@ -4,6 +4,7 @@
 #include "helpers.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal_types.h"
 #include "dynpriv/dynpriv.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
@@ -42,7 +43,7 @@ static void sleep_kill_fn(void*) {
 
     uint32_t kp = 0;
     RUN_ELEVATED({
-        kp = __atomic_load_n(&sched::current()->kill_pending, __ATOMIC_ACQUIRE);
+        kp = sched::is_kill_pending() ? 1u : 0u;
     });
     __atomic_store_n(&g_sleep_kill_was_pending, kp, __ATOMIC_RELEASE);
     __atomic_store_n(&g_sleep_kill_done, 1, __ATOMIC_RELEASE);
@@ -117,7 +118,7 @@ static void wq_kill_fn(void*) {
 
     uint32_t kp = 0;
     RUN_ELEVATED({
-        kp = __atomic_load_n(&sched::current()->kill_pending, __ATOMIC_ACQUIRE);
+        kp = sched::is_kill_pending() ? 1u : 0u;
     });
     __atomic_store_n(&g_wq_kill_was_pending, kp, __ATOMIC_RELEASE);
     __atomic_store_n(&g_wq_kill_done, 1, __ATOMIC_RELEASE);
@@ -212,7 +213,7 @@ static void double_kill_fn(void*) {
         }
         sync::spin_unlock_irqrestore(g_double_lock, irq);
         __atomic_store_n(&g_double_kp,
-            __atomic_load_n(&sched::current()->kill_pending, __ATOMIC_ACQUIRE),
+            sched::is_kill_pending() ? 1u : 0u,
             __ATOMIC_RELEASE);
     });
     __atomic_store_n(&g_double_done, 1, __ATOMIC_RELEASE);
@@ -292,7 +293,8 @@ TEST(kill, is_kill_pending_accessor) {
     ASSERT_TRUE(spin_wait(&g_ikp_started));
 
     RUN_ELEVATED({
-        __atomic_store_n(&t->kill_pending, 1, __ATOMIC_RELEASE);
+        __atomic_fetch_or(&t->sig.pending,
+                          signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
     });
     __atomic_store_n(&g_ikp_flag_set, 1, __ATOMIC_RELEASE);
 

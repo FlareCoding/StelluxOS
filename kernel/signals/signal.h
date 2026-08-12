@@ -71,9 +71,9 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig);
 
 /**
  * @brief Fatal signal the task must die from, or 0.
- * A set kill flag reports SIGKILL. Otherwise the lowest pending
- * unblocked signal whose action resolves to default-terminate, with
- * SIGKILL outranking every other pending signal.
+ * A set kill flag reports the group's recorded exit signal (SIGKILL if
+ * none). Otherwise the lowest pending unblocked signal whose action
+ * resolves to default-terminate, with SIGKILL outranking all others.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t);
@@ -84,6 +84,16 @@ __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE bool interrupt_pending(sched::task* t);
+
+/**
+ * @brief Terminate the current task because of signal sig.
+ * Fatal signals kill the whole process: a non-leader records sig as the
+ * group exit signal and force-kills the leader so teardown reaps every
+ * thread. Native kills (proc_kill, proc_kill_tid) stay thread-scoped.
+ * The wait status reports death by sig.
+ * @note Privilege: **required**
+ */
+[[noreturn]] __PRIVILEGED_CODE void die_from_signal(uint32_t sig);
 
 } // namespace signals
 

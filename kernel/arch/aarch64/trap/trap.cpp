@@ -13,6 +13,7 @@
 #include "timer/timer.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "signals/signal.h"
 #include "mm/mm.h"
 
 // Forward declaration of syscall dispatch
@@ -118,9 +119,7 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
         ec == aarch64::EC_FP_A64           ||
         ec == aarch64::EC_BRK_A64)
     ) {
-        int sig = ec_to_signal(ec);
-        __atomic_store_n(&sched::current()->kill_pending, 1, __ATOMIC_RELEASE);
-        sched::exit(sig);
+        signals::die_from_signal(static_cast<uint32_t>(ec_to_signal(ec)));
     }
 
     trap_fatal("el0 sync", tf);
