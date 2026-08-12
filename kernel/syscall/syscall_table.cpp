@@ -58,6 +58,9 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::RT_SIGACTION,    rt_sigaction);
     REGISTER_SYSCALL(linux_nr::RT_SIGPROCMASK,  rt_sigprocmask);
     REGISTER_SYSCALL(linux_nr::RT_SIGPENDING,   rt_sigpending);
+    REGISTER_SYSCALL(linux_nr::KILL,            kill);
+    REGISTER_SYSCALL(linux_nr::TKILL,           tkill);
+    REGISTER_SYSCALL(linux_nr::TGKILL,          tgkill);
     REGISTER_SYSCALL(linux_nr::GETTID,          gettid);
     REGISTER_SYSCALL(linux_nr::MPROTECT,        mprotect);
     REGISTER_SYSCALL(linux_nr::MUNMAP,          munmap);
