@@ -135,7 +135,7 @@ __PRIVILEGED_CODE int32_t copy_to_user(
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t copy_to_user_resident(
+__PRIVILEGED_CODE int32_t copy_to_user_nonblock(
     void* udst,
     const void* ksrc,
     size_t len
@@ -184,15 +184,19 @@ __PRIVILEGED_CODE int32_t copy_to_user_resident(
         cursor = next;
     }
 
-    // No page-in here: every page must already be resident. A present
-    // entry in a writable region is writable, nothing maps copy-on-write.
+    // Fault lazy stack pages in under the held lock, nothing blocks. A
+    // present entry in a writable region is writable, nothing maps
+    // copy-on-write.
     uintptr_t end_page = end & ~(pmm::PAGE_SIZE - 1);
     for (uintptr_t page = start & ~(pmm::PAGE_SIZE - 1);
          page <= end_page;
          page += pmm::PAGE_SIZE) {
-        if (paging::get_physical(page, mm_ctx->pt_root) == 0) {
+        if (paging::get_physical(page, mm_ctx->pt_root) != 0) {
+            continue;
+        }
+        if (!handle_user_pf_locked(mm_ctx, page, 0)) {
             sync::mutex_unlock(mm_ctx->lock);
-            return ERR_RETRY;
+            return ERR_FAULT;
         }
     }
 

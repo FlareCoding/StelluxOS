@@ -53,6 +53,17 @@ __PRIVILEGED_CODE bool handle_user_pf(
 );
 
 /**
+ * @brief handle_user_pf with mm_ctx->lock already held by the caller.
+ * Never blocks, so it is safe from interrupt context.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool handle_user_pf_locked(
+    mm_context* mm_ctx,
+    uintptr_t fault_address,
+    uint64_t pf_flags
+);
+
+/**
  * @brief Create a user address-space context with a new user page-table root.
  * @return New mm_context on success, nullptr on failure.
  * @note Privilege: **required**

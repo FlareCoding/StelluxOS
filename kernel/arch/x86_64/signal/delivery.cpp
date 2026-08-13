@@ -271,8 +271,8 @@ constexpr uint64_t RFLAGS_DF = 1ULL << 10;
 constexpr uint64_t RFLAGS_TF = 1ULL << 8;
 
 /**
- * Frame write for delivery outside a syscall. Never blocks or pages in,
- * the caller defers the signal when the stack is not resident.
+ * Frame write for delivery outside a syscall. Never blocks, the caller
+ * defers the signal when the address-space lock is contended.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static int32_t build_signal_frame_async(
@@ -299,10 +299,10 @@ __PRIVILEGED_CODE static int32_t build_signal_frame_async(
     sched::fpu_state fp;
     fpu::save(&fp);
 
-    int32_t rc = mm::uaccess::copy_to_user_resident(
+    int32_t rc = mm::uaccess::copy_to_user_nonblock(
         reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame));
     if (rc == mm::uaccess::OK) {
-        rc = mm::uaccess::copy_to_user_resident(
+        rc = mm::uaccess::copy_to_user_nonblock(
             reinterpret_cast<void*>(fpstate), &fp, sizeof(fp));
     }
     heap::kfree_delete(frame);

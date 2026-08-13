@@ -52,8 +52,8 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(trap_frame* tf);
 /**
  * @brief Deliver one pending handler-bound signal to a task interrupted
  * in user mode, redirecting the trap frame to the handler. The frame
- * write never blocks or pages in: when the user stack is not resident
- * the signal is returned to the pending set for a later boundary.
+ * write never blocks: when the address-space lock is contended the
+ * signal is returned to the pending set for a later boundary.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,

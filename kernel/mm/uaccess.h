@@ -61,14 +61,14 @@ __PRIVILEGED_CODE int32_t copy_cstr_from_user(
 );
 
 /**
- * @brief Copy to a resident user range without blocking or paging in.
- * Safe from interrupt context: the address-space lock is only tried and
- * every page must already be mapped, so the copy can never fault.
- * @return OK on success, ERR_RETRY when the lock is contended or a page
- * is not resident, ERR_FAULT/ERR_INVAL on a bad range.
+ * @brief Copy to a user range without ever blocking, for interrupt
+ * context. The address-space lock is only tried, and lazy stack pages
+ * are faulted in under it so the copy itself can never fault.
+ * @return OK on success, ERR_RETRY when the lock is contended,
+ * ERR_FAULT/ERR_INVAL on a bad range.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t copy_to_user_resident(
+__PRIVILEGED_CODE int32_t copy_to_user_nonblock(
     void* udst,
     const void* ksrc,
     size_t len

@@ -113,8 +113,8 @@ __PRIVILEGED_CODE int32_t build_signal_frame(trap_frame* tf, uint32_t sig,
 }
 
 /**
- * Frame write for delivery outside a syscall. Never blocks or pages in,
- * the caller defers the signal when the stack is not resident. The ERET
+ * Frame write for delivery outside a syscall. Never blocks, the caller
+ * defers the signal when the address-space lock is contended. The ERET
  * exit already rebuilds every register, no special restore is needed.
  * @note Privilege: **required**
  */
@@ -134,7 +134,7 @@ __PRIVILEGED_CODE static int32_t build_signal_frame_async(
     pack_sigframe(frame, tf, static_cast<int64_t>(tf->x[0]), sig,
                   old_blocked, &fp);
 
-    int32_t rc = mm::uaccess::copy_to_user_resident(
+    int32_t rc = mm::uaccess::copy_to_user_nonblock(
         reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame));
     heap::kfree_delete(frame);
 
