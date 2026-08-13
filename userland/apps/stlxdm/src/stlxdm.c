@@ -7,7 +7,9 @@
 #include <stlxgfx/event.h>
 #include <stlx/proc.h>
 #include <stlx/net.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -35,6 +37,15 @@ typedef struct {
     int count;
     int full_redraw;
 } stlxdm_dirty_t;
+
+/* ---- Top bar status state ---- */
+static char g_net_status_str[32] = "no network";
+static struct timespec g_net_last_query = {0, 0};
+
+static char g_sys_stats_str[64] = "";
+static struct timespec g_stats_last_query = {0, 0};
+static uint64_t g_stats_prev_busy = 0;
+static uint64_t g_stats_prev_total = 0;
 
 static void stlxdm_dirty_reset(stlxdm_dirty_t* d) {
     d->count = 0;
@@ -208,9 +219,6 @@ static void stlxdm_compositor_sync(stlxdm_compositor_t* comp,
     }
 }
 
-static char g_net_status_str[32] = "no network";
-static struct timespec g_net_last_query = {0, 0};
-
 static void stlxdm_update_net_status(void) {
     struct stlx_net_status st;
     if (stlx_net_get_status(&st) != 0 || st.if_count == 0) {
@@ -237,6 +245,88 @@ static void stlxdm_update_net_status(void) {
     }
 }
 
+/* Read a small /dev/sysinfo file into buf, NUL terminated */
+static ssize_t stlxdm_read_stats_file(const char* path, char* buf,
+                                       size_t cap) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    size_t total = 0;
+    while (total < cap - 1) {
+        ssize_t rd = read(fd, buf + total, cap - 1 - total);
+        if (rd <= 0) {
+            break;
+        }
+        total += (size_t)rd;
+    }
+    close(fd);
+    buf[total] = '\0';
+    return (ssize_t)total;
+}
+
+/* Value of a "<label> <number>" line in a stats text snapshot */
+static uint64_t stlxdm_stats_field(const char* text, const char* label) {
+    const char* p = strstr(text, label);
+    if (!p) {
+        return 0;
+    }
+    return strtoull(p + strlen(label), NULL, 10);
+}
+
+static void stlxdm_update_sys_stats(void) {
+    char buf[512];
+
+    /* Overall CPU utilization from busy and idle tick deltas */
+    if (stlxdm_read_stats_file("/dev/sysinfo/cpu", buf, sizeof(buf)) <= 0) {
+        g_sys_stats_str[0] = '\0';
+        return;
+    }
+
+    uint64_t busy = 0;
+    uint64_t idle = 0;
+    const char* p = buf;
+    while (*p) {
+        if (strncmp(p, "cpu", 3) == 0) {
+            char* end = NULL;
+            strtoull(p + 3, &end, 10);
+            busy += strtoull(end, &end, 10);
+            idle += strtoull(end, &end, 10);
+        }
+        while (*p && *p != '\n') {
+            p++;
+        }
+        if (*p) {
+            p++;
+        }
+    }
+
+    uint64_t total = busy + idle;
+    unsigned cpu_pct = 0;
+    if (g_stats_prev_total != 0 && total > g_stats_prev_total) {
+        uint64_t d_busy = busy - g_stats_prev_busy;
+        uint64_t d_total = total - g_stats_prev_total;
+        cpu_pct = (unsigned)((d_busy * 100 + d_total / 2) / d_total);
+    }
+    g_stats_prev_busy = busy;
+    g_stats_prev_total = total;
+
+    /* Memory consumption in MB from page counters */
+    if (stlxdm_read_stats_file("/dev/sysinfo/mem", buf, sizeof(buf)) <= 0) {
+        g_sys_stats_str[0] = '\0';
+        return;
+    }
+    uint64_t page_size = stlxdm_stats_field(buf, "page_size ");
+    uint64_t total_pages = stlxdm_stats_field(buf, "total_pages ");
+    uint64_t used_pages = stlxdm_stats_field(buf, "used_pages ");
+    uint64_t used_mb = used_pages * page_size / (1024 * 1024);
+    uint64_t total_mb = total_pages * page_size / (1024 * 1024);
+
+    snprintf(g_sys_stats_str, sizeof(g_sys_stats_str),
+             "CPU %u%%  MEM %llu/%llu MB", cpu_pct,
+             (unsigned long long)used_mb, (unsigned long long)total_mb);
+}
+
 static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
                                         const stlxdm_config_t* conf) {
     stlxgfx_ctx_fill_rect(ctx, 0, 0, width, STLXDM_BAR_HEIGHT,
@@ -246,7 +336,7 @@ static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
     stlxgfx_ctx_draw_text(ctx, 10, 6, "Stellux", conf->bar_font_size,
                            conf->text_color);
 
-    // Refresh network status every 3 seconds
+    // Refresh network status every 3 seconds and system stats every second
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
         int64_t elapsed = (now.tv_sec - g_net_last_query.tv_sec);
@@ -254,9 +344,15 @@ static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
             stlxdm_update_net_status();
             g_net_last_query = now;
         }
+        elapsed = (now.tv_sec - g_stats_last_query.tv_sec);
+        if (elapsed >= 1 || g_stats_last_query.tv_sec == 0) {
+            stlxdm_update_sys_stats();
+            g_stats_last_query = now;
+        }
     }
 
     // Center: clock
+    int32_t time_start_x = (int32_t)width;
     int32_t time_end_x = 0;
     struct timespec ts;
     if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
@@ -269,7 +365,21 @@ static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
             int32_t tx = ((int32_t)width - (int32_t)tw) / 2;
             stlxgfx_ctx_draw_text(ctx, tx, 6, time_str, conf->bar_font_size,
                                    conf->text_color);
+            time_start_x = tx;
             time_end_x = tx + (int32_t)tw;
+        }
+    }
+
+    // Left of center: live CPU and memory stats (only if they fit)
+    if (g_sys_stats_str[0]) {
+        uint32_t tw = 0, th = 0;
+        stlxgfx_ctx_text_size("Stellux", conf->bar_font_size, &tw, &th);
+        int32_t sx = 10 + (int32_t)tw + 24;
+        uint32_t sw = 0, sh = 0;
+        stlxgfx_ctx_text_size(g_sys_stats_str, conf->bar_font_size, &sw, &sh);
+        if (sx + (int32_t)sw < time_start_x - 8) {
+            stlxgfx_ctx_draw_text(ctx, sx, 6, g_sys_stats_str,
+                                   conf->bar_font_size, conf->accent_color);
         }
     }
 
