@@ -10,6 +10,7 @@ constexpr int32_t ERR_INVAL    = -1;
 constexpr int32_t ERR_NO_MMCTX = -2;
 constexpr int32_t ERR_FAULT    = -3;
 constexpr int32_t ERR_NAMETOOLONG = -4;
+constexpr int32_t ERR_RETRY    = -5;
 
 /**
  * @brief Validate that a user range is mapped and has required protections.
@@ -57,6 +58,20 @@ __PRIVILEGED_CODE int32_t copy_cstr_from_user(
     char* kdst,
     size_t cap,
     const char* usrc
+);
+
+/**
+ * @brief Copy to a user range without ever blocking, for interrupt
+ * context. The address-space lock is only tried, and lazy stack pages
+ * are faulted in under it so the copy itself can never fault.
+ * @return OK on success, ERR_RETRY when the lock is contended,
+ * ERR_FAULT/ERR_INVAL on a bad range.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t copy_to_user_nonblock(
+    void* udst,
+    const void* ksrc,
+    size_t len
 );
 
 } // namespace mm::uaccess

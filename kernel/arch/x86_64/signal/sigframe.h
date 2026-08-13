@@ -8,6 +8,11 @@ namespace x86 {
 
 constexpr int32_t SI_USER = 0;
 
+// uc_flags bit: the saved context carries live RCX/R11/RAX from an
+// interrupted instruction stream, so the return must rebuild every
+// register through an IRET exit (SYSRET consumes RCX and R11).
+constexpr uint64_t UC_FULL_RESTORE = 1;
+
 // Delivered to SA_SIGINFO handlers. Only si_signo and si_code are filled,
 // sender identity stays zero because standard signals carry no queue.
 struct siginfo {

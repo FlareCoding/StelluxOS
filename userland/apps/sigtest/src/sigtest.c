@@ -314,6 +314,69 @@ static void test_poll_eintr_despite_restart(void) {
     close(fds[1]);
 }
 
+static volatile sig_atomic_t async_handler_ran = 0;
+
+static void async_handler(int sig) {
+    (void)sig;
+    async_handler_ran = 1;
+}
+
+static void async_helper(void* arg) {
+    (void)arg;
+
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    sigprocmask(SIG_BLOCK, &set, NULL);
+
+    usleep(200 * 1000);
+    kill(getpid(), SIGUSR2);
+    _exit(0);
+}
+
+static void test_async_compute_delivery(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = async_handler;
+    sigaction(SIGUSR2, &sa, NULL);
+    async_handler_ran = 0;
+
+    void* stk = mmap(NULL, HELPER_STACK_SIZE, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    if (stk == MAP_FAILED) {
+        printf("  SKIP: helper stack unavailable\n");
+        return;
+    }
+    int h = proc_create_thread(async_helper, NULL,
+                               (char*)stk + HELPER_STACK_SIZE, "sig_helper");
+    if (h < 0) {
+        printf("  SKIP: thread creation unavailable\n");
+        munmap(stk, HELPER_STACK_SIZE);
+        return;
+    }
+    proc_thread_start(h);
+
+    /* Pure compute: no syscall happens until the handler flips the flag,
+     * so only asynchronous delivery can end this loop. */
+    volatile unsigned long spins = 0;
+    while (!async_handler_ran) {
+        spins++;
+    }
+
+    /* The interrupted loop's state must survive the full-register restore */
+    unsigned long resume_point = spins;
+    for (int i = 0; i < 1000; i++) {
+        spins++;
+    }
+
+    proc_thread_join(h, NULL);
+
+    check("handler fired mid-compute without a syscall", async_handler_ran == 1);
+    check("interrupted loop state survived", spins == resume_point + 1000);
+
+    munmap(stk, HELPER_STACK_SIZE);
+}
+
 static volatile sig_atomic_t sigpipe_count = 0;
 
 static void sigpipe_handler(int sig) {
@@ -383,6 +446,7 @@ int main(int argc, char** argv) {
     test_read_eintr();
     test_read_restart();
     test_poll_eintr_despite_restart();
+    test_async_compute_delivery();
     test_sigpipe_dispositions();
 
     printf("sigtest: %d passed, %d failed\n", passed, failed);

@@ -155,8 +155,14 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
     bool ok = mm::uaccess::copy_from_user(
         frame, reinterpret_cast<void*>(frame_addr), sizeof(*frame)) == mm::uaccess::OK;
 
+    // A context captured outside a syscall restores every register through
+    // the IRET exit, the frame-based SYSRET path cannot rebuild it
+    bool full = ok && (frame->uc.uc_flags & UC_FULL_RESTORE) != 0;
+    sched::task_exec_core* exec = this_cpu(current_task_exec);
+
     if (ok) {
-        ok = unpack_sigframe(frame, ctx, &mask);
+        ok = full ? unpack_sigframe_full(frame, &exec->iret_ctx, &mask)
+                  : unpack_sigframe(frame, ctx, &mask);
     }
 
     if (!ok) {
@@ -167,7 +173,8 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
     signals::set_blocked(sched::current(), signals::SIG_SETMASK, &mask, nullptr);
 
     uint64_t fpstate = frame->uc.uc_mcontext.fpstate;
-    int64_t resume = static_cast<int64_t>(frame->uc.uc_mcontext.rax);
+    int64_t resume = full ? 0
+        : static_cast<int64_t>(frame->uc.uc_mcontext.rax);
     if (fpstate) {
         // A bad FXSAVE pointer is a corrupt frame, kill like the other paths
         sched::fpu_state fp;
@@ -180,8 +187,181 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
         fpu::restore(&fp);
     }
 
+    if (full) {
+        // Publish only after the context is fully staged, the syscall
+        // exit consumes it as soon as this handler returns
+        __atomic_store_n(&exec->iret_pending, 1u, __ATOMIC_RELEASE);
+    }
+
     heap::kfree_delete(frame);
     return resume;
+}
+
+__PRIVILEGED_CODE void pack_sigframe_full(rt_sigframe* frame,
+                                          const trap_frame* tf, uint32_t sig,
+                                          signals::sig_set_t old_blocked,
+                                          uint64_t user_fpstate) {
+    sigcontext& sc = frame->uc.uc_mcontext;
+    sc.r8  = tf->r8;
+    sc.r9  = tf->r9;
+    sc.r10 = tf->r10;
+    sc.r11 = tf->r11;
+    sc.r12 = tf->r12;
+    sc.r13 = tf->r13;
+    sc.r14 = tf->r14;
+    sc.r15 = tf->r15;
+    sc.rdi = tf->rdi;
+    sc.rsi = tf->rsi;
+    sc.rbp = tf->rbp;
+    sc.rbx = tf->rbx;
+    sc.rdx = tf->rdx;
+    sc.rax = tf->rax;
+    sc.rcx = tf->rcx;
+    sc.rsp = tf->rsp;
+    sc.rip = tf->rip;
+    sc.eflags = tf->rflags;
+    sc.cs = USER_CS;
+    sc.ss = USER_DS;
+    sc.fpstate = user_fpstate;
+
+    frame->uc.uc_flags = UC_FULL_RESTORE;
+    frame->uc.uc_sigmask = old_blocked;
+    frame->info.si_signo = static_cast<int32_t>(sig);
+    frame->info.si_code = SI_USER;
+}
+
+__PRIVILEGED_CODE bool unpack_sigframe_full(const rt_sigframe* frame,
+                                            sched::thread_cpu_context* out,
+                                            signals::sig_set_t* mask) {
+    const sigcontext& sc = frame->uc.uc_mcontext;
+    if (sc.rip >= USER_ADDR_LIMIT) {
+        return false;
+    }
+
+    out->rax = sc.rax;
+    out->rbx = sc.rbx;
+    out->rcx = sc.rcx;
+    out->rdx = sc.rdx;
+    out->rsi = sc.rsi;
+    out->rdi = sc.rdi;
+    out->rbp = sc.rbp;
+    out->rsp = sc.rsp;
+    out->r8  = sc.r8;
+    out->r9  = sc.r9;
+    out->r10 = sc.r10;
+    out->r11 = sc.r11;
+    out->r12 = sc.r12;
+    out->r13 = sc.r13;
+    out->r14 = sc.r14;
+    out->r15 = sc.r15;
+    out->rip = sc.rip;
+    out->rflags = (sc.eflags & RFLAGS_USER_MASK) | RFLAGS_IF | RFLAGS_MB1;
+
+    // Forged segments must never reach the IRET exit
+    out->cs = USER_CS;
+    out->ss = USER_DS;
+
+    *mask = frame->uc.uc_sigmask;
+    return true;
+}
+
+// Direction and trap flags a handler must not inherit from the
+// interrupted instruction stream
+constexpr uint64_t RFLAGS_DF = 1ULL << 10;
+constexpr uint64_t RFLAGS_TF = 1ULL << 8;
+
+/**
+ * Frame write for delivery outside a syscall. Never blocks, the caller
+ * defers the signal when the address-space lock is contended.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int32_t build_signal_frame_async(
+    trap_frame* tf, uint32_t sig, const signals::k_sigaction* act,
+    signals::sig_set_t old_blocked) {
+    // SYSRET is not involved here, but the same user-half bound keeps a
+    // kernel-half handler from ever running with user state
+    if (act->handler >= USER_ADDR_LIMIT) {
+        return -1;
+    }
+
+    uint64_t sp = tf->rsp - RED_ZONE;
+    uint64_t fpstate = align_down(sp - sizeof(sched::fpu_state), 16);
+    uint64_t frame_addr = align_down(fpstate - sizeof(rt_sigframe), 16) - 8;
+
+    rt_sigframe* frame = heap::kalloc_new<rt_sigframe>();
+    if (!frame) {
+        return mm::uaccess::ERR_RETRY;
+    }
+
+    pack_sigframe_full(frame, tf, sig, old_blocked, fpstate);
+    frame->pretcode = act->restorer;
+
+    sched::fpu_state fp;
+    fpu::save(&fp);
+
+    int32_t rc = mm::uaccess::copy_to_user_nonblock(
+        reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame));
+    if (rc == mm::uaccess::OK) {
+        rc = mm::uaccess::copy_to_user_nonblock(
+            reinterpret_cast<void*>(fpstate), &fp, sizeof(fp));
+    }
+    heap::kfree_delete(frame);
+
+    if (rc != mm::uaccess::OK) {
+        return rc;
+    }
+
+    tf->rip = act->handler;
+    tf->rsp = frame_addr;
+    tf->rdi = sig;
+    tf->rsi = frame_addr + __builtin_offsetof(rt_sigframe, info);
+    tf->rdx = frame_addr + __builtin_offsetof(rt_sigframe, uc);
+    tf->rflags = (tf->rflags & RFLAGS_USER_MASK & ~(RFLAGS_DF | RFLAGS_TF))
+        | RFLAGS_IF | RFLAGS_MB1;
+    return 0;
+}
+
+__PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
+                                            trap_frame* tf) {
+    if (!from_user(tf)) {
+        return;
+    }
+
+    // An elevated task keeps its signals pending until it lowers, the
+    // same rule every other delivery site applies
+    if (!self || !self->group ||
+        (self->exec.flags & sched::TASK_FLAG_ELEVATED) ||
+        self->state == sched::TASK_STATE_DEAD) {
+        return;
+    }
+
+    // A fatal signal takes the death path at this same boundary
+    if (signals::fatal_pending(self)) {
+        return;
+    }
+
+    uint32_t sig = 0;
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+    if (!signals::take_deliverable(self, &sig, &act, &old_blocked)) {
+        return;
+    }
+
+    // The handler returns through the restorer's rt_sigreturn,
+    // an action installed without one is undeliverable.
+    if (!(act.flags & signals::SA_RESTORER) || !act.restorer) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
+
+    int32_t rc = build_signal_frame_async(tf, sig, &act, old_blocked);
+    if (rc == mm::uaccess::ERR_RETRY) {
+        // Not deliverable right now, a later boundary picks it up
+        signals::untake_deliverable(self, sig, &act, old_blocked);
+        return;
+    }
+    if (rc != 0) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
 }
 
 } // namespace x86
@@ -189,6 +369,12 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
 __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
                                                        int64_t result,
                                                        uint64_t syscall_num) {
+    // A staged full-register return supersedes the frame, so it no longer
+    // describes the resume context, delivery waits for a later boundary
+    if (__atomic_load_n(&self->exec.iret_pending, __ATOMIC_ACQUIRE)) {
+        return result;
+    }
+
     x86::syscall_frame* ctx = x86::current_syscall_frame();
 
     // Delivery only when returning to user mode, an elevated task keeps

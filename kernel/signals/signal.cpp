@@ -456,6 +456,24 @@ __PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
     return true;
 }
 
+__PRIVILEGED_CODE void untake_deliverable(sched::task* t, uint32_t sig,
+                                          const k_sigaction* act,
+                                          sig_set_t old_blocked) {
+    set_blocked(t, SIG_SETMASK, &old_blocked, nullptr);
+
+    // Reinstate a one-shot action the take reset, so a deferred delivery
+    // still runs the handler instead of falling to the default
+    if ((act->flags & SA_RESETHAND) && t->group) {
+        sync::irq_state irq = sync::spin_lock_irqsave(t->group->sig.lock);
+        if (t->group->sig.actions[sig - 1].handler == SIG_DFL) {
+            t->group->sig.actions[sig - 1] = *act;
+        }
+        sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
+    }
+
+    __atomic_fetch_or(&t->sig.pending, sig_bit(sig), __ATOMIC_ACQ_REL);
+}
+
 __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
     sched::task* self = sched::current();
     sched::thread_group* tg = self->group;

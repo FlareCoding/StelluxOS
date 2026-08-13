@@ -119,6 +119,17 @@ __PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
                                         sig_set_t* old_blocked);
 
 /**
+ * @brief Return a taken signal to the pending set with the pre-delivery
+ * mask, for a delivery that could not complete. An action SA_RESETHAND
+ * reset at take time is reinstated, unless another thread has installed
+ * a new one since.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void untake_deliverable(sched::task* t, uint32_t sig,
+                                          const k_sigaction* act,
+                                          sig_set_t old_blocked);
+
+/**
  * @brief Terminate the current task because of signal sig.
  * Fatal signals kill the whole process: a non-leader records sig as the
  * group exit signal and force-kills the leader so teardown reaps every

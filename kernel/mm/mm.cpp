@@ -82,6 +82,21 @@ bool handle_user_pf(
         return false;
     }
 
+    sync::mutex_lock(mm_ctx->lock);
+    bool resolved = handle_user_pf_locked(mm_ctx, fault_address, pf_flags);
+    sync::mutex_unlock(mm_ctx->lock);
+    return resolved;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE
+bool handle_user_pf_locked(
+    mm_context* mm_ctx,
+    uintptr_t fault_address,
+    uint64_t pf_flags
+) {
     /**
      * For now, on-demand paging is not yet fully complete, so
      * the only operation that's supported is lazy stack growing.
@@ -92,27 +107,22 @@ bool handle_user_pf(
 
     uintptr_t page_addr = fault_address & ~(pmm::PAGE_SIZE - 1);
 
-    sync::mutex_lock(mm_ctx->lock);
-
     // Get the virtual memory area for this page
     vma* vm = vma_find_locked(mm_ctx, page_addr);
 
     // Ensure that on-demand paging is supported for this page type
     if (!vm || !(vm->flags & VMA_FLAG_STACK)) {
-        sync::mutex_unlock(mm_ctx->lock);
         return false;
     }
 
     // Concurrent page fault on same page won by another CPU, retry
     if (paging::get_physical(page_addr, mm_ctx->pt_root) != 0) {
-        sync::mutex_unlock(mm_ctx->lock);
         return true;
     }
 
     // Allocate a new physical page to back the memory
     pmm::phys_addr_t phys = pmm::alloc_page();
     if (phys == 0) {
-        sync::mutex_unlock(mm_ctx->lock);
         return false; // OOM - my favorite thing
     }
 
@@ -123,11 +133,9 @@ bool handle_user_pf(
     paging::page_flags_t pagefl = prot_to_page_flags(vm->prot);
     if (paging::map_page(page_addr, phys, pagefl, mm_ctx->pt_root) != paging::OK) {
         pmm::free_page(phys);
-        sync::mutex_unlock(mm_ctx->lock);
         return false;
     }
 
-    sync::mutex_unlock(mm_ctx->lock);
     log::info("Lazily loading stack page: %p\n", page_addr);
     return true;
 }
