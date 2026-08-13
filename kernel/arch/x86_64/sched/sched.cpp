@@ -172,6 +172,7 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     advance_cpu_tlb_sync_epoch();
     // Finish prior off-CPU publication before handling this tick's switch.
     finalize_pending_off_cpu();
+    record_cpu_tick(prev);
     if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
         return;
     }

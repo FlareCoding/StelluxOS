@@ -36,6 +36,8 @@ static DEFINE_PER_CPU(uint64_t, cpu_tlb_sync_epoch);
 
 static DEFINE_PER_CPU(sched::runqueue, cpu_rq);
 
+static DEFINE_PER_CPU(sched::cpu_accounting_stats, cpu_accounting);
+
 static uint32_t g_next_tid = 1;
 static uint32_t g_pending_tlb_sync_tickets = 0;
 
@@ -230,6 +232,32 @@ __PRIVILEGED_CODE void cancel_block_task() {
         // it is off-CPU. Yield so that handoff can complete.
         yield();
     }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void record_cpu_tick(task* prev) {
+    cpu_accounting_stats& stats = this_cpu(cpu_accounting);
+    runqueue& rq = this_cpu(cpu_rq);
+
+    // Only this CPU's tick path writes these counters, remote readers
+    // use relaxed atomic loads
+    uint64_t* counter = (prev == rq.idle_task) ? &stats.idle_ticks
+                                               : &stats.busy_ticks;
+    __atomic_store_n(counter, *counter + 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&prev->run_ticks, prev->run_ticks + 1, __ATOMIC_RELAXED);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE cpu_accounting_stats read_cpu_accounting_stats(uint32_t cpu_id) {
+    cpu_accounting_stats& stats = per_cpu_on(cpu_accounting, cpu_id);
+    cpu_accounting_stats out;
+    out.busy_ticks = __atomic_load_n(&stats.busy_ticks, __ATOMIC_RELAXED);
+    out.idle_ticks = __atomic_load_n(&stats.idle_ticks, __ATOMIC_RELAXED);
+    return out;
 }
 
 /**

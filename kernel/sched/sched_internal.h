@@ -34,6 +34,14 @@ __PRIVILEGED_CODE void arch_post_switch(task* next);
 __PRIVILEGED_CODE task* pick_next_and_switch(task* prev);
 
 /**
+ * Common: charge one timer tick to the interrupted task and to this
+ * CPU's busy or idle counter. Called by arch on_tick handlers before
+ * any early return so non-preemptible work is still recorded.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void record_cpu_tick(task* prev);
+
+/**
  * Common: publish on_cpu=0 for a previously switched-out task.
  * Must be called from arch scheduler trap paths before taking reaper decisions.
  * @note Privilege: **required**

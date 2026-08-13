@@ -17,6 +17,15 @@ constexpr size_t MAX_ARG_STRLEN  = 256; // bytes per argv/envp string, including
 constexpr size_t MAX_ARG_STRINGS = 64;  // strings per argv/envp array
 
 /**
+ * One CPU's timer tick counters. A tick is charged as idle when it
+ * interrupts the CPU's idle task and as busy otherwise.
+ */
+struct cpu_accounting_stats {
+    uint64_t busy_ticks;
+    uint64_t idle_ticks;
+};
+
+/**
  * @brief Initialize the scheduler for the BSP. Creates idle task,
  * per-CPU runqueue, and scheduling policy. Call after mm::init().
  * @note Privilege: **required**
@@ -167,6 +176,14 @@ void yield();
  * @brief Get the current task on this CPU.
  */
 task* current();
+
+/**
+ * @brief Read a snapshot of a CPU's accounting stats. Safe to call
+ * from any CPU.
+ * @param cpu_id Logical CPU ID, must be below smp::cpu_count().
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE cpu_accounting_stats read_cpu_accounting_stats(uint32_t cpu_id);
 
 /**
  * @brief Block the current task for at least ns nanoseconds.

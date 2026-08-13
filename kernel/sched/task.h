@@ -76,6 +76,7 @@ struct task {
     list::node              wait_link;
     list::node              timer_link;
     uint64_t                timer_deadline;
+    uint64_t                run_ticks; // timer ticks observed while current
     task_tlb_sync_ticket    tlb_sync_ticket;
     rc::reaper::dead_node   reaper_node;
 
