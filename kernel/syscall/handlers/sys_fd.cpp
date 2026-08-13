@@ -121,7 +121,7 @@ inline int64_t map_resource_error(int64_t rc) {
         case resource::ERR_PIPE:
             return syscall::EPIPE;
         case resource::ERR_INTR:
-            return syscall::EINTR;
+            return syscall::ERESTARTSYS;
         case resource::ERR_NOTCONN:
             return syscall::ENOTCONN;
         case resource::ERR_CONNREFUSED:

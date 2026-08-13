@@ -53,6 +53,8 @@ __PRIVILEGED_CODE sig_set_t pending_blocked_set(sched::task* t);
  * SIGKILL terminates the whole process via the kill machinery. Signals
  * resolving to ignore are dropped unless the target blocks them. Fatal
  * and handler-bound signals wake a blocked target so it can act promptly.
+ * A handled signal leaves an elevated target waiting, since delivery
+ * needs a return to user mode.
  * @return OK, ERR_INVAL for a bad signal, ERR_PERM for kernel/idle tasks.
  * @note Privilege: **required**
  */
@@ -79,7 +81,9 @@ __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t);
 
 /**
  * @brief True if a blocking wait must unwind and return EINTR.
- * Covers kills, fatal signals, and handler-bound deliveries.
+ * Covers kills, fatal signals, and handler-bound deliveries. Handled
+ * signals only interrupt a task that can return to user mode to run the
+ * handler, an elevated task keeps waiting.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE bool interrupt_pending(sched::task* t);

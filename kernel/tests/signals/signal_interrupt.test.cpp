@@ -139,3 +139,24 @@ TEST(signal_interrupt, interrupt_pending_covers_handled_signals) {
     RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
     EXPECT_FALSE(intr);
 }
+
+TEST(signal_interrupt, elevated_task_defers_handled_interrupts) {
+    signals::k_sigaction act = {};
+    act.handler = 0x400000;
+    RUN_ELEVATED({
+        signals::set_action(g_tg, signals::SIGUSR1, &act, nullptr);
+    });
+
+    // Undeliverable while elevated, so the wait must not unwind
+    bool intr = true;
+    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->exec.flags = sched::TASK_FLAG_ELEVATED;
+    RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
+    EXPECT_FALSE(intr);
+
+    // Fatal signals still interrupt an elevated task
+    g_leader->sig.pending |= signals::sig_bit(signals::SIGKILL);
+    RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
+    EXPECT_TRUE(intr);
+    g_leader->exec.flags = 0;
+}

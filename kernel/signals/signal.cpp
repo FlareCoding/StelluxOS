@@ -139,6 +139,20 @@ __PRIVILEGED_CODE static void wake_for_signal(sched::task* t) {
     sched::wake(t);
 }
 
+/**
+ * True when a signal send may wake t: the signal must be unblocked, and
+ * one bound for a handler needs a target able to run it, so an elevated
+ * task is left waiting (mirrors interrupt_pending).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static bool wake_eligible(sched::task* t, sig_set_t bit,
+                                            bool needs_handler) {
+    if (__atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE) & bit) {
+        return false;
+    }
+    return !needs_handler || !(t->exec.flags & sched::TASK_FLAG_ELEVATED);
+}
+
 __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
     if (!t || !sig_valid(sig)) {
         return ERR_INVAL;
@@ -175,7 +189,8 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
     }
 
     __atomic_fetch_or(&t->sig.pending, sig_bit(sig), __ATOMIC_ACQ_REL);
-    if (verdict != send_verdict::IGNORABLE && !is_blocked) {
+    if (verdict != send_verdict::IGNORABLE &&
+        wake_eligible(t, sig_bit(sig), verdict == send_verdict::HANDLED)) {
         wake_for_signal(t);
     }
     return OK;
@@ -228,14 +243,14 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
     __atomic_fetch_or(&tg->sig.shared_pending, bit, __ATOMIC_ACQ_REL);
 
     if (verdict != send_verdict::IGNORABLE) {
-        // Wake one thread with the signal unblocked, leader preferred
+        // Wake one thread the signal can act on now, leader preferred
+        bool needs_handler = verdict == send_verdict::HANDLED;
         sched::task* target = nullptr;
-        if (tg->leader &&
-            !(__atomic_load_n(&tg->leader->sig.blocked, __ATOMIC_ACQUIRE) & bit)) {
+        if (tg->leader && wake_eligible(tg->leader, bit, needs_handler)) {
             target = tg->leader;
         } else {
             for (sched::task& thread : tg->threads) {
-                if (!(__atomic_load_n(&thread.sig.blocked, __ATOMIC_ACQUIRE) & bit)) {
+                if (wake_eligible(&thread, bit, needs_handler)) {
                     target = &thread;
                     break;
                 }
@@ -291,7 +306,17 @@ __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t) {
 }
 
 __PRIVILEGED_CODE bool interrupt_pending(sched::task* t) {
-    return t && (fatal_pending(t) != 0 || next_deliverable(t) != 0);
+    if (!t) {
+        return false;
+    }
+    if (fatal_pending(t) != 0) {
+        return true;
+    }
+
+    // A handler cannot run while elevated, so a deliverable signal only
+    // interrupts waits once the task can return to user mode
+    return !(t->exec.flags & sched::TASK_FLAG_ELEVATED)
+        && next_deliverable(t) != 0;
 }
 
 __PRIVILEGED_CODE uint32_t next_deliverable(sched::task* t) {

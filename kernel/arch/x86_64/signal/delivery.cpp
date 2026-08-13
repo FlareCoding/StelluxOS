@@ -1,5 +1,6 @@
 #include "signal/delivery.h"
 #include "arch/arch_signal.h"
+#include "syscall/syscall_table.h"
 #include "defs/segments.h"
 #include "sched/fpu.h"
 #include "sched/sched.h"
@@ -16,6 +17,9 @@ constexpr uint64_t RED_ZONE = 128;
 // User half of the canonical address space, RIP must stay below it or
 // SYSRET faults with kernel privilege on a non-canonical value.
 constexpr uint64_t USER_ADDR_LIMIT = 0x0000800000000000ULL;
+
+// SYSCALL is two bytes, stepping RIP back re-executes the interrupted call
+constexpr uint64_t SYSCALL_INSN_LEN = 2;
 
 // RFLAGS bits a restored context may carry (arithmetic, direction, trap,
 // AC, ID). IF is forced on and bit 1 is reserved-must-be-one, everything
@@ -183,11 +187,25 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
 } // namespace x86
 
 __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
-                                                       int64_t result) {
+                                                       int64_t result,
+                                                       uint64_t syscall_num) {
+    x86::syscall_frame* ctx = x86::current_syscall_frame();
+
+    // Delivery only when returning to user mode, an elevated task keeps
+    // its signals pending until it lowers
     uint32_t sig = 0;
     signals::k_sigaction act{};
     signals::sig_set_t old_blocked = 0;
-    if (!signals::take_deliverable(self, &sig, &act, &old_blocked)) {
+    bool delivered = !(self->exec.flags & sched::TASK_FLAG_ELEVATED) &&
+        signals::take_deliverable(self, &sig, &act, &old_blocked);
+
+    if (!delivered) {
+        // Interrupted with nothing to run: restart transparently so a raced
+        // or elevated boundary never surfaces a spurious EINTR
+        if (result == syscall::ERESTARTSYS) {
+            ctx->rip -= x86::SYSCALL_INSN_LEN;
+            return static_cast<int64_t>(syscall_num);
+        }
         return result;
     }
 
@@ -197,11 +215,23 @@ __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
         signals::die_from_signal(signals::SIGSEGV);
     }
 
-    if (x86::build_signal_frame(x86::current_syscall_frame(), sig, &act,
-                                old_blocked, result) != 0) {
+    // SA_RESTART resumes at the SYSCALL insn with the number back in RAX,
+    // re-executing the interrupted call once the handler returns
+    int64_t saved_result = result;
+    if (result == syscall::ERESTARTSYS) {
+        if (act.flags & signals::SA_RESTART) {
+            ctx->rip -= x86::SYSCALL_INSN_LEN;
+            saved_result = static_cast<int64_t>(syscall_num);
+        } else {
+            saved_result = syscall::EINTR;
+        }
+    }
+
+    if (x86::build_signal_frame(ctx, sig, &act, old_blocked,
+                                saved_result) != 0) {
         signals::die_from_signal(signals::SIGSEGV);
     }
-    return result;
+    return saved_result;
 }
 
 __PRIVILEGED_CODE int64_t arch::restore_signal_context() {

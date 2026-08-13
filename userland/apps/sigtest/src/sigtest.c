@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <stlx/proc.h>
 
@@ -187,6 +188,120 @@ static void test_read_eintr(void) {
     close(fds[1]);
 }
 
+static volatile sig_atomic_t restart_handler_ran = 0;
+static int g_restart_wfd;
+
+static void restart_handler(int sig) {
+    (void)sig;
+    restart_handler_ran = 1;
+}
+
+static void restart_helper(void* arg) {
+    (void)arg;
+
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &set, NULL);
+
+    usleep(150 * 1000);
+    kill(getpid(), SIGUSR1);      /* interrupts the read, restart re-blocks */
+    usleep(150 * 1000);
+    char b = 'r';
+    write(g_restart_wfd, &b, 1);  /* completes the restarted read */
+    _exit(0);
+}
+
+static void test_read_restart(void) {
+    /* signal() installs with SA_RESTART, the read must complete instead
+     * of failing with EINTR */
+    if (signal(SIGUSR1, restart_handler) == SIG_ERR) {
+        printf("  SKIP: signal unavailable\n");
+        return;
+    }
+
+    int fds[2];
+    if (pipe(fds) != 0) {
+        printf("  SKIP: pipe unavailable\n");
+        return;
+    }
+    g_restart_wfd = fds[1];
+
+    void* stk = mmap(NULL, HELPER_STACK_SIZE, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    if (stk == MAP_FAILED) {
+        printf("  SKIP: helper stack unavailable\n");
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    int h = proc_create_thread(restart_helper, NULL,
+                               (char*)stk + HELPER_STACK_SIZE, "sig_helper");
+    if (h < 0) {
+        printf("  SKIP: thread creation unavailable\n");
+        munmap(stk, HELPER_STACK_SIZE);
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    proc_thread_start(h);
+
+    char byte = 0;
+    ssize_t n = read(fds[0], &byte, 1);
+
+    proc_thread_join(h, NULL);
+
+    check("restarted read completed", n == 1 && byte == 'r');
+    check("handler ran during restart", restart_handler_ran == 1);
+
+    munmap(stk, HELPER_STACK_SIZE);
+    close(fds[0]);
+    close(fds[1]);
+}
+
+static void test_poll_eintr_despite_restart(void) {
+    /* poll is never restarted, SA_RESTART or not (as on Linux) */
+    signal(SIGUSR1, restart_handler);
+
+    int fds[2];
+    if (pipe(fds) != 0) {
+        printf("  SKIP: pipe unavailable\n");
+        return;
+    }
+
+    void* stk = mmap(NULL, HELPER_STACK_SIZE, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    if (stk == MAP_FAILED) {
+        printf("  SKIP: helper stack unavailable\n");
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    int h = proc_create_thread(eintr_helper, NULL,
+                               (char*)stk + HELPER_STACK_SIZE, "sig_helper");
+    if (h < 0) {
+        printf("  SKIP: thread creation unavailable\n");
+        munmap(stk, HELPER_STACK_SIZE);
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    proc_thread_start(h);
+
+    struct pollfd pfd = { .fd = fds[0], .events = POLLIN, .revents = 0 };
+    int ret = poll(&pfd, 1, -1);
+    int saved_errno = errno;
+
+    proc_thread_join(h, NULL);
+
+    check("poll interrupted despite SA_RESTART", ret == -1);
+    check("poll errno is EINTR", saved_errno == EINTR);
+
+    munmap(stk, HELPER_STACK_SIZE);
+    close(fds[0]);
+    close(fds[1]);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("sigtest: running signal delivery tests\n");
@@ -196,6 +311,8 @@ int main(void) {
     test_deferred_reentry();
     test_unblock_delivers();
     test_read_eintr();
+    test_read_restart();
+    test_poll_eintr_despite_restart();
 
     printf("sigtest: %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

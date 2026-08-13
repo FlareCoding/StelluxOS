@@ -56,11 +56,9 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
             signals::die_from_signal(fsig);
         }
 
-        // Handler delivery only when returning to user mode, an elevated
-        // task keeps its signals pending until it lowers
-        if (!(self->exec.flags & sched::TASK_FLAG_ELEVATED)) {
-            result = arch::deliver_pending_signal(self, result);
-        }
+        // Delivers one pending handled signal and resolves interrupted-wait
+        // restarts, the internal ERESTARTSYS marker never reaches userspace
+        result = arch::deliver_pending_signal(self, result, syscall_num);
     }
 
     // Return-boundary restore: dynamic runtime elevation follows the selected
