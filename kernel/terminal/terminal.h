@@ -54,7 +54,8 @@ int32_t set_mode(uint32_t cmd);
 /**
  * @brief Console terminal ioctl handling: the foreground process group
  * ioctls plus the mode-switch commands set_mode accepts.
- * @return OK on success, ERR on unsupported cmd or bad argument.
+ * @return OK on success, fs::ERR_INVAL on a bad foreground argument,
+ * ERR on an unsupported cmd.
  */
 int32_t console_ioctl(uint32_t cmd, uint64_t arg);
 

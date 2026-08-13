@@ -194,6 +194,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
             shell_err("shell: syntax error in redirection\r\n");
             if (prev_read_fd >= 0) close(prev_read_fd);
             for (int j = 0; j < i; j++) proc_detach(handles[j]);
+            if (fg_pgrp > 0) set_foreground(g_shell_pgrp);
             return 1;
         }
 
@@ -203,6 +204,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
             shell_err("shell: empty pipeline stage\r\n");
             if (prev_read_fd >= 0) close(prev_read_fd);
             for (int j = 0; j < i; j++) proc_detach(handles[j]);
+            if (fg_pgrp > 0) set_foreground(g_shell_pgrp);
             return 1;
         }
 
@@ -215,6 +217,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
                 shell_err("shell: pipe failed\r\n");
                 if (prev_read_fd >= 0) close(prev_read_fd);
                 for (int j = 0; j < i; j++) proc_detach(handles[j]);
+                if (fg_pgrp > 0) set_foreground(g_shell_pgrp);
                 return 1;
             }
         }
@@ -226,6 +229,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
             if (pipe_fds[0] >= 0) close(pipe_fds[0]);
             if (pipe_fds[1] >= 0) close(pipe_fds[1]);
             for (int j = 0; j < i; j++) proc_detach(handles[j]);
+            if (fg_pgrp > 0) set_foreground(g_shell_pgrp);
             return 1;
         }
 
@@ -238,6 +242,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
             if (pipe_fds[0] >= 0) close(pipe_fds[0]);
             if (pipe_fds[1] >= 0) close(pipe_fds[1]);
             for (int j = 0; j < i; j++) proc_detach(handles[j]);
+            if (fg_pgrp > 0) set_foreground(g_shell_pgrp);
             return 127;
         }
 

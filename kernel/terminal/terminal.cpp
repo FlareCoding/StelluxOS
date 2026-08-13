@@ -7,6 +7,7 @@
 #include "signals/signal.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
+#include "fs/fs.h"
 #include "fs/fstypes.h"
 #include "fs/devfs/devfs.h"
 #include "mm/heap.h"
@@ -141,6 +142,8 @@ int32_t set_mode(uint32_t cmd) {
 }
 
 int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
+    // Failures use fs error codes: this sits on the /dev/console node
+    // path, where the terminal ERR value would read as fs::ERR_NOENT
     if (cmd == TIOCGPGRP) {
         int32_t g = 0;
         RUN_ELEVATED({
@@ -149,7 +152,7 @@ int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
         });
         return mm::uaccess::copy_to_user(
             reinterpret_cast<void*>(arg), &g, sizeof(g)) == mm::uaccess::OK
-            ? OK : ERR;
+            ? OK : fs::ERR_INVAL;
     }
 
     if (cmd == TIOCSPGRP) {
@@ -157,7 +160,7 @@ int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
         if (mm::uaccess::copy_from_user(
                 &g, reinterpret_cast<const void*>(arg), sizeof(g)) != mm::uaccess::OK
             || g < 0) {
-            return ERR;
+            return fs::ERR_INVAL;
         }
 
         int32_t result = OK;
@@ -165,7 +168,7 @@ int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
             // POSIX requires an existing process group, 0 clears the foreground
             if (g > 0 && signals::send_to_group_id(
                     static_cast<uint32_t>(g), 0) != signals::OK) {
-                result = ERR;
+                result = fs::ERR_INVAL;
             } else {
                 __atomic_store_n(&g_console.fg_group, static_cast<uint32_t>(g),
                                  __ATOMIC_RELEASE);
