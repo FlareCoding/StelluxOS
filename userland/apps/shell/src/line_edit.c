@@ -513,6 +513,18 @@ char* line_edit_read(line_edit_state* s, const char* prompt) {
             continue;
         }
 
+        if (c == 0x03) { // Ctrl-C: discard the line, start fresh
+            s->cursor_pos = s->line_len;
+            redraw(s, prompt); /* park the cursor at end of line */
+            write(1, "^C\r\n", 4);
+            s->line_buf[0] = '\0';
+            s->line_len = 0;
+            s->cursor_pos = 0;
+            s->history_index = s->history_count < HISTORY_MAX ? s->history_count : HISTORY_MAX;
+            write_str(prompt);
+            continue;
+        }
+
         if (c == '\r' || c == '\n') {
             write(1, "\r\n", 2);
             s->line_buf[s->line_len] = '\0';
