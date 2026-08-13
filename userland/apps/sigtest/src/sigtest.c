@@ -119,6 +119,18 @@ static void test_unblock_delivers(void) {
     check("unblock delivers immediately", usr1_count == 1);
 }
 
+/* Child mode: a write with no reader must die by default SIGPIPE */
+static int pipe_victim_child(void) {
+    int fds[2];
+    if (pipe(fds) != 0) {
+        return 1;
+    }
+    close(fds[0]);
+    char b = 'x';
+    write(fds[1], &b, 1);
+    return 1; /* only reached if the signal never fired */
+}
+
 static volatile sig_atomic_t eintr_handler_ran = 0;
 
 static void eintr_handler(int sig) {
@@ -302,7 +314,65 @@ static void test_poll_eintr_despite_restart(void) {
     close(fds[1]);
 }
 
-int main(void) {
+static volatile sig_atomic_t sigpipe_count = 0;
+
+static void sigpipe_handler(int sig) {
+    (void)sig;
+    sigpipe_count++;
+}
+
+static void test_sigpipe_dispositions(void) {
+    int fds[2];
+    char b = 'x';
+
+    /* Ignored: the write fails with EPIPE and the process lives */
+    signal(SIGPIPE, SIG_IGN);
+    if (pipe(fds) != 0) {
+        printf("  SKIP: pipe unavailable\n");
+        return;
+    }
+    close(fds[0]);
+    ssize_t n = write(fds[1], &b, 1);
+    int saved_errno = errno;
+    check("ignored SIGPIPE write fails EPIPE", n == -1 && saved_errno == EPIPE);
+    close(fds[1]);
+
+    /* Handled: the handler runs and EPIPE is still returned */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigpipe_handler;
+    sigaction(SIGPIPE, &sa, NULL);
+    if (pipe(fds) != 0) {
+        printf("  SKIP: pipe unavailable\n");
+        return;
+    }
+    close(fds[0]);
+    n = write(fds[1], &b, 1);
+    saved_errno = errno;
+    check("handled SIGPIPE write fails EPIPE", n == -1 && saved_errno == EPIPE);
+    check("SIGPIPE handler ran", sigpipe_count == 1);
+    close(fds[1]);
+    signal(SIGPIPE, SIG_DFL);
+
+    /* Default: a child writing with no reader dies by SIGPIPE */
+    static const char* args[] = { "--pipe-victim", NULL };
+    int h = proc_create("/bin/sigtest", args);
+    if (h < 0) {
+        printf("  SKIP: self exec unavailable\n");
+        return;
+    }
+    proc_start(h);
+    int status = 0;
+    proc_wait(h, &status);
+    check("default SIGPIPE kills the writer",
+          STLX_WIFSIGNALED(status) && STLX_WTERMSIG(status) == SIGPIPE);
+}
+
+int main(int argc, char** argv) {
+    if (argc >= 2 && strcmp(argv[1], "--pipe-victim") == 0) {
+        return pipe_victim_child();
+    }
+
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("sigtest: running signal delivery tests\n");
 
@@ -313,6 +383,7 @@ int main(void) {
     test_read_eintr();
     test_read_restart();
     test_poll_eintr_despite_restart();
+    test_sigpipe_dispositions();
 
     printf("sigtest: %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

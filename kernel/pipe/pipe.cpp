@@ -3,6 +3,8 @@
 #include "common/ring_buffer.h"
 #include "fs/fstypes.h"
 #include "mm/heap.h"
+#include "sched/sched.h"
+#include "signals/signal.h"
 #include "sync/poll.h"
 #include "dynpriv/dynpriv.h"
 
@@ -74,6 +76,12 @@ static ssize_t pipe_write(
     RUN_ELEVATED({
         result = ring_buffer_write(ep->channel->rb,
                                    static_cast<const uint8_t*>(ksrc), count, nonblock);
+
+        // POSIX: a write with no reader raises SIGPIPE in the writer,
+        // EPIPE only surfaces when the signal is ignored or handled
+        if (result == RB_ERR_PIPE) {
+            signals::send_to_task(sched::current(), signals::SIGPIPE);
+        }
     });
     return result;
 }
