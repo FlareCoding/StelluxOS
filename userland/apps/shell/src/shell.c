@@ -51,15 +51,21 @@ static int reap_status(int status) {
         int sig = STLX_WTERMSIG(status);
         const char* name;
         switch (sig) {
+            case 2:  /* SIGINT: the terminal's ^C echo already told the story */
+            case 13: /* SIGPIPE: routine death for pipeline members */
+                     name = NULL;                        break;
             case 4:  name = "Illegal instruction";       break;
             case 7:  name = "Bus error";                 break;
             case 8:  name = "Floating point exception"; break;
             case 9:  name = "Killed";                    break;
             case 11: name = "Segmentation fault";        break;
+            case 15: name = "Terminated";                break;
             default: name = "Terminated by signal";      break;
         }
-        shell_err(name);
-        shell_err("\r\n");
+        if (name) {
+            shell_err(name);
+            shell_err("\r\n");
+        }
         return 128 + sig;
     }
     return status;
