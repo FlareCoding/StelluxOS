@@ -337,6 +337,62 @@ static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
         dst_px[stlxgfx_alpha_byte_index(dst)] = 0xFF;
 }
 
+int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
+                            uint32_t w, uint32_t h, uint32_t color) {
+    if (!s || !s->pixels) {
+        return -1;
+    }
+
+    uint8_t sa = (color >> 24) & 0xFF;
+    if (sa == 0) {
+        return 0;
+    }
+    if (sa == 255) {
+        return stlxgfx_fill_rect(s, x, y, w, h, color);
+    }
+
+    int32_t x0 = x < 0 ? 0 : x;
+    int32_t y0 = y < 0 ? 0 : y;
+    int32_t x1 = (int32_t)(x + w);
+    int32_t y1 = (int32_t)(y + h);
+    if (x1 > (int32_t)s->width) {
+        x1 = (int32_t)s->width;
+    }
+    if (y1 > (int32_t)s->height) {
+        y1 = (int32_t)s->height;
+    }
+    if (x0 >= x1 || y0 >= y1) {
+        return 0;
+    }
+
+    uint32_t bytes_pp = s->bpp / 8;
+    for (int32_t row = y0; row < y1; row++) {
+        uint8_t* px = s->pixels + (uint32_t)row * s->pitch
+                    + (uint32_t)x0 * bytes_pp;
+        for (int32_t col = x0; col < x1; col++, px += bytes_pp) {
+            blend_pixel(px, s, color);
+        }
+    }
+    return 0;
+}
+
+void stlxgfx_blend_coverage(stlxgfx_surface_t* s, int32_t x, int32_t y,
+                            uint32_t color, uint8_t coverage) {
+    if (!s || !s->pixels || coverage == 0 ||
+        x < 0 || y < 0 || x >= (int32_t)s->width || y >= (int32_t)s->height) {
+        return;
+    }
+
+    uint32_t alpha = (((color >> 24) & 0xFF) * coverage) / 255;
+    if (alpha == 0) {
+        return;
+    }
+
+    uint8_t* px = s->pixels + (uint32_t)y * s->pitch
+                + (uint32_t)x * (s->bpp / 8);
+    blend_pixel(px, s, (alpha << 24) | (color & 0x00FFFFFF));
+}
+
 int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
                         const stlxgfx_surface_t* src, int32_t sx, int32_t sy,
                         uint32_t w, uint32_t h) {

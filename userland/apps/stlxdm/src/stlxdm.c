@@ -280,22 +280,6 @@ static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
     }
 }
 
-static void stlxdm_build_arc_lut(int32_t r, int32_t* lut) {
-    for (int32_t i = 0; i <= r; i++) lut[i] = 0;
-    int32_t px = 0, py = r, d = 1 - r;
-    while (px <= py) {
-        if (py <= r && px > lut[py]) {
-            lut[py] = px;
-        }
-        if (px <= r && py > lut[px]) {
-            lut[px] = py;
-        }
-        px++;
-        if (d < 0) { d += 2 * px + 1; }
-        else { py--; d += 2 * (px - py) + 1; }
-    }
-}
-
 static void stlxdm_draw_window_frame(stlxgfx_ctx_t* ctx,
                                       stlxgfx_dm_window_t* w,
                                       int focused, int dragging,
@@ -346,24 +330,17 @@ static void stlxdm_draw_window_frame(stlxgfx_ctx_t* ctx,
                                content_inner_h - inner_cr,
                                STLXDM_BG_COLOR);
 
+        /* Bottom strip with anti-aliased rounded corners */
         int32_t ir = (int32_t)inner_cr;
-        int32_t arc_lut[32];
-        if (ir > 31) {
-            ir = 31;
-        }
-        stlxdm_build_arc_lut(ir, arc_lut);
-
-        int32_t bl_cx = ci_x + ir;
-        int32_t br_cx = ci_x + (int32_t)content_inner_w - ir - 1;
-        int32_t bot_cy = ci_y + (int32_t)content_inner_h - ir - 1;
-
-        for (int32_t dy = 0; dy <= ir; dy++) {
-            int32_t extent = arc_lut[dy];
-            int32_t sy = bot_cy + dy;
-            stlxgfx_ctx_fill_rect(ctx, bl_cx - extent, sy,
-                                   (uint32_t)(extent + 1 + (br_cx - bl_cx) + extent),
-                                   1, STLXDM_BG_COLOR);
-        }
+        int32_t ci_b = ci_y + (int32_t)content_inner_h;
+        int32_t ci_r = ci_x + (int32_t)content_inner_w;
+        stlxgfx_ctx_fill_rect(ctx, ci_x + ir, ci_b - ir,
+                               content_inner_w - 2 * inner_cr, inner_cr,
+                               STLXDM_BG_COLOR);
+        stlxgfx_ctx_fill_arc_corner(ctx, ci_x, ci_b, inner_cr, 0,
+                                     1, -1, 0, STLXDM_BG_COLOR);
+        stlxgfx_ctx_fill_arc_corner(ctx, ci_r, ci_b, inner_cr, 0,
+                                     -1, -1, 0, STLXDM_BG_COLOR);
     } else {
         stlxgfx_ctx_fill_rect(ctx, ci_x, ci_y,
                                content_inner_w, content_inner_h,
@@ -438,73 +415,29 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
             stlxgfx_ctx_blit(&ctx, content_x, content_y,
                               front, 0, 0, front->width, front->height);
 
+            /* The client blit is square, so it bleeds over the frame's
+             * rounded bottom corners. Re-carve them anti-aliased:
+             * background outside the outer arc, border ring between
+             * the concentric outer and inner arcs. */
             uint32_t bw = STLXDM_BORDER_WIDTH;
-            uint32_t outer_w = w->width + 2 * bw;
-            uint32_t outer_h = w->height + STLXDM_TITLE_HEIGHT + bw;
-            int32_t ro = (int32_t)STLXDM_CORNER_RADIUS;
-            int32_t ri = (int32_t)(STLXDM_CORNER_RADIUS > bw ? STLXDM_CORNER_RADIUS - bw : 0);
-            if (ro > 31) {
-                ro = 31;
-            }
-            if (ri > 31) {
-                ri = 31;
-            }
+            uint32_t ro = STLXDM_CORNER_RADIUS;
+            uint32_t ri = ro > bw ? ro - bw : 0;
 
-            int32_t outer_lut[32], inner_lut[32];
-            stlxdm_build_arc_lut(ro, outer_lut);
-            if (ri > 0) {
-                stlxdm_build_arc_lut(ri, inner_lut);
-            }
-
-            int32_t bot_edge = w->y + (int32_t)outer_h;
-            int32_t right_edge = w->x + (int32_t)outer_w;
-
-            int32_t outer_cy = bot_edge - ro - 1;
-            int32_t inner_cy = bot_edge - (int32_t)bw - ri - 1;
+            int32_t bot_edge = w->y + (int32_t)(w->height + STLXDM_TITLE_HEIGHT + bw);
+            int32_t right_edge = w->x + (int32_t)(w->width + 2 * bw);
 
             uint32_t border_c = dragging ? STLXDM_BORDER_DRAGGING
                               : focused  ? STLXDM_BORDER_FOCUSED
                               :            STLXDM_BORDER_UNFOCUSED;
 
-            for (int32_t sy = outer_cy; sy < bot_edge; sy++) {
-                int32_t ody = sy - outer_cy;
-                if (ody < 0 || ody > ro) {
-                    continue;
-                }
-                int32_t outer_ext = outer_lut[ody];
-
-                int32_t left_bg = ro - outer_ext;
-                if (left_bg > 0) {
-                    stlxgfx_ctx_fill_rect(&ctx, w->x, sy,
-                                           (uint32_t)left_bg, 1,
-                                           conf->bg_color);
-                    stlxgfx_ctx_fill_rect(&ctx, right_edge - left_bg, sy,
-                                           (uint32_t)left_bg, 1,
-                                           conf->bg_color);
-                }
-
-                if (ri > 0) {
-                    int32_t idy = sy - inner_cy;
-                    int32_t inner_ext = 0;
-                    if (idy >= 0 && idy <= ri) {
-                        inner_ext = inner_lut[idy];
-                    } else if (idy < 0) {
-                        inner_ext = ri;
-                    }
-
-                    int32_t inner_left = (int32_t)bw + ri - inner_ext;
-                    int32_t outer_left = ro - outer_ext;
-                    if (inner_left > outer_left) {
-                        int32_t fill_w = inner_left - outer_left;
-                        stlxgfx_ctx_fill_rect(&ctx,
-                            w->x + outer_left, sy,
-                            (uint32_t)fill_w, 1, border_c);
-                        stlxgfx_ctx_fill_rect(&ctx,
-                            right_edge - inner_left, sy,
-                            (uint32_t)fill_w, 1, border_c);
-                    }
-                }
-            }
+            stlxgfx_ctx_fill_arc_corner(&ctx, w->x, bot_edge, ro, 0,
+                                         1, -1, 1, conf->bg_color);
+            stlxgfx_ctx_fill_arc_corner(&ctx, right_edge, bot_edge, ro, 0,
+                                         -1, -1, 1, conf->bg_color);
+            stlxgfx_ctx_fill_arc_corner(&ctx, w->x, bot_edge, ro, ri,
+                                         1, -1, 0, border_c);
+            stlxgfx_ctx_fill_arc_corner(&ctx, right_edge, bot_edge, ro, ri,
+                                         -1, -1, 0, border_c);
         }
     }
 

@@ -37,6 +37,16 @@ stlxgfx_surface_t* stlxgfx_surface_from_buffer(uint8_t* buffer,
 int stlxgfx_clear(stlxgfx_surface_t* s, uint32_t color);
 int stlxgfx_fill_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
                       uint32_t w, uint32_t h, uint32_t color);
+
+/* Source-over rect fill: blends the color by its alpha instead of
+ * writing it raw, for translucent UI drawing. */
+int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
+                            uint32_t w, uint32_t h, uint32_t color);
+
+/* Source-over single pixel with extra coverage (0-255) modulating the
+ * color's alpha, the building block for anti-aliased edges. */
+void stlxgfx_blend_coverage(stlxgfx_surface_t* s, int32_t x, int32_t y,
+                            uint32_t color, uint8_t coverage);
 int stlxgfx_draw_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
                       uint32_t w, uint32_t h, uint32_t color);
 int stlxgfx_blit(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
