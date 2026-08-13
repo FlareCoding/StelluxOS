@@ -10,7 +10,7 @@ namespace signals {
 enum class send_verdict : uint8_t {
     FATAL,     // default-terminate, wake the target so it can die
     IGNORABLE, // droppable unless the target blocks it
-    HANDLED,   // a user handler is installed, leave it pending
+    HANDLED,   // a user handler is installed, wake the target to deliver
 };
 
 /**
@@ -175,7 +175,7 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
     }
 
     __atomic_fetch_or(&t->sig.pending, sig_bit(sig), __ATOMIC_ACQ_REL);
-    if (verdict == send_verdict::FATAL && !is_blocked) {
+    if (verdict != send_verdict::IGNORABLE && !is_blocked) {
         wake_for_signal(t);
     }
     return OK;
@@ -227,7 +227,7 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 
     __atomic_fetch_or(&tg->sig.shared_pending, bit, __ATOMIC_ACQ_REL);
 
-    if (verdict == send_verdict::FATAL) {
+    if (verdict != send_verdict::IGNORABLE) {
         // Wake one thread with the signal unblocked, leader preferred
         sched::task* target = nullptr;
         if (tg->leader &&
@@ -291,7 +291,7 @@ __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t) {
 }
 
 __PRIVILEGED_CODE bool interrupt_pending(sched::task* t) {
-    return t && fatal_pending(t) != 0;
+    return t && (fatal_pending(t) != 0 || next_deliverable(t) != 0);
 }
 
 __PRIVILEGED_CODE uint32_t next_deliverable(sched::task* t) {
@@ -323,6 +323,76 @@ __PRIVILEGED_CODE uint32_t next_deliverable(sched::task* t) {
 
     sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
     return result;
+}
+
+__PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
+                                        k_sigaction* act,
+                                        sig_set_t* old_blocked) {
+    if (!t || !t->group) {
+        return false;
+    }
+
+    // Lock-free fast path, the boundary check must stay cheap
+    sig_set_t blocked = __atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+    sig_set_t deliverable = (__atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE)
+        | __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE))
+        & ~blocked;
+    if (!deliverable) {
+        return false;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(t->group->sig.lock);
+
+    // Re-read under the lock: bits are only cleared by sig.lock holders,
+    // so the selection cannot race with a discard or another consumer
+    deliverable = (__atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE)
+        | __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE))
+        & ~blocked;
+
+    uint32_t selected = 0;
+    while (deliverable) {
+        uint32_t s = static_cast<uint32_t>(__builtin_ctzll(deliverable)) + 1;
+        deliverable &= deliverable - 1;
+
+        uintptr_t handler = t->group->sig.actions[s - 1].handler;
+        if (handler != SIG_DFL && handler != SIG_IGN) {
+            selected = s;
+            break;
+        }
+    }
+
+    if (!selected) {
+        sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
+        return false;
+    }
+
+    // Consume one pending instance, thread set before the shared set
+    const sig_set_t keep = ~sig_bit(selected);
+    if (!(__atomic_fetch_and(&t->sig.pending, keep, __ATOMIC_ACQ_REL)
+          & sig_bit(selected))) {
+        __atomic_fetch_and(&t->group->sig.shared_pending, keep, __ATOMIC_ACQ_REL);
+    }
+
+    *act = t->group->sig.actions[selected - 1];
+
+    // POSIX: SA_RESETHAND restores the default disposition on delivery
+    if (act->flags & SA_RESETHAND) {
+        t->group->sig.actions[selected - 1].handler = SIG_DFL;
+    }
+
+    sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
+
+    // The handler runs with its sa_mask plus its own signal blocked,
+    // the frame carries old_blocked for rt_sigreturn to restore
+    sig_set_t next = blocked | act->mask;
+    if (!(act->flags & SA_NODEFER)) {
+        next |= sig_bit(selected);
+    }
+    set_blocked(t, SIG_SETMASK, &next, nullptr);
+
+    *sig = selected;
+    *old_blocked = blocked;
+    return true;
 }
 
 __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {

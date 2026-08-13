@@ -2,6 +2,7 @@
 #define STELLUX_ARCH_AARCH64_TRAP_TRAP_FRAME_H
 
 #include "types.h"
+#include "sched/task_exec_core.h"
 
 namespace aarch64 {
 
@@ -44,6 +45,18 @@ inline uint64_t get_esr(const trap_frame* tf) {
 
 inline uint64_t get_far(const trap_frame* tf) {
     return tf->far;
+}
+
+/**
+ * @brief The current task's saved trap frame.
+ * Valid only while handling an EL0/EL1t-origin trap, when the frame sits
+ * immediately below the task's exception stack top (the scheduler pins
+ * SP_EL1 to system_stack_top on every return to a task-mode context).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline trap_frame* current_trap_frame() {
+    return reinterpret_cast<trap_frame*>(
+        this_cpu(current_task_exec)->system_stack_top - sizeof(trap_frame));
 }
 
 } // namespace aarch64

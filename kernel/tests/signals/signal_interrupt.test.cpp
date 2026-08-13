@@ -121,3 +121,21 @@ TEST(signal_interrupt, interrupt_pending_truth) {
     RUN_ELEVATED({ intr = signals::interrupt_pending(nullptr); });
     EXPECT_FALSE(intr);
 }
+
+TEST(signal_interrupt, interrupt_pending_covers_handled_signals) {
+    signals::k_sigaction act = {};
+    act.handler = 0x400000;
+    RUN_ELEVATED({
+        signals::set_action(g_tg, signals::SIGUSR1, &act, nullptr);
+    });
+
+    bool intr = false;
+    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
+    EXPECT_TRUE(intr);
+
+    // Blocking the signal removes the interrupt reason
+    g_leader->sig.blocked = signals::sig_bit(signals::SIGUSR1);
+    RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
+    EXPECT_FALSE(intr);
+}

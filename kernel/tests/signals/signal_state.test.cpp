@@ -264,3 +264,150 @@ TEST(signal_state, pending_blocked_set_combines_sets) {
     // Only pending signals that are blocked are reported (rt_sigpending)
     EXPECT_EQ(result, sigint | sigusr1);
 }
+
+// Installs a handler for sig with the given flags and sa_mask
+static void install_handler(uint32_t sig, uint64_t flags,
+                            signals::sig_set_t mask) {
+    signals::k_sigaction act = {};
+    act.handler = 0x400000;
+    act.flags = flags;
+    act.restorer = 0x400100;
+    act.mask = mask;
+    RUN_ELEVATED({ signals::set_action(g_tg, sig, &act, nullptr); });
+}
+
+TEST(signal_state, take_deliverable_consumes_and_masks) {
+    const signals::sig_set_t handler_mask = signals::sig_bit(signals::SIGUSR2);
+    install_handler(signals::SIGUSR1, 0, handler_mask);
+    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.blocked = signals::sig_bit(signals::SIGTERM);
+
+    uint32_t sig = 0;
+    signals::k_sigaction act = {};
+    signals::sig_set_t old_blocked = 0;
+    bool taken = false;
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(sig, signals::SIGUSR1);
+    EXPECT_EQ(act.handler, 0x400000UL);
+    EXPECT_EQ(g_leader->sig.pending, 0ULL);
+    EXPECT_EQ(old_blocked, signals::sig_bit(signals::SIGTERM));
+
+    // The handler runs with sa_mask plus its own signal on top of old_blocked
+    EXPECT_EQ(g_leader->sig.blocked, signals::sig_bit(signals::SIGTERM)
+                                   | handler_mask
+                                   | signals::sig_bit(signals::SIGUSR1));
+}
+
+TEST(signal_state, take_deliverable_prefers_thread_set) {
+    install_handler(signals::SIGUSR1, 0, 0);
+    g_leader->sig.pending    = signals::sig_bit(signals::SIGUSR1);
+    g_tg->sig.shared_pending = signals::sig_bit(signals::SIGUSR1);
+
+    uint32_t sig = 0;
+    signals::k_sigaction act = {};
+    signals::sig_set_t old_blocked = 0;
+    bool taken = false;
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(g_leader->sig.pending, 0ULL);
+    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGUSR1));
+}
+
+TEST(signal_state, take_deliverable_lowest_handled_first) {
+    install_handler(signals::SIGUSR1, 0, 0);
+    install_handler(signals::SIGUSR2, 0, 0);
+    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1)
+                          | signals::sig_bit(signals::SIGUSR2);
+    g_leader->sig.blocked = 0;
+
+    uint32_t sig = 0;
+    signals::k_sigaction act = {};
+    signals::sig_set_t old_blocked = 0;
+    bool taken = false;
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(sig, signals::SIGUSR1);
+
+    // Reset the mask the first take installed, then the next one follows
+    g_leader->sig.blocked = 0;
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(sig, signals::SIGUSR2);
+    EXPECT_EQ(g_leader->sig.pending, 0ULL);
+}
+
+TEST(signal_state, take_deliverable_nodefer_leaves_signal_unblocked) {
+    install_handler(signals::SIGUSR1, signals::SA_NODEFER, 0);
+    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+
+    uint32_t sig = 0;
+    signals::k_sigaction act = {};
+    signals::sig_set_t old_blocked = 0;
+    bool taken = false;
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(g_leader->sig.blocked, 0ULL);
+}
+
+TEST(signal_state, take_deliverable_resethand_restores_default) {
+    install_handler(signals::SIGUSR1, signals::SA_RESETHAND, 0);
+    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+
+    uint32_t sig = 0;
+    signals::k_sigaction act = {};
+    signals::sig_set_t old_blocked = 0;
+    bool taken = false;
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+
+    // The snapshot keeps the handler while the stored action resets
+    EXPECT_TRUE(taken);
+    EXPECT_EQ(act.handler, 0x400000UL);
+    EXPECT_EQ(g_tg->sig.actions[signals::SIGUSR1 - 1].handler, signals::SIG_DFL);
+}
+
+TEST(signal_state, take_deliverable_skips_blocked_and_unhandled) {
+    uint32_t sig = 0;
+    signals::k_sigaction act = {};
+    signals::sig_set_t old_blocked = 0;
+    bool taken = true;
+
+    // Nothing pending
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+    EXPECT_FALSE(taken);
+
+    // Pending without a handler stays for the fatal path
+    g_leader->sig.pending = signals::sig_bit(signals::SIGTERM);
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+    EXPECT_FALSE(taken);
+    EXPECT_EQ(g_leader->sig.pending, signals::sig_bit(signals::SIGTERM));
+
+    // A blocked handled signal is not deliverable
+    install_handler(signals::SIGUSR1, 0, 0);
+    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.blocked = signals::sig_bit(signals::SIGUSR1);
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+    EXPECT_FALSE(taken);
+    EXPECT_EQ(g_leader->sig.pending, signals::sig_bit(signals::SIGUSR1));
+}

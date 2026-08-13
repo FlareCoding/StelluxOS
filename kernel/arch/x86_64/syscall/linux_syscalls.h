@@ -20,6 +20,7 @@ constexpr uint64_t MUNMAP           = 11;
 constexpr uint64_t BRK              = 12;
 constexpr uint64_t RT_SIGACTION     = 13;
 constexpr uint64_t RT_SIGPROCMASK   = 14;
+constexpr uint64_t RT_SIGRETURN     = 15;
 constexpr uint64_t IOCTL            = 16;
 constexpr uint64_t WRITEV           = 20;
 constexpr uint64_t ACCESS           = 21;

@@ -52,8 +52,7 @@ __PRIVILEGED_CODE sig_set_t pending_blocked_set(sched::task* t);
  * @brief Send a thread-directed signal (tkill semantics).
  * SIGKILL terminates the whole process via the kill machinery. Signals
  * resolving to ignore are dropped unless the target blocks them. Fatal
- * signals wake a blocked target so it can act promptly. Signals with a
- * handler installed are left pending for delivery.
+ * and handler-bound signals wake a blocked target so it can act promptly.
  * @return OK, ERR_INVAL for a bad signal, ERR_PERM for kernel/idle tasks.
  * @note Privilege: **required**
  */
@@ -80,7 +79,7 @@ __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t);
 
 /**
  * @brief True if a blocking wait must unwind and return EINTR.
- * Covers kills and fatal signals (handler delivery extends this later).
+ * Covers kills, fatal signals, and handler-bound deliveries.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE bool interrupt_pending(sched::task* t);
@@ -93,6 +92,19 @@ __PRIVILEGED_CODE bool interrupt_pending(sched::task* t);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t next_deliverable(sched::task* t);
+
+/**
+ * @brief Consume the lowest-numbered signal ready for handler delivery.
+ * Clears one pending instance (thread set before shared), snapshots the
+ * action, applies SA_RESETHAND, and blocks the handler's sa_mask plus the
+ * signal itself (skipped under SA_NODEFER). old_blocked receives the
+ * pre-delivery mask the signal frame must carry for rt_sigreturn.
+ * @return true when a signal was taken and the outputs are valid.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
+                                        k_sigaction* act,
+                                        sig_set_t* old_blocked);
 
 /**
  * @brief Terminate the current task because of signal sig.

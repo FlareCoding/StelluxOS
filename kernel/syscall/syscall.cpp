@@ -1,5 +1,6 @@
 #include "syscall/syscall.h"
 #include "syscall/syscall_table.h"
+#include "arch/arch_signal.h"
 #include "sched/task_exec_core.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -53,6 +54,12 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
         uint32_t fsig = signals::fatal_pending(self);
         if (fsig) {
             signals::die_from_signal(fsig);
+        }
+
+        // Handler delivery only when returning to user mode, an elevated
+        // task keeps its signals pending until it lowers
+        if (!(self->exec.flags & sched::TASK_FLAG_ELEVATED)) {
+            result = arch::deliver_pending_signal(self, result);
         }
     }
 

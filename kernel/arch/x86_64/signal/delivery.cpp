@@ -1,4 +1,5 @@
 #include "signal/delivery.h"
+#include "arch/arch_signal.h"
 #include "defs/segments.h"
 #include "sched/fpu.h"
 #include "sched/sched.h"
@@ -180,3 +181,29 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
 }
 
 } // namespace x86
+
+__PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
+                                                       int64_t result) {
+    uint32_t sig = 0;
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+    if (!signals::take_deliverable(self, &sig, &act, &old_blocked)) {
+        return result;
+    }
+
+    // The handler returns through the restorer's rt_sigreturn,
+    // an action installed without one is undeliverable.
+    if (!(act.flags & signals::SA_RESTORER) || !act.restorer) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
+
+    if (x86::build_signal_frame(x86::current_syscall_frame(), sig, &act,
+                                old_blocked, result) != 0) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
+    return result;
+}
+
+__PRIVILEGED_CODE int64_t arch::restore_signal_context() {
+    return x86::restore_signal_frame(x86::current_syscall_frame());
+}

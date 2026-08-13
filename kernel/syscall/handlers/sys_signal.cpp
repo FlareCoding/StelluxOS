@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_signal.h"
+#include "arch/arch_signal.h"
 #include "signals/signal.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -171,6 +172,12 @@ DEFINE_SYSCALL2(rt_sigpending, u_set, sigsetsize) {
         return syscall::EFAULT;
     }
     return 0;
+}
+
+DEFINE_SYSCALL0(rt_sigreturn) {
+    // Returns the restored context's saved result value, so the normal
+    // result write completes the restore instead of clobbering it
+    return arch::restore_signal_context();
 }
 
 DEFINE_SYSCALL2(kill, u_pid, u_sig) {
