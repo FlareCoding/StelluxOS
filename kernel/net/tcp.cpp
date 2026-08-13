@@ -481,10 +481,16 @@ __PRIVILEGED_CODE static ssize_t tcp_write(
         sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
         if (sock->shut_wr) {
             sync::spin_unlock_irqrestore(sock->lock, irq);
-            return (count > remaining)
-                ? static_cast<ssize_t>(count - remaining)
-                : resource::ERR_PIPE;
+            if (count > remaining) {
+                return static_cast<ssize_t>(count - remaining);
+            }
+
+            // POSIX: writing a shut-down stream raises SIGPIPE, and write
+            // has no MSG_NOSIGNAL to suppress it.
+            signals::send_to_task(sched::current(), signals::SIGPIPE);
+            return resource::ERR_PIPE;
         }
+
         tcp_state cur = sock->state;
         if (cur != tcp_state::ESTABLISHED && cur != tcp_state::CLOSE_WAIT) {
             sync::spin_unlock_irqrestore(sock->lock, irq);
