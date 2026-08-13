@@ -1,4 +1,5 @@
 #include "signal/delivery.h"
+#include "arch/arch_signal.h"
 #include "sched/fpu.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -137,3 +138,30 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(trap_frame* tf) {
 }
 
 } // namespace aarch64
+
+__PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
+                                                       int64_t result) {
+    uint32_t sig = 0;
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+    if (!signals::take_deliverable(self, &sig, &act, &old_blocked)) {
+        return result;
+    }
+
+    // Same restorer contract as x86_64, the bundled musl always passes one
+    if (!(act.flags & signals::SA_RESTORER) || !act.restorer) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
+
+    if (aarch64::build_signal_frame(aarch64::current_trap_frame(), sig, &act,
+                                    old_blocked, result) != 0) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
+
+    // The dispatcher writes this into x0, matching the frame's sig argument
+    return static_cast<int64_t>(sig);
+}
+
+__PRIVILEGED_CODE int64_t arch::restore_signal_context() {
+    return aarch64::restore_signal_frame(aarch64::current_trap_frame());
+}

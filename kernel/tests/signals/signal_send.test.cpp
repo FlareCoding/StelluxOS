@@ -97,7 +97,7 @@ TEST(signal_send, ignored_blocked_send_pends) {
     EXPECT_EQ(g_thread->sig.pending, signals::sig_bit(signals::SIGCHLD));
 }
 
-TEST(signal_send, handled_send_pends_only) {
+TEST(signal_send, handled_send_pends) {
     signals::k_sigaction act = {};
     act.handler = 0x400000;
     int32_t rc = 0;

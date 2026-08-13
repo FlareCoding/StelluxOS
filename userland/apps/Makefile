@@ -4,7 +4,7 @@
 
 APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest date \
 			clockbench stlxdm stlxterm doom ping ifconfig nslookup arp udpecho tcpecho \
-			fetch polltest dropbear blackjack wordle hangman snake tetris \
+			fetch polltest sigtest dropbear blackjack wordle hangman snake tetris \
 			grep wc head threadtest uname kill cxxtest synctest python vim
 APP_COUNT := $(words $(APP_DIRS))
 
