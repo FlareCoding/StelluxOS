@@ -12,10 +12,6 @@ static constexpr uint64_t SIGSET_SIZE = 8;
 // Highest value representable as a task or group id
 static constexpr int64_t TASK_ID_LIMIT = 0xFFFFFFFF;
 
-// Distinct groups remembered during one group kill. Signals coalesce, so
-// duplicate sends past this window are harmless extra wakes, never misses.
-static constexpr uint32_t MAX_KILL_GROUPS = 64;
-
 static int64_t map_send_error(int32_t rc) {
     switch (rc) {
         case signals::OK:       return 0;
@@ -24,37 +20,10 @@ static int64_t map_send_error(int32_t rc) {
     }
 }
 
-// Send sig to every process in the group, where sig 0 only probes existence.
-// Group pointers stay valid because registered tasks pin their groups.
+// Send sig to every process in the group, where sig 0 only probes existence
 static int64_t kill_process_group(uint32_t group_id, uint32_t sig) {
-    sched::thread_group* seen[MAX_KILL_GROUPS];
-    uint32_t seen_count = 0;
-    bool found = false;
-
-    sync::irq_state irq = sched::g_task_registry.lock();
-    sched::g_task_registry.for_each_locked([&](sched::task& t) {
-        sched::thread_group* tg = t.group;
-        if (!tg || __atomic_load_n(&tg->group_id, __ATOMIC_ACQUIRE) != group_id) {
-            return;
-        }
-
-        for (uint32_t i = 0; i < seen_count; i++) {
-            if (seen[i] == tg) {
-                return;
-            }
-        }
-        if (seen_count < MAX_KILL_GROUPS) {
-            seen[seen_count++] = tg;
-        }
-
-        found = true;
-        if (sig != 0) {
-            signals::send_to_group(tg, sig);
-        }
-    });
-    sched::g_task_registry.unlock(irq);
-
-    return found ? 0 : syscall::ESRCH;
+    return signals::send_to_group_id(group_id, sig) == signals::OK
+        ? 0 : syscall::ESRCH;
 }
 
 // Thread-directed send shared by tkill and tgkill, tgid 0 skips the pair check

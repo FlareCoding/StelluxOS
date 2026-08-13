@@ -4,10 +4,14 @@
 #include "common/ring_buffer.h"
 #include "io/serial.h"
 #include "resource/resource.h"
+#include "signals/signal.h"
 #include "common/logging.h"
+#include "dynpriv/dynpriv.h"
+#include "fs/fs.h"
 #include "fs/fstypes.h"
 #include "fs/devfs/devfs.h"
 #include "mm/heap.h"
+#include "mm/uaccess.h"
 #include "sync/poll.h"
 
 namespace terminal {
@@ -17,6 +21,7 @@ constexpr size_t INPUT_RING_CAPACITY = 4096;
 __PRIVILEGED_BSS static struct {
     ring_buffer* input_rb;
     line_discipline ld;
+    uint32_t fg_group; // foreground process group, 0 = none
 } g_console;
 
 __PRIVILEGED_CODE static void serial_echo(void* ctx, const uint8_t* buf, size_t len) {
@@ -26,6 +31,19 @@ __PRIVILEGED_CODE static void serial_echo(void* ctx, const uint8_t* buf, size_t 
 
 __PRIVILEGED_DATA static const echo_target g_serial_echo = {
     serial_echo,
+    nullptr,
+};
+
+__PRIVILEGED_CODE static void console_signal_fn(void* ctx, uint32_t sig) {
+    (void)ctx;
+    uint32_t fg = __atomic_load_n(&g_console.fg_group, __ATOMIC_ACQUIRE);
+    if (fg) {
+        (void)signals::send_to_group_id(fg, sig);
+    }
+}
+
+__PRIVILEGED_DATA static const signal_target g_console_sig = {
+    console_signal_fn,
     nullptr,
 };
 
@@ -60,7 +78,8 @@ __PRIVILEGED_CODE int32_t init() {
 }
 
 __PRIVILEGED_CODE void input_char(char c) {
-    ld_input(&g_console.ld, g_console.input_rb, &g_serial_echo, c);
+    ld_input(&g_console.ld, g_console.input_rb, &g_serial_echo,
+             &g_console_sig, c);
 }
 
 __PRIVILEGED_CODE ring_buffer* console_input_rb() {
@@ -120,6 +139,45 @@ const resource::resource_ops* get_terminal_ops() {
 
 int32_t set_mode(uint32_t cmd) {
     return ld_set_mode(&g_console.ld, cmd);
+}
+
+int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
+    // Failures use fs error codes: this sits on the /dev/console node
+    // path, where the terminal ERR value would read as fs::ERR_NOENT
+    if (cmd == TIOCGPGRP) {
+        int32_t g = 0;
+        RUN_ELEVATED({
+            g = static_cast<int32_t>(
+                __atomic_load_n(&g_console.fg_group, __ATOMIC_ACQUIRE));
+        });
+        return mm::uaccess::copy_to_user(
+            reinterpret_cast<void*>(arg), &g, sizeof(g)) == mm::uaccess::OK
+            ? OK : fs::ERR_INVAL;
+    }
+
+    if (cmd == TIOCSPGRP) {
+        int32_t g = 0;
+        if (mm::uaccess::copy_from_user(
+                &g, reinterpret_cast<const void*>(arg), sizeof(g)) != mm::uaccess::OK
+            || g < 0) {
+            return fs::ERR_INVAL;
+        }
+
+        int32_t result = OK;
+        RUN_ELEVATED({
+            // POSIX requires an existing process group, 0 clears the foreground
+            if (g > 0 && signals::send_to_group_id(
+                    static_cast<uint32_t>(g), 0) != signals::OK) {
+                result = fs::ERR_INVAL;
+            } else {
+                __atomic_store_n(&g_console.fg_group, static_cast<uint32_t>(g),
+                                 __ATOMIC_RELEASE);
+            }
+        });
+        return result;
+    }
+
+    return set_mode(cmd);
 }
 
 } // namespace terminal

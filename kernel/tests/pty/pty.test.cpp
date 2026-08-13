@@ -7,6 +7,7 @@
 #include "sched/task.h"
 #include "terminal/terminal.h"
 #include "terminal/line_discipline.h"
+#include "signals/signal_types.h"
 #include "common/ring_buffer.h"
 #include "fs/fstypes.h"
 
@@ -198,6 +199,157 @@ TEST(pty_test, raw_mode_no_echo) {
     char buf[16] = {};
     ASSERT_EQ(resource::read(task, hs, buf, 16), static_cast<ssize_t>(3));
     EXPECT_STREQ(buf, "abc");
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+// Captures the last signal an ISIG interception delivered
+static uint32_t g_isig_caught;
+
+static void isig_capture(void*, uint32_t sig) {
+    g_isig_caught = sig;
+}
+
+TEST(pty_test, isig_intercepts_interrupt_byte) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    auto* ep = static_cast<pty::pty_endpoint*>(slave->impl);
+    ep->channel->m_sig = { isig_capture, nullptr };
+    g_isig_caught = 0;
+
+    // ^C mid-line: the pending line is flushed and the byte swallowed
+    ASSERT_EQ(resource::write(task, hm, "ab\x03", 3), static_cast<ssize_t>(3));
+    EXPECT_EQ(g_isig_caught, signals::SIGINT);
+
+    // The echo carries "ab" then the "^C" caret sequence
+    char echo_buf[16] = {};
+    ASSERT_EQ(resource::read(task, hm, echo_buf, 16), static_cast<ssize_t>(6));
+    EXPECT_STREQ(echo_buf, "ab^C\r\n");
+
+    // Only the next complete line reaches the slave
+    ASSERT_EQ(resource::write(task, hm, "cd\r", 3), static_cast<ssize_t>(3));
+    char buf[16] = {};
+    ASSERT_EQ(resource::read(task, hs, buf, 16), static_cast<ssize_t>(3));
+    EXPECT_STREQ(buf, "cd\n");
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, isig_quit_and_susp_bytes) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    auto* ep = static_cast<pty::pty_endpoint*>(slave->impl);
+    ep->channel->m_sig = { isig_capture, nullptr };
+
+    g_isig_caught = 0;
+    ASSERT_EQ(resource::write(task, hm, "\x1C", 1), static_cast<ssize_t>(1));
+    EXPECT_EQ(g_isig_caught, signals::SIGQUIT);
+
+    g_isig_caught = 0;
+    ASSERT_EQ(resource::write(task, hm, "\x1A", 1), static_cast<ssize_t>(1));
+    EXPECT_EQ(g_isig_caught, signals::SIGTSTP);
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, isig_raw_mode_passes_bytes) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    auto* ep = static_cast<pty::pty_endpoint*>(slave->impl);
+    ep->channel->m_sig = { isig_capture, nullptr };
+
+    // The raw shortcut clears ISIG, control bytes are plain input
+    terminal::ld_set_mode(&ep->channel->m_ld, terminal::STLX_TCSETS_RAW);
+    g_isig_caught = 0;
+    ASSERT_EQ(resource::write(task, hm, "\x03", 1), static_cast<ssize_t>(1));
+    EXPECT_EQ(g_isig_caught, 0U);
+
+    char buf[4] = {};
+    ASSERT_EQ(resource::read(task, hs, buf, 4), static_cast<ssize_t>(1));
+    EXPECT_EQ(buf[0], '\x03');
+
+    EXPECT_EQ(resource::close(task, hm), resource::OK);
+    EXPECT_EQ(resource::close(task, hs), resource::OK);
+}
+
+TEST(pty_test, isig_reenabled_in_raw_mode) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::resource_object* master = nullptr;
+    resource::resource_object* slave = nullptr;
+    ASSERT_EQ(pty::create_pair(&master, &slave), resource::OK);
+
+    resource::handle_t hm = -1;
+    resource::handle_t hs = -1;
+    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
+    resource::resource_release(master);
+    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+              resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
+    resource::resource_release(slave);
+
+    auto* ep = static_cast<pty::pty_endpoint*>(slave->impl);
+    ep->channel->m_sig = { isig_capture, nullptr };
+
+    // TCSETS can turn ISIG back on independently of raw mode
+    terminal::ld_set_mode(&ep->channel->m_ld, terminal::STLX_TCSETS_RAW);
+    terminal::ld_set_isig(&ep->channel->m_ld, true);
+
+    g_isig_caught = 0;
+    ASSERT_EQ(resource::write(task, hm, "x\x03y", 3), static_cast<ssize_t>(3));
+    EXPECT_EQ(g_isig_caught, signals::SIGINT);
+
+    // The surrounding bytes still pass through, the ^C does not
+    char buf[4] = {};
+    ASSERT_EQ(resource::read(task, hs, buf, 4), static_cast<ssize_t>(2));
+    EXPECT_EQ(buf[0], 'x');
+    EXPECT_EQ(buf[1], 'y');
 
     EXPECT_EQ(resource::close(task, hm), resource::OK);
     EXPECT_EQ(resource::close(task, hs), resource::OK);

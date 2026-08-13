@@ -31,8 +31,10 @@ struct pty_channel : rc::ref_counted<pty_channel> {
     ring_buffer* m_output_rb;             // slave write -> master read
     terminal::line_discipline m_ld;
     terminal::echo_target m_echo;
+    terminal::signal_target m_sig;
     uint32_t m_id;
     uint32_t m_oflags;                    // output processing flags
+    uint32_t m_fg_group;                  // foreground process group, 0 = none
     pty_winsize m_winsize;                // set via TIOCSWINSZ from either end
 
     /** @note Privilege: **required** */

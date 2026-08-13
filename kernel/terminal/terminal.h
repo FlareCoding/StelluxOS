@@ -16,6 +16,10 @@ constexpr int32_t ERR = -1;
 constexpr uint32_t STLX_TCSETS_RAW    = 0x7301;
 constexpr uint32_t STLX_TCSETS_COOKED = 0x7302;
 
+// Linux tty ioctls for the terminal foreground process group
+constexpr uint32_t TIOCGPGRP = 0x540F;
+constexpr uint32_t TIOCSPGRP = 0x5410;
+
 /**
  * @brief Initialize the global console terminal. Creates the input ring
  * buffer, registers as the serial RX callback, enables serial RX
@@ -46,6 +50,14 @@ __PRIVILEGED_CODE ring_buffer* console_input_rb();
  * @return OK on success, ERR on invalid cmd.
  */
 int32_t set_mode(uint32_t cmd);
+
+/**
+ * @brief Console terminal ioctl handling: the foreground process group
+ * ioctls plus the mode-switch commands set_mode accepts.
+ * @return OK on success, fs::ERR_INVAL on a bad foreground argument,
+ * ERR on an unsupported cmd.
+ */
+int32_t console_ioctl(uint32_t cmd, uint64_t arg);
 
 /**
  * @brief Get the terminal resource ops table for creating resource_objects.

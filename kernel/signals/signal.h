@@ -71,6 +71,14 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig);
 __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig);
 
 /**
+ * @brief Send sig to every process in the process group group_id, where
+ * sig 0 only probes for existence. Safe from ISR context.
+ * @return OK when at least one process matched, ERR_INVAL otherwise.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t send_to_group_id(uint32_t group_id, uint32_t sig);
+
+/**
  * @brief Fatal signal the task must die from, or 0.
  * A set kill flag reports the group's recorded exit signal (SIGKILL if
  * none). Otherwise the lowest pending unblocked signal whose action
