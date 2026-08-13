@@ -654,6 +654,19 @@ __PRIVILEGED_CODE uint64_t free_page_count(zone_mask_t zones) {
     return total;
 }
 
+__PRIVILEGED_CODE uint64_t total_page_count(zone_mask_t zones) {
+    if (!g_pmm.initialized) return 0;
+
+    uint64_t total = 0;
+    for (size_t zi = 0; zi < static_cast<size_t>(zone_id::COUNT); zi++) {
+        if (zones & (1 << zi)) {
+            sync::irq_lock_guard guard(g_zone_locks[zi]);
+            total += g_pmm.zones[zi].total_pages;
+        }
+    }
+    return total;
+}
+
 __PRIVILEGED_CODE uint64_t free_block_count(uint8_t order, zone_mask_t zones) {
     if (!g_pmm.initialized) return 0;
     if (order > MAX_ORDER) return 0;

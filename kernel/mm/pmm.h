@@ -100,6 +100,12 @@ __PRIVILEGED_CODE page_frame_descriptor* get_page_frame(phys_addr_t addr);
 __PRIVILEGED_CODE uint64_t free_page_count(zone_mask_t zones = ZONE_ANY);
 
 /**
+ * @brief Get total managed pages across specified zones.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint64_t total_page_count(zone_mask_t zones = ZONE_ANY);
+
+/**
  * @brief Get free blocks at a specific order in specified zones.
  * @note Privilege: **required**
  */
