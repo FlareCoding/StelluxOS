@@ -32,7 +32,7 @@ inline int64_t map_socket_op_error(int32_t rc) {
     case resource::ERR_AGAIN:       return syscall::EAGAIN;
     case resource::ERR_NOENT:       return syscall::ENOENT;
     case resource::ERR_NOTDIR:      return syscall::ENOTDIR;
-    case resource::ERR_INTR:        return syscall::EINTR;
+    case resource::ERR_INTR:        return syscall::ERESTARTSYS;
     case resource::ERR_NOPROTOOPT:  return syscall::ENOPROTOOPT;
     default:                        return syscall::EIO;
     }

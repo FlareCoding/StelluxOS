@@ -45,6 +45,10 @@ constexpr int64_t ENOTCONN         = -107;
 constexpr int64_t ETIMEDOUT        = -110;
 constexpr int64_t ECONNREFUSED     = -111;
 
+// Interrupted restartable wait, resolved at the syscall-return boundary
+// (rewind for re-execution or EINTR) and never visible to userspace.
+constexpr int64_t ERESTARTSYS = -512;
+
 extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
 
 /**

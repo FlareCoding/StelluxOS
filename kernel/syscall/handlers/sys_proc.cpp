@@ -292,7 +292,7 @@ DEFINE_SYSCALL2(proc_wait, u_handle, u_exit_code_ptr) {
     if (!pr->exited) {
         sync::spin_unlock_irqrestore(pr->lock, irq);
         resource::resource_release(obj);
-        return syscall::EINTR;
+        return syscall::ERESTARTSYS;
     }
     int32_t child_wait_status = pr->wait_status;
     sync::spin_unlock_irqrestore(pr->lock, irq);

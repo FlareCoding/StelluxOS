@@ -1,5 +1,6 @@
 #include "signal/delivery.h"
 #include "arch/arch_signal.h"
+#include "syscall/syscall_table.h"
 #include "sched/fpu.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -12,6 +13,9 @@ namespace aarch64 {
 // PSTATE condition flags (NZCV). Everything else is forced so a restored
 // context returns to EL0t (mode bits 0) with interrupts unmasked (DAIF 0).
 constexpr uint64_t SPSR_NZCV_MASK = 0xF0000000ULL;
+
+// SVC is four bytes, stepping ELR back re-executes the interrupted call
+constexpr uint64_t SVC_INSN_LEN = 4;
 
 static inline uint64_t align_down(uint64_t v, uint64_t a) {
     return v & ~(a - 1);
@@ -140,11 +144,25 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(trap_frame* tf) {
 } // namespace aarch64
 
 __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
-                                                       int64_t result) {
+                                                       int64_t result,
+                                                       uint64_t) {
+    aarch64::trap_frame* tf = aarch64::current_trap_frame();
+
+    // Delivery only when returning to user mode, an elevated task keeps
+    // its signals pending until it lowers
     uint32_t sig = 0;
     signals::k_sigaction act{};
     signals::sig_set_t old_blocked = 0;
-    if (!signals::take_deliverable(self, &sig, &act, &old_blocked)) {
+    bool delivered = !(self->exec.flags & sched::TASK_FLAG_ELEVATED) &&
+        signals::take_deliverable(self, &sig, &act, &old_blocked);
+
+    if (!delivered) {
+        // Interrupted with nothing to run: restart transparently so a raced
+        // or elevated boundary never surfaces EINTR, re-publishing x0's arg
+        if (result == syscall::ERESTARTSYS) {
+            tf->elr -= aarch64::SVC_INSN_LEN;
+            return static_cast<int64_t>(tf->x[0]);
+        }
         return result;
     }
 
@@ -153,8 +171,20 @@ __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
         signals::die_from_signal(signals::SIGSEGV);
     }
 
-    if (aarch64::build_signal_frame(aarch64::current_trap_frame(), sig, &act,
-                                    old_blocked, result) != 0) {
+    // SA_RESTART resumes at the SVC insn with x0 restored to the original
+    // argument, x8 still carries the number in the frame
+    int64_t saved_result = result;
+    if (result == syscall::ERESTARTSYS) {
+        if (act.flags & signals::SA_RESTART) {
+            tf->elr -= aarch64::SVC_INSN_LEN;
+            saved_result = static_cast<int64_t>(tf->x[0]);
+        } else {
+            saved_result = syscall::EINTR;
+        }
+    }
+
+    if (aarch64::build_signal_frame(tf, sig, &act, old_blocked,
+                                    saved_result) != 0) {
         signals::die_from_signal(signals::SIGSEGV);
     }
 
