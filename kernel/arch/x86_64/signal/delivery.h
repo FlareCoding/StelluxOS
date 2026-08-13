@@ -3,7 +3,10 @@
 
 #include "signal/sigframe.h"
 #include "syscall/syscall_frame.h"
+#include "trap/trap_frame.h"
 #include "signals/signal_types.h"
+
+namespace sched { struct task; }
 
 namespace x86 {
 
@@ -45,9 +48,43 @@ __PRIVILEGED_CODE int32_t build_signal_frame(syscall_frame* ctx, uint32_t sig,
 /**
  * @brief Restore interrupted state from the user signal frame and return
  * the value to resume in RAX. Kills the task with SIGSEGV on a bad frame.
+ * A frame marked UC_FULL_RESTORE is staged for the IRET exit instead of
+ * being applied to ctx.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx);
+
+/**
+ * @brief Fill a zeroed kernel-local signal frame from a trap frame, for
+ * delivery outside a syscall. Every register including RCX/R11/RAX is
+ * captured and the frame is marked UC_FULL_RESTORE. Pure, unit-testable.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void pack_sigframe_full(rt_sigframe* frame,
+                                          const trap_frame* tf, uint32_t sig,
+                                          signals::sig_set_t old_blocked,
+                                          uint64_t user_fpstate);
+
+/**
+ * @brief Recover a full register context from a UC_FULL_RESTORE frame.
+ * Sanitizes RFLAGS, forces user segments, and rejects a non-canonical
+ * RIP so the IRET exit can never fault back into the kernel. Returns
+ * false and leaves out untouched on a bad frame. Pure, unit-testable.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool unpack_sigframe_full(const rt_sigframe* frame,
+                                            sched::thread_cpu_context* out,
+                                            signals::sig_set_t* mask);
+
+/**
+ * @brief Deliver one pending handler-bound signal to a task interrupted
+ * in user mode, redirecting the trap frame to the handler. The frame
+ * write never blocks or pages in: when the user stack is not resident
+ * the signal is returned to the pending set for a later boundary.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
+                                            trap_frame* tf);
 
 } // namespace x86
 

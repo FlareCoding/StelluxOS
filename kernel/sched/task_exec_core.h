@@ -33,6 +33,12 @@ struct task_exec_core {
     mm::mm_context* mm_ctx; // owning reference to process address-space metadata
     fpu_state fpu_ctx;
     uint64_t  tls_base;    // thread-local storage base (FS_BASE on x86, TPIDR_EL0 on aarch64)
+
+    // Staged full-register return context (x86): a signal
+    // frame captured outside a syscall restores through an
+    // IRET exit. Consumed by the syscall exit assembly.
+    uint32_t  iret_pending;
+    thread_cpu_context iret_ctx;
 };
 
 constexpr size_t TASK_FLAGS_OFFSET          = __builtin_offsetof(task_exec_core, flags);
@@ -44,13 +50,29 @@ constexpr size_t TASK_PT_ROOT_OFFSET        = __builtin_offsetof(task_exec_core,
 constexpr size_t TASK_USER_PT_ROOT_OFFSET   = __builtin_offsetof(task_exec_core, user_pt_root);
 constexpr size_t TASK_MM_CTX_OFFSET         = __builtin_offsetof(task_exec_core, mm_ctx);
 constexpr size_t TASK_FPU_CTX_OFFSET        = __builtin_offsetof(task_exec_core, fpu_ctx);
+constexpr size_t TASK_IRET_PENDING_OFFSET   = __builtin_offsetof(task_exec_core, iret_pending);
+constexpr size_t TASK_IRET_CTX_OFFSET       = __builtin_offsetof(task_exec_core, iret_ctx);
 
 // Static assertions to ensure assembly offsets remain in sync
 // If these fail, update the assembly constants in:
 //   - kernel/arch/x86_64/trap/entry.S (TASK_FLAGS_OFFSET, TASK_SYS_STACK_OFFSET)
-//   - kernel/arch/x86_64/syscall/syscall_entry.S (TASK_FLAGS_OFFSET, TASK_SYS_STACK_OFFSET)
+//   - kernel/arch/x86_64/syscall/syscall_entry.S (TASK_FLAGS_OFFSET, TASK_SYS_STACK_OFFSET,
+//     TASK_IRET_PENDING_OFFSET, TASK_IRET_CTX_OFFSET, CTX_* register slots)
 static_assert(TASK_FLAGS_OFFSET == 0x00, "TASK_FLAGS_OFFSET changed - update x86_64 entry.S and syscall_entry.S");
 static_assert(TASK_SYS_STACK_OFFSET == 0x10, "TASK_SYS_STACK_OFFSET changed - update x86_64 entry.S and syscall_entry.S");
+
+#if defined(__x86_64__)
+static_assert(TASK_IRET_PENDING_OFFSET == 0x2E8, "TASK_IRET_PENDING_OFFSET changed - update syscall_entry.S");
+static_assert(TASK_IRET_CTX_OFFSET == 0x2F0, "TASK_IRET_CTX_OFFSET changed - update syscall_entry.S");
+static_assert(__builtin_offsetof(thread_cpu_context, rax) == 0x00);
+static_assert(__builtin_offsetof(thread_cpu_context, rcx) == 0x10);
+static_assert(__builtin_offsetof(thread_cpu_context, rsp) == 0x38);
+static_assert(__builtin_offsetof(thread_cpu_context, r11) == 0x58);
+static_assert(__builtin_offsetof(thread_cpu_context, rip) == 0x80);
+static_assert(__builtin_offsetof(thread_cpu_context, rflags) == 0x88);
+static_assert(__builtin_offsetof(thread_cpu_context, cs) == 0x90);
+static_assert(__builtin_offsetof(thread_cpu_context, ss) == 0x98);
+#endif
 
 int32_t init_boot_task();
 

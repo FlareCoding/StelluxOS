@@ -6,6 +6,8 @@
 #include "sched/fpu_state.h"
 #include "signals/signal_types.h"
 
+namespace sched { struct task; }
+
 namespace aarch64 {
 
 /**
@@ -46,6 +48,16 @@ __PRIVILEGED_CODE int32_t build_signal_frame(trap_frame* tf, uint32_t sig,
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int64_t restore_signal_frame(trap_frame* tf);
+
+/**
+ * @brief Deliver one pending handler-bound signal to a task interrupted
+ * in user mode, redirecting the trap frame to the handler. The frame
+ * write never blocks or pages in: when the user stack is not resident
+ * the signal is returned to the pending set for a later boundary.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
+                                            trap_frame* tf);
 
 } // namespace aarch64
 

@@ -112,6 +112,45 @@ __PRIVILEGED_CODE int32_t build_signal_frame(trap_frame* tf, uint32_t sig,
     return 0;
 }
 
+/**
+ * Frame write for delivery outside a syscall. Never blocks or pages in,
+ * the caller defers the signal when the stack is not resident. The ERET
+ * exit already rebuilds every register, no special restore is needed.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static int32_t build_signal_frame_async(
+    trap_frame* tf, uint32_t sig, const signals::k_sigaction* act,
+    signals::sig_set_t old_blocked) {
+    uint64_t frame_addr = align_down(tf->sp - sizeof(rt_sigframe), 16);
+
+    rt_sigframe* frame = heap::kalloc_new<rt_sigframe>();
+    if (!frame) {
+        return mm::uaccess::ERR_RETRY;
+    }
+    sched::fpu_state fp;
+    fpu::save(&fp);
+
+    // x0 still holds the interrupted value, there is no syscall result
+    pack_sigframe(frame, tf, static_cast<int64_t>(tf->x[0]), sig,
+                  old_blocked, &fp);
+
+    int32_t rc = mm::uaccess::copy_to_user_resident(
+        reinterpret_cast<void*>(frame_addr), frame, sizeof(*frame));
+    heap::kfree_delete(frame);
+
+    if (rc != mm::uaccess::OK) {
+        return rc;
+    }
+
+    tf->sp = frame_addr;
+    tf->elr = act->handler;
+    tf->x[0] = sig;
+    tf->x[1] = frame_addr + __builtin_offsetof(rt_sigframe, info);
+    tf->x[2] = frame_addr + __builtin_offsetof(rt_sigframe, uc);
+    tf->x[30] = act->restorer; // LR, the handler returns into the restorer
+    return 0;
+}
+
 __PRIVILEGED_CODE int64_t restore_signal_frame(trap_frame* tf) {
     uint64_t frame_addr = tf->sp;
 
@@ -139,6 +178,48 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(trap_frame* tf) {
     heap::kfree_delete(frame);
 
     return resume;
+}
+
+__PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
+                                            trap_frame* tf) {
+    if (!from_user(tf)) {
+        return;
+    }
+
+    // An elevated task keeps its signals pending until it lowers, the
+    // same rule every other delivery site applies
+    if (!self || !self->group ||
+        (self->exec.flags & sched::TASK_FLAG_ELEVATED) ||
+        self->state == sched::TASK_STATE_DEAD) {
+        return;
+    }
+
+    // A fatal signal takes the death path at this same boundary
+    if (signals::fatal_pending(self)) {
+        return;
+    }
+
+    uint32_t sig = 0;
+    signals::k_sigaction act{};
+    signals::sig_set_t old_blocked = 0;
+    if (!signals::take_deliverable(self, &sig, &act, &old_blocked)) {
+        return;
+    }
+
+    // Same restorer contract as x86_64, the bundled musl always passes one
+    if (!(act.flags & signals::SA_RESTORER) || !act.restorer) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
+
+    int32_t rc = build_signal_frame_async(tf, sig, &act, old_blocked);
+    if (rc == mm::uaccess::ERR_RETRY) {
+        // Not deliverable right now, a later boundary picks it up
+        signals::untake_deliverable(self, sig, &act, old_blocked);
+        return;
+    }
+    if (rc != 0) {
+        signals::die_from_signal(signals::SIGSEGV);
+    }
 }
 
 } // namespace aarch64

@@ -135,6 +135,76 @@ __PRIVILEGED_CODE int32_t copy_to_user(
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE int32_t copy_to_user_resident(
+    void* udst,
+    const void* ksrc,
+    size_t len
+) {
+    if (!udst || !ksrc || len == 0) {
+        return ERR_INVAL;
+    }
+
+    uintptr_t start = reinterpret_cast<uintptr_t>(udst);
+    uintptr_t end = start + len - 1;
+    if (end < start) {
+        return ERR_INVAL;
+    }
+    if (end >= USER_STACK_TOP) {
+        return ERR_FAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return ERR_NO_MMCTX;
+    }
+
+    // Interrupt context cannot block on the address-space lock
+    mm_context* mm_ctx = task->exec.mm_ctx;
+    if (!sync::mutex_trylock(mm_ctx->lock)) {
+        return ERR_RETRY;
+    }
+
+    uintptr_t cursor = start;
+    while (cursor <= end) {
+        vma* region = vma_find_locked(mm_ctx, cursor);
+        if (!region || cursor < region->start || cursor >= region->end ||
+            (region->prot & MM_PROT_WRITE) == 0) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return ERR_FAULT;
+        }
+
+        uintptr_t next = region->end;
+        if (next == 0 || next <= cursor) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return ERR_FAULT;
+        }
+        if (next > end) {
+            break;
+        }
+        cursor = next;
+    }
+
+    // No page-in here: every page must already be resident. A present
+    // entry in a writable region is writable, nothing maps copy-on-write.
+    uintptr_t end_page = end & ~(pmm::PAGE_SIZE - 1);
+    for (uintptr_t page = start & ~(pmm::PAGE_SIZE - 1);
+         page <= end_page;
+         page += pmm::PAGE_SIZE) {
+        if (paging::get_physical(page, mm_ctx->pt_root) == 0) {
+            sync::mutex_unlock(mm_ctx->lock);
+            return ERR_RETRY;
+        }
+    }
+
+    // Copying under the held lock keeps a concurrent unmap out of the range
+    string::memcpy(udst, ksrc, len);
+    sync::mutex_unlock(mm_ctx->lock);
+    return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t copy_cstr_from_user(
     char* kdst,
     size_t cap,

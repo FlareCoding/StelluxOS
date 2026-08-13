@@ -381,6 +381,32 @@ TEST(signal_state, take_deliverable_resethand_restores_default) {
     EXPECT_EQ(g_tg->sig.actions[signals::SIGUSR1 - 1].handler, signals::SIG_DFL);
 }
 
+TEST(signal_state, untake_deliverable_restores_state) {
+    install_handler(signals::SIGUSR1, signals::SA_RESETHAND,
+                    signals::sig_bit(signals::SIGUSR2));
+    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+
+    uint32_t sig = 0;
+    signals::k_sigaction act = {};
+    signals::sig_set_t old_blocked = 0;
+    bool taken = false;
+    RUN_ELEVATED({
+        taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
+    });
+    ASSERT_TRUE(taken);
+    EXPECT_EQ(g_leader->sig.pending, 0ULL);
+    EXPECT_EQ(g_tg->sig.actions[signals::SIGUSR1 - 1].handler, signals::SIG_DFL);
+
+    // A deferred delivery puts the signal, the mask, and the one-shot
+    // action all back
+    RUN_ELEVATED({
+        signals::untake_deliverable(g_leader, sig, &act, old_blocked);
+    });
+    EXPECT_EQ(g_leader->sig.pending, signals::sig_bit(signals::SIGUSR1));
+    EXPECT_EQ(g_leader->sig.blocked, 0ULL);
+    EXPECT_EQ(g_tg->sig.actions[signals::SIGUSR1 - 1].handler, 0x400000UL);
+}
+
 TEST(signal_state, take_deliverable_skips_blocked_and_unhandled) {
     uint32_t sig = 0;
     signals::k_sigaction act = {};

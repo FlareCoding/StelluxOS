@@ -2,6 +2,7 @@
 #include "sched/task.h"
 #include "sched/sched.h"
 #include "sched/sched_internal.h"
+#include "signal/delivery.h"
 #include "signals/signal.h"
 #include "sched/fpu.h"
 #include "dynpriv/dynpriv.h"
@@ -34,6 +35,8 @@ static task_exec_core g_boot_exec = {
     .mm_ctx = nullptr,
     .fpu_ctx = {},
     .tls_base = 0,
+    .iret_pending = 0,
+    .iret_ctx = {},
 };
 
 /**
@@ -126,6 +129,11 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     advance_cpu_tlb_sync_epoch();
     // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
     finalize_pending_off_cpu();
+
+    // The yield gate is reachable from user mode and skips the syscall
+    // boundary, deliver here so a yielding task sees signals promptly
+    x86::deliver_async_signal(prev, tf);
+
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
@@ -167,6 +175,10 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
         return;
     }
+
+    // Handler delivery for compute-bound tasks: redirect before the
+    // context save so both resume paths carry it
+    x86::deliver_async_signal(prev, tf);
 
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();

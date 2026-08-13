@@ -177,6 +177,103 @@ TEST(signal_delivery, x86_sanitizes_restored_mxcsr) {
     EXPECT_EQ(mxcsr >> 16, 0U);          // reserved bits never reach FXRSTOR
     EXPECT_EQ(mxcsr & 0x1F80U, 0x1F80U); // supported control bits survive
 }
+
+TEST(signal_delivery, x86_full_frame_captures_scratch_registers) {
+    x86::trap_frame tf{};
+    tf.rax = 0x2001; tf.rcx = 0x2002; tf.r11 = 0x2003;
+    tf.rdi = 0x2004; tf.rsp = 0x7fff0000; tf.rip = 0x401000;
+    tf.rflags = 0x246;
+
+    x86::rt_sigframe* frame = nullptr;
+    RUN_ELEVATED({ frame = heap::kalloc_new<x86::rt_sigframe>(); });
+    ASSERT_TRUE(frame != nullptr);
+
+    RUN_ELEVATED({
+        x86::pack_sigframe_full(frame, &tf, signals::SIGINT, 0xABCD, 0x7ffe0000);
+    });
+
+    // The scratch registers a syscall boundary never carries are captured
+    EXPECT_EQ(frame->uc.uc_mcontext.rax, 0x2001ULL);
+    EXPECT_EQ(frame->uc.uc_mcontext.rcx, 0x2002ULL);
+    EXPECT_EQ(frame->uc.uc_mcontext.r11, 0x2003ULL);
+    EXPECT_EQ(frame->uc.uc_flags & x86::UC_FULL_RESTORE, x86::UC_FULL_RESTORE);
+    EXPECT_EQ(frame->uc.uc_sigmask, 0xABCDULL);
+
+    RUN_ELEVATED({ heap::kfree_delete(frame); });
+}
+
+TEST(signal_delivery, x86_full_frame_round_trip) {
+    x86::trap_frame tf{};
+    tf.rax = 0x3001; tf.rcx = 0x3002; tf.r11 = 0x3003; tf.rbx = 0x3004;
+    tf.rbp = 0x3005; tf.r15 = 0x3006; tf.rsi = 0x3007; tf.rdx = 0x3008;
+    tf.rsp = 0x7fff0000; tf.rip = 0x401000; tf.rflags = 0x10246;
+
+    x86::rt_sigframe* frame = nullptr;
+    RUN_ELEVATED({ frame = heap::kalloc_new<x86::rt_sigframe>(); });
+    ASSERT_TRUE(frame != nullptr);
+
+    signals::sig_set_t mask = 0;
+    bool ok = false;
+    sched::thread_cpu_context out{};
+    RUN_ELEVATED({
+        x86::pack_sigframe_full(frame, &tf, signals::SIGUSR1, 0x77, 0);
+        ok = x86::unpack_sigframe_full(frame, &out, &mask);
+    });
+
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(out.rax, tf.rax);
+    EXPECT_EQ(out.rcx, tf.rcx);
+    EXPECT_EQ(out.r11, tf.r11);
+    EXPECT_EQ(out.rbx, tf.rbx);
+    EXPECT_EQ(out.r15, tf.r15);
+    EXPECT_EQ(out.rsp, tf.rsp);
+    EXPECT_EQ(out.rip, tf.rip);
+    EXPECT_EQ(mask, 0x77ULL);
+
+    RUN_ELEVATED({ heap::kfree_delete(frame); });
+}
+
+TEST(signal_delivery, x86_full_restore_sanitizes_forged_context) {
+    x86::trap_frame tf{};
+    tf.rsp = 0x7fff0000; tf.rip = 0x401000; tf.rflags = 0x246;
+
+    x86::rt_sigframe* frame = nullptr;
+    RUN_ELEVATED({ frame = heap::kalloc_new<x86::rt_sigframe>(); });
+    ASSERT_TRUE(frame != nullptr);
+
+    signals::sig_set_t mask = 0;
+    bool ok = false;
+    sched::thread_cpu_context out{};
+    uint16_t user_cs = 0;
+    uint16_t user_ss = 0;
+    RUN_ELEVATED({
+        x86::pack_sigframe_full(frame, &tf, signals::SIGUSR1, 0, 0);
+        user_cs = frame->uc.uc_mcontext.cs;
+        user_ss = frame->uc.uc_mcontext.ss;
+
+        // Forge ring 0 segments and privileged RFLAGS bits
+        frame->uc.uc_mcontext.cs = 0x08;
+        frame->uc.uc_mcontext.ss = 0x10;
+        frame->uc.uc_mcontext.eflags = 0xFFFFFFFF;
+        ok = x86::unpack_sigframe_full(frame, &out, &mask);
+    });
+
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(out.cs, static_cast<uint64_t>(user_cs));
+    EXPECT_EQ(out.ss, static_cast<uint64_t>(user_ss));
+    EXPECT_TRUE((out.rflags & (3ULL << 12)) == 0); // IOPL cleared
+    EXPECT_TRUE((out.rflags & (1ULL << 9)) != 0);  // IF forced on
+
+    // A kernel-half RIP rejects the whole frame
+    bool ok2 = true;
+    RUN_ELEVATED({
+        frame->uc.uc_mcontext.rip = 0x0000800000000000ULL;
+        ok2 = x86::unpack_sigframe_full(frame, &out, &mask);
+    });
+    EXPECT_TRUE(!ok2);
+
+    RUN_ELEVATED({ heap::kfree_delete(frame); });
+}
 #endif
 
 #ifdef __aarch64__

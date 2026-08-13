@@ -33,9 +33,33 @@
 .extern stlx_syscall_handler
 .extern current_task_exec
 
-.set TASK_FLAGS_OFFSET,     0x00
-.set TASK_SYS_STACK_OFFSET, 0x10
-.set TASK_FLAG_ELEVATED,    (1 << 0)
+.set TASK_FLAGS_OFFSET,        0x00
+.set TASK_SYS_STACK_OFFSET,    0x10
+.set TASK_IRET_PENDING_OFFSET, 0x2E8
+.set TASK_IRET_CTX_OFFSET,     0x2F0
+.set TASK_FLAG_ELEVATED,       (1 << 0)
+
+/* thread_cpu_context offsets (sched/thread_cpu_context.h) */
+.set CTX_RAX,    0x00
+.set CTX_RBX,    0x08
+.set CTX_RCX,    0x10
+.set CTX_RDX,    0x18
+.set CTX_RSI,    0x20
+.set CTX_RDI,    0x28
+.set CTX_RBP,    0x30
+.set CTX_RSP,    0x38
+.set CTX_R8,     0x40
+.set CTX_R9,     0x48
+.set CTX_R10,    0x50
+.set CTX_R11,    0x58
+.set CTX_R12,    0x60
+.set CTX_R13,    0x68
+.set CTX_R14,    0x70
+.set CTX_R15,    0x78
+.set CTX_RIP,    0x80
+.set CTX_RFLAGS, 0x88
+.set CTX_CS,     0x90
+.set CTX_SS,     0x98
 
 .globl stlx_x86_syscall_entry
 .type stlx_x86_syscall_entry, @function
@@ -114,6 +138,17 @@ stlx_x86_syscall_entry:
     /* Clean up arg6. */
     add rsp, 8
 
+    /*
+     * A staged full-register context (rt_sigreturn of a frame captured
+     * outside a syscall) replaces the frame-based return entirely:
+     * SYSRET consumes RCX/R11, only IRET can rebuild every register.
+     */
+    push rax
+    this_cpu_read rax, current_task_exec
+    cmp dword ptr [rax + TASK_IRET_PENDING_OFFSET], 0
+    pop rax
+    jne .Lsyscall_iret_exit
+
     /* Restore user argument registers. */
     pop rdi
     pop rsi
@@ -155,5 +190,42 @@ stlx_x86_syscall_entry:
     popfq
     push rcx
     ret
+
+.Lsyscall_iret_exit:
+    /*
+     * Full-register return: the staged context was sanitized by the
+     * rt_sigreturn path (user segments forced, RFLAGS masked, RIP
+     * bounded), so IRET always lands back in user mode.
+     */
+    this_cpu_read rax, current_task_exec
+    mov dword ptr [rax + TASK_IRET_PENDING_OFFSET], 0
+    lea rax, [rax + TASK_IRET_CTX_OFFSET]
+
+    /* Hardware return frame from the staged context. */
+    push qword ptr [rax + CTX_SS]
+    push qword ptr [rax + CTX_RSP]
+    push qword ptr [rax + CTX_RFLAGS]
+    push qword ptr [rax + CTX_CS]
+    push qword ptr [rax + CTX_RIP]
+
+    /* Every general register from the staged context, RAX last. */
+    mov rbx, [rax + CTX_RBX]
+    mov rcx, [rax + CTX_RCX]
+    mov rdx, [rax + CTX_RDX]
+    mov rsi, [rax + CTX_RSI]
+    mov rdi, [rax + CTX_RDI]
+    mov rbp, [rax + CTX_RBP]
+    mov r8,  [rax + CTX_R8]
+    mov r9,  [rax + CTX_R9]
+    mov r10, [rax + CTX_R10]
+    mov r11, [rax + CTX_R11]
+    mov r12, [rax + CTX_R12]
+    mov r13, [rax + CTX_R13]
+    mov r14, [rax + CTX_R14]
+    mov r15, [rax + CTX_R15]
+    mov rax, [rax + CTX_RAX]
+
+    swapgs
+    iretq
 
 .size stlx_x86_syscall_entry, . - stlx_x86_syscall_entry
