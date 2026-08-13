@@ -5,6 +5,12 @@
 
 #define STLXDM_CONF_PATH              "/etc/stlxdm/stlxdm.conf"
 #define STLXDM_CONF_DEFAULT_ICON_PATH "/etc/res/icons/icon_unknown_32x32.bmp"
+
+/* Pointer sprite (32-bit BMP, straight alpha) and its hotspot: the pixel
+ * inside the sprite that sits on the logical pointer position. */
+#define STLXDM_CONF_CURSOR_SPRITE_PATH "/etc/res/cursors/pointer_22x22.bmp"
+#define STLXDM_CONF_CURSOR_HOTSPOT_X   4
+#define STLXDM_CONF_CURSOR_HOTSPOT_Y   1
 #define STLXDM_CONF_MAX_TASKBAR_ITEMS 16
 #define STLXDM_CONF_MAX_SHORTCUTS     8
 #define STLXDM_CONF_MAX_AUTOSTART     8

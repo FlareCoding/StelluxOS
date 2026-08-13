@@ -63,9 +63,12 @@ static void stlxdm_dirty_add_rect(stlxdm_dirty_t* d,
 
 /* Convenience: mark cursor area (sprite + shadow) as dirty */
 static void stlxdm_dirty_add_cursor(stlxdm_dirty_t* d,
+                                      const stlxdm_input_t* inp,
                                       int32_t px, int32_t py) {
-    /* Cursor is 18 wide x 16 tall, shadow is offset +1,+1 */
-    stlxdm_dirty_add_rect(d, px, py, 18 + 1, 16 + 1);
+    /* Sprite is drawn at pointer minus hotspot, shadow is offset +1,+1 */
+    stlxdm_dirty_add_rect(d, px - inp->cursor_hot_x, py - inp->cursor_hot_y,
+                            (uint32_t)inp->cursor_w + 1,
+                            (uint32_t)inp->cursor_h + 1);
 }
 
 /* Mark a window's outer frame (including decorations) as dirty */
@@ -601,8 +604,8 @@ int main(void) {
 
         /* Cursor moved → dirty old and new positions */
         if (input.ptr_x != old_ptr_x || input.ptr_y != old_ptr_y) {
-            stlxdm_dirty_add_cursor(&dirty, old_ptr_x, old_ptr_y);
-            stlxdm_dirty_add_cursor(&dirty, input.ptr_x, input.ptr_y);
+            stlxdm_dirty_add_cursor(&dirty, &input, old_ptr_x, old_ptr_y);
+            stlxdm_dirty_add_cursor(&dirty, &input, input.ptr_x, input.ptr_y);
         }
 
         /* Window dragging → dirty the dragged window area */

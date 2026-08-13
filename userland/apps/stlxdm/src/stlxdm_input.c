@@ -1,7 +1,9 @@
 #define _POSIX_C_SOURCE 199309L
+#include "stlxdm_conf.h"
 #include "stlxdm_decor.h"
 #include "stlxdm_input.h"
 #include "stlxdm_taskbar.h"
+#include <stlxgfx/bmp.h>
 #include <stlxgfx/surface.h>
 #include <fcntl.h>
 #include <stdatomic.h>
@@ -41,11 +43,57 @@ static const char* g_cursor_shape[16] = {
 #define CURSOR_W 18
 #define CURSOR_H 16
 
+/* Derive a soft drop shadow from the sprite's alpha channel */
+static stlxgfx_surface_t* build_cursor_shadow(const stlxgfx_surface_t* sprite) {
+    stlxgfx_surface_t* shadow =
+        stlxgfx_create_surface(sprite->width, sprite->height, 32, 16, 8, 0);
+    if (!shadow) {
+        return NULL;
+    }
+
+    stlxgfx_clear(shadow, 0x00000000);
+
+    uint32_t src_bpp = sprite->bpp / 8;
+    uint8_t src_alpha = stlxgfx_alpha_byte_index(sprite);
+    uint8_t dst_alpha = stlxgfx_alpha_byte_index(shadow);
+    for (uint32_t y = 0; y < sprite->height; y++) {
+        const uint8_t* sp = sprite->pixels + y * sprite->pitch;
+        uint8_t* dp = shadow->pixels + y * shadow->pitch;
+        for (uint32_t x = 0; x < sprite->width; x++) {
+            /* Black at half the sprite's coverage */
+            dp[x * 4 + dst_alpha] = (uint8_t)(sp[x * src_bpp + src_alpha] / 2);
+        }
+    }
+    return shadow;
+}
+
 static void build_cursor_sprites(stlxdm_input_t* inp) {
+    inp->cursor_w = CURSOR_W;
+    inp->cursor_h = CURSOR_H;
+    inp->cursor_hot_x = 0;
+    inp->cursor_hot_y = 0;
+
+    /* Preferred: anti-aliased sprite loaded from a 32-bit BMP with alpha */
+    stlxgfx_surface_t* bmp = stlxgfx_load_bmp(STLXDM_CONF_CURSOR_SPRITE_PATH);
+    if (bmp) {
+        stlxgfx_surface_t* shadow =
+            (bmp->bpp == 32) ? build_cursor_shadow(bmp) : NULL;
+        if (shadow) {
+            inp->cursor_sprite = bmp;
+            inp->cursor_shadow = shadow;
+            inp->cursor_w = (int32_t)bmp->width;
+            inp->cursor_h = (int32_t)bmp->height;
+            inp->cursor_hot_x = STLXDM_CONF_CURSOR_HOTSPOT_X;
+            inp->cursor_hot_y = STLXDM_CONF_CURSOR_HOTSPOT_Y;
+            return;
+        }
+        stlxgfx_destroy_surface(bmp);
+    }
+
     /*
-     * Pre-render the cursor shape into two small ARGB surfaces so that
-     * drawing the cursor each frame is a single blit_alpha instead of
-     * hundreds of individual fill_rect(1,1) calls.
+     * Fallback: pre-render the built-in cursor shape into two small ARGB
+     * surfaces so that drawing the cursor each frame is a single
+     * blit_alpha instead of hundreds of individual fill_rect(1,1) calls.
      */
     inp->cursor_sprite = stlxgfx_create_surface(CURSOR_W, CURSOR_H, 32, 16, 8, 0);
     inp->cursor_shadow = stlxgfx_create_surface(CURSOR_W, CURSOR_H, 32, 16, 8, 0);
@@ -510,15 +558,17 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
 }
 
 void stlxdm_input_draw_cursor(stlxdm_input_t* inp, stlxgfx_surface_t* surface) {
-    int32_t x = inp->ptr_x;
-    int32_t y = inp->ptr_y;
+    int32_t x = inp->ptr_x - inp->cursor_hot_x;
+    int32_t y = inp->ptr_y - inp->cursor_hot_y;
 
     if (inp->cursor_shadow && inp->cursor_sprite) {
         /* Fast path: pre-rendered cursor sprites */
         stlxgfx_blit_alpha(surface, x + 1, y + 1,
-                            inp->cursor_shadow, 0, 0, CURSOR_W, CURSOR_H);
+                            inp->cursor_shadow, 0, 0,
+                            (uint32_t)inp->cursor_w, (uint32_t)inp->cursor_h);
         stlxgfx_blit_alpha(surface, x, y,
-                            inp->cursor_sprite, 0, 0, CURSOR_W, CURSOR_H);
+                            inp->cursor_sprite, 0, 0,
+                            (uint32_t)inp->cursor_w, (uint32_t)inp->cursor_h);
     } else {
         /* Fallback: pixel-by-pixel (only if sprite alloc failed) */
         for (int row = 0; row < CURSOR_H; row++) {

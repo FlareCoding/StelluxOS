@@ -45,6 +45,10 @@ typedef struct {
 
     stlxgfx_surface_t* cursor_sprite;
     stlxgfx_surface_t* cursor_shadow;
+    int32_t cursor_w;
+    int32_t cursor_h;
+    int32_t cursor_hot_x;
+    int32_t cursor_hot_y;
 } stlxdm_input_t;
 
 typedef struct {
