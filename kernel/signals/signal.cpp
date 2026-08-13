@@ -1,6 +1,7 @@
 #include "signals/signal.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "sched/task_registry.h"
 #include "timer/timer.h"
 #include "common/logging.h"
 
@@ -12,6 +13,10 @@ enum class send_verdict : uint8_t {
     IGNORABLE, // droppable unless the target blocks it
     HANDLED,   // a user handler is installed, wake the target to deliver
 };
+
+// Distinct groups remembered during one group-id send. Signals coalesce,
+// so duplicate sends past this window are harmless extra wakes.
+constexpr uint32_t MAX_GROUP_SEND_GROUPS = 64;
 
 /**
  * Clear pending instances of sig from the shared set and every thread.
@@ -263,6 +268,37 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 
     sync::spin_unlock_irqrestore(tg->lock, irq);
     return OK;
+}
+
+__PRIVILEGED_CODE int32_t send_to_group_id(uint32_t group_id, uint32_t sig) {
+    sched::thread_group* seen[MAX_GROUP_SEND_GROUPS];
+    uint32_t seen_count = 0;
+    bool found = false;
+
+    sync::irq_state irq = sched::g_task_registry.lock();
+    sched::g_task_registry.for_each_locked([&](sched::task& t) {
+        sched::thread_group* tg = t.group;
+        if (!tg || __atomic_load_n(&tg->group_id, __ATOMIC_ACQUIRE) != group_id) {
+            return;
+        }
+
+        for (uint32_t i = 0; i < seen_count; i++) {
+            if (seen[i] == tg) {
+                return;
+            }
+        }
+        if (seen_count < MAX_GROUP_SEND_GROUPS) {
+            seen[seen_count++] = tg;
+        }
+
+        found = true;
+        if (sig != 0) {
+            send_to_group(tg, sig);
+        }
+    });
+    sched::g_task_registry.unlock(irq);
+
+    return found ? OK : ERR_INVAL;
 }
 
 __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t) {

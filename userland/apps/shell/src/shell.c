@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 
 #include "line_edit.h"
 #include "parse.h"
@@ -14,8 +15,34 @@
 #define STLX_TCSETS_RAW    0x7301
 #define STLX_TCSETS_COOKED 0x7302
 
+/* The shell's own process group, restored as foreground after each job */
+static int g_shell_pgrp;
+
 static void shell_err(const char* s) {
     write(1, s, strlen(s));
+}
+
+static void set_foreground(int pgrp) {
+    if (pgrp > 0) tcsetpgrp(STDIN_FILENO, pgrp);
+}
+
+/* Put a created (not yet started) child in a process group so terminal
+ * signals reach it and not the shell. With pgrp 0 the child leads a new
+ * group and becomes the foreground. Returns the group id, or -1. */
+static int foreground_child(int handle, int pgrp) {
+    process_info info;
+    if (proc_info(handle, &info) != 0 ||
+        setpgid(info.pid, pgrp > 0 ? pgrp : info.pid) != 0) {
+        /* A group-less leader stays in the shell's group: clear the
+         * foreground so ^C drops instead of hitting the shell too */
+        if (pgrp <= 0) tcsetpgrp(STDIN_FILENO, 0);
+        return -1;
+    }
+    if (pgrp <= 0) {
+        pgrp = info.pid;
+        set_foreground(pgrp);
+    }
+    return pgrp;
 }
 
 static int reap_status(int status) {
@@ -134,9 +161,12 @@ static int run_single(const char* argv[], char* path_buf,
     if (redir_out >= 0)
         proc_set_handle(handle, STDOUT_FILENO, redir_out);
 
+    foreground_child(handle, 0);
+
     if (proc_start(handle) < 0) {
         close(handle);
         close_redirect_fds(redir_in, redir_out);
+        set_foreground(g_shell_pgrp);
         shell_err("shell: failed to start process\r\n");
         return 126;
     }
@@ -147,6 +177,7 @@ static int run_single(const char* argv[], char* path_buf,
     int status = 0;
     proc_wait(handle, &status);
     ioctl(0, STLX_TCSETS_RAW, 0);
+    set_foreground(g_shell_pgrp);
 
     return reap_status(status);
 }
@@ -154,6 +185,7 @@ static int run_single(const char* argv[], char* path_buf,
 static int run_pipeline(char* stages[], int nstages, char* path_buf) {
     int handles[MAX_PIPE_STAGES];
     int prev_read_fd = -1;
+    int fg_pgrp = -1;
 
     for (int i = 0; i < nstages; i++) {
         /* Parse redirections first — modifies stage string in-place */
@@ -225,6 +257,15 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
             proc_set_handle(handle, STDOUT_FILENO, pipe_fds[1]);
         }
 
+        /* First stage leads the foreground group, later stages join it.
+         * If the leader setup failed, all stages stay in the shell's
+         * group with the foreground cleared. */
+        if (i == 0) {
+            fg_pgrp = foreground_child(handle, 0);
+        } else if (fg_pgrp > 0) {
+            foreground_child(handle, fg_pgrp);
+        }
+
         if (proc_start(handle) < 0) {
             shell_err("shell: failed to start process\r\n");
             close(handle);
@@ -233,6 +274,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
             if (pipe_fds[0] >= 0) close(pipe_fds[0]);
             if (pipe_fds[1] >= 0) close(pipe_fds[1]);
             for (int j = 0; j < i; j++) proc_detach(handles[j]);
+            set_foreground(g_shell_pgrp);
             return 126;
         }
         handles[i] = handle;
@@ -253,6 +295,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
     int status = 0;
     proc_wait(handles[nstages - 1], &status);
     ioctl(0, STLX_TCSETS_RAW, 0);
+    set_foreground(g_shell_pgrp);
 
     return reap_status(status);
 }
@@ -298,6 +341,8 @@ static int execute_line(char* line, char* path_buf, line_edit_state* editor,
 }
 
 int main(int argc, char** argv) {
+    g_shell_pgrp = getpgid(0);
+
     /* Non-interactive command mode: `shell -c "command line"` (ssh exec). */
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
         char* cpath = malloc(256);

@@ -5,6 +5,7 @@
 #include "mm/heap.h"
 #include "mm/uaccess.h"
 #include "dynpriv/dynpriv.h"
+#include "signals/signal.h"
 #include "sync/poll.h"
 #include "sync/wait_queue.h"
 #include "terminal/terminal.h"
@@ -18,6 +19,7 @@ constexpr uint32_t TCSETSF     = 0x5404;
 constexpr uint32_t TIOCGWINSZ  = 0x5413;
 constexpr uint32_t TIOCSWINSZ  = 0x5414;
 
+constexpr uint32_t LINUX_ISIG   = 0x0001;
 constexpr uint32_t LINUX_ECHO   = 0x0008;
 constexpr uint32_t LINUX_ICANON = 0x0002;
 
@@ -44,6 +46,14 @@ __PRIVILEGED_CODE void pty_channel::ref_destroy(pty_channel* self) {
 __PRIVILEGED_CODE static void pty_echo_fn(void* ctx, const uint8_t* buf, size_t len) {
     auto* chan = static_cast<pty_channel*>(ctx);
     (void)ring_buffer_write(chan->m_output_rb, buf, len, true);
+}
+
+__PRIVILEGED_CODE static void pty_signal_fn(void* ctx, uint32_t sig) {
+    auto* chan = static_cast<pty_channel*>(ctx);
+    uint32_t fg = __atomic_load_n(&chan->m_fg_group, __ATOMIC_ACQUIRE);
+    if (fg) {
+        (void)signals::send_to_group_id(fg, sig);
+    }
 }
 
 // Master ops
@@ -80,6 +90,7 @@ static ssize_t pty_master_write(
             result = resource::ERR_PIPE;
         } else {
             terminal::ld_input_buf(&chan->m_ld, chan->m_input_rb, &chan->m_echo,
+                                   &chan->m_sig,
                                    static_cast<const char*>(ksrc), count);
             result = static_cast<ssize_t>(count);
         }
@@ -206,6 +217,9 @@ static int32_t do_tcgets(pty_channel* chan, uint64_t arg) {
     if (chan->m_ld.mode != terminal::LD_MODE_RAW) {
         t.c_lflag = LINUX_ICANON | LINUX_ECHO;
     }
+    if (chan->m_ld.isig) {
+        t.c_lflag |= LINUX_ISIG;
+    }
 
     int32_t rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(arg), &t, sizeof(t));
@@ -226,7 +240,38 @@ static int32_t do_tcsets(pty_channel* chan, uint64_t arg) {
         ? terminal::STLX_TCSETS_COOKED
         : terminal::STLX_TCSETS_RAW;
 
+    // The mode shortcut pairs ISIG with it, the termios bit then decides
     terminal::ld_set_mode(&chan->m_ld, mode);
+    terminal::ld_set_isig(&chan->m_ld, (t.c_lflag & LINUX_ISIG) != 0);
+    return resource::OK;
+}
+
+static int32_t do_tiocgpgrp(pty_channel* chan, uint64_t arg) {
+    int32_t g = static_cast<int32_t>(
+        __atomic_load_n(&chan->m_fg_group, __ATOMIC_ACQUIRE));
+
+    int32_t rc = mm::uaccess::copy_to_user(
+        reinterpret_cast<void*>(arg), &g, sizeof(g));
+
+    return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
+}
+
+static int32_t do_tiocspgrp(pty_channel* chan, uint64_t arg) {
+    int32_t g = 0;
+    int32_t rc = mm::uaccess::copy_from_user(
+        &g, reinterpret_cast<const void*>(arg), sizeof(g));
+    if (rc != mm::uaccess::OK || g < 0) {
+        return resource::ERR_INVAL;
+    }
+
+    // POSIX requires an existing process group, 0 clears the foreground
+    if (g > 0 &&
+        signals::send_to_group_id(static_cast<uint32_t>(g), 0) != signals::OK) {
+        return resource::ERR_INVAL;
+    }
+
+    __atomic_store_n(&chan->m_fg_group, static_cast<uint32_t>(g),
+                     __ATOMIC_RELEASE);
     return resource::OK;
 }
 
@@ -257,6 +302,8 @@ static int32_t pty_termios_ioctl(pty_channel* chan, uint32_t cmd, uint64_t arg) 
         case TCSETSF:                      return do_tcsets(chan, arg);
         case TIOCGWINSZ:                   return do_tiocgwinsz(chan, arg);
         case TIOCSWINSZ:                   return do_tiocswinsz(chan, arg);
+        case terminal::TIOCGPGRP:          return do_tiocgpgrp(chan, arg);
+        case terminal::TIOCSPGRP:          return do_tiocspgrp(chan, arg);
         case terminal::STLX_TCSETS_RAW:
         case terminal::STLX_TCSETS_COOKED: return terminal::ld_set_mode(&chan->m_ld, cmd);
         default:                           return resource::ERR_INVAL;
@@ -367,8 +414,10 @@ __PRIVILEGED_CODE int32_t create_pair(
 
     terminal::ld_init(&chan->m_ld);
     chan->m_echo = { pty_echo_fn, chan.ptr() };
+    chan->m_sig = { pty_signal_fn, chan.ptr() };
     chan->m_id = __atomic_fetch_add(&g_next_pty_id, 1, __ATOMIC_RELAXED);
     chan->m_oflags = PTY_OFLAG_ONLCR;
+    chan->m_fg_group = 0;
     chan->m_winsize = { 24, 80, 0, 0 };
 
     auto* ep_master = heap::kalloc_new<pty_endpoint>();
