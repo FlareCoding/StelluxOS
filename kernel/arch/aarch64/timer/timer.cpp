@@ -26,6 +26,7 @@ struct timer_cpu_state {
 static DEFINE_PER_CPU(timer_cpu_state, cpu_timer_state);
 
 __PRIVILEGED_BSS static uint64_t g_cnt_freq;
+__PRIVILEGED_BSS static uint32_t g_tick_hz;
 __PRIVILEGED_BSS static uint64_t g_inv_mult;
 __PRIVILEGED_BSS static uint32_t g_inv_shift;
 
@@ -90,6 +91,7 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     state.programmed_ns = state.next_tick_ns;
     state.sleep_queue.init();
 
+    g_tick_hz = hz;
     hwtimer::write_cntv_tval(state.tick_interval_ticks);
     hwtimer::write_cntv_ctl(1);
     irq::unmask(hwtimer::TIMER_PPI);
@@ -99,6 +101,13 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
               g_cnt_freq, hz);
 
     return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t tick_hz() {
+    return g_tick_hz;
 }
 
 /**

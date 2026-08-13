@@ -257,6 +257,7 @@ __PRIVILEGED_CODE cpu_accounting_stats read_cpu_accounting_stats(uint32_t cpu_id
     cpu_accounting_stats out;
     out.busy_ticks = __atomic_load_n(&stats.busy_ticks, __ATOMIC_RELAXED);
     out.idle_ticks = __atomic_load_n(&stats.idle_ticks, __ATOMIC_RELAXED);
+    out.tick_hz = timer::tick_hz();
     return out;
 }
 

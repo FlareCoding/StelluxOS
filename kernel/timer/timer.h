@@ -37,6 +37,12 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t hz);
 __PRIVILEGED_CODE void stop();
 
 /**
+ * @brief Scheduler tick frequency configured at init, 0 before init.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t tick_hz();
+
+/**
  * @brief Timer interrupt handler. Wakes expired sleepers, advances the
  * scheduler tick, and reprograms the hardware for the next event.
  * Called from the arch trap handler on timer interrupt.

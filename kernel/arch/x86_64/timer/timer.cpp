@@ -28,6 +28,7 @@ struct timer_cpu_state {
 static DEFINE_PER_CPU(timer_cpu_state, cpu_timer_state);
 
 __PRIVILEGED_BSS static uint64_t g_lapic_freq;
+__PRIVILEGED_BSS static uint32_t g_tick_hz;
 __PRIVILEGED_BSS static uint64_t g_inv_mult;
 __PRIVILEGED_BSS static uint32_t g_inv_shift;
 
@@ -145,6 +146,7 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     state.sleep_queue.init();
 
     // Program first tick and unmask
+    g_tick_hz = hz;
     program_oneshot(state.next_tick_ns);
     mmio::write32(lapic + irq::LAPIC_LVT_TIMER, x86::VEC_TIMER);
 
@@ -153,6 +155,13 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     log::info("timer: LAPIC freq=%lu Hz, one-shot at %u Hz", g_lapic_freq, hz);
 
     return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t tick_hz() {
+    return g_tick_hz;
 }
 
 /**

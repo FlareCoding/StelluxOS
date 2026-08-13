@@ -15,7 +15,7 @@ constexpr int32_t ERR = -1;
  * when read from offset zero and serves that snapshot to sequential
  * reads until the reader returns to offset zero:
  *
- *   /dev/sysinfo/cpu     one "cpu<N> <busy> <idle>" tick line per CPU
+ *   /dev/sysinfo/cpu     tick_hz, then one "cpu<N> <busy> <idle>" per CPU
  *   /dev/sysinfo/mem     page_size, total_pages, free_pages, used_pages
  *   /dev/sysinfo/uptime  monotonic nanoseconds since boot
  *   /dev/sysinfo/tasks   one "tid pid state cpu ticks name" line per task

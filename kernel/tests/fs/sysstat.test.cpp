@@ -69,7 +69,8 @@ static size_t count_lines(const char* text) {
 }
 
 // --- cpu_lines_match_cpu_count ---
-// Proves: /dev/sysinfo/cpu reports one tick line for every CPU.
+// Proves: /dev/sysinfo/cpu reports the tick rate and one tick line
+// for every CPU.
 
 TEST(sysstat, cpu_lines_match_cpu_count) {
     char buf[2048] = {};
@@ -81,8 +82,18 @@ TEST(sysstat, cpu_lines_match_cpu_count) {
         cpu_count = smp::cpu_count();
     });
 
-    EXPECT_EQ(count_lines(buf), static_cast<size_t>(cpu_count));
-    EXPECT_EQ(string::strncmp(buf, "cpu0 ", 5), 0);
+    uint64_t hz = 0;
+    EXPECT_TRUE(parse_labeled_u64(buf, "tick_hz", &hz));
+    EXPECT_TRUE(hz > 0);
+
+    size_t cpu_lines = 0;
+    for (const char* p = buf; *p; p++) {
+        if ((p == buf || p[-1] == '\n') &&
+            string::strncmp(p, "cpu", 3) == 0) {
+            cpu_lines++;
+        }
+    }
+    EXPECT_EQ(cpu_lines, static_cast<size_t>(cpu_count));
 }
 
 // --- mem_reports_sane_counters ---

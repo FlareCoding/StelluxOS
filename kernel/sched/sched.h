@@ -18,11 +18,14 @@ constexpr size_t MAX_ARG_STRINGS = 64;  // strings per argv/envp array
 
 /**
  * One CPU's timer tick counters. A tick is charged as idle when it
- * interrupts the CPU's idle task and as busy otherwise.
+ * interrupts the CPU's idle task and as busy otherwise. Snapshots
+ * carry the scheduler tick frequency so readers can convert tick
+ * counts into wall time.
  */
 struct cpu_accounting_stats {
     uint64_t busy_ticks;
     uint64_t idle_ticks;
+    uint32_t tick_hz;
 };
 
 /**
