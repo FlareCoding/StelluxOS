@@ -1,4 +1,5 @@
 #include <stlxgfx/surface.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -436,6 +437,103 @@ int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
         for (int32_t col = 0; col < sw; col++) {
             uint32_t sc = read_pixel(src_row, src);
             blend_pixel(dst_row, dst, sc);
+            src_row += src_bpp;
+            dst_row += dst_bpp;
+        }
+    }
+    return 0;
+}
+
+/* Edge coverage for a pixel at distance dist from an arc of radius r:
+ * full inside, zero outside, one linear pixel across the boundary. */
+static uint8_t blit_arc_coverage(float dist, float radius) {
+    float c = radius + 0.5f - dist;
+    if (c <= 0.0f) {
+        return 0;
+    }
+    if (c >= 1.0f) {
+        return 255;
+    }
+    return (uint8_t)(c * 255.0f + 0.5f);
+}
+
+int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
+                               const stlxgfx_surface_t* src,
+                               int32_t sx, int32_t sy,
+                               uint32_t w, uint32_t h, uint32_t radius) {
+    if (!dst || !dst->pixels || !src || !src->pixels) {
+        return -1;
+    }
+    uint32_t max_r = (w < h ? w : h) / 2;
+    if (radius > max_r) {
+        radius = max_r;
+    }
+    if (radius == 0) {
+        return stlxgfx_blit_alpha(dst, dx, dy, src, sx, sy, w, h);
+    }
+
+    /* Corner arcs are anchored on the logical dest rect as passed in,
+     * so clipping against the surface bounds below cannot shift them. */
+    float r = (float)radius;
+    float cx0 = (float)dx + r;
+    float cy0 = (float)dy + r;
+    float cx1 = (float)(dx + (int32_t)w) - r;
+    float cy1 = (float)(dy + (int32_t)h) - r;
+
+    int32_t sw = (int32_t)w;
+    int32_t sh = (int32_t)h;
+
+    if (sx < 0) { sw += sx; dx -= sx; sx = 0; }
+    if (sy < 0) { sh += sy; dy -= sy; sy = 0; }
+    if (dx < 0) { sw += dx; sx -= dx; dx = 0; }
+    if (dy < 0) { sh += dy; sy -= dy; dy = 0; }
+    if (sw <= 0 || sh <= 0) {
+        return 0;
+    }
+
+    if ((uint32_t)sx + (uint32_t)sw > src->width) {
+        sw = (int32_t)(src->width  - (uint32_t)sx);
+    }
+    if ((uint32_t)sy + (uint32_t)sh > src->height) {
+        sh = (int32_t)(src->height - (uint32_t)sy);
+    }
+    if ((uint32_t)dx + (uint32_t)sw > dst->width) {
+        sw = (int32_t)(dst->width  - (uint32_t)dx);
+    }
+    if ((uint32_t)dy + (uint32_t)sh > dst->height) {
+        sh = (int32_t)(dst->height - (uint32_t)dy);
+    }
+    if (sw <= 0 || sh <= 0) {
+        return 0;
+    }
+
+    uint32_t dst_bpp = dst->bpp / 8;
+    uint32_t src_bpp = src->bpp / 8;
+
+    for (int32_t row = 0; row < sh; row++) {
+        const uint8_t* src_row = src->pixels + ((uint32_t)sy + (uint32_t)row) * src->pitch + (uint32_t)sx * src_bpp;
+        uint8_t* dst_row = dst->pixels + ((uint32_t)dy + (uint32_t)row) * dst->pitch + (uint32_t)dx * dst_bpp;
+        float py = (float)(dy + row) + 0.5f;
+        for (int32_t col = 0; col < sw; col++) {
+            float px = (float)(dx + col) + 0.5f;
+
+            /* Nearest corner arc center; pixels in the straight bands
+             * clamp to the edge and always get full coverage */
+            float ax = px < cx0 ? cx0 : (px > cx1 ? cx1 : px);
+            float ay = py < cy0 ? cy0 : (py > cy1 ? cy1 : py);
+            uint8_t cov = 255;
+            if (ax != px || ay != py) {
+                float ddx = px - ax;
+                float ddy = py - ay;
+                cov = blit_arc_coverage(sqrtf(ddx * ddx + ddy * ddy), r);
+            }
+
+            if (cov) {
+                uint32_t sc = read_pixel(src_row, src);
+                uint32_t sa = ((sc >> 24) & 0xFF) * cov / 255;
+                blend_pixel(dst_row, dst,
+                            (sa << 24) | (sc & 0x00FFFFFF));
+            }
             src_row += src_bpp;
             dst_row += dst_bpp;
         }

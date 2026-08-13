@@ -6,6 +6,7 @@
 #define TB_ITEM_HOVER_BG    0xFF45475A
 #define TB_ITEM_HOVER_BORDER 0xFF585B70
 #define TB_ITEM_RADIUS      6
+#define TB_ICON_RADIUS      5
 #define TB_DEFAULT_ICON_COLOR 0xFF6C7086
 #define TB_TOOLTIP_BG       0xFF45475A
 #define TB_TOOLTIP_TEXT      0xFFCDD6F4
@@ -162,7 +163,9 @@ void stlxdm_taskbar_draw(stlxdm_taskbar_t* tb, stlxgfx_ctx_t* ctx) {
         if (!icon) icon = tb->default_icon;
 
         if (icon) {
-            stlxgfx_ctx_blit(ctx, ix, iy, icon, 0, 0, iw, ih);
+            stlxgfx_blit_rounded_alpha(ctx->target, ix, iy,
+                                        icon, 0, 0, iw, ih,
+                                        TB_ICON_RADIUS);
         } else if (it->label[0]) {
             draw_label_icon(ctx, ix, iy, iw, it->label, accent);
         } else {

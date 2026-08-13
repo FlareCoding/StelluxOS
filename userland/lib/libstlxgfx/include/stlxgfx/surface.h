@@ -47,6 +47,15 @@ int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
  * color's alpha, the building block for anti-aliased edges. */
 void stlxgfx_blend_coverage(stlxgfx_surface_t* s, int32_t x, int32_t y,
                             uint32_t color, uint8_t coverage);
+
+/* Alpha blit clipped to a rounded rect: source pixels blend by their
+ * alpha times anti-aliased corner coverage, so square images composite
+ * as rounded tiles. Corner arcs anchor on the logical (dx, dy, w, h)
+ * rect even when partially off-surface. */
+int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
+                               const stlxgfx_surface_t* src,
+                               int32_t sx, int32_t sy,
+                               uint32_t w, uint32_t h, uint32_t radius);
 int stlxgfx_draw_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
                       uint32_t w, uint32_t h, uint32_t color);
 int stlxgfx_blit(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
