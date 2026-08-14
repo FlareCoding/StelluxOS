@@ -6,6 +6,14 @@
 
 DEFINE_PER_CPU_BASE(uintptr_t, percpu_offset);
 
+// Scratch for the syscall entry prologue, which has no free register
+// and cannot touch a caller stack that may be unmapped.
+DEFINE_PER_CPU_BASE(uint64_t, syscall_scratch0);
+DEFINE_PER_CPU_BASE(uint64_t, syscall_scratch1);
+
+constexpr uintptr_t SYSCALL_SCRATCH0_OFFSET = 8;
+constexpr uintptr_t SYSCALL_SCRATCH1_OFFSET = 16;
+
 static constexpr uintptr_t CPU0_AREA_SIZE = 0x2000; // 8KB
 alignas(0x1000) static uint8_t g_cpu0_area[CPU0_AREA_SIZE];
 
@@ -43,6 +51,14 @@ __PRIVILEGED_CODE int32_t init_bsp() {
         reinterpret_cast<uintptr_t>(&percpu_offset) - tmpl;
     if (percpu_off_off != 0) {
         log::fatal("percpu_offset not at offset 0 (got %lu)", percpu_off_off);
+        return ERR_LAYOUT;
+    }
+
+    if (reinterpret_cast<uintptr_t>(&syscall_scratch0) - tmpl !=
+            SYSCALL_SCRATCH0_OFFSET ||
+        reinterpret_cast<uintptr_t>(&syscall_scratch1) - tmpl !=
+            SYSCALL_SCRATCH1_OFFSET) {
+        log::fatal("syscall scratch slots not at fixed offsets");
         return ERR_LAYOUT;
     }
 
