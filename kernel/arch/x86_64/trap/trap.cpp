@@ -34,7 +34,11 @@ static inline int vector_to_signal(uint64_t vec) {
         case x86::EXC_BOUND_RANGE:        return 11;  // SIGSEGV
         case x86::EXC_INVALID_OPCODE:     return 4;   // SIGILL
         case x86::EXC_DIVIDE_ERROR:
-        case x86::EXC_OVERFLOW:           return 8;   // SIGFPE
+        case x86::EXC_OVERFLOW:
+        case x86::EXC_X87_FPU:
+        case x86::EXC_SIMD_FP:            return 8;   // SIGFPE
+        case x86::EXC_DEBUG:
+        case x86::EXC_BREAKPOINT:         return 5;   // SIGTRAP
         case x86::EXC_ALIGNMENT_CHECK:    return 7;   // SIGBUS
         default:                          return 11;  // SIGSEGV fallback
     }
@@ -117,7 +121,11 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
         tf->vector == x86::EXC_OVERFLOW ||
         tf->vector == x86::EXC_BOUND_RANGE ||
         tf->vector == x86::EXC_STACK_FAULT ||
-        tf->vector == x86::EXC_ALIGNMENT_CHECK)
+        tf->vector == x86::EXC_ALIGNMENT_CHECK ||
+        tf->vector == x86::EXC_DEBUG ||
+        tf->vector == x86::EXC_BREAKPOINT ||
+        tf->vector == x86::EXC_X87_FPU ||
+        tf->vector == x86::EXC_SIMD_FP)
     ) {
         signals::die_from_signal(static_cast<uint32_t>(vector_to_signal(tf->vector)));
     }
