@@ -56,6 +56,25 @@ int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
                                const stlxgfx_surface_t* src,
                                int32_t sx, int32_t sy,
                                uint32_t w, uint32_t h, uint32_t radius);
+
+/* Bilinear blit of the source rect (sx, sy, sw, sh) onto the dest
+ * rect (dx, dy, dw, dh), resampling when the sizes differ. */
+int stlxgfx_blit_scaled(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
+                        uint32_t dw, uint32_t dh,
+                        const stlxgfx_surface_t* src, int32_t sx, int32_t sy,
+                        uint32_t sw, uint32_t sh);
+
+/* Anti-aliased corner arc blit, the image-sampling twin of
+ * stlxgfx_ctx_fill_arc_corner: fills the r_outer-by-r_outer pixel box
+ * at rect corner (x, y), growing inward along (dir_x, dir_y), with
+ * pixels sampled from src at the same coordinates. Fills inside the
+ * arc, a nonzero r_inner leaves the concentric inner disc empty, and
+ * invert fills outside the arc instead, which restores a background
+ * around a rounded corner. src must cover the touched coordinates. */
+void stlxgfx_blit_arc_corner(stlxgfx_surface_t* dst, int32_t x, int32_t y,
+                             uint32_t r_outer, uint32_t r_inner,
+                             int dir_x, int dir_y, int invert,
+                             const stlxgfx_surface_t* src);
 int stlxgfx_draw_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
                       uint32_t w, uint32_t h, uint32_t color);
 int stlxgfx_blit(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,

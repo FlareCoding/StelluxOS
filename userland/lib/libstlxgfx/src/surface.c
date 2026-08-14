@@ -541,6 +541,139 @@ int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     return 0;
 }
 
+int stlxgfx_blit_scaled(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
+                        uint32_t dw, uint32_t dh,
+                        const stlxgfx_surface_t* src, int32_t sx, int32_t sy,
+                        uint32_t sw, uint32_t sh) {
+    if (!dst || !dst->pixels || !src || !src->pixels) {
+        return -1;
+    }
+    if (dw == 0 || dh == 0 || sw == 0 || sh == 0) {
+        return 0;
+    }
+    if (sx < 0 || sy < 0 ||
+        (uint32_t)sx + sw > src->width || (uint32_t)sy + sh > src->height) {
+        return -1;
+    }
+
+    uint32_t dst_bpp = dst->bpp / 8;
+    uint32_t src_bpp = src->bpp / 8;
+
+    // 16.16 fixed point source stepping, sampling at pixel centers
+    int64_t step_x = ((int64_t)sw << 16) / (int64_t)dw;
+    int64_t step_y = ((int64_t)sh << 16) / (int64_t)dh;
+
+    for (uint32_t oy = 0; oy < dh; oy++) {
+        int32_t py = dy + (int32_t)oy;
+        if (py < 0 || py >= (int32_t)dst->height) {
+            continue;
+        }
+
+        int64_t fy = ((int64_t)oy * step_y) + (step_y >> 1) - (1 << 15);
+        if (fy < 0) {
+            fy = 0;
+        }
+        uint32_t y0 = (uint32_t)(fy >> 16);
+        uint32_t y1 = y0 + 1 < sh ? y0 + 1 : sh - 1;
+        uint32_t wy = (uint32_t)(fy & 0xFFFF);
+
+        const uint8_t* row0 = src->pixels
+                            + ((uint32_t)sy + y0) * src->pitch
+                            + (uint32_t)sx * src_bpp;
+        const uint8_t* row1 = src->pixels
+                            + ((uint32_t)sy + y1) * src->pitch
+                            + (uint32_t)sx * src_bpp;
+        uint8_t* out = dst->pixels + (uint32_t)py * dst->pitch;
+
+        for (uint32_t ox = 0; ox < dw; ox++) {
+            int32_t px = dx + (int32_t)ox;
+            if (px < 0 || px >= (int32_t)dst->width) {
+                continue;
+            }
+
+            int64_t fx = ((int64_t)ox * step_x) + (step_x >> 1) - (1 << 15);
+            if (fx < 0) {
+                fx = 0;
+            }
+            uint32_t x0 = (uint32_t)(fx >> 16);
+            uint32_t x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
+            uint32_t wx = (uint32_t)(fx & 0xFFFF);
+
+            uint32_t c00 = read_pixel(row0 + x0 * src_bpp, src);
+            uint32_t c01 = read_pixel(row0 + x1 * src_bpp, src);
+            uint32_t c10 = read_pixel(row1 + x0 * src_bpp, src);
+            uint32_t c11 = read_pixel(row1 + x1 * src_bpp, src);
+
+            uint32_t blended = 0;
+            for (uint32_t shift = 0; shift < 32; shift += 8) {
+                uint32_t p00 = (c00 >> shift) & 0xFF;
+                uint32_t p01 = (c01 >> shift) & 0xFF;
+                uint32_t p10 = (c10 >> shift) & 0xFF;
+                uint32_t p11 = (c11 >> shift) & 0xFF;
+                uint32_t top = (p00 * (0x10000 - wx) + p01 * wx) >> 16;
+                uint32_t bot = (p10 * (0x10000 - wx) + p11 * wx) >> 16;
+                uint32_t val = (top * (0x10000 - wy) + bot * wy) >> 16;
+                blended |= (val & 0xFF) << shift;
+            }
+
+            write_pixel(out + (uint32_t)px * dst_bpp, dst, blended);
+        }
+    }
+    return 0;
+}
+
+void stlxgfx_blit_arc_corner(stlxgfx_surface_t* dst, int32_t x, int32_t y,
+                             uint32_t r_outer, uint32_t r_inner,
+                             int dir_x, int dir_y, int invert,
+                             const stlxgfx_surface_t* src) {
+    if (!dst || !dst->pixels || !src || !src->pixels || r_outer == 0) {
+        return;
+    }
+
+    int32_t r = (int32_t)r_outer;
+    float center_x = (float)x + (float)(dir_x * r);
+    float center_y = (float)y + (float)(dir_y * r);
+
+    uint32_t dst_bpp = dst->bpp / 8;
+    uint32_t src_bpp = src->bpp / 8;
+
+    for (int32_t oy = 0; oy < r; oy++) {
+        for (int32_t ox = 0; ox < r; ox++) {
+            int32_t px = x + (dir_x > 0 ? ox : -1 - ox);
+            int32_t py = y + (dir_y > 0 ? oy : -1 - oy);
+            if (px < 0 || py < 0 ||
+                px >= (int32_t)dst->width || py >= (int32_t)dst->height ||
+                px >= (int32_t)src->width || py >= (int32_t)src->height) {
+                continue;
+            }
+
+            float ddx = ((float)px + 0.5f) - center_x;
+            float ddy = ((float)py + 0.5f) - center_y;
+            float dist = sqrtf(ddx * ddx + ddy * ddy);
+            uint8_t cov_out = blit_arc_coverage(dist, (float)r);
+            uint8_t cov;
+            if (invert) {
+                cov = (uint8_t)(255 - cov_out);
+            } else if (r_inner > 0) {
+                uint8_t cov_in = blit_arc_coverage(dist, (float)r_inner);
+                cov = cov_out > cov_in ? (uint8_t)(cov_out - cov_in) : 0;
+            } else {
+                cov = cov_out;
+            }
+            if (cov == 0) {
+                continue;
+            }
+
+            uint32_t sample = read_pixel(
+                src->pixels + (uint32_t)py * src->pitch
+                            + (uint32_t)px * src_bpp, src);
+            blend_pixel(dst->pixels + (uint32_t)py * dst->pitch
+                                    + (uint32_t)px * dst_bpp,
+                        dst, (cov << 24) | (sample & 0x00FFFFFF));
+        }
+    }
+}
+
 int stlxgfx_draw_line(stlxgfx_surface_t* s, int32_t x0, int32_t y0,
                        int32_t x1, int32_t y1, uint32_t color) {
     if (!s || !s->pixels) {
