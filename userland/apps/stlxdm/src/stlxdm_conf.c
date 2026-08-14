@@ -123,6 +123,8 @@ static void parse_line(stlxdm_config_t* conf, const char* line,
     case SEC_DESKTOP:
         if (strcmp(key, "bg_color") == 0)
             conf->bg_color = (uint32_t)strtoul(val, NULL, 16);
+        else if (strcmp(key, "wallpaper") == 0)
+            safe_copy(conf->wallpaper, val, sizeof(conf->wallpaper));
         break;
 
     case SEC_THEME:

@@ -2,6 +2,7 @@
 #include <stlxgfx/fb.h>
 #include <stlxgfx/surface.h>
 #include <stlxgfx/ctx.h>
+#include <stlxgfx/image.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/window.h>
 #include <stlxgfx/event.h>
@@ -189,6 +190,7 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
 typedef struct {
     stlxgfx_fb_t*       fb;
     stlxgfx_surface_t*  backbuf;
+    stlxgfx_surface_t*  wallpaper;
     uint32_t             width;
     uint32_t             height;
 } stlxdm_compositor_t;
@@ -198,11 +200,56 @@ static int stlxdm_compositor_init(stlxdm_compositor_t* comp,
     comp->fb = fb;
     comp->width = fb->width;
     comp->height = fb->height;
+    comp->wallpaper = NULL;
     comp->backbuf = stlxgfx_fb_create_surface(fb, fb->width, fb->height);
     if (!comp->backbuf) {
         return -1;
     }
     return 0;
+}
+
+/* Load the configured wallpaper and pre-scale it to cover the screen,
+ * so compose only ever pays for a plain blit */
+static void stlxdm_compositor_load_wallpaper(stlxdm_compositor_t* comp,
+                                              const stlxdm_config_t* conf) {
+    if (!conf->wallpaper[0]) {
+        return;
+    }
+
+    stlxgfx_surface_t* image = stlxgfx_load_image(conf->wallpaper);
+    if (!image) {
+        printf("stlxdm: failed to load wallpaper %s\r\n", conf->wallpaper);
+        return;
+    }
+
+    stlxgfx_surface_t* scaled =
+        stlxgfx_create_surface(comp->width, comp->height, 32, 16, 8, 0);
+    if (!scaled) {
+        stlxgfx_destroy_surface(image);
+        return;
+    }
+
+    /* Center-crop the source to the screen's aspect ratio, then scale */
+    uint64_t img_w = image->width;
+    uint64_t img_h = image->height;
+    uint32_t crop_w;
+    uint32_t crop_h;
+    if (img_w * comp->height > img_h * comp->width) {
+        crop_h = (uint32_t)img_h;
+        crop_w = (uint32_t)(img_h * comp->width / comp->height);
+    } else {
+        crop_w = (uint32_t)img_w;
+        crop_h = (uint32_t)(img_w * comp->height / comp->width);
+    }
+    if (crop_w == 0) crop_w = 1;
+    if (crop_h == 0) crop_h = 1;
+    int32_t crop_x = (int32_t)((img_w - crop_w) / 2);
+    int32_t crop_y = (int32_t)((img_h - crop_h) / 2);
+
+    stlxgfx_blit_scaled(scaled, 0, 0, comp->width, comp->height,
+                        image, crop_x, crop_y, crop_w, crop_h);
+    stlxgfx_destroy_surface(image);
+    comp->wallpaper = scaled;
 }
 
 static void stlxdm_compositor_sync(stlxdm_compositor_t* comp,
@@ -502,7 +549,12 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
     stlxgfx_ctx_t ctx;
     stlxgfx_ctx_init(&ctx, comp->backbuf);
 
-    stlxgfx_ctx_clear(&ctx, conf->bg_color);
+    if (comp->wallpaper) {
+        stlxgfx_ctx_blit(&ctx, 0, 0, comp->wallpaper, 0, 0,
+                          comp->width, comp->height);
+    } else {
+        stlxgfx_ctx_clear(&ctx, conf->bg_color);
+    }
     stlxdm_compositor_draw_bar(&ctx, comp->width, conf);
 
     for (int i = 0; i < inp->z_count; i++) {
@@ -543,10 +595,17 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                               : focused  ? STLXDM_BORDER_FOCUSED
                               :            STLXDM_BORDER_UNFOCUSED;
 
-            stlxgfx_ctx_fill_arc_corner(&ctx, w->x, bot_edge, ro, 0,
-                                         1, -1, 1, conf->bg_color);
-            stlxgfx_ctx_fill_arc_corner(&ctx, right_edge, bot_edge, ro, 0,
-                                         -1, -1, 1, conf->bg_color);
+            if (comp->wallpaper) {
+                stlxgfx_blit_arc_corner(comp->backbuf, w->x, bot_edge,
+                                         ro, 0, 1, -1, 1, comp->wallpaper);
+                stlxgfx_blit_arc_corner(comp->backbuf, right_edge, bot_edge,
+                                         ro, 0, -1, -1, 1, comp->wallpaper);
+            } else {
+                stlxgfx_ctx_fill_arc_corner(&ctx, w->x, bot_edge, ro, 0,
+                                             1, -1, 1, conf->bg_color);
+                stlxgfx_ctx_fill_arc_corner(&ctx, right_edge, bot_edge, ro, 0,
+                                             -1, -1, 1, conf->bg_color);
+            }
             stlxgfx_ctx_fill_arc_corner(&ctx, w->x, bot_edge, ro, ri,
                                          1, -1, 0, border_c);
             stlxgfx_ctx_fill_arc_corner(&ctx, right_edge, bot_edge, ro, ri,
@@ -632,6 +691,7 @@ int main(void) {
         stlxgfx_fb_close(&fb);
         return 1;
     }
+    stlxdm_compositor_load_wallpaper(&compositor, &config);
 
     stlxdm_show_splash(&fb, compositor.backbuf);
 

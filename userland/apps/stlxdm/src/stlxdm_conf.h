@@ -34,8 +34,10 @@ typedef struct {
 } stlxdm_conf_autostart_t;
 
 typedef struct {
-    /* [desktop] */
+    /* [desktop] wallpaper is scaled to cover the screen, an empty
+     * path falls back to the flat bg_color */
     uint32_t bg_color;
+    char     wallpaper[256];
 
     /* [theme] */
     uint32_t bar_color;
