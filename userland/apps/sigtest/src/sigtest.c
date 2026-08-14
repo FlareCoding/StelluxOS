@@ -131,6 +131,16 @@ static int pipe_victim_child(void) {
     return 1; /* only reached if the signal never fired */
 }
 
+/* Child mode: a breakpoint trap must die by default SIGTRAP */
+static int trap_victim_child(void) {
+#if defined(__x86_64__)
+    __asm__ volatile("int3");
+#elif defined(__aarch64__)
+    __asm__ volatile("brk #0");
+#endif
+    return 1; /* only reached if the trap never fired */
+}
+
 static volatile sig_atomic_t eintr_handler_ran = 0;
 
 static void eintr_handler(int sig) {
@@ -431,9 +441,27 @@ static void test_sigpipe_dispositions(void) {
           STLX_WIFSIGNALED(status) && STLX_WTERMSIG(status) == SIGPIPE);
 }
 
+/* A breakpoint trap must kill the child with SIGTRAP, not the kernel */
+static void test_trap_default_kills(void) {
+    static const char* args[] = { "--trap-victim", NULL };
+    int h = proc_create("/bin/sigtest", args);
+    if (h < 0) {
+        printf("  SKIP: self exec unavailable\n");
+        return;
+    }
+    proc_start(h);
+    int status = 0;
+    proc_wait(h, &status);
+    check("default SIGTRAP kills a trapping child",
+          STLX_WIFSIGNALED(status) && STLX_WTERMSIG(status) == SIGTRAP);
+}
+
 int main(int argc, char** argv) {
     if (argc >= 2 && strcmp(argv[1], "--pipe-victim") == 0) {
         return pipe_victim_child();
+    }
+    if (argc >= 2 && strcmp(argv[1], "--trap-victim") == 0) {
+        return trap_victim_child();
     }
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -448,6 +476,7 @@ int main(int argc, char** argv) {
     test_poll_eintr_despite_restart();
     test_async_compute_delivery();
     test_sigpipe_dispositions();
+    test_trap_default_kills();
 
     printf("sigtest: %d passed, %d failed\n", passed, failed);
     return failed > 0 ? 1 : 0;

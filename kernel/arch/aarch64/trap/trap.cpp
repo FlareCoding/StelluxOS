@@ -56,8 +56,8 @@ static inline int ec_to_signal(uint8_t ec) {
         case aarch64::EC_DATA_ABORT_LOWER:
         case aarch64::EC_INST_ABORT_LOWER:
         case aarch64::EC_SP_ALIGN:           return 11;  // SIGSEGV
-        case aarch64::EC_UNKNOWN:
-        case aarch64::EC_BRK_A64:            return 4;   // SIGILL
+        case aarch64::EC_UNKNOWN:            return 4;   // SIGILL
+        case aarch64::EC_BRK_A64:            return 5;   // SIGTRAP
         case aarch64::EC_FP_A64:             return 8;   // SIGFPE
         case aarch64::EC_PC_ALIGN:           return 7;   // SIGBUS
         default:                             return 11;  // SIGSEGV fallback
