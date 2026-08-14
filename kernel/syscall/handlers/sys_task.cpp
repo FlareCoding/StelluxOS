@@ -33,7 +33,7 @@ static int64_t regroup_unstarted_child(sched::task* caller, uint32_t pid,
     for (uint32_t slot = 0; slot < resource::MAX_TASK_HANDLES; slot++) {
         resource::resource_object* obj = nullptr;
         int32_t rc = resource::get_handle_object(
-            &caller->handles, static_cast<resource::handle_t>(slot), 0, &obj);
+            caller->handles, static_cast<resource::handle_t>(slot), 0, &obj);
         if (rc != resource::HANDLE_OK) {
             continue;
         }

@@ -147,7 +147,7 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
     }
 
     g_task_registry.remove(*t);
-    resource::close_all(t);
+    resource::release_task_handles(t);
     if (t->cwd) {
         if (t->cwd->release()) {
             fs::node::ref_destroy(t->cwd);
@@ -632,7 +632,13 @@ __PRIVILEGED_CODE task* create_kernel_task(
     }
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
-    resource::init_task_handles(t);
+    if (resource::init_task_handles(t) != resource::OK) {
+        log::error("sched: failed to allocate kernel task handle table");
+        vmm::free(task_stack_base);
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
     t->proc_res = nullptr;
     t->cwd = nullptr;
     t->sig = {};
@@ -890,7 +896,19 @@ __PRIVILEGED_CODE task* create_user_task(
     }
     t->reaper_node.init(reap_task_thunk);
 
-    resource::init_task_handles(t);
+    if (resource::init_task_handles(t) != resource::OK) {
+        log::error("sched: failed to allocate process handle table");
+        if (t->exec.mm_ctx) {
+            mm::mm_context_release(t->exec.mm_ctx);
+            t->exec.mm_ctx = nullptr;
+            t->exec.user_pt_root = 0;
+            image->mm_ctx = nullptr;
+            image->pt_root = 0;
+        }
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
     t->proc_res = nullptr;
     t->cwd = nullptr;
     t->sig = {};
@@ -898,7 +916,7 @@ __PRIVILEGED_CODE task* create_user_task(
     auto* tg = heap::kalloc_new<thread_group>();
     if (!tg) {
         log::error("sched: failed to allocate thread_group");
-        resource::close_all(t);
+        resource::release_task_handles(t);
         if (t->exec.mm_ctx) {
             mm::mm_context_release(t->exec.mm_ctx);
             t->exec.mm_ctx = nullptr;
@@ -960,6 +978,30 @@ __PRIVILEGED_CODE task* create_user_thread(
         return nullptr;
     }
 
+    // Native thread semantics, the new task gets a private snapshot copy
+    // of the creator's handle table taken under the source table lock
+    if (resource::init_task_handles(t) != resource::OK) {
+        log::error("sched: failed to allocate thread handle table");
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
+    {
+        sync::irq_lock_guard guard(creator->handles->lock);
+        for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+            const auto& src = creator->handles->entries[i];
+            if (!src.used || !src.obj) continue;
+            auto& dst = t->handles->entries[i];
+            dst.used = true;
+            dst.generation = src.generation;
+            dst.flags = src.flags;
+            dst.rights = src.rights;
+            dst.type = src.type;
+            dst.obj = src.obj;
+            resource::resource_add_ref(dst.obj);
+        }
+    }
+
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
     t->exec.on_cpu = 0;
@@ -1018,21 +1060,6 @@ __PRIVILEGED_CODE task* create_user_thread(
     tg->thread_count++;
     sync::spin_unlock_irqrestore(tg->lock, irq);
 
-    // Allocate a new resource handle table and copy the resources from the caller's task
-    resource::init_task_handles(t);
-    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
-        const auto& src = creator->handles.entries[i];
-        if (!src.used || !src.obj) continue;
-        auto& dst = t->handles.entries[i];
-        dst.used = true;
-        dst.generation = src.generation;
-        dst.flags = src.flags;
-        dst.rights = src.rights;
-        dst.type = src.type;
-        dst.obj = src.obj;
-        resource::resource_add_ref(dst.obj);
-    }
-
     t->proc_res = nullptr;
 
     // Copy the creator's cwd
@@ -1082,7 +1109,10 @@ __PRIVILEGED_CODE int32_t init() {
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
-    resource::init_task_handles(idle);
+    if (resource::init_task_handles(idle) != resource::OK) {
+        log::error("sched: failed to allocate idle task handle table");
+        return ERR_NO_MEM;
+    }
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
     idle->sig = {};
@@ -1152,7 +1182,9 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
-    resource::init_task_handles(idle);
+    if (resource::init_task_handles(idle) != resource::OK) {
+        return ERR_NO_MEM;
+    }
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
 

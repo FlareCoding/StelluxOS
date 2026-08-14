@@ -163,7 +163,7 @@ __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
     // never see a task whose group is being freed (same order as reap_task)
     sched::g_task_registry.remove(*t);
 
-    resource::close_all(t);
+    resource::release_task_handles(t);
     if (t->cwd) {
         if (t->cwd->release()) {
             fs::node::ref_destroy(t->cwd);

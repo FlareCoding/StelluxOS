@@ -64,7 +64,7 @@ DEFINE_SYSCALL2(memfd_create, u_name, u_flags) {
     resource::handle_t handle = -1;
     uint32_t rights = resource::RIGHT_READ | resource::RIGHT_WRITE;
     rc = resource::alloc_handle(
-        &task->handles, obj, resource::resource_type::SHMEM, rights, &handle);
+        task->handles, obj, resource::resource_type::SHMEM, rights, &handle);
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
         return syscall::EMFILE;
@@ -89,7 +89,7 @@ DEFINE_SYSCALL2(ftruncate, fd_val, length) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, fd, resource::RIGHT_WRITE, &obj);
+        task->handles, fd, resource::RIGHT_WRITE, &obj);
     if (rc != resource::HANDLE_OK) {
         return (rc == resource::HANDLE_ERR_ACCESS) ? syscall::EACCES : syscall::EBADF;
     }

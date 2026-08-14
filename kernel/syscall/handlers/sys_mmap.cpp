@@ -114,7 +114,7 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
 
         resource::resource_object* obj = nullptr;
         int32_t rc = resource::get_handle_object(
-            &task->handles, static_cast<int32_t>(fd_val),
+            task->handles, static_cast<int32_t>(fd_val),
             required_rights, &obj);
         if (rc != resource::HANDLE_OK) {
             return (rc == resource::HANDLE_ERR_ACCESS) ?

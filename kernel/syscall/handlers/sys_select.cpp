@@ -79,7 +79,7 @@ __PRIVILEGED_CODE static int64_t do_select(
     for (uint32_t i = 0; i < npoll; i++) {
         resource::resource_object* obj = nullptr;
         int32_t rc = resource::get_handle_object(
-            &task->handles, static_cast<resource::handle_t>(pollfds[i].fd), 0, &obj);
+            task->handles, static_cast<resource::handle_t>(pollfds[i].fd), 0, &obj);
         if (rc != resource::HANDLE_OK) {
             pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
             ready++;
@@ -111,7 +111,7 @@ __PRIVILEGED_CODE static int64_t do_select(
         for (uint32_t i = 0; i < npoll; i++) {
             resource::resource_object* obj = nullptr;
             int32_t rc = resource::get_handle_object(
-                &task->handles, static_cast<resource::handle_t>(pollfds[i].fd), 0, &obj);
+                task->handles, static_cast<resource::handle_t>(pollfds[i].fd), 0, &obj);
             if (rc != resource::HANDLE_OK) {
                 pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
                 ready++;

@@ -270,7 +270,7 @@ int64_t resolve_dirfd_base_node(
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(dirfd), 0, &obj);
+        task->handles, static_cast<resource::handle_t>(dirfd), 0, &obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
@@ -566,7 +566,7 @@ int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
+        task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
@@ -784,7 +784,7 @@ DEFINE_SYSCALL3(lseek, fd, offset, whence) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
+        task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
     if (rc != resource::HANDLE_OK || !obj) {
         return syscall::EBADF;
     }
@@ -1073,7 +1073,7 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
@@ -1182,7 +1182,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     if (cmd == F_GETFD) {
         uint32_t flags = 0;
         int32_t rc = resource::get_handle_flags(
-            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+            task->handles, static_cast<resource::handle_t>(fd), &flags);
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
@@ -1192,7 +1192,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     if (cmd == F_SETFD) {
         uint32_t flags = 0;
         int32_t rc = resource::get_handle_flags(
-            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+            task->handles, static_cast<resource::handle_t>(fd), &flags);
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
@@ -1203,7 +1203,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         }
         
         rc = resource::set_handle_flags(
-            &task->handles, static_cast<resource::handle_t>(fd), flags);
+            task->handles, static_cast<resource::handle_t>(fd), flags);
         
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
@@ -1214,7 +1214,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     if (cmd == F_GETFL) {
         uint32_t flags = 0;
         int32_t rc = resource::get_handle_flags(
-            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+            task->handles, static_cast<resource::handle_t>(fd), &flags);
         
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
@@ -1226,7 +1226,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     if (cmd == F_SETFL) {
         uint32_t flags = 0;
         int32_t rc = resource::get_handle_flags(
-            &task->handles, static_cast<resource::handle_t>(fd), &flags);
+            task->handles, static_cast<resource::handle_t>(fd), &flags);
         
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
@@ -1234,7 +1234,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         
         flags = (flags & ~SETFL_MASK) | (static_cast<uint32_t>(arg) & SETFL_MASK);
         rc = resource::set_handle_flags(
-            &task->handles, static_cast<resource::handle_t>(fd), flags);
+            task->handles, static_cast<resource::handle_t>(fd), flags);
         
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;

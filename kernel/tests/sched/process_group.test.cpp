@@ -185,7 +185,7 @@ TEST(process_group, setpgid_regroups_unstarted_child) {
         rc32 = resource::proc_provider::create_proc_resource(g_proc, &obj);
         if (rc32 == 0) {
             rc32 = resource::alloc_handle(
-                &self->handles, obj, resource::resource_type::PROCESS, 0, &handle);
+                self->handles, obj, resource::resource_type::PROCESS, 0, &handle);
         }
     });
     ASSERT_EQ(rc32, 0);
@@ -219,7 +219,7 @@ TEST(process_group, setpgid_regroups_unstarted_child) {
         }
 
         resource::resource_object* removed = nullptr;
-        if (resource::remove_handle(&self->handles, handle, &removed) == resource::HANDLE_OK) {
+        if (resource::remove_handle(self->handles, handle, &removed) == resource::HANDLE_OK) {
             resource::resource_release(removed);
         }
         resource::resource_release(obj);

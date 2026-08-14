@@ -80,8 +80,9 @@ struct task {
     task_tlb_sync_ticket    tlb_sync_ticket;
     rc::reaper::dead_node   reaper_node;
 
-    // Resources
-    resource::handle_table  handles;
+    // Resources, the handle table is private by default and shared
+    // when a thread is created with POSIX file table semantics
+    resource::handle_table* handles;
     resource::proc_provider::proc_resource* proc_res;
 };
 

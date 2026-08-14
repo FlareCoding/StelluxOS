@@ -16,13 +16,13 @@ static int64_t dup_to_slot(
     uint32_t flags = 0;
     uint32_t rights = 0;
     int32_t rc = resource::get_handle_object(
-        &task->handles, old_h, 0, &obj, &flags, &rights);
+        task->handles, old_h, 0, &obj, &flags, &rights);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
 
     rc = resource::install_handle_at(
-        &task->handles, new_h, obj, obj->type, rights);
+        task->handles, new_h, obj, obj->type, rights);
     resource::resource_release(obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
@@ -32,7 +32,7 @@ static int64_t dup_to_slot(
     if (set_cloexec) {
         flags |= resource::RESOURCE_HANDLE_CLOEXEC;
     }
-    resource::set_handle_flags(&task->handles, new_h, flags);
+    resource::set_handle_flags(task->handles, new_h, flags);
 
     return static_cast<int64_t>(new_h);
 }
@@ -47,7 +47,7 @@ DEFINE_SYSCALL1(dup, u_oldfd) {
     uint32_t flags = 0;
     uint32_t rights = 0;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(u_oldfd), 0,
+        task->handles, static_cast<resource::handle_t>(u_oldfd), 0,
         &obj, &flags, &rights);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
@@ -55,7 +55,7 @@ DEFINE_SYSCALL1(dup, u_oldfd) {
 
     // alloc_handle scans from slot zero, giving the POSIX lowest-free fd
     resource::handle_t new_h = -1;
-    rc = resource::alloc_handle(&task->handles, obj, obj->type, rights, &new_h);
+    rc = resource::alloc_handle(task->handles, obj, obj->type, rights, &new_h);
     resource::resource_release(obj);
     if (rc == resource::HANDLE_ERR_NOSPC) {
         return syscall::EMFILE;
@@ -65,7 +65,7 @@ DEFINE_SYSCALL1(dup, u_oldfd) {
     }
 
     resource::set_handle_flags(
-        &task->handles, new_h, flags & ~resource::RESOURCE_HANDLE_CLOEXEC);
+        task->handles, new_h, flags & ~resource::RESOURCE_HANDLE_CLOEXEC);
 
     return static_cast<int64_t>(new_h);
 }
@@ -85,7 +85,7 @@ DEFINE_SYSCALL2(dup2, u_oldfd, u_newfd) {
     // Equal descriptors are a no-op, but oldfd must still be valid
     if (old_h == new_h) {
         resource::resource_object* obj = nullptr;
-        int32_t rc = resource::get_handle_object(&task->handles, old_h, 0, &obj);
+        int32_t rc = resource::get_handle_object(task->handles, old_h, 0, &obj);
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }

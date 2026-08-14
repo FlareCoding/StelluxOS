@@ -38,7 +38,7 @@ __PRIVILEGED_CODE static int64_t poll_one_fd(
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(pfd.fd), 0, &obj);
+        task->handles, static_cast<resource::handle_t>(pfd.fd), 0, &obj);
     if (rc != resource::HANDLE_OK) {
         pfd.revents = static_cast<int16_t>(sync::POLL_NVAL);
         return 1;

@@ -24,7 +24,7 @@ DEFINE_SYSCALL3(getsockname, fd, u_addr, u_addrlen) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
+        task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
 
     if (obj->type != resource::resource_type::SOCKET) {
@@ -71,7 +71,7 @@ DEFINE_SYSCALL3(getpeername, fd, u_addr, u_addrlen) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
+        task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
 
     if (obj->type != resource::resource_type::SOCKET) {
