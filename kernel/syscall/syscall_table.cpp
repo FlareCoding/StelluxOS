@@ -31,6 +31,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
         g_syscall_table[i] = nullptr;
 
     REGISTER_SYSCALL(linux_nr::IOCTL,           ioctl);
+    REGISTER_SYSCALL(linux_nr::READV,           readv);
     REGISTER_SYSCALL(linux_nr::WRITEV,          writev);
     REGISTER_SYSCALL(linux_nr::READ,            read);
     REGISTER_SYSCALL(linux_nr::WRITE,           write);
