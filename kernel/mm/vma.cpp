@@ -318,8 +318,9 @@ __PRIVILEGED_CODE int32_t apply_page_protection(
 ) {
     paging::page_flags_t page_flags = prot_to_page_flags(prot);
     for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
+        // Absent pages take the VMA's protection when they fault in
         if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
-            return MM_CTX_ERR_NOT_MAPPED;
+            continue;
         }
         if (paging::set_page_flags(vaddr, page_flags, mm_ctx->pt_root) != paging::OK) {
             return MM_CTX_ERR_MAP_FAILED;

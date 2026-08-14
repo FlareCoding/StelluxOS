@@ -97,10 +97,7 @@ bool handle_user_pf_locked(
     uintptr_t fault_address,
     uint64_t pf_flags
 ) {
-    /**
-     * For now, on-demand paging is not yet fully complete, so
-     * the only operation that's supported is lazy stack growing.
-     */
+    // Protection violations on present pages are never recoverable here
     if (pf_flags & PF_FLAG_PRESENT) {
         return false;
     }
@@ -110,8 +107,20 @@ bool handle_user_pf_locked(
     // Get the virtual memory area for this page
     vma* vm = vma_find_locked(mm_ctx, page_addr);
 
-    // Ensure that on-demand paging is supported for this page type
-    if (!vm || !(vm->flags & VMA_FLAG_STACK)) {
+    // Demand paging serves anonymous memory, including stacks. Regions
+    // with no access rights are pure reservations and never fault in.
+    if (!vm || !(vm->flags & (VMA_FLAG_ANONYMOUS | VMA_FLAG_STACK))) {
+        return false;
+    }
+    if (vm->prot == 0) {
+        return false;
+    }
+
+    // Reject access types the region forbids before committing a page
+    if ((pf_flags & PF_FLAG_WRITE) && !(vm->prot & MM_PROT_WRITE)) {
+        return false;
+    }
+    if ((pf_flags & PF_FLAG_INSTRUCTION) && !(vm->prot & MM_PROT_EXEC)) {
         return false;
     }
 
@@ -136,7 +145,6 @@ bool handle_user_pf_locked(
         return false;
     }
 
-    log::info("Lazily loading stack page: %p\n", page_addr);
     return true;
 }
 

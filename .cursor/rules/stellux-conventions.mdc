@@ -1,0 +1,36 @@
+---
+description: StelluxOS engineering conventions for commits, code style, stacked-commit review, and verification gates
+alwaysApply: true
+---
+
+# StelluxOS Engineering Conventions
+
+## Commit style
+
+- Google style with domain scopes from repo history: `feat(sched):`, `feat(sysstat):`, `feat(client):`, `feat(userland):`, `feat(syscall):`, `fix(signals):`. Client = userland graphics/desktop.
+- Subject verbs in past tense: "added", "implemented", "rendered", "accounted".
+- Body: 2-4 sentences on WHY (the problem that existed, why this approach). No implementation play-by-play. Timeless wording, no "this PR/commit", no Linux mentions.
+- Work lands as a stack of small self-contained commits, each independently buildable and testable. Lib primitives may land with their first consumer.
+
+## Code style
+
+- Struct definitions and file-scope globals belong at the top of the file, above all function definitions, in both headers and .c/.cpp files.
+- Kernel modules use `namespace <module> { namespace { ... } }` for internals (see `kernel/random/random.cpp` as the template for devfs drivers).
+- Kernel test files use file-scope `static`, never anonymous namespaces (match `kernel/tests/sched/preemption.test.cpp`). Per-test globals sit adjacent to their test.
+- Comments: ASCII only, 1-2 lines, explain intent not mechanics. Headers use doxygen blocks with `@note Privilege: **required**` for privileged functions.
+- Public kernel APIs carry `__PRIVILEGED_CODE`; follow existing error-constant patterns (`fs::ERR_*`, per-module `OK`/`ERR`).
+- Userland apps: `APP_NAME := x` Makefile + `include ../../mk/app.mk`, register in `userland/apps/Makefile` APP_DIRS.
+
+## Stacked-commit review workflow
+
+- The user reviews commit-by-commit and comments in chat; feedback is folded into the commit where the code was born, not fixup commits.
+- To edit mid-stack: create `backup/<name>-vN` branch, `git reset --hard <base>`, then per commit `git cherry-pick -n <sha>`, edit, commit with the original message (updated if the change warrants). Never `git rebase -i`, never amend pushed commits.
+- After rebuilding a stack, verify `git diff backup/... HEAD` shows only the intended change, then rebuild and re-run the suite.
+- Work directly on master only when the user says so; they push themselves. Delete backup branches only after the user pushes.
+
+## Verification gates
+
+- Every kernel-touching stack: `make test ARCH=x86_64` and `ARCH=aarch64` fully green plus compile checks on both arches for every commit.
+- Userland/visual changes: live QEMU verification with before/after screenshots (see the stellux-qemu-testing skill). Present zoomed comparison crops in chat.
+- Delegate realistic interactive/visual testing to the user when they offer; they orchestrate GUI sessions better. Prepare diagnostic flags or builds for them instead of guessing.
+- `make test` leaves a test-flavored build; run `make clean && make image ARCH=x86_64` afterward so the shipped image matches committed code.
