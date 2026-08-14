@@ -182,13 +182,15 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
         return syscall::EINVAL;
     }
 
+    // Anonymous mappings are reservations: physical pages arrive through
+    // demand faults on first touch, so large reserves stay cheap
     uintptr_t mapped_addr = 0;
     int32_t rc = mm::mm_context_map_anonymous(
         task->exec.mm_ctx,
         static_cast<uintptr_t>(addr),
         static_cast<size_t>(length),
         linux_prot_to_mm(prot),
-        linux_map_to_mm(flags),
+        linux_map_to_mm(flags) | mm::MM_MAP_LAZY,
         &mapped_addr
     );
     if (rc != mm::MM_CTX_OK) {
