@@ -257,3 +257,16 @@ DEFINE_SYSCALL1(brk, addr) {
     // musl interprets this as "brk not available" and falls back to mmap.
     return 0;
 }
+
+DEFINE_SYSCALL3(madvise, addr, length, advice) {
+    (void)length;
+    (void)advice;
+
+    if (!is_page_aligned(addr)) {
+        return syscall::EINVAL;
+    }
+
+    // Advice is accepted without action, anonymous mappings are already
+    // lazily populated so there is no commit accounting to adjust
+    return 0;
+}

@@ -196,6 +196,11 @@ DEFINE_SYSCALL5(clone, u_flags, u_stack, u_ptid, u_tls, u_ctid) {
     return static_cast<int64_t>(tid);
 }
 
+DEFINE_SYSCALL0(sched_yield) {
+    sched::yield();
+    return 0;
+}
+
 DEFINE_SYSCALL1(exit, status) {
     sched::exit(static_cast<int>(status));
     __builtin_unreachable();
