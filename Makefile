@@ -539,7 +539,7 @@ musl:
 	@echo ""
 	@echo "musl $(MUSL_VERSION) ready for both architectures."
 
-LLVM_VERSION := 18.1.8
+LLVM_VERSION := 20.1.8
 LLVM_URL     := https://github.com/llvm/llvm-project/releases/download/llvmorg-$(LLVM_VERSION)/llvm-project-$(LLVM_VERSION).src.tar.xz
 LLVM_DIR     := userland/llvm-project-$(LLVM_VERSION).src
 LLVM_TARBALL := userland/llvm-project-$(LLVM_VERSION).src.tar.xz

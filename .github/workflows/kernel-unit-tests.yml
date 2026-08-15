@@ -104,7 +104,7 @@ jobs:
             userland/sysroot/aarch64/lib/libc++abi.a
             userland/sysroot/aarch64/lib/libunwind.a
             userland/sysroot/aarch64/include/c++
-          key: libcxx-sysroot-18.1.8-v2
+          key: libcxx-sysroot-20.1.8-v2
 
       - name: Build libc++
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
@@ -117,7 +117,7 @@ jobs:
           path: |
             userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
             userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
-          key: compiler-rt-builtins-18.1.8-v2
+          key: compiler-rt-builtins-20.1.8-v2
 
       - name: Build compiler-rt builtins
         if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
@@ -197,7 +197,7 @@ jobs:
             userland/sysroot/aarch64/lib/libc++abi.a
             userland/sysroot/aarch64/lib/libunwind.a
             userland/sysroot/aarch64/include/c++
-          key: macos-libcxx-sysroot-18.1.8-v2
+          key: macos-libcxx-sysroot-20.1.8-v2
 
       - name: Build libc++
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
@@ -210,7 +210,7 @@ jobs:
           path: |
             userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
             userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
-          key: macos-compiler-rt-builtins-18.1.8-v2
+          key: macos-compiler-rt-builtins-20.1.8-v2
 
       - name: Build compiler-rt builtins
         if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
@@ -287,7 +287,7 @@ jobs:
             userland/sysroot/aarch64/lib/libc++abi.a
             userland/sysroot/aarch64/lib/libunwind.a
             userland/sysroot/aarch64/include/c++
-          key: libcxx-sysroot-18.1.8-v2
+          key: libcxx-sysroot-20.1.8-v2
 
       - name: Build libc++
         if: steps.libcxx-cache.outputs.cache-hit != 'true'
@@ -300,7 +300,7 @@ jobs:
           path: |
             userland/sysroot/x86_64/lib/libclang_rt.builtins-x86_64.a
             userland/sysroot/aarch64/lib/libclang_rt.builtins-aarch64.a
-          key: compiler-rt-builtins-18.1.8-v2
+          key: compiler-rt-builtins-20.1.8-v2
 
       - name: Build compiler-rt builtins
         if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
