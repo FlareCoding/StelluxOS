@@ -7,6 +7,7 @@
 #include "sched/fpu.h"
 #include "dynpriv/dynpriv.h"
 #include "trap/trap_frame.h"
+#include "syscall/syscall_frame.h"
 #include "defs/segments.h"
 #include "defs/vectors.h"
 #include "percpu/percpu.h"
@@ -101,6 +102,42 @@ __PRIVILEGED_CODE void arch_init_task_context(
     ctx.rflags = 0x202; // IF=1, reserved bit 1=1
     ctx.cs = elevated ? x86::KERNEL_CS : x86::USER_CS;
     ctx.ss = elevated ? x86::KERNEL_DS : x86::USER_DS;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void arch_init_clone_cpu_context(task* t) {
+    const x86::syscall_frame* frame = x86::current_syscall_frame();
+    auto& ctx = t->exec.cpu_ctx;
+
+    // Registers the caller expects to survive the syscall
+    ctx.rbx = frame->rbx;
+    ctx.rdx = frame->rdx;
+    ctx.rsi = frame->rsi;
+    ctx.rdi = frame->rdi;
+    ctx.rbp = frame->rbp;
+    ctx.r8  = frame->r8;
+    ctx.r9  = frame->r9;
+    ctx.r10 = frame->r10;
+    ctx.r12 = frame->r12;
+    ctx.r13 = frame->r13;
+    ctx.r14 = frame->r14;
+    ctx.r15 = frame->r15;
+
+    // Syscall entry leaves the return rip in rcx and the return flags
+    // in r11, so the child sees the same clobbered values as the caller
+    ctx.rcx = frame->rip;
+    ctx.r11 = frame->rflags;
+
+    // The child returns zero from clone onto its own stack
+    ctx.rax = 0;
+    ctx.rsp = t->exec.task_stack_top;
+
+    ctx.rip = frame->rip;
+    ctx.rflags = frame->rflags;
+    ctx.cs = x86::USER_CS;
+    ctx.ss = x86::USER_DS;
 }
 
 /**

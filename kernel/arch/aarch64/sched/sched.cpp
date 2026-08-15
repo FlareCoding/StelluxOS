@@ -127,6 +127,29 @@ __PRIVILEGED_CODE void arch_init_task_context(
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE void arch_init_clone_cpu_context(task* t) {
+    const aarch64::trap_frame* frame = aarch64::current_trap_frame();
+    auto& ctx = t->exec.cpu_ctx;
+
+    // Registers the caller expects to survive the syscall
+    for (uint32_t i = 0; i < 31; i++) {
+        ctx.x[i] = frame->x[i];
+    }
+
+    // The child returns zero from clone onto its own stack
+    ctx.x[0] = 0;
+    ctx.sp = t->exec.task_stack_top;
+
+    ctx.pc = frame->elr;
+
+    // Keep the caller's flags but force EL0 so an elevated caller
+    // cannot hand its privilege level to the new thread
+    ctx.pstate = (frame->spsr & ~aarch64::SPSR_MODE_MASK) | aarch64::SPSR_EL0T;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void arch_post_switch(task* next) {
     if (paging::get_kernel_pt_root() != next->exec.pt_root) {
         paging::set_kernel_pt_root(next->exec.pt_root);

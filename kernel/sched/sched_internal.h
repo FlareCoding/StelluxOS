@@ -13,6 +13,15 @@ __PRIVILEGED_CODE void arch_init_task_context(
     task* t, void (*entry)(void*), void* arg);
 
 /**
+ * Arch-specific: fill cpu_ctx for a cloned thread from the calling
+ * task's saved syscall register frame. The child gets a zero syscall
+ * return value and the stack pointer from exec.task_stack_top.
+ * Must run in the creator's syscall context.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void arch_init_clone_cpu_context(task* t);
+
+/**
  * Arch-specific: called after picking the next task, before returning
  * to trap exit. Updates architecture-specific post-switch state
  * (e.g. TSS.RSP0 on x86, translation roots on aarch64).

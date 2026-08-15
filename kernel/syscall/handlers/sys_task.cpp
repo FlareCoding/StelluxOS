@@ -10,6 +10,32 @@
 // Highest value representable as a task id
 constexpr int64_t TASK_ID_LIMIT = 0xFFFFFFFF;
 
+// Clone flag bits recognized by the thread only clone path
+constexpr uint64_t CLONE_VM             = 0x00000100;
+constexpr uint64_t CLONE_FS             = 0x00000200;
+constexpr uint64_t CLONE_FILES          = 0x00000400;
+constexpr uint64_t CLONE_SIGHAND        = 0x00000800;
+constexpr uint64_t CLONE_THREAD         = 0x00010000;
+constexpr uint64_t CLONE_SYSVSEM        = 0x00040000;
+constexpr uint64_t CLONE_SETTLS         = 0x00080000;
+constexpr uint64_t CLONE_PARENT_SETTID  = 0x00100000;
+constexpr uint64_t CLONE_CHILD_CLEARTID = 0x00200000;
+constexpr uint64_t CLONE_DETACHED       = 0x00400000;
+constexpr uint64_t CLONE_CHILD_SETTID   = 0x01000000;
+
+// The exit signal lives in the low byte of the flags word
+constexpr uint64_t CLONE_CSIGNAL_MASK   = 0x000000FF;
+
+// Thread semantics Stellux implements, matching what musl requests
+// from pthread_create. Anything without the full bundle is fork
+// shaped and rejected by design, the process model spawns fresh
+// processes instead of duplicating address spaces.
+constexpr uint64_t CLONE_REQUIRED_BUNDLE =
+    CLONE_VM | CLONE_FS | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM;
+constexpr uint64_t CLONE_SUPPORTED_EXTRAS =
+    CLONE_FILES | CLONE_SETTLS | CLONE_PARENT_SETTID |
+    CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_DETACHED;
+
 // True if any live process belongs to the given process group
 static bool group_exists(uint32_t group_id) {
     bool found = false;
@@ -86,8 +112,88 @@ DEFINE_SYSCALL0(geteuid) { return 0; }
 DEFINE_SYSCALL0(getgid)  { return 0; }
 DEFINE_SYSCALL0(getegid) { return 0; }
 
-DEFINE_SYSCALL0(set_tid_address) {
-    return static_cast<int64_t>(sched::current()->tid);
+DEFINE_SYSCALL1(set_tid_address, u_tidptr) {
+    sched::task* t = sched::current();
+    t->clear_child_tid = static_cast<uintptr_t>(u_tidptr);
+    return static_cast<int64_t>(t->tid);
+}
+
+// x86_64 passes (flags, stack, ptid, ctid, tls),
+// aarch64 passes (flags, stack, ptid, tls, ctid)
+#if defined(__x86_64__)
+DEFINE_SYSCALL5(clone, u_flags, u_stack, u_ptid, u_ctid, u_tls) {
+#else
+DEFINE_SYSCALL5(clone, u_flags, u_stack, u_ptid, u_tls, u_ctid) {
+#endif
+    uint64_t flags = static_cast<uint64_t>(u_flags);
+
+    // Internally inconsistent flag combinations come first
+    if ((flags & CLONE_THREAD) && !(flags & CLONE_SIGHAND)) {
+        return syscall::EINVAL;
+    }
+
+    if ((flags & CLONE_SIGHAND) && !(flags & CLONE_VM)) {
+        return syscall::EINVAL;
+    }
+
+    if ((flags & CLONE_THREAD) && (flags & CLONE_CSIGNAL_MASK) != 0) {
+        return syscall::EINVAL;
+    }
+
+    // Well formed requests outside the thread bundle are fork shaped
+    // and unsupported by design
+    if ((flags & CLONE_REQUIRED_BUNDLE) != CLONE_REQUIRED_BUNDLE) {
+        return syscall::ENOSYS;
+    }
+
+    if ((flags & ~(CLONE_REQUIRED_BUNDLE | CLONE_SUPPORTED_EXTRAS)) != 0) {
+        return syscall::ENOSYS;
+    }
+
+    if (u_stack == 0) {
+        return syscall::EINVAL;
+    }
+
+    sched::task* caller = sched::current();
+
+    sched::task* child = sched::clone_user_thread(
+        caller,
+        static_cast<uintptr_t>(u_stack),
+        static_cast<uintptr_t>(u_tls),
+        (flags & CLONE_SETTLS) != 0,
+        (flags & CLONE_FILES) != 0);
+
+    if (!child) {
+        return syscall::ENOMEM;
+    }
+
+    uint32_t tid = child->tid;
+
+    if (flags & CLONE_PARENT_SETTID) {
+        if (mm::uaccess::copy_to_user(
+                reinterpret_cast<void*>(u_ptid), &tid, sizeof(tid))
+                != mm::uaccess::OK) {
+            resource::proc_provider::destroy_unstarted_task(child);
+            return syscall::EFAULT;
+        }
+    }
+
+    if (flags & CLONE_CHILD_SETTID) {
+        if (mm::uaccess::copy_to_user(
+                reinterpret_cast<void*>(u_ctid), &tid, sizeof(tid))
+                != mm::uaccess::OK) {
+            resource::proc_provider::destroy_unstarted_task(child);
+            return syscall::EFAULT;
+        }
+    }
+
+    if (flags & CLONE_CHILD_CLEARTID) {
+        child->clear_child_tid = static_cast<uintptr_t>(u_ctid);
+    }
+
+    sched::enqueue(child);
+
+    return static_cast<int64_t>(tid);
 }
 
 DEFINE_SYSCALL1(exit, status) {
@@ -96,6 +202,33 @@ DEFINE_SYSCALL1(exit, status) {
 }
 
 DEFINE_SYSCALL1(exit_group, status) {
+    sched::task* self = sched::current();
+    sched::thread_group* tg = self->group;
+
+    // Only a POSIX thread takes the whole process down with it, a
+    // native thread exits alone and stays joinable by its creator
+    if (tg && (self->exec.flags & sched::TASK_FLAG_POSIX_THREAD)) {
+        // First recorded status wins so every member reports the same
+        // exit code, encoded as a normal wait status with bit 31 set
+        uint32_t packed = 0x80000000u |
+            ((static_cast<uint32_t>(status) & 0xFF) << 8);
+
+        uint32_t expected = 0;
+        __atomic_compare_exchange_n(&tg->group_exit_status, &expected,
+                                    packed, false, __ATOMIC_ACQ_REL,
+                                    __ATOMIC_ACQUIRE);
+
+        // A non leader forces the leader down, the leader's exit then
+        // reaps every remaining thread including this one
+        sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+
+        if (tg->leader && tg->leader != self) {
+            sched::force_wake_for_kill(tg->leader);
+        }
+
+        sync::spin_unlock_irqrestore(tg->lock, irq);
+    }
+
     sched::exit(static_cast<int>(status));
     __builtin_unreachable();
 }

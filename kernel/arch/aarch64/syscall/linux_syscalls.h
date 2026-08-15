@@ -70,6 +70,7 @@ constexpr uint64_t GETSOCKOPT       = 209;
 constexpr uint64_t SHUTDOWN         = 210;
 constexpr uint64_t BRK              = 214;
 constexpr uint64_t MUNMAP           = 215;
+constexpr uint64_t CLONE            = 220;
 constexpr uint64_t MMAP             = 222;
 constexpr uint64_t MPROTECT         = 226;
 constexpr uint64_t GETRANDOM        = 278;

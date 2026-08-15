@@ -44,6 +44,7 @@ constexpr uint64_t GETPEERNAME      = 52;
 constexpr uint64_t SOCKETPAIR       = 53;
 constexpr uint64_t SETSOCKOPT       = 54;
 constexpr uint64_t GETSOCKOPT       = 55;
+constexpr uint64_t CLONE            = 56;
 constexpr uint64_t EXIT             = 60;
 constexpr uint64_t KILL             = 62;
 constexpr uint64_t UNAME            = 63;

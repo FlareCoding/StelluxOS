@@ -101,6 +101,26 @@ task* create_user_thread(task* creator, uintptr_t entry, uintptr_t arg,
                         uintptr_t stack_top, const char* name);
 
 /**
+ * @brief Create a thread for the musl pthread clone path.
+ * Unlike create_user_thread, the child resumes at the caller's
+ * syscall return point with a zero return value instead of entering
+ * a function, which is what the musl thread stub expects. Must be
+ * called from syscall context so the caller's saved user register
+ * frame is available to seed the child context.
+ * @param creator The calling task, must be the current task.
+ * @param stack_top Child user stack pointer, used exactly as passed.
+ * @param tls New thread pointer value when set_tls is true.
+ * @param set_tls True when the caller requested a new thread pointer.
+ * @param share_files True shares the caller's handle table, false
+ *   snapshots it with native copy semantics.
+ * @return task pointer on success, nullptr on failure.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE
+task* clone_user_thread(task* creator, uintptr_t stack_top, uintptr_t tls,
+                        bool set_tls, bool share_files);
+
+/**
  * @brief Add a task to a runqueue, distributing across CPUs via round-robin.
  * Atomically transitions the task from CREATED to READY via CAS.
  * Rejects tasks that are already enqueued, running, or dead.
