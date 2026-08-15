@@ -3,6 +3,7 @@
 
 #include "resource/resource_types.h"
 #include "sync/spinlock.h"
+#include "rc/ref_counted.h"
 
 namespace resource {
 
@@ -22,9 +23,16 @@ struct handle_entry {
     resource_object* obj;
 };
 
-struct handle_table {
+// Refcounted so a task can own a private table or share the creator's
+// table, the last reference closes all entries when it drops.
+struct handle_table : rc::ref_counted<handle_table> {
     sync::spinlock lock;
     handle_entry entries[MAX_TASK_HANDLES];
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void ref_destroy(handle_table* self);
 };
 
 constexpr int32_t HANDLE_OK         = 0;

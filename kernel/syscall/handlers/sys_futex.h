@@ -3,6 +3,7 @@
 
 #include "syscall/syscall_table.h"
 
+DECLARE_SYSCALL(futex);
 DECLARE_SYSCALL(futex_wait);
 DECLARE_SYSCALL(futex_wake);
 DECLARE_SYSCALL(futex_wake_all);

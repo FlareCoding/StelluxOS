@@ -1,7 +1,27 @@
 #include "resource/handle_table.h"
 #include "resource/resource.h"
+#include "mm/heap.h"
 
 namespace resource {
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void handle_table::ref_destroy(handle_table* self) {
+    if (!self) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
+        resource_object* obj = nullptr;
+
+        if (remove_handle(self, static_cast<handle_t>(i), &obj) == HANDLE_OK) {
+            resource_release(obj);
+        }
+    }
+
+    heap::kfree_delete(self);
+}
 
 /**
  * @note Privilege: **required**

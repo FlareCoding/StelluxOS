@@ -114,7 +114,7 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
 
         resource::resource_object* obj = nullptr;
         int32_t rc = resource::get_handle_object(
-            &task->handles, static_cast<int32_t>(fd_val),
+            task->handles, static_cast<int32_t>(fd_val),
             required_rights, &obj);
         if (rc != resource::HANDLE_OK) {
             return (rc == resource::HANDLE_ERR_ACCESS) ?
@@ -255,5 +255,18 @@ DEFINE_SYSCALL1(brk, addr) {
     (void)addr;
     // Minimal brk: always return 0 (break at address 0).
     // musl interprets this as "brk not available" and falls back to mmap.
+    return 0;
+}
+
+DEFINE_SYSCALL3(madvise, addr, length, advice) {
+    (void)length;
+    (void)advice;
+
+    if (!is_page_aligned(addr)) {
+        return syscall::EINVAL;
+    }
+
+    // Advice is accepted without action, anonymous mappings are already
+    // lazily populated so there is no commit accounting to adjust
     return 0;
 }

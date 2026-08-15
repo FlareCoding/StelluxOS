@@ -190,14 +190,14 @@ DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
     for (resource::handle_t fd = 0; fd < 3; fd++) {
         resource::resource_object* fd_obj = nullptr;
         int32_t fd_rc = resource::get_handle_object(
-            &caller->handles, fd, 0, &fd_obj);
+            caller->handles, fd, 0, &fd_obj);
         if (fd_rc != resource::HANDLE_OK) continue;
 
         resource::handle_t child_fd = -1;
         resource::alloc_handle(
-            &child->handles, fd_obj,
-            caller->handles.entries[static_cast<uint32_t>(fd)].type,
-            caller->handles.entries[static_cast<uint32_t>(fd)].rights,
+            child->handles, fd_obj,
+            caller->handles->entries[static_cast<uint32_t>(fd)].type,
+            caller->handles->entries[static_cast<uint32_t>(fd)].rights,
             &child_fd);
 
         resource::resource_release(fd_obj);
@@ -212,7 +212,7 @@ DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
 
     resource::handle_t handle = -1;
     int32_t h_rc = resource::alloc_handle(
-        &caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
+        caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
     if (h_rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
         return syscall::EMFILE;
@@ -228,7 +228,7 @@ DEFINE_SYSCALL1(proc_start, u_handle) {
     sched::task* caller = sched::current();
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &caller->handles, handle, 0, &obj);
+        caller->handles, handle, 0, &obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
@@ -264,7 +264,7 @@ DEFINE_SYSCALL2(proc_wait, u_handle, u_exit_code_ptr) {
     sched::task* caller = sched::current();
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &caller->handles, handle, 0, &obj);
+        caller->handles, handle, 0, &obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
@@ -319,7 +319,7 @@ DEFINE_SYSCALL1(proc_detach, u_handle) {
     sched::task* caller = sched::current();
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &caller->handles, handle, 0, &obj);
+        caller->handles, handle, 0, &obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
@@ -352,7 +352,7 @@ DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
     int32_t handle = static_cast<int32_t>(u_handle);
     sched::task* caller = sched::current();
     resource::resource_object* obj = nullptr;
-    int32_t rc = resource::get_handle_object(&caller->handles, handle, 0, &obj);
+    int32_t rc = resource::get_handle_object(caller->handles, handle, 0, &obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
@@ -402,7 +402,7 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
 
     resource::resource_object* proc_obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &caller->handles, static_cast<resource::handle_t>(u_proc_handle), 0, &proc_obj);
+        caller->handles, static_cast<resource::handle_t>(u_proc_handle), 0, &proc_obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
@@ -428,7 +428,7 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     resource::resource_object* res_obj = nullptr;
     uint32_t res_rights = 0;
     rc = resource::get_handle_object(
-        &caller->handles, static_cast<resource::handle_t>(u_resource_handle), 0,
+        caller->handles, static_cast<resource::handle_t>(u_resource_handle), 0,
         &res_obj, nullptr, &res_rights);
     if (rc != resource::HANDLE_OK) {
         sync::spin_unlock_irqrestore(pr->lock, irq);
@@ -437,7 +437,7 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     }
 
     rc = resource::install_handle_at(
-        &pr->child->handles, static_cast<resource::handle_t>(slot),
+        pr->child->handles, static_cast<resource::handle_t>(slot),
         res_obj, res_obj->type, res_rights);
 
     sync::spin_unlock_irqrestore(pr->lock, irq);
@@ -458,7 +458,7 @@ DEFINE_SYSCALL1(proc_kill, u_handle) {
     }
 
     resource::resource_object* obj = nullptr;
-    int32_t rc = resource::get_handle_object(&caller->handles, handle, 0, &obj);
+    int32_t rc = resource::get_handle_object(caller->handles, handle, 0, &obj);
     if (rc != resource::HANDLE_OK || !obj) {
         return syscall::EBADF;
     }
@@ -528,7 +528,7 @@ DEFINE_SYSCALL4(proc_create_thread, u_entry, u_arg, u_stack_top, u_name) {
 
     resource::handle_t handle = -1;
     int32_t h_rc = resource::alloc_handle(
-        &caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
+        caller->handles, obj, resource::resource_type::PROCESS, 0, &handle);
     if (h_rc != resource::HANDLE_OK) {
         resource::resource_release(obj);
         return syscall::EMFILE;

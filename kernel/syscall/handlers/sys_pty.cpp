@@ -21,7 +21,7 @@ DEFINE_SYSCALL1(pty_create, u_fds) {
 
     resource::handle_t h0 = -1;
     rc = resource::alloc_handle(
-        &task->handles, master_obj, resource::resource_type::PTY,
+        task->handles, master_obj, resource::resource_type::PTY,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h0);
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(master_obj);
@@ -32,7 +32,7 @@ DEFINE_SYSCALL1(pty_create, u_fds) {
 
     resource::handle_t h1 = -1;
     rc = resource::alloc_handle(
-        &task->handles, slave_obj, resource::resource_type::PTY,
+        task->handles, slave_obj, resource::resource_type::PTY,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h1);
     if (rc != resource::HANDLE_OK) {
         resource::close(task, h0);

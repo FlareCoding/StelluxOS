@@ -23,7 +23,7 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
 
     resource::handle_t h_read = -1;
     rc = resource::alloc_handle(
-        &task->handles, read_obj, resource::resource_type::PIPE,
+        task->handles, read_obj, resource::resource_type::PIPE,
         resource::RIGHT_READ, &h_read);
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(read_obj);
@@ -34,7 +34,7 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
 
     resource::handle_t h_write = -1;
     rc = resource::alloc_handle(
-        &task->handles, write_obj, resource::resource_type::PIPE,
+        task->handles, write_obj, resource::resource_type::PIPE,
         resource::RIGHT_WRITE, &h_write);
     if (rc != resource::HANDLE_OK) {
         resource::close(task, h_read);
@@ -44,8 +44,8 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
     resource::resource_release(write_obj);
 
     if (flags & fs::O_NONBLOCK) {
-        resource::set_handle_flags(&task->handles, h_read, fs::O_NONBLOCK);
-        resource::set_handle_flags(&task->handles, h_write, fs::O_NONBLOCK);
+        resource::set_handle_flags(task->handles, h_read, fs::O_NONBLOCK);
+        resource::set_handle_flags(task->handles, h_write, fs::O_NONBLOCK);
     }
 
     int32_t kbuf[2] = {h_read, h_write};

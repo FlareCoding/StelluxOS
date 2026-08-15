@@ -88,10 +88,11 @@ constexpr int32_t ERR_INTR        = -18;
 constexpr int32_t ERR_NOPROTOOPT  = -19;
 
 /**
- * @brief Initialize handle table storage in task.
+ * @brief Allocate a private handle table and attach it to the task.
+ * @return OK on success, ERR_NOMEM when allocation fails.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void init_task_handles(sched::task* task);
+__PRIVILEGED_CODE int32_t init_task_handles(sched::task* task);
 
 /**
  * @brief Open path-backed resource and install a handle in task table.
@@ -147,10 +148,11 @@ __PRIVILEGED_CODE int32_t close(
 );
 
 /**
- * @brief Close all handles owned by task.
+ * @brief Drop the task's reference to its handle table.
+ * The last reference closes every entry and frees the table.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void close_all(sched::task* owner);
+__PRIVILEGED_CODE void release_task_handles(sched::task* owner);
 
 /**
  * @brief Increment resource object reference.

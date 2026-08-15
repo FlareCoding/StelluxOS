@@ -11,10 +11,10 @@
  * immediately before any register saves. This ensures the kernel
  * never runs on the user/caller stack.
  *
- * Technique: push R14/R15 to the caller's stack as scratch, read
- * system_stack_top, copy saved values to the system stack, then
- * switch RSP. After the switch, the caller's stack is never
- * touched again.
+ * Technique: stash R14/R15 in fixed per-CPU scratch slots to free
+ * them, read system_stack_top, write the handoff record to the
+ * system stack, then switch RSP. The caller's stack is never touched
+ * because it may already be unmapped when the syscall is issued.
  *
  * The saved region below system_stack_top is described by
  * x86::syscall_frame (syscall_frame.h), keep the layout in sync.
@@ -38,6 +38,10 @@
 .set TASK_IRET_PENDING_OFFSET, 0x2E8
 .set TASK_IRET_CTX_OFFSET,     0x2F0
 .set TASK_FLAG_ELEVATED,       (1 << 0)
+
+/* Fixed per-CPU scratch offsets, verified by percpu::init_bsp */
+.set PERCPU_SYSCALL_SCRATCH0,  0x08
+.set PERCPU_SYSCALL_SCRATCH1,  0x10
 
 /* thread_cpu_context offsets (sched/thread_cpu_context.h) */
 .set CTX_RAX,    0x00
@@ -67,9 +71,9 @@ stlx_x86_syscall_entry:
     swapgs
     lfence
 
-    /* Save R14/R15 to caller's stack to free them as scratch. */
-    push r14
-    push r15
+    /* Free R14/R15 via per-CPU scratch, never via the caller's stack. */
+    mov qword ptr gs:[PERCPU_SYSCALL_SCRATCH0], r14
+    mov qword ptr gs:[PERCPU_SYSCALL_SCRATCH1], r15
 
     /* Preserve syscall number while RAX is reused for per-CPU access. */
     mov r14, rax
@@ -78,19 +82,16 @@ stlx_x86_syscall_entry:
     this_cpu_read rax, current_task_exec
     mov r15, qword ptr [rax + TASK_SYS_STACK_OFFSET]
 
-    /* Compute original caller RSP (before our 2 pushes). */
-    lea rax, [rsp + 16]
-
     /*
      * Write handoff record to top of system stack:
      *   [S - 8]  = original caller RSP
      *   [S - 16] = original R14
      *   [S - 24] = original R15
      */
-    mov qword ptr [r15 - 8], rax
-    mov rax, qword ptr [rsp + 8]
+    mov qword ptr [r15 - 8], rsp
+    mov rax, qword ptr gs:[PERCPU_SYSCALL_SCRATCH0]
     mov qword ptr [r15 - 16], rax
-    mov rax, qword ptr [rsp]
+    mov rax, qword ptr gs:[PERCPU_SYSCALL_SCRATCH1]
     mov qword ptr [r15 - 24], rax
 
     /* Switch to system stack. */

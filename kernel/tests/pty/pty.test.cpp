@@ -36,10 +36,10 @@ TEST(pty_test, master_to_slave_write_read) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -68,10 +68,10 @@ TEST(pty_test, slave_to_master_write_read) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -96,10 +96,10 @@ TEST(pty_test, close_master_slave_reads_eof) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -121,10 +121,10 @@ TEST(pty_test, close_slave_master_reads_eof) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -146,10 +146,10 @@ TEST(pty_test, close_slave_master_write_epipe) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -174,10 +174,10 @@ TEST(pty_test, raw_mode_no_echo) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -188,7 +188,7 @@ TEST(pty_test, raw_mode_no_echo) {
     ASSERT_EQ(resource::write(task, hm, "abc", 3), static_cast<ssize_t>(3));
 
     // Set master to non-blocking so we can check for no echo without hanging
-    ASSERT_EQ(resource::set_handle_flags(&task->handles, hm, fs::O_NONBLOCK), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_handle_flags(task->handles, hm, fs::O_NONBLOCK), resource::HANDLE_OK);
 
     // Master read should have nothing (no echo in raw mode)
     char echo_buf[16] = {};
@@ -221,10 +221,10 @@ TEST(pty_test, isig_intercepts_interrupt_byte) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -261,10 +261,10 @@ TEST(pty_test, isig_quit_and_susp_bytes) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -293,10 +293,10 @@ TEST(pty_test, isig_raw_mode_passes_bytes) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 
@@ -327,10 +327,10 @@ TEST(pty_test, isig_reenabled_in_raw_mode) {
 
     resource::handle_t hm = -1;
     resource::handle_t hs = -1;
-    ASSERT_EQ(resource::alloc_handle(&task->handles, master, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, master, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hm), resource::HANDLE_OK);
     resource::resource_release(master);
-    ASSERT_EQ(resource::alloc_handle(&task->handles, slave, resource::resource_type::PTY,
+    ASSERT_EQ(resource::alloc_handle(task->handles, slave, resource::resource_type::PTY,
               resource::RIGHT_READ | resource::RIGHT_WRITE, &hs), resource::HANDLE_OK);
     resource::resource_release(slave);
 

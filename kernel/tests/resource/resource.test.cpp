@@ -87,19 +87,23 @@ TEST(resource_test, rights_enforced_for_read_and_write) {
     EXPECT_EQ(resource::close(task, r), resource::OK);
 }
 
-TEST(resource_test, close_all_invalidates_existing_handles) {
-    sched::task* task = sched::current();
-    ASSERT_NOT_NULL(task);
+TEST(resource_test, releasing_task_handles_invalidates_existing_handles) {
+    // A scratch task exercises table teardown without touching the
+    // test runner's own live handle table
+    sched::task scratch{};
+    ASSERT_EQ(resource::init_task_handles(&scratch), resource::OK);
 
     resource::handle_t h1 = -1;
     resource::handle_t h2 = -1;
-    ASSERT_EQ(resource::open(task, "/resource_close_all_1", fs::O_CREAT | fs::O_RDWR, &h1), resource::OK);
-    ASSERT_EQ(resource::open(task, "/resource_close_all_2", fs::O_CREAT | fs::O_RDWR, &h2), resource::OK);
 
-    resource::close_all(task);
+    ASSERT_EQ(resource::open(&scratch, "/resource_close_all_1", fs::O_CREAT | fs::O_RDWR, &h1), resource::OK);
+    ASSERT_EQ(resource::open(&scratch, "/resource_close_all_2", fs::O_CREAT | fs::O_RDWR, &h2), resource::OK);
 
-    EXPECT_EQ(resource::close(task, h1), resource::ERR_BADF);
-    EXPECT_EQ(resource::close(task, h2), resource::ERR_BADF);
+    resource::release_task_handles(&scratch);
+
+    EXPECT_NULL(scratch.handles);
+    EXPECT_EQ(resource::close(&scratch, h1), resource::ERR_BADF);
+    EXPECT_EQ(resource::close(&scratch, h2), resource::ERR_BADF);
 }
 
 TEST(resource_test, used_handle_slots_never_have_unknown_type) {
@@ -111,7 +115,7 @@ TEST(resource_test, used_handle_slots_never_have_unknown_type) {
 
     bool saw_used = false;
     for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
-        const resource::handle_entry& entry = task->handles.entries[i];
+        const resource::handle_entry& entry = task->handles->entries[i];
         if (!entry.used) {
             continue;
         }
@@ -145,7 +149,7 @@ TEST(resource_test, missing_provider_ops_return_err_unsup) {
 
     resource::handle_t rh = -1;
     ASSERT_EQ(
-        resource::alloc_handle(&task->handles, read_obj, resource::resource_type::FILE, resource::RIGHT_READ, &rh),
+        resource::alloc_handle(task->handles, read_obj, resource::resource_type::FILE, resource::RIGHT_READ, &rh),
         resource::HANDLE_OK
     );
     resource::resource_release(read_obj);
@@ -162,7 +166,7 @@ TEST(resource_test, missing_provider_ops_return_err_unsup) {
 
     resource::handle_t wh = -1;
     ASSERT_EQ(
-        resource::alloc_handle(&task->handles, write_obj, resource::resource_type::FILE, resource::RIGHT_WRITE, &wh),
+        resource::alloc_handle(task->handles, write_obj, resource::resource_type::FILE, resource::RIGHT_WRITE, &wh),
         resource::HANDLE_OK
     );
     resource::resource_release(write_obj);
@@ -206,7 +210,7 @@ TEST(resource_test, terminal_release_invokes_close_once) {
 
     resource::handle_t h = -1;
     ASSERT_EQ(
-        resource::alloc_handle(&task->handles, obj, resource::resource_type::FILE, resource::RIGHT_READ, &h),
+        resource::alloc_handle(task->handles, obj, resource::resource_type::FILE, resource::RIGHT_READ, &h),
         resource::HANDLE_OK
     );
 
@@ -330,7 +334,7 @@ TEST(resource_test, dup2_replaces_and_closes_target) {
 
     resource::handle_t victim = -1;
     ASSERT_EQ(
-        resource::alloc_handle(&task->handles, victim_obj, resource::resource_type::FILE, resource::RIGHT_READ, &victim),
+        resource::alloc_handle(task->handles, victim_obj, resource::resource_type::FILE, resource::RIGHT_READ, &victim),
         resource::HANDLE_OK
     );
     resource::resource_release(victim_obj);
@@ -381,7 +385,7 @@ TEST(resource_test, dup_flag_inheritance_and_dup3_cloexec) {
     resource::handle_t f = -1;
     ASSERT_EQ(resource::open(task, "/dup_flags", fs::O_CREAT | fs::O_RDWR, &f), resource::OK);
     ASSERT_EQ(
-        resource::set_handle_flags(&task->handles, f, resource::RESOURCE_HANDLE_CLOEXEC | fs::O_NONBLOCK),
+        resource::set_handle_flags(task->handles, f, resource::RESOURCE_HANDLE_CLOEXEC | fs::O_NONBLOCK),
         resource::HANDLE_OK
     );
 
@@ -389,7 +393,7 @@ TEST(resource_test, dup_flag_inheritance_and_dup3_cloexec) {
     ASSERT_TRUE(d >= 0);
 
     uint32_t dflags = 0;
-    ASSERT_EQ(resource::get_handle_flags(&task->handles, static_cast<resource::handle_t>(d), &dflags), resource::HANDLE_OK);
+    ASSERT_EQ(resource::get_handle_flags(task->handles, static_cast<resource::handle_t>(d), &dflags), resource::HANDLE_OK);
     EXPECT_EQ(dflags, static_cast<uint32_t>(fs::O_NONBLOCK));
 
     ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(d)), resource::OK);
@@ -398,7 +402,7 @@ TEST(resource_test, dup_flag_inheritance_and_dup3_cloexec) {
     EXPECT_EQ(t, d);
 
     uint32_t tflags = 0;
-    ASSERT_EQ(resource::get_handle_flags(&task->handles, static_cast<resource::handle_t>(t), &tflags), resource::HANDLE_OK);
+    ASSERT_EQ(resource::get_handle_flags(task->handles, static_cast<resource::handle_t>(t), &tflags), resource::HANDLE_OK);
     EXPECT_EQ(tflags, static_cast<uint32_t>(fs::O_NONBLOCK | resource::RESOURCE_HANDLE_CLOEXEC));
 
     ASSERT_EQ(resource::close(task, f), resource::OK);

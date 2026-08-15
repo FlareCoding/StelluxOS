@@ -159,11 +159,20 @@ __PRIVILEGED_CODE proc_resource* get_proc_resource(resource_object* obj) {
 }
 
 __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
+    // Claim the task, a concurrent group teardown may have already
+    // moved it to dead and handed the memory to the reaper
+    uint32_t expected = sched::TASK_STATE_CREATED;
+    if (!__atomic_compare_exchange_n(&t->state, &expected,
+                                     sched::TASK_STATE_DEAD, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return;
+    }
+
     // Leave the registry before the group teardown so registry walkers
     // never see a task whose group is being freed (same order as reap_task)
     sched::g_task_registry.remove(*t);
 
-    resource::close_all(t);
+    resource::release_task_handles(t);
     if (t->cwd) {
         if (t->cwd->release()) {
             fs::node::ref_destroy(t->cwd);

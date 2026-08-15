@@ -74,7 +74,7 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
 
     resource::handle_t h = -1;
     rc = resource::alloc_handle(
-        &task->handles, obj, resource::resource_type::SOCKET,
+        task->handles, obj, resource::resource_type::SOCKET,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h
     );
     if (rc != resource::HANDLE_OK) {
@@ -113,7 +113,7 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
 
     resource::handle_t h0 = -1;
     rc = resource::alloc_handle(
-        &task->handles, obj_a, resource::resource_type::SOCKET,
+        task->handles, obj_a, resource::resource_type::SOCKET,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h0
     );
     if (rc != resource::HANDLE_OK) {
@@ -125,7 +125,7 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
 
     resource::handle_t h1 = -1;
     rc = resource::alloc_handle(
-        &task->handles, obj_b, resource::resource_type::SOCKET,
+        task->handles, obj_b, resource::resource_type::SOCKET,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h1
     );
     if (rc != resource::HANDLE_OK) {
@@ -157,7 +157,7 @@ DEFINE_SYSCALL3(bind, fd, addr, addrlen) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
@@ -190,7 +190,7 @@ DEFINE_SYSCALL2(listen, fd, backlog) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
@@ -216,7 +216,7 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
@@ -250,7 +250,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     resource::resource_object* listen_obj = nullptr;
     uint32_t handle_flags = 0;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &listen_obj, &handle_flags);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
     if (listen_obj->type != resource::resource_type::SOCKET || !listen_obj->impl) {
@@ -278,7 +278,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
 
     resource::handle_t new_handle = -1;
     rc = resource::alloc_handle(
-        &task->handles, new_obj, resource::resource_type::SOCKET,
+        task->handles, new_obj, resource::resource_type::SOCKET,
         resource::RIGHT_READ | resource::RIGHT_WRITE, &new_handle);
     if (rc != resource::HANDLE_OK) {
         resource::resource_release(new_obj);
@@ -320,7 +320,7 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_WRITE, &obj
     );
     if (rc != resource::HANDLE_OK) {
@@ -393,7 +393,7 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj
     );
     if (rc != resource::HANDLE_OK) {
@@ -479,7 +479,7 @@ DEFINE_SYSCALL5(setsockopt, fd, level, optname, optval, optlen) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
@@ -518,7 +518,7 @@ DEFINE_SYSCALL5(getsockopt, fd, level, optname, optval, optlen) {
 
     resource::resource_object* obj = nullptr;
     int32_t rc = resource::get_handle_object(
-        &task->handles, static_cast<resource::handle_t>(fd),
+        task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;

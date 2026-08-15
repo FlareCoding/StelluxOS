@@ -46,11 +46,20 @@ __PRIVILEGED_CODE void resource_release(resource_object* obj) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void init_task_handles(sched::task* task) {
+__PRIVILEGED_CODE int32_t init_task_handles(sched::task* task) {
     if (!task) {
-        return;
+        return ERR_INVAL;
     }
-    init_handle_table(&task->handles);
+
+    handle_table* table = heap::kalloc_new<handle_table>();
+    if (!table) {
+        return ERR_NOMEM;
+    }
+
+    init_handle_table(table);
+    task->handles = table;
+
+    return OK;
 }
 
 __PRIVILEGED_CODE static bool valid_open_flags(uint32_t flags) {
@@ -107,7 +116,7 @@ __PRIVILEGED_CODE int32_t open(
     }
 
     uint32_t rights = rights_from_open_flags(fs_flags);
-    rc = alloc_handle(&owner->handles, obj, rtype, rights, out_handle);
+    rc = alloc_handle(owner->handles, obj, rtype, rights, out_handle);
     if (rc != HANDLE_OK) {
         resource_release(obj);
         return (rc == HANDLE_ERR_NOSPC) ? ERR_TABLEFULL : ERR_IO;
@@ -115,8 +124,8 @@ __PRIVILEGED_CODE int32_t open(
 
     if (flags & fs::O_CLOEXEC) {
         uint32_t handle_flags = 0;
-        get_handle_flags(&owner->handles, *out_handle, &handle_flags);
-        set_handle_flags(&owner->handles, *out_handle,
+        get_handle_flags(owner->handles, *out_handle, &handle_flags);
+        set_handle_flags(owner->handles, *out_handle,
                          handle_flags | RESOURCE_HANDLE_CLOEXEC);
     }
 
@@ -140,7 +149,7 @@ __PRIVILEGED_CODE ssize_t read(
 
     resource_object* obj = nullptr;
     uint32_t handle_flags = 0;
-    int32_t rc = get_handle_object(&owner->handles, handle, RIGHT_READ, &obj, &handle_flags);
+    int32_t rc = get_handle_object(owner->handles, handle, RIGHT_READ, &obj, &handle_flags);
     if (rc != HANDLE_OK) {
         return (rc == HANDLE_ERR_ACCESS) ? ERR_ACCESS : ERR_BADF;
     }
@@ -169,7 +178,7 @@ __PRIVILEGED_CODE ssize_t write(
 
     resource_object* obj = nullptr;
     uint32_t handle_flags = 0;
-    int32_t rc = get_handle_object(&owner->handles, handle, RIGHT_WRITE, &obj, &handle_flags);
+    int32_t rc = get_handle_object(owner->handles, handle, RIGHT_WRITE, &obj, &handle_flags);
     if (rc != HANDLE_OK) {
         return (rc == HANDLE_ERR_ACCESS) ? ERR_ACCESS : ERR_BADF;
     }
@@ -198,7 +207,7 @@ __PRIVILEGED_CODE int32_t ioctl(
 
     resource_object* obj = nullptr;
     uint32_t handle_flags = 0;
-    int32_t rc = get_handle_object(&owner->handles, handle, 0, &obj, &handle_flags);
+    int32_t rc = get_handle_object(owner->handles, handle, 0, &obj, &handle_flags);
     if (rc != HANDLE_OK) {
         return ERR_BADF;
     }
@@ -224,7 +233,7 @@ __PRIVILEGED_CODE int32_t close(
     }
 
     resource_object* obj = nullptr;
-    int32_t rc = remove_handle(&owner->handles, handle, &obj);
+    int32_t rc = remove_handle(owner->handles, handle, &obj);
     if (rc != HANDLE_OK) {
         return ERR_BADF;
     }
@@ -236,18 +245,16 @@ __PRIVILEGED_CODE int32_t close(
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void close_all(sched::task* owner) {
-    if (!owner) {
+__PRIVILEGED_CODE void release_task_handles(sched::task* owner) {
+    if (!owner || !owner->handles) {
         return;
     }
 
-    for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
-        resource_object* obj = nullptr;
-        int32_t rc = remove_handle(&owner->handles, static_cast<handle_t>(i), &obj);
-        if (rc == HANDLE_OK) {
-            resource_release(obj);
-        }
+    if (owner->handles->release()) {
+        handle_table::ref_destroy(owner->handles);
     }
+
+    owner->handles = nullptr;
 }
 
 } // namespace resource

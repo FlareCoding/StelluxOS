@@ -12,6 +12,8 @@ DECLARE_SYSCALL(getegid);
 DECLARE_SYSCALL(exit);
 DECLARE_SYSCALL(exit_group);
 DECLARE_SYSCALL(set_tid_address);
+DECLARE_SYSCALL(clone);
+DECLARE_SYSCALL(sched_yield);
 DECLARE_SYSCALL(nanosleep);
 DECLARE_SYSCALL(setpgid);
 DECLARE_SYSCALL(getpgid);

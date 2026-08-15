@@ -20,6 +20,7 @@ constexpr uint32_t TASK_FLAG_IDLE        = (1 << 3);  // Is the idle task
 constexpr uint32_t TASK_FLAG_IN_SYSCALL  = (1 << 5);  // Currently handling a syscall
 constexpr uint32_t TASK_FLAG_IN_IRQ      = (1 << 6);  // Currently in interrupt handler
 constexpr uint32_t TASK_FLAG_PREEMPTIBLE = (1 << 7);  // Can be preempted
+constexpr uint32_t TASK_FLAG_POSIX_THREAD = (1 << 8); // Created through clone
 
 struct task_exec_core {
     uint32_t  flags;

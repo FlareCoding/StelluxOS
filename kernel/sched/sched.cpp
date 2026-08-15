@@ -27,6 +27,8 @@
 #include "resource/resource.h"
 #include "resource/providers/proc_provider.h"
 #include "fs/node.h"
+#include "mm/uaccess.h"
+#include "sync/futex.h"
 
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
@@ -147,7 +149,7 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
     }
 
     g_task_registry.remove(*t);
-    resource::close_all(t);
+    resource::release_task_handles(t);
     if (t->cwd) {
         if (t->cwd->release()) {
             fs::node::ref_destroy(t->cwd);
@@ -477,17 +479,38 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
     RUN_ELEVATED({
         sched::task* task = current();
 
+        // Zero the registered thread id address and wake one joiner
+        // while the address space is still mapped
+        if (task->clear_child_tid) {
+            uint32_t zero = 0;
+
+            if (mm::uaccess::copy_to_user(
+                    reinterpret_cast<void*>(task->clear_child_tid),
+                    &zero, sizeof(zero)) == mm::uaccess::OK) {
+                sync::futex_wake(task->clear_child_tid, 1);
+            }
+
+            task->clear_child_tid = 0;
+        }
+
         // Thread group handling: leader kills all threads, non-leader removes itself
         if (task->group) {
             thread_group* tg = task->group;
 
             if (tg->leader == task) {
                 // Reaped never-started threads report the recorded group
-                // exit signal so every member exposes the same death cause
+                // exit status or signal so every member exposes the same
+                // death cause
                 int32_t reap_status = TASK_KILL_STATUS;
+
+                uint32_t ges = __atomic_load_n(&tg->group_exit_status,
+                                               __ATOMIC_ACQUIRE);
                 uint32_t es = __atomic_load_n(&tg->sig.exit_signal,
                                               __ATOMIC_ACQUIRE);
-                if (es != 0) {
+
+                if (ges != 0) {
+                    reap_status = static_cast<int32_t>(ges & 0xFF00u);
+                } else if (es != 0) {
                     reap_status = static_cast<int32_t>(es) & 0x7F;
                 }
 
@@ -534,9 +557,19 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
 
         if (task->proc_res) {
             auto* pr = task->proc_res;
+
+            uint32_t ges = task->group
+                ? __atomic_load_n(&task->group->group_exit_status,
+                                  __ATOMIC_ACQUIRE)
+                : 0;
+
             sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
             if (!pr->detached) {
-                if (task_kill_bit_set(task)) {
+                // A recorded exit_group status overrides the kill bit so
+                // the process reports the exit code, not a signal death
+                if (ges != 0) {
+                    pr->wait_status = static_cast<int32_t>(ges & 0xFF00u);
+                } else if (task_kill_bit_set(task)) {
                     pr->wait_status = exit_code & 0x7F;
                 } else {
                     pr->wait_status = (exit_code & 0xFF) << 8;
@@ -632,9 +665,16 @@ __PRIVILEGED_CODE task* create_kernel_task(
     }
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
-    resource::init_task_handles(t);
+    if (resource::init_task_handles(t) != resource::OK) {
+        log::error("sched: failed to allocate kernel task handle table");
+        vmm::free(task_stack_base);
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
     t->proc_res = nullptr;
     t->cwd = nullptr;
+    t->clear_child_tid = 0;
     t->sig = {};
     t->group = nullptr;
     t->group_link = {};
@@ -890,15 +930,28 @@ __PRIVILEGED_CODE task* create_user_task(
     }
     t->reaper_node.init(reap_task_thunk);
 
-    resource::init_task_handles(t);
+    if (resource::init_task_handles(t) != resource::OK) {
+        log::error("sched: failed to allocate process handle table");
+        if (t->exec.mm_ctx) {
+            mm::mm_context_release(t->exec.mm_ctx);
+            t->exec.mm_ctx = nullptr;
+            t->exec.user_pt_root = 0;
+            image->mm_ctx = nullptr;
+            image->pt_root = 0;
+        }
+        vmm::free(sys_stack_base);
+        heap::kfree_delete(t);
+        return nullptr;
+    }
     t->proc_res = nullptr;
     t->cwd = nullptr;
+    t->clear_child_tid = 0;
     t->sig = {};
 
     auto* tg = heap::kalloc_new<thread_group>();
     if (!tg) {
         log::error("sched: failed to allocate thread_group");
-        resource::close_all(t);
+        resource::release_task_handles(t);
         if (t->exec.mm_ctx) {
             mm::mm_context_release(t->exec.mm_ctx);
             t->exec.mm_ctx = nullptr;
@@ -915,6 +968,7 @@ __PRIVILEGED_CODE task* create_user_task(
     tg->pid = t->tid;
     tg->threads.init();
     tg->thread_count = 0;
+    tg->group_exit_status = 0;
 
     // POSIX inheritance: a new process joins its creator's process group
     task* creator = current();
@@ -933,13 +987,17 @@ __PRIVILEGED_CODE task* create_user_task(
 }
 
 /**
+ * Shared setup for native and clone threads. Initializes every task
+ * field except the initial CPU context, which each entry point fills
+ * in after this returns. The task joins the creator's thread group
+ * and either snapshots or shares the creator's handle table.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE task* create_user_thread(
-    task* creator, uintptr_t entry, uintptr_t arg,
-    uintptr_t stack_top, const char* name
+__PRIVILEGED_CODE static task* init_user_thread_core(
+    task* creator, uintptr_t stack_top, bool share_files, const char* name
 ) {
-    if (!creator || !creator->exec.mm_ctx || !creator->group) {
+    if (!creator || !creator->exec.mm_ctx || !creator->group ||
+        !creator->handles) {
         log::error("sched: invalid creator provided for user thread creation");
         return nullptr;
     }
@@ -953,6 +1011,7 @@ __PRIVILEGED_CODE task* create_user_thread(
     // System stack in kernel VA
     uintptr_t sys_stack_base = 0;
     uintptr_t sys_stack_top = 0;
+
     if (vmm::alloc_stack(SYSTEM_STACK_PAGES, SYSTEM_GUARD_PAGES,
             kva::tag::privileged_stack, sys_stack_base, sys_stack_top) != vmm::OK) {
         log::error("sched: failed to allocate system stack for user thread task");
@@ -960,15 +1019,44 @@ __PRIVILEGED_CODE task* create_user_thread(
         return nullptr;
     }
 
+    if (share_files) {
+        // POSIX thread semantics, both tasks use one shared table
+        creator->handles->add_ref();
+        t->handles = creator->handles;
+    } else {
+        // Native thread semantics, the new task gets a private snapshot
+        // copy of the creator's handle table under the source table lock
+        if (resource::init_task_handles(t) != resource::OK) {
+            log::error("sched: failed to allocate thread handle table");
+            vmm::free(sys_stack_base);
+            heap::kfree_delete(t);
+            return nullptr;
+        }
+
+        sync::irq_lock_guard guard(creator->handles->lock);
+
+        for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+            const auto& src = creator->handles->entries[i];
+            if (!src.used || !src.obj) {
+                continue;
+            }
+
+            auto& dst = t->handles->entries[i];
+            dst.used = true;
+            dst.generation = src.generation;
+            dst.flags = src.flags;
+            dst.rights = src.rights;
+            dst.type = src.type;
+            dst.obj = src.obj;
+
+            resource::resource_add_ref(dst.obj);
+        }
+    }
+
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
     t->exec.on_cpu = 0;
-#if defined(__x86_64__)
-    // x86_64: entry RSP must be 8 mod 16
-    t->exec.task_stack_top = stack_top - 0x8;
-#else
     t->exec.task_stack_top = stack_top;
-#endif
     t->exec.system_stack_top = sys_stack_top;
     t->exec.pt_root = paging::supervisor_pt_root_for_user_task(creator->exec.mm_ctx->pt_root);
     t->exec.user_pt_root = creator->exec.mm_ctx->pt_root;
@@ -985,14 +1073,16 @@ __PRIVILEGED_CODE task* create_user_thread(
     for (size_t i = 0; i < sizeof(thread_cpu_context); i++) {
         ctx_bytes[i] = 0;
     }
-    arch_init_task_context(t, reinterpret_cast<void (*)(void *)>(entry), reinterpret_cast<void*>(arg));
 
     t->tid = __atomic_fetch_add(&g_next_tid, 1, __ATOMIC_RELAXED);
     t->state = TASK_STATE_CREATED;
     t->exit_code = 0;
     t->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
+    t->clear_child_tid = 0;
+
     t->sig = {};
     t->sig.blocked = __atomic_load_n(&creator->sig.blocked, __ATOMIC_ACQUIRE);
+
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1)); 
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
 
@@ -1002,14 +1092,17 @@ __PRIVILEGED_CODE task* create_user_thread(
     t->timer_link = {};
     t->timer_deadline = 0;
     t->tlb_sync_ticket.armed = 0;
+
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
     }
+
     t->reaper_node.init(reap_task_thunk);
 
     // Join the process's thread group
     thread_group* tg = creator->group;
     tg->add_ref(); // thread takes a shared reference to the group
+
     t->group = tg;
     t->group_link = {};
 
@@ -1017,21 +1110,6 @@ __PRIVILEGED_CODE task* create_user_thread(
     tg->threads.push_back(t);
     tg->thread_count++;
     sync::spin_unlock_irqrestore(tg->lock, irq);
-
-    // Allocate a new resource handle table and copy the resources from the caller's task
-    resource::init_task_handles(t);
-    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
-        const auto& src = creator->handles.entries[i];
-        if (!src.used || !src.obj) continue;
-        auto& dst = t->handles.entries[i];
-        dst.used = true;
-        dst.generation = src.generation;
-        dst.flags = src.flags;
-        dst.rights = src.rights;
-        dst.type = src.type;
-        dst.obj = src.obj;
-        resource::resource_add_ref(dst.obj);
-    }
 
     t->proc_res = nullptr;
 
@@ -1042,6 +1120,58 @@ __PRIVILEGED_CODE task* create_user_thread(
     }
 
     g_task_registry.insert(t);
+
+    return t;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE task* create_user_thread(
+    task* creator, uintptr_t entry, uintptr_t arg,
+    uintptr_t stack_top, const char* name
+) {
+#if defined(__x86_64__)
+    // The task starts at a function entry, where the ABI expects the
+    // 8 byte bias a call instruction would have left on the stack
+    stack_top -= 0x8;
+#endif
+
+    task* t = init_user_thread_core(creator, stack_top, false, name);
+    if (!t) {
+        return nullptr;
+    }
+
+    arch_init_task_context(t, reinterpret_cast<void (*)(void *)>(entry), reinterpret_cast<void*>(arg));
+
+    return t;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE task* clone_user_thread(
+    task* creator, uintptr_t stack_top, uintptr_t tls, bool set_tls,
+    bool share_files
+) {
+    // The child resumes at the clone return point rather than at a
+    // function entry, so the stack pointer is used exactly as passed
+    task* t = init_user_thread_core(creator, stack_top, share_files,
+                                    creator->name);
+    if (!t) {
+        return nullptr;
+    }
+
+    // Marks the thread as following POSIX process wide exit semantics,
+    // unlike a native thread which exits on its own and stays joinable
+    t->exec.flags |= TASK_FLAG_POSIX_THREAD;
+
+    if (set_tls) {
+        t->exec.tls_base = tls;
+    }
+
+    arch_init_clone_cpu_context(t);
+
     return t;
 }
 
@@ -1082,9 +1212,13 @@ __PRIVILEGED_CODE int32_t init() {
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
-    resource::init_task_handles(idle);
+    if (resource::init_task_handles(idle) != resource::OK) {
+        log::error("sched: failed to allocate idle task handle table");
+        return ERR_NO_MEM;
+    }
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
+    idle->clear_child_tid = 0;
     idle->sig = {};
     idle->group = nullptr;
     idle->group_link = {};
@@ -1152,7 +1286,9 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->cleanup_stage = TASK_CLEANUP_STAGE_ACTIVE;
     idle->tlb_sync_ticket.armed = 0;
     fpu::init_state(&idle->exec.fpu_ctx);
-    resource::init_task_handles(idle);
+    if (resource::init_task_handles(idle) != resource::OK) {
+        return ERR_NO_MEM;
+    }
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
 

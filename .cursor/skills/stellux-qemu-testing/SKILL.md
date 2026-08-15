@@ -74,5 +74,13 @@ All through `printf '<cmd>\n' | nc -U /tmp/stlx_mon`:
 - `make test ARCH=x` does a clean test-flavored rebuild (~60-90s, 611/606
   baseline passes); afterwards run `make clean && make image ARCH=x` so the
   disk image matches committed code before any live verification.
+- `make test` does NOT cover userland process, thread, or signal behavior.
+  Any change to task lifecycle, exit, clone, or signals must additionally run
+  `threadtest`, `pthreadtest`, and `sigtest` live, since only those exercise
+  native threads and per-thread exit status.
+- A test app that returns to the shell prompt WITHOUT printing its summary
+  line has died mid-run, it has not passed. Always grep for the summary
+  (`--- Results: N passed` for threadtest, `NAME: N passed` for the others)
+  and never infer success from a screen of PASS lines.
 - stlxdm autostarts terminals and dropbear; a serial-shell-launched GUI app
   fails with "failed to create window" until the splash is dismissed.
