@@ -14,7 +14,7 @@ constexpr int32_t ERR_NO_MEM = -1;
 
 // Exec-style string limits shared by proc_create copying and the user stack builder
 constexpr size_t MAX_ARG_STRLEN  = 256; // bytes per argv/envp string, including NUL
-constexpr size_t MAX_ARG_STRINGS = 64;  // strings per argv/envp array
+constexpr size_t MAX_ARG_STRINGS = 64; // strings per argv/envp array
 
 /**
  * One CPU's timer tick counters. A tick is charged as idle when it

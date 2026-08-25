@@ -701,4 +701,3 @@ stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window) {
     return window->front;
 }
 
-

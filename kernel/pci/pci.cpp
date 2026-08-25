@@ -83,7 +83,6 @@ static inline uintptr_t dev_base_for(uint8_t bus, uint8_t slot, uint8_t func) {
     return bdf_to_ecam_offset(bus, slot, func);
 }
 
-
 __PRIVILEGED_CODE static uint8_t cfg_read8(uintptr_t base, uint16_t offset) {
     if (g_backend == config_backend::ECAM) {
         return mmio::read8(base + offset);
@@ -219,7 +218,6 @@ static uint64_t pci_bus_to_cpu(uint64_t pci_addr) {
     return pci_addr;
 }
 
-
 const bar& device::get_bar(uint8_t index) const {
     if (index >= MAX_BARS) return g_null_bar;
     return m_bars[index];
@@ -280,7 +278,6 @@ __PRIVILEGED_CODE void device::disable() {
     cmd &= ~static_cast<uint16_t>(CMD_IO_SPACE | CMD_MEMORY_SPACE | CMD_BUS_MASTER);
     config_write16(CFG_COMMAND, cmd);
 }
-
 
 __PRIVILEGED_CODE void parse_bars(device& dev) {
     if (dev.m_header_type != HDR_TYPE_NORMAL) return;
@@ -350,7 +347,6 @@ __PRIVILEGED_CODE void parse_bars(device& dev) {
     dev.config_write16(CFG_COMMAND, saved_cmd);
 }
 
-
 __PRIVILEGED_CODE void parse_capabilities(device& dev) {
     uint16_t status = dev.config_read16(CFG_STATUS);
     if (!(status & STS_CAPABILITIES)) return;
@@ -373,7 +369,6 @@ __PRIVILEGED_CODE void parse_capabilities(device& dev) {
         visited++;
     }
 }
-
 
 __PRIVILEGED_CODE void enumerate_function(uint8_t bus, uint8_t slot, uint8_t func) {
     if (g_device_count >= MAX_DEVICES) return;
@@ -454,7 +449,6 @@ __PRIVILEGED_CODE static void enumerate_bridges() {
     }
 }
 
-
 __PRIVILEGED_CODE static int32_t init_ecam() {
     const auto* mcfg = acpi::find_table("MCFG");
     if (!mcfg) return ERR_NO_MCFG;
@@ -490,7 +484,6 @@ __PRIVILEGED_CODE static int32_t init_ecam() {
     log::info("pci: ECAM at phys 0x%lx, buses %u-%u", seg.base_address, seg.start_bus, seg.end_bus);
     return OK;
 }
-
 
 // BCM2711 (Raspberry Pi 4) known PCIe controller address
 constexpr uint64_t BCM2711_PCIE_BASE = 0xfd500000;
@@ -559,7 +552,6 @@ __PRIVILEGED_CODE static int32_t init_broadcom() {
     return OK;
 }
 
-
 __PRIVILEGED_CODE int32_t init() {
     if (g_initialized) return OK;
 
@@ -592,7 +584,6 @@ __PRIVILEGED_CODE int32_t init() {
     g_initialized = true;
     return OK;
 }
-
 
 uint32_t device_count() {
     return g_device_count;

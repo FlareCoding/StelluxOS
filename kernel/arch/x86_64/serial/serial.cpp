@@ -36,7 +36,7 @@ constexpr uint8_t MCR_RTS = 0x02;         // Request to send
 constexpr uint8_t MCR_OUT2 = 0x08;        // OUT2 (enables IRQs)
 
 // IER bits
-constexpr uint8_t IER_RX_AVAIL = 0x01;    // Received data available
+constexpr uint8_t IER_RX_AVAIL = 0x01; // Received data available
 
 // Baud rate divisors
 constexpr uint16_t BAUD_115200 = 0x01;

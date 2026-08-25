@@ -46,7 +46,7 @@ constexpr uint32_t VMA_FLAG_DEVICE    = (1u << 5);
 
 constexpr uintptr_t MMAP_BASE_DEFAULT = 0x00000080000000ULL;
 constexpr uintptr_t USER_STACK_TOP    = 0x00007FFFFFF00000ULL;
-constexpr size_t    USER_STACK_PAGES  = 8;       // 32 KiB
+constexpr size_t    USER_STACK_PAGES  = 8; // 32 KiB
 constexpr size_t    USER_STACK_MAX_PAGES = 2048; // 8 MiB max stack space via lazy on-demand paging
 constexpr size_t    USER_STACK_GUARD_PAGES = 1;
 

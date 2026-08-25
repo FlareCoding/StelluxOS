@@ -167,7 +167,7 @@ int32_t bcm_genet_driver::phy_reset_post_action() {
     if (rc != 0) return rc;
 
     val &= BRGPHY_AUXCTL_MISC_DATA_MASK;
-    val |= BRGPHY_AUXCTL_MISC_RGMII_SKEW_EN;  // enable RX clock skew
+    val |= BRGPHY_AUXCTL_MISC_RGMII_SKEW_EN; // enable RX clock skew
 
     rc = mdio_write(m_phy_addr, BRGPHY_AUXCTL,
                     BRGPHY_AUXCTL_MISC_WRITE_EN | BRGPHY_AUXCTL_SHADOW_MISC | val);
@@ -181,7 +181,7 @@ int32_t bcm_genet_driver::phy_reset_post_action() {
     if (rc != 0) return rc;
 
     val &= BRGPHY_SHADOW_1C_DATA_MASK;
-    val &= ~BRGPHY_SHADOW_1C_GTXCLK_EN;  // no TX clock delay for RGMII-RXID
+    val &= ~BRGPHY_SHADOW_1C_GTXCLK_EN; // no TX clock delay for RGMII-RXID
 
     rc = mdio_write(m_phy_addr, BRGPHY_SHADOW_1C,
                     BRGPHY_SHADOW_1C_WRITE_EN | BRGPHY_SHADOW_1C_CLK_CTRL | val);
@@ -266,7 +266,7 @@ void bcm_genet_driver::phy_configure_mac(phy_speed speed, phy_duplex duplex) {
     uint32_t oob = reg_read(EXT_RGMII_OOB_CTRL);
     oob &= ~EXT_RGMII_OOB_OOB_DIS;
     oob |= EXT_RGMII_OOB_RGMII_LINK | EXT_RGMII_OOB_RGMII_MODE;
-    oob &= ~EXT_RGMII_OOB_ID_MODE_DIS;  // keep ID mode enabled for RGMII-RXID
+    oob &= ~EXT_RGMII_OOB_ID_MODE_DIS; // keep ID mode enabled for RGMII-RXID
     reg_write(EXT_RGMII_OOB_CTRL, oob);
 
     uint32_t cmd = reg_read(UMAC_CMD);
@@ -309,7 +309,7 @@ void bcm_genet_driver::genet_reset() {
     // Max frame length and buffer configuration
     reg_write(UMAC_MAX_FRAME_LEN, MAX_PACKET_SIZE);
     val = reg_read(RBUF_CTRL);
-    val |= RBUF_ALIGN_2B;  // 2-byte padding so IP headers land on 4-byte boundary
+    val |= RBUF_ALIGN_2B; // 2-byte padding so IP headers land on 4-byte boundary
     reg_write(RBUF_CTRL, val);
     reg_write(RBUF_TBUF_SIZE_CTRL, 1);
 

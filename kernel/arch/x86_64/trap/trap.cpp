@@ -36,7 +36,7 @@ static inline int vector_to_signal(uint64_t vec) {
         case x86::EXC_DIVIDE_ERROR:
         case x86::EXC_OVERFLOW:
         case x86::EXC_X87_FPU:
-        case x86::EXC_SIMD_FP:            return 8;   // SIGFPE
+        case x86::EXC_SIMD_FP:            return 8; // SIGFPE
         case x86::EXC_DEBUG:
         case x86::EXC_BREAKPOINT:         return 5;   // SIGTRAP
         case x86::EXC_ALIGNMENT_CHECK:    return 7;   // SIGBUS

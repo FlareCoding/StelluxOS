@@ -134,7 +134,7 @@ protected:
 
     struct bar_mapping {
         uintptr_t base; // for vmm::free()
-        uintptr_t va;   // for MMIO access
+        uintptr_t va; // for MMIO access
     };
     bar_mapping m_bar_mappings[pci::MAX_BARS];
 

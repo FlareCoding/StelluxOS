@@ -86,7 +86,7 @@ static uint16_t my_ntohs(uint16_t v) {
     return (uint16_t)((v >> 8) | (v << 8));
 }
 
-#define DNS_SERVER_IP     0x08080808  // 8.8.8.8 (Google Public DNS)
+#define DNS_SERVER_IP     0x08080808 // 8.8.8.8 (Google Public DNS)
 #define DNS_PORT          53
 #define DNS_HEADER_LEN    12
 #define DNS_TYPE_A        1
@@ -96,7 +96,7 @@ static uint16_t my_ntohs(uint16_t v) {
 #define DNS_RCODE_MASK    0x000F
 #define DNS_MAX_PACKET    512
 #define DNS_RECV_TIMEOUT_MS  100
-#define DNS_RECV_RETRIES     50       // 50 * 100ms = 5s per attempt
+#define DNS_RECV_RETRIES     50 // 50 * 100ms = 5s per attempt
 #define DNS_SEND_ATTEMPTS    2
 
 static int dns_encode_name(const char* name, uint8_t* buf, size_t buf_size) {
@@ -343,7 +343,7 @@ int main(int argc, char* argv[]) {
             if (nrecv >= (ssize_t)sizeof(struct icmp_hdr)) {
                 struct icmp_hdr* peek = (struct icmp_hdr*)reply_buf;
                 if (peek->type == ICMP_ECHO_REPLY) {
-                    break;  // got a reply
+                    break; // got a reply
                 }
                 // Not a reply (e.g. echo request looped back), drain it
                 // and immediately retry without sleeping, but still charge
@@ -357,7 +357,7 @@ int main(int argc, char* argv[]) {
                                            .tv_nsec = PING_RECV_POLL_MS * 1000000L };
             nanosleep(&poll_delay, NULL);
             elapsed_ms += PING_RECV_POLL_MS;
-            nrecv = -1;  // ensure timeout path is taken if loop exhausts
+            nrecv = -1; // ensure timeout path is taken if loop exhausts
         }
 
         struct timespec t1;

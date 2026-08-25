@@ -34,10 +34,10 @@ __PRIVILEGED_CODE static inline void set_gate(uint8_t vec, void (*handler)(), ui
  */
 __PRIVILEGED_CODE static inline uint8_t get_ist_for_vector(uint8_t vec) {
     switch (vec) {
-        case x86::EXC_DOUBLE_FAULT:   return x86::IST_DF;   // IST1
+        case x86::EXC_DOUBLE_FAULT:   return x86::IST_DF; // IST1
         case x86::EXC_NMI:            return x86::IST_NMI; // IST2
         case x86::EXC_MACHINE_CHECK:  return x86::IST_MCE; // IST3
-        default:                      return 0;             // Use current stack
+        default:                      return 0; // Use current stack
     }
 }
 

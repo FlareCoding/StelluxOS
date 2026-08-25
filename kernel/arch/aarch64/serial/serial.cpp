@@ -56,7 +56,7 @@ constexpr uint32_t CR_TXE = (1 << 8);    // Transmit enable
 constexpr uint32_t CR_RXE = (1 << 9);    // Receive enable
 
 // Line control register bits
-constexpr uint32_t LCR_FEN = (1 << 4);    // Enable FIFOs
+constexpr uint32_t LCR_FEN = (1 << 4); // Enable FIFOs
 constexpr uint32_t LCR_WLEN_8 = (3 << 5); // 8-bit word length
 
 // UART base virtual address (set during init)

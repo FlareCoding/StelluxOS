@@ -189,19 +189,19 @@ __PRIVILEGED_CODE static uint32_t inet_poll(
 }
 
 static const resource::resource_ops g_inet_icmp_ops = {
-    nullptr,                // read
-    nullptr,               // write
+    nullptr, // read
+    nullptr, // write
     inet_close,
     inet_ioctl,
-    nullptr,                // mmap
+    nullptr, // mmap
     inet_sendto,
     inet_recvfrom,
-    nullptr,                // bind
+    nullptr, // bind
     nullptr,              // listen
     nullptr,              // accept
-    nullptr,             // connect
-    nullptr,            // setsockopt
-    nullptr,           // getsockopt
+    nullptr, // connect
+    nullptr, // setsockopt
+    nullptr, // getsockopt
     inet_poll,
     nullptr, // shutdown
 };
@@ -453,17 +453,17 @@ __PRIVILEGED_CODE static int32_t inet_getsockopt(
 }
 
 static const resource::resource_ops g_inet_udp_ops = {
-    nullptr,                    // read
-    nullptr,                   // write
+    nullptr, // read
+    nullptr, // write
     inet_close,
     inet_ioctl,
-    nullptr,                    // mmap
+    nullptr, // mmap
     inet_udp_sendto,
     inet_udp_recvfrom,
-    inet_udp_bind,              // bind
+    inet_udp_bind, // bind
     nullptr,                  // listen
     nullptr,                  // accept
-    nullptr,                 // connect
+    nullptr, // connect
     inet_setsockopt,
     inet_getsockopt,
     inet_poll,

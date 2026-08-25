@@ -17,8 +17,8 @@ enum class main_item_tag : uint8_t {
     input    = 0x8,  // Input item
     output   = 0x9,  // Output item
     feature  = 0xB,  // Feature item
-    collection = 0xA,  // Start a collection (Application, Physical, etc.)
-    end_collection = 0xC  // End a collection
+    collection = 0xA, // Start a collection (Application, Physical, etc.)
+    end_collection = 0xC // End a collection
 };
 
 // Global item tags (used in Global item type)
@@ -77,7 +77,7 @@ enum class generic_desktop_usage : uint8_t {
     gamepad          = 0x05,  // Gamepad
     keyboard         = 0x06,  // Keyboard
     keypad           = 0x07,  // Keypad
-    multi_axis_controller = 0x08,  // Multi-axis controller
+    multi_axis_controller = 0x08, // Multi-axis controller
     x_axis           = 0x30,  // X-axis movement
     y_axis           = 0x31,  // Y-axis movement
     z_axis           = 0x32,  // Z-axis movement
@@ -140,6 +140,6 @@ inline const char* to_string(local_item_tag tag) {
     }
 }
 
-}  // namespace usb::hid
+} // namespace usb::hid
 
-#endif  // STELLUX_DRIVERS_USB_HID_HID_CONSTANTS_H
+#endif // STELLUX_DRIVERS_USB_HID_HID_CONSTANTS_H

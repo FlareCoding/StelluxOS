@@ -27,7 +27,7 @@ struct __attribute__((packed)) madt_gicc {
     uint64_t arm_mpidr;
     uint8_t  efficiency_class; // ACPI 6.0+
     uint8_t  reserved2;
-    uint16_t spe_interrupt;    // ACPI 6.3+
+    uint16_t spe_interrupt; // ACPI 6.3+
 };
 
 constexpr size_t GICC_MIN_LENGTH = 76; // ACPI 5.1 minimum (up to arm_mpidr)

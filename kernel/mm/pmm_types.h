@@ -69,7 +69,7 @@ struct __attribute__((packed)) page_frame_descriptor {
         } buddy;
         struct __attribute__((packed)) {
             uint8_t  class_index; // size class (0-7), or 0xFF for large
-            uint8_t  heap_type;   // 0=privileged, 1=unprivileged (see heap::heap_type)
+            uint8_t  heap_type; // 0=privileged, 1=unprivileged (see heap::heap_type)
             uint16_t free_count;
             uint16_t total_count;
             uint8_t  _pad[8];

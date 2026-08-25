@@ -259,7 +259,7 @@ __PRIVILEGED_CODE static void* get_or_create_table(pml4e_t* entry) {
     entry->value = 0;
     entry->present = 1;
     entry->read_write = 1;
-    entry->user_supervisor = 1;  // Allow user access to be controlled at leaf level
+    entry->user_supervisor = 1; // Allow user access to be controlled at leaf level
     entry->phys_addr = table_phys >> 12;
 
     return phys_to_virt(table_phys);
@@ -279,14 +279,14 @@ __PRIVILEGED_CODE static pte_t* get_pte_ptr(pmm::phys_addr_t root_pt, virt_addr_
 
     // PDPT -> PD
     pdpte_t* pdpte = &pdpt->entries[parts.pdpt_idx];
-    if (pdpte->page_size) return nullptr;  // 1GB page, can't get PTE
+    if (pdpte->page_size) return nullptr; // 1GB page, can't get PTE
     if (!pdpte->present && !create) return nullptr;
     page_directory_t* pd = static_cast<page_directory_t*>(create ? get_or_create_table(pdpte) : phys_to_virt(pdpte->phys_addr << 12));
     if (!pd) return nullptr;
 
     // PD -> PT
     pde_t* pde = &pd->entries[parts.pd_idx];
-    if (pde->page_size) return nullptr;  // 2MB page, can't get PTE
+    if (pde->page_size) return nullptr; // 2MB page, can't get PTE
     if (!pde->present && !create) return nullptr;
     page_table_t* pt = static_cast<page_table_t*>(create ? get_or_create_table(pde) : phys_to_virt(pde->phys_addr << 12));
     if (!pt) return nullptr;

@@ -13,7 +13,7 @@ constexpr uint16_t VRING_DESC_F_INDIRECT = 4;
 
 // Virtqueue descriptor
 struct vring_desc {
-    uint64_t addr;   // physical address
+    uint64_t addr; // physical address
     uint32_t len;
     uint16_t flags;
     uint16_t next;

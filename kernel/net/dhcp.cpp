@@ -66,7 +66,7 @@ static void init_dhcp_header(dhcp_packet* pkt, const uint8_t* mac, uint32_t xid)
     pkt->htype = DHCP_HTYPE_ETHERNET;
     pkt->hlen  = DHCP_HLEN_ETHERNET;
     pkt->hops  = 0;
-    pkt->xid   = xid;  // already in network byte order
+    pkt->xid   = xid; // already in network byte order
     pkt->secs  = 0;
     pkt->flags = htons(DHCP_FLAG_BROADCAST);
     // ciaddr, yiaddr, siaddr, giaddr all zero
@@ -174,11 +174,11 @@ static int32_t send_dhcp_broadcast(netif* iface, const uint8_t* payload,
 
     // --- IPv4 header ---
     auto* ip = reinterpret_cast<ipv4_header*>(frame + sizeof(eth_header));
-    ip->ver_ihl   = (4 << 4) | 5;      // IPv4, IHL=5 (20 bytes)
+    ip->ver_ihl   = (4 << 4) | 5; // IPv4, IHL=5 (20 bytes)
     ip->tos       = 0;
     ip->total_len = htons(static_cast<uint16_t>(ip_total));
     ip->id        = 0;
-    ip->flags_frag = 0;                 // no DF, no fragmentation
+    ip->flags_frag = 0; // no DF, no fragmentation
     ip->ttl       = 64;
     ip->protocol  = IPV4_PROTO_UDP;
     ip->checksum  = 0;

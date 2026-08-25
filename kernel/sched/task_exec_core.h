@@ -33,7 +33,7 @@ struct task_exec_core {
     uint64_t  user_pt_root; // physical address of user-space page table (= pt_root on x86 / TTBR0 on aarch64)
     mm::mm_context* mm_ctx; // owning reference to process address-space metadata
     fpu_state fpu_ctx;
-    uint64_t  tls_base;    // thread-local storage base (FS_BASE on x86, TPIDR_EL0 on aarch64)
+    uint64_t  tls_base; // thread-local storage base (FS_BASE on x86, TPIDR_EL0 on aarch64)
 
     // Staged full-register return context (x86): a signal
     // frame captured outside a syscall restores through an

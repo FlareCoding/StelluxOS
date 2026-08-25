@@ -100,19 +100,19 @@ inline const T* node_to_entry(const node* n) {
 template <typename T, node T::*Link, typename Compare>
 class tree {
 public:
-    constexpr tree() : root_(nullptr), count_(0), cmp_() {}
-    explicit constexpr tree(Compare cmp) : root_(nullptr), count_(0), cmp_(cmp) {}
+    constexpr tree() : m_root(nullptr), m_count(0), m_cmp() {}
+    explicit constexpr tree(Compare cmp) : m_root(nullptr), m_count(0), m_cmp(cmp) {}
 
-    [[nodiscard]] constexpr bool empty() const { return root_ == nullptr; }
-    [[nodiscard]] constexpr size_t size() const { return count_; }
+    [[nodiscard]] constexpr bool empty() const { return m_root == nullptr; }
+    [[nodiscard]] constexpr size_t size() const { return m_count; }
 
     // Return the minimum/maximum entry, or nullptr if tree is empty.
     [[nodiscard]] T* min() const {
-        return to_entry(minimum(root_));
+        return to_entry(minimum(m_root));
     }
 
     [[nodiscard]] T* max() const {
-        return to_entry(maximum(root_));
+        return to_entry(maximum(m_root));
     }
 
     // Insert entry into the tree. Returns true if inserted, false if a
@@ -125,13 +125,13 @@ public:
 
         // BST descent to find insertion point
         node* parent = nullptr;
-        node* cur = root_;
+        node* cur = m_root;
         while (cur) {
             parent = cur;
             const T* cur_entry = to_entry(cur);
-            if (cmp_(*entry, *cur_entry)) {
+            if (m_cmp(*entry, *cur_entry)) {
                 cur = cur->left;
-            } else if (cmp_(*cur_entry, *entry)) {
+            } else if (m_cmp(*cur_entry, *entry)) {
                 cur = cur->right;
             } else {
                 return false; // duplicate
@@ -140,23 +140,23 @@ public:
 
         n->parent = parent;
         if (!parent) {
-            root_ = n;
-        } else if (cmp_(*entry, *to_entry(parent))) {
+            m_root = n;
+        } else if (m_cmp(*entry, *to_entry(parent))) {
             parent->left = n;
         } else {
             parent->right = n;
         }
 
-        insert_fixup(&root_, n);
-        ++count_;
+        insert_fixup(&m_root, n);
+        ++m_count;
         return true;
     }
 
     // Remove entry from this tree. Entry must be a member of this tree.
     void remove(T& entry) {
         node* n = to_node(entry);
-        remove_node(&root_, n);
-        --count_;
+        remove_node(&m_root, n);
+        --m_count;
         // Clear removed node's links for safety
         n->parent = nullptr;
         n->left = nullptr;
@@ -165,12 +165,12 @@ public:
 
     // Find an entry matching probe. Returns nullptr if not found.
     [[nodiscard]] T* find(const T& probe) const {
-        node* cur = root_;
+        node* cur = m_root;
         while (cur) {
             const T* cur_entry = to_entry(cur);
-            if (cmp_(probe, *cur_entry)) {
+            if (m_cmp(probe, *cur_entry)) {
                 cur = cur->left;
-            } else if (cmp_(*cur_entry, probe)) {
+            } else if (m_cmp(*cur_entry, probe)) {
                 cur = cur->right;
             } else {
                 return const_cast<T*>(cur_entry);
@@ -181,11 +181,11 @@ public:
 
     // Return the first entry >= probe, or nullptr if none.
     [[nodiscard]] T* lower_bound(const T& probe) const {
-        node* cur = root_;
+        node* cur = m_root;
         node* candidate = nullptr;
         while (cur) {
             const T* cur_entry = to_entry(cur);
-            if (cmp_(*cur_entry, probe)) {
+            if (m_cmp(*cur_entry, probe)) {
                 cur = cur->right;
             } else {
                 candidate = cur;
@@ -197,11 +197,11 @@ public:
 
     // Return the first entry > probe, or nullptr if none.
     [[nodiscard]] T* upper_bound(const T& probe) const {
-        node* cur = root_;
+        node* cur = m_root;
         node* candidate = nullptr;
         while (cur) {
             const T* cur_entry = to_entry(cur);
-            if (cmp_(probe, *cur_entry)) {
+            if (m_cmp(probe, *cur_entry)) {
                 candidate = cur;
                 cur = cur->left;
             } else {
@@ -224,47 +224,47 @@ public:
     }
 
     [[nodiscard]] bool validate() const {
-        return rbt::validate(root_, count_);
+        return rbt::validate(m_root, m_count);
     }
 
     [[nodiscard]] bool validate(const char*& err_out) const {
-        return rbt::validate(root_, count_, err_out);
+        return rbt::validate(m_root, m_count, err_out);
     }
 
     // Forward iterator for in-order traversal.
     class iterator {
     public:
-        constexpr iterator() : cur_(nullptr) {}
-        explicit constexpr iterator(node* n) : cur_(n) {}
+        constexpr iterator() : m_cur(nullptr) {}
+        explicit constexpr iterator(node* n) : m_cur(n) {}
 
-        T& operator*() const { return *node_to_entry<T, Link>(cur_); }
-        T* operator->() const { return node_to_entry<T, Link>(cur_); }
+        T& operator*() const { return *node_to_entry<T, Link>(m_cur); }
+        T* operator->() const { return node_to_entry<T, Link>(m_cur); }
 
         iterator& operator++() {
-            cur_ = rbt::next(cur_);
+            m_cur = rbt::next(m_cur);
             return *this;
         }
 
         iterator operator++(int) {
             iterator tmp = *this;
-            cur_ = rbt::next(cur_);
+            m_cur = rbt::next(m_cur);
             return tmp;
         }
 
-        bool operator==(const iterator& other) const { return cur_ == other.cur_; }
-        bool operator!=(const iterator& other) const { return cur_ != other.cur_; }
+        bool operator==(const iterator& other) const { return m_cur == other.m_cur; }
+        bool operator!=(const iterator& other) const { return m_cur != other.m_cur; }
 
     private:
-        node* cur_;
+        node* m_cur;
     };
 
-    iterator begin() const { return iterator(minimum(root_)); }
+    iterator begin() const { return iterator(minimum(m_root)); }
     iterator end() const { return iterator(nullptr); }
 
 private:
-    node*   root_;
-    size_t  count_;
-    Compare cmp_;
+    node*   m_root;
+    size_t  m_count;
+    Compare m_cmp;
 
     static constexpr node* to_node(T* e) { return &(e->*Link); }
     static constexpr node* to_node(T& e) { return &(e.*Link); }

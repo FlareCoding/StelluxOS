@@ -9,7 +9,7 @@ struct endpoint {
     uint8_t  address;         // bEndpointAddress (e.g. 0x81 = EP1 IN)
     uint8_t  transfer_type;   // 0=control, 1=isochronous, 2=bulk, 3=interrupt
     uint16_t max_packet_size;
-    uint8_t  interval;        // polling interval (interrupt/isochronous)
+    uint8_t  interval; // polling interval (interrupt/isochronous)
 
     inline uint8_t number() const { return address & 0x0F; }
     inline bool is_in() const { return (address & 0x80) != 0; }
@@ -54,7 +54,7 @@ struct device {
     uint8_t active_driver_count;
     bool disconnect_pending;
     bool hcd_teardown_complete; // HCD is done dereferencing hcd_device.
-    bool finalize_started;      // Final release path has claimed ownership.
+    bool finalize_started; // Final release path has claimed ownership.
 };
 
 } // namespace usb

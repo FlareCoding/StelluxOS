@@ -18,11 +18,11 @@ struct arp_header {
     uint16_t proto_type;   // network byte order
     uint8_t  hw_len;
     uint8_t  proto_len;
-    uint16_t opcode;       // network byte order
+    uint16_t opcode; // network byte order
     uint8_t  sender_mac[MAC_ADDR_LEN];
-    uint32_t sender_ip;    // network byte order
+    uint32_t sender_ip; // network byte order
     uint8_t  target_mac[MAC_ADDR_LEN];
-    uint32_t target_ip;    // network byte order
+    uint32_t target_ip; // network byte order
 } __attribute__((packed));
 
 static_assert(sizeof(arp_header) == 28, "arp_header must be 28 bytes");

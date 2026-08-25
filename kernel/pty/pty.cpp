@@ -133,7 +133,7 @@ static ssize_t pty_slave_read(
 static ssize_t pty_slave_write_onlcr(pty_channel* chan,
                                       const uint8_t* src, size_t count,
                                       bool nonblock) {
-    size_t consumed = 0;   // bytes consumed from src
+    size_t consumed = 0; // bytes consumed from src
     size_t i = 0;
 
     while (i < count) {
@@ -167,7 +167,7 @@ static ssize_t pty_slave_write_onlcr(pty_channel* chan,
             if (n < 0) {
                 return consumed > 0 ? static_cast<ssize_t>(consumed) : n;
             }
-            consumed++;  // count the original \n byte consumed
+            consumed++; // count the original \n byte consumed
             i++;
         }
     }

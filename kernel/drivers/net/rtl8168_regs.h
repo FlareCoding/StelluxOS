@@ -41,28 +41,28 @@ constexpr uint16_t REG_MAR0                  = 0x0008;  // Multicast bits [63:32
 constexpr uint16_t REG_MAR4                  = 0x000C;  // Multicast bits [31:0]
 
 // Dump Tally Counter Command (64-byte aligned physical address + command bit)
-constexpr uint16_t REG_DTCCR                 = 0x0010;  // 64-bit
+constexpr uint16_t REG_DTCCR                 = 0x0010; // 64-bit
 
 // TX descriptor start addresses (256-byte aligned, 64-bit)
 constexpr uint16_t REG_TNPDS                 = 0x0020;  // TX Normal Priority Descriptor Start
 constexpr uint16_t REG_THPDS                 = 0x0028;  // TX High Priority Descriptor Start
 
 // Command register
-constexpr uint16_t REG_CMD                   = 0x0037;  // 8-bit
+constexpr uint16_t REG_CMD                   = 0x0037; // 8-bit
 constexpr uint8_t  CMD_RST                   = (1u << 4);
 constexpr uint8_t  CMD_RE                    = (1u << 3);  // Receiver Enable
 constexpr uint8_t  CMD_TE                    = (1u << 2);  // Transmitter Enable
 
 // Transmit Priority Polling
-constexpr uint16_t REG_TPPOLL               = 0x0038;  // 8-bit, write-only
+constexpr uint16_t REG_TPPOLL               = 0x0038; // 8-bit, write-only
 constexpr uint8_t  TPPOLL_HPQ               = (1u << 7);  // High Priority Queue poll
 constexpr uint8_t  TPPOLL_NPQ               = (1u << 6);  // Normal Priority Queue poll
 constexpr uint8_t  TPPOLL_FSWINT            = (1u << 0);  // Forced Software Interrupt
 
 // Interrupt Mask Register
-constexpr uint16_t REG_IMR                   = 0x003C;  // 16-bit
+constexpr uint16_t REG_IMR                   = 0x003C; // 16-bit
 // Interrupt Status Register
-constexpr uint16_t REG_ISR                   = 0x003E;  // 16-bit
+constexpr uint16_t REG_ISR                   = 0x003E; // 16-bit
 
 // Shared IMR/ISR bit definitions
 constexpr uint16_t INT_TIMEOUT               = (1u << 14);
@@ -85,7 +85,7 @@ constexpr uint16_t INT_MASK_DEFAULT          = INT_MASK_TX | INT_MASK_RX |
                                                INT_MASK_LINK | INT_TIMEOUT;
 
 // Transmit Configuration Register
-constexpr uint16_t REG_TCR                   = 0x0040;  // 32-bit
+constexpr uint16_t REG_TCR                   = 0x0040; // 32-bit
 constexpr uint32_t TCR_HWVERID_MASK          = 0x7CF00000; // bits [30:28, 26, 23, 22:20]
 constexpr uint32_t TCR_IFG_MASK              = 0x03080000; // IFG[2:0]
 constexpr uint32_t TCR_IFG_DEFAULT           = 0x03000000; // IFG=011 (96ns at 1G)
@@ -94,7 +94,7 @@ constexpr uint32_t TCR_MXDMA_UNLIMITED       = 0x00000700; // 111 = unlimited
 constexpr uint32_t TCR_NOCRC                 = (1u << 16);
 
 // Receive Configuration Register
-constexpr uint16_t REG_RCR                   = 0x0044;  // 32-bit
+constexpr uint16_t REG_RCR                   = 0x0044; // 32-bit
 constexpr uint32_t RCR_RXFTH_MASK            = 0x0000E000; // RX FIFO threshold
 constexpr uint32_t RCR_RXFTH_NONE            = 0x0000E000; // 111 = no threshold
 constexpr uint32_t RCR_MXDMA_MASK            = 0x00000700; // Max DMA burst size
@@ -108,7 +108,7 @@ constexpr uint32_t RCR_APM                   = (1u << 1);  // Accept Physical Ma
 constexpr uint32_t RCR_AAP                   = (1u << 0);  // Accept All Packets
 
 // Timer Count Register (125 MHz internal clock -> 8ns per tick)
-constexpr uint16_t REG_TCTR                  = 0x0048;  // 32-bit
+constexpr uint16_t REG_TCTR                  = 0x0048; // 32-bit
 
 // 93C46/93C56 EEPROM Command Register
 constexpr uint16_t REG_9346CR                = 0x0050;  // 8-bit
@@ -127,24 +127,24 @@ constexpr uint16_t REG_CONFIG5               = 0x0056;
 constexpr uint16_t REG_TIMERINT              = 0x0058;
 
 // PHY Access Register (indirect MDIO via MMIO)
-constexpr uint16_t REG_PHYAR                 = 0x0060;  // 32-bit
-constexpr uint32_t PHYAR_FLAG                = (1u << 31);  // 1=write, auto-clears; 0=read, auto-sets
+constexpr uint16_t REG_PHYAR                 = 0x0060; // 32-bit
+constexpr uint32_t PHYAR_FLAG                = (1u << 31); // 1=write, auto-clears; 0=read, auto-sets
 constexpr uint32_t PHYAR_REG_SHIFT           = 16;
 constexpr uint32_t PHYAR_REG_MASK            = 0x001F0000;
 constexpr uint32_t PHYAR_DATA_MASK           = 0x0000FFFF;
 
 // PHY Status Register (real-time, updated every ~300us)
-constexpr uint16_t REG_PHYSTATUS             = 0x006C;  // 8-bit
+constexpr uint16_t REG_PHYSTATUS             = 0x006C; // 8-bit
 constexpr uint8_t  PHYSTS_TXFLOW             = (1u << 6);
 constexpr uint8_t  PHYSTS_RXFLOW             = (1u << 5);
-constexpr uint8_t  PHYSTS_1000MF             = (1u << 4);  // 1000 Mbps full-duplex
+constexpr uint8_t  PHYSTS_1000MF             = (1u << 4); // 1000 Mbps full-duplex
 constexpr uint8_t  PHYSTS_100M               = (1u << 3);
 constexpr uint8_t  PHYSTS_10M                = (1u << 2);
 constexpr uint8_t  PHYSTS_LINK               = (1u << 1);
 constexpr uint8_t  PHYSTS_FULLDUP            = (1u << 0);
 
 // Extended Register Access (ERIAR), used by 8168g+ chips
-constexpr uint16_t REG_ERIAR                 = 0x00DC;  // 32-bit
+constexpr uint16_t REG_ERIAR                 = 0x00DC; // 32-bit
 constexpr uint32_t ERIAR_FLAG                = (1u << 31);
 constexpr uint32_t ERIAR_WRITE               = 0x80000000;
 constexpr uint32_t ERIAR_READ                = 0x00000000;
@@ -152,19 +152,19 @@ constexpr uint32_t ERIAR_ADDR_MASK           = 0x0000FFFF;
 constexpr uint32_t ERIAR_TYPE_SHIFT          = 16;
 
 // Extended Register Data
-constexpr uint16_t REG_ERIDR                 = 0x00D0;  // 32-bit
+constexpr uint16_t REG_ERIDR                 = 0x00D0; // 32-bit
 
 // RX packet Maximum Size
 constexpr uint16_t REG_RMS                   = 0x00DA;  // 16-bit
 constexpr uint16_t RMS_MAX                   = 0x3FFF;  // 14 bits, max 16383
 
 // C+ Command Register
-constexpr uint16_t REG_CPCR                  = 0x00E0;  // 16-bit (word access only)
+constexpr uint16_t REG_CPCR                  = 0x00E0; // 16-bit (word access only)
 constexpr uint16_t CPCR_RXVLAN              = (1u << 6);  // VLAN de-tag on RX
 constexpr uint16_t CPCR_RXCHKSUM            = (1u << 5);  // RX checksum offload
 
 // RX Descriptor Start Address (256-byte aligned, 64-bit)
-constexpr uint16_t REG_RDSAR                 = 0x00E4;  // low 32 bits at E4, high at E8
+constexpr uint16_t REG_RDSAR                 = 0x00E4; // low 32 bits at E4, high at E8
 
 // Max Transmit Packet Size (in 128-byte units)
 constexpr uint16_t REG_MTPS                  = 0x00EC;  // 8-bit
@@ -172,7 +172,7 @@ constexpr uint8_t  MTPS_NORMAL               = 0x0C;    // >1518 bytes (0x0C * 1
 constexpr uint8_t  MTPS_JUMBO                = 0x3B;    // >=7440 bytes
 
 // Miscellaneous register (used on 8168G+ for RXDV gating)
-constexpr uint16_t REG_MISC                  = 0x00F0;  // 32-bit
+constexpr uint16_t REG_MISC                  = 0x00F0; // 32-bit
 constexpr uint32_t MISC_RXDV_GATED           = (1u << 19);
 constexpr uint32_t MISC_EARLY_TALLY_EN       = (1u << 16);
 constexpr uint32_t MISC_PWM_EN               = (1u << 22);
@@ -308,7 +308,7 @@ constexpr uint32_t RX_TCPF                   = (1u << 14);  // TCP Checksum Fail
 constexpr uint32_t RX_FRAME_LEN_MASK         = 0x00003FFF;  // Frame length [13:0]
 
 // RX opts2 bit definitions
-constexpr uint32_t RX_TAVA                   = (1u << 16);  // Tag Available (VLAN)
+constexpr uint32_t RX_TAVA                   = (1u << 16); // Tag Available (VLAN)
 constexpr uint32_t RX_VLAN_MASK              = 0x0000FFFF;
 
 // Descriptor ring parameters

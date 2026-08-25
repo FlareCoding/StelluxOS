@@ -52,13 +52,13 @@ public:
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE explicit irq_lock_guard(spinlock& lk)
-        : lock_(lk), state_(spin_lock_irqsave(lk)) {}
+        : m_lock(lk), m_state(spin_lock_irqsave(lk)) {}
 
     /**
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE ~irq_lock_guard() {
-        spin_unlock_irqrestore(lock_, state_);
+        spin_unlock_irqrestore(m_lock, m_state);
     }
 
     irq_lock_guard(const irq_lock_guard&) = delete;
@@ -67,8 +67,8 @@ public:
     irq_lock_guard& operator=(irq_lock_guard&&) = delete;
 
 private:
-    spinlock& lock_;
-    irq_state state_;
+    spinlock& m_lock;
+    irq_state m_state;
 };
 
 } // namespace sync

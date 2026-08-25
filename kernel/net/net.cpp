@@ -24,7 +24,7 @@ constexpr uint32_t DEFERRED_TX_MAX = 8;
 namespace {
 
 enum class deferred_tx_kind : uint8_t {
-    ipv4,     // send via ipv4_send (dst_ip + protocol + payload)
+    ipv4, // send via ipv4_send (dst_ip + protocol + payload)
     ethernet, // send via eth_send (dst_mac + ethertype + payload)
 };
 

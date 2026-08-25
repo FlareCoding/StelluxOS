@@ -21,13 +21,13 @@ struct kernel_sockaddr_in {
 constexpr uint16_t AF_INET_VAL = 2;
 
 struct inet_socket {
-    uint8_t        protocol;   // e.g. IPPROTO_ICMP (1), IPPROTO_UDP (17)
+    uint8_t        protocol; // e.g. IPPROTO_ICMP (1), IPPROTO_UDP (17)
     uint32_t       bound_addr; // 0 = any (host byte order)
     uint16_t       bound_port; // host byte order, 0 = unbound (UDP)
-    ring_buffer*   rx_buf;     // incoming packets queued here
+    ring_buffer*   rx_buf; // incoming packets queued here
     uint32_t       so_options; // bitmask of socket options
     sync::spinlock lock;
-    inet_socket*   next;       // linked list for protocol registry
+    inet_socket*   next; // linked list for protocol registry
 };
 
 /**

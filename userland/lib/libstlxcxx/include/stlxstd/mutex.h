@@ -10,71 +10,71 @@ inline constexpr defer_lock_t defer_lock{};
 
 class mutex {
 public:
-    mutex() : m_(STLX_MUTEX_INIT) {}
+    mutex() : m_native(STLX_MUTEX_INIT) {}
     ~mutex() = default;
 
     mutex(const mutex&) = delete;
     mutex& operator=(const mutex&) = delete;
 
-    void lock() { stlx_mutex_lock(&m_); }
-    void unlock() { stlx_mutex_unlock(&m_); }
-    bool try_lock() { return stlx_mutex_trylock(&m_) == 0; }
+    void lock() { stlx_mutex_lock(&m_native); }
+    void unlock() { stlx_mutex_unlock(&m_native); }
+    bool try_lock() { return stlx_mutex_trylock(&m_native) == 0; }
 
-    stlx_mutex_t* native() { return &m_; }
+    stlx_mutex_t* native() { return &m_native; }
 
 private:
-    stlx_mutex_t m_;
+    stlx_mutex_t m_native;
 };
 
 template<typename Mutex>
 class lock_guard {
 public:
-    explicit lock_guard(Mutex& m) : m_(m) { m_.lock(); }
-    ~lock_guard() { m_.unlock(); }
+    explicit lock_guard(Mutex& m) : m_mutex(m) { m_mutex.lock(); }
+    ~lock_guard() { m_mutex.unlock(); }
 
     lock_guard(const lock_guard&) = delete;
     lock_guard& operator=(const lock_guard&) = delete;
 
 private:
-    Mutex& m_;
+    Mutex& m_mutex;
 };
 
 template<typename Mutex>
 class unique_lock {
 public:
-    explicit unique_lock(Mutex& m) : m_(&m), owned_(true) { m_->lock(); }
-    unique_lock(Mutex& m, defer_lock_t) : m_(&m), owned_(false) {}
-    ~unique_lock() { if (owned_) m_->unlock(); }
+    explicit unique_lock(Mutex& m) : m_mutex(&m), m_owned(true) { m_mutex->lock(); }
+    unique_lock(Mutex& m, defer_lock_t) : m_mutex(&m), m_owned(false) {}
+    ~unique_lock() { if (m_owned) m_mutex->unlock(); }
 
     unique_lock(const unique_lock&) = delete;
     unique_lock& operator=(const unique_lock&) = delete;
 
-    unique_lock(unique_lock&& o) : m_(o.m_), owned_(o.owned_) {
-        o.m_ = nullptr;
-        o.owned_ = false;
+    unique_lock(unique_lock&& o) : m_mutex(o.m_mutex), m_owned(o.m_owned) {
+        o.m_mutex = nullptr;
+        o.m_owned = false;
     }
 
     unique_lock& operator=(unique_lock&& o) {
         if (this != &o) {
-            if (owned_) m_->unlock();
-            m_ = o.m_;
-            owned_ = o.owned_;
-            o.m_ = nullptr;
-            o.owned_ = false;
+            if (m_owned) m_mutex->unlock();
+            m_mutex = o.m_mutex;
+            m_owned = o.m_owned;
+            o.m_mutex = nullptr;
+            o.m_owned = false;
         }
         return *this;
     }
 
-    void lock() { m_->lock(); owned_ = true; }
-    void unlock() { m_->unlock(); owned_ = false; }
-    bool try_lock() { owned_ = m_->try_lock(); return owned_; }
+    void lock() { m_mutex->lock(); m_owned = true; }
+    void unlock() { m_mutex->unlock(); m_owned = false; }
+    bool try_lock() { m_owned = m_mutex->try_lock(); return m_owned; }
 
-    bool owns_lock() const { return owned_; }
-    Mutex* mutex_ptr() const { return m_; }
+    bool owns_lock() const { return m_owned; }
+    Mutex* mutex_ptr() const { return m_mutex; }
 
 private:
-    Mutex* m_;
-    bool owned_;
+    Mutex* m_mutex;
+    bool m_owned;
 };
 
 } // namespace stlxstd

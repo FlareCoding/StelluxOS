@@ -17,7 +17,7 @@ constexpr uint64_t ARP_ENTRY_TTL_NS = 60ULL * 1000000000ULL; // 60 seconds
 namespace {
 
 struct arp_entry {
-    uint32_t ip;                // host byte order
+    uint32_t ip; // host byte order
     uint8_t  mac[MAC_ADDR_LEN];
     bool     valid;
     uint64_t last_updated_ns;

@@ -26,7 +26,7 @@ struct route_entry {
     netif*      owner;      // interface whose configure() created this route
                             // (may differ from iface for LOCAL routes that
                             // point to loopback but belong to another iface)
-    route_type  type;       // LOCAL, CONNECTED, GATEWAY
+    route_type  type; // LOCAL, CONNECTED, GATEWAY
     uint8_t     _pad[1];
     uint16_t    metric;     // lower = preferred
     bool        valid;      // slot in use

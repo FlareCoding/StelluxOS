@@ -10,7 +10,7 @@ constexpr uint32_t MSR_LSTAR  = 0xC0000082;
 constexpr uint32_t MSR_CSTAR  = 0xC0000083;
 constexpr uint32_t MSR_SFMASK = 0xC0000084;
 
-constexpr uint64_t EFER_SCE = (1 << 0);  // System Call Enable
+constexpr uint64_t EFER_SCE = (1 << 0); // System Call Enable
 
 constexpr uint64_t RFLAGS_IF = (1 << 9);
 constexpr uint64_t RFLAGS_DF = (1 << 10);
@@ -52,7 +52,7 @@ __PRIVILEGED_CODE int32_t init_arch_syscalls() {
      * For SYSRET (to user): use a base that derives USER_DS/USER_CS directly.
      */
     uint64_t star = (static_cast<uint64_t>(SYSRET_SEL_BASE) << 48) | // SYSRET base
-                    (static_cast<uint64_t>(x86::KERNEL_CS) << 32);  // SYSCALL base
+                    (static_cast<uint64_t>(x86::KERNEL_CS) << 32); // SYSCALL base
     msr::write(MSR_STAR, star);
 
     /* LSTAR: 64-bit SYSCALL entry point */

@@ -36,7 +36,7 @@ static_assert(sizeof(siginfo) == 128);
 struct sigcontext {
     uint64_t r8, r9, r10, r11, r12, r13, r14, r15; // gregs[0..7]
     uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp; // gregs[8..15]
-    uint64_t rip;    // gregs[16]
+    uint64_t rip; // gregs[16]
     uint64_t eflags; // gregs[17]
     uint16_t cs, gs, fs, ss; // gregs[18], packed as csgsfs
     uint64_t err, trapno, oldmask, cr2; // gregs[19..22]
@@ -54,10 +54,10 @@ static_assert(sizeof(sigcontext) == 256);
 struct ucontext {
     uint64_t uc_flags;
     uint64_t uc_link;
-    uint64_t ss_sp;    // uc_stack.ss_sp
+    uint64_t ss_sp; // uc_stack.ss_sp
     uint32_t ss_flags; // uc_stack.ss_flags
     uint32_t __pad0;
-    uint64_t ss_size;  // uc_stack.ss_size
+    uint64_t ss_size; // uc_stack.ss_size
     sigcontext uc_mcontext;
     signals::sig_set_t uc_sigmask; // blocked mask saved across the handler
 };

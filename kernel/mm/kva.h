@@ -14,7 +14,7 @@ constexpr int32_t ERR_DOUBLE_FREE = -5;
 constexpr int32_t ERR_NO_MEM      = -6;
 
 enum class placement : uint8_t {
-    low,  // allocate from lowest available (boot, heaps, device mmio)
+    low, // allocate from lowest available (boot, heaps, device mmio)
     high, // allocate from highest available (stacks)
 };
 

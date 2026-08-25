@@ -526,7 +526,7 @@ void virtio_net_driver::replenish_rx() {
     bool posted_any = false;
     for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
         if (m_rx_bufs[i].desc_id >= 0) continue; // already posted
-        if (m_rx_bufs[i].delivering) continue;    // being read by deliver_rx_batch
+        if (m_rx_bufs[i].delivering) continue; // being read by deliver_rx_batch
 
         int32_t desc_id = m_rxq.add_buf(
             m_rx_bufs[i].phys, RX_BUF_SIZE, VRING_DESC_F_WRITE);
@@ -571,7 +571,7 @@ void virtio_net_driver::run() {
     if (dhcp_rc != net::OK) {
         log::warn("virtio-net: DHCP failed (%d), using static fallback", dhcp_rc);
         net::configure(&m_netif,
-                       net::ipv4_addr(10, 0, 2, 15),     // IP
+                       net::ipv4_addr(10, 0, 2, 15), // IP
                        net::ipv4_addr(255, 255, 255, 0),  // Netmask
                        net::ipv4_addr(10, 0, 2, 2));      // Gateway
     }

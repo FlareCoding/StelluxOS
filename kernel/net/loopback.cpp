@@ -56,7 +56,7 @@ __PRIVILEGED_CODE int32_t loopback_init() {
 
     g_lo_netif.transmit    = lo_transmit;
     g_lo_netif.link_up     = lo_link_up;
-    g_lo_netif.poll        = nullptr;  // no polling needed
+    g_lo_netif.poll        = nullptr; // no polling needed
     g_lo_netif.driver_data = nullptr;
     g_lo_netif.flags       = NETIF_UP | NETIF_RUNNING | NETIF_LOOPBACK;
 
@@ -69,9 +69,9 @@ __PRIVILEGED_CODE int32_t loopback_init() {
 
     // Configure with 127.0.0.1/8 (no gateway needed for loopback)
     rc = configure(&g_lo_netif,
-                   ipv4_addr(127, 0, 0, 1),    // IP
-                   ipv4_addr(255, 0, 0, 0),     // Netmask (/8)
-                   0);                           // No gateway
+                   ipv4_addr(127, 0, 0, 1), // IP
+                   ipv4_addr(255, 0, 0, 0), // Netmask (/8)
+                   0); // No gateway
     if (rc != OK) {
         log::error("loopback: failed to configure interface");
         return rc;

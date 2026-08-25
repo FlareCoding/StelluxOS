@@ -9,7 +9,7 @@ namespace stlxstd {
 class barrier {
 public:
     explicit barrier(uint32_t count) {
-        stlx_barrier_init(&b_, count);
+        stlx_barrier_init(&m_barrier, count);
     }
 
     ~barrier() = default;
@@ -17,10 +17,10 @@ public:
     barrier(const barrier&) = delete;
     barrier& operator=(const barrier&) = delete;
 
-    void arrive_and_wait() { stlx_barrier_wait(&b_); }
+    void arrive_and_wait() { stlx_barrier_wait(&m_barrier); }
 
 private:
-    stlx_barrier_t b_;
+    stlx_barrier_t m_barrier;
 };
 
 } // namespace stlxstd

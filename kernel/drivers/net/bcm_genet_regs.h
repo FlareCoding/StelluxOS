@@ -17,7 +17,7 @@ namespace drivers::genet {
 constexpr uint32_t SYS_REV_CTRL              = 0x000;
 constexpr uint32_t  SYS_REV_MAJOR_MASK       = 0x0F000000;
 constexpr uint32_t  SYS_REV_MAJOR_SHIFT      = 24;
-constexpr uint32_t  SYS_REV_MAJOR_V5         = 6;  // GENET v5 reports major=6
+constexpr uint32_t  SYS_REV_MAJOR_V5         = 6; // GENET v5 reports major=6
 constexpr uint32_t  SYS_REV_MINOR_MASK       = 0x000F0000;
 constexpr uint32_t  SYS_REV_MINOR_SHIFT      = 16;
 
@@ -182,7 +182,7 @@ constexpr uint32_t TX_DESC_BUFLEN_SHIFT      = 16;
 constexpr uint32_t TX_DESC_OWN               = (1u << 15);
 constexpr uint32_t TX_DESC_EOP               = (1u << 14);
 constexpr uint32_t TX_DESC_SOP               = (1u << 13);
-constexpr uint32_t TX_DESC_QTAG_MASK         = 0x1F80;  // bits [12:7]
+constexpr uint32_t TX_DESC_QTAG_MASK         = 0x1F80; // bits [12:7]
 constexpr uint32_t TX_DESC_CRC               = (1u << 6);
 constexpr uint32_t TX_DESC_CKSUM             = (1u << 4);
 

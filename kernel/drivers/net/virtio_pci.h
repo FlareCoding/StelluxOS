@@ -22,10 +22,10 @@ constexpr uint8_t VIRTIO_PCI_CAP_PCI_CFG     = 5;
 
 // Virtio PCI capability structure (in PCI config space)
 struct virtio_pci_cap {
-    uint8_t  cap_vndr;   // 0x09
+    uint8_t  cap_vndr; // 0x09
     uint8_t  cap_next;
     uint8_t  cap_len;
-    uint8_t  cfg_type;   // VIRTIO_PCI_CAP_*
+    uint8_t  cfg_type; // VIRTIO_PCI_CAP_*
     uint8_t  bar;
     uint8_t  id;
     uint8_t  padding[2];

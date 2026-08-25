@@ -46,9 +46,9 @@ TEST(route_test, add_basic) {
     mock.link_up = mock_link_up;
 
     int32_t rc = net::route_add(
-        net::ipv4_addr(192, 168, 100, 0),  // dest
-        net::ipv4_addr(255, 255, 255, 0),   // netmask
-        0,                                   // no gateway
+        net::ipv4_addr(192, 168, 100, 0), // dest
+        net::ipv4_addr(255, 255, 255, 0), // netmask
+        0, // no gateway
         &mock,
         net::route_type::CONNECTED,
         net::METRIC_CONNECTED);
@@ -217,7 +217,7 @@ TEST(route_test, lookup_local) {
     // Add LOCAL host route
     int32_t rc = net::route_add(
         net::ipv4_addr(10, 0, 2, 15),
-        0xFFFFFFFF,   // /32
+        0xFFFFFFFF, // /32
         0,
         lo, net::route_type::LOCAL, net::METRIC_LOCAL);
     ASSERT_EQ(rc, net::OK);

@@ -19,9 +19,8 @@ struct trace_record_header {
 
 static_assert(sizeof(trace_record_header) == 16, "trace_record_header size must be 16 bytes");
 
-
 struct trace_record {
-    trace_record_header hdr;        // Event header
+    trace_record_header hdr; // Event header
     uint64_t            payload[6]; // Event specific payload
 } __attribute__((aligned(64)));
 

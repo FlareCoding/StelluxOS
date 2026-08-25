@@ -19,7 +19,7 @@ constexpr uint64_t DESC_PXN = 1ULL << 53;    // Privileged execute never
 // We use index 3 for device memory to avoid conflicts
 // Note: This early_mmu code uses identity mapping in TTBR0, so it's separate
 // from Limine's TTBR1 mappings. We can use index 3 for device here.
-constexpr uint64_t DESC_ATTR_DEVICE = 3ULL << 2;  // Index 3 = Device-nGnRnE
+constexpr uint64_t DESC_ATTR_DEVICE = 3ULL << 2; // Index 3 = Device-nGnRnE
 
 // Page/block sizes
 constexpr uint64_t PAGE_SIZE = 4096;

@@ -56,45 +56,45 @@ template<typename T, node T::*Link>
 class head {
 public:
     void init() {
-        sentinel_.prev = &sentinel_;
-        sentinel_.next = &sentinel_;
-        count_ = 0;
+        m_sentinel.prev = &m_sentinel;
+        m_sentinel.next = &m_sentinel;
+        m_count = 0;
     }
 
-    [[nodiscard]] bool empty() const { return sentinel_.next == &sentinel_; }
-    [[nodiscard]] size_t size() const { return count_; }
+    [[nodiscard]] bool empty() const { return m_sentinel.next == &m_sentinel; }
+    [[nodiscard]] size_t size() const { return m_count; }
 
     void push_back(T* item) {
         node* n = to_node(item);
-        n->prev = sentinel_.prev;
-        n->next = &sentinel_;
-        sentinel_.prev->next = n;
-        sentinel_.prev = n;
-        ++count_;
+        n->prev = m_sentinel.prev;
+        n->next = &m_sentinel;
+        m_sentinel.prev->next = n;
+        m_sentinel.prev = n;
+        ++m_count;
     }
 
     void push_front(T* item) {
         node* n = to_node(item);
-        n->prev = &sentinel_;
-        n->next = sentinel_.next;
-        sentinel_.next->prev = n;
-        sentinel_.next = n;
-        ++count_;
+        n->prev = &m_sentinel;
+        n->next = m_sentinel.next;
+        m_sentinel.next->prev = n;
+        m_sentinel.next = n;
+        ++m_count;
     }
 
     T* pop_front() {
         if (empty()) return nullptr;
-        node* n = sentinel_.next;
+        node* n = m_sentinel.next;
         unlink(n);
-        --count_;
+        --m_count;
         return to_entry(n);
     }
 
     T* pop_back() {
         if (empty()) return nullptr;
-        node* n = sentinel_.prev;
+        node* n = m_sentinel.prev;
         unlink(n);
-        --count_;
+        --m_count;
         return to_entry(n);
     }
 
@@ -102,59 +102,59 @@ public:
     void remove(T* item) {
         node* n = to_node(item);
         unlink(n);
-        --count_;
+        --m_count;
     }
 
     [[nodiscard]] T* front() {
         if (empty()) return nullptr;
-        return to_entry(sentinel_.next);
+        return to_entry(m_sentinel.next);
     }
 
     [[nodiscard]] T* back() {
         if (empty()) return nullptr;
-        return to_entry(sentinel_.prev);
+        return to_entry(m_sentinel.prev);
     }
 
     [[nodiscard]] const T* front() const {
         if (empty()) return nullptr;
-        return node_to_entry<T, Link>(sentinel_.next);
+        return node_to_entry<T, Link>(m_sentinel.next);
     }
 
     [[nodiscard]] const T* back() const {
         if (empty()) return nullptr;
-        return node_to_entry<T, Link>(sentinel_.prev);
+        return node_to_entry<T, Link>(m_sentinel.prev);
     }
 
     // Forward iterator for traversal.
     class iterator {
     public:
         explicit constexpr iterator(node* n, const node* sentinel)
-            : cur_(n), sentinel_(sentinel) {}
+            : m_cur(n), m_sentinel(sentinel) {}
 
-        T& operator*() const { return *node_to_entry<T, Link>(cur_); }
-        T* operator->() const { return node_to_entry<T, Link>(cur_); }
+        T& operator*() const { return *node_to_entry<T, Link>(m_cur); }
+        T* operator->() const { return node_to_entry<T, Link>(m_cur); }
 
         iterator& operator++() {
-            cur_ = cur_->next;
+            m_cur = m_cur->next;
             return *this;
         }
 
         iterator operator++(int) {
             iterator tmp = *this;
-            cur_ = cur_->next;
+            m_cur = m_cur->next;
             return tmp;
         }
 
-        bool operator==(const iterator& other) const { return cur_ == other.cur_; }
-        bool operator!=(const iterator& other) const { return cur_ != other.cur_; }
+        bool operator==(const iterator& other) const { return m_cur == other.m_cur; }
+        bool operator!=(const iterator& other) const { return m_cur != other.m_cur; }
 
     private:
-        node* cur_;
-        const node* sentinel_;
+        node* m_cur;
+        const node* m_sentinel;
     };
 
-    iterator begin() { return iterator(sentinel_.next, &sentinel_); }
-    iterator end() { return iterator(&sentinel_, &sentinel_); }
+    iterator begin() { return iterator(m_sentinel.next, &m_sentinel); }
+    iterator end() { return iterator(&m_sentinel, &m_sentinel); }
 
     /**
      * Insert item in sorted order. Pred(a, b) returns true if a should
@@ -164,14 +164,14 @@ public:
     template<typename Pred>
     void insert_sorted(T* item, Pred before) {
         node* n = to_node(item);
-        node* cur = sentinel_.next;
-        while (cur != &sentinel_) {
+        node* cur = m_sentinel.next;
+        while (cur != &m_sentinel) {
             if (before(item, to_entry(cur))) {
                 n->prev = cur->prev;
                 n->next = cur;
                 cur->prev->next = n;
                 cur->prev = n;
-                ++count_;
+                ++m_count;
                 return;
             }
             cur = cur->next;
@@ -180,8 +180,8 @@ public:
     }
 
 private:
-    node   sentinel_;
-    size_t count_ = 0;
+    node   m_sentinel;
+    size_t m_count = 0;
 
     static node* to_node(T* e) { return &(e->*Link); }
 

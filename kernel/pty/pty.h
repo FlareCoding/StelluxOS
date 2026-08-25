@@ -16,7 +16,7 @@ constexpr int32_t ERR = -1;
 constexpr size_t PTY_RING_CAPACITY = 4096;
 
 /** Output processing flags (applied in the slave->master direction). */
-constexpr uint32_t PTY_OFLAG_ONLCR = (1u << 0);   // map NL -> CR+NL
+constexpr uint32_t PTY_OFLAG_ONLCR = (1u << 0); // map NL -> CR+NL
 
 /** Terminal geometry, Linux winsize layout. */
 struct pty_winsize {

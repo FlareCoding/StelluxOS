@@ -50,7 +50,7 @@ enum class mem_attr : uint8_t {
     NORMAL = 0,        // Write-back cacheable (regular RAM)
     DEVICE = 1,        // Uncached, strongly ordered (MMIO)
     WRITE_COMBINE = 2, // Write-combining (framebuffer)
-    DMA = 3,           // Non-cacheable (DMA buffers)
+    DMA = 3, // Non-cacheable (DMA buffers)
 };
 
 // Result codes

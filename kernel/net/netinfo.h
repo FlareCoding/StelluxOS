@@ -16,7 +16,7 @@ struct net_status_entry {
     char     name[16];
     uint8_t  mac[6];
     uint8_t  _pad[2];
-    uint32_t ipv4_addr;    // host byte order
+    uint32_t ipv4_addr; // host byte order
     uint32_t ipv4_netmask; // host byte order
     uint32_t ipv4_gateway; // host byte order
     uint32_t ipv4_dns;     // host byte order

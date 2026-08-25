@@ -9,7 +9,6 @@
 
 namespace ramfs {
 
-
 __PRIVILEGED_CODE static int32_t ramfs_mount_fn(
     fs::driver* drv, const char* source, uint32_t flags,
     void* data, fs::instance** out
@@ -53,7 +52,6 @@ extern "C" __PRIVILEGED_CODE int32_t ramfs_init_driver() {
 }
 
 namespace ramfs {
-
 
 dir_node::dir_node(fs::instance* fs, const char* name)
     : fs::node(fs::node_type::directory, fs, name)
@@ -294,7 +292,6 @@ int32_t dir_node::getattr(fs::vattr* attr) {
     attr->size = m_child_count;
     return fs::OK;
 }
-
 
 file_node::file_node(fs::instance* fs, const char* name)
     : fs::node(fs::node_type::regular, fs, name)

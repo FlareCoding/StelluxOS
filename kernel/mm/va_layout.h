@@ -11,11 +11,11 @@ constexpr int32_t VA_LAYOUT_ERR_NO_MAP  = -1;
 // Describes the kernel's virtual address space regions.
 // Computed once from boot info and linker symbols, then constant.
 struct va_layout {
-    uintptr_t hhdm_base;          // start of direct map
-    uintptr_t hhdm_end;          // exclusive
+    uintptr_t hhdm_base; // start of direct map
+    uintptr_t hhdm_end; // exclusive
 
-    uintptr_t kernel_image_base;  // __stlx_kern_start
-    uintptr_t kernel_image_end;  // __stlx_kern_end (page-aligned)
+    uintptr_t kernel_image_base; // __stlx_kern_start
+    uintptr_t kernel_image_end; // __stlx_kern_end (page-aligned)
 
     uintptr_t kva_base;          // start of KVA-managed range (after HHDM)
     uintptr_t kva_end;           // exclusive (before kernel image)

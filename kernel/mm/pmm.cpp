@@ -55,7 +55,7 @@ __PRIVILEGED_CODE static size_t compute_required_pages() {
                            reinterpret_cast<uint64_t>(__stlx_kern_start);
     uint64_t kernel_pages = (kernel_size + PAGE_SIZE - 1) / PAGE_SIZE;
     uint64_t kernel_l3 = (kernel_pages + 511) / 512;
-    uint64_t kernel_tables = 1 + 1 + kernel_l3;  // L1 + L2 + L3s
+    uint64_t kernel_tables = 1 + 1 + kernel_l3; // L1 + L2 + L3s
     
     // Device mappings during paging::init()
     // - aarch64: UART at 0x09000000 needs mapping (1 page, may need L1+L2+L3 tables)

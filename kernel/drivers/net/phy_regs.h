@@ -17,10 +17,10 @@ constexpr uint8_t  BMCR                      = 0x00;
 constexpr uint16_t BMCR_RESET                = (1u << 15);
 constexpr uint16_t BMCR_LOOPBACK             = (1u << 14);
 constexpr uint16_t BMCR_SPEED_100            = (1u << 13);
-constexpr uint16_t BMCR_ANE                  = (1u << 12);  // Auto-Negotiation Enable
+constexpr uint16_t BMCR_ANE                  = (1u << 12); // Auto-Negotiation Enable
 constexpr uint16_t BMCR_POWER_DOWN           = (1u << 11);
 constexpr uint16_t BMCR_ISOLATE              = (1u << 10);
-constexpr uint16_t BMCR_RESTART_AN           = (1u << 9);   // Restart Auto-Negotiation
+constexpr uint16_t BMCR_RESTART_AN           = (1u << 9); // Restart Auto-Negotiation
 constexpr uint16_t BMCR_FULL_DUPLEX          = (1u << 8);
 constexpr uint16_t BMCR_SPEED_1000           = (1u << 6);
 

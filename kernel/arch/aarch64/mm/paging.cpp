@@ -99,9 +99,9 @@ __PRIVILEGED_CODE static void configure_mair() {
 __PRIVILEGED_CODE static page_desc_t flags_to_page_desc(pmm::phys_addr_t phys, page_flags_t flags) {
     page_desc_t desc = {};
     desc.valid = 1;
-    desc.type = 1;  // Page descriptor (not block)
+    desc.type = 1; // Page descriptor (not block)
     desc.output_addr = phys >> 12;
-    desc.af = 1;  // Access flag must be set
+    desc.af = 1; // Access flag must be set
 
     // Shareability: Inner Shareable for SMP
     desc.sh = sh::INNER_SHAREABLE;
@@ -126,7 +126,7 @@ __PRIVILEGED_CODE static page_desc_t flags_to_page_desc(pmm::phys_addr_t phys, p
         desc.pxn = 1;  // Privileged execute never
         desc.uxn = 1;  // User execute never
     } else if (!(flags & PAGE_USER)) {
-        desc.uxn = 1;  // User execute never (kernel only)
+        desc.uxn = 1; // User execute never (kernel only)
     }
 
     // Global flag:
@@ -331,7 +331,7 @@ __PRIVILEGED_CODE static translation_table_t* get_or_create_table(table_desc_t* 
     // Set up table descriptor
     entry->value = 0;
     entry->valid = 1;
-    entry->type = 1;  // Table descriptor
+    entry->type = 1; // Table descriptor
     entry->next_table_addr = table_phys >> 12;
 
     return static_cast<translation_table_t*>(phys_to_virt(table_phys));
@@ -353,7 +353,7 @@ __PRIVILEGED_CODE static page_desc_t* get_page_desc_ptr(pmm::phys_addr_t root_pt
     // L1 -> L2
     // Check if it's a 1GB block
     if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
-        return nullptr;  // 1GB block, can't get page descriptor
+        return nullptr; // 1GB block, can't get page descriptor
     }
     table_desc_t* l1_entry = &l1->as_table[parts.l1_idx];
     if (!l1_entry->valid && !create) return nullptr;
@@ -364,7 +364,7 @@ __PRIVILEGED_CODE static page_desc_t* get_page_desc_ptr(pmm::phys_addr_t root_pt
     // L2 -> L3
     // Check if it's a 2MB block
     if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
-        return nullptr;  // 2MB block, can't get page descriptor
+        return nullptr; // 2MB block, can't get page descriptor
     }
     table_desc_t* l2_entry = &l2->as_table[parts.l2_idx];
     if (!l2_entry->valid && !create) return nullptr;

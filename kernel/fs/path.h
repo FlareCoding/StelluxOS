@@ -15,7 +15,7 @@ namespace fs {
  *   const char* comp;
  *   size_t len;
  *   while (it.next(comp, len)) {
- *       // comp="foo" len=3, then "bar" len=3, then "baz" len=3
+ * // comp="foo" len=3, then "bar" len=3, then "baz" len=3
  *   }
  */
 class path_iterator {

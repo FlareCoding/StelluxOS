@@ -7,7 +7,7 @@ namespace aarch64 {
 
 // ESR_EL1 field masks and shifts
 constexpr uint64_t ESR_EC_SHIFT = 26;
-constexpr uint64_t ESR_EC_MASK  = 0x3F;        // bits [31:26]
+constexpr uint64_t ESR_EC_MASK  = 0x3F; // bits [31:26]
 constexpr uint64_t ESR_ISS_MASK = 0x00FFFFFF; // bits [24:0]
 
 // Exception Class (EC) values - ARMv8-A (common ones)

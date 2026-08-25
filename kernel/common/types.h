@@ -5,8 +5,8 @@
  * from the standard library. These definitions work for both x86_64 and AArch64.
  */
 
-#ifndef _TYPES_H
-#define _TYPES_H
+#ifndef STELLUX_COMMON_TYPES_H
+#define STELLUX_COMMON_TYPES_H
 
 /* Exact-width integer types */
 typedef signed char        int8_t;
@@ -62,4 +62,4 @@ inline void  operator delete(void*, void*) noexcept {}
 inline void  operator delete[](void*, void*) noexcept {}
 #endif
 
-#endif /* _TYPES_H */
+#endif /* STELLUX_COMMON_TYPES_H */

@@ -15,14 +15,14 @@ struct syscall_frame {
     uint64_t r8;
     uint64_t r9;
     uint64_t rflags; // user RFLAGS, carried in R11 by SYSCALL/SYSRET
-    uint64_t rip;    // user return RIP, carried in RCX by SYSCALL/SYSRET
+    uint64_t rip; // user return RIP, carried in RCX by SYSCALL/SYSRET
     uint64_t rbx;
     uint64_t rbp;
     uint64_t r12;
     uint64_t r13;
     uint64_t r15;
     uint64_t r14;
-    uint64_t rsp;    // user stack pointer from the handoff record
+    uint64_t rsp; // user stack pointer from the handoff record
 };
 
 // Field offset checks matching the syscall_entry.S push sequence

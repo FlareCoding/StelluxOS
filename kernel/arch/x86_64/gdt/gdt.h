@@ -55,7 +55,7 @@ namespace flags {
 
     // Common combinations
     constexpr uint8_t CODE_64     = GRANULARITY | LONG_MODE; // 0xA0: 64-bit code
-    constexpr uint8_t DATA_64     = GRANULARITY | SIZE_32;   // 0xC0: 64-bit data
+    constexpr uint8_t DATA_64     = GRANULARITY | SIZE_32; // 0xC0: 64-bit data
 }
 
 // System Segment Descriptor (Intel SDM Vol. 3A, Section 7.2.3, Figure 7-4)
@@ -105,7 +105,7 @@ struct __attribute__((packed)) tss {
     uint64_t ist7;
     uint64_t reserved2;
     uint16_t reserved3;
-    uint16_t iopb_offset;   // I/O Permission Bitmap offset from TSS base
+    uint16_t iopb_offset; // I/O Permission Bitmap offset from TSS base
 };
 
 static_assert(sizeof(tss) == 104, "TSS must be 104 bytes");

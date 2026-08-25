@@ -9,9 +9,9 @@ namespace signals {
 
 // What a send must do for sig, given the process's installed action
 enum class send_verdict : uint8_t {
-    FATAL,     // default-terminate, wake the target so it can die
+    FATAL, // default-terminate, wake the target so it can die
     IGNORABLE, // droppable unless the target blocks it
-    HANDLED,   // a user handler is installed, wake the target to deliver
+    HANDLED, // a user handler is installed, wake the target to deliver
 };
 
 // Distinct groups remembered during one group-id send. Signals coalesce,

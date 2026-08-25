@@ -68,7 +68,6 @@ static inline uint64_t read_mpidr_el1() {
     return val;
 }
 
-
 static inline uint64_t read_id_aa64pfr0_el1() {
     uint64_t val;
     asm volatile("mrs %0, id_aa64pfr0_el1" : "=r"(val));

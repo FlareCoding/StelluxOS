@@ -8,7 +8,7 @@ namespace aarch64 {
 
 struct alignas(16) trap_frame {
     uint64_t x[31]; // x0-x30
-    uint64_t sp;    // interrupted-context SP (EL0 traps store SP_EL0)
+    uint64_t sp; // interrupted-context SP (EL0 traps store SP_EL0)
     uint64_t sp_el1; // EL1 exception stack pointer to use after trap return
     uint64_t elr;
     uint64_t spsr;

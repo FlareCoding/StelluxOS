@@ -541,7 +541,7 @@ TEST(dhcp_test, parse_wrong_op_code) {
     string::memset(buf, 0, sizeof(buf));
 
     auto* pkt = reinterpret_cast<net::dhcp_packet*>(buf);
-    pkt->op = net::DHCP_OP_BOOTREQUEST;  // wrong!
+    pkt->op = net::DHCP_OP_BOOTREQUEST; // wrong!
     pkt->magic = net::htonl(net::DHCP_MAGIC_COOKIE);
 
     uint8_t* opts = buf + sizeof(net::dhcp_packet);
@@ -561,7 +561,7 @@ TEST(dhcp_test, parse_wrong_magic) {
 
     auto* pkt = reinterpret_cast<net::dhcp_packet*>(buf);
     pkt->op = net::DHCP_OP_BOOTREPLY;
-    pkt->magic = net::htonl(0x12345678);  // wrong magic
+    pkt->magic = net::htonl(0x12345678); // wrong magic
 
     uint8_t* opts = buf + sizeof(net::dhcp_packet);
     opts[0] = net::DHCP_OPT_MSG_TYPE;

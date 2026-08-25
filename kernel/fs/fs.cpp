@@ -17,7 +17,6 @@ extern "C" __PRIVILEGED_CODE int32_t devfs_init_driver();
 
 namespace fs {
 
-
 __PRIVILEGED_BSS static mount_point* g_root_mount;
 __PRIVILEGED_BSS static instance*    g_root_instance;
 
@@ -30,7 +29,6 @@ __PRIVILEGED_BSS static driver* g_drivers[MAX_DRIVERS];
 __PRIVILEGED_BSS static uint32_t g_mount_count;
 static constexpr uint32_t MAX_MOUNTS = 32;
 __PRIVILEGED_BSS static mount_point* g_mounts[MAX_MOUNTS];
-
 
 node::node(node_type t, instance* fs, const char* name)
     : m_child_link{}
@@ -79,7 +77,6 @@ __PRIVILEGED_CODE void node::ref_destroy(node* n) {
     heap::kfree(n);
 }
 
-
 file::file(rc::strong_ref<node>&& n, uint32_t flags)
     : m_node(static_cast<rc::strong_ref<node>&&>(n))
     , m_offset(0)
@@ -98,7 +95,6 @@ void file::ref_destroy(file* f) {
     });
 }
 
-
 instance::instance(driver* drv, node* root)
     : m_driver(drv)
     , m_root(rc::strong_ref<node>::adopt(root)) {
@@ -107,7 +103,6 @@ instance::instance(driver* drv, node* root)
 __PRIVILEGED_CODE int32_t instance::unmount() {
     return OK;
 }
-
 
 __PRIVILEGED_CODE int32_t register_driver(driver* drv) {
     if (!drv || !drv->name || !drv->mount_fn) return ERR_INVAL;
@@ -129,7 +124,6 @@ __PRIVILEGED_CODE static driver* find_driver(const char* name) {
     }
     return nullptr;
 }
-
 
 __PRIVILEGED_CODE static mount_point* find_mount_for_instance(instance* inst) {
     for (uint32_t i = 0; i < g_mount_count; i++) {
@@ -497,7 +491,6 @@ __PRIVILEGED_CODE int32_t resolve_parent_path_at(
         base_dir, path, out_parent, out_name, out_name_len);
 }
 
-
 __PRIVILEGED_CODE int32_t mount(const char* source, const char* target,
                                 const char* fs_name, uint32_t flags) {
     if (!fs_name) return ERR_INVAL;
@@ -583,7 +576,6 @@ __PRIVILEGED_CODE int32_t unmount(const char* target) {
     (void)target;
     return ERR_NOSYS;
 }
-
 
 file* open(const char* path, uint32_t flags) {
     return open_at(nullptr, path, flags, nullptr);
@@ -848,7 +840,6 @@ ssize_t readdir(file* f, dirent* entries, size_t count) {
     });
     return result;
 }
-
 
 __PRIVILEGED_CODE int32_t init() {
     g_root_mount = nullptr;

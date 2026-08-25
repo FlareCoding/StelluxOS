@@ -174,7 +174,7 @@ TEST(signal_delivery, x86_sanitizes_restored_mxcsr) {
         mxcsr = *reinterpret_cast<uint32_t*>(&fp.fxsave_area[fpu::MXCSR_OFFSET]);
     });
 
-    EXPECT_EQ(mxcsr >> 16, 0U);          // reserved bits never reach FXRSTOR
+    EXPECT_EQ(mxcsr >> 16, 0U); // reserved bits never reach FXRSTOR
     EXPECT_EQ(mxcsr & 0x1F80U, 0x1F80U); // supported control bits survive
 }
 
@@ -262,7 +262,7 @@ TEST(signal_delivery, x86_full_restore_sanitizes_forged_context) {
     EXPECT_EQ(out.cs, static_cast<uint64_t>(user_cs));
     EXPECT_EQ(out.ss, static_cast<uint64_t>(user_ss));
     EXPECT_TRUE((out.rflags & (3ULL << 12)) == 0); // IOPL cleared
-    EXPECT_TRUE((out.rflags & (1ULL << 9)) != 0);  // IF forced on
+    EXPECT_TRUE((out.rflags & (1ULL << 9)) != 0); // IF forced on
 
     // A kernel-half RIP rejects the whole frame
     bool ok2 = true;

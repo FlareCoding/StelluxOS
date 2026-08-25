@@ -68,10 +68,10 @@ static_assert(sizeof(sigcontext) == 4384);
 struct ucontext {
     uint64_t uc_flags;
     uint64_t uc_link;
-    uint64_t ss_sp;    // uc_stack.ss_sp
+    uint64_t ss_sp; // uc_stack.ss_sp
     uint32_t ss_flags; // uc_stack.ss_flags
     uint32_t __pad0;
-    uint64_t ss_size;  // uc_stack.ss_size
+    uint64_t ss_size; // uc_stack.ss_size
     signals::sig_set_t uc_sigmask; // blocked mask saved across the handler
     uint8_t  __sigmask_reserved[128];
     sigcontext uc_mcontext;

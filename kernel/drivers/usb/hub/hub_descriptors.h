@@ -55,7 +55,7 @@ constexpr uint16_t PORT_CHANGE_RESET         = (1 << 4);
 // Hub Descriptor (USB 2.0 Spec Section 11.23.2.1)
 struct hub_descriptor {
     uint8_t  bDescLength;
-    uint8_t  bDescriptorType;   // 0x29 for hub
+    uint8_t  bDescriptorType; // 0x29 for hub
     uint8_t  bNbrPorts;
     uint16_t wHubCharacteristics;
     uint8_t  bPwrOn2PwrGood;    // time in 2ms intervals
