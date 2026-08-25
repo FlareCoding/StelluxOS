@@ -1,4 +1,4 @@
-#include "io/serial.h"
+#include "serial/serial.h"
 #include "hw/mmio.h"
 #include "irq/irq.h"
 #include "irq/irq_arch.h"

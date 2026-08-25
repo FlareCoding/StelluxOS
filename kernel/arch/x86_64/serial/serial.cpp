@@ -1,4 +1,4 @@
-#include "io/serial.h"
+#include "serial/serial.h"
 #include "hw/portio.h"
 #include "irq/ioapic.h"
 #include "defs/vectors.h"

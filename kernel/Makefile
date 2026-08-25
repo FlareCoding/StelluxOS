@@ -59,7 +59,6 @@ include arch/$(ARCH)/defconfig
 # Find all C++ sources
 CXX_SOURCES := $(shell find boot -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find common -name '*.cpp' 2>/dev/null | sort)
-CXX_SOURCES += $(shell find io -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find mm -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find percpu -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find sched -name '*.cpp' 2>/dev/null | sort)

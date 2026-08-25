@@ -1,7 +1,7 @@
 #include "logging.h"
 #include "varargs.h"
 #include "string.h"
-#include "io/serial.h"
+#include "serial/serial.h"
 #include "hw/cpu.h"
 #include "sync/spinlock.h"
 #include "dynpriv/dynpriv.h"

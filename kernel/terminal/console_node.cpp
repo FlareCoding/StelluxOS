@@ -1,7 +1,7 @@
 #include "terminal/console_node.h"
 #include "terminal/terminal.h"
 #include "common/ring_buffer.h"
-#include "io/serial.h"
+#include "serial/serial.h"
 #include "fs/fs.h"
 #include "fs/file.h"
 

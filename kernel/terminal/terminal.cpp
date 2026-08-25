@@ -2,7 +2,7 @@
 #include "terminal/console_node.h"
 #include "terminal/line_discipline.h"
 #include "common/ring_buffer.h"
-#include "io/serial.h"
+#include "serial/serial.h"
 #include "resource/resource.h"
 #include "signals/signal.h"
 #include "common/logging.h"

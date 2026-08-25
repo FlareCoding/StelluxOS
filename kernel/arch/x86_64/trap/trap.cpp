@@ -1,7 +1,7 @@
 #include "trap/trap_frame.h"
 #include "defs/vectors.h"
 #include "irq/irq.h"
-#include "io/serial.h"
+#include "serial/serial.h"
 #include "timer/timer.h"
 #include "debug/panic.h"
 #include "sched/task_exec_core.h"

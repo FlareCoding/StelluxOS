@@ -1,5 +1,5 @@
 #include "boot_services.h"
-#include "io/serial.h"
+#include "serial/serial.h"
 #include "common/logging.h"
 #include "hw/cpu.h"
 #include "arch/arch_init.h"

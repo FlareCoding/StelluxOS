@@ -8,7 +8,7 @@
 #include "dynpriv/dynpriv.h"
 #include "irq/irq.h"
 #include "irq/irq_arch.h"
-#include "io/serial.h"
+#include "serial/serial.h"
 #include "hwtimer/hwtimer_arch.h"
 #include "timer/timer.h"
 #include "sched/sched.h"

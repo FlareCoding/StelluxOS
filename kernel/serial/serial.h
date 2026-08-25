@@ -1,5 +1,5 @@
-#ifndef STELLUX_IO_SERIAL_H
-#define STELLUX_IO_SERIAL_H
+#ifndef STELLUX_SERIAL_SERIAL_H
+#define STELLUX_SERIAL_SERIAL_H
 
 #include "common/types.h"
 
@@ -85,4 +85,4 @@ __PRIVILEGED_CODE uint32_t irq_id();
 
 } // namespace serial
 
-#endif // STELLUX_IO_SERIAL_H
+#endif // STELLUX_SERIAL_SERIAL_H
