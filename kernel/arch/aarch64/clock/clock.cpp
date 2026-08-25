@@ -1,5 +1,5 @@
 #include "clock/clock.h"
-#include "hwtimer/hwtimer_arch.h"
+#include "hw/hwtimer.h"
 #include "hw/rtc.h"
 #include "common/logging.h"
 

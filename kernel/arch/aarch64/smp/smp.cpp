@@ -17,7 +17,7 @@
 #include "hw/cpu_features.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
-#include "hwtimer/hwtimer_arch.h"
+#include "hw/hwtimer.h"
 #include "common/string.h"
 #include "common/logging.h"
 #include "trace/ktrace.h"

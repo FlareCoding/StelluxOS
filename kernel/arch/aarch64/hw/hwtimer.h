@@ -1,5 +1,5 @@
-#ifndef STELLUX_AARCH64_HWTIMER_HWTIMER_ARCH_H
-#define STELLUX_AARCH64_HWTIMER_HWTIMER_ARCH_H
+#ifndef STELLUX_ARCH_AARCH64_HW_HWTIMER_H
+#define STELLUX_ARCH_AARCH64_HW_HWTIMER_H
 
 #include "common/types.h"
 
@@ -39,4 +39,4 @@ inline void write_cntv_ctl(uint32_t val) {
 
 } // namespace hwtimer
 
-#endif // STELLUX_AARCH64_HWTIMER_HWTIMER_ARCH_H
+#endif // STELLUX_ARCH_AARCH64_HW_HWTIMER_H

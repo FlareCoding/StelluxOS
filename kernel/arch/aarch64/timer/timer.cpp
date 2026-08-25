@@ -2,7 +2,7 @@
 #include "sched/task.h"
 #include "sched/sched.h"
 #include "clock/clock.h"
-#include "hwtimer/hwtimer_arch.h"
+#include "hw/hwtimer.h"
 #include "irq/irq.h"
 #include "hw/cpu.h"
 #include "percpu/percpu.h"

@@ -9,7 +9,7 @@
 #include "irq/irq.h"
 #include "irq/irq_arch.h"
 #include "serial/serial.h"
-#include "hwtimer/hwtimer_arch.h"
+#include "hw/hwtimer.h"
 #include "timer/timer.h"
 #include "sched/sched.h"
 #include "sched/task.h"
