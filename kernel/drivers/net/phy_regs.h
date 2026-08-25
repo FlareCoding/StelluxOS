@@ -10,9 +10,7 @@
 
 namespace drivers::phy {
 
-// ============================================================================
 // Standard MII registers (IEEE 802.3)
-// ============================================================================
 
 // Basic Control Register
 constexpr uint8_t  BMCR                      = 0x00;
@@ -62,10 +60,8 @@ constexpr uint8_t  GBSR                      = 0x0A;
 constexpr uint16_t GBSR_1000BASET_FDX        = (1u << 11);
 constexpr uint16_t GBSR_1000BASET            = (1u << 10);
 
-// ============================================================================
 // Broadcom BCM54213PE specific shadow registers
 // Used for RGMII clock delay configuration.
-// ============================================================================
 
 // Auxiliary Control shadow register (register 0x18)
 // Bits [2:0] select the shadow function (0x00-0x07).
@@ -87,9 +83,7 @@ constexpr uint16_t BRGPHY_SHADOW_1C_DATA_MASK = 0x03FF;
 constexpr uint16_t BRGPHY_SHADOW_1C_CLK_CTRL = (0x03 << 10);
 constexpr uint16_t BRGPHY_SHADOW_1C_GTXCLK_EN = 0x0200;
 
-// ============================================================================
 // PHY speed/duplex enumerations
-// ============================================================================
 
 enum class phy_speed : uint16_t {
     SPEED_NONE = 0,

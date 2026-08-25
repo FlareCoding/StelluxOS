@@ -15,9 +15,7 @@
 
 TEST_SUITE(poll_resource);
 
-// ---------------------------------------------------------------------------
 // ring_buffer_poll_readable
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, ring_buffer_poll_readable) {
     ring_buffer* rb = nullptr;
@@ -36,9 +34,7 @@ TEST(poll_resource, ring_buffer_poll_readable) {
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }
 
-// ---------------------------------------------------------------------------
 // ring_buffer_poll_not_readable
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, ring_buffer_poll_not_readable) {
     ring_buffer* rb = nullptr;
@@ -54,9 +50,7 @@ TEST(poll_resource, ring_buffer_poll_not_readable) {
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }
 
-// ---------------------------------------------------------------------------
 // ring_buffer_poll_writable
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, ring_buffer_poll_writable) {
     ring_buffer* rb = nullptr;
@@ -72,9 +66,7 @@ TEST(poll_resource, ring_buffer_poll_writable) {
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }
 
-// ---------------------------------------------------------------------------
 // ring_buffer_poll_hup
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, ring_buffer_poll_hup) {
     ring_buffer* rb = nullptr;
@@ -92,10 +84,8 @@ TEST(poll_resource, ring_buffer_poll_hup) {
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }
 
-// ---------------------------------------------------------------------------
 // ring_buffer_poll_hup_with_data
 // Writer closed but data remains: both POLL_IN and POLL_HUP must be set.
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, ring_buffer_poll_hup_with_data) {
     ring_buffer* rb = nullptr;
@@ -116,9 +106,7 @@ TEST(poll_resource, ring_buffer_poll_hup_with_data) {
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }
 
-// ---------------------------------------------------------------------------
 // ring_buffer_poll_err
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, ring_buffer_poll_err) {
     ring_buffer* rb = nullptr;
@@ -137,9 +125,7 @@ TEST(poll_resource, ring_buffer_poll_err) {
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }
 
-// ---------------------------------------------------------------------------
 // ring_buffer_poll_subscribes_read_wq
-// ---------------------------------------------------------------------------
 
 static sync::wait_queue g_rb_poll_wq;
 static volatile uint32_t g_rb_poll_waiting;
@@ -200,9 +186,7 @@ TEST(poll_resource, ring_buffer_poll_subscribes_read_wq) {
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }
 
-// ---------------------------------------------------------------------------
 // pty_poll_readable
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, pty_poll_readable) {
     resource::resource_object* master = nullptr;
@@ -237,9 +221,7 @@ TEST(poll_resource, pty_poll_readable) {
     });
 }
 
-// ---------------------------------------------------------------------------
 // unix_socket_poll_readable
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, unix_socket_poll_readable) {
     resource::resource_object* a = nullptr;
@@ -272,9 +254,7 @@ TEST(poll_resource, unix_socket_poll_readable) {
     });
 }
 
-// ---------------------------------------------------------------------------
 // null_poll_table_just_probes
-// ---------------------------------------------------------------------------
 
 TEST(poll_resource, null_poll_table_just_probes) {
     ring_buffer* rb = nullptr;

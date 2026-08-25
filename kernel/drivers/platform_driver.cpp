@@ -11,9 +11,7 @@
 
 namespace drivers {
 
-// ============================================================================
 // platform_driver base class implementation
-// ============================================================================
 
 __PRIVILEGED_CODE uintptr_t platform_driver::map_regs() {
     if (m_reg_va != 0) {
@@ -55,9 +53,7 @@ __PRIVILEGED_CODE void platform_driver::notify_event() {
     sync::wake_one(m_irq_wq);
 }
 
-// ============================================================================
 // Platform device discovery and initialization
-// ============================================================================
 
 static void platform_task_entry(void* arg) {
     auto* drv = static_cast<platform_driver*>(arg);

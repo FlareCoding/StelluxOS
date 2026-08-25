@@ -14,9 +14,7 @@
 
 TEST_SUITE(socket_test);
 
-// ---------------------------------------------------------------------------
 // Ring buffer tests
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, ring_buffer_create_destroy) {
     auto* rb = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
@@ -194,9 +192,7 @@ TEST(socket_test, ring_buffer_null_args_returns_inval) {
     ring_buffer_destroy(rb);
 }
 
-// ---------------------------------------------------------------------------
 // Socket pair creation and data flow
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, create_socket_pair_succeeds) {
     resource::resource_object* obj_a = nullptr;
@@ -347,9 +343,7 @@ TEST(socket_test, socketpair_drain_then_eof) {
     EXPECT_EQ(resource::close(task, h1), resource::OK);
 }
 
-// ---------------------------------------------------------------------------
 // Unbound socket tests
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, create_unbound_socket) {
     resource::resource_object* obj = nullptr;
@@ -401,9 +395,7 @@ TEST(socket_test, unbound_socket_write_returns_notconn) {
     EXPECT_EQ(resource::close(task, h), resource::OK);
 }
 
-// ---------------------------------------------------------------------------
 // Handle flags / fcntl tests
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, handle_flags_default_zero) {
     sched::task* task = sched::current();
@@ -478,9 +470,7 @@ TEST(socket_test, handle_flags_cleared_on_close) {
     EXPECT_EQ(resource::get_handle_flags(task->handles, h, &flags), resource::HANDLE_ERR_NOENT);
 }
 
-// ---------------------------------------------------------------------------
 // Non-blocking socket read/write via handle flags
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, nonblock_socketpair_read_eagain) {
     sched::task* task = sched::current();
@@ -563,9 +553,7 @@ TEST(socket_test, nonblock_socketpair_eof_not_eagain) {
     EXPECT_EQ(resource::close(task, h1), resource::OK);
 }
 
-// ---------------------------------------------------------------------------
 // Listener state tests
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, listener_state_create_destroy) {
     auto ls = rc::make_kref<socket::listener_state>();
@@ -582,9 +570,7 @@ TEST(socket_test, listener_state_create_destroy) {
     EXPECT_EQ(ls->pending_count, 0u);
 }
 
-// ---------------------------------------------------------------------------
 // Channel ref counting
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, channel_refcount_after_socketpair) {
     resource::resource_object* obj_a = nullptr;
@@ -605,9 +591,7 @@ TEST(socket_test, channel_refcount_after_socketpair) {
     resource::resource_release(obj_b);
 }
 
-// ---------------------------------------------------------------------------
 // Socket type validation
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, socket_handle_has_socket_type) {
     sched::task* task = sched::current();
@@ -636,9 +620,7 @@ TEST(socket_test, close_invalid_handle_returns_badf) {
     EXPECT_EQ(resource::close(task, 9999), resource::ERR_BADF);
 }
 
-// ---------------------------------------------------------------------------
 // VFS socket node
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, node_type_socket_in_fstypes) {
     fs::vattr attr;
@@ -647,9 +629,7 @@ TEST(socket_test, node_type_socket_in_fstypes) {
     EXPECT_EQ(attr.type, fs::node_type::socket);
 }
 
-// ---------------------------------------------------------------------------
 // Double close safety
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, double_close_returns_badf) {
     sched::task* task = sched::current();
@@ -674,9 +654,7 @@ TEST(socket_test, double_close_returns_badf) {
     EXPECT_EQ(resource::close(task, h1), resource::ERR_BADF);
 }
 
-// ---------------------------------------------------------------------------
 // get_handle_object with flags output
-// ---------------------------------------------------------------------------
 
 TEST(socket_test, get_handle_object_returns_flags) {
     sched::task* task = sched::current();

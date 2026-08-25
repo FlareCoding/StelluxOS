@@ -6,10 +6,8 @@
 
 TEST_SUITE(genet_regs_test);
 
-// ============================================================================
 // DMA descriptor offset tests
 // Verify agreement with EDK2/FreeBSD/Linux values
-// ============================================================================
 
 TEST(genet_regs_test, rx_desc_offsets_base) {
     using namespace drivers::genet;
@@ -45,9 +43,7 @@ TEST(genet_regs_test, tx_desc_offsets_indexed) {
     EXPECT_EQ(TX_DESC_STATUS(255), TX_BASE + 255u * 12u);
 }
 
-// ============================================================================
 // DMA ring register offset tests
-// ============================================================================
 
 TEST(genet_regs_test, rx_ring_base_default_queue) {
     using namespace drivers::genet;
@@ -79,9 +75,7 @@ TEST(genet_regs_test, tx_ring_base_default_queue) {
     EXPECT_EQ(TX_DMA_WRITE_PTR_LO(DMA_DEFAULT_QUEUE), expected + 0x2Cu);
 }
 
-// ============================================================================
 // DMA control register offset tests
-// ============================================================================
 
 TEST(genet_regs_test, dma_ctrl_offsets) {
     using namespace drivers::genet;
@@ -105,9 +99,7 @@ TEST(genet_regs_test, dma_ctrl_ring_enable_bits) {
     EXPECT_EQ(DMA_CTRL_RING_EN(16), (1u << 17));
 }
 
-// ============================================================================
 // Ring buffer size field encoding
-// ============================================================================
 
 TEST(genet_regs_test, ring_buf_size_encoding) {
     using namespace drivers::genet;
@@ -121,9 +113,7 @@ TEST(genet_regs_test, ring_buf_size_encoding) {
     EXPECT_EQ(DMA_END_ADDR(256), 767u);
 }
 
-// ============================================================================
 // XON/XOFF threshold encoding
-// ============================================================================
 
 TEST(genet_regs_test, xon_xoff_encoding) {
     using namespace drivers::genet;
@@ -133,9 +123,7 @@ TEST(genet_regs_test, xon_xoff_encoding) {
     EXPECT_EQ(val & 0xFFFFu, 16u); // 256 >> 4 = 16
 }
 
-// ============================================================================
 // Producer/consumer index math
-// ============================================================================
 
 TEST(genet_regs_test, index_wrapping) {
     using namespace drivers::genet;
@@ -168,9 +156,7 @@ TEST(genet_regs_test, desc_index_from_cons) {
     EXPECT_EQ(static_cast<uint16_t>(512) % DMA_DESC_COUNT, 0u);
 }
 
-// ============================================================================
 // MDIO command word construction
-// ============================================================================
 
 TEST(genet_regs_test, mdio_read_command) {
     using namespace drivers::genet;
@@ -206,9 +192,7 @@ TEST(genet_regs_test, mdio_write_command) {
     EXPECT_EQ(cmd & MDIO_VAL_MASK, static_cast<uint32_t>(data));
 }
 
-// ============================================================================
 // TX descriptor status construction
-// ============================================================================
 
 TEST(genet_regs_test, tx_desc_status_construction) {
     using namespace drivers::genet;
@@ -224,9 +208,7 @@ TEST(genet_regs_test, tx_desc_status_construction) {
     EXPECT_EQ((status & TX_DESC_BUFLEN_MASK) >> TX_DESC_BUFLEN_SHIFT, len);
 }
 
-// ============================================================================
 // RX descriptor status extraction
-// ============================================================================
 
 TEST(genet_regs_test, rx_desc_status_extraction) {
     using namespace drivers::genet;
@@ -241,9 +223,7 @@ TEST(genet_regs_test, rx_desc_status_extraction) {
     EXPECT_EQ(status & RX_DESC_RX_ERROR, 0u);
 }
 
-// ============================================================================
 // Key register offsets — verify against known EDK2/FreeBSD values
-// ============================================================================
 
 TEST(genet_regs_test, sys_register_offsets) {
     using namespace drivers::genet;
@@ -285,9 +265,7 @@ TEST(genet_regs_test, ext_and_rbuf_offsets) {
     EXPECT_EQ(RBUF_TBUF_SIZE_CTRL, 0x3B4u);
 }
 
-// ============================================================================
 // PHY register sanity
-// ============================================================================
 
 TEST(genet_regs_test, phy_standard_registers) {
     using namespace drivers::phy;
@@ -302,9 +280,7 @@ TEST(genet_regs_test, phy_standard_registers) {
     EXPECT_EQ(GBSR, static_cast<uint8_t>(0x0A));
 }
 
-// ============================================================================
 // MDF register accessor
-// ============================================================================
 
 TEST(genet_regs_test, mdf_addr_accessors) {
     using namespace drivers::genet;

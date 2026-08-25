@@ -13,7 +13,6 @@
 
 namespace net {
 
-// ============================================================================
 // DHCP Receive Hook
 //
 // The DHCP client runs at Ring 3 (user mode) in a kernel task, so it cannot
@@ -21,7 +20,6 @@ namespace net {
 // a simple static receive context: udp_recv() (which runs at Ring 0 in
 // interrupt/poll context) copies incoming port-68 packets into this buffer,
 // and the DHCP client polls the ready flag.
-// ============================================================================
 
 namespace {
 
@@ -57,9 +55,7 @@ void dhcp_rx_hook(const uint8_t* data, size_t len) {
     __atomic_store_n(&g_dhcp_rx.ready, true, __ATOMIC_RELEASE);
 }
 
-// ============================================================================
 // Internal helpers
-// ============================================================================
 
 namespace {
 
@@ -259,9 +255,7 @@ static void deactivate_rx_hook() {
 
 } // anonymous namespace
 
-// ============================================================================
 // Packet Build Functions
-// ============================================================================
 
 size_t dhcp_build_discover(uint8_t* out, size_t out_size,
                            const uint8_t* mac, uint32_t xid) {
@@ -368,9 +362,7 @@ size_t dhcp_build_request(uint8_t* out, size_t out_size,
     return sizeof(dhcp_packet) + pos;
 }
 
-// ============================================================================
 // Packet Parse Function
-// ============================================================================
 
 bool dhcp_parse_response(const dhcp_packet* pkt, size_t pkt_len,
                          dhcp_config* out) {
@@ -458,9 +450,7 @@ bool dhcp_parse_response(const dhcp_packet* pkt, size_t pkt_len,
     return true;
 }
 
-// ============================================================================
 // DHCP Client State Machine
-// ============================================================================
 
 int32_t dhcp_configure(netif* iface) {
     if (!iface || !iface->transmit) {
@@ -495,7 +485,7 @@ int32_t dhcp_configure(netif* iface) {
                       attempt + 1, DHCP_ATTEMPTS);
         }
 
-        // ---- Phase 1: Send DISCOVER ----
+        // Broadcast a DISCOVER to solicit lease offers
         size_t discover_len = dhcp_build_discover(tx_buf, DHCP_PACKET_MAX,
                                                   iface->mac, xid);
         if (discover_len == 0) {
@@ -513,7 +503,7 @@ int32_t dhcp_configure(netif* iface) {
             continue;
         }
 
-        // ---- Phase 2: Wait for OFFER ----
+        // Poll for an OFFER matching our transaction id
         dhcp_config offer = {};
         bool got_offer = false;
         uint64_t deadline = clock::now_ns() +
@@ -564,7 +554,7 @@ int32_t dhcp_configure(netif* iface) {
                   (offer.server_id >> 8) & 0xFF,
                   offer.server_id & 0xFF);
 
-        // ---- Phase 3: Send REQUEST ----
+        // REQUEST the offered lease from the offering server
         size_t request_len = dhcp_build_request(tx_buf, DHCP_PACKET_MAX,
                                                 iface->mac, xid,
                                                 offer.offered_ip,
@@ -588,7 +578,7 @@ int32_t dhcp_configure(netif* iface) {
             continue;
         }
 
-        // ---- Phase 4: Wait for ACK ----
+        // Poll for the ACK that commits the lease, a NAK abandons the attempt
         dhcp_config ack = {};
         bool got_ack = false;
         deadline = clock::now_ns() +
@@ -629,7 +619,7 @@ int32_t dhcp_configure(netif* iface) {
             continue;
         }
 
-        // ---- Success: Configure the interface ----
+        // Success: Configure the interface
         uint32_t ip   = ack.offered_ip   ? ack.offered_ip   : offer.offered_ip;
         uint32_t mask = ack.subnet_mask  ? ack.subnet_mask  : offer.subnet_mask;
         uint32_t gw   = ack.gateway      ? ack.gateway      : offer.gateway;

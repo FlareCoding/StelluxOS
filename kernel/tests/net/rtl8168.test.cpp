@@ -5,10 +5,8 @@
 
 TEST_SUITE(rtl8168_regs_test);
 
-// ============================================================================
 // Descriptor struct sizes
 // Verify agreement with RTL8168B datasheet §6.1 (16 bytes per descriptor)
-// ============================================================================
 
 TEST(rtl8168_regs_test, descriptor_sizes) {
     using namespace drivers::rtl8168;
@@ -17,9 +15,7 @@ TEST(rtl8168_regs_test, descriptor_sizes) {
     EXPECT_EQ(sizeof(rx_desc), 16u);
 }
 
-// ============================================================================
 // Register offsets — verify against RTL8168B datasheet §2.1 MAC Registers
-// ============================================================================
 
 TEST(rtl8168_regs_test, mac_register_offsets) {
     using namespace drivers::rtl8168;
@@ -64,9 +60,7 @@ TEST(rtl8168_regs_test, phy_and_misc_register_offsets) {
     EXPECT_EQ(REG_MISC, static_cast<uint16_t>(0x00F0));
 }
 
-// ============================================================================
 // Command register bits
-// ============================================================================
 
 TEST(rtl8168_regs_test, command_register_bits) {
     using namespace drivers::rtl8168;
@@ -76,9 +70,7 @@ TEST(rtl8168_regs_test, command_register_bits) {
     EXPECT_EQ(CMD_TE, static_cast<uint8_t>(0x04));
 }
 
-// ============================================================================
 // Interrupt bit definitions
-// ============================================================================
 
 TEST(rtl8168_regs_test, interrupt_bits) {
     using namespace drivers::rtl8168;
@@ -95,9 +87,7 @@ TEST(rtl8168_regs_test, interrupt_bits) {
     EXPECT_EQ(INT_TIMEOUT, static_cast<uint16_t>(1u << 14));
 }
 
-// ============================================================================
 // PHYAR register construction
-// ============================================================================
 
 TEST(rtl8168_regs_test, phyar_read_command) {
     using namespace drivers::rtl8168;
@@ -125,9 +115,7 @@ TEST(rtl8168_regs_test, phyar_write_command) {
     EXPECT_EQ(cmd & PHYAR_DATA_MASK, static_cast<uint32_t>(data));
 }
 
-// ============================================================================
 // PHY Status register bits
-// ============================================================================
 
 TEST(rtl8168_regs_test, phy_status_bits) {
     using namespace drivers::rtl8168;
@@ -139,9 +127,7 @@ TEST(rtl8168_regs_test, phy_status_bits) {
     EXPECT_EQ(PHYSTS_1000MF, static_cast<uint8_t>(1u << 4));
 }
 
-// ============================================================================
 // TX descriptor opts1 construction
-// ============================================================================
 
 TEST(rtl8168_regs_test, tx_desc_opts1_normal) {
     using namespace drivers::rtl8168;
@@ -164,9 +150,7 @@ TEST(rtl8168_regs_test, tx_desc_eor_preserves_ring) {
     EXPECT_BITS_SET(opts1, TX_OWN);
 }
 
-// ============================================================================
 // RX descriptor opts1 — command mode (OWN=1)
-// ============================================================================
 
 TEST(rtl8168_regs_test, rx_desc_command_mode) {
     using namespace drivers::rtl8168;
@@ -181,9 +165,7 @@ TEST(rtl8168_regs_test, rx_desc_command_mode) {
     EXPECT_BITS_SET(last, RX_EOR);
 }
 
-// ============================================================================
 // RX descriptor opts1 — status mode (OWN=0, after receive)
-// ============================================================================
 
 TEST(rtl8168_regs_test, rx_desc_status_extraction) {
     using namespace drivers::rtl8168;
@@ -206,9 +188,7 @@ TEST(rtl8168_regs_test, rx_desc_error_flags) {
     EXPECT_BITS_SET(status, RX_CRC);
 }
 
-// ============================================================================
 // Chip version XID extraction
-// ============================================================================
 
 TEST(rtl8168_regs_test, chip_version_xid_extraction) {
     using namespace drivers::rtl8168;
@@ -227,9 +207,7 @@ TEST(rtl8168_regs_test, chip_version_xid_extraction) {
     EXPECT_EQ(full_mask_xid, 0x000007CFu);
 }
 
-// ============================================================================
 // Ring parameters
-// ============================================================================
 
 TEST(rtl8168_regs_test, ring_parameters) {
     using namespace drivers::rtl8168;
@@ -244,9 +222,7 @@ TEST(rtl8168_regs_test, ring_parameters) {
     EXPECT_EQ(RX_BUF_SIZE <= 0x3FFF, true);
 }
 
-// ============================================================================
 // Config register lock/unlock values
-// ============================================================================
 
 TEST(rtl8168_regs_test, config_lock_unlock) {
     using namespace drivers::rtl8168;
@@ -255,9 +231,7 @@ TEST(rtl8168_regs_test, config_lock_unlock) {
     EXPECT_EQ(CFG_9346_UNLOCK, static_cast<uint8_t>(0xC0));
 }
 
-// ============================================================================
 // MII PHY register addresses
-// ============================================================================
 
 TEST(rtl8168_regs_test, phy_register_addresses) {
     using namespace drivers::rtl8168::phy;
@@ -272,9 +246,7 @@ TEST(rtl8168_regs_test, phy_register_addresses) {
     EXPECT_EQ(GBSR, static_cast<uint8_t>(0x0A));
 }
 
-// ============================================================================
 // PHY BMCR bit definitions
-// ============================================================================
 
 TEST(rtl8168_regs_test, phy_bmcr_bits) {
     using namespace drivers::rtl8168::phy;
@@ -285,9 +257,7 @@ TEST(rtl8168_regs_test, phy_bmcr_bits) {
     EXPECT_EQ(BMCR_SPEED_1000, static_cast<uint16_t>(1u << 6));
 }
 
-// ============================================================================
 // TX max packet size register values
-// ============================================================================
 
 TEST(rtl8168_regs_test, mtps_values) {
     using namespace drivers::rtl8168;

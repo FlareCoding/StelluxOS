@@ -3,9 +3,7 @@
 #include "common/types.h"
 
 namespace usb::hid {
-// -----------------------------------------------------------------------------
 // HID Item Types and Tags
-// -----------------------------------------------------------------------------
 // Item types define the kind of information contained in a report descriptor item.
 enum class item_type : uint8_t {
     main     = 0x0,  // Main item: input/output/feature items
@@ -53,9 +51,7 @@ enum class local_item_tag : uint8_t {
     delimiter         = 0xA   // Used to delimit items in compound reports
 };
 
-// -----------------------------------------------------------------------------
 // Common Usage Pages and Usages
-// -----------------------------------------------------------------------------
 // Common usage pages
 enum class usage_page : uint16_t {
     generic_desktop = 0x1,  // Generic Desktop Controls (e.g., mouse, keyboard, joystick)
@@ -89,9 +85,7 @@ enum class generic_desktop_usage : uint8_t {
     hat_switch       = 0x39   // Hat switch (D-pad)
 };
 
-// -----------------------------------------------------------------------------
 // HID Report Descriptor Utilities
-// -----------------------------------------------------------------------------
 inline const char* to_string(item_type type) {
     switch (type) {
         case item_type::main: return "Main";

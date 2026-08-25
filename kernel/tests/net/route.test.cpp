@@ -28,9 +28,7 @@ static bool mock_link_up(net::netif* /*iface*/) {
 
 } // namespace
 
-// ============================================================================
 // Basic route table state after init
-// ============================================================================
 
 TEST(route_test, table_has_loopback_routes) {
     // After net::init(), the loopback interface is configured with
@@ -40,9 +38,7 @@ TEST(route_test, table_has_loopback_routes) {
     EXPECT_GE(count, static_cast<uint32_t>(1));
 }
 
-// ============================================================================
 // route_add and route_count
-// ============================================================================
 
 TEST(route_test, add_basic) {
     uint32_t before = net::route_count();
@@ -74,9 +70,7 @@ TEST(route_test, add_null_iface_rejected) {
     EXPECT_EQ(rc, net::ERR_INVAL);
 }
 
-// ============================================================================
 // route_lookup — connected route
-// ============================================================================
 
 TEST(route_test, lookup_connected) {
     net::netif mock = {};
@@ -103,9 +97,7 @@ TEST(route_test, lookup_connected) {
     net::route_del_iface(&mock);
 }
 
-// ============================================================================
 // route_lookup — gateway route
-// ============================================================================
 
 TEST(route_test, lookup_gateway) {
     net::netif mock = {};
@@ -132,9 +124,7 @@ TEST(route_test, lookup_gateway) {
     net::route_del_iface(&mock);
 }
 
-// ============================================================================
 // route_lookup — longest prefix match
-// ============================================================================
 
 TEST(route_test, lookup_longest_prefix) {
     net::netif mock_broad = {};
@@ -178,9 +168,7 @@ TEST(route_test, lookup_longest_prefix) {
     net::route_del_iface(&mock_narrow);
 }
 
-// ============================================================================
 // route_lookup — metric tiebreak
-// ============================================================================
 
 TEST(route_test, lookup_metric_tiebreak) {
     net::netif mock_hi = {};
@@ -218,9 +206,7 @@ TEST(route_test, lookup_metric_tiebreak) {
     net::route_del_iface(&mock_lo);
 }
 
-// ============================================================================
 // route_lookup — local route
-// ============================================================================
 
 TEST(route_test, lookup_local) {
     net::netif mock = {};
@@ -270,9 +256,7 @@ TEST(route_test, lookup_local) {
     // other tests since 10.0.2.15 is not used elsewhere.
 }
 
-// ============================================================================
 // route_lookup — loopback
-// ============================================================================
 
 TEST(route_test, lookup_loopback) {
     // 127.0.0.1 should be routed through the loopback interface
@@ -298,9 +282,7 @@ TEST(route_test, lookup_loopback_other_addr) {
     EXPECT_EQ(rt.iface, lo);
 }
 
-// ============================================================================
 // route_lookup — no match
-// ============================================================================
 
 TEST(route_test, lookup_no_match) {
     // In the test environment, there's no default route (no gateway).
@@ -315,9 +297,7 @@ TEST(route_test, lookup_no_match) {
     EXPECT_EQ(rc, net::ERR_NOIF);
 }
 
-// ============================================================================
 // route_del_iface
-// ============================================================================
 
 TEST(route_test, del_iface_clears_routes) {
     net::netif mock = {};
@@ -342,9 +322,7 @@ TEST(route_test, del_iface_clears_routes) {
     EXPECT_EQ(net::route_count(), before);
 }
 
-// ============================================================================
 // route_add_interface_routes — auto-populate
-// ============================================================================
 
 TEST(route_test, add_interface_routes_populates) {
     net::netif mock = {};
@@ -396,9 +374,7 @@ TEST(route_test, add_interface_routes_populates) {
     net::unregister_netif(&mock);
 }
 
-// ============================================================================
 // route_add_interface_routes — reconfiguration clears old routes
-// ============================================================================
 
 TEST(route_test, reconfigure_replaces_routes) {
     net::netif mock = {};
@@ -456,9 +432,7 @@ TEST(route_test, reconfigure_replaces_routes) {
     net::unregister_netif(&mock);
 }
 
-// ============================================================================
 // route_table_full
-// ============================================================================
 
 TEST(route_test, table_full) {
     // Save current count, then fill remaining slots
@@ -510,14 +484,11 @@ TEST(route_test, table_full) {
     EXPECT_EQ(net::route_count(), current);
 }
 
-// ============================================================================
-// Verify loopback ipv4_send still works through routing table
-// ============================================================================
+// Verify loopback ipv4_send delivers through the routing table
 
 TEST(route_test, ipv4_send_via_route_table) {
-    // This test verifies that ipv4_send still correctly delivers
-    // packets to 127.0.0.1 after the routing table integration.
-    // It's a regression test for the Phase 1→Phase 2 transition.
+    // ipv4_send must deliver to 127.0.0.1 through the route table lookup
+    // path, not through any hardcoded loopback shortcut.
     net::netif* lo = net::get_loopback_netif();
     ASSERT_NOT_NULL(lo);
 
@@ -542,9 +513,7 @@ TEST(route_test, ipv4_send_via_route_table) {
     net::drain_deferred_tx();
 }
 
-// ============================================================================
 // unregister_netif cleans up routes (Bug 1 regression test)
-// ============================================================================
 
 TEST(route_test, unregister_cleans_routes) {
     net::netif mock = {};
@@ -585,10 +554,8 @@ TEST(route_test, unregister_cleans_routes) {
     }
 }
 
-// ============================================================================
 // Reconfiguring loopback does NOT destroy other interfaces' LOCAL routes
 // (Bug 4 regression test — owner-based route deletion)
-// ============================================================================
 
 TEST(route_test, loopback_reconfig_preserves_other_local_routes) {
     // Set up a mock interface with a LOCAL route through loopback

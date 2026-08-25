@@ -7,7 +7,7 @@ alwaysApply: false
 # Stellux Style
 
 Vendored code is exempt and must never be restyled: doom, python, vim,
-dropbear, bearssl, stb_image, and kernel/boot/limine.h.
+dropbear, bearssl, stb_* headers, and kernel/boot/limine.h.
 
 ## Language, in code and comments
 
@@ -26,15 +26,24 @@ dropbear, bearssl, stb_image, and kernel/boot/limine.h.
 
 - Explain intent and the why behind the decision, never mechanics the code
   already shows. If the code is self-explanatory, write no comment.
-- One to two lines maximum. The only exception is doxygen blocks on public
-  APIs, which use @brief, @param, and @return.
+- One to two lines maximum, counting content lines only (the /** and */
+  frame lines of a block comment do not count). Two exceptions: doxygen
+  blocks on public APIs (@brief, @param, @return), and rare longer blocks
+  documenting a subtle invariant, race, or hardware contract that genuinely
+  needs the space, like the critical section note in dynpriv lower(). Length
+  never excuses narration, a long comment must still explain why.
+- Hand-written hardware spec quotations and RFC or protocol reference blocks
+  (the xhci headers, net/ RFC notes) are protected documentation. Never
+  shorten, rewrite, or delete them.
 - Privileged functions add `@note Privilege: **required**` to their doxygen
   block (owned by the dynpriv rule).
 - Comments never interrupt a single statement. An initializer list, argument
   list, or expression is one atom, so a comment sits above the whole statement
   or trails a definition line. Per-field trailing comments are welcome in
   struct definitions and constant tables, and forbidden inside initializations.
-- Single space before inline comments: `x = 5; // Reason`
+- Single space before inline comments: `x = 5; // Reason`. Exception:
+  column-aligned comment blocks in constant and register tables align within
+  their block.
 - No decorative separators such as `// =====` or `// -----`.
 
 ## Stanza formatting
@@ -89,7 +98,8 @@ return strong_ref<T>::adopt(obj);
 - Anonymous namespaces exist only to give internal linkage to types. Functions
   and variables use file-scope static instead. Test files always use
   file-scope static.
-- Include guards: STELLUX_<DIR>_<FILE>_H, matching the file path.
+- Include guards in the kernel: STELLUX_<DIR>_<FILE>_H, matching the file
+  path. Userland projects use their project prefix, as in STLXGFX_WINDOW_H.
 - K&R braces, 4-space indent, pointer binds to the type: `task* t`.
 - Soft line limit of 120 columns.
 
@@ -105,6 +115,7 @@ return strong_ref<T>::adopt(obj);
 
 ## Low level
 
-- C++ casts only, never C-style casts.
+- In C++ code, C++ casts only, never C-style casts. Plain `(void)expr`
+  discards are fine. C sources are exempt.
 - volatile only for MMIO and memory shared with hardware.
 - All magic numbers become named constexpr constants.

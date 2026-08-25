@@ -20,9 +20,7 @@
 
 TEST_SUITE(loopback_test);
 
-// ============================================================================
 // Interface existence and identity
-// ============================================================================
 
 TEST(loopback_test, interface_exists) {
     net::netif* lo = net::get_loopback_netif();
@@ -76,9 +74,7 @@ TEST(loopback_test, poll_is_null) {
     EXPECT_TRUE(lo->poll == nullptr);
 }
 
-// ============================================================================
 // Default interface behavior
-// ============================================================================
 
 TEST(loopback_test, not_default_interface) {
     // In the test environment with no hardware NICs, the default
@@ -95,9 +91,7 @@ TEST(loopback_test, not_default_interface) {
     // which is correct behavior.
 }
 
-// ============================================================================
 // Interface list visibility
-// ============================================================================
 
 TEST(loopback_test, visible_in_interface_list) {
     net::net_status status = {};
@@ -122,9 +116,7 @@ TEST(loopback_test, visible_in_interface_list) {
     EXPECT_TRUE(found_lo);
 }
 
-// ============================================================================
 // Loopback transmit — frame delivery
-// ============================================================================
 
 TEST(loopback_test, transmit_delivers_to_rx) {
     // Create an ICMP socket to receive packets delivered through loopback
@@ -207,9 +199,7 @@ TEST(loopback_test, transmit_delivers_to_rx) {
     heap::kfree_delete(obj);
 }
 
-// ============================================================================
 // ipv4_send to loopback destination
-// ============================================================================
 
 TEST(loopback_test, ipv4_send_to_127_0_0_1) {
     // Create an ICMP socket to catch delivered packets
@@ -293,9 +283,7 @@ TEST(loopback_test, ipv4_send_to_127_0_0_1) {
     heap::kfree_delete(obj);
 }
 
-// ============================================================================
 // ipv4_send to other 127.x.x.x addresses
-// ============================================================================
 
 TEST(loopback_test, ipv4_send_to_127_0_0_2) {
     // Verify that sending to 127.0.0.2 also routes through loopback.
@@ -345,9 +333,7 @@ TEST(loopback_test, ipv4_send_to_127_0_0_2) {
     heap::kfree_delete(obj);
 }
 
-// ============================================================================
 // Loopback transmit with null/invalid args
-// ============================================================================
 
 TEST(loopback_test, transmit_null_frame) {
     net::netif* lo = net::get_loopback_netif();
@@ -368,9 +354,7 @@ TEST(loopback_test, transmit_zero_length) {
     EXPECT_EQ(rc, net::ERR_INVAL);
 }
 
-// ============================================================================
-// Phase 3: Interface flags
-// ============================================================================
+// Interface flags
 
 TEST(loopback_test, has_netif_flags) {
     net::netif* lo = net::get_loopback_netif();
@@ -396,9 +380,7 @@ TEST(loopback_test, iff_loopback_in_status) {
     EXPECT_TRUE(found_lo);
 }
 
-// ============================================================================
-// Phase 3: Interface lookup
-// ============================================================================
+// Interface lookup
 
 TEST(loopback_test, find_netif_by_name) {
     net::netif* lo = net::find_netif("lo");
@@ -441,9 +423,7 @@ TEST(loopback_test, is_local_ip_unknown) {
     EXPECT_FALSE(net::is_local_ip(net::ipv4_addr(8, 8, 8, 8)));
 }
 
-// ============================================================================
 // Loopback transmit with null/invalid args
-// ============================================================================
 
 TEST(loopback_test, transmit_null_iface) {
     net::netif* lo = net::get_loopback_netif();
@@ -455,9 +435,7 @@ TEST(loopback_test, transmit_null_iface) {
     EXPECT_EQ(rc, net::ERR_INVAL);
 }
 
-// ============================================================================
 // LOCAL route delivery for non-127 own IP (Bug 2 regression test)
-// ============================================================================
 
 TEST(loopback_test, local_route_delivers_own_ip) {
     // Simulate having a configured eth0-like interface with a LOCAL route.

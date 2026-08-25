@@ -11,17 +11,13 @@
 
 TEST_SUITE(dhcp_test);
 
-// ============================================================================
 // Packet structure size
-// ============================================================================
 
 TEST(dhcp_test, dhcp_packet_size) {
     EXPECT_EQ(sizeof(net::dhcp_packet), static_cast<size_t>(240));
 }
 
-// ============================================================================
 // Build DISCOVER
-// ============================================================================
 
 TEST(dhcp_test, build_discover_basic) {
     uint8_t buf[net::DHCP_PACKET_MAX];
@@ -183,9 +179,7 @@ TEST(dhcp_test, build_discover_null_args) {
               static_cast<size_t>(0));
 }
 
-// ============================================================================
 // Build REQUEST
-// ============================================================================
 
 TEST(dhcp_test, build_request_basic) {
     uint8_t buf[net::DHCP_PACKET_MAX];
@@ -258,9 +252,7 @@ TEST(dhcp_test, build_request_has_correct_options) {
     EXPECT_TRUE(found_server_id);
 }
 
-// ============================================================================
 // Parse OFFER
-// ============================================================================
 
 // Helper: build a hand-crafted DHCP OFFER packet for testing
 static size_t build_test_offer(uint8_t* buf, size_t buf_size, uint32_t xid,
@@ -392,9 +384,7 @@ TEST(dhcp_test, parse_offer_minimal) {
     EXPECT_EQ(cfg.dns_server, static_cast<uint32_t>(0));
 }
 
-// ============================================================================
 // Parse ACK
-// ============================================================================
 
 TEST(dhcp_test, parse_ack) {
     uint8_t buf[net::DHCP_PACKET_MAX];
@@ -421,9 +411,7 @@ TEST(dhcp_test, parse_ack) {
     EXPECT_EQ(cfg.offered_ip, net::ipv4_addr(172, 16, 0, 10));
 }
 
-// ============================================================================
 // Parse NAK
-// ============================================================================
 
 TEST(dhcp_test, parse_nak) {
     uint8_t buf[net::DHCP_PACKET_MAX];
@@ -445,9 +433,7 @@ TEST(dhcp_test, parse_nak) {
     EXPECT_EQ(cfg.msg_type, net::DHCP_MSG_NAK);
 }
 
-// ============================================================================
 // Parse edge cases
-// ============================================================================
 
 TEST(dhcp_test, parse_unknown_options_skipped) {
     uint8_t buf[net::DHCP_PACKET_MAX];
@@ -625,9 +611,7 @@ TEST(dhcp_test, parse_options_truncated_mid_option) {
     EXPECT_EQ(cfg.subnet_mask, static_cast<uint32_t>(0)); // truncated, not parsed
 }
 
-// ============================================================================
 // Build DISCOVER → Parse roundtrip
-// ============================================================================
 
 TEST(dhcp_test, discover_roundtrip_mac_preserved) {
     uint8_t buf[net::DHCP_PACKET_MAX];
@@ -642,9 +626,7 @@ TEST(dhcp_test, discover_roundtrip_mac_preserved) {
     EXPECT_EQ(pkt->xid, xid);
 }
 
-// ============================================================================
 // Multiple DNS/Router entries (only first used)
-// ============================================================================
 
 TEST(dhcp_test, parse_multiple_dns_uses_first) {
     uint8_t buf[net::DHCP_PACKET_MAX];

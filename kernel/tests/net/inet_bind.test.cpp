@@ -63,9 +63,7 @@ void close_udp_socket(resource::resource_object* obj) {
 
 } // namespace
 
-// ============================================================================
 // Basic bind
-// ============================================================================
 
 TEST(inet_bind_test, udp_bind_specific_port) {
     auto [obj, sock] = create_udp();
@@ -103,9 +101,7 @@ TEST(inet_bind_test, udp_bind_already_bound) {
     close_udp_socket(obj);
 }
 
-// ============================================================================
 // Conflict detection
-// ============================================================================
 
 TEST(inet_bind_test, udp_bind_port_conflict_same_addr) {
     auto [obj_a, sock_a] = create_udp();
@@ -184,9 +180,7 @@ TEST(inet_bind_test, udp_bind_same_port_different_addr_allowed) {
     net::unregister_netif(&mock_eth);
 }
 
-// ============================================================================
 // Implicit bind interaction
-// ============================================================================
 
 TEST(inet_bind_test, udp_sendto_then_bind_fails) {
     // After sendto assigns an ephemeral port, explicit bind must fail.
@@ -231,9 +225,7 @@ TEST(inet_bind_test, udp_sendto_then_bind_fails) {
     net::unregister_netif(&mock_eth);
 }
 
-// ============================================================================
 // Address validation
-// ============================================================================
 
 TEST(inet_bind_test, udp_bind_loopback_addr) {
     auto [obj, sock] = create_udp();
@@ -273,9 +265,7 @@ TEST(inet_bind_test, udp_bind_bad_family) {
     close_udp_socket(obj);
 }
 
-// ============================================================================
 // Address-filtered delivery via loopback
-// ============================================================================
 
 TEST(inet_bind_test, udp_recv_delivers_to_bound_addr) {
     // Bind a UDP socket to 127.0.0.1:7000, inject a UDP frame

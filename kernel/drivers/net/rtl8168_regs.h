@@ -18,9 +18,7 @@
 
 namespace drivers::rtl8168 {
 
-// ============================================================================
 // PCI identification
-// ============================================================================
 
 constexpr uint16_t RTL_VENDOR_ID             = 0x10EC;
 constexpr uint16_t RTL_DEVICE_ID_8168        = 0x8168;
@@ -29,12 +27,10 @@ constexpr uint16_t RTL_DEVICE_ID_8168        = 0x8168;
 // (PCI config offset 0x18). This consumes BAR indices 2 and 3.
 constexpr uint8_t  RTL_MMIO_BAR              = 2;
 
-// ============================================================================
 // MAC registers (offsets from MMIO base)
 //
 // Cross-referenced: datasheet 2.1, Linux enum rtl_registers,
 // FreeBSD RL_IDR0 etc.
-// ============================================================================
 
 // MAC address (IDR0-IDR5). Must be read/written as 32-bit aligned accesses.
 constexpr uint16_t REG_IDR0                  = 0x0000;  // ID register 0 (MAC byte 0)
@@ -181,11 +177,9 @@ constexpr uint32_t MISC_RXDV_GATED           = (1u << 19);
 constexpr uint32_t MISC_EARLY_TALLY_EN       = (1u << 16);
 constexpr uint32_t MISC_PWM_EN               = (1u << 22);
 
-// ============================================================================
 // Chip version identification
 //
 // The hardware version is encoded in TxConfig[30:28,26,23,22:20].
-// ============================================================================
 
 constexpr uint32_t TCR_HWVERID_SHIFT         = 20;
 constexpr uint32_t TCR_XID_MASK              = 0x000007CF; // bits [30:28,26,23,22:20] after >> 20
@@ -231,7 +225,6 @@ inline constexpr bool chip_is_8168g_plus(chip_version ver) {
     }
 }
 
-// ============================================================================
 // TX descriptor format (16 bytes)
 //
 // Each TX descriptor is 4 DWORDs:
@@ -241,7 +234,6 @@ inline constexpr bool chip_is_8168g_plus(chip_version ver) {
 //   DWORD 3: buffer physical address high 32 bits
 //
 // The ring wraps at the descriptor where EOR is set.
-// ============================================================================
 
 struct tx_desc {
     uint32_t opts1;
@@ -267,7 +259,6 @@ constexpr uint32_t TX_LEN_MASK               = 0x0000FFFF;  // Frame length (bit
 constexpr uint32_t TX_TAGC                   = (1u << 17);  // Insert VLAN tag
 constexpr uint32_t TX_VLAN_MASK              = 0x0000FFFF;  // VLAN tag value
 
-// ============================================================================
 // RX descriptor format (16 bytes)
 //
 // Each RX descriptor is 4 DWORDs:
@@ -278,7 +269,6 @@ constexpr uint32_t TX_VLAN_MASK              = 0x0000FFFF;  // VLAN tag value
 //
 // When OWN=1 (command mode): bits [13:0] = buffer size (max 0x1FF8)
 // When OWN=0 (status mode):  bits [13:0] = frame length including CRC
-// ============================================================================
 
 struct rx_desc {
     uint32_t opts1;
@@ -321,9 +311,7 @@ constexpr uint32_t RX_FRAME_LEN_MASK         = 0x00003FFF;  // Frame length [13:
 constexpr uint32_t RX_TAVA                   = (1u << 16);  // Tag Available (VLAN)
 constexpr uint32_t RX_VLAN_MASK              = 0x0000FFFF;
 
-// ============================================================================
 // Descriptor ring parameters
-// ============================================================================
 
 constexpr uint32_t TX_DESC_COUNT             = 256;
 constexpr uint32_t RX_DESC_COUNT             = 256;
@@ -335,13 +323,11 @@ constexpr uint32_t RX_BUF_SIZE               = 2048;
 // Descriptor rings must be 256-byte aligned
 constexpr size_t   DESC_RING_ALIGN           = 256;
 
-// ============================================================================
 // Standard MII PHY registers (accessed via PHYAR)
 //
 // These are IEEE 802.3 standard. Same as phy_regs.h but in the rtl8168
 // namespace for self-contained usage. The RTL8168 has an integrated PHY
 // so there is no external MDIO bus — access is through PHYAR (offset 0x60).
-// ============================================================================
 
 namespace phy {
 

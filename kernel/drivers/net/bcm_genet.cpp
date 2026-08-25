@@ -21,9 +21,7 @@ namespace drivers {
 using namespace genet;
 using namespace phy;
 
-// ============================================================================
 // Construction / factory
-// ============================================================================
 
 bcm_genet_driver::bcm_genet_driver(uint64_t reg_phys, uint64_t reg_size,
                                    uint32_t irq0, uint32_t irq1)
@@ -52,9 +50,7 @@ bcm_genet_driver* create_bcm_genet(uint64_t reg_phys, uint64_t reg_size,
     return heap::ualloc_new<bcm_genet_driver>(reg_phys, reg_size, irq0, irq1);
 }
 
-// ============================================================================
 // Register access
-// ============================================================================
 
 uint32_t bcm_genet_driver::reg_read(uint32_t offset) {
     return mmio::read32(m_reg_va + offset);
@@ -65,9 +61,7 @@ void bcm_genet_driver::reg_write(uint32_t offset, uint32_t value) {
     mmio::write32(m_reg_va + offset, value);
 }
 
-// ============================================================================
 // MDIO bus
-// ============================================================================
 
 // Approximate microsecond-level busy-wait delay.
 static void delay_us(uint32_t us) {
@@ -117,9 +111,7 @@ int32_t bcm_genet_driver::mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t dat
     return -1;
 }
 
-// ============================================================================
 // PHY management
-// ============================================================================
 
 int32_t bcm_genet_driver::phy_detect() {
     for (uint8_t addr = 0; addr < 32; addr++) {
@@ -289,9 +281,7 @@ void bcm_genet_driver::phy_configure_mac(phy_speed speed, phy_duplex duplex) {
     reg_write(UMAC_CMD, cmd);
 }
 
-// ============================================================================
 // Controller reset and MAC configuration
-// ============================================================================
 
 void bcm_genet_driver::genet_reset() {
     // RBUF flush
@@ -366,9 +356,7 @@ void bcm_genet_driver::set_phy_mode() {
     reg_write(SYS_PORT_CTRL, SYS_PORT_MODE_EXT_GPHY);
 }
 
-// ============================================================================
 // DMA buffer allocation and ring setup
-// ============================================================================
 
 int32_t bcm_genet_driver::dma_alloc() {
     size_t buf_total = static_cast<size_t>(DMA_DESC_COUNT) * MAX_PACKET_SIZE;
@@ -501,9 +489,7 @@ void bcm_genet_driver::dma_disable_tx_rx() {
     reg_write(UMAC_CMD, val);
 }
 
-// ============================================================================
 // TX path
-// ============================================================================
 
 int32_t bcm_genet_driver::tx_callback(net::netif* iface, const uint8_t* frame, size_t len) {
     if (!iface || !frame || len == 0) return -1;
@@ -554,9 +540,7 @@ void bcm_genet_driver::process_tx_completions() {
     }
 }
 
-// ============================================================================
 // RX path
-// ============================================================================
 
 void bcm_genet_driver::process_rx() {
     uint32_t hw_prod = reg_read(RX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE)) & DMA_INDEX_MASK;
@@ -602,9 +586,7 @@ void bcm_genet_driver::rx_remap_descriptor(uint16_t idx) {
     reg_write(RX_DESC_STATUS(idx), 0);
 }
 
-// ============================================================================
 // Interrupts
-// ============================================================================
 
 int32_t bcm_genet_driver::setup_interrupts() {
     if (m_irq[0] == 0) {
@@ -679,9 +661,7 @@ void bcm_genet_driver::disable_interrupts() {
     reg_write(INTRL2_CPU_CLEAR, 0xFFFFFFFF);
 }
 
-// ============================================================================
 // Net interface callbacks
-// ============================================================================
 
 bool bcm_genet_driver::link_callback(net::netif* iface) {
     if (!iface) return false;
@@ -702,9 +682,7 @@ void bcm_genet_driver::poll_callback(net::netif* iface) {
     RUN_ELEVATED(net::drain_deferred_tx());
 }
 
-// ============================================================================
 // MAC filter
-// ============================================================================
 
 void bcm_genet_driver::set_promisc(bool enable) {
     uint32_t val = reg_read(UMAC_CMD);
@@ -732,9 +710,7 @@ void bcm_genet_driver::setup_rx_filter() {
     reg_write(UMAC_MDF_CTRL, (1u << 16) | (1u << 15));
 }
 
-// ============================================================================
 // Debug
-// ============================================================================
 
 void bcm_genet_driver::dump_state() {
     constexpr uint32_t Q = DMA_DEFAULT_QUEUE;
@@ -773,9 +749,7 @@ void bcm_genet_driver::dump_state() {
     log::info("genet: --- end dump ---");
 }
 
-// ============================================================================
 // Driver lifecycle
-// ============================================================================
 
 int32_t bcm_genet_driver::attach() {
     log::info("genet: attaching (phys=0x%lx size=0x%lx IRQs=%u,%u)",

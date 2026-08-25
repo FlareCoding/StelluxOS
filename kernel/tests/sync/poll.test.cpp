@@ -15,10 +15,8 @@ using test_helpers::brief_delay;
 
 TEST_SUITE(poll);
 
-// ---------------------------------------------------------------------------
 // basic_subscribe_and_trigger
 // One task subscribes to a single wait queue, another fires it.
-// ---------------------------------------------------------------------------
 
 static sync::wait_queue g_basic_wq;
 static volatile uint32_t g_basic_waiting;
@@ -64,10 +62,8 @@ TEST(poll, basic_subscribe_and_trigger) {
     EXPECT_EQ(__atomic_load_n(&g_basic_result, __ATOMIC_ACQUIRE), 1u);
 }
 
-// ---------------------------------------------------------------------------
 // multi_source_first_fires
 // Subscribe to 3 wait queues, fire the first one.
-// ---------------------------------------------------------------------------
 
 static sync::wait_queue g_multi_wq[3];
 static volatile uint32_t g_multi_first_waiting;
@@ -115,10 +111,8 @@ TEST(poll, multi_source_first_fires) {
     EXPECT_EQ(__atomic_load_n(&g_multi_first_result, __ATOMIC_ACQUIRE), 1u);
 }
 
-// ---------------------------------------------------------------------------
 // multi_source_last_fires
 // Subscribe to 3 wait queues, fire the last one.
-// ---------------------------------------------------------------------------
 
 static volatile uint32_t g_multi_last_waiting;
 static volatile uint32_t g_multi_last_result;
@@ -165,10 +159,8 @@ TEST(poll, multi_source_last_fires) {
     EXPECT_EQ(__atomic_load_n(&g_multi_last_result, __ATOMIC_ACQUIRE), 1u);
 }
 
-// ---------------------------------------------------------------------------
 // multi_source_all_fire
 // Subscribe to 3 wait queues, fire all of them. Task should wake once.
-// ---------------------------------------------------------------------------
 
 static volatile uint32_t g_multi_all_waiting;
 static volatile uint32_t g_multi_all_result;
@@ -217,10 +209,8 @@ TEST(poll, multi_source_all_fire) {
     EXPECT_EQ(__atomic_load_n(&g_multi_all_result, __ATOMIC_ACQUIRE), 1u);
 }
 
-// ---------------------------------------------------------------------------
 // timeout_no_trigger
 // Subscribe but never fire. Wait with timeout. Verify returns false.
-// ---------------------------------------------------------------------------
 
 static volatile uint32_t g_timeout_result;
 static volatile uint32_t g_timeout_done;
@@ -256,10 +246,8 @@ TEST(poll, timeout_no_trigger) {
     EXPECT_EQ(__atomic_load_n(&g_timeout_result, __ATOMIC_ACQUIRE), 0u);
 }
 
-// ---------------------------------------------------------------------------
 // immediate_trigger_no_block
 // Fire the source before poll_wait — should return immediately.
-// ---------------------------------------------------------------------------
 
 static volatile uint32_t g_imm_result;
 static volatile uint32_t g_imm_done;
@@ -298,10 +286,8 @@ TEST(poll, immediate_trigger_no_block) {
     EXPECT_EQ(__atomic_load_n(&g_imm_result, __ATOMIC_ACQUIRE), 1u);
 }
 
-// ---------------------------------------------------------------------------
 // cleanup_removes_all_observers
 // Subscribe to 3 wqs, cleanup, verify observer lists are empty.
-// ---------------------------------------------------------------------------
 
 static volatile uint32_t g_cleanup_done;
 
@@ -347,10 +333,8 @@ TEST(poll, cleanup_removes_all_observers) {
     EXPECT_EQ(__atomic_load_n(&g_cleanup_done, __ATOMIC_ACQUIRE), 1u);
 }
 
-// ---------------------------------------------------------------------------
 // kill_pending_wakes_poll
 // Task in poll_wait, force_wake_for_kill wakes it.
-// ---------------------------------------------------------------------------
 
 static sync::wait_queue g_kill_wq;
 static volatile uint32_t g_kill_waiting;
@@ -414,10 +398,8 @@ TEST(poll, kill_pending_wakes_poll) {
               sched::TASK_STATE_RUNNING);
 }
 
-// ---------------------------------------------------------------------------
 // repeated_poll_cycles
 // Subscribe/wait/cleanup 10 times on the same wqs.
-// ---------------------------------------------------------------------------
 
 static sync::wait_queue g_repeat_wq;
 static sync::spinlock g_repeat_lock;

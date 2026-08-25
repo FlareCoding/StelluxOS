@@ -12,9 +12,7 @@
 
 namespace drivers::genet {
 
-// ============================================================================
 // System registers
-// ============================================================================
 
 constexpr uint32_t SYS_REV_CTRL              = 0x000;
 constexpr uint32_t  SYS_REV_MAJOR_MASK       = 0x0F000000;
@@ -31,9 +29,7 @@ constexpr uint32_t  SYS_RBUF_FLUSH_RESET     = (1u << 1);
 
 constexpr uint32_t SYS_TBUF_FLUSH_CTRL       = 0x00C;
 
-// ============================================================================
 // External RGMII control
-// ============================================================================
 
 constexpr uint32_t EXT_RGMII_OOB_CTRL        = 0x08C;
 constexpr uint32_t  EXT_RGMII_OOB_ID_MODE_DIS = (1u << 16);
@@ -41,9 +37,7 @@ constexpr uint32_t  EXT_RGMII_OOB_RGMII_MODE  = (1u << 6);
 constexpr uint32_t  EXT_RGMII_OOB_OOB_DIS     = (1u << 5);
 constexpr uint32_t  EXT_RGMII_OOB_RGMII_LINK  = (1u << 4);
 
-// ============================================================================
 // Interrupt registers (INTRL2 bank 0, CPU interrupts)
-// ============================================================================
 
 constexpr uint32_t INTRL2_CPU_STAT           = 0x200;
 constexpr uint32_t INTRL2_CPU_CLEAR          = 0x208;
@@ -57,9 +51,7 @@ constexpr uint32_t IRQ_MDIO_DONE             = (1u << 23);
 constexpr uint32_t IRQ_TXDMA_DONE            = (1u << 16);
 constexpr uint32_t IRQ_RXDMA_DONE            = (1u << 13);
 
-// ============================================================================
 // Receive buffer control (RBUF)
-// ============================================================================
 
 constexpr uint32_t RBUF_CTRL                 = 0x300;
 constexpr uint32_t  RBUF_64B_EN              = (1u << 0);
@@ -72,15 +64,11 @@ constexpr uint32_t  RBUF_CHECK_SKIP_FCS      = (1u << 4);
 
 constexpr uint32_t RBUF_TBUF_SIZE_CTRL       = 0x3B4;
 
-// ============================================================================
 // Transmit buffer control (TBUF)
-// ============================================================================
 
 constexpr uint32_t TBUF_CTRL                 = 0x600;
 
-// ============================================================================
 // UniMAC (UMAC) registers
-// ============================================================================
 
 constexpr uint32_t UMAC_CMD                  = 0x808;
 constexpr uint32_t  UMAC_CMD_LCL_LOOP_EN     = (1u << 15);
@@ -106,9 +94,7 @@ constexpr uint32_t  UMAC_MIB_RESET_RX        = (1u << 0);
 constexpr uint32_t  UMAC_MIB_RESET_RUNT      = (1u << 1);
 constexpr uint32_t  UMAC_MIB_RESET_TX        = (1u << 2);
 
-// ============================================================================
 // MDIO bus registers
-// ============================================================================
 
 constexpr uint32_t MDIO_CMD                  = 0xE14;
 constexpr uint32_t  MDIO_START_BUSY          = (1u << 29);
@@ -121,9 +107,7 @@ constexpr uint32_t  MDIO_REG_SHIFT           = 16;
 constexpr uint32_t  MDIO_REG_MASK            = (0x1Fu << 16);
 constexpr uint32_t  MDIO_VAL_MASK            = 0xFFFF;
 
-// ============================================================================
 // MAC Destination Filter (MDF) registers
-// ============================================================================
 
 constexpr uint32_t UMAC_MDF_CTRL             = 0xE50;
 constexpr uint32_t MAX_MDF_FILTER            = 17;
@@ -136,14 +120,12 @@ inline constexpr uint32_t UMAC_MDF_ADDR1(uint32_t n) {
     return 0xE58 + n * 0x8;
 }
 
-// ============================================================================
 // DMA descriptor layout
 //
 // Descriptors are MMIO-mapped at RX_BASE/TX_BASE. Each is 12 bytes:
 //   [0x00] STATUS   - length and flags
 //   [0x04] ADDR_LO  - low 32 bits of buffer physical address
 //   [0x08] ADDR_HI  - high 32 bits of buffer physical address
-// ============================================================================
 
 constexpr uint32_t DMA_DESC_COUNT            = 256;
 constexpr uint32_t DMA_DESC_SIZE             = 12;  // bytes per descriptor
@@ -158,9 +140,7 @@ constexpr uint32_t BCM2711_SCB_BURST_SIZE    = 0x08;
 constexpr uint32_t RX_BASE                   = 0x2000;
 constexpr uint32_t TX_BASE                   = 0x4000;
 
-// ============================================================================
 // RX DMA descriptor accessors
-// ============================================================================
 
 inline constexpr uint32_t RX_DESC_STATUS(uint32_t idx) {
     return RX_BASE + DMA_DESC_SIZE * idx + 0x00;
@@ -182,9 +162,7 @@ constexpr uint32_t RX_DESC_EOP               = (1u << 14);
 constexpr uint32_t RX_DESC_SOP               = (1u << 13);
 constexpr uint32_t RX_DESC_RX_ERROR          = (1u << 2);
 
-// ============================================================================
 // TX DMA descriptor accessors
-// ============================================================================
 
 inline constexpr uint32_t TX_DESC_STATUS(uint32_t idx) {
     return TX_BASE + DMA_DESC_SIZE * idx + 0x00;
@@ -208,11 +186,9 @@ constexpr uint32_t TX_DESC_QTAG_MASK         = 0x1F80;  // bits [12:7]
 constexpr uint32_t TX_DESC_CRC               = (1u << 6);
 constexpr uint32_t TX_DESC_CKSUM             = (1u << 4);
 
-// ============================================================================
 // DMA ring registers (per-queue)
 //
 // Each queue has a 0x40-byte control block. We only use the default queue (16).
-// ============================================================================
 
 // Ring base address calculation
 inline constexpr uint32_t RX_DMA_RING_BASE(uint32_t qid) {
@@ -270,9 +246,7 @@ inline constexpr uint32_t DMA_END_ADDR(uint32_t desc_count) {
     return (desc_count * DMA_DESC_SIZE / 4) - 1;
 }
 
-// ============================================================================
 // Global DMA control registers (outside per-queue ring blocks)
-// ============================================================================
 
 constexpr uint32_t RX_DMA_RING_CFG           = RX_BASE + 0x1040;
 constexpr uint32_t RX_DMA_CTRL               = RX_BASE + 0x1044;

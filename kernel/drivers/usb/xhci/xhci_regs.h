@@ -127,8 +127,7 @@ Unless otherwise stated, all registers should be accessed with Dword references
 on reads, with an appropriate software mask if needed. A software
 read/modify/write mechanism should be invoked for partial writes.
 Software should write registers containing a Qword address field using only
-Qword references. If a system is incapable of issuing Qword references, then 
-388 Document Number: 625472, Revision: 1.2b Intel Confidential
+Qword references. If a system is incapable of issuing Qword references, then
 writes to the Qword address fields shall be performed using 2 Dword
 references; low Dword-first, high-Dword second.
 */

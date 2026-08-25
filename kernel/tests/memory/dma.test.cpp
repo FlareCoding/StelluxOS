@@ -36,7 +36,7 @@ int32_t dma_after_all() {
 BEFORE_ALL(dma_test, dma_before_all);
 AFTER_ALL(dma_test, dma_after_all);
 
-// ---------- Page-level tests ----------
+// Page-level tests
 
 TEST(dma_test, page_alloc_basic) {
     dma::buffer buf = {};
@@ -102,7 +102,7 @@ TEST(dma_test, page_alloc_dma32_phys_below_4gb) {
     });
 }
 
-// ---------- Pool init validation tests ----------
+// Pool init validation tests
 
 TEST(dma_test, pool_init_basic) {
     dma::pool p = {};
@@ -155,7 +155,7 @@ TEST(dma_test, pool_init_bad_alignment) {
     EXPECT_EQ(rc, dma::ERR_INVALID_ARG);
 }
 
-// ---------- Pool alloc/free tests ----------
+// Pool alloc/free tests
 
 TEST(dma_test, pool_alloc_returns_aligned) {
     dma::pool p = {};
@@ -263,7 +263,7 @@ TEST(dma_test, pool_alloc_exhaustion) {
     });
 }
 
-// ---------- Pool lifecycle tests ----------
+// Pool lifecycle tests
 
 TEST(dma_test, pool_destroy_and_reinit) {
     dma::pool p = {};

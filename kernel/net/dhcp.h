@@ -6,9 +6,7 @@
 
 namespace net {
 
-// ============================================================================
 // DHCP Constants
-// ============================================================================
 
 constexpr uint16_t DHCP_SERVER_PORT = 67;
 constexpr uint16_t DHCP_CLIENT_PORT = 68;
@@ -52,9 +50,7 @@ constexpr uint32_t DHCP_ATTEMPTS       = 3;
 constexpr uint32_t DHCP_POLL_INTERVAL_MS = 50;
 constexpr uint32_t DHCP_TIMEOUT_MS     = 5000;
 
-// ============================================================================
 // DHCP Packet Structure
-// ============================================================================
 
 /**
  * Fixed-size BOOTP/DHCP header (236 bytes).
@@ -86,9 +82,7 @@ constexpr size_t DHCP_OPTIONS_MAX = 312;
 // Maximum total DHCP message size (header + options)
 constexpr size_t DHCP_PACKET_MAX = sizeof(dhcp_packet) + DHCP_OPTIONS_MAX;
 
-// ============================================================================
 // Parsed DHCP Configuration
-// ============================================================================
 
 /**
  * Holds parsed configuration from a DHCP OFFER or ACK response.
@@ -105,9 +99,7 @@ struct dhcp_config {
     bool     valid;          // true if parsing succeeded
 };
 
-// ============================================================================
 // Packet Build/Parse Functions (unit-testable)
-// ============================================================================
 
 /**
  * Build a DHCP DISCOVER packet.
@@ -144,9 +136,7 @@ size_t dhcp_build_request(uint8_t* out, size_t out_size,
 bool dhcp_parse_response(const dhcp_packet* pkt, size_t pkt_len,
                          dhcp_config* out);
 
-// ============================================================================
 // DHCP Receive Hook (called by udp_recv, runs at Ring 0)
-// ============================================================================
 
 /**
  * Called by udp_recv() when a UDP packet arrives on port 68 (DHCP client).
@@ -159,9 +149,7 @@ bool dhcp_parse_response(const dhcp_packet* pkt, size_t pkt_len,
  */
 void dhcp_rx_hook(const uint8_t* data, size_t len);
 
-// ============================================================================
 // DHCP Client API
-// ============================================================================
 
 /**
  * Run a full DHCP exchange on the given interface.
