@@ -15,8 +15,9 @@ alwaysApply: true
 ## Code style
 
 - Struct definitions and file-scope globals belong at the top of the file, above all function definitions, in both headers and .c/.cpp files.
-- Kernel modules use `namespace <module> { namespace { ... } }` for internals (see `kernel/random/random.cpp` as the template for devfs drivers).
+- Module internals use file-scope `static` for functions and variables; anonymous namespaces exist only to give internal linkage to types (see the style rule).
 - Kernel test files use file-scope `static`, never anonymous namespaces (match `kernel/tests/sched/preemption.test.cpp`). Per-test globals sit adjacent to their test.
+- `kernel/tests/` dirs group by theme, not strict 1:1 with source dirs: `tests/memory/` deliberately holds mm and dma tests.
 - Comments: ASCII only, 1-2 lines, explain intent not mechanics. Headers use doxygen blocks with `@note Privilege: **required**` for privileged functions.
 - Public kernel APIs carry `__PRIVILEGED_CODE`; follow existing error-constant patterns (`fs::ERR_*`, per-module `OK`/`ERR`).
 - Userland apps: `APP_NAME := x` Makefile + `include ../../mk/app.mk`, register in `userland/apps/Makefile` APP_DIRS.

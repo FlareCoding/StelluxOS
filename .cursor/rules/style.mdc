@@ -1,0 +1,110 @@
+---
+description: Code style for all first-party Stellux code, kernel and userland
+globs: kernel/**,userland/**
+alwaysApply: false
+---
+
+# Stellux Style
+
+Vendored code is exempt and must never be restyled: doom, python, vim,
+dropbear, bearssl, stb_image, and kernel/boot/limine.h.
+
+## Language, in code and comments
+
+- ASCII only. No unicode arrows, icons, emoji, box drawing, or typographic
+  punctuation anywhere.
+- No em-dashes. Use commas, parentheses, or separate sentences.
+- No semicolons in comments. Restructure the sentence with commas or split it.
+- Plain, simple language, written for a reader with no prior context in this
+  domain. Banned words and their relatives: leverage, robust, seamless,
+  elegant, comprehensive, powerful, simply, cutting-edge.
+- Comments are timeless. Never reference the current change, commit, PR,
+  refactor, conversation, or anything "new", "old", or "now". A comment must
+  still be true and useful in five years.
+
+## Comments
+
+- Explain intent and the why behind the decision, never mechanics the code
+  already shows. If the code is self-explanatory, write no comment.
+- One to two lines maximum. The only exception is doxygen blocks on public
+  APIs, which use @brief, @param, and @return.
+- Privileged functions add `@note Privilege: **required**` to their doxygen
+  block (owned by the dynpriv rule).
+- Comments never interrupt a single statement. An initializer list, argument
+  list, or expression is one atom, so a comment sits above the whole statement
+  or trails a definition line. Per-field trailing comments are welcome in
+  struct definitions and constant tables, and forbidden inside initializations.
+- Single space before inline comments: `x = 5; // Reason`
+- No decorative separators such as `// =====` or `// -----`.
+
+## Stanza formatting
+
+Function bodies read as stanzas: groups of one to six statements that
+accomplish one sub-step (validate, acquire, initialize, mutate, commit,
+return), separated by exactly one blank line.
+
+- Blank line after an early-exit guard block.
+- Blank line between acquiring a resource and using it.
+- Blank line before the final return, unless the body is a single stanza.
+- No blank line inside a stanza, and never two consecutive blank lines.
+- Bodies of one to three lines form a single stanza with no blank lines.
+
+```cpp
+// BAD, one undifferentiated block
+void* mem = heap::kzalloc(sizeof(T));
+if (!mem) {
+    return strong_ref<T>();
+}
+T* obj = new (mem) T(static_cast<args_t&&>(args)...);
+return strong_ref<T>::adopt(obj);
+
+// GOOD, allocation guarded, then construction
+void* mem = heap::kzalloc(sizeof(T));
+if (!mem) {
+    return strong_ref<T>();
+}
+
+T* obj = new (mem) T(static_cast<args_t&&>(args)...);
+return strong_ref<T>::adopt(obj);
+```
+
+## Naming
+
+- snake_case for functions, variables, types, namespaces, and files.
+  SCREAMING_SNAKE_CASE for constants and macros.
+- Private and protected class members carry the m_ prefix. Trailing
+  underscores are forbidden.
+- namespace = directory = module name (see the arch-layout rule).
+- Resource providers are named for what they wrap, X_provider wraps X:
+  file_provider wraps fs::file, shmem_provider wraps mm::shmem.
+- using aliases end in _t only when aliasing a scalar such as an address or
+  id: phys_addr_t. Composite types take plain names.
+
+## Structure
+
+- Struct definitions and file-scope globals sit at the top of the file, above
+  all function definitions, in headers and in .cpp files alike.
+- struct for plain data and intrusive nodes, class only when private state
+  guards an invariant.
+- Anonymous namespaces exist only to give internal linkage to types. Functions
+  and variables use file-scope static instead. Test files always use
+  file-scope static.
+- Include guards: STELLUX_<DIR>_<FILE>_H, matching the file path.
+- K&R braces, 4-space indent, pointer binds to the type: `task* t`.
+- Soft line limit of 120 columns.
+
+## Errors and logging
+
+- Per-module error constants in the module header: OK = 0 and negative
+  int32_t ERR_* values.
+- Crossing an error vocabulary boundary requires an explicit translation
+  function, as map_fs_error_to_resource does for fs to resource codes.
+- [[nodiscard]] on functions returning ownership or a lock guard.
+- log::fatal only for unrecoverable boot failures. Optional subsystems log a
+  warning and degrade.
+
+## Low level
+
+- C++ casts only, never C-style casts.
+- volatile only for MMIO and memory shared with hardware.
+- All magic numbers become named constexpr constants.
