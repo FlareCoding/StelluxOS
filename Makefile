@@ -514,7 +514,7 @@ musl:
 	@mkdir -p userland
 	@test -f $(MUSL_TARBALL) || \
 		(echo "Downloading musl $(MUSL_VERSION)..." && \
-		 curl -L -o $(MUSL_TARBALL) $(MUSL_URL))
+		 curl -fL --retry 3 -o $(MUSL_TARBALL) $(MUSL_URL))
 	@test -d $(MUSL_DIR) || \
 		(echo "Extracting..." && \
 		 cd userland && tar xf musl-$(MUSL_VERSION).tar.gz)
@@ -564,7 +564,7 @@ libcxx:
 	@mkdir -p userland
 	@test -f $(LLVM_TARBALL) || \
 		(echo "Downloading LLVM $(LLVM_VERSION) source (~130MB)..." && \
-		 curl -L -o $(LLVM_TARBALL) $(LLVM_URL))
+		 curl -fL --retry 3 -o $(LLVM_TARBALL) $(LLVM_URL))
 	@test -d $(LLVM_DIR) || \
 		(echo "Extracting..." && \
 		 cd userland && tar xf llvm-project-$(LLVM_VERSION).src.tar.xz)
@@ -576,6 +576,7 @@ libcxx:
 	cd $(LLVM_DIR)/build-x86_64 && cmake -G "Unix Makefiles" ../runtimes \
 		$(CMAKE_HOST_FLAGS) \
 		-DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+		-DLLVM_INCLUDE_TESTS=OFF \
 		-DCMAKE_C_COMPILER=$(STLX_CC) \
 		-DCMAKE_CXX_COMPILER=$(STLX_CXX) \
 		-DCMAKE_ASM_COMPILER=$(STLX_CC) \
@@ -617,6 +618,7 @@ libcxx:
 	cd $(LLVM_DIR)/build-aarch64 && cmake -G "Unix Makefiles" ../runtimes \
 		$(CMAKE_HOST_FLAGS) \
 		-DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
+		-DLLVM_INCLUDE_TESTS=OFF \
 		-DCMAKE_C_COMPILER=$(STLX_CC) \
 		-DCMAKE_CXX_COMPILER=$(STLX_CXX) \
 		-DCMAKE_ASM_COMPILER=$(STLX_CC) \
@@ -670,7 +672,7 @@ compiler-rt:
 	@mkdir -p userland
 	@test -f $(LLVM_TARBALL) || \
 		(echo "Downloading LLVM $(LLVM_VERSION) source (~130MB)..." && \
-		 curl -L -o $(LLVM_TARBALL) $(LLVM_URL))
+		 curl -fL --retry 3 -o $(LLVM_TARBALL) $(LLVM_URL))
 	@test -d $(LLVM_DIR) || \
 		(echo "Extracting..." && \
 		 cd userland && tar xf llvm-project-$(LLVM_VERSION).src.tar.xz)
