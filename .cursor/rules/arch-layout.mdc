@@ -1,0 +1,41 @@
+---
+description: Dual-architecture code layout, include-path overlay, and file placement rules for the Stellux kernel
+globs: kernel/**
+alwaysApply: false
+---
+
+# Kernel Layout and Arch Abstraction
+
+## Include overlay
+
+All kernel code compiles with `-I. -Icommon -Iarch/$(ARCH)` (relative to `kernel/`). Three roots merge into one include namespace:
+
+- `#include "mm/paging.h"` → `kernel/mm/` (common subsystem)
+- `#include "hw/cpu.h"` → `kernel/arch/$(ARCH)/hw/` (arch overlay)
+- `#include "common/types.h"` → always spell out the `common/` prefix
+
+The same include path may resolve per-arch: `"sched/thread_cpu_context.h"` picks the building arch's file. This overlay is the ONLY sanctioned form of arch dispatch — never `#ifdef __x86_64__` / `__aarch64__` in common code (platform defines like `STLX_PLATFORM_RPI4` are likewise arch-tree-only), never weak symbols.
+
+## The five abstraction mechanisms
+
+Pick the weakest mechanism that fits; copy the canonical example:
+
+1. **Common header + per-arch .cpp** — one API, per-arch mechanism. `kernel/clock/clock.h` ↔ `kernel/arch/{x86_64,aarch64}/clock/clock.cpp`. Also: timer, trap, dynpriv, percpu, serial.
+2. **Arch overlay header** — same include path, per-arch definitions (context/frame types): `"sched/thread_cpu_context.h"`.
+3. **`*_arch.h` contract header** — arch-provided constants/types consumed by COMMON code: `mm/paging_arch.h`, `acpi/madt_arch.h`, `irq/irq_arch.h`, `exec/elf_arch.h`. The suffix means exactly this; never use it for arch-private headers.
+4. **`arch::` facade** — cross-cutting hooks declared once under `kernel/arch/` (`arch_init.h`, `arch_smp.h`, `arch_msi.h`, `arch_signal.h`), implemented by both arch trees.
+5. **Internal named hooks** — a common `*_internal.h` declares functions the arch side implements: `sched_internal.h` → `sched::arch_*` in `arch/*/sched/sched.cpp`.
+
+## Placement decision tree
+
+- Arch-independent logic → `kernel/<module>/`; namespace = directory = module name.
+- One API, per-arch mechanism → mechanism 1; the arch dir MUST carry the same name as the common module (mirror naming).
+- Arch data consumed by common code → mechanism 3.
+- Raw register/instruction wrappers → `arch/$(ARCH)/hw/`. Inline asm lives ONLY in arch trees, isolated in small wrapper functions; common code calls the wrappers.
+- Arch-private code with no common consumer → `arch/$(ARCH)/<area>/`, plain filename (no `_arch` suffix). Arch-private namespaces `x86::` / `aarch64::` are allowed here only.
+
+## Hard rules
+
+- A feature is complete only when it works on BOTH architectures. If the abstraction feels forced on one arch, redesign the interface; do not bolt on conditionals.
+- `kernel/hw/` holds arch-neutral facades only (`mmio.h`, `rtc.h`); arch-specific wrappers go in `arch/$(ARCH)/hw/`.
+- A new common subsystem dir containing `.cpp` files needs a `find` line added in `kernel/Makefile`; arch-tree sources are discovered automatically.
