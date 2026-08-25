@@ -1257,7 +1257,8 @@ Controller during status update if the associated error condition is detected.
 /*
 // xHci Spec Section 7.0 Table 7-1: Format of xHCI Extended Capability Pointer Register
 */
-#define XHCI_NEXT_EXT_CAP_PTR(ptr, next) (volatile uint32_t*)((char*)ptr + (next * sizeof(uint32_t)))
+#define XHCI_NEXT_EXT_CAP_PTR(ptr, next) \
+    reinterpret_cast<volatile uint32_t*>(reinterpret_cast<volatile char*>(ptr) + (next * sizeof(uint32_t)))
 
 /*
 // xHci Spec Section 6.2.2 Figure 6-2: Slot Context Data Structure (page 407)

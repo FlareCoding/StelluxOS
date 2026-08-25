@@ -1,5 +1,5 @@
-#ifndef XHCI_MEM_H
-#define XHCI_MEM_H
+#ifndef STELLUX_DRIVERS_USB_XHCI_XHCI_MEM_H
+#define STELLUX_DRIVERS_USB_XHCI_XHCI_MEM_H
 
 #include "mm/paging_types.h"
 
@@ -59,4 +59,4 @@ uintptr_t xhci_get_physical_addr(void* vaddr);
 
 } // namespace drivers::xhci
 
-#endif // XHCI_MEM_H
+#endif // STELLUX_DRIVERS_USB_XHCI_XHCI_MEM_H
