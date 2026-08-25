@@ -49,12 +49,15 @@ public:
         if (this == &other) {
             return *this;
         }
+
         T* new_ptr = other.m_ptr;
         if (new_ptr) {
             new_ptr->add_ref();
         }
+
         reset();
         m_ptr = new_ptr;
+
         return *this;
     }
 
@@ -62,9 +65,12 @@ public:
         if (this == &other) {
             return *this;
         }
+
         reset();
+
         m_ptr = other.m_ptr;
         other.m_ptr = nullptr;
+
         return *this;
     }
 
@@ -88,9 +94,11 @@ public:
         if (!raw) {
             return strong_ref();
         }
+
         if (!raw->try_add_ref()) {
             return strong_ref();
         }
+
         return strong_ref(raw, ADOPT_REF);
     }
 
@@ -102,6 +110,7 @@ public:
     void reset() noexcept {
         T* dying = m_ptr;
         m_ptr = nullptr;
+
         if (dying && dying->release()) {
             T::ref_destroy(dying);
         }
@@ -143,6 +152,7 @@ strong_ref<T> make_kref(args_t&&... args) noexcept {
     if (!mem) {
         return strong_ref<T>();
     }
+
     T* obj = new (mem) T(static_cast<args_t&&>(args)...);
     return strong_ref<T>::adopt(obj);
 }
@@ -159,6 +169,7 @@ strong_ref<T> make_uref(args_t&&... args) noexcept {
     if (!mem) {
         return strong_ref<T>();
     }
+
     T* obj = new (mem) T(static_cast<args_t&&>(args)...);
     return strong_ref<T>::adopt(obj);
 }
