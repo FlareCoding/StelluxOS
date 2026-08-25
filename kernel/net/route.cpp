@@ -5,8 +5,6 @@
 
 namespace net {
 
-namespace {
-
 __PRIVILEGED_DATA static route_entry g_route_table[ROUTE_TABLE_SIZE] = {};
 __PRIVILEGED_DATA static sync::spinlock g_route_lock = sync::SPINLOCK_INIT;
 
@@ -19,8 +17,6 @@ static uint32_t popcount32(uint32_t v) {
     v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
     return (((v + (v >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
 }
-
-} // anonymous namespace
 
 __PRIVILEGED_CODE void route_init() {
     for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {

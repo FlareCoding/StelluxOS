@@ -12,8 +12,6 @@
 
 namespace net {
 
-namespace {
-
 // Linked list of ICMP sockets registered for packet delivery.
 // Protected by g_icmp_sock_lock.
 __PRIVILEGED_DATA static inet_socket* g_icmp_sock_list = nullptr;
@@ -47,8 +45,6 @@ static void deliver_to_sockets(uint32_t src_ip, const uint8_t* data, size_t len)
 
     heap::kfree(entry);
 }
-
-} // anonymous namespace
 
 void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len) {
     if (!iface || !data || len < sizeof(icmp_header)) {

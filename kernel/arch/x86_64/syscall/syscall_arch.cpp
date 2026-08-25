@@ -4,8 +4,6 @@
 
 extern "C" void stlx_x86_syscall_entry();
 
-namespace {
-
 constexpr uint32_t MSR_EFER   = 0xC0000080;
 constexpr uint32_t MSR_STAR   = 0xC0000081;
 constexpr uint32_t MSR_LSTAR  = 0xC0000082;
@@ -30,8 +28,6 @@ static_assert(static_cast<uint16_t>(SYSRET_SEL_BASE + 8) == x86::USER_DS,
               "SYSRET base must derive USER_DS");
 static_assert(static_cast<uint16_t>(SYSRET_SEL_BASE + 16) == x86::USER_CS,
               "SYSRET base must derive USER_CS");
-
-} // anonymous namespace
 
 namespace syscall {
 

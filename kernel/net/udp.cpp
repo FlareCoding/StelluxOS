@@ -13,8 +13,6 @@
 
 namespace net {
 
-namespace {
-
 __PRIVILEGED_DATA static inet_socket* g_udp_sock_list = nullptr;
 __PRIVILEGED_DATA static sync::spinlock g_udp_sock_lock = sync::SPINLOCK_INIT;
 __PRIVILEGED_DATA static volatile uint32_t g_ephemeral_next = UDP_PORT_EPHEMERAL_MIN;
@@ -25,8 +23,6 @@ __PRIVILEGED_DATA static volatile uint32_t g_ephemeral_next = UDP_PORT_EPHEMERAL
 //   [2 bytes: payload_len, host byte order]
 //   [N bytes: UDP payload]
 constexpr size_t RX_ENTRY_HEADER = 8;
-
-} // anonymous namespace
 
 void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
               const uint8_t* data, size_t len) {

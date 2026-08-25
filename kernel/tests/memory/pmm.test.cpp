@@ -6,11 +6,9 @@
 
 TEST_SUITE(pmm);
 
-namespace {
+static uint64_t g_initial_free_pages = 0;
 
-uint64_t g_initial_free_pages = 0;
-
-int32_t pmm_before_all() {
+static int32_t pmm_before_all() {
     g_initial_free_pages = pmm::free_page_count();
     if (g_initial_free_pages < 512) {
         log::error("pmm tests: insufficient free pages (%lu)", g_initial_free_pages);
@@ -19,7 +17,7 @@ int32_t pmm_before_all() {
     return 0;
 }
 
-int32_t pmm_after_all() {
+static int32_t pmm_after_all() {
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("pmm tests: leak detected, started=%lu ended=%lu delta=%ld",
@@ -28,8 +26,6 @@ int32_t pmm_after_all() {
     }
     return 0;
 }
-
-} // namespace
 
 BEFORE_ALL(pmm, pmm_before_all);
 AFTER_ALL(pmm, pmm_after_all);

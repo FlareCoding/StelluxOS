@@ -7,8 +7,6 @@
 
 TEST_SUITE(task_registry);
 
-namespace {
-
 // Mock task helpers. The task struct is large, so all test data is static
 // to avoid kernel stack overflow.
 
@@ -40,8 +38,6 @@ static bool tid_in_buffer(const uint32_t* buf, uint32_t count, uint32_t tid) {
 
 // Snapshot buffer (static to avoid stack pressure)
 static uint32_t s_snap_buf[MAX_MOCK_TASKS];
-
-} // namespace
 
 // --- init / count ---
 

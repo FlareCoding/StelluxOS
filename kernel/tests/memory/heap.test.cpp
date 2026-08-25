@@ -8,11 +8,9 @@
 
 TEST_SUITE(heap_test);
 
-namespace {
+static uint64_t g_initial_free_pages = 0;
 
-uint64_t g_initial_free_pages = 0;
-
-int32_t heap_before_all() {
+static int32_t heap_before_all() {
     g_initial_free_pages = pmm::free_page_count();
     if (g_initial_free_pages < 256) {
         log::error("heap tests: insufficient free pages (%lu)", g_initial_free_pages);
@@ -21,7 +19,7 @@ int32_t heap_before_all() {
     return 0;
 }
 
-int32_t heap_after_all() {
+static int32_t heap_after_all() {
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("heap tests: leak detected, started=%lu ended=%lu delta=%ld",
@@ -30,8 +28,6 @@ int32_t heap_after_all() {
     }
     return 0;
 }
-
-} // namespace
 
 BEFORE_ALL(heap_test, heap_before_all);
 AFTER_ALL(heap_test, heap_after_all);

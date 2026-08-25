@@ -17,10 +17,8 @@
 
 TEST_SUITE(inet_bind_test);
 
-namespace {
-
 // Helper: build a kernel_sockaddr_in for binding
-net::kernel_sockaddr_in make_sin(uint32_t ip_host, uint16_t port_host) {
+static net::kernel_sockaddr_in make_sin(uint32_t ip_host, uint16_t port_host) {
     net::kernel_sockaddr_in sa{};
     sa.sin_family = net::AF_INET_VAL;
     sa.sin_port = net::htons(port_host);
@@ -30,12 +28,12 @@ net::kernel_sockaddr_in make_sin(uint32_t ip_host, uint16_t port_host) {
 
 // Helper: create a UDP socket and return (obj, sock) pair.
 // Caller must clean up via close_udp_socket.
-struct udp_pair {
+struct inet_bind_udp_pair {
     resource::resource_object* obj;
     net::inet_socket* sock;
 };
 
-udp_pair create_udp() {
+static inet_bind_udp_pair create_udp() {
     resource::resource_object* obj = nullptr;
     int32_t rc = net::create_inet_udp_socket(&obj);
     if (rc != resource::OK || !obj) {
@@ -45,14 +43,14 @@ udp_pair create_udp() {
 }
 
 // Helper: bind a UDP socket to (ip, port) via ops
-int32_t do_bind(resource::resource_object* obj, uint32_t ip_host,
-                uint16_t port_host) {
+static int32_t do_bind(resource::resource_object* obj, uint32_t ip_host,
+                       uint16_t port_host) {
     auto sa = make_sin(ip_host, port_host);
     return obj->ops->bind(obj, &sa, sizeof(sa));
 }
 
 // Helper: clean up a UDP socket (mirrors inet_close path)
-void close_udp_socket(resource::resource_object* obj) {
+static void close_udp_socket(resource::resource_object* obj) {
     if (obj && obj->ops && obj->ops->close) {
         obj->ops->close(obj);
     }
@@ -60,8 +58,6 @@ void close_udp_socket(resource::resource_object* obj) {
         heap::kfree_delete(obj);
     }
 }
-
-} // namespace
 
 // Basic bind
 

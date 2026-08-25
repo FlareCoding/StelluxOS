@@ -10,16 +10,14 @@
 
 TEST_SUITE(paging_test);
 
-namespace {
+static uint64_t g_initial_free_pages = 0;
 
-uint64_t g_initial_free_pages = 0;
-
-int32_t paging_before_all() {
+static int32_t paging_before_all() {
     g_initial_free_pages = pmm::free_page_count();
     return 0;
 }
 
-int32_t paging_after_all() {
+static int32_t paging_after_all() {
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("paging tests: leak detected, started=%lu ended=%lu",
@@ -29,7 +27,7 @@ int32_t paging_after_all() {
 }
 
 // Helper: allocate a VA from KVA for test mappings
-paging::virt_addr_t alloc_test_va(size_t pages = 1) {
+static paging::virt_addr_t alloc_test_va(size_t pages = 1) {
     kva::allocation alloc = {};
     int32_t result = kva::alloc(
         pages * paging::PAGE_SIZE_4KB,
@@ -44,17 +42,15 @@ paging::virt_addr_t alloc_test_va(size_t pages = 1) {
     return static_cast<paging::virt_addr_t>(alloc.base);
 }
 
-void free_test_va(paging::virt_addr_t va) {
+static void free_test_va(paging::virt_addr_t va) {
     kva::free(static_cast<uintptr_t>(va));
 }
 
 // Low-canonical VA guaranteed unmapped in the kernel root. 32TB is well above
 // any physical address or firmware MMIO region but within the 47-bit canonical range.
-paging::virt_addr_t user_test_va() {
+static paging::virt_addr_t user_test_va() {
     return 0x0000200000000000ULL;
 }
-
-} // namespace
 
 BEFORE_ALL(paging_test, paging_before_all);
 AFTER_ALL(paging_test, paging_after_all);

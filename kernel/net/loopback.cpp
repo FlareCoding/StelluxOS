@@ -6,8 +6,6 @@
 
 namespace net {
 
-namespace {
-
 static netif g_lo_netif = {};
 static bool g_lo_initialized = false;
 
@@ -46,8 +44,6 @@ static int32_t lo_transmit(netif* iface, const uint8_t* frame, size_t len) {
 static bool lo_link_up(netif*) {
     return true;
 }
-
-} // anonymous namespace
 
 __PRIVILEGED_CODE int32_t loopback_init() {
     // Initialize the loopback netif

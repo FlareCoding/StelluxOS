@@ -7,67 +7,65 @@
 
 TEST_SUITE(hashmap);
 
-namespace {
-
-struct test_item {
+struct hashmap_test_item {
     uint64_t id;
     uint64_t value;
     hashmap::node link;
 };
 
-struct test_key_ops {
+struct hashmap_test_key_ops {
     using key_type = uint64_t;
-    static key_type key_of(const test_item& e) { return e.id; }
+    static key_type key_of(const hashmap_test_item& e) { return e.id; }
     static uint64_t hash(const key_type& k) { return hash::u64(k); }
     static bool equal(const key_type& a, const key_type& b) { return a == b; }
 };
 
-using test_map = hashmap::map<test_item, &test_item::link, test_key_ops>;
+using test_map = hashmap::map<hashmap_test_item, &hashmap_test_item::link, hashmap_test_key_ops>;
 
 constexpr uint32_t TEST_BUCKETS = 16;
 
 // Force all items into bucket 0 by making hash return 0.
-struct collide_key_ops {
+struct hashmap_collide_key_ops {
     using key_type = uint64_t;
-    static key_type key_of(const test_item& e) { return e.id; }
+    static key_type key_of(const hashmap_test_item& e) { return e.id; }
     static uint64_t hash(const key_type&) { return 0; }
     static bool equal(const key_type& a, const key_type& b) { return a == b; }
 };
 
-using collide_map = hashmap::map<test_item, &test_item::link, collide_key_ops>;
+using collide_map = hashmap::map<hashmap_test_item, &hashmap_test_item::link, hashmap_collide_key_ops>;
 
-struct str_item {
+struct hashmap_str_item {
     const char* name;
     uint64_t value;
     hashmap::node link;
 };
 
-struct str_key_ops {
+struct hashmap_str_key_ops {
     using key_type = const char*;
-    static key_type key_of(const str_item& e) { return e.name; }
+    static key_type key_of(const hashmap_str_item& e) { return e.name; }
     static uint64_t hash(const key_type& k) { return hash::string(k); }
     static bool equal(const key_type& a, const key_type& b) {
         return string::strcmp(a, b) == 0;
     }
 };
 
-using str_map = hashmap::map<str_item, &str_item::link, str_key_ops>;
+using str_map = hashmap::map<hashmap_str_item, &hashmap_str_item::link, hashmap_str_key_ops>;
 
-struct composite_key {
+struct hashmap_composite_key {
     uint64_t parent_id;
     const char* name;
 };
 
-struct comp_item {
+struct hashmap_comp_item {
     uint64_t parent_id;
     const char* name;
     uint64_t value;
     hashmap::node link;
 };
 
-struct comp_key_ops {
-    using key_type = composite_key;
-    static key_type key_of(const comp_item& e) { return {e.parent_id, e.name}; }
+struct hashmap_comp_key_ops {
+    using key_type = hashmap_composite_key;
+    static key_type key_of(const hashmap_comp_item& e) { return {e.parent_id, e.name}; }
     static uint64_t hash(const key_type& k) {
         return hash::combine(hash::u64(k.parent_id), hash::string(k.name));
     }
@@ -76,9 +74,7 @@ struct comp_key_ops {
     }
 };
 
-using comp_map = hashmap::map<comp_item, &comp_item::link, comp_key_ops>;
-
-} // namespace
+using comp_map = hashmap::map<hashmap_comp_item, &hashmap_comp_item::link, hashmap_comp_key_ops>;
 
 TEST(hashmap, empty_map_operations) {
     hashmap::bucket buckets[TEST_BUCKETS];
@@ -91,7 +87,7 @@ TEST(hashmap, empty_map_operations) {
     EXPECT_NULL(m.find(42));
 
     uint32_t visit_count = 0;
-    m.for_each([&](test_item&) { visit_count++; });
+    m.for_each([&](hashmap_test_item&) { visit_count++; });
     EXPECT_EQ(visit_count, static_cast<uint32_t>(0));
 }
 
@@ -100,7 +96,7 @@ TEST(hashmap, insert_single) {
     test_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item item{42, 100, {}};
+    hashmap_test_item item{42, 100, {}};
     m.insert(&item);
 
     EXPECT_FALSE(m.empty());
@@ -117,7 +113,7 @@ TEST(hashmap, insert_and_find) {
     test_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item items[8];
+    hashmap_test_item items[8];
     for (uint64_t i = 0; i < 8; i++) {
         items[i].id = i * 10;
         items[i].value = i;
@@ -139,7 +135,7 @@ TEST(hashmap, find_missing_key) {
     test_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item item{10, 1, {}};
+    hashmap_test_item item{10, 1, {}};
     m.insert(&item);
 
     EXPECT_NULL(m.find(0));
@@ -152,7 +148,7 @@ TEST(hashmap, remove_single) {
     test_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item item{42, 1, {}};
+    hashmap_test_item item{42, 1, {}};
     m.insert(&item);
     ASSERT_NOT_NULL(m.find(42));
 
@@ -167,9 +163,9 @@ TEST(hashmap, remove_head_of_chain) {
     collide_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item a{1, 10, {}};
-    test_item b{2, 20, {}};
-    test_item c{3, 30, {}};
+    hashmap_test_item a{1, 10, {}};
+    hashmap_test_item b{2, 20, {}};
+    hashmap_test_item c{3, 30, {}};
     m.insert(&a);
     m.insert(&b);
     m.insert(&c);
@@ -186,9 +182,9 @@ TEST(hashmap, remove_middle_of_chain) {
     collide_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item a{1, 10, {}};
-    test_item b{2, 20, {}};
-    test_item c{3, 30, {}};
+    hashmap_test_item a{1, 10, {}};
+    hashmap_test_item b{2, 20, {}};
+    hashmap_test_item c{3, 30, {}};
     m.insert(&a);
     m.insert(&b);
     m.insert(&c);
@@ -205,9 +201,9 @@ TEST(hashmap, remove_tail_of_chain) {
     collide_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item a{1, 10, {}};
-    test_item b{2, 20, {}};
-    test_item c{3, 30, {}};
+    hashmap_test_item a{1, 10, {}};
+    hashmap_test_item b{2, 20, {}};
+    hashmap_test_item c{3, 30, {}};
     m.insert(&a);
     m.insert(&b);
     m.insert(&c);
@@ -224,7 +220,7 @@ TEST(hashmap, reinsert_after_remove) {
     test_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item item{42, 1, {}};
+    hashmap_test_item item{42, 1, {}};
     m.insert(&item);
     m.remove(item);
     EXPECT_NULL(m.find(42));
@@ -242,7 +238,7 @@ TEST(hashmap, insert_same_entry_twice) {
     test_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item item{42, 1, {}};
+    hashmap_test_item item{42, 1, {}};
     m.insert(&item);
 
     EXPECT_TRUE(item.link.pprev != nullptr);
@@ -254,7 +250,7 @@ TEST(hashmap, insert_ascending) {
     test_map m;
     m.init(buckets, 64);
 
-    test_item items[N];
+    hashmap_test_item items[N];
     for (uint32_t i = 0; i < N; i++) {
         items[i].id = i;
         items[i].value = i * 10;
@@ -276,7 +272,7 @@ TEST(hashmap, stress_insert_remove) {
     test_map m;
     m.init(buckets, 64);
 
-    test_item items[N];
+    hashmap_test_item items[N];
     for (uint32_t i = 0; i < N; i++) {
         items[i].id = i;
         items[i].value = i;
@@ -318,7 +314,7 @@ TEST(hashmap, for_each_visits_all) {
     test_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item items[N];
+    hashmap_test_item items[N];
     for (uint32_t i = 0; i < N; i++) {
         items[i].id = i;
         items[i].value = 0;
@@ -327,7 +323,7 @@ TEST(hashmap, for_each_visits_all) {
     }
 
     uint32_t visit_count = 0;
-    m.for_each([&](test_item&) { visit_count++; });
+    m.for_each([&](hashmap_test_item&) { visit_count++; });
     EXPECT_EQ(visit_count, N);
 }
 
@@ -336,15 +332,15 @@ TEST(hashmap, for_each_possible_visits_bucket) {
     collide_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item a{1, 10, {}};
-    test_item b{2, 20, {}};
-    test_item c{3, 30, {}};
+    hashmap_test_item a{1, 10, {}};
+    hashmap_test_item b{2, 20, {}};
+    hashmap_test_item c{3, 30, {}};
     m.insert(&a);
     m.insert(&b);
     m.insert(&c);
 
     uint32_t visit_count = 0;
-    m.for_each_possible(1, [&](test_item&) { visit_count++; });
+    m.for_each_possible(1, [&](hashmap_test_item&) { visit_count++; });
     EXPECT_EQ(visit_count, static_cast<uint32_t>(3));
 }
 
@@ -354,7 +350,7 @@ TEST(hashmap, for_each_remove_during_iteration) {
     test_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    test_item items[N];
+    hashmap_test_item items[N];
     for (uint32_t i = 0; i < N; i++) {
         items[i].id = i;
         items[i].value = 0;
@@ -362,7 +358,7 @@ TEST(hashmap, for_each_remove_during_iteration) {
         m.insert(&items[i]);
     }
 
-    m.for_each([&](test_item& entry) {
+    m.for_each([&](hashmap_test_item& entry) {
         m.remove(entry);
     });
     EXPECT_TRUE(m.empty());
@@ -374,9 +370,9 @@ TEST(hashmap, string_keys) {
     str_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    str_item hello{"hello", 1, {}};
-    str_item world{"world", 2, {}};
-    str_item foo{"foo", 3, {}};
+    hashmap_str_item hello{"hello", 1, {}};
+    hashmap_str_item world{"world", 2, {}};
+    hashmap_str_item foo{"foo", 3, {}};
     m.insert(&hello);
     m.insert(&world);
     m.insert(&foo);
@@ -404,9 +400,9 @@ TEST(hashmap, composite_key) {
     comp_map m;
     m.init(buckets, TEST_BUCKETS);
 
-    comp_item a{1, "file.txt", 10, {}};
-    comp_item b{1, "readme.md", 20, {}};
-    comp_item c{2, "file.txt", 30, {}};
+    hashmap_comp_item a{1, "file.txt", 10, {}};
+    hashmap_comp_item b{1, "readme.md", 20, {}};
+    hashmap_comp_item c{2, "file.txt", 30, {}};
     m.insert(&a);
     m.insert(&b);
     m.insert(&c);

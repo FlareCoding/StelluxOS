@@ -10,11 +10,9 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 
-namespace {
-
 constexpr size_t MEMFD_NAME_MAX = 249;
 
-inline int64_t map_fs_truncate_error(int32_t rc) {
+static inline int64_t map_fs_truncate_error(int32_t rc) {
     switch (rc) {
         case fs::ERR_INVAL:
             return syscall::EINVAL;
@@ -28,8 +26,6 @@ inline int64_t map_fs_truncate_error(int32_t rc) {
 }
 constexpr uint32_t MFD_CLOEXEC = 0x0001u;
 constexpr uint32_t MFD_ALLOWED = MFD_CLOEXEC;
-
-} // namespace
 
 DEFINE_SYSCALL2(memfd_create, u_name, u_flags) {
     uint32_t flags = static_cast<uint32_t>(u_flags);

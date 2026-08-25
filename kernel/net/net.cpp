@@ -13,8 +13,6 @@
 
 namespace net {
 
-namespace {
-
 __PRIVILEGED_DATA static netif* g_iface_list = nullptr;
 __PRIVILEGED_DATA static netif* g_default_iface = nullptr;
 __PRIVILEGED_DATA static sync::spinlock g_net_lock = sync::SPINLOCK_INIT;
@@ -22,6 +20,8 @@ __PRIVILEGED_DATA static sync::spinlock g_net_lock = sync::SPINLOCK_INIT;
 // Deferred TX queue: protocol-generated responses (e.g. ICMP echo replies)
 // that cannot be sent inline from RX processing context.
 constexpr uint32_t DEFERRED_TX_MAX = 8;
+
+namespace {
 
 enum class deferred_tx_kind : uint8_t {
     ipv4,     // send via ipv4_send (dst_ip + protocol + payload)
@@ -43,11 +43,11 @@ struct deferred_tx_entry {
     uint16_t ethertype;
 };
 
+} // anonymous namespace
+
 __PRIVILEGED_DATA static deferred_tx_entry g_deferred_tx[DEFERRED_TX_MAX] = {};
 __PRIVILEGED_DATA static uint32_t g_deferred_tx_count = 0;
 __PRIVILEGED_DATA static sync::spinlock g_deferred_tx_lock = sync::SPINLOCK_INIT;
-
-} // anonymous namespace
 
 __PRIVILEGED_CODE int32_t init() {
     arp_init();

@@ -9,9 +9,7 @@
 
 TEST_SUITE(fs_test);
 
-namespace {
-
-void release_node(fs::node* n) {
+static void release_node(fs::node* n) {
     if (!n) {
         return;
     }
@@ -19,8 +17,6 @@ void release_node(fs::node* n) {
         fs::node::ref_destroy(n);
     }
 }
-
-} // anonymous namespace
 
 TEST(fs_test, create_and_close_file) {
     fs::file* f = fs::open("/test_create", fs::O_CREAT | fs::O_RDWR);

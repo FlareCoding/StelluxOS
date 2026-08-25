@@ -3,13 +3,6 @@
 #include "clock/clock.h"
 #include "mm/uaccess.h"
 
-namespace {
-
-struct kernel_timespec {
-    int64_t tv_sec;
-    int64_t tv_nsec;
-};
-
 constexpr uint64_t CLOCK_REALTIME           = 0;
 constexpr uint64_t CLOCK_MONOTONIC          = 1;
 constexpr uint64_t CLOCK_PROCESS_CPUTIME_ID = 2;
@@ -22,6 +15,13 @@ constexpr uint64_t CLOCK_BOOTTIME           = 7;
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
 constexpr int64_t COARSE_RES_NS = 10000000; // 10 ms at 100 Hz tick
 
+namespace {
+
+struct kernel_timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
+
 struct kernel_timeval {
     int64_t tv_sec;
     int64_t tv_usec;
@@ -32,15 +32,15 @@ struct kernel_timezone {
     int32_t tz_dsttime;
 };
 
-uint64_t get_monotonic_ns() {
+} // anonymous namespace
+
+static uint64_t get_monotonic_ns() {
     return clock::now_ns();
 }
 
-uint64_t get_realtime_ns() {
+static uint64_t get_realtime_ns() {
     return clock::boot_realtime_ns() + clock::now_ns();
 }
-
-} // anonymous namespace
 
 DEFINE_SYSCALL2(clock_gettime, clock_id, u_tp) {
     if (u_tp == 0) {

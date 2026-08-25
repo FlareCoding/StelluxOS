@@ -15,8 +15,6 @@ using test_helpers::brief_delay;
 
 TEST_SUITE(task_registry_integration);
 
-namespace {
-
 constexpr uint32_t SNAP_BUF_SIZE = 256;
 static uint32_t s_snap_buf[SNAP_BUF_SIZE];
 
@@ -40,8 +38,6 @@ static bool wait_for_tid_removal(uint32_t tid) {
     }
     return false;
 }
-
-} // namespace
 
 // --- created_task_appears_in_registry ---
 // create_kernel_task inserts the task into g_task_registry before returning.

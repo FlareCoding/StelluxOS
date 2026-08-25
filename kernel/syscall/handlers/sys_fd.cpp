@@ -15,8 +15,6 @@
 #include "fs/fstypes.h"
 #include "common/string.h"
 
-namespace {
-
 constexpr int64_t AT_FDCWD = -100;
 constexpr uint64_t AT_SYMLINK_NOFOLLOW = 0x100;
 constexpr uint32_t AT_REMOVEDIR = 0x200;
@@ -31,13 +29,6 @@ constexpr uint32_t ST_IFREG  = 0100000;
 constexpr uint32_t ST_IFLNK  = 0120000;
 constexpr uint32_t ST_IFSOCK = 0140000;
 
-struct linux_dirent64_hdr {
-    uint64_t d_ino;
-    int64_t  d_off;
-    uint16_t d_reclen;
-    uint8_t  d_type;
-} __attribute__((packed));
-
 constexpr uint8_t DT_UNKNOWN = 0;
 constexpr uint8_t DT_CHR     = 2;
 constexpr uint8_t DT_DIR     = 4;
@@ -46,13 +37,14 @@ constexpr uint8_t DT_REG     = 8;
 constexpr uint8_t DT_LNK     = 10;
 constexpr uint8_t DT_SOCK    = 12;
 
-constexpr size_t GETDENTS64_ALIGN = 8;
-constexpr uint16_t GETDENTS64_MIN_RECLEN = static_cast<uint16_t>(
-    (sizeof(linux_dirent64_hdr) + 1 + (GETDENTS64_ALIGN - 1)) &
-    ~(GETDENTS64_ALIGN - 1));
-constexpr uint16_t GETDENTS64_MAX_RECLEN = static_cast<uint16_t>(
-    (sizeof(linux_dirent64_hdr) + fs::NAME_MAX + 1 + (GETDENTS64_ALIGN - 1)) &
-    ~(GETDENTS64_ALIGN - 1));
+namespace {
+
+struct linux_dirent64_hdr {
+    uint64_t d_ino;
+    int64_t  d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;
+} __attribute__((packed));
 
 #if defined(__x86_64__)
 struct linux_kstat {
@@ -99,7 +91,17 @@ struct linux_kstat {
 };
 #endif
 
-inline int64_t map_resource_error(int64_t rc) {
+} // anonymous namespace
+
+constexpr size_t GETDENTS64_ALIGN = 8;
+constexpr uint16_t GETDENTS64_MIN_RECLEN = static_cast<uint16_t>(
+    (sizeof(linux_dirent64_hdr) + 1 + (GETDENTS64_ALIGN - 1)) &
+    ~(GETDENTS64_ALIGN - 1));
+constexpr uint16_t GETDENTS64_MAX_RECLEN = static_cast<uint16_t>(
+    (sizeof(linux_dirent64_hdr) + fs::NAME_MAX + 1 + (GETDENTS64_ALIGN - 1)) &
+    ~(GETDENTS64_ALIGN - 1));
+
+static inline int64_t map_resource_error(int64_t rc) {
     switch (rc) {
         case resource::ERR_INVAL:
             return syscall::EINVAL;
@@ -140,7 +142,7 @@ inline int64_t map_resource_error(int64_t rc) {
     }
 }
 
-inline uint8_t node_type_to_dirent_type(fs::node_type t) {
+static inline uint8_t node_type_to_dirent_type(fs::node_type t) {
     switch (t) {
         case fs::node_type::regular:
             return DT_REG;
@@ -159,7 +161,7 @@ inline uint8_t node_type_to_dirent_type(fs::node_type t) {
     }
 }
 
-inline uint32_t node_type_to_mode_bits(fs::node_type t) {
+static inline uint32_t node_type_to_mode_bits(fs::node_type t) {
     switch (t) {
         case fs::node_type::regular:
             return ST_IFREG;
@@ -178,7 +180,7 @@ inline uint32_t node_type_to_mode_bits(fs::node_type t) {
     }
 }
 
-inline uint32_t node_type_default_perms(fs::node_type t) {
+static inline uint32_t node_type_default_perms(fs::node_type t) {
     switch (t) {
         case fs::node_type::directory:
             return 0755;
@@ -194,7 +196,7 @@ inline uint32_t node_type_default_perms(fs::node_type t) {
     }
 }
 
-inline int64_t copy_stat_to_user(const fs::vattr& attr, uint64_t u_stat) {
+static inline int64_t copy_stat_to_user(const fs::vattr& attr, uint64_t u_stat) {
     linux_kstat st = {};
     st.st_mode = node_type_to_mode_bits(attr.type) | node_type_default_perms(attr.type);
     st.st_size = static_cast<int64_t>(attr.size);
@@ -210,7 +212,7 @@ inline int64_t copy_stat_to_user(const fs::vattr& attr, uint64_t u_stat) {
     return 0;
 }
 
-inline void release_node_ref(fs::node* n) {
+static inline void release_node_ref(fs::node* n) {
     if (!n) {
         return;
     }
@@ -219,7 +221,7 @@ inline void release_node_ref(fs::node* n) {
     }
 }
 
-int64_t acquire_task_cwd_node(sched::task* task, fs::node** out_node) {
+static int64_t acquire_task_cwd_node(sched::task* task, fs::node** out_node) {
     if (!task || !out_node) {
         return syscall::EINVAL;
     }
@@ -238,7 +240,7 @@ int64_t acquire_task_cwd_node(sched::task* task, fs::node** out_node) {
     return 0;
 }
 
-int64_t replace_task_cwd_node(sched::task* task, fs::node* new_cwd) {
+static int64_t replace_task_cwd_node(sched::task* task, fs::node* new_cwd) {
     if (!task || !new_cwd) {
         return syscall::EINVAL;
     }
@@ -253,7 +255,7 @@ int64_t replace_task_cwd_node(sched::task* task, fs::node* new_cwd) {
     return 0;
 }
 
-int64_t resolve_dirfd_base_node(
+static int64_t resolve_dirfd_base_node(
     sched::task* task, int64_t dirfd, fs::node** out_base
 ) {
     if (!task || !out_base) {
@@ -298,7 +300,7 @@ int64_t resolve_dirfd_base_node(
     return 0;
 }
 
-int64_t normalize_absolute_path(
+static int64_t normalize_absolute_path(
     const char* base_abs, const char* input_path,
     char* out_path, size_t out_cap
 ) {
@@ -402,7 +404,7 @@ int64_t normalize_absolute_path(
     return 0;
 }
 
-int64_t normalize_path_for_dirfd(
+static int64_t normalize_path_for_dirfd(
     sched::task* task, int64_t dirfd,
     const char* input_path, char* out_path, size_t out_cap
 ) {
@@ -438,7 +440,7 @@ int64_t normalize_path_for_dirfd(
     return norm_rc;
 }
 
-int64_t lookup_node_for_dirfd_path(
+static int64_t lookup_node_for_dirfd_path(
     sched::task* task,
     int64_t dirfd,
     const char* input_path,
@@ -465,7 +467,7 @@ int64_t lookup_node_for_dirfd_path(
     return 0;
 }
 
-int64_t resolve_parent_for_dirfd_path(
+static int64_t resolve_parent_for_dirfd_path(
     sched::task* task,
     int64_t dirfd,
     const char* input_path,
@@ -495,7 +497,7 @@ int64_t resolve_parent_for_dirfd_path(
     return 0;
 }
 
-int64_t resolve_open_resource_path(
+static int64_t resolve_open_resource_path(
     sched::task* task,
     int64_t dirfd,
     const char* input_path,
@@ -554,7 +556,7 @@ int64_t resolve_open_resource_path(
     return 0;
 }
 
-int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
+static int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
     if (u_stat == 0) {
         return syscall::EFAULT;
     }
@@ -611,7 +613,7 @@ int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
     return syscall::EINVAL;
 }
 
-int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u_stat, uint64_t flags) {
+static int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u_stat, uint64_t flags) {
     if (u_stat == 0 || pathname == 0) {
         return syscall::EFAULT;
     }
@@ -681,7 +683,7 @@ int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u_stat, 
     return copy_stat_to_user(attr, u_stat);
 }
 
-int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, uint64_t mode) {
+static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, uint64_t mode) {
     (void)mode;
 
     char kpath[fs::PATH_MAX];
@@ -765,8 +767,6 @@ int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, uint64_
 
     return handle;
 }
-
-} // anonymous namespace
 
 DEFINE_SYSCALL4(openat, dirfd, pathname, flags, mode) {
     return do_open_common(static_cast<int64_t>(dirfd), pathname, flags, mode);
@@ -1162,7 +1162,6 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
     return static_cast<int64_t>(bytes_written);
 }
 
-namespace {
 constexpr uint64_t F_GETFD = 1;
 constexpr uint64_t F_SETFD = 2;
 constexpr uint64_t F_GETFL = 3;
@@ -1171,7 +1170,6 @@ constexpr uint64_t F_SETFL = 4;
 constexpr int64_t FD_CLOEXEC = 1;
 
 constexpr uint32_t SETFL_MASK = fs::O_NONBLOCK | fs::O_APPEND;
-} // anonymous namespace
 
 DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     sched::task* task = sched::current();

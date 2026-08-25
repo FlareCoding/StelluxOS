@@ -15,15 +15,17 @@
 
 namespace socket {
 
-namespace {
-
 constexpr uint16_t AF_UNIX_VAL = 1;
 constexpr size_t SUN_PATH_OFFSET = 2;
+
+namespace {
 
 struct sockaddr_un {
     uint16_t sun_family;
     char sun_path[UNIX_PATH_MAX];
 };
+
+} // anonymous namespace
 
 // Parse a kernel-copied sockaddr_un buffer into a validated path.
 // Returns 0 on success, negative resource:: error on failure.
@@ -61,8 +63,6 @@ static int32_t parse_unix_addr(const void* kaddr, size_t addrlen,
     string::memcpy(kpath_out, sa.sun_path, UNIX_PATH_MAX);
     return resource::OK;
 }
-
-} // anonymous namespace
 
 __PRIVILEGED_CODE void unix_channel::ref_destroy(unix_channel* self) {
     if (!self) {

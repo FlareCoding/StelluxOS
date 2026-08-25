@@ -8,11 +8,9 @@
 
 namespace mm {
 
-namespace {
-
 constexpr size_t INITIAL_PAGE_CAPACITY = 4;
 
-bool ensure_capacity(shmem* s, size_t needed) {
+static bool ensure_capacity(shmem* s, size_t needed) {
     if (needed <= s->m_capacity) {
         return true;
     }
@@ -38,8 +36,6 @@ bool ensure_capacity(shmem* s, size_t needed) {
     s->m_capacity = new_cap;
     return true;
 }
-
-} // namespace
 
 void shmem::ref_destroy(shmem* self) {
     if (!self) {

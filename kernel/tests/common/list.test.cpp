@@ -5,16 +5,12 @@
 
 TEST_SUITE(list);
 
-namespace {
-
-struct test_item {
+struct list_test_item {
     uint64_t value;
     list::node link;
 };
 
-using test_list = list::head<test_item, &test_item::link>;
-
-} // namespace
+using test_list = list::head<list_test_item, &list_test_item::link>;
 
 TEST(list, empty_list_operations) {
     test_list lst;
@@ -29,7 +25,7 @@ TEST(list, empty_list_operations) {
 }
 
 TEST(list, push_back_single) {
-    test_item item{42, {}};
+    list_test_item item{42, {}};
     test_list lst;
     lst.init();
 
@@ -43,7 +39,7 @@ TEST(list, push_back_single) {
 }
 
 TEST(list, push_front_single) {
-    test_item item{99, {}};
+    list_test_item item{99, {}};
     test_list lst;
     lst.init();
 
@@ -57,7 +53,7 @@ TEST(list, push_front_single) {
 }
 
 TEST(list, push_back_order) {
-    test_item a{1, {}}, b{2, {}}, c{3, {}};
+    list_test_item a{1, {}}, b{2, {}}, c{3, {}};
     test_list lst;
     lst.init();
 
@@ -73,7 +69,7 @@ TEST(list, push_back_order) {
 }
 
 TEST(list, push_front_order) {
-    test_item a{1, {}}, b{2, {}}, c{3, {}};
+    list_test_item a{1, {}}, b{2, {}}, c{3, {}};
     test_list lst;
     lst.init();
 
@@ -89,7 +85,7 @@ TEST(list, push_front_order) {
 }
 
 TEST(list, pop_front_fifo) {
-    test_item a{10, {}}, b{20, {}}, c{30, {}};
+    list_test_item a{10, {}}, b{20, {}}, c{30, {}};
     test_list lst;
     lst.init();
 
@@ -117,7 +113,7 @@ TEST(list, pop_front_fifo) {
 }
 
 TEST(list, pop_back_lifo) {
-    test_item a{10, {}}, b{20, {}}, c{30, {}};
+    list_test_item a{10, {}}, b{20, {}}, c{30, {}};
     test_list lst;
     lst.init();
 
@@ -142,7 +138,7 @@ TEST(list, pop_back_lifo) {
 }
 
 TEST(list, remove_middle) {
-    test_item a{1, {}}, b{2, {}}, c{3, {}};
+    list_test_item a{1, {}}, b{2, {}}, c{3, {}};
     test_list lst;
     lst.init();
 
@@ -160,7 +156,7 @@ TEST(list, remove_middle) {
 }
 
 TEST(list, remove_front) {
-    test_item a{1, {}}, b{2, {}}, c{3, {}};
+    list_test_item a{1, {}}, b{2, {}}, c{3, {}};
     test_list lst;
     lst.init();
 
@@ -176,7 +172,7 @@ TEST(list, remove_front) {
 }
 
 TEST(list, remove_back) {
-    test_item a{1, {}}, b{2, {}}, c{3, {}};
+    list_test_item a{1, {}}, b{2, {}}, c{3, {}};
     test_list lst;
     lst.init();
 
@@ -192,7 +188,7 @@ TEST(list, remove_back) {
 }
 
 TEST(list, remove_only_item) {
-    test_item a{42, {}};
+    list_test_item a{42, {}};
     test_list lst;
     lst.init();
 
@@ -206,7 +202,7 @@ TEST(list, remove_only_item) {
 }
 
 TEST(list, remove_clears_node_links) {
-    test_item a{1, {}}, b{2, {}};
+    list_test_item a{1, {}}, b{2, {}};
     test_list lst;
     lst.init();
 
@@ -220,7 +216,7 @@ TEST(list, remove_clears_node_links) {
 
 TEST(list, remove_all_items) {
     constexpr size_t N = 32;
-    test_item items[N];
+    list_test_item items[N];
     for (size_t i = 0; i < N; i++) {
         items[i].value = i;
         items[i].link = {};
@@ -242,7 +238,7 @@ TEST(list, remove_all_items) {
 
 TEST(list, iterator_forward) {
     constexpr size_t N = 16;
-    test_item items[N];
+    list_test_item items[N];
     for (size_t i = 0; i < N; i++) {
         items[i].value = i * 10;
         items[i].link = {};
@@ -265,7 +261,7 @@ TEST(list, iterator_forward) {
 }
 
 TEST(list, push_back_pop_front_interleaved) {
-    test_item a{1, {}}, b{2, {}}, c{3, {}}, d{4, {}};
+    list_test_item a{1, {}}, b{2, {}}, c{3, {}}, d{4, {}};
     test_list lst;
     lst.init();
 
@@ -292,7 +288,7 @@ TEST(list, push_back_pop_front_interleaved) {
 }
 
 TEST(list, reinsert_after_remove) {
-    test_item a{1, {}}, b{2, {}};
+    list_test_item a{1, {}}, b{2, {}};
     test_list lst;
     lst.init();
 
@@ -309,7 +305,7 @@ TEST(list, reinsert_after_remove) {
 }
 
 TEST(list, reinsert_after_pop) {
-    test_item a{10, {}}, b{20, {}};
+    list_test_item a{10, {}}, b{20, {}};
     test_list lst;
     lst.init();
 
@@ -327,7 +323,7 @@ TEST(list, reinsert_after_pop) {
 }
 
 TEST(list, mixed_push_front_back) {
-    test_item a{1, {}}, b{2, {}}, c{3, {}}, d{4, {}};
+    list_test_item a{1, {}}, b{2, {}}, c{3, {}}, d{4, {}};
     test_list lst;
     lst.init();
 
@@ -355,7 +351,7 @@ TEST(list, mixed_push_front_back) {
 
 TEST(list, stress_fifo) {
     constexpr size_t N = 512;
-    test_item items[N];
+    list_test_item items[N];
     for (size_t i = 0; i < N; i++) {
         items[i].value = i;
         items[i].link = {};
@@ -379,7 +375,7 @@ TEST(list, stress_fifo) {
 
 TEST(list, stress_remove_alternating) {
     constexpr size_t N = 256;
-    test_item items[N];
+    list_test_item items[N];
     for (size_t i = 0; i < N; i++) {
         items[i].value = i;
         items[i].link = {};

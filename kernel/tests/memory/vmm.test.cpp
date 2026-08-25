@@ -10,11 +10,9 @@
 
 TEST_SUITE(vmm_test);
 
-namespace {
+static uint64_t g_initial_free_pages = 0;
 
-uint64_t g_initial_free_pages = 0;
-
-int32_t vmm_before_all() {
+static int32_t vmm_before_all() {
     g_initial_free_pages = pmm::free_page_count();
     if (g_initial_free_pages < 256) {
         log::error("vmm tests: insufficient free pages (%lu)", g_initial_free_pages);
@@ -23,7 +21,7 @@ int32_t vmm_before_all() {
     return 0;
 }
 
-int32_t vmm_after_all() {
+static int32_t vmm_after_all() {
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("vmm tests: leak detected, started=%lu ended=%lu delta=%ld",
@@ -32,8 +30,6 @@ int32_t vmm_after_all() {
     }
     return 0;
 }
-
-} // namespace
 
 BEFORE_ALL(vmm_test, vmm_before_all);
 AFTER_ALL(vmm_test, vmm_after_all);

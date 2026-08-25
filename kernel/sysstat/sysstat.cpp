@@ -15,19 +15,17 @@
 
 namespace sysstat {
 
-namespace {
-
 // Bounded text append helpers. Output past cap is dropped silently, so
 // an overfull snapshot ends with a truncated final line.
 
-size_t append_str(char* buf, size_t cap, size_t pos, const char* s) {
+static size_t append_str(char* buf, size_t cap, size_t pos, const char* s) {
     while (*s && pos < cap) {
         buf[pos++] = *s++;
     }
     return pos;
 }
 
-size_t append_u64(char* buf, size_t cap, size_t pos, uint64_t value) {
+static size_t append_u64(char* buf, size_t cap, size_t pos, uint64_t value) {
     char digits[20];
     size_t count = 0;
     do {
@@ -41,7 +39,7 @@ size_t append_u64(char* buf, size_t cap, size_t pos, uint64_t value) {
     return pos;
 }
 
-const char* task_state_name(uint32_t state) {
+static const char* task_state_name(uint32_t state) {
     switch (state) {
     case sched::TASK_STATE_CREATED: return "created";
     case sched::TASK_STATE_READY:   return "ready";
@@ -52,7 +50,7 @@ const char* task_state_name(uint32_t state) {
     }
 }
 
-size_t generate_cpu(char* buf, size_t cap) {
+static size_t generate_cpu(char* buf, size_t cap) {
     size_t pos = 0;
     pos = append_str(buf, cap, pos, "tick_hz ");
     pos = append_u64(buf, cap, pos,
@@ -74,7 +72,7 @@ size_t generate_cpu(char* buf, size_t cap) {
     return pos;
 }
 
-size_t generate_mem(char* buf, size_t cap) {
+static size_t generate_mem(char* buf, size_t cap) {
     uint64_t total = pmm::total_page_count();
     uint64_t free_count = pmm::free_page_count();
     uint64_t used = total > free_count ? total - free_count : 0;
@@ -92,12 +90,12 @@ size_t generate_mem(char* buf, size_t cap) {
     return pos;
 }
 
-size_t generate_uptime(char* buf, size_t cap) {
+static size_t generate_uptime(char* buf, size_t cap) {
     size_t pos = append_u64(buf, cap, 0, clock::now_ns());
     return append_str(buf, cap, pos, "\n");
 }
 
-size_t generate_tasks(char* buf, size_t cap) {
+static size_t generate_tasks(char* buf, size_t cap) {
     size_t pos = 0;
     sync::irq_state irq = sched::g_task_registry.lock();
     sched::g_task_registry.for_each_locked([&](sched::task& t) {
@@ -118,6 +116,8 @@ size_t generate_tasks(char* buf, size_t cap) {
     sched::g_task_registry.unlock(irq);
     return pos;
 }
+
+namespace {
 
 /**
  * A readable devfs text node. Every open holds its own snapshot buffer

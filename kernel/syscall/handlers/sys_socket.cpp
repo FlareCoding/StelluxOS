@@ -10,8 +10,6 @@
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 
-namespace {
-
 constexpr uint64_t AF_UNIX     = 1;
 constexpr uint64_t AF_INET     = 2;
 constexpr uint64_t SOCK_STREAM = 1;
@@ -22,7 +20,7 @@ constexpr uint64_t IPPROTO_UDP  = 17;
 constexpr size_t   SENDTO_MAX_ADDR = 128;
 constexpr size_t   SENDTO_MAX_BUF  = 4096;
 
-inline int64_t map_socket_op_error(int32_t rc) {
+static inline int64_t map_socket_op_error(int32_t rc) {
     switch (rc) {
     case resource::ERR_INVAL:       return syscall::EINVAL;
     case resource::ERR_NOMEM:       return syscall::ENOMEM;
@@ -37,8 +35,6 @@ inline int64_t map_socket_op_error(int32_t rc) {
     default:                        return syscall::EIO;
     }
 }
-
-} // anonymous namespace
 
 DEFINE_SYSCALL3(socket, domain, type, protocol) {
     sched::task* task = sched::current();

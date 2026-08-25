@@ -8,8 +8,6 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 
-namespace {
-
 constexpr uint64_t LINUX_PROT_READ  = 0x1;
 constexpr uint64_t LINUX_PROT_WRITE = 0x2;
 constexpr uint64_t LINUX_PROT_EXEC  = 0x4;
@@ -30,7 +28,7 @@ constexpr uint64_t LINUX_MAP_ALLOWED_MASK =
     LINUX_MAP_ANONYMOUS | LINUX_MAP_STACK | LINUX_MAP_FIXED_NOREPLACE |
     LINUX_MAP_NORESERVE;
 
-inline uint32_t linux_prot_to_mm(uint64_t prot) {
+static inline uint32_t linux_prot_to_mm(uint64_t prot) {
     uint32_t mm_prot = 0;
     if (prot & LINUX_PROT_READ) mm_prot |= mm::MM_PROT_READ;
     if (prot & LINUX_PROT_WRITE) mm_prot |= mm::MM_PROT_WRITE;
@@ -38,7 +36,7 @@ inline uint32_t linux_prot_to_mm(uint64_t prot) {
     return mm_prot;
 }
 
-inline uint32_t linux_map_to_mm(uint64_t flags) {
+static inline uint32_t linux_map_to_mm(uint64_t flags) {
     uint32_t mm_flags = 0;
     if (flags & LINUX_MAP_SHARED) mm_flags |= mm::MM_MAP_SHARED;
     if (flags & LINUX_MAP_PRIVATE) mm_flags |= mm::MM_MAP_PRIVATE;
@@ -48,7 +46,7 @@ inline uint32_t linux_map_to_mm(uint64_t flags) {
     return mm_flags;
 }
 
-inline int64_t mm_status_to_errno(int32_t status) {
+static inline int64_t mm_status_to_errno(int32_t status) {
     switch (status) {
         case mm::MM_CTX_OK:
             return 0;
@@ -66,11 +64,9 @@ inline int64_t mm_status_to_errno(int32_t status) {
     }
 }
 
-inline bool is_page_aligned(uint64_t value) {
+static inline bool is_page_aligned(uint64_t value) {
     return (value & (pmm::PAGE_SIZE - 1)) == 0;
 }
-
-} // namespace
 
 DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
     if (length == 0) {

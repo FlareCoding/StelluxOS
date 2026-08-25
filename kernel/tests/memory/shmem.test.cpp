@@ -11,16 +11,14 @@
 
 TEST_SUITE(shmem_test);
 
-namespace {
+static uint64_t g_initial_free_pages = 0;
 
-uint64_t g_initial_free_pages = 0;
-
-int32_t shmem_before_all() {
+static int32_t shmem_before_all() {
     g_initial_free_pages = pmm::free_page_count();
     return 0;
 }
 
-int32_t shmem_after_all() {
+static int32_t shmem_after_all() {
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         return -1;
@@ -29,8 +27,6 @@ int32_t shmem_after_all() {
 }
 
 constexpr size_t PAGE = pmm::PAGE_SIZE;
-
-} // namespace
 
 BEFORE_ALL(shmem_test, shmem_before_all);
 AFTER_ALL(shmem_test, shmem_after_all);

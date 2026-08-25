@@ -7,19 +7,15 @@
 
 TEST_SUITE(kva_test);
 
-namespace {
-
 constexpr size_t PAGE_SIZE = paging::PAGE_SIZE_4KB;
 
-int32_t kva_before_all() {
+static int32_t kva_before_all() {
     return 0;
 }
 
-int32_t kva_after_all() {
+static int32_t kva_after_all() {
     return 0;
 }
-
-} // namespace
 
 BEFORE_ALL(kva_test, kva_before_all);
 AFTER_ALL(kva_test, kva_after_all);

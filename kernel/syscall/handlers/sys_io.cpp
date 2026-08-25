@@ -12,10 +12,12 @@ struct iovec {
     uint64_t len;
 };
 
+} // anonymous namespace
+
 constexpr uint64_t MAX_IOVCNT = 1024;
 constexpr size_t IO_CHUNK_SIZE = 4096;
 
-inline int64_t map_resource_error(int64_t rc) {
+static inline int64_t map_resource_error(int64_t rc) {
     switch (rc) {
         case resource::ERR_INVAL:     return syscall::EINVAL;
         case resource::ERR_NOENT:     return syscall::ENOENT;
@@ -31,8 +33,6 @@ inline int64_t map_resource_error(int64_t rc) {
         default:                      return syscall::EIO;
     }
 }
-
-} // anonymous namespace
 
 DEFINE_SYSCALL3(readv, fd, iov_ptr, iovcnt) {
     if (iovcnt == 0) return 0;

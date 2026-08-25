@@ -13,8 +13,6 @@
 
 TEST_SUITE(route_test);
 
-namespace {
-
 // Dummy transmit callback for mock interfaces
 static int32_t mock_tx(net::netif* /*iface*/, const uint8_t* /*frame*/,
                        size_t /*len*/) {
@@ -25,8 +23,6 @@ static int32_t mock_tx(net::netif* /*iface*/, const uint8_t* /*frame*/,
 static bool mock_link_up(net::netif* /*iface*/) {
     return true;
 }
-
-} // namespace
 
 // Basic route table state after init
 

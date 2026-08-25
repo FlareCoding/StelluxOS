@@ -4,10 +4,8 @@
 #include "hw/cpu.h"
 #include "syscall/syscall_table.h"
 
-namespace {
 constexpr uint64_t ARCH_SET_FS  = 0x1002;
 constexpr uint64_t ARCH_GET_FS  = 0x1003;
-} // anonymous namespace
 
 DEFINE_SYSCALL2(arch_prctl, code, addr) {
     sched::task_exec_core* task = this_cpu(current_task_exec);

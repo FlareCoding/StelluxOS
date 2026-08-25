@@ -13,16 +13,12 @@
 
 namespace net {
 
-namespace {
-
 __PRIVILEGED_DATA static volatile uint32_t g_ipv4_id_counter = 0;
 
 static uint16_t next_ipv4_id() {
     return static_cast<uint16_t>(
         __atomic_fetch_add(&g_ipv4_id_counter, 1, __ATOMIC_RELAXED));
 }
-
-} // anonymous namespace
 
 void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
     if (!iface || !data || len < sizeof(ipv4_header)) {

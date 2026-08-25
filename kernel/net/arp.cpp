@@ -12,9 +12,9 @@
 
 namespace net {
 
-namespace {
-
 constexpr uint64_t ARP_ENTRY_TTL_NS = 60ULL * 1000000000ULL; // 60 seconds
+
+namespace {
 
 struct arp_entry {
     uint32_t ip;                // host byte order
@@ -23,10 +23,10 @@ struct arp_entry {
     uint64_t last_updated_ns;
 };
 
+} // anonymous namespace
+
 __PRIVILEGED_DATA static arp_entry g_arp_table[ARP_TABLE_SIZE] = {};
 __PRIVILEGED_DATA static sync::spinlock g_arp_lock = sync::SPINLOCK_INIT;
-
-} // anonymous namespace
 
 void arp_init() {
     for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {

@@ -175,20 +175,16 @@ TEST(resource_test, missing_provider_ops_return_err_unsup) {
     EXPECT_EQ(resource::close(task, wh), resource::OK);
 }
 
-namespace {
-
-struct close_counter {
+struct resource_close_counter {
     uint32_t closes;
 };
 
 static void close_counter_close(resource::resource_object* obj) {
-    auto* counter = static_cast<close_counter*>(obj->impl);
+    auto* counter = static_cast<resource_close_counter*>(obj->impl);
     if (counter) {
         counter->closes++;
     }
 }
-
-} // anonymous namespace
 
 TEST(resource_test, terminal_release_invokes_close_once) {
     sched::task* task = sched::current();
@@ -200,7 +196,7 @@ TEST(resource_test, terminal_release_invokes_close_once) {
         nullptr,
     };
 
-    close_counter counter{0};
+    resource_close_counter counter{0};
 
     auto* obj = heap::kalloc_new<resource::resource_object>();
     ASSERT_NOT_NULL(obj);
@@ -324,7 +320,7 @@ TEST(resource_test, dup2_replaces_and_closes_target) {
         nullptr,
     };
 
-    close_counter counter{0};
+    resource_close_counter counter{0};
 
     auto* victim_obj = heap::kalloc_new<resource::resource_object>();
     ASSERT_NOT_NULL(victim_obj);

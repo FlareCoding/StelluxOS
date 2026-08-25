@@ -12,10 +12,10 @@
 
 namespace resource::shm_provider {
 
-namespace {
-
 constexpr size_t SHM_PREFIX_LEN = 9; // strlen("/dev/shm/")
 constexpr size_t SHM_REGISTRY_BUCKETS = 32;
+
+namespace {
 
 struct shm_entry {
     char name[fs::NAME_MAX + 1];
@@ -34,19 +34,21 @@ struct shm_key_ops {
 
 using shm_map = hashmap::map<shm_entry, &shm_entry::hash_link, shm_key_ops>;
 
-__PRIVILEGED_DATA sync::spinlock g_shm_lock = sync::SPINLOCK_INIT;
-__PRIVILEGED_BSS hashmap::bucket g_shm_buckets[SHM_REGISTRY_BUCKETS];
-__PRIVILEGED_BSS shm_map g_shm_registry;
-__PRIVILEGED_BSS bool g_shm_inited;
+} // namespace
 
-void ensure_init() {
+__PRIVILEGED_DATA static sync::spinlock g_shm_lock = sync::SPINLOCK_INIT;
+__PRIVILEGED_BSS static hashmap::bucket g_shm_buckets[SHM_REGISTRY_BUCKETS];
+__PRIVILEGED_BSS static shm_map g_shm_registry;
+__PRIVILEGED_BSS static bool g_shm_inited;
+
+static void ensure_init() {
     if (!g_shm_inited) {
         g_shm_registry.init(g_shm_buckets, SHM_REGISTRY_BUCKETS);
         g_shm_inited = true;
     }
 }
 
-bool extract_shm_name(
+static bool extract_shm_name(
     const char* path, const char** out_name, size_t* out_len
 ) {
     if (string::strncmp(path, "/dev/shm", 8) != 0) {
@@ -78,8 +80,6 @@ bool extract_shm_name(
     *out_len = len;
     return true;
 }
-
-} // namespace
 
 bool is_shm_path(const char* path) {
     if (!path) {

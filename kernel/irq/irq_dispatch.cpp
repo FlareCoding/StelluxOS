@@ -11,10 +11,10 @@ struct irq_entry {
     void*          context;
 };
 
+} // anonymous namespace
+
 __PRIVILEGED_DATA static irq_entry g_irq_table[MAX_IRQ] = {};
 __PRIVILEGED_DATA static sync::spinlock g_irq_table_lock = sync::SPINLOCK_INIT;
-
-} // anonymous namespace
 
 __PRIVILEGED_CODE int32_t register_handler(uint32_t irq, irq_handler_fn fn,
                                            void* context) {

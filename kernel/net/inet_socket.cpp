@@ -17,8 +17,6 @@
 
 namespace net {
 
-namespace {
-
 constexpr size_t RX_BUF_CAPACITY = 16384;
 
 // Ring buffer entry framing (must match icmp.cpp delivery format):
@@ -471,8 +469,6 @@ static const resource::resource_ops g_inet_udp_ops = {
     inet_poll,
     nullptr, // shutdown
 };
-
-} // anonymous namespace
 
 int32_t create_inet_icmp_socket(resource::resource_object** out) {
     if (!out) {

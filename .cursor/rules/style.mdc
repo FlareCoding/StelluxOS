@@ -97,7 +97,9 @@ return strong_ref<T>::adopt(obj);
   guards an invariant.
 - Anonymous namespaces exist only to give internal linkage to types. Functions
   and variables use file-scope static instead. Test files always use
-  file-scope static.
+  file-scope static. At most one anonymous namespace per file: hoist
+  type-independent constants above it and place type-dependent constants
+  (sizeof-derived and similar) directly below it.
 - Include guards in the kernel: STELLUX_<DIR>_<FILE>_H, matching the file
   path. Userland projects use their project prefix, as in STLXGFX_WINDOW_H.
 - K&R braces, 4-space indent, pointer binds to the type: `task* t`.

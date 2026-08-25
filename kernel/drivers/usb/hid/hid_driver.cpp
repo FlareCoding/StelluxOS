@@ -18,6 +18,8 @@ struct report_capabilities {
     bool mouse = false;
 };
 
+} // namespace
+
 static bool is_keyboard_modifier_usage(uint16_t usage) {
     return usage >= 0xE0u && usage <= 0xE7u;
 }
@@ -59,8 +61,6 @@ static report_capabilities classify_report(const report_layout& layout,
     caps.mouse = has_x && has_y;
     return caps;
 }
-
-} // namespace
 
 hid_driver::hid_driver(usb::device* dev, usb::interface* iface)
     : class_driver("usb-hid"), m_iface(iface) {

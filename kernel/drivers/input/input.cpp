@@ -11,15 +11,15 @@
 
 namespace input {
 
-namespace {
-
 constexpr size_t KBD_RING_CAPACITY   = 4096;
 constexpr size_t MOUSE_RING_CAPACITY = 4096;
 
-__PRIVILEGED_BSS ring_buffer* g_kbd_rb;
-__PRIVILEGED_BSS ring_buffer* g_mouse_rb;
-__PRIVILEGED_BSS uint32_t     g_kbd_drops;
-__PRIVILEGED_BSS uint32_t     g_mouse_drops;
+__PRIVILEGED_BSS static ring_buffer* g_kbd_rb;
+__PRIVILEGED_BSS static ring_buffer* g_mouse_rb;
+__PRIVILEGED_BSS static uint32_t     g_kbd_drops;
+__PRIVILEGED_BSS static uint32_t     g_mouse_drops;
+
+namespace {
 
 template <typename Event>
 class input_device_node : public fs::node {

@@ -10,18 +10,16 @@
 
 namespace random {
 
-namespace {
-
 // xoshiro256** software PRNG - used as fallback when no hardware RNG exists.
 
-uint64_t g_sw_state[4];
-bool g_use_sw_prng = false;
+static uint64_t g_sw_state[4];
+static bool g_use_sw_prng = false;
 
-inline uint64_t rotl(uint64_t x, int k) {
+static inline uint64_t rotl(uint64_t x, int k) {
     return (x << k) | (x >> (64 - k));
 }
 
-uint64_t xoshiro256ss() {
+static uint64_t xoshiro256ss() {
     uint64_t result = rotl(g_sw_state[1] * 5, 7) * 9;
     uint64_t t = g_sw_state[1] << 17;
     g_sw_state[2] ^= g_sw_state[0];
@@ -34,14 +32,14 @@ uint64_t xoshiro256ss() {
 }
 
 // splitmix64 to expand a single seed into the full xoshiro state
-uint64_t splitmix64(uint64_t* state) {
+static uint64_t splitmix64(uint64_t* state) {
     uint64_t z = (*state += 0x9e3779b97f4a7c15ULL);
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
     z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
     return z ^ (z >> 31);
 }
 
-void sw_prng_init() {
+static void sw_prng_init() {
     uint64_t seed = clock::now_ns();
     seed ^= reinterpret_cast<uintptr_t>(&seed);
     if (seed == 0) seed = 0xdeadbeefcafe1234ULL;
@@ -52,7 +50,7 @@ void sw_prng_init() {
     g_use_sw_prng = true;
 }
 
-void sw_prng_fill(void* buf, size_t len) {
+static void sw_prng_fill(void* buf, size_t len) {
     auto* dst = static_cast<uint8_t*>(buf);
     size_t offset = 0;
     while (offset < len) {
@@ -66,6 +64,8 @@ void sw_prng_fill(void* buf, size_t len) {
         offset += chunk;
     }
 }
+
+namespace {
 
 class urandom_node : public fs::node {
 public:

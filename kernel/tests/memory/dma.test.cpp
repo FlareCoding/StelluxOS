@@ -8,11 +8,9 @@
 
 TEST_SUITE(dma_test);
 
-namespace {
+static uint64_t g_initial_free_pages = 0;
 
-uint64_t g_initial_free_pages = 0;
-
-int32_t dma_before_all() {
+static int32_t dma_before_all() {
     g_initial_free_pages = pmm::free_page_count();
     if (g_initial_free_pages < 256) {
         log::error("dma tests: insufficient free pages (%lu)", g_initial_free_pages);
@@ -21,7 +19,7 @@ int32_t dma_before_all() {
     return 0;
 }
 
-int32_t dma_after_all() {
+static int32_t dma_after_all() {
     uint64_t final_free = pmm::free_page_count();
     int64_t delta = static_cast<int64_t>(final_free) - static_cast<int64_t>(g_initial_free_pages);
     if (delta < -4) {
@@ -30,8 +28,6 @@ int32_t dma_after_all() {
     }
     return 0;
 }
-
-} // namespace
 
 BEFORE_ALL(dma_test, dma_before_all);
 AFTER_ALL(dma_test, dma_after_all);

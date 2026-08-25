@@ -16,6 +16,8 @@
 #include "fs/fstypes.h"
 #include "common/string.h"
 
+constexpr size_t MAX_PROC_ARGV_TOTAL = 3500;
+
 namespace {
 
 struct process_info {
@@ -23,8 +25,6 @@ struct process_info {
     int pid;
     int cpu;
 };
-
-constexpr size_t MAX_PROC_ARGV_TOTAL = 3500;
 
 // One bounded user string array copied into kernel storage
 struct proc_string_array {
@@ -40,9 +40,11 @@ struct proc_create_strings {
     proc_string_array envp;
 };
 
+} // anonymous namespace
+
 // Copies a NULL-terminated user pointer array of strings into arr. The
 // user address stays an opaque integer until uaccess validates each access.
-int64_t copy_proc_string_array_from_user(
+static int64_t copy_proc_string_array_from_user(
     proc_string_array& arr, uint64_t u_array
 ) {
     arr.count = 0;
@@ -92,7 +94,7 @@ int64_t copy_proc_string_array_from_user(
 }
 
 // Copies the full proc_create string payload in one step
-int64_t copy_proc_create_strings_from_user(
+static int64_t copy_proc_create_strings_from_user(
     proc_create_strings& strs, uint64_t u_argv, uint64_t u_envp
 ) {
     int64_t rc = copy_proc_string_array_from_user(strs.argv, u_argv);
@@ -124,8 +126,6 @@ __PRIVILEGED_CODE static int64_t map_elf_error(int32_t rc) {
             return syscall::EINVAL;
     }
 }
-
-} // anonymous namespace
 
 DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
     sched::task* caller = sched::current();

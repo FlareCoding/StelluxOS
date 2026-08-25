@@ -30,13 +30,13 @@ struct dhcp_rx_context {
     volatile bool active;  // true while DHCP is waiting for packets
 };
 
+} // anonymous namespace
+
 // Single static context, only one DHCP exchange at a time.
 // NOT __PRIVILEGED_DATA: both the DHCP client (Ring 3) and the UDP
 // delivery path (Ring 0) access this buffer, so it must be in the
 // unprivileged data section accessible from both privilege levels.
 static dhcp_rx_context g_dhcp_rx = {};
-
-} // anonymous namespace
 
 // Called by udp_recv() when a UDP packet arrives on port 68 and the
 // DHCP receive hook is active. Runs in the poll/RX delivery context
@@ -56,8 +56,6 @@ void dhcp_rx_hook(const uint8_t* data, size_t len) {
 }
 
 // Internal helpers
-
-namespace {
 
 /**
  * Initialize the common fields of a DHCP packet header.
@@ -252,8 +250,6 @@ static void deactivate_rx_hook() {
     __atomic_store_n(&g_dhcp_rx.active, false, __ATOMIC_RELEASE);
     __atomic_store_n(&g_dhcp_rx.ready, false, __ATOMIC_RELEASE);
 }
-
-} // anonymous namespace
 
 // Packet Build Functions
 
