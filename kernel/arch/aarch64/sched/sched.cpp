@@ -2,7 +2,7 @@
 #include "sched/task.h"
 #include "sched/sched.h"
 #include "sched/sched_internal.h"
-#include "signal/delivery.h"
+#include "signals/delivery.h"
 #include "signals/signal.h"
 #include "sched/fpu.h"
 #include "dynpriv/dynpriv.h"

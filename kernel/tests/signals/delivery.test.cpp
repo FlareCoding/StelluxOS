@@ -2,7 +2,7 @@
 
 #include "stlx_unit_test.h"
 #include "signals/signal.h"
-#include "signal/delivery.h"
+#include "signals/delivery.h"
 #include "sched/fpu.h"
 #include "sched/task.h"
 #include "mm/heap.h"

@@ -1,5 +1,5 @@
-#ifndef STELLUX_ARCH_X86_64_SIGNAL_SIGFRAME_H
-#define STELLUX_ARCH_X86_64_SIGNAL_SIGFRAME_H
+#ifndef STELLUX_ARCH_X86_64_SIGNALS_SIGFRAME_H
+#define STELLUX_ARCH_X86_64_SIGNALS_SIGFRAME_H
 
 #include "common/types.h"
 #include "signals/signal_types.h"
@@ -80,4 +80,4 @@ static_assert(sizeof(rt_sigframe) == 440);
 
 } // namespace x86
 
-#endif // STELLUX_ARCH_X86_64_SIGNAL_SIGFRAME_H
+#endif // STELLUX_ARCH_X86_64_SIGNALS_SIGFRAME_H

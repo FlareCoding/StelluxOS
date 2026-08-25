@@ -1,5 +1,5 @@
-#ifndef STELLUX_ARCH_AARCH64_SIGNAL_SIGFRAME_H
-#define STELLUX_ARCH_AARCH64_SIGNAL_SIGFRAME_H
+#ifndef STELLUX_ARCH_AARCH64_SIGNALS_SIGFRAME_H
+#define STELLUX_ARCH_AARCH64_SIGNALS_SIGFRAME_H
 
 #include "common/types.h"
 #include "signals/signal_types.h"
@@ -94,4 +94,4 @@ static_assert(sizeof(rt_sigframe) == 4688);
 
 } // namespace aarch64
 
-#endif // STELLUX_ARCH_AARCH64_SIGNAL_SIGFRAME_H
+#endif // STELLUX_ARCH_AARCH64_SIGNALS_SIGFRAME_H

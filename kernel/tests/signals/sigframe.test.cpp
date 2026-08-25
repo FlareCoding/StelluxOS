@@ -1,7 +1,7 @@
 #define STLX_TEST_TIER TIER_UTIL
 
 #include "stlx_unit_test.h"
-#include "signal/sigframe.h"
+#include "signals/sigframe.h"
 
 // The frame layout is enforced by static_asserts in signal/sigframe.h.
 // These runtime checks confirm the header compiles for the active arch.

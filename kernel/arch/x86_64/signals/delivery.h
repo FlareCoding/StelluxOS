@@ -1,7 +1,7 @@
-#ifndef STELLUX_ARCH_X86_64_SIGNAL_DELIVERY_H
-#define STELLUX_ARCH_X86_64_SIGNAL_DELIVERY_H
+#ifndef STELLUX_ARCH_X86_64_SIGNALS_DELIVERY_H
+#define STELLUX_ARCH_X86_64_SIGNALS_DELIVERY_H
 
-#include "signal/sigframe.h"
+#include "signals/sigframe.h"
 #include "syscall/syscall_frame.h"
 #include "trap/trap_frame.h"
 #include "signals/signal_types.h"
@@ -88,4 +88,4 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
 
 } // namespace x86
 
-#endif // STELLUX_ARCH_X86_64_SIGNAL_DELIVERY_H
+#endif // STELLUX_ARCH_X86_64_SIGNALS_DELIVERY_H

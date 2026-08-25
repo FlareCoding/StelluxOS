@@ -1,4 +1,4 @@
-#include "signal/delivery.h"
+#include "signals/delivery.h"
 #include "arch/arch_signal.h"
 #include "syscall/syscall_table.h"
 #include "defs/segments.h"
