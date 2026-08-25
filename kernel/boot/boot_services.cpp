@@ -1,5 +1,5 @@
 #include "boot_services.h"
-#include "common/limine.h"
+#include "boot/limine.h"
 
 // Global boot info instance
 __PRIVILEGED_DATA boot_info g_boot_info = {};

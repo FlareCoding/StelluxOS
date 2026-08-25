@@ -2,7 +2,7 @@
 #define STELLUX_BOOT_SERVICES_H
 
 #include "common/types.h"
-#include "limine.h"
+#include "boot/limine.h"
 
 struct boot_info {
     // Kernel location
