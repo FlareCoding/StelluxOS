@@ -1,7 +1,7 @@
 #include "arch/arch_init.h"
 #include "percpu/percpu.h"
 #include "trap/trap.h"
-#include "cpu/features.h"
+#include "hw/cpu_features.h"
 #include "sched/task_exec_core.h"
 #include "syscall/syscall.h"
 #include "common/logging.h"

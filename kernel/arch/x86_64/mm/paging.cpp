@@ -1,7 +1,7 @@
 #include "mm/paging.h"
 #include "mm/paging_arch.h"
 #include "mm/pmm.h"
-#include "cpu/features.h"
+#include "hw/cpu_features.h"
 #include "boot/boot_services.h"
 #include "common/logging.h"
 #include "common/string.h"

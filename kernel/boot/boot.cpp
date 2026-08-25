@@ -12,6 +12,7 @@
 #include "rc/reaper.h"
 #include "smp/smp.h"
 #include "debug/debug.h"
+#include "trace/ktrace.h"
 #include "sched/task.h"
 #include "fs/fs.h"
 #include "exec/elf.h"
@@ -144,6 +145,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 
     syscall::init_syscall_table();
+
+    if (ktrace::init() != ktrace::OK) {
+        log::warn("ktrace::init failed on BSP, performance profiling may be degraded");
+    }
 
     if (smp::init() != smp::OK) {
         log::warn("smp::init failed, continuing with single CPU");

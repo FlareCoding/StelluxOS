@@ -1,7 +1,7 @@
 #ifndef STELLUX_ARCH_X86_64_HW_RNG_H
 #define STELLUX_ARCH_X86_64_HW_RNG_H
 
-#include "cpu/features.h"
+#include "hw/cpu_features.h"
 
 namespace hw::rng {
 

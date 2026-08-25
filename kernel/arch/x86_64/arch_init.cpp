@@ -2,7 +2,7 @@
 #include "percpu/percpu.h"
 #include "gdt/gdt.h"
 #include "trap/trap.h"
-#include "cpu/features.h"
+#include "hw/cpu_features.h"
 #include "sched/task_exec_core.h"
 #include "syscall/syscall.h"
 

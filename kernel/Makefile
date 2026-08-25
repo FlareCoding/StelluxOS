@@ -67,6 +67,7 @@ CXX_SOURCES += $(shell find signals -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find syscall -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find acpi -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find debug -name '*.cpp' 2>/dev/null | sort)
+CXX_SOURCES += $(shell find trace -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find dma -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find exec -name '*.cpp' 2>/dev/null | sort)
 CXX_SOURCES += $(shell find fdt -name '*.cpp' 2>/dev/null | sort)
@@ -146,6 +147,7 @@ CXXFLAGS_LOG := -DLOG_LEVEL=$(LOG_LEVEL)
 CXXFLAGS_CONFIG := -DMAX_CPUS=$(MAX_CPUS)
 CXXFLAGS_CONFIG += -DSTLX_BUILD_EPOCH=$(STLX_BUILD_EPOCH)
 CXXFLAGS_CONFIG += -DSTLX_VERSION='"$(STLX_VERSION)"'
+CXXFLAGS_CONFIG += -DKTRACE_ENABLED=$(KTRACE_ENABLED)
 
 # uname release / version (version: mode, platform, UTC time from STLX_BUILD_EPOCH)
 STLX_BUILD_DATE := $(shell date -u -d @$(STLX_BUILD_EPOCH) +'%Y-%m-%d %H:%M UTC' 2>/dev/null || date -u -r $(STLX_BUILD_EPOCH) +'%Y-%m-%d %H:%M UTC' 2>/dev/null || echo unknown)
@@ -291,7 +293,10 @@ endif
 	for src in $(CC_SOURCES); do \
 		if [ $$first -eq 1 ]; then first=0; else echo "," >> compile_commands.json; fi; \
 		args="\"$(CXX)\""; \
-		for flag in $(CC_FLAGS); do args="$$args, \"$$flag\""; done; \
+		for flag in $(CC_FLAGS); do \
+			esc=$$(printf '%s' "$$flag" | sed 's/\\/\\\\/g; s/"/\\"/g'); \
+			args="$$args, \"$$esc\""; \
+		done; \
 		args="$$args, \"-c\", \"$$src\""; \
 		echo "  {" >> compile_commands.json; \
 		echo "    \"directory\": \"$$(pwd)\"," >> compile_commands.json; \

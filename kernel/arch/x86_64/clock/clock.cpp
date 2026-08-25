@@ -4,7 +4,7 @@
 #include "hw/mmio.h"
 #include "hw/cpu.h"
 #include "hw/rtc.h"
-#include "cpu/features.h"
+#include "hw/cpu_features.h"
 #include "common/logging.h"
 
 namespace clock {

@@ -15,11 +15,12 @@
 #include "percpu/percpu.h"
 #include "gdt/gdt.h"
 #include "trap/trap.h"
-#include "cpu/features.h"
+#include "hw/cpu_features.h"
 #include "syscall/syscall.h"
 #include "sched/sched.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
+#include "trace/ktrace.h"
 
 extern "C" {
     extern char asm_ap_trampoline[];
@@ -119,6 +120,10 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
         smp::cpu_info* info = smp::get_cpu_info(cpu_id);
         if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
         while (true) { asm volatile("cli; hlt"); }
+    }
+
+    if (ktrace::init() != ktrace::OK) {
+        log::warn("ktrace::init failed on AP %u, performance profiling may be degraded", cpu_id);
     }
 
     smp::cpu_info* info = smp::get_cpu_info(cpu_id);

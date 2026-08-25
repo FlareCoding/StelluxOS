@@ -1,5 +1,5 @@
-#ifndef STELLUX_ARCH_AARCH64_CPU_FEATURES_H
-#define STELLUX_ARCH_AARCH64_CPU_FEATURES_H
+#ifndef STELLUX_ARCH_AARCH64_HW_CPU_FEATURES_H
+#define STELLUX_ARCH_AARCH64_HW_CPU_FEATURES_H
 
 #include "types.h"
 
@@ -53,4 +53,4 @@ inline bool has(uint64_t mask) {
 
 } // namespace cpu
 
-#endif // STELLUX_ARCH_AARCH64_CPU_FEATURES_H
+#endif // STELLUX_ARCH_AARCH64_HW_CPU_FEATURES_H

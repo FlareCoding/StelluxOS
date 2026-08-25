@@ -76,6 +76,9 @@ LOG_LEVEL ?= 0
 # Build epoch (Unix timestamp for RTC fallback on platforms without hardware RTC)
 STLX_BUILD_EPOCH ?= $(shell date +%s)
 
+# Kernel tracing and performance profiling subsystem
+KTRACE_ENABLED ?= 1
+
 # ============================================================================
 # Platform Selection
 # ============================================================================
