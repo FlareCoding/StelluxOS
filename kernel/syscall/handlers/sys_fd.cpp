@@ -2,7 +2,7 @@
 
 #include "resource/resource.h"
 #include "resource/providers/file_provider.h"
-#include "resource/providers/shmem_resource_provider.h"
+#include "resource/providers/shmem_provider.h"
 #include "resource/providers/shm_provider.h"
 #include "syscall/handlers/sys_error_map.h"
 #include "sched/sched.h"
@@ -587,7 +587,7 @@ int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
     }
 
     if (obj->type == resource::resource_type::SHMEM) {
-        mm::shmem* backing = resource::shmem_resource_provider::get_shmem_backing(obj);
+        mm::shmem* backing = resource::shmem_provider::get_shmem_backing(obj);
         if (!backing) {
             resource::resource_release(obj);
             return syscall::EINVAL;

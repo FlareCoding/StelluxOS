@@ -1,5 +1,5 @@
 #include "syscall/handlers/sys_memfd.h"
-#include "resource/providers/shmem_resource_provider.h"
+#include "resource/providers/shmem_provider.h"
 #include "resource/providers/file_provider.h"
 #include "resource/handle_table.h"
 #include "mm/shmem.h"
@@ -56,7 +56,7 @@ DEFINE_SYSCALL2(memfd_create, u_name, u_flags) {
     }
 
     resource::resource_object* obj = nullptr;
-    int32_t rc = resource::shmem_resource_provider::create_shmem_resource(flags, &obj);
+    int32_t rc = resource::shmem_provider::create_shmem_resource(flags, &obj);
     if (rc != resource::OK) {
         return syscall::ENOMEM;
     }
@@ -95,7 +95,7 @@ DEFINE_SYSCALL2(ftruncate, fd_val, length) {
     }
 
     if (obj->type == resource::resource_type::SHMEM) {
-        mm::shmem* backing = resource::shmem_resource_provider::get_shmem_backing(obj);
+        mm::shmem* backing = resource::shmem_provider::get_shmem_backing(obj);
         if (!backing) {
             resource::resource_release(obj);
             return syscall::EINVAL;

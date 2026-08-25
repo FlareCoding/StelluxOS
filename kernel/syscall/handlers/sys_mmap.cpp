@@ -4,7 +4,7 @@
 #include "mm/vma.h"
 #include "mm/shmem.h"
 #include "resource/resource.h"
-#include "resource/providers/shmem_resource_provider.h"
+#include "resource/providers/shmem_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 
@@ -124,7 +124,7 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
         uintptr_t mapped_addr = 0;
 
         if (obj->type == resource::resource_type::SHMEM) {
-            mm::shmem* backing = resource::shmem_resource_provider::get_shmem_backing(obj);
+            mm::shmem* backing = resource::shmem_provider::get_shmem_backing(obj);
             if (!backing) {
                 resource::resource_release(obj);
                 return syscall::EINVAL;

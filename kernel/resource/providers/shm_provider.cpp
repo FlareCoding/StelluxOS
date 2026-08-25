@@ -1,5 +1,5 @@
 #include "resource/providers/shm_provider.h"
-#include "resource/providers/shmem_resource_provider.h"
+#include "resource/providers/shmem_provider.h"
 #include "common/hash.h"
 #include "common/hashmap.h"
 #include "common/string.h"
@@ -158,7 +158,7 @@ __PRIVILEGED_CODE int32_t open_shm_resource(
         sync::mutex_unlock(backing_ref->lock);
     }
 
-    return shmem_resource_provider::create_shmem_resource_with_backing(
+    return shmem_provider::create_shmem_resource_with_backing(
         backing_ref.ptr(), flags, out_obj);
 }
 

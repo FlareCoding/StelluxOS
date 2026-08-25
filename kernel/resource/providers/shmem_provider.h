@@ -1,10 +1,10 @@
-#ifndef STELLUX_RESOURCE_PROVIDERS_SHMEM_RESOURCE_PROVIDER_H
-#define STELLUX_RESOURCE_PROVIDERS_SHMEM_RESOURCE_PROVIDER_H
+#ifndef STELLUX_RESOURCE_PROVIDERS_SHMEM_PROVIDER_H
+#define STELLUX_RESOURCE_PROVIDERS_SHMEM_PROVIDER_H
 
 #include "resource/resource.h"
 #include "mm/shmem.h"
 
-namespace resource::shmem_resource_provider {
+namespace resource::shmem_provider {
 
 /**
  * @brief Create a SHMEM resource backed by a new shmem (size 0).
@@ -31,6 +31,6 @@ int32_t create_shmem_resource_with_backing(
  */
 [[nodiscard]] mm::shmem* get_shmem_backing(resource_object* obj);
 
-} // namespace resource::shmem_resource_provider
+} // namespace resource::shmem_provider
 
-#endif // STELLUX_RESOURCE_PROVIDERS_SHMEM_RESOURCE_PROVIDER_H
+#endif // STELLUX_RESOURCE_PROVIDERS_SHMEM_PROVIDER_H

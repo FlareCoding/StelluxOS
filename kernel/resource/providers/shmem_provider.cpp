@@ -1,11 +1,11 @@
-#include "resource/providers/shmem_resource_provider.h"
+#include "resource/providers/shmem_provider.h"
 #include "dynpriv/dynpriv.h"
 #include "mm/heap.h"
 #include "mm/shmem.h"
 #include "rc/strong_ref.h"
 #include "sync/poll.h"
 
-namespace resource::shmem_resource_provider {
+namespace resource::shmem_provider {
 
 struct shmem_resource_impl {
     rc::strong_ref<mm::shmem> backing;
@@ -197,4 +197,4 @@ mm::shmem* get_shmem_backing(resource_object* obj) {
     return backing;
 }
 
-} // namespace resource::shmem_resource_provider
+} // namespace resource::shmem_provider
