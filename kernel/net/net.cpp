@@ -81,7 +81,7 @@ int32_t register_netif(netif* iface) {
         iface->next = g_iface_list;
         g_iface_list = iface;
         // Set as default only if no default exists AND this is not loopback.
-        // Loopback should never be the default outbound interface — external
+        // Loopback should never be the default outbound interface, external
         // traffic must go through a real NIC. If loopback is the only
         // interface, g_default_iface stays nullptr until a real NIC registers.
         if (!g_default_iface && !(iface->flags & NETIF_LOOPBACK)) {

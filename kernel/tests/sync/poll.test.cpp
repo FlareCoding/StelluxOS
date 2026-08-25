@@ -247,7 +247,7 @@ TEST(poll, timeout_no_trigger) {
 }
 
 // immediate_trigger_no_block
-// Fire the source before poll_wait — should return immediately.
+// Fire the source before poll_wait, should return immediately.
 
 static volatile uint32_t g_imm_result;
 static volatile uint32_t g_imm_done;

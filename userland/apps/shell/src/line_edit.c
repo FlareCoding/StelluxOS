@@ -436,7 +436,7 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
     }
 
     if (count == 1) {
-        /* Single match — complete fully */
+        /* Single match, complete fully */
         const char* match = entries[0].name;
         int match_len = (int)strlen(match);
         int insert_len = match_len - name_prefix_len;
@@ -470,7 +470,7 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
         return;
     }
 
-    /* No additional common prefix — show candidates on second Tab */
+    /* No additional common prefix, show candidates on second Tab */
     if (s->tab_pressed) {
         show_candidates(entries, count, s, prompt);
         s->tab_pressed = 0;

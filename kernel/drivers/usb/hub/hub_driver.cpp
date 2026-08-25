@@ -98,7 +98,7 @@ void hub_driver::run() {
 
     if (ep_addr == 0) {
         log::warn("hub: no interrupt IN endpoint, polling mode only");
-        // No interrupt endpoint — just stay alive
+        // No interrupt endpoint, just stay alive
         while (!m_disconnected) {
             delay::us(500000);
             for (uint8_t port = 1; port <= m_hub_desc.bNbrPorts; port++) {

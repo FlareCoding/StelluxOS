@@ -143,7 +143,7 @@ constexpr uint8_t  PHYSTS_10M                = (1u << 2);
 constexpr uint8_t  PHYSTS_LINK               = (1u << 1);
 constexpr uint8_t  PHYSTS_FULLDUP            = (1u << 0);
 
-// Extended Register Access (ERIAR) — used by 8168g+ chips
+// Extended Register Access (ERIAR), used by 8168g+ chips
 constexpr uint16_t REG_ERIAR                 = 0x00DC;  // 32-bit
 constexpr uint32_t ERIAR_FLAG                = (1u << 31);
 constexpr uint32_t ERIAR_WRITE               = 0x80000000;
@@ -327,7 +327,7 @@ constexpr size_t   DESC_RING_ALIGN           = 256;
 //
 // These are IEEE 802.3 standard. Same as phy_regs.h but in the rtl8168
 // namespace for self-contained usage. The RTL8168 has an integrated PHY
-// so there is no external MDIO bus — access is through PHYAR (offset 0x60).
+// so there is no external MDIO bus, access is through PHYAR (offset 0x60).
 
 namespace phy {
 

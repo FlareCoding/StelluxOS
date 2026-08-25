@@ -415,7 +415,7 @@ __PRIVILEGED_CODE static void mark_pages(pfn_t start_pfn, pfn_t end_pfn, uint8_t
 // Build freelists using max-order-first decomposition.
 // For each contiguous run of free pages, directly computes the largest
 // naturally-aligned power-of-2 block at each position. No coalescing
-// pass needed — blocks go directly to their final order.
+// pass needed, blocks go directly to their final order.
 __PRIVILEGED_CODE static void build_freelists() {
     for (size_t zi = 0; zi < static_cast<size_t>(zone_id::COUNT); zi++) {
         zone& z = g_pmm.zones[zi];

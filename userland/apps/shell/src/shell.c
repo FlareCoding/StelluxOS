@@ -194,7 +194,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
     int fg_pgrp = -1;
 
     for (int i = 0; i < nstages; i++) {
-        /* Parse redirections first — modifies stage string in-place */
+        /* Parse redirections first, modifies stage string in-place */
         redirect_info redir;
         if (parse_redirects(stages[i], &redir) < 0) {
             shell_err("shell: syntax error in redirection\r\n");

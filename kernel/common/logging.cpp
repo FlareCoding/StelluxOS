@@ -274,7 +274,7 @@ void error(const char* fmt, ...) {
     va_end(args);
 }
 
-// Emergency serial output for fatal() — bypasses log_lock and num_buffer.
+// Emergency serial output for fatal(), bypasses log_lock and num_buffer.
 // Uses stack-local buffer to avoid races with concurrent formatters.
 static void fatal_serial_char(char c) {
     serial::write(&c, 1);

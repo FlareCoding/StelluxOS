@@ -94,9 +94,9 @@ inline const T* node_to_entry(const node* n) {
 }
 
 // Type-safe intrusive red-black tree.
-// T      — the containing struct type
-// Link   — pointer-to-member identifying which rbt::node field to use
-// Compare — functor with bool operator()(const T&, const T&) for less-than
+// T     , the containing struct type
+// Link  , pointer-to-member identifying which rbt::node field to use
+// Compare, functor with bool operator()(const T&, const T&) for less-than
 template <typename T, node T::*Link, typename Compare>
 class tree {
 public:

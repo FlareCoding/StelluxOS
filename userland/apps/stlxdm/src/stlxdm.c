@@ -772,13 +772,13 @@ int main(void) {
             prev_focused = input.focused_slot;
         }
 
-        /* Cursor moved → dirty old and new positions */
+        /* Cursor moved -> dirty old and new positions */
         if (input.ptr_x != old_ptr_x || input.ptr_y != old_ptr_y) {
             stlxdm_dirty_add_cursor(&dirty, &input, old_ptr_x, old_ptr_y);
             stlxdm_dirty_add_cursor(&dirty, &input, input.ptr_x, input.ptr_y);
         }
 
-        /* Window dragging → dirty the dragged window area */
+        /* Window dragging -> dirty the dragged window area */
         if (input.drag_slot >= 0) {
             stlxdm_dirty_add_full(&dirty);
         }
@@ -787,7 +787,7 @@ int main(void) {
         }
         prev_drag = input.drag_slot;
 
-        /* Close button hover changed → dirty window title area */
+        /* Close button hover changed -> dirty window title area */
         if (input.close_hover_slot != prev_close_hover) {
             if (prev_close_hover >= 0 && server.clients[prev_close_hover].window) {
                 stlxdm_dirty_add_window(&dirty,
@@ -801,7 +801,7 @@ int main(void) {
             prev_close_hover = input.close_hover_slot;
         }
 
-        /* Taskbar hover or press changed — include tooltip area above bar */
+        /* Taskbar hover or press changed, include tooltip area above bar */
         if (taskbar.hover_index != prev_taskbar_hover ||
             taskbar.press_index != prev_taskbar_press) {
             /* Tooltips are drawn above the taskbar icons.  Expand the

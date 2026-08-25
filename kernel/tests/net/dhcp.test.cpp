@@ -611,7 +611,7 @@ TEST(dhcp_test, parse_options_truncated_mid_option) {
     EXPECT_EQ(cfg.subnet_mask, static_cast<uint32_t>(0)); // truncated, not parsed
 }
 
-// Build DISCOVER → Parse roundtrip
+// Build DISCOVER -> Parse roundtrip
 
 TEST(dhcp_test, discover_roundtrip_mac_preserved) {
     uint8_t buf[net::DHCP_PACKET_MAX];

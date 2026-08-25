@@ -66,7 +66,7 @@ void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len) {
     if (hdr->type == ICMP_TYPE_ECHO_REQUEST && hdr->code == 0) {
         // Build the echo reply and queue it for deferred transmission.
         // Sending inline from RX context would recurse through
-        // ipv4_send → arp_resolve → poll → deliver_rx_batch.
+        // ipv4_send -> arp_resolve -> poll -> deliver_rx_batch.
         if (len <= ETH_MTU) {
             auto* reply = static_cast<uint8_t*>(heap::kzalloc(len));
             if (reply) {

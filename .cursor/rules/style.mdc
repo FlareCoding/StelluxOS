@@ -33,8 +33,8 @@ dropbear, bearssl, stb_* headers, and kernel/boot/limine.h.
   needs the space, like the critical section note in dynpriv lower(). Length
   never excuses narration, a long comment must still explain why.
 - Hand-written hardware spec quotations and RFC or protocol reference blocks
-  (the xhci headers, net/ RFC notes) are protected documentation. Never
-  shorten, rewrite, or delete them.
+  (the xhci headers, net/ RFC notes) are protected documentation. Never edit
+  them in any way, not even to shorten, reword, or normalize punctuation.
 - Privileged functions add `@note Privilege: **required**` to their doxygen
   block (owned by the dynpriv rule).
 - Comments never interrupt a single statement. An initializer list, argument

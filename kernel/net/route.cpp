@@ -123,15 +123,15 @@ int32_t route_lookup(uint32_t dst_ip, route_result* result) {
 
             switch (best.type) {
             case route_type::LOCAL:
-                // Local delivery — next hop is the destination itself
+                // Local delivery, next hop is the destination itself
                 result->next_hop = dst_ip;
                 break;
             case route_type::CONNECTED:
-                // Directly reachable — next hop is the destination
+                // Directly reachable, next hop is the destination
                 result->next_hop = dst_ip;
                 break;
             case route_type::GATEWAY:
-                // Via gateway — next hop is the gateway address
+                // Via gateway, next hop is the gateway address
                 result->next_hop = best.gateway;
                 break;
             }
@@ -148,12 +148,12 @@ void route_add_interface_routes(netif* iface) {
 
     netif* lo = get_loopback_netif();
 
-    // Add a LOCAL host route for the interface's own IP (→ loopback).
+    // Add a LOCAL host route for the interface's own IP (-> loopback).
     // This enables local delivery when sending to our own address.
     // The route's outgoing interface is loopback, but the owner is the
-    // configured interface — so route_del_iface(iface) correctly cleans
+    // configured interface, so route_del_iface(iface) correctly cleans
     // it up without affecting other interfaces' LOCAL routes.
-    // Skip this for the loopback interface itself — its CONNECTED route
+    // Skip this for the loopback interface itself, its CONNECTED route
     // (127.0.0.0/8) already covers local delivery.
     if (lo && iface != lo) {
         route_add(iface->ipv4_addr, 0xFFFFFFFF, 0,

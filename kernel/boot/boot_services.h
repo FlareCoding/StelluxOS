@@ -13,7 +13,7 @@ struct boot_info {
     // Highest physical address (page-aligned, from memory map)
     uint64_t max_phys_addr;
 
-    // Memory map (raw Limine pointers — only valid before paging::init()
+    // Memory map (raw Limine pointers, only valid before paging::init()
     // replaces page tables, since entries live in bootloader-reclaimable memory)
     uint64_t memmap_entry_count;
     struct limine_memmap_entry** memmap_entries;

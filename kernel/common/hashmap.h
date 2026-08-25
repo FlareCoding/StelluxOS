@@ -70,9 +70,9 @@ inline const T* node_to_entry(const node* n) {
 }
 
 // Type-safe intrusive hash map.
-// T       — the containing struct type
-// Link    — pointer-to-member identifying which hashmap::node field to use
-// KeyOps  — traits struct providing:
+// T      , the containing struct type
+// Link   , pointer-to-member identifying which hashmap::node field to use
+// KeyOps , traits struct providing:
 //             using key_type = ...;
 //             static key_type key_of(const T&);
 //             static uint64_t hash(const key_type&);
@@ -163,7 +163,7 @@ public:
     [[nodiscard]] uint32_t bucket_count() const { return m_mask + 1; }
 
     // Iterate all entries. Safe to call remove() on the current entry
-    // inside fn — next pointer is captured before each callback.
+    // inside fn, next pointer is captured before each callback.
     template<typename Fn>
     void for_each(Fn fn) {
         if (!m_buckets) return;

@@ -199,7 +199,7 @@ TEST(poll_resource, pty_poll_readable) {
     ASSERT_NOT_NULL(master);
     ASSERT_NOT_NULL(slave);
 
-    // Write to master → line discipline processes → slave can read.
+    // Write to master -> line discipline processes -> slave can read.
     // Use newline to flush through cooked-mode line discipline.
     const char* msg = "x\n";
     RUN_ELEVATED({
@@ -234,7 +234,7 @@ TEST(poll_resource, unix_socket_poll_readable) {
     ASSERT_NOT_NULL(a);
     ASSERT_NOT_NULL(b);
 
-    // Write to a → b can read
+    // Write to a -> b can read
     const uint8_t data[] = {7};
     RUN_ELEVATED({
         a->ops->write(a, data, 1, 0);
@@ -264,7 +264,7 @@ TEST(poll_resource, null_poll_table_just_probes) {
     uint8_t data[] = {1};
     RUN_ELEVATED({ (void)ring_buffer_write(rb, data, 1, true); });
 
-    // Pass null pt — should just probe, no subscription
+    // Pass null pt, should just probe, no subscription
     uint32_t mask = 0;
     RUN_ELEVATED({
         mask = ring_buffer_poll_read(rb, nullptr);

@@ -7,10 +7,10 @@
 namespace net {
 
 /**
- * Route type — determines how a packet is delivered.
+ * Route type, determines how a packet is delivered.
  */
 enum class route_type : uint8_t {
-    LOCAL,       // Destination is a local address → deliver via loopback
+    LOCAL,       // Destination is a local address -> deliver via loopback
     CONNECTED,   // Destination is directly reachable on this interface
     GATEWAY,     // Destination is reachable via a next-hop gateway
 };
@@ -44,7 +44,7 @@ struct route_result {
 
 constexpr uint32_t ROUTE_TABLE_SIZE = 32;
 
-// Metric constants — lower = higher priority
+// Metric constants, lower = higher priority
 constexpr uint16_t METRIC_LOCAL     = 0;      // own IPs -> loopback
 constexpr uint16_t METRIC_CONNECTED = 100;    // directly connected subnets
 constexpr uint16_t METRIC_STATIC    = 200;    // manually added routes

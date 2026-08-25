@@ -16,8 +16,8 @@ static bool g_lo_initialized = false;
  * Feeds the frame directly back to the receive path.
  *
  * Safety: This is called from eth_send() which is called from:
- *   (a) ipv4_send() — top-level send path, not inside RX processing
- *   (b) drain_deferred_tx() — also top-level, after RX delivery
+ *   (a) ipv4_send(), top-level send path, not inside RX processing
+ *   (b) drain_deferred_tx(), also top-level, after RX delivery
  * In both cases, we are NOT inside rx_frame() processing, so calling
  * rx_frame() here does not cause recursion. Protocol handlers that
  * need to reply (e.g. ICMP echo) use queue_deferred_tx() to defer
@@ -54,7 +54,7 @@ __PRIVILEGED_CODE int32_t loopback_init() {
     string::memset(&g_lo_netif, 0, sizeof(g_lo_netif));
     string::memcpy(g_lo_netif.name, "lo", 3);
 
-    // Loopback has no real MAC address — use all zeros.
+    // Loopback has no real MAC address, use all zeros.
     // Ethernet framing still works; the MAC is never resolved via ARP.
     string::memset(g_lo_netif.mac, 0, MAC_ADDR_LEN);
 

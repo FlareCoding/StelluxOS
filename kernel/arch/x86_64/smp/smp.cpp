@@ -65,15 +65,15 @@ static_assert(sizeof(ap_startup_data) == 40);
 constexpr uint32_t MSR_IA32_APIC_BASE = 0x1B;
 constexpr uint64_t APIC_BASE_BSP_FLAG = (1ULL << 8);
 
-// AP C entry — called from the trampoline's 64-bit section
+// AP C entry, called from the trampoline's 64-bit section
 extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     auto* data = reinterpret_cast<ap_startup_data*>(AP_STARTUP_DATA_PHYS);
     uint32_t cpu_id = static_cast<uint32_t>(logical_id);
 
-    // Per-CPU area first — enables this_cpu() for everything else
+    // Per-CPU area first, enables this_cpu() for everything else
     percpu::init_ap(cpu_id, data->percpu_base);
 
-    // Allocate IST stacks (VMM safe after GS set — spinlocks use pushfq/cli)
+    // Allocate IST stacks (VMM safe after GS set, spinlocks use pushfq/cli)
     uintptr_t ist1_base = 0, ist1_top = 0;
     uintptr_t ist2_base = 0, ist2_top = 0;
     uintptr_t ist3_base = 0, ist3_top = 0;
@@ -83,20 +83,20 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
         while (true) { asm volatile("cli; hlt"); }
     }
 
-    // GDT/TSS — uses this_cpu() for per-CPU GDT/TSS structs
+    // GDT/TSS, uses this_cpu() for per-CPU GDT/TSS structs
     x86::gdt::init(data->stack_top, ist1_top, ist2_top, ist3_top);
     x86::gdt::load();
 
     // Load shared IDT (lidt only, no rebuild)
     trap::load();
 
-    // CPU features (CR4.FSGSBASE, PAT MSR — per-CPU registers)
+    // CPU features (CR4.FSGSBASE, PAT MSR, per-CPU registers)
     cpu::init();
 
-    // Syscall MSRs (LSTAR/STAR/SFMASK — per-CPU)
+    // Syscall MSRs (LSTAR/STAR/SFMASK, per-CPU)
     syscall::init_arch_syscalls();
 
-    // LAPIC enable (SVR, mask LVTs, clear EOI — per-CPU hardware)
+    // LAPIC enable (SVR, mask LVTs, clear EOI, per-CPU hardware)
     irq::init_ap();
 
     // Allocate a separate system stack for the idle task.
@@ -302,7 +302,7 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
         }
     }
 
-    // AP did not come online — clean up both allocations
+    // AP did not come online, clean up both allocations
     vmm::free(stack_base);
     vmm::free(percpu_va);
     return smp::ERR_BOOT_TIMEOUT;

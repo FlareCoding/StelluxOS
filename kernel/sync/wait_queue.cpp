@@ -42,7 +42,7 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
     }
 
     // Overflow: re-scan and wake all observers under the lock.
-    // Some were already woken above — sched::wake() is idempotent.
+    // Some were already woken above, sched::wake() is idempotent.
     // sched::wake() only acquires rq.lock (never wq.lock), so holding
     // wq.lock here is deadlock-free. This path is extremely rare
     // (requires >16 concurrent pollers on one wait queue).

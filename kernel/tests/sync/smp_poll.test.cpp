@@ -208,7 +208,7 @@ static void xrace_poll_fn(void*) {
         pt.init(sched::current());
         sync::poll_subscribe(pt, g_xrace_wq);
 
-        // Short timeout — will expire before the source fires
+        // Short timeout, will expire before the source fires
         sync::poll_wait(pt, 10000000ULL); // 10ms
         sync::poll_cleanup(pt);
     });

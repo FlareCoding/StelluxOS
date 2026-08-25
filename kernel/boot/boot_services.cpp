@@ -105,7 +105,7 @@ __PRIVILEGED_CODE int32_t init() {
     g_boot_info.memmap_entry_count = memmap_request.response->entry_count;
     g_boot_info.memmap_entries = memmap_request.response->entries;
 
-    // Compute highest physical address (any entry type — HHDM spans the full range)
+    // Compute highest physical address (any entry type, HHDM spans the full range)
     uint64_t max_phys = 0;
     for (uint64_t i = 0; i < g_boot_info.memmap_entry_count; i++) {
         uint64_t end = g_boot_info.memmap_entries[i]->base +
@@ -161,7 +161,7 @@ __PRIVILEGED_CODE int32_t init() {
         g_boot_info.module_count = 0;
     }
 
-    // Get framebuffer (optional — copy fields, Limine memory is reclaimed later)
+    // Get framebuffer (optional, copy fields, Limine memory is reclaimed later)
     if (LIMINE_REQUEST_FULFILLED(framebuffer_request) &&
         framebuffer_request.response->framebuffer_count > 0) {
         auto* fb = framebuffer_request.response->framebuffers[0];

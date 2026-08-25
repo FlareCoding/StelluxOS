@@ -111,7 +111,7 @@ __PRIVILEGED_CODE int32_t init();
 
 /**
  * @brief Map caller-provided physical pages into kernel VA (no physical allocation).
- * Unlike map_device, does not force any cache type — caller controls caching.
+ * Unlike map_device, does not force any cache type, caller controls caching.
  * Useful for firmware tables, shared memory, framebuffers, etc.
  * Physical pages are not freed on vmm::free(); caller retains ownership.
  * @param phys Physical address (may be non-page-aligned).

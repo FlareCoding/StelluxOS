@@ -16,12 +16,12 @@ namespace serial {
 // Raspberry Pi 4 (BCM2711): PL011 on GPIO header, 48 MHz UART clock
 constexpr uintptr_t PL011_PHYS = 0xFE201000;
 constexpr uint32_t BAUD_IBRD = 26;   // 48000000 / (16 * 115200) = 26.042
-constexpr uint32_t BAUD_FBRD = 3;    // 0.042 * 64 = 2.67 ≈ 3
+constexpr uint32_t BAUD_FBRD = 3;    // 0.042 * 64 = 2.67 ~ 3
 #else
 // QEMU virt machine: PL011 at fixed address, 24 MHz UART clock
 constexpr uintptr_t PL011_PHYS = 0x09000000;
 constexpr uint32_t BAUD_IBRD = 13;   // 24000000 / (16 * 115200) = 13.021
-constexpr uint32_t BAUD_FBRD = 1;    // 0.021 * 64 = 1.33 ≈ 1
+constexpr uint32_t BAUD_FBRD = 1;    // 0.021 * 64 = 1.33 ~ 1
 #endif
 
 // Register offsets from base (same for all PL011 implementations)

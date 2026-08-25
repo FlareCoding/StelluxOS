@@ -20,7 +20,7 @@ constexpr uint8_t TCP_PSH = 0x08; // push buffered data to receiver
 constexpr uint8_t TCP_ACK = 0x10; // acknowledgment field is valid
 constexpr uint8_t TCP_URG = 0x20; // urgent pointer field is valid
 
-// TCP header (RFC 9293 Section 3.1) — minimum 20 bytes.
+// TCP header (RFC 9293 Section 3.1), minimum 20 bytes.
 // All multi-byte fields are in network byte order on the wire.
 struct tcp_header {
     uint16_t src_port;   // source port

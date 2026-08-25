@@ -70,7 +70,7 @@ TEST(route_test, add_null_iface_rejected) {
     EXPECT_EQ(rc, net::ERR_INVAL);
 }
 
-// route_lookup — connected route
+// route_lookup, connected route
 
 TEST(route_test, lookup_connected) {
     net::netif mock = {};
@@ -97,7 +97,7 @@ TEST(route_test, lookup_connected) {
     net::route_del_iface(&mock);
 }
 
-// route_lookup — gateway route
+// route_lookup, gateway route
 
 TEST(route_test, lookup_gateway) {
     net::netif mock = {};
@@ -124,7 +124,7 @@ TEST(route_test, lookup_gateway) {
     net::route_del_iface(&mock);
 }
 
-// route_lookup — longest prefix match
+// route_lookup, longest prefix match
 
 TEST(route_test, lookup_longest_prefix) {
     net::netif mock_broad = {};
@@ -153,13 +153,13 @@ TEST(route_test, lookup_longest_prefix) {
         0, &mock_narrow, net::route_type::CONNECTED, net::METRIC_CONNECTED);
     ASSERT_EQ(rc, net::OK);
 
-    // Lookup 10.0.2.15 — should match the /24 (longer prefix)
+    // Lookup 10.0.2.15, should match the /24 (longer prefix)
     net::route_result rt;
     rc = net::route_lookup(net::ipv4_addr(10, 0, 2, 15), &rt);
     ASSERT_EQ(rc, net::OK);
     EXPECT_EQ(rt.iface, &mock_narrow);
 
-    // Lookup 10.0.3.1 — should match the /8 (only one that matches)
+    // Lookup 10.0.3.1, should match the /8 (only one that matches)
     rc = net::route_lookup(net::ipv4_addr(10, 0, 3, 1), &rt);
     ASSERT_EQ(rc, net::OK);
     EXPECT_EQ(rt.iface, &mock_broad);
@@ -168,7 +168,7 @@ TEST(route_test, lookup_longest_prefix) {
     net::route_del_iface(&mock_narrow);
 }
 
-// route_lookup — metric tiebreak
+// route_lookup, metric tiebreak
 
 TEST(route_test, lookup_metric_tiebreak) {
     net::netif mock_hi = {};
@@ -206,7 +206,7 @@ TEST(route_test, lookup_metric_tiebreak) {
     net::route_del_iface(&mock_lo);
 }
 
-// route_lookup — local route
+// route_lookup, local route
 
 TEST(route_test, lookup_local) {
     net::netif mock = {};
@@ -233,10 +233,10 @@ TEST(route_test, lookup_local) {
     EXPECT_EQ(static_cast<uint8_t>(rt.type),
               static_cast<uint8_t>(net::route_type::LOCAL));
 
-    // Clean up — remove just the route we added (lo also has its own routes)
+    // Clean up, remove just the route we added (lo also has its own routes)
     // We can't use route_del_iface(lo) as that would remove loopback routes.
     // Instead, add a connected route for mock and del_iface(lo) would be wrong.
-    // Let's just leave it — it'll be cleaned up when we add the proper route
+    // Let's just leave it, it'll be cleaned up when we add the proper route
     // for mock_lc0 anyway. Actually, let's use a dedicated mock iface:
     // Re-do: add the LOCAL route pointing to a dedicated mock lo
     net::netif mock_lo2 = {};
@@ -246,7 +246,7 @@ TEST(route_test, lookup_local) {
     mock_lo2.configured = true;
 
     // Remove the route we just added (it's on the real lo)
-    // We need a different approach — let's not pollute the real lo routes.
+    // We need a different approach, let's not pollute the real lo routes.
     // Instead, just verify the lookup result is correct.
     // The test already validated the lookup works. Clean up by invalidating
     // only routes that point to mock interfaces.
@@ -256,12 +256,12 @@ TEST(route_test, lookup_local) {
     // other tests since 10.0.2.15 is not used elsewhere.
 }
 
-// route_lookup — loopback
+// route_lookup, loopback
 
 TEST(route_test, lookup_loopback) {
     // 127.0.0.1 should be routed through the loopback interface
     // via the CONNECTED route for 127.0.0.0/8 that was auto-populated
-    // by loopback_init() → configure() → route_add_interface_routes().
+    // by loopback_init() -> configure() -> route_add_interface_routes().
     net::route_result rt;
     int32_t rc = net::route_lookup(net::ipv4_addr(127, 0, 0, 1), &rt);
     ASSERT_EQ(rc, net::OK);
@@ -282,7 +282,7 @@ TEST(route_test, lookup_loopback_other_addr) {
     EXPECT_EQ(rt.iface, lo);
 }
 
-// route_lookup — no match
+// route_lookup, no match
 
 TEST(route_test, lookup_no_match) {
     // In the test environment, there's no default route (no gateway).
@@ -322,7 +322,7 @@ TEST(route_test, del_iface_clears_routes) {
     EXPECT_EQ(net::route_count(), before);
 }
 
-// route_add_interface_routes — auto-populate
+// route_add_interface_routes, auto-populate
 
 TEST(route_test, add_interface_routes_populates) {
     net::netif mock = {};
@@ -374,7 +374,7 @@ TEST(route_test, add_interface_routes_populates) {
     net::unregister_netif(&mock);
 }
 
-// route_add_interface_routes — reconfiguration clears old routes
+// route_add_interface_routes, reconfiguration clears old routes
 
 TEST(route_test, reconfigure_replaces_routes) {
     net::netif mock = {};
@@ -396,7 +396,7 @@ TEST(route_test, reconfigure_replaces_routes) {
     uint32_t after_first = net::route_count();
     EXPECT_EQ(after_first, before + 3);
 
-    // Reconfigure with different IP — old routes should be replaced
+    // Reconfigure with different IP, old routes should be replaced
     rc = net::configure(&mock,
                         net::ipv4_addr(10, 0, 7, 200),
                         net::ipv4_addr(255, 255, 255, 0),
@@ -408,7 +408,7 @@ TEST(route_test, reconfigure_replaces_routes) {
 
     // Old subnet should not have a CONNECTED route any more.
     // The new default GATEWAY route (0.0.0.0/0) will still match, but
-    // it should be via GATEWAY — not CONNECTED (the old connected route
+    // it should be via GATEWAY, not CONNECTED (the old connected route
     // for 10.0.6.0/24 should have been deleted).
     net::route_result rt;
     rc = net::route_lookup(net::ipv4_addr(10, 0, 6, 50), &rt);
@@ -539,7 +539,7 @@ TEST(route_test, unregister_cleans_routes) {
     rc = net::route_lookup(net::ipv4_addr(10, 99, 0, 50), &rt);
     ASSERT_EQ(rc, net::OK);
 
-    // Unregister should clean up ALL routes (including LOCAL → loopback)
+    // Unregister should clean up ALL routes (including LOCAL -> loopback)
     rc = net::unregister_netif(&mock);
     ASSERT_EQ(rc, net::OK);
     EXPECT_EQ(net::route_count(), before);
@@ -555,7 +555,7 @@ TEST(route_test, unregister_cleans_routes) {
 }
 
 // Reconfiguring loopback does NOT destroy other interfaces' LOCAL routes
-// (Bug 4 regression test — owner-based route deletion)
+// (Bug 4 regression test, owner-based route deletion)
 
 TEST(route_test, loopback_reconfig_preserves_other_local_routes) {
     // Set up a mock interface with a LOCAL route through loopback

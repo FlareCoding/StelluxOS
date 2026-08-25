@@ -42,16 +42,16 @@ struct resource_ops {
     close_fn    close;
     ioctl_fn    ioctl;       // nullable
     mmap_fn     mmap;        // nullable
-    sendto_fn   sendto;      // nullable — for datagram/raw sockets
-    recvfrom_fn recvfrom;    // nullable — for datagram/raw sockets
-    bind_fn     bind;        // nullable — for sockets
-    listen_fn   listen;      // nullable — for stream sockets
-    accept_fn   accept;      // nullable — for listening sockets
-    connect_fn  connect;     // nullable — for stream sockets
-    setsockopt_fn setsockopt; // nullable — for sockets
-    getsockopt_fn getsockopt; // nullable — for sockets
-    poll_fn       poll;       // nullable — returns readiness mask, subscribes on wait queues
-    shutdown_fn   shutdown;   // nullable — for sockets
+    sendto_fn   sendto;      // nullable, for datagram/raw sockets
+    recvfrom_fn recvfrom;    // nullable, for datagram/raw sockets
+    bind_fn     bind;        // nullable, for sockets
+    listen_fn   listen;      // nullable, for stream sockets
+    accept_fn   accept;      // nullable, for listening sockets
+    connect_fn  connect;     // nullable, for stream sockets
+    setsockopt_fn setsockopt; // nullable, for sockets
+    getsockopt_fn getsockopt; // nullable, for sockets
+    poll_fn       poll;       // nullable, returns readiness mask, subscribes on wait queues
+    shutdown_fn   shutdown;   // nullable, for sockets
 };
 
 struct resource_object : rc::ref_counted<resource_object> {

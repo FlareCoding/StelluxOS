@@ -4,7 +4,7 @@
  * Stateless orchestration layer that combines KVA (VA bookkeeping),
  * PMM (physical pages), and paging (page tables) into complete
  * "allocate mapped kernel memory" operations. Has no internal tracking
- * tree — all persistent state lives in the layers below.
+ * tree, all persistent state lives in the layers below.
  */
 
 #include "mm/vmm.h"
@@ -323,7 +323,7 @@ __PRIVILEGED_CODE static int32_t map_phys_internal(
                               phys_base + i * pmm::PAGE_SIZE,
                               flags, g_kernel_root);
         if (rc != paging::OK) {
-            // Rollback — unmap only, do not free physical (it's hardware MMIO)
+            // Rollback, unmap only, do not free physical (it's hardware MMIO)
             for (size_t j = 0; j < i; j++) {
                 paging::unmap_page(base + j * pmm::PAGE_SIZE, g_kernel_root);
             }
@@ -426,7 +426,7 @@ __PRIVILEGED_CODE int32_t free(uintptr_t addr) {
 
     paging::flush_tlb_range(base, base + size);
 
-    // Free physical pages (safe now — mappings removed and TLB flushed)
+    // Free physical pages (safe now, mappings removed and TLB flushed)
     if (free_phys) {
         if (order > 0) {
             if (contig_phys != 0) {

@@ -88,7 +88,7 @@ static bool arp_table_lookup(uint32_t ip, uint8_t* out_mac) {
         for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
             if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
                 if (now - g_arp_table[i].last_updated_ns > ARP_ENTRY_TTL_NS) {
-                    break; // stale — force re-resolution
+                    break; // stale, force re-resolution
                 }
                 string::memcpy(out_mac, g_arp_table[i].mac, MAC_ADDR_LEN);
                 found = true;
@@ -120,7 +120,7 @@ void arp_recv(netif* iface, const uint8_t* data, size_t len) {
 
     if (opcode == ARP_OP_REQUEST && iface->configured && target_ip == iface->ipv4_addr) {
         // Queue ARP reply for deferred transmission (same principle as
-        // ICMP echo replies — no inline TX from RX processing context).
+        // ICMP echo replies, no inline TX from RX processing context).
         arp_header reply = {};
         reply.hw_type = htons(ARP_HW_ETHERNET);
         reply.proto_type = htons(ETH_TYPE_IPV4);

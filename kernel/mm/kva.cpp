@@ -3,7 +3,7 @@
  *
  * Manages the VA range between HHDM and kernel image. Tracks free/used
  * regions with three RB-trees (free-by-addr, free-by-size, used-by-addr).
- * Does not touch page tables — only bookkeeping.
+ * Does not touch page tables, only bookkeeping.
  */
 
 #include "mm/kva.h"
@@ -218,7 +218,7 @@ __PRIVILEGED_CODE int32_t init() {
         }
     }
 
-    // Safe to modify trees now — all nodes are secured
+    // Safe to modify trees now, all nodes are secured
     uintptr_t old_start = candidate->start;
     uintptr_t old_end = candidate->end;
     remove_from_free_trees(candidate);

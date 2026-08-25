@@ -411,7 +411,7 @@ __PRIVILEGED_CODE static int32_t map_block_2mb(pmm::phys_addr_t root_pt, virt_ad
     // Set L2 entry as 2MB block (no L3 level)
     block_desc_t* block = &l2->as_block[parts.l2_idx];
     if (block->valid) {
-        // L2 entry exists — if it's a table descriptor (type==1) pointing
+        // L2 entry exists, if it's a table descriptor (type==1) pointing
         // to an L3, check if all 512 L3 entries are empty. If so, free
         // the L3 table and reclaim the entry.
         table_desc_t* as_tbl = &l2->as_table[parts.l2_idx];

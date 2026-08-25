@@ -1,5 +1,5 @@
 /*
- * Intrusive red-black tree — core algorithms.
+ * Intrusive red-black tree, core algorithms.
  *
  * All functions operate on raw rbt::node pointers and are compiled once.
  * The template wrapper in rb_tree.h calls into these.
@@ -83,20 +83,20 @@ void insert_fixup(node** root, node* n) {
         if (p == g->left) {
             node* u = g->right; // uncle
             if (is_red(u)) {
-                // Case 1: uncle is red — recolor and move up
+                // Case 1: uncle is red, recolor and move up
                 p->col = color::BLACK;
                 u->col = color::BLACK;
                 g->col = color::RED;
                 n = g;
             } else {
                 if (n == p->right) {
-                    // Case 2: uncle black, n is inner child — rotate to outer
+                    // Case 2: uncle black, n is inner child, rotate to outer
                     n = p;
                     rotate_left(root, n);
                     p = n->parent;
                     g = p->parent;
                 }
-                // Case 3: uncle black, n is outer child — rotate + recolor
+                // Case 3: uncle black, n is outer child, rotate + recolor
                 p->col = color::BLACK;
                 g->col = color::RED;
                 rotate_right(root, g);
@@ -229,7 +229,7 @@ static void swap_nodes(node** root, node* a, node* b) {
 
     // Handle the case where a and b are parent-child
     if (a->parent == b) {
-        // b is parent of a — swap so a is always the parent
+        // b is parent of a, swap so a is always the parent
         swap_nodes(root, b, a);
         return;
     }
@@ -266,7 +266,7 @@ static void swap_nodes(node** root, node* a, node* b) {
         if (b_left) b_left->parent = a;
         if (b_right) b_right->parent = a;
     } else {
-        // a and b are not adjacent — general case
+        // a and b are not adjacent, general case
 
         // Update parents to point to the swapped node
         if (!a_parent) {
@@ -326,13 +326,13 @@ void remove_node(node** root, node* n) {
     // Fix up if we removed a black node
     if (removed_color == color::BLACK) {
         if (child) {
-            // child exists — fixup from child
+            // child exists, fixup from child
             delete_fixup(root, child, child->parent);
         } else if (parent) {
-            // child is nullptr (double-black nil) — fixup from parent
+            // child is nullptr (double-black nil), fixup from parent
             delete_fixup(root, nullptr, parent);
         }
-        // else: removed the last node, tree is empty — nothing to fix
+        // else: removed the last node, tree is empty, nothing to fix
     }
 }
 

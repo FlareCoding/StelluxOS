@@ -83,7 +83,7 @@ int32_t hid_driver::probe(usb::device* dev, usb::interface* iface) {
         return -1;
     }
 
-    // GET_REPORT_DESCRIPTOR — HID report descriptor is at interface level
+    // GET_REPORT_DESCRIPTOR, HID report descriptor is at interface level
     int32_t rc = 0;
     uint16_t desc_len = iface->hid_report_desc_length != 0
         ? iface->hid_report_desc_length

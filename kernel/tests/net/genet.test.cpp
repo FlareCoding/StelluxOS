@@ -223,7 +223,7 @@ TEST(genet_regs_test, rx_desc_status_extraction) {
     EXPECT_EQ(status & RX_DESC_RX_ERROR, 0u);
 }
 
-// Key register offsets — verify against known EDK2/FreeBSD values
+// Key register offsets, verify against known EDK2/FreeBSD values
 
 TEST(genet_regs_test, sys_register_offsets) {
     using namespace drivers::genet;

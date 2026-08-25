@@ -106,7 +106,7 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     route_result rt;
     int32_t rt_rc = route_lookup(dst_ip, &rt);
     if (rt_rc != OK) {
-        // No route found — if caller specified an interface, fall back
+        // No route found, if caller specified an interface, fall back
         // to direct delivery on that interface (preserves behavior for
         // callers that set up interfaces without configuring routes).
         if (!iface || !iface->configured) {
@@ -168,7 +168,7 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
 
     string::memcpy(packet + sizeof(ipv4_header), payload, payload_len);
 
-    // Local or loopback delivery — no ARP needed. Use the interface's
+    // Local or loopback delivery, no ARP needed. Use the interface's
     // own MAC as destination (all zeros for lo).
     bool is_loopback_iface = (out_iface->flags & NETIF_LOOPBACK) != 0;
     if (rt.type == route_type::LOCAL || is_loopback_iface) {

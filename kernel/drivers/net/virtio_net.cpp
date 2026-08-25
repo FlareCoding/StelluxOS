@@ -433,7 +433,7 @@ int32_t virtio_net_driver::attach() {
     // Mark device as ready
     write_status(read_status() | VIRTIO_STATUS_DRIVER_OK);
 
-    // Post RX buffers after DRIVER_OK — the virtio spec (§3.1.1) forbids
+    // Post RX buffers after DRIVER_OK, the virtio spec (Section 3.1.1) forbids
     // sending buffer available notifications before DRIVER_OK is set.
     fill_rx_queue();
 
@@ -603,7 +603,7 @@ void virtio_net_driver::run() {
         });
         // Send any protocol-generated responses (e.g. ICMP echo replies)
         // that were queued during RX delivery. This runs at the top level,
-        // so ipv4_send and ARP resolution are safe — no recursion into
+        // so ipv4_send and ARP resolution are safe, no recursion into
         // deliver_rx_batch.
         RUN_ELEVATED(net::drain_deferred_tx());
     }

@@ -167,7 +167,7 @@ __PRIVILEGED_CODE static void switch_to_el1t(uintptr_t sys_stack_top) {
     );
 }
 
-// AP C entry — called from the trampoline after MMU is enabled
+// AP C entry, called from the trampoline after MMU is enabled
 extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     uint32_t cpu_id = static_cast<uint32_t>(logical_id);
 
@@ -390,7 +390,7 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
         cpu::relax();
     }
 
-    // AP did not come online — clean up
+    // AP did not come online, clean up
     vmm::free(stack_base);
     vmm::free(percpu_va);
     return smp::ERR_BOOT_TIMEOUT;

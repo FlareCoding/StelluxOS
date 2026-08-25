@@ -27,7 +27,7 @@ __PRIVILEGED_CODE int32_t init() {
     return OK;
 }
 
-#else // QEMU virt — PL031 RTC
+#else // QEMU virt, PL031 RTC
 
 constexpr uintptr_t PL031_PHYS = 0x09010000;
 constexpr size_t    PL031_SIZE = 0x1000;

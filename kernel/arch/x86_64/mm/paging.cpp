@@ -328,7 +328,7 @@ __PRIVILEGED_CODE static int32_t map_page_2mb(pmm::phys_addr_t root_pt, virt_add
     // Set PDE as 2MB large page (no PT level)
     pde_t* pde = &pd->entries[parts.pd_idx];
     if (pde->present) {
-        // PDE exists — if it points to a PT (not a large page), check if
+        // PDE exists, if it points to a PT (not a large page), check if
         // all 512 PTEs are empty. If so, free the PT and reclaim the entry.
         if (!pde->page_size) {
             auto* pt = static_cast<page_table_t*>(phys_to_virt(pde->phys_addr << 12));
@@ -372,7 +372,7 @@ __PRIVILEGED_CODE static int32_t map_page_1gb(pmm::phys_addr_t root_pt, virt_add
     pdpte_t* pdpte = &pdpt->entries[parts.pdpt_idx];
     if (pdpte->present) {
         if (!pdpte->page_size) {
-            // PDPTE points to a PD — check if all 512 PDEs are empty
+            // PDPTE points to a PD, check if all 512 PDEs are empty
             auto* pd = static_cast<page_directory_t*>(phys_to_virt(pdpte->phys_addr << 12));
             bool all_empty = true;
             for (int i = 0; i < 512; i++) {

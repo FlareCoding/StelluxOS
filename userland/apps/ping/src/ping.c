@@ -352,7 +352,7 @@ int main(int argc, char* argv[]) {
                 elapsed_ms += PING_RECV_POLL_MS;
                 continue;
             }
-            // No data yet — sleep briefly and retry
+            // No data yet, sleep briefly and retry
             struct timespec poll_delay = { .tv_sec = 0,
                                            .tv_nsec = PING_RECV_POLL_MS * 1000000L };
             nanosleep(&poll_delay, NULL);

@@ -6,7 +6,7 @@
 TEST_SUITE(rtl8168_regs_test);
 
 // Descriptor struct sizes
-// Verify agreement with RTL8168B datasheet §6.1 (16 bytes per descriptor)
+// Verify agreement with RTL8168B datasheet Section 6.1 (16 bytes per descriptor)
 
 TEST(rtl8168_regs_test, descriptor_sizes) {
     using namespace drivers::rtl8168;
@@ -15,7 +15,7 @@ TEST(rtl8168_regs_test, descriptor_sizes) {
     EXPECT_EQ(sizeof(rx_desc), 16u);
 }
 
-// Register offsets — verify against RTL8168B datasheet §2.1 MAC Registers
+// Register offsets, verify against RTL8168B datasheet Section 2.1 MAC Registers
 
 TEST(rtl8168_regs_test, mac_register_offsets) {
     using namespace drivers::rtl8168;
@@ -150,7 +150,7 @@ TEST(rtl8168_regs_test, tx_desc_eor_preserves_ring) {
     EXPECT_BITS_SET(opts1, TX_OWN);
 }
 
-// RX descriptor opts1 — command mode (OWN=1)
+// RX descriptor opts1, command mode (OWN=1)
 
 TEST(rtl8168_regs_test, rx_desc_command_mode) {
     using namespace drivers::rtl8168;
@@ -165,7 +165,7 @@ TEST(rtl8168_regs_test, rx_desc_command_mode) {
     EXPECT_BITS_SET(last, RX_EOR);
 }
 
-// RX descriptor opts1 — status mode (OWN=0, after receive)
+// RX descriptor opts1, status mode (OWN=0, after receive)
 
 TEST(rtl8168_regs_test, rx_desc_status_extraction) {
     using namespace drivers::rtl8168;
@@ -194,7 +194,7 @@ TEST(rtl8168_regs_test, chip_version_xid_extraction) {
     using namespace drivers::rtl8168;
 
     // Simulate a TxConfig value for RTL8168B: XID = 0x380
-    // bits [30:28]=011, [26]=1, [23]=1, [22:20]=000 → (0x38 << 20) ignoring bit 26/23
+    // bits [30:28]=011, [26]=1, [23]=1, [22:20]=000 -> (0x38 << 20) ignoring bit 26/23
     // Actually: (TxConfig >> 20) & 0xFCF
     // For 0x380: the raw bits in positions [30:28,26,23,22:20] encode to 0x380 after extraction
 
@@ -262,8 +262,8 @@ TEST(rtl8168_regs_test, phy_bmcr_bits) {
 TEST(rtl8168_regs_test, mtps_values) {
     using namespace drivers::rtl8168;
 
-    // MTPS_NORMAL = 0x0C → 0x0C * 128 = 1536 bytes (covers 1518 frame + CRC)
+    // MTPS_NORMAL = 0x0C -> 0x0C * 128 = 1536 bytes (covers 1518 frame + CRC)
     EXPECT_EQ(static_cast<uint32_t>(MTPS_NORMAL) * 128u, 1536u);
-    // MTPS_JUMBO = 0x3B → 0x3B * 128 = 7552 bytes (covers 7440 jumbo)
+    // MTPS_JUMBO = 0x3B -> 0x3B * 128 = 7552 bytes (covers 7440 jumbo)
     EXPECT_EQ(static_cast<uint32_t>(MTPS_JUMBO) * 128u, 7552u);
 }

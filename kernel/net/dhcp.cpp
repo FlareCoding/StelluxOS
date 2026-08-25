@@ -30,7 +30,7 @@ struct dhcp_rx_context {
     volatile bool active;  // true while DHCP is waiting for packets
 };
 
-// Single static context — only one DHCP exchange at a time.
+// Single static context, only one DHCP exchange at a time.
 // NOT __PRIVILEGED_DATA: both the DHCP client (Ring 3) and the UDP
 // delivery path (Ring 0) access this buffer, so it must be in the
 // unprivileged data section accessible from both privilege levels.
@@ -162,7 +162,7 @@ static int32_t send_dhcp_broadcast(netif* iface, const uint8_t* payload,
         return ERR_INVAL;
     }
 
-    // Use unprivileged heap — callable from Ring 3 (auto-elevates internally)
+    // Use unprivileged heap, callable from Ring 3 (auto-elevates internally)
     auto* frame = static_cast<uint8_t*>(heap::uzalloc(frame_len));
     if (!frame) {
         return ERR_NOMEM;

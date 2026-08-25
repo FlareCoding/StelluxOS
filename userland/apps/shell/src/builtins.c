@@ -4,12 +4,12 @@
 #include <stdlib.h>
 #include <sys/types.h>
 
-/* Error output — always goes to the terminal (fd 1) */
+/* Error output, always goes to the terminal (fd 1) */
 static void shell_write(const char* s) {
     write(1, s, strlen(s));
 }
 
-/* Data output — goes to the specified fd (may be a redirect target) */
+/* Data output, goes to the specified fd (may be a redirect target) */
 static void data_write(int fd, const char* s) {
     write(fd, s, strlen(s));
 }

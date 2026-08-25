@@ -353,7 +353,7 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
                 hs->pending_len = 1;
                 hs->state = 1;
             } else {
-                /* Not a boundary — flush pending \r and this byte */
+                /* Not a boundary, flush pending \r and this byte */
                 flush_pending(hs);
                 write(STDOUT_FILENO, &c, 1);
                 hs->state = 0;
@@ -366,7 +366,7 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
                 hs->pending_len = 3;
                 hs->state = 3;
             } else {
-                /* Not a boundary — flush pending \r\n and this byte */
+                /* Not a boundary, flush pending \r\n and this byte */
                 flush_pending(hs);
                 write(STDOUT_FILENO, &c, 1);
                 hs->state = 0;
@@ -387,7 +387,7 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
                    potential boundary from \r (the byte at pending[2])
                    followed by this new \r. */
                 write(STDOUT_FILENO, hs->pending, 2); /* flush \r\n */
-                /* pending[2] was \r — that's content too since it
+                /* pending[2] was \r, that's content too since it
                    wasn't followed by \n. Flush it. */
                 write(STDOUT_FILENO, "\r", 1);
                 /* Now track the current \r as a new potential start. */
