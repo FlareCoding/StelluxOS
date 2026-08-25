@@ -40,5 +40,8 @@ initrd/usr/
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__/
+
 # DOOM WAD file (downloadable via 'make doom-wad')
 initrd/etc/res/doom/doom1.wad
