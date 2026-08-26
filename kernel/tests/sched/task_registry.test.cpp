@@ -3,7 +3,6 @@
 #include "stlx_unit_test.h"
 #include "sched/task_registry.h"
 #include "sched/task.h"
-#include "common/string.h"
 
 TEST_SUITE(task_registry);
 
@@ -18,9 +17,8 @@ static sched::task s_tasks[MAX_MOCK_TASKS];
 // Zero-initialize a mock task and set its TID. Only the tid and
 // task_registry_link fields matter for registry operations.
 static void init_mock_task(sched::task& t, uint32_t tid) {
-    string::memset(&t, 0, sizeof(sched::task));
+    new (&t) sched::task{};
     t.tid = tid;
-    t.task_registry_link = {};
 }
 
 // Re-initialize the static registry and all mock tasks for a clean test.
