@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "hw/cpu.h"
+#include "sync/atomic.h"
 
 namespace sync {
 
@@ -18,14 +19,16 @@ struct irq_state {
 };
 
 inline void spin_lock(spinlock& lock) {
-    uint16_t ticket = __atomic_fetch_add(&lock.next_ticket, 1, __ATOMIC_RELAXED);
-    while (__atomic_load_n(&lock.now_serving, __ATOMIC_ACQUIRE) != ticket) {
+    uint16_t ticket = atomic_ref<uint16_t>{lock.next_ticket}.fetch_add_relaxed(1);
+
+    atomic_ref<uint16_t> serving{lock.now_serving};
+    while (serving.load_acquire() != ticket) {
         cpu::relax();
     }
 }
 
 inline void spin_unlock(spinlock& lock) {
-    __atomic_add_fetch(&lock.now_serving, 1, __ATOMIC_RELEASE);
+    atomic_ref<uint16_t>{lock.now_serving}.fetch_add_release(1);
     cpu::send_event();
 }
 

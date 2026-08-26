@@ -1,4 +1,5 @@
 #include "sync/futex.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -65,9 +66,8 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     // Re-read the futex word under the bucket lock. The page is already
     // validated/faulted by the copy_from_user above, so a direct read
     // is safe here. This atomic check-and-enqueue prevents lost wakeups.
-    uint32_t current_val;
-    string::memcpy(&current_val, reinterpret_cast<const void*>(uaddr),
-                   sizeof(uint32_t));
+    uint32_t* word = reinterpret_cast<uint32_t*>(uaddr);
+    uint32_t current_val = atomic_ref<uint32_t>(*word).load_relaxed();
 
     if (current_val != expected) {
         spin_unlock_irqrestore(bucket->lock, irq);
