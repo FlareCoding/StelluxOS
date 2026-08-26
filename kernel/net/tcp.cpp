@@ -9,6 +9,7 @@
 #include "common/string.h"
 #include "common/ring_buffer.h"
 #include "mm/heap.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "sync/poll.h"
 #include "fs/fstypes.h"
@@ -27,12 +28,12 @@ __PRIVILEGED_DATA static sync::spinlock g_tcp_sock_lock = sync::SPINLOCK_INIT;
 
 // Simple ISN generator. A real implementation uses a clock-based scheme
 // for security (RFC 6528), but a monotonic counter is correct for now.
-__PRIVILEGED_DATA static volatile uint32_t g_tcp_isn_counter = 1000;
+__PRIVILEGED_DATA static sync::atomic<uint32_t> g_tcp_isn_counter{1000};
 
 constexpr size_t TCP_MSS = ETH_MTU - sizeof(ipv4_header) - sizeof(tcp_header);
 
 static uint32_t tcp_generate_isn() {
-    return __atomic_fetch_add(&g_tcp_isn_counter, 64000, __ATOMIC_RELAXED);
+    return g_tcp_isn_counter.fetch_add_relaxed(64000);
 }
 
 constexpr uint16_t TCP_DEFAULT_WINDOW = 8192;
@@ -42,10 +43,10 @@ constexpr size_t TCP_RX_BUF_CAPACITY = 16384;
 constexpr uint16_t TCP_PORT_EPHEMERAL_MIN = 49152;
 constexpr uint16_t TCP_PORT_EPHEMERAL_MAX = 65535;
 
-__PRIVILEGED_DATA static volatile uint32_t g_tcp_ephemeral_next = TCP_PORT_EPHEMERAL_MIN;
+__PRIVILEGED_DATA static sync::atomic<uint32_t> g_tcp_ephemeral_next{TCP_PORT_EPHEMERAL_MIN};
 
 static uint16_t tcp_alloc_ephemeral_port() {
-    uint32_t port = __atomic_fetch_add(&g_tcp_ephemeral_next, 1, __ATOMIC_RELAXED);
+    uint32_t port = g_tcp_ephemeral_next.fetch_add_relaxed(1);
     uint32_t range = TCP_PORT_EPHEMERAL_MAX - TCP_PORT_EPHEMERAL_MIN + 1;
     return static_cast<uint16_t>(
         TCP_PORT_EPHEMERAL_MIN + (port - TCP_PORT_EPHEMERAL_MIN) % range);

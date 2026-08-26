@@ -1,4 +1,5 @@
 #include "irq/irq.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "dynpriv/dynpriv.h"
 
@@ -29,7 +30,7 @@ __PRIVILEGED_CODE int32_t register_handler(uint32_t irq, irq_handler_fn fn,
         result = ERR_BUSY;
     } else {
         g_irq_table[irq].context = context;
-        __atomic_thread_fence(__ATOMIC_RELEASE);
+        sync::atomic_fence_release();
         g_irq_table[irq].fn = fn;
     }
 
@@ -54,7 +55,7 @@ __PRIVILEGED_CODE bool dispatch(uint32_t irq) {
     }
 
     irq_handler_fn fn = g_irq_table[irq].fn;
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    sync::atomic_fence_acquire();
 
     if (fn) {
         fn(irq, g_irq_table[irq].context);

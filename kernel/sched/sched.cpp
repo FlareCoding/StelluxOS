@@ -113,7 +113,7 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
     if (stage == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
         for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
             smp::cpu_info* info = smp::get_cpu_info(cpu);
-            if (!info || __atomic_load_n(&info->state, __ATOMIC_ACQUIRE) != smp::CPU_ONLINE) {
+            if (!info || info->state.load_acquire() != smp::CPU_ONLINE) {
                 t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] = TLB_SYNC_CPU_IGNORED;
                 continue;
             }
@@ -319,7 +319,7 @@ __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
     uint32_t seen = 0;
     for (uint32_t i = 0; i < total; i++) {
         smp::cpu_info* info = smp::get_cpu_info(i);
-        if (info && __atomic_load_n(&info->state, __ATOMIC_ACQUIRE) == smp::CPU_ONLINE) {
+        if (info && info->state.load_acquire() == smp::CPU_ONLINE) {
             if (seen == target) return i;
             seen++;
         }

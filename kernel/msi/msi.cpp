@@ -1,13 +1,14 @@
 #include "msi/msi.h"
 #include "arch/arch_msi.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "common/logging.h"
 
 namespace msi {
 
 struct handler_slot {
-    handler_fn fn;
-    void*      context;
+    sync::atomic<handler_fn> fn;
+    void*                    context;
 };
 
 __PRIVILEGED_BSS static handler_slot g_slots[MAX_VECTORS];
@@ -126,8 +127,7 @@ __PRIVILEGED_CODE int32_t free(uint32_t base, uint32_t count) {
     for (uint32_t i = base; i < base + count; i++) {
         bitmap_clear(i);
         g_slots[i].context = nullptr;
-        __atomic_store_n(&g_slots[i].fn, static_cast<handler_fn>(nullptr),
-                         __ATOMIC_RELEASE);
+        g_slots[i].fn.store_release(nullptr);
     }
 
     return OK;
@@ -144,7 +144,7 @@ __PRIVILEGED_CODE int32_t set_handler(uint32_t vector,
 
     sync::irq_lock_guard guard(g_lock);
     g_slots[vector].context = context;
-    __atomic_store_n(&g_slots[vector].fn, fn, __ATOMIC_RELEASE);
+    g_slots[vector].fn.store_release(fn);
     return OK;
 }
 
@@ -158,8 +158,7 @@ __PRIVILEGED_CODE void clear_handler(uint32_t vector) {
 
     sync::irq_lock_guard guard(g_lock);
     g_slots[vector].context = nullptr;
-    __atomic_store_n(&g_slots[vector].fn, static_cast<handler_fn>(nullptr),
-                     __ATOMIC_RELEASE);
+    g_slots[vector].fn.store_release(nullptr);
 }
 
 /**
@@ -169,7 +168,7 @@ __PRIVILEGED_CODE void dispatch(uint32_t vector) {
     if (vector >= g_capacity) {
         return;
     }
-    handler_fn fn = __atomic_load_n(&g_slots[vector].fn, __ATOMIC_ACQUIRE);
+    handler_fn fn = g_slots[vector].fn.load_acquire();
     if (fn) {
         fn(vector, g_slots[vector].context);
     }

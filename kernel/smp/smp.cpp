@@ -26,9 +26,9 @@ __PRIVILEGED_CODE int32_t init() {
     uint32_t ap_count = 0;
     for (uint32_t i = 0; i < g_cpu_count; i++) {
         if (g_cpus[i].is_bsp) {
-            g_cpus[i].state = CPU_ONLINE;
+            g_cpus[i].state.store_relaxed(CPU_ONLINE);
         } else {
-            g_cpus[i].state = CPU_OFFLINE;
+            g_cpus[i].state.store_relaxed(CPU_OFFLINE);
             ap_count++;
         }
     }
@@ -50,14 +50,14 @@ __PRIVILEGED_CODE int32_t init() {
     for (uint32_t i = 0; i < g_cpu_count; i++) {
         if (g_cpus[i].is_bsp) continue;
 
-        __atomic_store_n(&g_cpus[i].state, CPU_BOOTING, __ATOMIC_RELEASE);
+        g_cpus[i].state.store_release(CPU_BOOTING);
 
         rc = arch::smp_boot_cpu(g_cpus[i]);
         if (rc == OK) {
             log::info("smp: CPU %u online",
                       g_cpus[i].logical_id);
         } else {
-            __atomic_store_n(&g_cpus[i].state, CPU_OFFLINE, __ATOMIC_RELEASE);
+            g_cpus[i].state.store_release(CPU_OFFLINE);
             log::warn("smp: CPU %u failed to start (hw_id 0x%lx)",
                       g_cpus[i].logical_id, g_cpus[i].hw_id);
         }
@@ -76,7 +76,7 @@ uint32_t cpu_count() {
 uint32_t online_count() {
     uint32_t count = 0;
     for (uint32_t i = 0; i < g_cpu_count; i++) {
-        if (__atomic_load_n(&g_cpus[i].state, __ATOMIC_ACQUIRE) == CPU_ONLINE) {
+        if (g_cpus[i].state.load_acquire() == CPU_ONLINE) {
             count++;
         }
     }

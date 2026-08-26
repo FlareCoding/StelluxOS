@@ -10,14 +10,14 @@
 #include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
+#include "sync/atomic.h"
 
 namespace net {
 
-__PRIVILEGED_DATA static volatile uint32_t g_ipv4_id_counter = 0;
+__PRIVILEGED_DATA static sync::atomic<uint32_t> g_ipv4_id_counter;
 
 static uint16_t next_ipv4_id() {
-    return static_cast<uint16_t>(
-        __atomic_fetch_add(&g_ipv4_id_counter, 1, __ATOMIC_RELAXED));
+    return static_cast<uint16_t>(g_ipv4_id_counter.fetch_add_relaxed(1));
 }
 
 void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {

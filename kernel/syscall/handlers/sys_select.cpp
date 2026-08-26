@@ -97,7 +97,7 @@ __PRIVILEGED_CODE static int64_t do_select(
         if (pollfds[i].revents) ready++;
     }
 
-    if (__atomic_load_n(&pt.error, __ATOMIC_ACQUIRE)) {
+    if (pt.error.load_acquire()) {
         sync::poll_cleanup(pt);
         heap::kfree(fdmap);
         heap::kfree(pollfds);

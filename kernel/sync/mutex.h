@@ -1,6 +1,7 @@
 #ifndef STELLUX_SYNC_MUTEX_H
 #define STELLUX_SYNC_MUTEX_H
 
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 
@@ -8,12 +9,12 @@ namespace sync {
 
 struct mutex {
     spinlock lock;
-    sched::task* owner;
+    atomic<sched::task*> owner;
     wait_queue wq;
 
     void init() {
         lock = SPINLOCK_INIT;
-        owner = nullptr;
+        owner.store_relaxed(nullptr);
         wq.init();
     }
 };
@@ -44,7 +45,7 @@ __PRIVILEGED_CODE void mutex_unlock(mutex& m);
  * may be stale if checked without external synchronization.
  */
 inline bool mutex_is_locked(const mutex& m) {
-    return __atomic_load_n(&m.owner, __ATOMIC_RELAXED) != nullptr;
+    return m.owner.load_relaxed() != nullptr;
 }
 
 } // namespace sync

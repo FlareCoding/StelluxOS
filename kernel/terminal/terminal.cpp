@@ -12,6 +12,7 @@
 #include "fs/devfs/devfs.h"
 #include "mm/heap.h"
 #include "mm/uaccess.h"
+#include "sync/atomic.h"
 #include "sync/poll.h"
 
 namespace terminal {
@@ -21,7 +22,7 @@ constexpr size_t INPUT_RING_CAPACITY = 4096;
 __PRIVILEGED_BSS static struct {
     ring_buffer* input_rb;
     line_discipline ld;
-    uint32_t fg_group; // foreground process group, 0 = none
+    sync::atomic<uint32_t> fg_group; // foreground process group, 0 = none
 } g_console;
 
 __PRIVILEGED_CODE static void serial_echo(void* ctx, const uint8_t* buf, size_t len) {
@@ -36,7 +37,7 @@ __PRIVILEGED_DATA static const echo_target g_serial_echo = {
 
 __PRIVILEGED_CODE static void console_signal_fn(void* ctx, uint32_t sig) {
     (void)ctx;
-    uint32_t fg = __atomic_load_n(&g_console.fg_group, __ATOMIC_ACQUIRE);
+    uint32_t fg = g_console.fg_group.load_acquire();
     if (fg) {
         (void)signals::send_to_group_id(fg, sig);
     }
@@ -147,8 +148,7 @@ int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
     if (cmd == TIOCGPGRP) {
         int32_t g = 0;
         RUN_ELEVATED({
-            g = static_cast<int32_t>(
-                __atomic_load_n(&g_console.fg_group, __ATOMIC_ACQUIRE));
+            g = static_cast<int32_t>(g_console.fg_group.load_acquire());
         });
         return mm::uaccess::copy_to_user(
             reinterpret_cast<void*>(arg), &g, sizeof(g)) == mm::uaccess::OK
@@ -170,8 +170,7 @@ int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
                     static_cast<uint32_t>(g), 0) != signals::OK) {
                 result = fs::ERR_INVAL;
             } else {
-                __atomic_store_n(&g_console.fg_group, static_cast<uint32_t>(g),
-                                 __ATOMIC_RELEASE);
+                g_console.fg_group.store_release(static_cast<uint32_t>(g));
             }
         });
         return result;

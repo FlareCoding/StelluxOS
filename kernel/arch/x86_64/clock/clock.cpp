@@ -6,13 +6,14 @@
 #include "hw/rtc.h"
 #include "hw/cpu_features.h"
 #include "common/logging.h"
+#include "sync/atomic.h"
 
 namespace clock {
 
 static uint64_t g_tsc_freq;
 static uint64_t g_mult;
 static uint32_t g_shift;
-static bool g_calibrated;
+static sync::atomic<bool> g_calibrated;
 static uint64_t g_boot_realtime_ns;
 
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
@@ -92,7 +93,7 @@ __PRIVILEGED_CODE int32_t init() {
 
     compute_mult_shift(g_tsc_freq, &g_mult, &g_shift);
     g_boot_realtime_ns = rtc::boot_unix_ns();
-    __atomic_store_n(&g_calibrated, true, __ATOMIC_RELEASE);
+    g_calibrated.store_release(true);
 
     log::info("clock: TSC freq=%lu Hz, mult=%lu shift=%u%s",
               g_tsc_freq, g_mult, g_shift,
@@ -105,14 +106,14 @@ __PRIVILEGED_CODE int32_t init() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t init_ap() {
-    if (!__atomic_load_n(&g_calibrated, __ATOMIC_ACQUIRE)) {
+    if (!g_calibrated.load_acquire()) {
         return ERR;
     }
     return OK;
 }
 
 uint64_t now_ns() {
-    if (!__atomic_load_n(&g_calibrated, __ATOMIC_ACQUIRE)) {
+    if (!g_calibrated.load_acquire()) {
         return 0;
     }
     uint64_t ticks = tsc::rdtsc();

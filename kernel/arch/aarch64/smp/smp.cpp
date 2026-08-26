@@ -187,7 +187,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
                          kva::tag::privileged_stack,
                          sys_stack_base, sys_stack_top) != vmm::OK) {
         smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+        if (info) info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("wfi"); }
     }
 
@@ -195,7 +195,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     if (sched::init_ap(cpu_id, my_stack_top, sys_stack_top) != 0) {
         smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+        if (info) info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("wfi"); }
     }
 
@@ -211,7 +211,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     if (clock::init_ap() != clock::OK || timer::init_ap(100) != timer::OK) {
         smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+        if (info) info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("wfi"); }
     }
 
@@ -220,7 +220,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     }
 
     smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-    __atomic_store_n(&info->state, smp::CPU_ONLINE, __ATOMIC_RELEASE);
+    info->state.store_release(smp::CPU_ONLINE);
 
     while (true) { cpu::halt(); }
 }
@@ -243,7 +243,7 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
 
         cpus[count].logical_id = count;
         cpus[count].hw_id = madt.giccs[i].mpidr;
-        cpus[count].state = smp::CPU_OFFLINE;
+        cpus[count].state.store_relaxed(smp::CPU_OFFLINE);
         cpus[count].is_bsp = (entry_mpidr == current_mpidr);
         count++;
     }
@@ -383,7 +383,7 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
     uint64_t timeout_ticks = (freq * AP_BOOT_TIMEOUT_MS) / 1000;
 
     while (hwtimer::read_cntpct() - start < timeout_ticks) {
-        if (__atomic_load_n(&cpu.state, __ATOMIC_ACQUIRE) == smp::CPU_ONLINE) {
+        if (cpu.state.load_acquire() == smp::CPU_ONLINE) {
             return smp::OK;
         }
         cpu::relax();
