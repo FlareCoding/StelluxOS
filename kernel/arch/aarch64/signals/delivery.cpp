@@ -190,7 +190,7 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
     // same rule every other delivery site applies
     if (!self || !self->group ||
         (self->exec.flags & sched::TASK_FLAG_ELEVATED) ||
-        self->state == sched::TASK_STATE_DEAD) {
+        self->state.load_relaxed() == sched::TASK_STATE_DEAD) {
         return;
     }
 

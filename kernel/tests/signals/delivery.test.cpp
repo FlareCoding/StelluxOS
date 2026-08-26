@@ -51,7 +51,7 @@ static void install_handler(uint32_t sig) {
 TEST(signal_delivery, selects_pending_handled_signal) {
     uint32_t sig = 0;
     install_handler(signals::SIGUSR1);
-    g_leader->sig.pending |= signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending.fetch_or_relaxed(signals::sig_bit(signals::SIGUSR1));
     RUN_ELEVATED({ sig = signals::next_deliverable(g_leader); });
     EXPECT_EQ(sig, signals::SIGUSR1);
 }
@@ -60,14 +60,14 @@ TEST(signal_delivery, ignores_default_and_blocked_signals) {
     uint32_t sig = 0;
 
     // A pending signal left at its default action is not for a handler
-    g_leader->sig.pending |= signals::sig_bit(signals::SIGTERM);
+    g_leader->sig.pending.fetch_or_relaxed(signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({ sig = signals::next_deliverable(g_leader); });
     EXPECT_EQ(sig, 0U);
 
     // A handled signal that is blocked is not deliverable
     install_handler(signals::SIGUSR1);
-    g_leader->sig.pending |= signals::sig_bit(signals::SIGUSR1);
-    g_leader->sig.blocked |= signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending.fetch_or_relaxed(signals::sig_bit(signals::SIGUSR1));
+    g_leader->sig.blocked.fetch_or_relaxed(signals::sig_bit(signals::SIGUSR1));
     RUN_ELEVATED({ sig = signals::next_deliverable(g_leader); });
     EXPECT_EQ(sig, 0U);
 }
@@ -78,9 +78,9 @@ TEST(signal_delivery, selects_lowest_handled_signal) {
     install_handler(signals::SIGUSR2); // 12
 
     // A default-action SIGTERM pending alongside must not win over a handler
-    g_leader->sig.pending |= signals::sig_bit(signals::SIGUSR2);
-    g_leader->sig.pending |= signals::sig_bit(signals::SIGUSR1);
-    g_leader->sig.pending |= signals::sig_bit(signals::SIGTERM);
+    g_leader->sig.pending.fetch_or_relaxed(signals::sig_bit(signals::SIGUSR2));
+    g_leader->sig.pending.fetch_or_relaxed(signals::sig_bit(signals::SIGUSR1));
+    g_leader->sig.pending.fetch_or_relaxed(signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({ sig = signals::next_deliverable(g_leader); });
     EXPECT_EQ(sig, signals::SIGUSR1);
 }

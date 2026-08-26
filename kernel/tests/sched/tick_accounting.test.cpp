@@ -48,7 +48,7 @@ static void spinner_task_fn(void*) {
     spin_for_ns(SPIN_NS);
     RUN_ELEVATED({
         sched::task* self = sched::current();
-        uint64_t ticks = __atomic_load_n(&self->run_ticks, __ATOMIC_RELAXED);
+        uint64_t ticks = self->run_ticks.load_relaxed();
         __atomic_store_n(&g_spinner_ticks, static_cast<uint32_t>(ticks),
                          __ATOMIC_RELEASE);
     });

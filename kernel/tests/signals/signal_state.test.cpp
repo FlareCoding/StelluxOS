@@ -60,7 +60,7 @@ TEST(signal_state, set_blocked_block_unblock_setmask) {
     });
     EXPECT_EQ(rc, signals::OK);
     EXPECT_EQ(old, 0ULL);
-    EXPECT_EQ(g_leader->sig.blocked, set);
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), set);
 
     signals::sig_set_t unblock = signals::sig_bit(signals::SIGTERM);
     RUN_ELEVATED({
@@ -68,14 +68,14 @@ TEST(signal_state, set_blocked_block_unblock_setmask) {
     });
     EXPECT_EQ(rc, signals::OK);
     EXPECT_EQ(old, set);
-    EXPECT_EQ(g_leader->sig.blocked, signals::sig_bit(signals::SIGINT));
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), signals::sig_bit(signals::SIGINT));
 
     signals::sig_set_t mask = signals::sig_bit(signals::SIGUSR1);
     RUN_ELEVATED({
         rc = signals::set_blocked(g_leader, signals::SIG_SETMASK, &mask, nullptr);
     });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_leader->sig.blocked, mask);
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), mask);
 }
 
 TEST(signal_state, set_blocked_never_blocks_kill_stop) {
@@ -85,14 +85,14 @@ TEST(signal_state, set_blocked_never_blocks_kill_stop) {
         rc = signals::set_blocked(g_leader, signals::SIG_SETMASK, &all, nullptr);
     });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_BITS_CLEAR(g_leader->sig.blocked, signals::UNBLOCKABLE_MASK);
-    EXPECT_EQ(g_leader->sig.blocked, ~0ULL & ~signals::UNBLOCKABLE_MASK);
+    EXPECT_BITS_CLEAR(g_leader->sig.blocked.load_relaxed(), signals::UNBLOCKABLE_MASK);
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), ~0ULL & ~signals::UNBLOCKABLE_MASK);
 }
 
 TEST(signal_state, set_blocked_query_only_ignores_how) {
     int32_t rc = 0;
     signals::sig_set_t old = ~0ULL;
-    g_leader->sig.blocked = signals::sig_bit(signals::SIGINT);
+    g_leader->sig.blocked .store_relaxed(signals::sig_bit(signals::SIGINT));
 
     // set == nullptr: how is not significant (POSIX)
     RUN_ELEVATED({
@@ -100,7 +100,7 @@ TEST(signal_state, set_blocked_query_only_ignores_how) {
     });
     EXPECT_EQ(rc, signals::OK);
     EXPECT_EQ(old, signals::sig_bit(signals::SIGINT));
-    EXPECT_EQ(g_leader->sig.blocked, signals::sig_bit(signals::SIGINT));
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), signals::sig_bit(signals::SIGINT));
 }
 
 TEST(signal_state, set_blocked_rejects_bad_how) {
@@ -110,7 +110,7 @@ TEST(signal_state, set_blocked_rejects_bad_how) {
         rc = signals::set_blocked(g_leader, 99, &set, nullptr);
     });
     EXPECT_EQ(rc, signals::ERR_INVAL);
-    EXPECT_EQ(g_leader->sig.blocked, 0ULL);
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), 0ULL);
 }
 
 TEST(signal_state, set_action_roundtrip) {
@@ -206,8 +206,8 @@ TEST(signal_state, dfl_on_default_ignore_signal_discards_pending) {
     const signals::sig_set_t sigchld = signals::sig_bit(signals::SIGCHLD);
     const signals::sig_set_t sigtstp = signals::sig_bit(signals::SIGTSTP);
 
-    g_tg->sig.shared_pending = sigchld | sigtstp;
-    g_leader->sig.pending    = sigchld | sigtstp;
+    g_tg->sig.shared_pending .store_relaxed(sigchld | sigtstp);
+    g_leader->sig.pending    .store_relaxed(sigchld | sigtstp);
 
     signals::k_sigaction act = {};
     act.handler = signals::SIG_DFL;
@@ -221,17 +221,17 @@ TEST(signal_state, dfl_on_default_ignore_signal_discards_pending) {
     EXPECT_EQ(rc, signals::OK);
 
     // Default-ignore SIGCHLD is discarded, stop-class SIGTSTP is not
-    EXPECT_EQ(g_tg->sig.shared_pending, sigtstp);
-    EXPECT_EQ(g_leader->sig.pending, sigtstp);
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), sigtstp);
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), sigtstp);
 }
 
 TEST(signal_state, sig_ign_discards_pending) {
     const signals::sig_set_t sigusr1 = signals::sig_bit(signals::SIGUSR1);
     const signals::sig_set_t sigterm = signals::sig_bit(signals::SIGTERM);
 
-    g_tg->sig.shared_pending = sigusr1 | sigterm;
-    g_leader->sig.pending    = sigusr1 | sigterm;
-    g_thread->sig.pending    = sigusr1 | sigterm;
+    g_tg->sig.shared_pending .store_relaxed(sigusr1 | sigterm);
+    g_leader->sig.pending    .store_relaxed(sigusr1 | sigterm);
+    g_thread->sig.pending    .store_relaxed(sigusr1 | sigterm);
 
     signals::k_sigaction act = {};
     act.handler = signals::SIG_IGN;
@@ -242,9 +242,9 @@ TEST(signal_state, sig_ign_discards_pending) {
     EXPECT_EQ(rc, signals::OK);
 
     // SIGUSR1 discarded everywhere, SIGTERM untouched
-    EXPECT_EQ(g_tg->sig.shared_pending, sigterm);
-    EXPECT_EQ(g_leader->sig.pending, sigterm);
-    EXPECT_EQ(g_thread->sig.pending, sigterm);
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), sigterm);
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), sigterm);
+    EXPECT_EQ(g_thread->sig.pending.load_relaxed(), sigterm);
 }
 
 TEST(signal_state, pending_blocked_set_combines_sets) {
@@ -252,9 +252,9 @@ TEST(signal_state, pending_blocked_set_combines_sets) {
     const signals::sig_set_t sigusr1 = signals::sig_bit(signals::SIGUSR1);
     const signals::sig_set_t sigterm = signals::sig_bit(signals::SIGTERM);
 
-    g_leader->sig.pending     = sigint;
-    g_tg->sig.shared_pending  = sigusr1 | sigterm;
-    g_leader->sig.blocked     = sigint | sigusr1;
+    g_leader->sig.pending     .store_relaxed(sigint);
+    g_tg->sig.shared_pending  .store_relaxed(sigusr1 | sigterm);
+    g_leader->sig.blocked     .store_relaxed(sigint | sigusr1);
 
     signals::sig_set_t result = 0;
     RUN_ELEVATED({
@@ -279,8 +279,8 @@ static void install_handler(uint32_t sig, uint64_t flags,
 TEST(signal_state, take_deliverable_consumes_and_masks) {
     const signals::sig_set_t handler_mask = signals::sig_bit(signals::SIGUSR2);
     install_handler(signals::SIGUSR1, 0, handler_mask);
-    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
-    g_leader->sig.blocked = signals::sig_bit(signals::SIGTERM);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGUSR1));
+    g_leader->sig.blocked .store_relaxed(signals::sig_bit(signals::SIGTERM));
 
     uint32_t sig = 0;
     signals::k_sigaction act = {};
@@ -293,19 +293,19 @@ TEST(signal_state, take_deliverable_consumes_and_masks) {
     EXPECT_TRUE(taken);
     EXPECT_EQ(sig, signals::SIGUSR1);
     EXPECT_EQ(act.handler, 0x400000UL);
-    EXPECT_EQ(g_leader->sig.pending, 0ULL);
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), 0ULL);
     EXPECT_EQ(old_blocked, signals::sig_bit(signals::SIGTERM));
 
     // The handler runs with sa_mask plus its own signal on top of old_blocked
-    EXPECT_EQ(g_leader->sig.blocked, signals::sig_bit(signals::SIGTERM)
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), signals::sig_bit(signals::SIGTERM)
                                    | handler_mask
                                    | signals::sig_bit(signals::SIGUSR1));
 }
 
 TEST(signal_state, take_deliverable_prefers_thread_set) {
     install_handler(signals::SIGUSR1, 0, 0);
-    g_leader->sig.pending    = signals::sig_bit(signals::SIGUSR1);
-    g_tg->sig.shared_pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending    .store_relaxed(signals::sig_bit(signals::SIGUSR1));
+    g_tg->sig.shared_pending .store_relaxed(signals::sig_bit(signals::SIGUSR1));
 
     uint32_t sig = 0;
     signals::k_sigaction act = {};
@@ -316,16 +316,16 @@ TEST(signal_state, take_deliverable_prefers_thread_set) {
     });
 
     EXPECT_TRUE(taken);
-    EXPECT_EQ(g_leader->sig.pending, 0ULL);
-    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGUSR1));
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), 0ULL);
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGUSR1));
 }
 
 TEST(signal_state, take_deliverable_lowest_handled_first) {
     install_handler(signals::SIGUSR1, 0, 0);
     install_handler(signals::SIGUSR2, 0, 0);
-    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1)
-                          | signals::sig_bit(signals::SIGUSR2);
-    g_leader->sig.blocked = 0;
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGUSR1)
+                          | signals::sig_bit(signals::SIGUSR2));
+    g_leader->sig.blocked .store_relaxed(0);
 
     uint32_t sig = 0;
     signals::k_sigaction act = {};
@@ -338,18 +338,18 @@ TEST(signal_state, take_deliverable_lowest_handled_first) {
     EXPECT_EQ(sig, signals::SIGUSR1);
 
     // Reset the mask the first take installed, then the next one follows
-    g_leader->sig.blocked = 0;
+    g_leader->sig.blocked .store_relaxed(0);
     RUN_ELEVATED({
         taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
     });
     EXPECT_TRUE(taken);
     EXPECT_EQ(sig, signals::SIGUSR2);
-    EXPECT_EQ(g_leader->sig.pending, 0ULL);
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), 0ULL);
 }
 
 TEST(signal_state, take_deliverable_nodefer_leaves_signal_unblocked) {
     install_handler(signals::SIGUSR1, signals::SA_NODEFER, 0);
-    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGUSR1));
 
     uint32_t sig = 0;
     signals::k_sigaction act = {};
@@ -360,12 +360,12 @@ TEST(signal_state, take_deliverable_nodefer_leaves_signal_unblocked) {
     });
 
     EXPECT_TRUE(taken);
-    EXPECT_EQ(g_leader->sig.blocked, 0ULL);
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), 0ULL);
 }
 
 TEST(signal_state, take_deliverable_resethand_restores_default) {
     install_handler(signals::SIGUSR1, signals::SA_RESETHAND, 0);
-    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGUSR1));
 
     uint32_t sig = 0;
     signals::k_sigaction act = {};
@@ -384,7 +384,7 @@ TEST(signal_state, take_deliverable_resethand_restores_default) {
 TEST(signal_state, untake_deliverable_restores_state) {
     install_handler(signals::SIGUSR1, signals::SA_RESETHAND,
                     signals::sig_bit(signals::SIGUSR2));
-    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGUSR1));
 
     uint32_t sig = 0;
     signals::k_sigaction act = {};
@@ -394,7 +394,7 @@ TEST(signal_state, untake_deliverable_restores_state) {
         taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
     });
     ASSERT_TRUE(taken);
-    EXPECT_EQ(g_leader->sig.pending, 0ULL);
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), 0ULL);
     EXPECT_EQ(g_tg->sig.actions[signals::SIGUSR1 - 1].handler, signals::SIG_DFL);
 
     // A deferred delivery puts the signal, the mask, and the one-shot
@@ -402,8 +402,8 @@ TEST(signal_state, untake_deliverable_restores_state) {
     RUN_ELEVATED({
         signals::untake_deliverable(g_leader, sig, &act, old_blocked);
     });
-    EXPECT_EQ(g_leader->sig.pending, signals::sig_bit(signals::SIGUSR1));
-    EXPECT_EQ(g_leader->sig.blocked, 0ULL);
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGUSR1));
+    EXPECT_EQ(g_leader->sig.blocked.load_relaxed(), 0ULL);
     EXPECT_EQ(g_tg->sig.actions[signals::SIGUSR1 - 1].handler, 0x400000UL);
 }
 
@@ -420,20 +420,20 @@ TEST(signal_state, take_deliverable_skips_blocked_and_unhandled) {
     EXPECT_FALSE(taken);
 
     // Pending without a handler stays for the fatal path
-    g_leader->sig.pending = signals::sig_bit(signals::SIGTERM);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({
         taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
     });
     EXPECT_FALSE(taken);
-    EXPECT_EQ(g_leader->sig.pending, signals::sig_bit(signals::SIGTERM));
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
 
     // A blocked handled signal is not deliverable
     install_handler(signals::SIGUSR1, 0, 0);
-    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
-    g_leader->sig.blocked = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGUSR1));
+    g_leader->sig.blocked .store_relaxed(signals::sig_bit(signals::SIGUSR1));
     RUN_ELEVATED({
         taken = signals::take_deliverable(g_leader, &sig, &act, &old_blocked);
     });
     EXPECT_FALSE(taken);
-    EXPECT_EQ(g_leader->sig.pending, signals::sig_bit(signals::SIGUSR1));
+    EXPECT_EQ(g_leader->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGUSR1));
 }

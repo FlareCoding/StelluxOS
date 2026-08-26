@@ -358,7 +358,7 @@ static void kill_poll_fn(void*) {
         __atomic_store_n(&g_kill_sched_linked,
             sched::current()->sched_link.is_linked() ? 1 : 0, __ATOMIC_RELEASE);
         __atomic_store_n(&g_kill_state_after_wait,
-            sched::current()->state, __ATOMIC_RELEASE);
+            sched::current()->state.load_relaxed(), __ATOMIC_RELEASE);
 
         sync::poll_cleanup(pt);
     });

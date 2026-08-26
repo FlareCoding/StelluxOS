@@ -2,6 +2,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sched/task_registry.h"
+#include "sync/atomic.h"
 #include "resource/handle_table.h"
 #include "resource/resource.h"
 #include "resource/providers/proc_provider.h"
@@ -43,7 +44,7 @@ static bool group_exists(uint32_t group_id) {
     sync::irq_state irq = sched::g_task_registry.lock();
     sched::g_task_registry.for_each_locked([&](sched::task& t) {
         if (t.group &&
-            __atomic_load_n(&t.group->group_id, __ATOMIC_ACQUIRE) == group_id) {
+            t.group->group_id.load_acquire() == group_id) {
             found = true;
         }
     });
@@ -84,11 +85,10 @@ static int64_t regroup_unstarted_child(sched::task* caller, uint32_t pid,
         }
 
         int64_t result = 0;
-        if (child->state != sched::TASK_STATE_CREATED) {
+        if (child->state.load_relaxed() != sched::TASK_STATE_CREATED) {
             result = syscall::EACCES;
         } else {
-            __atomic_store_n(&child->group->group_id, group_id,
-                             __ATOMIC_RELEASE);
+            child->group->group_id.store_release(group_id);
         }
         sync::spin_unlock_irqrestore(pr->lock, irq);
         resource::resource_release(obj);
@@ -219,9 +219,10 @@ DEFINE_SYSCALL1(exit_group, status) {
             ((static_cast<uint32_t>(status) & 0xFF) << 8);
 
         uint32_t expected = 0;
-        __atomic_compare_exchange_n(&tg->group_exit_status, &expected,
-                                    packed, false, __ATOMIC_ACQ_REL,
-                                    __ATOMIC_ACQUIRE);
+        if (!tg->group_exit_status.cmpxchg_strong_acq_rel(expected, packed)) {
+            // Acquire pairs with the winning store that recorded the status.
+            sync::atomic_fence_acquire();
+        }
 
         // A non leader forces the leader down, the leader's exit then
         // reaps every remaining thread including this one
@@ -304,7 +305,7 @@ DEFINE_SYSCALL2(setpgid, u_pid, u_pgid) {
     }
 
     if (target_pid == caller->group->pid) {
-        __atomic_store_n(&caller->group->group_id, group_id, __ATOMIC_RELEASE);
+        caller->group->group_id.store_release(group_id);
         return 0;
     }
 
@@ -319,7 +320,7 @@ DEFINE_SYSCALL1(getpgid, u_pid) {
         if (!caller->group) {
             return syscall::ESRCH;
         }
-        return __atomic_load_n(&caller->group->group_id, __ATOMIC_ACQUIRE);
+        return caller->group->group_id.load_acquire();
     }
 
     if (pid < 0 || pid > TASK_ID_LIMIT) {
@@ -330,7 +331,7 @@ DEFINE_SYSCALL1(getpgid, u_pid) {
     sync::irq_state irq = sched::g_task_registry.lock();
     sched::task* t = sched::g_task_registry.find_locked(static_cast<uint32_t>(pid));
     if (t && t->group) {
-        result = __atomic_load_n(&t->group->group_id, __ATOMIC_ACQUIRE);
+        result = t->group->group_id.load_acquire();
     }
     sched::g_task_registry.unlock(irq);
 

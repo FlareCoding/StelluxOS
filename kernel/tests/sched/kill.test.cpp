@@ -17,7 +17,7 @@ using test_helpers::brief_delay;
 // Deterministic handshake: wait until the task has actually blocked.
 static bool wait_until_blocked(sched::task* t) {
     uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
-    while (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != sched::TASK_STATE_BLOCKED) {
+    while (t->state.load_acquire() != sched::TASK_STATE_BLOCKED) {
         if (clock::now_ns() > deadline) return false;
     }
     return true;
@@ -293,8 +293,7 @@ TEST(kill, is_kill_pending_accessor) {
     ASSERT_TRUE(spin_wait(&g_ikp_started));
 
     RUN_ELEVATED({
-        __atomic_fetch_or(&t->sig.pending,
-                          signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
+        t->sig.pending.fetch_or_release(signals::sig_bit(signals::SIGKILL));
     });
     __atomic_store_n(&g_ikp_flag_set, 1, __ATOMIC_RELEASE);
 

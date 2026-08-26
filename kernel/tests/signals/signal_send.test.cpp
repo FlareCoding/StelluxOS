@@ -77,24 +77,24 @@ TEST(signal_send, fatal_send_pends_without_kill_flag) {
     int32_t rc = 0;
     RUN_ELEVATED({ rc = signals::send_to_task(g_thread, signals::SIGTERM); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_thread->sig.pending, signals::sig_bit(signals::SIGTERM));
-    EXPECT_BITS_CLEAR(g_thread->sig.pending, signals::sig_bit(signals::SIGKILL));
-    EXPECT_BITS_CLEAR(g_leader->sig.pending, signals::sig_bit(signals::SIGKILL));
+    EXPECT_EQ(g_thread->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
+    EXPECT_BITS_CLEAR(g_thread->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
+    EXPECT_BITS_CLEAR(g_leader->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
 }
 
 TEST(signal_send, ignored_unblocked_send_drops) {
     int32_t rc = 0;
     RUN_ELEVATED({ rc = signals::send_to_task(g_thread, signals::SIGCHLD); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_thread->sig.pending, 0ULL);
+    EXPECT_EQ(g_thread->sig.pending.load_relaxed(), 0ULL);
 }
 
 TEST(signal_send, ignored_blocked_send_pends) {
-    g_thread->sig.blocked = signals::sig_bit(signals::SIGCHLD);
+    g_thread->sig.blocked .store_relaxed(signals::sig_bit(signals::SIGCHLD));
     int32_t rc = 0;
     RUN_ELEVATED({ rc = signals::send_to_task(g_thread, signals::SIGCHLD); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_thread->sig.pending, signals::sig_bit(signals::SIGCHLD));
+    EXPECT_EQ(g_thread->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGCHLD));
 }
 
 TEST(signal_send, handled_send_pends) {
@@ -108,8 +108,8 @@ TEST(signal_send, handled_send_pends) {
         }
     });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_thread->sig.pending, signals::sig_bit(signals::SIGTERM));
-    EXPECT_BITS_CLEAR(g_thread->sig.pending, signals::sig_bit(signals::SIGKILL));
+    EXPECT_EQ(g_thread->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
+    EXPECT_BITS_CLEAR(g_thread->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
 }
 
 TEST(signal_send, sigkill_to_thread_kills_group) {
@@ -118,43 +118,43 @@ TEST(signal_send, sigkill_to_thread_kills_group) {
     EXPECT_EQ(rc, signals::OK);
     // SIGKILL is process-wide: target and leader are marked, and the
     // shared bit makes it fatal for every other thread immediately
-    EXPECT_BITS_SET(g_thread->sig.pending, signals::sig_bit(signals::SIGKILL));
-    EXPECT_BITS_SET(g_leader->sig.pending, signals::sig_bit(signals::SIGKILL));
-    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGKILL));
+    EXPECT_BITS_SET(g_thread->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
+    EXPECT_BITS_SET(g_leader->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
 }
 
 TEST(signal_send, sigkill_to_group_marks_leader) {
     int32_t rc = 0;
     RUN_ELEVATED({ rc = signals::send_to_group(g_tg, signals::SIGKILL); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_BITS_SET(g_leader->sig.pending, signals::sig_bit(signals::SIGKILL));
-    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGKILL));
+    EXPECT_BITS_SET(g_leader->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
 }
 
 TEST(signal_send, group_fatal_send_sets_shared) {
     int32_t rc = 0;
     RUN_ELEVATED({ rc = signals::send_to_group(g_tg, signals::SIGTERM); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGTERM));
-    EXPECT_BITS_CLEAR(g_leader->sig.pending, signals::sig_bit(signals::SIGKILL));
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
+    EXPECT_BITS_CLEAR(g_leader->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGKILL));
 }
 
 TEST(signal_send, group_ignored_send_drops_unless_blocked) {
     int32_t rc = 0;
     RUN_ELEVATED({ rc = signals::send_to_group(g_tg, signals::SIGCHLD); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_tg->sig.shared_pending, 0ULL);
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), 0ULL);
 
     // One thread blocking the signal keeps it pending
-    g_thread->sig.blocked = signals::sig_bit(signals::SIGCHLD);
+    g_thread->sig.blocked .store_relaxed(signals::sig_bit(signals::SIGCHLD));
     RUN_ELEVATED({ rc = signals::send_to_group(g_tg, signals::SIGCHLD); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGCHLD));
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGCHLD));
 }
 
 TEST(signal_send, stop_class_send_is_ignored) {
     int32_t rc = 0;
     RUN_ELEVATED({ rc = signals::send_to_task(g_thread, signals::SIGTSTP); });
     EXPECT_EQ(rc, signals::OK);
-    EXPECT_EQ(g_thread->sig.pending, 0ULL);
+    EXPECT_EQ(g_thread->sig.pending.load_relaxed(), 0ULL);
 }

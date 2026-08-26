@@ -190,7 +190,7 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
     if (full) {
         // Publish only after the context is fully staged, the syscall
         // exit consumes it as soon as this handler returns
-        __atomic_store_n(&exec->iret_pending, 1u, __ATOMIC_RELEASE);
+        sync::atomic_ref<uint32_t>{exec->iret_pending}.store_release(1u);
     }
 
     heap::kfree_delete(frame);
@@ -331,7 +331,7 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
     // same rule every other delivery site applies
     if (!self || !self->group ||
         (self->exec.flags & sched::TASK_FLAG_ELEVATED) ||
-        self->state == sched::TASK_STATE_DEAD) {
+        self->state.load_relaxed() == sched::TASK_STATE_DEAD) {
         return;
     }
 
@@ -371,7 +371,7 @@ __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
                                                        uint64_t syscall_num) {
     // A staged full-register return supersedes the frame, so it no longer
     // describes the resume context, delivery waits for a later boundary
-    if (__atomic_load_n(&self->exec.iret_pending, __ATOMIC_ACQUIRE)) {
+    if (sync::atomic_ref<uint32_t>{self->exec.iret_pending}.load_acquire()) {
         return result;
     }
 

@@ -212,7 +212,7 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
 }
 
 __PRIVILEGED_CODE void cancel_sleep(sched::task* t) {
-    uint32_t cpu = __atomic_load_n(&t->exec.cpu, __ATOMIC_RELAXED);
+    uint32_t cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
     timer_cpu_state& state = per_cpu_on(cpu_timer_state, cpu);
     sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
     if (t->timer_link.is_linked()) {

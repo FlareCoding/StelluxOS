@@ -41,7 +41,7 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
 
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
 
-    if (pr->child && pr->child->state == sched::TASK_STATE_CREATED) {
+    if (pr->child && pr->child->state.load_relaxed() == sched::TASK_STATE_CREATED) {
         auto* child = pr->child;
         pr->child = nullptr;
         sync::spin_unlock_irqrestore(pr->lock, irq);
@@ -162,9 +162,7 @@ __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
     // Claim the task, a concurrent group teardown may have already
     // moved it to dead and handed the memory to the reaper
     uint32_t expected = sched::TASK_STATE_CREATED;
-    if (!__atomic_compare_exchange_n(&t->state, &expected,
-                                     sched::TASK_STATE_DEAD, false,
-                                     __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+    if (!t->state.cmpxchg_strong_acq_rel(expected, sched::TASK_STATE_DEAD)) {
         return;
     }
 

@@ -151,7 +151,7 @@ static void xfast_poll_fn(void*) {
             if (!triggered) {
                 __atomic_fetch_add(&g_xfast_trigger_failures, 1, __ATOMIC_ACQ_REL);
             }
-            if (self->state != sched::TASK_STATE_RUNNING) {
+            if (self->state.load_relaxed() != sched::TASK_STATE_RUNNING) {
                 __atomic_fetch_add(&g_xfast_state_failures, 1, __ATOMIC_ACQ_REL);
             }
             if (self->sched_link.is_linked()) {
