@@ -72,7 +72,7 @@ __PRIVILEGED_CODE static int64_t do_poll(
         ready += poll_one_fd(task, kfds[i], immediate ? nullptr : &pt);
     }
 
-    if (__atomic_load_n(&pt.error, __ATOMIC_ACQUIRE)) {
+    if (pt.error.load_acquire()) {
         sync::poll_cleanup(pt);
         return syscall::ENOMEM;
     }

@@ -10,6 +10,7 @@
 #include "sched/sched.h"
 #include "clock/clock.h"
 #include "dynpriv/dynpriv.h"
+#include "sync/atomic.h"
 
 namespace net {
 
@@ -26,8 +27,8 @@ namespace {
 struct dhcp_rx_context {
     uint8_t  buffer[DHCP_PACKET_MAX];
     size_t   length;
-    volatile bool ready;   // set by udp_recv hook, cleared by DHCP poll
-    volatile bool active;  // true while DHCP is waiting for packets
+    sync::atomic<bool> ready;   // set by udp_recv hook, cleared by DHCP poll
+    sync::atomic<bool> active;  // true while DHCP is waiting for packets
 };
 
 } // anonymous namespace
@@ -44,15 +45,15 @@ static dhcp_rx_context g_dhcp_rx = {};
 // interrupt-driven path. NOT __PRIVILEGED_CODE because the buffer
 // is in regular .bss (accessible from both Ring 0 and Ring 3).
 void dhcp_rx_hook(const uint8_t* data, size_t len) {
-    if (!__atomic_load_n(&g_dhcp_rx.active, __ATOMIC_ACQUIRE)) return;
-    if (__atomic_load_n(&g_dhcp_rx.ready, __ATOMIC_ACQUIRE)) return;
+    if (!g_dhcp_rx.active.load_acquire()) return;
+    if (g_dhcp_rx.ready.load_acquire()) return;
 
     size_t copy_len = len < DHCP_PACKET_MAX ? len : DHCP_PACKET_MAX;
     string::memcpy(g_dhcp_rx.buffer, data, copy_len);
     g_dhcp_rx.length = copy_len;
 
     // Write barrier: ensure buffer/length are visible before ready flag
-    __atomic_store_n(&g_dhcp_rx.ready, true, __ATOMIC_RELEASE);
+    g_dhcp_rx.ready.store_release(true);
 }
 
 // Internal helpers
@@ -219,7 +220,7 @@ static bool try_read_dhcp_response(uint8_t* out_buf, size_t buf_size,
     if (!out_buf || !out_len) return false;
 
     // Check ready flag with acquire semantics
-    if (!__atomic_load_n(&g_dhcp_rx.ready, __ATOMIC_ACQUIRE)) {
+    if (!g_dhcp_rx.ready.load_acquire()) {
         return false;
     }
 
@@ -228,7 +229,7 @@ static bool try_read_dhcp_response(uint8_t* out_buf, size_t buf_size,
     *out_len = copy_len;
 
     // Mark as consumed
-    __atomic_store_n(&g_dhcp_rx.ready, false, __ATOMIC_RELEASE);
+    g_dhcp_rx.ready.store_release(false);
 
     return true;
 }
@@ -239,16 +240,16 @@ static bool try_read_dhcp_response(uint8_t* out_buf, size_t buf_size,
  */
 static void activate_rx_hook() {
     g_dhcp_rx.length = 0;
-    __atomic_store_n(&g_dhcp_rx.ready, false, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_dhcp_rx.active, true, __ATOMIC_RELEASE);
+    g_dhcp_rx.ready.store_release(false);
+    g_dhcp_rx.active.store_release(true);
 }
 
 /**
  * Deactivate the DHCP receive hook.
  */
 static void deactivate_rx_hook() {
-    __atomic_store_n(&g_dhcp_rx.active, false, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_dhcp_rx.ready, false, __ATOMIC_RELEASE);
+    g_dhcp_rx.active.store_release(false);
+    g_dhcp_rx.ready.store_release(false);
 }
 
 // Packet Build Functions

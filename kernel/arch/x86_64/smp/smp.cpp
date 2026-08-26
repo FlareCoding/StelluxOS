@@ -111,14 +111,14 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     if (sched::init_ap(cpu_id, data->stack_top, sys_stack_top) != sched::OK) {
         smp::cpu_info* info = smp::get_cpu_info(cpu_id);
         if (info) {
-            __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+            info->state.store_release(smp::CPU_OFFLINE);
         }
         while (true) { asm volatile("cli; hlt"); }
     }
 
     if (clock::init_ap() != clock::OK || timer::init_ap(100) != timer::OK) {
         smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) __atomic_store_n(&info->state, smp::CPU_OFFLINE, __ATOMIC_RELEASE);
+        if (info) info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("cli; hlt"); }
     }
 
@@ -127,7 +127,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     }
 
     smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-    __atomic_store_n(&info->state, smp::CPU_ONLINE, __ATOMIC_RELEASE);
+    info->state.store_release(smp::CPU_ONLINE);
 
     while (true) {
         cpu::halt();
@@ -190,7 +190,7 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
 
         cpus[count].logical_id = count;
         cpus[count].hw_id = madt.lapics[i].apic_id;
-        cpus[count].state = smp::CPU_OFFLINE;
+        cpus[count].state.store_relaxed(smp::CPU_OFFLINE);
         cpus[count].is_bsp = (madt.lapics[i].apic_id == bsp_apic_id);
         count++;
     }
@@ -288,7 +288,7 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
     delay::pit_ms(IPI_SIPI_DELAY_MS);
 
     // Check if AP came online
-    if (__atomic_load_n(&cpu.state, __ATOMIC_ACQUIRE) == smp::CPU_ONLINE) {
+    if (cpu.state.load_acquire() == smp::CPU_ONLINE) {
         return smp::OK;
     }
 
@@ -297,7 +297,7 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
 
     for (uint32_t waited = 0; waited < IPI_TIMEOUT_MS; waited++) {
         delay::pit_ms(1);
-        if (__atomic_load_n(&cpu.state, __ATOMIC_ACQUIRE) == smp::CPU_ONLINE) {
+        if (cpu.state.load_acquire() == smp::CPU_ONLINE) {
             return smp::OK;
         }
     }

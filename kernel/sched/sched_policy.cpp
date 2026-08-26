@@ -14,7 +14,7 @@ void round_robin_policy::enqueue(task* t) {
     }
     if (t->sched_link.is_linked()) {
         log::fatal("sched: ready-list double enqueue tid=%u name=%s state=%u cpu=%u on_cpu=%u",
-                   t->tid, t->name, t->state, t->exec.cpu, t->exec.on_cpu);
+                   t->tid, t->name, t->state.load_relaxed(), t->exec.cpu, t->exec.on_cpu);
     }
 #endif
     m_ready_list.push_back(t);

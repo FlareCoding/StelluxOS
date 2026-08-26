@@ -2,6 +2,7 @@
 #define STELLUX_SIGNALS_SIGNAL_TYPES_H
 
 #include "common/types.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 
 namespace signals {
@@ -69,15 +70,15 @@ static_assert(sizeof(k_sigaction) == 32, "k_sigaction must match musl rt_sigacti
 // Per-task signal state. pending is set by senders,
 // blocked is written only by the owning task.
 struct task_signals {
-    sig_set_t blocked;
-    sig_set_t pending;
+    sync::atomic<sig_set_t> blocked;
+    sync::atomic<sig_set_t> pending;
 };
 
 // Per-process signal state shared by all threads in a thread group.
 struct group_signals {
     sync::spinlock lock; // guards actions
-    sig_set_t shared_pending;
-    uint32_t exit_signal; // first fatal signal that began group termination, 0 if none
+    sync::atomic<sig_set_t> shared_pending;
+    sync::atomic<uint32_t> exit_signal; // first fatal signal that began group termination, 0 if none
     k_sigaction actions[NSIG];
 };
 

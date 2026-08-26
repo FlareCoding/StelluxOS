@@ -174,7 +174,7 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
-    if (!(prev->exec.flags & TASK_FLAG_KERNEL) && prev->state != TASK_STATE_DEAD) {
+    if (!(prev->exec.flags & TASK_FLAG_KERNEL) && prev->state.load_relaxed() != TASK_STATE_DEAD) {
         uint32_t fsig = signals::fatal_pending(prev);
         if (fsig) {
             signals::die_from_signal(fsig);
@@ -187,7 +187,7 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     }
 
     next->exec.cpu = percpu::current_cpu_id();
-    __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
+    sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
 
     fpu::save(&prev->exec.fpu_ctx);
     fpu::restore(&next->exec.fpu_ctx);
@@ -221,7 +221,7 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
-    if (!(prev->exec.flags & TASK_FLAG_KERNEL) && prev->state != TASK_STATE_DEAD) {
+    if (!(prev->exec.flags & TASK_FLAG_KERNEL) && prev->state.load_relaxed() != TASK_STATE_DEAD) {
         uint32_t fsig = signals::fatal_pending(prev);
         if (fsig) {
             signals::die_from_signal(fsig);
@@ -234,7 +234,7 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     }
 
     next->exec.cpu = percpu::current_cpu_id();
-    __atomic_store_n(&next->exec.on_cpu, 1, __ATOMIC_RELAXED);
+    sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
 
     fpu::save(&prev->exec.fpu_ctx);
     fpu::restore(&next->exec.fpu_ctx);

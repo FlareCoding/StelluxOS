@@ -1,6 +1,7 @@
 #include "rc/reaper.h"
 #include "sched/sched.h"
 #include "sched/task_exec_core.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 #include "common/logging.h"
@@ -8,10 +9,10 @@
 namespace rc {
 namespace reaper {
 
-__PRIVILEGED_DATA static dead_node* g_queue_head = nullptr;
+__PRIVILEGED_DATA static sync::atomic<dead_node*> g_queue_head{nullptr};
 __PRIVILEGED_DATA static sync::wait_queue g_wait_queue;
 __PRIVILEGED_DATA static sync::spinlock g_wait_lock = sync::SPINLOCK_INIT;
-__PRIVILEGED_DATA static uint32_t g_initialized = 0;
+__PRIVILEGED_DATA static sync::atomic<uint32_t> g_initialized{0};
 __PRIVILEGED_DATA static sched::task* g_reaper_task = nullptr;
 
 constexpr uint32_t QUEUED_EMPTY = 0;
@@ -44,7 +45,7 @@ static dead_node* reverse_list(dead_node* head) {
 }
 
 __PRIVILEGED_CODE static dead_node* pop_all() {
-    dead_node* head = __atomic_exchange_n(&g_queue_head, nullptr, __ATOMIC_ACQ_REL);
+    dead_node* head = g_queue_head.exchange_acq_rel(nullptr);
     return reverse_list(head);
 }
 
@@ -58,11 +59,10 @@ __PRIVILEGED_CODE static void enqueue_chain(dead_node* first, bool wake_if_empty
         tail = tail->next;
     }
 
-    dead_node* old_head = __atomic_load_n(&g_queue_head, __ATOMIC_ACQUIRE);
+    dead_node* old_head = g_queue_head.load_acquire();
     do {
         tail->next = old_head;
-    } while (!__atomic_compare_exchange_n(&g_queue_head, &old_head, first,
-                                          false, __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+    } while (!g_queue_head.cmpxchg_strong_release(old_head, first));
 
     if (wake_if_empty && old_head == nullptr) {
         // Serialized with g_wait_lock to avoid lost wakeups.
@@ -75,8 +75,7 @@ __PRIVILEGED_CODE static void enqueue_chain(dead_node* first, bool wake_if_empty
 __PRIVILEGED_CODE static void requeue_retry(dead_node* node, uint32_t retry_count) {
     uint32_t encoded_retry = encode_retry_count(retry_count);
     uint32_t expected = QUEUED_EMPTY;
-    if (!__atomic_compare_exchange_n(&node->queued, &expected, encoded_retry,
-                                     false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+    if (!node->queued.cmpxchg_strong_acq_rel(expected, encoded_retry)) {
         return;
     }
 
@@ -92,7 +91,7 @@ __PRIVILEGED_CODE static void reaper_main(void*) {
         dead_node* list = pop_all();
         if (!list) {
             sync::irq_state irq = sync::spin_lock_irqsave(g_wait_lock);
-            while (__atomic_load_n(&g_queue_head, __ATOMIC_ACQUIRE) == nullptr) {
+            while (g_queue_head.load_acquire() == nullptr) {
                 irq = sync::wait(g_wait_queue, g_wait_lock, irq);
             }
             sync::spin_unlock_irqrestore(g_wait_lock, irq);
@@ -106,7 +105,7 @@ __PRIVILEGED_CODE static void reaper_main(void*) {
             cursor = cursor->next;
             node->next = nullptr;
 
-            uint32_t encoded = __atomic_exchange_n(&node->queued, QUEUED_EMPTY, __ATOMIC_ACQ_REL);
+            uint32_t encoded = node->queued.exchange_acq_rel(QUEUED_EMPTY);
             uint32_t retry_count = decode_retry_count(encoded);
 
             cleanup_result result = DONE;
@@ -135,19 +134,18 @@ __PRIVILEGED_CODE static void reaper_main(void*) {
  */
 __PRIVILEGED_CODE int32_t init() {
     uint32_t expected = 0;
-    if (!__atomic_compare_exchange_n(&g_initialized, &expected, 1,
-                                     false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+    if (!g_initialized.cmpxchg_strong_acq_rel(expected, 1)) {
         return OK;
     }
 
-    __atomic_store_n(&g_queue_head, nullptr, __ATOMIC_RELEASE);
+    g_queue_head.store_release(nullptr);
     g_wait_lock = sync::SPINLOCK_INIT;
     g_wait_queue.init();
 
     sched::task* task = sched::create_kernel_task(
         reaper_main, nullptr, "reaper", sched::TASK_FLAG_ELEVATED);
     if (!task) {
-        __atomic_store_n(&g_initialized, 0, __ATOMIC_RELEASE);
+        g_initialized.store_release(0);
         return ERR_NO_MEM;
     }
 
@@ -167,8 +165,7 @@ __PRIVILEGED_CODE void defer(dead_node* node) {
     }
 
     uint32_t expected = QUEUED_EMPTY;
-    if (!__atomic_compare_exchange_n(&node->queued, &expected, QUEUED_FIRST,
-                                     false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+    if (!node->queued.cmpxchg_strong_acq_rel(expected, QUEUED_FIRST)) {
         return;
     }
 

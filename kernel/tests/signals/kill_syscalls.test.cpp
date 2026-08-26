@@ -29,12 +29,12 @@ static void init_process(sched::task* t, sched::thread_group* tg, uint32_t tid) 
     tg->lock = sync::SPINLOCK_INIT;
     tg->leader = t;
     tg->pid = tid;
-    tg->group_id = tid;
+    tg->group_id.store_relaxed(tid);
     tg->threads.init();
     tg->thread_count = 0;
 
     t->tid = tid;
-    t->state = sched::TASK_STATE_CREATED;
+    t->state.store_relaxed(sched::TASK_STATE_CREATED);
     t->group = tg;
 }
 
@@ -55,13 +55,13 @@ static int32_t setup_tasks() {
     init_process(g_proc2, g_tg2, TEST_TID2);
 
     g_thread->tid = THREAD_TID;
-    g_thread->state = sched::TASK_STATE_CREATED;
+    g_thread->state.store_relaxed(sched::TASK_STATE_CREATED);
     g_thread->group = g_tg;
     g_tg->threads.push_back(g_thread);
     g_tg->thread_count = 1;
 
     g_ktask->tid = KTASK_TID;
-    g_ktask->state = sched::TASK_STATE_CREATED;
+    g_ktask->state.store_relaxed(sched::TASK_STATE_CREATED);
     g_ktask->exec.flags = sched::TASK_FLAG_KERNEL;
 
     RUN_ELEVATED({
@@ -154,27 +154,27 @@ TEST(kill_syscalls, null_signal_probes_without_sending) {
     RUN_ELEVATED({ rc = sys_tkill(KTASK_TID, 0, 0, 0, 0, 0); });
     EXPECT_EQ(rc, syscall::EPERM);
 
-    EXPECT_EQ(g_proc->sig.pending, 0ULL);
-    EXPECT_EQ(g_tg->sig.shared_pending, 0ULL);
+    EXPECT_EQ(g_proc->sig.pending.load_relaxed(), 0ULL);
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), 0ULL);
 }
 
 TEST(kill_syscalls, kill_signals_the_whole_process) {
     int64_t rc = 0;
     RUN_ELEVATED({ rc = sys_kill(TEST_TID, signals::SIGTERM, 0, 0, 0, 0); });
     EXPECT_EQ(rc, 0);
-    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGTERM));
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
 }
 
 TEST(kill_syscalls, kill_accepts_nonleader_thread_ids) {
     int64_t rc = 0;
     RUN_ELEVATED({ rc = sys_kill(THREAD_TID, signals::SIGTERM, 0, 0, 0, 0); });
     EXPECT_EQ(rc, 0);
-    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGTERM));
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
 }
 
 TEST(kill_syscalls, group_kill_reaches_every_member_process) {
     // Both processes join one group, addressed by negative pid
-    g_tg2->group_id = TEST_TID;
+    g_tg2->group_id.store_relaxed(TEST_TID);
 
     int64_t rc = 0;
     RUN_ELEVATED({
@@ -182,16 +182,16 @@ TEST(kill_syscalls, group_kill_reaches_every_member_process) {
                       signals::SIGTERM, 0, 0, 0, 0);
     });
     EXPECT_EQ(rc, 0);
-    EXPECT_EQ(g_tg->sig.shared_pending, signals::sig_bit(signals::SIGTERM));
-    EXPECT_EQ(g_tg2->sig.shared_pending, signals::sig_bit(signals::SIGTERM));
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
+    EXPECT_EQ(g_tg2->sig.shared_pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
 }
 
 TEST(kill_syscalls, tkill_is_thread_directed) {
     int64_t rc = 0;
     RUN_ELEVATED({ rc = sys_tkill(THREAD_TID, signals::SIGTERM, 0, 0, 0, 0); });
     EXPECT_EQ(rc, 0);
-    EXPECT_EQ(g_thread->sig.pending, signals::sig_bit(signals::SIGTERM));
-    EXPECT_EQ(g_tg->sig.shared_pending, 0ULL);
+    EXPECT_EQ(g_thread->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
+    EXPECT_EQ(g_tg->sig.shared_pending.load_relaxed(), 0ULL);
 }
 
 TEST(kill_syscalls, tgkill_validates_the_pair) {
@@ -201,7 +201,7 @@ TEST(kill_syscalls, tgkill_validates_the_pair) {
         rc = sys_tgkill(TEST_TID, THREAD_TID, signals::SIGTERM, 0, 0, 0);
     });
     EXPECT_EQ(rc, 0);
-    EXPECT_EQ(g_thread->sig.pending, signals::sig_bit(signals::SIGTERM));
+    EXPECT_EQ(g_thread->sig.pending.load_relaxed(), signals::sig_bit(signals::SIGTERM));
 
     // A thread paired with the wrong process is not a match
     RUN_ELEVATED({

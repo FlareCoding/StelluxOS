@@ -320,6 +320,16 @@ inline void atomic_fence_release() {
     __atomic_thread_fence(__ATOMIC_RELEASE);
 }
 
+/**
+ * @brief Full fence, orders prior stores against later loads.
+ *
+ * Use for store-then-check handshakes where two sides must never
+ * both miss each other, such as blocking versus kill delivery.
+ */
+inline void atomic_fence_seq_cst() {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
 } // namespace sync
 
 #endif // STELLUX_SYNC_ATOMIC_H

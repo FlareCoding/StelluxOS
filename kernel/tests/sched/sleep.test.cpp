@@ -19,18 +19,18 @@ constexpr uint32_t MAX_TEST_CPUS = 16;
 // --- sleep_ns_zero ---
 // Proves: sleep_ns(0) returns quickly (yields without blocking).
 
-static volatile uint32_t g_zero_done = 0;
+static sync::atomic<uint32_t> g_zero_done;
 
 static void zero_sleeper_fn(void*) {
     RUN_ELEVATED({
         sched::sleep_ns(0);
     });
-    __atomic_store_n(&g_zero_done, 1, __ATOMIC_RELEASE);
+    g_zero_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(sleep, sleep_ns_zero) {
-    g_zero_done = 0;
+    g_zero_done.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(
@@ -39,15 +39,15 @@ TEST(sleep, sleep_ns_zero) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_zero_done));
+    ASSERT_TRUE(spin_wait(g_zero_done));
 }
 
 // --- sleep_ms_basic ---
 // Proves: sleep_ns(100ms) sleeps for approximately 100ms.
 
-static volatile uint32_t g_basic_done = 0;
-static volatile uint64_t g_basic_elapsed_hi = 0;
-static volatile uint64_t g_basic_elapsed_lo = 0;
+static sync::atomic<uint32_t> g_basic_done;
+static sync::atomic<uint64_t> g_basic_elapsed_hi;
+static sync::atomic<uint64_t> g_basic_elapsed_lo;
 
 static void basic_sleeper_fn(void*) {
     uint64_t start = clock::now_ns();
@@ -55,16 +55,16 @@ static void basic_sleeper_fn(void*) {
         sched::sleep_ns(100000000ULL);
     });
     uint64_t elapsed = clock::now_ns() - start;
-    __atomic_store_n(&g_basic_elapsed_hi, elapsed >> 32, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_basic_elapsed_lo, elapsed & 0xFFFFFFFF, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_basic_done, 1, __ATOMIC_RELEASE);
+    g_basic_elapsed_hi.store_release(elapsed >> 32);
+    g_basic_elapsed_lo.store_release(elapsed & 0xFFFFFFFF);
+    g_basic_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(sleep, sleep_ms_basic) {
-    g_basic_done = 0;
-    g_basic_elapsed_hi = 0;
-    g_basic_elapsed_lo = 0;
+    g_basic_done.store_relaxed(0);
+    g_basic_elapsed_hi.store_relaxed(0);
+    g_basic_elapsed_lo.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(
@@ -73,10 +73,10 @@ TEST(sleep, sleep_ms_basic) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_basic_done));
+    ASSERT_TRUE(spin_wait(g_basic_done));
 
-    uint64_t elapsed = (__atomic_load_n(&g_basic_elapsed_hi, __ATOMIC_ACQUIRE) << 32)
-                     | __atomic_load_n(&g_basic_elapsed_lo, __ATOMIC_ACQUIRE);
+    uint64_t elapsed = (g_basic_elapsed_hi.load_acquire() << 32)
+                     | g_basic_elapsed_lo.load_acquire();
     EXPECT_GE(elapsed, static_cast<uint64_t>(50000000));
     EXPECT_LE(elapsed, static_cast<uint64_t>(2000000000));
 }
@@ -84,15 +84,15 @@ TEST(sleep, sleep_ms_basic) {
 // --- sleep_ordering ---
 // Proves: 50ms sleeper wakes before 100ms sleeper.
 
-static volatile uint32_t g_order_count = 0;
-static volatile uint32_t g_order_first = 0;
+static sync::atomic<uint32_t> g_order_count;
+static sync::atomic<uint32_t> g_order_first;
 
 static void order_short_fn(void*) {
     RUN_ELEVATED({
         sched::sleep_ns(50000000ULL);
     });
-    uint32_t idx = __atomic_fetch_add(&g_order_count, 1, __ATOMIC_ACQ_REL);
-    if (idx == 0) __atomic_store_n(&g_order_first, 1, __ATOMIC_RELEASE);
+    uint32_t idx = g_order_count.fetch_add_acq_rel(1);
+    if (idx == 0) g_order_first.store_release(1);
     sched::exit(0);
 }
 
@@ -100,14 +100,14 @@ static void order_long_fn(void*) {
     RUN_ELEVATED({
         sched::sleep_ns(150000000ULL);
     });
-    uint32_t idx = __atomic_fetch_add(&g_order_count, 1, __ATOMIC_ACQ_REL);
-    if (idx == 0) __atomic_store_n(&g_order_first, 2, __ATOMIC_RELEASE);
+    uint32_t idx = g_order_count.fetch_add_acq_rel(1);
+    if (idx == 0) g_order_first.store_release(2);
     sched::exit(0);
 }
 
 TEST(sleep, sleep_ordering) {
-    g_order_count = 0;
-    g_order_first = 0;
+    g_order_count.store_relaxed(0);
+    g_order_first.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t_long = sched::create_kernel_task(
@@ -120,18 +120,18 @@ TEST(sleep, sleep_ordering) {
         sched::enqueue_on(t_short, 0);
     });
 
-    ASSERT_TRUE(spin_wait_ge(&g_order_count, 2));
-    EXPECT_EQ(__atomic_load_n(&g_order_first, __ATOMIC_ACQUIRE), 1u);
+    ASSERT_TRUE(spin_wait_ge(g_order_count, 2));
+    EXPECT_EQ(g_order_first.load_acquire(), 1u);
 }
 
 // --- sleep_does_not_block_others ---
 // Proves: a sleeping task does not prevent other tasks from running.
 
-static volatile uint32_t g_runner_done = 0;
-static volatile uint32_t g_sleeper_done = 0;
+static sync::atomic<uint32_t> g_runner_done;
+static sync::atomic<uint32_t> g_sleeper_done;
 
 static void nonblock_runner_fn(void*) {
-    __atomic_store_n(&g_runner_done, 1, __ATOMIC_RELEASE);
+    g_runner_done.store_release(1);
     sched::exit(0);
 }
 
@@ -139,13 +139,13 @@ static void nonblock_sleeper_fn(void*) {
     RUN_ELEVATED({
         sched::sleep_ns(200000000ULL);
     });
-    __atomic_store_n(&g_sleeper_done, 1, __ATOMIC_RELEASE);
+    g_sleeper_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(sleep, sleep_does_not_block_others) {
-    g_runner_done = 0;
-    g_sleeper_done = 0;
+    g_runner_done.store_relaxed(0);
+    g_sleeper_done.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* sleeper = sched::create_kernel_task(
@@ -158,30 +158,30 @@ TEST(sleep, sleep_does_not_block_others) {
         sched::enqueue(runner);
     });
 
-    ASSERT_TRUE(spin_wait(&g_runner_done));
-    ASSERT_TRUE(spin_wait(&g_sleeper_done));
+    ASSERT_TRUE(spin_wait(g_runner_done));
+    ASSERT_TRUE(spin_wait(g_sleeper_done));
 }
 
 // --- sleep_on_remote_cpu ---
 // Proves: task on CPU 1 can sleep and wake correctly.
 
-static volatile uint32_t g_remote_done = 0;
-static volatile uint32_t g_remote_cpu = 0xFFFFFFFF;
+static sync::atomic<uint32_t> g_remote_done;
+static sync::atomic<uint32_t> g_remote_cpu{0xFFFFFFFF};
 
 static void remote_sleeper_fn(void*) {
-    __atomic_store_n(&g_remote_cpu, percpu::current_cpu_id(), __ATOMIC_RELEASE);
+    g_remote_cpu.store_release(percpu::current_cpu_id());
     RUN_ELEVATED({
         sched::sleep_ns(50000000ULL);
     });
-    __atomic_store_n(&g_remote_done, 1, __ATOMIC_RELEASE);
+    g_remote_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(sleep, sleep_on_remote_cpu) {
     if (smp::cpu_count() < 2) return;
 
-    g_remote_done = 0;
-    g_remote_cpu = 0xFFFFFFFF;
+    g_remote_done.store_relaxed(0);
+    g_remote_cpu.store_relaxed(0xFFFFFFFF);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(
@@ -190,21 +190,21 @@ TEST(sleep, sleep_on_remote_cpu) {
         sched::enqueue_on(t, 1);
     });
 
-    ASSERT_TRUE(spin_wait(&g_remote_done));
-    EXPECT_EQ(__atomic_load_n(&g_remote_cpu, __ATOMIC_ACQUIRE), 1u);
+    ASSERT_TRUE(spin_wait(g_remote_done));
+    EXPECT_EQ(g_remote_cpu.load_acquire(), 1u);
 }
 
 // --- sleep_simultaneous ---
 // Proves: tasks on all CPUs can sleep and wake independently.
 
-static volatile uint32_t g_sim_done[MAX_TEST_CPUS] = {};
+static sync::atomic<uint32_t> g_sim_done[MAX_TEST_CPUS] = {};
 
 static void sim_sleeper_fn(void* arg) {
     uint32_t idx = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
     RUN_ELEVATED({
         sched::sleep_ns(100000000ULL);
     });
-    __atomic_store_n(&g_sim_done[idx], 1, __ATOMIC_RELEASE);
+    g_sim_done[idx].store_release(1);
     sched::exit(0);
 }
 
@@ -213,7 +213,7 @@ TEST(sleep, sleep_simultaneous) {
     if (cpus < 2 || cpus > MAX_TEST_CPUS) return;
 
     for (uint32_t i = 0; i < cpus; i++) {
-        g_sim_done[i] = 0;
+        g_sim_done[i].store_relaxed(0);
     }
 
     RUN_ELEVATED({
@@ -228,25 +228,25 @@ TEST(sleep, sleep_simultaneous) {
     });
 
     for (uint32_t i = 0; i < cpus; i++) {
-        ASSERT_TRUE(spin_wait(&g_sim_done[i]));
+        ASSERT_TRUE(spin_wait(g_sim_done[i]));
     }
 }
 
 // --- sleep_same_deadline ---
 // Proves: 4 tasks with identical deadlines all complete.
 
-static volatile uint32_t g_same_done_count = 0;
+static sync::atomic<uint32_t> g_same_done_count;
 
 static void same_deadline_fn(void*) {
     RUN_ELEVATED({
         sched::sleep_ns(80000000ULL);
     });
-    __atomic_fetch_add(&g_same_done_count, 1, __ATOMIC_ACQ_REL);
+    g_same_done_count.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(sleep, sleep_same_deadline) {
-    g_same_done_count = 0;
+    g_same_done_count.store_relaxed(0);
 
     RUN_ELEVATED({
         for (uint32_t i = 0; i < 4; i++) {
@@ -257,5 +257,5 @@ TEST(sleep, sleep_same_deadline) {
         }
     });
 
-    ASSERT_TRUE(spin_wait_ge(&g_same_done_count, 4));
+    ASSERT_TRUE(spin_wait_ge(g_same_done_count, 4));
 }

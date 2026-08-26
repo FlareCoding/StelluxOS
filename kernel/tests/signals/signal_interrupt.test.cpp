@@ -52,32 +52,32 @@ AFTER_EACH(signal_interrupt, teardown_group);
 TEST(signal_interrupt, pending_sigkill_reports_sigkill) {
     uint32_t fatal = 0;
     // SIGKILL wins over a lower pending signal
-    g_leader->sig.pending = signals::sig_bit(signals::SIGKILL)
-                          | signals::sig_bit(signals::SIGTERM);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGKILL)
+                          | signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({ fatal = signals::fatal_pending(g_leader); });
     EXPECT_EQ(fatal, signals::SIGKILL);
 }
 
 TEST(signal_interrupt, lowest_fatal_signal_wins) {
     uint32_t fatal = 0;
-    g_leader->sig.pending = signals::sig_bit(signals::SIGTERM)
-                          | signals::sig_bit(signals::SIGINT);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGTERM)
+                          | signals::sig_bit(signals::SIGINT));
     RUN_ELEVATED({ fatal = signals::fatal_pending(g_leader); });
     EXPECT_EQ(fatal, signals::SIGINT);
 }
 
 TEST(signal_interrupt, pending_sigkill_outranks_lower_signals) {
     uint32_t fatal = 0;
-    g_leader->sig.pending = signals::sig_bit(signals::SIGINT);
-    g_tg->sig.shared_pending = signals::sig_bit(signals::SIGKILL);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGINT));
+    g_tg->sig.shared_pending .store_relaxed(signals::sig_bit(signals::SIGKILL));
     RUN_ELEVATED({ fatal = signals::fatal_pending(g_leader); });
     EXPECT_EQ(fatal, signals::SIGKILL);
 }
 
 TEST(signal_interrupt, blocked_signals_are_not_fatal) {
     uint32_t fatal = 1;
-    g_leader->sig.pending = signals::sig_bit(signals::SIGTERM);
-    g_leader->sig.blocked = signals::sig_bit(signals::SIGTERM);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGTERM));
+    g_leader->sig.blocked .store_relaxed(signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({ fatal = signals::fatal_pending(g_leader); });
     EXPECT_EQ(fatal, 0U);
 }
@@ -89,21 +89,21 @@ TEST(signal_interrupt, handled_signals_are_not_fatal) {
     RUN_ELEVATED({
         signals::set_action(g_tg, signals::SIGTERM, &act, nullptr);
     });
-    g_leader->sig.pending = signals::sig_bit(signals::SIGTERM);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({ fatal = signals::fatal_pending(g_leader); });
     EXPECT_EQ(fatal, 0U);
 }
 
 TEST(signal_interrupt, default_ignore_pending_is_not_fatal) {
     uint32_t fatal = 1;
-    g_leader->sig.pending = signals::sig_bit(signals::SIGCHLD);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGCHLD));
     RUN_ELEVATED({ fatal = signals::fatal_pending(g_leader); });
     EXPECT_EQ(fatal, 0U);
 }
 
 TEST(signal_interrupt, shared_pending_is_visible_to_every_thread) {
     uint32_t fatal = 0;
-    g_tg->sig.shared_pending = signals::sig_bit(signals::SIGTERM);
+    g_tg->sig.shared_pending .store_relaxed(signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({ fatal = signals::fatal_pending(g_thread); });
     EXPECT_EQ(fatal, signals::SIGTERM);
 }
@@ -113,7 +113,7 @@ TEST(signal_interrupt, interrupt_pending_truth) {
     RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
     EXPECT_FALSE(intr);
 
-    g_leader->sig.pending = signals::sig_bit(signals::SIGTERM);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGTERM));
     RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
     EXPECT_TRUE(intr);
 
@@ -130,12 +130,12 @@ TEST(signal_interrupt, interrupt_pending_covers_handled_signals) {
     });
 
     bool intr = false;
-    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGUSR1));
     RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
     EXPECT_TRUE(intr);
 
     // Blocking the signal removes the interrupt reason
-    g_leader->sig.blocked = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.blocked .store_relaxed(signals::sig_bit(signals::SIGUSR1));
     RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
     EXPECT_FALSE(intr);
 }
@@ -149,13 +149,13 @@ TEST(signal_interrupt, elevated_task_defers_handled_interrupts) {
 
     // Undeliverable while elevated, so the wait must not unwind
     bool intr = true;
-    g_leader->sig.pending = signals::sig_bit(signals::SIGUSR1);
+    g_leader->sig.pending .store_relaxed(signals::sig_bit(signals::SIGUSR1));
     g_leader->exec.flags = sched::TASK_FLAG_ELEVATED;
     RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
     EXPECT_FALSE(intr);
 
     // Fatal signals still interrupt an elevated task
-    g_leader->sig.pending |= signals::sig_bit(signals::SIGKILL);
+    g_leader->sig.pending.fetch_or_relaxed(signals::sig_bit(signals::SIGKILL));
     RUN_ELEVATED({ intr = signals::interrupt_pending(g_leader); });
     EXPECT_TRUE(intr);
     g_leader->exec.flags = 0;

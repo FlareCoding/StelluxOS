@@ -20,15 +20,15 @@ __PRIVILEGED_CODE void mutex_lock(mutex& m) {
 
     irq_state irq = spin_lock_irqsave(m.lock);
 
-    MUTEX_ASSERT(m.owner != self, "recursive lock detected");
+    MUTEX_ASSERT(m.owner.load_relaxed() != self, "recursive lock detected");
 
-    while (m.owner != nullptr) {
+    while (m.owner.load_relaxed() != nullptr) {
         MUTEX_ASSERT(!(self->exec.flags & sched::TASK_FLAG_IDLE),
                      "idle task blocked on contended mutex");
         irq = wait(m.wq, m.lock, irq);
     }
 
-    m.owner = self;
+    m.owner.store_relaxed(self);
     spin_unlock_irqrestore(m.lock, irq);
 }
 
@@ -38,10 +38,10 @@ __PRIVILEGED_CODE void mutex_lock(mutex& m) {
 __PRIVILEGED_CODE void mutex_unlock(mutex& m) {
     irq_state irq = spin_lock_irqsave(m.lock);
 
-    MUTEX_ASSERT(m.owner == sched::current(),
+    MUTEX_ASSERT(m.owner.load_relaxed() == sched::current(),
                  "unlock called by non-owner");
 
-    m.owner = nullptr;
+    m.owner.store_relaxed(nullptr);
     spin_unlock_irqrestore(m.lock, irq);
 
     wake_one(m.wq);
@@ -53,12 +53,12 @@ __PRIVILEGED_CODE void mutex_unlock(mutex& m) {
 __PRIVILEGED_CODE bool mutex_trylock(mutex& m) {
     irq_state irq = spin_lock_irqsave(m.lock);
 
-    if (m.owner != nullptr) {
+    if (m.owner.load_relaxed() != nullptr) {
         spin_unlock_irqrestore(m.lock, irq);
         return false;
     }
 
-    m.owner = sched::current();
+    m.owner.store_relaxed(sched::current());
     spin_unlock_irqrestore(m.lock, irq);
     return true;
 }

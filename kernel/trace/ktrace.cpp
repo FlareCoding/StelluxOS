@@ -1,5 +1,6 @@
 #include "trace/ktrace.h"
 #include "common/logging.h"
+#include "sync/atomic.h"
 #include "mm/kva.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
@@ -54,7 +55,7 @@ void record_event(const trace_record& rec) {
     }
 
     // Atomically reserve a slot in the ring buffer 
-    uint64_t slot = __atomic_fetch_add(&head_idx, 1, __ATOMIC_RELAXED);
+    uint64_t slot = sync::atomic_ref<uint64_t>{head_idx}.fetch_add_relaxed(1);
 
     // Insert the event record
     buffer[slot % PERCPU_RECORD_BUFFER_RECORDS] = rec;

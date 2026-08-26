@@ -103,12 +103,11 @@ static size_t generate_tasks(char* buf, size_t cap) {
         pos = append_str(buf, cap, pos, " ");
         pos = append_u64(buf, cap, pos, t.group ? t.group->pid : 0);
         pos = append_str(buf, cap, pos, " ");
-        pos = append_str(buf, cap, pos, task_state_name(t.state));
+        pos = append_str(buf, cap, pos, task_state_name(t.state.load_relaxed()));
         pos = append_str(buf, cap, pos, " ");
         pos = append_u64(buf, cap, pos, t.exec.cpu);
         pos = append_str(buf, cap, pos, " ");
-        pos = append_u64(buf, cap, pos,
-                         __atomic_load_n(&t.run_ticks, __ATOMIC_RELAXED));
+        pos = append_u64(buf, cap, pos, t.run_ticks.load_relaxed());
         pos = append_str(buf, cap, pos, " ");
         pos = append_str(buf, cap, pos, t.name);
         pos = append_str(buf, cap, pos, "\n");

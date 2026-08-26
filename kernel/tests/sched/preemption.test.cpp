@@ -14,15 +14,15 @@ TEST_SUITE(preemption);
 // --- basic_preemption ---
 // Proves: timer preempts the boot task, created task runs without explicit yield.
 
-static volatile uint32_t g_basic_done = 0;
+static sync::atomic<uint32_t> g_basic_done;
 
 static void basic_task_fn(void*) {
-    __atomic_store_n(&g_basic_done, 1, __ATOMIC_RELEASE);
+    g_basic_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(preemption, basic_preemption) {
-    g_basic_done = 0;
+    g_basic_done.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(basic_task_fn, nullptr, "test_basic");
@@ -30,15 +30,15 @@ TEST(preemption, basic_preemption) {
         sched::enqueue(t);
     });
 
-    bool completed = spin_wait(&g_basic_done);
+    bool completed = spin_wait(g_basic_done);
     EXPECT_TRUE(completed);
 }
 
 // --- context_integrity ---
 // Proves: register context survives preemption across many timer ticks.
 
-static volatile uint32_t g_fib_result = 0;
-static volatile uint32_t g_fib_done = 0;
+static sync::atomic<uint32_t> g_fib_result;
+static sync::atomic<uint32_t> g_fib_done;
 
 static int fib(int n) {
     if (n <= 0) return 0;
@@ -49,14 +49,14 @@ static int fib(int n) {
 
 static void fib_task_fn(void*) {
     int result = fib(25);
-    __atomic_store_n(&g_fib_result, static_cast<uint32_t>(result), __ATOMIC_RELEASE);
-    __atomic_store_n(&g_fib_done, 1, __ATOMIC_RELEASE);
+    g_fib_result.store_release(static_cast<uint32_t>(result));
+    g_fib_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(preemption, context_integrity) {
-    g_fib_result = 0;
-    g_fib_done = 0;
+    g_fib_result.store_relaxed(0);
+    g_fib_done.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(fib_task_fn, nullptr, "test_fib");
@@ -64,26 +64,26 @@ TEST(preemption, context_integrity) {
         sched::enqueue(t);
     });
 
-    bool completed = spin_wait(&g_fib_done);
+    bool completed = spin_wait(g_fib_done);
     ASSERT_TRUE(completed);
-    EXPECT_EQ(g_fib_result, static_cast<uint32_t>(75025));
+    EXPECT_EQ(g_fib_result.load_acquire(), static_cast<uint32_t>(75025));
 }
 
 // --- multiple_tasks_complete ---
 // Proves: round-robin scheduler doesn't starve any task.
 
 constexpr uint32_t MULTI_COUNT = 4;
-static volatile uint32_t g_multi_done[MULTI_COUNT] = {};
+static sync::atomic<uint32_t> g_multi_done[MULTI_COUNT] = {};
 
 static void multi_task_fn(void* arg) {
     uint32_t idx = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
-    __atomic_store_n(&g_multi_done[idx], 1, __ATOMIC_RELEASE);
+    g_multi_done[idx].store_release(1);
     sched::exit(0);
 }
 
 TEST(preemption, multiple_tasks_complete) {
     for (uint32_t i = 0; i < MULTI_COUNT; i++) {
-        g_multi_done[i] = 0;
+        g_multi_done[i].store_relaxed(0);
     }
 
     RUN_ELEVATED({
@@ -98,7 +98,7 @@ TEST(preemption, multiple_tasks_complete) {
     });
 
     for (uint32_t i = 0; i < MULTI_COUNT; i++) {
-        bool completed = spin_wait(&g_multi_done[i]);
+        bool completed = spin_wait(g_multi_done[i]);
         EXPECT_TRUE(completed);
     }
 }
@@ -108,22 +108,22 @@ TEST(preemption, multiple_tasks_complete) {
 
 constexpr uint32_t ATOMIC_TASKS = 4;
 constexpr uint32_t ATOMIC_ITERS = 1000;
-static volatile uint32_t g_atomic_counter = 0;
-static volatile uint32_t g_atomic_done[ATOMIC_TASKS] = {};
+static sync::atomic<uint32_t> g_atomic_counter;
+static sync::atomic<uint32_t> g_atomic_done[ATOMIC_TASKS] = {};
 
 static void atomic_task_fn(void* arg) {
     uint32_t idx = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
     for (uint32_t i = 0; i < ATOMIC_ITERS; i++) {
-        __atomic_fetch_add(&g_atomic_counter, 1, __ATOMIC_RELAXED);
+        g_atomic_counter.fetch_add_relaxed(1);
     }
-    __atomic_store_n(&g_atomic_done[idx], 1, __ATOMIC_RELEASE);
+    g_atomic_done[idx].store_release(1);
     sched::exit(0);
 }
 
 TEST(preemption, atomic_counter) {
-    g_atomic_counter = 0;
+    g_atomic_counter.store_relaxed(0);
     for (uint32_t i = 0; i < ATOMIC_TASKS; i++) {
-        g_atomic_done[i] = 0;
+        g_atomic_done[i].store_relaxed(0);
     }
 
     RUN_ELEVATED({
@@ -138,10 +138,10 @@ TEST(preemption, atomic_counter) {
     });
 
     for (uint32_t i = 0; i < ATOMIC_TASKS; i++) {
-        bool completed = spin_wait(&g_atomic_done[i]);
+        bool completed = spin_wait(g_atomic_done[i]);
         EXPECT_TRUE(completed);
     }
 
-    uint32_t final_count = __atomic_load_n(&g_atomic_counter, __ATOMIC_ACQUIRE);
+    uint32_t final_count = g_atomic_counter.load_acquire();
     EXPECT_EQ(final_count, ATOMIC_TASKS * ATOMIC_ITERS);
 }

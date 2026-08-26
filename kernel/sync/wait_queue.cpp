@@ -28,7 +28,7 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
     uint32_t total = 0;
 
     for (auto& obs : wq.observers) {
-        __atomic_store_n(&obs.table->triggered, 1, __ATOMIC_RELEASE);
+        obs.table->triggered.store_release(1);
         if (n < OBSERVER_BATCH_SIZE) {
             batch[n++] = obs.table->task;
         }

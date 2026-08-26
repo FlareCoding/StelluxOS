@@ -2,6 +2,7 @@
 #define STELLUX_RC_REAPER_H
 
 #include "common/types.h"
+#include "sync/atomic.h"
 
 namespace rc {
 namespace reaper {
@@ -17,12 +18,12 @@ using cleanup_fn = cleanup_result (*)(dead_node*);
 struct dead_node {
     dead_node* next;
     cleanup_fn cleanup;
-    uint32_t queued;
+    sync::atomic<uint32_t> queued;
 
     void init(cleanup_fn fn) {
         next = nullptr;
         cleanup = fn;
-        queued = 0;
+        queued.store_relaxed(0);
     }
 };
 

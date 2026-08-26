@@ -3,23 +3,24 @@
 
 #include "common/types.h"
 #include "clock/clock.h"
+#include "sync/atomic.h"
 
 namespace test_helpers {
 
 // Wall-clock bound: iteration counts vary ~100x across hosts and emulators.
 constexpr uint64_t SPIN_TIMEOUT_NS = 20000000000ULL; // 20s
 
-inline bool spin_wait(volatile uint32_t* flag) {
+inline bool spin_wait(const sync::atomic<uint32_t>& flag) {
     uint64_t deadline = clock::now_ns() + SPIN_TIMEOUT_NS;
-    while (!__atomic_load_n(flag, __ATOMIC_ACQUIRE)) {
+    while (!flag.load_acquire()) {
         if (clock::now_ns() > deadline) return false;
     }
     return true;
 }
 
-inline bool spin_wait_ge(volatile uint32_t* value, uint32_t target) {
+inline bool spin_wait_ge(const sync::atomic<uint32_t>& value, uint32_t target) {
     uint64_t deadline = clock::now_ns() + SPIN_TIMEOUT_NS;
-    while (__atomic_load_n(value, __ATOMIC_ACQUIRE) < target) {
+    while (value.load_acquire() < target) {
         if (clock::now_ns() > deadline) return false;
     }
     return true;

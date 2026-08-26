@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include "rc/ref_counted.h"
 #include "rc/strong_ref.h"
+#include "sync/atomic.h"
 #include "terminal/line_discipline.h"
 
 struct ring_buffer;
@@ -34,7 +35,7 @@ struct pty_channel : rc::ref_counted<pty_channel> {
     terminal::signal_target m_sig;
     uint32_t m_id;
     uint32_t m_oflags;                    // output processing flags
-    uint32_t m_fg_group;                  // foreground process group, 0 = none
+    sync::atomic<uint32_t> m_fg_group;    // foreground process group, 0 = none
     pty_winsize m_winsize;                // set via TIOCSWINSZ from either end
 
     /** @note Privilege: **required** */

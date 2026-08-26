@@ -2,6 +2,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sched/task_registry.h"
+#include "sync/atomic.h"
 #include "timer/timer.h"
 #include "common/logging.h"
 
@@ -24,14 +25,14 @@ constexpr uint32_t MAX_GROUP_SEND_GROUPS = 64;
  */
 __PRIVILEGED_CODE static void discard_pending(sched::thread_group* tg, uint32_t sig) {
     const sig_set_t keep = ~sig_bit(sig);
-    __atomic_fetch_and(&tg->sig.shared_pending, keep, __ATOMIC_ACQ_REL);
+    tg->sig.shared_pending.fetch_and_acq_rel(keep);
 
     sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
     if (tg->leader) {
-        __atomic_fetch_and(&tg->leader->sig.pending, keep, __ATOMIC_ACQ_REL);
+        tg->leader->sig.pending.fetch_and_acq_rel(keep);
     }
     for (sched::task& thread : tg->threads) {
-        __atomic_fetch_and(&thread.sig.pending, keep, __ATOMIC_ACQ_REL);
+        thread.sig.pending.fetch_and_acq_rel(keep);
     }
     sync::spin_unlock_irqrestore(tg->lock, irq);
 }
@@ -75,7 +76,7 @@ __PRIVILEGED_CODE int32_t set_blocked(sched::task* t, uint32_t how,
         return ERR_INVAL;
     }
 
-    sig_set_t cur = __atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+    sig_set_t cur = t->sig.blocked.load_acquire();
     if (old) {
         *old = cur;
     }
@@ -93,16 +94,16 @@ __PRIVILEGED_CODE int32_t set_blocked(sched::task* t, uint32_t how,
     }
 
     next &= ~UNBLOCKABLE_MASK;
-    __atomic_store_n(&t->sig.blocked, next, __ATOMIC_RELEASE);
+    t->sig.blocked.store_release(next);
     return OK;
 }
 
 __PRIVILEGED_CODE sig_set_t pending_blocked_set(sched::task* t) {
-    sig_set_t pend = __atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE);
+    sig_set_t pend = t->sig.pending.load_acquire();
     if (t->group) {
-        pend |= __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE);
+        pend |= t->group->sig.shared_pending.load_acquire();
     }
-    return pend & __atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+    return pend & t->sig.blocked.load_acquire();
 }
 
 /**
@@ -139,7 +140,7 @@ __PRIVILEGED_CODE static send_verdict classify_send(sched::thread_group* tg,
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static void wake_for_signal(sched::task* t) {
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     timer::cancel_sleep(t);
     sched::wake(t);
 }
@@ -152,7 +153,7 @@ __PRIVILEGED_CODE static void wake_for_signal(sched::task* t) {
  */
 __PRIVILEGED_CODE static bool wake_eligible(sched::task* t, sig_set_t bit,
                                             bool needs_handler) {
-    if (__atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE) & bit) {
+    if (t->sig.blocked.load_acquire() & bit) {
         return false;
     }
     return !needs_handler || !(t->exec.flags & sched::TASK_FLAG_ELEVATED);
@@ -171,7 +172,7 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
         // SIGKILL is process-wide: the shared bit is fatal for every thread
         // at its next kernel crossing, not only after leader teardown
         sched::thread_group* tg = t->group;
-        __atomic_fetch_or(&tg->sig.shared_pending, sig_bit(SIGKILL), __ATOMIC_ACQ_REL);
+        tg->sig.shared_pending.fetch_or_acq_rel(sig_bit(SIGKILL));
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
 
         if (tg->leader && tg->leader != t) {
@@ -184,7 +185,7 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
     }
 
     send_verdict verdict = classify_send(t->group, sig);
-    sig_set_t blocked = __atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+    sig_set_t blocked = t->sig.blocked.load_acquire();
     bool is_blocked = (blocked & sig_bit(sig)) != 0;
 
     // Ignored signals are dropped unless blocked (the action may change
@@ -193,7 +194,7 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
         return OK;
     }
 
-    __atomic_fetch_or(&t->sig.pending, sig_bit(sig), __ATOMIC_ACQ_REL);
+    t->sig.pending.fetch_or_acq_rel(sig_bit(sig));
     if (verdict != send_verdict::IGNORABLE &&
         wake_eligible(t, sig_bit(sig), verdict == send_verdict::HANDLED)) {
         wake_for_signal(t);
@@ -207,7 +208,7 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
     }
 
     if (sig == SIGKILL) {
-        __atomic_fetch_or(&tg->sig.shared_pending, sig_bit(SIGKILL), __ATOMIC_ACQ_REL);
+        tg->sig.shared_pending.fetch_or_acq_rel(sig_bit(SIGKILL));
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
 
         if (tg->leader) {
@@ -227,25 +228,25 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
         // Droppable only if no thread has it blocked
         bool blocked_somewhere = false;
         if (tg->leader &&
-            (__atomic_load_n(&tg->leader->sig.blocked, __ATOMIC_ACQUIRE) & bit)) {
+            (tg->leader->sig.blocked.load_acquire() & bit)) {
             blocked_somewhere = true;
         }
 
         for (sched::task& thread : tg->threads) {
-            if (__atomic_load_n(&thread.sig.blocked, __ATOMIC_ACQUIRE) & bit) {
+            if (thread.sig.blocked.load_acquire() & bit) {
                 blocked_somewhere = true;
                 break;
             }
         }
 
         if (blocked_somewhere) {
-            __atomic_fetch_or(&tg->sig.shared_pending, bit, __ATOMIC_ACQ_REL);
+            tg->sig.shared_pending.fetch_or_acq_rel(bit);
         }
         sync::spin_unlock_irqrestore(tg->lock, irq);
         return OK;
     }
 
-    __atomic_fetch_or(&tg->sig.shared_pending, bit, __ATOMIC_ACQ_REL);
+    tg->sig.shared_pending.fetch_or_acq_rel(bit);
 
     if (verdict != send_verdict::IGNORABLE) {
         // Wake one thread the signal can act on now, leader preferred
@@ -278,7 +279,7 @@ __PRIVILEGED_CODE int32_t send_to_group_id(uint32_t group_id, uint32_t sig) {
     sync::irq_state irq = sched::g_task_registry.lock();
     sched::g_task_registry.for_each_locked([&](sched::task& t) {
         sched::thread_group* tg = t.group;
-        if (!tg || __atomic_load_n(&tg->group_id, __ATOMIC_ACQUIRE) != group_id) {
+        if (!tg || tg->group_id.load_acquire() != group_id) {
             return;
         }
 
@@ -302,15 +303,15 @@ __PRIVILEGED_CODE int32_t send_to_group_id(uint32_t group_id, uint32_t sig) {
 }
 
 __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t) {
-    sig_set_t pending = __atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE);
+    sig_set_t pending = t->sig.pending.load_acquire();
     sig_set_t shared = t->group
-        ? __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE) : 0;
+        ? t->group->sig.shared_pending.load_acquire() : 0;
 
     // A pending SIGKILL is the "must terminate" marker and outranks all.
     // Report the signal that began group termination if one was recorded.
     if ((pending | shared) & sig_bit(SIGKILL)) {
         uint32_t es = t->group
-            ? __atomic_load_n(&t->group->sig.exit_signal, __ATOMIC_ACQUIRE) : 0;
+            ? t->group->sig.exit_signal.load_acquire() : 0;
         return es ? es : SIGKILL;
     }
 
@@ -319,7 +320,7 @@ __PRIVILEGED_CODE uint32_t fatal_pending(sched::task* t) {
     }
 
     sig_set_t deliverable = (pending | shared)
-        & ~__atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+        & ~t->sig.blocked.load_acquire();
     if (!deliverable) {
         return 0;
     }
@@ -360,10 +361,10 @@ __PRIVILEGED_CODE uint32_t next_deliverable(sched::task* t) {
         return 0;
     }
 
-    sig_set_t pending = __atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE)
-        | __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE);
+    sig_set_t pending = t->sig.pending.load_acquire()
+        | t->group->sig.shared_pending.load_acquire();
     sig_set_t deliverable = pending
-        & ~__atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
+        & ~t->sig.blocked.load_acquire();
 
     if (!deliverable) {
         return 0;
@@ -394,9 +395,9 @@ __PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
     }
 
     // Lock-free fast path, the boundary check must stay cheap
-    sig_set_t blocked = __atomic_load_n(&t->sig.blocked, __ATOMIC_ACQUIRE);
-    sig_set_t deliverable = (__atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE)
-        | __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE))
+    sig_set_t blocked = t->sig.blocked.load_acquire();
+    sig_set_t deliverable = (t->sig.pending.load_acquire()
+        | t->group->sig.shared_pending.load_acquire())
         & ~blocked;
     if (!deliverable) {
         return false;
@@ -406,8 +407,8 @@ __PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
 
     // Re-read under the lock: bits are only cleared by sig.lock holders,
     // so the selection cannot race with a discard or another consumer
-    deliverable = (__atomic_load_n(&t->sig.pending, __ATOMIC_ACQUIRE)
-        | __atomic_load_n(&t->group->sig.shared_pending, __ATOMIC_ACQUIRE))
+    deliverable = (t->sig.pending.load_acquire()
+        | t->group->sig.shared_pending.load_acquire())
         & ~blocked;
 
     uint32_t selected = 0;
@@ -429,9 +430,9 @@ __PRIVILEGED_CODE bool take_deliverable(sched::task* t, uint32_t* sig,
 
     // Consume one pending instance, thread set before the shared set
     const sig_set_t keep = ~sig_bit(selected);
-    if (!(__atomic_fetch_and(&t->sig.pending, keep, __ATOMIC_ACQ_REL)
+    if (!(t->sig.pending.fetch_and_acq_rel(keep)
           & sig_bit(selected))) {
-        __atomic_fetch_and(&t->group->sig.shared_pending, keep, __ATOMIC_ACQ_REL);
+        t->group->sig.shared_pending.fetch_and_acq_rel(keep);
     }
 
     *act = t->group->sig.actions[selected - 1];
@@ -471,7 +472,7 @@ __PRIVILEGED_CODE void untake_deliverable(sched::task* t, uint32_t sig,
         sync::spin_unlock_irqrestore(t->group->sig.lock, irq);
     }
 
-    __atomic_fetch_or(&t->sig.pending, sig_bit(sig), __ATOMIC_ACQ_REL);
+    t->sig.pending.fetch_or_acq_rel(sig_bit(sig));
 }
 
 __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
@@ -481,16 +482,16 @@ __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
     // Native kills (proc_kill) stay thread-scoped: the SIGKILL bit
     // is set without recording a group exit signal
     bool native_kill =
-        (__atomic_load_n(&self->sig.pending, __ATOMIC_ACQUIRE) & sig_bit(SIGKILL)) &&
-        (!tg || __atomic_load_n(&tg->sig.exit_signal, __ATOMIC_ACQUIRE) == 0);
+        (self->sig.pending.load_acquire() & sig_bit(SIGKILL)) &&
+        (!tg || tg->sig.exit_signal.load_acquire() == 0);
 
     if (tg && !native_kill) {
         // First recorded signal wins so every group member reports it,
         // including this thread if another already recorded one
         uint32_t expected = 0;
-        if (!__atomic_compare_exchange_n(&tg->sig.exit_signal, &expected, sig,
-                                         false, __ATOMIC_ACQ_REL,
-                                         __ATOMIC_ACQUIRE)) {
+        if (!tg->sig.exit_signal.cmpxchg_strong_acq_rel(expected, sig)) {
+            // Acquire pairs with the winning store before adopting its value.
+            sync::atomic_fence_acquire();
             sig = expected;
         }
 
@@ -504,7 +505,7 @@ __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
     }
 
     // The SIGKILL bit makes exit() encode a killed-by-signal wait status
-    __atomic_fetch_or(&self->sig.pending, sig_bit(SIGKILL), __ATOMIC_RELEASE);
+    self->sig.pending.fetch_or_release(sig_bit(SIGKILL));
     sched::exit(static_cast<int32_t>(sig));
 }
 

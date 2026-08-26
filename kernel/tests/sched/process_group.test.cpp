@@ -29,12 +29,12 @@ static void init_process(sched::task* t, sched::thread_group* tg, uint32_t tid) 
     tg->lock = sync::SPINLOCK_INIT;
     tg->leader = t;
     tg->pid = tid;
-    tg->group_id = tid;
+    tg->group_id.store_relaxed(tid);
     tg->threads.init();
     tg->thread_count = 0;
 
     t->tid = tid;
-    t->state = sched::TASK_STATE_CREATED;
+    t->state.store_relaxed(sched::TASK_STATE_CREATED);
     t->group = tg;
 }
 
@@ -68,7 +68,7 @@ static void attach_self_group() {
     g_self_tg->lock = sync::SPINLOCK_INIT;
     g_self_tg->leader = self;
     g_self_tg->pid = self->tid;
-    g_self_tg->group_id = self->tid;
+    g_self_tg->group_id.store_relaxed(self->tid);
     g_self_tg->threads.init();
     g_self_tg->thread_count = 0;
 
@@ -143,12 +143,12 @@ TEST(process_group, setpgid_self_creates_and_joins) {
     // Making yourself your own group is always allowed
     RUN_ELEVATED({ rc = sys_setpgid(0, 0, 0, 0, 0, 0); });
     EXPECT_EQ(rc, 0);
-    EXPECT_EQ(g_self_tg->group_id, self_tid);
+    EXPECT_EQ(g_self_tg->group_id.load_relaxed(), self_tid);
 
     // Joining an existing group with a live member
     RUN_ELEVATED({ rc = sys_setpgid(0, TEST_TID, 0, 0, 0, 0); });
     EXPECT_EQ(rc, 0);
-    EXPECT_EQ(g_self_tg->group_id, TEST_TID);
+    EXPECT_EQ(g_self_tg->group_id.load_relaxed(), TEST_TID);
 
     detach_self_group();
 }
@@ -195,13 +195,13 @@ TEST(process_group, setpgid_regroups_unstarted_child) {
     // An unstarted child owned via a handle may be moved into a live group
     RUN_ELEVATED({ rc = sys_setpgid(TEST_TID, TEST_TID2, 0, 0, 0, 0); });
     EXPECT_EQ(rc, 0);
-    EXPECT_EQ(g_tg->group_id, TEST_TID2);
+    EXPECT_EQ(g_tg->group_id.load_relaxed(), TEST_TID2);
 
     // A started child may not be re-grouped anymore
-    g_proc->state = sched::TASK_STATE_READY;
+    g_proc->state.store_relaxed(sched::TASK_STATE_READY);
     RUN_ELEVATED({ rc = sys_setpgid(TEST_TID, 0, 0, 0, 0, 0); });
     EXPECT_EQ(rc, syscall::EACCES);
-    g_proc->state = sched::TASK_STATE_CREATED;
+    g_proc->state.store_relaxed(sched::TASK_STATE_CREATED);
 
     // Detach the hand-built child before dropping the proc resource so
     // its close path cannot run real task teardown on it

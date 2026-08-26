@@ -17,7 +17,7 @@ using test_helpers::brief_delay;
 // Deterministic handshake: wait until the task has actually blocked.
 static bool wait_until_blocked(sched::task* t) {
     uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
-    while (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != sched::TASK_STATE_BLOCKED) {
+    while (t->state.load_acquire() != sched::TASK_STATE_BLOCKED) {
         if (clock::now_ns() > deadline) return false;
     }
     return true;
@@ -29,9 +29,9 @@ TEST_SUITE(kill);
 // A task sleeping for a long time is woken immediately by force_wake_for_kill.
 // Verifies: kill_pending is set, sleep is cancelled, task completes promptly.
 
-static volatile uint32_t g_sleep_kill_done = 0;
-static volatile uint32_t g_sleep_kill_was_pending = 0;
-static volatile uint64_t g_sleep_kill_elapsed_ns = 0;
+static sync::atomic<uint32_t> g_sleep_kill_done;
+static sync::atomic<uint32_t> g_sleep_kill_was_pending;
+static sync::atomic<uint64_t> g_sleep_kill_elapsed_ns;
 
 static void sleep_kill_fn(void*) {
     uint64_t start = clock::now_ns();
@@ -39,21 +39,21 @@ static void sleep_kill_fn(void*) {
         sched::sleep_ns(5000000000ULL); // 5 seconds -- should be cancelled
     });
     uint64_t elapsed = clock::now_ns() - start;
-    __atomic_store_n(&g_sleep_kill_elapsed_ns, elapsed, __ATOMIC_RELEASE);
+    g_sleep_kill_elapsed_ns.store_release(elapsed);
 
     uint32_t kp = 0;
     RUN_ELEVATED({
         kp = sched::is_kill_pending() ? 1u : 0u;
     });
-    __atomic_store_n(&g_sleep_kill_was_pending, kp, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_sleep_kill_done, 1, __ATOMIC_RELEASE);
+    g_sleep_kill_was_pending.store_release(kp);
+    g_sleep_kill_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(kill, force_wake_kills_sleeping_task) {
-    g_sleep_kill_done = 0;
-    g_sleep_kill_was_pending = 0;
-    g_sleep_kill_elapsed_ns = 0;
+    g_sleep_kill_done.store_relaxed(0);
+    g_sleep_kill_was_pending.store_relaxed(0);
+    g_sleep_kill_elapsed_ns.store_relaxed(0);
 
     sched::task* t = nullptr;
     RUN_ELEVATED({
@@ -68,9 +68,9 @@ TEST(kill, force_wake_kills_sleeping_task) {
         sched::force_wake_for_kill(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_sleep_kill_done));
-    EXPECT_EQ(__atomic_load_n(&g_sleep_kill_was_pending, __ATOMIC_ACQUIRE), 1u);
-    EXPECT_LT(__atomic_load_n(&g_sleep_kill_elapsed_ns, __ATOMIC_ACQUIRE),
+    ASSERT_TRUE(spin_wait(g_sleep_kill_done));
+    EXPECT_EQ(g_sleep_kill_was_pending.load_acquire(), 1u);
+    EXPECT_LT(g_sleep_kill_elapsed_ns.load_acquire(),
               static_cast<uint64_t>(2000000000)); // woke in < 2s, not 5s
 }
 
@@ -79,9 +79,9 @@ TEST(kill, force_wake_kills_sleeping_task) {
 // at the block commit point instead of being lost until natural expiry.
 
 TEST(kill, kill_before_sleep_aborts_sleep) {
-    g_sleep_kill_done = 0;
-    g_sleep_kill_was_pending = 0;
-    g_sleep_kill_elapsed_ns = 0;
+    g_sleep_kill_done.store_relaxed(0);
+    g_sleep_kill_was_pending.store_relaxed(0);
+    g_sleep_kill_elapsed_ns.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(sleep_kill_fn, nullptr, "kill_presleep");
@@ -90,9 +90,9 @@ TEST(kill, kill_before_sleep_aborts_sleep) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_sleep_kill_done));
-    EXPECT_EQ(__atomic_load_n(&g_sleep_kill_was_pending, __ATOMIC_ACQUIRE), 1u);
-    EXPECT_LT(__atomic_load_n(&g_sleep_kill_elapsed_ns, __ATOMIC_ACQUIRE),
+    ASSERT_TRUE(spin_wait(g_sleep_kill_done));
+    EXPECT_EQ(g_sleep_kill_was_pending.load_acquire(), 1u);
+    EXPECT_LT(g_sleep_kill_elapsed_ns.load_acquire(),
               static_cast<uint64_t>(2000000000)); // aborted, not slept for 5s
 }
 
@@ -102,14 +102,14 @@ TEST(kill, kill_before_sleep_aborts_sleep) {
 
 static sync::wait_queue g_wq_kill_wq;
 static sync::spinlock g_wq_kill_lock;
-static volatile uint32_t g_wq_kill_waiting = 0;
-static volatile uint32_t g_wq_kill_done = 0;
-static volatile uint32_t g_wq_kill_was_pending = 0;
+static sync::atomic<uint32_t> g_wq_kill_waiting;
+static sync::atomic<uint32_t> g_wq_kill_done;
+static sync::atomic<uint32_t> g_wq_kill_was_pending;
 
 static void wq_kill_fn(void*) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(g_wq_kill_lock);
-        __atomic_store_n(&g_wq_kill_waiting, 1, __ATOMIC_RELEASE);
+        g_wq_kill_waiting.store_release(1);
         while (!sched::is_kill_pending()) {
             irq = sync::wait(g_wq_kill_wq, g_wq_kill_lock, irq);
         }
@@ -120,17 +120,17 @@ static void wq_kill_fn(void*) {
     RUN_ELEVATED({
         kp = sched::is_kill_pending() ? 1u : 0u;
     });
-    __atomic_store_n(&g_wq_kill_was_pending, kp, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_wq_kill_done, 1, __ATOMIC_RELEASE);
+    g_wq_kill_was_pending.store_release(kp);
+    g_wq_kill_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(kill, force_wake_kills_blocked_on_wq) {
     g_wq_kill_wq.init();
     g_wq_kill_lock = sync::SPINLOCK_INIT;
-    g_wq_kill_waiting = 0;
-    g_wq_kill_done = 0;
-    g_wq_kill_was_pending = 0;
+    g_wq_kill_waiting.store_relaxed(0);
+    g_wq_kill_done.store_relaxed(0);
+    g_wq_kill_was_pending.store_relaxed(0);
 
     sched::task* t = nullptr;
     RUN_ELEVATED({
@@ -139,15 +139,15 @@ TEST(kill, force_wake_kills_blocked_on_wq) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_wq_kill_waiting));
+    ASSERT_TRUE(spin_wait(g_wq_kill_waiting));
     brief_delay();
 
     RUN_ELEVATED({
         sched::force_wake_for_kill(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_wq_kill_done));
-    EXPECT_EQ(__atomic_load_n(&g_wq_kill_was_pending, __ATOMIC_ACQUIRE), 1u);
+    ASSERT_TRUE(spin_wait(g_wq_kill_done));
+    EXPECT_EQ(g_wq_kill_was_pending.load_acquire(), 1u);
 }
 
 // --- self_removal_cleans_wq ---
@@ -155,27 +155,27 @@ TEST(kill, force_wake_kills_blocked_on_wq) {
 
 static sync::wait_queue g_sr_wq;
 static sync::spinlock g_sr_lock;
-static volatile uint32_t g_sr_waiting = 0;
-static volatile uint32_t g_sr_done = 0;
+static sync::atomic<uint32_t> g_sr_waiting;
+static sync::atomic<uint32_t> g_sr_done;
 
 static void sr_waiter_fn(void*) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(g_sr_lock);
-        __atomic_store_n(&g_sr_waiting, 1, __ATOMIC_RELEASE);
+        g_sr_waiting.store_release(1);
         while (!sched::is_kill_pending()) {
             irq = sync::wait(g_sr_wq, g_sr_lock, irq);
         }
         sync::spin_unlock_irqrestore(g_sr_lock, irq);
     });
-    __atomic_store_n(&g_sr_done, 1, __ATOMIC_RELEASE);
+    g_sr_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(kill, self_removal_cleans_wq) {
     g_sr_wq.init();
     g_sr_lock = sync::SPINLOCK_INIT;
-    g_sr_waiting = 0;
-    g_sr_done = 0;
+    g_sr_waiting.store_relaxed(0);
+    g_sr_done.store_relaxed(0);
 
     sched::task* t = nullptr;
     RUN_ELEVATED({
@@ -184,48 +184,46 @@ TEST(kill, self_removal_cleans_wq) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_sr_waiting));
+    ASSERT_TRUE(spin_wait(g_sr_waiting));
     brief_delay();
 
     RUN_ELEVATED({
         sched::force_wake_for_kill(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_sr_done));
+    ASSERT_TRUE(spin_wait(g_sr_done));
     EXPECT_TRUE(g_sr_wq.waiters.empty());
 }
 
 // --- double_kill_is_harmless ---
 // Calling force_wake_for_kill twice on the same task does not crash.
 
-static volatile uint32_t g_double_waiting = 0;
-static volatile uint32_t g_double_done = 0;
-static volatile uint32_t g_double_kp = 0;
+static sync::atomic<uint32_t> g_double_waiting;
+static sync::atomic<uint32_t> g_double_done;
+static sync::atomic<uint32_t> g_double_kp;
 static sync::wait_queue g_double_wq;
 static sync::spinlock g_double_lock;
 
 static void double_kill_fn(void*) {
     RUN_ELEVATED({
         sync::irq_state irq = sync::spin_lock_irqsave(g_double_lock);
-        __atomic_store_n(&g_double_waiting, 1, __ATOMIC_RELEASE);
+        g_double_waiting.store_release(1);
         while (!sched::is_kill_pending()) {
             irq = sync::wait(g_double_wq, g_double_lock, irq);
         }
         sync::spin_unlock_irqrestore(g_double_lock, irq);
-        __atomic_store_n(&g_double_kp,
-            sched::is_kill_pending() ? 1u : 0u,
-            __ATOMIC_RELEASE);
+        g_double_kp.store_release(sched::is_kill_pending() ? 1u : 0u);
     });
-    __atomic_store_n(&g_double_done, 1, __ATOMIC_RELEASE);
+    g_double_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(kill, double_kill_is_harmless) {
     g_double_wq.init();
     g_double_lock = sync::SPINLOCK_INIT;
-    g_double_waiting = 0;
-    g_double_done = 0;
-    g_double_kp = 0;
+    g_double_waiting.store_relaxed(0);
+    g_double_done.store_relaxed(0);
+    g_double_kp.store_relaxed(0);
 
     sched::task* t = nullptr;
     RUN_ELEVATED({
@@ -234,7 +232,7 @@ TEST(kill, double_kill_is_harmless) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_double_waiting));
+    ASSERT_TRUE(spin_wait(g_double_waiting));
     brief_delay();
 
     RUN_ELEVATED({
@@ -242,28 +240,28 @@ TEST(kill, double_kill_is_harmless) {
         sched::force_wake_for_kill(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_double_done));
-    EXPECT_EQ(__atomic_load_n(&g_double_kp, __ATOMIC_ACQUIRE), 1u);
+    ASSERT_TRUE(spin_wait(g_double_done));
+    EXPECT_EQ(g_double_kp.load_acquire(), 1u);
 }
 
 // --- is_kill_pending_accessor ---
 // Verifies is_kill_pending() returns correct values before and after setting the flag.
 
-static volatile uint32_t g_ikp_before = 0xFF;
-static volatile uint32_t g_ikp_after = 0xFF;
-static volatile uint32_t g_ikp_done = 0;
-static volatile uint32_t g_ikp_flag_set = 0;
-static volatile uint32_t g_ikp_started = 0;
+static sync::atomic<uint32_t> g_ikp_before{0xFF};
+static sync::atomic<uint32_t> g_ikp_after{0xFF};
+static sync::atomic<uint32_t> g_ikp_done;
+static sync::atomic<uint32_t> g_ikp_flag_set;
+static sync::atomic<uint32_t> g_ikp_started;
 
 static void ikp_fn(void*) {
     uint32_t before = 0;
     RUN_ELEVATED({
         before = sched::is_kill_pending() ? 1 : 0;
     });
-    __atomic_store_n(&g_ikp_before, before, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_ikp_started, 1, __ATOMIC_RELEASE);
+    g_ikp_before.store_release(before);
+    g_ikp_started.store_release(1);
 
-    while (!__atomic_load_n(&g_ikp_flag_set, __ATOMIC_ACQUIRE)) {
+    while (!g_ikp_flag_set.load_acquire()) {
         // busy wait for test driver to set kill_pending
     }
 
@@ -271,17 +269,17 @@ static void ikp_fn(void*) {
     RUN_ELEVATED({
         after = sched::is_kill_pending() ? 1 : 0;
     });
-    __atomic_store_n(&g_ikp_after, after, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_ikp_done, 1, __ATOMIC_RELEASE);
+    g_ikp_after.store_release(after);
+    g_ikp_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(kill, is_kill_pending_accessor) {
-    g_ikp_before = 0xFF;
-    g_ikp_after = 0xFF;
-    g_ikp_done = 0;
-    g_ikp_flag_set = 0;
-    g_ikp_started = 0;
+    g_ikp_before.store_relaxed(0xFF);
+    g_ikp_after.store_relaxed(0xFF);
+    g_ikp_done.store_relaxed(0);
+    g_ikp_flag_set.store_relaxed(0);
+    g_ikp_started.store_relaxed(0);
 
     sched::task* t = nullptr;
     RUN_ELEVATED({
@@ -290,17 +288,16 @@ TEST(kill, is_kill_pending_accessor) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_ikp_started));
+    ASSERT_TRUE(spin_wait(g_ikp_started));
 
     RUN_ELEVATED({
-        __atomic_fetch_or(&t->sig.pending,
-                          signals::sig_bit(signals::SIGKILL), __ATOMIC_RELEASE);
+        t->sig.pending.fetch_or_release(signals::sig_bit(signals::SIGKILL));
     });
-    __atomic_store_n(&g_ikp_flag_set, 1, __ATOMIC_RELEASE);
+    g_ikp_flag_set.store_release(1);
 
-    ASSERT_TRUE(spin_wait(&g_ikp_done));
-    EXPECT_EQ(__atomic_load_n(&g_ikp_before, __ATOMIC_ACQUIRE), 0u);
-    EXPECT_EQ(__atomic_load_n(&g_ikp_after, __ATOMIC_ACQUIRE), 1u);
+    ASSERT_TRUE(spin_wait(g_ikp_done));
+    EXPECT_EQ(g_ikp_before.load_acquire(), 0u);
+    EXPECT_EQ(g_ikp_after.load_acquire(), 1u);
 }
 
 // --- wait_status_normal_exit ---

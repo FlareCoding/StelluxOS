@@ -12,7 +12,7 @@ namespace sync {
 __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
     auto* entry = heap::kalloc_new<poll_entry>();
     if (!entry) {
-        __atomic_store_n(&pt.error, 1, __ATOMIC_RELEASE);
+        pt.error.store_release(1);
         return;
     }
 
@@ -29,11 +29,11 @@ __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
 }
 
 __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
-    if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
+    if (pt.triggered.load_acquire()) {
         return true;
     }
 
-    if (__atomic_load_n(&pt.error, __ATOMIC_ACQUIRE)) {
+    if (pt.error.load_acquire()) {
         return false;
     }
 
@@ -51,7 +51,7 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
 
     // The interrupt check's fence also orders this re-check against the
     // BLOCKED store, closing the race where a source fires during the transition.
-    if (__atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE)) {
+    if (pt.triggered.load_acquire()) {
         sched::cancel_block_task();
         return true;
     }
@@ -64,7 +64,7 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
     sched::yield();
 
     timer::cancel_sleep(self);
-    return __atomic_load_n(&pt.triggered, __ATOMIC_ACQUIRE) != 0;
+    return pt.triggered.load_acquire() != 0;
 }
 
 __PRIVILEGED_CODE void poll_cleanup(poll_table& pt) {

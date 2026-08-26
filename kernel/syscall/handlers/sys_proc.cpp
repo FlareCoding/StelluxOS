@@ -245,7 +245,7 @@ DEFINE_SYSCALL1(proc_start, u_handle) {
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
-    if (!pr->child || pr->child->state != sched::TASK_STATE_CREATED) {
+    if (!pr->child || pr->child->state.load_relaxed() != sched::TASK_STATE_CREATED) {
         sync::spin_unlock_irqrestore(pr->lock, irq);
         resource::resource_release(obj);
         return syscall::EINVAL;
@@ -281,7 +281,7 @@ DEFINE_SYSCALL2(proc_wait, u_handle, u_exit_code_ptr) {
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
-    if (pr->child && pr->child->state == sched::TASK_STATE_CREATED) {
+    if (pr->child && pr->child->state.load_relaxed() == sched::TASK_STATE_CREATED) {
         sync::spin_unlock_irqrestore(pr->lock, irq);
         resource::resource_release(obj);
         return syscall::EINVAL;
@@ -419,7 +419,7 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     }
 
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
-    if (!pr->child || pr->child->state != sched::TASK_STATE_CREATED) {
+    if (!pr->child || pr->child->state.load_relaxed() != sched::TASK_STATE_CREATED) {
         sync::spin_unlock_irqrestore(pr->lock, irq);
         resource::resource_release(proc_obj);
         return syscall::EINVAL;

@@ -32,7 +32,7 @@ struct linux_termios {
     uint8_t  c_cc[19];
 };
 
-__PRIVILEGED_BSS static uint32_t g_next_pty_id;
+__PRIVILEGED_BSS static sync::atomic<uint32_t> g_next_pty_id;
 
 __PRIVILEGED_CODE void pty_channel::ref_destroy(pty_channel* self) {
     if (!self) {
@@ -50,7 +50,7 @@ __PRIVILEGED_CODE static void pty_echo_fn(void* ctx, const uint8_t* buf, size_t 
 
 __PRIVILEGED_CODE static void pty_signal_fn(void* ctx, uint32_t sig) {
     auto* chan = static_cast<pty_channel*>(ctx);
-    uint32_t fg = __atomic_load_n(&chan->m_fg_group, __ATOMIC_ACQUIRE);
+    uint32_t fg = chan->m_fg_group.load_acquire();
     if (fg) {
         (void)signals::send_to_group_id(fg, sig);
     }
@@ -247,8 +247,7 @@ static int32_t do_tcsets(pty_channel* chan, uint64_t arg) {
 }
 
 static int32_t do_tiocgpgrp(pty_channel* chan, uint64_t arg) {
-    int32_t g = static_cast<int32_t>(
-        __atomic_load_n(&chan->m_fg_group, __ATOMIC_ACQUIRE));
+    int32_t g = static_cast<int32_t>(chan->m_fg_group.load_acquire());
 
     int32_t rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(arg), &g, sizeof(g));
@@ -270,8 +269,7 @@ static int32_t do_tiocspgrp(pty_channel* chan, uint64_t arg) {
         return resource::ERR_INVAL;
     }
 
-    __atomic_store_n(&chan->m_fg_group, static_cast<uint32_t>(g),
-                     __ATOMIC_RELEASE);
+    chan->m_fg_group.store_release(static_cast<uint32_t>(g));
     return resource::OK;
 }
 
@@ -415,9 +413,9 @@ __PRIVILEGED_CODE int32_t create_pair(
     terminal::ld_init(&chan->m_ld);
     chan->m_echo = { pty_echo_fn, chan.ptr() };
     chan->m_sig = { pty_signal_fn, chan.ptr() };
-    chan->m_id = __atomic_fetch_add(&g_next_pty_id, 1, __ATOMIC_RELAXED);
+    chan->m_id = g_next_pty_id.fetch_add_relaxed(1);
     chan->m_oflags = PTY_OFLAG_ONLCR;
-    chan->m_fg_group = 0;
+    chan->m_fg_group.store_relaxed(0);
     chan->m_winsize = { 24, 80, 0, 0 };
 
     auto* ep_master = heap::kalloc_new<pty_endpoint>();

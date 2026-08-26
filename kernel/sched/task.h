@@ -7,6 +7,7 @@
 #include "rc/ref_counted.h"
 #include "rc/reaper.h"
 #include "signals/signal_types.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "resource/handle_table.h"
 
@@ -39,7 +40,7 @@ constexpr uint32_t TASK_CLEANUP_STAGE_READY_TO_RECLAIM      = 4;
  */
 struct task_tlb_sync_ticket {
     uint64_t cpu_epoch_snapshot[MAX_CPUS];
-    uint32_t armed;
+    sync::atomic<uint32_t> armed;
 };
 
 struct thread_group;
@@ -60,8 +61,8 @@ struct task {
 
     // Lifecycle
     int32_t        exit_code;
-    uint32_t       state;
-    uint32_t       cleanup_stage;
+    sync::atomic<uint32_t> state;
+    sync::atomic<uint32_t> cleanup_stage;
 
     // Thread id address registered by a cloned thread, exit writes
     // zero there and wakes one futex waiter so pthread_join returns
@@ -80,7 +81,7 @@ struct task {
     list::node              wait_link;
     list::node              timer_link;
     uint64_t                timer_deadline;
-    uint64_t                run_ticks; // timer ticks observed while current
+    sync::atomic<uint64_t>  run_ticks; // timer ticks observed while current
     task_tlb_sync_ticket    tlb_sync_ticket;
     rc::reaper::dead_node   reaper_node;
 
@@ -106,14 +107,14 @@ struct thread_group : rc::ref_counted<thread_group> {
     sync::spinlock lock;
     task*          leader;
     uint32_t       pid; // process leader tid
-    uint32_t       group_id; // process group this process belongs to
+    sync::atomic<uint32_t> group_id; // process group this process belongs to
     list::head<task, &task::group_link> threads; // non-leader threads only
     uint32_t       thread_count; // number of live non-leader threads
 
     // Group exit status recorded by exit_group, zero means unset,
     // otherwise bit 31 is set and bits 8 to 15 hold the exit code
     // already encoded as a normal wait status
-    uint32_t       group_exit_status;
+    sync::atomic<uint32_t> group_exit_status;
 
     // Signals (per-process action table and shared pending set)
     signals::group_signals sig;

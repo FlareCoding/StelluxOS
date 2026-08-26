@@ -3,6 +3,7 @@
 
 #include "common/types.h"
 #include "common/list.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 
 namespace sched { struct task; }
@@ -29,15 +30,15 @@ struct poll_entry {
 
 struct poll_table {
     sched::task* task;
-    uint32_t triggered;
-    uint32_t error;
+    atomic<uint32_t> triggered;
+    atomic<uint32_t> error;
     spinlock lock;
     list::head<poll_entry, &poll_entry::table_link> entries;
 
     void init(sched::task* t) {
         task = t;
-        triggered = 0;
-        error = 0;
+        triggered.store_relaxed(0);
+        error.store_relaxed(0);
         lock = SPINLOCK_INIT;
         entries.init();
     }

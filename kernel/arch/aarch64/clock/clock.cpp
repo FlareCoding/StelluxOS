@@ -2,13 +2,14 @@
 #include "hw/hwtimer.h"
 #include "hw/rtc.h"
 #include "common/logging.h"
+#include "sync/atomic.h"
 
 namespace clock {
 
 static uint64_t g_cnt_freq;
 static uint64_t g_mult;
 static uint32_t g_shift;
-static bool g_calibrated;
+static sync::atomic<bool> g_calibrated;
 static uint64_t g_boot_realtime_ns;
 
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
@@ -60,7 +61,7 @@ __PRIVILEGED_CODE int32_t init() {
     compute_mult_shift(g_cnt_freq, &g_mult, &g_shift);
     g_boot_realtime_ns = rtc::boot_unix_ns();
     enable_el0_counter_access();
-    __atomic_store_n(&g_calibrated, true, __ATOMIC_RELEASE);
+    g_calibrated.store_release(true);
 
     log::info("clock: CNTFRQ=%lu Hz, mult=%lu shift=%u",
               g_cnt_freq, g_mult, g_shift);
@@ -73,14 +74,14 @@ __PRIVILEGED_CODE int32_t init() {
  */
 __PRIVILEGED_CODE int32_t init_ap() {
     enable_el0_counter_access();
-    if (!__atomic_load_n(&g_calibrated, __ATOMIC_ACQUIRE)) {
+    if (!g_calibrated.load_acquire()) {
         return ERR;
     }
     return OK;
 }
 
 uint64_t now_ns() {
-    if (!__atomic_load_n(&g_calibrated, __ATOMIC_ACQUIRE)) {
+    if (!g_calibrated.load_acquire()) {
         return 0;
     }
     uint64_t ticks = hwtimer::read_cntvct();

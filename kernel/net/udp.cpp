@@ -7,6 +7,7 @@
 #include "common/string.h"
 #include "common/ring_buffer.h"
 #include "mm/heap.h"
+#include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "dynpriv/dynpriv.h"
 #include "common/logging.h"
@@ -15,7 +16,7 @@ namespace net {
 
 __PRIVILEGED_DATA static inet_socket* g_udp_sock_list = nullptr;
 __PRIVILEGED_DATA static sync::spinlock g_udp_sock_lock = sync::SPINLOCK_INIT;
-__PRIVILEGED_DATA static volatile uint32_t g_ephemeral_next = UDP_PORT_EPHEMERAL_MIN;
+__PRIVILEGED_DATA static sync::atomic<uint32_t> g_ephemeral_next{UDP_PORT_EPHEMERAL_MIN};
 
 // Ring buffer entry framing for UDP:
 //   [4 bytes: src_ip, network byte order]
@@ -152,7 +153,7 @@ bool udp_try_register(inet_socket* sock) {
 }
 
 uint16_t udp_alloc_ephemeral_port() {
-    uint32_t port = __atomic_fetch_add(&g_ephemeral_next, 1, __ATOMIC_RELAXED);
+    uint32_t port = g_ephemeral_next.fetch_add_relaxed(1);
     uint32_t range = UDP_PORT_EPHEMERAL_MAX - UDP_PORT_EPHEMERAL_MIN + 1;
     return static_cast<uint16_t>(
         UDP_PORT_EPHEMERAL_MIN + (port - UDP_PORT_EPHEMERAL_MIN) % range);

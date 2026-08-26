@@ -187,7 +187,7 @@ DEFINE_SYSCALL2(kill, u_pid, u_sig) {
         if (!caller->group) {
             return syscall::ESRCH;
         }
-        group_id = __atomic_load_n(&caller->group->group_id, __ATOMIC_ACQUIRE);
+        group_id = caller->group->group_id.load_acquire();
     } else {
         if (pid < -TASK_ID_LIMIT) {
             return syscall::ESRCH;

@@ -144,10 +144,10 @@ TEST(sysstat, uptime_advances_between_reads) {
 // Proves: /dev/sysinfo/tasks reports a compute-bound task as running,
 // with numeric lead fields, even when the table spans many reads.
 
-static volatile uint32_t g_tasks_spin_started = 0;
+static sync::atomic<uint32_t> g_tasks_spin_started;
 
 static void tasks_spinner_fn(void*) {
-    __atomic_store_n(&g_tasks_spin_started, 1, __ATOMIC_RELEASE);
+    g_tasks_spin_started.store_release(1);
     // Spin long enough for the reader to stream the whole task table,
     // then exit on our own so no cross-task handshake is needed
     uint64_t deadline = clock::now_ns() + 500ULL * 1000 * 1000;
@@ -161,7 +161,7 @@ TEST(sysstat, tasks_lists_running_tasks) {
     if (smp::cpu_count() < 2) {
         return;
     }
-    g_tasks_spin_started = 0;
+    g_tasks_spin_started.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(tasks_spinner_fn, nullptr,
@@ -171,7 +171,7 @@ TEST(sysstat, tasks_lists_running_tasks) {
         uint32_t target = (percpu::current_cpu_id() + 1) % smp::cpu_count();
         sched::enqueue_on(t, target);
     });
-    ASSERT_TRUE(spin_wait(&g_tasks_spin_started));
+    ASSERT_TRUE(spin_wait(g_tasks_spin_started));
 
     fs::file* f = fs::open("/dev/sysinfo/tasks", fs::O_RDONLY);
     ASSERT_NOT_NULL(f);
