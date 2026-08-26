@@ -43,15 +43,15 @@ static bool wait_for_tid_removal(uint32_t tid) {
 // create_kernel_task inserts the task into g_task_registry before returning.
 // The task is in CREATED state (not yet enqueued). Verify its TID appears.
 
-static volatile uint32_t g_appear_done = 0;
+static sync::atomic<uint32_t> g_appear_done;
 
 static void appear_fn(void*) {
-    __atomic_store_n(&g_appear_done, 1, __ATOMIC_RELEASE);
+    g_appear_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(task_registry_integration, created_task_appears_in_registry) {
-    g_appear_done = 0;
+    g_appear_done.store_relaxed(0);
 
     sched::task* t = nullptr;
     uint32_t tid = 0;
@@ -68,22 +68,22 @@ TEST(task_registry_integration, created_task_appears_in_registry) {
     RUN_ELEVATED({
         sched::enqueue(t);
     });
-    ASSERT_TRUE(spin_wait(&g_appear_done));
+    ASSERT_TRUE(spin_wait(g_appear_done));
 }
 
 // --- multiple_tasks_appear ---
 // Create several kernel tasks, verify all TIDs appear in the registry.
 
 constexpr uint32_t MULTI_COUNT = 4;
-static volatile uint32_t g_multi_done = 0;
+static sync::atomic<uint32_t> g_multi_done;
 
 static void multi_fn(void*) {
-    __atomic_fetch_add(&g_multi_done, 1, __ATOMIC_ACQ_REL);
+    g_multi_done.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(task_registry_integration, multiple_tasks_appear) {
-    g_multi_done = 0;
+    g_multi_done.store_relaxed(0);
     uint32_t tids[MULTI_COUNT];
     sched::task* tasks[MULTI_COUNT] = {};
 
@@ -107,21 +107,21 @@ TEST(task_registry_integration, multiple_tasks_appear) {
         }
     });
 
-    ASSERT_TRUE(spin_wait_ge(&g_multi_done, MULTI_COUNT));
+    ASSERT_TRUE(spin_wait_ge(g_multi_done, MULTI_COUNT));
 }
 
 // --- count_increases_on_create ---
 // Verify that g_task_registry.count() increases when a new task is created.
 
-static volatile uint32_t g_count_done = 0;
+static sync::atomic<uint32_t> g_count_done;
 
 static void count_task_fn(void*) {
-    __atomic_store_n(&g_count_done, 1, __ATOMIC_RELEASE);
+    g_count_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(task_registry_integration, count_increases_on_create) {
-    g_count_done = 0;
+    g_count_done.store_relaxed(0);
 
     uint32_t before = 0;
     uint32_t after = 0;
@@ -140,22 +140,22 @@ TEST(task_registry_integration, count_increases_on_create) {
     RUN_ELEVATED({
         sched::enqueue(t);
     });
-    ASSERT_TRUE(spin_wait(&g_count_done));
+    ASSERT_TRUE(spin_wait(g_count_done));
 }
 
 // --- exited_task_eventually_removed ---
 // Create a task, enqueue it, let it exit. Verify its TID eventually
 // disappears from the registry (cleaned up by the reaper).
 
-static volatile uint32_t g_exit_done = 0;
+static sync::atomic<uint32_t> g_exit_done;
 
 static void exit_task_fn(void*) {
-    __atomic_store_n(&g_exit_done, 1, __ATOMIC_RELEASE);
+    g_exit_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(task_registry_integration, exited_task_eventually_removed) {
-    g_exit_done = 0;
+    g_exit_done.store_relaxed(0);
 
     uint32_t tid = 0;
     RUN_ELEVATED({
@@ -166,7 +166,7 @@ TEST(task_registry_integration, exited_task_eventually_removed) {
     });
 
     // Wait for the task to signal it's about to exit
-    ASSERT_TRUE(spin_wait(&g_exit_done));
+    ASSERT_TRUE(spin_wait(g_exit_done));
 
     // Give the reaper time to process
     brief_delay();
@@ -180,21 +180,21 @@ TEST(task_registry_integration, exited_task_eventually_removed) {
 // A task that does some actual work (sleep) should be in the registry
 // while alive, and removed after exit.
 
-static volatile uint32_t g_work_alive = 0;
-static volatile uint32_t g_work_done = 0;
+static sync::atomic<uint32_t> g_work_alive;
+static sync::atomic<uint32_t> g_work_done;
 
 static void work_task_fn(void*) {
-    __atomic_store_n(&g_work_alive, 1, __ATOMIC_RELEASE);
+    g_work_alive.store_release(1);
     RUN_ELEVATED({
         sched::sleep_ns(50000000ULL); // 50ms
     });
-    __atomic_store_n(&g_work_done, 1, __ATOMIC_RELEASE);
+    g_work_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(task_registry_integration, task_with_work_appears_and_disappears) {
-    g_work_alive = 0;
-    g_work_done = 0;
+    g_work_alive.store_relaxed(0);
+    g_work_done.store_relaxed(0);
 
     uint32_t tid = 0;
     RUN_ELEVATED({
@@ -205,13 +205,13 @@ TEST(task_registry_integration, task_with_work_appears_and_disappears) {
     });
 
     // Wait for the task to be alive
-    ASSERT_TRUE(spin_wait(&g_work_alive));
+    ASSERT_TRUE(spin_wait(g_work_alive));
 
     // While alive, it must be in the registry
     EXPECT_TRUE(tid_in_snapshot(tid));
 
     // Wait for task to finish its work
-    ASSERT_TRUE(spin_wait(&g_work_done));
+    ASSERT_TRUE(spin_wait(g_work_done));
 
     // Give reaper time
     brief_delay();
@@ -226,15 +226,15 @@ TEST(task_registry_integration, task_with_work_appears_and_disappears) {
 // disappear from the registry.
 
 constexpr uint32_t BATCH_COUNT = 4;
-static volatile uint32_t g_batch_done = 0;
+static sync::atomic<uint32_t> g_batch_done;
 
 static void batch_exit_fn(void*) {
-    __atomic_fetch_add(&g_batch_done, 1, __ATOMIC_ACQ_REL);
+    g_batch_done.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(task_registry_integration, multiple_exits_all_cleaned) {
-    g_batch_done = 0;
+    g_batch_done.store_relaxed(0);
     uint32_t tids[BATCH_COUNT];
 
     RUN_ELEVATED({
@@ -247,7 +247,7 @@ TEST(task_registry_integration, multiple_exits_all_cleaned) {
     });
 
     // Wait for all tasks to signal they're exiting
-    ASSERT_TRUE(spin_wait_ge(&g_batch_done, BATCH_COUNT));
+    ASSERT_TRUE(spin_wait_ge(g_batch_done, BATCH_COUNT));
 
     // Give reaper time
     brief_delay();
@@ -262,22 +262,22 @@ TEST(task_registry_integration, multiple_exits_all_cleaned) {
 // --- snapshot_contains_running_tasks ---
 // While tasks are running, snapshot should contain their TIDs.
 
-static volatile uint32_t g_snap_ready = 0;
-static volatile uint32_t g_snap_done = 0;
+static sync::atomic<uint32_t> g_snap_ready;
+static sync::atomic<uint32_t> g_snap_done;
 
 static void snap_task_fn(void*) {
-    __atomic_fetch_add(&g_snap_ready, 1, __ATOMIC_ACQ_REL);
+    g_snap_ready.fetch_add_acq_rel(1);
     // Sleep just long enough for the test to take its snapshot
     RUN_ELEVATED({
         sched::sleep_ns(100000000ULL); // 100ms
     });
-    __atomic_fetch_add(&g_snap_done, 1, __ATOMIC_ACQ_REL);
+    g_snap_done.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(task_registry_integration, snapshot_contains_running_tasks) {
-    g_snap_ready = 0;
-    g_snap_done = 0;
+    g_snap_ready.store_relaxed(0);
+    g_snap_done.store_relaxed(0);
 
     constexpr uint32_t N = 3;
     uint32_t tids[N];
@@ -292,7 +292,7 @@ TEST(task_registry_integration, snapshot_contains_running_tasks) {
     });
 
     // Wait for all tasks to signal they're alive
-    ASSERT_TRUE(spin_wait_ge(&g_snap_ready, N));
+    ASSERT_TRUE(spin_wait_ge(g_snap_ready, N));
 
     // Tasks are now sleeping. Take a snapshot -- they must still be in registry.
     for (uint32_t i = 0; i < N; i++) {
@@ -303,22 +303,22 @@ TEST(task_registry_integration, snapshot_contains_running_tasks) {
     // Use a generous busy-wait since tasks sleep 100ms then exit.
     constexpr uint64_t DONE_TIMEOUT = 500000000ULL;
     uint64_t spins = 0;
-    while (__atomic_load_n(&g_snap_done, __ATOMIC_ACQUIRE) < N) {
+    while (g_snap_done.load_acquire() < N) {
         if (++spins > DONE_TIMEOUT) break;
     }
-    EXPECT_GE(__atomic_load_n(&g_snap_done, __ATOMIC_ACQUIRE), N);
+    EXPECT_GE(g_snap_done.load_acquire(), N);
 }
 
 // --- concurrent_inserts_from_multiple_cpus ---
 // Tasks running on different CPUs each create a sub-task, causing
 // concurrent inserts into the global registry. Verify all TIDs appear.
 
-static volatile uint32_t g_conc_tids[8] = {};
-static volatile uint32_t g_conc_ready = 0;
-static volatile uint32_t g_conc_subtask_done = 0;
+static sync::atomic<uint32_t> g_conc_tids[8] = {};
+static sync::atomic<uint32_t> g_conc_ready;
+static sync::atomic<uint32_t> g_conc_subtask_done;
 
 static void conc_subtask_fn(void*) {
-    __atomic_fetch_add(&g_conc_subtask_done, 1, __ATOMIC_ACQ_REL);
+    g_conc_subtask_done.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
@@ -327,11 +327,11 @@ static void conc_creator_fn(void* arg) {
     RUN_ELEVATED({
         sched::task* sub = sched::create_kernel_task(conc_subtask_fn, nullptr, "reg_csub");
         if (sub) {
-            __atomic_store_n(&g_conc_tids[idx], sub->tid, __ATOMIC_RELEASE);
+            g_conc_tids[idx].store_release(sub->tid);
             sched::enqueue(sub);
         }
     });
-    __atomic_fetch_add(&g_conc_ready, 1, __ATOMIC_ACQ_REL);
+    g_conc_ready.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
@@ -340,9 +340,9 @@ TEST(task_registry_integration, concurrent_inserts_from_multiple_cpus) {
     uint32_t n_creators = cpus < 4 ? cpus : 4;
     if (n_creators < 2) return; // Need at least 2 CPUs for this test
 
-    g_conc_ready = 0;
-    g_conc_subtask_done = 0;
-    for (uint32_t i = 0; i < 8; i++) g_conc_tids[i] = 0;
+    g_conc_ready.store_relaxed(0);
+    g_conc_subtask_done.store_relaxed(0);
+    for (uint32_t i = 0; i < 8; i++) g_conc_tids[i].store_relaxed(0);
 
     RUN_ELEVATED({
         for (uint32_t i = 0; i < n_creators; i++) {
@@ -356,15 +356,15 @@ TEST(task_registry_integration, concurrent_inserts_from_multiple_cpus) {
     });
 
     // Wait for all creators to finish
-    ASSERT_TRUE(spin_wait_ge(&g_conc_ready, n_creators));
+    ASSERT_TRUE(spin_wait_ge(g_conc_ready, n_creators));
 
     // Wait for subtasks
-    ASSERT_TRUE(spin_wait_ge(&g_conc_subtask_done, n_creators));
+    ASSERT_TRUE(spin_wait_ge(g_conc_subtask_done, n_creators));
 
     // All subtask TIDs should have appeared in the registry at some point.
     // Since subtasks may have already exited, we check that TIDs were assigned.
     for (uint32_t i = 0; i < n_creators; i++) {
-        uint32_t sub_tid = __atomic_load_n(&g_conc_tids[i], __ATOMIC_ACQUIRE);
+        uint32_t sub_tid = g_conc_tids[i].load_acquire();
         EXPECT_NE(sub_tid, static_cast<uint32_t>(0));
     }
 }
@@ -374,16 +374,16 @@ TEST(task_registry_integration, concurrent_inserts_from_multiple_cpus) {
 
 constexpr uint32_t RAPID_WAVES = 3;
 constexpr uint32_t RAPID_PER_WAVE = 4;
-static volatile uint32_t g_rapid_done = 0;
+static sync::atomic<uint32_t> g_rapid_done;
 
 static void rapid_exit_fn(void*) {
-    __atomic_fetch_add(&g_rapid_done, 1, __ATOMIC_ACQ_REL);
+    g_rapid_done.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(task_registry_integration, registry_survives_rapid_create_exit) {
     for (uint32_t wave = 0; wave < RAPID_WAVES; wave++) {
-        g_rapid_done = 0;
+        g_rapid_done.store_relaxed(0);
 
         RUN_ELEVATED({
             for (uint32_t i = 0; i < RAPID_PER_WAVE; i++) {
@@ -394,7 +394,7 @@ TEST(task_registry_integration, registry_survives_rapid_create_exit) {
             }
         });
 
-        ASSERT_TRUE(spin_wait_ge(&g_rapid_done, RAPID_PER_WAVE));
+        ASSERT_TRUE(spin_wait_ge(g_rapid_done, RAPID_PER_WAVE));
         brief_delay();
     }
 

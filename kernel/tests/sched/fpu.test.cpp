@@ -44,8 +44,8 @@ static uint64_t read_fpu_reg() {
 // --- fpu_basic_float ---
 // Task writes a known value to an FPU register and reads it back.
 
-static volatile uint64_t g_basic_result = 0;
-static volatile uint32_t g_basic_done = 0;
+static sync::atomic<uint64_t> g_basic_result;
+static sync::atomic<uint32_t> g_basic_done;
 
 static void basic_float_fn(void*) {
     constexpr uint64_t pattern = 0xDEADBEEFCAFEBABEULL;
@@ -56,14 +56,14 @@ static void basic_float_fn(void*) {
     RUN_ELEVATED({
         readback = read_fpu_reg();
     });
-    __atomic_store_n(&g_basic_result, readback, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_basic_done, 1, __ATOMIC_RELEASE);
+    g_basic_result.store_release(readback);
+    g_basic_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(fpu, fpu_basic_float) {
-    g_basic_result = 0;
-    g_basic_done = 0;
+    g_basic_result.store_relaxed(0);
+    g_basic_done.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(
@@ -72,8 +72,8 @@ TEST(fpu, fpu_basic_float) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_basic_done));
-    EXPECT_EQ(__atomic_load_n(&g_basic_result, __ATOMIC_ACQUIRE),
+    ASSERT_TRUE(spin_wait(g_basic_done));
+    EXPECT_EQ(g_basic_result.load_acquire(),
               0xDEADBEEFCAFEBABEULL);
 }
 
@@ -83,13 +83,13 @@ TEST(fpu, fpu_basic_float) {
 
 constexpr uint32_t ISOLATION_ITERS = 50;
 
-static volatile uint32_t g_iso_fail_a = 0;
-static volatile uint32_t g_iso_fail_b = 0;
-static volatile uint32_t g_iso_done_count = 0;
+static sync::atomic<uint32_t> g_iso_fail_a;
+static sync::atomic<uint32_t> g_iso_fail_b;
+static sync::atomic<uint32_t> g_iso_done_count;
 
 static void isolation_task_fn(void* arg) {
     uint64_t fingerprint = reinterpret_cast<uint64_t>(arg);
-    volatile uint32_t* fail_flag = (fingerprint == 0xAAAAAAAAAAAAAAAAULL)
+    sync::atomic<uint32_t>* fail_flag = (fingerprint == 0xAAAAAAAAAAAAAAAAULL)
         ? &g_iso_fail_a : &g_iso_fail_b;
 
     for (uint32_t i = 0; i < ISOLATION_ITERS; i++) {
@@ -102,18 +102,18 @@ static void isolation_task_fn(void* arg) {
             readback = read_fpu_reg();
         });
         if (readback != fingerprint) {
-            __atomic_store_n(fail_flag, 1, __ATOMIC_RELEASE);
+            fail_flag->store_release(1);
             break;
         }
     }
-    __atomic_fetch_add(&g_iso_done_count, 1, __ATOMIC_ACQ_REL);
+    g_iso_done_count.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(fpu, fpu_context_isolation) {
-    g_iso_fail_a = 0;
-    g_iso_fail_b = 0;
-    g_iso_done_count = 0;
+    g_iso_fail_a.store_relaxed(0);
+    g_iso_fail_b.store_relaxed(0);
+    g_iso_done_count.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* ta = sched::create_kernel_task(
@@ -130,16 +130,16 @@ TEST(fpu, fpu_context_isolation) {
         sched::enqueue_on(tb, 0);
     });
 
-    ASSERT_TRUE(spin_wait_ge(&g_iso_done_count, 2));
-    EXPECT_EQ(__atomic_load_n(&g_iso_fail_a, __ATOMIC_ACQUIRE), 0u);
-    EXPECT_EQ(__atomic_load_n(&g_iso_fail_b, __ATOMIC_ACQUIRE), 0u);
+    ASSERT_TRUE(spin_wait_ge(g_iso_done_count, 2));
+    EXPECT_EQ(g_iso_fail_a.load_acquire(), 0u);
+    EXPECT_EQ(g_iso_fail_b.load_acquire(), 0u);
 }
 
 // --- fpu_cross_cpu ---
 // Tasks on different CPUs each write a fingerprint and verify it.
 
-static volatile uint32_t g_cross_fail = 0;
-static volatile uint32_t g_cross_done_count = 0;
+static sync::atomic<uint32_t> g_cross_fail;
+static sync::atomic<uint32_t> g_cross_done_count;
 
 static void cross_cpu_fpu_fn(void* arg) {
     uint64_t fingerprint = reinterpret_cast<uint64_t>(arg);
@@ -154,19 +154,19 @@ static void cross_cpu_fpu_fn(void* arg) {
             readback = read_fpu_reg();
         });
         if (readback != fingerprint) {
-            __atomic_store_n(&g_cross_fail, 1, __ATOMIC_RELEASE);
+            g_cross_fail.store_release(1);
             break;
         }
     }
-    __atomic_fetch_add(&g_cross_done_count, 1, __ATOMIC_ACQ_REL);
+    g_cross_done_count.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(fpu, fpu_cross_cpu) {
     if (smp::cpu_count() < 2) return;
 
-    g_cross_fail = 0;
-    g_cross_done_count = 0;
+    g_cross_fail.store_relaxed(0);
+    g_cross_done_count.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t0 = sched::create_kernel_task(
@@ -183,6 +183,6 @@ TEST(fpu, fpu_cross_cpu) {
         sched::enqueue_on(t1, 1);
     });
 
-    ASSERT_TRUE(spin_wait_ge(&g_cross_done_count, 2));
-    EXPECT_EQ(__atomic_load_n(&g_cross_fail, __ATOMIC_ACQUIRE), 0u);
+    ASSERT_TRUE(spin_wait_ge(g_cross_done_count, 2));
+    EXPECT_EQ(g_cross_fail.load_acquire(), 0u);
 }

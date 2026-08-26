@@ -128,9 +128,9 @@ TEST(poll_resource, ring_buffer_poll_err) {
 // ring_buffer_poll_subscribes_read_wq
 
 static sync::wait_queue g_rb_poll_wq;
-static volatile uint32_t g_rb_poll_waiting;
-static volatile uint32_t g_rb_poll_result;
-static volatile uint32_t g_rb_poll_done;
+static sync::atomic<uint32_t> g_rb_poll_waiting;
+static sync::atomic<uint32_t> g_rb_poll_result;
+static sync::atomic<uint32_t> g_rb_poll_done;
 
 static void rb_poll_waiter_fn(void* arg) {
     auto* rb = static_cast<ring_buffer*>(arg);
@@ -140,28 +140,28 @@ static void rb_poll_waiter_fn(void* arg) {
 
         uint32_t mask = ring_buffer_poll_read(rb, &pt);
         if (mask & sync::POLL_IN) {
-            __atomic_store_n(&g_rb_poll_result, 1, __ATOMIC_RELEASE);
+            g_rb_poll_result.store_release(1);
             sync::poll_cleanup(pt);
-            __atomic_store_n(&g_rb_poll_done, 1, __ATOMIC_RELEASE);
+            g_rb_poll_done.store_release(1);
             sched::exit(0);
             return;
         }
 
-        __atomic_store_n(&g_rb_poll_waiting, 1, __ATOMIC_RELEASE);
+        g_rb_poll_waiting.store_release(1);
         sync::poll_wait(pt, 0);
         // Re-check after wake
         mask = ring_buffer_poll_read(rb, nullptr);
-        __atomic_store_n(&g_rb_poll_result, (mask & sync::POLL_IN) ? 1 : 0, __ATOMIC_RELEASE);
+        g_rb_poll_result.store_release((mask & sync::POLL_IN) ? 1 : 0);
         sync::poll_cleanup(pt);
     });
-    __atomic_store_n(&g_rb_poll_done, 1, __ATOMIC_RELEASE);
+    g_rb_poll_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(poll_resource, ring_buffer_poll_subscribes_read_wq) {
-    g_rb_poll_waiting = 0;
-    g_rb_poll_result = 0;
-    g_rb_poll_done = 0;
+    g_rb_poll_waiting.store_relaxed(0);
+    g_rb_poll_result.store_relaxed(0);
+    g_rb_poll_done.store_relaxed(0);
 
     ring_buffer* rb = nullptr;
     RUN_ELEVATED({ rb = ring_buffer_create(256); });
@@ -173,15 +173,15 @@ TEST(poll_resource, ring_buffer_poll_subscribes_read_wq) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(test_helpers::spin_wait(&g_rb_poll_waiting));
+    ASSERT_TRUE(test_helpers::spin_wait(g_rb_poll_waiting));
     test_helpers::brief_delay();
 
     // Write data to trigger the observer
     uint8_t data[] = {42};
     RUN_ELEVATED({ (void)ring_buffer_write(rb, data, 1, true); });
 
-    ASSERT_TRUE(test_helpers::spin_wait(&g_rb_poll_done));
-    EXPECT_EQ(__atomic_load_n(&g_rb_poll_result, __ATOMIC_ACQUIRE), 1u);
+    ASSERT_TRUE(test_helpers::spin_wait(g_rb_poll_done));
+    EXPECT_EQ(g_rb_poll_result.load_acquire(), 1u);
 
     RUN_ELEVATED({ ring_buffer_destroy(rb); });
 }

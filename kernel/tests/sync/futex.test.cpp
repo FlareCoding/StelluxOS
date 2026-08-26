@@ -16,7 +16,7 @@ TEST_SUITE(futex);
 
 // --- wait returns EAGAIN on value mismatch ---
 
-static volatile uint32_t g_mismatch_val = 42;
+static uint32_t g_mismatch_val = 42;
 
 TEST(futex, wait_eagain_on_mismatch) {
     g_mismatch_val = 42;
@@ -30,7 +30,7 @@ TEST(futex, wait_eagain_on_mismatch) {
 
 // --- wake with no waiters returns 0 ---
 
-static volatile uint32_t g_nowait_val = 0;
+static uint32_t g_nowait_val = 0;
 
 TEST(futex, wake_no_waiters) {
     g_nowait_val = 0;
@@ -44,24 +44,24 @@ TEST(futex, wake_no_waiters) {
 
 // --- basic wait and wake ---
 
-static volatile uint32_t g_basic_val = 0;
-static volatile uint32_t g_basic_waiting = 0;
-static volatile uint32_t g_basic_woken = 0;
+static uint32_t g_basic_val = 0;
+static sync::atomic<uint32_t> g_basic_waiting;
+static sync::atomic<uint32_t> g_basic_woken;
 
 static void basic_waiter_fn(void*) {
-    __atomic_store_n(&g_basic_waiting, 1, __ATOMIC_RELEASE);
+    g_basic_waiting.store_release(1);
     RUN_ELEVATED({
         sync::futex_wait(
             reinterpret_cast<uintptr_t>(&g_basic_val), 0, 0);
     });
-    __atomic_store_n(&g_basic_woken, 1, __ATOMIC_RELEASE);
+    g_basic_woken.store_release(1);
     sched::exit(0);
 }
 
 TEST(futex, basic_wait_and_wake) {
     g_basic_val = 0;
-    g_basic_waiting = 0;
-    g_basic_woken = 0;
+    g_basic_waiting.store_relaxed(0);
+    g_basic_woken.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(
@@ -70,39 +70,39 @@ TEST(futex, basic_wait_and_wake) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_basic_waiting));
+    ASSERT_TRUE(spin_wait(g_basic_waiting));
     brief_delay();
 
-    __atomic_store_n(&g_basic_val, 1, __ATOMIC_RELEASE);
+    sync::atomic_ref<uint32_t>{g_basic_val}.store_release(1);
     RUN_ELEVATED({
         sync::futex_wake(
             reinterpret_cast<uintptr_t>(&g_basic_val), 1);
     });
 
-    EXPECT_TRUE(spin_wait(&g_basic_woken));
+    EXPECT_TRUE(spin_wait(g_basic_woken));
 }
 
 // --- wake respects count ---
 
 constexpr uint32_t WAKE_N_TASKS = 4;
-static volatile uint32_t g_wn_val = 0;
-static volatile uint32_t g_wn_ready = 0;
-static volatile uint32_t g_wn_woken = 0;
+static uint32_t g_wn_val = 0;
+static sync::atomic<uint32_t> g_wn_ready;
+static sync::atomic<uint32_t> g_wn_woken;
 
 static void wake_n_waiter_fn(void*) {
-    __atomic_fetch_add(&g_wn_ready, 1, __ATOMIC_ACQ_REL);
+    g_wn_ready.fetch_add_acq_rel(1);
     RUN_ELEVATED({
         sync::futex_wait(
             reinterpret_cast<uintptr_t>(&g_wn_val), 0, 0);
     });
-    __atomic_fetch_add(&g_wn_woken, 1, __ATOMIC_ACQ_REL);
+    g_wn_woken.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(futex, wake_count_respected) {
     g_wn_val = 0;
-    g_wn_ready = 0;
-    g_wn_woken = 0;
+    g_wn_ready.store_relaxed(0);
+    g_wn_woken.store_relaxed(0);
 
     RUN_ELEVATED({
         for (uint32_t i = 0; i < WAKE_N_TASKS; i++) {
@@ -113,7 +113,7 @@ TEST(futex, wake_count_respected) {
         }
     });
 
-    ASSERT_TRUE(spin_wait_ge(&g_wn_ready, WAKE_N_TASKS));
+    ASSERT_TRUE(spin_wait_ge(g_wn_ready, WAKE_N_TASKS));
     brief_delay();
 
     int32_t woken = 0;
@@ -123,9 +123,9 @@ TEST(futex, wake_count_respected) {
     });
     EXPECT_EQ(woken, static_cast<int32_t>(2));
 
-    ASSERT_TRUE(spin_wait_ge(&g_wn_woken, 2));
+    ASSERT_TRUE(spin_wait_ge(g_wn_woken, 2));
     brief_delay();
-    EXPECT_EQ(__atomic_load_n(&g_wn_woken, __ATOMIC_ACQUIRE), 2u);
+    EXPECT_EQ(g_wn_woken.load_acquire(), 2u);
 
     int32_t rest = 0;
     RUN_ELEVATED({
@@ -134,34 +134,33 @@ TEST(futex, wake_count_respected) {
     });
     EXPECT_EQ(rest, static_cast<int32_t>(2));
 
-    ASSERT_TRUE(spin_wait_ge(&g_wn_woken, WAKE_N_TASKS));
+    ASSERT_TRUE(spin_wait_ge(g_wn_woken, WAKE_N_TASKS));
 }
 
 // --- wait with timeout ---
 
-static volatile uint32_t g_timeout_val = 0;
-static volatile int32_t g_timeout_rc = 0;
-static volatile uint64_t g_timeout_elapsed = 0;
-static volatile uint32_t g_timeout_done = 0;
+static uint32_t g_timeout_val = 0;
+static sync::atomic<int32_t> g_timeout_rc;
+static sync::atomic<uint64_t> g_timeout_elapsed;
+static sync::atomic<uint32_t> g_timeout_done;
 
 static void timeout_waiter_fn(void*) {
     uint64_t before = clock::now_ns();
     RUN_ELEVATED({
-        g_timeout_rc = sync::futex_wait(
+        g_timeout_rc.store_relaxed(sync::futex_wait(
             reinterpret_cast<uintptr_t>(&g_timeout_val), 0,
-            50000000ULL); // 50ms
+            50000000ULL)); // 50ms
     });
-    __atomic_store_n(&g_timeout_elapsed,
-        clock::now_ns() - before, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_timeout_done, 1, __ATOMIC_RELEASE);
+    g_timeout_elapsed.store_release(clock::now_ns() - before);
+    g_timeout_done.store_release(1);
     sched::exit(0);
 }
 
 TEST(futex, wait_timeout) {
     g_timeout_val = 0;
-    g_timeout_rc = 0;
-    g_timeout_elapsed = 0;
-    g_timeout_done = 0;
+    g_timeout_rc.store_relaxed(0);
+    g_timeout_elapsed.store_relaxed(0);
+    g_timeout_done.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* t = sched::create_kernel_task(
@@ -170,20 +169,20 @@ TEST(futex, wait_timeout) {
         sched::enqueue(t);
     });
 
-    ASSERT_TRUE(spin_wait(&g_timeout_done));
-    EXPECT_EQ(static_cast<int32_t>(g_timeout_rc),
+    ASSERT_TRUE(spin_wait(g_timeout_done));
+    EXPECT_EQ(g_timeout_rc.load_relaxed(),
               static_cast<int32_t>(-110)); // ETIMEDOUT
-    EXPECT_GE(g_timeout_elapsed, 10000000ULL);
+    EXPECT_GE(g_timeout_elapsed.load_relaxed(), 10000000ULL);
 }
 
 // --- killed thread unblocks ---
 
-static volatile uint32_t g_kill_val = 0;
-static volatile uint32_t g_kill_entered = 0;
+static uint32_t g_kill_val = 0;
+static sync::atomic<uint32_t> g_kill_entered;
 static sched::task* g_kill_task = nullptr;
 
 static void kill_waiter_fn(void*) {
-    __atomic_store_n(&g_kill_entered, 1, __ATOMIC_RELEASE);
+    g_kill_entered.store_release(1);
     RUN_ELEVATED({
         sync::futex_wait(
             reinterpret_cast<uintptr_t>(&g_kill_val), 0, 0);
@@ -193,7 +192,7 @@ static void kill_waiter_fn(void*) {
 
 TEST(futex, killed_thread_unblocks) {
     g_kill_val = 0;
-    g_kill_entered = 0;
+    g_kill_entered.store_relaxed(0);
     g_kill_task = nullptr;
 
     RUN_ELEVATED({
@@ -203,7 +202,7 @@ TEST(futex, killed_thread_unblocks) {
         sched::enqueue(g_kill_task);
     });
 
-    ASSERT_TRUE(spin_wait(&g_kill_entered));
+    ASSERT_TRUE(spin_wait(g_kill_entered));
     brief_delay();
 
     RUN_ELEVATED({
@@ -219,24 +218,24 @@ TEST(futex, killed_thread_unblocks) {
 // --- wake_all wakes everyone ---
 
 constexpr uint32_t WALL_TASKS = 8;
-static volatile uint32_t g_wall_val = 0;
-static volatile uint32_t g_wall_ready = 0;
-static volatile uint32_t g_wall_woken = 0;
+static uint32_t g_wall_val = 0;
+static sync::atomic<uint32_t> g_wall_ready;
+static sync::atomic<uint32_t> g_wall_woken;
 
 static void wake_all_waiter_fn(void*) {
-    __atomic_fetch_add(&g_wall_ready, 1, __ATOMIC_ACQ_REL);
+    g_wall_ready.fetch_add_acq_rel(1);
     RUN_ELEVATED({
         sync::futex_wait(
             reinterpret_cast<uintptr_t>(&g_wall_val), 0, 0);
     });
-    __atomic_fetch_add(&g_wall_woken, 1, __ATOMIC_ACQ_REL);
+    g_wall_woken.fetch_add_acq_rel(1);
     sched::exit(0);
 }
 
 TEST(futex, wake_all_wakes_everyone) {
     g_wall_val = 0;
-    g_wall_ready = 0;
-    g_wall_woken = 0;
+    g_wall_ready.store_relaxed(0);
+    g_wall_woken.store_relaxed(0);
 
     RUN_ELEVATED({
         for (uint32_t i = 0; i < WALL_TASKS; i++) {
@@ -247,7 +246,7 @@ TEST(futex, wake_all_wakes_everyone) {
         }
     });
 
-    ASSERT_TRUE(spin_wait_ge(&g_wall_ready, WALL_TASKS));
+    ASSERT_TRUE(spin_wait_ge(g_wall_ready, WALL_TASKS));
     brief_delay();
 
     int32_t woken = 0;
@@ -256,45 +255,45 @@ TEST(futex, wake_all_wakes_everyone) {
             reinterpret_cast<uintptr_t>(&g_wall_val));
     });
     EXPECT_EQ(woken, static_cast<int32_t>(WALL_TASKS));
-    EXPECT_TRUE(spin_wait_ge(&g_wall_woken, WALL_TASKS));
+    EXPECT_TRUE(spin_wait_ge(g_wall_woken, WALL_TASKS));
 }
 
 // --- different addresses are independent ---
 
-static volatile uint32_t g_ind_val_a = 0;
-static volatile uint32_t g_ind_val_b = 0;
-static volatile uint32_t g_ind_ready_a = 0;
-static volatile uint32_t g_ind_ready_b = 0;
-static volatile uint32_t g_ind_woken_a = 0;
-static volatile uint32_t g_ind_woken_b = 0;
+static uint32_t g_ind_val_a = 0;
+static uint32_t g_ind_val_b = 0;
+static sync::atomic<uint32_t> g_ind_ready_a;
+static sync::atomic<uint32_t> g_ind_ready_b;
+static sync::atomic<uint32_t> g_ind_woken_a;
+static sync::atomic<uint32_t> g_ind_woken_b;
 
 static void ind_waiter_a_fn(void*) {
-    __atomic_store_n(&g_ind_ready_a, 1, __ATOMIC_RELEASE);
+    g_ind_ready_a.store_release(1);
     RUN_ELEVATED({
         sync::futex_wait(
             reinterpret_cast<uintptr_t>(&g_ind_val_a), 0, 0);
     });
-    __atomic_store_n(&g_ind_woken_a, 1, __ATOMIC_RELEASE);
+    g_ind_woken_a.store_release(1);
     sched::exit(0);
 }
 
 static void ind_waiter_b_fn(void*) {
-    __atomic_store_n(&g_ind_ready_b, 1, __ATOMIC_RELEASE);
+    g_ind_ready_b.store_release(1);
     RUN_ELEVATED({
         sync::futex_wait(
             reinterpret_cast<uintptr_t>(&g_ind_val_b), 0, 0);
     });
-    __atomic_store_n(&g_ind_woken_b, 1, __ATOMIC_RELEASE);
+    g_ind_woken_b.store_release(1);
     sched::exit(0);
 }
 
 TEST(futex, different_addresses_independent) {
     g_ind_val_a = 0;
     g_ind_val_b = 0;
-    g_ind_ready_a = 0;
-    g_ind_ready_b = 0;
-    g_ind_woken_a = 0;
-    g_ind_woken_b = 0;
+    g_ind_ready_a.store_relaxed(0);
+    g_ind_ready_b.store_relaxed(0);
+    g_ind_woken_a.store_relaxed(0);
+    g_ind_woken_b.store_relaxed(0);
 
     RUN_ELEVATED({
         sched::task* ta = sched::create_kernel_task(
@@ -307,8 +306,8 @@ TEST(futex, different_addresses_independent) {
         sched::enqueue(tb);
     });
 
-    ASSERT_TRUE(spin_wait(&g_ind_ready_a));
-    ASSERT_TRUE(spin_wait(&g_ind_ready_b));
+    ASSERT_TRUE(spin_wait(g_ind_ready_a));
+    ASSERT_TRUE(spin_wait(g_ind_ready_b));
     brief_delay();
 
     // Wake only address A
@@ -317,9 +316,9 @@ TEST(futex, different_addresses_independent) {
             reinterpret_cast<uintptr_t>(&g_ind_val_a), 1);
     });
 
-    ASSERT_TRUE(spin_wait(&g_ind_woken_a));
+    ASSERT_TRUE(spin_wait(g_ind_woken_a));
     brief_delay();
-    EXPECT_EQ(__atomic_load_n(&g_ind_woken_b, __ATOMIC_ACQUIRE), 0u);
+    EXPECT_EQ(g_ind_woken_b.load_acquire(), 0u);
 
     // Now wake B
     RUN_ELEVATED({
@@ -327,5 +326,5 @@ TEST(futex, different_addresses_independent) {
             reinterpret_cast<uintptr_t>(&g_ind_val_b), 1);
     });
 
-    EXPECT_TRUE(spin_wait(&g_ind_woken_b));
+    EXPECT_TRUE(spin_wait(g_ind_woken_b));
 }
