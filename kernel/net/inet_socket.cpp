@@ -57,7 +57,7 @@ __PRIVILEGED_CODE static ssize_t inet_sendto(
 
     // Trigger RX processing so pending incoming packets are delivered
     if (iface->poll) {
-        RUN_ELEVATED(iface->poll(iface));
+        iface->poll(iface);
     }
 
     int32_t rc = ipv4_send(iface, dst_ip, IPV4_PROTO_ICMP,
@@ -83,7 +83,7 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
     // Trigger RX processing to deliver pending packets
     netif* iface = get_default_netif();
     if (iface && iface->poll) {
-        RUN_ELEVATED(iface->poll(iface));
+        iface->poll(iface);
     }
 
     // Entries are written as one atomic unit, so once the header is read the
@@ -251,7 +251,7 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
     }
 
     if (iface->poll) {
-        RUN_ELEVATED(iface->poll(iface));
+        iface->poll(iface);
     }
 
     // The checksum's source IP must match what ipv4_send stamps in the IP
@@ -311,7 +311,7 @@ __PRIVILEGED_CODE static ssize_t inet_udp_recvfrom(
 
     netif* iface = get_default_netif();
     if (iface && iface->poll) {
-        RUN_ELEVATED(iface->poll(iface));
+        iface->poll(iface);
     }
 
     uint8_t hdr[UDP_RX_ENTRY_HEADER];

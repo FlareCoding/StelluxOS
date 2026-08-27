@@ -163,7 +163,7 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
 
         sock->state = tcp_state::CLOSED;
 
-        RUN_ELEVATED({
+        {
             sync::irq_lock_guard guard(g_tcp_sock_lock);
 
             while (tcp_pending_conn* pc = sock->accept_queue.pop_front()) {
@@ -198,7 +198,7 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
                 }
                 pp = &(*pp)->next;
             }
-        });
+        }
         sync::spin_unlock_irqrestore(sock->lock, irq);
 
         sync::wake_all(sock->accept_wq);
@@ -411,10 +411,10 @@ __PRIVILEGED_CODE static int32_t tcp_accept(
     }
 
     tcp_pending_conn* pc = nullptr;
-    RUN_ELEVATED({
+    {
         sync::irq_lock_guard guard(g_tcp_sock_lock);
         pc = sock->accept_queue.pop_front();
-    });
+    }
 
     if (!pc) {
         sync::spin_unlock_irqrestore(sock->lock, irq);
@@ -634,12 +634,12 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
     sock->accept_wq.init();
 
     if (!already_registered) {
-        RUN_ELEVATED({
+        {
             sync::irq_lock_guard guard(g_tcp_sock_lock);
 
             sock->next = g_tcp_sock_list;
             g_tcp_sock_list = sock;
-        });
+        }
     }
     sync::spin_unlock_irqrestore(sock->lock, irq);
 

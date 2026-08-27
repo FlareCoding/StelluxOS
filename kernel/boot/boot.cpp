@@ -81,7 +81,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         if (serial_pci) {
             const auto& bar = serial_pci->get_bar(0);
             if (bar.type == pci::BAR_IO && bar.phys != 0 && bar.phys != 0x3F8) {
-                RUN_ELEVATED(serial_pci->enable());
+                serial_pci->enable();
                 serial::set_port(static_cast<uint16_t>(bar.phys));
                 log::info("serial: redirected to PCI adapter at %02x:%02x.%x (port 0x%x)",
                           serial_pci->bus(), serial_pci->slot(), serial_pci->func(),

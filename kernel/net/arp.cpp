@@ -223,7 +223,7 @@ __PRIVILEGED_CODE int32_t query_arp_table(arp_table_status* out) {
     string::memset(out, 0, sizeof(arp_table_status));
     uint32_t count = 0;
 
-    RUN_ELEVATED({
+    {
         sync::irq_lock_guard guard(g_arp_lock);
         uint64_t now = clock::now_ns();
 
@@ -238,7 +238,7 @@ __PRIVILEGED_CODE int32_t query_arp_table(arp_table_status* out) {
             e.flags = 0;
             count++;
         }
-    });
+    }
 
     out->entry_count = count;
     return OK;

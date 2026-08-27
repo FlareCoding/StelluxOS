@@ -46,7 +46,7 @@ int32_t virtqueue::init(uint16_t queue_size, uint16_t queue_index) {
         rc = vmm::alloc_contiguous(
             pages,
             pmm::ZONE_DMA32,
-            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_DMA,
+            paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_DMA,
             vmm::ALLOC_ZERO,
             kva::tag::generic,
             m_dma_vaddr,

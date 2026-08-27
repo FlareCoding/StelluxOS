@@ -34,6 +34,19 @@ SECTIONS {
     .rodata : AT(ADDR(.rodata) - KERNEL_VADDR) {
         __rodata_start = .;
         *(.rodata .rodata.*)
+
+        . = ALIGN(8);
+
+        /* PCI driver registration entries */
+        __pci_drivers_start = .;
+        KEEP(*(.pci_drivers))
+        __pci_drivers_end = .;
+
+        /* USB class driver registration entries */
+        __usb_class_drivers_start = .;
+        KEEP(*(.usb_class_drivers))
+        __usb_class_drivers_end = .;
+
         /* Privileged rodata */
         . = ALIGN(4096);
         __priv_rodata_start = .;
@@ -105,20 +118,6 @@ SECTIONS {
         __stlx_unit_test_hooks_start = .;
         KEEP(*(.stlx_unit_test_hooks))
         __stlx_unit_test_hooks_end = .;
-    } :data
-
-    /* PCI driver registration entries */
-    .pci_drivers : AT(ADDR(.pci_drivers) - KERNEL_VADDR) SUBALIGN(8) {
-        __pci_drivers_start = .;
-        KEEP(*(.pci_drivers))
-        __pci_drivers_end = .;
-    } :data
-
-    /* USB class driver registration entries */
-    .usb_class_drivers : AT(ADDR(.usb_class_drivers) - KERNEL_VADDR) SUBALIGN(8) {
-        __usb_class_drivers_start = .;
-        KEEP(*(.usb_class_drivers))
-        __usb_class_drivers_end = .;
     } :data
 
     /* Ensure end symbols are page-aligned to avoid partial page issues */

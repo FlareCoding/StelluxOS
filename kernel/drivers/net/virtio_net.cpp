@@ -98,7 +98,7 @@ int32_t virtio_net_driver::parse_virtio_caps() {
 int32_t virtio_net_driver::map_config_regions() {
     // Map the BAR that contains the common config
     uintptr_t bar_va = 0;
-    int32_t rc = map_bar(m_pci_cfg.common_bar, bar_va);
+    int32_t rc = map_bar(m_pci_cfg.common_bar, bar_va, paging::PAGE_USER);
     if (rc != 0) {
         log::error("virtio-net: failed to map BAR %u", m_pci_cfg.common_bar);
         return rc;
@@ -113,7 +113,7 @@ int32_t virtio_net_driver::map_config_regions() {
         if (m_pci_cfg.notify_bar == m_pci_cfg.common_bar) {
             notify_bar_va = bar_va;
         } else {
-            rc = map_bar(m_pci_cfg.notify_bar, notify_bar_va);
+            rc = map_bar(m_pci_cfg.notify_bar, notify_bar_va, paging::PAGE_USER);
             if (rc != 0) {
                 log::error("virtio-net: failed to map notify BAR %u", m_pci_cfg.notify_bar);
                 return rc;
@@ -130,7 +130,7 @@ int32_t virtio_net_driver::map_config_regions() {
         if (m_pci_cfg.isr_bar == m_pci_cfg.common_bar) {
             isr_bar_va = bar_va;
         } else {
-            rc = map_bar(m_pci_cfg.isr_bar, isr_bar_va);
+            rc = map_bar(m_pci_cfg.isr_bar, isr_bar_va, paging::PAGE_USER);
             if (rc != 0) {
                 log::error("virtio-net: failed to map ISR BAR %u", m_pci_cfg.isr_bar);
                 return rc;
@@ -146,7 +146,7 @@ int32_t virtio_net_driver::map_config_regions() {
         if (m_pci_cfg.device_bar == m_pci_cfg.common_bar) {
             dev_bar_va = bar_va;
         } else {
-            rc = map_bar(m_pci_cfg.device_bar, dev_bar_va);
+            rc = map_bar(m_pci_cfg.device_bar, dev_bar_va, paging::PAGE_USER);
             if (rc != 0) {
                 log::error("virtio-net: failed to map device BAR %u", m_pci_cfg.device_bar);
                 return rc;
@@ -311,7 +311,7 @@ int32_t virtio_net_driver::init_queues() {
         RUN_ELEVATED(
             alloc_rc = vmm::alloc_contiguous(
                 1, pmm::ZONE_DMA32,
-                paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_DMA,
+                paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_DMA,
                 vmm::ALLOC_ZERO, kva::tag::generic,
                 m_rx_bufs[i].vaddr, m_rx_bufs[i].phys)
         );
@@ -332,7 +332,7 @@ int32_t virtio_net_driver::init_queues() {
         RUN_ELEVATED(
             alloc_rc = vmm::alloc_contiguous(
                 1, pmm::ZONE_DMA32,
-                paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_DMA,
+                paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_USER | paging::PAGE_DMA,
                 vmm::ALLOC_ZERO, kva::tag::generic,
                 m_tx_bufs[i].vaddr, m_tx_bufs[i].phys)
         );
@@ -695,8 +695,9 @@ bool virtio_net_driver::link_callback(net::netif* iface) {
 
     bool up = true;
     if (drv->m_has_status && drv->m_device_cfg) {
-        RUN_ELEVATED(up = (drv->m_device_cfg->status & 1) != 0);
+        up = (drv->m_device_cfg->status & 1) != 0;
     }
+
     return up;
 }
 

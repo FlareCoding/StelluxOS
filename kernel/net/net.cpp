@@ -313,7 +313,7 @@ __PRIVILEGED_CODE int32_t query_status(net_status* out) {
     snapshot_entry snap[MAX_INTERFACES];
     uint32_t count = 0;
 
-    RUN_ELEVATED({
+    {
         sync::irq_lock_guard guard(g_net_lock);
 
         netif* cur = g_iface_list;
@@ -340,7 +340,7 @@ __PRIVILEGED_CODE int32_t query_status(net_status* out) {
             count++;
             cur = cur->next;
         }
-    });
+    }
 
     // Query live link status outside the lock.
     for (uint32_t i = 0; i < count; i++) {
