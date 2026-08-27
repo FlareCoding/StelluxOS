@@ -11,7 +11,7 @@ struct file_resource_impl {
     fs::file* file;
 };
 
-__PRIVILEGED_CODE static int32_t map_fs_error_to_resource(int32_t fs_err) {
+static int32_t map_fs_error_to_resource(int32_t fs_err) {
     switch (fs_err) {
         case fs::ERR_NOENT:
             return ERR_NOENT;

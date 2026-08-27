@@ -107,7 +107,7 @@ __PRIVILEGED_CODE static ssize_t terminal_write(
     return static_cast<ssize_t>(count);
 }
 
-__PRIVILEGED_CODE static void terminal_close(resource::resource_object*) {
+static void terminal_close(resource::resource_object*) {
 }
 
 __PRIVILEGED_CODE static uint32_t terminal_poll(

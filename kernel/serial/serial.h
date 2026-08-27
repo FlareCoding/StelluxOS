@@ -79,9 +79,8 @@ __PRIVILEGED_CODE void on_rx_irq();
  * @brief Get the platform IRQ ID used by the serial port.
  * On x86_64: returns the IDT vector (e.g. 0x24).
  * On AArch64: returns the GIC INTID (e.g. 33 for QEMU virt).
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE uint32_t irq_id();
+uint32_t irq_id();
 
 } // namespace serial
 

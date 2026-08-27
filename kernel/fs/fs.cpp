@@ -47,7 +47,7 @@ node::node(node_type t, instance* fs, const char* name)
     }
 }
 
-__PRIVILEGED_CODE int32_t node::lookup(const char*, size_t, node**)   { return ERR_NOSYS; }
+int32_t node::lookup(const char*, size_t, node**)   { return ERR_NOSYS; }
 int32_t node::create(const char*, size_t, uint32_t, node**) { return ERR_NOSYS; }
 int32_t node::mkdir(const char*, size_t, uint32_t, node**)  { return ERR_NOSYS; }
 int32_t node::unlink(const char*, size_t)           { return ERR_NOSYS; }
@@ -101,7 +101,7 @@ instance::instance(driver* drv, node* root)
     , m_root(rc::strong_ref<node>::adopt(root)) {
 }
 
-__PRIVILEGED_CODE int32_t instance::unmount() {
+int32_t instance::unmount() {
     return OK;
 }
 
@@ -277,7 +277,7 @@ __PRIVILEGED_CODE static int32_t resolve_path_at_internal(
     return OK;
 }
 
-__PRIVILEGED_CODE static int32_t split_parent_path(
+static int32_t split_parent_path(
     const char* path,
     const char** out_name,
     size_t* out_name_len,

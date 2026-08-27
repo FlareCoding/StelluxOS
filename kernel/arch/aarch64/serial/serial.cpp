@@ -167,7 +167,7 @@ __PRIVILEGED_CODE void on_rx_irq() {
     }
 }
 
-__PRIVILEGED_CODE uint32_t irq_id() {
+uint32_t irq_id() {
     return PL011_GIC_INTID;
 }
 

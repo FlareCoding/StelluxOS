@@ -143,13 +143,17 @@ check_docstring() {
 # MAX_INDENT controls how deep to look:
 #   0  = only top-level (function definitions at namespace scope in .cpp)
 #   4  = include class members (declarations in .h)
+#
+# WANT_UNQUALIFIED=1 skips Class::name definitions, so a namespace-scope
+# declaration is never matched against a member function of the same name.
 # ────────────────────────────────────────────────────────────────────────────
 find_unpriv_definition() {
-    local file="$1" fname="$2" max_indent="${3:-0}"
+    local file="$1" fname="$2" max_indent="${3:-0}" want_unqualified="${4:-0}"
 
-    awk -v fname="$fname" -v maxind="$max_indent" '
+    awk -v fname="$fname" -v maxind="$max_indent" -v unqual="$want_unqualified" '
     BEGIN {
         pat = "(^|[^a-zA-Z0-9_])" fname "[[:space:]]*\\("
+        qpat = "::[[:space:]]*" fname "[[:space:]]*\\("
     }
     {
         prev = cur
@@ -159,6 +163,9 @@ find_unpriv_definition() {
         # Skip comment lines
         if ($0 ~ /^[[:space:]]*\/\//) next
         if ($0 ~ /^[[:space:]]*\*/)  next
+
+        # A namespace-scope declaration must not match Class::name definitions
+        if (unqual == 1 && $0 ~ qpat) next
 
         # Check indentation — definitions are at top level
         match($0, /^[[:space:]]*/); indent = RLENGTH
@@ -263,6 +270,11 @@ for hdr in "${HEADERS[@]}"; do
         # Inline functions live entirely in the header — skip
         [[ "$is_inline" == "1" ]] && continue
 
+        # A namespace-scope declaration must not be matched against a
+        # member function that happens to share its name.
+        unqual=0
+        [[ "$qname" != *::* ]] && unqual=1
+
         for src in "${srcs[@]}"; do
             # maxind=0: only top-level definitions (not calls inside function bodies)
             while IFS='|' read -r sline _; do
@@ -270,7 +282,7 @@ for hdr in "${HEADERS[@]}"; do
                 error "$src" "$sline" \
                     "'${fname}' is __PRIVILEGED_CODE in $(rel "$hdr"):${lineno} but NOT in source definition"
                 ((check2_hits++)) || true
-            done < <(find_unpriv_definition "$src" "$fname" 0)
+            done < <(find_unpriv_definition "$src" "$fname" 0 "$unqual")
         done
     done < <(extract_priv_funcs "$hdr")
 done

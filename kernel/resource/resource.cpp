@@ -65,16 +65,16 @@ __PRIVILEGED_CODE int32_t init_task_handles(sched::task* task) {
     return OK;
 }
 
-__PRIVILEGED_CODE static bool valid_open_flags(uint32_t flags) {
+static bool valid_open_flags(uint32_t flags) {
     uint32_t mode = flags & fs::ACCESS_MODE_MASK;
     return mode == fs::O_RDONLY || mode == fs::O_WRONLY || mode == fs::O_RDWR;
 }
 
-__PRIVILEGED_CODE static uint32_t normalize_open_flags(uint32_t flags) {
+static uint32_t normalize_open_flags(uint32_t flags) {
     return flags & (fs::ACCESS_MODE_MASK | fs::O_CREAT | fs::O_EXCL | fs::O_TRUNC | fs::O_APPEND | fs::O_NONBLOCK);
 }
 
-__PRIVILEGED_CODE static uint32_t rights_from_open_flags(uint32_t flags) {
+static uint32_t rights_from_open_flags(uint32_t flags) {
     uint32_t rights = 0;
     uint32_t mode = flags & fs::ACCESS_MODE_MASK;
     if (mode == fs::O_RDONLY || mode == fs::O_RDWR) {

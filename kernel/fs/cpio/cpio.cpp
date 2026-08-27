@@ -15,7 +15,7 @@ constexpr uint32_t S_IFMT  = 0170000;
 constexpr uint32_t S_IFDIR = 0040000;
 constexpr uint32_t S_IFREG = 0100000;
 
-__PRIVILEGED_CODE static uint32_t hex_to_u32(const char* s, size_t len) {
+static uint32_t hex_to_u32(const char* s, size_t len) {
     uint32_t val = 0;
     for (size_t i = 0; i < len; i++) {
         val <<= 4;
@@ -31,11 +31,11 @@ __PRIVILEGED_CODE static uint32_t hex_to_u32(const char* s, size_t len) {
     return val;
 }
 
-__PRIVILEGED_CODE static size_t align4(size_t x) {
+static size_t align4(size_t x) {
     return (x + 3) & ~static_cast<size_t>(3);
 }
 
-__PRIVILEGED_CODE static bool has_dotdot(const char* path) {
+static bool has_dotdot(const char* path) {
     for (size_t i = 0; path[i] != '\0'; i++) {
         if (path[i] == '.' && path[i + 1] == '.') {
             if (i == 0 || path[i - 1] == '/') {

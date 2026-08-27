@@ -17,14 +17,14 @@ __PRIVILEGED_CODE void proc_resource::ref_destroy(proc_resource* self) {
     heap::kfree_delete(self);
 }
 
-__PRIVILEGED_CODE static ssize_t proc_read(
+static ssize_t proc_read(
     resource_object* obj, void* kdst, size_t count, uint32_t flags
 ) {
     (void)obj; (void)kdst; (void)count; (void)flags;
     return ERR_UNSUP;
 }
 
-__PRIVILEGED_CODE static ssize_t proc_write(
+static ssize_t proc_write(
     resource_object* obj, const void* ksrc, size_t count, uint32_t flags
 ) {
     (void)obj; (void)ksrc; (void)count; (void)flags;
