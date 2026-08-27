@@ -144,7 +144,6 @@ static void rb_poll_waiter_fn(void* arg) {
             sync::poll_cleanup(pt);
             g_rb_poll_done.store_release(1);
             sched::exit(0);
-            return;
         }
 
         g_rb_poll_waiting.store_release(1);
