@@ -38,7 +38,7 @@ struct boot_info {
     module_info modules[MAX_BOOT_MODULES];
     uint32_t module_count;
 
-    // Framebuffer (copied from Limine response; fb_phys == 0 means unavailable)
+    // Framebuffer (copied from Limine response, fb_phys == 0 means unavailable)
     struct {
         uint64_t fb_phys;
         uint64_t width;

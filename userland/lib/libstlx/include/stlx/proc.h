@@ -54,8 +54,8 @@ int proc_wait(int handle, int* exit_code);
 
 /**
  * Detach ownership of a child process. The handle becomes invalid. The
- * child continues running independently; when it exits, the system reaper
- * cleans it up. Returns 0 on success, -1 on failure with errno set.
+ * child continues running independently, and when it exits, the system
+ * reaper cleans it up. Returns 0 on success, -1 on failure with errno set.
  */
 int proc_detach(int handle);
 
@@ -75,7 +75,7 @@ int proc_set_handle(int proc_handle, int slot, int resource_handle);
 
 /**
  * Kill a child process. The child is terminated asynchronously. The
- * handle remains valid; call proc_wait() afterward to collect the
+ * handle remains valid, call proc_wait() afterward to collect the
  * exit status. Returns 0 on success, -1 on failure.
  */
 int proc_kill(int handle);
@@ -83,7 +83,7 @@ int proc_kill(int handle);
 /**
  * Create a thread in the caller's address space. The thread shares the
  * caller's mm_context and gets a copy of the caller's handle table and cwd.
- * Returns a handle in CREATED state; call proc_thread_start() to schedule.
+ * Returns a handle in CREATED state, call proc_thread_start() to schedule.
  * The entry function MUST call _exit() -- returning from it is undefined.
  *
  * @param entry  User-space function pointer (thread entry point).

@@ -16,6 +16,7 @@ static int32_t dma_before_all() {
         log::error("dma tests: insufficient free pages (%lu)", g_initial_free_pages);
         return -1;
     }
+
     return 0;
 }
 

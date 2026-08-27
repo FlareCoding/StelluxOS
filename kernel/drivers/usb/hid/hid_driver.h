@@ -43,7 +43,6 @@ private:
     int32_t create_handlers();
     void apply_idle_policy(usb::device* dev);
     void dispatch_report(uint8_t report_id, const uint8_t* data, uint32_t length);
-
 };
 
 } // namespace usb::hid

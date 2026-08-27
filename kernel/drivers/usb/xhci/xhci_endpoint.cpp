@@ -41,6 +41,7 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
         log::error("xhci: failed to allocate async endpoint state for EP %u", endpoint_num());
         return -1;
     }
+
     m_async_state->active_request = nullptr;
     m_async_state->pending_head = nullptr;
     m_async_state->pending_tail = nullptr;
@@ -86,6 +87,7 @@ int32_t xhci_endpoint::init(uint8_t slot_id, const usb::usb_endpoint_descriptor*
         m_async_state = nullptr;
         return -1;
     }
+
     m_dma_buffer_phys = xhci_get_physical_addr(m_dma_buffer);
 
     return 0;
@@ -97,18 +99,22 @@ void xhci_endpoint::destroy() {
             heap::ufree(m_async_state->interrupt_in_stream.payload_storage);
             m_async_state->interrupt_in_stream.payload_storage = nullptr;
         }
+
         if (m_async_state->interrupt_in_stream.payloads) {
             heap::ufree(m_async_state->interrupt_in_stream.payloads);
             m_async_state->interrupt_in_stream.payloads = nullptr;
         }
+
         heap::ufree_delete(m_async_state);
         m_async_state = nullptr;
     }
+
     if (m_dma_buffer) {
         free_xhci_memory(m_dma_buffer);
         m_dma_buffer = nullptr;
         m_dma_buffer_phys = 0;
     }
+
     if (m_ring) {
         m_ring->destroy();
         heap::ufree_delete(m_ring);

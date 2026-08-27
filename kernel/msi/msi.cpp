@@ -74,12 +74,15 @@ __PRIVILEGED_CODE int32_t alloc(uint32_t count, uint32_t alignment,
     if (!g_initialized) {
         return ERR_NOT_READY;
     }
+
     if (count == 0 || count > g_capacity || out_base == nullptr) {
         return ERR_INVALID;
     }
+
     if (alignment == 0) {
         alignment = 1;
     }
+
     if ((alignment & (alignment - 1)) != 0) {
         return ERR_INVALID;
     }
@@ -118,6 +121,7 @@ __PRIVILEGED_CODE int32_t free(uint32_t base, uint32_t count) {
     if (!g_initialized) {
         return ERR_NOT_READY;
     }
+
     if (count == 0 || base + count > g_capacity) {
         return ERR_INVALID;
     }
@@ -168,6 +172,7 @@ __PRIVILEGED_CODE void dispatch(uint32_t vector) {
     if (vector >= g_capacity) {
         return;
     }
+
     handler_fn fn = g_slots[vector].fn.load_acquire();
     if (fn) {
         fn(vector, g_slots[vector].context);

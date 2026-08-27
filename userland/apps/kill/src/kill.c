@@ -24,6 +24,7 @@ static int parse_signal(const char* spec) {
         if (*end != '\0' || sig < 0 || sig > 64) {
             return -1;
         }
+
         return (int)sig;
     }
 
@@ -35,6 +36,7 @@ static int parse_signal(const char* spec) {
             return signal_names[i].sig;
         }
     }
+
     return -1;
 }
 
@@ -48,6 +50,7 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "kill: invalid signal: %s\n", argv[argi]);
             return 1;
         }
+
         argi++;
     }
 
@@ -76,5 +79,6 @@ int main(int argc, char* argv[]) {
             status = 1;
         }
     }
+
     return status;
 }

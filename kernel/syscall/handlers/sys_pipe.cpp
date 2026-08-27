@@ -9,6 +9,7 @@
 
 static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
     if (u_fds == 0) return syscall::EFAULT;
+
     if (flags & ~static_cast<uint32_t>(fs::O_NONBLOCK)) return syscall::EINVAL;
 
     sched::task* task = sched::current();
@@ -30,6 +31,7 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
         resource::resource_release(write_obj);
         return syscall::EMFILE;
     }
+
     resource::resource_release(read_obj);
 
     resource::handle_t h_write = -1;
@@ -41,6 +43,7 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
         resource::resource_release(write_obj);
         return syscall::EMFILE;
     }
+
     resource::resource_release(write_obj);
 
     if (flags & fs::O_NONBLOCK) {

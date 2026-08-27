@@ -21,14 +21,17 @@ static ssize_t read_all(const char* path, char* buf, size_t cap) {
     if (!f) {
         return -1;
     }
+
     size_t total = 0;
     while (total < cap - 1) {
         ssize_t rd = fs::read(f, buf + total, cap - 1 - total);
         if (rd <= 0) {
             break;
         }
+
         total += static_cast<size_t>(rd);
     }
+
     fs::close(f);
     buf[total] = '\0';
     return static_cast<ssize_t>(total);
@@ -46,6 +49,7 @@ static bool parse_labeled_u64(const char* text, const char* label,
             if (*d < '0' || *d > '9') {
                 return false;
             }
+
             uint64_t value = 0;
             while (*d >= '0' && *d <= '9') {
                 value = value * 10 + static_cast<uint64_t>(*d - '0');
@@ -161,6 +165,7 @@ TEST(sysstat, tasks_lists_running_tasks) {
     if (smp::cpu_count() < 2) {
         return;
     }
+
     g_tasks_spin_started.store_relaxed(0);
 
     RUN_ELEVATED({
@@ -189,6 +194,7 @@ TEST(sysstat, tasks_lists_running_tasks) {
         if (rd <= 0) {
             break;
         }
+
         if (first_chunk) {
             EXPECT_TRUE(chunk[0] >= '0' && chunk[0] <= '9');
             first_chunk = false;
@@ -213,6 +219,7 @@ TEST(sysstat, tasks_lists_running_tasks) {
         string::memcpy(window, window + window_len - keep, keep);
         window_len = keep;
     }
+
     fs::close(f);
 
     EXPECT_FALSE(first_chunk);
@@ -235,6 +242,7 @@ TEST(sysstat, snapshot_consistent_across_small_reads) {
         if (rd == 0) {
             break;
         }
+
         ASSERT_EQ(rd, static_cast<ssize_t>(1));
         buf[total++] = c;
     }

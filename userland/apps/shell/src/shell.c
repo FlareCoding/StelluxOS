@@ -38,6 +38,7 @@ static int foreground_child(int handle, int pgrp) {
         if (pgrp <= 0) tcsetpgrp(STDIN_FILENO, 0);
         return -1;
     }
+
     if (pgrp <= 0) {
         pgrp = info.pid;
         set_foreground(pgrp);
@@ -47,6 +48,7 @@ static int foreground_child(int handle, int pgrp) {
 
 static int reap_status(int status) {
     if (STLX_WIFEXITED(status)) return STLX_WEXITSTATUS(status);
+
     if (STLX_WIFSIGNALED(status)) {
         int sig = STLX_WTERMSIG(status);
         const char* name;
@@ -68,6 +70,7 @@ static int reap_status(int status) {
         }
         return 128 + sig;
     }
+
     return status;
 }
 
@@ -95,7 +98,8 @@ static const char* resolve_cmd(const char* name, char* path_buf, int buf_size) {
         path = sep + 1;
     }
 
-    /* Keep the historical candidate so failure messaging is unchanged */
+    /* PATH miss: fall back to /bin so the create attempt still targets
+     * a concrete candidate path */
     int n = snprintf(path_buf, buf_size, "/bin/%s", name);
     return (n > 0 && n < buf_size) ? path_buf : name;
 }
@@ -255,8 +259,8 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
         /* Wire stdin: redirect overrides pipe */
         if (redir_in >= 0) {
             proc_set_handle(handle, STDIN_FILENO, redir_in);
-            /* If there was also a pipe input, we still consumed it above;
-               prev_read_fd will be closed below. */
+            /* Any pipe input left in prev_read_fd is unused and gets
+               closed below */
         } else if (prev_read_fd >= 0) {
             proc_set_handle(handle, STDIN_FILENO, prev_read_fd);
         }
@@ -268,9 +272,8 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
             proc_set_handle(handle, STDOUT_FILENO, pipe_fds[1]);
         }
 
-        /* First stage leads the foreground group, later stages join it.
-         * If the leader setup failed, all stages stay in the shell's
-         * group with the foreground cleared. */
+        /* First stage leads the foreground group, later stages join it. On
+         * leader setup failure all stages stay in the shell's group, foreground cleared. */
         if (i == 0) {
             fg_pgrp = foreground_child(handle, 0);
         } else if (fg_pgrp > 0) {
@@ -288,6 +291,7 @@ static int run_pipeline(char* stages[], int nstages, char* path_buf) {
             set_foreground(g_shell_pgrp);
             return 126;
         }
+
         handles[i] = handle;
 
         /* Close fds the parent no longer needs */
@@ -339,6 +343,7 @@ static int execute_line(char* line, char* path_buf, line_edit_state* editor,
         if (open_redirect_fds(&redir, &redir_in, &redir_out) < 0) {
             return 1;
         }
+
         int builtin_out = (redir_out >= 0) ? redir_out : STDOUT_FILENO;
         int builtin_rc = try_builtin(argc, argv, editor,
                                      last_status, shell_exit_code, builtin_out);
@@ -358,8 +363,9 @@ int main(int argc, char** argv) {
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
         char* cpath = malloc(256);
         if (!cpath) return 1;
+
         int exit_code = 0, should_exit = 0;
-        /* argv strings are modifiable; execute_line tokenizes in place */
+        /* argv strings are modifiable, execute_line tokenizes in place */
         int status = execute_line(argv[2], cpath, NULL, 0, &exit_code, &should_exit);
         free(cpath);
         return should_exit ? exit_code : status;
@@ -391,6 +397,7 @@ int main(int argc, char** argv) {
         } else {
             snprintf(prompt, sizeof(prompt), "$ ");
         }
+
         char* line = line_edit_read(editor, prompt);
         if (!line) break;
         if (line[0] == '\0') continue;

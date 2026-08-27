@@ -62,10 +62,12 @@ static void stlxdm_dirty_add_rect(stlxdm_dirty_t* d,
                                     uint32_t w, uint32_t h) {
     if (d->full_redraw) return;
     if (w == 0 || h == 0) return;
+
     if (d->count >= STLXDM_MAX_DIRTY_RECTS) {
         d->full_redraw = 1;
         return;
     }
+
     stlxdm_rect_t* r = &d->rects[d->count++];
     r->x = x;
     r->y = y;
@@ -125,10 +127,12 @@ static void stlxdm_server_accept(stlxdm_server_t* srv) {
     if (srv->client_count >= STLXGFX_DM_MAX_CLIENTS) {
         return;
     }
+
     int client_fd = stlxgfx_dm_accept(srv->listen_fd);
     if (client_fd < 0) {
         return;
     }
+
     for (int i = 0; i < STLXGFX_DM_MAX_CLIENTS; i++) {
         if (srv->clients[i].fd < 0) {
             srv->clients[i].fd = client_fd;
@@ -137,6 +141,7 @@ static void stlxdm_server_accept(stlxdm_server_t* srv) {
             return;
         }
     }
+
     close(client_fd);
 }
 
@@ -163,6 +168,7 @@ static void stlxdm_server_process_messages(stlxdm_server_t* srv,
             srv->client_count--;
             continue;
         }
+
         if (rc == 0) {
             continue;
         }
@@ -205,6 +211,7 @@ static int stlxdm_compositor_init(stlxdm_compositor_t* comp,
     if (!comp->backbuf) {
         return -1;
     }
+
     return 0;
 }
 
@@ -241,6 +248,7 @@ static void stlxdm_compositor_load_wallpaper(stlxdm_compositor_t* comp,
         crop_w = (uint32_t)img_w;
         crop_h = (uint32_t)(img_w * comp->height / comp->width);
     }
+
     if (crop_w == 0) crop_w = 1;
     if (crop_h == 0) crop_h = 1;
     int32_t crop_x = (int32_t)((img_w - crop_w) / 2);
@@ -299,14 +307,17 @@ static ssize_t stlxdm_read_stats_file(const char* path, char* buf,
     if (fd < 0) {
         return -1;
     }
+
     size_t total = 0;
     while (total < cap - 1) {
         ssize_t rd = read(fd, buf + total, cap - 1 - total);
         if (rd <= 0) {
             break;
         }
+
         total += (size_t)rd;
     }
+
     close(fd);
     buf[total] = '\0';
     return (ssize_t)total;
@@ -318,6 +329,7 @@ static uint64_t stlxdm_stats_field(const char* text, const char* label) {
     if (!p) {
         return 0;
     }
+
     return strtoull(p + strlen(label), NULL, 10);
 }
 
@@ -363,6 +375,7 @@ static void stlxdm_update_sys_stats(void) {
         g_sys_stats_str[0] = '\0';
         return;
     }
+
     uint64_t page_size = stlxdm_stats_field(buf, "page_size ");
     uint64_t total_pages = stlxdm_stats_field(buf, "total_pages ");
     uint64_t used_pages = stlxdm_stats_field(buf, "used_pages ");
@@ -410,6 +423,7 @@ static void stlxdm_compositor_draw_bar(stlxgfx_ctx_t* ctx, uint32_t width,
             uint32_t tw = 0, th = 0;
             stlxgfx_ctx_text_size(time_str, conf->bar_font_size, &tw, &th);
             int32_t tx = ((int32_t)width - (int32_t)tw) / 2;
+
             stlxgfx_ctx_draw_text(ctx, tx, 6, time_str, conf->bar_font_size,
                                    conf->text_color);
             time_start_x = tx;
@@ -580,10 +594,8 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
             stlxgfx_ctx_blit(&ctx, content_x, content_y,
                               front, 0, 0, front->width, front->height);
 
-            /* The client blit is square, so it bleeds over the frame's
-             * rounded bottom corners. Re-carve them anti-aliased:
-             * background outside the outer arc, border ring between
-             * the concentric outer and inner arcs. */
+            /* The square client blit bleeds over the frame's rounded
+             * bottom corners, so re-carve them anti-aliased */
             uint32_t bw = STLXDM_BORDER_WIDTH;
             uint32_t ro = STLXDM_CORNER_RADIUS;
             uint32_t ri = ro > bw ? ro - bw : 0;
@@ -620,9 +632,8 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
 static void stlxdm_compositor_present(stlxdm_compositor_t* comp,
                                        const stlxdm_dirty_t* dirty) {
     if (dirty->full_redraw || dirty->count == 0) {
-        /* Full present: either explicitly requested or nothing dirty
-         * (first frame / fallback). We still present on count==0 for
-         * the first frame and the always-updating clock bar. */
+        /* count==0 still presents everything, covering the first frame
+         * and the always-updating clock bar */
         stlxgfx_fb_present(comp->fb, comp->backbuf);
     } else {
         for (int i = 0; i < dirty->count; i++) {
@@ -643,7 +654,7 @@ static void stlxdm_compositor_finish_sync(stlxdm_compositor_t* comp,
 }
 
 /* Spawn a detached app. args is an optional space-separated argument
- * string (no quoting support), tokenized in place; may be NULL. */
+ * string (no quoting support), tokenized in place, and may be NULL. */
 static void stlxdm_spawn_app(const char* path, char* args) {
     const char* argv[16];
     int argc = 0;
@@ -691,6 +702,7 @@ int main(void) {
         stlxgfx_fb_close(&fb);
         return 1;
     }
+
     stlxdm_compositor_load_wallpaper(&compositor, &config);
 
     stlxdm_show_splash(&fb, compositor.backbuf);
@@ -804,9 +816,8 @@ int main(void) {
         /* Taskbar hover or press changed, include tooltip area above bar */
         if (taskbar.hover_index != prev_taskbar_hover ||
             taskbar.press_index != prev_taskbar_press) {
-            /* Tooltips are drawn above the taskbar icons.  Expand the
-             * dirty region upward by a generous margin so the tooltip
-             * (and its disappearance) are always captured. */
+            /* Tooltips render above the taskbar icons, so extend the
+             * dirty region upward to capture them appearing and vanishing */
             int32_t tooltip_margin = 48;
             int32_t dirty_y = taskbar.bar_y - tooltip_margin;
             if (dirty_y < 0) dirty_y = 0;

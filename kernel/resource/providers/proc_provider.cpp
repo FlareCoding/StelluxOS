@@ -67,6 +67,7 @@ __PRIVILEGED_CODE static uint32_t proc_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
+
     auto* impl = static_cast<proc_resource_impl*>(obj->impl);
     auto* pr = impl->proc.ptr();
     if (!pr) return sync::POLL_HUP;
@@ -78,6 +79,7 @@ __PRIVILEGED_CODE static uint32_t proc_poll(
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
     uint32_t mask = pr->exited ? sync::POLL_IN : 0;
     sync::spin_unlock_irqrestore(pr->lock, irq);
+
     return mask;
 }
 
@@ -129,6 +131,7 @@ __PRIVILEGED_CODE int32_t create_proc_resource(
         }
         return ERR_NOMEM;
     }
+
     impl->proc = rc::strong_ref<proc_resource>::adopt(pr); // takes ownership of ref 1
 
     auto* obj = heap::kalloc_new<resource_object>();
@@ -154,6 +157,7 @@ __PRIVILEGED_CODE proc_resource* get_proc_resource(resource_object* obj) {
     if (!obj || obj->type != resource_type::PROCESS || !obj->impl) {
         return nullptr;
     }
+
     auto* impl = static_cast<proc_resource_impl*>(obj->impl);
     return impl->proc.ptr();
 }

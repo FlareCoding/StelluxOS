@@ -157,6 +157,7 @@ public:
         node* n = to_node(entry);
         remove_node(&m_root, n);
         --m_count;
+
         // Clear removed node's links for safety
         n->parent = nullptr;
         n->left = nullptr;

@@ -558,6 +558,7 @@ TEST(socket_test, nonblock_socketpair_eof_not_eagain) {
 TEST(socket_test, listener_state_create_destroy) {
     auto ls = rc::make_kref<socket::listener_state>();
     ASSERT_TRUE(static_cast<bool>(ls));
+
     ls->lock = sync::SPINLOCK_INIT;
     ls->closed = false;
     ls->accept_queue.init();

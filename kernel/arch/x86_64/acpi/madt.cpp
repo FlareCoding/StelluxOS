@@ -56,6 +56,7 @@ __PRIVILEGED_CODE int32_t parse() {
         switch (entry->type) {
         case MADT_TYPE_LOCAL_APIC: {
             if (entry->length < sizeof(madt_local_apic)) break;
+
             const auto* e = reinterpret_cast<const madt_local_apic*>(ptr);
             uint32_t flags = read_u32_safe(&e->flags);
             if (g_madt.lapic_count < MAX_CPUS) {
@@ -67,6 +68,7 @@ __PRIVILEGED_CODE int32_t parse() {
         }
         case MADT_TYPE_IO_APIC: {
             if (entry->length < sizeof(madt_io_apic)) break;
+
             const auto* e = reinterpret_cast<const madt_io_apic*>(ptr);
             if (g_madt.io_apic_count < MAX_IO_APICS) {
                 auto& io = g_madt.io_apics[g_madt.io_apic_count++];
@@ -78,6 +80,7 @@ __PRIVILEGED_CODE int32_t parse() {
         }
         case MADT_TYPE_INT_SRC_OVERRIDE: {
             if (entry->length < sizeof(madt_int_src_override)) break;
+
             const auto* e = reinterpret_cast<const madt_int_src_override*>(ptr);
             if (g_madt.iso_count < MAX_ISOS) {
                 auto& iso = g_madt.isos[g_madt.iso_count++];
@@ -91,6 +94,7 @@ __PRIVILEGED_CODE int32_t parse() {
         }
         case MADT_TYPE_LOCAL_APIC_NMI: {
             if (entry->length < sizeof(madt_local_apic_nmi)) break;
+
             const auto* e = reinterpret_cast<const madt_local_apic_nmi*>(ptr);
             if (g_madt.nmi_count < MAX_NMIS) {
                 auto& nmi = g_madt.nmis[g_madt.nmi_count++];
@@ -103,6 +107,7 @@ __PRIVILEGED_CODE int32_t parse() {
         }
         case MADT_TYPE_LAPIC_ADDR_OVERRIDE: {
             if (entry->length < sizeof(madt_lapic_addr_override)) break;
+
             const auto* e = reinterpret_cast<const madt_lapic_addr_override*>(ptr);
             g_madt.lapic_base = read_u64_safe(&e->address);
             break;

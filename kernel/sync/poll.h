@@ -46,7 +46,7 @@ struct poll_table {
 
 /**
  * Register an observer on a wait queue. Allocates a poll_entry
- * internally; the entry lives until poll_cleanup frees it.
+ * internally, the entry lives until poll_cleanup frees it.
  * After this call, any wake_one/wake_all on wq will also wake pt.task.
  * @note Privilege: **required**
  */

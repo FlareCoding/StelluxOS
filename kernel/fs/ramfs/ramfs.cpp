@@ -17,6 +17,7 @@ __PRIVILEGED_CODE static int32_t ramfs_mount_fn(
 
     void* root_mem = heap::kzalloc(sizeof(dir_node));
     if (!root_mem) return fs::ERR_NOMEM;
+
     auto* root = new (root_mem) dir_node(nullptr, "");
 
     void* inst_mem = heap::kzalloc(sizeof(fs::instance));
@@ -25,6 +26,7 @@ __PRIVILEGED_CODE static int32_t ramfs_mount_fn(
         heap::kfree(root);
         return fs::ERR_NOMEM;
     }
+
     auto* inst = new (inst_mem) fs::instance(drv, root);
 
     root->set_filesystem(inst);
@@ -60,11 +62,8 @@ dir_node::dir_node(fs::instance* fs, const char* name)
 }
 
 dir_node::~dir_node() {
-    // Truly iterative destruction: move children into a worklist,
-    // then process the worklist in a flat loop. If a child is itself
-    // a dir_node, steal its children into the worklist before destroying
-    // it, so the child's destructor sees an empty child list and does
-    // not recurse. This bounds stack depth regardless of tree depth.
+    // Destruction steals every directory's children into a flat worklist
+    // first, so destructors never recurse and stack depth stays bounded.
     list::head<fs::node, &fs::node::m_child_link> worklist;
     worklist.init();
 
@@ -116,7 +115,9 @@ int32_t dir_node::lookup(const char* name, size_t len, fs::node** out) {
 
 int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node** out) {
     if (!name || !out || len == 0) return fs::ERR_INVAL;
+
     if (len > fs::NAME_MAX) return fs::ERR_NAMETOOLONG;
+
     (void)mode;
 
     sync::irq_lock_guard guard(m_lock);
@@ -133,6 +134,7 @@ int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node**
     if (!mem) {
         return fs::ERR_NOMEM;
     }
+
     auto* child = new (mem) file_node(m_fs, name_buf);
 
     child->set_parent(this);
@@ -147,6 +149,7 @@ int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node**
 int32_t dir_node::create_socket(const char* name, size_t len, void* impl, fs::node** out) {
     (void)impl;
     if (!name || !out || len == 0) return fs::ERR_INVAL;
+
     if (len > fs::NAME_MAX) return fs::ERR_NAMETOOLONG;
 
     sync::irq_lock_guard guard(m_lock);
@@ -163,6 +166,7 @@ int32_t dir_node::create_socket(const char* name, size_t len, void* impl, fs::no
     if (!mem) {
         return fs::ERR_NOMEM;
     }
+
     auto* child = new (mem) fs::socket_node(m_fs, name_buf);
 
     child->set_parent(this);
@@ -176,7 +180,9 @@ int32_t dir_node::create_socket(const char* name, size_t len, void* impl, fs::no
 
 int32_t dir_node::mkdir(const char* name, size_t len, uint32_t mode, fs::node** out) {
     if (!name || !out || len == 0) return fs::ERR_INVAL;
+
     if (len > fs::NAME_MAX) return fs::ERR_NAMETOOLONG;
+
     (void)mode;
 
     sync::irq_lock_guard guard(m_lock);
@@ -193,6 +199,7 @@ int32_t dir_node::mkdir(const char* name, size_t len, uint32_t mode, fs::node** 
     if (!mem) {
         return fs::ERR_NOMEM;
     }
+
     auto* child = new (mem) dir_node(m_fs, name_buf);
 
     child->set_parent(this);
@@ -213,6 +220,7 @@ int32_t dir_node::unlink(const char* name, size_t len) {
     if (!child) {
         return fs::ERR_NOENT;
     }
+
     if (child->type() == fs::node_type::directory) {
         return fs::ERR_ISDIR;
     }
@@ -224,6 +232,7 @@ int32_t dir_node::unlink(const char* name, size_t len) {
     if (child->release()) {
         fs::node::ref_destroy(child);
     }
+
     return fs::OK;
 }
 
@@ -236,6 +245,7 @@ int32_t dir_node::rmdir(const char* name, size_t len) {
     if (!child) {
         return fs::ERR_NOENT;
     }
+
     if (child->type() != fs::node_type::directory) {
         return fs::ERR_NOTDIR;
     }
@@ -252,11 +262,13 @@ int32_t dir_node::rmdir(const char* name, size_t len) {
     if (child->release()) {
         fs::node::ref_destroy(child);
     }
+
     return fs::OK;
 }
 
 ssize_t dir_node::readdir(fs::file* f, fs::dirent* entries, size_t count) {
     if (!f || !entries) return fs::ERR_BADF;
+
     if (count == 0) return 0;
 
     sync::irq_lock_guard guard(m_lock);
@@ -269,6 +281,7 @@ ssize_t dir_node::readdir(fs::file* f, fs::dirent* entries, size_t count) {
         if (written >= count) {
             break;
         }
+
         if (cur_idx >= idx) {
             size_t name_len = string::strlen(child.name());
             if (name_len > fs::NAME_MAX) {
@@ -288,6 +301,7 @@ ssize_t dir_node::readdir(fs::file* f, fs::dirent* entries, size_t count) {
 
 int32_t dir_node::getattr(fs::vattr* attr) {
     if (!attr) return fs::ERR_INVAL;
+
     attr->type = fs::node_type::directory;
     attr->size = m_child_count;
     return fs::OK;
@@ -324,6 +338,7 @@ int32_t file_node::ensure_capacity(uint32_t needed_pages) {
         if (new_cap > 0x80000000u) {
             return fs::ERR_NOMEM;
         }
+
         new_cap *= 2;
     }
 
@@ -349,11 +364,12 @@ ssize_t file_node::read(fs::file* f, void* buf, size_t count) {
 
     int64_t off = f->offset();
     if (off < 0) return fs::ERR_INVAL;
-    size_t offset = static_cast<size_t>(off);
 
+    size_t offset = static_cast<size_t>(off);
     if (offset >= m_size) {
         return 0;
     }
+
     if (offset + count > m_size) {
         count = m_size - offset;
     }
@@ -395,8 +411,8 @@ ssize_t file_node::write(fs::file* f, const void* buf, size_t count) {
         off = static_cast<int64_t>(m_size);
     }
     if (off < 0) return fs::ERR_INVAL;
-    size_t offset = static_cast<size_t>(off);
 
+    size_t offset = static_cast<size_t>(off);
     size_t end_pos = offset + count;
     uint32_t needed_pages = static_cast<uint32_t>((end_pos + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE);
 
@@ -422,6 +438,7 @@ ssize_t file_node::write(fs::file* f, const void* buf, size_t count) {
             if (phys == 0) {
                 return fs::ERR_NOMEM;
             }
+
             auto* virt = static_cast<uint8_t*>(paging::phys_to_virt(phys));
             string::memset(virt, 0, pmm::PAGE_SIZE);
             m_pages[m_page_count] = virt;
@@ -473,6 +490,7 @@ int64_t file_node::seek(fs::file* f, int64_t offset, int whence) {
 
 int32_t file_node::getattr(fs::vattr* attr) {
     if (!attr) return fs::ERR_INVAL;
+
     attr->type = fs::node_type::regular;
     attr->size = m_size;
     return fs::OK;
@@ -502,6 +520,7 @@ int32_t file_node::truncate(size_t size) {
                 m_page_count = i;
                 return fs::ERR_NOMEM;
             }
+
             m_pages[i] = static_cast<uint8_t*>(paging::phys_to_virt(phys));
             string::memset(m_pages[i], 0, pmm::PAGE_SIZE);
         }

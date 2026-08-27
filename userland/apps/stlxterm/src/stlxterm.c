@@ -134,6 +134,7 @@ int main(void) {
         stlxgfx_window_destroy(win);
         return 1;
     }
+
     term_init(term, term_rows, term_cols);
 
     int master_fd, slave_fd;
@@ -163,9 +164,11 @@ int main(void) {
         stlxgfx_window_destroy(win);
         return 1;
     }
+
     proc_set_handle(shell_proc, 0, slave_fd);
     proc_set_handle(shell_proc, 1, slave_fd);
     proc_set_handle(shell_proc, 2, slave_fd);
+
     if (proc_start(shell_proc) < 0) {
         printf("stlxterm: failed to start shell\r\n");
         close(shell_proc);
@@ -175,6 +178,7 @@ int main(void) {
         stlxgfx_window_destroy(win);
         return 1;
     }
+
     close(slave_fd);
 
     int blink_counter = 0;
@@ -192,17 +196,20 @@ int main(void) {
                 win = NULL;
                 break;
             }
+
             if (evt.type == STLXGFX_EVT_FOCUS_IN) {
                 focused = 1;
                 cursor_visible = 1;
                 blink_counter = 0;
                 term->dirty = 1;
             }
+
             if (evt.type == STLXGFX_EVT_FOCUS_OUT) {
                 focused = 0;
                 cursor_visible = 0;
                 term->dirty = 1;
             }
+
             if (evt.type == STLXGFX_EVT_KEY_DOWN ||
                 evt.type == STLXGFX_EVT_KEY_REPEAT) {
                 char seq[8];
@@ -217,6 +224,7 @@ int main(void) {
                 }
             }
         }
+
         if (!win) {
             break;
         }
@@ -226,6 +234,7 @@ int main(void) {
         if (n == 0) {
             break;
         }
+
         if (n > 0) {
             term_feed(term, pty_buf, (int)n);
             if (focused) {

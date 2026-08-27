@@ -1,4 +1,5 @@
 #include "drivers/net/virtio_net.h"
+#include "sync/atomic.h"
 #include "mm/vmm.h"
 #include "mm/heap.h"
 #include "hw/mmio.h"
@@ -14,8 +15,8 @@ namespace drivers {
 
 using namespace virtio;
 
-// Parse virtio PCI capabilities from the PCI config space capability list.
-// Virtio uses vendor-specific caps (id=0x09) with a cfg_type field.
+// Virtio advertises its config regions as vendor-specific PCI capabilities
+// (id 0x09), distinguished by a cfg_type field.
 int32_t virtio_net_driver::parse_virtio_caps() {
     string::memset(&m_pci_cfg, 0, sizeof(m_pci_cfg));
 
@@ -118,6 +119,7 @@ int32_t virtio_net_driver::map_config_regions() {
                 return rc;
             }
         }
+
         m_notify_base = notify_bar_va + m_pci_cfg.notify_offset;
         m_notify_off_multiplier = m_pci_cfg.notify_off_multiplier;
     }
@@ -134,6 +136,7 @@ int32_t virtio_net_driver::map_config_regions() {
                 return rc;
             }
         }
+
         m_isr_addr = isr_bar_va + m_pci_cfg.isr_offset;
     }
 
@@ -149,6 +152,7 @@ int32_t virtio_net_driver::map_config_regions() {
                 return rc;
             }
         }
+
         m_device_cfg = reinterpret_cast<volatile virtio_net_config*>(
             dev_bar_va + m_pci_cfg.device_offset);
     }
@@ -158,8 +162,9 @@ int32_t virtio_net_driver::map_config_regions() {
 
 void virtio_net_driver::write_status(uint8_t status) {
     m_common_cfg->device_status = status;
-    // Read back to ensure write is flushed
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
+    // Fence orders the status write ahead of later device config accesses.
+    sync::atomic_fence_seq_cst();
 }
 
 uint8_t virtio_net_driver::read_status() {
@@ -167,14 +172,13 @@ uint8_t virtio_net_driver::read_status() {
 }
 
 int32_t virtio_net_driver::negotiate_features() {
-    // Read device features (select page 0 for bits 0-31)
+    // The 64-bit feature word is exposed through a 32-bit select window.
     m_common_cfg->device_feature_select = 0;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     uint32_t features_lo = m_common_cfg->device_feature;
 
-    // Read device features (select page 1 for bits 32-63)
     m_common_cfg->device_feature_select = 1;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     uint32_t features_hi = m_common_cfg->device_feature;
 
     uint64_t device_features = (static_cast<uint64_t>(features_hi) << 32) | features_lo;
@@ -200,11 +204,11 @@ int32_t virtio_net_driver::negotiate_features() {
 
     // Write driver features
     m_common_cfg->driver_feature_select = 0;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     m_common_cfg->driver_feature = static_cast<uint32_t>(driver_features & 0xFFFFFFFF);
 
     m_common_cfg->driver_feature_select = 1;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     m_common_cfg->driver_feature = static_cast<uint32_t>(driver_features >> 32);
 
     return 0;
@@ -212,7 +216,7 @@ int32_t virtio_net_driver::negotiate_features() {
 
 int32_t virtio_net_driver::read_mac() {
     if (!m_device_cfg || !m_has_mac) {
-        // Generate a random-ish MAC
+        // Device provides no MAC, use a fixed locally administered address.
         m_netif.mac[0] = 0x52;
         m_netif.mac[1] = 0x54;
         m_netif.mac[2] = 0x00;
@@ -235,16 +239,16 @@ int32_t virtio_net_driver::read_mac() {
 int32_t virtio_net_driver::init_queues() {
     // Initialize RX queue (queue index 0)
     m_common_cfg->queue_select = VIRTIO_NET_QUEUE_RX;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     uint16_t rx_size = m_common_cfg->queue_size;
     if (rx_size == 0) {
         log::error("virtio-net: RX queue size is 0");
         return -1;
     }
+
     if (rx_size > virtio::VIRTQ_MAX_SIZE) {
         rx_size = virtio::VIRTQ_MAX_SIZE;
     }
-    // Set the queue size we want
     m_common_cfg->queue_size = rx_size;
 
     int32_t rc = m_rxq.init(rx_size, VIRTIO_NET_QUEUE_RX);
@@ -253,12 +257,11 @@ int32_t virtio_net_driver::init_queues() {
         return rc;
     }
 
-    // Tell device where the rings are
     m_common_cfg->queue_desc = m_rxq.desc_phys();
     m_common_cfg->queue_avail = m_rxq.avail_phys();
     m_common_cfg->queue_used = m_rxq.used_phys();
     m_common_cfg->queue_enable = 1;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
 
     uint16_t rx_notify_off = m_common_cfg->queue_notify_off;
     m_rx_notify_addr = m_notify_base +
@@ -266,12 +269,13 @@ int32_t virtio_net_driver::init_queues() {
 
     // Initialize TX queue (queue index 1)
     m_common_cfg->queue_select = VIRTIO_NET_QUEUE_TX;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     uint16_t tx_size = m_common_cfg->queue_size;
     if (tx_size == 0) {
         log::error("virtio-net: TX queue size is 0");
         return -1;
     }
+
     if (tx_size > virtio::VIRTQ_MAX_SIZE) {
         tx_size = virtio::VIRTQ_MAX_SIZE;
     }
@@ -287,7 +291,7 @@ int32_t virtio_net_driver::init_queues() {
     m_common_cfg->queue_avail = m_txq.avail_phys();
     m_common_cfg->queue_used = m_txq.used_phys();
     m_common_cfg->queue_enable = 1;
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
 
     uint16_t tx_notify_off = m_common_cfg->queue_notify_off;
     m_tx_notify_addr = m_notify_base +
@@ -348,6 +352,7 @@ void virtio_net_driver::fill_rx_queue() {
         int32_t desc_id = m_rxq.add_buf(
             m_rx_bufs[i].phys, RX_BUF_SIZE, VRING_DESC_F_WRITE);
         if (desc_id < 0) break;
+
         m_rx_bufs[i].desc_id = static_cast<int16_t>(desc_id);
     }
 
@@ -417,17 +422,17 @@ int32_t virtio_net_driver::attach() {
     // Assign MSI-X vectors to queues
     if (m_dev->get_msi_state().mode == pci::MSI_MODE_MSIX) {
         m_common_cfg->msix_config = 0;
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        sync::atomic_fence_seq_cst();
 
         m_common_cfg->queue_select = VIRTIO_NET_QUEUE_RX;
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        sync::atomic_fence_seq_cst();
         m_common_cfg->queue_msix_vector = 0;
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        sync::atomic_fence_seq_cst();
 
         m_common_cfg->queue_select = VIRTIO_NET_QUEUE_TX;
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        sync::atomic_fence_seq_cst();
         m_common_cfg->queue_msix_vector = (m_dev->get_msi_state().vector_count > 1) ? 1 : 0;
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        sync::atomic_fence_seq_cst();
     }
 
     // Mark device as ready
@@ -469,7 +474,6 @@ __PRIVILEGED_CODE void virtio_net_driver::on_interrupt(uint32_t vector) {
 }
 
 void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
-    // Drain used buffers from the virtqueue into a local batch.
     // Caller must hold m_vq_lock.
     batch.count = 0;
 
@@ -495,7 +499,6 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
         uintptr_t buf_vaddr = m_rx_bufs[buf_idx].vaddr;
         size_t hdr_size = m_net_hdr_size;
 
-        // Return descriptor to free list
         m_rxq.free_desc(desc_id);
         m_rx_bufs[buf_idx].desc_id = -1;
 
@@ -512,7 +515,6 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
 }
 
 void virtio_net_driver::deliver_rx_batch(rx_batch& batch) {
-    // Deliver drained frames to the protocol stack.
     // Called without m_vq_lock held so protocol processing can
     // call back into tx_callback (e.g. ARP replies) without deadlock.
     for (uint16_t i = 0; i < batch.count; i++) {
@@ -526,11 +528,13 @@ void virtio_net_driver::replenish_rx() {
     bool posted_any = false;
     for (uint16_t i = 0; i < RX_BUF_COUNT; i++) {
         if (m_rx_bufs[i].desc_id >= 0) continue; // already posted
+
         if (m_rx_bufs[i].delivering) continue; // being read by deliver_rx_batch
 
         int32_t desc_id = m_rxq.add_buf(
             m_rx_bufs[i].phys, RX_BUF_SIZE, VRING_DESC_F_WRITE);
         if (desc_id < 0) break;
+
         m_rx_bufs[i].desc_id = static_cast<int16_t>(desc_id);
         posted_any = true;
     }
@@ -563,17 +567,16 @@ void virtio_net_driver::process_tx_completions() {
 void virtio_net_driver::run() {
     log::info("virtio-net: driver task running");
 
-    // Run DHCP to dynamically configure the interface.
-    // This runs here (in the driver's kernel task) rather than in attach()
-    // because sched::sleep_ms() is needed for DHCP timeouts, and attach()
-    // runs on the boot CPU before the task is spawned.
+    // DHCP runs here rather than in attach() because its timeouts need
+    // sched::sleep_ms(), and attach() runs before the driver task exists.
     int32_t dhcp_rc = net::dhcp_configure(&m_netif);
     if (dhcp_rc != net::OK) {
         log::warn("virtio-net: DHCP failed (%d), using static fallback", dhcp_rc);
+        // QEMU user-mode networking defaults: IP, netmask, gateway.
         net::configure(&m_netif,
-                       net::ipv4_addr(10, 0, 2, 15), // IP
-                       net::ipv4_addr(255, 255, 255, 0),  // Netmask
-                       net::ipv4_addr(10, 0, 2, 2));      // Gateway
+                       net::ipv4_addr(10, 0, 2, 15),
+                       net::ipv4_addr(255, 255, 255, 0),
+                       net::ipv4_addr(10, 0, 2, 2));
     }
 
     // Check MSI mode once at start (elevated because m_dev is in privileged memory)
@@ -601,10 +604,9 @@ void virtio_net_driver::run() {
             sync::irq_lock_guard guard(m_vq_lock);
             replenish_rx();
         });
-        // Send any protocol-generated responses (e.g. ICMP echo replies)
-        // that were queued during RX delivery. This runs at the top level,
-        // so ipv4_send and ARP resolution are safe, no recursion into
-        // deliver_rx_batch.
+
+        // Flush protocol responses queued during RX delivery. At top level
+        // ipv4_send and ARP resolution cannot recurse into deliver_rx_batch.
         RUN_ELEVATED(net::drain_deferred_tx());
     }
 }
@@ -666,6 +668,7 @@ int32_t virtio_net_driver::tx_callback(net::netif* iface, const uint8_t* frame, 
 
 void virtio_net_driver::poll_callback(net::netif* iface) {
     if (!iface) return;
+
     auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
     if (!drv) return;
 
@@ -680,11 +683,13 @@ void virtio_net_driver::poll_callback(net::netif* iface) {
         sync::irq_lock_guard guard(drv->m_vq_lock);
         drv->replenish_rx();
     });
+
     RUN_ELEVATED(net::drain_deferred_tx());
 }
 
 bool virtio_net_driver::link_callback(net::netif* iface) {
     if (!iface) return false;
+
     auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
     if (!drv) return false;
 

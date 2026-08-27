@@ -72,6 +72,7 @@ hid_driver::~hid_driver() {
         usb::close_interrupt_in_stream(m_stream);
         m_stream = nullptr;
     }
+
     destroy_bindings();
     m_layout.destroy();
 }
@@ -98,6 +99,7 @@ int32_t hid_driver::probe(usb::device* dev, usb::interface* iface) {
         log::error("hid: failed to allocate report descriptor buffer");
         return -1;
     }
+
     string::memset(desc_buf, 0, desc_len);
 
     rc = usb::control_transfer(dev,
@@ -216,6 +218,7 @@ void hid_driver::run() {
                 log::warn("hid: dropped empty report missing report ID");
                 continue;
             }
+
             report_id = report_buf[0];
             report_data = report_buf + 1;
             report_length = actual - 1;
@@ -234,6 +237,7 @@ void hid_driver::run() {
         usb::close_interrupt_in_stream(m_stream);
         m_stream = nullptr;
     }
+
     log::info("hid: driver exiting");
 }
 
@@ -283,6 +287,7 @@ void hid_driver::destroy_bindings() {
         heap::ufree(m_bindings);
         m_bindings = nullptr;
     }
+
     m_binding_count = 0;
 }
 

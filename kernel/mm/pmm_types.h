@@ -106,6 +106,7 @@ constexpr phys_addr_t page_align_up(phys_addr_t addr) {
 // Convert number of pages to order (0=1 page, 1=2 pages, ..., 10=1024 pages)
 constexpr uint8_t pages_to_order(size_t pages) {
     if (pages <= 1) return 0;
+
     uint8_t order = 0;
     size_t block_pages = 1;
     while (block_pages < pages && order < MAX_ORDER) {

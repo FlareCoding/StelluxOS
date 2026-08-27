@@ -1,4 +1,5 @@
 #include "drivers/net/bcm_genet.h"
+#include "sync/atomic.h"
 #include "mm/vmm.h"
 #include "mm/heap.h"
 #include "hw/mmio.h"
@@ -57,7 +58,7 @@ uint32_t bcm_genet_driver::reg_read(uint32_t offset) {
 }
 
 void bcm_genet_driver::reg_write(uint32_t offset, uint32_t value) {
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     mmio::write32(m_reg_va + offset, value);
 }
 
@@ -83,9 +84,11 @@ int32_t bcm_genet_driver::mdio_read(uint8_t phy_addr, uint8_t reg, uint16_t* out
         if ((val & MDIO_START_BUSY) == 0) {
             if (val & MDIO_READ_FAIL)
                 return -1;
+
             *out = static_cast<uint16_t>(val & MDIO_VAL_MASK);
             return 0;
         }
+
         delay_us(10);
     }
 
@@ -104,6 +107,7 @@ int32_t bcm_genet_driver::mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t dat
         uint32_t val = reg_read(MDIO_CMD);
         if ((val & MDIO_START_BUSY) == 0)
             return 0;
+
         delay_us(10);
     }
 
@@ -117,6 +121,7 @@ int32_t bcm_genet_driver::phy_detect() {
     for (uint8_t addr = 0; addr < 32; addr++) {
         uint16_t id1 = 0, id2 = 0;
         if (mdio_read(addr, PHYIDR1, &id1) != 0) continue;
+
         if (mdio_read(addr, PHYIDR2, &id2) != 0) continue;
 
         if (id1 != 0xFFFF && id2 != 0xFFFF && id1 != 0 && id2 != 0) {
@@ -140,10 +145,12 @@ int32_t bcm_genet_driver::phy_reset() {
         uint16_t bmcr = 0;
         rc = mdio_read(m_phy_addr, BMCR, &bmcr);
         if (rc != 0) return rc;
+
         if ((bmcr & BMCR_RESET) == 0) {
             log::debug("genet: PHY reset complete (%u ms)", i);
             return phy_reset_post_action();
         }
+
         delay_us(1000);
     }
 
@@ -198,6 +205,7 @@ int32_t bcm_genet_driver::phy_auto_negotiate() {
     // Advertise 10/100 capabilities
     rc = mdio_read(m_phy_addr, ANAR, &val);
     if (rc != 0) return rc;
+
     val |= ANAR_100BASETX_FDX | ANAR_100BASETX | ANAR_10BASET_FDX | ANAR_10BASET;
     rc = mdio_write(m_phy_addr, ANAR, val);
     if (rc != 0) return rc;
@@ -205,6 +213,7 @@ int32_t bcm_genet_driver::phy_auto_negotiate() {
     // Advertise 1000 capabilities
     rc = mdio_read(m_phy_addr, GBCR, &val);
     if (rc != 0) return rc;
+
     val |= GBCR_1000BASET_FDX | GBCR_1000BASET;
     rc = mdio_write(m_phy_addr, GBCR, val);
     if (rc != 0) return rc;
@@ -212,6 +221,7 @@ int32_t bcm_genet_driver::phy_auto_negotiate() {
     // Restart auto-negotiation
     rc = mdio_read(m_phy_addr, BMCR, &val);
     if (rc != 0) return rc;
+
     val |= BMCR_ANE | BMCR_RESTART_AN;
     rc = mdio_write(m_phy_addr, BMCR, val);
     if (rc != 0) return rc;
@@ -289,9 +299,11 @@ void bcm_genet_driver::genet_reset() {
     val |= SYS_RBUF_FLUSH_RESET;
     reg_write(SYS_RBUF_FLUSH_CTRL, val);
     delay_us(10);
+
     val &= ~SYS_RBUF_FLUSH_RESET;
     reg_write(SYS_RBUF_FLUSH_CTRL, val);
     delay_us(10);
+
     reg_write(SYS_RBUF_FLUSH_CTRL, 0);
     delay_us(10);
 
@@ -334,7 +346,7 @@ void bcm_genet_driver::read_mac_address() {
         if (m_netif.mac[i] != 0xFF) all_ff = false;
     }
     if (all_zero || all_ff) {
-        // Locally administered fallback
+        // Fixed fallback address with the Raspberry Pi vendor prefix.
         m_netif.mac[0] = 0xDC; m_netif.mac[1] = 0xA6; m_netif.mac[2] = 0x32;
         m_netif.mac[3] = 0x01; m_netif.mac[4] = 0x02; m_netif.mac[5] = 0x03;
         log::warn("genet: firmware MAC invalid, using fallback");
@@ -391,7 +403,7 @@ int32_t bcm_genet_driver::dma_alloc() {
 }
 
 void bcm_genet_driver::dma_free() {
-    // Permanent allocations; freed only if vmm supports it in the future.
+    // The DMA buffers are permanent, vmm cannot free contiguous allocations.
 }
 
 void bcm_genet_driver::dma_init_rings() {
@@ -446,6 +458,7 @@ int32_t bcm_genet_driver::dma_map_rx_descriptors() {
         reg_write(RX_DESC_ADDR_HI(i), static_cast<uint32_t>(phys >> 32));
         reg_write(RX_DESC_STATUS(i), 0);
     }
+
     log::debug("genet: %u RX descriptors mapped", DMA_DESC_COUNT);
     return 0;
 }
@@ -493,6 +506,7 @@ void bcm_genet_driver::dma_disable_tx_rx() {
 
 int32_t bcm_genet_driver::tx_callback(net::netif* iface, const uint8_t* frame, size_t len) {
     if (!iface || !frame || len == 0) return -1;
+
     auto* drv = static_cast<bcm_genet_driver*>(iface->driver_data);
     if (!drv) return -1;
 
@@ -527,6 +541,7 @@ int32_t bcm_genet_driver::tx_callback(net::netif* iface, const uint8_t* frame, s
             result = 0;
         }
     });
+
     return result;
 }
 
@@ -638,6 +653,7 @@ void bcm_genet_driver::teardown_interrupts() {
             });
         }
     }
+
     m_has_irq = false;
 }
 
@@ -671,6 +687,7 @@ bool bcm_genet_driver::link_callback(net::netif* iface) {
 
 void bcm_genet_driver::poll_callback(net::netif* iface) {
     if (!iface) return;
+
     auto* drv = static_cast<bcm_genet_driver*>(iface->driver_data);
     if (!drv) return;
 
@@ -679,6 +696,7 @@ void bcm_genet_driver::poll_callback(net::netif* iface) {
         drv->process_rx();
         drv->process_tx_completions();
     });
+
     RUN_ELEVATED(net::drain_deferred_tx());
 }
 
@@ -755,15 +773,14 @@ int32_t bcm_genet_driver::attach() {
     log::info("genet: attaching (phys=0x%lx size=0x%lx IRQs=%u,%u)",
               m_reg_phys, m_reg_size, m_irq[0], m_irq[1]);
 
-    // Map MMIO registers
     RUN_ELEVATED({ map_regs(); });
     if (m_reg_va == 0) {
         log::error("genet: failed to map MMIO registers");
         return -1;
     }
+
     log::info("genet: MMIO mapped at VA 0x%lx", m_reg_va);
 
-    // Verify hardware revision
     uint32_t rev = reg_read(SYS_REV_CTRL);
     uint32_t major = (rev & SYS_REV_MAJOR_MASK) >> SYS_REV_MAJOR_SHIFT;
     uint32_t minor = (rev & SYS_REV_MINOR_MASK) >> SYS_REV_MINOR_SHIFT;
@@ -783,52 +800,53 @@ int32_t bcm_genet_driver::attach() {
     genet_reset();
     dma_disable_tx_rx();
 
-    // Restore MAC and set PHY mode
     write_mac_address();
     set_phy_mode();
 
-    // PHY init
     int32_t rc = phy_detect();
     if (rc != 0) return rc;
+
     rc = phy_reset();
     if (rc != 0) return rc;
+
     rc = phy_auto_negotiate();
     if (rc != 0) return rc;
 
-    // DMA setup
     rc = dma_alloc();
     if (rc != 0) return rc;
+
     dma_init_rings();
     rc = dma_map_rx_descriptors();
     if (rc != 0) return rc;
 
-    // Interrupts (non-fatal if it fails; we fall back to polling)
+    // Interrupt setup failure is non-fatal, the driver falls back to polling.
     setup_interrupts();
 
-    // Enable hardware
     setup_rx_filter();
     dma_enable_tx_rx();
     if (m_has_irq)
         enable_interrupts();
 
-    // Register with network stack
     string::memcpy(m_netif.name, "eth0", 5);
     m_netif.transmit = tx_callback;
     m_netif.link_up = link_callback;
     m_netif.poll = poll_callback;
     m_netif.driver_data = this;
+
     net::register_netif(&m_netif);
 
-    // Wait for PHY link before DHCP - auto-negotiation takes time
+    // Wait for PHY link before DHCP, auto-negotiation takes time.
     bool got_link = false;
     for (int i = 0; i < 50; i++) {
         if (m_link_up) {
             got_link = true;
             break;
         }
+
         RUN_ELEVATED(sched::sleep_ms(100));
         phy_update_link();
     }
+
     if (!got_link) {
         log::warn("genet: link not up after 5 seconds, proceeding anyway");
     }
@@ -849,11 +867,13 @@ int32_t bcm_genet_driver::attach() {
 
 int32_t bcm_genet_driver::detach() {
     log::info("genet: detaching");
+
     dma_disable_tx_rx();
     disable_interrupts();
     teardown_interrupts();
     net::unregister_netif(&m_netif);
     dma_free();
+
     return 0;
 }
 

@@ -60,6 +60,7 @@ __PRIVILEGED_CODE bool mutex_trylock(mutex& m) {
 
     m.owner.store_relaxed(sched::current());
     spin_unlock_irqrestore(m.lock, irq);
+
     return true;
 }
 

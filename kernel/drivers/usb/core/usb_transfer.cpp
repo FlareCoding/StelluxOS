@@ -67,6 +67,7 @@ int32_t open_interrupt_in_stream(device* dev,
     if (!out_stream) {
         return -1;
     }
+
     *out_stream = nullptr;
 
     if (!dev || !dev->hcd || !dev->hcd_device) {
@@ -86,6 +87,7 @@ int32_t open_interrupt_in_stream(device* dev,
         hcd->usb_close_interrupt_in_stream(xdev, endpoint_addr);
         return -1;
     }
+
     stream->dev = dev;
     stream->endpoint_addr = endpoint_addr;
     *out_stream = stream;
@@ -157,6 +159,7 @@ int32_t interrupt_transfer(device* dev, uint8_t endpoint_addr,
         rc == static_cast<int32_t>(transfer_status::short_packet)) {
         return 0;
     }
+
     return rc;
 }
 

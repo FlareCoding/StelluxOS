@@ -28,6 +28,7 @@ DEFINE_SYSCALL1(pty_create, u_fds) {
         resource::resource_release(slave_obj);
         return syscall::EMFILE;
     }
+
     resource::resource_release(master_obj);
 
     resource::handle_t h1 = -1;
@@ -39,6 +40,7 @@ DEFINE_SYSCALL1(pty_create, u_fds) {
         resource::resource_release(slave_obj);
         return syscall::EMFILE;
     }
+
     resource::resource_release(slave_obj);
 
     int32_t kbuf[2] = {h0, h1};

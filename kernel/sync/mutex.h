@@ -41,7 +41,7 @@ __PRIVILEGED_CODE void mutex_unlock(mutex& m);
 [[nodiscard]] __PRIVILEGED_CODE bool mutex_trylock(mutex& m);
 
 /**
- * Check if the mutex is currently held. Advisory only; the result
+ * Check if the mutex is currently held. Advisory only, the result
  * may be stale if checked without external synchronization.
  */
 inline bool mutex_is_locked(const mutex& m) {

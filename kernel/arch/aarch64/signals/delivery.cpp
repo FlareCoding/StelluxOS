@@ -78,6 +78,7 @@ __PRIVILEGED_CODE bool unpack_sigframe(const rt_sigframe* frame, trap_frame* tf,
     copy_vregs(fp->vregs, fc->vregs);
 
     *mask = frame->uc.uc_sigmask;
+
     return true;
 }
 
@@ -91,6 +92,7 @@ __PRIVILEGED_CODE int32_t build_signal_frame(trap_frame* tf, uint32_t sig,
     if (!frame) {
         return -1;
     }
+
     sched::fpu_state fp;
     fpu::save(&fp);
     pack_sigframe(frame, tf, saved_result, sig, old_blocked, &fp);
@@ -109,6 +111,7 @@ __PRIVILEGED_CODE int32_t build_signal_frame(trap_frame* tf, uint32_t sig,
     tf->x[1] = frame_addr + __builtin_offsetof(rt_sigframe, info);
     tf->x[2] = frame_addr + __builtin_offsetof(rt_sigframe, uc);
     tf->x[30] = act->restorer; // LR, the handler returns into the restorer
+
     return 0;
 }
 
@@ -127,6 +130,7 @@ __PRIVILEGED_CODE static int32_t build_signal_frame_async(
     if (!frame) {
         return mm::uaccess::ERR_RETRY;
     }
+
     sched::fpu_state fp;
     fpu::save(&fp);
 
@@ -148,6 +152,7 @@ __PRIVILEGED_CODE static int32_t build_signal_frame_async(
     tf->x[1] = frame_addr + __builtin_offsetof(rt_sigframe, info);
     tf->x[2] = frame_addr + __builtin_offsetof(rt_sigframe, uc);
     tf->x[30] = act->restorer; // LR, the handler returns into the restorer
+
     return 0;
 }
 
@@ -158,6 +163,7 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(trap_frame* tf) {
     if (!frame) {
         signals::die_from_signal(signals::SIGSEGV);
     }
+
     if (mm::uaccess::copy_from_user(
             frame, reinterpret_cast<void*>(frame_addr), sizeof(*frame)) != mm::uaccess::OK) {
         heap::kfree_delete(frame);
@@ -217,6 +223,7 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
         signals::untake_deliverable(self, sig, &act, old_blocked);
         return;
     }
+
     if (rc != 0) {
         signals::die_from_signal(signals::SIGSEGV);
     }
@@ -244,6 +251,7 @@ __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
             tf->elr -= aarch64::SVC_INSN_LEN;
             return static_cast<int64_t>(tf->x[0]);
         }
+
         return result;
     }
 

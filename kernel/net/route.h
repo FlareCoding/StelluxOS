@@ -24,9 +24,8 @@ struct route_entry {
     uint32_t    gateway;    // next hop IP (0 for connected/local), host byte order
     netif*      iface;      // outgoing interface
     netif*      owner;      // interface whose configure() created this route
-                            // (may differ from iface for LOCAL routes that
-                            // point to loopback but belong to another iface)
-    route_type  type; // LOCAL, CONNECTED, GATEWAY
+                            // (differs from iface for LOCAL routes via loopback)
+    route_type  type;
     uint8_t     _pad[1];
     uint16_t    metric;     // lower = preferred
     bool        valid;      // slot in use
@@ -39,7 +38,7 @@ struct route_entry {
 struct route_result {
     netif*      iface;      // outgoing interface
     uint32_t    next_hop;   // IP to ARP resolve (gateway or dst)
-    route_type  type;       // LOCAL, CONNECTED, GATEWAY
+    route_type  type;
 };
 
 constexpr uint32_t ROUTE_TABLE_SIZE = 32;

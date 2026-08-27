@@ -77,6 +77,7 @@ __PRIVILEGED_CODE int32_t init_ap() {
     if (!g_calibrated.load_acquire()) {
         return ERR;
     }
+
     return OK;
 }
 
@@ -84,6 +85,7 @@ uint64_t now_ns() {
     if (!g_calibrated.load_acquire()) {
         return 0;
     }
+
     uint64_t ticks = hwtimer::read_cntvct();
     return static_cast<uint64_t>(
         (static_cast<unsigned __int128>(ticks) * g_mult) >> g_shift

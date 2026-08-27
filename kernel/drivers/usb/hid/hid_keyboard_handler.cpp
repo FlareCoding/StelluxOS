@@ -69,10 +69,12 @@ void hid_keyboard_handler::reset_state() {
         heap::ufree(m_key_fields);
         m_key_fields = nullptr;
     }
+
     if (m_prev_keycodes) {
         heap::ufree(m_prev_keycodes);
         m_prev_keycodes = nullptr;
     }
+
     if (m_curr_keycodes) {
         heap::ufree(m_curr_keycodes);
         m_curr_keycodes = nullptr;
@@ -153,9 +155,11 @@ int32_t hid_keyboard_handler::init(const report_layout& layout,
         if (field.usage_page != kb || field.is_constant()) {
             continue;
         }
+
         if (field.is_variable() && is_modifier_usage(field.usage)) {
             continue;
         }
+
         if (slot < key_field_count) {
             m_key_fields[slot++] = &field;
         }
@@ -234,6 +238,7 @@ void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t length) {
         if (keycode == 0 || contains_keycode(m_curr_keycodes, i, keycode)) {
             continue;
         }
+
         if (!contains_keycode(m_prev_keycodes, m_key_field_count, keycode)) {
             input::kbd_event evt{};
             evt.action = input::KBD_ACTION_DOWN;
@@ -248,6 +253,7 @@ void hid_keyboard_handler::on_report(const uint8_t* data, uint32_t length) {
         if (keycode == 0 || contains_keycode(m_prev_keycodes, i, keycode)) {
             continue;
         }
+
         if (!contains_keycode(m_curr_keycodes, m_key_field_count, keycode)) {
             input::kbd_event evt{};
             evt.action = input::KBD_ACTION_UP;
@@ -265,6 +271,7 @@ const char* hid_keyboard_handler::scancode_to_name(uint16_t scancode) {
     if (scancode > 0xFFu) {
         return nullptr;
     }
+
     return scancode_to_name_lookup(static_cast<uint8_t>(scancode));
 }
 

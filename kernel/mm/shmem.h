@@ -42,7 +42,7 @@ struct shmem final : rc::ref_counted<shmem> {
 /**
  * @brief Resize the shmem backing.
  * Grow: allocate and zero new pages.
- * Shrink: update m_size and m_page_count only; do NOT free tail pages
+ * Shrink: update m_size and m_page_count only, do NOT free tail pages
  * (they may still be mapped). Tail pages are freed in ref_destroy.
  * Caller must hold s->lock.
  */

@@ -77,18 +77,15 @@ TEST(loopback_test, poll_is_null) {
 // Default interface behavior
 
 TEST(loopback_test, not_default_interface) {
-    // In the test environment with no hardware NICs, the default
-    // outbound interface should be nullptr, NOT loopback.
+    // With no hardware NICs the default outbound interface may be absent,
+    // but it must never be loopback.
     net::netif* def = net::get_default_netif();
     net::netif* lo = net::get_loopback_netif();
     ASSERT_NOT_NULL(lo);
 
-    // If a default exists, it must not be loopback
     if (def != nullptr) {
         EXPECT_NE(def, lo);
     }
-    // In a test-only environment, there might be no default at all,
-    // which is correct behavior.
 }
 
 // Interface list visibility
@@ -135,12 +132,14 @@ TEST(loopback_test, transmit_delivers_to_rx) {
     // Build an ICMP echo request
     uint8_t icmp_pkt[64];
     string::memset(icmp_pkt, 0, sizeof(icmp_pkt));
+
     auto* icmp_hdr = reinterpret_cast<net::icmp_header*>(icmp_pkt);
     icmp_hdr->type = net::ICMP_TYPE_ECHO_REQUEST;
     icmp_hdr->code = 0;
     icmp_hdr->id = net::htons(0x1234);
     icmp_hdr->sequence = net::htons(1);
     icmp_hdr->checksum = 0;
+
     // Fill payload with a pattern
     for (size_t i = sizeof(net::icmp_header); i < sizeof(icmp_pkt); i++) {
         icmp_pkt[i] = static_cast<uint8_t>(i & 0xFF);
@@ -152,12 +151,14 @@ TEST(loopback_test, transmit_delivers_to_rx) {
     uint8_t ip_pkt[128];
     string::memset(ip_pkt, 0, sizeof(ip_pkt));
     auto* ip_hdr = reinterpret_cast<net::ipv4_header*>(ip_pkt);
+
     ip_hdr->ver_ihl = (4 << 4) | 5;
     ip_hdr->total_len = net::htons(static_cast<uint16_t>(ip_total));
     ip_hdr->ttl = 64;
     ip_hdr->protocol = net::IPV4_PROTO_ICMP;
     ip_hdr->src_ip = net::htonl(net::ipv4_addr(127, 0, 0, 1));
     ip_hdr->dst_ip = net::htonl(net::ipv4_addr(127, 0, 0, 1));
+
     ip_hdr->checksum = 0;
     string::memcpy(ip_pkt + sizeof(net::ipv4_header), icmp_pkt, sizeof(icmp_pkt));
     ip_hdr->checksum = net::inet_checksum(ip_pkt, sizeof(net::ipv4_header));
@@ -167,6 +168,7 @@ TEST(loopback_test, transmit_delivers_to_rx) {
     uint8_t frame[256];
     string::memset(frame, 0, sizeof(frame));
     auto* eth_hdr = reinterpret_cast<net::eth_header*>(frame);
+
     string::memset(eth_hdr->dst, 0, net::MAC_ADDR_LEN);
     string::memset(eth_hdr->src, 0, net::MAC_ADDR_LEN);
     eth_hdr->ethertype = net::htons(net::ETH_TYPE_IPV4);
@@ -176,9 +178,8 @@ TEST(loopback_test, transmit_delivers_to_rx) {
     rc = lo->transmit(lo, frame, frame_len);
     EXPECT_EQ(rc, net::OK);
 
-    // The ICMP handler should have queued an echo reply via deferred TX
-    // and delivered the original echo request to our socket.
-    // Drain deferred TX to process the echo reply.
+    // The handler delivered the echo request to our socket and queued an
+    // echo reply on deferred TX, drain it now
     net::drain_deferred_tx();
 
     // Try to read from the socket's ring buffer (nonblock)
@@ -218,17 +219,18 @@ TEST(loopback_test, ipv4_send_to_127_0_0_1) {
     // Build an ICMP echo request
     uint8_t icmp_pkt[64];
     string::memset(icmp_pkt, 0, sizeof(icmp_pkt));
+
     auto* icmp_hdr = reinterpret_cast<net::icmp_header*>(icmp_pkt);
     icmp_hdr->type = net::ICMP_TYPE_ECHO_REQUEST;
     icmp_hdr->code = 0;
     icmp_hdr->id = net::htons(0x5678);
     icmp_hdr->sequence = net::htons(2);
+
     icmp_hdr->checksum = 0;
     icmp_hdr->checksum = net::inet_checksum(icmp_pkt, sizeof(icmp_pkt));
 
-    // Send via ipv4_send to 127.0.0.1
-    // This should: build IP header -> loopback check -> eth_send -> lo_transmit
-    // -> rx_frame -> eth_recv -> ipv4_recv -> icmp_recv -> deliver_to_sockets
+    // Send to 127.0.0.1, the packet must loop back through the full
+    // receive path and land in the ICMP socket
     rc = net::ipv4_send(lo, net::ipv4_addr(127, 0, 0, 1),
                         net::IPV4_PROTO_ICMP, icmp_pkt, sizeof(icmp_pkt));
     EXPECT_EQ(rc, net::OK);
@@ -286,9 +288,8 @@ TEST(loopback_test, ipv4_send_to_127_0_0_1) {
 // ipv4_send to other 127.x.x.x addresses
 
 TEST(loopback_test, ipv4_send_to_127_0_0_2) {
-    // Verify that sending to 127.0.0.2 also routes through loopback.
-    // The packet should be accepted by ipv4_recv since the loopback
-    // interface accepts any address in 127.0.0.0/8.
+    // Sending to 127.0.0.2 must also route through loopback, which
+    // accepts any destination in 127.0.0.0/8.
     resource::resource_object* obj = nullptr;
     int32_t rc = net::create_inet_icmp_socket(&obj);
     ASSERT_EQ(rc, resource::OK);
@@ -303,11 +304,13 @@ TEST(loopback_test, ipv4_send_to_127_0_0_2) {
     // Build a minimal ICMP echo request
     uint8_t icmp_pkt[8];
     string::memset(icmp_pkt, 0, sizeof(icmp_pkt));
+
     auto* icmp_hdr = reinterpret_cast<net::icmp_header*>(icmp_pkt);
     icmp_hdr->type = net::ICMP_TYPE_ECHO_REQUEST;
     icmp_hdr->code = 0;
     icmp_hdr->id = net::htons(0xABCD);
     icmp_hdr->sequence = net::htons(1);
+
     icmp_hdr->checksum = 0;
     icmp_hdr->checksum = net::inet_checksum(icmp_pkt, sizeof(icmp_pkt));
 
@@ -435,19 +438,20 @@ TEST(loopback_test, transmit_null_iface) {
     EXPECT_EQ(rc, net::ERR_INVAL);
 }
 
-// LOCAL route delivery for non-127 own IP (Bug 2 regression test)
+// LOCAL route delivery for a non-127 own IP
 
 TEST(loopback_test, local_route_delivers_own_ip) {
-    // Simulate having a configured eth0-like interface with a LOCAL route.
-    // Sending to that interface's own IP should be delivered via loopback
-    // (through the LOCAL route) and received correctly by ipv4_recv.
+    // Sending to a configured interface's own IP must be delivered locally
+    // via the LOCAL route through loopback and accepted on receive.
 
     // Create and configure a mock interface
     static net::netif mock_eth = {};
     string::memcpy(mock_eth.name, "mock0", 6);
+
     mock_eth.mac[0] = 0xAA; mock_eth.mac[1] = 0xBB;
     mock_eth.mac[2] = 0xCC; mock_eth.mac[3] = 0xDD;
     mock_eth.mac[4] = 0xEE; mock_eth.mac[5] = 0xFF;
+
     // Transmit callback, not used for LOCAL delivery, but required for register
     mock_eth.transmit = [](net::netif*, const uint8_t*, size_t) -> int32_t {
         return net::OK;
@@ -459,9 +463,8 @@ TEST(loopback_test, local_route_delivers_own_ip) {
     int32_t rc = net::register_netif(&mock_eth);
     ASSERT_EQ(rc, net::OK);
 
-    // Configure with a non-loopback IP. This creates:
-    //   LOCAL 10.0.88.100/32 -> lo
-    //   CONNECTED 10.0.88.0/24 -> mock_eth
+    // Configuring a non-loopback IP installs LOCAL 10.0.88.100/32 on lo
+    // and CONNECTED 10.0.88.0/24 on mock_eth
     rc = net::configure(&mock_eth,
                         net::ipv4_addr(10, 0, 88, 100),
                         net::ipv4_addr(255, 255, 255, 0),
@@ -478,20 +481,20 @@ TEST(loopback_test, local_route_delivers_own_ip) {
     ASSERT_NOT_NULL(sock);
     ASSERT_NOT_NULL(sock->rx_buf);
 
-    // Send ICMP echo request to our own mock_eth IP (10.0.88.100).
-    // This should route via LOCAL -> loopback, be accepted by ipv4_recv,
-    // and delivered to the socket.
+    // Build an ICMP echo request
     uint8_t icmp_pkt[8];
     string::memset(icmp_pkt, 0, sizeof(icmp_pkt));
+
     auto* icmp_hdr = reinterpret_cast<net::icmp_header*>(icmp_pkt);
     icmp_hdr->type = net::ICMP_TYPE_ECHO_REQUEST;
     icmp_hdr->code = 0;
     icmp_hdr->id = net::htons(0xBEEF);
     icmp_hdr->sequence = net::htons(1);
+
     icmp_hdr->checksum = 0;
     icmp_hdr->checksum = net::inet_checksum(icmp_pkt, sizeof(icmp_pkt));
 
-    // Send to 10.0.88.100, route_lookup should find LOCAL /32 route
+    // Sending to our own IP must take the LOCAL /32 route through loopback
     rc = net::ipv4_send(&mock_eth, net::ipv4_addr(10, 0, 88, 100),
                         net::IPV4_PROTO_ICMP, icmp_pkt, sizeof(icmp_pkt));
     EXPECT_EQ(rc, net::OK);

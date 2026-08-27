@@ -14,6 +14,7 @@ static int32_t pmm_before_all() {
         log::error("pmm tests: insufficient free pages (%lu)", g_initial_free_pages);
         return -1;
     }
+
     return 0;
 }
 
@@ -167,10 +168,8 @@ TEST(pmm, buddy_coalescing) {
     pmm::free_page(b);
 
     uint64_t order1_after = pmm::free_block_count(1);
-    // We can't guarantee they were buddies, but free count should be consistent
-    // At minimum, the total free page count should increase by 2
-    // (buddy coalescing is an internal optimization, not directly observable
-    // from alloc_page which may return non-adjacent pages)
+    // alloc_page may return non-adjacent pages, so coalescing is not
+    // directly observable and no assertion on the order-1 count is possible
     uint64_t total_before_minus_2 = pmm::free_page_count() - 2;
     (void)order1_before;
     (void)order1_after;

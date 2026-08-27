@@ -13,6 +13,7 @@ int main(void) {
     if (fd0 < 0) {
         return 99;
     }
+
     open("/dev/console", O_RDWR); // fd 1
     open("/dev/console", O_RDWR); // fd 2
 

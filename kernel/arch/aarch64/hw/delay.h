@@ -13,6 +13,7 @@ namespace delay {
  */
 inline void ns(uint64_t n) {
     if (n == 0) return;
+
     uint64_t start = clock::now_ns();
     while (clock::now_ns() - start < n) {
         cpu::relax();

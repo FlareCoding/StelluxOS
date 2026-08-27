@@ -1,5 +1,5 @@
-#ifndef STELLUX_AARCH64_ACPI_MADT_ARCH_H
-#define STELLUX_AARCH64_ACPI_MADT_ARCH_H
+#ifndef STELLUX_ARCH_AARCH64_ACPI_MADT_ARCH_H
+#define STELLUX_ARCH_AARCH64_ACPI_MADT_ARCH_H
 
 #include "common/types.h"
 #include "acpi/tables.h"
@@ -7,8 +7,9 @@
 namespace acpi {
 
 // AArch64 MADT entry structs (packed, matching ACPI spec byte layouts)
-// GICC is variable-length across ACPI versions; we define the full struct
-// but only access fields within the entry's declared length.
+
+// GICC is variable-length across ACPI versions, so the full struct is
+// defined but only fields within the entry's declared length are accessed.
 
 struct __attribute__((packed)) madt_gicc {
     madt_entry_header header; // type=0x0B
@@ -106,4 +107,4 @@ __PRIVILEGED_CODE const madt_info& get_madt_info();
 
 } // namespace acpi
 
-#endif // STELLUX_AARCH64_ACPI_MADT_ARCH_H
+#endif // STELLUX_ARCH_AARCH64_ACPI_MADT_ARCH_H

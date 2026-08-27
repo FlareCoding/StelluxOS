@@ -89,10 +89,12 @@ using vma_tree = rbt::tree<vma, &vma::addr_link, vma_addr_cmp>;
     if (length == 0) {
         return false;
     }
+
     uintptr_t end = start + length;
     if (end < start) {
         return false;
     }
+
     end_out = end;
     return true;
 }
@@ -159,7 +161,7 @@ __PRIVILEGED_CODE void vma_remove_locked(mm_context* mm_ctx, vma& node);
 
 /**
  * @brief Unmap [start, end) from a user mm_context, freeing physical pages.
- * Iterates page-by-page; pages that aren't mapped are skipped.
+ * Iterates page-by-page, pages that aren't mapped are skipped.
  * Used for anonymous/stack mappings the kernel owns.
  * @note Privilege: **required**
  */
@@ -192,7 +194,7 @@ __PRIVILEGED_CODE void coalesce_all_locked(mm_context* mm_ctx);
 
 /**
  * @brief Split a VMA at split_addr into two adjacent VMAs.
- * The left part keeps the original node; the right part is freshly allocated
+ * The left part keeps the original node, the right part is freshly allocated
  * and inserted into the tree. Caller must hold mm_ctx->lock.
  * @return The newly-allocated right-hand VMA, or nullptr on allocation failure
  *         or out-of-range split_addr.
@@ -220,7 +222,7 @@ __PRIVILEGED_CODE int32_t unmap_range_locked(
 
 /**
  * @brief Apply new protection bits to the existing PTEs for [start, end).
- * Does not change VMA records; caller is responsible for VMA updates.
+ * Does not change VMA records, caller is responsible for VMA updates.
  * @return MM_CTX_OK on success, MM_CTX_ERR_NOT_MAPPED if any page is unmapped,
  *         MM_CTX_ERR_MAP_FAILED on PTE-update failure.
  * @note Privilege: **required**

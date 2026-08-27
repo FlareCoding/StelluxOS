@@ -32,7 +32,7 @@ __PRIVILEGED_BSS static uint32_t g_tick_hz;
 __PRIVILEGED_BSS static uint64_t g_inv_mult;
 __PRIVILEGED_BSS static uint32_t g_inv_shift;
 
-// PIT constants (same as former hwtimer calibration)
+// PIT channel 2 constants for timing LAPIC frequency calibration
 constexpr uint16_t PIT_CTRL     = 0x43;
 constexpr uint16_t PIT_CH2_DATA = 0x42;
 constexpr uint16_t PORT_B       = 0x61;
@@ -280,11 +280,14 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
 __PRIVILEGED_CODE void cancel_sleep(sched::task* t) {
     uint32_t cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
     timer_cpu_state& state = per_cpu_on(cpu_timer_state, cpu);
+
     sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
+
     if (t->timer_link.is_linked()) {
         state.sleep_queue.remove(t);
         t->timer_deadline = 0;
     }
+
     sync::spin_unlock_irqrestore(state.lock, irq);
 }
 

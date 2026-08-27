@@ -25,6 +25,7 @@ static const char* get_string(uint32_t nameoff) {
 
 static uint32_t read_token(uint32_t offset) {
     if (offset + 4 > g_struct_size) return FDT_END;
+
     uint32_t raw;
     string::memcpy(&raw, g_struct_base + offset, 4);
     return be32(raw);
@@ -44,6 +45,7 @@ static bool compatible_match(const uint8_t* data, uint32_t len, const char* targ
         const char* entry = reinterpret_cast<const char*>(data + pos);
         uint32_t elen = string::strnlen(entry, len - pos);
         if (elen == tlen && string::memcmp(entry, target, tlen) == 0) return true;
+
         pos += elen + 1;
     }
     return false;
@@ -53,6 +55,7 @@ static bool compatible_match(const uint8_t* data, uint32_t len, const char* targ
 // Returns pointer to property data and sets out_len, or nullptr if not found.
 static const void* node_get_prop(uint32_t node_offset, const char* name, uint32_t* out_len) {
     if (read_token(node_offset) != FDT_BEGIN_NODE) return nullptr;
+
     uint32_t offset = node_offset + 4;
 
     // Skip name
@@ -63,10 +66,12 @@ static const void* node_get_prop(uint32_t node_offset, const char* name, uint32_
     while (offset < g_struct_size) {
         uint32_t tok = read_token(offset);
         if (tok == FDT_NOP) { offset += 4; continue; }
-        if (tok != FDT_PROP) break;
-        offset += 4;
 
+        if (tok != FDT_PROP) break;
+
+        offset += 4;
         if (offset + 8 > g_struct_size) return nullptr;
+
         uint32_t len = read_cell32(g_struct_base + offset);
         uint32_t nameoff = read_cell32(g_struct_base + offset + 4);
         offset += 8;
@@ -76,8 +81,10 @@ static const void* node_get_prop(uint32_t node_offset, const char* name, uint32_
             if (out_len) *out_len = len;
             return g_struct_base + offset;
         }
+
         offset = align4(offset + len);
     }
+
     return nullptr;
 }
 
@@ -86,6 +93,7 @@ static uint32_t node_get_u32(uint32_t node_offset, const char* name, uint32_t de
     uint32_t len = 0;
     const void* data = node_get_prop(node_offset, name, &len);
     if (!data || len < 4) return default_val;
+
     return read_cell32(static_cast<const uint8_t*>(data));
 }
 
@@ -167,6 +175,7 @@ __PRIVILEGED_CODE int32_t find_compatible(const char* compatible) {
         if (tok == FDT_PROP) {
             offset += 4;
             if (offset + 8 > g_struct_size) break;
+
             uint32_t len = read_cell32(g_struct_base + offset);
             offset += 8;
             offset = align4(offset + len);
@@ -182,22 +191,22 @@ __PRIVILEGED_CODE int32_t find_compatible(const char* compatible) {
 
 __PRIVILEGED_CODE const void* get_prop(int32_t node_offset, const char* name, uint32_t* out_len) {
     if (!g_initialized || node_offset < 0) return nullptr;
+
     return node_get_prop(static_cast<uint32_t>(node_offset), name, out_len);
 }
 
 __PRIVILEGED_CODE int32_t get_reg(int32_t node_offset, uint64_t* out_base, uint64_t* out_size) {
     if (!g_initialized || node_offset < 0) return ERR_NO_DTB;
+
     if (!out_base || !out_size) return ERR_BAD_DATA;
 
     uint32_t target = static_cast<uint32_t>(node_offset);
 
-    // Simple approach: walk from root, find the direct parent of our node
-    // The parent's properties define how to interpret our reg
-    // Default values per DT spec
+    // The direct parent's #address-cells and #size-cells define how reg
+    // is interpreted, the 2/1 split is the DT spec default
     uint32_t parent_addr_cells = 2;
     uint32_t parent_size_cells = 1;
 
-    // Walk from root to find parent
     uint32_t offset = 0;
     uint32_t depth = 0;
     constexpr uint32_t MAX_DEPTH = 16;
@@ -210,25 +219,31 @@ __PRIVILEGED_CODE int32_t get_reg(int32_t node_offset, uint64_t* out_base, uint6
             if (depth < MAX_DEPTH) parent_stack[depth] = offset;
             depth++;
             if (offset == target) break;
+
             offset += 4;
             while (offset < g_struct_size && g_struct_base[offset] != 0) offset++;
             offset = align4(offset + 1);
             continue;
         }
+
         if (tok == FDT_END_NODE) {
             if (depth > 0) depth--;
             offset += 4;
             continue;
         }
+
         if (tok == FDT_PROP) {
             offset += 4;
             if (offset + 8 > g_struct_size) return ERR_BAD_DATA;
+
             uint32_t len = read_cell32(g_struct_base + offset);
             offset += 8;
             offset = align4(offset + len);
             continue;
         }
+
         if (tok == FDT_NOP) { offset += 4; continue; }
+
         break;
     }
 
@@ -315,6 +330,7 @@ __PRIVILEGED_CODE int32_t get_reg(int32_t node_offset, uint64_t* out_base, uint6
 __PRIVILEGED_CODE int32_t get_interrupts(int32_t node_offset,
                                          uint32_t* out_irqs, uint32_t max_irqs) {
     if (!g_initialized || node_offset < 0) return ERR_NO_DTB;
+
     if (!out_irqs || max_irqs == 0) return ERR_BAD_DATA;
 
     uint32_t len = 0;
@@ -335,7 +351,6 @@ __PRIVILEGED_CODE int32_t get_interrupts(int32_t node_offset,
          off += BYTES_PER_IRQ) {
         uint32_t type = read_cell32(cells + off);
         uint32_t num  = read_cell32(cells + off + 4);
-        // uint32_t flags = read_cell32(cells + off + 8);  // unused for now
 
         if (type == 0) {
             // SPI interrupt

@@ -23,6 +23,7 @@ static int32_t shmem_after_all() {
     if (final_free != g_initial_free_pages) {
         return -1;
     }
+
     return 0;
 }
 

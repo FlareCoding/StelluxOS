@@ -41,9 +41,11 @@ public:
         if (rc == RB_ERR_AGAIN) {
             return fs::ERR_AGAIN;
         }
+
         if (rc < 0) {
             return fs::ERR_IO;
         }
+
         size_t got = static_cast<size_t>(rc);
         size_t whole = (got / rec_size) * rec_size;
         return static_cast<ssize_t>(whole > 0 ? whole : 0);
@@ -57,6 +59,7 @@ public:
         if (!attr) {
             return fs::ERR_INVAL;
         }
+
         attr->type = fs::node_type::char_device;
         attr->size = 0;
         return fs::OK;
@@ -105,6 +108,7 @@ __PRIVILEGED_CODE int32_t init() {
         g_kbd_rb = nullptr;
         return ERR;
     }
+
     auto* kbd_node = new (kbd_mem) kbd_device_node(nullptr, "kbd", g_kbd_rb);
 
     void* mouse_mem = heap::kzalloc(sizeof(mouse_device_node));
@@ -118,6 +122,7 @@ __PRIVILEGED_CODE int32_t init() {
         g_kbd_rb = nullptr;
         return ERR;
     }
+
     auto* mouse_node = new (mouse_mem) mouse_device_node(nullptr, "mouse", g_mouse_rb);
 
     if (devfs::add_char_device_at(input_dir, kbd_node) != devfs::OK) {

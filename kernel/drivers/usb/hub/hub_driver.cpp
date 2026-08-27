@@ -37,9 +37,8 @@ int32_t hub_driver::probe(usb::device* dev, usb::interface* /*iface*/) {
 
     // Extract TT think time from wHubCharacteristics bits 5-6
     uint8_t tt_think_time = (m_hub_desc.wHubCharacteristics >> 5) & 0x3;
-    // MTT: bit 0 of wHubCharacteristics (0=single TT, 1=multi TT for ganged)
-    // Actually, per USB 2.0 spec, if the hub supports multiple TTs, it's
-    // indicated by bDeviceProtocol == 2 (multi-TT). We don't enable MTT for now.
+    // Per the USB 2.0 spec, multi-TT support is indicated by
+    // bDeviceProtocol == 2. This driver always runs hubs with a single TT.
     bool mtt = false;
 
     if (hcd->configure_as_hub(xdev, num_ports, tt_think_time, mtt) != 0) {
@@ -60,9 +59,8 @@ void hub_driver::run() {
 
     power_on_ports();
 
-    // Initial port scan after power-on.
-    // Devices already physically connected won't have PORT_CHANGE_CONNECTION
-    // set, so we enumerate based on PORT_STATUS_CONNECTION directly.
+    // Devices already connected at power-on do not raise PORT_CHANGE_CONNECTION,
+    // so the initial scan enumerates from PORT_STATUS_CONNECTION directly.
     delay::us(m_hub_desc.bPwrOn2PwrGood * 2000 + 50000);
 
     for (uint8_t port = 1; port <= m_hub_desc.bNbrPorts; port++) {
@@ -87,6 +85,7 @@ void hub_driver::run() {
         }
 
         if (get_port_status(port, &status) != 0) continue;
+
         if (!(status.status & PORT_STATUS_ENABLE)) {
             log::warn("hub: port %u not enabled after initial reset", port);
             continue;
@@ -108,6 +107,7 @@ void hub_driver::run() {
                 }
             }
         }
+
         return;
     }
 
@@ -184,12 +184,15 @@ void hub_driver::handle_port_change(uint8_t port) {
                 log::error("hub: port %u re-enable reset failed", port);
                 return;
             }
+
             if (get_port_status(port, &status) != 0) return;
+
             if (status.status & PORT_STATUS_ENABLE) {
                 uint8_t speed = hub_speed_to_xhci_speed(status.status);
                 hcd->queue_hub_disconnect(xdev, port);
                 hcd->queue_hub_enumerate(xdev, port, speed);
             }
+
             return;
         }
     }

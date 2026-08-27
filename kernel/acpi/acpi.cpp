@@ -32,6 +32,7 @@ __PRIVILEGED_CODE static const void* map_acpi_region(
     if (rc != vmm::OK) {
         return nullptr;
     }
+
     return reinterpret_cast<const void*>(va);
 }
 
@@ -95,7 +96,7 @@ __PRIVILEGED_CODE int32_t init() {
         return ERR_BAD_CHECKSUM;
     }
 
-    // Validate v1 checksum (first 20 bytes)
+    // The v1 checksum covers only the first 20 bytes
     if (!validate_checksum(rsdp_ptr, RSDP_V1_SIZE)) {
         log::error("acpi: RSDP v1 checksum failed");
         return ERR_BAD_CHECKSUM;
@@ -110,6 +111,7 @@ __PRIVILEGED_CODE int32_t init() {
             log::error("acpi: RSDP v2 extended checksum failed");
             return ERR_BAD_CHECKSUM;
         }
+
         sdt_phys = read_u64(&rsdp_ptr->xsdt_address);
         g_use_xsdt = true;
         entry_size = 8;
@@ -177,6 +179,7 @@ __PRIVILEGED_CODE int32_t init() {
         log::error("acpi: MADT parse failed (%d)", madt_rc);
         return madt_rc;
     }
+
     madt::dump();
 
     return OK;
@@ -218,6 +221,7 @@ __PRIVILEGED_CODE const sdt_header* find_table(const char signature[4]) {
                 log::error("acpi: table '%.4s' checksum failed", signature);
                 continue;
             }
+
             return hdr;
         }
     }

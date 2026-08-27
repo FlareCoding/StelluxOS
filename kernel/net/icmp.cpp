@@ -36,6 +36,7 @@ static void deliver_to_sockets(uint32_t src_ip, const uint8_t* data, size_t len)
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_icmp_sock_lock);
+
         for (inet_socket* s = g_icmp_sock_list; s; s = s->next) {
             if (s->rx_buf) {
                 (void)ring_buffer_write_all(s->rx_buf, entry, entry_len, true);
@@ -60,9 +61,8 @@ void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len) {
     }
 
     if (hdr->type == ICMP_TYPE_ECHO_REQUEST && hdr->code == 0) {
-        // Build the echo reply and queue it for deferred transmission.
-        // Sending inline from RX context would recurse through
-        // ipv4_send -> arp_resolve -> poll -> deliver_rx_batch.
+        // Queue the echo reply for deferred transmission, sending inline
+        // from RX context would recurse back into RX processing.
         if (len <= ETH_MTU) {
             auto* reply = static_cast<uint8_t*>(heap::kzalloc(len));
             if (reply) {
@@ -88,6 +88,7 @@ void icmp_register_socket(inet_socket* sock) {
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_icmp_sock_lock);
+
         sock->next = g_icmp_sock_list;
         g_icmp_sock_list = sock;
     });
@@ -98,6 +99,7 @@ void icmp_unregister_socket(inet_socket* sock) {
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_icmp_sock_lock);
+
         inet_socket** pp = &g_icmp_sock_list;
         while (*pp) {
             if (*pp == sock) {

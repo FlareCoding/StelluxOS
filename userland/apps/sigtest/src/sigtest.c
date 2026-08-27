@@ -125,6 +125,7 @@ static int pipe_victim_child(void) {
     if (pipe(fds) != 0) {
         return 1;
     }
+
     close(fds[0]);
     char b = 'x';
     write(fds[1], &b, 1);
@@ -193,6 +194,7 @@ static void test_read_eintr(void) {
         close(fds[1]);
         return;
     }
+
     proc_thread_start(h);
 
     char byte;
@@ -247,6 +249,7 @@ static void test_read_restart(void) {
         printf("  SKIP: pipe unavailable\n");
         return;
     }
+
     g_restart_wfd = fds[1];
 
     void* stk = mmap(NULL, HELPER_STACK_SIZE, PROT_READ | PROT_WRITE,
@@ -257,6 +260,7 @@ static void test_read_restart(void) {
         close(fds[1]);
         return;
     }
+
     int h = proc_create_thread(restart_helper, NULL,
                                (char*)stk + HELPER_STACK_SIZE, "sig_helper");
     if (h < 0) {
@@ -266,6 +270,7 @@ static void test_read_restart(void) {
         close(fds[1]);
         return;
     }
+
     proc_thread_start(h);
 
     char byte = 0;
@@ -299,6 +304,7 @@ static void test_poll_eintr_despite_restart(void) {
         close(fds[1]);
         return;
     }
+
     int h = proc_create_thread(eintr_helper, NULL,
                                (char*)stk + HELPER_STACK_SIZE, "sig_helper");
     if (h < 0) {
@@ -308,6 +314,7 @@ static void test_poll_eintr_despite_restart(void) {
         close(fds[1]);
         return;
     }
+
     proc_thread_start(h);
 
     struct pollfd pfd = { .fd = fds[0], .events = POLLIN, .revents = 0 };
@@ -357,6 +364,7 @@ static void test_async_compute_delivery(void) {
         printf("  SKIP: helper stack unavailable\n");
         return;
     }
+
     int h = proc_create_thread(async_helper, NULL,
                                (char*)stk + HELPER_STACK_SIZE, "sig_helper");
     if (h < 0) {
@@ -364,6 +372,7 @@ static void test_async_compute_delivery(void) {
         munmap(stk, HELPER_STACK_SIZE);
         return;
     }
+
     proc_thread_start(h);
 
     /* Pure compute: no syscall happens until the handler flips the flag,
@@ -404,6 +413,7 @@ static void test_sigpipe_dispositions(void) {
         printf("  SKIP: pipe unavailable\n");
         return;
     }
+
     close(fds[0]);
     ssize_t n = write(fds[1], &b, 1);
     int saved_errno = errno;
@@ -419,9 +429,11 @@ static void test_sigpipe_dispositions(void) {
         printf("  SKIP: pipe unavailable\n");
         return;
     }
+
     close(fds[0]);
     n = write(fds[1], &b, 1);
     saved_errno = errno;
+
     check("handled SIGPIPE write fails EPIPE", n == -1 && saved_errno == EPIPE);
     check("SIGPIPE handler ran", sigpipe_count == 1);
     close(fds[1]);
@@ -434,6 +446,7 @@ static void test_sigpipe_dispositions(void) {
         printf("  SKIP: self exec unavailable\n");
         return;
     }
+
     proc_start(h);
     int status = 0;
     proc_wait(h, &status);
@@ -449,6 +462,7 @@ static void test_trap_default_kills(void) {
         printf("  SKIP: self exec unavailable\n");
         return;
     }
+
     proc_start(h);
     int status = 0;
     proc_wait(h, &status);
@@ -460,6 +474,7 @@ int main(int argc, char** argv) {
     if (argc >= 2 && strcmp(argv[1], "--pipe-victim") == 0) {
         return pipe_victim_child();
     }
+
     if (argc >= 2 && strcmp(argv[1], "--trap-victim") == 0) {
         return trap_victim_child();
     }

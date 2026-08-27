@@ -62,6 +62,7 @@ static int64_t copy_proc_string_array_from_user(
         if (rc != mm::uaccess::OK) {
             return syscall::EFAULT;
         }
+
         if (uptr == 0) {
             break;
         }
@@ -70,6 +71,7 @@ static int64_t copy_proc_string_array_from_user(
         if (remaining == 0) {
             return syscall::ENAMETOOLONG;
         }
+
         size_t cap = remaining < sched::MAX_ARG_STRLEN
                    ? remaining : sched::MAX_ARG_STRLEN;
 
@@ -79,6 +81,7 @@ static int64_t copy_proc_string_array_from_user(
         if (rc == mm::uaccess::ERR_NAMETOOLONG) {
             return syscall::ENAMETOOLONG;
         }
+
         if (rc != mm::uaccess::OK) {
             return syscall::EFAULT;
         }
@@ -101,6 +104,7 @@ static int64_t copy_proc_create_strings_from_user(
     if (rc != 0) {
         return rc;
     }
+
     return copy_proc_string_array_from_user(strs.envp, u_envp);
 }
 
@@ -140,6 +144,7 @@ DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
     if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
         return syscall::ENAMETOOLONG;
     }
+
     if (copy_rc != mm::uaccess::OK) {
         return syscall::EFAULT;
     }
@@ -185,6 +190,7 @@ DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
         resource::proc_provider::destroy_unstarted_task(child);
         return syscall::error_map::map_fs_error(cwd_rc);
     }
+
     child->cwd = inherited_cwd;
 
     for (resource::handle_t fd = 0; fd < 3; fd++) {
@@ -286,14 +292,17 @@ DEFINE_SYSCALL2(proc_wait, u_handle, u_exit_code_ptr) {
         resource::resource_release(obj);
         return syscall::EINVAL;
     }
+
     while (!pr->exited && !signals::interrupt_pending(caller)) {
         irq = sync::wait(pr->wait_queue, pr->lock, irq);
     }
+
     if (!pr->exited) {
         sync::spin_unlock_irqrestore(pr->lock, irq);
         resource::resource_release(obj);
         return syscall::ERESTARTSYS;
     }
+
     int32_t child_wait_status = pr->wait_status;
     sync::spin_unlock_irqrestore(pr->lock, irq);
 
@@ -356,6 +365,7 @@ DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
+
     if (obj->type != resource::resource_type::PROCESS) {
         resource::resource_release(obj);
         return syscall::EBADF;
@@ -374,6 +384,7 @@ DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
         resource::resource_release(obj);
         return syscall::ESRCH;
     }
+
     string::memcpy(kinfo.name, pr->child->name,
                    string::strnlen(pr->child->name, sched::TASK_NAME_MAX - 1) + 1);
     kinfo.pid = static_cast<int>(pr->child->tid);
@@ -447,6 +458,7 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     if (rc != resource::HANDLE_OK) {
         return syscall::EINVAL;
     }
+
     return 0;
 }
 
@@ -462,6 +474,7 @@ DEFINE_SYSCALL1(proc_kill, u_handle) {
     if (rc != resource::HANDLE_OK || !obj) {
         return syscall::EBADF;
     }
+
     if (obj->type != resource::resource_type::PROCESS) {
         resource::resource_release(obj);
         return syscall::EBADF;
@@ -479,6 +492,7 @@ DEFINE_SYSCALL1(proc_kill, u_handle) {
         resource::resource_release(obj);
         return pr->exited ? 0 : syscall::EINVAL;
     }
+
     sched::task* child = pr->child;
     sync::spin_unlock_irqrestore(pr->lock, irq);
 
@@ -506,6 +520,7 @@ DEFINE_SYSCALL4(proc_create_thread, u_entry, u_arg, u_stack_top, u_name) {
         if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
             return syscall::ENAMETOOLONG;
         }
+
         if (copy_rc != mm::uaccess::OK) {
             return syscall::EFAULT;
         }

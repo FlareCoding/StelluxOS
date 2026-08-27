@@ -35,13 +35,11 @@ void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf) {
     // Set return value in x0 (standard AArch64 ABI)
     tf->x[0] = static_cast<uint64_t>(result);
 
-    // For SYS_ELEVATE success: modify SPSR to return to EL1, but only if we
-    // actually came from EL0 (we're truly elevating). If we came from
-    // EL1 (already elevated, just got a warning), don't modify SPSR.
+    // On SYS_ELEVATE success, rewrite SPSR so the return lands in EL1. A
+    // caller already in EL1 also reports success, its SPSR must stay untouched.
     if (syscall_num == syscall::SYS_ELEVATE && result == 0) {
         uint8_t current_mode = tf->spsr & aarch64::SPSR_MODE_MASK;
         if (current_mode == aarch64::SPSR_EL0T) {
-            // Came from EL0, elevate to EL1
             tf->spsr = (tf->spsr & ~aarch64::SPSR_MODE_MASK) | aarch64::SPSR_EL1T;
         }
     }

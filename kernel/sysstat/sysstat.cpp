@@ -61,14 +61,17 @@ static size_t generate_cpu(char* buf, size_t cap) {
     for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
         sched::cpu_accounting_stats stats =
             sched::read_cpu_accounting_stats(cpu);
+
         pos = append_str(buf, cap, pos, "cpu");
         pos = append_u64(buf, cap, pos, cpu);
         pos = append_str(buf, cap, pos, " ");
+
         pos = append_u64(buf, cap, pos, stats.busy_ticks);
         pos = append_str(buf, cap, pos, " ");
         pos = append_u64(buf, cap, pos, stats.idle_ticks);
         pos = append_str(buf, cap, pos, "\n");
     }
+
     return pos;
 }
 
@@ -82,11 +85,13 @@ static size_t generate_mem(char* buf, size_t cap) {
     pos = append_u64(buf, cap, pos, pmm::PAGE_SIZE);
     pos = append_str(buf, cap, pos, "\ntotal_pages ");
     pos = append_u64(buf, cap, pos, total);
+
     pos = append_str(buf, cap, pos, "\nfree_pages ");
     pos = append_u64(buf, cap, pos, free_count);
     pos = append_str(buf, cap, pos, "\nused_pages ");
     pos = append_u64(buf, cap, pos, used);
     pos = append_str(buf, cap, pos, "\n");
+
     return pos;
 }
 
@@ -97,6 +102,7 @@ static size_t generate_uptime(char* buf, size_t cap) {
 
 static size_t generate_tasks(char* buf, size_t cap) {
     size_t pos = 0;
+
     sync::irq_state irq = sched::g_task_registry.lock();
     sched::g_task_registry.for_each_locked([&](sched::task& t) {
         pos = append_u64(buf, cap, pos, t.tid);
@@ -105,6 +111,7 @@ static size_t generate_tasks(char* buf, size_t cap) {
         pos = append_str(buf, cap, pos, " ");
         pos = append_str(buf, cap, pos, task_state_name(t.state.load_relaxed()));
         pos = append_str(buf, cap, pos, " ");
+
         pos = append_u64(buf, cap, pos, t.exec.cpu);
         pos = append_str(buf, cap, pos, " ");
         pos = append_u64(buf, cap, pos, t.run_ticks.load_relaxed());
@@ -113,16 +120,16 @@ static size_t generate_tasks(char* buf, size_t cap) {
         pos = append_str(buf, cap, pos, "\n");
     });
     sched::g_task_registry.unlock(irq);
+
     return pos;
 }
 
 namespace {
 
 /**
- * A readable devfs text node. Every open holds its own snapshot buffer
- * so concurrent readers never see each other's data. A read from
- * offset zero regenerates the snapshot, later reads serve the same
- * bytes so a reader always sees one consistent capture.
+ * A readable devfs text node. Every open holds a private snapshot buffer,
+ * a read from offset zero regenerates it and later reads serve the same
+ * bytes, so each reader sees one consistent capture.
  */
 class stats_node : public fs::node {
 public:
@@ -139,9 +146,11 @@ public:
         if (!mem) {
             return fs::ERR_NOMEM;
         }
+
         auto* snap = static_cast<snapshot*>(mem);
         snap->text = reinterpret_cast<char*>(mem) + sizeof(snapshot);
         snap->len = 0;
+
         f->set_private_data(snap);
         return fs::OK;
     }
@@ -152,6 +161,7 @@ public:
             f->set_private_data(nullptr);
             heap::ufree(snap);
         }
+
         return fs::OK;
     }
 
@@ -159,6 +169,7 @@ public:
         if (!f || !buf) {
             return fs::ERR_BADF;
         }
+
         auto* snap = static_cast<snapshot*>(f->private_data());
         if (!snap) {
             return fs::ERR_BADF;
@@ -177,9 +188,11 @@ public:
         if (offset >= snap->len) {
             return 0;
         }
+
         if (offset + count > snap->len) {
             count = snap->len - offset;
         }
+
         string::memcpy(buf, snap->text + offset, count);
         f->set_offset(static_cast<int64_t>(offset + count));
         return static_cast<ssize_t>(count);
@@ -187,6 +200,7 @@ public:
 
     int32_t getattr(fs::vattr* attr) override {
         if (!attr) return fs::ERR_INVAL;
+
         attr->type = fs::node_type::char_device;
         attr->size = 0;
         return fs::OK;
@@ -228,6 +242,7 @@ __PRIVILEGED_CODE int32_t init() {
             log::error("sysstat: failed to allocate /dev/sysinfo/%s", n.name);
             return ERR;
         }
+
         auto* node = new (mem) stats_node(n.name, n.gen, n.cap);
 
         if (devfs::add_char_device_at(dir, node) != devfs::OK) {

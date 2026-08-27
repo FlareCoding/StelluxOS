@@ -13,6 +13,7 @@ static void release_node(fs::node* n) {
     if (!n) {
         return;
     }
+
     if (n->release()) {
         fs::node::ref_destroy(n);
     }

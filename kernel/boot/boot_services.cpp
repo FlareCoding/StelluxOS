@@ -89,6 +89,7 @@ __PRIVILEGED_CODE int32_t init() {
     if (!LIMINE_REQUEST_FULFILLED(kernel_address_request)) {
         return ERR_NOT_AVAILABLE;
     }
+
     g_boot_info.kernel_phys_base = kernel_address_request.response->physical_base;
     g_boot_info.kernel_virt_base = kernel_address_request.response->virtual_base;
 
@@ -96,12 +97,14 @@ __PRIVILEGED_CODE int32_t init() {
     if (!LIMINE_REQUEST_FULFILLED(hhdm_request)) {
         return ERR_NOT_AVAILABLE;
     }
+
     g_boot_info.hhdm_offset = hhdm_request.response->offset;
 
     // Get memory map (required)
     if (!LIMINE_REQUEST_FULFILLED(memmap_request)) {
         return ERR_NOT_AVAILABLE;
     }
+
     g_boot_info.memmap_entry_count = memmap_request.response->entry_count;
     g_boot_info.memmap_entries = memmap_request.response->entries;
 
@@ -167,10 +170,12 @@ __PRIVILEGED_CODE int32_t init() {
         auto* fb = framebuffer_request.response->framebuffers[0];
         g_boot_info.framebuffer.fb_phys = reinterpret_cast<uintptr_t>(fb->address)
                                         - hhdm_request.response->offset;
+
         g_boot_info.framebuffer.width   = fb->width;
         g_boot_info.framebuffer.height  = fb->height;
         g_boot_info.framebuffer.pitch   = fb->pitch;
         g_boot_info.framebuffer.bpp     = fb->bpp;
+
         g_boot_info.framebuffer.red_mask_shift   = fb->red_mask_shift;
         g_boot_info.framebuffer.green_mask_shift = fb->green_mask_shift;
         g_boot_info.framebuffer.blue_mask_shift  = fb->blue_mask_shift;

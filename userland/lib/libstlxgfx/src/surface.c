@@ -52,6 +52,7 @@ stlxgfx_surface_t* stlxgfx_create_surface(uint32_t width, uint32_t height,
         free(s);
         return NULL;
     }
+
     memset(s->pixels, 0, (size_t)s->pitch * height);
 
     return s;
@@ -61,6 +62,7 @@ void stlxgfx_destroy_surface(stlxgfx_surface_t* surface) {
     if (!surface) {
         return;
     }
+
     if (surface->owned && surface->pixels) {
         free(surface->pixels);
     }
@@ -99,6 +101,7 @@ int stlxgfx_clear(stlxgfx_surface_t* s, uint32_t color) {
     if (!s || !s->pixels) {
         return -1;
     }
+
     return stlxgfx_fill_rect(s, 0, 0, s->width, s->height, color);
 }
 
@@ -118,6 +121,7 @@ int stlxgfx_fill_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
     if (y1 > (int32_t)s->height) {
         y1 = (int32_t)s->height;
     }
+
     if (x0 >= x1 || y0 >= y1) {
         return 0;
     }
@@ -141,6 +145,7 @@ int stlxgfx_fill_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
                 row_ptr[i] = native_pixel;
             }
         }
+
         return 0;
     }
 
@@ -152,6 +157,7 @@ int stlxgfx_fill_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
             row_ptr += bytes_pp;
         }
     }
+
     return 0;
 }
 
@@ -160,6 +166,7 @@ int stlxgfx_draw_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
     if (!s || w == 0 || h == 0) {
         return -1;
     }
+
     stlxgfx_fill_rect(s, x, y, w, 1, color);
     if (h > 1) {
         stlxgfx_fill_rect(s, x, y + (int32_t)h - 1, w, 1, color);
@@ -170,6 +177,7 @@ int stlxgfx_draw_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
             stlxgfx_fill_rect(s, x + (int32_t)w - 1, y + 1, 1, h - 2, color);
         }
     }
+
     return 0;
 }
 
@@ -228,6 +236,7 @@ int stlxgfx_blit(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
             }
         }
     }
+
     return 0;
 }
 
@@ -236,6 +245,7 @@ int stlxgfx_fill_circle(stlxgfx_surface_t* s, int32_t cx, int32_t cy,
     if (!s || !s->pixels || radius == 0) {
         return -1;
     }
+
     int32_t r = (int32_t)radius;
     int32_t x = 0;
     int32_t y = r;
@@ -256,6 +266,7 @@ int stlxgfx_fill_circle(stlxgfx_surface_t* s, int32_t cx, int32_t cy,
         stlxgfx_fill_rect(s, cx - y, cy + x, (uint32_t)(2 * y + 1), 1, color);
         stlxgfx_fill_rect(s, cx - y, cy - x, (uint32_t)(2 * y + 1), 1, color);
     }
+
     return 0;
 }
 
@@ -265,10 +276,12 @@ int stlxgfx_fill_rounded_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
     if (!s || !s->pixels || w == 0 || h == 0) {
         return -1;
     }
+
     uint32_t max_r = (w < h ? w : h) / 2;
     if (radius > max_r) {
         radius = max_r;
     }
+
     if (radius == 0) {
         return stlxgfx_fill_rect(s, x, y, w, h, color);
     }
@@ -311,6 +324,7 @@ int stlxgfx_fill_rounded_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
             d += 2 * (px - py) + 1;
         }
     }
+
     return 0;
 }
 
@@ -320,17 +334,21 @@ static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
     if (sa == 0) {
         return;
     }
+
     if (sa == 255) {
         write_pixel(dst_px, dst, src_color);
         return;
     }
+
     uint8_t sr = (src_color >> 16) & 0xFF;
     uint8_t sg = (src_color >>  8) & 0xFF;
     uint8_t sb =  src_color        & 0xFF;
+
     uint8_t dr = dst_px[dst->red_shift   / 8];
     uint8_t dg = dst_px[dst->green_shift / 8];
     uint8_t db = dst_px[dst->blue_shift  / 8];
     uint8_t inv = 255 - sa;
+
     dst_px[dst->red_shift   / 8] = (uint8_t)((sr * sa + dr * inv) / 255);
     dst_px[dst->green_shift / 8] = (uint8_t)((sg * sa + dg * inv) / 255);
     dst_px[dst->blue_shift  / 8] = (uint8_t)((sb * sa + db * inv) / 255);
@@ -348,6 +366,7 @@ int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
     if (sa == 0) {
         return 0;
     }
+
     if (sa == 255) {
         return stlxgfx_fill_rect(s, x, y, w, h, color);
     }
@@ -362,6 +381,7 @@ int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
     if (y1 > (int32_t)s->height) {
         y1 = (int32_t)s->height;
     }
+
     if (x0 >= x1 || y0 >= y1) {
         return 0;
     }
@@ -374,6 +394,7 @@ int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
             blend_pixel(px, s, color);
         }
     }
+
     return 0;
 }
 
@@ -408,6 +429,7 @@ int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     if (sy < 0) { sh += sy; dy -= sy; sy = 0; }
     if (dx < 0) { sw += dx; sx -= dx; dx = 0; }
     if (dy < 0) { sh += dy; sy -= dy; dy = 0; }
+
     if (sw <= 0 || sh <= 0) {
         return 0;
     }
@@ -424,6 +446,7 @@ int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     if ((uint32_t)dy + (uint32_t)sh > dst->height) {
         sh = (int32_t)(dst->height - (uint32_t)dy);
     }
+
     if (sw <= 0 || sh <= 0) {
         return 0;
     }
@@ -441,6 +464,7 @@ int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
             dst_row += dst_bpp;
         }
     }
+
     return 0;
 }
 
@@ -451,9 +475,11 @@ static uint8_t blit_arc_coverage(float dist, float radius) {
     if (c <= 0.0f) {
         return 0;
     }
+
     if (c >= 1.0f) {
         return 255;
     }
+
     return (uint8_t)(c * 255.0f + 0.5f);
 }
 
@@ -464,10 +490,12 @@ int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     if (!dst || !dst->pixels || !src || !src->pixels) {
         return -1;
     }
+
     uint32_t max_r = (w < h ? w : h) / 2;
     if (radius > max_r) {
         radius = max_r;
     }
+
     if (radius == 0) {
         return stlxgfx_blit_alpha(dst, dx, dy, src, sx, sy, w, h);
     }
@@ -487,6 +515,7 @@ int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     if (sy < 0) { sh += sy; dy -= sy; sy = 0; }
     if (dx < 0) { sw += dx; sx -= dx; dx = 0; }
     if (dy < 0) { sh += dy; sy -= dy; dy = 0; }
+
     if (sw <= 0 || sh <= 0) {
         return 0;
     }
@@ -503,6 +532,7 @@ int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     if ((uint32_t)dy + (uint32_t)sh > dst->height) {
         sh = (int32_t)(dst->height - (uint32_t)dy);
     }
+
     if (sw <= 0 || sh <= 0) {
         return 0;
     }
@@ -517,7 +547,7 @@ int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
         for (int32_t col = 0; col < sw; col++) {
             float px = (float)(dx + col) + 0.5f;
 
-            /* Nearest corner arc center; pixels in the straight bands
+            /* Nearest corner arc center. Pixels in the straight bands
              * clamp to the edge and always get full coverage */
             float ax = px < cx0 ? cx0 : (px > cx1 ? cx1 : px);
             float ay = py < cy0 ? cy0 : (py > cy1 ? cy1 : py);
@@ -538,6 +568,7 @@ int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
             dst_row += dst_bpp;
         }
     }
+
     return 0;
 }
 
@@ -548,9 +579,11 @@ int stlxgfx_blit_scaled(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
     if (!dst || !dst->pixels || !src || !src->pixels) {
         return -1;
     }
+
     if (dw == 0 || dh == 0 || sw == 0 || sh == 0) {
         return 0;
     }
+
     if (sx < 0 || sy < 0 ||
         (uint32_t)sx + sw > src->width || (uint32_t)sy + sh > src->height) {
         return -1;
@@ -619,6 +652,7 @@ int stlxgfx_blit_scaled(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
             write_pixel(out + (uint32_t)px * dst_bpp, dst, blended);
         }
     }
+
     return 0;
 }
 
@@ -660,6 +694,7 @@ void stlxgfx_blit_arc_corner(stlxgfx_surface_t* dst, int32_t x, int32_t y,
             } else {
                 cov = cov_out;
             }
+
             if (cov == 0) {
                 continue;
             }
@@ -718,5 +753,6 @@ int stlxgfx_draw_line(stlxgfx_surface_t* s, int32_t x0, int32_t y0,
             }
         }
     }
+
     return 0;
 }

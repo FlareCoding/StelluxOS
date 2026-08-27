@@ -14,13 +14,8 @@
 
 namespace net {
 
-// DHCP Receive Hook
-//
-// The DHCP client runs at Ring 3 (user mode) in a kernel task, so it cannot
-// use ring_buffer or other __PRIVILEGED_CODE APIs directly. Instead, we use
-// a simple static receive context: udp_recv() (which runs at Ring 0 in
-// interrupt/poll context) copies incoming port-68 packets into this buffer,
-// and the DHCP client polls the ready flag.
+// The DHCP client runs at Ring 3 and cannot use __PRIVILEGED_CODE APIs, so
+// udp_recv() at Ring 0 hands packets over through a static receive context.
 
 namespace {
 
@@ -33,19 +28,15 @@ struct dhcp_rx_context {
 
 } // anonymous namespace
 
-// Single static context, only one DHCP exchange at a time.
-// NOT __PRIVILEGED_DATA: both the DHCP client (Ring 3) and the UDP
-// delivery path (Ring 0) access this buffer, so it must be in the
-// unprivileged data section accessible from both privilege levels.
+// Single static context, only one DHCP exchange at a time. Deliberately not
+// __PRIVILEGED_DATA so both Ring 0 delivery and the Ring 3 client can access it.
 static dhcp_rx_context g_dhcp_rx = {};
 
-// Called by udp_recv() when a UDP packet arrives on port 68 and the
-// DHCP receive hook is active. Runs in the poll/RX delivery context
-// which may be at Ring 0 (inside RUN_ELEVATED) or part of the
-// interrupt-driven path. NOT __PRIVILEGED_CODE because the buffer
-// is in regular .bss (accessible from both Ring 0 and Ring 3).
+// Not __PRIVILEGED_CODE, the receive context lives in regular .bss so any
+// delivery context, interrupt-driven or elevated poll, can call this.
 void dhcp_rx_hook(const uint8_t* data, size_t len) {
     if (!g_dhcp_rx.active.load_acquire()) return;
+
     if (g_dhcp_rx.ready.load_acquire()) return;
 
     size_t copy_len = len < DHCP_PACKET_MAX ? len : DHCP_PACKET_MAX;
@@ -96,6 +87,7 @@ static size_t append_option(uint8_t* opts, size_t offset, size_t max_len,
     if (data_len > 0 && data) {
         string::memcpy(opts + offset + 2, data, data_len);
     }
+
     return needed;
 }
 
@@ -123,28 +115,21 @@ static size_t append_option_u32(uint8_t* opts, size_t offset, size_t max_len,
 static uint32_t generate_xid(const uint8_t* mac) {
     uint64_t ns = clock::now_ns();
     uint32_t seed = static_cast<uint32_t>(ns ^ (ns >> 32));
+
     // Mix in MAC bytes for additional entropy
     seed ^= (static_cast<uint32_t>(mac[2]) << 24) |
             (static_cast<uint32_t>(mac[3]) << 16) |
             (static_cast<uint32_t>(mac[4]) << 8)  |
             static_cast<uint32_t>(mac[5]);
+
     return htonl(seed);
 }
 
 /**
- * Build a complete Ethernet frame containing an IPv4/UDP/DHCP broadcast
- * and transmit it directly via the interface's transmit callback.
- *
- * This bypasses eth_send() and ipv4_send() entirely because:
- * - ipv4_send() requires a configured interface (DHCP runs before config)
- * - eth_send() uses heap::kzalloc which is __PRIVILEGED_CODE
- *
- * Uses heap::uzalloc() (unprivileged, auto-elevating) for the frame buffer.
- *
- * @param iface   Interface to send on (must have MAC and transmit callback).
- * @param payload DHCP message (header + options).
- * @param payload_len Length of the DHCP message.
- * @return net::OK on success, negative error code on failure.
+ * Build a full Ethernet+IPv4+UDP broadcast frame around a DHCP message and
+ * hand it straight to the driver's transmit callback. The normal send path
+ * is bypassed, it needs a configured interface and privileged allocations,
+ * neither of which holds for the Ring 3 DHCP client.
  */
 static int32_t send_dhcp_broadcast(netif* iface, const uint8_t* payload,
                                    size_t payload_len) {
@@ -152,7 +137,6 @@ static int32_t send_dhcp_broadcast(netif* iface, const uint8_t* payload,
         return ERR_INVAL;
     }
 
-    // Build the complete Ethernet frame: ETH + IPv4 + UDP + DHCP payload.
     size_t udp_total = sizeof(udp_header) + payload_len;
     size_t ip_total  = sizeof(ipv4_header) + udp_total;
     size_t frame_len = sizeof(eth_header) + ip_total;
@@ -167,13 +151,13 @@ static int32_t send_dhcp_broadcast(netif* iface, const uint8_t* payload,
         return ERR_NOMEM;
     }
 
-    // --- Ethernet header ---
+    // Ethernet header
     auto* eth = reinterpret_cast<eth_header*>(frame);
     string::memcpy(eth->dst, ETH_BROADCAST, MAC_ADDR_LEN);
     string::memcpy(eth->src, iface->mac, MAC_ADDR_LEN);
     eth->ethertype = htons(ETH_TYPE_IPV4);
 
-    // --- IPv4 header ---
+    // IPv4 header
     auto* ip = reinterpret_cast<ipv4_header*>(frame + sizeof(eth_header));
     ip->ver_ihl   = (4 << 4) | 5; // IPv4, IHL=5 (20 bytes)
     ip->tos       = 0;
@@ -187,14 +171,14 @@ static int32_t send_dhcp_broadcast(netif* iface, const uint8_t* payload,
     ip->dst_ip    = htonl(0xFFFFFFFF);  // 255.255.255.255
     ip->checksum  = inet_checksum(ip, sizeof(ipv4_header));
 
-    // --- UDP header ---
+    // UDP header
     auto* udp = reinterpret_cast<udp_header*>(frame + sizeof(eth_header) + sizeof(ipv4_header));
     udp->src_port = htons(DHCP_CLIENT_PORT);
     udp->dst_port = htons(DHCP_SERVER_PORT);
     udp->length   = htons(static_cast<uint16_t>(udp_total));
     udp->checksum = 0;
 
-    // --- DHCP payload ---
+    // DHCP payload
     string::memcpy(frame + sizeof(eth_header) + sizeof(ipv4_header) + sizeof(udp_header),
                    payload, payload_len);
 
@@ -204,8 +188,7 @@ static int32_t send_dhcp_broadcast(netif* iface, const uint8_t* payload,
                                  udp_total);
     udp->checksum = (csum == 0) ? static_cast<uint16_t>(0xFFFF) : csum;
 
-    // Transmit the frame directly via the driver callback.
-    // tx_callback uses RUN_ELEVATED internally for its lock/DMA access.
+    // The driver's transmit callback elevates internally for its lock/DMA access
     int32_t rc = iface->transmit(iface, frame, frame_len);
     heap::ufree(frame);
     return rc;
@@ -219,7 +202,6 @@ static bool try_read_dhcp_response(uint8_t* out_buf, size_t buf_size,
                                    size_t* out_len) {
     if (!out_buf || !out_len) return false;
 
-    // Check ready flag with acquire semantics
     if (!g_dhcp_rx.ready.load_acquire()) {
         return false;
     }
@@ -271,6 +253,7 @@ size_t dhcp_build_discover(uint8_t* out, size_t out_size,
     // Option 53: DHCP Message Type = DISCOVER
     n = append_option_u8(opts, pos, opts_max, DHCP_OPT_MSG_TYPE, DHCP_MSG_DISCOVER);
     if (n == 0) return 0;
+
     pos += n;
 
     // Option 12: Hostname
@@ -278,6 +261,7 @@ size_t dhcp_build_discover(uint8_t* out, size_t out_size,
     n = append_option(opts, pos, opts_max, DHCP_OPT_HOSTNAME,
                       reinterpret_cast<const uint8_t*>(hostname), sizeof(hostname) - 1);
     if (n == 0) return 0;
+
     pos += n;
 
     // Option 55: Parameter Request List
@@ -290,11 +274,13 @@ size_t dhcp_build_discover(uint8_t* out, size_t out_size,
     n = append_option(opts, pos, opts_max, DHCP_OPT_PARAM_LIST,
                       param_list, sizeof(param_list));
     if (n == 0) return 0;
+
     pos += n;
 
     // Option 255: End
     n = append_option(opts, pos, opts_max, DHCP_OPT_END, nullptr, 0);
     if (n == 0) return 0;
+
     pos += n;
 
     return sizeof(dhcp_packet) + pos;
@@ -318,6 +304,7 @@ size_t dhcp_build_request(uint8_t* out, size_t out_size,
     // Option 53: DHCP Message Type = REQUEST
     n = append_option_u8(opts, pos, opts_max, DHCP_OPT_MSG_TYPE, DHCP_MSG_REQUEST);
     if (n == 0) return 0;
+
     pos += n;
 
     // Option 12: Hostname
@@ -325,18 +312,21 @@ size_t dhcp_build_request(uint8_t* out, size_t out_size,
     n = append_option(opts, pos, opts_max, DHCP_OPT_HOSTNAME,
                       reinterpret_cast<const uint8_t*>(hostname), sizeof(hostname) - 1);
     if (n == 0) return 0;
+
     pos += n;
 
     // Option 50: Requested IP Address (network byte order)
     uint32_t req_ip_net = htonl(offered_ip);
     n = append_option_u32(opts, pos, opts_max, DHCP_OPT_REQUESTED_IP, req_ip_net);
     if (n == 0) return 0;
+
     pos += n;
 
     // Option 54: Server Identifier (network byte order)
     uint32_t srv_id_net = htonl(server_id);
     n = append_option_u32(opts, pos, opts_max, DHCP_OPT_SERVER_ID, srv_id_net);
     if (n == 0) return 0;
+
     pos += n;
 
     // Option 55: Parameter Request List
@@ -349,11 +339,13 @@ size_t dhcp_build_request(uint8_t* out, size_t out_size,
     n = append_option(opts, pos, opts_max, DHCP_OPT_PARAM_LIST,
                       param_list, sizeof(param_list));
     if (n == 0) return 0;
+
     pos += n;
 
     // Option 255: End
     n = append_option(opts, pos, opts_max, DHCP_OPT_END, nullptr, 0);
     if (n == 0) return 0;
+
     pos += n;
 
     return sizeof(dhcp_packet) + pos;
@@ -371,6 +363,7 @@ bool dhcp_parse_response(const dhcp_packet* pkt, size_t pkt_len,
     out->valid = false;
 
     if (pkt->op != DHCP_OP_BOOTREPLY) return false;
+
     if (ntohl(pkt->magic) != DHCP_MAGIC_COOKIE) return false;
 
     out->offered_ip = ntohl(pkt->yiaddr);
@@ -390,6 +383,7 @@ bool dhcp_parse_response(const dhcp_packet* pkt, size_t pkt_len,
         }
 
         if (pos + 1 >= opts_len) break;
+
         uint8_t opt_len = opts[pos + 1];
         if (pos + 2 + opt_len > opts_len) break;
 
@@ -460,7 +454,6 @@ int32_t dhcp_configure(netif* iface) {
     // into the static buffer for us to poll.
     activate_rx_hook();
 
-    // Generate transaction ID
     uint32_t xid = generate_xid(iface->mac);
 
     // Allocate buffers using unprivileged heap (auto-elevates, Ring 3 safe)
@@ -616,7 +609,7 @@ int32_t dhcp_configure(netif* iface) {
             continue;
         }
 
-        // Success: Configure the interface
+        // ACK fields win, an ACK may omit options already given in the OFFER
         uint32_t ip   = ack.offered_ip   ? ack.offered_ip   : offer.offered_ip;
         uint32_t mask = ack.subnet_mask  ? ack.subnet_mask  : offer.subnet_mask;
         uint32_t gw   = ack.gateway      ? ack.gateway      : offer.gateway;

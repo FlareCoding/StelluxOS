@@ -64,6 +64,7 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
     sched::yield();
 
     timer::cancel_sleep(self);
+
     return pt.triggered.load_acquire() != 0;
 }
 

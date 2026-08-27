@@ -25,6 +25,7 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
         log::error("xhci: failed to allocate input context for slot %u", slot_id);
         return -1;
     }
+
     m_input_ctx_phys = xhci_get_physical_addr(m_input_ctx);
 
     // Allocate a persistent DMA page for control transfer payloads.
@@ -35,6 +36,7 @@ int32_t xhci_device::init(uint8_t port_id, uint8_t slot_id, uint8_t speed, bool 
         m_input_ctx = nullptr;
         return -1;
     }
+
     m_ctrl_transfer_buffer_phys = xhci_get_physical_addr(m_ctrl_transfer_buffer);
 
     // Allocate and init the control transfer ring
@@ -77,15 +79,18 @@ void xhci_device::destroy() {
         heap::ufree_delete(m_ctrl_ring);
         m_ctrl_ring = nullptr;
     }
+
     if (m_ctrl_transfer_buffer) {
         free_xhci_memory(m_ctrl_transfer_buffer);
         m_ctrl_transfer_buffer = nullptr;
         m_ctrl_transfer_buffer_phys = 0;
     }
+
     if (m_input_ctx) {
         free_xhci_memory(m_input_ctx);
         m_input_ctx = nullptr;
     }
+
     m_output_ctx = nullptr;
     m_core_device = nullptr;
 }
@@ -95,6 +100,7 @@ xhci_input_control_context32* xhci_device::input_ctrl_ctx() {
         auto* ctx = static_cast<xhci_input_context64*>(m_input_ctx);
         return reinterpret_cast<xhci_input_control_context32*>(&ctx->control_context);
     }
+
     auto* ctx = static_cast<xhci_input_context32*>(m_input_ctx);
     return &ctx->control_context;
 }
@@ -104,6 +110,7 @@ xhci_slot_context32* xhci_device::input_slot_ctx() {
         auto* ctx = static_cast<xhci_input_context64*>(m_input_ctx);
         return reinterpret_cast<xhci_slot_context32*>(&ctx->device_context.slot_context);
     }
+
     auto* ctx = static_cast<xhci_input_context32*>(m_input_ctx);
     return &ctx->device_context.slot_context;
 }
@@ -113,6 +120,7 @@ xhci_endpoint_context32* xhci_device::input_ctrl_ep_ctx() {
         auto* ctx = static_cast<xhci_input_context64*>(m_input_ctx);
         return reinterpret_cast<xhci_endpoint_context32*>(&ctx->device_context.control_ep_context);
     }
+
     auto* ctx = static_cast<xhci_input_context32*>(m_input_ctx);
     return &ctx->device_context.control_ep_context;
 }
@@ -123,6 +131,7 @@ xhci_endpoint_context32* xhci_device::input_ep_ctx(uint8_t ep_num) {
         auto* ctx = static_cast<xhci_input_context64*>(m_input_ctx);
         return reinterpret_cast<xhci_endpoint_context32*>(&ctx->device_context.ep[ep_index]);
     }
+
     auto* ctx = static_cast<xhci_input_context32*>(m_input_ctx);
     return &ctx->device_context.ep[ep_index];
 }
@@ -136,6 +145,32 @@ void xhci_device::sync_input_ctx() {
     } else {
         auto* input = static_cast<xhci_input_context32*>(m_input_ctx);
         string::memcpy(&input->device_context, m_output_ctx, sizeof(xhci_device_context32));
+    }
+}
+
+xhci_endpoint* xhci_device::endpoint_by_address(uint8_t address) {
+    uint8_t ep_num = address & 0x0F;
+    bool is_in = (address & 0x80) != 0;
+    uint8_t dci = static_cast<uint8_t>(ep_num * 2 + (is_in ? 1 : 0));
+
+    if (dci < 2 || dci > MAX_ENDPOINTS) {
+        return nullptr;
+    }
+
+    return m_endpoints[dci];
+}
+
+xhci_device* xhci_device::hub_child(uint8_t hub_port) {
+    if (hub_port < 1 || hub_port > MAX_HUB_PORTS) {
+        return nullptr;
+    }
+
+    return m_hub_children[hub_port - 1];
+}
+
+void xhci_device::set_hub_child(uint8_t hub_port, xhci_device* child) {
+    if (hub_port >= 1 && hub_port <= MAX_HUB_PORTS) {
+        m_hub_children[hub_port - 1] = child;
     }
 }
 

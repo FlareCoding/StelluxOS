@@ -83,6 +83,7 @@ DEFINE_SYSCALL4(rt_sigaction, signum, u_act, u_oldact, sigsetsize) {
             return syscall::EFAULT;
         }
     }
+
     return 0;
 }
 
@@ -121,6 +122,7 @@ DEFINE_SYSCALL4(rt_sigprocmask, how, u_set, u_oldset, sigsetsize) {
             return syscall::EFAULT;
         }
     }
+
     return 0;
 }
 
@@ -140,6 +142,7 @@ DEFINE_SYSCALL2(rt_sigpending, u_set, sigsetsize) {
             sizeof(pending)) != mm::uaccess::OK) {
         return syscall::EFAULT;
     }
+
     return 0;
 }
 
@@ -153,6 +156,7 @@ DEFINE_SYSCALL2(kill, u_pid, u_sig) {
     if (u_sig > signals::NSIG) {
         return syscall::EINVAL;
     }
+
     uint32_t sig = static_cast<uint32_t>(u_sig);
     int64_t pid  = static_cast<int64_t>(u_pid);
 
@@ -177,6 +181,7 @@ DEFINE_SYSCALL2(kill, u_pid, u_sig) {
                          : 0;
         }
         sched::g_task_registry.unlock(irq);
+
         return result;
     }
 
@@ -187,11 +192,13 @@ DEFINE_SYSCALL2(kill, u_pid, u_sig) {
         if (!caller->group) {
             return syscall::ESRCH;
         }
+
         group_id = caller->group->group_id.load_acquire();
     } else {
         if (pid < -TASK_ID_LIMIT) {
             return syscall::ESRCH;
         }
+
         group_id = static_cast<uint32_t>(-pid);
     }
 

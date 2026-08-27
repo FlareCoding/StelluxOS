@@ -307,6 +307,7 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
     out->segment_count = img.segment_count;
     out->phentsize = img.phentsize;
     out->phnum = img.phnum;
+
     out->phdr_vaddr = 0;
     if (img.segment_count > 0) {
         const auto& first = img.segments[0];
@@ -316,6 +317,7 @@ int32_t load_elf(const void* buffer, size_t size, loaded_image* out) {
             out->phdr_vaddr = first.vaddr + (img.e_phoff - first.offset);
         }
     }
+
     return OK;
 }
 

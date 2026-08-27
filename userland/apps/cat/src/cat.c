@@ -31,6 +31,7 @@ int main(int argc, char* argv[]) {
             rc = 1;
             continue;
         }
+
         if (cat_fd(fd) != 0) rc = 1;
         close(fd);
     }

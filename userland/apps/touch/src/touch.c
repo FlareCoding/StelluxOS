@@ -18,6 +18,7 @@ int main(int argc, char* argv[]) {
             rc = 1;
             continue;
         }
+
         close(fd);
     }
     return rc;

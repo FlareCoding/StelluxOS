@@ -52,7 +52,7 @@ struct input_report_info {
 };
 
 // Parsed input-report layout from a HID report descriptor.
-// Owns heap-allocated arrays; call destroy() when done.
+// Owns heap-allocated arrays, call destroy() when done.
 struct report_layout {
     field_info*        fields = nullptr;
     uint16_t           num_fields = 0;
@@ -74,9 +74,11 @@ inline const field_info* report_fields(const report_layout& layout,
     return layout.fields + report.field_begin;
 }
 
-// Parse a raw HID report descriptor into a report_layout.
-// The layout's fields array is heap-allocated; caller must call layout.destroy().
-// Returns 0 on success, negative on failure.
+/**
+ * Parse a raw HID report descriptor into a report_layout.
+ * The layout's arrays are heap-allocated, the caller must call layout.destroy().
+ * @return 0 on success, negative on failure.
+ */
 int32_t parse_report_descriptor(const uint8_t* descriptor, size_t length,
                                 report_layout& out);
 

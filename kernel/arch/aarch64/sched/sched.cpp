@@ -65,6 +65,7 @@ __PRIVILEGED_CODE static void save_cpu_context(
     for (int i = 0; i < 31; i++) {
         ctx->x[i] = tf->x[i];
     }
+
     // ctx->sp tracks the interrupted stack pointer for the return mode in ctx->pstate:
     // - EL0t / EL1t: SP_EL0
     // - EL1h:        SP_EL1
@@ -82,6 +83,7 @@ __PRIVILEGED_CODE static void load_cpu_context(
     for (int i = 0; i < 31; i++) {
         tf->x[i] = ctx->x[i];
     }
+
     tf->sp = ctx->sp;
     tf->elr = ctx->pc;
     tf->spsr = ctx->pstate;
@@ -118,6 +120,7 @@ __PRIVILEGED_CODE void arch_init_task_context(
 ) {
     bool elevated = (t->exec.flags & TASK_FLAG_ELEVATED) != 0;
     auto& ctx = t->exec.cpu_ctx;
+
     ctx.pc = reinterpret_cast<uint64_t>(entry);
     ctx.x[0] = reinterpret_cast<uint64_t>(arg);
     ctx.sp = t->exec.task_stack_top;
@@ -174,8 +177,10 @@ void yield() {
  */
 __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     task* prev = current();
+
     // Advance per-CPU sync epoch so stack reclaim can wait for a post-switch TLB-safe point.
     advance_cpu_tlb_sync_epoch();
+
     // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
     finalize_pending_off_cpu();
 
@@ -208,6 +213,7 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     prepare_trap_return_stacks(tf, next);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
+
     // Defer prev->on_cpu clear until switch teardown is complete.
     defer_off_cpu_finalize(prev);
 }
@@ -218,10 +224,13 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
  */
 __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     task* prev = current();
+
     // Each scheduler trap is a synchronization checkpoint for deferred reclaim logic.
     advance_cpu_tlb_sync_epoch();
+
     // Finish prior off-CPU publication before handling this tick's switch.
     finalize_pending_off_cpu();
+
     record_cpu_tick(prev);
     if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
         return;
@@ -256,6 +265,7 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     prepare_trap_return_stacks(tf, next);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
+
     // Prevent early off-CPU publication while trap exit still depends on prev context.
     defer_off_cpu_finalize(prev);
 }

@@ -14,11 +14,8 @@ static void data_write(int fd, const char* s) {
     write(fd, s, strlen(s));
 }
 
-/*
- * Write a newline to the given fd.
- * Terminal (fd 1) is in raw mode and needs \r\n.
- * Redirect files should get \n only (no spurious \r).
- */
+/* The terminal (fd 1) is in raw mode and needs \r\n.
+ * Redirect files should get \n only (no spurious \r). */
 static void data_newline(int fd) {
     if (fd == STDOUT_FILENO)
         write(fd, "\r\n", 2);
@@ -33,6 +30,7 @@ static int builtin_cd(int argc, const char* argv[]) {
         shell_write(path);
         shell_write(": no such directory\n");
     }
+
     return 1;
 }
 
@@ -44,6 +42,7 @@ static int builtin_pwd(int out_fd) {
     } else {
         shell_write("pwd: error\n");
     }
+
     return 1;
 }
 
@@ -68,6 +67,7 @@ static int builtin_history(line_edit_state* editor, int out_fd) {
         data_write(out_fd, editor->history[slot]);
         data_newline(out_fd);
     }
+
     return 1;
 }
 

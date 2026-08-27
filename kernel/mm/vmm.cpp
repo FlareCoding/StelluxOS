@@ -78,6 +78,7 @@ __PRIVILEGED_CODE int32_t init() {
     if (pages == 0) {
         return ERR_INVALID_ARG;
     }
+
     if (!(flags & paging::PAGE_READ)) {
         return ERR_INVALID_ARG;
     }
@@ -236,6 +237,7 @@ __PRIVILEGED_CODE int32_t init() {
     if (usable_pages == 0) {
         return ERR_INVALID_ARG;
     }
+
     if (tag != kva::tag::privileged_stack && tag != kva::tag::unprivileged_stack) {
         return ERR_INVALID_ARG;
     }
@@ -296,6 +298,7 @@ __PRIVILEGED_CODE static int32_t map_phys_internal(
     if (size == 0) {
         return ERR_INVALID_ARG;
     }
+
     if (phys + size < phys) {
         return ERR_INVALID_ARG; // overflow
     }

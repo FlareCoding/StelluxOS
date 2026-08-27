@@ -20,6 +20,7 @@ __PRIVILEGED_CODE int32_t validate_user_range(
     if (!user_ptr || len == 0) {
         return ERR_INVAL;
     }
+
     if ((required_prot & ~MM_PROT_MASK) != 0 || required_prot == 0) {
         return ERR_INVAL;
     }
@@ -29,6 +30,7 @@ __PRIVILEGED_CODE int32_t validate_user_range(
     if (end < start) {
         return ERR_INVAL;
     }
+
     if (end >= USER_STACK_TOP) {
         return ERR_FAULT;
     }
@@ -48,6 +50,7 @@ __PRIVILEGED_CODE int32_t validate_user_range(
             sync::mutex_unlock(mm_ctx->lock);
             return ERR_FAULT;
         }
+
         if ((region->prot & required_prot) != required_prot) {
             sync::mutex_unlock(mm_ctx->lock);
             return ERR_FAULT;
@@ -58,9 +61,11 @@ __PRIVILEGED_CODE int32_t validate_user_range(
             sync::mutex_unlock(mm_ctx->lock);
             return ERR_FAULT;
         }
+
         if (next > end) {
             break;
         }
+
         cursor = next;
     }
 
@@ -95,6 +100,7 @@ __PRIVILEGED_CODE int32_t copy_from_user(
     if (!kdst || !usrc) {
         return ERR_INVAL;
     }
+
     if (len == 0) {
         return OK;
     }
@@ -105,6 +111,7 @@ __PRIVILEGED_CODE int32_t copy_from_user(
     }
 
     string::memcpy(kdst, usrc, len);
+
     return OK;
 }
 
@@ -119,6 +126,7 @@ __PRIVILEGED_CODE int32_t copy_to_user(
     if (!udst || !ksrc) {
         return ERR_INVAL;
     }
+
     if (len == 0) {
         return OK;
     }
@@ -129,6 +137,7 @@ __PRIVILEGED_CODE int32_t copy_to_user(
     }
 
     string::memcpy(udst, ksrc, len);
+
     return OK;
 }
 
@@ -149,6 +158,7 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
     if (end < start) {
         return ERR_INVAL;
     }
+
     if (end >= USER_STACK_TOP) {
         return ERR_FAULT;
     }
@@ -178,15 +188,16 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
             sync::mutex_unlock(mm_ctx->lock);
             return ERR_FAULT;
         }
+
         if (next > end) {
             break;
         }
+
         cursor = next;
     }
 
-    // Fault lazy stack pages in under the held lock, nothing blocks. A
-    // present entry in a writable region is writable, nothing maps
-    // copy-on-write.
+    // Fault lazy stack pages in under the held lock, nothing blocks. A present
+    // entry in a writable region is writable, nothing maps copy-on-write.
     uintptr_t end_page = end & ~(pmm::PAGE_SIZE - 1);
     for (uintptr_t page = start & ~(pmm::PAGE_SIZE - 1);
          page <= end_page;
@@ -194,6 +205,7 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
         if (paging::get_physical(page, mm_ctx->pt_root) != 0) {
             continue;
         }
+
         if (!handle_user_pf_locked(mm_ctx, page, 0)) {
             sync::mutex_unlock(mm_ctx->lock);
             return ERR_FAULT;
@@ -203,6 +215,7 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
     // Copying under the held lock keeps a concurrent unmap out of the range
     string::memcpy(udst, ksrc, len);
     sync::mutex_unlock(mm_ctx->lock);
+
     return OK;
 }
 
@@ -242,6 +255,7 @@ __PRIVILEGED_CODE int32_t copy_cstr_from_user(
     }
 
     kdst[cap - 1] = '\0';
+
     return ERR_NAMETOOLONG;
 }
 

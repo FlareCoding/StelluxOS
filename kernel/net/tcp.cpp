@@ -20,14 +20,13 @@
 
 namespace net {
 
-// TCP port registry: global linked list of all TCP sockets that have
-// a local port assigned (via bind). Used by tcp_recv to find the
-// matching socket for incoming segments.
+// Port registry: every TCP socket with a local port assigned, searched by
+// tcp_recv to match incoming segments to their socket.
 __PRIVILEGED_DATA static tcp_socket* g_tcp_sock_list = nullptr;
 __PRIVILEGED_DATA static sync::spinlock g_tcp_sock_lock = sync::SPINLOCK_INIT;
 
-// Simple ISN generator. A real implementation uses a clock-based scheme
-// for security (RFC 6528), but a monotonic counter is correct for now.
+// ISN generator. A monotonic counter is functionally correct, though it lacks
+// the off-path spoofing protection of a clock-based scheme (RFC 6528).
 __PRIVILEGED_DATA static sync::atomic<uint32_t> g_tcp_isn_counter{1000};
 
 constexpr size_t TCP_MSS = ETH_MTU - sizeof(ipv4_header) - sizeof(tcp_header);
@@ -52,9 +51,8 @@ static uint16_t tcp_alloc_ephemeral_port() {
         TCP_PORT_EPHEMERAL_MIN + (port - TCP_PORT_EPHEMERAL_MIN) % range);
 }
 
-// Build a TCP segment and send it.
-// deferred=true: use queue_deferred_tx (safe from RX/IRQ context).
-// deferred=false: use ipv4_send directly (syscall context only).
+// Build a TCP segment and send it. deferred=true queues it for deferred TX
+// (safe from RX/IRQ context), deferred=false sends inline (syscall context only).
 __PRIVILEGED_CODE static int32_t tcp_send(
     uint32_t src_ip, uint16_t src_port,
     uint32_t dst_ip, uint16_t dst_port,
@@ -126,6 +124,7 @@ __PRIVILEGED_CODE static void tcp_sock_release(tcp_socket* sock) {
     if (!sock) {
         return;
     }
+
     if (sock->release()) {
         tcp_socket::ref_destroy(sock);
     }
@@ -135,6 +134,7 @@ static void tcp_destroy_socket(tcp_socket* sock) {
     if (!sock) {
         return;
     }
+
     if (sock->local_port != 0) {
         tcp_unregister_socket(sock);
     }
@@ -160,6 +160,7 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
             sync::spin_unlock_irqrestore(sock->lock, irq);
             goto cleanup;
         }
+
         sock->state = tcp_state::CLOSED;
 
         RUN_ELEVATED({
@@ -225,7 +226,6 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
     // in the port registry until the FIN handshake completes.
     if (sock->state == tcp_state::ESTABLISHED
         || sock->state == tcp_state::CLOSE_WAIT) {
-
         sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
 
         // Re-check under lock
@@ -259,9 +259,8 @@ __PRIVILEGED_CODE static void tcp_close(resource::resource_object* obj) {
         return;
     }
 
-    // Post-shutdown states: fd is being closed but FIN handshake is in progress.
-    // Just detach the fd and release the user-held ref that shutdown() took.
-    // The creation ref keeps the socket alive until tcp_recv finishes teardown.
+    // FIN handshake still in flight: detach the fd and drop the ref shutdown()
+    // took. The creation ref keeps the socket alive until tcp_recv tears it down.
     if (sock->state == tcp_state::FIN_WAIT_1 ||
         sock->state == tcp_state::FIN_WAIT_2 ||
         sock->state == tcp_state::CLOSING ||
@@ -300,6 +299,7 @@ __PRIVILEGED_CODE static int32_t tcp_bind(
     if (!kaddr || addrlen < sizeof(kernel_sockaddr_in)) {
         return resource::ERR_INVAL;
     }
+
     const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
     if (addr->sin_family != AF_INET_VAL) {
         return resource::ERR_INVAL;
@@ -398,11 +398,13 @@ __PRIVILEGED_CODE static int32_t tcp_accept(
             return resource::ERR_AGAIN;
         }
     }
+
     while (sock->accept_queue.empty()
            && sock->state == tcp_state::LISTEN
            && !signals::interrupt_pending(task)) {
         irq = sync::wait(sock->accept_wq, sock->lock, irq);
     }
+
     if (signals::interrupt_pending(task)) {
         sync::spin_unlock_irqrestore(sock->lock, irq);
         return resource::ERR_INTR;
@@ -418,6 +420,7 @@ __PRIVILEGED_CODE static int32_t tcp_accept(
         sync::spin_unlock_irqrestore(sock->lock, irq);
         return resource::ERR_INVAL;
     }
+
     sock->pending_count--;
     sync::spin_unlock_irqrestore(sock->lock, irq);
 
@@ -509,8 +512,10 @@ __PRIVILEGED_CODE static ssize_t tcp_write(
             if (count > remaining) {
                 return static_cast<ssize_t>(count - remaining);
             }
+
             return resource::ERR_AGAIN;
         }
+
         if (chunk > wnd - in_flight) {
             chunk = wnd - in_flight;
         }
@@ -559,10 +564,10 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
 
     auto* sock = static_cast<tcp_socket*>(obj->impl);
 
-    // State validation
     if (sock->state == tcp_state::ESTABLISHED) {
         return resource::ERR_ISCONN;
     }
+
     if (sock->state != tcp_state::CLOSED) {
         return resource::ERR_INVAL;
     }
@@ -570,6 +575,7 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
     if (!kaddr || addrlen < sizeof(kernel_sockaddr_in)) {
         return resource::ERR_INVAL;
     }
+
     const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
     if (addr->sin_family != AF_INET_VAL) {
         return resource::ERR_INVAL;
@@ -594,7 +600,6 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
         sock->local_port = tcp_alloc_ephemeral_port();
     }
 
-    // Fill in remote endpoint
     sock->remote_addr = dst_ip;
     sock->remote_port = dst_port;
 
@@ -631,6 +636,7 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
     if (!already_registered) {
         RUN_ELEVATED({
             sync::irq_lock_guard guard(g_tcp_sock_lock);
+
             sock->next = g_tcp_sock_list;
             g_tcp_sock_list = sock;
         });
@@ -665,9 +671,11 @@ __PRIVILEGED_CODE static int32_t tcp_connect(
     if (signals::interrupt_pending(task)) {
         return resource::ERR_INTR;
     }
+
     if (final_state == tcp_state::ESTABLISHED) {
         return resource::OK;
     }
+
     return resource::ERR_CONNREFUSED;
 }
 
@@ -676,18 +684,29 @@ __PRIVILEGED_CODE static int32_t tcp_setsockopt(
     int32_t optname, const void* optval, size_t optlen
 ) {
     auto* sock = static_cast<tcp_socket*>(obj->impl);
-    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
-    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
-    if (optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    if (level != SOL_SOCKET) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    if (optname != SO_REUSEADDR) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    if (optlen < sizeof(int32_t)) {
+        return resource::ERR_INVAL;
+    }
 
     int32_t val = 0;
     string::memcpy(&val, optval, sizeof(val));
 
     sync::irq_lock_guard guard(sock->lock);
+
     if (val)
         sock->so_options |= static_cast<uint32_t>(SO_REUSEADDR);
     else
         sock->so_options &= ~static_cast<uint32_t>(SO_REUSEADDR);
+
     return resource::OK;
 }
 
@@ -696,14 +715,25 @@ __PRIVILEGED_CODE static int32_t tcp_getsockopt(
     int32_t optname, void* optval, size_t* optlen
 ) {
     auto* sock = static_cast<tcp_socket*>(obj->impl);
-    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
-    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
-    if (!optlen || *optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    if (level != SOL_SOCKET) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    if (optname != SO_REUSEADDR) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    if (!optlen || *optlen < sizeof(int32_t)) {
+        return resource::ERR_INVAL;
+    }
 
     sync::irq_lock_guard guard(sock->lock);
+
     int32_t val = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) ? 1 : 0;
     string::memcpy(optval, &val, sizeof(val));
     *optlen = sizeof(val);
+
     return resource::OK;
 }
 
@@ -711,6 +741,7 @@ __PRIVILEGED_CODE static uint32_t tcp_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
+
     auto* sock = static_cast<tcp_socket*>(obj->impl);
 
     sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
@@ -744,6 +775,7 @@ __PRIVILEGED_CODE static uint32_t tcp_poll(
         if (pt) {
             sync::poll_subscribe(*pt, sock->accept_wq);
         }
+
         irq = sync::spin_lock_irqsave(sock->lock);
         uint32_t mask = sock->accept_queue.empty() ? 0 : sync::POLL_IN;
         sync::spin_unlock_irqrestore(sock->lock, irq);
@@ -766,6 +798,7 @@ __PRIVILEGED_CODE static int32_t tcp_shutdown(
     if (!obj || !obj->impl) {
         return resource::ERR_NOTCONN;
     }
+
     auto* sock = static_cast<tcp_socket*>(obj->impl);
 
     sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
@@ -827,10 +860,10 @@ const resource::resource_ops g_tcp_ops = {
     tcp_read,
     tcp_write,
     tcp_close,
-    nullptr, // ioctl
-    nullptr, // mmap
-    nullptr, // sendto
-    nullptr, // recvfrom
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
     tcp_bind,
     tcp_listen,
     tcp_accept,
@@ -841,16 +874,15 @@ const resource::resource_ops g_tcp_ops = {
     tcp_shutdown,
 };
 
-// Look up a TCP socket matching an incoming segment.
-// For LISTEN sockets: match on local port (and optionally local addr).
-// For established connections: match on the full 4-tuple.
-// Caller must hold g_tcp_sock_lock. Returns a ref'd pointer or nullptr.
+// Match an incoming segment to a socket: exact 4-tuple first, then a LISTEN
+// socket on the local port. Caller holds g_tcp_sock_lock, the result is ref'd.
 static tcp_socket* tcp_lookup(uint32_t src_ip, uint16_t src_port,
                               uint32_t dst_ip, uint16_t dst_port) {
     tcp_socket* listen_match = nullptr;
 
     for (tcp_socket* s = g_tcp_sock_list; s; s = s->next) {
         if (s->local_port != dst_port) continue;
+
         if (s->local_addr != 0 && s->local_addr != dst_ip) continue;
 
         // Exact 4-tuple match (established connections) takes priority
@@ -859,6 +891,7 @@ static tcp_socket* tcp_lookup(uint32_t src_ip, uint16_t src_port,
                 if (listen_match) tcp_sock_release(listen_match);
                 return s;
             }
+
             return listen_match;
         }
 
@@ -882,10 +915,12 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
         sync::spin_unlock_irqrestore(listener->lock, irq);
         return;
     }
+
     if (listener->pending_count >= listener->backlog) {
         sync::spin_unlock_irqrestore(listener->lock, irq);
         return;
     }
+
     listener->pending_count++;
     sync::spin_unlock_irqrestore(listener->lock, irq);
 
@@ -925,6 +960,7 @@ static void tcp_listen_recv_syn(tcp_socket* listener,
     bool registered = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_tcp_sock_lock);
+
         child->parent = listener;
         if (listener->state == tcp_state::LISTEN) {
             child->next = g_tcp_sock_list;
@@ -977,6 +1013,7 @@ static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num,
         tcp_destroy_socket(sock);
         return;
     }
+
     obj->type = resource::resource_type::SOCKET;
     obj->ops = &g_tcp_ops;
     obj->impl = sock;
@@ -992,11 +1029,13 @@ static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num,
         tcp_destroy_socket(sock);
         return;
     }
+
     pc->conn_obj = obj;
 
     bool enqueued = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_tcp_sock_lock);
+
         tcp_socket* parent = sock->parent;
         if (parent && parent->state == tcp_state::LISTEN) {
             parent->accept_queue.push_back(pc);
@@ -1018,6 +1057,7 @@ static void tcp_synrcvd_recv_ack(tcp_socket* sock, uint32_t ack_num,
 
 __PRIVILEGED_CODE void tcp_socket::ref_destroy(tcp_socket* self) {
     if (!self) return;
+
     if (self->rx_buf) {
         ring_buffer_destroy(self->rx_buf);
         self->rx_buf = nullptr;
@@ -1029,15 +1069,19 @@ bool tcp_try_register(tcp_socket* sock) {
     if (!sock || sock->local_port == 0) {
         return false;
     }
+
     bool reuse = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) != 0;
     bool registered = false;
+
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_tcp_sock_lock);
 
         bool conflict = false;
         for (tcp_socket* s = g_tcp_sock_list; s; s = s->next) {
             if (s == sock) continue;
+
             if (s->local_port != sock->local_port) continue;
+
             if (sock->local_addr != 0 && s->local_addr != 0
                 && s->local_addr != sock->local_addr) continue;
 
@@ -1056,6 +1100,7 @@ bool tcp_try_register(tcp_socket* sock) {
             registered = true;
         }
     });
+
     return registered;
 }
 
@@ -1065,6 +1110,7 @@ bool tcp_unregister_socket(tcp_socket* sock) {
     bool found = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_tcp_sock_lock);
+
         tcp_socket** pp = &g_tcp_sock_list;
         while (*pp) {
             if (*pp == sock) {
@@ -1076,6 +1122,7 @@ bool tcp_unregister_socket(tcp_socket* sock) {
             pp = &(*pp)->next;
         }
     });
+
     return found;
 }
 
@@ -1088,6 +1135,7 @@ int32_t create_tcp_socket(resource::resource_object** out) {
     if (!sock) {
         return resource::ERR_NOMEM;
     }
+
     sock->state = tcp_state::CLOSED;
     sock->local_addr = 0;
     sock->local_port = 0;
@@ -1115,6 +1163,7 @@ int32_t create_tcp_socket(resource::resource_object** out) {
         heap::kfree_delete(sock);
         return resource::ERR_NOMEM;
     }
+
     obj->type = resource::resource_type::SOCKET;
     obj->ops = &g_tcp_ops;
     obj->impl = sock;
@@ -1250,6 +1299,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
             }
+
             if (ack_num > sock->snd_una && ack_num <= sock->snd_nxt) {
                 sock->snd_una = ack_num;
             }
@@ -1264,6 +1314,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
             }
+
             if (seq != sock->rcv_nxt) {
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
@@ -1301,10 +1352,12 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
             }
+
             if (seq + static_cast<uint32_t>(payload_len) != sock->rcv_nxt) {
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
             }
+
             sock->rcv_nxt++;
             sock->state = tcp_state::CLOSE_WAIT;
 
@@ -1340,6 +1393,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 if (written > 0) {
                     sock->rcv_nxt += static_cast<uint32_t>(written);
                 }
+
                 uint32_t l_addr = sock->local_addr;
                 uint16_t l_port = sock->local_port;
                 uint32_t r_addr = sock->remote_addr;
@@ -1379,6 +1433,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
             }
+
             sock->rcv_nxt++;
             fw1_fin_acked = (sock->snd_una == sock->snd_nxt);
 
@@ -1422,6 +1477,7 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 if (written > 0) {
                     sock->rcv_nxt += static_cast<uint32_t>(written);
                 }
+
                 uint32_t l_addr = sock->local_addr;
                 uint16_t l_port = sock->local_port;
                 uint32_t r_addr = sock->remote_addr;
@@ -1446,7 +1502,9 @@ void tcp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
                 sync::spin_unlock_irqrestore(sock->lock, irq);
                 break;
             }
+
             sock->rcv_nxt++;
+
             uint32_t l_addr = sock->local_addr;
             uint16_t l_port = sock->local_port;
             uint32_t r_addr = sock->remote_addr;

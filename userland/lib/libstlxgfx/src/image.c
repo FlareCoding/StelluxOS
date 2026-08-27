@@ -26,6 +26,7 @@ stlxgfx_surface_t* stlxgfx_load_image(const char* path) {
     if (!f) {
         return NULL;
     }
+
     unsigned char magic[2] = {0};
     size_t got = fread(magic, 1, sizeof(magic), f);
     fclose(f);
@@ -33,8 +34,8 @@ stlxgfx_surface_t* stlxgfx_load_image(const char* path) {
         return NULL;
     }
 
-    /* The BMP loader also understands the alpha conventions used by
-     * existing assets, so BMP files keep going through it */
+    /* The BMP loader understands the alpha conventions the BMP assets
+     * rely on, so BMP files go through it instead of stb_image */
     if (magic[0] == 'B' && magic[1] == 'M') {
         return stlxgfx_load_bmp(path);
     }
@@ -46,6 +47,7 @@ stlxgfx_surface_t* stlxgfx_load_image(const char* path) {
     if (!pixels) {
         return NULL;
     }
+
     if (width <= 0 || height <= 0) {
         stbi_image_free(pixels);
         return NULL;

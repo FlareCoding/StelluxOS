@@ -1,5 +1,5 @@
-#ifndef STELLUX_X86_64_ACPI_MADT_ARCH_H
-#define STELLUX_X86_64_ACPI_MADT_ARCH_H
+#ifndef STELLUX_ARCH_X86_64_ACPI_MADT_ARCH_H
+#define STELLUX_ARCH_X86_64_ACPI_MADT_ARCH_H
 
 #include "common/types.h"
 #include "acpi/tables.h"
@@ -49,7 +49,7 @@ struct __attribute__((packed)) madt_lapic_addr_override {
 
 // Parsed MADT result
 
-// Static capacity limits (not spec-defined; ACPI allows arbitrary counts, but these values are safe in practice)
+// Static capacity limits. ACPI allows arbitrary counts, but these values are safe in practice.
 constexpr size_t MAX_IO_APICS = 16;
 constexpr size_t MAX_ISOS     = 48;
 constexpr size_t MAX_NMIS     = 8;
@@ -102,4 +102,4 @@ __PRIVILEGED_CODE const madt_info& get_madt_info();
 
 } // namespace acpi
 
-#endif // STELLUX_X86_64_ACPI_MADT_ARCH_H
+#endif // STELLUX_ARCH_X86_64_ACPI_MADT_ARCH_H

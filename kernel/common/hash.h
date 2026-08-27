@@ -3,7 +3,7 @@
  *
  * Two families: golden-ratio multiplicative hashing for integers/pointers
  * (fast, one multiply), and FNV-1a for byte sequences and strings.
- * Full hash producers return full-width values; the caller (or hash map)
+ * Full hash producers return full-width values, the caller (or hash map)
  * folds to a bucket index via masking.
  *
  * Usage:

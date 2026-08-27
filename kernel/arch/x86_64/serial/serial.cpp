@@ -90,6 +90,7 @@ int32_t read_char() {
     if ((portio::in8(g_port_base + REG_LSR) & LSR_DATA_READY) == 0) {
         return ERR_NO_DATA;
     }
+
     return portio::in8(g_port_base + REG_DATA);
 }
 
@@ -107,11 +108,14 @@ __PRIVILEGED_CODE int32_t enable_rx_interrupt() {
         // RX interrupt routing for PCI UARTs is not supported.
         return ERR_NO_DEVICE;
     }
+
     int32_t rc = ioapic::route_irq(COM1_LEGACY_IRQ, x86::VEC_SERIAL, 0);
     if (rc != ioapic::OK) {
         return rc;
     }
+
     portio::out8(COM1_BASE + REG_IER, IER_RX_AVAIL);
+
     return OK;
 }
 

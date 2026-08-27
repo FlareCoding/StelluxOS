@@ -29,7 +29,7 @@ inline void smp_write() {
 
 /**
  * SMP full barrier - ensures complete ordering between CPUs.
- * On x86_64: lock prefix provides full barrier; faster than mfence.
+ * On x86_64: lock prefix provides full barrier, faster than mfence.
  */
 inline void smp_full() {
     asm volatile("lock; addl $0, (%%rsp)" ::: "memory", "cc");
@@ -85,7 +85,7 @@ inline void dma_full() {
 
 /**
  * Instruction barrier - ensures instruction stream synchronization.
- * On x86_64: No-op (x86 is self-synchronizing; TLB flush handles page tables).
+ * On x86_64: No-op (x86 is self-synchronizing, TLB flush handles page tables).
  */
 inline void instruction() {
     asm volatile("" ::: "memory");

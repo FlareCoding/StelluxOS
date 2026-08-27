@@ -10,7 +10,7 @@
 
 namespace random {
 
-// xoshiro256** software PRNG - used as fallback when no hardware RNG exists.
+// xoshiro256** software PRNG, used as a fallback when no hardware RNG exists.
 
 static uint64_t g_sw_state[4];
 static bool g_use_sw_prng = false;
@@ -22,12 +22,14 @@ static inline uint64_t rotl(uint64_t x, int k) {
 static uint64_t xoshiro256ss() {
     uint64_t result = rotl(g_sw_state[1] * 5, 7) * 9;
     uint64_t t = g_sw_state[1] << 17;
+
     g_sw_state[2] ^= g_sw_state[0];
     g_sw_state[3] ^= g_sw_state[1];
     g_sw_state[1] ^= g_sw_state[2];
     g_sw_state[0] ^= g_sw_state[3];
     g_sw_state[2] ^= t;
     g_sw_state[3] = rotl(g_sw_state[3], 45);
+
     return result;
 }
 
@@ -43,6 +45,7 @@ static void sw_prng_init() {
     uint64_t seed = clock::now_ns();
     seed ^= reinterpret_cast<uintptr_t>(&seed);
     if (seed == 0) seed = 0xdeadbeefcafe1234ULL;
+
     g_sw_state[0] = splitmix64(&seed);
     g_sw_state[1] = splitmix64(&seed);
     g_sw_state[2] = splitmix64(&seed);
@@ -53,6 +56,7 @@ static void sw_prng_init() {
 static void sw_prng_fill(void* buf, size_t len) {
     auto* dst = static_cast<uint8_t*>(buf);
     size_t offset = 0;
+
     while (offset < len) {
         uint64_t val = xoshiro256ss();
         size_t remaining = len - offset;
@@ -77,11 +81,13 @@ public:
         if (rc != OK) {
             return fs::ERR_IO;
         }
+
         return static_cast<ssize_t>(count);
     }
 
     int32_t getattr(fs::vattr* attr) override {
         if (!attr) return fs::ERR_INVAL;
+
         attr->type = fs::node_type::char_device;
         attr->size = 0;
         return fs::OK;
@@ -96,10 +102,12 @@ int32_t fill(void* buf, size_t len) {
             return OK;
         }
     }
+
     if (g_use_sw_prng) {
         sw_prng_fill(buf, len);
         return OK;
     }
+
     return ERR_NOSRC;
 }
 
@@ -116,6 +124,7 @@ __PRIVILEGED_CODE int32_t init() {
         log::error("random: failed to allocate urandom node");
         return ERR_NOSRC;
     }
+
     auto* unode = new (urandom_mem) urandom_node(nullptr, "urandom");
 
     if (devfs::add_char_device("urandom", unode) != devfs::OK) {
@@ -130,6 +139,7 @@ __PRIVILEGED_CODE int32_t init() {
         log::warn("random: failed to allocate random node, /dev/random unavailable");
         return OK;
     }
+
     auto* rnode = new (random_mem) urandom_node(nullptr, "random");
 
     if (devfs::add_char_device("random", rnode) != devfs::OK) {

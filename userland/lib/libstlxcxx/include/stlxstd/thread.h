@@ -58,6 +58,7 @@ public:
         using ctx_t = detail::thread_context_impl<Decayed>;
         auto* ctx = static_cast<ctx_t*>(malloc(sizeof(ctx_t)));
         if (!ctx) abort();
+
         new (ctx) ctx_t(static_cast<Fn&&>(fn));
 
         m_stack = mmap(nullptr, STACK_SIZE, PROT_READ | PROT_WRITE,
@@ -109,6 +110,7 @@ public:
 
     void join() {
         if (!joinable()) return;
+
         proc_thread_join(m_handle, nullptr);
         munmap(m_stack, STACK_SIZE);
         m_handle = -1;
@@ -119,6 +121,7 @@ public:
     // using it. It will be reclaimed when the process exits.
     void detach() {
         if (!joinable()) return;
+
         proc_thread_detach(m_handle);
         m_handle = -1;
         m_stack = nullptr;

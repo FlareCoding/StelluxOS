@@ -21,7 +21,7 @@ static void init_mock_task(sched::task& t, uint32_t tid) {
     t.tid = tid;
 }
 
-// Re-initialize the static registry and all mock tasks for a clean test.
+// Re-initialize the static registry for a clean test.
 static void reset_registry() {
     s_reg.init();
 }

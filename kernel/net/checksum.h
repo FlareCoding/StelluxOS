@@ -71,6 +71,7 @@ inline uint16_t transport_checksum(uint32_t src_ip_net, uint32_t dst_ip_net,
         ptr += 2;
         remaining -= 2;
     }
+
     if (remaining == 1) {
         sum += static_cast<uint16_t>(ptr[0]);
     }

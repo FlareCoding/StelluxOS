@@ -60,6 +60,7 @@ DEFINE_SYSCALL1(dup, u_oldfd) {
     if (rc == resource::HANDLE_ERR_NOSPC) {
         return syscall::EMFILE;
     }
+
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
@@ -89,6 +90,7 @@ DEFINE_SYSCALL2(dup2, u_oldfd, u_newfd) {
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
+
         resource::resource_release(obj);
         return static_cast<int64_t>(new_h);
     }
@@ -107,9 +109,11 @@ DEFINE_SYSCALL3(dup3, u_oldfd, u_newfd, u_flags) {
     if (old_h == new_h) {
         return syscall::EINVAL;
     }
+
     if (new_h < 0 || static_cast<uint32_t>(new_h) >= resource::MAX_TASK_HANDLES) {
         return syscall::EBADF;
     }
+
     if (u_flags & ~static_cast<uint64_t>(fs::O_CLOEXEC)) {
         return syscall::EINVAL;
     }

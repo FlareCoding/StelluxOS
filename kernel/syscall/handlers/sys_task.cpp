@@ -27,10 +27,8 @@ constexpr uint64_t CLONE_CHILD_SETTID   = 0x01000000;
 // The exit signal lives in the low byte of the flags word
 constexpr uint64_t CLONE_CSIGNAL_MASK   = 0x000000FF;
 
-// Thread semantics Stellux implements, matching what musl requests
-// from pthread_create. Anything without the full bundle is fork
-// shaped and rejected by design, the process model spawns fresh
-// processes instead of duplicating address spaces.
+// The thread bundle musl requests from pthread_create. Anything else is
+// fork shaped and rejected, the process model spawns fresh processes.
 constexpr uint64_t CLONE_REQUIRED_BUNDLE =
     CLONE_VM | CLONE_FS | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM;
 constexpr uint64_t CLONE_SUPPORTED_EXTRAS =
@@ -64,6 +62,7 @@ static int64_t regroup_unstarted_child(sched::task* caller, uint32_t pid,
         if (rc != resource::HANDLE_OK) {
             continue;
         }
+
         if (obj->type != resource::resource_type::PROCESS) {
             resource::resource_release(obj);
             continue;
@@ -277,6 +276,7 @@ DEFINE_SYSCALL2(nanosleep, u_req, u_rem) {
             return syscall::EFAULT;
         }
     }
+
     return syscall::EINTR;
 }
 
@@ -291,6 +291,7 @@ DEFINE_SYSCALL2(setpgid, u_pid, u_pgid) {
     if (pid < 0 || pid > TASK_ID_LIMIT) {
         return syscall::ESRCH;
     }
+
     if (pgid < 0 || pgid > TASK_ID_LIMIT) {
         return syscall::EINVAL;
     }
@@ -320,6 +321,7 @@ DEFINE_SYSCALL1(getpgid, u_pid) {
         if (!caller->group) {
             return syscall::ESRCH;
         }
+
         return caller->group->group_id.load_acquire();
     }
 

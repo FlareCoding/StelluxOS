@@ -27,6 +27,7 @@ static void rotate_left(node** root, node* x) {
     if (y->left) {
         y->left->parent = x;
     }
+
     y->parent = x->parent;
     if (!x->parent) {
         *root = y;
@@ -35,6 +36,7 @@ static void rotate_left(node** root, node* x) {
     } else {
         x->parent->right = y;
     }
+
     y->left = x;
     x->parent = y;
 }
@@ -53,6 +55,7 @@ static void rotate_right(node** root, node* x) {
     if (y->right) {
         y->right->parent = x;
     }
+
     y->parent = x->parent;
     if (!x->parent) {
         *root = y;
@@ -61,6 +64,7 @@ static void rotate_right(node** root, node* x) {
     } else {
         x->parent->right = y;
     }
+
     y->right = x;
     x->parent = y;
 }
@@ -373,6 +377,7 @@ node* prev(const node* n) {
 // Leftmost descendant of subtree.
 node* minimum(node* subtree) {
     if (!subtree) return nullptr;
+
     while (subtree->left) {
         subtree = subtree->left;
     }
@@ -382,6 +387,7 @@ node* minimum(node* subtree) {
 // Rightmost descendant of subtree.
 node* maximum(node* subtree) {
     if (!subtree) return nullptr;
+
     while (subtree->right) {
         subtree = subtree->right;
     }

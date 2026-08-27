@@ -79,6 +79,7 @@ static void detach_self_group() {
     if (!g_self_tg) {
         return;
     }
+
     sched::current()->group = nullptr;
     RUN_ELEVATED({ heap::kfree_delete(g_self_tg); });
     g_self_tg = nullptr;
@@ -98,6 +99,7 @@ static int32_t teardown_process() {
         if (g_tg) heap::kfree_delete(g_tg);
         if (g_tg2) heap::kfree_delete(g_tg2);
     });
+
     g_proc = nullptr;
     g_tg = nullptr;
     g_proc2 = nullptr;

@@ -70,6 +70,7 @@ static void arp_table_update(uint32_t ip, const uint8_t* mac) {
                     oldest = i;
                 }
             }
+
             g_arp_table[oldest].ip = ip;
             string::memcpy(g_arp_table[oldest].mac, mac, MAC_ADDR_LEN);
             g_arp_table[oldest].valid = true;
@@ -85,17 +86,20 @@ static bool arp_table_lookup(uint32_t ip, uint8_t* out_mac) {
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_arp_lock);
         uint64_t now = clock::now_ns();
+
         for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
             if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
                 if (now - g_arp_table[i].last_updated_ns > ARP_ENTRY_TTL_NS) {
                     break; // stale, force re-resolution
                 }
+
                 string::memcpy(out_mac, g_arp_table[i].mac, MAC_ADDR_LEN);
                 found = true;
                 break;
             }
         }
     });
+
     return found;
 }
 
@@ -106,10 +110,21 @@ void arp_recv(netif* iface, const uint8_t* data, size_t len) {
 
     const auto* arp = reinterpret_cast<const arp_header*>(data);
 
-    if (ntohs(arp->hw_type) != ARP_HW_ETHERNET) return;
-    if (ntohs(arp->proto_type) != ETH_TYPE_IPV4) return;
-    if (arp->hw_len != MAC_ADDR_LEN) return;
-    if (arp->proto_len != 4) return;
+    if (ntohs(arp->hw_type) != ARP_HW_ETHERNET) {
+        return;
+    }
+
+    if (ntohs(arp->proto_type) != ETH_TYPE_IPV4) {
+        return;
+    }
+
+    if (arp->hw_len != MAC_ADDR_LEN) {
+        return;
+    }
+
+    if (arp->proto_len != 4) {
+        return;
+    }
 
     uint32_t sender_ip = ntohl(arp->sender_ip);
     uint32_t target_ip = ntohl(arp->target_ip);
@@ -127,6 +142,7 @@ void arp_recv(netif* iface, const uint8_t* data, size_t len) {
         reply.hw_len = MAC_ADDR_LEN;
         reply.proto_len = 4;
         reply.opcode = htons(ARP_OP_REPLY);
+        
         string::memcpy(reply.sender_mac, iface->mac, MAC_ADDR_LEN);
         reply.sender_ip = htonl(iface->ipv4_addr);
         string::memcpy(reply.target_mac, arp->sender_mac, MAC_ADDR_LEN);
@@ -162,7 +178,7 @@ void arp_send_request(netif* iface, uint32_t target_ip) {
 int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
     if (!iface || !out_mac) return ERR_INVAL;
 
-    // Check if it's a broadcast address
+    // Broadcast destinations map directly to the Ethernet broadcast MAC
     if (target_ip == 0xFFFFFFFF ||
         target_ip == (iface->ipv4_addr | ~iface->ipv4_netmask)) {
         string::memcpy(out_mac, ETH_BROADCAST, MAC_ADDR_LEN);
@@ -184,7 +200,6 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
         for (uint32_t poll = 0; poll < POLLS_PER_ATTEMPT; poll++) {
             RUN_ELEVATED({
                 sched::sleep_ms(POLL_SLEEP_MS);
-                
                 if (iface->poll) {
                     iface->poll(iface);
                 }
@@ -194,7 +209,6 @@ int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
                 return OK;
             }
         }
-
     }
 
     log::warn("arp: failed to resolve %u.%u.%u.%u",

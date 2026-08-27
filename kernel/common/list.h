@@ -84,6 +84,7 @@ public:
 
     T* pop_front() {
         if (empty()) return nullptr;
+
         node* n = m_sentinel.next;
         unlink(n);
         --m_count;
@@ -92,6 +93,7 @@ public:
 
     T* pop_back() {
         if (empty()) return nullptr;
+
         node* n = m_sentinel.prev;
         unlink(n);
         --m_count;

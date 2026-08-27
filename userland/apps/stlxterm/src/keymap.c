@@ -35,6 +35,7 @@ int keymap_translate(uint16_t usage, uint8_t modifiers, int app_cursor,
             out[0] = ch & 0x1F;
             return 1;
         }
+
         out[0] = shift ? (char)(ch - 32) : ch;
         return 1;
     }

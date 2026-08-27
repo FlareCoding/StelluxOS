@@ -26,9 +26,10 @@ static uint32_t parse_ipv4(const char* str) {
             return 0;
         }
     }
-    if (field != 3 || val > 255) return 0;
-    parts[3] = val;
 
+    if (field != 3 || val > 255) return 0;
+
+    parts[3] = val;
     return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
 }
 
@@ -45,6 +46,7 @@ static int run_server(uint16_t port) {
         printf("tcpecho: socket() failed (errno=%d)\r\n", errno);
         return 1;
     }
+
     printf("tcpecho: socket created (fd=%d)\r\n", fd);
 
     int optval = 1;
@@ -64,6 +66,7 @@ static int run_server(uint16_t port) {
         close(fd);
         return 1;
     }
+
     printf("tcpecho: bind OK\r\n");
 
     printf("tcpecho: calling listen()...\r\n");
@@ -72,6 +75,7 @@ static int run_server(uint16_t port) {
         close(fd);
         return 1;
     }
+
     printf("tcpecho: listening on port %u\r\n", port);
 
     while (1) {
@@ -130,6 +134,7 @@ static int run_client(uint32_t dst_ip_host, uint16_t port, const char* msg) {
         close(fd);
         return 1;
     }
+
     printf("tcpecho: connected\r\n");
 
     size_t msg_len = strlen(msg);
@@ -172,6 +177,7 @@ int main(int argc, char* argv[]) {
             printf("tcpecho: invalid port\r\n");
             return 1;
         }
+
         return run_server(port);
     }
 
@@ -180,16 +186,19 @@ int main(int argc, char* argv[]) {
             printf("Usage: tcpecho client <ip> <port> [message]\r\n");
             return 1;
         }
+
         uint32_t ip = parse_ipv4(argv[2]);
         if (ip == 0) {
             printf("tcpecho: invalid IP address '%s'\r\n", argv[2]);
             return 1;
         }
+
         uint16_t port = (uint16_t)atoi(argv[3]);
         if (port == 0) {
             printf("tcpecho: invalid port\r\n");
             return 1;
         }
+
         const char* msg = (argc >= 5) ? argv[4] : "hello";
         return run_client(ip, port, msg);
     }

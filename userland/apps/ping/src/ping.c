@@ -9,7 +9,6 @@
 #include <netinet/in.h>
 #include <errno.h>
 
-// ICMP header structure
 struct icmp_hdr {
     uint8_t  type;
     uint8_t  code;
@@ -61,9 +60,10 @@ static uint32_t parse_ipv4(const char* str) {
             return 0;
         }
     }
-    if (field != 3 || val > 255) return 0;
-    parts[3] = val;
 
+    if (field != 3 || val > 255) return 0;
+
+    parts[3] = val;
     return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
 }
 
@@ -119,6 +119,7 @@ static int dns_encode_name(const char* name, uint8_t* buf, size_t buf_size) {
 
         seg = (*dot == '.') ? dot + 1 : dot;
     }
+
     buf[pos++] = 0;
     return (int)pos;
 }
@@ -131,6 +132,7 @@ static int dns_skip_name(const uint8_t* pkt, size_t pkt_len, size_t offset) {
         if ((label_len & 0xC0) == 0xC0) { pos += 2; break; }
         pos += 1 + label_len;
     }
+
     if (pos > pkt_len) return -1;
     return (int)pos;
 }
@@ -224,9 +226,11 @@ static uint32_t dns_resolve(const char* hostname) {
                              (uint32_t)resp[pos + 3];
                     break;
                 }
+
                 if (pos + (int)rdlength > (int)nrecv) break;
                 pos += rdlength;
             }
+
             break;
         }
     }
@@ -306,14 +310,12 @@ int main(int argc, char* argv[]) {
             packet[sizeof(struct icmp_hdr) + j] = (uint8_t)(j & 0xFF);
         }
 
-        // Compute ICMP checksum
         hdr->checksum = inet_checksum(packet, sizeof(packet));
 
         // Record send time
         struct timespec t0;
         clock_gettime(CLOCK_MONOTONIC, &t0);
 
-        // Send
         ssize_t nsent = sendto(fd, packet, sizeof(packet), 0,
                                (struct sockaddr*)&dst, sizeof(dst));
         sent++;
@@ -327,9 +329,8 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // Wait for reply using non-blocking poll/sleep loop with timeout.
-        // This avoids blocking forever when replies never arrive (e.g.
-        // unreachable host, firewall, QEMU SLIRP ICMP limitation).
+        // Poll with a timeout instead of blocking, replies may never arrive
+        // (unreachable host, firewall, QEMU SLIRP ICMP limitation).
         uint8_t reply_buf[256];
         struct sockaddr_in src;
         socklen_t srclen = sizeof(src);
@@ -345,13 +346,14 @@ int main(int argc, char* argv[]) {
                 if (peek->type == ICMP_ECHO_REPLY) {
                     break; // got a reply
                 }
-                // Not a reply (e.g. echo request looped back), drain it
-                // and immediately retry without sleeping, but still charge
-                // one poll interval so the timeout stays bounded.
+
+                // Not a reply (e.g. echo request looped back), drain it and
+                // retry, still charging one interval to bound the timeout.
                 nrecv = -1;
                 elapsed_ms += PING_RECV_POLL_MS;
                 continue;
             }
+
             // No data yet, sleep briefly and retry
             struct timespec poll_delay = { .tv_sec = 0,
                                            .tv_nsec = PING_RECV_POLL_MS * 1000000L };
@@ -371,7 +373,6 @@ int main(int argc, char* argv[]) {
             if (reply_hdr->type == ICMP_ECHO_REPLY &&
                 my_ntohs(reply_hdr->id) == ping_id &&
                 my_ntohs(reply_hdr->seq) == (uint16_t)i) {
-
                 long sec_diff = t1.tv_sec - t0.tv_sec;
                 long nsec_diff = t1.tv_nsec - t0.tv_nsec;
                 if (nsec_diff < 0) {

@@ -11,8 +11,7 @@ namespace mm { struct mm_context; }
 namespace sched {
 
 // Task privilege-mode bit (Ring 0 / EL1 when set). During trap/syscall handling
-// the CPU executes elevated regardless of this bit; per-CPU runtime elevation
-// state is tracked separately via percpu_is_elevated.
+// the CPU executes elevated regardless, tracked per-CPU via percpu_is_elevated.
 constexpr uint32_t TASK_FLAG_ELEVATED    = (1 << 0);
 constexpr uint32_t TASK_FLAG_KERNEL      = (1 << 1);  // Is a kernel task
 constexpr uint32_t TASK_FLAG_CAN_ELEVATE = (1 << 2);  // Authorized to elevate
@@ -35,9 +34,8 @@ struct task_exec_core {
     fpu_state fpu_ctx;
     uint64_t  tls_base; // thread-local storage base (FS_BASE on x86, TPIDR_EL0 on aarch64)
 
-    // Staged full-register return context (x86): a signal
-    // frame captured outside a syscall restores through an
-    // IRET exit. Consumed by the syscall exit assembly.
+    // Staged full-register return context (x86): a signal frame captured outside
+    // a syscall restores through an IRET exit in the syscall exit assembly.
     uint32_t  iret_pending;
     thread_cpu_context iret_ctx;
 };

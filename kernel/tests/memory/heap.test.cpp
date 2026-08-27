@@ -16,6 +16,7 @@ static int32_t heap_before_all() {
         log::error("heap tests: insufficient free pages (%lu)", g_initial_free_pages);
         return -1;
     }
+
     return 0;
 }
 
@@ -42,12 +43,14 @@ TEST(heap_test, kalloc_free_basic) {
 TEST(heap_test, kzalloc_returns_zeroed) {
     void* p = heap::kzalloc(128);
     ASSERT_NOT_NULL(p);
+
     auto* bytes = static_cast<uint8_t*>(p);
     bool all_zero = true;
     for (size_t i = 0; i < 128; i++) {
         if (bytes[i] != 0) { all_zero = false; break; }
     }
     EXPECT_TRUE(all_zero);
+
     heap::kfree(p);
 }
 
@@ -172,12 +175,14 @@ TEST(heap_test, ualloc_smoke) {
 TEST(heap_test, uzalloc_returns_zeroed) {
     void* p = heap::uzalloc(128);
     ASSERT_NOT_NULL(p);
+
     auto* bytes = static_cast<uint8_t*>(p);
     bool all_zero = true;
     for (size_t i = 0; i < 128; i++) {
         if (bytes[i] != 0) { all_zero = false; break; }
     }
     EXPECT_TRUE(all_zero);
+
     heap::ufree(p);
 }
 

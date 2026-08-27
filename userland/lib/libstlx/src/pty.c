@@ -7,6 +7,7 @@ int pty_create(int* master_fd, int* slave_fd) {
     int fds[2];
     int rc = (int)syscall(SYS_PTY_CREATE, fds);
     if (rc < 0) return rc;
+
     *master_fd = fds[0];
     *slave_fd = fds[1];
     return 0;

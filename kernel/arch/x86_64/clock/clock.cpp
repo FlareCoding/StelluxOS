@@ -18,7 +18,7 @@ static uint64_t g_boot_realtime_ns;
 
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
 
-// PIT constants (same as hwtimer calibration)
+// PIT channel 2 constants for timing TSC frequency calibration
 constexpr uint16_t PIT_CTRL     = 0x43;
 constexpr uint16_t PIT_CH2_DATA = 0x42;
 constexpr uint16_t PORT_B       = 0x61;
@@ -109,6 +109,7 @@ __PRIVILEGED_CODE int32_t init_ap() {
     if (!g_calibrated.load_acquire()) {
         return ERR;
     }
+
     return OK;
 }
 
@@ -116,6 +117,7 @@ uint64_t now_ns() {
     if (!g_calibrated.load_acquire()) {
         return 0;
     }
+
     uint64_t ticks = tsc::rdtsc();
     return static_cast<uint64_t>(
         (static_cast<unsigned __int128>(ticks) * g_mult) >> g_shift

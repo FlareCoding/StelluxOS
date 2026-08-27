@@ -1,4 +1,5 @@
 #include "drivers/net/rtl8168.h"
+#include "sync/atomic.h"
 #include "mm/vmm.h"
 #include "mm/heap.h"
 #include "hw/mmio.h"
@@ -116,6 +117,7 @@ void rtl8168_driver::hw_reset() {
             log::debug("rtl8168: hardware reset complete (%u iterations)", i);
             return;
         }
+
         for (uint32_t j = 0; j < 100; j++) cpu::relax();
     }
 
@@ -198,10 +200,12 @@ int32_t rtl8168_driver::phy_reset() {
         uint16_t bmcr = 0;
         rc = phy_read(phy::BMCR, &bmcr);
         if (rc != 0) return rc;
+
         if ((bmcr & phy::BMCR_RESET) == 0) {
             log::debug("rtl8168: PHY reset complete (%u ms)", i);
             return 0;
         }
+
         delay::us(1000);
     }
 
@@ -215,6 +219,7 @@ int32_t rtl8168_driver::phy_auto_negotiate() {
 
     rc = phy_read(phy::ANAR, &val);
     if (rc != 0) return rc;
+
     val |= phy::ANAR_100BASETX_FDX | phy::ANAR_100BASETX |
            phy::ANAR_10BASET_FDX | phy::ANAR_10BASET |
            phy::ANAR_PAUSE;
@@ -224,12 +229,14 @@ int32_t rtl8168_driver::phy_auto_negotiate() {
 
     rc = phy_read(phy::GBCR, &val);
     if (rc != 0) return rc;
+
     val |= phy::GBCR_1000BASET_FDX | phy::GBCR_1000BASET;
     rc = phy_write(phy::GBCR, val);
     if (rc != 0) return rc;
 
     rc = phy_read(phy::BMCR, &val);
     if (rc != 0) return rc;
+
     val |= phy::BMCR_ANE | phy::BMCR_RESTART_AN;
     rc = phy_write(phy::BMCR, val);
     if (rc != 0) return rc;
@@ -284,6 +291,7 @@ int32_t rtl8168_driver::alloc_rings() {
         log::error("rtl8168: TX ring allocation failed (%d)", rc);
         return -1;
     }
+
     m_tx_ring = reinterpret_cast<tx_desc*>(tx_ring_va);
     m_tx_ring_phys = tx_ring_pa;
 
@@ -312,6 +320,7 @@ int32_t rtl8168_driver::alloc_rings() {
         log::error("rtl8168: RX ring allocation failed (%d)", rc);
         return -1;
     }
+
     m_rx_ring = reinterpret_cast<rx_desc*>(rx_ring_va);
     m_rx_ring_phys = rx_ring_pa;
 
@@ -340,16 +349,19 @@ void rtl8168_driver::free_rings() {
         m_tx_ring = nullptr;
         m_tx_ring_phys = 0;
     }
+
     if (m_tx_buf_vaddr) {
         RUN_ELEVATED(vmm::free(m_tx_buf_vaddr));
         m_tx_buf_vaddr = 0;
         m_tx_buf_phys = 0;
     }
+
     if (m_rx_ring) {
         RUN_ELEVATED(vmm::free(reinterpret_cast<uintptr_t>(m_rx_ring)));
         m_rx_ring = nullptr;
         m_rx_ring_phys = 0;
     }
+
     if (m_rx_buf_vaddr) {
         RUN_ELEVATED(vmm::free(m_rx_buf_vaddr));
         m_rx_buf_vaddr = 0;
@@ -392,7 +404,7 @@ int32_t rtl8168_driver::fill_rx_ring() {
         uint32_t flags = RX_OWN | (RX_BUF_SIZE & RX_BUF_SIZE_MASK);
         if (i == RX_DESC_COUNT - 1)
             flags |= RX_EOR;
-        __atomic_thread_fence(__ATOMIC_RELEASE);
+        sync::atomic_fence_release();
         m_rx_ring[i].opts1 = flags;
     }
 
@@ -411,6 +423,7 @@ int32_t rtl8168_driver::tx_callback(
     net::netif* iface, const uint8_t* frame, size_t len
 ) {
     if (!iface || !frame || len == 0) return -1;
+
     auto* drv = static_cast<rtl8168_driver*>(iface->driver_data);
     if (!drv) return -1;
 
@@ -442,7 +455,7 @@ int32_t rtl8168_driver::tx_callback(
                 opts1 |= TX_EOR;
 
             // Release fence: NIC must see addr/opts2 before OWN is set.
-            __atomic_thread_fence(__ATOMIC_RELEASE);
+            sync::atomic_fence_release();
             drv->m_tx_ring[idx].opts1 = opts1;
 
             drv->m_tx_prod = (idx + 1) % TX_DESC_COUNT;
@@ -481,7 +494,7 @@ void rtl8168_driver::process_rx() {
         uint32_t idx = m_rx_cur;
         uint32_t opts1 = m_rx_ring[idx].opts1;
 
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        sync::atomic_fence_acquire();
 
         if (opts1 & RX_OWN)
             break;
@@ -528,7 +541,7 @@ void rtl8168_driver::process_rx() {
             if (idx == RX_DESC_COUNT - 1)
                 new_opts1 |= RX_EOR;
 
-            __atomic_thread_fence(__ATOMIC_RELEASE);
+            sync::atomic_fence_release();
             m_rx_ring[idx].opts1 = new_opts1;
         }
 
@@ -570,6 +583,7 @@ bool rtl8168_driver::link_callback(net::netif* iface) {
 
 void rtl8168_driver::poll_callback(net::netif* iface) {
     if (!iface) return;
+
     auto* drv = static_cast<rtl8168_driver*>(iface->driver_data);
     if (!drv) return;
 
@@ -578,6 +592,7 @@ void rtl8168_driver::poll_callback(net::netif* iface) {
         drv->process_rx();
         drv->process_tx_completions();
     });
+
     RUN_ELEVATED(net::drain_deferred_tx());
 }
 
@@ -610,7 +625,7 @@ void rtl8168_driver::hw_start() {
     reg_write32(REG_MAR0, 0xFFFFFFFF);
     reg_write32(REG_MAR4, 0xFFFFFFFF);
 
-    // 8168G+ chips gate RX behind the RXDV bit; open it.
+    // 8168G+ chips gate RX behind the RXDV bit, open it.
     if (chip_is_8168g_plus(m_chip_version)) {
         uint32_t misc = reg_read32(REG_MISC);
         misc &= ~MISC_RXDV_GATED;
@@ -694,6 +709,7 @@ int32_t rtl8168_driver::attach() {
         log::error("rtl8168: failed to map BAR %u (%d)", RTL_MMIO_BAR, rc);
         return rc;
     }
+
     log::info("rtl8168: MMIO mapped at VA 0x%lx", m_mmio_va);
 
     hw_reset();
@@ -738,6 +754,7 @@ int32_t rtl8168_driver::attach() {
     m_netif.link_up = link_callback;
     m_netif.poll = poll_callback;
     m_netif.driver_data = this;
+
     net::register_netif(&m_netif);
 
     log::info("rtl8168: attached successfully (%s)",
@@ -748,9 +765,11 @@ int32_t rtl8168_driver::attach() {
 
 int32_t rtl8168_driver::detach() {
     log::info("rtl8168: detaching");
+
     hw_stop();
     net::unregister_netif(&m_netif);
     free_rings();
+
     return pci_driver::detach();
 }
 
@@ -769,6 +788,7 @@ void rtl8168_driver::run() {
             break;
         }
     }
+
     if (!got_link) {
         log::warn("rtl8168: link not up after 5 seconds, proceeding anyway");
     }
@@ -801,9 +821,8 @@ void rtl8168_driver::run() {
             phy_update_link();
         }
 
-        // Re-enable IMR after draining work. If ISR bits accumulated
-        // while masked, this creates a 0->nonzero (ISR & IMR) transition
-        // that fires a fresh MSI.
+        // Re-enable IMR after draining. ISR bits accumulated while masked
+        // create a fresh 0->nonzero (ISR & IMR) transition and a new MSI.
         if (m_has_msi) {
             reg_write16(REG_IMR, m_imr);
         }

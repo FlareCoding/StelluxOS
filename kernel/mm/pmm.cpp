@@ -35,9 +35,8 @@ __PRIVILEGED_CODE static uint64_t calc_page_tables_for_pages(uint64_t page_count
 
 // Compute page tables needed for initial mappings (HHDM + kernel + devices)
 __PRIVILEGED_CODE static size_t compute_required_pages() {
-    // HHDM mapping: use full physical address span (0 to max_phys)
-    // Gaps in physical memory still affect which L1/L2 indices are used,
-    // so we must calculate based on the span, not just usable page count
+    // HHDM tables are sized from the full physical span, not the usable page
+    // count, because gaps in physical memory still consume L1/L2 indices
     phys_addr_t max_phys = 0;
     for (uint64_t i = 0; i < g_boot_info.memmap_entry_count; i++) {
         auto* e = g_boot_info.memmap_entries[i];
@@ -47,11 +46,10 @@ __PRIVILEGED_CODE static size_t compute_required_pages() {
         }
     }
     uint64_t hhdm_tables = calc_page_tables_for_pages(max_phys / PAGE_SIZE);
-    
-    // Kernel mapping: exact size from linker symbols
-    // Kernel is at 0xffffffff80000000 (different L0 index than HHDM)
-    // Needs its own L1/L2/L3 chain (L0 root table is shared)
-    uint64_t kernel_size = reinterpret_cast<uint64_t>(__stlx_kern_end) - 
+
+    // The kernel image at 0xffffffff80000000 sits under a different L0 index
+    // than the HHDM, so it needs its own L1/L2/L3 chain (the L0 root is shared)
+    uint64_t kernel_size = reinterpret_cast<uint64_t>(__stlx_kern_end) -
                            reinterpret_cast<uint64_t>(__stlx_kern_start);
     uint64_t kernel_pages = (kernel_size + PAGE_SIZE - 1) / PAGE_SIZE;
     uint64_t kernel_l3 = (kernel_pages + 511) / 512;
@@ -65,7 +63,7 @@ __PRIVILEGED_CODE static size_t compute_required_pages() {
 #else
     uint64_t device_tables = 0;
 #endif
-    
+
     return static_cast<size_t>(hhdm_tables + kernel_tables + device_tables);
 }
 
@@ -77,23 +75,23 @@ __PRIVILEGED_CODE static bool find_suitable_region(size_t required_pages, phys_a
     size_t best_size = 0;
     bool best_is_low = false;
     bool found = false;
-    
+
     for (uint64_t i = 0; i < g_boot_info.memmap_entry_count; i++) {
         auto* e = g_boot_info.memmap_entries[i];
         if (e->type != LIMINE_MEMMAP_USABLE) continue;
-        
+
         phys_addr_t start = page_align_up(e->base);
         phys_addr_t end = page_align_down(e->base + e->length);
-        
+
         if (end <= start) continue;
         size_t size = end - start;
         if (size < required_size) continue;
-        
+
         bool is_low = (end <= 0x100000000ULL);
-        bool is_better = !found || 
-                         (is_low && !best_is_low) || 
+        bool is_better = !found ||
+                         (is_low && !best_is_low) ||
                          (is_low == best_is_low && size > best_size);
-        
+
         if (is_better) {
             best_start = start;
             best_end = end;
@@ -102,11 +100,12 @@ __PRIVILEGED_CODE static bool find_suitable_region(size_t required_pages, phys_a
             found = true;
         }
     }
-    
+
     if (found) {
         out_start = best_start;
         out_end = best_end;
     }
+
     return found;
 }
 
@@ -114,30 +113,30 @@ __PRIVILEGED_CODE int32_t bootstrap_allocator::init() {
     if (g_bootstrap_info.initialized) {
         return OK;
     }
-    
+
     size_t required_pages = compute_required_pages();
     size_t required_size = required_pages * PAGE_SIZE;
-    
-    log::debug("bootstrap: need %lu pages (%lu KB) for page tables", 
+
+    log::debug("bootstrap: need %lu pages (%lu KB) for page tables",
                required_pages, required_size / 1024);
-    
+
     phys_addr_t region_start, region_end;
     if (!find_suitable_region(required_pages, region_start, region_end)) {
         log::error("bootstrap: no suitable memory region found");
         return ERR_NO_MEMORY;
     }
-    
+
     // Only reserve what we need from the region
     g_bootstrap_info.region_start = region_start;
     g_bootstrap_info.region_end = region_start + required_size;
     g_bootstrap_info.current = region_start;
     g_bootstrap_info.pages_allocated = 0;
     g_bootstrap_info.initialized = true;
-    
+
     log::debug("bootstrap: using region 0x%lx-0x%lx (%lu pages available)",
                g_bootstrap_info.region_start, g_bootstrap_info.region_end,
                (g_bootstrap_info.region_end - g_bootstrap_info.region_start) / PAGE_SIZE);
-    
+
     return OK;
 }
 
@@ -145,14 +144,15 @@ __PRIVILEGED_CODE phys_addr_t bootstrap_allocator::alloc_page() {
     if (!g_bootstrap_info.initialized) {
         return 0;
     }
+
     if (g_bootstrap_info.current + PAGE_SIZE > g_bootstrap_info.region_end) {
         return 0; // Exhausted
     }
-    
+
     phys_addr_t page = g_bootstrap_info.current;
     g_bootstrap_info.current += PAGE_SIZE;
     g_bootstrap_info.pages_allocated++;
-    
+
     void* virt = reinterpret_cast<void*>(page + g_boot_info.hhdm_offset);
     string::memset(virt, 0, PAGE_SIZE);
     return page;
@@ -167,7 +167,7 @@ __PRIVILEGED_CODE phys_addr_t bootstrap_allocator::get_used_end() {
 }
 
 __PRIVILEGED_CODE bool bootstrap_allocator::is_active() {
-    return g_bootstrap_info.initialized && 
+    return g_bootstrap_info.initialized &&
            (g_bootstrap_info.current + PAGE_SIZE <= g_bootstrap_info.region_end);
 }
 
@@ -187,7 +187,6 @@ __PRIVILEGED_DATA sync::spinlock g_zone_locks[static_cast<size_t>(zone_id::COUNT
     sync::SPINLOCK_INIT, sync::SPINLOCK_INIT
 };
 
-// Debug assertion macro
 #ifdef DEBUG
 #define PMM_ASSERT(cond, msg) \
     do { if (!(cond)) log::fatal("PMM: " msg); } while(0)
@@ -374,6 +373,7 @@ __PRIVILEGED_CODE static void init_zones() {
     dma32.end_pfn = phys_to_pfn(min(pfn_to_phys(g_pmm.max_pfn), ZONE_DMA32_LIMIT));
     dma32.total_pages = 0;
     dma32.free_pages = 0;
+
     for (uint8_t o = 0; o <= MAX_ORDER; o++) {
         dma32.free_areas[o].first = INVALID_PFN;
         dma32.free_areas[o].last = INVALID_PFN;
@@ -393,6 +393,7 @@ __PRIVILEGED_CODE static void init_zones() {
     }
     normal.total_pages = 0;
     normal.free_pages = 0;
+
     for (uint8_t o = 0; o <= MAX_ORDER; o++) {
         normal.free_areas[o].first = INVALID_PFN;
         normal.free_areas[o].last = INVALID_PFN;
@@ -412,10 +413,8 @@ __PRIVILEGED_CODE static void mark_pages(pfn_t start_pfn, pfn_t end_pfn, uint8_t
     }
 }
 
-// Build freelists using max-order-first decomposition.
-// For each contiguous run of free pages, directly computes the largest
-// naturally-aligned power-of-2 block at each position. No coalescing
-// pass needed, blocks go directly to their final order.
+// Build freelists by carving each contiguous free run into the largest
+// naturally-aligned power-of-2 blocks, so no coalescing pass is needed.
 __PRIVILEGED_CODE static void build_freelists() {
     for (size_t zi = 0; zi < static_cast<size_t>(zone_id::COUNT); zi++) {
         zone& z = g_pmm.zones[zi];
@@ -555,7 +554,7 @@ __PRIVILEGED_CODE int32_t init() {
     if (bootstrap_allocator::is_active()) {
         pfn_t bs_start_pfn = phys_to_pfn(bootstrap_allocator::get_region_start());
         // Reserve full region end, not just used_end (which is still 0 at this point)
-        phys_addr_t region_end = bootstrap_allocator::get_region_start() + 
+        phys_addr_t region_end = bootstrap_allocator::get_region_start() +
             (bootstrap_allocator::get_pages_remaining() + bootstrap_allocator::get_pages_allocated()) * PAGE_SIZE;
         pfn_t bs_end_pfn = phys_to_pfn(region_end);
         mark_pages(bs_start_pfn, bs_end_pfn, PAGE_FLAG_RESERVED);
@@ -575,6 +574,7 @@ __PRIVILEGED_CODE int32_t init() {
     }
 
     paging::dump_mappings();
+
     return OK;
 }
 

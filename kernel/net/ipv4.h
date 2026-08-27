@@ -13,7 +13,7 @@ constexpr uint8_t IPV4_PROTO_UDP  = 17;
 constexpr uint8_t IPV4_DEFAULT_TTL = 64;
 
 struct ipv4_header {
-    uint8_t  ver_ihl; // version(4) + IHL(4)
+    uint8_t  ver_ihl;     // version(4) + IHL(4)
     uint8_t  tos;
     uint16_t total_len;   // network byte order
     uint16_t id;          // network byte order

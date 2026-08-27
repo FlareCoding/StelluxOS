@@ -8,10 +8,8 @@
 
 namespace serial {
 
-// Platform-specific PL011 configuration
-//
-// Both QEMU virt and RPi4 use the same PL011 IP block with identical registers.
-// Only the base address and clock rate differ.
+// Both QEMU virt and RPi4 use the same PL011 IP block with identical
+// registers, only the base address and clock rate differ.
 #if defined(STLX_PLATFORM_RPI4)
 // Raspberry Pi 4 (BCM2711): PL011 on GPIO header, 48 MHz UART clock
 constexpr uintptr_t PL011_PHYS = 0xFE201000;
@@ -70,6 +68,7 @@ int32_t init() {
         if (early_mmu::init() != early_mmu::OK) {
             return ERR_NO_DEVICE;
         }
+
         uart_base = early_mmu::map_device(PL011_PHYS, 0x1000);
         if (uart_base == 0) {
             return ERR_NO_DEVICE;
@@ -114,6 +113,7 @@ int32_t read_char() {
     if ((mmio::read32(uart_base + REG_FR) & FR_RXFE) != 0) {
         return ERR_NO_DATA;
     }
+
     return mmio::read32(uart_base + REG_DR) & 0xFF;
 }
 
@@ -130,6 +130,7 @@ int32_t remap() {
     }
 
     uart_base = kva_va;
+
     return OK;
 }
 

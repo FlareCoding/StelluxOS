@@ -111,9 +111,8 @@ struct thread_group : rc::ref_counted<thread_group> {
     list::head<task, &task::group_link> threads; // non-leader threads only
     uint32_t       thread_count; // number of live non-leader threads
 
-    // Group exit status recorded by exit_group, zero means unset,
-    // otherwise bit 31 is set and bits 8 to 15 hold the exit code
-    // already encoded as a normal wait status
+    // Group exit status recorded by exit_group: zero means unset, otherwise bit
+    // 31 is set and bits 8 to 15 hold the exit code as a normal wait status
     sync::atomic<uint32_t> group_exit_status;
 
     // Signals (per-process action table and shared pending set)

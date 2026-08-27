@@ -28,9 +28,11 @@ static int32_t setup_group() {
     g_tg->pid = 1;
     g_tg->threads.init();
     g_tg->thread_count = 1;
+
     g_leader->group = g_tg;
     g_thread->group = g_tg;
     g_tg->threads.push_back(g_thread);
+
     return 0;
 }
 

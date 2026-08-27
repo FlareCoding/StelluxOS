@@ -34,6 +34,7 @@ static bool ensure_capacity(shmem* s, size_t needed) {
 
     s->m_pages = new_pages;
     s->m_capacity = new_cap;
+
     return true;
 }
 
@@ -113,6 +114,7 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
                         string::memset(paging::phys_to_virt(s->m_pages[i]), 0, pmm::PAGE_SIZE);
                         continue;
                     }
+
                     pmm::phys_addr_t phys = pmm::alloc_page();
                     if (phys == 0) {
                         if (i > old_page_count) {
@@ -122,6 +124,7 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
                         result = SHMEM_ERR_NO_MEM;
                         break;
                     }
+
                     string::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
                     s->m_pages[i] = phys;
                 }
@@ -137,6 +140,7 @@ int32_t shmem_resize_locked(shmem* s, size_t new_size) {
                     string::memset(page + tail_off, 0, pmm::PAGE_SIZE - tail_off);
                 }
             }
+
             s->m_page_count = new_page_count;
             s->m_size = new_size;
         }

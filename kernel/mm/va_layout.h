@@ -17,8 +17,8 @@ struct va_layout {
     uintptr_t kernel_image_base; // __stlx_kern_start
     uintptr_t kernel_image_end; // __stlx_kern_end (page-aligned)
 
-    uintptr_t kva_base;          // start of KVA-managed range (after HHDM)
-    uintptr_t kva_end;           // exclusive (before kernel image)
+    uintptr_t kva_base; // start of KVA-managed range (after HHDM)
+    uintptr_t kva_end; // exclusive (before kernel image)
 };
 
 /**

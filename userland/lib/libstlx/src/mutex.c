@@ -31,5 +31,6 @@ int stlx_mutex_trylock(stlx_mutex_t* m) {
             __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
         return 0;
     }
+
     return -1;
 }

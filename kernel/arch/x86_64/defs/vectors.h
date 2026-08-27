@@ -50,7 +50,7 @@ constexpr uint8_t VEC_MSI_BASE  = 0x40;
 constexpr uint8_t VEC_MSI_COUNT = 64;
 
 // IST (Interrupt Stack Table) indices
-// IST1-IST7 are valid; 0 means use current stack
+// IST1-IST7 are valid, 0 means use current stack
 constexpr uint8_t IST_DF  = 1; // Double Fault
 constexpr uint8_t IST_NMI = 2; // Non-Maskable Interrupt
 constexpr uint8_t IST_MCE = 3; // Machine Check Exception

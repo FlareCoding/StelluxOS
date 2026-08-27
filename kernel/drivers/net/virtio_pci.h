@@ -76,7 +76,7 @@ struct virtio_net_config {
     uint16_t status;
 } __attribute__((packed));
 
-// Virtio-net header prepended to every packet (legacy format, 10 bytes;
+// Virtio-net header prepended to every packet (legacy format, 10 bytes,
 // modern with VIRTIO_F_VERSION_1 uses 12 bytes with num_buffers)
 struct virtio_net_hdr {
     uint8_t  flags;

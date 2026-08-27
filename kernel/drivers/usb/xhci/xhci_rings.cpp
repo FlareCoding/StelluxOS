@@ -152,6 +152,7 @@ void xhci_event_ring::destroy() {
         free_xhci_memory(m_primary_segment_ring);
         m_primary_segment_ring = nullptr;
     }
+
     if (m_segment_table) {
         free_xhci_memory(m_segment_table);
         m_segment_table = nullptr;

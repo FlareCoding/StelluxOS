@@ -36,6 +36,7 @@ static inline int64_t map_resource_error(int64_t rc) {
 
 DEFINE_SYSCALL3(readv, fd, iov_ptr, iovcnt) {
     if (iovcnt == 0) return 0;
+
     if (iovcnt > MAX_IOVCNT) return syscall::EINVAL;
 
     sched::task* task = sched::current();
@@ -74,6 +75,7 @@ DEFINE_SYSCALL3(readv, fd, iov_ptr, iovcnt) {
                 done = true;
                 break;
             }
+
             if (n == 0) {
                 done = true;
                 break;
@@ -104,6 +106,7 @@ DEFINE_SYSCALL3(readv, fd, iov_ptr, iovcnt) {
 
 DEFINE_SYSCALL3(writev, fd, iov_ptr, iovcnt) {
     if (iovcnt == 0) return 0;
+
     if (iovcnt > MAX_IOVCNT) return syscall::EINVAL;
 
     sched::task* task = sched::current();
@@ -150,6 +153,7 @@ DEFINE_SYSCALL3(writev, fd, iov_ptr, iovcnt) {
                 done = true;
                 break;
             }
+
             if (n == 0) {
                 done = true;
                 break;
@@ -181,5 +185,6 @@ DEFINE_SYSCALL3(ioctl, fd, cmd, arg) {
 
     // POSIX: an unsupported request on any fd is ENOTTY, not ENOSYS
     if (rc == resource::ERR_UNSUP) return syscall::ENOTTY;
+
     return map_resource_error(rc);
 }

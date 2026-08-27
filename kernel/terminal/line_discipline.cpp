@@ -47,6 +47,7 @@ static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
         ld->line_len = 0;
         ld->prev_char = c;
         if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
+
         if (cooked) {
             echo_signal_char(echo, c);
         }
@@ -59,6 +60,7 @@ static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
     if (ld->mode == LD_MODE_RAW) {
         ld->prev_char = c;
         if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
+
         uint8_t byte = static_cast<uint8_t>(c);
         (void)ring_buffer_write(sink, &byte, 1, true);
         return;
@@ -69,12 +71,14 @@ static void ld_process_byte(line_discipline* ld, ring_buffer* sink,
         if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
         return;
     }
+
     ld->prev_char = c;
 
     if (c == '\r' || c == '\n') {
         ld->line_buf[ld->line_len] = '\n';
         size_t len = ld->line_len + 1;
         if (!hold_lock) sync::spin_unlock_irqrestore(ld->lock, irq);
+
         (void)ring_buffer_write(sink,
                                reinterpret_cast<const uint8_t*>(ld->line_buf),
                                len, true);
@@ -159,6 +163,7 @@ int32_t ld_set_mode(line_discipline* ld, uint32_t cmd) {
         ld->isig = (new_mode == LD_MODE_RAW) ? 0u : 1u;
         sync::spin_unlock_irqrestore(ld->lock, irq);
     });
+
     return OK;
 }
 

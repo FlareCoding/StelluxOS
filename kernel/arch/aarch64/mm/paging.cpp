@@ -428,6 +428,7 @@ __PRIVILEGED_CODE static int32_t map_block_2mb(pmm::phys_addr_t root_pt, virt_ad
             if (!all_empty) {
                 return ERR_ALREADY_MAPPED;
             }
+
             pmm::phys_addr_t l3_phys = static_cast<pmm::phys_addr_t>(as_tbl->next_table_addr) << 12;
             l2->raw[parts.l2_idx] = 0;
             pmm::free_page(l3_phys);
@@ -467,6 +468,7 @@ __PRIVILEGED_CODE static int32_t map_block_1gb(pmm::phys_addr_t root_pt, virt_ad
             if (!all_empty) {
                 return ERR_ALREADY_MAPPED;
             }
+
             pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(as_tbl->next_table_addr) << 12;
             l1->raw[parts.l1_idx] = 0;
             pmm::free_page(l2_phys);

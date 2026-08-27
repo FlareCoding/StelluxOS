@@ -20,8 +20,7 @@ constexpr uint32_t MAX_TEST_CPUS = 16;
 
 // --- cross_cpu_wake_one ---
 // Proves: a task blocked on CPU 1 is woken by wake_one() from CPU 0.
-// Uses the condition-variable pattern (while-loop re-check) to handle
-// the race where wake_one fires before the task enters the wait queue.
+// The while-loop recheck covers a wake that fires before the wait.
 
 static sync::wait_queue g_xwake_wq;
 static sync::spinlock g_xwake_lock;
@@ -139,9 +138,8 @@ TEST(smp_wait_queue, cross_cpu_wake_all) {
 }
 
 // --- cross_cpu_producer_consumer ---
-// Proves: producer on CPU 0 and consumer on CPU 1 communicate via wait queue.
-// Consumer signals "ready" before entering the wait loop so the producer
-// doesn't start before the consumer is listening.
+// Proves: producer on CPU 0 and consumer on CPU 1 communicate via wait
+// queue, the consumer signals ready before the producer starts.
 
 constexpr uint32_t PC_TARGET = 50;
 

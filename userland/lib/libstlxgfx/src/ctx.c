@@ -19,6 +19,7 @@ int stlxgfx_ctx_save(stlxgfx_ctx_t *ctx) {
     if (ctx->stack_depth >= STLXGFX_CTX_MAX_SAVE_DEPTH) {
         return -1;
     }
+
     ctx->stack[ctx->stack_depth++] = ctx->state;
     return 0;
 }
@@ -27,6 +28,7 @@ int stlxgfx_ctx_restore(stlxgfx_ctx_t *ctx) {
     if (ctx->stack_depth <= 0) {
         return -1;
     }
+
     ctx->state = ctx->stack[--ctx->stack_depth];
     return 0;
 }
@@ -104,10 +106,12 @@ void stlxgfx_ctx_clear(stlxgfx_ctx_t *ctx, uint32_t color) {
     if (!ctx || !ctx->target) {
         return;
     }
+
     const stlxgfx_clip_t *c = &ctx->state.clip;
     if (c->w == 0 || c->h == 0) {
         return;
     }
+
     stlxgfx_fill_rect(ctx->target, c->x, c->y, c->w, c->h, color);
 }
 
@@ -116,6 +120,7 @@ void stlxgfx_ctx_fill_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
     if (!ctx || !ctx->target) {
         return;
     }
+
     int32_t ox, oy;
     uint32_t ow, oh;
     if (!ctx_clip_rect(ctx, x, y, w, h, &ox, &oy, &ow, &oh)) {
@@ -138,9 +143,11 @@ static uint8_t arc_coverage(float dist, float radius) {
     if (c <= 0.0f) {
         return 0;
     }
+
     if (c >= 1.0f) {
         return 255;
     }
+
     return (uint8_t)(c * 255.0f + 0.5f);
 }
 
@@ -171,6 +178,7 @@ void stlxgfx_ctx_fill_arc_corner(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
             if (!ctx_clip_contains(ctx, px, py)) {
                 continue;
             }
+
             float dx = ((float)px + 0.5f) - center_x;
             float dy = ((float)py + 0.5f) - center_y;
             float dist = sqrtf(dx * dx + dy * dy);
@@ -184,6 +192,7 @@ void stlxgfx_ctx_fill_arc_corner(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
             } else {
                 cov = cov_out;
             }
+
             if (cov) {
                 stlxgfx_blend_coverage(ctx->target, px, py, color, cov);
             }
@@ -196,6 +205,7 @@ void stlxgfx_ctx_draw_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
     if (!ctx || !ctx->target || w == 0 || h == 0) {
         return;
     }
+
     stlxgfx_ctx_fill_rect(ctx, x, y, w, 1, color);
     if (h > 1) {
         stlxgfx_ctx_fill_rect(ctx, x, y + (int32_t)h - 1, w, 1, color);
@@ -214,9 +224,8 @@ void stlxgfx_ctx_fill_circle(stlxgfx_ctx_t *ctx, int32_t cx, int32_t cy,
         return;
     }
 
-    // Continuous center on the middle of pixel (cx, cy); edge coverage
+    // Continuous center on the middle of pixel (cx, cy), edge coverage
     // puts the rim at radius + 0.5 so the diameter stays 2r + 1 pixels
-    // like the previous rasterizer
     float fcx = (float)(ctx->state.ox + cx) + 0.5f;
     float fcy = (float)(ctx->state.oy + cy) + 0.5f;
     int32_t r = (int32_t)radius;
@@ -230,10 +239,12 @@ void stlxgfx_ctx_fill_circle(stlxgfx_ctx_t *ctx, int32_t cx, int32_t cy,
             if (!ctx_clip_contains(ctx, x, y)) {
                 continue;
             }
+
             float dx = ((float)x + 0.5f) - fcx;
             float dy = ((float)y + 0.5f) - fcy;
             float dist = sqrtf(dx * dx + dy * dy);
             uint8_t cov = arc_coverage(dist, (float)r);
+
             if (cov) {
                 stlxgfx_blend_coverage(ctx->target, x, y, color, cov);
             }
@@ -247,10 +258,12 @@ void stlxgfx_ctx_fill_rounded_rect(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
     if (!ctx || !ctx->target || w == 0 || h == 0) {
         return;
     }
+
     uint32_t max_r = (w < h ? w : h) / 2;
     if (radius > max_r) {
         radius = max_r;
     }
+
     if (radius == 0) {
         stlxgfx_ctx_fill_rect(ctx, x, y, w, h, color);
         return;
@@ -295,6 +308,7 @@ void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
         stlxgfx_ctx_fill_rect(ctx, lo, y0, len, 1, color);
         return;
     }
+
     if (x0 == x1) {
         int32_t lo = y0 < y1 ? y0 : y1;
         uint32_t len = (uint32_t)(y0 < y1 ? y1 - y0 : y0 - y1) + 1;
@@ -343,10 +357,12 @@ void stlxgfx_ctx_draw_text(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
     if (!ctx || !ctx->target) {
         return;
     }
+
     const stlxgfx_clip_t *c = &ctx->state.clip;
     if (c->w == 0 || c->h == 0) {
         return;
     }
+
     stlxgfx_draw_text_clipped(ctx->target,
                                ctx->state.ox + x, ctx->state.oy + y,
                                text, font_size, color,
@@ -393,6 +409,7 @@ void stlxgfx_ctx_blit(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
     if (ady + sh > cy1) {
         sh = cy1 - ady;
     }
+
     if (sw <= 0 || sh <= 0) {
         return;
     }
@@ -435,6 +452,7 @@ void stlxgfx_ctx_blit_alpha(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
     if (ady + sh > cy1) {
         sh = cy1 - ady;
     }
+
     if (sw <= 0 || sh <= 0) {
         return;
     }

@@ -109,9 +109,8 @@ private:
     };
     tx_buf_info m_tx_bufs[TX_BUF_COUNT];
 
-    // Spinlock protecting all virtqueue and buffer pool state.
-    // Must be held by poll_callback, run(), tx_callback, and any
-    // code that touches m_rxq, m_txq, m_rx_bufs, or m_tx_bufs.
+    // Protects all virtqueue and buffer pool state (m_rxq, m_txq, m_rx_bufs,
+    // m_tx_bufs), held by run(), poll_callback, and tx_callback.
     sync::spinlock m_vq_lock;
 
     // Network interface

@@ -263,6 +263,7 @@ void xhci_hcd::_parse_extended_capabilities() {
         }
 
         if (entry.next == 0) break;
+
         cap_ptr = XHCI_NEXT_EXT_CAP_PTR(cap_ptr, entry.next);
     }
 }
@@ -341,6 +342,7 @@ int32_t xhci_hcd::_reset_host_controller() {
             log::error("xhci: controller did not halt within %ums", HALT_TIMEOUT_US / 1000);
             return -1;
         }
+
         delay::us(POLL_US);
         elapsed += POLL_US;
     }
@@ -361,6 +363,7 @@ int32_t xhci_hcd::_reset_host_controller() {
                        RESET_TIMEOUT_US / 1000);
             return -1;
         }
+
         delay::us(POLL_US);
         elapsed += POLL_US;
     }
@@ -399,6 +402,7 @@ int32_t xhci_hcd::_start_host_controller() {
             log::error("xhci: controller did not start within %ums", START_TIMEOUT_US / 1000);
             return -1;
         }
+
         delay::us(POLL_US);
         elapsed += POLL_US;
     }
@@ -431,6 +435,7 @@ int32_t xhci_hcd::_stop_host_controller() {
             log::error("xhci: controller did not halt within %ums", HALT_TIMEOUT_US / 1000);
             return -1;
         }
+
         delay::us(POLL_US);
         elapsed += POLL_US;
     }
@@ -511,6 +516,7 @@ int32_t xhci_hcd::_configure_operational_registers() {
                 }
                 goto fail_scratchpad_va;
             }
+
             m_scratchpad.page_vaddrs[i] = page;
             scratchpad_phys_array[i] = xhci_get_physical_addr(page);
         }
@@ -646,6 +652,7 @@ void xhci_hcd::_process_event_ring() {
             } else {
                 auto* ep = dev->endpoint(ep_id);
                 if (!ep) break;
+
                 if (ep->async_state()) {
                     auto* state = ep->async_state();
                     if (state->async_enabled) {
@@ -664,6 +671,7 @@ void xhci_hcd::_process_event_ring() {
                     }
                     break;
                 }
+
                 _complete_endpoint_transfer(
                     ep->completion_lock(), ep->completion_wq(),
                     ep->result(), ep->completed_ptr(), e);
@@ -851,6 +859,7 @@ void xhci_hcd::_queue_deferred_doorbell(uint8_t slot_id, uint8_t target) {
         _ring_doorbell(slot_id, target);
         return;
     }
+
     m_pending_doorbells[m_pending_doorbell_count++] = {slot_id, target};
 }
 
@@ -911,6 +920,7 @@ void xhci_hcd::_teardown_device(uint8_t port_index) {
         for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
             auto* ep = device->endpoint(i);
             if (!ep) continue;
+
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
             ep->result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
             ep->result().transfer_length = 0;
@@ -1042,6 +1052,7 @@ int32_t xhci_hcd::_recover_stalled_control_endpoint(xhci_device* device) {
 void xhci_hcd::_clear_tt_buffer(xhci_device* device, uint8_t dev_addr) {
     if (!device || device->route_string() == 0)
         return;
+
     if (device->speed() != XHCI_USB_SPEED_LOW_SPEED &&
         device->speed() != XHCI_USB_SPEED_FULL_SPEED)
         return;
@@ -1340,6 +1351,7 @@ void xhci_hcd::_teardown_hub_device(xhci_device* hub_device, uint8_t hub_port) {
         for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
             auto* ep = device->endpoint(i);
             if (!ep) continue;
+
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
             ep->result().completion_code = XHCI_TRB_COMPLETION_CODE_STOPPED;
             ep->result().transfer_length = 0;
@@ -1355,6 +1367,7 @@ void xhci_hcd::_teardown_hub_device(xhci_device* hub_device, uint8_t hub_port) {
         sync::spin_unlock_irqrestore(device->ctrl_completion_lock(), irq);
         sync::wake_all(device->ctrl_completion_wq());
     });
+
     _disable_slot(slot_id);
 
     m_dcbaa[slot_id] = 0;
@@ -1440,9 +1453,11 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     for (uint8_t attempt = 0; attempt < 3; attempt++) {
         rc = _get_device_descriptor(device, &desc, 8);
         if (rc == 0) break;
+
         _clear_tt_buffer(device);
         delay::us(10000);
     }
+
     if (rc != 0)
         ENUM_FAIL("xhci: failed to read device descriptor for slot %u", slot_id);
 
@@ -1488,9 +1503,11 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
     for (uint8_t attempt = 0; attempt < 3; attempt++) {
         rc = _get_device_descriptor(device, &desc, sizeof(usb::usb_device_descriptor));
         if (rc == 0) break;
+
         _clear_tt_buffer(device, dev_addr);
         delay::us(10000);
     }
+
     if (rc != 0)
         ENUM_FAIL("xhci: failed to read full device descriptor for slot %u", slot_id);
 
@@ -1542,6 +1559,7 @@ void xhci_hcd::_configure_device(xhci_device* device, const usb::usb_device_desc
                       hdr->bLength, offset);
             break;
         }
+
         if (offset + hdr->bLength > data_length) {
             log::warn("xhci: descriptor overruns config buffer at offset %u (len=%u, remaining=%u)",
                       offset, hdr->bLength,
@@ -1722,6 +1740,7 @@ xhci::endpoint_async_state* xhci_hcd::_ensure_endpoint_async_state(xhci_endpoint
     if (!ep) {
         return nullptr;
     }
+
     return ep->ensure_async_state();
 }
 
@@ -1733,6 +1752,7 @@ void xhci_hcd::_enqueue_pending_request(xhci::endpoint_async_state& state,
         state.pending_tail = &request;
         return;
     }
+
     state.pending_tail->next = &request;
     state.pending_tail = &request;
 }
@@ -1797,6 +1817,7 @@ int32_t xhci_hcd::_start_async_request(xhci_device* device,
     } else {
         _ring_doorbell(device->slot_id(), ep->dci());
     }
+
     return 0;
 }
 
@@ -1971,6 +1992,7 @@ int32_t xhci_hcd::_queue_interrupt_in_stream_td(xhci_device* device,
     } else {
         _ring_doorbell(device->slot_id(), ep->dci());
     }
+
     return 0;
 }
 
@@ -2000,10 +2022,12 @@ bool xhci_hcd::_queue_interrupt_in_stream_payload(xhci::interrupt_in_stream_stat
     if (length > 0) {
         string::memcpy(payload.data, data, length);
     }
+
     stream.count++;
     if (seq_out) {
         *seq_out = payload.seq;
     }
+
     return true;
 }
 
@@ -2123,11 +2147,13 @@ void xhci_hcd::_clear_async_endpoint_state(xhci_device* /*device*/,
     if (active) {
         _finish_request(*active, status, 0);
     }
+
     while (pending) {
         usb::transfer_request* next = pending->next;
         _finish_request(*pending, status, 0);
         pending = next;
     }
+
     if (wake_stream) {
         RUN_ELEVATED(sync::wake_all(state->interrupt_in_stream.available_wq));
     }
@@ -2137,11 +2163,13 @@ void xhci_hcd::_mark_async_endpoints_for_device_disconnecting(xhci_device* devic
     if (!device) {
         return;
     }
+
     for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
         auto* ep = device->endpoint(i);
         if (!ep || !ep->async_state()) {
             continue;
         }
+
         auto* state = ep->async_state();
         RUN_ELEVATED({
             sync::irq_state irq = sync::spin_lock_irqsave(ep->completion_lock());
@@ -2156,6 +2184,7 @@ void xhci_hcd::_clear_async_endpoints_for_device(xhci_device* device,
     if (!device) {
         return;
     }
+
     for (uint8_t i = 2; i <= xhci_device::MAX_ENDPOINTS; i++) {
         _clear_async_endpoint_state(device, device->endpoint(i), status);
     }
@@ -2237,6 +2266,7 @@ void xhci_hcd::usb_cancel_transfer(xhci_device* device,
     if (!ep || !ep->async_state()) {
         return;
     }
+
     auto* state = ep->async_state();
 
     usb::transfer_request* prev = nullptr;
@@ -2296,6 +2326,7 @@ int32_t xhci_hcd::usb_open_interrupt_in_stream(xhci_device* device,
     if (!device) {
         return -1;
     }
+
     auto* ep = device->endpoint_by_address(endpoint_addr);
     if (!ep || !ep->is_in() || ep->transfer_type() != 3 ||
         payload_length == 0 || payload_length > paging::PAGE_SIZE_4KB) {
@@ -2373,10 +2404,12 @@ int32_t xhci_hcd::usb_read_interrupt_in_stream(xhci_device* device,
     if (!device || !buffer || buffer_len == 0) {
         return -1;
     }
+
     auto* ep = device->endpoint_by_address(endpoint_addr);
     if (!ep || !ep->async_state()) {
         return -1;
     }
+
     auto* state = ep->async_state();
 
     bool got_payload = false;
@@ -2423,10 +2456,12 @@ void xhci_hcd::usb_close_interrupt_in_stream(xhci_device* device,
     if (!device) {
         return;
     }
+
     auto* ep = device->endpoint_by_address(endpoint_addr);
     if (!ep || !ep->async_state()) {
         return;
     }
+
     auto* state = ep->async_state();
 
     uint8_t* storage = nullptr;
@@ -2470,6 +2505,7 @@ void xhci_hcd::usb_close_interrupt_in_stream(xhci_device* device,
     if (payloads) {
         heap::ufree(payloads);
     }
+
     if (storage) {
         heap::ufree(storage);
     }
@@ -2610,6 +2646,7 @@ int32_t xhci_hcd::_send_control_transfer(
         log::error("xhci: missing control transfer buffer for slot %u", device->slot_id());
         return -1;
     }
+
     if (length > paging::PAGE_SIZE_4KB) {
         log::error("xhci: control transfer too large (%u bytes)", length);
         return -1;
@@ -2766,6 +2803,7 @@ int32_t xhci_hcd::_submit_normal_transfer(
     if (!ep || !ep->ring() || !ep->dma_buffer()) {
         return -1;
     }
+
     if (length > paging::PAGE_SIZE_4KB) {
         log::error("xhci: normal transfer too large (%u bytes)", length);
         return -1;
@@ -2861,6 +2899,7 @@ int32_t xhci_hcd::usb_control_transfer(
         log::error("xhci: missing control transfer buffer for slot %u", device->slot_id());
         return -1;
     }
+
     if (length > paging::PAGE_SIZE_4KB) {
         log::error("xhci: control transfer too large (%u bytes)", length);
         return -1;
@@ -2962,12 +3001,14 @@ int32_t xhci_hcd::usb_submit_transfer(
     if (!device || (!buffer && length > 0)) {
         return -1;
     }
+
     auto* ep = device->endpoint_by_address(endpoint_addr);
     if (!ep) {
         log::error("xhci: no endpoint for address 0x%02x on slot %u",
                    endpoint_addr, device->slot_id());
         return -1;
     }
+
     return _submit_normal_transfer(device, ep, buffer, length);
 }
 

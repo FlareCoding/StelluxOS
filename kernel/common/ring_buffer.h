@@ -55,7 +55,7 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb);
 
 /**
  * All-or-nothing write: writes all `len` bytes atomically or none.
- * In nonblock mode returns RB_ERR_AGAIN when insufficient space;
+ * In nonblock mode returns RB_ERR_AGAIN when insufficient space,
  * in blocking mode waits until enough space is available.
  * @return len on success, or negative error.
  * @note Privilege: **required**

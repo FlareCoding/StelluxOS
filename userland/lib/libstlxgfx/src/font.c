@@ -38,6 +38,7 @@ static int font_ensure_loaded(void) {
     if (g_font_loaded) {
         return 0;
     }
+
     return stlxgfx_font_init(STLXGFX_FONT_PATH);
 }
 
@@ -96,6 +97,7 @@ static unsigned char* cache_get(int codepoint, uint32_t font_size,
         stbtt_FreeBitmap(bmp, NULL);
         return NULL;
     }
+
     memcpy(e->bitmap, bmp, bmp_size);
     e->width = *w;
     e->height = *h;
@@ -114,6 +116,7 @@ int stlxgfx_font_init(const char* font_path) {
     if (!font_path) {
         return -1;
     }
+
     if (g_font_loaded) {
         return 0;
     }
@@ -128,8 +131,8 @@ int stlxgfx_font_init(const char* font_path) {
         close(fd);
         return -1;
     }
-    off_t size = st.st_size;
 
+    off_t size = st.st_size;
     void* data = malloc((size_t)size);
     if (!data) {
         close(fd);
@@ -142,6 +145,7 @@ int stlxgfx_font_init(const char* font_path) {
         if (n <= 0) {
             break;
         }
+
         total += n;
     }
     close(fd);
@@ -240,6 +244,7 @@ static int draw_text_internal(stlxgfx_surface_t* s, int32_t x, int32_t y,
                 if (sy < cy0 || sy >= cy1) {
                     continue;
                 }
+
                 for (int px = 0; px < char_w; px++) {
                     int32_t sx = gx + px;
                     if (sx < cx0 || sx >= cx1) {
@@ -271,9 +276,11 @@ int stlxgfx_draw_text(stlxgfx_surface_t* s, int32_t x, int32_t y,
     if (!s || !s->pixels || !text || font_size == 0) {
         return -1;
     }
+
     if (font_ensure_loaded() != 0) {
         return -1;
     }
+
     return draw_text_internal(s, x, y, text, font_size, color,
                                0, 0, (int32_t)s->width, (int32_t)s->height);
 }
@@ -286,9 +293,11 @@ int stlxgfx_draw_text_clipped(stlxgfx_surface_t* s, int32_t x, int32_t y,
     if (!s || !s->pixels || !text || font_size == 0) {
         return -1;
     }
+
     if (font_ensure_loaded() != 0) {
         return -1;
     }
+
     int32_t cx1 = clip_x + (int32_t)clip_w;
     int32_t cy1 = clip_y + (int32_t)clip_h;
     if (cx1 > (int32_t)s->width) {
@@ -297,6 +306,7 @@ int stlxgfx_draw_text_clipped(stlxgfx_surface_t* s, int32_t x, int32_t y,
     if (cy1 > (int32_t)s->height) {
         cy1 = (int32_t)s->height;
     }
+
     return draw_text_internal(s, x, y, text, font_size, color,
                                clip_x, clip_y, cx1, cy1);
 }
@@ -312,6 +322,7 @@ void stlxgfx_text_size(const char* text, uint32_t font_size,
         }
         return;
     }
+
     if (font_ensure_loaded() != 0) {
         if (out_w) {
             *out_w = 0;

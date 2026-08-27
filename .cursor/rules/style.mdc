@@ -52,7 +52,8 @@ Function bodies read as stanzas: groups of one to six statements that
 accomplish one sub-step (validate, acquire, initialize, mutate, commit,
 return), separated by exactly one blank line.
 
-- Blank line after an early-exit guard block.
+- Blank line after an early-exit guard block. Consecutive guards are
+  separate stanzas, one blank line between each.
 - Blank line between acquiring a resource and using it.
 - Blank line before the final return, unless the body is a single stanza.
 - No blank line inside a stanza, and never two consecutive blank lines.
@@ -100,6 +101,9 @@ return strong_ref<T>::adopt(obj);
   file-scope static. At most one anonymous namespace per file: hoist
   type-independent constants above it and place type-dependent constants
   (sizeof-derived and similar) directly below it.
+- Class methods containing logic are defined in the class's own .cpp file.
+  Only one-line accessors and setters are defined inline in headers. Templates
+  are header-only by necessity and exempt.
 - Include guards in the kernel: STELLUX_<DIR>_<FILE>_H, matching the file
   path. Userland projects use their project prefix, as in STLXGFX_WINDOW_H.
 - K&R braces, 4-space indent, pointer binds to the type: `task* t`.

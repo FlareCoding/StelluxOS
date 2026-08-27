@@ -95,6 +95,7 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
         sched::cancel_block_task();
         return -4; // EINTR
     }
+
     sched::yield();
 
     // Cancel any outstanding timer to prevent spurious wakes of future

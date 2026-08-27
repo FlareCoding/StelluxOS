@@ -1,4 +1,5 @@
 #include "drivers/net/virtio_queue.h"
+#include "sync/atomic.h"
 #include "mm/vmm.h"
 #include "mm/paging_types.h"
 #include "mm/pmm_types.h"
@@ -22,6 +23,7 @@ int32_t virtqueue::init(uint16_t queue_size, uint16_t queue_index) {
         log::error("virtqueue: size %u is not a power of 2", queue_size);
         return -1;
     }
+
     if (queue_size > VIRTQ_MAX_SIZE) {
         queue_size = VIRTQ_MAX_SIZE;
     }
@@ -29,20 +31,16 @@ int32_t virtqueue::init(uint16_t queue_size, uint16_t queue_index) {
     m_size = queue_size;
     m_queue_index = queue_index;
 
-    // Calculate memory layout sizes
     size_t desc_size = static_cast<size_t>(queue_size) * sizeof(vring_desc);
     size_t avail_size = sizeof(uint16_t) * 2 + sizeof(uint16_t) * queue_size + sizeof(uint16_t);
     size_t used_size = sizeof(uint16_t) * 2 + sizeof(vring_used_elem) * queue_size + sizeof(uint16_t);
 
-    // Calculate offsets with alignment
     size_t avail_offset = align_up(desc_size, VRING_AVAIL_ALIGN);
     size_t used_offset = align_up(avail_offset + avail_size, VRING_USED_ALIGN);
     size_t total_size = used_offset + used_size;
 
-    // Round up to pages
     size_t pages = (total_size + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE;
 
-    // Allocate contiguous DMA memory
     int32_t rc = 0;
     RUN_ELEVATED(
         rc = vmm::alloc_contiguous(
@@ -62,12 +60,10 @@ int32_t virtqueue::init(uint16_t queue_size, uint16_t queue_index) {
 
     m_dma_size = pages * pmm::PAGE_SIZE;
 
-    // Set up pointers
     m_desc = reinterpret_cast<vring_desc*>(m_dma_vaddr);
     m_avail = reinterpret_cast<vring_avail*>(m_dma_vaddr + avail_offset);
     m_used = reinterpret_cast<vring_used*>(m_dma_vaddr + used_offset);
 
-    // Physical addresses for device configuration
     m_desc_phys = m_dma_phys;
     m_avail_phys = m_dma_phys + avail_offset;
     m_used_phys = m_dma_phys + used_offset;
@@ -119,6 +115,7 @@ void virtqueue::free_desc(uint16_t id) {
         m_free_count++;
 
         if (!has_next) break;
+
         current = next;
     }
 }
@@ -134,12 +131,11 @@ int32_t virtqueue::add_buf(uint64_t phys_addr, uint32_t len, uint16_t flags) {
     m_desc[idx].flags = flags;
     m_desc[idx].next = 0;
 
-    // Add to available ring
     uint16_t avail_idx = m_avail->idx;
     m_avail->ring[avail_idx % m_size] = idx;
 
     // Memory barrier: ensure descriptor is visible before updating idx
-    __atomic_thread_fence(__ATOMIC_RELEASE);
+    sync::atomic_fence_release();
     m_avail->idx = avail_idx + 1;
 
     return static_cast<int32_t>(idx);
@@ -160,35 +156,32 @@ int32_t virtqueue::add_buf_chain(uint64_t hdr_phys, uint32_t hdr_len,
         return -1;
     }
 
-    // Header descriptor
     m_desc[head].addr = hdr_phys;
     m_desc[head].len = hdr_len;
     m_desc[head].flags = hdr_flags | VRING_DESC_F_NEXT;
     m_desc[head].next = tail;
 
-    // Data descriptor
     m_desc[tail].addr = data_phys;
     m_desc[tail].len = data_len;
     m_desc[tail].flags = data_flags;
     m_desc[tail].next = 0;
 
-    // Add to available ring
     uint16_t avail_idx = m_avail->idx;
     m_avail->ring[avail_idx % m_size] = head;
 
-    __atomic_thread_fence(__ATOMIC_RELEASE);
+    sync::atomic_fence_release();
     m_avail->idx = avail_idx + 1;
 
     return static_cast<int32_t>(head);
 }
 
 bool virtqueue::has_used() const {
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    sync::atomic_fence_acquire();
     return m_last_used_idx != m_used->idx;
 }
 
 bool virtqueue::get_used(uint16_t* out_id, uint32_t* out_len) {
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    sync::atomic_fence_acquire();
     if (m_last_used_idx == m_used->idx) {
         return false;
     }
@@ -202,7 +195,7 @@ bool virtqueue::get_used(uint16_t* out_id, uint32_t* out_len) {
 }
 
 void virtqueue::kick(uintptr_t notify_addr) {
-    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    sync::atomic_fence_seq_cst();
     mmio::write16(notify_addr, m_queue_index);
 }
 

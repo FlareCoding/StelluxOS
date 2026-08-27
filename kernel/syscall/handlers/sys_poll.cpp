@@ -67,7 +67,8 @@ __PRIVILEGED_CODE static int64_t do_poll(
 
     int64_t ready = 0;
 
-    // First pass: check readiness + subscribe (unless immediate/non-blocking)
+    // The readiness check also subscribes to every fd's wait queue
+    // unless the caller asked for an immediate probe
     for (uint32_t i = 0; i < nfds; i++) {
         ready += poll_one_fd(task, kfds[i], immediate ? nullptr : &pt);
     }
@@ -90,7 +91,7 @@ __PRIVILEGED_CODE static int64_t do_poll(
         sync::poll_wait(pt, 0);
     }
 
-    // Re-check pass (probe only, no subscribe)
+    // The null poll table probes again without re-subscribing
     ready = 0;
     for (uint32_t i = 0; i < nfds; i++) {
         ready += poll_one_fd(task, kfds[i], nullptr);
@@ -102,6 +103,7 @@ __PRIVILEGED_CODE static int64_t do_poll(
     if (ready == 0 && signals::interrupt_pending(task)) {
         return syscall::EINTR;
     }
+
     return ready;
 }
 
@@ -114,6 +116,7 @@ DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {
 
     uint32_t nfds = static_cast<uint32_t>(nfds_val);
     if (nfds > MAX_POLL_FDS) return syscall::EINVAL;
+
     if (nfds > 0 && u_fds == 0) return syscall::EFAULT;
 
     size_t buf_size = nfds * sizeof(kernel_pollfd);
@@ -142,10 +145,12 @@ DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {
             heap::kfree(kfds);
             return syscall::EFAULT;
         }
+
         if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec > 999999999) {
             heap::kfree(kfds);
             return syscall::EINVAL;
         }
+
         timeout_ns = static_cast<uint64_t>(ts.tv_sec) * NS_PER_SEC
                    + static_cast<uint64_t>(ts.tv_nsec);
         infinite = false;
@@ -174,6 +179,7 @@ DEFINE_SYSCALL3(poll, u_fds, nfds_val, timeout_ms) {
 
     uint32_t nfds = static_cast<uint32_t>(nfds_val);
     if (nfds > MAX_POLL_FDS) return syscall::EINVAL;
+
     if (nfds > 0 && u_fds == 0) return syscall::EFAULT;
 
     size_t buf_size = nfds * sizeof(kernel_pollfd);

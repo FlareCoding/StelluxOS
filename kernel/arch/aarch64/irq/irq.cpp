@@ -91,6 +91,7 @@ __PRIVILEGED_CODE void set_spi_target(uint32_t irq, uint8_t cpu_mask) {
     uint32_t reg_offset = (irq / 4) * 4;
     uint32_t byte_shift = (irq % 4) * 8;
     uintptr_t addr = g_gicd_va + GICD_ITARGETSR + reg_offset;
+
     uint32_t val = mmio::read32(addr);
     val &= ~(0xFFu << byte_shift);
     val |= (static_cast<uint32_t>(cpu_mask) << byte_shift);
@@ -146,6 +147,7 @@ __PRIVILEGED_CODE void set_edge_triggered(uint32_t irq) {
     uint32_t reg_index = irq / 16;
     uint32_t field_shift = (irq % 16) * 2;
     uintptr_t addr = g_gicd_va + GICD_ICFGR + reg_index * 4;
+
     uint32_t val = mmio::read32(addr);
     val &= ~(0x3u << field_shift);
     val |= (0x2u << field_shift);

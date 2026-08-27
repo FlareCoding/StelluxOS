@@ -342,6 +342,7 @@ __PRIVILEGED_CODE static int32_t map_page_2mb(pmm::phys_addr_t root_pt, virt_add
             if (!all_empty) {
                 return ERR_ALREADY_MAPPED;
             }
+
             pmm::phys_addr_t pt_phys = static_cast<pmm::phys_addr_t>(pde->phys_addr) << 12;
             pde->value = 0;
             pmm::free_page(pt_phys);
@@ -384,6 +385,7 @@ __PRIVILEGED_CODE static int32_t map_page_1gb(pmm::phys_addr_t root_pt, virt_add
             if (!all_empty) {
                 return ERR_ALREADY_MAPPED;
             }
+
             pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
             pdpte->value = 0;
             pmm::free_page(pd_phys);
@@ -902,7 +904,6 @@ __PRIVILEGED_CODE int32_t init() {
     // Map kernel image in two regions:
     // 1. Unprivileged region (USER=1): __stlx_kern_start to __stlx_kern_priv_start
     //    This includes per-CPU data (.bss.percpu) which lowered threads can access.
-    //    * Note: figure out how to not place per-CPU data in the privileged region.
     // 2. Privileged region (USER=0): __stlx_kern_priv_start to __stlx_kern_priv_end
     //    Only accessible at Ring 0 (elevated or kernel code).
     

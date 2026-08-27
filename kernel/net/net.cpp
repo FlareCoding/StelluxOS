@@ -78,12 +78,12 @@ int32_t register_netif(netif* iface) {
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_net_lock);
+
         iface->next = g_iface_list;
         g_iface_list = iface;
-        // Set as default only if no default exists AND this is not loopback.
-        // Loopback should never be the default outbound interface, external
-        // traffic must go through a real NIC. If loopback is the only
-        // interface, g_default_iface stays nullptr until a real NIC registers.
+
+        // Loopback must never be the default outbound interface, so the
+        // default stays unset until a real NIC registers.
         if (!g_default_iface && !(iface->flags & NETIF_LOOPBACK)) {
             g_default_iface = iface;
         }
@@ -99,11 +99,8 @@ int32_t register_netif(netif* iface) {
 int32_t unregister_netif(netif* iface) {
     if (!iface) return ERR_INVAL;
 
-    // Clean up all routing table entries owned by this interface BEFORE
-    // removing from the interface list. route_del_iface matches on the
-    // owner field, so LOCAL routes (which point to loopback but are owned
-    // by this interface) are correctly removed without affecting other
-    // interfaces' LOCAL routes.
+    // Drop this interface's routes before unlinking it. Matching on the owner
+    // field also removes its LOCAL routes, which point at loopback.
     route_del_iface(iface);
 
     RUN_ELEVATED({
@@ -138,10 +135,8 @@ int32_t unregister_netif(netif* iface) {
 int32_t configure(netif* iface, uint32_t ip, uint32_t netmask, uint32_t gateway) {
     if (!iface) return ERR_INVAL;
 
-    // Clear any existing routes owned by this interface (handles reconfiguration).
-    // route_del_iface matches on the owner field, so LOCAL routes (which point
-    // to loopback) are correctly cleaned up without affecting other interfaces'
-    // LOCAL routes.
+    // Reconfiguration replaces any routes this interface already owns, matching
+    // on the owner field also covers its LOCAL routes that point at loopback.
     route_del_iface(iface);
 
     iface->ipv4_addr = ip;
@@ -149,7 +144,6 @@ int32_t configure(netif* iface, uint32_t ip, uint32_t netmask, uint32_t gateway)
     iface->ipv4_gateway = gateway;
     iface->configured = true;
 
-    // Auto-populate routes for this interface
     route_add_interface_routes(iface);
 
     log::info("net: %s configured %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u",
@@ -172,6 +166,7 @@ uint32_t get_dns_server() {
     if (iface && iface->configured) {
         return iface->ipv4_dns;
     }
+
     return 0;
 }
 
@@ -181,6 +176,7 @@ netif* find_netif(const char* name) {
     netif* result = nullptr;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_net_lock);
+
         for (netif* cur = g_iface_list; cur; cur = cur->next) {
             if (string::strcmp(cur->name, name) == 0) {
                 result = cur;
@@ -188,6 +184,7 @@ netif* find_netif(const char* name) {
             }
         }
     });
+
     return result;
 }
 
@@ -197,6 +194,7 @@ netif* find_netif_by_ip(uint32_t ip) {
     netif* result = nullptr;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_net_lock);
+
         for (netif* cur = g_iface_list; cur; cur = cur->next) {
             if (cur->configured && cur->ipv4_addr == ip) {
                 result = cur;
@@ -204,6 +202,7 @@ netif* find_netif_by_ip(uint32_t ip) {
             }
         }
     });
+
     return result;
 }
 
@@ -215,6 +214,7 @@ void rx_frame(netif* iface, const uint8_t* data, size_t len) {
     if (!iface || !data || len < sizeof(eth_header)) {
         return;
     }
+
     eth_recv(iface, data, len);
 }
 
@@ -235,6 +235,7 @@ void queue_deferred_tx(netif* iface, uint32_t dst_ip, uint8_t protocol,
             entry.protocol = protocol;
             entry.len = len;
             string::memcpy(entry.data, data, len);
+
             g_deferred_tx_count++;
         }
     });
@@ -257,6 +258,7 @@ void queue_deferred_eth_tx(netif* iface, const uint8_t* dst_mac,
             entry.ethertype = ethertype;
             entry.len = len;
             string::memcpy(entry.data, data, len);
+
             g_deferred_tx_count++;
         }
     });
@@ -266,7 +268,6 @@ void drain_deferred_tx() {
     // Snapshot and clear the queue under the lock, then send outside it.
     uint32_t count = 0;
 
-    // Heap-allocate the snapshot
     auto* local = static_cast<deferred_tx_entry*>(
         heap::kzalloc(DEFERRED_TX_MAX * sizeof(deferred_tx_entry))
     );
@@ -276,6 +277,7 @@ void drain_deferred_tx() {
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_deferred_tx_lock);
+
         count = g_deferred_tx_count;
         if (count > 0) {
             string::memcpy(local, g_deferred_tx, count * sizeof(deferred_tx_entry));
@@ -301,10 +303,8 @@ __PRIVILEGED_CODE int32_t query_status(net_status* out) {
 
     string::memset(out, 0, sizeof(net_status));
 
-    // Snapshot interface data under the lock.
-    // Save link_up callback + netif pointer for each interface so we
-    // can query live link status outside the lock (avoids calling
-    // driver callbacks while holding g_net_lock).
+    // Snapshot each interface under the lock, then query live link status
+    // outside it, driver callbacks must not run while g_net_lock is held.
     struct snapshot_entry {
         netif* iface;
         netif_link_fn link_fn;
@@ -325,6 +325,7 @@ __PRIVILEGED_CODE int32_t query_status(net_status* out) {
             e.ipv4_netmask = cur->ipv4_netmask;
             e.ipv4_gateway = cur->ipv4_gateway;
             e.ipv4_dns     = cur->ipv4_dns;
+
             e.flags = 0;
             if (cur->configured) {
                 e.flags |= IFF_CONFIGURED;

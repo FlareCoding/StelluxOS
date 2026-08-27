@@ -45,12 +45,11 @@ constexpr uint32_t PAGE_USER_RW    = PAGE_READ | PAGE_WRITE | PAGE_USER;
 constexpr uint32_t PAGE_USER_RX    = PAGE_READ | PAGE_EXEC | PAGE_USER;
 constexpr uint32_t PAGE_USER_RWX   = PAGE_READ | PAGE_WRITE | PAGE_EXEC | PAGE_USER;
 
-// Memory attribute enum
 enum class mem_attr : uint8_t {
     NORMAL = 0,        // Write-back cacheable (regular RAM)
     DEVICE = 1,        // Uncached, strongly ordered (MMIO)
     WRITE_COMBINE = 2, // Write-combining (framebuffer)
-    DMA = 3, // Non-cacheable (DMA buffers)
+    DMA = 3,           // Non-cacheable (DMA buffers)
 };
 
 // Result codes

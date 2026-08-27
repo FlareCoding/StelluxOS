@@ -26,6 +26,7 @@ __PRIVILEGED_CODE void pci_driver::isr_trampoline(uint32_t vector, void* context
 __PRIVILEGED_CODE void pci_driver::notify_interrupt(uint32_t global_vector) {
     uint32_t local = global_vector - m_dev->get_msi_state().base_vector;
     on_interrupt(local);
+
     sync::irq_state irq = sync::spin_lock_irqsave(m_irq_lock);
     m_event_pending = true;
     sync::wake_one(m_irq_wq);
@@ -52,9 +53,11 @@ int32_t pci_driver::detach() {
     if (ms.mode != pci::MSI_MODE_NONE) {
         RUN_ELEVATED(m_dev->disable_msi());
     }
+
     for (uint8_t i = 0; i < pci::MAX_BARS; i++) {
         unmap_bar(i);
     }
+
     return 0;
 }
 
@@ -136,6 +139,7 @@ int32_t pci_driver::setup_msi(uint32_t count) {
     if (rc != pci::OK) {
         return rc;
     }
+
     return register_msi_handlers();
 }
 
@@ -145,6 +149,7 @@ int32_t pci_driver::setup_msix(uint32_t count) {
     if (rc != pci::OK) {
         return rc;
     }
+
     return register_msi_handlers();
 }
 

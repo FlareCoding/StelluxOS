@@ -34,9 +34,11 @@ __PRIVILEGED_CODE inline void init_state(sched::fpu_state* state) {
     for (size_t i = 0; i < 512; i++) {
         area[i] = 0;
     }
+
     // FCW (offset 0): 0x037F - mask all x87 exceptions, 64-bit precision, round-to-nearest
     area[0] = 0x7F;
     area[1] = 0x03;
+
     // MXCSR: 0x1F80 - mask all SSE exceptions, round-to-nearest
     area[MXCSR_OFFSET]     = 0x80;
     area[MXCSR_OFFSET + 1] = 0x1F;

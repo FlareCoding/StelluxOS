@@ -54,7 +54,7 @@ void record_event(const trace_record& rec) {
         return;
     }
 
-    // Atomically reserve a slot in the ring buffer 
+    // Atomically reserve a slot in the ring buffer
     uint64_t slot = sync::atomic_ref<uint64_t>{head_idx}.fetch_add_relaxed(1);
 
     // Insert the event record

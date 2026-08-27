@@ -27,9 +27,8 @@ static bool mock_link_up(net::netif* /*iface*/) {
 // Basic route table state after init
 
 TEST(route_test, table_has_loopback_routes) {
-    // After net::init(), the loopback interface is configured with
-    // 127.0.0.1/8 which adds a CONNECTED route for 127.0.0.0/8.
-    // route_count() should reflect at least this route.
+    // net::init() configures loopback with 127.0.0.1/8, which installs a
+    // CONNECTED route for 127.0.0.0/8, so at least one route must exist.
     uint32_t count = net::route_count();
     EXPECT_GE(count, static_cast<uint32_t>(1));
 }
@@ -45,10 +44,11 @@ TEST(route_test, add_basic) {
     mock.transmit = mock_tx;
     mock.link_up = mock_link_up;
 
+    // Add a CONNECTED route for 192.168.100.0/24 with no gateway
     int32_t rc = net::route_add(
-        net::ipv4_addr(192, 168, 100, 0), // dest
-        net::ipv4_addr(255, 255, 255, 0), // netmask
-        0, // no gateway
+        net::ipv4_addr(192, 168, 100, 0),
+        net::ipv4_addr(255, 255, 255, 0),
+        0,
         &mock,
         net::route_type::CONNECTED,
         net::METRIC_CONNECTED);
@@ -214,10 +214,10 @@ TEST(route_test, lookup_local) {
     net::netif* lo = net::get_loopback_netif();
     ASSERT_NOT_NULL(lo);
 
-    // Add LOCAL host route
+    // Add a LOCAL /32 host route through the real loopback interface
     int32_t rc = net::route_add(
         net::ipv4_addr(10, 0, 2, 15),
-        0xFFFFFFFF, // /32
+        0xFFFFFFFF,
         0,
         lo, net::route_type::LOCAL, net::METRIC_LOCAL);
     ASSERT_EQ(rc, net::OK);
@@ -229,35 +229,16 @@ TEST(route_test, lookup_local) {
     EXPECT_EQ(static_cast<uint8_t>(rt.type),
               static_cast<uint8_t>(net::route_type::LOCAL));
 
-    // Clean up, remove just the route we added (lo also has its own routes)
-    // We can't use route_del_iface(lo) as that would remove loopback routes.
-    // Instead, add a connected route for mock and del_iface(lo) would be wrong.
-    // Let's just leave it, it'll be cleaned up when we add the proper route
-    // for mock_lc0 anyway. Actually, let's use a dedicated mock iface:
-    // Re-do: add the LOCAL route pointing to a dedicated mock lo
-    net::netif mock_lo2 = {};
-    string::memcpy(mock_lo2.name, "mlo", 4);
-    mock_lo2.transmit = mock_tx;
-    mock_lo2.link_up = mock_link_up;
-    mock_lo2.configured = true;
-
-    // Remove the route we just added (it's on the real lo)
-    // We need a different approach, let's not pollute the real lo routes.
-    // Instead, just verify the lookup result is correct.
-    // The test already validated the lookup works. Clean up by invalidating
-    // only routes that point to mock interfaces.
+    // The LOCAL route on lo stays, route_del_iface(lo) would also drop the
+    // real loopback routes and 10.0.2.15 does not collide with other tests.
     net::route_del_iface(&mock);
-    // The LOCAL route we added to lo will remain, but that's OK since
-    // it's a valid route (to our own test IP). It won't interfere with
-    // other tests since 10.0.2.15 is not used elsewhere.
 }
 
 // route_lookup, loopback
 
 TEST(route_test, lookup_loopback) {
-    // 127.0.0.1 should be routed through the loopback interface
-    // via the CONNECTED route for 127.0.0.0/8 that was auto-populated
-    // by loopback_init() -> configure() -> route_add_interface_routes().
+    // 127.0.0.1 must resolve to the loopback interface via the CONNECTED
+    // 127.0.0.0/8 route installed when loopback is configured.
     net::route_result rt;
     int32_t rc = net::route_lookup(net::ipv4_addr(127, 0, 0, 1), &rt);
     ASSERT_EQ(rc, net::OK);
@@ -281,15 +262,10 @@ TEST(route_test, lookup_loopback_other_addr) {
 // route_lookup, no match
 
 TEST(route_test, lookup_no_match) {
-    // In the test environment, there's no default route (no gateway).
-    // An external IP like 8.8.8.8 should not match any route
-    // (unless another test left one behind).
-    // First, verify that 192.168.99.99 has no route
+    // The test environment has no default route, so an address outside
+    // every configured subnet must fail the lookup with ERR_NOIF.
     net::route_result rt;
     int32_t rc = net::route_lookup(net::ipv4_addr(192, 168, 99, 99), &rt);
-    // This could return OK if there's a default route, or ERR_NOIF if not.
-    // In the test environment without hardware NICs, there should be no
-    // default route, so we expect ERR_NOIF.
     EXPECT_EQ(rc, net::ERR_NOIF);
 }
 
@@ -402,16 +378,11 @@ TEST(route_test, reconfigure_replaces_routes) {
     // Same number of routes (old ones deleted, new ones added)
     EXPECT_EQ(net::route_count(), after_first);
 
-    // Old subnet should not have a CONNECTED route any more.
-    // The new default GATEWAY route (0.0.0.0/0) will still match, but
-    // it should be via GATEWAY, not CONNECTED (the old connected route
-    // for 10.0.6.0/24 should have been deleted).
+    // The old 10.0.6.0/24 CONNECTED route must be gone. The new default
+    // gateway may still match the old subnet, but only as a GATEWAY route.
     net::route_result rt;
     rc = net::route_lookup(net::ipv4_addr(10, 0, 6, 50), &rt);
     if (rc == net::OK) {
-        // If it matches via the new default gateway, that's expected.
-        // The key assertion: it should NOT be a CONNECTED route to mock,
-        // because the old 10.0.6.0/24 connected route was deleted.
         if (rt.iface == &mock) {
             EXPECT_EQ(static_cast<uint8_t>(rt.type),
                       static_cast<uint8_t>(net::route_type::GATEWAY));
@@ -445,6 +416,7 @@ TEST(route_test, table_full) {
         mocks[i].name[1] = static_cast<char>('0' + (i / 10) % 10);
         mocks[i].name[2] = static_cast<char>('0' + i % 10);
         mocks[i].name[3] = '\0';
+
         mocks[i].transmit = mock_tx;
         mocks[i].link_up = mock_link_up;
         mocks[i].configured = true;
@@ -491,11 +463,13 @@ TEST(route_test, ipv4_send_via_route_table) {
     // Build a minimal ICMP echo request
     uint8_t icmp_pkt[8];
     string::memset(icmp_pkt, 0, sizeof(icmp_pkt));
+
     auto* hdr = reinterpret_cast<net::icmp_header*>(icmp_pkt);
     hdr->type = net::ICMP_TYPE_ECHO_REQUEST;
     hdr->code = 0;
     hdr->id = net::htons(0x9999);
     hdr->sequence = net::htons(1);
+
     hdr->checksum = 0;
     hdr->checksum = net::inet_checksum(icmp_pkt, sizeof(icmp_pkt));
 
@@ -509,7 +483,7 @@ TEST(route_test, ipv4_send_via_route_table) {
     net::drain_deferred_tx();
 }
 
-// unregister_netif cleans up routes (Bug 1 regression test)
+// unregister_netif removes every route the interface owns
 
 TEST(route_test, unregister_cleans_routes) {
     net::netif mock = {};
@@ -540,18 +514,16 @@ TEST(route_test, unregister_cleans_routes) {
     ASSERT_EQ(rc, net::OK);
     EXPECT_EQ(net::route_count(), before);
 
-    // The old routes should no longer match
+    // The old IP may still match some unrelated route, but the lookup
+    // must never return the unregistered interface
     rc = net::route_lookup(net::ipv4_addr(10, 99, 0, 50), &rt);
-    // Should not find a LOCAL route to our old IP any more
-    // (may match a default gateway from another test if one exists,
-    // but must not return the unregistered interface)
     if (rc == net::OK) {
         EXPECT_NE(rt.iface, &mock);
     }
 }
 
-// Reconfiguring loopback does NOT destroy other interfaces' LOCAL routes
-// (Bug 4 regression test, owner-based route deletion)
+// Reconfiguring loopback must not destroy LOCAL routes that other
+// interfaces own, route deletion is keyed on the owning interface
 
 TEST(route_test, loopback_reconfig_preserves_other_local_routes) {
     // Set up a mock interface with a LOCAL route through loopback
@@ -580,9 +552,8 @@ TEST(route_test, loopback_reconfig_preserves_other_local_routes) {
     ASSERT_NOT_NULL(lo);
     EXPECT_EQ(rt.iface, lo);
 
-    // Simulate reconfiguring loopback (e.g. changing its IP).
-    // This calls route_del_iface(lo) which should only remove routes
-    // OWNED by loopback, not the LOCAL route owned by mock.
+    // Reconfiguring loopback triggers route_del_iface(lo), which must only
+    // remove routes owned by loopback, not the LOCAL route owned by mock.
     rc = net::configure(lo,
                         net::ipv4_addr(127, 0, 0, 1),
                         net::ipv4_addr(255, 0, 0, 0),

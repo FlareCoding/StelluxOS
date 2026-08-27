@@ -197,17 +197,20 @@ static int splash_check_enter(int kbd_fd) {
     if (kbd_fd < 0) {
         return 0;
     }
+
     stlx_input_kbd_event_t buf[16];
     ssize_t n = read(kbd_fd, buf, sizeof(buf));
     if (n <= 0) {
         return 0;
     }
+
     int count = (int)(n / (ssize_t)sizeof(stlx_input_kbd_event_t));
     for (int i = 0; i < count; i++) {
         if (buf[i].action == STLX_INPUT_KBD_ACTION_DOWN && buf[i].usage == 0x28) {
             return 1;
         }
     }
+
     return 0;
 }
 

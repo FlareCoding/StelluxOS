@@ -26,9 +26,11 @@ __PRIVILEGED_CODE static bool validate_freelist_ptr(
     uintptr_t p = reinterpret_cast<uintptr_t>(ptr);
     if ((p & ~0xFFFULL) != page_base) return false;
     if (p < page_base + sizeof(slab_header)) return false;
+
     uintptr_t offset = p - page_base - sizeof(slab_header);
     if (offset % obj_size != 0) return false;
     if (offset / obj_size >= objs_per_slab) return false;
+
     return true;
 }
 
@@ -154,6 +156,7 @@ __PRIVILEGED_CODE static void* alloc_internal(size_t size, heap_state* state) {
         log::fatal("heap: corrupted freelist next 0x%lx in slab 0x%lx (class %u)",
                    reinterpret_cast<uintptr_t>(next), page_base, class_idx);
     }
+
     header->freelist = next;
 
     auto* pfd = va_to_pfd(page_base);
@@ -191,6 +194,7 @@ __PRIVILEGED_CODE static int32_t free_internal(void* ptr, heap_state* state) {
         if (alloc.alloc_tag != state->heap_tag) {
             log::fatal("heap: freeing large alloc from wrong heap");
         }
+
         vmm::free(addr);
         return OK;
     }
@@ -246,6 +250,7 @@ __PRIVILEGED_CODE static int32_t free_internal(void* ptr, heap_state* state) {
     }
 
     sc.total_frees++;
+
     return OK;
 }
 
@@ -347,6 +352,7 @@ int32_t ufree(void* ptr) {
 __PRIVILEGED_CODE void dump_stats() {
     auto dump_heap = [](const char* name, heap_state& state) {
         sync::irq_lock_guard guard(state.lock);
+
         log::info("heap: %s heap:", name);
         for (uint8_t i = 0; i < CLASS_COUNT; i++) {
             const slab_class& sc = state.classes[i];

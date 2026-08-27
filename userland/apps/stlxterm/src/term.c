@@ -103,6 +103,7 @@ static void sgr_dispatch(term_state_t *t) {
         sgr_reset(t);
         return;
     }
+
     for (int i = 0; i < t->csi_param_count; i++) {
         int p = t->csi_params[i];
         if (p == 0) {
@@ -148,6 +149,7 @@ static void restore_cursor(term_state_t *t) {
     t->cur_bg = t->saved_bg;
     t->cur_bold = t->saved_bold;
     t->cur_reverse = t->saved_reverse;
+
     if (t->cursor_row < 0) t->cursor_row = 0;
     if (t->cursor_row >= t->rows) t->cursor_row = t->rows - 1;
     if (t->cursor_col < 0) t->cursor_col = 0;
@@ -397,12 +399,14 @@ static void csi_dispatch(term_state_t *t, char cmd) {
         n = csi_param(t, 1, t->rows);
         t->scroll_top = p0 - 1;
         t->scroll_bottom = n - 1;
+
         if (t->scroll_top < 0) t->scroll_top = 0;
         if (t->scroll_bottom >= t->rows) t->scroll_bottom = t->rows - 1;
         if (t->scroll_top >= t->scroll_bottom) {
             t->scroll_top = 0;
             t->scroll_bottom = t->rows - 1;
         }
+
         t->cursor_row = 0;
         t->cursor_col = 0;
         break;

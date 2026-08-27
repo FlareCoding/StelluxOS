@@ -78,6 +78,7 @@ __PRIVILEGED_CODE static void insert_into_free_trees(range_node* n) {
     n->guard_post = 0;
     n->alloc_tag = tag::generic;
     n->pmm_order = 0;
+
     (void)g_free_by_addr.insert(n);
     (void)g_free_by_size.insert(n);
 }
@@ -94,6 +95,7 @@ __PRIVILEGED_CODE static void populate_allocation(const range_node* n, allocatio
     out.size = usable_size(*n);
     out.reserved_base = n->start;
     out.reserved_size = n->end - n->start;
+
     out.guard_pre = n->guard_pre;
     out.guard_post = n->guard_post;
     out.alloc_tag = n->alloc_tag;
@@ -131,6 +133,7 @@ __PRIVILEGED_CODE int32_t init() {
     if (layout.kva_base >= layout.kva_end) {
         return ERR_INVALID_ARG;
     }
+
     if ((layout.kva_base & (PAGE_SIZE - 1)) != 0 ||
         (layout.kva_end & (PAGE_SIZE - 1)) != 0) {
         return ERR_ALIGNMENT;
@@ -144,6 +147,7 @@ __PRIVILEGED_CODE int32_t init() {
     insert_into_free_trees(initial);
 
     g_initialized = true;
+
     return OK;
 }
 
@@ -210,6 +214,7 @@ __PRIVILEGED_CODE int32_t init() {
         prefix_node = pool_alloc();
         if (!prefix_node) return ERR_NO_MEM;
     }
+
     if (need_suffix) {
         suffix_node = pool_alloc();
         if (!suffix_node) {
@@ -241,11 +246,13 @@ __PRIVILEGED_CODE int32_t init() {
     candidate->start = alloc_start;
     candidate->end = alloc_end;
     candidate->usable_base = alloc_start + static_cast<uintptr_t>(guard_pre) * PAGE_SIZE;
+
     candidate->guard_pre = guard_pre;
     candidate->guard_post = guard_post;
     candidate->alloc_tag = t;
     candidate->pmm_order = pmm_order;
     candidate->is_free = false;
+
     (void)g_used_by_addr.insert(candidate);
 
     populate_allocation(candidate, out);
@@ -274,6 +281,7 @@ __PRIVILEGED_CODE int32_t free(uintptr_t base) {
     node->guard_post = 0;
     node->alloc_tag = tag::generic;
     node->pmm_order = 0;
+
     node->is_free = true;
     node->usable_base = freed_start;
     node->start = freed_start;
@@ -336,6 +344,7 @@ __PRIVILEGED_CODE int32_t reserve(uintptr_t base, size_t size, tag t) {
             return ERR_NO_MEM;
         }
     }
+
     if (need_suffix) {
         suffix_node = pool_alloc();
         if (!suffix_node) {
@@ -366,11 +375,13 @@ __PRIVILEGED_CODE int32_t reserve(uintptr_t base, size_t size, tag t) {
     containing->start = alloc_start;
     containing->end = alloc_end;
     containing->usable_base = alloc_start;
+
     containing->guard_pre = 0;
     containing->guard_post = 0;
     containing->alloc_tag = t;
     containing->pmm_order = 0;
     containing->is_free = false;
+
     (void)g_used_by_addr.insert(containing);
 
     return OK;

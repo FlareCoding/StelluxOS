@@ -29,9 +29,8 @@ TEST(clock, now_ns_advances) {
 }
 
 // --- now_ns_rate_sane ---
-// Proves: the clock ticks at a reasonable rate.
-// ~200 brief_delay iterations should produce a measurable delta
-// that's neither zero nor absurdly large.
+// Proves: the clock ticks at a sane rate, 200 brief_delay iterations
+// yield a delta that is neither zero nor absurdly large.
 
 TEST(clock, now_ns_rate_sane) {
     uint64_t start = clock::now_ns();

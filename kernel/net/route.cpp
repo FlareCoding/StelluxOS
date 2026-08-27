@@ -51,6 +51,7 @@ int32_t route_add(uint32_t dest, uint32_t netmask, uint32_t gateway,
                 g_route_table[i].type    = type;
                 g_route_table[i].metric  = metric;
                 g_route_table[i].valid   = true;
+
                 result = OK;
                 break;
             }
@@ -66,9 +67,8 @@ void route_del_iface(netif* iface) {
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_route_lock);
 
-        // Match on the owner field so that LOCAL routes (which point to
-        // loopback as their outgoing interface) are correctly associated
-        // with the interface whose configure() created them.
+        // Match on the owner field, LOCAL routes point at loopback but belong
+        // to the interface whose configure() created them.
         for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
             if (g_route_table[i].valid && g_route_table[i].owner == iface) {
                 g_route_table[i].valid = false;
@@ -119,15 +119,12 @@ int32_t route_lookup(uint32_t dst_ip, route_result* result) {
 
             switch (best.type) {
             case route_type::LOCAL:
-                // Local delivery, next hop is the destination itself
                 result->next_hop = dst_ip;
                 break;
             case route_type::CONNECTED:
-                // Directly reachable, next hop is the destination
                 result->next_hop = dst_ip;
                 break;
             case route_type::GATEWAY:
-                // Via gateway, next hop is the gateway address
                 result->next_hop = best.gateway;
                 break;
             }
@@ -144,27 +141,18 @@ void route_add_interface_routes(netif* iface) {
 
     netif* lo = get_loopback_netif();
 
-    // Add a LOCAL host route for the interface's own IP (-> loopback).
-    // This enables local delivery when sending to our own address.
-    // The route's outgoing interface is loopback, but the owner is the
-    // configured interface, so route_del_iface(iface) correctly cleans
-    // it up without affecting other interfaces' LOCAL routes.
-    // Skip this for the loopback interface itself, its CONNECTED route
-    // (127.0.0.0/8) already covers local delivery.
+    // Self-addressed traffic is delivered via loopback. Ownership keeps
+    // teardown correct, and lo's own 127.0.0.0/8 route already covers lo.
     if (lo && iface != lo) {
         route_add(iface->ipv4_addr, 0xFFFFFFFF, 0,
                   lo, route_type::LOCAL, METRIC_LOCAL, iface);
     }
 
-    // Add a CONNECTED subnet route for the interface's subnet.
-    // This means: to reach any address in this subnet, send directly
-    // on this interface (no gateway needed).
     uint32_t subnet = iface->ipv4_addr & iface->ipv4_netmask;
     route_add(subnet, iface->ipv4_netmask, 0,
               iface, route_type::CONNECTED, METRIC_CONNECTED);
 
-    // If a gateway is configured, add a default route (0.0.0.0/0)
-    // through the gateway via this interface.
+    // A configured gateway becomes the default route (0.0.0.0/0)
     if (iface->ipv4_gateway != 0) {
         route_add(0, 0, iface->ipv4_gateway,
                   iface, route_type::GATEWAY, METRIC_DEFAULT);
@@ -176,6 +164,7 @@ uint32_t route_count() {
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_route_lock);
+
         for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
             if (g_route_table[i].valid) {
                 count++;

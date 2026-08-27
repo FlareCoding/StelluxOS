@@ -9,10 +9,12 @@ DEFINE_SYSCALL0(elevate) {
     if (!(task->flags & sched::TASK_FLAG_CAN_ELEVATE)) {
         log::fatal("syscall: task not authorized to elevate");
     }
+
     if (task->flags & sched::TASK_FLAG_ELEVATED) {
         log::warn("syscall: task already elevated");
         return 0;
     }
+
     task->flags |= sched::TASK_FLAG_ELEVATED;
     this_cpu(percpu_is_elevated) = true;
     return 0;

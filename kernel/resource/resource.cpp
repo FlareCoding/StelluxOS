@@ -18,6 +18,7 @@ __PRIVILEGED_CODE void resource_object::ref_destroy(resource_object* self) {
     if (self->ops && self->ops->close) {
         self->ops->close(self);
     }
+
     heap::kfree_delete(self);
 }
 
@@ -28,6 +29,7 @@ __PRIVILEGED_CODE void resource_add_ref(resource_object* obj) {
     if (!obj) {
         return;
     }
+
     obj->add_ref();
 }
 
@@ -38,6 +40,7 @@ __PRIVILEGED_CODE void resource_release(resource_object* obj) {
     if (!obj) {
         return;
     }
+
     if (obj->release()) {
         resource_object::ref_destroy(obj);
     }
@@ -95,9 +98,11 @@ __PRIVILEGED_CODE int32_t open(
     if (!owner || !kpath || !out_handle) {
         return ERR_INVAL;
     }
+
     if (!valid_open_flags(flags)) {
         return ERR_INVAL;
     }
+
     uint32_t fs_flags = normalize_open_flags(flags);
 
     resource_object* obj = nullptr;

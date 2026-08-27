@@ -39,6 +39,7 @@ static paging::virt_addr_t alloc_test_va(size_t pages = 1) {
         alloc
     );
     if (result != kva::OK) return 0;
+
     return static_cast<paging::virt_addr_t>(alloc.base);
 }
 

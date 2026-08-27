@@ -57,6 +57,7 @@ __PRIVILEGED_CODE void ring_buffer_destroy(ring_buffer* rb) {
     if (!rb) {
         return;
     }
+
     if (rb->data) {
         heap::ufree(rb->data);
         rb->data = nullptr;
@@ -169,7 +170,7 @@ __PRIVILEGED_CODE ssize_t ring_buffer_write(ring_buffer* rb, const uint8_t* buf,
 /**
  * All-or-nothing write: either writes all `len` bytes atomically or
  * writes nothing. In nonblock mode returns RB_ERR_AGAIN when
- * insufficient space; in blocking mode waits until space is available.
+ * insufficient space, in blocking mode waits until space is available.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE ssize_t ring_buffer_write_all(ring_buffer* rb, const uint8_t* buf, size_t len, bool nonblock) {

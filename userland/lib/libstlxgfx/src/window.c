@@ -25,14 +25,18 @@ static int read_full(int fd, void* buf, size_t count) {
             if (errno == EAGAIN) {
                 continue;
             }
+
             return -1;
         }
+
         if (n == 0) {
             return -1;
         }
+
         p += (size_t)n;
         remaining -= (size_t)n;
     }
+
     return 0;
 }
 
@@ -44,9 +48,11 @@ static int write_full(int fd, const void* buf, size_t count) {
         if (n <= 0) {
             return -1;
         }
+
         p += (size_t)n;
         remaining -= (size_t)n;
     }
+
     return 0;
 }
 
@@ -58,14 +64,17 @@ static int send_message(int fd, uint32_t type, uint32_t seq,
     hdr.sequence_number = seq;
     hdr.payload_size = payload_size;
     hdr.flags = 0;
+
     if (write_full(fd, &hdr, sizeof(hdr)) != 0) {
         return -1;
     }
+
     if (payload_size > 0 && payload) {
         if (write_full(fd, payload, payload_size) != 0) {
             return -1;
         }
     }
+
     return 0;
 }
 
@@ -86,6 +95,7 @@ static int stlxgfx_connect(const char* socket_path) {
         close(fd);
         return -1;
     }
+
     return fd;
 }
 
@@ -118,9 +128,11 @@ static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
     if (read_full(conn_fd, &resp_hdr, sizeof(resp_hdr)) != 0) {
         return NULL;
     }
+
     if (resp_hdr.protocol_version != STLXGFX_PROTOCOL_VERSION) {
         return NULL;
     }
+
     if (resp_hdr.message_type != STLXGFX_MSG_CREATE_WINDOW_RESP) {
         return NULL;
     }
@@ -129,6 +141,7 @@ static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
     if (read_full(conn_fd, &resp, sizeof(resp)) != 0) {
         return NULL;
     }
+
     if (resp.result_code != 0) {
         return NULL;
     }
@@ -139,10 +152,12 @@ static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
     snprintf(surface_path, sizeof(surface_path), "/dev/shm/%s", resp.surface_name);
     snprintf(sync_path, sizeof(sync_path), "/dev/shm/%s", resp.sync_name);
     snprintf(events_path, sizeof(events_path), "/dev/shm/%s", resp.events_name);
+
     int sync_fd = open(sync_path, O_RDWR);
     if (sync_fd < 0) {
         return NULL;
     }
+
     stlxgfx_window_sync_t* sync = mmap(NULL, sizeof(stlxgfx_window_sync_t),
                                         PROT_READ | PROT_WRITE, MAP_SHARED,
                                         sync_fd, 0);
@@ -157,6 +172,7 @@ static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
         close(sync_fd);
         return NULL;
     }
+
     stlxgfx_event_ring_t* event_ring = mmap(NULL, sizeof(stlxgfx_event_ring_t),
                                              PROT_READ | PROT_WRITE, MAP_SHARED,
                                              events_fd, 0);
@@ -178,6 +194,7 @@ static stlxgfx_window_t* create_window_internal(int conn_fd, uint32_t width,
         close(sync_fd);
         return NULL;
     }
+
     uint8_t* surface_buf = mmap(NULL, surface_size,
                                 PROT_READ | PROT_WRITE, MAP_SHARED,
                                 surface_fd, 0);
@@ -252,6 +269,7 @@ stlxgfx_window_t* stlxgfx_create_window(uint32_t width, uint32_t height,
         close(conn_fd);
         return NULL;
     }
+
     return win;
 }
 
@@ -267,6 +285,7 @@ static void window_cleanup(stlxgfx_window_t* window) {
         send_message(owned_conn, STLXGFX_MSG_DESTROY_WINDOW_REQ, 0,
                      &req, sizeof(req));
     }
+
     if (window->back)
         stlxgfx_destroy_surface(window->back);
     if (window->event_ring)
@@ -291,6 +310,7 @@ void stlxgfx_window_destroy(stlxgfx_window_t* window) {
     if (!window) {
         return;
     }
+
     window_cleanup(window);
     free(window);
 }
@@ -299,6 +319,7 @@ int stlxgfx_window_is_open(stlxgfx_window_t* window) {
     if (!window) {
         return 0;
     }
+
     return window->open;
 }
 
@@ -306,6 +327,7 @@ stlxgfx_surface_t* stlxgfx_window_back_buffer(stlxgfx_window_t* window) {
     if (!window || !window->sync || !window->back || !window->open) {
         return NULL;
     }
+
     uint32_t bi = atomic_load_explicit(&window->sync->back_index,
                                        memory_order_acquire);
     size_t single_buf = (size_t)window->pitch * window->height;
@@ -317,6 +339,7 @@ int stlxgfx_window_swap_buffers(stlxgfx_window_t* window) {
     if (!window || !window->sync || !window->open) {
         return -1;
     }
+
     stlxgfx_window_sync_t* s = window->sync;
 
     if (atomic_load_explicit(&s->swap_pending, memory_order_acquire)) {
@@ -351,6 +374,7 @@ int stlxgfx_window_next_event(stlxgfx_window_t* window,
         memset(&close_evt, 0, sizeof(close_evt));
         close_evt.type = STLXGFX_EVT_CLOSE_REQUESTED;
         close_evt.window_id = window->window_id;
+
         *event = close_evt;
         atomic_store_explicit(&window->sync->close_requested, 0,
                               memory_order_release);
@@ -381,6 +405,7 @@ int stlxgfx_dm_listen(const char* socket_path) {
         close(fd);
         return -1;
     }
+
     if (listen(fd, STLXGFX_DM_MAX_CLIENTS) < 0) {
         fprintf(stderr, "stlxgfx_dm_listen: listen() failed (errno=%d)\r\n", errno);
         close(fd);
@@ -396,6 +421,7 @@ int stlxgfx_dm_accept(int listen_fd) {
     if (fd < 0) {
         return -1;
     }
+
     fcntl(fd, F_SETFL, O_NONBLOCK);
     return fd;
 }
@@ -407,11 +433,14 @@ int stlxgfx_dm_read_request(int client_fd, stlxgfx_msg_header_t* header,
         if (errno == EAGAIN) {
             return 0;
         }
+
         return -1;
     }
+
     if (n == 0) {
         return -1;
     }
+
     if ((size_t)n < sizeof(*header)) {
         uint8_t* p = (uint8_t*)header + n;
         size_t remaining = sizeof(*header) - (size_t)n;
@@ -423,14 +452,17 @@ int stlxgfx_dm_read_request(int client_fd, stlxgfx_msg_header_t* header,
     if (header->protocol_version != STLXGFX_PROTOCOL_VERSION) {
         return -1;
     }
+
     if (header->payload_size > 0) {
         if (header->payload_size > max_payload || !payload) {
             return -1;
         }
+
         if (read_full(client_fd, payload, header->payload_size) != 0) {
             return -1;
         }
     }
+
     return 1;
 }
 
@@ -468,10 +500,12 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
     if (surface_fd < 0) {
         return NULL;
     }
+
     if (ftruncate(surface_fd, (off_t)surface_size) < 0) {
         close(surface_fd);
         return NULL;
     }
+
     uint8_t* surface_buf = mmap(NULL, surface_size,
                                 PROT_READ | PROT_WRITE, MAP_SHARED,
                                 surface_fd, 0);
@@ -479,6 +513,7 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
         close(surface_fd);
         return NULL;
     }
+
     memset(surface_buf, 0, surface_size);
 
     int sync_fd = open(sync_path, O_CREAT | O_RDWR, 0);
@@ -487,12 +522,14 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
         close(surface_fd);
         return NULL;
     }
+
     if (ftruncate(sync_fd, (off_t)sizeof(stlxgfx_window_sync_t)) < 0) {
         close(sync_fd);
         munmap(surface_buf, surface_size);
         close(surface_fd);
         return NULL;
     }
+
     stlxgfx_window_sync_t* sync = mmap(NULL, sizeof(stlxgfx_window_sync_t),
                                         PROT_READ | PROT_WRITE, MAP_SHARED,
                                         sync_fd, 0);
@@ -511,6 +548,7 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
         close(surface_fd);
         return NULL;
     }
+
     if (ftruncate(events_fd, (off_t)sizeof(stlxgfx_event_ring_t)) < 0) {
         close(events_fd);
         munmap(sync, sizeof(stlxgfx_window_sync_t));
@@ -519,6 +557,7 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
         close(surface_fd);
         return NULL;
     }
+
     stlxgfx_event_ring_t* event_ring = mmap(NULL, sizeof(stlxgfx_event_ring_t),
                                              PROT_READ | PROT_WRITE, MAP_SHARED,
                                              events_fd, 0);
@@ -530,6 +569,7 @@ stlxgfx_dm_window_t* stlxgfx_dm_handle_create_window(
         close(surface_fd);
         return NULL;
     }
+
     stlxgfx_event_ring_init(event_ring);
 
     atomic_store_explicit(&sync->front_index, 0, memory_order_relaxed);
@@ -629,6 +669,7 @@ void stlxgfx_dm_destroy_window(stlxgfx_dm_window_t* window) {
     if (!window) {
         return;
     }
+
     if (window->front) {
         stlxgfx_destroy_surface(window->front);
     }
@@ -659,6 +700,7 @@ void stlxgfx_dm_destroy_window(stlxgfx_dm_window_t* window) {
     if (window->sync_path[0]) {
         unlink(window->sync_path);
     }
+
     free(window);
 }
 
@@ -666,6 +708,7 @@ int stlxgfx_dm_sync(stlxgfx_dm_window_t* window) {
     if (!window || !window->sync) {
         return 0;
     }
+
     stlxgfx_window_sync_t* s = window->sync;
 
     int new_frame = 0;
@@ -691,6 +734,7 @@ void stlxgfx_dm_finish_sync(stlxgfx_dm_window_t* window) {
     if (!window || !window->sync) {
         return;
     }
+
     atomic_store_explicit(&window->sync->dm_consuming, 0, memory_order_release);
 }
 
@@ -698,6 +742,6 @@ stlxgfx_surface_t* stlxgfx_dm_front_buffer(stlxgfx_dm_window_t* window) {
     if (!window) {
         return NULL;
     }
+
     return window->front;
 }
-

@@ -19,14 +19,17 @@ inline bool vma_can_merge(const vma& left, const vma& right) {
         left.flags != right.flags) {
         return false;
     }
+
     if ((left.flags & VMA_FLAG_SHARED) || (right.flags & VMA_FLAG_SHARED)) {
         if (left.shmem_backing.ptr() != right.shmem_backing.ptr()) {
             return false;
         }
+
         if (left.backing_offset + (left.end - left.start) != right.backing_offset) {
             return false;
         }
     }
+
     return true;
 }
 
@@ -59,6 +62,7 @@ __PRIVILEGED_CODE vma* alloc_vma(uintptr_t start, uintptr_t end, uint32_t prot, 
     node->flags = flags;
     node->addr_link = {};
     node->backing_offset = 0;
+
     return node;
 }
 
@@ -117,6 +121,7 @@ __PRIVILEGED_CODE vma* vma_find_overlap_locked(
     if (pred && ranges_overlap(pred->start, pred->end, start, end)) {
         return pred;
     }
+
     if (lb && ranges_overlap(lb->start, lb->end, start, end)) {
         return lb;
     }
@@ -131,6 +136,7 @@ __PRIVILEGED_CODE bool vma_insert_locked(mm_context* mm_ctx, vma* node) {
     if (!node || node->start >= node->end) {
         return false;
     }
+
     if (!is_page_aligned(node->start) || !is_page_aligned(node->end)) {
         return false;
     }
@@ -147,6 +153,7 @@ __PRIVILEGED_CODE bool vma_insert_locked(mm_context* mm_ctx, vma* node) {
     if (pred && pred->end > node->start) {
         return false;
     }
+
     if (lb && lb->start < node->end) {
         return false;
     }
@@ -219,6 +226,7 @@ __PRIVILEGED_CODE void unmap_pages_only(mm_context* mm_ctx, uintptr_t start, uin
         if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
             continue;
         }
+
         paging::unmap_page(vaddr, mm_ctx->pt_root);
     }
 }
@@ -237,6 +245,7 @@ __PRIVILEGED_CODE void coalesce_all_locked(mm_context* mm_ctx) {
             free_vma(next);
             continue;
         }
+
         cur = next;
     }
 }
@@ -245,6 +254,7 @@ __PRIVILEGED_CODE vma* split_vma_locked(mm_context* mm_ctx, vma* node, uintptr_t
     if (!node) {
         return nullptr;
     }
+
     if (split_addr <= node->start || split_addr >= node->end) {
         return nullptr;
     }
@@ -298,6 +308,7 @@ __PRIVILEGED_CODE int32_t unmap_range_locked(mm_context* mm_ctx, uintptr_t start
     }
 
     coalesce_all_locked(mm_ctx);
+
     return MM_CTX_OK;
 }
 
@@ -308,8 +319,10 @@ bool range_fully_mapped_locked(mm_context* mm_ctx, uintptr_t start, uintptr_t en
         if (!node || node->start > cur) {
             return false;
         }
+
         cur = (node->end < end) ? node->end : end;
     }
+
     return true;
 }
 
@@ -322,10 +335,12 @@ __PRIVILEGED_CODE int32_t apply_page_protection(
         if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
             continue;
         }
+
         if (paging::set_page_flags(vaddr, page_flags, mm_ctx->pt_root) != paging::OK) {
             return MM_CTX_ERR_MAP_FAILED;
         }
     }
+
     return MM_CTX_OK;
 }
 

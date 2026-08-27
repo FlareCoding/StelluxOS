@@ -11,7 +11,7 @@
 
 namespace mm {
 
-    /**
+/**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE
@@ -107,11 +107,12 @@ bool handle_user_pf_locked(
     // Get the virtual memory area for this page
     vma* vm = vma_find_locked(mm_ctx, page_addr);
 
-    // Demand paging serves anonymous memory, including stacks. Regions
-    // with no access rights are pure reservations and never fault in.
+    // Demand paging serves anonymous memory, including stacks
     if (!vm || !(vm->flags & (VMA_FLAG_ANONYMOUS | VMA_FLAG_STACK))) {
         return false;
     }
+
+    // Regions with no access rights are pure reservations and never fault in
     if (vm->prot == 0) {
         return false;
     }
@@ -120,6 +121,7 @@ bool handle_user_pf_locked(
     if ((pf_flags & PF_FLAG_WRITE) && !(vm->prot & MM_PROT_WRITE)) {
         return false;
     }
+
     if ((pf_flags & PF_FLAG_INSTRUCTION) && !(vm->prot & MM_PROT_EXEC)) {
         return false;
     }
@@ -132,10 +134,10 @@ bool handle_user_pf_locked(
     // Allocate a new physical page to back the memory
     pmm::phys_addr_t phys = pmm::alloc_page();
     if (phys == 0) {
-        return false; // OOM - my favorite thing
+        return false; // OOM - my favorite thing (ptsd from the days of having to fix Cursor Glass perf and OOMs specifically)
     }
 
-    // Zero out the memory
+    // Fresh anonymous pages must be zero-filled before reaching userland
     string::memset(paging::phys_to_virt(phys), 0, pmm::PAGE_SIZE);
 
     // Setup the PTE with appropriate protection bits
@@ -211,6 +213,7 @@ __PRIVILEGED_CODE int32_t mm_context_add_vma(
     if (!mm_ctx || (prot & ~MM_PROT_MASK) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if (!is_page_aligned(start)) {
         return MM_CTX_ERR_INVALID_ARG;
     }
@@ -237,6 +240,7 @@ __PRIVILEGED_CODE int32_t mm_context_add_vma(
 
     coalesce_all_locked(mm_ctx);
     sync::mutex_unlock(mm_ctx->lock);
+
     return MM_CTX_OK;
 }
 
@@ -254,12 +258,15 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
     if (!mm_ctx || !out_addr) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if ((prot & ~MM_PROT_MASK) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if ((map_flags & ~MM_MAP_ALLOWED_FLAGS) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if (!(map_flags & MM_MAP_PRIVATE) || !(map_flags & MM_MAP_ANONYMOUS)) {
         return MM_CTX_ERR_INVALID_ARG;
     }
@@ -280,6 +287,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
         if (!is_page_aligned(addr)) {
             return MM_CTX_ERR_INVALID_ARG;
         }
+
         start = addr;
         if (!range_from_len(start, aligned_len, end)) {
             return MM_CTX_ERR_INVALID_ARG;
@@ -311,10 +319,11 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_NO_VIRT;
         }
+
         end = start + aligned_len;
     }
 
-    // Don't eagerly allocate pages lazy pages that will get populated through on-demand faults
+    // Lazy mappings take no pages up front, demand faults populate them later
     if (!(map_flags & MM_MAP_LAZY)) {
         paging::page_flags_t page_flags = prot_to_page_flags(prot);
         uintptr_t mapped_end = start;
@@ -333,6 +342,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_anonymous(
                 sync::mutex_unlock(mm_ctx->lock);
                 return MM_CTX_ERR_MAP_FAILED;
             }
+
             mapped_end = vaddr + pmm::PAGE_SIZE;
         }
     }
@@ -399,6 +409,7 @@ __PRIVILEGED_CODE int32_t mm_context_mprotect(
     if (!mm_ctx || !is_page_aligned(addr) || length == 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if ((prot & ~MM_PROT_MASK) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
@@ -461,6 +472,7 @@ __PRIVILEGED_CODE int32_t mm_context_mprotect(
 
     coalesce_all_locked(mm_ctx);
     sync::mutex_unlock(mm_ctx->lock);
+
     return MM_CTX_OK;
 }
 
@@ -480,9 +492,11 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
     if (!mm_ctx || !backing || !out_addr) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if ((prot & ~MM_PROT_MASK) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if (!(map_flags & MM_MAP_SHARED)) {
         return MM_CTX_ERR_INVALID_ARG;
     }
@@ -491,6 +505,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
     if (aligned_len == 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if (offset % pmm::PAGE_SIZE != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
@@ -508,11 +523,13 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_INVALID_ARG;
         }
+
         start = addr;
         if (!range_from_len(start, aligned_len, end)) {
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_INVALID_ARG;
         }
+
         if (start < mm_ctx->mmap_base || end > mm_ctx->mmap_end) {
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_NO_VIRT;
@@ -522,6 +539,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_EXISTS;
         }
+
         if (!no_replace) {
             int32_t rc = unmap_range_locked(mm_ctx, start, end);
             if (rc != MM_CTX_OK) {
@@ -535,6 +553,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_shared(
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_NO_VIRT;
         }
+
         end = start + aligned_len;
     }
 
@@ -612,9 +631,11 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
     if (!mm_ctx || !out_addr) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if ((prot & ~MM_PROT_MASK) != 0) {
         return MM_CTX_ERR_INVALID_ARG;
     }
+
     if (!is_page_aligned(phys_base)) {
         return MM_CTX_ERR_INVALID_ARG;
     }
@@ -637,11 +658,13 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_INVALID_ARG;
         }
+
         start = addr;
         if (!range_from_len(start, aligned_len, end)) {
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_INVALID_ARG;
         }
+
         if (start < mm_ctx->mmap_base || end > mm_ctx->mmap_end) {
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_NO_VIRT;
@@ -651,6 +674,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_EXISTS;
         }
+
         if (!no_replace) {
             int32_t rc = unmap_range_locked(mm_ctx, start, end);
             if (rc != MM_CTX_OK) {
@@ -664,6 +688,7 @@ __PRIVILEGED_CODE int32_t mm_context_map_device(
             sync::mutex_unlock(mm_ctx->lock);
             return MM_CTX_ERR_NO_VIRT;
         }
+
         end = start + aligned_len;
     }
 

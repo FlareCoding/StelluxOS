@@ -57,6 +57,7 @@ __PRIVILEGED_CODE int32_t parse() {
         switch (entry->type) {
         case MADT_TYPE_GICC: {
             if (entry->length < GICC_MIN_LENGTH) break;
+
             const auto* e = reinterpret_cast<const madt_gicc*>(ptr);
             uint32_t flags = read_u32_safe(&e->flags);
             if (g_madt.cpu_count < MAX_CPUS) {
@@ -69,6 +70,7 @@ __PRIVILEGED_CODE int32_t parse() {
         }
         case MADT_TYPE_GICD: {
             if (entry->length < sizeof(madt_gicd)) break;
+
             const auto* e = reinterpret_cast<const madt_gicd*>(ptr);
             g_madt.gicd_base = read_u64_safe(&e->base_address);
             g_madt.gic_version = e->version;
@@ -78,9 +80,11 @@ __PRIVILEGED_CODE int32_t parse() {
             if (entry->length < sizeof(madt_gic_msi_frame)) {
                 break;
             }
+
             if (g_madt.msi_frame.base_address != 0) {
                 break;
             }
+
             const auto* e = reinterpret_cast<const madt_gic_msi_frame*>(ptr);
             g_madt.msi_frame.base_address = read_u64_safe(&e->base_address);
             g_madt.msi_frame.flags = read_u32_safe(&e->flags);
@@ -91,6 +95,7 @@ __PRIVILEGED_CODE int32_t parse() {
         }
         case MADT_TYPE_GICR: {
             if (entry->length < sizeof(madt_gicr)) break;
+
             const auto* e = reinterpret_cast<const madt_gicr*>(ptr);
             if (g_madt.gicr_base == 0) {
                 g_madt.gicr_base = read_u64_safe(&e->base_address);

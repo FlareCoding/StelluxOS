@@ -28,6 +28,7 @@ DEFINE_SYSCALL3(getrandom, u_buf, buflen, flags) {
         if (flags & GRND_NONBLOCK) {
             return syscall::EAGAIN;
         }
+
         return syscall::ENOSYS;
     }
 

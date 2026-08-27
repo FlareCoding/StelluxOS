@@ -66,6 +66,7 @@ __PRIVILEGED_CODE static void save_cpu_context(
     ctx->rsi = tf->rsi; ctx->rdi = tf->rdi; ctx->rbp = tf->rbp; ctx->rsp = tf->rsp;
     ctx->r8  = tf->r8;  ctx->r9  = tf->r9;  ctx->r10 = tf->r10; ctx->r11 = tf->r11;
     ctx->r12 = tf->r12; ctx->r13 = tf->r13; ctx->r14 = tf->r14; ctx->r15 = tf->r15;
+
     ctx->rip = tf->rip;
     ctx->rflags = tf->rflags;
     ctx->cs = tf->cs;
@@ -82,6 +83,7 @@ __PRIVILEGED_CODE static void load_cpu_context(
     tf->rsi = ctx->rsi; tf->rdi = ctx->rdi; tf->rbp = ctx->rbp; tf->rsp = ctx->rsp;
     tf->r8  = ctx->r8;  tf->r9  = ctx->r9;  tf->r10 = ctx->r10; tf->r11 = ctx->r11;
     tf->r12 = ctx->r12; tf->r13 = ctx->r13; tf->r14 = ctx->r14; tf->r15 = ctx->r15;
+
     tf->rip = ctx->rip;
     tf->rflags = ctx->rflags;
     tf->cs = ctx->cs;
@@ -96,6 +98,7 @@ __PRIVILEGED_CODE void arch_init_task_context(
 ) {
     bool elevated = (t->exec.flags & TASK_FLAG_ELEVATED) != 0;
     auto& ctx = t->exec.cpu_ctx;
+
     ctx.rip = reinterpret_cast<uint64_t>(entry);
     ctx.rdi = reinterpret_cast<uint64_t>(arg);
     ctx.rsp = t->exec.task_stack_top;
@@ -162,8 +165,10 @@ void yield() {
  */
 __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     task* prev = current();
+
     // Advance per-CPU sync epoch so stack reclaim can wait for a post-switch TLB-safe point.
     advance_cpu_tlb_sync_epoch();
+
     // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
     finalize_pending_off_cpu();
 
@@ -195,6 +200,7 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     load_cpu_context(&next->exec.cpu_ctx, tf);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
+
     // Defer prev->on_cpu clear until switch teardown is complete.
     defer_off_cpu_finalize(prev);
 }
@@ -205,10 +211,13 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
  */
 __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     task* prev = current();
+
     // Each scheduler trap is a synchronization checkpoint for deferred reclaim logic.
     advance_cpu_tlb_sync_epoch();
+
     // Finish prior off-CPU publication before handling this tick's switch.
     finalize_pending_off_cpu();
+
     record_cpu_tick(prev);
     if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
         return;
@@ -242,6 +251,7 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     load_cpu_context(&next->exec.cpu_ctx, tf);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
+
     // Prevent early off-CPU publication while trap exit still depends on prev context.
     defer_off_cpu_finalize(prev);
 }

@@ -72,9 +72,11 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
     if (length == 0) {
         return syscall::EINVAL;
     }
+
     if ((prot & ~LINUX_PROT_MASK) != 0) {
         return syscall::EINVAL;
     }
+
     if ((flags & ~LINUX_MAP_ALLOWED_MASK) != 0) {
         return syscall::EINVAL;
     }
@@ -97,9 +99,11 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
         if (!has_shared) {
             return syscall::EINVAL;
         }
+
         if (!is_page_aligned(offset)) {
             return syscall::EINVAL;
         }
+
         if (offset + length < length) {
             return syscall::EINVAL;
         }
@@ -142,6 +146,7 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
             if (map_rc != mm::MM_CTX_OK) {
                 return mm_status_to_errno(map_rc);
             }
+
             return static_cast<int64_t>(mapped_addr);
         } else if (obj->ops && obj->ops->mmap) {
             int32_t map_rc = obj->ops->mmap(
@@ -158,6 +163,7 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
             if (map_rc != 0) {
                 return mm_status_to_errno(map_rc);
             }
+
             return static_cast<int64_t>(mapped_addr);
         } else {
             resource::resource_release(obj);
@@ -168,12 +174,15 @@ DEFINE_SYSCALL6(mmap, addr, length, prot, flags, fd, offset) {
     if (!has_private) {
         return syscall::EINVAL;
     }
+
     if (!has_anon) {
         return syscall::EINVAL;
     }
+
     if (fd_val != -1) {
         return syscall::EINVAL;
     }
+
     if (offset != 0) {
         return syscall::EINVAL;
     }
@@ -219,6 +228,7 @@ DEFINE_SYSCALL2(munmap, addr, length) {
     if (rc != mm::MM_CTX_OK) {
         return mm_status_to_errno(rc);
     }
+
     return 0;
 }
 
@@ -226,6 +236,7 @@ DEFINE_SYSCALL3(mprotect, addr, length, prot) {
     if (!is_page_aligned(addr) || length == 0) {
         return syscall::EINVAL;
     }
+
     if ((prot & ~LINUX_PROT_MASK) != 0) {
         return syscall::EINVAL;
     }
@@ -244,6 +255,7 @@ DEFINE_SYSCALL3(mprotect, addr, length, prot) {
     if (rc != mm::MM_CTX_OK) {
         return mm_status_to_errno(rc);
     }
+
     return 0;
 }
 

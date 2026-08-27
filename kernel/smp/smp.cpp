@@ -87,6 +87,7 @@ cpu_info* get_cpu_info(uint32_t logical_id) {
     if (logical_id >= g_cpu_count) {
         return nullptr;
     }
+
     return &g_cpus[logical_id];
 }
 

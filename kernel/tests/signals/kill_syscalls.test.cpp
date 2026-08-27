@@ -86,12 +86,14 @@ static int32_t teardown_tasks() {
         heap::kfree_delete(g_tg);
         heap::kfree_delete(g_tg2);
     });
+
     g_proc = nullptr;
     g_thread = nullptr;
     g_tg = nullptr;
     g_proc2 = nullptr;
     g_tg2 = nullptr;
     g_ktask = nullptr;
+
     return 0;
 }
 

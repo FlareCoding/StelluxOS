@@ -56,6 +56,7 @@ static int dns_encode_name(const char* name, uint8_t* buf, size_t buf_size) {
 
         seg = (*dot == '.') ? dot + 1 : dot;
     }
+
     buf[pos++] = 0;
     return (int)pos;
 }
@@ -68,6 +69,7 @@ static int dns_skip_name(const uint8_t* pkt, size_t pkt_len, size_t offset) {
         if ((label_len & 0xC0) == 0xC0) { pos += 2; break; }
         pos += 1 + label_len;
     }
+
     if (pos > pkt_len) return -1;
     return (int)pos;
 }
@@ -153,9 +155,11 @@ static uint32_t dns_resolve(const char* hostname, uint32_t server_ip) {
                              (uint32_t)resp[pos + 3];
                     break;
                 }
+
                 if (pos + (int)rdlength > (int)nrecv) break;
                 pos += rdlength;
             }
+
             break;
         }
     }

@@ -31,10 +31,12 @@ int main(int argc, char* argv[]) {
             usage();
             return 0;
         }
+
         if (argv[i][0] != '-' || argv[i][1] == '\0') {
             printf("uname: invalid option '%s'\n", argv[i]);
             return 1;
         }
+
         for (const char* p = argv[i] + 1; *p; p++) {
             switch (*p) {
             case 'a': flags |= FLAG_ALL; break;

@@ -47,6 +47,7 @@ static int fits(int piece, int rot, int px, int py) {
         if (x < 0 || x >= BW || y < 0 || y >= BH) return 0;
         if (board[y][x] != CELL_EMPTY) return 0;
     }
+
     return 1;
 }
 
@@ -76,6 +77,7 @@ static void clear_lines(void) {
             y++;
         }
     }
+
     if (cleared > 0) {
         static const int scores[] = {0, 100, 300, 500, 800};
         score += scores[cleared] * (level + 1);
@@ -179,6 +181,7 @@ int main(void) {
                 if (c == 'q' || c == 'Q') goto done;
                 break;
             }
+
             struct timespec ts = {0, 50000000};
             nanosleep(&ts, NULL);
         }

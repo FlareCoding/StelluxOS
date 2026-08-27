@@ -118,9 +118,11 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
                 t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] = TLB_SYNC_CPU_IGNORED;
                 continue;
             }
+
             t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] =
                 sync::atomic_ref<uint64_t>{per_cpu_on(cpu_tlb_sync_epoch, cpu)}.load_acquire();
         }
+
         t->tlb_sync_ticket.armed.store_release(1);
         g_pending_tlb_sync_tickets.fetch_add_acq_rel(1);
         store_cleanup_stage(t, TASK_CLEANUP_STAGE_WAITING_FOR_TLB_SYNC);
@@ -136,11 +138,13 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
             if (t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] == TLB_SYNC_CPU_IGNORED) {
                 continue;
             }
+
             uint64_t epoch = sync::atomic_ref<uint64_t>{per_cpu_on(cpu_tlb_sync_epoch, cpu)}.load_acquire();
             if ((epoch - t->tlb_sync_ticket.cpu_epoch_snapshot[cpu]) == 0) {
                 return rc::reaper::RETRY_LATER;
             }
         }
+
         g_pending_tlb_sync_tickets.fetch_sub_acq_rel(1);
         store_cleanup_stage(t, TASK_CLEANUP_STAGE_READY_TO_RECLAIM);
     }
@@ -151,6 +155,7 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
 
     g_task_registry.remove(*t);
     resource::release_task_handles(t);
+
     if (t->cwd) {
         if (t->cwd->release()) {
             fs::node::ref_destroy(t->cwd);
@@ -163,15 +168,18 @@ __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
         t->exec.mm_ctx = nullptr;
         t->exec.user_pt_root = 0;
     }
+
     if (t->group) {
         if (t->group->release()) {
             thread_group::ref_destroy(t->group);
         }
         t->group = nullptr;
     }
+
     vmm::free(t->task_stack_base);
     vmm::free(t->sys_stack_base);
     heap::kfree_delete(t);
+
     return rc::reaper::DONE;
 }
 
@@ -302,6 +310,7 @@ __PRIVILEGED_CODE void advance_cpu_tlb_sync_epoch() {
     if (g_pending_tlb_sync_tickets.load_acquire() == 0) {
         return;
     }
+
     paging::flush_tlb_all();
     sync::atomic_ref<uint64_t>{this_cpu(cpu_tlb_sync_epoch)}.fetch_add_release(1);
 }
@@ -385,6 +394,7 @@ __PRIVILEGED_CODE void enqueue(task* t) {
     uint32_t cpu = load_balance_select_cpu();
     t->exec.cpu = cpu;
     runqueue& rq = per_cpu_on(cpu_rq, cpu);
+
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;
@@ -403,6 +413,7 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id) {
 
     t->exec.cpu = cpu_id;
     runqueue& rq = per_cpu_on(cpu_rq, cpu_id);
+
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;
@@ -426,6 +437,7 @@ __PRIVILEGED_CODE void wake(task* t) {
     }
 
     runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
+
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;
@@ -494,9 +506,8 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
             thread_group* tg = task->group;
 
             if (tg->leader == task) {
-                // Reaped never-started threads report the recorded group
-                // exit status or signal so every member exposes the same
-                // death cause
+                // Reaped never-started threads report the recorded group exit
+                // status or signal so every member exposes the same death cause
                 int32_t reap_status = TASK_KILL_STATUS;
 
                 uint32_t ges = tg->group_exit_status.load_acquire();
@@ -511,6 +522,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                 sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
                 auto it = tg->threads.begin();
                 auto end = tg->threads.end();
+
                 while (it != end) {
                     sched::task& thread = *it;
                     ++it; // advance before potential removal
@@ -521,23 +533,27 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                         tg->thread_count--;
                         if (thread.proc_res) {
                             auto* pr = thread.proc_res;
+
                             sync::irq_state pr_irq = sync::spin_lock_irqsave(pr->lock);
                             pr->wait_status = reap_status;
                             pr->exited = true;
                             pr->child = nullptr;
                             sync::wake_all(pr->wait_queue);
                             sync::spin_unlock_irqrestore(pr->lock, pr_irq);
+
                             thread.proc_res = nullptr;
                             if (pr->release()) {
                                 resource::proc_provider::proc_resource::ref_destroy(pr);
                             }
                         }
+
                         store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
                         rc::reaper::defer(&thread.reaper_node);
                     } else {
                         force_wake_for_kill(&thread);
                     }
                 }
+
                 tg->leader = nullptr;
                 sync::spin_unlock_irqrestore(tg->lock, irq);
             } else if (task->group_link.is_linked()) {
@@ -573,6 +589,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                 pr->child = nullptr;
             }
             sync::spin_unlock_irqrestore(pr->lock, irq);
+
             task->proc_res = nullptr;
             if (pr->release()) {
                 resource::proc_provider::proc_resource::ref_destroy(pr);
@@ -625,10 +642,12 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->exec.cpu = 0;
     t->exec.task_stack_top = task_stack_top;
     t->exec.system_stack_top = sys_stack_top;
+
     t->exec.pt_root = paging::get_kernel_pt_root();
     t->exec.user_pt_root = 0;
     t->exec.mm_ctx = nullptr;
     t->exec.tls_base = 0;
+
     t->task_stack_base = task_stack_base;
     t->sys_stack_base = sys_stack_base;
 
@@ -648,15 +667,19 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
+
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
+
     t->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
     t->tlb_sync_ticket.armed.store_relaxed(0);
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
     }
+
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
+
     if (resource::init_task_handles(t) != resource::OK) {
         log::error("sched: failed to allocate kernel task handle table");
         vmm::free(task_stack_base);
@@ -664,6 +687,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
         heap::kfree_delete(t);
         return nullptr;
     }
+
     t->proc_res = nullptr;
     t->cwd = nullptr;
     t->clear_child_tid = 0;
@@ -673,6 +697,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->group_link = {};
 
     g_task_registry.insert(t);
+
     return t;
 }
 
@@ -765,14 +790,17 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     uint64_t data[1 + MAX_ARGV_PTRS + 1 + MAX_ENVP_PTRS + 1 + AUXV_WORDS];
     size_t idx = 0;
     data[idx++] = static_cast<uint64_t>(total_argc);
+
     for (int i = 0; i < total_argc; i++) {
         data[idx++] = argv_vas[i];
     }
     data[idx++] = 0; // argv terminator (NULL)
+
     for (int i = 0; i < user_envc; i++) {
         data[idx++] = envp_vas[i];
     }
     data[idx++] = 0; // envp terminator (NULL)
+
     data[idx++] = AT_PAGESZ; data[idx++] = pmm::PAGE_SIZE;
     data[idx++] = AT_PHDR;   data[idx++] = image.phdr_vaddr;
     data[idx++] = AT_PHENT;  data[idx++] = image.phentsize;
@@ -818,7 +846,7 @@ __PRIVILEGED_CODE task* create_user_task(
     // USER_STACK_MAX_PAGES at the top of user VA. The bottom portion is
     // reserved lazily (no eager pages) so userland faults grow it on demand.
     // The top USER_STACK_PAGES window is eagerly mapped so the kernel can
-    // write argv/envp into it (+ performance) before the user task ever runs.
+    // write argv/envp into it before the user task ever runs.
     uintptr_t stack_max_base = mm::USER_STACK_TOP - mm::USER_STACK_MAX_PAGES * pmm::PAGE_SIZE;
     uintptr_t eager_base     = mm::USER_STACK_TOP - mm::USER_STACK_PAGES     * pmm::PAGE_SIZE;
     size_t    lazy_bytes     = (mm::USER_STACK_MAX_PAGES - mm::USER_STACK_PAGES) * pmm::PAGE_SIZE;
@@ -845,9 +873,8 @@ __PRIVILEGED_CODE task* create_user_task(
         return nullptr;
     }
 
-    // Eagerly map the top window so argv/envp setup can write into it.
-    // Coalesce in mm_context_map_anonymous will merge this with the lazy
-    // reservation into one STACK vma covering [stack_max_base, USER_STACK_TOP).
+    // Eagerly map the top window for argv/envp setup. Coalescing merges it
+    // with the lazy reservation into one stack vma up to USER_STACK_TOP.
     uintptr_t mapped_stack_addr = 0;
     int32_t eager_rc = mm::mm_context_map_anonymous(
         mm_ctx,
@@ -890,10 +917,12 @@ __PRIVILEGED_CODE task* create_user_task(
     t->exec.cpu = 0;
     t->exec.task_stack_top = user_sp;
     t->exec.system_stack_top = sys_stack_top;
+
     t->exec.pt_root = paging::supervisor_pt_root_for_user_task(mm_ctx->pt_root);
     t->exec.user_pt_root = mm_ctx->pt_root;
     t->exec.mm_ctx = mm_ctx;
     t->exec.tls_base = 0;
+
     t->task_stack_base = 0; // user stack is not VMM-allocated
     t->sys_stack_base = sys_stack_base;
 
@@ -914,13 +943,16 @@ __PRIVILEGED_CODE task* create_user_task(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
+
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
+
     t->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
     t->tlb_sync_ticket.armed.store_relaxed(0);
     for (uint32_t i = 0; i < MAX_CPUS; i++) {
         t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
     }
+
     t->reaper_node.init(reap_task_thunk);
 
     if (resource::init_task_handles(t) != resource::OK) {
@@ -936,6 +968,7 @@ __PRIVILEGED_CODE task* create_user_task(
         heap::kfree_delete(t);
         return nullptr;
     }
+
     t->proc_res = nullptr;
     t->cwd = nullptr;
     t->clear_child_tid = 0;
@@ -957,6 +990,7 @@ __PRIVILEGED_CODE task* create_user_task(
         heap::kfree_delete(t);
         return nullptr;
     }
+
     tg->lock = sync::SPINLOCK_INIT;
     tg->leader = t;
     tg->pid = t->tid;
@@ -977,6 +1011,7 @@ __PRIVILEGED_CODE task* create_user_task(
     image->pt_root = 0;
 
     g_task_registry.insert(t);
+
     return t;
 }
 
@@ -1041,8 +1076,8 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
             dst.flags = src.flags;
             dst.rights = src.rights;
             dst.type = src.type;
-            dst.obj = src.obj;
 
+            dst.obj = src.obj;
             resource::resource_add_ref(dst.obj);
         }
     }
@@ -1052,9 +1087,11 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
     t->exec.on_cpu = 0;
     t->exec.task_stack_top = stack_top;
     t->exec.system_stack_top = sys_stack_top;
+
     t->exec.pt_root = paging::supervisor_pt_root_for_user_task(creator->exec.mm_ctx->pt_root);
     t->exec.user_pt_root = creator->exec.mm_ctx->pt_root;
     t->exec.tls_base = creator->exec.tls_base;
+
     t->task_stack_base = 0; // user stack is not VMM-allocated
     t->sys_stack_base = sys_stack_base;
 
@@ -1077,7 +1114,7 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
     t->sig.pending.store_relaxed(0);
     t->sig.blocked.store_relaxed(creator->sig.blocked.load_acquire());
 
-    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1)); 
+    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
 
     t->task_registry_link = {};
@@ -1107,7 +1144,6 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
 
     t->proc_res = nullptr;
 
-    // Copy the creator's cwd
     t->cwd = creator->cwd;
     if (t->cwd) {
         t->cwd->add_ref();
@@ -1188,28 +1224,35 @@ __PRIVILEGED_CODE int32_t init() {
             dst[i] = src[i];
         }
     }
+
     idle->exec.pt_root = paging::get_kernel_pt_root();
     idle->exec.user_pt_root = 0;
     idle->exec.mm_ctx = nullptr;
     idle->exec.flags |= TASK_FLAG_IDLE;
+
     idle->tid = 0;
     idle->state.store_relaxed(TASK_STATE_RUNNING);
     idle->task_stack_base = 0;
     idle->sys_stack_base = 0;
+
     idle->task_registry_link = {};
     idle->sched_link = {};
     idle->wait_link = {};
     idle->timer_link = {};
     idle->timer_deadline = 0;
+
     string::memcpy(idle->name, "idle", 4);
     idle->name[4] = '\0';
+
     idle->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
     idle->tlb_sync_ticket.armed.store_relaxed(0);
     fpu::init_state(&idle->exec.fpu_ctx);
+
     if (resource::init_task_handles(idle) != resource::OK) {
         log::error("sched: failed to allocate idle task handle table");
         return ERR_NO_MEM;
     }
+
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
     idle->clear_child_tid = 0;
@@ -1224,18 +1267,17 @@ __PRIVILEGED_CODE int32_t init() {
     this_cpu(pending_off_cpu_task) = nullptr;
     this_cpu(cpu_tlb_sync_epoch) = 0;
 
-    // Initialize per-CPU runqueue
     runqueue& rq = this_cpu(cpu_rq);
     rq.lock = sync::SPINLOCK_INIT;
     rq.nr_running = 0;
     rq.idle_task = idle;
 
-    // Allocate round-robin policy
     auto* policy = heap::kalloc_new<round_robin_policy>();
     if (!policy) {
         log::error("sched: failed to allocate scheduling policy");
         return ERR_NO_MEM;
     }
+
     policy->init();
     rq.policy = policy;
 
@@ -1245,6 +1287,7 @@ __PRIVILEGED_CODE int32_t init() {
     }
 
     log::info("sched: initialized (round-robin, tid0=idle)");
+
     return OK;
 }
 
@@ -1269,11 +1312,13 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->exec.on_cpu = 1;
     idle->exec.task_stack_top = task_stack_top;
     idle->exec.system_stack_top = system_stack_top;
+
     idle->exec.pt_root = paging::get_kernel_pt_root();
     idle->exec.user_pt_root = 0;
     idle->exec.mm_ctx = nullptr;
     idle->task_stack_base = 0;
     idle->sys_stack_base = 0;
+
     idle->tid = g_next_tid.fetch_add_relaxed(1);
     idle->state.store_relaxed(TASK_STATE_RUNNING);
     string::memcpy(idle->name, "idle", 4);
@@ -1281,9 +1326,11 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     idle->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
     idle->tlb_sync_ticket.armed.store_relaxed(0);
     fpu::init_state(&idle->exec.fpu_ctx);
+
     if (resource::init_task_handles(idle) != resource::OK) {
         return ERR_NO_MEM;
     }
+
     idle->proc_res = nullptr;
     idle->cwd = nullptr;
 
@@ -1302,6 +1349,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     if (!policy) {
         return ERR_NO_MEM;
     }
+
     policy->init();
     rq.policy = policy;
 

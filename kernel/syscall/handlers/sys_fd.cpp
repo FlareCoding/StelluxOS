@@ -209,6 +209,7 @@ static inline int64_t copy_stat_to_user(const fs::vattr& attr, uint64_t u_stat) 
     if (copy_rc != mm::uaccess::OK) {
         return syscall::EFAULT;
     }
+
     return 0;
 }
 
@@ -216,6 +217,7 @@ static inline void release_node_ref(fs::node* n) {
     if (!n) {
         return;
     }
+
     if (n->release()) {
         fs::node::ref_destroy(n);
     }
@@ -225,6 +227,7 @@ static int64_t acquire_task_cwd_node(sched::task* task, fs::node** out_node) {
     if (!task || !out_node) {
         return syscall::EINVAL;
     }
+
     if (task->cwd) {
         task->cwd->add_ref();
         *out_node = task->cwd;
@@ -236,6 +239,7 @@ static int64_t acquire_task_cwd_node(sched::task* task, fs::node** out_node) {
     if (fs_rc != fs::OK) {
         return syscall::error_map::map_fs_error(fs_rc);
     }
+
     *out_node = root;
     return 0;
 }
@@ -244,6 +248,7 @@ static int64_t replace_task_cwd_node(sched::task* task, fs::node* new_cwd) {
     if (!task || !new_cwd) {
         return syscall::EINVAL;
     }
+
     if (new_cwd->type() != fs::node_type::directory) {
         return syscall::ENOTDIR;
     }
@@ -307,6 +312,7 @@ static int64_t normalize_absolute_path(
     if (!input_path || !out_path || out_cap < 2) {
         return syscall::EINVAL;
     }
+
     out_path[0] = '/';
     out_path[1] = '\0';
     size_t out_len = 1;
@@ -342,6 +348,7 @@ static int64_t normalize_absolute_path(
             if (out_len + 1 >= out_cap) {
                 return syscall::ENAMETOOLONG;
             }
+
             out_path[out_len++] = '/';
             out_path[out_len] = '\0';
         }
@@ -349,6 +356,7 @@ static int64_t normalize_absolute_path(
         if (out_len + len >= out_cap) {
             return syscall::ENAMETOOLONG;
         }
+
         string::memcpy(out_path + out_len, src, len);
         out_len += len;
         out_path[out_len] = '\0';
@@ -373,6 +381,7 @@ static int64_t normalize_absolute_path(
             if (len == 0 || (len == 1 && src[start] == '.')) {
                 continue;
             }
+
             if (len == 2 && src[start] == '.' && src[start + 1] == '.') {
                 pop_component();
                 continue;
@@ -390,6 +399,7 @@ static int64_t normalize_absolute_path(
         if (!base_abs || base_abs[0] != '/') {
             return syscall::EINVAL;
         }
+
         int64_t base_rc = consume(base_abs);
         if (base_rc != 0) {
             return base_rc;
@@ -580,11 +590,13 @@ static int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
             resource::resource_release(obj);
             return syscall::EIO;
         }
+
         int32_t fs_rc = fs::fstat(kfile, &attr);
         resource::resource_release(obj);
         if (fs_rc != fs::OK) {
             return syscall::error_map::map_fs_error(fs_rc);
         }
+
         return copy_stat_to_user(attr, u_stat);
     }
 
@@ -594,10 +606,12 @@ static int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
             resource::resource_release(obj);
             return syscall::EINVAL;
         }
+
         sync::mutex_lock(backing->lock);
         attr.type = fs::node_type::regular;
         attr.size = backing->m_size;
         sync::mutex_unlock(backing->lock);
+
         resource::resource_release(obj);
         return copy_stat_to_user(attr, u_stat);
     }
@@ -636,6 +650,7 @@ static int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u
         if ((flags & AT_EMPTY_PATH) == 0) {
             return syscall::ENOENT;
         }
+
         if (dirfd == AT_FDCWD) {
             sched::task* task = sched::current();
             if (!task) {
@@ -654,11 +669,14 @@ static int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u
             if (fs_rc != fs::OK) {
                 return syscall::error_map::map_fs_error(fs_rc);
             }
+
             return copy_stat_to_user(attr, u_stat);
         }
+
         if (dirfd < 0) {
             return syscall::EBADF;
         }
+
         return do_fstat_common(dirfd, u_stat);
     }
 
@@ -732,6 +750,7 @@ static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, 
                 heap::kfree(resolved_path);
                 return resolve_rc;
             }
+
             path_for_open = resolved_path;
         }
     } else {
@@ -806,6 +825,7 @@ DEFINE_SYSCALL3(lseek, fd, offset, whence) {
     if (result < 0) {
         return syscall::error_map::map_fs_error(static_cast<int32_t>(result));
     }
+
     return result;
 }
 
@@ -813,6 +833,7 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
     if (count == 0) {
         return 0;
     }
+
     if (buf == 0) {
         return syscall::EFAULT;
     }
@@ -839,8 +860,10 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
             if (total > 0) {
                 return total;
             }
+
             return map_resource_error(n);
         }
+
         if (n == 0) {
             break;
         }
@@ -851,6 +874,7 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
             if (total > 0) {
                 return total;
             }
+
             return syscall::EFAULT;
         }
 
@@ -871,6 +895,7 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
     if (count == 0) {
         return 0;
     }
+
     if (buf == 0) {
         return syscall::EFAULT;
     }
@@ -897,6 +922,7 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
             if (total > 0) {
                 return total;
             }
+
             return syscall::EFAULT;
         }
 
@@ -906,8 +932,10 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
             if (total > 0) {
                 return total;
             }
+
             return map_resource_error(n);
         }
+
         if (n == 0) {
             break;
         }
@@ -935,6 +963,7 @@ DEFINE_SYSCALL1(close, fd) {
     if (rc != resource::OK) {
         return map_resource_error(rc);
     }
+
     return 0;
 }
 
@@ -974,6 +1003,7 @@ DEFINE_SYSCALL2(getcwd, buf, size) {
     if (size == 0 || size < required) {
         return syscall::ERANGE;
     }
+
     if (buf == 0) {
         return syscall::EFAULT;
     }
@@ -1001,6 +1031,7 @@ DEFINE_SYSCALL1(chdir, pathname) {
         }
         return syscall::EFAULT;
     }
+
     if (kpath[0] == '\0') {
         return syscall::ENOENT;
     }
@@ -1054,9 +1085,11 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
     if (dirp == 0) {
         return syscall::EFAULT;
     }
+
     if (count == 0) {
         return 0;
     }
+
     if (count > 0xFFFFFFFFULL) {
         return syscall::EINVAL;
     }
@@ -1112,8 +1145,10 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
             if (bytes_written > 0) {
                 return static_cast<int64_t>(bytes_written);
             }
+
             return syscall::error_map::map_fs_error(static_cast<int32_t>(nread));
         }
+
         if (nread == 0) {
             break;
         }
@@ -1152,6 +1187,7 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
             if (bytes_written > 0) {
                 return static_cast<int64_t>(bytes_written);
             }
+
             return syscall::EFAULT;
         }
 
@@ -1184,6 +1220,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
+
         return (flags & resource::RESOURCE_HANDLE_CLOEXEC) ? FD_CLOEXEC : 0;
     }
 
@@ -1199,13 +1236,13 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         if (arg & FD_CLOEXEC) {
             flags |= resource::RESOURCE_HANDLE_CLOEXEC;
         }
-        
+
         rc = resource::set_handle_flags(
             task->handles, static_cast<resource::handle_t>(fd), flags);
-        
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
+
         return 0;
     }
 
@@ -1213,11 +1250,10 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         uint32_t flags = 0;
         int32_t rc = resource::get_handle_flags(
             task->handles, static_cast<resource::handle_t>(fd), &flags);
-        
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
-        
+
         return static_cast<int64_t>(flags & ~resource::RESOURCE_HANDLE_CLOEXEC);
     }
 
@@ -1225,18 +1261,17 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
         uint32_t flags = 0;
         int32_t rc = resource::get_handle_flags(
             task->handles, static_cast<resource::handle_t>(fd), &flags);
-        
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
-        
+
         flags = (flags & ~SETFL_MASK) | (static_cast<uint32_t>(arg) & SETFL_MASK);
         rc = resource::set_handle_flags(
             task->handles, static_cast<resource::handle_t>(fd), flags);
-        
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
+
         return 0;
     }
 
@@ -1244,7 +1279,6 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
 }
 
 DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
-
     char kpath[fs::PATH_MAX];
     int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
         kpath, sizeof(kpath),
@@ -1310,6 +1344,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
         if (rc != resource::OK) {
             return map_resource_error(rc);
         }
+
         return 0;
     }
 
@@ -1337,18 +1372,21 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
     if (rc != fs::OK) {
         return syscall::error_map::map_fs_error(rc);
     }
+
     return 0;
 }
 
 DEFINE_SYSCALL1(unlink, pathname) {
+    // -100 is AT_FDCWD
     return sys_unlinkat(
-        static_cast<uint64_t>(-100), // AT_FDCWD
+        static_cast<uint64_t>(-100),
         pathname, 0, 0, 0, 0);
 }
 
 DEFINE_SYSCALL1(rmdir, pathname) {
+    // -100 is AT_FDCWD
     return sys_unlinkat(
-        static_cast<uint64_t>(-100), // AT_FDCWD
+        static_cast<uint64_t>(-100),
         pathname, AT_REMOVEDIR, 0, 0, 0);
 }
 
@@ -1394,12 +1432,14 @@ DEFINE_SYSCALL3(mkdirat, dirfd, pathname, mode) {
     if (rc != fs::OK) {
         return syscall::error_map::map_fs_error(rc);
     }
+
     return 0;
 }
 
 DEFINE_SYSCALL2(mkdir, pathname, mode) {
+    // -100 is AT_FDCWD
     return sys_mkdirat(
-        static_cast<uint64_t>(-100), // AT_FDCWD
+        static_cast<uint64_t>(-100),
         pathname, mode, 0, 0, 0);
 }
 
@@ -1442,8 +1482,9 @@ DEFINE_SYSCALL3(faccessat, dirfd, pathname, mode) {
 }
 
 DEFINE_SYSCALL2(access, pathname, mode) {
+    // -100 is AT_FDCWD
     return sys_faccessat(
-        static_cast<uint64_t>(-100), // AT_FDCWD
+        static_cast<uint64_t>(-100),
         pathname, mode, 0, 0, 0);
 }
 
@@ -1503,6 +1544,7 @@ static int64_t do_readlinkat(int64_t dirfd, uint64_t pathname,
                                   kpath, target_len) != mm::uaccess::OK) {
         return syscall::EFAULT;
     }
+
     return static_cast<int64_t>(target_len);
 }
 
@@ -1522,7 +1564,7 @@ DEFINE_SYSCALL4(renameat, olddirfd, oldpath, newdirfd, newpath) {
     return syscall::ENOSYS;
 }
 
-// fsync - no-op on ramfs (data is always in memory)
+// fsync is a no-op on ramfs, data is always in memory
 DEFINE_SYSCALL1(fsync, fd) {
     (void)fd;
     return 0;

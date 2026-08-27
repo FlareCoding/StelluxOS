@@ -54,9 +54,11 @@ static bool extract_shm_name(
     if (string::strncmp(path, "/dev/shm", 8) != 0) {
         return false;
     }
+
     if (path[8] != '/' && path[8] != '\0') {
         return false;
     }
+
     if (path[8] == '\0') {
         return false;
     }
@@ -66,12 +68,15 @@ static bool extract_shm_name(
     while (name[len] != '\0' && name[len] != '/') {
         len++;
     }
+
     if (name[len] == '/') {
         return false;
     }
+
     if (len == 0) {
         return false;
     }
+
     if (len > fs::NAME_MAX) {
         return false;
     }
@@ -85,9 +90,11 @@ bool is_shm_path(const char* path) {
     if (!path) {
         return false;
     }
+
     if (string::strncmp(path, "/dev/shm", 8) != 0) {
         return false;
     }
+
     return path[8] == '/' || path[8] == '\0';
 }
 
@@ -125,6 +132,7 @@ __PRIVILEGED_CODE int32_t open_shm_resource(
             if (excl) {
                 return ERR_EXIST;
             }
+
             backing_ref = existing->backing;
             need_trunc = (flags & fs::O_TRUNC) != 0;
         } else if (!create) {

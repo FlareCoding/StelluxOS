@@ -64,6 +64,7 @@ static stlxgfx_surface_t* build_cursor_shadow(const stlxgfx_surface_t* sprite) {
             dp[x * 4 + dst_alpha] = (uint8_t)(sp[x * src_bpp + src_alpha] / 2);
         }
     }
+
     return shadow;
 }
 
@@ -87,14 +88,12 @@ static void build_cursor_sprites(stlxdm_input_t* inp) {
             inp->cursor_hot_y = STLXDM_CONF_CURSOR_HOTSPOT_Y;
             return;
         }
+
         stlxgfx_destroy_surface(bmp);
     }
 
-    /*
-     * Fallback: pre-render the built-in cursor shape into two small ARGB
-     * surfaces so that drawing the cursor each frame is a single
-     * blit_alpha instead of hundreds of individual fill_rect(1,1) calls.
-     */
+    /* Fallback: pre-render the built-in shape into two small ARGB surfaces
+     * so each frame's cursor draw is one blit_alpha, not hundreds of fills */
     inp->cursor_sprite = stlxgfx_create_surface(CURSOR_W, CURSOR_H, 32, 16, 8, 0);
     inp->cursor_shadow = stlxgfx_create_surface(CURSOR_W, CURSOR_H, 32, 16, 8, 0);
     if (!inp->cursor_sprite || !inp->cursor_shadow) {
@@ -151,9 +150,11 @@ void stlxdm_input_add_window(stlxdm_input_t* inp, int slot,
             return;
         }
     }
+
     if (inp->z_count >= STLXGFX_DM_MAX_CLIENTS) {
         return;
     }
+
     inp->z_order[inp->z_count++] = slot;
     set_focus(inp, clients, slot);
 }
@@ -169,12 +170,14 @@ void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot,
             inp->z_order[i] = inp->z_order[i + 1];
         inp->z_count--;
     }
+
     if (inp->focused_slot == slot) {
         inp->focused_slot = -1;
         int new_top = inp->z_count > 0 ? inp->z_order[inp->z_count - 1] : -1;
         if (new_top >= 0)
             set_focus(inp, clients, new_top);
     }
+
     if (inp->capture_slot == slot) {
         inp->capture_slot = -1;
         inp->capture_buttons = 0;
@@ -191,6 +194,7 @@ int stlxdm_input_z_order(const stlxdm_input_t* inp, int idx) {
     if (idx < 0 || idx >= inp->z_count) {
         return -1;
     }
+
     return inp->z_order[idx];
 }
 
@@ -223,10 +227,13 @@ static hit_zone_t hit_test_zone(const stlxdm_input_t* inp,
             if (dx * dx + dy * dy <= STLXDM_CLOSE_BTN_RADIUS * STLXDM_CLOSE_BTN_RADIUS) {
                 return HIT_CLOSE_BUTTON;
             }
+
             return HIT_TITLE_BAR;
         }
+
         return HIT_CLIENT;
     }
+
     return HIT_NONE;
 }
 
@@ -238,6 +245,7 @@ static void raise_slot(stlxdm_input_t* inp, int slot) {
     if (found < 0 || found == inp->z_count - 1) {
         return;
     }
+
     for (int i = found; i < inp->z_count - 1; i++)
         inp->z_order[i] = inp->z_order[i + 1];
     inp->z_order[inp->z_count - 1] = slot;
@@ -376,9 +384,11 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                 if (is_global_shortcut(&kbd_buf[i], inp)) {
                     continue;
                 }
+
                 if (inp->focused_slot < 0) {
                     continue;
                 }
+
                 deliver_key(clients, inp->focused_slot, &kbd_buf[i]);
                 update_key_repeat(inp, &kbd_buf[i], now);
             }
@@ -489,6 +499,7 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                         inp->capture_buttons = cur_buttons;
                         continue;
                     }
+
                     if (inp->close_press_slot >= 0) {
                         int rel_slot = -1;
                         hit_zone_t rel_zone = hit_test_zone(inp, clients,

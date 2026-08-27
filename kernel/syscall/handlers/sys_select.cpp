@@ -69,13 +69,12 @@ __PRIVILEGED_CODE static int64_t do_select(
         }
     }
 
-    // Use the existing poll infrastructure
     sync::poll_table pt;
     pt.init(task);
 
     int64_t ready = 0;
 
-    // First pass: check + subscribe
+    // The readiness check also subscribes to every fd's wait queue
     for (uint32_t i = 0; i < npoll; i++) {
         resource::resource_object* obj = nullptr;
         int32_t rc = resource::get_handle_object(
@@ -85,12 +84,14 @@ __PRIVILEGED_CODE static int64_t do_select(
             ready++;
             continue;
         }
+
         if (!obj->ops || !obj->ops->poll) {
             pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
             resource::resource_release(obj);
             ready++;
             continue;
         }
+
         uint32_t mask = obj->ops->poll(obj, immediate ? nullptr : &pt);
         resource::resource_release(obj);
         pollfds[i].revents = static_cast<int16_t>(mask) & (pollfds[i].events | static_cast<int16_t>(sync::POLL_ERR | sync::POLL_HUP | sync::POLL_NVAL));
@@ -117,12 +118,14 @@ __PRIVILEGED_CODE static int64_t do_select(
                 ready++;
                 continue;
             }
+
             if (!obj->ops || !obj->ops->poll) {
                 pollfds[i].revents = static_cast<int16_t>(sync::POLL_NVAL);
                 resource::resource_release(obj);
                 ready++;
                 continue;
             }
+
             uint32_t mask = obj->ops->poll(obj, nullptr);
             resource::resource_release(obj);
             pollfds[i].revents = static_cast<int16_t>(mask) & (pollfds[i].events | static_cast<int16_t>(sync::POLL_ERR | sync::POLL_HUP | sync::POLL_NVAL));
@@ -132,7 +135,6 @@ __PRIVILEGED_CODE static int64_t do_select(
 
     sync::poll_cleanup(pt);
 
-    // Convert results back to fd_set bitmaps
     if (kread) {
         for (size_t w = 0; w < nwords; w++) kread[w] = 0;
     }
@@ -145,6 +147,7 @@ __PRIVILEGED_CODE static int64_t do_select(
 
     for (uint32_t i = 0; i < npoll; i++) {
         if (!pollfds[i].revents) continue;
+
         int32_t fd = fdmap[i];
         if (kread && (pollfds[i].revents & (sync::POLL_IN | sync::POLL_HUP | sync::POLL_ERR))) {
             fd_set_bit(kread, fd);
@@ -165,6 +168,7 @@ __PRIVILEGED_CODE static int64_t do_select(
     if (ready == 0 && !immediate && signals::interrupt_pending(task)) {
         return syscall::EINTR;
     }
+
     return ready;
 }
 
@@ -186,20 +190,25 @@ DEFINE_SYSCALL5(select, nfds_val, u_readfds, u_writefds, u_exceptfds, u_timeout)
     if (u_readfds) {
         kread = static_cast<uint64_t*>(heap::kzalloc(set_bytes));
         if (!kread) return syscall::ENOMEM;
+
         if (mm::uaccess::copy_from_user(kread, reinterpret_cast<const void*>(u_readfds), set_bytes) != mm::uaccess::OK) {
             heap::kfree(kread); return syscall::EFAULT;
         }
     }
+
     if (u_writefds) {
         kwrite = static_cast<uint64_t*>(heap::kzalloc(set_bytes));
         if (!kwrite) { heap::kfree(kread); return syscall::ENOMEM; }
+
         if (mm::uaccess::copy_from_user(kwrite, reinterpret_cast<const void*>(u_writefds), set_bytes) != mm::uaccess::OK) {
             heap::kfree(kwrite); heap::kfree(kread); return syscall::EFAULT;
         }
     }
+
     if (u_exceptfds) {
         kexcept = static_cast<uint64_t*>(heap::kzalloc(set_bytes));
         if (!kexcept) { heap::kfree(kwrite); heap::kfree(kread); return syscall::ENOMEM; }
+
         if (mm::uaccess::copy_from_user(kexcept, reinterpret_cast<const void*>(u_exceptfds), set_bytes) != mm::uaccess::OK) {
             heap::kfree(kexcept); heap::kfree(kwrite); heap::kfree(kread); return syscall::EFAULT;
         }
@@ -215,10 +224,12 @@ DEFINE_SYSCALL5(select, nfds_val, u_readfds, u_writefds, u_exceptfds, u_timeout)
             heap::kfree(kexcept); heap::kfree(kwrite); heap::kfree(kread);
             return syscall::EFAULT;
         }
+
         if (tv.tv_sec < 0 || tv.tv_usec < 0) {
             heap::kfree(kexcept); heap::kfree(kwrite); heap::kfree(kread);
             return syscall::EINVAL;
         }
+
         timeout_ns = static_cast<uint64_t>(tv.tv_sec) * NS_PER_SEC
                    + static_cast<uint64_t>(tv.tv_usec) * NS_PER_US;
         immediate = (timeout_ns == 0);
@@ -262,20 +273,25 @@ DEFINE_SYSCALL6(pselect6, nfds_val, u_readfds, u_writefds, u_exceptfds, u_timeou
     if (u_readfds) {
         kread = static_cast<uint64_t*>(heap::kzalloc(set_bytes));
         if (!kread) return syscall::ENOMEM;
+
         if (mm::uaccess::copy_from_user(kread, reinterpret_cast<const void*>(u_readfds), set_bytes) != mm::uaccess::OK) {
             heap::kfree(kread); return syscall::EFAULT;
         }
     }
+
     if (u_writefds) {
         kwrite = static_cast<uint64_t*>(heap::kzalloc(set_bytes));
         if (!kwrite) { heap::kfree(kread); return syscall::ENOMEM; }
+
         if (mm::uaccess::copy_from_user(kwrite, reinterpret_cast<const void*>(u_writefds), set_bytes) != mm::uaccess::OK) {
             heap::kfree(kwrite); heap::kfree(kread); return syscall::EFAULT;
         }
     }
+
     if (u_exceptfds) {
         kexcept = static_cast<uint64_t*>(heap::kzalloc(set_bytes));
         if (!kexcept) { heap::kfree(kwrite); heap::kfree(kread); return syscall::ENOMEM; }
+
         if (mm::uaccess::copy_from_user(kexcept, reinterpret_cast<const void*>(u_exceptfds), set_bytes) != mm::uaccess::OK) {
             heap::kfree(kexcept); heap::kfree(kwrite); heap::kfree(kread); return syscall::EFAULT;
         }
@@ -291,10 +307,12 @@ DEFINE_SYSCALL6(pselect6, nfds_val, u_readfds, u_writefds, u_exceptfds, u_timeou
             heap::kfree(kexcept); heap::kfree(kwrite); heap::kfree(kread);
             return syscall::EFAULT;
         }
+
         if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec > 999999999) {
             heap::kfree(kexcept); heap::kfree(kwrite); heap::kfree(kread);
             return syscall::EINVAL;
         }
+
         timeout_ns = static_cast<uint64_t>(ts.tv_sec) * NS_PER_SEC
                    + static_cast<uint64_t>(ts.tv_nsec);
         immediate = (timeout_ns == 0);

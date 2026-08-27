@@ -57,11 +57,8 @@ __PRIVILEGED_DATA static uint8_t g_ecam_end_bus = 0;
 __PRIVILEGED_DATA static uint8_t g_start_bus = 0;
 __PRIVILEGED_DATA static uintptr_t g_brcm_base = 0;
 
-// PCI bus -> CPU physical address translation for non-ECAM backends.
-// On x86 and QEMU virt these are identity-mapped; on BCM2711 (RPi4) the
-// PCIe outbound window remaps a PCI bus address range to a different CPU
-// physical address range.  parse_bars() applies this so bar.phys always
-// holds the CPU physical address that vmm::map_device() expects.
+// On BCM2711 the PCIe outbound window remaps PCI bus addresses, so parse_bars()
+// translates bar.phys into the CPU physical address vmm::map_device() expects.
 __PRIVILEGED_DATA static uint64_t g_pci_mem_base = 0;
 __PRIVILEGED_DATA static uint64_t g_cpu_mem_base = 0;
 __PRIVILEGED_DATA static uint64_t g_pci_mem_size = 0;
@@ -78,8 +75,10 @@ static inline uintptr_t dev_base_for(uint8_t bus, uint8_t slot, uint8_t func) {
     if (g_backend == config_backend::ECAM) {
         return g_ecam_va + bdf_to_ecam_offset(bus - g_ecam_start_bus, slot, func);
     }
-    // Broadcom: root complex at 0:0.0 uses sentinel 0; downstream uses INDEX value
+
+    // Broadcom: root complex at 0:0.0 uses sentinel 0, downstream uses the INDEX value
     if (bus == 0 && slot == 0 && func == 0) return 0;
+
     return bdf_to_ecam_offset(bus, slot, func);
 }
 
@@ -87,7 +86,9 @@ __PRIVILEGED_CODE static uint8_t cfg_read8(uintptr_t base, uint16_t offset) {
     if (g_backend == config_backend::ECAM) {
         return mmio::read8(base + offset);
     }
+
     if (base == 0) return mmio::read8(g_brcm_base + offset);
+
     mmio::write32(g_brcm_base + BRCM_EXT_CFG_INDEX, static_cast<uint32_t>(base));
     return mmio::read8(g_brcm_base + BRCM_EXT_CFG_DATA + offset);
 }
@@ -96,7 +97,9 @@ __PRIVILEGED_CODE static uint16_t cfg_read16(uintptr_t base, uint16_t offset) {
     if (g_backend == config_backend::ECAM) {
         return mmio::read16(base + offset);
     }
+
     if (base == 0) return mmio::read16(g_brcm_base + offset);
+
     mmio::write32(g_brcm_base + BRCM_EXT_CFG_INDEX, static_cast<uint32_t>(base));
     return mmio::read16(g_brcm_base + BRCM_EXT_CFG_DATA + offset);
 }
@@ -105,7 +108,9 @@ __PRIVILEGED_CODE static uint32_t cfg_read32(uintptr_t base, uint16_t offset) {
     if (g_backend == config_backend::ECAM) {
         return mmio::read32(base + offset);
     }
+
     if (base == 0) return mmio::read32(g_brcm_base + offset);
+
     mmio::write32(g_brcm_base + BRCM_EXT_CFG_INDEX, static_cast<uint32_t>(base));
     return mmio::read32(g_brcm_base + BRCM_EXT_CFG_DATA + offset);
 }
@@ -114,7 +119,9 @@ __PRIVILEGED_CODE static void cfg_write8(uintptr_t base, uint16_t offset, uint8_
     if (g_backend == config_backend::ECAM) {
         mmio::write8(base + offset, val); return;
     }
+
     if (base == 0) { mmio::write8(g_brcm_base + offset, val); return; }
+
     mmio::write32(g_brcm_base + BRCM_EXT_CFG_INDEX, static_cast<uint32_t>(base));
     mmio::write8(g_brcm_base + BRCM_EXT_CFG_DATA + offset, val);
 }
@@ -123,7 +130,9 @@ __PRIVILEGED_CODE static void cfg_write16(uintptr_t base, uint16_t offset, uint1
     if (g_backend == config_backend::ECAM) {
         mmio::write16(base + offset, val); return;
     }
+
     if (base == 0) { mmio::write16(g_brcm_base + offset, val); return; }
+
     mmio::write32(g_brcm_base + BRCM_EXT_CFG_INDEX, static_cast<uint32_t>(base));
     mmio::write16(g_brcm_base + BRCM_EXT_CFG_DATA + offset, val);
 }
@@ -132,7 +141,9 @@ __PRIVILEGED_CODE static void cfg_write32(uintptr_t base, uint16_t offset, uint3
     if (g_backend == config_backend::ECAM) {
         mmio::write32(base + offset, val); return;
     }
+
     if (base == 0) { mmio::write32(g_brcm_base + offset, val); return; }
+
     mmio::write32(g_brcm_base + BRCM_EXT_CFG_INDEX, static_cast<uint32_t>(base));
     mmio::write32(g_brcm_base + BRCM_EXT_CFG_DATA + offset, val);
 }
@@ -149,9 +160,8 @@ static uint32_t fdt_read_be32(const void* p) {
 }
 
 /**
- * Parse the PCIe node's "ranges" property from the FDT to discover
- * the outbound window mapping (PCI bus address -> CPU physical address).
- * Looks for the first 32-bit or 64-bit memory space entry.
+ * Discover the outbound window (PCI bus address to CPU physical address)
+ * from the PCIe node's "ranges", using the first memory space entry.
  */
 __PRIVILEGED_CODE static void parse_pcie_ranges(int32_t node) {
     // Read #address-cells / #size-cells from the PCIe node itself
@@ -211,10 +221,12 @@ __PRIVILEGED_CODE static void parse_pcie_ranges(int32_t node) {
 
 static uint64_t pci_bus_to_cpu(uint64_t pci_addr) {
     if (g_pci_mem_size == 0) return pci_addr;
+
     if (pci_addr >= g_pci_mem_base &&
         pci_addr < g_pci_mem_base + g_pci_mem_size) {
         return pci_addr - g_pci_mem_base + g_cpu_mem_base;
     }
+
     return pci_addr;
 }
 
@@ -304,6 +316,7 @@ __PRIVILEGED_CODE void parse_bars(device& dev) {
         if (is_io) {
             uint32_t masked = readback & BAR_ADDR_MASK_IO;
             if (masked == 0) { dev.m_bars[i] = {0, 0, BAR_NONE, false}; continue; }
+
             uint32_t sz = (~masked) + 1;
             uint64_t phys = original & BAR_ADDR_MASK_IO;
             dev.m_bars[i] = {phys, sz, BAR_IO, false};
@@ -327,6 +340,7 @@ __PRIVILEGED_CODE void parse_bars(device& dev) {
                     dev.m_bars[i] = {0, 0, BAR_NONE, false};
                     continue;
                 }
+
                 uint64_t sz = ~combined + 1;
                 uint64_t phys =
                     (static_cast<uint64_t>(original_hi) << 32) |
@@ -337,6 +351,7 @@ __PRIVILEGED_CODE void parse_bars(device& dev) {
             } else {
                 uint32_t masked = readback & BAR_ADDR_MASK_MEM;
                 if (masked == 0) { dev.m_bars[i] = {0, 0, BAR_NONE, false}; continue; }
+
                 uint32_t sz = (~masked) + 1;
                 uint64_t phys = original & BAR_ADDR_MASK_MEM;
                 dev.m_bars[i] = {pci_bus_to_cpu(phys), sz, BAR_MMIO32, prefetch};
@@ -439,9 +454,8 @@ __PRIVILEGED_CODE static void enumerate_bridges() {
                 continue;
             }
 
-            // Broadcom (RPi4) is a point-to-point link with one downstream
-            // device at slot 0. ECAM systems may have PCIe switches whose
-            // internal buses have downstream ports at arbitrary slots.
+            // The Broadcom link is point-to-point with one device at slot 0,
+            // ECAM systems may have switches with ports at arbitrary slots.
             uint8_t max_slots = (g_backend == config_backend::BROADCOM) ? 1 : SLOTS_PER_BUS;
             enumerate_bus(secondary, max_slots);
         }
@@ -505,7 +519,6 @@ __PRIVILEGED_CODE static int32_t init_broadcom() {
     uint64_t ctrl_base = 0, ctrl_size = 0;
     int32_t pcie_node = -1;
 
-    // Try DTB first
     int32_t fdt_rc = fdt::init();
     if (fdt_rc == fdt::OK) {
         pcie_node = fdt::find_compatible("brcm,bcm2711-pcie");
@@ -540,6 +553,7 @@ __PRIVILEGED_CODE static int32_t init_broadcom() {
     if (pcie_node >= 0) {
         parse_pcie_ranges(pcie_node);
     }
+
     if (g_pci_mem_size == 0 && is_rpi4_firmware()) {
         g_pci_mem_base = BCM2711_PCI_MEM_BASE;
         g_cpu_mem_base = BCM2711_CPU_MEM_BASE;
@@ -557,11 +571,11 @@ __PRIVILEGED_CODE int32_t init() {
 
     g_device_count = 0;
 
-    // Try MCFG/ECAM first, then DTB/Broadcom
     int32_t rc = init_ecam();
     if (rc != OK) {
         rc = init_broadcom();
     }
+
     if (rc != OK) {
         log::warn("pci: no PCI host bridge found");
         return rc;

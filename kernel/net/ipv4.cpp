@@ -27,29 +27,26 @@ void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
 
     const auto* hdr = reinterpret_cast<const ipv4_header*>(data);
 
-    // Check version
     uint8_t version = (hdr->ver_ihl >> 4) & 0xF;
     if (version != 4) return;
 
-    // Get header length
     uint8_t ihl = hdr->ver_ihl & 0xF;
     if (ihl < 5) return;
+
     size_t header_len = static_cast<size_t>(ihl) * 4;
     if (header_len > len) return;
 
-    // Verify total length
     uint16_t total_len = ntohs(hdr->total_len);
     if (total_len > len) return;
+
     if (total_len < header_len) return;
 
-    // Verify header checksum
     uint16_t computed = inet_checksum(data, header_len);
     if (computed != 0) {
         log::debug("ipv4: bad header checksum, dropping");
         return;
     }
 
-    // Check if packet is for us
     uint32_t dst_ip = ntohl(hdr->dst_ip);
 
     // On the loopback interface, accept:
@@ -98,28 +95,22 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
         return ERR_INVAL;
     }
 
-    // Route lookup determines outgoing interface and next hop.
     route_result rt;
     int32_t rt_rc = route_lookup(dst_ip, &rt);
     if (rt_rc != OK) {
-        // No route found, if caller specified an interface, fall back
-        // to direct delivery on that interface (preserves behavior for
-        // callers that set up interfaces without configuring routes).
+        // Without a route, fall back to direct delivery on the caller's
+        // interface, which covers interfaces set up without routes.
         if (!iface || !iface->configured) {
             return ERR_NOIF;
         }
+
         rt.iface = iface;
         rt.next_hop = dst_ip;
         rt.type = route_type::CONNECTED;
     }
 
-    // Determine the outgoing interface:
-    // - If the route goes through loopback (LOCAL type or loopback interface),
-    //   always use the route's interface regardless of what the caller specified.
-    //   This ensures packets to 127.x.x.x always go through loopback even when
-    //   the caller passes eth0 (e.g. inet_sendto uses get_default_netif()).
-    // - For other routes, prefer the caller's interface if specified
-    //   (e.g. deferred TX entries store a specific interface).
+    // Loopback-bound routes override the caller's interface so self-addressed
+    // traffic never leaves loopback, otherwise the caller's choice wins.
     bool route_is_loopback = (rt.type == route_type::LOCAL) ||
                              (rt.iface && (rt.iface->flags & NETIF_LOOPBACK));
     netif* out_iface = rt.iface;
@@ -147,10 +138,8 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     hdr->protocol = protocol;
     hdr->checksum = 0;
 
-    // Source IP selection:
-    // 1. Explicit override from caller (e.g. bound socket address)
-    // 2. LOCAL routes: use dst_ip (packet is self-addressed, src = dst)
-    // 3. Default: use the outgoing interface's IP
+    // A caller override (e.g. a bound socket address) wins, LOCAL routes are
+    // self-addressed so src equals dst, otherwise use the interface's IP.
     if (src_ip_override != 0) {
         hdr->src_ip = htonl(src_ip_override);
     } else if (rt.type == route_type::LOCAL) {
@@ -174,7 +163,6 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
         return rc;
     }
 
-    // For CONNECTED and GATEWAY routes, resolve the next hop via ARP
     uint8_t dst_mac[MAC_ADDR_LEN];
     int32_t arp_rc = arp_resolve(out_iface, rt.next_hop, dst_mac);
     if (arp_rc != OK) {

@@ -51,7 +51,9 @@ static uint32_t parse_ipv4(const char *str) {
             return 0;
         }
     }
+
     if (field != 3 || val > 255) return 0;
+
     parts[3] = val;
     return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
 }
@@ -101,6 +103,7 @@ static int dns_encode_name(const char *name, uint8_t *buf, size_t buf_size) {
 
         seg = (*dot == '.') ? dot + 1 : dot;
     }
+
     buf[pos++] = 0;
     return (int)pos;
 }
@@ -113,6 +116,7 @@ static int dns_skip_name(const uint8_t *pkt, size_t pkt_len, size_t offset) {
         if ((label_len & 0xC0) == 0xC0) { pos += 2; break; }
         pos += 1 + label_len;
     }
+
     if (pos > pkt_len) return -1;
     return (int)pos;
 }
@@ -207,9 +211,11 @@ static uint32_t dns_resolve(const char *hostname) {
                              (uint32_t)resp[pos + 3];
                     break;
                 }
+
                 if (pos + (int)rdlength > (int)nrecv) break;
                 pos += rdlength;
             }
+
             break;
         }
     }
@@ -226,9 +232,11 @@ static ssize_t write_all(int fd, const void *buf, size_t len) {
     while (remaining > 0) {
         ssize_t n = write(fd, p, remaining);
         if (n <= 0) return -1;
+
         p += n;
         remaining -= (size_t)n;
     }
+
     return (ssize_t)len;
 }
 
@@ -270,15 +278,8 @@ static int build_http_request(char *req, size_t req_size,
 
 /* ---- HTTP header/body separation ----
  *
- * State machine to find the \r\n\r\n boundary between HTTP headers and
- * body. Handles the boundary being split across read() calls.
- *
- * The boundary \r\n\r\n has 4 bytes that may be part of the separator.
- * We buffer pending bytes (up to 3: \r\n\r) until we can confirm whether
- * they're separator or content. On confirmation as content, they're
- * flushed to stdout. On confirmation as separator, they're discarded.
- *
- * States: 0=normal, 1=seen \r, 2=seen \r\n, 3=seen \r\n\r
+ * State machine that finds the \r\n\r\n boundary between HTTP headers
+ * and body, even when the boundary is split across read() calls.
  */
 typedef struct {
     int state;        /* 0-3: matching progress for \r\n\r\n */
@@ -322,13 +323,8 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
             break;
         }
 
-        /* Advance the \r\n\r\n state machine.
-         *
-         * Bytes that might be part of the separator are buffered in
-         * pending[] and only flushed to stdout when we confirm they
-         * are not the separator. This avoids prematurely printing
-         * separator bytes to stdout.
-         */
+        /* Possible separator bytes wait in pending[] so they reach
+         * stdout only once they are known not to be the separator */
         switch (hs->state) {
         case 0:
             if (c == '\r') {
@@ -381,16 +377,10 @@ static ssize_t process_response_chunk(http_split_state *hs, int out_fd,
                 hs->state = 4;
                 hs->headers_done = 1;
             } else if (c == '\r') {
-                /* False alarm: the pending \r\n\r was not a separator.
-                   The first \r\n is content (end of a header line).
-                   Flush those two bytes, then start tracking a new
-                   potential boundary from \r (the byte at pending[2])
-                   followed by this new \r. */
-                write(STDOUT_FILENO, hs->pending, 2); /* flush \r\n */
-                /* pending[2] was \r, that's content too since it
-                   wasn't followed by \n. Flush it. */
+                /* The pending \r\n\r is all content (a header line end
+                   plus a lone \r), only this new \r can start a boundary */
+                write(STDOUT_FILENO, hs->pending, 2);
                 write(STDOUT_FILENO, "\r", 1);
-                /* Now track the current \r as a new potential start. */
                 hs->pending[0] = '\r';
                 hs->pending_len = 1;
                 hs->state = 1;
@@ -438,10 +428,11 @@ static int fetch_plain(int fd, const char *host, const char *path, int out_fd) {
                 close(fd);
                 return 1;
             }
+
             total += (size_t)body;
         }
     } else {
-        /* Stdout mode: dump everything (existing behavior) */
+        /* Stdout mode: dump everything */
         while ((n = read(fd, buf, sizeof(buf))) > 0) {
             write(STDOUT_FILENO, buf, (size_t)n);
             total += (size_t)n;
@@ -543,9 +534,11 @@ static int sock_write(void *ctx, const unsigned char *buf, size_t len) {
     while (remaining > 0) {
         ssize_t n = write(fd, p, remaining);
         if (n <= 0) return -1;
+
         p += n;
         remaining -= (size_t)n;
     }
+
     return (int)len;
 }
 
@@ -555,11 +548,8 @@ static int fetch_tls(int fd, const char *host, const char *path, int out_fd) {
     br_ssl_client_context sc;
     br_x509_minimal_context xc;
 
-    /*
-     * Using static here keeps ~33KB off the stack. The TLS record
-     * layer needs a buffer large enough for one full-size record
-     * in each direction.
-     */
+    /* static keeps ~33KB off the stack. The TLS record layer needs room
+     * for one full-size record in each direction. */
     static unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
 
     br_ssl_client_init_full(&sc, &xc, TAs, TAs_NUM);
@@ -574,6 +564,7 @@ static int fetch_tls(int fd, const char *host, const char *path, int out_fd) {
         close(fd);
         return 1;
     }
+
     br_ssl_engine_inject_entropy(&sc.eng, seed, sizeof(seed));
 
     /* Set up the simplified I/O wrapper around the TCP socket */
@@ -620,10 +611,11 @@ static int fetch_tls(int fd, const char *host, const char *path, int out_fd) {
                 close(fd);
                 return 1;
             }
+
             total += (size_t)body;
         }
     } else {
-        /* Stdout mode: dump everything (existing behavior) */
+        /* Stdout mode: dump everything */
         while ((n = br_sslio_read(&ioc, buf, sizeof(buf))) > 0) {
             write(STDOUT_FILENO, buf, (size_t)n);
             total += (size_t)n;
@@ -710,6 +702,7 @@ static int parse_url(int url_argc, char *url_argv[], struct fetch_params *out) {
     if (slash) {
         size_t host_len = (size_t)(slash - arg);
         if (host_len == 0 || host_len >= sizeof(out->host)) return -1;
+
         memcpy(out->host, arg, host_len);
         out->host[host_len] = '\0';
         snprintf(out->path, sizeof(out->path), "%s", slash);
@@ -719,20 +712,21 @@ static int parse_url(int url_argc, char *url_argv[], struct fetch_params *out) {
         snprintf(out->path, sizeof(out->path), "%s", DEFAULT_PATH);
     }
 
-    /* Legacy positional syntax: fetch <host> <port> [path] */
+    /* Alternate positional syntax: fetch <host> <port> [path] */
     if (url_argc >= 2 && !scheme_explicit) {
         out->port = (uint16_t)atoi(url_argv[1]);
         if (out->port == 0) {
             printf("fetch: invalid port '%s'\r\n", url_argv[1]);
             return -1;
         }
+
         out->use_tls = (out->port == DEFAULT_HTTPS_PORT) ? 1 : 0;
     }
     if (url_argc >= 3 && !scheme_explicit) {
         snprintf(out->path, sizeof(out->path), "%s", url_argv[2]);
     }
 
-    /* Remove trailing slash from empty paths */
+    /* Default an empty path to / */
     if (out->path[0] == '\0')
         snprintf(out->path, sizeof(out->path), "%s", DEFAULT_PATH);
 
@@ -773,6 +767,7 @@ int main(int argc, char *argv[]) {
                 printf("fetch: -o requires a filename\r\n");
                 return 1;
             }
+
             save_mode = 1;
             explicit_output = 1;
             snprintf(output_file, sizeof(output_file), "%s", argv[++i]);
@@ -798,8 +793,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Handle --save auto filename derivation.
-     * Explicit -o takes priority: if both -o and --save are given,
+    /* Explicit -o takes priority: if both -o and --save are given,
      * use the -o filename and ignore --save's auto-derivation. */
     if (save_mode) {
         if (auto_name && !explicit_output) {
@@ -832,6 +826,7 @@ int main(int argc, char *argv[]) {
             printf("fetch: failed to resolve '%s'\r\n", params.host);
             return 1;
         }
+
         char ip_str[16];
         format_ip(ip, ip_str, sizeof(ip_str));
         printf("fetch: resolved to %s\r\n", ip_str);

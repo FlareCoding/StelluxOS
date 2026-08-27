@@ -21,6 +21,7 @@ static int32_t vma_after_all() {
     if (final_free != g_initial_free_pages) {
         return -1;
     }
+
     return 0;
 }
 
@@ -158,12 +159,13 @@ TEST(vma_test, prot_none_map_and_mprotect_roundtrip) {
     mm::mm_context* mm_ctx = mm::mm_context_create();
     ASSERT_NOT_NULL(mm_ctx);
 
+    // Map one page with no access rights (PROT_NONE)
     uintptr_t mapped = 0;
     ASSERT_EQ(mm::mm_context_map_anonymous(
         mm_ctx,
         0,
         PAGE,
-        0, // PROT_NONE
+        0,
         mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS,
         &mapped
     ), mm::MM_CTX_OK);

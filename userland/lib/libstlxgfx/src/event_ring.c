@@ -5,6 +5,7 @@ void stlxgfx_event_ring_init(stlxgfx_event_ring_t* ring) {
     if (!ring) {
         return;
     }
+
     atomic_store_explicit(&ring->write_index, 0, memory_order_relaxed);
     atomic_store_explicit(&ring->read_index, 0, memory_order_relaxed);
     ring->overflow_count = 0;

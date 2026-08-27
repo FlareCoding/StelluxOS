@@ -23,12 +23,15 @@ int walk(uint64_t initial_fp, frame* out, int max_frames) {
         uint64_t saved_lr = frame_base[1];
         if (saved_lr == 0) break;
         if (saved_lr < 0xFFFF000000000000ULL) break;
+
         out[count].frame_ptr   = fp;
         out[count].return_addr = saved_lr;
         count++;
+
         prev_fp = fp;
         fp = saved_fp;
     }
+
     return count;
 }
 

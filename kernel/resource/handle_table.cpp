@@ -55,14 +55,17 @@ __PRIVILEGED_CODE int32_t alloc_handle(
     if (!table || !obj || !out_handle) {
         return HANDLE_ERR_INVAL;
     }
+
     if (type == resource_type::UNKNOWN) {
         return HANDLE_ERR_INVAL;
     }
+
     if ((rights & ~RIGHT_MASK) != 0) {
         return HANDLE_ERR_INVAL;
     }
 
     sync::irq_lock_guard guard(table->lock);
+
     for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
         handle_entry& entry = table->entries[i];
         if (entry.used) {
@@ -70,6 +73,7 @@ __PRIVILEGED_CODE int32_t alloc_handle(
         }
 
         resource_add_ref(obj);
+
         entry.used = true;
         entry.generation++;
         entry.flags = 0;
@@ -98,9 +102,11 @@ __PRIVILEGED_CODE int32_t get_handle_object(
     if (!table || !out_obj) {
         return HANDLE_ERR_INVAL;
     }
+
     if (handle < 0 || static_cast<uint32_t>(handle) >= MAX_TASK_HANDLES) {
         return HANDLE_ERR_NOENT;
     }
+
     if ((required_rights & ~RIGHT_MASK) != 0) {
         return HANDLE_ERR_INVAL;
     }
@@ -110,6 +116,7 @@ __PRIVILEGED_CODE int32_t get_handle_object(
     if (!entry.used || !entry.obj || entry.type == resource_type::UNKNOWN) {
         return HANDLE_ERR_NOENT;
     }
+
     if ((entry.rights & required_rights) != required_rights) {
         return HANDLE_ERR_ACCESS;
     }
@@ -122,6 +129,7 @@ __PRIVILEGED_CODE int32_t get_handle_object(
     if (out_rights) {
         *out_rights = entry.rights;
     }
+
     return HANDLE_OK;
 }
 
@@ -136,6 +144,7 @@ __PRIVILEGED_CODE int32_t get_handle_flags(
     if (!table || !out_flags) {
         return HANDLE_ERR_INVAL;
     }
+
     if (handle < 0 || static_cast<uint32_t>(handle) >= MAX_TASK_HANDLES) {
         return HANDLE_ERR_NOENT;
     }
@@ -161,6 +170,7 @@ __PRIVILEGED_CODE int32_t set_handle_flags(
     if (!table) {
         return HANDLE_ERR_INVAL;
     }
+
     if (handle < 0 || static_cast<uint32_t>(handle) >= MAX_TASK_HANDLES) {
         return HANDLE_ERR_NOENT;
     }
@@ -188,9 +198,11 @@ __PRIVILEGED_CODE int32_t install_handle_at(
     if (!table || !obj) {
         return HANDLE_ERR_INVAL;
     }
+
     if (slot < 0 || static_cast<uint32_t>(slot) >= MAX_TASK_HANDLES) {
         return HANDLE_ERR_INVAL;
     }
+
     if (type == resource_type::UNKNOWN) {
         return HANDLE_ERR_INVAL;
     }
@@ -205,6 +217,7 @@ __PRIVILEGED_CODE int32_t install_handle_at(
         }
 
         resource_add_ref(obj);
+
         entry.used = true;
         entry.generation++;
         entry.flags = 0;
@@ -216,6 +229,7 @@ __PRIVILEGED_CODE int32_t install_handle_at(
     if (old_obj) {
         resource_release(old_obj);
     }
+
     return HANDLE_OK;
 }
 
@@ -230,6 +244,7 @@ __PRIVILEGED_CODE int32_t remove_handle(
     if (!table || !out_obj) {
         return HANDLE_ERR_INVAL;
     }
+
     if (handle < 0 || static_cast<uint32_t>(handle) >= MAX_TASK_HANDLES) {
         return HANDLE_ERR_NOENT;
     }

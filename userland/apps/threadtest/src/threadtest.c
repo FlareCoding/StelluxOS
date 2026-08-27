@@ -175,7 +175,7 @@ static void test_thread_detach(void) {
     nanosleep(&ts, NULL);
 
     check("detached thread set flag", __atomic_load_n(&g_detach_flag, __ATOMIC_SEQ_CST) == 1);
-    // stack not freed: detached thread may still be using it; reclaimed at process exit
+    // stack not freed: detached thread may still be using it, reclaimed at process exit
 }
 
 /* ---------- test 6: shared_memory_write ---------- */
@@ -367,6 +367,7 @@ static void test_nested_thread_create(void) {
     proc_thread_start(h);
     int status = 0;
     proc_thread_join(h, &status);
+
     check("thread A exited cleanly", STLX_WIFEXITED(status) && STLX_WEXITSTATUS(status) == 0);
     check("thread B completed", __atomic_load_n(&g_nested_b_done, __ATOMIC_SEQ_CST) == 1);
     check("thread A completed", __atomic_load_n(&g_nested_a_done, __ATOMIC_SEQ_CST) == 1);
@@ -483,7 +484,7 @@ static void test_join_after_detach(void) {
 
     struct timespec ts = { .tv_sec = 0, .tv_nsec = 200000000 };
     nanosleep(&ts, NULL);
-    // stack not freed: detached thread may still be using it; reclaimed at process exit
+    // stack not freed: detached thread may still be using it, reclaimed at process exit
 }
 
 /* ---------- child process mode for leader_exit_kills_threads ---------- */

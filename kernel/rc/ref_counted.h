@@ -40,9 +40,11 @@ public:
         if (cur == REFCOUNT_POISON) {
             log::fatal("rc: add_ref on poisoned object %p", this);
         }
+
         if (cur == 0) {
             log::fatal("rc: add_ref on zero-ref object %p", this);
         }
+
         if (cur >= REFCOUNT_SATURATED) {
             log::warn("rc: refcount saturated on %p", this);
             return;

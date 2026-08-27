@@ -4,17 +4,10 @@
 
 /* ---- Redirect parsing ----
  *
- * Scans a command string for unquoted < , > , >> operators.
- * Extracts the target filename and blanks the redirect region with spaces
- * so that parse_line() never sees the redirect tokens.
- *
- * Handles:
- *   cmd > file       (truncate)
- *   cmd >> file      (append)
- *   cmd < file       (input)
- *   cmd >file        (no space before filename)
- *   cmd >"file"      (quoted filename)
- *   combinations:    cmd < in > out
+ * Extracts unquoted <, > and >> operators and their target filenames
+ * (bare or quoted, with or without a space before the name), then
+ * blanks the redirect region with spaces so parse_line() never sees
+ * the redirect tokens. Redirects combine freely: cmd < in > out.
  */
 
 /* Read a filename token starting at *pos. Advances *pos past it.
@@ -30,12 +23,12 @@ static int read_filename(char* line, int* pos, char* dst, int dst_size) {
 
     if (line[*pos] == '"' || line[*pos] == '\'') {
         char q = line[*pos];
-        (*pos)++;  /* skip opening quote */
+        (*pos)++; /* skip opening quote */
         while (line[*pos] && line[*pos] != q) {
             if (out < dst_size - 1) dst[out++] = line[*pos];
             (*pos)++;
         }
-        if (line[*pos] == q) (*pos)++;  /* skip closing quote */
+        if (line[*pos] == q) (*pos)++; /* skip closing quote */
     } else {
         while (line[*pos] && line[*pos] != ' ' && line[*pos] != '\t' &&
                line[*pos] != '>' && line[*pos] != '<' && line[*pos] != '|') {
@@ -45,6 +38,7 @@ static int read_filename(char* line, int* pos, char* dst, int dst_size) {
     }
 
     if (out == 0) return -1;
+
     dst[out] = '\0';
     return out;
 }
@@ -65,11 +59,13 @@ int parse_redirects(char* line, redirect_info* redir) {
             i++;
             continue;
         }
+
         if (in_quote && line[i] == in_quote) {
             in_quote = 0;
             i++;
             continue;
         }
+
         if (in_quote) {
             i++;
             continue;

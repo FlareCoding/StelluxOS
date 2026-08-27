@@ -49,6 +49,7 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
         if (type != SOCK_STREAM || protocol != 0) {
             return syscall::EINVAL;
         }
+
         rc = socket::create_unbound_socket(&obj);
     } else if (domain == AF_INET) {
         if (type == SOCK_STREAM && (protocol == 0 || protocol == IPPROTO_TCP)) {
@@ -77,6 +78,7 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
         resource::resource_release(obj);
         return syscall::EMFILE;
     }
+
     resource::resource_release(obj);
     return h;
 }
@@ -85,12 +87,15 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
     if (domain != AF_UNIX) {
         return syscall::EINVAL;
     }
+
     if (type != SOCK_STREAM) {
         return syscall::EINVAL;
     }
+
     if (protocol != 0) {
         return syscall::EINVAL;
     }
+
     if (sv == 0) {
         return syscall::EFAULT;
     }
@@ -117,6 +122,7 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
         resource::resource_release(obj_b);
         return syscall::EMFILE;
     }
+
     resource::resource_release(obj_a);
 
     resource::handle_t h1 = -1;
@@ -129,6 +135,7 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
         resource::resource_release(obj_b);
         return syscall::EMFILE;
     }
+
     resource::resource_release(obj_b);
 
     int32_t kbuf[2] = {h0, h1};
@@ -146,6 +153,7 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
 
 DEFINE_SYSCALL3(bind, fd, addr, addrlen) {
     if (addr == 0) return syscall::EFAULT;
+
     if (addrlen < sizeof(uint16_t)) return syscall::EINVAL;
 
     sched::task* task = sched::current();
@@ -156,10 +164,12 @@ DEFINE_SYSCALL3(bind, fd, addr, addrlen) {
         task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
+
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
         resource::resource_release(obj);
         return syscall::EINVAL;
     }
+
     if (!obj->ops || !obj->ops->bind) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
@@ -189,10 +199,12 @@ DEFINE_SYSCALL2(listen, fd, backlog) {
         task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
+
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
         resource::resource_release(obj);
         return syscall::EINVAL;
     }
+
     if (!obj->ops || !obj->ops->listen) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
@@ -205,6 +217,7 @@ DEFINE_SYSCALL2(listen, fd, backlog) {
 
 DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
     if (addr == 0) return syscall::EFAULT;
+
     if (addrlen < sizeof(uint16_t)) return syscall::EINVAL;
 
     sched::task* task = sched::current();
@@ -215,10 +228,12 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
         task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
+
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
         resource::resource_release(obj);
         return syscall::EINVAL;
     }
+
     if (!obj->ops || !obj->ops->connect) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
@@ -249,10 +264,12 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
         task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &listen_obj, &handle_flags);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
+
     if (listen_obj->type != resource::resource_type::SOCKET || !listen_obj->impl) {
         resource::resource_release(listen_obj);
         return syscall::EINVAL;
     }
+
     if (!listen_obj->ops || !listen_obj->ops->accept) {
         resource::resource_release(listen_obj);
         return syscall::EOPNOTSUPP;
@@ -281,6 +298,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
         resource::resource_release(listen_obj);
         return syscall::EMFILE;
     }
+
     resource::resource_release(new_obj);
     resource::resource_release(listen_obj);
 
@@ -322,12 +340,12 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
+
     if (!obj->ops || !obj->ops->sendto) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
     }
 
-    // Copy data from userspace
     size_t data_len = static_cast<size_t>(len);
     if (data_len > SENDTO_MAX_BUF) {
         resource::resource_release(obj);
@@ -347,7 +365,6 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
         return syscall::EFAULT;
     }
 
-    // Copy sockaddr from userspace
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t addr_len = 0;
     if (dest_addr != 0 && addrlen > 0) {
@@ -357,6 +374,7 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
             resource::resource_release(obj);
             return syscall::EINVAL;
         }
+
         copy_rc = mm::uaccess::copy_from_user(kaddr, reinterpret_cast<const void*>(dest_addr), addr_len);
         if (copy_rc != mm::uaccess::OK) {
             heap::kfree(kbuf);
@@ -374,6 +392,7 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
     if (result < 0) {
         return syscall::EIO;
     }
+
     return result;
 }
 
@@ -395,6 +414,7 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
+
     if (!obj->ops || !obj->ops->recvfrom) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
@@ -424,10 +444,10 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
         if (result == resource::ERR_AGAIN) {
             return syscall::EAGAIN;
         }
+
         return syscall::EIO;
     }
 
-    // Copy data to userspace
     int32_t copy_rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(buf), kbuf, static_cast<size_t>(result));
     heap::kfree(kbuf);
@@ -436,7 +456,6 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
         return syscall::EFAULT;
     }
 
-    // Copy source address to userspace if requested
     if (src_addr != 0 && addrlen != 0) {
         uint32_t user_addrlen = 0;
         copy_rc = mm::uaccess::copy_from_user(
@@ -478,10 +497,12 @@ DEFINE_SYSCALL5(setsockopt, fd, level, optname, optval, optlen) {
         task->handles, static_cast<resource::handle_t>(fd),
         resource::RIGHT_READ, &obj);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
+
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
         resource::resource_release(obj);
         return syscall::EINVAL;
     }
+
     if (!obj->ops || !obj->ops->setsockopt) {
         resource::resource_release(obj);
         return syscall::ENOPROTOOPT;
@@ -519,10 +540,12 @@ DEFINE_SYSCALL5(getsockopt, fd, level, optname, optval, optlen) {
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
     }
+
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
         resource::resource_release(obj);
         return syscall::EINVAL;
     }
+
     if (!obj->ops || !obj->ops->getsockopt) {
         resource::resource_release(obj);
         return syscall::ENOPROTOOPT;

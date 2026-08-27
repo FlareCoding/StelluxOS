@@ -43,6 +43,7 @@ static int isig_run_victim(const char* path, const char** args,
         close(slave_fd);
         return -1;
     }
+
     proc_set_handle(proc, 0, slave_fd);
     proc_set_handle(proc, 1, slave_fd);
     proc_set_handle(proc, 2, slave_fd);
@@ -57,6 +58,7 @@ static int isig_run_victim(const char* path, const char** args,
         close(slave_fd);
         return -1;
     }
+
     proc_start(proc);
 
     /* Wait for the readiness marker, or give the victim time to block */
@@ -83,10 +85,12 @@ static int isig_test(void) {
     if (isig_run_victim("/bin/sleep", sleep_args, 0, &status) != 0) {
         return -1;
     }
+
     if (!STLX_WIFSIGNALED(status) || STLX_WTERMSIG(status) != SIGINT) {
         printf("ptytest: ISIG kill FAILED (status=%d)\n", status);
         return -1;
     }
+
     printf("ptytest: ISIG ^C killed foreground child\n");
 
     /* Installed handler: ^C must run it instead of killing */
@@ -95,10 +99,12 @@ static int isig_test(void) {
     if (isig_run_victim("/bin/ptytest", catch_args, 1, &status) != 0) {
         return -1;
     }
+
     if (!STLX_WIFEXITED(status) || STLX_WEXITSTATUS(status) != 42) {
         printf("ptytest: ISIG handler FAILED (status=%d)\n", status);
         return -1;
     }
+
     printf("ptytest: ISIG ^C ran the child's handler\n");
     return 0;
 }
@@ -107,6 +113,7 @@ int main(int argc, char** argv) {
     if (argc >= 2 && strcmp(argv[1], "--catch-int") == 0) {
         return catch_int_child();
     }
+
     setvbuf(stdout, NULL, _IONBF, 0);
 
     int master_fd, slave_fd;
@@ -114,6 +121,7 @@ int main(int argc, char** argv) {
         printf("ptytest: pty_create failed\n");
         return 1;
     }
+
     printf("ptytest: created PTY pair (master=%d, slave=%d)\n", master_fd, slave_fd);
 
     ioctl(slave_fd, STLX_TCSETS_RAW, 0);

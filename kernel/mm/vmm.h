@@ -29,7 +29,7 @@ __PRIVILEGED_CODE int32_t init();
 
 /**
  * @brief Allocate non-contiguous pages (always 4KB).
- * Zeroing is forced if PAGE_USER is set in flags; optional via ALLOC_ZERO.
+ * Zeroing is forced if PAGE_USER is set in flags, optional via ALLOC_ZERO.
  * @param pages Number of 4KB pages (> 0).
  * @param flags Page permissions (PAGE_USER determines access level and zeroing).
  * @param alloc_flags ALLOC_ZERO only (large page flags ignored).
@@ -91,7 +91,7 @@ __PRIVILEGED_CODE int32_t init();
 
 /**
  * @brief Map a physical device region for MMIO (no physical allocation).
- * Physical address may be non-page-aligned; offset is handled internally.
+ * Physical address may be non-page-aligned, the offset is handled internally.
  * Forces PAGE_DEVICE if no cache type (PAGE_DEVICE, PAGE_WC) is specified.
  * @param phys Physical address of device region.
  * @param size Size in bytes (> 0).
@@ -113,7 +113,7 @@ __PRIVILEGED_CODE int32_t init();
  * @brief Map caller-provided physical pages into kernel VA (no physical allocation).
  * Unlike map_device, does not force any cache type, caller controls caching.
  * Useful for firmware tables, shared memory, framebuffers, etc.
- * Physical pages are not freed on vmm::free(); caller retains ownership.
+ * Physical pages are not freed on vmm::free(), the caller retains ownership.
  * @param phys Physical address (may be non-page-aligned).
  * @param size Size in bytes (> 0).
  * @param flags Page permissions and cache type (caller's choice).

@@ -65,6 +65,7 @@ __PRIVILEGED_CODE static int32_t msi_init_gicv2m(const acpi::madt_info& madt,
         *out_capacity = 0;
         return msi::ERR_INIT;
     }
+
     (void)map_base;
     g_frame_va = map_va;
 
@@ -240,6 +241,7 @@ __PRIVILEGED_CODE bool msi_handle_irq(uint32_t irq_id) {
         if (irq_id != BCM_MSI_SPI_INTID) {
             return false;
         }
+
         uint32_t status = mmio::read32(g_brcm_base + BCM_MSI_INTR2_STATUS);
         while (status != 0) {
             uint32_t bit = __builtin_ctz(status);

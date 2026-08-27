@@ -30,14 +30,17 @@ static bool match_interface(const class_match& match, const usb::interface* ifac
         match.interface_class != iface->interface_class) {
         return false;
     }
+
     if (match.interface_subclass != USB_MATCH_ANY &&
         match.interface_subclass != iface->interface_subclass) {
         return false;
     }
+
     if (match.interface_protocol != USB_MATCH_ANY &&
         match.interface_protocol != iface->interface_protocol) {
         return false;
     }
+
     return true;
 }
 
@@ -119,6 +122,7 @@ static finalization_ticket claim_finalization_if_ready_locked(usb::device* dev) 
     ticket.hcd = static_cast<drivers::xhci_hcd*>(dev->hcd);
     dev->hcd_device = nullptr;
     dev->hcd = nullptr;
+
     return ticket;
 }
 
@@ -168,7 +172,6 @@ static void class_driver_task_entry(void* arg) {
     sched::exit(0);
 }
 
-// Build a usb::device from the xHCI device's state
 static usb::device* build_usb_device(
     drivers::xhci_hcd* hcd,
     drivers::xhci::xhci_device* xdev,
@@ -197,6 +200,7 @@ static usb::device* build_usb_device(
     dev->disconnect_pending = false;
     dev->hcd_teardown_complete = false;
     dev->finalize_started = false;
+
     xdev->set_core_device(dev);
 
     for (uint8_t i = 0; i < xdev->num_interfaces(); i++) {
@@ -215,6 +219,7 @@ static usb::device* build_usb_device(
             if (!xep) {
                 continue;
             }
+
             auto& ep = iface.endpoints[j];
             ep.address = xep->endpoint_addr();
             ep.transfer_type = xep->transfer_type();
@@ -273,6 +278,7 @@ void device_configured(drivers::xhci_hcd* hcd,
                 drv->m_bound_device = dev;
                 drv->m_bound_slot_id = slot_id;
                 drv->m_bound_interface_index = i;
+
                 sync::irq_state dev_irq = sync::spin_lock_irqsave(dev->lifetime_lock);
                 dev->active_driver_count++;
                 sync::spin_unlock_irqrestore(dev->lifetime_lock, dev_irq);
@@ -307,7 +313,6 @@ void device_disconnected(drivers::xhci_hcd*,
         sync::spin_unlock_irqrestore(dev->lifetime_lock, irq);
     });
 
-    // Notify bound class drivers
     uint8_t slot_id = xdev->slot_id();
     for (uint8_t i = 0; i < dev->num_interfaces; i++) {
         uint16_t drv_idx = static_cast<uint16_t>(slot_id) * 16 + i;

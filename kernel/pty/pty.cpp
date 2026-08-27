@@ -38,6 +38,7 @@ __PRIVILEGED_CODE void pty_channel::ref_destroy(pty_channel* self) {
     if (!self) {
         return;
     }
+
     ring_buffer_destroy(self->m_input_rb);
     ring_buffer_destroy(self->m_output_rb);
     heap::kfree_delete(self);
@@ -64,13 +65,16 @@ static ssize_t pty_master_read(
     if (!obj || !obj->impl || !kdst) {
         return resource::ERR_INVAL;
     }
+
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
+
     ssize_t result;
     RUN_ELEVATED({
         result = ring_buffer_read(ep->channel->m_output_rb,
                                   static_cast<uint8_t*>(kdst), count, nonblock);
     });
+
     return result;
 }
 
@@ -81,6 +85,7 @@ static ssize_t pty_master_write(
     if (!obj || !obj->impl || !ksrc) {
         return resource::ERR_INVAL;
     }
+
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     auto* chan = ep->channel.ptr();
 
@@ -95,6 +100,7 @@ static ssize_t pty_master_write(
             result = static_cast<ssize_t>(count);
         }
     });
+
     return result;
 }
 
@@ -102,8 +108,8 @@ static void pty_master_close(resource::resource_object* obj) {
     if (!obj || !obj->impl) {
         return;
     }
-    auto* ep = static_cast<pty_endpoint*>(obj->impl);
 
+    auto* ep = static_cast<pty_endpoint*>(obj->impl);
     RUN_ELEVATED({
         ring_buffer_close_write(ep->channel->m_input_rb);
         ring_buffer_close_read(ep->channel->m_output_rb);
@@ -120,13 +126,16 @@ static ssize_t pty_slave_read(
     if (!obj || !obj->impl || !kdst) {
         return resource::ERR_INVAL;
     }
+
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
+
     ssize_t result;
     RUN_ELEVATED({
         result = ring_buffer_read(ep->channel->m_input_rb,
                                   static_cast<uint8_t*>(kdst), count, nonblock);
     });
+
     return result;
 }
 
@@ -152,14 +161,16 @@ static ssize_t pty_slave_write_onlcr(pty_channel* chan,
             if (n < 0) {
                 return consumed > 0 ? static_cast<ssize_t>(consumed) : n;
             }
+
             consumed += static_cast<size_t>(n);
-            // Short write: rewind i to retry remaining bytes next time
+
+            // Partial ring write, report progress and let the caller retry the rest
             if (static_cast<size_t>(n) < chunk_len) {
                 return static_cast<ssize_t>(consumed);
             }
         }
 
-        // If we hit a \n, write \r\n atomically (all-or-nothing).
+        // Write \r\n all-or-nothing so a short write cannot split the pair
         if (i < count && src[i] == '\n') {
             static const uint8_t crlf[2] = {'\r', '\n'};
             ssize_t n = ring_buffer_write_all(chan->m_output_rb,
@@ -167,10 +178,12 @@ static ssize_t pty_slave_write_onlcr(pty_channel* chan,
             if (n < 0) {
                 return consumed > 0 ? static_cast<ssize_t>(consumed) : n;
             }
+
             consumed++; // count the original \n byte consumed
             i++;
         }
     }
+
     return static_cast<ssize_t>(consumed);
 }
 
@@ -180,11 +193,12 @@ static ssize_t pty_slave_write(
     if (!obj || !obj->impl || !ksrc) {
         return resource::ERR_INVAL;
     }
+
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
     auto* chan = ep->channel.ptr();
-    ssize_t result;
 
+    ssize_t result;
     RUN_ELEVATED({
         if (chan->m_oflags & PTY_OFLAG_ONLCR) {
             result = pty_slave_write_onlcr(chan,
@@ -194,6 +208,7 @@ static ssize_t pty_slave_write(
                          static_cast<const uint8_t*>(ksrc), count, nonblock);
         }
     });
+
     return result;
 }
 
@@ -201,8 +216,8 @@ static void pty_slave_close(resource::resource_object* obj) {
     if (!obj || !obj->impl) {
         return;
     }
-    auto* ep = static_cast<pty_endpoint*>(obj->impl);
 
+    auto* ep = static_cast<pty_endpoint*>(obj->impl);
     RUN_ELEVATED({
         ring_buffer_close_write(ep->channel->m_output_rb);
         ring_buffer_close_read(ep->channel->m_input_rb);
@@ -315,6 +330,7 @@ static int32_t pty_ioctl(
     if (!obj || !obj->impl) {
         return resource::ERR_INVAL;
     }
+
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     return pty_termios_ioctl(ep->channel.ptr(), cmd, arg);
 }
@@ -323,12 +339,14 @@ static uint32_t pty_master_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
+
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     uint32_t mask = 0;
     RUN_ELEVATED({
         mask = ring_buffer_poll_read(ep->channel->m_output_rb, pt)
              | ring_buffer_poll_write(ep->channel->m_input_rb, pt);
     });
+
     return mask;
 }
 
@@ -336,12 +354,14 @@ static uint32_t pty_slave_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
+
     auto* ep = static_cast<pty_endpoint*>(obj->impl);
     uint32_t mask = 0;
     RUN_ELEVATED({
         mask = ring_buffer_poll_read(ep->channel->m_input_rb, pt)
              | ring_buffer_poll_write(ep->channel->m_output_rb, pt);
     });
+
     return mask;
 }
 
@@ -413,6 +433,7 @@ __PRIVILEGED_CODE int32_t create_pair(
     terminal::ld_init(&chan->m_ld);
     chan->m_echo = { pty_echo_fn, chan.ptr() };
     chan->m_sig = { pty_signal_fn, chan.ptr() };
+
     chan->m_id = g_next_pty_id.fetch_add_relaxed(1);
     chan->m_oflags = PTY_OFLAG_ONLCR;
     chan->m_fg_group.store_relaxed(0);
@@ -422,6 +443,7 @@ __PRIVILEGED_CODE int32_t create_pair(
     if (!ep_master) {
         return resource::ERR_NOMEM;
     }
+
     ep_master->channel = chan;
     ep_master->is_master = true;
 
@@ -430,6 +452,7 @@ __PRIVILEGED_CODE int32_t create_pair(
         heap::kfree_delete(ep_master);
         return resource::ERR_NOMEM;
     }
+
     ep_slave->channel = static_cast<rc::strong_ref<pty_channel>&&>(chan);
     ep_slave->is_master = false;
 
@@ -439,6 +462,7 @@ __PRIVILEGED_CODE int32_t create_pair(
         heap::kfree_delete(ep_master);
         return resource::ERR_NOMEM;
     }
+
     obj_master->type = resource::resource_type::PTY;
     obj_master->ops = &g_pty_master_ops;
     obj_master->impl = ep_master;
@@ -450,6 +474,7 @@ __PRIVILEGED_CODE int32_t create_pair(
         heap::kfree_delete(ep_master);
         return resource::ERR_NOMEM;
     }
+
     obj_slave->type = resource::resource_type::PTY;
     obj_slave->ops = &g_pty_slave_ops;
     obj_slave->impl = ep_slave;

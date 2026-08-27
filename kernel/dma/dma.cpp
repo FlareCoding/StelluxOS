@@ -66,12 +66,15 @@ __PRIVILEGED_CODE int32_t pool::init(size_t object_size, size_t alignment,
     if (m_initialized) {
         return ERR_INVALID_ARG;
     }
+
     if (object_size == 0 || capacity == 0) {
         return ERR_INVALID_ARG;
     }
+
     if (object_size > pmm::PAGE_SIZE) {
         return ERR_INVALID_ARG;
     }
+
     if (!is_power_of_2(alignment) || alignment > pmm::PAGE_SIZE) {
         return ERR_INVALID_ARG;
     }
@@ -85,6 +88,7 @@ __PRIVILEGED_CODE int32_t pool::init(size_t object_size, size_t alignment,
     if (objs_per_page == 0) {
         return ERR_INVALID_ARG;
     }
+
     if (objs_per_page > SLAB_BITMAP_BITS) {
         return ERR_INVALID_ARG;
     }
@@ -93,6 +97,7 @@ __PRIVILEGED_CODE int32_t pool::init(size_t object_size, size_t alignment,
     if (computed_slab_count > 0xFFFF) {
         return ERR_INVALID_ARG;
     }
+
     uint16_t slab_count = static_cast<uint16_t>(computed_slab_count);
 
     slab* slabs = static_cast<slab*>(
@@ -130,9 +135,11 @@ __PRIVILEGED_CODE int32_t pool::init(size_t object_size, size_t alignment,
     m_lock = sync::SPINLOCK_INIT;
     m_slabs = slabs;
     m_slab_count = slab_count;
+
     m_obj_size = object_size;
     m_obj_stride = stride;
     m_objs_per_page = objs_per_page;
+
     m_total_capacity = capacity;
     m_used_count = 0;
     m_initialized = true;
@@ -229,9 +236,11 @@ __PRIVILEGED_CODE void pool::destroy() {
 
     m_slabs = nullptr;
     m_slab_count = 0;
+
     m_obj_size = 0;
     m_obj_stride = 0;
     m_objs_per_page = 0;
+
     m_total_capacity = 0;
     m_used_count = 0;
     m_initialized = false;

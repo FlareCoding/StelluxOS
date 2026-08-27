@@ -78,7 +78,7 @@ ssize_t readdir(file* f, dirent* entries, size_t count);
 /**
  * @brief Resolve path relative to base_dir when path is not absolute.
  * If path is absolute, base_dir is ignored.
- * On success, *out has add_ref() called; caller must release.
+ * On success, *out has add_ref() called, caller must release.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, node** out);
@@ -86,7 +86,7 @@ __PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, node** out
 /**
  * @brief Resolve parent directory of path relative to base_dir.
  * If path is absolute, base_dir is ignored.
- * On success, *out_parent has add_ref() called; caller must release.
+ * On success, *out_parent has add_ref() called, caller must release.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t resolve_parent_path_at(
@@ -113,7 +113,7 @@ __PRIVILEGED_CODE int32_t lookup(const char* path, node** out);
 
 /**
  * @brief Resolve the parent directory of a path and extract the final component.
- * On success, *out_parent has add_ref() called; caller must release.
+ * On success, *out_parent has add_ref() called, caller must release.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t resolve_parent_path(

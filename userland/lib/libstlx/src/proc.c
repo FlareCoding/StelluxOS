@@ -17,11 +17,13 @@ int proc_exec(const char* path, const char* argv[]) {
     if (handle < 0) {
         return handle;
     }
+
     int err = proc_start(handle);
     if (err < 0) {
         close(handle);
         return err;
     }
+
     return handle;
 }
 

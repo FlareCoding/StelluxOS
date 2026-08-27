@@ -88,6 +88,7 @@ static int item_index_at(const stlxdm_taskbar_t* tb,
             return i;
         }
     }
+
     return -1;
 }
 
@@ -236,6 +237,7 @@ void stlxdm_taskbar_on_release(stlxdm_taskbar_t* tb,
             }
         }
     }
+
     tb->press_index = -1;
 }
 

@@ -25,6 +25,7 @@ int stlxgfx_fb_open(stlxgfx_fb_t* fb) {
     if (!fb) {
         return -1;
     }
+
     memset(fb, 0, sizeof(*fb));
     fb->fd = -1;
 
@@ -66,6 +67,7 @@ void stlxgfx_fb_close(stlxgfx_fb_t* fb) {
     if (!fb) {
         return;
     }
+
     if (fb->buffer) {
         munmap(fb->buffer, fb->size);
         fb->buffer = NULL;
@@ -80,6 +82,7 @@ stlxgfx_surface_t* stlxgfx_fb_surface(stlxgfx_fb_t* fb) {
     if (!fb || !fb->buffer) {
         return NULL;
     }
+
     return stlxgfx_surface_from_buffer(fb->buffer,
                                         fb->width, fb->height, fb->pitch,
                                         fb->bpp, fb->red_shift,
@@ -91,6 +94,7 @@ stlxgfx_surface_t* stlxgfx_fb_create_surface(const stlxgfx_fb_t* fb,
     if (!fb) {
         return NULL;
     }
+
     return stlxgfx_create_surface(width, height, fb->bpp,
                                    fb->red_shift, fb->green_shift, fb->blue_shift);
 }
@@ -137,6 +141,7 @@ void stlxgfx_fb_present_region(stlxgfx_fb_t* fb,
 
     if (x1 > max_w) x1 = max_w;
     if (y1 > max_h) y1 = max_h;
+
     if (x0 >= x1 || y0 >= y1) return;
 
     uint32_t bpp = fb->bpp / 8;

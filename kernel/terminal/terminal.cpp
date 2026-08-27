@@ -67,6 +67,7 @@ __PRIVILEGED_CODE int32_t init() {
         log::error("terminal: failed to allocate console_node");
         return ERR;
     }
+
     auto* cn = new (cn_mem) console_node(nullptr, "console");
     int32_t rc = devfs::add_char_device("console", cn);
     if (rc != devfs::OK) {
@@ -93,6 +94,7 @@ __PRIVILEGED_CODE static ssize_t terminal_read(
     if (!obj || !obj->impl || !kdst) {
         return RB_ERR_INVAL;
     }
+
     auto* rb = static_cast<ring_buffer*>(obj->impl);
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
     return ring_buffer_read(rb, static_cast<uint8_t*>(kdst), count, nonblock);
@@ -112,6 +114,7 @@ __PRIVILEGED_CODE static uint32_t terminal_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
+
     auto* rb = static_cast<ring_buffer*>(obj->impl);
     return ring_buffer_poll_read(rb, pt) | sync::POLL_OUT;
 }
@@ -150,6 +153,7 @@ int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
         RUN_ELEVATED({
             g = static_cast<int32_t>(g_console.fg_group.load_acquire());
         });
+
         return mm::uaccess::copy_to_user(
             reinterpret_cast<void*>(arg), &g, sizeof(g)) == mm::uaccess::OK
             ? OK : fs::ERR_INVAL;
@@ -173,6 +177,7 @@ int32_t console_ioctl(uint32_t cmd, uint64_t arg) {
                 g_console.fg_group.store_release(static_cast<uint32_t>(g));
             }
         });
+
         return result;
     }
 

@@ -62,7 +62,7 @@ __PRIVILEGED_CODE int32_t alloc_handle(
 
 /**
  * @brief Resolve handle to resource object with rights check.
- * Increments object refcount on success; caller must release.
+ * Increments object refcount on success, caller must release.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t get_handle_object(
@@ -110,7 +110,7 @@ __PRIVILEGED_CODE int32_t install_handle_at(
 
 /**
  * @brief Remove handle entry and return held object reference.
- * Does not release object; caller owns one reference on success.
+ * Does not release object, caller owns one reference on success.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t remove_handle(

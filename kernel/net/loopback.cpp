@@ -10,16 +10,9 @@ static netif g_lo_netif = {};
 static bool g_lo_initialized = false;
 
 /**
- * Loopback transmit callback.
- * Feeds the frame directly back to the receive path.
- *
- * Safety: This is called from eth_send() which is called from:
- *   (a) ipv4_send(), top-level send path, not inside RX processing
- *   (b) drain_deferred_tx(), also top-level, after RX delivery
- * In both cases, we are NOT inside rx_frame() processing, so calling
- * rx_frame() here does not cause recursion. Protocol handlers that
- * need to reply (e.g. ICMP echo) use queue_deferred_tx() to defer
- * their responses.
+ * Loopback transmit callback. Feeds the frame straight back into rx_frame().
+ * Safe from recursion because transmits only happen from top-level send
+ * paths, never inside RX processing, replies use the deferred TX queue.
  */
 static int32_t lo_transmit(netif* iface, const uint8_t* frame, size_t len) {
     if (!iface || !frame || len == 0) {
@@ -29,10 +22,8 @@ static int32_t lo_transmit(netif* iface, const uint8_t* frame, size_t len) {
     // Feed the frame back to the receive path.
     rx_frame(iface, frame, len);
 
-    // Drain any deferred TX that was queued during RX processing
-    // (e.g. ICMP echo replies). For hardware NICs, this is done by
-    // the driver's run() loop or poll_callback(). Since loopback has
-    // no driver event loop, we drain immediately here.
+    // Hardware NICs drain deferred TX from their driver event loop. Loopback
+    // has none, so replies queued during this RX are drained right here.
     drain_deferred_tx();
 
     return OK;
@@ -46,12 +37,11 @@ static bool lo_link_up(netif*) {
 }
 
 __PRIVILEGED_CODE int32_t loopback_init() {
-    // Initialize the loopback netif
     string::memset(&g_lo_netif, 0, sizeof(g_lo_netif));
     string::memcpy(g_lo_netif.name, "lo", 3);
 
-    // Loopback has no real MAC address, use all zeros.
-    // Ethernet framing still works; the MAC is never resolved via ARP.
+    // Loopback has no real MAC. Ethernet framing still works because the
+    // all-zeros MAC is never resolved via ARP.
     string::memset(g_lo_netif.mac, 0, MAC_ADDR_LEN);
 
     g_lo_netif.transmit    = lo_transmit;
@@ -60,7 +50,6 @@ __PRIVILEGED_CODE int32_t loopback_init() {
     g_lo_netif.driver_data = nullptr;
     g_lo_netif.flags       = NETIF_UP | NETIF_RUNNING | NETIF_LOOPBACK;
 
-    // Register with the network stack.
     int32_t rc = register_netif(&g_lo_netif);
     if (rc != OK) {
         log::error("loopback: failed to register interface");
@@ -69,9 +58,9 @@ __PRIVILEGED_CODE int32_t loopback_init() {
 
     // Configure with 127.0.0.1/8 (no gateway needed for loopback)
     rc = configure(&g_lo_netif,
-                   ipv4_addr(127, 0, 0, 1), // IP
-                   ipv4_addr(255, 0, 0, 0), // Netmask (/8)
-                   0); // No gateway
+                   ipv4_addr(127, 0, 0, 1),
+                   ipv4_addr(255, 0, 0, 0),
+                   0);
     if (rc != OK) {
         log::error("loopback: failed to configure interface");
         return rc;

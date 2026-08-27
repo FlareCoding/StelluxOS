@@ -18,11 +18,7 @@ __PRIVILEGED_DATA static inet_socket* g_udp_sock_list = nullptr;
 __PRIVILEGED_DATA static sync::spinlock g_udp_sock_lock = sync::SPINLOCK_INIT;
 __PRIVILEGED_DATA static sync::atomic<uint32_t> g_ephemeral_next{UDP_PORT_EPHEMERAL_MIN};
 
-// Ring buffer entry framing for UDP:
-//   [4 bytes: src_ip, network byte order]
-//   [2 bytes: src_port, network byte order]
-//   [2 bytes: payload_len, host byte order]
-//   [N bytes: UDP payload]
+// Ring buffer entry framing: [src_ip(4, net)] [src_port(2, net)] [payload_len(2, host)] [data(N)]
 constexpr size_t RX_ENTRY_HEADER = 8;
 
 void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
@@ -51,10 +47,8 @@ void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     const uint8_t* payload = data + sizeof(udp_header);
     size_t payload_len = udp_len - sizeof(udp_header);
 
-    // DHCP receive hook: deliver port-68 packets to the DHCP client
-    // via a static buffer, bypassing the socket/ring_buffer path.
-    // This runs before socket delivery so the DHCP client gets the
-    // packet even when no socket is registered on port 68.
+    // Port-68 packets also feed the DHCP client through a static buffer,
+    // so DHCP works even when no socket is registered on the port.
     if (ntohs(dst_port_net) == DHCP_CLIENT_PORT && payload_len > 0) {
         dhcp_rx_hook(payload, payload_len);
     }
@@ -79,6 +73,7 @@ void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     // Lock only for socket lookup + ring buffer write
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_udp_sock_lock);
+
         for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
             if (htons(s->bound_port) == dst_port_net
                 && (s->bound_addr == 0 || s->bound_addr == dst_ip)
@@ -97,6 +92,7 @@ void udp_register_socket(inet_socket* sock) {
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_udp_sock_lock);
+
         sock->next = g_udp_sock_list;
         g_udp_sock_list = sock;
     });
@@ -107,6 +103,7 @@ void udp_unregister_socket(inet_socket* sock) {
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_udp_sock_lock);
+
         inet_socket** pp = &g_udp_sock_list;
         while (*pp) {
             if (*pp == sock) {
@@ -123,15 +120,19 @@ bool udp_try_register(inet_socket* sock) {
     if (!sock || sock->bound_port == 0) {
         return false;
     }
+
     bool reuse = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) != 0;
     bool registered = false;
+
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_udp_sock_lock);
 
         bool conflict = false;
         for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
             if (s == sock) continue;
+
             if (s->bound_port != sock->bound_port) continue;
+
             if (sock->bound_addr != 0 && s->bound_addr != 0
                 && s->bound_addr != sock->bound_addr) continue;
 
@@ -149,6 +150,7 @@ bool udp_try_register(inet_socket* sock) {
             registered = true;
         }
     });
+
     return registered;
 }
 

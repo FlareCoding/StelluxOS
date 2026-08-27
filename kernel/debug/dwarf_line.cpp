@@ -217,6 +217,7 @@ static bool run_line_program(const uint8_t* prog, const uint8_t* end,
     uint64_t address = 0;
     int64_t  line    = 1;
     uint64_t file    = 0;
+
     uint64_t prev_addr = 0;
     int64_t  prev_line = 1;
     uint64_t prev_file = 0;
@@ -325,6 +326,7 @@ static bool run_line_program(const uint8_t* prog, const uint8_t* end,
         out->line = static_cast<uint32_t>(prev_line);
         return out->file != nullptr;
     }
+
     return false;
 }
 
@@ -338,6 +340,7 @@ __PRIVILEGED_CODE int32_t init(const debug::kernel_elf& elf) {
     uint64_t line_size = line_shdr->sh_size;
     auto* line_copy = reinterpret_cast<uint8_t*>(heap::kalloc(line_size));
     if (!line_copy) return ERR_NO_MEMORY;
+
     string::memcpy(line_copy, elf.base + line_shdr->sh_offset, line_size);
 
     const elf64::Shdr* str_shdr = elf.find_section(".debug_line_str");
@@ -386,6 +389,7 @@ bool resolve(uint64_t addr, resolve_result* out) {
 
         p = unit_end;
     }
+
     return false;
 }
 

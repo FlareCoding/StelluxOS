@@ -72,6 +72,7 @@ static void platform_task_entry(void* arg) {
 static bool is_rpi4() {
     const auto* fadt = acpi::find_table("FACP");
     if (!fadt) return false;
+
     return string::memcmp(fadt->oem_id, "RPIFDN", 6) == 0
         && string::memcmp(fadt->oem_table_id, "RPI4", 4) == 0;
 }
@@ -114,7 +115,7 @@ __PRIVILEGED_CODE static int32_t probe_genet() {
     }
 
     if (!found) {
-        // No FDT node; only probe if we can confirm RPi4 via ACPI.
+        // No FDT node, only probe if we can confirm RPi4 via ACPI.
         if (!is_rpi4())
             return -1;
 

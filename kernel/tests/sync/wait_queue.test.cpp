@@ -155,9 +155,8 @@ TEST(wait_queue, wake_all_wakes_everyone) {
 }
 
 // --- producer_consumer ---
-// A producer increments a shared counter N times, calling wake_one
-// after each increment. A consumer waits until the counter reaches N.
-// Validates the canonical mutex/condvar usage pattern.
+// A producer increments a shared counter N times, waking after each, and
+// a consumer waits for the counter to reach N, the canonical condvar pattern.
 
 constexpr uint32_t PC_TARGET = 50;
 
@@ -332,10 +331,8 @@ TEST(wait_queue, wake_one_only_wakes_one) {
 }
 
 // --- wake_with_condition_recheck ---
-// Two tasks wait with different conditions. wake_all is called, but
-// only one condition is true. The task whose condition is false must
-// re-block (the while-loop recheck pattern). Then the second condition
-// is set and wake_all is called again.
+// Two tasks wait on different conditions and wake_all fires with only one
+// condition true, the other task must recheck and re-block until its turn.
 
 static sync::wait_queue g_recheck_wq;
 static sync::spinlock g_recheck_lock;
@@ -362,6 +359,7 @@ static void recheck_waiter_fn(void* arg) {
 TEST(wait_queue, wake_with_condition_recheck) {
     g_recheck_wq.init();
     g_recheck_lock = sync::SPINLOCK_INIT;
+
     g_recheck_go[0].store_relaxed(0);
     g_recheck_go[1].store_relaxed(0);
     g_recheck_ready[0].store_relaxed(0);

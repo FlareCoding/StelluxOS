@@ -193,12 +193,8 @@ TEST(rtl8168_regs_test, rx_desc_error_flags) {
 TEST(rtl8168_regs_test, chip_version_xid_extraction) {
     using namespace drivers::rtl8168;
 
-    // Simulate a TxConfig value for RTL8168B: XID = 0x380
-    // bits [30:28]=011, [26]=1, [23]=1, [22:20]=000 -> (0x38 << 20) ignoring bit 26/23
-    // Actually: (TxConfig >> 20) & 0xFCF
-    // For 0x380: the raw bits in positions [30:28,26,23,22:20] encode to 0x380 after extraction
-
-    // We just verify the mask and shift are consistent
+    // XID is (TxConfig >> 20) & TCR_XID_MASK. The RTL8168B XID 0x380
+    // must survive the mask unchanged.
     uint32_t xid = 0x380;
     EXPECT_EQ(xid & TCR_XID_MASK, xid);
 

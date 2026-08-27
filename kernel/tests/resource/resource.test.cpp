@@ -119,6 +119,7 @@ TEST(resource_test, used_handle_slots_never_have_unknown_type) {
         if (!entry.used) {
             continue;
         }
+
         saw_used = true;
         EXPECT_NOT_NULL(entry.obj);
         EXPECT_NE(entry.type, resource::resource_type::UNKNOWN);
@@ -210,7 +211,7 @@ TEST(resource_test, terminal_release_invokes_close_once) {
         resource::HANDLE_OK
     );
 
-    // Drop creator ownership; table entry keeps one reference.
+    // Drop creator ownership, the table entry keeps one reference.
     resource::resource_release(obj);
     EXPECT_EQ(counter.closes, 0u);
 

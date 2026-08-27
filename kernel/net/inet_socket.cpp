@@ -42,6 +42,7 @@ __PRIVILEGED_CODE static ssize_t inet_sendto(
     if (!kaddr || addrlen < sizeof(kernel_sockaddr_in)) {
         return resource::ERR_INVAL;
     }
+
     const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
     if (addr->sin_family != AF_INET_VAL) {
         return resource::ERR_INVAL;
@@ -85,17 +86,14 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
         RUN_ELEVATED(iface->poll(iface));
     }
 
-    // The header read may block if no data is available. Since entries
-    // are written atomically via ring_buffer_write_all, once the header
-    // is available the payload is guaranteed to be there too. No lock
-    // is needed because the ring buffer has its own internal lock per
-    // read/write, and the atomic write ensures the header and payload
-    // are always a complete unit.
+    // Entries are written as one atomic unit, so once the header is read the
+    // payload is guaranteed to follow, no external locking is needed.
     uint8_t hdr[RX_ENTRY_HEADER];
     ssize_t hdr_rc = ring_buffer_read(sock->rx_buf, hdr, RX_ENTRY_HEADER, nonblock);
     if (hdr_rc == RB_ERR_AGAIN) {
         return resource::ERR_AGAIN;
     }
+
     if (hdr_rc < static_cast<ssize_t>(RX_ENTRY_HEADER)) {
         return resource::ERR_IO;
     }
@@ -109,9 +107,8 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
     ssize_t data_rc = ring_buffer_read(sock->rx_buf, static_cast<uint8_t*>(kdst),
                                        to_read, true);
 
-    // Always drain remaining bytes from this entry to keep the stream
-    // synchronized, even if the payload read failed or the user buffer
-    // was smaller than the packet.
+    // Always drain the rest of the entry so the stream stays framed, even on
+    // short user buffers or failed payload reads.
     size_t consumed = (data_rc > 0) ? static_cast<size_t>(data_rc) : 0;
     if (consumed < payload_len) {
         size_t discard = payload_len - consumed;
@@ -127,7 +124,6 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
         return resource::ERR_IO;
     }
 
-    // Fill in source address
     if (kaddr && addrlen && *addrlen >= sizeof(kernel_sockaddr_in)) {
         auto* src = static_cast<kernel_sockaddr_in*>(kaddr);
         string::memset(src, 0, sizeof(*src));
@@ -142,6 +138,7 @@ __PRIVILEGED_CODE static ssize_t inet_recvfrom(
 __PRIVILEGED_CODE static int32_t inet_ioctl(
     resource::resource_object* obj, uint32_t cmd, uint64_t arg) {
     (void)obj;
+
     if (cmd == STLX_SIOCGNETSTATUS) {
         net_status status = {};
         query_status(&status);
@@ -149,6 +146,7 @@ __PRIVILEGED_CODE static int32_t inet_ioctl(
             reinterpret_cast<void*>(arg), &status, sizeof(status));
         return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
     }
+
     if (cmd == STLX_SIOCGARPTABLE) {
         arp_table_status table = {};
         query_arp_table(&table);
@@ -156,6 +154,7 @@ __PRIVILEGED_CODE static int32_t inet_ioctl(
             reinterpret_cast<void*>(arg), &table, sizeof(table));
         return (rc == mm::uaccess::OK) ? resource::OK : resource::ERR_INVAL;
     }
+
     return resource::ERR_UNSUP;
 }
 
@@ -166,7 +165,6 @@ __PRIVILEGED_CODE static void inet_close(resource::resource_object* obj) {
 
     auto* sock = static_cast<inet_socket*>(obj->impl);
 
-    // Unregister from the protocol layer
     if (sock->protocol == IPV4_PROTO_ICMP) {
         icmp_unregister_socket(sock);
     } else if (sock->protocol == IPV4_PROTO_UDP && sock->bound_port != 0) {
@@ -189,21 +187,21 @@ __PRIVILEGED_CODE static uint32_t inet_poll(
 }
 
 static const resource::resource_ops g_inet_icmp_ops = {
-    nullptr, // read
-    nullptr, // write
+    nullptr,
+    nullptr,
     inet_close,
     inet_ioctl,
-    nullptr, // mmap
+    nullptr,
     inet_sendto,
     inet_recvfrom,
-    nullptr, // bind
-    nullptr,              // listen
-    nullptr,              // accept
-    nullptr, // connect
-    nullptr, // setsockopt
-    nullptr, // getsockopt
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
     inet_poll,
-    nullptr, // shutdown
+    nullptr,
 };
 
 // UDP ring buffer entry framing:
@@ -227,6 +225,7 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
     if (!kaddr || addrlen < sizeof(kernel_sockaddr_in)) {
         return resource::ERR_INVAL;
     }
+
     const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
     if (addr->sin_family != AF_INET_VAL) {
         return resource::ERR_INVAL;
@@ -240,9 +239,8 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
         return resource::ERR_IO;
     }
 
-    // Assign ephemeral port on first send and register with UDP layer.
-    // Double-checked under sock->lock to prevent duplicate registration
-    // if two sendto calls race on the same socket.
+    // First send assigns the ephemeral port, double-checked under sock->lock
+    // so racing sendto calls cannot register the socket twice.
     if (sock->bound_port == 0) {
         sync::irq_state irq = sync::spin_lock_irqsave(sock->lock);
         if (sock->bound_port == 0) {
@@ -256,10 +254,8 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
         RUN_ELEVATED(iface->poll(iface));
     }
 
-    // Determine source IP for the UDP pseudo-header checksum.
-    // If the socket is bound to a specific address, use it directly and
-    // pass it to ipv4_send as an override so the IP header matches.
-    // Otherwise, mirror ipv4_send's route-based source selection.
+    // The checksum's source IP must match what ipv4_send stamps in the IP
+    // header: the bound address if any, otherwise the route-derived source.
     uint32_t src_ip = sock->bound_addr;
     if (src_ip == 0) {
         src_ip = iface->ipv4_addr;
@@ -298,6 +294,7 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
     if (rc != OK) {
         return resource::ERR_IO;
     }
+
     return static_cast<ssize_t>(count);
 }
 
@@ -322,6 +319,7 @@ __PRIVILEGED_CODE static ssize_t inet_udp_recvfrom(
     if (hdr_rc == RB_ERR_AGAIN) {
         return resource::ERR_AGAIN;
     }
+
     if (hdr_rc < static_cast<ssize_t>(UDP_RX_ENTRY_HEADER)) {
         return resource::ERR_IO;
     }
@@ -379,6 +377,7 @@ __PRIVILEGED_CODE static int32_t inet_udp_bind(
     if (!kaddr || addrlen < sizeof(kernel_sockaddr_in)) {
         return resource::ERR_INVAL;
     }
+
     const auto* addr = static_cast<const kernel_sockaddr_in*>(kaddr);
     if (addr->sin_family != AF_INET_VAL) {
         return resource::ERR_INVAL;
@@ -421,18 +420,29 @@ __PRIVILEGED_CODE static int32_t inet_setsockopt(
     int32_t optname, const void* optval, size_t optlen
 ) {
     auto* sock = static_cast<inet_socket*>(obj->impl);
-    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
-    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
-    if (optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    if (level != SOL_SOCKET) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    if (optname != SO_REUSEADDR) {
+        return resource::ERR_NOPROTOOPT;
+    }
+    
+    if (optlen < sizeof(int32_t)) {
+        return resource::ERR_INVAL;
+    }
 
     int32_t val = 0;
     string::memcpy(&val, optval, sizeof(val));
 
     sync::irq_lock_guard guard(sock->lock);
+
     if (val)
         sock->so_options |= static_cast<uint32_t>(SO_REUSEADDR);
     else
         sock->so_options &= ~static_cast<uint32_t>(SO_REUSEADDR);
+
     return resource::OK;
 }
 
@@ -441,33 +451,44 @@ __PRIVILEGED_CODE static int32_t inet_getsockopt(
     int32_t optname, void* optval, size_t* optlen
 ) {
     auto* sock = static_cast<inet_socket*>(obj->impl);
-    if (level != SOL_SOCKET) return resource::ERR_NOPROTOOPT;
-    if (optname != SO_REUSEADDR) return resource::ERR_NOPROTOOPT;
-    if (!optlen || *optlen < sizeof(int32_t)) return resource::ERR_INVAL;
+
+    if (level != SOL_SOCKET) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    if (optname != SO_REUSEADDR) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    if (!optlen || *optlen < sizeof(int32_t)) {
+        return resource::ERR_INVAL;
+    }
 
     sync::irq_lock_guard guard(sock->lock);
+
     int32_t val = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) ? 1 : 0;
     string::memcpy(optval, &val, sizeof(val));
     *optlen = sizeof(val);
+
     return resource::OK;
 }
 
 static const resource::resource_ops g_inet_udp_ops = {
-    nullptr, // read
-    nullptr, // write
+    nullptr,
+    nullptr,
     inet_close,
     inet_ioctl,
-    nullptr, // mmap
+    nullptr,
     inet_udp_sendto,
     inet_udp_recvfrom,
-    inet_udp_bind, // bind
-    nullptr,                  // listen
-    nullptr,                  // accept
-    nullptr, // connect
+    inet_udp_bind,
+    nullptr,
+    nullptr,
+    nullptr,
     inet_setsockopt,
     inet_getsockopt,
     inet_poll,
-    nullptr, // shutdown
+    nullptr,
 };
 
 int32_t create_inet_icmp_socket(resource::resource_object** out) {
@@ -479,6 +500,7 @@ int32_t create_inet_icmp_socket(resource::resource_object** out) {
     if (!sock) {
         return resource::ERR_NOMEM;
     }
+
     sock->protocol = IPV4_PROTO_ICMP;
     sock->bound_addr = 0;
     sock->bound_port = 0;
@@ -498,11 +520,11 @@ int32_t create_inet_icmp_socket(resource::resource_object** out) {
         heap::kfree_delete(sock);
         return resource::ERR_NOMEM;
     }
+
     obj->type = resource::resource_type::SOCKET;
     obj->ops = &g_inet_icmp_ops;
     obj->impl = sock;
 
-    // Register with the ICMP protocol layer for packet delivery
     icmp_register_socket(sock);
 
     *out = obj;
@@ -518,6 +540,7 @@ int32_t create_inet_udp_socket(resource::resource_object** out) {
     if (!sock) {
         return resource::ERR_NOMEM;
     }
+
     sock->protocol = IPV4_PROTO_UDP;
     sock->bound_addr = 0;
     sock->bound_port = 0;
@@ -537,6 +560,7 @@ int32_t create_inet_udp_socket(resource::resource_object** out) {
         heap::kfree_delete(sock);
         return resource::ERR_NOMEM;
     }
+
     obj->type = resource::resource_type::SOCKET;
     obj->ops = &g_inet_udp_ops;
     obj->impl = sock;

@@ -50,10 +50,8 @@ void report_fail(const char* file, int line, const char* macro, const char* expr
 
 template<typename T>
 void format_value(const char* label, const T& val) {
-    // Forward declaration -- implemented in runner.cpp via log::raw
-    // We call print() which is declared in runner.h, but to avoid
-    // circular includes we use a non-template helper for output.
-    // This is handled via the overloaded report functions below.
+    // No-op. Output goes through the non-template report_values_* helpers
+    // below, which keeps this header free of include cycles with runner.h.
     (void)label;
     (void)val;
 }

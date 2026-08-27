@@ -28,6 +28,7 @@ int32_t console_node::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
 
 int32_t console_node::getattr(fs::vattr* attr) {
     if (!attr) return fs::ERR_INVAL;
+
     attr->type = fs::node_type::char_device;
     attr->size = 0;
     return fs::OK;

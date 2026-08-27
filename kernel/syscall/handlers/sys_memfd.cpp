@@ -24,6 +24,7 @@ static inline int64_t map_fs_truncate_error(int32_t rc) {
             return syscall::EIO;
     }
 }
+
 constexpr uint32_t MFD_CLOEXEC = 0x0001u;
 constexpr uint32_t MFD_ALLOWED = MFD_CLOEXEC;
 
@@ -41,6 +42,7 @@ DEFINE_SYSCALL2(memfd_create, u_name, u_flags) {
         if (rc == mm::uaccess::ERR_NAMETOOLONG) {
             return syscall::ENAMETOOLONG;
         }
+
         if (rc != mm::uaccess::OK) {
             return syscall::EFAULT;
         }
@@ -76,6 +78,7 @@ DEFINE_SYSCALL2(ftruncate, fd_val, length) {
     if (signed_len < 0) {
         return syscall::EINVAL;
     }
+
     size_t new_size = static_cast<size_t>(signed_len);
 
     sched::task* task = sched::current();

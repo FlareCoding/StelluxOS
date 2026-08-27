@@ -21,8 +21,9 @@ __PRIVILEGED_CODE static inline void set_gate(uint8_t vec, void (*handler)(), ui
     x86::idt_entry& e = g_idt[vec];
     e.offset_low = static_cast<uint16_t>(addr & 0xFFFF);
     e.selector = x86::KERNEL_CS;
-    e.ist = static_cast<uint8_t>(ist & 0x07); // IST bits 0-2 only; bits 3-7 are reserved and must be 0
+    e.ist = static_cast<uint8_t>(ist & 0x07); // IST bits 0-2 only, bits 3-7 are reserved and must be 0
     e.type_attr = x86::interrupt_gate_attr(dpl_level);
+
     e.offset_mid = static_cast<uint16_t>((addr >> 16) & 0xFFFF);
     e.offset_high = static_cast<uint32_t>((addr >> 32) & 0xFFFFFFFF);
     e.zero = 0;

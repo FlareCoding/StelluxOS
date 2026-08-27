@@ -124,9 +124,8 @@ TEST(smp_poll, cross_cpu_multi_source) {
 }
 
 // cross_cpu_immediate_wake_preserves_scheduler_state
-// Fire immediately after the waiter announces readiness so the wake races the
-// BLOCKED transition. poll_wait must still return with the current task
-// RUNNING and not leave sched_link queued.
+// The wake races the BLOCKED transition, poll_wait must still return with
+// the task RUNNING and its sched_link unqueued.
 
 static sync::wait_queue g_xfast_wq;
 static sync::atomic<uint32_t> g_xfast_waiting;

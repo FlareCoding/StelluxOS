@@ -13,7 +13,7 @@ bool is_shm_path(const char* path);
 
 /**
  * @brief Open or create a named shared memory resource.
- * Path must be "/dev/shm/<name>"; name is extracted and used as key.
+ * Path must be "/dev/shm/<name>", the name is extracted and used as the key.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t open_shm_resource(
@@ -24,7 +24,7 @@ __PRIVILEGED_CODE int32_t open_shm_resource(
 
 /**
  * @brief Unlink a named shared memory object.
- * Removes the name from the registry; backing persists until
+ * Removes the name from the registry, the backing persists until
  * all fds are closed and all mappings are unmapped.
  * @note Privilege: **required**
  */

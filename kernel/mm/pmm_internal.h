@@ -45,6 +45,7 @@ inline zone_id get_zone_for_pfn(pfn_t pfn) {
     if (addr < ZONE_DMA32_LIMIT) {
         return zone_id::DMA32;
     }
+
     return zone_id::NORMAL;
 }
 

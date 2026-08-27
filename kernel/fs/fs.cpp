@@ -67,6 +67,7 @@ int32_t node::truncate(size_t)                      { return ERR_NOSYS; }
 
 int32_t node::getattr(vattr* attr) {
     if (!attr) return ERR_INVAL;
+
     attr->type = m_type;
     attr->size = m_size;
     return OK;
@@ -111,6 +112,7 @@ __PRIVILEGED_CODE int32_t register_driver(driver* drv) {
     if (g_driver_count >= MAX_DRIVERS) {
         return ERR_NOMEM;
     }
+
     g_drivers[g_driver_count++] = drv;
     log::info("fs: registered driver '%s'", drv->name);
     return OK;
@@ -138,6 +140,7 @@ __PRIVILEGED_CODE static void release_node_ref(node* n) {
     if (!n) {
         return;
     }
+
     if (n->release()) {
         node::ref_destroy(n);
     }
@@ -156,6 +159,7 @@ __PRIVILEGED_CODE static int32_t acquire_global_root(node** out_root) {
     if (!cur) {
         return ERR_INVAL;
     }
+
     cur->add_ref();
 
     while (cur->mounted_here()) {
@@ -203,6 +207,7 @@ __PRIVILEGED_CODE static int32_t resolve_path_at_internal(
     if (!path || !out) {
         return ERR_INVAL;
     }
+
     if (path[0] == '\0') {
         return ERR_NOENT;
     }
@@ -362,6 +367,7 @@ __PRIVILEGED_CODE int32_t path_from_node(
     if (!target || !out_path || out_cap == 0) {
         return ERR_INVAL;
     }
+
     if (!g_root_instance) {
         return ERR_INVAL;
     }
@@ -370,6 +376,7 @@ __PRIVILEGED_CODE int32_t path_from_node(
     if (!path_buf) {
         return ERR_NOMEM;
     }
+
     size_t pos = PATH_MAX;
     path_buf[--pos] = '\0';
 
@@ -403,6 +410,7 @@ __PRIVILEGED_CODE int32_t path_from_node(
             heap::kfree(path_buf);
             return ERR_NOENT;
         }
+
         if (pos < name_len + 1) {
             release_node_ref(cur);
             heap::kfree(path_buf);
@@ -432,6 +440,7 @@ __PRIVILEGED_CODE int32_t path_from_node(
             heap::kfree(path_buf);
             return ERR_NAMETOOLONG;
         }
+
         out_path[0] = '/';
         out_path[1] = '\0';
         heap::kfree(path_buf);
@@ -453,9 +462,11 @@ __PRIVILEGED_CODE int32_t lookup(const char* path, node** out) {
     if (!path || !out) {
         return ERR_INVAL;
     }
+
     if (path[0] != '/') {
         return ERR_INVAL;
     }
+
     return resolve_path_at_internal(nullptr, path, out);
 }
 
@@ -463,6 +474,7 @@ __PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, node** out
     if (!path || !out) {
         return ERR_INVAL;
     }
+
     return resolve_path_at_internal(base_dir, path, out);
 }
 
@@ -473,9 +485,11 @@ __PRIVILEGED_CODE int32_t resolve_parent_path(
     if (!path || !out_parent || !out_name || !out_name_len) {
         return ERR_INVAL;
     }
+
     if (path[0] != '/') {
         return ERR_INVAL;
     }
+
     return resolve_parent_at_internal(
         nullptr, path, out_parent, out_name, out_name_len);
 }
@@ -487,6 +501,7 @@ __PRIVILEGED_CODE int32_t resolve_parent_path_at(
     if (!path || !out_parent || !out_name || !out_name_len) {
         return ERR_INVAL;
     }
+
     return resolve_parent_at_internal(
         base_dir, path, out_parent, out_name, out_name_len);
 }
@@ -532,7 +547,7 @@ __PRIVILEGED_CODE int32_t mount(const char* source, const char* target,
         return OK;
     }
 
-    // Non-root mount: resolve target
+    // Non-root mount
     node* target_node = nullptr;
     err = lookup(target, &target_node);
     if (err != OK) {
@@ -649,6 +664,7 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
         set_err(ERR_NOMEM);
         return nullptr;
     }
+
     auto* f = new (mem) file(rc::strong_ref<node>::adopt(n), flags);
 
     RUN_ELEVATED({
@@ -670,7 +686,9 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
 
 ssize_t read(file* f, void* buf, size_t count) {
     if (!f || !buf) return ERR_BADF;
+
     if (count == 0) return 0;
+
     uint32_t mode = f->flags() & ACCESS_MODE_MASK;
     if (mode == O_WRONLY) return ERR_BADF;
 
@@ -678,12 +696,15 @@ ssize_t read(file* f, void* buf, size_t count) {
     RUN_ELEVATED({
         result = f->get_node()->read(f, buf, count);
     });
+
     return result;
 }
 
 ssize_t write(file* f, const void* buf, size_t count) {
     if (!f || !buf) return ERR_BADF;
+
     if (count == 0) return 0;
+
     uint32_t mode = f->flags() & ACCESS_MODE_MASK;
     if (mode == O_RDONLY) return ERR_BADF;
 
@@ -691,6 +712,7 @@ ssize_t write(file* f, const void* buf, size_t count) {
     RUN_ELEVATED({
         result = f->get_node()->write(f, buf, count);
     });
+
     return result;
 }
 
@@ -701,14 +723,17 @@ int64_t seek(file* f, int64_t offset, int whence) {
     RUN_ELEVATED({
         result = f->get_node()->seek(f, offset, whence);
     });
+
     return result;
 }
 
 int32_t close(file* f) {
     if (!f) return ERR_BADF;
+
     if (f->release()) {
         file::ref_destroy(f);
     }
+
     return OK;
 }
 
@@ -719,6 +744,7 @@ int32_t ioctl(file* f, uint32_t cmd, uint64_t arg) {
     RUN_ELEVATED({
         result = f->get_node()->ioctl(f, cmd, arg);
     });
+
     return result;
 }
 
@@ -730,6 +756,7 @@ int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr, size_t length,
     RUN_ELEVATED({
         result = f->get_node()->mmap(f, mm_ctx, addr, length, prot, map_flags, offset, out_addr);
     });
+
     return result;
 }
 
@@ -748,6 +775,7 @@ int32_t stat(const char* path, vattr* attr) {
             }
         }
     });
+
     return err;
 }
 
@@ -758,6 +786,7 @@ int32_t fstat(file* f, vattr* attr) {
     RUN_ELEVATED({
         result = f->get_node()->getattr(attr);
     });
+
     return result;
 }
 
@@ -785,6 +814,7 @@ int32_t mkdir(const char* path, uint32_t mode) {
             }
         }
     });
+
     return err;
 }
 
@@ -806,6 +836,7 @@ int32_t rmdir(const char* path) {
             }
         }
     });
+
     return err;
 }
 
@@ -827,17 +858,20 @@ int32_t unlink(const char* path) {
             }
         }
     });
+
     return err;
 }
 
 ssize_t readdir(file* f, dirent* entries, size_t count) {
     if (!f || !entries) return ERR_BADF;
+
     if (count == 0) return 0;
 
     ssize_t result;
     RUN_ELEVATED({
         result = f->get_node()->readdir(f, entries, count);
     });
+
     return result;
 }
 
@@ -860,7 +894,6 @@ __PRIVILEGED_CODE int32_t init() {
         return err;
     }
 
-    // Mount ramfs as rootfs
     err = mount(nullptr, "/", "ramfs", 0);
     if (err != OK) {
         log::error("fs: failed to mount rootfs");
@@ -892,7 +925,7 @@ __PRIVILEGED_CODE int32_t init() {
         return err;
     }
 
-    // Proactively create the system runtime /tmp directory
+    // Best-effort, userland expects /tmp to exist at boot
     mkdir("/tmp", 0);
 
     return OK;

@@ -40,7 +40,7 @@ static_assert(sizeof(mouse_event) == 16, "mouse_event must be 16 bytes");
 __PRIVILEGED_CODE int32_t init();
 
 /**
- * @brief Enqueue a keyboard event. Non-blocking; drops on overflow.
+ * @brief Enqueue a keyboard event. Non-blocking, drops on overflow.
  * Internally elevates privilege to access the ring buffer.
  * @return Number of events enqueued (1) or 0 on overflow.
  * @note Safe to call from any kernel context including user-mode tasks.
@@ -48,7 +48,7 @@ __PRIVILEGED_CODE int32_t init();
 int32_t push_kbd_event(const kbd_event& evt);
 
 /**
- * @brief Enqueue a mouse event. Non-blocking; drops on overflow.
+ * @brief Enqueue a mouse event. Non-blocking, drops on overflow.
  * Internally elevates privilege to access the ring buffer.
  * @return Number of events enqueued (1) or 0 on overflow.
  * @note Safe to call from any kernel context including user-mode tasks.

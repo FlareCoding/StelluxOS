@@ -39,11 +39,13 @@ __PRIVILEGED_CODE static ssize_t file_read(resource_object* obj, void* kdst, siz
     if (!obj || !obj->impl || !kdst) {
         return ERR_INVAL;
     }
+
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
     ssize_t rc = fs::read(impl->file, kdst, count);
     if (rc < 0) {
         return map_fs_error_to_resource(static_cast<int32_t>(rc));
     }
+
     return rc;
 }
 
@@ -52,11 +54,13 @@ __PRIVILEGED_CODE static ssize_t file_write(resource_object* obj, const void* ks
     if (!obj || !obj->impl || !ksrc) {
         return ERR_INVAL;
     }
+
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
     ssize_t rc = fs::write(impl->file, ksrc, count);
     if (rc < 0) {
         return map_fs_error_to_resource(static_cast<int32_t>(rc));
     }
+
     return rc;
 }
 
@@ -70,6 +74,7 @@ __PRIVILEGED_CODE static void file_close(resource_object* obj) {
         fs::close(impl->file);
         impl->file = nullptr;
     }
+
     heap::kfree_delete(impl);
     obj->impl = nullptr;
 }
@@ -78,11 +83,13 @@ __PRIVILEGED_CODE static int32_t file_ioctl(resource_object* obj, uint32_t cmd, 
     if (!obj || !obj->impl) {
         return ERR_INVAL;
     }
+
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
     int32_t rc = fs::ioctl(impl->file, cmd, arg);
     if (rc < 0) {
         return map_fs_error_to_resource(rc);
     }
+
     return rc;
 }
 
@@ -100,6 +107,7 @@ __PRIVILEGED_CODE static int32_t file_mmap(
     if (rc == 0) {
         return mm::MM_CTX_OK;
     }
+
     switch (rc) {
     case mm::MM_CTX_ERR_INVALID_ARG:
     case mm::MM_CTX_ERR_NO_MEM:
@@ -116,9 +124,15 @@ __PRIVILEGED_CODE static int32_t file_mmap(
 __PRIVILEGED_CODE static uint32_t file_poll(
     resource_object* obj, sync::poll_table* pt
 ) {
-    if (!obj || !obj->impl) return sync::POLL_NVAL;
+    if (!obj || !obj->impl) {
+        return sync::POLL_NVAL;
+    }
+
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
-    if (!impl->file || !impl->file->get_node()) return sync::POLL_NVAL;
+    if (!impl->file || !impl->file->get_node()) {
+        return sync::POLL_NVAL;
+    }
+
     return impl->file->get_node()->poll(impl->file, pt);
 }
 
@@ -163,6 +177,7 @@ __PRIVILEGED_CODE int32_t open_file_resource(
         fs::close(file);
         return ERR_NOMEM;
     }
+
     impl->file = file;
 
     auto* obj = heap::kalloc_new<resource_object>();
@@ -187,6 +202,7 @@ __PRIVILEGED_CODE fs::file* get_file(resource_object* obj) {
     if (!obj || obj->type != resource_type::FILE || !obj->impl) {
         return nullptr;
     }
+
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
     return impl->file;
 }

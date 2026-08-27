@@ -177,6 +177,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     if (percpu::init_ap(cpu_id, my_percpu_base) != percpu::OK) {
         while (true) { asm volatile("wfi"); }
     }
+
     trap::load();
     irq::init_ap();
 

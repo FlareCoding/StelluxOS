@@ -40,6 +40,7 @@ _Static_assert(sizeof(struct stlx_net_status) == 360, "stlx_net_status ABI size 
 static inline int stlx_net_get_status(struct stlx_net_status* out) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return -1;
+
     int rc = ioctl(fd, STLX_SIOCGNETSTATUS, out);
     close(fd);
     return rc;
@@ -51,6 +52,7 @@ stlx_net_default_if(const struct stlx_net_status* st) {
         if (st->interfaces[i].flags & STLX_IFF_DEFAULT)
             return &st->interfaces[i];
     }
+
     return NULL;
 }
 
@@ -80,6 +82,7 @@ _Static_assert(sizeof(struct stlx_arp_table) == 648, "stlx_arp_table ABI size mi
 static inline int stlx_arp_get_table(struct stlx_arp_table* out) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return -1;
+
     int rc = ioctl(fd, STLX_SIOCGARPTABLE, out);
     close(fd);
     return rc;

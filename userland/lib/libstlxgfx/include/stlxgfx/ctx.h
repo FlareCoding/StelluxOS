@@ -48,9 +48,9 @@ void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
 
 /* Anti-aliased corner arc fill for the r_outer-by-r_outer pixel box at
  * rect corner (x, y), growing inward along (dir_x, dir_y) (+1 or -1
- * each). Fills inside the arc; a nonzero r_inner leaves the concentric
- * inner disc empty (border ring); invert fills outside the arc instead
- * (squaring off / erasing a rounded corner region). */
+ * each). Fills inside the arc, a nonzero r_inner leaves the concentric
+ * inner disc empty (border ring), and invert fills outside the arc
+ * instead (squaring off or erasing a rounded corner region). */
 void stlxgfx_ctx_fill_arc_corner(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
                                   uint32_t r_outer, uint32_t r_inner,
                                   int dir_x, int dir_y, int invert,

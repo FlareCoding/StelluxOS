@@ -15,33 +15,33 @@ public:
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static int32_t init();
-    
+
     /**
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static phys_addr_t alloc_page();
-    
+
     /**
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static phys_addr_t get_region_start();
-    
+
     /**
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static phys_addr_t get_used_end();
-    
+
     /**
      * @brief Check if bootstrap allocator is initialized and has capacity.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static bool is_active();
-    
+
     /**
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE static size_t get_pages_allocated();
-    
+
     /**
      * @note Privilege: **required**
      */

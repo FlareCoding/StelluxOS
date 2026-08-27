@@ -134,6 +134,7 @@ int main(void) {
                 if (c == 'q' || c == 'Q') goto done;
                 break;
             }
+
             struct timespec ts = {0, 50000000};
             nanosleep(&ts, NULL);
         }

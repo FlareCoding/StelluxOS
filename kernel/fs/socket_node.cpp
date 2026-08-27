@@ -11,6 +11,7 @@ int32_t socket_node::getattr(vattr* attr) {
     if (!attr) {
         return fs::ERR_INVAL;
     }
+
     attr->type = node_type::socket;
     attr->size = 0;
     return fs::OK;

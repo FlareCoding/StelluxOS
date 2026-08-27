@@ -81,14 +81,17 @@ static ssize_t read_stats_file(const char* path, char* buf, size_t cap) {
     if (fd < 0) {
         return -1;
     }
+
     size_t total = 0;
     while (total < cap - 1) {
         ssize_t rd = read(fd, buf + total, cap - 1 - total);
         if (rd <= 0) {
             break;
         }
+
         total += (size_t)rd;
     }
+
     close(fd);
     buf[total] = '\0';
     return (ssize_t)total;
@@ -99,6 +102,7 @@ static uint64_t labeled_field(const char* text, const char* label) {
     if (!p) {
         return 0;
     }
+
     return strtoull(p + strlen(label), NULL, 10);
 }
 
@@ -107,6 +111,7 @@ static int parse_cpu(sample_t* s) {
     if (read_stats_file("/dev/sysinfo/cpu", buf, sizeof(buf)) <= 0) {
         return -1;
     }
+
     s->tick_hz = labeled_field(buf, "tick_hz ");
     s->cpu_count = 0;
 
@@ -126,6 +131,7 @@ static int parse_cpu(sample_t* s) {
             p++;
         }
     }
+
     return s->cpu_count > 0 ? 0 : -1;
 }
 
@@ -134,6 +140,7 @@ static int parse_mem(sample_t* s) {
     if (read_stats_file("/dev/sysinfo/mem", buf, sizeof(buf)) <= 0) {
         return -1;
     }
+
     s->mem_page_size = labeled_field(buf, "page_size ");
     s->mem_total_pages = labeled_field(buf, "total_pages ");
     s->mem_used_pages = labeled_field(buf, "used_pages ");
@@ -164,6 +171,7 @@ static int parse_tasks(sample_t* s) {
         if (end == p) {
             break;
         }
+
         t->pid = (uint32_t)strtoul(end, &end, 10);
 
         while (*end == ' ') {
@@ -196,6 +204,7 @@ static int parse_tasks(sample_t* s) {
             p++;
         }
     }
+
     return 0;
 }
 
@@ -203,6 +212,7 @@ static int sample_all(sample_t* s) {
     if (parse_cpu(s) != 0 || parse_mem(s) != 0 || parse_tasks(s) != 0) {
         return -1;
     }
+
     parse_uptime(s);
     return 0;
 }
@@ -213,6 +223,7 @@ static void restore_terminal(void) {
     if (g_tio_saved) {
         tcsetattr(STDIN_FILENO, TCSANOW, &g_saved_tio);
     }
+
     const char* out = "\033[0m\033[?25h\033[2J\033[H";
     write(STDOUT_FILENO, out, strlen(out));
 }
@@ -272,9 +283,11 @@ static const char* pct_color(unsigned pct) {
     if (pct >= 80) {
         return "\033[31m";
     }
+
     if (pct >= 50) {
         return "\033[33m";
     }
+
     return "\033[32m";
 }
 
@@ -284,6 +297,7 @@ static void emit_bar(const char* label, unsigned pct, const char* text,
     if (fill > width) {
         fill = width;
     }
+
     emit("\033[1m%s\033[0m[%s", label, pct_color(pct));
     for (int i = 0; i < width; i++) {
         emit(i < fill ? "|" : " ");
@@ -297,6 +311,7 @@ static unsigned cpu_pct(const cpu_sample_t* cur, const cpu_sample_t* prev) {
     if (d_total == 0) {
         return 0;
     }
+
     return (unsigned)((d_busy * 100 + d_total / 2) / d_total);
 }
 
@@ -306,9 +321,11 @@ static int delta_compare(const void* a, const void* b) {
     if (ta->pct != tb->pct) {
         return ta->pct > tb->pct ? -1 : 1;
     }
+
     if (ta->ticks != tb->ticks) {
         return ta->ticks > tb->ticks ? -1 : 1;
     }
+
     return ta->tid < tb->tid ? -1 : 1;
 }
 
@@ -319,6 +336,7 @@ static uint64_t prev_task_ticks(uint32_t tid, int* found) {
             return g_prev.tasks[i].ticks;
         }
     }
+
     *found = 0;
     return 0;
 }
@@ -329,6 +347,7 @@ static const task_sample_t* task_by_tid(const sample_t* s, uint32_t tid) {
             return &s->tasks[i];
         }
     }
+
     return NULL;
 }
 
@@ -386,6 +405,7 @@ static void render(void) {
         mem_pct = (unsigned)(g_cur.mem_used_pages * 100
                              / g_cur.mem_total_pages);
     }
+
     char mem_text[40];
     snprintf(mem_text, sizeof(mem_text), "%llu/%lluMB",
              (unsigned long long)used_mb, (unsigned long long)total_mb);
@@ -425,6 +445,7 @@ static void render(void) {
         if (!t) {
             continue;
         }
+
         uint64_t secs = g_cur.tick_hz > 0 ? t->ticks / g_cur.tick_hz : 0;
         char time_str[16];
         snprintf(time_str, sizeof(time_str), "%llu:%02llu.%02llu",
@@ -446,16 +467,15 @@ static void render(void) {
 
     emit("\033[0J\033[1mq\033[0m quit");
 
-    // The terminal drains the pty at its own pace and short writes are
-    // part of its contract, so push until the whole frame is delivered.
-    // On error or no progress the frame is abandoned, the next refresh
-    // repaints everything anyway
+    // Short writes are part of the pty contract, so push until the whole
+    // frame is delivered. An abandoned frame is repainted next refresh
     size_t sent = 0;
     while (sent < g_frame_len) {
         ssize_t wr = write(STDOUT_FILENO, g_frame + sent, g_frame_len - sent);
         if (wr <= 0) {
             break;
         }
+
         sent += (size_t)wr;
     }
 }
@@ -469,6 +489,7 @@ int main(int argc, char** argv) {
                         "stlxtop: -u expects seconds in 0.1..3600\n");
                 return 1;
             }
+
             g_interval_ns = (uint64_t)(secs * 1000000000.0);
         }
     }
@@ -510,6 +531,7 @@ int main(int argc, char** argv) {
             now_ns = (uint64_t)now.tv_sec * 1000000000ULL
                    + (uint64_t)now.tv_nsec;
         }
+
         if (quit) {
             break;
         }

@@ -51,8 +51,8 @@ __PRIVILEGED_CODE int32_t init_arch_syscalls() {
      * For SYSCALL (to kernel): STAR[47:32] = KERNEL_CS.
      * For SYSRET (to user): use a base that derives USER_DS/USER_CS directly.
      */
-    uint64_t star = (static_cast<uint64_t>(SYSRET_SEL_BASE) << 48) | // SYSRET base
-                    (static_cast<uint64_t>(x86::KERNEL_CS) << 32); // SYSCALL base
+    uint64_t star = (static_cast<uint64_t>(SYSRET_SEL_BASE) << 48) |
+                    (static_cast<uint64_t>(x86::KERNEL_CS) << 32);
     msr::write(MSR_STAR, star);
 
     /* LSTAR: 64-bit SYSCALL entry point */

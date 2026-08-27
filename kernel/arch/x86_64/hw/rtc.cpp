@@ -107,6 +107,7 @@ __PRIVILEGED_CODE int32_t init() {
     uint8_t sec  = t2.sec;
     uint8_t min  = t2.min;
     uint8_t hr   = t2.hr;
+
     uint8_t day  = t2.day;
     uint8_t mon  = t2.mon;
     uint8_t year = t2.year;
@@ -119,6 +120,7 @@ __PRIVILEGED_CODE int32_t init() {
         day  = bcd_to_bin(day);
         mon  = bcd_to_bin(mon);
         year = bcd_to_bin(year);
+
         if (cent) {
             cent = bcd_to_bin(cent);
         }

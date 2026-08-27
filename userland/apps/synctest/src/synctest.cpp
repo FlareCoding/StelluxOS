@@ -33,6 +33,7 @@ static void test_mutex_stress() {
             }
         });
     }
+
     for (int i = 0; i < MUTEX_THREADS; i++) {
         threads[i].join();
     }
@@ -106,6 +107,7 @@ static void test_barrier() {
             __atomic_store_n(&verified[i], all_set ? 1 : 0, __ATOMIC_RELEASE);
         });
     }
+
     for (int i = 0; i < BARRIER_THREADS; i++) {
         threads[i].join();
     }
@@ -176,6 +178,7 @@ static void test_multi_mutex() {
             }
         });
     }
+
     for (int i = 0; i < MULTI_THREADS; i++) {
         threads[i].join();
     }

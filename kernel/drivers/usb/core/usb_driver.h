@@ -31,9 +31,11 @@ public:
     class_driver(const class_driver&) = delete;
     class_driver& operator=(const class_driver&) = delete;
 
-    // Called after the Core matches an interface to this driver.
-    // The driver should perform USB setup (SET_PROTOCOL, SET_IDLE, etc.)
-    // and return 0 to claim the interface, or negative to decline.
+    /**
+     * Called after the Core matches an interface to this driver.
+     * The driver should perform USB setup (SET_PROTOCOL, SET_IDLE, etc.)
+     * and return 0 to claim the interface, or negative to decline.
+     */
     virtual int32_t probe(device* dev, interface* iface) = 0;
 
     // Driver main loop, executed in the driver's own kernel task.

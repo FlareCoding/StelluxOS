@@ -39,6 +39,7 @@ static inet_bind_udp_pair create_udp() {
     if (rc != resource::OK || !obj) {
         return {nullptr, nullptr};
     }
+
     return {obj, static_cast<net::inet_socket*>(obj->impl)};
 }
 
@@ -208,9 +209,8 @@ TEST(inet_bind_test, udp_sendto_then_bind_fails) {
     uint8_t payload[] = "test";
     (void)obj->ops->sendto(obj, payload, 4, 0, &dst, sizeof(dst));
 
-    // sendto may fail if routing/loopback isn't quite right, but the
-    // ephemeral port assignment happens before the send attempt.
-    // What matters is that bound_port is now non-zero.
+    // The send itself may fail, but the implicit ephemeral bind happens
+    // before the send attempt, so bound_port must now be non-zero
     EXPECT_NE(sock->bound_port, static_cast<uint16_t>(0));
 
     // Explicit bind must fail
@@ -285,6 +285,7 @@ TEST(inet_bind_test, udp_recv_delivers_to_bound_addr) {
     uint8_t udp_pkt[64];
     string::memset(udp_pkt, 0, sizeof(udp_pkt));
     auto* uhdr = reinterpret_cast<net::udp_header*>(udp_pkt);
+
     uhdr->src_port = net::htons(12345);
     uhdr->dst_port = net::htons(7000);
     uhdr->length = net::htons(static_cast<uint16_t>(udp_total));
@@ -303,12 +304,14 @@ TEST(inet_bind_test, udp_recv_delivers_to_bound_addr) {
     uint8_t ip_pkt[128];
     string::memset(ip_pkt, 0, sizeof(ip_pkt));
     auto* ip_hdr = reinterpret_cast<net::ipv4_header*>(ip_pkt);
+
     ip_hdr->ver_ihl = (4 << 4) | 5;
     ip_hdr->total_len = net::htons(static_cast<uint16_t>(ip_total));
     ip_hdr->ttl = 64;
     ip_hdr->protocol = net::IPV4_PROTO_UDP;
     ip_hdr->src_ip = net::htonl(net::ipv4_addr(127, 0, 0, 1));
     ip_hdr->dst_ip = net::htonl(net::ipv4_addr(127, 0, 0, 1));
+
     ip_hdr->checksum = 0;
     string::memcpy(ip_pkt + sizeof(net::ipv4_header), udp_pkt, udp_total);
     ip_hdr->checksum = net::inet_checksum(ip_pkt, sizeof(net::ipv4_header));
@@ -318,6 +321,7 @@ TEST(inet_bind_test, udp_recv_delivers_to_bound_addr) {
     uint8_t frame[256];
     string::memset(frame, 0, sizeof(frame));
     auto* eth_hdr = reinterpret_cast<net::eth_header*>(frame);
+
     string::memset(eth_hdr->dst, 0, net::MAC_ADDR_LEN);
     string::memset(eth_hdr->src, 0, net::MAC_ADDR_LEN);
     eth_hdr->ethertype = net::htons(net::ETH_TYPE_IPV4);

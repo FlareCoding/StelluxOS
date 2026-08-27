@@ -25,6 +25,7 @@ static size_t item_length(const uint8_t* descriptor, size_t offset, size_t lengt
         if (offset + total > length) {
             return 0;
         }
+
         return total;
     }
 
@@ -32,9 +33,11 @@ static size_t item_length(const uint8_t* descriptor, size_t offset, size_t lengt
     if (size == 3) {
         size = 4;
     }
+
     if (offset + 1 + size > length) {
         return 0;
     }
+
     return 1 + size;
 }
 
@@ -189,9 +192,11 @@ static uint32_t resolve_array_usage(const local_state& locals) {
     if (locals.usage_count > 0) {
         return locals.usages[0];
     }
+
     if (locals.has_usage_range) {
         return locals.usage_minimum;
     }
+
     return 0;
 }
 
@@ -299,6 +304,7 @@ static int32_t analyze_input_reports(const report_item* items, size_t num_items,
                 if (globals.report_size == 0 || globals.report_count == 0) {
                     return -1;
                 }
+
                 if (out_uses_report_ids && globals.report_id == 0) {
                     return -1;
                 }
@@ -329,6 +335,7 @@ static int32_t analyze_input_reports(const report_item* items, size_t num_items,
                     }
                     out_num_fields += globals.report_count;
                 }
+
                 locals.reset();
                 break;
             }
@@ -472,6 +479,7 @@ static int32_t build_input_layout(const report_item* items, size_t num_items,
                     globals.report_size > 0xFFFFu) {
                     return -1;
                 }
+
                 if (uses_report_ids && globals.report_id == 0) {
                     return -1;
                 }
@@ -563,10 +571,12 @@ void report_layout::destroy() {
         heap::ufree(fields);
         fields = nullptr;
     }
+
     if (input_reports) {
         heap::ufree(input_reports);
         input_reports = nullptr;
     }
+
     num_fields = 0;
     num_input_reports = 0;
     uses_report_ids = false;
@@ -668,6 +678,7 @@ uint32_t read_field_unsigned(const uint8_t* data, uint32_t length,
     if (byte_offset >= length) {
         return 0;
     }
+
     if (byte_offset + bytes_needed > length) {
         bytes_needed = length - byte_offset;
     }
@@ -693,6 +704,7 @@ int32_t read_field_signed(const uint8_t* data, uint32_t length,
     if (byte_offset >= length) {
         return 0;
     }
+
     if (byte_offset + bytes_needed > length) {
         bytes_needed = length - byte_offset;
     }
@@ -703,8 +715,8 @@ int32_t read_field_signed(const uint8_t* data, uint32_t length,
     if (bit_size >= 32) {
         return static_cast<int32_t>(raw);
     }
-    raw &= (1u << bit_size) - 1u;
 
+    raw &= (1u << bit_size) - 1u;
     int32_t shift = 32 - bit_size;
     return static_cast<int32_t>(raw << shift) >> shift;
 }

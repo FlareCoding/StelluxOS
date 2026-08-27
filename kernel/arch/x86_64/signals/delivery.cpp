@@ -90,6 +90,7 @@ __PRIVILEGED_CODE bool unpack_sigframe(const rt_sigframe* frame,
     ctx->rflags = (sc.eflags & RFLAGS_USER_MASK) | RFLAGS_IF | RFLAGS_MB1;
 
     *mask = frame->uc.uc_sigmask;
+
     return true;
 }
 
@@ -139,6 +140,7 @@ __PRIVILEGED_CODE int32_t build_signal_frame(syscall_frame* ctx, uint32_t sig,
     ctx->rdi = sig;
     ctx->rsi = frame_addr + __builtin_offsetof(rt_sigframe, info);
     ctx->rdx = frame_addr + __builtin_offsetof(rt_sigframe, uc);
+
     return 0;
 }
 
@@ -183,6 +185,7 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
             heap::kfree_delete(frame);
             signals::die_from_signal(signals::SIGSEGV);
         }
+
         fpu::sanitize_user_mxcsr(&fp);
         fpu::restore(&fp);
     }
@@ -194,6 +197,7 @@ __PRIVILEGED_CODE int64_t restore_signal_frame(syscall_frame* ctx) {
     }
 
     heap::kfree_delete(frame);
+
     return resume;
 }
 
@@ -262,6 +266,7 @@ __PRIVILEGED_CODE bool unpack_sigframe_full(const rt_sigframe* frame,
     out->ss = USER_DS;
 
     *mask = frame->uc.uc_sigmask;
+
     return true;
 }
 
@@ -318,6 +323,7 @@ __PRIVILEGED_CODE static int32_t build_signal_frame_async(
     tf->rdx = frame_addr + __builtin_offsetof(rt_sigframe, uc);
     tf->rflags = (tf->rflags & RFLAGS_USER_MASK & ~(RFLAGS_DF | RFLAGS_TF))
         | RFLAGS_IF | RFLAGS_MB1;
+
     return 0;
 }
 
@@ -359,6 +365,7 @@ __PRIVILEGED_CODE void deliver_async_signal(sched::task* self,
         signals::untake_deliverable(self, sig, &act, old_blocked);
         return;
     }
+
     if (rc != 0) {
         signals::die_from_signal(signals::SIGSEGV);
     }
@@ -392,6 +399,7 @@ __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
             ctx->rip -= x86::SYSCALL_INSN_LEN;
             return static_cast<int64_t>(syscall_num);
         }
+
         return result;
     }
 
@@ -417,6 +425,7 @@ __PRIVILEGED_CODE int64_t arch::deliver_pending_signal(sched::task* self,
                                 saved_result) != 0) {
         signals::die_from_signal(signals::SIGSEGV);
     }
+
     return saved_result;
 }
 

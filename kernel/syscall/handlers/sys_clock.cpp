@@ -61,6 +61,7 @@ DEFINE_SYSCALL2(clock_gettime, clock_id, u_tp) {
         if (clock::boot_realtime_ns() == 0) {
             return syscall::EINVAL;
         }
+
         ns = get_realtime_ns();
         break;
     case CLOCK_THREAD_CPUTIME_ID:
@@ -78,6 +79,7 @@ DEFINE_SYSCALL2(clock_gettime, clock_id, u_tp) {
     if (rc != mm::uaccess::OK) {
         return syscall::EFAULT;
     }
+
     return 0;
 }
 
@@ -112,6 +114,7 @@ DEFINE_SYSCALL2(clock_getres, clock_id, u_tp) {
             return syscall::EFAULT;
         }
     }
+
     return 0;
 }
 
@@ -120,6 +123,7 @@ DEFINE_SYSCALL2(gettimeofday, u_tv, u_tz) {
         if (clock::boot_realtime_ns() == 0) {
             return syscall::EINVAL;
         }
+
         uint64_t ns = get_realtime_ns();
         kernel_timeval tv;
         tv.tv_sec = static_cast<int64_t>(ns / NS_PER_SEC);

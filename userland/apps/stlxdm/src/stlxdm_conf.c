@@ -110,11 +110,13 @@ static void parse_line(stlxdm_config_t* conf, const char* line,
         } else {
             *sec = SEC_NONE;
         }
+
         return;
     }
 
     char* eq = strchr(s, '=');
     if (!eq) return;
+
     *eq = '\0';
     char* key = trim(s);
     char* val = trim(eq + 1);
@@ -156,6 +158,7 @@ static void parse_line(stlxdm_config_t* conf, const char* line,
 
     case SEC_TASKBAR_ITEM:
         if (*item_idx < 0) break;
+
         {
             stlxdm_conf_taskbar_item_t* it =
                 &conf->taskbar_items[*item_idx];
@@ -170,6 +173,7 @@ static void parse_line(stlxdm_config_t* conf, const char* line,
 
     case SEC_SHORTCUT:
         if (*item_idx < 0) break;
+
         {
             stlxdm_conf_shortcut_t* sc = &conf->shortcuts[*item_idx];
             if (strcmp(key, "key") == 0)
@@ -183,6 +187,7 @@ static void parse_line(stlxdm_config_t* conf, const char* line,
 
     case SEC_AUTOSTART:
         if (*item_idx < 0) break;
+
         {
             stlxdm_conf_autostart_t* as = &conf->autostart[*item_idx];
             if (strcmp(key, "path") == 0)

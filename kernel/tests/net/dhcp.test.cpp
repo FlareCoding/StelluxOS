@@ -263,6 +263,7 @@ static size_t build_test_offer(uint8_t* buf, size_t buf_size, uint32_t xid,
 
     string::memset(buf, 0, buf_size);
     auto* pkt = reinterpret_cast<net::dhcp_packet*>(buf);
+
     pkt->op = net::DHCP_OP_BOOTREPLY;
     pkt->htype = net::DHCP_HTYPE_ETHERNET;
     pkt->hlen = net::DHCP_HLEN_ETHERNET;
@@ -359,8 +360,8 @@ TEST(dhcp_test, parse_offer_minimal) {
     // OFFER with only message type and yiaddr, no other options
     uint8_t buf[net::DHCP_PACKET_MAX];
     string::memset(buf, 0, sizeof(buf));
-
     auto* pkt = reinterpret_cast<net::dhcp_packet*>(buf);
+
     pkt->op = net::DHCP_OP_BOOTREPLY;
     pkt->htype = net::DHCP_HTYPE_ETHERNET;
     pkt->hlen = net::DHCP_HLEN_ETHERNET;
@@ -389,8 +390,8 @@ TEST(dhcp_test, parse_offer_minimal) {
 TEST(dhcp_test, parse_ack) {
     uint8_t buf[net::DHCP_PACKET_MAX];
     string::memset(buf, 0, sizeof(buf));
-
     auto* pkt = reinterpret_cast<net::dhcp_packet*>(buf);
+
     pkt->op = net::DHCP_OP_BOOTREPLY;
     pkt->htype = net::DHCP_HTYPE_ETHERNET;
     pkt->hlen = net::DHCP_HLEN_ETHERNET;

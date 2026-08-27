@@ -92,6 +92,7 @@ public:
             (bucket_count & (bucket_count - 1)) != 0) {
             bad_init(buckets, bucket_count);
         }
+
         m_buckets = buckets;
         m_mask = bucket_count - 1;
         m_count = 0;
@@ -103,6 +104,7 @@ public:
     // Does NOT check for duplicates.
     void insert(T* entry) {
         if (!m_buckets) return;
+
         node* n = to_node(entry);
         uint64_t h = KeyOps::hash(KeyOps::key_of(*entry));
         uint32_t idx = static_cast<uint32_t>(h) & m_mask;
@@ -129,6 +131,7 @@ public:
     // Unlink all entries without freeing (entries are caller-owned).
     void clear() {
         if (!m_buckets) return;
+
         for (uint32_t i = 0; i <= m_mask; ++i) {
             node* cur = m_buckets[i].first;
             while (cur) {
@@ -145,6 +148,7 @@ public:
     // Find first entry matching key. Returns nullptr if not found.
     [[nodiscard]] T* find(const key_type& key) const {
         if (!m_buckets) return nullptr;
+
         uint64_t h = KeyOps::hash(key);
         uint32_t idx = static_cast<uint32_t>(h) & m_mask;
         node* cur = m_buckets[idx].first;
@@ -155,6 +159,7 @@ public:
             }
             cur = cur->next;
         }
+
         return nullptr;
     }
 
@@ -167,6 +172,7 @@ public:
     template<typename Fn>
     void for_each(Fn fn) {
         if (!m_buckets) return;
+
         for (uint32_t i = 0; i <= m_mask; ++i) {
             node* cur = m_buckets[i].first;
             while (cur) {
@@ -181,6 +187,7 @@ public:
     template<typename Fn>
     void for_each_possible(const key_type& key, Fn fn) {
         if (!m_buckets) return;
+
         uint64_t h = KeyOps::hash(key);
         uint32_t idx = static_cast<uint32_t>(h) & m_mask;
         node* cur = m_buckets[idx].first;

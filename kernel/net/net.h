@@ -25,7 +25,6 @@ constexpr uint32_t NETIF_UP       = (1u << 0);  // administratively up
 constexpr uint32_t NETIF_RUNNING  = (1u << 1);  // link is up (carrier detected)
 constexpr uint32_t NETIF_LOOPBACK = (1u << 2);  // virtual loopback device
 
-// Forward declaration
 struct netif;
 
 // Driver callback types
@@ -39,25 +38,25 @@ using netif_poll_fn = void (*)(netif* iface);
  * The protocol stack manages everything else.
  */
 struct netif {
-    // --- Identity (set by driver before registration) ---
+    // Identity (set by driver before registration)
     char         name[16];
     uint8_t      mac[MAC_ADDR_LEN];
 
-    // --- Driver callbacks (set by driver before registration) ---
+    // Driver callbacks (set by driver before registration)
     netif_tx_fn   transmit;    // send a raw Ethernet frame
     netif_link_fn link_up;     // query link status
     void*         driver_data; // opaque pointer back to driver instance
-    netif_poll_fn poll; // synchronously process pending RX (optional)
+    netif_poll_fn poll;        // synchronously process pending RX (optional)
 
-    // --- Stack-managed state (set by net::configure() or register_netif()) ---
-    uint32_t     ipv4_addr; // host byte order
+    // Stack-managed state (set by net::configure() or register_netif())
+    uint32_t     ipv4_addr;    // host byte order
     uint32_t     ipv4_netmask; // host byte order
     uint32_t     ipv4_gateway; // host byte order
     uint32_t     ipv4_dns;     // DNS server, host byte order (from DHCP)
     uint32_t     flags;        // NETIF_* flags
     bool         configured;
 
-    // --- Internal linkage (managed by net subsystem) ---
+    // Internal linkage (managed by net subsystem)
     netif*       next;
 };
 

@@ -36,6 +36,7 @@ static ssize_t shmem_resource_read(
             }
         }
     });
+
     return result;
 }
 
@@ -61,6 +62,7 @@ static ssize_t shmem_resource_write(
             }
         }
     });
+
     return result;
 }
 
@@ -68,6 +70,7 @@ static void shmem_resource_close(resource_object* obj) {
     if (!obj) {
         return;
     }
+
     RUN_ELEVATED({
         if (obj->impl) {
             auto* impl = static_cast<shmem_resource_impl*>(obj->impl);
@@ -147,6 +150,7 @@ int32_t create_shmem_resource(
     if (result != OK && backing_still_owned) {
         mm::shmem::ref_destroy(backing);
     }
+
     return result;
 }
 
@@ -183,6 +187,7 @@ int32_t create_shmem_resource_with_backing(
             }
         }
     });
+
     return result;
 }
 
@@ -194,6 +199,7 @@ mm::shmem* get_shmem_backing(resource_object* obj) {
             backing = impl->backing.ptr();
         }
     });
+
     return backing;
 }
 

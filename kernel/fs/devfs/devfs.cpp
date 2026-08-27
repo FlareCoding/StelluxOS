@@ -43,6 +43,7 @@ public:
 
     ssize_t readdir(fs::file* f, fs::dirent* entries, size_t count) override {
         if (!f || !entries) return fs::ERR_BADF;
+
         if (count == 0) return 0;
 
         sync::irq_lock_guard guard(m_lock);
@@ -53,6 +54,7 @@ public:
         size_t cur_idx = 0;
         for (auto& child : m_children) {
             if (written >= count) break;
+
             if (cur_idx >= idx) {
                 size_t name_len = string::strlen(child.name());
                 if (name_len > fs::NAME_MAX) name_len = fs::NAME_MAX;
@@ -70,6 +72,7 @@ public:
 
     int32_t getattr(fs::vattr* attr) override {
         if (!attr) return fs::ERR_INVAL;
+
         attr->type = fs::node_type::directory;
         attr->size = m_child_count;
         return fs::OK;
@@ -77,6 +80,7 @@ public:
 
     void add_child(fs::node* child) {
         sync::irq_lock_guard guard(m_lock);
+
         child->set_parent(this);
         child->set_filesystem(m_fs);
         child->add_ref();
@@ -113,6 +117,7 @@ public:
 
     int32_t getattr(fs::vattr* attr) override {
         if (!attr) return fs::ERR_INVAL;
+
         attr->type = fs::node_type::char_device;
         attr->size = 0;
         return fs::OK;
@@ -127,6 +132,7 @@ __PRIVILEGED_CODE static int32_t devfs_mount_fn(
 ) {
     void* root_mem = heap::kzalloc(sizeof(devfs_dir_node));
     if (!root_mem) return fs::ERR_NOMEM;
+
     auto* root = new (root_mem) devfs_dir_node(nullptr, "");
 
     void* inst_mem = heap::kzalloc(sizeof(fs::instance));
@@ -135,6 +141,7 @@ __PRIVILEGED_CODE static int32_t devfs_mount_fn(
         heap::kfree(root);
         return fs::ERR_NOMEM;
     }
+
     auto* inst = new (inst_mem) fs::instance(drv, root);
 
     root->set_filesystem(inst);
@@ -166,6 +173,7 @@ __PRIVILEGED_CODE int32_t add_char_device(const char*, fs::node* dev_node) {
     if (!g_devfs_root || !dev_node) {
         return ERR;
     }
+
     g_devfs_root->add_child(dev_node);
     return OK;
 }
@@ -185,6 +193,7 @@ __PRIVILEGED_CODE fs::node* ensure_dir(const char* name) {
     if (!mem) {
         return nullptr;
     }
+
     auto* dir = new (mem) devfs_dir_node(g_devfs_instance, name);
     g_devfs_root->add_child(dir);
     return dir;
@@ -194,6 +203,7 @@ __PRIVILEGED_CODE int32_t add_char_device_at(fs::node* dir, fs::node* dev_node) 
     if (!dir || !dev_node) {
         return ERR;
     }
+
     auto* ddir = static_cast<devfs_dir_node*>(dir);
     ddir->add_child(dev_node);
     return OK;

@@ -47,6 +47,7 @@ static constexpr uint32_t round_down_pow2(uint32_t n) {
     if (n == 0) {
         return 0;
     }
+
     n |= n >> 1;
     n |= n >> 2;
     n |= n >> 4;

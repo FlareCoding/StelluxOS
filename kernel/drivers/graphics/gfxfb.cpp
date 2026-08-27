@@ -32,6 +32,7 @@ public:
         if (cmd != GFXFB_GET_INFO) {
             return fs::ERR_NOSYS;
         }
+
         if (arg == 0) {
             return fs::ERR_INVAL;
         }
@@ -51,6 +52,7 @@ public:
         if (rc != mm::uaccess::OK) {
             return fs::ERR_INVAL;
         }
+
         return fs::OK;
     }
 
@@ -62,10 +64,12 @@ public:
             log::error("gfxfb: mmap: aligned_len < length");
             return mm::MM_CTX_ERR_INVALID_ARG;
         }
+
         if (offset + aligned_len < aligned_len) {
             log::error("gfxfb: mmap: offset overflow");
             return mm::MM_CTX_ERR_INVALID_ARG;
         }
+
         size_t aligned_fb_size = pmm::page_align_up(m_fb_size);
         if (offset + aligned_len > aligned_fb_size) {
             log::error("gfxfb: mmap: offset+aligned_len=%lu > aligned_fb_size=%lu",
@@ -94,6 +98,7 @@ public:
 
     int32_t getattr(fs::vattr* attr) override {
         if (!attr) return fs::ERR_INVAL;
+
         attr->type = fs::node_type::char_device;
         attr->size = m_fb_size;
         return fs::OK;

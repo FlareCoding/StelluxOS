@@ -84,6 +84,7 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     compute_inv_mult_shift(g_cnt_freq, &g_inv_mult, &g_inv_shift);
 
     timer_cpu_state& state = this_cpu(cpu_timer_state);
+
     state.lock = sync::SPINLOCK_INIT;
     state.tick_interval_ns = NS_PER_SEC / hz;
     state.tick_interval_ticks = static_cast<uint32_t>(g_cnt_freq / hz);
@@ -120,6 +121,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t hz) {
     }
 
     timer_cpu_state& state = this_cpu(cpu_timer_state);
+
     state.lock = sync::SPINLOCK_INIT;
     state.tick_interval_ns = NS_PER_SEC / hz;
     state.tick_interval_ticks = static_cast<uint32_t>(freq / hz);
@@ -214,11 +216,14 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
 __PRIVILEGED_CODE void cancel_sleep(sched::task* t) {
     uint32_t cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
     timer_cpu_state& state = per_cpu_on(cpu_timer_state, cpu);
+
     sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
+
     if (t->timer_link.is_linked()) {
         state.sleep_queue.remove(t);
         t->timer_deadline = 0;
     }
+
     sync::spin_unlock_irqrestore(state.lock, irq);
 }
 

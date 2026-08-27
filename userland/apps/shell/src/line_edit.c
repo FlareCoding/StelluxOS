@@ -28,11 +28,13 @@ static void redraw(line_edit_state* s, const char* prompt) {
         int n = 0;
         seq[n++] = '\x1b';
         seq[n++] = '[';
+
         char digits[6];
         int dpos = 0;
         int tmp = back;
         do { digits[dpos++] = '0' + (tmp % 10); tmp /= 10; } while (tmp > 0);
         while (dpos > 0) seq[n++] = digits[--dpos];
+
         seq[n++] = 'D';
         write_chars(seq, n);
     }
@@ -88,6 +90,7 @@ static void handle_escape(line_edit_state* s, const char* prompt) {
     switch (code) {
     case 'A': // up
         if (total == 0) break;
+
         if (s->history_index > 0) {
             s->history_index--;
         }
@@ -103,6 +106,7 @@ static void handle_escape(line_edit_state* s, const char* prompt) {
     case 'B': // down
         if (total == 0) break;
         if (s->history_index >= total) break;
+
         s->history_index++;
         if (s->history_index >= total) {
             s->line_buf[0] = '\0';
@@ -144,6 +148,7 @@ static void handle_escape(line_edit_state* s, const char* prompt) {
     case '3': { // Delete key sends ESC[3~
         int tilde = try_read_byte();
         if (tilde != '~') break;
+
         if (s->cursor_pos < s->line_len) {
             memmove(s->line_buf + s->cursor_pos,
                     s->line_buf + s->cursor_pos + 1,
@@ -168,10 +173,8 @@ typedef struct {
 } completion_entry;
 
 /*
- * Determine if the current token is in "command position": the first
- * token of the current pipeline stage. We scan backwards from tok_start
- * for an unquoted '|' or the start of line, then check if there's only
- * whitespace between that boundary and tok_start.
+ * A token is in "command position" when it is the first token of its
+ * pipeline stage. Command-position tokens complete against PATH.
  */
 static int is_command_position(const char* buf, int tok_start) {
     int scan = tok_start;
@@ -182,7 +185,7 @@ static int is_command_position(const char* buf, int tok_start) {
             break;
         }
     }
-    /* skip whitespace from boundary to tok_start */
+
     while (scan < tok_start && (buf[scan] == ' ' || buf[scan] == '\t'))
         scan++;
     return (scan == tok_start);
@@ -215,7 +218,6 @@ static int collect_candidates(const char* dir_path, const char* prefix,
         strncpy(out[count].name, ent->d_name, COMPLETE_NAME_MAX - 1);
         out[count].name[COMPLETE_NAME_MAX - 1] = '\0';
 
-        /* Check if it's a directory via stat */
         char full_path[512];
         int n = snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, ent->d_name);
         if (n > 0 && n < (int)sizeof(full_path)) {
@@ -318,7 +320,6 @@ static void show_candidates(const completion_entry* entries, int count,
         }
     }
 
-    /* redraw prompt + current line */
     redraw(s, prompt);
 }
 
@@ -327,17 +328,14 @@ static int is_token_boundary(char c) {
 }
 
 static void handle_tab(line_edit_state* s, const char* prompt) {
-    /* Find the start of the current token.
-     * Split on whitespace and shell operators (|, >, <) so that
-     * e.g. "ls|gr<Tab>" extracts "gr" and "cmd >fo<Tab>" extracts "fo",
-     * matching how parse_pipeline and parse_redirects delimit tokens. */
+    /* Token boundaries match how parse_pipeline and parse_redirects
+     * delimit tokens (whitespace and the |, >, < operators) */
     int tok_start = s->cursor_pos;
     while (tok_start > 0 && !is_token_boundary(s->line_buf[tok_start - 1]))
         tok_start--;
 
     int tok_len = s->cursor_pos - tok_start;
 
-    /* Extract the prefix */
     char prefix[LINE_MAX];
     if (tok_len > 0)
         memcpy(prefix, s->line_buf + tok_start, (size_t)tok_len);
@@ -430,7 +428,6 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
     }
 
     if (count == 0) {
-        /* no matches */
         free(entries);
         return;
     }
@@ -444,12 +441,14 @@ static void handle_tab(line_edit_state* s, const char* prompt) {
         if (insert_len > 0) {
             insert_text(s, match + name_prefix_len, insert_len);
         }
+
         /* Append / for dirs, space for files */
         if (entries[0].is_dir) {
             insert_text(s, "/", 1);
         } else {
             insert_text(s, " ", 1);
         }
+
         s->tab_pressed = 0;
         redraw(s, prompt);
         free(entries);
@@ -517,10 +516,12 @@ char* line_edit_read(line_edit_state* s, const char* prompt) {
             s->cursor_pos = s->line_len;
             redraw(s, prompt); /* park the cursor at end of line */
             write(1, "^C\r\n", 4);
+
             s->line_buf[0] = '\0';
             s->line_len = 0;
             s->cursor_pos = 0;
             s->history_index = s->history_count < HISTORY_MAX ? s->history_count : HISTORY_MAX;
+
             write_str(prompt);
             continue;
         }
@@ -584,6 +585,7 @@ char* line_edit_read(line_edit_state* s, const char* prompt) {
 
         if (c >= 0x20 && c <= 0x7e) {
             if (s->line_len >= LINE_MAX - 1) continue;
+
             memmove(s->line_buf + s->cursor_pos + 1,
                     s->line_buf + s->cursor_pos,
                     (size_t)(s->line_len - s->cursor_pos));

@@ -56,8 +56,11 @@ static int32_t parse_unix_addr(const void* kaddr, size_t addrlen,
             break;
         }
     }
+
     if (!found_null) return resource::ERR_INVAL;
+
     if (sa.sun_path[0] == '\0') return resource::ERR_INVAL;
+
     if (sa.sun_path[0] != '/') return resource::ERR_INVAL;
 
     string::memcpy(kpath_out, sa.sun_path, UNIX_PATH_MAX);
@@ -68,6 +71,7 @@ __PRIVILEGED_CODE void unix_channel::ref_destroy(unix_channel* self) {
     if (!self) {
         return;
     }
+
     ring_buffer_destroy(self->buf_a_to_b);
     ring_buffer_destroy(self->buf_b_to_a);
     heap::kfree_delete(self);
@@ -79,10 +83,12 @@ __PRIVILEGED_CODE static ssize_t socket_read(
     if (!obj || !obj->impl || !kdst) {
         return resource::ERR_INVAL;
     }
+
     auto* sock = static_cast<unix_socket*>(obj->impl);
     if (sock->state != SOCK_STATE_CONNECTED) {
         return resource::ERR_NOTCONN;
     }
+
     ring_buffer* rb = sock->is_side_a
         ? sock->channel->buf_b_to_a
         : sock->channel->buf_a_to_b;
@@ -96,10 +102,12 @@ __PRIVILEGED_CODE static ssize_t socket_write(
     if (!obj || !obj->impl || !ksrc) {
         return resource::ERR_INVAL;
     }
+
     auto* sock = static_cast<unix_socket*>(obj->impl);
     if (sock->state != SOCK_STATE_CONNECTED) {
         return resource::ERR_NOTCONN;
     }
+
     ring_buffer* rb = sock->is_side_a
         ? sock->channel->buf_a_to_b
         : sock->channel->buf_b_to_a;
@@ -111,6 +119,7 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
     if (!obj || !obj->impl) {
         return;
     }
+
     auto* sock = static_cast<unix_socket*>(obj->impl);
 
     switch (sock->state) {
@@ -216,6 +225,7 @@ __PRIVILEGED_CODE static int32_t unix_listen(
     ls->closed = false;
     ls->accept_queue.init();
     ls->accept_wq.init();
+
     uint32_t bl = (backlog <= 0) ? DEFAULT_BACKLOG : static_cast<uint32_t>(backlog);
     if (bl > MAX_BACKLOG) {
         bl = MAX_BACKLOG;
@@ -257,19 +267,23 @@ __PRIVILEGED_CODE static int32_t unix_accept(
             sync::spin_unlock_irqrestore(ls->lock, irq);
             return resource::ERR_INVAL;
         }
+
         if (nonblock) {
             sync::spin_unlock_irqrestore(ls->lock, irq);
             return resource::ERR_AGAIN;
         }
     }
+
     while (ls->accept_queue.empty() && !ls->closed
            && !signals::interrupt_pending(task)) {
         irq = sync::wait(ls->accept_wq, ls->lock, irq);
     }
+
     if (signals::interrupt_pending(task)) {
         sync::spin_unlock_irqrestore(ls->lock, irq);
         return resource::ERR_INTR;
     }
+
     if (ls->accept_queue.empty()) {
         sync::spin_unlock_irqrestore(ls->lock, irq);
         return resource::ERR_INVAL;
@@ -300,6 +314,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
     if (client_sock->state == SOCK_STATE_CONNECTED) {
         return resource::ERR_ISCONN;
     }
+
     if (client_sock->state == SOCK_STATE_LISTENING) {
         return resource::ERR_INVAL;
     }
@@ -314,6 +329,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
         if (rc == fs::ERR_NOENT) return resource::ERR_NOENT;
         return resource::ERR_CONNREFUSED;
     }
+
     if (target_node->type() != fs::node_type::socket) {
         if (target_node->release()) {
             fs::node::ref_destroy(target_node);
@@ -341,6 +357,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
 
     auto chan = rc::make_kref<unix_channel>();
     if (!chan) return resource::ERR_NOMEM;
+
     chan->buf_a_to_b = nullptr;
     chan->buf_b_to_a = nullptr;
 
@@ -352,6 +369,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
 
     auto* server_sock = heap::kalloc_new<unix_socket>();
     if (!server_sock) return resource::ERR_NOMEM;
+
     server_sock->state = SOCK_STATE_CONNECTED;
     server_sock->lock = sync::SPINLOCK_INIT;
     server_sock->is_side_a = true;
@@ -362,6 +380,7 @@ __PRIVILEGED_CODE static int32_t unix_connect(
         heap::kfree_delete(server_sock);
         return resource::ERR_NOMEM;
     }
+
     server_obj->type = resource::resource_type::SOCKET;
     server_obj->ops = get_socket_ops();
     server_obj->impl = server_sock;
@@ -401,6 +420,7 @@ __PRIVILEGED_CODE static uint32_t socket_poll(
     resource::resource_object* obj, sync::poll_table* pt
 ) {
     if (!obj || !obj->impl) return sync::POLL_NVAL;
+
     auto* sock = static_cast<unix_socket*>(obj->impl);
 
     if (sock->state == SOCK_STATE_CONNECTED) {
@@ -418,9 +438,11 @@ __PRIVILEGED_CODE static uint32_t socket_poll(
         if (pt) {
             sync::poll_subscribe(*pt, sock->listener->accept_wq);
         }
+
         sync::irq_state irq = sync::spin_lock_irqsave(sock->listener->lock);
         uint32_t mask = sock->listener->accept_queue.empty() ? 0 : sync::POLL_IN;
         sync::spin_unlock_irqrestore(sock->listener->lock, irq);
+
         return mask;
     }
 
@@ -463,6 +485,7 @@ __PRIVILEGED_CODE int32_t create_unbound_socket(
     if (!sock) {
         return resource::ERR_NOMEM;
     }
+
     sock->state = SOCK_STATE_UNBOUND;
     sock->lock = sync::SPINLOCK_INIT;
     sock->is_side_a = false;
@@ -472,6 +495,7 @@ __PRIVILEGED_CODE int32_t create_unbound_socket(
         heap::kfree_delete(sock);
         return resource::ERR_NOMEM;
     }
+
     obj->type = resource::resource_type::SOCKET;
     obj->ops = &g_socket_ops;
     obj->impl = sock;
@@ -495,6 +519,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
     if (!chan) {
         return resource::ERR_NOMEM;
     }
+
     chan->buf_a_to_b = nullptr;
     chan->buf_b_to_a = nullptr;
 
@@ -512,6 +537,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
     if (!sock_a) {
         return resource::ERR_NOMEM;
     }
+
     sock_a->state = SOCK_STATE_CONNECTED;
     sock_a->lock = sync::SPINLOCK_INIT;
     sock_a->is_side_a = true;
@@ -522,6 +548,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
         heap::kfree_delete(sock_a);
         return resource::ERR_NOMEM;
     }
+
     sock_b->state = SOCK_STATE_CONNECTED;
     sock_b->lock = sync::SPINLOCK_INIT;
     sock_b->is_side_a = false;
@@ -533,6 +560,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
         heap::kfree_delete(sock_a);
         return resource::ERR_NOMEM;
     }
+
     obj_a->type = resource::resource_type::SOCKET;
     obj_a->ops = &g_socket_ops;
     obj_a->impl = sock_a;
@@ -544,6 +572,7 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
         heap::kfree_delete(sock_a);
         return resource::ERR_NOMEM;
     }
+
     obj_b->type = resource::resource_type::SOCKET;
     obj_b->ops = &g_socket_ops;
     obj_b->impl = sock_b;

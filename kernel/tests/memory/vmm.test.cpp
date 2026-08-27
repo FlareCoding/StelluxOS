@@ -18,6 +18,7 @@ static int32_t vmm_before_all() {
         log::error("vmm tests: insufficient free pages (%lu)", g_initial_free_pages);
         return -1;
     }
+
     return 0;
 }
 

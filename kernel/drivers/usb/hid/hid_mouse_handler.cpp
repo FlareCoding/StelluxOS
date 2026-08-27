@@ -16,6 +16,7 @@ void hid_mouse_handler::reset_state() {
         heap::ufree(m_button_fields);
         m_button_fields = nullptr;
     }
+
     if (m_prev_buttons) {
         heap::ufree(m_prev_buttons);
         m_prev_buttons = nullptr;
@@ -53,18 +54,21 @@ int32_t hid_mouse_handler::init(const report_layout& layout,
             m_x_field = &field;
             continue;
         }
+
         if (!m_y_field &&
             field.usage_page == gd &&
             field.usage == static_cast<uint16_t>(generic_desktop_usage::y_axis)) {
             m_y_field = &field;
             continue;
         }
+
         if (!m_wheel_field &&
             field.usage_page == gd &&
             field.usage == static_cast<uint16_t>(generic_desktop_usage::wheel)) {
             m_wheel_field = &field;
             continue;
         }
+
         if (field.usage_page == btn && field.is_variable()) {
             button_count++;
         }
@@ -121,12 +125,14 @@ void hid_mouse_handler::on_report(const uint8_t* data, uint32_t length) {
             : static_cast<int32_t>(read_field_unsigned(
                 data, length, m_x_field->bit_offset, m_x_field->bit_size));
     }
+
     if (m_y_field) {
         dy = (m_y_field->logical_minimum < 0 || m_y_field->is_relative())
             ? read_field_signed(data, length, m_y_field->bit_offset, m_y_field->bit_size)
             : static_cast<int32_t>(read_field_unsigned(
                 data, length, m_y_field->bit_offset, m_y_field->bit_size));
     }
+
     if (m_wheel_field) {
         scroll = (m_wheel_field->logical_minimum < 0 || m_wheel_field->is_relative())
             ? read_field_signed(data, length, m_wheel_field->bit_offset, m_wheel_field->bit_size)

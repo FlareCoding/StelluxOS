@@ -8,9 +8,8 @@ struct futex_timespec {
     int64_t tv_nsec;
 };
 
-// Futex operations implemented by the multiplexer, the private flag
-// is meaningless here because waiters are already keyed by address
-// space, and requeue degrades to waking every waiter
+// The private flag is meaningless because waiters are already keyed
+// by address space, and requeue degrades to waking every waiter
 constexpr uint64_t FUTEX_CMD_MASK       = 0x7F;
 constexpr uint64_t FUTEX_OP_WAIT        = 0;
 constexpr uint64_t FUTEX_OP_WAKE        = 1;
@@ -19,9 +18,8 @@ constexpr uint64_t FUTEX_OP_CMP_REQUEUE = 4;
 
 constexpr int64_t NSEC_PER_SEC = 1000000000;
 
-// Read the optional relative timeout, returning zero on success and a
-// negative errno otherwise. Zero nanoseconds means wait forever in the
-// native layer, so an already expired timeout clamps to one nanosecond
+// Zero nanoseconds means wait forever in the native layer, so an already
+// expired timeout clamps to one nanosecond. Returns 0 or a negative errno
 static int64_t read_futex_timeout(uint64_t u_timeout, uint64_t* out_ns) {
     if (u_timeout == 0) {
         *out_ns = 0;

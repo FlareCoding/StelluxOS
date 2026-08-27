@@ -75,6 +75,7 @@ __PRIVILEGED_CODE int32_t init(const debug::kernel_elf& elf) {
 
 bool resolve(uint64_t addr, resolve_result* out) {
     if (!g_available || !out) return false;
+
     const elf64::Sym* best = nullptr;
     for (uint64_t i = 0; i < g_sym_count; i++) {
         const elf64::Sym* sym = &g_symtab[i];
@@ -85,8 +86,10 @@ bool resolve(uint64_t addr, resolve_result* out) {
         if (sym->st_size > 0 && addr >= sym->st_value + sym->st_size) continue;
         if (!best || sym->st_value > best->st_value) best = sym;
     }
+
     if (!best) return false;
     if (best->st_name >= g_strtab_size) return false;
+
     out->name   = g_strtab + best->st_name;
     out->offset = addr - best->st_value;
     return true;

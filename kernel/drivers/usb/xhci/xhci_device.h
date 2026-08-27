@@ -92,13 +92,7 @@ public:
     void set_endpoint(uint8_t dci, xhci_endpoint* ep) { m_endpoints[dci] = ep; }
 
     // Lookup endpoint by USB endpoint address (e.g. 0x81 = EP1 IN)
-    xhci_endpoint* endpoint_by_address(uint8_t address) {
-        uint8_t ep_num = address & 0x0F;
-        bool is_in = (address & 0x80) != 0;
-        uint8_t dci = static_cast<uint8_t>(ep_num * 2 + (is_in ? 1 : 0));
-        if (dci < 2 || dci > MAX_ENDPOINTS) return nullptr;
-        return m_endpoints[dci];
-    }
+    xhci_endpoint* endpoint_by_address(uint8_t address);
 
     // Interface tracking
     static constexpr uint8_t MAX_INTERFACES = 16;
@@ -117,15 +111,8 @@ public:
 
     // Hub downstream device tracking (hub_port is 1-based, array is 0-based)
     static constexpr uint8_t MAX_HUB_PORTS = 16;
-    xhci_device* hub_child(uint8_t hub_port) {
-        if (hub_port < 1 || hub_port > MAX_HUB_PORTS) return nullptr;
-        return m_hub_children[hub_port - 1];
-    }
-    void set_hub_child(uint8_t hub_port, xhci_device* child) {
-        if (hub_port >= 1 && hub_port <= MAX_HUB_PORTS) {
-            m_hub_children[hub_port - 1] = child;
-        }
-    }
+    xhci_device* hub_child(uint8_t hub_port);
+    void set_hub_child(uint8_t hub_port, xhci_device* child);
 
 private:
     uint8_t   m_port_id = 0;     // 1-based port ID (root hub port for root devices)
