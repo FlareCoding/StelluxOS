@@ -14,8 +14,8 @@ namespace net {
 
 // Linked list of ICMP sockets registered for packet delivery.
 // Protected by g_icmp_sock_lock.
-__PRIVILEGED_DATA static inet_socket* g_icmp_sock_list = nullptr;
-__PRIVILEGED_DATA static sync::spinlock g_icmp_sock_lock = sync::SPINLOCK_INIT;
+static inet_socket* g_icmp_sock_list = nullptr;
+static sync::spinlock g_icmp_sock_lock = sync::SPINLOCK_INIT;
 
 // Ring buffer entry framing: [src_ip(4)] [payload_len(2)] [data(N)]
 constexpr size_t RX_ENTRY_HEADER = 6;

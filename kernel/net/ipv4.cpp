@@ -14,7 +14,7 @@
 
 namespace net {
 
-__PRIVILEGED_DATA static sync::atomic<uint32_t> g_ipv4_id_counter{0};
+static sync::atomic<uint32_t> g_ipv4_id_counter{0};
 
 static uint16_t next_ipv4_id() {
     return static_cast<uint16_t>(g_ipv4_id_counter.fetch_add_relaxed(1));

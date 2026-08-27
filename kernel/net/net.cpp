@@ -13,9 +13,11 @@
 
 namespace net {
 
-__PRIVILEGED_DATA static netif* g_iface_list = nullptr;
-__PRIVILEGED_DATA static netif* g_default_iface = nullptr;
-__PRIVILEGED_DATA static sync::spinlock g_net_lock = sync::SPINLOCK_INIT;
+// Interface state stays unprivileged: the netif objects it points at are
+// owned by drivers and allocated from the unprivileged heap.
+static netif* g_iface_list = nullptr;
+static netif* g_default_iface = nullptr;
+static sync::spinlock g_net_lock = sync::SPINLOCK_INIT;
 
 // Deferred TX queue: protocol-generated responses (e.g. ICMP echo replies)
 // that cannot be sent inline from RX processing context.
@@ -45,9 +47,9 @@ struct deferred_tx_entry {
 
 } // anonymous namespace
 
-__PRIVILEGED_DATA static deferred_tx_entry g_deferred_tx[DEFERRED_TX_MAX] = {};
-__PRIVILEGED_DATA static uint32_t g_deferred_tx_count = 0;
-__PRIVILEGED_DATA static sync::spinlock g_deferred_tx_lock = sync::SPINLOCK_INIT;
+static deferred_tx_entry g_deferred_tx[DEFERRED_TX_MAX] = {};
+static uint32_t g_deferred_tx_count = 0;
+static sync::spinlock g_deferred_tx_lock = sync::SPINLOCK_INIT;
 
 __PRIVILEGED_CODE int32_t init() {
     arp_init();

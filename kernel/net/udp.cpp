@@ -14,9 +14,9 @@
 
 namespace net {
 
-__PRIVILEGED_DATA static inet_socket* g_udp_sock_list = nullptr;
-__PRIVILEGED_DATA static sync::spinlock g_udp_sock_lock = sync::SPINLOCK_INIT;
-__PRIVILEGED_DATA static sync::atomic<uint32_t> g_ephemeral_next{UDP_PORT_EPHEMERAL_MIN};
+static inet_socket* g_udp_sock_list = nullptr;
+static sync::spinlock g_udp_sock_lock = sync::SPINLOCK_INIT;
+static sync::atomic<uint32_t> g_ephemeral_next{UDP_PORT_EPHEMERAL_MIN};
 
 // Ring buffer entry framing: [src_ip(4, net)] [src_port(2, net)] [payload_len(2, host)] [data(N)]
 constexpr size_t RX_ENTRY_HEADER = 8;

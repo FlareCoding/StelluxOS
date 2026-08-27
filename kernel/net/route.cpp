@@ -5,8 +5,8 @@
 
 namespace net {
 
-__PRIVILEGED_DATA static route_entry g_route_table[ROUTE_TABLE_SIZE] = {};
-__PRIVILEGED_DATA static sync::spinlock g_route_lock = sync::SPINLOCK_INIT;
+static route_entry g_route_table[ROUTE_TABLE_SIZE] = {};
+static sync::spinlock g_route_lock = sync::SPINLOCK_INIT;
 
 /**
  * Count the number of set bits in a 32-bit value.

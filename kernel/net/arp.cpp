@@ -25,8 +25,8 @@ struct arp_entry {
 
 } // anonymous namespace
 
-__PRIVILEGED_DATA static arp_entry g_arp_table[ARP_TABLE_SIZE] = {};
-__PRIVILEGED_DATA static sync::spinlock g_arp_lock = sync::SPINLOCK_INIT;
+static arp_entry g_arp_table[ARP_TABLE_SIZE] = {};
+static sync::spinlock g_arp_lock = sync::SPINLOCK_INIT;
 
 void arp_init() {
     for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {

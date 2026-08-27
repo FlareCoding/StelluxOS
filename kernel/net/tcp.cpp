@@ -22,12 +22,12 @@ namespace net {
 
 // Port registry: every TCP socket with a local port assigned, searched by
 // tcp_recv to match incoming segments to their socket.
-__PRIVILEGED_DATA static tcp_socket* g_tcp_sock_list = nullptr;
-__PRIVILEGED_DATA static sync::spinlock g_tcp_sock_lock = sync::SPINLOCK_INIT;
+static tcp_socket* g_tcp_sock_list = nullptr;
+static sync::spinlock g_tcp_sock_lock = sync::SPINLOCK_INIT;
 
 // ISN generator. A monotonic counter is functionally correct, though it lacks
 // the off-path spoofing protection of a clock-based scheme (RFC 6528).
-__PRIVILEGED_DATA static sync::atomic<uint32_t> g_tcp_isn_counter{1000};
+static sync::atomic<uint32_t> g_tcp_isn_counter{1000};
 
 constexpr size_t TCP_MSS = ETH_MTU - sizeof(ipv4_header) - sizeof(tcp_header);
 
@@ -42,7 +42,7 @@ constexpr size_t TCP_RX_BUF_CAPACITY = 16384;
 constexpr uint16_t TCP_PORT_EPHEMERAL_MIN = 49152;
 constexpr uint16_t TCP_PORT_EPHEMERAL_MAX = 65535;
 
-__PRIVILEGED_DATA static sync::atomic<uint32_t> g_tcp_ephemeral_next{TCP_PORT_EPHEMERAL_MIN};
+static sync::atomic<uint32_t> g_tcp_ephemeral_next{TCP_PORT_EPHEMERAL_MIN};
 
 static uint16_t tcp_alloc_ephemeral_port() {
     uint32_t port = g_tcp_ephemeral_next.fetch_add_relaxed(1);
