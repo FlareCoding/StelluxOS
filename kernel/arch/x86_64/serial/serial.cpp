@@ -43,7 +43,9 @@ constexpr uint16_t BAUD_115200 = 0x01;
 
 constexpr uint8_t COM1_LEGACY_IRQ = 4;
 
-static uint16_t g_port_base = COM1_BASE;
+// Feeds elevated port I/O, so a stray write here would redirect Ring 0
+// accesses to arbitrary ports such as the PCI config window.
+__PRIVILEGED_DATA static uint16_t g_port_base = COM1_BASE;
 
 __PRIVILEGED_BSS static rx_callback_t g_rx_callback;
 

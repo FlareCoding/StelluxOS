@@ -58,7 +58,9 @@ constexpr uint32_t LCR_FEN = (1 << 4); // Enable FIFOs
 constexpr uint32_t LCR_WLEN_8 = (3 << 5); // 8-bit word length
 
 // UART base virtual address (set during init)
-static uintptr_t uart_base = 0;
+// Feeds elevated MMIO writes, so a stray write here would turn every log
+// call into an arbitrary Ring 0 memory write.
+__PRIVILEGED_BSS static uintptr_t uart_base = 0;
 
 __PRIVILEGED_BSS static rx_callback_t g_rx_callback;
 

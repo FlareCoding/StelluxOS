@@ -24,7 +24,7 @@
 
 namespace syscall {
 
-handler_t g_syscall_table[MAX_SYSCALL_NUM];
+__PRIVILEGED_BSS handler_t g_syscall_table[MAX_SYSCALL_NUM];
 
 __PRIVILEGED_CODE void init_syscall_table() {
     for (uint64_t i = 0; i < MAX_SYSCALL_NUM; i++)

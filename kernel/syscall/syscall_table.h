@@ -49,7 +49,9 @@ constexpr int64_t ECONNREFUSED     = -111;
 // (rewind for re-execution or EINTR) and never visible to userspace.
 constexpr int64_t ERESTARTSYS = -512;
 
-extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
+// Dispatched by call at Ring 0, so the table must be unreachable from
+// lowered code that could redirect an entry.
+__PRIVILEGED_BSS extern handler_t g_syscall_table[MAX_SYSCALL_NUM];
 
 /**
  * @note Privilege: **required**
