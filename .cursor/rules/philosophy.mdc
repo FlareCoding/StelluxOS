@@ -1,0 +1,73 @@
+---
+description: Core project philosophy and the design process for new StelluxOS features, read when designing a feature, weighing an abstraction, or deciding where something belongs
+alwaysApply: false
+---
+
+# StelluxOS Philosophy
+
+Stellux 3.0 is a ground-up rewrite of an earlier hobby OS that grew real
+features but cracked under foundational brittleness and x86-only assumptions.
+This is not a learning project. The goal is to build a foundation that holds.
+
+The research thesis is dynamic privilege: one kernel binary executing at two
+hardware privilege levels, with as little privileged code and data as possible.
+See the dynpriv rule and skill for how that shapes individual decisions.
+
+## Principles
+
+**Dual architecture as a forcing function.** x86_64 and AArch64 are both
+first-class. This is not about supporting ARM, it is about using architecture
+differences to drive proper abstractions. If a feature works cleanly on both,
+the abstraction is probably right. If one architecture fights the interface,
+the interface is wrong.
+
+**Slow is smooth, smooth is fast.** A feature is done when it works on both
+architectures, its semantics and layering are thought through, and it is solid
+enough to build on. A week spent on correct abstractions saves months of
+refactoring.
+
+**Robustness over features.** Correctness over speed to feature, clean
+abstractions over clever hacks, explicit error handling over silent failure,
+documented invariants over tribal knowledge.
+
+**Monolithic with clean internals.** Not microkernel IPC overhead, not
+spaghetti. The architecture may evolve, so the foundation must support any
+direction.
+
+## Designing a feature
+
+1. **Semantics first.** What does this operation mean, independent of any
+   architecture? Think "map a page", not "write to CR3". Think "send an
+   interrupt to a CPU", not "write to the LAPIC".
+2. **Find the split.** Common owns the abstract operation, data structures,
+   algorithms, and policy. Arch owns the mechanism: registers, instructions,
+   hardware layout. See the arch-layout rule for the mechanisms available and
+   where files go.
+3. **Design the interface.** Express semantics, hide the mechanism, document
+   the contract implementations must fulfill, and return error codes.
+4. **Sketch both implementations** before committing to the interface. If one
+   feels natural and the other feels forced, revisit the interface.
+5. **Work the edges.** What can fail, what is unrecoverable, what invariants
+   must hold, and what happens under concurrency.
+
+Worked example, the serial console. The semantics are "write a byte to the
+debug console". The common interface is `serial::` declared in
+`kernel/serial/serial.h`. x86_64 implements it with port I/O and AArch64 with
+MMIO to a PL011, each in its own `arch/<arch>/serial/serial.cpp`. Both feel
+natural, so the abstraction holds. The edges: initialization can fail and
+returns an error, and the elevation needed for port I/O lives in the logging
+layer above rather than in the primitive.
+
+## Red flags
+
+- `#ifdef __x86_64__` or `#ifdef __aarch64__` in common code. Use the include
+  overlay, never conditionals.
+- "This is x86-specific, we will port it later." Both architectures, always.
+- Magic numbers without names.
+- Inline assembly outside an arch tree, or outside a small wrapper function.
+- Marking something privileged because it was easier than checking whether it
+  needed to be.
+- Silent failures. Every error is handled or explicitly propagated.
+- "It works, ship it." Does it work on both architectures, and is it robust?
+
+When in doubt, slow down and think.

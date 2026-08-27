@@ -1,58 +1,55 @@
-description: Gather context on the Stellux 3.0 kernel for a new agent session
+description: Gather context on the StelluxOS kernel for a new agent session
 mode: agent
 
 ---
 
-You are onboarding yourself onto the Stellux 3.0 codebase. Your goal is to build a mental model of the project so you can assist effectively.
+You are onboarding yourself onto the StelluxOS codebase. Your goal is to build a mental model of the project so you can assist effectively.
 
-## Step 1: Read Project Philosophy & Rules
+## Step 1: Read the project rules and skills
 
-Read these files in order — they define how this project thinks:
+These define how the project thinks and what it expects:
 
-1. `.cursor/rules/philosophy.md` — Core principles and problem-solving approach
-2. `.cursor/rules/architecture.md` — Dual-architecture requirements (x86_64 + AArch64)
-3. `.cursor/rules/style.md` — Naming and code style conventions
-4. `.cursor/rules/low-level.md` — Low-level coding constraints
-5. `.cursor/rules/error-handling.md` — Error handling approach
-6. `.cursor/rules/build.md` — Build system details
-7. `.cursor/rules/cpp-constraints.md` — C++ subset used (freestanding, no STL)
+1. `.cursor/rules/philosophy.mdc`: core principles and the design process
+2. `.cursor/rules/arch-layout.mdc`: the include overlay and where code belongs
+3. `.cursor/rules/dynpriv.mdc`: what may be privileged and how elevation is bracketed
+4. `.cursor/rules/style.mdc`: naming, comments, stanza formatting, structure
+5. `.cursor/rules/stellux-conventions.mdc`: commits, review workflow, verification gates
+6. `.cursor/skills/stellux-dynpriv/SKILL.md`: the dynamic privilege model in depth
+7. `README.md`: the research motivation and supported platforms
 
-## Step 2: Understand the Directory Structure
+## Step 2: Understand the directory structure
 
-Explore the top-level layout and key directories:
+Explore the layout, ignoring build artifacts:
 
-- `kernel/common/` — Architecture-independent interfaces and shared logic
-- `kernel/arch/x86_64/` — x86_64 implementations
-- `kernel/arch/aarch64/` — AArch64 implementations
-- `kernel/boot/` — Boot protocol handling
-- `kernel/mm/`, `kernel/trap/`, `kernel/sched/`, `kernel/syscall/` — Subsystems
-- `boot/` — Bootloader-related code
-- `Makefile`, `config.mk` — Build system entry points
-- `scripts/` — Helper scripts
+- `kernel/<subsystem>/`, one directory per subsystem, namespace matches the directory
+- `kernel/common/`, freestanding types, logging, containers, string utilities
+- `kernel/arch/{x86_64,aarch64}/`, per-architecture implementations that mirror subsystem names
+- `kernel/tests/`, unit tests grouped by theme, built only with STLX_UNIT_TESTS_ENABLED
+- `userland/lib/`, `userland/apps/`, musl and libc++ based userland
+- `Makefile`, `config.mk`, `kernel/Makefile`, build entry points
+- `scripts/`, helper scripts including dynpriv-lint.sh and priv-footprint.sh
 
-## Step 3: Read Key Source Files
+## Step 3: Read key source files
 
-Skim these to understand how the codebase actually works:
+- `kernel/boot/boot.cpp` for the init sequence and how subsystems come up
+- `kernel/dynpriv/dynpriv.h` plus one arch implementation, since dynamic privilege is the project's thesis
+- A common interface and both arch implementations of it, for example `kernel/clock/clock.h`
+- Entry points: `start.S` and `arch_init.cpp` in both architectures
 
-- A common header (e.g., one from `kernel/common/`) to see interface style
-- The matching arch implementations in both `kernel/arch/x86_64/` and `kernel/arch/aarch64/`
-- `kernel/Makefile` or `Makefile` to understand build flow
-- Entry points: look for `start.S`, `main`, or `arch_init` in both architectures
+## Step 4: Identify current state
 
-## Step 4: Identify Current State
-
-- What subsystems exist and how mature are they?
-- What's the most recent area of development? (check git log)
-- Are there any TODOs, FIXMEs, or incomplete areas?
+- Which subsystems exist and how mature are they
+- Where recent development has focused (check git log)
+- Any incomplete areas
 
 ## Output
 
-Report back with a concise summary covering:
+Report back a concise summary covering:
 
-1. **Project Identity**: What Stellux 3.0 is and what makes it unique
-2. **Architecture**: How the dual-arch abstraction works in practice
-3. **Current State**: What subsystems exist and their maturity level
-4. **Key Patterns**: Conventions a new contributor must follow
-5. **Active Areas**: Where development is currently focused
+1. **Project identity**: what StelluxOS is and what makes it unique
+2. **Architecture**: how the dual-arch abstraction works in practice
+3. **Current state**: subsystems and maturity
+4. **Key patterns**: conventions a contributor must follow
+5. **Active areas**: where development is focused
 
-Keep it brief and actionable — this is a working summary, not a report.
+Keep it brief and actionable, a working summary rather than a report.
