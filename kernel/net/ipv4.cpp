@@ -123,7 +123,7 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     }
 
     size_t total_len = sizeof(ipv4_header) + payload_len;
-    auto* packet = static_cast<uint8_t*>(heap::kzalloc(total_len));
+    auto* packet = static_cast<uint8_t*>(heap::uzalloc(total_len));
     if (!packet) {
         return ERR_NOMEM;
     }
@@ -159,19 +159,19 @@ int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
     if (rt.type == route_type::LOCAL || is_loopback_iface) {
         int32_t rc = eth_send(out_iface, out_iface->mac, ETH_TYPE_IPV4,
                               packet, total_len);
-        heap::kfree(packet);
+        heap::ufree(packet);
         return rc;
     }
 
     uint8_t dst_mac[MAC_ADDR_LEN];
     int32_t arp_rc = arp_resolve(out_iface, rt.next_hop, dst_mac);
     if (arp_rc != OK) {
-        heap::kfree(packet);
+        heap::ufree(packet);
         return arp_rc;
     }
 
     int32_t rc = eth_send(out_iface, dst_mac, ETH_TYPE_IPV4, packet, total_len);
-    heap::kfree(packet);
+    heap::ufree(packet);
     return rc;
 }
 

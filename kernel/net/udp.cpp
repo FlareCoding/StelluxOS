@@ -60,7 +60,7 @@ void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
     uint16_t plen = static_cast<uint16_t>(payload_len);
 
     size_t entry_len = RX_ENTRY_HEADER + payload_len;
-    auto* entry = static_cast<uint8_t*>(heap::kzalloc(entry_len));
+    auto* entry = static_cast<uint8_t*>(heap::uzalloc(entry_len));
     if (!entry) return;
 
     string::memcpy(entry, &src_ip_net, 4);
@@ -84,7 +84,7 @@ void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
         }
     });
 
-    heap::kfree(entry);
+    heap::ufree(entry);
 }
 
 void udp_register_socket(inet_socket* sock) {

@@ -338,7 +338,7 @@ __PRIVILEGED_CODE int32_t init(const debug::kernel_elf& elf) {
         return ERR_BAD_DWARF;
 
     uint64_t line_size = line_shdr->sh_size;
-    auto* line_copy = reinterpret_cast<uint8_t*>(heap::kalloc(line_size));
+    auto* line_copy = reinterpret_cast<uint8_t*>(heap::ualloc(line_size));
     if (!line_copy) return ERR_NO_MEMORY;
 
     string::memcpy(line_copy, elf.base + line_shdr->sh_offset, line_size);
@@ -348,7 +348,7 @@ __PRIVILEGED_CODE int32_t init(const debug::kernel_elf& elf) {
     uint64_t str_size = 0;
     if (str_shdr && str_shdr->sh_offset + str_shdr->sh_size <= elf.file_size) {
         str_size = str_shdr->sh_size;
-        str_copy = reinterpret_cast<char*>(heap::kalloc(str_size));
+        str_copy = reinterpret_cast<char*>(heap::ualloc(str_size));
         if (str_copy)
             string::memcpy(str_copy, elf.base + str_shdr->sh_offset, str_size);
     }

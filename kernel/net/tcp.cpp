@@ -62,7 +62,7 @@ __PRIVILEGED_CODE static int32_t tcp_send(
     bool deferred
 ) {
     size_t seg_len = sizeof(tcp_header) + data_len;
-    auto* buf = static_cast<uint8_t*>(heap::kzalloc(seg_len));
+    auto* buf = static_cast<uint8_t*>(heap::uzalloc(seg_len));
     if (!buf) {
         return ERR_NOMEM;
     }
@@ -93,7 +93,7 @@ __PRIVILEGED_CODE static int32_t tcp_send(
     } else {
         rc = ipv4_send(iface, dst_ip, IPV4_PROTO_TCP, buf, seg_len, src_ip);
     }
-    heap::kfree(buf);
+    heap::ufree(buf);
     return rc;
 }
 

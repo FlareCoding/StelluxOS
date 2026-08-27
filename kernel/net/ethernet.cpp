@@ -42,7 +42,7 @@ int32_t eth_send(netif* iface, const uint8_t* dst_mac,
         return ERR_INVAL;
     }
 
-    auto* frame = static_cast<uint8_t*>(heap::kzalloc(frame_len));
+    auto* frame = static_cast<uint8_t*>(heap::uzalloc(frame_len));
     if (!frame) {
         return ERR_NOMEM;
     }
@@ -55,7 +55,7 @@ int32_t eth_send(netif* iface, const uint8_t* dst_mac,
     string::memcpy(frame + sizeof(eth_header), payload, payload_len);
 
     int32_t rc = iface->transmit(iface, frame, frame_len);
-    heap::kfree(frame);
+    heap::ufree(frame);
     return rc;
 }
 

@@ -271,7 +271,7 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
 
     // Build UDP packet: header + payload
     size_t udp_total = sizeof(udp_header) + count;
-    auto* udp_pkt = static_cast<uint8_t*>(heap::kzalloc(udp_total));
+    auto* udp_pkt = static_cast<uint8_t*>(heap::uzalloc(udp_total));
     if (!udp_pkt) {
         return resource::ERR_NOMEM;
     }
@@ -289,7 +289,7 @@ __PRIVILEGED_CODE static ssize_t inet_udp_sendto(
 
     int32_t rc = ipv4_send(iface, dst_ip, IPV4_PROTO_UDP, udp_pkt, udp_total,
                            sock->bound_addr);
-    heap::kfree(udp_pkt);
+    heap::ufree(udp_pkt);
 
     if (rc != OK) {
         return resource::ERR_IO;

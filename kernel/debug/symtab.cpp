@@ -47,15 +47,15 @@ __PRIVILEGED_CODE int32_t init(const debug::kernel_elf& elf) {
         return ERR_BAD_ELF;
     }
 
-    auto* sym_copy = reinterpret_cast<elf64::Sym*>(heap::kalloc(symtab_size));
+    auto* sym_copy = reinterpret_cast<elf64::Sym*>(heap::ualloc(symtab_size));
     if (!sym_copy) {
         log::warn("symtab: failed to allocate for symbol table");
         return ERR_NO_MEMORY;
     }
 
-    auto* str_copy = reinterpret_cast<char*>(heap::kalloc(strtab_size));
+    auto* str_copy = reinterpret_cast<char*>(heap::ualloc(strtab_size));
     if (!str_copy) {
-        heap::kfree(sym_copy);
+        heap::ufree(sym_copy);
         log::warn("symtab: failed to allocate for string table");
         return ERR_NO_MEMORY;
     }

@@ -17,14 +17,14 @@ DEFINE_SYSCALL3(getrandom, u_buf, buflen, flags) {
         len = GETRANDOM_MAX_BUF;
     }
 
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(len));
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(len));
     if (!kbuf) {
         return syscall::ENOMEM;
     }
 
     int32_t rc = random::fill(kbuf, len);
     if (rc != random::OK) {
-        heap::kfree(kbuf);
+        heap::ufree(kbuf);
         if (flags & GRND_NONBLOCK) {
             return syscall::EAGAIN;
         }
@@ -34,7 +34,7 @@ DEFINE_SYSCALL3(getrandom, u_buf, buflen, flags) {
 
     int32_t copy_rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(u_buf), kbuf, len);
-    heap::kfree(kbuf);
+    heap::ufree(kbuf);
 
     if (copy_rc != mm::uaccess::OK) {
         return syscall::EFAULT;

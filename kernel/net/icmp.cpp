@@ -27,7 +27,7 @@ static void deliver_to_sockets(uint32_t src_ip, const uint8_t* data, size_t len)
     uint16_t payload_len = static_cast<uint16_t>(len);
 
     size_t entry_len = RX_ENTRY_HEADER + len;
-    auto* entry = static_cast<uint8_t*>(heap::kzalloc(entry_len));
+    auto* entry = static_cast<uint8_t*>(heap::uzalloc(entry_len));
     if (!entry) return;
 
     string::memcpy(entry, &src_ip_net, 4);
@@ -44,7 +44,7 @@ static void deliver_to_sockets(uint32_t src_ip, const uint8_t* data, size_t len)
         }
     });
 
-    heap::kfree(entry);
+    heap::ufree(entry);
 }
 
 void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len) {
@@ -64,7 +64,7 @@ void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len) {
         // Queue the echo reply for deferred transmission, sending inline
         // from RX context would recurse back into RX processing.
         if (len <= ETH_MTU) {
-            auto* reply = static_cast<uint8_t*>(heap::kzalloc(len));
+            auto* reply = static_cast<uint8_t*>(heap::uzalloc(len));
             if (reply) {
                 string::memcpy(reply, data, len);
                 auto* reply_hdr = reinterpret_cast<icmp_header*>(reply);
@@ -74,7 +74,7 @@ void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len) {
                 reply_hdr->checksum = inet_checksum(reply, len);
 
                 queue_deferred_tx(iface, src_ip, IPV4_PROTO_ICMP, reply, len);
-                heap::kfree(reply);
+                heap::ufree(reply);
             }
         }
     }
