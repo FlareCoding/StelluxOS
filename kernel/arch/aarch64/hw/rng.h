@@ -1,7 +1,7 @@
 #ifndef STELLUX_ARCH_AARCH64_HW_RNG_H
 #define STELLUX_ARCH_AARCH64_HW_RNG_H
 
-#include "types.h"
+#include "common/types.h"
 #include "hw/cpu_features.h"
 
 namespace hw::rng {

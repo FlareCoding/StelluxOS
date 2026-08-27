@@ -1,8 +1,8 @@
 #ifndef STELLUX_COMMON_LOGGING_H
 #define STELLUX_COMMON_LOGGING_H
 
-#include "types.h"
-#include "varargs.h"
+#include "common/types.h"
+#include "common/varargs.h"
 
 // Default log level if not defined via defconfig
 #ifndef LOG_LEVEL

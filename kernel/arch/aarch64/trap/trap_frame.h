@@ -1,7 +1,7 @@
 #ifndef STELLUX_ARCH_AARCH64_TRAP_TRAP_FRAME_H
 #define STELLUX_ARCH_AARCH64_TRAP_TRAP_FRAME_H
 
-#include "types.h"
+#include "common/types.h"
 #include "sched/task_exec_core.h"
 
 namespace aarch64 {

@@ -1,7 +1,7 @@
 #ifndef STELLUX_COMMON_STRING_H
 #define STELLUX_COMMON_STRING_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace string {
 

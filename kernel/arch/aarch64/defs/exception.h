@@ -1,7 +1,7 @@
 #ifndef STELLUX_ARCH_AARCH64_DEFS_EXCEPTION_H
 #define STELLUX_ARCH_AARCH64_DEFS_EXCEPTION_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace aarch64 {
 

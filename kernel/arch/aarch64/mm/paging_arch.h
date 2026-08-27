@@ -1,7 +1,7 @@
 #ifndef STELLUX_ARCH_AARCH64_PAGING_ARCH_H
 #define STELLUX_ARCH_AARCH64_PAGING_ARCH_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace paging {
 

@@ -1,7 +1,7 @@
 #ifndef STELLUX_ARCH_X86_64_DEFS_VECTORS_H
 #define STELLUX_ARCH_X86_64_DEFS_VECTORS_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace x86 {
 

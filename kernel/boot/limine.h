@@ -10,7 +10,7 @@
 #ifndef _LIMINE_H
 #define _LIMINE_H
 
-#include "types.h"
+#include "common/types.h"
 
 #ifdef __cplusplus
 extern "C" {

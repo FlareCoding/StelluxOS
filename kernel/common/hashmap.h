@@ -34,7 +34,7 @@
 #ifndef STELLUX_COMMON_HASHMAP_H
 #define STELLUX_COMMON_HASHMAP_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace hashmap {
 
@@ -219,7 +219,7 @@ private:
 // The fatal handler is defined out-of-class to keep logging.h out of
 // this header. It must be compiled exactly once (ODR), so we rely on
 // the linker to deduplicate this weak definition across translation units.
-#include "logging.h"
+#include "common/logging.h"
 
 template<typename T, hashmap::node T::*Link, typename KeyOps>
 [[noreturn]] void hashmap::map<T, Link, KeyOps>::bad_init(

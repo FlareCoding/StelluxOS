@@ -1,7 +1,7 @@
 #ifndef STELLUX_MM_EARLY_MMU_H
 #define STELLUX_MM_EARLY_MMU_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace early_mmu {
 

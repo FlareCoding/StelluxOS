@@ -22,7 +22,7 @@
 #ifndef STELLUX_COMMON_LIST_H
 #define STELLUX_COMMON_LIST_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace list {
 

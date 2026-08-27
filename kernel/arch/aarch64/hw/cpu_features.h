@@ -1,7 +1,7 @@
 #ifndef STELLUX_ARCH_AARCH64_HW_CPU_FEATURES_H
 #define STELLUX_ARCH_AARCH64_HW_CPU_FEATURES_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace cpu {
 

@@ -8,11 +8,11 @@ alwaysApply: false
 
 ## Include overlay
 
-All kernel code compiles with `-I. -Icommon -Iarch/$(ARCH)` (relative to `kernel/`). Three roots merge into one include namespace:
+All kernel code compiles with `-I. -Iarch/$(ARCH)` (relative to `kernel/`). Two roots merge into one include namespace:
 
 - `#include "mm/paging.h"` → `kernel/mm/` (common subsystem)
+- `#include "common/types.h"` → `kernel/common/` (always with the prefix)
 - `#include "hw/cpu.h"` → `kernel/arch/$(ARCH)/hw/` (arch overlay)
-- `#include "common/types.h"` → always spell out the `common/` prefix
 
 The same include path may resolve per-arch: `"sched/thread_cpu_context.h"` picks the building arch's file. This overlay is the ONLY sanctioned form of arch dispatch — never `#ifdef __x86_64__` / `__aarch64__` in common code (platform defines like `STLX_PLATFORM_RPI4` are likewise arch-tree-only), never weak symbols.
 

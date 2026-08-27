@@ -29,7 +29,7 @@
 #ifndef STELLUX_COMMON_RB_TREE_H
 #define STELLUX_COMMON_RB_TREE_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace rbt {
 

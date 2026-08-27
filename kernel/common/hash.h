@@ -17,7 +17,7 @@
 #ifndef STELLUX_COMMON_HASH_H
 #define STELLUX_COMMON_HASH_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace hash {
 

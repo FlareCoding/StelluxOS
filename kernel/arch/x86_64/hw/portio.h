@@ -1,7 +1,7 @@
 #ifndef STELLUX_ARCH_X86_64_HW_PORTIO_H
 #define STELLUX_ARCH_X86_64_HW_PORTIO_H
 
-#include "types.h"
+#include "common/types.h"
 
 namespace portio {
 

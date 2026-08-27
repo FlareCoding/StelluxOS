@@ -1,7 +1,7 @@
 #ifndef STELLUX_HW_MMIO_H
 #define STELLUX_HW_MMIO_H
 
-#include "types.h"
+#include "common/types.h"
 #include "hw/barrier.h"
 
 namespace mmio {

@@ -164,7 +164,7 @@ endif
 # Include paths
 # Note: -Iarch/$(ARCH) allows arch-specific headers to be included with paths
 # like #include "hw/barrier.h" - the build system picks the right arch directory
-CXXFLAGS_INCLUDES := -I. -Icommon -Iarch/$(ARCH)
+CXXFLAGS_INCLUDES := -I. -Iarch/$(ARCH)
 
 # Unit test flags
 ifeq ($(STLX_UNIT_TESTS_ENABLED),1)

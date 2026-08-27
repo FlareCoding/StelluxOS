@@ -1,7 +1,7 @@
 #ifndef STELLUX_MM_PAGING_TYPES_H
 #define STELLUX_MM_PAGING_TYPES_H
 
-#include "types.h"
+#include "common/types.h"
 #include "mm/pmm_types.h"
 
 namespace paging {
