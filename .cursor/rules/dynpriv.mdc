@@ -1,0 +1,85 @@
+---
+description: Dynamic privilege rules for kernel code, what may be privileged and how to bracket elevation
+globs: kernel/**
+alwaysApply: false
+---
+
+# Dynamic Privilege
+
+Kernel threads run hardware-unprivileged (Ring 3 / EL0) inside the kernel
+address space and elevate only for work that architecturally requires it. The
+research goal is to keep privileged code and data as small as possible, so a
+stray write from a buggy subsystem faults immediately instead of silently
+corrupting the kernel.
+
+## Never leave a RUN_ELEVATED block early
+
+`RUN_ELEVATED` is a `do { ... } while (0)` that calls `lower()` after the
+body. A `return`, `break`, `continue`, or `goto` inside the body skips that
+call, so the thread keeps hardware privilege for the rest of its life and the
+isolation the design buys is silently gone. Compute a result inside the block
+and act on it after.
+
+```cpp
+// BAD, the early return skips lower() and the thread stays elevated
+RUN_ELEVATED({
+    if (!device_ready()) {
+        return ERR_BUSY;
+    }
+    program_device();
+});
+
+// GOOD, the block only produces a value
+int32_t rc = OK;
+RUN_ELEVATED({
+    rc = device_ready() ? program_device() : ERR_BUSY;
+});
+
+if (rc != OK) {
+    return rc;
+}
+```
+
+A `[[noreturn]]` call such as `sched::exit` or `log::fatal` is the one
+exception, since the thread never resumes.
+
+## Unprivileged by default
+
+Privilege is earned, never assumed. Mark a function `__PRIVILEGED_CODE` only
+when it does at least one of these:
+
+- executes a privileged instruction (MSR, CR, TLB, `cli`/`sti`, DAIF, cache
+  or system-register maintenance)
+- reads or writes `__PRIVILEGED_*` data or memory from the privileged heap
+- unavoidably calls a function that is privileged for one of these reasons
+- is a hardware-mandated Ring 0 entry point (trap, syscall, IRQ, context
+  switch, AP bring-up)
+- performs port I/O, which is always privileged on x86, or touches MMIO that
+  is mapped supervisor-only
+
+Pure computation, flag conversion, error mapping, and parsing are never
+privileged, even when every current caller happens to be elevated.
+
+## Data and allocation
+
+- `ualloc` / `uzalloc` is the default allocator. `kalloc` / `kzalloc` is for
+  data whose corruption would subvert the privilege model itself.
+- Allocation and release must come from the same heap. A `uzalloc` paired
+  with `kfree` corrupts the allocator rather than failing cleanly.
+- Subsystem state, driver objects, packet buffers, and their callbacks belong
+  in unprivileged memory, and elevated code may dispatch through them.
+- The transition machinery stays privileged: syscall and interrupt dispatch
+  tables, descriptor tables, page table roots, elevation state, and the
+  register bases that elevated MMIO and port I/O derive from.
+- Device registers and DMA memory that a driver needs while lowered are
+  mapped with `PAGE_USER`, matching the existing net and USB drivers.
+
+## Annotation hygiene
+
+- Every `__PRIVILEGED_CODE` function carries `@note Privilege: **required**`
+  in its doxygen block, and the header declaration and the definition must
+  agree.
+- Removing privilege means removing that note as well.
+- Never place `RUN_ELEVATED` inside a function that is already privileged,
+  since it can only ever no-op there.
+- Run `scripts/dynpriv-lint.sh` before committing kernel changes.
