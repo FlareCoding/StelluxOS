@@ -74,11 +74,10 @@ __PRIVILEGED_CODE static uint64_t calibrate_lapic() {
 
 /**
  * Precompute inv_mult/inv_shift for ns-to-ticks: ticks = (ns * inv_mult) >> inv_shift
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static void compute_inv_mult_shift(uint64_t freq,
-                                                      uint64_t* out_mult,
-                                                      uint32_t* out_shift) {
+static void compute_inv_mult_shift(uint64_t freq,
+                                   uint64_t* out_mult,
+                                   uint32_t* out_shift) {
     for (uint32_t s = 63; s > 0; s--) {
         if (freq > (0xFFFFFFFFFFFFFFFFULL >> s)) continue;
         uint64_t m = (freq << s) / NS_PER_SEC;

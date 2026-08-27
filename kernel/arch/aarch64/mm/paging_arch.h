@@ -242,9 +242,8 @@ constexpr uint64_t TLBI_VA_OPERAND_MASK = 0x00FFFFFFFFFFF000ULL;
 
 /**
  * Derive TLBI-by-VA operand from virtual address (VA[55:12]).
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static inline uint64_t tlbi_operand_from_va(uint64_t addr) {
+static inline uint64_t tlbi_operand_from_va(uint64_t addr) {
     return (addr & TLBI_VA_OPERAND_MASK) >> 12;
 }
 

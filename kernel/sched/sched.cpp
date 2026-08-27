@@ -44,7 +44,7 @@ static DEFINE_PER_CPU(sched::cpu_accounting_stats, cpu_accounting);
 static sync::atomic<uint32_t> g_next_tid{1};
 static sync::atomic<uint32_t> g_pending_tlb_sync_tickets;
 
-__PRIVILEGED_DATA static sync::atomic<uint32_t> g_lb_next_cpu{0};
+static sync::atomic<uint32_t> g_lb_next_cpu{0};
 
 namespace sched {
 

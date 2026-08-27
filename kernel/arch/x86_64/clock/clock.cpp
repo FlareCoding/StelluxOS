@@ -31,11 +31,10 @@ constexpr uint16_t PIT_10MS     = 11932;
  * Compute mult and shift such that:
  *   ns = (ticks * mult) >> shift
  * where mult / 2^shift approximates NS_PER_SEC / freq.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static void compute_mult_shift(uint64_t freq,
-                                                  uint64_t* out_mult,
-                                                  uint32_t* out_shift) {
+static void compute_mult_shift(uint64_t freq,
+                               uint64_t* out_mult,
+                               uint32_t* out_shift) {
     // Target: find largest shift where mult fits in 64 bits
     // mult = (NS_PER_SEC << shift) / freq
     for (uint32_t s = 32; s > 0; s--) {

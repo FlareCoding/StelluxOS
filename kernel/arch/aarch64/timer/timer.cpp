@@ -30,12 +30,9 @@ __PRIVILEGED_BSS static uint32_t g_tick_hz;
 __PRIVILEGED_BSS static uint64_t g_inv_mult;
 __PRIVILEGED_BSS static uint32_t g_inv_shift;
 
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE static void compute_inv_mult_shift(uint64_t freq,
-                                                      uint64_t* out_mult,
-                                                      uint32_t* out_shift) {
+static void compute_inv_mult_shift(uint64_t freq,
+                                   uint64_t* out_mult,
+                                   uint32_t* out_shift) {
     for (uint32_t s = 63; s > 0; s--) {
         if (freq > (0xFFFFFFFFFFFFFFFFULL >> s)) continue;
         uint64_t m = (freq << s) / NS_PER_SEC;

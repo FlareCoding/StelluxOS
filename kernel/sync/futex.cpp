@@ -24,7 +24,7 @@ __PRIVILEGED_CODE void futex_init() {
     }
 }
 
-__PRIVILEGED_CODE static uint32_t futex_hash(mm::mm_context* mm, uintptr_t addr) {
+static uint32_t futex_hash(mm::mm_context* mm, uintptr_t addr) {
     uint64_t h = hash::combine(hash::ptr(mm), hash::u64(addr));
     return static_cast<uint32_t>(h) & FUTEX_BUCKET_MASK;
 }

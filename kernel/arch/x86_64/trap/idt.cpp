@@ -31,9 +31,8 @@ __PRIVILEGED_CODE static inline void set_gate(uint8_t vec, void (*handler)(), ui
 
 /**
  * @brief Get IST index for a given vector.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static inline uint8_t get_ist_for_vector(uint8_t vec) {
+static inline uint8_t get_ist_for_vector(uint8_t vec) {
     switch (vec) {
         case x86::EXC_DOUBLE_FAULT:   return x86::IST_DF; // IST1
         case x86::EXC_NMI:            return x86::IST_NMI; // IST2

@@ -11,13 +11,11 @@
 #include "mm/kva.h"
 #include "mm/pmm.h"
 #include "mm/paging.h"
-#include "common/logging.h"
 #include "common/string.h"
 
 namespace vmm {
 
 __PRIVILEGED_DATA static pmm::phys_addr_t g_kernel_root = 0;
-__PRIVILEGED_DATA static bool g_initialized = false;
 
 static inline uintptr_t align_up(uintptr_t val, size_t align) {
     return (val + align - 1) & ~(align - 1);
@@ -32,7 +30,7 @@ static inline bool must_zero(paging::page_flags_t flags, uint32_t alloc_flags) {
 }
 
 // Translate KVA error codes to VMM error codes.
-__PRIVILEGED_CODE static int32_t translate_kva_error(int32_t kva_err) {
+static int32_t translate_kva_error(int32_t kva_err) {
     switch (kva_err) {
         case kva::ERR_NO_VIRT:     return ERR_NO_VIRT;
         case kva::ERR_NO_MEM:      return ERR_NO_MEM;
@@ -61,7 +59,6 @@ __PRIVILEGED_CODE static void rollback_non_contiguous(
  */
 __PRIVILEGED_CODE int32_t init() {
     g_kernel_root = paging::get_kernel_pt_root();
-    g_initialized = true;
     return OK;
 }
 

@@ -414,7 +414,7 @@ __PRIVILEGED_CODE int32_t reserve(uintptr_t base, size_t size, tag t) {
     return ERR_NOT_FOUND;
 }
 
-__PRIVILEGED_CODE static const char* tag_name(tag t) {
+static const char* tag_name(tag t) {
     switch (t) {
         case tag::generic:            return "generic";
         case tag::privileged_heap:    return "privileged_heap";

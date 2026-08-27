@@ -20,7 +20,7 @@ static uint8_t size_to_class(size_t size) {
 }
 
 // Validate that a freelist pointer is within the valid object region of its slab page.
-__PRIVILEGED_CODE static bool validate_freelist_ptr(
+static bool validate_freelist_ptr(
     void* ptr, uintptr_t page_base, uint16_t obj_size, uint16_t objs_per_slab
 ) {
     uintptr_t p = reinterpret_cast<uintptr_t>(ptr);

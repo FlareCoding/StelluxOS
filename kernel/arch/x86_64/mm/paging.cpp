@@ -63,7 +63,7 @@ __PRIVILEGED_CODE static pmm::phys_addr_t alloc_table_page() {
 }
 
 // Convert abstract flags to x86_64 PTE bits
-__PRIVILEGED_CODE static pte_t flags_to_pte(pmm::phys_addr_t phys, page_flags_t flags) {
+static pte_t flags_to_pte(pmm::phys_addr_t phys, page_flags_t flags) {
     pte_t pte = {};
     pte.present = 1;
     pte.phys_addr = phys >> 12;
@@ -93,7 +93,7 @@ __PRIVILEGED_CODE static pte_t flags_to_pte(pmm::phys_addr_t phys, page_flags_t 
 }
 
 // Convert PTE to abstract flags
-__PRIVILEGED_CODE static page_flags_t pte_to_flags(const pte_t& pte) {
+static page_flags_t pte_to_flags(const pte_t& pte) {
     if (!pte.present) {
         return 0;
     }
@@ -124,7 +124,7 @@ __PRIVILEGED_CODE static page_flags_t pte_to_flags(const pte_t& pte) {
 }
 
 // Convert abstract flags to x86_64 2MB large page PDE
-__PRIVILEGED_CODE static pde_2mb_t flags_to_pde_2mb(pmm::phys_addr_t phys, page_flags_t flags) {
+static pde_2mb_t flags_to_pde_2mb(pmm::phys_addr_t phys, page_flags_t flags) {
     pde_2mb_t pde = {};
     pde.present = 1;
     pde.page_size = 1;
@@ -155,7 +155,7 @@ __PRIVILEGED_CODE static pde_2mb_t flags_to_pde_2mb(pmm::phys_addr_t phys, page_
 }
 
 // Convert 2MB PDE to abstract flags
-__PRIVILEGED_CODE static page_flags_t pde_2mb_to_flags(const pde_2mb_t& pde) {
+static page_flags_t pde_2mb_to_flags(const pde_2mb_t& pde) {
     if (!pde.present) {
         return 0;
     }
@@ -185,7 +185,7 @@ __PRIVILEGED_CODE static page_flags_t pde_2mb_to_flags(const pde_2mb_t& pde) {
 }
 
 // Convert abstract flags to x86_64 1GB huge page PDPTE
-__PRIVILEGED_CODE static pdpte_1gb_t flags_to_pdpte_1gb(pmm::phys_addr_t phys, page_flags_t flags) {
+static pdpte_1gb_t flags_to_pdpte_1gb(pmm::phys_addr_t phys, page_flags_t flags) {
     pdpte_1gb_t pdpte = {};
     pdpte.present = 1;
     pdpte.page_size = 1;
@@ -216,7 +216,7 @@ __PRIVILEGED_CODE static pdpte_1gb_t flags_to_pdpte_1gb(pmm::phys_addr_t phys, p
 }
 
 // Convert 1GB PDPTE to abstract flags
-__PRIVILEGED_CODE static page_flags_t pdpte_1gb_to_flags(const pdpte_1gb_t& pdpte) {
+static page_flags_t pdpte_1gb_to_flags(const pdpte_1gb_t& pdpte) {
     if (!pdpte.present) {
         return 0;
     }

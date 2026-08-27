@@ -142,9 +142,8 @@ constexpr segment_descriptor make_segment_descriptor(uint8_t access_byte, uint8_
 
 /**
  * @brief Create a system segment descriptor (TSS/LDT).
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE inline system_segment_descriptor make_system_descriptor(uint64_t base, uint32_t limit, uint8_t type) {
+inline system_segment_descriptor make_system_descriptor(uint64_t base, uint32_t limit, uint8_t type) {
     return system_segment_descriptor{
         .limit_low = static_cast<uint16_t>(limit & 0xFFFF),
         .base_low = static_cast<uint16_t>(base & 0xFFFF),

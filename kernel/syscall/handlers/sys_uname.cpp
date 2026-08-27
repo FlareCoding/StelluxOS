@@ -13,7 +13,7 @@ struct new_utsname {
     char domainname[UTS_FIELD_LEN];
 };
 
-__PRIVILEGED_CODE static void fill_field(char* dst, const char* src) {
+static void fill_field(char* dst, const char* src) {
     size_t len = string::strnlen(src, UTS_FIELD_LEN - 1);
     string::memcpy(dst, src, len);
     string::memset(dst + len, 0, UTS_FIELD_LEN - len);

@@ -25,7 +25,7 @@ __PRIVILEGED_DATA static struct {
 
 // Compute exact page table requirement for 4-level paging
 // Given N pages to map: L3 = ceil(N/512), L2 = ceil(L3/512), L1 = ceil(L2/512), L0 = 1
-__PRIVILEGED_CODE static uint64_t calc_page_tables_for_pages(uint64_t page_count) {
+static uint64_t calc_page_tables_for_pages(uint64_t page_count) {
     uint64_t l3 = (page_count + 511) / 512;   // Each L3 covers 512 pages (2MB)
     uint64_t l2 = (l3 + 511) / 512;           // Each L2 covers 512 L3s (1GB)
     uint64_t l1 = (l2 + 511) / 512;           // Each L1 covers 512 L2s (512GB)
@@ -467,7 +467,7 @@ __PRIVILEGED_CODE static void build_freelists() {
 }
 
 // Check if a memory type should be tracked in our page array
-__PRIVILEGED_CODE static bool is_tracked_memory_type(uint64_t type) {
+static bool is_tracked_memory_type(uint64_t type) {
     switch (type) {
         case LIMINE_MEMMAP_USABLE:
         case LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE:

@@ -3,7 +3,7 @@
 
 namespace cpu {
 
-__PRIVILEGED_DATA features g_features = {};
+features g_features = {};
 
 // Read MIDR_EL1: Main ID Register
 __PRIVILEGED_CODE static inline uint64_t read_midr_el1() {

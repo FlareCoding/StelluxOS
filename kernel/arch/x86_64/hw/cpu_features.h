@@ -39,7 +39,7 @@ struct features {
     uint8_t stepping;
 };
 
-__PRIVILEGED_DATA extern features g_features;
+extern features g_features;
 
 constexpr int32_t OK = 0;
 constexpr int32_t ERR_REQUIRED_FEATURE = -1;

@@ -96,7 +96,7 @@ __PRIVILEGED_CODE static void configure_mair() {
 }
 
 // Convert abstract flags to AArch64 page descriptor
-__PRIVILEGED_CODE static page_desc_t flags_to_page_desc(pmm::phys_addr_t phys, page_flags_t flags) {
+static page_desc_t flags_to_page_desc(pmm::phys_addr_t phys, page_flags_t flags) {
     page_desc_t desc = {};
     desc.valid = 1;
     desc.type = 1; // Page descriptor (not block)
@@ -151,7 +151,7 @@ __PRIVILEGED_CODE static page_desc_t flags_to_page_desc(pmm::phys_addr_t phys, p
 }
 
 // Convert page descriptor to abstract flags
-__PRIVILEGED_CODE static page_flags_t page_desc_to_flags(const page_desc_t& desc) {
+static page_flags_t page_desc_to_flags(const page_desc_t& desc) {
     if (!desc.valid) {
         return 0;
     }
@@ -187,7 +187,7 @@ __PRIVILEGED_CODE static page_flags_t page_desc_to_flags(const page_desc_t& desc
 }
 
 // Convert abstract flags to AArch64 2MB block descriptor
-__PRIVILEGED_CODE static block_desc_t flags_to_block_desc_2mb(pmm::phys_addr_t phys, page_flags_t flags) {
+static block_desc_t flags_to_block_desc_2mb(pmm::phys_addr_t phys, page_flags_t flags) {
     block_desc_t desc = {};
     desc.valid = 1;
     desc.type = 0; // Block descriptor
@@ -224,7 +224,7 @@ __PRIVILEGED_CODE static block_desc_t flags_to_block_desc_2mb(pmm::phys_addr_t p
 }
 
 // Convert 2MB block descriptor to abstract flags
-__PRIVILEGED_CODE static page_flags_t block_desc_to_flags_2mb(const block_desc_t& desc) {
+static page_flags_t block_desc_to_flags_2mb(const block_desc_t& desc) {
     if (!desc.valid) {
         return 0;
     }
@@ -253,7 +253,7 @@ __PRIVILEGED_CODE static page_flags_t block_desc_to_flags_2mb(const block_desc_t
 }
 
 // Convert abstract flags to AArch64 1GB block descriptor
-__PRIVILEGED_CODE static block_desc_t flags_to_block_desc_1gb(pmm::phys_addr_t phys, page_flags_t flags) {
+static block_desc_t flags_to_block_desc_1gb(pmm::phys_addr_t phys, page_flags_t flags) {
     block_desc_t desc = {};
     desc.valid = 1;
     desc.type = 0; // Block descriptor
@@ -290,7 +290,7 @@ __PRIVILEGED_CODE static block_desc_t flags_to_block_desc_1gb(pmm::phys_addr_t p
 }
 
 // Convert 1GB block descriptor to abstract flags
-__PRIVILEGED_CODE static page_flags_t block_desc_to_flags_1gb(const block_desc_t& desc) {
+static page_flags_t block_desc_to_flags_1gb(const block_desc_t& desc) {
     if (!desc.valid) {
         return 0;
     }

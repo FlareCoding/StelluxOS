@@ -19,11 +19,11 @@ struct select_pollfd {
     int16_t revents;
 };
 
-__PRIVILEGED_CODE static bool fd_is_set(const uint64_t* set, int fd) {
+static bool fd_is_set(const uint64_t* set, int fd) {
     return (set[fd / BITS_PER_LONG] >> (fd % BITS_PER_LONG)) & 1;
 }
 
-__PRIVILEGED_CODE static void fd_set_bit(uint64_t* set, int fd) {
+static void fd_set_bit(uint64_t* set, int fd) {
     set[fd / BITS_PER_LONG] |= (1ULL << (fd % BITS_PER_LONG));
 }
 

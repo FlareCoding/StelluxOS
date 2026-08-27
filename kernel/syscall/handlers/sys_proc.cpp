@@ -108,7 +108,7 @@ static int64_t copy_proc_create_strings_from_user(
     return copy_proc_string_array_from_user(strs.envp, u_envp);
 }
 
-__PRIVILEGED_CODE static const char* path_basename(const char* path) {
+static const char* path_basename(const char* path) {
     const char* base = path;
     for (const char* p = path; *p; p++) {
         if (*p == '/') base = p + 1;
@@ -116,7 +116,7 @@ __PRIVILEGED_CODE static const char* path_basename(const char* path) {
     return base;
 }
 
-__PRIVILEGED_CODE static int64_t map_elf_error(int32_t rc) {
+static int64_t map_elf_error(int32_t rc) {
     switch (rc) {
         case exec::ERR_FILE_OPEN:
             return syscall::ENOENT;

@@ -29,7 +29,7 @@ struct features {
     uint8_t revision;     // MIDR_EL1[3:0]
 };
 
-__PRIVILEGED_DATA extern features g_features;
+extern features g_features;
 
 constexpr int32_t OK = 0;
 

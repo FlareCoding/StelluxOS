@@ -18,11 +18,10 @@ constexpr uint64_t NS_PER_SEC = 1000000000ULL;
  * Compute mult and shift such that:
  *   ns = (ticks * mult) >> shift
  * where mult / 2^shift approximates NS_PER_SEC / freq.
- * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static void compute_mult_shift(uint64_t freq,
-                                                  uint64_t* out_mult,
-                                                  uint32_t* out_shift) {
+static void compute_mult_shift(uint64_t freq,
+                               uint64_t* out_mult,
+                               uint32_t* out_shift) {
     for (uint32_t s = 32; s > 0; s--) {
         uint64_t m = (NS_PER_SEC << s) / freq;
         if (m != 0 && m <= 0xFFFFFFFFFFFFFFFFULL) {
