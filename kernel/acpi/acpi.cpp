@@ -229,4 +229,20 @@ __PRIVILEGED_CODE const sdt_header* find_table(const char signature[4]) {
     return nullptr;
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE const fadt* get_fadt() {
+    const sdt_header* hdr = find_table("FACP");
+    if (!hdr) {
+        return nullptr;
+    }
+
+    if (read_u32(&hdr->length) < FADT_REV1_LENGTH) {
+        return nullptr;
+    }
+
+    return reinterpret_cast<const fadt*>(hdr);
+}
+
 } // namespace acpi

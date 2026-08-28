@@ -30,6 +30,15 @@ __PRIVILEGED_CODE int32_t init();
  */
 __PRIVILEGED_CODE const sdt_header* find_table(const char signature[4]);
 
+/**
+ * @brief Typed view of the FADT ("FACP") table.
+ * Fields past the ACPI 1.0 fixed block exist only when header.length
+ * covers them, which callers gate with FADT_HAS_FIELD.
+ * @return Pointer to the FADT, or nullptr if missing or truncated.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE const fadt* get_fadt();
+
 } // namespace acpi
 
 #endif // STELLUX_ACPI_ACPI_H

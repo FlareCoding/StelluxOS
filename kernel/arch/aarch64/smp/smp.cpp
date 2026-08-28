@@ -37,10 +37,6 @@ constexpr uint32_t AP_BOOT_TIMEOUT_MS = 200;
 constexpr uint32_t PERCPU_PAGES = 2;
 constexpr size_t CACHE_LINE_SIZE = 64;
 
-// ACPI FADT arm_boot_flags (offset 129, ACPI 5.1+)
-constexpr size_t FADT_ARM_BOOT_FLAGS_OFFSET = 129;
-constexpr uint16_t FADT_PSCI_COMPLIANT = (1 << 0);
-constexpr uint16_t FADT_PSCI_USE_HVC   = (1 << 1);
 constexpr uint64_t ID_AA64PFR0_EL3_SHIFT = 12;
 
 // Startup data shared between BSP and AP (matches trampoline offsets at entry + 0x100)
@@ -253,25 +249,17 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
 }
 
 /**
- * Determine the PSCI conduit from ACPI FADT arm_boot_flags.
+ * Determine the PSCI conduit from FADT arm_boot_arch flags.
  * Falls back to ID_AA64PFR0_EL1 EL3 detection if FADT is unavailable.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static psci::conduit detect_psci_conduit() {
-    const auto* fadt = acpi::find_table("FACP");
-    if (fadt) {
-        uint32_t length;
-        string::memcpy(&length, &fadt->length, sizeof(length));
-        if (length >= FADT_ARM_BOOT_FLAGS_OFFSET + sizeof(uint16_t)) {
-            auto* base = reinterpret_cast<const uint8_t*>(fadt);
-            uint16_t flags;
-            string::memcpy(&flags, base + FADT_ARM_BOOT_FLAGS_OFFSET,
-                           sizeof(flags));
-            if (flags & FADT_PSCI_COMPLIANT) {
-                return (flags & FADT_PSCI_USE_HVC)
-                    ? psci::conduit::HVC
-                    : psci::conduit::SMC;
-            }
+    const acpi::fadt* fadt = acpi::get_fadt();
+    if (fadt && FADT_HAS_FIELD(fadt, arm_boot_arch)) {
+        if (fadt->arm_boot_arch & acpi::FADT_ARM_PSCI_COMPLIANT) {
+            return (fadt->arm_boot_arch & acpi::FADT_ARM_PSCI_USE_HVC)
+                ? psci::conduit::HVC
+                : psci::conduit::SMC;
         }
     }
 

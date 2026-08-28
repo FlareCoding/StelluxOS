@@ -504,10 +504,10 @@ constexpr uint64_t BCM2711_PCIE_BASE = 0xfd500000;
 constexpr uint64_t BCM2711_PCIE_SIZE = 0x9310;
 
 __PRIVILEGED_CODE static bool is_rpi4_firmware() {
-    const auto* fadt = acpi::find_table("FACP");
+    const acpi::fadt* fadt = acpi::get_fadt();
     if (!fadt) return false;
-    return string::memcmp(fadt->oem_id, "RPIFDN", 6) == 0
-        && string::memcmp(fadt->oem_table_id, "RPI4", 4) == 0;
+    return string::memcmp(fadt->header.oem_id, "RPIFDN", 6) == 0
+        && string::memcmp(fadt->header.oem_table_id, "RPI4", 4) == 0;
 }
 
 // Known RPi4 outbound window (from upstream bcm2711 device tree)

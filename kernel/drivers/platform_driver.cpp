@@ -70,11 +70,11 @@ static void platform_task_entry(void* arg) {
 
 // Detect RPi4 via ACPI FADT OEM IDs (same check as PCI subsystem).
 static bool is_rpi4() {
-    const auto* fadt = acpi::find_table("FACP");
+    const acpi::fadt* fadt = acpi::get_fadt();
     if (!fadt) return false;
 
-    return string::memcmp(fadt->oem_id, "RPIFDN", 6) == 0
-        && string::memcmp(fadt->oem_table_id, "RPI4", 4) == 0;
+    return string::memcmp(fadt->header.oem_id, "RPIFDN", 6) == 0
+        && string::memcmp(fadt->header.oem_table_id, "RPI4", 4) == 0;
 }
 
 // Known RPi4 GENET addresses (used when FDT doesn't have them or ACPI is used)

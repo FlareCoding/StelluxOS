@@ -3,7 +3,6 @@
 #include "common/time_util.h"
 #include "common/logging.h"
 #include "acpi/acpi.h"
-#include "common/string.h"
 
 namespace rtc {
 
@@ -28,8 +27,6 @@ constexpr uint8_t STATUS_A_UIP     = 0x80;
 constexpr uint8_t STATUS_B_24HR    = 0x02;
 constexpr uint8_t STATUS_B_BINARY  = 0x04;
 
-constexpr size_t FADT_CENTURY_OFFSET = 108;
-
 /** @note Privilege: **required** */
 __PRIVILEGED_CODE static uint8_t cmos_read(uint8_t reg) {
     portio::out8(CMOS_ADDR, reg | NMI_DISABLE);
@@ -41,27 +38,17 @@ static uint8_t bcd_to_bin(uint8_t val) {
 }
 
 /**
- * Read the FADT century register index (ACPI 2.0+, offset 108).
- * Returns 0 if FADT is unavailable or field is zero.
+ * Read the FADT century register index.
+ * Returns 0 if FADT is unavailable or the field is zero.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static uint8_t get_fadt_century_register() {
-    const auto* fadt = acpi::find_table("FACP");
+    const acpi::fadt* fadt = acpi::get_fadt();
     if (!fadt) {
         return 0;
     }
 
-    uint32_t length;
-    string::memcpy(&length, &fadt->length, sizeof(length));
-    if (length < FADT_CENTURY_OFFSET + sizeof(uint8_t)) {
-        return 0;
-    }
-
-    uint8_t century_reg;
-    string::memcpy(&century_reg,
-                   reinterpret_cast<const uint8_t*>(fadt) + FADT_CENTURY_OFFSET,
-                   sizeof(century_reg));
-    return century_reg;
+    return fadt->century;
 }
 
 struct rtc_time {
