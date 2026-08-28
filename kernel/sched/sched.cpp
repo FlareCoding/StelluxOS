@@ -64,6 +64,8 @@ constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
 
 constexpr uint64_t TLB_SYNC_CPU_IGNORED = ~0ULL;
 
+constexpr uint32_t TEARDOWN_BATCH_SIZE = 16;
+
 constexpr uint64_t AT_NULL   = 0;
 constexpr uint64_t AT_PHDR   = 3;
 constexpr uint64_t AT_PHENT  = 4;
@@ -533,45 +535,87 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                     reap_status = static_cast<int32_t>(es) & 0x7F;
                 }
 
-                sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
-                auto it = tg->threads.begin();
-                auto end = tg->threads.end();
+                // Threads are handled in batches: kill references and orphaned
+                // proc resources collected under tg->lock are woken only after
+                // it drops, keeping the off-CPU spin in wake outside the lock
+                for (;;) {
+                    rc::strong_ref<sched::task> kill_batch[TEARDOWN_BATCH_SIZE];
+                    resource::proc_provider::proc_resource* pr_batch[TEARDOWN_BATCH_SIZE];
+                    uint32_t kills = 0;
+                    uint32_t prs = 0;
+                    bool rescan = false;
 
-                while (it != end) {
-                    sched::task& thread = *it;
-                    ++it; // advance before potential removal
-                    uint32_t expected = TASK_STATE_CREATED;
-                    if (thread.state.cmpxchg_strong_acq_rel(expected,
-                            TASK_STATE_DEAD)) {
-                        tg->threads.remove(&thread);
-                        tg->thread_count--;
-                        if (thread.proc_res) {
-                            auto* pr = thread.proc_res;
+                    sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
+                    auto it = tg->threads.begin();
+                    auto end = tg->threads.end();
 
-                            sync::irq_state pr_irq = sync::spin_lock_irqsave(pr->lock);
-                            pr->wait_status = reap_status;
-                            pr->exited = true;
-                            pr->child = nullptr;
-                            sync::wake_all(pr->wait_queue);
-                            sync::spin_unlock_irqrestore(pr->lock, pr_irq);
+                    while (it != end) {
+                        sched::task& thread = *it;
+                        ++it; // advance before potential removal
 
-                            thread.proc_res = nullptr;
-                            if (pr->release()) {
-                                resource::proc_provider::proc_resource::ref_destroy(pr);
+                        if (kills == TEARDOWN_BATCH_SIZE || prs == TEARDOWN_BATCH_SIZE) {
+                            rescan = true;
+                            break;
+                        }
+
+                        uint32_t expected = TASK_STATE_CREATED;
+                        if (thread.state.cmpxchg_strong_acq_rel(expected,
+                                TASK_STATE_DEAD)) {
+                            tg->threads.remove(&thread);
+                            tg->thread_count--;
+
+                            if (thread.proc_res) {
+                                auto* pr = thread.proc_res;
+
+                                sync::irq_state pr_irq = sync::spin_lock_irqsave(pr->lock);
+                                pr->wait_status = reap_status;
+                                pr->exited = true;
+                                pr->child = nullptr;
+                                sync::spin_unlock_irqrestore(pr->lock, pr_irq);
+
+                                // The thread's resource reference moves to the
+                                // batch and is released after the deferred wake
+                                thread.proc_res = nullptr;
+                                pr_batch[prs++] = pr;
                             }
-                        }
 
-                        store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
-                        if (thread.release()) {
-                            task::ref_destroy(&thread);
+                            store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
+                            if (thread.release()) {
+                                task::ref_destroy(&thread);
+                            }
+                        } else if (!(thread.sig.pending.load_acquire()
+                                     & signals::sig_bit(signals::SIGKILL))) {
+                            // Setting the kill bit under tg->lock marks the
+                            // thread handled, so a rescan cannot batch it twice
+                            thread.sig.pending.fetch_or_acq_rel(
+                                signals::sig_bit(signals::SIGKILL));
+
+                            kill_batch[kills++] = task_ref(&thread);
                         }
-                    } else {
-                        force_wake_for_kill(&thread);
+                    }
+
+                    if (!rescan) {
+                        tg->leader = nullptr;
+                    }
+                    sync::spin_unlock_irqrestore(tg->lock, irq);
+
+                    for (uint32_t i = 0; i < prs; i++) {
+                        sync::wake_all(pr_batch[i]->wait_queue);
+                        if (pr_batch[i]->release()) {
+                            resource::proc_provider::proc_resource::ref_destroy(pr_batch[i]);
+                        }
+                    }
+
+                    for (uint32_t i = 0; i < kills; i++) {
+                        if (kill_batch[i]) {
+                            force_wake_for_kill(kill_batch[i].ptr());
+                        }
+                    }
+
+                    if (!rescan) {
+                        break;
                     }
                 }
-
-                tg->leader = nullptr;
-                sync::spin_unlock_irqrestore(tg->lock, irq);
             } else if (task->group_link.is_linked()) {
                 sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
                 tg->threads.remove(task);
@@ -586,6 +630,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
             uint32_t ges = task->group
                 ? task->group->group_exit_status.load_acquire()
                 : 0;
+            bool announce = false;
 
             sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
             if (!pr->detached) {
@@ -600,11 +645,17 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                 }
                 pr->exited = true;
                 pr->child = nullptr;
-                sync::wake_all(pr->wait_queue);
+                announce = true;
             } else {
                 pr->child = nullptr;
             }
             sync::spin_unlock_irqrestore(pr->lock, irq);
+
+            // Waiters recheck pr->exited under pr->lock, so waking after
+            // the lock drops cannot lose the wakeup
+            if (announce) {
+                sync::wake_all(pr->wait_queue);
+            }
 
             task->proc_res = nullptr;
             if (pr->release()) {

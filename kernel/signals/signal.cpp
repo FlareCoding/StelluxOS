@@ -173,13 +173,20 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
         // at its next kernel crossing, not only after leader teardown
         sched::thread_group* tg = t->group;
         tg->sig.shared_pending.fetch_or_acq_rel(sig_bit(SIGKILL));
+        rc::strong_ref<sched::task> leader;
+
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
 
         if (tg->leader && tg->leader != t) {
-            sched::force_wake_for_kill(tg->leader);
+            leader = sched::task_ref(tg->leader);
         }
 
         sync::spin_unlock_irqrestore(tg->lock, irq);
+
+        if (leader) {
+            sched::force_wake_for_kill(leader.ptr());
+        }
+
         sched::force_wake_for_kill(t);
         return OK;
     }
@@ -209,13 +216,20 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 
     if (sig == SIGKILL) {
         tg->sig.shared_pending.fetch_or_acq_rel(sig_bit(SIGKILL));
+        rc::strong_ref<sched::task> leader;
+
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
 
         if (tg->leader) {
-            sched::force_wake_for_kill(tg->leader); // leader exit reaps the group
+            leader = sched::task_ref(tg->leader);
         }
 
         sync::spin_unlock_irqrestore(tg->lock, irq);
+
+        if (leader) {
+            sched::force_wake_for_kill(leader.ptr()); // leader exit reaps the group
+        }
+
         return OK;
     }
 
@@ -248,26 +262,28 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 
     tg->sig.shared_pending.fetch_or_acq_rel(bit);
 
+    rc::strong_ref<sched::task> target;
     if (verdict != send_verdict::IGNORABLE) {
         // Wake one thread the signal can act on now, leader preferred
         bool needs_handler = verdict == send_verdict::HANDLED;
-        sched::task* target = nullptr;
         if (tg->leader && wake_eligible(tg->leader, bit, needs_handler)) {
-            target = tg->leader;
+            target = sched::task_ref(tg->leader);
         } else {
             for (sched::task& thread : tg->threads) {
                 if (wake_eligible(&thread, bit, needs_handler)) {
-                    target = &thread;
+                    target = sched::task_ref(&thread);
                     break;
                 }
             }
         }
-        if (target) {
-            wake_for_signal(target);
-        }
     }
 
     sync::spin_unlock_irqrestore(tg->lock, irq);
+
+    if (target) {
+        wake_for_signal(target.ptr());
+    }
+
     return OK;
 }
 
@@ -497,11 +513,16 @@ __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
 
         // A dying non-leader force-kills the leader, whose exit reaps
         // every remaining thread
+        rc::strong_ref<sched::task> leader;
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
         if (tg->leader && tg->leader != self) {
-            sched::force_wake_for_kill(tg->leader);
+            leader = sched::task_ref(tg->leader);
         }
         sync::spin_unlock_irqrestore(tg->lock, irq);
+
+        if (leader) {
+            sched::force_wake_for_kill(leader.ptr());
+        }
     }
 
     // The SIGKILL bit makes exit() encode a killed-by-signal wait status
