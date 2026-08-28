@@ -304,16 +304,26 @@ __PRIVILEGED_CODE int32_t send_to_group_id(uint32_t group_id, uint32_t sig) {
                 return;
             }
         }
-        if (seen_count < MAX_GROUP_SEND_GROUPS) {
-            seen[seen_count++] = tg;
-        }
 
         found = true;
-        if (sig != 0) {
-            send_to_group(tg, sig);
+        if (seen_count < MAX_GROUP_SEND_GROUPS) {
+            tg->add_ref();
+            seen[seen_count++] = tg;
         }
     });
     sched::g_task_registry.unlock(irq);
+
+    // Sends run after the registry lock drops, pinned by the references
+    // above. Groups past the array bound are dropped.
+    for (uint32_t i = 0; i < seen_count; i++) {
+        if (sig != 0) {
+            send_to_group(seen[i], sig);
+        }
+
+        if (seen[i]->release()) {
+            sched::thread_group::ref_destroy(seen[i]);
+        }
+    }
 
     return found ? OK : ERR_INVAL;
 }

@@ -439,6 +439,17 @@ __PRIVILEGED_CODE rc::strong_ref<task> task_ref(task* t) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE rc::strong_ref<task> task_ref_by_tid(uint32_t tid) {
+    sync::irq_state irq = g_task_registry.lock();
+    rc::strong_ref<task> ref = task_ref(g_task_registry.find_locked(tid));
+    g_task_registry.unlock(irq);
+
+    return ref;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void wake(task* t) {
     uint32_t expected = TASK_STATE_BLOCKED;
     if (!t->state.cmpxchg_strong_acq_rel(expected, TASK_STATE_READY)) {

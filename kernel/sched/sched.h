@@ -172,6 +172,15 @@ __PRIVILEGED_CODE void force_wake_for_kill(task* t);
 [[nodiscard]] __PRIVILEGED_CODE rc::strong_ref<task> task_ref(task* t);
 
 /**
+ * @brief Acquire a counted reference to the task with the given tid.
+ * Takes the registry lock internally, so no caller-side pin is needed.
+ * Returns a null reference if no task with that tid is registered or if
+ * the task is already tearing down.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE rc::strong_ref<task> task_ref_by_tid(uint32_t tid);
+
+/**
  * @brief Publish intent to block: moves the current task to BLOCKED.
  * Pair with block_task_interrupted before yielding.
  * @note Privilege: **required**

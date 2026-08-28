@@ -28,24 +28,20 @@ static int64_t kill_process_group(uint32_t group_id, uint32_t sig) {
 
 // Thread-directed send shared by tkill and tgkill, tgid 0 skips the pair check
 static int64_t send_to_thread(uint32_t tgid, uint32_t tid, uint32_t sig) {
-    int64_t result = syscall::ESRCH;
-
-    sync::irq_state irq = sched::g_task_registry.lock();
-    sched::task* t = sched::g_task_registry.find_locked(tid);
-    if (t && (tgid == 0 || (t->group && t->group->pid == tgid))) {
-        if (sig != 0) {
-            result = map_send_error(signals::send_to_task(t, sig));
-        } else {
-            // The null probe reports the same permission gate a send would
-            bool denied = (t->exec.flags &
-                           (sched::TASK_FLAG_KERNEL | sched::TASK_FLAG_IDLE)) ||
-                          !t->group;
-            result = denied ? syscall::EPERM : 0;
-        }
+    rc::strong_ref<sched::task> t = sched::task_ref_by_tid(tid);
+    if (!t || (tgid != 0 && (!t->group || t->group->pid != tgid))) {
+        return syscall::ESRCH;
     }
-    sched::g_task_registry.unlock(irq);
 
-    return result;
+    if (sig == 0) {
+        // The null probe reports the same permission gate a send would
+        bool denied = (t->exec.flags &
+                       (sched::TASK_FLAG_KERNEL | sched::TASK_FLAG_IDLE)) ||
+                      !t->group;
+        return denied ? syscall::EPERM : 0;
+    }
+
+    return map_send_error(signals::send_to_task(t.ptr(), sig));
 }
 
 DEFINE_SYSCALL4(rt_sigaction, signum, u_act, u_oldact, sigsetsize) {
@@ -172,17 +168,13 @@ DEFINE_SYSCALL2(kill, u_pid, u_sig) {
 
         // Any thread id resolves to its containing process (kill semantics
         // on Linux), and the signal is delivered process-wide
-        int64_t result = syscall::ESRCH;
-        sync::irq_state irq = sched::g_task_registry.lock();
-        sched::task* t =
-            sched::g_task_registry.find_locked(static_cast<uint32_t>(pid));
-        if (t && t->group) {
-            result = sig ? map_send_error(signals::send_to_group(t->group, sig))
-                         : 0;
+        rc::strong_ref<sched::task> t =
+            sched::task_ref_by_tid(static_cast<uint32_t>(pid));
+        if (!t || !t->group) {
+            return syscall::ESRCH;
         }
-        sched::g_task_registry.unlock(irq);
 
-        return result;
+        return sig ? map_send_error(signals::send_to_group(t->group, sig)) : 0;
     }
 
     // pid 0 targets the caller's group, below -1 the group named by -pid
