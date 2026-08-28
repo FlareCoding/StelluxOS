@@ -191,7 +191,10 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
-    if (!(prev->exec.flags & TASK_FLAG_KERNEL) && prev->state.load_relaxed() != TASK_STATE_DEAD) {
+    // A task inside a syscall still owns kernel state such as a linked wait
+    // node, so it dies at the syscall exit fatal check instead of here
+    if (!(prev->exec.flags & (TASK_FLAG_KERNEL | TASK_FLAG_IN_SYSCALL)) &&
+        prev->state.load_relaxed() != TASK_STATE_DEAD) {
         uint32_t fsig = signals::fatal_pending(prev);
         if (fsig) {
             signals::die_from_signal(fsig);
@@ -243,7 +246,10 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
-    if (!(prev->exec.flags & TASK_FLAG_KERNEL) && prev->state.load_relaxed() != TASK_STATE_DEAD) {
+    // A task inside a syscall still owns kernel state such as a linked wait
+    // node, so it dies at the syscall exit fatal check instead of here
+    if (!(prev->exec.flags & (TASK_FLAG_KERNEL | TASK_FLAG_IN_SYSCALL)) &&
+        prev->state.load_relaxed() != TASK_STATE_DEAD) {
         uint32_t fsig = signals::fatal_pending(prev);
         if (fsig) {
             signals::die_from_signal(fsig);

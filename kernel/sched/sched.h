@@ -2,6 +2,7 @@
 #define STELLUX_SCHED_SCHED_H
 
 #include "common/types.h"
+#include "rc/strong_ref.h"
 
 namespace exec { struct loaded_image; }
 
@@ -140,9 +141,15 @@ __PRIVILEGED_CODE void enqueue(task* t);
 __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id);
 
 /**
- * @brief Resume a blocked task by placing it on the local runqueue.
+ * @brief Resume a blocked task by placing it on its CPU's runqueue.
  * Atomically transitions BLOCKED -> READY via CAS.
  * Called by sync::wake_one / sync::wake_all.
+ *
+ * The caller must pin t so the reaper cannot free it mid-call: hold a
+ * counted reference (task_ref) or a lock t must take before it can exit.
+ * A remote wake spins until t leaves its CPU, so never hold a spinlock
+ * with interrupts off across the call. Waking a task that last ran on
+ * the calling CPU never spins, so the timer expiry walk is exempt.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake(task* t);
@@ -151,9 +158,28 @@ __PRIVILEGED_CODE void wake(task* t);
  * @brief Mark a task for termination and wake it if blocked.
  * Fire-and-forget: the target is force-woken now or observes the kill
  * at its next killable blocking attempt (sleep, futex, poll).
+ * Same pin and spin rules as wake.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void force_wake_for_kill(task* t);
+
+/**
+ * @brief Acquire a counted reference to a task from a raw pointer.
+ * The raw pointer must still be protected here: hold a lock the task must
+ * take before it can finish exiting, or another counted reference. Returns
+ * a null reference if the task is already tearing down.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE rc::strong_ref<task> task_ref(task* t);
+
+/**
+ * @brief Acquire a counted reference to the task with the given tid.
+ * Takes the registry lock internally, so no caller-side pin is needed.
+ * Returns a null reference if no task with that tid is registered or if
+ * the task is already tearing down.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE rc::strong_ref<task> task_ref_by_tid(uint32_t tid);
 
 /**
  * @brief Publish intent to block: moves the current task to BLOCKED.

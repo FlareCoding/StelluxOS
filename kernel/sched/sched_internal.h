@@ -66,7 +66,8 @@ __PRIVILEGED_CODE void defer_off_cpu_finalize(task* prev);
 
 /**
  * Common: advances this CPU's TLB sync epoch.
- * This marks a safe point that reaper can rely on before reclaiming stack pages.
+ * This marks a safe point that reaper can rely on before reclaiming stack
+ * pages. It says nothing about task pointers, which counted references pin.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void advance_cpu_tlb_sync_epoch();

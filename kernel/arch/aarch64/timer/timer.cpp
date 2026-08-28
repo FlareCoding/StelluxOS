@@ -157,6 +157,9 @@ __PRIVILEGED_CODE bool on_interrupt() {
         return true;
     }
 
+    // Waking raw pointers under the queue lock satisfies the wake pin
+    // contract: a sleeper re-takes this lock in cancel_sleep before it
+    // can exit, and it slept on this CPU, so wake never spins off-CPU
     while (!state.sleep_queue.empty()) {
         sched::task* t = state.sleep_queue.front();
         if (t->timer_deadline > now) break;

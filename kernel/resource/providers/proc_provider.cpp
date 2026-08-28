@@ -1,12 +1,8 @@
 #include "resource/providers/proc_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
-#include "sched/task_registry.h"
-#include "mm/mm.h"
 #include "mm/vma.h"
-#include "mm/vmm.h"
 #include "mm/heap.h"
-#include "fs/node.h"
 #include "common/logging.h"
 #include "sync/poll.h"
 #include "sync/wait_queue.h"
@@ -39,24 +35,29 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
     auto* impl = static_cast<proc_resource_impl*>(obj->impl);
     auto* pr = impl->proc.ptr();
 
+    // The reference taken under pr->lock keeps the child reclaim-safe
+    // after the lock drops, even if it exits and is reaped concurrently
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    rc::strong_ref<sched::task> child;
+    bool unstarted = false;
 
-    if (pr->child && pr->child->state.load_relaxed() == sched::TASK_STATE_CREATED) {
-        auto* child = pr->child;
-        pr->child = nullptr;
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-
-        if (child->proc_res) {
-            (void)child->proc_res->release();
-            child->proc_res = nullptr;
+    if (pr->child) {
+        unstarted = pr->child->state.load_relaxed() == sched::TASK_STATE_CREATED;
+        if (unstarted || (!pr->exited && !pr->detached)) {
+            child = sched::task_ref(pr->child);
         }
-        destroy_unstarted_task(child);
-    } else if (pr->child && !pr->exited && !pr->detached) {
-        sched::task* child = pr->child;
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-        sched::force_wake_for_kill(child);
-    } else {
-        sync::spin_unlock_irqrestore(pr->lock, irq);
+
+        if (unstarted) {
+            pr->child = nullptr;
+        }
+    }
+
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+
+    if (child && unstarted) {
+        destroy_unstarted_task(child.ptr());
+    } else if (child) {
+        sched::force_wake_for_kill(child.ptr());
     }
 
     heap::kfree_delete(impl);
@@ -164,44 +165,37 @@ __PRIVILEGED_CODE proc_resource* get_proc_resource(resource_object* obj) {
 
 __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
     // Claim the task, a concurrent group teardown may have already
-    // moved it to dead and handed the memory to the reaper
+    // moved it to dead and handed it to the reaper
     uint32_t expected = sched::TASK_STATE_CREATED;
     if (!t->state.cmpxchg_strong_acq_rel(expected, sched::TASK_STATE_DEAD)) {
         return;
     }
 
-    // Leave the registry before the group teardown so registry walkers
-    // never see a task whose group is being freed (same order as reap_task)
-    sched::g_task_registry.remove(*t);
-
-    resource::release_task_handles(t);
-    if (t->cwd) {
-        if (t->cwd->release()) {
-            fs::node::ref_destroy(t->cwd);
+    // Winning the claim confers sole ownership of the task's proc
+    // resource reference, a losing teardown path must not touch it
+    if (t->proc_res) {
+        if (t->proc_res->release()) {
+            proc_resource::ref_destroy(t->proc_res);
         }
-        t->cwd = nullptr;
+        t->proc_res = nullptr;
     }
 
-    if (t->exec.mm_ctx) {
-        mm::mm_context_release(t->exec.mm_ctx);
-        t->exec.mm_ctx = nullptr;
+    // Unlink from the group list here, reap_task releases the group
+    // reference but never touches the thread list
+    if (t->group && t->group->leader != t && t->group_link.is_linked()) {
+        sync::irq_state irq = sync::spin_lock_irqsave(t->group->lock);
+        t->group->threads.remove(t);
+        t->group->thread_count--;
+        sync::spin_unlock_irqrestore(t->group->lock, irq);
     }
 
-    if (t->group) {
-        if (t->group->leader != t && t->group_link.is_linked()) {
-            sync::irq_state irq = sync::spin_lock_irqsave(t->group->lock);
-            t->group->threads.remove(t);
-            t->group->thread_count--;
-            sync::spin_unlock_irqrestore(t->group->lock, irq);
-        }
-        if (t->group->release()) {
-            sched::thread_group::ref_destroy(t->group);
-        }
-        t->group = nullptr;
-    }
+    // Never started means already off-CPU, so the task goes straight to
+    // the reaper for the same staged teardown as a normal exit
+    t->cleanup_stage.store_release(sched::TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
 
-    vmm::free(t->sys_stack_base);
-    heap::kfree_delete(t);
+    if (t->release()) {
+        sched::task::ref_destroy(t);
+    }
 }
 
 } // namespace resource::proc_provider

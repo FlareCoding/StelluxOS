@@ -373,9 +373,11 @@ TEST(poll, kill_pending_wakes_poll) {
     g_kill_done.store_relaxed(0);
 
     sched::task* t = nullptr;
+    rc::strong_ref<sched::task> pin;
     RUN_ELEVATED({
         t = sched::create_kernel_task(kill_poll_fn, nullptr, "poll_kill");
         ASSERT_NOT_NULL(t);
+        pin = sched::task_ref(t);
         sched::enqueue(t);
     });
 

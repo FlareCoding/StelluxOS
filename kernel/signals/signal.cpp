@@ -15,10 +15,6 @@ enum class send_verdict : uint8_t {
     HANDLED, // a user handler is installed, wake the target to deliver
 };
 
-// Distinct groups remembered during one group-id send. Signals coalesce,
-// so duplicate sends past this window are harmless extra wakes.
-constexpr uint32_t MAX_GROUP_SEND_GROUPS = 64;
-
 /**
  * Clear pending instances of sig from the shared set and every thread.
  * @note Privilege: **required**
@@ -173,13 +169,20 @@ __PRIVILEGED_CODE int32_t send_to_task(sched::task* t, uint32_t sig) {
         // at its next kernel crossing, not only after leader teardown
         sched::thread_group* tg = t->group;
         tg->sig.shared_pending.fetch_or_acq_rel(sig_bit(SIGKILL));
+        rc::strong_ref<sched::task> leader;
+
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
 
         if (tg->leader && tg->leader != t) {
-            sched::force_wake_for_kill(tg->leader);
+            leader = sched::task_ref(tg->leader);
         }
 
         sync::spin_unlock_irqrestore(tg->lock, irq);
+
+        if (leader) {
+            sched::force_wake_for_kill(leader.ptr());
+        }
+
         sched::force_wake_for_kill(t);
         return OK;
     }
@@ -209,13 +212,20 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 
     if (sig == SIGKILL) {
         tg->sig.shared_pending.fetch_or_acq_rel(sig_bit(SIGKILL));
+        rc::strong_ref<sched::task> leader;
+
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
 
         if (tg->leader) {
-            sched::force_wake_for_kill(tg->leader); // leader exit reaps the group
+            leader = sched::task_ref(tg->leader);
         }
 
         sync::spin_unlock_irqrestore(tg->lock, irq);
+
+        if (leader) {
+            sched::force_wake_for_kill(leader.ptr()); // leader exit reaps the group
+        }
+
         return OK;
     }
 
@@ -248,56 +258,68 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 
     tg->sig.shared_pending.fetch_or_acq_rel(bit);
 
+    rc::strong_ref<sched::task> target;
     if (verdict != send_verdict::IGNORABLE) {
         // Wake one thread the signal can act on now, leader preferred
         bool needs_handler = verdict == send_verdict::HANDLED;
-        sched::task* target = nullptr;
         if (tg->leader && wake_eligible(tg->leader, bit, needs_handler)) {
-            target = tg->leader;
+            target = sched::task_ref(tg->leader);
         } else {
             for (sched::task& thread : tg->threads) {
                 if (wake_eligible(&thread, bit, needs_handler)) {
-                    target = &thread;
+                    target = sched::task_ref(&thread);
                     break;
                 }
             }
         }
-        if (target) {
-            wake_for_signal(target);
-        }
     }
 
     sync::spin_unlock_irqrestore(tg->lock, irq);
+
+    if (target) {
+        wake_for_signal(target.ptr());
+    }
+
     return OK;
 }
 
 __PRIVILEGED_CODE int32_t send_to_group_id(uint32_t group_id, uint32_t sig) {
-    sched::thread_group* seen[MAX_GROUP_SEND_GROUPS];
-    uint32_t seen_count = 0;
     bool found = false;
+    uint32_t cursor = 0;
 
-    sync::irq_state irq = sched::g_task_registry.lock();
-    sched::g_task_registry.for_each_locked([&](sched::task& t) {
-        sched::thread_group* tg = t.group;
-        if (!tg || tg->group_id.load_acquire() != group_id) {
-            return;
-        }
+    // Each pass sends to the matching group with the smallest leader pid
+    // above the cursor, reaching every group however many match
+    for (;;) {
+        sched::thread_group* best = nullptr;
 
-        for (uint32_t i = 0; i < seen_count; i++) {
-            if (seen[i] == tg) {
+        sync::irq_state irq = sched::g_task_registry.lock();
+        sched::g_task_registry.for_each_locked([&](sched::task& t) {
+            sched::thread_group* tg = t.group;
+            if (!tg || tg->group_id.load_acquire() != group_id) {
                 return;
             }
-        }
-        if (seen_count < MAX_GROUP_SEND_GROUPS) {
-            seen[seen_count++] = tg;
+
+            if (tg->pid > cursor && (!best || tg->pid < best->pid)) {
+                best = tg;
+            }
+        });
+
+        // A registry member pins its group until reaped, so the reference
+        // is taken under the registry lock and the send runs after it drops
+        rc::strong_ref<sched::thread_group> target =
+            rc::strong_ref<sched::thread_group>::try_from_raw(best);
+        sched::g_task_registry.unlock(irq);
+
+        if (!target) {
+            break;
         }
 
         found = true;
+        cursor = target->pid;
         if (sig != 0) {
-            send_to_group(tg, sig);
+            send_to_group(target.ptr(), sig);
         }
-    });
-    sched::g_task_registry.unlock(irq);
+    }
 
     return found ? OK : ERR_INVAL;
 }
@@ -497,11 +519,16 @@ __PRIVILEGED_CODE void die_from_signal(uint32_t sig) {
 
         // A dying non-leader force-kills the leader, whose exit reaps
         // every remaining thread
+        rc::strong_ref<sched::task> leader;
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
         if (tg->leader && tg->leader != self) {
-            sched::force_wake_for_kill(tg->leader);
+            leader = sched::task_ref(tg->leader);
         }
         sync::spin_unlock_irqrestore(tg->lock, irq);
+
+        if (leader) {
+            sched::force_wake_for_kill(leader.ptr());
+        }
     }
 
     // The SIGKILL bit makes exit() encode a killed-by-signal wait status

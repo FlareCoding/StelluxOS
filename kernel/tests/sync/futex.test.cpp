@@ -195,10 +195,12 @@ TEST(futex, killed_thread_unblocks) {
     g_kill_entered.store_relaxed(0);
     g_kill_task = nullptr;
 
+    rc::strong_ref<sched::task> pin;
     RUN_ELEVATED({
         g_kill_task = sched::create_kernel_task(
             kill_waiter_fn, nullptr, "ftx_kill");
         ASSERT_NOT_NULL(g_kill_task);
+        pin = sched::task_ref(g_kill_task);
         sched::enqueue(g_kill_task);
     });
 

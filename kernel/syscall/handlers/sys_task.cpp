@@ -225,13 +225,19 @@ DEFINE_SYSCALL1(exit_group, status) {
 
         // A non leader forces the leader down, the leader's exit then
         // reaps every remaining thread including this one
+        rc::strong_ref<sched::task> leader;
+
         sync::irq_state irq = sync::spin_lock_irqsave(tg->lock);
 
         if (tg->leader && tg->leader != self) {
-            sched::force_wake_for_kill(tg->leader);
+            leader = sched::task_ref(tg->leader);
         }
 
         sync::spin_unlock_irqrestore(tg->lock, irq);
+
+        if (leader) {
+            sched::force_wake_for_kill(leader.ptr());
+        }
     }
 
     sched::exit(static_cast<int>(status));

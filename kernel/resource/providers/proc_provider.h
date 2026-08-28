@@ -47,7 +47,8 @@ __PRIVILEGED_CODE int32_t create_proc_resource(
 
 /**
  * @brief Destroy a task that was created but never started (TASK_STATE_CREATED).
- * Frees mm_ctx, system stack, and the task struct. Does NOT release proc_res ref.
+ * Claims the task against concurrent group teardown, drops its proc
+ * resource reference, and defers reclamation to the reaper.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t);

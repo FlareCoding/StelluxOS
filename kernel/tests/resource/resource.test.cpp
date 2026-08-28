@@ -90,20 +90,23 @@ TEST(resource_test, rights_enforced_for_read_and_write) {
 TEST(resource_test, releasing_task_handles_invalidates_existing_handles) {
     // A scratch task exercises table teardown without touching the
     // test runner's own live handle table
-    sched::task scratch{};
-    ASSERT_EQ(resource::init_task_handles(&scratch), resource::OK);
+    sched::task* scratch = heap::kalloc_new<sched::task>();
+    ASSERT_NOT_NULL(scratch);
+    ASSERT_EQ(resource::init_task_handles(scratch), resource::OK);
 
     resource::handle_t h1 = -1;
     resource::handle_t h2 = -1;
 
-    ASSERT_EQ(resource::open(&scratch, "/resource_close_all_1", fs::O_CREAT | fs::O_RDWR, &h1), resource::OK);
-    ASSERT_EQ(resource::open(&scratch, "/resource_close_all_2", fs::O_CREAT | fs::O_RDWR, &h2), resource::OK);
+    ASSERT_EQ(resource::open(scratch, "/resource_close_all_1", fs::O_CREAT | fs::O_RDWR, &h1), resource::OK);
+    ASSERT_EQ(resource::open(scratch, "/resource_close_all_2", fs::O_CREAT | fs::O_RDWR, &h2), resource::OK);
 
-    resource::release_task_handles(&scratch);
+    resource::release_task_handles(scratch);
 
-    EXPECT_NULL(scratch.handles);
-    EXPECT_EQ(resource::close(&scratch, h1), resource::ERR_BADF);
-    EXPECT_EQ(resource::close(&scratch, h2), resource::ERR_BADF);
+    EXPECT_NULL(scratch->handles);
+    EXPECT_EQ(resource::close(scratch, h1), resource::ERR_BADF);
+    EXPECT_EQ(resource::close(scratch, h2), resource::ERR_BADF);
+
+    heap::kfree_delete(scratch);
 }
 
 TEST(resource_test, used_handle_slots_never_have_unknown_type) {

@@ -25,10 +25,8 @@ struct wait_queue {
  * Block current task until woken, atomically releasing a held lock.
  *
  * Caller MUST hold `lock` via spin_lock_irqsave (IRQs disabled).
- * Internally acquires wq.lock via spin_lock_irqsave for both the
- * enqueue and post-yield cleanup, ensuring it is
- * safe to call from any context, including paths where an ISR may
- * concurrently call wake_one() or wake_all().
+ * Takes wq.lock for the enqueue and the post-yield cleanup, so an ISR
+ * running wake_one() or wake_all() cannot race the wait entry.
  *
  * On wake, re-acquires `lock` via spin_lock_irqsave and returns
  * the new irq_state. Caller MUST re-check its condition (spurious
@@ -48,14 +46,16 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved);
 
 /**
  * Wake the first waiting task (FIFO order).
- * No-op if the queue is empty. Safe from IRQ context.
+ * No-op if the queue is empty. Waiters are pinned internally, but the
+ * off-CPU spin rule of sched::wake still applies to the caller.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake_one(wait_queue& wq);
 
 /**
  * Wake all waiting tasks.
- * No-op if the queue is empty. Safe from IRQ context.
+ * No-op if the queue is empty. Waiters are pinned internally, but the
+ * off-CPU spin rule of sched::wake still applies to the caller.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake_all(wait_queue& wq);

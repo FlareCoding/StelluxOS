@@ -3,6 +3,7 @@
 #include "stlx_unit_test.h"
 #include "signals/signal.h"
 #include "sched/task.h"
+#include "sched/task_registry.h"
 #include "mm/heap.h"
 #include "dynpriv/dynpriv.h"
 
@@ -159,4 +160,74 @@ TEST(signal_send, stop_class_send_is_ignored) {
     RUN_ELEVATED({ rc = signals::send_to_task(g_thread, signals::SIGTSTP); });
     EXPECT_EQ(rc, signals::OK);
     EXPECT_EQ(g_thread->sig.pending.load_relaxed(), 0ULL);
+}
+
+// A group-id send must reach every matching group, not only the ones
+// that fit a fixed window. Sized past the 64-group batch an earlier
+// implementation silently dropped.
+constexpr uint32_t GID_GROUP_COUNT = 67;
+constexpr uint32_t GID_TEST_GROUP  = 0x7E577E57u;
+constexpr uint32_t GID_TID_BASE    = 0x40000000u;
+
+static sched::task* g_gid_leaders[GID_GROUP_COUNT];
+static sched::thread_group* g_gid_groups[GID_GROUP_COUNT];
+
+TEST(signal_send, group_id_send_reaches_all_groups) {
+    bool built = true;
+
+    // Single-task mock processes registered in the live task registry,
+    // all members of the same process group
+    RUN_ELEVATED({
+        for (uint32_t i = 0; i < GID_GROUP_COUNT; i++) {
+            g_gid_leaders[i] = heap::kalloc_new<sched::task>();
+            g_gid_groups[i]  = heap::kalloc_new<sched::thread_group>();
+            if (!g_gid_leaders[i] || !g_gid_groups[i]) {
+                built = false;
+                break;
+            }
+
+            sched::task* t = g_gid_leaders[i];
+            sched::thread_group* tg = g_gid_groups[i];
+            tg->lock = sync::SPINLOCK_INIT;
+            tg->leader = t;
+            tg->pid = GID_TID_BASE + i;
+            tg->threads.init();
+            tg->group_id.store_relaxed(GID_TEST_GROUP);
+
+            t->tid = GID_TID_BASE + i;
+            t->group = tg;
+            sched::g_task_registry.insert(t);
+        }
+    });
+
+    int32_t rc = -1;
+    if (built) {
+        RUN_ELEVATED({
+            rc = signals::send_to_group_id(GID_TEST_GROUP, signals::SIGTERM);
+        });
+    }
+
+    EXPECT_TRUE(built);
+    EXPECT_EQ(rc, signals::OK);
+
+    uint32_t reached = 0;
+    for (uint32_t i = 0; i < GID_GROUP_COUNT; i++) {
+        if (g_gid_groups[i] && (g_gid_groups[i]->sig.shared_pending.load_relaxed()
+                                & signals::sig_bit(signals::SIGTERM))) {
+            reached++;
+        }
+    }
+    EXPECT_EQ(reached, GID_GROUP_COUNT);
+
+    RUN_ELEVATED({
+        for (uint32_t i = 0; i < GID_GROUP_COUNT; i++) {
+            if (g_gid_leaders[i] && g_gid_groups[i]) {
+                sched::g_task_registry.remove(*g_gid_leaders[i]);
+            }
+            if (g_gid_groups[i])  heap::kfree_delete(g_gid_groups[i]);
+            if (g_gid_leaders[i]) heap::kfree_delete(g_gid_leaders[i]);
+            g_gid_groups[i]  = nullptr;
+            g_gid_leaders[i] = nullptr;
+        }
+    });
 }

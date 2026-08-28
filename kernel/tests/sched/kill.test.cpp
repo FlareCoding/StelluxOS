@@ -56,9 +56,11 @@ TEST(kill, force_wake_kills_sleeping_task) {
     g_sleep_kill_elapsed_ns.store_relaxed(0);
 
     sched::task* t = nullptr;
+    rc::strong_ref<sched::task> pin;
     RUN_ELEVATED({
         t = sched::create_kernel_task(sleep_kill_fn, nullptr, "kill_sleep");
         ASSERT_NOT_NULL(t);
+        pin = sched::task_ref(t);
         sched::enqueue(t);
     });
 
@@ -133,9 +135,11 @@ TEST(kill, force_wake_kills_blocked_on_wq) {
     g_wq_kill_was_pending.store_relaxed(0);
 
     sched::task* t = nullptr;
+    rc::strong_ref<sched::task> pin;
     RUN_ELEVATED({
         t = sched::create_kernel_task(wq_kill_fn, nullptr, "kill_wq");
         ASSERT_NOT_NULL(t);
+        pin = sched::task_ref(t);
         sched::enqueue(t);
     });
 
@@ -178,9 +182,11 @@ TEST(kill, self_removal_cleans_wq) {
     g_sr_done.store_relaxed(0);
 
     sched::task* t = nullptr;
+    rc::strong_ref<sched::task> pin;
     RUN_ELEVATED({
         t = sched::create_kernel_task(sr_waiter_fn, nullptr, "kill_sr");
         ASSERT_NOT_NULL(t);
+        pin = sched::task_ref(t);
         sched::enqueue(t);
     });
 
@@ -226,9 +232,11 @@ TEST(kill, double_kill_is_harmless) {
     g_double_kp.store_relaxed(0);
 
     sched::task* t = nullptr;
+    rc::strong_ref<sched::task> pin;
     RUN_ELEVATED({
         t = sched::create_kernel_task(double_kill_fn, nullptr, "kill_dbl");
         ASSERT_NOT_NULL(t);
+        pin = sched::task_ref(t);
         sched::enqueue(t);
     });
 
