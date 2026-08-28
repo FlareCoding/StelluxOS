@@ -1,0 +1,8 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_POWER_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_POWER_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(reboot);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_POWER_H

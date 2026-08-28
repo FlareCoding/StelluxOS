@@ -47,6 +47,7 @@ constexpr uint64_t RT_SIGACTION     = 134;
 constexpr uint64_t RT_SIGPROCMASK   = 135;
 constexpr uint64_t RT_SIGPENDING    = 136;
 constexpr uint64_t RT_SIGRETURN     = 139;
+constexpr uint64_t REBOOT           = 142;
 constexpr uint64_t SETPGID          = 154;
 constexpr uint64_t GETPGID          = 155;
 constexpr uint64_t UNAME            = 160;
