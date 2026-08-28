@@ -140,9 +140,14 @@ __PRIVILEGED_CODE void enqueue(task* t);
 __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id);
 
 /**
- * @brief Resume a blocked task by placing it on the local runqueue.
+ * @brief Resume a blocked task by placing it on its CPU's runqueue.
  * Atomically transitions BLOCKED -> READY via CAS.
  * Called by sync::wake_one / sync::wake_all.
+ *
+ * Caller must pin t: hold a lock t re-acquires before it can exit, so the
+ * reaper cannot reclaim it mid-call. Blocking paths that re-acquire nothing
+ * are pinned only by the registry lock. A remote wake spins for t to go
+ * off-CPU, so holding a spinlock with interrupts off across it can deadlock.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake(task* t);
@@ -151,6 +156,7 @@ __PRIVILEGED_CODE void wake(task* t);
  * @brief Mark a task for termination and wake it if blocked.
  * Fire-and-forget: the target is force-woken now or observes the kill
  * at its next killable blocking attempt (sleep, futex, poll).
+ * Same pin and spin rules as wake.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void force_wake_for_kill(task* t);

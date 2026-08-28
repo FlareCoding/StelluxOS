@@ -43,9 +43,8 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
 
     // Overflow: re-scan and wake all observers under the lock.
     // Some were already woken above, sched::wake() is idempotent.
-    // sched::wake() only acquires rq.lock (never wq.lock), so holding
-    // wq.lock here is deadlock-free. This path is extremely rare
-    // (requires >16 concurrent pollers on one wait queue).
+    // Lock order is fine (wake takes only rq.lock) but its off-CPU spin is
+    // not: the CPU owing that publication may be waiting for this wq.lock.
     if (total > n) {
         irq = spin_lock_irqsave(wq.lock);
         for (auto& obs : wq.observers) {
