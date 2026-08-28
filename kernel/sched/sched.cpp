@@ -104,6 +104,9 @@ __PRIVILEGED_CODE static inline void assert_switch_privilege_state(
 #endif
 
 /**
+ * Runs only after the last counted reference dropped. Registry lookups can
+ * still find the task until the removal below, its poisoned refcount turns
+ * them away. The TLB sync wait covers the freed stack pages, nothing else.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {

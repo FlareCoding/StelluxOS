@@ -18,6 +18,22 @@ namespace sched {
 
 constexpr size_t TASK_NAME_MAX = 256;
 
+/**
+ * Task states and the legal transitions between them:
+ *
+ *   CREATED -> READY    enqueue / enqueue_on (CAS)
+ *   CREATED -> DEAD     unstarted task teardown claims it (CAS)
+ *   READY   -> RUNNING  pick_next_and_switch
+ *   RUNNING -> READY    preemption re-enqueue
+ *   RUNNING -> BLOCKED  prepare_to_block_task, by the task itself
+ *   RUNNING -> DEAD     exit, by the task itself
+ *   BLOCKED -> READY    wake (CAS)
+ *   BLOCKED -> RUNNING  cancel_block_task, by the task itself (CAS)
+ *
+ * A task is BLOCKED yet still on-CPU between prepare_to_block_task and
+ * its yield. A tick in that window switches it out without re-enqueueing
+ * it, so it stays off the runqueues until a wake arrives.
+ */
 constexpr uint32_t TASK_STATE_CREATED = 0; // exists but not on any queue
 constexpr uint32_t TASK_STATE_READY   = 1; // on a runqueue
 constexpr uint32_t TASK_STATE_RUNNING = 2; // executing on a CPU
@@ -26,6 +42,14 @@ constexpr uint32_t TASK_STATE_DEAD    = 4; // terminated
 
 constexpr int32_t TASK_KILL_STATUS    = 9; // wait-status for forcibly killed tasks
 
+/**
+ * Reclamation ladder. exit() records EXIT_REQUESTED on the dying task, the
+ * scheduler advances to SCHEDULER_DETACHED when the task is switched out
+ * (unstarted teardown jumps there directly), and the reaper owns the last
+ * two stages: it snapshots every CPU's TLB sync epoch, waits for each CPU
+ * to move past its snapshot, then reclaims. The struct itself is freed only
+ * after the last counted reference has dropped and handed it to the reaper.
+ */
 constexpr uint32_t TASK_CLEANUP_STAGE_ACTIVE                = 0;
 constexpr uint32_t TASK_CLEANUP_STAGE_EXIT_REQUESTED        = 1;
 constexpr uint32_t TASK_CLEANUP_STAGE_SCHEDULER_DETACHED    = 2;
@@ -36,7 +60,9 @@ constexpr uint32_t TASK_CLEANUP_STAGE_READY_TO_RECLAIM      = 4;
  * Per-task TLB sync ticket used by reaper before reclaiming task stacks.
  *
  * The ticket snapshots each CPU's reclaim epoch and requires every CPU to
- * advance past that snapshot before stack unmap/free can proceed.
+ * advance past that snapshot before stack unmap/free can proceed. It only
+ * retires stale TLB entries for the freed stacks, keeping the task struct
+ * itself alive is the job of its counted references.
  */
 struct task_tlb_sync_ticket {
     uint64_t cpu_epoch_snapshot[MAX_CPUS];
