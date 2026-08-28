@@ -56,6 +56,27 @@ __PRIVILEGED_CODE static uint64_t read_u64(const void* ptr) {
 }
 
 /**
+ * Map an SDT at the given physical address, extending the mapping when
+ * the table is longer than one page. Returns nullptr unless the whole
+ * table ended up mapped.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static const sdt_header* map_sdt(uint64_t phys) {
+    auto* hdr = static_cast<const sdt_header*>(
+        map_acpi_region(phys, pmm::PAGE_SIZE));
+    if (!hdr) {
+        return nullptr;
+    }
+
+    uint32_t length = read_u32(&hdr->length);
+    if (length > pmm::PAGE_SIZE) {
+        hdr = static_cast<const sdt_header*>(map_acpi_region(phys, length));
+    }
+
+    return hdr;
+}
+
+/**
  * Get the physical address of the Nth XSDT/RSDT entry.
  * @note Privilege: **required**
  */
@@ -188,6 +209,32 @@ __PRIVILEGED_CODE int32_t init() {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE const sdt_header* map_table(uint64_t phys) {
+    if (phys == 0) {
+        return nullptr;
+    }
+
+    const sdt_header* hdr = map_sdt(phys);
+    if (!hdr) {
+        return nullptr;
+    }
+
+    uint32_t length = read_u32(&hdr->length);
+    if (length < sizeof(sdt_header)) {
+        return nullptr;
+    }
+
+    if (!validate_checksum(hdr, length)) {
+        log::error("acpi: table '%.4s' checksum failed", hdr->signature);
+        return nullptr;
+    }
+
+    return hdr;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE const sdt_header* find_table(const char signature[4]) {
     for (size_t i = 0; i < g_entry_count; i++) {
         const sdt_header* hdr = g_table_cache[i];
@@ -196,21 +243,8 @@ __PRIVILEGED_CODE const sdt_header* find_table(const char signature[4]) {
             uint64_t phys = get_entry_phys(i);
             if (phys == 0) continue;
 
-            // Map 1 page to read the header
-            hdr = static_cast<const sdt_header*>(
-                map_acpi_region(phys, pmm::PAGE_SIZE));
+            hdr = map_sdt(phys);
             if (!hdr) continue;
-
-            uint32_t length = read_u32(&hdr->length);
-
-            // If table exceeds 1 page, create a full mapping
-            if (length > pmm::PAGE_SIZE) {
-                auto* full = static_cast<const sdt_header*>(
-                    map_acpi_region(phys, length));
-                if (full) {
-                    hdr = full;
-                }
-            }
 
             g_table_cache[i] = hdr;
         }

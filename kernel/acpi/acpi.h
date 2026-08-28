@@ -21,6 +21,15 @@ constexpr int32_t ERR_MAP_FAILED   = -4;
 __PRIVILEGED_CODE int32_t init();
 
 /**
+ * @brief Map an ACPI table by physical address and validate its checksum.
+ * For tables referenced by pointer instead of an XSDT/RSDT entry, such
+ * as the DSDT. The mapping is permanent (never unmapped).
+ * @return Pointer to the table header, or nullptr on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE const sdt_header* map_table(uint64_t phys);
+
+/**
  * @brief Find an ACPI table by its 4-byte signature.
  * Maps the table on demand via vmm::map_phys() and caches the result.
  * Returned pointer is permanently valid (never unmapped).
