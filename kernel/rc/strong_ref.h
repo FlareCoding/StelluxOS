@@ -79,8 +79,8 @@ public:
     }
 
     /**
-     * Wrap a raw pointer whose refcount is already 1 (from allocation).
-     * Does NOT call add_ref.
+     * Wrap a raw pointer, taking ownership of one already-held reference,
+     * as when adopting a freshly allocated object. Does NOT call add_ref.
      */
     [[nodiscard]] static strong_ref adopt(T* raw) noexcept {
         return strong_ref(raw, ADOPT_REF);

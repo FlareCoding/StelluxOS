@@ -554,7 +554,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                 // it drops, keeping the off-CPU spin in wake outside the lock
                 for (;;) {
                     rc::strong_ref<sched::task> kill_batch[TEARDOWN_BATCH_SIZE];
-                    resource::proc_provider::proc_resource* pr_batch[TEARDOWN_BATCH_SIZE];
+                    rc::strong_ref<resource::proc_provider::proc_resource> pr_batch[TEARDOWN_BATCH_SIZE];
                     uint32_t kills = 0;
                     uint32_t prs = 0;
                     bool rescan = false;
@@ -590,7 +590,7 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                                 // The thread's resource reference moves to the
                                 // batch and is released after the deferred wake
                                 thread.proc_res = nullptr;
-                                pr_batch[prs++] = pr;
+                                pr_batch[prs++] = rc::strong_ref<resource::proc_provider::proc_resource>::adopt(pr);
                             }
 
                             store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
@@ -615,9 +615,6 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
 
                     for (uint32_t i = 0; i < prs; i++) {
                         sync::wake_all(pr_batch[i]->wait_queue);
-                        if (pr_batch[i]->release()) {
-                            resource::proc_provider::proc_resource::ref_destroy(pr_batch[i]);
-                        }
                     }
 
                     for (uint32_t i = 0; i < kills; i++) {
