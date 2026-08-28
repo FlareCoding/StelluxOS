@@ -486,17 +486,24 @@ DEFINE_SYSCALL1(proc_kill, u_handle) {
         return syscall::EINVAL;
     }
 
+    // The reference taken under pr->lock keeps the child reclaim-safe
+    // after the lock drops, even if it exits and is reaped concurrently
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
-    if (!pr->child || pr->exited) {
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-        resource::resource_release(obj);
-        return pr->exited ? 0 : syscall::EINVAL;
+    bool exited = pr->exited;
+
+    rc::strong_ref<sched::task> child;
+    if (pr->child && !exited) {
+        child = sched::task_ref(pr->child);
     }
 
-    sched::task* child = pr->child;
     sync::spin_unlock_irqrestore(pr->lock, irq);
 
-    RUN_ELEVATED(sched::force_wake_for_kill(child));
+    if (!child) {
+        resource::resource_release(obj);
+        return exited ? 0 : syscall::EINVAL;
+    }
+
+    RUN_ELEVATED(sched::force_wake_for_kill(child.ptr()));
 
     resource::resource_release(obj);
     return 0;

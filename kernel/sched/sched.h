@@ -2,6 +2,7 @@
 #define STELLUX_SCHED_SCHED_H
 
 #include "common/types.h"
+#include "rc/strong_ref.h"
 
 namespace exec { struct loaded_image; }
 
@@ -144,10 +145,10 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id);
  * Atomically transitions BLOCKED -> READY via CAS.
  * Called by sync::wake_one / sync::wake_all.
  *
- * Caller must pin t: hold a lock t re-acquires before it can exit, so the
- * reaper cannot reclaim it mid-call. Blocking paths that re-acquire nothing
- * are pinned only by the registry lock. A remote wake spins for t to go
- * off-CPU, so holding a spinlock with interrupts off across it can deadlock.
+ * The caller must pin t so the reaper cannot free it mid-call: hold a
+ * counted reference (task_ref) or a lock t must take before it can exit.
+ * A remote wake spins until t leaves its CPU, so never hold a spinlock
+ * with interrupts off across the call.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake(task* t);
@@ -160,6 +161,15 @@ __PRIVILEGED_CODE void wake(task* t);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void force_wake_for_kill(task* t);
+
+/**
+ * @brief Acquire a counted reference to a task from a raw pointer.
+ * The raw pointer must still be protected here: hold a lock the task must
+ * take before it can finish exiting, or another counted reference. Returns
+ * a null reference if the task is already tearing down.
+ * @note Privilege: **required**
+ */
+[[nodiscard]] __PRIVILEGED_CODE rc::strong_ref<task> task_ref(task* t);
 
 /**
  * @brief Publish intent to block: moves the current task to BLOCKED.

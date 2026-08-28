@@ -430,6 +430,13 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE rc::strong_ref<task> task_ref(task* t) {
+    return rc::strong_ref<task>::try_from_raw(t);
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE void wake(task* t) {
     uint32_t expected = TASK_STATE_BLOCKED;
     if (!t->state.cmpxchg_strong_acq_rel(expected, TASK_STATE_READY)) {

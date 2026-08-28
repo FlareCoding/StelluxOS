@@ -35,24 +35,34 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
     auto* impl = static_cast<proc_resource_impl*>(obj->impl);
     auto* pr = impl->proc.ptr();
 
+    // The reference taken under pr->lock keeps the child reclaim-safe
+    // after the lock drops, even if it exits and is reaped concurrently
     sync::irq_state irq = sync::spin_lock_irqsave(pr->lock);
+    rc::strong_ref<sched::task> child;
+    bool unstarted = false;
 
-    if (pr->child && pr->child->state.load_relaxed() == sched::TASK_STATE_CREATED) {
-        auto* child = pr->child;
-        pr->child = nullptr;
-        sync::spin_unlock_irqrestore(pr->lock, irq);
+    if (pr->child) {
+        unstarted = pr->child->state.load_relaxed() == sched::TASK_STATE_CREATED;
+        if (unstarted || (!pr->exited && !pr->detached)) {
+            child = sched::task_ref(pr->child);
+        }
 
+        if (unstarted) {
+            pr->child = nullptr;
+        }
+    }
+
+    sync::spin_unlock_irqrestore(pr->lock, irq);
+
+    if (child && unstarted) {
         if (child->proc_res) {
             (void)child->proc_res->release();
             child->proc_res = nullptr;
         }
-        destroy_unstarted_task(child);
-    } else if (pr->child && !pr->exited && !pr->detached) {
-        sched::task* child = pr->child;
-        sync::spin_unlock_irqrestore(pr->lock, irq);
-        sched::force_wake_for_kill(child);
-    } else {
-        sync::spin_unlock_irqrestore(pr->lock, irq);
+
+        destroy_unstarted_task(child.ptr());
+    } else if (child) {
+        sched::force_wake_for_kill(child.ptr());
     }
 
     heap::kfree_delete(impl);
