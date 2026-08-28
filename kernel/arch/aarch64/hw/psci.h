@@ -6,8 +6,10 @@
 namespace psci {
 
 // PSCI function IDs (SMC64 calling convention)
-constexpr uint32_t PSCI_VERSION   = 0x84000000;
-constexpr uint64_t PSCI_CPU_ON_64 = 0xC4000003;
+constexpr uint32_t PSCI_VERSION      = 0x84000000;
+constexpr uint64_t PSCI_CPU_ON_64    = 0xC4000003;
+constexpr uint32_t PSCI_SYSTEM_OFF   = 0x84000008;
+constexpr uint32_t PSCI_SYSTEM_RESET = 0x84000009;
 
 // PSCI return codes
 constexpr int32_t SUCCESS          = 0;
@@ -92,6 +94,33 @@ __PRIVILEGED_CODE inline int32_t cpu_on(conduit c, uint64_t target_mpidr,
                                          uint64_t context_id) {
     return call(c, PSCI_CPU_ON_64, target_mpidr, entry_point, context_id);
 }
+
+/**
+ * Power off the whole machine via PSCI SYSTEM_OFF.
+ * Does not return on success.
+ * @return PSCI result code, only ever seen on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline int32_t system_off(conduit c) {
+    return call(c, PSCI_SYSTEM_OFF, 0, 0, 0);
+}
+
+/**
+ * Reset the whole machine via PSCI SYSTEM_RESET.
+ * Does not return on success.
+ * @return PSCI result code, only ever seen on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline int32_t system_reset(conduit c) {
+    return call(c, PSCI_SYSTEM_RESET, 0, 0, 0);
+}
+
+/**
+ * Determine the PSCI conduit from FADT arm_boot_arch flags.
+ * Falls back to ID_AA64PFR0_EL1 EL3 detection if FADT is unavailable.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE conduit detect_conduit();
 
 } // namespace psci
 
