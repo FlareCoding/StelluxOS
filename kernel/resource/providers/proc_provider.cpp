@@ -55,11 +55,6 @@ __PRIVILEGED_CODE static void proc_close(resource_object* obj) {
     sync::spin_unlock_irqrestore(pr->lock, irq);
 
     if (child && unstarted) {
-        if (child->proc_res) {
-            (void)child->proc_res->release();
-            child->proc_res = nullptr;
-        }
-
         destroy_unstarted_task(child.ptr());
     } else if (child) {
         sched::force_wake_for_kill(child.ptr());
@@ -174,6 +169,15 @@ __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
     uint32_t expected = sched::TASK_STATE_CREATED;
     if (!t->state.cmpxchg_strong_acq_rel(expected, sched::TASK_STATE_DEAD)) {
         return;
+    }
+
+    // Winning the claim confers sole ownership of the task's proc
+    // resource reference, a losing teardown path must not touch it
+    if (t->proc_res) {
+        if (t->proc_res->release()) {
+            proc_resource::ref_destroy(t->proc_res);
+        }
+        t->proc_res = nullptr;
     }
 
     // Unlink from the group list here, reap_task releases the group
