@@ -46,14 +46,16 @@ irq_state wait(wait_queue& wq, spinlock& lock, irq_state saved);
 
 /**
  * Wake the first waiting task (FIFO order).
- * No-op if the queue is empty. Same pin and spin rules as sched::wake.
+ * No-op if the queue is empty. Waiters are pinned internally, but the
+ * off-CPU spin rule of sched::wake still applies to the caller.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake_one(wait_queue& wq);
 
 /**
  * Wake all waiting tasks.
- * No-op if the queue is empty. Same pin and spin rules as sched::wake.
+ * No-op if the queue is empty. Waiters are pinned internally, but the
+ * off-CPU spin rule of sched::wake still applies to the caller.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake_all(wait_queue& wq);

@@ -128,7 +128,7 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
     uint32_t total_woken = 0;
 
     for (;;) {
-        sched::task* batch[WAKE_BATCH_SIZE];
+        rc::strong_ref<sched::task> batch[WAKE_BATCH_SIZE];
         uint32_t n = 0;
         bool done = false;
 
@@ -141,7 +141,7 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
             ++it; // advance before removal
             if (w.mm == mm && w.addr == uaddr) {
                 bucket->waiters.remove(&w);
-                batch[n++] = w.task;
+                batch[n++] = sched::task_ref(w.task);
                 if (total_woken + n >= count) {
                     done = true;
                     break;
@@ -153,7 +153,9 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
         spin_unlock_irqrestore(bucket->lock, irq);
 
         for (uint32_t i = 0; i < n; i++) {
-            sched::wake(batch[i]);
+            if (batch[i]) {
+                sched::wake(batch[i].ptr());
+            }
         }
         total_woken += n;
 
@@ -174,7 +176,7 @@ __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr) {
     uint32_t total_woken = 0;
 
     for (;;) {
-        sched::task* batch[WAKE_BATCH_SIZE];
+        rc::strong_ref<sched::task> batch[WAKE_BATCH_SIZE];
         uint32_t n = 0;
 
         irq_state irq = spin_lock_irqsave(bucket->lock);
@@ -186,7 +188,7 @@ __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr) {
             ++it;
             if (w.mm == mm && w.addr == uaddr) {
                 bucket->waiters.remove(&w);
-                batch[n++] = w.task;
+                batch[n++] = sched::task_ref(w.task);
             }
         }
 
@@ -194,7 +196,9 @@ __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr) {
         spin_unlock_irqrestore(bucket->lock, irq);
 
         for (uint32_t i = 0; i < n; i++) {
-            sched::wake(batch[i]);
+            if (batch[i]) {
+                sched::wake(batch[i].ptr());
+            }
         }
         total_woken += n;
 
