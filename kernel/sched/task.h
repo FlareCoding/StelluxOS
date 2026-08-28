@@ -45,7 +45,12 @@ struct task_tlb_sync_ticket {
 
 struct thread_group;
 
-struct task {
+/**
+ * A schedulable unit of execution. Refcounted: a task starts with one
+ * reference, dropped once the scheduler has detached it after death, and
+ * the last release hands reclamation to the reaper.
+ */
+struct task : rc::ref_counted<task> {
     // Execution core
     task_exec_core exec;
 
@@ -89,12 +94,14 @@ struct task {
     // when a thread is created with POSIX file table semantics
     resource::handle_table* handles;
     resource::proc_provider::proc_resource* proc_res;
-};
 
-// Assembly accesses task_exec_core fields via offsets from the task pointer.
-// exec must be at offset 0 so &task == &task.exec.
-static_assert(__builtin_offsetof(task, exec) == 0,
-    "task.exec must be at offset 0 for assembly compatibility");
+    /**
+     * Defers reclamation to the reaper, which owns the staged teardown
+     * and the TLB grace period for stack pages.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE static void ref_destroy(task* self);
+};
 
 /**
  * Groups all tasks sharing an address space. Every userland task belongs to

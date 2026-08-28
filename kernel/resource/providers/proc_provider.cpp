@@ -1,12 +1,8 @@
 #include "resource/providers/proc_provider.h"
 #include "sched/sched.h"
 #include "sched/task.h"
-#include "sched/task_registry.h"
-#include "mm/mm.h"
 #include "mm/vma.h"
-#include "mm/vmm.h"
 #include "mm/heap.h"
-#include "fs/node.h"
 #include "common/logging.h"
 #include "sync/poll.h"
 #include "sync/wait_queue.h"
@@ -164,44 +160,28 @@ __PRIVILEGED_CODE proc_resource* get_proc_resource(resource_object* obj) {
 
 __PRIVILEGED_CODE void destroy_unstarted_task(sched::task* t) {
     // Claim the task, a concurrent group teardown may have already
-    // moved it to dead and handed the memory to the reaper
+    // moved it to dead and handed it to the reaper
     uint32_t expected = sched::TASK_STATE_CREATED;
     if (!t->state.cmpxchg_strong_acq_rel(expected, sched::TASK_STATE_DEAD)) {
         return;
     }
 
-    // Leave the registry before the group teardown so registry walkers
-    // never see a task whose group is being freed (same order as reap_task)
-    sched::g_task_registry.remove(*t);
-
-    resource::release_task_handles(t);
-    if (t->cwd) {
-        if (t->cwd->release()) {
-            fs::node::ref_destroy(t->cwd);
-        }
-        t->cwd = nullptr;
+    // Unlink from the group list here, reap_task releases the group
+    // reference but never touches the thread list
+    if (t->group && t->group->leader != t && t->group_link.is_linked()) {
+        sync::irq_state irq = sync::spin_lock_irqsave(t->group->lock);
+        t->group->threads.remove(t);
+        t->group->thread_count--;
+        sync::spin_unlock_irqrestore(t->group->lock, irq);
     }
 
-    if (t->exec.mm_ctx) {
-        mm::mm_context_release(t->exec.mm_ctx);
-        t->exec.mm_ctx = nullptr;
-    }
+    // Never started means already off-CPU, so the task goes straight to
+    // the reaper for the same staged teardown as a normal exit
+    t->cleanup_stage.store_release(sched::TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
 
-    if (t->group) {
-        if (t->group->leader != t && t->group_link.is_linked()) {
-            sync::irq_state irq = sync::spin_lock_irqsave(t->group->lock);
-            t->group->threads.remove(t);
-            t->group->thread_count--;
-            sync::spin_unlock_irqrestore(t->group->lock, irq);
-        }
-        if (t->group->release()) {
-            sched::thread_group::ref_destroy(t->group);
-        }
-        t->group = nullptr;
+    if (t->release()) {
+        sched::task::ref_destroy(t);
     }
-
-    vmm::free(t->sys_stack_base);
-    heap::kfree_delete(t);
 }
 
 } // namespace resource::proc_provider

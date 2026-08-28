@@ -17,7 +17,7 @@ static sched::task s_tasks[MAX_MOCK_TASKS];
 // Zero-initialize a mock task and set its TID. Only the tid and
 // task_registry_link fields matter for registry operations.
 static void init_mock_task(sched::task& t, uint32_t tid) {
-    new (&t) sched::task{};
+    new (&t) sched::task();
     t.tid = tid;
 }
 

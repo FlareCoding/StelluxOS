@@ -52,6 +52,10 @@ __PRIVILEGED_CODE void thread_group::ref_destroy(thread_group* self) {
     heap::kfree_delete(self);
 }
 
+__PRIVILEGED_CODE void task::ref_destroy(task* self) {
+    rc::reaper::defer(&self->reaper_node);
+}
+
 constexpr size_t TASK_STACK_PAGES = 4;
 constexpr uint16_t TASK_GUARD_PAGES = 1;
 
@@ -284,8 +288,11 @@ __PRIVILEGED_CODE void finalize_pending_off_cpu() {
     cpu::send_event();
 
     if (load_cleanup_stage(pending) == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
-        // The reaper must only start cleanup after off-CPU publication is visible.
-        rc::reaper::defer(&pending->reaper_node);
+        // Reclamation must not begin before the off-CPU store above is
+        // visible, so the reference the task was created with drops here.
+        if (pending->release()) {
+            task::ref_destroy(pending);
+        }
     }
 }
 
@@ -548,7 +555,9 @@ __PRIVILEGED_CODE void sleep_ms(uint64_t ms) {
                         }
 
                         store_cleanup_stage(&thread, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
-                        rc::reaper::defer(&thread.reaper_node);
+                        if (thread.release()) {
+                            task::ref_destroy(&thread);
+                        }
                     } else {
                         force_wake_for_kill(&thread);
                     }
@@ -1299,11 +1308,6 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     task* idle = heap::kalloc_new<task>();
     if (!idle) {
         return ERR_NO_MEM;
-    }
-
-    auto* dst = reinterpret_cast<uint8_t*>(idle);
-    for (size_t i = 0; i < sizeof(task); i++) {
-        dst[i] = 0;
     }
 
     idle->exec.flags = TASK_FLAG_IDLE | TASK_FLAG_ELEVATED | TASK_FLAG_KERNEL
