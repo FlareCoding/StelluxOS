@@ -15,10 +15,6 @@ enum class send_verdict : uint8_t {
     HANDLED, // a user handler is installed, wake the target to deliver
 };
 
-// Distinct groups remembered during one group-id send. Signals coalesce,
-// so duplicate sends past this window are harmless extra wakes.
-constexpr uint32_t MAX_GROUP_SEND_GROUPS = 64;
-
 /**
  * Clear pending instances of sig from the shared set and every thread.
  * @note Privilege: **required**
@@ -288,40 +284,40 @@ __PRIVILEGED_CODE int32_t send_to_group(sched::thread_group* tg, uint32_t sig) {
 }
 
 __PRIVILEGED_CODE int32_t send_to_group_id(uint32_t group_id, uint32_t sig) {
-    sched::thread_group* seen[MAX_GROUP_SEND_GROUPS];
-    uint32_t seen_count = 0;
     bool found = false;
+    uint32_t cursor = 0;
 
-    sync::irq_state irq = sched::g_task_registry.lock();
-    sched::g_task_registry.for_each_locked([&](sched::task& t) {
-        sched::thread_group* tg = t.group;
-        if (!tg || tg->group_id.load_acquire() != group_id) {
-            return;
-        }
+    // Each pass sends to the matching group with the smallest leader pid
+    // above the cursor, reaching every group however many match
+    for (;;) {
+        sched::thread_group* best = nullptr;
 
-        for (uint32_t i = 0; i < seen_count; i++) {
-            if (seen[i] == tg) {
+        sync::irq_state irq = sched::g_task_registry.lock();
+        sched::g_task_registry.for_each_locked([&](sched::task& t) {
+            sched::thread_group* tg = t.group;
+            if (!tg || tg->group_id.load_acquire() != group_id) {
                 return;
             }
+
+            if (tg->pid > cursor && (!best || tg->pid < best->pid)) {
+                best = tg;
+            }
+        });
+
+        // A registry member pins its group until reaped, so the reference
+        // is taken under the registry lock and the send runs after it drops
+        rc::strong_ref<sched::thread_group> target =
+            rc::strong_ref<sched::thread_group>::try_from_raw(best);
+        sched::g_task_registry.unlock(irq);
+
+        if (!target) {
+            break;
         }
 
         found = true;
-        if (seen_count < MAX_GROUP_SEND_GROUPS) {
-            tg->add_ref();
-            seen[seen_count++] = tg;
-        }
-    });
-    sched::g_task_registry.unlock(irq);
-
-    // Sends run after the registry lock drops, pinned by the references
-    // above. Groups past the array bound are dropped.
-    for (uint32_t i = 0; i < seen_count; i++) {
+        cursor = target->pid;
         if (sig != 0) {
-            send_to_group(seen[i], sig);
-        }
-
-        if (seen[i]->release()) {
-            sched::thread_group::ref_destroy(seen[i]);
+            send_to_group(target.ptr(), sig);
         }
     }
 
