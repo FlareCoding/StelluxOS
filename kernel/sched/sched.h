@@ -148,7 +148,8 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id);
  * The caller must pin t so the reaper cannot free it mid-call: hold a
  * counted reference (task_ref) or a lock t must take before it can exit.
  * A remote wake spins until t leaves its CPU, so never hold a spinlock
- * with interrupts off across the call.
+ * with interrupts off across the call. Waking a task that last ran on
+ * the calling CPU never spins, so the timer expiry walk is exempt.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake(task* t);
