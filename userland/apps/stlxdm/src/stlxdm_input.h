@@ -1,6 +1,7 @@
 #ifndef STLXDM_INPUT_H
 #define STLXDM_INPUT_H
 
+#include "stlxdm_power.h"
 #include <stlxgfx/window.h>
 #include <stlxgfx/event.h>
 #include <stlx/input.h>
@@ -59,7 +60,8 @@ typedef struct {
 void stlxdm_input_init(stlxdm_input_t* inp, int32_t fb_w, int32_t fb_h);
 void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                            int max_clients,
-                           struct stlxdm_taskbar_t_tag* taskbar);
+                           struct stlxdm_taskbar_t_tag* taskbar,
+                           stlxdm_power_t* power);
 void stlxdm_input_add_window(stlxdm_input_t* inp, int slot,
                               dm_client_t* clients);
 void stlxdm_input_remove_window(stlxdm_input_t* inp, int slot,

@@ -18,6 +18,7 @@
 #include "stlxdm_conf.h"
 #include "stlxdm_decor.h"
 #include "stlxdm_input.h"
+#include "stlxdm_power.h"
 #include "stlxdm_splash.h"
 #include "stlxdm_taskbar.h"
 
@@ -559,7 +560,8 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
                                        stlxdm_input_t* inp,
                                        dm_client_t* clients,
                                        const stlxdm_config_t* conf,
-                                       stlxdm_taskbar_t* taskbar) {
+                                       stlxdm_taskbar_t* taskbar,
+                                       stlxdm_power_t* power) {
     stlxgfx_ctx_t ctx;
     stlxgfx_ctx_init(&ctx, comp->backbuf);
 
@@ -626,6 +628,8 @@ static void stlxdm_compositor_compose(stlxdm_compositor_t* comp,
     }
 
     stlxdm_taskbar_draw(taskbar, &ctx);
+    stlxdm_power_draw_star(power, &ctx);
+    stlxdm_power_draw_overlay(power, &ctx);
     stlxdm_input_draw_cursor(inp, comp->backbuf);
 }
 
@@ -736,12 +740,17 @@ int main(void) {
     stlxdm_taskbar_t taskbar;
     stlxdm_taskbar_init(&taskbar, &config, fb.width, fb.height);
 
+    stlxdm_power_t power;
+    stlxdm_power_init(&power, &config, fb.width, fb.height);
+
     stlxdm_dirty_t dirty;
     int prev_focused = -1;
     int prev_close_hover = -1;
     int prev_drag = -1;
     int prev_taskbar_hover = -1;
     int prev_taskbar_press = -1;
+    int prev_power_active = 0;
+    int prev_star_hover = 0;
     int first_frame = 1;
 
     while (1) {
@@ -764,7 +773,29 @@ int main(void) {
         stlxdm_server_accept(&server);
         stlxdm_server_process_messages(&server, &input, &fb);
         stlxdm_input_process(&input, server.clients, STLXGFX_DM_MAX_CLIENTS,
-                              &taskbar);
+                              &taskbar, &power);
+        stlxdm_power_update(&power);
+
+        /* Overlay transitions animate over the whole screen, but once it is
+         * settled only the orb boxes change, so those frames stay small */
+        int power_active = stlxdm_power_is_active(&power);
+        int power_steady = stlxdm_power_is_steady(&power);
+        if ((power_active && !power_steady) ||
+            power_active != prev_power_active ||
+            power.star_hover != prev_star_hover) {
+            stlxdm_dirty_add_full(&dirty);
+        }
+        prev_power_active = power_active;
+        prev_star_hover = power.star_hover;
+
+        if (power_steady) {
+            for (int i = 0; i < 2; i++) {
+                int32_t bx, by;
+                uint32_t bw, bh;
+                stlxdm_power_orb_box(&power, i, &bx, &by, &bw, &bh);
+                stlxdm_dirty_add_rect(&dirty, bx, by, bw, bh);
+            }
+        }
 
         if (input.spawn_terminal_requested) {
             stlxdm_spawn_app("/bin/stlxterm", NULL);
@@ -829,17 +860,37 @@ int main(void) {
             prev_taskbar_press = taskbar.press_index;
         }
 
-        /* Always dirty the top status bar (clock updates) */
-        stlxdm_dirty_add_rect(&dirty, 0, 0, fb.width,
-                               STLXDM_BAR_HEIGHT + 1);
+        /* Always dirty the top status bar (clock updates), except behind the
+         * settled overlay where the dimmed bar is frozen anyway */
+        if (!power_steady) {
+            stlxdm_dirty_add_rect(&dirty, 0, 0, fb.width,
+                                   STLXDM_BAR_HEIGHT + 1);
+        }
 
         /* Sync client buffers and mark windows with new frames as dirty */
         stlxdm_compositor_sync(&compositor, server.clients, &dirty);
 
-        stlxdm_compositor_compose(&compositor, &input, server.clients,
-                                   &config, &taskbar);
+        if (power_steady) {
+            /* Repaint from the cached backdrop instead of recomposing the
+             * desktop and re-dimming it to the same pixels every frame */
+            stlxgfx_ctx_t ctx;
+            stlxgfx_ctx_init(&ctx, compositor.backbuf);
+            for (int i = 0; i < dirty.count; i++) {
+                const stlxdm_rect_t* r = &dirty.rects[i];
+                stlxdm_power_restore(&power, compositor.backbuf,
+                                      r->x, r->y, r->w, r->h);
+            }
+            stlxdm_power_draw_orbs(&power, &ctx);
+            stlxdm_input_draw_cursor(&input, compositor.backbuf);
+        } else {
+            stlxdm_compositor_compose(&compositor, &input, server.clients,
+                                       &config, &taskbar, &power);
+        }
         stlxdm_compositor_present(&compositor, &dirty);
         stlxdm_compositor_finish_sync(&compositor, server.clients);
+
+        /* Runs after the final dark frame reaches the screen */
+        stlxdm_power_run_action(&power);
 
         struct timespec frame_end;
         clock_gettime(CLOCK_MONOTONIC, &frame_end);

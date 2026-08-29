@@ -368,7 +368,8 @@ static int is_global_shortcut(const stlx_input_kbd_event_t* evt,
 
 void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                            int max_clients,
-                           stlxdm_taskbar_t* taskbar) {
+                           stlxdm_taskbar_t* taskbar,
+                           stlxdm_power_t* power) {
     (void)max_clients;
 
     inp->spawn_terminal_requested = 0;
@@ -381,6 +382,16 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
         if (n > 0) {
             int count = (int)(n / (ssize_t)sizeof(stlx_input_kbd_event_t));
             for (int i = 0; i < count; i++) {
+                /* Escape backs out of the power overlay before anything
+                 * else can claim the key */
+                if (power && stlxdm_power_is_active(power)) {
+                    if (kbd_buf[i].action == STLX_INPUT_KBD_ACTION_DOWN &&
+                        kbd_buf[i].usage == 0x29) {
+                        stlxdm_power_dismiss(power);
+                    }
+                    continue;
+                }
+
                 if (is_global_shortcut(&kbd_buf[i], inp)) {
                     continue;
                 }
@@ -436,6 +447,19 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                 uint16_t prev_buttons = inp->capture_buttons;
                 uint16_t cur_buttons = me->buttons;
 
+                /* The overlay is modal, so it consumes pointer input
+                 * before windows or the taskbar can see it */
+                if (power && stlxdm_power_is_active(power)) {
+                    stlxdm_power_on_motion(power, inp->ptr_x, inp->ptr_y);
+                    if ((cur_buttons & 1) && !(prev_buttons & 1)) {
+                        stlxdm_power_on_press(power, inp->ptr_x, inp->ptr_y);
+                    } else if ((prev_buttons & 1) && !(cur_buttons & 1)) {
+                        stlxdm_power_on_release(power, inp->ptr_x, inp->ptr_y);
+                    }
+                    inp->capture_buttons = cur_buttons;
+                    continue;
+                }
+
                 if (inp->drag_slot >= 0) {
                     stlxgfx_dm_window_t* dw = clients[inp->drag_slot].window;
                     if (dw) {
@@ -460,6 +484,15 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
                 }
 
                 if ((cur_buttons & 1) && !(prev_buttons & 1)) {
+                    /* The trigger sits inside the taskbar strip, so it has
+                     * to be tested before the taskbar swallows the click */
+                    if (power && stlxdm_power_star_hit(power, inp->ptr_x,
+                                                        inp->ptr_y)) {
+                        stlxdm_power_open(power);
+                        inp->capture_buttons = cur_buttons;
+                        continue;
+                    }
+
                     if (taskbar &&
                         stlxdm_taskbar_hit_test(taskbar,
                                                 inp->ptr_x, inp->ptr_y)) {
@@ -563,8 +596,16 @@ void stlxdm_input_process(stlxdm_input_t* inp, dm_client_t* clients,
         }
     }
 
+    if (power) {
+        stlxdm_power_on_motion(power, inp->ptr_x, inp->ptr_y);
+    }
+
     if (taskbar) {
-        stlxdm_taskbar_update_hover(taskbar, inp->ptr_x, inp->ptr_y);
+        if (power && stlxdm_power_is_active(power)) {
+            stlxdm_taskbar_update_hover(taskbar, -1, -1);
+        } else {
+            stlxdm_taskbar_update_hover(taskbar, inp->ptr_x, inp->ptr_y);
+        }
     }
 }
 
