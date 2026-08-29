@@ -325,3 +325,137 @@ TEST(kill, wait_status_killed) {
     EXPECT_NE(status & 0x7F, 0);
     EXPECT_EQ(status & 0x7F, 9);
 }
+
+// --- kill_after_death_is_safe ---
+// A counted reference keeps a fully dead task safe to kill: the wake
+// degrades to a no-op instead of touching reclaimed memory. Dropping the
+// pin must then let the reaper reclaim the task.
+
+static sync::atomic<uint32_t> g_kad_done;
+
+static void kad_fn(void*) {
+    g_kad_done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(kill, kill_after_death_is_safe) {
+    g_kad_done.store_relaxed(0);
+
+    sched::task* t = nullptr;
+    rc::strong_ref<sched::task> pin;
+    uint32_t tid = 0;
+    RUN_ELEVATED({
+        t = sched::create_kernel_task(kad_fn, nullptr, "kill_dead");
+        ASSERT_NOT_NULL(t);
+        pin = sched::task_ref(t);
+        tid = t->tid;
+        sched::enqueue(t);
+    });
+
+    ASSERT_TRUE(spin_wait(g_kad_done));
+
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (t->state.load_acquire() != sched::TASK_STATE_DEAD) {
+        if (clock::now_ns() > deadline) break;
+    }
+    ASSERT_EQ(t->state.load_acquire(), sched::TASK_STATE_DEAD);
+    brief_delay();
+
+    RUN_ELEVATED({
+        sched::force_wake_for_kill(t);
+    });
+
+    // Only the pin holds the task now, releasing it must reclaim
+    pin.reset();
+
+    bool reclaimed = false;
+    deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (!reclaimed && clock::now_ns() < deadline) {
+        RUN_ELEVATED({
+            reclaimed = !sched::task_ref_by_tid(tid);
+        });
+    }
+    EXPECT_TRUE(reclaimed);
+}
+
+// --- wake_all_reclaims_many_waiters ---
+// Twenty waiters exceed one wake batch, forcing wake_all to rescan. Every
+// waiter is pinned, killed again after death, and must reclaim once the
+// pins drop, proving no reference leaks out of the wake and kill paths.
+
+constexpr uint32_t MANY_WAITERS = 20;
+
+static sync::wait_queue g_many_wq;
+static sync::spinlock g_many_lock;
+static sync::atomic<uint32_t> g_many_waiting;
+static sync::atomic<uint32_t> g_many_go;
+static sync::atomic<uint32_t> g_many_done;
+static uint32_t g_many_tids[MANY_WAITERS];
+
+static void many_waiter_fn(void*) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_many_lock);
+        g_many_waiting.fetch_add_release(1);
+        while (g_many_go.load_acquire() == 0 && !sched::is_kill_pending()) {
+            irq = sync::wait(g_many_wq, g_many_lock, irq);
+        }
+        sync::spin_unlock_irqrestore(g_many_lock, irq);
+    });
+    g_many_done.fetch_add_release(1);
+    sched::exit(0);
+}
+
+TEST(kill, wake_all_reclaims_many_waiters) {
+    g_many_wq.init();
+    g_many_lock = sync::SPINLOCK_INIT;
+    g_many_waiting.store_relaxed(0);
+    g_many_go.store_relaxed(0);
+    g_many_done.store_relaxed(0);
+
+    rc::strong_ref<sched::task> pins[MANY_WAITERS];
+    RUN_ELEVATED({
+        for (uint32_t i = 0; i < MANY_WAITERS; i++) {
+            sched::task* t = sched::create_kernel_task(
+                many_waiter_fn, nullptr, "kill_many");
+            ASSERT_NOT_NULL(t);
+            pins[i] = sched::task_ref(t);
+            g_many_tids[i] = t->tid;
+            sched::enqueue(t);
+        }
+    });
+
+    ASSERT_TRUE(spin_wait_ge(g_many_waiting, MANY_WAITERS));
+    brief_delay();
+
+    g_many_go.store_release(1);
+    RUN_ELEVATED({
+        sync::wake_all(g_many_wq);
+    });
+
+    ASSERT_TRUE(spin_wait_ge(g_many_done, MANY_WAITERS));
+
+    // Killing waiters that are already dead or dying must be a no-op
+    RUN_ELEVATED({
+        for (uint32_t i = 0; i < MANY_WAITERS; i++) {
+            sched::force_wake_for_kill(pins[i].ptr());
+        }
+    });
+
+    for (uint32_t i = 0; i < MANY_WAITERS; i++) {
+        pins[i].reset();
+    }
+
+    uint32_t reclaimed = 0;
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (reclaimed < MANY_WAITERS && clock::now_ns() < deadline) {
+        reclaimed = 0;
+        RUN_ELEVATED({
+            for (uint32_t i = 0; i < MANY_WAITERS; i++) {
+                if (!sched::task_ref_by_tid(g_many_tids[i])) {
+                    reclaimed++;
+                }
+            }
+        });
+    }
+    EXPECT_EQ(reclaimed, MANY_WAITERS);
+}
