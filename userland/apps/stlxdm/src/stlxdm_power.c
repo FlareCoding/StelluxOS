@@ -75,36 +75,9 @@ static uint32_t pw_with_alpha(uint32_t color, float scale) {
     return (color & 0x00FFFFFFu) | ((uint32_t)scaled << 24);
 }
 
-/* Whole screen dim. The generic blend goes through a per-pixel accessor,
- * which is far too slow at this size, so packed 32bpp surfaces get a direct
- * fixed point loop and anything else falls back. */
+/* Whole screen dim through the shared blend path. */
 static void pw_dim_screen(stlxgfx_surface_t* s, uint32_t color) {
-    uint32_t a = (color >> 24) & 0xFFu;
-    if (a == 0) {
-        return;
-    }
-
-    if (s->bpp != 32 || s->red_shift != 16 || s->green_shift != 8 ||
-        s->blue_shift != 0) {
-        stlxgfx_fill_rect_blend(s, 0, 0, s->width, s->height, color);
-        return;
-    }
-
-    uint32_t inv = 255u - a;
-    uint32_t sr = ((color >> 16) & 0xFFu) * a;
-    uint32_t sg = ((color >> 8) & 0xFFu) * a;
-    uint32_t sb = (color & 0xFFu) * a;
-
-    for (uint32_t y = 0; y < s->height; y++) {
-        uint32_t* row = (uint32_t*)(void*)(s->pixels + (size_t)y * s->pitch);
-        for (uint32_t x = 0; x < s->width; x++) {
-            uint32_t d = row[x];
-            uint32_t r = ((((d >> 16) & 0xFFu) * inv) + sr) >> 8;
-            uint32_t g = ((((d >> 8) & 0xFFu) * inv) + sg) >> 8;
-            uint32_t b = (((d & 0xFFu) * inv) + sb) >> 8;
-            row[x] = (d & 0xFF000000u) | (r << 16) | (g << 8) | b;
-        }
-    }
+    stlxgfx_fill_rect_blend(s, 0, 0, s->width, s->height, color);
 }
 
 /* Copies the cached screen while fading it toward black in the same pass.
