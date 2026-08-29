@@ -780,6 +780,7 @@ int main(void) {
          * settled only the orb boxes change, so those frames stay small */
         int power_active = stlxdm_power_is_active(&power);
         int power_steady = stlxdm_power_is_steady(&power);
+        int power_collapsing = stlxdm_power_is_collapsing(&power);
         if ((power_active && !power_steady) ||
             power_active != prev_power_active ||
             power.star_hover != prev_star_hover) {
@@ -870,7 +871,14 @@ int main(void) {
         /* Sync client buffers and mark windows with new frames as dirty */
         stlxdm_compositor_sync(&compositor, server.clients, &dirty);
 
-        if (power_steady) {
+        if (power_collapsing) {
+            /* The whole screen darkens, so it is redrawn from the cached
+             * copy in one fading pass rather than composed again */
+            stlxgfx_ctx_t ctx;
+            stlxgfx_ctx_init(&ctx, compositor.backbuf);
+            stlxdm_power_draw_collapse(&power, &ctx);
+            stlxdm_input_draw_cursor(&input, compositor.backbuf);
+        } else if (power_steady) {
             /* Repaint from the cached backdrop instead of recomposing the
              * desktop and re-dimming it to the same pixels every frame */
             stlxgfx_ctx_t ctx;

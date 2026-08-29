@@ -107,6 +107,44 @@ static void pw_dim_screen(stlxgfx_surface_t* s, uint32_t color) {
     }
 }
 
+/* Copies the cached screen while fading it toward black in the same pass.
+ * Restoring and then darkening separately would walk every pixel twice, and
+ * darkening only part of the screen would leave a visible edge. */
+static void pw_blit_faded(stlxgfx_surface_t* dst, stlxgfx_surface_t* src,
+                          float veil) {
+    if (veil < 0.0f) veil = 0.0f;
+    if (veil > 1.0f) veil = 1.0f;
+
+    if (dst->bpp != 32 || src->bpp != 32 || dst->red_shift != 16 ||
+        dst->green_shift != 8 || dst->blue_shift != 0 ||
+        src->red_shift != 16 || src->green_shift != 8 ||
+        src->blue_shift != 0) {
+        stlxgfx_blit(dst, 0, 0, src, 0, 0, dst->width, dst->height);
+        stlxgfx_fill_rect_blend(dst, 0, 0, dst->width, dst->height,
+                                pw_with_alpha(0xFF000000u, veil));
+        return;
+    }
+
+    uint32_t keep = (uint32_t)((1.0f - veil) * 256.0f);
+    if (keep > 256u) keep = 256u;
+
+    uint32_t h = dst->height < src->height ? dst->height : src->height;
+    uint32_t w = dst->width < src->width ? dst->width : src->width;
+
+    for (uint32_t y = 0; y < h; y++) {
+        uint32_t* drow = (uint32_t*)(void*)(dst->pixels + (size_t)y * dst->pitch);
+        const uint32_t* srow =
+            (const uint32_t*)(void*)(src->pixels + (size_t)y * src->pitch);
+        for (uint32_t x = 0; x < w; x++) {
+            uint32_t c = srow[x];
+            uint32_t r = (((c >> 16) & 0xFFu) * keep) >> 8;
+            uint32_t g = (((c >> 8) & 0xFFu) * keep) >> 8;
+            uint32_t b = ((c & 0xFFu) * keep) >> 8;
+            drow[x] = (c & 0xFF000000u) | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
 /* Anti-aliased filled disc. fill_circle is hard edged and opaque, and
  * these orbs sit over the desktop, so coverage blending is used instead. */
 static void pw_disc(stlxgfx_surface_t* s, float cx, float cy, float radius,
@@ -338,15 +376,10 @@ void stlxdm_power_open(stlxdm_power_t* pw) {
 /* The dim never changes once applied, so every phase except the final
  * blackout can repaint from the cache instead of re-dimming the screen. */
 int stlxdm_power_is_steady(const stlxdm_power_t* pw) {
-    if (!pw->backdrop_valid || pw->state == STLXDM_POWER_CLOSED) {
-        return 0;
-    }
-
-    if (pw->state == STLXDM_POWER_COMMITTING) {
-        return pw_phase(pw, PW_COMMIT_MS) < PW_BLACKOUT_AT;
-    }
-
-    return 1;
+    return pw->backdrop_valid &&
+           (pw->state == STLXDM_POWER_OPENING ||
+            pw->state == STLXDM_POWER_OPEN ||
+            pw->state == STLXDM_POWER_CLOSING);
 }
 
 void stlxdm_power_orb_box(const stlxdm_power_t* pw, int choice,
@@ -562,41 +595,48 @@ void stlxdm_power_draw_overlay(stlxdm_power_t* pw, stlxgfx_ctx_t* ctx) {
     stlxdm_power_draw_orbs(pw, ctx);
 }
 
+/* The chosen light flares, then contracts to a point and winks out, which
+ * also covers the latency of the power call that follows */
+static void pw_draw_collapse_light(stlxdm_power_t* pw, stlxgfx_surface_t* s) {
+    float t = pw_phase(pw, PW_COMMIT_MS);
+    float cx, cy;
+    pw_orb_center(pw, pw->commit_choice, &cx, &cy);
+    uint32_t accent = pw->commit_choice == STLXDM_POWER_SHUTDOWN
+        ? PW_SHUTDOWN_ACCENT : PW_RESTART_ACCENT;
+
+    float flare = t < 0.18f ? (t / 0.18f) : 1.0f;
+    float shrink = t < 0.18f ? 1.0f : (1.0f - (t - 0.18f) / 0.82f);
+    if (shrink < 0.0f) shrink = 0.0f;
+
+    float core = (4.0f + 10.0f * flare) * shrink;
+    float halo = (float)PW_ORB_RADIUS * 0.92f * shrink;
+
+    if (halo > 0.5f) {
+        pw_glow(s, cx, cy, core, halo, pw_with_alpha(accent, 0.55f));
+    }
+    if (core > 0.4f) {
+        pw_disc(s, cx, cy, core, pw_with_alpha(0xFFFFFFFFu, 0.95f));
+    }
+}
+
+int stlxdm_power_is_collapsing(const stlxdm_power_t* pw) {
+    return pw->state == STLXDM_POWER_COMMITTING && pw->backdrop_valid &&
+           pw_phase(pw, PW_COMMIT_MS) < PW_BLACKOUT_AT;
+}
+
+void stlxdm_power_draw_collapse(stlxdm_power_t* pw, stlxgfx_ctx_t* ctx) {
+    float t = pw_phase(pw, PW_COMMIT_MS);
+    float veil = pw_ease_in(t / PW_BLACKOUT_AT);
+
+    pw_blit_faded(ctx->target, pw->backdrop, veil);
+    pw_draw_collapse_light(pw, ctx->target);
+}
+
 void stlxdm_power_draw_orbs(stlxdm_power_t* pw, stlxgfx_ctx_t* ctx) {
     stlxgfx_surface_t* s = ctx->target;
 
     if (pw->state == STLXDM_POWER_COMMITTING) {
-        float t = pw_phase(pw, PW_COMMIT_MS);
-        float cx, cy;
-        pw_orb_center(pw, pw->commit_choice, &cx, &cy);
-        uint32_t accent = pw->commit_choice == STLXDM_POWER_SHUTDOWN
-            ? PW_SHUTDOWN_ACCENT : PW_RESTART_ACCENT;
-
-        /* The chosen light flares, then contracts to a point and winks out,
-         * which also covers the latency of the power call that follows */
-        float flare = t < 0.18f ? (t / 0.18f) : 1.0f;
-        float shrink = t < 0.18f ? 1.0f : (1.0f - (t - 0.18f) / 0.82f);
-        if (shrink < 0.0f) shrink = 0.0f;
-
-        float core = (4.0f + 10.0f * flare) * shrink;
-        float halo = (float)PW_ORB_RADIUS * 0.92f * shrink;
-        float veil = pw_ease_in(t / PW_BLACKOUT_AT);
-        if (veil > 1.0f) veil = 1.0f;
-
-        /* Darkening is confined to the light's own box so the rest of the
-         * screen keeps the cached pixels until the final blackout */
-        int32_t bx, by;
-        uint32_t bw, bh;
-        stlxdm_power_orb_box(pw, pw->commit_choice, &bx, &by, &bw, &bh);
-        stlxgfx_fill_rect_blend(s, bx, by, bw, bh,
-                                pw_with_alpha(0xFF000000u, veil));
-
-        if (halo > 0.5f) {
-            pw_glow(s, cx, cy, core, halo, pw_with_alpha(accent, 0.55f));
-        }
-        if (core > 0.4f) {
-            pw_disc(s, cx, cy, core, pw_with_alpha(0xFFFFFFFFu, 0.95f));
-        }
+        pw_draw_collapse_light(pw, s);
         return;
     }
 

@@ -78,6 +78,10 @@ void stlxdm_power_restore(stlxdm_power_t* pw, stlxgfx_surface_t* dst,
                            int32_t x, int32_t y, uint32_t w, uint32_t h);
 void stlxdm_power_draw_orbs(stlxdm_power_t* pw, stlxgfx_ctx_t* ctx);
 
+/* True while the collapse darkens the whole screen from the cached copy */
+int  stlxdm_power_is_collapsing(const stlxdm_power_t* pw);
+void stlxdm_power_draw_collapse(stlxdm_power_t* pw, stlxgfx_ctx_t* ctx);
+
 /* Issues the chosen power operation, only returns if the platform refused */
 void stlxdm_power_run_action(stlxdm_power_t* pw);
 
