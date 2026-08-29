@@ -6,7 +6,7 @@ APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest
 			clockbench stlxdm stlxterm doom ping ifconfig nslookup arp udpecho tcpecho \
 			fetch polltest sigtest dropbear blackjack wordle hangman snake tetris \
 			grep wc head threadtest pthreadtest uname kill cxxtest synctest python vim stlxtop \
-			reboot shutdown
+			reboot shutdown gfxbench
 APP_COUNT := $(words $(APP_DIRS))
 
 all:
