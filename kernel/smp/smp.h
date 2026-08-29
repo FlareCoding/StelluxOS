@@ -6,14 +6,20 @@
 
 namespace smp {
 
-constexpr uint32_t CPU_OFFLINE = 0;
-constexpr uint32_t CPU_BOOTING = 1;
-constexpr uint32_t CPU_ONLINE  = 2;
+// A wake request cannot be recalled, so a CPU that misses its boot deadline
+// may still start later. CLAIMED and ABANDONED are the two outcomes of the
+// race between the AP taking ownership of its boot memory and the BSP giving
+// up on it, decided by a single compare-exchange so exactly one side wins.
+constexpr uint32_t CPU_OFFLINE   = 0;
+constexpr uint32_t CPU_BOOTING   = 1; // wake sent, AP has not responded yet
+constexpr uint32_t CPU_ONLINE    = 2;
+constexpr uint32_t CPU_CLAIMED   = 3; // AP owns its boot memory, still initializing
+constexpr uint32_t CPU_ABANDONED = 4; // BSP gave up first, AP must not proceed
 
 struct cpu_info {
     uint32_t logical_id;            // 0-based index
     uint64_t hw_id;                 // APIC ID (x86) or MPIDR (aarch64)
-    sync::atomic<uint32_t> state;   // CPU_OFFLINE / CPU_BOOTING / CPU_ONLINE
+    sync::atomic<uint32_t> state;   // CPU_* above
     bool     is_bsp;                // true for the bootstrap processor
 };
 

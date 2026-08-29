@@ -33,7 +33,7 @@ constexpr uint64_t MPIDR_AFF_MASK = 0xFF00FFFFFFULL;
 constexpr uintptr_t AP_STARTUP_DATA_OFFSET = 0x100;
 constexpr uint32_t AP_STACK_PAGES = 4;
 constexpr uint16_t AP_GUARD_PAGES = 1;
-constexpr uint32_t AP_BOOT_TIMEOUT_MS = 200;
+constexpr uint32_t AP_BOOT_TIMEOUT_MS = 400;
 constexpr uint32_t PERCPU_PAGES = 2;
 constexpr size_t CACHE_LINE_SIZE = 64;
 
@@ -162,6 +162,14 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     uintptr_t my_percpu_base = static_cast<uintptr_t>(data->percpu_base);
     uintptr_t my_stack_top = static_cast<uintptr_t>(data->stack_top);
 
+    // Claim before touching the per-CPU area or running any init, so a CPU the
+    // BSP already gave up on parks instead of using memory it no longer owns.
+    smp::cpu_info* info = smp::get_cpu_info(cpu_id);
+    uint32_t claim = smp::CPU_BOOTING;
+    if (!info || !info->state.cmpxchg_strong_acq_rel(claim, smp::CPU_CLAIMED)) {
+        while (true) { asm volatile("wfi"); }
+    }
+
     if (percpu::init_ap(cpu_id, my_percpu_base) != percpu::OK) {
         while (true) { asm volatile("wfi"); }
     }
@@ -175,16 +183,14 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     if (vmm::alloc_stack(AP_STACK_PAGES, AP_GUARD_PAGES,
                          kva::tag::privileged_stack,
                          sys_stack_base, sys_stack_top) != vmm::OK) {
-        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) info->state.store_release(smp::CPU_OFFLINE);
+        info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("wfi"); }
     }
 
     switch_to_el1t(sys_stack_top);
 
     if (sched::init_ap(cpu_id, my_stack_top, sys_stack_top) != 0) {
-        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) info->state.store_release(smp::CPU_OFFLINE);
+        info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("wfi"); }
     }
 
@@ -199,8 +205,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     );
 
     if (clock::init_ap() != clock::OK || timer::init_ap(100) != timer::OK) {
-        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) info->state.store_release(smp::CPU_OFFLINE);
+        info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("wfi"); }
     }
 
@@ -208,7 +213,6 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
         log::warn("ktrace::init failed on AP %u, performance profiling may be degraded", cpu_id);
     }
 
-    smp::cpu_info* info = smp::get_cpu_info(cpu_id);
     info->state.store_release(smp::CPU_ONLINE);
 
     while (true) { cpu::halt(); }
@@ -351,10 +355,25 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
         cpu::relax();
     }
 
-    // AP did not come online, clean up
-    vmm::free(stack_base);
-    vmm::free(percpu_va);
-    return smp::ERR_BOOT_TIMEOUT;
+    // CPU_ON already succeeded, so the deadline expiring does not prove the AP
+    // is dead. Abandon atomically: winning means the AP parks before using
+    // anything, losing means it is alive and owns its memory.
+    uint32_t abandon = smp::CPU_BOOTING;
+    if (cpu.state.cmpxchg_strong_acq_rel(abandon, smp::CPU_ABANDONED)) {
+        // The trampoline already ran on this stack, so both allocations are
+        // leaked rather than handed out again under a CPU that may still run.
+        return smp::ERR_BOOT_TIMEOUT;
+    }
+
+    // The AP claimed after the deadline, so let it finish coming up.
+    start = hwtimer::read_cntpct();
+    while (hwtimer::read_cntpct() - start < timeout_ticks &&
+           cpu.state.load_acquire() == smp::CPU_CLAIMED) {
+        cpu::relax();
+    }
+
+    return cpu.state.load_acquire() == smp::CPU_ONLINE
+        ? smp::OK : smp::ERR_BOOT_TIMEOUT;
 }
 
 } // namespace arch

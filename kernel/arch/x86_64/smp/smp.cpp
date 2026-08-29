@@ -48,7 +48,7 @@ constexpr uint32_t ICR_DEST_SHIFT    = 24;
 // IPI timing
 constexpr uint32_t IPI_INIT_DELAY_MS    = 10;
 constexpr uint32_t IPI_SIPI_DELAY_MS    = 1;
-constexpr uint32_t IPI_TIMEOUT_MS       = 200;
+constexpr uint32_t IPI_TIMEOUT_MS       = 400;
 
 constexpr uint32_t PERCPU_PAGES = 2;
 
@@ -69,6 +69,14 @@ constexpr uint64_t APIC_BASE_BSP_FLAG = (1ULL << 8);
 extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     auto* data = reinterpret_cast<ap_startup_data*>(AP_STARTUP_DATA_PHYS);
     uint32_t cpu_id = static_cast<uint32_t>(logical_id);
+
+    // Claim before touching the per-CPU area or running any init, so a CPU the
+    // BSP already gave up on parks instead of using memory it no longer owns.
+    smp::cpu_info* info = smp::get_cpu_info(cpu_id);
+    uint32_t claim = smp::CPU_BOOTING;
+    if (!info || !info->state.cmpxchg_strong_acq_rel(claim, smp::CPU_CLAIMED)) {
+        while (true) { asm volatile("cli; hlt"); }
+    }
 
     // Per-CPU area first, enables this_cpu() for everything else
     percpu::init_ap(cpu_id, data->percpu_base);
@@ -109,16 +117,12 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     // Common AP Init
     if (sched::init_ap(cpu_id, data->stack_top, sys_stack_top) != sched::OK) {
-        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) {
-            info->state.store_release(smp::CPU_OFFLINE);
-        }
+        info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("cli; hlt"); }
     }
 
     if (clock::init_ap() != clock::OK || timer::init_ap(100) != timer::OK) {
-        smp::cpu_info* info = smp::get_cpu_info(cpu_id);
-        if (info) info->state.store_release(smp::CPU_OFFLINE);
+        info->state.store_release(smp::CPU_OFFLINE);
         while (true) { asm volatile("cli; hlt"); }
     }
 
@@ -126,7 +130,6 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
         log::warn("ktrace::init failed on AP %u, performance profiling may be degraded", cpu_id);
     }
 
-    smp::cpu_info* info = smp::get_cpu_info(cpu_id);
     info->state.store_release(smp::CPU_ONLINE);
 
     while (true) {
@@ -302,10 +305,24 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
         }
     }
 
-    // AP did not come online, clean up both allocations
-    vmm::free(stack_base);
-    vmm::free(percpu_va);
-    return smp::ERR_BOOT_TIMEOUT;
+    // A SIPI cannot be recalled, so the deadline expiring does not prove the AP
+    // is dead. Abandon atomically: winning means the AP parks before using
+    // anything, losing means it is alive and owns its memory.
+    uint32_t abandon = smp::CPU_BOOTING;
+    if (cpu.state.cmpxchg_strong_acq_rel(abandon, smp::CPU_ABANDONED)) {
+        // The trampoline already ran on this stack, so both allocations are
+        // leaked rather than handed out again under a CPU that may still run.
+        return smp::ERR_BOOT_TIMEOUT;
+    }
+
+    // The AP claimed after the deadline, so let it finish coming up.
+    for (uint32_t waited = 0; waited < IPI_TIMEOUT_MS &&
+         cpu.state.load_acquire() == smp::CPU_CLAIMED; waited++) {
+        delay::pit_ms(1);
+    }
+
+    return cpu.state.load_acquire() == smp::CPU_ONLINE
+        ? smp::OK : smp::ERR_BOOT_TIMEOUT;
 }
 
 } // namespace arch
