@@ -1,4 +1,5 @@
 #include <stlxgfx/surface.h>
+#include <stlxgfx/internal/blend.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -330,7 +331,7 @@ int stlxgfx_fill_rounded_rect(stlxgfx_surface_t* s, int32_t x, int32_t y,
 
 static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
                                 uint32_t src_color) {
-    uint8_t sa = (src_color >> 24) & 0xFF;
+    uint32_t sa = (src_color >> 24) & 0xFF;
     if (sa == 0) {
         return;
     }
@@ -340,18 +341,18 @@ static inline void blend_pixel(uint8_t* dst_px, const stlxgfx_surface_t* dst,
         return;
     }
 
-    uint8_t sr = (src_color >> 16) & 0xFF;
-    uint8_t sg = (src_color >>  8) & 0xFF;
-    uint8_t sb =  src_color        & 0xFF;
+    uint32_t sr = (src_color >> 16) & 0xFF;
+    uint32_t sg = (src_color >>  8) & 0xFF;
+    uint32_t sb =  src_color        & 0xFF;
 
-    uint8_t dr = dst_px[dst->red_shift   / 8];
-    uint8_t dg = dst_px[dst->green_shift / 8];
-    uint8_t db = dst_px[dst->blue_shift  / 8];
-    uint8_t inv = 255 - sa;
+    uint8_t rb = dst->red_shift   / 8;
+    uint8_t gb = dst->green_shift / 8;
+    uint8_t bb = dst->blue_shift  / 8;
+    uint32_t inv = 255 - sa;
 
-    dst_px[dst->red_shift   / 8] = (uint8_t)((sr * sa + dr * inv) / 255);
-    dst_px[dst->green_shift / 8] = (uint8_t)((sg * sa + dg * inv) / 255);
-    dst_px[dst->blue_shift  / 8] = (uint8_t)((sb * sa + db * inv) / 255);
+    dst_px[rb] = stlxgfx_blend_channel(dst_px[rb], sr * sa, inv);
+    dst_px[gb] = stlxgfx_blend_channel(dst_px[gb], sg * sa, inv);
+    dst_px[bb] = stlxgfx_blend_channel(dst_px[bb], sb * sa, inv);
     if (dst->bpp == 32)
         dst_px[stlxgfx_alpha_byte_index(dst)] = 0xFF;
 }
@@ -386,12 +387,46 @@ int stlxgfx_fill_rect_blend(stlxgfx_surface_t* s, int32_t x, int32_t y,
         return 0;
     }
 
+    /* Full-screen dim hot path. Packed whole-word blending is what
+     * stays fast under emulation, measured by gfxbench. */
+    uint32_t inv = 255 - (uint32_t)sa;
+    uint32_t spr = ((color >> 16) & 0xFF) * (uint32_t)sa;
+    uint32_t spg = ((color >>  8) & 0xFF) * (uint32_t)sa;
+    uint32_t spb = ( color        & 0xFF) * (uint32_t)sa;
     uint32_t bytes_pp = s->bpp / 8;
+
+    if (bytes_pp == 4) {
+        uint32_t rs = s->red_shift;
+        uint32_t gs = s->green_shift;
+        uint32_t bs = s->blue_shift;
+        uint32_t as = (uint32_t)stlxgfx_alpha_byte_index(s) * 8;
+
+        for (int32_t row = y0; row < y1; row++) {
+            uint32_t* px = (uint32_t*)(void*)(s->pixels
+                         + (uint32_t)row * s->pitch) + (uint32_t)x0;
+            for (int32_t col = x0; col < x1; col++, px++) {
+                uint32_t d = *px;
+                uint32_t r = stlxgfx_div255(spr + ((d >> rs) & 0xFF) * inv);
+                uint32_t g = stlxgfx_div255(spg + ((d >> gs) & 0xFF) * inv);
+                uint32_t b = stlxgfx_div255(spb + ((d >> bs) & 0xFF) * inv);
+                *px = (r << rs) | (g << gs) | (b << bs) | (0xFFu << as);
+            }
+        }
+
+        return 0;
+    }
+
+    uint8_t rb = s->red_shift   / 8;
+    uint8_t gb = s->green_shift / 8;
+    uint8_t bb = s->blue_shift  / 8;
+
     for (int32_t row = y0; row < y1; row++) {
         uint8_t* px = s->pixels + (uint32_t)row * s->pitch
                     + (uint32_t)x0 * bytes_pp;
         for (int32_t col = x0; col < x1; col++, px += bytes_pp) {
-            blend_pixel(px, s, color);
+            px[rb] = stlxgfx_blend_channel(px[rb], spr, inv);
+            px[gb] = stlxgfx_blend_channel(px[gb], spg, inv);
+            px[bb] = stlxgfx_blend_channel(px[bb], spb, inv);
         }
     }
 
@@ -405,7 +440,7 @@ void stlxgfx_blend_coverage(stlxgfx_surface_t* s, int32_t x, int32_t y,
         return;
     }
 
-    uint32_t alpha = (((color >> 24) & 0xFF) * coverage) / 255;
+    uint32_t alpha = stlxgfx_div255(((color >> 24) & 0xFF) * coverage);
     if (alpha == 0) {
         return;
     }
@@ -451,17 +486,41 @@ int stlxgfx_blit_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
         return 0;
     }
 
+    /* Per-pixel source alpha: hoist both surfaces' channel offsets and
+     * read source channels directly, skipping the packed round trip. */
     uint32_t dst_bpp = dst->bpp / 8;
     uint32_t src_bpp = src->bpp / 8;
+    uint8_t s_rb = src->red_shift   / 8;
+    uint8_t s_gb = src->green_shift / 8;
+    uint8_t s_bb = src->blue_shift  / 8;
+    uint8_t s_ab = stlxgfx_alpha_byte_index(src);
+    uint8_t d_rb = dst->red_shift   / 8;
+    uint8_t d_gb = dst->green_shift / 8;
+    uint8_t d_bb = dst->blue_shift  / 8;
+    uint8_t d_ab = stlxgfx_alpha_byte_index(dst);
 
     for (int32_t row = 0; row < sh; row++) {
-        const uint8_t* src_row = src->pixels + ((uint32_t)sy + (uint32_t)row) * src->pitch + (uint32_t)sx * src_bpp;
-        uint8_t* dst_row = dst->pixels + ((uint32_t)dy + (uint32_t)row) * dst->pitch + (uint32_t)dx * dst_bpp;
-        for (int32_t col = 0; col < sw; col++) {
-            uint32_t sc = read_pixel(src_row, src);
-            blend_pixel(dst_row, dst, sc);
-            src_row += src_bpp;
-            dst_row += dst_bpp;
+        const uint8_t* sp = src->pixels + ((uint32_t)sy + (uint32_t)row) * src->pitch + (uint32_t)sx * src_bpp;
+        uint8_t* dp = dst->pixels + ((uint32_t)dy + (uint32_t)row) * dst->pitch + (uint32_t)dx * dst_bpp;
+        for (int32_t col = 0; col < sw; col++, sp += src_bpp, dp += dst_bpp) {
+            uint32_t sa = src_bpp == 4 ? sp[s_ab] : 0xFF;
+            if (sa == 0) {
+                continue;
+            }
+
+            if (sa == 255) {
+                dp[d_rb] = sp[s_rb];
+                dp[d_gb] = sp[s_gb];
+                dp[d_bb] = sp[s_bb];
+            } else {
+                uint32_t inv = 255 - sa;
+                dp[d_rb] = stlxgfx_blend_channel(dp[d_rb], sp[s_rb] * sa, inv);
+                dp[d_gb] = stlxgfx_blend_channel(dp[d_gb], sp[s_gb] * sa, inv);
+                dp[d_bb] = stlxgfx_blend_channel(dp[d_bb], sp[s_bb] * sa, inv);
+            }
+            if (dst_bpp == 4) {
+                dp[d_ab] = 0xFF;
+            }
         }
     }
 
@@ -560,7 +619,7 @@ int stlxgfx_blit_rounded_alpha(stlxgfx_surface_t* dst, int32_t dx, int32_t dy,
 
             if (cov) {
                 uint32_t sc = read_pixel(src_row, src);
-                uint32_t sa = ((sc >> 24) & 0xFF) * cov / 255;
+                uint32_t sa = stlxgfx_div255(((sc >> 24) & 0xFF) * cov);
                 blend_pixel(dst_row, dst,
                             (sa << 24) | (sc & 0x00FFFFFF));
             }

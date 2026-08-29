@@ -1,4 +1,5 @@
 #include <stlxgfx/font.h>
+#include <stlxgfx/internal/blend.h>
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -175,35 +176,31 @@ void stlxgfx_font_cleanup(void) {
     g_font_loaded = 0;
 }
 
-static inline void alpha_blend_pixel(uint8_t* pixel, const stlxgfx_surface_t* s,
-                                     uint32_t color, uint8_t alpha) {
+/* Glyph coverage blend with the channel offsets hoisted by the caller,
+ * since they are loop-invariant across a whole text run. */
+static inline void alpha_blend_pixel(uint8_t* pixel, uint8_t rb, uint8_t gb,
+                                     uint8_t bb, uint8_t ab, int has_alpha,
+                                     uint32_t src_r, uint32_t src_g,
+                                     uint32_t src_b, uint8_t alpha) {
     if (alpha == 0) {
         return;
     }
 
-    uint8_t src_r = (color >> 16) & 0xFF;
-    uint8_t src_g = (color >>  8) & 0xFF;
-    uint8_t src_b =  color        & 0xFF;
-
     if (alpha == 255) {
-        pixel[s->red_shift   / 8] = src_r;
-        pixel[s->green_shift / 8] = src_g;
-        pixel[s->blue_shift  / 8] = src_b;
-        if (s->bpp / 8 == 4)
-            pixel[stlxgfx_alpha_byte_index(s)] = 0xFF;
+        pixel[rb] = (uint8_t)src_r;
+        pixel[gb] = (uint8_t)src_g;
+        pixel[bb] = (uint8_t)src_b;
+        if (has_alpha)
+            pixel[ab] = 0xFF;
         return;
     }
 
-    uint8_t dst_r = pixel[s->red_shift   / 8];
-    uint8_t dst_g = pixel[s->green_shift / 8];
-    uint8_t dst_b = pixel[s->blue_shift  / 8];
-    uint8_t inv = 255 - alpha;
-
-    pixel[s->red_shift   / 8] = (uint8_t)((src_r * alpha + dst_r * inv) / 255);
-    pixel[s->green_shift / 8] = (uint8_t)((src_g * alpha + dst_g * inv) / 255);
-    pixel[s->blue_shift  / 8] = (uint8_t)((src_b * alpha + dst_b * inv) / 255);
-    if (s->bpp / 8 == 4)
-        pixel[stlxgfx_alpha_byte_index(s)] = 0xFF;
+    uint32_t inv = 255 - alpha;
+    pixel[rb] = stlxgfx_blend_channel(pixel[rb], src_r * alpha, inv);
+    pixel[gb] = stlxgfx_blend_channel(pixel[gb], src_g * alpha, inv);
+    pixel[bb] = stlxgfx_blend_channel(pixel[bb], src_b * alpha, inv);
+    if (has_alpha)
+        pixel[ab] = 0xFF;
 }
 
 static int draw_text_internal(stlxgfx_surface_t* s, int32_t x, int32_t y,
@@ -218,6 +215,16 @@ static int draw_text_internal(stlxgfx_surface_t* s, int32_t x, int32_t y,
 
     int32_t current_x = x;
     uint32_t bytes_pp = s->bpp / 8;
+
+    /* Channel layout and color are invariant across the run */
+    uint8_t rb = s->red_shift   / 8;
+    uint8_t gb = s->green_shift / 8;
+    uint8_t bb = s->blue_shift  / 8;
+    uint8_t ab = stlxgfx_alpha_byte_index(s);
+    int has_alpha = bytes_pp == 4;
+    uint32_t src_r = (color >> 16) & 0xFF;
+    uint32_t src_g = (color >>  8) & 0xFF;
+    uint32_t src_b =  color        & 0xFF;
 
     for (int i = 0; text[i]; i++) {
         int codepoint = (unsigned char)text[i];
@@ -255,7 +262,8 @@ static int draw_text_internal(stlxgfx_surface_t* s, int32_t x, int32_t y,
                     if (coverage > 0) {
                         uint8_t* pixel = s->pixels + (uint32_t)sy * s->pitch
                                        + (uint32_t)sx * bytes_pp;
-                        alpha_blend_pixel(pixel, s, color, coverage);
+                        alpha_blend_pixel(pixel, rb, gb, bb, ab, has_alpha,
+                                          src_r, src_g, src_b, coverage);
                     }
                 }
             }
