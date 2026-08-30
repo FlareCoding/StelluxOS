@@ -4,8 +4,10 @@
  */
 #include <stlxwin/stlxwin.h>
 
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 static void paint_colored(stlxwin_buffer* buf, uint32_t a, uint32_t b) {
     for (uint32_t y = 0; y < buf->height; y++) {
@@ -73,6 +75,14 @@ int main(void) {
             }
             case STLXWIN_EVT_KEY_DOWN:
             case STLXWIN_EVT_KEY_REPEAT:
+                /* s stalls the client to exercise outbound queueing */
+                if (ev.key.ch == 's') {
+                    printf("windemo: stalling 3s\r\n");
+                    struct timespec ts = { 3, 0 };
+                    nanosleep(&ts, NULL);
+                    printf("windemo: awake\r\n");
+                    break;
+                }
                 /* w maps a second overlapping window, p opens a
                  * grabbing popup on the first window */
                 if (ev.key.ch == 'w' && !win2) {
