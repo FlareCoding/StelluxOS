@@ -94,5 +94,8 @@ int main() {
             srv.compose_tick();
             last_compose_ns = now;
         }
+
+        /* Everything this wakeup staged leaves before the next sleep */
+        srv.flush_events();
     }
 }

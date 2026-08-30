@@ -13,6 +13,10 @@
 #include <memory>
 #include <vector>
 
+/* Staged event records per window, flushed as one EVENT message per
+ * wakeup. A full batch flushes early. */
+constexpr uint32_t DM_EV_BATCH_MAX = 16;
+
 /* One attached shared-memory buffer, mapped for the window's lifetime
  * or until the client detaches it. */
 struct dm_buffer {
@@ -58,6 +62,9 @@ struct dm_window {
     static constexpr uint32_t SENT_CONF_MAX = 8;
     dm_sent_conf sent_confs[SENT_CONF_MAX];
     uint32_t sent_conf_count = 0;
+
+    swp_event_rec ev_batch[DM_EV_BATCH_MAX];
+    uint32_t ev_batch_count = 0;
 
     /* Damage carried by the pending commit, buffer coordinates.
      * Zero rects means the whole buffer changed. */
@@ -112,6 +119,10 @@ public:
      * Runs at the paced tick. */
     void compose_tick();
 
+    /* Flushes every window's staged event batch. Call once per poll
+     * wakeup after input, protocol, and compose work. */
+    void flush_events();
+
     /* Input routing entry points, fed by the input layer. */
     void route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                    bool repeat);
@@ -140,7 +151,7 @@ private:
     void drop_client(dm_client& c);
     bool send_to(dm_client& c, uint16_t type,
                  const void* payload, uint32_t length);
-    void send_motion(dm_client& c, dm_window* w, const swp_event_rec& rec);
+    void flush_window_events(dm_client& c, dm_window& w);
     void flush_client(dm_client& c);
 
     /* events.cpp */

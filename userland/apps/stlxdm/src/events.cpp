@@ -135,18 +135,17 @@ dm_window* server::window_at(int32_t x, int32_t y, decor::zone* out_zone) {
     return nullptr;
 }
 
+/* Events stage on the window and leave as one message per wakeup */
 void server::send_event(dm_window* w, const swp_event_rec& rec) {
-    dm_client* c = window_owner(w);
-    if (!c) {
-        return;
+    if (w->ev_batch_count == DM_EV_BATCH_MAX) {
+        dm_client* c = window_owner(w);
+        if (!c) {
+            return;
+        }
+        flush_window_events(*c, *w);
     }
 
-    struct {
-        swp_event_prefix prefix;
-        swp_event_rec rec;
-    } msg = { { w->win_id, 1 }, rec };
-
-    send_to(*c, SWP_MSG_EVENT, &msg, sizeof(msg));
+    w->ev_batch[w->ev_batch_count++] = rec;
 }
 
 void server::set_focus(dm_window* w) {
@@ -487,10 +486,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
     if (changed == 0 && wheel == 0) {
         rec.kind = SWP_EV_MOTION;
-        dm_client* owner = window_owner(target);
-        if (owner) {
-            send_motion(*owner, target, rec);
-        }
+        send_event(target, rec);
         return;
     }
 

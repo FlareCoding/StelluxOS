@@ -315,36 +315,79 @@ bool server::send_to(dm_client& c, uint16_t type,
     return true;
 }
 
-/* Motion events coalesce in place when the queue tail is already a
- * motion for the same window, so a stalled client sees the latest
- * position instead of a flood. */
-void server::send_motion(dm_client& c, dm_window* w,
-                         const swp_event_rec& rec) {
-    if (!c.out_q.empty() && c.q_motion_off != SIZE_MAX &&
-        c.q_motion_win == w->win_id) {
-        memcpy(c.out_q.data() + c.q_motion_off +
-                   sizeof(swp_header) + sizeof(swp_event_prefix),
-               &rec, sizeof(rec));
+/* Flush one window's staged records as a single EVENT message. Under
+ * queue pressure the batch keeps only its newest motion, and a lone
+ * motion overwrites the queued one in place, so a stalled client sees
+ * the latest position without the queue growing. */
+void server::flush_window_events(dm_client& c, dm_window& w) {
+    if (w.ev_batch_count == 0 || c.dead) {
+        w.ev_batch_count = 0;
         return;
     }
 
-    size_t off = c.out_q.size();
+    if (!c.out_q.empty()) {
+        int32_t last_motion = -1;
+        for (uint32_t i = 0; i < w.ev_batch_count; i++) {
+            if (w.ev_batch[i].kind == SWP_EV_MOTION) {
+                last_motion = static_cast<int32_t>(i);
+            }
+        }
+
+        uint32_t keep = 0;
+        for (uint32_t i = 0; i < w.ev_batch_count; i++) {
+            if (w.ev_batch[i].kind == SWP_EV_MOTION &&
+                static_cast<int32_t>(i) != last_motion) {
+                continue;
+            }
+            w.ev_batch[keep++] = w.ev_batch[i];
+        }
+        w.ev_batch_count = keep;
+
+        if (w.ev_batch_count == 1 &&
+            w.ev_batch[0].kind == SWP_EV_MOTION &&
+            c.q_motion_off != SIZE_MAX && c.q_motion_win == w.win_id) {
+            memcpy(c.out_q.data() + c.q_motion_off +
+                       sizeof(swp_header) + sizeof(swp_event_prefix),
+                   &w.ev_batch[0], sizeof(swp_event_rec));
+            w.ev_batch_count = 0;
+            return;
+        }
+    }
+
     struct {
         swp_event_prefix prefix;
-        swp_event_rec rec;
-    } msg = { { w->win_id, 1 }, rec };
+        swp_event_rec recs[DM_EV_BATCH_MAX];
+    } msg;
+    msg.prefix = { w.win_id, w.ev_batch_count };
+    memcpy(msg.recs, w.ev_batch,
+           w.ev_batch_count * sizeof(swp_event_rec));
+    uint32_t length = static_cast<uint32_t>(
+        sizeof(swp_event_prefix) +
+        w.ev_batch_count * sizeof(swp_event_rec));
 
-    bool was_empty = c.out_q.empty();
-    if (!send_to(c, SWP_MSG_EVENT, &msg, sizeof(msg))) {
+    size_t off = c.out_q.size();
+    bool lone_motion = w.ev_batch_count == 1 &&
+                       w.ev_batch[0].kind == SWP_EV_MOTION;
+    w.ev_batch_count = 0;
+    if (!send_to(c, SWP_MSG_EVENT, &msg, length)) {
         return;
     }
 
-    /* The marker is valid only when the whole message was queued */
-    if (!was_empty || !c.out_q.empty()) {
-        if (c.out_q.size() >= sizeof(swp_header) + sizeof(msg) &&
-            c.out_q.size() - off == sizeof(swp_header) + sizeof(msg)) {
-            c.q_motion_off = off;
-            c.q_motion_win = w->win_id;
+    /* The coalesce marker is valid only when a whole lone-motion
+     * message sits in the queue */
+    if (lone_motion && c.out_q.size() > off &&
+        c.out_q.size() - off == sizeof(swp_header) + length) {
+        c.q_motion_off = off;
+        c.q_motion_win = w.win_id;
+    }
+}
+
+/* Cross-window delivery order within one wakeup is unspecified, only
+ * per-window order is promised. */
+void server::flush_events() {
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            flush_window_events(*c, *w);
         }
     }
 }
