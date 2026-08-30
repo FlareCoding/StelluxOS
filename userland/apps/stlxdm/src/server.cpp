@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -145,6 +146,24 @@ int server::init(presenter* pres, const stlxconf_t* conf) {
     m_presenter = pres;
     m_conf = conf;
 
+    if (m_cursor.init() != 0) {
+        return -1;
+    }
+
+    if (apply_config() != 0) {
+        return -1;
+    }
+
+    m_cursor_x = static_cast<int32_t>(pres->width()) / 2;
+    m_cursor_y = static_cast<int32_t>(pres->height()) / 2;
+
+    /* The first tick paints the whole desktop over the boot contents */
+    m_damage.add_full();
+
+    return 0;
+}
+
+int server::serve() {
     m_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (m_listen_fd < 0) {
         return -1;
@@ -166,14 +185,6 @@ int server::init(presenter* pres, const stlxconf_t* conf) {
 
     fcntl(m_listen_fd, F_SETFL, O_NONBLOCK);
 
-    if (m_cursor.init() != 0) {
-        return -1;
-    }
-
-    if (apply_config() != 0) {
-        return -1;
-    }
-
     /* The config's autostart entries, or a lone terminal without any */
     if (m_conf->autostart_count > 0) {
         for (uint32_t i = 0; i < m_conf->autostart_count; i++) {
@@ -182,12 +193,6 @@ int server::init(presenter* pres, const stlxconf_t* conf) {
     } else {
         spawn_app("/bin/stlxterm", nullptr);
     }
-
-    m_cursor_x = static_cast<int32_t>(pres->width()) / 2;
-    m_cursor_y = static_cast<int32_t>(pres->height()) / 2;
-
-    /* The first tick paints the whole desktop over the boot contents */
-    m_damage.add_full();
 
     return 0;
 }
