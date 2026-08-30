@@ -41,6 +41,8 @@ static const char* const PAGE_BLURBS[PAGE_COUNT] = {
     "Programs and shortcuts at session start",
 };
 
+namespace {
+
 /* One nav rail entry: a rounded row with an accent bar when selected */
 class nav_item : public ui::widget {
 public:
@@ -135,6 +137,8 @@ struct app_state {
     uint32_t active_page = 0;
     bool dirty = false;
 };
+
+} // namespace
 
 static app_state g_st;
 

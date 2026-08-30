@@ -150,9 +150,11 @@ int server::init(presenter* pres, const stlxconf_t* conf) {
         return -1;
     }
 
-    if (apply_config() != 0) {
+    dm_conf_state state;
+    if (build_conf_state(state) != 0) {
         return -1;
     }
+    adopt_conf_state(std::move(state));
 
     m_cursor_x = static_cast<int32_t>(pres->width()) / 2;
     m_cursor_y = static_cast<int32_t>(pres->height()) / 2;
@@ -197,25 +199,28 @@ int server::serve() {
     return 0;
 }
 
-/* Builds every config-derived piece: panels, power, the wallpaper,
- * and the hotkey table. Runs at startup and again on reload. */
-int server::apply_config() {
-    if (m_panels.init(m_presenter->width(), m_presenter->height(),
-                      *m_conf) != 0) {
+/* Builds every config-derived piece into fresh objects: panels,
+ * power, the wallpaper, and the hotkey table. Nothing running is
+ * touched, so a failure leaves no trace. */
+int server::build_conf_state(dm_conf_state& out) {
+    out.panels = std::make_unique<dm_panels>();
+    out.power = std::make_unique<dm_power>();
+
+    if (out.panels->init(m_presenter->width(), m_presenter->height(),
+                         *m_conf) != 0 ||
+        out.power->init(m_presenter->width(), m_presenter->height(),
+                        m_conf->taskbar_height) != 0) {
+        out.panels->shutdown();
+        out.power->shutdown();
         return -1;
     }
 
-    if (m_power.init(m_presenter->width(), m_presenter->height(),
-                     m_conf->taskbar_height) != 0) {
-        return -1;
-    }
-
-    m_panels.on_launch = [](const char* path) {
+    out.panels->on_launch = [](const char* path) {
         spawn_app(path, nullptr);
     };
 
-    m_wallpaper = load_wallpaper(*m_conf, m_presenter->width(),
-                                 m_presenter->height());
+    out.wallpaper = load_wallpaper(*m_conf, m_presenter->width(),
+                                   m_presenter->height());
 
     /* Exec shortcuts with parseable chords become live hotkeys */
     for (uint32_t i = 0; i < m_conf->shortcut_count; i++) {
@@ -227,23 +232,38 @@ int server::apply_config() {
         dm_hotkey hk;
         if (parse_hotkey(sc.key, &hk.mods, &hk.usage)) {
             hk.path = sc.path;
-            m_hotkeys.push_back(hk);
+            out.hotkeys.push_back(hk);
         }
     }
 
     return 0;
 }
 
-void server::reload_config() {
-    m_panels.shutdown();
-    m_power.shutdown();
-    stlxgfx_destroy_surface(m_wallpaper);
-    m_wallpaper = nullptr;
-    m_hotkeys.clear();
-
-    if (apply_config() != 0) {
-        printf("stlxdm: config reload failed, desktop degraded\r\n");
+/* Retires the running config state and moves the built one in */
+void server::adopt_conf_state(dm_conf_state&& next) {
+    if (m_panels) {
+        m_panels->shutdown();
     }
+    if (m_power) {
+        m_power->shutdown();
+    }
+    stlxgfx_destroy_surface(m_wallpaper);
+
+    m_panels = std::move(next.panels);
+    m_power = std::move(next.power);
+    m_wallpaper = next.wallpaper;
+    m_hotkeys = std::move(next.hotkeys);
+    next.wallpaper = nullptr;
+}
+
+void server::reload_config() {
+    dm_conf_state state;
+    if (build_conf_state(state) != 0) {
+        printf("stlxdm: config reload failed, keeping the running desktop\r\n");
+        return;
+    }
+
+    adopt_conf_state(std::move(state));
 
     m_damage.add_full();
     printf("stlxdm: config reloaded\r\n");
@@ -257,8 +277,12 @@ void server::shutdown() {
 
     stlxgfx_destroy_surface(m_wallpaper);
     m_wallpaper = nullptr;
-    m_power.shutdown();
-    m_panels.shutdown();
+    if (m_power) {
+        m_power->shutdown();
+    }
+    if (m_panels) {
+        m_panels->shutdown();
+    }
 
     if (m_listen_fd >= 0) {
         close(m_listen_fd);

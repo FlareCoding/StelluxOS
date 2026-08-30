@@ -28,6 +28,15 @@ struct dm_hotkey {
     const char* path = nullptr;
 };
 
+/* Config-derived state built as a unit and adopted only when every
+ * piece came up, so a failed reload keeps the running desktop */
+struct dm_conf_state {
+    std::unique_ptr<dm_panels> panels;
+    std::unique_ptr<dm_power> power;
+    stlxgfx_surface_t* wallpaper = nullptr;
+    std::vector<dm_hotkey> hotkeys;
+};
+
 /* One attached shared-memory buffer, mapped for the window's lifetime
  * or until the client detaches it. */
 struct dm_buffer {
@@ -137,19 +146,19 @@ public:
      * running overlay animation wait for the paced tick. */
     bool compose_pending() const {
         return !m_damage.empty() || has_latch_work() ||
-               has_configure_work() || m_panels.dirty() ||
-               m_power.animating();
+               has_configure_work() || m_panels->dirty() ||
+               m_power->animating();
     }
 
     /* The bar clock's poll bound and tick, frozen while the overlay
      * dims the desktop. */
     int64_t clock_timeout_ns(uint64_t now_ns) const {
-        return m_power.active() ? -1
-                                : m_panels.clock_timeout_ns(now_ns);
+        return m_power->active() ? -1
+                                 : m_panels->clock_timeout_ns(now_ns);
     }
     void clock_tick() {
-        if (!m_power.active()) {
-            m_panels.clock_tick();
+        if (!m_power->active()) {
+            m_panels->clock_tick();
         }
     }
 
@@ -189,7 +198,8 @@ private:
 
     void drop_client(dm_client& c);
     void spawn_shortcut(const char* path);
-    int apply_config();
+    int build_conf_state(dm_conf_state& out);
+    void adopt_conf_state(dm_conf_state&& next);
     bool send_to(dm_client& c, uint16_t type,
                  const void* payload, uint32_t length);
     void flush_window_events(dm_client& c, dm_window& w);
@@ -244,10 +254,10 @@ private:
     dm_window* m_focus_restore = nullptr;
 
     /* The compositor's own widget trees in the background band */
-    dm_panels m_panels;
+    std::unique_ptr<dm_panels> m_panels;
 
     /* The power overlay and its dock star */
-    dm_power m_power;
+    std::unique_ptr<dm_power> m_power;
     bool m_power_was_active = false;
 
     /* The pointer sprite: position, active shape, damage on change */
