@@ -2,6 +2,7 @@
 #include "server.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <poll.h>
 #include <vector>
 
@@ -11,6 +12,15 @@ int main() {
     screen scr;
     if (scr.init() != 0) {
         printf("stlxdm: no framebuffer, exiting\r\n");
+        return 1;
+    }
+
+    /* Composition happens here, never in the scanout mapping */
+    uint8_t* backbuffer =
+        static_cast<uint8_t*>(malloc((size_t)scr.width * scr.height * 4));
+    if (!backbuffer) {
+        printf("stlxdm: backbuffer allocation failed\r\n");
+        scr.shutdown();
         return 1;
     }
 
@@ -34,5 +44,6 @@ int main() {
         }
 
         srv.pump(fds);
+        srv.present(scr, backbuffer);
     }
 }

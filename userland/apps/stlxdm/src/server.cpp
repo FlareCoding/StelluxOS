@@ -165,26 +165,58 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
 
     switch (hdr.type) {
     case SWP_MSG_CREATE_WINDOW:
+        if (hdr.length == sizeof(swp_create_window)) {
+            handle_create_window(c, payload);
+            return;
+        }
+        break;
     case SWP_MSG_DESTROY_WINDOW:
+        if (hdr.length == sizeof(swp_destroy_window)) {
+            handle_destroy_window(c, payload);
+            return;
+        }
+        break;
     case SWP_MSG_SET_WINDOW:
+        if (hdr.length == sizeof(swp_set_window)) {
+            handle_set_window(c, payload);
+            return;
+        }
+        break;
     case SWP_MSG_ATTACH_BUFFER:
+        if (hdr.length == sizeof(swp_attach_buffer)) {
+            handle_attach_buffer(c, payload);
+            return;
+        }
+        break;
     case SWP_MSG_DETACH_BUFFER:
+        if (hdr.length == sizeof(swp_detach_buffer)) {
+            handle_detach_buffer(c, payload);
+            return;
+        }
+        break;
     case SWP_MSG_COMMIT:
+        if (hdr.length == sizeof(swp_commit)) {
+            handle_commit(c, payload);
+            return;
+        }
+        break;
     case SWP_MSG_CLIPBOARD_SET:
     case SWP_MSG_CLIPBOARD_GET:
     case SWP_MSG_CAPTURE:
-        /* Window, buffer, and clipboard handling land in later units */
-        printf("stlxdm: message 0x%x from %s not handled yet\r\n",
-               hdr.type, c.app_id);
+        /* Clipboard and capture land with the input unit */
         return;
     default:
-        c.dead = true;
-        return;
+        break;
     }
+
+    c.dead = true;
 }
 
 void server::drop_client(dm_client& c) {
-    /* Window and buffer teardown attach here in later units */
+    while (!c.windows.empty()) {
+        destroy_window_tree(c, c.windows.back()->win_id);
+    }
+
     close(c.fd);
     c.fd = -1;
 }
