@@ -260,6 +260,7 @@ protected:
     point m_scroll;
 
     friend class host;
+    friend class menu;
 };
 
 /* Built in widgets, the v1 set */
@@ -431,6 +432,12 @@ public:
     /** @brief Runs layout and repaint if anything is dirty. */
     virtual void flush() = 0;
 
+    /**
+     * @brief The protocol window behind this host, when one exists.
+     * Menus require it, embedder hosts return NULL.
+     */
+    virtual stlxwin_window* protocol_window() const { return nullptr; }
+
 protected:
     /* Layout, paint, and input plumbing shared by every host kind,
      * implemented by the toolkit core. paint_tree binds the painter
@@ -478,9 +485,11 @@ public:
 
     void flush() override;
     stlxwin_window* window() const { return m_win; }
+    stlxwin_window* protocol_window() const override { return m_win; }
 
 private:
     friend class app;
+    friend class menu;
     explicit window_host(class app& a);
 
     class app* m_app = nullptr;
@@ -557,6 +566,14 @@ private:
 
     stlxwin_conn* m_conn = nullptr;
     std::vector<std::unique_ptr<window_host>> m_hosts;
+
+    /* The one open menu. Closing marks retirement, and the loop
+     * erases the host only after dispatch unwinds, since selection
+     * runs inside the very host being closed. */
+    window_host* m_menu_host = nullptr;
+    bool m_menu_retire = false;
+    std::function<void()> m_menu_after_close;
+
     std::vector<fd_watch> m_watches;
     std::vector<timer> m_timers;
     uint64_t m_next_timer_id = 1;

@@ -188,6 +188,13 @@ int app::run() {
                 }
                 break;
             }
+            case STLXWIN_EVT_POPUP_DISMISSED:
+                /* The compositor already destroyed the popup on an
+                 * outside press, only the host remains to retire */
+                if (m_menu_host) {
+                    m_menu_retire = true;
+                }
+                break;
             case STLXWIN_EVT_DISCONNECTED:
                 quit(1);
                 break;
@@ -197,6 +204,27 @@ int app::run() {
 
             if (!m_running) {
                 break;
+            }
+        }
+
+        /* Menu retirement happens between dispatch and the callback,
+         * so selection may safely open the next menu */
+        if (m_menu_retire) {
+            window_host* dead = m_menu_host;
+            m_menu_host = nullptr;
+            m_menu_retire = false;
+
+            for (size_t i = 0; i < m_hosts.size(); i++) {
+                if (m_hosts[i].get() == dead) {
+                    m_hosts.erase(m_hosts.begin() + static_cast<long>(i));
+                    break;
+                }
+            }
+
+            std::function<void()> after = std::move(m_menu_after_close);
+            m_menu_after_close = nullptr;
+            if (after) {
+                after();
             }
         }
 
