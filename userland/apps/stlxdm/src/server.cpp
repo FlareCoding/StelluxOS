@@ -234,7 +234,7 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
     }
     case SWP_MSG_CLIPBOARD_GET: {
         uint8_t reply[sizeof(swp_clipboard_data) + SWP_CLIPBOARD_MAX];
-        swp_clipboard_data prefix = { (uint32_t)m_clipboard.size() };
+        swp_clipboard_data prefix = { static_cast<uint32_t>(m_clipboard.size()) };
         memcpy(reply, &prefix, sizeof(prefix));
         if (!m_clipboard.empty()) {
             memcpy(reply + sizeof(prefix), m_clipboard.data(),
@@ -242,7 +242,7 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
         }
 
         send_to(c, SWP_MSG_CLIPBOARD_DATA, reply,
-                (uint32_t)(sizeof(prefix) + m_clipboard.size()));
+                static_cast<uint32_t>(sizeof(prefix) + m_clipboard.size()));
         return;
     }
     case SWP_MSG_CAPTURE:
@@ -265,11 +265,7 @@ void server::drop_client(dm_client& c) {
     c.fd = -1;
 }
 
-namespace {
-
 constexpr size_t OUT_Q_LIMIT = 64 * 1024;
-
-} // namespace
 
 /* Nonblocking send that queues whatever the socket refuses. Overflow
  * means the client stopped reading long ago and it is disconnected. */
