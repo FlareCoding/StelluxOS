@@ -84,7 +84,8 @@ void input::pump_mouse(server& srv) {
 }
 
 int64_t input::repeat_timeout_ns(uint64_t now_ns) const {
-    if (m_held_usage == 0 || m_repeat_delay_ns == 0) {
+    if (m_held_usage == 0 || m_repeat_delay_ns == 0 ||
+        m_repeat_interval_ns == 0) {
         return -1;
     }
 
@@ -96,8 +97,11 @@ int64_t input::repeat_timeout_ns(uint64_t now_ns) const {
     return deadline > now_ns ? static_cast<int64_t>(deadline - now_ns) : 0;
 }
 
+/* A zero interval would never advance the catch-up loop, so it
+ * disables repeat the same way a zero delay does */
 void input::pump_repeat(server& srv, uint64_t now_ns) {
-    if (m_held_usage == 0 || m_repeat_delay_ns == 0) {
+    if (m_held_usage == 0 || m_repeat_delay_ns == 0 ||
+        m_repeat_interval_ns == 0) {
         return;
     }
 
