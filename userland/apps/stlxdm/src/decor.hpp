@@ -58,10 +58,10 @@ damage_list::rect bounds(const dm_window& w);
  * zones exist only for resizable decorated windows. */
 zone hit(const dm_window& w, int32_t x, int32_t y);
 
-/* Draws the chrome around the content area, clipped by the caller's
- * compose rect. */
+/* Draws the chrome around the content area, clipped to one compose
+ * rect so lower chrome never overpaints higher windows. */
 void draw(stlxgfx_surface_t* back, const dm_window& w, bool focused,
-          bool close_hover);
+          bool close_hover, const damage_list::rect& clip);
 
 /* Draws the interactive-resize rubber band. */
 void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r);

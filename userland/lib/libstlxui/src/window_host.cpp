@@ -29,20 +29,24 @@ void window_host::flush() {
         return;
     }
 
-    /* A size change repaints everything since the fresh buffer has
-     * unknown content. Otherwise layout runs unconditionally, and
-     * unchanged geometry produces no damage at all. */
+    /* A size change or a never seen slot repaints everything, since
+     * fresh buffers hold nothing at all. Otherwise layout runs
+     * unconditionally and unchanged geometry produces no damage. */
     bool resized = buf->width != m_last_w || buf->height != m_last_h;
-    layout_tree({ static_cast<int32_t>(buf->width),
-                  static_cast<int32_t>(buf->height) });
     if (resized) {
-        m_root->invalidate();
-        m_last_damage.clear();
+        m_grounded[0] = nullptr;
+        m_grounded[1] = nullptr;
     }
 
-    /* The other slot of the pair missed the previous frame, so its
-     * regions rejoin this frame's damage and repaint */
-    if (!resized && buf->pixels != m_last_pixels) {
+    bool fresh = buf->pixels != m_grounded[0] &&
+                 buf->pixels != m_grounded[1];
+    layout_tree({ static_cast<int32_t>(buf->width),
+                  static_cast<int32_t>(buf->height) });
+    if (resized || fresh) {
+        m_root->invalidate();
+        m_last_damage.clear();
+    } else if (buf->pixels != m_last_pixels) {
+        /* The other grounded slot missed exactly the previous frame */
         invalidate_rects(m_last_damage);
     }
 
@@ -88,6 +92,10 @@ void window_host::flush() {
     m_last_w = buf->width;
     m_last_h = buf->height;
     m_last_damage = damage;
+
+    if (buf->pixels != m_grounded[0] && buf->pixels != m_grounded[1]) {
+        m_grounded[m_grounded[0] ? 1 : 0] = buf->pixels;
+    }
 }
 
 } // namespace ui
