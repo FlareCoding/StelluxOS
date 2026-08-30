@@ -59,12 +59,6 @@ void stlxgfx_ctx_fill_arc_corner(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
                                   uint32_t r_outer, uint32_t r_inner,
                                   int dir_x, int dir_y, int invert,
                                   uint32_t color);
-void stlxgfx_ctx_draw_text(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
-                            const char *text, uint32_t font_size,
-                            uint32_t color);
-void stlxgfx_ctx_text_size(const char *text, uint32_t font_size,
-                            uint32_t *out_w, uint32_t *out_h);
-
 void stlxgfx_ctx_blit(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
                        const stlxgfx_surface_t *src, int32_t sx, int32_t sy,
                        uint32_t w, uint32_t h);

@@ -2,6 +2,15 @@
  * with metrics and per-face tables computed once at open, backed by
  * a process wide atlas of rasterized glyph coverage.
  */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stlxgfx/internal/stb_truetype.h>
+#undef STB_TRUETYPE_IMPLEMENTATION
+#pragma GCC diagnostic pop
+
 #include <stlxgfx/internal/blend.h>
 #include <stlxgfx/internal/text.h>
 

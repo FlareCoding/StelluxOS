@@ -3,6 +3,8 @@
 
 #include <stlxgfx/font.h>
 
+#include <cstring>
+
 constexpr uint32_t TITLE_BG_FOCUSED   = 0xFF313244;
 constexpr uint32_t TITLE_BG_UNFOCUSED = 0xFF1E1E2E;
 constexpr uint32_t TITLE_FG_FOCUSED   = 0xFFBAC2DE;
@@ -15,6 +17,10 @@ constexpr uint32_t CLOSE_FG           = 0xFFBAC2DE;
 constexpr uint32_t TITLE_FONT_SIZE    = 13;
 constexpr uint32_t OUTLINE_COLOR      = 0xFF89B4FA;
 
+/* The chrome face at the title size, opened once at startup */
+static stlxgfx_font* g_font = nullptr;
+static stlxgfx_font_metrics g_fm = {};
+
 static const dm_buffer* current_buffer(const dm_window& w) {
     if (w.current < 0) {
         return nullptr;
@@ -24,6 +30,16 @@ static const dm_buffer* current_buffer(const dm_window& w) {
 }
 
 namespace decor {
+
+int init() {
+    g_font = stlxgfx_font_open(STLXGFX_FONT_PATH, TITLE_FONT_SIZE);
+    if (!g_font) {
+        return -1;
+    }
+
+    stlxgfx_font_metrics_get(g_font, &g_fm);
+    return 0;
+}
 
 bool decorated(const dm_window& w) {
     return (w.flags & SWP_WF_BORDERLESS) == 0;
@@ -136,8 +152,9 @@ void draw(stlxgfx_surface_t* back, const dm_window& w, bool focused,
     stlxgfx_fill_rect(back, w.x, w.y - TITLE_H + BORDER,
                       static_cast<uint32_t>(bw), static_cast<uint32_t>(TITLE_H - BORDER),
                       title_bg);
-    stlxgfx_draw_text_topleft(back, w.x + 10, w.y - TITLE_H + 7,
-                      w.title, TITLE_FONT_SIZE, title_fg);
+    stlxgfx_draw_text(back, g_font, w.x + 10,
+                      w.y - TITLE_H + 7 + g_fm.ascent,
+                      w.title, strlen(w.title), title_fg);
 
     if (focused) {
         int32_t ccx = w.x + bw - CLOSE_MARGIN;
@@ -145,12 +162,12 @@ void draw(stlxgfx_surface_t* back, const dm_window& w, bool focused,
         stlxgfx_fill_circle(back, ccx, ccy, static_cast<uint32_t>(CLOSE_R),
                             close_hover ? CLOSE_BG_HOVER : CLOSE_BG);
 
-        uint32_t xw = 0;
-        uint32_t xh = 0;
-        stlxgfx_text_size("x", TITLE_FONT_SIZE, &xw, &xh);
-        stlxgfx_draw_text_topleft(back, ccx - static_cast<int32_t>(xw) / 2,
-                          ccy - static_cast<int32_t>(xh) / 2, "x", TITLE_FONT_SIZE,
-                          CLOSE_FG);
+        /* The glyph centers on the circle: horizontally by advance,
+         * vertically by the face's ink box around the baseline */
+        int32_t xw = stlxgfx_text_width(g_font, "x", 1);
+        int32_t xh = g_fm.ascent + g_fm.descent;
+        stlxgfx_draw_text(back, g_font, ccx - xw / 2,
+                          ccy - xh / 2 + g_fm.ascent, "x", 1, CLOSE_FG);
     }
 }
 
