@@ -36,6 +36,8 @@ private:
     cursor_sprite m_ibeam;
     cursor_sprite m_resize_h;
     cursor_sprite m_resize_v;
+    cursor_sprite m_resize_nwse;
+    cursor_sprite m_resize_nesw;
 
     const cursor_sprite* sprite_for(uint32_t shape) const;
 };

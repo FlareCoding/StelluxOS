@@ -99,6 +99,30 @@ static stlxgfx_surface_t* build_resize(bool horizontal) {
     return s;
 }
 
+/* A two-headed arrow along the main diagonal, mirrored horizontally
+ * for the opposite slope */
+static stlxgfx_surface_t* build_resize_diag(bool nwse) {
+    constexpr int32_t N = 13;
+    stlxgfx_surface_t* s = stlxgfx_create_surface(N, N, 32, 16, 8, 0);
+    if (!s) {
+        return nullptr;
+    }
+
+    stlxgfx_clear(s, 0x00000000);
+    for (int32_t y = 0; y < N; y++) {
+        for (int32_t x = 0; x < N; x++) {
+            bool stem = x == y || x == y + 1 || x + 1 == y;
+            bool head_a = x + y <= 5;
+            bool head_b = x + y >= 2 * (N - 1) - 5;
+            if (stem || head_a || head_b) {
+                stlxgfx_fill_rect(s, nwse ? x : N - 1 - x, y, 1, 1, FILL);
+            }
+        }
+    }
+
+    return s;
+}
+
 /* A soft shadow at half the sprite's own coverage, drawn offset one
  * pixel down and right so the shape reads on any background */
 static stlxgfx_surface_t* build_shadow(const stlxgfx_surface_t* sprite) {
@@ -155,7 +179,16 @@ int cursor::init() {
     m_resize_v.hot_x = 3;
     m_resize_v.hot_y = 8;
 
-    cursor_sprite* all[] = { &m_arrow, &m_ibeam, &m_resize_h, &m_resize_v };
+    m_resize_nwse.image = build_resize_diag(true);
+    m_resize_nwse.hot_x = 6;
+    m_resize_nwse.hot_y = 6;
+
+    m_resize_nesw.image = build_resize_diag(false);
+    m_resize_nesw.hot_x = 6;
+    m_resize_nesw.hot_y = 6;
+
+    cursor_sprite* all[] = { &m_arrow, &m_ibeam, &m_resize_h,
+                             &m_resize_v, &m_resize_nwse, &m_resize_nesw };
     for (cursor_sprite* s : all) {
         if (s->image) {
             s->shadow = build_shadow(s->image);
@@ -170,16 +203,20 @@ void cursor::shutdown() {
     destroy_sprite(&m_ibeam);
     destroy_sprite(&m_resize_h);
     destroy_sprite(&m_resize_v);
+    destroy_sprite(&m_resize_nwse);
+    destroy_sprite(&m_resize_nesw);
 }
 
 const cursor_sprite* cursor::sprite_for(uint32_t shape) const {
     switch (shape) {
-    case SWP_CURSOR_IBEAM:    return &m_ibeam;
-    case SWP_CURSOR_HAND:     return &m_arrow;
-    case SWP_CURSOR_RESIZE_H: return &m_resize_h;
-    case SWP_CURSOR_RESIZE_V: return &m_resize_v;
-    case SWP_CURSOR_NONE:     return nullptr;
-    default:                  return &m_arrow;
+    case SWP_CURSOR_IBEAM:       return &m_ibeam;
+    case SWP_CURSOR_HAND:        return &m_arrow;
+    case SWP_CURSOR_RESIZE_H:    return &m_resize_h;
+    case SWP_CURSOR_RESIZE_V:    return &m_resize_v;
+    case SWP_CURSOR_RESIZE_NWSE: return &m_resize_nwse;
+    case SWP_CURSOR_RESIZE_NESW: return &m_resize_nesw;
+    case SWP_CURSOR_NONE:        return nullptr;
+    default:                     return &m_arrow;
     }
 }
 

@@ -106,6 +106,8 @@ typedef enum {
     SWP_CURSOR_RESIZE_H,
     SWP_CURSOR_RESIZE_V,
     SWP_CURSOR_NONE,
+    SWP_CURSOR_RESIZE_NWSE,
+    SWP_CURSOR_RESIZE_NESW,
 } swp_cursor;
 
 /* One field per message. These are rare and tiny, so a fixed layout

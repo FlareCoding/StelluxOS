@@ -133,9 +133,15 @@ void server::handle_set_window(dm_client& c, const uint8_t* payload) {
         w->cursor = m->a;
         return;
     case SWP_FIELD_MIN_SIZE:
+        w->min_w = m->a;
+        w->min_h = m->b;
+        return;
     case SWP_FIELD_MAX_SIZE:
+        w->max_w = m->a;
+        w->max_h = m->b;
+        return;
     case SWP_FIELD_FULLSCREEN:
-        /* Stored and honored once interactive resize lands */
+        /* Stored and honored once the fullscreen path lands */
         return;
     default:
         return;
@@ -230,10 +236,34 @@ void server::handle_commit(dm_client& c, const uint8_t* payload) {
         return;
     }
 
-    /* Acks are protocol state, recorded at receipt */
+    /* A commit must arrive at the displayed size or at the size of
+     * the configure it acks, anything else is a client bug */
+    if (w->current >= 0) {
+        const dm_buffer& cur = w->buffers[(size_t)w->current];
+        bool ok = b->width == cur.width && b->height == cur.height;
+        for (uint32_t i = 0; !ok && i < w->sent_conf_count; i++) {
+            const dm_sent_conf& e = w->sent_confs[i];
+            ok = e.serial == m->ack_serial &&
+                 e.w == b->width && e.h == b->height;
+        }
+        if (!ok) {
+            c.dead = true;
+            return;
+        }
+    }
+
+    /* Acks are protocol state, recorded at receipt. Configures older
+     * than the ack are history, the acked one stays for the latch. */
     if (m->ack_serial > w->acked_serial) {
         w->acked_serial = m->ack_serial;
     }
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < w->sent_conf_count; i++) {
+        if (w->sent_confs[i].serial >= w->acked_serial) {
+            w->sent_confs[keep++] = w->sent_confs[i];
+        }
+    }
+    w->sent_conf_count = keep;
 
     /* Only the latest commit counts, a superseded one is released
      * without ever reaching the screen */
@@ -268,6 +298,63 @@ bool server::has_latch_work() const {
     return false;
 }
 
+bool server::has_configure_work() const {
+    for (const auto& c : m_clients) {
+        for (const auto& w : c->windows) {
+            if (w->target_w != 0 && w->sent_conf_count < 2) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/* Sends at most one CONFIGURE per window per tick and none while two
+ * are unacked, so a slow client skips straight to the newest size
+ * instead of chewing through every intermediate one. */
+void server::flush_configures() {
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            if (w->target_w == 0 || w->sent_conf_count >= 2) {
+                continue;
+            }
+
+            /* The size the client already settles at without a send */
+            uint32_t ref_w = 0;
+            uint32_t ref_h = 0;
+            if (w->sent_conf_count > 0) {
+                ref_w = w->sent_confs[w->sent_conf_count - 1].w;
+                ref_h = w->sent_confs[w->sent_conf_count - 1].h;
+            } else if (w->current >= 0) {
+                ref_w = w->buffers[(size_t)w->current].width;
+                ref_h = w->buffers[(size_t)w->current].height;
+            }
+
+            if (w->target_w == ref_w && w->target_h == ref_h) {
+                w->target_w = 0;
+                w->target_h = 0;
+                continue;
+            }
+
+            uint32_t serial = ++w->sent_serial;
+            w->sent_confs[w->sent_conf_count++] = {
+                serial, w->target_w, w->target_h,
+                w->target_x, w->target_y
+            };
+
+            swp_configure msg = {
+                w->win_id, w->target_w, w->target_h, serial,
+                w.get() == m_focus ? SWP_STATE_FOCUSED : 0u
+            };
+            send_to(*c, SWP_MSG_CONFIGURE, &msg, sizeof(msg));
+
+            w->target_w = 0;
+            w->target_h = 0;
+        }
+    }
+}
+
 /* Latch a window's pending commit and translate its damage to screen
  * space: the whole window on map or resize, the commit rects otherwise. */
 void server::latch_window(dm_client& c, dm_window& w) {
@@ -285,6 +372,28 @@ void server::latch_window(dm_client& c, dm_window& w) {
         swp_release rel = { w.win_id, ob.buf_id };
         send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
     }
+
+    /* A resize latch moves the window to the spot its configure
+     * promised, so an anchored edge stays visually fixed. The acked
+     * entry is consumed here. */
+    if (resized) {
+        for (uint32_t i = 0; i < w.sent_conf_count; i++) {
+            const dm_sent_conf& e = w.sent_confs[i];
+            if (e.serial == w.acked_serial &&
+                e.w == nb.width && e.h == nb.height) {
+                w.x = e.x;
+                w.y = e.y;
+                break;
+            }
+        }
+    }
+    uint32_t keep = 0;
+    for (uint32_t i = 0; i < w.sent_conf_count; i++) {
+        if (w.sent_confs[i].serial > w.acked_serial) {
+            w.sent_confs[keep++] = w.sent_confs[i];
+        }
+    }
+    w.sent_conf_count = keep;
 
     if (first_map || resized) {
         damage_list::rect nr = { w.x - decor::BORDER,
@@ -353,6 +462,9 @@ void server::compose_rect(stlxgfx_surface_t* back,
         }
     }
 
+    if (m_resize) {
+        decor::draw_outline(back, m_outline);
+    }
     m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y);
 }
 
@@ -364,6 +476,8 @@ void server::compose_tick() {
             }
         }
     }
+
+    flush_configures();
 
     if (m_damage.empty()) {
         return;
