@@ -1,11 +1,27 @@
 /* The text engine: font objects binding a face to one pixel size,
- * with metrics and per-face tables computed once at open.
+ * with metrics and per-face tables computed once at open, backed by
+ * a process wide atlas of rasterized glyph coverage.
  */
 #include <stlxgfx/internal/text.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* One shelf packed atlas page. A bumped generation is how eviction
+ * invalidates the slots that pointed here. */
+typedef struct {
+    uint8_t* pixels;
+    uint16_t gen;
+    uint16_t shelf_y;
+    uint16_t shelf_h;
+    uint16_t cursor_x;
+    uint64_t last_use;
+} atlas_page;
+
+static atlas_page g_pages[STLXGFX_ATLAS_MAX_PAGES];
+static uint64_t g_use_tick = 0;
+static stlxgfx_text_stats g_stats = { 0, 0, 0 };
 
 static int32_t scale_round(float scale, int v) {
     float s = scale * (float)v;
@@ -140,6 +156,8 @@ void stlxgfx_font_close(stlxgfx_font* font) {
         return;
     }
 
+    /* Atlas regions this font used are reclaimed by normal eviction */
+    free(font->glyphs);
     free(font->file_data);
     free(font);
 }
@@ -147,4 +165,216 @@ void stlxgfx_font_close(stlxgfx_font* font) {
 void stlxgfx_font_metrics_get(const stlxgfx_font* font,
                               stlxgfx_font_metrics* out) {
     *out = font->metrics;
+}
+
+/* Places a w by h region on a page shelf, or fails for this page */
+static int page_place(atlas_page* p, uint16_t w, uint16_t h,
+                      uint16_t* out_x, uint16_t* out_y) {
+    if ((uint32_t)p->cursor_x + w <= STLXGFX_ATLAS_PAGE_W &&
+        h <= p->shelf_h) {
+        *out_x = p->cursor_x;
+        *out_y = p->shelf_y;
+        p->cursor_x = (uint16_t)(p->cursor_x + w);
+        return 1;
+    }
+
+    uint32_t next_y = (uint32_t)p->shelf_y + p->shelf_h;
+    if (next_y + h <= STLXGFX_ATLAS_PAGE_H &&
+        w <= STLXGFX_ATLAS_PAGE_W) {
+        p->shelf_y = (uint16_t)next_y;
+        p->shelf_h = h;
+        p->cursor_x = w;
+        *out_x = 0;
+        *out_y = (uint16_t)next_y;
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Reserves atlas space: an existing page with room, then a fresh
+ * page, then the least recently used page evicted and reused */
+static int atlas_reserve(uint16_t w, uint16_t h, uint16_t* out_page,
+                         uint16_t* out_x, uint16_t* out_y) {
+    if (w > STLXGFX_ATLAS_PAGE_W || h > STLXGFX_ATLAS_PAGE_H) {
+        return -1;
+    }
+
+    for (uint16_t i = 0; i < STLXGFX_ATLAS_MAX_PAGES; i++) {
+        atlas_page* p = &g_pages[i];
+        if (p->pixels && page_place(p, w, h, out_x, out_y)) {
+            *out_page = i;
+            p->last_use = ++g_use_tick;
+            return 0;
+        }
+    }
+
+    for (uint16_t i = 0; i < STLXGFX_ATLAS_MAX_PAGES; i++) {
+        atlas_page* p = &g_pages[i];
+        if (p->pixels) {
+            continue;
+        }
+
+        p->pixels = calloc(1, STLXGFX_ATLAS_PAGE_W * STLXGFX_ATLAS_PAGE_H);
+        if (!p->pixels) {
+            break;
+        }
+
+        page_place(p, w, h, out_x, out_y);
+        *out_page = i;
+        p->last_use = ++g_use_tick;
+        return 0;
+    }
+
+    uint16_t victim = 0;
+    for (uint16_t i = 1; i < STLXGFX_ATLAS_MAX_PAGES; i++) {
+        if (g_pages[i].pixels &&
+            g_pages[i].last_use < g_pages[victim].last_use) {
+            victim = i;
+        }
+    }
+
+    atlas_page* p = &g_pages[victim];
+    if (!p->pixels) {
+        return -1;
+    }
+
+    /* The bump invalidates every slot that pointed at this page */
+    p->gen++;
+    p->shelf_y = 0;
+    p->shelf_h = 0;
+    p->cursor_x = 0;
+    g_stats.page_evictions++;
+
+    page_place(p, w, h, out_x, out_y);
+    *out_page = victim;
+    p->last_use = ++g_use_tick;
+    return 0;
+}
+
+static stlxgfx_glyph_slot* map_probe(stlxgfx_glyph_slot* table,
+                                     uint32_t cap, uint32_t codepoint) {
+    uint32_t i = (codepoint * 2654435761u) & (cap - 1);
+    while (table[i].codepoint != 0 && table[i].codepoint != codepoint) {
+        i = (i + 1) & (cap - 1);
+    }
+
+    return &table[i];
+}
+
+static int map_grow(stlxgfx_font* font) {
+    uint32_t new_cap = font->glyph_cap ? font->glyph_cap * 2 : 64;
+    stlxgfx_glyph_slot* table = calloc(new_cap, sizeof(*table));
+    if (!table) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < font->glyph_cap; i++) {
+        if (font->glyphs[i].codepoint != 0) {
+            *map_probe(table, new_cap, font->glyphs[i].codepoint) =
+                font->glyphs[i];
+        }
+    }
+
+    free(font->glyphs);
+    font->glyphs = table;
+    font->glyph_cap = new_cap;
+    return 0;
+}
+
+const stlxgfx_glyph_slot* stlxgfx_glyph_get(stlxgfx_font* font,
+                                            uint32_t codepoint) {
+    if (codepoint == 0) {
+        return NULL;
+    }
+
+    g_stats.lookups++;
+
+    if (font->glyph_count * 10 >= font->glyph_cap * 7 &&
+        map_grow(font) != 0) {
+        return NULL;
+    }
+
+    stlxgfx_glyph_slot* slot =
+        map_probe(font->glyphs, font->glyph_cap, codepoint);
+    if (slot->codepoint == codepoint) {
+        atlas_page* p = &g_pages[slot->page];
+        if (slot->w == 0 || slot->gen == p->gen) {
+            p->last_use = ++g_use_tick;
+            return slot;
+        }
+    }
+
+    int glyph;
+    int16_t advance;
+    if (codepoint >= STLXGFX_ASCII_FIRST &&
+        codepoint < STLXGFX_ASCII_FIRST + STLXGFX_ASCII_COUNT) {
+        glyph = font->ascii_glyph[codepoint - STLXGFX_ASCII_FIRST];
+        advance = font->ascii_advance[codepoint - STLXGFX_ASCII_FIRST];
+    } else {
+        glyph = stbtt_FindGlyphIndex(&font->info, (int)codepoint);
+        int adv = 0;
+        int lsb = 0;
+        stbtt_GetGlyphHMetrics(&font->info, glyph, &adv, &lsb);
+        advance = (int16_t)scale_round(font->scale, adv);
+    }
+
+    int x0, y0, x1, y1;
+    stbtt_GetGlyphBitmapBox(&font->info, glyph, font->scale, font->scale,
+                            &x0, &y0, &x1, &y1);
+    uint16_t w = (uint16_t)(x1 - x0);
+    uint16_t h = (uint16_t)(y1 - y0);
+
+    if (slot->codepoint == 0) {
+        font->glyph_count++;
+    }
+    slot->codepoint = codepoint;
+    slot->bearing_x = (int16_t)x0;
+    slot->bearing_y = (int16_t)y0;
+    slot->advance = advance;
+
+    /* Whitespace caches as a slot without atlas space */
+    if (w == 0 || h == 0) {
+        slot->page = 0;
+        slot->gen = 0;
+        slot->x = 0;
+        slot->y = 0;
+        slot->w = 0;
+        slot->h = 0;
+        return slot;
+    }
+
+    uint16_t page, gx, gy;
+    if (atlas_reserve(w, h, &page, &gx, &gy) != 0) {
+        slot->codepoint = 0;
+        font->glyph_count--;
+        return NULL;
+    }
+
+    stbtt_MakeGlyphBitmap(&font->info,
+                          g_pages[page].pixels
+                              + (uint32_t)gy * STLXGFX_ATLAS_PAGE_W + gx,
+                          w, h, STLXGFX_ATLAS_PAGE_W,
+                          font->scale, font->scale, glyph);
+    g_stats.rasterizations++;
+
+    slot->page = page;
+    slot->gen = g_pages[page].gen;
+    slot->x = gx;
+    slot->y = gy;
+    slot->w = w;
+    slot->h = h;
+    return slot;
+}
+
+const uint8_t* stlxgfx_atlas_page_pixels(uint16_t page) {
+    if (page >= STLXGFX_ATLAS_MAX_PAGES) {
+        return NULL;
+    }
+
+    return g_pages[page].pixels;
+}
+
+void stlxgfx_text_stats_get(stlxgfx_text_stats* out) {
+    *out = g_stats;
 }
