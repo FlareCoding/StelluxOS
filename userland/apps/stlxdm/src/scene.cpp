@@ -1,3 +1,4 @@
+#include "decor.hpp"
 #include "server.hpp"
 
 #include <algorithm>
@@ -20,8 +21,8 @@ void collect_subtree(const std::vector<std::unique_ptr<dm_window>>& siblings,
 
 void server::scene_damage_window(dm_window* w) {
     if (w->mapped && w->current >= 0) {
-        const dm_buffer& b = w->buffers[(size_t)w->current];
-        m_damage.add(w->x, w->y, (int32_t)b.width, (int32_t)b.height);
+        damage_list::rect r = decor::bounds(*w);
+        m_damage.add(r.x, r.y, r.w, r.h);
     }
 }
 

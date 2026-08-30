@@ -2,6 +2,7 @@
 #define STLXDM_SERVER_HPP
 
 #include "damage.hpp"
+#include "decor.hpp"
 #include "presenter.hpp"
 
 #include <stlxgfx/surface.h>
@@ -113,7 +114,7 @@ private:
 
     /* events.cpp */
     dm_client* window_owner(const dm_window* w);
-    dm_window* window_at(int32_t x, int32_t y);
+    dm_window* window_at(int32_t x, int32_t y, decor::zone* out_zone);
     void send_event(dm_window* w, const swp_event_rec& rec);
     void set_focus(dm_window* w);
     void forget_window(dm_window* w);
@@ -150,6 +151,13 @@ private:
      * dismisses it and restores the focus it displaced */
     dm_window* m_grab_popup = nullptr;
     dm_window* m_focus_restore = nullptr;
+
+    /* Title drag and close-control hover, decoration hit zones */
+    dm_window* m_drag = nullptr;
+    int32_t m_drag_dx = 0;
+    int32_t m_drag_dy = 0;
+    dm_window* m_close_hover = nullptr;
+    dm_window* m_close_press = nullptr;
 
     /* One shared text clipboard, last writer wins */
     std::vector<char> m_clipboard;
