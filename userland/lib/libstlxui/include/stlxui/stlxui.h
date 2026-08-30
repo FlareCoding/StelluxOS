@@ -255,6 +255,10 @@ protected:
     bool m_needs_paint = true;
     bool m_needs_layout = true;
 
+    /* Children shift by this offset in every host traversal, which
+     * is how scrolling exists without touching child frames */
+    point m_scroll;
+
     friend class host;
 };
 
@@ -367,15 +371,12 @@ public:
     size measure(size avail) override;
     void paint(painter& p) override;
     bool on_scroll(const pointer_event& e) override;
-
-private:
-    int32_t m_offset = 0;
 };
 
 /**
  * An app painted region, the escape hatch for plots and grids. The
- * paint callback draws widget local, damage() requests a partial
- * repaint of one region without touching the rest of the tree.
+ * paint callback draws widget local. damage() schedules a repaint of
+ * the canvas, region granularity can come with a consumer needing it.
  */
 class canvas : public widget {
 public:

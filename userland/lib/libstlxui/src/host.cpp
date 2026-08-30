@@ -68,8 +68,10 @@ void host::paint_tree(void* surface, std::vector<rect>& damage_out) {
             w->m_needs_paint = false;
         }
 
+        point child_origin = { pos.x - w->m_scroll.x,
+                               pos.y - w->m_scroll.y };
         for (auto& c : w->m_children) {
-            self(self, c.get(), pos);
+            self(self, c.get(), child_origin);
         }
     };
     collect(collect, m_root.get(), { 0, 0 });
@@ -94,8 +96,10 @@ void host::paint_tree(void* surface, std::vector<rect>& damage_out) {
         w->paint(p);
         p.m_clips.pop_back();
 
+        point child_origin = { pos.x - w->m_scroll.x,
+                               pos.y - w->m_scroll.y };
         for (auto& c : w->m_children) {
-            self(self, c.get(), pos, p, visible);
+            self(self, c.get(), child_origin, p, visible);
         }
     };
 
@@ -114,11 +118,14 @@ widget* host::hit_at(point p, point* out_local) {
 
     /* Later siblings paint later, so they win where frames overlap */
     auto walk = [out_local](auto&& self, widget* w, point l) -> widget* {
+        point adj = { l.x + w->m_scroll.x, l.y + w->m_scroll.y };
+
         for (size_t i = w->m_children.size(); i-- > 0;) {
             widget* c = w->m_children[i].get();
-            if (c->m_frame.contains(l)) {
+            if (c->m_frame.contains(adj)) {
                 return self(self, c,
-                            point{ l.x - c->m_frame.x, l.y - c->m_frame.y });
+                            point{ adj.x - c->m_frame.x,
+                                   adj.y - c->m_frame.y });
             }
         }
 
@@ -139,6 +146,10 @@ void host::dispatch_pointer_move(point p) {
         for (widget* a = m_pointer_grab; a != nullptr; a = a->m_parent) {
             l.x -= a->m_frame.x;
             l.y -= a->m_frame.y;
+            if (a->m_parent) {
+                l.x += a->m_parent->m_scroll.x;
+                l.y += a->m_parent->m_scroll.y;
+            }
         }
 
         m_pointer_grab->on_pointer_move({ l, 0, 0 });
@@ -167,6 +178,10 @@ void host::dispatch_pointer_move(point p) {
 
         l.x += w->m_frame.x;
         l.y += w->m_frame.y;
+        if (w->m_parent) {
+            l.x -= w->m_parent->m_scroll.x;
+            l.y -= w->m_parent->m_scroll.y;
+        }
     }
 }
 
@@ -185,6 +200,10 @@ void host::dispatch_pointer_button(point p, uint8_t button, bool down) {
 
             l.x += w->m_frame.x;
             l.y += w->m_frame.y;
+            if (w->m_parent) {
+                l.x -= w->m_parent->m_scroll.x;
+                l.y -= w->m_parent->m_scroll.y;
+            }
         }
         return;
     }
@@ -197,6 +216,10 @@ void host::dispatch_pointer_button(point p, uint8_t button, bool down) {
         for (widget* a = grab; a != nullptr; a = a->m_parent) {
             l.x -= a->m_frame.x;
             l.y -= a->m_frame.y;
+            if (a->m_parent) {
+                l.x += a->m_parent->m_scroll.x;
+                l.y += a->m_parent->m_scroll.y;
+            }
         }
 
         grab->on_pointer_up({ l, button, 0 });
@@ -211,6 +234,10 @@ void host::dispatch_pointer_button(point p, uint8_t button, bool down) {
 
         l.x += w->m_frame.x;
         l.y += w->m_frame.y;
+        if (w->m_parent) {
+            l.x -= w->m_parent->m_scroll.x;
+            l.y -= w->m_parent->m_scroll.y;
+        }
     }
 }
 
@@ -226,6 +253,10 @@ void host::dispatch_scroll(point p, int16_t dy) {
 
         l.x += w->m_frame.x;
         l.y += w->m_frame.y;
+        if (w->m_parent) {
+            l.x -= w->m_parent->m_scroll.x;
+            l.y -= w->m_parent->m_scroll.y;
+        }
     }
 }
 
@@ -260,8 +291,10 @@ void host::invalidate_rects(const std::vector<rect>& rects) {
             }
         }
 
+        point child_origin = { pos.x - w->m_scroll.x,
+                               pos.y - w->m_scroll.y };
         for (auto& c : w->m_children) {
-            self(self, c.get(), pos);
+            self(self, c.get(), child_origin);
         }
     };
 
