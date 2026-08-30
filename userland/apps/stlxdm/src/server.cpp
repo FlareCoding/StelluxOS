@@ -33,6 +33,10 @@ int server::init(const screen* scr) {
     }
 
     fcntl(m_listen_fd, F_SETFL, O_NONBLOCK);
+
+    /* The first tick paints the whole desktop over the boot contents */
+    m_damage.add_full();
+
     return 0;
 }
 

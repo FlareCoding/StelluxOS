@@ -66,6 +66,27 @@ int main(void) {
             }
             case STLXWIN_EVT_KEY_DOWN:
             case STLXWIN_EVT_KEY_REPEAT:
+                /* d commits a small patch with exact damage */
+                if (ev.key.ch == 'd') {
+                    stlxwin_buffer* b = stlxwin_begin_frame(win);
+                    if (b) {
+                        static uint32_t step = 0;
+                        int32_t px = (int32_t)((step * 50) % (b->width - 40));
+                        step++;
+                        paint(b);
+                        for (uint32_t y = 0; y < 40; y++) {
+                            uint32_t* row = b->pixels
+                                          + (100 + y) * (b->stride / 4);
+                            for (uint32_t x = 0; x < 40; x++) {
+                                row[(uint32_t)px + x] = 0x00F38BA8;
+                            }
+                        }
+                        stlxwin_rect r = { px, 100, 40, 40 };
+                        stlxwin_commit(win, b, &r, 1, 0);
+                        printf("windemo: patch at %d\r\n", px);
+                    }
+                    break;
+                }
                 /* c and v exercise the clipboard round trip */
                 if (ev.key.ch == 'c') {
                     stlxwin_clipboard_set(conn, "windemo clip", 12);

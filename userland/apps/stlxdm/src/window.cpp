@@ -100,12 +100,17 @@ void server::destroy_window_tree(dm_client& c, uint32_t win_id) {
             continue;
         }
 
-        forget_window(c.windows[i].get());
+        dm_window* w = c.windows[i].get();
+        if (w->mapped && w->current >= 0) {
+            const dm_buffer& b = w->buffers[(size_t)w->current];
+            m_damage.add(w->x, w->y, (int32_t)b.width, (int32_t)b.height);
+        }
+
+        forget_window(w);
         for (auto& b : c.windows[i]->buffers) {
             unmap_buffer(b);
         }
         c.windows.erase(c.windows.begin() + (long)i);
-        m_scene_dirty = true;
         return;
     }
 }
@@ -126,7 +131,6 @@ void server::handle_set_window(dm_client& c, const uint8_t* payload) {
     case SWP_FIELD_TITLE:
         memcpy(w->title, m->title, sizeof(w->title));
         w->title[sizeof(w->title) - 1] = '\0';
-        m_scene_dirty = true;
         return;
     case SWP_FIELD_CURSOR:
         w->cursor = m->a;
@@ -247,47 +251,69 @@ void server::handle_commit(dm_client& c, const uint8_t* payload) {
             break;
         }
     }
+
+    w->pending_damage_count =
+        m->n_damage <= SWP_COMMIT_MAX_RECTS ? m->n_damage : 0;
+    for (uint32_t i = 0; i < w->pending_damage_count; i++) {
+        w->pending_damage[i] = m->damage[i];
+    }
 }
 
-void server::present(const screen& scr, uint8_t* backbuffer) {
-    /* Latch every pending commit and notify its owner */
-    for (auto& c : m_clients) {
-        for (auto& w : c->windows) {
-            if (w->pending < 0) {
-                continue;
+bool server::has_latch_work() const {
+    for (const auto& c : m_clients) {
+        for (const auto& w : c->windows) {
+            if (w->pending >= 0) {
+                return true;
             }
-
-            if (w->current >= 0) {
-                swp_release rel = { w->win_id,
-                                    w->buffers[(size_t)w->current].buf_id };
-                send_to(*c, SWP_MSG_RELEASE, &rel, sizeof(rel));
-            }
-
-            w->current = w->pending;
-            w->pending = -1;
-            w->mapped = true;
-            m_scene_dirty = true;
-
-            swp_frame_done done = { w->win_id, 0, now_ns() };
-            send_to(*c, SWP_MSG_FRAME_DONE, &done, sizeof(done));
         }
     }
 
-    if (!m_scene_dirty) {
-        return;
-    }
-    m_scene_dirty = false;
+    return false;
+}
 
-    /* Interim composition: background fill, window blits in creation
-     * order, one full copy to scanout. The damage engine replaces this. */
-    stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
-        backbuffer, scr.width, scr.height, scr.width * 4, 32,
-        scr.red_shift, scr.green_shift, scr.blue_shift);
-    if (!back) {
-        return;
+/* Latch a window's pending commit and translate its damage to screen
+ * space: the whole window on map or resize, the commit rects otherwise. */
+void server::latch_window(dm_client& c, dm_window& w) {
+    const dm_buffer& nb = w.buffers[(size_t)w.pending];
+    bool first_map = !w.mapped;
+    bool resized = false;
+
+    if (w.current >= 0) {
+        const dm_buffer& ob = w.buffers[(size_t)w.current];
+        resized = ob.width != nb.width || ob.height != nb.height;
+        if (resized) {
+            m_damage.add(w.x, w.y, (int32_t)ob.width, (int32_t)ob.height);
+        }
+
+        swp_release rel = { w.win_id, ob.buf_id };
+        send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
     }
 
-    stlxgfx_clear(back, BACKGROUND);
+    if (first_map || resized) {
+        m_damage.add(w.x, w.y, (int32_t)nb.width, (int32_t)nb.height);
+    } else if (w.pending_damage_count == 0) {
+        m_damage.add(w.x, w.y, (int32_t)nb.width, (int32_t)nb.height);
+    } else {
+        for (uint32_t i = 0; i < w.pending_damage_count; i++) {
+            const swp_rect& r = w.pending_damage[i];
+            m_damage.add(w.x + r.x, w.y + r.y, r.w, r.h);
+        }
+    }
+
+    w.current = w.pending;
+    w.pending = -1;
+    w.mapped = true;
+
+    swp_frame_done done = { w.win_id, 0, now_ns() };
+    send_to(c, SWP_MSG_FRAME_DONE, &done, sizeof(done));
+}
+
+/* Compose one screen-space rect: background, then every intersecting
+ * window in scene order. */
+void server::compose_rect(stlxgfx_surface_t* back,
+                          const damage_list::rect& r) {
+    stlxgfx_fill_rect(back, r.x, r.y, (uint32_t)r.w, (uint32_t)r.h,
+                      BACKGROUND);
 
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
@@ -296,22 +322,82 @@ void server::present(const screen& scr, uint8_t* backbuffer) {
             }
 
             dm_buffer& b = w->buffers[(size_t)w->current];
+            int32_t ix0 = r.x > w->x ? r.x : w->x;
+            int32_t iy0 = r.y > w->y ? r.y : w->y;
+            int32_t ix1 = r.x + r.w < w->x + (int32_t)b.width
+                        ? r.x + r.w : w->x + (int32_t)b.width;
+            int32_t iy1 = r.y + r.h < w->y + (int32_t)b.height
+                        ? r.y + r.h : w->y + (int32_t)b.height;
+            if (ix0 >= ix1 || iy0 >= iy1) {
+                continue;
+            }
+
             stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
                 reinterpret_cast<uint8_t*>(b.pixels), b.width, b.height,
                 b.width * 4, 32, 16, 8, 0);
             if (src) {
-                stlxgfx_blit(back, w->x, w->y, src, 0, 0,
-                             b.width, b.height);
+                stlxgfx_blit(back, ix0, iy0, src,
+                             ix0 - w->x, iy0 - w->y,
+                             (uint32_t)(ix1 - ix0), (uint32_t)(iy1 - iy0));
                 stlxgfx_destroy_surface(src);
             }
         }
     }
+}
 
-    for (uint32_t row = 0; row < scr.height; row++) {
-        memcpy(scr.scanout + (size_t)row * scr.pitch,
-               backbuffer + (size_t)row * scr.width * 4,
-               (size_t)scr.width * 4);
+void server::compose_tick(const screen& scr, uint8_t* backbuffer) {
+    for (auto& c : m_clients) {
+        for (auto& w : c->windows) {
+            if (w->pending >= 0) {
+                latch_window(*c, *w);
+            }
+        }
+    }
+
+    if (m_damage.empty()) {
+        return;
+    }
+
+    stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
+        backbuffer, scr.width, scr.height, scr.width * 4, 32,
+        scr.red_shift, scr.green_shift, scr.blue_shift);
+    if (!back) {
+        m_damage.clear();
+        return;
+    }
+
+    /* Coarsened damage repaints and presents the whole screen */
+    if (m_damage.full()) {
+        damage_list::rect whole = { 0, 0, (int32_t)scr.width,
+                                    (int32_t)scr.height };
+        compose_rect(back, whole);
+        for (uint32_t row = 0; row < scr.height; row++) {
+            memcpy(scr.scanout + (size_t)row * scr.pitch,
+                   backbuffer + (size_t)row * scr.width * 4,
+                   (size_t)scr.width * 4);
+        }
+
+        stlxgfx_destroy_surface(back);
+        m_damage.clear();
+        return;
+    }
+
+    for (uint32_t i = 0; i < m_damage.count(); i++) {
+        damage_list::rect r = m_damage.at(i);
+        if (!damage_list::clip(r, (int32_t)scr.width, (int32_t)scr.height)) {
+            continue;
+        }
+
+        compose_rect(back, r);
+
+        /* Present exactly this rect, row by row into the mapping */
+        for (int32_t row = r.y; row < r.y + r.h; row++) {
+            memcpy(scr.scanout + (size_t)row * scr.pitch + (size_t)r.x * 4,
+                   backbuffer + ((size_t)row * scr.width + (size_t)r.x) * 4,
+                   (size_t)r.w * 4);
+        }
     }
 
     stlxgfx_destroy_surface(back);
+    m_damage.clear();
 }

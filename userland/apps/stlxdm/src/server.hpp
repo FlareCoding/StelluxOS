@@ -1,6 +1,9 @@
 #ifndef STLXDM_SERVER_HPP
 #define STLXDM_SERVER_HPP
 
+#include "damage.hpp"
+
+#include <stlxgfx/surface.h>
 #include <stlxwin/proto.h>
 
 #include <cstdint>
@@ -35,6 +38,11 @@ struct dm_window {
     uint32_t acked_serial = 0;
     uint32_t cursor = 0;        /* swp_cursor, drawn once the sprite lands */
     bool     mapped = false;    /* first commit latched */
+
+    /* Damage carried by the pending commit, buffer coordinates.
+     * Zero rects means the whole buffer changed. */
+    swp_rect pending_damage[SWP_COMMIT_MAX_RECTS];
+    uint32_t pending_damage_count = 0;
 };
 
 /* One connected application. Owns the socket, the partial-message
@@ -68,10 +76,12 @@ public:
      * dead ones. Call after every poll wakeup. */
     void pump(const std::vector<struct pollfd>& fds);
 
-    /* Latches pending commits, notifies clients, and repaints the
-     * screen when anything changed. Interim full-screen composition,
-     * the damage engine replaces its internals. */
-    void present(const screen& scr, uint8_t* backbuffer);
+    /* Whether damage is waiting for the next compose tick. */
+    bool compose_pending() const { return !m_damage.empty() || has_latch_work(); }
+
+    /* Latches pending commits into scene damage, composes exactly the
+     * damaged regions, and presents them. Runs at the paced tick. */
+    void compose_tick(const screen& scr, uint8_t* backbuffer);
 
     /* Input routing entry points, fed by the input layer. */
     void route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
@@ -94,6 +104,8 @@ private:
     void handle_detach_buffer(dm_client& c, const uint8_t* payload);
     void handle_commit(dm_client& c, const uint8_t* payload);
     void destroy_window_tree(dm_client& c, uint32_t win_id);
+    void latch_window(dm_client& c, dm_window& w);
+    void compose_rect(stlxgfx_surface_t* back, const damage_list::rect& r);
 
     void drop_client(dm_client& c);
     bool send_to(dm_client& c, uint16_t type,
@@ -106,11 +118,13 @@ private:
     void set_focus(dm_window* w);
     void forget_window(dm_window* w);
 
+    bool has_latch_work() const;
+
     int m_listen_fd = -1;
     const screen* m_screen = nullptr;
     std::vector<std::unique_ptr<dm_client>> m_clients;
     uint32_t m_window_count = 0;
-    bool m_scene_dirty = false;
+    damage_list m_damage;
 
     /* Input routing state, cleared by forget_window on death */
     dm_window* m_focus = nullptr;
