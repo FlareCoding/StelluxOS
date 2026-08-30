@@ -48,6 +48,21 @@ int main() {
         printf("uidemo: click %d\r\n", clicks);
     };
 
+    ui::button* menu_btn = row->add<ui::button>("Menu");
+    menu_btn->s().main = ui::length::content();
+    menu_btn->on_click = [menu_btn]() {
+        std::vector<ui::menu_item> items;
+        items.push_back({ "First action",
+                          []() { printf("uidemo: menu first\r\n"); },
+                          true, false });
+        items.push_back({ "Second action",
+                          []() { printf("uidemo: menu second\r\n"); },
+                          true, true });
+        items.push_back({ "Disabled", nullptr, false, false });
+
+        ui::menu::open_at(menu_btn, std::move(items));
+    };
+
     ui::button* quit = row->add<ui::button>("Quit");
     quit->s().main = ui::length::content();
     quit->on_click = [&app]() {
