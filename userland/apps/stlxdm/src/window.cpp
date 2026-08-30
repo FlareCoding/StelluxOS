@@ -429,6 +429,9 @@ void server::compose_rect(stlxgfx_surface_t* back,
     stlxgfx_fill_rect(back, r.x, r.y, static_cast<uint32_t>(r.w), static_cast<uint32_t>(r.h),
                       BACKGROUND);
 
+    /* Panels live between the wallpaper and the windows */
+    m_panels.compose(back, r);
+
     for (dm_window* w : m_zorder) {
         if (w->current < 0) {
             continue;
@@ -474,6 +477,7 @@ void server::compose_tick() {
     }
 
     flush_configures();
+    m_panels.flush(m_damage);
 
     if (m_damage.empty()) {
         return;

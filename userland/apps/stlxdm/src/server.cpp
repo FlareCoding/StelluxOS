@@ -36,6 +36,10 @@ int server::init(presenter* pres) {
     if (m_cursor.init() != 0) {
         return -1;
     }
+
+    if (m_panels.init(pres->width(), pres->height()) != 0) {
+        return -1;
+    }
     m_cursor_x = static_cast<int32_t>(pres->width()) / 2;
     m_cursor_y = static_cast<int32_t>(pres->height()) / 2;
 

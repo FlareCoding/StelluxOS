@@ -64,6 +64,13 @@ int main() {
          * pending, the paced compose deadline. Idle blocks forever. */
         uint64_t now = now_ns();
         int64_t next_ns = inp.repeat_timeout_ns(now);
+
+        /* The clock bounds every sleep at the next second rollover */
+        int64_t clock_ns = srv.panels().clock_timeout_ns(now);
+        if (next_ns < 0 || clock_ns < next_ns) {
+            next_ns = clock_ns;
+        }
+
         if (srv.compose_pending()) {
             uint64_t deadline = last_compose_ns + COMPOSE_INTERVAL_NS;
             int64_t compose_ns = deadline > now
@@ -86,6 +93,7 @@ int main() {
             inp.pump_mouse(srv);
         }
         inp.pump_repeat(srv, now_ns());
+        srv.panels().clock_tick();
 
         srv.pump(fds);
 

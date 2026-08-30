@@ -472,8 +472,28 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     }
 
     if (!target) {
+        /* Uncovered band area belongs to the panels, and a motion
+         * elsewhere clears any panel hover */
+        if (!struck && m_panels.contains(x, y)) {
+            if (changed == 0 && wheel == 0) {
+                m_panels.pointer_move(x, y);
+            }
+
+            for (uint8_t btn = 0; btn < 3; btn++) {
+                uint16_t bit = static_cast<uint16_t>(1u << btn);
+                if (changed & bit) {
+                    m_panels.pointer_button(x, y, btn,
+                                            (buttons & bit) != 0);
+                }
+            }
+        } else {
+            m_panels.pointer_move(-1, -1);
+        }
+
         return;
     }
+
+    m_panels.pointer_move(-1, -1);
 
     swp_event_rec rec;
     memset(&rec, 0, sizeof(rec));
