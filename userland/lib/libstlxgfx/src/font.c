@@ -279,7 +279,7 @@ static int draw_text_internal(stlxgfx_surface_t* s, int32_t x, int32_t y,
     return 0;
 }
 
-int stlxgfx_draw_text(stlxgfx_surface_t* s, int32_t x, int32_t y,
+int stlxgfx_draw_text_topleft(stlxgfx_surface_t* s, int32_t x, int32_t y,
                       const char* text, uint32_t font_size, uint32_t color) {
     if (!s || !s->pixels || !text || font_size == 0) {
         return -1;

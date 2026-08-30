@@ -126,7 +126,7 @@ static void render_span(stlxgfx_surface_t* s, int row, int c0, int c1,
             uint32_t fg = at_cursor ? BG_COLOR
                         : FG_PALETTE[g_term.attrs[row][c].fg];
             ch_buf[0] = g_term.cells[row][c];
-            stlxgfx_draw_text(s, px, py, ch_buf, FONT_SIZE, fg);
+            stlxgfx_draw_text_topleft(s, px, py, ch_buf, FONT_SIZE, fg);
         }
     }
 }
