@@ -60,9 +60,24 @@ int main() {
         printf("uidemo: option %s\r\n", v ? "on" : "off");
     };
 
-    /* A flex spacer pushes the footer to the bottom edge */
-    ui::box* spacer = root->add<ui::box>();
-    spacer->s().main = ui::length::flex();
+    ui::text_input* field = root->add<ui::text_input>();
+    field->set_placeholder("type and press enter");
+    field->on_submit = [](const std::string& t) {
+        printf("uidemo: submit '%s'\r\n", t.c_str());
+    };
+
+    /* A scrolling list takes the leftover height */
+    ui::scroll_view* list = root->add<ui::scroll_view>();
+    list->s().main = ui::length::flex();
+
+    ui::box* items = list->add<ui::box>(ui::axis::column);
+    items->s().main = ui::length::content();
+    items->s().gap = 4;
+    for (int i = 1; i <= 12; i++) {
+        char text[24];
+        snprintf(text, sizeof(text), "List item %d", i);
+        items->add<ui::label>(text);
+    }
 
     ui::label* footer = root->add<ui::label>("Resize me");
     footer->set_color(ui::theme::active().text_dim);
