@@ -136,7 +136,7 @@ void draw(stlxgfx_surface_t* back, const dm_window& w, bool focused,
     stlxgfx_fill_rect(back, w.x, w.y - TITLE_H + BORDER,
                       static_cast<uint32_t>(bw), static_cast<uint32_t>(TITLE_H - BORDER),
                       title_bg);
-    stlxgfx_draw_text(back, w.x + 10, w.y - TITLE_H + 7,
+    stlxgfx_draw_text_topleft(back, w.x + 10, w.y - TITLE_H + 7,
                       w.title, TITLE_FONT_SIZE, title_fg);
 
     if (focused) {
@@ -148,7 +148,7 @@ void draw(stlxgfx_surface_t* back, const dm_window& w, bool focused,
         uint32_t xw = 0;
         uint32_t xh = 0;
         stlxgfx_text_size("x", TITLE_FONT_SIZE, &xw, &xh);
-        stlxgfx_draw_text(back, ccx - static_cast<int32_t>(xw) / 2,
+        stlxgfx_draw_text_topleft(back, ccx - static_cast<int32_t>(xw) / 2,
                           ccy - static_cast<int32_t>(xh) / 2, "x", TITLE_FONT_SIZE,
                           CLOSE_FG);
     }
