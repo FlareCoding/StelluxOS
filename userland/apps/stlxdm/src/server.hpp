@@ -4,6 +4,7 @@
 #include "cursor.hpp"
 #include "damage.hpp"
 #include "decor.hpp"
+#include "panels.hpp"
 #include "presenter.hpp"
 
 #include <stlxgfx/surface.h>
@@ -109,10 +110,13 @@ public:
      * dead ones. Call after every poll wakeup. */
     void pump(const std::vector<struct pollfd>& fds);
 
-    /* Whether damage, latches, or configure sends wait for the tick. */
+    /* Whether damage, latches, configures, or panel repaints wait. */
     bool compose_pending() const {
-        return !m_damage.empty() || has_latch_work() || has_configure_work();
+        return !m_damage.empty() || has_latch_work() ||
+               has_configure_work() || m_panels.dirty();
     }
+
+    dm_panels& panels() { return m_panels; }
 
     /* Latches pending commits into scene damage, composes exactly the
      * damaged regions into the presenter's target, and presents them.
@@ -194,6 +198,9 @@ private:
      * dismisses it and restores the focus it displaced */
     dm_window* m_grab_popup = nullptr;
     dm_window* m_focus_restore = nullptr;
+
+    /* The compositor's own widget trees in the background band */
+    dm_panels m_panels;
 
     /* The pointer sprite: position, active shape, damage on change */
     cursor m_cursor;
