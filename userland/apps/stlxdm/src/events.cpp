@@ -196,6 +196,15 @@ void server::forget_window(dm_window* w) {
 
 void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                        bool repeat) {
+    /* An open overlay swallows the keyboard, escape closes it */
+    if (m_panels.overlay_open()) {
+        if (down && !repeat && m_panels.overlay_key(usage)) {
+            m_panels.overlay_toggle(false);
+            m_damage.add_full();
+        }
+        return;
+    }
+
     if (!m_focus) {
         return;
     }
@@ -316,6 +325,24 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                            uint16_t changed, int16_t wheel) {
     bool press = changed != 0 && (buttons & changed) != 0;
     bool all_released = (buttons & 0x7) == 0;
+
+    /* An open overlay owns the pointer entirely */
+    if (m_panels.overlay_open()) {
+        move_cursor(x, y, SWP_CURSOR_ARROW);
+        if (changed == 0 && wheel == 0) {
+            m_panels.overlay_pointer_move(x, y);
+            return;
+        }
+
+        for (uint8_t btn = 0; btn < 3; btn++) {
+            uint16_t bit = static_cast<uint16_t>(1u << btn);
+            if (changed & bit) {
+                m_panels.overlay_pointer_button(x, y, btn,
+                                                (buttons & bit) != 0);
+            }
+        }
+        return;
+    }
 
     /* An active resize drag owns the pointer until every button lifts,
      * and the final target flushes as one last configure */

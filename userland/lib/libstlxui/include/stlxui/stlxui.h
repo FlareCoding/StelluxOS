@@ -154,6 +154,9 @@ public:
      */
     void image(point dst, const void* stlxgfx_surface);
 
+    /** @brief Fills a circle, clipped by its bounding box. */
+    void circle(point center, int32_t radius, color c);
+
     void push_clip(const rect& r);
     void pop_clip();
 
