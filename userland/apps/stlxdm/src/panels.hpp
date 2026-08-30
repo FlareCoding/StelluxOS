@@ -29,12 +29,13 @@ public:
     }
 };
 
-/* The top bar: a full width band in the background z layer, holding
- * the product label and a clock whose one second timer is the
- * desktop's only sanctioned idle wakeup. */
+/* The compositor's chrome: a top bar with the product name, network
+ * state, and clock, and a bottom dock of pinned launchers. Both are
+ * toolkit trees over retained band surfaces in the background layer. */
 class dm_panels {
 public:
     static constexpr int32_t BAR_H = 28;
+    static constexpr int32_t DOCK_H = 44;
 
     int init(uint32_t screen_w, uint32_t screen_h);
     void shutdown();
@@ -49,8 +50,11 @@ public:
     void compose(stlxgfx_surface_t* back, const damage_list::rect& r);
 
     bool contains(int32_t x, int32_t y) const {
-        return y >= 0 && y < BAR_H && x >= 0 &&
-               x < static_cast<int32_t>(m_width);
+        if (x < 0 || x >= static_cast<int32_t>(m_width)) {
+            return false;
+        }
+
+        return (y >= 0 && y < BAR_H) || y >= m_dock_y;
     }
 
     void pointer_move(int32_t x, int32_t y);
@@ -63,9 +67,14 @@ public:
 
 private:
     direct_host m_host;
+    direct_host m_dock_host;
     stlxgfx_surface_t* m_band = nullptr;
+    stlxgfx_surface_t* m_dock = nullptr;
     uint32_t m_width = 0;
+    int32_t m_dock_y = 0;
     ui::label* m_clock = nullptr;
+    ui::label* m_net = nullptr;
+    uint32_t m_net_tick = 0;
 };
 
 #endif
