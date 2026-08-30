@@ -5,7 +5,9 @@
 
 #include <stddef.h>
 
+#ifndef STLXGFX_FONT_PATH
 #define STLXGFX_FONT_PATH "/etc/res/fonts/UbuntuMono-Regular.ttf"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
