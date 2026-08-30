@@ -97,6 +97,31 @@ static void* g_last_pixels = NULL;
 static uint32_t g_last_buf_w = 0;
 static uint32_t g_last_buf_h = 0;
 
+/* Buffers the renderer has fully painted at least once. A slot seen
+ * for the first time holds nothing at all, not a one frame stale
+ * image, so span parity cannot ground it. */
+static void* g_grounded[2] = { NULL, NULL };
+
+static int buffer_grounded(void* pixels) {
+    for (int i = 0; i < 2; i++) {
+        if (g_grounded[i] == pixels) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void ground_buffer(void* pixels) {
+    for (int i = 0; i < 2; i++) {
+        if (g_grounded[i] == pixels) {
+            return;
+        }
+    }
+
+    g_grounded[g_grounded[0] ? 1 : 0] = pixels;
+}
+
 static void span_mark(int row, int c0, int c1) {
     if (row < 0 || row >= g_term.rows) {
         return;
@@ -148,7 +173,14 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
     }
 
     int full = !g_prev_valid ||
-               buf->width != g_last_buf_w || buf->height != g_last_buf_h;
+               buf->width != g_last_buf_w || buf->height != g_last_buf_h ||
+               !buffer_grounded(buf->pixels);
+
+    /* A size change replaces the slots, nothing stays grounded */
+    if (buf->width != g_last_buf_w || buf->height != g_last_buf_h) {
+        g_grounded[0] = NULL;
+        g_grounded[1] = NULL;
+    }
 
     if (!full) {
         for (int r = 0; r < g_term.rows; r++) {
@@ -278,6 +310,7 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
     g_last_pixels = buf->pixels;
     g_last_buf_w = buf->width;
     g_last_buf_h = buf->height;
+    ground_buffer(buf->pixels);
 
     return 0;
 }

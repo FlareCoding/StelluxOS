@@ -437,7 +437,7 @@ void server::compose_rect(stlxgfx_surface_t* back,
             continue;
         }
 
-        decor::draw(back, *w, w == m_focus, w == m_close_hover);
+        decor::draw(back, *w, w == m_focus, w == m_close_hover, r);
 
         dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
         int32_t ix0 = r.x > w->x ? r.x : w->x;

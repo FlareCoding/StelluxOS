@@ -506,8 +506,10 @@ private:
     stlxwin_window* m_win = nullptr;
 
     /* Buffer parity: the previous frame's damage repaints into the
-     * swapped in slot of the buffer pair */
+     * swapped in slot of the buffer pair. A never seen slot holds
+     * nothing at all, so it repaints fully instead. */
     void* m_last_pixels = nullptr;
+    void* m_grounded[2] = { nullptr, nullptr };
     uint32_t m_last_w = 0;
     uint32_t m_last_h = 0;
     std::vector<rect> m_last_damage;
