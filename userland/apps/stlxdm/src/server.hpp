@@ -56,6 +56,12 @@ struct dm_client {
     uint8_t  rd_buf[SWP_MAX_MSG_SIZE];
     uint32_t rd_have = 0;
 
+    /* Outbound bytes the socket would not take, bounded, flushed on
+     * POLLOUT. The tail marker enables in-place motion coalescing. */
+    std::vector<uint8_t> out_q;
+    size_t   q_motion_off = SIZE_MAX;
+    uint32_t q_motion_win = 0;
+
     std::vector<std::unique_ptr<dm_window>> windows;
 
     explicit dm_client(int sock) : fd(sock) {}
@@ -111,6 +117,8 @@ private:
     void drop_client(dm_client& c);
     bool send_to(dm_client& c, uint16_t type,
                  const void* payload, uint32_t length);
+    void send_motion(dm_client& c, dm_window* w, const swp_event_rec& rec);
+    void flush_client(dm_client& c);
 
     /* events.cpp */
     dm_client* window_owner(const dm_window* w);

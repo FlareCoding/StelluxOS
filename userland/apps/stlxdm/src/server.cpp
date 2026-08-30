@@ -55,7 +55,11 @@ void server::shutdown() {
 void server::collect_fds(std::vector<pollfd>& fds) const {
     fds.push_back({ m_listen_fd, POLLIN, 0 });
     for (const auto& c : m_clients) {
-        fds.push_back({ c->fd, POLLIN, 0 });
+        short events = POLLIN;
+        if (!c->out_q.empty()) {
+            events |= POLLOUT;
+        }
+        fds.push_back({ c->fd, events, 0 });
     }
 }
 
@@ -66,6 +70,9 @@ void server::pump(const std::vector<pollfd>& fds) {
     }
 
     for (size_t i = 0; i < m_clients.size() && i + 1 < fds.size(); i++) {
+        if (fds[i + 1].revents & POLLOUT) {
+            flush_client(*m_clients[i]);
+        }
         if (fds[i + 1].revents & (POLLIN | POLLHUP | POLLERR)) {
             pump_client(*m_clients[i]);
         }
@@ -252,8 +259,20 @@ void server::drop_client(dm_client& c) {
     c.fd = -1;
 }
 
+namespace {
+
+constexpr size_t OUT_Q_LIMIT = 64 * 1024;
+
+} // namespace
+
+/* Nonblocking send that queues whatever the socket refuses. Overflow
+ * means the client stopped reading long ago and it is disconnected. */
 bool server::send_to(dm_client& c, uint16_t type,
                      const void* payload, uint32_t length) {
+    if (c.dead) {
+        return false;
+    }
+
     swp_header hdr = { type, 0, length };
     uint8_t msg[SWP_MAX_MSG_SIZE];
     memcpy(msg, &hdr, sizeof(hdr));
@@ -261,11 +280,90 @@ bool server::send_to(dm_client& c, uint16_t type,
         memcpy(msg + sizeof(hdr), payload, length);
     }
 
-    /* Nonblocking single write. A client that cannot take a small
-     * reply has already stalled beyond saving. Outbound queueing for
-     * event bursts lands with the event unit. */
     size_t total = sizeof(hdr) + length;
-    ssize_t n = write(c.fd, msg, total);
-    return n == static_cast<ssize_t>(total);
+    size_t sent = 0;
+
+    /* Queued bytes must go first to preserve message order */
+    if (c.out_q.empty()) {
+        ssize_t n = write(c.fd, msg, total);
+        if (n == static_cast<ssize_t>(total)) {
+            return true;
+        }
+        if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            c.dead = true;
+            return false;
+        }
+
+        sent = n > 0 ? static_cast<size_t>(n) : 0;
+    }
+
+    if (c.out_q.size() + (total - sent) > OUT_Q_LIMIT) {
+        c.dead = true;
+        return false;
+    }
+
+    /* Any append that is not a lone motion invalidates the coalesce
+     * marker so ordering is never disturbed */
+    c.q_motion_off = SIZE_MAX;
+    c.out_q.insert(c.out_q.end(), msg + sent, msg + total);
+    return true;
+}
+
+/* Motion events coalesce in place when the queue tail is already a
+ * motion for the same window, so a stalled client sees the latest
+ * position instead of a flood. */
+void server::send_motion(dm_client& c, dm_window* w,
+                         const swp_event_rec& rec) {
+    if (!c.out_q.empty() && c.q_motion_off != SIZE_MAX &&
+        c.q_motion_win == w->win_id) {
+        memcpy(c.out_q.data() + c.q_motion_off +
+                   sizeof(swp_header) + sizeof(swp_event_prefix),
+               &rec, sizeof(rec));
+        return;
+    }
+
+    size_t off = c.out_q.size();
+    struct {
+        swp_event_prefix prefix;
+        swp_event_rec rec;
+    } msg = { { w->win_id, 1 }, rec };
+
+    bool was_empty = c.out_q.empty();
+    if (!send_to(c, SWP_MSG_EVENT, &msg, sizeof(msg))) {
+        return;
+    }
+
+    /* The marker is valid only when the whole message was queued */
+    if (!was_empty || !c.out_q.empty()) {
+        if (c.out_q.size() >= sizeof(swp_header) + sizeof(msg) &&
+            c.out_q.size() - off == sizeof(swp_header) + sizeof(msg)) {
+            c.q_motion_off = off;
+            c.q_motion_win = w->win_id;
+        }
+    }
+}
+
+void server::flush_client(dm_client& c) {
+    if (c.dead || c.out_q.empty()) {
+        return;
+    }
+
+    ssize_t n = write(c.fd, c.out_q.data(), c.out_q.size());
+    if (n < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            c.dead = true;
+        }
+        return;
+    }
+
+    c.out_q.erase(c.out_q.begin(), c.out_q.begin() + n);
+
+    if (c.q_motion_off != SIZE_MAX) {
+        if (static_cast<size_t>(n) > c.q_motion_off) {
+            c.q_motion_off = SIZE_MAX;
+        } else {
+            c.q_motion_off -= static_cast<size_t>(n);
+        }
+    }
 }
 

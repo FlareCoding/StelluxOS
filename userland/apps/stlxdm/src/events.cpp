@@ -306,7 +306,10 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
     if (changed == 0 && wheel == 0) {
         rec.kind = SWP_EV_MOTION;
-        send_event(target, rec);
+        dm_client* owner = window_owner(target);
+        if (owner) {
+            send_motion(*owner, target, rec);
+        }
         return;
     }
 
