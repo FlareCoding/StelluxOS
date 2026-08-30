@@ -1,6 +1,7 @@
 #ifndef STLXDM_SERVER_HPP
 #define STLXDM_SERVER_HPP
 
+#include "cursor.hpp"
 #include "damage.hpp"
 #include "decor.hpp"
 #include "presenter.hpp"
@@ -159,6 +160,14 @@ private:
      * dismisses it and restores the focus it displaced */
     dm_window* m_grab_popup = nullptr;
     dm_window* m_focus_restore = nullptr;
+
+    /* The pointer sprite: position, active shape, damage on change */
+    cursor m_cursor;
+    int32_t m_cursor_x = 0;
+    int32_t m_cursor_y = 0;
+    uint32_t m_cursor_shape = SWP_CURSOR_ARROW;
+
+    void move_cursor(int32_t x, int32_t y, uint32_t shape);
 
     /* Title drag and close-control hover, decoration hit zones */
     dm_window* m_drag = nullptr;

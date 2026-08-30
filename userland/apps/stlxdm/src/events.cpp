@@ -176,6 +176,24 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     send_event(m_focus, rec);
 }
 
+/* Damages the sprite's old and new bounds so both repaint */
+void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
+    if (x == m_cursor_x && y == m_cursor_y && shape == m_cursor_shape) {
+        return;
+    }
+
+    int32_t bx, by, bw, bh;
+    m_cursor.bounds(m_cursor_shape, m_cursor_x, m_cursor_y,
+                    &bx, &by, &bw, &bh);
+    m_damage.add(bx, by, bw, bh);
+    m_cursor.bounds(shape, x, y, &bx, &by, &bw, &bh);
+    m_damage.add(bx, by, bw, bh);
+
+    m_cursor_x = x;
+    m_cursor_y = y;
+    m_cursor_shape = shape;
+}
+
 void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                            uint16_t changed, int16_t wheel) {
     bool press = changed != 0 && (buttons & changed) != 0;
@@ -183,6 +201,8 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
     /* An active title drag owns the pointer until every button lifts */
     if (m_drag) {
+        move_cursor(x, y, m_cursor_shape);
+
         scene_damage_window(m_drag);
         m_drag->x = x - m_drag_dx;
         m_drag->y = y - m_drag_dy;
@@ -234,6 +254,11 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     if (m_grab) {
         zone = decor::zone::content;
     }
+
+    /* The shape follows the content window's request */
+    uint32_t shape = zone == decor::zone::content && struck
+                   ? struck->cursor : SWP_CURSOR_ARROW;
+    move_cursor(x, y, shape);
 
     /* Close-control hover repaints the title bars it touches */
     dm_window* hover_close =
