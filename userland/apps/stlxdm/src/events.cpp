@@ -471,6 +471,12 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         zone = decor::zone::content;
     }
 
+    /* The close control is only drawn on the focused window, so an
+     * unfocused frame treats its circle as plain title */
+    if (zone == decor::zone::close && struck != m_focus) {
+        zone = decor::zone::title;
+    }
+
     /* The shape follows the content window's request, and the frame
      * band advertises the resize direction it would grab */
     uint8_t resize_edges = zone_edges(zone);
@@ -521,6 +527,12 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
             send_event(struck, rec);
             m_close_press = nullptr;
             scene_damage_window(struck);
+        }
+
+        /* A press that ended anywhere else sheds the pressed shade */
+        if (changed != 0 && all_released && m_close_press) {
+            scene_damage_window(m_close_press);
+            m_close_press = nullptr;
         }
         return;
     }
