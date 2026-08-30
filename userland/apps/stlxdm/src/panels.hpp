@@ -40,7 +40,13 @@ public:
     int init(uint32_t screen_w, uint32_t screen_h);
     void shutdown();
 
-    bool dirty() const { return m_host.dirty(); }
+    /* Fired by the dock's star button, the server opens the overlay */
+    std::function<void()> on_power_request;
+
+    bool dirty() const {
+        return m_host.dirty() || m_dock_host.dirty() ||
+               (m_overlay_open && m_overlay_host.dirty());
+    }
 
     /* Paints dirty panel subtrees into the retained band surface and
      * adds the changed regions to the screen damage list. */
@@ -60,6 +66,18 @@ public:
     void pointer_move(int32_t x, int32_t y);
     void pointer_button(int32_t x, int32_t y, uint8_t btn, bool down);
 
+    /* The power overlay dims the desktop above every window and owns
+     * all input while open. Escape or a press outside the orbs
+     * closes it. */
+    bool overlay_open() const { return m_overlay_open; }
+    void overlay_toggle(bool open);
+    void overlay_compose(stlxgfx_surface_t* back,
+                         const damage_list::rect& r);
+    void overlay_pointer_move(int32_t x, int32_t y);
+    void overlay_pointer_button(int32_t x, int32_t y, uint8_t btn,
+                                bool down);
+    bool overlay_key(uint16_t usage);
+
     /* Nanoseconds until the next second rollover, and the tick that
      * applies it. The clock is the desktop's only idle timer. */
     int64_t clock_timeout_ns(uint64_t now_ns) const;
@@ -68,13 +86,17 @@ public:
 private:
     direct_host m_host;
     direct_host m_dock_host;
+    direct_host m_overlay_host;
     stlxgfx_surface_t* m_band = nullptr;
     stlxgfx_surface_t* m_dock = nullptr;
+    stlxgfx_surface_t* m_overlay = nullptr;
     uint32_t m_width = 0;
+    uint32_t m_height = 0;
     int32_t m_dock_y = 0;
     ui::label* m_clock = nullptr;
     ui::label* m_net = nullptr;
     uint32_t m_net_tick = 0;
+    bool m_overlay_open = false;
 };
 
 #endif

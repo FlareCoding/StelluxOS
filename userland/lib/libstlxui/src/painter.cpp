@@ -178,6 +178,24 @@ void painter::image(point dst, const void* stlxgfx_surface) {
                        src->width, src->height);
 }
 
+void painter::circle(point center, int32_t radius, color c) {
+    if (!m_target || m_clips.empty() || radius <= 0) {
+        return;
+    }
+
+    rect bounds = { center.x + m_origin.x - radius,
+                    center.y + m_origin.y - radius,
+                    2 * radius + 1, 2 * radius + 1 };
+    rect clipped = intersect(bounds, m_clips.back());
+    if (clipped.w != bounds.w || clipped.h != bounds.h) {
+        return;
+    }
+
+    stlxgfx_fill_circle(static_cast<stlxgfx_surface_t*>(m_target),
+                        center.x + m_origin.x, center.y + m_origin.y,
+                        static_cast<uint32_t>(radius), c);
+}
+
 void painter::push_clip(const rect& r) {
     rect surf = { r.x + m_origin.x, r.y + m_origin.y, r.w, r.h };
 

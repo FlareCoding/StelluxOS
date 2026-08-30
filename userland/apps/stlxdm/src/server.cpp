@@ -40,6 +40,13 @@ int server::init(presenter* pres) {
     if (m_panels.init(pres->width(), pres->height()) != 0) {
         return -1;
     }
+
+    /* The star toggles the overlay, and either state change repaints
+     * the whole screen */
+    m_panels.on_power_request = [this]() {
+        m_panels.overlay_toggle(!m_panels.overlay_open());
+        m_damage.add_full();
+    };
     m_cursor_x = static_cast<int32_t>(pres->width()) / 2;
     m_cursor_y = static_cast<int32_t>(pres->height()) / 2;
 

@@ -464,6 +464,11 @@ void server::compose_rect(stlxgfx_surface_t* back,
     if (m_resize) {
         decor::draw_outline(back, m_outline);
     }
+
+    /* The power overlay dims and draws above everything but the
+     * pointer */
+    m_panels.overlay_compose(back, r);
+
     m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y);
 }
 
