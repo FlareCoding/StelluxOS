@@ -432,9 +432,15 @@ public:
 
 protected:
     /* Layout, paint, and input plumbing shared by every host kind,
-     * implemented by the toolkit core */
+     * implemented by the toolkit core. paint_tree binds the painter
+     * internally, since only host code may configure one, and paints
+     * exactly the subtrees whose widgets invalidated. */
     void layout_tree(size viewport);
-    void paint_tree(painter& p, std::vector<rect>& damage_out);
+    void paint_tree(void* surface, std::vector<rect>& damage_out);
+
+    /* Deepest widget under a window space point and the point in its
+     * local space, or null outside the tree */
+    widget* hit_at(point p, point* out_local);
     void dispatch_pointer_move(point p);
     void dispatch_pointer_button(point p, uint8_t button, bool down);
     void dispatch_scroll(point p, int16_t dy);
