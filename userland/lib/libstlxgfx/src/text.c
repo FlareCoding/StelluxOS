@@ -2,6 +2,7 @@
  * with metrics and per-face tables computed once at open, backed by
  * a process wide atlas of rasterized glyph coverage.
  */
+#include <stlxgfx/internal/blend.h>
 #include <stlxgfx/internal/text.h>
 
 #include <stdio.h>
@@ -329,6 +330,7 @@ const stlxgfx_glyph_slot* stlxgfx_glyph_get(stlxgfx_font* font,
         font->glyph_count++;
     }
     slot->codepoint = codepoint;
+    slot->glyph_index = (uint16_t)glyph;
     slot->bearing_x = (int16_t)x0;
     slot->bearing_y = (int16_t)y0;
     slot->advance = advance;
@@ -377,4 +379,200 @@ const uint8_t* stlxgfx_atlas_page_pixels(uint16_t page) {
 
 void stlxgfx_text_stats_get(stlxgfx_text_stats* out) {
     *out = g_stats;
+}
+
+/* Decodes the next UTF-8 codepoint, advancing the byte index. A
+ * malformed byte is consumed alone and decodes to 0, which renders
+ * and measures as nothing. */
+static uint32_t utf8_next(const char* s, size_t len, size_t* i) {
+    uint8_t b0 = (uint8_t)s[(*i)++];
+    if (b0 < 0x80) {
+        return b0;
+    }
+
+    uint32_t cp;
+    size_t extra;
+    if ((b0 & 0xE0) == 0xC0) {
+        cp = b0 & 0x1Fu;
+        extra = 1;
+    } else if ((b0 & 0xF0) == 0xE0) {
+        cp = b0 & 0x0Fu;
+        extra = 2;
+    } else if ((b0 & 0xF8) == 0xF0) {
+        cp = b0 & 0x07u;
+        extra = 3;
+    } else {
+        return 0;
+    }
+
+    if (*i + extra > len) {
+        *i = len;
+        return 0;
+    }
+
+    for (size_t k = 0; k < extra; k++) {
+        uint8_t c = (uint8_t)s[*i];
+        if ((c & 0xC0) != 0x80) {
+            return 0;
+        }
+        cp = (cp << 6) | (c & 0x3Fu);
+        (*i)++;
+    }
+
+    return cp;
+}
+
+/* Pair kerning in pixels, table hit for ASCII pairs and a rasterizer
+ * lookup otherwise. Faces without kerning skip all of it. */
+static int32_t kern_px(const stlxgfx_font* font,
+                       uint32_t prev_cp, uint16_t prev_glyph,
+                       uint32_t cp, uint16_t cur_glyph) {
+    if (!font->has_kerning || prev_cp == 0) {
+        return 0;
+    }
+
+    if (prev_cp >= STLXGFX_ASCII_FIRST &&
+        prev_cp < STLXGFX_ASCII_FIRST + STLXGFX_ASCII_COUNT &&
+        cp >= STLXGFX_ASCII_FIRST &&
+        cp < STLXGFX_ASCII_FIRST + STLXGFX_ASCII_COUNT) {
+        return font->ascii_kern[prev_cp - STLXGFX_ASCII_FIRST]
+                               [cp - STLXGFX_ASCII_FIRST];
+    }
+
+    int kern = stbtt_GetGlyphKernAdvance(&font->info, prev_glyph, cur_glyph);
+    return scale_round(font->scale, kern);
+}
+
+int32_t stlxgfx_text_width(const stlxgfx_font* font,
+                           const char* utf8, size_t len) {
+    if (!font || !utf8) {
+        return 0;
+    }
+
+    int32_t width = 0;
+    uint32_t prev_cp = 0;
+    uint16_t prev_glyph = 0;
+    size_t i = 0;
+
+    while (i < len) {
+        uint32_t cp = utf8_next(utf8, len, &i);
+        if (cp == 0) {
+            continue;
+        }
+
+        const stlxgfx_glyph_slot* slot =
+            stlxgfx_glyph_get((stlxgfx_font*)font, cp);
+        if (!slot) {
+            continue;
+        }
+
+        width += slot->advance
+               + kern_px(font, prev_cp, prev_glyph, cp, slot->glyph_index);
+        prev_cp = cp;
+        prev_glyph = slot->glyph_index;
+    }
+
+    return width;
+}
+
+void stlxgfx_draw_text(stlxgfx_surface_t* s, const stlxgfx_font* font,
+                       int32_t x, int32_t baseline_y,
+                       const char* utf8, size_t len, uint32_t color) {
+    if (!s || !font || !utf8) {
+        return;
+    }
+
+    /* Channel layout and color are invariant across the run */
+    uint32_t bytes_pp = s->bpp / 8;
+    uint8_t rb = s->red_shift   / 8;
+    uint8_t gb = s->green_shift / 8;
+    uint8_t bb = s->blue_shift  / 8;
+    uint8_t ab = stlxgfx_alpha_byte_index(s);
+    int has_alpha = bytes_pp == 4;
+    uint32_t src_r = (color >> 16) & 0xFF;
+    uint32_t src_g = (color >>  8) & 0xFF;
+    uint32_t src_b =  color        & 0xFF;
+    uint32_t color_a = color >> 24;
+
+    int32_t pen_x = x;
+    uint32_t prev_cp = 0;
+    uint16_t prev_glyph = 0;
+    size_t i = 0;
+
+    while (i < len) {
+        uint32_t cp = utf8_next(utf8, len, &i);
+        if (cp == 0) {
+            continue;
+        }
+
+        stlxgfx_glyph_slot slot_copy;
+        {
+            const stlxgfx_glyph_slot* slot =
+                stlxgfx_glyph_get((stlxgfx_font*)font, cp);
+            if (!slot) {
+                continue;
+            }
+            slot_copy = *slot;
+        }
+
+        pen_x += kern_px(font, prev_cp, prev_glyph, cp,
+                         slot_copy.glyph_index);
+        prev_cp = cp;
+        prev_glyph = slot_copy.glyph_index;
+
+        if (slot_copy.w == 0) {
+            pen_x += slot_copy.advance;
+            continue;
+        }
+
+        const uint8_t* page = g_pages[slot_copy.page].pixels;
+        int32_t gx = pen_x + slot_copy.bearing_x;
+        int32_t gy = baseline_y + slot_copy.bearing_y;
+
+        for (uint16_t r = 0; r < slot_copy.h; r++) {
+            int32_t sy = gy + r;
+            if (sy < 0 || sy >= (int32_t)s->height) {
+                continue;
+            }
+
+            const uint8_t* cov = page
+                + (uint32_t)(slot_copy.y + r) * STLXGFX_ATLAS_PAGE_W
+                + slot_copy.x;
+            uint8_t* row = s->pixels + (uint32_t)sy * s->pitch;
+
+            for (uint16_t c = 0; c < slot_copy.w; c++) {
+                int32_t sx = gx + c;
+                if (sx < 0 || sx >= (int32_t)s->width) {
+                    continue;
+                }
+
+                uint32_t a = cov[c];
+                if (a == 0) {
+                    continue;
+                }
+                a = color_a == 255 ? a : stlxgfx_div255(a * color_a);
+
+                uint8_t* pixel = row + (uint32_t)sx * bytes_pp;
+                if (a == 255) {
+                    pixel[rb] = (uint8_t)src_r;
+                    pixel[gb] = (uint8_t)src_g;
+                    pixel[bb] = (uint8_t)src_b;
+                    if (has_alpha) {
+                        pixel[ab] = 0xFF;
+                    }
+                    continue;
+                }
+
+                uint32_t inv = 255 - a;
+                pixel[rb] = stlxgfx_blend_channel(pixel[rb], src_r * a, inv);
+                pixel[gb] = stlxgfx_blend_channel(pixel[gb], src_g * a, inv);
+                pixel[bb] = stlxgfx_blend_channel(pixel[bb], src_b * a, inv);
+                if (has_alpha) {
+                    pixel[ab] = 0xFF;
+                }
+            }
+        }
+
+        pen_x += slot_copy.advance;
+    }
 }

@@ -23,6 +23,7 @@
  * owning page. */
 typedef struct {
     uint32_t codepoint;    /* 0 marks an empty map slot */
+    uint16_t glyph_index;  /* face glyph id, kerning pairs need it */
     uint16_t page;
     uint16_t gen;
     uint16_t x, y, w, h;
