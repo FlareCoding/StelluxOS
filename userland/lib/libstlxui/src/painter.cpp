@@ -157,7 +157,8 @@ int32_t painter::font_ascent(uint32_t font_size) const {
 
 /* Blitting clips coarsely by bounding box, full precision arrives
  * with a consumer that needs partially visible images */
-void painter::image(point dst, const void* stlxgfx_surface) {
+void painter::image(point dst, const void* stlxgfx_surface,
+                    int32_t corner_radius) {
     if (!m_target || m_clips.empty() || !stlxgfx_surface) {
         return;
     }
@@ -169,6 +170,14 @@ void painter::image(point dst, const void* stlxgfx_surface) {
                     static_cast<int32_t>(src->height) };
     rect clipped = intersect(bounds, m_clips.back());
     if (clipped.w != bounds.w || clipped.h != bounds.h) {
+        return;
+    }
+
+    if (corner_radius > 0) {
+        stlxgfx_blit_rounded_alpha(static_cast<stlxgfx_surface_t*>(m_target),
+                                   bounds.x, bounds.y, src, 0, 0,
+                                   src->width, src->height,
+                                   static_cast<uint32_t>(corner_radius));
         return;
     }
 
@@ -194,6 +203,24 @@ void painter::circle(point center, int32_t radius, color c) {
     stlxgfx_fill_circle(static_cast<stlxgfx_surface_t*>(m_target),
                         center.x + m_origin.x, center.y + m_origin.y,
                         static_cast<uint32_t>(radius), c);
+}
+
+void painter::rounded_rect(const rect& r, int32_t radius, color c) {
+    if (!m_target || m_clips.empty() || r.w <= 0 || r.h <= 0) {
+        return;
+    }
+
+    rect surf = { r.x + m_origin.x, r.y + m_origin.y, r.w, r.h };
+    rect clipped = intersect(surf, m_clips.back());
+    if (clipped.w != surf.w || clipped.h != surf.h) {
+        return;
+    }
+
+    stlxgfx_fill_rounded_rect(static_cast<stlxgfx_surface_t*>(m_target),
+                              surf.x, surf.y,
+                              static_cast<uint32_t>(surf.w),
+                              static_cast<uint32_t>(surf.h),
+                              static_cast<uint32_t>(radius), c);
 }
 
 void painter::push_clip(const rect& r) {

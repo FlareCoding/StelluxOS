@@ -1,5 +1,8 @@
 #include "server.hpp"
 
+#include <stlx/proc.h>
+#include <stlxgfx/image.h>
+
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -9,8 +12,138 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-int server::init(presenter* pres) {
+/* Spawns a detached app. args is an optional space-separated argument
+ * string tokenized into a scratch copy, no quoting support. */
+static void spawn_app(const char* path, const char* args) {
+    char scratch[256];
+    const char* argv[16];
+    int argc = 0;
+
+    if (args && args[0]) {
+        strncpy(scratch, args, sizeof(scratch) - 1);
+        scratch[sizeof(scratch) - 1] = '\0';
+
+        for (char* p = scratch; *p && argc < 15;) {
+            while (*p == ' ') {
+                p++;
+            }
+            if (!*p) {
+                break;
+            }
+            argv[argc++] = p;
+            while (*p && *p != ' ') {
+                p++;
+            }
+            if (*p) {
+                *p++ = '\0';
+            }
+        }
+    }
+    argv[argc] = nullptr;
+
+    int handle = proc_exec(path, argc > 0 ? argv : nullptr);
+    if (handle < 0) {
+        printf("stlxdm: failed to spawn %s\r\n", path);
+        return;
+    }
+
+    proc_detach(handle);
+    printf("stlxdm: spawned %s\r\n", path);
+}
+
+/* Loads the configured wallpaper and pre-scales it to cover the
+ * screen, so compose only ever pays for a plain blit */
+static stlxgfx_surface_t* load_wallpaper(const dm_config& conf,
+                                         uint32_t screen_w,
+                                         uint32_t screen_h) {
+    if (!conf.wallpaper[0]) {
+        return nullptr;
+    }
+
+    stlxgfx_surface_t* image = stlxgfx_load_image(conf.wallpaper);
+    if (!image) {
+        printf("stlxdm: failed to load wallpaper %s\r\n", conf.wallpaper);
+        return nullptr;
+    }
+
+    stlxgfx_surface_t* scaled =
+        stlxgfx_create_surface(screen_w, screen_h, 32, 16, 8, 0);
+    if (!scaled) {
+        stlxgfx_destroy_surface(image);
+        return nullptr;
+    }
+
+    /* Center-crop the source to the screen's aspect ratio, then scale */
+    uint64_t img_w = image->width;
+    uint64_t img_h = image->height;
+    uint32_t crop_w;
+    uint32_t crop_h;
+    if (img_w * screen_h > img_h * screen_w) {
+        crop_h = static_cast<uint32_t>(img_h);
+        crop_w = static_cast<uint32_t>(img_h * screen_w / screen_h);
+    } else {
+        crop_w = static_cast<uint32_t>(img_w);
+        crop_h = static_cast<uint32_t>(img_w * screen_h / screen_w);
+    }
+    if (crop_w == 0) crop_w = 1;
+    if (crop_h == 0) crop_h = 1;
+
+    int32_t crop_x = static_cast<int32_t>((img_w - crop_w) / 2);
+    int32_t crop_y = static_cast<int32_t>((img_h - crop_h) / 2);
+    stlxgfx_blit_scaled(scaled, 0, 0, screen_w, screen_h,
+                        image, crop_x, crop_y, crop_w, crop_h);
+    stlxgfx_destroy_surface(image);
+
+    return scaled;
+}
+
+/* Parses a plus-separated chord such as ctrl+alt+t into modifier
+ * bits and a usage. Returns false for keys outside the letter and
+ * digit rows. */
+static bool parse_hotkey(const char* chord, uint8_t* out_mods,
+                         uint16_t* out_usage) {
+    uint8_t mods = 0;
+    uint16_t usage = 0;
+
+    const char* p = chord;
+    while (*p) {
+        const char* end = strchr(p, '+');
+        size_t len = end ? static_cast<size_t>(end - p) : strlen(p);
+
+        if (len == 4 && strncmp(p, "ctrl", 4) == 0) {
+            mods |= 1u << 1;
+        } else if (len == 3 && strncmp(p, "alt", 3) == 0) {
+            mods |= 1u << 2;
+        } else if (len == 5 && strncmp(p, "shift", 5) == 0) {
+            mods |= 1u << 0;
+        } else if ((len == 3 && strncmp(p, "gui", 3) == 0) ||
+                   (len == 5 && strncmp(p, "super", 5) == 0)) {
+            mods |= 1u << 3;
+        } else if (len == 1 && *p >= 'a' && *p <= 'z') {
+            usage = static_cast<uint16_t>(0x04 + (*p - 'a'));
+        } else if (len == 1 && *p >= '1' && *p <= '9') {
+            usage = static_cast<uint16_t>(0x1E + (*p - '1'));
+        } else if (len == 1 && *p == '0') {
+            usage = 0x27;
+        } else {
+            return false;
+        }
+
+        p = end ? end + 1 : p + len;
+    }
+
+    if (usage == 0) {
+        return false;
+    }
+
+    *out_mods = mods;
+    *out_usage = usage;
+    return true;
+}
+
+int server::init(presenter* pres, const dm_config* conf) {
     m_presenter = pres;
+    m_conf = conf;
 
     m_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (m_listen_fd < 0) {
@@ -37,16 +170,44 @@ int server::init(presenter* pres) {
         return -1;
     }
 
-    if (m_panels.init(pres->width(), pres->height()) != 0) {
+    if (m_panels.init(pres->width(), pres->height(), *conf) != 0) {
         return -1;
     }
 
-    /* The star toggles the overlay, and either state change repaints
-     * the whole screen */
-    m_panels.on_power_request = [this]() {
-        m_panels.overlay_toggle(!m_panels.overlay_open());
-        m_damage.add_full();
+    if (m_power.init(pres->width(), pres->height(),
+                     conf->taskbar_height) != 0) {
+        return -1;
+    }
+
+    m_panels.on_launch = [](const char* path) {
+        spawn_app(path, nullptr);
     };
+
+    m_wallpaper = load_wallpaper(*conf, pres->width(), pres->height());
+
+    /* Exec shortcuts with parseable chords become live hotkeys */
+    for (uint32_t i = 0; i < conf->shortcut_count; i++) {
+        const dm_conf_shortcut& sc = conf->shortcuts[i];
+        if (strcmp(sc.action, "exec") != 0 || !sc.path[0]) {
+            continue;
+        }
+
+        dm_hotkey hk;
+        if (parse_hotkey(sc.key, &hk.mods, &hk.usage)) {
+            hk.path = sc.path;
+            m_hotkeys.push_back(hk);
+        }
+    }
+
+    /* The config's autostart entries, or a lone terminal without any */
+    if (conf->autostart_count > 0) {
+        for (uint32_t i = 0; i < conf->autostart_count; i++) {
+            spawn_app(conf->autostart[i].path, conf->autostart[i].args);
+        }
+    } else {
+        spawn_app("/bin/stlxterm", nullptr);
+    }
+
     m_cursor_x = static_cast<int32_t>(pres->width()) / 2;
     m_cursor_y = static_cast<int32_t>(pres->height()) / 2;
 
@@ -61,6 +222,11 @@ void server::shutdown() {
         close(c->fd);
     }
     m_clients.clear();
+
+    stlxgfx_destroy_surface(m_wallpaper);
+    m_wallpaper = nullptr;
+    m_power.shutdown();
+    m_panels.shutdown();
 
     if (m_listen_fd >= 0) {
         close(m_listen_fd);
@@ -274,6 +440,10 @@ void server::drop_client(dm_client& c) {
 
     close(c.fd);
     c.fd = -1;
+}
+
+void server::spawn_shortcut(const char* path) {
+    spawn_app(path, nullptr);
 }
 
 constexpr size_t OUT_Q_LIMIT = 64 * 1024;

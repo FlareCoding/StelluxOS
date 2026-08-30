@@ -151,11 +151,16 @@ public:
      * @brief Alpha blends an stlxgfx surface at a widget local point.
      * @param dst Top left destination in widget space.
      * @param stlxgfx_surface The source stlxgfx_surface_t.
+     * @param corner_radius Rounds the blit's corners, 0 blits square.
      */
-    void image(point dst, const void* stlxgfx_surface);
+    void image(point dst, const void* stlxgfx_surface,
+               int32_t corner_radius = 0);
 
     /** @brief Fills a circle, clipped by its bounding box. */
     void circle(point center, int32_t radius, color c);
+
+    /** @brief Fills a rounded rect, clipped by its bounding box. */
+    void rounded_rect(const rect& r, int32_t radius, color c);
 
     void push_clip(const rect& r);
     void pop_clip();

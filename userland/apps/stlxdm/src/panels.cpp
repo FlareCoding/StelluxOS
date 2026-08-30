@@ -1,97 +1,127 @@
 /* The compositor's panels on its own toolkit hosts. Band surfaces
  * are retained like window buffers: the toolkit repaints only dirty
  * widgets into them, and compose blits whatever region damage
- * touches. The dock launches pinned apps, the top bar shows the
- * clock and network state, and the power overlay dims the desktop
- * above every window.
+ * touches. The dock launches the config's pinned apps, and the top
+ * bar shows system stats, the clock, and network state.
  */
 #include "panels.hpp"
 
 #include <stlx/net.h>
-#include <stlx/proc.h>
 #include <stlxgfx/bmp.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fcntl.h>
+#include <unistd.h>
 
-/* Pinned launchers, conf driven once the conf unit lands */
-struct dock_pin {
-    const char* icon_path;
-    const char* launch_path;
+constexpr uint32_t PIN_BG = 0xFF313244;
+constexpr uint32_t PIN_BG_HOVER = 0xFF45475A;
+constexpr uint32_t PIN_BG_PRESS = 0xFF3E3E52;
+constexpr uint32_t PIN_RING = 0xFF585B70;
+constexpr int32_t PIN_RADIUS = 6;
+constexpr int32_t PIN_ICON_RADIUS = 5;
+constexpr uint32_t PIN_FALLBACK_FG = 0xFF6C7086;
+
+constexpr uint32_t TIP_BG = 0xFF45475A;
+constexpr uint32_t TIP_FG = 0xFFCDD6F4;
+constexpr int32_t TIP_RADIUS = 4;
+constexpr int32_t TIP_PAD_H = 8;
+constexpr int32_t TIP_PAD_V = 4;
+constexpr int32_t TIP_GAP = 6;
+constexpr uint32_t TIP_FONT_PX = 12;
+
+/* The tooltip pops above the dock, so hover transitions damage this
+ * far beyond the band */
+constexpr int32_t TIP_REACH = 48;
+
+/* Refresh cadences. The tick runs on every wakeup, so the queries
+ * gate themselves by elapsed time, stats each second and the rarely
+ * changing network answer every third. */
+constexpr uint64_t STATS_POLL_NS = 1000000000ull;
+constexpr uint64_t NET_POLL_NS = 3000000000ull;
+
+/* Letter-glyph fallback colors for pins without an icon file */
+static const uint32_t PIN_ACCENTS[] = {
+    0xFF89B4FA, 0xFFF38BA8, 0xFFA6E3A1, 0xFFFAB387,
+    0xFFCBA6F7, 0xFF94E2D5, 0xFFF9E2AF, 0xFFEBA0AC,
+    0xFF74C7EC, 0xFFB4BEFE, 0xFFF2CDCD, 0xFFF5C2E7,
+    0xFF89DCEB, 0xFFBAC2DE, 0xFFCDD6F4, 0xFFFAB387
 };
 
-static const dock_pin DOCK_PINS[] = {
-    { "/etc/res/icons/icon_stlxterm_32x32.bmp", "/bin/stlxterm" },
-    { "/etc/res/icons/icon_doom_32x32.bmp", "/bin/doom" },
-    { "/etc/res/icons/icon_unknown_32x32.bmp", "/bin/uidemo" },
-};
-constexpr const char* DEFAULT_ICON =
-    "/etc/res/icons/icon_unknown_32x32.bmp";
-
-constexpr int32_t DOCK_BTN_W = 40;
-constexpr int32_t DOCK_ICON = 32;
-constexpr int32_t ORB_R = 36;
-constexpr int32_t ORB_BOX_W = 110;
-constexpr int32_t ORB_BOX_H = 130;
-constexpr uint32_t DIM_COLOR = 0xA0000000;
-
-/* Every net query cadence in clock ticks */
-constexpr uint32_t NET_POLL_TICKS = 3;
-
-/* Launched apps live their own lives, the DM never waits */
-static void launch_detached(const char* path) {
-    int handle = proc_create(path, nullptr);
-    if (handle < 0) {
-        printf("stlxdm: launch failed: %s\r\n", path);
-        return;
-    }
-
-    if (proc_start(handle) < 0) {
-        printf("stlxdm: start failed: %s\r\n", path);
-        return;
-    }
-
-    proc_detach(handle);
-}
+/* Live top bar strings, refreshed on the clock tick */
+static char g_stats_str[64] = "";
+static uint64_t g_stats_prev_busy = 0;
+static uint64_t g_stats_prev_total = 0;
 
 namespace {
 
-/* One pinned launcher: an icon on a hover surface, spawning its app
- * detached on release */
+/* One pinned launcher: an icon tile on a rounded hover surface,
+ * firing its launch callback on release inside */
 class dock_button : public ui::widget {
 public:
-    dock_button(stlxgfx_surface_t* icon, const char* path)
-        : m_icon(icon), m_path(path) {}
+    dock_button(stlxgfx_surface_t* icon, const dm_conf_pin& pin,
+                int32_t index, uint32_t accent, int32_t icon_px)
+        : m_icon(icon), m_pin(&pin), m_index(index), m_accent(accent),
+          m_icon_px(icon_px) {}
+
+    std::function<void(const char*)> on_launch;
+    std::function<void(int32_t, bool)> on_hover;
 
     ui::size measure(ui::size) override {
-        return { DOCK_BTN_W, dm_panels::DOCK_H };
+        return { m_icon_px + 2, m_icon_px + 2 };
     }
 
     void paint(ui::painter& p) override {
-        const ui::theme& t = ui::theme::active();
+        ui::rect icon_box = { 1, 1, m_icon_px, m_icon_px };
 
-        if (m_pressed) {
-            p.fill({ 0, 0, m_frame.w, m_frame.h }, t.surface_press);
-        } else if (m_hover) {
-            p.fill({ 0, 0, m_frame.w, m_frame.h }, t.surface_hover);
+        if (m_hover && !m_pressed) {
+            p.rounded_rect({ 0, 0, m_frame.w, m_frame.h },
+                           PIN_RADIUS + 1, PIN_RING);
         }
+        p.rounded_rect(icon_box, PIN_RADIUS,
+                       m_pressed ? PIN_BG_PRESS
+                       : m_hover ? PIN_BG_HOVER : PIN_BG);
 
         if (m_icon) {
-            p.image({ (m_frame.w - DOCK_ICON) / 2,
-                      (m_frame.h - DOCK_ICON) / 2 }, m_icon);
+            p.image({ icon_box.x, icon_box.y }, m_icon, PIN_ICON_RADIUS);
+            return;
         }
+
+        /* Fallback glyph: the label's first letter, or a question
+         * mark when there is no label either */
+        char glyph[2] = { m_pin->label[0] ? m_pin->label[0] : '?', '\0' };
+        uint32_t px = static_cast<uint32_t>(m_icon_px) * 2 / 3;
+        if (px < 10) {
+            px = 10;
+        }
+
+        ui::size ts = p.measure_text(glyph, px);
+        int32_t tx = icon_box.x + (icon_box.w - ts.w) / 2;
+        int32_t ty = icon_box.y + (icon_box.h - ts.h) / 2
+                   + p.font_ascent(px);
+        p.text({ tx, ty }, glyph, px,
+               m_pin->label[0] ? m_accent : PIN_FALLBACK_FG);
     }
 
     void on_pointer_enter() override {
         m_hover = true;
         invalidate();
+
+        if (on_hover) {
+            on_hover(m_index, true);
+        }
     }
 
     void on_pointer_leave() override {
         m_hover = false;
         m_pressed = false;
         invalidate();
+
+        if (on_hover) {
+            on_hover(m_index, false);
+        }
     }
 
     bool on_pointer_down(const ui::pointer_event&) override {
@@ -109,8 +139,8 @@ public:
         m_pressed = false;
         invalidate();
 
-        if (fire) {
-            launch_detached(m_path);
+        if (fire && on_launch && m_pin->path[0]) {
+            on_launch(m_pin->path);
         }
 
         return true;
@@ -118,138 +148,12 @@ public:
 
 private:
     stlxgfx_surface_t* m_icon = nullptr;
-    const char* m_path = nullptr;
+    const dm_conf_pin* m_pin = nullptr;
+    int32_t m_index = 0;
+    uint32_t m_accent = 0;
+    int32_t m_icon_px = 0;
     bool m_hover = false;
     bool m_pressed = false;
-};
-
-/* A power choice: a circle with its label beneath, ringed on hover */
-class power_orb : public ui::widget {
-public:
-    power_orb(std::string text, ui::color fill)
-        : m_text(std::move(text)), m_fill(fill) {}
-
-    std::function<void()> on_pick;
-
-    ui::size measure(ui::size) override {
-        return { ORB_BOX_W, ORB_BOX_H };
-    }
-
-    void paint(ui::painter& p) override {
-        const ui::theme& t = ui::theme::active();
-        ui::point c = { m_frame.w / 2, ORB_R + 8 };
-
-        if (m_hover) {
-            p.circle(c, ORB_R + 4, t.text);
-        }
-        p.circle(c, ORB_R, m_fill);
-
-        ui::size text = p.measure_text(m_text, 0);
-        int32_t baseline = 2 * (ORB_R + 8) + 10 + p.font_ascent(0);
-
-        p.text({ (m_frame.w - text.w) / 2, baseline }, m_text, 0, t.text);
-    }
-
-    void on_pointer_enter() override {
-        m_hover = true;
-        invalidate();
-    }
-
-    void on_pointer_leave() override {
-        m_hover = false;
-        invalidate();
-    }
-
-    bool on_pointer_down(const ui::pointer_event&) override {
-        return true;
-    }
-
-    bool on_pointer_up(const ui::pointer_event& e) override {
-        bool inside = e.pos.x >= 0 && e.pos.y >= 0 &&
-                      e.pos.x < m_frame.w && e.pos.y < m_frame.h;
-        if (inside && on_pick) {
-            on_pick();
-        }
-
-        return true;
-    }
-
-private:
-    std::string m_text;
-    ui::color m_fill;
-    bool m_hover = false;
-};
-
-/* The dock's power affordance at the right edge */
-class power_star : public ui::widget {
-public:
-    std::function<void()> on_open;
-
-    ui::size measure(ui::size) override {
-        return { DOCK_BTN_W, dm_panels::DOCK_H };
-    }
-
-    void paint(ui::painter& p) override {
-        const ui::theme& t = ui::theme::active();
-        ui::point c = { m_frame.w / 2, m_frame.h / 2 };
-        ui::color glyph = m_hover ? t.danger : t.text_dim;
-
-        if (m_hover) {
-            p.fill({ 0, 0, m_frame.w, m_frame.h }, t.surface_hover);
-        }
-
-        /* A power symbol: a ring with a stem through the top */
-        p.circle(c, 9, glyph);
-        p.circle(c, 5, m_hover ? t.surface_hover : t.surface);
-        p.fill({ c.x - 1, c.y - 11, 3, 9 }, glyph);
-    }
-
-    void on_pointer_enter() override {
-        m_hover = true;
-        invalidate();
-    }
-
-    void on_pointer_leave() override {
-        m_hover = false;
-        invalidate();
-    }
-
-    bool on_pointer_down(const ui::pointer_event&) override {
-        return true;
-    }
-
-    bool on_pointer_up(const ui::pointer_event& e) override {
-        bool inside = e.pos.x >= 0 && e.pos.y >= 0 &&
-                      e.pos.x < m_frame.w && e.pos.y < m_frame.h;
-        if (inside && on_open) {
-            on_open();
-        }
-
-        return true;
-    }
-
-private:
-    bool m_hover = false;
-};
-
-/* Presses that reach the overlay root landed outside the orbs. Its
- * paint stores transparency so vanished hover rings actually erase,
- * which the background skip sentinel would not do. */
-class overlay_root : public ui::box {
-public:
-    std::function<void()> on_outside;
-
-    void paint(ui::painter& p) override {
-        p.fill({ 0, 0, m_frame.w, m_frame.h }, 0x00000000);
-    }
-
-    bool on_pointer_down(const ui::pointer_event&) override {
-        if (on_outside) {
-            on_outside();
-        }
-
-        return true;
-    }
 };
 
 } // namespace
@@ -259,14 +163,26 @@ static stlxgfx_surface_t* make_band(uint32_t w, int32_t h) {
                                   32, 16, 8, 0);
 }
 
+static uint64_t monotonic_ns() {
+    timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull
+         + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+/* Weekday, date, and time for the bar's center */
 static void format_clock(char* out, size_t cap) {
     time_t t = time(nullptr);
-    uint64_t secs = static_cast<uint64_t>(t);
+    struct tm* tm = gmtime(&t);
+    if (!tm) {
+        out[0] = '\0';
+        return;
+    }
 
-    snprintf(out, cap, "%02llu:%02llu:%02llu",
-             (unsigned long long)(secs / 3600 % 24),
-             (unsigned long long)(secs / 60 % 60),
-             (unsigned long long)(secs % 60));
+    strftime(out, cap, "%a %b %e  %H:%M:%S", tm);
 }
 
 /* The default interface summarized as a short bar string */
@@ -298,112 +214,204 @@ static void format_net(char* out, size_t cap) {
              (ip >> 8) & 0xFF, ip & 0xFF);
 }
 
-int dm_panels::init(uint32_t screen_w, uint32_t screen_h) {
-    m_width = screen_w;
-    m_height = screen_h;
-    m_dock_y = static_cast<int32_t>(screen_h) - DOCK_H;
-
-    m_band = make_band(screen_w, BAR_H);
-    m_dock = make_band(screen_w, DOCK_H);
-    m_overlay = make_band(screen_w, static_cast<int32_t>(screen_h));
-    if (!m_band || !m_dock || !m_overlay) {
+/* Reads a small /dev/sysinfo file into buf, NUL terminated */
+static ssize_t read_stats_file(const char* path, char* buf, size_t cap) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
         return -1;
     }
 
-    /* The top bar: name left, network state and clock right */
+    size_t total = 0;
+    while (total < cap - 1) {
+        ssize_t rd = read(fd, buf + total, cap - 1 - total);
+        if (rd <= 0) {
+            break;
+        }
+        total += static_cast<size_t>(rd);
+    }
+    close(fd);
+    buf[total] = '\0';
+
+    return static_cast<ssize_t>(total);
+}
+
+/* Value of a "<label> <number>" line in a stats text snapshot */
+static uint64_t stats_field(const char* text, const char* label) {
+    const char* p = strstr(text, label);
+    if (!p) {
+        return 0;
+    }
+
+    return strtoull(p + strlen(label), nullptr, 10);
+}
+
+/* Overall CPU utilization from busy and idle tick deltas, plus
+ * memory consumption from page counters */
+static void update_sys_stats() {
+    char buf[512];
+    if (read_stats_file("/dev/sysinfo/cpu", buf, sizeof(buf)) <= 0) {
+        g_stats_str[0] = '\0';
+        return;
+    }
+
+    uint64_t busy = 0;
+    uint64_t idle = 0;
+    const char* p = buf;
+    while (*p) {
+        if (strncmp(p, "cpu", 3) == 0) {
+            char* end = nullptr;
+            strtoull(p + 3, &end, 10);
+            busy += strtoull(end, &end, 10);
+            idle += strtoull(end, &end, 10);
+        }
+        while (*p && *p != '\n') {
+            p++;
+        }
+        if (*p) {
+            p++;
+        }
+    }
+
+    uint64_t total = busy + idle;
+    unsigned cpu_pct = 0;
+    if (g_stats_prev_total != 0 && total > g_stats_prev_total) {
+        uint64_t d_busy = busy - g_stats_prev_busy;
+        uint64_t d_total = total - g_stats_prev_total;
+        cpu_pct = static_cast<unsigned>((d_busy * 100 + d_total / 2)
+                                        / d_total);
+    }
+    g_stats_prev_busy = busy;
+    g_stats_prev_total = total;
+
+    if (read_stats_file("/dev/sysinfo/mem", buf, sizeof(buf)) <= 0) {
+        g_stats_str[0] = '\0';
+        return;
+    }
+
+    uint64_t page_size = stats_field(buf, "page_size ");
+    uint64_t total_pages = stats_field(buf, "total_pages ");
+    uint64_t used_pages = stats_field(buf, "used_pages ");
+    uint64_t used_mb = used_pages * page_size / (1024 * 1024);
+    uint64_t total_mb = total_pages * page_size / (1024 * 1024);
+
+    snprintf(g_stats_str, sizeof(g_stats_str),
+             "CPU %u%%  MEM %llu/%llu MB", cpu_pct,
+             static_cast<unsigned long long>(used_mb),
+             static_cast<unsigned long long>(total_mb));
+}
+
+int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
+                    const dm_config& conf) {
+    m_conf = &conf;
+    m_width = screen_w;
+    m_height = screen_h;
+    m_dock_h = static_cast<int32_t>(conf.taskbar_height);
+    m_dock_y = static_cast<int32_t>(screen_h) - m_dock_h;
+
+    /* One row below the bar carries its accent underline, outside the
+     * toolkit's layout so it never repaints */
+    m_band = make_band(screen_w, BAR_H + 1);
+    m_dock = make_band(screen_w, m_dock_h);
+    if (!m_band || !m_dock) {
+        return -1;
+    }
+
+    stlxgfx_fill_rect(m_band, 0, BAR_H, screen_w, 1, conf.accent_color);
+
+    m_tip_font = stlxgfx_font_open(STLXGFX_FONT_PATH, TIP_FONT_PX);
+    if (!m_tip_font) {
+        return -1;
+    }
+    stlxgfx_font_metrics_get(m_tip_font, &m_tip_fm);
+
+    /* The bar: name and stats left, the clock truly centered between
+     * two equal flex halves, network state right */
     auto bar = std::make_unique<ui::box>(ui::axis::row);
-    bar->s().background = ui::theme::active().surface;
-    bar->s().padding = ui::edge_insets::xy(12, 0);
+    bar->s().background = conf.bar_color;
+    bar->s().padding = ui::edge_insets::xy(10, 0);
     bar->s().align_items = ui::align::center;
-    bar->s().gap = 16;
 
-    ui::label* name = bar->add<ui::label>("Stellux");
+    ui::box* left = bar->add<ui::box>(ui::axis::row);
+    left->s().main = ui::length::flex();
+    left->s().align_items = ui::align::center;
+    left->s().gap = 24;
+
+    ui::label* name = left->add<ui::label>("Stellux");
     name->s().main = ui::length::content();
+    name->set_color(conf.text_color);
 
-    ui::box* spacer = bar->add<ui::box>();
-    spacer->s().main = ui::length::flex();
+    update_sys_stats();
+    m_stats_query_ns = monotonic_ns();
+    m_stats = left->add<ui::label>(g_stats_str);
+    m_stats->s().main = ui::length::content();
+    m_stats->set_color(conf.accent_color);
 
-    char net[32];
-    format_net(net, sizeof(net));
-    m_net = bar->add<ui::label>(net);
-    m_net->s().main = ui::length::content();
-    m_net->set_color(ui::theme::active().text_dim);
-
-    char text[16];
+    char text[64];
     format_clock(text, sizeof(text));
     m_clock = bar->add<ui::label>(text);
     m_clock->s().main = ui::length::content();
-    m_clock->set_color(ui::theme::active().text_dim);
+    m_clock->set_color(conf.text_color);
+
+    ui::box* right = bar->add<ui::box>(ui::axis::row);
+    right->s().main = ui::length::flex();
+    right->s().align_items = ui::align::center;
+    right->s().justify = ui::align::end;
+
+    char net[32];
+    format_net(net, sizeof(net));
+    m_net_query_ns = monotonic_ns();
+    m_net = right->add<ui::label>(net);
+    m_net->s().main = ui::length::content();
+    m_net->set_color(conf.text_color);
 
     m_host.set_root(std::move(bar));
 
-    /* The dock: pins centered between flex spacers, power at the
-     * right edge where the old desktop kept it */
+    /* The dock: the config's pins centered between flex spacers. The
+     * accent top edge is drawn at compose time over the band blit. */
     auto dock = std::make_unique<ui::box>(ui::axis::row);
-    dock->s().background = ui::theme::active().surface;
+    dock->s().background = conf.bar_color;
     dock->s().align_items = ui::align::center;
-    dock->s().gap = 6;
+
+    /* Tiles are one pixel wider than their icons on each side, so the
+     * icon pitch matches the configured icon size plus spacing */
+    int32_t spacing = static_cast<int32_t>(conf.taskbar_spacing);
+    dock->s().gap = spacing >= 2 ? spacing - 2 : 0;
 
     ui::box* lead = dock->add<ui::box>();
     lead->s().main = ui::length::flex();
 
-    for (const dock_pin& pin : DOCK_PINS) {
-        stlxgfx_surface_t* icon = stlxgfx_load_bmp(pin.icon_path);
+    int32_t icon_px = static_cast<int32_t>(conf.taskbar_icon_size);
+    for (uint32_t i = 0; i < conf.pin_count; i++) {
+        const dm_conf_pin& pin = conf.pins[i];
+
+        stlxgfx_surface_t* icon = nullptr;
+        if (pin.icon_path[0]) {
+            icon = stlxgfx_load_bmp(pin.icon_path);
+        }
         if (!icon) {
-            icon = stlxgfx_load_bmp(DEFAULT_ICON);
+            icon = stlxgfx_load_bmp(DM_CONF_DEFAULT_ICON);
         }
 
-        dock_button* btn = dock->add<dock_button>(icon, pin.launch_path);
-        btn->s().main = ui::length::fixed(DOCK_BTN_W);
-        btn->s().cross = ui::length::fixed(DOCK_H);
+        uint32_t accent = PIN_ACCENTS[
+            i % (sizeof(PIN_ACCENTS) / sizeof(PIN_ACCENTS[0]))];
+        dock_button* btn = dock->add<dock_button>(
+            icon, pin, static_cast<int32_t>(i), accent, icon_px);
+        btn->s().main = ui::length::fixed(icon_px + 2);
+        btn->s().cross = ui::length::fixed(icon_px + 2);
+        btn->on_launch = [this](const char* path) {
+            if (on_launch) {
+                on_launch(path);
+            }
+        };
+        btn->on_hover = [this](int32_t index, bool entered) {
+            hover_pin(index, entered);
+        };
     }
 
     ui::box* tail = dock->add<ui::box>();
     tail->s().main = ui::length::flex();
 
-    power_star* star = dock->add<power_star>();
-    star->s().main = ui::length::fixed(DOCK_BTN_W);
-    star->s().cross = ui::length::fixed(DOCK_H);
-    star->on_open = [this]() {
-        if (on_power_request) {
-            on_power_request();
-        }
-    };
-
     m_dock_host.set_root(std::move(dock));
-
-    /* The overlay: two orbs centered on a transparent ground, the
-     * dim itself is composed under the band */
-    auto ov = std::make_unique<overlay_root>();
-    ov->s().direction = ui::axis::row;
-    ov->s().justify = ui::align::center;
-    ov->s().align_items = ui::align::center;
-    ov->s().gap = 48;
-    ov->on_outside = [this]() {
-        if (on_power_request) {
-            on_power_request();
-        }
-    };
-
-    power_orb* restart = ov->add<power_orb>(
-        "Restart", ui::theme::active().accent);
-    restart->s().main = ui::length::fixed(ORB_BOX_W);
-    restart->s().cross = ui::length::fixed(ORB_BOX_H);
-    restart->on_pick = []() {
-        printf("stlxdm: restart chosen\r\n");
-        launch_detached("/bin/reboot");
-    };
-
-    power_orb* off = ov->add<power_orb>(
-        "Shut down", ui::theme::active().danger);
-    off->s().main = ui::length::fixed(ORB_BOX_W);
-    off->s().cross = ui::length::fixed(ORB_BOX_H);
-    off->on_pick = []() {
-        printf("stlxdm: shutdown chosen\r\n");
-        launch_detached("/bin/shutdown");
-    };
-
-    m_overlay_host.set_root(std::move(ov));
 
     return 0;
 }
@@ -411,10 +419,39 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h) {
 void dm_panels::shutdown() {
     stlxgfx_destroy_surface(m_band);
     stlxgfx_destroy_surface(m_dock);
-    stlxgfx_destroy_surface(m_overlay);
     m_band = nullptr;
     m_dock = nullptr;
-    m_overlay = nullptr;
+
+    stlxgfx_font_close(m_tip_font);
+    m_tip_font = nullptr;
+}
+
+void dm_panels::hover_pin(int32_t index, bool entered) {
+    if (entered) {
+        m_hover_pin = index;
+        return;
+    }
+
+    if (m_hover_pin == index) {
+        m_hover_pin = -1;
+    }
+}
+
+/* Screen-space icon box of one pin, the flex-centered row reduced to
+ * arithmetic: tiles are icon plus two, pitch adds the gap */
+damage_list::rect dm_panels::pin_icon_rect(int32_t index) const {
+    int32_t n = static_cast<int32_t>(m_conf->pin_count);
+    int32_t icon = static_cast<int32_t>(m_conf->taskbar_icon_size);
+    int32_t tile = icon + 2;
+    int32_t spacing = static_cast<int32_t>(m_conf->taskbar_spacing);
+    int32_t gap = spacing >= 2 ? spacing - 2 : 0;
+
+    int32_t total = n * tile + (n - 1) * gap;
+    int32_t start = (static_cast<int32_t>(m_width) - total) / 2;
+    int32_t x = start + index * (tile + gap) + 1;
+    int32_t y = m_dock_y + (m_dock_h - icon) / 2;
+
+    return { x, y, icon, icon };
 }
 
 void dm_panels::flush(damage_list& damage) {
@@ -430,7 +467,7 @@ void dm_panels::flush(damage_list& damage) {
     }
 
     if (m_dock && m_dock_host.dirty()) {
-        m_dock_host.layout_now(static_cast<int32_t>(m_width), DOCK_H);
+        m_dock_host.layout_now(static_cast<int32_t>(m_width), m_dock_h);
 
         std::vector<ui::rect> out;
         m_dock_host.paint_now(m_dock, out);
@@ -441,29 +478,24 @@ void dm_panels::flush(damage_list& damage) {
         }
     }
 
-    if (m_overlay && m_overlay_open && m_overlay_host.dirty()) {
-        m_overlay_host.layout_now(static_cast<int32_t>(m_width),
-                                  static_cast<int32_t>(m_height));
-
-        /* The transparent ground must actually clear, since orbs move
-         * nowhere and hover rings grow into fresh pixels */
-        std::vector<ui::rect> out;
-        m_overlay_host.paint_now(m_overlay, out);
-
-        for (const ui::rect& r : out) {
-            damage.add(r.x, r.y, r.w, r.h);
-        }
+    /* A tooltip appearing or vanishing repaints the dock strip plus
+     * its reach above the band */
+    if (m_hover_pin != m_drawn_hover_pin) {
+        damage.add(0, m_dock_y - TIP_REACH,
+                   static_cast<int32_t>(m_width), TIP_REACH + m_dock_h);
+        m_drawn_hover_pin = m_hover_pin;
     }
 }
 
 void dm_panels::compose(stlxgfx_surface_t* back,
                         const damage_list::rect& r) {
-    if (m_band && r.y < BAR_H) {
+    int32_t band_h = BAR_H + 1;
+    if (m_band && r.y < band_h) {
         int32_t x0 = r.x > 0 ? r.x : 0;
         int32_t y0 = r.y > 0 ? r.y : 0;
         int32_t x1 = r.x + r.w < static_cast<int32_t>(m_width)
                    ? r.x + r.w : static_cast<int32_t>(m_width);
-        int32_t y1 = r.y + r.h < BAR_H ? r.y + r.h : BAR_H;
+        int32_t y1 = r.y + r.h < band_h ? r.y + r.h : band_h;
 
         if (x0 < x1 && y0 < y1) {
             stlxgfx_blit(back, x0, y0, m_band, x0, y0,
@@ -477,58 +509,79 @@ void dm_panels::compose(stlxgfx_surface_t* back,
         int32_t y0 = r.y > m_dock_y ? r.y : m_dock_y;
         int32_t x1 = r.x + r.w < static_cast<int32_t>(m_width)
                    ? r.x + r.w : static_cast<int32_t>(m_width);
-        int32_t y1 = r.y + r.h < m_dock_y + DOCK_H
-                   ? r.y + r.h : m_dock_y + DOCK_H;
+        int32_t y1 = r.y + r.h < m_dock_y + m_dock_h
+                   ? r.y + r.h : m_dock_y + m_dock_h;
 
         if (x0 < x1 && y0 < y1) {
             stlxgfx_blit(back, x0, y0, m_dock, x0, y0 - m_dock_y,
                          static_cast<uint32_t>(x1 - x0),
                          static_cast<uint32_t>(y1 - y0));
+
+            /* The dock's accent top edge, mirroring the bar's underline */
+            if (y0 == m_dock_y) {
+                stlxgfx_fill_rect(back, x0, m_dock_y,
+                                  static_cast<uint32_t>(x1 - x0), 1,
+                                  m_conf->accent_color);
+            }
         }
     }
 }
 
-void dm_panels::overlay_compose(stlxgfx_surface_t* back,
-                                const damage_list::rect& r) {
-    if (!m_overlay_open || !m_overlay) {
+void dm_panels::compose_top(stlxgfx_surface_t* back,
+                            const damage_list::rect& r) {
+    if (m_hover_pin < 0 ||
+        m_hover_pin >= static_cast<int32_t>(m_conf->pin_count)) {
         return;
     }
 
-    stlxgfx_fill_rect_blend(back, r.x, r.y,
-                            static_cast<uint32_t>(r.w),
-                            static_cast<uint32_t>(r.h), DIM_COLOR);
-    stlxgfx_blit_alpha(back, r.x, r.y, m_overlay, r.x, r.y,
-                       static_cast<uint32_t>(r.w),
-                       static_cast<uint32_t>(r.h));
-}
-
-void dm_panels::overlay_toggle(bool open) {
-    if (m_overlay_open == open) {
+    const dm_conf_pin& pin = m_conf->pins[m_hover_pin];
+    if (!pin.label[0]) {
         return;
     }
 
-    m_overlay_open = open;
+    int32_t tw = stlxgfx_text_width(m_tip_font, pin.label,
+                                    strlen(pin.label));
+    int32_t th = m_tip_fm.ascent + m_tip_fm.descent;
+    damage_list::rect icon = pin_icon_rect(m_hover_pin);
 
-    if (open) {
-        stlxgfx_clear(m_overlay, 0x00000000);
-        m_overlay_host.root()->invalidate_layout();
+    int32_t tip_w = tw + 2 * TIP_PAD_H;
+    int32_t tip_h = th + 2 * TIP_PAD_V;
+    int32_t tip_x = icon.x + icon.w / 2 - tip_w / 2;
+    int32_t tip_y = icon.y - tip_h - TIP_GAP;
+
+    if (tip_x < 2) {
+        tip_x = 2;
+    }
+    if (tip_x + tip_w > static_cast<int32_t>(m_width) - 2) {
+        tip_x = static_cast<int32_t>(m_width) - tip_w - 2;
+    }
+    if (tip_y < 2) {
+        tip_y = 2;
+    }
+
+    if (tip_x >= r.x + r.w || tip_x + tip_w <= r.x ||
+        tip_y >= r.y + r.h || tip_y + tip_h <= r.y) {
         return;
     }
 
-    m_overlay_host.pointer_move(-1, -1);
-}
+    /* A view over the compose rect clips the box and text for free */
+    stlxgfx_surface_t* view = stlxgfx_surface_from_buffer(
+        back->pixels + static_cast<uint32_t>(r.y) * back->pitch
+            + static_cast<uint32_t>(r.x) * 4,
+        static_cast<uint32_t>(r.w), static_cast<uint32_t>(r.h),
+        back->pitch, 32, 16, 8, 0);
+    if (!view) {
+        return;
+    }
 
-void dm_panels::overlay_pointer_move(int32_t x, int32_t y) {
-    m_overlay_host.pointer_move(x, y);
-}
-
-void dm_panels::overlay_pointer_button(int32_t x, int32_t y, uint8_t btn,
-                                       bool down) {
-    m_overlay_host.pointer_button(x, y, btn, down);
-}
-
-bool dm_panels::overlay_key(uint16_t usage) {
-    return usage == 0x29;
+    stlxgfx_fill_rounded_rect(view, tip_x - r.x, tip_y - r.y,
+                              static_cast<uint32_t>(tip_w),
+                              static_cast<uint32_t>(tip_h),
+                              static_cast<uint32_t>(TIP_RADIUS), TIP_BG);
+    stlxgfx_draw_text(view, m_tip_font, tip_x - r.x + TIP_PAD_H,
+                      tip_y - r.y + TIP_PAD_V + m_tip_fm.ascent,
+                      pin.label, strlen(pin.label), TIP_FG);
+    stlxgfx_destroy_surface(view);
 }
 
 void dm_panels::pointer_move(int32_t x, int32_t y) {
@@ -563,15 +616,22 @@ void dm_panels::clock_tick() {
         return;
     }
 
-    char text[16];
+    char text[64];
     format_clock(text, sizeof(text));
     m_clock->set_text(text);
 
-    /* The network answer changes rarely, so it polls at a slower
-     * cadence than the clock */
-    m_net_tick++;
-    if (m_net && m_net_tick >= NET_POLL_TICKS) {
-        m_net_tick = 0;
+    /* Stats sample busy and idle deltas, so calls faster than the
+     * cadence would shrink the window to noise and repaint per wake */
+    uint64_t now = monotonic_ns();
+    if (m_stats && now - m_stats_query_ns >= STATS_POLL_NS) {
+        m_stats_query_ns = now;
+
+        update_sys_stats();
+        m_stats->set_text(g_stats_str);
+    }
+
+    if (m_net && now - m_net_query_ns >= NET_POLL_NS) {
+        m_net_query_ns = now;
 
         char net[32];
         format_net(net, sizeof(net));

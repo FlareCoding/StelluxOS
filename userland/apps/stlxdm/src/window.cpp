@@ -10,9 +10,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-constexpr int32_t CASCADE_ORIGIN = 60;
-constexpr int32_t CASCADE_STEP = 40;
-constexpr uint32_t BACKGROUND = 0xFF16161E;
+/* Toplevels cascade from here, expressed as the content origin: the
+ * frame's outer corner lands at (60, 48) */
+constexpr int32_t CASCADE_X = 60 + decor::BORDER;
+constexpr int32_t CASCADE_Y = 48 + decor::TITLE_H;
+constexpr int32_t CASCADE_STEP = 32;
+constexpr uint32_t CASCADE_WRAP = 10;
 
 static dm_window* find_window(dm_client& c, uint32_t win_id) {
     for (auto& w : c.windows) {
@@ -73,10 +76,10 @@ void server::handle_create_window(dm_client& c, const uint8_t* payload) {
         w->x = parent->x + m->rel_x;
         w->y = parent->y + m->rel_y;
     } else {
-        int32_t step = CASCADE_ORIGIN
-                     + CASCADE_STEP * static_cast<int32_t>(m_window_count % 8);
-        w->x = step;
-        w->y = step;
+        int32_t step = CASCADE_STEP
+                     * static_cast<int32_t>(m_window_count % CASCADE_WRAP);
+        w->x = CASCADE_X + step;
+        w->y = CASCADE_Y + step;
     }
 
     m_window_count++;
@@ -392,11 +395,11 @@ void server::latch_window(dm_client& c, dm_window& w) {
     w.sent_conf_count = keep;
 
     if (first_map || resized) {
-        damage_list::rect nr = { w.x - decor::BORDER,
-                                 w.y - decor::TITLE_H,
-                                 static_cast<int32_t>(nb.width) + 2 * decor::BORDER,
+        damage_list::rect nr = { w.x - decor::BORDER - 1,
+                                 w.y - decor::TITLE_H - 1,
+                                 static_cast<int32_t>(nb.width) + 2 * decor::BORDER + 2,
                                  static_cast<int32_t>(nb.height) + decor::TITLE_H
-                                     + decor::BORDER };
+                                     + decor::BORDER + 2 };
         if (w.flags & SWP_WF_BORDERLESS) {
             nr = { w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height) };
         }
@@ -426,8 +429,15 @@ void server::latch_window(dm_client& c, dm_window& w) {
  * window in scene order. */
 void server::compose_rect(stlxgfx_surface_t* back,
                           const damage_list::rect& r) {
-    stlxgfx_fill_rect(back, r.x, r.y, static_cast<uint32_t>(r.w), static_cast<uint32_t>(r.h),
-                      BACKGROUND);
+    if (m_wallpaper) {
+        stlxgfx_blit(back, r.x, r.y, m_wallpaper, r.x, r.y,
+                     static_cast<uint32_t>(r.w),
+                     static_cast<uint32_t>(r.h));
+    } else {
+        stlxgfx_fill_rect(back, r.x, r.y,
+                          static_cast<uint32_t>(r.w),
+                          static_cast<uint32_t>(r.h), m_conf->bg_color);
+    }
 
     /* Panels live between the wallpaper and the windows */
     m_panels.compose(back, r);
@@ -437,7 +447,12 @@ void server::compose_rect(stlxgfx_surface_t* back,
             continue;
         }
 
-        decor::draw(back, *w, w == m_focus, w == m_close_hover, r);
+        decor::chrome_state st;
+        st.focused = w == m_focus;
+        st.dragging = w == m_drag;
+        st.close_hover = w == m_close_hover;
+        st.close_pressed = w == m_close_press;
+        decor::draw(back, *w, st, r);
 
         dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
         int32_t ix0 = r.x > w->x ? r.x : w->x;
@@ -459,15 +474,22 @@ void server::compose_rect(stlxgfx_surface_t* back,
                          static_cast<uint32_t>(ix1 - ix0), static_cast<uint32_t>(iy1 - iy0));
             stlxgfx_destroy_surface(src);
         }
+
+        /* The square client blit bleeds over the frame's rounded
+         * bottom corners, so they are re-carved anti-aliased */
+        decor::carve_bottom_corners(back, *w, st, m_wallpaper,
+                                    m_conf->bg_color, r);
     }
 
     if (m_resize) {
         decor::draw_outline(back, m_outline);
     }
 
-    /* The power overlay dims and draws above everything but the
-     * pointer */
-    m_panels.overlay_compose(back, r);
+    /* Floating chrome above the windows: the dock tooltip and the
+     * power star, then the overlay, then the pointer */
+    m_panels.compose_top(back, r);
+    m_power.draw_star(back, r);
+    m_power.draw_overlay(back, r);
 
     m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y);
 }
@@ -483,6 +505,45 @@ void server::compose_tick() {
 
     flush_configures();
     m_panels.flush(m_damage);
+
+    /* Overlay phases: activation edges and transitions repaint the
+     * whole screen, a winding hold repaints the orb boxes */
+    m_power.update();
+    bool power_active = m_power.active();
+    if (power_active != m_power_was_active) {
+        m_damage.add_full();
+        m_power_was_active = power_active;
+    } else if (m_power.transitioning()) {
+        m_damage.add_full();
+    } else if (m_power.animating()) {
+        for (int32_t i = 0; i < 2; i++) {
+            damage_list::rect ob = m_power.orb_box(i);
+            m_damage.add(ob.x, ob.y, ob.w, ob.h);
+        }
+    }
+
+    /* Collapse frames fade the cached backdrop under the contracting
+     * light, skipping scene composition entirely */
+    if (m_power.collapsing()) {
+        presenter::target t = m_presenter->acquire();
+        stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
+            reinterpret_cast<uint8_t*>(t.pixels), m_presenter->width(),
+            m_presenter->height(), t.stride, 32, 16, 8, 0);
+        if (back) {
+            m_power.draw_collapse(back);
+            m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y);
+            stlxgfx_destroy_surface(back);
+
+            damage_list full;
+            full.add_full();
+            m_presenter->present(full);
+            m_history[m_history_head] = full;
+            m_history_head = (m_history_head + 1) % DAMAGE_HISTORY;
+        }
+
+        m_damage.clear();
+        return;
+    }
 
     if (m_damage.empty()) {
         return;
@@ -541,4 +602,7 @@ void server::compose_tick() {
     m_history[m_history_head] = m_damage;
     m_history_head = (m_history_head + 1) % DAMAGE_HISTORY;
     m_damage.clear();
+
+    /* Runs only after the collapse's final dark frame is on screen */
+    m_power.run_action();
 }
