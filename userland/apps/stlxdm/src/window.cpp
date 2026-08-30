@@ -17,6 +17,10 @@ constexpr int32_t CASCADE_Y = 48 + decor::TITLE_H;
 constexpr int32_t CASCADE_STEP = 32;
 constexpr uint32_t CASCADE_WRAP = 10;
 
+/* Occlusion pieces per compose rect are bounded, a pathological
+ * window arrangement falls back to overdraw instead of growing */
+constexpr size_t OCCLUDE_PIECE_CAP = 64;
+
 static dm_window* find_window(dm_client& c, uint32_t win_id) {
     for (auto& w : c.windows) {
         if (w->win_id == win_id) {
@@ -428,24 +432,96 @@ void server::latch_window(dm_client& c, dm_window& w) {
     send_to(c, SWP_MSG_FRAME_DONE, &done, sizeof(done));
 }
 
-/* Compose one screen-space rect: background, then every intersecting
- * window in scene order. */
-void server::compose_rect(stlxgfx_surface_t* back,
-                          const damage_list::rect& r) {
-    if (m_wallpaper) {
-        stlxgfx_blit(back, r.x, r.y, m_wallpaper, r.x, r.y,
-                     static_cast<uint32_t>(r.w),
-                     static_cast<uint32_t>(r.h));
-    } else {
-        stlxgfx_fill_rect(back, r.x, r.y,
-                          static_cast<uint32_t>(r.w),
-                          static_cast<uint32_t>(r.h), m_conf->bg_color);
+/* Splits every piece by the hole, dropping fully covered parts.
+ * Returns false once the piece list would exceed its cap, and the
+ * caller stops subtracting from there. */
+static bool subtract_hole(std::vector<damage_list::rect>& pieces,
+                          const damage_list::rect& hole) {
+    std::vector<damage_list::rect> out;
+    out.reserve(pieces.size() + 4);
+
+    for (const damage_list::rect& p : pieces) {
+        int32_t hx0 = hole.x > p.x ? hole.x : p.x;
+        int32_t hy0 = hole.y > p.y ? hole.y : p.y;
+        int32_t hx1 = hole.x + hole.w < p.x + p.w
+                    ? hole.x + hole.w : p.x + p.w;
+        int32_t hy1 = hole.y + hole.h < p.y + p.h
+                    ? hole.y + hole.h : p.y + p.h;
+        if (hx0 >= hx1 || hy0 >= hy1) {
+            out.push_back(p);
+            continue;
+        }
+
+        /* Up to four bands survive around the covered middle */
+        if (hy0 > p.y) {
+            out.push_back({ p.x, p.y, p.w, hy0 - p.y });
+        }
+        if (hy1 < p.y + p.h) {
+            out.push_back({ p.x, hy1, p.w, p.y + p.h - hy1 });
+        }
+        if (hx0 > p.x) {
+            out.push_back({ p.x, hy0, hx0 - p.x, hy1 - hy0 });
+        }
+        if (hx1 < p.x + p.w) {
+            out.push_back({ hx1, hy0, p.x + p.w - hx1, hy1 - hy0 });
+        }
     }
 
-    /* Panels live between the wallpaper and the windows */
-    m_panels->compose(back, r);
+    if (out.size() > OCCLUDE_PIECE_CAP) {
+        return false;
+    }
 
-    for (dm_window* w : m_zorder) {
+    pieces = std::move(out);
+    return true;
+}
+
+/* Compose one screen-space rect bottom-up, each layer clipped to the
+ * damage minus the opaque content of every window above it, so
+ * covered background and window pixels are never painted at all. */
+void server::compose_rect(stlxgfx_surface_t* back,
+                          const damage_list::rect& r) {
+    /* Walk top-down recording what each window may paint, then
+     * subtract its opaque content from everything beneath */
+    std::vector<damage_list::rect> pieces = { r };
+    std::vector<std::vector<damage_list::rect>> visible(m_zorder.size());
+    bool subtracting = true;
+
+    for (size_t i = m_zorder.size(); i-- > 0;) {
+        dm_window* w = m_zorder[i];
+        if (w->current < 0) {
+            continue;
+        }
+
+        visible[i] = pieces;
+        if (!subtracting) {
+            continue;
+        }
+
+        const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+        damage_list::rect content = { w->x, w->y,
+                                      static_cast<int32_t>(b.width),
+                                      static_cast<int32_t>(b.height) };
+        subtracting = subtract_hole(pieces, content);
+    }
+
+    /* The background and the panels fill only what stayed exposed */
+    for (const damage_list::rect& p : pieces) {
+        if (m_wallpaper) {
+            stlxgfx_blit(back, p.x, p.y, m_wallpaper, p.x, p.y,
+                         static_cast<uint32_t>(p.w),
+                         static_cast<uint32_t>(p.h));
+        } else {
+            stlxgfx_fill_rect(back, p.x, p.y,
+                              static_cast<uint32_t>(p.w),
+                              static_cast<uint32_t>(p.h),
+                              m_conf->bg_color);
+        }
+
+        m_panels->compose(back, p);
+    }
+
+    for (size_t i = 0; i < m_zorder.size(); i++) {
+        dm_window* w = m_zorder[i];
         if (w->current < 0) {
             continue;
         }
@@ -455,33 +531,35 @@ void server::compose_rect(stlxgfx_surface_t* back,
         st.dragging = w == m_drag;
         st.close_hover = w == m_close_hover;
         st.close_pressed = w == m_close_press;
-        decor::draw(back, *w, st, r);
 
         dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
-        int32_t ix0 = r.x > w->x ? r.x : w->x;
-        int32_t iy0 = r.y > w->y ? r.y : w->y;
-        int32_t ix1 = r.x + r.w < w->x + static_cast<int32_t>(b.width)
-                    ? r.x + r.w : w->x + static_cast<int32_t>(b.width);
-        int32_t iy1 = r.y + r.h < w->y + static_cast<int32_t>(b.height)
-                    ? r.y + r.h : w->y + static_cast<int32_t>(b.height);
-        if (ix0 >= ix1 || iy0 >= iy1) {
-            continue;
-        }
+        for (const damage_list::rect& p : visible[i]) {
+            decor::draw(back, *w, st, p);
 
-        stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
-            reinterpret_cast<uint8_t*>(b.pixels), b.width, b.height,
-            b.width * 4, 32, 16, 8, 0);
-        if (src) {
-            stlxgfx_blit(back, ix0, iy0, src,
-                         ix0 - w->x, iy0 - w->y,
-                         static_cast<uint32_t>(ix1 - ix0), static_cast<uint32_t>(iy1 - iy0));
-            stlxgfx_destroy_surface(src);
-        }
+            int32_t ix0 = p.x > w->x ? p.x : w->x;
+            int32_t iy0 = p.y > w->y ? p.y : w->y;
+            int32_t ix1 = p.x + p.w < w->x + static_cast<int32_t>(b.width)
+                        ? p.x + p.w : w->x + static_cast<int32_t>(b.width);
+            int32_t iy1 = p.y + p.h < w->y + static_cast<int32_t>(b.height)
+                        ? p.y + p.h : w->y + static_cast<int32_t>(b.height);
+            if (ix0 < ix1 && iy0 < iy1) {
+                stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
+                    reinterpret_cast<uint8_t*>(b.pixels), b.width,
+                    b.height, b.width * 4, 32, 16, 8, 0);
+                if (src) {
+                    stlxgfx_blit(back, ix0, iy0, src,
+                                 ix0 - w->x, iy0 - w->y,
+                                 static_cast<uint32_t>(ix1 - ix0),
+                                 static_cast<uint32_t>(iy1 - iy0));
+                    stlxgfx_destroy_surface(src);
+                }
+            }
 
-        /* The square client blit bleeds over the frame's rounded
-         * bottom corners, so they are re-carved anti-aliased */
-        decor::carve_bottom_corners(back, *w, st, m_wallpaper,
-                                    m_conf->bg_color, r);
+            /* The square client blit bleeds over the frame's rounded
+             * bottom corners, so they are re-carved anti-aliased */
+            decor::carve_bottom_corners(back, *w, st, m_wallpaper,
+                                        m_conf->bg_color, p);
+        }
     }
 
     if (m_resize) {
