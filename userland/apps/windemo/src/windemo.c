@@ -5,6 +5,7 @@
 #include <stlxwin/stlxwin.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 
 static void paint(stlxwin_buffer* buf) {
     for (uint32_t y = 0; y < buf->height; y++) {
@@ -65,6 +66,20 @@ int main(void) {
             }
             case STLXWIN_EVT_KEY_DOWN:
             case STLXWIN_EVT_KEY_REPEAT:
+                /* c and v exercise the clipboard round trip */
+                if (ev.key.ch == 'c') {
+                    stlxwin_clipboard_set(conn, "windemo clip", 12);
+                    printf("windemo: clipboard set\r\n");
+                    break;
+                }
+                if (ev.key.ch == 'v') {
+                    char* text = NULL;
+                    long n = stlxwin_clipboard_get(conn, &text);
+                    printf("windemo: clipboard get %ld '%s'\r\n",
+                           n, text ? text : "");
+                    free(text);
+                    break;
+                }
                 if (ev.key.ch >= 32 && ev.key.ch < 127) {
                     printf("windemo: key%s '%c' mods=%u\r\n",
                            ev.type == STLXWIN_EVT_KEY_REPEAT ? " repeat" : "",

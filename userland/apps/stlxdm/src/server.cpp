@@ -200,10 +200,37 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
             return;
         }
         break;
-    case SWP_MSG_CLIPBOARD_SET:
-    case SWP_MSG_CLIPBOARD_GET:
+    case SWP_MSG_CLIPBOARD_SET: {
+        if (hdr.length < sizeof(swp_clipboard_set)) {
+            break;
+        }
+
+        const auto* m = reinterpret_cast<const swp_clipboard_set*>(payload);
+        if (m->len > SWP_CLIPBOARD_MAX ||
+            hdr.length != sizeof(*m) + m->len) {
+            break;
+        }
+
+        const char* text = reinterpret_cast<const char*>(payload + sizeof(*m));
+        m_clipboard.assign(text, text + m->len);
+        return;
+    }
+    case SWP_MSG_CLIPBOARD_GET: {
+        uint8_t reply[sizeof(swp_clipboard_data) + SWP_CLIPBOARD_MAX];
+        swp_clipboard_data prefix = { (uint32_t)m_clipboard.size() };
+        memcpy(reply, &prefix, sizeof(prefix));
+        if (!m_clipboard.empty()) {
+            memcpy(reply + sizeof(prefix), m_clipboard.data(),
+                   m_clipboard.size());
+        }
+
+        send_to(c, SWP_MSG_CLIPBOARD_DATA, reply,
+                (uint32_t)(sizeof(prefix) + m_clipboard.size()));
+        return;
+    }
     case SWP_MSG_CAPTURE:
-        /* Clipboard and capture land with the input unit */
+        /* Deferred until the screenshot consumer exists, the wire needs
+         * a completion message first */
         return;
     default:
         break;

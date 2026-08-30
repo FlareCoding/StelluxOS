@@ -128,11 +128,13 @@ void server::handle_set_window(dm_client& c, const uint8_t* payload) {
         w->title[sizeof(w->title) - 1] = '\0';
         m_scene_dirty = true;
         return;
+    case SWP_FIELD_CURSOR:
+        w->cursor = m->a;
+        return;
     case SWP_FIELD_MIN_SIZE:
     case SWP_FIELD_MAX_SIZE:
     case SWP_FIELD_FULLSCREEN:
-    case SWP_FIELD_CURSOR:
-        /* Stored and honored once resize and input land */
+        /* Stored and honored once interactive resize lands */
         return;
     default:
         return;

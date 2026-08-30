@@ -44,8 +44,10 @@ void input::pump_kbd(server& srv) {
     while (read(m_kbd_fd, &ev, sizeof(ev)) == sizeof(ev)) {
         bool down = ev.action == STLX_INPUT_KBD_ACTION_DOWN;
 
-        /* Modifier usages never repeat and carry no character */
+        /* Modifier usages never repeat and carry no character, but a
+         * held key must repeat with the modifiers as they are now */
         if (ev.usage >= 0xE0 && ev.usage <= 0xE7) {
+            m_held_modifiers = ev.modifiers;
             srv.route_key(ev.usage, ev.modifiers, down, false);
             continue;
         }
