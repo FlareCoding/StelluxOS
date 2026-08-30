@@ -63,6 +63,29 @@ int main(void) {
                 }
                 break;
             }
+            case STLXWIN_EVT_KEY_DOWN:
+            case STLXWIN_EVT_KEY_REPEAT:
+                if (ev.key.ch >= 32 && ev.key.ch < 127) {
+                    printf("windemo: key%s '%c' mods=%u\r\n",
+                           ev.type == STLXWIN_EVT_KEY_REPEAT ? " repeat" : "",
+                           (char)ev.key.ch, ev.key.modifiers);
+                } else {
+                    printf("windemo: key%s usage=0x%x mods=%u\r\n",
+                           ev.type == STLXWIN_EVT_KEY_REPEAT ? " repeat" : "",
+                           ev.key.usage, ev.key.modifiers);
+                }
+                break;
+            case STLXWIN_EVT_BUTTON_DOWN:
+                printf("windemo: button %u down at %d,%d\r\n",
+                       ev.button.button, ev.button.x, ev.button.y);
+                break;
+            case STLXWIN_EVT_POINTER_ENTER:
+                printf("windemo: pointer enter at %d,%d\r\n",
+                       ev.motion.x, ev.motion.y);
+                break;
+            case STLXWIN_EVT_FOCUS_IN:
+                printf("windemo: focused\r\n");
+                break;
             case STLXWIN_EVT_CLOSE:
             case STLXWIN_EVT_DISCONNECTED:
                 running = 0;

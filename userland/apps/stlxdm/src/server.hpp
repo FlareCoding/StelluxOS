@@ -72,6 +72,12 @@ public:
      * the damage engine replaces its internals. */
     void present(const screen& scr, uint8_t* backbuffer);
 
+    /* Input routing entry points, fed by the input layer. */
+    void route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
+                   bool repeat);
+    void route_pointer(int32_t x, int32_t y, uint16_t buttons,
+                       uint16_t changed, int16_t wheel);
+
 private:
     void accept_one();
     void pump_client(dm_client& c);
@@ -92,11 +98,23 @@ private:
     bool send_to(dm_client& c, uint16_t type,
                  const void* payload, uint32_t length);
 
+    /* events.cpp */
+    dm_client* window_owner(const dm_window* w);
+    dm_window* window_at(int32_t x, int32_t y);
+    void send_event(dm_window* w, const swp_event_rec& rec);
+    void set_focus(dm_window* w);
+    void forget_window(dm_window* w);
+
     int m_listen_fd = -1;
     const screen* m_screen = nullptr;
     std::vector<std::unique_ptr<dm_client>> m_clients;
     uint32_t m_window_count = 0;
     bool m_scene_dirty = false;
+
+    /* Input routing state, cleared by forget_window on death */
+    dm_window* m_focus = nullptr;
+    dm_window* m_hover = nullptr;
+    dm_window* m_grab = nullptr;
 };
 
 #endif

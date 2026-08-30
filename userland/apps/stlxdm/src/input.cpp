@@ -1,0 +1,116 @@
+#include "input.hpp"
+#include "screen.hpp"
+#include "server.hpp"
+
+#include <stlx/input.h>
+
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace {
+
+constexpr uint64_t REPEAT_DELAY_NS = 350000000ull;
+constexpr uint64_t REPEAT_INTERVAL_NS = 40000000ull;
+
+}
+
+int input::init(const screen* scr) {
+    m_max_x = static_cast<int32_t>(scr->width) - 1;
+    m_max_y = static_cast<int32_t>(scr->height) - 1;
+    m_ptr_x = m_max_x / 2;
+    m_ptr_y = m_max_y / 2;
+
+    m_kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
+    m_mouse_fd = open("/dev/input/mouse", O_RDONLY | O_NONBLOCK);
+
+    return (m_kbd_fd >= 0 || m_mouse_fd >= 0) ? 0 : -1;
+}
+
+void input::shutdown() {
+    if (m_kbd_fd >= 0) {
+        close(m_kbd_fd);
+        m_kbd_fd = -1;
+    }
+    if (m_mouse_fd >= 0) {
+        close(m_mouse_fd);
+        m_mouse_fd = -1;
+    }
+}
+
+void input::pump_kbd(server& srv) {
+    stlx_input_kbd_event_t ev;
+
+    while (read(m_kbd_fd, &ev, sizeof(ev)) == sizeof(ev)) {
+        bool down = ev.action == STLX_INPUT_KBD_ACTION_DOWN;
+
+        /* Modifier usages never repeat and carry no character */
+        if (ev.usage >= 0xE0 && ev.usage <= 0xE7) {
+            srv.route_key(ev.usage, ev.modifiers, down, false);
+            continue;
+        }
+
+        if (down) {
+            m_held_usage = ev.usage;
+            m_held_modifiers = ev.modifiers;
+            m_repeat_deadline_ns = 0;
+        } else if (ev.usage == m_held_usage) {
+            m_held_usage = 0;
+        }
+
+        srv.route_key(ev.usage, ev.modifiers, down, false);
+    }
+}
+
+void input::pump_mouse(server& srv) {
+    stlx_input_mouse_event_t ev;
+
+    while (read(m_mouse_fd, &ev, sizeof(ev)) == sizeof(ev)) {
+        if (ev.flags & STLX_INPUT_MOUSE_FLAG_RELATIVE) {
+            m_ptr_x += ev.x_value;
+            m_ptr_y += ev.y_value;
+        } else {
+            m_ptr_x = ev.x_value;
+            m_ptr_y = ev.y_value;
+        }
+
+        if (m_ptr_x < 0) m_ptr_x = 0;
+        if (m_ptr_y < 0) m_ptr_y = 0;
+        if (m_ptr_x > m_max_x) m_ptr_x = m_max_x;
+        if (m_ptr_y > m_max_y) m_ptr_y = m_max_y;
+
+        uint16_t changed = ev.buttons ^ m_buttons;
+        m_buttons = ev.buttons;
+
+        srv.route_pointer(m_ptr_x, m_ptr_y, ev.buttons, changed, ev.wheel);
+    }
+}
+
+int64_t input::repeat_timeout_ns(uint64_t now_ns) const {
+    if (m_held_usage == 0) {
+        return -1;
+    }
+
+    uint64_t deadline = m_repeat_deadline_ns;
+    if (deadline == 0) {
+        return (int64_t)REPEAT_DELAY_NS;
+    }
+
+    return deadline > now_ns ? (int64_t)(deadline - now_ns) : 0;
+}
+
+void input::pump_repeat(server& srv, uint64_t now_ns) {
+    if (m_held_usage == 0) {
+        return;
+    }
+
+    if (m_repeat_deadline_ns == 0) {
+        m_repeat_deadline_ns = now_ns + REPEAT_DELAY_NS;
+        return;
+    }
+
+    while (m_repeat_deadline_ns <= now_ns) {
+        srv.route_key(m_held_usage, m_held_modifiers, true, true);
+        m_repeat_deadline_ns += REPEAT_INTERVAL_NS;
+    }
+}
