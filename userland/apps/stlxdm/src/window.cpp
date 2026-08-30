@@ -1,4 +1,3 @@
-#include "screen.hpp"
 #include "server.hpp"
 
 #include <stlxgfx/surface.h>
@@ -345,7 +344,7 @@ void server::compose_rect(stlxgfx_surface_t* back,
     }
 }
 
-void server::compose_tick(const screen& scr, uint8_t* backbuffer) {
+void server::compose_tick() {
     for (auto& c : m_clients) {
         for (auto& w : c->windows) {
             if (w->pending >= 0) {
@@ -358,46 +357,57 @@ void server::compose_tick(const screen& scr, uint8_t* backbuffer) {
         return;
     }
 
+    presenter::target t = m_presenter->acquire();
+    uint32_t sw = m_presenter->width();
+    uint32_t sh = m_presenter->height();
+
+    /* A target older than one present is missing frames of content,
+     * so their damage is unioned back in. Unknown age repaints fully. */
+    damage_list effective = m_damage;
+    if (t.age == 0 || t.age > DAMAGE_HISTORY + 1) {
+        effective.add_full();
+    } else {
+        for (uint32_t back = 1; back < t.age; back++) {
+            uint32_t idx = (m_history_head + DAMAGE_HISTORY - back)
+                         % DAMAGE_HISTORY;
+            const damage_list& h = m_history[idx];
+            if (h.full()) {
+                effective.add_full();
+                break;
+            }
+
+            for (uint32_t i = 0; i < h.count(); i++) {
+                const damage_list::rect& r = h.at(i);
+                effective.add(r.x, r.y, r.w, r.h);
+            }
+        }
+    }
+
     stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
-        backbuffer, scr.width, scr.height, scr.width * 4, 32,
-        scr.red_shift, scr.green_shift, scr.blue_shift);
+        reinterpret_cast<uint8_t*>(t.pixels), sw, sh, t.stride, 32,
+        16, 8, 0);
     if (!back) {
         m_damage.clear();
         return;
     }
 
-    /* Coarsened damage repaints and presents the whole screen */
-    if (m_damage.full()) {
-        damage_list::rect whole = { 0, 0, (int32_t)scr.width,
-                                    (int32_t)scr.height };
+    if (effective.full()) {
+        damage_list::rect whole = { 0, 0, (int32_t)sw, (int32_t)sh };
         compose_rect(back, whole);
-        for (uint32_t row = 0; row < scr.height; row++) {
-            memcpy(scr.scanout + (size_t)row * scr.pitch,
-                   backbuffer + (size_t)row * scr.width * 4,
-                   (size_t)scr.width * 4);
-        }
-
-        stlxgfx_destroy_surface(back);
-        m_damage.clear();
-        return;
-    }
-
-    for (uint32_t i = 0; i < m_damage.count(); i++) {
-        damage_list::rect r = m_damage.at(i);
-        if (!damage_list::clip(r, (int32_t)scr.width, (int32_t)scr.height)) {
-            continue;
-        }
-
-        compose_rect(back, r);
-
-        /* Present exactly this rect, row by row into the mapping */
-        for (int32_t row = r.y; row < r.y + r.h; row++) {
-            memcpy(scr.scanout + (size_t)row * scr.pitch + (size_t)r.x * 4,
-                   backbuffer + ((size_t)row * scr.width + (size_t)r.x) * 4,
-                   (size_t)r.w * 4);
+    } else {
+        for (uint32_t i = 0; i < effective.count(); i++) {
+            damage_list::rect r = effective.at(i);
+            if (damage_list::clip(r, (int32_t)sw, (int32_t)sh)) {
+                compose_rect(back, r);
+            }
         }
     }
 
+    m_presenter->present(effective);
     stlxgfx_destroy_surface(back);
+
+    /* This frame's new damage joins the history for older targets */
+    m_history[m_history_head] = m_damage;
+    m_history_head = (m_history_head + 1) % DAMAGE_HISTORY;
     m_damage.clear();
 }

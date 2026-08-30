@@ -1,5 +1,4 @@
 #include "input.hpp"
-#include "screen.hpp"
 #include "server.hpp"
 
 #include <stlx/input.h>
@@ -15,9 +14,9 @@ constexpr uint64_t REPEAT_INTERVAL_NS = 40000000ull;
 
 }
 
-int input::init(const screen* scr) {
-    m_max_x = static_cast<int32_t>(scr->width) - 1;
-    m_max_y = static_cast<int32_t>(scr->height) - 1;
+int input::init(uint32_t screen_w, uint32_t screen_h) {
+    m_max_x = static_cast<int32_t>(screen_w) - 1;
+    m_max_y = static_cast<int32_t>(screen_h) - 1;
     m_ptr_x = m_max_x / 2;
     m_ptr_y = m_max_y / 2;
 

@@ -1,9 +1,8 @@
 #include "input.hpp"
-#include "screen.hpp"
+#include "presenter.hpp"
 #include "server.hpp"
 
 #include <cstdio>
-#include <cstdlib>
 #include <ctime>
 #include <poll.h>
 #include <vector>
@@ -17,34 +16,25 @@ static uint64_t now_ns() {
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
-    screen scr;
-    if (scr.init() != 0) {
+    memcpy_presenter pres;
+    if (pres.init() != 0) {
         printf("stlxdm: no framebuffer, exiting\r\n");
         return 1;
     }
 
-    /* Composition happens here, never in the scanout mapping */
-    uint8_t* backbuffer =
-        static_cast<uint8_t*>(malloc((size_t)scr.width * scr.height * 4));
-    if (!backbuffer) {
-        printf("stlxdm: backbuffer allocation failed\r\n");
-        scr.shutdown();
-        return 1;
-    }
-
     server srv;
-    if (srv.init(&scr) != 0) {
+    if (srv.init(&pres) != 0) {
         printf("stlxdm: failed to bind %s\r\n", SWP_SOCKET_PATH);
-        scr.shutdown();
+        pres.shutdown();
         return 1;
     }
 
     input inp;
-    if (inp.init(&scr) != 0) {
+    if (inp.init(pres.width(), pres.height()) != 0) {
         printf("stlxdm: no input devices, serving without input\r\n");
     }
 
-    printf("stlxdm: serving %ux%u\r\n", scr.width, scr.height);
+    printf("stlxdm: serving %ux%u\r\n", pres.width(), pres.height());
 
     constexpr uint64_t COMPOSE_INTERVAL_NS = 16666667ull;
     uint64_t last_compose_ns = 0;
@@ -95,7 +85,7 @@ int main() {
         now = now_ns();
         if (srv.compose_pending() &&
             now >= last_compose_ns + COMPOSE_INTERVAL_NS) {
-            srv.compose_tick(scr, backbuffer);
+            srv.compose_tick();
             last_compose_ns = now;
         }
     }
