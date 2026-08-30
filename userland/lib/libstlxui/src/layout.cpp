@@ -145,14 +145,22 @@ void host::layout_tree(size viewport) {
                               ? 0
                               : align_offset(eff, avail_cross, cross_px);
 
+            rect f;
             if (row) {
-                c->m_frame = { cursor, cross_base + cross_off,
-                               main_px, cross_px };
+                f = { cursor, cross_base + cross_off, main_px, cross_px };
             } else {
-                c->m_frame = { cross_base + cross_off, cursor,
-                               cross_px, main_px };
+                f = { cross_base + cross_off, cursor, cross_px, main_px };
             }
 
+            /* A moved or resized widget repaints, and its parent owns
+             * the area it vacated */
+            if (f.x != c->m_frame.x || f.y != c->m_frame.y ||
+                f.w != c->m_frame.w || f.h != c->m_frame.h) {
+                c->m_needs_paint = true;
+                w->m_needs_paint = true;
+            }
+
+            c->m_frame = f;
             cursor += main_px + st.gap;
 
             self(self, c);

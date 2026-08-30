@@ -243,6 +243,53 @@ void host::dispatch_key(const key_event& e, bool down) {
     }
 }
 
+void host::invalidate_rects(const std::vector<rect>& rects) {
+    if (!m_root || rects.empty()) {
+        return;
+    }
+
+    auto walk = [&rects](auto&& self, widget* w, point origin) -> void {
+        point pos = window_pos_of(w->m_frame, origin);
+        rect abs = { pos.x, pos.y, w->m_frame.w, w->m_frame.h };
+
+        for (const rect& r : rects) {
+            rect hit = intersect_rects(abs, r);
+            if (hit.w > 0 && hit.h > 0) {
+                w->m_needs_paint = true;
+                break;
+            }
+        }
+
+        for (auto& c : w->m_children) {
+            self(self, c.get(), pos);
+        }
+    };
+
+    walk(walk, m_root.get(), { 0, 0 });
+}
+
+bool host::tree_dirty() const {
+    if (!m_root) {
+        return false;
+    }
+
+    std::vector<const widget*> stack = { m_root.get() };
+    while (!stack.empty()) {
+        const widget* w = stack.back();
+        stack.pop_back();
+
+        if (w->m_needs_paint || w->m_needs_layout) {
+            return true;
+        }
+
+        for (const auto& c : w->m_children) {
+            stack.push_back(c.get());
+        }
+    }
+
+    return false;
+}
+
 void host::focus_next() {
     std::vector<widget*> focusables;
     if (m_root) {
