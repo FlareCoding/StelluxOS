@@ -301,7 +301,11 @@ void server::latch_window(dm_client& c, dm_window& w) {
 
     w.current = w.pending;
     w.pending = -1;
-    w.mapped = true;
+
+    if (first_map) {
+        w.mapped = true;
+        scene_map(&w);
+    }
 
     swp_frame_done done = { w.win_id, 0, now_ns() };
     send_to(c, SWP_MSG_FRAME_DONE, &done, sizeof(done));
@@ -314,32 +318,30 @@ void server::compose_rect(stlxgfx_surface_t* back,
     stlxgfx_fill_rect(back, r.x, r.y, (uint32_t)r.w, (uint32_t)r.h,
                       BACKGROUND);
 
-    for (auto& c : m_clients) {
-        for (auto& w : c->windows) {
-            if (!w->mapped || w->current < 0) {
-                continue;
-            }
+    for (dm_window* w : m_zorder) {
+        if (w->current < 0) {
+            continue;
+        }
 
-            dm_buffer& b = w->buffers[(size_t)w->current];
-            int32_t ix0 = r.x > w->x ? r.x : w->x;
-            int32_t iy0 = r.y > w->y ? r.y : w->y;
-            int32_t ix1 = r.x + r.w < w->x + (int32_t)b.width
-                        ? r.x + r.w : w->x + (int32_t)b.width;
-            int32_t iy1 = r.y + r.h < w->y + (int32_t)b.height
-                        ? r.y + r.h : w->y + (int32_t)b.height;
-            if (ix0 >= ix1 || iy0 >= iy1) {
-                continue;
-            }
+        dm_buffer& b = w->buffers[(size_t)w->current];
+        int32_t ix0 = r.x > w->x ? r.x : w->x;
+        int32_t iy0 = r.y > w->y ? r.y : w->y;
+        int32_t ix1 = r.x + r.w < w->x + (int32_t)b.width
+                    ? r.x + r.w : w->x + (int32_t)b.width;
+        int32_t iy1 = r.y + r.h < w->y + (int32_t)b.height
+                    ? r.y + r.h : w->y + (int32_t)b.height;
+        if (ix0 >= ix1 || iy0 >= iy1) {
+            continue;
+        }
 
-            stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
-                reinterpret_cast<uint8_t*>(b.pixels), b.width, b.height,
-                b.width * 4, 32, 16, 8, 0);
-            if (src) {
-                stlxgfx_blit(back, ix0, iy0, src,
-                             ix0 - w->x, iy0 - w->y,
-                             (uint32_t)(ix1 - ix0), (uint32_t)(iy1 - iy0));
-                stlxgfx_destroy_surface(src);
-            }
+        stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
+            reinterpret_cast<uint8_t*>(b.pixels), b.width, b.height,
+            b.width * 4, 32, 16, 8, 0);
+        if (src) {
+            stlxgfx_blit(back, ix0, iy0, src,
+                         ix0 - w->x, iy0 - w->y,
+                         (uint32_t)(ix1 - ix0), (uint32_t)(iy1 - iy0));
+            stlxgfx_destroy_surface(src);
         }
     }
 }

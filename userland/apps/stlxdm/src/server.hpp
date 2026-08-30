@@ -118,6 +118,11 @@ private:
     void set_focus(dm_window* w);
     void forget_window(dm_window* w);
 
+    /* scene.cpp */
+    void scene_map(dm_window* w);
+    void scene_raise(dm_window* w);
+    void scene_damage_window(dm_window* w);
+
     bool has_latch_work() const;
 
     int m_listen_fd = -1;
@@ -125,6 +130,10 @@ private:
     std::vector<std::unique_ptr<dm_client>> m_clients;
     uint32_t m_window_count = 0;
     damage_list m_damage;
+
+    /* Mapped windows bottom to top. Popups sit directly above their
+     * parent and travel with it on raise. */
+    std::vector<dm_window*> m_zorder;
 
     /* Damage from recent frames, unioned in when the acquired target
      * is older than one present */
@@ -136,6 +145,11 @@ private:
     dm_window* m_focus = nullptr;
     dm_window* m_hover = nullptr;
     dm_window* m_grab = nullptr;
+
+    /* Active grabbing popup: it holds focus, and any press outside it
+     * dismisses it and restores the focus it displaced */
+    dm_window* m_grab_popup = nullptr;
+    dm_window* m_focus_restore = nullptr;
 
     /* One shared text clipboard, last writer wins */
     std::vector<char> m_clipboard;
