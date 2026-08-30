@@ -435,6 +435,23 @@ static void csi_push_param(term_state_t *t) {
     t->csi_current_param = 0;
 }
 
+/* OSC 0 and 2 set the window title, other commands are ignored */
+static void osc_finish(term_state_t *t) {
+    t->osc_buf[t->osc_len] = '\0';
+    if ((t->osc_buf[0] != '0' && t->osc_buf[0] != '2') ||
+        t->osc_buf[1] != ';') {
+        return;
+    }
+
+    const char *text = t->osc_buf + 2;
+    int i = 0;
+    for (; text[i] != '\0' && i < TERM_TITLE_MAX - 1; i++) {
+        t->title[i] = text[i];
+    }
+    t->title[i] = '\0';
+    t->title_changed = 1;
+}
+
 static void feed_byte(term_state_t *t, unsigned char ch) {
     switch (t->state) {
     case TERM_ST_NORMAL:
@@ -462,7 +479,8 @@ static void feed_byte(term_state_t *t, unsigned char ch) {
             t->csi_private = 0;
             t->csi_discard = 0;
             t->state = TERM_ST_CSI;
-        } else if (ch == ']') { /* OSC: consume until BEL or ST */
+        } else if (ch == ']') { /* OSC: capture until BEL or ST */
+            t->osc_len = 0;
             t->state = TERM_ST_OSC;
         } else if (ch == '7') { /* DECSC: save cursor */
             save_cursor(t);
@@ -519,9 +537,13 @@ static void feed_byte(term_state_t *t, unsigned char ch) {
 
     case TERM_ST_OSC:
         if (ch == '\x07') {
+            osc_finish(t);
             t->state = TERM_ST_NORMAL;
         } else if (ch == '\x1b') {
             t->state = TERM_ST_OSC_ESC;
+        } else if (t->osc_len < (int)sizeof(t->osc_buf) - 1 &&
+                   ch >= 0x20 && ch <= 0x7E) {
+            t->osc_buf[t->osc_len++] = (char)ch;
         }
         break;
 
@@ -529,6 +551,7 @@ static void feed_byte(term_state_t *t, unsigned char ch) {
         /* ESC backslash is ST, anything else starts a new escape whose
            follower byte must be reprocessed */
         if (ch == '\\') {
+            osc_finish(t);
             t->state = TERM_ST_NORMAL;
         } else {
             t->state = TERM_ST_ESC;
@@ -566,6 +589,9 @@ void term_init(term_state_t *t, int rows, int cols) {
     t->csi_current_param = 0;
     t->csi_private = 0;
     t->csi_discard = 0;
+    t->osc_len = 0;
+    t->title[0] = '\0';
+    t->title_changed = 0;
     for (int r = 0; r < TERM_MAX_ROWS; r++) {
         memset(&t->cells[r], ' ', TERM_MAX_COLS);
         memset(&t->attrs[r], 0, TERM_MAX_COLS * sizeof(term_attr_t));
@@ -577,5 +603,39 @@ void term_init(term_state_t *t, int rows, int cols) {
 void term_feed(term_state_t *t, const char *data, int len) {
     for (int i = 0; i < len; i++)
         feed_byte(t, (unsigned char)data[i]);
+    t->dirty = 1;
+}
+
+void term_resize(term_state_t *t, int rows, int cols) {
+    if (rows > TERM_MAX_ROWS) rows = TERM_MAX_ROWS;
+    if (cols > TERM_MAX_COLS) cols = TERM_MAX_COLS;
+    if (rows < 1) rows = 1;
+    if (cols < 1) cols = 1;
+    if (rows == t->rows && cols == t->cols) return;
+
+    /* Cells exposed by growth may hold stale content from before an
+       earlier shrink, so clear them in both screen buffers */
+    for (int r = 0; r < TERM_MAX_ROWS; r++) {
+        int from = r < t->rows ? t->cols : 0;
+        for (int c = from; c < TERM_MAX_COLS; c++) {
+            t->cells[r][c] = ' ';
+            t->attrs[r][c] = ATTR_DEFAULT;
+            t->alt_cells[r][c] = ' ';
+            t->alt_attrs[r][c] = ATTR_DEFAULT;
+        }
+    }
+
+    t->rows = rows;
+    t->cols = cols;
+    t->scroll_top = 0;
+    t->scroll_bottom = rows - 1;
+
+    if (t->cursor_row >= rows) t->cursor_row = rows - 1;
+    if (t->cursor_col >= cols) t->cursor_col = cols - 1;
+    if (t->saved_cursor_row >= rows) t->saved_cursor_row = rows - 1;
+    if (t->saved_cursor_col >= cols) t->saved_cursor_col = cols - 1;
+    if (t->alt_cursor_row >= rows) t->alt_cursor_row = rows - 1;
+    if (t->alt_cursor_col >= cols) t->alt_cursor_col = cols - 1;
+
     t->dirty = 1;
 }
