@@ -75,6 +75,12 @@ int main(void) {
             }
             case STLXWIN_EVT_KEY_DOWN:
             case STLXWIN_EVT_KEY_REPEAT:
+                /* i requests the ibeam cursor over this window */
+                if (ev.key.ch == 'i') {
+                    stlxwin_window_set_cursor(win, STLXWIN_CURSOR_IBEAM);
+                    printf("windemo: ibeam requested\r\n");
+                    break;
+                }
                 /* s stalls the client to exercise outbound queueing */
                 if (ev.key.ch == 's') {
                     printf("windemo: stalling 3s\r\n");

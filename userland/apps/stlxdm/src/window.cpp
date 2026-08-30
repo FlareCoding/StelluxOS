@@ -352,6 +352,8 @@ void server::compose_rect(stlxgfx_surface_t* back,
             stlxgfx_destroy_surface(src);
         }
     }
+
+    m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y);
 }
 
 void server::compose_tick() {

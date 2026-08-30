@@ -33,6 +33,12 @@ int server::init(presenter* pres) {
 
     fcntl(m_listen_fd, F_SETFL, O_NONBLOCK);
 
+    if (m_cursor.init() != 0) {
+        return -1;
+    }
+    m_cursor_x = static_cast<int32_t>(pres->width()) / 2;
+    m_cursor_y = static_cast<int32_t>(pres->height()) / 2;
+
     /* The first tick paints the whole desktop over the boot contents */
     m_damage.add_full();
 
