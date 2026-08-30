@@ -9,8 +9,35 @@
 
 struct screen;
 
-/* One connected application. Owns the socket and the partial-message
- * assembly buffer. Window and buffer state attach here in later units. */
+/* One attached shared-memory buffer, mapped for the window's lifetime
+ * or until the client detaches it. */
+struct dm_buffer {
+    uint32_t  buf_id = 0;
+    uint32_t  width = 0, height = 0;
+    size_t    size = 0;
+    uint32_t* pixels = nullptr;
+};
+
+/* One window. Displayed geometry is always the current buffer's
+ * geometry, pending holds the newest unlatched commit. */
+struct dm_window {
+    uint32_t win_id = 0;
+    uint32_t parent_id = 0;
+    int32_t  x = 0, y = 0;
+    uint32_t flags = 0;
+    uint32_t popup_flags = 0;
+    char     title[SWP_TITLE_MAX] = {};
+
+    std::vector<dm_buffer> buffers;
+    int32_t  pending = -1;      /* buffers index awaiting latch */
+    int32_t  current = -1;      /* buffers index on screen */
+    uint32_t sent_serial = 0;
+    uint32_t acked_serial = 0;
+    bool     mapped = false;    /* first commit latched */
+};
+
+/* One connected application. Owns the socket, the partial-message
+ * assembly buffer, and its windows. */
 struct dm_client {
     int      fd = -1;
     bool     hello_done = false;
@@ -19,6 +46,8 @@ struct dm_client {
 
     uint8_t  rd_buf[SWP_MAX_MSG_SIZE];
     uint32_t rd_have = 0;
+
+    std::vector<std::unique_ptr<dm_window>> windows;
 
     explicit dm_client(int sock) : fd(sock) {}
 };
@@ -38,12 +67,26 @@ public:
      * dead ones. Call after every poll wakeup. */
     void pump(const std::vector<struct pollfd>& fds);
 
+    /* Latches pending commits, notifies clients, and repaints the
+     * screen when anything changed. Interim full-screen composition,
+     * the damage engine replaces its internals. */
+    void present(const screen& scr, uint8_t* backbuffer);
+
 private:
     void accept_one();
     void pump_client(dm_client& c);
 
     void handle_message(dm_client& c, const swp_header& hdr,
                         const uint8_t* payload);
+
+    /* window.cpp */
+    void handle_create_window(dm_client& c, const uint8_t* payload);
+    void handle_destroy_window(dm_client& c, const uint8_t* payload);
+    void handle_set_window(dm_client& c, const uint8_t* payload);
+    void handle_attach_buffer(dm_client& c, const uint8_t* payload);
+    void handle_detach_buffer(dm_client& c, const uint8_t* payload);
+    void handle_commit(dm_client& c, const uint8_t* payload);
+    void destroy_window_tree(dm_client& c, uint32_t win_id);
 
     void drop_client(dm_client& c);
     bool send_to(dm_client& c, uint16_t type,
@@ -52,6 +95,8 @@ private:
     int m_listen_fd = -1;
     const screen* m_screen = nullptr;
     std::vector<std::unique_ptr<dm_client>> m_clients;
+    uint32_t m_window_count = 0;
+    bool m_scene_dirty = false;
 };
 
 #endif
