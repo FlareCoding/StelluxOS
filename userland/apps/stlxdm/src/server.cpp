@@ -1,5 +1,4 @@
 #include "server.hpp"
-#include "screen.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -10,8 +9,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-int server::init(const screen* scr) {
-    m_screen = scr;
+int server::init(presenter* pres) {
+    m_presenter = pres;
 
     m_listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (m_listen_fd < 0) {
@@ -160,7 +159,8 @@ void server::handle_message(dm_client& c, const swp_header& hdr,
         c.hello_done = true;
 
         swp_hello_reply reply = { SWP_VERSION, SWP_FMT_XRGB8888,
-                                  m_screen->width, m_screen->height };
+                                  m_presenter->width(),
+                                  m_presenter->height() };
         if (!send_to(c, SWP_MSG_HELLO_REPLY, &reply, sizeof(reply))) {
             c.dead = true;
         }

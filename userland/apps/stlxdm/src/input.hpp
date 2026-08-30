@@ -4,7 +4,6 @@
 #include <cstdint>
 
 class server;
-struct screen;
 
 /* Input routing: reads the kernel input devices, tracks the pointer
  * and keyboard focus, and feeds translated events to the server for
@@ -13,7 +12,7 @@ class input {
 public:
     /* Opens /dev/input/kbd and /dev/input/mouse. Missing devices are
      * tolerated, the desktop just runs without that input kind. */
-    int init(const screen* scr);
+    int init(uint32_t screen_w, uint32_t screen_h);
     void shutdown();
 
     int kbd_fd() const { return m_kbd_fd; }

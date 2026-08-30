@@ -2,6 +2,7 @@
 #define STLXDM_SERVER_HPP
 
 #include "damage.hpp"
+#include "presenter.hpp"
 
 #include <stlxgfx/surface.h>
 #include <stlxwin/proto.h>
@@ -9,8 +10,6 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
-
-struct screen;
 
 /* One attached shared-memory buffer, mapped for the window's lifetime
  * or until the client detaches it. */
@@ -66,7 +65,7 @@ struct dm_client {
 class server {
 public:
     /* Binds and listens on the protocol socket. Returns 0 or -1. */
-    int init(const screen* scr);
+    int init(presenter* pres);
     void shutdown();
 
     /* Fills fds for one poll cycle: listen socket plus every client. */
@@ -80,8 +79,9 @@ public:
     bool compose_pending() const { return !m_damage.empty() || has_latch_work(); }
 
     /* Latches pending commits into scene damage, composes exactly the
-     * damaged regions, and presents them. Runs at the paced tick. */
-    void compose_tick(const screen& scr, uint8_t* backbuffer);
+     * damaged regions into the presenter's target, and presents them.
+     * Runs at the paced tick. */
+    void compose_tick();
 
     /* Input routing entry points, fed by the input layer. */
     void route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
@@ -121,10 +121,16 @@ private:
     bool has_latch_work() const;
 
     int m_listen_fd = -1;
-    const screen* m_screen = nullptr;
+    presenter* m_presenter = nullptr;
     std::vector<std::unique_ptr<dm_client>> m_clients;
     uint32_t m_window_count = 0;
     damage_list m_damage;
+
+    /* Damage from recent frames, unioned in when the acquired target
+     * is older than one present */
+    static constexpr uint32_t DAMAGE_HISTORY = 3;
+    damage_list m_history[DAMAGE_HISTORY];
+    uint32_t m_history_head = 0;
 
     /* Input routing state, cleared by forget_window on death */
     dm_window* m_focus = nullptr;
