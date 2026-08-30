@@ -1,7 +1,6 @@
 #ifndef STLXDM_SERVER_HPP
 #define STLXDM_SERVER_HPP
 
-#include "config.hpp"
 #include "cursor.hpp"
 #include "damage.hpp"
 #include "decor.hpp"
@@ -9,6 +8,7 @@
 #include "power.hpp"
 #include "presenter.hpp"
 
+#include <stlxconf/conf.h>
 #include <stlxgfx/surface.h>
 #include <stlxwin/proto.h>
 
@@ -111,8 +111,13 @@ class server {
 public:
     /* Binds the protocol socket, loads the wallpaper, and spawns the
      * config's autostart entries. Returns 0 or -1. */
-    int init(presenter* pres, const dm_config* conf);
+    int init(presenter* pres, const stlxconf_t* conf);
     void shutdown();
+
+    /* Re-applies a freshly re-parsed config: panels, power, the
+     * wallpaper, and the hotkeys rebuild, then the desktop repaints.
+     * Autostart entries do not respawn. */
+    void reload_config();
 
     /* Fills fds for one poll cycle: listen socket plus every client. */
     void collect_fds(std::vector<struct pollfd>& fds) const;
@@ -177,6 +182,7 @@ private:
 
     void drop_client(dm_client& c);
     void spawn_shortcut(const char* path);
+    int apply_config();
     bool send_to(dm_client& c, uint16_t type,
                  const void* payload, uint32_t length);
     void flush_window_events(dm_client& c, dm_window& w);
@@ -199,7 +205,7 @@ private:
 
     int m_listen_fd = -1;
     presenter* m_presenter = nullptr;
-    const dm_config* m_conf = nullptr;
+    const stlxconf_t* m_conf = nullptr;
     std::vector<std::unique_ptr<dm_client>> m_clients;
     uint32_t m_window_count = 0;
     damage_list m_damage;

@@ -6,21 +6,24 @@
 
 namespace ui {
 
-/* Buttons pad their text, checkboxes draw a square glyph beside it,
+/* Buttons pad their text, checkboxes draw a rounded glyph beside it,
  * text fields inset their content, scrolling steps per wheel notch */
 constexpr int32_t BUTTON_PAD_X = 12;
+constexpr int32_t BUTTON_RADIUS = 6;
 constexpr int32_t CHECK_GLYPH = 16;
+constexpr int32_t CHECK_RADIUS = 4;
 constexpr int32_t CHECK_GAP = 8;
 constexpr int32_t INPUT_PAD_X = 8;
+constexpr int32_t INPUT_RADIUS = 6;
 constexpr int32_t SCROLL_STEP = 24;
 constexpr int32_t SCROLL_BAR_W = 4;
 constexpr int32_t SCROLL_THUMB_MIN = 16;
 
 /* Measurement runs outside a paint pass, and text metrics come from
  * process global state, so a transient painter serves them */
-static size text_metrics(const std::string& text) {
+static size text_metrics(const std::string& text, uint32_t font_size) {
     painter p;
-    return p.measure_text(text, 0);
+    return p.measure_text(text, font_size);
 }
 
 void label::set_text(std::string text) {
@@ -41,8 +44,17 @@ void label::set_color(color c) {
     invalidate();
 }
 
+void label::set_font_size(uint32_t px) {
+    if (m_font_size == px) {
+        return;
+    }
+
+    m_font_size = px;
+    invalidate_layout();
+}
+
 size label::measure(size) {
-    size text = text_metrics(m_text);
+    size text = text_metrics(m_text, m_font_size);
     const edge_insets& pad = m_style.padding;
 
     return { text.w + pad.left + pad.right,
@@ -52,11 +64,11 @@ size label::measure(size) {
 void label::paint(painter& p) {
     widget::paint(p);
 
-    size text = p.measure_text(m_text, 0);
-    int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(0);
+    size text = p.measure_text(m_text, m_font_size);
+    int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(m_font_size);
     color c = m_color != 0 ? m_color : theme::active().text;
 
-    p.text({ m_style.padding.left, baseline }, m_text, 0, c);
+    p.text({ m_style.padding.left, baseline }, m_text, m_font_size, c);
 }
 
 void button::set_text(std::string text) {
@@ -68,26 +80,45 @@ void button::set_text(std::string text) {
     invalidate_layout();
 }
 
+void button::set_accent(bool accent) {
+    if (m_accent == accent) {
+        return;
+    }
+
+    m_accent = accent;
+    invalidate();
+}
+
 size button::measure(size) {
-    size text = text_metrics(m_text);
+    size text = text_metrics(m_text, 0);
 
     return { text.w + 2 * BUTTON_PAD_X, theme::active().control_h };
 }
 
 void button::paint(painter& p) {
     const theme& t = theme::active();
-    color bg = m_pressed ? t.surface_press
-             : m_hover ? t.surface_hover : t.surface;
+    color bg = m_accent
+             ? (m_pressed ? t.accent_press
+                : m_hover ? t.accent_hover : t.accent)
+             : (m_pressed ? t.surface_press
+                : m_hover ? t.surface_hover : t.surface);
 
-    p.fill({ 0, 0, m_frame.w, m_frame.h }, bg);
+    /* A focus ring wraps the rounded surface, painted as two fills */
     if (focused()) {
-        p.stroke({ 0, 0, m_frame.w, m_frame.h }, t.accent);
+        p.rounded_rect({ 0, 0, m_frame.w, m_frame.h },
+                       BUTTON_RADIUS + 1, m_accent ? t.text : t.accent);
+        p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 },
+                       BUTTON_RADIUS, bg);
+    } else {
+        p.rounded_rect({ 0, 0, m_frame.w, m_frame.h },
+                       BUTTON_RADIUS, bg);
     }
 
     size text = p.measure_text(m_text, 0);
     int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(0);
+    color fg = m_accent ? t.window_bg : t.text;
 
-    p.text({ (m_frame.w - text.w) / 2, baseline }, m_text, 0, t.text);
+    p.text({ (m_frame.w - text.w) / 2, baseline }, m_text, 0, fg);
 }
 
 bool button::on_pointer_down(const pointer_event&) {
@@ -145,7 +176,7 @@ void checkbox::set_checked(bool v) {
 }
 
 size checkbox::measure(size) {
-    size text = text_metrics(m_text);
+    size text = text_metrics(m_text, 0);
     int32_t h = text.h > CHECK_GLYPH ? text.h : CHECK_GLYPH;
 
     return { CHECK_GLYPH + CHECK_GAP + text.w, h };
@@ -156,9 +187,15 @@ void checkbox::paint(painter& p) {
     int32_t gy = (m_frame.h - CHECK_GLYPH) / 2;
     rect glyph = { 0, gy, CHECK_GLYPH, CHECK_GLYPH };
 
-    p.fill(glyph, m_checked ? t.accent : t.surface);
     if (m_hover || focused()) {
-        p.stroke(glyph, focused() ? t.accent : t.surface_hover);
+        p.rounded_rect(glyph, CHECK_RADIUS,
+                       focused() ? t.accent : t.surface_hover);
+        p.rounded_rect({ glyph.x + 1, glyph.y + 1,
+                         glyph.w - 2, glyph.h - 2 },
+                       CHECK_RADIUS, m_checked ? t.accent : t.surface);
+    } else {
+        p.rounded_rect(glyph, CHECK_RADIUS,
+                       m_checked ? t.accent : t.surface);
     }
 
     if (m_checked) {
@@ -220,8 +257,18 @@ void text_input::set_placeholder(std::string text) {
     invalidate();
 }
 
+void text_input::set_font_size(uint32_t px) {
+    if (m_font_size == px) {
+        return;
+    }
+
+    m_font_size = px;
+    invalidate_layout();
+}
+
 size text_input::measure(size) {
-    size text = text_metrics(!m_text.empty() ? m_text : m_placeholder);
+    size text = text_metrics(!m_text.empty() ? m_text : m_placeholder,
+                             m_font_size);
 
     return { text.w + 2 * INPUT_PAD_X, theme::active().control_h };
 }
@@ -229,21 +276,24 @@ size text_input::measure(size) {
 void text_input::paint(painter& p) {
     const theme& t = theme::active();
 
-    p.fill({ 0, 0, m_frame.w, m_frame.h }, t.surface);
-    p.stroke({ 0, 0, m_frame.w, m_frame.h },
-             focused() ? t.accent : t.surface_hover);
+    /* A rounded field with its border as the outer fill */
+    p.rounded_rect({ 0, 0, m_frame.w, m_frame.h }, INPUT_RADIUS,
+                   focused() ? t.accent : t.surface_hover);
+    p.rounded_rect({ 1, 1, m_frame.w - 2, m_frame.h - 2 },
+                   INPUT_RADIUS, t.surface);
 
     bool empty = m_text.empty();
     const std::string& shown = empty ? m_placeholder : m_text;
-    size text = p.measure_text(shown, 0);
-    int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(0);
+    size text = p.measure_text(shown, m_font_size);
+    int32_t baseline = (m_frame.h - text.h) / 2
+                     + p.font_ascent(m_font_size);
 
-    p.text({ INPUT_PAD_X, baseline }, shown, 0,
+    p.text({ INPUT_PAD_X, baseline }, shown, m_font_size,
            empty ? t.text_dim : t.text);
 
     if (focused()) {
         size before = p.measure_text(
-            std::string_view(m_text).substr(0, m_cursor), 0);
+            std::string_view(m_text).substr(0, m_cursor), m_font_size);
         int32_t cx = INPUT_PAD_X + before.w;
 
         p.fill({ cx, (m_frame.h - text.h) / 2, 1, text.h }, t.text);
@@ -257,7 +307,8 @@ bool text_input::on_pointer_down(const pointer_event& e) {
     painter p;
     size_t best = m_text.size();
     for (size_t i = 0; i <= m_text.size(); i++) {
-        size w = p.measure_text(std::string_view(m_text).substr(0, i), 0);
+        size w = p.measure_text(std::string_view(m_text).substr(0, i),
+                                m_font_size);
         if (INPUT_PAD_X + w.w >= e.pos.x) {
             best = i;
             break;
@@ -372,8 +423,8 @@ void scroll_view::paint(painter& p) {
     int32_t thumb_y = range > 0
                     ? (track - thumb_h) * m_scroll.y / range : 0;
 
-    p.fill({ m_frame.w - SCROLL_BAR_W, thumb_y, SCROLL_BAR_W, thumb_h },
-           t.surface_hover);
+    p.rounded_rect({ m_frame.w - SCROLL_BAR_W, thumb_y,
+                     SCROLL_BAR_W, thumb_h }, 2, t.surface_hover);
 }
 
 bool scroll_view::on_scroll(const pointer_event& e) {

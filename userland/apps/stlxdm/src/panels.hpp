@@ -1,9 +1,9 @@
 #ifndef STLXDM_PANELS_HPP
 #define STLXDM_PANELS_HPP
 
-#include "config.hpp"
 #include "damage.hpp"
 
+#include <stlxconf/conf.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/surface.h>
 #include <stlxui/stlxui.h>
@@ -39,7 +39,7 @@ class dm_panels {
 public:
     static constexpr int32_t BAR_H = 28;
 
-    int init(uint32_t screen_w, uint32_t screen_h, const dm_config& conf);
+    int init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf);
     void shutdown();
 
     /* Fired by a dock pin's release, the server spawns the app */
@@ -84,11 +84,12 @@ private:
     void hover_pin(int32_t index, bool entered);
     damage_list::rect pin_icon_rect(int32_t index) const;
 
-    const dm_config* m_conf = nullptr;
+    const stlxconf_t* m_conf = nullptr;
     direct_host m_host;
     direct_host m_dock_host;
     stlxgfx_surface_t* m_band = nullptr;
     stlxgfx_surface_t* m_dock = nullptr;
+    std::vector<stlxgfx_surface_t*> m_icons;
     stlxgfx_font* m_tip_font = nullptr;
     stlxgfx_font_metrics m_tip_fm = {};
     uint32_t m_width = 0;

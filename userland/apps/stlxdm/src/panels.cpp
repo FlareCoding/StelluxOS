@@ -61,7 +61,7 @@ namespace {
  * firing its launch callback on release inside */
 class dock_button : public ui::widget {
 public:
-    dock_button(stlxgfx_surface_t* icon, const dm_conf_pin& pin,
+    dock_button(stlxgfx_surface_t* icon, const stlxconf_pin_t& pin,
                 int32_t index, uint32_t accent, int32_t icon_px)
         : m_icon(icon), m_pin(&pin), m_index(index), m_accent(accent),
           m_icon_px(icon_px) {}
@@ -148,7 +148,7 @@ public:
 
 private:
     stlxgfx_surface_t* m_icon = nullptr;
-    const dm_conf_pin* m_pin = nullptr;
+    const stlxconf_pin_t* m_pin = nullptr;
     int32_t m_index = 0;
     uint32_t m_accent = 0;
     int32_t m_icon_px = 0;
@@ -301,7 +301,7 @@ static void update_sys_stats() {
 }
 
 int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
-                    const dm_config& conf) {
+                    const stlxconf_t& conf) {
     m_conf = &conf;
     m_width = screen_w;
     m_height = screen_h;
@@ -382,14 +382,17 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
 
     int32_t icon_px = static_cast<int32_t>(conf.taskbar_icon_size);
     for (uint32_t i = 0; i < conf.pin_count; i++) {
-        const dm_conf_pin& pin = conf.pins[i];
+        const stlxconf_pin_t& pin = conf.pins[i];
 
         stlxgfx_surface_t* icon = nullptr;
         if (pin.icon_path[0]) {
             icon = stlxgfx_load_bmp(pin.icon_path);
         }
         if (!icon) {
-            icon = stlxgfx_load_bmp(DM_CONF_DEFAULT_ICON);
+            icon = stlxgfx_load_bmp(STLXCONF_DEFAULT_ICON);
+        }
+        if (icon) {
+            m_icons.push_back(icon);
         }
 
         uint32_t accent = PIN_ACCENTS[
@@ -417,6 +420,20 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
 }
 
 void dm_panels::shutdown() {
+    /* Roots go first, dock buttons reference the icon surfaces */
+    m_host.set_root(nullptr);
+    m_dock_host.set_root(nullptr);
+    m_clock = nullptr;
+    m_stats = nullptr;
+    m_net = nullptr;
+    m_hover_pin = -1;
+    m_drawn_hover_pin = -1;
+
+    for (stlxgfx_surface_t* icon : m_icons) {
+        stlxgfx_destroy_surface(icon);
+    }
+    m_icons.clear();
+
     stlxgfx_destroy_surface(m_band);
     stlxgfx_destroy_surface(m_dock);
     m_band = nullptr;
@@ -534,7 +551,7 @@ void dm_panels::compose_top(stlxgfx_surface_t* back,
         return;
     }
 
-    const dm_conf_pin& pin = m_conf->pins[m_hover_pin];
+    const stlxconf_pin_t& pin = m_conf->pins[m_hover_pin];
     if (!pin.label[0]) {
         return;
     }

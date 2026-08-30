@@ -53,7 +53,7 @@ static void spawn_app(const char* path, const char* args) {
 
 /* Loads the configured wallpaper and pre-scales it to cover the
  * screen, so compose only ever pays for a plain blit */
-static stlxgfx_surface_t* load_wallpaper(const dm_config& conf,
+static stlxgfx_surface_t* load_wallpaper(const stlxconf_t& conf,
                                          uint32_t screen_w,
                                          uint32_t screen_h) {
     if (!conf.wallpaper[0]) {
@@ -141,7 +141,7 @@ static bool parse_hotkey(const char* chord, uint8_t* out_mods,
     return true;
 }
 
-int server::init(presenter* pres, const dm_config* conf) {
+int server::init(presenter* pres, const stlxconf_t* conf) {
     m_presenter = pres;
     m_conf = conf;
 
@@ -170,39 +170,14 @@ int server::init(presenter* pres, const dm_config* conf) {
         return -1;
     }
 
-    if (m_panels.init(pres->width(), pres->height(), *conf) != 0) {
+    if (apply_config() != 0) {
         return -1;
-    }
-
-    if (m_power.init(pres->width(), pres->height(),
-                     conf->taskbar_height) != 0) {
-        return -1;
-    }
-
-    m_panels.on_launch = [](const char* path) {
-        spawn_app(path, nullptr);
-    };
-
-    m_wallpaper = load_wallpaper(*conf, pres->width(), pres->height());
-
-    /* Exec shortcuts with parseable chords become live hotkeys */
-    for (uint32_t i = 0; i < conf->shortcut_count; i++) {
-        const dm_conf_shortcut& sc = conf->shortcuts[i];
-        if (strcmp(sc.action, "exec") != 0 || !sc.path[0]) {
-            continue;
-        }
-
-        dm_hotkey hk;
-        if (parse_hotkey(sc.key, &hk.mods, &hk.usage)) {
-            hk.path = sc.path;
-            m_hotkeys.push_back(hk);
-        }
     }
 
     /* The config's autostart entries, or a lone terminal without any */
-    if (conf->autostart_count > 0) {
-        for (uint32_t i = 0; i < conf->autostart_count; i++) {
-            spawn_app(conf->autostart[i].path, conf->autostart[i].args);
+    if (m_conf->autostart_count > 0) {
+        for (uint32_t i = 0; i < m_conf->autostart_count; i++) {
+            spawn_app(m_conf->autostart[i].path, m_conf->autostart[i].args);
         }
     } else {
         spawn_app("/bin/stlxterm", nullptr);
@@ -215,6 +190,58 @@ int server::init(presenter* pres, const dm_config* conf) {
     m_damage.add_full();
 
     return 0;
+}
+
+/* Builds every config-derived piece: panels, power, the wallpaper,
+ * and the hotkey table. Runs at startup and again on reload. */
+int server::apply_config() {
+    if (m_panels.init(m_presenter->width(), m_presenter->height(),
+                      *m_conf) != 0) {
+        return -1;
+    }
+
+    if (m_power.init(m_presenter->width(), m_presenter->height(),
+                     m_conf->taskbar_height) != 0) {
+        return -1;
+    }
+
+    m_panels.on_launch = [](const char* path) {
+        spawn_app(path, nullptr);
+    };
+
+    m_wallpaper = load_wallpaper(*m_conf, m_presenter->width(),
+                                 m_presenter->height());
+
+    /* Exec shortcuts with parseable chords become live hotkeys */
+    for (uint32_t i = 0; i < m_conf->shortcut_count; i++) {
+        const stlxconf_shortcut_t& sc = m_conf->shortcuts[i];
+        if (strcmp(sc.action, "exec") != 0 || !sc.path[0]) {
+            continue;
+        }
+
+        dm_hotkey hk;
+        if (parse_hotkey(sc.key, &hk.mods, &hk.usage)) {
+            hk.path = sc.path;
+            m_hotkeys.push_back(hk);
+        }
+    }
+
+    return 0;
+}
+
+void server::reload_config() {
+    m_panels.shutdown();
+    m_power.shutdown();
+    stlxgfx_destroy_surface(m_wallpaper);
+    m_wallpaper = nullptr;
+    m_hotkeys.clear();
+
+    if (apply_config() != 0) {
+        printf("stlxdm: config reload failed, desktop degraded\r\n");
+    }
+
+    m_damage.add_full();
+    printf("stlxdm: config reloaded\r\n");
 }
 
 void server::shutdown() {

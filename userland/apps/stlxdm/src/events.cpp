@@ -93,6 +93,7 @@ static uint32_t cook_codepoint(uint16_t usage, uint8_t hid) {
 
     switch (usage) {
     case 0x28: return '\r';
+    case 0x2A: return '\b';
     case 0x2B: return '\t';
     case 0x2C: return ' ';
     default:   return 0;

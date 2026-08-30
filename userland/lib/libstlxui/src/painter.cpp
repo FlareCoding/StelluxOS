@@ -51,6 +51,19 @@ static rect intersect(const rect& a, const rect& b) {
     return { x0, y0, x1 - x0, y1 - y0 };
 }
 
+/* A writable view over the clip region, so partially visible shapes
+ * render their visible part instead of bailing or overflowing. The
+ * caller draws in coordinates shifted by the view's origin. */
+static stlxgfx_surface_t* clip_view(void* target, const rect& clipped) {
+    stlxgfx_surface_t* s = static_cast<stlxgfx_surface_t*>(target);
+
+    return stlxgfx_surface_from_buffer(
+        s->pixels + static_cast<uint32_t>(clipped.y) * s->pitch
+            + static_cast<uint32_t>(clipped.x) * 4,
+        static_cast<uint32_t>(clipped.w), static_cast<uint32_t>(clipped.h),
+        s->pitch, 32, 16, 8, 0);
+}
+
 void painter::fill(const rect& r, color c) {
     if (!m_target || m_clips.empty()) {
         return;
@@ -110,8 +123,6 @@ void painter::text(point baseline_origin, std::string_view utf8,
         return;
     }
 
-    /* Glyph blitting clips per pixel to the surface, and the clip
-     * stack guards the common whole widget case by bounding box */
     stlxgfx_font_metrics m;
     stlxgfx_font_metrics_get(f, &m);
     int32_t w = stlxgfx_text_width(f, utf8.data(), utf8.size());
@@ -123,10 +134,18 @@ void painter::text(point baseline_origin, std::string_view utf8,
         return;
     }
 
-    stlxgfx_draw_text(static_cast<stlxgfx_surface_t*>(m_target), f,
-                      baseline_origin.x + m_origin.x,
-                      baseline_origin.y + m_origin.y,
+    /* Drawing through a view over the clip makes overlong text end
+     * at its widget instead of spilling across neighbors */
+    stlxgfx_surface_t* view = clip_view(m_target, clipped);
+    if (!view) {
+        return;
+    }
+
+    stlxgfx_draw_text(view, f,
+                      baseline_origin.x + m_origin.x - clipped.x,
+                      baseline_origin.y + m_origin.y - clipped.y,
                       utf8.data(), utf8.size(), c);
+    stlxgfx_destroy_surface(view);
 }
 
 size painter::measure_text(std::string_view utf8,
@@ -155,8 +174,6 @@ int32_t painter::font_ascent(uint32_t font_size) const {
     return m.ascent;
 }
 
-/* Blitting clips coarsely by bounding box, full precision arrives
- * with a consumer that needs partially visible images */
 void painter::image(point dst, const void* stlxgfx_surface,
                     int32_t corner_radius) {
     if (!m_target || m_clips.empty() || !stlxgfx_surface) {
@@ -169,22 +186,29 @@ void painter::image(point dst, const void* stlxgfx_surface,
                     static_cast<int32_t>(src->width),
                     static_cast<int32_t>(src->height) };
     rect clipped = intersect(bounds, m_clips.back());
-    if (clipped.w != bounds.w || clipped.h != bounds.h) {
+    if (clipped.w <= 0 || clipped.h <= 0) {
+        return;
+    }
+
+    stlxgfx_surface_t* view = clip_view(m_target, clipped);
+    if (!view) {
         return;
     }
 
     if (corner_radius > 0) {
-        stlxgfx_blit_rounded_alpha(static_cast<stlxgfx_surface_t*>(m_target),
-                                   bounds.x, bounds.y, src, 0, 0,
+        stlxgfx_blit_rounded_alpha(view,
+                                   bounds.x - clipped.x,
+                                   bounds.y - clipped.y, src, 0, 0,
                                    src->width, src->height,
                                    static_cast<uint32_t>(corner_radius));
-        return;
+    } else {
+        stlxgfx_blit_alpha(view, bounds.x - clipped.x,
+                           bounds.y - clipped.y,
+                           const_cast<stlxgfx_surface_t*>(src), 0, 0,
+                           src->width, src->height);
     }
 
-    stlxgfx_blit_alpha(static_cast<stlxgfx_surface_t*>(m_target),
-                       bounds.x, bounds.y,
-                       const_cast<stlxgfx_surface_t*>(src), 0, 0,
-                       src->width, src->height);
+    stlxgfx_destroy_surface(view);
 }
 
 void painter::circle(point center, int32_t radius, color c) {
@@ -196,13 +220,19 @@ void painter::circle(point center, int32_t radius, color c) {
                     center.y + m_origin.y - radius,
                     2 * radius + 1, 2 * radius + 1 };
     rect clipped = intersect(bounds, m_clips.back());
-    if (clipped.w != bounds.w || clipped.h != bounds.h) {
+    if (clipped.w <= 0 || clipped.h <= 0) {
         return;
     }
 
-    stlxgfx_fill_circle(static_cast<stlxgfx_surface_t*>(m_target),
-                        center.x + m_origin.x, center.y + m_origin.y,
+    stlxgfx_surface_t* view = clip_view(m_target, clipped);
+    if (!view) {
+        return;
+    }
+
+    stlxgfx_fill_circle(view, center.x + m_origin.x - clipped.x,
+                        center.y + m_origin.y - clipped.y,
                         static_cast<uint32_t>(radius), c);
+    stlxgfx_destroy_surface(view);
 }
 
 void painter::rounded_rect(const rect& r, int32_t radius, color c) {
@@ -212,15 +242,23 @@ void painter::rounded_rect(const rect& r, int32_t radius, color c) {
 
     rect surf = { r.x + m_origin.x, r.y + m_origin.y, r.w, r.h };
     rect clipped = intersect(surf, m_clips.back());
-    if (clipped.w != surf.w || clipped.h != surf.h) {
+    if (clipped.w <= 0 || clipped.h <= 0) {
         return;
     }
 
-    stlxgfx_fill_rounded_rect(static_cast<stlxgfx_surface_t*>(m_target),
-                              surf.x, surf.y,
+    /* The view keeps rounded fills correct under partial damage, a
+     * repaint of one child re-fills exactly its slice of the panel */
+    stlxgfx_surface_t* view = clip_view(m_target, clipped);
+    if (!view) {
+        return;
+    }
+
+    stlxgfx_fill_rounded_rect(view, surf.x - clipped.x,
+                              surf.y - clipped.y,
                               static_cast<uint32_t>(surf.w),
                               static_cast<uint32_t>(surf.h),
                               static_cast<uint32_t>(radius), c);
+    stlxgfx_destroy_surface(view);
 }
 
 void painter::push_clip(const rect& r) {
