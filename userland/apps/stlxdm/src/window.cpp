@@ -1,3 +1,4 @@
+#include "decor.hpp"
 #include "server.hpp"
 
 #include <stlxgfx/surface.h>
@@ -100,10 +101,7 @@ void server::destroy_window_tree(dm_client& c, uint32_t win_id) {
         }
 
         dm_window* w = c.windows[i].get();
-        if (w->mapped && w->current >= 0) {
-            const dm_buffer& b = w->buffers[(size_t)w->current];
-            m_damage.add(w->x, w->y, (int32_t)b.width, (int32_t)b.height);
-        }
+        scene_damage_window(w);
 
         forget_window(w);
         for (auto& b : c.windows[i]->buffers) {
@@ -281,7 +279,7 @@ void server::latch_window(dm_client& c, dm_window& w) {
         const dm_buffer& ob = w.buffers[(size_t)w.current];
         resized = ob.width != nb.width || ob.height != nb.height;
         if (resized) {
-            m_damage.add(w.x, w.y, (int32_t)ob.width, (int32_t)ob.height);
+            scene_damage_window(&w);
         }
 
         swp_release rel = { w.win_id, ob.buf_id };
@@ -289,7 +287,15 @@ void server::latch_window(dm_client& c, dm_window& w) {
     }
 
     if (first_map || resized) {
-        m_damage.add(w.x, w.y, (int32_t)nb.width, (int32_t)nb.height);
+        damage_list::rect nr = { w.x - decor::BORDER,
+                                 w.y - decor::TITLE_H,
+                                 (int32_t)nb.width + 2 * decor::BORDER,
+                                 (int32_t)nb.height + decor::TITLE_H
+                                     + decor::BORDER };
+        if (w.flags & SWP_WF_BORDERLESS) {
+            nr = { w.x, w.y, (int32_t)nb.width, (int32_t)nb.height };
+        }
+        m_damage.add(nr.x, nr.y, nr.w, nr.h);
     } else if (w.pending_damage_count == 0) {
         m_damage.add(w.x, w.y, (int32_t)nb.width, (int32_t)nb.height);
     } else {
@@ -322,6 +328,8 @@ void server::compose_rect(stlxgfx_surface_t* back,
         if (w->current < 0) {
             continue;
         }
+
+        decor::draw(back, *w, w == m_focus, w == m_close_hover);
 
         dm_buffer& b = w->buffers[(size_t)w->current];
         int32_t ix0 = r.x > w->x ? r.x : w->x;

@@ -1,4 +1,6 @@
 #include "input.hpp"
+
+#include <stlxgfx/font.h>
 #include "presenter.hpp"
 #include "server.hpp"
 
@@ -32,6 +34,10 @@ int main() {
     input inp;
     if (inp.init(pres.width(), pres.height()) != 0) {
         printf("stlxdm: no input devices, serving without input\r\n");
+    }
+
+    if (stlxgfx_font_init(STLXGFX_FONT_PATH) != 0) {
+        printf("stlxdm: font unavailable, titles will be blank\r\n");
     }
 
     printf("stlxdm: serving %ux%u\r\n", pres.width(), pres.height());

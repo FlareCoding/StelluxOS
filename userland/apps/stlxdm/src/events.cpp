@@ -1,3 +1,4 @@
+#include "decor.hpp"
 #include "server.hpp"
 
 #include <stlx/input.h>
@@ -76,22 +77,23 @@ dm_client* server::window_owner(const dm_window* w) {
     return nullptr;
 }
 
-/* Topmost mapped window under the point, walking the scene top-down. */
-dm_window* server::window_at(int32_t x, int32_t y) {
+/* Topmost window whose decorated bounds contain the point, walking
+ * the scene top-down and reporting which zone was struck. */
+dm_window* server::window_at(int32_t x, int32_t y, decor::zone* out_zone) {
     for (size_t i = m_zorder.size(); i-- > 0;) {
         dm_window* w = m_zorder[i];
-        if (w->current < 0) {
-            continue;
-        }
-
-        const dm_buffer& b = w->buffers[(size_t)w->current];
-        if (x >= w->x && y >= w->y &&
-            x < w->x + (int32_t)b.width &&
-            y < w->y + (int32_t)b.height) {
+        decor::zone z = decor::hit(*w, x, y);
+        if (z != decor::zone::none) {
+            if (out_zone) {
+                *out_zone = z;
+            }
             return w;
         }
     }
 
+    if (out_zone) {
+        *out_zone = decor::zone::none;
+    }
     return nullptr;
 }
 
@@ -122,10 +124,18 @@ void server::set_focus(dm_window* w) {
         send_event(m_focus, rec);
     }
 
+    dm_window* old = m_focus;
     m_focus = w;
     if (w) {
         rec.kind = SWP_EV_FOCUS_IN;
         send_event(w, rec);
+    }
+
+    if (old) {
+        scene_damage_window(old);
+    }
+    if (w) {
+        scene_damage_window(w);
     }
 }
 
@@ -135,6 +145,9 @@ void server::forget_window(dm_window* w) {
     if (m_grab == w) m_grab = nullptr;
     if (m_grab_popup == w) m_grab_popup = nullptr;
     if (m_focus_restore == w) m_focus_restore = nullptr;
+    if (m_drag == w) m_drag = nullptr;
+    if (m_close_hover == w) m_close_hover = nullptr;
+    if (m_close_press == w) m_close_press = nullptr;
 
     for (size_t i = 0; i < m_zorder.size(); i++) {
         if (m_zorder[i] == w) {
@@ -154,17 +167,6 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
     memset(&rec, 0, sizeof(rec));
     rec.modifiers = cook_modifiers(hid_modifiers);
 
-    /* Ctrl+Alt+Q asks the focused window to close, standing in for the
-     * decoration close button until server chrome lands */
-    constexpr uint16_t USAGE_Q = 0x14;
-    if (down && !repeat && usage == USAGE_Q &&
-        (rec.modifiers & 0x6) == 0x6) {
-        rec.kind = SWP_EV_CLOSE;
-        rec.modifiers = 0;
-        send_event(m_focus, rec);
-        return;
-    }
-
     rec.kind = repeat ? SWP_EV_KEY_REPEAT
              : down   ? SWP_EV_KEY_DOWN
              :          SWP_EV_KEY_UP;
@@ -176,10 +178,26 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
 
 void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                            uint16_t changed, int16_t wheel) {
+    bool press = changed != 0 && (buttons & changed) != 0;
+    bool all_released = (buttons & 0x7) == 0;
+
+    /* An active title drag owns the pointer until every button lifts */
+    if (m_drag) {
+        scene_damage_window(m_drag);
+        m_drag->x = x - m_drag_dx;
+        m_drag->y = y - m_drag_dy;
+        scene_damage_window(m_drag);
+
+        if (all_released) {
+            m_drag = nullptr;
+        }
+        return;
+    }
+
     /* A press outside a grabbing popup dismisses it, restores the
      * focus it displaced, and swallows the press */
-    if (m_grab_popup && changed != 0 && (buttons & changed) != 0) {
-        dm_window* hit = window_at(x, y);
+    if (m_grab_popup && press) {
+        dm_window* hit = window_at(x, y, nullptr);
         if (hit != m_grab_popup) {
             dm_window* popup = m_grab_popup;
             dm_window* restore = m_focus_restore;
@@ -211,8 +229,54 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         }
     }
 
-    /* A window holding the implicit grab owns motion until release */
-    dm_window* target = m_grab ? m_grab : window_at(x, y);
+    decor::zone zone = decor::zone::none;
+    dm_window* struck = m_grab ? m_grab : window_at(x, y, &zone);
+    if (m_grab) {
+        zone = decor::zone::content;
+    }
+
+    /* Close-control hover repaints the title bars it touches */
+    dm_window* hover_close =
+        zone == decor::zone::close ? struck : nullptr;
+    if (hover_close != m_close_hover) {
+        if (m_close_hover) {
+            scene_damage_window(m_close_hover);
+        }
+        m_close_hover = hover_close;
+        if (m_close_hover) {
+            scene_damage_window(m_close_hover);
+        }
+    }
+
+    /* Decoration interactions never reach the client */
+    if (zone == decor::zone::title || zone == decor::zone::close) {
+        if (press) {
+            set_focus(struck);
+            scene_raise(struck);
+
+            if (zone == decor::zone::title) {
+                m_drag = struck;
+                m_drag_dx = x - struck->x;
+                m_drag_dy = y - struck->y;
+            } else {
+                m_close_press = struck;
+            }
+        } else if (changed != 0 && m_close_press == struck &&
+                   zone == decor::zone::close) {
+            swp_event_rec rec;
+            memset(&rec, 0, sizeof(rec));
+            rec.kind = SWP_EV_CLOSE;
+            send_event(struck, rec);
+            m_close_press = nullptr;
+        }
+        return;
+    }
+
+    if (changed != 0 && all_released) {
+        m_close_press = nullptr;
+    }
+
+    dm_window* target = zone == decor::zone::content ? struck : nullptr;
 
     if (!m_grab && target != m_hover) {
         swp_event_rec rec;
@@ -267,7 +331,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
             set_focus(target);
             scene_raise(target);
             m_grab = target;
-        } else if (m_grab && (buttons & 0x7) == 0) {
+        } else if (m_grab && all_released) {
             m_grab = nullptr;
         }
 
