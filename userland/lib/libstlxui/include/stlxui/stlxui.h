@@ -441,6 +441,15 @@ protected:
     /* Deepest widget under a window space point and the point in its
      * local space, or null outside the tree */
     widget* hit_at(point p, point* out_local);
+
+    /* Whether any widget awaits layout or paint, checked before a
+     * frame buffer is acquired since acquisition can block */
+    bool tree_dirty() const;
+
+    /* Invalidates every widget intersecting the given window space
+     * rects, which is how a swapped in buffer catches up with the
+     * frame it missed */
+    void invalidate_rects(const std::vector<rect>& rects);
     void dispatch_pointer_move(point p);
     void dispatch_pointer_button(point p, uint8_t button, bool down);
     void dispatch_scroll(point p, int16_t dy);
@@ -475,6 +484,13 @@ private:
 
     class app* m_app = nullptr;
     stlxwin_window* m_win = nullptr;
+
+    /* Buffer parity: the previous frame's damage repaints into the
+     * swapped in slot of the buffer pair */
+    void* m_last_pixels = nullptr;
+    uint32_t m_last_w = 0;
+    uint32_t m_last_h = 0;
+    std::vector<rect> m_last_damage;
 };
 
 /**
