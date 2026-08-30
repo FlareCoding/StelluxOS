@@ -41,6 +41,9 @@ enum class zone {
     resize_br,
 };
 
+/* Opens the chrome font. Returns 0, or -1 when the face is missing. */
+int init();
+
 bool decorated(const dm_window& w);
 
 /* The decorated rect for an explicit content geometry. */

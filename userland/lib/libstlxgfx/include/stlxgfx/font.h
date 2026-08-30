@@ -81,24 +81,6 @@ void stlxgfx_draw_text(stlxgfx_surface_t* s, const stlxgfx_font* font,
                        int32_t x, int32_t baseline_y,
                        const char* utf8, size_t len, uint32_t color);
 
-/* Migration surface: top-left anchored drawing over an internal
- * default face registry, removed when the last caller ports to font
- * objects. */
-
-int stlxgfx_font_init(const char* font_path);
-void stlxgfx_font_cleanup(void);
-
-int stlxgfx_draw_text_topleft(stlxgfx_surface_t* s, int32_t x, int32_t y,
-                         const char* text, uint32_t font_size,
-                         uint32_t color);
-int stlxgfx_draw_text_clipped(stlxgfx_surface_t* s, int32_t x, int32_t y,
-                              const char* text, uint32_t font_size,
-                              uint32_t color,
-                              int32_t clip_x, int32_t clip_y,
-                              uint32_t clip_w, uint32_t clip_h);
-void stlxgfx_text_size(const char* text, uint32_t font_size,
-                       uint32_t* out_w, uint32_t* out_h);
-
 #ifdef __cplusplus
 }
 #endif

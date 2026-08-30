@@ -36,8 +36,9 @@ int main() {
         printf("stlxdm: no input devices, serving without input\r\n");
     }
 
-    if (stlxgfx_font_init(STLXGFX_FONT_PATH) != 0) {
-        printf("stlxdm: font unavailable, titles will be blank\r\n");
+    if (decor::init() != 0) {
+        printf("stlxdm: chrome font unavailable\r\n");
+        return 1;
     }
 
     printf("stlxdm: serving %ux%u\r\n", pres.width(), pres.height());

@@ -76,6 +76,8 @@ static const uint32_t BG_PALETTE[17] = {
 };
 
 static term_state_t g_term;
+static stlxgfx_font* g_font = NULL;
+static int32_t g_ascent = 0;
 static uint32_t g_cell_w = 8;
 static uint32_t g_cell_h = 16;
 
@@ -126,7 +128,7 @@ static void render_span(stlxgfx_surface_t* s, int row, int c0, int c1,
             uint32_t fg = at_cursor ? BG_COLOR
                         : FG_PALETTE[g_term.attrs[row][c].fg];
             ch_buf[0] = g_term.cells[row][c];
-            stlxgfx_draw_text_topleft(s, px, py, ch_buf, FONT_SIZE, fg);
+            stlxgfx_draw_text(s, g_font, px, py + g_ascent, ch_buf, 1, fg);
         }
     }
 }
@@ -378,9 +380,20 @@ int main(void) {
         return 1;
     }
 
-    stlxgfx_text_size("M", FONT_SIZE, &g_cell_w, &g_cell_h);
-    if (g_cell_w == 0) g_cell_w = 8;
-    if (g_cell_h == 0) g_cell_h = 16;
+    g_font = stlxgfx_font_open(STLXGFX_FONT_PATH, FONT_SIZE);
+    if (!g_font) {
+        printf("stlxterm: font load failed\r\n");
+        stlxwin_window_destroy(win);
+        stlxwin_disconnect(conn);
+        return 1;
+    }
+
+    /* The cell grid comes straight from the face metrics */
+    stlxgfx_font_metrics fm;
+    stlxgfx_font_metrics_get(g_font, &fm);
+    g_cell_w = fm.advance_mono > 0 ? (uint32_t)fm.advance_mono : 8;
+    g_cell_h = (uint32_t)fm.line_height;
+    g_ascent = fm.ascent;
     stlxwin_window_set_min_size(win,
         2 * PADDING + MIN_COLS * g_cell_w,
         2 * PADDING + MIN_ROWS * g_cell_h);
@@ -509,6 +522,7 @@ int main(void) {
     }
 
     close(master_fd);
+    stlxgfx_font_close(g_font);
     stlxwin_window_destroy(win);
     stlxwin_disconnect(conn);
     return 0;

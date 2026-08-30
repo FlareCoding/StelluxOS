@@ -351,29 +351,6 @@ void stlxgfx_ctx_draw_line(stlxgfx_ctx_t *ctx, int32_t x0, int32_t y0,
     line_plot(ctx, ax1, ay1, steep, color, 255);
 }
 
-void stlxgfx_ctx_draw_text(stlxgfx_ctx_t *ctx, int32_t x, int32_t y,
-                            const char *text, uint32_t font_size,
-                            uint32_t color) {
-    if (!ctx || !ctx->target) {
-        return;
-    }
-
-    const stlxgfx_clip_t *c = &ctx->state.clip;
-    if (c->w == 0 || c->h == 0) {
-        return;
-    }
-
-    stlxgfx_draw_text_clipped(ctx->target,
-                               ctx->state.ox + x, ctx->state.oy + y,
-                               text, font_size, color,
-                               c->x, c->y, c->w, c->h);
-}
-
-void stlxgfx_ctx_text_size(const char *text, uint32_t font_size,
-                            uint32_t *out_w, uint32_t *out_h) {
-    stlxgfx_text_size(text, font_size, out_w, out_h);
-}
-
 void stlxgfx_ctx_blit(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
                        const stlxgfx_surface_t *src, int32_t sx, int32_t sy,
                        uint32_t w, uint32_t h) {
