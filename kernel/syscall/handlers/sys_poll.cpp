@@ -7,6 +7,7 @@
 #include "signals/signal.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
+#include "clock/clock.h"
 
 struct kernel_pollfd {
     int32_t fd;
@@ -62,49 +63,76 @@ __PRIVILEGED_CODE static int64_t do_poll(
     kernel_pollfd* kfds, uint32_t nfds,
     uint64_t timeout_ns, bool infinite, bool immediate
 ) {
-    sync::poll_table pt;
-    pt.init(task);
-
-    int64_t ready = 0;
-
-    // The readiness check also subscribes to every fd's wait queue
-    // unless the caller asked for an immediate probe
-    for (uint32_t i = 0; i < nfds; i++) {
-        ready += poll_one_fd(task, kfds[i], immediate ? nullptr : &pt);
+    uint64_t deadline_ns = 0;
+    if (!infinite && !immediate) {
+        deadline_ns = clock::now_ns() + timeout_ns;
     }
 
-    if (pt.error.load_acquire()) {
+    while (true) {
+        sync::poll_table pt;
+        pt.init(task);
+
+        int64_t ready = 0;
+
+        // The readiness check also subscribes to every fd's wait queue
+        // unless the caller asked for an immediate probe
+        for (uint32_t i = 0; i < nfds; i++) {
+            ready += poll_one_fd(task, kfds[i], immediate ? nullptr : &pt);
+        }
+
+        if (pt.error.load_acquire()) {
+            sync::poll_cleanup(pt);
+            return syscall::ENOMEM;
+        }
+
+        if (ready > 0 || immediate) {
+            sync::poll_cleanup(pt);
+            return ready;
+        }
+
+        uint64_t wait_ns = 0;
+        if (!infinite) {
+            uint64_t now = clock::now_ns();
+            if (now >= deadline_ns) {
+                sync::poll_cleanup(pt);
+                return 0;
+            }
+
+            wait_ns = deadline_ns - now;
+        }
+
+        // nfds can be 0 with a timeout (sleep idiom)
+        if (!infinite || nfds > 0) {
+            sync::poll_wait(pt, wait_ns);
+        } else {
+            // nfds == 0, infinite: block until kill
+            sync::poll_wait(pt, 0);
+        }
+
+        // The null poll table probes again without re-subscribing
+        ready = 0;
+        for (uint32_t i = 0; i < nfds; i++) {
+            ready += poll_one_fd(task, kfds[i], nullptr);
+        }
+
         sync::poll_cleanup(pt);
-        return syscall::ENOMEM;
+
+        if (ready > 0) {
+            return ready;
+        }
+
+        // An interrupted wait with nothing ready is EINTR, not a timeout.
+        if (signals::interrupt_pending(task)) {
+            return syscall::EINTR;
+        }
+
+        if (!infinite) {
+            uint64_t now = clock::now_ns();
+            if (now >= deadline_ns) {
+                return 0;
+            }
+        }
     }
-
-    if (ready > 0 || immediate) {
-        sync::poll_cleanup(pt);
-        return ready;
-    }
-
-    // nfds can be 0 with a timeout (sleep idiom)
-    if (!infinite || nfds > 0) {
-        sync::poll_wait(pt, infinite ? 0 : timeout_ns);
-    } else {
-        // nfds == 0, infinite: block until kill
-        sync::poll_wait(pt, 0);
-    }
-
-    // The null poll table probes again without re-subscribing
-    ready = 0;
-    for (uint32_t i = 0; i < nfds; i++) {
-        ready += poll_one_fd(task, kfds[i], nullptr);
-    }
-
-    sync::poll_cleanup(pt);
-
-    // An interrupted wait with nothing ready is EINTR, not a timeout
-    if (ready == 0 && signals::interrupt_pending(task)) {
-        return syscall::EINTR;
-    }
-
-    return ready;
 }
 
 DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {

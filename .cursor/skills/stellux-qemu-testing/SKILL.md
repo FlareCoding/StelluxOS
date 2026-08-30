@@ -111,8 +111,6 @@ mappings, or protocol state needs this, not just a quiet boot.
 - Apps do not relink when only a lib archive changed: `touch` the app source
   after lib-only edits, and confirm with `strings initrd/bin/<app> | grep <marker>`.
 - pty writes return short by design under load, so userland writers must loop.
-  poll timeouts are not reliable from userland, so pace loops with nanosleep
-  against a CLOCK_MONOTONIC deadline and poll input with timeout 0.
 - The serial shell echoes every keystroke with `[2K` redraw sequences. Never
   measure timing or count prompts from serial output, and filter echo noise with
   `grep -v "2K"` when reading command output.
