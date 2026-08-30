@@ -11,8 +11,10 @@ class server;
 class input {
 public:
     /* Opens /dev/input/kbd and /dev/input/mouse. Missing devices are
-     * tolerated, the desktop just runs without that input kind. */
-    int init(uint32_t screen_w, uint32_t screen_h);
+     * tolerated, the desktop just runs without that input kind. A
+     * repeat delay of zero disables key repeat. */
+    int init(uint32_t screen_w, uint32_t screen_h,
+             uint64_t repeat_delay_ns, uint64_t repeat_interval_ns);
     void shutdown();
 
     int kbd_fd() const { return m_kbd_fd; }
@@ -41,7 +43,9 @@ private:
     int32_t m_max_y = 0;
     uint16_t m_buttons = 0;
 
-    /* Held key state driving DM-side repeat */
+    /* Held key state driving DM-side repeat, rates from the config */
+    uint64_t m_repeat_delay_ns = 0;
+    uint64_t m_repeat_interval_ns = 0;
     uint16_t m_held_usage = 0;
     uint8_t  m_held_modifiers = 0;
     uint64_t m_repeat_deadline_ns = 0;

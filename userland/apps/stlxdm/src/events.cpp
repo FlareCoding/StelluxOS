@@ -196,13 +196,23 @@ void server::forget_window(dm_window* w) {
 
 void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                        bool repeat) {
-    /* An open overlay swallows the keyboard, escape closes it */
-    if (m_panels.overlay_open()) {
-        if (down && !repeat && m_panels.overlay_key(usage)) {
-            m_panels.overlay_toggle(false);
-            m_damage.add_full();
+    /* An active overlay swallows the keyboard, escape backs out */
+    if (m_power.active()) {
+        if (down && !repeat && usage == 0x29) {
+            m_power.dismiss();
         }
         return;
+    }
+
+    /* Config hotkeys fire on press and never reach the focus */
+    if (down && !repeat) {
+        uint8_t mods = cook_modifiers(hid_modifiers);
+        for (const dm_hotkey& hk : m_hotkeys) {
+            if (usage == hk.usage && (mods & hk.mods) == hk.mods) {
+                spawn_shortcut(hk.path);
+                return;
+            }
+        }
     }
 
     if (!m_focus) {
@@ -326,21 +336,42 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     bool press = changed != 0 && (buttons & changed) != 0;
     bool all_released = (buttons & 0x7) == 0;
 
-    /* An open overlay owns the pointer entirely */
-    if (m_panels.overlay_open()) {
+    /* An active overlay owns the pointer entirely. Hover and hold
+     * transitions repaint the orb boxes. */
+    if (m_power.active()) {
         move_cursor(x, y, SWP_CURSOR_ARROW);
-        if (changed == 0 && wheel == 0) {
-            m_panels.overlay_pointer_move(x, y);
-            return;
-        }
 
-        for (uint8_t btn = 0; btn < 3; btn++) {
-            uint16_t bit = static_cast<uint16_t>(1u << btn);
-            if (changed & bit) {
-                m_panels.overlay_pointer_button(x, y, btn,
-                                                (buttons & bit) != 0);
+        int32_t old_hover = m_power.hover_choice();
+        m_power.on_motion(x, y);
+        if ((changed & 1) != 0) {
+            if ((buttons & 1) != 0) {
+                m_power.on_press(x, y);
+            } else {
+                m_power.on_release();
             }
         }
+
+        if (m_power.hover_choice() != old_hover || (changed & 1) != 0) {
+            for (int32_t i = 0; i < 2; i++) {
+                damage_list::rect ob = m_power.orb_box(i);
+                m_damage.add(ob.x, ob.y, ob.w, ob.h);
+            }
+        }
+        return;
+    }
+
+    /* Star hover tracking while the overlay is closed, a change
+     * repaints the sprite's glow */
+    bool star_was = m_power.star_hover();
+    m_power.on_motion(x, y);
+    if (m_power.star_hover() != star_was) {
+        m_damage.add_full();
+    }
+
+    /* A press on the star opens the overlay above everything */
+    if (press && m_power.star_hit(x, y)) {
+        m_power.open();
+        m_damage.add_full();
         return;
     }
 
@@ -357,13 +388,23 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         return;
     }
 
-    /* An active title drag owns the pointer until every button lifts */
+    /* An active title drag owns the pointer until every button lifts.
+     * The title bar stays reachable between the bar and the dock. */
     if (m_drag) {
         move_cursor(x, y, m_cursor_shape);
 
+        int32_t want_y = y - m_drag_dy;
+        int32_t min_y = dm_panels::BAR_H + decor::TITLE_H;
+        if (want_y < min_y) {
+            want_y = min_y;
+        }
+        if (want_y > m_panels.dock_y()) {
+            want_y = m_panels.dock_y();
+        }
+
         scene_damage_window(m_drag);
         int32_t dx = x - m_drag_dx - m_drag->x;
-        int32_t dy = y - m_drag_dy - m_drag->y;
+        int32_t dy = want_y - m_drag->y;
         m_drag->x += dx;
         m_drag->y += dy;
         scene_damage_window(m_drag);
@@ -379,8 +420,11 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
             m_drag->target_y += dy;
         }
 
+        /* Dropping the window sheds the drag glow */
         if (all_released) {
+            dm_window* dropped = m_drag;
             m_drag = nullptr;
+            scene_damage_window(dropped);
         }
         return;
     }
@@ -461,8 +505,12 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                 m_drag = struck;
                 m_drag_dx = x - struck->x;
                 m_drag_dy = y - struck->y;
+
+                /* The drag glow appears on grab */
+                scene_damage_window(struck);
             } else {
                 m_close_press = struck;
+                scene_damage_window(struck);
             }
         } else if (changed != 0 && m_close_press == struck &&
                    zone == decor::zone::close) {
@@ -471,11 +519,13 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
             rec.kind = SWP_EV_CLOSE;
             send_event(struck, rec);
             m_close_press = nullptr;
+            scene_damage_window(struck);
         }
         return;
     }
 
-    if (changed != 0 && all_released) {
+    if (changed != 0 && all_released && m_close_press) {
+        scene_damage_window(m_close_press);
         m_close_press = nullptr;
     }
 

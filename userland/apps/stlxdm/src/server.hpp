@@ -1,10 +1,12 @@
 #ifndef STLXDM_SERVER_HPP
 #define STLXDM_SERVER_HPP
 
+#include "config.hpp"
 #include "cursor.hpp"
 #include "damage.hpp"
 #include "decor.hpp"
 #include "panels.hpp"
+#include "power.hpp"
 #include "presenter.hpp"
 
 #include <stlxgfx/surface.h>
@@ -17,6 +19,14 @@
 /* Staged event records per window, flushed as one EVENT message per
  * wakeup. A full batch flushes early. */
 constexpr uint32_t DM_EV_BATCH_MAX = 16;
+
+/* One parsed exec shortcut: required modifier bits and the usage
+ * that fires it while they are held */
+struct dm_hotkey {
+    uint8_t mods = 0;
+    uint16_t usage = 0;
+    const char* path = nullptr;
+};
 
 /* One attached shared-memory buffer, mapped for the window's lifetime
  * or until the client detaches it. */
@@ -95,12 +105,13 @@ struct dm_client {
     explicit dm_client(int sock) : fd(sock) {}
 };
 
-/* The protocol server: listens, accepts, pumps client sockets, and
- * routes complete messages. Compose and input attach in later units. */
+/* The protocol server: listens, accepts, pumps client sockets, routes
+ * complete messages, and owns the scene, panels, and power overlay. */
 class server {
 public:
-    /* Binds and listens on the protocol socket. Returns 0 or -1. */
-    int init(presenter* pres);
+    /* Binds the protocol socket, loads the wallpaper, and spawns the
+     * config's autostart entries. Returns 0 or -1. */
+    int init(presenter* pres, const dm_config* conf);
     void shutdown();
 
     /* Fills fds for one poll cycle: listen socket plus every client. */
@@ -110,13 +121,25 @@ public:
      * dead ones. Call after every poll wakeup. */
     void pump(const std::vector<struct pollfd>& fds);
 
-    /* Whether damage, latches, configures, or panel repaints wait. */
+    /* Whether damage, latches, configures, panel repaints, or a
+     * running overlay animation wait for the paced tick. */
     bool compose_pending() const {
         return !m_damage.empty() || has_latch_work() ||
-               has_configure_work() || m_panels.dirty();
+               has_configure_work() || m_panels.dirty() ||
+               m_power.animating();
     }
 
-    dm_panels& panels() { return m_panels; }
+    /* The bar clock's poll bound and tick, frozen while the overlay
+     * dims the desktop. */
+    int64_t clock_timeout_ns(uint64_t now_ns) const {
+        return m_power.active() ? -1
+                                : m_panels.clock_timeout_ns(now_ns);
+    }
+    void clock_tick() {
+        if (!m_power.active()) {
+            m_panels.clock_tick();
+        }
+    }
 
     /* Latches pending commits into scene damage, composes exactly the
      * damaged regions into the presenter's target, and presents them.
@@ -153,6 +176,7 @@ private:
     void compose_rect(stlxgfx_surface_t* back, const damage_list::rect& r);
 
     void drop_client(dm_client& c);
+    void spawn_shortcut(const char* path);
     bool send_to(dm_client& c, uint16_t type,
                  const void* payload, uint32_t length);
     void flush_window_events(dm_client& c, dm_window& w);
@@ -175,9 +199,16 @@ private:
 
     int m_listen_fd = -1;
     presenter* m_presenter = nullptr;
+    const dm_config* m_conf = nullptr;
     std::vector<std::unique_ptr<dm_client>> m_clients;
     uint32_t m_window_count = 0;
     damage_list m_damage;
+
+    /* The pre-scaled wallpaper, null when the config names none */
+    stlxgfx_surface_t* m_wallpaper = nullptr;
+
+    /* Exec shortcuts parsed from the config's key chords */
+    std::vector<dm_hotkey> m_hotkeys;
 
     /* Mapped windows bottom to top. Popups sit directly above their
      * parent and travel with it on raise. */
@@ -201,6 +232,10 @@ private:
 
     /* The compositor's own widget trees in the background band */
     dm_panels m_panels;
+
+    /* The power overlay and its dock star */
+    dm_power m_power;
+    bool m_power_was_active = false;
 
     /* The pointer sprite: position, active shape, damage on change */
     cursor m_cursor;

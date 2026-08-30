@@ -7,14 +7,14 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-constexpr uint64_t REPEAT_DELAY_NS = 350000000ull;
-constexpr uint64_t REPEAT_INTERVAL_NS = 40000000ull;
-
-int input::init(uint32_t screen_w, uint32_t screen_h) {
+int input::init(uint32_t screen_w, uint32_t screen_h,
+                uint64_t repeat_delay_ns, uint64_t repeat_interval_ns) {
     m_max_x = static_cast<int32_t>(screen_w) - 1;
     m_max_y = static_cast<int32_t>(screen_h) - 1;
     m_ptr_x = m_max_x / 2;
     m_ptr_y = m_max_y / 2;
+    m_repeat_delay_ns = repeat_delay_ns;
+    m_repeat_interval_ns = repeat_interval_ns;
 
     m_kbd_fd = open("/dev/input/kbd", O_RDONLY | O_NONBLOCK);
     m_mouse_fd = open("/dev/input/mouse", O_RDONLY | O_NONBLOCK);
@@ -84,30 +84,30 @@ void input::pump_mouse(server& srv) {
 }
 
 int64_t input::repeat_timeout_ns(uint64_t now_ns) const {
-    if (m_held_usage == 0) {
+    if (m_held_usage == 0 || m_repeat_delay_ns == 0) {
         return -1;
     }
 
     uint64_t deadline = m_repeat_deadline_ns;
     if (deadline == 0) {
-        return static_cast<int64_t>(REPEAT_DELAY_NS);
+        return static_cast<int64_t>(m_repeat_delay_ns);
     }
 
     return deadline > now_ns ? static_cast<int64_t>(deadline - now_ns) : 0;
 }
 
 void input::pump_repeat(server& srv, uint64_t now_ns) {
-    if (m_held_usage == 0) {
+    if (m_held_usage == 0 || m_repeat_delay_ns == 0) {
         return;
     }
 
     if (m_repeat_deadline_ns == 0) {
-        m_repeat_deadline_ns = now_ns + REPEAT_DELAY_NS;
+        m_repeat_deadline_ns = now_ns + m_repeat_delay_ns;
         return;
     }
 
     while (m_repeat_deadline_ns <= now_ns) {
         srv.route_key(m_held_usage, m_held_modifiers, true, true);
-        m_repeat_deadline_ns += REPEAT_INTERVAL_NS;
+        m_repeat_deadline_ns += m_repeat_interval_ns;
     }
 }

@@ -1,8 +1,10 @@
+#include "config.hpp"
 #include "input.hpp"
-
-#include <stlxgfx/font.h>
 #include "presenter.hpp"
 #include "server.hpp"
+#include "splash.hpp"
+
+#include <stlxgfx/font.h>
 
 #include <cstdio>
 #include <ctime>
@@ -24,21 +26,32 @@ int main() {
         return 1;
     }
 
+    static dm_config config;
+    if (dm_config_load(config, DM_CONF_PATH) != 0) {
+        printf("stlxdm: no config file, using defaults\r\n");
+    }
+
+    if (decor::init() != 0) {
+        printf("stlxdm: chrome font unavailable\r\n");
+        return 1;
+    }
+
+    /* The splash owns the screen until Enter, before any client can
+     * connect and before autostart spawns */
+    splash_run(pres);
+
     server srv;
-    if (srv.init(&pres) != 0) {
+    if (srv.init(&pres, &config) != 0) {
         printf("stlxdm: failed to bind %s\r\n", SWP_SOCKET_PATH);
         pres.shutdown();
         return 1;
     }
 
     input inp;
-    if (inp.init(pres.width(), pres.height()) != 0) {
+    if (inp.init(pres.width(), pres.height(),
+                 static_cast<uint64_t>(config.key_repeat_delay_ms) * 1000000ull,
+                 static_cast<uint64_t>(config.key_repeat_interval_ms) * 1000000ull) != 0) {
         printf("stlxdm: no input devices, serving without input\r\n");
-    }
-
-    if (decor::init() != 0) {
-        printf("stlxdm: chrome font unavailable\r\n");
-        return 1;
     }
 
     printf("stlxdm: serving %ux%u\r\n", pres.width(), pres.height());
@@ -65,9 +78,10 @@ int main() {
         uint64_t now = now_ns();
         int64_t next_ns = inp.repeat_timeout_ns(now);
 
-        /* The clock bounds every sleep at the next second rollover */
-        int64_t clock_ns = srv.panels().clock_timeout_ns(now);
-        if (next_ns < 0 || clock_ns < next_ns) {
+        /* The clock bounds every sleep at the next second rollover,
+         * except behind the overlay where the bar is frozen */
+        int64_t clock_ns = srv.clock_timeout_ns(now);
+        if (clock_ns >= 0 && (next_ns < 0 || clock_ns < next_ns)) {
             next_ns = clock_ns;
         }
 
@@ -93,7 +107,7 @@ int main() {
             inp.pump_mouse(srv);
         }
         inp.pump_repeat(srv, now_ns());
-        srv.panels().clock_tick();
+        srv.clock_tick();
 
         srv.pump(fds);
 

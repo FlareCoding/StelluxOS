@@ -14,10 +14,11 @@ struct dm_window;
  * have none. */
 namespace decor {
 
-constexpr int32_t TITLE_H = 28;
+constexpr int32_t TITLE_H = 32;
 constexpr int32_t BORDER = 2;
-constexpr int32_t CLOSE_R = 8;
-constexpr int32_t CLOSE_MARGIN = 14;
+constexpr int32_t CORNER_R = 8;
+constexpr int32_t CLOSE_R = 10;
+constexpr int32_t CLOSE_MARGIN = 8;
 
 /* The thin border is a hard target, so resize grips extend this far
  * beyond the visual frame, and this far along it at the corners */
@@ -41,6 +42,15 @@ enum class zone {
     resize_br,
 };
 
+/* Interaction state the chrome renders: the drag glow, the focus
+ * palette, and the close control's hover and press shades */
+struct chrome_state {
+    bool focused = false;
+    bool dragging = false;
+    bool close_hover = false;
+    bool close_pressed = false;
+};
+
 /* Opens the chrome font. Returns 0, or -1 when the face is missing. */
 int init();
 
@@ -50,18 +60,26 @@ bool decorated(const dm_window& w);
 damage_list::rect frame_rect(const dm_window& w, int32_t x, int32_t y,
                              int32_t cw, int32_t ch);
 
-/* The full on-screen rect including chrome, the content rect when
- * borderless. Zero when the window has no displayed buffer. */
+/* The full on-screen rect including chrome and the drag glow ring,
+ * the content rect when borderless. Zero without a displayed buffer. */
 damage_list::rect bounds(const dm_window& w);
 
 /* Zone under a screen point, none when outside the window. Resize
  * zones exist only for resizable decorated windows. */
 zone hit(const dm_window& w, int32_t x, int32_t y);
 
-/* Draws the chrome around the content area, clipped to one compose
- * rect so lower chrome never overpaints higher windows. */
-void draw(stlxgfx_surface_t* back, const dm_window& w, bool focused,
-          bool close_hover, const damage_list::rect& clip);
+/* Draws the rounded chrome around the content area, clipped to one
+ * compose rect so lower chrome never overpaints higher windows. */
+void draw(stlxgfx_surface_t* back, const dm_window& w,
+          const chrome_state& st, const damage_list::rect& clip);
+
+/* Re-carves the rounded bottom corners after the square content blit,
+ * restoring the background and the border arc over the bleed. */
+void carve_bottom_corners(stlxgfx_surface_t* back, const dm_window& w,
+                          const chrome_state& st,
+                          const stlxgfx_surface_t* wallpaper,
+                          uint32_t bg_color,
+                          const damage_list::rect& clip);
 
 /* Draws the interactive-resize rubber band. */
 void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r);
