@@ -7,13 +7,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static void paint(stlxwin_buffer* buf) {
+static void paint_colored(stlxwin_buffer* buf, uint32_t a, uint32_t b) {
     for (uint32_t y = 0; y < buf->height; y++) {
         uint32_t* row = buf->pixels + y * (buf->stride / 4);
         for (uint32_t x = 0; x < buf->width; x++) {
-            row[x] = ((x / 16) ^ (y / 16)) & 1 ? 0x00446688 : 0x0089B4FA;
+            row[x] = ((x / 16) ^ (y / 16)) & 1 ? a : b;
         }
     }
+}
+
+static void paint(stlxwin_buffer* buf) {
+    paint_colored(buf, 0x00446688, 0x0089B4FA);
 }
 
 int main(void) {
@@ -44,6 +48,9 @@ int main(void) {
     stlxwin_commit(win, buf, 0, 0, STLXWIN_COMMIT_WANT_FRAME);
     printf("windemo: first frame committed\r\n");
 
+    stlxwin_window* win2 = NULL;
+    stlxwin_window* popup = NULL;
+
     int running = 1;
     while (running) {
         if (stlxwin_wait(conn, -1) < 0) {
@@ -66,6 +73,32 @@ int main(void) {
             }
             case STLXWIN_EVT_KEY_DOWN:
             case STLXWIN_EVT_KEY_REPEAT:
+                /* w maps a second overlapping window, p opens a
+                 * grabbing popup on the first window */
+                if (ev.key.ch == 'w' && !win2) {
+                    win2 = stlxwin_window_create(conn, 400, 300,
+                                                 "Second", 0);
+                    stlxwin_buffer* b = win2
+                        ? stlxwin_begin_frame(win2) : NULL;
+                    if (b) {
+                        paint_colored(b, 0x00336644, 0x0066CC88);
+                        stlxwin_commit(win2, b, 0, 0, 0);
+                        printf("windemo: second window mapped\r\n");
+                    }
+                    break;
+                }
+                if (ev.key.ch == 'p' && !popup) {
+                    popup = stlxwin_popup_create(win, 300, 50, 200, 150,
+                                                 STLXWIN_PF_GRAB);
+                    stlxwin_buffer* b = popup
+                        ? stlxwin_begin_frame(popup) : NULL;
+                    if (b) {
+                        paint_colored(b, 0x00AA5577, 0x00F38BA8);
+                        stlxwin_commit(popup, b, 0, 0, 0);
+                        printf("windemo: popup mapped\r\n");
+                    }
+                    break;
+                }
                 /* d commits a small patch with exact damage */
                 if (ev.key.ch == 'd') {
                     stlxwin_buffer* b = stlxwin_begin_frame(win);
@@ -114,6 +147,13 @@ int main(void) {
             case STLXWIN_EVT_BUTTON_DOWN:
                 printf("windemo: button %u down at %d,%d\r\n",
                        ev.button.button, ev.button.x, ev.button.y);
+                break;
+            case STLXWIN_EVT_POPUP_DISMISSED:
+                printf("windemo: popup dismissed\r\n");
+                if (popup) {
+                    stlxwin_window_destroy(popup);
+                    popup = NULL;
+                }
                 break;
             case STLXWIN_EVT_POINTER_ENTER:
                 printf("windemo: pointer enter at %d,%d\r\n",

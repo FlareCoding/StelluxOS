@@ -76,24 +76,19 @@ dm_client* server::window_owner(const dm_window* w) {
     return nullptr;
 }
 
-/* Topmost mapped window under the point: newest client first, popups
- * before their parents within a client. The scene layer replaces this
- * with real z-order. */
+/* Topmost mapped window under the point, walking the scene top-down. */
 dm_window* server::window_at(int32_t x, int32_t y) {
-    for (size_t ci = m_clients.size(); ci-- > 0;) {
-        auto& wins = m_clients[ci]->windows;
-        for (size_t wi = wins.size(); wi-- > 0;) {
-            dm_window* w = wins[wi].get();
-            if (!w->mapped || w->current < 0) {
-                continue;
-            }
+    for (size_t i = m_zorder.size(); i-- > 0;) {
+        dm_window* w = m_zorder[i];
+        if (w->current < 0) {
+            continue;
+        }
 
-            const dm_buffer& b = w->buffers[(size_t)w->current];
-            if (x >= w->x && y >= w->y &&
-                x < w->x + (int32_t)b.width &&
-                y < w->y + (int32_t)b.height) {
-                return w;
-            }
+        const dm_buffer& b = w->buffers[(size_t)w->current];
+        if (x >= w->x && y >= w->y &&
+            x < w->x + (int32_t)b.width &&
+            y < w->y + (int32_t)b.height) {
+            return w;
         }
     }
 
@@ -138,6 +133,15 @@ void server::forget_window(dm_window* w) {
     if (m_focus == w) m_focus = nullptr;
     if (m_hover == w) m_hover = nullptr;
     if (m_grab == w) m_grab = nullptr;
+    if (m_grab_popup == w) m_grab_popup = nullptr;
+    if (m_focus_restore == w) m_focus_restore = nullptr;
+
+    for (size_t i = 0; i < m_zorder.size(); i++) {
+        if (m_zorder[i] == w) {
+            m_zorder.erase(m_zorder.begin() + (long)i);
+            break;
+        }
+    }
 }
 
 void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
@@ -172,6 +176,41 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
 
 void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                            uint16_t changed, int16_t wheel) {
+    /* A press outside a grabbing popup dismisses it, restores the
+     * focus it displaced, and swallows the press */
+    if (m_grab_popup && changed != 0 && (buttons & changed) != 0) {
+        dm_window* hit = window_at(x, y);
+        if (hit != m_grab_popup) {
+            dm_window* popup = m_grab_popup;
+            dm_window* restore = m_focus_restore;
+            dm_client* owner = window_owner(popup);
+            uint32_t parent_id = popup->parent_id;
+            m_grab_popup = nullptr;
+            m_focus_restore = nullptr;
+
+            if (owner) {
+                dm_window* parent = nullptr;
+                for (auto& win : owner->windows) {
+                    if (win->win_id == parent_id) {
+                        parent = win.get();
+                        break;
+                    }
+                }
+                if (parent) {
+                    swp_event_rec rec;
+                    memset(&rec, 0, sizeof(rec));
+                    rec.kind = SWP_EV_POPUP_DISMISSED;
+                    send_event(parent, rec);
+                }
+
+                destroy_window_tree(*owner, popup->win_id);
+            }
+
+            set_focus(restore);
+            return;
+        }
+    }
+
     /* A window holding the implicit grab owns motion until release */
     dm_window* target = m_grab ? m_grab : window_at(x, y);
 
@@ -226,6 +265,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
         if (down) {
             set_focus(target);
+            scene_raise(target);
             m_grab = target;
         } else if (m_grab && (buttons & 0x7) == 0) {
             m_grab = nullptr;
