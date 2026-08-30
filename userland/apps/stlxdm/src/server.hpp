@@ -33,6 +33,7 @@ struct dm_window {
     int32_t  current = -1;      /* buffers index on screen */
     uint32_t sent_serial = 0;
     uint32_t acked_serial = 0;
+    uint32_t cursor = 0;        /* swp_cursor, drawn once the sprite lands */
     bool     mapped = false;    /* first commit latched */
 };
 
@@ -115,6 +116,9 @@ private:
     dm_window* m_focus = nullptr;
     dm_window* m_hover = nullptr;
     dm_window* m_grab = nullptr;
+
+    /* One shared text clipboard, last writer wins */
+    std::vector<char> m_clipboard;
 };
 
 #endif

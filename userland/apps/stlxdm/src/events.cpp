@@ -148,11 +148,23 @@ void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
 
     swp_event_rec rec;
     memset(&rec, 0, sizeof(rec));
+    rec.modifiers = cook_modifiers(hid_modifiers);
+
+    /* Ctrl+Alt+Q asks the focused window to close, standing in for the
+     * decoration close button until server chrome lands */
+    constexpr uint16_t USAGE_Q = 0x14;
+    if (down && !repeat && usage == USAGE_Q &&
+        (rec.modifiers & 0x6) == 0x6) {
+        rec.kind = SWP_EV_CLOSE;
+        rec.modifiers = 0;
+        send_event(m_focus, rec);
+        return;
+    }
+
     rec.kind = repeat ? SWP_EV_KEY_REPEAT
              : down   ? SWP_EV_KEY_DOWN
              :          SWP_EV_KEY_UP;
     rec.usage = usage;
-    rec.modifiers = cook_modifiers(hid_modifiers);
     rec.ch = down ? cook_codepoint(usage, hid_modifiers) : 0;
 
     send_event(m_focus, rec);
