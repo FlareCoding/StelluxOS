@@ -100,6 +100,7 @@ void server::destroy_window_tree(dm_client& c, uint32_t win_id) {
             continue;
         }
 
+        forget_window(c.windows[i].get());
         for (auto& b : c.windows[i]->buffers) {
             unmap_buffer(b);
         }
