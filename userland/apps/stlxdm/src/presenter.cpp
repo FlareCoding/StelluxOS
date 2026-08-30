@@ -7,9 +7,9 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-namespace {
-
 constexpr unsigned long GFXFB_GET_INFO = 0x4700;
+
+namespace {
 
 struct gfxfb_info {
     uint64_t width;
@@ -55,7 +55,7 @@ int memcpy_presenter::init() {
     m_scanout = static_cast<uint8_t*>(mem);
 
     m_back = static_cast<uint8_t*>(
-        malloc((size_t)m_width * m_height * 4));
+        malloc(static_cast<size_t>(m_width) * m_height * 4));
     if (!m_back) {
         shutdown();
         return -1;
@@ -93,23 +93,23 @@ presenter::target memcpy_presenter::acquire() {
 
 void memcpy_presenter::copy_rect(const damage_list::rect& r) {
     for (int32_t row = r.y; row < r.y + r.h; row++) {
-        memcpy(m_scanout + (size_t)row * m_pitch + (size_t)r.x * 4,
-               m_back + ((size_t)row * m_width + (size_t)r.x) * 4,
-               (size_t)r.w * 4);
+        memcpy(m_scanout + static_cast<size_t>(row) * m_pitch + static_cast<size_t>(r.x) * 4,
+               m_back + (static_cast<size_t>(row) * m_width + static_cast<size_t>(r.x)) * 4,
+               static_cast<size_t>(r.w) * 4);
     }
 }
 
 void memcpy_presenter::present(const damage_list& damage) {
     if (damage.full()) {
-        damage_list::rect whole = { 0, 0, (int32_t)m_width,
-                                    (int32_t)m_height };
+        damage_list::rect whole = { 0, 0, static_cast<int32_t>(m_width),
+                                    static_cast<int32_t>(m_height) };
         copy_rect(whole);
         return;
     }
 
     for (uint32_t i = 0; i < damage.count(); i++) {
         damage_list::rect r = damage.at(i);
-        if (damage_list::clip(r, (int32_t)m_width, (int32_t)m_height)) {
+        if (damage_list::clip(r, static_cast<int32_t>(m_width), static_cast<int32_t>(m_height))) {
             copy_rect(r);
         }
     }

@@ -3,11 +3,10 @@
 
 #include <algorithm>
 
-namespace {
-
 /* Collects w and its popup descendants in stacking order. */
-void collect_subtree(const std::vector<std::unique_ptr<dm_window>>& siblings,
-                     dm_window* w, std::vector<dm_window*>& out) {
+static void collect_subtree(
+    const std::vector<std::unique_ptr<dm_window>>& siblings,
+    dm_window* w, std::vector<dm_window*>& out) {
     out.push_back(w);
 
     for (const auto& child : siblings) {
@@ -16,8 +15,6 @@ void collect_subtree(const std::vector<std::unique_ptr<dm_window>>& siblings,
         }
     }
 }
-
-} // namespace
 
 void server::scene_damage_window(dm_window* w) {
     if (w->mapped && w->current >= 0) {
@@ -48,7 +45,7 @@ void server::scene_map(dm_window* w) {
         }
     }
 
-    m_zorder.insert(m_zorder.begin() + (long)insert_at, w);
+    m_zorder.insert(m_zorder.begin() + static_cast<long>(insert_at), w);
 
     /* Grabbing popups take focus with a restore point, plain popups
      * leave the parent's focus alone */

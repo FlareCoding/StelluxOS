@@ -12,7 +12,7 @@
 static uint64_t now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
 }
 
 int main() {
@@ -66,12 +66,12 @@ int main() {
         if (srv.compose_pending()) {
             uint64_t deadline = last_compose_ns + COMPOSE_INTERVAL_NS;
             int64_t compose_ns = deadline > now
-                               ? (int64_t)(deadline - now) : 0;
+                               ? static_cast<int64_t>(deadline - now) : 0;
             if (next_ns < 0 || compose_ns < next_ns) {
                 next_ns = compose_ns;
             }
         }
-        int timeout_ms = next_ns < 0 ? -1 : (int)(next_ns / 1000000);
+        int timeout_ms = next_ns < 0 ? -1 : static_cast<int>(next_ns / 1000000);
 
         int rc = poll(fds.data(), fds.size(), timeout_ms);
         if (rc < 0) {

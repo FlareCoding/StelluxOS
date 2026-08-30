@@ -10,13 +10,11 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-namespace {
-
 constexpr int32_t CASCADE_ORIGIN = 60;
 constexpr int32_t CASCADE_STEP = 40;
 constexpr uint32_t BACKGROUND = 0xFF16161E;
 
-dm_window* find_window(dm_client& c, uint32_t win_id) {
+static dm_window* find_window(dm_client& c, uint32_t win_id) {
     for (auto& w : c.windows) {
         if (w->win_id == win_id) {
             return w.get();
@@ -26,7 +24,7 @@ dm_window* find_window(dm_client& c, uint32_t win_id) {
     return nullptr;
 }
 
-dm_buffer* find_buffer(dm_window& w, uint32_t buf_id) {
+static dm_buffer* find_buffer(dm_window& w, uint32_t buf_id) {
     for (auto& b : w.buffers) {
         if (b.buf_id == buf_id) {
             return &b;
@@ -36,20 +34,18 @@ dm_buffer* find_buffer(dm_window& w, uint32_t buf_id) {
     return nullptr;
 }
 
-void unmap_buffer(dm_buffer& b) {
+static void unmap_buffer(dm_buffer& b) {
     if (b.pixels) {
         munmap(b.pixels, b.size);
         b.pixels = nullptr;
     }
 }
 
-uint64_t now_ns() {
+static uint64_t now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
 }
-
-} // namespace
 
 void server::handle_create_window(dm_client& c, const uint8_t* payload) {
     const auto* m = reinterpret_cast<const swp_create_window*>(payload);
@@ -78,7 +74,7 @@ void server::handle_create_window(dm_client& c, const uint8_t* payload) {
         w->y = parent->y + m->rel_y;
     } else {
         int32_t step = CASCADE_ORIGIN
-                     + CASCADE_STEP * (int32_t)(m_window_count % 8);
+                     + CASCADE_STEP * static_cast<int32_t>(m_window_count % 8);
         w->x = step;
         w->y = step;
     }
@@ -107,7 +103,7 @@ void server::destroy_window_tree(dm_client& c, uint32_t win_id) {
         for (auto& b : c.windows[i]->buffers) {
             unmap_buffer(b);
         }
-        c.windows.erase(c.windows.begin() + (long)i);
+        c.windows.erase(c.windows.begin() + static_cast<long>(i));
         return;
     }
 }
@@ -171,7 +167,7 @@ void server::handle_attach_buffer(dm_client& c, const uint8_t* payload) {
         return;
     }
 
-    size_t size = (size_t)m->width * m->height * 4;
+    size_t size = static_cast<size_t>(m->width) * m->height * 4;
     void* pixels = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
     close(fd);
 
@@ -205,17 +201,17 @@ void server::handle_detach_buffer(dm_client& c, const uint8_t* payload) {
         }
 
         /* Detaching the displayed or pending buffer is a client bug */
-        if ((int32_t)i == w->current || (int32_t)i == w->pending) {
+        if (static_cast<int32_t>(i) == w->current || static_cast<int32_t>(i) == w->pending) {
             c.dead = true;
             return;
         }
 
         unmap_buffer(w->buffers[i]);
-        w->buffers.erase(w->buffers.begin() + (long)i);
-        if (w->current > (int32_t)i) {
+        w->buffers.erase(w->buffers.begin() + static_cast<long>(i));
+        if (w->current > static_cast<int32_t>(i)) {
             w->current--;
         }
-        if (w->pending > (int32_t)i) {
+        if (w->pending > static_cast<int32_t>(i)) {
             w->pending--;
         }
         return;
@@ -239,7 +235,7 @@ void server::handle_commit(dm_client& c, const uint8_t* payload) {
     /* A commit must arrive at the displayed size or at the size of
      * the configure it acks, anything else is a client bug */
     if (w->current >= 0) {
-        const dm_buffer& cur = w->buffers[(size_t)w->current];
+        const dm_buffer& cur = w->buffers[static_cast<size_t>(w->current)];
         bool ok = b->width == cur.width && b->height == cur.height;
         for (uint32_t i = 0; !ok && i < w->sent_conf_count; i++) {
             const dm_sent_conf& e = w->sent_confs[i];
@@ -268,13 +264,13 @@ void server::handle_commit(dm_client& c, const uint8_t* payload) {
     /* Only the latest commit counts, a superseded one is released
      * without ever reaching the screen */
     if (w->pending >= 0) {
-        swp_release rel = { w->win_id, w->buffers[(size_t)w->pending].buf_id };
+        swp_release rel = { w->win_id, w->buffers[static_cast<size_t>(w->pending)].buf_id };
         send_to(c, SWP_MSG_RELEASE, &rel, sizeof(rel));
     }
 
     for (size_t i = 0; i < w->buffers.size(); i++) {
         if (&w->buffers[i] == b) {
-            w->pending = (int32_t)i;
+            w->pending = static_cast<int32_t>(i);
             break;
         }
     }
@@ -327,8 +323,8 @@ void server::flush_configures() {
                 ref_w = w->sent_confs[w->sent_conf_count - 1].w;
                 ref_h = w->sent_confs[w->sent_conf_count - 1].h;
             } else if (w->current >= 0) {
-                ref_w = w->buffers[(size_t)w->current].width;
-                ref_h = w->buffers[(size_t)w->current].height;
+                ref_w = w->buffers[static_cast<size_t>(w->current)].width;
+                ref_h = w->buffers[static_cast<size_t>(w->current)].height;
             }
 
             if (w->target_w == ref_w && w->target_h == ref_h) {
@@ -358,12 +354,12 @@ void server::flush_configures() {
 /* Latch a window's pending commit and translate its damage to screen
  * space: the whole window on map or resize, the commit rects otherwise. */
 void server::latch_window(dm_client& c, dm_window& w) {
-    const dm_buffer& nb = w.buffers[(size_t)w.pending];
+    const dm_buffer& nb = w.buffers[static_cast<size_t>(w.pending)];
     bool first_map = !w.mapped;
     bool resized = false;
 
     if (w.current >= 0) {
-        const dm_buffer& ob = w.buffers[(size_t)w.current];
+        const dm_buffer& ob = w.buffers[static_cast<size_t>(w.current)];
         resized = ob.width != nb.width || ob.height != nb.height;
         if (resized) {
             scene_damage_window(&w);
@@ -398,15 +394,15 @@ void server::latch_window(dm_client& c, dm_window& w) {
     if (first_map || resized) {
         damage_list::rect nr = { w.x - decor::BORDER,
                                  w.y - decor::TITLE_H,
-                                 (int32_t)nb.width + 2 * decor::BORDER,
-                                 (int32_t)nb.height + decor::TITLE_H
+                                 static_cast<int32_t>(nb.width) + 2 * decor::BORDER,
+                                 static_cast<int32_t>(nb.height) + decor::TITLE_H
                                      + decor::BORDER };
         if (w.flags & SWP_WF_BORDERLESS) {
-            nr = { w.x, w.y, (int32_t)nb.width, (int32_t)nb.height };
+            nr = { w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height) };
         }
         m_damage.add(nr.x, nr.y, nr.w, nr.h);
     } else if (w.pending_damage_count == 0) {
-        m_damage.add(w.x, w.y, (int32_t)nb.width, (int32_t)nb.height);
+        m_damage.add(w.x, w.y, static_cast<int32_t>(nb.width), static_cast<int32_t>(nb.height));
     } else {
         for (uint32_t i = 0; i < w.pending_damage_count; i++) {
             const swp_rect& r = w.pending_damage[i];
@@ -430,7 +426,7 @@ void server::latch_window(dm_client& c, dm_window& w) {
  * window in scene order. */
 void server::compose_rect(stlxgfx_surface_t* back,
                           const damage_list::rect& r) {
-    stlxgfx_fill_rect(back, r.x, r.y, (uint32_t)r.w, (uint32_t)r.h,
+    stlxgfx_fill_rect(back, r.x, r.y, static_cast<uint32_t>(r.w), static_cast<uint32_t>(r.h),
                       BACKGROUND);
 
     for (dm_window* w : m_zorder) {
@@ -440,13 +436,13 @@ void server::compose_rect(stlxgfx_surface_t* back,
 
         decor::draw(back, *w, w == m_focus, w == m_close_hover);
 
-        dm_buffer& b = w->buffers[(size_t)w->current];
+        dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
         int32_t ix0 = r.x > w->x ? r.x : w->x;
         int32_t iy0 = r.y > w->y ? r.y : w->y;
-        int32_t ix1 = r.x + r.w < w->x + (int32_t)b.width
-                    ? r.x + r.w : w->x + (int32_t)b.width;
-        int32_t iy1 = r.y + r.h < w->y + (int32_t)b.height
-                    ? r.y + r.h : w->y + (int32_t)b.height;
+        int32_t ix1 = r.x + r.w < w->x + static_cast<int32_t>(b.width)
+                    ? r.x + r.w : w->x + static_cast<int32_t>(b.width);
+        int32_t iy1 = r.y + r.h < w->y + static_cast<int32_t>(b.height)
+                    ? r.y + r.h : w->y + static_cast<int32_t>(b.height);
         if (ix0 >= ix1 || iy0 >= iy1) {
             continue;
         }
@@ -457,7 +453,7 @@ void server::compose_rect(stlxgfx_surface_t* back,
         if (src) {
             stlxgfx_blit(back, ix0, iy0, src,
                          ix0 - w->x, iy0 - w->y,
-                         (uint32_t)(ix1 - ix0), (uint32_t)(iy1 - iy0));
+                         static_cast<uint32_t>(ix1 - ix0), static_cast<uint32_t>(iy1 - iy0));
             stlxgfx_destroy_surface(src);
         }
     }
@@ -518,12 +514,12 @@ void server::compose_tick() {
     }
 
     if (effective.full()) {
-        damage_list::rect whole = { 0, 0, (int32_t)sw, (int32_t)sh };
+        damage_list::rect whole = { 0, 0, static_cast<int32_t>(sw), static_cast<int32_t>(sh) };
         compose_rect(back, whole);
     } else {
         for (uint32_t i = 0; i < effective.count(); i++) {
             damage_list::rect r = effective.at(i);
-            if (damage_list::clip(r, (int32_t)sw, (int32_t)sh)) {
+            if (damage_list::clip(r, static_cast<int32_t>(sw), static_cast<int32_t>(sh))) {
                 compose_rect(back, r);
             }
         }

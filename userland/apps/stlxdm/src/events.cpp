@@ -5,8 +5,6 @@
 
 #include <cstring>
 
-namespace {
-
 constexpr uint8_t HID_SHIFT =
     STLX_INPUT_MOD_LSHIFT | STLX_INPUT_MOD_RSHIFT;
 constexpr uint8_t HID_CTRL =
@@ -36,7 +34,7 @@ constexpr uint32_t MIN_CONTENT_W = 64;
 constexpr uint32_t MIN_CONTENT_H = 48;
 
 /* Wire modifier bits from the raw HID modifier byte */
-uint8_t cook_modifiers(uint8_t hid) {
+static uint8_t cook_modifiers(uint8_t hid) {
     uint8_t out = 0;
     if (hid & HID_SHIFT) out |= 1u << 0;
     if (hid & HID_CTRL)  out |= 1u << 1;
@@ -45,7 +43,7 @@ uint8_t cook_modifiers(uint8_t hid) {
     return out;
 }
 
-uint8_t zone_edges(decor::zone z) {
+static uint8_t zone_edges(decor::zone z) {
     switch (z) {
     case decor::zone::resize_l:  return EDGE_L;
     case decor::zone::resize_r:  return EDGE_R;
@@ -59,7 +57,7 @@ uint8_t zone_edges(decor::zone z) {
     }
 }
 
-uint32_t zone_shape(decor::zone z) {
+static uint32_t zone_shape(decor::zone z) {
     switch (z) {
     case decor::zone::resize_l:
     case decor::zone::resize_r:  return SWP_CURSOR_RESIZE_H;
@@ -74,7 +72,7 @@ uint32_t zone_shape(decor::zone z) {
 }
 
 /* US layout usage to codepoint, 0 for keys without a character */
-uint32_t cook_codepoint(uint16_t usage, uint8_t hid) {
+static uint32_t cook_codepoint(uint16_t usage, uint8_t hid) {
     bool shift = (hid & HID_SHIFT) != 0;
 
     if (usage >= 0x04 && usage <= 0x1D) {
@@ -84,13 +82,13 @@ uint32_t cook_codepoint(uint16_t usage, uint8_t hid) {
 
     if (usage >= 0x1E && usage <= 0x27) {
         uint32_t idx = usage - 0x1E;
-        return (uint32_t)(shift ? DIGIT_SHIFT[idx] : DIGIT_PLAIN[idx]);
+        return static_cast<uint32_t>(shift ? DIGIT_SHIFT[idx] : DIGIT_PLAIN[idx]);
     }
 
     if (usage >= 0x2D && usage <= 0x38) {
         uint32_t idx = usage - 0x2D;
         char ch = shift ? PUNCT_SHIFT[idx] : PUNCT_PLAIN[idx];
-        return (uint32_t)ch;
+        return static_cast<uint32_t>(ch);
     }
 
     switch (usage) {
@@ -100,8 +98,6 @@ uint32_t cook_codepoint(uint16_t usage, uint8_t hid) {
     default:   return 0;
     }
 }
-
-} // namespace
 
 dm_client* server::window_owner(const dm_window* w) {
     for (auto& c : m_clients) {
@@ -192,7 +188,7 @@ void server::forget_window(dm_window* w) {
 
     for (size_t i = 0; i < m_zorder.size(); i++) {
         if (m_zorder[i] == w) {
-            m_zorder.erase(m_zorder.begin() + (long)i);
+            m_zorder.erase(m_zorder.begin() + static_cast<long>(i));
             break;
         }
     }
@@ -248,15 +244,15 @@ void server::damage_outline() {
 }
 
 void server::begin_resize(dm_window* w, decor::zone z, uint32_t shape) {
-    const dm_buffer& b = w->buffers[(size_t)w->current];
+    const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
 
     m_resize = w;
     m_resize_edges = zone_edges(z);
     m_resize_shape = shape;
     m_resize_anchor_x = (m_resize_edges & EDGE_L)
-                      ? w->x + (int32_t)b.width : w->x;
+                      ? w->x + static_cast<int32_t>(b.width) : w->x;
     m_resize_anchor_y = (m_resize_edges & EDGE_T)
-                      ? w->y + (int32_t)b.height : w->y;
+                      ? w->y + static_cast<int32_t>(b.height) : w->y;
 
     m_outline = decor::bounds(*w);
     damage_outline();
@@ -266,7 +262,7 @@ void server::begin_resize(dm_window* w, decor::zone z, uint32_t shape) {
  * edges anchored, and moves the rubber band to it */
 void server::update_resize(int32_t px, int32_t py) {
     dm_window* w = m_resize;
-    const dm_buffer& b = w->buffers[(size_t)w->current];
+    const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
 
     uint32_t min_w = w->min_w > MIN_CONTENT_W ? w->min_w : MIN_CONTENT_W;
     uint32_t min_h = w->min_h > MIN_CONTENT_H ? w->min_h : MIN_CONTENT_H;
@@ -278,14 +274,14 @@ void server::update_resize(int32_t px, int32_t py) {
 
     if (m_resize_edges & EDGE_L) {
         int32_t raw = m_resize_anchor_x - px;
-        tw = raw < (int32_t)min_w ? min_w : (uint32_t)raw;
+        tw = raw < static_cast<int32_t>(min_w) ? min_w : static_cast<uint32_t>(raw);
         if (w->max_w != 0 && tw > w->max_w) {
             tw = w->max_w;
         }
-        tx = m_resize_anchor_x - (int32_t)tw;
+        tx = m_resize_anchor_x - static_cast<int32_t>(tw);
     } else if (m_resize_edges & EDGE_R) {
         int32_t raw = px - w->x;
-        tw = raw < (int32_t)min_w ? min_w : (uint32_t)raw;
+        tw = raw < static_cast<int32_t>(min_w) ? min_w : static_cast<uint32_t>(raw);
         if (w->max_w != 0 && tw > w->max_w) {
             tw = w->max_w;
         }
@@ -293,14 +289,14 @@ void server::update_resize(int32_t px, int32_t py) {
 
     if (m_resize_edges & EDGE_T) {
         int32_t raw = m_resize_anchor_y - py;
-        th = raw < (int32_t)min_h ? min_h : (uint32_t)raw;
+        th = raw < static_cast<int32_t>(min_h) ? min_h : static_cast<uint32_t>(raw);
         if (w->max_h != 0 && th > w->max_h) {
             th = w->max_h;
         }
-        ty = m_resize_anchor_y - (int32_t)th;
+        ty = m_resize_anchor_y - static_cast<int32_t>(th);
     } else if (m_resize_edges & EDGE_B) {
         int32_t raw = py - w->y;
-        th = raw < (int32_t)min_h ? min_h : (uint32_t)raw;
+        th = raw < static_cast<int32_t>(min_h) ? min_h : static_cast<uint32_t>(raw);
         if (w->max_h != 0 && th > w->max_h) {
             th = w->max_h;
         }
@@ -312,7 +308,7 @@ void server::update_resize(int32_t px, int32_t py) {
     w->target_y = ty;
 
     damage_outline();
-    m_outline = decor::frame_rect(*w, tx, ty, (int32_t)tw, (int32_t)th);
+    m_outline = decor::frame_rect(*w, tx, ty, static_cast<int32_t>(tw), static_cast<int32_t>(th));
     damage_outline();
 }
 
@@ -497,7 +493,7 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     }
 
     for (uint8_t btn = 0; btn < 3; btn++) {
-        uint16_t bit = (uint16_t)(1u << btn);
+        uint16_t bit = static_cast<uint16_t>(1u << btn);
         if (!(changed & bit)) {
             continue;
         }

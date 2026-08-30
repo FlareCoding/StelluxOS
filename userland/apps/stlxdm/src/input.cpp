@@ -7,12 +7,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-namespace {
-
 constexpr uint64_t REPEAT_DELAY_NS = 350000000ull;
 constexpr uint64_t REPEAT_INTERVAL_NS = 40000000ull;
-
-}
 
 int input::init(uint32_t screen_w, uint32_t screen_h) {
     m_max_x = static_cast<int32_t>(screen_w) - 1;
@@ -94,10 +90,10 @@ int64_t input::repeat_timeout_ns(uint64_t now_ns) const {
 
     uint64_t deadline = m_repeat_deadline_ns;
     if (deadline == 0) {
-        return (int64_t)REPEAT_DELAY_NS;
+        return static_cast<int64_t>(REPEAT_DELAY_NS);
     }
 
-    return deadline > now_ns ? (int64_t)(deadline - now_ns) : 0;
+    return deadline > now_ns ? static_cast<int64_t>(deadline - now_ns) : 0;
 }
 
 void input::pump_repeat(server& srv, uint64_t now_ns) {
