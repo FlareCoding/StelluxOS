@@ -34,6 +34,7 @@ constexpr uint64_t SPSR_MODE_MASK = 0x1F;
 constexpr uint64_t SPSR_EL0T      = 0x00;  // EL0 using SP_EL0
 constexpr uint64_t SPSR_EL1T      = 0x04;  // EL1 using SP_EL0
 constexpr uint64_t SPSR_EL1H      = 0x05;  // EL1 using SP_EL1
+constexpr uint64_t SPSR_IRQ_MASK  = 1ull << 7;  // PSTATE.I, IRQs masked
 
 } // namespace aarch64
 

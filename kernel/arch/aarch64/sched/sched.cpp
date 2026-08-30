@@ -191,6 +191,12 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
 
+    // A blocked waiter resumes after yield to unwind its sleep or wait entry.
+    // Restore that kernel context with IRQs enabled so timer ticks keep flowing.
+    if (prev->state.load_relaxed() == TASK_STATE_BLOCKED) {
+        prev->exec.cpu_ctx.pstate &= ~aarch64::SPSR_IRQ_MASK;
+    }
+
     // A task inside a syscall still owns kernel state such as a linked wait
     // node, so it dies at the syscall exit fatal check instead of here
     if (!(prev->exec.flags & (TASK_FLAG_KERNEL | TASK_FLAG_IN_SYSCALL)) &&
