@@ -60,6 +60,8 @@ typedef enum {
     STLXWIN_CURSOR_RESIZE_H,
     STLXWIN_CURSOR_RESIZE_V,
     STLXWIN_CURSOR_NONE,
+    STLXWIN_CURSOR_RESIZE_NWSE,
+    STLXWIN_CURSOR_RESIZE_NESW,
 } stlxwin_cursor;
 
 typedef enum {

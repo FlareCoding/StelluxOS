@@ -22,6 +22,15 @@ struct dm_buffer {
     uint32_t* pixels = nullptr;
 };
 
+/* One sent and not yet acked CONFIGURE, remembered so the acking
+ * commit can be validated and the window repositioned to the spot
+ * this size was promised for. */
+struct dm_sent_conf {
+    uint32_t serial = 0;
+    uint32_t w = 0, h = 0;
+    int32_t  x = 0, y = 0;
+};
+
 /* One window. Displayed geometry is always the current buffer's
  * geometry, pending holds the newest unlatched commit. */
 struct dm_window {
@@ -39,6 +48,16 @@ struct dm_window {
     uint32_t acked_serial = 0;
     uint32_t cursor = 0;        /* swp_cursor, drawn once the sprite lands */
     bool     mapped = false;    /* first commit latched */
+    uint32_t min_w = 0, min_h = 0;  /* client size hints, 0 unset */
+    uint32_t max_w = 0, max_h = 0;
+
+    /* Desired geometry not yet sent as a CONFIGURE, target_w of zero
+     * means settled. The ledger holds sent unacked configures. */
+    uint32_t target_w = 0, target_h = 0;
+    int32_t  target_x = 0, target_y = 0;
+    static constexpr uint32_t SENT_CONF_MAX = 8;
+    dm_sent_conf sent_confs[SENT_CONF_MAX];
+    uint32_t sent_conf_count = 0;
 
     /* Damage carried by the pending commit, buffer coordinates.
      * Zero rects means the whole buffer changed. */
@@ -83,8 +102,10 @@ public:
      * dead ones. Call after every poll wakeup. */
     void pump(const std::vector<struct pollfd>& fds);
 
-    /* Whether damage is waiting for the next compose tick. */
-    bool compose_pending() const { return !m_damage.empty() || has_latch_work(); }
+    /* Whether damage, latches, or configure sends wait for the tick. */
+    bool compose_pending() const {
+        return !m_damage.empty() || has_latch_work() || has_configure_work();
+    }
 
     /* Latches pending commits into scene damage, composes exactly the
      * damaged regions into the presenter's target, and presents them.
@@ -113,6 +134,7 @@ private:
     void handle_commit(dm_client& c, const uint8_t* payload);
     void destroy_window_tree(dm_client& c, uint32_t win_id);
     void latch_window(dm_client& c, dm_window& w);
+    void flush_configures();
     void compose_rect(stlxgfx_surface_t* back, const damage_list::rect& r);
 
     void drop_client(dm_client& c);
@@ -134,6 +156,7 @@ private:
     void scene_damage_window(dm_window* w);
 
     bool has_latch_work() const;
+    bool has_configure_work() const;
 
     int m_listen_fd = -1;
     presenter* m_presenter = nullptr;
@@ -175,6 +198,20 @@ private:
     int32_t m_drag_dy = 0;
     dm_window* m_close_hover = nullptr;
     dm_window* m_close_press = nullptr;
+
+    /* Interactive resize: the grabbed window, which content edges the
+     * pointer moves, the fixed opposite content corner, the rubber
+     * band rect, and the sprite held for the whole drag */
+    dm_window* m_resize = nullptr;
+    uint8_t m_resize_edges = 0;
+    int32_t m_resize_anchor_x = 0;
+    int32_t m_resize_anchor_y = 0;
+    damage_list::rect m_outline = {};
+    uint32_t m_resize_shape = SWP_CURSOR_ARROW;
+
+    void begin_resize(dm_window* w, decor::zone z, uint32_t shape);
+    void update_resize(int32_t px, int32_t py);
+    void damage_outline();
 
     /* One shared text clipboard, last writer wins */
     std::vector<char> m_clipboard;

@@ -25,6 +25,16 @@ constexpr char PUNCT_SHIFT[] = {
     '_', '+', '{', '}', '|', 0, ':', '"', '~', '<', '>', '?'
 };
 
+/* Content edges a resize drag moves */
+constexpr uint8_t EDGE_L = 1u << 0;
+constexpr uint8_t EDGE_R = 1u << 1;
+constexpr uint8_t EDGE_T = 1u << 2;
+constexpr uint8_t EDGE_B = 1u << 3;
+
+/* Windows never shrink below this content size */
+constexpr uint32_t MIN_CONTENT_W = 64;
+constexpr uint32_t MIN_CONTENT_H = 48;
+
 /* Wire modifier bits from the raw HID modifier byte */
 uint8_t cook_modifiers(uint8_t hid) {
     uint8_t out = 0;
@@ -33,6 +43,34 @@ uint8_t cook_modifiers(uint8_t hid) {
     if (hid & HID_ALT)   out |= 1u << 2;
     if (hid & HID_GUI)   out |= 1u << 3;
     return out;
+}
+
+uint8_t zone_edges(decor::zone z) {
+    switch (z) {
+    case decor::zone::resize_l:  return EDGE_L;
+    case decor::zone::resize_r:  return EDGE_R;
+    case decor::zone::resize_t:  return EDGE_T;
+    case decor::zone::resize_b:  return EDGE_B;
+    case decor::zone::resize_tl: return EDGE_T | EDGE_L;
+    case decor::zone::resize_tr: return EDGE_T | EDGE_R;
+    case decor::zone::resize_bl: return EDGE_B | EDGE_L;
+    case decor::zone::resize_br: return EDGE_B | EDGE_R;
+    default:                     return 0;
+    }
+}
+
+uint32_t zone_shape(decor::zone z) {
+    switch (z) {
+    case decor::zone::resize_l:
+    case decor::zone::resize_r:  return SWP_CURSOR_RESIZE_H;
+    case decor::zone::resize_t:
+    case decor::zone::resize_b:  return SWP_CURSOR_RESIZE_V;
+    case decor::zone::resize_tl:
+    case decor::zone::resize_br: return SWP_CURSOR_RESIZE_NWSE;
+    case decor::zone::resize_tr:
+    case decor::zone::resize_bl: return SWP_CURSOR_RESIZE_NESW;
+    default:                     return SWP_CURSOR_ARROW;
+    }
 }
 
 /* US layout usage to codepoint, 0 for keys without a character */
@@ -148,6 +186,10 @@ void server::forget_window(dm_window* w) {
     if (m_drag == w) m_drag = nullptr;
     if (m_close_hover == w) m_close_hover = nullptr;
     if (m_close_press == w) m_close_press = nullptr;
+    if (m_resize == w) {
+        damage_outline();
+        m_resize = nullptr;
+    }
 
     for (size_t i = 0; i < m_zorder.size(); i++) {
         if (m_zorder[i] == w) {
@@ -194,19 +236,126 @@ void server::move_cursor(int32_t x, int32_t y, uint32_t shape) {
     m_cursor_shape = shape;
 }
 
+void server::damage_outline() {
+    const damage_list::rect& r = m_outline;
+    if (r.w <= 0 || r.h <= 0) {
+        return;
+    }
+
+    m_damage.add(r.x, r.y, r.w, decor::OUTLINE_T);
+    m_damage.add(r.x, r.y + r.h - decor::OUTLINE_T, r.w, decor::OUTLINE_T);
+    m_damage.add(r.x, r.y, decor::OUTLINE_T, r.h);
+    m_damage.add(r.x + r.w - decor::OUTLINE_T, r.y, decor::OUTLINE_T, r.h);
+}
+
+void server::begin_resize(dm_window* w, decor::zone z, uint32_t shape) {
+    const dm_buffer& b = w->buffers[(size_t)w->current];
+
+    m_resize = w;
+    m_resize_edges = zone_edges(z);
+    m_resize_shape = shape;
+    m_resize_anchor_x = (m_resize_edges & EDGE_L)
+                      ? w->x + (int32_t)b.width : w->x;
+    m_resize_anchor_y = (m_resize_edges & EDGE_T)
+                      ? w->y + (int32_t)b.height : w->y;
+
+    m_outline = decor::bounds(*w);
+    damage_outline();
+}
+
+/* Recomputes the drag target from the pointer, keeping the opposite
+ * edges anchored, and moves the rubber band to it */
+void server::update_resize(int32_t px, int32_t py) {
+    dm_window* w = m_resize;
+    const dm_buffer& b = w->buffers[(size_t)w->current];
+
+    uint32_t min_w = w->min_w > MIN_CONTENT_W ? w->min_w : MIN_CONTENT_W;
+    uint32_t min_h = w->min_h > MIN_CONTENT_H ? w->min_h : MIN_CONTENT_H;
+
+    uint32_t tw = b.width;
+    uint32_t th = b.height;
+    int32_t tx = w->x;
+    int32_t ty = w->y;
+
+    if (m_resize_edges & EDGE_L) {
+        int32_t raw = m_resize_anchor_x - px;
+        tw = raw < (int32_t)min_w ? min_w : (uint32_t)raw;
+        if (w->max_w != 0 && tw > w->max_w) {
+            tw = w->max_w;
+        }
+        tx = m_resize_anchor_x - (int32_t)tw;
+    } else if (m_resize_edges & EDGE_R) {
+        int32_t raw = px - w->x;
+        tw = raw < (int32_t)min_w ? min_w : (uint32_t)raw;
+        if (w->max_w != 0 && tw > w->max_w) {
+            tw = w->max_w;
+        }
+    }
+
+    if (m_resize_edges & EDGE_T) {
+        int32_t raw = m_resize_anchor_y - py;
+        th = raw < (int32_t)min_h ? min_h : (uint32_t)raw;
+        if (w->max_h != 0 && th > w->max_h) {
+            th = w->max_h;
+        }
+        ty = m_resize_anchor_y - (int32_t)th;
+    } else if (m_resize_edges & EDGE_B) {
+        int32_t raw = py - w->y;
+        th = raw < (int32_t)min_h ? min_h : (uint32_t)raw;
+        if (w->max_h != 0 && th > w->max_h) {
+            th = w->max_h;
+        }
+    }
+
+    w->target_w = tw;
+    w->target_h = th;
+    w->target_x = tx;
+    w->target_y = ty;
+
+    damage_outline();
+    m_outline = decor::frame_rect(*w, tx, ty, (int32_t)tw, (int32_t)th);
+    damage_outline();
+}
+
 void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
                            uint16_t changed, int16_t wheel) {
     bool press = changed != 0 && (buttons & changed) != 0;
     bool all_released = (buttons & 0x7) == 0;
+
+    /* An active resize drag owns the pointer until every button lifts,
+     * and the final target flushes as one last configure */
+    if (m_resize) {
+        move_cursor(x, y, m_resize_shape);
+        update_resize(x, y);
+
+        if (all_released) {
+            damage_outline();
+            m_resize = nullptr;
+        }
+        return;
+    }
 
     /* An active title drag owns the pointer until every button lifts */
     if (m_drag) {
         move_cursor(x, y, m_cursor_shape);
 
         scene_damage_window(m_drag);
-        m_drag->x = x - m_drag_dx;
-        m_drag->y = y - m_drag_dy;
+        int32_t dx = x - m_drag_dx - m_drag->x;
+        int32_t dy = y - m_drag_dy - m_drag->y;
+        m_drag->x += dx;
+        m_drag->y += dy;
         scene_damage_window(m_drag);
+
+        /* Positions promised to unacked configures move with the drag,
+         * or a late resize ack would snap the window back */
+        for (uint32_t i = 0; i < m_drag->sent_conf_count; i++) {
+            m_drag->sent_confs[i].x += dx;
+            m_drag->sent_confs[i].y += dy;
+        }
+        if (m_drag->target_w != 0) {
+            m_drag->target_x += dx;
+            m_drag->target_y += dy;
+        }
 
         if (all_released) {
             m_drag = nullptr;
@@ -255,9 +404,13 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         zone = decor::zone::content;
     }
 
-    /* The shape follows the content window's request */
+    /* The shape follows the content window's request, and the frame
+     * band advertises the resize direction it would grab */
+    uint8_t resize_edges = zone_edges(zone);
     uint32_t shape = zone == decor::zone::content && struck
-                   ? struck->cursor : SWP_CURSOR_ARROW;
+                   ? struck->cursor
+                   : resize_edges != 0 ? zone_shape(zone)
+                                       : SWP_CURSOR_ARROW;
     move_cursor(x, y, shape);
 
     /* Close-control hover repaints the title bars it touches */
@@ -274,12 +427,15 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     }
 
     /* Decoration interactions never reach the client */
-    if (zone == decor::zone::title || zone == decor::zone::close) {
+    if (zone == decor::zone::title || zone == decor::zone::close ||
+        resize_edges != 0) {
         if (press) {
             set_focus(struck);
             scene_raise(struck);
 
-            if (zone == decor::zone::title) {
+            if (resize_edges != 0) {
+                begin_resize(struck, zone, shape);
+            } else if (zone == decor::zone::title) {
                 m_drag = struck;
                 m_drag_dx = x - struck->x;
                 m_drag_dy = y - struck->y;

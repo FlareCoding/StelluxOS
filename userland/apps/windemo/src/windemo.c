@@ -66,10 +66,16 @@ int main(void) {
                 printf("windemo: frame presented\r\n");
                 break;
             case STLXWIN_EVT_CONFIGURE: {
-                stlxwin_buffer* b = stlxwin_begin_frame(win);
+                printf("windemo: configure %ux%u\r\n",
+                       ev.configure.width, ev.configure.height);
+                stlxwin_buffer* b = stlxwin_begin_frame(ev.window);
                 if (b) {
-                    paint(b);
-                    stlxwin_commit(win, b, 0, 0, 0);
+                    if (ev.window == win2) {
+                        paint_colored(b, 0x00336644, 0x0066CC88);
+                    } else {
+                        paint(b);
+                    }
+                    stlxwin_commit(ev.window, b, 0, 0, 0);
                 }
                 break;
             }
