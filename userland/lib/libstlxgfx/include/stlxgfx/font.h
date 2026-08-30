@@ -5,6 +5,10 @@
 
 #define STLXGFX_FONT_PATH "/etc/res/fonts/UbuntuMono-Regular.ttf"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int stlxgfx_font_init(const char* font_path);
 void stlxgfx_font_cleanup(void);
 
@@ -17,5 +21,9 @@ int stlxgfx_draw_text_clipped(stlxgfx_surface_t* s, int32_t x, int32_t y,
                                uint32_t clip_w, uint32_t clip_h);
 void stlxgfx_text_size(const char* text, uint32_t font_size,
                        uint32_t* out_w, uint32_t* out_h);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* STLXGFX_FONT_H */

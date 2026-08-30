@@ -5,6 +5,10 @@
 
 #define STLXGFX_CTX_MAX_SAVE_DEPTH 16
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct {
     int32_t  x, y;
     uint32_t w, h;
@@ -67,5 +71,9 @@ void stlxgfx_ctx_blit(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
 void stlxgfx_ctx_blit_alpha(stlxgfx_ctx_t *ctx, int32_t dx, int32_t dy,
                              const stlxgfx_surface_t *src, int32_t sx, int32_t sy,
                              uint32_t w, uint32_t h);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* STLXGFX_CTX_H */
