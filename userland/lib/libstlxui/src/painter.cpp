@@ -155,6 +155,29 @@ int32_t painter::font_ascent(uint32_t font_size) const {
     return m.ascent;
 }
 
+/* Blitting clips coarsely by bounding box, full precision arrives
+ * with a consumer that needs partially visible images */
+void painter::image(point dst, const void* stlxgfx_surface) {
+    if (!m_target || m_clips.empty() || !stlxgfx_surface) {
+        return;
+    }
+
+    const stlxgfx_surface_t* src =
+        static_cast<const stlxgfx_surface_t*>(stlxgfx_surface);
+    rect bounds = { dst.x + m_origin.x, dst.y + m_origin.y,
+                    static_cast<int32_t>(src->width),
+                    static_cast<int32_t>(src->height) };
+    rect clipped = intersect(bounds, m_clips.back());
+    if (clipped.w != bounds.w || clipped.h != bounds.h) {
+        return;
+    }
+
+    stlxgfx_blit_alpha(static_cast<stlxgfx_surface_t*>(m_target),
+                       bounds.x, bounds.y,
+                       const_cast<stlxgfx_surface_t*>(src), 0, 0,
+                       src->width, src->height);
+}
+
 void painter::push_clip(const rect& r) {
     rect surf = { r.x + m_origin.x, r.y + m_origin.y, r.w, r.h };
 

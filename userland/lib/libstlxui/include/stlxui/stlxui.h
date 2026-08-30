@@ -147,6 +147,13 @@ public:
     /** @brief Font ascent in pixels, for baseline placement. */
     int32_t font_ascent(uint32_t font_size) const;
 
+    /**
+     * @brief Alpha blends an stlxgfx surface at a widget local point.
+     * @param dst Top left destination in widget space.
+     * @param stlxgfx_surface The source stlxgfx_surface_t.
+     */
+    void image(point dst, const void* stlxgfx_surface);
+
     void push_clip(const rect& r);
     void pop_clip();
 
