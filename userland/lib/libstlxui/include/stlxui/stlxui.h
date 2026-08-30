@@ -103,6 +103,8 @@ struct theme {
     color surface_hover = 0xFF45475A;
     color surface_press = 0xFF585B70;
     color accent = 0xFF89B4FA;
+    color accent_hover = 0xFFA5C8FC;
+    color accent_press = 0xFF6E9DE8;
     color danger = 0xFFF38BA8;
     color text = 0xFFCDD6F4;
     color text_dim = 0xFF585B70;
@@ -294,13 +296,15 @@ public:
     void set_text(std::string text);
     const std::string& text() const { return m_text; }
     void set_color(color c);
+    void set_font_size(uint32_t px);
 
     size measure(size avail) override;
     void paint(painter& p) override;
 
 private:
     std::string m_text;
-    color m_color = 0;    /* 0 uses the theme text color */
+    color m_color = 0;          /* 0 uses the theme text color */
+    uint32_t m_font_size = 0;   /* 0 uses the theme font size */
 };
 
 /** A push button firing on_click on release or enter. */
@@ -311,6 +315,11 @@ public:
     std::function<void()> on_click;
 
     void set_text(std::string text);
+
+    /* Accent buttons carry the theme accent as their surface, the
+     * one primary action of a form */
+    void set_accent(bool accent);
+
     bool focusable() const override { return true; }
     size measure(size avail) override;
     void paint(painter& p) override;
@@ -322,6 +331,7 @@ public:
 
 private:
     std::string m_text;
+    bool m_accent = false;
     bool m_hover = false;
     bool m_pressed = false;
 };
@@ -363,6 +373,7 @@ public:
     const std::string& text() const { return m_text; }
     void set_text(std::string text);
     void set_placeholder(std::string text);
+    void set_font_size(uint32_t px);
 
     bool focusable() const override { return true; }
     size measure(size avail) override;
@@ -374,6 +385,7 @@ private:
     std::string m_text;
     std::string m_placeholder;
     size_t m_cursor = 0;
+    uint32_t m_font_size = 0;   /* 0 uses the theme font size */
 };
 
 /**

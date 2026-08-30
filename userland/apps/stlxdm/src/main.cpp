@@ -1,20 +1,42 @@
-#include "config.hpp"
 #include "input.hpp"
 #include "presenter.hpp"
 #include "server.hpp"
 #include "splash.hpp"
 
+#include <stlxconf/conf.h>
 #include <stlxgfx/font.h>
 
+#include <csignal>
 #include <cstdio>
 #include <ctime>
 #include <poll.h>
+#include <unistd.h>
 #include <vector>
+
+constexpr const char* DM_PID_PATH = "/tmp/stlxdm.pid";
+
+/* SIGHUP asks for a config reload, applied on the next wakeup */
+static volatile sig_atomic_t g_reload = 0;
+
+static void on_sighup(int) {
+    g_reload = 1;
+}
 
 static uint64_t now_ns() {
     timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+}
+
+/* The pidfile lets the settings app deliver the reload signal */
+static void write_pidfile() {
+    FILE* f = fopen(DM_PID_PATH, "w");
+    if (!f) {
+        return;
+    }
+
+    fprintf(f, "%d\n", getpid());
+    fclose(f);
 }
 
 int main() {
@@ -26,8 +48,8 @@ int main() {
         return 1;
     }
 
-    static dm_config config;
-    if (dm_config_load(config, DM_CONF_PATH) != 0) {
+    static stlxconf_t config;
+    if (stlxconf_load(&config, STLXCONF_PATH) != 0) {
         printf("stlxdm: no config file, using defaults\r\n");
     }
 
@@ -53,6 +75,9 @@ int main() {
                  static_cast<uint64_t>(config.key_repeat_interval_ms) * 1000000ull) != 0) {
         printf("stlxdm: no input devices, serving without input\r\n");
     }
+
+    signal(SIGHUP, on_sighup);
+    write_pidfile();
 
     printf("stlxdm: serving %ux%u\r\n", pres.width(), pres.height());
 
@@ -96,6 +121,17 @@ int main() {
         int timeout_ms = next_ns < 0 ? -1 : static_cast<int>(next_ns / 1000000);
 
         int rc = poll(fds.data(), fds.size(), timeout_ms);
+
+        /* A reload signal may be the very interruption poll saw */
+        if (g_reload) {
+            g_reload = 0;
+            stlxconf_load(&config, STLXCONF_PATH);
+            srv.reload_config();
+            inp.set_repeat_rates(
+                static_cast<uint64_t>(config.key_repeat_delay_ms) * 1000000ull,
+                static_cast<uint64_t>(config.key_repeat_interval_ms) * 1000000ull);
+        }
+
         if (rc < 0) {
             continue;
         }

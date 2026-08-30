@@ -27,6 +27,12 @@ public:
     /* Nanoseconds until the next key repeat fires, or -1 when idle. */
     int64_t repeat_timeout_ns(uint64_t now_ns) const;
 
+    /* Applies reloaded repeat rates, a delay of zero disables. */
+    void set_repeat_rates(uint64_t delay_ns, uint64_t interval_ns) {
+        m_repeat_delay_ns = delay_ns;
+        m_repeat_interval_ns = interval_ns;
+    }
+
     /* Emits repeat events whose deadline has passed. */
     void pump_repeat(server& srv, uint64_t now_ns);
 
