@@ -109,9 +109,16 @@ struct dm_client {
  * complete messages, and owns the scene, panels, and power overlay. */
 class server {
 public:
-    /* Binds the protocol socket, loads the wallpaper, and spawns the
-     * config's autostart entries. Returns 0 or -1. */
+    /* Builds the display state: cursor, panels, power, wallpaper,
+     * and hotkeys. Runs before the splash so its cost, dominated by
+     * the wallpaper decode, never sits between Enter and the
+     * desktop. Returns 0 or -1. */
     int init(presenter* pres, const stlxconf_t* conf);
+
+    /* Binds the protocol socket and spawns the config's autostart
+     * entries, the moment clients may exist. Returns 0 or -1. */
+    int serve();
+
     void shutdown();
 
     /* Re-applies a freshly re-parsed config: panels, power, the

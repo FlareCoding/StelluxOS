@@ -58,12 +58,20 @@ int main() {
         return 1;
     }
 
+    /* Display state builds first, so the wallpaper decode and the
+     * font opens are already paid when the splash asks for Enter */
+    server srv;
+    if (srv.init(&pres, &config) != 0) {
+        printf("stlxdm: display init failed\r\n");
+        pres.shutdown();
+        return 1;
+    }
+
     /* The splash owns the screen until Enter, before any client can
      * connect and before autostart spawns */
     splash_run(pres);
 
-    server srv;
-    if (srv.init(&pres, &config) != 0) {
+    if (srv.serve() != 0) {
         printf("stlxdm: failed to bind %s\r\n", SWP_SOCKET_PATH);
         pres.shutdown();
         return 1;
