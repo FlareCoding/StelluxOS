@@ -127,6 +127,9 @@ void server::handle_set_window(dm_client& c, const uint8_t* payload) {
     case SWP_FIELD_TITLE:
         memcpy(w->title, m->title, sizeof(w->title));
         w->title[sizeof(w->title) - 1] = '\0';
+
+        /* The bar repaints with the name it now carries */
+        scene_damage_window(w);
         return;
     case SWP_FIELD_CURSOR:
         w->cursor = m->a;
@@ -440,7 +443,7 @@ void server::compose_rect(stlxgfx_surface_t* back,
     }
 
     /* Panels live between the wallpaper and the windows */
-    m_panels.compose(back, r);
+    m_panels->compose(back, r);
 
     for (dm_window* w : m_zorder) {
         if (w->current < 0) {
@@ -487,9 +490,9 @@ void server::compose_rect(stlxgfx_surface_t* back,
 
     /* Floating chrome above the windows: the dock tooltip and the
      * power star, then the overlay, then the pointer */
-    m_panels.compose_top(back, r);
-    m_power.draw_star(back, r);
-    m_power.draw_overlay(back, r);
+    m_panels->compose_top(back, r);
+    m_power->draw_star(back, r);
+    m_power->draw_overlay(back, r);
 
     m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y);
 }
@@ -504,33 +507,33 @@ void server::compose_tick() {
     }
 
     flush_configures();
-    m_panels.flush(m_damage);
+    m_panels->flush(m_damage);
 
     /* Overlay phases: activation edges and transitions repaint the
      * whole screen, a winding hold repaints the orb boxes */
-    m_power.update();
-    bool power_active = m_power.active();
+    m_power->update();
+    bool power_active = m_power->active();
     if (power_active != m_power_was_active) {
         m_damage.add_full();
         m_power_was_active = power_active;
-    } else if (m_power.transitioning()) {
+    } else if (m_power->transitioning()) {
         m_damage.add_full();
-    } else if (m_power.animating()) {
+    } else if (m_power->animating()) {
         for (int32_t i = 0; i < 2; i++) {
-            damage_list::rect ob = m_power.orb_box(i);
+            damage_list::rect ob = m_power->orb_box(i);
             m_damage.add(ob.x, ob.y, ob.w, ob.h);
         }
     }
 
     /* Collapse frames fade the cached backdrop under the contracting
      * light, skipping scene composition entirely */
-    if (m_power.collapsing()) {
+    if (m_power->collapsing()) {
         presenter::target t = m_presenter->acquire();
         stlxgfx_surface_t* back = stlxgfx_surface_from_buffer(
             reinterpret_cast<uint8_t*>(t.pixels), m_presenter->width(),
             m_presenter->height(), t.stride, 32, 16, 8, 0);
         if (back) {
-            m_power.draw_collapse(back);
+            m_power->draw_collapse(back);
             m_cursor.draw(back, m_cursor_shape, m_cursor_x, m_cursor_y);
             stlxgfx_destroy_surface(back);
 
@@ -604,5 +607,5 @@ void server::compose_tick() {
     m_damage.clear();
 
     /* Runs only after the collapse's final dark frame is on screen */
-    m_power.run_action();
+    m_power->run_action();
 }

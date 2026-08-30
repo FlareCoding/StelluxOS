@@ -198,9 +198,9 @@ void server::forget_window(dm_window* w) {
 void server::route_key(uint16_t usage, uint8_t hid_modifiers, bool down,
                        bool repeat) {
     /* An active overlay swallows the keyboard, escape backs out */
-    if (m_power.active()) {
+    if (m_power->active()) {
         if (down && !repeat && usage == 0x29) {
-            m_power.dismiss();
+            m_power->dismiss();
         }
         return;
     }
@@ -339,22 +339,22 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
     /* An active overlay owns the pointer entirely. Hover and hold
      * transitions repaint the orb boxes. */
-    if (m_power.active()) {
+    if (m_power->active()) {
         move_cursor(x, y, SWP_CURSOR_ARROW);
 
-        int32_t old_hover = m_power.hover_choice();
-        m_power.on_motion(x, y);
+        int32_t old_hover = m_power->hover_choice();
+        m_power->on_motion(x, y);
         if ((changed & 1) != 0) {
             if ((buttons & 1) != 0) {
-                m_power.on_press(x, y);
+                m_power->on_press(x, y);
             } else {
-                m_power.on_release();
+                m_power->on_release();
             }
         }
 
-        if (m_power.hover_choice() != old_hover || (changed & 1) != 0) {
+        if (m_power->hover_choice() != old_hover || (changed & 1) != 0) {
             for (int32_t i = 0; i < 2; i++) {
-                damage_list::rect ob = m_power.orb_box(i);
+                damage_list::rect ob = m_power->orb_box(i);
                 m_damage.add(ob.x, ob.y, ob.w, ob.h);
             }
         }
@@ -363,15 +363,15 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
 
     /* Star hover tracking while the overlay is closed, a change
      * repaints the sprite's glow */
-    bool star_was = m_power.star_hover();
-    m_power.on_motion(x, y);
-    if (m_power.star_hover() != star_was) {
+    bool star_was = m_power->star_hover();
+    m_power->on_motion(x, y);
+    if (m_power->star_hover() != star_was) {
         m_damage.add_full();
     }
 
     /* A press on the star opens the overlay above everything */
-    if (press && m_power.star_hit(x, y)) {
-        m_power.open();
+    if (press && m_power->star_hit(x, y)) {
+        m_power->open();
         m_damage.add_full();
         return;
     }
@@ -399,8 +399,8 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
         if (want_y < min_y) {
             want_y = min_y;
         }
-        if (want_y > m_panels.dock_y()) {
-            want_y = m_panels.dock_y();
+        if (want_y > m_panels->dock_y()) {
+            want_y = m_panels->dock_y();
         }
 
         scene_damage_window(m_drag);
@@ -552,26 +552,26 @@ void server::route_pointer(int32_t x, int32_t y, uint16_t buttons,
     if (!target) {
         /* Uncovered band area belongs to the panels, and a motion
          * elsewhere clears any panel hover */
-        if (!struck && m_panels.contains(x, y)) {
+        if (!struck && m_panels->contains(x, y)) {
             if (changed == 0 && wheel == 0) {
-                m_panels.pointer_move(x, y);
+                m_panels->pointer_move(x, y);
             }
 
             for (uint8_t btn = 0; btn < 3; btn++) {
                 uint16_t bit = static_cast<uint16_t>(1u << btn);
                 if (changed & bit) {
-                    m_panels.pointer_button(x, y, btn,
+                    m_panels->pointer_button(x, y, btn,
                                             (buttons & bit) != 0);
                 }
             }
         } else {
-            m_panels.pointer_move(-1, -1);
+            m_panels->pointer_move(-1, -1);
         }
 
         return;
     }
 
-    m_panels.pointer_move(-1, -1);
+    m_panels->pointer_move(-1, -1);
 
     swp_event_rec rec;
     memset(&rec, 0, sizeof(rec));

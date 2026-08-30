@@ -34,23 +34,28 @@ static unsigned short s_key_queue[KEYQUEUE_SIZE];
 static unsigned int s_key_write = 0;
 static unsigned int s_key_read = 0;
 
-/* Printable keys ride the translated codepoint, forced lowercase
- * because shift is the run modifier and DOOM binds lowercase chars.
- * Everything else comes from the HID usage. */
+/* Keys map from the HID usage alone: releases carry no translated
+ * codepoint, and DOOM binds base characters regardless of shift, so
+ * usage mapping keeps every down and up pair symmetric. */
 static unsigned char translate_key(const stlxwin_event *ev)
 {
-    uint32_t ch = ev->key.ch;
-    if (ch == ' ') {
+    uint16_t usage = ev->key.usage;
+    if (usage >= 0x04 && usage <= 0x1D) {
+        return (unsigned char)('a' + (usage - 0x04));
+    }
+    if (usage >= 0x1E && usage <= 0x27) {
+        static const char digits[] = "1234567890";
+        return (unsigned char)digits[usage - 0x1E];
+    }
+    if (usage >= 0x2D && usage <= 0x38) {
+        static const char punct[] = {
+            '-', '=', '[', ']', '\\', 0, ';', '\'', '`', ',', '.', '/'
+        };
+        return (unsigned char)punct[usage - 0x2D];
+    }
+    if (usage == 0x2C) {
         return KEY_USE;
     }
-    if (ch >= 'A' && ch <= 'Z') {
-        ch |= 32u;
-    }
-    if (ch >= 33 && ch < 127) {
-        return (unsigned char)ch;
-    }
-
-    uint16_t usage = ev->key.usage;
     if (usage >= 0x3A && usage <= 0x45) {
         static const unsigned char f_keys[] = {
             KEY_F1, KEY_F2, KEY_F3, KEY_F4,  KEY_F5,  KEY_F6,
