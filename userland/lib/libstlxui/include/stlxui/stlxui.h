@@ -180,6 +180,7 @@ struct pointer_event {
     point pos;
     uint8_t button = 0;
     int16_t scroll_dy = 0;
+    uint8_t clicks = 1;    /* 2 on the press completing a double click */
 };
 
 struct key_event {
@@ -495,6 +496,13 @@ protected:
     widget* m_focus = nullptr;
     widget* m_hover = nullptr;
     widget* m_pointer_grab = nullptr;
+
+    /* Presses close in time and space chain into multi clicks, the
+     * count rides every event of the press */
+    uint64_t m_click_time_ns = 0;
+    point m_click_pos;
+    uint8_t m_click_button = 0;
+    uint8_t m_click_count = 0;
 
     friend class widget;
 };

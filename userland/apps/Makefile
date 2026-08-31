@@ -7,7 +7,7 @@ APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest
 			fetch polltest sigtest dropbear blackjack wordle hangman snake tetris \
 			grep wc head threadtest pthreadtest uname kill cxxtest synctest python vim stlxtop \
 			reboot shutdown gfxbench windemo stlxterm doom uidemo \
-			stlxsettings
+			stlxsettings file-manager
 APP_COUNT := $(words $(APP_DIRS))
 
 all:

@@ -6,7 +6,21 @@
 
 #include <stlxgfx/surface.h>
 
+#include <ctime>
+
 namespace ui {
+
+/* Presses this close in time and space chain into a double click */
+constexpr uint64_t CLICK_CHAIN_NS = 400000000ull;
+constexpr int32_t CLICK_SLOP = 4;
+
+static uint64_t click_now_ns() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull
+         + static_cast<uint64_t>(ts.tv_nsec);
+}
 
 /* Window space position of a widget, the sum of ancestor frames */
 static point window_pos_of(const rect& frame, point parent_origin) {
@@ -190,10 +204,24 @@ void host::dispatch_pointer_button(point p, uint8_t button, bool down) {
     widget* target = hit_at(p, &local);
 
     if (down) {
+        /* A press near the last one continues its click chain */
+        uint64_t now = click_now_ns();
+        bool chains = button == m_click_button &&
+                      now - m_click_time_ns <= CLICK_CHAIN_NS &&
+                      p.x - m_click_pos.x <= CLICK_SLOP &&
+                      m_click_pos.x - p.x <= CLICK_SLOP &&
+                      p.y - m_click_pos.y <= CLICK_SLOP &&
+                      m_click_pos.y - p.y <= CLICK_SLOP;
+        m_click_count = chains && m_click_count < 255
+                      ? static_cast<uint8_t>(m_click_count + 1) : 1;
+        m_click_time_ns = now;
+        m_click_pos = p;
+        m_click_button = button;
+
         /* The consumer of the press owns the pointer until release */
         point l = local;
         for (widget* w = target; w != nullptr; w = w->m_parent) {
-            if (w->on_pointer_down({ l, button, 0 })) {
+            if (w->on_pointer_down({ l, button, 0, m_click_count })) {
                 m_pointer_grab = w;
                 return;
             }
@@ -222,13 +250,13 @@ void host::dispatch_pointer_button(point p, uint8_t button, bool down) {
             }
         }
 
-        grab->on_pointer_up({ l, button, 0 });
+        grab->on_pointer_up({ l, button, 0, m_click_count });
         return;
     }
 
     point l = local;
     for (widget* w = target; w != nullptr; w = w->m_parent) {
-        if (w->on_pointer_up({ l, button, 0 })) {
+        if (w->on_pointer_up({ l, button, 0, m_click_count })) {
             return;
         }
 
