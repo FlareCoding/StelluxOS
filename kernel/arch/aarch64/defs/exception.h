@@ -13,6 +13,7 @@ constexpr uint64_t ESR_ISS_MASK = 0x00FFFFFF; // bits [24:0]
 // Exception Class (EC) values - ARMv8-A (common ones)
 constexpr uint8_t EC_UNKNOWN            = 0x00;
 constexpr uint8_t EC_SVC_A64            = 0x15;
+constexpr uint8_t EC_MSR_MRS            = 0x18;
 constexpr uint8_t EC_INST_ABORT_LOWER   = 0x20;
 constexpr uint8_t EC_INST_ABORT_SAME    = 0x21;
 constexpr uint8_t EC_PC_ALIGN           = 0x22;
