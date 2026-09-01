@@ -1251,14 +1251,29 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     }
 
     if (cmd == F_GETFL) {
+        resource::resource_object* obj = nullptr;
         uint32_t flags = 0;
-        int32_t rc = resource::get_handle_flags(
-            task->handles, static_cast<resource::handle_t>(fd), &flags);
+        uint32_t rights = 0;
+        int32_t rc = resource::get_handle_object(
+            task->handles, static_cast<resource::handle_t>(fd), 0,
+            &obj, &flags, &rights);
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }
 
-        return static_cast<int64_t>(flags & ~resource::RESOURCE_HANDLE_CLOEXEC);
+        resource::resource_release(obj);
+
+        // The access mode lives in the handle rights rather than the
+        // flag word, and callers use it to judge fd writability
+        uint32_t accmode = fs::O_RDONLY;
+        if ((rights & resource::RIGHT_READ) && (rights & resource::RIGHT_WRITE)) {
+            accmode = fs::O_RDWR;
+        } else if (rights & resource::RIGHT_WRITE) {
+            accmode = fs::O_WRONLY;
+        }
+
+        return static_cast<int64_t>(
+            accmode | (flags & ~resource::RESOURCE_HANDLE_CLOEXEC));
     }
 
     if (cmd == F_SETFL) {
