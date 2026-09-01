@@ -971,6 +971,10 @@ DEFINE_SYSCALL2(stat, pathname, statbuf) {
     return do_newfstatat_common(AT_FDCWD, pathname, statbuf, 0);
 }
 
+DEFINE_SYSCALL2(lstat, pathname, statbuf) {
+    return do_newfstatat_common(AT_FDCWD, pathname, statbuf, AT_SYMLINK_NOFOLLOW);
+}
+
 DEFINE_SYSCALL2(fstat, fd, statbuf) {
     return do_fstat_common(static_cast<int64_t>(fd), statbuf);
 }

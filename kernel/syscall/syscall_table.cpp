@@ -57,6 +57,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::SELECT,          select);
     REGISTER_SYSCALL(linux_nr::OPEN,            open);
     REGISTER_SYSCALL(linux_nr::STAT,            stat);
+    REGISTER_SYSCALL(linux_nr::LSTAT,           lstat);
     REGISTER_SYSCALL(linux_nr::DUP2,            dup2);
 #endif
     REGISTER_SYSCALL(linux_nr::BRK,             brk);
