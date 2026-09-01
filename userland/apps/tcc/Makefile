@@ -126,7 +126,9 @@ $(BUILD_DIR)/.staged: $(TCC_HOME)/libtcc1.a $(EXTRA_OBJS)
 	$(UQ)cp $(EXTRA_OBJS) $(TCC_HOME)/
 	$(UQ)cp $(SRC_DIR)/include/*.h $(TCC_HOME)/include/
 	$(UQ)cd $(SYSROOT)/lib && cp $(SYSROOT_LIBS) $(USR_LIB)/
-	$(UQ)rm -rf $(USR_INC)
+	$(UQ)if [ -d $(USR_INC) ]; then mv $(USR_INC) $(BUILD_DIR)/include-trash-$$$$; fi
+	$(UQ)rm -rf $(BUILD_DIR)/include-trash-* || true
+	$(UQ)mkdir -p $(USR_INC)
 	$(UQ)cp -R $(SYSROOT)/include/. $(USR_INC)/
 	$(UQ)rm -rf $(USR_INC)/c++ $(USR_INC)/linux $(USR_INC)/asm $(USR_INC)/asm-generic
 	$(UQ)touch $@
