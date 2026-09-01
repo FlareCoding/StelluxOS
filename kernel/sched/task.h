@@ -152,8 +152,11 @@ struct thread_group : rc::ref_counted<thread_group> {
     // Signals (per-process action table and shared pending set)
     signals::group_signals sig;
 
-    // Per-process resource limits. Guarded by lock.
+    // Per-process resource limits
     rlimit_pair rlimits[RLIMIT_COUNT];
+
+    // Per-process file creation mask
+    uint32_t umask;
 
     /**
      * @note Privilege: **required**
