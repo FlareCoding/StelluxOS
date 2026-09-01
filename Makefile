@@ -572,6 +572,11 @@ define build_binutils_arch
 	@echo "binutils $(1) installed to userland/toolchain/$(1)/"
 endef
 
+# Builds the static on-target GCC toolchain artifacts in a Docker
+# container.
+gcc-toolchain-build:
+	$(Q)./scripts/gcc-toolchain/build.sh
+
 binutils:
 	@echo "Building binutils $(BINUTILS_VERSION) for x86_64 and aarch64..."
 	@test -f $(BINUTILS_TARBALL) || \
