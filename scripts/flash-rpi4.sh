@@ -108,8 +108,8 @@ make -C "$PROJECT_DIR" userland ARCH=aarch64 RELEASE=1
 info "Creating boot image..."
 mkdir -p "$(dirname "$IMG")"
 
-dd if=/dev/zero of="$IMG" bs=1M count=256 status=none
-sgdisk --clear --new=1:2048:524254 --typecode=1:ef00 "$IMG" > /dev/null
+dd if=/dev/zero of="$IMG" bs=1M count=512 status=none
+sgdisk --clear --new=1:2048:1048542 --typecode=1:ef00 "$IMG" > /dev/null
 
 mformat -i "$IMG"@@1M -F -v STELLUX ::
 
