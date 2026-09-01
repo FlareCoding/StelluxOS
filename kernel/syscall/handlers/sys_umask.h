@@ -1,0 +1,8 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_UMASK_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_UMASK_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(umask);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_UMASK_H

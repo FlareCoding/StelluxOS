@@ -69,6 +69,9 @@ __PRIVILEGED_CODE void task::ref_destroy(task* self) {
 constexpr size_t TASK_STACK_PAGES = 4;
 constexpr uint16_t TASK_GUARD_PAGES = 1;
 
+// File creation mask a first process starts with
+constexpr uint32_t DEFAULT_UMASK = 022;
+
 constexpr size_t SYSTEM_STACK_PAGES = 4;
 constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
 
@@ -1092,15 +1095,18 @@ __PRIVILEGED_CODE task* create_user_task(
         ? creator->group->group_id.load_acquire()
         : t->tid);
 
-    // POSIX inheritance: resource limits copy from the creating process
+    // POSIX inheritance: resource limits and the file creation mask
+    // copy from the creating process
     if (creator && creator->group) {
         sync::spin_lock(creator->group->lock);
         for (uint32_t i = 0; i < RLIMIT_COUNT; i++) {
             tg->rlimits[i] = creator->group->rlimits[i];
         }
+        tg->umask = creator->group->umask;
         sync::spin_unlock(creator->group->lock);
     } else {
         init_default_rlimits(tg->rlimits);
+        tg->umask = DEFAULT_UMASK;
     }
 
     t->group = tg; // task takes ownership of the initial ref (refcount=1)

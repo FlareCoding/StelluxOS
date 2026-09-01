@@ -61,6 +61,7 @@ constexpr uint64_t MKDIR            = 83;
 constexpr uint64_t RMDIR            = 84;
 constexpr uint64_t UNLINK           = 87;
 constexpr uint64_t READLINK         = 89;
+constexpr uint64_t UMASK            = 95;
 constexpr uint64_t GETTIMEOFDAY     = 96;
 constexpr uint64_t GETRUSAGE        = 98;
 constexpr uint64_t SYSINFO          = 99;
