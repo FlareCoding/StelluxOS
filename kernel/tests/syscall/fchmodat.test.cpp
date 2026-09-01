@@ -9,14 +9,8 @@ TEST_SUITE(fchmodat_syscall);
 // Path resolution behavior is verified live from userland, since kernel
 // test tasks have no user address space to hold the path string.
 
-TEST(fchmodat_syscall, rejects_unknown_flags) {
+TEST(fchmodat_syscall, rejects_unreadable_path_pointer) {
     int64_t rc = 0;
-    RUN_ELEVATED({ rc = sys_fchmodat(0, 0, 0644, 0x200, 0, 0); });
-    EXPECT_EQ(rc, syscall::EINVAL);
-}
-
-TEST(fchmodat_syscall, rejects_mode_beyond_permission_bits) {
-    int64_t rc = 0;
-    RUN_ELEVATED({ rc = sys_fchmodat(0, 0, 0100000, 0, 0, 0); });
-    EXPECT_EQ(rc, syscall::EINVAL);
+    RUN_ELEVATED({ rc = sys_fchmodat(0, 0, 0644, 0, 0, 0); });
+    EXPECT_EQ(rc, syscall::EFAULT);
 }

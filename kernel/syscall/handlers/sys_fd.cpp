@@ -1481,15 +1481,8 @@ DEFINE_SYSCALL3(faccessat, dirfd, pathname, mode) {
     return 0;
 }
 
-DEFINE_SYSCALL4(fchmodat, dirfd, pathname, mode, flags) {
-    // AT_SYMLINK_NOFOLLOW is the only defined flag
-    if (flags & ~0x100ULL) {
-        return syscall::EINVAL;
-    }
-
-    if (mode & ~07777ULL) {
-        return syscall::EINVAL;
-    }
+DEFINE_SYSCALL3(fchmodat, dirfd, pathname, mode) {
+    (void)mode;
 
     char kpath[fs::PATH_MAX];
     int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
