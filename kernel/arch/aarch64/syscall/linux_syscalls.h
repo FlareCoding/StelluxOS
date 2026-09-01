@@ -80,6 +80,7 @@ constexpr uint64_t MMAP             = 222;
 constexpr uint64_t MPROTECT         = 226;
 constexpr uint64_t MADVISE          = 233;
 constexpr uint64_t GETRANDOM        = 278;
+constexpr uint64_t PRLIMIT64        = 261;
 constexpr uint64_t MEMFD_CREATE     = 279;
 
 } // namespace syscall::linux_nr

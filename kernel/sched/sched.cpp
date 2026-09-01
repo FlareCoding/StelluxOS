@@ -52,6 +52,16 @@ __PRIVILEGED_CODE void thread_group::ref_destroy(thread_group* self) {
     heap::kfree_delete(self);
 }
 
+void init_default_rlimits(rlimit_pair* limits) {
+    for (uint32_t i = 0; i < RLIMIT_COUNT; i++) {
+        limits[i] = { RLIM_INFINITY, RLIM_INFINITY };
+    }
+
+    uint64_t stack_bytes = mm::USER_STACK_MAX_PAGES * pmm::PAGE_SIZE;
+    limits[RLIMIT_STACK]  = { stack_bytes, stack_bytes };
+    limits[RLIMIT_NOFILE] = { resource::MAX_TASK_HANDLES, resource::MAX_TASK_HANDLES };
+}
+
 __PRIVILEGED_CODE void task::ref_destroy(task* self) {
     rc::reaper::defer(&self->reaper_node);
 }
@@ -1081,6 +1091,17 @@ __PRIVILEGED_CODE task* create_user_task(
     tg->group_id.store_relaxed((creator && creator->group)
         ? creator->group->group_id.load_acquire()
         : t->tid);
+
+    // POSIX inheritance: resource limits copy from the creating process
+    if (creator && creator->group) {
+        sync::spin_lock(creator->group->lock);
+        for (uint32_t i = 0; i < RLIMIT_COUNT; i++) {
+            tg->rlimits[i] = creator->group->rlimits[i];
+        }
+        sync::spin_unlock(creator->group->lock);
+    } else {
+        init_default_rlimits(tg->rlimits);
+    }
 
     t->group = tg; // task takes ownership of the initial ref (refcount=1)
     t->group_link = {};

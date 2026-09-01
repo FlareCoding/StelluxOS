@@ -2,6 +2,7 @@
 #define STELLUX_SCHED_TASK_H
 
 #include "sched/task_exec_core.h"
+#include "sched/rlimits.h"
 #include "common/list.h"
 #include "common/hashmap.h"
 #include "rc/ref_counted.h"
@@ -150,6 +151,9 @@ struct thread_group : rc::ref_counted<thread_group> {
 
     // Signals (per-process action table and shared pending set)
     signals::group_signals sig;
+
+    // Per-process resource limits. Guarded by lock.
+    rlimit_pair rlimits[RLIMIT_COUNT];
 
     /**
      * @note Privilege: **required**
