@@ -328,6 +328,17 @@ jobs:
         if: steps.compiler-rt-cache.outputs.cache-hit != 'true'
         run: make compiler-rt
 
+      - name: Cache target binutils
+        uses: actions/cache@v4
+        id: binutils-cache
+        with:
+          path: userland/toolchain
+          key: target-binutils-2.45-v1
+
+      - name: Build target binutils
+        if: steps.binutils-cache.outputs.cache-hit != 'true'
+        run: make binutils
+
       - name: Run unit tests
         run: make test ARCH=${{ matrix.arch }} 2>&1 | tee test-log-${{ matrix.arch }}.txt
 
