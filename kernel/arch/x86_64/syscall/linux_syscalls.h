@@ -61,6 +61,7 @@ constexpr uint64_t MKDIR            = 83;
 constexpr uint64_t RMDIR            = 84;
 constexpr uint64_t UNLINK           = 87;
 constexpr uint64_t READLINK         = 89;
+constexpr uint64_t CHMOD            = 90;
 constexpr uint64_t UMASK            = 95;
 constexpr uint64_t GETTIMEOFDAY     = 96;
 constexpr uint64_t GETRUSAGE        = 98;
@@ -95,6 +96,7 @@ constexpr uint64_t PPOLL            = 271;
 constexpr uint64_t DUP3             = 292;
 constexpr uint64_t PIPE2            = 293;
 constexpr uint64_t GETRANDOM        = 318;
+constexpr uint64_t FCHMODAT         = 268;
 constexpr uint64_t PRLIMIT64        = 302;
 constexpr uint64_t MEMFD_CREATE     = 319;
 
