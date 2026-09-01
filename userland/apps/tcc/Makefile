@@ -38,7 +38,42 @@ TCC_CFLAGS := \
 TARGET := $(BIN_DIR)/tcc
 C2STR  := build/c2str
 
-all: $(TARGET)
+# On-target compile environment, staged as a rootfs overlay that the
+# userland install step copies onto the initrd.
+ROOTFS_DIR := $(USERLAND_ROOT)/build/$(ARCH)/rootfs
+TCC_HOME   := $(ROOTFS_DIR)/usr/lib/tcc
+USR_LIB    := $(ROOTFS_DIR)/usr/lib
+USR_INC    := $(ROOTFS_DIR)/usr/include
+BUILTINS_A := $(SYSROOT)/lib/libclang_rt.builtins-$(ARCH).a
+
+# Per-target libtcc1 members, matching the upstream lib/Makefile object
+# lists. Cache flushing for -run comes from the compiler-rt builtins
+# merged in below, so armflush.o is not built.
+ifeq ($(ARCH),x86_64)
+  LIB1_BASES := libtcc1 va_list stdatomic atomic builtin alloca alloca-bt dsohandle
+else
+  LIB1_BASES := lib-arm64 stdatomic atomic builtin alloca alloca-bt dsohandle
+endif
+LIB1_OBJS := $(addprefix $(BUILD_DIR)/lib/,$(addsuffix .o,$(LIB1_BASES)))
+
+# Standalone objects tcc loads by name: runmain.o for -run, tcov.o for
+# -ftest-coverage.
+EXTRA_OBJS := $(BUILD_DIR)/lib/runmain.o $(BUILD_DIR)/lib/tcov.o
+
+# Libraries and start files programs link against on target. The empty
+# musl stub archives keep common -l flags working.
+SYSROOT_LIBS := libc.a libm.a libpthread.a libdl.a librt.a libcrypt.a \
+	libutil.a libxnet.a libresolv.a libstlx.a crt1.o crti.o crtn.o
+
+LIB_CFLAGS := \
+	--target=$(TARGET_TRIPLE) \
+	--sysroot=$(SYSROOT) \
+	-nostdlibinc \
+	-isystem $(SYSROOT)/include \
+	-O2 -g -fno-stack-protector \
+	-Wno-attribute-alias
+
+all: $(TARGET) $(BUILD_DIR)/.staged
 
 # Host tool that converts include/tccdefs.h into a C string header
 $(C2STR): $(SRC_DIR)/conftest.c
@@ -65,6 +100,36 @@ $(TARGET): $(BUILD_DIR)/tcc.o
 		$(BUILD_DIR)/tcc.o \
 		-L$(SYSROOT)/lib -Wl,--start-group -lstlx -lc -lm $(BUILTINS_LIB) -Wl,--end-group \
 		$(SYSROOT)/lib/crtn.o
+
+$(BUILD_DIR)/lib/%.o: $(SRC_DIR)/lib/%.c
+	$(UQ)mkdir -p $(dir $@)
+	@echo "[CC]  $< ($(ARCH))"
+	$(UQ)$(CC) $(LIB_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/lib/%.o: $(SRC_DIR)/lib/%.S
+	$(UQ)mkdir -p $(dir $@)
+	@echo "[AS]  $< ($(ARCH))"
+	$(UQ)$(CC) $(LIB_CFLAGS) -c $< -o $@
+
+# The compiler-rt builtins are merged in flattened so tcc-linked
+# programs resolve helper calls (soft fp128 on arm64, cache flush)
+# without knowing about compiler-rt.
+$(TCC_HOME)/libtcc1.a: $(LIB1_OBJS)
+	$(UQ)mkdir -p $(dir $@)
+	@echo "[AR]  libtcc1.a ($(ARCH))"
+	$(UQ)rm -f $@
+	$(UQ)$(AR) qcsL $@ $(LIB1_OBJS) $(BUILTINS_A)
+
+$(BUILD_DIR)/.staged: $(TCC_HOME)/libtcc1.a $(EXTRA_OBJS)
+	@echo "[STG] compile environment ($(ARCH))"
+	$(UQ)mkdir -p $(TCC_HOME)/include $(USR_LIB)
+	$(UQ)cp $(EXTRA_OBJS) $(TCC_HOME)/
+	$(UQ)cp $(SRC_DIR)/include/*.h $(TCC_HOME)/include/
+	$(UQ)cd $(SYSROOT)/lib && cp $(SYSROOT_LIBS) $(USR_LIB)/
+	$(UQ)rm -rf $(USR_INC)
+	$(UQ)cp -R $(SYSROOT)/include/. $(USR_INC)/
+	$(UQ)rm -rf $(USR_INC)/c++ $(USR_INC)/linux $(USR_INC)/asm $(USR_INC)/asm-generic
+	$(UQ)touch $@
 
 clean:
 	$(UQ)rm -rf build
