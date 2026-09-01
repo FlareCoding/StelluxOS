@@ -17,6 +17,7 @@ constexpr uint64_t FTRUNCATE        = 46;
 constexpr uint64_t FACCESSAT        = 48;
 constexpr uint64_t CHDIR            = 49;
 constexpr uint64_t FCHDIR           = 50;
+constexpr uint64_t FCHMODAT         = 53;
 constexpr uint64_t OPENAT           = 56;
 constexpr uint64_t CLOSE            = 57;
 constexpr uint64_t PIPE2            = 59;

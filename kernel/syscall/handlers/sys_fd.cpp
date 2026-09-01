@@ -1481,6 +1481,56 @@ DEFINE_SYSCALL3(faccessat, dirfd, pathname, mode) {
     return 0;
 }
 
+DEFINE_SYSCALL4(fchmodat, dirfd, pathname, mode, flags) {
+    // AT_SYMLINK_NOFOLLOW is the only defined flag
+    if (flags & ~0x100ULL) {
+        return syscall::EINVAL;
+    }
+
+    if (mode & ~07777ULL) {
+        return syscall::EINVAL;
+    }
+
+    char kpath[fs::PATH_MAX];
+    int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
+        kpath, sizeof(kpath),
+        reinterpret_cast<const char*>(pathname));
+    if (copy_rc != mm::uaccess::OK) {
+        if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
+            return syscall::ENAMETOOLONG;
+        }
+        return syscall::EFAULT;
+    }
+
+    if (kpath[0] == '\0') {
+        return syscall::ENOENT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    fs::node* node = nullptr;
+    int64_t lookup_rc = lookup_node_for_dirfd_path(
+        task, static_cast<int64_t>(dirfd), kpath, &node);
+    if (lookup_rc != 0) {
+        return lookup_rc;
+    }
+
+    // The vfs synthesizes permissions from node type and stores no mode
+    // bits, so a change on a resolvable node succeeds without effect
+    release_node_ref(node);
+    return 0;
+}
+
+DEFINE_SYSCALL2(chmod, pathname, mode) {
+    // -100 is AT_FDCWD
+    return sys_fchmodat(
+        static_cast<uint64_t>(-100),
+        pathname, mode, 0, 0, 0);
+}
+
 DEFINE_SYSCALL2(access, pathname, mode) {
     // -100 is AT_FDCWD
     return sys_faccessat(
