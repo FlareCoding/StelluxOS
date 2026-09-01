@@ -1,0 +1,8 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_RUSAGE_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_RUSAGE_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(getrusage);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_RUSAGE_H
