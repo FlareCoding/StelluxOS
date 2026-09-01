@@ -1,0 +1,32 @@
+#!/bin/sh
+# Cross cc wrapper that presents clang as a plain host compiler able to
+# link static musl executables, for configure driven toolchain builds.
+# The caller provides STLX_ARCH, STLX_CLANG, and STLX_SYSROOT.
+# The link line mirrors the canonical app.mk recipe.
+set -eu
+: "${STLX_ARCH:?set STLX_ARCH to x86_64 or aarch64}"
+: "${STLX_CLANG:?set STLX_CLANG to the clang binary}"
+: "${STLX_SYSROOT:?set STLX_SYSROOT to the musl sysroot}"
+
+TRIPLE="$STLX_ARCH-linux-musl"
+COMMON="--target=$TRIPLE --sysroot=$STLX_SYSROOT -nostdlibinc -isystem $STLX_SYSROOT/include"
+BUILTINS="$STLX_SYSROOT/lib/libclang_rt.builtins-$STLX_ARCH.a"
+
+link=yes
+for a in "$@"; do
+    case "$a" in
+        -c|-E|-S|-M|-MM|--version|-v|-dumpmachine|-print-*) link=no ;;
+    esac
+done
+
+if [ "$link" = no ]; then
+    exec "$STLX_CLANG" $COMMON "$@"
+fi
+
+# The clang driver expects a gcc style toolchain layout for static
+# linking, so the link line is assembled from the sysroot directly.
+exec "$STLX_CLANG" $COMMON -fuse-ld=lld -static -nostdlib \
+    "$STLX_SYSROOT/lib/crt1.o" "$STLX_SYSROOT/lib/crti.o" \
+    "$@" \
+    "-L$STLX_SYSROOT/lib" -Wl,--start-group -lc "$BUILTINS" -Wl,--end-group \
+    "$STLX_SYSROOT/lib/crtn.o"
