@@ -1115,6 +1115,10 @@ __PRIVILEGED_CODE int32_t init() {
     constexpr uint64_t SCTLR_nTWE = 1ULL << 18;
     sctlr |= SCTLR_nTWE;
 
+    // Allow EL0 cache maintenance and CTR_EL0 reads so code generators
+    // can flush freshly written instructions (dc cvau + ic ivau).
+    sctlr |= sctlr::UCT | sctlr::UCI;
+
     write_sctlr_el1(sctlr);
 
     // Switch to new page tables

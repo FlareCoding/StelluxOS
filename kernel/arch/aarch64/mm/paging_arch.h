@@ -231,8 +231,10 @@ namespace sctlr {
     constexpr uint64_t M    = 1ULL << 0;   // MMU enable
     constexpr uint64_t C    = 1ULL << 2;   // D-cache enable
     constexpr uint64_t I    = 1ULL << 12;  // I-cache enable
+    constexpr uint64_t UCT  = 1ULL << 15;  // EL0 access to CTR_EL0
     constexpr uint64_t WXN  = 1ULL << 19;  // Write permission implies XN (Execute Never)
     constexpr uint64_t SPAN = 1ULL << 23;  // Set Privileged Access Never
+    constexpr uint64_t UCI  = 1ULL << 26;  // EL0 cache maintenance (dc cvau/ic ivau)
 }
 
 // TLBI VA-based invalidation operands carry VA[55:12].
