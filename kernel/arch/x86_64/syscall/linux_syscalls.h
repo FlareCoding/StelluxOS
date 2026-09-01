@@ -62,6 +62,7 @@ constexpr uint64_t RMDIR            = 84;
 constexpr uint64_t UNLINK           = 87;
 constexpr uint64_t READLINK         = 89;
 constexpr uint64_t GETTIMEOFDAY     = 96;
+constexpr uint64_t SYSINFO          = 99;
 constexpr uint64_t GETUID           = 102;
 constexpr uint64_t GETGID           = 104;
 constexpr uint64_t GETEUID          = 107;
