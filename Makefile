@@ -819,12 +819,10 @@ toolchain-check:
 		 if [ -f "$$SR" ]; then \
 			echo "$$SR"; \
 		 else \
-			BRT=$$($(STLX_CC) --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
-			if [ -f "$$BRT" ]; then \
-				echo "$$BRT"; \
-			elif which x86_64-linux-gnu-gcc > /dev/null 2>&1; then \
-				BGCC=$$(x86_64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
-				[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND - run 'make compiler-rt'"; \
+			FB=$$($(STLX_CC) --target=x86_64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+			[ -f "$$FB" ] || FB=$$(x86_64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
+			if [ -f "$$FB" ]; then \
+				echo "$$FB (host fallback - tcc port needs 'make compiler-rt')"; \
 			else \
 				echo "NOT FOUND - run 'make compiler-rt'"; \
 			fi; \
@@ -834,18 +832,16 @@ toolchain-check:
 		 if [ -f "$$SR" ]; then \
 			echo "$$SR"; \
 		 else \
-			BRT=$$($(STLX_CC) --target=aarch64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
-			if [ -f "$$BRT" ]; then \
-				echo "$$BRT"; \
-			elif which aarch64-linux-gnu-gcc > /dev/null 2>&1; then \
-				BGCC=$$(aarch64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
-				[ -f "$$BGCC" ] && echo "$$BGCC" || echo "NOT FOUND - run 'make compiler-rt'"; \
+			FB=$$($(STLX_CC) --target=aarch64-linux-musl --rtlib=compiler-rt -print-libgcc-file-name 2>/dev/null); \
+			[ -f "$$FB" ] || FB=$$(aarch64-linux-gnu-gcc -print-libgcc-file-name 2>/dev/null); \
+			if [ -f "$$FB" ]; then \
+				echo "$$FB (host fallback - tcc port needs 'make compiler-rt')"; \
 			else \
 				echo "NOT FOUND - run 'make compiler-rt'"; \
 			fi; \
 		 fi)
 	@echo ""
-	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', 'make libcxx', and/or 'make rpi4-firmware'"
+	@echo "If anything is NOT FOUND, run 'make deps', 'make limine', 'make musl', 'make libcxx', 'make compiler-rt', and/or 'make rpi4-firmware'"
 
 # ============================================================================
 # Help
