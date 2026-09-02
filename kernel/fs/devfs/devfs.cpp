@@ -1,109 +1,22 @@
 #include "fs/devfs/devfs.h"
-#include "fs/node.h"
-#include "fs/file.h"
+#include "fs/dir_node.h"
 #include "fs/mount.h"
 #include "fs/fs.h"
-#include "common/list.h"
 #include "common/string.h"
 #include "mm/heap.h"
 #include "common/logging.h"
 
 namespace devfs {
 
-class devfs_dir_node : public fs::node {
+class devfs_dir_node : public fs::dir_node {
 public:
     devfs_dir_node(fs::instance* fs, const char* name)
-        : fs::node(fs::node_type::directory, fs, name)
-        , m_child_count(0) {
-        m_children.init();
-    }
-
-    ~devfs_dir_node() override {
-        while (!m_children.empty()) {
-            fs::node* child = m_children.pop_front();
-            child->set_parent(nullptr);
-            if (child->release()) {
-                fs::node::ref_destroy(child);
-            }
-        }
-        m_child_count = 0;
-    }
-
-    int32_t lookup(const char* name, size_t len, fs::node** out) override {
-        if (!name || !out) return fs::ERR_INVAL;
-
-        sync::irq_lock_guard guard(m_lock);
-        fs::node* child = find_child(name, len);
-        if (!child) return fs::ERR_NOENT;
-
-        child->add_ref();
-        *out = child;
-        return fs::OK;
-    }
-
-    ssize_t readdir(fs::file* f, fs::dirent* entries, size_t count) override {
-        if (!f || !entries) return fs::ERR_BADF;
-
-        if (count == 0) return 0;
-
-        sync::irq_lock_guard guard(m_lock);
-
-        size_t idx = static_cast<size_t>(f->offset());
-        size_t written = 0;
-
-        size_t cur_idx = 0;
-        for (auto& child : m_children) {
-            if (written >= count) break;
-
-            if (cur_idx >= idx) {
-                size_t name_len = string::strlen(child.name());
-                if (name_len > fs::NAME_MAX) name_len = fs::NAME_MAX;
-                string::memcpy(entries[written].name, child.name(), name_len);
-                entries[written].name[name_len] = '\0';
-                entries[written].type = child.type();
-                entries[written].ino = child.ino();
-                written++;
-            }
-            cur_idx++;
-        }
-
-        f->set_offset(static_cast<int64_t>(idx + written));
-        return static_cast<ssize_t>(written);
-    }
-
-    int32_t getattr(fs::vattr* attr) override {
-        int32_t rc = fs::node::getattr(attr);
-        if (rc != fs::OK) {
-            return rc;
-        }
-
-        attr->size = m_child_count;
-        return fs::OK;
-    }
+        : fs::dir_node(fs, name) {}
 
     void add_child(fs::node* child) {
         sync::irq_lock_guard guard(m_lock);
-
-        child->set_parent(this);
-        child->set_filesystem(m_fs);
-        child->add_ref();
-        m_children.push_back(child);
-        m_child_count++;
+        attach_child(child);
     }
-
-private:
-    fs::node* find_child(const char* name, size_t len) {
-        for (auto& child : m_children) {
-            size_t child_len = string::strlen(child.name());
-            if (child_len == len && string::strncmp(child.name(), name, len) == 0) {
-                return &child;
-            }
-        }
-        return nullptr;
-    }
-
-    list::head<fs::node, &fs::node::m_child_link> m_children;
-    uint32_t m_child_count;
 };
 
 /* Built-in /dev/null: reads return EOF, writes are discarded. */
