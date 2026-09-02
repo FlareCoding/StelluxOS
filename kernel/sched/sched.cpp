@@ -85,6 +85,9 @@ constexpr uint64_t AT_PHENT  = 4;
 constexpr uint64_t AT_PHNUM  = 5;
 constexpr uint64_t AT_PAGESZ = 6;
 
+constexpr size_t AUXV_ENTRIES = 5;
+constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
+
 static uint32_t load_cleanup_stage(const task* t) {
     return t->cleanup_stage.load_acquire();
 }
@@ -800,11 +803,35 @@ static const char* path_basename(const char* path) {
     return base;
 }
 
+// Total bytes the initial stack layout needs: argv[0], the
+// user args, the environment, the pointer block, and auxv.
+static size_t measure_needed_user_stack_bytes(
+    const char* path,
+    int user_argc, const char* const* user_argv,
+    int user_envc, const char* const* user_envp
+) {
+    size_t struct_words = 1 + (1 + user_argc) + 1 + user_envc + 1 + AUXV_WORDS;
+    size_t bytes = struct_words * sizeof(uint64_t);
+
+    bytes += (string::strnlen(path, MAX_ARG_STRLEN - 1) + 1 + 7) & ~7ULL;
+    for (int i = 0; i < user_argc; i++) {
+        bytes += (string::strnlen(user_argv[i], MAX_ARG_STRLEN - 1) + 1 + 7) & ~7ULL;
+    }
+
+    for (int i = 0; i < user_envc; i++) {
+        bytes += (string::strnlen(user_envp[i], MAX_ARG_STRLEN - 1) + 1 + 7) & ~7ULL;
+    }
+
+    return bytes + 16; // stack pointer alignment space
+}
+
 /**
  * Build the initial stack layout (argc, argv, envp, auxv) that musl's
- * _start expects. Writes data into the last page of the already-mapped
- * user stack via the kernel HHDM mapping.
+ * _start expects. Writes across the eagerly mapped pages at the top of
+ * the not-yet-active user stack via the kernel HHDM mapping.
  *
+ * @param pt_root Page table root of the target address space.
+ * @param mapped_bytes Eagerly mapped bytes available below stack_top.
  * @param user_argc Number of user-provided args (excluding program name).
  * @param user_argv Kernel-copied argument strings, or nullptr for none.
  * @param user_envc Number of environment strings.
@@ -813,8 +840,9 @@ static const char* path_basename(const char* path) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static uintptr_t setup_user_stack(
-    pmm::phys_addr_t last_page_phys,
+    uint64_t pt_root,
     uintptr_t stack_top,
+    size_t mapped_bytes,
     const exec::loaded_image& image,
     const char* path,
     int user_argc,
@@ -822,19 +850,34 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     int user_envc,
     const char* const* user_envp
 ) {
-    uint8_t* page_kva = static_cast<uint8_t*>(paging::phys_to_virt(last_page_phys));
-    uintptr_t page_base_va = pmm::page_align_down(stack_top - 1);
-    auto write = [&](uintptr_t user_va, const void* data, size_t len) {
-        size_t offset = user_va - page_base_va;
-        string::memcpy(page_kva + offset, data, len);
+    bool write_ok = true;
+    auto write = [&](uintptr_t user_va, const void* src, size_t len) {
+        auto* src_bytes = static_cast<const uint8_t*>(src);
+        while (len > 0) {
+            uintptr_t page_va = pmm::page_align_down(user_va);
+            size_t offset = user_va - page_va;
+
+            size_t chunk = pmm::PAGE_SIZE - offset;
+            if (chunk > len) {
+                chunk = len;
+            }
+
+            pmm::phys_addr_t phys = paging::get_physical(page_va, pt_root);
+            if (phys == 0) {
+                write_ok = false;
+                return;
+            }
+            
+            auto* page_kva = static_cast<uint8_t*>(paging::phys_to_virt(phys));
+            string::memcpy(page_kva + offset, src_bytes, chunk);
+            
+            user_va += chunk;
+            src_bytes += chunk;
+            len -= chunk;
+        }
     };
 
     int total_argc = 1 + user_argc; // argv[0] = path, argv[1..] = user args
-
-    constexpr size_t MAX_ARGV_PTRS = 1 + MAX_ARG_STRINGS; // program name + user args
-    constexpr size_t MAX_ENVP_PTRS = MAX_ARG_STRINGS;
-    constexpr size_t AUXV_ENTRIES = 5;
-    constexpr size_t AUXV_WORDS = AUXV_ENTRIES * 2;
 
     size_t struct_words = 1 + static_cast<size_t>(total_argc) + 1
                         + static_cast<size_t>(user_envc) + 1 + AUXV_WORDS;
@@ -847,67 +890,79 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         size_t arg_len = string::strnlen(user_argv[i], MAX_ARG_STRLEN - 1) + 1;
         total_string_bytes += (arg_len + 7) & ~7ULL;
     }
+
     for (int i = 0; i < user_envc; i++) {
         size_t env_len = string::strnlen(user_envp[i], MAX_ARG_STRLEN - 1) + 1;
         total_string_bytes += (env_len + 7) & ~7ULL;
     }
 
-    if (total_string_bytes + struct_bytes + 16 > pmm::PAGE_SIZE) {
+    if (total_string_bytes + struct_bytes + 16 > mapped_bytes) {
         return 0;
     }
 
-    // Write strings at the top of the page (growing downward from stack_top)
+    // Strings sit at the top of the window and the pointer block below
+    // them, so both regions are known before anything is written
+    uintptr_t str_bottom = stack_top - total_string_bytes;
+    uintptr_t sp = (str_bottom - struct_bytes) & ~0xFULL;
+    uint64_t argc_word = static_cast<uint64_t>(total_argc);
+
+    write(sp, &argc_word, sizeof(argc_word));
+
     uintptr_t str_cursor = stack_top;
-    uintptr_t argv_vas[MAX_ARGV_PTRS];
+    uintptr_t slot = sp + sizeof(uint64_t);
 
-    // argv[0] = the path the program was invoked with, which relocatable
-    // programs use to locate their own installation
-    size_t path_padded = (path_len + 7) & ~7ULL;
-    str_cursor -= path_padded;
+    // argv[0] = the path the program was invoked with
+    str_cursor -= (path_len + 7) & ~7ULL;
     write(str_cursor, path, path_len);
-    argv_vas[0] = str_cursor;
 
-    // argv[1..user_argc] = user-provided args
+    uint64_t path_va = str_cursor;
+    write(slot, &path_va, sizeof(path_va));
+
+    // User arguments
+    slot += sizeof(uint64_t);
     for (int i = 0; i < user_argc; i++) {
         size_t arg_len = string::strnlen(user_argv[i], MAX_ARG_STRLEN - 1) + 1;
-        size_t arg_padded = (arg_len + 7) & ~7ULL;
-        str_cursor -= arg_padded;
+        str_cursor -= (arg_len + 7) & ~7ULL;
         write(str_cursor, user_argv[i], arg_len);
-        argv_vas[1 + i] = str_cursor;
+
+        uint64_t arg_va = str_cursor;
+        write(slot, &arg_va, sizeof(arg_va));
+        slot += sizeof(uint64_t);
     }
 
-    uintptr_t envp_vas[MAX_ENVP_PTRS];
+    uint64_t terminator = 0;
+    write(slot, &terminator, sizeof(terminator));
+
+    // Environment variables
+    slot += sizeof(uint64_t);
     for (int i = 0; i < user_envc; i++) {
         size_t env_len = string::strnlen(user_envp[i], MAX_ARG_STRLEN - 1) + 1;
-        size_t env_padded = (env_len + 7) & ~7ULL;
-        str_cursor -= env_padded;
+        str_cursor -= (env_len + 7) & ~7ULL;
         write(str_cursor, user_envp[i], env_len);
-        envp_vas[i] = str_cursor;
+
+        uint64_t env_va = str_cursor;
+        write(slot, &env_va, sizeof(env_va));
+        slot += sizeof(uint64_t);
     }
 
-    uintptr_t sp = (str_cursor - struct_bytes) & ~0xFULL;
+    write(slot, &terminator, sizeof(terminator));
+    slot += sizeof(uint64_t);
 
-    uint64_t data[1 + MAX_ARGV_PTRS + 1 + MAX_ENVP_PTRS + 1 + AUXV_WORDS];
-    size_t idx = 0;
-    data[idx++] = static_cast<uint64_t>(total_argc);
+    const uint64_t auxv[AUXV_WORDS] = {
+        AT_PAGESZ, pmm::PAGE_SIZE,
+        AT_PHDR,   image.phdr_vaddr,
+        AT_PHENT,  image.phentsize,
+        AT_PHNUM,  static_cast<uint64_t>(image.phdr_vaddr ? image.phnum : 0),
+        AT_NULL,   0
+    };
+    write(slot, auxv, sizeof(auxv));
 
-    for (int i = 0; i < total_argc; i++) {
-        data[idx++] = argv_vas[i];
+    // The string loops here must consume exactly what the measuring pass
+    // reserved, otherwise the pointer block and the strings would collide
+    if (!write_ok || str_cursor != str_bottom) {
+        return 0;
     }
-    data[idx++] = 0; // argv terminator (NULL)
 
-    for (int i = 0; i < user_envc; i++) {
-        data[idx++] = envp_vas[i];
-    }
-    data[idx++] = 0; // envp terminator (NULL)
-
-    data[idx++] = AT_PAGESZ; data[idx++] = pmm::PAGE_SIZE;
-    data[idx++] = AT_PHDR;   data[idx++] = image.phdr_vaddr;
-    data[idx++] = AT_PHENT;  data[idx++] = image.phentsize;
-    data[idx++] = AT_PHNUM;  data[idx++] = image.phdr_vaddr ? image.phnum : 0;
-    data[idx++] = AT_NULL;   data[idx++] = 0;
-
-    write(sp, data, idx * sizeof(uint64_t));
     return sp;
 }
 
@@ -925,6 +980,17 @@ __PRIVILEGED_CODE task* create_user_task(
     }
 
     mm::mm_context* mm_ctx = image->mm_ctx;
+
+    // The argv, envp, and auxv block is written before the task runs, so
+    // the top of the stack must be mapped up front to hold all of it
+    size_t args_bytes = measure_needed_user_stack_bytes(path, argc, argv, envc, envp);
+    size_t args_pages = (args_bytes + pmm::PAGE_SIZE - 1) / pmm::PAGE_SIZE;
+    size_t eager_pages = args_pages > mm::USER_STACK_PAGES
+                    ? args_pages : mm::USER_STACK_PAGES;
+    if (eager_pages > mm::USER_STACK_MAX_PAGES) {
+        log::error("sched: argv and envp need %zu bytes, more than the allowed user stack", args_bytes);
+        return nullptr;
+    }
 
     task* t = heap::kalloc_new<task>();
     if (!t) {
@@ -945,12 +1011,13 @@ __PRIVILEGED_CODE task* create_user_task(
     // Stack region layout: a single coalesced MM_MAP_STACK vma spanning
     // USER_STACK_MAX_PAGES at the top of user VA. The bottom portion is
     // reserved lazily (no eager pages) so userland faults grow it on demand.
-    // The top USER_STACK_PAGES window is eagerly mapped so the kernel can
-    // write argv/envp into it before the user task ever runs.
+    // The top window is eagerly mapped so the kernel can write argv and
+    // envp into it before the user task ever runs, and it grows past the
+    // USER_STACK_PAGES default when the arguments need more room.
     uintptr_t stack_max_base = mm::USER_STACK_TOP - mm::USER_STACK_MAX_PAGES * pmm::PAGE_SIZE;
-    uintptr_t eager_base     = mm::USER_STACK_TOP - mm::USER_STACK_PAGES     * pmm::PAGE_SIZE;
-    size_t    lazy_bytes     = (mm::USER_STACK_MAX_PAGES - mm::USER_STACK_PAGES) * pmm::PAGE_SIZE;
-    size_t    eager_bytes    = mm::USER_STACK_PAGES     * pmm::PAGE_SIZE;
+    uintptr_t eager_base     = mm::USER_STACK_TOP - eager_pages * pmm::PAGE_SIZE;
+    size_t    lazy_bytes     = (mm::USER_STACK_MAX_PAGES - eager_pages) * pmm::PAGE_SIZE;
+    size_t    eager_bytes    = eager_pages * pmm::PAGE_SIZE;
     size_t    total_bytes    = mm::USER_STACK_MAX_PAGES * pmm::PAGE_SIZE;
 
     uint32_t base_stack_flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS |
@@ -966,6 +1033,7 @@ __PRIVILEGED_CODE task* create_user_task(
         base_stack_flags | mm::MM_MAP_LAZY,
         &reserved_addr
     );
+
     if (lazy_rc != mm::MM_CTX_OK) {
         log::error("sched: failed to reserve user stack VMA (rc=%d)", lazy_rc);
         vmm::free(sys_stack_base);
@@ -992,21 +1060,11 @@ __PRIVILEGED_CODE task* create_user_task(
         return nullptr;
     }
 
-    pmm::phys_addr_t last_stack_page_phys =
-        paging::get_physical(mm::USER_STACK_TOP - pmm::PAGE_SIZE, mm_ctx->pt_root);
-    if (last_stack_page_phys == 0) {
-        log::error("sched: failed to resolve user stack top page");
-        mm::mm_context_unmap(mm_ctx, stack_max_base, total_bytes);
-        vmm::free(sys_stack_base);
-        heap::kfree_delete(t);
-        return nullptr;
-    }
-
     uintptr_t user_sp = setup_user_stack(
-        last_stack_page_phys, mm::USER_STACK_TOP, *image, path,
+        mm_ctx->pt_root, mm::USER_STACK_TOP, eager_bytes, *image, path,
         argc, argv, envc, envp);
     if (user_sp == 0) {
-        log::error("sched: user stack setup failed (argv/envp too large?)");
+        log::error("sched: user stack setup failed (argv/envp did not fit)");
         mm::mm_context_unmap(mm_ctx, stack_max_base, total_bytes);
         vmm::free(sys_stack_base);
         heap::kfree_delete(t);
