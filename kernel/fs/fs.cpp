@@ -7,6 +7,7 @@
 #include "common/string.h"
 #include "mm/heap.h"
 #include "sync/spinlock.h"
+#include "sync/atomic.h"
 #include "sync/poll.h"
 #include "dynpriv/dynpriv.h"
 #include "fs/cpio/cpio.h"
@@ -30,12 +31,17 @@ __PRIVILEGED_BSS static uint32_t g_mount_count;
 static constexpr uint32_t MAX_MOUNTS = 32;
 __PRIVILEGED_BSS static mount_point* g_mounts[MAX_MOUNTS];
 
+// Identity counters start at 1 so that 0 always means "no identity"
+static sync::atomic<uint64_t> g_next_ino{1};
+static sync::atomic<uint64_t> g_next_dev{1};
+
 node::node(node_type t, instance* fs, const char* name)
     : m_child_link{}
     , m_type(t)
     , m_fs(fs)
     , m_parent(nullptr)
     , m_size(0)
+    , m_ino(g_next_ino.fetch_add_relaxed(1))
     , m_lock(sync::SPINLOCK_INIT)
     , m_mounted_here(nullptr) {
     if (name) {
@@ -70,6 +76,8 @@ int32_t node::getattr(vattr* attr) {
 
     attr->type = m_type;
     attr->size = m_size;
+    attr->ino = m_ino;
+    attr->dev = m_fs ? m_fs->dev() : 0;
     return OK;
 }
 
@@ -98,7 +106,8 @@ void file::ref_destroy(file* f) {
 
 instance::instance(driver* drv, node* root)
     : m_driver(drv)
-    , m_root(rc::strong_ref<node>::adopt(root)) {
+    , m_root(rc::strong_ref<node>::adopt(root))
+    , m_dev(g_next_dev.fetch_add_relaxed(1)) {
 }
 
 int32_t instance::unmount() {

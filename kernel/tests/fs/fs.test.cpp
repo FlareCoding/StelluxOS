@@ -314,6 +314,71 @@ TEST(fs_test, err_notdir) {
     fs::unlink("/notdir_file");
 }
 
+TEST(fs_test, stat_identity_distinct_per_node) {
+    fs::file* a = fs::open("/ino_a", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(a);
+    fs::file* b = fs::open("/ino_b", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(b);
+
+    fs::vattr attr_a = {};
+    fs::vattr attr_b = {};
+    EXPECT_EQ(fs::fstat(a, &attr_a), fs::OK);
+    EXPECT_EQ(fs::fstat(b, &attr_b), fs::OK);
+    EXPECT_NE(attr_a.ino, static_cast<uint64_t>(0));
+    EXPECT_NE(attr_a.ino, attr_b.ino);
+    EXPECT_EQ(attr_a.dev, attr_b.dev);
+
+    fs::close(a);
+    fs::close(b);
+    fs::unlink("/ino_a");
+    fs::unlink("/ino_b");
+}
+
+TEST(fs_test, stat_identity_stable_for_node) {
+    fs::file* f = fs::open("/ino_stable", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr by_fd = {};
+    fs::vattr by_path = {};
+    EXPECT_EQ(fs::fstat(f, &by_fd), fs::OK);
+    EXPECT_EQ(fs::stat("/ino_stable", &by_path), fs::OK);
+    EXPECT_EQ(by_fd.ino, by_path.ino);
+    EXPECT_EQ(by_fd.dev, by_path.dev);
+
+    fs::close(f);
+    fs::unlink("/ino_stable");
+}
+
+TEST(fs_test, stat_identity_distinct_per_filesystem) {
+    fs::vattr root = {};
+    fs::vattr dev = {};
+    EXPECT_EQ(fs::stat("/", &root), fs::OK);
+    EXPECT_EQ(fs::stat("/dev", &dev), fs::OK);
+    EXPECT_NE(root.dev, static_cast<uint64_t>(0));
+    EXPECT_NE(dev.dev, static_cast<uint64_t>(0));
+    EXPECT_NE(root.dev, dev.dev);
+}
+
+TEST(fs_test, readdir_reports_node_identity) {
+    fs::mkdir("/ino_dir", 0);
+    fs::file* f = fs::open("/ino_dir/child", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/ino_dir/child", &attr), fs::OK);
+
+    fs::file* dir = fs::open("/ino_dir", fs::O_RDONLY);
+    ASSERT_NOT_NULL(dir);
+    fs::dirent entry = {};
+    EXPECT_EQ(fs::readdir(dir, &entry, 1), static_cast<ssize_t>(1));
+    EXPECT_EQ(entry.ino, attr.ino);
+
+    fs::close(dir);
+    fs::unlink("/ino_dir/child");
+    fs::rmdir("/ino_dir");
+}
+
 TEST(fs_test, multi_page_write_read) {
     fs::file* f = fs::open("/bigfile", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);

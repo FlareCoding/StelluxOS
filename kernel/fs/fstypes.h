@@ -37,11 +37,14 @@ constexpr int32_t SEEK_END = 2;
 struct vattr {
     node_type type;
     size_t size;
+    uint64_t ino;  // Unique among all nodes for the node's lifetime, never 0
+    uint64_t dev;  // Identifies the mounted filesystem instance, 0 if unmounted
 };
 
 struct dirent {
     char name[NAME_MAX + 1];
     node_type type;
+    uint64_t ino;
 };
 
 } // namespace fs

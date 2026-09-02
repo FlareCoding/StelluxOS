@@ -198,14 +198,6 @@ public:
         return static_cast<ssize_t>(count);
     }
 
-    int32_t getattr(fs::vattr* attr) override {
-        if (!attr) return fs::ERR_INVAL;
-
-        attr->type = fs::node_type::char_device;
-        attr->size = 0;
-        return fs::OK;
-    }
-
 private:
     struct snapshot {
         char*  text;

@@ -198,6 +198,8 @@ static inline uint32_t node_type_default_perms(fs::node_type t) {
 
 static inline int64_t copy_stat_to_user(const fs::vattr& attr, uint64_t u_stat) {
     linux_kstat st = {};
+    st.st_dev = attr.dev;
+    st.st_ino = attr.ino;
     st.st_mode = node_type_to_mode_bits(attr.type) | node_type_default_perms(attr.type);
     st.st_size = static_cast<int64_t>(attr.size);
     st.st_nlink = (attr.type == fs::node_type::directory) ? 2 : 1;
@@ -1173,7 +1175,7 @@ DEFINE_SYSCALL3(getdents64, fd, dirp, count) {
 
         string::memset(record_buf, 0, reclen);
         linux_dirent64_hdr hdr = {};
-        hdr.d_ino = 0;
+        hdr.d_ino = entry.ino;
         hdr.d_off = kfile->offset();
         hdr.d_reclen = reclen;
         hdr.d_type = node_type_to_dirent_type(entry.type);

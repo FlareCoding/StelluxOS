@@ -290,6 +290,7 @@ ssize_t dir_node::readdir(fs::file* f, fs::dirent* entries, size_t count) {
             string::memcpy(entries[written].name, child.name(), name_len);
             entries[written].name[name_len] = '\0';
             entries[written].type = child.type();
+            entries[written].ino = child.ino();
             written++;
         }
         cur_idx++;
@@ -300,9 +301,11 @@ ssize_t dir_node::readdir(fs::file* f, fs::dirent* entries, size_t count) {
 }
 
 int32_t dir_node::getattr(fs::vattr* attr) {
-    if (!attr) return fs::ERR_INVAL;
+    int32_t rc = fs::node::getattr(attr);
+    if (rc != fs::OK) {
+        return rc;
+    }
 
-    attr->type = fs::node_type::directory;
     attr->size = m_child_count;
     return fs::OK;
 }
@@ -486,14 +489,6 @@ int64_t file_node::seek(fs::file* f, int64_t offset, int whence) {
 
     f->set_offset(new_off);
     return new_off;
-}
-
-int32_t file_node::getattr(fs::vattr* attr) {
-    if (!attr) return fs::ERR_INVAL;
-
-    attr->type = fs::node_type::regular;
-    attr->size = m_size;
-    return fs::OK;
 }
 
 int32_t file_node::truncate(size_t size) {

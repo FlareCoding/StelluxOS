@@ -2,7 +2,6 @@
 #include "terminal/terminal.h"
 #include "common/ring_buffer.h"
 #include "serial/serial.h"
-#include "fs/fs.h"
 #include "fs/file.h"
 
 namespace terminal {
@@ -24,14 +23,6 @@ ssize_t console_node::write(fs::file*, const void* buf, size_t count) {
 
 int32_t console_node::ioctl(fs::file*, uint32_t cmd, uint64_t arg) {
     return terminal::console_ioctl(cmd, arg);
-}
-
-int32_t console_node::getattr(fs::vattr* attr) {
-    if (!attr) return fs::ERR_INVAL;
-
-    attr->type = fs::node_type::char_device;
-    attr->size = 0;
-    return fs::OK;
 }
 
 } // namespace terminal

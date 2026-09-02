@@ -61,6 +61,7 @@ public:
                 string::memcpy(entries[written].name, child.name(), name_len);
                 entries[written].name[name_len] = '\0';
                 entries[written].type = child.type();
+                entries[written].ino = child.ino();
                 written++;
             }
             cur_idx++;
@@ -71,9 +72,11 @@ public:
     }
 
     int32_t getattr(fs::vattr* attr) override {
-        if (!attr) return fs::ERR_INVAL;
+        int32_t rc = fs::node::getattr(attr);
+        if (rc != fs::OK) {
+            return rc;
+        }
 
-        attr->type = fs::node_type::directory;
         attr->size = m_child_count;
         return fs::OK;
     }
@@ -113,14 +116,6 @@ public:
 
     ssize_t write(fs::file*, const void*, size_t count) override {
         return static_cast<ssize_t>(count);
-    }
-
-    int32_t getattr(fs::vattr* attr) override {
-        if (!attr) return fs::ERR_INVAL;
-
-        attr->type = fs::node_type::char_device;
-        attr->size = 0;
-        return fs::OK;
     }
 };
 
