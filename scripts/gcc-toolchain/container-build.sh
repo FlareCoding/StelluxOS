@@ -54,6 +54,7 @@ GCC_CONFIG += --disable-libquadmath --disable-decimal-float
 GCC_CONFIG += --disable-multilib --disable-lto --disable-host-shared
 GCC_CONFIG += --disable-shared
 GCC_CONFIG += --disable-fixincludes
+GCC_CONFIG += --with-native-system-header-dir=/include
 BINUTILS_CONFIG += --disable-lto
 MUSL_CONFIG += --disable-shared
 EOF
