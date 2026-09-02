@@ -16,7 +16,7 @@
 #include "fs/fstypes.h"
 #include "common/string.h"
 
-constexpr size_t MAX_PROC_ARGV_TOTAL = 3500;
+constexpr size_t MAX_PROC_ARGV_TOTAL = 128 * 1024; // 128 KB
 
 namespace {
 
