@@ -2,6 +2,7 @@
 #define STELLUX_CLOCK_CLOCK_H
 
 #include "common/types.h"
+#include "hw/rtc.h"
 
 namespace clock {
 
@@ -43,10 +44,16 @@ uint64_t freq_hz();
 
 /**
  * @brief Unix epoch in nanoseconds at boot time.
- * Returns 0 if no RTC was available or rtc::init() was not called.
- * Unprivileged: reads a cached value from regular .bss.
+ * Valid as soon as rtc::init() has run, which precedes init() here.
+ * Returns 0 if no RTC was available.
  */
-uint64_t boot_realtime_ns();
+inline uint64_t boot_realtime_ns() { return rtc::boot_unix_ns(); }
+
+/**
+ * @brief Unix epoch in nanoseconds now. Counts from 0 when no RTC was
+ * available, so ordering between readings holds even without wall time.
+ */
+inline uint64_t realtime_ns() { return boot_realtime_ns() + now_ns(); }
 
 } // namespace clock
 
