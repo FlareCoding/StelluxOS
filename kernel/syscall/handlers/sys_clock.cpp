@@ -38,10 +38,6 @@ static uint64_t get_monotonic_ns() {
     return clock::now_ns();
 }
 
-static uint64_t get_realtime_ns() {
-    return clock::boot_realtime_ns() + clock::now_ns();
-}
-
 DEFINE_SYSCALL2(clock_gettime, clock_id, u_tp) {
     if (u_tp == 0) {
         return syscall::EFAULT;
@@ -62,7 +58,7 @@ DEFINE_SYSCALL2(clock_gettime, clock_id, u_tp) {
             return syscall::EINVAL;
         }
 
-        ns = get_realtime_ns();
+        ns = clock::realtime_ns();
         break;
     case CLOCK_THREAD_CPUTIME_ID:
         return syscall::EINVAL;
@@ -124,7 +120,7 @@ DEFINE_SYSCALL2(gettimeofday, u_tv, u_tz) {
             return syscall::EINVAL;
         }
 
-        uint64_t ns = get_realtime_ns();
+        uint64_t ns = clock::realtime_ns();
         kernel_timeval tv;
         tv.tv_sec = static_cast<int64_t>(ns / NS_PER_SEC);
         tv.tv_usec = static_cast<int64_t>((ns % NS_PER_SEC) / 1000);
