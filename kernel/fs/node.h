@@ -74,6 +74,7 @@ public:
     node* parent() const { return m_parent; }
     const char* name() const { return m_name; }
     size_t size() const { return m_size; }
+    uint64_t ino() const { return m_ino; }
     instance* mounted_here() const { return m_mounted_here; }
 
     void set_parent(node* p) { m_parent = p; }
@@ -88,6 +89,7 @@ protected:
     node*          m_parent;
     char           m_name[NAME_MAX + 1];
     size_t         m_size;
+    uint64_t       m_ino;
     sync::spinlock m_lock;
     instance*      m_mounted_here;
 };

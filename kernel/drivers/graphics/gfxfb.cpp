@@ -96,14 +96,6 @@ public:
         return rc;
     }
 
-    int32_t getattr(fs::vattr* attr) override {
-        if (!attr) return fs::ERR_INVAL;
-
-        attr->type = fs::node_type::char_device;
-        attr->size = m_fb_size;
-        return fs::OK;
-    }
-
 private:
     uint64_t m_phys;
     uint64_t m_width;

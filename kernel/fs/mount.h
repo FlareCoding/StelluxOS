@@ -29,12 +29,14 @@ public:
 
     node* root() const { return m_root.ptr(); }
     driver* fs_driver() const { return m_driver; }
+    uint64_t dev() const { return m_dev; }
 
     virtual int32_t unmount();
 
 private:
     driver* m_driver;
     rc::strong_ref<node> m_root;
+    uint64_t m_dev;
 
 public:
     list::node m_link;

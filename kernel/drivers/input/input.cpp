@@ -55,16 +55,6 @@ public:
         return ring_buffer_poll_read(m_rb, pt);
     }
 
-    int32_t getattr(fs::vattr* attr) override {
-        if (!attr) {
-            return fs::ERR_INVAL;
-        }
-
-        attr->type = fs::node_type::char_device;
-        attr->size = 0;
-        return fs::OK;
-    }
-
 private:
     ring_buffer* m_rb;
 };
