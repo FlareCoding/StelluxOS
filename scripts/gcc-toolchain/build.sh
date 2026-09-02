@@ -42,6 +42,7 @@ for arch in $ARCHES; do
 
     for stage in mcm-stage1 mcm-stage2; do
         git clone -q "$TOP/mcm-pristine" "$work/$stage"
+        patch -s -d "$work/$stage" -p1 < "$SCRIPT_DIR/mcm-prefix.patch"
         mkdir -p "$work/$stage/sources"
         find "$SOURCES_CACHE" -maxdepth 1 -type f \
             -exec cp {} "$work/$stage/sources/" \;
@@ -65,6 +66,12 @@ for arch in $ARCHES; do
     # Keep downloaded tarballs so later builds skip the mirrors
     find "$work/mcm-stage1/sources" -maxdepth 1 -type f \
         -exec cp {} "$SOURCES_CACHE/" \;
+
+    # Hardlink groups survive tar but collapse to zero byte files
+    # through the initrd cpio, so every name gets its own copy
+    find "$work/out" -type f -links +1 | while read -r f; do
+        cp -p "$f" "$f.unlink.tmp" && mv "$f.unlink.tmp" "$f"
+    done
 
     artifact="$TOP/stellux-gcc-$GCC_VER-$arch.tar.xz"
     echo "=== gcc-toolchain: packaging $(basename "$artifact") ==="

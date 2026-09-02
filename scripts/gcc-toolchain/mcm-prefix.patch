@@ -1,0 +1,46 @@
+Parametrize the install prefix so a native toolchain can live in a
+subdirectory of the target filesystem instead of owning its root.
+With PREFIX unset every path matches upstream behavior exactly.
+
+--- a/litecross/Makefile	2026-09-01 17:47:38
++++ b/litecross/Makefile	2026-09-01 18:22:14
+@@ -60,8 +60,8 @@
+ 	--disable-separate-code \
+ 	$(COMMON_CONFIG) $(BINUTILS_CONFIG) $(TOOLCHAIN_CONFIG) \
+ 	--disable-werror \
+-	--target=$(TARGET) --prefix= \
+-	--libdir=/lib --disable-multilib \
++	--target=$(TARGET) --prefix=$(PREFIX) \
++	--libdir=$(PREFIX)/lib --disable-multilib \
+ 	--with-sysroot=$(SYSROOT) \
+ 	--enable-deterministic-archives
+ 
+@@ -71,8 +71,8 @@
+ 	--disable-bootstrap \
+ 	--disable-assembly \
+ 	--disable-werror \
+-	--target=$(TARGET) --prefix= \
+-	--libdir=/lib --disable-multilib \
++	--target=$(TARGET) --prefix=$(PREFIX) \
++	--libdir=$(PREFIX)/lib --disable-multilib \
+ 	--with-sysroot=$(SYSROOT) \
+ 	--enable-tls \
+ 	--disable-libmudflap --disable-libsanitizer \
+@@ -117,7 +117,7 @@
+ obj_gcc/.lc_built: | obj_sysroot/.lc_libs obj_sysroot/.lc_headers
+ obj_gcc/.lc_configured: obj_binutils/.lc_built
+ else
+-SYSROOT = /
++SYSROOT = $(or $(PREFIX),/)
+ FULL_BINUTILS_CONFIG += --build=$(BUILD) --host=$(HOST)
+ FULL_GCC_CONFIG += --build=$(BUILD) --host=$(HOST)
+ MUSL_VARS = 
+@@ -254,7 +254,7 @@
+ 
+ install-gcc: | obj_gcc/.lc_built
+ 	cd obj_gcc && $(MAKE) MAKE="$(MAKE) $(LIBTOOL_ARG)" DESTDIR=$(DESTDIR)$(OUTPUT) install
+-	ln -sf $(TARGET)-gcc $(DESTDIR)$(OUTPUT)/bin/$(TARGET)-cc
++	ln -sf $(TARGET)-gcc $(DESTDIR)$(OUTPUT)$(PREFIX)/bin/$(TARGET)-cc
+ 
+ ifneq ($(LINUX_SRCDIR),)
+ TARGET_ARCH = $(firstword $(subst -, ,$(TARGET)))
