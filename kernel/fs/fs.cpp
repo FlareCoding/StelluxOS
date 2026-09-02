@@ -3,6 +3,7 @@
 #include "fs/file.h"
 #include "fs/mount.h"
 #include "fs/path.h"
+#include "clock/clock.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "mm/heap.h"
@@ -42,6 +43,9 @@ node::node(node_type t, instance* fs, const char* name)
     , m_parent(nullptr)
     , m_size(0)
     , m_ino(g_next_ino.fetch_add_relaxed(1))
+    , m_atime_ns(clock::realtime_ns())
+    , m_mtime_ns(m_atime_ns)
+    , m_ctime_ns(m_atime_ns)
     , m_lock(sync::SPINLOCK_INIT)
     , m_mounted_here(nullptr) {
     if (name) {
@@ -78,7 +82,34 @@ int32_t node::getattr(vattr* attr) {
     attr->size = m_size;
     attr->ino = m_ino;
     attr->dev = m_fs ? m_fs->dev() : 0;
+    attr->atime_ns = m_atime_ns;
+    attr->mtime_ns = m_mtime_ns;
+    attr->ctime_ns = m_ctime_ns;
+
     return OK;
+}
+
+int32_t node::setattr(const vattr& attr, uint32_t mask) {
+    if (mask & ~(VATTR_ATIME | VATTR_MTIME)) return ERR_INVAL;
+
+    if (mask == 0) return OK;
+
+    if (mask & VATTR_ATIME) {
+        m_atime_ns = attr.atime_ns;
+    }
+
+    if (mask & VATTR_MTIME) {
+        m_mtime_ns = attr.mtime_ns;
+    }
+
+    m_ctime_ns = clock::realtime_ns();
+
+    return OK;
+}
+
+void node::mark_modified() {
+    m_mtime_ns = clock::realtime_ns();
+    m_ctime_ns = m_mtime_ns;
 }
 
 __PRIVILEGED_CODE void node::ref_destroy(node* n) {
@@ -794,6 +825,17 @@ int32_t fstat(file* f, vattr* attr) {
     int32_t result;
     RUN_ELEVATED({
         result = f->get_node()->getattr(attr);
+    });
+
+    return result;
+}
+
+int32_t fsetattr(file* f, const vattr& attr, uint32_t mask) {
+    if (!f) return ERR_BADF;
+
+    int32_t result;
+    RUN_ELEVATED({
+        result = f->get_node()->setattr(attr, mask);
     });
 
     return result;

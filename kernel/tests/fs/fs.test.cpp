@@ -379,6 +379,93 @@ TEST(fs_test, readdir_reports_node_identity) {
     fs::rmdir("/ino_dir");
 }
 
+TEST(fs_test, timestamps_start_equal_and_nonzero) {
+    fs::file* f = fs::open("/ts_new", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::fstat(f, &attr), fs::OK);
+    EXPECT_NE(attr.mtime_ns, static_cast<uint64_t>(0));
+    EXPECT_EQ(attr.atime_ns, attr.mtime_ns);
+    EXPECT_EQ(attr.ctime_ns, attr.mtime_ns);
+
+    fs::close(f);
+    fs::unlink("/ts_new");
+}
+
+TEST(fs_test, setattr_applies_times_and_bumps_ctime) {
+    fs::file* f = fs::open("/ts_set", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr before = {};
+    EXPECT_EQ(fs::fstat(f, &before), fs::OK);
+
+    fs::vattr want = {};
+    want.atime_ns = 1000;
+    want.mtime_ns = 2000;
+    EXPECT_EQ(fs::fsetattr(f, want, fs::VATTR_ATIME | fs::VATTR_MTIME), fs::OK);
+
+    fs::vattr after = {};
+    EXPECT_EQ(fs::fstat(f, &after), fs::OK);
+    EXPECT_EQ(after.atime_ns, static_cast<uint64_t>(1000));
+    EXPECT_EQ(after.mtime_ns, static_cast<uint64_t>(2000));
+    EXPECT_GE(after.ctime_ns, before.ctime_ns);
+
+    fs::close(f);
+    fs::unlink("/ts_set");
+}
+
+TEST(fs_test, setattr_rejects_unknown_mask) {
+    fs::file* f = fs::open("/ts_mask", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::fsetattr(f, attr, 1u << 31), fs::ERR_INVAL);
+
+    fs::close(f);
+    fs::unlink("/ts_mask");
+}
+
+TEST(fs_test, write_moves_mtime_forward) {
+    fs::file* f = fs::open("/ts_write", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr past = {};
+    past.mtime_ns = 1;
+    EXPECT_EQ(fs::fsetattr(f, past, fs::VATTR_MTIME), fs::OK);
+    EXPECT_EQ(fs::write(f, "x", 1), static_cast<ssize_t>(1));
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::fstat(f, &attr), fs::OK);
+    EXPECT_GT(attr.mtime_ns, static_cast<uint64_t>(1));
+    EXPECT_EQ(attr.ctime_ns, attr.mtime_ns);
+
+    fs::close(f);
+    fs::unlink("/ts_write");
+}
+
+TEST(fs_test, directory_mtime_tracks_entries) {
+    EXPECT_EQ(fs::mkdir("/ts_dir", 0), fs::OK);
+    fs::file* dir = fs::open("/ts_dir", fs::O_RDONLY);
+    ASSERT_NOT_NULL(dir);
+
+    fs::vattr past = {};
+    past.mtime_ns = 1;
+    EXPECT_EQ(fs::fsetattr(dir, past, fs::VATTR_MTIME), fs::OK);
+
+    fs::file* child = fs::open("/ts_dir/child", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(child);
+    fs::close(child);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/ts_dir", &attr), fs::OK);
+    EXPECT_GT(attr.mtime_ns, static_cast<uint64_t>(1));
+
+    fs::close(dir);
+    fs::unlink("/ts_dir/child");
+    fs::rmdir("/ts_dir");
+}
+
 TEST(fs_test, multi_page_write_read) {
     fs::file* f = fs::open("/bigfile", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);

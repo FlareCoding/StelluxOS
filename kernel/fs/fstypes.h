@@ -37,9 +37,16 @@ constexpr int32_t SEEK_END = 2;
 struct vattr {
     node_type type;
     size_t size;
-    uint64_t ino;  // Unique among all nodes for the node's lifetime, never 0
-    uint64_t dev;  // Identifies the mounted filesystem instance, 0 if unmounted
+    uint64_t ino;       // Unique among all nodes for the node's lifetime, never 0
+    uint64_t dev;       // Identifies the mounted filesystem instance, 0 if unmounted
+    uint64_t atime_ns;  // Last access, Unix epoch nanoseconds, reads do not update it
+    uint64_t mtime_ns;  // Last content change
+    uint64_t ctime_ns;  // Last content or attribute change, never set by callers
 };
+
+// setattr mask bits naming the vattr fields to apply
+constexpr uint32_t VATTR_ATIME = 1u << 0;
+constexpr uint32_t VATTR_MTIME = 1u << 1;
 
 struct dirent {
     char name[NAME_MAX + 1];

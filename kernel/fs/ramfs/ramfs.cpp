@@ -334,7 +334,9 @@ ssize_t file_node::write(fs::file* f, const void* buf, size_t count) {
         m_size = end_pos;
     }
 
+    mark_modified();
     f->set_offset(static_cast<int64_t>(end_pos));
+
     return static_cast<ssize_t>(count);
 }
 
@@ -415,6 +417,8 @@ int32_t file_node::truncate(size_t size) {
     }
 
     m_size = size;
+    mark_modified();
+
     return fs::OK;
 }
 

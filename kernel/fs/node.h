@@ -54,6 +54,7 @@ public:
 
     // --- Metadata ---
     virtual int32_t getattr(vattr* attr);
+    virtual int32_t setattr(const vattr& attr, uint32_t mask);
     virtual int32_t truncate(size_t size);
 
     // --- Symlink ---
@@ -84,12 +85,18 @@ public:
     list::node     m_child_link;
 
 protected:
+    // Records a content change by moving mtime and ctime to now
+    void mark_modified();
+
     node_type      m_type;
     instance*      m_fs;
     node*          m_parent;
     char           m_name[NAME_MAX + 1];
     size_t         m_size;
     uint64_t       m_ino;
+    uint64_t       m_atime_ns;
+    uint64_t       m_mtime_ns;
+    uint64_t       m_ctime_ns;
     sync::spinlock m_lock;
     instance*      m_mounted_here;
 };
