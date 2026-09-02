@@ -1,0 +1,138 @@
+--- a/libiberty/pex-unix.c	2026-09-01 16:31:49
++++ b/libiberty/pex-unix.c	2026-09-01 16:32:23
+@@ -369,7 +369,96 @@
+ 
+ /* Execute a child.  */
+ 
+-#if defined(HAVE_SPAWNVE) && defined(HAVE_SPAWNVPE)
++/* Stellux has no fork.  Processes are created suspended through the
++   kernel's own syscalls, given their standard descriptors, and then
++   started, so process spawning routes through that interface.  */
++#define PEX_STELLUX_PROC 1
++
++#if defined(PEX_STELLUX_PROC)
++/* Implementation of pex->exec_child using the Stellux process API.  */
++
++#define STLX_SYS_PROC_CREATE     1010
++#define STLX_SYS_PROC_START      1011
++#define STLX_SYS_PROC_WAIT       1012
++#define STLX_SYS_PROC_SET_HANDLE 1015
++#define STLX_SYS_PROC_KILL       1016
++
++extern long syscall (long, ...);
++
++/* The kernel derives the process name from the path, so the argument
++   vector starts after the program name.  A NULL environment means the
++   child inherits the caller's.  */
++
++static long
++stlx_proc_create (const char *path, char * const *argv, char * const *env)
++{
++  return syscall (STLX_SYS_PROC_CREATE, path, argv + 1,
++		  env != NULL ? env : environ);
++}
++
++static pid_t
++pex_unix_exec_child (struct pex_obj *obj ATTRIBUTE_UNUSED,
++		     int flags, const char *executable,
++		     char * const * argv, char * const * env,
++		     int in, int out, int errdes,
++		     int toclose ATTRIBUTE_UNUSED,
++		     const char **errmsg, int *err)
++{
++  long handle = -1;
++
++  if ((flags & PEX_SEARCH) != 0 && strchr (executable, '/') == NULL)
++    {
++      const char *path = getenv ("PATH");
++      char candidate[1024];
++
++      while (path != NULL && *path != '\0' && handle < 0)
++	{
++	  const char *sep = strchr (path, ':');
++	  size_t len = sep != NULL ? (size_t) (sep - path) : strlen (path);
++
++	  if (len > 0 && len + strlen (executable) + 2 <= sizeof candidate)
++	    {
++	      memcpy (candidate, path, len);
++	      candidate[len] = '/';
++	      strcpy (candidate + len + 1, executable);
++	      handle = stlx_proc_create (candidate, argv, env);
++	    }
++
++	  path = sep != NULL ? sep + 1 : NULL;
++	}
++    }
++  else
++    handle = stlx_proc_create (executable, argv, env);
++
++  if (handle < 0)
++    {
++      *err = errno;
++      *errmsg = "proc_create";
++      return (pid_t) -1;
++    }
++
++  /* Children start with only the standard descriptors, so redirection
++     installs the parent's descriptor into the child's slot and toclose
++     has nothing to leak.  */
++  if ((in != STDIN_FILE_NO
++       && syscall (STLX_SYS_PROC_SET_HANDLE, handle, STDIN_FILE_NO, in) < 0)
++      || (out != STDOUT_FILE_NO
++	  && syscall (STLX_SYS_PROC_SET_HANDLE, handle, STDOUT_FILE_NO, out) < 0)
++      || (errdes != STDERR_FILE_NO
++	  && syscall (STLX_SYS_PROC_SET_HANDLE, handle, STDERR_FILE_NO, errdes) < 0)
++      || syscall (STLX_SYS_PROC_START, handle) < 0)
++    {
++      *err = errno;
++      *errmsg = "proc_start";
++      syscall (STLX_SYS_PROC_KILL, handle);
++      close ((int) handle);
++      return (pid_t) -1;
++    }
++
++  return (pid_t) handle;
++}
++
++#elif defined(HAVE_SPAWNVE) && defined(HAVE_SPAWNVPE)
+ /* Implementation of pex->exec_child using the Cygwin spawn operation.  */
+ 
+ /* Subroutine of pex_unix_exec_child.  Move OLD_FD to a new file descriptor
+@@ -941,9 +1030,29 @@
+ 	       struct pex_time *time, int done, const char **errmsg,
+ 	       int *err)
+ {
++#if defined(PEX_STELLUX_PROC)
++  if (time != NULL)
++    memset (time, 0, sizeof *time);
++
+   /* If we are cleaning up when the caller didn't retrieve process
+      status for some reason, encourage the process to go away.  */
+   if (done)
++    syscall (STLX_SYS_PROC_KILL, pid);
++
++  /* The kernel reports a wait style status word and closes the
++     process handle once the wait succeeds.  */
++  if (syscall (STLX_SYS_PROC_WAIT, pid, status) < 0)
++    {
++      *err = errno;
++      *errmsg = "proc_wait";
++      return -1;
++    }
++
++  return 0;
++#else
++  /* If we are cleaning up when the caller didn't retrieve process
++     status for some reason, encourage the process to go away.  */
++  if (done)
+     kill (pid, SIGTERM);
+ 
+   if (pex_wait (obj, pid, status, time) < 0)
+@@ -954,6 +1063,7 @@
+     }
+ 
+   return 0;
++#endif
+ }
+ 
+ /* Create a pipe.  */
