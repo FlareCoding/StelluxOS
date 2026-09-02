@@ -14,6 +14,7 @@ constexpr char CPIO_TRAILER[] = "TRAILER!!!";
 constexpr uint32_t S_IFMT  = 0170000;
 constexpr uint32_t S_IFDIR = 0040000;
 constexpr uint32_t S_IFREG = 0100000;
+constexpr uint64_t NS_PER_SEC = 1000000000ULL;
 
 static uint32_t hex_to_u32(const char* s, size_t len) {
     uint32_t val = 0;
@@ -100,6 +101,7 @@ __PRIVILEGED_CODE int32_t load_initrd() {
         uint32_t namesize = hex_to_u32(hdr->c_namesize, 8);
         uint32_t filesize = hex_to_u32(hdr->c_filesize, 8);
         uint32_t mode     = hex_to_u32(hdr->c_mode, 8);
+        uint32_t mtime    = hex_to_u32(hdr->c_mtime, 8);
 
         offset += sizeof(cpio_newc_header);
 
@@ -159,6 +161,13 @@ __PRIVILEGED_CODE int32_t load_initrd() {
                 if (filesize > 0 && offset + filesize <= archive_len) {
                     fs::write(f, file_data, filesize);
                 }
+
+                // Files keep their archived timestamps so build tools see real ages
+                fs::vattr attr = {};
+                attr.atime_ns = static_cast<uint64_t>(mtime) * NS_PER_SEC;
+                attr.mtime_ns = attr.atime_ns;
+                fs::fsetattr(f, attr, fs::VATTR_ATIME | fs::VATTR_MTIME);
+
                 fs::close(f);
                 files_extracted++;
             } else {

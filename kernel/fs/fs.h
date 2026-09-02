@@ -69,6 +69,7 @@ int32_t mmap(file* f, mm::mm_context* mm_ctx, uintptr_t addr, size_t length,
 
 int32_t stat(const char* path, vattr* attr);
 int32_t fstat(file* f, vattr* attr);
+int32_t fsetattr(file* f, const vattr& attr, uint32_t mask);
 
 int32_t mkdir(const char* path, uint32_t mode);
 int32_t rmdir(const char* path);

@@ -57,12 +57,14 @@ void dir_node::attach_child(node* child) {
     child->add_ref();
     m_children.push_back(child);
     m_child_count++;
+    mark_modified();
 }
 
 void dir_node::detach_child(node* child) {
     m_children.remove(child);
     m_child_count--;
     child->set_parent(nullptr);
+    mark_modified();
 
     if (child->release()) {
         node::ref_destroy(child);

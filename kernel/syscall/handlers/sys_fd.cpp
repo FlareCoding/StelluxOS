@@ -37,6 +37,8 @@ constexpr uint8_t DT_REG     = 8;
 constexpr uint8_t DT_LNK     = 10;
 constexpr uint8_t DT_SOCK    = 12;
 
+constexpr uint64_t NS_PER_SEC = 1000000000ULL;
+
 namespace {
 
 struct linux_dirent64_hdr {
@@ -201,10 +203,18 @@ static inline int64_t copy_stat_to_user(const fs::vattr& attr, uint64_t u_stat) 
     st.st_dev = attr.dev;
     st.st_ino = attr.ino;
     st.st_mode = node_type_to_mode_bits(attr.type) | node_type_default_perms(attr.type);
-    st.st_size = static_cast<int64_t>(attr.size);
     st.st_nlink = (attr.type == fs::node_type::directory) ? 2 : 1;
+
+    st.st_size = static_cast<int64_t>(attr.size);
     st.st_blksize = 4096;
     st.st_blocks = static_cast<int64_t>((attr.size + 511) / 512);
+
+    st.st_atime_sec = static_cast<int64_t>(attr.atime_ns / NS_PER_SEC);
+    st.st_atime_nsec = static_cast<int64_t>(attr.atime_ns % NS_PER_SEC);
+    st.st_mtime_sec = static_cast<int64_t>(attr.mtime_ns / NS_PER_SEC);
+    st.st_mtime_nsec = static_cast<int64_t>(attr.mtime_ns % NS_PER_SEC);
+    st.st_ctime_sec = static_cast<int64_t>(attr.ctime_ns / NS_PER_SEC);
+    st.st_ctime_nsec = static_cast<int64_t>(attr.ctime_ns % NS_PER_SEC);
 
     int32_t copy_rc = mm::uaccess::copy_to_user(
         reinterpret_cast<void*>(u_stat), &st, sizeof(st));
