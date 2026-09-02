@@ -56,61 +56,7 @@ extern "C" __PRIVILEGED_CODE int32_t ramfs_init_driver() {
 namespace ramfs {
 
 dir_node::dir_node(fs::instance* fs, const char* name)
-    : fs::node(fs::node_type::directory, fs, name)
-    , m_child_count(0) {
-    m_children.init();
-}
-
-dir_node::~dir_node() {
-    // Destruction steals every directory's children into a flat worklist
-    // first, so destructors never recurse and stack depth stays bounded.
-    list::head<fs::node, &fs::node::m_child_link> worklist;
-    worklist.init();
-
-    while (!m_children.empty()) {
-        fs::node* child = m_children.pop_front();
-        child->set_parent(nullptr);
-        worklist.push_back(child);
-    }
-    m_child_count = 0;
-
-    while (!worklist.empty()) {
-        fs::node* n = worklist.pop_front();
-        if (n->type() == fs::node_type::directory) {
-            auto* dn = static_cast<dir_node*>(n);
-            while (!dn->m_children.empty()) {
-                fs::node* grandchild = dn->m_children.pop_front();
-                grandchild->set_parent(nullptr);
-                worklist.push_back(grandchild);
-            }
-            dn->m_child_count = 0;
-        }
-        if (n->release()) {
-            fs::node::ref_destroy(n);
-        }
-    }
-}
-
-fs::node* dir_node::find_child(const char* name, size_t len) {
-    for (auto& child : m_children) {
-        size_t child_len = string::strlen(child.name());
-        if (child_len == len && string::strncmp(child.name(), name, len) == 0) {
-            return &child;
-        }
-    }
-    return nullptr;
-}
-
-int32_t dir_node::lookup(const char* name, size_t len, fs::node** out) {
-    if (!name || !out) return fs::ERR_INVAL;
-
-    sync::irq_lock_guard guard(m_lock);
-    fs::node* child = find_child(name, len);
-    if (!child) return fs::ERR_NOENT;
-
-    child->add_ref();
-    *out = child;
-    return fs::OK;
+    : fs::dir_node(fs, name) {
 }
 
 int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node** out) {
@@ -136,12 +82,8 @@ int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node**
     }
 
     auto* child = new (mem) file_node(m_fs, name_buf);
+    attach_child(child);
 
-    child->set_parent(this);
-    m_children.push_back(child);
-    m_child_count++;
-
-    child->add_ref();
     *out = child;
     return fs::OK;
 }
@@ -168,12 +110,8 @@ int32_t dir_node::create_socket(const char* name, size_t len, void* impl, fs::no
     }
 
     auto* child = new (mem) fs::socket_node(m_fs, name_buf);
+    attach_child(child);
 
-    child->set_parent(this);
-    m_children.push_back(child);
-    m_child_count++;
-
-    child->add_ref();
     *out = child;
     return fs::OK;
 }
@@ -201,12 +139,8 @@ int32_t dir_node::mkdir(const char* name, size_t len, uint32_t mode, fs::node** 
     }
 
     auto* child = new (mem) dir_node(m_fs, name_buf);
+    attach_child(child);
 
-    child->set_parent(this);
-    m_children.push_back(child);
-    m_child_count++;
-
-    child->add_ref();
     *out = child;
     return fs::OK;
 }
@@ -225,14 +159,7 @@ int32_t dir_node::unlink(const char* name, size_t len) {
         return fs::ERR_ISDIR;
     }
 
-    m_children.remove(child);
-    m_child_count--;
-    child->set_parent(nullptr);
-
-    if (child->release()) {
-        fs::node::ref_destroy(child);
-    }
-
+    detach_child(child);
     return fs::OK;
 }
 
@@ -250,63 +177,11 @@ int32_t dir_node::rmdir(const char* name, size_t len) {
         return fs::ERR_NOTDIR;
     }
 
-    auto* child_dir = static_cast<dir_node*>(child);
-    if (child_dir->m_child_count > 0) {
+    if (static_cast<fs::dir_node*>(child)->child_count() > 0) {
         return fs::ERR_NOTEMPTY;
     }
 
-    m_children.remove(child);
-    m_child_count--;
-    child->set_parent(nullptr);
-
-    if (child->release()) {
-        fs::node::ref_destroy(child);
-    }
-
-    return fs::OK;
-}
-
-ssize_t dir_node::readdir(fs::file* f, fs::dirent* entries, size_t count) {
-    if (!f || !entries) return fs::ERR_BADF;
-
-    if (count == 0) return 0;
-
-    sync::irq_lock_guard guard(m_lock);
-
-    size_t idx = static_cast<size_t>(f->offset());
-    size_t written = 0;
-
-    size_t cur_idx = 0;
-    for (auto& child : m_children) {
-        if (written >= count) {
-            break;
-        }
-
-        if (cur_idx >= idx) {
-            size_t name_len = string::strlen(child.name());
-            if (name_len > fs::NAME_MAX) {
-                name_len = fs::NAME_MAX;
-            }
-            string::memcpy(entries[written].name, child.name(), name_len);
-            entries[written].name[name_len] = '\0';
-            entries[written].type = child.type();
-            entries[written].ino = child.ino();
-            written++;
-        }
-        cur_idx++;
-    }
-
-    f->set_offset(static_cast<int64_t>(idx + written));
-    return static_cast<ssize_t>(written);
-}
-
-int32_t dir_node::getattr(fs::vattr* attr) {
-    int32_t rc = fs::node::getattr(attr);
-    if (rc != fs::OK) {
-        return rc;
-    }
-
-    attr->size = m_child_count;
+    detach_child(child);
     return fs::OK;
 }
 
