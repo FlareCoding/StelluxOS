@@ -108,14 +108,6 @@ static int64_t copy_proc_create_strings_from_user(
     return copy_proc_string_array_from_user(strs.envp, u_envp);
 }
 
-static const char* path_basename(const char* path) {
-    const char* base = path;
-    for (const char* p = path; *p; p++) {
-        if (*p == '/') base = p + 1;
-    }
-    return base;
-}
-
 static int64_t map_elf_error(int32_t rc) {
     switch (rc) {
         case exec::ERR_FILE_OPEN:
@@ -167,9 +159,8 @@ DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
         return map_elf_error(elf_rc);
     }
 
-    const char* name = path_basename(kpath);
     sched::task* child = sched::create_user_task(
-        &loaded, name,
+        &loaded, kpath,
         strs->argv.count, strs->argv.count > 0 ? strs->argv.ptrs : nullptr,
         strs->envp.count, strs->envp.count > 0 ? strs->envp.ptrs : nullptr);
     heap::kfree_delete(strs);

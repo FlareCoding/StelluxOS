@@ -792,10 +792,18 @@ __PRIVILEGED_CODE task* create_kernel_task(
     return t;
 }
 
+static const char* path_basename(const char* path) {
+    const char* base = path;
+    for (const char* p = path; *p; p++) {
+        if (*p == '/') base = p + 1;
+    }
+    return base;
+}
+
 /**
- * Build the Linux-compatible initial stack layout (argc, argv, envp, auxv)
- * that musl's _start expects. Writes data into the last page of the
- * already-mapped user stack via the kernel HHDM mapping.
+ * Build the initial stack layout (argc, argv, envp, auxv) that musl's
+ * _start expects. Writes data into the last page of the already-mapped
+ * user stack via the kernel HHDM mapping.
  *
  * @param user_argc Number of user-provided args (excluding program name).
  * @param user_argv Kernel-copied argument strings, or nullptr for none.
@@ -808,7 +816,7 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     pmm::phys_addr_t last_page_phys,
     uintptr_t stack_top,
     const exec::loaded_image& image,
-    const char* name,
+    const char* path,
     int user_argc,
     const char* const* user_argv,
     int user_envc,
@@ -821,7 +829,7 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
         string::memcpy(page_kva + offset, data, len);
     };
 
-    int total_argc = 1 + user_argc; // argv[0] = name, argv[1..] = user args
+    int total_argc = 1 + user_argc; // argv[0] = path, argv[1..] = user args
 
     constexpr size_t MAX_ARGV_PTRS = 1 + MAX_ARG_STRINGS; // program name + user args
     constexpr size_t MAX_ENVP_PTRS = MAX_ARG_STRINGS;
@@ -833,8 +841,8 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     size_t struct_bytes = struct_words * sizeof(uint64_t);
 
     // Pre-compute total string space needed (8-byte aligned per arg)
-    size_t name_len = string::strnlen(name, TASK_NAME_MAX - 1) + 1;
-    size_t total_string_bytes = (name_len + 7) & ~7ULL;
+    size_t path_len = string::strnlen(path, MAX_ARG_STRLEN - 1) + 1;
+    size_t total_string_bytes = (path_len + 7) & ~7ULL;
     for (int i = 0; i < user_argc; i++) {
         size_t arg_len = string::strnlen(user_argv[i], MAX_ARG_STRLEN - 1) + 1;
         total_string_bytes += (arg_len + 7) & ~7ULL;
@@ -852,10 +860,11 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
     uintptr_t str_cursor = stack_top;
     uintptr_t argv_vas[MAX_ARGV_PTRS];
 
-    // argv[0] = program name
-    size_t name_padded = (name_len + 7) & ~7ULL;
-    str_cursor -= name_padded;
-    write(str_cursor, name, name_len);
+    // argv[0] = the path the program was invoked with, which relocatable
+    // programs use to locate their own installation
+    size_t path_padded = (path_len + 7) & ~7ULL;
+    str_cursor -= path_padded;
+    write(str_cursor, path, path_len);
     argv_vas[0] = str_cursor;
 
     // argv[1..user_argc] = user-provided args
@@ -906,7 +915,7 @@ __PRIVILEGED_CODE static uintptr_t setup_user_stack(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE task* create_user_task(
-    exec::loaded_image* image, const char* name,
+    exec::loaded_image* image, const char* path,
     int argc, const char* const* argv,
     int envc, const char* const* envp
 ) {
@@ -994,7 +1003,7 @@ __PRIVILEGED_CODE task* create_user_task(
     }
 
     uintptr_t user_sp = setup_user_stack(
-        last_stack_page_phys, mm::USER_STACK_TOP, *image, name,
+        last_stack_page_phys, mm::USER_STACK_TOP, *image, path,
         argc, argv, envc, envp);
     if (user_sp == 0) {
         log::error("sched: user stack setup failed (argv/envp too large?)");
@@ -1035,8 +1044,11 @@ __PRIVILEGED_CODE task* create_user_task(
     t->timer_link = {};
     t->timer_deadline = 0;
 
-    string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
-    t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
+    // The task name shows the program, while argv[0] kept the full path
+    const char* name = path_basename(path);
+    size_t name_len = string::strnlen(name, TASK_NAME_MAX - 1);
+    string::memcpy(t->name, name, name_len);
+    t->name[name_len] = '\0';
 
     t->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
     t->tlb_sync_ticket.armed.store_relaxed(0);
