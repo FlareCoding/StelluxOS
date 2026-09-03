@@ -185,6 +185,11 @@ int32_t dir_node::rmdir(const char* name, size_t len) {
     return fs::OK;
 }
 
+int32_t dir_node::rename(const char* name, size_t len, fs::node* new_parent,
+                         const char* new_name, size_t new_len) {
+    return rename_child(name, len, new_parent, new_name, new_len);
+}
+
 file_node::file_node(fs::instance* fs, const char* name)
     : fs::node(fs::node_type::regular, fs, name)
     , m_pages(nullptr)

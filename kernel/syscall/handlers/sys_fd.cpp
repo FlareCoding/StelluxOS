@@ -1630,12 +1630,87 @@ DEFINE_SYSCALL3(readlink, pathname, buf, bufsize) {
     return do_readlinkat(static_cast<int64_t>(-100), pathname, buf, bufsize);
 }
 
+static int64_t copy_user_path(uint64_t u_path, char* out, size_t cap) {
+    int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
+        out, cap, reinterpret_cast<const char*>(u_path));
+    if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
+        return syscall::ENAMETOOLONG;
+    }
+
+    if (copy_rc != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    if (out[0] == '\0') {
+        return syscall::ENOENT;
+    }
+
+    return 0;
+}
+
 DEFINE_SYSCALL4(renameat, olddirfd, oldpath, newdirfd, newpath) {
-    (void)olddirfd;
-    (void)oldpath;
-    (void)newdirfd;
-    (void)newpath;
-    return syscall::ENOSYS;
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    // Both paths outlive the rename because parent resolution hands back
+    // name pointers into them
+    char* paths = static_cast<char*>(heap::kzalloc(2 * fs::PATH_MAX));
+    if (!paths) {
+        return syscall::ENOMEM;
+    }
+
+    char* old_kpath = paths;
+    char* new_kpath = paths + fs::PATH_MAX;
+    int64_t rc = copy_user_path(oldpath, old_kpath, fs::PATH_MAX);
+    if (rc == 0) {
+        rc = copy_user_path(newpath, new_kpath, fs::PATH_MAX);
+    }
+    if (rc != 0) {
+        heap::kfree(paths);
+        return rc;
+    }
+
+    fs::node* old_parent = nullptr;
+    const char* old_name = nullptr;
+    size_t old_len = 0;
+    rc = resolve_parent_for_dirfd_path(
+        task, static_cast<int64_t>(olddirfd), old_kpath,
+        &old_parent, &old_name, &old_len);
+    if (rc != 0) {
+        heap::kfree(paths);
+        return rc;
+    }
+
+    fs::node* new_parent = nullptr;
+    const char* new_name = nullptr;
+    size_t new_len = 0;
+    rc = resolve_parent_for_dirfd_path(
+        task, static_cast<int64_t>(newdirfd), new_kpath,
+        &new_parent, &new_name, &new_len);
+    if (rc != 0) {
+        release_node_ref(old_parent);
+        heap::kfree(paths);
+        return rc;
+    }
+
+    int32_t fs_rc = old_parent->rename(old_name, old_len, new_parent, new_name, new_len);
+    release_node_ref(new_parent);
+    release_node_ref(old_parent);
+    heap::kfree(paths);
+    if (fs_rc != fs::OK) {
+        return syscall::error_map::map_fs_error(fs_rc);
+    }
+
+    return 0;
+}
+
+DEFINE_SYSCALL2(rename, oldpath, newpath) {
+    // -100 is AT_FDCWD
+    return sys_renameat(
+        static_cast<uint64_t>(-100), oldpath,
+        static_cast<uint64_t>(-100), newpath, 0, 0);
 }
 
 // fsync is a no-op on ramfs, data is always in memory

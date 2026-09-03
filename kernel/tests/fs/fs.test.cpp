@@ -500,6 +500,137 @@ TEST(fs_test, open_trunc_ignored_for_read_only) {
     fs::unlink("/trunc_ro");
 }
 
+TEST(fs_test, rename_in_place_keeps_identity) {
+    fs::file* f = fs::open("/rn_a", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    fs::vattr before = {};
+    EXPECT_EQ(fs::stat("/rn_a", &before), fs::OK);
+    EXPECT_EQ(fs::rename("/rn_a", "/rn_b"), fs::OK);
+
+    fs::vattr after = {};
+    EXPECT_EQ(fs::stat("/rn_b", &after), fs::OK);
+    EXPECT_EQ(after.ino, before.ino);
+    EXPECT_GE(after.ctime_ns, before.ctime_ns);
+    EXPECT_EQ(fs::stat("/rn_a", &before), fs::ERR_NOENT);
+
+    fs::unlink("/rn_b");
+}
+
+TEST(fs_test, rename_across_directories_moves_content) {
+    EXPECT_EQ(fs::mkdir("/rn_src", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/rn_dst", 0), fs::OK);
+    fs::file* f = fs::open("/rn_src/f", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(fs::write(f, "moved", 5), static_cast<ssize_t>(5));
+    fs::close(f);
+
+    EXPECT_EQ(fs::rename("/rn_src/f", "/rn_dst/g"), fs::OK);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/rn_src", &attr), fs::OK);
+    EXPECT_EQ(attr.size, static_cast<size_t>(0));
+    EXPECT_EQ(fs::stat("/rn_dst", &attr), fs::OK);
+    EXPECT_EQ(attr.size, static_cast<size_t>(1));
+
+    f = fs::open("/rn_dst/g", fs::O_RDONLY);
+    ASSERT_NOT_NULL(f);
+    char buf[8] = {};
+    EXPECT_EQ(fs::read(f, buf, sizeof(buf)), static_cast<ssize_t>(5));
+    EXPECT_STREQ(buf, "moved");
+    fs::close(f);
+
+    fs::unlink("/rn_dst/g");
+    fs::rmdir("/rn_src");
+    fs::rmdir("/rn_dst");
+}
+
+TEST(fs_test, rename_replaces_existing_file) {
+    fs::file* f = fs::open("/rn_new", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(fs::write(f, "new", 3), static_cast<ssize_t>(3));
+    fs::close(f);
+    f = fs::open("/rn_old", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(fs::write(f, "old", 3), static_cast<ssize_t>(3));
+    fs::close(f);
+
+    EXPECT_EQ(fs::rename("/rn_new", "/rn_old"), fs::OK);
+
+    f = fs::open("/rn_old", fs::O_RDONLY);
+    ASSERT_NOT_NULL(f);
+    char buf[8] = {};
+    EXPECT_EQ(fs::read(f, buf, sizeof(buf)), static_cast<ssize_t>(3));
+    EXPECT_STREQ(buf, "new");
+    fs::close(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/rn_new", &attr), fs::ERR_NOENT);
+
+    fs::unlink("/rn_old");
+}
+
+TEST(fs_test, rename_onto_itself_is_noop) {
+    fs::file* f = fs::open("/rn_self", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    EXPECT_EQ(fs::rename("/rn_self", "/rn_self"), fs::OK);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/rn_self", &attr), fs::OK);
+
+    fs::unlink("/rn_self");
+}
+
+TEST(fs_test, rename_refuses_directory_into_own_subtree) {
+    EXPECT_EQ(fs::mkdir("/rn_outer", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/rn_outer/inner", 0), fs::OK);
+
+    EXPECT_EQ(fs::rename("/rn_outer", "/rn_outer/inner/x"), fs::ERR_INVAL);
+    EXPECT_EQ(fs::rename("/rn_outer", "/rn_outer/x"), fs::ERR_INVAL);
+
+    fs::rmdir("/rn_outer/inner");
+    fs::rmdir("/rn_outer");
+}
+
+TEST(fs_test, rename_directory_over_nonempty_fails) {
+    EXPECT_EQ(fs::mkdir("/rn_d1", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/rn_d2", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/rn_d2/x", 0), fs::OK);
+
+    EXPECT_EQ(fs::rename("/rn_d1", "/rn_d2"), fs::ERR_NOTEMPTY);
+
+    fs::rmdir("/rn_d2/x");
+    EXPECT_EQ(fs::rename("/rn_d1", "/rn_d2"), fs::OK);
+
+    fs::rmdir("/rn_d2");
+}
+
+TEST(fs_test, rename_type_mismatch_fails) {
+    fs::file* f = fs::open("/rn_file", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+    EXPECT_EQ(fs::mkdir("/rn_dir", 0), fs::OK);
+
+    EXPECT_EQ(fs::rename("/rn_file", "/rn_dir"), fs::ERR_ISDIR);
+    EXPECT_EQ(fs::rename("/rn_dir", "/rn_file"), fs::ERR_NOTDIR);
+
+    fs::unlink("/rn_file");
+    fs::rmdir("/rn_dir");
+}
+
+TEST(fs_test, rename_across_filesystems_fails) {
+    fs::file* f = fs::open("/rn_xdev", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    EXPECT_EQ(fs::rename("/rn_xdev", "/dev/rn_xdev"), fs::ERR_XDEV);
+
+    fs::unlink("/rn_xdev");
+}
+
 TEST(fs_test, multi_page_write_read) {
     fs::file* f = fs::open("/bigfile", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);

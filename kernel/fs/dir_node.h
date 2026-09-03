@@ -30,7 +30,17 @@ protected:
     void attach_child(node* child);
     void detach_child(node* child);
 
+    // Moves a child under new_parent as new_name, replacing an existing
+    // entry there when the types allow. Takes every lock it needs itself.
+    int32_t rename_child(const char* name, size_t len, node* new_parent,
+                         const char* new_name, size_t new_len);
+
 private:
+    int32_t move_child_locked(const char* name, size_t len, dir_node* dst,
+                              const char* new_name, size_t new_len);
+    int32_t replace_child_locked(node* child, node* existing);
+    int32_t detach_empty_dir_locked(dir_node* dir);
+
     list::head<node, &node::m_child_link> m_children;
     uint32_t m_child_count;
 };

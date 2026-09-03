@@ -36,6 +36,8 @@ public:
     virtual int32_t mkdir(const char* name, size_t len, uint32_t mode, node** out);
     virtual int32_t unlink(const char* name, size_t len);
     virtual int32_t rmdir(const char* name, size_t len);
+    virtual int32_t rename(const char* name, size_t len, node* new_parent,
+                           const char* new_name, size_t new_len);
 
     // --- I/O ops (file/device nodes override) ---
     virtual ssize_t read(file* f, void* buf, size_t count);
@@ -81,6 +83,10 @@ public:
     void set_parent(node* p) { m_parent = p; }
     void set_filesystem(instance* fs) { m_fs = fs; }
     void set_mounted_here(instance* inst) { m_mounted_here = inst; }
+    void set_name(const char* name, size_t len);
+
+    // Records an attribute change by moving ctime to now
+    void mark_changed();
 
     list::node     m_child_link;
 

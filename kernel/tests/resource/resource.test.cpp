@@ -420,6 +420,11 @@ TEST(resource_test, faccessat_validates_mode_before_path) {
     EXPECT_EQ(sys_faccessat(at_fdcwd, kpath, 0, 0, 0, 0), syscall::EFAULT);
 }
 
-TEST(resource_test, renameat_returns_enosys) {
-    EXPECT_EQ(sys_renameat(0, 0, 0, 0, 0, 0), syscall::ENOSYS);
+TEST(resource_test, renameat_rejects_bad_user_paths) {
+    constexpr uint64_t at_fdcwd = static_cast<uint64_t>(-100);
+    uint64_t kpath = reinterpret_cast<uint64_t>("/a");
+
+    EXPECT_EQ(sys_renameat(at_fdcwd, 0, at_fdcwd, kpath, 0, 0), syscall::EFAULT);
+    EXPECT_EQ(sys_renameat(at_fdcwd, kpath, at_fdcwd, kpath, 0, 0), syscall::EFAULT);
+    EXPECT_EQ(sys_rename(kpath, kpath, 0, 0, 0, 0), syscall::EFAULT);
 }
