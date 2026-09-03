@@ -227,21 +227,31 @@ int32_t dir_node::move_child_locked(const char* name, size_t len, dir_node* dst,
 }
 
 int32_t dir_node::lookup(const char* name, size_t len, node** out) {
-    if (!name || !out) return ERR_INVAL;
+    if (!name || !out) {
+        return ERR_INVAL;
+    }
 
     sync::irq_lock_guard guard(m_lock);
+
     node* child = find_child(name, len);
-    if (!child) return ERR_NOENT;
+    if (!child) {
+        return ERR_NOENT;
+    }
 
     child->add_ref();
     *out = child;
+
     return OK;
 }
 
 ssize_t dir_node::readdir(file* f, dirent* entries, size_t count) {
-    if (!f || !entries) return ERR_BADF;
+    if (!f || !entries) {
+        return ERR_BADF;
+    }
 
-    if (count == 0) return 0;
+    if (count == 0) {
+        return 0;
+    }
 
     sync::irq_lock_guard guard(m_lock);
 

@@ -92,9 +92,13 @@ int32_t node::getattr(vattr* attr) {
 }
 
 int32_t node::setattr(const vattr& attr, uint32_t mask) {
-    if (mask & ~(VATTR_ATIME | VATTR_MTIME)) return ERR_INVAL;
+    if (mask & ~(VATTR_ATIME | VATTR_MTIME)) {
+        return ERR_INVAL;
+    }
 
-    if (mask == 0) return OK;
+    if (mask == 0) {
+        return OK;
+    }
 
     if (mask & VATTR_ATIME) {
         m_atime_ns = attr.atime_ns;
@@ -959,7 +963,9 @@ int32_t fstat(file* f, vattr* attr) {
 }
 
 int32_t fsetattr(file* f, const vattr& attr, uint32_t mask) {
-    if (!f) return ERR_BADF;
+    if (!f) {
+        return ERR_BADF;
+    }
 
     int32_t result;
     RUN_ELEVATED({
