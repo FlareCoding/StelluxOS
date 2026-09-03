@@ -709,6 +709,12 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
 
     RUN_ELEVATED({
         err = n->open(f, flags);
+
+        // O_TRUNC only applies to regular files opened for writing
+        bool writable = (flags & ACCESS_MODE_MASK) != O_RDONLY;
+        if (err == OK && (flags & O_TRUNC) && writable && n->type() == node_type::regular) {
+            err = n->truncate(0);
+        }
     });
 
     if (err != OK) {

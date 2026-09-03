@@ -466,6 +466,40 @@ TEST(fs_test, directory_mtime_tracks_entries) {
     fs::rmdir("/ts_dir");
 }
 
+TEST(fs_test, open_trunc_empties_writable_file) {
+    fs::file* f = fs::open("/trunc_rw", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(fs::write(f, "0123456789", 10), static_cast<ssize_t>(10));
+    fs::close(f);
+
+    f = fs::open("/trunc_rw", fs::O_WRONLY | fs::O_TRUNC);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::fstat(f, &attr), fs::OK);
+    EXPECT_EQ(attr.size, static_cast<size_t>(0));
+
+    fs::close(f);
+    fs::unlink("/trunc_rw");
+}
+
+TEST(fs_test, open_trunc_ignored_for_read_only) {
+    fs::file* f = fs::open("/trunc_ro", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(fs::write(f, "0123456789", 10), static_cast<ssize_t>(10));
+    fs::close(f);
+
+    f = fs::open("/trunc_ro", fs::O_RDONLY | fs::O_TRUNC);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::fstat(f, &attr), fs::OK);
+    EXPECT_EQ(attr.size, static_cast<size_t>(10));
+
+    fs::close(f);
+    fs::unlink("/trunc_ro");
+}
+
 TEST(fs_test, multi_page_write_read) {
     fs::file* f = fs::open("/bigfile", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);
