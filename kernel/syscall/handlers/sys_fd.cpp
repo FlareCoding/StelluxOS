@@ -446,7 +446,7 @@ static int64_t normalize_path_for_dirfd(
         return base_rc;
     }
 
-    char* base_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+    char* base_path = static_cast<char*>(heap::uzalloc(fs::PATH_MAX));
     if (!base_path) {
         release_node_ref(base_node);
         return syscall::ENOMEM;
@@ -455,12 +455,12 @@ static int64_t normalize_path_for_dirfd(
     int32_t base_path_rc = fs::path_from_node(base_node, base_path, fs::PATH_MAX);
     release_node_ref(base_node);
     if (base_path_rc != fs::OK) {
-        heap::kfree(base_path);
+        heap::ufree(base_path);
         return syscall::error_map::map_fs_error(base_path_rc);
     }
 
     int64_t norm_rc = normalize_absolute_path(base_path, input_path, out_path, out_cap);
-    heap::kfree(base_path);
+    heap::ufree(base_path);
     return norm_rc;
 }
 
@@ -743,7 +743,7 @@ static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, 
     }
 
     uint32_t open_flags = static_cast<uint32_t>(flags);
-    char* resolved_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+    char* resolved_path = static_cast<char*>(heap::uzalloc(fs::PATH_MAX));
     if (!resolved_path) {
         return syscall::ENOMEM;
     }
@@ -753,7 +753,7 @@ static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, 
         int64_t norm_rc = normalize_absolute_path(
             nullptr, kpath, resolved_path, fs::PATH_MAX);
         if (norm_rc != 0) {
-            heap::kfree(resolved_path);
+            heap::ufree(resolved_path);
             return norm_rc;
         }
 
@@ -763,7 +763,7 @@ static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, 
             int64_t resolve_rc = resolve_open_resource_path(
                 task, dirfd, kpath, open_flags, resolved_path, fs::PATH_MAX);
             if (resolve_rc != 0) {
-                heap::kfree(resolved_path);
+                heap::ufree(resolved_path);
                 return resolve_rc;
             }
 
@@ -773,7 +773,7 @@ static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, 
         int64_t norm_rc = normalize_path_for_dirfd(
             task, dirfd, kpath, resolved_path, fs::PATH_MAX);
         if (norm_rc != 0) {
-            heap::kfree(resolved_path);
+            heap::ufree(resolved_path);
             return norm_rc;
         }
 
@@ -781,7 +781,7 @@ static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, 
             int64_t resolve_rc = resolve_open_resource_path(
                 task, dirfd, kpath, open_flags, resolved_path, fs::PATH_MAX);
             if (resolve_rc != 0) {
-                heap::kfree(resolved_path);
+                heap::ufree(resolved_path);
                 return resolve_rc;
             }
         }
@@ -795,7 +795,7 @@ static int64_t do_open_common(int64_t dirfd, uint64_t pathname, uint64_t flags, 
         open_flags,
         &handle
     );
-    heap::kfree(resolved_path);
+    heap::ufree(resolved_path);
     if (rc != resource::OK) {
         return map_resource_error(rc);
     }
@@ -863,7 +863,7 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
     uint8_t* user_ptr = reinterpret_cast<uint8_t*>(buf);
     int64_t total = 0;
 
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(IO_CHUNK_SIZE));
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(IO_CHUNK_SIZE));
     if (!kbuf) {
         return syscall::ENOMEM;
     }
@@ -872,7 +872,7 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
         size_t chunk = remaining > IO_CHUNK_SIZE ? IO_CHUNK_SIZE : remaining;
         ssize_t n = resource::read(task, static_cast<resource::handle_t>(fd), kbuf, chunk);
         if (n < 0) {
-            heap::kfree(kbuf);
+            heap::ufree(kbuf);
             if (total > 0) {
                 return total;
             }
@@ -886,7 +886,7 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
 
         int32_t rc = mm::uaccess::copy_to_user(user_ptr, kbuf, static_cast<size_t>(n));
         if (rc != mm::uaccess::OK) {
-            heap::kfree(kbuf);
+            heap::ufree(kbuf);
             if (total > 0) {
                 return total;
             }
@@ -903,7 +903,7 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
         }
     }
 
-    heap::kfree(kbuf);
+    heap::ufree(kbuf);
     return total;
 }
 
@@ -925,7 +925,7 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
     const uint8_t* user_ptr = reinterpret_cast<const uint8_t*>(buf);
     int64_t total = 0;
 
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(IO_CHUNK_SIZE));
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(IO_CHUNK_SIZE));
     if (!kbuf) {
         return syscall::ENOMEM;
     }
@@ -934,7 +934,7 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
         size_t chunk = remaining > IO_CHUNK_SIZE ? IO_CHUNK_SIZE : remaining;
         int32_t copy_rc = mm::uaccess::copy_from_user(kbuf, user_ptr, chunk);
         if (copy_rc != mm::uaccess::OK) {
-            heap::kfree(kbuf);
+            heap::ufree(kbuf);
             if (total > 0) {
                 return total;
             }
@@ -944,7 +944,7 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
 
         ssize_t n = resource::write(task, static_cast<resource::handle_t>(fd), kbuf, chunk);
         if (n < 0) {
-            heap::kfree(kbuf);
+            heap::ufree(kbuf);
             if (total > 0) {
                 return total;
             }
@@ -965,7 +965,7 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
         }
     }
 
-    heap::kfree(kbuf);
+    heap::ufree(kbuf);
     return total;
 }
 
@@ -1337,7 +1337,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
     char* normalized_path = nullptr;
     const char* shm_path = nullptr;
     if (kpath[0] == '/') {
-        normalized_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+        normalized_path = static_cast<char*>(heap::uzalloc(fs::PATH_MAX));
         if (!normalized_path) {
             return syscall::ENOMEM;
         }
@@ -1345,7 +1345,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
         int64_t norm_rc = normalize_absolute_path(
             nullptr, kpath, normalized_path, fs::PATH_MAX);
         if (norm_rc != 0) {
-            heap::kfree(normalized_path);
+            heap::ufree(normalized_path);
             return norm_rc;
         }
 
@@ -1353,7 +1353,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
             shm_path = normalized_path;
         }
     } else {
-        normalized_path = static_cast<char*>(heap::kzalloc(fs::PATH_MAX));
+        normalized_path = static_cast<char*>(heap::uzalloc(fs::PATH_MAX));
         if (!normalized_path) {
             return syscall::ENOMEM;
         }
@@ -1362,7 +1362,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
             task, static_cast<int64_t>(dirfd), kpath,
             normalized_path, fs::PATH_MAX);
         if (norm_rc != 0) {
-            heap::kfree(normalized_path);
+            heap::ufree(normalized_path);
             return norm_rc;
         }
 
@@ -1374,7 +1374,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
     if (shm_path) {
         int32_t rc = resource::shm_provider::unlink_shm(shm_path);
         if (normalized_path) {
-            heap::kfree(normalized_path);
+            heap::ufree(normalized_path);
         }
         if (rc != resource::OK) {
             return map_resource_error(rc);
@@ -1384,7 +1384,7 @@ DEFINE_SYSCALL3(unlinkat, dirfd, pathname, flags_val) {
     }
 
     if (normalized_path) {
-        heap::kfree(normalized_path);
+        heap::ufree(normalized_path);
     }
 
     fs::node* parent = nullptr;
