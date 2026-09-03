@@ -126,7 +126,7 @@ endif
         run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
         connect-gdb-x86_64 connect-gdb-aarch64 \
         deps limine musl libcxx rpi4-firmware toolchain-check \
-        help
+        packages-list packages-build help
 
 # Default target
 all: help
@@ -573,10 +573,9 @@ define build_binutils_arch
 	@echo "binutils $(1) installed to userland/toolchain/$(1)/"
 endef
 
-# Builds the static on-target GCC toolchain artifacts in a Docker
-# container.
-gcc-toolchain-build:
-	$(Q)./scripts/gcc-toolchain/build.sh
+# Builds the developer packages in Docker, see packages/README.md
+packages-build:
+	$(Q)./packages/build.sh $(ARCHES)
 
 # Shows which package archives PACKAGES resolves to for ARCH
 packages-list:
@@ -936,6 +935,7 @@ help:
 	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
 	@echo "  make image PACKAGES=\"gcc ...\" Include prebuilt developer packages (see packages/README.md)"
 	@echo "  make packages-list           Show the package archives PACKAGES resolves to"
+	@echo "  make packages-build [ARCHES=x86_64] Build the developer packages in Docker (slow, publishers only)"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
 	@echo "  make run-headless ARCH=<arch> Build + run headless (for SSH)"
 	@echo "  make usb ARCH=<arch>         Build + print USB instructions"
