@@ -1,7 +1,7 @@
 #!/bin/sh
-# Builds the developer packages in Docker and drops the archives into
-# userland/toolchain/packages/, which make clean leaves alone. The same
-# script runs on developer machines and on the publish workflow.
+# Builds the Stellux developer packages in Docker and drops the archives
+# into userland/toolchain/packages/, which make clean leaves alone. Runs
+# on developer machines and on the publish workflow alike.
 #
 # Usage: packages/build.sh [x86_64] [aarch64]
 # With no arguments both architectures are built.

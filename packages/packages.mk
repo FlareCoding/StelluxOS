@@ -1,5 +1,5 @@
-# Resolves developer package pins from packages.lock for the current ARCH.
-# Included by the top-level and userland Makefiles, see README.md.
+# Resolves Stellux developer package pins from packages.lock for the target
+# ARCH. Included by the top-level and userland Makefiles, see README.md.
 
 PACKAGES ?=
 

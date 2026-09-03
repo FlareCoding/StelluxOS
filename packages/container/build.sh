@@ -1,9 +1,9 @@
 #!/bin/sh
-# Runs inside the build container. Builds one architecture's static
-# native GCC toolchain in two stages and packages it:
-#   stage 1: a cross toolchain targeting <arch>-linux-musl
+# Runs inside the build container. Builds the Stellux GCC toolchain for
+# one architecture in two stages and packages it:
+#   stage 1: a cross toolchain targeting <arch>-linux-musl, runs here
 #   stage 2: that cross toolchain rebuilds everything as static
-#            native binaries that run on the target itself
+#            Stellux binaries
 # Expects /work prepared by build.sh: mcm-stage1/, mcm-stage2/, and
 # versions.sh. Writes the package archives to /work/dist.
 #

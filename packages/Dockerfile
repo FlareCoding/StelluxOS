@@ -1,6 +1,6 @@
-# Build environment for the developer packages. The base image digest and
-# the package list come from versions.sh through build arguments so this
-# file never drifts from the pins.
+# Build environment for the Stellux developer packages. The base image
+# digest and the package list come from versions.sh through build
+# arguments so this file never drifts from the pins.
 ARG ALPINE_IMAGE
 FROM ${ALPINE_IMAGE}
 

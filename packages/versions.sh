@@ -1,4 +1,4 @@
-# Version and source pins for the developer packages.
+# Version and source pins for the Stellux developer packages.
 # Sourced by build.sh on the host and by container/build.sh inside.
 
 # musl-cross-make provides the musl targeting patches and the build
