@@ -190,6 +190,86 @@ int32_t dir_node::rename(const char* name, size_t len, fs::node* new_parent,
     return rename_child(name, len, new_parent, new_name, new_len);
 }
 
+int32_t dir_node::symlink(const char* name, size_t len, const char* target, fs::node** out) {
+    if (!name || !out || !target || len == 0) {
+        return fs::ERR_INVAL;
+    }
+
+    if (len > fs::NAME_MAX) {
+        return fs::ERR_NAMETOOLONG;
+    }
+
+    sync::irq_lock_guard guard(m_lock);
+
+    if (find_child(name, len)) {
+        return fs::ERR_EXIST;
+    }
+
+    char name_buf[fs::NAME_MAX + 1];
+    string::memcpy(name_buf, name, len);
+    name_buf[len] = '\0';
+
+    void* mem = heap::kzalloc(sizeof(symlink_node));
+    if (!mem) {
+        return fs::ERR_NOMEM;
+    }
+
+    auto* child = new (mem) symlink_node(m_fs, name_buf);
+    int32_t rc = child->set_target(target);
+    if (rc != fs::OK) {
+        fs::node::ref_destroy(child);
+        return rc;
+    }
+
+    attach_child(child);
+
+    *out = child;
+    return fs::OK;
+}
+
+symlink_node::symlink_node(fs::instance* fs, const char* name)
+    : fs::node(fs::node_type::symlink, fs, name)
+    , m_target(nullptr)
+    , m_target_len(0) {
+}
+
+symlink_node::~symlink_node() {
+    if (m_target) {
+        heap::kfree(m_target);
+    }
+}
+
+int32_t symlink_node::set_target(const char* target) {
+    size_t len = string::strnlen(target, fs::PATH_MAX);
+    if (len == 0 || len >= fs::PATH_MAX) {
+        return fs::ERR_INVAL;
+    }
+
+    auto* copy = static_cast<char*>(heap::kzalloc(len + 1));
+    if (!copy) {
+        return fs::ERR_NOMEM;
+    }
+
+    string::memcpy(copy, target, len);
+    m_target = copy;
+    m_target_len = len;
+    m_size = len;
+
+    return fs::OK;
+}
+
+int32_t symlink_node::readlink(char* buf, size_t size, size_t* out_len) {
+    if (!buf || !out_len) {
+        return fs::ERR_INVAL;
+    }
+
+    size_t n = m_target_len < size ? m_target_len : size;
+    string::memcpy(buf, m_target, n);
+    *out_len = n;
+
+    return fs::OK;
+}
+
 file_node::file_node(fs::instance* fs, const char* name)
     : fs::node(fs::node_type::regular, fs, name)
     , m_pages(nullptr)

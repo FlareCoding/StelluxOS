@@ -4,6 +4,7 @@
 #include "boot/boot_services.h"
 #include "mm/vmm.h"
 #include "mm/paging.h"
+#include "mm/heap.h"
 #include "common/string.h"
 #include "common/logging.h"
 
@@ -14,6 +15,7 @@ constexpr char CPIO_TRAILER[] = "TRAILER!!!";
 constexpr uint32_t S_IFMT  = 0170000;
 constexpr uint32_t S_IFDIR = 0040000;
 constexpr uint32_t S_IFREG = 0100000;
+constexpr uint32_t S_IFLNK = 0120000;
 constexpr uint64_t NS_PER_SEC = 1000000000ULL;
 
 static uint32_t hex_to_u32(const char* s, size_t len) {
@@ -87,8 +89,16 @@ __PRIVILEGED_CODE int32_t load_initrd() {
     const auto* archive = reinterpret_cast<const uint8_t*>(usable_va);
     size_t archive_len = static_cast<size_t>(size);
 
+    // Link targets are copied out so they can be null terminated
+    char* target_buf = static_cast<char*>(heap::uzalloc(fs::PATH_MAX));
+    if (!target_buf) {
+        vmm::free(base_va);
+        return ERR_MAP_FAILED;
+    }
+
     uint32_t files_extracted = 0;
     uint32_t dirs_created = 0;
+    uint32_t links_created = 0;
     size_t offset = 0;
 
     while (offset + sizeof(cpio_newc_header) <= archive_len) {
@@ -173,16 +183,34 @@ __PRIVILEGED_CODE int32_t load_initrd() {
             } else {
                 log::warn("cpio: failed to create file %s", path_buf);
             }
+        } else if ((mode & S_IFMT) == S_IFLNK) {
+            bool target_ok = filesize > 0 && filesize < fs::PATH_MAX &&
+                             offset + filesize <= archive_len;
+
+            if (target_ok) {
+                string::memcpy(target_buf, file_data, filesize);
+                target_buf[filesize] = '\0';
+                ensure_parents(path_buf);
+
+                if (fs::symlink(target_buf, path_buf) == fs::OK) {
+                    links_created++;
+                } else {
+                    log::warn("cpio: failed to create link %s", path_buf);
+                }
+            } else {
+                log::warn("cpio: rejecting link with bad target: %s", path_buf);
+            }
         }
 
         offset += filesize;
         offset = align4(offset);
     }
 
+    heap::ufree(target_buf);
     vmm::free(base_va);
 
-    log::info("cpio: extracted %u files and %u directories into /",
-              files_extracted, dirs_created);
+    log::info("cpio: extracted %u files, %u directories, and %u links into /",
+              files_extracted, dirs_created, links_created);
     return OK;
 }
 

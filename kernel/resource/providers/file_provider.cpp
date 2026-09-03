@@ -31,6 +31,8 @@ static int32_t map_fs_error_to_resource(int32_t fs_err) {
             return ERR_UNSUP;
         case fs::ERR_AGAIN:
             return ERR_AGAIN;
+        case fs::ERR_LOOP:
+            return ERR_LOOP;
         default:
             return ERR_IO;
     }

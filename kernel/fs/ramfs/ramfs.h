@@ -24,7 +24,21 @@ public:
     int32_t rmdir(const char* name, size_t len) override;
     int32_t rename(const char* name, size_t len, fs::node* new_parent,
                    const char* new_name, size_t new_len) override;
+    int32_t symlink(const char* name, size_t len, const char* target, fs::node** out) override;
     int32_t create_socket(const char* name, size_t len, void* impl, fs::node** out) override;
+};
+
+class symlink_node : public fs::node {
+public:
+    symlink_node(fs::instance* fs, const char* name);
+    ~symlink_node() override;
+
+    int32_t set_target(const char* target);
+    int32_t readlink(char* buf, size_t size, size_t* out_len) override;
+
+private:
+    char*  m_target;
+    size_t m_target_len;
 };
 
 class file_node : public fs::node {

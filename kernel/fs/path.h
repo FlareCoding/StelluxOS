@@ -30,6 +30,8 @@ public:
      */
     bool next(const char*& out_name, size_t& out_len);
 
+    const char* remaining() const { return m_path + m_pos; }
+
 private:
     const char* m_path;
     size_t m_pos;

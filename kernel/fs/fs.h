@@ -76,15 +76,27 @@ int32_t mkdir(const char* path, uint32_t mode);
 int32_t rmdir(const char* path);
 int32_t unlink(const char* path);
 int32_t rename(const char* oldpath, const char* newpath);
+int32_t symlink(const char* target, const char* linkpath);
+
+// Lookup flag: resolve the final component to the link itself, not its target
+constexpr uint32_t LOOKUP_NOFOLLOW = 1u << 0;
 ssize_t readdir(file* f, dirent* entries, size_t count);
 
 /**
  * @brief Resolve path relative to base_dir when path is not absolute.
- * If path is absolute, base_dir is ignored.
+ * If path is absolute, base_dir is ignored. Symbolic links are followed.
  * On success, *out has add_ref() called, caller must release.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, node** out);
+
+/**
+ * @brief Resolve path like lookup_at, with LOOKUP_NOFOLLOW in flags leaving
+ * a final symbolic link unresolved so the caller receives the link itself.
+ * On success, *out has add_ref() called, caller must release.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, uint32_t flags, node** out);
 
 /**
  * @brief Resolve parent directory of path relative to base_dir.

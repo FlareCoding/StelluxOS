@@ -124,6 +124,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::FACCESSAT,   faccessat);
     REGISTER_SYSCALL(linux_nr::FCHMODAT,    fchmodat);
     REGISTER_SYSCALL(linux_nr::RENAMEAT,    renameat);
+    REGISTER_SYSCALL(linux_nr::SYMLINKAT,   symlinkat);
     REGISTER_SYSCALL(linux_nr::READLINKAT,  readlinkat);
 #if defined(__x86_64__)
     REGISTER_SYSCALL(linux_nr::MKDIR,       mkdir);
@@ -132,6 +133,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::RMDIR,       rmdir);
     REGISTER_SYSCALL(linux_nr::ACCESS,      access);
     REGISTER_SYSCALL(linux_nr::RENAME,      rename);
+    REGISTER_SYSCALL(linux_nr::SYMLINK,     symlink);
     REGISTER_SYSCALL(linux_nr::READLINK,    readlink);
 #endif
 
