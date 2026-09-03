@@ -3,9 +3,9 @@
 
 PACKAGES ?=
 
-PACKAGES_DIR   := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
+PACKAGES_DIR   := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PACKAGES_LOCK  := $(PACKAGES_DIR)/packages.lock
-PACKAGES_CACHE := $(PACKAGES_DIR)/../userland/toolchain/packages
+PACKAGES_CACHE := $(abspath $(PACKAGES_DIR)/../userland/toolchain/packages)
 
 PACKAGES_SOURCE  := $(shell awk '$$1 == "source" { print $$2 }' $(PACKAGES_LOCK))
 PACKAGES_RELEASE := $(shell awk '$$1 == "release" { print $$2 }' $(PACKAGES_LOCK))
