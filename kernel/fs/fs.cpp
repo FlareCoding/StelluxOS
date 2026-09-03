@@ -687,13 +687,20 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
             err = resolve_parent_at_internal(
                 base_dir, path, &parent, &name, &name_len);
             if (err == OK) {
+                // O_EXCL demands that this call be the one creating the file, so
+                // an existing entry and a concurrent create both fail
                 err = parent->lookup(name, name_len, &n);
-                if (err == ERR_NOENT) {
+                if (err == OK && (flags & O_EXCL)) {
+                    release_node_ref(n);
+                    n = nullptr;
+                    err = ERR_EXIST;
+                } else if (err == ERR_NOENT) {
                     err = parent->create(name, name_len, 0, &n);
+                    if (err == ERR_EXIST && !(flags & O_EXCL)) {
+                        err = parent->lookup(name, name_len, &n);
+                    }
                 }
-                if (err == ERR_EXIST) {
-                    err = parent->lookup(name, name_len, &n);
-                }
+
                 if (parent->release()) {
                     node::ref_destroy(parent);
                 }
