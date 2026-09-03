@@ -42,7 +42,7 @@ else
   export STLX_QUIET := 1
 endif
 
-all: build install-summary
+all: build packages install-summary
 
 build:
 ifeq ($(V),1)
@@ -99,6 +99,7 @@ clean:
 	@rm -rf build
 
 include mk/toolchain.mk
+include mk/packages.mk
 
 CC_SOURCES := $(shell find apps lib -name '*.c' 2>/dev/null | sort)
 CC_FLAGS := $(CFLAGS_COMMON)

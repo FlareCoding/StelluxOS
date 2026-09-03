@@ -13,6 +13,7 @@ Fetches any archive missing from `userland/toolchain/packages/`, checks
 it against the pinned sha256, and unpacks it into the rootfs overlay
 that the userland install step copies onto the initrd. The cache
 survives `make clean`, so the download happens once per version.
+Unpacking needs `zstd` on the host, which `make deps` installs.
 
 ## Package format
 

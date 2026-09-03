@@ -44,7 +44,7 @@ define HOST_DEPS_INSTALL
 	@echo "Installing required packages (Homebrew)..."
 	@command -v brew > /dev/null 2>&1 || \
 		{ echo "ERROR: Homebrew not found. Install it from https://brew.sh first."; exit 1; }
-	brew install llvm lld cmake qemu mtools gptfdisk coreutils bash gdb
+	brew install llvm lld cmake qemu mtools gptfdisk coreutils bash gdb zstd
 	@echo ""
 	@echo "Note: the 'python' userland app also needs a host python3.12"
 	@echo "(e.g. 'brew install python@3.12')."
@@ -123,7 +123,7 @@ define HOST_DEPS_INSTALL
 		cmake \
 		qemu-system-x86 qemu-system-arm \
 		ovmf qemu-efi-aarch64 \
-		mtools gdisk xorriso \
+		mtools gdisk xorriso zstd \
 		gdb-multiarch
 endef
 
