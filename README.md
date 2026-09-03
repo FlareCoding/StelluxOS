@@ -93,7 +93,6 @@ make limine
 make musl
 make libcxx
 make compiler-rt
-make binutils
 ```
 
 `make deps` installs system packages -- via apt on Linux (clang, lld,
@@ -103,9 +102,12 @@ the Limine bootloader binaries. `make musl` builds musl 1.2.5 for both
 x86_64 and aarch64. `make libcxx` builds the LLVM C++ runtime (libc++,
 libc++abi, libunwind) against the musl sysroot for C++ userland
 application support. `make compiler-rt` builds the compiler runtime
-builtins for both architectures. `make binutils` downloads a pinned
-GNU binutils release and cross-builds the on-target assembler,
-linker, and object tools for both architectures.
+builtins for both architectures.
+
+Heavy programs that run on Stellux, such as the GCC toolchain and
+binutils, are prebuilt packages rather than part of this setup:
+`make image PACKAGES="gcc binutils"` fetches them into the image, see
+`packages/README.md`.
 
 The optional CPython userland app additionally requires a host
 `python3.12` (e.g. `brew install python@3.12` / `apt install python3.12`).

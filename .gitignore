@@ -31,7 +31,6 @@ userland/sysroot/
 userland/musl-*
 userland/llvm-project-*
 userland/linux-headers-*
-userland/binutils-*
 userland/toolchain/
 userland/build/
 initrd/bin/*
