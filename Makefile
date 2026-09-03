@@ -86,7 +86,7 @@ SUPPORTED_ARCHS := x86_64 aarch64
 # ============================================================================
 
 # Targets that require ARCH
-ARCH_REQUIRED_TARGETS := kernel userland image run test
+ARCH_REQUIRED_TARGETS := kernel userland image run test packages-list
 
 # Check if current target requires ARCH
 CURRENT_GOALS := $(MAKECMDGOALS)
@@ -885,7 +885,7 @@ help:
 	@echo "  make image-x86_64            Build x86_64 disk image (shortcut)"
 	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
 	@echo "  make image PACKAGES=\"gcc ...\" Include prebuilt Stellux developer packages (see packages/README.md)"
-	@echo "  make packages-list           Show the package archives PACKAGES resolves to"
+	@echo "  make packages-list ARCH=<arch> PACKAGES=\"gcc ...\" Show the archives PACKAGES resolves to"
 	@echo "  make packages-build [ARCHES=x86_64] Build the Stellux developer packages in Docker (slow, publishers only)"
 	@echo "  make packages-publish RELEASE=<tag> Publish built packages as a GitHub release"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
