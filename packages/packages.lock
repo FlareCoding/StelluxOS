@@ -1,0 +1,8 @@
+# Developer packages this tree is known to work with. One line per
+# package build per architecture, see README.md for the format.
+#
+# source  base URL of the GitHub releases hosting the archives
+# release tag of the release every entry below was published under
+# <name> <version>-<release> <arch> <sha256>
+
+source https://github.com/FlareCoding/StelluxOS/releases/download
