@@ -1,7 +1,7 @@
-# Developer packages
+# Stellux developer packages
 
-Prebuilt tools that are too heavy to build on every clone, such as the
-native GCC toolchain, ship as packages: archives built once in a
+Stellux programs too heavy to build on every clone, such as the GCC
+toolchain, ship as packages: static binaries built for Stellux once in a
 container, published on a GitHub release, and pulled into the image on
 request. A plain `make image` stays lean and needs none of them.
 

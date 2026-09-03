@@ -1,0 +1,78 @@
+#
+# Stellux Developer Packages
+#
+# Builds the prebuilt Stellux programs the image build can fetch (the GCC
+# toolchain, binutils) for both architectures and publishes them as a
+# GitHub release. Runs on demand, since each architecture takes about an
+# hour, and packages/packages.lock pins the result.
+#
+# Job graph:
+#
+#   build  (2 jobs: arch)
+#     |
+#     v
+#   publish
+#
+name: Stellux Developer Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Release tag, for example packages-2026.09.03"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Archive timestamps derive from the recipe's last commit, which a
+          # shallow clone cannot see
+          fetch-depth: 0
+
+      - name: Build packages
+        run: ./packages/build.sh ${{ matrix.arch }}
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: userland/toolchain/packages/*.tar.zst
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./packages/publish.sh "${{ inputs.release }}" dist

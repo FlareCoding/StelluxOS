@@ -126,7 +126,7 @@ endif
         run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
         connect-gdb-x86_64 connect-gdb-aarch64 \
         deps limine musl libcxx rpi4-firmware toolchain-check \
-        packages-list packages-build help
+        packages-list packages-build packages-publish help
 
 # Default target
 all: help
@@ -573,9 +573,16 @@ define build_binutils_arch
 	@echo "binutils $(1) installed to userland/toolchain/$(1)/"
 endef
 
-# Builds the developer packages in Docker, see packages/README.md
+# Builds the Stellux developer packages, programs that run on the target,
+# in Docker. See packages/README.md.
 packages-build:
 	$(Q)./packages/build.sh $(ARCHES)
+
+# Publishes the built packages as a GitHub release, normally done by the
+# Developer Packages workflow instead
+packages-publish:
+	$(Q)[ -n "$(RELEASE)" ] || { echo "usage: make packages-publish RELEASE=packages-YYYY.MM.DD"; exit 1; }
+	$(Q)./packages/publish.sh $(RELEASE)
 
 # Shows which package archives PACKAGES resolves to for ARCH
 packages-list:
@@ -933,9 +940,10 @@ help:
 	@echo "  make image ARCH=<arch>       Build kernel + userland + create disk image"
 	@echo "  make image-x86_64            Build x86_64 disk image (shortcut)"
 	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
-	@echo "  make image PACKAGES=\"gcc ...\" Include prebuilt developer packages (see packages/README.md)"
+	@echo "  make image PACKAGES=\"gcc ...\" Include prebuilt Stellux developer packages (see packages/README.md)"
 	@echo "  make packages-list           Show the package archives PACKAGES resolves to"
-	@echo "  make packages-build [ARCHES=x86_64] Build the developer packages in Docker (slow, publishers only)"
+	@echo "  make packages-build [ARCHES=x86_64] Build the Stellux developer packages in Docker (slow, publishers only)"
+	@echo "  make packages-publish RELEASE=<tag> Publish built packages as a GitHub release"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
 	@echo "  make run-headless ARCH=<arch> Build + run headless (for SSH)"
 	@echo "  make usb ARCH=<arch>         Build + print USB instructions"

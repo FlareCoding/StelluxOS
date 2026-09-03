@@ -1,5 +1,5 @@
-# Developer packages this tree is known to work with. One line per
-# package build per architecture, see README.md for the format.
+# Stellux developer packages this tree is known to work with, one line per
+# package build per target architecture. See README.md for the format.
 #
 # source  base URL of the GitHub releases hosting the archives
 # release tag of the release every entry below was published under
