@@ -38,6 +38,7 @@ public:
     virtual int32_t rmdir(const char* name, size_t len);
     virtual int32_t rename(const char* name, size_t len, node* new_parent,
                            const char* new_name, size_t new_len);
+    virtual int32_t symlink(const char* name, size_t len, const char* target, node** out);
 
     // --- I/O ops (file/device nodes override) ---
     virtual ssize_t read(file* f, void* buf, size_t count);

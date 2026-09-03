@@ -12,6 +12,7 @@ constexpr uint64_t FCNTL            = 25;
 constexpr uint64_t IOCTL            = 29;
 constexpr uint64_t MKDIRAT          = 34;
 constexpr uint64_t UNLINKAT         = 35;
+constexpr uint64_t SYMLINKAT        = 36;
 constexpr uint64_t RENAMEAT         = 38;
 constexpr uint64_t FTRUNCATE        = 46;
 constexpr uint64_t FACCESSAT        = 48;

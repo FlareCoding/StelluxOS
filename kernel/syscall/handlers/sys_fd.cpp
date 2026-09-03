@@ -138,6 +138,8 @@ static inline int64_t map_resource_error(int64_t rc) {
             return syscall::EAGAIN;
         case resource::ERR_EXIST:
             return syscall::EEXIST;
+        case resource::ERR_LOOP:
+            return syscall::ELOOP;
         case resource::ERR_IO:
         default:
             return syscall::EIO;
@@ -466,7 +468,8 @@ static int64_t lookup_node_for_dirfd_path(
     sched::task* task,
     int64_t dirfd,
     const char* input_path,
-    fs::node** out_node
+    fs::node** out_node,
+    uint32_t lookup_flags = 0
 ) {
     if (!task || !input_path || !out_node) {
         return syscall::EINVAL;
@@ -480,7 +483,7 @@ static int64_t lookup_node_for_dirfd_path(
         }
     }
 
-    int32_t fs_rc = fs::lookup_at(base, input_path, out_node);
+    int32_t fs_rc = fs::lookup_at(base, input_path, lookup_flags, out_node);
     release_node_ref(base);
     if (fs_rc != fs::OK) {
         return syscall::error_map::map_fs_error(fs_rc);
@@ -698,7 +701,8 @@ static int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u
     }
 
     fs::node* target = nullptr;
-    int64_t lookup_rc = lookup_node_for_dirfd_path(task, dirfd, kpath, &target);
+    uint32_t lookup_flags = (flags & AT_SYMLINK_NOFOLLOW) ? fs::LOOKUP_NOFOLLOW : 0;
+    int64_t lookup_rc = lookup_node_for_dirfd_path(task, dirfd, kpath, &target, lookup_flags);
     if (lookup_rc != 0) {
         return lookup_rc;
     }
@@ -1589,7 +1593,8 @@ static int64_t do_readlinkat(int64_t dirfd, uint64_t pathname,
     }
 
     fs::node* node = nullptr;
-    int64_t lookup_rc = lookup_node_for_dirfd_path(task, dirfd, kpath, &node);
+    int64_t lookup_rc = lookup_node_for_dirfd_path(
+        task, dirfd, kpath, &node, fs::LOOKUP_NOFOLLOW);
     if (lookup_rc != 0) {
         return lookup_rc;
     }
@@ -1656,7 +1661,7 @@ DEFINE_SYSCALL4(renameat, olddirfd, oldpath, newdirfd, newpath) {
 
     // Both paths outlive the rename because parent resolution hands back
     // name pointers into them
-    char* paths = static_cast<char*>(heap::kzalloc(2 * fs::PATH_MAX));
+    char* paths = static_cast<char*>(heap::uzalloc(2 * fs::PATH_MAX));
     if (!paths) {
         return syscall::ENOMEM;
     }
@@ -1668,7 +1673,7 @@ DEFINE_SYSCALL4(renameat, olddirfd, oldpath, newdirfd, newpath) {
         rc = copy_user_path(newpath, new_kpath, fs::PATH_MAX);
     }
     if (rc != 0) {
-        heap::kfree(paths);
+        heap::ufree(paths);
         return rc;
     }
 
@@ -1679,7 +1684,7 @@ DEFINE_SYSCALL4(renameat, olddirfd, oldpath, newdirfd, newpath) {
         task, static_cast<int64_t>(olddirfd), old_kpath,
         &old_parent, &old_name, &old_len);
     if (rc != 0) {
-        heap::kfree(paths);
+        heap::ufree(paths);
         return rc;
     }
 
@@ -1691,14 +1696,14 @@ DEFINE_SYSCALL4(renameat, olddirfd, oldpath, newdirfd, newpath) {
         &new_parent, &new_name, &new_len);
     if (rc != 0) {
         release_node_ref(old_parent);
-        heap::kfree(paths);
+        heap::ufree(paths);
         return rc;
     }
 
     int32_t fs_rc = old_parent->rename(old_name, old_len, new_parent, new_name, new_len);
     release_node_ref(new_parent);
     release_node_ref(old_parent);
-    heap::kfree(paths);
+    heap::ufree(paths);
     if (fs_rc != fs::OK) {
         return syscall::error_map::map_fs_error(fs_rc);
     }
@@ -1711,6 +1716,55 @@ DEFINE_SYSCALL2(rename, oldpath, newpath) {
     return sys_renameat(
         static_cast<uint64_t>(-100), oldpath,
         static_cast<uint64_t>(-100), newpath, 0, 0);
+}
+
+DEFINE_SYSCALL3(symlinkat, target, newdirfd, linkpath) {
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    char* paths = static_cast<char*>(heap::uzalloc(2 * fs::PATH_MAX));
+    if (!paths) {
+        return syscall::ENOMEM;
+    }
+
+    char* ktarget = paths;
+    char* klink = paths + fs::PATH_MAX;
+    int64_t rc = copy_user_path(target, ktarget, fs::PATH_MAX);
+    if (rc == 0) {
+        rc = copy_user_path(linkpath, klink, fs::PATH_MAX);
+    }
+    if (rc != 0) {
+        heap::ufree(paths);
+        return rc;
+    }
+
+    fs::node* parent = nullptr;
+    const char* name = nullptr;
+    size_t name_len = 0;
+    rc = resolve_parent_for_dirfd_path(
+        task, static_cast<int64_t>(newdirfd), klink, &parent, &name, &name_len);
+    if (rc != 0) {
+        heap::ufree(paths);
+        return rc;
+    }
+
+    fs::node* link = nullptr;
+    int32_t fs_rc = parent->symlink(name, name_len, ktarget, &link);
+    release_node_ref(link);
+    release_node_ref(parent);
+    heap::ufree(paths);
+    if (fs_rc != fs::OK) {
+        return syscall::error_map::map_fs_error(fs_rc);
+    }
+
+    return 0;
+}
+
+DEFINE_SYSCALL2(symlink, target, linkpath) {
+    // -100 is AT_FDCWD
+    return sys_symlinkat(target, static_cast<uint64_t>(-100), linkpath, 0, 0, 0);
 }
 
 // fsync is a no-op on ramfs, data is always in memory

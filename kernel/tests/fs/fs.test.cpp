@@ -650,6 +650,183 @@ TEST(fs_test, open_excl_creates_only_new_files) {
     fs::unlink("/excl_new");
 }
 
+TEST(fs_test, symlink_stat_follows_and_lookup_nofollow_does_not) {
+    fs::file* f = fs::open("/sl_target", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(fs::write(f, "hello", 5), static_cast<ssize_t>(5));
+    fs::close(f);
+
+    EXPECT_EQ(fs::symlink("/sl_target", "/sl_link"), fs::OK);
+
+    fs::vattr target = {};
+    fs::vattr through = {};
+    EXPECT_EQ(fs::stat("/sl_target", &target), fs::OK);
+    EXPECT_EQ(fs::stat("/sl_link", &through), fs::OK);
+    EXPECT_EQ(through.type, fs::node_type::regular);
+    EXPECT_EQ(through.ino, target.ino);
+    EXPECT_EQ(through.size, static_cast<size_t>(5));
+
+    fs::node* link = nullptr;
+    ASSERT_EQ(fs::lookup_at(nullptr, "/sl_link", fs::LOOKUP_NOFOLLOW, &link), fs::OK);
+    fs::vattr self = {};
+    EXPECT_EQ(link->getattr(&self), fs::OK);
+    EXPECT_EQ(self.type, fs::node_type::symlink);
+    EXPECT_EQ(self.size, static_cast<size_t>(10));
+    EXPECT_NE(self.ino, target.ino);
+
+    char buf[32] = {};
+    size_t len = 0;
+    EXPECT_EQ(link->readlink(buf, sizeof(buf), &len), fs::OK);
+    EXPECT_EQ(len, static_cast<size_t>(10));
+    EXPECT_STREQ(buf, "/sl_target");
+    release_node(link);
+
+    fs::unlink("/sl_link");
+    fs::unlink("/sl_target");
+}
+
+TEST(fs_test, symlink_open_reads_target_content) {
+    fs::file* f = fs::open("/sl_data", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(fs::write(f, "via link", 8), static_cast<ssize_t>(8));
+    fs::close(f);
+    EXPECT_EQ(fs::symlink("sl_data", "/sl_rel"), fs::OK);
+
+    f = fs::open("/sl_rel", fs::O_RDONLY);
+    ASSERT_NOT_NULL(f);
+    char buf[16] = {};
+    EXPECT_EQ(fs::read(f, buf, sizeof(buf)), static_cast<ssize_t>(8));
+    EXPECT_STREQ(buf, "via link");
+    fs::close(f);
+
+    fs::unlink("/sl_rel");
+    fs::unlink("/sl_data");
+}
+
+TEST(fs_test, symlink_to_directory_in_the_middle_of_a_path) {
+    EXPECT_EQ(fs::mkdir("/sl_real", 0), fs::OK);
+    fs::file* f = fs::open("/sl_real/inner", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+    EXPECT_EQ(fs::symlink("/sl_real", "/sl_dirlink"), fs::OK);
+
+    fs::vattr direct = {};
+    fs::vattr via = {};
+    EXPECT_EQ(fs::stat("/sl_real/inner", &direct), fs::OK);
+    EXPECT_EQ(fs::stat("/sl_dirlink/inner", &via), fs::OK);
+    EXPECT_EQ(via.ino, direct.ino);
+    EXPECT_EQ(fs::stat("/sl_dirlink/../sl_real/inner", &via), fs::OK);
+    EXPECT_EQ(via.ino, direct.ino);
+
+    fs::unlink("/sl_dirlink");
+    fs::unlink("/sl_real/inner");
+    fs::rmdir("/sl_real");
+}
+
+TEST(fs_test, symlink_loop_and_dangling_targets) {
+    EXPECT_EQ(fs::symlink("/sl_loop_b", "/sl_loop_a"), fs::OK);
+    EXPECT_EQ(fs::symlink("/sl_loop_a", "/sl_loop_b"), fs::OK);
+    EXPECT_EQ(fs::symlink("/sl_missing", "/sl_dangling"), fs::OK);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/sl_loop_a", &attr), fs::ERR_LOOP);
+    EXPECT_EQ(fs::stat("/sl_dangling", &attr), fs::ERR_NOENT);
+
+    fs::node* link = nullptr;
+    EXPECT_EQ(fs::lookup_at(nullptr, "/sl_dangling", fs::LOOKUP_NOFOLLOW, &link), fs::OK);
+    release_node(link);
+
+    fs::unlink("/sl_loop_a");
+    fs::unlink("/sl_loop_b");
+    fs::unlink("/sl_dangling");
+}
+
+// Writes "/sl_chain<index>" with two decimal digits into out
+static void chain_link_name(uint32_t index, char* out) {
+    const char prefix[] = "/sl_chain";
+    string::memcpy(out, prefix, sizeof(prefix) - 1);
+    out[sizeof(prefix) - 1] = static_cast<char>('0' + index / 10);
+    out[sizeof(prefix)] = static_cast<char>('0' + index % 10);
+    out[sizeof(prefix) + 1] = '\0';
+}
+
+// Builds /sl_chain<links-1> -> ... -> /sl_chain00 -> /sl_chain_end
+static void make_symlink_chain(uint32_t links, char* head) {
+    fs::file* f = fs::open("/sl_chain_end", fs::O_CREAT | fs::O_RDWR);
+    if (f) {
+        fs::close(f);
+    }
+
+    char target[32] = "/sl_chain_end";
+    for (uint32_t i = 0; i < links; i++) {
+        chain_link_name(i, head);
+        fs::symlink(target, head);
+        string::memcpy(target, head, string::strlen(head) + 1);
+    }
+}
+
+static void remove_symlink_chain(uint32_t links) {
+    fs::unlink("/sl_chain_end");
+
+    char name[32];
+    for (uint32_t i = 0; i < links; i++) {
+        chain_link_name(i, name);
+        fs::unlink(name);
+    }
+}
+
+TEST(fs_test, symlink_chain_within_limit_resolves) {
+    char head[32];
+    make_symlink_chain(5, head);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat(head, &attr), fs::OK);
+    EXPECT_EQ(attr.type, fs::node_type::regular);
+
+    remove_symlink_chain(5);
+}
+
+TEST(fs_test, symlink_chain_beyond_limit_fails) {
+    char head[32];
+    make_symlink_chain(fs::SYMLOOP_MAX + 1, head);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat(head, &attr), fs::ERR_LOOP);
+
+    remove_symlink_chain(fs::SYMLOOP_MAX + 1);
+}
+
+TEST(fs_test, symlink_unlink_and_rename_act_on_the_link) {
+    fs::file* f = fs::open("/sl_kept", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+    EXPECT_EQ(fs::symlink("/sl_kept", "/sl_l1"), fs::OK);
+
+    EXPECT_EQ(fs::rename("/sl_l1", "/sl_l2"), fs::OK);
+    fs::node* link = nullptr;
+    ASSERT_EQ(fs::lookup_at(nullptr, "/sl_l2", fs::LOOKUP_NOFOLLOW, &link), fs::OK);
+    EXPECT_EQ(link->type(), fs::node_type::symlink);
+    release_node(link);
+
+    EXPECT_EQ(fs::unlink("/sl_l2"), fs::OK);
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/sl_kept", &attr), fs::OK);
+    EXPECT_EQ(fs::stat("/sl_l2", &attr), fs::ERR_NOENT);
+
+    fs::unlink("/sl_kept");
+}
+
+TEST(fs_test, symlink_rejects_existing_name_and_empty_target) {
+    fs::file* f = fs::open("/sl_taken", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    EXPECT_EQ(fs::symlink("/anything", "/sl_taken"), fs::ERR_EXIST);
+    EXPECT_EQ(fs::symlink("", "/sl_empty"), fs::ERR_INVAL);
+
+    fs::unlink("/sl_taken");
+}
+
 TEST(fs_test, multi_page_write_read) {
     fs::file* f = fs::open("/bigfile", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);

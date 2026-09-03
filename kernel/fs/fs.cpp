@@ -63,6 +63,7 @@ int32_t node::mkdir(const char*, size_t, uint32_t, node**)  { return ERR_NOSYS; 
 int32_t node::unlink(const char*, size_t)           { return ERR_NOSYS; }
 int32_t node::rmdir(const char*, size_t)            { return ERR_NOSYS; }
 int32_t node::rename(const char*, size_t, node*, const char*, size_t) { return ERR_NOSYS; }
+int32_t node::symlink(const char*, size_t, const char*, node**) { return ERR_NOSYS; }
 ssize_t node::read(file*, void*, size_t)            { return ERR_NOSYS; }
 ssize_t node::write(file*, const void*, size_t)     { return ERR_NOSYS; }
 int64_t node::seek(file*, int64_t, int)             { return ERR_NOSYS; }
@@ -255,8 +256,53 @@ __PRIVILEGED_CODE static int32_t acquire_start_node(
     return OK;
 }
 
+// Builds a link target followed by the unresolved remainder of the path into
+// the spare buffer, then makes that buffer the one being walked. Both buffers
+// are allocated on first use so lookups without links pay nothing.
+__PRIVILEGED_CODE static int32_t splice_symlink(
+    node* link, const char* rest, char** walked, char** spare, uint32_t* depth
+) {
+    if (*depth >= SYMLOOP_MAX) {
+        return ERR_LOOP;
+    }
+
+    (*depth)++;
+
+    if (!*walked) {
+        *walked = static_cast<char*>(heap::uzalloc(PATH_MAX));
+        *spare = static_cast<char*>(heap::uzalloc(PATH_MAX));
+        if (!*walked || !*spare) {
+            return ERR_NOMEM;
+        }
+    }
+
+    char* buf = *spare;
+    size_t len = 0;
+    int32_t err = link->readlink(buf, PATH_MAX - 1, &len);
+    if (err != OK) {
+        return err;
+    }
+
+    size_t rest_len = string::strnlen(rest, PATH_MAX);
+    if (rest_len > 0) {
+        if (len + 1 + rest_len >= PATH_MAX) {
+            return ERR_NAMETOOLONG;
+        }
+
+        buf[len] = '/';
+        string::memcpy(buf + len + 1, rest, rest_len);
+        len += 1 + rest_len;
+    }
+    buf[len] = '\0';
+
+    *spare = *walked;
+    *walked = buf;
+
+    return OK;
+}
+
 __PRIVILEGED_CODE static int32_t resolve_path_at_internal(
-    node* base_dir, const char* path, node** out
+    node* base_dir, const char* path, bool follow_last, node** out
 ) {
     if (!path || !out) {
         return ERR_INVAL;
@@ -267,10 +313,16 @@ __PRIVILEGED_CODE static int32_t resolve_path_at_internal(
     }
 
     node* cur = nullptr;
-    int32_t start_err = acquire_start_node(base_dir, path, &cur);
-    if (start_err != OK) {
-        return start_err;
+    int32_t err = acquire_start_node(base_dir, path, &cur);
+    if (err != OK) {
+        return err;
     }
+
+    // Following a link restarts the walk on a spliced heap copy of the path,
+    // so a chain of links costs no stack depth however long it is
+    char* walked = nullptr;
+    char* spare = nullptr;
+    uint32_t depth = 0;
 
     path_iterator it(path);
     const char* comp = nullptr;
@@ -278,8 +330,8 @@ __PRIVILEGED_CODE static int32_t resolve_path_at_internal(
 
     while (it.next(comp, comp_len)) {
         if (comp_len > NAME_MAX) {
-            release_node_ref(cur);
-            return ERR_NAMETOOLONG;
+            err = ERR_NAMETOOLONG;
+            break;
         }
 
         if (comp_len == 2 && comp[0] == '.' && comp[1] == '.') {
@@ -305,15 +357,41 @@ __PRIVILEGED_CODE static int32_t resolve_path_at_internal(
         }
 
         if (cur->type() != node_type::directory) {
-            release_node_ref(cur);
-            return ERR_NOTDIR;
+            err = ERR_NOTDIR;
+            break;
         }
 
         node* child = nullptr;
-        int32_t err = cur->lookup(comp, comp_len, &child);
+        err = cur->lookup(comp, comp_len, &child);
         if (err != OK) {
-            release_node_ref(cur);
-            return err;
+            break;
+        }
+
+        // A link in the middle of a path is always followed, a final one only
+        // when the caller wants the target rather than the link itself
+        path_iterator ahead = it;
+        const char* ahead_comp = nullptr;
+        size_t ahead_len = 0;
+        bool is_last = !ahead.next(ahead_comp, ahead_len);
+
+        if (child->type() == node_type::symlink && (follow_last || !is_last)) {
+            err = splice_symlink(child, it.remaining(), &walked, &spare, &depth);
+            release_node_ref(child);
+            if (err != OK) {
+                break;
+            }
+
+            if (walked[0] == '/') {
+                release_node_ref(cur);
+                cur = nullptr;
+                err = acquire_global_root(&cur);
+                if (err != OK) {
+                    break;
+                }
+            }
+
+            it = path_iterator(walked);
+            continue;
         }
 
         while (child->mounted_here()) {
@@ -325,6 +403,19 @@ __PRIVILEGED_CODE static int32_t resolve_path_at_internal(
 
         release_node_ref(cur);
         cur = child;
+    }
+
+    if (walked) {
+        heap::ufree(walked);
+    }
+
+    if (spare) {
+        heap::ufree(spare);
+    }
+
+    if (err != OK) {
+        release_node_ref(cur);
+        return err;
     }
 
     *out = cur;
@@ -399,7 +490,7 @@ __PRIVILEGED_CODE static int32_t resolve_parent_at_internal(
         parent_buf[parent_len] = '\0';
     }
 
-    err = resolve_path_at_internal(base_dir, parent_buf, out_parent);
+    err = resolve_path_at_internal(base_dir, parent_buf, true, out_parent);
     if (err != OK) {
         return err;
     }
@@ -521,15 +612,21 @@ __PRIVILEGED_CODE int32_t lookup(const char* path, node** out) {
         return ERR_INVAL;
     }
 
-    return resolve_path_at_internal(nullptr, path, out);
+    return resolve_path_at_internal(nullptr, path, true, out);
 }
 
 __PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, node** out) {
+    return lookup_at(base_dir, path, 0, out);
+}
+
+__PRIVILEGED_CODE int32_t lookup_at(node* base_dir, const char* path, uint32_t flags, node** out) {
     if (!path || !out) {
         return ERR_INVAL;
     }
 
-    return resolve_path_at_internal(base_dir, path, out);
+    bool follow_last = (flags & LOOKUP_NOFOLLOW) == 0;
+
+    return resolve_path_at_internal(base_dir, path, follow_last, out);
 }
 
 __PRIVILEGED_CODE int32_t resolve_parent_path(
@@ -694,6 +791,10 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
                     release_node_ref(n);
                     n = nullptr;
                     err = ERR_EXIST;
+                } else if (err == OK && n->type() == node_type::symlink) {
+                    release_node_ref(n);
+                    n = nullptr;
+                    err = resolve_path_at_internal(base_dir, path, true, &n);
                 } else if (err == ERR_NOENT) {
                     err = parent->create(name, name_len, 0, &n);
                     if (err == ERR_EXIST && !(flags & O_EXCL)) {
@@ -706,7 +807,7 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
                 }
             }
         } else {
-            err = resolve_path_at_internal(base_dir, path, &n);
+            err = resolve_path_at_internal(base_dir, path, true, &n);
         }
     });
 
@@ -971,6 +1072,34 @@ int32_t rename(const char* oldpath, const char* newpath) {
             }
 
             release_node_ref(old_parent);
+        }
+    });
+
+    return err;
+}
+
+int32_t symlink(const char* target, const char* linkpath) {
+    if (!target || !linkpath) {
+        return ERR_INVAL;
+    }
+
+    if (target[0] == '\0' || linkpath[0] != '/') {
+        return ERR_INVAL;
+    }
+
+    int32_t err;
+    RUN_ELEVATED({
+        node* parent = nullptr;
+        const char* name;
+        size_t name_len;
+
+        err = resolve_parent_at_internal(
+            nullptr, linkpath, &parent, &name, &name_len);
+        if (err == OK) {
+            node* link = nullptr;
+            err = parent->symlink(name, name_len, target, &link);
+            release_node_ref(link);
+            release_node_ref(parent);
         }
     });
 

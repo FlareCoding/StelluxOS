@@ -86,6 +86,7 @@ constexpr int32_t ERR_AGAIN       = -16;
 constexpr int32_t ERR_EXIST       = -17;
 constexpr int32_t ERR_INTR        = -18;
 constexpr int32_t ERR_NOPROTOOPT  = -19;
+constexpr int32_t ERR_LOOP        = -20;
 
 /**
  * @brief Allocate a private handle table and attach it to the task.
