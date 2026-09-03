@@ -164,20 +164,7 @@ int32_t dir_node::unlink(const char* name, size_t len) {
 }
 
 int32_t dir_node::rmdir(const char* name, size_t len) {
-    if (!name || len == 0) return fs::ERR_INVAL;
-
-    sync::irq_lock_guard guard(m_lock);
-
-    fs::node* child = find_child(name, len);
-    if (!child) {
-        return fs::ERR_NOENT;
-    }
-
-    if (child->type() != fs::node_type::directory) {
-        return fs::ERR_NOTDIR;
-    }
-
-    return remove_empty_dir(static_cast<fs::dir_node*>(child));
+    return rmdir_child(name, len);
 }
 
 int32_t dir_node::rename(const char* name, size_t len, fs::node* new_parent,

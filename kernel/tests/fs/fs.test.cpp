@@ -628,6 +628,43 @@ TEST(fs_test, rename_type_mismatch_fails) {
     fs::rmdir("/rn_dir");
 }
 
+TEST(fs_test, rename_onto_own_parent_fails) {
+    EXPECT_EQ(fs::mkdir("/rp", 0), fs::OK);
+    EXPECT_EQ(fs::mkdir("/rp/sub", 0), fs::OK);
+    fs::file* f = fs::open("/rp/f", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    EXPECT_EQ(fs::rename("/rp/sub", "/rp"), fs::ERR_NOTEMPTY);
+    EXPECT_EQ(fs::rename("/rp/f", "/rp"), fs::ERR_ISDIR);
+
+    fs::unlink("/rp/f");
+    fs::rmdir("/rp/sub");
+    fs::rmdir("/rp");
+}
+
+TEST(fs_test, rename_into_removed_directory_fails) {
+    EXPECT_EQ(fs::mkdir("/rd_gone", 0), fs::OK);
+    fs::node* gone = nullptr;
+    ASSERT_EQ(fs::lookup("/rd_gone", &gone), fs::OK);
+    fs::file* f = fs::open("/rd_src", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    EXPECT_EQ(fs::rmdir("/rd_gone"), fs::OK);
+
+    fs::node* root = nullptr;
+    ASSERT_EQ(fs::lookup("/", &root), fs::OK);
+    EXPECT_EQ(root->rename("rd_src", 6, gone, "x", 1), fs::ERR_NOENT);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/rd_src", &attr), fs::OK);
+
+    release_node(root);
+    release_node(gone);
+    fs::unlink("/rd_src");
+}
+
 TEST(fs_test, rename_across_filesystems_fails) {
     fs::file* f = fs::open("/rn_xdev", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);
@@ -821,6 +858,30 @@ TEST(fs_test, symlink_unlink_and_rename_act_on_the_link) {
     EXPECT_EQ(fs::stat("/sl_l2", &attr), fs::ERR_NOENT);
 
     fs::unlink("/sl_kept");
+}
+
+TEST(fs_test, open_creat_through_dangling_symlink_creates_target) {
+    EXPECT_EQ(fs::symlink("/sl_ct_target", "/sl_ct_link"), fs::OK);
+    EXPECT_EQ(fs::symlink("sl_ct_link", "/sl_ct_link2"), fs::OK);
+
+    int32_t err = fs::OK;
+    fs::file* f = fs::open("/sl_ct_link2", fs::O_CREAT | fs::O_RDWR, &err);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(fs::write(f, "made", 4), static_cast<ssize_t>(4));
+    fs::close(f);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/sl_ct_target", &attr), fs::OK);
+    EXPECT_EQ(attr.type, fs::node_type::regular);
+    EXPECT_EQ(attr.size, static_cast<size_t>(4));
+
+    f = fs::open("/sl_ct_link", fs::O_CREAT | fs::O_EXCL | fs::O_RDWR, &err);
+    EXPECT_NULL(f);
+    EXPECT_EQ(err, fs::ERR_EXIST);
+
+    fs::unlink("/sl_ct_link2");
+    fs::unlink("/sl_ct_link");
+    fs::unlink("/sl_ct_target");
 }
 
 TEST(fs_test, symlink_rejects_existing_name_and_empty_target) {
