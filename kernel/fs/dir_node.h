@@ -33,14 +33,15 @@ protected:
     int32_t rename_child(const char* name, size_t len, node* new_parent,
                          const char* new_name, size_t new_len);
 
-    // Caller holds m_lock. Detaches a child directory only while it is
-    // provably empty, refusing mount points and populated directories.
-    int32_t remove_empty_dir(dir_node* dir);
+    // Removes an empty child directory, refusing mount points and populated
+    // directories. Takes every lock it needs itself.
+    int32_t rmdir_child(const char* name, size_t len);
 
 private:
     int32_t move_child_locked(const char* name, size_t len, dir_node* dst,
                               const char* new_name, size_t new_len);
     int32_t replace_child_locked(node* child, node* existing);
+    int32_t remove_empty_dir(dir_node* dir);
     int32_t detach_if_empty(dir_node* dir);
 
     list::head<node, &node::m_child_link> m_children;

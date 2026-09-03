@@ -5,10 +5,9 @@
 
 namespace fs {
 
-// Every rename serializes on this lock, which keeps the ancestor walk that
-// refuses to move a directory into its own subtree reading a stable tree and
-// makes locking a replaced directory beneath its parents deadlock free
-static sync::spinlock g_rename_lock = sync::SPINLOCK_INIT;
+// Serializes rename and rmdir, the operations that lock more than one directory,
+// so nested directory locks cannot deadlock and ancestor walks see a stable tree
+static sync::spinlock g_dir_tree_lock = sync::SPINLOCK_INIT;
 
 static bool is_dot_name(const char* name, size_t len) {
     return (len == 1 && name[0] == '.') || (len == 2 && name[0] == '.' && name[1] == '.');
@@ -118,7 +117,7 @@ int32_t dir_node::rename_child(const char* name, size_t len, node* new_parent,
     }
 
     auto* dst = static_cast<dir_node*>(new_parent);
-    sync::irq_lock_guard rename_guard(g_rename_lock);
+    sync::irq_lock_guard tree_guard(g_dir_tree_lock);
 
     if (dst == this) {
         sync::irq_lock_guard guard(m_lock);
@@ -151,6 +150,26 @@ int32_t dir_node::detach_if_empty(dir_node* dir) {
 
     detach_child(dir);
     return OK;
+}
+
+int32_t dir_node::rmdir_child(const char* name, size_t len) {
+    if (!name || len == 0) {
+        return ERR_INVAL;
+    }
+
+    sync::irq_lock_guard tree_guard(g_dir_tree_lock);
+    sync::irq_lock_guard guard(m_lock);
+
+    node* child = find_child(name, len);
+    if (!child) {
+        return ERR_NOENT;
+    }
+
+    if (child->type() != node_type::directory) {
+        return ERR_NOTDIR;
+    }
+
+    return remove_empty_dir(static_cast<dir_node*>(child));
 }
 
 int32_t dir_node::remove_empty_dir(dir_node* dir) {
@@ -196,6 +215,11 @@ int32_t dir_node::move_child_locked(const char* name, size_t len, dir_node* dst,
         return ERR_BUSY;
     }
 
+    // A destination detached by a concurrent rmdir would swallow the child
+    if (dst->parent() == nullptr) {
+        return ERR_NOENT;
+    }
+
     node* existing = dst->find_child(new_name, new_len);
     if (existing == child) {
         return OK;
@@ -203,6 +227,12 @@ int32_t dir_node::move_child_locked(const char* name, size_t len, dir_node* dst,
 
     if (child->type() == node_type::directory && is_within(dst, child)) {
         return ERR_INVAL;
+    }
+
+    // A directory renamed onto its own parent's entry would replace the very
+    // directory still holding it, which is therefore never empty
+    if (existing == this && child->type() == node_type::directory) {
+        return ERR_NOTEMPTY;
     }
 
     if (existing) {

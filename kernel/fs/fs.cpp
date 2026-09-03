@@ -747,6 +747,69 @@ __PRIVILEGED_CODE int32_t unmount(const char* target) {
     return ERR_NOSYS;
 }
 
+// Creating through a link creates the final missing name of its chain, as the
+// standard requires. dir holds the link and anchors its relative target.
+__PRIVILEGED_CODE static int32_t create_symlink_target(node* dir, node* link, node** out) {
+    char* target = static_cast<char*>(heap::uzalloc(PATH_MAX));
+    if (!target) {
+        return ERR_NOMEM;
+    }
+
+    dir->add_ref();
+    link->add_ref();
+
+    int32_t err = OK;
+    for (uint32_t depth = 0; ; depth++) {
+        if (depth >= SYMLOOP_MAX) {
+            err = ERR_LOOP;
+            break;
+        }
+
+        size_t len = 0;
+        err = link->readlink(target, PATH_MAX - 1, &len);
+        if (err != OK) {
+            break;
+        }
+        target[len] = '\0';
+
+        node* parent = nullptr;
+        const char* name = nullptr;
+        size_t name_len = 0;
+        err = resolve_parent_at_internal(dir, target, &parent, &name, &name_len);
+        if (err != OK) {
+            break;
+        }
+
+        release_node_ref(dir);
+        dir = parent;
+
+        node* found = nullptr;
+        err = dir->lookup(name, name_len, &found);
+        if (err == ERR_NOENT) {
+            err = dir->create(name, name_len, 0, out);
+            break;
+        }
+
+        if (err != OK) {
+            break;
+        }
+
+        release_node_ref(link);
+        link = found;
+        if (link->type() != node_type::symlink) {
+            link->add_ref();
+            *out = link;
+            break;
+        }
+    }
+
+    release_node_ref(link);
+    release_node_ref(dir);
+    heap::ufree(target);
+
+    return err;
+}
+
 file* open(const char* path, uint32_t flags) {
     return open_at(nullptr, path, flags, nullptr);
 }
@@ -796,9 +859,10 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
                     n = nullptr;
                     err = ERR_EXIST;
                 } else if (err == OK && n->type() == node_type::symlink) {
-                    release_node_ref(n);
+                    node* link = n;
                     n = nullptr;
-                    err = resolve_path_at_internal(base_dir, path, true, &n);
+                    err = create_symlink_target(parent, link, &n);
+                    release_node_ref(link);
                 } else if (err == ERR_NOENT) {
                     err = parent->create(name, name_len, 0, &n);
                     if (err == ERR_EXIST && !(flags & O_EXCL)) {
