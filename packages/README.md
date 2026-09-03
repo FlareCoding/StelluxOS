@@ -44,5 +44,8 @@ A fetch that does not match its pinned sha256 fails the build.
                                          cache to a new GitHub release
 
 The `packages` workflow does the same on GitHub runners and is the
-normal way to publish. After a release, update `packages.lock` with the
-new tag and checksums.
+normal way to publish. After a release, `make packages-pin RELEASE=<tag>`
+rewrites `packages.lock` from the release's checksums; review the diff,
+boot the result once, and commit it. Bump a package's release number in
+`versions.sh` whenever its recipe changes, so a changed archive always
+gets a new name.

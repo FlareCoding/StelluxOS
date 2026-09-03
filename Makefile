@@ -126,7 +126,7 @@ endif
         run-qemu-x86_64-debug-headless run-qemu-aarch64-debug-headless \
         connect-gdb-x86_64 connect-gdb-aarch64 \
         deps limine musl libcxx rpi4-firmware toolchain-check \
-        packages-list packages-build packages-publish help
+        packages-list packages-build packages-publish packages-pin help
 
 # Default target
 all: help
@@ -551,6 +551,11 @@ packages-publish:
 	$(Q)[ -n "$(RELEASE)" ] || { echo "usage: make packages-publish RELEASE=packages-YYYY.MM.DD"; exit 1; }
 	$(Q)./packages/publish.sh $(RELEASE)
 
+# Rewrites packages.lock to a published release, leaving the change to review
+packages-pin:
+	$(Q)[ -n "$(RELEASE)" ] || { echo "usage: make packages-pin RELEASE=packages-YYYY.MM.DD"; exit 1; }
+	$(Q)./packages/pin.sh $(RELEASE)
+
 # Shows which package archives PACKAGES resolves to for ARCH
 packages-list:
 	$(Q)true $(foreach p,$(PACKAGES),$(call check_package,$(p)))
@@ -888,6 +893,7 @@ help:
 	@echo "  make packages-list ARCH=<arch> PACKAGES=\"gcc ...\" Show the archives PACKAGES resolves to"
 	@echo "  make packages-build [ARCHES=x86_64] Build the Stellux developer packages in Docker (slow, publishers only)"
 	@echo "  make packages-publish RELEASE=<tag> Publish built packages as a GitHub release"
+	@echo "  make packages-pin RELEASE=<tag>  Point packages.lock at a published release"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
 	@echo "  make run-headless ARCH=<arch> Build + run headless (for SSH)"
 	@echo "  make usb ARCH=<arch>         Build + print USB instructions"
