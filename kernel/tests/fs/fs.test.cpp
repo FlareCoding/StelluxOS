@@ -631,6 +631,25 @@ TEST(fs_test, rename_across_filesystems_fails) {
     fs::unlink("/rn_xdev");
 }
 
+TEST(fs_test, open_excl_creates_only_new_files) {
+    int32_t err = fs::OK;
+    fs::file* f = fs::open("/excl_new", fs::O_CREAT | fs::O_EXCL | fs::O_RDWR, &err);
+    ASSERT_NOT_NULL(f);
+    EXPECT_EQ(err, fs::OK);
+    fs::close(f);
+
+    f = fs::open("/excl_new", fs::O_CREAT | fs::O_EXCL | fs::O_RDWR, &err);
+    EXPECT_NULL(f);
+    EXPECT_EQ(err, fs::ERR_EXIST);
+
+    f = fs::open("/excl_new", fs::O_CREAT | fs::O_RDWR, &err);
+    EXPECT_NOT_NULL(f);
+    EXPECT_EQ(err, fs::OK);
+    fs::close(f);
+
+    fs::unlink("/excl_new");
+}
+
 TEST(fs_test, multi_page_write_read) {
     fs::file* f = fs::open("/bigfile", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);

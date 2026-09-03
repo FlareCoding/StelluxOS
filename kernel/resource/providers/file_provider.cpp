@@ -15,6 +15,8 @@ static int32_t map_fs_error_to_resource(int32_t fs_err) {
     switch (fs_err) {
         case fs::ERR_NOENT:
             return ERR_NOENT;
+        case fs::ERR_EXIST:
+            return ERR_EXIST;
         case fs::ERR_NOMEM:
             return ERR_NOMEM;
         case fs::ERR_NOTDIR:
