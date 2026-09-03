@@ -37,8 +37,8 @@ A fetch that does not match its pinned sha256 fails the build.
 
 ## Building and publishing
 
-    make packages-build                  builds every package for both
-                                         architectures in Docker
+    make packages-build [ARCHES=x86_64]  builds every package, for both
+                                         architectures by default, in Docker
     make packages-publish RELEASE=<tag>  uploads the archives from the
                                          cache to a new GitHub release
 
