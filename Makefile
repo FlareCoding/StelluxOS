@@ -31,6 +31,7 @@ RPI4_UEFI_VERSION := v1.41
 
 # Host tool and command resolution
 include scripts/host.mk
+include packages/packages.mk
 
 # QEMU UEFI firmware paths (auto-detect): Linux OVMF/AAVMF packages first,
 # then the edk2 images bundled with Homebrew QEMU on macOS.
@@ -577,6 +578,12 @@ endef
 gcc-toolchain-build:
 	$(Q)./scripts/gcc-toolchain/build.sh
 
+# Shows which package archives PACKAGES resolves to for ARCH
+packages-list:
+	$(Q)true $(foreach p,$(PACKAGES),$(call check_package,$(p)))
+	$(Q)[ -n "$(PACKAGES)" ] || echo "no packages selected, use PACKAGES=\"<name> ...\""
+	$(Q)$(foreach p,$(PACKAGES),echo "$(p) $(call pkg_version,$(p))  $(call pkg_url,$(p))";)
+
 binutils:
 	@echo "Building binutils $(BINUTILS_VERSION) for x86_64 and aarch64..."
 	@test -f $(BINUTILS_TARBALL) || \
@@ -927,6 +934,8 @@ help:
 	@echo "  make image ARCH=<arch>       Build kernel + userland + create disk image"
 	@echo "  make image-x86_64            Build x86_64 disk image (shortcut)"
 	@echo "  make image-aarch64           Build AArch64 disk image (shortcut)"
+	@echo "  make image PACKAGES=\"gcc ...\" Include prebuilt developer packages (see packages/README.md)"
+	@echo "  make packages-list           Show the package archives PACKAGES resolves to"
 	@echo "  make run ARCH=<arch>         Build + run in QEMU (with display)"
 	@echo "  make run-headless ARCH=<arch> Build + run headless (for SSH)"
 	@echo "  make usb ARCH=<arch>         Build + print USB instructions"
