@@ -42,7 +42,7 @@ else
   export STLX_QUIET := 1
 endif
 
-all: build packages install-summary
+all: install-summary
 
 build:
 ifeq ($(V),1)
@@ -58,7 +58,7 @@ else
 	@echo ""
 endif
 
-install-summary: build
+install-summary: build packages
 	@mkdir -p $(INITRD_BIN)
 ifeq ($(V),1)
 	@echo "Installing userland binaries/rootfs to initrd..."
