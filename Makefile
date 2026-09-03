@@ -540,39 +540,6 @@ musl:
 	@echo ""
 	@echo "musl $(MUSL_VERSION) ready for both architectures."
 
-BINUTILS_VERSION := 2.45
-BINUTILS_SHA256  := c50c0e7f9cb188980e2cc97e4537626b1672441815587f1eab69d2a1bfbef5d2
-BINUTILS_URL     := https://ftp.gnu.org/gnu/binutils/binutils-$(BINUTILS_VERSION).tar.xz
-BINUTILS_DIR     := userland/binutils-$(BINUTILS_VERSION)
-BINUTILS_TARBALL := userland/binutils-$(BINUTILS_VERSION).tar.xz
-BINUTILS_PATCHES := $(wildcard userland/apps/binutils/patches/*.patch)
-
-BINUTILS_CONFIG := --disable-nls --disable-werror --disable-plugins \
-	--disable-gprofng --disable-shared --enable-static \
-	--without-zstd --with-system-zlib=no MAKEINFO=true
-
-# Configure and build one architecture, installing into userland/toolchain
-define build_binutils_arch
-	@echo ""
-	@echo "Building binutils for $(1)..."
-	@mkdir -p $(BINUTILS_DIR)/build-$(1)
-	cd $(BINUTILS_DIR)/build-$(1) && \
-		env STLX_ARCH=$(1) STLX_CLANG=$(STLX_CC) \
-		STLX_SYSROOT=$(abspath userland/sysroot/$(1)) \
-		CC=$(abspath userland/mk/stellux-cc) CC_FOR_BUILD=cc \
-		AR=$(STLX_AR) RANLIB=$(STLX_RANLIB) \
-		../configure --host=$(1)-linux-musl --target=$(1)-linux-musl \
-		--prefix=$(abspath userland/toolchain/$(1)) $(BINUTILS_CONFIG) > /dev/null
-	env STLX_ARCH=$(1) STLX_CLANG=$(STLX_CC) \
-		STLX_SYSROOT=$(abspath userland/sysroot/$(1)) \
-		$(MAKE) -C $(BINUTILS_DIR)/build-$(1) -j$(NPROC) > /dev/null
-	env STLX_ARCH=$(1) STLX_CLANG=$(STLX_CC) \
-		STLX_SYSROOT=$(abspath userland/sysroot/$(1)) \
-		$(MAKE) -C $(BINUTILS_DIR)/build-$(1) install > /dev/null
-	$(STLX_STRIP) userland/toolchain/$(1)/bin/* 2>/dev/null || true
-	@echo "binutils $(1) installed to userland/toolchain/$(1)/"
-endef
-
 # Builds the Stellux developer packages, programs that run on the target,
 # in Docker. See packages/README.md.
 packages-build:
@@ -589,26 +556,6 @@ packages-list:
 	$(Q)true $(foreach p,$(PACKAGES),$(call check_package,$(p)))
 	$(Q)[ -n "$(PACKAGES)" ] || echo "no packages selected, use PACKAGES=\"<name> ...\""
 	$(Q)$(foreach p,$(PACKAGES),echo "$(p) $(call pkg_version,$(p))  $(call pkg_url,$(p))";)
-
-binutils:
-	@echo "Building binutils $(BINUTILS_VERSION) for x86_64 and aarch64..."
-	@test -f $(BINUTILS_TARBALL) || \
-		(echo "Downloading binutils $(BINUTILS_VERSION)..." && \
-		 curl -fL --retry 3 -o $(BINUTILS_TARBALL) $(BINUTILS_URL))
-	@echo "$(BINUTILS_SHA256)  $(BINUTILS_TARBALL)" | shasum -a 256 -c - > /dev/null || \
-		(echo "binutils tarball checksum mismatch, refusing to build"; exit 1)
-	@test -d $(BINUTILS_DIR) || \
-		(echo "Extracting..." && \
-		 cd userland && tar xf binutils-$(BINUTILS_VERSION).tar.xz && \
-		 cd .. && \
-		 for p in $(BINUTILS_PATCHES); do \
-			echo "Applying $$p..."; \
-			patch -d $(BINUTILS_DIR) -p1 < $$p; \
-		 done)
-	$(call build_binutils_arch,x86_64)
-	$(call build_binutils_arch,aarch64)
-	@echo ""
-	@echo "binutils $(BINUTILS_VERSION) ready for both architectures."
 
 LLVM_VERSION := 20.1.8
 LLVM_URL     := https://github.com/llvm/llvm-project/releases/download/llvmorg-$(LLVM_VERSION)/llvm-project-$(LLVM_VERSION).src.tar.xz
@@ -851,9 +798,6 @@ toolchain-check:
 		(command -v $(STLX_CXX) > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND")
 	@printf "%-24s" "aarch64-linux-gnu-gcc:" && \
 		(which aarch64-linux-gnu-gcc > /dev/null 2>&1 && echo "OK" || echo "NOT FOUND (Linux builtins fallback)")
-	@printf "%-24s" "target binutils:" && \
-		(test -x userland/toolchain/x86_64/bin/as -a -x userland/toolchain/aarch64/bin/as \
-			&& echo "OK" || echo "NOT FOUND (run 'make binutils')")
 	@printf "%-24s" "ld.lld:" && \
 		(command -v $(STLX_LLD) > /dev/null 2>&1 && $(STLX_LLD) --version | head -1 || echo "NOT FOUND")
 	@printf "%-24s" "llvm-ar:" && \
