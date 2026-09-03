@@ -177,12 +177,7 @@ int32_t dir_node::rmdir(const char* name, size_t len) {
         return fs::ERR_NOTDIR;
     }
 
-    if (static_cast<fs::dir_node*>(child)->child_count() > 0) {
-        return fs::ERR_NOTEMPTY;
-    }
-
-    detach_child(child);
-    return fs::OK;
+    return remove_empty_dir(static_cast<fs::dir_node*>(child));
 }
 
 int32_t dir_node::rename(const char* name, size_t len, fs::node* new_parent,
