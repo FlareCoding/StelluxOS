@@ -26,6 +26,7 @@ constexpr int32_t ERR_BUSY      = -11;
 constexpr int32_t ERR_LOOP      = -12;
 constexpr int32_t ERR_BADF      = -13;
 constexpr int32_t ERR_AGAIN     = -14;
+constexpr int32_t ERR_XDEV      = -15;
 
 /**
  * @brief Initialize the filesystem subsystem. Registers ramfs,
@@ -74,6 +75,7 @@ int32_t fsetattr(file* f, const vattr& attr, uint32_t mask);
 int32_t mkdir(const char* path, uint32_t mode);
 int32_t rmdir(const char* path);
 int32_t unlink(const char* path);
+int32_t rename(const char* oldpath, const char* newpath);
 ssize_t readdir(file* f, dirent* entries, size_t count);
 
 /**

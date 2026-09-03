@@ -62,6 +62,7 @@ int32_t node::create(const char*, size_t, uint32_t, node**) { return ERR_NOSYS; 
 int32_t node::mkdir(const char*, size_t, uint32_t, node**)  { return ERR_NOSYS; }
 int32_t node::unlink(const char*, size_t)           { return ERR_NOSYS; }
 int32_t node::rmdir(const char*, size_t)            { return ERR_NOSYS; }
+int32_t node::rename(const char*, size_t, node*, const char*, size_t) { return ERR_NOSYS; }
 ssize_t node::read(file*, void*, size_t)            { return ERR_NOSYS; }
 ssize_t node::write(file*, const void*, size_t)     { return ERR_NOSYS; }
 int64_t node::seek(file*, int64_t, int)             { return ERR_NOSYS; }
@@ -110,6 +111,19 @@ int32_t node::setattr(const vattr& attr, uint32_t mask) {
 void node::mark_modified() {
     m_mtime_ns = clock::realtime_ns();
     m_ctime_ns = m_mtime_ns;
+}
+
+void node::mark_changed() {
+    m_ctime_ns = clock::realtime_ns();
+}
+
+void node::set_name(const char* name, size_t len) {
+    if (len > NAME_MAX) {
+        len = NAME_MAX;
+    }
+
+    string::memcpy(m_name, name, len);
+    m_name[len] = '\0';
 }
 
 __PRIVILEGED_CODE void node::ref_destroy(node* n) {
@@ -919,6 +933,43 @@ int32_t unlink(const char* path) {
     return err;
 }
 
+int32_t rename(const char* oldpath, const char* newpath) {
+    if (!oldpath || !newpath) {
+        return ERR_INVAL;
+    }
+
+    if (oldpath[0] != '/' || newpath[0] != '/') {
+        return ERR_INVAL;
+    }
+
+    int32_t err;
+    RUN_ELEVATED({
+        node* old_parent = nullptr;
+        const char* old_name;
+        size_t old_len;
+
+        err = resolve_parent_at_internal(
+            nullptr, oldpath, &old_parent, &old_name, &old_len);
+        if (err == OK) {
+            node* new_parent = nullptr;
+            const char* new_name;
+            size_t new_len;
+
+            err = resolve_parent_at_internal(
+                nullptr, newpath, &new_parent, &new_name, &new_len);
+
+            if (err == OK) {
+                err = old_parent->rename(old_name, old_len, new_parent, new_name, new_len);
+                release_node_ref(new_parent);
+            }
+
+            release_node_ref(old_parent);
+        }
+    });
+
+    return err;
+}
+
 ssize_t readdir(file* f, dirent* entries, size_t count) {
     if (!f || !entries) return ERR_BADF;
 
@@ -941,6 +992,7 @@ __PRIVILEGED_CODE int32_t init() {
     for (uint32_t i = 0; i < MAX_DRIVERS; i++) {
         g_drivers[i] = nullptr;
     }
+
     for (uint32_t i = 0; i < MAX_MOUNTS; i++) {
         g_mounts[i] = nullptr;
     }

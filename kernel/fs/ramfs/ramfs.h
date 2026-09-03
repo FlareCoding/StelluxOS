@@ -22,6 +22,8 @@ public:
     int32_t mkdir(const char* name, size_t len, uint32_t mode, fs::node** out) override;
     int32_t unlink(const char* name, size_t len) override;
     int32_t rmdir(const char* name, size_t len) override;
+    int32_t rename(const char* name, size_t len, fs::node* new_parent,
+                   const char* new_name, size_t new_len) override;
     int32_t create_socket(const char* name, size_t len, void* impl, fs::node** out) override;
 };
 

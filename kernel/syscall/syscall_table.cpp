@@ -131,7 +131,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::UNLINK,      unlink);
     REGISTER_SYSCALL(linux_nr::RMDIR,       rmdir);
     REGISTER_SYSCALL(linux_nr::ACCESS,      access);
-    REGISTER_SYSCALL(linux_nr::RENAME,      renameat);
+    REGISTER_SYSCALL(linux_nr::RENAME,      rename);
     REGISTER_SYSCALL(linux_nr::READLINK,    readlink);
 #endif
 

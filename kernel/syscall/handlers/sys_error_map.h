@@ -34,6 +34,8 @@ inline int64_t map_fs_error(int32_t rc) {
             return syscall::EBADF;
         case fs::ERR_AGAIN:
             return syscall::EAGAIN;
+        case fs::ERR_XDEV:
+            return syscall::EXDEV;
         case fs::ERR_IO:
         default:
             return syscall::EIO;

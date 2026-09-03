@@ -31,6 +31,7 @@ constexpr int64_t ENOTEMPTY = -39;
 constexpr int64_t ELOOP     = -40;
 constexpr int64_t EAGAIN    = -11;
 constexpr int64_t EBUSY     = -16;
+constexpr int64_t EXDEV     = -18;
 constexpr int64_t ESPIPE = -29;
 constexpr int64_t EPIPE  = -32;
 constexpr int64_t ENOTSOCK = -88;
