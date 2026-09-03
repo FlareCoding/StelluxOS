@@ -884,6 +884,23 @@ TEST(fs_test, open_creat_through_dangling_symlink_creates_target) {
     fs::unlink("/sl_ct_target");
 }
 
+TEST(fs_test, open_creat_through_symlink_reaches_mounted_root) {
+    EXPECT_EQ(fs::symlink("/dev", "/sl_devlink"), fs::OK);
+
+    fs::file* f = fs::open("/sl_devlink", fs::O_CREAT | fs::O_RDONLY);
+    ASSERT_NOT_NULL(f);
+
+    fs::vattr through = {};
+    fs::vattr direct = {};
+    EXPECT_EQ(fs::fstat(f, &through), fs::OK);
+    EXPECT_EQ(fs::stat("/dev", &direct), fs::OK);
+    EXPECT_EQ(through.ino, direct.ino);
+    EXPECT_EQ(through.dev, direct.dev);
+
+    fs::close(f);
+    fs::unlink("/sl_devlink");
+}
+
 TEST(fs_test, symlink_rejects_existing_name_and_empty_target) {
     fs::file* f = fs::open("/sl_taken", fs::O_CREAT | fs::O_RDWR);
     ASSERT_NOT_NULL(f);

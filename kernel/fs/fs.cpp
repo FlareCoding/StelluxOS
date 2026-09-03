@@ -209,6 +209,18 @@ __PRIVILEGED_CODE static bool is_global_root_node(node* n) {
     return g_root_instance && n == g_root_instance->root();
 }
 
+// Steps from a mount point to the root mounted on it, carrying the reference
+__PRIVILEGED_CODE static node* descend_mounts(node* n) {
+    while (n->mounted_here()) {
+        node* mounted_root = n->mounted_here()->root();
+        mounted_root->add_ref();
+        release_node_ref(n);
+        n = mounted_root;
+    }
+
+    return n;
+}
+
 __PRIVILEGED_CODE static int32_t acquire_global_root(node** out_root) {
     if (!out_root || !g_root_mount || !g_root_instance) {
         return ERR_INVAL;
@@ -221,14 +233,7 @@ __PRIVILEGED_CODE static int32_t acquire_global_root(node** out_root) {
 
     cur->add_ref();
 
-    while (cur->mounted_here()) {
-        node* mounted_root = cur->mounted_here()->root();
-        mounted_root->add_ref();
-        release_node_ref(cur);
-        cur = mounted_root;
-    }
-
-    *out_root = cur;
+    *out_root = descend_mounts(cur);
     return OK;
 }
 
@@ -249,14 +254,8 @@ __PRIVILEGED_CODE static int32_t acquire_start_node(
     }
 
     start->add_ref();
-    while (start->mounted_here()) {
-        node* mounted_root = start->mounted_here()->root();
-        mounted_root->add_ref();
-        release_node_ref(start);
-        start = mounted_root;
-    }
 
-    *out_start = start;
+    *out_start = descend_mounts(start);
     return OK;
 }
 
@@ -398,15 +397,8 @@ __PRIVILEGED_CODE static int32_t resolve_path_at_internal(
             continue;
         }
 
-        while (child->mounted_here()) {
-            node* mounted_root = child->mounted_here()->root();
-            mounted_root->add_ref();
-            release_node_ref(child);
-            child = mounted_root;
-        }
-
         release_node_ref(cur);
-        cur = child;
+        cur = descend_mounts(child);
     }
 
     if (walked) {
@@ -787,6 +779,9 @@ __PRIVILEGED_CODE static int32_t create_symlink_target(node* dir, node* link, no
         err = dir->lookup(name, name_len, &found);
         if (err == ERR_NOENT) {
             err = dir->create(name, name_len, 0, out);
+            if (err == ERR_EXIST) {
+                err = dir->lookup(name, name_len, out);
+            }
             break;
         }
 
@@ -794,13 +789,13 @@ __PRIVILEGED_CODE static int32_t create_symlink_target(node* dir, node* link, no
             break;
         }
 
-        release_node_ref(link);
-        link = found;
-        if (link->type() != node_type::symlink) {
-            link->add_ref();
-            *out = link;
+        if (found->type() != node_type::symlink) {
+            *out = descend_mounts(found);
             break;
         }
+
+        release_node_ref(link);
+        link = found;
     }
 
     release_node_ref(link);
