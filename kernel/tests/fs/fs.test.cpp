@@ -119,6 +119,13 @@ TEST(fs_test, rmdir_nonempty_fails) {
     EXPECT_EQ(fs::rmdir("/parent"), fs::OK);
 }
 
+TEST(fs_test, rmdir_refuses_mount_point) {
+    EXPECT_EQ(fs::rmdir("/dev"), fs::ERR_BUSY);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/dev/null", &attr), fs::OK);
+}
+
 TEST(fs_test, readdir_lists_children) {
     fs::mkdir("/rd_test", 0);
     fs::file* f1 = fs::open("/rd_test/a", fs::O_CREAT | fs::O_RDWR);

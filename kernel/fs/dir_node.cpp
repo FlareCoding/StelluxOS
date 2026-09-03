@@ -136,7 +136,9 @@ int32_t dir_node::rename_child(const char* name, size_t len, node* new_parent,
     return move_child_locked(name, len, dst, new_name, new_len);
 }
 
-int32_t dir_node::detach_empty_dir_locked(dir_node* dir) {
+// The directory's own lock is held from the emptiness check through the
+// detach so no entry can appear in between
+int32_t dir_node::detach_if_empty(dir_node* dir) {
     sync::irq_lock_guard guard(dir->m_lock);
 
     if (dir->mounted_here()) {
@@ -149,6 +151,18 @@ int32_t dir_node::detach_empty_dir_locked(dir_node* dir) {
 
     detach_child(dir);
     return OK;
+}
+
+int32_t dir_node::remove_empty_dir(dir_node* dir) {
+    // A temporary reference keeps the directory alive while its own lock is
+    // held across the detach, since the list reference may be its last
+    dir->add_ref();
+    int32_t rc = detach_if_empty(dir);
+    if (dir->release()) {
+        node::ref_destroy(dir);
+    }
+
+    return rc;
 }
 
 int32_t dir_node::replace_child_locked(node* child, node* existing) {
@@ -168,15 +182,7 @@ int32_t dir_node::replace_child_locked(node* child, node* existing) {
         return OK;
     }
 
-    // A temporary reference keeps the directory alive while its own lock is
-    // held across the detach, since the list reference may be its last
-    existing->add_ref();
-    int32_t rc = detach_empty_dir_locked(static_cast<dir_node*>(existing));
-    if (existing->release()) {
-        node::ref_destroy(existing);
-    }
-
-    return rc;
+    return remove_empty_dir(static_cast<dir_node*>(existing));
 }
 
 int32_t dir_node::move_child_locked(const char* name, size_t len, dir_node* dst,
