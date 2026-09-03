@@ -1,13 +1,13 @@
 # Stellux developer packages
 
 Stellux programs too heavy to build on every clone, such as the GCC
-toolchain, ship as packages: static binaries built for Stellux once in a
+toolchain and CPython, ship as packages: static binaries built for Stellux once in a
 container, published on a GitHub release, and pulled into the image on
 request. A plain `make image` stays lean and needs none of them.
 
 ## Using packages
 
-    make image PACKAGES="gcc binutils"
+    make image PACKAGES="gcc binutils python"
 
 Fetches any archive missing from `userland/toolchain/packages/`, checks
 it against the pinned sha256, and unpacks it into the rootfs overlay

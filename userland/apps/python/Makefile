@@ -26,6 +26,11 @@ INSTALL_DIR := install/$(ARCH)
 
 ROOTFS_DIR := $(USERLAND_ROOT)/build/$(ARCH)/rootfs
 
+# The recipe inputs live with the package definitions, shared with the
+# container build in packages/
+PKG_INPUTS := $(USERLAND_ROOT)/../packages/python
+PKG_PATCHES := $(USERLAND_ROOT)/../packages/patches/python-$(PY_VER)
+
 include $(USERLAND_ROOT)/../scripts/host.mk
 
 CC := $(STLX_CC)
@@ -128,23 +133,23 @@ $(EXTRACT_STAMP): $(DL_DIR)/$(PY_TARBALL)
 
 $(PATCH_STAMP): | $(EXTRACT_STAMP)
 	@echo "[PATCH] CPython for Stellux"
-	@cd $(SRC_DIR) && for p in ../../patches/*.patch; do \
+	@cd $(SRC_DIR) && for p in $(PKG_PATCHES)/*.patch; do \
 		if [ -f "$$p" ]; then \
 			echo "  applying $$p"; \
 			patch --forward --batch -p1 < "$$p"; \
 		fi; \
 	done
-	@cp Modules.Setup.local $(SRC_DIR)/Modules/Setup.local
+	@cp $(PKG_INPUTS)/Modules.Setup.local $(SRC_DIR)/Modules/Setup.local
 	@touch $@
 
-$(CONFIGURE_STAMP): $(PATCH_STAMP) config.site Modules.Setup.local
+$(CONFIGURE_STAMP): $(PATCH_STAMP) $(PKG_INPUTS)/config.site $(PKG_INPUTS)/Modules.Setup.local
 	@mkdir -p $(BUILD_DIR)/Modules
 	@echo "[CONF] CPython $(PY_VER) ($(ARCH))"
 	@echo "  SYSROOT=$(SYSROOT)"
 	@echo "  BUILTINS_LIB=$(BUILTINS_LIB)"
-	@cp Modules.Setup.local $(BUILD_DIR)/Modules/Setup.local
+	@cp $(PKG_INPUTS)/Modules.Setup.local $(BUILD_DIR)/Modules/Setup.local
 	@cd $(BUILD_DIR) && \
-	CONFIG_SITE=$(CURDIR)/config.site \
+	CONFIG_SITE=$(PKG_INPUTS)/config.site \
 	CC="$(CC)" \
 	CFLAGS="$(COMMON_CFLAGS)" \
 	LDFLAGS="$(COMMON_LDFLAGS)" \

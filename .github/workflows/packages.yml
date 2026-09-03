@@ -2,7 +2,7 @@
 # Stellux Developer Packages
 #
 # Builds the prebuilt Stellux programs the image build can fetch (the GCC
-# toolchain, binutils) for both architectures and publishes them as a
+# toolchain, binutils, etc.) for both architectures and publishes them as a
 # GitHub release. Runs on demand, since each architecture takes about an
 # hour, and packages/packages.lock pins the result.
 #

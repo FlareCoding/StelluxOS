@@ -14,10 +14,17 @@ GCC_VER="14.3.0"
 BINUTILS_VER="2.45"
 MUSL_VER="1.2.5"
 
+# CPython is cross-built with the stage 1 toolchain; the build interpreter
+# inside the container must share its major.minor version.
+PYTHON_VER="3.12.8"
+PYTHON_SHA256="c909157bb25ec114e5869124cc2a9c4a4d4c1e957ca4ff553f1edc692101154e"
+PYTHON_URL="https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz"
+
 # Package release numbers, bumped when a recipe changes without its
 # upstream version changing
 GCC_PKG_REL="1"
 BINUTILS_PKG_REL="1"
+PYTHON_PKG_REL="1"
 
 # Downloads come from the kernel.org mirror, since the GNU primary
 # intermittently serves errors long enough to outlast curl retries.
@@ -26,4 +33,4 @@ GNU_SITE="https://mirrors.kernel.org/gnu"
 # Build container, pinned by digest so every host builds from the same
 # image, and the packages the build needs inside it
 ALPINE_IMAGE="alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce"
-ALPINE_PKGS="build-base curl xz zstd tar patch linux-headers texinfo bash git rsync"
+ALPINE_PKGS="build-base curl xz zstd tar patch linux-headers texinfo bash git rsync python3"

@@ -24,8 +24,10 @@ fi
 mkdir -p "$TOP" "$SOURCES_CACHE"
 
 # Archive timestamps come from the recipe's last change so identical
-# inputs produce identical bytes on every machine
-SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" log -1 --format=%ct -- packages 2>/dev/null || echo 0)"
+# inputs produce identical bytes on every machine. The lock and the docs
+# are not inputs, so pinning a release cannot alter the next build.
+SOURCE_DATE_EPOCH="$(git -C "$REPO_ROOT" log -1 --format=%ct -- packages \
+    ':(exclude)packages/packages.lock' ':(exclude)packages/README.md' 2>/dev/null || echo 0)"
 
 docker build -q -t "$IMAGE_TAG" \
     --build-arg "ALPINE_IMAGE=$ALPINE_IMAGE" \
@@ -39,6 +41,18 @@ if [ ! -d "$TOP/mcm" ]; then
 fi
 git -C "$TOP/mcm" fetch -q origin "$MCM_COMMIT" 2>/dev/null || true
 git -C "$TOP/mcm" checkout -q "$MCM_COMMIT"
+
+# Sources built outside musl-cross-make are fetched and verified here,
+# once, and shared with every architecture through the cache
+python_tarball="$SOURCES_CACHE/Python-$PYTHON_VER.tar.xz"
+if [ ! -f "$python_tarball" ]; then
+    curl -fsSL --retry 3 -o "$python_tarball.tmp" "$PYTHON_URL"
+    mv "$python_tarball.tmp" "$python_tarball"
+fi
+echo "$PYTHON_SHA256  $python_tarball" | shasum -a 256 -c - > /dev/null || {
+    echo "packages: $python_tarball does not match its pinned checksum" >&2
+    exit 1
+}
 
 for arch in $ARCHES; do
     work="$TOP/work/$arch"
@@ -66,7 +80,11 @@ for arch in $ARCHES; do
         cp "$d"/* "$work/mcm-stage2/patches/$name/"
     done
 
-    docker run --rm -v "$work:/work" \
+    mkdir -p "$work/python"
+    cp "$python_tarball" "$SCRIPT_DIR"/python/* "$work/python/"
+    cp "$SCRIPT_DIR"/patches/python-"$PYTHON_VER"/*.patch "$work/python/"
+
+    docker run --rm -v "$work:/host" \
         -e "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
         "$IMAGE_TAG" "$arch"
 

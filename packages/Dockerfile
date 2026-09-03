@@ -8,4 +8,4 @@ ARG ALPINE_PKGS
 RUN apk add --no-cache ${ALPINE_PKGS}
 
 WORKDIR /work
-ENTRYPOINT ["sh", "/work/build.sh"]
+ENTRYPOINT ["sh", "/host/build.sh"]
