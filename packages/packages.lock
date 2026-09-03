@@ -6,3 +6,8 @@
 # <name> <version>-<release> <arch> <sha256>
 
 source https://github.com/FlareCoding/StelluxOS/releases/download
+release packages-2026.09.03
+gcc 14.3.0-1 x86_64 8081d5dfa5212cb3fa9c842b7c025f087ebab3c04d8b5d0e450435efcfe103fd
+gcc 14.3.0-1 aarch64 d4444a9f6ef49e2c4992fae52ff2b125eb00732dc75f5946661567fcd7d210ea
+binutils 2.45-1 x86_64 7375d3e8918ea8fd2c68471735b15fdfd11f056c26bfd964444728c06faa8152
+binutils 2.45-1 aarch64 099399a0dac7e9566880eafe956333c2b0f68af6d4a588ed0e7ec7082dd892d4
