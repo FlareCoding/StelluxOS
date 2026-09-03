@@ -16,8 +16,6 @@ constexpr size_t MOUSE_RING_CAPACITY = 4096;
 
 __PRIVILEGED_BSS static ring_buffer* g_kbd_rb;
 __PRIVILEGED_BSS static ring_buffer* g_mouse_rb;
-__PRIVILEGED_BSS static uint32_t     g_kbd_drops;
-__PRIVILEGED_BSS static uint32_t     g_mouse_drops;
 
 namespace {
 
@@ -153,7 +151,6 @@ int32_t push_kbd_event(const kbd_event& evt) {
                                            reinterpret_cast<const uint8_t*>(&evt),
                                            sizeof(evt), true);
             if (rc < 0 || static_cast<size_t>(rc) < sizeof(evt)) {
-                g_kbd_drops++;
                 result = 0;
             } else {
                 result = 1;
@@ -173,7 +170,6 @@ int32_t push_mouse_event(const mouse_event& evt) {
                                            reinterpret_cast<const uint8_t*>(&evt),
                                            sizeof(evt), true);
             if (rc < 0 || static_cast<size_t>(rc) < sizeof(evt)) {
-                g_mouse_drops++;
                 result = 0;
             } else {
                 result = 1;

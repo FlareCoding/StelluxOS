@@ -21,7 +21,6 @@ __PRIVILEGED_DATA static free_addr_tree g_free_by_addr;
 __PRIVILEGED_DATA static free_size_tree g_free_by_size;
 __PRIVILEGED_DATA static used_addr_tree g_used_by_addr;
 __PRIVILEGED_DATA static node_pool g_pool;
-__PRIVILEGED_DATA static bool g_initialized = false;
 __PRIVILEGED_DATA static sync::spinlock g_kva_lock = sync::SPINLOCK_INIT;
 
 static inline uintptr_t align_up(uintptr_t val, size_t align) {
@@ -145,8 +144,6 @@ __PRIVILEGED_CODE int32_t init() {
     initial->start = layout.kva_base;
     initial->end = layout.kva_end;
     insert_into_free_trees(initial);
-
-    g_initialized = true;
 
     return OK;
 }

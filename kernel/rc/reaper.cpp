@@ -13,7 +13,6 @@ __PRIVILEGED_DATA static sync::atomic<dead_node*> g_queue_head{nullptr};
 __PRIVILEGED_DATA static sync::wait_queue g_wait_queue;
 __PRIVILEGED_DATA static sync::spinlock g_wait_lock = sync::SPINLOCK_INIT;
 __PRIVILEGED_DATA static sync::atomic<uint32_t> g_initialized{0};
-__PRIVILEGED_DATA static sched::task* g_reaper_task = nullptr;
 
 constexpr uint32_t QUEUED_EMPTY = 0;
 constexpr uint32_t QUEUED_FIRST = 1;
@@ -149,7 +148,6 @@ __PRIVILEGED_CODE int32_t init() {
         return ERR_NO_MEM;
     }
 
-    g_reaper_task = task;
     sched::enqueue(task);
 
     log::info("reaper: initialized");

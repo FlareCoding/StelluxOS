@@ -12,7 +12,7 @@ constexpr paging::page_flags_t DMA_PAGE_FLAGS =
     paging::PAGE_READ | paging::PAGE_WRITE | paging::PAGE_DMA;
 
 constexpr uint16_t SLAB_BITMAP_BITS = 64;
-constexpr uint8_t DEBUG_FREE_FILL = 0xDE;
+[[maybe_unused]] constexpr uint8_t DEBUG_FREE_FILL = 0xDE;
 
 static inline bool is_power_of_2(size_t v) {
     return v != 0 && (v & (v - 1)) == 0;
