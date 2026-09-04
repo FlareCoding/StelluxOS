@@ -7,7 +7,7 @@
 #
 # This script:
 #   1. Builds the kernel for x86_64
-#   2. Builds the userland
+#   2. Builds the userland and stages the prebuilt developer packages
 #   3. Creates a bootable EFI image (Limine + Stellux + initrd)
 #   4. Unmounts any mounted partitions on the target device
 #   5. Writes the image to the USB drive
@@ -34,6 +34,9 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LIMINE_DIR="$PROJECT_DIR/boot/limine"
 IMG="$PROJECT_DIR/images/stellux-x86.img"
 KERNEL="$PROJECT_DIR/build/kernel/x86_64/kernel.elf"
+
+# Prebuilt Stellux packages to include, override with PACKAGES="" for a lean image.
+PACKAGES="${PACKAGES-binutils gcc python}"
 
 # --- Argument parsing ---
 
@@ -99,7 +102,7 @@ make -C "$PROJECT_DIR" kernel ARCH=x86_64 RELEASE=1
 [[ -f "$KERNEL" ]] || die "Kernel build failed: $KERNEL not found"
 
 info "Building userland (ARCH=x86_64)..."
-make -C "$PROJECT_DIR" userland ARCH=x86_64 RELEASE=1
+make -C "$PROJECT_DIR" userland ARCH=x86_64 RELEASE=1 PACKAGES="$PACKAGES"
 
 # --- Step 2: Create image ---
 

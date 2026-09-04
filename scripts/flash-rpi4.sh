@@ -7,7 +7,7 @@
 #
 # This script:
 #   1. Builds the kernel with PLATFORM=rpi4
-#   2. Builds the userland (init binary, etc.)
+#   2. Builds the userland and stages the prebuilt developer packages
 #   3. Creates a bootable image (RPi4 UEFI + Limine + Stellux + initrd)
 #   4. Unmounts any mounted partitions on the target device
 #   5. Writes the image to the SD card
@@ -35,6 +35,9 @@ UEFI_DIR="$PROJECT_DIR/boot/rpi4-uefi"
 LIMINE_DIR="$PROJECT_DIR/boot/limine"
 IMG="$PROJECT_DIR/images/stellux-rpi4.img"
 KERNEL="$PROJECT_DIR/build/kernel/aarch64/kernel.elf"
+
+# Prebuilt Stellux packages to include, override with PACKAGES="" for a lean image.
+PACKAGES="${PACKAGES-binutils gcc python}"
 
 # --- Argument parsing ---
 
@@ -101,7 +104,7 @@ make -C "$PROJECT_DIR" kernel ARCH=aarch64 PLATFORM=rpi4 RELEASE=1
 [[ -f "$KERNEL" ]] || die "Kernel build failed: $KERNEL not found"
 
 info "Building userland (ARCH=aarch64)..."
-make -C "$PROJECT_DIR" userland ARCH=aarch64 RELEASE=1
+make -C "$PROJECT_DIR" userland ARCH=aarch64 RELEASE=1 PACKAGES="$PACKAGES"
 
 # --- Step 2: Create image ---
 

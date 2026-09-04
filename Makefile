@@ -477,6 +477,7 @@ clean:
 	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
 	$(Q)rm -rf userland/build
 	$(Q)find initrd/bin -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
+	$(Q)rm -rf initrd/usr
 	@echo "Done."
 
 # ============================================================================

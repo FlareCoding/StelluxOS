@@ -58,8 +58,11 @@ else
 	@echo ""
 endif
 
+# initrd/usr comes only from the overlay, so it is replaced rather than
+# accumulating files from earlier builds and other architectures
 install-summary: build packages
 	@mkdir -p $(INITRD_BIN)
+	@rm -rf $(INITRD_ROOT)/usr
 ifeq ($(V),1)
 	@echo "Installing userland binaries/rootfs to initrd..."
 	@if [ -d "$(BIN_DIR)" ] && [ -n "$$(ls -A $(BIN_DIR) 2>/dev/null)" ]; then \
