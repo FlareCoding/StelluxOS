@@ -2,7 +2,7 @@
 # Stellux Userland - Applications
 #
 
-APP_DIRS := init hello shell ls cat rm stat touch sleep true false clear ptytest date \
+APP_DIRS := init hello shell ls cat rm cp mv stat touch sleep true false clear ptytest date \
 			clockbench stlxdm ping ifconfig nslookup arp udpecho tcpecho \
 			fetch polltest sigtest dropbear blackjack wordle hangman snake tetris \
 			grep wc head threadtest pthreadtest uname kill cxxtest synctest vim tcc stlxtop \
