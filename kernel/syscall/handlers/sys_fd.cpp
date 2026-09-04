@@ -13,6 +13,7 @@
 #include "fs/fs.h"
 #include "fs/file.h"
 #include "fs/fstypes.h"
+#include "clock/clock.h"
 #include "common/string.h"
 
 constexpr int64_t AT_FDCWD = -100;
@@ -20,6 +21,10 @@ constexpr uint64_t AT_SYMLINK_NOFOLLOW = 0x100;
 constexpr uint32_t AT_REMOVEDIR = 0x200;
 constexpr uint64_t AT_NO_AUTOMOUNT = 0x800;
 constexpr uint64_t AT_EMPTY_PATH = 0x1000;
+
+// utimensat tv_nsec values that pick the current time or leave a stamp alone
+constexpr int64_t UTIME_NOW  = 0x3fffffff;
+constexpr int64_t UTIME_OMIT = 0x3ffffffe;
 constexpr size_t IO_CHUNK_SIZE = 4096;
 
 constexpr uint32_t ST_IFDIR  = 0040000;
@@ -47,6 +52,11 @@ struct linux_dirent64_hdr {
     uint16_t d_reclen;
     uint8_t  d_type;
 } __attribute__((packed));
+
+struct kernel_timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
 
 #if defined(__x86_64__)
 struct linux_kstat {
@@ -640,6 +650,80 @@ static int64_t do_fstat_common(int64_t fd, uint64_t u_stat) {
 
     resource::resource_release(obj);
     return syscall::EINVAL;
+}
+
+// Turns the utimensat times array into a setattr request: a null array
+// means now for both stamps, UTIME_NOW picks now, UTIME_OMIT skips one
+static int64_t read_utimens(uint64_t u_times, fs::vattr* attr, uint32_t* mask) {
+    uint64_t now = clock::realtime_ns();
+    if (u_times == 0) {
+        attr->atime_ns = now;
+        attr->mtime_ns = now;
+        *mask = fs::VATTR_ATIME | fs::VATTR_MTIME;
+        return 0;
+    }
+
+    kernel_timespec ts[2];
+    int32_t copy_rc = mm::uaccess::copy_from_user(
+        ts, reinterpret_cast<const void*>(u_times), sizeof(ts));
+    if (copy_rc != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    const uint32_t bits[2] = { fs::VATTR_ATIME, fs::VATTR_MTIME };
+    uint64_t* stamps[2] = { &attr->atime_ns, &attr->mtime_ns };
+    *mask = 0;
+    for (int i = 0; i < 2; i++) {
+        if (ts[i].tv_nsec == UTIME_OMIT) {
+            continue;
+        }
+
+        if (ts[i].tv_nsec == UTIME_NOW) {
+            *stamps[i] = now;
+        } else {
+            // Stamps are unsigned nanoseconds since the epoch, so the range
+            // stops at 1970 below and at the uint64_t limit above
+            bool bad_nsec = ts[i].tv_nsec < 0 || ts[i].tv_nsec >= static_cast<int64_t>(NS_PER_SEC);
+            bool bad_sec = ts[i].tv_sec < 0 ||
+                static_cast<uint64_t>(ts[i].tv_sec) > ~0ULL / NS_PER_SEC;
+            if (bad_nsec || bad_sec) {
+                return syscall::EINVAL;
+            }
+            *stamps[i] = static_cast<uint64_t>(ts[i].tv_sec) * NS_PER_SEC +
+                static_cast<uint64_t>(ts[i].tv_nsec);
+        }
+        *mask |= bits[i];
+    }
+
+    return 0;
+}
+
+static int64_t set_fd_times(sched::task* task, int64_t fd, const fs::vattr& attr, uint32_t mask) {
+    resource::resource_object* obj = nullptr;
+    int32_t rc = resource::get_handle_object(
+        task->handles, static_cast<resource::handle_t>(fd), 0, &obj);
+    if (rc != resource::HANDLE_OK) {
+        return syscall::EBADF;
+    }
+
+    if (obj->type != resource::resource_type::FILE) {
+        resource::resource_release(obj);
+        return syscall::EBADF;
+    }
+
+    fs::file* kfile = resource::file_provider::get_file(obj);
+    if (!kfile) {
+        resource::resource_release(obj);
+        return syscall::EIO;
+    }
+
+    int32_t fs_rc = fs::fsetattr(kfile, attr, mask);
+    resource::resource_release(obj);
+    if (fs_rc != fs::OK) {
+        return syscall::error_map::map_fs_error(fs_rc);
+    }
+
+    return 0;
 }
 
 static int64_t do_newfstatat_common(int64_t dirfd, uint64_t pathname, uint64_t u_stat, uint64_t flags) {
@@ -1557,6 +1641,67 @@ DEFINE_SYSCALL2(chmod, pathname, mode) {
     return sys_fchmodat(
         static_cast<uint64_t>(-100),
         pathname, mode, 0, 0, 0);
+}
+
+DEFINE_SYSCALL4(utimensat, dirfd, pathname, times, flags) {
+    if ((flags & ~AT_SYMLINK_NOFOLLOW) != 0) {
+        return syscall::EINVAL;
+    }
+
+    fs::vattr attr = {};
+    uint32_t mask = 0;
+    int64_t times_rc = read_utimens(times, &attr, &mask);
+    if (times_rc != 0) {
+        return times_rc;
+    }
+
+    sched::task* task = sched::current();
+    if (!task) {
+        return syscall::EIO;
+    }
+
+    // A null pathname is how futimens arrives: the stamps go on dirfd itself
+    if (pathname == 0) {
+        if (flags != 0) {
+            return syscall::EINVAL;
+        }
+
+        if (static_cast<int64_t>(dirfd) == AT_FDCWD) {
+            return syscall::EFAULT;
+        }
+
+        return set_fd_times(task, static_cast<int64_t>(dirfd), attr, mask);
+    }
+
+    char kpath[fs::PATH_MAX];
+    int32_t copy_rc = mm::uaccess::copy_cstr_from_user(
+        kpath, sizeof(kpath), reinterpret_cast<const char*>(pathname));
+    if (copy_rc != mm::uaccess::OK) {
+        if (copy_rc == mm::uaccess::ERR_NAMETOOLONG) {
+            return syscall::ENAMETOOLONG;
+        }
+        return syscall::EFAULT;
+    }
+
+    if (kpath[0] == '\0') {
+        return syscall::ENOENT;
+    }
+
+    fs::node* target = nullptr;
+    uint32_t lookup_flags = (flags & AT_SYMLINK_NOFOLLOW) ? fs::LOOKUP_NOFOLLOW : 0;
+    int64_t lookup_rc = lookup_node_for_dirfd_path(
+        task, static_cast<int64_t>(dirfd), kpath, &target, lookup_flags);
+    if (lookup_rc != 0) {
+        return lookup_rc;
+    }
+
+    int32_t fs_rc = target->setattr(attr, mask);
+    release_node_ref(target);
+    if (fs_rc != fs::OK) {
+        return syscall::error_map::map_fs_error(fs_rc);
+    }
+
+    return 0;
 }
 
 DEFINE_SYSCALL2(access, pathname, mode) {

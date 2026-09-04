@@ -123,6 +123,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::UNLINKAT,    unlinkat);
     REGISTER_SYSCALL(linux_nr::FACCESSAT,   faccessat);
     REGISTER_SYSCALL(linux_nr::FCHMODAT,    fchmodat);
+    REGISTER_SYSCALL(linux_nr::UTIMENSAT,   utimensat);
     REGISTER_SYSCALL(linux_nr::RENAMEAT,    renameat);
     REGISTER_SYSCALL(linux_nr::SYMLINKAT,   symlinkat);
     REGISTER_SYSCALL(linux_nr::READLINKAT,  readlinkat);

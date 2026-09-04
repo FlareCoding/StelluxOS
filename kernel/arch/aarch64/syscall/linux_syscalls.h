@@ -34,6 +34,7 @@ constexpr uint64_t READLINKAT       = 78;
 constexpr uint64_t NEWFSTATAT       = 79;
 constexpr uint64_t FSTAT            = 80;
 constexpr uint64_t FSYNC            = 82;
+constexpr uint64_t UTIMENSAT        = 88;
 constexpr uint64_t EXIT             = 93;
 constexpr uint64_t EXIT_GROUP       = 94;
 constexpr uint64_t SET_TID_ADDRESS  = 96;

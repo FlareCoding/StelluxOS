@@ -99,6 +99,7 @@ constexpr uint64_t DUP3             = 292;
 constexpr uint64_t PIPE2            = 293;
 constexpr uint64_t GETRANDOM        = 318;
 constexpr uint64_t FCHMODAT         = 268;
+constexpr uint64_t UTIMENSAT        = 280;
 constexpr uint64_t PRLIMIT64        = 302;
 constexpr uint64_t MEMFD_CREATE     = 319;
 
