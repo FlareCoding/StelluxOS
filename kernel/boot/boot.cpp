@@ -26,7 +26,6 @@
 #include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
-#include "net/net.h"
 #include "random/random.h"
 #include "sysstat/sysstat.h"
 #include "sync/futex.h"
@@ -152,10 +151,6 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (smp::init() != smp::OK) {
         log::warn("smp::init failed, continuing with single CPU");
-    }
-
-    if (net::init() != net::OK) {
-        log::warn("net::init failed, networking unavailable");
     }
 
 #ifdef STLX_UNIT_TESTS_ENABLED

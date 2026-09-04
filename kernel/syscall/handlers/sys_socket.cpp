@@ -1,8 +1,6 @@
 #include "syscall/handlers/sys_socket.h"
 
 #include "socket/unix_socket.h"
-#include "net/inet_socket.h"
-#include "net/tcp.h"
 #include "resource/resource.h"
 #include "fs/fstypes.h"
 #include "sched/sched.h"
@@ -11,12 +9,7 @@
 #include "mm/heap.h"
 
 constexpr uint64_t AF_UNIX     = 1;
-constexpr uint64_t AF_INET     = 2;
 constexpr uint64_t SOCK_STREAM = 1;
-constexpr uint64_t SOCK_DGRAM  = 2;
-constexpr uint64_t IPPROTO_ICMP = 1;
-constexpr uint64_t IPPROTO_TCP  = 6;
-constexpr uint64_t IPPROTO_UDP  = 17;
 constexpr size_t   SENDTO_MAX_ADDR = 128;
 constexpr size_t   SENDTO_MAX_BUF  = 4096;
 
@@ -51,16 +44,6 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
         }
 
         rc = socket::create_unbound_socket(&obj);
-    } else if (domain == AF_INET) {
-        if (type == SOCK_STREAM && (protocol == 0 || protocol == IPPROTO_TCP)) {
-            rc = net::create_tcp_socket(&obj);
-        } else if (type == SOCK_DGRAM && protocol == IPPROTO_ICMP) {
-            rc = net::create_inet_icmp_socket(&obj);
-        } else if (type == SOCK_DGRAM && (protocol == 0 || protocol == IPPROTO_UDP)) {
-            rc = net::create_inet_udp_socket(&obj);
-        } else {
-            return syscall::EPROTONOSUPPORT;
-        }
     } else {
         return syscall::EAFNOSUPPORT;
     }

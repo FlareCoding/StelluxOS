@@ -9,9 +9,6 @@
 #include "common/string.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
-#include "net/net.h"
-#include "net/ipv4.h"
-#include "net/dhcp.h"
 
 #if defined(__aarch64__)
 #include "irq/irq_arch.h"
@@ -42,8 +39,7 @@ bcm_genet_driver::bcm_genet_driver(uint64_t reg_phys, uint64_t reg_size,
     , m_tx_queued(0)
     , m_has_irq(false) {
     m_lock = sync::SPINLOCK_INIT;
-    uint8_t* p = reinterpret_cast<uint8_t*>(&m_netif);
-    for (size_t i = 0; i < sizeof(m_netif); i++) p[i] = 0;
+    string::memset(m_mac, 0, sizeof(m_mac));
 }
 
 bcm_genet_driver* create_bcm_genet(uint64_t reg_phys, uint64_t reg_size,
@@ -333,33 +329,33 @@ void bcm_genet_driver::read_mac_address() {
     uint32_t mac0 = reg_read(UMAC_MAC0);
     uint32_t mac1 = reg_read(UMAC_MAC1);
 
-    m_netif.mac[0] = static_cast<uint8_t>((mac0 >> 24) & 0xFF);
-    m_netif.mac[1] = static_cast<uint8_t>((mac0 >> 16) & 0xFF);
-    m_netif.mac[2] = static_cast<uint8_t>((mac0 >> 8) & 0xFF);
-    m_netif.mac[3] = static_cast<uint8_t>(mac0 & 0xFF);
-    m_netif.mac[4] = static_cast<uint8_t>((mac1 >> 8) & 0xFF);
-    m_netif.mac[5] = static_cast<uint8_t>(mac1 & 0xFF);
+    m_mac[0] = static_cast<uint8_t>((mac0 >> 24) & 0xFF);
+    m_mac[1] = static_cast<uint8_t>((mac0 >> 16) & 0xFF);
+    m_mac[2] = static_cast<uint8_t>((mac0 >> 8) & 0xFF);
+    m_mac[3] = static_cast<uint8_t>(mac0 & 0xFF);
+    m_mac[4] = static_cast<uint8_t>((mac1 >> 8) & 0xFF);
+    m_mac[5] = static_cast<uint8_t>(mac1 & 0xFF);
 
     bool all_zero = true, all_ff = true;
     for (int i = 0; i < 6; i++) {
-        if (m_netif.mac[i] != 0x00) all_zero = false;
-        if (m_netif.mac[i] != 0xFF) all_ff = false;
+        if (m_mac[i] != 0x00) all_zero = false;
+        if (m_mac[i] != 0xFF) all_ff = false;
     }
     if (all_zero || all_ff) {
         // Fixed fallback address with the Raspberry Pi vendor prefix.
-        m_netif.mac[0] = 0xDC; m_netif.mac[1] = 0xA6; m_netif.mac[2] = 0x32;
-        m_netif.mac[3] = 0x01; m_netif.mac[4] = 0x02; m_netif.mac[5] = 0x03;
+        m_mac[0] = 0xDC; m_mac[1] = 0xA6; m_mac[2] = 0x32;
+        m_mac[3] = 0x01; m_mac[4] = 0x02; m_mac[5] = 0x03;
         log::warn("genet: firmware MAC invalid, using fallback");
     }
 }
 
 void bcm_genet_driver::write_mac_address() {
-    uint32_t mac0 = (static_cast<uint32_t>(m_netif.mac[0]) << 24) |
-                    (static_cast<uint32_t>(m_netif.mac[1]) << 16) |
-                    (static_cast<uint32_t>(m_netif.mac[2]) << 8) |
-                    static_cast<uint32_t>(m_netif.mac[3]);
-    uint32_t mac1 = (static_cast<uint32_t>(m_netif.mac[4]) << 8) |
-                    static_cast<uint32_t>(m_netif.mac[5]);
+    uint32_t mac0 = (static_cast<uint32_t>(m_mac[0]) << 24) |
+                    (static_cast<uint32_t>(m_mac[1]) << 16) |
+                    (static_cast<uint32_t>(m_mac[2]) << 8) |
+                    static_cast<uint32_t>(m_mac[3]);
+    uint32_t mac1 = (static_cast<uint32_t>(m_mac[4]) << 8) |
+                    static_cast<uint32_t>(m_mac[5]);
     reg_write(UMAC_MAC0, mac0);
     reg_write(UMAC_MAC1, mac1);
 }
@@ -504,40 +500,39 @@ void bcm_genet_driver::dma_disable_tx_rx() {
 
 // TX path
 
-int32_t bcm_genet_driver::tx_callback(net::netif* iface, const uint8_t* frame, size_t len) {
-    if (!iface || !frame || len == 0) return -1;
-
-    auto* drv = static_cast<bcm_genet_driver*>(iface->driver_data);
-    if (!drv) return -1;
+int32_t bcm_genet_driver::transmit(const uint8_t* frame, size_t len) {
+    if (!frame || len == 0) {
+        return -1;
+    }
 
     int32_t result = -1;
     RUN_ELEVATED({
-        sync::irq_lock_guard guard(drv->m_lock);
-        drv->process_tx_completions();
+        sync::irq_lock_guard guard(m_lock);
+        process_tx_completions();
 
-        if (drv->m_tx_queued >= DMA_DESC_COUNT || len > MAX_PACKET_SIZE) {
+        if (m_tx_queued >= DMA_DESC_COUNT || len > MAX_PACKET_SIZE) {
             result = -1;
         } else {
-            uint16_t idx = drv->m_tx_prod_index % DMA_DESC_COUNT;
+            uint16_t idx = m_tx_prod_index % DMA_DESC_COUNT;
 
-            uintptr_t buf_va = drv->m_tx_buf_vaddr +
+            uintptr_t buf_va = m_tx_buf_vaddr +
                                static_cast<uintptr_t>(idx) * MAX_PACKET_SIZE;
             string::memcpy(reinterpret_cast<uint8_t*>(buf_va), frame, len);
 
-            uint64_t buf_phys = drv->m_tx_buf_phys +
+            uint64_t buf_phys = m_tx_buf_phys +
                                 static_cast<uint64_t>(idx) * MAX_PACKET_SIZE;
 
             uint32_t status = TX_DESC_SOP | TX_DESC_EOP | TX_DESC_CRC |
                               TX_DESC_QTAG_MASK |
                               (static_cast<uint32_t>(len) << TX_DESC_BUFLEN_SHIFT);
 
-            drv->reg_write(TX_DESC_ADDR_LO(idx), static_cast<uint32_t>(buf_phys & 0xFFFFFFFF));
-            drv->reg_write(TX_DESC_ADDR_HI(idx), static_cast<uint32_t>(buf_phys >> 32));
-            drv->reg_write(TX_DESC_STATUS(idx), status);
+            reg_write(TX_DESC_ADDR_LO(idx), static_cast<uint32_t>(buf_phys & 0xFFFFFFFF));
+            reg_write(TX_DESC_ADDR_HI(idx), static_cast<uint32_t>(buf_phys >> 32));
+            reg_write(TX_DESC_STATUS(idx), status);
 
-            drv->m_tx_prod_index = (drv->m_tx_prod_index + 1) & DMA_INDEX_MASK;
-            drv->reg_write(TX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE), drv->m_tx_prod_index);
-            drv->m_tx_queued++;
+            m_tx_prod_index = (m_tx_prod_index + 1) & DMA_INDEX_MASK;
+            reg_write(TX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE), m_tx_prod_index);
+            m_tx_queued++;
             result = 0;
         }
     });
@@ -579,13 +574,8 @@ void bcm_genet_driver::process_rx() {
         if (buf_len > MAX_PACKET_SIZE || buf_len <= 2)
             goto recycle;
 
-        {
-            uintptr_t buf_va = m_rx_buf_vaddr +
-                               static_cast<uintptr_t>(idx) * MAX_PACKET_SIZE;
-            // Skip 2-byte RBUF alignment padding
-            const uint8_t* frame = reinterpret_cast<const uint8_t*>(buf_va + 2);
-            net::rx_frame(&m_netif, frame, buf_len - 2);
-        }
+        // Frames stop here until a protocol stack attaches. The payload
+        // starts 2 bytes in, after the RBUF alignment padding.
 
     recycle:
         rx_remap_descriptor(idx);
@@ -677,29 +667,6 @@ void bcm_genet_driver::disable_interrupts() {
     reg_write(INTRL2_CPU_CLEAR, 0xFFFFFFFF);
 }
 
-// Net interface callbacks
-
-bool bcm_genet_driver::link_callback(net::netif* iface) {
-    if (!iface) return false;
-    auto* drv = static_cast<bcm_genet_driver*>(iface->driver_data);
-    return drv ? drv->m_link_up : false;
-}
-
-void bcm_genet_driver::poll_callback(net::netif* iface) {
-    if (!iface) return;
-
-    auto* drv = static_cast<bcm_genet_driver*>(iface->driver_data);
-    if (!drv) return;
-
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(drv->m_lock);
-        drv->process_rx();
-        drv->process_tx_completions();
-    });
-
-    RUN_ELEVATED(net::drain_deferred_tx());
-}
-
 // MAC filter
 
 void bcm_genet_driver::set_promisc(bool enable) {
@@ -712,13 +679,13 @@ void bcm_genet_driver::set_promisc(bool enable) {
 void bcm_genet_driver::setup_rx_filter() {
     // Slot 0: unicast (our MAC)
     reg_write(UMAC_MDF_ADDR0(0),
-              static_cast<uint32_t>(m_netif.mac[1]) |
-              (static_cast<uint32_t>(m_netif.mac[0]) << 8));
+              static_cast<uint32_t>(m_mac[1]) |
+              (static_cast<uint32_t>(m_mac[0]) << 8));
     reg_write(UMAC_MDF_ADDR1(0),
-              static_cast<uint32_t>(m_netif.mac[5]) |
-              (static_cast<uint32_t>(m_netif.mac[4]) << 8) |
-              (static_cast<uint32_t>(m_netif.mac[3]) << 16) |
-              (static_cast<uint32_t>(m_netif.mac[2]) << 24));
+              static_cast<uint32_t>(m_mac[5]) |
+              (static_cast<uint32_t>(m_mac[4]) << 8) |
+              (static_cast<uint32_t>(m_mac[3]) << 16) |
+              (static_cast<uint32_t>(m_mac[2]) << 24));
 
     // Slot 1: broadcast
     reg_write(UMAC_MDF_ADDR0(1), 0xFFFF);
@@ -793,8 +760,8 @@ int32_t bcm_genet_driver::attach() {
     // Read MAC before reset (in case reset clears the firmware-programmed value)
     read_mac_address();
     log::info("genet: MAC %02x:%02x:%02x:%02x:%02x:%02x",
-              m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
-              m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
+              m_mac[0], m_mac[1], m_mac[2],
+              m_mac[3], m_mac[4], m_mac[5]);
 
     // Reset controller and stop any DMA left running by firmware
     genet_reset();
@@ -827,39 +794,6 @@ int32_t bcm_genet_driver::attach() {
     if (m_has_irq)
         enable_interrupts();
 
-    string::memcpy(m_netif.name, "eth0", 5);
-    m_netif.transmit = tx_callback;
-    m_netif.link_up = link_callback;
-    m_netif.poll = poll_callback;
-    m_netif.driver_data = this;
-
-    net::register_netif(&m_netif);
-
-    // Wait for PHY link before DHCP, auto-negotiation takes time.
-    bool got_link = false;
-    for (int i = 0; i < 50; i++) {
-        if (m_link_up) {
-            got_link = true;
-            break;
-        }
-
-        RUN_ELEVATED(sched::sleep_ms(100));
-        phy_update_link();
-    }
-
-    if (!got_link) {
-        log::warn("genet: link not up after 5 seconds, proceeding anyway");
-    }
-
-    int32_t dhcp_rc = net::dhcp_configure(&m_netif);
-    if (dhcp_rc != net::OK) {
-        log::warn("genet: DHCP failed (%d), using static fallback", dhcp_rc);
-        net::configure(&m_netif,
-                       net::ipv4_addr(10, 0, 0, 200),
-                       net::ipv4_addr(255, 255, 255, 0),
-                       net::ipv4_addr(10, 0, 0, 1));
-    }
-
     log::info("genet: attached successfully");
     dump_state();
     return 0;
@@ -871,7 +805,6 @@ int32_t bcm_genet_driver::detach() {
     dma_disable_tx_rx();
     disable_interrupts();
     teardown_interrupts();
-    net::unregister_netif(&m_netif);
     dma_free();
 
     return 0;
@@ -901,8 +834,6 @@ void bcm_genet_driver::run() {
             process_rx();
             process_tx_completions();
         });
-
-        RUN_ELEVATED(net::drain_deferred_tx());
 
         if (++link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;

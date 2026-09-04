@@ -4,7 +4,6 @@
 #include "drivers/pci_driver.h"
 #include "drivers/net/virtio_pci.h"
 #include "drivers/net/virtio_queue.h"
-#include "net/net.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
 
@@ -21,9 +20,7 @@ public:
         , m_device_cfg(nullptr)
         , m_rx_notify_addr(0)
         , m_tx_notify_addr(0) {
-        // Zero netif including any padding
-        uint8_t* p = reinterpret_cast<uint8_t*>(&m_netif);
-        for (size_t i = 0; i < sizeof(m_netif); i++) p[i] = 0;
+        string::memset(m_mac, 0, sizeof(m_mac));
         m_vq_lock = sync::SPINLOCK_INIT;
     }
 
@@ -44,7 +41,7 @@ private:
     int32_t read_mac();
 
     // Batch of received frames drained from the virtqueue under lock,
-    // then delivered to the protocol stack without the lock held.
+    // then released without the lock held.
     static constexpr uint16_t RX_BATCH_MAX = 16;
     struct rx_batch_entry {
         const uint8_t* data;
@@ -57,9 +54,8 @@ private:
     };
 
     // Packet I/O
-    static int32_t tx_callback(net::netif* iface, const uint8_t* frame, size_t len);
-    static bool link_callback(net::netif* iface);
-    static void poll_callback(net::netif* iface);
+    int32_t transmit(const uint8_t* frame, size_t len);
+    bool link_up();
     void drain_rx_locked(rx_batch& batch);     // requires m_vq_lock
     void deliver_rx_batch(rx_batch& batch);    // called without m_vq_lock
     void process_tx_completions();             // under lock
@@ -110,11 +106,11 @@ private:
     tx_buf_info m_tx_bufs[TX_BUF_COUNT];
 
     // Protects all virtqueue and buffer pool state (m_rxq, m_txq, m_rx_bufs,
-    // m_tx_bufs), held by run(), poll_callback, and tx_callback.
+    // m_tx_bufs), held by run() and transmit().
     sync::spinlock m_vq_lock;
 
-    // Network interface
-    net::netif m_netif;
+    // Hardware address, from the device or a fixed fallback
+    uint8_t m_mac[6];
 
     // Feature flags
     bool m_has_mac = false;

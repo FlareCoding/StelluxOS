@@ -9,12 +9,13 @@
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
-#include "net/net.h"
-#include "net/dhcp.h"
 
 namespace drivers {
 
 using namespace rtl8168;
+
+// Largest frame the rings carry, a 1500 byte payload plus the Ethernet header
+constexpr size_t ETH_FRAME_MAX = 1514;
 
 rtl8168_driver::rtl8168_driver(pci::device* dev)
     : pci_driver("rtl8168", dev)
@@ -38,7 +39,7 @@ rtl8168_driver::rtl8168_driver(pci::device* dev)
     , m_has_msi(false)
     , m_imr(INT_MASK_DEFAULT) {
     m_lock = sync::SPINLOCK_INIT;
-    string::memset(&m_netif, 0, sizeof(m_netif));
+    string::memset(m_mac, 0, sizeof(m_mac));
 }
 
 uint8_t rtl8168_driver::reg_read8(uint16_t offset) {
@@ -132,21 +133,21 @@ void rtl8168_driver::read_mac_address() {
     uint32_t idr0 = reg_read32(REG_IDR0);
     uint32_t idr4 = reg_read32(REG_IDR4);
 
-    m_netif.mac[0] = static_cast<uint8_t>(idr0 & 0xFF);
-    m_netif.mac[1] = static_cast<uint8_t>((idr0 >> 8) & 0xFF);
-    m_netif.mac[2] = static_cast<uint8_t>((idr0 >> 16) & 0xFF);
-    m_netif.mac[3] = static_cast<uint8_t>((idr0 >> 24) & 0xFF);
-    m_netif.mac[4] = static_cast<uint8_t>(idr4 & 0xFF);
-    m_netif.mac[5] = static_cast<uint8_t>((idr4 >> 8) & 0xFF);
+    m_mac[0] = static_cast<uint8_t>(idr0 & 0xFF);
+    m_mac[1] = static_cast<uint8_t>((idr0 >> 8) & 0xFF);
+    m_mac[2] = static_cast<uint8_t>((idr0 >> 16) & 0xFF);
+    m_mac[3] = static_cast<uint8_t>((idr0 >> 24) & 0xFF);
+    m_mac[4] = static_cast<uint8_t>(idr4 & 0xFF);
+    m_mac[5] = static_cast<uint8_t>((idr4 >> 8) & 0xFF);
 
     bool all_zero = true, all_ff = true;
     for (int i = 0; i < 6; i++) {
-        if (m_netif.mac[i] != 0x00) all_zero = false;
-        if (m_netif.mac[i] != 0xFF) all_ff = false;
+        if (m_mac[i] != 0x00) all_zero = false;
+        if (m_mac[i] != 0xFF) all_ff = false;
     }
     if (all_zero || all_ff) {
-        m_netif.mac[0] = 0x52; m_netif.mac[1] = 0x54; m_netif.mac[2] = 0x00;
-        m_netif.mac[3] = 0x12; m_netif.mac[4] = 0x34; m_netif.mac[5] = 0x56;
+        m_mac[0] = 0x52; m_mac[1] = 0x54; m_mac[2] = 0x00;
+        m_mac[3] = 0x12; m_mac[4] = 0x34; m_mac[5] = 0x56;
         log::warn("rtl8168: EEPROM MAC invalid, using fallback");
     }
 }
@@ -295,7 +296,7 @@ int32_t rtl8168_driver::alloc_rings() {
     m_tx_ring = reinterpret_cast<tx_desc*>(tx_ring_va);
     m_tx_ring_phys = tx_ring_pa;
 
-    size_t tx_buf_total = static_cast<size_t>(TX_DESC_COUNT) * net::ETH_FRAME_MAX;
+    size_t tx_buf_total = static_cast<size_t>(TX_DESC_COUNT) * ETH_FRAME_MAX;
     size_t tx_buf_pages = (tx_buf_total + 0xFFF) / 0x1000;
     RUN_ELEVATED(
         rc = vmm::alloc_contiguous(tx_buf_pages, pmm::ZONE_DMA32, DMA_FLAGS,
@@ -419,35 +420,32 @@ void rtl8168_driver::set_descriptor_addresses() {
     reg_write32(REG_RDSAR + 4, static_cast<uint32_t>(m_rx_ring_phys >> 32));
 }
 
-int32_t rtl8168_driver::tx_callback(
-    net::netif* iface, const uint8_t* frame, size_t len
-) {
-    if (!iface || !frame || len == 0) return -1;
-
-    auto* drv = static_cast<rtl8168_driver*>(iface->driver_data);
-    if (!drv) return -1;
+int32_t rtl8168_driver::transmit(const uint8_t* frame, size_t len) {
+    if (!frame || len == 0) {
+        return -1;
+    }
 
     int32_t result = -1;
     RUN_ELEVATED({
-        sync::irq_lock_guard guard(drv->m_lock);
+        sync::irq_lock_guard guard(m_lock);
 
-        drv->process_tx_completions();
+        process_tx_completions();
 
-        if (drv->m_tx_queued >= TX_DESC_COUNT || len > net::ETH_FRAME_MAX) {
+        if (m_tx_queued >= TX_DESC_COUNT || len > ETH_FRAME_MAX) {
             result = -1;
         } else {
-            uint32_t idx = drv->m_tx_prod;
+            uint32_t idx = m_tx_prod;
 
-            uintptr_t buf_va = drv->m_tx_buf_vaddr +
-                               static_cast<uintptr_t>(idx) * net::ETH_FRAME_MAX;
+            uintptr_t buf_va = m_tx_buf_vaddr +
+                               static_cast<uintptr_t>(idx) * ETH_FRAME_MAX;
             string::memcpy(reinterpret_cast<uint8_t*>(buf_va), frame, len);
 
-            uint64_t buf_phys = drv->m_tx_buf_phys +
-                                static_cast<uint64_t>(idx) * net::ETH_FRAME_MAX;
+            uint64_t buf_phys = m_tx_buf_phys +
+                                static_cast<uint64_t>(idx) * ETH_FRAME_MAX;
 
-            drv->m_tx_ring[idx].addr_lo = static_cast<uint32_t>(buf_phys & 0xFFFFFFFF);
-            drv->m_tx_ring[idx].addr_hi = static_cast<uint32_t>(buf_phys >> 32);
-            drv->m_tx_ring[idx].opts2 = 0;
+            m_tx_ring[idx].addr_lo = static_cast<uint32_t>(buf_phys & 0xFFFFFFFF);
+            m_tx_ring[idx].addr_hi = static_cast<uint32_t>(buf_phys >> 32);
+            m_tx_ring[idx].opts2 = 0;
 
             uint32_t opts1 = TX_OWN | TX_FS | TX_LS |
                              (static_cast<uint32_t>(len) & TX_LEN_MASK);
@@ -456,12 +454,12 @@ int32_t rtl8168_driver::tx_callback(
 
             // Release fence: NIC must see addr/opts2 before OWN is set.
             sync::atomic_fence_release();
-            drv->m_tx_ring[idx].opts1 = opts1;
+            m_tx_ring[idx].opts1 = opts1;
 
-            drv->m_tx_prod = (idx + 1) % TX_DESC_COUNT;
-            drv->m_tx_queued++;
+            m_tx_prod = (idx + 1) % TX_DESC_COUNT;
+            m_tx_queued++;
 
-            drv->reg_write8(REG_TPPOLL, TPPOLL_NPQ);
+            reg_write8(REG_TPPOLL, TPPOLL_NPQ);
 
             result = 0;
         }
@@ -520,14 +518,10 @@ void rtl8168_driver::process_rx() {
             else
                 goto recycle;
 
-            if (frame_len > net::ETH_FRAME_MAX)
+            if (frame_len > ETH_FRAME_MAX)
                 goto recycle;
 
-            uintptr_t buf_va = m_rx_buf_vaddr +
-                               static_cast<uintptr_t>(idx) * RX_BUF_SIZE;
-            const uint8_t* frame = reinterpret_cast<const uint8_t*>(buf_va);
-
-            net::rx_frame(&m_netif, frame, frame_len);
+            // Frames stop here until a protocol stack attaches
         }
 
     recycle:
@@ -573,27 +567,6 @@ void rtl8168_driver::disable_interrupts() {
     uint16_t isr = reg_read16(REG_ISR);
     if (isr)
         reg_write16(REG_ISR, isr);
-}
-
-bool rtl8168_driver::link_callback(net::netif* iface) {
-    if (!iface) return false;
-    auto* drv = static_cast<rtl8168_driver*>(iface->driver_data);
-    return drv ? drv->m_link_up : false;
-}
-
-void rtl8168_driver::poll_callback(net::netif* iface) {
-    if (!iface) return;
-
-    auto* drv = static_cast<rtl8168_driver*>(iface->driver_data);
-    if (!drv) return;
-
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(drv->m_lock);
-        drv->process_rx();
-        drv->process_tx_completions();
-    });
-
-    RUN_ELEVATED(net::drain_deferred_tx());
 }
 
 /**
@@ -668,8 +641,8 @@ void rtl8168_driver::dump_state() {
               reg_read32(REG_MISC),
               (reg_read32(REG_MISC) & MISC_RXDV_GATED) ? "ON" : "off");
     log::debug("rtl8168:  MAC %02x:%02x:%02x:%02x:%02x:%02x",
-              m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
-              m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
+              m_mac[0], m_mac[1], m_mac[2],
+              m_mac[3], m_mac[4], m_mac[5]);
     log::debug("rtl8168:  chip=0x%03x link=%s speed=%u duplex=%s",
               static_cast<uint16_t>(m_chip_version),
               m_link_up ? "up" : "down",
@@ -717,8 +690,8 @@ int32_t rtl8168_driver::attach() {
 
     read_mac_address();
     log::info("rtl8168: MAC %02x:%02x:%02x:%02x:%02x:%02x",
-              m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
-              m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
+              m_mac[0], m_mac[1], m_mac[2],
+              m_mac[3], m_mac[4], m_mac[5]);
 
     rc = phy_reset();
     if (rc != 0) {
@@ -749,14 +722,6 @@ int32_t rtl8168_driver::attach() {
 
     hw_start();
 
-    string::memcpy(m_netif.name, "eth0", 5);
-    m_netif.transmit = tx_callback;
-    m_netif.link_up = link_callback;
-    m_netif.poll = poll_callback;
-    m_netif.driver_data = this;
-
-    net::register_netif(&m_netif);
-
     log::info("rtl8168: attached successfully (%s)",
               m_has_msi ? "MSI" : "polling");
     dump_state();
@@ -767,7 +732,6 @@ int32_t rtl8168_driver::detach() {
     log::info("rtl8168: detaching");
 
     hw_stop();
-    net::unregister_netif(&m_netif);
     free_rings();
 
     return pci_driver::detach();
@@ -793,11 +757,6 @@ void rtl8168_driver::run() {
         log::warn("rtl8168: link not up after 5 seconds, proceeding anyway");
     }
 
-    int32_t dhcp_rc = net::dhcp_configure(&m_netif);
-    if (dhcp_rc != net::OK) {
-        log::warn("rtl8168: DHCP failed (%d), interface left unconfigured", dhcp_rc);
-    }
-
     uint32_t link_poll_counter = 0;
     constexpr uint32_t LINK_POLL_INTERVAL = 100;
 
@@ -813,8 +772,6 @@ void rtl8168_driver::run() {
             process_rx();
             process_tx_completions();
         });
-
-        RUN_ELEVATED(net::drain_deferred_tx());
 
         if (++link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;
