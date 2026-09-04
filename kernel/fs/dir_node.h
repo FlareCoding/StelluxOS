@@ -28,6 +28,10 @@ protected:
     void attach_child(node* child);
     void detach_child(node* child);
 
+    // True once rmdir has taken the directory out of the tree, so creators
+    // holding a stale reference refuse instead of adding unreachable entries
+    bool detached() const { return parent() == nullptr; }
+
     // Moves a child under new_parent as new_name, replacing an existing
     // entry there when the types allow. Takes every lock it needs itself.
     int32_t rename_child(const char* name, size_t len, node* new_parent,

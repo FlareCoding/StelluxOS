@@ -126,6 +126,37 @@ TEST(fs_test, rmdir_refuses_mount_point) {
     EXPECT_EQ(fs::stat("/dev/null", &attr), fs::OK);
 }
 
+TEST(fs_test, removed_directory_refuses_new_entries) {
+    EXPECT_EQ(fs::mkdir("/gone_dir", 0), fs::OK);
+    fs::file* f = fs::open("/gone_src", fs::O_CREAT | fs::O_RDWR);
+    ASSERT_NOT_NULL(f);
+    fs::close(f);
+
+    // The reference outlives the rmdir, as a concurrent creator's would
+    fs::node* dir = nullptr;
+    ASSERT_EQ(fs::lookup("/gone_dir", &dir), fs::OK);
+    EXPECT_EQ(fs::rmdir("/gone_dir"), fs::OK);
+
+    fs::node* out = nullptr;
+    EXPECT_EQ(dir->create("f", 1, 0, &out), fs::ERR_NOENT);
+    EXPECT_EQ(dir->mkdir("d", 1, 0, &out), fs::ERR_NOENT);
+    EXPECT_EQ(dir->symlink("l", 1, "/", &out), fs::ERR_NOENT);
+    EXPECT_EQ(dir->create_socket("s", 1, nullptr, &out), fs::ERR_NOENT);
+    EXPECT_NULL(out);
+
+    fs::node* root = nullptr;
+    ASSERT_EQ(fs::lookup("/", &root), fs::OK);
+    EXPECT_EQ(root->rename("gone_src", 8, dir, "moved", 5), fs::ERR_NOENT);
+
+    fs::vattr attr = {};
+    EXPECT_EQ(fs::stat("/gone_src", &attr), fs::OK);
+    EXPECT_EQ(fs::stat("/gone_dir", &attr), fs::ERR_NOENT);
+
+    release_node(root);
+    release_node(dir);
+    fs::unlink("/gone_src");
+}
+
 TEST(fs_test, readdir_lists_children) {
     fs::mkdir("/rd_test", 0);
     fs::file* f1 = fs::open("/rd_test/a", fs::O_CREAT | fs::O_RDWR);

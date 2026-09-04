@@ -68,6 +68,10 @@ int32_t dir_node::create(const char* name, size_t len, uint32_t mode, fs::node**
 
     sync::irq_lock_guard guard(m_lock);
 
+    if (detached()) {
+        return fs::ERR_NOENT;
+    }
+
     if (find_child(name, len)) {
         return fs::ERR_EXIST;
     }
@@ -95,6 +99,10 @@ int32_t dir_node::create_socket(const char* name, size_t len, void* impl, fs::no
     if (len > fs::NAME_MAX) return fs::ERR_NAMETOOLONG;
 
     sync::irq_lock_guard guard(m_lock);
+
+    if (detached()) {
+        return fs::ERR_NOENT;
+    }
 
     if (find_child(name, len)) {
         return fs::ERR_EXIST;
@@ -124,6 +132,10 @@ int32_t dir_node::mkdir(const char* name, size_t len, uint32_t mode, fs::node** 
     (void)mode;
 
     sync::irq_lock_guard guard(m_lock);
+
+    if (detached()) {
+        return fs::ERR_NOENT;
+    }
 
     if (find_child(name, len)) {
         return fs::ERR_EXIST;
@@ -182,6 +194,10 @@ int32_t dir_node::symlink(const char* name, size_t len, const char* target, fs::
     }
 
     sync::irq_lock_guard guard(m_lock);
+
+    if (detached()) {
+        return fs::ERR_NOENT;
+    }
 
     if (find_child(name, len)) {
         return fs::ERR_EXIST;

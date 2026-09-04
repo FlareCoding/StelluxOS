@@ -216,7 +216,7 @@ int32_t dir_node::move_child_locked(const char* name, size_t len, dir_node* dst,
     }
 
     // A destination detached by a concurrent rmdir would swallow the child
-    if (dst->parent() == nullptr) {
+    if (dst->detached()) {
         return ERR_NOENT;
     }
 
