@@ -104,13 +104,10 @@ libc++abi, libunwind) against the musl sysroot for C++ userland
 application support. `make compiler-rt` builds the compiler runtime
 builtins for both architectures.
 
-Heavy programs that run on Stellux, such as the GCC toolchain and
-binutils, are prebuilt packages rather than part of this setup:
-`make image PACKAGES="gcc binutils"` fetches them into the image, see
+Heavy programs that run on Stellux, such as the GCC toolchain, binutils,
+and CPython, are prebuilt packages rather than part of this setup:
+`make image PACKAGES="gcc binutils python"` fetches them into the image, see
 `packages/README.md`.
-
-The optional CPython userland app additionally requires a host
-`python3.12` (e.g. `brew install python@3.12` / `apt install python3.12`).
 
 Run `make toolchain-check` to verify everything is in place.
 

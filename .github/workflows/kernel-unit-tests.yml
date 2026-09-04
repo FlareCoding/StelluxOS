@@ -166,9 +166,7 @@ jobs:
           df -h / | tail -1
 
       - name: Install build dependencies
-        run: |
-          make deps
-          brew install python@3.12
+        run: make deps
 
       - name: Fetch Limine EFI binaries
         run: make limine
