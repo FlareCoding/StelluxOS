@@ -11,6 +11,7 @@ namespace net {
 class packet;
 
 constexpr size_t IFACE_NAME_MAX = 16;
+constexpr size_t MAX_INTERFACES = 8;
 
 struct iface_counters {
     uint64_t frames_in;
@@ -57,11 +58,16 @@ public:
     int32_t receive(packet* pkt);
 
     uint64_t id() const { return m_id; }
+    const char* name() const { return m_name; }
+
     bool enabled() const { return m_enabled; }
 
     const eth::mac_addr& mac() const { return m_mac; }
     uint16_t mtu() const { return m_mtu; }
     const ipv4::ipv4_config& ipv4_conf() const { return m_ipv4_conf; }
+
+    // Assigned by the registry, truncated to IFACE_NAME_MAX
+    void set_name(const char* name);
 
     void record_packet_dropped() { m_counters.drops.fetch_add_relaxed(1); }
     void record_iface_error() { m_counters.errors.fetch_add_relaxed(1); }
@@ -79,6 +85,21 @@ protected:
     // IPv4 identity, unspecified until configured by hand or through DHCP
     ipv4::ipv4_config m_ipv4_conf;
 };
+
+/*
+ * Adds `iface` to the stack and names it `<prefix><n>`, numbering within the
+ * prefix, such as eth0 or lo0. The registry owns the set and the names, the
+ * driver owns the object.
+ */
+int32_t register_interface(interface* iface, const char* prefix);
+
+size_t interface_count();
+interface* interface_at(size_t index);
+
+/*
+ * Finds the interface configured with `addr` or returns nullptr.
+ */
+interface* find_interface_by_address(const ipv4::ipv4_addr& addr);
 
 } // namespace net
 

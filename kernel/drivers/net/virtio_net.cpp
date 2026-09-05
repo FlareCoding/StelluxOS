@@ -406,10 +406,15 @@ int32_t virtio_net_driver::attach() {
 
     // Link identity for the stack. The interface comes
     // up here until the stack owns that decision.
-    string::memcpy(net::interface::m_name, "eth0", 5);
     m_mtu = net::eth::MTU;
     m_ipv4_conf = QEMU_STATIC_IPV4;
     m_enabled = true;
+
+    rc = net::register_interface(this, "eth");
+    if (rc != net::OK) {
+        log::error("virtio-net: interface registration failed: %d", rc);
+        return rc;
+    }
 
     rc = init_queues();
     if (rc != 0) {
