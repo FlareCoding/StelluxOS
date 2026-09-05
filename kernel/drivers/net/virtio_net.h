@@ -4,12 +4,13 @@
 #include "drivers/pci_driver.h"
 #include "drivers/net/virtio_pci.h"
 #include "drivers/net/virtio_queue.h"
+#include "net/interface.h"
 #include "common/string.h"
 #include "sync/spinlock.h"
 
 namespace drivers {
 
-class virtio_net_driver : public pci_driver {
+class virtio_net_driver : public pci_driver, public net::interface {
 public:
     virtio_net_driver(pci::device* dev)
         : pci_driver("virtio_net", dev)
@@ -20,7 +21,6 @@ public:
         , m_device_cfg(nullptr)
         , m_rx_notify_addr(0)
         , m_tx_notify_addr(0) {
-        string::memset(m_mac, 0, sizeof(m_mac));
         m_vq_lock = sync::SPINLOCK_INIT;
     }
 
@@ -28,10 +28,15 @@ public:
     int32_t detach() override;
     void run() override;
 
+    int32_t transmit(net::packet* pkt) override;
+
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
 
 private:
+    // Largest payload an Ethernet frame carries, excluding the 14-byte header
+    const uint16_t ETHERNET_MTU = 1500;
+
     // Virtio initialization helpers
     int32_t parse_virtio_caps();
     int32_t map_config_regions();
@@ -48,13 +53,13 @@ private:
         size_t len;
         uint16_t buf_idx; // index into m_rx_bufs for clearing delivering flag
     };
+
     struct rx_batch {
         rx_batch_entry entries[RX_BATCH_MAX];
         uint16_t count;
     };
 
     // Packet I/O
-    int32_t transmit(const uint8_t* frame, size_t len);
     bool link_up();
     void drain_rx_locked(rx_batch& batch);     // requires m_vq_lock
     void deliver_rx_batch(rx_batch& batch);    // called without m_vq_lock
@@ -108,9 +113,6 @@ private:
     // Protects all virtqueue and buffer pool state (m_rxq, m_txq, m_rx_bufs,
     // m_tx_bufs), held by run() and transmit().
     sync::spinlock m_vq_lock;
-
-    // Hardware address, from the device or a fixed fallback
-    uint8_t m_mac[6];
 
     // Feature flags
     bool m_has_mac = false;

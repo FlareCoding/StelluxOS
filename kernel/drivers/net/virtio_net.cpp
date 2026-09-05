@@ -1,12 +1,12 @@
 #include "drivers/net/virtio_net.h"
 #include "sync/atomic.h"
 #include "mm/vmm.h"
-#include "mm/heap.h"
 #include "hw/mmio.h"
-#include "common/logging.h"
+#include "net/packet.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
+#include "common/logging.h"
 
 namespace drivers {
 
@@ -223,7 +223,7 @@ int32_t virtio_net_driver::read_mac() {
         return 0;
     }
 
-    for (int i = 0; i < 6; i++) {
+    for (size_t i = 0; i < net::MAC_ADDR_LEN; i++) {
         m_mac[i] = m_device_cfg->mac[i];
     }
 
@@ -401,6 +401,12 @@ int32_t virtio_net_driver::attach() {
     rc = read_mac();
     if (rc != 0) return rc;
 
+    // Link identity for the stack. The interface comes
+    // up here until the stack owns that decision.
+    string::memcpy(net::interface::m_name, "eth0", 5);
+    m_mtu = ETHERNET_MTU;
+    m_enabled = true;
+
     rc = init_queues();
     if (rc != 0) {
         write_status(read_status() | VIRTIO_STATUS_FAILED);
@@ -499,11 +505,29 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
     }
 }
 
-// Frames stop here until a protocol stack attaches, so this only hands the
-// buffers back. It runs without m_vq_lock so delivery may later transmit.
+// Copies each frame out of its DMA buffer into a packet and hands the packet to
+// the stack. Runs without m_vq_lock so the stack may transmit from receive.
 void virtio_net_driver::deliver_rx_batch(rx_batch& batch) {
     for (uint16_t i = 0; i < batch.count; i++) {
-        m_rx_bufs[batch.entries[i].buf_idx].delivering = false;
+        rx_batch_entry& entry = batch.entries[i];
+        net::packet* pkt = net::packet::alloc();
+
+        uint8_t* dst = pkt ? pkt->put(entry.len) : nullptr;
+        if (!dst) {
+            net::packet::free(pkt);
+            m_counters.drops++;
+
+            m_rx_bufs[entry.buf_idx].delivering = false;
+            continue;
+        }
+
+        string::memcpy(dst, entry.data, entry.len);
+        pkt->set_iface(this);
+
+        m_rx_bufs[entry.buf_idx].delivering = false;
+
+        // Hand the packet off to the network stack to handle
+        receive(pkt);
     }
 }
 
@@ -562,15 +586,15 @@ void virtio_net_driver::run() {
             RUN_ELEVATED(sched::sleep_ms(1));
         }
 
-        // Drain RX under lock, deliver frames without the lock so
-        // protocol handlers can transmit, then re-lock to replenish.
+        // Drain RX under lock, deliver lowered and without the lock so the
+        // stack can transmit from receive, then re-lock to replenish.
         rx_batch batch;
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
             drain_rx_locked(batch);
             process_tx_completions();
         });
-        RUN_ELEVATED(deliver_rx_batch(batch));
+        deliver_rx_batch(batch);
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
             replenish_rx();
@@ -578,16 +602,23 @@ void virtio_net_driver::run() {
     }
 }
 
-int32_t virtio_net_driver::transmit(const uint8_t* frame, size_t len) {
-    if (!frame || len == 0) {
-        return -1;
+int32_t virtio_net_driver::transmit(net::packet* pkt) {
+    if (!pkt || pkt->length() == 0) {
+        return net::ERR_INVALID;
     }
 
-    int32_t result = -1;
+    size_t hdr_size = m_net_hdr_size;
+    size_t len = pkt->length();
+
+    if (hdr_size + len > TX_BUF_SIZE) {
+        return net::ERR_TOO_LARGE;
+    }
+
+    int32_t result = net::ERR_BUSY;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(m_vq_lock);
 
-        // Find a free TX buffer
+        // Find a free TX buffer, reclaiming completed ones if none is free
         int32_t buf_idx = -1;
         for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
             if (!m_tx_bufs[i].in_use) {
@@ -597,7 +628,6 @@ int32_t virtio_net_driver::transmit(const uint8_t* frame, size_t len) {
         }
 
         if (buf_idx < 0) {
-            // Process completions and try again
             process_tx_completions();
             for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
                 if (!m_tx_bufs[i].in_use) {
@@ -610,22 +640,27 @@ int32_t virtio_net_driver::transmit(const uint8_t* frame, size_t len) {
         if (buf_idx >= 0) {
             auto& buf = m_tx_bufs[buf_idx];
 
-            size_t hdr_size = m_net_hdr_size;
-            if (hdr_size + len <= TX_BUF_SIZE) {
-                auto* nethdr = reinterpret_cast<virtio_net_hdr*>(buf.vaddr);
-                string::memset(nethdr, 0, hdr_size);
-                nethdr->gso_type = VIRTIO_NET_HDR_GSO_NONE;
+            auto* nethdr = reinterpret_cast<virtio_net_hdr*>(buf.vaddr);
+            nethdr->gso_type = VIRTIO_NET_HDR_GSO_NONE;
 
-                string::memcpy(reinterpret_cast<uint8_t*>(buf.vaddr + hdr_size), frame, len);
+            string::memset(nethdr, 0, hdr_size);
+            string::memcpy(reinterpret_cast<uint8_t*>(buf.vaddr + hdr_size), pkt->data(), len);
 
-                int32_t rc = m_txq.add_buf(buf.phys, static_cast<uint32_t>(hdr_size + len), 0);
-                if (rc >= 0) {
-                    buf.in_use = true;
-                    buf.desc_id = static_cast<int16_t>(rc);
-                    m_txq.kick(m_tx_notify_addr);
-                    result = 0;
-                }
+            int32_t rc = m_txq.add_buf(buf.phys, static_cast<uint32_t>(hdr_size + len), 0);
+            if (rc >= 0) {
+                buf.in_use = true;
+                buf.desc_id = static_cast<int16_t>(rc);
+
+                m_txq.kick(m_tx_notify_addr);
+                result = net::OK;
             }
+        }
+
+        if (result == net::OK) {
+            m_counters.frames_out++;
+            m_counters.bytes_out += len;
+        } else {
+            m_counters.drops++;
         }
     });
 

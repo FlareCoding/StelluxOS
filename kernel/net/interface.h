@@ -11,6 +11,7 @@ constexpr int32_t OK            = 0;
 constexpr int32_t ERR_INVALID   = -1; // null packet or empty frame
 constexpr int32_t ERR_BUSY      = -2; // no transmit slot is free
 constexpr int32_t ERR_TOO_LARGE = -3; // frame does not fit in one link transmission
+constexpr int32_t ERR_DOWN      = -4; // interface is administratively disabled
 
 constexpr size_t MAC_ADDR_LEN   = 6;
 constexpr size_t IFACE_NAME_MAX = 16;
@@ -42,9 +43,8 @@ public:
      * The implementation must copy the frame into device memory before returning,
      * and the caller still owns the packet afterwards.
      * @param pkt Frame to send.
-     * @return OK on success, ERR_BUSY when no transmit slot is free, ERR_TOO_LARGE
-     *         when the frame exceeds the link limit, ERR_INVALID for a null or
-     *         empty packet.
+     * @return OK when the frame was accepted, ERR_INVALID for a null packet,
+     *         ERR_DOWN when the interface is disabled and the frame was dropped.
      */
     virtual int32_t transmit(packet* pkt) = 0;
 
