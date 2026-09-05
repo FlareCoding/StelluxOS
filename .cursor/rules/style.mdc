@@ -45,6 +45,12 @@ dropbear, bearssl, stb_* headers, and kernel/boot/limine.h.
   column-aligned comment blocks in constant and register tables align within
   their block.
 - No decorative separators such as `// =====` or `// -----`.
+- Voice, with `kernel/net/interface.h` as the reference: a class or module
+  block first says in plain prose what the thing is, for a reader with no
+  context, then who implements what and which direction each call travels.
+  Identifiers in prose are backticked. Obligations use "must". @param lines
+  stay short when the name already says it. Full sentences with periods, no
+  fragments.
 
 ## Stanza formatting
 
