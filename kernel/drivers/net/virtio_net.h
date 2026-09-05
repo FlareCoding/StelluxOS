@@ -34,9 +34,6 @@ public:
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
 
 private:
-    // Largest payload an Ethernet frame carries, excluding the 14-byte header
-    const uint16_t ETHERNET_MTU = 1500;
-
     // Virtio initialization helpers
     int32_t parse_virtio_caps();
     int32_t map_config_regions();

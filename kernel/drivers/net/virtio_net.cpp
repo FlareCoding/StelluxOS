@@ -214,22 +214,17 @@ int32_t virtio_net_driver::negotiate_features() {
 int32_t virtio_net_driver::read_mac() {
     if (!m_device_cfg || !m_has_mac) {
         // Device provides no MAC, use a fixed locally administered address.
-        m_mac[0] = 0x52;
-        m_mac[1] = 0x54;
-        m_mac[2] = 0x00;
-        m_mac[3] = 0x12;
-        m_mac[4] = 0x34;
-        m_mac[5] = 0x56;
+        m_mac = {{0x52, 0x54, 0x00, 0x12, 0x34, 0x56}};
         return 0;
     }
 
-    for (size_t i = 0; i < net::MAC_ADDR_LEN; i++) {
-        m_mac[i] = m_device_cfg->mac[i];
+    for (size_t i = 0; i < net::eth::MAC_ADDR_LEN; i++) {
+        m_mac.bytes[i] = m_device_cfg->mac[i];
     }
 
     log::info("virtio-net: MAC %02x:%02x:%02x:%02x:%02x:%02x",
-              m_mac[0], m_mac[1], m_mac[2],
-              m_mac[3], m_mac[4], m_mac[5]);
+              m_mac.bytes[0], m_mac.bytes[1], m_mac.bytes[2],
+              m_mac.bytes[3], m_mac.bytes[4], m_mac.bytes[5]);
     return 0;
 }
 
@@ -404,7 +399,7 @@ int32_t virtio_net_driver::attach() {
     // Link identity for the stack. The interface comes
     // up here until the stack owns that decision.
     string::memcpy(net::interface::m_name, "eth0", 5);
-    m_mtu = ETHERNET_MTU;
+    m_mtu = net::eth::MTU;
     m_enabled = true;
 
     rc = init_queues();
@@ -512,10 +507,13 @@ void virtio_net_driver::deliver_rx_batch(rx_batch& batch) {
         rx_batch_entry& entry = batch.entries[i];
         net::packet* pkt = net::packet::alloc();
 
-        uint8_t* dst = pkt ? pkt->put(entry.len) : nullptr;
+        uint8_t* dst = nullptr;
+        if (pkt && pkt->reserve(net::eth::RX_ALIGN_PAD)) {
+            dst = pkt->put(entry.len);
+        }
         if (!dst) {
             net::packet::free(pkt);
-            m_counters.drops++;
+            record_packet_dropped();
 
             m_rx_bufs[entry.buf_idx].delivering = false;
             continue;
@@ -660,7 +658,7 @@ int32_t virtio_net_driver::transmit(net::packet* pkt) {
             m_counters.frames_out++;
             m_counters.bytes_out += len;
         } else {
-            m_counters.drops++;
+            record_packet_dropped();
         }
     });
 

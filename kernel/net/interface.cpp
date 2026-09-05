@@ -1,7 +1,7 @@
 #include "net/interface.h"
 #include "net/packet.h"
+#include "net/eth.h"
 #include "sync/atomic.h"
-#include "common/logging.h"
 
 namespace net {
 
@@ -26,7 +26,7 @@ int32_t interface::receive(packet* pkt) {
     }
 
     if (!m_enabled) {
-        m_counters.drops++;
+        record_packet_dropped();
         packet::free(pkt);
         return ERR_DOWN;
     }
@@ -34,34 +34,9 @@ int32_t interface::receive(packet* pkt) {
     m_counters.frames_in++;
     m_counters.bytes_in += pkt->length();
 
-    // Debug logging
-    {
-        static const char HEX[] = "0123456789abcdef";
-        const uint8_t* bytes = pkt->data();
-        size_t len = pkt->length();
-
-        log::info("%s: received %lu bytes", m_name, len);
-
-        for (size_t off = 0; off < len; off += 16) {
-            char line[3 * 16 + 1];
-            size_t pos = 0;
-
-            for (size_t i = off; i < off + 16 && i < len; i++) {
-                line[pos++] = HEX[bytes[i] >> 4];
-                line[pos++] = HEX[bytes[i] & 0x0F];
-                line[pos++] = ' ';
-            }
-
-            line[pos] = '\0';
-            log::info("  %04lx: %s", off, line);
-        }
-    }
-
-    // At this point, the network stack is done
-    // processing the packet so we can safely free it.
-    packet::free(pkt);
-
-    return OK;
+    // Every interface is an Ethernet interface, so the link layer
+    // above is always Ethernet and it takes ownership from here.
+    return eth::input(pkt);
 }
 
 } // namespace net

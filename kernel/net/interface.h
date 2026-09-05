@@ -1,7 +1,8 @@
 #ifndef STELLUX_NET_INTERFACE_H
 #define STELLUX_NET_INTERFACE_H
 
-#include "common/types.h"
+#include "net/eth.h"
+#include "sync/atomic.h"
 
 namespace net {
 
@@ -13,7 +14,6 @@ constexpr int32_t ERR_BUSY      = -2; // no transmit slot is free
 constexpr int32_t ERR_TOO_LARGE = -3; // frame does not fit in one link transmission
 constexpr int32_t ERR_DOWN      = -4; // interface is administratively disabled
 
-constexpr size_t MAC_ADDR_LEN   = 6;
 constexpr size_t IFACE_NAME_MAX = 16;
 
 struct iface_counters {
@@ -21,8 +21,8 @@ struct iface_counters {
     uint64_t frames_out;
     uint64_t bytes_in;
     uint64_t bytes_out;
-    uint64_t drops;  // frames discarded by policy, such as a full ring
-    uint64_t errors; // frames the hardware or the stack could not process
+    sync::atomic<uint64_t> drops;  // frames discarded by policy, such as a full ring
+    sync::atomic<uint64_t> errors; // frames the hardware or the stack could not process
 };
 
 /**
@@ -43,8 +43,9 @@ public:
      * The implementation must copy the frame into device memory before returning,
      * and the caller still owns the packet afterwards.
      * @param pkt Frame to send.
-     * @return OK when the frame was accepted, ERR_INVALID for a null packet,
-     *         ERR_DOWN when the interface is disabled and the frame was dropped.
+     * @return OK on success, ERR_BUSY when no transmit slot is free, ERR_TOO_LARGE
+     *         when the frame exceeds the link limit, ERR_INVALID for a null or
+     *         empty packet.
      */
     virtual int32_t transmit(packet* pkt) = 0;
 
@@ -53,9 +54,20 @@ public:
      * the network stack. The interface takes ownership of the packet, so the
      * driver must not touch it again after this call.
      * @param pkt Received frame.
-     * @return OK when the frame was accepted, ERR_INVALID for a null packet.
+     * @return ERR_INVALID for a null packet, ERR_DOWN when the interface is
+     *         disabled and the frame was dropped, otherwise the result of the
+     *         link layer.
      */
     int32_t receive(packet* pkt);
+
+    uint64_t id() const { return m_id; }
+    bool enabled() const { return m_enabled; }
+
+    const eth::mac_addr& mac() const { return m_mac; }
+    uint16_t mtu() const { return m_mtu; }
+
+    void record_packet_dropped() { m_counters.drops.fetch_add_relaxed(1); }
+    void record_iface_error() { m_counters.errors.fetch_add_relaxed(1); }
 
 protected:
     uint64_t        m_id;      // Nonzero and unique for the life of the kernel, 0 means no interface
@@ -64,7 +76,7 @@ protected:
     iface_counters  m_counters;
 
     // Link layer identity, filled in by the driver once the hardware reports it
-    uint8_t         m_mac[MAC_ADDR_LEN];
+    eth::mac_addr   m_mac;
     uint16_t        m_mtu; // Largest payload carried in one frame, excluding the link header
 };
 
