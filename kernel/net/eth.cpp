@@ -1,6 +1,7 @@
 #include "net/eth.h"
 #include "net/packet.h"
 #include "net/interface.h"
+#include "net/arp.h"
 #include "common/logging.h"
 
 namespace net {
@@ -61,9 +62,7 @@ int32_t input(packet* pkt) {
 
     switch (type) {
     case TYPE_ARP:
-        log_frame("ARP", hdr, pkt->length());
-        packet::free(pkt);
-        break;
+        return arp::input(pkt);
     case TYPE_IPV4:
         log_frame("IPv4", hdr, pkt->length());
         packet::free(pkt);

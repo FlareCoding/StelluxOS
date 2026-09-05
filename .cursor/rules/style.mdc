@@ -50,7 +50,9 @@ dropbear, bearssl, stb_* headers, and kernel/boot/limine.h.
   context, then who implements what and which direction each call travels.
   Identifiers in prose are backticked. Obligations use "must". @param lines
   stay short when the name already says it. Full sentences with periods, no
-  fragments.
+  fragments. Plain technical vocabulary only: hosts and MAC addresses, not
+  "stations", protocols are "supported", not "spoken", and no figurative
+  phrasing such as packets that "travel" or entries that are "forgotten".
 
 ## Stanza formatting
 

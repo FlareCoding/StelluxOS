@@ -5,7 +5,7 @@
 
 namespace net {
 
-// Multibyte protocol fields travel most significant byte first, which RFC 1700
+// Multibyte protocol fields are sent most significant byte first, which RFC 1700
 // calls network byte order. These convert between that and the host's order and
 // compile to a byte swap on little-endian hosts and to nothing on big-endian ones.
 constexpr bool HOST_IS_LITTLE_ENDIAN = (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);

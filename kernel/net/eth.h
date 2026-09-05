@@ -12,7 +12,7 @@ namespace eth {
 constexpr size_t MAC_ADDR_LEN    = 6;
 constexpr size_t HEADER_LEN      = 14;
 constexpr size_t MTU             = 1500;                        // largest payload in one frame
-constexpr size_t MIN_FRAME_LEN   = 60;                          // shorter frames arrive padded
+constexpr size_t MIN_FRAME_LEN   = 60;                          // shorter frames are padded to this
 constexpr size_t MAX_FRAME_LEN   = HEADER_LEN + MTU;            // 1514
 constexpr size_t MIN_PAYLOAD_LEN = MIN_FRAME_LEN - HEADER_LEN;  // 46
 
@@ -54,8 +54,8 @@ inline bool mac_addr::is_broadcast() const { return *this == BROADCAST_ADDR; }
  * https://www.rfc-editor.org/info/rfc894/
  */
 struct eth_header {
-    mac_addr dest;  // Station the frame is for, or the broadcast address
-    mac_addr src;   // Station that sent the frame
+    mac_addr dest;  // Destination MAC address or the broadcast address
+    mac_addr src;   // Source MAC address
     uint16_t type;  // Type of the payload
 } __attribute__((packed));
 static_assert(sizeof(eth_header) == HEADER_LEN);
