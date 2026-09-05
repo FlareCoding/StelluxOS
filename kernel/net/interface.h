@@ -1,18 +1,14 @@
 #ifndef STELLUX_NET_INTERFACE_H
 #define STELLUX_NET_INTERFACE_H
 
+#include "net/net.h"
 #include "net/eth.h"
+#include "net/ipv4.h"
 #include "sync/atomic.h"
 
 namespace net {
 
 class packet;
-
-constexpr int32_t OK            = 0;
-constexpr int32_t ERR_INVALID   = -1; // null packet or empty frame
-constexpr int32_t ERR_BUSY      = -2; // no transmit slot is free
-constexpr int32_t ERR_TOO_LARGE = -3; // frame does not fit in one link transmission
-constexpr int32_t ERR_DOWN      = -4; // interface is administratively disabled
 
 constexpr size_t IFACE_NAME_MAX = 16;
 
@@ -65,6 +61,7 @@ public:
 
     const eth::mac_addr& mac() const { return m_mac; }
     uint16_t mtu() const { return m_mtu; }
+    const ipv4::ipv4_config& ipv4_conf() const { return m_ipv4_conf; }
 
     void record_packet_dropped() { m_counters.drops.fetch_add_relaxed(1); }
     void record_iface_error() { m_counters.errors.fetch_add_relaxed(1); }
@@ -78,6 +75,9 @@ protected:
     // Link layer identity, filled in by the driver once the hardware reports it
     eth::mac_addr   m_mac;
     uint16_t        m_mtu; // Largest payload carried in one frame, excluding the link header
+
+    // IPv4 identity, unspecified until configured by hand or through DHCP
+    ipv4::ipv4_config m_ipv4_conf;
 };
 
 } // namespace net

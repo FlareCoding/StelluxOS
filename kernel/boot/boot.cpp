@@ -20,8 +20,8 @@
 #include "terminal/terminal.h"
 #include "hw/rtc.h"
 #include "pci/pci.h"
-#include "dynpriv/dynpriv.h"
 #include "msi/msi.h"
+#include "net/net.h"
 #include "drivers/pci_driver.h"
 #include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
@@ -151,6 +151,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (smp::init() != smp::OK) {
         log::warn("smp::init failed, continuing with single CPU");
+    }
+
+    if (net::init() != net::OK) {
+        log::warn("net::init failed, network stack will not function properly");
     }
 
 #ifdef STLX_UNIT_TESTS_ENABLED
