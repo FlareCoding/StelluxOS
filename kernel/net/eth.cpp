@@ -2,6 +2,7 @@
 #include "net/packet.h"
 #include "net/interface.h"
 #include "net/arp.h"
+#include "net/ipv4.h"
 #include "common/logging.h"
 
 namespace net {
@@ -17,12 +18,6 @@ static int32_t reject(interface* iface, packet* pkt, int32_t rc) {
     iface->record_iface_error();
     packet::free(pkt);
     return rc;
-}
-
-static void log_frame(const char* proto, const eth_header* hdr, size_t payload_len) {
-    const uint8_t* src = hdr->src.bytes;
-    log::info("eth: %s frame from %02x:%02x:%02x:%02x:%02x:%02x, %lu payload bytes",
-              proto, src[0], src[1], src[2], src[3], src[4], src[5], payload_len);
 }
 
 int32_t input(packet* pkt) {
@@ -64,9 +59,7 @@ int32_t input(packet* pkt) {
     case TYPE_ARP:
         return arp::input(pkt);
     case TYPE_IPV4:
-        log_frame("IPv4", hdr, pkt->length());
-        packet::free(pkt);
-        break;
+        return ipv4::input(pkt);
     default:
         return drop(iface, pkt, OK);
     }
