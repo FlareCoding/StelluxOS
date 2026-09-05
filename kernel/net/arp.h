@@ -1,10 +1,16 @@
 #ifndef STELLUX_NET_ARP_H
 #define STELLUX_NET_ARP_H
 
+#include "common/list.h"
 #include "net/eth.h"
 #include "net/ipv4.h"
+#include "net/packet.h"
+#include "sync/spinlock.h"
 
 namespace net {
+
+class interface;
+
 namespace arp {
 
 constexpr size_t HEADER_LEN = 28;
@@ -15,11 +21,12 @@ constexpr uint16_t OP_REQUEST       = 1;
 constexpr uint16_t OP_REPLY         = 2;
 
 // ARP table configuration
-constexpr uint64_t NS_PER_SEC          = 1000000000ULL;
-constexpr size_t   TABLE_SIZE          = 16;
-constexpr uint64_t ENTRY_LIFETIME_NS   = 300 * NS_PER_SEC; // resolved entries expire after this
-constexpr uint64_t PENDING_TIMEOUT_NS  = 5 * NS_PER_SEC;   // unanswered requests fail after this
-constexpr size_t   PENDING_QUEUE_DEPTH = 3;                // packets held per unresolved entry
+constexpr uint64_t NS_PER_SEC           = 1000000000ULL;
+constexpr size_t   TABLE_SIZE           = 16;
+constexpr uint64_t ENTRY_LIFETIME_NS    = 300 * NS_PER_SEC; // resolved entries expire after this
+constexpr uint64_t REQUEST_RETRY_NS     = 1 * NS_PER_SEC;   // pending entries resend their request at this interval
+constexpr uint8_t  MAX_REQUEST_ATTEMPTS = 3;                // pending entries fail after this many requests
+constexpr size_t   PENDING_QUEUE_DEPTH  = 3;                // packets held per unresolved entry
 
 /**
  * ARP packet for Ethernet over IPv4 (RFC 826). The standard header is generic,
@@ -53,9 +60,97 @@ enum class arp_entry_state : uint8_t {
     resolved = 2,
 };
 
+using packet_list = list::head<packet, &packet::link>;
+
+struct arp_entry {
+    interface*      iface;
+    arp_entry_state state;
+    uint8_t         attempts;  // Requests sent while pending
+    ipv4::ipv4_addr ip;
+    eth::mac_addr   mac;
+    uint64_t        timestamp; // Last request sent while pending, last confirmed while resolved
+    packet_list     queue;
+};
+
+// Answer from the table when asked how to send to an address: the MAC is known
+// and the caller transmits now, or the table has stored the packet in a pending entry.
+enum class arp_send_action : uint8_t {
+    transmit = 0,
+    queued   = 1,
+};
+
+struct arp_retry {
+    interface*      iface;
+    ipv4::ipv4_addr ip;
+};
+
+class arp_table {
+public:
+    arp_table() = default;
+    ~arp_table() = default;
+
+    void init();
+
+    /*
+     * Finds the MAC for `ip` so a packet can be sent to it. Fills `out_mac` if
+     * the entry exists, otherwise stores `pkt` on a pending entry and sets
+     * `send_request` when a request must be broadcast. Packets evicted to make
+     * room are returned in `dropped` for the caller to free.
+     */
+    arp_send_action resolve(
+        interface* iface,
+        const ipv4::ipv4_addr& ip,
+        packet* pkt,
+        uint64_t timestamp,
+        eth::mac_addr* out_mac,
+        bool* send_request,
+        packet_list& dropped
+    );
+
+    /*
+     * Records the ARP entry. Refreshes an existing entry, creates one only
+     * when `create` is set. Packets that waited on the entry are returned in
+     * `flushed` for the caller to send.
+     * Returns true when a pending entry was resolved.
+     */
+    bool update_entry(
+        interface* iface,
+        const ipv4::ipv4_addr& ip,
+        const eth::mac_addr& mac,
+        uint64_t timestamp,
+        bool create,
+        packet_list& flushed
+    );
+
+    /*
+     * Expires resolved entries past their lifetime and retries or fails pending
+     * ones. Failed entries return their packets in `dropped` for the caller to
+     * free, entries due for another request are listed in `retries`.
+     */
+    void sweep(
+        uint64_t timestamp,
+        packet_list& dropped,
+        arp_retry* retries,
+        size_t* retry_count
+    );
+
+private:
+    arp_entry* find_entry(interface* iface, const ipv4::ipv4_addr& ip);
+    arp_entry* take_free_entry();
+    arp_entry* allocate_entry(packet_list& dropped);
+    void clear_entry(arp_entry& entry);
+
+    sync::spinlock m_lock;
+    arp_entry      m_entries[TABLE_SIZE];
+};
+
 /*
- * Consumes an ARP packet. A request for this host's
- * address is answered in place, everything else is freed.
+ * Sets up the ARP table
+ */
+int32_t init();
+
+/*
+ * Consumes an ARP packet.
  */
 int32_t input(packet* pkt);
 
@@ -66,7 +161,13 @@ int32_t input(packet* pkt);
 int32_t output(packet* pkt, const eth::mac_addr& dest);
 
 /*
- * Ages the table on every daemon pass. `ts` is the current monotonic time.
+ * Fills `out` mac address and returns OK when `ip` is resolved,
+ * otherwise requests it and returns ERR_PENDING.
+ */
+int32_t resolve(interface* iface, const ipv4::ipv4_addr& ip, eth::mac_addr* out);
+
+/*
+ * Ages the table on every netstkd daemon pass. `ts` is the current monotonic time.
  */
 void sweep(uint64_t ts);
 

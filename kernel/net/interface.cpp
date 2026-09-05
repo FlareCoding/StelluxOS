@@ -18,7 +18,8 @@ interface::interface()
     , m_name{}
     , m_counters{}
     , m_mac{}
-    , m_mtu(0) {}
+    , m_mtu(0)
+    , m_ipv4_conf{} {}
 
 int32_t interface::receive(packet* pkt) {
     if (!pkt) {

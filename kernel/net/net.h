@@ -12,6 +12,7 @@ constexpr int32_t ERR_BUSY      = -2; // no transmit slot is free
 constexpr int32_t ERR_TOO_LARGE = -3; // frame does not fit in one link transmission
 constexpr int32_t ERR_DOWN      = -4; // interface is administratively disabled
 constexpr int32_t ERR_NO_MEMORY = -5; // an allocation or task creation failed
+constexpr int32_t ERR_PENDING   = -6; // packet processing is in progress, retry later
 
 /**
  * Initialize the network stack and start its daemon/bookkeeping task.

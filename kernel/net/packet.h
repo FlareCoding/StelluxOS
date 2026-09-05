@@ -1,14 +1,14 @@
 #ifndef STELLUX_NET_PACKET_H
 #define STELLUX_NET_PACKET_H
 
-#include "common/types.h"
+#include "common/list.h"
 
 namespace net {
 
 class interface;
 
 constexpr size_t PACKET_OBJECT_SIZE   = 2048;
-constexpr size_t PACKET_METADATA_SIZE = 24;
+constexpr size_t PACKET_METADATA_SIZE = 40;
 constexpr size_t PACKET_CAPACITY      = PACKET_OBJECT_SIZE - PACKET_METADATA_SIZE;
 
 /**
@@ -101,6 +101,11 @@ public:
     // Interface the frame arrived on or will be transmitted through
     interface* iface() const { return m_iface; }
     void set_iface(interface* iface) { m_iface = iface; }
+
+    // Linkage for the one queue that owns the packet while it waits, such as an
+    // ARP entry or a socket receive queue. A packet is on at most one queue and
+    // must be removed from it before anything else touches it.
+    list::node link;
 
 private:
     static constexpr uint16_t HEADER_UNSET = 0xFFFF;
