@@ -3,7 +3,6 @@
 
 #include "drivers/pci_driver.h"
 #include "drivers/net/rtl8168_regs.h"
-#include "net/net.h"
 #include "sync/spinlock.h"
 
 namespace drivers {
@@ -50,13 +49,9 @@ private:
     int32_t fill_rx_ring();
     void set_descriptor_addresses();
 
-    static int32_t tx_callback(net::netif* iface,
-                               const uint8_t* frame, size_t len);
+    int32_t transmit(const uint8_t* frame, size_t len);
     void process_tx_completions();
     void process_rx();
-
-    static bool link_callback(net::netif* iface);
-    static void poll_callback(net::netif* iface);
 
     void hw_start();
     void hw_stop();
@@ -86,7 +81,7 @@ private:
     uint64_t          m_rx_buf_phys;
 
     sync::spinlock m_lock;
-    net::netif m_netif;
+    uint8_t m_mac[6];
     bool m_has_msi;
     uint16_t m_imr;
 };

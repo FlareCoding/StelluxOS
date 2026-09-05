@@ -1,247 +1,81 @@
 #include "net/arp.h"
-#include "net/net.h"
-#include "net/netinfo.h"
-#include "net/ethernet.h"
-#include "net/byteorder.h"
+#include "net/packet.h"
+#include "net/interface.h"
 #include "common/logging.h"
-#include "common/string.h"
-#include "sync/spinlock.h"
-#include "clock/clock.h"
-#include "sched/sched.h"
-#include "dynpriv/dynpriv.h"
 
 namespace net {
+namespace arp {
 
-constexpr uint64_t ARP_ENTRY_TTL_NS = 60ULL * 1000000000ULL; // 60 seconds
-
-namespace {
-
-struct arp_entry {
-    uint32_t ip; // host byte order
-    uint8_t  mac[MAC_ADDR_LEN];
-    bool     valid;
-    uint64_t last_updated_ns;
-};
-
-} // anonymous namespace
-
-static arp_entry g_arp_table[ARP_TABLE_SIZE] = {};
-static sync::spinlock g_arp_lock = sync::SPINLOCK_INIT;
-
-void arp_init() {
-    for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
-        g_arp_table[i].valid = false;
-    }
+static int32_t drop(interface* iface, packet* pkt, int32_t rc) {
+    iface->record_packet_dropped();
+    packet::free(pkt);
+    return rc;
 }
 
-static void arp_table_update(uint32_t ip, const uint8_t* mac) {
-    RUN_ELEVATED({
-        sync::irq_state irq = sync::spin_lock_irqsave(g_arp_lock);
-        uint64_t now = clock::now_ns();
-
-        bool updated = false;
-        for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
-            if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
-                string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
-                g_arp_table[i].last_updated_ns = now;
-                updated = true;
-                break;
-            }
-        }
-
-        if (!updated) {
-            for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
-                if (!g_arp_table[i].valid) {
-                    g_arp_table[i].ip = ip;
-                    string::memcpy(g_arp_table[i].mac, mac, MAC_ADDR_LEN);
-                    g_arp_table[i].valid = true;
-                    g_arp_table[i].last_updated_ns = now;
-                    updated = true;
-                    break;
-                }
-            }
-        }
-
-        // Table full: evict the oldest entry
-        if (!updated) {
-            uint32_t oldest = 0;
-            for (uint32_t i = 1; i < ARP_TABLE_SIZE; i++) {
-                if (g_arp_table[i].last_updated_ns < g_arp_table[oldest].last_updated_ns) {
-                    oldest = i;
-                }
-            }
-
-            g_arp_table[oldest].ip = ip;
-            string::memcpy(g_arp_table[oldest].mac, mac, MAC_ADDR_LEN);
-            g_arp_table[oldest].valid = true;
-            g_arp_table[oldest].last_updated_ns = now;
-        }
-
-        sync::spin_unlock_irqrestore(g_arp_lock, irq);
-    });
+static int32_t reject(interface* iface, packet* pkt, int32_t rc) {
+    iface->record_iface_error();
+    packet::free(pkt);
+    return rc;
 }
 
-static bool arp_table_lookup(uint32_t ip, uint8_t* out_mac) {
-    bool found = false;
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_arp_lock);
-        uint64_t now = clock::now_ns();
-
-        for (uint32_t i = 0; i < ARP_TABLE_SIZE; i++) {
-            if (g_arp_table[i].valid && g_arp_table[i].ip == ip) {
-                if (now - g_arp_table[i].last_updated_ns > ARP_ENTRY_TTL_NS) {
-                    break; // stale, force re-resolution
-                }
-
-                string::memcpy(out_mac, g_arp_table[i].mac, MAC_ADDR_LEN);
-                found = true;
-                break;
-            }
-        }
-    });
-
-    return found;
-}
-
-void arp_recv(netif* iface, const uint8_t* data, size_t len) {
-    if (!iface || !data || len < sizeof(arp_header)) {
-        return;
+int32_t input(packet* pkt) {
+    if (!pkt) {
+        log::warn("arp: input called with no packet");
+        return ERR_INVALID;
     }
 
-    const auto* arp = reinterpret_cast<const arp_header*>(data);
-
-    if (ntohs(arp->hw_type) != ARP_HW_ETHERNET) {
-        return;
+    interface* iface = pkt->iface();
+    if (!iface) {
+        log::warn("arp: input called with a packet that has no interface");
+        packet::free(pkt);
+        return ERR_INVALID;
     }
 
-    if (ntohs(arp->proto_type) != ETH_TYPE_IPV4) {
-        return;
+    if (pkt->length() < HEADER_LEN) {
+        return reject(iface, pkt, ERR_INVALID);
     }
 
-    if (arp->hw_len != MAC_ADDR_LEN) {
-        return;
+    // Only Ethernet over IPv4 is supported
+    arp_header* hdr = reinterpret_cast<arp_header*>(pkt->data());
+    if (
+        ntohs(hdr->hw_type) != HW_TYPE_ETHERNET ||
+        ntohs(hdr->proto_type) != PROTO_TYPE_IPV4 ||
+        hdr->hw_len != eth::MAC_ADDR_LEN ||
+        hdr->proto_len != ipv4::ADDR_LEN
+    ) {
+        return drop(iface, pkt, OK);
     }
 
-    if (arp->proto_len != 4) {
-        return;
-    }
-
-    uint32_t sender_ip = ntohl(arp->sender_ip);
-    uint32_t target_ip = ntohl(arp->target_ip);
-    uint16_t opcode = ntohs(arp->opcode);
-
-    // Always learn from incoming ARP packets
-    arp_table_update(sender_ip, arp->sender_mac);
-
-    if (opcode == ARP_OP_REQUEST && iface->configured && target_ip == iface->ipv4_addr) {
-        // Queue ARP reply for deferred transmission (same principle as
-        // ICMP echo replies, no inline TX from RX processing context).
-        arp_header reply = {};
-        reply.hw_type = htons(ARP_HW_ETHERNET);
-        reply.proto_type = htons(ETH_TYPE_IPV4);
-        reply.hw_len = MAC_ADDR_LEN;
-        reply.proto_len = 4;
-        reply.opcode = htons(ARP_OP_REPLY);
-        
-        string::memcpy(reply.sender_mac, iface->mac, MAC_ADDR_LEN);
-        reply.sender_ip = htonl(iface->ipv4_addr);
-        string::memcpy(reply.target_mac, arp->sender_mac, MAC_ADDR_LEN);
-        reply.target_ip = arp->sender_ip;
-
-        queue_deferred_eth_tx(iface, arp->sender_mac, ETH_TYPE_ARP,
-                              reinterpret_cast<const uint8_t*>(&reply), sizeof(reply));
-    } else if (opcode == ARP_OP_REPLY) {
-        log::debug("arp: got reply from %u.%u.%u.%u",
-                   (sender_ip >> 24) & 0xFF, (sender_ip >> 16) & 0xFF,
-                   (sender_ip >> 8) & 0xFF, sender_ip & 0xFF);
-    }
-}
-
-void arp_send_request(netif* iface, uint32_t target_ip) {
-    if (!iface || !iface->configured) return;
-
-    arp_header req = {};
-    req.hw_type = htons(ARP_HW_ETHERNET);
-    req.proto_type = htons(ETH_TYPE_IPV4);
-    req.hw_len = MAC_ADDR_LEN;
-    req.proto_len = 4;
-    req.opcode = htons(ARP_OP_REQUEST);
-    string::memcpy(req.sender_mac, iface->mac, MAC_ADDR_LEN);
-    req.sender_ip = htonl(iface->ipv4_addr);
-    string::memset(req.target_mac, 0, MAC_ADDR_LEN);
-    req.target_ip = htonl(target_ip);
-
-    eth_send(iface, ETH_BROADCAST, ETH_TYPE_ARP,
-             reinterpret_cast<const uint8_t*>(&req), sizeof(req));
-}
-
-int32_t arp_resolve(netif* iface, uint32_t target_ip, uint8_t* out_mac) {
-    if (!iface || !out_mac) return ERR_INVAL;
-
-    // Broadcast destinations map directly to the Ethernet broadcast MAC
-    if (target_ip == 0xFFFFFFFF ||
-        target_ip == (iface->ipv4_addr | ~iface->ipv4_netmask)) {
-        string::memcpy(out_mac, ETH_BROADCAST, MAC_ADDR_LEN);
+    // Requests for other hosts are normal traffic, not drops
+    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    if (!conf.configured() || hdr->target_proto_addr != conf.address) {
+        packet::free(pkt);
         return OK;
     }
 
-    // Check cache first
-    if (arp_table_lookup(target_ip, out_mac)) {
-        return OK;
+    if (ntohs(hdr->opcode) != OP_REQUEST) {
+        return drop(iface, pkt, OK);
     }
 
-    // Sleep between polls so the scheduler can run other tasks and interrupts can fire
-    constexpr uint32_t POLLS_PER_ATTEMPT = 100;
-    constexpr uint64_t POLL_SLEEP_MS = 10;
+    // RFC 826: the request becomes the reply in place, sender and target swapped
+    hdr->target_hw_addr = hdr->sender_hw_addr;
+    hdr->target_proto_addr = hdr->sender_proto_addr;
+    hdr->sender_hw_addr = iface->mac();
+    hdr->sender_proto_addr = conf.address;
+    hdr->opcode = htons(OP_REPLY);
 
-    for (uint32_t attempt = 0; attempt < ARP_RETRY_COUNT; attempt++) {
-        arp_send_request(iface, target_ip);
+    // Strip link padding so it is not sent back as payload
+    pkt->trim(HEADER_LEN);
 
-        for (uint32_t poll = 0; poll < POLLS_PER_ATTEMPT; poll++) {
-            RUN_ELEVATED({
-                sched::sleep_ms(POLL_SLEEP_MS);
-                if (iface->poll) {
-                    iface->poll(iface);
-                }
-            });
-
-            if (arp_table_lookup(target_ip, out_mac)) {
-                return OK;
-            }
-        }
-    }
-
-    log::warn("arp: failed to resolve %u.%u.%u.%u",
-              (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
-              (target_ip >> 8) & 0xFF, target_ip & 0xFF);
-    return ERR_NOARP;
+    return output(pkt, hdr->target_hw_addr);
 }
 
-__PRIVILEGED_CODE int32_t query_arp_table(arp_table_status* out) {
-    if (!out) return ERR_INVAL;
-
-    string::memset(out, 0, sizeof(arp_table_status));
-    uint32_t count = 0;
-
-    {
-        sync::irq_lock_guard guard(g_arp_lock);
-        uint64_t now = clock::now_ns();
-
-        for (uint32_t i = 0; i < ARP_TABLE_SIZE && count < ARP_QUERY_MAX; i++) {
-            if (!g_arp_table[i].valid) continue;
-
-            auto& e = out->entries[count];
-            e.ipv4_addr = g_arp_table[i].ip;
-            string::memcpy(e.mac, g_arp_table[i].mac, MAC_ADDR_LEN);
-            uint64_t age_ns = now - g_arp_table[i].last_updated_ns;
-            e.age_ms = static_cast<uint32_t>(age_ns / 1000000ULL);
-            e.flags = 0;
-            count++;
-        }
-    }
-
-    out->entry_count = count;
-    return OK;
+int32_t output(packet* pkt, const eth::mac_addr& dest) {
+    return eth::output(pkt, dest, eth::TYPE_ARP);
 }
 
+void sweep(uint64_t) {
+}
+
+} // namespace arp
 } // namespace net

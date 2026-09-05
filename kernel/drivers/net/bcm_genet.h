@@ -4,7 +4,6 @@
 #include "drivers/platform_driver.h"
 #include "drivers/net/bcm_genet_regs.h"
 #include "drivers/net/phy_regs.h"
-#include "net/net.h"
 #include "sync/spinlock.h"
 
 namespace drivers {
@@ -55,7 +54,7 @@ private:
     void dma_disable_tx_rx();
 
     // TX path
-    static int32_t tx_callback(net::netif* iface, const uint8_t* frame, size_t len);
+    int32_t transmit(const uint8_t* frame, size_t len);
     void process_tx_completions();
 
     // RX path
@@ -68,10 +67,6 @@ private:
     static void isr(uint32_t irq, void* context);
     void enable_interrupts();
     void disable_interrupts();
-
-    // Net interface callbacks
-    static bool link_callback(net::netif* iface);
-    static void poll_callback(net::netif* iface);
 
     // MAC filter
     void set_promisc(bool enable);
@@ -103,8 +98,8 @@ private:
     // Lock protecting DMA state and register access
     sync::spinlock   m_lock;
 
-    // Network interface
-    net::netif       m_netif;
+    // Hardware address, from the firmware or a fixed fallback
+    uint8_t          m_mac[6];
 
     // Whether interrupts were successfully set up
     bool             m_has_irq;

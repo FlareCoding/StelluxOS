@@ -1,19 +1,24 @@
 #include "drivers/net/virtio_net.h"
 #include "sync/atomic.h"
 #include "mm/vmm.h"
-#include "mm/heap.h"
 #include "hw/mmio.h"
-#include "common/logging.h"
+#include "net/packet.h"
 #include "common/string.h"
 #include "dynpriv/dynpriv.h"
 #include "sched/sched.h"
-#include "net/net.h"
-#include "net/ipv4.h"
-#include "net/dhcp.h"
+#include "common/logging.h"
 
 namespace drivers {
 
 using namespace virtio;
+
+// QEMU user-mode network defaults, used until the stack supports
+// interface configuration
+static constexpr net::ipv4::ipv4_config QEMU_STATIC_IPV4 = {
+    {{10, 0, 2, 15}},
+    {{255, 255, 255, 0}},
+    {{10, 0, 2, 2}},
+};
 
 // Virtio advertises its config regions as vendor-specific PCI capabilities
 // (id 0x09), distinguished by a cfg_type field.
@@ -217,22 +222,17 @@ int32_t virtio_net_driver::negotiate_features() {
 int32_t virtio_net_driver::read_mac() {
     if (!m_device_cfg || !m_has_mac) {
         // Device provides no MAC, use a fixed locally administered address.
-        m_netif.mac[0] = 0x52;
-        m_netif.mac[1] = 0x54;
-        m_netif.mac[2] = 0x00;
-        m_netif.mac[3] = 0x12;
-        m_netif.mac[4] = 0x34;
-        m_netif.mac[5] = 0x56;
+        m_mac = {{0x52, 0x54, 0x00, 0x12, 0x34, 0x56}};
         return 0;
     }
 
-    for (int i = 0; i < 6; i++) {
-        m_netif.mac[i] = m_device_cfg->mac[i];
+    for (size_t i = 0; i < net::eth::MAC_ADDR_LEN; i++) {
+        m_mac.bytes[i] = m_device_cfg->mac[i];
     }
 
     log::info("virtio-net: MAC %02x:%02x:%02x:%02x:%02x:%02x",
-              m_netif.mac[0], m_netif.mac[1], m_netif.mac[2],
-              m_netif.mac[3], m_netif.mac[4], m_netif.mac[5]);
+              m_mac.bytes[0], m_mac.bytes[1], m_mac.bytes[2],
+              m_mac.bytes[3], m_mac.bytes[4], m_mac.bytes[5]);
     return 0;
 }
 
@@ -404,6 +404,13 @@ int32_t virtio_net_driver::attach() {
     rc = read_mac();
     if (rc != 0) return rc;
 
+    // Link identity for the stack. The interface comes
+    // up here until the stack owns that decision.
+    string::memcpy(net::interface::m_name, "eth0", 5);
+    m_mtu = net::eth::MTU;
+    m_ipv4_conf = QEMU_STATIC_IPV4;
+    m_enabled = true;
+
     rc = init_queues();
     if (rc != 0) {
         write_status(read_status() | VIRTIO_STATUS_FAILED);
@@ -443,18 +450,6 @@ int32_t virtio_net_driver::attach() {
     fill_rx_queue();
 
     log::info("virtio-net: DRIVER_OK, device is live");
-
-    // Register with network stack
-    string::memcpy(m_netif.name, "eth0", 5);
-    m_netif.transmit = tx_callback;
-    m_netif.link_up = link_callback;
-    m_netif.poll = poll_callback;
-    m_netif.driver_data = this;
-
-    net::register_netif(&m_netif);
-
-    // IP configuration is deferred to run(), where DHCP runs in a
-    // proper kernel task context with sched::sleep_ms() available.
 
     return 0;
 }
@@ -514,13 +509,32 @@ void virtio_net_driver::drain_rx_locked(rx_batch& batch) {
     }
 }
 
+// Copies each frame out of its DMA buffer into a packet and hands the packet to
+// the stack. Runs without m_vq_lock so the stack may transmit from receive.
 void virtio_net_driver::deliver_rx_batch(rx_batch& batch) {
-    // Called without m_vq_lock held so protocol processing can
-    // call back into tx_callback (e.g. ARP replies) without deadlock.
     for (uint16_t i = 0; i < batch.count; i++) {
-        net::rx_frame(&m_netif, batch.entries[i].data, batch.entries[i].len);
-        // Clear delivering flag so replenish_rx can re-post this buffer
-        m_rx_bufs[batch.entries[i].buf_idx].delivering = false;
+        rx_batch_entry& entry = batch.entries[i];
+        net::packet* pkt = net::packet::alloc();
+
+        uint8_t* dst = nullptr;
+        if (pkt && pkt->reserve(net::eth::RX_ALIGN_PAD)) {
+            dst = pkt->put(entry.len);
+        }
+        if (!dst) {
+            net::packet::free(pkt);
+            record_packet_dropped();
+
+            m_rx_bufs[entry.buf_idx].delivering = false;
+            continue;
+        }
+
+        string::memcpy(dst, entry.data, entry.len);
+        pkt->set_iface(this);
+
+        m_rx_bufs[entry.buf_idx].delivering = false;
+
+        // Hand the packet off to the network stack to handle
+        receive(pkt);
     }
 }
 
@@ -567,18 +581,6 @@ void virtio_net_driver::process_tx_completions() {
 void virtio_net_driver::run() {
     log::info("virtio-net: driver task running");
 
-    // DHCP runs here rather than in attach() because its timeouts need
-    // sched::sleep_ms(), and attach() runs before the driver task exists.
-    int32_t dhcp_rc = net::dhcp_configure(&m_netif);
-    if (dhcp_rc != net::OK) {
-        log::warn("virtio-net: DHCP failed (%d), using static fallback", dhcp_rc);
-        // QEMU user-mode networking defaults: IP, netmask, gateway.
-        net::configure(&m_netif,
-                       net::ipv4_addr(10, 0, 2, 15),
-                       net::ipv4_addr(255, 255, 255, 0),
-                       net::ipv4_addr(10, 0, 2, 2));
-    }
-
     // Check MSI mode once at start (elevated because m_dev is in privileged memory)
     bool has_msi = false;
     RUN_ELEVATED(has_msi = m_dev->get_msi_state().mode != pci::MSI_MODE_NONE);
@@ -591,50 +593,51 @@ void virtio_net_driver::run() {
             RUN_ELEVATED(sched::sleep_ms(1));
         }
 
-        // Drain RX under lock, deliver frames without the lock so
-        // protocol handlers can transmit, then re-lock to replenish.
+        // Drain RX under lock, deliver lowered and without the lock so the
+        // stack can transmit from receive, then re-lock to replenish.
         rx_batch batch;
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
             drain_rx_locked(batch);
             process_tx_completions();
         });
-        RUN_ELEVATED(deliver_rx_batch(batch));
+        deliver_rx_batch(batch);
         RUN_ELEVATED({
             sync::irq_lock_guard guard(m_vq_lock);
             replenish_rx();
         });
-
-        // Flush protocol responses queued during RX delivery. At top level
-        // ipv4_send and ARP resolution cannot recurse into deliver_rx_batch.
-        RUN_ELEVATED(net::drain_deferred_tx());
     }
 }
 
-int32_t virtio_net_driver::tx_callback(net::netif* iface, const uint8_t* frame, size_t len) {
-    if (!iface || !frame || len == 0) return -1;
+int32_t virtio_net_driver::transmit(net::packet* pkt) {
+    if (!pkt || pkt->length() == 0) {
+        return net::ERR_INVALID;
+    }
 
-    auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
-    if (!drv) return -1;
+    size_t hdr_size = m_net_hdr_size;
+    size_t len = pkt->length();
 
-    int32_t result = -1;
+    if (hdr_size + len > TX_BUF_SIZE) {
+        return net::ERR_TOO_LARGE;
+    }
+
+    int32_t result = net::ERR_BUSY;
     RUN_ELEVATED({
-        sync::irq_lock_guard guard(drv->m_vq_lock);
+        sync::irq_lock_guard guard(m_vq_lock);
 
-        // Find a free TX buffer
+        // Find a free TX buffer, reclaiming completed ones if none is free
         int32_t buf_idx = -1;
         for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
-            if (!drv->m_tx_bufs[i].in_use) {
+            if (!m_tx_bufs[i].in_use) {
                 buf_idx = static_cast<int32_t>(i);
                 break;
             }
         }
 
         if (buf_idx < 0) {
-            // Process completions and try again
-            drv->process_tx_completions();
+            process_tx_completions();
             for (uint16_t i = 0; i < TX_BUF_COUNT; i++) {
-                if (!drv->m_tx_bufs[i].in_use) {
+                if (!m_tx_bufs[i].in_use) {
                     buf_idx = static_cast<int32_t>(i);
                     break;
                 }
@@ -642,60 +645,39 @@ int32_t virtio_net_driver::tx_callback(net::netif* iface, const uint8_t* frame, 
         }
 
         if (buf_idx >= 0) {
-            auto& buf = drv->m_tx_bufs[buf_idx];
+            auto& buf = m_tx_bufs[buf_idx];
 
-            size_t hdr_size = drv->m_net_hdr_size;
-            if (hdr_size + len <= TX_BUF_SIZE) {
-                auto* nethdr = reinterpret_cast<virtio_net_hdr*>(buf.vaddr);
-                string::memset(nethdr, 0, hdr_size);
-                nethdr->gso_type = VIRTIO_NET_HDR_GSO_NONE;
+            auto* nethdr = reinterpret_cast<virtio_net_hdr*>(buf.vaddr);
+            nethdr->gso_type = VIRTIO_NET_HDR_GSO_NONE;
 
-                string::memcpy(reinterpret_cast<uint8_t*>(buf.vaddr + hdr_size), frame, len);
+            string::memset(nethdr, 0, hdr_size);
+            string::memcpy(reinterpret_cast<uint8_t*>(buf.vaddr + hdr_size), pkt->data(), len);
 
-                int32_t rc = drv->m_txq.add_buf(buf.phys, static_cast<uint32_t>(hdr_size + len), 0);
-                if (rc >= 0) {
-                    buf.in_use = true;
-                    buf.desc_id = static_cast<int16_t>(rc);
-                    drv->m_txq.kick(drv->m_tx_notify_addr);
-                    result = 0;
-                }
+            int32_t rc = m_txq.add_buf(buf.phys, static_cast<uint32_t>(hdr_size + len), 0);
+            if (rc >= 0) {
+                buf.in_use = true;
+                buf.desc_id = static_cast<int16_t>(rc);
+
+                m_txq.kick(m_tx_notify_addr);
+                result = net::OK;
             }
+        }
+
+        if (result == net::OK) {
+            m_counters.frames_out++;
+            m_counters.bytes_out += len;
+        } else {
+            record_packet_dropped();
         }
     });
 
     return result;
 }
 
-void virtio_net_driver::poll_callback(net::netif* iface) {
-    if (!iface) return;
-
-    auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
-    if (!drv) return;
-
-    rx_batch batch;
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(drv->m_vq_lock);
-        drv->drain_rx_locked(batch);
-        drv->process_tx_completions();
-    });
-    RUN_ELEVATED(drv->deliver_rx_batch(batch));
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(drv->m_vq_lock);
-        drv->replenish_rx();
-    });
-
-    RUN_ELEVATED(net::drain_deferred_tx());
-}
-
-bool virtio_net_driver::link_callback(net::netif* iface) {
-    if (!iface) return false;
-
-    auto* drv = static_cast<virtio_net_driver*>(iface->driver_data);
-    if (!drv) return false;
-
+bool virtio_net_driver::link_up() {
     bool up = true;
-    if (drv->m_has_status && drv->m_device_cfg) {
-        up = (drv->m_device_cfg->status & 1) != 0;
+    if (m_has_status && m_device_cfg) {
+        up = (m_device_cfg->status & 1) != 0;
     }
 
     return up;

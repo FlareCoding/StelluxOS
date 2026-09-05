@@ -20,13 +20,12 @@
 #include "terminal/terminal.h"
 #include "hw/rtc.h"
 #include "pci/pci.h"
-#include "dynpriv/dynpriv.h"
 #include "msi/msi.h"
+#include "net/net.h"
 #include "drivers/pci_driver.h"
 #include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
-#include "net/net.h"
 #include "random/random.h"
 #include "sysstat/sysstat.h"
 #include "sync/futex.h"
@@ -155,7 +154,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 
     if (net::init() != net::OK) {
-        log::warn("net::init failed, networking unavailable");
+        log::warn("net::init failed, network stack will not function properly");
     }
 
 #ifdef STLX_UNIT_TESTS_ENABLED

@@ -2,64 +2,68 @@
 #define STELLUX_NET_IPV4_H
 
 #include "common/types.h"
-#include "net/net.h"
+#include "common/string.h"
 
 namespace net {
+namespace ipv4 {
 
-constexpr uint8_t IPV4_PROTO_ICMP = 1;
-constexpr uint8_t IPV4_PROTO_TCP  = 6;
-constexpr uint8_t IPV4_PROTO_UDP  = 17;
-
-constexpr uint8_t IPV4_DEFAULT_TTL = 64;
-
-struct ipv4_header {
-    uint8_t  ver_ihl;     // version(4) + IHL(4)
-    uint8_t  tos;
-    uint16_t total_len;   // network byte order
-    uint16_t id;          // network byte order
-    uint16_t flags_frag;  // network byte order
-    uint8_t  ttl;
-    uint8_t  protocol;
-    uint16_t checksum;    // network byte order
-    uint32_t src_ip;      // network byte order
-    uint32_t dst_ip;      // network byte order
-} __attribute__((packed));
-
-static_assert(sizeof(ipv4_header) == 20, "ipv4_header must be 20 bytes");
+constexpr size_t ADDR_LEN = 4;
 
 /**
- * Helper to construct an IPv4 address from 4 octets (host byte order).
+ * A 32-bit IPv4 address held as its four wire bytes, most significant first,
+ * so it copies straight into and out of headers and there is never a byte
+ * order to remember. `bytes[0]` is the first octet of the dotted notation.
  */
-inline constexpr uint32_t ipv4_addr(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
-    return (static_cast<uint32_t>(a) << 24) |
-           (static_cast<uint32_t>(b) << 16) |
-           (static_cast<uint32_t>(c) <<  8) |
-           static_cast<uint32_t>(d);
+struct ipv4_addr {
+    uint8_t bytes[ADDR_LEN];
+
+    bool operator==(const ipv4_addr& other) const {
+        return string::memcmp(bytes, other.bytes, ADDR_LEN) == 0;
+    }
+
+    bool operator!=(const ipv4_addr& other) const { return !(*this == other); }
+
+    // 0.0.0.0, no address assigned
+    bool is_unspecified() const;
+
+    // 255.255.255.255, delivered to every host on the link
+    bool is_broadcast() const;
+
+    // True when this address and `other` share the network that `mask` describes
+    bool in_same_subnet(const ipv4_addr& other, const ipv4_addr& mask) const;
+} __attribute__((packed));
+static_assert(sizeof(ipv4_addr) == ADDR_LEN);
+
+constexpr ipv4_addr UNSPECIFIED_ADDR = {{0, 0, 0, 0}};
+constexpr ipv4_addr BROADCAST_ADDR   = {{255, 255, 255, 255}};
+
+inline bool ipv4_addr::is_unspecified() const { return *this == UNSPECIFIED_ADDR; }
+inline bool ipv4_addr::is_broadcast() const { return *this == BROADCAST_ADDR; }
+
+inline bool ipv4_addr::in_same_subnet(const ipv4_addr& other, const ipv4_addr& mask) const {
+    for (size_t i = 0; i < ADDR_LEN; i++) {
+        if ((bytes[i] & mask.bytes[i]) != (other.bytes[i] & mask.bytes[i])) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 /**
- * Process a received IPv4 packet (after Ethernet header is stripped).
- * Validates header, checksum, and dispatches to the appropriate protocol handler.
+ * Network layer identity of one interface. `address` stays unspecified until
+ * configuration assigns one, by hand or through DHCP, and an interface without
+ * an address handles no network layer traffic, ARP included.
  */
-void ipv4_recv(netif* iface, const uint8_t* data, size_t len);
+struct ipv4_config {
+    ipv4_addr address;
+    ipv4_addr netmask;
+    ipv4_addr gateway; // Router for destinations outside the subnet, unspecified if none
 
-/**
- * Send an IPv4 packet.
- * Builds the IP header, resolves the next-hop MAC via ARP, and sends via Ethernet.
- * @param iface    Interface to send on.
- * @param dst_ip   Destination IP in HOST byte order.
- * @param protocol IP protocol number (e.g., IPV4_PROTO_ICMP).
- * @param payload  Payload data.
- * @param payload_len Length of payload.
- * @param src_ip_override Source IP in HOST byte order, or 0 to let
- *        routing decide. When non-zero, this address is stamped into
- *        the IPv4 header instead of the route-derived source.
- * @return 0 on success, negative error code on failure.
- */
-int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
-                  const uint8_t* payload, size_t payload_len,
-                  uint32_t src_ip_override = 0);
+    bool configured() const { return !address.is_unspecified(); }
+};
 
+} // namespace ipv4
 } // namespace net
 
 #endif // STELLUX_NET_IPV4_H
