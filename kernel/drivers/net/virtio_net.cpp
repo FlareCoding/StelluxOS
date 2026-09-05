@@ -12,6 +12,14 @@ namespace drivers {
 
 using namespace virtio;
 
+// QEMU user-mode network defaults, used until the stack supports
+// interface configuration
+static constexpr net::ipv4::ipv4_config QEMU_STATIC_IPV4 = {
+    {{10, 0, 2, 15}},
+    {{255, 255, 255, 0}},
+    {{10, 0, 2, 2}},
+};
+
 // Virtio advertises its config regions as vendor-specific PCI capabilities
 // (id 0x09), distinguished by a cfg_type field.
 int32_t virtio_net_driver::parse_virtio_caps() {
@@ -400,6 +408,7 @@ int32_t virtio_net_driver::attach() {
     // up here until the stack owns that decision.
     string::memcpy(net::interface::m_name, "eth0", 5);
     m_mtu = net::eth::MTU;
+    m_ipv4_conf = QEMU_STATIC_IPV4;
     m_enabled = true;
 
     rc = init_queues();
