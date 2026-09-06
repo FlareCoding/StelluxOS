@@ -352,3 +352,55 @@ TEST(paging_test, user_mapping_survives_kernel_map_unmap_churn) {
     free_test_va(kernel_va);
     pmm::free_page(user_phys);
 }
+
+// A kept frame survives a regular unmap of the same address and comes back
+// exactly once, with the size of the mapping it belonged to.
+TEST(paging_test, kept_frame_roundtrip_4kb) {
+    pmm::phys_addr_t phys = pmm::alloc_page();
+    ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
+
+    paging::virt_addr_t va = alloc_test_va();
+    ASSERT_NE(va, static_cast<paging::virt_addr_t>(0));
+
+    pmm::phys_addr_t root = paging::get_kernel_pt_root();
+    ASSERT_EQ(paging::map_page(va, phys, paging::PAGE_KERNEL_RW, root), paging::OK);
+    ASSERT_EQ(paging::unmap_page_keep_frame(va, root), paging::OK);
+    EXPECT_FALSE(paging::is_mapped(va, root));
+    EXPECT_EQ(paging::unmap_page(va, root), paging::OK);
+
+    pmm::phys_addr_t kept = 0;
+    size_t size = 0;
+    ASSERT_EQ(paging::take_kept_frame(va, root, &kept, &size), paging::OK);
+    EXPECT_EQ(kept, phys);
+    EXPECT_EQ(size, static_cast<size_t>(paging::PAGE_SIZE_4KB));
+    EXPECT_EQ(paging::take_kept_frame(va, root, &kept, &size), paging::ERR_NOT_MAPPED);
+
+    free_test_va(va);
+    pmm::free_page(phys);
+}
+
+// Large mappings record their frame at the level the mapping lived on, so the
+// base must come back unshifted and the size must be the block size.
+TEST(paging_test, kept_frame_roundtrip_2mb) {
+    constexpr uint8_t ORDER_2MB = 9;
+    pmm::phys_addr_t phys = pmm::alloc_pages(ORDER_2MB);
+    ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
+
+    // A fresh root guarantees the 2MB slot holds no page table yet
+    pmm::phys_addr_t root = paging::create_user_pt_root();
+    ASSERT_NE(root, static_cast<pmm::phys_addr_t>(0));
+    paging::virt_addr_t va = user_test_va();
+
+    ASSERT_EQ(paging::map_page(va, phys, paging::PAGE_KERNEL_RW | paging::PAGE_LARGE_2MB, root), paging::OK);
+    ASSERT_TRUE(paging::get_page_flags(va, root) & paging::PAGE_LARGE_2MB);
+    ASSERT_EQ(paging::unmap_page_keep_frame(va, root), paging::OK);
+
+    pmm::phys_addr_t kept = 0;
+    size_t size = 0;
+    ASSERT_EQ(paging::take_kept_frame(va, root, &kept, &size), paging::OK);
+    EXPECT_EQ(kept, phys);
+    EXPECT_EQ(size, static_cast<size_t>(paging::PAGE_SIZE_2MB));
+
+    paging::destroy_user_pt_root(root);
+    pmm::free_pages(phys, ORDER_2MB);
+}

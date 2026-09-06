@@ -604,7 +604,8 @@ __PRIVILEGED_CODE static int32_t unmap_page_keep_frame_nolock(virt_addr_t virt, 
     }
 
     if (pdpte->page_size) {
-        pdpte->value = kept_frame_entry(static_cast<uint64_t>(pdpte->phys_addr) << 30);
+        auto* huge = reinterpret_cast<pdpte_1gb_t*>(pdpte);
+        pdpte->value = kept_frame_entry(static_cast<uint64_t>(huge->phys_addr) << 30);
         flush_tlb_page_local(virt);
         return OK;
     }
@@ -616,7 +617,8 @@ __PRIVILEGED_CODE static int32_t unmap_page_keep_frame_nolock(virt_addr_t virt, 
     }
 
     if (pde->page_size) {
-        pde->value = kept_frame_entry(static_cast<uint64_t>(pde->phys_addr) << 21);
+        auto* large = reinterpret_cast<pde_2mb_t*>(pde);
+        pde->value = kept_frame_entry(static_cast<uint64_t>(large->phys_addr) << 21);
         flush_tlb_page_local(virt);
         return OK;
     }
