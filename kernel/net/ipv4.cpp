@@ -1,10 +1,17 @@
 #include "net/ipv4.h"
 #include "net/interface.h"
 #include "net/checksum.h"
+#include "net/route.h"
+#include "net/arp.h"
+#include "net/eth.h"
+#include "sync/atomic.h"
 #include "common/logging.h"
 
 namespace net {
 namespace ipv4 {
+
+// Identification field of the next datagram sent, only meaningful to reassembly
+static sync::atomic<uint16_t> g_next_id {0};
 
 static int32_t drop(interface* iface, packet* pkt, int32_t rc) {
     iface->record_packet_dropped();
@@ -111,10 +118,56 @@ int32_t input(packet* pkt) {
 }
 
 int32_t output(packet* pkt, const ipv4_addr& dest, uint8_t protocol) {
-    (void)dest;
-    (void)protocol;
-    packet::free(pkt);
-    return ERR_INVALID;
+    if (!pkt) {
+        log::warn("ipv4: output called with no packet");
+        return ERR_INVALID;
+    }
+
+    route::route_result route;
+    int32_t rc = route::lookup(dest, &route);
+    if (rc != OK) {
+        packet::free(pkt);
+        return rc;
+    }
+
+    // Local delivery through loopback interface
+    if (route.type == route::route_type::local) {
+        return drop(route.iface, pkt, ERR_NO_ROUTE);
+    }
+
+    // Nothing is fragmented, so the payload must fit one frame behind the header
+    if (pkt->length() > static_cast<size_t>(route.iface->mtu()) - HEADER_LEN) {
+        return drop(route.iface, pkt, ERR_TOO_LARGE);
+    }
+
+    ipv4_header* hdr = reinterpret_cast<ipv4_header*>(pkt->push(HEADER_LEN));
+    if (!hdr) {
+        log::warn("ipv4: output packet has no headroom for the header");
+        return reject(route.iface, pkt, ERR_INVALID);
+    }
+
+    hdr->set_version_ihl(VERSION, MIN_IHL);
+    hdr->tos = 0;
+    hdr->total_len = htons(static_cast<uint16_t>(pkt->length()));
+    hdr->id = htons(g_next_id.fetch_add_relaxed(1));
+    hdr->fl_frag_off = htons(FLAG_DF);
+    hdr->ttl = DEFAULT_TTL;
+    hdr->proto = protocol;
+    hdr->src = route.iface->ipv4_conf().address;
+    hdr->dst = dest;
+
+    // Computed last, over the finished header with the field itself zeroed
+    hdr->checksum = 0;
+    hdr->checksum = htons(checksum(hdr, HEADER_LEN));
+
+    pkt->mark_network_header();
+    pkt->set_iface(route.iface);
+
+    if (route.type == route::route_type::broadcast) {
+        return eth::output(pkt, eth::BROADCAST_ADDR, eth::TYPE_IPV4);
+    }
+
+    return arp::resolve_and_send(pkt, route.next_hop);
 }
 
 } // namespace ipv4

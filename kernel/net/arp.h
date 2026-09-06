@@ -167,6 +167,12 @@ int32_t output(packet* pkt, const eth::mac_addr& dest);
 int32_t resolve(interface* iface, const ipv4::ipv4_addr& ip, eth::mac_addr* out);
 
 /*
+ * Consumes an IPv4 packet and sends it to the unicast `next_hop` on the
+ * packet's interface, holding it in the table until the address resolves.
+ */
+int32_t resolve_and_send(packet* pkt, const ipv4::ipv4_addr& next_hop);
+
+/*
  * Ages the table on every netstkd daemon pass. `ts` is the current monotonic time.
  */
 void sweep(uint64_t ts);

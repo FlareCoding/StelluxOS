@@ -385,6 +385,49 @@ int32_t resolve(interface* iface, const ipv4::ipv4_addr& ip, eth::mac_addr* out)
     return action == arp_send_action::transmit ? OK : ERR_PENDING;
 }
 
+int32_t resolve_and_send(packet* pkt, const ipv4::ipv4_addr& next_hop) {
+    if (!pkt) {
+        log::warn("arp: resolve_and_send called with no packet");
+        return ERR_INVALID;
+    }
+
+    interface* iface = pkt->iface();
+    if (!iface) {
+        log::warn("arp: resolve_and_send called with a packet that has no interface");
+        packet::free(pkt);
+        return ERR_INVALID;
+    }
+
+    packet_list dropped;
+    dropped.init();
+
+    eth::mac_addr mac;
+    bool request = false;
+
+    arp_send_action action = g_table.resolve(
+        iface,
+        next_hop,
+        pkt,
+        clock::now_ns(),
+        &mac,
+        &request,
+        dropped
+    );
+
+    drop_all(dropped);
+
+    if (request) {
+        send_arp_request(iface, next_hop);
+    }
+
+    // A queued packet belongs to the table now and leaves when the reply arrives
+    if (action == arp_send_action::queued) {
+        return OK;
+    }
+
+    return eth::output(pkt, mac, eth::TYPE_IPV4);
+}
+
 void sweep(uint64_t ts) {
     packet_list dropped;
     dropped.init();
