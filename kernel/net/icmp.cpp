@@ -1,4 +1,5 @@
 #include "net/icmp.h"
+#include "net/icmp_socket.h"
 #include "net/interface.h"
 #include "net/checksum.h"
 #include "net/eth.h"
@@ -62,10 +63,7 @@ int32_t input(packet* pkt) {
         return output(pkt, requester);
     }
     case TYPE_ECHO_REPLY: {
-        log::info("icmp: echo reply from %u.%u.%u.%u, id 0x%04x seq %u, %lu payload bytes",
-                  src[0], src[1], src[2], src[3], ntohs(hdr->echo.id), ntohs(hdr->echo.seq),
-                  pkt->length() - HEADER_LEN);
-        packet::free(pkt);
+        socket_deliver(pkt);
         return OK;
     }
     case TYPE_DEST_UNREACHABLE:

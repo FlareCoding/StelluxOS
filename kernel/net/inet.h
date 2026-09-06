@@ -18,6 +18,7 @@ constexpr uint32_t IPPROTO_IP   = 0;
 constexpr uint32_t IPPROTO_ICMP = ipv4::PROTO_ICMP;
 constexpr uint32_t IPPROTO_TCP  = ipv4::PROTO_TCP;
 constexpr uint32_t IPPROTO_UDP  = ipv4::PROTO_UDP;
+constexpr uint32_t MSG_DONTWAIT = 0x40;
 
 constexpr size_t SOCKADDR_IN_LEN = 16;
 

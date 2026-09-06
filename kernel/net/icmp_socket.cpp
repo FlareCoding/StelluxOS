@@ -175,6 +175,36 @@ static ssize_t socket_sendto(resource::resource_object* obj, const void* ksrc, s
     return static_cast<ssize_t>(count);
 }
 
+// Hands the oldest waiting reply to the caller, truncated to
+// `count` bytes, with its source address in `kaddr`.
+static ssize_t socket_recvfrom(resource::resource_object* obj, void* kdst, size_t count,
+                               uint32_t, void* kaddr, size_t* addrlen) {
+    icmp_socket* sock = static_cast<icmp_socket*>(obj->impl);
+
+    packet* pkt = nullptr;
+    {
+        sync::lock_guard guard(sock->lock);
+        pkt = sock->rx_queue.pop_front();
+    }
+
+    if (!pkt) {
+        return resource::ERR_AGAIN;
+    }
+
+    size_t copied = pkt->length() < count ? pkt->length() : count;
+    string::memcpy(kdst, pkt->data(), copied);
+
+    if (kaddr && addrlen) {
+        const ipv4::ipv4_header* ip = reinterpret_cast<const ipv4::ipv4_header*>(pkt->network_header());
+        if (inet::fill_sockaddr(kaddr, addrlen, ip->src, 0) != OK) {
+            *addrlen = 0;
+        }
+    }
+
+    packet::free(pkt);
+    return static_cast<ssize_t>(copied);
+}
+
 static void socket_close(resource::resource_object* obj) {
     if (!obj || !obj->impl) {
         return;
@@ -199,7 +229,7 @@ static const resource::resource_ops g_socket_ops = {
     nullptr, // ioctl
     nullptr, // mmap
     socket_sendto,
-    nullptr, // recvfrom
+    socket_recvfrom,
     nullptr, // bind
     nullptr, // listen
     nullptr, // accept
