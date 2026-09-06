@@ -59,7 +59,6 @@ ROOT=$(stlx_root)
 mkdir -p "$OUT"
 SUMMARY="$OUT/summary.txt"
 : > "$SUMMARY"
-PROMPT_RE="${STLX_PROMPT_RE:-/ \\\$}"
 
 run_one() {
     local id="$1"; shift
@@ -72,7 +71,7 @@ run_one() {
     exec 3>"$fifo"
 
     local booted=0 done=0 failed=0
-    if stlx_wait_pattern "$log" "$PROMPT_RE" "$BOOT_TO"; then
+    if stlx_wait_shell "$log" 3 "$BOOT_TO"; then
         booted=1
         sleep 2
         printf '%s\r' "$CMD" >&3

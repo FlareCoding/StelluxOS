@@ -69,7 +69,6 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 
 LOG="$OUT/serial.log"; FIFO="$OUT/in"; VARS="$OUT/vars.fd"; MON="$OUT/monitor.sock"
 GDBTXT="$OUT/gdb.txt"; CMDS="$OUT/gdb.cmds"
-PROMPT_RE="${STLX_PROMPT_RE:-/ \\\$}"
 MEM_BYTES=$(stlx_mem_bytes "$MEM")
 
 GDB=gdb
@@ -127,7 +126,7 @@ sleep 1
 if [ "$KEEP" = 1 ] && [ -t 0 ]; then
     # Interactive: the human gets the gdb prompt once the capture is done.
     ( sleep 1
-      if stlx_wait_pattern "$LOG" "$PROMPT_RE" "$BOOT_TO"; then sleep 2; printf '%s\r' "$CMD" >&3; fi ) &
+      if stlx_wait_shell "$LOG" 3 "$BOOT_TO"; then sleep 2; printf '%s\r' "$CMD" >&3; fi ) &
     "$GDB" -q -x "$CMDS" 2>&1 | tee "$GDBTXT"
     exec 3>&-
     stlx_stop_qemu "$QPID"
@@ -138,7 +137,7 @@ fi
 GPID=$!
 
 booted=0; done=0; frozen=0
-if stlx_wait_pattern "$LOG" "$PROMPT_RE" "$BOOT_TO"; then
+if stlx_wait_shell "$LOG" 3 "$BOOT_TO"; then
     booted=1
     sleep 2
     printf '%s\r' "$CMD" >&3

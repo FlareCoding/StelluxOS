@@ -93,6 +93,24 @@ stlx_wait_pattern() {
     return 1
 }
 
+# Wait for the serial shell. The prompt can be written character-interleaved
+# with a kernel log line from another CPU, so when it has not been seen for a
+# while after userland started, a carriage return asks the shell for a fresh
+# one. FD is the open write end of the input fifo.
+#   stlx_wait_shell LOG FD SECONDS
+stlx_wait_shell() {
+    local log="$1" fd="$2" secs="$3" i
+    local prompt="${STLX_PROMPT_RE:-/ \\\$}"
+    for i in $(seq 1 "$secs"); do
+        if grep -qE "$prompt" "$log" 2>/dev/null; then return 0; fi
+        if [ $((i % 15)) -eq 0 ] && grep -q 'init: ' "$log" 2>/dev/null; then
+            printf '\r' >&"$fd"
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 # Poll LOG until either regex appears. Prints "first", "second", or "timeout".
 stlx_wait_either() {
     local log="$1" re1="$2" re2="$3" secs="$4" i
