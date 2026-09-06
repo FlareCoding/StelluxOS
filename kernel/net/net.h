@@ -14,6 +14,7 @@ constexpr int32_t ERR_DOWN      = -4; // interface is administratively disabled
 constexpr int32_t ERR_NO_MEMORY = -5; // an allocation or task creation failed
 constexpr int32_t ERR_PENDING   = -6; // packet processing is in progress, retry later
 constexpr int32_t ERR_FULL      = -7; // a fixed-size table has no free slot
+constexpr int32_t ERR_NO_ROUTE  = -8; // no interface can reach the destination
 
 /**
  * Initialize the network stack and start its daemon/bookkeeping task.
