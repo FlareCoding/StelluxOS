@@ -273,6 +273,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // The kernel stamps its own identifier on every request and reports it as the
+    // local port, the stack address is only a fallback where that query fails.
+    uint16_t ping_id = (uint16_t)(uintptr_t)&fd;
+    struct sockaddr_in local;
+    socklen_t local_len = sizeof(local);
+
+    if (getsockname(fd, (struct sockaddr*)&local, &local_len) == 0 && local_len == sizeof(local)) {
+        ping_id = my_ntohs(local.sin_port);
+    }
+
     char ip_str[32];
     format_ip(dst_ip_host, ip_str, sizeof(ip_str));
     if (parse_ipv4(target) != 0) {
@@ -291,7 +301,6 @@ int main(int argc, char* argv[]) {
     uint32_t rtt_min = 0xFFFFFFFF;
     uint32_t rtt_max = 0;
     uint64_t rtt_total = 0;
-    uint16_t ping_id = (uint16_t)(uintptr_t)&fd; // unique-ish per process
 
     for (int i = 0; i < count; i++) {
         // Build ICMP echo request
