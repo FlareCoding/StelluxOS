@@ -3,6 +3,8 @@
  *
  * Manages the VA range between HHDM and kernel image. Tracks free/used
  * regions with three RB-trees (free-by-addr, free-by-size, used-by-addr).
+ * A retired region stays in the used tree, threaded on a list for whoever
+ * drains freed memory, until that owner releases it.
  * Does not touch page tables, only bookkeeping.
  */
 
@@ -21,6 +23,7 @@ __PRIVILEGED_DATA static free_addr_tree g_free_by_addr;
 __PRIVILEGED_DATA static free_size_tree g_free_by_size;
 __PRIVILEGED_DATA static used_addr_tree g_used_by_addr;
 __PRIVILEGED_DATA static node_pool g_pool;
+__PRIVILEGED_DATA static range_node* g_retired = nullptr;
 __PRIVILEGED_DATA static sync::spinlock g_kva_lock = sync::SPINLOCK_INIT;
 
 static inline uintptr_t align_up(uintptr_t val, size_t align) {
@@ -71,7 +74,7 @@ __PRIVILEGED_CODE static void pool_free(range_node* n) {
 
 // Insert a free range into both free trees.
 __PRIVILEGED_CODE static void insert_into_free_trees(range_node* n) {
-    n->is_free = true;
+    n->state = range_state::free;
     n->usable_base = n->start;
     n->guard_pre = 0;
     n->guard_post = 0;
@@ -121,6 +124,64 @@ __PRIVILEGED_CODE static range_node* find_containing_free(uintptr_t base, size_t
     }
 
     return nullptr;
+}
+
+// Find the used or retired range that contains addr, guards included.
+__PRIVILEGED_CODE static range_node* find_containing_used(uintptr_t addr) {
+    range_node probe{};
+    probe.usable_base = addr;
+
+    range_node* lb = g_used_by_addr.lower_bound(probe);
+    if (lb && lb->start <= addr && addr < lb->end) {
+        return lb;
+    }
+
+    range_node* pred = lb ? g_used_by_addr.prev(*lb) : g_used_by_addr.max();
+    if (pred && pred->start <= addr && addr < pred->end) {
+        return pred;
+    }
+
+    return nullptr;
+}
+
+// Return a node from the used tree to the free trees, coalescing with its
+// free neighbours. Caller holds the lock.
+__PRIVILEGED_CODE static void release_node(range_node* node) {
+    g_used_by_addr.remove(*node);
+
+    uintptr_t freed_start = node->start;
+    uintptr_t freed_end = node->end;
+    node->guard_pre = 0;
+    node->guard_post = 0;
+    node->alloc_tag = tag::generic;
+    node->pmm_order = 0;
+    node->usable_base = freed_start;
+    node->start = freed_start;
+    node->end = freed_end;
+
+    // Coalesce with predecessor: find free range whose end == freed_start
+    range_node addr_probe{};
+    addr_probe.start = freed_start;
+    range_node* lb = g_free_by_addr.lower_bound(addr_probe);
+    range_node* pred = lb ? g_free_by_addr.prev(*lb) : g_free_by_addr.max();
+    if (pred && pred->end == freed_start) {
+        remove_from_free_trees(pred);
+        node->start = pred->start;
+        pool_free(pred);
+    }
+
+    // Coalesce with successor: find free range whose start == freed_end
+    range_node succ_probe{};
+    succ_probe.start = node->end;
+    range_node* succ = g_free_by_addr.find(succ_probe);
+    if (succ) {
+        remove_from_free_trees(succ);
+        node->end = succ->end;
+        pool_free(succ);
+    }
+
+    node->usable_base = node->start;
+    insert_into_free_trees(node);
 }
 
 /**
@@ -248,7 +309,7 @@ __PRIVILEGED_CODE int32_t init() {
     candidate->guard_post = guard_post;
     candidate->alloc_tag = t;
     candidate->pmm_order = pmm_order;
-    candidate->is_free = false;
+    candidate->state = range_state::used;
 
     (void)g_used_by_addr.insert(candidate);
 
@@ -266,50 +327,77 @@ __PRIVILEGED_CODE int32_t free(uintptr_t base) {
     probe.usable_base = base;
 
     range_node* node = g_used_by_addr.find(probe);
-    if (!node) return ERR_NOT_FOUND;
-
-    // Remove from used tree
-    g_used_by_addr.remove(*node);
-
-    // Prepare as free range (clear allocation metadata)
-    uintptr_t freed_start = node->start;
-    uintptr_t freed_end = node->end;
-    node->guard_pre = 0;
-    node->guard_post = 0;
-    node->alloc_tag = tag::generic;
-    node->pmm_order = 0;
-
-    node->is_free = true;
-    node->usable_base = freed_start;
-    node->start = freed_start;
-    node->end = freed_end;
-
-    // Coalesce with predecessor: find free range whose end == freed_start
-    range_node addr_probe{};
-    addr_probe.start = freed_start;
-    range_node* lb = g_free_by_addr.lower_bound(addr_probe);
-    range_node* pred = lb ? g_free_by_addr.prev(*lb) : g_free_by_addr.max();
-    if (pred && pred->end == freed_start) {
-        remove_from_free_trees(pred);
-        node->start = pred->start;
-        pool_free(pred);
+    if (!node) {
+        return ERR_NOT_FOUND;
     }
 
-    // Coalesce with successor: find free range whose start == freed_end
-    range_node succ_probe{};
-    succ_probe.start = node->end;
-    range_node* succ = g_free_by_addr.find(succ_probe);
-    if (succ) {
-        remove_from_free_trees(succ);
-        node->end = succ->end;
-        pool_free(succ);
+    if (node->state == range_state::retired) {
+        return ERR_DOUBLE_FREE;
     }
 
-    // Update usable_base to match merged start
-    node->usable_base = node->start;
-    insert_into_free_trees(node);
-
+    release_node(node);
     return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t retire(uintptr_t addr, allocation& out) {
+    sync::irq_lock_guard guard(g_kva_lock);
+
+    range_node* node = find_containing_used(addr);
+    if (!node) {
+        return ERR_NOT_FOUND;
+    }
+
+    if (node->state == range_state::retired) {
+        return ERR_DOUBLE_FREE;
+    }
+
+    node->state = range_state::retired;
+    node->retired_next = g_retired;
+    g_retired = node;
+
+    populate_allocation(node, out);
+    return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE retired_batch take_retired() {
+    sync::irq_lock_guard guard(g_kva_lock);
+
+    retired_batch batch;
+    batch.head = g_retired;
+    g_retired = nullptr;
+
+    return batch;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void for_each_retired(const retired_batch& batch, retired_visitor visit) {
+    for (range_node* node = batch.head; node; node = node->retired_next) {
+        allocation range;
+        populate_allocation(node, range);
+        visit(range);
+    }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void release_retired(retired_batch& batch) {
+    // One node per lock hold, so a large batch never stalls interrupts for long
+    while (batch.head) {
+        sync::irq_lock_guard guard(g_kva_lock);
+
+        range_node* node = batch.head;
+        batch.head = node->retired_next;
+        release_node(node);
+    }
 }
 
 /**
@@ -377,7 +465,7 @@ __PRIVILEGED_CODE int32_t reserve(uintptr_t base, size_t size, tag t) {
     containing->guard_post = 0;
     containing->alloc_tag = t;
     containing->pmm_order = 0;
-    containing->is_free = false;
+    containing->state = range_state::used;
 
     (void)g_used_by_addr.insert(containing);
 
@@ -390,25 +478,13 @@ __PRIVILEGED_CODE int32_t reserve(uintptr_t base, size_t size, tag t) {
 [[nodiscard]] __PRIVILEGED_CODE int32_t query(uintptr_t addr, allocation& out) {
     sync::irq_lock_guard guard(g_kva_lock);
 
-    range_node probe{};
-    probe.usable_base = addr;
-
-    range_node* lb = g_used_by_addr.lower_bound(probe);
-
-    // Check lb
-    if (lb && lb->start <= addr && addr < lb->end) {
-        populate_allocation(lb, out);
-        return OK;
+    range_node* node = find_containing_used(addr);
+    if (!node) {
+        return ERR_NOT_FOUND;
     }
 
-    // Check predecessor
-    range_node* pred = lb ? g_used_by_addr.prev(*lb) : g_used_by_addr.max();
-    if (pred && pred->start <= addr && addr < pred->end) {
-        populate_allocation(pred, out);
-        return OK;
-    }
-
-    return ERR_NOT_FOUND;
+    populate_allocation(node, out);
+    return OK;
 }
 
 static const char* tag_name(tag t) {
@@ -446,9 +522,10 @@ __PRIVILEGED_CODE void dump_state() {
     size_t used_count = 0;
     size_t used_bytes = 0;
     for (auto& n : g_used_by_addr) {
-        log::info("  used:  base=0x%016lx size=%lu pages tag=%s guards=%u/%u",
+        log::info("  used:  base=0x%016lx size=%lu pages tag=%s guards=%u/%u%s",
                   n.usable_base, usable_size(n) / PAGE_SIZE,
-                  tag_name(n.alloc_tag), n.guard_pre, n.guard_post);
+                  tag_name(n.alloc_tag), n.guard_pre, n.guard_post,
+                  n.state == range_state::retired ? " retired" : "");
         used_count++;
         used_bytes += n.end - n.start;
     }

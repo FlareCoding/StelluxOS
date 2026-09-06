@@ -65,6 +65,27 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
 __PRIVILEGED_CODE int32_t unmap_pages(virt_addr_t virt, size_t count, pmm::phys_addr_t root_pt);
 
 /**
+ * @brief Invalidate the mapping at `virt` but keep its frame recorded in the
+ * now invalid entry, so the frame can be recovered with `take_kept_frame`
+ * once every CPU has dropped the translation. Flushes the calling CPU only
+ * and never releases page table pages, since the entry stays in use.
+ * @return OK, or ERR_NOT_MAPPED when nothing is mapped at `virt`.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t unmap_page_keep_frame(virt_addr_t virt, pmm::phys_addr_t root_pt);
+
+/**
+ * @brief Recover the frame that `unmap_page_keep_frame` left at `virt` and
+ * clear the entry.
+ * @param out_phys Base of the frame the entry mapped.
+ * @param out_size Size of that mapping, 4 KB, 2 MB or 1 GB.
+ * @return OK, or ERR_NOT_MAPPED when `virt` holds no kept frame.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t take_kept_frame(virt_addr_t virt, pmm::phys_addr_t root_pt,
+                                              pmm::phys_addr_t* out_phys, size_t* out_size);
+
+/**
  * @brief Modify flags on an existing mapping.
  * @return OK on success, ERR_NOT_MAPPED if not mapped.
  * @note Privilege: **required**

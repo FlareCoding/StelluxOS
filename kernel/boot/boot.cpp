@@ -4,6 +4,7 @@
 #include "hw/cpu.h"
 #include "arch/arch_init.h"
 #include "mm/mm.h"
+#include "mm/page_quarantine.h"
 #include "acpi/acpi.h"
 #include "irq/irq.h"
 #include "clock/clock.h"
@@ -112,6 +113,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (rc::reaper::init() != rc::reaper::OK) {
         log::fatal("rc::reaper::init failed");
+    }
+
+    if (page_quarantine::start() != page_quarantine::OK) {
+        log::fatal("page_quarantine::start failed");
     }
 
     sync::futex_init();

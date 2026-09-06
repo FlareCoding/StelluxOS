@@ -7,7 +7,6 @@
 #include "clock/clock.h"
 #include "hw/cpu.h"
 #include "sync/atomic.h"
-#include "sync/spinlock.h"
 #include "common/logging.h"
 
 namespace paging {
@@ -37,9 +36,10 @@ __PRIVILEGED_DATA static uint64_t g_generation = 0;
 __PRIVILEGED_DATA static ack_word g_acks[MAX_CPUS] = {};
 __PRIVILEGED_DATA static smp::ipi::message g_message = {0};
 
-// Plain lock on purpose: a second initiator waiting here keeps interrupts
-// enabled, so it still acknowledges the flush that is already in flight.
-__PRIVILEGED_DATA static sync::spinlock g_initiator_lock = sync::SPINLOCK_INIT;
+// Held with interrupts disabled so the holder cannot be preempted while other
+// CPUs wait on it, and waited for with interrupts enabled so a waiter still
+// acknowledges the flush already in flight. A plain spinlock gives neither.
+__PRIVILEGED_DATA static sync::atomic<uint32_t> g_initiator_busy{0};
 
 // One instruction per page, no page table walk, so it is safe in the
 // interrupt handler. A huge page is invalidated by any address inside it.
@@ -81,6 +81,24 @@ __PRIVILEGED_CODE static uint64_t request_from_others() {
     return targets;
 }
 
+__PRIVILEGED_CODE static uint64_t acquire_initiator() {
+    while (true) {
+        uint64_t flags = cpu::irq_save();
+        uint32_t idle = 0;
+        if (g_initiator_busy.cmpxchg_strong_acquire(idle, 1)) {
+            return flags;
+        }
+
+        cpu::irq_restore(flags);
+        cpu::relax();
+    }
+}
+
+__PRIVILEGED_CODE static void release_initiator(uint64_t flags) {
+    g_initiator_busy.store_release(0);
+    cpu::irq_restore(flags);
+}
+
 __PRIVILEGED_CODE static void wait_for_acks(uint64_t targets, uint64_t generation) {
     uint64_t deadline = clock::now_ns() + ACK_WARNING_NS;
 
@@ -112,7 +130,7 @@ __PRIVILEGED_CODE static void flush_everywhere(const flush_request& request) {
         log::fatal("paging: system-wide TLB flush requested with interrupts disabled");
     }
 
-    sync::lock_guard guard(g_initiator_lock);
+    uint64_t flags = acquire_initiator();
 
     g_request = request;
     uint64_t generation = g_generation + 1;
@@ -121,6 +139,8 @@ __PRIVILEGED_CODE static void flush_everywhere(const flush_request& request) {
     uint64_t targets = request_from_others();
     apply_locally(request);
     wait_for_acks(targets, generation);
+
+    release_initiator(flags);
 }
 
 __PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt) {

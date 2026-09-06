@@ -42,6 +42,19 @@ struct allocation {
     uint8_t   pmm_order; // 0=non-contiguous/MMIO, 1-18=contiguous PMM order
 };
 
+struct range_node;
+
+// Retired allocations detached from the allocator, owned by whoever took them
+struct retired_batch {
+    range_node* head = nullptr;
+
+    bool empty() const {
+        return head == nullptr;
+    }
+};
+
+using retired_visitor = void (*)(const allocation& range);
+
 /**
  * @brief Initialize the KVA allocator. Call after mm::init_va_layout().
  * @return OK on success, error code on failure.
@@ -77,10 +90,44 @@ __PRIVILEGED_CODE int32_t init();
  * @brief Free a previously allocated VA range by its usable base address.
  * Coalesces with adjacent free ranges.
  * @param base The usable base address returned by alloc().
- * @return OK on success, ERR_NOT_FOUND if not allocated.
+ * @return OK on success, ERR_NOT_FOUND if not allocated, ERR_DOUBLE_FREE if
+ *         the range is retired and belongs to whoever drains it.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t free(uintptr_t base);
+
+/**
+ * @brief Retire a live allocation. The range leaves service at once, so a
+ * second retire or a free reports ERR_DOUBLE_FREE, but its address stays
+ * reserved and query still finds it until a batch holding it is released.
+ * Never allocates, safe from any context.
+ * @param addr Any address within the allocation.
+ * @param out Populated on success.
+ * @return OK, ERR_NOT_FOUND if addr is not allocated, ERR_DOUBLE_FREE if the
+ *         allocation was already retired.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t retire(uintptr_t addr, allocation& out);
+
+/**
+ * @brief Detach every allocation retired so far. The caller owns the batch
+ * and must eventually release it.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE retired_batch take_retired();
+
+/**
+ * @brief Call `visit` for every allocation in a batch, without consuming it.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void for_each_retired(const retired_batch& batch, retired_visitor visit);
+
+/**
+ * @brief Return every address in a batch to the free pool. The batch is
+ * empty afterwards.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void release_retired(retired_batch& batch);
 
 /**
  * @brief Mark a fixed VA range as used (for pre-mapped regions).

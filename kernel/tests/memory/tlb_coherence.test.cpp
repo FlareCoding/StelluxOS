@@ -69,7 +69,9 @@ static void reset_reader_state() {
 // invalidate `va` on every CPU for the reader to observe the second frame.
 static void remap_is_seen_by_other_cpu(void (*flush)(uintptr_t va)) {
     uint32_t reader_cpu = pick_other_online_cpu();
-    if (reader_cpu == percpu::current_cpu_id()) return;
+    if (reader_cpu == percpu::current_cpu_id()) {
+        return;
+    }
 
     reset_reader_state();
 
@@ -120,13 +122,9 @@ static void remap_is_seen_by_other_cpu(void (*flush)(uintptr_t va)) {
     ASSERT_TRUE(spin_wait(g_done));
     EXPECT_EQ(g_second_value.load_acquire(), SECOND_PATTERN);
 
-    // vmm::free invalidates only this CPU. Without a system-wide flush the
-    // reader CPU would carry this translation into the next test, which
-    // reuses the address, and read the wrong frame there.
     RUN_ELEVATED({
         vmm::free(va);
         pmm::free_page(first_frame);
-        paging::flush_tlb_page(va);
     });
 }
 

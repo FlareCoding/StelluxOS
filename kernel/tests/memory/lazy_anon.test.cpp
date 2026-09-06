@@ -5,6 +5,7 @@
 #include "mm/vma.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "mm/page_quarantine.h"
 #include "common/string.h"
 
 TEST_SUITE(lazy_anon);
@@ -12,11 +13,13 @@ TEST_SUITE(lazy_anon);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t lazy_anon_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     return 0;
 }
 
 static int32_t lazy_anon_after_all() {
+    page_quarantine::drain();
     return pmm::free_page_count() == g_initial_free_pages ? 0 : -1;
 }
 
@@ -35,6 +38,7 @@ TEST(lazy_anon, lazy_map_reserves_without_pages) {
     mm::mm_context* mm_ctx = mm::mm_context_create();
     ASSERT_NOT_NULL(mm_ctx);
 
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
     uintptr_t addr = 0;
     ASSERT_EQ(mm::mm_context_map_anonymous(
@@ -42,6 +46,7 @@ TEST(lazy_anon, lazy_map_reserves_without_pages) {
         mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
     ), mm::MM_CTX_OK);
     EXPECT_NE(addr, static_cast<uintptr_t>(0));
+    page_quarantine::drain();
     EXPECT_EQ(pmm::free_page_count(), before);
     EXPECT_EQ(paging::get_physical(addr, mm_ctx->pt_root),
               static_cast<pmm::phys_addr_t>(0));

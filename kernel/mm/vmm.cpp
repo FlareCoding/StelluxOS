@@ -11,6 +11,8 @@
 #include "mm/kva.h"
 #include "mm/pmm.h"
 #include "mm/paging.h"
+#include "mm/page_quarantine.h"
+#include "hw/cpu.h"
 #include "common/string.h"
 
 namespace vmm {
@@ -39,6 +41,18 @@ static int32_t translate_kva_error(int32_t kva_err) {
     }
 }
 
+// Memory waiting in the quarantine is not gone, only not yet flushed. A caller
+// that can wait drains it and deserves one more attempt before hearing "out".
+__PRIVILEGED_CODE static bool retry_after_drain(int32_t rc) {
+    bool exhausted = rc == ERR_NO_VIRT || rc == ERR_NO_PHYS || rc == ERR_NO_MEM;
+    if (!exhausted || !cpu::irqs_enabled()) {
+        return false;
+    }
+
+    page_quarantine::drain();
+    return true;
+}
+
 // Rollback: unmap and free physical for [base, base + mapped_bytes).
 // For non-contiguous allocations only (each page freed individually).
 __PRIVILEGED_CODE static void rollback_non_contiguous(
@@ -59,13 +73,11 @@ __PRIVILEGED_CODE static void rollback_non_contiguous(
  */
 __PRIVILEGED_CODE int32_t init() {
     g_kernel_root = paging::get_kernel_pt_root();
+    page_quarantine::init(g_kernel_root);
     return OK;
 }
 
-/**
- * @note Privilege: **required**
- */
-[[nodiscard]] __PRIVILEGED_CODE int32_t alloc(
+__PRIVILEGED_CODE static int32_t alloc_once(
     size_t               pages,
     paging::page_flags_t flags,
     uint32_t             alloc_flags,
@@ -123,7 +135,22 @@ __PRIVILEGED_CODE int32_t init() {
 /**
  * @note Privilege: **required**
  */
-[[nodiscard]] __PRIVILEGED_CODE int32_t alloc_contiguous(
+[[nodiscard]] __PRIVILEGED_CODE int32_t alloc(
+    size_t               pages,
+    paging::page_flags_t flags,
+    uint32_t             alloc_flags,
+    kva::tag             tag,
+    uintptr_t&           out
+) {
+    int32_t rc = alloc_once(pages, flags, alloc_flags, tag, out);
+    if (retry_after_drain(rc)) {
+        rc = alloc_once(pages, flags, alloc_flags, tag, out);
+    }
+
+    return rc;
+}
+
+__PRIVILEGED_CODE static int32_t alloc_contiguous_once(
     size_t               pages,
     pmm::zone_mask_t     zone,
     paging::page_flags_t flags,
@@ -224,7 +251,24 @@ __PRIVILEGED_CODE int32_t init() {
 /**
  * @note Privilege: **required**
  */
-[[nodiscard]] __PRIVILEGED_CODE int32_t alloc_stack(
+[[nodiscard]] __PRIVILEGED_CODE int32_t alloc_contiguous(
+    size_t               pages,
+    pmm::zone_mask_t     zone,
+    paging::page_flags_t flags,
+    uint32_t             alloc_flags,
+    kva::tag             tag,
+    uintptr_t&           out_addr,
+    pmm::phys_addr_t&    out_phys
+) {
+    int32_t rc = alloc_contiguous_once(pages, zone, flags, alloc_flags, tag, out_addr, out_phys);
+    if (retry_after_drain(rc)) {
+        rc = alloc_contiguous_once(pages, zone, flags, alloc_flags, tag, out_addr, out_phys);
+    }
+
+    return rc;
+}
+
+__PRIVILEGED_CODE static int32_t alloc_stack_once(
     size_t     usable_pages,
     uint16_t   guard_pages,
     kva::tag   tag,
@@ -284,7 +328,22 @@ __PRIVILEGED_CODE int32_t init() {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static int32_t map_phys_internal(
+[[nodiscard]] __PRIVILEGED_CODE int32_t alloc_stack(
+    size_t     usable_pages,
+    uint16_t   guard_pages,
+    kva::tag   tag,
+    uintptr_t& out_base,
+    uintptr_t& out_top
+) {
+    int32_t rc = alloc_stack_once(usable_pages, guard_pages, tag, out_base, out_top);
+    if (retry_after_drain(rc)) {
+        rc = alloc_stack_once(usable_pages, guard_pages, tag, out_base, out_top);
+    }
+
+    return rc;
+}
+
+__PRIVILEGED_CODE static int32_t map_phys_once(
     pmm::phys_addr_t     phys,
     size_t               size,
     paging::page_flags_t flags,
@@ -337,6 +396,22 @@ __PRIVILEGED_CODE static int32_t map_phys_internal(
     return OK;
 }
 
+__PRIVILEGED_CODE static int32_t map_phys_internal(
+    pmm::phys_addr_t     phys,
+    size_t               size,
+    paging::page_flags_t flags,
+    kva::tag             tag,
+    uintptr_t&           out_base,
+    uintptr_t&           out_va
+) {
+    int32_t rc = map_phys_once(phys, size, flags, tag, out_base, out_va);
+    if (retry_after_drain(rc)) {
+        rc = map_phys_once(phys, size, flags, tag, out_base, out_va);
+    }
+
+    return rc;
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -370,78 +445,7 @@ __PRIVILEGED_CODE static int32_t map_phys_internal(
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t free(uintptr_t addr) {
-    kva::allocation alloc;
-    int32_t rc = kva::query(addr, alloc);
-    if (rc != kva::OK) {
-        return ERR_NOT_FOUND;
-    }
-
-    uintptr_t base = alloc.base;
-    size_t size = alloc.size;
-    kva::tag tag = alloc.alloc_tag;
-    uint8_t order = alloc.pmm_order;
-    bool free_phys = (tag != kva::tag::mmio && tag != kva::tag::phys_map);
-
-    // Gather the contiguous base address while the mapping still exists
-    pmm::phys_addr_t contig_phys = 0;
-    if (free_phys && order > 0) {
-        contig_phys = paging::get_physical(base, g_kernel_root);
-    }
-
-    // Unmap all pages. For non-contiguous, gather phys addresses per-page
-    // before each unmap and release them only after this CPU has flushed.
-    constexpr size_t PHYS_BATCH = 64;
-    pmm::phys_addr_t phys_batch[PHYS_BATCH];
-    size_t batch_count = 0;
-
-    uintptr_t pos = base;
-    uintptr_t end_addr = base + size;
-    while (pos < end_addr) {
-        paging::page_flags_t pf = paging::get_page_flags(pos, g_kernel_root);
-        size_t step = pmm::PAGE_SIZE;
-        if (pf & paging::PAGE_HUGE_1GB) {
-            step = paging::PAGE_SIZE_1GB;
-        } else if (pf & paging::PAGE_LARGE_2MB) {
-            step = paging::PAGE_SIZE_2MB;
-        }
-
-        if (free_phys && order == 0) {
-            pmm::phys_addr_t phys = paging::get_physical(pos, g_kernel_root);
-            if (phys != 0) {
-                phys_batch[batch_count++] = phys;
-            }
-        }
-
-        paging::unmap_page(pos, g_kernel_root);
-        pos += step;
-
-        if (free_phys && order == 0 && batch_count == PHYS_BATCH) {
-            paging::flush_tlb_range_local(base, pos);
-            for (size_t i = 0; i < batch_count; i++) {
-                pmm::free_page(phys_batch[i]);
-            }
-            batch_count = 0;
-        }
-    }
-
-    paging::flush_tlb_range_local(base, base + size);
-
-    // Free physical pages, the mappings are gone and this CPU has flushed
-    if (free_phys) {
-        if (order > 0) {
-            if (contig_phys != 0) {
-                pmm::free_pages(contig_phys, order);
-            }
-        } else {
-            for (size_t i = 0; i < batch_count; i++) {
-                pmm::free_page(phys_batch[i]);
-            }
-        }
-    }
-
-    kva::free(alloc.base);
-
-    return OK;
+    return page_quarantine::admit(addr) == page_quarantine::OK ? OK : ERR_NOT_FOUND;
 }
 
 /**

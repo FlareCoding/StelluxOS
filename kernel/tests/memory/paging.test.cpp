@@ -4,6 +4,7 @@
 #include "mm/paging.h"
 #include "mm/pmm.h"
 #include "mm/kva.h"
+#include "mm/page_quarantine.h"
 #include "boot/boot_services.h"
 #include "common/string.h"
 #include "common/logging.h"
@@ -13,11 +14,13 @@ TEST_SUITE(paging_test);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t paging_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     return 0;
 }
 
 static int32_t paging_after_all() {
+    page_quarantine::drain();
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("paging tests: leak detected, started=%lu ended=%lu",

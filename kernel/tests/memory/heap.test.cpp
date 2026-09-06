@@ -3,6 +3,7 @@
 #include "stlx_unit_test.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
+#include "mm/page_quarantine.h"
 #include "common/string.h"
 #include "common/logging.h"
 
@@ -11,6 +12,7 @@ TEST_SUITE(heap_test);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t heap_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     if (g_initial_free_pages < 256) {
         log::error("heap tests: insufficient free pages (%lu)", g_initial_free_pages);
@@ -21,6 +23,7 @@ static int32_t heap_before_all() {
 }
 
 static int32_t heap_after_all() {
+    page_quarantine::drain();
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("heap tests: leak detected, started=%lu ended=%lu delta=%ld",
@@ -130,6 +133,7 @@ TEST(heap_test, kalloc_many_free_lifo) {
 }
 
 TEST(heap_test, kalloc_free_no_major_leak) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
 
     constexpr size_t N = 16;
@@ -219,6 +223,7 @@ TEST(heap_test, stress_alloc_free) {
         heap::kfree(w);
     }
 
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
 
     constexpr size_t N = 64;

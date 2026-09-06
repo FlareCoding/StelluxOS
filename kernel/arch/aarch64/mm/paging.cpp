@@ -32,6 +32,12 @@ __PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
 // TTBR1_EL1 mask to extract physical address (mask off ASID in bits 63:48)
 constexpr uint64_t TTBR_BADDR_MASK = 0x0000FFFFFFFFFFFFULL;
 
+// With the valid bit clear the hardware ignores the rest of a descriptor, so
+// a kept-frame descriptor carries only the output address and this marker.
+constexpr uint64_t DESC_VALID      = 1ULL << 0;
+constexpr uint64_t DESC_KEPT_FRAME = 1ULL << 55;
+constexpr uint64_t DESC_ADDR_MASK  = 0x0000FFFFFFFFF000ULL;
+
 __PRIVILEGED_CODE pmm::phys_addr_t get_kernel_pt_root() {
     // Read TTBR1_EL1 directly - mask off ASID bits (upper 16 bits)
     return read_ttbr1_el1() & TTBR_BADDR_MASK;
@@ -622,6 +628,125 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
 __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     sync::irq_lock_guard guard(g_pt_lock);
     return unmap_page_nolock(virt, root_pt);
+}
+
+__PRIVILEGED_CODE static uint64_t kept_frame_descriptor(uint64_t descriptor) {
+    return (descriptor & DESC_ADDR_MASK) | DESC_KEPT_FRAME;
+}
+
+__PRIVILEGED_CODE static bool is_kept_frame_descriptor(uint64_t value) {
+    return (value & DESC_VALID) == 0 && (value & DESC_KEPT_FRAME) != 0;
+}
+
+__PRIVILEGED_CODE static int32_t unmap_page_keep_frame_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
+    auto parts = split_virt_addr(virt);
+    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
+
+    table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
+    if (!l0_entry->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l1 = static_cast<translation_table_t*>(
+        phys_to_virt(l0_entry->next_table_addr << 12));
+    if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
+        l1->raw[parts.l1_idx] = kept_frame_descriptor(l1->raw[parts.l1_idx]);
+        flush_tlb_page_local(virt);
+        return OK;
+    }
+
+    table_desc_t* l1_entry = &l1->as_table[parts.l1_idx];
+    if (!l1_entry->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l2 = static_cast<translation_table_t*>(
+        phys_to_virt(l1_entry->next_table_addr << 12));
+    if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
+        l2->raw[parts.l2_idx] = kept_frame_descriptor(l2->raw[parts.l2_idx]);
+        flush_tlb_page_local(virt);
+        return OK;
+    }
+
+    table_desc_t* l2_entry = &l2->as_table[parts.l2_idx];
+    if (!l2_entry->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l3 = static_cast<translation_table_t*>(
+        phys_to_virt(l2_entry->next_table_addr << 12));
+    page_desc_t* page = &l3->as_page[parts.l3_idx];
+    if (!page->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    page->value = kept_frame_descriptor(page->value);
+    flush_tlb_page_local(virt);
+    return OK;
+}
+
+// A kept-frame descriptor is found at the level where the mapping used to
+// live, so the level it sits on also tells the size the mapping covered.
+__PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
+    virt_addr_t virt, pmm::phys_addr_t root_pt, pmm::phys_addr_t* out_phys, size_t* out_size
+) {
+    auto parts = split_virt_addr(virt);
+    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
+
+    table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
+    if (!l0_entry->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l1 = static_cast<translation_table_t*>(
+        phys_to_virt(l0_entry->next_table_addr << 12));
+    if (is_kept_frame_descriptor(l1->raw[parts.l1_idx])) {
+        *out_phys = l1->raw[parts.l1_idx] & DESC_ADDR_MASK;
+        *out_size = PAGE_SIZE_1GB;
+        l1->raw[parts.l1_idx] = 0;
+        return OK;
+    }
+
+    table_desc_t* l1_entry = &l1->as_table[parts.l1_idx];
+    if (!l1_entry->valid || l1_entry->type == 0) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l2 = static_cast<translation_table_t*>(
+        phys_to_virt(l1_entry->next_table_addr << 12));
+    if (is_kept_frame_descriptor(l2->raw[parts.l2_idx])) {
+        *out_phys = l2->raw[parts.l2_idx] & DESC_ADDR_MASK;
+        *out_size = PAGE_SIZE_2MB;
+        l2->raw[parts.l2_idx] = 0;
+        return OK;
+    }
+
+    table_desc_t* l2_entry = &l2->as_table[parts.l2_idx];
+    if (!l2_entry->valid || l2_entry->type == 0) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l3 = static_cast<translation_table_t*>(
+        phys_to_virt(l2_entry->next_table_addr << 12));
+    if (!is_kept_frame_descriptor(l3->raw[parts.l3_idx])) {
+        return ERR_NOT_MAPPED;
+    }
+
+    *out_phys = l3->raw[parts.l3_idx] & DESC_ADDR_MASK;
+    *out_size = PAGE_SIZE_4KB;
+    l3->raw[parts.l3_idx] = 0;
+    return OK;
+}
+
+__PRIVILEGED_CODE int32_t unmap_page_keep_frame(virt_addr_t virt, pmm::phys_addr_t root_pt) {
+    sync::irq_lock_guard guard(g_pt_lock);
+    return unmap_page_keep_frame_nolock(virt, root_pt);
+}
+
+__PRIVILEGED_CODE int32_t take_kept_frame(virt_addr_t virt, pmm::phys_addr_t root_pt,
+                                              pmm::phys_addr_t* out_phys, size_t* out_size) {
+    sync::irq_lock_guard guard(g_pt_lock);
+    return take_kept_frame_nolock(virt, root_pt, out_phys, out_size);
 }
 
 __PRIVILEGED_CODE static int32_t map_page_nolock(virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags, pmm::phys_addr_t root_pt) {

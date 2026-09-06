@@ -21,6 +21,14 @@ constexpr uint32_t ALLOC_ALLOW_2MB = (1 << 1); // alloc_contiguous only
 constexpr uint32_t ALLOC_ALLOW_1GB = (1 << 2); // alloc_contiguous only
 
 /**
+ * Freed memory passes through the page quarantine and becomes reusable only
+ * after a drain has flushed every CPU. An allocation that runs out of address
+ * space or frames while memory waits there drains the quarantine and retries
+ * once when interrupts are enabled; with interrupts disabled it cannot wait
+ * and reports the exhaustion, as any atomic allocation may.
+ */
+
+/**
  * @brief Initialize the VMM. Call after kva::init().
  * @return OK on success.
  * @note Privilege: **required**
@@ -132,10 +140,12 @@ __PRIVILEGED_CODE int32_t init();
 
 /**
  * @brief Free any VMM allocation by address.
- * Uses kva::query() to find allocation type, then unmaps and frees accordingly.
- * MMIO mappings are unmapped but physical pages are not freed.
+ * Retires the allocation into the page quarantine, which returns the address
+ * and frames once every CPU has dropped its translations. MMIO and
+ * caller-owned physical memory is unmapped but its frames are never freed.
+ * Never allocates or waits, safe from any context.
  * @param addr Any address within the allocation (usable or guard region).
- * @return OK on success, ERR_NOT_FOUND if not allocated.
+ * @return OK on success, ERR_NOT_FOUND if not allocated or already freed.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t free(uintptr_t addr);

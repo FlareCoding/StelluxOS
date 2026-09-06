@@ -34,6 +34,17 @@ __PRIVILEGED_CODE inline void irq_enable() {
     asm volatile("msr daifclr, #0xf" ::: "memory");
 }
 
+constexpr uint64_t DAIF_IRQ_MASKED = 1ULL << 7;
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline bool irqs_enabled() {
+    uint64_t daif;
+    asm volatile("mrs %0, daif" : "=r"(daif));
+    return (daif & DAIF_IRQ_MASKED) == 0;
+}
+
 /**
  * @note Privilege: **required**
  */
