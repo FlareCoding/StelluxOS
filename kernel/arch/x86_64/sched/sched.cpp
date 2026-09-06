@@ -168,9 +168,6 @@ void yield() {
 __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     task* prev = current();
 
-    // Advance per-CPU sync epoch so stack reclaim can wait for a post-switch TLB-safe point.
-    advance_cpu_tlb_sync_epoch();
-
     // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
     finalize_pending_off_cpu();
 
@@ -222,9 +219,6 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
  */
 __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     task* prev = current();
-
-    // Each scheduler trap is a synchronization checkpoint for deferred reclaim logic.
-    advance_cpu_tlb_sync_epoch();
 
     // Finish prior off-CPU publication before handling this tick's switch.
     finalize_pending_off_cpu();
