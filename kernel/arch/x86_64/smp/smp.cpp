@@ -233,8 +233,8 @@ __PRIVILEGED_CODE int32_t smp_prepare() {
         return smp::ERR_PREPARE;
     }
 
-    paging::flush_tlb_page(AP_TRAMPOLINE_PHYS);
-    paging::flush_tlb_page(AP_STARTUP_DATA_PHYS);
+    paging::flush_tlb_page_local(AP_TRAMPOLINE_PHYS);
+    paging::flush_tlb_page_local(AP_STARTUP_DATA_PHYS);
 
     // Copy trampoline code to physical 0x8000
     size_t tramp_size = static_cast<size_t>(

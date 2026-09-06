@@ -389,7 +389,7 @@ __PRIVILEGED_CODE int32_t free(uintptr_t addr) {
     }
 
     // Unmap all pages. For non-contiguous, gather phys addresses per-page
-    // before each unmap, then free after TLB flush to prevent SMP aliasing.
+    // before each unmap and release them only after this CPU has flushed.
     constexpr size_t PHYS_BATCH = 64;
     pmm::phys_addr_t phys_batch[PHYS_BATCH];
     size_t batch_count = 0;
@@ -416,7 +416,7 @@ __PRIVILEGED_CODE int32_t free(uintptr_t addr) {
         pos += step;
 
         if (free_phys && order == 0 && batch_count == PHYS_BATCH) {
-            paging::flush_tlb_range(base, pos);
+            paging::flush_tlb_range_local(base, pos);
             for (size_t i = 0; i < batch_count; i++) {
                 pmm::free_page(phys_batch[i]);
             }
@@ -424,9 +424,9 @@ __PRIVILEGED_CODE int32_t free(uintptr_t addr) {
         }
     }
 
-    paging::flush_tlb_range(base, base + size);
+    paging::flush_tlb_range_local(base, base + size);
 
-    // Free physical pages (safe now, mappings removed and TLB flushed)
+    // Free physical pages, the mappings are gone and this CPU has flushed
     if (free_phys) {
         if (order > 0) {
             if (contig_phys != 0) {

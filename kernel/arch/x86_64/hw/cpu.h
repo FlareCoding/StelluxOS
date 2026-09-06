@@ -33,6 +33,14 @@ __PRIVILEGED_CODE inline void irq_enable() {
     asm volatile("sti" ::: "memory");
 }
 
+constexpr uint64_t RFLAGS_IF = 1ULL << 9;
+
+inline bool irqs_enabled() {
+    uint64_t flags;
+    asm volatile("pushfq; pop %0" : "=r"(flags));
+    return (flags & RFLAGS_IF) != 0;
+}
+
 /**
  * @note Privilege: **required**
  */

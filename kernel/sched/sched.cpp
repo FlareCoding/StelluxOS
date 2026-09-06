@@ -339,7 +339,7 @@ __PRIVILEGED_CODE void advance_cpu_tlb_sync_epoch() {
         return;
     }
 
-    paging::flush_tlb_all();
+    paging::flush_tlb_all_local();
     sync::atomic_ref<uint64_t>{this_cpu(cpu_tlb_sync_epoch)}.fetch_add_release(1);
 }
 

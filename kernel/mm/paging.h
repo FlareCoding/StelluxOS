@@ -92,22 +92,51 @@ __PRIVILEGED_CODE page_flags_t get_page_flags(virt_addr_t virt, pmm::phys_addr_t
 __PRIVILEGED_CODE bool is_mapped(virt_addr_t virt, pmm::phys_addr_t root_pt);
 
 /**
- * @brief TLB management - flush single page.
+ * TLB invalidation comes in two forms. The system-wide form guarantees that
+ * on return no CPU holds a translation for the range, so a page may be
+ * reused. It may block until every other CPU has acknowledged, so the caller
+ * must have interrupts enabled and must not hold a lock that another CPU
+ * could be spinning on with interrupts disabled. The local form only
+ * invalidates the calling CPU and is for the paging internals, for the
+ * acknowledging side of a system-wide flush, and for bring-up phases where
+ * only one CPU runs.
+ */
+
+/**
+ * @brief Invalidate one page on every CPU.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt);
 
 /**
- * @brief TLB management - flush range.
+ * @brief Invalidate `[start, end)` on every CPU.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end);
 
 /**
- * @brief TLB management - flush all.
+ * @brief Invalidate every translation on every CPU.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void flush_tlb_all();
+
+/**
+ * @brief Invalidate one page on the calling CPU only.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void flush_tlb_page_local(virt_addr_t virt);
+
+/**
+ * @brief Invalidate `[start, end)` on the calling CPU only.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void flush_tlb_range_local(virt_addr_t start, virt_addr_t end);
+
+/**
+ * @brief Invalidate every translation on the calling CPU only.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void flush_tlb_all_local();
 
 /**
  * @brief Dump current mappings to serial (uses get_kernel_pt_root() internally).

@@ -1,5 +1,6 @@
 #include "mm/paging.h"
 #include "mm/paging_arch.h"
+#include "mm/tlb_shootdown.h"
 #include "mm/pmm.h"
 #include "hw/cpu_features.h"
 #include "boot/boot_services.h"
@@ -510,7 +511,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     // 1GB huge page
     if (pdpte->page_size) {
         pdpte->value = 0;
-        flush_tlb_page(virt);
+        flush_tlb_page_local(virt);
         if (is_table_empty(pdpt)) {
             pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
             pml4e->value = 0;
@@ -526,7 +527,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     // 2MB large page
     if (pde->page_size) {
         pde->value = 0;
-        flush_tlb_page(virt);
+        flush_tlb_page_local(virt);
         if (is_table_empty(pd)) {
             pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
             pdpte->value = 0;
@@ -546,7 +547,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (!pte->present) return OK;
 
     pte->value = 0;
-    flush_tlb_page(virt);
+    flush_tlb_page_local(virt);
 
     // Cascade: reclaim empty page tables up the hierarchy
     if (is_table_empty(pt)) {
@@ -603,7 +604,7 @@ __PRIVILEGED_CODE int32_t set_page_flags(virt_addr_t virt, page_flags_t flags, p
         auto* huge = reinterpret_cast<pdpte_1gb_t*>(pdpte);
         pmm::phys_addr_t phys = static_cast<pmm::phys_addr_t>(huge->phys_addr) << 30;
         *huge = flags_to_pdpte_1gb(phys, flags);
-        flush_tlb_page(virt);
+        flush_tlb_page_local(virt);
         return OK;
     }
 
@@ -616,7 +617,7 @@ __PRIVILEGED_CODE int32_t set_page_flags(virt_addr_t virt, page_flags_t flags, p
         auto* large = reinterpret_cast<pde_2mb_t*>(pde);
         pmm::phys_addr_t phys = static_cast<pmm::phys_addr_t>(large->phys_addr) << 21;
         *large = flags_to_pde_2mb(phys, flags);
-        flush_tlb_page(virt);
+        flush_tlb_page_local(virt);
         return OK;
     }
 
@@ -627,7 +628,7 @@ __PRIVILEGED_CODE int32_t set_page_flags(virt_addr_t virt, page_flags_t flags, p
 
     pmm::phys_addr_t phys = static_cast<pmm::phys_addr_t>(pte->phys_addr) << 12;
     *pte = flags_to_pte(phys, flags);
-    flush_tlb_page(virt);
+    flush_tlb_page_local(virt);
     return OK;
 }
 
@@ -741,11 +742,11 @@ __PRIVILEGED_CODE bool is_mapped(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     return pt->entries[parts.pt_idx].present;
 }
 
-__PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt) {
+__PRIVILEGED_CODE void flush_tlb_page_local(virt_addr_t virt) {
     invlpg(virt);
 }
 
-__PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end) {
+__PRIVILEGED_CODE void flush_tlb_range_local(virt_addr_t start, virt_addr_t end) {
     sync::irq_lock_guard guard(g_pt_lock);
     pmm::phys_addr_t root_pt = get_kernel_pt_root();
     virt_addr_t addr = start;
@@ -778,7 +779,7 @@ __PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end) {
     }
 }
 
-__PRIVILEGED_CODE void flush_tlb_all() {
+__PRIVILEGED_CODE void flush_tlb_all_local() {
     write_cr3(read_cr3());
 }
 
@@ -1002,11 +1003,11 @@ __PRIVILEGED_CODE int32_t init() {
 
     // Switch to new page tables by writing to CR3
     set_kernel_pt_root(new_root);
-    flush_tlb_all();
+    flush_tlb_all_local();
 
     g_initialized = true;
 
-    return OK;
+    return x86::init_tlb_shootdown();
 }
 
 __PRIVILEGED_CODE pmm::phys_addr_t create_user_pt_root() {

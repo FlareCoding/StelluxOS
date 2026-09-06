@@ -909,6 +909,20 @@ __PRIVILEGED_CODE void flush_tlb_all() {
     );
 }
 
+__PRIVILEGED_CODE void flush_tlb_page_local(virt_addr_t virt) {
+    tlbi_vae1(virt);
+}
+
+__PRIVILEGED_CODE void flush_tlb_range_local(virt_addr_t start, virt_addr_t end) {
+    for (virt_addr_t addr = start; addr < end; addr += PAGE_SIZE_4KB) {
+        tlbi_vae1(addr);
+    }
+}
+
+__PRIVILEGED_CODE void flush_tlb_all_local() {
+    tlbi_vmalle1();
+}
+
 __PRIVILEGED_CODE void dump_mappings() {
     if (!g_initialized) {
         log::info("paging: not initialized");
