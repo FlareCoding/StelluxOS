@@ -8,6 +8,7 @@
 #include "dynpriv/dynpriv.h"
 #include "irq/irq.h"
 #include "irq/irq_arch.h"
+#include "smp/ipi.h"
 #include "serial/serial.h"
 #include "hw/hwtimer.h"
 #include "timer/timer.h"
@@ -134,10 +135,11 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
     sched::task_exec_core* irq_task_core = this_cpu(current_task_exec);
     irq_task_core->flags |= sched::TASK_FLAG_IN_IRQ;
 
-    uint32_t irq_id = irq::acknowledge();
+    uint32_t ack = irq::acknowledge();
+    uint32_t irq_id = ack & irq::GIC_INTID_MASK;
     if (irq_id == hwtimer::TIMER_PPI) {
         bool tick = timer::on_interrupt();
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         if (tick) {
             sched::on_tick(tf);
         }
@@ -146,9 +148,17 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         return;
     }
 
+    if (irq_id == irq::IPI_SGI_INTID) {
+        smp::ipi::dispatch();
+        irq::eoi(ack);
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
     if (irq_id == serial::irq_id()) {
         serial::on_rx_irq();
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
@@ -161,14 +171,14 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
     }
 
     if (irq::dispatch(irq_id)) {
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
     }
 
     if (irq_id != irq::GIC_SPURIOUS_ID) {
-        irq::eoi(irq_id);
+        irq::eoi(ack);
     }
     irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     trap_fatal("el0 irq", tf);
@@ -212,10 +222,11 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
     sched::task_exec_core* irq_task_core = this_cpu(current_task_exec);
     irq_task_core->flags |= sched::TASK_FLAG_IN_IRQ;
 
-    uint32_t irq_id = irq::acknowledge();
+    uint32_t ack = irq::acknowledge();
+    uint32_t irq_id = ack & irq::GIC_INTID_MASK;
     if (irq_id == hwtimer::TIMER_PPI) {
         bool tick = timer::on_interrupt();
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         if (tick) {
             sched::on_tick(tf);
         }
@@ -224,9 +235,17 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
         return;
     }
 
+    if (irq_id == irq::IPI_SGI_INTID) {
+        smp::ipi::dispatch();
+        irq::eoi(ack);
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
     if (irq_id == serial::irq_id()) {
         serial::on_rx_irq();
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
@@ -239,14 +258,14 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
     }
 
     if (irq::dispatch(irq_id)) {
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
     }
 
     if (irq_id != irq::GIC_SPURIOUS_ID) {
-        irq::eoi(irq_id);
+        irq::eoi(ack);
     }
     irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     trap_fatal("el1 irq", tf);

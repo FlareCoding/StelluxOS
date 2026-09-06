@@ -11,6 +11,7 @@
 #include "sched/sched.h"
 #include "rc/reaper.h"
 #include "smp/smp.h"
+#include "smp/ipi.h"
 #include "debug/debug.h"
 #include "trace/ktrace.h"
 #include "sched/task.h"
@@ -95,6 +96,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (irq::init() != irq::OK) {
         log::fatal("irq::init failed");
+    }
+
+    if (smp::ipi::init() != smp::ipi::OK) {
+        log::fatal("smp::ipi::init failed");
     }
 
     if (msi::init() != msi::OK) {

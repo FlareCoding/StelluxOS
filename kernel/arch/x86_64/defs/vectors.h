@@ -49,6 +49,10 @@ constexpr uint8_t VEC_SCHED_YIELD = 0x81;
 constexpr uint8_t VEC_MSI_BASE  = 0x40;
 constexpr uint8_t VEC_MSI_COUNT = 64;
 
+// Inter-processor interrupt, in a priority class above every device vector
+// so a request from another CPU is never queued behind device work
+constexpr uint8_t VEC_IPI = 0xF0;
+
 // IST (Interrupt Stack Table) indices
 // IST1-IST7 are valid, 0 means use current stack
 constexpr uint8_t IST_DF  = 1; // Double Fault

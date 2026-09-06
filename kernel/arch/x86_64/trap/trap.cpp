@@ -8,6 +8,7 @@
 #include "percpu/percpu.h"
 #include "dynpriv/dynpriv.h"
 #include "msi/msi.h"
+#include "smp/ipi.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "signals/signal.h"
@@ -82,6 +83,14 @@ extern "C" __PRIVILEGED_CODE void stlx_x86_64_trap_handler(x86::trap_frame* tf) 
     if (tf->vector == x86::VEC_SERIAL) {
         irq::eoi(0);
         serial::on_rx_irq();
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
+    if (tf->vector == x86::VEC_IPI) {
+        irq::eoi(0);
+        smp::ipi::dispatch();
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
