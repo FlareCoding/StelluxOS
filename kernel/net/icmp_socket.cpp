@@ -205,6 +205,20 @@ static ssize_t socket_recvfrom(resource::resource_object* obj, void* kdst, size_
     return static_cast<ssize_t>(copied);
 }
 
+// Reports the socket as unbound with its identifier in the port field
+static int32_t socket_getname(resource::resource_object* obj, void* kaddr, size_t* addrlen, bool peer) {
+    if (peer) {
+        return resource::ERR_NOTCONN;
+    }
+
+    icmp_socket* sock = static_cast<icmp_socket*>(obj->impl);
+    if (inet::fill_sockaddr(kaddr, addrlen, ipv4::UNSPECIFIED_ADDR, sock->id) != OK) {
+        return resource::ERR_INVAL;
+    }
+
+    return resource::OK;
+}
+
 static void socket_close(resource::resource_object* obj) {
     if (!obj || !obj->impl) {
         return;
@@ -225,6 +239,7 @@ static ssize_t socket_write(resource::resource_object*, const void*, size_t, uin
 static const resource::socket_ops g_icmp_socket_ops = {
     .sendto = socket_sendto,
     .recvfrom = socket_recvfrom,
+    .getname = socket_getname,
 };
 
 static const resource::resource_ops g_socket_ops = {

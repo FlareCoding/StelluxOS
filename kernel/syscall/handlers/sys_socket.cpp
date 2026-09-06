@@ -1,4 +1,5 @@
 #include "syscall/handlers/sys_socket.h"
+#include "syscall/handlers/sys_error_map.h"
 
 #include "socket/unix_socket.h"
 #include "net/inet.h"
@@ -13,25 +14,6 @@ constexpr uint64_t AF_UNIX     = 1;
 constexpr uint64_t SOCK_STREAM = 1;
 constexpr size_t   SENDTO_MAX_ADDR = 128;
 constexpr size_t   SENDTO_MAX_BUF  = 4096;
-
-static inline int64_t map_socket_op_error(int32_t rc) {
-    switch (rc) {
-    case resource::ERR_INVAL:       return syscall::EINVAL;
-    case resource::ERR_NOMEM:       return syscall::ENOMEM;
-    case resource::ERR_ADDRINUSE:   return syscall::EADDRINUSE;
-    case resource::ERR_CONNREFUSED: return syscall::ECONNREFUSED;
-    case resource::ERR_ISCONN:      return syscall::EISCONN;
-    case resource::ERR_AGAIN:       return syscall::EAGAIN;
-    case resource::ERR_NOENT:       return syscall::ENOENT;
-    case resource::ERR_NOTDIR:      return syscall::ENOTDIR;
-    case resource::ERR_INTR:        return syscall::ERESTARTSYS;
-    case resource::ERR_NOPROTOOPT:  return syscall::ENOPROTOOPT;
-    case resource::ERR_MSGSIZE:     return syscall::EMSGSIZE;
-    case resource::ERR_HOSTUNREACH: return syscall::EHOSTUNREACH;
-    case resource::ERR_UNSUP:       return syscall::EOPNOTSUPP;
-    default:                        return syscall::EIO;
-    }
-}
 
 DEFINE_SYSCALL3(socket, domain, type, protocol) {
     sched::task* task = sched::current();
@@ -182,7 +164,7 @@ DEFINE_SYSCALL3(bind, fd, addr, addrlen) {
 
     int32_t result = sockops->bind(obj, kaddr, klen);
     resource::resource_release(obj);
-    return (result == resource::OK) ? 0 : map_socket_op_error(result);
+    return (result == resource::OK) ? 0 : syscall::error_map::map_socket_op_error(result);
 }
 
 DEFINE_SYSCALL2(listen, fd, backlog) {
@@ -208,7 +190,7 @@ DEFINE_SYSCALL2(listen, fd, backlog) {
 
     int32_t result = sockops->listen(obj, static_cast<int32_t>(backlog));
     resource::resource_release(obj);
-    return (result == resource::OK) ? 0 : map_socket_op_error(result);
+    return (result == resource::OK) ? 0 : syscall::error_map::map_socket_op_error(result);
 }
 
 DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
@@ -248,7 +230,7 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
 
     int32_t result = sockops->connect(obj, kaddr, klen);
     resource::resource_release(obj);
-    return (result == resource::OK) ? 0 : map_socket_op_error(result);
+    return (result == resource::OK) ? 0 : syscall::error_map::map_socket_op_error(result);
 }
 
 DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
@@ -284,7 +266,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
 
     if (result != resource::OK) {
         resource::resource_release(listen_obj);
-        return map_socket_op_error(result);
+        return syscall::error_map::map_socket_op_error(result);
     }
 
     resource::handle_t new_handle = -1;
@@ -389,7 +371,7 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
     resource::resource_release(obj);
 
     if (result < 0) {
-        return map_socket_op_error(static_cast<int32_t>(result));
+        return syscall::error_map::map_socket_op_error(static_cast<int32_t>(result));
     }
 
     return result;
@@ -527,7 +509,7 @@ DEFINE_SYSCALL5(setsockopt, fd, level, optname, optval, optlen) {
         obj, static_cast<int32_t>(level), static_cast<int32_t>(optname),
         kval, klen);
     resource::resource_release(obj);
-    return (result == resource::OK) ? 0 : map_socket_op_error(result);
+    return (result == resource::OK) ? 0 : syscall::error_map::map_socket_op_error(result);
 }
 
 DEFINE_SYSCALL5(getsockopt, fd, level, optname, optval, optlen) {
@@ -573,7 +555,7 @@ DEFINE_SYSCALL5(getsockopt, fd, level, optname, optval, optlen) {
         kval, &klen);
     if (result != resource::OK) {
         resource::resource_release(obj);
-        return map_socket_op_error(result);
+        return syscall::error_map::map_socket_op_error(result);
     }
 
     copy_rc = mm::uaccess::copy_to_user(

@@ -3,8 +3,29 @@
 
 #include "syscall/syscall_table.h"
 #include "fs/fs.h"
+#include "resource/resource.h"
 
 namespace syscall::error_map {
+
+inline int64_t map_socket_op_error(int32_t rc) {
+    switch (rc) {
+    case resource::ERR_INVAL:       return syscall::EINVAL;
+    case resource::ERR_NOMEM:       return syscall::ENOMEM;
+    case resource::ERR_ADDRINUSE:   return syscall::EADDRINUSE;
+    case resource::ERR_CONNREFUSED: return syscall::ECONNREFUSED;
+    case resource::ERR_ISCONN:      return syscall::EISCONN;
+    case resource::ERR_NOTCONN:     return syscall::ENOTCONN;
+    case resource::ERR_AGAIN:       return syscall::EAGAIN;
+    case resource::ERR_NOENT:       return syscall::ENOENT;
+    case resource::ERR_NOTDIR:      return syscall::ENOTDIR;
+    case resource::ERR_INTR:        return syscall::ERESTARTSYS;
+    case resource::ERR_NOPROTOOPT:  return syscall::ENOPROTOOPT;
+    case resource::ERR_MSGSIZE:     return syscall::EMSGSIZE;
+    case resource::ERR_HOSTUNREACH: return syscall::EHOSTUNREACH;
+    case resource::ERR_UNSUP:       return syscall::EOPNOTSUPP;
+    default:                        return syscall::EIO;
+    }
+}
 
 inline int64_t map_fs_error(int32_t rc) {
     switch (rc) {
