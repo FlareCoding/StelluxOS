@@ -128,39 +128,15 @@ static uint32_t pipe_write_poll(
 // Ops tables
 
 static const resource::resource_ops g_pipe_read_ops = {
-    pipe_read,       // read
-    nullptr,         // write
-    pipe_read_close, // close
-    nullptr,         // ioctl
-    nullptr,         // mmap
-    nullptr,         // sendto
-    nullptr,         // recvfrom
-    nullptr,         // bind
-    nullptr,         // listen
-    nullptr,         // accept
-    nullptr,         // connect
-    nullptr,         // setsockopt
-    nullptr,         // getsockopt
-    pipe_read_poll,  // poll
-    nullptr,         // shutdown
+    .read = pipe_read,
+    .close = pipe_read_close,
+    .poll = pipe_read_poll,
 };
 
 static const resource::resource_ops g_pipe_write_ops = {
-    nullptr,          // read
-    pipe_write,       // write
-    pipe_write_close, // close
-    nullptr,          // ioctl
-    nullptr,          // mmap
-    nullptr,          // sendto
-    nullptr,          // recvfrom
-    nullptr,          // bind
-    nullptr,          // listen
-    nullptr,          // accept
-    nullptr,          // connect
-    nullptr,          // setsockopt
-    nullptr,          // getsockopt
-    pipe_write_poll,  // poll
-    nullptr,          // shutdown
+    .write = pipe_write,
+    .close = pipe_write_close,
+    .poll = pipe_write_poll,
 };
 
 // Pair creation

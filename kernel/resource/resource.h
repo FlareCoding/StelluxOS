@@ -12,6 +12,7 @@ namespace sync { struct poll_table; }
 namespace resource {
 
 struct resource_object;
+struct socket_ops;
 
 using read_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count, uint32_t flags);
 using write_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count, uint32_t flags);
@@ -20,38 +21,21 @@ using ioctl_fn = int32_t (*)(resource_object* obj, uint32_t cmd, uint64_t arg);
 using mmap_fn = int32_t (*)(resource_object* obj, mm::mm_context* mm_ctx,
                             uintptr_t addr, size_t length, uint32_t prot,
                             uint32_t map_flags, uint64_t offset, uintptr_t* out_addr);
-using sendto_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count,
-                              uint32_t flags, const void* kaddr, size_t addrlen);
-using recvfrom_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count,
-                                uint32_t flags, void* kaddr, size_t* addrlen);
-using bind_fn = int32_t (*)(resource_object* obj, const void* kaddr, size_t addrlen);
-using listen_fn = int32_t (*)(resource_object* obj, int32_t backlog);
-using accept_fn = int32_t (*)(resource_object* obj, resource_object** new_obj,
-                              void* kaddr, size_t* addrlen, bool nonblock);
-using connect_fn = int32_t (*)(resource_object* obj, const void* kaddr, size_t addrlen);
-using setsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
-                                  int32_t optname, const void* optval, size_t optlen);
-using getsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
-                                  int32_t optname, void* optval, size_t* optlen);
 using poll_fn = uint32_t (*)(resource_object* obj, sync::poll_table* pt);
-using shutdown_fn = int32_t (*)(resource_object* obj, int32_t how);
 
+/**
+ * Operations every resource may provide. Tables list only the entries they
+ * implement, the rest are null. `socket` is set exactly for sockets and holds
+ * the operations only they have.
+ */
 struct resource_ops {
-    read_fn     read;
-    write_fn    write;
-    close_fn    close;
-    ioctl_fn    ioctl;       // nullable
-    mmap_fn     mmap;        // nullable
-    sendto_fn   sendto;      // nullable, for datagram/raw sockets
-    recvfrom_fn recvfrom;    // nullable, for datagram/raw sockets
-    bind_fn     bind;        // nullable, for sockets
-    listen_fn   listen;      // nullable, for stream sockets
-    accept_fn   accept;      // nullable, for listening sockets
-    connect_fn  connect;     // nullable, for stream sockets
-    setsockopt_fn setsockopt; // nullable, for sockets
-    getsockopt_fn getsockopt; // nullable, for sockets
-    poll_fn       poll;       // nullable, returns readiness mask, subscribes on wait queues
-    shutdown_fn   shutdown;   // nullable, for sockets
+    read_fn  read = nullptr;
+    write_fn write = nullptr;
+    close_fn close = nullptr;
+    ioctl_fn ioctl = nullptr;
+    mmap_fn  mmap = nullptr;
+    poll_fn  poll = nullptr;
+    const socket_ops* socket = nullptr;
 };
 
 struct resource_object : rc::ref_counted<resource_object> {

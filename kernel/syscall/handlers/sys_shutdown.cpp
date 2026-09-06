@@ -1,6 +1,6 @@
 #include "syscall/handlers/sys_shutdown.h"
 
-#include "resource/resource.h"
+#include "resource/socket_ops.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 
@@ -27,12 +27,13 @@ DEFINE_SYSCALL2(shutdown, fd, how) {
         return syscall::ENOTSOCK;
     }
 
-    if (!obj->ops || !obj->ops->shutdown) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->shutdown) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
     }
 
-    int32_t result = obj->ops->shutdown(obj, how_val);
+    int32_t result = sockops->shutdown(obj, how_val);
     resource::resource_release(obj);
 
     if (result == resource::OK) return 0;

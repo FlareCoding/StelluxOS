@@ -2,7 +2,7 @@
 
 #include "socket/unix_socket.h"
 #include "net/inet.h"
-#include "resource/resource.h"
+#include "resource/socket_ops.h"
 #include "fs/fstypes.h"
 #include "sched/sched.h"
 #include "sched/task.h"
@@ -164,7 +164,8 @@ DEFINE_SYSCALL3(bind, fd, addr, addrlen) {
         return syscall::EINVAL;
     }
 
-    if (!obj->ops || !obj->ops->bind) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->bind) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
     }
@@ -179,7 +180,7 @@ DEFINE_SYSCALL3(bind, fd, addr, addrlen) {
         return syscall::EFAULT;
     }
 
-    int32_t result = obj->ops->bind(obj, kaddr, klen);
+    int32_t result = sockops->bind(obj, kaddr, klen);
     resource::resource_release(obj);
     return (result == resource::OK) ? 0 : map_socket_op_error(result);
 }
@@ -199,12 +200,13 @@ DEFINE_SYSCALL2(listen, fd, backlog) {
         return syscall::EINVAL;
     }
 
-    if (!obj->ops || !obj->ops->listen) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->listen) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
     }
 
-    int32_t result = obj->ops->listen(obj, static_cast<int32_t>(backlog));
+    int32_t result = sockops->listen(obj, static_cast<int32_t>(backlog));
     resource::resource_release(obj);
     return (result == resource::OK) ? 0 : map_socket_op_error(result);
 }
@@ -228,7 +230,8 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
         return syscall::EINVAL;
     }
 
-    if (!obj->ops || !obj->ops->connect) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->connect) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
     }
@@ -243,7 +246,7 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
         return syscall::EFAULT;
     }
 
-    int32_t result = obj->ops->connect(obj, kaddr, klen);
+    int32_t result = sockops->connect(obj, kaddr, klen);
     resource::resource_release(obj);
     return (result == resource::OK) ? 0 : map_socket_op_error(result);
 }
@@ -264,7 +267,8 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
         return syscall::EINVAL;
     }
 
-    if (!listen_obj->ops || !listen_obj->ops->accept) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(listen_obj);
+    if (!sockops || !sockops->accept) {
         resource::resource_release(listen_obj);
         return syscall::EOPNOTSUPP;
     }
@@ -275,7 +279,7 @@ DEFINE_SYSCALL3(accept, fd, addr, addrlen) {
     size_t kaddr_len = sizeof(kaddr);
 
     resource::resource_object* new_obj = nullptr;
-    int32_t result = listen_obj->ops->accept(
+    int32_t result = sockops->accept(
         listen_obj, &new_obj, kaddr, &kaddr_len, nonblock);
 
     if (result != resource::OK) {
@@ -335,7 +339,8 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
         return syscall::EBADF;
     }
 
-    if (!obj->ops || !obj->ops->sendto) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->sendto) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
     }
@@ -377,9 +382,9 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
         }
     }
 
-    ssize_t result = obj->ops->sendto(obj, kbuf, data_len,
-                                       static_cast<uint32_t>(flags),
-                                       kaddr, addr_len);
+    ssize_t result = sockops->sendto(obj, kbuf, data_len,
+                                  static_cast<uint32_t>(flags),
+                                  kaddr, addr_len);
     heap::kfree(kbuf);
     resource::resource_release(obj);
 
@@ -409,7 +414,8 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
         return syscall::EBADF;
     }
 
-    if (!obj->ops || !obj->ops->recvfrom) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->recvfrom) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
     }
@@ -428,9 +434,9 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t kaddr_len = sizeof(kaddr);
 
-    ssize_t result = obj->ops->recvfrom(obj, kbuf, data_len,
-                                         static_cast<uint32_t>(flags),
-                                         kaddr, &kaddr_len);
+    ssize_t result = sockops->recvfrom(obj, kbuf, data_len,
+                                    static_cast<uint32_t>(flags),
+                                    kaddr, &kaddr_len);
 
     if (result < 0) {
         heap::kfree(kbuf);
@@ -497,7 +503,8 @@ DEFINE_SYSCALL5(setsockopt, fd, level, optname, optval, optlen) {
         return syscall::EINVAL;
     }
 
-    if (!obj->ops || !obj->ops->setsockopt) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->setsockopt) {
         resource::resource_release(obj);
         return syscall::ENOPROTOOPT;
     }
@@ -516,7 +523,7 @@ DEFINE_SYSCALL5(setsockopt, fd, level, optname, optval, optlen) {
         return syscall::EFAULT;
     }
 
-    int32_t result = obj->ops->setsockopt(
+    int32_t result = sockops->setsockopt(
         obj, static_cast<int32_t>(level), static_cast<int32_t>(optname),
         kval, klen);
     resource::resource_release(obj);
@@ -540,7 +547,8 @@ DEFINE_SYSCALL5(getsockopt, fd, level, optname, optval, optlen) {
         return syscall::EINVAL;
     }
 
-    if (!obj->ops || !obj->ops->getsockopt) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->getsockopt) {
         resource::resource_release(obj);
         return syscall::ENOPROTOOPT;
     }
@@ -560,7 +568,7 @@ DEFINE_SYSCALL5(getsockopt, fd, level, optname, optval, optlen) {
     }
 
     uint8_t kval[64] = {};
-    int32_t result = obj->ops->getsockopt(
+    int32_t result = sockops->getsockopt(
         obj, static_cast<int32_t>(level), static_cast<int32_t>(optname),
         kval, &klen);
     if (result != resource::OK) {

@@ -3,7 +3,7 @@
 #include "net/inet.h"
 #include "net/eth.h"
 #include "net/interface.h"
-#include "resource/resource.h"
+#include "resource/socket_ops.h"
 #include "mm/heap.h"
 #include "common/string.h"
 
@@ -222,22 +222,16 @@ static ssize_t socket_write(resource::resource_object*, const void*, size_t, uin
     return resource::ERR_UNSUP;
 }
 
+static const resource::socket_ops g_icmp_socket_ops = {
+    .sendto = socket_sendto,
+    .recvfrom = socket_recvfrom,
+};
+
 static const resource::resource_ops g_socket_ops = {
-    socket_read,
-    socket_write,
-    socket_close,
-    nullptr, // ioctl
-    nullptr, // mmap
-    socket_sendto,
-    socket_recvfrom,
-    nullptr, // bind
-    nullptr, // listen
-    nullptr, // accept
-    nullptr, // connect
-    nullptr, // setsockopt
-    nullptr, // getsockopt
-    nullptr, // poll
-    nullptr, // shutdown
+    .read = socket_read,
+    .write = socket_write,
+    .close = socket_close,
+    .socket = &g_icmp_socket_ops,
 };
 
 const resource::resource_ops* socket_ops() {

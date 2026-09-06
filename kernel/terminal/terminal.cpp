@@ -120,21 +120,10 @@ __PRIVILEGED_CODE static uint32_t terminal_poll(
 }
 
 static const resource::resource_ops g_terminal_ops = {
-    terminal_read,
-    terminal_write,
-    terminal_close,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    terminal_poll,
-    nullptr,
+    .read = terminal_read,
+    .write = terminal_write,
+    .close = terminal_close,
+    .poll = terminal_poll,
 };
 
 const resource::resource_ops* get_terminal_ops() {

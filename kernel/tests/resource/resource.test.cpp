@@ -139,11 +139,7 @@ TEST(resource_test, missing_provider_ops_return_err_unsup) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
 
-    static const resource::resource_ops no_rw_ops = {
-        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-        nullptr,
-    };
+    static const resource::resource_ops no_rw_ops = {};
 
     auto* read_obj = heap::kalloc_new<resource::resource_object>();
     ASSERT_NOT_NULL(read_obj);
@@ -195,9 +191,7 @@ TEST(resource_test, terminal_release_invokes_close_once) {
     ASSERT_NOT_NULL(task);
 
     static const resource::resource_ops close_counter_ops = {
-        nullptr, nullptr, close_counter_close, nullptr, nullptr, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-        nullptr,
+        .close = close_counter_close,
     };
 
     resource_close_counter counter{0};
@@ -319,9 +313,7 @@ TEST(resource_test, dup2_replaces_and_closes_target) {
     ASSERT_NOT_NULL(task);
 
     static const resource::resource_ops victim_ops = {
-        nullptr, nullptr, close_counter_close, nullptr, nullptr, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-        nullptr,
+        .close = close_counter_close,
     };
 
     resource_close_counter counter{0};
