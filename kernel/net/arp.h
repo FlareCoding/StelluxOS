@@ -60,8 +60,6 @@ enum class arp_entry_state : uint8_t {
     resolved = 2,
 };
 
-using packet_list = list::head<packet, &packet::link>;
-
 struct arp_entry {
     interface*      iface;
     arp_entry_state state;

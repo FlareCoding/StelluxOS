@@ -1,6 +1,7 @@
 #include "syscall/handlers/sys_socket.h"
 
 #include "socket/unix_socket.h"
+#include "net/inet.h"
 #include "resource/resource.h"
 #include "fs/fstypes.h"
 #include "sched/sched.h"
@@ -25,6 +26,9 @@ static inline int64_t map_socket_op_error(int32_t rc) {
     case resource::ERR_NOTDIR:      return syscall::ENOTDIR;
     case resource::ERR_INTR:        return syscall::ERESTARTSYS;
     case resource::ERR_NOPROTOOPT:  return syscall::ENOPROTOOPT;
+    case resource::ERR_MSGSIZE:     return syscall::EMSGSIZE;
+    case resource::ERR_HOSTUNREACH: return syscall::EHOSTUNREACH;
+    case resource::ERR_UNSUP:       return syscall::EOPNOTSUPP;
     default:                        return syscall::EIO;
     }
 }
@@ -44,6 +48,13 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
         }
 
         rc = socket::create_unbound_socket(&obj);
+    } else if (domain == net::inet::AF_INET) {
+        rc = net::inet::create_socket(static_cast<uint32_t>(type),
+                                      static_cast<uint32_t>(protocol), &obj);
+
+        if (rc == resource::ERR_UNSUP) {
+            return syscall::EPROTONOSUPPORT;
+        }
     } else {
         return syscall::EAFNOSUPPORT;
     }
@@ -373,7 +384,7 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
     resource::resource_release(obj);
 
     if (result < 0) {
-        return syscall::EIO;
+        return map_socket_op_error(static_cast<int32_t>(result));
     }
 
     return result;

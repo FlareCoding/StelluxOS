@@ -135,6 +135,8 @@ private:
 
 static_assert(sizeof(packet) == PACKET_OBJECT_SIZE);
 
+using packet_list = list::head<packet, &packet::link>;
+
 } // namespace net
 
 #endif // STELLUX_NET_PACKET_H
