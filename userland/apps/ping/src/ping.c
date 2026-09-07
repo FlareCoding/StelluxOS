@@ -7,6 +7,7 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <errno.h>
 
 struct icmp_hdr {
@@ -22,9 +23,8 @@ struct icmp_hdr {
 #define ICMP_PAYLOAD_LEN  56
 #define ICMP_PACKET_LEN   (sizeof(struct icmp_hdr) + ICMP_PAYLOAD_LEN)
 
-// Receive timeout: poll interval and total wait time per ping
-#define PING_RECV_POLL_MS    50       // poll every 50ms
-#define PING_RECV_TIMEOUT_MS 3000     // give up after 3 seconds
+// How long to wait for each reply before reporting it lost
+#define PING_RECV_TIMEOUT_MS 3000
 
 static uint16_t inet_checksum(const void* data, size_t len) {
     const uint8_t* ptr = (const uint8_t*)data;
@@ -338,71 +338,67 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // Poll with a timeout instead of blocking, replies may never arrive
-        // (unreachable host, firewall, QEMU SLIRP ICMP limitation).
+        // Wait for the matching reply, bounded because it may never arrive
+        // (unreachable host, firewall). Anything else on the socket, such as
+        // a late reply to an earlier request, is read and skipped.
         uint8_t reply_buf[256];
         struct sockaddr_in src;
         socklen_t srclen = sizeof(src);
         ssize_t nrecv = -1;
 
-        int elapsed_ms = 0;
-        while (elapsed_ms < PING_RECV_TIMEOUT_MS) {
+        struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
+        for (;;) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long waited_ms = (now.tv_sec - t0.tv_sec) * 1000L +
+                             (now.tv_nsec - t0.tv_nsec) / 1000000L;
+            if (waited_ms >= PING_RECV_TIMEOUT_MS) {
+                break;
+            }
+
+            if (poll(&pfd, 1, PING_RECV_TIMEOUT_MS - (int)waited_ms) <= 0) {
+                break;
+            }
+
             srclen = sizeof(src);
             nrecv = recvfrom(fd, reply_buf, sizeof(reply_buf), MSG_DONTWAIT,
                              (struct sockaddr*)&src, &srclen);
             if (nrecv >= (ssize_t)sizeof(struct icmp_hdr)) {
-                struct icmp_hdr* peek = (struct icmp_hdr*)reply_buf;
-                if (peek->type == ICMP_ECHO_REPLY) {
-                    break; // got a reply
+                struct icmp_hdr* reply_hdr = (struct icmp_hdr*)reply_buf;
+                if (reply_hdr->type == ICMP_ECHO_REPLY &&
+                    my_ntohs(reply_hdr->id) == ping_id &&
+                    my_ntohs(reply_hdr->seq) == (uint16_t)i) {
+                    break;
                 }
-
-                // Not a reply (e.g. echo request looped back), drain it and
-                // retry, still charging one interval to bound the timeout.
-                nrecv = -1;
-                elapsed_ms += PING_RECV_POLL_MS;
-                continue;
             }
 
-            // No data yet, sleep briefly and retry
-            struct timespec poll_delay = { .tv_sec = 0,
-                                           .tv_nsec = PING_RECV_POLL_MS * 1000000L };
-            nanosleep(&poll_delay, NULL);
-            elapsed_ms += PING_RECV_POLL_MS;
-            nrecv = -1; // ensure timeout path is taken if loop exhausts
+            nrecv = -1;
         }
 
         struct timespec t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
 
-        if (nrecv < (ssize_t)sizeof(struct icmp_hdr)) {
+        if (nrecv < 0) {
             printf("Request timeout for icmp_seq=%d\r\n", i);
         } else {
-            struct icmp_hdr* reply_hdr = (struct icmp_hdr*)reply_buf;
-
-            if (reply_hdr->type == ICMP_ECHO_REPLY &&
-                my_ntohs(reply_hdr->id) == ping_id &&
-                my_ntohs(reply_hdr->seq) == (uint16_t)i) {
-                long sec_diff = t1.tv_sec - t0.tv_sec;
-                long nsec_diff = t1.tv_nsec - t0.tv_nsec;
-                if (nsec_diff < 0) {
-                    sec_diff--;
-                    nsec_diff += 1000000000L;
-                }
-                uint64_t rtt_ns = (uint64_t)sec_diff * 1000000000ULL + (uint64_t)nsec_diff;
-                uint32_t rtt_us = (uint32_t)(rtt_ns / 1000);
-
-                received++;
-                rtt_total += rtt_us;
-                if (rtt_us < rtt_min) rtt_min = rtt_us;
-                if (rtt_us > rtt_max) rtt_max = rtt_us;
-
-                uint32_t ms = rtt_us / 1000;
-                uint32_t us_frac = rtt_us % 1000;
-                printf("64 bytes from %s: icmp_seq=%d time=%u.%03u ms\r\n",
-                       ip_str, i, ms, us_frac);
-            } else {
-                printf("Request timeout for icmp_seq=%d\r\n", i);
+            long sec_diff = t1.tv_sec - t0.tv_sec;
+            long nsec_diff = t1.tv_nsec - t0.tv_nsec;
+            if (nsec_diff < 0) {
+                sec_diff--;
+                nsec_diff += 1000000000L;
             }
+            uint64_t rtt_ns = (uint64_t)sec_diff * 1000000000ULL + (uint64_t)nsec_diff;
+            uint32_t rtt_us = (uint32_t)(rtt_ns / 1000);
+
+            received++;
+            rtt_total += rtt_us;
+            if (rtt_us < rtt_min) rtt_min = rtt_us;
+            if (rtt_us > rtt_max) rtt_max = rtt_us;
+
+            uint32_t ms = rtt_us / 1000;
+            uint32_t us_frac = rtt_us % 1000;
+            printf("64 bytes from %s: icmp_seq=%d time=%u.%03u ms\r\n",
+                   ip_str, i, ms, us_frac);
         }
 
         if (i < count - 1) {

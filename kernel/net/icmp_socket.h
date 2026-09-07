@@ -4,6 +4,7 @@
 #include "common/types.h"
 #include "net/packet.h"
 #include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 
 namespace resource { struct resource_ops; }
 
@@ -15,29 +16,35 @@ constexpr size_t SOCKET_QUEUE_DEPTH = 8; // replies held per socket, oldest drop
 
 /**
  * One ping socket. Requests sent through it carry `id`, and replies with that
- * identifier wait in `rx_queue` until recvfrom takes them. Lives in
- * unprivileged memory because the driver task enqueues replies while lowered.
+ * identifier wait in `rx_queue` until recvfrom takes them, waking a reader
+ * asleep on `rx_wq`. Protocol state, so it lives in unprivileged memory. The
+ * lock is held with interrupts disabled on every path, which the sleep and
+ * wake protocol requires.
  */
 struct icmp_socket {
-    uint16_t       id;
-    sync::spinlock lock; // Guards rx_queue
-    packet_list    rx_queue;
+    uint16_t         id;
+    sync::spinlock   lock; // Guards rx_queue
+    packet_list      rx_queue;
+    sync::wait_queue rx_wq; // Readers waiting for rx_queue to fill
 };
 
-/*
- * Allocates a socket with an unused identifier and registers it.
- * Returns nullptr when the table is full or memory is exhausted.
+/**
+ * @brief Allocates a socket with an unused identifier and registers it.
+ * @return The socket, or nullptr when the table is full or memory is exhausted.
+ * @note Privilege: **required**
  */
-icmp_socket* socket_open();
+__PRIVILEGED_CODE icmp_socket* socket_open();
 
-/*
- * Unregisters the socket and frees it with any replies still waiting.
+/**
+ * @brief Unregisters the socket and frees it with any replies still waiting.
+ * @note Privilege: **required**
  */
-void socket_close(icmp_socket* sock);
+__PRIVILEGED_CODE void socket_close(icmp_socket* sock);
 
 /*
  * Consumes an echo reply, queueing it on the socket that owns its identifier
- * or freeing it when no socket does.
+ * and waking a waiting reader, or freeing it when no socket does. Elevates
+ * internally, so the driver task may call it lowered.
  */
 void socket_deliver(packet* pkt);
 

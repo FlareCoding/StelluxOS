@@ -388,9 +388,10 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
     }
 
     resource::resource_object* obj = nullptr;
+    uint32_t handle_flags = 0;
     int32_t rc = resource::get_handle_object(
         task->handles, static_cast<resource::handle_t>(fd),
-        resource::RIGHT_READ, &obj
+        resource::RIGHT_READ, &obj, &handle_flags
     );
     if (rc != resource::HANDLE_OK) {
         return syscall::EBADF;
@@ -400,6 +401,12 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
     if (!sockops || !sockops->recvfrom) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
+    }
+
+    // A nonblocking descriptor never waits, whatever the call asked for
+    uint32_t msg_flags = static_cast<uint32_t>(flags);
+    if (handle_flags & fs::O_NONBLOCK) {
+        msg_flags |= net::inet::MSG_DONTWAIT;
     }
 
     size_t data_len = static_cast<size_t>(len);
@@ -416,18 +423,13 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t kaddr_len = sizeof(kaddr);
 
-    ssize_t result = sockops->recvfrom(obj, kbuf, data_len,
-                                    static_cast<uint32_t>(flags),
+    ssize_t result = sockops->recvfrom(obj, kbuf, data_len, msg_flags,
                                     kaddr, &kaddr_len);
 
     if (result < 0) {
         heap::kfree(kbuf);
         resource::resource_release(obj);
-        if (result == resource::ERR_AGAIN) {
-            return syscall::EAGAIN;
-        }
-
-        return syscall::EIO;
+        return syscall::error_map::map_socket_op_error(static_cast<int32_t>(result));
     }
 
     int32_t copy_rc = mm::uaccess::copy_to_user(
