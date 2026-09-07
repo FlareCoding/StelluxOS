@@ -19,6 +19,18 @@ namespace drivers {
 using namespace genet;
 using namespace phy;
 
+// RBUF_ALIGN_2B makes the hardware place this many bytes in front of every
+// received frame so the IP header lands on a 4 byte boundary
+constexpr uint32_t RX_PREFIX_LEN = 2;
+
+// Address on the test network, used until the stack supports interface
+// configuration. Adjust to the network the board is attached to.
+static constexpr net::ipv4::ipv4_config LAN_STATIC_IPV4 = {
+    {{10, 0, 0, 75}},
+    {{255, 255, 255, 0}},
+    {{10, 0, 0, 1}},
+};
+
 // Construction / factory
 
 bcm_genet_driver::bcm_genet_driver(uint64_t reg_phys, uint64_t reg_size,
@@ -39,7 +51,6 @@ bcm_genet_driver::bcm_genet_driver(uint64_t reg_phys, uint64_t reg_size,
     , m_tx_queued(0)
     , m_has_irq(false) {
     m_lock = sync::SPINLOCK_INIT;
-    string::memset(m_mac, 0, sizeof(m_mac));
 }
 
 bcm_genet_driver* create_bcm_genet(uint64_t reg_phys, uint64_t reg_size,
@@ -329,33 +340,32 @@ void bcm_genet_driver::read_mac_address() {
     uint32_t mac0 = reg_read(UMAC_MAC0);
     uint32_t mac1 = reg_read(UMAC_MAC1);
 
-    m_mac[0] = static_cast<uint8_t>((mac0 >> 24) & 0xFF);
-    m_mac[1] = static_cast<uint8_t>((mac0 >> 16) & 0xFF);
-    m_mac[2] = static_cast<uint8_t>((mac0 >> 8) & 0xFF);
-    m_mac[3] = static_cast<uint8_t>(mac0 & 0xFF);
-    m_mac[4] = static_cast<uint8_t>((mac1 >> 8) & 0xFF);
-    m_mac[5] = static_cast<uint8_t>(mac1 & 0xFF);
+    m_mac.bytes[0] = static_cast<uint8_t>((mac0 >> 24) & 0xFF);
+    m_mac.bytes[1] = static_cast<uint8_t>((mac0 >> 16) & 0xFF);
+    m_mac.bytes[2] = static_cast<uint8_t>((mac0 >> 8) & 0xFF);
+    m_mac.bytes[3] = static_cast<uint8_t>(mac0 & 0xFF);
+    m_mac.bytes[4] = static_cast<uint8_t>((mac1 >> 8) & 0xFF);
+    m_mac.bytes[5] = static_cast<uint8_t>(mac1 & 0xFF);
 
     bool all_zero = true, all_ff = true;
-    for (int i = 0; i < 6; i++) {
-        if (m_mac[i] != 0x00) all_zero = false;
-        if (m_mac[i] != 0xFF) all_ff = false;
+    for (size_t i = 0; i < net::eth::MAC_ADDR_LEN; i++) {
+        if (m_mac.bytes[i] != 0x00) all_zero = false;
+        if (m_mac.bytes[i] != 0xFF) all_ff = false;
     }
     if (all_zero || all_ff) {
         // Fixed fallback address with the Raspberry Pi vendor prefix.
-        m_mac[0] = 0xDC; m_mac[1] = 0xA6; m_mac[2] = 0x32;
-        m_mac[3] = 0x01; m_mac[4] = 0x02; m_mac[5] = 0x03;
+        m_mac = {{0xDC, 0xA6, 0x32, 0x01, 0x02, 0x03}};
         log::warn("genet: firmware MAC invalid, using fallback");
     }
 }
 
 void bcm_genet_driver::write_mac_address() {
-    uint32_t mac0 = (static_cast<uint32_t>(m_mac[0]) << 24) |
-                    (static_cast<uint32_t>(m_mac[1]) << 16) |
-                    (static_cast<uint32_t>(m_mac[2]) << 8) |
-                    static_cast<uint32_t>(m_mac[3]);
-    uint32_t mac1 = (static_cast<uint32_t>(m_mac[4]) << 8) |
-                    static_cast<uint32_t>(m_mac[5]);
+    uint32_t mac0 = (static_cast<uint32_t>(m_mac.bytes[0]) << 24) |
+                    (static_cast<uint32_t>(m_mac.bytes[1]) << 16) |
+                    (static_cast<uint32_t>(m_mac.bytes[2]) << 8) |
+                    static_cast<uint32_t>(m_mac.bytes[3]);
+    uint32_t mac1 = (static_cast<uint32_t>(m_mac.bytes[4]) << 8) |
+                    static_cast<uint32_t>(m_mac.bytes[5]);
     reg_write(UMAC_MAC0, mac0);
     reg_write(UMAC_MAC1, mac1);
 }
@@ -500,24 +510,27 @@ void bcm_genet_driver::dma_disable_tx_rx() {
 
 // TX path
 
-int32_t bcm_genet_driver::transmit(const uint8_t* frame, size_t len) {
-    if (!frame || len == 0) {
-        return -1;
+int32_t bcm_genet_driver::transmit(net::packet* pkt) {
+    if (!pkt || pkt->length() == 0) {
+        return net::ERR_INVALID;
     }
 
-    int32_t result = -1;
+    size_t len = pkt->length();
+    if (len > MAX_PACKET_SIZE) {
+        return net::ERR_TOO_LARGE;
+    }
+
+    int32_t result = net::ERR_BUSY;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(m_lock);
         process_tx_completions();
 
-        if (m_tx_queued >= DMA_DESC_COUNT || len > MAX_PACKET_SIZE) {
-            result = -1;
-        } else {
+        if (m_tx_queued < DMA_DESC_COUNT) {
             uint16_t idx = m_tx_prod_index % DMA_DESC_COUNT;
 
             uintptr_t buf_va = m_tx_buf_vaddr +
                                static_cast<uintptr_t>(idx) * MAX_PACKET_SIZE;
-            string::memcpy(reinterpret_cast<uint8_t*>(buf_va), frame, len);
+            string::memcpy(reinterpret_cast<uint8_t*>(buf_va), pkt->data(), len);
 
             uint64_t buf_phys = m_tx_buf_phys +
                                 static_cast<uint64_t>(idx) * MAX_PACKET_SIZE;
@@ -533,7 +546,14 @@ int32_t bcm_genet_driver::transmit(const uint8_t* frame, size_t len) {
             m_tx_prod_index = (m_tx_prod_index + 1) & DMA_INDEX_MASK;
             reg_write(TX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE), m_tx_prod_index);
             m_tx_queued++;
-            result = 0;
+            result = net::OK;
+        }
+
+        if (result == net::OK) {
+            m_counters.frames_out++;
+            m_counters.bytes_out += len;
+        } else {
+            record_packet_dropped();
         }
     });
 
@@ -552,33 +572,87 @@ void bcm_genet_driver::process_tx_completions() {
 
 // RX path
 
-void bcm_genet_driver::process_rx() {
+// Frame length of a finished descriptor without the alignment prefix, or 0
+// when the hardware flagged an error, split the frame, or reported an
+// impossible length
+static uint16_t rx_frame_length(uint16_t idx, uint32_t desc_status) {
+    if (desc_status & RX_DESC_RX_ERROR) {
+        log::warn("genet: RX error on desc %u (status=0x%08x)", idx, desc_status);
+        return 0;
+    }
+
+    if ((desc_status & (RX_DESC_SOP | RX_DESC_EOP)) != (RX_DESC_SOP | RX_DESC_EOP)) {
+        log::warn("genet: RX multi-descriptor frame on desc %u, dropping", idx);
+        return 0;
+    }
+
+    uint32_t buf_len = (desc_status & RX_DESC_BUFLEN_MASK) >> RX_DESC_BUFLEN_SHIFT;
+    if (buf_len <= RX_PREFIX_LEN || buf_len > MAX_PACKET_SIZE) {
+        return 0;
+    }
+
+    return static_cast<uint16_t>(buf_len - RX_PREFIX_LEN);
+}
+
+// Takes finished descriptors from the ring in order, up to one batch. The
+// consumer index is not advanced until they are recycled, so the hardware
+// cannot refill them while their frames are being delivered.
+void bcm_genet_driver::drain_rx_locked(rx_batch& batch) {
+    batch.count = 0;
+
     uint32_t hw_prod = reg_read(RX_DMA_PROD_INDEX(DMA_DEFAULT_QUEUE)) & DMA_INDEX_MASK;
     uint32_t pending = (hw_prod - m_rx_cons_index) & DMA_INDEX_MASK;
+    if (pending > RX_BATCH_MAX) {
+        pending = RX_BATCH_MAX;
+    }
 
     for (uint32_t i = 0; i < pending; i++) {
-        uint16_t idx = m_rx_cons_index % DMA_DESC_COUNT;
+        uint16_t idx = static_cast<uint16_t>((m_rx_cons_index + i) % DMA_DESC_COUNT);
         uint32_t desc_status = reg_read(RX_DESC_STATUS(idx));
-        uint32_t buf_len = (desc_status & RX_DESC_BUFLEN_MASK) >> RX_DESC_BUFLEN_SHIFT;
 
-        if (desc_status & RX_DESC_RX_ERROR) {
-            log::warn("genet: RX error on desc %u (status=0x%08x)", idx, desc_status);
-            goto recycle;
+        rx_batch_entry& entry = batch.entries[batch.count++];
+        entry.idx = idx;
+        entry.len = rx_frame_length(idx, desc_status);
+    }
+}
+
+// Copies each frame out of its DMA buffer into a packet and hands the packet
+// to the stack. Runs without m_lock so the stack may transmit from receive.
+void bcm_genet_driver::deliver_rx_batch(const rx_batch& batch) {
+    for (uint32_t i = 0; i < batch.count; i++) {
+        const rx_batch_entry& entry = batch.entries[i];
+        if (entry.len == 0) {
+            record_iface_error();
+            continue;
         }
 
-        if ((desc_status & (RX_DESC_SOP | RX_DESC_EOP)) != (RX_DESC_SOP | RX_DESC_EOP)) {
-            log::warn("genet: RX multi-descriptor frame on desc %u, dropping", idx);
-            goto recycle;
+        net::packet* pkt = net::packet::alloc();
+
+        uint8_t* dst = nullptr;
+        if (pkt && pkt->reserve(net::eth::RX_ALIGN_PAD)) {
+            dst = pkt->put(entry.len);
         }
 
-        if (buf_len > MAX_PACKET_SIZE || buf_len <= 2)
-            goto recycle;
+        if (!dst) {
+            net::packet::free(pkt);
+            record_packet_dropped();
+            continue;
+        }
 
-        // Frames stop here until a protocol stack attaches. The payload
-        // starts 2 bytes in, after the RBUF alignment padding.
+        const uint8_t* src = reinterpret_cast<const uint8_t*>(
+            m_rx_buf_vaddr + static_cast<uintptr_t>(entry.idx) * MAX_PACKET_SIZE + RX_PREFIX_LEN);
+        string::memcpy(dst, src, entry.len);
+        pkt->set_iface(this);
 
-    recycle:
-        rx_remap_descriptor(idx);
+        receive(pkt);
+    }
+}
+
+// Returns every descriptor of a delivered batch to the hardware in ring
+// order, advancing the consumer index behind each one
+void bcm_genet_driver::recycle_rx_locked(const rx_batch& batch) {
+    for (uint32_t i = 0; i < batch.count; i++) {
+        rx_remap_descriptor(batch.entries[i].idx);
         m_rx_cons_index = (m_rx_cons_index + 1) & DMA_INDEX_MASK;
         reg_write(RX_DMA_CONS_INDEX(DMA_DEFAULT_QUEUE), m_rx_cons_index);
     }
@@ -679,13 +753,13 @@ void bcm_genet_driver::set_promisc(bool enable) {
 void bcm_genet_driver::setup_rx_filter() {
     // Slot 0: unicast (our MAC)
     reg_write(UMAC_MDF_ADDR0(0),
-              static_cast<uint32_t>(m_mac[1]) |
-              (static_cast<uint32_t>(m_mac[0]) << 8));
+              static_cast<uint32_t>(m_mac.bytes[1]) |
+              (static_cast<uint32_t>(m_mac.bytes[0]) << 8));
     reg_write(UMAC_MDF_ADDR1(0),
-              static_cast<uint32_t>(m_mac[5]) |
-              (static_cast<uint32_t>(m_mac[4]) << 8) |
-              (static_cast<uint32_t>(m_mac[3]) << 16) |
-              (static_cast<uint32_t>(m_mac[2]) << 24));
+              static_cast<uint32_t>(m_mac.bytes[5]) |
+              (static_cast<uint32_t>(m_mac.bytes[4]) << 8) |
+              (static_cast<uint32_t>(m_mac.bytes[3]) << 16) |
+              (static_cast<uint32_t>(m_mac.bytes[2]) << 24));
 
     // Slot 1: broadcast
     reg_write(UMAC_MDF_ADDR0(1), 0xFFFF);
@@ -760,8 +834,8 @@ int32_t bcm_genet_driver::attach() {
     // Read MAC before reset (in case reset clears the firmware-programmed value)
     read_mac_address();
     log::info("genet: MAC %02x:%02x:%02x:%02x:%02x:%02x",
-              m_mac[0], m_mac[1], m_mac[2],
-              m_mac[3], m_mac[4], m_mac[5]);
+              m_mac.bytes[0], m_mac.bytes[1], m_mac.bytes[2],
+              m_mac.bytes[3], m_mac.bytes[4], m_mac.bytes[5]);
 
     // Reset controller and stop any DMA left running by firmware
     genet_reset();
@@ -788,6 +862,18 @@ int32_t bcm_genet_driver::attach() {
 
     // Interrupt setup failure is non-fatal, the driver falls back to polling.
     setup_interrupts();
+
+    // Link identity for the stack. The interface comes up here until the
+    // stack owns that decision.
+    m_mtu = net::eth::MTU;
+    m_ipv4_conf = LAN_STATIC_IPV4;
+    m_enabled = true;
+
+    rc = net::register_interface(this, "eth");
+    if (rc != net::OK) {
+        log::error("genet: interface registration failed: %d", rc);
+        return rc;
+    }
 
     setup_rx_filter();
     dma_enable_tx_rx();
@@ -829,11 +915,24 @@ void bcm_genet_driver::run() {
         else
             RUN_ELEVATED(sched::sleep_ms(1));
 
-        RUN_ELEVATED({
-            sync::irq_lock_guard guard(m_lock);
-            process_rx();
-            process_tx_completions();
-        });
+        // Take descriptors under the lock, deliver lowered and without it so
+        // the stack may transmit from receive, then re-lock to return them.
+        // A full batch means more frames may be waiting.
+        rx_batch batch;
+        do {
+            RUN_ELEVATED({
+                sync::irq_lock_guard guard(m_lock);
+                drain_rx_locked(batch);
+                process_tx_completions();
+            });
+
+            deliver_rx_batch(batch);
+
+            RUN_ELEVATED({
+                sync::irq_lock_guard guard(m_lock);
+                recycle_rx_locked(batch);
+            });
+        } while (batch.count == RX_BATCH_MAX);
 
         if (++link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;

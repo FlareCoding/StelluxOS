@@ -3,6 +3,7 @@
 
 #include "drivers/pci_driver.h"
 #include "drivers/net/rtl8168_regs.h"
+#include "net/interface.h"
 #include "sync/spinlock.h"
 
 namespace drivers {
@@ -11,7 +12,7 @@ namespace drivers {
  * Realtek RTL8111/RTL8168 PCIe Gigabit Ethernet driver.
  * Uses MMIO BAR 2, DMA descriptor rings, and integrated PHY via PHYAR.
  */
-class rtl8168_driver : public pci_driver {
+class rtl8168_driver : public pci_driver, public net::interface {
 public:
     rtl8168_driver(pci::device* dev);
 
@@ -19,10 +20,27 @@ public:
     int32_t detach() override;
     void run() override;
 
+    int32_t transmit(net::packet* pkt) override;
+
     /** @note Privilege: **required** */
     __PRIVILEGED_CODE void on_interrupt(uint32_t vector) override;
 
 private:
+    // Finished descriptors taken from the ring under m_lock and held by the
+    // host until recycled, so their buffers stay stable while the frames are
+    // delivered without the lock. A zero length marks a frame the hardware
+    // flagged as bad, which is counted and recycled without delivery.
+    static constexpr uint32_t RX_BATCH_MAX = 32;
+    struct rx_batch_entry {
+        uint16_t idx;
+        uint16_t len;
+    };
+
+    struct rx_batch {
+        rx_batch_entry entries[RX_BATCH_MAX];
+        uint32_t count;
+    };
+
     uint8_t  reg_read8(uint16_t offset);
     uint16_t reg_read16(uint16_t offset);
     uint32_t reg_read32(uint16_t offset);
@@ -47,11 +65,13 @@ private:
     void init_tx_ring();
     void init_rx_ring();
     int32_t fill_rx_ring();
+    void arm_rx_desc(uint32_t idx);
     void set_descriptor_addresses();
 
-    int32_t transmit(const uint8_t* frame, size_t len);
-    void process_tx_completions();
-    void process_rx();
+    void process_tx_completions();               // requires m_lock
+    void drain_rx_locked(rx_batch& batch);       // requires m_lock
+    void deliver_rx_batch(const rx_batch& batch); // called without m_lock
+    void recycle_rx_locked(const rx_batch& batch); // requires m_lock
 
     void hw_start();
     void hw_stop();
@@ -81,7 +101,6 @@ private:
     uint64_t          m_rx_buf_phys;
 
     sync::spinlock m_lock;
-    uint8_t m_mac[6];
     bool m_has_msi;
     uint16_t m_imr;
 };

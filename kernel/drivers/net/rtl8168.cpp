@@ -17,6 +17,17 @@ using namespace rtl8168;
 // Largest frame the rings carry, a 1500 byte payload plus the Ethernet header
 constexpr size_t ETH_FRAME_MAX = 1514;
 
+// The hardware reports frame lengths with the trailing checksum included
+constexpr uint32_t ETH_FCS_LEN = 4;
+
+// Address on the test network, used until the stack supports interface
+// configuration. Adjust to the network the machine is attached to.
+static constexpr net::ipv4::ipv4_config LAN_STATIC_IPV4 = {
+    {{10, 0, 0, 125}},
+    {{255, 255, 255, 0}},
+    {{10, 0, 0, 1}},
+};
+
 rtl8168_driver::rtl8168_driver(pci::device* dev)
     : pci_driver("rtl8168", dev)
     , m_mmio_va(0)
@@ -39,7 +50,6 @@ rtl8168_driver::rtl8168_driver(pci::device* dev)
     , m_has_msi(false)
     , m_imr(INT_MASK_DEFAULT) {
     m_lock = sync::SPINLOCK_INIT;
-    string::memset(m_mac, 0, sizeof(m_mac));
 }
 
 uint8_t rtl8168_driver::reg_read8(uint16_t offset) {
@@ -133,21 +143,20 @@ void rtl8168_driver::read_mac_address() {
     uint32_t idr0 = reg_read32(REG_IDR0);
     uint32_t idr4 = reg_read32(REG_IDR4);
 
-    m_mac[0] = static_cast<uint8_t>(idr0 & 0xFF);
-    m_mac[1] = static_cast<uint8_t>((idr0 >> 8) & 0xFF);
-    m_mac[2] = static_cast<uint8_t>((idr0 >> 16) & 0xFF);
-    m_mac[3] = static_cast<uint8_t>((idr0 >> 24) & 0xFF);
-    m_mac[4] = static_cast<uint8_t>(idr4 & 0xFF);
-    m_mac[5] = static_cast<uint8_t>((idr4 >> 8) & 0xFF);
+    m_mac.bytes[0] = static_cast<uint8_t>(idr0 & 0xFF);
+    m_mac.bytes[1] = static_cast<uint8_t>((idr0 >> 8) & 0xFF);
+    m_mac.bytes[2] = static_cast<uint8_t>((idr0 >> 16) & 0xFF);
+    m_mac.bytes[3] = static_cast<uint8_t>((idr0 >> 24) & 0xFF);
+    m_mac.bytes[4] = static_cast<uint8_t>(idr4 & 0xFF);
+    m_mac.bytes[5] = static_cast<uint8_t>((idr4 >> 8) & 0xFF);
 
     bool all_zero = true, all_ff = true;
-    for (int i = 0; i < 6; i++) {
-        if (m_mac[i] != 0x00) all_zero = false;
-        if (m_mac[i] != 0xFF) all_ff = false;
+    for (size_t i = 0; i < net::eth::MAC_ADDR_LEN; i++) {
+        if (m_mac.bytes[i] != 0x00) all_zero = false;
+        if (m_mac.bytes[i] != 0xFF) all_ff = false;
     }
     if (all_zero || all_ff) {
-        m_mac[0] = 0x52; m_mac[1] = 0x54; m_mac[2] = 0x00;
-        m_mac[3] = 0x12; m_mac[4] = 0x34; m_mac[5] = 0x56;
+        m_mac = {{0x52, 0x54, 0x00, 0x12, 0x34, 0x56}};
         log::warn("rtl8168: EEPROM MAC invalid, using fallback");
     }
 }
@@ -397,20 +406,28 @@ void rtl8168_driver::init_rx_ring() {
 
 int32_t rtl8168_driver::fill_rx_ring() {
     for (uint32_t i = 0; i < RX_DESC_COUNT; i++) {
-        uint64_t phys = m_rx_buf_phys + static_cast<uint64_t>(i) * RX_BUF_SIZE;
-        m_rx_ring[i].addr_lo = static_cast<uint32_t>(phys & 0xFFFFFFFF);
-        m_rx_ring[i].addr_hi = static_cast<uint32_t>(phys >> 32);
-        m_rx_ring[i].opts2 = 0;
-
-        uint32_t flags = RX_OWN | (RX_BUF_SIZE & RX_BUF_SIZE_MASK);
-        if (i == RX_DESC_COUNT - 1)
-            flags |= RX_EOR;
-        sync::atomic_fence_release();
-        m_rx_ring[i].opts1 = flags;
+        arm_rx_desc(i);
     }
 
     log::debug("rtl8168: %u RX descriptors filled", RX_DESC_COUNT);
     return 0;
+}
+
+// Points a descriptor at its buffer and hands it to the hardware
+void rtl8168_driver::arm_rx_desc(uint32_t idx) {
+    uint64_t phys = m_rx_buf_phys + static_cast<uint64_t>(idx) * RX_BUF_SIZE;
+    m_rx_ring[idx].addr_lo = static_cast<uint32_t>(phys & 0xFFFFFFFF);
+    m_rx_ring[idx].addr_hi = static_cast<uint32_t>(phys >> 32);
+    m_rx_ring[idx].opts2 = 0;
+
+    uint32_t opts1 = RX_OWN | (RX_BUF_SIZE & RX_BUF_SIZE_MASK);
+    if (idx == RX_DESC_COUNT - 1) {
+        opts1 |= RX_EOR;
+    }
+
+    // The hardware must see the address before it sees ownership
+    sync::atomic_fence_release();
+    m_rx_ring[idx].opts1 = opts1;
 }
 
 void rtl8168_driver::set_descriptor_addresses() {
@@ -420,25 +437,28 @@ void rtl8168_driver::set_descriptor_addresses() {
     reg_write32(REG_RDSAR + 4, static_cast<uint32_t>(m_rx_ring_phys >> 32));
 }
 
-int32_t rtl8168_driver::transmit(const uint8_t* frame, size_t len) {
-    if (!frame || len == 0) {
-        return -1;
+int32_t rtl8168_driver::transmit(net::packet* pkt) {
+    if (!pkt || pkt->length() == 0) {
+        return net::ERR_INVALID;
     }
 
-    int32_t result = -1;
+    size_t len = pkt->length();
+    if (len > ETH_FRAME_MAX) {
+        return net::ERR_TOO_LARGE;
+    }
+
+    int32_t result = net::ERR_BUSY;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(m_lock);
 
         process_tx_completions();
 
-        if (m_tx_queued >= TX_DESC_COUNT || len > ETH_FRAME_MAX) {
-            result = -1;
-        } else {
+        if (m_tx_queued < TX_DESC_COUNT) {
             uint32_t idx = m_tx_prod;
 
             uintptr_t buf_va = m_tx_buf_vaddr +
                                static_cast<uintptr_t>(idx) * ETH_FRAME_MAX;
-            string::memcpy(reinterpret_cast<uint8_t*>(buf_va), frame, len);
+            string::memcpy(reinterpret_cast<uint8_t*>(buf_va), pkt->data(), len);
 
             uint64_t buf_phys = m_tx_buf_phys +
                                 static_cast<uint64_t>(idx) * ETH_FRAME_MAX;
@@ -461,7 +481,14 @@ int32_t rtl8168_driver::transmit(const uint8_t* frame, size_t len) {
 
             reg_write8(REG_TPPOLL, TPPOLL_NPQ);
 
-            result = 0;
+            result = net::OK;
+        }
+
+        if (result == net::OK) {
+            m_counters.frames_out++;
+            m_counters.bytes_out += len;
+        } else {
+            record_packet_dropped();
         }
     });
 
@@ -485,61 +512,87 @@ void rtl8168_driver::process_tx_completions() {
     }
 }
 
-void rtl8168_driver::process_rx() {
-    uint32_t budget = RX_DESC_COUNT;
+// Frame length of a finished descriptor without the checksum, or 0 when the
+// hardware flagged an error, split the frame, or reported an impossible length
+static uint16_t rx_frame_length(uint32_t idx, uint32_t opts1) {
+    if (opts1 & RX_RES) {
+        log::warn("rtl8168: RX error on desc %u (opts1=0x%08x)", idx, opts1);
+        return 0;
+    }
 
-    while (budget > 0) {
+    if ((opts1 & (RX_FS | RX_LS)) != (RX_FS | RX_LS)) {
+        log::warn("rtl8168: RX multi-desc frame on desc %u, dropping", idx);
+        return 0;
+    }
+
+    uint32_t frame_len = opts1 & RX_FRAME_LEN_MASK;
+    if (frame_len <= ETH_FCS_LEN || frame_len - ETH_FCS_LEN > ETH_FRAME_MAX) {
+        return 0;
+    }
+
+    return static_cast<uint16_t>(frame_len - ETH_FCS_LEN);
+}
+
+// Takes finished descriptors from the ring in order, up to one batch. They
+// stay owned by the host until recycled, so the hardware cannot refill them.
+void rtl8168_driver::drain_rx_locked(rx_batch& batch) {
+    batch.count = 0;
+
+    while (batch.count < RX_BATCH_MAX) {
         uint32_t idx = m_rx_cur;
         uint32_t opts1 = m_rx_ring[idx].opts1;
 
+        // The status must be read before the frame bytes it describes
         sync::atomic_fence_acquire();
 
-        if (opts1 & RX_OWN)
+        if (opts1 & RX_OWN) {
             break;
-
-        budget--;
-
-        if (opts1 & RX_RES) {
-            log::warn("rtl8168: RX error on desc %u (opts1=0x%08x)", idx, opts1);
-            goto recycle;
         }
 
-        if ((opts1 & (RX_FS | RX_LS)) != (RX_FS | RX_LS)) {
-            log::warn("rtl8168: RX multi-desc frame on desc %u, dropping", idx);
-            goto recycle;
-        }
-
-        {
-            uint32_t frame_len = opts1 & RX_FRAME_LEN_MASK;
-
-            // Frame length includes 4-byte CRC
-            if (frame_len > 4)
-                frame_len -= 4;
-            else
-                goto recycle;
-
-            if (frame_len > ETH_FRAME_MAX)
-                goto recycle;
-
-            // Frames stop here until a protocol stack attaches
-        }
-
-    recycle:
-        {
-            uint64_t phys = m_rx_buf_phys + static_cast<uint64_t>(idx) * RX_BUF_SIZE;
-            m_rx_ring[idx].addr_lo = static_cast<uint32_t>(phys & 0xFFFFFFFF);
-            m_rx_ring[idx].addr_hi = static_cast<uint32_t>(phys >> 32);
-            m_rx_ring[idx].opts2 = 0;
-
-            uint32_t new_opts1 = RX_OWN | (RX_BUF_SIZE & RX_BUF_SIZE_MASK);
-            if (idx == RX_DESC_COUNT - 1)
-                new_opts1 |= RX_EOR;
-
-            sync::atomic_fence_release();
-            m_rx_ring[idx].opts1 = new_opts1;
-        }
+        rx_batch_entry& entry = batch.entries[batch.count++];
+        entry.idx = static_cast<uint16_t>(idx);
+        entry.len = rx_frame_length(idx, opts1);
 
         m_rx_cur = (idx + 1) % RX_DESC_COUNT;
+    }
+}
+
+// Copies each frame out of its DMA buffer into a packet and hands the packet
+// to the stack. Runs without m_lock so the stack may transmit from receive.
+void rtl8168_driver::deliver_rx_batch(const rx_batch& batch) {
+    for (uint32_t i = 0; i < batch.count; i++) {
+        const rx_batch_entry& entry = batch.entries[i];
+        if (entry.len == 0) {
+            record_iface_error();
+            continue;
+        }
+
+        net::packet* pkt = net::packet::alloc();
+
+        uint8_t* dst = nullptr;
+        if (pkt && pkt->reserve(net::eth::RX_ALIGN_PAD)) {
+            dst = pkt->put(entry.len);
+        }
+
+        if (!dst) {
+            net::packet::free(pkt);
+            record_packet_dropped();
+            continue;
+        }
+
+        const uint8_t* src = reinterpret_cast<const uint8_t*>(
+            m_rx_buf_vaddr + static_cast<uintptr_t>(entry.idx) * RX_BUF_SIZE);
+        string::memcpy(dst, src, entry.len);
+        pkt->set_iface(this);
+
+        receive(pkt);
+    }
+}
+
+// Returns every descriptor of a delivered batch to the hardware in ring order
+void rtl8168_driver::recycle_rx_locked(const rx_batch& batch) {
+    for (uint32_t i = 0; i < batch.count; i++) {
+        arm_rx_desc(batch.entries[i].idx);
     }
 }
 
@@ -641,8 +694,8 @@ void rtl8168_driver::dump_state() {
               reg_read32(REG_MISC),
               (reg_read32(REG_MISC) & MISC_RXDV_GATED) ? "ON" : "off");
     log::debug("rtl8168:  MAC %02x:%02x:%02x:%02x:%02x:%02x",
-              m_mac[0], m_mac[1], m_mac[2],
-              m_mac[3], m_mac[4], m_mac[5]);
+              m_mac.bytes[0], m_mac.bytes[1], m_mac.bytes[2],
+              m_mac.bytes[3], m_mac.bytes[4], m_mac.bytes[5]);
     log::debug("rtl8168:  chip=0x%03x link=%s speed=%u duplex=%s",
               static_cast<uint16_t>(m_chip_version),
               m_link_up ? "up" : "down",
@@ -690,8 +743,8 @@ int32_t rtl8168_driver::attach() {
 
     read_mac_address();
     log::info("rtl8168: MAC %02x:%02x:%02x:%02x:%02x:%02x",
-              m_mac[0], m_mac[1], m_mac[2],
-              m_mac[3], m_mac[4], m_mac[5]);
+              m_mac.bytes[0], m_mac.bytes[1], m_mac.bytes[2],
+              m_mac.bytes[3], m_mac.bytes[4], m_mac.bytes[5]);
 
     rc = phy_reset();
     if (rc != 0) {
@@ -718,6 +771,18 @@ int32_t rtl8168_driver::attach() {
     } else {
         m_has_msi = true;
         log::info("rtl8168: MSI configured");
+    }
+
+    // Link identity for the stack. The interface comes up here until the
+    // stack owns that decision.
+    m_mtu = net::eth::MTU;
+    m_ipv4_conf = LAN_STATIC_IPV4;
+    m_enabled = true;
+
+    rc = net::register_interface(this, "eth");
+    if (rc != net::OK) {
+        log::error("rtl8168: interface registration failed: %d", rc);
+        return rc;
     }
 
     hw_start();
@@ -767,11 +832,24 @@ void rtl8168_driver::run() {
             RUN_ELEVATED(sched::sleep_ms(1));
         }
 
-        RUN_ELEVATED({
-            sync::irq_lock_guard guard(m_lock);
-            process_rx();
-            process_tx_completions();
-        });
+        // Take descriptors under the lock, deliver lowered and without it so
+        // the stack may transmit from receive, then re-lock to return them.
+        // A full batch means more frames may be waiting.
+        rx_batch batch;
+        do {
+            RUN_ELEVATED({
+                sync::irq_lock_guard guard(m_lock);
+                drain_rx_locked(batch);
+                process_tx_completions();
+            });
+
+            deliver_rx_batch(batch);
+
+            RUN_ELEVATED({
+                sync::irq_lock_guard guard(m_lock);
+                recycle_rx_locked(batch);
+            });
+        } while (batch.count == RX_BATCH_MAX);
 
         if (++link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;
