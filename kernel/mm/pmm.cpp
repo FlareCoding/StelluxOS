@@ -276,14 +276,12 @@ __PRIVILEGED_CODE int32_t zone_free(zone& z, pfn_t pfn, uint8_t order) {
         return ERR_DOUBLE_FREE;
     }
 
-#ifdef DEBUG
     // Verify order matches what was stored during allocation
     if (pf.buddy.order != order) {
         log::error("PMM: order mismatch on free: stored=%u, passed=%u, pfn=0x%x",
                    pf.buddy.order, order, pfn);
         return ERR_ORDER_MISMATCH;
     }
-#endif
 
     // Mark as free
     pf.flags = PAGE_FLAG_NONE;
@@ -621,7 +619,13 @@ __PRIVILEGED_CODE int32_t free_pages(phys_addr_t addr, uint8_t order) {
     zone& z = g_pmm.zones[zi];
 
     sync::irq_lock_guard guard(g_zone_locks[zi]);
-    return zone_free(z, pfn, order);
+    int32_t rc = zone_free(z, pfn, order);
+
+    if (rc != OK) {
+        log::warn("PMM: rejected free of 0x%lx order %u (%d)", addr, order, rc);
+    }
+
+    return rc;
 }
 
 __PRIVILEGED_CODE phys_addr_t alloc_page(zone_mask_t zones) {
