@@ -28,8 +28,13 @@ constexpr int64_t NS_PER_SEC = 1000000000LL;
 constexpr int16_t ALWAYS_EVENTS =
     static_cast<int16_t>(sync::POLL_ERR | sync::POLL_HUP | sync::POLL_NVAL);
 
+// Checks one descriptor and, when `pt` is given, subscribes to its wait queue.
+// A subscribed object is handed back through `held` instead of being released,
+// because its wait queue carries an observer until poll_cleanup and a
+// concurrent close would otherwise free the queue under that observer.
 __PRIVILEGED_CODE static int64_t poll_one_fd(
-    sched::task* task, kernel_pollfd& pfd, sync::poll_table* pt
+    sched::task* task, kernel_pollfd& pfd, sync::poll_table* pt,
+    resource::resource_object** held
 ) {
     pfd.revents = 0;
 
@@ -52,15 +57,32 @@ __PRIVILEGED_CODE static int64_t poll_one_fd(
     }
 
     uint32_t mask = obj->ops->poll(obj, pt);
-    resource::resource_release(obj);
+    if (pt && held) {
+        *held = obj;
+    } else {
+        resource::resource_release(obj);
+    }
 
     pfd.revents = static_cast<int16_t>(mask) & (pfd.events | ALWAYS_EVENTS);
     return pfd.revents != 0 ? 1 : 0;
 }
 
-__PRIVILEGED_CODE static int64_t do_poll(
+// Unsubscribes every observer, then drops the references that kept their
+// wait queues alive
+__PRIVILEGED_CODE static void finish_round(
+    sync::poll_table& pt, resource::resource_object** held, uint32_t nfds
+) {
+    sync::poll_cleanup(pt);
+
+    for (uint32_t i = 0; i < nfds; i++) {
+        resource::resource_release(held[i]);
+        held[i] = nullptr;
+    }
+}
+
+__PRIVILEGED_CODE static int64_t poll_rounds(
     sched::task* task,
-    kernel_pollfd* kfds, uint32_t nfds,
+    kernel_pollfd* kfds, resource::resource_object** held, uint32_t nfds,
     uint64_t timeout_ns, bool infinite, bool immediate
 ) {
     uint64_t deadline_ns = 0;
@@ -77,16 +99,16 @@ __PRIVILEGED_CODE static int64_t do_poll(
         // The readiness check also subscribes to every fd's wait queue
         // unless the caller asked for an immediate probe
         for (uint32_t i = 0; i < nfds; i++) {
-            ready += poll_one_fd(task, kfds[i], immediate ? nullptr : &pt);
+            ready += poll_one_fd(task, kfds[i], immediate ? nullptr : &pt, &held[i]);
         }
 
         if (pt.error.load_acquire()) {
-            sync::poll_cleanup(pt);
+            finish_round(pt, held, nfds);
             return syscall::ENOMEM;
         }
 
         if (ready > 0 || immediate) {
-            sync::poll_cleanup(pt);
+            finish_round(pt, held, nfds);
             return ready;
         }
 
@@ -94,7 +116,7 @@ __PRIVILEGED_CODE static int64_t do_poll(
         if (!infinite) {
             uint64_t now = clock::now_ns();
             if (now >= deadline_ns) {
-                sync::poll_cleanup(pt);
+                finish_round(pt, held, nfds);
                 return 0;
             }
 
@@ -112,10 +134,10 @@ __PRIVILEGED_CODE static int64_t do_poll(
         // The null poll table probes again without re-subscribing
         ready = 0;
         for (uint32_t i = 0; i < nfds; i++) {
-            ready += poll_one_fd(task, kfds[i], nullptr);
+            ready += poll_one_fd(task, kfds[i], nullptr, nullptr);
         }
 
-        sync::poll_cleanup(pt);
+        finish_round(pt, held, nfds);
 
         if (ready > 0) {
             return ready;
@@ -133,6 +155,26 @@ __PRIVILEGED_CODE static int64_t do_poll(
             }
         }
     }
+}
+
+__PRIVILEGED_CODE static int64_t do_poll(
+    sched::task* task,
+    kernel_pollfd* kfds, uint32_t nfds,
+    uint64_t timeout_ns, bool infinite, bool immediate
+) {
+    resource::resource_object** held = nullptr;
+    if (nfds > 0) {
+        held = static_cast<resource::resource_object**>(
+            heap::kzalloc(nfds * sizeof(resource::resource_object*)));
+        if (!held) {
+            return syscall::ENOMEM;
+        }
+    }
+
+    int64_t result = poll_rounds(task, kfds, held, nfds, timeout_ns, infinite, immediate);
+    heap::kfree(held);
+
+    return result;
 }
 
 DEFINE_SYSCALL5(ppoll, u_fds, nfds_val, u_timeout, u_sigmask, sigsetsize) {
