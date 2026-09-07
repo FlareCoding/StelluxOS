@@ -38,6 +38,7 @@ private:
     // the hardware flagged as bad, which is counted and recycled without
     // delivery.
     static constexpr uint32_t RX_BATCH_MAX = 32;
+    static constexpr uint32_t RX_PASSES_PER_WAKEUP = genet::DMA_DESC_COUNT / RX_BATCH_MAX;
     struct rx_batch_entry {
         uint16_t idx;
         uint16_t len;

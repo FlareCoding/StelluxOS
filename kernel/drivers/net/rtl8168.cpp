@@ -834,9 +834,10 @@ void rtl8168_driver::run() {
 
         // Take descriptors under the lock, deliver lowered and without it so
         // the stack may transmit from receive, then re-lock to return them.
-        // A full batch means more frames may be waiting.
+        // One ring of frames bounds the work per wakeup: anything beyond it
+        // arrived while the interrupt was masked and raises the next one.
         rx_batch batch;
-        do {
+        for (uint32_t pass = 0; pass < RX_PASSES_PER_WAKEUP; pass++) {
             RUN_ELEVATED({
                 sync::irq_lock_guard guard(m_lock);
                 drain_rx_locked(batch);
@@ -849,7 +850,11 @@ void rtl8168_driver::run() {
                 sync::irq_lock_guard guard(m_lock);
                 recycle_rx_locked(batch);
             });
-        } while (batch.count == RX_BATCH_MAX);
+
+            if (batch.count < RX_BATCH_MAX) {
+                break;
+            }
+        }
 
         if (++link_poll_counter >= LINK_POLL_INTERVAL) {
             link_poll_counter = 0;
