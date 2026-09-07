@@ -383,6 +383,9 @@ TEST(paging_test, kept_frame_roundtrip_4kb) {
 // base must come back unshifted and the size must be the block size.
 TEST(paging_test, kept_frame_roundtrip_2mb) {
     constexpr uint8_t ORDER_2MB = 9;
+    page_quarantine::drain();
+    uint64_t before = pmm::free_page_count();
+
     pmm::phys_addr_t phys = pmm::alloc_pages(ORDER_2MB);
     ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
 
@@ -403,4 +406,5 @@ TEST(paging_test, kept_frame_roundtrip_2mb) {
 
     paging::destroy_user_pt_root(root);
     pmm::free_pages(phys, ORDER_2MB);
+    EXPECT_EQ(pmm::free_page_count(), before);
 }

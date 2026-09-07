@@ -499,6 +499,40 @@ __PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
     }
 }
 
+// Free the tables left empty below a cleared entry, lowest level first. A
+// null level was not part of the walk.
+__PRIVILEGED_CODE static void reclaim_empty_tables(
+    pml4e_t* pml4e, pdpt_t* pdpt, pdpte_t* pdpte, page_directory_t* pd, pde_t* pde, page_table_t* pt
+) {
+    if (pt) {
+        if (!is_table_empty(pt)) {
+            return;
+        }
+
+        pmm::phys_addr_t pt_phys = static_cast<pmm::phys_addr_t>(pde->phys_addr) << 12;
+        pde->value = 0;
+        try_free_table_page(pt_phys);
+    }
+
+    if (pd) {
+        if (!is_table_empty(pd)) {
+            return;
+        }
+
+        pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
+        pdpte->value = 0;
+        try_free_table_page(pd_phys);
+    }
+
+    if (!is_table_empty(pdpt)) {
+        return;
+    }
+
+    pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
+    pml4e->value = 0;
+    try_free_table_page(pdpt_phys);
+}
+
 __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     if (!g_initialized) {
         return OK;
@@ -518,11 +552,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (pdpte->page_size) {
         pdpte->value = 0;
         flush_tlb_page_local(virt);
-        if (is_table_empty(pdpt)) {
-            pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
-            pml4e->value = 0;
-            try_free_table_page(pdpt_phys);
-        }
+        reclaim_empty_tables(pml4e, pdpt, nullptr, nullptr, nullptr, nullptr);
         return OK;
     }
 
@@ -534,16 +564,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (pde->page_size) {
         pde->value = 0;
         flush_tlb_page_local(virt);
-        if (is_table_empty(pd)) {
-            pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
-            pdpte->value = 0;
-            try_free_table_page(pd_phys);
-            if (is_table_empty(pdpt)) {
-                pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
-                pml4e->value = 0;
-                try_free_table_page(pdpt_phys);
-            }
-        }
+        reclaim_empty_tables(pml4e, pdpt, pdpte, pd, nullptr, nullptr);
         return OK;
     }
 
@@ -554,23 +575,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
 
     pte->value = 0;
     flush_tlb_page_local(virt);
-
-    // Cascade: reclaim empty page tables up the hierarchy
-    if (is_table_empty(pt)) {
-        pmm::phys_addr_t pt_phys = static_cast<pmm::phys_addr_t>(pde->phys_addr) << 12;
-        pde->value = 0;
-        try_free_table_page(pt_phys);
-        if (is_table_empty(pd)) {
-            pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
-            pdpte->value = 0;
-            try_free_table_page(pd_phys);
-            if (is_table_empty(pdpt)) {
-                pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
-                pml4e->value = 0;
-                try_free_table_page(pdpt_phys);
-            }
-        }
-    }
+    reclaim_empty_tables(pml4e, pdpt, pdpte, pd, pde, pt);
 
     return OK;
 }
@@ -653,6 +658,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
         *out_phys = pdpte->value & ENTRY_ADDR_MASK;
         *out_size = PAGE_SIZE_1GB;
         pdpte->value = 0;
+        reclaim_empty_tables(pml4e, pdpt, nullptr, nullptr, nullptr, nullptr);
         return OK;
     }
 
@@ -666,6 +672,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
         *out_phys = pde->value & ENTRY_ADDR_MASK;
         *out_size = PAGE_SIZE_2MB;
         pde->value = 0;
+        reclaim_empty_tables(pml4e, pdpt, pdpte, pd, nullptr, nullptr);
         return OK;
     }
 
@@ -682,6 +689,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
     *out_phys = pte->value & ENTRY_ADDR_MASK;
     *out_size = PAGE_SIZE_4KB;
     pte->value = 0;
+    reclaim_empty_tables(pml4e, pdpt, pdpte, pd, pde, pt);
     return OK;
 }
 

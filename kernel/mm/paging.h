@@ -76,7 +76,8 @@ __PRIVILEGED_CODE int32_t unmap_page_keep_frame(virt_addr_t virt, pmm::phys_addr
 
 /**
  * @brief Recover the frame that `unmap_page_keep_frame` left at `virt` and
- * clear the entry.
+ * clear the entry, releasing page tables the clearing leaves empty. Call it
+ * only after a system-wide flush has covered `virt`.
  * @param out_phys Base of the frame the entry mapped.
  * @param out_size Size of that mapping, 4 KB, 2 MB or 1 GB.
  * @return OK, or ERR_NOT_MAPPED when `virt` holds no kept frame.

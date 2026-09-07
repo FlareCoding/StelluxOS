@@ -26,7 +26,7 @@ constexpr size_t DRAIN_THRESHOLD_PAGES = 2048;
  * A drain invalidates the mappings of every retired range while leaving each
  * frame recorded in its invalid page table entry, performs one system-wide
  * flush, and only then returns frames to the PMM and addresses to the KVA
- * allocator. Page table pages are never released on this path.
+ * allocator. Page tables left empty are released at that point, never before.
  * The `vmreclaimd` task drains periodically and a freer that can wait drains
  * once the backlog grows past a threshold, which bounds how much memory is
  * held. Correctness never depends on either: memory left in quarantine is

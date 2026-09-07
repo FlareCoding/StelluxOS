@@ -543,6 +543,41 @@ __PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
     }
 }
 
+// Free the tables left empty below a cleared entry, lowest level first. A
+// null level was not part of the walk.
+__PRIVILEGED_CODE static void reclaim_empty_tables(
+    table_desc_t* l0_entry, translation_table_t* l1, table_desc_t* l1_entry,
+    translation_table_t* l2, table_desc_t* l2_entry, translation_table_t* l3
+) {
+    if (l3) {
+        if (!is_table_empty(l3)) {
+            return;
+        }
+
+        pmm::phys_addr_t l3_phys = static_cast<pmm::phys_addr_t>(l2_entry->next_table_addr) << 12;
+        l2_entry->value = 0;
+        try_free_table_page(l3_phys);
+    }
+
+    if (l2) {
+        if (!is_table_empty(l2)) {
+            return;
+        }
+
+        pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
+        l1_entry->value = 0;
+        try_free_table_page(l2_phys);
+    }
+
+    if (!is_table_empty(l1)) {
+        return;
+    }
+
+    pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
+    l0_entry->value = 0;
+    try_free_table_page(l1_phys);
+}
+
 __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     if (!g_initialized) {
         return OK;
@@ -561,11 +596,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
         l1->raw[parts.l1_idx] = 0;
         flush_tlb_page(virt);
-        if (is_table_empty(l1)) {
-            pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
-            l0_entry->value = 0;
-            try_free_table_page(l1_phys);
-        }
+        reclaim_empty_tables(l0_entry, l1, nullptr, nullptr, nullptr, nullptr);
         return OK;
     }
 
@@ -579,16 +610,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
         l2->raw[parts.l2_idx] = 0;
         flush_tlb_page(virt);
-        if (is_table_empty(l2)) {
-            pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
-            l1_entry->value = 0;
-            try_free_table_page(l2_phys);
-            if (is_table_empty(l1)) {
-                pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
-                l0_entry->value = 0;
-                try_free_table_page(l1_phys);
-            }
-        }
+        reclaim_empty_tables(l0_entry, l1, l1_entry, l2, nullptr, nullptr);
         return OK;
     }
 
@@ -604,23 +626,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
 
     page->value = 0;
     flush_tlb_page(virt);
-
-    // Cascade: reclaim empty page tables up the hierarchy
-    if (is_table_empty(l3)) {
-        pmm::phys_addr_t l3_phys = static_cast<pmm::phys_addr_t>(l2_entry->next_table_addr) << 12;
-        l2_entry->value = 0;
-        try_free_table_page(l3_phys);
-        if (is_table_empty(l2)) {
-            pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
-            l1_entry->value = 0;
-            try_free_table_page(l2_phys);
-            if (is_table_empty(l1)) {
-                pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
-                l0_entry->value = 0;
-                try_free_table_page(l1_phys);
-            }
-        }
-    }
+    reclaim_empty_tables(l0_entry, l1, l1_entry, l2, l2_entry, l3);
 
     return OK;
 }
@@ -704,6 +710,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
         *out_phys = l1->raw[parts.l1_idx] & DESC_ADDR_MASK;
         *out_size = PAGE_SIZE_1GB;
         l1->raw[parts.l1_idx] = 0;
+        reclaim_empty_tables(l0_entry, l1, nullptr, nullptr, nullptr, nullptr);
         return OK;
     }
 
@@ -718,6 +725,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
         *out_phys = l2->raw[parts.l2_idx] & DESC_ADDR_MASK;
         *out_size = PAGE_SIZE_2MB;
         l2->raw[parts.l2_idx] = 0;
+        reclaim_empty_tables(l0_entry, l1, l1_entry, l2, nullptr, nullptr);
         return OK;
     }
 
@@ -735,6 +743,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
     *out_phys = l3->raw[parts.l3_idx] & DESC_ADDR_MASK;
     *out_size = PAGE_SIZE_4KB;
     l3->raw[parts.l3_idx] = 0;
+    reclaim_empty_tables(l0_entry, l1, l1_entry, l2, l2_entry, l3);
     return OK;
 }
 
