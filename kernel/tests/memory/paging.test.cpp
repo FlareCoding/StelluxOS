@@ -406,5 +406,35 @@ TEST(paging_test, kept_frame_roundtrip_2mb) {
 
     paging::destroy_user_pt_root(root);
     pmm::free_pages(phys, ORDER_2MB);
+    page_quarantine::drain();
+    EXPECT_EQ(pmm::free_page_count(), before);
+}
+
+// A page table emptied by an unmap is not freed until a drain has flushed
+// every CPU, and a drain returns all of them.
+TEST(paging_test, emptied_tables_are_freed_by_a_drain) {
+    page_quarantine::drain();
+    uint64_t before = pmm::free_page_count();
+
+    pmm::phys_addr_t root = paging::create_user_pt_root();
+    ASSERT_NE(root, static_cast<pmm::phys_addr_t>(0));
+    pmm::phys_addr_t phys = pmm::alloc_page();
+    ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
+
+    paging::virt_addr_t va = user_test_va();
+    ASSERT_EQ(paging::map_page(va, phys, paging::PAGE_USER_RW, root), paging::OK);
+    ASSERT_EQ(paging::unmap_page(va, root), paging::OK);
+
+    // Unless vmreclaimd got here first, the root, the frame and the three
+    // tables the mapping needed are all still held
+    paging::retired_tables tables = paging::take_retired_tables();
+    if (!tables.empty()) {
+        EXPECT_EQ(pmm::free_page_count(), before - 5);
+        paging::flush_tlb_all();
+        paging::free_retired_tables(tables);
+    }
+
+    paging::destroy_user_pt_root(root);
+    pmm::free_page(phys);
     EXPECT_EQ(pmm::free_page_count(), before);
 }

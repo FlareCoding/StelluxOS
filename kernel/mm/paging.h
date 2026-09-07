@@ -54,6 +54,7 @@ __PRIVILEGED_CODE int32_t map_pages(virt_addr_t virt, pmm::phys_addr_t phys, pag
 
 /**
  * @brief Unmap a single page. Idempotent - unmapping unmapped page is OK.
+ * Page tables left empty are retired, see `take_retired_tables`.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt);
@@ -76,7 +77,7 @@ __PRIVILEGED_CODE int32_t unmap_page_keep_frame(virt_addr_t virt, pmm::phys_addr
 
 /**
  * @brief Recover the frame that `unmap_page_keep_frame` left at `virt` and
- * clear the entry, releasing page tables the clearing leaves empty. Call it
+ * clear the entry, retiring page tables the clearing leaves empty. Call it
  * only after a system-wide flush has covered `virt`.
  * @param out_phys Base of the frame the entry mapped.
  * @param out_size Size of that mapping, 4 KB, 2 MB or 1 GB.
@@ -85,6 +86,31 @@ __PRIVILEGED_CODE int32_t unmap_page_keep_frame(virt_addr_t virt, pmm::phys_addr
  */
 __PRIVILEGED_CODE int32_t take_kept_frame(virt_addr_t virt, pmm::phys_addr_t root_pt,
                                               pmm::phys_addr_t* out_phys, size_t* out_size);
+
+// Page tables emptied by an unmap, threaded through their own pages. Another
+// CPU may still hold a cached copy of the entry that pointed at them.
+struct retired_tables {
+    pmm::phys_addr_t head = 0;
+
+    bool empty() const {
+        return head == 0;
+    }
+};
+
+/**
+ * @brief Detach every page table retired so far. The caller owns the batch
+ * and frees it with `free_retired_tables` after a system-wide full flush,
+ * the only operation that also drops cached intermediate walk entries.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE retired_tables take_retired_tables();
+
+/**
+ * @brief Return the frames of a retired batch to the PMM. The batch is empty
+ * afterwards.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void free_retired_tables(retired_tables& tables);
 
 /**
  * @brief Modify flags on an existing mapping.

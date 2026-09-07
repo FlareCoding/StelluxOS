@@ -28,6 +28,7 @@ namespace paging {
 // Tracks whether paging has been initialized
 __PRIVILEGED_DATA static bool g_initialized = false;
 __PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
+__PRIVILEGED_DATA static pmm::phys_addr_t g_retired_tables = 0;
 
 // TTBR1_EL1 mask to extract physical address (mask off ASID in bits 63:48)
 constexpr uint64_t TTBR_BADDR_MASK = 0x0000FFFFFFFFFFFFULL;
@@ -530,17 +531,19 @@ __PRIVILEGED_CODE static bool is_table_empty(const translation_table_t* table) {
     return true;
 }
 
-// Free a page table page back to PMM if it was dynamically allocated.
-// Bootstrap-allocated pages (PAGE_FLAG_RESERVED) are not freed.
-__PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
+// Retire an emptied translation table whose parent entry is already clear.
+// Freeing it now would let a CPU with a cached walk entry reach a reused page.
+// Entry 0 carries the list link, an aligned address reads as invalid.
+// Bootstrap-allocated pages (PAGE_FLAG_RESERVED) are never freed.
+__PRIVILEGED_CODE static void retire_table_page(pmm::phys_addr_t phys) {
     auto* pfd = pmm::get_page_frame(phys);
-    if (pfd && pfd->is_allocated()) {
-        // A reclaimed translation-table page may be reused quickly for unrelated
-        // allocations. Before releasing it to PMM, invalidate all EL1 TLB state
-        // to ensure no CPU retains stale table-walk references to this page.
-        flush_tlb_all();
-        pmm::free_page(phys);
+    if (!pfd || !pfd->is_allocated()) {
+        return;
     }
+
+    auto* link = static_cast<pmm::phys_addr_t*>(phys_to_virt(phys));
+    *link = g_retired_tables;
+    g_retired_tables = phys;
 }
 
 // Free the tables left empty below a cleared entry, lowest level first. A
@@ -556,7 +559,7 @@ __PRIVILEGED_CODE static void reclaim_empty_tables(
 
         pmm::phys_addr_t l3_phys = static_cast<pmm::phys_addr_t>(l2_entry->next_table_addr) << 12;
         l2_entry->value = 0;
-        try_free_table_page(l3_phys);
+        retire_table_page(l3_phys);
     }
 
     if (l2) {
@@ -566,7 +569,7 @@ __PRIVILEGED_CODE static void reclaim_empty_tables(
 
         pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
         l1_entry->value = 0;
-        try_free_table_page(l2_phys);
+        retire_table_page(l2_phys);
     }
 
     if (!is_table_empty(l1)) {
@@ -575,7 +578,7 @@ __PRIVILEGED_CODE static void reclaim_empty_tables(
 
     pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
     l0_entry->value = 0;
-    try_free_table_page(l1_phys);
+    retire_table_page(l1_phys);
 }
 
 __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
@@ -756,6 +759,24 @@ __PRIVILEGED_CODE int32_t take_kept_frame(virt_addr_t virt, pmm::phys_addr_t roo
                                               pmm::phys_addr_t* out_phys, size_t* out_size) {
     sync::irq_lock_guard guard(g_pt_lock);
     return take_kept_frame_nolock(virt, root_pt, out_phys, out_size);
+}
+
+__PRIVILEGED_CODE retired_tables take_retired_tables() {
+    sync::irq_lock_guard guard(g_pt_lock);
+
+    retired_tables tables;
+    tables.head = g_retired_tables;
+    g_retired_tables = 0;
+
+    return tables;
+}
+
+__PRIVILEGED_CODE void free_retired_tables(retired_tables& tables) {
+    while (tables.head != 0) {
+        pmm::phys_addr_t phys = tables.head;
+        tables.head = *static_cast<pmm::phys_addr_t*>(phys_to_virt(phys));
+        pmm::free_page(phys);
+    }
 }
 
 __PRIVILEGED_CODE static int32_t map_page_nolock(virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags, pmm::phys_addr_t root_pt) {

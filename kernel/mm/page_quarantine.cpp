@@ -103,10 +103,13 @@ __PRIVILEGED_CODE static void release_drain() {
 }
 
 // The caller owns the drain. Every retired range is invalidated before the
-// one system-wide flush, and nothing is returned before it.
+// one system-wide flush, and nothing is returned before it. A retired page
+// table may live on as a cached walk entry for any address it covered, so
+// only a full flush clears the way for freeing it.
 __PRIVILEGED_CODE static void flush_and_reclaim_retired() {
     kva::retired_batch batch = kva::take_retired();
-    if (batch.empty()) {
+    paging::retired_tables tables = paging::take_retired_tables();
+    if (batch.empty() && tables.empty()) {
         return;
     }
 
@@ -114,7 +117,7 @@ __PRIVILEGED_CODE static void flush_and_reclaim_retired() {
     g_batch_hi = 0;
     kva::for_each_retired(batch, retire_range);
 
-    if (g_batch_hi - g_batch_lo <= RANGE_FLUSH_LIMIT) {
+    if (tables.empty() && g_batch_hi - g_batch_lo <= RANGE_FLUSH_LIMIT) {
         paging::flush_tlb_range(g_batch_lo, g_batch_hi);
     } else {
         paging::flush_tlb_all();
@@ -122,6 +125,14 @@ __PRIVILEGED_CODE static void flush_and_reclaim_retired() {
 
     kva::for_each_retired(batch, reclaim_range);
     kva::release_retired(batch);
+    paging::free_retired_tables(tables);
+
+    // Reclaiming may have emptied tables of its own, they wait for one more flush
+    tables = paging::take_retired_tables();
+    if (!tables.empty()) {
+        paging::flush_tlb_all();
+        paging::free_retired_tables(tables);
+    }
 }
 
 __PRIVILEGED_CODE static void drainer_main(void*) {
