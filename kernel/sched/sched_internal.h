@@ -39,8 +39,9 @@ __PRIVILEGED_CODE void arch_post_switch(task* next);
  *
  * Ownership boundary:
  * - Updates task scheduler ownership (current_task/current_task_exec) and
- *   marks next on-CPU under the runqueue lock, so a waker holding that lock
- *   never sees a task that is neither queued nor on-CPU yet.
+ *   marks next on-CPU under the runqueue lock. prev's on_runqueue is cleared
+ *   under that lock only when it leaves the queue, so a waker holding the
+ *   lock sees whether the task is still queued or running.
  * - Must NOT finalize per-CPU runtime elevation state for trap/syscall return.
  *   Trap/syscall return-boundary code restores percpu_is_elevated from the
  *   selected task's TASK_FLAG_ELEVATED after switch teardown is complete.

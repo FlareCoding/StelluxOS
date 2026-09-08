@@ -216,13 +216,7 @@ __PRIVILEGED_CODE bool block_task_interrupted() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void cancel_block_task() {
-    task* self = current();
-    uint32_t expected = TASK_STATE_BLOCKED;
-    if (!self->state.cmpxchg_strong_acq_rel(expected, TASK_STATE_RUNNING)) {
-        // A wake already claimed this task READY and will requeue it once
-        // it is off-CPU. Yield so that handoff can complete.
-        yield();
-    }
+    current()->state.store_release(TASK_STATE_RUNNING);
 }
 
 /**
@@ -283,24 +277,28 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
 
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
 
-    // A running task goes back on the queue. A task already claimed READY by a
-    // waker does not, that waker enqueues it once it is off-CPU.
+    // Only a voluntary yield while BLOCKED or death takes prev off the
+    // runqueue. READY means a wake landed while it was still on-CPU.
     uint32_t prev_state = prev->state.load_relaxed();
-    if (prev != rq.idle_task && prev_state == TASK_STATE_RUNNING) {
-        prev->state.store_relaxed(TASK_STATE_READY);
-        rq.policy->enqueue(prev);
-        rq.nr_running++;
-    }
-
-    // Preemption never takes a task off the queue. One caught between marking
-    // itself BLOCKED and yielding stays queued and blocks at its own yield.
-    if (prev != rq.idle_task && preempted && prev_state == TASK_STATE_BLOCKED) {
-        rq.policy->enqueue(prev);
-        rq.nr_running++;
-    }
-
-    // Dead task is now scheduler-detached and can enter deferred cleanup flow.
     bool prev_dead = prev != rq.idle_task && prev_state == TASK_STATE_DEAD;
+
+    if (prev != rq.idle_task) {
+        bool keep = prev_state == TASK_STATE_RUNNING ||
+                    prev_state == TASK_STATE_READY ||
+                    (prev_state == TASK_STATE_BLOCKED && preempted);
+
+        if (prev_state == TASK_STATE_RUNNING) {
+            prev->state.store_relaxed(TASK_STATE_READY);
+        }
+
+        if (keep) {
+            rq.policy->enqueue(prev);
+            rq.nr_running++;
+        } else {
+            prev->exec.on_runqueue = 0;
+        }
+    }
+
     if (prev_dead) {
         store_cleanup_stage(prev, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
     }
@@ -312,21 +310,27 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
         next = rq.idle_task;
     }
 
+#ifdef DEBUG
+    if (next != rq.idle_task && next->cleanup_stage.load_relaxed() != TASK_CLEANUP_STAGE_ACTIVE) {
+        log::fatal("sched: picked a dying task tid=%u name=%s state=%u stage=%u",
+                   next->tid, next->name, next->state.load_relaxed(), next->cleanup_stage.load_relaxed());
+    }
+#endif
+
     // A task resuming its wait entry stays BLOCKED
     if (next->state.load_relaxed() != TASK_STATE_BLOCKED) {
         next->state.store_relaxed(TASK_STATE_RUNNING);
     }
 
-    // Claimed under the runqueue lock, so a waker holding it
-    // sees a task as either queued or on-CPU, never in between.
     next->exec.cpu = percpu::current_cpu_id();
     sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
     this_cpu(current_task) = next;
     this_cpu(current_task_exec) = &next->exec;
+
+#ifdef DEBUG
     // Runtime elevation state remains true while trap/syscall teardown continues.
     // Return-boundary code restores percpu_is_elevated from the selected task's
     // TASK_FLAG_ELEVATED after switch teardown is complete.
-#ifdef DEBUG
     assert_switch_privilege_state("pick_next_and_switch:post-select");
 #endif
 
@@ -366,6 +370,7 @@ __PRIVILEGED_CODE void enqueue(task* t) {
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;
+    t->exec.on_runqueue = 1;
     sync::spin_unlock_irqrestore(rq.lock, irq);
 }
 
@@ -385,6 +390,7 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id) {
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;
+    t->exec.on_runqueue = 1;
     sync::spin_unlock_irqrestore(rq.lock, irq);
 }
 
@@ -430,30 +436,39 @@ __PRIVILEGED_CODE rc::strong_ref<task> task_ref_by_tid(uint32_t tid) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake(task* t) {
+    uint32_t task_cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
+
+    bool remote = task_cpu != percpu::current_cpu_id();
+    runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
+
+    // The claim must be made under the runqueue lock
+    sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
+
     uint32_t expected = TASK_STATE_BLOCKED;
     if (!t->state.cmpxchg_strong_acq_rel(expected, TASK_STATE_READY)) {
+        sync::spin_unlock_irqrestore(rq.lock, irq);
         return;
     }
 
-    uint32_t task_cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
-    bool remote = task_cpu != percpu::current_cpu_id();
-    if (remote) {
-        while (sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire()) {
-            cpu::relax();
-        }
+    // If queued or running, its own switch-out keeps a READY task on the runqueue
+    if (t->exec.on_runqueue) {
+        sync::spin_unlock_irqrestore(rq.lock, irq);
+        return;
     }
 
-    runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
-
-    sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
-    bool claimed =
-        t->sched_link.is_linked() ||
-        (remote && sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire());
-
-    if (!claimed) {
-        rq.policy->enqueue(t);
-        rq.nr_running++;
+#ifdef DEBUG
+    if (!remote && sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire()) {
+        log::fatal("sched: wake of a task leaving this CPU tid=%u", t->tid);
     }
+#endif
+
+    while (sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire()) {
+        cpu::relax();
+    }
+
+    rq.policy->enqueue(t);
+    rq.nr_running++;
+    t->exec.on_runqueue = 1;
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
 
@@ -729,6 +744,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     arch_init_task_context(t, entry, arg);
 
     t->exec.on_cpu = 0;
+    t->exec.on_runqueue = 0;
 
     t->tid = g_next_tid.fetch_add_relaxed(1);
     t->state.store_relaxed(TASK_STATE_CREATED);
@@ -1064,6 +1080,7 @@ __PRIVILEGED_CODE task* create_user_task(
     arch_init_task_context(t, entry, nullptr);
 
     t->exec.on_cpu = 0;
+    t->exec.on_runqueue = 0;
     fpu::init_state(&t->exec.fpu_ctx);
 
     t->tid = g_next_tid.fetch_add_relaxed(1);
@@ -1229,6 +1246,7 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
     t->exec.on_cpu = 0;
+    t->exec.on_runqueue = 0;
     t->exec.task_stack_top = stack_top;
     t->exec.system_stack_top = sys_stack_top;
 

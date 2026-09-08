@@ -43,6 +43,7 @@ static task_exec_core g_boot_exec = {
     .system_stack_top = 0,
     .cpu_ctx = {},
     .on_cpu = 0,
+    .on_runqueue = 0,
     .pt_root = 0,
     .user_pt_root = 0,
     .mm_ctx = nullptr,
