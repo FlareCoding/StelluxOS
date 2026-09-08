@@ -240,6 +240,9 @@ stlx_x86_common_entry:
     call stlx_x86_64_trap_handler
     mov rsp, r12
 
+    /* Disable interrupts while on the exit stack, iretq restores the task's IF */
+    cli
+
     /*
      * A task switch left the next task's frame on the previous task's stack.
      * Finish on the exit stack so that stack is unused once rsp leaves it.
@@ -247,9 +250,6 @@ stlx_x86_common_entry:
     this_cpu_read rax, current_task_exec
     cmp rax, r13
     je .Lstlx_x86_exit_in_place
-
-    /* Disable interrupts while on the exit stack, iretq restores the task's IF. */
-    cli
 
     this_cpu_read rax, percpu_offset
     lea rbx, switch_exit_stack

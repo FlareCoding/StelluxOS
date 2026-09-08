@@ -130,6 +130,12 @@
  */
 .macro STLX_A64_RETURN_FROM_FRAME
     /*
+     * Masked through eret: ELR_EL1, SPSR_EL1 and SP_EL0 carry the return state
+     * from here on, and an interrupt would overwrite them with its own.
+     */
+    msr daifset, #0xf
+
+    /*
      * A task switch left the next task's frame on the previous task's stack.
      * Finish on the exit stack so that stack is unused once sp leaves it.
      */
@@ -138,8 +144,6 @@
     cmp x16, x19
     b.eq 2f
 
-    /* The exit stack has no room for a nested frame, eret restores the task's DAIF. */
-    msr daifset, #0xf
     STLX_A64_THIS_CPU_ADDR x20, x17, switch_exit_stack
     add x20, x20, #EXIT_FRAME_OFFSET
 
