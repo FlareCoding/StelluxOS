@@ -1136,12 +1136,13 @@ __PRIVILEGED_CODE task* create_user_task(
     // POSIX inheritance: resource limits and the file creation mask
     // copy from the creating process
     if (creator && creator->group) {
-        sync::spin_lock(creator->group->lock);
+        sync::irq_lock_guard guard(creator->group->lock);
+
         for (uint32_t i = 0; i < RLIMIT_COUNT; i++) {
             tg->rlimits[i] = creator->group->rlimits[i];
         }
+
         tg->umask = creator->group->umask;
-        sync::spin_unlock(creator->group->lock);
     } else {
         init_default_rlimits(tg->rlimits);
         tg->umask = DEFAULT_UMASK;
