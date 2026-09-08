@@ -445,12 +445,10 @@ __PRIVILEGED_CODE void wake(task* t) {
 
     runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
 
-    // A task preempted while entering its wait may still be queued, or may have
-    // been picked since the check above. Either way its CPU runs it, and the
-    // READY state it carries makes its own yield requeue it.
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
-    bool claimed = t->sched_link.is_linked()
-                || sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire();
+    bool claimed =
+        t->sched_link.is_linked() ||
+        (remote && sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire());
 
     if (!claimed) {
         rq.policy->enqueue(t);
