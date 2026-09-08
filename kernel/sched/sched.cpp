@@ -271,6 +271,12 @@ __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
 __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
 #ifdef DEBUG
     assert_switch_privilege_state("pick_next_and_switch:entry");
+
+    // wake spins under the runqueue lock for a task leaving its CPU, which is
+    // only safe because nothing interrupts the switch between here and off-CPU
+    if (cpu::irqs_enabled()) {
+        log::fatal("sched: pick_next_and_switch entered with interrupts enabled");
+    }
 #endif
 
     runqueue& rq = this_cpu(cpu_rq);
