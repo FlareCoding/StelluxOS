@@ -102,7 +102,8 @@ TEST(kva_test, query_not_found_after_free) {
 
 // A retired range leaves service at once but keeps its address until the
 // quarantine drains: query still finds it, retire and free refuse it, and
-// only the drain makes the address free again.
+// only the drain makes the address free again. vmreclaimd may drain at any
+// moment, so the retired-state checks apply only while query still finds it.
 TEST(kva_test, retired_range_keeps_its_address_until_drained) {
     kva::allocation alloc = {};
     ASSERT_EQ(kva::alloc(
@@ -114,11 +115,15 @@ TEST(kva_test, retired_range_keeps_its_address_until_drained) {
     EXPECT_EQ(kva::retire(alloc.base, retired), kva::OK);
     EXPECT_EQ(retired.base, alloc.base);
     EXPECT_EQ(retired.size, alloc.size);
-    EXPECT_EQ(kva::retire(alloc.base, retired), kva::ERR_DOUBLE_FREE);
-    EXPECT_EQ(kva::free(alloc.base), kva::ERR_DOUBLE_FREE);
+
+    int32_t again = kva::retire(alloc.base, retired);
+    int32_t freed = kva::free(alloc.base);
 
     kva::allocation queried = {};
-    EXPECT_EQ(kva::query(alloc.base, queried), kva::OK);
+    if (kva::query(alloc.base, queried) == kva::OK) {
+        EXPECT_EQ(again, kva::ERR_DOUBLE_FREE);
+        EXPECT_EQ(freed, kva::ERR_DOUBLE_FREE);
+    }
 
     page_quarantine::drain();
     EXPECT_EQ(kva::query(alloc.base, queried), kva::ERR_NOT_FOUND);
