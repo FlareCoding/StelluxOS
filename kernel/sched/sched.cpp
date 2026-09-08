@@ -316,6 +316,11 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
     if (next->state.load_relaxed() != TASK_STATE_BLOCKED) {
         next->state.store_relaxed(TASK_STATE_RUNNING);
     }
+
+    // Claimed under the runqueue lock, so a waker holding it
+    // sees a task as either queued or on-CPU, never in between.
+    next->exec.cpu = percpu::current_cpu_id();
+    sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
     this_cpu(current_task) = next;
     this_cpu(current_task_exec) = &next->exec;
     // Runtime elevation state remains true while trap/syscall teardown continues.
@@ -440,12 +445,18 @@ __PRIVILEGED_CODE void wake(task* t) {
 
     runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
 
-    // Preempted while entering its wait, the task is still queued and runs anyway
+    // A task preempted while entering its wait may still be queued, or may have
+    // been picked since the check above. Either way its CPU runs it, and the
+    // READY state it carries makes its own yield requeue it.
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
-    if (!t->sched_link.is_linked()) {
+    bool claimed = t->sched_link.is_linked()
+                || sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire();
+
+    if (!claimed) {
         rq.policy->enqueue(t);
         rq.nr_running++;
     }
+
     sync::spin_unlock_irqrestore(rq.lock, irq);
 
     // An idle CPU looks at its runqueue only when interrupted

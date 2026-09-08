@@ -208,9 +208,6 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
         return;
     }
 
-    next->exec.cpu = percpu::current_cpu_id();
-    sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
-
     fpu::save(&prev->exec.fpu_ctx);
     fpu::restore(&next->exec.fpu_ctx);
 
@@ -252,9 +249,6 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     if (next == prev) {
         return;
     }
-
-    next->exec.cpu = percpu::current_cpu_id();
-    sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
 
     fpu::save(&prev->exec.fpu_ctx);
     fpu::restore(&next->exec.fpu_ctx);
