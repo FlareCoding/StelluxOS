@@ -1532,6 +1532,8 @@ void xhci_hcd::_enumerate_device(xhci_device* device) {
             ENUM_FAIL("xhci: evaluate context failed for slot %u", slot_id);
     }
 
+    _sync_ctrl_ep_dequeue_ptr(device);
+
     // Send the address device command again with BSR=0 this time
     if (_address_device(device, false) != 0)
         ENUM_FAIL("xhci: address device (BSR=0) failed for slot %u", slot_id);
@@ -2667,8 +2669,16 @@ void xhci_hcd::_configure_ctrl_ep_input_context(xhci_device* device, uint16_t ma
     ep0_ctx->interval = 0;
     ep0_ctx->average_trb_length = 8;
     ep0_ctx->max_esit_payload_lo = 0;
-    ep0_ctx->transfer_ring_dequeue_ptr =
-        device->ctrl_ring()->get_physical_base();
+
+    _sync_ctrl_ep_dequeue_ptr(device);
+}
+
+void xhci_hcd::_sync_ctrl_ep_dequeue_ptr(xhci_device* device) {
+    // Every TD on the ring has completed by the time a command is issued, so
+    // the producer's enqueue position and cycle state are the dequeue pointer.
+    auto* ep0_ctx = device->input_ctrl_ep_ctx();
+
+    ep0_ctx->transfer_ring_dequeue_ptr = device->ctrl_ring()->get_enqueue_phys();
     ep0_ctx->dcs = device->ctrl_ring()->get_cycle_bit();
 }
 

@@ -254,6 +254,8 @@ private:
     uint8_t _device_address(xhci::xhci_device* device);
     void _configure_device(xhci::xhci_device* device, const usb::usb_device_descriptor& desc);
     void _configure_ctrl_ep_input_context(xhci::xhci_device* device, uint16_t max_packet_size);
+
+    void _sync_ctrl_ep_dequeue_ptr(xhci::xhci_device* device);
     xhci::xhci_endpoint* _create_endpoint(xhci::xhci_device* device, const usb::usb_endpoint_descriptor* desc);
     void _configure_endpoint_context(xhci::xhci_device* device, xhci::xhci_endpoint* ep);
     int32_t _configure_endpoints(xhci::xhci_device* device);
