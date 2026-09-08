@@ -214,6 +214,13 @@ bool is_kill_pending();
 void yield();
 
 /**
+ * @brief The idle task's loop. Sleeps until an interrupt, then yields if the
+ * runqueue has work, so a woken task runs at the interrupt, not the next tick.
+ * @note Privilege: **required**
+ */
+[[noreturn]] __PRIVILEGED_CODE void run_idle();
+
+/**
  * @brief Terminate the current task. Marks it DEAD and yields.
  * Developer must call this explicitly before returning from task entry.
  * @param exit_code Exit code to return to the parent task.

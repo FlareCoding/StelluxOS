@@ -136,9 +136,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     info->state.store_release(smp::CPU_ONLINE);
 
-    while (true) {
-        cpu::halt();
-    }
+    sched::run_idle();
 }
 
 __PRIVILEGED_CODE static void wait_icr_idle() {

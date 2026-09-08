@@ -17,6 +17,7 @@
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "smp/smp.h"
+#include "smp/ipi.h"
 #include "hw/cpu.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
@@ -42,6 +43,10 @@ static DEFINE_PER_CPU(sched::cpu_accounting_stats, cpu_accounting);
 static sync::atomic<uint32_t> g_next_tid{1};
 
 static sync::atomic<uint32_t> g_lb_next_cpu{0};
+
+// Interrupts a CPU so its idle loop sees a task placed on
+// its runqueue immediately rather than at its next tick.
+__PRIVILEGED_DATA static smp::ipi::message g_resched_kick = {0};
 
 namespace sched {
 
@@ -287,11 +292,6 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
         rq.nr_running++;
     }
 
-    // Dead task is now scheduler-detached and can enter deferred cleanup flow.
-    bool prev_dead = prev != rq.idle_task && prev_state == TASK_STATE_DEAD;
-    if (prev_dead) {
-        store_cleanup_stage(prev, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
-    }
     // Preemption never takes a task off the queue. One caught between marking
     // itself BLOCKED and yielding stays queued and blocks at its own yield.
     if (prev != rq.idle_task && preempted && prev_state == TASK_STATE_BLOCKED) {
@@ -299,6 +299,11 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
         rq.nr_running++;
     }
 
+    // Dead task is now scheduler-detached and can enter deferred cleanup flow.
+    bool prev_dead = prev != rq.idle_task && prev_state == TASK_STATE_DEAD;
+    if (prev_dead) {
+        store_cleanup_stage(prev, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
+    }
 
     task* next = rq.policy->pick_next();
     if (next) {
@@ -381,6 +386,26 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id) {
 /**
  * @note Privilege: **required**
  */
+[[noreturn]] __PRIVILEGED_CODE void run_idle() {
+    while (true) {
+        cpu::irq_disable();
+
+        // Checked with interrupts off so a wake cannot
+        // land between the check and the halt.
+        if (this_cpu(cpu_rq).nr_running > 0) {
+            cpu::irq_enable();
+            yield();
+
+            continue;
+        }
+
+        cpu::halt_until_interrupt();
+    }
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE rc::strong_ref<task> task_ref(task* t) {
     return rc::strong_ref<task>::try_from_raw(t);
 }
@@ -406,7 +431,8 @@ __PRIVILEGED_CODE void wake(task* t) {
     }
 
     uint32_t task_cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
-    if (task_cpu != percpu::current_cpu_id()) {
+    bool remote = task_cpu != percpu::current_cpu_id();
+    if (remote) {
         while (sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire()) {
             cpu::relax();
         }
@@ -414,12 +440,21 @@ __PRIVILEGED_CODE void wake(task* t) {
 
     runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
 
+    // Preempted while entering its wait, the task is still queued and runs anyway
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     if (!t->sched_link.is_linked()) {
         rq.policy->enqueue(t);
         rq.nr_running++;
     }
     sync::spin_unlock_irqrestore(rq.lock, irq);
+
+    // An idle CPU looks at its runqueue only when interrupted
+    if (remote) {
+        smp::ipi::send(task_cpu, g_resched_kick);
+    }
+}
+
+__PRIVILEGED_CODE static void on_resched_kick() {
 }
 
 /**
@@ -442,7 +477,6 @@ __PRIVILEGED_CODE uint64_t sleep_ns(uint64_t ns) {
     timer::schedule_sleep(self, deadline);
 
     if (block_task_interrupted()) {
-    // Preempted while entering its wait, the task is still queued and runs anyway
         // Interrupted before or during sleep entry: do not serve the sleep.
         timer::cancel_sleep(self);
         cancel_block_task();
@@ -1375,6 +1409,11 @@ __PRIVILEGED_CODE int32_t init() {
 
     if (g_task_registry.init() != 0) {
         log::error("sched: task registry init failed");
+        return ERR_NO_MEM;
+    }
+
+    if (smp::ipi::register_message(on_resched_kick, &g_resched_kick) != smp::ipi::OK) {
+        log::error("sched: failed to register the reschedule kick");
         return ERR_NO_MEM;
     }
 

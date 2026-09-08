@@ -196,7 +196,5 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::error("ELF load of /bin/init failed: %d", load_result);
     }
 
-    while (true) {
-        cpu::halt();
-    }
+    sched::run_idle();
 }
