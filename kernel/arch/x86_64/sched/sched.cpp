@@ -203,7 +203,7 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
         }
     }
 
-    task* next = pick_next_and_switch(prev);
+    task* next = pick_next_and_switch(prev, false);
     if (next == prev) {
         return;
     }
@@ -248,7 +248,7 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
         }
     }
 
-    task* next = pick_next_and_switch(prev);
+    task* next = pick_next_and_switch(prev, true);
     if (next == prev) {
         return;
     }

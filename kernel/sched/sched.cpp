@@ -269,7 +269,7 @@ __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
+__PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
 #ifdef DEBUG
     assert_switch_privilege_state("pick_next_and_switch:entry");
 #endif
@@ -278,18 +278,27 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
 
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
 
-    // Only re-enqueue if prev was running (not dead, blocked, or already woken)
-    if (prev != rq.idle_task && prev->state.load_relaxed() == TASK_STATE_RUNNING) {
+    // A running task goes back on the queue. A task already claimed READY by a
+    // waker does not, that waker enqueues it once it is off-CPU.
+    uint32_t prev_state = prev->state.load_relaxed();
+    if (prev != rq.idle_task && prev_state == TASK_STATE_RUNNING) {
         prev->state.store_relaxed(TASK_STATE_READY);
         rq.policy->enqueue(prev);
         rq.nr_running++;
     }
 
     // Dead task is now scheduler-detached and can enter deferred cleanup flow.
-    bool prev_dead = prev != rq.idle_task && prev->state.load_relaxed() == TASK_STATE_DEAD;
+    bool prev_dead = prev != rq.idle_task && prev_state == TASK_STATE_DEAD;
     if (prev_dead) {
         store_cleanup_stage(prev, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
     }
+    // Preemption never takes a task off the queue. One caught between marking
+    // itself BLOCKED and yielding stays queued and blocks at its own yield.
+    if (prev != rq.idle_task && preempted && prev_state == TASK_STATE_BLOCKED) {
+        rq.policy->enqueue(prev);
+        rq.nr_running++;
+    }
+
 
     task* next = rq.policy->pick_next();
     if (next) {
@@ -298,7 +307,10 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
         next = rq.idle_task;
     }
 
-    next->state.store_relaxed(TASK_STATE_RUNNING);
+    // A task resuming its wait entry stays BLOCKED
+    if (next->state.load_relaxed() != TASK_STATE_BLOCKED) {
+        next->state.store_relaxed(TASK_STATE_RUNNING);
+    }
     this_cpu(current_task) = next;
     this_cpu(current_task_exec) = &next->exec;
     // Runtime elevation state remains true while trap/syscall teardown continues.
@@ -403,8 +415,10 @@ __PRIVILEGED_CODE void wake(task* t) {
     runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
 
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
-    rq.policy->enqueue(t);
-    rq.nr_running++;
+    if (!t->sched_link.is_linked()) {
+        rq.policy->enqueue(t);
+        rq.nr_running++;
+    }
     sync::spin_unlock_irqrestore(rq.lock, irq);
 }
 
@@ -428,6 +442,7 @@ __PRIVILEGED_CODE uint64_t sleep_ns(uint64_t ns) {
     timer::schedule_sleep(self, deadline);
 
     if (block_task_interrupted()) {
+    // Preempted while entering its wait, the task is still queued and runs anyway
         // Interrupted before or during sleep entry: do not serve the sleep.
         timer::cancel_sleep(self);
         cancel_block_task();

@@ -33,6 +33,10 @@ __PRIVILEGED_CODE void arch_post_switch(task* next);
  * Common: called by arch on_yield/on_tick handler. Handles runqueue lock,
  * state transitions, and picking the next task.
  *
+ * preempted is true from the tick and false from a yield. Only a yield may
+ * leave a BLOCKED prev off the queue, since that is the task's own decision to
+ * block. A tick between prepare_to_block_task and that yield keeps it queued.
+ *
  * Ownership boundary:
  * - Updates task scheduler ownership (current_task/current_task_exec).
  * - Must NOT finalize per-CPU runtime elevation state for trap/syscall return.
@@ -40,7 +44,7 @@ __PRIVILEGED_CODE void arch_post_switch(task* next);
  *   selected task's TASK_FLAG_ELEVATED after switch teardown is complete.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE task* pick_next_and_switch(task* prev);
+__PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted);
 
 /**
  * Common: charge one timer tick to the interrupted task and to this
