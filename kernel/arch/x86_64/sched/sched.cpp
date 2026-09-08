@@ -20,8 +20,20 @@ extern "C" char stack_top[];
 
 constexpr uint64_t RFLAGS_IF = (1ULL << 9);
 
+// The exit path needs the trap frame plus the seven words above
+// it: irq vector, the error code, and the five-word IRET frame.
+constexpr size_t SWITCH_EXIT_FRAME_SIZE = sizeof(x86::trap_frame) + 7 * sizeof(uint64_t);
+constexpr size_t SWITCH_EXIT_STACK_SIZE = 256;
+
+static_assert(SWITCH_EXIT_STACK_SIZE >= SWITCH_EXIT_FRAME_SIZE, "exit stack must hold one frame image");
+static_assert(SWITCH_EXIT_STACK_SIZE % 16 == 0, "exit stack must keep 16-byte stack alignment");
+
 DECLARE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(sched::task_exec_core*, current_task_exec);
+
+// A task switch returns from here rather than from the switched-out task's
+// stack, so that stack is free the moment the stack pointer leaves it.
+DEFINE_PER_CPU_CACHELINE_ALIGNED(uint8_t[SWITCH_EXIT_STACK_SIZE], switch_exit_stack);
 
 namespace sched {
 

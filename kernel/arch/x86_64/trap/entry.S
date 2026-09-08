@@ -20,6 +20,8 @@
 
 .extern stlx_x86_64_trap_handler
 .extern current_task_exec
+.extern percpu_offset
+.extern switch_exit_stack
 
 .section .priv.rodata, "a", @progbits
 .p2align 3
@@ -62,6 +64,10 @@ stlx_x86_isr_table:
 .set TF_RSP,    0xA0
 .set TF_SS,     0xA8
 .set TF_SIZE,   0xB0
+
+/* Per-CPU exit stack, size must match SWITCH_EXIT_STACK_SIZE in sched/sched.cpp. */
+.set EXIT_STACK_SIZE,   0x100
+.set EXIT_FRAME_OFFSET, EXIT_STACK_SIZE - (TF_SIZE + 56)
 
 /* Task structure offsets (from sched/task_exec_core.h)
  * CRITICAL: These must match the C++ struct layout!
@@ -224,12 +230,47 @@ stlx_x86_common_entry:
     pop rax
 
 .Lstlx_x86_call_c:
+    /* Used to track scheduler task switches on the exit path */
+    this_cpu_read r13, current_task_exec
+
     mov rdi, rsp
     mov r12, rsp
     and rsp, -16
     call stlx_x86_64_trap_handler
     mov rsp, r12
 
+    /*
+     * A task switch left the next task's frame on the previous task's stack.
+     * Finish on the exit stack so that stack is unused once rsp leaves it.
+     */
+    this_cpu_read rax, current_task_exec
+    cmp rax, r13
+    je .Lstlx_x86_exit_in_place
+
+    /* Disable interrupts while on the exit stack, iretq restores the task's IF. */
+    cli
+
+    this_cpu_read rax, percpu_offset
+    lea rbx, switch_exit_stack
+    add rbx, rax
+    add rbx, EXIT_FRAME_OFFSET
+
+    /* Copy trap_frame using r8/r9/r10, all restored from the copy below. */
+    mov r8, rsp
+    mov r9, rbx
+    mov r10, TF_SIZE / 8
+
+.Lstlx_x86_copy_exit_frame:
+    mov rax, [r8]
+    mov [r9], rax
+    add r8, 8
+    add r9, 8
+    dec r10
+    jnz .Lstlx_x86_copy_exit_frame
+
+    mov rsp, rbx
+
+.Lstlx_x86_exit_in_place:
     /* Write back trap_frame to iret frame. */
     lea rsi, [rsp + TF_SIZE]
     mov rax, [rsp + TF_RIP]

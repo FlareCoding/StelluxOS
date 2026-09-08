@@ -18,8 +18,20 @@
 extern "C" char stack_top[];
 extern "C" char sys_stack_top[];
 
+// The exit path needs the whole trap frame, eret itself
+// takes nothing from the stack.
+constexpr size_t SWITCH_EXIT_FRAME_SIZE = sizeof(aarch64::trap_frame);
+constexpr size_t SWITCH_EXIT_STACK_SIZE = 512;
+
+static_assert(SWITCH_EXIT_STACK_SIZE >= SWITCH_EXIT_FRAME_SIZE, "exit stack must hold one frame image");
+static_assert(SWITCH_EXIT_STACK_SIZE % 16 == 0, "exit stack must keep 16-byte stack alignment");
+
 DECLARE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(sched::task_exec_core*, current_task_exec);
+
+// A task switch returns from here rather than from the switched-out task's
+// stack, so that stack is free the moment the stack pointer leaves it.
+DEFINE_PER_CPU_CACHELINE_ALIGNED(uint8_t[SWITCH_EXIT_STACK_SIZE], switch_exit_stack);
 
 namespace sched {
 

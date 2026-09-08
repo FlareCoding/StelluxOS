@@ -16,6 +16,8 @@
 .extern stlx_aarch64_el1_irq_handler
 .extern stlx_aarch64_el1_fiq_handler
 .extern stlx_aarch64_el1_serror_handler
+.extern current_task_exec
+.extern switch_exit_stack
 
 /* trap::trap_frame offsets (bytes) */
 .set TF_X0,    0x00
@@ -26,6 +28,18 @@
 .set TF_ESR,   0x118
 .set TF_FAR,   0x120
 .set TF_SIZE,  0x130
+
+/* Per-CPU exit stack, size must match SWITCH_EXIT_STACK_SIZE in sched/sched.cpp. */
+.set EXIT_STACK_SIZE,   0x200
+.set EXIT_FRAME_OFFSET, EXIT_STACK_SIZE - TF_SIZE
+
+/* This CPU's image of a per-CPU variable sits at the template address plus TPIDRRO_EL0. */
+.macro STLX_A64_THIS_CPU_ADDR dst:req, tmp:req, variable:req
+    adrp \dst, \variable
+    add \dst, \dst, :lo12:\variable
+    mrs \tmp, tpidrro_el0
+    add \dst, \dst, \tmp
+.endm
 
 .macro STLX_A64_SAVE_GPRS
     /* ARMv8-A guarantees SP_EL1 is 16-byte aligned on exception entry.
@@ -91,6 +105,10 @@
 .endm
 
 .macro STLX_A64_CALL_C handler
+    /* Used to track scheduler task switches on the exit path */
+    STLX_A64_THIS_CPU_ADDR x19, x16, current_task_exec
+    ldr x19, [x19]
+
     /* SP is 16-byte aligned: ARMv8-A guarantees SP_EL1 alignment on exception entry,
      * and TF_SIZE (0x130 = 304 = 16×19) preserves alignment. AArch64 PCS requires
      * 16-byte alignment at function call boundaries. */
@@ -110,6 +128,32 @@
  * active SP_EL1 for unrelated tasks.
  */
 .macro STLX_A64_RETURN_FROM_FRAME
+    /*
+     * A task switch left the next task's frame on the previous task's stack.
+     * Finish on the exit stack so that stack is unused once sp leaves it.
+     */
+    STLX_A64_THIS_CPU_ADDR x16, x17, current_task_exec
+    ldr x16, [x16]
+    cmp x16, x19
+    b.eq 2f
+
+    /* The exit stack has no room for a nested frame, eret restores the task's DAIF. */
+    msr daifset, #0xf
+    STLX_A64_THIS_CPU_ADDR x1, x17, switch_exit_stack
+    add x1, x1, #EXIT_FRAME_OFFSET
+
+    /* Copy trap_frame with x0-x4 and x16/x17, all restored from the copy below. */
+    mov x0, sp
+    mov x2, x1
+    mov x4, #(TF_SIZE / 16)
+3:
+    ldp x16, x17, [x0], #16
+    stp x16, x17, [x2], #16
+    subs x4, x4, #1
+    b.ne 3b
+
+    mov sp, x1
+2:
     ldr x17, [sp, #TF_SPSR]
     tst x17, #1
     b.ne 1f
