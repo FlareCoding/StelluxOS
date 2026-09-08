@@ -20,10 +20,10 @@ extern "C" char stack_top[];
 
 constexpr uint64_t RFLAGS_IF = (1ULL << 9);
 
-// The exit path needs the trap frame plus the seven words above
-// it: irq vector, the error code, and the five-word IRET frame.
+// The exit path needs the trap frame plus the seven words above it (irq
+// vector, error code, IRET frame), then room for the finish_task_switch call.
 constexpr size_t SWITCH_EXIT_FRAME_SIZE = sizeof(x86::trap_frame) + 7 * sizeof(uint64_t);
-constexpr size_t SWITCH_EXIT_STACK_SIZE = 256;
+constexpr size_t SWITCH_EXIT_STACK_SIZE = 1024;
 
 static_assert(SWITCH_EXIT_STACK_SIZE >= SWITCH_EXIT_FRAME_SIZE, "exit stack must hold one frame image");
 static_assert(SWITCH_EXIT_STACK_SIZE % 16 == 0, "exit stack must keep 16-byte stack alignment");
@@ -180,9 +180,6 @@ void yield() {
 __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     task* prev = current();
 
-    // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
-    finalize_pending_off_cpu();
-
     // The yield gate is reachable from user mode and skips the syscall
     // boundary, deliver here so a yielding task sees signals promptly
     x86::deliver_async_signal(prev, tf);
@@ -220,9 +217,6 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
     load_cpu_context(&next->exec.cpu_ctx, tf);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
-
-    // Defer prev->on_cpu clear until switch teardown is complete.
-    defer_off_cpu_finalize(prev);
 }
 
 /**
@@ -231,9 +225,6 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
  */
 __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     task* prev = current();
-
-    // Finish prior off-CPU publication before handling this tick's switch.
-    finalize_pending_off_cpu();
 
     record_cpu_tick(prev);
     if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
@@ -271,9 +262,6 @@ __PRIVILEGED_CODE void on_tick(x86::trap_frame* tf) {
     load_cpu_context(&next->exec.cpu_ctx, tf);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
-
-    // Prevent early off-CPU publication while trap exit still depends on prev context.
-    defer_off_cpu_finalize(prev);
 }
 
 } // namespace sched

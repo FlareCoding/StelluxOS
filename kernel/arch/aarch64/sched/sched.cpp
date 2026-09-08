@@ -18,10 +18,10 @@
 extern "C" char stack_top[];
 extern "C" char sys_stack_top[];
 
-// The exit path needs the whole trap frame, eret itself
-// takes nothing from the stack.
+// The exit path needs the whole trap frame (eret itself takes nothing from
+// the stack), then room for the finish_task_switch call.
 constexpr size_t SWITCH_EXIT_FRAME_SIZE = sizeof(aarch64::trap_frame);
-constexpr size_t SWITCH_EXIT_STACK_SIZE = 512;
+constexpr size_t SWITCH_EXIT_STACK_SIZE = 1024;
 
 static_assert(SWITCH_EXIT_STACK_SIZE >= SWITCH_EXIT_FRAME_SIZE, "exit stack must hold one frame image");
 static_assert(SWITCH_EXIT_STACK_SIZE % 16 == 0, "exit stack must keep 16-byte stack alignment");
@@ -190,9 +190,6 @@ void yield() {
 __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     task* prev = current();
 
-    // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
-    finalize_pending_off_cpu();
-
     // The yield fast path skips the syscall boundary, deliver here so a
     // yielding task still sees its handled signals promptly
     aarch64::deliver_async_signal(prev, tf);
@@ -231,9 +228,6 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     prepare_trap_return_stacks(tf, next);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
-
-    // Defer prev->on_cpu clear until switch teardown is complete.
-    defer_off_cpu_finalize(prev);
 }
 
 /**
@@ -242,9 +236,6 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
  */
 __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     task* prev = current();
-
-    // Finish prior off-CPU publication before handling this tick's switch.
-    finalize_pending_off_cpu();
 
     record_cpu_tick(prev);
     if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
@@ -283,9 +274,6 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     prepare_trap_return_stacks(tf, next);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
-
-    // Prevent early off-CPU publication while trap exit still depends on prev context.
-    defer_off_cpu_finalize(prev);
 }
 
 } // namespace sched

@@ -16,6 +16,7 @@
 .extern stlx_aarch64_el1_irq_handler
 .extern stlx_aarch64_el1_fiq_handler
 .extern stlx_aarch64_el1_serror_handler
+.extern stlx_finish_task_switch
 .extern current_task_exec
 .extern switch_exit_stack
 
@@ -30,7 +31,7 @@
 .set TF_SIZE,  0x130
 
 /* Per-CPU exit stack, size must match SWITCH_EXIT_STACK_SIZE in sched/sched.cpp. */
-.set EXIT_STACK_SIZE,   0x200
+.set EXIT_STACK_SIZE,   0x400
 .set EXIT_FRAME_OFFSET, EXIT_STACK_SIZE - TF_SIZE
 
 /* This CPU's image of a per-CPU variable sits at the template address plus TPIDRRO_EL0. */
@@ -139,12 +140,12 @@
 
     /* The exit stack has no room for a nested frame, eret restores the task's DAIF. */
     msr daifset, #0xf
-    STLX_A64_THIS_CPU_ADDR x1, x17, switch_exit_stack
-    add x1, x1, #EXIT_FRAME_OFFSET
+    STLX_A64_THIS_CPU_ADDR x20, x17, switch_exit_stack
+    add x20, x20, #EXIT_FRAME_OFFSET
 
     /* Copy trap_frame with x0-x4 and x16/x17, all restored from the copy below. */
     mov x0, sp
-    mov x2, x1
+    mov x2, x20
     mov x4, #(TF_SIZE / 16)
 3:
     ldp x16, x17, [x0], #16
@@ -152,7 +153,11 @@
     subs x4, x4, #1
     b.ne 3b
 
-    mov sp, x1
+    mov sp, x20
+
+    /* Nothing reads the previous task's stack past this point, publish it off-CPU. */
+    mov x0, x19
+    bl stlx_finish_task_switch
 2:
     ldr x17, [sp, #TF_SPSR]
     tst x17, #1

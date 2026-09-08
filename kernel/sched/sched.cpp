@@ -34,7 +34,6 @@
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
 DEFINE_PER_CPU(uint32_t, percpu_cpu_id);
-static DEFINE_PER_CPU(sched::task*, pending_off_cpu_task);
 
 static DEFINE_PER_CPU(sched::runqueue, cpu_rq);
 
@@ -247,43 +246,6 @@ __PRIVILEGED_CODE cpu_accounting_stats read_cpu_accounting_stats(uint32_t cpu_id
     out.tick_hz = timer::tick_hz();
     return out;
 }
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE void finalize_pending_off_cpu() {
-    task* pending = this_cpu(pending_off_cpu_task);
-    if (!pending) {
-        return;
-    }
-
-    this_cpu(pending_off_cpu_task) = nullptr;
-    sync::atomic_ref<uint32_t>{pending->exec.on_cpu}.store_release(0);
-    cpu::send_event();
-
-    if (load_cleanup_stage(pending) == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
-        // Reclamation must not begin before the off-CPU store above is
-        // visible, so the reference the task was created with drops here.
-        if (pending->release()) {
-            task::ref_destroy(pending);
-        }
-    }
-}
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE void defer_off_cpu_finalize(task* prev) {
-    if (!prev) {
-        return;
-    }
-
-    if (this_cpu(pending_off_cpu_task)) {
-        finalize_pending_off_cpu();
-    }
-    this_cpu(pending_off_cpu_task) = prev;
-}
-
 /**
  * @note Privilege: **required**
  */
@@ -324,7 +286,8 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
     }
 
     // Dead task is now scheduler-detached and can enter deferred cleanup flow.
-    if (prev != rq.idle_task && prev->state.load_relaxed() == TASK_STATE_DEAD) {
+    bool prev_dead = prev != rq.idle_task && prev->state.load_relaxed() == TASK_STATE_DEAD;
+    if (prev_dead) {
         store_cleanup_stage(prev, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
     }
 
@@ -347,7 +310,21 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
 
+    // Dropping the creation reference wakes the reaper, which needs the runqueue
+    // lock released. The reaper reclaims only after the trap exit publishes prev off-CPU.
+    if (prev_dead && prev->release()) {
+        task::ref_destroy(prev);
+    }
+
     return next;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+extern "C" __PRIVILEGED_CODE void stlx_finish_task_switch(task_exec_core* prev) {
+    sync::atomic_ref<uint32_t>{prev->on_cpu}.store_release(0);
+    cpu::send_event();
 }
 
 /**
@@ -1366,7 +1343,6 @@ __PRIVILEGED_CODE int32_t init() {
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
     this_cpu(percpu_is_elevated) = (idle->exec.flags & TASK_FLAG_ELEVATED) != 0;
-    this_cpu(pending_off_cpu_task) = nullptr;
 
     runqueue& rq = this_cpu(cpu_rq);
     rq.lock = sync::SPINLOCK_INIT;
@@ -1432,7 +1408,6 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
     this_cpu(percpu_is_elevated) = true;
-    this_cpu(pending_off_cpu_task) = nullptr;
 
     runqueue& rq = this_cpu(cpu_rq);
     rq.lock = sync::SPINLOCK_INIT;

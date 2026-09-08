@@ -19,6 +19,7 @@
 .include "percpu/percpu_asm.inc"
 
 .extern stlx_x86_64_trap_handler
+.extern stlx_finish_task_switch
 .extern current_task_exec
 .extern percpu_offset
 .extern switch_exit_stack
@@ -66,8 +67,8 @@ stlx_x86_isr_table:
 .set TF_SIZE,   0xB0
 
 /* Per-CPU exit stack, size must match SWITCH_EXIT_STACK_SIZE in sched/sched.cpp. */
-.set EXIT_STACK_SIZE,   0x100
-.set EXIT_FRAME_OFFSET, EXIT_STACK_SIZE - (TF_SIZE + 56)
+.set EXIT_STACK_SIZE,   0x400
+.set EXIT_FRAME_OFFSET, (EXIT_STACK_SIZE - (TF_SIZE + 56)) & ~15
 
 /* Task structure offsets (from sched/task_exec_core.h)
  * CRITICAL: These must match the C++ struct layout!
@@ -269,6 +270,10 @@ stlx_x86_common_entry:
     jnz .Lstlx_x86_copy_exit_frame
 
     mov rsp, rbx
+
+    /* Nothing reads the previous task's stack past this point */
+    mov rdi, r13
+    call stlx_finish_task_switch
 
 .Lstlx_x86_exit_in_place:
     /* Write back trap_frame to iret frame. */

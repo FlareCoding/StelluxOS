@@ -51,18 +51,13 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev);
 __PRIVILEGED_CODE void record_cpu_tick(task* prev);
 
 /**
- * Common: publish on_cpu=0 for a previously switched-out task.
- * Must be called from arch scheduler trap paths before taking reaper decisions.
+ * Common: the first code after a task switch. The trap exit stub calls it on
+ * the per-CPU exit stack with interrupts masked once nothing on this CPU
+ * reads prev's stack anymore, and it publishes prev off-CPU state. The exit
+ * stack is small and very sensitive, so it must not fault, block, or log.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void finalize_pending_off_cpu();
-
-/**
- * Common: defer on_cpu publication for the task switched out in this trap.
- * Call only after switch-out work (including FPU save/restore) is complete.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE void defer_off_cpu_finalize(task* prev);
+extern "C" __PRIVILEGED_CODE void stlx_finish_task_switch(task_exec_core* prev);
 
 } // namespace sched
 
