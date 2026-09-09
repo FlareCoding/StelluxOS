@@ -38,15 +38,18 @@ struct icmp_header {
     uint8_t  type;
     uint8_t  code;
     uint16_t checksum;
+
     union {
         struct {
             uint16_t id;
             uint16_t seq;
         } __attribute__((packed)) echo;
+
         struct {
             uint16_t unused;
             uint16_t next_hop_mtu;
         } __attribute__((packed)) frag;
+
         uint32_t unused;
     } __attribute__((packed));
 } __attribute__((packed));
