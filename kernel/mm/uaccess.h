@@ -28,6 +28,18 @@ __PRIVILEGED_CODE int32_t copy_from_user(
 );
 
 /**
+ * @brief Load one 32-bit aligned word from user memory in a single access,
+ * so a concurrent store by another thread is never observed torn.
+ * @return OK, ERR_INVAL for a misaligned address, ERR_FAULT when the page is
+ * missing or unreadable at the moment of the load.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t load_u32_from_user(
+    const uint32_t* usrc,
+    uint32_t* out
+);
+
+/**
  * @brief Copy from a kernel buffer to a user buffer. A user page that is
  * missing or read-only at the moment of the copy reports ERR_FAULT.
  * @note Privilege: **required**

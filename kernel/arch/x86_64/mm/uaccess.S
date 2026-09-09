@@ -36,3 +36,31 @@ stlx_user_copy_fixup:
     ret
 
 .size stlx_user_copy, . - stlx_user_copy
+
+/*
+ * size_t stlx_user_load32(const uint32_t* src, uint32_t* out)
+ *
+ * Loads one aligned word in a single access, returns zero on success and
+ * one when the source faulted.
+ */
+.global stlx_user_load32
+.type stlx_user_load32, @function
+
+stlx_user_load32:
+
+.global stlx_user_load32_begin
+stlx_user_load32_begin:
+    mov eax, dword ptr [rdi]
+
+.global stlx_user_load32_end
+stlx_user_load32_end:
+    mov dword ptr [rsi], eax
+    xor eax, eax
+    ret
+
+.global stlx_user_load32_fixup
+stlx_user_load32_fixup:
+    mov eax, 1
+    ret
+
+.size stlx_user_load32, . - stlx_user_load32

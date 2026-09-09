@@ -22,8 +22,14 @@ extern "C" char stlx_user_copy_begin[];
 extern "C" char stlx_user_copy_end[];
 extern "C" char stlx_user_copy_fixup[];
 
+extern "C" size_t stlx_user_load32(const uint32_t* src, uint32_t* out);
+extern "C" char stlx_user_load32_begin[];
+extern "C" char stlx_user_load32_end[];
+extern "C" char stlx_user_load32_fixup[];
+
 static const access_region g_access_regions[] = {
     { stlx_user_copy_begin, stlx_user_copy_end, stlx_user_copy_fixup },
+    { stlx_user_load32_begin, stlx_user_load32_end, stlx_user_load32_fixup },
 };
 
 namespace mm::uaccess {
@@ -95,6 +101,29 @@ __PRIVILEGED_CODE int32_t copy_from_user(
     }
 
     return stlx_user_copy(kdst, usrc, len) == 0 ? OK : ERR_FAULT;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t load_u32_from_user(
+    const uint32_t* usrc,
+    uint32_t* out
+) {
+    if (!usrc || !out || (reinterpret_cast<uintptr_t>(usrc) & 0x3) != 0) {
+        return ERR_INVAL;
+    }
+
+    if (!user_range_ok(usrc, sizeof(uint32_t))) {
+        return ERR_FAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return ERR_NO_MMCTX;
+    }
+
+    return stlx_user_load32(usrc, out) == 0 ? OK : ERR_FAULT;
 }
 
 /**

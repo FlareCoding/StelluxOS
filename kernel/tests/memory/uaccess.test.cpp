@@ -10,6 +10,7 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sched/sched_internal.h"
+#include "sync/spinlock.h"
 #include "common/string.h"
 
 TEST_SUITE(uaccess);
@@ -21,6 +22,7 @@ static constexpr uint32_t LAZY_ANON =
 static constexpr uint32_t EAGER_ANON = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS;
 
 static uint64_t g_initial_free_pages = 0;
+static sync::spinlock g_masked_lock = sync::SPINLOCK_INIT;
 
 // Runs the calling task under a user address space so copies reach it the
 // way a syscall body does, then puts the kernel root back
@@ -297,6 +299,72 @@ TEST(uaccess, nonblock_copy_lands_in_a_lazy_page) {
         if (landed) {
             EXPECT_EQ(string::memcmp(landed, pattern, sizeof(pattern)), 0);
         }
+    }
+
+    mm::mm_context_release(ctx);
+}
+
+// --- load_u32_reads_a_word_and_rejects_bad_addresses ---
+// Proves: the single-access load returns the word behind a present page and
+// refuses a missing page or a misaligned address without touching either.
+
+TEST(uaccess, load_u32_reads_a_word_and_rejects_bad_addresses) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_user(ctx, 1, PROT_RW, EAGER_ANON);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    uint8_t* backing = page_bytes(ctx, addr + 64);
+    ASSERT_NOT_NULL(backing);
+    uint32_t stored = 0x12345678u;
+    string::memcpy(backing, &stored, sizeof(stored));
+
+    {
+        user_space_scope scope(ctx);
+        uint32_t value = 0;
+        EXPECT_EQ(mm::uaccess::load_u32_from_user(
+            reinterpret_cast<const uint32_t*>(addr + 64), &value
+        ), mm::uaccess::OK);
+        EXPECT_EQ(value, stored);
+
+        EXPECT_EQ(mm::uaccess::load_u32_from_user(
+            reinterpret_cast<const uint32_t*>(addr + 4 * PAGE), &value
+        ), mm::uaccess::ERR_FAULT);
+        EXPECT_EQ(mm::uaccess::load_u32_from_user(
+            reinterpret_cast<const uint32_t*>(addr + 66), &value
+        ), mm::uaccess::ERR_INVAL);
+    }
+
+    mm::mm_context_release(ctx);
+}
+
+// --- masked_context_never_faults_a_page_in ---
+// Proves: with interrupts off a missing page reports a fault instead of
+// sleeping on the address-space lock, and succeeds once they are back on.
+
+TEST(uaccess, masked_context_never_faults_a_page_in) {
+    mm::mm_context* ctx = mm::mm_context_create();
+    ASSERT_NOT_NULL(ctx);
+    uintptr_t addr = map_user(ctx, 1, PROT_RW, LAZY_ANON);
+    ASSERT_NE(addr, static_cast<uintptr_t>(0));
+
+    {
+        user_space_scope scope(ctx);
+        uint32_t value = 0xFFFFFFFFu;
+
+        sync::irq_state irq = sync::spin_lock_irqsave(g_masked_lock);
+        int32_t masked_rc = mm::uaccess::load_u32_from_user(
+            reinterpret_cast<const uint32_t*>(addr), &value);
+        sync::spin_unlock_irqrestore(g_masked_lock, irq);
+
+        EXPECT_EQ(masked_rc, mm::uaccess::ERR_FAULT);
+        EXPECT_NULL(page_bytes(ctx, addr));
+
+        EXPECT_EQ(mm::uaccess::load_u32_from_user(
+            reinterpret_cast<const uint32_t*>(addr), &value
+        ), mm::uaccess::OK);
+        EXPECT_EQ(value, static_cast<uint32_t>(0));
+        EXPECT_NOT_NULL(page_bytes(ctx, addr));
     }
 
     mm::mm_context_release(ctx);
