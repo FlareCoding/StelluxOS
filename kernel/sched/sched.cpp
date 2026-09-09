@@ -317,7 +317,7 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
     }
 
 #ifdef DEBUG
-    if (next != rq.idle_task && next->cleanup_stage.load_relaxed() != TASK_CLEANUP_STAGE_ACTIVE) {
+    if (next != rq.idle_task && next->cleanup_stage.load_relaxed() >= TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
         log::fatal("sched: picked a dying task tid=%u name=%s state=%u stage=%u",
                    next->tid, next->name, next->state.load_relaxed(), next->cleanup_stage.load_relaxed());
     }
