@@ -85,8 +85,9 @@ stlx_x86_isr_table:
 .set TASK_SYS_STACK_OFFSET, 0x10
 
 /* Task flags (must match sched/task_exec_core.h) */
-.set TASK_FLAG_ELEVATED, (1 << 0)
-.set TASK_FLAG_IN_IRQ,   (1 << 6)
+.set TASK_FLAG_ELEVATED,   (1 << 0)
+.set TASK_FLAG_IN_SYSCALL, (1 << 5)
+.set TASK_FLAG_IN_IRQ,     (1 << 6)
 
 /*
  * Per-vector entry stub generator.
@@ -186,15 +187,15 @@ stlx_x86_common_entry:
 .Lstlx_x86_from_kernel:
     /*
      * Check if this is an elevated task that needs stack switch.
-     * Switch only if: ELEVATED=1 AND IN_IRQ=0
-     * (If IN_IRQ=1, we're already on system_stack from a previous interrupt.)
+     * Switch only if: ELEVATED=1 AND IN_IRQ=0 AND IN_SYSCALL=0
+     * (Either flag set means we're already on system_stack.)
      */
     push rax
     push rbx
     
     this_cpu_read rax, current_task_exec
     mov ebx, [rax + TASK_FLAGS_OFFSET]
-    and ebx, (TASK_FLAG_ELEVATED | TASK_FLAG_IN_IRQ)
+    and ebx, (TASK_FLAG_ELEVATED | TASK_FLAG_IN_IRQ | TASK_FLAG_IN_SYSCALL)
     cmp ebx, TASK_FLAG_ELEVATED
     jne .Lstlx_x86_kernel_no_switch
     
