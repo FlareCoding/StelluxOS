@@ -2,6 +2,7 @@
 #include "sched/task_exec_core.h"
 #include "percpu/percpu.h"
 #include "hw/cpu.h"
+#include "mm/uaccess.h"
 #include "syscall/syscall_table.h"
 
 constexpr uint64_t ARCH_SET_FS  = 0x1002;
@@ -14,9 +15,17 @@ DEFINE_SYSCALL2(arch_prctl, code, addr) {
             task->tls_base = addr;
             cpu::write_tls_base(addr);
             return 0;
-        case ARCH_GET_FS:
-            *reinterpret_cast<uint64_t*>(addr) = task->tls_base;
+        case ARCH_GET_FS: {
+            int32_t rc = mm::uaccess::copy_to_user(
+                reinterpret_cast<void*>(addr), &task->tls_base, sizeof(task->tls_base)
+            );
+
+            if (rc != mm::uaccess::OK) {
+                return syscall::EFAULT;
+            }
+
             return 0;
+        }
         default:
             return syscall::EINVAL;
     }
