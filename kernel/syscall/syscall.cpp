@@ -7,6 +7,7 @@
 #include "signals/signal.h"
 #include "dynpriv/dynpriv.h"
 #include "percpu/percpu.h"
+#include "hw/cpu.h"
 #include "common/logging.h"
 
 constexpr uint32_t ELEVATION_CONTEXT_MASK = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
@@ -34,6 +35,7 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
     // IN_SYSCALL keeps percpu_is_elevated correct across a mid-syscall switch.
     this_cpu(current_task_exec)->flags |= sched::TASK_FLAG_IN_SYSCALL;
     this_cpu(percpu_is_elevated) = true;
+    cpu::irq_enable();
 
     int64_t result;
 
@@ -60,6 +62,7 @@ extern "C" __PRIVILEGED_CODE int64_t stlx_syscall_handler(
 
     // Return-boundary restore: dynamic runtime elevation follows the selected
     // task mode once syscall handling and switch teardown are complete.
+    cpu::irq_disable();
     this_cpu(current_task_exec)->flags &= ~sched::TASK_FLAG_IN_SYSCALL;
     restore_post_syscall_elevation_state();
 
