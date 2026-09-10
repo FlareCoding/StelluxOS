@@ -42,9 +42,8 @@ __PRIVILEGED_CODE icmp_socket* socket_open();
 __PRIVILEGED_CODE void socket_close(icmp_socket* sock);
 
 /*
- * Consumes an echo reply, queueing it on the socket that owns its identifier
- * and waking a waiting reader, or freeing it when no socket does. Elevates
- * internally, so the driver task may call it lowered.
+ * Consumes an echo reply, queueing it on the socket owning its identifier and waking
+ * a reader, or frees it when none does. Elevates internally, callable lowered.
  */
 void socket_deliver(packet* pkt);
 

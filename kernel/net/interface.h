@@ -87,9 +87,8 @@ protected:
 };
 
 /*
- * Adds `iface` to the stack and names it `<prefix><n>`, numbering within the
- * prefix, such as eth0 or lo0. The registry owns the set and the names, the
- * driver owns the object.
+ * Adds `iface` to the stack under the name `<prefix><n>`, such as eth0 or lo0. The
+ * registry owns the set and the names, the driver owns the object.
  */
 int32_t register_interface(interface* iface, const char* prefix);
 

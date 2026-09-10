@@ -90,10 +90,8 @@ public:
     void init();
 
     /*
-     * Finds the MAC for `ip` so a packet can be sent to it. Fills `out_mac` if
-     * the entry exists, otherwise stores `pkt` on a pending entry and sets
-     * `send_request` when a request must be broadcast. Packets evicted to make
-     * room are returned in `dropped` for the caller to free.
+     * Fills `out_mac` when `ip` is known, otherwise holds `pkt` on a pending entry and
+     * sets `send_request` when one must go out. Packets evicted for room return in `dropped`.
      */
     arp_send_action resolve(
         interface* iface,
@@ -106,10 +104,8 @@ public:
     );
 
     /*
-     * Records the ARP entry. Refreshes an existing entry, creates one only
-     * when `create` is set. Packets that waited on the entry are returned in
-     * `flushed` for the caller to send.
-     * Returns true when a pending entry was resolved.
+     * Refreshes the entry for `ip`, creating it only when `create` is set. Packets that
+     * waited on it return in `flushed` for sending. True when a pending entry resolved.
      */
     bool update_entry(
         interface* iface,
@@ -121,9 +117,8 @@ public:
     );
 
     /*
-     * Expires resolved entries past their lifetime and retries or fails pending
-     * ones. Failed entries return their packets in `dropped` for the caller to
-     * free, entries due for another request are listed in `retries`.
+     * Expires resolved entries past their lifetime and retries or fails pending ones.
+     * Failed entries return their packets in `dropped`, ones to retry are listed in `retries`.
      */
     void sweep(
         uint64_t timestamp,

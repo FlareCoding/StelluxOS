@@ -83,9 +83,8 @@ public:
     size_t headroom() const { return m_data; }
     size_t tailroom() const { return PACKET_CAPACITY - m_tail; }
 
-    // Each layer marks where its header starts before pulling past it, so higher
-    // layers can still reach lower headers, such as UDP reading IP addresses for
-    // its checksum.
+    // Each layer marks its header before pulling past it, so a higher layer can still
+    // reach a lower header, as UDP reads the IP addresses for its checksum
     void mark_link_header() { m_link_header = m_data; }
     void mark_network_header() { m_network_header = m_data; }
     void mark_transport_header() { m_transport_header = m_data; }
@@ -102,9 +101,8 @@ public:
     interface* iface() const { return m_iface; }
     void set_iface(interface* iface) { m_iface = iface; }
 
-    // Linkage for the one queue that owns the packet while it waits, such as an
-    // ARP entry or a socket receive queue. A packet is on at most one queue and
-    // must be removed from it before anything else touches it.
+    // Linkage for the one queue holding the packet while it waits, an ARP entry or a
+    // socket receive queue. It leaves that queue before anything else touches it.
     list::node link;
 
 private:

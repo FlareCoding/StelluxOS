@@ -16,9 +16,8 @@ constexpr size_t MIN_FRAME_LEN   = 60;                          // shorter frame
 constexpr size_t MAX_FRAME_LEN   = HEADER_LEN + MTU;            // 1514
 constexpr size_t MIN_PAYLOAD_LEN = MIN_FRAME_LEN - HEADER_LEN;  // 46
 
-// Headroom a driver reserves before copying a received frame in. A 14-byte
-// header leaves the network header that follows it misaligned, two bytes of
-// padding put it back on a 4-byte boundary.
+// Headroom a driver reserves before copying a received frame in. Two bytes of padding
+// put the network header, which follows the 14-byte link header, on a 4-byte boundary.
 constexpr size_t RX_ALIGN_PAD = 2;
 
 // Values of the type field, in host byte order. Frames with a value below
@@ -61,19 +60,14 @@ struct eth_header {
 static_assert(sizeof(eth_header) == HEADER_LEN);
 
 /*
- * Entry point for the ethernet layer of the network stack to consume
- * the packet. Refuses frames shorter than the header, marks the link
- * header, pulls it, and dispatches on the type. Anything not handled is
- * counted and freed here.
+ * Consumes a received frame: checks its length, records and pulls the link header,
+ * and dispatches on the type. Frames nobody handles are counted and freed here.
  */
 int32_t input(packet* pkt);
 
 /*
- * Exit point for the ethernet layer of the network stack to consume
- * the packet. Refuses packets without headroom for the header or without
- * an interface to leave through, pushes the header with the source taken
- * from that interface, and hands the frame to it for transmission. The
- * packet is freed here whether or not the interface accepted it.
+ * Consumes a packet leaving through its interface: pushes the header with that
+ * interface's address as the source and hands the frame over. Freed here in every case.
  */
 int32_t output(packet* pkt, const mac_addr& dest, uint16_t type);
 

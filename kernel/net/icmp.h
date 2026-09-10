@@ -25,8 +25,8 @@ constexpr uint8_t CODE_FRAGMENTATION_NEEDED = 4;
 constexpr uint8_t CODE_TTL_EXCEEDED        = 0;
 constexpr uint8_t CODE_REASSEMBLY_EXCEEDED = 1;
 
-// Error messages quote the offending IP header plus this much of its payload
-constexpr size_t ERROR_QUOTE_LEN = 8;
+// Error messages carry the offending IP header plus this much of its payload
+constexpr size_t ERROR_PAYLOAD_LEN = 8;
 
 /**
  * ICMP message header (RFC 792). The last four bytes depend on the type:
@@ -74,9 +74,8 @@ int32_t send_echo_request(const ipv4::ipv4_addr& dest, uint16_t id, uint16_t seq
                           const void* payload, size_t len);
 
 /*
- * Reports an error about `offending` packet whose window must start at its IPv4
- * header, quoting that header and the first bytes of its payload. Nothing is
- * sent about broadcasts, later fragments, or other ICMP errors.
+ * Reports an error about `offending`, window at its IPv4 header, sending that header
+ * and the start of its payload back. Silent about broadcasts, fragments, and ICMP errors.
  */
 int32_t send_error(const packet* offending, uint8_t type, uint8_t code);
 

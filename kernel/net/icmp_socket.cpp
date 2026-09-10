@@ -29,9 +29,6 @@ static ssize_t map_net_error(int32_t rc) {
     }
 }
 
-// Open sockets by slot. Written under g_sockets_lock from syscall context,
-// read under it on delivery. Every holder disables interrupts, since the
-// socket lock is taken inside it under the same rule.
 static sync::spinlock g_sockets_lock = sync::SPINLOCK_INIT;
 static icmp_socket* g_sockets[MAX_SOCKETS];
 static uint16_t g_next_id = 1;
@@ -191,9 +188,8 @@ static ssize_t socket_sendto(resource::resource_object* obj, const void* ksrc, s
     return static_cast<ssize_t>(count);
 }
 
-// Hands the oldest waiting reply to the caller, truncated to `count` bytes,
-// with its source address in `kaddr`. Without MSG_DONTWAIT the caller sleeps
-// until a reply arrives or a signal interrupts the wait.
+// Hands the oldest waiting reply to the caller with its source address. Without
+// MSG_DONTWAIT the caller sleeps until a reply arrives or a signal interrupts.
 __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj, void* kdst, size_t count,
                                                  uint32_t flags, void* kaddr, size_t* addrlen) {
     icmp_socket* sock = static_cast<icmp_socket*>(obj->impl);
