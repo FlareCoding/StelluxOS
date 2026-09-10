@@ -334,6 +334,8 @@ __PRIVILEGED_CODE int32_t apply_page_protection(
     mm_context* mm_ctx, uintptr_t start, uintptr_t end, uint32_t prot
 ) {
     paging::page_flags_t page_flags = prot_to_page_flags(prot);
+    int32_t rc = MM_CTX_OK;
+
     for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
         // Absent pages take the VMA's protection when they fault in
         if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
@@ -341,11 +343,16 @@ __PRIVILEGED_CODE int32_t apply_page_protection(
         }
 
         if (paging::set_page_flags(vaddr, page_flags, mm_ctx->pt_root) != paging::OK) {
-            return MM_CTX_ERR_MAP_FAILED;
+            rc = MM_CTX_ERR_MAP_FAILED;
+            break;
         }
     }
 
-    return MM_CTX_OK;
+    // A stale entry elsewhere would keep the old rights or fault fatally on a
+    // present page, so every CPU drops the range before the caller returns
+    paging::flush_tlb_range(start, end);
+
+    return rc;
 }
 
 } // namespace mm

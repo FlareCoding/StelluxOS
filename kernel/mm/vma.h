@@ -225,6 +225,7 @@ __PRIVILEGED_CODE int32_t unmap_range_locked(
 /**
  * @brief Apply new protection bits to the existing PTEs for [start, end).
  * Does not change VMA records, caller is responsible for VMA updates.
+ * Returns once every CPU sees the new bits, so the call may block.
  * @return MM_CTX_OK on success, MM_CTX_ERR_NOT_MAPPED if any page is unmapped,
  *         MM_CTX_ERR_MAP_FAILED on PTE-update failure.
  * @note Privilege: **required**

@@ -147,42 +147,51 @@ TEST(tlb_coherence, large_range_flush_reaches_other_cpu) {
     remap_is_seen_by_other_cpu(flush_large_range);
 }
 
-// A reader on another CPU caches a user translation through a kernel copy,
-// then copies again after this CPU unmapped the page. It faults only if the
-// unmap flushed every CPU, otherwise its stale entry still reads the frame.
+// A prober on another CPU caches a user translation through a kernel copy,
+// then copies again after this CPU changed the mapping. It faults only if
+// the change was flushed on every CPU, otherwise its stale entry still works.
 static mm::mm_context* g_user_ctx = nullptr;
 static uintptr_t g_user_va = 0;
+static bool g_probe_writes = false;
 static sync::atomic<int32_t> g_first_rc;
 static sync::atomic<int32_t> g_second_rc;
 
-static void user_reader_fn(void*) {
+static int32_t probe_user_page() {
+    uint8_t value = FIRST_PATTERN;
+    if (g_probe_writes) {
+        return mm::uaccess::copy_to_user(reinterpret_cast<void*>(g_user_va), &value, sizeof(value));
+    }
+    return mm::uaccess::copy_from_user(&value, reinterpret_cast<const void*>(g_user_va), sizeof(value));
+}
+
+static void user_prober_fn(void*) {
     RUN_ELEVATED({
         test_helpers::user_space_scope scope(g_user_ctx);
-        uint8_t value = 0;
 
-        g_first_rc.store_release(mm::uaccess::copy_from_user(
-            &value, reinterpret_cast<const void*>(g_user_va), sizeof(value)));
-        g_first_value.store_release(value);
+        g_first_rc.store_release(probe_user_page());
         g_first_read_done.store_release(1);
 
         while (!g_go.load_acquire()) {
         }
 
-        g_second_rc.store_release(mm::uaccess::copy_from_user(
-            &value, reinterpret_cast<const void*>(g_user_va), sizeof(value)));
+        g_second_rc.store_release(probe_user_page());
     });
 
     g_done.store_release(1);
     sched::exit(0);
 }
 
-TEST(tlb_coherence, user_unmap_reaches_other_cpu) {
-    uint32_t reader_cpu = pick_other_online_cpu();
-    if (reader_cpu == percpu::current_cpu_id()) {
+// Runs the scenario with `change` as the operation under test. `change` must
+// leave the prober's access illegal for its second attempt to fault.
+static void user_change_is_seen_by_other_cpu(int32_t (*change)(mm::mm_context*, uintptr_t),
+                                             bool probe_writes) {
+    uint32_t prober_cpu = pick_other_online_cpu();
+    if (prober_cpu == percpu::current_cpu_id()) {
         return;
     }
 
     reset_reader_state();
+    g_probe_writes = probe_writes;
     g_first_rc.store_relaxed(-1);
     g_second_rc.store_relaxed(-1);
 
@@ -196,10 +205,6 @@ TEST(tlb_coherence, user_unmap_reaches_other_cpu) {
                 ctx, 0, paging::PAGE_SIZE_4KB, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
                 mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS, &va);
         }
-        if (rc == mm::MM_CTX_OK && va != 0) {
-            pmm::phys_addr_t frame = paging::get_physical(va, ctx->pt_root);
-            string::memset(paging::phys_to_virt(frame), FIRST_PATTERN, paging::PAGE_SIZE_4KB);
-        }
     });
     ASSERT_NOT_NULL(ctx);
     ASSERT_EQ(rc, mm::MM_CTX_OK);
@@ -210,9 +215,9 @@ TEST(tlb_coherence, user_unmap_reaches_other_cpu) {
 
     bool spawned = false;
     RUN_ELEVATED({
-        sched::task* reader = sched::create_kernel_task(user_reader_fn, nullptr, "tlb_ureader");
-        if (reader) {
-            sched::enqueue_on(reader, reader_cpu);
+        sched::task* prober = sched::create_kernel_task(user_prober_fn, nullptr, "tlb_uprober");
+        if (prober) {
+            sched::enqueue_on(prober, prober_cpu);
             spawned = true;
         }
     });
@@ -220,10 +225,9 @@ TEST(tlb_coherence, user_unmap_reaches_other_cpu) {
 
     ASSERT_TRUE(spin_wait(g_first_read_done));
     EXPECT_EQ(g_first_rc.load_acquire(), mm::uaccess::OK);
-    EXPECT_EQ(g_first_value.load_acquire(), FIRST_PATTERN);
 
     RUN_ELEVATED({
-        rc = mm::mm_context_unmap(ctx, va, paging::PAGE_SIZE_4KB);
+        rc = change(ctx, va);
     });
     EXPECT_EQ(rc, mm::MM_CTX_OK);
 
@@ -234,4 +238,20 @@ TEST(tlb_coherence, user_unmap_reaches_other_cpu) {
     RUN_ELEVATED({
         mm::mm_context_release(ctx);
     });
+}
+
+static int32_t unmap_user_page(mm::mm_context* ctx, uintptr_t va) {
+    return mm::mm_context_unmap(ctx, va, paging::PAGE_SIZE_4KB);
+}
+
+static int32_t make_user_page_read_only(mm::mm_context* ctx, uintptr_t va) {
+    return mm::mm_context_mprotect(ctx, va, paging::PAGE_SIZE_4KB, mm::MM_PROT_READ);
+}
+
+TEST(tlb_coherence, user_unmap_reaches_other_cpu) {
+    user_change_is_seen_by_other_cpu(unmap_user_page, false);
+}
+
+TEST(tlb_coherence, user_mprotect_reaches_other_cpu) {
+    user_change_is_seen_by_other_cpu(make_user_page_read_only, true);
 }
