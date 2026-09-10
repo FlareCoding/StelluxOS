@@ -40,6 +40,7 @@ struct allocation {
     uint16_t  guard_post;
     tag       alloc_tag;
     uint8_t   pmm_order; // 0=non-contiguous/MMIO, 1-18=contiguous PMM order
+    bool      retired;   // Freed and waiting for the quarantine to reclaim it
 };
 
 struct range_node;

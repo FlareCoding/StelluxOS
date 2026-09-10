@@ -120,13 +120,14 @@ TEST(kva_test, retired_range_keeps_its_address_until_drained) {
     int32_t freed = kva::free(alloc.base);
 
     kva::allocation queried = {};
-    if (kva::query(alloc.base, queried) == kva::OK) {
+    if (kva::query(alloc.base, queried) == kva::OK && queried.retired) {
         EXPECT_EQ(again, kva::ERR_DOUBLE_FREE);
         EXPECT_EQ(freed, kva::ERR_DOUBLE_FREE);
     }
 
+    // Once drained the address is gone or already serving a new allocation
     page_quarantine::drain();
-    EXPECT_EQ(kva::query(alloc.base, queried), kva::ERR_NOT_FOUND);
+    EXPECT_TRUE(kva::query(alloc.base, queried) != kva::OK || !queried.retired);
 }
 
 TEST(kva_test, alloc_no_overlap) {

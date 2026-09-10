@@ -102,6 +102,7 @@ __PRIVILEGED_CODE static void populate_allocation(const range_node* n, allocatio
     out.guard_post = n->guard_post;
     out.alloc_tag = n->alloc_tag;
     out.pmm_order = n->pmm_order;
+    out.retired = n->state == range_state::retired;
 }
 
 // Find the free range in free_by_addr that contains [base, base+size).

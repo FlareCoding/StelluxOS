@@ -249,7 +249,7 @@ TEST(vmm_test, stress_alloc_free) {
 // address is not handed out again, the frames are not back in the PMM, and
 // a second free is refused instead of retiring the range twice. vmreclaimd
 // may drain at any moment, so the held-state checks apply only while query
-// still finds the range.
+// still reports the range as retired.
 TEST(vmm_test, freed_range_waits_in_quarantine_until_drained) {
     // Warm up so any page table page the mapping needs already exists
     uintptr_t warm = 0;
@@ -265,13 +265,13 @@ TEST(vmm_test, freed_range_waits_in_quarantine_until_drained) {
 
     uint64_t held = pmm::free_page_count();
     kva::allocation reserved = {};
-    if (kva::query(first, reserved) == kva::OK) {
+    if (kva::query(first, reserved) == kva::OK && reserved.retired) {
         EXPECT_EQ(held, before - 1);
     }
 
     uintptr_t second = 0;
     ASSERT_EQ(vmm::alloc(1, paging::PAGE_KERNEL_RW, 0, kva::tag::generic, second), vmm::OK);
-    if (kva::query(first, reserved) == kva::OK) {
+    if (kva::query(first, reserved) == kva::OK && reserved.retired) {
         EXPECT_NE(second, first);
     }
     EXPECT_EQ(vmm::free(second), vmm::OK);
