@@ -256,6 +256,22 @@ bool arp_table::update_entry(
     return completed;
 }
 
+size_t arp_table::snapshot(arp_snapshot_entry* out, size_t max, uint64_t timestamp) {
+    sync::lock_guard guard(m_lock);
+
+    size_t count = 0;
+    for (size_t i = 0; i < TABLE_SIZE && count < max; i++) {
+        const arp_entry& entry = m_entries[i];
+        if (entry.state == arp_entry_state::empty) {
+            continue;
+        }
+
+        out[count++] = { entry.iface, entry.ip, entry.mac, entry.state, timestamp - entry.timestamp };
+    }
+
+    return count;
+}
+
 int32_t init() {
     g_table.init();
     return OK;
@@ -440,6 +456,14 @@ void sweep(uint64_t ts) {
     for (size_t i = 0; i < retry_count; i++) {
         send_arp_request(retries[i].iface, retries[i].ip);
     }
+}
+
+size_t snapshot(arp_snapshot_entry* out, size_t max) {
+    if (!out) {
+        return 0;
+    }
+
+    return g_table.snapshot(out, max, clock::now_ns());
 }
 
 } // namespace arp

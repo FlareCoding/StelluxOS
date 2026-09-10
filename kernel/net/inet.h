@@ -3,7 +3,9 @@
 
 #include "common/types.h"
 #include "net/net.h"
+#include "net/eth.h"
 #include "net/ipv4.h"
+#include "net/interface.h"
 
 namespace resource { struct resource_object; }
 
@@ -34,6 +36,57 @@ struct sockaddr_in {
 } __attribute__((packed));
 static_assert(sizeof(sockaddr_in) == SOCKADDR_IN_LEN);
 
+// Queries any AF_INET socket answers through ioctl, mirroring stlx/net.h
+// in userland. The sizes below are the contract with it.
+constexpr uint32_t SIOCGNETSTATUS = 0x4E01;
+constexpr uint32_t SIOCGARPTABLE  = 0x4E02;
+
+constexpr size_t MAX_IFINFO  = 8;
+constexpr size_t MAX_ARPINFO = 32;
+
+constexpr uint32_t IFF_UP         = 1u << 0; // administratively enabled
+constexpr uint32_t IFF_CONFIGURED = 1u << 1; // has an IPv4 address
+constexpr uint32_t IFF_DEFAULT    = 1u << 2; // carries traffic no link reaches directly
+constexpr uint32_t IFF_LOOPBACK   = 1u << 3;
+
+constexpr uint32_t ARP_RESOLVED = 1u << 0; // the hardware address is known
+
+// One interface as userland sees it. Addresses are in host byte order.
+struct ifinfo {
+    char     name[IFACE_NAME_MAX];
+    uint8_t  mac[eth::MAC_ADDR_LEN];
+    uint8_t  pad[2];
+    uint32_t ipv4_addr;
+    uint32_t ipv4_netmask;
+    uint32_t ipv4_gateway;
+    uint32_t ipv4_dns; // Always zero, name servers are not an interface property
+    uint32_t flags;
+};
+static_assert(sizeof(ifinfo) == 44);
+
+struct net_status {
+    uint32_t if_count;
+    uint32_t reserved;
+    ifinfo   interfaces[MAX_IFINFO];
+};
+static_assert(sizeof(net_status) == 360);
+
+struct arp_info_entry {
+    uint32_t ipv4_addr;
+    uint8_t  mac[eth::MAC_ADDR_LEN];
+    uint8_t  pad[2];
+    uint32_t age_ms;
+    uint32_t flags;
+};
+static_assert(sizeof(arp_info_entry) == 20);
+
+struct arp_info {
+    uint32_t       entry_count;
+    uint32_t       reserved;
+    arp_info_entry entries[MAX_ARPINFO];
+};
+static_assert(sizeof(arp_info) == 648);
+
 /*
  * Validates `len` bytes of a user-supplied address and extracts the endpoint.
  * `port` is returned in host byte order.
@@ -59,6 +112,15 @@ int32_t map_net_error(int32_t rc);
  */
 __PRIVILEGED_CODE int32_t create_socket(uint32_t type, uint32_t protocol,
                                         resource::resource_object** out);
+
+/**
+ * @brief Answers the interface and neighbor table queries for any AF_INET socket,
+ * writing the result to the user buffer at `arg`.
+ * @return OK, ERR_UNSUP for a command no query matches, ERR_INVAL when the
+ *         buffer cannot be written.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t socket_ioctl(resource::resource_object* obj, uint32_t cmd, uint64_t arg);
 
 } // namespace inet
 } // namespace net

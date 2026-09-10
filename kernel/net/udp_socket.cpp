@@ -354,6 +354,7 @@ static const resource::socket_ops g_udp_socket_ops = {
 static const resource::resource_ops g_socket_ops = {
     .read = socket_read,
     .close = socket_close,
+    .ioctl = inet::socket_ioctl,
     .poll = socket_poll,
     .socket = &g_udp_socket_ops,
 };

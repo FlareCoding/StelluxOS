@@ -34,6 +34,11 @@ int32_t lookup(const ipv4::ipv4_addr& dest, route_result* out);
  */
 int32_t lookup_on(interface* iface, const ipv4::ipv4_addr& dest, route_result* out);
 
+/*
+ * The interface whose gateway carries traffic no link reaches directly, or nullptr.
+ */
+interface* default_interface();
+
 } // namespace route
 } // namespace net
 

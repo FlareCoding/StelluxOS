@@ -82,6 +82,15 @@ struct arp_retry {
     ipv4::ipv4_addr ip;
 };
 
+// Copy of one occupied entry for reporting
+struct arp_snapshot_entry {
+    interface*      iface;
+    ipv4::ipv4_addr ip;
+    eth::mac_addr   mac;
+    arp_entry_state state;
+    uint64_t        age_ns; // Since the last request while pending, since confirmation while resolved
+};
+
 class arp_table {
 public:
     arp_table() = default;
@@ -127,6 +136,12 @@ public:
         size_t* retry_count
     );
 
+    /*
+     * Copies the occupied entries into `out`, at most `max` of them, with ages
+     * measured from `timestamp`. Returns how many were copied.
+     */
+    size_t snapshot(arp_snapshot_entry* out, size_t max, uint64_t timestamp);
+
 private:
     arp_entry* find_entry(interface* iface, const ipv4::ipv4_addr& ip);
     arp_entry* take_free_entry();
@@ -169,6 +184,11 @@ int32_t resolve_and_send(packet* pkt, const ipv4::ipv4_addr& next_hop);
  * Ages the table on every netstkd daemon pass. `ts` is the current monotonic time.
  */
 void sweep(uint64_t ts);
+
+/*
+ * Copies the occupied table entries into `out`, at most `max`. Returns how many.
+ */
+size_t snapshot(arp_snapshot_entry* out, size_t max);
 
 } // namespace arp
 } // namespace net

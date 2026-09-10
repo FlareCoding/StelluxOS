@@ -61,6 +61,8 @@ stlx_net_default_if(const struct stlx_net_status* st) {
 #define STLX_ARP_TABLE_SIZE   32
 #define STLX_SIOCGARPTABLE    0x4E02
 
+#define STLX_ARP_RESOLVED     (1u << 0)
+
 struct stlx_arp_entry {
     uint32_t ipv4_addr;
     uint8_t  mac[6];

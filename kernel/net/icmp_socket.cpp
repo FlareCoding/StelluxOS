@@ -276,6 +276,7 @@ static const resource::resource_ops g_socket_ops = {
     .read = socket_read,
     .write = socket_write,
     .close = socket_close,
+    .ioctl = inet::socket_ioctl,
     .poll = socket_poll,
     .socket = &g_icmp_socket_ops,
 };

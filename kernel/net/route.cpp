@@ -29,14 +29,24 @@ static bool match_link(interface* iface, const ipv4::ipv4_addr& dest, route_resu
     return false;
 }
 
-static bool match_gateway(interface* iface, route_result* out) {
+static bool has_gateway(interface* iface) {
     const ipv4::ipv4_config& conf = iface->ipv4_conf();
-    if (!conf.configured() || conf.gateway.is_unspecified()) {
-        return false;
+    return conf.configured() && !conf.gateway.is_unspecified();
+}
+
+static void gateway_route(interface* iface, route_result* out) {
+    *out = { iface, iface->ipv4_conf().gateway, route_type::unicast };
+}
+
+interface* default_interface() {
+    size_t count = interface_count();
+    for (size_t i = 0; i < count; i++) {
+        if (has_gateway(interface_at(i))) {
+            return interface_at(i);
+        }
     }
 
-    *out = { iface, conf.gateway, route_type::unicast };
-    return true;
+    return nullptr;
 }
 
 int32_t lookup(const ipv4::ipv4_addr& dest, route_result* out) {
@@ -53,13 +63,13 @@ int32_t lookup(const ipv4::ipv4_addr& dest, route_result* out) {
         }
     }
 
-    for (size_t i = 0; i < count; i++) {
-        if (match_gateway(interface_at(i), out)) {
-            return OK;
-        }
+    interface* via = default_interface();
+    if (!via) {
+        return ERR_NO_ROUTE;
     }
 
-    return ERR_NO_ROUTE;
+    gateway_route(via, out);
+    return OK;
 }
 
 int32_t lookup_on(interface* iface, const ipv4::ipv4_addr& dest, route_result* out) {
@@ -77,11 +87,16 @@ int32_t lookup_on(interface* iface, const ipv4::ipv4_addr& dest, route_result* o
         return OK;
     }
 
-    if (match_link(iface, dest, out) || match_gateway(iface, out)) {
+    if (match_link(iface, dest, out)) {
         return OK;
     }
 
-    return ERR_NO_ROUTE;
+    if (!has_gateway(iface)) {
+        return ERR_NO_ROUTE;
+    }
+
+    gateway_route(iface, out);
+    return OK;
 }
 
 } // namespace route
