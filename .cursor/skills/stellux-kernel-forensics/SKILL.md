@@ -68,9 +68,20 @@ the ones outside the subsystem that crashed: allocator, paging, scheduler.
 Each run boots a fresh headless instance, types the command at the serial
 prompt, and classifies the run. Read the per-run lines, then the
 `failing=N clean=M` summary. A `booted=0` run is a harness problem, fix it
-before trusting any number. Rates drift with host load (the same bug went from
-44 to 25 percent between two sessions), so a clean comparison batch means
-something only next to a baseline that reproduced in the same session.
+before trusting any number, and so is a summary with more lines than runs.
+Rates drift with host load (the same bug went from 44 to 25 percent between
+two sessions), so a clean comparison batch means something only next to a
+baseline that reproduced in the same session.
+
+For multi-threaded address-space races (copies against unmap, mprotect, and
+futex words moving underneath) the workload is `mmstress`, which reports every
+kernel copy as completed or `EFAULT` and anything else as unexpected:
+
+```bash
+.cursor/skills/stellux-kernel-forensics/scripts/stress.sh \
+    --smp 4 --runs 16 --parallel 2 --cmd-timeout 300 --cmd 'mmstress' \
+    --done 'mmstress: done' --fail 'KERNEL PANIC|\[FATAL\]|mmstress: FAIL|mmstress: unexpected' --tag mm
+```
 
 **4 Discriminate.** Pick the experiment whose outcome the hypotheses disagree on:
 
