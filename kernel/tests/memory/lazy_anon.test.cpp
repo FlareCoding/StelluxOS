@@ -31,25 +31,24 @@ static constexpr uint32_t LAZY_ANON =
     mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS | mm::MM_MAP_LAZY;
 
 // --- lazy_map_reserves_without_pages ---
-// Proves: a lazy anonymous mapping consumes address space but no
-// physical pages until touched.
+// Proves: a lazy anonymous mapping backs none of its pages until touched.
+// Its VMA bookkeeping may take heap memory, so page counts are not the measure.
 
 TEST(lazy_anon, lazy_map_reserves_without_pages) {
     mm::mm_context* mm_ctx = mm::mm_context_create();
     ASSERT_NOT_NULL(mm_ctx);
 
-    page_quarantine::drain();
-    uint64_t before = pmm::free_page_count();
     uintptr_t addr = 0;
     ASSERT_EQ(mm::mm_context_map_anonymous(
         mm_ctx, 0, 16 * PAGE,
         mm::MM_PROT_READ | mm::MM_PROT_WRITE, LAZY_ANON, &addr
     ), mm::MM_CTX_OK);
     EXPECT_NE(addr, static_cast<uintptr_t>(0));
-    page_quarantine::drain();
-    EXPECT_EQ(pmm::free_page_count(), before);
-    EXPECT_EQ(paging::get_physical(addr, mm_ctx->pt_root),
-              static_cast<pmm::phys_addr_t>(0));
+
+    for (size_t i = 0; i < 16; i++) {
+        EXPECT_EQ(paging::get_physical(addr + i * PAGE, mm_ctx->pt_root),
+                  static_cast<pmm::phys_addr_t>(0));
+    }
 
     mm::mm_context_release(mm_ctx);
 }
