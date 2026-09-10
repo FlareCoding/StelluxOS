@@ -150,6 +150,7 @@ int32_t map_net_error(int32_t rc) {
     case ERR_NO_ROUTE:  return resource::ERR_HOSTUNREACH;
     case ERR_DOWN:      return resource::ERR_HOSTUNREACH;
     case ERR_IN_USE:    return resource::ERR_ADDRINUSE;
+    case ERR_ACCESS:    return resource::ERR_ACCESS;
     default:            return resource::ERR_IO;
     }
 }

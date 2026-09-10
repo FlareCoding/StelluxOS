@@ -41,10 +41,11 @@ int32_t input(packet* pkt);
 /*
  * Consumes a finished payload with headroom, prepends the header for `src_port`
  * to `dest_port`, fills in the checksum, and hands it to IPv4 for `dest`. With
- * `iface` set the datagram leaves through that interface, otherwise any.
+ * `iface` set the datagram leaves through that interface, otherwise any. A
+ * broadcast destination is refused unless `broadcast_allowed`.
  */
 int32_t output(packet* pkt, interface* iface, const ipv4::ipv4_addr& dest,
-               uint16_t src_port, uint16_t dest_port);
+               uint16_t src_port, uint16_t dest_port, bool broadcast_allowed);
 
 } // namespace udp
 } // namespace net

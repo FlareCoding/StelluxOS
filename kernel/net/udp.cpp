@@ -88,7 +88,7 @@ int32_t input(packet* pkt) {
 }
 
 int32_t output(packet* pkt, interface* iface, const ipv4::ipv4_addr& dest,
-               uint16_t src_port, uint16_t dest_port) {
+               uint16_t src_port, uint16_t dest_port, bool broadcast_allowed) {
     if (!pkt) {
         log::warn("udp: output called with no packet");
         return ERR_INVALID;
@@ -100,6 +100,11 @@ int32_t output(packet* pkt, interface* iface, const ipv4::ipv4_addr& dest,
     if (rc != OK) {
         packet::free(pkt);
         return rc;
+    }
+
+    if (route.type == route::route_type::broadcast && !broadcast_allowed) {
+        packet::free(pkt);
+        return ERR_ACCESS;
     }
 
     udp_header* hdr = reinterpret_cast<udp_header*>(pkt->push(HEADER_LEN));

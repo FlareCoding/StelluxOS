@@ -23,6 +23,7 @@ constexpr uint32_t IPPROTO_UDP  = ipv4::PROTO_UDP;
 constexpr uint32_t MSG_DONTWAIT = 0x40;
 
 constexpr int32_t SOL_SOCKET      = 1;
+constexpr int32_t SO_BROADCAST    = 6;
 constexpr int32_t SO_BINDTODEVICE = 25;
 
 constexpr size_t SOCKADDR_IN_LEN = 16;

@@ -30,6 +30,7 @@ __PRIVILEGED_CODE udp_socket* socket_open() {
     sock->local_addr = ipv4::UNSPECIFIED_ADDR;
     sock->local_port = 0;
     sock->iface = nullptr;
+    sock->broadcast_allowed = false;
     sock->lock = sync::SPINLOCK_INIT;
     sock->rx_queue.init();
     sock->rx_wq.init();
@@ -251,7 +252,7 @@ __PRIVILEGED_CODE static ssize_t socket_sendto(resource::resource_object* obj, c
 
     string::memcpy(body, ksrc, count);
 
-    int32_t rc = output(pkt, sock->iface, dest, sock->local_port, dest_port);
+    int32_t rc = output(pkt, sock->iface, dest, sock->local_port, dest_port, sock->broadcast_allowed);
     if (rc != OK) {
         return inet::map_net_error(rc);
     }
@@ -299,9 +300,23 @@ __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj,
     return static_cast<ssize_t>(copied);
 }
 
-// SO_BINDTODEVICE names the interface the socket lives on, an empty name frees it
+// SO_BROADCAST opts into broadcast destinations, SO_BINDTODEVICE names the
+// interface the socket lives on and an empty name frees it
 __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* obj, int32_t level,
                                                    int32_t optname, const void* optval, size_t optlen) {
+    udp_socket* sock = static_cast<udp_socket*>(obj->impl);
+
+    if (level == inet::SOL_SOCKET && optname == inet::SO_BROADCAST) {
+        if (optlen < sizeof(int32_t)) {
+            return resource::ERR_INVAL;
+        }
+
+        int32_t enable = 0;
+        string::memcpy(&enable, optval, sizeof(enable));
+        sock->broadcast_allowed = enable != 0;
+        return resource::OK;
+    }
+
     if (level != inet::SOL_SOCKET || optname != inet::SO_BINDTODEVICE) {
         return resource::ERR_NOPROTOOPT;
     }
@@ -319,7 +334,6 @@ __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* ob
         }
     }
 
-    udp_socket* sock = static_cast<udp_socket*>(obj->impl);
     sync::irq_lock_guard guard(g_sockets_lock);
     sock->iface = iface;
 

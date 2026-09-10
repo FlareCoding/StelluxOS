@@ -150,7 +150,7 @@ TEST(udp_socket, output_through_an_unconfigured_interface_broadcasts_from_nowher
     ASSERT_NOT_NULL(body);
     string::memcpy(body, "dhcp", 4);
 
-    ASSERT_EQ(udp::output(pkt, &link, ipv4::BROADCAST_ADDR, 68, 67), OK);
+    ASSERT_EQ(udp::output(pkt, &link, ipv4::BROADCAST_ADDR, 68, 67, true), OK);
     ASSERT_EQ(link.frames_sent(), static_cast<size_t>(1));
 
     const auto* frame = reinterpret_cast<const eth::eth_header*>(link.last_frame());
@@ -163,4 +163,22 @@ TEST(udp_socket, output_through_an_unconfigured_interface_broadcasts_from_nowher
     const auto* hdr = reinterpret_cast<const udp::udp_header*>(link.last_frame() + eth::HEADER_LEN + ipv4::HEADER_LEN);
     EXPECT_EQ(ntohs(hdr->src_port), 68);
     EXPECT_EQ(ntohs(hdr->dst_port), 67);
+}
+
+// --- output_refuses_a_broadcast_the_socket_did_not_opt_into ---
+// Proves: a broadcast destination needs SO_BROADCAST.
+
+TEST(udp_socket, output_refuses_a_broadcast_the_socket_did_not_opt_into) {
+    stub_interface link;
+    ASSERT_EQ(link.configure_ipv4({{{10, 0, 2, 15}}, {{255, 255, 255, 0}}, {{0, 0, 0, 0}}}), OK);
+
+    packet* pkt = packet::alloc();
+    ASSERT_NOT_NULL(pkt);
+    ASSERT_TRUE(pkt->reserve(eth::HEADER_LEN + ipv4::HEADER_LEN + udp::HEADER_LEN));
+    ASSERT_NOT_NULL(pkt->put(1));
+
+    EXPECT_EQ(udp::output(pkt, &link, ipv4::ipv4_addr{{10, 0, 2, 255}}, 50005, 7, false), ERR_ACCESS);
+    EXPECT_EQ(link.frames_sent(), static_cast<size_t>(0));
+
+    link.unconfigure_ipv4();
 }
