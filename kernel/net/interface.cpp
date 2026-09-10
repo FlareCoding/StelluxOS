@@ -1,6 +1,7 @@
 #include "net/interface.h"
 #include "net/packet.h"
 #include "net/eth.h"
+#include "net/arp.h"
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "common/string.h"
@@ -90,6 +91,28 @@ void interface::set_name(const char* name) {
 
     string::memcpy(m_name, name, len);
     m_name[len] = '\0';
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t interface::configure_ipv4(const ipv4::ipv4_config& conf) {
+    if (!conf.is_well_formed() || conf.address.is_loopback() != m_loopback) {
+        return ERR_INVALID;
+    }
+
+    set_ipv4_conf(conf);
+    arp::forget(this);
+
+    return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void interface::unconfigure_ipv4() {
+    set_ipv4_conf({});
+    arp::forget(this);
 }
 
 int32_t register_interface(interface* iface, const char* prefix) {

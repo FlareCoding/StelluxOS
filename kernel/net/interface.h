@@ -68,6 +68,20 @@ public:
     uint16_t mtu() const { return m_mtu; }
     ipv4::ipv4_config ipv4_conf() const { return m_ipv4_conf.read(); }
 
+    /**
+     * @brief Gives the interface a new IPv4 identity and forgets the neighbors
+     * learned under the old one. Loopback addresses belong to loopback alone.
+     * @return OK, or ERR_INVALID when `conf` does not describe a host on a subnet.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE int32_t configure_ipv4(const ipv4::ipv4_config& conf);
+
+    /**
+     * @brief Takes the IPv4 identity away, the interface then handles no network traffic.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void unconfigure_ipv4();
+
     // Assigned by the registry, truncated to IFACE_NAME_MAX
     void set_name(const char* name);
 

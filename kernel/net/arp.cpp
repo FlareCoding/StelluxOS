@@ -272,6 +272,20 @@ size_t arp_table::snapshot(arp_snapshot_entry* out, size_t max, uint64_t timesta
     return count;
 }
 
+void arp_table::forget(interface* iface, packet_list& dropped) {
+    sync::lock_guard guard(m_lock);
+
+    for (size_t i = 0; i < TABLE_SIZE; i++) {
+        arp_entry& entry = m_entries[i];
+        if (entry.state == arp_entry_state::empty || entry.iface != iface) {
+            continue;
+        }
+
+        move_all(entry.queue, dropped);
+        clear_entry(entry);
+    }
+}
+
 int32_t init() {
     g_table.init();
     return OK;
@@ -464,6 +478,18 @@ size_t snapshot(arp_snapshot_entry* out, size_t max) {
     }
 
     return g_table.snapshot(out, max, clock::now_ns());
+}
+
+void forget(interface* iface) {
+    if (!iface) {
+        return;
+    }
+
+    packet_list dropped;
+    dropped.init();
+
+    g_table.forget(iface, dropped);
+    drop_all(dropped);
 }
 
 } // namespace arp

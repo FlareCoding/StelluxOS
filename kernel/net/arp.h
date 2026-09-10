@@ -142,6 +142,11 @@ public:
      */
     size_t snapshot(arp_snapshot_entry* out, size_t max, uint64_t timestamp);
 
+    /*
+     * Drops every entry learned on `iface`. Packets that waited on them return in `dropped`.
+     */
+    void forget(interface* iface, packet_list& dropped);
+
 private:
     arp_entry* find_entry(interface* iface, const ipv4::ipv4_addr& ip);
     arp_entry* take_free_entry();
@@ -189,6 +194,11 @@ void sweep(uint64_t ts);
  * Copies the occupied table entries into `out`, at most `max`. Returns how many.
  */
 size_t snapshot(arp_snapshot_entry* out, size_t max);
+
+/*
+ * Drops everything learned on `iface`, for when its addressing changes.
+ */
+void forget(interface* iface);
 
 } // namespace arp
 } // namespace net

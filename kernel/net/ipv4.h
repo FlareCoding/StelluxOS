@@ -60,6 +60,9 @@ struct ipv4_addr {
 
     // True when this address and `other` share the network that `mask` describes
     bool in_same_subnet(const ipv4_addr& other, const ipv4_addr& mask) const;
+
+    // True for a netmask of one or more leading ones followed by zeros
+    bool is_contiguous_mask() const;
 } __attribute__((packed));
 static_assert(sizeof(ipv4_addr) == ADDR_LEN);
 
@@ -72,6 +75,12 @@ inline bool ipv4_addr::is_multicast() const { return (bytes[0] & 0xF0) == 0xE0; 
 inline bool ipv4_addr::is_reserved() const { return (bytes[0] & 0xF0) == 0xF0; }
 inline bool ipv4_addr::is_loopback() const { return bytes[0] == 127; }
 inline bool ipv4_addr::in_zero_network() const { return bytes[0] == 0; }
+
+inline bool ipv4_addr::is_contiguous_mask() const {
+    uint32_t mask = (uint32_t{bytes[0]} << 24) | (uint32_t{bytes[1]} << 16) |
+                    (uint32_t{bytes[2]} << 8) | uint32_t{bytes[3]};
+    return mask != 0 && (mask | (mask - 1)) == 0xFFFFFFFFu;
+}
 
 inline bool ipv4_addr::in_same_subnet(const ipv4_addr& other, const ipv4_addr& mask) const {
     for (size_t i = 0; i < ADDR_LEN; i++) {
@@ -102,6 +111,10 @@ struct ipv4_config {
     // True when `addr` names exactly one host as seen from this interface (RFC 1122
     // 3.2.1.3). Loopback addresses count only on the loopback interface itself.
     bool is_unicast(const ipv4_addr& addr) const;
+
+    // True when the address is a host on the subnet the mask describes, and the
+    // gateway is either unspecified or is a different host on the same subnet.
+    bool is_well_formed() const;
 };
 
 struct ipv4_header {

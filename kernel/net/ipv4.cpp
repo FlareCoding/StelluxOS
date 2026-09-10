@@ -49,6 +49,18 @@ bool ipv4_config::is_subnet_broadcast(const ipv4_addr& addr) const {
     return host_bits >= 2 && (all_ones || all_zeros);
 }
 
+bool ipv4_config::is_well_formed() const {
+    if (!netmask.is_contiguous_mask() || !is_unicast(address)) {
+        return false;
+    }
+
+    if (gateway.is_unspecified()) {
+        return true;
+    }
+
+    return gateway != address && gateway.in_same_subnet(address, netmask) && is_unicast(gateway);
+}
+
 bool ipv4_config::is_unicast(const ipv4_addr& addr) const {
     if (addr.in_zero_network() || addr.is_multicast() || addr.is_reserved() ||
         is_subnet_broadcast(addr)) {
