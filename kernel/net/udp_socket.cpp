@@ -136,7 +136,9 @@ static udp_socket* find_bound_socket_locked(const ipv4::ipv4_addr& addr, uint16_
 
     for (size_t i = 0; i < MAX_SOCKETS; i++) {
         udp_socket* sock = g_sockets[i];
-        if (!sock || sock->local_port != port) {
+
+        // An unbound socket has no port and matches nothing, port zero included
+        if (!sock || sock->local_port == 0 || sock->local_port != port) {
             continue;
         }
 

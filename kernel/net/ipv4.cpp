@@ -42,6 +42,15 @@ bool ipv4_config::is_subnet_broadcast(const ipv4_addr& addr) const {
     return true;
 }
 
+bool ipv4_config::is_unicast(const ipv4_addr& addr) const {
+    if (addr.in_zero_network() || addr.is_multicast() || addr.is_reserved() ||
+        is_subnet_broadcast(addr)) {
+        return false;
+    }
+
+    return addr.is_loopback() ? address.is_loopback() : true;
+}
+
 int32_t input(packet* pkt) {
     if (!pkt) {
         log::warn("ipv4: input called with no packet");
@@ -85,6 +94,14 @@ int32_t input(packet* pkt) {
     if (!for_local_host) {
         packet::free(pkt);
         return OK;
+    }
+
+    // RFC 1122 3.2.1.3: the source must name a single host. A host still acquiring
+    // its address may send from the zero network to the limited broadcast.
+    bool acquiring = hdr->src.in_zero_network() && hdr->dst.is_broadcast();
+
+    if (!acquiring && !iface->ipv4_conf().is_unicast(hdr->src)) {
+        return reject(iface, pkt, ERR_INVALID);
     }
 
     // Fragments are not reassembled

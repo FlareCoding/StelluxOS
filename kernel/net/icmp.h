@@ -75,7 +75,7 @@ int32_t send_echo_request(const ipv4::ipv4_addr& dest, uint16_t id, uint16_t seq
 
 /*
  * Reports an error about `offending`, window at its IPv4 header, sending that header
- * and the start of its payload back. Silent about broadcasts, fragments, and ICMP errors.
+ * and the start of its payload back. Silent unless passed between two single hosts.
  */
 int32_t send_error(const packet* offending, uint8_t type, uint8_t code);
 

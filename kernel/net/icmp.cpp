@@ -150,10 +150,13 @@ int32_t send_error(const packet* offending, uint8_t type, uint8_t code) {
         return ERR_INVALID;
     }
 
-    // RFC 1122 3.2.2: silence about broadcasts, later fragments, and sources
-    // that cannot be replied to, or one packet could provoke a storm of errors.
-    if (ip->dst.is_broadcast() || iface->ipv4_conf().is_subnet_broadcast(ip->dst) ||
-        ip->frag_off() != 0 || ip->src.is_unspecified() || ip->src.is_broadcast()) {
+    // RFC 1122 3.2.2: silence unless the datagram went from one host to one host as a
+    // link unicast and is a first fragment, or one packet could provoke a storm of errors
+    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    const eth::eth_header* link = reinterpret_cast<const eth::eth_header*>(offending->link_header());
+
+    if (!conf.is_unicast(ip->src) || !conf.is_unicast(ip->dst) || ip->frag_off() != 0 ||
+        (link && link->dest.is_multicast())) {
         return OK;
     }
 

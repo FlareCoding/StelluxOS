@@ -46,6 +46,18 @@ struct ipv4_addr {
     // 255.255.255.255, delivered to every host on the link
     bool is_broadcast() const;
 
+    // 224.0.0.0/4, delivered to a group of hosts
+    bool is_multicast() const;
+
+    // 240.0.0.0/4, reserved (RFC 1112), names no host except as the broadcast above
+    bool is_reserved() const;
+
+    // 127.0.0.0/8, never leaves the host
+    bool is_loopback() const;
+
+    // 0.0.0.0/8, a host that does not have its address yet
+    bool in_zero_network() const;
+
     // True when this address and `other` share the network that `mask` describes
     bool in_same_subnet(const ipv4_addr& other, const ipv4_addr& mask) const;
 } __attribute__((packed));
@@ -56,6 +68,10 @@ constexpr ipv4_addr BROADCAST_ADDR   = {{255, 255, 255, 255}};
 
 inline bool ipv4_addr::is_unspecified() const { return *this == UNSPECIFIED_ADDR; }
 inline bool ipv4_addr::is_broadcast() const { return *this == BROADCAST_ADDR; }
+inline bool ipv4_addr::is_multicast() const { return (bytes[0] & 0xF0) == 0xE0; }
+inline bool ipv4_addr::is_reserved() const { return (bytes[0] & 0xF0) == 0xF0; }
+inline bool ipv4_addr::is_loopback() const { return bytes[0] == 127; }
+inline bool ipv4_addr::in_zero_network() const { return bytes[0] == 0; }
 
 inline bool ipv4_addr::in_same_subnet(const ipv4_addr& other, const ipv4_addr& mask) const {
     for (size_t i = 0; i < ADDR_LEN; i++) {
@@ -81,6 +97,10 @@ struct ipv4_config {
 
     // True for the all-host-bits address of the current subnet
     bool is_subnet_broadcast(const ipv4_addr& addr) const;
+
+    // True when `addr` names exactly one host as seen from this interface (RFC 1122
+    // 3.2.1.3). Loopback addresses count only on the loopback interface itself.
+    bool is_unicast(const ipv4_addr& addr) const;
 };
 
 struct ipv4_header {
