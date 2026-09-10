@@ -1,6 +1,7 @@
 #include "net/inet.h"
 #include "net/byteorder.h"
 #include "net/icmp_socket.h"
+#include "net/udp_socket.h"
 #include "resource/resource.h"
 #include "mm/heap.h"
 #include "common/string.h"
@@ -38,6 +39,19 @@ int32_t fill_sockaddr(void* addr, size_t* len, const ipv4::ipv4_addr& ip, uint16
     return OK;
 }
 
+int32_t map_net_error(int32_t rc) {
+    switch (rc) {
+    case OK:            return resource::OK;
+    case ERR_INVALID:   return resource::ERR_INVAL;
+    case ERR_NO_MEMORY: return resource::ERR_NOMEM;
+    case ERR_TOO_LARGE: return resource::ERR_MSGSIZE;
+    case ERR_NO_ROUTE:  return resource::ERR_HOSTUNREACH;
+    case ERR_DOWN:      return resource::ERR_HOSTUNREACH;
+    case ERR_IN_USE:    return resource::ERR_ADDRINUSE;
+    default:            return resource::ERR_IO;
+    }
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -47,26 +61,32 @@ __PRIVILEGED_CODE int32_t create_socket(uint32_t type, uint32_t protocol,
         return resource::ERR_INVAL;
     }
 
-    if (type != SOCK_DGRAM || protocol != IPPROTO_ICMP) {
+    // A datagram socket is UDP unless ICMP is named, which selects a ping socket
+    bool is_udp = protocol == IPPROTO_UDP || protocol == IPPROTO_IP;
+    if (type != SOCK_DGRAM || (!is_udp && protocol != IPPROTO_ICMP)) {
         return resource::ERR_UNSUP;
-    }
-
-    icmp::icmp_socket* sock = icmp::socket_open();
-    if (!sock) {
-        return resource::ERR_NOMEM;
     }
 
     // The object stays in privileged memory with the rest of the resource
     // layer, only the protocol state behind `impl` is reachable while lowered
     auto* obj = heap::kalloc_new<resource::resource_object>();
     if (!obj) {
-        icmp::socket_close(sock);
         return resource::ERR_NOMEM;
     }
 
     obj->type = resource::resource_type::SOCKET;
-    obj->ops = icmp::socket_ops();
-    obj->impl = sock;
+    if (is_udp) {
+        obj->ops = udp::socket_ops();
+        obj->impl = udp::socket_open();
+    } else {
+        obj->ops = icmp::socket_ops();
+        obj->impl = icmp::socket_open();
+    }
+
+    if (!obj->impl) {
+        heap::kfree_delete(obj);
+        return resource::ERR_NOMEM;
+    }
 
     *out = obj;
     return resource::OK;

@@ -15,20 +15,6 @@
 namespace net {
 namespace icmp {
 
-// The stack and the resource layer speak different result codes, this is the
-// one place they are translated
-static ssize_t map_net_error(int32_t rc) {
-    switch (rc) {
-    case OK:            return 0;
-    case ERR_INVALID:   return resource::ERR_INVAL;
-    case ERR_NO_MEMORY: return resource::ERR_NOMEM;
-    case ERR_TOO_LARGE: return resource::ERR_MSGSIZE;
-    case ERR_NO_ROUTE:  return resource::ERR_HOSTUNREACH;
-    case ERR_DOWN:      return resource::ERR_HOSTUNREACH;
-    default:            return resource::ERR_IO;
-    }
-}
-
 static sync::spinlock g_sockets_lock = sync::SPINLOCK_INIT;
 static icmp_socket* g_sockets[MAX_SOCKETS];
 static uint16_t g_next_id = 1;
@@ -182,7 +168,7 @@ static ssize_t socket_sendto(resource::resource_object* obj, const void* ksrc, s
 
     int32_t rc = output(pkt, dest);
     if (rc != OK) {
-        return map_net_error(rc);
+        return inet::map_net_error(rc);
     }
 
     return static_cast<ssize_t>(count);

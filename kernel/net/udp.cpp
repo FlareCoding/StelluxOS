@@ -1,4 +1,5 @@
 #include "net/udp.h"
+#include "net/udp_socket.h"
 #include "net/net.h"
 #include "net/interface.h"
 #include "net/route.h"
@@ -74,10 +75,10 @@ int32_t input(packet* pkt) {
         return reject(iface, pkt, ERR_INVALID);
     }
 
-    const uint8_t* src = ip->src.bytes;
-    log::info("udp: %u.%u.%u.%u:%u -> port %u, %lu payload bytes, checksum %s",
-              src[0], src[1], src[2], src[3], ntohs(hdr->src_port), ntohs(hdr->dst_port),
-              length - HEADER_LEN, hdr->checksum == CHECKSUM_NONE ? "none" : "ok");
+    int32_t rc = socket_deliver(pkt);
+    if (rc != ERR_NOT_FOUND) {
+        return rc;
+    }
 
     return drop(iface, pkt, OK);
 }

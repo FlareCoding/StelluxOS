@@ -46,6 +46,11 @@ int32_t parse_sockaddr(const void* addr, size_t len, ipv4::ipv4_addr* out_addr, 
  */
 int32_t fill_sockaddr(void* addr, size_t* len, const ipv4::ipv4_addr& ip, uint16_t port);
 
+/*
+ * Translates a network stack result into the resource layer's.
+ */
+int32_t map_net_error(int32_t rc);
+
 /**
  * Creates the resource object for an AF_INET socket of `type` and `protocol`,
  * with one reference held by the caller. Speaks resource result codes, and

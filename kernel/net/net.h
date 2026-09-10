@@ -15,6 +15,8 @@ constexpr int32_t ERR_NO_MEMORY = -5; // an allocation or task creation failed
 constexpr int32_t ERR_PENDING   = -6; // packet processing is in progress, retry later
 constexpr int32_t ERR_FULL      = -7; // a fixed-size table has no free slot
 constexpr int32_t ERR_NO_ROUTE  = -8; // no interface can reach the destination
+constexpr int32_t ERR_IN_USE    = -9; // another socket owns the address and port
+constexpr int32_t ERR_NOT_FOUND = -10; // no socket owns the destination port
 
 /**
  * Initialize the network stack and start its daemon/bookkeeping task.
