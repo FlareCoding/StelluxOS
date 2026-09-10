@@ -93,7 +93,7 @@ int32_t output(packet* pkt, const ipv4::ipv4_addr& dest, uint16_t src_port, uint
         return ERR_INVALID;
     }
 
-    // The checksum covers the source address, which IPv4 picks by route, so the
+    // The checksum covers the source address, which the route decides, so the
     // route is resolved here first. IPv4 resolves it again for its own header.
     route::route_result route;
     int32_t rc = route::lookup(dest, &route);
@@ -113,7 +113,7 @@ int32_t output(packet* pkt, const ipv4::ipv4_addr& dest, uint16_t src_port, uint
     hdr->length = htons(static_cast<uint16_t>(pkt->length()));
     hdr->checksum = 0;
 
-    uint16_t sum = datagram_checksum(route.iface->ipv4_conf().address, dest, hdr, pkt->length());
+    uint16_t sum = datagram_checksum(route.source, dest, hdr, pkt->length());
     hdr->checksum = htons(sum == 0 ? CHECKSUM_ALL_ONES : sum);
 
     pkt->mark_transport_header();

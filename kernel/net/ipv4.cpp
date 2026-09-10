@@ -85,11 +85,16 @@ int32_t input(packet* pkt) {
 
     pkt->trim(total_len);
 
-    // Weak host model: any address this host owns is accepted on any interface,
-    // which is what local delivery through loopback needs.
-    bool for_local_host = find_interface_by_address(hdr->dst) != nullptr ||
-                          hdr->dst.is_broadcast() ||
-                          iface->ipv4_conf().is_subnet_broadcast(hdr->dst);
+    // Weak host model: any address this host owns is accepted on any interface. The
+    // loopback network is the exception, it never arrives from a link (RFC 1122 3.2.1.3).
+    bool for_local_host;
+    if (hdr->dst.is_loopback()) {
+        for_local_host = iface->is_loopback();
+    } else {
+        for_local_host = find_interface_by_address(hdr->dst) != nullptr ||
+                         hdr->dst.is_broadcast() ||
+                         iface->ipv4_conf().is_subnet_broadcast(hdr->dst);
+    }
 
     if (!for_local_host) {
         packet::free(pkt);
@@ -143,11 +148,6 @@ int32_t output(packet* pkt, const ipv4_addr& dest, uint8_t protocol) {
         return rc;
     }
 
-    // Local delivery through loopback interface
-    if (route.type == route::route_type::local) {
-        return drop(route.iface, pkt, ERR_NO_ROUTE);
-    }
-
     // Nothing is fragmented, so the payload must fit one frame behind the header
     if (pkt->length() > static_cast<size_t>(route.iface->mtu()) - HEADER_LEN) {
         return drop(route.iface, pkt, ERR_TOO_LARGE);
@@ -166,7 +166,7 @@ int32_t output(packet* pkt, const ipv4_addr& dest, uint8_t protocol) {
     hdr->fl_frag_off = htons(FLAG_DF);
     hdr->ttl = DEFAULT_TTL;
     hdr->proto = protocol;
-    hdr->src = route.iface->ipv4_conf().address;
+    hdr->src = route.source;
     hdr->dst = dest;
 
     // Computed last, over the finished header with the field itself zeroed
@@ -175,6 +175,11 @@ int32_t output(packet* pkt, const ipv4_addr& dest, uint8_t protocol) {
 
     pkt->mark_network_header();
     pkt->set_iface(route.iface);
+
+    // The loopback interface is its own next hop
+    if (route.type == route::route_type::local) {
+        return eth::output(pkt, route.iface->mac(), eth::TYPE_IPV4);
+    }
 
     if (route.type == route::route_type::broadcast) {
         return eth::output(pkt, eth::BROADCAST_ADDR, eth::TYPE_IPV4);

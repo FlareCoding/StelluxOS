@@ -4,6 +4,16 @@
 namespace net {
 namespace route {
 
+static bool is_local_route(const ipv4::ipv4_addr& dest, route_result* out) {
+    interface* lo = find_loopback_interface();
+    if (!lo) {
+        return false;
+    }
+
+    *out = { lo, dest, dest, route_type::local };
+    return true;
+}
+
 // Matches `dest` against what `iface` reaches directly, ignoring its gateway
 static bool match_link(interface* iface, const ipv4::ipv4_addr& dest, route_result* out) {
     const ipv4::ipv4_config& conf = iface->ipv4_conf();
@@ -12,21 +22,25 @@ static bool match_link(interface* iface, const ipv4::ipv4_addr& dest, route_resu
     }
 
     if (dest == conf.address) {
-        *out = { iface, dest, route_type::local };
-        return true;
+        return is_local_route(dest, out);
     }
 
     if (dest.is_broadcast() || conf.is_subnet_broadcast(dest)) {
-        *out = { iface, dest, route_type::broadcast };
+        *out = { iface, dest, conf.address, route_type::broadcast };
         return true;
     }
 
-    if (dest.in_same_subnet(conf.address, conf.netmask)) {
-        *out = { iface, dest, route_type::unicast };
-        return true;
+    if (!dest.in_same_subnet(conf.address, conf.netmask)) {
+        return false;
     }
 
-    return false;
+    // Every address on the loopback network is this host
+    if (iface->is_loopback()) {
+        return is_local_route(dest, out);
+    }
+
+    *out = { iface, dest, conf.address, route_type::unicast };
+    return true;
 }
 
 static bool has_gateway(interface* iface) {
@@ -35,7 +49,8 @@ static bool has_gateway(interface* iface) {
 }
 
 static void gateway_route(interface* iface, route_result* out) {
-    *out = { iface, iface->ipv4_conf().gateway, route_type::unicast };
+    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    *out = { iface, conf.gateway, conf.address, route_type::unicast };
 }
 
 interface* default_interface() {
@@ -83,7 +98,7 @@ int32_t lookup_on(interface* iface, const ipv4::ipv4_addr& dest, route_result* o
             return ERR_NO_ROUTE;
         }
 
-        *out = { iface, dest, route_type::broadcast };
+        *out = { iface, dest, ipv4::UNSPECIFIED_ADDR, route_type::broadcast };
         return OK;
     }
 

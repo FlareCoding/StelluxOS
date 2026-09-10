@@ -11,7 +11,7 @@ class interface;
 namespace route {
 
 enum class route_type : uint8_t {
-    local     = 0, // one of this host's own addresses
+    local     = 0, // this host itself, delivered through the loopback interface
     unicast   = 1, // a single host, reached through `next_hop`
     broadcast = 2, // every host on the interface's link
 };
@@ -19,6 +19,7 @@ enum class route_type : uint8_t {
 struct route_result {
     interface*      iface;    // Interface the packet leaves through
     ipv4::ipv4_addr next_hop; // The destination when on-link, otherwise the gateway
+    ipv4::ipv4_addr source;   // Address the packet is sent from, unspecified while acquiring one
     route_type      type;
 };
 
