@@ -25,7 +25,8 @@ static bool match_link(interface* iface, const ipv4::ipv4_addr& dest, route_resu
         return is_local_route(dest, out);
     }
 
-    if (dest.is_broadcast() || conf.is_subnet_broadcast(dest)) {
+    // The limited broadcast needs a link to carry it, and loopback has none
+    if ((dest.is_broadcast() && !iface->is_loopback()) || conf.is_subnet_broadcast(dest)) {
         *out = { iface, dest, conf.address, route_type::broadcast };
         return true;
     }

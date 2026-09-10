@@ -95,7 +95,8 @@ struct ipv4_config {
 
     bool configured() const { return !address.is_unspecified(); }
 
-    // True for the all-host-bits address of the current subnet
+    // True for the current subnet's broadcast in either form, all host bits set
+    // or the obsolete all clear (RFC 1122 3.3.6). A /31 or /32 has no broadcast.
     bool is_subnet_broadcast(const ipv4_addr& addr) const;
 
     // True when `addr` names exactly one host as seen from this interface (RFC 1122

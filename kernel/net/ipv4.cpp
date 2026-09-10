@@ -32,14 +32,21 @@ bool ipv4_config::is_subnet_broadcast(const ipv4_addr& addr) const {
         return false;
     }
 
+    // The all-ones host number is the broadcast, the all-zeros one its obsolete
+    // form that hosts still accept (RFC 1122 3.3.6), a /31 or /32 has neither
+    int host_bits = 0;
+    bool all_ones = true;
+    bool all_zeros = true;
+
     for (size_t i = 0; i < ADDR_LEN; i++) {
-        uint8_t host_bits = static_cast<uint8_t>(~netmask.bytes[i]);
-        if ((addr.bytes[i] & host_bits) != host_bits) {
-            return false;
-        }
+        uint8_t host_mask = static_cast<uint8_t>(~netmask.bytes[i]);
+        host_bits += __builtin_popcount(host_mask);
+
+        all_ones = all_ones && (addr.bytes[i] & host_mask) == host_mask;
+        all_zeros = all_zeros && (addr.bytes[i] & host_mask) == 0;
     }
 
-    return true;
+    return host_bits >= 2 && (all_ones || all_zeros);
 }
 
 bool ipv4_config::is_unicast(const ipv4_addr& addr) const {

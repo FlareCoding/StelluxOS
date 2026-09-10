@@ -32,6 +32,7 @@ TEST(ipv4, unicast_rejects_rfc1122_non_hosts) {
     EXPECT_FALSE(g_eth_conf.is_unicast(addr(0, 0, 0, 0)));
     EXPECT_FALSE(g_eth_conf.is_unicast(addr(0, 0, 0, 5)));
     EXPECT_FALSE(g_eth_conf.is_unicast(addr(10, 0, 2, 255)));
+    EXPECT_FALSE(g_eth_conf.is_unicast(addr(10, 0, 2, 0)));
     EXPECT_FALSE(g_eth_conf.is_unicast(addr(224, 0, 0, 0)));
     EXPECT_FALSE(g_eth_conf.is_unicast(addr(239, 255, 255, 255)));
     EXPECT_FALSE(g_eth_conf.is_unicast(addr(240, 0, 0, 0)));
@@ -53,4 +54,23 @@ TEST(ipv4, unicast_without_configuration_knows_no_subnet) {
     EXPECT_TRUE(g_unconfigured.is_unicast(addr(10, 0, 2, 2)));
     EXPECT_FALSE(g_unconfigured.is_unicast(addr(255, 255, 255, 255)));
     EXPECT_FALSE(g_unconfigured.is_unicast(addr(0, 0, 0, 0)));
+}
+
+// Both broadcast forms belong to the subnet, and a subnet too small to hold
+// them has none (RFC 3021)
+TEST(ipv4, subnet_broadcast_has_two_forms_unless_the_subnet_is_tiny) {
+    EXPECT_TRUE(g_eth_conf.is_subnet_broadcast(addr(10, 0, 2, 255)));
+    EXPECT_TRUE(g_eth_conf.is_subnet_broadcast(addr(10, 0, 2, 0)));
+    EXPECT_FALSE(g_eth_conf.is_subnet_broadcast(addr(10, 0, 2, 1)));
+    EXPECT_FALSE(g_eth_conf.is_subnet_broadcast(addr(10, 0, 3, 255)));
+
+    const ipv4_config link31 = {{{10, 0, 2, 14}}, {{255, 255, 255, 254}}, {{0, 0, 0, 0}}};
+    EXPECT_FALSE(link31.is_subnet_broadcast(addr(10, 0, 2, 14)));
+    EXPECT_FALSE(link31.is_subnet_broadcast(addr(10, 0, 2, 15)));
+    EXPECT_TRUE(link31.is_unicast(addr(10, 0, 2, 14)));
+    EXPECT_TRUE(link31.is_unicast(addr(10, 0, 2, 15)));
+
+    const ipv4_config host32 = {{{10, 0, 2, 15}}, {{255, 255, 255, 255}}, {{0, 0, 0, 0}}};
+    EXPECT_FALSE(host32.is_subnet_broadcast(addr(10, 0, 2, 15)));
+    EXPECT_TRUE(host32.is_unicast(addr(10, 0, 2, 15)));
 }
