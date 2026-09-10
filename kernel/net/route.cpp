@@ -93,6 +93,10 @@ int32_t lookup_on(interface* iface, const ipv4::ipv4_addr& dest, route_result* o
         return ERR_INVALID;
     }
 
+    if (dest.is_loopback() || find_interface_by_address(dest)) {
+        return is_local_route(dest, out) ? OK : ERR_NO_ROUTE;
+    }
+
     // An unconfigured interface can still broadcast, which is how it asks for an address
     if (!iface->ipv4_conf().configured()) {
         if (!dest.is_broadcast()) {

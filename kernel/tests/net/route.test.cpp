@@ -57,3 +57,24 @@ TEST(route, unconfigured_interface_can_only_broadcast) {
 
     EXPECT_EQ(route::lookup_on(&link, ipv4::ipv4_addr{{10, 0, 2, 2}}, &out), ERR_NO_ROUTE);
 }
+
+// --- pinned_lookup_keeps_this_host_local ---
+// Proves: a socket pinned to a link still reaches the host itself through
+// loopback instead of pushing a loopback address toward the link's gateway.
+
+TEST(route, pinned_lookup_keeps_this_host_local) {
+    const ipv4::ipv4_addr gateway = {{10, 0, 2, 2}};
+    stub_interface link;
+    ASSERT_EQ(link.configure_ipv4({{{10, 0, 2, 15}}, {{255, 255, 255, 0}}, gateway}), OK);
+
+    route::route_result out = {};
+    ASSERT_EQ(route::lookup_on(&link, ipv4::ipv4_addr{{127, 0, 0, 1}}, &out), OK);
+    EXPECT_TRUE(out.iface->is_loopback());
+    EXPECT_TRUE(out.type == route::route_type::local);
+
+    ASSERT_EQ(route::lookup_on(&link, ipv4::ipv4_addr{{8, 8, 8, 8}}, &out), OK);
+    EXPECT_TRUE(out.iface == &link);
+    EXPECT_TRUE(out.next_hop == gateway);
+
+    link.unconfigure_ipv4();
+}
