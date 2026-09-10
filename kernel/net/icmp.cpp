@@ -133,5 +133,67 @@ int32_t send_echo_request(const ipv4::ipv4_addr& dest, uint16_t id, uint16_t seq
     return output(pkt, dest);
 }
 
+// RFC 1122 3.2.2: an error message is never sent about another error message
+static bool is_error_message(uint8_t type) {
+    return type == TYPE_DEST_UNREACHABLE || type == TYPE_TIME_EXCEEDED ||
+           type == TYPE_PARAMETER_PROBLEM;
+}
+
+int32_t send_error(const packet* offending, uint8_t type, uint8_t code) {
+    if (!offending || offending->length() < ipv4::HEADER_LEN) {
+        return ERR_INVALID;
+    }
+
+    interface* iface = offending->iface();
+    const ipv4::ipv4_header* ip = reinterpret_cast<const ipv4::ipv4_header*>(offending->data());
+    if (!iface || offending->length() < ip->header_len()) {
+        return ERR_INVALID;
+    }
+
+    // RFC 1122 3.2.2: silence about broadcasts, later fragments, and sources
+    // that cannot be replied to, or one packet could provoke a storm of errors.
+    if (ip->dst.is_broadcast() || iface->ipv4_conf().is_subnet_broadcast(ip->dst) ||
+        ip->frag_off() != 0 || ip->src.is_unspecified() || ip->src.is_broadcast()) {
+        return OK;
+    }
+
+    if (ip->proto == ipv4::PROTO_ICMP && offending->length() >= ip->header_len() + HEADER_LEN) {
+        const icmp_header* inner =
+            reinterpret_cast<const icmp_header*>(offending->data() + ip->header_len());
+        if (is_error_message(inner->type)) {
+            return OK;
+        }
+    }
+
+    // The offending IP header and enough of its payload to hold the transport ports
+    size_t included_len = ip->header_len() + ERROR_PAYLOAD_LEN;
+    if (included_len > offending->length()) {
+        included_len = offending->length();
+    }
+
+    packet* pkt = packet::alloc();
+    if (!pkt) {
+        return ERR_NO_MEMORY;
+    }
+
+    uint8_t* body = nullptr;
+    if (pkt->reserve(eth::HEADER_LEN + ipv4::HEADER_LEN)) {
+        body = pkt->put(HEADER_LEN + included_len);
+    }
+
+    if (!body) {
+        packet::free(pkt);
+        return ERR_TOO_LARGE;
+    }
+
+    icmp_header* hdr = reinterpret_cast<icmp_header*>(body);
+    hdr->type = type;
+    hdr->code = code;
+    hdr->unused = 0;
+    string::memcpy(body + HEADER_LEN, offending->data(), included_len);
+
+    return output(pkt, ip->src);
+}
+
 } // namespace icmp
 } // namespace net

@@ -1,5 +1,6 @@
 #include "net/udp.h"
 #include "net/udp_socket.h"
+#include "net/icmp.h"
 #include "net/net.h"
 #include "net/interface.h"
 #include "net/route.h"
@@ -79,6 +80,9 @@ int32_t input(packet* pkt) {
     if (rc != ERR_NOT_FOUND) {
         return rc;
     }
+
+    (void)pkt->push(ip->header_len());
+    icmp::send_error(pkt, icmp::TYPE_DEST_UNREACHABLE, icmp::CODE_PORT_UNREACHABLE);
 
     return drop(iface, pkt, OK);
 }
