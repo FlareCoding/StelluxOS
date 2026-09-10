@@ -18,8 +18,6 @@
 
 extern "C" char stack_top[];
 
-constexpr uint64_t RFLAGS_IF = (1ULL << 9);
-
 // The exit path needs the trap frame plus the seven words above it (irq
 // vector, error code, IRET frame), then room for the finish_task_switch call.
 constexpr size_t SWITCH_EXIT_FRAME_SIZE = sizeof(x86::trap_frame) + 7 * sizeof(uint64_t);
@@ -187,12 +185,6 @@ __PRIVILEGED_CODE void on_yield(x86::trap_frame* tf) {
 
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
-
-    // A blocked waiter resumes after yield to unwind its sleep or wait entry.
-    // Restore that kernel context with IRQs enabled so timer ticks keep flowing.
-    if (prev->state.load_relaxed() == TASK_STATE_BLOCKED) {
-        prev->exec.cpu_ctx.rflags |= RFLAGS_IF;
-    }
 
     // A task inside a syscall still owns kernel state such as a linked wait
     // node, so it dies at the syscall exit fatal check instead of here
