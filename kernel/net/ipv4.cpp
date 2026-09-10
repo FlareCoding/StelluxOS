@@ -5,6 +5,7 @@
 #include "net/arp.h"
 #include "net/eth.h"
 #include "net/icmp.h"
+#include "net/udp.h"
 #include "sync/atomic.h"
 #include "common/logging.h"
 
@@ -99,10 +100,7 @@ int32_t input(packet* pkt) {
     case PROTO_ICMP:
         return icmp::input(pkt);
     case PROTO_UDP:
-        log::info("ipv4: UDP datagram from %u.%u.%u.%u, %lu payload bytes",
-                  src[0], src[1], src[2], src[3], pkt->length());
-        packet::free(pkt);
-        break;
+        return udp::input(pkt);
     case PROTO_TCP:
         log::info("ipv4: TCP datagram from %u.%u.%u.%u, %lu payload bytes",
                   src[0], src[1], src[2], src[3], pkt->length());

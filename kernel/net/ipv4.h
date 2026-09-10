@@ -10,8 +10,9 @@ namespace ipv4 {
 
 constexpr size_t ADDR_LEN = 4;
 
-constexpr size_t   HEADER_LEN       = 20;
-constexpr size_t   MAX_HEADER_LEN   = 60;
+constexpr size_t   HEADER_LEN           = 20;
+constexpr size_t   MAX_HEADER_LEN       = 60;
+constexpr size_t   PSEUDO_HEADER_LEN    = 12;
 
 constexpr uint8_t  VERSION          = 4;
 constexpr uint8_t  MIN_IHL          = 5;
@@ -107,6 +108,20 @@ struct ipv4_header {
 
 } __attribute__((packed));
 static_assert(sizeof(ipv4_header) == HEADER_LEN);
+
+/**
+ * Twelve bytes UDP and TCP include in their checksum but never send (RFC 768,
+ * RFC 793). Covering the addresses lets a receiver detect a segment or datagram
+ * that was delivered to the wrong host. `length` is the transport header and payload.
+ */
+struct pseudo_header {
+    ipv4_addr src;
+    ipv4_addr dst;
+    uint8_t   zero;
+    uint8_t   proto;
+    uint16_t  length;
+} __attribute__((packed));
+static_assert(sizeof(pseudo_header) == PSEUDO_HEADER_LEN);
 
 /*
  * Entry point into the IP layer of the network stack
