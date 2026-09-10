@@ -61,6 +61,7 @@ public:
     const char* name() const { return m_name; }
 
     bool enabled() const { return m_enabled; }
+    bool is_loopback() const { return m_loopback; }
 
     const eth::mac_addr& mac() const { return m_mac; }
     uint16_t mtu() const { return m_mtu; }
@@ -73,8 +74,9 @@ public:
     void record_iface_error() { m_counters.errors.fetch_add_relaxed(1); }
 
 protected:
-    uint64_t        m_id;      // Nonzero and unique for the life of the kernel, 0 means no interface
-    bool            m_enabled; // Administratively up, checked by the stack before frames move either way
+    uint64_t        m_id;       // Nonzero and unique for the life of the kernel, 0 means no interface
+    bool            m_enabled;  // Administratively up, checked by the stack before frames move either way
+    bool            m_loopback; // Frames sent through it come back to this host, so no link or ARP
     char            m_name[IFACE_NAME_MAX];
     iface_counters  m_counters;
 
@@ -99,6 +101,11 @@ interface* interface_at(size_t index);
  * Finds the interface configured with `addr` or returns nullptr.
  */
 interface* find_interface_by_address(const ipv4::ipv4_addr& addr);
+
+/*
+ * Returns the registered loopback interface or nullptr before one exists.
+ */
+interface* find_loopback_interface();
 
 } // namespace net
 

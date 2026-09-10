@@ -56,6 +56,7 @@ static size_t count_prefix(const char* prefix, size_t prefix_len) {
 interface::interface()
     : m_id(generate_interface_id())
     , m_enabled(false)
+    , m_loopback(false)
     , m_name{}
     , m_counters{}
     , m_mac{}
@@ -142,6 +143,17 @@ interface* find_interface_by_address(const ipv4::ipv4_addr& addr) {
         const ipv4::ipv4_config& conf = g_interfaces[i]->ipv4_conf();
 
         if (conf.configured() && conf.address == addr) {
+            return g_interfaces[i];
+        }
+    }
+
+    return nullptr;
+}
+
+interface* find_loopback_interface() {
+    size_t count = g_interface_count.load_acquire();
+    for (size_t i = 0; i < count; i++) {
+        if (g_interfaces[i]->is_loopback()) {
             return g_interfaces[i];
         }
     }

@@ -1,6 +1,7 @@
 #include "net/net.h"
 #include "clock/clock.h"
 #include "net/arp.h"
+#include "net/loopback.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
 #include "common/logging.h"
@@ -29,6 +30,12 @@ __PRIVILEGED_CODE int32_t init() {
     int32_t rc = arp::init();
     if (rc != OK) {
         log::error("net: arp::init failed: %d", rc);
+        return rc;
+    }
+
+    rc = loopback::init();
+    if (rc != OK) {
+        log::error("net: loopback::init failed: %d", rc);
         return rc;
     }
 
