@@ -94,13 +94,15 @@ int32_t input(packet* pkt) {
 
     // Weak host model: any address this host owns is accepted on any interface. The
     // loopback network is the exception, it never arrives from a link (RFC 1122 3.2.1.3).
+    ipv4_config conf = iface->ipv4_conf();
     bool for_local_host;
+
     if (hdr->dst.is_loopback()) {
         for_local_host = iface->is_loopback();
     } else {
         for_local_host = find_interface_by_address(hdr->dst) != nullptr ||
                          hdr->dst.is_broadcast() ||
-                         iface->ipv4_conf().is_subnet_broadcast(hdr->dst);
+                         conf.is_subnet_broadcast(hdr->dst);
     }
 
     if (!for_local_host) {
@@ -112,7 +114,7 @@ int32_t input(packet* pkt) {
     // its address may send from the zero network to the limited broadcast.
     bool acquiring = hdr->src.in_zero_network() && hdr->dst.is_broadcast();
 
-    if (!acquiring && !iface->ipv4_conf().is_unicast(hdr->src)) {
+    if (!acquiring && !conf.is_unicast(hdr->src)) {
         return reject(iface, pkt, ERR_INVALID);
     }
 

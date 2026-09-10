@@ -776,7 +776,7 @@ int32_t rtl8168_driver::attach() {
     // Link identity for the stack. The interface comes up here until the
     // stack owns that decision.
     m_mtu = net::eth::MTU;
-    m_ipv4_conf = LAN_STATIC_IPV4;
+    RUN_ELEVATED(set_ipv4_conf(LAN_STATIC_IPV4));
     m_enabled = true;
 
     rc = net::register_interface(this, "eth");

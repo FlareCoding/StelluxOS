@@ -306,7 +306,7 @@ int32_t input(packet* pkt) {
     }
 
     // No address yet, so there is nothing to learn or answer
-    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    ipv4::ipv4_config conf = iface->ipv4_conf();
     if (!conf.configured()) {
         packet::free(pkt);
         return OK;

@@ -5,6 +5,7 @@
 #include "net/eth.h"
 #include "net/ipv4.h"
 #include "sync/atomic.h"
+#include "sync/seqlock.h"
 
 namespace net {
 
@@ -65,7 +66,7 @@ public:
 
     const eth::mac_addr& mac() const { return m_mac; }
     uint16_t mtu() const { return m_mtu; }
-    const ipv4::ipv4_config& ipv4_conf() const { return m_ipv4_conf; }
+    ipv4::ipv4_config ipv4_conf() const { return m_ipv4_conf.read(); }
 
     // Assigned by the registry, truncated to IFACE_NAME_MAX
     void set_name(const char* name);
@@ -85,7 +86,12 @@ protected:
     uint16_t        m_mtu; // Largest payload carried in one frame, excluding the link header
 
     // IPv4 identity, unspecified until configured by hand or through DHCP
-    ipv4::ipv4_config m_ipv4_conf;
+    sync::seqlocked<ipv4::ipv4_config> m_ipv4_conf;
+
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void set_ipv4_conf(const ipv4::ipv4_config& conf) { m_ipv4_conf.write(conf); }
 };
 
 /*

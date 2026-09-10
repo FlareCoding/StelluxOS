@@ -152,7 +152,7 @@ int32_t send_error(const packet* offending, uint8_t type, uint8_t code) {
 
     // RFC 1122 3.2.2: silence unless the datagram went from one host to one host as a
     // link unicast and is a first fragment, or one packet could provoke a storm of errors
-    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    ipv4::ipv4_config conf = iface->ipv4_conf();
     const eth::eth_header* link = reinterpret_cast<const eth::eth_header*>(offending->link_header());
 
     if (!conf.is_unicast(ip->src) || !conf.is_unicast(ip->dst) || ip->frag_off() != 0 ||

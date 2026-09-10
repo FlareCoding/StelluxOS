@@ -18,7 +18,7 @@ static uint32_t to_host_order(const ipv4::ipv4_addr& addr) {
 }
 
 static void fill_ifinfo(interface* iface, bool is_default, ifinfo* info) {
-    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    ipv4::ipv4_config conf = iface->ipv4_conf();
 
     size_t name_len = string::strlen(iface->name());
     if (name_len >= sizeof(info->name)) {

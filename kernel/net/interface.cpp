@@ -140,7 +140,7 @@ interface* interface_at(size_t index) {
 interface* find_interface_by_address(const ipv4::ipv4_addr& addr) {
     size_t count = g_interface_count.load_acquire();
     for (size_t i = 0; i < count; i++) {
-        const ipv4::ipv4_config& conf = g_interfaces[i]->ipv4_conf();
+        ipv4::ipv4_config conf = g_interfaces[i]->ipv4_conf();
 
         if (conf.configured() && conf.address == addr) {
             return g_interfaces[i];

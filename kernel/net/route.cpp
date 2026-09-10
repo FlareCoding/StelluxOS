@@ -16,7 +16,7 @@ static bool is_local_route(const ipv4::ipv4_addr& dest, route_result* out) {
 
 // Matches `dest` against what `iface` reaches directly, ignoring its gateway
 static bool match_link(interface* iface, const ipv4::ipv4_addr& dest, route_result* out) {
-    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    ipv4::ipv4_config conf = iface->ipv4_conf();
     if (!conf.configured()) {
         return false;
     }
@@ -45,12 +45,12 @@ static bool match_link(interface* iface, const ipv4::ipv4_addr& dest, route_resu
 }
 
 static bool has_gateway(interface* iface) {
-    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    ipv4::ipv4_config conf = iface->ipv4_conf();
     return conf.configured() && !conf.gateway.is_unspecified();
 }
 
 static void gateway_route(interface* iface, route_result* out) {
-    const ipv4::ipv4_config& conf = iface->ipv4_conf();
+    ipv4::ipv4_config conf = iface->ipv4_conf();
     *out = { iface, conf.gateway, conf.address, route_type::unicast };
 }
 

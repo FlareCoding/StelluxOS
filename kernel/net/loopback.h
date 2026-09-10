@@ -21,7 +21,10 @@ constexpr uint16_t MTU = static_cast<uint16_t>(PACKET_CAPACITY - eth::HEADER_LEN
  */
 class loopback_interface : public interface {
 public:
-    loopback_interface();
+    /**
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE loopback_interface();
 
     int32_t transmit(packet* pkt) override;
 

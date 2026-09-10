@@ -26,7 +26,7 @@ static void delivery_task(void* arg) {
     sched::exit(0);
 }
 
-loopback_interface::loopback_interface()
+__PRIVILEGED_CODE loopback_interface::loopback_interface()
     : m_lock(sync::SPINLOCK_INIT) {
     m_pending.init();
     m_wq.init();
@@ -34,8 +34,7 @@ loopback_interface::loopback_interface()
     m_loopback = true;
     m_mtu = MTU;
 
-    m_ipv4_conf.address = {{127, 0, 0, 1}};
-    m_ipv4_conf.netmask = {{255, 0, 0, 0}};
+    set_ipv4_conf({{{127, 0, 0, 1}}, {{255, 0, 0, 0}}, {{0, 0, 0, 0}}});
 }
 
 int32_t loopback_interface::transmit(packet* pkt) {
