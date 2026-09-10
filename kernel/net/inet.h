@@ -40,6 +40,7 @@ static_assert(sizeof(sockaddr_in) == SOCKADDR_IN_LEN);
 // in userland. The sizes below are the contract with it.
 constexpr uint32_t SIOCGNETSTATUS = 0x4E01;
 constexpr uint32_t SIOCGARPTABLE  = 0x4E02;
+constexpr uint32_t SIOCSIFCONF    = 0x4E03;
 
 constexpr size_t MAX_IFINFO  = 8;
 constexpr size_t MAX_ARPINFO = 32;
@@ -70,6 +71,16 @@ struct net_status {
     ifinfo   interfaces[MAX_IFINFO];
 };
 static_assert(sizeof(net_status) == 360);
+
+// The identity userland assigns to one interface, addresses in host byte order.
+// An unspecified address clears the identity.
+struct ifconf {
+    char     name[IFACE_NAME_MAX];
+    uint32_t ipv4_addr;
+    uint32_t ipv4_netmask;
+    uint32_t ipv4_gateway;
+};
+static_assert(sizeof(ifconf) == 28);
 
 struct arp_info_entry {
     uint32_t ipv4_addr;

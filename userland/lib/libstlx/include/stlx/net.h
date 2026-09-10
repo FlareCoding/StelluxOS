@@ -90,4 +90,27 @@ static inline int stlx_arp_get_table(struct stlx_arp_table* out) {
     return rc;
 }
 
+/* --- Interface configuration --- */
+
+#define STLX_SIOCSIFCONF      0x4E03
+
+/* Addresses in host byte order, an ipv4_addr of zero clears the identity */
+struct stlx_ifconf {
+    char     name[16];
+    uint32_t ipv4_addr;
+    uint32_t ipv4_netmask;
+    uint32_t ipv4_gateway;
+};
+
+_Static_assert(sizeof(struct stlx_ifconf) == 28, "stlx_ifconf ABI size mismatch");
+
+static inline int stlx_net_set_config(const struct stlx_ifconf* conf) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+
+    int rc = ioctl(fd, STLX_SIOCSIFCONF, conf);
+    close(fd);
+    return rc;
+}
+
 #endif /* STLX_NET_H */

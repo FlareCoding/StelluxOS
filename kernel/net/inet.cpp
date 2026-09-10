@@ -17,6 +17,11 @@ static uint32_t to_host_order(const ipv4::ipv4_addr& addr) {
            (static_cast<uint32_t>(addr.bytes[2]) << 8) | addr.bytes[3];
 }
 
+static ipv4::ipv4_addr from_host_order(uint32_t value) {
+    return {{static_cast<uint8_t>(value >> 24), static_cast<uint8_t>(value >> 16),
+             static_cast<uint8_t>(value >> 8), static_cast<uint8_t>(value)}};
+}
+
 static void fill_ifinfo(interface* iface, bool is_default, ifinfo* info) {
     ipv4::ipv4_config conf = iface->ipv4_conf();
 
@@ -78,6 +83,32 @@ __PRIVILEGED_CODE static int32_t query_arp_table(uint64_t arg) {
 
     int32_t rc = mm::uaccess::copy_to_user(reinterpret_cast<void*>(arg), &info, sizeof(info));
     return rc == mm::uaccess::OK ? resource::OK : resource::ERR_INVAL;
+}
+
+__PRIVILEGED_CODE static int32_t set_interface_config(uint64_t user_request) {
+    ifconf request;
+    if (mm::uaccess::copy_from_user(&request, reinterpret_cast<const void*>(user_request), sizeof(request)) != mm::uaccess::OK) {
+        return resource::ERR_INVAL;
+    }
+
+    request.name[IFACE_NAME_MAX - 1] = '\0';
+    interface* iface = find_interface_by_name(request.name);
+    if (!iface) {
+        return resource::ERR_NOENT;
+    }
+
+    if (request.ipv4_addr == 0) {
+        iface->unconfigure_ipv4();
+        return resource::OK;
+    }
+
+    ipv4::ipv4_config conf = {
+        from_host_order(request.ipv4_addr),
+        from_host_order(request.ipv4_netmask),
+        from_host_order(request.ipv4_gateway),
+    };
+
+    return iface->configure_ipv4(conf) == OK ? resource::OK : resource::ERR_INVAL;
 }
 
 int32_t parse_sockaddr(const void* addr, size_t len, ipv4::ipv4_addr* out_addr, uint16_t* out_port) {
@@ -167,6 +198,7 @@ __PRIVILEGED_CODE int32_t socket_ioctl(resource::resource_object*, uint32_t cmd,
     switch (cmd) {
     case SIOCGNETSTATUS: return query_net_status(arg);
     case SIOCGARPTABLE:  return query_arp_table(arg);
+    case SIOCSIFCONF:    return set_interface_config(arg);
     default:             return resource::ERR_UNSUP;
     }
 }

@@ -77,7 +77,7 @@ public:
     __PRIVILEGED_CODE int32_t configure_ipv4(const ipv4::ipv4_config& conf);
 
     /**
-     * @brief Takes the IPv4 identity away, the interface then handles no network traffic.
+     * @brief Clears the IPv4 identity, the interface then handles no network traffic.
      * @note Privilege: **required**
      */
     __PRIVILEGED_CODE void unconfigure_ipv4();
@@ -121,6 +121,11 @@ interface* interface_at(size_t index);
  * Finds the interface configured with `addr` or returns nullptr.
  */
 interface* find_interface_by_address(const ipv4::ipv4_addr& addr);
+
+/*
+ * Finds the interface registered as `name` or returns nullptr.
+ */
+interface* find_interface_by_name(const char* name);
 
 /*
  * Returns the registered loopback interface or nullptr before one exists.

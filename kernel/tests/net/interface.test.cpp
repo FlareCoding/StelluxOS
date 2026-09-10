@@ -40,6 +40,19 @@ static size_t neighbors_learned_on(const interface* iface) {
     return owned;
 }
 
+// --- lookup_by_name_finds_registered_interfaces_only ---
+// Proves: the registry answers to the exact registered name and nothing else.
+
+TEST(interface, lookup_by_name_finds_registered_interfaces_only) {
+    interface* lo = find_loopback_interface();
+    ASSERT_NOT_NULL(lo);
+
+    EXPECT_TRUE(find_interface_by_name(lo->name()) == lo);
+    EXPECT_NULL(find_interface_by_name("nosuch0"));
+    EXPECT_NULL(find_interface_by_name(""));
+    EXPECT_NULL(find_interface_by_name(nullptr));
+}
+
 // --- configure_gives_the_interface_the_identity ---
 // Proves: a well-formed configuration is published whole and can be taken back.
 

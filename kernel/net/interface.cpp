@@ -173,6 +173,21 @@ interface* find_interface_by_address(const ipv4::ipv4_addr& addr) {
     return nullptr;
 }
 
+interface* find_interface_by_name(const char* name) {
+    if (!name) {
+        return nullptr;
+    }
+
+    size_t count = g_interface_count.load_acquire();
+    for (size_t i = 0; i < count; i++) {
+        if (string::strcmp(g_interfaces[i]->name(), name) == 0) {
+            return g_interfaces[i];
+        }
+    }
+
+    return nullptr;
+}
+
 interface* find_loopback_interface() {
     size_t count = g_interface_count.load_acquire();
     for (size_t i = 0; i < count; i++) {
