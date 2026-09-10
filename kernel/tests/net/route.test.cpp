@@ -72,6 +72,15 @@ TEST(route, pinned_lookup_keeps_this_host_local) {
     EXPECT_TRUE(out.iface->is_loopback());
     EXPECT_TRUE(out.type == route::route_type::local);
 
+    // The loopback broadcast stays a broadcast, answered exactly as lookup answers it
+    const ipv4::ipv4_addr lo_broadcast = {{127, 255, 255, 255}};
+    route::route_result unpinned = {};
+    ASSERT_EQ(route::lookup_on(&link, lo_broadcast, &out), OK);
+    ASSERT_EQ(route::lookup(lo_broadcast, &unpinned), OK);
+    EXPECT_TRUE(out.type == route::route_type::broadcast);
+    EXPECT_TRUE(out.iface == unpinned.iface);
+    EXPECT_TRUE(out.source == unpinned.source);
+
     ASSERT_EQ(route::lookup_on(&link, ipv4::ipv4_addr{{8, 8, 8, 8}}, &out), OK);
     EXPECT_TRUE(out.iface == &link);
     EXPECT_TRUE(out.next_hop == gateway);

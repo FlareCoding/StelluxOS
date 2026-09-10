@@ -93,8 +93,11 @@ int32_t lookup_on(interface* iface, const ipv4::ipv4_addr& dest, route_result* o
         return ERR_INVALID;
     }
 
-    if (dest.is_loopback() || find_interface_by_address(dest)) {
-        return is_local_route(dest, out) ? OK : ERR_NO_ROUTE;
+    // Addresses belonging to this host resolve through the interface
+    // that owns them, regardless of the interface the caller pinned.
+    interface* owner = dest.is_loopback() ? find_loopback_interface() : find_interface_by_address(dest);
+    if (owner || dest.is_loopback()) {
+        return owner && match_link(owner, dest, out) ? OK : ERR_NO_ROUTE;
     }
 
     // An unconfigured interface can still broadcast, which is how it asks for an address
