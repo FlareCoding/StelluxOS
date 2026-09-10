@@ -1,6 +1,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "stub_interface.h"
 #include "net/interface.h"
 #include "net/arp.h"
 #include "net/ipv4.h"
@@ -10,20 +11,6 @@
 TEST_SUITE(interface);
 
 using namespace net;
-
-// A link whose frames go nowhere, never registered with the stack
-class stub_interface : public interface {
-public:
-    explicit stub_interface(bool loopback) {
-        m_loopback = loopback;
-        m_mtu = eth::MTU;
-        m_mac = {{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}};
-    }
-
-    int32_t transmit(packet*) override {
-        return OK;
-    }
-};
 
 static const ipv4::ipv4_config g_lan = {{{10, 0, 2, 15}}, {{255, 255, 255, 0}}, {{10, 0, 2, 2}}};
 

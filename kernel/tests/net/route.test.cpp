@@ -1,6 +1,7 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "stub_interface.h"
 #include "net/route.h"
 #include "net/interface.h"
 #include "net/ipv4.h"
@@ -39,4 +40,20 @@ TEST(route, loopback_network_stays_local) {
     ASSERT_EQ(route::lookup(ipv4::ipv4_addr{{127, 255, 255, 255}}, &out), OK);
     EXPECT_TRUE(out.iface->is_loopback());
     EXPECT_TRUE(out.type == route::route_type::broadcast);
+}
+
+// --- unconfigured_interface_can_only_broadcast ---
+// Proves: a link without an address still reaches the limited broadcast, from
+// the unspecified source, and nothing else.
+
+TEST(route, unconfigured_interface_can_only_broadcast) {
+    stub_interface link;
+    route::route_result out = {};
+
+    ASSERT_EQ(route::lookup_on(&link, ipv4::BROADCAST_ADDR, &out), OK);
+    EXPECT_TRUE(out.iface == &link);
+    EXPECT_TRUE(out.type == route::route_type::broadcast);
+    EXPECT_TRUE(out.source.is_unspecified());
+
+    EXPECT_EQ(route::lookup_on(&link, ipv4::ipv4_addr{{10, 0, 2, 2}}, &out), ERR_NO_ROUTE);
 }

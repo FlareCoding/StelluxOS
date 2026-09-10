@@ -1,6 +1,7 @@
 #include "net/icmp.h"
 #include "net/icmp_socket.h"
 #include "net/interface.h"
+#include "net/route.h"
 #include "net/checksum.h"
 #include "net/eth.h"
 #include "common/string.h"
@@ -90,12 +91,19 @@ int32_t output(packet* pkt, const ipv4::ipv4_addr& dest) {
         return ERR_INVALID;
     }
 
+    route::route_result route;
+    int32_t rc = route::lookup(dest, &route);
+    if (rc != OK) {
+        packet::free(pkt);
+        return rc;
+    }
+
     icmp_header* hdr = reinterpret_cast<icmp_header*>(pkt->data());
     hdr->checksum = 0;
     hdr->checksum = htons(checksum(pkt->data(), pkt->length()));
 
     pkt->mark_transport_header();
-    return ipv4::output(pkt, dest, ipv4::PROTO_ICMP);
+    return ipv4::output(pkt, dest, route, ipv4::PROTO_ICMP);
 }
 
 int32_t send_echo_request(const ipv4::ipv4_addr& dest, uint16_t id, uint16_t seq,

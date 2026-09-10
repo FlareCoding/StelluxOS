@@ -156,17 +156,10 @@ int32_t input(packet* pkt) {
     return OK;
 }
 
-int32_t output(packet* pkt, const ipv4_addr& dest, uint8_t protocol) {
+int32_t output(packet* pkt, const ipv4_addr& dest, const route::route_result& route, uint8_t protocol) {
     if (!pkt) {
         log::warn("ipv4: output called with no packet");
         return ERR_INVALID;
-    }
-
-    route::route_result route;
-    int32_t rc = route::lookup(dest, &route);
-    if (rc != OK) {
-        packet::free(pkt);
-        return rc;
     }
 
     // Nothing is fragmented, so the payload must fit one frame behind the header

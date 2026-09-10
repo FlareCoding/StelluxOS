@@ -29,6 +29,7 @@ __PRIVILEGED_CODE udp_socket* socket_open() {
 
     sock->local_addr = ipv4::UNSPECIFIED_ADDR;
     sock->local_port = 0;
+    sock->iface = nullptr;
     sock->lock = sync::SPINLOCK_INIT;
     sock->rx_queue.init();
     sock->rx_wq.init();
@@ -129,9 +130,9 @@ __PRIVILEGED_CODE int32_t socket_bind(udp_socket* sock, const ipv4::ipv4_addr& a
     return OK;
 }
 
-// Caller holds g_sockets_lock. A socket bound to the datagram's
-// own address wins over one bound to every address.
-static udp_socket* find_bound_socket_locked(const ipv4::ipv4_addr& addr, uint16_t port) {
+// Caller holds g_sockets_lock. A socket bound to the datagram's own address wins
+// over one bound to every address, and one bound to an interface sees only its traffic.
+static udp_socket* find_bound_socket_locked(interface* iface, const ipv4::ipv4_addr& addr, uint16_t port) {
     udp_socket* any_addr = nullptr;
 
     for (size_t i = 0; i < MAX_SOCKETS; i++) {
@@ -139,6 +140,10 @@ static udp_socket* find_bound_socket_locked(const ipv4::ipv4_addr& addr, uint16_
 
         // An unbound socket has no port and matches nothing, port zero included
         if (!sock || sock->local_port == 0 || sock->local_port != port) {
+            continue;
+        }
+
+        if (sock->iface && sock->iface != iface) {
             continue;
         }
 
@@ -168,7 +173,7 @@ int32_t socket_deliver(packet* pkt) {
     RUN_ELEVATED({
         sync::irq_lock_guard table_guard(g_sockets_lock);
 
-        udp_socket* sock = find_bound_socket_locked(ip->dst, port);
+        udp_socket* sock = find_bound_socket_locked(pkt->iface(), ip->dst, port);
         if (!sock) {
             rc = ERR_NOT_FOUND;
         } else {
@@ -246,7 +251,7 @@ __PRIVILEGED_CODE static ssize_t socket_sendto(resource::resource_object* obj, c
 
     string::memcpy(body, ksrc, count);
 
-    int32_t rc = output(pkt, dest, sock->local_port, dest_port);
+    int32_t rc = output(pkt, sock->iface, dest, sock->local_port, dest_port);
     if (rc != OK) {
         return inet::map_net_error(rc);
     }
@@ -292,6 +297,33 @@ __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj,
 
     packet::free(pkt);
     return static_cast<ssize_t>(copied);
+}
+
+// SO_BINDTODEVICE names the interface the socket lives on, an empty name frees it
+__PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* obj, int32_t level,
+                                                   int32_t optname, const void* optval, size_t optlen) {
+    if (level != inet::SOL_SOCKET || optname != inet::SO_BINDTODEVICE) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    char name[IFACE_NAME_MAX];
+    size_t len = optlen < IFACE_NAME_MAX - 1 ? optlen : IFACE_NAME_MAX - 1;
+    string::memcpy(name, optval, len);
+    name[len] = '\0';
+
+    interface* iface = nullptr;
+    if (name[0] != '\0') {
+        iface = find_interface_by_name(name);
+        if (!iface) {
+            return resource::ERR_NOENT;
+        }
+    }
+
+    udp_socket* sock = static_cast<udp_socket*>(obj->impl);
+    sync::irq_lock_guard guard(g_sockets_lock);
+    sock->iface = iface;
+
+    return resource::OK;
 }
 
 // Reports the bound endpoint, all zero before bind. Nothing connects a socket yet, so no peer.
@@ -349,6 +381,7 @@ static const resource::socket_ops g_udp_socket_ops = {
     .sendto = socket_sendto,
     .recvfrom = socket_recvfrom,
     .getname = socket_getname,
+    .setsockopt = socket_setsockopt,
 };
 
 static const resource::resource_ops g_socket_ops = {

@@ -6,6 +6,7 @@
 #include "common/string.h"
 
 namespace net {
+namespace route { struct route_result; }
 namespace ipv4 {
 
 constexpr size_t ADDR_LEN = 4;
@@ -163,9 +164,10 @@ static_assert(sizeof(pseudo_header) == PSEUDO_HEADER_LEN);
 int32_t input(packet* pkt);
 
 /*
- * Transmits a constructed packet for a given `dest` ipv4 address
+ * Consumes a finished transport datagram and sends it to `dest` along `route`,
+ * which the caller resolved so both layers agree on the interface and source.
  */
-int32_t output(packet* pkt, const ipv4_addr& dest, uint8_t protocol);
+int32_t output(packet* pkt, const ipv4_addr& dest, const route::route_result& route, uint8_t protocol);
 
 
 } // namespace ipv4

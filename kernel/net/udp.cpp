@@ -87,16 +87,16 @@ int32_t input(packet* pkt) {
     return drop(iface, pkt, OK);
 }
 
-int32_t output(packet* pkt, const ipv4::ipv4_addr& dest, uint16_t src_port, uint16_t dest_port) {
+int32_t output(packet* pkt, interface* iface, const ipv4::ipv4_addr& dest,
+               uint16_t src_port, uint16_t dest_port) {
     if (!pkt) {
         log::warn("udp: output called with no packet");
         return ERR_INVALID;
     }
 
-    // The checksum covers the source address, which the route decides, so the
-    // route is resolved here first. IPv4 resolves it again for its own header.
+    // The checksum covers the source address (which the route decides)
     route::route_result route;
-    int32_t rc = route::lookup(dest, &route);
+    int32_t rc = iface ? route::lookup_on(iface, dest, &route) : route::lookup(dest, &route);
     if (rc != OK) {
         packet::free(pkt);
         return rc;
@@ -117,7 +117,7 @@ int32_t output(packet* pkt, const ipv4::ipv4_addr& dest, uint16_t src_port, uint
     hdr->checksum = htons(sum == 0 ? CHECKSUM_ALL_ONES : sum);
 
     pkt->mark_transport_header();
-    return ipv4::output(pkt, dest, ipv4::PROTO_UDP);
+    return ipv4::output(pkt, dest, route, ipv4::PROTO_UDP);
 }
 
 } // namespace udp

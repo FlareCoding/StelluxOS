@@ -23,6 +23,7 @@ constexpr size_t SOCKET_QUEUE_DEPTH = 16; // datagrams held per socket, oldest d
 struct udp_socket {
     ipv4::ipv4_addr  local_addr;
     uint16_t         local_port; // Host order, zero until bound
+    interface*       iface;
     sync::spinlock   lock;       // Guards rx_queue
     packet_list      rx_queue;
     sync::wait_queue rx_wq;      // Readers waiting for rx_queue to fill
