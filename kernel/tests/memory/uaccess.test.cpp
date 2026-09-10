@@ -1,17 +1,14 @@
 #define STLX_TEST_TIER TIER_MM_CORE
 
 #include "stlx_unit_test.h"
-#include "mm/mm.h"
+#include "helpers.h"
 #include "mm/vma.h"
-#include "mm/paging.h"
-#include "mm/pmm.h"
 #include "mm/uaccess.h"
 #include "mm/page_quarantine.h"
-#include "sched/sched.h"
-#include "sched/task.h"
-#include "sched/sched_internal.h"
 #include "sync/spinlock.h"
 #include "common/string.h"
+
+using test_helpers::user_space_scope;
 
 TEST_SUITE(uaccess);
 
@@ -23,28 +20,6 @@ static constexpr uint32_t EAGER_ANON = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS
 
 static uint64_t g_initial_free_pages = 0;
 static sync::spinlock g_masked_lock = sync::SPINLOCK_INIT;
-
-// Runs the calling task under a user address space so copies reach it the
-// way a syscall body does, then puts the kernel root back
-struct user_space_scope {
-    sched::task* self;
-    pmm::phys_addr_t saved_root;
-
-    explicit user_space_scope(mm::mm_context* ctx)
-        : self(sched::current()), saved_root(self->exec.pt_root) {
-        self->exec.mm_ctx = ctx;
-        self->exec.pt_root = paging::supervisor_pt_root_for_user_task(ctx->pt_root);
-        self->exec.user_pt_root = ctx->pt_root;
-        sched::arch_post_switch(self);
-    }
-
-    ~user_space_scope() {
-        self->exec.mm_ctx = nullptr;
-        self->exec.pt_root = saved_root;
-        self->exec.user_pt_root = 0;
-        sched::arch_post_switch(self);
-    }
-};
 
 static int32_t uaccess_before_all() {
     page_quarantine::drain();

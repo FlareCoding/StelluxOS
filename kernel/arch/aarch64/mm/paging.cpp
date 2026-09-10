@@ -1019,36 +1019,13 @@ __PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt) {
 }
 
 __PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end) {
-    sync::irq_lock_guard guard(g_pt_lock);
+    if ((end - start) / PAGE_SIZE_4KB > FULL_FLUSH_PAGE_THRESHOLD) {
+        flush_tlb_all();
+        return;
+    }
 
-    pmm::phys_addr_t root_pt = get_kernel_pt_root();
-    virt_addr_t addr = start;
-
-    while (addr < end) {
-        size_t step = PAGE_SIZE_4KB;
-
-        auto parts = split_virt_addr(addr);
-        translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
-        table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
-
-        if (l0_entry->valid) {
-            translation_table_t* l1 = static_cast<translation_table_t*>(
-                phys_to_virt(l0_entry->next_table_addr << 12));
-
-            if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
-                step = PAGE_SIZE_1GB;
-            } else if (l1->as_table[parts.l1_idx].valid) {
-                translation_table_t* l2 = static_cast<translation_table_t*>(
-                    phys_to_virt(l1->as_table[parts.l1_idx].next_table_addr << 12));
-
-                if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
-                    step = PAGE_SIZE_2MB;
-                }
-            }
-        }
-
+    for (virt_addr_t addr = start; addr < end; addr += PAGE_SIZE_4KB) {
         tlbi_vae1is(addr);
-        addr += step;
     }
 }
 

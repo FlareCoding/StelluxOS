@@ -11,9 +11,6 @@
 
 namespace paging {
 
-// Above this many pages one full flush costs less than a page at a time
-constexpr size_t FULL_FLUSH_PAGE_THRESHOLD = 32;
-
 // A CPU that has not acknowledged after this long is named in the log
 constexpr uint64_t ACK_WARNING_NS = 1000000000ULL;
 

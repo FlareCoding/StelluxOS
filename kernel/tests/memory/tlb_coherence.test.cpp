@@ -6,6 +6,9 @@
 #include "mm/pmm.h"
 #include "mm/vmm.h"
 #include "mm/kva.h"
+#include "mm/mm.h"
+#include "mm/vma.h"
+#include "mm/uaccess.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "smp/smp.h"
@@ -21,7 +24,7 @@ constexpr uint8_t FIRST_PATTERN  = 0x11;
 constexpr uint8_t SECOND_PATTERN = 0x22;
 
 // Well above the per-page invalidation ceiling, so the full flush path runs
-constexpr size_t LARGE_RANGE_PAGES = 64;
+constexpr size_t LARGE_RANGE_PAGES = 2 * paging::FULL_FLUSH_PAGE_THRESHOLD;
 
 // A reader on another CPU caches the translation of one page, waits while
 // this CPU remaps the address to a different frame, then reads again. It
@@ -142,4 +145,93 @@ TEST(tlb_coherence, page_flush_reaches_other_cpu) {
 
 TEST(tlb_coherence, large_range_flush_reaches_other_cpu) {
     remap_is_seen_by_other_cpu(flush_large_range);
+}
+
+// A reader on another CPU caches a user translation through a kernel copy,
+// then copies again after this CPU unmapped the page. It faults only if the
+// unmap flushed every CPU, otherwise its stale entry still reads the frame.
+static mm::mm_context* g_user_ctx = nullptr;
+static uintptr_t g_user_va = 0;
+static sync::atomic<int32_t> g_first_rc;
+static sync::atomic<int32_t> g_second_rc;
+
+static void user_reader_fn(void*) {
+    RUN_ELEVATED({
+        test_helpers::user_space_scope scope(g_user_ctx);
+        uint8_t value = 0;
+
+        g_first_rc.store_release(mm::uaccess::copy_from_user(
+            &value, reinterpret_cast<const void*>(g_user_va), sizeof(value)));
+        g_first_value.store_release(value);
+        g_first_read_done.store_release(1);
+
+        while (!g_go.load_acquire()) {
+        }
+
+        g_second_rc.store_release(mm::uaccess::copy_from_user(
+            &value, reinterpret_cast<const void*>(g_user_va), sizeof(value)));
+    });
+
+    g_done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(tlb_coherence, user_unmap_reaches_other_cpu) {
+    uint32_t reader_cpu = pick_other_online_cpu();
+    if (reader_cpu == percpu::current_cpu_id()) {
+        return;
+    }
+
+    reset_reader_state();
+    g_first_rc.store_relaxed(-1);
+    g_second_rc.store_relaxed(-1);
+
+    mm::mm_context* ctx = nullptr;
+    uintptr_t va = 0;
+    int32_t rc = mm::MM_CTX_OK;
+    RUN_ELEVATED({
+        ctx = mm::mm_context_create();
+        if (ctx) {
+            rc = mm::mm_context_map_anonymous(
+                ctx, 0, paging::PAGE_SIZE_4KB, mm::MM_PROT_READ | mm::MM_PROT_WRITE,
+                mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS, &va);
+        }
+        if (rc == mm::MM_CTX_OK && va != 0) {
+            pmm::phys_addr_t frame = paging::get_physical(va, ctx->pt_root);
+            string::memset(paging::phys_to_virt(frame), FIRST_PATTERN, paging::PAGE_SIZE_4KB);
+        }
+    });
+    ASSERT_NOT_NULL(ctx);
+    ASSERT_EQ(rc, mm::MM_CTX_OK);
+    ASSERT_NE(va, 0u);
+
+    g_user_ctx = ctx;
+    g_user_va = va;
+
+    bool spawned = false;
+    RUN_ELEVATED({
+        sched::task* reader = sched::create_kernel_task(user_reader_fn, nullptr, "tlb_ureader");
+        if (reader) {
+            sched::enqueue_on(reader, reader_cpu);
+            spawned = true;
+        }
+    });
+    ASSERT_TRUE(spawned);
+
+    ASSERT_TRUE(spin_wait(g_first_read_done));
+    EXPECT_EQ(g_first_rc.load_acquire(), mm::uaccess::OK);
+    EXPECT_EQ(g_first_value.load_acquire(), FIRST_PATTERN);
+
+    RUN_ELEVATED({
+        rc = mm::mm_context_unmap(ctx, va, paging::PAGE_SIZE_4KB);
+    });
+    EXPECT_EQ(rc, mm::MM_CTX_OK);
+
+    g_go.store_release(1);
+    ASSERT_TRUE(spin_wait(g_done));
+    EXPECT_EQ(g_second_rc.load_acquire(), mm::uaccess::ERR_FAULT);
+
+    RUN_ELEVATED({
+        mm::mm_context_release(ctx);
+    });
 }

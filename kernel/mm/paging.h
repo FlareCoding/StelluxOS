@@ -6,6 +6,9 @@
 
 namespace paging {
 
+// Above this many pages one full flush costs less than a page at a time
+constexpr size_t FULL_FLUSH_PAGE_THRESHOLD = 32;
+
 /**
  * @brief Get the kernel page table root (reads CR3 on x86_64, TTBR1_EL1 on aarch64).
  * @return Physical address of the kernel's top-level page table.

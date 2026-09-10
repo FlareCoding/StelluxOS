@@ -208,14 +208,19 @@ __PRIVILEGED_CODE uintptr_t vma_find_gap_topdown_locked(mm_context* mm_ctx, size
 }
 
 __PRIVILEGED_CODE void unmap_and_free_pages(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
+    // Frames stay owned until every CPU has dropped its translation, so a
+    // sibling thread still using a stale one touches memory that is still ours.
     for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
-        if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
-            continue;
-        }
+        paging::unmap_page_keep_frame(vaddr, mm_ctx->pt_root);
+    }
 
-        pmm::phys_addr_t phys = paging::get_physical(vaddr, mm_ctx->pt_root);
-        paging::unmap_page(vaddr, mm_ctx->pt_root);
-        if (phys != 0) {
+    paging::flush_tlb_range(start, end);
+
+    for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
+        pmm::phys_addr_t phys = 0;
+        size_t size = 0;
+
+        if (paging::take_kept_frame(vaddr, mm_ctx->pt_root, &phys, &size) == paging::OK) {
             pmm::free_page(phys);
         }
     }
@@ -223,12 +228,11 @@ __PRIVILEGED_CODE void unmap_and_free_pages(mm_context* mm_ctx, uintptr_t start,
 
 __PRIVILEGED_CODE void unmap_pages_only(mm_context* mm_ctx, uintptr_t start, uintptr_t end) {
     for (uintptr_t vaddr = start; vaddr < end; vaddr += pmm::PAGE_SIZE) {
-        if (!paging::is_mapped(vaddr, mm_ctx->pt_root)) {
-            continue;
-        }
-
         paging::unmap_page(vaddr, mm_ctx->pt_root);
     }
+
+    // The range can be mapped again as soon as the caller returns
+    paging::flush_tlb_range(start, end);
 }
 
 __PRIVILEGED_CODE void rollback_new_pages(mm_context* mm_ctx, uintptr_t start, uintptr_t mapped_end) {
