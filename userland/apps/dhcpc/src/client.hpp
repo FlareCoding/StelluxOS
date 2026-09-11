@@ -6,6 +6,9 @@
 
 #include <cstdint>
 
+/* A deadline the poll loop never reaches */
+constexpr uint64_t DHCP_NO_DEADLINE = UINT64_MAX;
+
 enum class dhcp_state {
     init,
     selecting,
@@ -13,6 +16,7 @@ enum class dhcp_state {
     bound,
     renewing,
     rebinding,
+    rebooting,
 };
 
 /* One interface's walk through RFC 2131, driven by the owner's poll loop */
@@ -23,13 +27,15 @@ public:
     dhcp_client& operator=(const dhcp_client&) = delete;
     ~dhcp_client();
 
-    int open(const char* iface, const uint8_t* mac, bool verbose, uint32_t lease_cap_s);
+    int open(const char* iface, const uint8_t* mac, bool verbose, uint32_t lease_cap_s, bool link_up);
 
     int fd() const { return m_fd; }
+    const char* iface() const { return m_iface; }
     uint64_t deadline_ns() const { return m_deadline_ns; }
 
     void on_timeout(uint64_t now_ns);
     void on_readable(uint64_t now_ns);
+    void on_link(bool up, uint64_t now_ns);
 
     /* Hands the address back to the server and clears the interface */
     void release();
@@ -47,6 +53,9 @@ private:
     void enter_renewing(uint64_t now_ns);
     void enter_rebinding(uint64_t now_ns);
     void send_renewal(uint64_t now_ns, bool broadcast);
+    void enter_rebooting(uint64_t now_ns);
+    void send_reboot_request(uint64_t now_ns);
+    void resume_lease(uint64_t now_ns);
     void expire(uint64_t now_ns);
     uint64_t retry_before(uint64_t now_ns, uint64_t boundary_ns) const;
 
@@ -65,6 +74,7 @@ private:
     int        m_fd = -1;
     bool       m_verbose = false;
     uint32_t   m_lease_cap_s = 0;
+    bool       m_link_up = false;
     dhcp_state m_state = dhcp_state::init;
     uint32_t   m_xid = 0;
     uint64_t   m_transaction_start_ns = 0;

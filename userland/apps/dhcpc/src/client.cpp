@@ -59,11 +59,12 @@ dhcp_client::~dhcp_client() {
     }
 }
 
-int dhcp_client::open(const char* iface, const uint8_t* mac, bool verbose, uint32_t lease_cap_s) {
+int dhcp_client::open(const char* iface, const uint8_t* mac, bool verbose, uint32_t lease_cap_s, bool link_up) {
     snprintf(m_iface, sizeof(m_iface), "%s", iface);
     memcpy(m_mac, mac, DHCP_MAC_LEN);
     m_verbose = verbose;
     m_lease_cap_s = lease_cap_s;
+    m_link_up = link_up;
 
     m_fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
     if (m_fd < 0) {
@@ -84,12 +85,17 @@ int dhcp_client::open(const char* iface, const uint8_t* mac, bool verbose, uint3
         return -1;
     }
 
-    m_deadline_ns = 0;
+    m_deadline_ns = link_up ? 0 : DHCP_NO_DEADLINE;
+    if (!link_up) {
+        log("waiting for link");
+    }
+
     return 0;
 }
 
 bool dhcp_client::holds_lease() const {
-    return m_state == dhcp_state::bound || m_state == dhcp_state::renewing || m_state == dhcp_state::rebinding;
+    return m_state == dhcp_state::bound || m_state == dhcp_state::renewing || m_state == dhcp_state::rebinding ||
+           m_state == dhcp_state::rebooting;
 }
 
 void dhcp_client::on_timeout(uint64_t now_ns) {
@@ -127,6 +133,37 @@ void dhcp_client::on_timeout(uint64_t now_ns) {
             m_deadline_ns = retry_before(now_ns, m_expiry_at_ns);
         }
         break;
+    case dhcp_state::rebooting:
+        if (m_request_attempts >= MAX_REQUEST_ATTEMPTS) {
+            resume_lease(now_ns);
+        } else {
+            send_reboot_request(now_ns);
+        }
+        break;
+    }
+}
+
+/* Nothing moves without carrier, so the timers pause. When it returns a held
+ * lease is confirmed with the server and anything else starts over at once */
+void dhcp_client::on_link(bool up, uint64_t now_ns) {
+    if (up == m_link_up) {
+        return;
+    }
+
+    m_link_up = up;
+    if (!up) {
+        log("link down");
+        m_deadline_ns = DHCP_NO_DEADLINE;
+        return;
+    }
+
+    log("link up");
+    if (!holds_lease()) {
+        restart(now_ns);
+    } else if (now_ns >= m_expiry_at_ns) {
+        expire(now_ns);
+    } else {
+        enter_rebooting(now_ns);
     }
 }
 
@@ -158,7 +195,7 @@ void dhcp_client::on_readable(uint64_t now_ns) {
         }
 
         bool awaiting_answer = m_state == dhcp_state::requesting || m_state == dhcp_state::renewing ||
-                               m_state == dhcp_state::rebinding;
+                               m_state == dhcp_state::rebinding || m_state == dhcp_state::rebooting;
         if (type == dhcp_type::offer && m_state == dhcp_state::selecting) {
             handle_offer(msg, now_ns);
         } else if (type == dhcp_type::ack && awaiting_answer) {
@@ -278,6 +315,35 @@ void dhcp_client::send_renewal(uint64_t now_ns, bool broadcast) {
     transmit(msg, broadcast ? LIMITED_BROADCAST : m_lease.server, "REQUEST");
 }
 
+void dhcp_client::enter_rebooting(uint64_t now_ns) {
+    m_xid = random_u32();
+    m_transaction_start_ns = now_ns;
+    m_request_attempts = 0;
+    m_backoff_s = 0;
+    m_state = dhcp_state::rebooting;
+    log("confirming %s", address_text(m_lease.address).text);
+    send_reboot_request(now_ns);
+}
+
+void dhcp_client::send_reboot_request(uint64_t now_ns) {
+    dhcp_message msg;
+    msg.start(dhcp_type::request, m_xid, elapsed_seconds(now_ns), m_mac, true);
+    msg.add_address(OPT_REQUESTED_ADDR, m_lease.address);
+    add_common_options(msg);
+    msg.finish();
+
+    m_request_attempts++;
+    transmit(msg, LIMITED_BROADCAST, "REQUEST");
+    arm_retransmit(now_ns);
+}
+
+/* An unanswered confirmation is not a refusal, the lease runs on under its own timers */
+void dhcp_client::resume_lease(uint64_t now_ns) {
+    log("no answer, keeping %s", address_text(m_lease.address).text);
+    m_state = dhcp_state::bound;
+    m_deadline_ns = m_renewal_at_ns > now_ns ? m_renewal_at_ns : now_ns;
+}
+
 void dhcp_client::expire(uint64_t now_ns) {
     log("lease expired");
     drop_lease();
@@ -344,8 +410,11 @@ void dhcp_client::handle_ack(const dhcp_message& msg, uint64_t now_ns) {
         log("cannot publish the name servers: %s", strerror(errno));
     }
 
+    bool confirmed = m_state == dhcp_state::rebooting;
     start_lease(lease, now_ns);
-    if (renewal) {
+    if (confirmed) {
+        log("confirmed %s, lease %us", address_text(lease.address).text, lease.lease_seconds);
+    } else if (renewal) {
         log("renewed %s, lease %us", address_text(lease.address).text, lease.lease_seconds);
     } else if (lease.router.s_addr != 0) {
         log("bound %s/%u via %s, lease %us", address_text(lease.address).text, lease.prefix_length(),
@@ -358,11 +427,19 @@ void dhcp_client::handle_ack(const dhcp_message& msg, uint64_t now_ns) {
 void dhcp_client::handle_nak(uint64_t now_ns) {
     if (m_state == dhcp_state::requesting) {
         log("declined by %s, restarting", address_text(m_offer.server).text);
-    } else {
-        log("lease withdrawn by %s, restarting", address_text(m_lease.server).text);
-        drop_lease();
+        restart(now_ns + RESTART_HOLDOFF_NS);
+        return;
     }
 
+    if (m_state == dhcp_state::rebooting) {
+        log("%s refused here, discovering", address_text(m_lease.address).text);
+        drop_lease();
+        restart(now_ns);
+        return;
+    }
+
+    log("lease withdrawn by %s, restarting", address_text(m_lease.server).text);
+    drop_lease();
     restart(now_ns + RESTART_HOLDOFF_NS);
 }
 
