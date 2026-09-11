@@ -402,6 +402,10 @@ __PRIVILEGED_CODE static int64_t copy_iovecs(uint64_t user_iov, uint64_t iovcnt,
 
 __PRIVILEGED_CODE static int64_t gather_from_user(const syscall::iovec* iovs, uint64_t iovcnt, uint8_t* data) {
     for (uint64_t i = 0; i < iovcnt; i++) {
+        if (iovs[i].len == 0) {
+            continue;
+        }
+
         if (mm::uaccess::copy_from_user(data, reinterpret_cast<const void*>(iovs[i].base), iovs[i].len) != mm::uaccess::OK) {
             return syscall::EFAULT;
         }
@@ -416,6 +420,10 @@ __PRIVILEGED_CODE static int64_t scatter_to_user(const syscall::iovec* iovs, uin
                                                  const uint8_t* data, size_t len) {
     for (uint64_t i = 0; i < iovcnt && len > 0; i++) {
         size_t chunk = iovs[i].len < len ? iovs[i].len : len;
+        if (chunk == 0) {
+            continue;
+        }
+
         if (mm::uaccess::copy_to_user(reinterpret_cast<void*>(iovs[i].base), data, chunk) != mm::uaccess::OK) {
             return syscall::EFAULT;
         }

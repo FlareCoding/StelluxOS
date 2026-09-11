@@ -139,17 +139,19 @@ static packet* make_datagram(uint16_t dst_port, const char* payload, size_t payl
     return pkt;
 }
 
+// Two buffers with a legal empty null slot between them
 static void lay_out_message(user_page& page, uint32_t namelen, size_t len_a, size_t len_b) {
     user_iovec* iovs = page.at<user_iovec>(MSG_IOVS);
     iovs[0] = {page.addr + MSG_BUF_A, len_a};
-    iovs[1] = {page.addr + MSG_BUF_B, len_b};
+    iovs[1] = {0, 0};
+    iovs[2] = {page.addr + MSG_BUF_B, len_b};
 
     user_msghdr* hdr = page.at<user_msghdr>(MSG_HDR);
     *hdr = {};
     hdr->name = page.addr + MSG_NAME;
     hdr->namelen = namelen;
     hdr->iov = page.addr + MSG_IOVS;
-    hdr->iovlen = 2;
+    hdr->iovlen = 3;
 }
 
 TEST(socket_syscall, creation_flags_land_on_the_handle) {
