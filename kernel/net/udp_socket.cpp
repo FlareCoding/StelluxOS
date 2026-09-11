@@ -72,11 +72,16 @@ __PRIVILEGED_CODE void socket_close(udp_socket* sock) {
 }
 
 // Caller holds g_sockets_lock. Only one socket may match a datagram, so the
-// unspecified address conflicts with every address on the same port.
-static bool is_port_taken_locked(const ipv4::ipv4_addr& addr, uint16_t port) {
+// unspecified address conflicts with every address on the same port, while
+// sockets pinned to different interfaces can never both match one.
+static bool is_port_taken_locked(const interface* iface, const ipv4::ipv4_addr& addr, uint16_t port) {
     for (size_t i = 0; i < MAX_SOCKETS; i++) {
         udp_socket* other = g_sockets[i];
         if (!other || other->local_port != port) {
+            continue;
+        }
+
+        if (iface && other->iface && other->iface != iface) {
             continue;
         }
 
@@ -97,7 +102,7 @@ static uint16_t take_ephemeral_port_locked(const ipv4::ipv4_addr& addr) {
         uint16_t port = g_next_ephemeral_port;
         g_next_ephemeral_port = port == EPHEMERAL_PORT_MAX ? EPHEMERAL_PORT_MIN : port + 1;
 
-        if (!is_port_taken_locked(addr, port)) {
+        if (!is_port_taken_locked(nullptr, addr, port)) {
             return port;
         }
     }
@@ -121,7 +126,7 @@ __PRIVILEGED_CODE int32_t socket_bind(udp_socket* sock, const ipv4::ipv4_addr& a
         if (port == 0) {
             return ERR_FULL;
         }
-    } else if (is_port_taken_locked(addr, port)) {
+    } else if (is_port_taken_locked(sock->iface, addr, port)) {
         return ERR_IN_USE;
     }
 

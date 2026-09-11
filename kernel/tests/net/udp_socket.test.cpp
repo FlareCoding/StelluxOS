@@ -136,6 +136,44 @@ TEST(udp_socket, deliver_respects_the_bound_interface) {
     udp::socket_close(sock);
 }
 
+// --- pinned_sockets_share_a_port_across_interfaces ---
+// Proves: a port can be bound once per interface, a socket on every interface
+// or on the same one still conflicts, and each datagram reaches its own link's socket.
+
+TEST(udp_socket, pinned_sockets_share_a_port_across_interfaces) {
+    stub_interface link_a;
+    stub_interface link_b;
+
+    udp::udp_socket* on_a = udp::socket_open();
+    udp::udp_socket* on_b = udp::socket_open();
+    udp::udp_socket* anywhere = udp::socket_open();
+    udp::udp_socket* also_on_a = udp::socket_open();
+    ASSERT_NOT_NULL(on_a);
+    ASSERT_NOT_NULL(on_b);
+    ASSERT_NOT_NULL(anywhere);
+    ASSERT_NOT_NULL(also_on_a);
+    on_a->iface = &link_a;
+    on_b->iface = &link_b;
+    also_on_a->iface = &link_a;
+
+    EXPECT_EQ(udp::socket_bind(on_a, ipv4::UNSPECIFIED_ADDR, 50006), OK);
+    EXPECT_EQ(udp::socket_bind(on_b, ipv4::UNSPECIFIED_ADDR, 50006), OK);
+    EXPECT_EQ(udp::socket_bind(anywhere, ipv4::UNSPECIFIED_ADDR, 50006), ERR_IN_USE);
+    EXPECT_EQ(udp::socket_bind(also_on_a, ipv4::UNSPECIFIED_ADDR, 50006), ERR_IN_USE);
+
+    packet* for_b = make_datagram(50006);
+    ASSERT_NOT_NULL(for_b);
+    for_b->set_iface(&link_b);
+    EXPECT_EQ(udp::socket_deliver(for_b), OK);
+    EXPECT_TRUE(on_a->rx_queue.empty());
+    EXPECT_EQ(on_b->rx_queue.size(), static_cast<size_t>(1));
+
+    udp::socket_close(on_a);
+    udp::socket_close(on_b);
+    udp::socket_close(anywhere);
+    udp::socket_close(also_on_a);
+}
+
 // --- output_through_an_unconfigured_interface_broadcasts_from_nowhere ---
 // Proves: a datagram pinned to an interface without an address leaves it as a
 // link broadcast with the unspecified source, the way an address is asked for.
