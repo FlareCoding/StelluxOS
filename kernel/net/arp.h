@@ -64,6 +64,7 @@ struct arp_entry {
     interface*      iface;
     arp_entry_state state;
     uint8_t         attempts;  // Requests sent while pending
+    bool            draining;  // Forgotten while pending, gone once its queue can leave
     ipv4::ipv4_addr ip;
     eth::mac_addr   mac;
     uint64_t        timestamp; // Last request sent while pending, last confirmed while resolved
@@ -143,9 +144,10 @@ public:
     size_t snapshot(arp_snapshot_entry* out, size_t max, uint64_t timestamp);
 
     /*
-     * Drops every entry learned on `iface`. Packets that waited on them return in `dropped`.
+     * Drops every entry learned on `iface`. A pending entry stays only to send the
+     * packets that wait on it, and leaves the table the moment it resolves.
      */
-    void forget(interface* iface, packet_list& dropped);
+    void forget(interface* iface);
 
 private:
     arp_entry* find_entry(interface* iface, const ipv4::ipv4_addr& ip);
@@ -196,7 +198,8 @@ void sweep(uint64_t ts);
 size_t snapshot(arp_snapshot_entry* out, size_t max);
 
 /*
- * Drops everything learned on `iface`, for when its addressing changes.
+ * Drops everything learned on `iface`, for when its addressing changes. Packets
+ * already accepted for sending still leave once their address resolves.
  */
 void forget(interface* iface);
 

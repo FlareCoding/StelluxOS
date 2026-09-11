@@ -76,6 +76,7 @@ void arp_table::clear_entry(arp_entry& entry) {
     entry.state = arp_entry_state::empty;
     entry.iface = nullptr;
     entry.attempts = 0;
+    entry.draining = false;
     entry.ip = {};
     entry.mac = {};
     entry.timestamp = 0;
@@ -253,6 +254,10 @@ bool arp_table::update_entry(
     entry->timestamp = timestamp;
     move_all(entry->queue, flushed);
 
+    if (entry->draining) {
+        clear_entry(*entry);
+    }
+
     return completed;
 }
 
@@ -272,7 +277,7 @@ size_t arp_table::snapshot(arp_snapshot_entry* out, size_t max, uint64_t timesta
     return count;
 }
 
-void arp_table::forget(interface* iface, packet_list& dropped) {
+void arp_table::forget(interface* iface) {
     sync::lock_guard guard(m_lock);
 
     for (size_t i = 0; i < TABLE_SIZE; i++) {
@@ -281,8 +286,11 @@ void arp_table::forget(interface* iface, packet_list& dropped) {
             continue;
         }
 
-        move_all(entry.queue, dropped);
-        clear_entry(entry);
+        if (entry.state == arp_entry_state::pending && !entry.queue.empty()) {
+            entry.draining = true;
+        } else {
+            clear_entry(entry);
+        }
     }
 }
 
@@ -319,14 +327,9 @@ int32_t input(packet* pkt) {
         return drop(iface, pkt, OK);
     }
 
-    // No address yet, so there is nothing to learn or answer
+    // Without an address nothing is answered and only pending entries can complete
     ipv4::ipv4_config conf = iface->ipv4_conf();
-    if (!conf.configured()) {
-        packet::free(pkt);
-        return OK;
-    }
-
-    bool is_for_local_ip = hdr->target_proto_addr == conf.address;
+    bool is_for_local_ip = conf.configured() && hdr->target_proto_addr == conf.address;
     bool is_request = ntohs(hdr->opcode) == OP_REQUEST;
 
     // Never learn from address probes, group addresses, or our own address
@@ -485,11 +488,7 @@ void forget(interface* iface) {
         return;
     }
 
-    packet_list dropped;
-    dropped.init();
-
-    g_table.forget(iface, dropped);
-    drop_all(dropped);
+    g_table.forget(iface);
 }
 
 } // namespace arp

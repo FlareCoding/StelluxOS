@@ -108,3 +108,47 @@ TEST(interface, reconfigure_forgets_the_neighbors) {
     link.unconfigure_ipv4();
     EXPECT_EQ(neighbors_learned_on(&link), 0u);
 }
+
+// --- reconfigure_lets_accepted_packets_leave ---
+// Proves: a packet waiting on a neighbor when the identity changes still goes
+// out once the neighbor answers, and the neighbor is not kept afterwards.
+
+TEST(interface, reconfigure_lets_accepted_packets_leave) {
+    stub_interface link(false);
+    EXPECT_EQ(link.configure_ipv4(g_lan), OK);
+
+    packet* waiting = packet::alloc();
+    ASSERT_NOT_NULL(waiting);
+    ASSERT_TRUE(waiting->reserve(eth::HEADER_LEN));
+    ASSERT_NOT_NULL(waiting->put(ipv4::HEADER_LEN));
+    waiting->set_iface(&link);
+    EXPECT_EQ(arp::resolve_and_send(waiting, g_lan.gateway), OK);
+    EXPECT_EQ(link.frames_sent(), static_cast<size_t>(1));
+
+    link.unconfigure_ipv4();
+    EXPECT_EQ(neighbors_learned_on(&link), 1u);
+
+    const eth::mac_addr gateway_mac = {{0x52, 0x55, 0x0a, 0x00, 0x02, 0x02}};
+    packet* reply = packet::alloc();
+    ASSERT_NOT_NULL(reply);
+    ASSERT_TRUE(reply->reserve(eth::HEADER_LEN));
+    auto* hdr = reinterpret_cast<arp::arp_header*>(reply->put(arp::HEADER_LEN));
+    ASSERT_NOT_NULL(hdr);
+    hdr->hw_type = htons(arp::HW_TYPE_ETHERNET);
+    hdr->proto_type = htons(arp::PROTO_TYPE_IPV4);
+    hdr->hw_len = eth::MAC_ADDR_LEN;
+    hdr->proto_len = ipv4::ADDR_LEN;
+    hdr->opcode = htons(arp::OP_REPLY);
+    hdr->sender_hw_addr = gateway_mac;
+    hdr->sender_proto_addr = g_lan.gateway;
+    hdr->target_hw_addr = link.mac();
+    hdr->target_proto_addr = g_lan.address;
+    reply->set_iface(&link);
+    EXPECT_EQ(arp::input(reply), OK);
+
+    EXPECT_EQ(link.frames_sent(), static_cast<size_t>(2));
+    const auto* frame = reinterpret_cast<const eth::eth_header*>(link.last_frame());
+    EXPECT_TRUE(frame->dest == gateway_mac);
+    EXPECT_EQ(ntohs(frame->type), eth::TYPE_IPV4);
+    EXPECT_EQ(neighbors_learned_on(&link), 0u);
+}
