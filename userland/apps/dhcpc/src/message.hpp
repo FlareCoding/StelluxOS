@@ -41,6 +41,7 @@ enum class dhcp_type : uint8_t {
 class dhcp_message {
 public:
     void start(dhcp_type type, uint32_t xid, uint16_t secs, const uint8_t* mac, bool broadcast);
+    void set_ciaddr(in_addr address);
     bool add_option(uint8_t code, std::span<const uint8_t> value);
     bool add_address(uint8_t code, in_addr address);
     void finish();

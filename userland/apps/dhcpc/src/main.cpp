@@ -6,11 +6,20 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <memory>
 #include <vector>
+
+/* SIGTERM is the orderly shutdown, the leases go back before the process does */
+static volatile sig_atomic_t g_shutdown = 0;
+
+static void on_sigterm(int) {
+    g_shutdown = 1;
+}
 
 static uint64_t now_ns() {
     timespec ts;
@@ -49,12 +58,15 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
 
     bool verbose = false;
+    uint32_t lease_cap_s = 0;
     std::vector<const char*> names;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0) {
             verbose = true;
+        } else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc && atoi(argv[i + 1]) > 0) {
+            lease_cap_s = static_cast<uint32_t>(atoi(argv[++i]));
         } else if (argv[i][0] == '-') {
-            printf("Usage: dhcpc [-v] [interface...]\r\n");
+            printf("Usage: dhcpc [-v] [-l seconds] [interface...]\r\n");
             return 1;
         } else {
             names.push_back(argv[i]);
@@ -75,7 +87,7 @@ int main(int argc, char** argv) {
         }
 
         auto client = std::make_unique<dhcp_client>();
-        if (client->open(info.name, info.mac, verbose) != 0) {
+        if (client->open(info.name, info.mac, verbose, lease_cap_s) != 0) {
             printf("dhcpc: %s: %s\r\n", info.name, strerror(errno));
             continue;
         }
@@ -87,6 +99,8 @@ int main(int argc, char** argv) {
         printf("dhcpc: no interface to configure\r\n");
         return 1;
     }
+
+    signal(SIGTERM, on_sigterm);
 
     std::vector<pollfd> fds(clients.size());
     while (true) {
@@ -100,6 +114,14 @@ int main(int argc, char** argv) {
         if (poll(fds.data(), fds.size(), poll_timeout_ms(next_deadline, now)) < 0 && errno != EINTR) {
             printf("dhcpc: poll: %s\r\n", strerror(errno));
             return 1;
+        }
+
+        if (g_shutdown) {
+            for (auto& client : clients) {
+                client->release();
+            }
+
+            return 0;
         }
 
         now = now_ns();

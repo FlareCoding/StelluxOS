@@ -87,11 +87,44 @@ bool dhcp_lease::from_message(const dhcp_message& msg) {
     }
 
     lease_seconds = *lease < MAX_LEASE_SECONDS ? *lease : MAX_LEASE_SECONDS;
-    renewal_seconds = find_u32(msg, OPT_RENEWAL_TIME).value_or(lease_seconds / 2);
-    rebinding_seconds = find_u32(msg, OPT_REBINDING_TIME).value_or(lease_seconds / 8 * 7);
+    derive_timers(find_u32(msg, OPT_RENEWAL_TIME), find_u32(msg, OPT_REBINDING_TIME));
+    return true;
+}
+
+void dhcp_lease::cap_to(uint32_t seconds) {
+    if (seconds == 0 || lease_seconds <= seconds) {
+        return;
+    }
+
+    lease_seconds = seconds;
+    derive_timers(std::nullopt, std::nullopt);
+}
+
+/* The server's times are kept only when they divide the lease the way RFC 2131 orders them */
+void dhcp_lease::derive_timers(std::optional<uint32_t> renewal, std::optional<uint32_t> rebinding) {
+    uint32_t default_rebinding = static_cast<uint32_t>(static_cast<uint64_t>(lease_seconds) * 7 / 8);
+    renewal_seconds = renewal.value_or(lease_seconds / 2);
+    rebinding_seconds = rebinding.value_or(default_rebinding);
     if (renewal_seconds >= lease_seconds || rebinding_seconds >= lease_seconds || rebinding_seconds <= renewal_seconds) {
         renewal_seconds = lease_seconds / 2;
-        rebinding_seconds = lease_seconds / 8 * 7;
+        rebinding_seconds = default_rebinding;
+    }
+}
+
+bool dhcp_lease::same_interface_config(const dhcp_lease& other) const {
+    return address.s_addr == other.address.s_addr && netmask.s_addr == other.netmask.s_addr &&
+           router.s_addr == other.router.s_addr;
+}
+
+bool dhcp_lease::same_dns(const dhcp_lease& other) const {
+    if (dns_count != other.dns_count) {
+        return false;
+    }
+
+    for (size_t i = 0; i < dns_count; i++) {
+        if (dns[i].s_addr != other.dns[i].s_addr) {
+            return false;
+        }
     }
 
     return true;
@@ -128,4 +161,10 @@ int dhcp_lease::publish_dns() const {
 
 unsigned dhcp_lease::prefix_length() const {
     return static_cast<unsigned>(__builtin_popcount(ntohl(netmask.s_addr)));
+}
+
+int dhcp_lease::clear_interface(const char* iface) {
+    stlx_ifconf conf = {};
+    snprintf(conf.name, sizeof(conf.name), "%s", iface);
+    return stlx_net_set_config(&conf);
 }

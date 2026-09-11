@@ -11,6 +11,7 @@ constexpr size_t HDR_HLEN    = 2;
 constexpr size_t HDR_XID     = 4;
 constexpr size_t HDR_SECS    = 8;
 constexpr size_t HDR_FLAGS   = 10;
+constexpr size_t HDR_CIADDR  = 12;
 constexpr size_t HDR_YIADDR  = 16;
 constexpr size_t HDR_CHADDR  = 28;
 constexpr size_t HDR_COOKIE  = 236;
@@ -46,6 +47,10 @@ void dhcp_message::start(dhcp_type type, uint32_t xid, uint16_t secs, const uint
 
     uint8_t code = static_cast<uint8_t>(type);
     add_option(OPT_MESSAGE_TYPE, {&code, 1});
+}
+
+void dhcp_message::set_ciaddr(in_addr address) {
+    memcpy(m_bytes + HDR_CIADDR, &address.s_addr, sizeof(address.s_addr));
 }
 
 /* Always leaves room for the END marker finish() appends */
