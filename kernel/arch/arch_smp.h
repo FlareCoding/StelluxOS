@@ -3,8 +3,17 @@
 
 #include "common/types.h"
 #include "smp/smp.h"
+#include "mm/pmm_types.h"
 
 namespace arch {
+
+/**
+ * @brief Physical frames the AP bring-up needs at fixed addresses, kept out
+ * of the allocator for the life of the system. An empty range means none.
+ * x86_64: the real-mode trampoline and its startup data below 1 MB.
+ * AArch64: none, the trampoline page is allocated when the APs are prepared.
+ */
+pmm::phys_range smp_fixed_boot_frames();
 
 /**
  * @brief Enumerate CPUs from the parsed ACPI MADT.

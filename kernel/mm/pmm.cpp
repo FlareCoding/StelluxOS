@@ -1,6 +1,7 @@
 #include "mm/pmm.h"
 #include "mm/pmm_internal.h"
 #include "mm/paging.h"
+#include "arch/arch_smp.h"
 #include "boot/boot_services.h"
 #include "common/logging.h"
 #include "common/string.h"
@@ -541,6 +542,12 @@ __PRIVILEGED_CODE int32_t init() {
             mark_pages(start_pfn, end_pfn, PAGE_FLAG_NONE); // Free
         }
     }
+
+    // Frame 0 is the address the allocator returns for failure, so it is never handed out
+    mark_pages(0, 1, PAGE_FLAG_RESERVED);
+
+    phys_range boot_frames = arch::smp_fixed_boot_frames();
+    mark_pages(phys_to_pfn(boot_frames.start), phys_to_pfn(boot_frames.end), PAGE_FLAG_RESERVED);
 
     // Mark page array region itself as reserved
     pfn_t array_start_pfn = phys_to_pfn(g_pmm.page_array_phys);

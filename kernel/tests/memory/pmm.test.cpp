@@ -3,6 +3,7 @@
 #include "stlx_unit_test.h"
 #include "mm/pmm.h"
 #include "mm/page_quarantine.h"
+#include "arch/arch_smp.h"
 #include "common/logging.h"
 
 TEST_SUITE(pmm);
@@ -200,4 +201,18 @@ TEST(pmm, stress_alloc_free) {
     }
 
     EXPECT_EQ(pmm::free_page_count(), before);
+}
+
+// The allocator's failure address and the frames the AP bring-up writes must never reach the free pool
+TEST(pmm, fixed_frames_stay_reserved) {
+    pmm::page_frame_descriptor* zero = pmm::get_page_frame(0);
+    ASSERT_NOT_NULL(zero);
+    EXPECT_TRUE(zero->is_reserved());
+
+    pmm::phys_range boot = arch::smp_fixed_boot_frames();
+    for (pmm::phys_addr_t phys = boot.start; phys < boot.end; phys += pmm::PAGE_SIZE) {
+        pmm::page_frame_descriptor* frame = pmm::get_page_frame(phys);
+        ASSERT_NOT_NULL(frame);
+        EXPECT_TRUE(frame->is_reserved());
+    }
 }

@@ -203,6 +203,10 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
     return count;
 }
 
+pmm::phys_range smp_fixed_boot_frames() {
+    return {AP_TRAMPOLINE_PHYS, AP_STARTUP_DATA_PHYS + pmm::PAGE_SIZE};
+}
+
 /**
  * @note Privilege: **required**
  */
