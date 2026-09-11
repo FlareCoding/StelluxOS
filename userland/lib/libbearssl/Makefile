@@ -52,14 +52,15 @@ all: $(TARGET) install-headers
 $(TARGET): $(ALL_OBJS)
 	$(UQ)mkdir -p $(dir $@)
 	@echo "[AR]  libbearssl.a ($(ARCH))"
+	$(UQ)rm -f $@
 	$(UQ)$(AR) crs $@ $(ALL_OBJS)
 	$(UQ)mkdir -p $(SYSROOT_LIB)
 	$(UQ)cp $@ $(SYSROOT_LIB)/
 
 install-headers:
 	$(UQ)mkdir -p $(SYSROOT_INC)
-	$(UQ)cp bearssl/inc/*.h $(SYSROOT_INC)/
-	$(UQ)cp trust_anchors.h $(SYSROOT_INC)/
+	$(UQ)cp -p bearssl/inc/*.h $(SYSROOT_INC)/
+	$(UQ)cp -p trust_anchors.h $(SYSROOT_INC)/
 
 $(BUILD_DIR)/bearssl/%.o: bearssl/%.c
 	$(UQ)mkdir -p $(dir $@)

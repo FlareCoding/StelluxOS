@@ -33,7 +33,7 @@ CFLAGS_COMMON := \
 	-std=c11 -O2 -g \
 	-Wall -Wextra -Werror \
 	-fno-stack-protector \
-	-MMD -MP
+	-MD -MP
 
 # C++ flags for userland applications (requires 'make libcxx' sysroot).
 # libc++ headers must come before musl C headers in the include path.
@@ -46,7 +46,7 @@ CXXFLAGS_COMMON := \
 	-std=c++20 -O2 -g \
 	-Wall -Wextra -Werror \
 	-fno-stack-protector \
-	-MMD -MP
+	-MD -MP
 
 # Runtime builtins are required for compiler helper symbols referenced by musl
 # (notably on aarch64 long-double printf paths). Preference order: the
