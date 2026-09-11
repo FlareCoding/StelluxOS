@@ -23,14 +23,6 @@ using namespace phy;
 // received frame so the IP header lands on a 4 byte boundary
 constexpr uint32_t RX_PREFIX_LEN = 2;
 
-// Address on the test network, used until the stack supports interface
-// configuration. Adjust to the network the board is attached to.
-static constexpr net::ipv4::ipv4_config LAN_STATIC_IPV4 = {
-    {{10, 0, 0, 75}},
-    {{255, 255, 255, 0}},
-    {{10, 0, 0, 1}},
-};
-
 // Construction / factory
 
 bcm_genet_driver::bcm_genet_driver(uint64_t reg_phys, uint64_t reg_size,
@@ -863,10 +855,8 @@ int32_t bcm_genet_driver::attach() {
     // Interrupt setup failure is non-fatal, the driver falls back to polling.
     setup_interrupts();
 
-    // Link identity for the stack. The interface comes up here until the
-    // stack owns that decision.
+    // The interface comes up without an address, userland assigns one
     m_mtu = net::eth::MTU;
-    RUN_ELEVATED(set_ipv4_conf(LAN_STATIC_IPV4));
     m_enabled = true;
 
     rc = net::register_interface(this, "eth");

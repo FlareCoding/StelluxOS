@@ -20,14 +20,6 @@ constexpr size_t ETH_FRAME_MAX = 1514;
 // The hardware reports frame lengths with the trailing checksum included
 constexpr uint32_t ETH_FCS_LEN = 4;
 
-// Address on the test network, used until the stack supports interface
-// configuration. Adjust to the network the machine is attached to.
-static constexpr net::ipv4::ipv4_config LAN_STATIC_IPV4 = {
-    {{10, 0, 0, 125}},
-    {{255, 255, 255, 0}},
-    {{10, 0, 0, 1}},
-};
-
 rtl8168_driver::rtl8168_driver(pci::device* dev)
     : pci_driver("rtl8168", dev)
     , m_mmio_va(0)
@@ -773,10 +765,8 @@ int32_t rtl8168_driver::attach() {
         log::info("rtl8168: MSI configured");
     }
 
-    // Link identity for the stack. The interface comes up here until the
-    // stack owns that decision.
+    // The interface comes up without an address, userland assigns one
     m_mtu = net::eth::MTU;
-    RUN_ELEVATED(set_ipv4_conf(LAN_STATIC_IPV4));
     m_enabled = true;
 
     rc = net::register_interface(this, "eth");
