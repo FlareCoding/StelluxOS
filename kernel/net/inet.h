@@ -64,17 +64,16 @@ struct ifinfo {
     uint32_t ipv4_addr;
     uint32_t ipv4_netmask;
     uint32_t ipv4_gateway;
-    uint32_t ipv4_dns; // Always zero, name servers are not an interface property
     uint32_t flags;
 };
-static_assert(sizeof(ifinfo) == 44);
+static_assert(sizeof(ifinfo) == 40);
 
 struct net_status {
     uint32_t if_count;
     uint32_t reserved;
     ifinfo   interfaces[MAX_IFINFO];
 };
-static_assert(sizeof(net_status) == 360);
+static_assert(sizeof(net_status) == 328);
 
 // The identity userland assigns to one interface, addresses in host byte order.
 // An unspecified address clears the identity.

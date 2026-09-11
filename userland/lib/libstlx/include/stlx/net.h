@@ -23,11 +23,10 @@ struct stlx_ifinfo {
     uint32_t ipv4_addr;
     uint32_t ipv4_netmask;
     uint32_t ipv4_gateway;
-    uint32_t ipv4_dns;
     uint32_t flags;
 };
 
-_Static_assert(sizeof(struct stlx_ifinfo) == 44, "stlx_ifinfo ABI size mismatch");
+_Static_assert(sizeof(struct stlx_ifinfo) == 40, "stlx_ifinfo ABI size mismatch");
 
 struct stlx_net_status {
     uint32_t           if_count;
@@ -35,7 +34,7 @@ struct stlx_net_status {
     struct stlx_ifinfo interfaces[STLX_NET_MAX_IF];
 };
 
-_Static_assert(sizeof(struct stlx_net_status) == 360, "stlx_net_status ABI size mismatch");
+_Static_assert(sizeof(struct stlx_net_status) == 328, "stlx_net_status ABI size mismatch");
 
 static inline int stlx_net_get_status(struct stlx_net_status* out) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);

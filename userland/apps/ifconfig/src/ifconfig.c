@@ -50,12 +50,6 @@ static int show(void) {
                iface->mac[0], iface->mac[1], iface->mac[2],
                iface->mac[3], iface->mac[4], iface->mac[5]);
 
-        if (iface->ipv4_dns != 0) {
-            char dns[16];
-            format_ip(iface->ipv4_dns, dns, sizeof(dns));
-            printf("      dns %s\r\n", dns);
-        }
-
         if (i + 1 < st.if_count) printf("\r\n");
     }
 
