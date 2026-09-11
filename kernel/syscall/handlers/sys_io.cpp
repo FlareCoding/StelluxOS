@@ -5,16 +5,9 @@
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 
-namespace {
+using syscall::iovec;
+using syscall::MAX_IOVCNT;
 
-struct iovec {
-    uint64_t base;
-    uint64_t len;
-};
-
-} // anonymous namespace
-
-constexpr uint64_t MAX_IOVCNT = 1024;
 constexpr size_t IO_CHUNK_SIZE = 4096;
 
 static inline int64_t map_resource_error(int64_t rc) {
