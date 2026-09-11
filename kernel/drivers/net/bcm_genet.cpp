@@ -268,6 +268,7 @@ int32_t bcm_genet_driver::phy_update_link() {
         m_speed = phy_speed::SPEED_NONE;
     }
 
+    RUN_ELEVATED(set_link_up(m_link_up));
     return 0;
 }
 

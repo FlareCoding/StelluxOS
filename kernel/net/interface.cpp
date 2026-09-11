@@ -4,6 +4,9 @@
 #include "net/arp.h"
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
+#include "sync/poll.h"
+#include "sync/wait_queue.h"
+#include "dynpriv/dynpriv.h"
 #include "common/string.h"
 
 namespace net {
@@ -16,6 +19,10 @@ static sync::atomic<uint64_t> g_next_interface_id {1};
 static sync::spinlock g_registry_lock = sync::SPINLOCK_INIT;
 static interface* g_interfaces[MAX_INTERFACES];
 static sync::atomic<size_t> g_interface_count {0};
+
+// Starts at one so a watcher that has seen nothing has something to read
+static sync::atomic<uint64_t> g_status_generation {1};
+static sync::wait_queue g_status_wq;
 
 static uint64_t generate_interface_id() {
     return g_next_interface_id.fetch_add_relaxed(1);
@@ -58,6 +65,7 @@ interface::interface()
     : m_id(generate_interface_id())
     , m_enabled(false)
     , m_loopback(false)
+    , m_link_up(false)
     , m_name{}
     , m_counters{}
     , m_mac{}
@@ -115,6 +123,38 @@ __PRIVILEGED_CODE void interface::unconfigure_ipv4() {
     arp::forget(this);
 }
 
+__PRIVILEGED_CODE void interface::set_ipv4_conf(const ipv4::ipv4_config& conf) {
+    m_ipv4_conf.write(conf);
+    note_status_change();
+}
+
+__PRIVILEGED_CODE void interface::set_link_up(bool up) {
+    if (m_link_up.load_relaxed() == up) {
+        return;
+    }
+
+    m_link_up.store_release(up);
+    note_status_change();
+}
+
+int32_t init_status_watch() {
+    g_status_wq.init();
+    return OK;
+}
+
+uint64_t status_generation() {
+    return g_status_generation.load_acquire();
+}
+
+__PRIVILEGED_CODE void note_status_change() {
+    g_status_generation.fetch_add_release(1);
+    sync::wake_all(g_status_wq);
+}
+
+__PRIVILEGED_CODE void watch_status(sync::poll_table& pt) {
+    sync::poll_subscribe(pt, g_status_wq);
+}
+
 int32_t register_interface(interface* iface, const char* prefix) {
     if (!iface || !prefix) {
         return ERR_INVALID;
@@ -145,6 +185,7 @@ int32_t register_interface(interface* iface, const char* prefix) {
 
     g_interfaces[count] = iface;
     g_interface_count.store_release(count + 1);
+    RUN_ELEVATED(note_status_change());
     return OK;
 }
 

@@ -13,6 +13,7 @@ static void format_ip(uint32_t ip, char* buf, size_t sz) {
 static void print_flags(uint32_t flags) {
     int first = 1;
     if (flags & STLX_IFF_UP)         { printf("%sUP", first ? "" : ","); first = 0; }
+    if (flags & STLX_IFF_RUNNING)    { printf("%sRUNNING", first ? "" : ","); first = 0; }
     if (flags & STLX_IFF_CONFIGURED) { printf("%sCONFIGURED", first ? "" : ","); first = 0; }
     if (flags & STLX_IFF_DEFAULT)    { printf("%sDEFAULT", first ? "" : ","); first = 0; }
     if (flags & STLX_IFF_LOOPBACK)   { printf("%sLOOPBACK", first ? "" : ","); first = 0; }

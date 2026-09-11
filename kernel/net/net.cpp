@@ -2,6 +2,7 @@
 #include "clock/clock.h"
 #include "net/arp.h"
 #include "net/loopback.h"
+#include "net/netevents.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
 #include "common/logging.h"
@@ -27,7 +28,12 @@ __PRIVILEGED_CODE int32_t init() {
     // Create the interface table
     // ...
 
-    int32_t rc = arp::init();
+    int32_t rc = init_status_watch();
+    if (rc != OK) {
+        return rc;
+    }
+
+    rc = arp::init();
     if (rc != OK) {
         log::error("net: arp::init failed: %d", rc);
         return rc;
@@ -36,6 +42,11 @@ __PRIVILEGED_CODE int32_t init() {
     rc = loopback::init();
     if (rc != OK) {
         log::error("net: loopback::init failed: %d", rc);
+        return rc;
+    }
+
+    rc = netevents::init();
+    if (rc != OK) {
         return rc;
     }
 

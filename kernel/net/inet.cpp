@@ -38,7 +38,8 @@ static void fill_ifinfo(interface* iface, bool is_default, ifinfo* info) {
     info->ipv4_gateway = to_host_order(conf.gateway);
 
     info->flags = (iface->enabled() ? IFF_UP : 0) | (conf.configured() ? IFF_CONFIGURED : 0) |
-                  (is_default ? IFF_DEFAULT : 0) | (iface->is_loopback() ? IFF_LOOPBACK : 0);
+                  (is_default ? IFF_DEFAULT : 0) | (iface->is_loopback() ? IFF_LOOPBACK : 0) |
+                  (iface->link_up() ? IFF_RUNNING : 0);
 }
 
 __PRIVILEGED_CODE static int32_t query_net_status(uint64_t arg) {

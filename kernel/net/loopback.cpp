@@ -32,6 +32,7 @@ __PRIVILEGED_CODE loopback_interface::loopback_interface()
     m_wq.init();
 
     m_loopback = true;
+    m_link_up.store_relaxed(true);
     m_mtu = MTU;
 
     set_ipv4_conf({{{127, 0, 0, 1}}, {{255, 0, 0, 0}}, {{0, 0, 0, 0}}});

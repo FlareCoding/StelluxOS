@@ -7,6 +7,8 @@
 #include "sync/atomic.h"
 #include "sync/seqlock.h"
 
+namespace sync { struct poll_table; }
+
 namespace net {
 
 class packet;
@@ -22,6 +24,25 @@ struct iface_counters {
     sync::atomic<uint64_t> drops;  // frames discarded by policy, such as a full ring
     sync::atomic<uint64_t> errors; // frames the hardware or the stack could not process
 };
+
+/*
+ * Every change to what the status query reports, an interface appearing, its
+ * carrier or its IPv4 identity, moves the status generation and wakes watchers.
+ */
+int32_t init_status_watch();
+uint64_t status_generation();
+
+/**
+ * @brief Moves the status generation and wakes every watcher.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void note_status_change();
+
+/**
+ * @brief Subscribes `pt` to the next status change.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void watch_status(sync::poll_table& pt);
 
 /**
  * A network interface is a connection point between a network driver and the rest
@@ -62,6 +83,7 @@ public:
     const char* name() const { return m_name; }
 
     bool enabled() const { return m_enabled; }
+    bool link_up() const { return m_link_up.load_acquire(); }
     bool is_loopback() const { return m_loopback; }
 
     const eth::mac_addr& mac() const { return m_mac; }
@@ -82,6 +104,13 @@ public:
      */
     __PRIVILEGED_CODE void unconfigure_ipv4();
 
+    /**
+     * @brief Records what the driver learned about the carrier, a change is
+     * reported to status watchers.
+     * @note Privilege: **required**
+     */
+    __PRIVILEGED_CODE void set_link_up(bool up);
+
     // Assigned by the registry, truncated to IFACE_NAME_MAX
     void set_name(const char* name);
 
@@ -92,6 +121,7 @@ protected:
     uint64_t        m_id;       // Nonzero and unique for the life of the kernel, 0 means no interface
     bool            m_enabled;  // Administratively up, checked by the stack before frames move either way
     bool            m_loopback; // Frames sent through it come back to this host, so no link or ARP
+    sync::atomic<bool> m_link_up; // Carrier as last reported by the driver
     char            m_name[IFACE_NAME_MAX];
     iface_counters  m_counters;
 
@@ -105,7 +135,7 @@ protected:
     /**
      * @note Privilege: **required**
      */
-    __PRIVILEGED_CODE void set_ipv4_conf(const ipv4::ipv4_config& conf) { m_ipv4_conf.write(conf); }
+    __PRIVILEGED_CODE void set_ipv4_conf(const ipv4::ipv4_config& conf);
 };
 
 /*

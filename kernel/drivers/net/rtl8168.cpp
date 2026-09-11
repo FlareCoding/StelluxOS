@@ -272,6 +272,8 @@ void rtl8168_driver::phy_update_link() {
         log::info("rtl8168: link down");
         m_speed = 0;
     }
+
+    RUN_ELEVATED(set_link_up(m_link_up));
 }
 
 int32_t rtl8168_driver::alloc_rings() {

@@ -109,6 +109,32 @@ TEST(interface, reconfigure_forgets_the_neighbors) {
     EXPECT_EQ(neighbors_learned_on(&link), 0u);
 }
 
+// --- status_generation_moves_with_carrier_and_identity ---
+// Proves: a carrier or identity change moves the generation once, a repeated
+// report of the same carrier does not.
+
+TEST(interface, status_generation_moves_with_carrier_and_identity) {
+    stub_interface link(false);
+    uint64_t before = status_generation();
+    EXPECT_FALSE(link.link_up());
+
+    link.set_link_up(true);
+    EXPECT_TRUE(link.link_up());
+    EXPECT_EQ(status_generation(), before + 1);
+
+    link.set_link_up(true);
+    EXPECT_EQ(status_generation(), before + 1);
+
+    EXPECT_EQ(link.configure_ipv4(g_lan), OK);
+    EXPECT_EQ(status_generation(), before + 2);
+
+    link.unconfigure_ipv4();
+    EXPECT_EQ(status_generation(), before + 3);
+
+    link.set_link_up(false);
+    EXPECT_EQ(status_generation(), before + 4);
+}
+
 // --- reconfigure_lets_accepted_packets_leave ---
 // Proves: a packet waiting on a neighbor when the identity changes still goes
 // out once the neighbor answers, and the neighbor is not kept afterwards.

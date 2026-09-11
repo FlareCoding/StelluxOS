@@ -601,6 +601,8 @@ void virtio_net_driver::run() {
             sync::irq_lock_guard guard(m_vq_lock);
             replenish_rx();
         });
+
+        RUN_ELEVATED(set_link_up(link_up()));
     }
 }
 
