@@ -92,7 +92,7 @@ void hub_driver::run() {
         }
 
         uint8_t speed = hub_speed_to_xhci_speed(status.status);
-        hcd->queue_hub_enumerate(xdev, port, speed);
+        hcd->enumerate_hub_port(xdev, port, speed);
     }
 
     if (ep_addr == 0) {
@@ -190,7 +190,7 @@ void hub_driver::handle_port_change(uint8_t port) {
             if (status.status & PORT_STATUS_ENABLE) {
                 uint8_t speed = hub_speed_to_xhci_speed(status.status);
                 hcd->queue_hub_disconnect(xdev, port);
-                hcd->queue_hub_enumerate(xdev, port, speed);
+                hcd->enumerate_hub_port(xdev, port, speed);
             }
 
             return;
@@ -217,7 +217,7 @@ void hub_driver::handle_port_change(uint8_t port) {
             }
 
             uint8_t speed = hub_speed_to_xhci_speed(status.status);
-            hcd->queue_hub_enumerate(xdev, port, speed);
+            hcd->enumerate_hub_port(xdev, port, speed);
         } else {
             log::info("hub: device disconnected from port %u", port);
             hcd->queue_hub_disconnect(xdev, port);

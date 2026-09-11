@@ -1,0 +1,222 @@
+#include "net/interface.h"
+#include "net/packet.h"
+#include "net/eth.h"
+#include "net/arp.h"
+#include "sync/atomic.h"
+#include "sync/spinlock.h"
+#include "sync/poll.h"
+#include "sync/wait_queue.h"
+#include "dynpriv/dynpriv.h"
+#include "common/string.h"
+
+namespace net {
+
+// IDs start at 1 since 0 means "no interface"
+static sync::atomic<uint64_t> g_next_interface_id {1};
+
+// Slots are filled once and never removed. The count is published with a
+// release store so readers can index below it without taking the lock.
+static sync::spinlock g_registry_lock = sync::SPINLOCK_INIT;
+static interface* g_interfaces[MAX_INTERFACES];
+static sync::atomic<size_t> g_interface_count {0};
+
+// Starts at one so a watcher that has seen nothing has something to read
+static sync::atomic<uint64_t> g_status_generation {1};
+static sync::wait_queue g_status_wq;
+
+static uint64_t generate_interface_id() {
+    return g_next_interface_id.fetch_add_relaxed(1);
+}
+
+// Interfaces already registered under `prefix`, locked by the caller
+static size_t count_prefix(const char* prefix, size_t prefix_len) {
+    size_t matches = 0;
+    size_t total = g_interface_count.load_relaxed();
+    for (size_t i = 0; i < total; i++) {
+        if (string::strncmp(g_interfaces[i]->name(), prefix, prefix_len) == 0) {
+            matches++;
+        }
+    }
+    return matches;
+}
+
+interface::interface()
+    : m_id(generate_interface_id())
+    , m_enabled(false)
+    , m_loopback(false)
+    , m_link_up(false)
+    , m_name{}
+    , m_counters{}
+    , m_mac{}
+    , m_mtu(0)
+    , m_ipv4_conf{} {}
+
+int32_t interface::receive(packet* pkt) {
+    if (!pkt) {
+        return ERR_INVALID;
+    }
+
+    if (!m_enabled) {
+        record_packet_dropped();
+        packet::free(pkt);
+        return ERR_DOWN;
+    }
+
+    m_counters.frames_in++;
+    m_counters.bytes_in += pkt->length();
+
+    // Every interface is an Ethernet interface, so the link layer
+    // above is always Ethernet and it takes ownership from here.
+    return eth::input(pkt);
+}
+
+void interface::set_name(const char* name) {
+    size_t len = string::strlen(name);
+    if (len >= IFACE_NAME_MAX) {
+        len = IFACE_NAME_MAX - 1;
+    }
+
+    string::memcpy(m_name, name, len);
+    m_name[len] = '\0';
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t interface::configure_ipv4(const ipv4::ipv4_config& conf) {
+    if (!conf.is_well_formed() || conf.address.is_loopback() != m_loopback) {
+        return ERR_INVALID;
+    }
+
+    set_ipv4_conf(conf);
+    arp::forget(this);
+
+    return OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void interface::unconfigure_ipv4() {
+    set_ipv4_conf({});
+    arp::forget(this);
+}
+
+__PRIVILEGED_CODE void interface::set_ipv4_conf(const ipv4::ipv4_config& conf) {
+    m_ipv4_conf.write(conf);
+    note_status_change();
+}
+
+__PRIVILEGED_CODE void interface::set_link_up(bool up) {
+    if (m_link_up.load_relaxed() == up) {
+        return;
+    }
+
+    m_link_up.store_release(up);
+    note_status_change();
+}
+
+int32_t init_status_watch() {
+    g_status_wq.init();
+    return OK;
+}
+
+uint64_t status_generation() {
+    return g_status_generation.load_acquire();
+}
+
+__PRIVILEGED_CODE void note_status_change() {
+    g_status_generation.fetch_add_release(1);
+    sync::wake_all(g_status_wq);
+}
+
+__PRIVILEGED_CODE void watch_status(sync::poll_table& pt) {
+    sync::poll_subscribe(pt, g_status_wq);
+}
+
+int32_t register_interface(interface* iface, const char* prefix) {
+    if (!iface || !prefix) {
+        return ERR_INVALID;
+    }
+
+    size_t prefix_len = string::strlen(prefix);
+    if (prefix_len == 0 || prefix_len >= IFACE_NAME_MAX) {
+        return ERR_INVALID;
+    }
+
+    sync::lock_guard guard(g_registry_lock);
+
+    size_t count = g_interface_count.load_relaxed();
+    if (count >= MAX_INTERFACES) {
+        return ERR_FULL;
+    }
+
+    char name[IFACE_NAME_MAX];
+    string::memcpy(name, prefix, prefix_len);
+
+    size_t digits = string::format_u64(name + prefix_len, IFACE_NAME_MAX - prefix_len - 1, count_prefix(prefix, prefix_len));
+    if (digits == 0) {
+        return ERR_INVALID;
+    }
+
+    name[prefix_len + digits] = '\0';
+    iface->set_name(name);
+
+    g_interfaces[count] = iface;
+    g_interface_count.store_release(count + 1);
+    RUN_ELEVATED(note_status_change());
+    return OK;
+}
+
+size_t interface_count() {
+    return g_interface_count.load_acquire();
+}
+
+interface* interface_at(size_t index) {
+    if (index >= g_interface_count.load_acquire()) {
+        return nullptr;
+    }
+
+    return g_interfaces[index];
+}
+
+interface* find_interface_by_address(const ipv4::ipv4_addr& addr) {
+    size_t count = g_interface_count.load_acquire();
+    for (size_t i = 0; i < count; i++) {
+        ipv4::ipv4_config conf = g_interfaces[i]->ipv4_conf();
+
+        if (conf.configured() && conf.address == addr) {
+            return g_interfaces[i];
+        }
+    }
+
+    return nullptr;
+}
+
+interface* find_interface_by_name(const char* name) {
+    if (!name) {
+        return nullptr;
+    }
+
+    size_t count = g_interface_count.load_acquire();
+    for (size_t i = 0; i < count; i++) {
+        if (string::strcmp(g_interfaces[i]->name(), name) == 0) {
+            return g_interfaces[i];
+        }
+    }
+
+    return nullptr;
+}
+
+interface* find_loopback_interface() {
+    size_t count = g_interface_count.load_acquire();
+    for (size_t i = 0; i < count; i++) {
+        if (g_interfaces[i]->is_loopback()) {
+            return g_interfaces[i];
+        }
+    }
+
+    return nullptr;
+}
+
+} // namespace net

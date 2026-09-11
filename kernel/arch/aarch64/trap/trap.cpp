@@ -8,6 +8,7 @@
 #include "dynpriv/dynpriv.h"
 #include "irq/irq.h"
 #include "irq/irq_arch.h"
+#include "smp/ipi.h"
 #include "serial/serial.h"
 #include "hw/hwtimer.h"
 #include "timer/timer.h"
@@ -15,6 +16,7 @@
 #include "sched/task.h"
 #include "signals/signal.h"
 #include "mm/mm.h"
+#include "mm/uaccess.h"
 
 // Forward declaration of syscall dispatch
 extern "C" void stlx_aarch64_syscall_dispatch(aarch64::trap_frame* tf);
@@ -49,6 +51,28 @@ __PRIVILEGED_CODE static inline void restore_post_trap_elevation_state() {
     constexpr uint32_t mask = sched::TASK_FLAG_ELEVATED | sched::TASK_FLAG_IN_SYSCALL;
     this_cpu(percpu_is_elevated) =
         (this_cpu(current_task_exec)->flags & mask) != 0;
+}
+
+// Translates an abort's ESR into the access description the mm layer expects
+static uint32_t abort_pf_flags(uint64_t esr, uint8_t ec) {
+    uint32_t pf_flags = 0;
+
+    // DFSC[5:0] is in ESR.ISS bits [5:0], its top four bits classify the fault
+    if (((esr & 0x3F) >> 2) == 0b0011) {
+        pf_flags |= mm::PF_FLAG_PRESENT;
+    }
+
+    // ESR.ISS bit 6 = WnR (Write not Read) for data aborts
+    bool data_abort = ec == aarch64::EC_DATA_ABORT_LOWER || ec == aarch64::EC_DATA_ABORT_SAME;
+    if (data_abort && (esr & (1u << 6))) {
+        pf_flags |= mm::PF_FLAG_WRITE;
+    }
+
+    if (ec == aarch64::EC_INST_ABORT_LOWER) {
+        pf_flags |= mm::PF_FLAG_INSTRUCTION;
+    }
+
+    return pf_flags;
 }
 
 static inline int ec_to_signal(uint8_t ec) {
@@ -88,21 +112,7 @@ void stlx_aarch64_el0_sync_handler(aarch64::trap_frame* tf) {
         ec == aarch64::EC_INST_ABORT_LOWER)
     ) {
         uintptr_t fault_addr = aarch64::get_far(tf);
-        uint32_t pf_flags = 0;
-
-        // DFSC[5:0] is in ESR.ISS bits [5:0] for data/instruction aborts.
-        uint32_t dfsc = esr & 0x3F;
-        uint32_t fault_class = dfsc >> 2; // top 4 bits identify the class
-        if (fault_class == 0b0011) pf_flags |= mm::PF_FLAG_PRESENT; // permission fault
-
-        // ESR.ISS bit 6 = WnR (Write not Read) for data aborts.
-        if (ec == aarch64::EC_DATA_ABORT_LOWER && (esr & (1u << 6))) {
-            pf_flags |= mm::PF_FLAG_WRITE;
-        }
-
-        if (ec == aarch64::EC_INST_ABORT_LOWER) {
-            pf_flags |= mm::PF_FLAG_INSTRUCTION;
-        }
+        uint32_t pf_flags = abort_pf_flags(esr, ec);
 
         if (mm::handle_user_pf(guard.task_core->mm_ctx, fault_addr, pf_flags)) {
             // Fault has been handled successfully, restart instruction
@@ -134,10 +144,11 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
     sched::task_exec_core* irq_task_core = this_cpu(current_task_exec);
     irq_task_core->flags |= sched::TASK_FLAG_IN_IRQ;
 
-    uint32_t irq_id = irq::acknowledge();
+    uint32_t ack = irq::acknowledge();
+    uint32_t irq_id = ack & irq::GIC_INTID_MASK;
     if (irq_id == hwtimer::TIMER_PPI) {
         bool tick = timer::on_interrupt();
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         if (tick) {
             sched::on_tick(tf);
         }
@@ -146,9 +157,17 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
         return;
     }
 
+    if (irq_id == irq::IPI_SGI_INTID) {
+        smp::ipi::dispatch();
+        irq::eoi(ack);
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
     if (irq_id == serial::irq_id()) {
         serial::on_rx_irq();
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
@@ -161,14 +180,14 @@ void stlx_aarch64_el0_irq_handler(aarch64::trap_frame* tf) {
     }
 
     if (irq::dispatch(irq_id)) {
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
     }
 
     if (irq_id != irq::GIC_SPURIOUS_ID) {
-        irq::eoi(irq_id);
+        irq::eoi(ack);
     }
     irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     trap_fatal("el0 irq", tf);
@@ -202,6 +221,23 @@ void stlx_aarch64_el1_sync_handler(aarch64::trap_frame* tf) {
         return;
     }
 
+    // A kernel data abort is recoverable only when raised by a user copy
+    if (ec == aarch64::EC_DATA_ABORT_SAME) {
+        bool can_sleep = (tf->spsr & aarch64::SPSR_IRQ_MASK) == 0;
+        if (
+            mm::uaccess::handle_kernel_fault(
+                guard.task_core->mm_ctx,
+                &tf->elr,
+                aarch64::get_far(tf),
+                abort_pf_flags(esr, ec),
+                can_sleep
+            )
+        ) {
+            restore_post_trap_elevation_state();
+            return;
+        }
+    }
+
     trap_fatal("el1 sync", tf);
 }
 
@@ -212,10 +248,11 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
     sched::task_exec_core* irq_task_core = this_cpu(current_task_exec);
     irq_task_core->flags |= sched::TASK_FLAG_IN_IRQ;
 
-    uint32_t irq_id = irq::acknowledge();
+    uint32_t ack = irq::acknowledge();
+    uint32_t irq_id = ack & irq::GIC_INTID_MASK;
     if (irq_id == hwtimer::TIMER_PPI) {
         bool tick = timer::on_interrupt();
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         if (tick) {
             sched::on_tick(tf);
         }
@@ -224,9 +261,17 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
         return;
     }
 
+    if (irq_id == irq::IPI_SGI_INTID) {
+        smp::ipi::dispatch();
+        irq::eoi(ack);
+        irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
+        restore_post_trap_elevation_state();
+        return;
+    }
+
     if (irq_id == serial::irq_id()) {
         serial::on_rx_irq();
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
@@ -239,14 +284,14 @@ void stlx_aarch64_el1_irq_handler(aarch64::trap_frame* tf) {
     }
 
     if (irq::dispatch(irq_id)) {
-        irq::eoi(irq_id);
+        irq::eoi(ack);
         irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
         restore_post_trap_elevation_state();
         return;
     }
 
     if (irq_id != irq::GIC_SPURIOUS_ID) {
-        irq::eoi(irq_id);
+        irq::eoi(ack);
     }
     irq_task_core->flags &= ~sched::TASK_FLAG_IN_IRQ;
     trap_fatal("el1 irq", tf);

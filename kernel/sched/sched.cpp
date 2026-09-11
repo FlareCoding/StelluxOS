@@ -17,6 +17,7 @@
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
 #include "smp/smp.h"
+#include "smp/ipi.h"
 #include "hw/cpu.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
@@ -34,17 +35,18 @@
 DEFINE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(bool, percpu_is_elevated);
 DEFINE_PER_CPU(uint32_t, percpu_cpu_id);
-static DEFINE_PER_CPU(sched::task*, pending_off_cpu_task);
-static DEFINE_PER_CPU(uint64_t, cpu_tlb_sync_epoch);
 
 static DEFINE_PER_CPU(sched::runqueue, cpu_rq);
 
 static DEFINE_PER_CPU(sched::cpu_accounting_stats, cpu_accounting);
 
 static sync::atomic<uint32_t> g_next_tid{1};
-static sync::atomic<uint32_t> g_pending_tlb_sync_tickets;
 
 static sync::atomic<uint32_t> g_lb_next_cpu{0};
+
+// Interrupts a CPU so its idle loop sees a task placed on
+// its runqueue immediately rather than at its next tick.
+__PRIVILEGED_DATA static smp::ipi::message g_resched_kick = {0};
 
 namespace sched {
 
@@ -74,8 +76,6 @@ constexpr uint32_t DEFAULT_UMASK = 022;
 
 constexpr size_t SYSTEM_STACK_PAGES = 4;
 constexpr uint16_t SYSTEM_GUARD_PAGES = 1;
-
-constexpr uint64_t TLB_SYNC_CPU_IGNORED = ~0ULL;
 
 constexpr uint32_t TEARDOWN_BATCH_SIZE = 16;
 
@@ -122,59 +122,16 @@ __PRIVILEGED_CODE static inline void assert_switch_privilege_state(
 /**
  * Runs only after the last counted reference dropped. Registry lookups can
  * still find the task until the removal below, its poisoned refcount turns
- * them away. The TLB sync wait covers the freed stack pages, nothing else.
+ * them away. The stacks are freed like any other kernel memory once no CPU
+ * runs on them, the page quarantine keeps them out of reuse until flushed.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static rc::reaper::cleanup_result reap_task(sched::task* t) {
-    uint32_t stage = load_cleanup_stage(t);
-    if (stage < TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
+    if (load_cleanup_stage(t) < TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
         return rc::reaper::RETRY_LATER;
     }
 
     if (sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire()) {
-        return rc::reaper::RETRY_LATER;
-    }
-
-    uint32_t cpu_count = smp::cpu_count();
-    if (stage == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
-        for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
-            smp::cpu_info* info = smp::get_cpu_info(cpu);
-            if (!info || info->state.load_acquire() != smp::CPU_ONLINE) {
-                t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] = TLB_SYNC_CPU_IGNORED;
-                continue;
-            }
-
-            t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] =
-                sync::atomic_ref<uint64_t>{per_cpu_on(cpu_tlb_sync_epoch, cpu)}.load_acquire();
-        }
-
-        t->tlb_sync_ticket.armed.store_release(1);
-        g_pending_tlb_sync_tickets.fetch_add_acq_rel(1);
-        store_cleanup_stage(t, TASK_CLEANUP_STAGE_WAITING_FOR_TLB_SYNC);
-        return rc::reaper::RETRY_LATER;
-    }
-
-    if (stage == TASK_CLEANUP_STAGE_WAITING_FOR_TLB_SYNC) {
-        if (t->tlb_sync_ticket.armed.load_acquire() == 0) {
-            return rc::reaper::RETRY_LATER;
-        }
-
-        for (uint32_t cpu = 0; cpu < cpu_count; cpu++) {
-            if (t->tlb_sync_ticket.cpu_epoch_snapshot[cpu] == TLB_SYNC_CPU_IGNORED) {
-                continue;
-            }
-
-            uint64_t epoch = sync::atomic_ref<uint64_t>{per_cpu_on(cpu_tlb_sync_epoch, cpu)}.load_acquire();
-            if ((epoch - t->tlb_sync_ticket.cpu_epoch_snapshot[cpu]) == 0) {
-                return rc::reaper::RETRY_LATER;
-            }
-        }
-
-        g_pending_tlb_sync_tickets.fetch_sub_acq_rel(1);
-        store_cleanup_stage(t, TASK_CLEANUP_STAGE_READY_TO_RECLAIM);
-    }
-
-    if (load_cleanup_stage(t) != TASK_CLEANUP_STAGE_READY_TO_RECLAIM) {
         return rc::reaper::RETRY_LATER;
     }
 
@@ -259,13 +216,7 @@ __PRIVILEGED_CODE bool block_task_interrupted() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void cancel_block_task() {
-    task* self = current();
-    uint32_t expected = TASK_STATE_BLOCKED;
-    if (!self->state.cmpxchg_strong_acq_rel(expected, TASK_STATE_RUNNING)) {
-        // A wake already claimed this task READY and will requeue it once
-        // it is off-CPU. Yield so that handoff can complete.
-        yield();
-    }
+    current()->state.store_release(TASK_STATE_RUNNING);
 }
 
 /**
@@ -294,55 +245,6 @@ __PRIVILEGED_CODE cpu_accounting_stats read_cpu_accounting_stats(uint32_t cpu_id
     out.tick_hz = timer::tick_hz();
     return out;
 }
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE void finalize_pending_off_cpu() {
-    task* pending = this_cpu(pending_off_cpu_task);
-    if (!pending) {
-        return;
-    }
-
-    this_cpu(pending_off_cpu_task) = nullptr;
-    sync::atomic_ref<uint32_t>{pending->exec.on_cpu}.store_release(0);
-    cpu::send_event();
-
-    if (load_cleanup_stage(pending) == TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
-        // Reclamation must not begin before the off-CPU store above is
-        // visible, so the reference the task was created with drops here.
-        if (pending->release()) {
-            task::ref_destroy(pending);
-        }
-    }
-}
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE void defer_off_cpu_finalize(task* prev) {
-    if (!prev) {
-        return;
-    }
-
-    if (this_cpu(pending_off_cpu_task)) {
-        finalize_pending_off_cpu();
-    }
-    this_cpu(pending_off_cpu_task) = prev;
-}
-
-/**
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE void advance_cpu_tlb_sync_epoch() {
-    if (g_pending_tlb_sync_tickets.load_acquire() == 0) {
-        return;
-    }
-
-    paging::flush_tlb_all();
-    sync::atomic_ref<uint64_t>{this_cpu(cpu_tlb_sync_epoch)}.fetch_add_release(1);
-}
-
 /**
  * @note Privilege: **required**
  */
@@ -366,24 +268,44 @@ __PRIVILEGED_CODE static uint32_t load_balance_select_cpu() {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
+__PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted) {
 #ifdef DEBUG
     assert_switch_privilege_state("pick_next_and_switch:entry");
+
+    // wake spins under the runqueue lock for a task leaving its CPU, which is
+    // only safe because nothing interrupts the switch between here and off-CPU
+    if (cpu::irqs_enabled()) {
+        log::fatal("sched: pick_next_and_switch entered with interrupts enabled");
+    }
 #endif
 
     runqueue& rq = this_cpu(cpu_rq);
 
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
 
-    // Only re-enqueue if prev was running (not dead, blocked, or already woken)
-    if (prev != rq.idle_task && prev->state.load_relaxed() == TASK_STATE_RUNNING) {
-        prev->state.store_relaxed(TASK_STATE_READY);
-        rq.policy->enqueue(prev);
-        rq.nr_running++;
+    // Only a voluntary yield while BLOCKED or death takes prev off the
+    // runqueue. READY means a wake landed while it was still on-CPU.
+    uint32_t prev_state = prev->state.load_relaxed();
+    bool prev_dead = prev != rq.idle_task && prev_state == TASK_STATE_DEAD;
+
+    if (prev != rq.idle_task) {
+        bool keep = prev_state == TASK_STATE_RUNNING ||
+                    prev_state == TASK_STATE_READY ||
+                    (prev_state == TASK_STATE_BLOCKED && preempted);
+
+        if (prev_state == TASK_STATE_RUNNING) {
+            prev->state.store_relaxed(TASK_STATE_READY);
+        }
+
+        if (keep) {
+            rq.policy->enqueue(prev);
+            rq.nr_running++;
+        } else {
+            prev->exec.on_runqueue = 0;
+        }
     }
 
-    // Dead task is now scheduler-detached and can enter deferred cleanup flow.
-    if (prev != rq.idle_task && prev->state.load_relaxed() == TASK_STATE_DEAD) {
+    if (prev_dead) {
         store_cleanup_stage(prev, TASK_CLEANUP_STAGE_SCHEDULER_DETACHED);
     }
 
@@ -394,19 +316,47 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev) {
         next = rq.idle_task;
     }
 
-    next->state.store_relaxed(TASK_STATE_RUNNING);
+#ifdef DEBUG
+    if (next != rq.idle_task && next->cleanup_stage.load_relaxed() >= TASK_CLEANUP_STAGE_SCHEDULER_DETACHED) {
+        log::fatal("sched: picked a dying task tid=%u name=%s state=%u stage=%u",
+                   next->tid, next->name, next->state.load_relaxed(), next->cleanup_stage.load_relaxed());
+    }
+#endif
+
+    // A task resuming its wait entry stays BLOCKED
+    if (next->state.load_relaxed() != TASK_STATE_BLOCKED) {
+        next->state.store_relaxed(TASK_STATE_RUNNING);
+    }
+
+    next->exec.cpu = percpu::current_cpu_id();
+    sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
     this_cpu(current_task) = next;
     this_cpu(current_task_exec) = &next->exec;
+
+#ifdef DEBUG
     // Runtime elevation state remains true while trap/syscall teardown continues.
     // Return-boundary code restores percpu_is_elevated from the selected task's
     // TASK_FLAG_ELEVATED after switch teardown is complete.
-#ifdef DEBUG
     assert_switch_privilege_state("pick_next_and_switch:post-select");
 #endif
 
     sync::spin_unlock_irqrestore(rq.lock, irq);
 
+    // Dropping the creation reference wakes the reaper, which needs the runqueue
+    // lock released. The reaper reclaims only after the trap exit publishes prev off-CPU.
+    if (prev_dead && prev->release()) {
+        task::ref_destroy(prev);
+    }
+
     return next;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+extern "C" __PRIVILEGED_CODE void stlx_finish_task_switch(task_exec_core* prev) {
+    sync::atomic_ref<uint32_t>{prev->on_cpu}.store_release(0);
+    cpu::send_event();
 }
 
 /**
@@ -426,6 +376,7 @@ __PRIVILEGED_CODE void enqueue(task* t) {
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;
+    t->exec.on_runqueue = 1;
     sync::spin_unlock_irqrestore(rq.lock, irq);
 }
 
@@ -445,7 +396,28 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id) {
     sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
     rq.policy->enqueue(t);
     rq.nr_running++;
+    t->exec.on_runqueue = 1;
     sync::spin_unlock_irqrestore(rq.lock, irq);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+[[noreturn]] __PRIVILEGED_CODE void run_idle() {
+    while (true) {
+        cpu::irq_disable();
+
+        // Checked with interrupts off so a wake cannot
+        // land between the check and the halt.
+        if (this_cpu(cpu_rq).nr_running > 0) {
+            cpu::irq_enable();
+            yield();
+
+            continue;
+        }
+
+        cpu::halt_until_interrupt();
+    }
 }
 
 /**
@@ -470,24 +442,49 @@ __PRIVILEGED_CODE rc::strong_ref<task> task_ref_by_tid(uint32_t tid) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake(task* t) {
+    uint32_t task_cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
+
+    bool remote = task_cpu != percpu::current_cpu_id();
+    runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
+
+    // The claim must be made under the runqueue lock
+    sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
+
     uint32_t expected = TASK_STATE_BLOCKED;
     if (!t->state.cmpxchg_strong_acq_rel(expected, TASK_STATE_READY)) {
+        sync::spin_unlock_irqrestore(rq.lock, irq);
         return;
     }
 
-    uint32_t task_cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
-    if (task_cpu != percpu::current_cpu_id()) {
-        while (sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire()) {
-            cpu::relax();
-        }
+    // If queued or running, its own switch-out keeps a READY task on the runqueue
+    if (t->exec.on_runqueue) {
+        sync::spin_unlock_irqrestore(rq.lock, irq);
+        return;
     }
 
-    runqueue& rq = per_cpu_on(cpu_rq, task_cpu);
+#ifdef DEBUG
+    if (!remote && sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire()) {
+        log::fatal("sched: wake of a task leaving this CPU tid=%u", t->tid);
+    }
+#endif
 
-    sync::irq_state irq = sync::spin_lock_irqsave(rq.lock);
+    while (sync::atomic_ref<uint32_t>{t->exec.on_cpu}.load_acquire()) {
+        cpu::relax();
+    }
+
     rq.policy->enqueue(t);
     rq.nr_running++;
+    t->exec.on_runqueue = 1;
+
     sync::spin_unlock_irqrestore(rq.lock, irq);
+
+    // An idle CPU looks at its runqueue only when interrupted
+    if (remote) {
+        smp::ipi::send(task_cpu, g_resched_kick);
+    }
+}
+
+__PRIVILEGED_CODE static void on_resched_kick() {
 }
 
 /**
@@ -753,6 +750,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     arch_init_task_context(t, entry, arg);
 
     t->exec.on_cpu = 0;
+    t->exec.on_runqueue = 0;
 
     t->tid = g_next_tid.fetch_add_relaxed(1);
     t->state.store_relaxed(TASK_STATE_CREATED);
@@ -766,10 +764,6 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
 
     t->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
-    t->tlb_sync_ticket.armed.store_relaxed(0);
-    for (uint32_t i = 0; i < MAX_CPUS; i++) {
-        t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
-    }
 
     fpu::init_state(&t->exec.fpu_ctx);
     t->reaper_node.init(reap_task_thunk);
@@ -1092,6 +1086,7 @@ __PRIVILEGED_CODE task* create_user_task(
     arch_init_task_context(t, entry, nullptr);
 
     t->exec.on_cpu = 0;
+    t->exec.on_runqueue = 0;
     fpu::init_state(&t->exec.fpu_ctx);
 
     t->tid = g_next_tid.fetch_add_relaxed(1);
@@ -1109,10 +1104,6 @@ __PRIVILEGED_CODE task* create_user_task(
     t->name[name_len] = '\0';
 
     t->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
-    t->tlb_sync_ticket.armed.store_relaxed(0);
-    for (uint32_t i = 0; i < MAX_CPUS; i++) {
-        t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
-    }
 
     t->reaper_node.init(reap_task_thunk);
 
@@ -1168,12 +1159,13 @@ __PRIVILEGED_CODE task* create_user_task(
     // POSIX inheritance: resource limits and the file creation mask
     // copy from the creating process
     if (creator && creator->group) {
-        sync::spin_lock(creator->group->lock);
+        sync::irq_lock_guard guard(creator->group->lock);
+
         for (uint32_t i = 0; i < RLIMIT_COUNT; i++) {
             tg->rlimits[i] = creator->group->rlimits[i];
         }
+
         tg->umask = creator->group->umask;
-        sync::spin_unlock(creator->group->lock);
     } else {
         init_default_rlimits(tg->rlimits);
         tg->umask = DEFAULT_UMASK;
@@ -1260,6 +1252,7 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
     t->exec.cpu = 0;
     t->exec.on_cpu = 0;
+    t->exec.on_runqueue = 0;
     t->exec.task_stack_top = stack_top;
     t->exec.system_stack_top = sys_stack_top;
 
@@ -1297,11 +1290,6 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
     t->wait_link = {};
     t->timer_link = {};
     t->timer_deadline = 0;
-    t->tlb_sync_ticket.armed.store_relaxed(0);
-
-    for (uint32_t i = 0; i < MAX_CPUS; i++) {
-        t->tlb_sync_ticket.cpu_epoch_snapshot[i] = 0;
-    }
 
     t->reaper_node.init(reap_task_thunk);
 
@@ -1420,7 +1408,6 @@ __PRIVILEGED_CODE int32_t init() {
     idle->name[4] = '\0';
 
     idle->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
-    idle->tlb_sync_ticket.armed.store_relaxed(0);
     fpu::init_state(&idle->exec.fpu_ctx);
 
     if (resource::init_task_handles(idle) != resource::OK) {
@@ -1439,8 +1426,6 @@ __PRIVILEGED_CODE int32_t init() {
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
     this_cpu(percpu_is_elevated) = (idle->exec.flags & TASK_FLAG_ELEVATED) != 0;
-    this_cpu(pending_off_cpu_task) = nullptr;
-    this_cpu(cpu_tlb_sync_epoch) = 0;
 
     runqueue& rq = this_cpu(cpu_rq);
     rq.lock = sync::SPINLOCK_INIT;
@@ -1458,6 +1443,11 @@ __PRIVILEGED_CODE int32_t init() {
 
     if (g_task_registry.init() != 0) {
         log::error("sched: task registry init failed");
+        return ERR_NO_MEM;
+    }
+
+    if (smp::ipi::register_message(on_resched_kick, &g_resched_kick) != smp::ipi::OK) {
+        log::error("sched: failed to register the reschedule kick");
         return ERR_NO_MEM;
     }
 
@@ -1494,7 +1484,6 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     string::memcpy(idle->name, "idle", 4);
     idle->name[4] = '\0';
     idle->cleanup_stage.store_relaxed(TASK_CLEANUP_STAGE_ACTIVE);
-    idle->tlb_sync_ticket.armed.store_relaxed(0);
     fpu::init_state(&idle->exec.fpu_ctx);
 
     if (resource::init_task_handles(idle) != resource::OK) {
@@ -1507,8 +1496,6 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t cpu_id, uintptr_t task_stack_top,
     this_cpu(current_task) = idle;
     this_cpu(current_task_exec) = &idle->exec;
     this_cpu(percpu_is_elevated) = true;
-    this_cpu(pending_off_cpu_task) = nullptr;
-    this_cpu(cpu_tlb_sync_epoch) = 0;
 
     runqueue& rq = this_cpu(cpu_rq);
     rq.lock = sync::SPINLOCK_INIT;

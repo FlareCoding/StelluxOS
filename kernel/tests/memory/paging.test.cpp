@@ -4,6 +4,7 @@
 #include "mm/paging.h"
 #include "mm/pmm.h"
 #include "mm/kva.h"
+#include "mm/page_quarantine.h"
 #include "boot/boot_services.h"
 #include "common/string.h"
 #include "common/logging.h"
@@ -13,11 +14,13 @@ TEST_SUITE(paging_test);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t paging_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     return 0;
 }
 
 static int32_t paging_after_all() {
+    page_quarantine::drain();
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("paging tests: leak detected, started=%lu ended=%lu",
@@ -348,4 +351,90 @@ TEST(paging_test, user_mapping_survives_kernel_map_unmap_churn) {
     paging::destroy_user_pt_root(user_root);
     free_test_va(kernel_va);
     pmm::free_page(user_phys);
+}
+
+// A kept frame survives a regular unmap of the same address and comes back
+// exactly once, with the size of the mapping it belonged to.
+TEST(paging_test, kept_frame_roundtrip_4kb) {
+    pmm::phys_addr_t phys = pmm::alloc_page();
+    ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
+
+    paging::virt_addr_t va = alloc_test_va();
+    ASSERT_NE(va, static_cast<paging::virt_addr_t>(0));
+
+    pmm::phys_addr_t root = paging::get_kernel_pt_root();
+    ASSERT_EQ(paging::map_page(va, phys, paging::PAGE_KERNEL_RW, root), paging::OK);
+    ASSERT_EQ(paging::unmap_page_keep_frame(va, root), paging::OK);
+    EXPECT_FALSE(paging::is_mapped(va, root));
+    EXPECT_EQ(paging::unmap_page(va, root), paging::OK);
+
+    pmm::phys_addr_t kept = 0;
+    size_t size = 0;
+    ASSERT_EQ(paging::take_kept_frame(va, root, &kept, &size), paging::OK);
+    EXPECT_EQ(kept, phys);
+    EXPECT_EQ(size, static_cast<size_t>(paging::PAGE_SIZE_4KB));
+    EXPECT_EQ(paging::take_kept_frame(va, root, &kept, &size), paging::ERR_NOT_MAPPED);
+
+    free_test_va(va);
+    pmm::free_page(phys);
+}
+
+// Large mappings record their frame at the level the mapping lived on, so the
+// base must come back unshifted and the size must be the block size.
+TEST(paging_test, kept_frame_roundtrip_2mb) {
+    constexpr uint8_t ORDER_2MB = 9;
+    page_quarantine::drain();
+    uint64_t before = pmm::free_page_count();
+
+    pmm::phys_addr_t phys = pmm::alloc_pages(ORDER_2MB);
+    ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
+
+    // A fresh root guarantees the 2MB slot holds no page table yet
+    pmm::phys_addr_t root = paging::create_user_pt_root();
+    ASSERT_NE(root, static_cast<pmm::phys_addr_t>(0));
+    paging::virt_addr_t va = user_test_va();
+
+    ASSERT_EQ(paging::map_page(va, phys, paging::PAGE_KERNEL_RW | paging::PAGE_LARGE_2MB, root), paging::OK);
+    ASSERT_TRUE(paging::get_page_flags(va, root) & paging::PAGE_LARGE_2MB);
+    ASSERT_EQ(paging::unmap_page_keep_frame(va, root), paging::OK);
+
+    pmm::phys_addr_t kept = 0;
+    size_t size = 0;
+    ASSERT_EQ(paging::take_kept_frame(va, root, &kept, &size), paging::OK);
+    EXPECT_EQ(kept, phys);
+    EXPECT_EQ(size, static_cast<size_t>(paging::PAGE_SIZE_2MB));
+
+    paging::destroy_user_pt_root(root);
+    pmm::free_pages(phys, ORDER_2MB);
+    page_quarantine::drain();
+    EXPECT_EQ(pmm::free_page_count(), before);
+}
+
+// A page table emptied by an unmap is not freed until a drain has flushed
+// every CPU, and a drain returns all of them.
+TEST(paging_test, emptied_tables_are_freed_by_a_drain) {
+    page_quarantine::drain();
+    uint64_t before = pmm::free_page_count();
+
+    pmm::phys_addr_t root = paging::create_user_pt_root();
+    ASSERT_NE(root, static_cast<pmm::phys_addr_t>(0));
+    pmm::phys_addr_t phys = pmm::alloc_page();
+    ASSERT_NE(phys, static_cast<pmm::phys_addr_t>(0));
+
+    paging::virt_addr_t va = user_test_va();
+    ASSERT_EQ(paging::map_page(va, phys, paging::PAGE_USER_RW, root), paging::OK);
+    ASSERT_EQ(paging::unmap_page(va, root), paging::OK);
+
+    // Unless vmreclaimd got here first, the root, the frame and the three
+    // tables the mapping needed are all still held
+    paging::retired_tables tables = paging::take_retired_tables();
+    if (!tables.empty()) {
+        EXPECT_EQ(pmm::free_page_count(), before - 5);
+        paging::flush_tlb_all();
+        paging::free_retired_tables(tables);
+    }
+
+    paging::destroy_user_pt_root(root);
+    pmm::free_page(phys);
+    EXPECT_EQ(pmm::free_page_count(), before);
 }

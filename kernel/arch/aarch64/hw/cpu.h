@@ -12,6 +12,14 @@ __PRIVILEGED_CODE inline void halt() {
     asm volatile("wfi");
 }
 
+/**
+ * @brief Put the cpu to sleep until the next interrupt and return with interrupts enabled.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline void halt_until_interrupt() {
+    asm volatile("dsb sy; wfi; msr daifclr, #0xf" ::: "memory");
+}
+
 inline void relax() {
     asm volatile("wfe");
 }
@@ -32,6 +40,17 @@ __PRIVILEGED_CODE inline void irq_disable() {
  */
 __PRIVILEGED_CODE inline void irq_enable() {
     asm volatile("msr daifclr, #0xf" ::: "memory");
+}
+
+constexpr uint64_t DAIF_IRQ_MASKED = 1ULL << 7;
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline bool irqs_enabled() {
+    uint64_t daif;
+    asm volatile("mrs %0, daif" : "=r"(daif));
+    return (daif & DAIF_IRQ_MASKED) == 0;
 }
 
 /**

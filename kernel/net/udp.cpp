@@ -1,164 +1,129 @@
 #include "net/udp.h"
-#include "net/inet_socket.h"
-#include "net/dhcp.h"
-#include "net/byteorder.h"
-#include "net/checksum.h"
+#include "net/udp_socket.h"
+#include "net/icmp.h"
 #include "net/net.h"
-#include "common/string.h"
-#include "common/ring_buffer.h"
-#include "mm/heap.h"
-#include "sync/atomic.h"
-#include "sync/spinlock.h"
-#include "dynpriv/dynpriv.h"
+#include "net/interface.h"
+#include "net/route.h"
+#include "net/checksum.h"
 #include "common/logging.h"
 
 namespace net {
+namespace udp {
 
-static inet_socket* g_udp_sock_list = nullptr;
-static sync::spinlock g_udp_sock_lock = sync::SPINLOCK_INIT;
-static sync::atomic<uint32_t> g_ephemeral_next{UDP_PORT_EPHEMERAL_MIN};
-
-// Ring buffer entry framing: [src_ip(4, net)] [src_port(2, net)] [payload_len(2, host)] [data(N)]
-constexpr size_t RX_ENTRY_HEADER = 8;
-
-void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
-              const uint8_t* data, size_t len) {
-    if (!iface || !data || len < sizeof(udp_header)) {
-        return;
-    }
-
-    const auto* hdr = reinterpret_cast<const udp_header*>(data);
-
-    uint16_t udp_len = ntohs(hdr->length);
-    if (udp_len < sizeof(udp_header) || udp_len > len) {
-        return;
-    }
-
-    // Verify checksum if present (checksum == 0 means "not computed" per RFC 768)
-    if (hdr->checksum != 0) {
-        uint16_t computed = udp_checksum(htonl(src_ip), htonl(dst_ip), data, udp_len);
-        if (computed != 0) {
-            log::debug("udp: bad checksum, dropping");
-            return;
-        }
-    }
-
-    uint16_t dst_port_net = hdr->dst_port;
-    const uint8_t* payload = data + sizeof(udp_header);
-    size_t payload_len = udp_len - sizeof(udp_header);
-
-    // Port-68 packets also feed the DHCP client through a static buffer,
-    // so DHCP works even when no socket is registered on the port.
-    if (ntohs(dst_port_net) == DHCP_CLIENT_PORT && payload_len > 0) {
-        dhcp_rx_hook(payload, payload_len);
-    }
-
-    // Build the framed ring buffer entry before taking the lock.
-    // This keeps heap alloc/free outside the IRQ-disabled critical section.
-    uint32_t src_ip_net = htonl(src_ip);
-    uint16_t src_port_net = hdr->src_port;
-    uint16_t plen = static_cast<uint16_t>(payload_len);
-
-    size_t entry_len = RX_ENTRY_HEADER + payload_len;
-    auto* entry = static_cast<uint8_t*>(heap::uzalloc(entry_len));
-    if (!entry) return;
-
-    string::memcpy(entry, &src_ip_net, 4);
-    string::memcpy(entry + 4, &src_port_net, 2);
-    string::memcpy(entry + 6, &plen, 2);
-    if (payload && payload_len > 0) {
-        string::memcpy(entry + RX_ENTRY_HEADER, payload, payload_len);
-    }
-
-    // Lock only for socket lookup + ring buffer write
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_udp_sock_lock);
-
-        for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
-            if (htons(s->bound_port) == dst_port_net
-                && (s->bound_addr == 0 || s->bound_addr == dst_ip)
-                && s->rx_buf) {
-                (void)ring_buffer_write_all(s->rx_buf, entry, entry_len, true);
-                break;
-            }
-        }
-    });
-
-    heap::ufree(entry);
+static int32_t drop(interface* iface, packet* pkt, int32_t rc) {
+    iface->record_packet_dropped();
+    packet::free(pkt);
+    return rc;
 }
 
-void udp_register_socket(inet_socket* sock) {
-    if (!sock) return;
-
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_udp_sock_lock);
-
-        sock->next = g_udp_sock_list;
-        g_udp_sock_list = sock;
-    });
+static int32_t reject(interface* iface, packet* pkt, int32_t rc) {
+    iface->record_iface_error();
+    packet::free(pkt);
+    return rc;
 }
 
-void udp_unregister_socket(inet_socket* sock) {
-    if (!sock) return;
+/*
+ * Checksum over the pseudo-header and `len` bytes of datagram. Over a received
+ * datagram with its checksum in place the result is zero when it is intact.
+ */
+static uint16_t datagram_checksum(const ipv4::ipv4_addr& src, const ipv4::ipv4_addr& dst,
+                                  const void* datagram, size_t len) {
+    ipv4::pseudo_header pseudo = {};
+    pseudo.src = src;
+    pseudo.dst = dst;
+    pseudo.zero = 0;
+    pseudo.proto = ipv4::PROTO_UDP;
+    pseudo.length = htons(static_cast<uint16_t>(len));
 
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_udp_sock_lock);
+    uint32_t sum = checksum_accumulate(0, &pseudo, sizeof(pseudo));
+    sum = checksum_accumulate(sum, datagram, len);
 
-        inet_socket** pp = &g_udp_sock_list;
-        while (*pp) {
-            if (*pp == sock) {
-                *pp = sock->next;
-                sock->next = nullptr;
-                break;
-            }
-            pp = &(*pp)->next;
-        }
-    });
+    return checksum_finish(sum);
 }
 
-bool udp_try_register(inet_socket* sock) {
-    if (!sock || sock->bound_port == 0) {
-        return false;
+int32_t input(packet* pkt) {
+    if (!pkt) {
+        log::warn("udp: input called with no packet");
+        return ERR_INVALID;
     }
 
-    bool reuse = (sock->so_options & static_cast<uint32_t>(SO_REUSEADDR)) != 0;
-    bool registered = false;
+    interface* iface = pkt->iface();
+    const ipv4::ipv4_header* ip = reinterpret_cast<const ipv4::ipv4_header*>(pkt->network_header());
 
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_udp_sock_lock);
+    if (!iface || !ip) {
+        log::warn("udp: input called with a packet missing its interface or IP header");
+        packet::free(pkt);
+        return ERR_INVALID;
+    }
 
-        bool conflict = false;
-        for (inet_socket* s = g_udp_sock_list; s; s = s->next) {
-            if (s == sock) continue;
+    pkt->mark_transport_header();
 
-            if (s->bound_port != sock->bound_port) continue;
+    if (pkt->length() < HEADER_LEN) {
+        return reject(iface, pkt, ERR_INVALID);
+    }
 
-            if (sock->bound_addr != 0 && s->bound_addr != 0
-                && s->bound_addr != sock->bound_addr) continue;
+    // The window may carry link padding past the datagram, never less than it
+    const udp_header* hdr = reinterpret_cast<const udp_header*>(pkt->data());
+    size_t length = ntohs(hdr->length);
 
-            if (reuse && (s->so_options & static_cast<uint32_t>(SO_REUSEADDR))) {
-                continue;
-            }
+    if (length < HEADER_LEN || length > pkt->length()) {
+        return reject(iface, pkt, ERR_INVALID);
+    }
 
-            conflict = true;
-            break;
-        }
+    pkt->trim(length);
 
-        if (!conflict) {
-            sock->next = g_udp_sock_list;
-            g_udp_sock_list = sock;
-            registered = true;
-        }
-    });
+    if (hdr->checksum != CHECKSUM_NONE && datagram_checksum(ip->src, ip->dst, hdr, length) != 0) {
+        return reject(iface, pkt, ERR_INVALID);
+    }
 
-    return registered;
+    int32_t rc = socket_deliver(pkt);
+    if (rc != ERR_NOT_FOUND) {
+        return rc;
+    }
+
+    (void)pkt->push(ip->header_len());
+    icmp::send_error(pkt, icmp::TYPE_DEST_UNREACHABLE, icmp::CODE_PORT_UNREACHABLE);
+
+    return drop(iface, pkt, OK);
 }
 
-uint16_t udp_alloc_ephemeral_port() {
-    uint32_t port = g_ephemeral_next.fetch_add_relaxed(1);
-    uint32_t range = UDP_PORT_EPHEMERAL_MAX - UDP_PORT_EPHEMERAL_MIN + 1;
-    return static_cast<uint16_t>(
-        UDP_PORT_EPHEMERAL_MIN + (port - UDP_PORT_EPHEMERAL_MIN) % range);
+int32_t output(packet* pkt, interface* iface, const ipv4::ipv4_addr& dest,
+               uint16_t src_port, uint16_t dest_port, bool broadcast_allowed) {
+    if (!pkt) {
+        log::warn("udp: output called with no packet");
+        return ERR_INVALID;
+    }
+
+    // The checksum covers the source address (which the route decides)
+    route::route_result route;
+    int32_t rc = iface ? route::lookup_on(iface, dest, &route) : route::lookup(dest, &route);
+    if (rc != OK) {
+        packet::free(pkt);
+        return rc;
+    }
+
+    if (route.type == route::route_type::broadcast && !broadcast_allowed) {
+        packet::free(pkt);
+        return ERR_ACCESS;
+    }
+
+    udp_header* hdr = reinterpret_cast<udp_header*>(pkt->push(HEADER_LEN));
+    if (!hdr) {
+        log::warn("udp: output packet has no headroom for the header");
+        return reject(route.iface, pkt, ERR_INVALID);
+    }
+
+    hdr->src_port = htons(src_port);
+    hdr->dst_port = htons(dest_port);
+    hdr->length = htons(static_cast<uint16_t>(pkt->length()));
+    hdr->checksum = 0;
+
+    uint16_t sum = datagram_checksum(route.source, dest, hdr, pkt->length());
+    hdr->checksum = htons(sum == 0 ? CHECKSUM_ALL_ONES : sum);
+
+    pkt->mark_transport_header();
+    return ipv4::output(pkt, dest, route, ipv4::PROTO_UDP);
 }
 
+} // namespace udp
 } // namespace net

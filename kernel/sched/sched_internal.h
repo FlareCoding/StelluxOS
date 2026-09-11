@@ -33,14 +33,21 @@ __PRIVILEGED_CODE void arch_post_switch(task* next);
  * Common: called by arch on_yield/on_tick handler. Handles runqueue lock,
  * state transitions, and picking the next task.
  *
+ * preempted is true from the tick and false from a yield. Only a yield may
+ * leave a BLOCKED prev off the queue, since that is the task's own decision to
+ * block. A tick between prepare_to_block_task and that yield keeps it queued.
+ *
  * Ownership boundary:
- * - Updates task scheduler ownership (current_task/current_task_exec).
+ * - Updates task scheduler ownership (current_task/current_task_exec) and
+ *   marks next on-CPU under the runqueue lock. prev's on_runqueue is cleared
+ *   under that lock only when it leaves the queue, so a waker holding the
+ *   lock sees whether the task is still queued or running.
  * - Must NOT finalize per-CPU runtime elevation state for trap/syscall return.
  *   Trap/syscall return-boundary code restores percpu_is_elevated from the
  *   selected task's TASK_FLAG_ELEVATED after switch teardown is complete.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE task* pick_next_and_switch(task* prev);
+__PRIVILEGED_CODE task* pick_next_and_switch(task* prev, bool preempted);
 
 /**
  * Common: charge one timer tick to the interrupted task and to this
@@ -51,26 +58,13 @@ __PRIVILEGED_CODE task* pick_next_and_switch(task* prev);
 __PRIVILEGED_CODE void record_cpu_tick(task* prev);
 
 /**
- * Common: publish on_cpu=0 for a previously switched-out task.
- * Must be called from arch scheduler trap paths before taking reaper decisions.
+ * Common: the first code after a task switch. The trap exit stub calls it on
+ * the per-CPU exit stack with interrupts masked once nothing on this CPU
+ * reads prev's stack anymore, and it publishes prev off-CPU state. The exit
+ * stack is small and very sensitive, so it must not fault, block, or log.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void finalize_pending_off_cpu();
-
-/**
- * Common: defer on_cpu publication for the task switched out in this trap.
- * Call only after switch-out work (including FPU save/restore) is complete.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE void defer_off_cpu_finalize(task* prev);
-
-/**
- * Common: advances this CPU's TLB sync epoch.
- * This marks a safe point that reaper can rely on before reclaiming stack
- * pages. It says nothing about task pointers, which counted references pin.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE void advance_cpu_tlb_sync_epoch();
+extern "C" __PRIVILEGED_CODE void stlx_finish_task_switch(task_exec_core* prev);
 
 } // namespace sched
 

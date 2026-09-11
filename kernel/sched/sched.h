@@ -148,9 +148,8 @@ __PRIVILEGED_CODE void enqueue_on(task* t, uint32_t cpu_id);
  *
  * The caller must pin t so the reaper cannot free it mid-call: hold a
  * counted reference (task_ref) or a lock t must take before it can exit.
- * A remote wake spins until t leaves its CPU, so never hold a spinlock
- * with interrupts off across the call. Waking a task that last ran on
- * the calling CPU never spins, so the timer expiry walk is exempt.
+ * A task still queued or running is only marked READY. One that committed to
+ * sleep is enqueued once its CPU has finished switching it out.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake(task* t);
@@ -198,7 +197,7 @@ __PRIVILEGED_CODE bool block_task_interrupted();
 
 /**
  * @brief Revert an unfinished block after the caller unwound its entry.
- * Yields once if a concurrent wake already claimed the task.
+ * The task stays runnable whether or not a wake already claimed it.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void cancel_block_task();
@@ -214,6 +213,13 @@ bool is_kill_pending();
  * Triggers a software interrupt that routes through the trap path.
  */
 void yield();
+
+/**
+ * @brief The idle task's loop. Sleeps until an interrupt, then yields if the
+ * runqueue has work, so a woken task runs at the interrupt, not the next tick.
+ * @note Privilege: **required**
+ */
+[[noreturn]] __PRIVILEGED_CODE void run_idle();
 
 /**
  * @brief Terminate the current task. Marks it DEAD and yields.

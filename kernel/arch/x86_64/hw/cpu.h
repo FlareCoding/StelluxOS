@@ -12,6 +12,14 @@ __PRIVILEGED_CODE inline void halt() {
     asm volatile("hlt");
 }
 
+/**
+ * @brief Put the cpu to sleep until the next interrupt and return with interrupts enabled.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline void halt_until_interrupt() {
+    asm volatile("sti; hlt" ::: "memory");
+}
+
 inline void relax() {
     asm volatile("pause");
 }
@@ -31,6 +39,17 @@ __PRIVILEGED_CODE inline void irq_disable() {
  */
 __PRIVILEGED_CODE inline void irq_enable() {
     asm volatile("sti" ::: "memory");
+}
+
+constexpr uint64_t RFLAGS_IF = 1ULL << 9;
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline bool irqs_enabled() {
+    uint64_t flags;
+    asm volatile("pushfq; pop %0" : "=r"(flags));
+    return (flags & RFLAGS_IF) != 0;
 }
 
 /**

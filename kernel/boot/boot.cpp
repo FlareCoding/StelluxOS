@@ -4,6 +4,7 @@
 #include "hw/cpu.h"
 #include "arch/arch_init.h"
 #include "mm/mm.h"
+#include "mm/page_quarantine.h"
 #include "acpi/acpi.h"
 #include "irq/irq.h"
 #include "clock/clock.h"
@@ -11,6 +12,7 @@
 #include "sched/sched.h"
 #include "rc/reaper.h"
 #include "smp/smp.h"
+#include "smp/ipi.h"
 #include "debug/debug.h"
 #include "trace/ktrace.h"
 #include "sched/task.h"
@@ -20,13 +22,12 @@
 #include "terminal/terminal.h"
 #include "hw/rtc.h"
 #include "pci/pci.h"
-#include "dynpriv/dynpriv.h"
 #include "msi/msi.h"
+#include "net/net.h"
 #include "drivers/pci_driver.h"
 #include "drivers/platform_driver.h"
 #include "drivers/graphics/gfxfb.h"
 #include "drivers/input/input.h"
-#include "net/net.h"
 #include "random/random.h"
 #include "sysstat/sysstat.h"
 #include "sync/futex.h"
@@ -98,6 +99,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::fatal("irq::init failed");
     }
 
+    if (smp::ipi::init() != smp::ipi::OK) {
+        log::fatal("smp::ipi::init failed");
+    }
+
     if (msi::init() != msi::OK) {
         log::warn("msi::init failed, MSI unavailable");
     }
@@ -108,6 +113,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
 
     if (rc::reaper::init() != rc::reaper::OK) {
         log::fatal("rc::reaper::init failed");
+    }
+
+    if (page_quarantine::start() != page_quarantine::OK) {
+        log::fatal("page_quarantine::start failed");
     }
 
     sync::futex_init();
@@ -155,7 +164,7 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
     }
 
     if (net::init() != net::OK) {
-        log::warn("net::init failed, networking unavailable");
+        log::warn("net::init failed, network stack will not function properly");
     }
 
 #ifdef STLX_UNIT_TESTS_ENABLED
@@ -187,7 +196,5 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::error("ELF load of /bin/init failed: %d", load_result);
     }
 
-    while (true) {
-        cpu::halt();
-    }
+    sched::run_idle();
 }

@@ -1,4 +1,5 @@
 #include "socket/unix_socket.h"
+#include "resource/socket_ops.h"
 #include "mm/heap.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
@@ -449,22 +450,19 @@ __PRIVILEGED_CODE static uint32_t socket_poll(
     return 0;
 }
 
+static const resource::socket_ops g_unix_socket_ops = {
+    .bind = unix_bind,
+    .listen = unix_listen,
+    .accept = unix_accept,
+    .connect = unix_connect,
+};
+
 static const resource::resource_ops g_socket_ops = {
-    socket_read,
-    socket_write,
-    socket_close,
-    nullptr, // ioctl
-    nullptr, // mmap
-    nullptr, // sendto
-    nullptr, // recvfrom
-    unix_bind,
-    unix_listen,
-    unix_accept,
-    unix_connect,
-    nullptr, // setsockopt
-    nullptr, // getsockopt
-    socket_poll,
-    nullptr, // shutdown
+    .read = socket_read,
+    .write = socket_write,
+    .close = socket_close,
+    .poll = socket_poll,
+    .socket = &g_unix_socket_ops,
 };
 
 const resource::resource_ops* get_socket_ops() {

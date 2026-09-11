@@ -1,178 +1,206 @@
 #include "net/ipv4.h"
-#include "net/ethernet.h"
+#include "net/interface.h"
+#include "net/checksum.h"
+#include "net/route.h"
 #include "net/arp.h"
+#include "net/eth.h"
 #include "net/icmp.h"
 #include "net/udp.h"
-#include "net/tcp.h"
-#include "net/route.h"
-#include "net/byteorder.h"
-#include "net/checksum.h"
-#include "common/logging.h"
-#include "common/string.h"
-#include "mm/heap.h"
 #include "sync/atomic.h"
+#include "common/logging.h"
 
 namespace net {
+namespace ipv4 {
 
-static sync::atomic<uint32_t> g_ipv4_id_counter{0};
+// Identification field of the next datagram sent, only meaningful to reassembly
+static sync::atomic<uint16_t> g_next_id {0};
 
-static uint16_t next_ipv4_id() {
-    return static_cast<uint16_t>(g_ipv4_id_counter.fetch_add_relaxed(1));
-}
-
-void ipv4_recv(netif* iface, const uint8_t* data, size_t len) {
-    if (!iface || !data || len < sizeof(ipv4_header)) {
-        return;
-    }
-
-    const auto* hdr = reinterpret_cast<const ipv4_header*>(data);
-
-    uint8_t version = (hdr->ver_ihl >> 4) & 0xF;
-    if (version != 4) return;
-
-    uint8_t ihl = hdr->ver_ihl & 0xF;
-    if (ihl < 5) return;
-
-    size_t header_len = static_cast<size_t>(ihl) * 4;
-    if (header_len > len) return;
-
-    uint16_t total_len = ntohs(hdr->total_len);
-    if (total_len > len) return;
-
-    if (total_len < header_len) return;
-
-    uint16_t computed = inet_checksum(data, header_len);
-    if (computed != 0) {
-        log::debug("ipv4: bad header checksum, dropping");
-        return;
-    }
-
-    uint32_t dst_ip = ntohl(hdr->dst_ip);
-
-    // On the loopback interface, accept:
-    //   - Any address in the loopback subnet (127.0.0.0/8) per RFC 1122 section 3.2.1.3
-    //   - Any locally-configured IP (delivered via LOCAL routes for self-addressed
-    //     traffic, e.g. sending to our own eth0 IP routes through loopback)
-    // On other interfaces, only accept our exact IP, broadcast, or subnet broadcast.
-    bool is_loopback = (iface->flags & NETIF_LOOPBACK) != 0;
-
-    if (iface->configured && dst_ip != iface->ipv4_addr &&
-        dst_ip != 0xFFFFFFFF &&
-        dst_ip != (iface->ipv4_addr | ~iface->ipv4_netmask) &&
-        !(is_loopback && ((dst_ip & iface->ipv4_netmask) ==
-                          (iface->ipv4_addr & iface->ipv4_netmask) ||
-                          is_local_ip(dst_ip)))) {
-        return; // not for us
-    }
-
-    uint32_t src_ip = ntohl(hdr->src_ip);
-    const uint8_t* payload = data + header_len;
-    size_t payload_len = total_len - header_len;
-
-    switch (hdr->protocol) {
-    case IPV4_PROTO_ICMP:
-        icmp_recv(iface, src_ip, payload, payload_len);
-        break;
-    case IPV4_PROTO_TCP:
-        tcp_recv(iface, src_ip, dst_ip, payload, payload_len);
-        break;
-    case IPV4_PROTO_UDP:
-        udp_recv(iface, src_ip, dst_ip, payload, payload_len);
-        break;
-    default:
-        break;
-    }
-}
-
-int32_t ipv4_send(netif* iface, uint32_t dst_ip, uint8_t protocol,
-                  const uint8_t* payload, size_t payload_len,
-                  uint32_t src_ip_override) {
-    if (!payload) {
-        return ERR_INVAL;
-    }
-
-    if (payload_len > ETH_MTU - sizeof(ipv4_header)) {
-        return ERR_INVAL;
-    }
-
-    route_result rt;
-    int32_t rt_rc = route_lookup(dst_ip, &rt);
-    if (rt_rc != OK) {
-        // Without a route, fall back to direct delivery on the caller's
-        // interface, which covers interfaces set up without routes.
-        if (!iface || !iface->configured) {
-            return ERR_NOIF;
-        }
-
-        rt.iface = iface;
-        rt.next_hop = dst_ip;
-        rt.type = route_type::CONNECTED;
-    }
-
-    // Loopback-bound routes override the caller's interface so self-addressed
-    // traffic never leaves loopback, otherwise the caller's choice wins.
-    bool route_is_loopback = (rt.type == route_type::LOCAL) ||
-                             (rt.iface && (rt.iface->flags & NETIF_LOOPBACK));
-    netif* out_iface = rt.iface;
-    if (iface && !route_is_loopback) {
-        out_iface = iface;
-    }
-
-    if (!out_iface || !out_iface->configured) {
-        return ERR_NOIF;
-    }
-
-    size_t total_len = sizeof(ipv4_header) + payload_len;
-    auto* packet = static_cast<uint8_t*>(heap::uzalloc(total_len));
-    if (!packet) {
-        return ERR_NOMEM;
-    }
-
-    auto* hdr = reinterpret_cast<ipv4_header*>(packet);
-    hdr->ver_ihl = (4 << 4) | 5;
-    hdr->tos = 0;
-    hdr->total_len = htons(static_cast<uint16_t>(total_len));
-    hdr->id = htons(next_ipv4_id());
-    hdr->flags_frag = htons(0x4000);
-    hdr->ttl = IPV4_DEFAULT_TTL;
-    hdr->protocol = protocol;
-    hdr->checksum = 0;
-
-    // A caller override (e.g. a bound socket address) wins, LOCAL routes are
-    // self-addressed so src equals dst, otherwise use the interface's IP.
-    if (src_ip_override != 0) {
-        hdr->src_ip = htonl(src_ip_override);
-    } else if (rt.type == route_type::LOCAL) {
-        hdr->src_ip = htonl(dst_ip);
-    } else {
-        hdr->src_ip = htonl(out_iface->ipv4_addr);
-    }
-
-    hdr->dst_ip = htonl(dst_ip);
-    hdr->checksum = inet_checksum(hdr, sizeof(ipv4_header));
-
-    string::memcpy(packet + sizeof(ipv4_header), payload, payload_len);
-
-    // Local or loopback delivery, no ARP needed. Use the interface's
-    // own MAC as destination (all zeros for lo).
-    bool is_loopback_iface = (out_iface->flags & NETIF_LOOPBACK) != 0;
-    if (rt.type == route_type::LOCAL || is_loopback_iface) {
-        int32_t rc = eth_send(out_iface, out_iface->mac, ETH_TYPE_IPV4,
-                              packet, total_len);
-        heap::ufree(packet);
-        return rc;
-    }
-
-    uint8_t dst_mac[MAC_ADDR_LEN];
-    int32_t arp_rc = arp_resolve(out_iface, rt.next_hop, dst_mac);
-    if (arp_rc != OK) {
-        heap::ufree(packet);
-        return arp_rc;
-    }
-
-    int32_t rc = eth_send(out_iface, dst_mac, ETH_TYPE_IPV4, packet, total_len);
-    heap::ufree(packet);
+static int32_t drop(interface* iface, packet* pkt, int32_t rc) {
+    iface->record_packet_dropped();
+    packet::free(pkt);
     return rc;
 }
 
+static int32_t reject(interface* iface, packet* pkt, int32_t rc) {
+    iface->record_iface_error();
+    packet::free(pkt);
+    return rc;
+}
+
+bool ipv4_config::is_subnet_broadcast(const ipv4_addr& addr) const {
+    if (!configured() || !addr.in_same_subnet(address, netmask)) {
+        return false;
+    }
+
+    // The all-ones host number is the broadcast, the all-zeros one its obsolete
+    // form that hosts still accept (RFC 1122 3.3.6), a /31 or /32 has neither
+    int host_bits = 0;
+    bool all_ones = true;
+    bool all_zeros = true;
+
+    for (size_t i = 0; i < ADDR_LEN; i++) {
+        uint8_t host_mask = static_cast<uint8_t>(~netmask.bytes[i]);
+        host_bits += __builtin_popcount(host_mask);
+
+        all_ones = all_ones && (addr.bytes[i] & host_mask) == host_mask;
+        all_zeros = all_zeros && (addr.bytes[i] & host_mask) == 0;
+    }
+
+    return host_bits >= 2 && (all_ones || all_zeros);
+}
+
+bool ipv4_config::is_well_formed() const {
+    if (!netmask.is_contiguous_mask() || !is_unicast(address)) {
+        return false;
+    }
+
+    if (gateway.is_unspecified()) {
+        return true;
+    }
+
+    return gateway != address && gateway.in_same_subnet(address, netmask) && is_unicast(gateway);
+}
+
+bool ipv4_config::is_unicast(const ipv4_addr& addr) const {
+    if (addr.in_zero_network() || addr.is_multicast() || addr.is_reserved() ||
+        is_subnet_broadcast(addr)) {
+        return false;
+    }
+
+    return addr.is_loopback() ? address.is_loopback() : true;
+}
+
+int32_t input(packet* pkt) {
+    if (!pkt) {
+        log::warn("ipv4: input called with no packet");
+        return ERR_INVALID;
+    }
+
+    interface* iface = pkt->iface();
+    if (!iface) {
+        log::warn("ipv4: input called with a packet that has no interface");
+        packet::free(pkt);
+        return ERR_INVALID;
+    }
+
+    if (pkt->length() < HEADER_LEN) {
+        return reject(iface, pkt, ERR_INVALID);
+    }
+
+    const ipv4_header* hdr = reinterpret_cast<const ipv4_header*>(pkt->data());
+    if (hdr->version() != VERSION || hdr->ihl() < MIN_IHL || hdr->header_len() > pkt->length()) {
+        return reject(iface, pkt, ERR_INVALID);
+    }
+
+    if (checksum(hdr, hdr->header_len()) != 0) {
+        return reject(iface, pkt, ERR_INVALID);
+    }
+
+    // The header's own length is authoritative, anything past it is link padding
+    size_t total_len = ntohs(hdr->total_len);
+    if (total_len < hdr->header_len() || total_len > pkt->length()) {
+        return reject(iface, pkt, ERR_INVALID);
+    }
+
+    pkt->trim(total_len);
+
+    // Weak host model: any address this host owns is accepted on any interface. The
+    // loopback network is the exception, it never arrives from a link (RFC 1122 3.2.1.3).
+    ipv4_config conf = iface->ipv4_conf();
+    bool for_local_host;
+
+    if (hdr->dst.is_loopback()) {
+        for_local_host = iface->is_loopback();
+    } else {
+        for_local_host = find_interface_by_address(hdr->dst) != nullptr ||
+                         hdr->dst.is_broadcast() ||
+                         conf.is_subnet_broadcast(hdr->dst);
+    }
+
+    if (!for_local_host) {
+        packet::free(pkt);
+        return OK;
+    }
+
+    // RFC 1122 3.2.1.3: the source must name a single host. A host still acquiring
+    // its address may send from the zero network to the limited broadcast.
+    bool acquiring = hdr->src.in_zero_network() && hdr->dst.is_broadcast();
+
+    if (!acquiring && !conf.is_unicast(hdr->src)) {
+        return reject(iface, pkt, ERR_INVALID);
+    }
+
+    // Fragments are not reassembled
+    if (hdr->frag_off() != 0 || (hdr->flags() & FLAG_MF) != 0) {
+        return drop(iface, pkt, OK);
+    }
+
+    pkt->mark_network_header();
+    (void)pkt->pull(hdr->header_len());
+
+    const uint8_t* src = hdr->src.bytes;
+    switch (hdr->proto) {
+    case PROTO_ICMP:
+        return icmp::input(pkt);
+    case PROTO_UDP:
+        return udp::input(pkt);
+    case PROTO_TCP:
+        log::info("ipv4: TCP datagram from %u.%u.%u.%u, %lu payload bytes",
+                  src[0], src[1], src[2], src[3], pkt->length());
+        packet::free(pkt);
+        break;
+    default:
+        return drop(iface, pkt, OK);
+    }
+
+    return OK;
+}
+
+int32_t output(packet* pkt, const ipv4_addr& dest, const route::route_result& route, uint8_t protocol) {
+    if (!pkt) {
+        log::warn("ipv4: output called with no packet");
+        return ERR_INVALID;
+    }
+
+    // Nothing is fragmented, so the payload must fit one frame behind the header
+    if (pkt->length() > static_cast<size_t>(route.iface->mtu()) - HEADER_LEN) {
+        return drop(route.iface, pkt, ERR_TOO_LARGE);
+    }
+
+    ipv4_header* hdr = reinterpret_cast<ipv4_header*>(pkt->push(HEADER_LEN));
+    if (!hdr) {
+        log::warn("ipv4: output packet has no headroom for the header");
+        return reject(route.iface, pkt, ERR_INVALID);
+    }
+
+    hdr->set_version_ihl(VERSION, MIN_IHL);
+    hdr->tos = 0;
+    hdr->total_len = htons(static_cast<uint16_t>(pkt->length()));
+    hdr->id = htons(g_next_id.fetch_add_relaxed(1));
+    hdr->fl_frag_off = htons(FLAG_DF);
+    hdr->ttl = DEFAULT_TTL;
+    hdr->proto = protocol;
+    hdr->src = route.source;
+    hdr->dst = dest;
+
+    // Computed last, over the finished header with the field itself zeroed
+    hdr->checksum = 0;
+    hdr->checksum = htons(checksum(hdr, HEADER_LEN));
+
+    pkt->mark_network_header();
+    pkt->set_iface(route.iface);
+
+    // The loopback interface is its own next hop
+    if (route.type == route::route_type::local) {
+        return eth::output(pkt, route.iface->mac(), eth::TYPE_IPV4);
+    }
+
+    if (route.type == route::route_type::broadcast) {
+        return eth::output(pkt, eth::BROADCAST_ADDR, eth::TYPE_IPV4);
+    }
+
+    return arp::resolve_and_send(pkt, route.next_hop);
+}
+
+} // namespace ipv4
 } // namespace net

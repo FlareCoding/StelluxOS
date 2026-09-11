@@ -2,6 +2,8 @@
 
 #include "stlx_unit_test.h"
 #include "mm/pmm.h"
+#include "mm/page_quarantine.h"
+#include "arch/arch_smp.h"
 #include "common/logging.h"
 
 TEST_SUITE(pmm);
@@ -9,6 +11,7 @@ TEST_SUITE(pmm);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t pmm_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     if (g_initial_free_pages < 512) {
         log::error("pmm tests: insufficient free pages (%lu)", g_initial_free_pages);
@@ -19,6 +22,7 @@ static int32_t pmm_before_all() {
 }
 
 static int32_t pmm_after_all() {
+    page_quarantine::drain();
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("pmm tests: leak detected, started=%lu ended=%lu delta=%ld",
@@ -89,6 +93,7 @@ TEST(pmm, alloc_pages_order_4) {
 
 TEST(pmm, alloc_free_preserves_count) {
     constexpr size_t N = 16;
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
 
     pmm::phys_addr_t addrs[N];
@@ -170,6 +175,7 @@ TEST(pmm, buddy_coalescing) {
     uint64_t order1_after = pmm::free_block_count(1);
     // alloc_page may return non-adjacent pages, so coalescing is not
     // directly observable and no assertion on the order-1 count is possible
+    page_quarantine::drain();
     uint64_t total_before_minus_2 = pmm::free_page_count() - 2;
     (void)order1_before;
     (void)order1_after;
@@ -179,6 +185,7 @@ TEST(pmm, buddy_coalescing) {
 TEST(pmm, stress_alloc_free) {
     constexpr size_t N = 256;
     pmm::phys_addr_t addrs[N];
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
 
     for (size_t i = 0; i < N; i++) {
@@ -194,4 +201,18 @@ TEST(pmm, stress_alloc_free) {
     }
 
     EXPECT_EQ(pmm::free_page_count(), before);
+}
+
+// The allocator's failure address and the frames the AP bring-up writes must never reach the free pool
+TEST(pmm, fixed_frames_stay_reserved) {
+    pmm::page_frame_descriptor* zero = pmm::get_page_frame(0);
+    ASSERT_NOT_NULL(zero);
+    EXPECT_TRUE(zero->is_reserved());
+
+    pmm::phys_range boot = arch::smp_fixed_boot_frames();
+    for (pmm::phys_addr_t phys = boot.start; phys < boot.end; phys += pmm::PAGE_SIZE) {
+        pmm::page_frame_descriptor* frame = pmm::get_page_frame(phys);
+        ASSERT_NOT_NULL(frame);
+        EXPECT_TRUE(frame->is_reserved());
+    }
 }

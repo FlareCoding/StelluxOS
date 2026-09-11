@@ -13,6 +13,7 @@
 #define STLX_IFF_CONFIGURED   (1u << 1)
 #define STLX_IFF_DEFAULT      (1u << 2)
 #define STLX_IFF_LOOPBACK     (1u << 3)
+#define STLX_IFF_RUNNING      (1u << 4)
 
 #define STLX_SIOCGNETSTATUS   0x4E01
 
@@ -23,11 +24,10 @@ struct stlx_ifinfo {
     uint32_t ipv4_addr;
     uint32_t ipv4_netmask;
     uint32_t ipv4_gateway;
-    uint32_t ipv4_dns;
     uint32_t flags;
 };
 
-_Static_assert(sizeof(struct stlx_ifinfo) == 44, "stlx_ifinfo ABI size mismatch");
+_Static_assert(sizeof(struct stlx_ifinfo) == 40, "stlx_ifinfo ABI size mismatch");
 
 struct stlx_net_status {
     uint32_t           if_count;
@@ -35,7 +35,7 @@ struct stlx_net_status {
     struct stlx_ifinfo interfaces[STLX_NET_MAX_IF];
 };
 
-_Static_assert(sizeof(struct stlx_net_status) == 360, "stlx_net_status ABI size mismatch");
+_Static_assert(sizeof(struct stlx_net_status) == 328, "stlx_net_status ABI size mismatch");
 
 static inline int stlx_net_get_status(struct stlx_net_status* out) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -61,6 +61,8 @@ stlx_net_default_if(const struct stlx_net_status* st) {
 #define STLX_ARP_TABLE_SIZE   32
 #define STLX_SIOCGARPTABLE    0x4E02
 
+#define STLX_ARP_RESOLVED     (1u << 0)
+
 struct stlx_arp_entry {
     uint32_t ipv4_addr;
     uint8_t  mac[6];
@@ -84,6 +86,29 @@ static inline int stlx_arp_get_table(struct stlx_arp_table* out) {
     if (fd < 0) return -1;
 
     int rc = ioctl(fd, STLX_SIOCGARPTABLE, out);
+    close(fd);
+    return rc;
+}
+
+/* --- Interface configuration --- */
+
+#define STLX_SIOCSIFCONF      0x4E03
+
+/* Addresses in host byte order, an ipv4_addr of zero clears the identity */
+struct stlx_ifconf {
+    char     name[16];
+    uint32_t ipv4_addr;
+    uint32_t ipv4_netmask;
+    uint32_t ipv4_gateway;
+};
+
+_Static_assert(sizeof(struct stlx_ifconf) == 28, "stlx_ifconf ABI size mismatch");
+
+static inline int stlx_net_set_config(const struct stlx_ifconf* conf) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+
+    int rc = ioctl(fd, STLX_SIOCSIFCONF, conf);
     close(fd);
     return rc;
 }

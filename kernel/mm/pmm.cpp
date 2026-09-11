@@ -1,6 +1,7 @@
 #include "mm/pmm.h"
 #include "mm/pmm_internal.h"
 #include "mm/paging.h"
+#include "arch/arch_smp.h"
 #include "boot/boot_services.h"
 #include "common/logging.h"
 #include "common/string.h"
@@ -276,14 +277,12 @@ __PRIVILEGED_CODE int32_t zone_free(zone& z, pfn_t pfn, uint8_t order) {
         return ERR_DOUBLE_FREE;
     }
 
-#ifdef DEBUG
     // Verify order matches what was stored during allocation
     if (pf.buddy.order != order) {
         log::error("PMM: order mismatch on free: stored=%u, passed=%u, pfn=0x%x",
                    pf.buddy.order, order, pfn);
         return ERR_ORDER_MISMATCH;
     }
-#endif
 
     // Mark as free
     pf.flags = PAGE_FLAG_NONE;
@@ -544,6 +543,12 @@ __PRIVILEGED_CODE int32_t init() {
         }
     }
 
+    // Frame 0 is the address the allocator returns for failure, so it is never handed out
+    mark_pages(0, 1, PAGE_FLAG_RESERVED);
+
+    phys_range boot_frames = arch::smp_fixed_boot_frames();
+    mark_pages(phys_to_pfn(boot_frames.start), phys_to_pfn(boot_frames.end), PAGE_FLAG_RESERVED);
+
     // Mark page array region itself as reserved
     pfn_t array_start_pfn = phys_to_pfn(g_pmm.page_array_phys);
     pfn_t array_end_pfn = phys_to_pfn(page_align_up(g_pmm.page_array_phys + g_pmm.page_array_size));
@@ -621,7 +626,13 @@ __PRIVILEGED_CODE int32_t free_pages(phys_addr_t addr, uint8_t order) {
     zone& z = g_pmm.zones[zi];
 
     sync::irq_lock_guard guard(g_zone_locks[zi]);
-    return zone_free(z, pfn, order);
+    int32_t rc = zone_free(z, pfn, order);
+
+    if (rc != OK) {
+        log::warn("PMM: rejected free of 0x%lx order %u (%d)", addr, order, rc);
+    }
+
+    return rc;
 }
 
 __PRIVILEGED_CODE phys_addr_t alloc_page(zone_mask_t zones) {

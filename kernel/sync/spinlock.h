@@ -49,6 +49,20 @@ __PRIVILEGED_CODE inline void spin_unlock_irqrestore(spinlock& lock, irq_state s
     cpu::irq_restore(state.flags);
 }
 
+class lock_guard {
+public:
+    explicit lock_guard(spinlock& lk) : m_lock(lk) { spin_lock(lk); }
+    ~lock_guard() { spin_unlock(m_lock); }
+
+    lock_guard(const lock_guard&) = delete;
+    lock_guard& operator=(const lock_guard&) = delete;
+    lock_guard(lock_guard&&) = delete;
+    lock_guard& operator=(lock_guard&&) = delete;
+
+private:
+    spinlock& m_lock;
+};
+
 class irq_lock_guard {
 public:
     /**

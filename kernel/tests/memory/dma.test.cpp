@@ -3,6 +3,7 @@
 #include "stlx_unit_test.h"
 #include "dma/dma.h"
 #include "mm/pmm.h"
+#include "mm/page_quarantine.h"
 #include "common/logging.h"
 #include "dynpriv/dynpriv.h"
 
@@ -11,6 +12,7 @@ TEST_SUITE(dma_test);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t dma_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     if (g_initial_free_pages < 256) {
         log::error("dma tests: insufficient free pages (%lu)", g_initial_free_pages);
@@ -67,11 +69,13 @@ TEST(dma_test, page_alloc_multi) {
 }
 
 TEST(dma_test, page_alloc_free_no_leak) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
     dma::buffer buf = {};
     RUN_ELEVATED({
         (void)dma::alloc_pages(1, buf);
         dma::free_pages(buf);
+        page_quarantine::drain();
     });
     uint64_t after = pmm::free_page_count();
     EXPECT_EQ(before, after);

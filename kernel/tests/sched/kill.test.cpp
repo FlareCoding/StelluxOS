@@ -4,6 +4,7 @@
 #include "helpers.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "smp/smp.h"
 #include "signals/signal_types.h"
 #include "dynpriv/dynpriv.h"
 #include "sync/spinlock.h"
@@ -283,17 +284,21 @@ static void ikp_fn(void*) {
 }
 
 TEST(kill, is_kill_pending_accessor) {
+    if (smp::cpu_count() < 2) return;
+
     g_ikp_before.store_relaxed(0xFF);
     g_ikp_after.store_relaxed(0xFF);
     g_ikp_done.store_relaxed(0);
     g_ikp_flag_set.store_relaxed(0);
     g_ikp_started.store_relaxed(0);
 
+    // The helper spins until this test sets the flag, so it must not share the
+    // runner's CPU or neither side ever runs again
     sched::task* t = nullptr;
     RUN_ELEVATED({
         t = sched::create_kernel_task(ikp_fn, nullptr, "kill_ikp");
         ASSERT_NOT_NULL(t);
-        sched::enqueue(t);
+        sched::enqueue_on(t, 1);
     });
 
     ASSERT_TRUE(spin_wait(g_ikp_started));

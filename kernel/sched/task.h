@@ -46,29 +46,13 @@ constexpr int32_t TASK_KILL_STATUS    = 9; // wait-status for forcibly killed ta
 /**
  * Reclamation ladder. exit() records EXIT_REQUESTED on the dying task, the
  * scheduler advances to SCHEDULER_DETACHED when the task is switched out
- * (unstarted teardown jumps there directly), and the reaper owns the last
- * two stages: it snapshots every CPU's TLB sync epoch, waits for each CPU
- * to move past its snapshot, then reclaims. The struct itself is freed only
- * after the last counted reference has dropped and handed it to the reaper.
+ * (unstarted teardown jumps there directly), and the reaper reclaims once
+ * the task is off every CPU. The struct itself is freed only after the last
+ * counted reference has dropped and handed it to the reaper.
  */
-constexpr uint32_t TASK_CLEANUP_STAGE_ACTIVE                = 0;
-constexpr uint32_t TASK_CLEANUP_STAGE_EXIT_REQUESTED        = 1;
-constexpr uint32_t TASK_CLEANUP_STAGE_SCHEDULER_DETACHED    = 2;
-constexpr uint32_t TASK_CLEANUP_STAGE_WAITING_FOR_TLB_SYNC  = 3;
-constexpr uint32_t TASK_CLEANUP_STAGE_READY_TO_RECLAIM      = 4;
-
-/**
- * Per-task TLB sync ticket used by reaper before reclaiming task stacks.
- *
- * The ticket snapshots each CPU's reclaim epoch and requires every CPU to
- * advance past that snapshot before stack unmap/free can proceed. It only
- * retires stale TLB entries for the freed stacks, keeping the task struct
- * itself alive is the job of its counted references.
- */
-struct task_tlb_sync_ticket {
-    uint64_t cpu_epoch_snapshot[MAX_CPUS];
-    sync::atomic<uint32_t> armed;
-};
+constexpr uint32_t TASK_CLEANUP_STAGE_ACTIVE             = 0;
+constexpr uint32_t TASK_CLEANUP_STAGE_EXIT_REQUESTED     = 1;
+constexpr uint32_t TASK_CLEANUP_STAGE_SCHEDULER_DETACHED = 2;
 
 struct thread_group;
 
@@ -114,7 +98,6 @@ struct task : rc::ref_counted<task> {
     list::node              timer_link;
     uint64_t                timer_deadline;
     sync::atomic<uint64_t>  run_ticks; // timer ticks observed while current
-    task_tlb_sync_ticket    tlb_sync_ticket;
     rc::reaper::dead_node   reaper_node;
 
     // Resources, the handle table is private by default and shared

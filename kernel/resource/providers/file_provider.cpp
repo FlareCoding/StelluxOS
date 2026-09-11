@@ -141,21 +141,12 @@ __PRIVILEGED_CODE static uint32_t file_poll(
 }
 
 static const resource_ops g_file_ops = {
-    file_read,
-    file_write,
-    file_close,
-    file_ioctl,
-    file_mmap,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    file_poll,
-    nullptr,
+    .read = file_read,
+    .write = file_write,
+    .close = file_close,
+    .ioctl = file_ioctl,
+    .mmap = file_mmap,
+    .poll = file_poll,
 };
 
 /**

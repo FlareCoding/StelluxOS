@@ -6,6 +6,9 @@
 
 namespace paging {
 
+// Above this many pages one full flush costs less than a page at a time
+constexpr size_t FULL_FLUSH_PAGE_THRESHOLD = 32;
+
 /**
  * @brief Get the kernel page table root (reads CR3 on x86_64, TTBR1_EL1 on aarch64).
  * @return Physical address of the kernel's top-level page table.
@@ -54,6 +57,7 @@ __PRIVILEGED_CODE int32_t map_pages(virt_addr_t virt, pmm::phys_addr_t phys, pag
 
 /**
  * @brief Unmap a single page. Idempotent - unmapping unmapped page is OK.
+ * Page tables left empty are retired, see `take_retired_tables`.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt);
@@ -63,6 +67,53 @@ __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt)
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t unmap_pages(virt_addr_t virt, size_t count, pmm::phys_addr_t root_pt);
+
+/**
+ * @brief Invalidate the mapping at `virt` but keep its frame recorded in the
+ * now invalid entry, so the frame can be recovered with `take_kept_frame`
+ * once every CPU has dropped the translation. Flushes the calling CPU only
+ * and never releases page table pages, since the entry stays in use.
+ * @return OK, or ERR_NOT_MAPPED when nothing is mapped at `virt`.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t unmap_page_keep_frame(virt_addr_t virt, pmm::phys_addr_t root_pt);
+
+/**
+ * @brief Recover the frame that `unmap_page_keep_frame` left at `virt` and
+ * clear the entry, retiring page tables the clearing leaves empty. Call it
+ * only after a system-wide flush has covered `virt`.
+ * @param out_phys Base of the frame the entry mapped.
+ * @param out_size Size of that mapping, 4 KB, 2 MB or 1 GB.
+ * @return OK, or ERR_NOT_MAPPED when `virt` holds no kept frame.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t take_kept_frame(virt_addr_t virt, pmm::phys_addr_t root_pt,
+                                              pmm::phys_addr_t* out_phys, size_t* out_size);
+
+// Page tables emptied by an unmap, threaded through their own pages. Another
+// CPU may still hold a cached copy of the entry that pointed at them.
+struct retired_tables {
+    pmm::phys_addr_t head = 0;
+
+    bool empty() const {
+        return head == 0;
+    }
+};
+
+/**
+ * @brief Detach every page table retired so far. The caller owns the batch
+ * and frees it with `free_retired_tables` after a system-wide full flush,
+ * the only operation that also drops cached intermediate walk entries.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE retired_tables take_retired_tables();
+
+/**
+ * @brief Return the frames of a retired batch to the PMM. The batch is empty
+ * afterwards.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void free_retired_tables(retired_tables& tables);
 
 /**
  * @brief Modify flags on an existing mapping.
@@ -92,22 +143,51 @@ __PRIVILEGED_CODE page_flags_t get_page_flags(virt_addr_t virt, pmm::phys_addr_t
 __PRIVILEGED_CODE bool is_mapped(virt_addr_t virt, pmm::phys_addr_t root_pt);
 
 /**
- * @brief TLB management - flush single page.
+ * TLB invalidation comes in two forms. The system-wide form guarantees that
+ * on return no CPU holds a translation for the range, so a page may be
+ * reused. It may block until every other CPU has acknowledged, so the caller
+ * must have interrupts enabled and must not hold a lock that another CPU
+ * could be spinning on with interrupts disabled. The local form only
+ * invalidates the calling CPU and is for the paging internals, for the
+ * acknowledging side of a system-wide flush, and for bring-up phases where
+ * only one CPU runs.
+ */
+
+/**
+ * @brief Invalidate one page on every CPU.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt);
 
 /**
- * @brief TLB management - flush range.
+ * @brief Invalidate `[start, end)` on every CPU.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end);
 
 /**
- * @brief TLB management - flush all.
+ * @brief Invalidate every translation on every CPU.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void flush_tlb_all();
+
+/**
+ * @brief Invalidate one page on the calling CPU only.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void flush_tlb_page_local(virt_addr_t virt);
+
+/**
+ * @brief Invalidate `[start, end)` on the calling CPU only.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void flush_tlb_range_local(virt_addr_t start, virt_addr_t end);
+
+/**
+ * @brief Invalidate every translation on the calling CPU only.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void flush_tlb_all_local();
 
 /**
  * @brief Dump current mappings to serial (uses get_kernel_pt_root() internally).

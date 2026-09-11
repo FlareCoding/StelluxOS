@@ -154,7 +154,7 @@ userland:
 # ============================================================================
 
 test:
-	$(Q)$(MAKE) clean
+	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
 	$(Q)$(MAKE) image ARCH=$(ARCH) STLX_UNIT_TESTS_ENABLED=1
 	@echo ""
 	$(Q)./scripts/run_tests.sh $(ARCH)
@@ -475,7 +475,7 @@ usb: image
 clean:
 	@echo "Cleaning build artifacts..."
 	$(Q)rm -rf $(BUILD_DIR) $(IMAGE_DIR)
-	$(Q)rm -rf userland/build
+	$(Q)rm -rf userland/build userland/apps/*/build userland/lib/*/build
 	$(Q)find initrd/bin -mindepth 1 ! -name '.gitkeep' -delete 2>/dev/null || true
 	$(Q)rm -rf initrd/usr
 	@echo "Done."

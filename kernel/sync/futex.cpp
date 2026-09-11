@@ -35,10 +35,8 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     mm::mm_context* mm = self->exec.mm_ctx;
     if (uaddr & 0x3) return -22; // EINVAL
 
-    // Read the value before taking the bucket lock. copy_from_user
-    // acquires mm_ctx->lock (a sleeping mutex) so it must not be called
-    // under a spinlock. This also faults in the page so the re-read
-    // under the spinlock below is safe.
+    // Read the value before taking the bucket lock, copy_from_user may sleep
+    // to fault the page in and must not run under a spinlock
     uint32_t pre_val;
     if (mm) {
         int32_t rc = mm::uaccess::copy_from_user(
@@ -63,11 +61,21 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
 
     irq_state irq = spin_lock_irqsave(bucket->lock);
 
-    // Re-read the futex word under the bucket lock. The page is already
-    // validated/faulted by the copy_from_user above, so a direct read
-    // is safe here. This atomic check-and-enqueue prevents lost wakeups.
-    uint32_t* word = reinterpret_cast<uint32_t*>(uaddr);
-    uint32_t current_val = atomic_ref<uint32_t>(*word).load_relaxed();
+    // Re-read under the bucket lock so a waker cannot slip between the check
+    // and the enqueue, a page unmapped since the first read reports EFAULT.
+    uint32_t current_val;
+    if (mm) {
+        int32_t rc = mm::uaccess::load_u32_from_user(
+            reinterpret_cast<const uint32_t*>(uaddr), &current_val);
+
+        if (rc != mm::uaccess::OK) {
+            spin_unlock_irqrestore(bucket->lock, irq);
+            return -14; // EFAULT
+        }
+    } else {
+        uint32_t* word = reinterpret_cast<uint32_t*>(uaddr);
+        current_val = atomic_ref<uint32_t>(*word).load_relaxed();
+    }
 
     if (current_val != expected) {
         spin_unlock_irqrestore(bucket->lock, irq);

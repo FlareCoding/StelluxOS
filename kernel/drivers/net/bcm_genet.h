@@ -4,7 +4,7 @@
 #include "drivers/platform_driver.h"
 #include "drivers/net/bcm_genet_regs.h"
 #include "drivers/net/phy_regs.h"
-#include "net/net.h"
+#include "net/interface.h"
 #include "sync/spinlock.h"
 
 namespace drivers {
@@ -16,7 +16,7 @@ namespace drivers {
  * or ACPI OEM detection. Uses MMIO registers, DMA descriptor rings, MDIO
  * bus for PHY management, and GIC SPI interrupts.
  */
-class bcm_genet_driver : public platform_driver {
+class bcm_genet_driver : public platform_driver, public net::interface {
 public:
     bcm_genet_driver(uint64_t reg_phys, uint64_t reg_size,
                      uint32_t irq0, uint32_t irq1);
@@ -25,7 +25,30 @@ public:
     int32_t detach() override;
     void run() override;
 
+    int32_t transmit(net::packet* pkt) override;
+
+    // The platform framework holds this type directly and asks for the
+    // driver's name, the interface name is reached through `net::interface`
+    using device_driver::name;
+
 private:
+    // Finished descriptors taken from the ring under m_lock and withheld
+    // from the hardware until recycled, so their buffers stay stable while
+    // the frames are delivered without the lock. A zero length marks a frame
+    // the hardware flagged as bad, which is counted and recycled without
+    // delivery.
+    static constexpr uint32_t RX_BATCH_MAX = 32;
+    static constexpr uint32_t RX_PASSES_PER_WAKEUP = genet::DMA_DESC_COUNT / RX_BATCH_MAX;
+    struct rx_batch_entry {
+        uint16_t idx;
+        uint16_t len;
+    };
+
+    struct rx_batch {
+        rx_batch_entry entries[RX_BATCH_MAX];
+        uint32_t count;
+    };
+
     // Register access
     uint32_t reg_read(uint32_t offset);
     void reg_write(uint32_t offset, uint32_t value);
@@ -55,11 +78,12 @@ private:
     void dma_disable_tx_rx();
 
     // TX path
-    static int32_t tx_callback(net::netif* iface, const uint8_t* frame, size_t len);
-    void process_tx_completions();
+    void process_tx_completions();                 // requires m_lock
 
     // RX path
-    void process_rx();
+    void drain_rx_locked(rx_batch& batch);         // requires m_lock
+    void deliver_rx_batch(const rx_batch& batch);  // called without m_lock
+    void recycle_rx_locked(const rx_batch& batch); // requires m_lock
     void rx_remap_descriptor(uint16_t desc_idx);
 
     // Interrupts
@@ -68,10 +92,6 @@ private:
     static void isr(uint32_t irq, void* context);
     void enable_interrupts();
     void disable_interrupts();
-
-    // Net interface callbacks
-    static bool link_callback(net::netif* iface);
-    static void poll_callback(net::netif* iface);
 
     // MAC filter
     void set_promisc(bool enable);
@@ -102,9 +122,6 @@ private:
 
     // Lock protecting DMA state and register access
     sync::spinlock   m_lock;
-
-    // Network interface
-    net::netif       m_netif;
 
     // Whether interrupts were successfully set up
     bool             m_has_irq;

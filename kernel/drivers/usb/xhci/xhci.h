@@ -56,6 +56,7 @@ class xhci_hcd : public pci_driver {
 public:
     xhci_hcd(pci::device* dev) : pci_driver("xhci_hcd", dev) {
         m_hub_event_lock = sync::SPINLOCK_INIT;
+        m_hub_event_done_wq.init();
     }
 
     int32_t attach() override;
@@ -89,9 +90,9 @@ public:
                                        uint8_t endpoint_addr);
     void release_disconnected_device(xhci::xhci_device* device);
 
-    // Queue a hub port enumeration request. Called from the hub driver task.
-    // The HCD processes this asynchronously from its own task context.
-    void queue_hub_enumerate(xhci::xhci_device* hub_device, uint8_t hub_port, uint8_t speed);
+    // Enumerates the device on a hub port and returns once the HCD task is done
+    // with it, so the hub task never resets a sibling port over a shared TT.
+    void enumerate_hub_port(xhci::xhci_device* hub_device, uint8_t hub_port, uint8_t speed);
 
     // Queue a hub port disconnect request. Called from the hub driver task.
     void queue_hub_disconnect(xhci::xhci_device* hub_device, uint8_t hub_port);
@@ -140,11 +141,15 @@ private:
     // USB3 port bitmap (bit N = port N is USB3)
     uint32_t m_usb3_port_map[8] = {};
 
-    // Hub event queue (hub driver posts events, HCD processes them)
-    xhci::hub_event m_hub_events[xhci::HUB_EVENT_QUEUE_SIZE];
-    uint8_t         m_hub_event_head = 0;
-    uint8_t         m_hub_event_tail = 0;
-    sync::spinlock  m_hub_event_lock;
+    // Hub event queue, posted by hub drivers and handled by the HCD task. Events
+    // are numbered so the poster can sleep until its own event has been handled.
+    xhci::hub_event  m_hub_events[xhci::HUB_EVENT_QUEUE_SIZE];
+    uint8_t          m_hub_event_head = 0;
+    uint8_t          m_hub_event_tail = 0;
+    uint64_t         m_hub_events_queued = 0;
+    uint64_t         m_hub_events_completed = 0;
+    sync::spinlock   m_hub_event_lock;
+    sync::wait_queue m_hub_event_done_wq;
 
     // Deferred endpoint doorbells, rung after event processing finishes.
     struct pending_doorbell { uint8_t slot_id; uint8_t target; };
@@ -237,6 +242,8 @@ private:
                                            usb::transfer_status status);
 
     // Hub event processing (called from HCD task context)
+    uint64_t _queue_hub_event(const xhci::hub_event& evt);
+    void _complete_hub_event();
     void _process_hub_events();
     void _setup_hub_device(xhci::xhci_device* hub_device, uint8_t hub_port, uint8_t speed);
     void _teardown_hub_device(xhci::xhci_device* hub_device, uint8_t hub_port);
@@ -244,8 +251,11 @@ private:
     // Device setup and management
     void _setup_device(uint8_t port_index);
     void _teardown_device(uint8_t port_index);
+    uint8_t _device_address(xhci::xhci_device* device);
     void _configure_device(xhci::xhci_device* device, const usb::usb_device_descriptor& desc);
     void _configure_ctrl_ep_input_context(xhci::xhci_device* device, uint16_t max_packet_size);
+
+    void _sync_ctrl_ep_dequeue_ptr(xhci::xhci_device* device);
     xhci::xhci_endpoint* _create_endpoint(xhci::xhci_device* device, const usb::usb_endpoint_descriptor* desc);
     void _configure_endpoint_context(xhci::xhci_device* device, xhci::xhci_endpoint* ep);
     int32_t _configure_endpoints(xhci::xhci_device* device);

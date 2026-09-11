@@ -2,6 +2,7 @@
 
 #include "stlx_unit_test.h"
 #include "mm/vmm.h"
+#include "mm/page_quarantine.h"
 #include "mm/pmm.h"
 #include "mm/paging.h"
 #include "boot/boot_services.h"
@@ -13,6 +14,7 @@ TEST_SUITE(vmm_test);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t vmm_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     if (g_initial_free_pages < 256) {
         log::error("vmm tests: insufficient free pages (%lu)", g_initial_free_pages);
@@ -23,6 +25,7 @@ static int32_t vmm_before_all() {
 }
 
 static int32_t vmm_after_all() {
+    page_quarantine::drain();
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         log::error("vmm tests: leak detected, started=%lu ended=%lu delta=%ld",
@@ -165,6 +168,7 @@ TEST(vmm_test, alloc_stack_usable_region) {
 }
 
 TEST(vmm_test, free_returns_pages_to_pmm) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
 
     uintptr_t out = 0;
@@ -176,6 +180,7 @@ TEST(vmm_test, free_returns_pages_to_pmm) {
     EXPECT_LT(during, before);
 
     vmm::free(out);
+    page_quarantine::drain();
 
     uint64_t after = pmm::free_page_count();
     EXPECT_EQ(after, before);
@@ -220,6 +225,7 @@ TEST(vmm_test, map_phys_roundtrip) {
 TEST(vmm_test, stress_alloc_free) {
     constexpr size_t N = 32;
     uintptr_t addrs[N];
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
 
     for (size_t i = 0; i < N; i++) {
@@ -233,6 +239,67 @@ TEST(vmm_test, stress_alloc_free) {
         EXPECT_EQ(vmm::free(addrs[i]), vmm::OK);
     }
 
+    page_quarantine::drain();
+
     uint64_t after = pmm::free_page_count();
     EXPECT_EQ(after, before);
+}
+
+// A freed range stays out of circulation until the quarantine drains: the
+// address is not handed out again, the frames are not back in the PMM, and
+// a second free is refused instead of retiring the range twice. vmreclaimd
+// may drain at any moment, so the held-state checks apply only while query
+// still reports the range as retired.
+TEST(vmm_test, freed_range_waits_in_quarantine_until_drained) {
+    // Warm up so any page table page the mapping needs already exists
+    uintptr_t warm = 0;
+    ASSERT_EQ(vmm::alloc(1, paging::PAGE_KERNEL_RW, 0, kva::tag::generic, warm), vmm::OK);
+    EXPECT_EQ(vmm::free(warm), vmm::OK);
+    page_quarantine::drain();
+    uint64_t before = pmm::free_page_count();
+
+    uintptr_t first = 0;
+    ASSERT_EQ(vmm::alloc(1, paging::PAGE_KERNEL_RW, 0, kva::tag::generic, first), vmm::OK);
+    EXPECT_EQ(vmm::free(first), vmm::OK);
+    EXPECT_EQ(vmm::free(first), vmm::ERR_NOT_FOUND);
+
+    uint64_t held = pmm::free_page_count();
+    kva::allocation reserved = {};
+    if (kva::query(first, reserved) == kva::OK && reserved.retired) {
+        EXPECT_EQ(held, before - 1);
+    }
+
+    uintptr_t second = 0;
+    ASSERT_EQ(vmm::alloc(1, paging::PAGE_KERNEL_RW, 0, kva::tag::generic, second), vmm::OK);
+    if (kva::query(first, reserved) == kva::OK && reserved.retired) {
+        EXPECT_NE(second, first);
+    }
+    EXPECT_EQ(vmm::free(second), vmm::OK);
+
+    page_quarantine::drain();
+    EXPECT_EQ(pmm::free_page_count(), before);
+}
+
+// A freer that can wait drains the quarantine itself once the backlog is
+// large, so held memory stays bounded even if vmreclaimd never ran.
+TEST(vmm_test, large_backlog_drains_without_the_drainer) {
+    constexpr size_t CHUNK_PAGES = 64;
+    constexpr size_t CHUNKS = (page_quarantine::DRAIN_THRESHOLD_PAGES / CHUNK_PAGES) * 3 / 2;
+    uintptr_t chunks[CHUNKS];
+
+    page_quarantine::drain();
+    uint64_t before = pmm::free_page_count();
+
+    for (size_t i = 0; i < CHUNKS; i++) {
+        ASSERT_EQ(vmm::alloc(CHUNK_PAGES, paging::PAGE_KERNEL_RW, 0, kva::tag::generic, chunks[i]), vmm::OK);
+    }
+
+    for (size_t i = 0; i < CHUNKS; i++) {
+        EXPECT_EQ(vmm::free(chunks[i]), vmm::OK);
+    }
+
+    EXPECT_GE(pmm::free_page_count() + page_quarantine::DRAIN_THRESHOLD_PAGES, before);
+
+    page_quarantine::drain();
+    EXPECT_EQ(pmm::free_page_count(), before);
 }

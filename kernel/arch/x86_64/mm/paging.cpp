@@ -1,5 +1,6 @@
 #include "mm/paging.h"
 #include "mm/paging_arch.h"
+#include "mm/tlb_shootdown.h"
 #include "mm/pmm.h"
 #include "hw/cpu_features.h"
 #include "boot/boot_services.h"
@@ -26,6 +27,13 @@ namespace paging {
 // Tracks whether paging has been initialized
 __PRIVILEGED_DATA static bool g_initialized = false;
 __PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
+__PRIVILEGED_DATA static pmm::phys_addr_t g_retired_tables = 0;
+
+// With the present bit clear the hardware ignores the rest of an entry, so a
+// kept-frame entry carries its frame address and this software marker.
+constexpr uint64_t ENTRY_PRESENT    = 1ULL << 0;
+constexpr uint64_t ENTRY_KEPT_FRAME = 1ULL << 9;
+constexpr uint64_t ENTRY_ADDR_MASK  = 0x000FFFFFFFFFF000ULL;
 
 __PRIVILEGED_CODE pmm::phys_addr_t get_kernel_pt_root() {
     // Read CR3 directly - the physical address is in bits 12-51
@@ -483,13 +491,53 @@ __PRIVILEGED_CODE static bool is_table_empty(const void* table) {
     return true;
 }
 
-// Free a page table page back to PMM if it was dynamically allocated.
-// Bootstrap-allocated pages (PAGE_FLAG_RESERVED) are not freed.
-__PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
+// Retire an emptied page table whose parent entry is already clear. Freeing
+// it now would let a CPU with a cached copy of that entry walk a reused page.
+// Entry 0 carries the list link, an aligned address reads as not present.
+// Bootstrap-allocated pages (PAGE_FLAG_RESERVED) are never freed.
+__PRIVILEGED_CODE static void retire_table_page(pmm::phys_addr_t phys) {
     auto* pfd = pmm::get_page_frame(phys);
-    if (pfd && pfd->is_allocated()) {
-        pmm::free_page(phys);
+    if (!pfd || !pfd->is_allocated()) {
+        return;
     }
+
+    auto* link = static_cast<pmm::phys_addr_t*>(phys_to_virt(phys));
+    *link = g_retired_tables;
+    g_retired_tables = phys;
+}
+
+// Free the tables left empty below a cleared entry, lowest level first. A
+// null level was not part of the walk.
+__PRIVILEGED_CODE static void reclaim_empty_tables(
+    pml4e_t* pml4e, pdpt_t* pdpt, pdpte_t* pdpte, page_directory_t* pd, pde_t* pde, page_table_t* pt
+) {
+    if (pt) {
+        if (!is_table_empty(pt)) {
+            return;
+        }
+
+        pmm::phys_addr_t pt_phys = static_cast<pmm::phys_addr_t>(pde->phys_addr) << 12;
+        pde->value = 0;
+        retire_table_page(pt_phys);
+    }
+
+    if (pd) {
+        if (!is_table_empty(pd)) {
+            return;
+        }
+
+        pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
+        pdpte->value = 0;
+        retire_table_page(pd_phys);
+    }
+
+    if (!is_table_empty(pdpt)) {
+        return;
+    }
+
+    pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
+    pml4e->value = 0;
+    retire_table_page(pdpt_phys);
 }
 
 __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
@@ -510,12 +558,8 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     // 1GB huge page
     if (pdpte->page_size) {
         pdpte->value = 0;
-        flush_tlb_page(virt);
-        if (is_table_empty(pdpt)) {
-            pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
-            pml4e->value = 0;
-            try_free_table_page(pdpt_phys);
-        }
+        flush_tlb_page_local(virt);
+        reclaim_empty_tables(pml4e, pdpt, nullptr, nullptr, nullptr, nullptr);
         return OK;
     }
 
@@ -526,17 +570,8 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     // 2MB large page
     if (pde->page_size) {
         pde->value = 0;
-        flush_tlb_page(virt);
-        if (is_table_empty(pd)) {
-            pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
-            pdpte->value = 0;
-            try_free_table_page(pd_phys);
-            if (is_table_empty(pdpt)) {
-                pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
-                pml4e->value = 0;
-                try_free_table_page(pdpt_phys);
-            }
-        }
+        flush_tlb_page_local(virt);
+        reclaim_empty_tables(pml4e, pdpt, pdpte, pd, nullptr, nullptr);
         return OK;
     }
 
@@ -546,24 +581,8 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (!pte->present) return OK;
 
     pte->value = 0;
-    flush_tlb_page(virt);
-
-    // Cascade: reclaim empty page tables up the hierarchy
-    if (is_table_empty(pt)) {
-        pmm::phys_addr_t pt_phys = static_cast<pmm::phys_addr_t>(pde->phys_addr) << 12;
-        pde->value = 0;
-        try_free_table_page(pt_phys);
-        if (is_table_empty(pd)) {
-            pmm::phys_addr_t pd_phys = static_cast<pmm::phys_addr_t>(pdpte->phys_addr) << 12;
-            pdpte->value = 0;
-            try_free_table_page(pd_phys);
-            if (is_table_empty(pdpt)) {
-                pmm::phys_addr_t pdpt_phys = static_cast<pmm::phys_addr_t>(pml4e->phys_addr) << 12;
-                pml4e->value = 0;
-                try_free_table_page(pdpt_phys);
-            }
-        }
-    }
+    flush_tlb_page_local(virt);
+    reclaim_empty_tables(pml4e, pdpt, pdpte, pd, pde, pt);
 
     return OK;
 }
@@ -571,6 +590,143 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
 __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     sync::irq_lock_guard guard(g_pt_lock);
     return unmap_page_nolock(virt, root_pt);
+}
+
+__PRIVILEGED_CODE static uint64_t kept_frame_entry(uint64_t phys) {
+    return (phys & ENTRY_ADDR_MASK) | ENTRY_KEPT_FRAME;
+}
+
+__PRIVILEGED_CODE static bool is_kept_frame_entry(uint64_t value) {
+    return (value & ENTRY_PRESENT) == 0 && (value & ENTRY_KEPT_FRAME) != 0;
+}
+
+__PRIVILEGED_CODE static int32_t unmap_page_keep_frame_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
+    auto parts = split_virt_addr(virt);
+    pml4_t* pml4 = static_cast<pml4_t*>(phys_to_virt(root_pt));
+
+    pml4e_t* pml4e = &pml4->entries[parts.pml4_idx];
+    if (!pml4e->present) {
+        return ERR_NOT_MAPPED;
+    }
+
+    pdpt_t* pdpt = static_cast<pdpt_t*>(phys_to_virt(pml4e->phys_addr << 12));
+    pdpte_t* pdpte = &pdpt->entries[parts.pdpt_idx];
+    if (!pdpte->present) {
+        return ERR_NOT_MAPPED;
+    }
+
+    if (pdpte->page_size) {
+        auto* huge = reinterpret_cast<pdpte_1gb_t*>(pdpte);
+        pdpte->value = kept_frame_entry(static_cast<uint64_t>(huge->phys_addr) << 30);
+        flush_tlb_page_local(virt);
+        return OK;
+    }
+
+    page_directory_t* pd = static_cast<page_directory_t*>(phys_to_virt(pdpte->phys_addr << 12));
+    pde_t* pde = &pd->entries[parts.pd_idx];
+    if (!pde->present) {
+        return ERR_NOT_MAPPED;
+    }
+
+    if (pde->page_size) {
+        auto* large = reinterpret_cast<pde_2mb_t*>(pde);
+        pde->value = kept_frame_entry(static_cast<uint64_t>(large->phys_addr) << 21);
+        flush_tlb_page_local(virt);
+        return OK;
+    }
+
+    page_table_t* pt = static_cast<page_table_t*>(phys_to_virt(pde->phys_addr << 12));
+    pte_t* pte = &pt->entries[parts.pt_idx];
+    if (!pte->present) {
+        return ERR_NOT_MAPPED;
+    }
+
+    pte->value = kept_frame_entry(static_cast<uint64_t>(pte->phys_addr) << 12);
+    flush_tlb_page_local(virt);
+    return OK;
+}
+
+// A kept-frame entry is found at the level where the mapping used to live, so
+// the level it sits on also tells the size the mapping covered.
+__PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
+    virt_addr_t virt, pmm::phys_addr_t root_pt, pmm::phys_addr_t* out_phys, size_t* out_size
+) {
+    auto parts = split_virt_addr(virt);
+    pml4_t* pml4 = static_cast<pml4_t*>(phys_to_virt(root_pt));
+
+    pml4e_t* pml4e = &pml4->entries[parts.pml4_idx];
+    if (!pml4e->present) {
+        return ERR_NOT_MAPPED;
+    }
+
+    pdpt_t* pdpt = static_cast<pdpt_t*>(phys_to_virt(pml4e->phys_addr << 12));
+    pdpte_t* pdpte = &pdpt->entries[parts.pdpt_idx];
+    if (is_kept_frame_entry(pdpte->value)) {
+        *out_phys = pdpte->value & ENTRY_ADDR_MASK;
+        *out_size = PAGE_SIZE_1GB;
+        pdpte->value = 0;
+        reclaim_empty_tables(pml4e, pdpt, nullptr, nullptr, nullptr, nullptr);
+        return OK;
+    }
+
+    if (!pdpte->present || pdpte->page_size) {
+        return ERR_NOT_MAPPED;
+    }
+
+    page_directory_t* pd = static_cast<page_directory_t*>(phys_to_virt(pdpte->phys_addr << 12));
+    pde_t* pde = &pd->entries[parts.pd_idx];
+    if (is_kept_frame_entry(pde->value)) {
+        *out_phys = pde->value & ENTRY_ADDR_MASK;
+        *out_size = PAGE_SIZE_2MB;
+        pde->value = 0;
+        reclaim_empty_tables(pml4e, pdpt, pdpte, pd, nullptr, nullptr);
+        return OK;
+    }
+
+    if (!pde->present || pde->page_size) {
+        return ERR_NOT_MAPPED;
+    }
+
+    page_table_t* pt = static_cast<page_table_t*>(phys_to_virt(pde->phys_addr << 12));
+    pte_t* pte = &pt->entries[parts.pt_idx];
+    if (!is_kept_frame_entry(pte->value)) {
+        return ERR_NOT_MAPPED;
+    }
+
+    *out_phys = pte->value & ENTRY_ADDR_MASK;
+    *out_size = PAGE_SIZE_4KB;
+    pte->value = 0;
+    reclaim_empty_tables(pml4e, pdpt, pdpte, pd, pde, pt);
+    return OK;
+}
+
+__PRIVILEGED_CODE int32_t unmap_page_keep_frame(virt_addr_t virt, pmm::phys_addr_t root_pt) {
+    sync::irq_lock_guard guard(g_pt_lock);
+    return unmap_page_keep_frame_nolock(virt, root_pt);
+}
+
+__PRIVILEGED_CODE int32_t take_kept_frame(virt_addr_t virt, pmm::phys_addr_t root_pt,
+                                              pmm::phys_addr_t* out_phys, size_t* out_size) {
+    sync::irq_lock_guard guard(g_pt_lock);
+    return take_kept_frame_nolock(virt, root_pt, out_phys, out_size);
+}
+
+__PRIVILEGED_CODE retired_tables take_retired_tables() {
+    sync::irq_lock_guard guard(g_pt_lock);
+
+    retired_tables tables;
+    tables.head = g_retired_tables;
+    g_retired_tables = 0;
+
+    return tables;
+}
+
+__PRIVILEGED_CODE void free_retired_tables(retired_tables& tables) {
+    while (tables.head != 0) {
+        pmm::phys_addr_t phys = tables.head;
+        tables.head = *static_cast<pmm::phys_addr_t*>(phys_to_virt(phys));
+        pmm::free_page(phys);
+    }
 }
 
 __PRIVILEGED_CODE int32_t unmap_pages(virt_addr_t virt, size_t count, pmm::phys_addr_t root_pt) {
@@ -603,7 +759,7 @@ __PRIVILEGED_CODE int32_t set_page_flags(virt_addr_t virt, page_flags_t flags, p
         auto* huge = reinterpret_cast<pdpte_1gb_t*>(pdpte);
         pmm::phys_addr_t phys = static_cast<pmm::phys_addr_t>(huge->phys_addr) << 30;
         *huge = flags_to_pdpte_1gb(phys, flags);
-        flush_tlb_page(virt);
+        flush_tlb_page_local(virt);
         return OK;
     }
 
@@ -616,7 +772,7 @@ __PRIVILEGED_CODE int32_t set_page_flags(virt_addr_t virt, page_flags_t flags, p
         auto* large = reinterpret_cast<pde_2mb_t*>(pde);
         pmm::phys_addr_t phys = static_cast<pmm::phys_addr_t>(large->phys_addr) << 21;
         *large = flags_to_pde_2mb(phys, flags);
-        flush_tlb_page(virt);
+        flush_tlb_page_local(virt);
         return OK;
     }
 
@@ -627,7 +783,7 @@ __PRIVILEGED_CODE int32_t set_page_flags(virt_addr_t virt, page_flags_t flags, p
 
     pmm::phys_addr_t phys = static_cast<pmm::phys_addr_t>(pte->phys_addr) << 12;
     *pte = flags_to_pte(phys, flags);
-    flush_tlb_page(virt);
+    flush_tlb_page_local(virt);
     return OK;
 }
 
@@ -741,11 +897,11 @@ __PRIVILEGED_CODE bool is_mapped(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     return pt->entries[parts.pt_idx].present;
 }
 
-__PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt) {
+__PRIVILEGED_CODE void flush_tlb_page_local(virt_addr_t virt) {
     invlpg(virt);
 }
 
-__PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end) {
+__PRIVILEGED_CODE void flush_tlb_range_local(virt_addr_t start, virt_addr_t end) {
     sync::irq_lock_guard guard(g_pt_lock);
     pmm::phys_addr_t root_pt = get_kernel_pt_root();
     virt_addr_t addr = start;
@@ -778,7 +934,7 @@ __PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end) {
     }
 }
 
-__PRIVILEGED_CODE void flush_tlb_all() {
+__PRIVILEGED_CODE void flush_tlb_all_local() {
     write_cr3(read_cr3());
 }
 
@@ -1002,11 +1158,11 @@ __PRIVILEGED_CODE int32_t init() {
 
     // Switch to new page tables by writing to CR3
     set_kernel_pt_root(new_root);
-    flush_tlb_all();
+    flush_tlb_all_local();
 
     g_initialized = true;
 
-    return OK;
+    return x86::init_tlb_shootdown();
 }
 
 __PRIVILEGED_CODE pmm::phys_addr_t create_user_pt_root() {

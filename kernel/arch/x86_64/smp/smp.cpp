@@ -2,6 +2,8 @@
 #include "acpi/madt_arch.h"
 #include "irq/irq_arch.h"
 #include "irq/irq.h"
+#include "smp/ipi.h"
+#include "defs/vectors.h"
 #include "hw/mmio.h"
 #include "hw/msr.h"
 #include "hw/cpu.h"
@@ -38,6 +40,7 @@ constexpr uint32_t AP_STACK_PAGES = 4;
 constexpr uint16_t AP_GUARD_PAGES = 1;
 
 // LAPIC ICR command constants
+constexpr uint32_t ICR_DM_FIXED      = (0 << 8);
 constexpr uint32_t ICR_DM_INIT       = (5 << 8);
 constexpr uint32_t ICR_DM_STARTUP    = (6 << 8);
 constexpr uint32_t ICR_LEVEL_ASSERT  = (1 << 14);
@@ -106,6 +109,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     // LAPIC enable (SVR, mask LVTs, clear EOI, per-CPU hardware)
     irq::init_ap();
+    smp::ipi::init_ap();
 
     // Allocate a separate system stack for the idle task.
     uintptr_t sys_stack_base = 0, sys_stack_top = 0;
@@ -132,9 +136,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     info->state.store_release(smp::CPU_ONLINE);
 
-    while (true) {
-        cpu::halt();
-    }
+    sched::run_idle();
 }
 
 __PRIVILEGED_CODE static void wait_icr_idle() {
@@ -201,6 +203,10 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
     return count;
 }
 
+pmm::phys_range smp_fixed_boot_frames() {
+    return {AP_TRAMPOLINE_PHYS, AP_STARTUP_DATA_PHYS + pmm::PAGE_SIZE};
+}
+
 /**
  * @note Privilege: **required**
  */
@@ -229,8 +235,8 @@ __PRIVILEGED_CODE int32_t smp_prepare() {
         return smp::ERR_PREPARE;
     }
 
-    paging::flush_tlb_page(AP_TRAMPOLINE_PHYS);
-    paging::flush_tlb_page(AP_STARTUP_DATA_PHYS);
+    paging::flush_tlb_page_local(AP_TRAMPOLINE_PHYS);
+    paging::flush_tlb_page_local(AP_STARTUP_DATA_PHYS);
 
     // Copy trampoline code to physical 0x8000
     size_t tramp_size = static_cast<size_t>(
@@ -323,6 +329,44 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
 
     return cpu.state.load_acquire() == smp::CPU_ONLINE
         ? smp::OK : smp::ERR_BOOT_TIMEOUT;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_ipi_init() {
+    return smp::ipi::OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_ipi_init_ap() {
+    return smp::ipi::OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_raise_ipi(const smp::cpu_info& target) {
+    // Physical destinations in the ICR hold an 8-bit APIC id
+    if (target.hw_id > 0xFF) {
+        return smp::ipi::ERR_UNREACHABLE;
+    }
+
+    uintptr_t lapic_va = irq::get_lapic_va();
+    uint32_t apic_id = static_cast<uint32_t>(target.hw_id);
+
+    // The destination and command halves must land as a pair, an interrupt
+    // handler sending its own IPI between them would redirect this one.
+    uint64_t flags = cpu::irq_save();
+    wait_icr_idle();
+    mmio::write32(lapic_va + irq::LAPIC_ICR_HIGH, apic_id << ICR_DEST_SHIFT);
+    mmio::write32(lapic_va + irq::LAPIC_ICR_LOW,
+                  x86::VEC_IPI | ICR_DM_FIXED | ICR_LEVEL_ASSERT);
+    cpu::irq_restore(flags);
+
+    return smp::ipi::OK;
 }
 
 } // namespace arch

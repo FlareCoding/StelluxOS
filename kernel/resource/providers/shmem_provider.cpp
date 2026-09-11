@@ -87,21 +87,10 @@ static uint32_t shmem_resource_poll(
 }
 
 static const resource_ops g_shmem_resource_ops = {
-    shmem_resource_read,
-    shmem_resource_write,
-    shmem_resource_close,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    shmem_resource_poll,
-    nullptr,
+    .read = shmem_resource_read,
+    .write = shmem_resource_write,
+    .close = shmem_resource_close,
+    .poll = shmem_resource_poll,
 };
 
 int32_t create_shmem_resource(
