@@ -399,6 +399,7 @@ int32_t virtio_net_driver::attach() {
     // The interface comes up without an address, userland assigns one
     m_mtu = net::eth::MTU;
     m_enabled = true;
+    RUN_ELEVATED(set_link_up(link_up()));
 
     rc = net::register_interface(this, "eth");
     if (rc != net::OK) {
