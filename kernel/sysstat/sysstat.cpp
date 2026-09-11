@@ -26,17 +26,7 @@ static size_t append_str(char* buf, size_t cap, size_t pos, const char* s) {
 }
 
 static size_t append_u64(char* buf, size_t cap, size_t pos, uint64_t value) {
-    char digits[20];
-    size_t count = 0;
-    do {
-        digits[count++] = static_cast<char>('0' + (value % 10));
-        value /= 10;
-    } while (value > 0);
-
-    while (count > 0 && pos < cap) {
-        buf[pos++] = digits[--count];
-    }
-    return pos;
+    return pos + string::format_u64(buf + pos, cap - pos, value);
 }
 
 static const char* task_state_name(uint32_t state) {

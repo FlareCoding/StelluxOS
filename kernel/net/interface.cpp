@@ -28,27 +28,6 @@ static uint64_t generate_interface_id() {
     return g_next_interface_id.fetch_add_relaxed(1);
 }
 
-// Writes `value` in decimal at `pos`, returns the new position or `cap` when
-// the buffer is too small.
-static size_t append_decimal(char* buf, size_t cap, size_t pos, size_t value) {
-    char digits[20];
-    size_t count = 0;
-    do {
-        digits[count++] = static_cast<char>('0' + value % 10);
-        value /= 10;
-    } while (value != 0);
-
-    if (pos + count >= cap) {
-        return cap;
-    }
-
-    while (count > 0) {
-        buf[pos++] = digits[--count];
-    }
-
-    return pos;
-}
-
 // Interfaces already registered under `prefix`, locked by the caller
 static size_t count_prefix(const char* prefix, size_t prefix_len) {
     size_t matches = 0;
@@ -175,12 +154,12 @@ int32_t register_interface(interface* iface, const char* prefix) {
     char name[IFACE_NAME_MAX];
     string::memcpy(name, prefix, prefix_len);
 
-    size_t end = append_decimal(name, IFACE_NAME_MAX, prefix_len, count_prefix(prefix, prefix_len));
-    if (end >= IFACE_NAME_MAX) {
+    size_t digits = string::format_u64(name + prefix_len, IFACE_NAME_MAX - prefix_len - 1, count_prefix(prefix, prefix_len));
+    if (digits == 0) {
         return ERR_INVALID;
     }
 
-    name[end] = '\0';
+    name[prefix_len + digits] = '\0';
     iface->set_name(name);
 
     g_interfaces[count] = iface;
