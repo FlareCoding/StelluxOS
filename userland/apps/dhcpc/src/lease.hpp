@@ -23,8 +23,9 @@ struct dhcp_lease {
     uint32_t renewal_seconds = 0;
     uint32_t rebinding_seconds = 0;
 
-    /* False when the proposal could not be used on this host */
-    bool from_message(const dhcp_message& msg);
+    /* False when the proposal could not be used on this host. A renewal may omit
+     * what it leaves unchanged, so `held` supplies whatever the message lacks */
+    bool from_message(const dhcp_message& msg, const dhcp_lease* held = nullptr);
 
     /* Shortens the lease, with the renewal and rebinding times following it */
     void cap_to(uint32_t seconds);

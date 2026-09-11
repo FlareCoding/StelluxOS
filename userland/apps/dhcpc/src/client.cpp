@@ -318,7 +318,7 @@ void dhcp_client::handle_ack(const dhcp_message& msg, uint64_t now_ns) {
     in_addr expected = renewal ? m_lease.address : m_offer.address;
 
     dhcp_lease lease;
-    if (!lease.from_message(msg) || lease.address.s_addr != expected.s_addr) {
+    if (!lease.from_message(msg, renewal ? &m_lease : nullptr) || lease.address.s_addr != expected.s_addr) {
         if (renewal) {
             log("ignored an unusable acknowledgement");
             return;

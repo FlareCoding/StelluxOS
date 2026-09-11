@@ -44,7 +44,7 @@ static bool is_contiguous_mask(uint32_t host_order) {
     return host_order != 0 && (inverted & (inverted + 1)) == 0;
 }
 
-bool dhcp_lease::from_message(const dhcp_message& msg) {
+bool dhcp_lease::from_message(const dhcp_message& msg, const dhcp_lease* held) {
     address = msg.yiaddr();
     uint32_t host = ntohl(address.s_addr);
     if (!is_usable_host(host)) {
@@ -57,6 +57,10 @@ bool dhcp_lease::from_message(const dhcp_message& msg) {
     }
 
     auto mask = find_address(msg, OPT_SUBNET_MASK);
+    if (!mask && held) {
+        mask = held->netmask;
+    }
+
     if (!mask || !is_contiguous_mask(ntohl(mask->s_addr))) {
         return false;
     }
@@ -74,10 +78,15 @@ bool dhcp_lease::from_message(const dhcp_message& msg) {
 
     server = *server_id;
     netmask = *mask;
-    router = find_address(msg, OPT_ROUTER).value_or(in_addr{});
+    router = find_address(msg, OPT_ROUTER).value_or(held ? held->router : in_addr{});
 
     dns_count = 0;
-    if (auto servers = msg.find(OPT_DNS)) {
+    auto servers = msg.find(OPT_DNS);
+    if (!servers && held) {
+        for (size_t i = 0; i < held->dns_count; i++) {
+            dns[dns_count++] = held->dns[i];
+        }
+    } else if (servers) {
         for (size_t at = 0; at + sizeof(in_addr::s_addr) <= servers->size() && dns_count < DHCP_MAX_DNS; at += sizeof(in_addr::s_addr)) {
             in_addr candidate = to_address(servers->subspan(at, sizeof(in_addr::s_addr)));
             if (is_usable_host(ntohl(candidate.s_addr))) {
