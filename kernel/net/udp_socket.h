@@ -53,6 +53,13 @@ __PRIVILEGED_CODE void socket_close(udp_socket* sock);
  */
 __PRIVILEGED_CODE int32_t socket_bind(udp_socket* sock, const ipv4::ipv4_addr& addr, uint16_t port);
 
+/**
+ * @brief Pins the socket to `iface`, or to every interface when it is null.
+ * @return OK, or ERR_IN_USE when a bound socket's port would no longer be its own there.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t socket_bind_to_device(udp_socket* sock, interface* iface);
+
 /*
  * Delivers a valid datagram whose window starts at the UDP header to the socket
  * bound to its destination, waking a reader. ERR_NOT_FOUND leaves it with the caller.

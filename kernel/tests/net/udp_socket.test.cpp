@@ -138,7 +138,8 @@ TEST(udp_socket, deliver_respects_the_bound_interface) {
 
 // --- pinned_sockets_share_a_port_across_interfaces ---
 // Proves: a port can be bound once per interface, a socket on every interface
-// or on the same one still conflicts, and each datagram reaches its own link's socket.
+// or on the same one still conflicts, each datagram reaches its own link's
+// socket, and a later move cannot break what bind enforced.
 
 TEST(udp_socket, pinned_sockets_share_a_port_across_interfaces) {
     stub_interface link_a;
@@ -167,6 +168,14 @@ TEST(udp_socket, pinned_sockets_share_a_port_across_interfaces) {
     EXPECT_EQ(udp::socket_deliver(for_b), OK);
     EXPECT_TRUE(on_a->rx_queue.empty());
     EXPECT_EQ(on_b->rx_queue.size(), static_cast<size_t>(1));
+
+    // Moving a bound socket obeys the same rule as binding it there
+    stub_interface link_c;
+    EXPECT_EQ(udp::socket_bind_to_device(on_b, &link_a), ERR_IN_USE);
+    EXPECT_EQ(udp::socket_bind_to_device(on_b, nullptr), ERR_IN_USE);
+    EXPECT_EQ(on_b->iface, &link_b);
+    EXPECT_EQ(udp::socket_bind_to_device(on_b, &link_c), OK);
+    EXPECT_EQ(on_b->iface, &link_c);
 
     udp::socket_close(on_a);
     udp::socket_close(on_b);

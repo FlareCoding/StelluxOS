@@ -74,10 +74,11 @@ __PRIVILEGED_CODE void socket_close(udp_socket* sock) {
 // Caller holds g_sockets_lock. Only one socket may match a datagram, so the
 // unspecified address conflicts with every address on the same port, while
 // sockets pinned to different interfaces can never both match one.
-static bool is_port_taken_locked(const interface* iface, const ipv4::ipv4_addr& addr, uint16_t port) {
+static bool is_port_taken_locked(const udp_socket* self, const interface* iface,
+                                 const ipv4::ipv4_addr& addr, uint16_t port) {
     for (size_t i = 0; i < MAX_SOCKETS; i++) {
         udp_socket* other = g_sockets[i];
-        if (!other || other->local_port != port) {
+        if (!other || other == self || other->local_port != port) {
             continue;
         }
 
@@ -102,7 +103,7 @@ static uint16_t take_ephemeral_port_locked(const ipv4::ipv4_addr& addr) {
         uint16_t port = g_next_ephemeral_port;
         g_next_ephemeral_port = port == EPHEMERAL_PORT_MAX ? EPHEMERAL_PORT_MIN : port + 1;
 
-        if (!is_port_taken_locked(nullptr, addr, port)) {
+        if (!is_port_taken_locked(nullptr, nullptr, addr, port)) {
             return port;
         }
     }
@@ -126,13 +127,23 @@ __PRIVILEGED_CODE int32_t socket_bind(udp_socket* sock, const ipv4::ipv4_addr& a
         if (port == 0) {
             return ERR_FULL;
         }
-    } else if (is_port_taken_locked(sock->iface, addr, port)) {
+    } else if (is_port_taken_locked(sock, sock->iface, addr, port)) {
         return ERR_IN_USE;
     }
 
     sock->local_addr = addr;
     sock->local_port = port;
 
+    return OK;
+}
+
+__PRIVILEGED_CODE int32_t socket_bind_to_device(udp_socket* sock, interface* iface) {
+    sync::irq_lock_guard guard(g_sockets_lock);
+    if (sock->local_port != 0 && is_port_taken_locked(sock, iface, sock->local_addr, sock->local_port)) {
+        return ERR_IN_USE;
+    }
+
+    sock->iface = iface;
     return OK;
 }
 
@@ -306,7 +317,8 @@ __PRIVILEGED_CODE static ssize_t socket_recvfrom(resource::resource_object* obj,
 }
 
 // SO_BROADCAST opts into broadcast destinations, SO_BINDTODEVICE names the
-// interface the socket lives on and an empty name frees it
+// interface the socket lives on and an empty name frees it. A bound socket
+// may only move where its port is still its own
 __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* obj, int32_t level,
                                                    int32_t optname, const void* optval, size_t optlen) {
     udp_socket* sock = static_cast<udp_socket*>(obj->impl);
@@ -339,10 +351,7 @@ __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* ob
         }
     }
 
-    sync::irq_lock_guard guard(g_sockets_lock);
-    sock->iface = iface;
-
-    return resource::OK;
+    return inet::map_net_error(socket_bind_to_device(sock, iface));
 }
 
 // Reports the bound endpoint, all zero before bind. Nothing connects a socket yet, so no peer.
