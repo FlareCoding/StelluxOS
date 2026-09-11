@@ -181,6 +181,12 @@ void dhcp_client::on_readable(uint64_t now_ns) {
             return;
         }
 
+        /* An answer that arrived before the carrier dropped belongs to a
+         * conversation that starts over when the carrier returns */
+        if (!m_link_up) {
+            continue;
+        }
+
         dhcp_message msg;
         if (!msg.parse(buffer, static_cast<size_t>(len)) || msg.xid() != m_xid || !msg.addressed_to(m_mac)) {
             if (m_verbose) {
