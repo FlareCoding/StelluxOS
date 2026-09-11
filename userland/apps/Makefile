@@ -3,7 +3,7 @@
 #
 
 APP_DIRS := init hello shell ls cat rm cp mv stat touch sleep true false clear ptytest date \
-			clockbench stlxdm ping ifconfig nslookup arp udpecho tcpecho \
+			clockbench stlxdm ping ifconfig nslookup arp dhcpc udpecho tcpecho \
 			fetch polltest sigtest dropbear blackjack wordle hangman snake tetris \
 			grep wc head threadtest pthreadtest mmstress uname kill cxxtest synctest vim tcc stlxtop \
 			reboot shutdown gfxbench windemo stlxterm doom uidemo \
