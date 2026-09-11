@@ -15,11 +15,28 @@ constexpr uint64_t SOCK_STREAM = 1;
 constexpr size_t   SENDTO_MAX_ADDR = 128;
 constexpr size_t   SENDTO_MAX_BUF  = 4096;
 
+constexpr uint64_t SOCK_CREATION_FLAGS = fs::O_NONBLOCK | fs::O_CLOEXEC;
+
+__PRIVILEGED_CODE static void apply_creation_flags(sched::task* task, resource::handle_t h,
+                                                   uint64_t creation_flags) {
+    uint32_t flags = (creation_flags & fs::O_NONBLOCK) ? fs::O_NONBLOCK : 0;
+    if (creation_flags & fs::O_CLOEXEC) {
+        flags |= resource::RESOURCE_HANDLE_CLOEXEC;
+    }
+
+    if (flags) {
+        resource::set_handle_flags(task->handles, h, flags);
+    }
+}
+
 DEFINE_SYSCALL3(socket, domain, type, protocol) {
     sched::task* task = sched::current();
     if (!task) {
         return syscall::EIO;
     }
+
+    uint64_t creation_flags = type & SOCK_CREATION_FLAGS;
+    type &= ~SOCK_CREATION_FLAGS;
 
     resource::resource_object* obj = nullptr;
     int32_t rc;
@@ -55,6 +72,7 @@ DEFINE_SYSCALL3(socket, domain, type, protocol) {
         return syscall::EMFILE;
     }
 
+    apply_creation_flags(task, h, creation_flags);
     resource::resource_release(obj);
     return h;
 }
@@ -64,7 +82,8 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
         return syscall::EINVAL;
     }
 
-    if (type != SOCK_STREAM) {
+    uint64_t creation_flags = type & SOCK_CREATION_FLAGS;
+    if ((type & ~SOCK_CREATION_FLAGS) != SOCK_STREAM) {
         return syscall::EINVAL;
     }
 
@@ -113,6 +132,9 @@ DEFINE_SYSCALL4(socketpair, domain, type, protocol, sv) {
     }
 
     resource::resource_release(obj_b);
+
+    apply_creation_flags(task, h0, creation_flags);
+    apply_creation_flags(task, h1, creation_flags);
 
     int32_t kbuf[2] = {h0, h1};
     int32_t copy_rc = mm::uaccess::copy_to_user(
