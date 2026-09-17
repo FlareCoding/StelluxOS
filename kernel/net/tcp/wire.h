@@ -120,6 +120,7 @@ size_t build_options(uint8_t* dst, const tcp_options& opts);
 /**
  * @brief The checksum over the pseudo-header for `src` and `dst` and the `len`
  * bytes of `segment`, whose own checksum field must be zero (RFC 9293 3.1).
+ * @return The checksum in host order, stored with `htons`.
  */
 uint16_t compute_checksum(const ipv4::ipv4_addr& src, const ipv4::ipv4_addr& dst,
                           const void* segment, size_t len);
