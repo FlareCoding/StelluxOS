@@ -42,28 +42,24 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
         return false;
     }
 
+    bool timed = timeout_ns > 0;
+    uint64_t deadline = timed ? clock::now_ns() + timeout_ns : 0;
+
     sched::prepare_to_block_task();
-
-    if (sched::block_task_interrupted()) {
-        sched::cancel_block_task();
-        return false;
-    }
-
-    // The interrupt check's fence also orders this re-check against the
-    // BLOCKED store, closing the race where a source fires during the transition.
-    if (pt.triggered.load_acquire()) {
-        sched::cancel_block_task();
-        return true;
-    }
-
-    if (timeout_ns > 0) {
-        uint64_t deadline = clock::now_ns() + timeout_ns;
+    if (timed) {
         timer::schedule_sleep(self, deadline);
     }
 
-    sched::yield();
+    while (!sched::block_task_interrupted() && !pt.triggered.load_acquire() &&
+           (!timed || clock::now_ns() < deadline)) {
+        sched::yield();
+        sched::prepare_to_block_task();
+    }
 
-    timer::cancel_sleep(self);
+    sched::cancel_block_task();
+    if (timed) {
+        timer::cancel_sleep(self);
+    }
 
     return pt.triggered.load_acquire() != 0;
 }

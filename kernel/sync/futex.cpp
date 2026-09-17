@@ -85,32 +85,26 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     sched::prepare_to_block_task();
     bucket->waiters.push_back(&waiter);
 
-    if (timeout_ns > 0) {
-        uint64_t deadline = clock::now_ns() + timeout_ns;
+    bool timed = timeout_ns > 0;
+    uint64_t deadline = timed ? clock::now_ns() + timeout_ns : 0;
+    if (timed) {
         timer::schedule_sleep(self, deadline);
     }
 
     spin_unlock_irqrestore(bucket->lock, irq);
 
-    if (sched::block_task_interrupted()) {
-        // Interrupted during futex entry: unwind waiter and timer, don't block.
-        timer::cancel_sleep(self);
-        irq = spin_lock_irqsave(bucket->lock);
-        if (waiter.link.is_linked()) {
-            bucket->waiters.remove(&waiter);
-        }
-        spin_unlock_irqrestore(bucket->lock, irq);
-        sched::cancel_block_task();
-        return -4; // EINTR
+    while (!sched::block_task_interrupted() && waiter.link.is_linked() &&
+           (!timed || clock::now_ns() < deadline)) {
+        sched::yield();
+        sched::prepare_to_block_task();
     }
 
-    sched::yield();
+    sched::cancel_block_task();
+    if (timed) {
+        timer::cancel_sleep(self);
+    }
 
-    // Cancel any outstanding timer to prevent spurious wakes of future
-    // blocking operations if we were woken by futex_wake before timeout.
-    timer::cancel_sleep(self);
-
-    // Remove self from bucket if still linked (timeout or interrupt wakeup).
+    // Still linked means no wake came for this wait, so a timeout or an interrupt
     bool was_linked = false;
     irq = spin_lock_irqsave(bucket->lock);
     if (waiter.link.is_linked()) {

@@ -506,13 +506,13 @@ __PRIVILEGED_CODE uint64_t sleep_ns(uint64_t ns) {
     prepare_to_block_task();
     timer::schedule_sleep(self, deadline);
 
-    if (block_task_interrupted()) {
-        // Interrupted before or during sleep entry: do not serve the sleep.
-        timer::cancel_sleep(self);
-        cancel_block_task();
-    } else {
+    while (!block_task_interrupted() && clock::now_ns() < deadline) {
         yield();
+        prepare_to_block_task();
     }
+
+    cancel_block_task();
+    timer::cancel_sleep(self);
 
     uint64_t now = clock::now_ns();
     return deadline > now ? deadline - now : 0;
