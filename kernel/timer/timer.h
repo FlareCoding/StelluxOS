@@ -22,15 +22,15 @@ enum class deadline_state : uint8_t {
 
 /**
  * A timer that runs its callback once a deadline passes, embedded in the object
- * that owns it. Callbacks run in a worker task, must not sleep, and may free the timer.
+ * that owns it. Callbacks run lowered in a worker task and must not sleep.
  */
 struct deadline_timer {
-    rbt::node             link;
-    uint64_t              deadline_ns;
-    uint64_t              sequence;
-    deadline_fn           fn;
-    uint32_t              cpu;
-    sync::atomic<uint8_t> state;
+    rbt::node              link;
+    uint64_t               deadline_ns;
+    uint64_t               sequence;
+    deadline_fn            fn;
+    sync::atomic<uint32_t> cpu;
+    sync::atomic<uint8_t>  state;
 };
 
 /**
@@ -96,8 +96,10 @@ __PRIVILEGED_CODE void cancel_sleep(sched::task* t);
 /**
  * @brief Schedules `timer` to run its callback on the calling CPU once
  * `deadline_ns` passes or moves the deadline of a timer already scheduled.
- * A running timer may schedule itself again from its own callback, which is
- * how a periodic timer is written.
+ * Safe against a concurrent `schedule` or `cancel` of the same timer from any
+ * CPU. A running timer may schedule itself again from its own callback,
+ * elevated like every privileged call made lowered, which is how a periodic
+ * timer is written.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void schedule(deadline_timer* timer, uint64_t deadline_ns);

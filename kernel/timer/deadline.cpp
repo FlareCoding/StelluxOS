@@ -41,6 +41,10 @@ struct expiry_batch {
     uint64_t sequence_limit;
 };
 
+// A timer carries this CPU number while it moves between trees, so anyone
+// trying to lock its owner waits until the move is complete
+constexpr uint32_t CPU_MIGRATING = ~0u;
+
 static DEFINE_PER_CPU(deadline_cpu_state, cpu_deadline_state);
 
 static bool has_state(const deadline_timer* timer, deadline_state value) {
@@ -56,22 +60,27 @@ static deadline_timer* next_entry(deadline_timer* timer) {
 }
 
 /**
- * Takes the timer out of the tree of the CPU holding it. False when it is
- * no longer scheduled there because its callback started in the meantime.
+ * Locks the CPU state that owns `timer`, retrying while another CPU is moving
+ * it. Returns with interrupts off and the owner's lock held.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static bool unschedule(deadline_timer* timer) {
-    deadline_cpu_state& owner = per_cpu_on(cpu_deadline_state, timer->cpu);
-    sync::irq_lock_guard guard(owner.lock);
+__PRIVILEGED_CODE static deadline_cpu_state& lock_owner(deadline_timer* timer, sync::irq_state* irq) {
+    while (true) {
+        uint32_t cpu_id = timer->cpu.load_acquire();
+        if (cpu_id == CPU_MIGRATING) {
+            cpu::relax();
+            continue;
+        }
 
-    if (!has_state(timer, deadline_state::scheduled)) {
-        return false;
+        deadline_cpu_state& owner = per_cpu_on(cpu_deadline_state, cpu_id);
+        *irq = sync::spin_lock_irqsave(owner.lock);
+
+        if (timer->cpu.load_acquire() == cpu_id) {
+            return owner;
+        }
+
+        sync::spin_unlock_irqrestore(owner.lock, *irq);
     }
-
-    owner.tree.remove(*timer);
-    set_state(timer, deadline_state::idle);
-
-    return true;
 }
 
 static deadline_timer* first_due_locked(deadline_cpu_state& state, uint64_t now_ns, uint64_t pass_sequence) {
@@ -226,19 +235,29 @@ __PRIVILEGED_CODE void schedule(deadline_timer* timer, uint64_t deadline_ns) {
         return;
     }
 
+    sync::irq_state irq;
+    deadline_cpu_state* owner = &lock_owner(timer, &irq);
+
     if (has_state(timer, deadline_state::scheduled)) {
-        (void)unschedule(timer);
+        owner->tree.remove(*timer);
+        set_state(timer, deadline_state::idle);
     }
 
-    // Interrupts go off before the CPU is read, so the timer lands in the
-    // tree of the CPU that records itself as its owner
-    sync::irq_state irq{cpu::irq_save()};
+    // Interrupts are off, so this CPU cannot change under us. A timer owned
+    // elsewhere is marked as moving while no lock is held, and anyone racing
+    // for it waits in lock_owner until it has a tree again.
+    uint32_t cpu_id = percpu::current_cpu_id();
     deadline_cpu_state& state = this_cpu(cpu_deadline_state);
-    sync::spin_lock(state.lock);
+
+    if (owner != &state) {
+        timer->cpu.store_release(CPU_MIGRATING);
+        sync::spin_unlock(owner->lock);
+        sync::spin_lock(state.lock);
+    }
 
     timer->deadline_ns = deadline_ns;
     timer->sequence = state.next_sequence++;
-    timer->cpu = percpu::current_cpu_id();
+    timer->cpu.store_release(cpu_id);
     (void)state.tree.insert(timer);
     set_state(timer, deadline_state::scheduled);
 
@@ -255,19 +274,17 @@ __PRIVILEGED_CODE bool cancel(deadline_timer* timer) {
         return true;
     }
 
-    deadline_cpu_state& owner = per_cpu_on(cpu_deadline_state, timer->cpu);
-    sync::irq_lock_guard guard(owner.lock);
+    sync::irq_state irq;
+    deadline_cpu_state& owner = lock_owner(timer, &irq);
 
-    if (owner.running == timer) {
-        return false;
-    }
-
-    if (has_state(timer, deadline_state::scheduled)) {
+    bool running = owner.running == timer;
+    if (!running && has_state(timer, deadline_state::scheduled)) {
         owner.tree.remove(*timer);
         set_state(timer, deadline_state::idle);
     }
 
-    return true;
+    sync::spin_unlock_irqrestore(owner.lock, irq);
+    return !running;
 }
 
 bool is_pending(const deadline_timer* timer) {
