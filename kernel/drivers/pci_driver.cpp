@@ -206,12 +206,13 @@ __PRIVILEGED_CODE int32_t init() {
                 continue;
             }
 
+            // An attached driver may have registered an interface, which the
+            // stack keeps for the life of the kernel, so it is disabled, not freed
             sched::task* t = sched::create_kernel_task(
                 pci_task_entry, drv, drv->name());
             if (!t) {
                 log::error("drivers: task creation failed for %s", drv->name());
                 drv->detach();
-                heap::ufree_delete(drv);
                 continue;
             }
 

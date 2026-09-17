@@ -767,17 +767,18 @@ int32_t rtl8168_driver::attach() {
         log::info("rtl8168: MSI configured");
     }
 
-    // The interface comes up without an address, userland assigns one
+    hw_start();
+
+    // Registered last when nothing can fail
     m_mtu = net::eth::MTU;
     m_enabled = true;
 
     rc = net::register_interface(this, "eth");
     if (rc != net::OK) {
         log::error("rtl8168: interface registration failed: %d", rc);
+        m_enabled = false;
         return rc;
     }
-
-    hw_start();
 
     log::info("rtl8168: attached successfully (%s)",
               m_has_msi ? "MSI" : "polling");
@@ -787,6 +788,10 @@ int32_t rtl8168_driver::attach() {
 
 int32_t rtl8168_driver::detach() {
     log::info("rtl8168: detaching");
+
+    // The registry may still name this interface, so it refuses traffic from here on
+    m_enabled = false;
+    RUN_ELEVATED(set_link_up(false));
 
     hw_stop();
     free_rings();

@@ -856,20 +856,21 @@ int32_t bcm_genet_driver::attach() {
     // Interrupt setup failure is non-fatal, the driver falls back to polling.
     setup_interrupts();
 
-    // The interface comes up without an address, userland assigns one
+    setup_rx_filter();
+    dma_enable_tx_rx();
+    if (m_has_irq)
+        enable_interrupts();
+
+    // Registered last when nothing can fail
     m_mtu = net::eth::MTU;
     m_enabled = true;
 
     rc = net::register_interface(this, "eth");
     if (rc != net::OK) {
         log::error("genet: interface registration failed: %d", rc);
+        m_enabled = false;
         return rc;
     }
-
-    setup_rx_filter();
-    dma_enable_tx_rx();
-    if (m_has_irq)
-        enable_interrupts();
 
     log::info("genet: attached successfully");
     dump_state();
@@ -878,6 +879,10 @@ int32_t bcm_genet_driver::attach() {
 
 int32_t bcm_genet_driver::detach() {
     log::info("genet: detaching");
+
+    // The registry may still name this interface, so it refuses traffic from here on
+    m_enabled = false;
+    RUN_ELEVATED(set_link_up(false));
 
     dma_disable_tx_rx();
     disable_interrupts();

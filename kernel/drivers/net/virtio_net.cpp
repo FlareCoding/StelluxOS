@@ -396,17 +396,6 @@ int32_t virtio_net_driver::attach() {
     rc = read_mac();
     if (rc != 0) return rc;
 
-    // The interface comes up without an address, userland assigns one
-    m_mtu = net::eth::MTU;
-    m_enabled = true;
-    RUN_ELEVATED(set_link_up(link_up()));
-
-    rc = net::register_interface(this, "eth");
-    if (rc != net::OK) {
-        log::error("virtio-net: interface registration failed: %d", rc);
-        return rc;
-    }
-
     rc = init_queues();
     if (rc != 0) {
         write_status(read_status() | VIRTIO_STATUS_FAILED);
@@ -445,13 +434,28 @@ int32_t virtio_net_driver::attach() {
     // sending buffer available notifications before DRIVER_OK is set.
     fill_rx_queue();
 
+    // Registered last when nothing can fail
+    m_mtu = net::eth::MTU;
+    m_enabled = true;
+    RUN_ELEVATED(set_link_up(link_up()));
+
+    rc = net::register_interface(this, "eth");
+    if (rc != net::OK) {
+        log::error("virtio-net: interface registration failed: %d", rc);
+        m_enabled = false;
+        return rc;
+    }
+
     log::info("virtio-net: DRIVER_OK, device is live");
 
     return 0;
 }
 
 int32_t virtio_net_driver::detach() {
-    // Reset device
+    // The registry may still name this interface, so it refuses traffic from here on
+    m_enabled = false;
+    RUN_ELEVATED(set_link_up(false));
+
     write_status(0);
     return pci_driver::detach();
 }
