@@ -4,6 +4,7 @@
 #include "hw/cpu.h"
 #include "percpu/percpu.h"
 #include "sched/sched.h"
+#include "sched/task.h"
 #include "smp/smp.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
@@ -109,10 +110,11 @@ __PRIVILEGED_CODE static expiry_batch begin_batch(uint64_t now_ns) {
 
 /**
  * Removes the next timer due in the batch and records it as the one running.
- * Nullptr ends the batch.
+ * Nullptr ends the batch. The callback is copied out here because a timer may
+ * sit in privileged memory that the lowered worker cannot read.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE static deadline_timer* take_next_due(const expiry_batch& batch) {
+__PRIVILEGED_CODE static deadline_timer* take_next_due(const expiry_batch& batch, deadline_fn* fn) {
     sync::irq_state irq{cpu::irq_save()};
     deadline_cpu_state& state = this_cpu(cpu_deadline_state);
     sync::spin_lock(state.lock);
@@ -122,6 +124,7 @@ __PRIVILEGED_CODE static deadline_timer* take_next_due(const expiry_batch& batch
         state.tree.remove(*due);
         set_state(due, deadline_state::idle);
         state.running = due;
+        *fn = due->fn;
     }
 
     sync::spin_unlock_irqrestore(state.lock, irq);
@@ -174,12 +177,13 @@ static void worker_entry(void*) {
 
         while (true) {
             deadline_timer* due = nullptr;
-            RUN_ELEVATED(due = take_next_due(batch));
+            deadline_fn fn = nullptr;
+            RUN_ELEVATED(due = take_next_due(batch, &fn));
             if (!due) {
                 break;
             }
 
-            due->fn(due);
+            fn(due);
             RUN_ELEVATED(finish_callback());
         }
     }
@@ -297,9 +301,32 @@ bool is_pending(const deadline_timer* timer) {
 __PRIVILEGED_CODE void __dbg_test_fire_expired(uint64_t now_ns) {
     expiry_batch batch = begin_batch(now_ns);
 
-    while (deadline_timer* due = take_next_due(batch)) {
-        due->fn(due);
+    deadline_fn fn = nullptr;
+    while (deadline_timer* due = take_next_due(batch, &fn)) {
+        fn(due);
         finish_callback();
+    }
+}
+
+static void wake_sleeper(deadline_timer* self) {
+    sched::task* task = owner_of<sched::task, &sched::task::sleep_timer>(self);
+    RUN_ELEVATED(sched::wake(task));
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void schedule_sleep(sched::task* task, uint64_t deadline_ns) {
+    task->sleep_timer.fn = wake_sleeper;
+    schedule(&task->sleep_timer, deadline_ns);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void cancel_sleep(sched::task* task) {
+    while (!cancel(&task->sleep_timer)) {
+        cpu::relax();
     }
 }
 

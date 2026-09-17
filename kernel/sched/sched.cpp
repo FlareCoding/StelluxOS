@@ -757,8 +757,7 @@ __PRIVILEGED_CODE task* create_kernel_task(
     t->task_registry_link = {};
     t->sched_link = {};
     t->wait_link = {};
-    t->timer_link = {};
-    t->timer_deadline = 0;
+    timer::init_deadline_timer(&t->sleep_timer, nullptr);
 
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
@@ -1094,8 +1093,7 @@ __PRIVILEGED_CODE task* create_user_task(
     t->task_registry_link = {};
     t->sched_link = {};
     t->wait_link = {};
-    t->timer_link = {};
-    t->timer_deadline = 0;
+    timer::init_deadline_timer(&t->sleep_timer, nullptr);
 
     // The task name shows the program, while argv[0] kept the full path
     const char* name = path_basename(path);
@@ -1288,8 +1286,7 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
     t->task_registry_link = {};
     t->sched_link = {};
     t->wait_link = {};
-    t->timer_link = {};
-    t->timer_deadline = 0;
+    timer::init_deadline_timer(&t->sleep_timer, nullptr);
 
     t->reaper_node.init(reap_task_thunk);
 
@@ -1401,8 +1398,7 @@ __PRIVILEGED_CODE int32_t init() {
     idle->task_registry_link = {};
     idle->sched_link = {};
     idle->wait_link = {};
-    idle->timer_link = {};
-    idle->timer_deadline = 0;
+    timer::init_deadline_timer(&idle->sleep_timer, nullptr);
 
     string::memcpy(idle->name, "idle", 4);
     idle->name[4] = '\0';

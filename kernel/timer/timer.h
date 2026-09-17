@@ -33,6 +33,23 @@ struct deadline_timer {
     sync::atomic<uint8_t>  state;
 };
 
+// Puts an unscheduled `timer` in the idle state with `fn` as its callback
+inline void init_deadline_timer(deadline_timer* timer, deadline_fn fn) {
+    timer->link = {};
+    timer->deadline_ns = 0;
+    timer->sequence = 0;
+    timer->fn = fn;
+    timer->cpu.store_relaxed(0);
+    timer->state.store_relaxed(static_cast<uint8_t>(deadline_state::idle));
+}
+
+// The object holding `timer` as its member `Member`
+template <typename T, deadline_timer T::*Member>
+inline T* owner_of(deadline_timer* timer) {
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(&(static_cast<T*>(nullptr)->*Member));
+    return reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(timer) - offset);
+}
+
 /**
  * @brief Initialize the timer subsystem on the BSP.
  * Calibrates hardware timer, programs first one-shot tick, enables IRQs.
@@ -75,23 +92,18 @@ __PRIVILEGED_CODE uint32_t tick_hz();
 __PRIVILEGED_CODE bool on_interrupt();
 
 /**
- * @brief Schedule a task to be woken at the given absolute deadline.
- * Inserts the task into the per-CPU sleep queue and reprograms the
- * hardware timer if the new deadline is sooner than the current one.
- * The task's state must already be TASK_STATE_BLOCKED before this call.
- * @param t Task to sleep (must be the current task on this CPU).
- * @param deadline_ns Absolute wakeup time in nanoseconds (clock::now_ns() timebase).
+ * @brief Wakes `task` once `deadline_ns` passes, through the deadline timer
+ * embedded in it. The task must already be TASK_STATE_BLOCKED.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns);
+__PRIVILEGED_CODE void schedule_sleep(sched::task* task, uint64_t deadline_ns);
 
 /**
- * @brief Remove a task from its CPU's sleep queue if present.
- * No-op if the task is not on any sleep queue. Safe to call from
- * any CPU. Must be called from elevated/privileged context.
+ * @brief Stops the sleep timer of `task`, waiting out a callback that is
+ * already waking it, so nothing reaches the task through its timer afterwards.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void cancel_sleep(sched::task* t);
+__PRIVILEGED_CODE void cancel_sleep(sched::task* task);
 
 /**
  * @brief Schedules `timer` to run its callback on the calling CPU once

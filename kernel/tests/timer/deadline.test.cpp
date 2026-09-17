@@ -48,14 +48,8 @@ static void record_run(timer::deadline_timer* self) {
     }
 }
 
-// The state field is an atomic and cannot be assigned, so a probe is cleared by hand
 static void clear(probe& p, timer::deadline_fn fn, uint32_t id) {
-    p.timer.link = {};
-    p.timer.deadline_ns = 0;
-    p.timer.sequence = 0;
-    p.timer.fn = fn;
-    p.timer.cpu.store_relaxed(0);
-    p.timer.state.store_relaxed(0);
+    timer::init_deadline_timer(&p.timer, fn);
     p.id = id;
     p.runs = 0;
     p.ran_on_cpu = 0;

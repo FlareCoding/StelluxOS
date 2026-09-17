@@ -10,6 +10,7 @@
 #include "signals/signal_types.h"
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
+#include "timer/timer.h"
 #include "resource/handle_table.h"
 
 namespace resource::proc_provider { struct proc_resource; }
@@ -95,8 +96,7 @@ struct task : rc::ref_counted<task> {
     // Scheduler state
     list::node              sched_link;
     list::node              wait_link;
-    list::node              timer_link;
-    uint64_t                timer_deadline;
+    timer::deadline_timer   sleep_timer;
     sync::atomic<uint64_t>  run_ticks; // timer ticks observed while current
     rc::reaper::dead_node   reaper_node;
 
