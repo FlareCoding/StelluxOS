@@ -163,6 +163,10 @@ extern "C" __PRIVILEGED_CODE void stlx_init() {
         log::warn("smp::init failed, continuing with single CPU");
     }
 
+    if (timer::start_deadline_workers() != timer::OK) {
+        log::fatal("timer::start_deadline_workers failed");
+    }
+
     if (net::init() != net::OK) {
         log::warn("net::init failed, network stack will not function properly");
     }

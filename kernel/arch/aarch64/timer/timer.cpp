@@ -1,4 +1,5 @@
 #include "timer/timer.h"
+#include "timer/timer_internal.h"
 #include "sched/task.h"
 #include "sched/sched.h"
 #include "clock/clock.h"
@@ -88,6 +89,7 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     state.next_tick_ns = clock::now_ns() + state.tick_interval_ns;
     state.programmed_ns = state.next_tick_ns;
     state.sleep_queue.init();
+    deadline_init_this_cpu();
 
     g_tick_hz = hz;
     hwtimer::write_cntv_tval(state.tick_interval_ticks);
@@ -125,6 +127,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t hz) {
     state.next_tick_ns = clock::now_ns() + state.tick_interval_ns;
     state.programmed_ns = state.next_tick_ns;
     state.sleep_queue.init();
+    deadline_init_this_cpu();
 
     hwtimer::write_cntv_tval(state.tick_interval_ticks);
     hwtimer::write_cntv_ctl(1);
@@ -184,6 +187,11 @@ __PRIVILEGED_CODE bool on_interrupt() {
         }
     }
 
+    uint64_t deadline_next = deadline_interrupt(now);
+    if (deadline_next < next_event) {
+        next_event = deadline_next;
+    }
+
     state.programmed_ns = next_event;
     program_oneshot(next_event);
 
@@ -204,6 +212,21 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
         [](sched::task* a, sched::task* b) {
             return a->timer_deadline < b->timer_deadline;
         });
+
+    if (deadline_ns < state.programmed_ns) {
+        state.programmed_ns = deadline_ns;
+        program_oneshot(deadline_ns);
+    }
+
+    sync::spin_unlock_irqrestore(state.lock, irq);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void arch_request_deadline(uint64_t deadline_ns) {
+    timer_cpu_state& state = this_cpu(cpu_timer_state);
+    sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
 
     if (deadline_ns < state.programmed_ns) {
         state.programmed_ns = deadline_ns;
