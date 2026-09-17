@@ -29,6 +29,14 @@ static uint32_t futex_hash(mm::mm_context* mm, uintptr_t addr) {
     return static_cast<uint32_t>(h) & FUTEX_BUCKET_MASK;
 }
 
+__PRIVILEGED_CODE static bool waiter_queued(futex_bucket* bucket, futex_waiter& waiter) {
+    irq_state irq = spin_lock_irqsave(bucket->lock);
+    bool queued = waiter.link.is_linked();
+
+    spin_unlock_irqrestore(bucket->lock, irq);
+    return queued;
+}
+
 __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
                                      uint64_t timeout_ns) {
     sched::task* self = sched::current();
@@ -93,7 +101,7 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
 
     spin_unlock_irqrestore(bucket->lock, irq);
 
-    while (!sched::block_task_interrupted() && waiter.link.is_linked() &&
+    while (!sched::block_task_interrupted() && waiter_queued(bucket, waiter) &&
            (!timed || clock::now_ns() < deadline)) {
         sched::yield();
         sched::prepare_to_block_task();
