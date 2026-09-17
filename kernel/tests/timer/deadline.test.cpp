@@ -54,7 +54,7 @@ static void clear(probe& p, timer::deadline_fn fn, uint32_t id) {
     p.runs = 0;
     p.ran_on_cpu = 0;
     p.ran_at_ns = 0;
-    p.cancel_self_result = true;
+    p.cancel_self_result = false;
 }
 
 static void reset(probe* probes, size_t count, timer::deadline_fn fn) {
@@ -129,15 +129,15 @@ TEST(deadline_timer, cancel_prevents_the_callback) {
     probe probes[1];
     reset(probes, 1, record_run);
 
-    bool cancelled = false;
-    RUN_ELEVATED(cancelled = timer::cancel(&probes[0].timer));
-    EXPECT_TRUE(cancelled);
+    timer::cancel_outcome outcome = timer::cancel_outcome::running;
+    RUN_ELEVATED(outcome = timer::cancel(&probes[0].timer));
+    EXPECT_EQ(outcome, timer::cancel_outcome::not_scheduled);
 
     schedule_at(probes[0], 10 * MS);
     EXPECT_TRUE(timer::is_pending(&probes[0].timer));
 
-    RUN_ELEVATED(cancelled = timer::cancel(&probes[0].timer));
-    EXPECT_TRUE(cancelled);
+    RUN_ELEVATED(outcome = timer::cancel(&probes[0].timer));
+    EXPECT_EQ(outcome, timer::cancel_outcome::removed);
     EXPECT_FALSE(timer::is_pending(&probes[0].timer));
 
     fire_at(20 * MS);
@@ -151,9 +151,9 @@ TEST(deadline_timer, cancel_after_the_deadline_passed_still_prevents_it) {
     schedule_at(probes[0], 10 * MS);
 
     // The deadline is behind us but the worker has not taken the timer yet
-    bool cancelled = false;
-    RUN_ELEVATED(cancelled = timer::cancel(&probes[0].timer));
-    EXPECT_TRUE(cancelled);
+    timer::cancel_outcome outcome = timer::cancel_outcome::running;
+    RUN_ELEVATED(outcome = timer::cancel(&probes[0].timer));
+    EXPECT_EQ(outcome, timer::cancel_outcome::removed);
 
     fire_at(30 * MS);
     EXPECT_EQ(probes[0].runs, 0u);
@@ -216,12 +216,12 @@ TEST(deadline_timer, callback_can_cancel_a_timer_due_in_the_same_batch) {
 
 static void cancel_self(timer::deadline_timer* self) {
     record_run(self);
-    bool result = true;
-    RUN_ELEVATED(result = timer::cancel(self));
-    probe_of(self)->cancel_self_result = result;
+    timer::cancel_outcome outcome = timer::cancel_outcome::not_scheduled;
+    RUN_ELEVATED(outcome = timer::cancel(self));
+    probe_of(self)->cancel_self_result = outcome == timer::cancel_outcome::running;
 }
 
-TEST(deadline_timer, cancel_reports_false_while_the_callback_runs) {
+TEST(deadline_timer, cancel_reports_running_from_inside_the_callback) {
     probe probes[1];
     reset(probes, 1, cancel_self);
 
@@ -229,7 +229,7 @@ TEST(deadline_timer, cancel_reports_false_while_the_callback_runs) {
     fire_at(10 * MS);
 
     EXPECT_EQ(probes[0].runs, 1u);
-    EXPECT_FALSE(probes[0].cancel_self_result);
+    EXPECT_TRUE(probes[0].cancel_self_result);
 }
 
 // --- real time, through the interrupt and the worker ---
@@ -361,13 +361,13 @@ TEST(deadline_timer, schedule_and_cancel_race_across_cpus_leaves_a_consistent_ti
 
     // Whatever the interleaving, the timer ends in exactly one place or none.
     // A cancel that meets the callback mid-run is legitimate, so retry briefly.
-    bool cancelled = false;
+    timer::cancel_outcome outcome = timer::cancel_outcome::running;
     uint64_t give_up = clock::now_ns() + 100 * MS;
-    while (!cancelled && clock::now_ns() < give_up) {
-        RUN_ELEVATED(cancelled = timer::cancel(&g_real_probe.timer));
+    while (outcome == timer::cancel_outcome::running && clock::now_ns() < give_up) {
+        RUN_ELEVATED(outcome = timer::cancel(&g_real_probe.timer));
     }
 
-    EXPECT_TRUE(cancelled);
+    EXPECT_NE(outcome, timer::cancel_outcome::running);
     EXPECT_FALSE(timer::is_pending(&g_real_probe.timer));
 
     uint64_t settle = clock::now_ns() + 20 * MS;

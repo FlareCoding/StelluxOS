@@ -273,22 +273,25 @@ __PRIVILEGED_CODE void schedule(deadline_timer* timer, uint64_t deadline_ns) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool cancel(deadline_timer* timer) {
+__PRIVILEGED_CODE cancel_outcome cancel(deadline_timer* timer) {
     if (!timer) {
-        return true;
+        return cancel_outcome::not_scheduled;
     }
 
     sync::irq_state irq;
     deadline_cpu_state& owner = lock_owner(timer, &irq);
 
-    bool running = owner.running == timer;
-    if (!running && has_state(timer, deadline_state::scheduled)) {
+    cancel_outcome outcome = cancel_outcome::not_scheduled;
+    if (owner.running == timer) {
+        outcome = cancel_outcome::running;
+    } else if (has_state(timer, deadline_state::scheduled)) {
         owner.tree.remove(*timer);
         set_state(timer, deadline_state::idle);
+        outcome = cancel_outcome::removed;
     }
 
     sync::spin_unlock_irqrestore(owner.lock, irq);
-    return !running;
+    return outcome;
 }
 
 bool is_pending(const deadline_timer* timer) {
@@ -308,15 +311,29 @@ __PRIVILEGED_CODE void __dbg_test_fire_expired(uint64_t now_ns) {
     }
 }
 
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static void drop_sleeper_reference(sched::task* task) {
+    if (task->release()) {
+        sched::task::ref_destroy(task);
+    }
+}
+
 static void wake_sleeper(deadline_timer* self) {
     sched::task* task = owner_of<sched::task, &sched::task::sleep_timer>(self);
-    RUN_ELEVATED(sched::wake(task));
+
+    RUN_ELEVATED({
+        sched::wake(task);
+        drop_sleeper_reference(task);
+    });
 }
 
 /**
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void schedule_sleep(sched::task* task, uint64_t deadline_ns) {
+    task->add_ref();
     task->sleep_timer.fn = wake_sleeper;
     schedule(&task->sleep_timer, deadline_ns);
 }
@@ -325,8 +342,8 @@ __PRIVILEGED_CODE void schedule_sleep(sched::task* task, uint64_t deadline_ns) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void cancel_sleep(sched::task* task) {
-    while (!cancel(&task->sleep_timer)) {
-        cpu::relax();
+    if (cancel(&task->sleep_timer) == cancel_outcome::removed) {
+        drop_sleeper_reference(task);
     }
 }
 

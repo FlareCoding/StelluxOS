@@ -20,6 +20,14 @@ enum class deadline_state : uint8_t {
     scheduled = 1,
 };
 
+// Only `removed` means a scheduled timer was stopped, so only
+// that caller owns whatever the callback would have released.
+enum class cancel_outcome : uint8_t {
+    not_scheduled = 0,
+    removed       = 1,
+    running       = 2,
+};
+
 /**
  * A timer that runs its callback once a deadline passes, embedded in the object
  * that owns it. Callbacks run lowered in a worker task and must not sleep.
@@ -93,14 +101,15 @@ __PRIVILEGED_CODE bool on_interrupt();
 
 /**
  * @brief Wakes `task` once `deadline_ns` passes, through the deadline timer
- * embedded in it. The task must already be TASK_STATE_BLOCKED.
+ * embedded in it. The task must already be TASK_STATE_BLOCKED. The scheduled
+ * timer holds a reference to the task until it fires or is cancelled.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void schedule_sleep(sched::task* task, uint64_t deadline_ns);
 
 /**
- * @brief Stops the sleep timer of `task`, waiting out a callback that is
- * already waking it, so nothing reaches the task through its timer afterwards.
+ * @brief Stops the sleep timer of `task` if it has not fired. Never waits, so
+ * it is safe from any context, interrupt handlers included.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void cancel_sleep(sched::task* task);
@@ -117,14 +126,14 @@ __PRIVILEGED_CODE void cancel_sleep(sched::task* task);
 __PRIVILEGED_CODE void schedule(deadline_timer* timer, uint64_t deadline_ns);
 
 /**
- * @brief Removes `timer` from the tree holding it.
- * @return True when the callback will not run. False when it is already
- *         running and the owner must let it finish. The owner protects
- *         itself against that case by holding a reference for every
- *         scheduled timer and checking a generation counter in the callback.
+ * @brief Removes `timer` from the tree holding it. Never waits.
+ * @return `removed` when a scheduled timer was stopped, `not_scheduled` when
+ *         there was nothing to stop, `running` when the callback has already
+ *         started and will finish on its own. An owner that must outlive a
+ *         running callback holds a reference for every scheduled timer.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE bool cancel(deadline_timer* timer);
+__PRIVILEGED_CODE cancel_outcome cancel(deadline_timer* timer);
 
 // True while `timer` waits in a tree for its deadline
 bool is_pending(const deadline_timer* timer);
