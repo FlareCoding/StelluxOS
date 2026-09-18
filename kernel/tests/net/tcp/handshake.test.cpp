@@ -706,6 +706,43 @@ TEST(tcp_handshake, simultaneous_open_answers_with_a_syn_ack_and_completes_on_th
     EXPECT_EQ(lp.link.frames_sent(), 2u);
 }
 
+TEST(tcp_handshake, syn_ack_arriving_after_the_open_timed_out_is_ignored) {
+    linked_peer lp;
+    connecting active(lp);
+    uint32_t iss = active.conn->iss;
+
+    uint64_t backoff = TIMEOUT_INIT_NS;
+    for (size_t attempt = 0; attempt <= SYN_RETRIES; attempt++) {
+        advance_and_fire(backoff);
+        backoff *= 2;
+    }
+
+    ASSERT_EQ(active.conn->state, tcp_state::closed);
+    size_t frames = lp.link.frames_sent();
+
+    // The connection is gone, so the peer's SYN-ACK meets the CLOSED state and a reset
+    EXPECT_EQ(input(lp.remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), frames + 1);
+    EXPECT_EQ(sent_tcp(lp.link, frames)->flags, FLAG_RST);
+    EXPECT_EQ(sent_seq(lp, frames), iss + 1);
+    EXPECT_EQ(active.conn->state, tcp_state::closed);
+    EXPECT_EQ(active.conn->pending_error, resource::ERR_TIMEDOUT);
+    EXPECT_FALSE(lookup(active.conn->key));
+}
+
+TEST(tcp_handshake, a_late_failure_leaves_an_established_connection_alone) {
+    linked_peer lp;
+    connecting active(lp);
+
+    EXPECT_EQ(input(lp.remote.segment(FLAG_SYN | FLAG_ACK, 7000, active.conn->iss + 1)), OK);
+    ASSERT_EQ(active.conn->state, tcp_state::established);
+
+    fail_connection(active.conn.ptr(), resource::ERR_TIMEDOUT);
+    EXPECT_EQ(active.conn->state, tcp_state::established);
+    EXPECT_EQ(active.conn->pending_error, resource::OK);
+    EXPECT_TRUE(lookup(active.conn->key));
+}
+
 TEST(tcp_handshake, only_a_bare_syn_reaches_the_listener) {
     linked_peer lp;
     listening on(8);

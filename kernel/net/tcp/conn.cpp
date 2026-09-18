@@ -200,14 +200,20 @@ int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>
 }
 
 void fail_connection(tcp_conn* conn, int32_t error) {
+    bool failed = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);
-        if (conn->state != tcp_state::closed) {
+        if (conn->state == tcp_state::syn_sent || conn->state == tcp_state::syn_rcvd) {
             conn->state = tcp_state::closed;
             conn->pending_error = error;
             conn->send_timer_kind = timer_kind::none;
+            failed = true;
         }
     });
+
+    if (!failed) {
+        return;
+    }
 
     disarm_timer(conn, &conn->send_timer);
     (void)remove(conn);

@@ -1,9 +1,14 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "harness.h"
 #include "net/tcp/socket.h"
 #include "net/tcp/conn.h"
 #include "net/net.h"
+#include "net/inet.h"
+#include "resource/socket_ops.h"
+#include "sync/poll.h"
+#include "mm/heap.h"
 
 TEST_SUITE(tcp_socket);
 
@@ -13,6 +18,45 @@ using namespace net::tcp;
 // lo0 owns 127.0.0.1 in every test image, TEST-NET-1 belongs to nobody
 static const ipv4::ipv4_addr g_loopback = {{127, 0, 0, 1}};
 static const ipv4::ipv4_addr g_foreign  = {{192, 0, 2, 1}};
+
+// A stream socket behind its resource object, the way the syscalls reach it
+struct stream_socket {
+    resource::resource_object* obj;
+
+    stream_socket() {
+        obj = heap::kalloc_new<resource::resource_object>();
+        obj->type = resource::resource_type::SOCKET;
+        obj->ops = socket_ops();
+        obj->impl = socket_open();
+    }
+
+    ~stream_socket() {
+        obj->ops->close(obj);
+        heap::kfree_delete(obj);
+    }
+
+    tcp_socket* impl() const { return static_cast<tcp_socket*>(obj->impl); }
+    const resource::socket_ops* ops() const { return obj->ops->socket; }
+
+    int32_t connect(const peer& remote, bool nonblock) const {
+        inet::sockaddr_in addr = {inet::AF_INET, htons(remote.port), remote.addr, {}};
+        return ops()->connect(obj, &addr, sizeof(addr), nonblock);
+    }
+
+    // The peer as it must answer: to the port the socket's SYN in `frame` came from
+    static peer replying_to(const linked_peer& lp, size_t frame) {
+        peer remote = lp.remote;
+        remote.host_port = ntohs(sent_tcp(lp.link, frame)->src_port);
+        return remote;
+    }
+
+    int32_t pending_error() const {
+        int32_t value = -1;
+        size_t len = sizeof(value);
+        ops()->getsockopt(obj, inet::SOL_SOCKET, inet::SO_ERROR, &value, &len);
+        return value;
+    }
+};
 
 TEST(tcp_socket, opens_unbound_and_closes) {
     tcp_socket* sock = socket_open();
@@ -121,4 +165,56 @@ TEST(tcp_socket, closing_frees_the_port_for_the_next_bind) {
     tcp_socket* second = socket_open();
     EXPECT_EQ(socket_bind(second, ipv4::UNSPECIFIED_ADDR, 7000), OK);
     socket_close(second);
+}
+
+TEST(tcp_socket, one_connect_at_a_time_and_a_failure_reported_once_frees_the_socket) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_SYN);
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_ALREADY);
+    EXPECT_EQ(sock.ops()->listen(sock.obj, 5), resource::ERR_INVAL);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), 0u);
+
+    // The peer refuses: poll and SO_ERROR report it, the peer name is gone
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(stream_socket::replying_to(lp, 0).segment(FLAG_RST | FLAG_ACK, 0, iss + 1)), OK);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_HUP | sync::POLL_ERR);
+    EXPECT_EQ(sock.pending_error(), resource::ERR_CONNREFUSED);
+    EXPECT_EQ(sock.pending_error(), resource::OK);
+
+    uint8_t name[inet::SOCKADDR_IN_LEN];
+    size_t name_len = sizeof(name);
+    EXPECT_EQ(sock.ops()->getname(sock.obj, name, &name_len, true), resource::ERR_NOTCONN);
+
+    // The attempt after a failure reports it and the one after that starts
+    // fresh from the port the socket was given
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_CONNREFUSED);
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    EXPECT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_SYN);
+    EXPECT_EQ(ntohs(sent_tcp(lp.link, 1)->src_port), ntohs(sent_tcp(lp.link, 0)->src_port));
+}
+
+TEST(tcp_socket, connect_completes_and_reports_the_peer) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(stream_socket::replying_to(lp, 0).segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1)), OK);
+
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_OUT);
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_ISCONN);
+    EXPECT_EQ(sock.pending_error(), resource::OK);
+
+    inet::sockaddr_in name = {};
+    size_t name_len = sizeof(name);
+    ASSERT_EQ(sock.ops()->getname(sock.obj, &name, &name_len, true), resource::OK);
+    EXPECT_TRUE(name.addr == lp.remote.addr);
+    EXPECT_EQ(ntohs(name.port), lp.remote.port);
 }

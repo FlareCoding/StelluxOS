@@ -18,6 +18,7 @@ constexpr size_t EPHEMERAL_BIND_ATTEMPTS = 8; // ports lost to a racing bind bef
 struct tcp_socket {
     endpoint                     local;
     bool                         bound;
+    bool                         connecting;
     rc::strong_ref<tcp_listener> listener;
     rc::strong_ref<tcp_conn>     conn;
     sync::spinlock               lock;

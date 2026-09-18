@@ -52,7 +52,9 @@ static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
         sync::irq_lock_guard guard(conn->lock);
         bool ack_ok = has_ack && seq_gt(ack, conn->iss) && seq_leq(ack, conn->snd_nxt);
 
-        if (has_ack && !ack_ok) {
+        if (conn->state != tcp_state::syn_sent) {
+            action = handshake_action::drop;
+        } else if (has_ack && !ack_ok) {
             action = (hdr->flags & FLAG_RST) ? handshake_action::drop : handshake_action::reset_peer;
         } else if (hdr->flags & FLAG_RST) {
             action = ack_ok ? handshake_action::refused : handshake_action::drop;
@@ -104,7 +106,9 @@ static int32_t syn_rcvd_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);
-        if (hdr->flags & FLAG_RST) {
+        if (conn->state != tcp_state::syn_rcvd) {
+            action = handshake_action::drop;
+        } else if (hdr->flags & FLAG_RST) {
             action = seq == conn->rcv_nxt ? handshake_action::refused : handshake_action::drop;
         } else if ((hdr->flags & FLAG_ACK) && seq_gt(ack, conn->snd_una) && seq_leq(ack, conn->snd_nxt)) {
             conn->snd_una = ack;

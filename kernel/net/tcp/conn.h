@@ -175,9 +175,10 @@ int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>
 void abort_connection(tcp_conn* conn);
 
 /**
- * @brief Ends a connection the peer or the network refused, without a reset:
+ * @brief Ends a handshake the peer or the network refused, without a reset:
  * `error` is what the socket will report, the record leaves the table, its
- * timer is disarmed, and every waiter on it is woken.
+ * timer is disarmed, and every waiter on it is woken. A connection that has
+ * completed its handshake in the meantime is left alone.
  */
 void fail_connection(tcp_conn* conn, int32_t error);
 

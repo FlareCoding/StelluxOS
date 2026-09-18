@@ -83,7 +83,7 @@ __PRIVILEGED_CODE int32_t socket_listen(tcp_socket* sock, uint16_t backlog) {
     }
 
     sync::irq_lock_guard guard(sock->lock);
-    if (sock->conn) {
+    if (sock->conn || sock->connecting) {
         return ERR_INVALID;
     }
 
@@ -130,7 +130,7 @@ __PRIVILEGED_CODE int32_t socket_bind(tcp_socket* sock, const ipv4::ipv4_addr& a
 
         sync::irq_lock_guard sockets_guard(g_sockets_lock);
         sync::irq_lock_guard guard(sock->lock);
-        if (sock->bound) {
+        if (sock->bound || sock->connecting) {
             return ERR_INVALID;
         }
 
@@ -266,6 +266,13 @@ __PRIVILEGED_CODE static int32_t socket_getname(resource::resource_object* obj, 
             return resource::ERR_NOTCONN;
         }
 
+        {
+            sync::irq_lock_guard conn_guard(sock->conn->lock);
+            if (sock->conn->state == tcp_state::closed) {
+                return resource::ERR_NOTCONN;
+            }
+        }
+
         const tuple& key = sock->conn->key;
         return inet::fill_sockaddr(kaddr, addrlen, key.remote_addr, key.remote_port) == OK
                    ? resource::OK : resource::ERR_INVAL;
@@ -284,6 +291,10 @@ __PRIVILEGED_CODE static int32_t socket_getname(resource::resource_object* obj, 
 static int32_t connect_precondition_locked(tcp_socket* sock) {
     if (sock->listener) {
         return resource::ERR_ISCONN;
+    }
+
+    if (sock->connecting) {
+        return resource::ERR_ALREADY;
     }
 
     if (!sock->conn) {
@@ -311,6 +322,32 @@ static int32_t connect_precondition_locked(tcp_socket* sock) {
     return error != resource::OK ? error : resource::ERR_CONNREFUSED;
 }
 
+// Routes the destination, fills in the local half of `key` the socket left
+// open, and opens the connection. Resource codes, since the socket reports them.
+__PRIVILEGED_CODE static int32_t begin_active_open(interface* pinned, tuple* key, rc::strong_ref<tcp_conn>* out) {
+    route::route_result route;
+    int32_t rc = pinned ? route::lookup_on(pinned, key->remote_addr, &route)
+                        : route::lookup(key->remote_addr, &route);
+    if (rc != OK) {
+        return resource::ERR_NETUNREACH;
+    }
+
+    if (key->local_addr.is_unspecified()) {
+        key->local_addr = route.source;
+    }
+
+    if (key->local_port == 0 && take_ephemeral_port(&key->local_port) != OK) {
+        return resource::ERR_ADDRNOTAVAIL;
+    }
+
+    rc = open_active(*key, route.iface, out);
+    if (rc == ERR_FULL) {
+        return resource::ERR_NOBUFS;
+    }
+
+    return inet::map_net_error(rc);
+}
+
 __PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, const void* kaddr,
                                                 size_t addrlen, bool nonblock) {
     tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
@@ -323,6 +360,7 @@ __PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, 
     }
 
     interface* pinned = nullptr;
+    tuple key = {ipv4::UNSPECIFIED_ADDR, dest, 0, port};
     {
         sync::irq_lock_guard guard(sock->lock);
         int32_t rc = connect_precondition_locked(sock);
@@ -330,41 +368,30 @@ __PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, 
             return rc;
         }
 
+        // Held across the route and the open, so no second connect or listen slips in
+        sock->connecting = true;
         pinned = sock->local.iface;
-    }
-
-    route::route_result route;
-    int32_t rc = pinned ? route::lookup_on(pinned, dest, &route) : route::lookup(dest, &route);
-    if (rc != OK) {
-        return resource::ERR_NETUNREACH;
-    }
-
-    tuple key = {route.source, dest, 0, port};
-    {
-        sync::irq_lock_guard guard(sock->lock);
         if (sock->bound) {
+            key.local_addr = sock->local.addr;
             key.local_port = sock->local.port;
-            if (!sock->local.addr.is_unspecified()) {
-                key.local_addr = sock->local.addr;
-            }
         }
     }
 
-    if (key.local_port == 0 && take_ephemeral_port(&key.local_port) != OK) {
-        return resource::ERR_ADDRNOTAVAIL;
-    }
-
     rc::strong_ref<tcp_conn> conn;
-    rc = open_active(key, route.iface, &conn);
-    if (rc != OK) {
-        return rc == ERR_FULL ? resource::ERR_NOBUFS : inet::map_net_error(rc);
-    }
+    int32_t rc = begin_active_open(pinned, &key, &conn);
 
     {
         sync::irq_lock_guard guard(sock->lock);
-        sock->local = {key.local_addr, key.local_port, pinned, sock->local.reuseaddr};
-        sock->bound = true;
-        sock->conn = conn;
+        sock->connecting = false;
+        if (rc == resource::OK) {
+            sock->local = {key.local_addr, key.local_port, pinned, sock->local.reuseaddr};
+            sock->bound = true;
+            sock->conn = conn;
+        }
+    }
+
+    if (rc != resource::OK) {
+        return rc;
     }
 
     {
@@ -391,11 +418,19 @@ __PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, 
         return resource::OK;
     }
 
-    if (state == tcp_state::closed) {
-        return error != resource::OK ? error : resource::ERR_CONNREFUSED;
+    if (state != tcp_state::closed) {
+        return resource::ERR_INTR;
     }
 
-    return resource::ERR_INTR;
+    // The failure is reported here and the socket is free for another attempt
+    {
+        sync::irq_lock_guard guard(sock->lock);
+        if (sock->conn.ptr() == conn.ptr()) {
+            sock->conn.reset();
+        }
+    }
+
+    return error != resource::OK ? error : resource::ERR_CONNREFUSED;
 }
 
 __PRIVILEGED_CODE static int32_t socket_getsockopt(resource::resource_object* obj, int32_t level,
