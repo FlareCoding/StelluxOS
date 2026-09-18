@@ -10,6 +10,7 @@
 #include "sched/task.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
+#include "common/string.h"
 
 constexpr uint64_t AF_UNIX     = 1;
 constexpr uint64_t SOCK_STREAM = 1;
@@ -245,9 +246,10 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
     if (!task) return syscall::EIO;
 
     resource::resource_object* obj = nullptr;
+    uint32_t handle_flags = 0;
     int32_t rc = resource::get_handle_object(
         task->handles, static_cast<resource::handle_t>(fd),
-        resource::RIGHT_READ, &obj);
+        resource::RIGHT_READ, &obj, &handle_flags);
     if (rc != resource::HANDLE_OK) return syscall::EBADF;
 
     if (obj->type != resource::resource_type::SOCKET || !obj->impl) {
@@ -271,7 +273,8 @@ DEFINE_SYSCALL3(connect, fd, addr, addrlen) {
         return syscall::EFAULT;
     }
 
-    int32_t result = sockops->connect(obj, kaddr, klen);
+    bool nonblock = (handle_flags & fs::O_NONBLOCK) != 0;
+    int32_t result = sockops->connect(obj, kaddr, klen, nonblock);
     resource::resource_release(obj);
     return (result == resource::OK) ? 0 : syscall::error_map::map_socket_op_error(result);
 }
@@ -804,6 +807,16 @@ DEFINE_SYSCALL5(getsockopt, fd, level, optname, optval, optlen) {
     if (result != resource::OK) {
         resource::resource_release(obj);
         return syscall::error_map::map_socket_op_error(result);
+    }
+
+    // SO_ERROR is the one option whose value is an errno, and the socket
+    // reports it as a resource code that only this layer can translate
+    if (level == net::inet::SOL_SOCKET && optname == net::inet::SO_ERROR && klen >= sizeof(int32_t)) {
+        int32_t pending = 0;
+        string::memcpy(&pending, kval, sizeof(pending));
+        int32_t errnum = pending == resource::OK
+            ? 0 : static_cast<int32_t>(-syscall::error_map::map_socket_op_error(pending));
+        string::memcpy(kval, &errnum, sizeof(errnum));
     }
 
     copy_rc = mm::uaccess::copy_to_user(

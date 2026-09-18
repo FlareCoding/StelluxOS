@@ -55,14 +55,6 @@ static int32_t drop(interface* iface, packet* pkt, int32_t rc) {
     return rc;
 }
 
-static uint16_t local_mss(const interface* iface) {
-    return static_cast<uint16_t>(iface->mtu() - ipv4::HEADER_LEN - HEADER_LEN);
-}
-
-static uint16_t advertised_window(uint32_t rcv_wnd) {
-    return static_cast<uint16_t>(rcv_wnd > 0xFFFF ? 0xFFFF : rcv_wnd);
-}
-
 // Caller holds the request lock
 static synack_fields synack_fields_locked(const tcp_request* request) {
     synack_fields fields = {};
@@ -82,7 +74,7 @@ static synack_fields synack_fields_locked(const tcp_request* request) {
 
 static int32_t send_synack(const synack_fields& fields) {
     return send_segment(fields.iface, fields.key, FLAG_SYN | FLAG_ACK, fields.iss, fields.irs + 1,
-                        advertised_window(RCV_BUF_INITIAL), fields.opts);
+                        window_field(RCV_BUF_INITIAL, 0), fields.opts);
 }
 
 // Caller holds the request lock
@@ -424,7 +416,7 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
 
 static int32_t send_request_ack(const tcp_request* request, const negotiated_fields& fields) {
     return send_segment(request->iface, request->key, FLAG_ACK, fields.iss + 1, fields.irs + 1,
-                        advertised_window(RCV_BUF_INITIAL), {});
+                        window_field(RCV_BUF_INITIAL, 0), {});
 }
 
 static int32_t promote(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {

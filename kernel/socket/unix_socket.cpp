@@ -307,7 +307,7 @@ __PRIVILEGED_CODE static int32_t unix_accept(
 }
 
 __PRIVILEGED_CODE static int32_t unix_connect(
-    resource::resource_object* obj, const void* kaddr, size_t addrlen
+    resource::resource_object* obj, const void* kaddr, size_t addrlen, bool
 ) {
     if (!obj || !obj->impl) return resource::ERR_INVAL;
 

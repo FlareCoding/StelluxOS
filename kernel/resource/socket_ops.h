@@ -13,7 +13,7 @@ using bind_fn = int32_t (*)(resource_object* obj, const void* kaddr, size_t addr
 using listen_fn = int32_t (*)(resource_object* obj, int32_t backlog);
 using accept_fn = int32_t (*)(resource_object* obj, resource_object** new_obj,
                               void* kaddr, size_t* addrlen, bool nonblock);
-using connect_fn = int32_t (*)(resource_object* obj, const void* kaddr, size_t addrlen);
+using connect_fn = int32_t (*)(resource_object* obj, const void* kaddr, size_t addrlen, bool nonblock);
 using getname_fn = int32_t (*)(resource_object* obj, void* kaddr, size_t* addrlen, bool peer);
 using setsockopt_fn = int32_t (*)(resource_object* obj, int32_t level,
                                   int32_t optname, const void* optval, size_t optlen);

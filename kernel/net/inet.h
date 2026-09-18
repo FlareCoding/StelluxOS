@@ -24,6 +24,7 @@ constexpr uint32_t MSG_DONTWAIT = 0x40;
 
 constexpr int32_t SOL_SOCKET      = 1;
 constexpr int32_t SO_REUSEADDR    = 2;
+constexpr int32_t SO_ERROR        = 4;
 constexpr int32_t SO_BROADCAST    = 6;
 constexpr int32_t SO_BINDTODEVICE = 25;
 

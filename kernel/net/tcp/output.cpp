@@ -1,12 +1,40 @@
 #include "net/tcp/output.h"
 #include "net/net.h"
 #include "net/eth.h"
+#include "net/interface.h"
 #include "net/route.h"
 #include "net/byteorder.h"
 #include "common/string.h"
 
 namespace net {
 namespace tcp {
+
+uint16_t local_mss(const interface* iface) {
+    return static_cast<uint16_t>(iface->mtu() - ipv4::HEADER_LEN - HEADER_LEN);
+}
+
+uint16_t window_field(uint32_t window, uint8_t wscale) {
+    uint32_t scaled = window >> wscale;
+    return static_cast<uint16_t>(scaled > 0xFFFF ? 0xFFFF : scaled);
+}
+
+segment_source snapshot_source(const tcp_conn* conn) {
+    segment_source src = {};
+    src.iface = conn->iface;
+    src.key = conn->key;
+    src.iss = conn->iss;
+    src.snd_nxt = conn->snd_nxt;
+    src.rcv_nxt = conn->rcv_nxt;
+    src.rcv_wnd = conn->rcv_wnd;
+    src.rcv_wscale = conn->rcv_wscale;
+    src.wscale_ok = conn->wscale_ok;
+    src.sack_ok = conn->sack_ok;
+    src.ts_ok = conn->ts_ok;
+    src.ts_offset = conn->ts_offset;
+    src.ts_recent = conn->ts_recent;
+
+    return src;
+}
 
 int32_t send_segment(interface* iface, const tuple& key, uint8_t flags, uint32_t seq, uint32_t ack,
                      uint16_t window, const tcp_options& opts) {
@@ -49,6 +77,42 @@ int32_t send_segment(interface* iface, const tuple& key, uint8_t flags, uint32_t
     hdr->checksum = htons(compute_checksum(key.local_addr, key.remote_addr, hdr, header_len));
 
     return ipv4::output(pkt, key.remote_addr, route, ipv4::PROTO_TCP);
+}
+
+int32_t send_syn(const segment_source& src) {
+    tcp_options opts;
+    opts.mss = local_mss(src.iface);
+    opts.sack_permitted = true;
+    opts.has_timestamps = true;
+    opts.ts_val = timestamp_value(src.ts_offset);
+    opts.window_scale = src.rcv_wscale;
+
+    return send_segment(src.iface, src.key, FLAG_SYN, src.iss, 0, window_field(src.rcv_wnd, 0), opts);
+}
+
+int32_t send_syn_ack(const segment_source& src) {
+    tcp_options opts;
+    opts.mss = local_mss(src.iface);
+    opts.sack_permitted = src.sack_ok;
+    opts.has_timestamps = src.ts_ok;
+    opts.ts_val = timestamp_value(src.ts_offset);
+    opts.ts_ecr = src.ts_recent;
+    opts.window_scale = src.wscale_ok ? src.rcv_wscale : WINDOW_SCALE_NONE;
+
+    return send_segment(src.iface, src.key, FLAG_SYN | FLAG_ACK, src.iss, src.rcv_nxt,
+                        window_field(src.rcv_wnd, 0), opts);
+}
+
+int32_t send_control(const segment_source& src, uint8_t flags) {
+    tcp_options opts;
+    if (src.ts_ok) {
+        opts.has_timestamps = true;
+        opts.ts_val = timestamp_value(src.ts_offset);
+        opts.ts_ecr = src.ts_recent;
+    }
+
+    return send_segment(src.iface, src.key, flags, src.snd_nxt, src.rcv_nxt,
+                        window_field(src.rcv_wnd, src.rcv_wscale), opts);
 }
 
 } // namespace tcp

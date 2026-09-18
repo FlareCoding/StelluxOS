@@ -2,6 +2,7 @@
 #include "net/tcp/wire.h"
 #include "net/tcp/conn.h"
 #include "net/tcp/listen.h"
+#include "net/tcp/input.h"
 #include "net/tcp/output.h"
 #include "net/net.h"
 #include "net/interface.h"
@@ -101,6 +102,10 @@ int32_t input(packet* pkt) {
 
     if (rec && rec->kind == record_kind::request) {
         return request_input(static_cast<tcp_request*>(rec.ptr()), pkt, hdr, opts);
+    }
+
+    if (rec && rec->kind == record_kind::connection) {
+        return conn_input(static_cast<tcp_conn*>(rec.ptr()), pkt, hdr, opts);
     }
 
     if (rec) {

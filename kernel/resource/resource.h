@@ -74,6 +74,11 @@ constexpr int32_t ERR_LOOP        = -20;
 constexpr int32_t ERR_MSGSIZE     = -21;
 constexpr int32_t ERR_HOSTUNREACH = -22;
 constexpr int32_t ERR_ADDRNOTAVAIL = -23;
+constexpr int32_t ERR_NETUNREACH  = -24;
+constexpr int32_t ERR_INPROGRESS  = -25;
+constexpr int32_t ERR_ALREADY     = -26;
+constexpr int32_t ERR_TIMEDOUT    = -27;
+constexpr int32_t ERR_NOBUFS      = -28;
 
 /**
  * @brief Allocate a private handle table and attach it to the task.

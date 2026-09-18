@@ -3,6 +3,7 @@
 #include "net/net.h"
 #include "net/inet.h"
 #include "net/interface.h"
+#include "net/route.h"
 #include "resource/socket_ops.h"
 #include "sync/spinlock.h"
 #include "sync/poll.h"
@@ -277,6 +278,154 @@ __PRIVILEGED_CODE static int32_t socket_getname(resource::resource_object* obj, 
     return resource::OK;
 }
 
+// Caller holds the socket lock. What a connect finds already there decides
+// whether it may begin: EISCONN and EALREADY as POSIX names them, and a
+// finished attempt reports its error once and makes room for the next.
+static int32_t connect_precondition_locked(tcp_socket* sock) {
+    if (sock->listener) {
+        return resource::ERR_ISCONN;
+    }
+
+    if (!sock->conn) {
+        return resource::OK;
+    }
+
+    tcp_state state;
+    int32_t error;
+    {
+        sync::irq_lock_guard guard(sock->conn->lock);
+        state = sock->conn->state;
+        error = sock->conn->pending_error;
+        sock->conn->pending_error = resource::OK;
+    }
+
+    if (state == tcp_state::syn_sent || state == tcp_state::syn_rcvd) {
+        return resource::ERR_ALREADY;
+    }
+
+    if (state != tcp_state::closed) {
+        return resource::ERR_ISCONN;
+    }
+
+    sock->conn.reset();
+    return error != resource::OK ? error : resource::ERR_CONNREFUSED;
+}
+
+__PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, const void* kaddr,
+                                                size_t addrlen, bool nonblock) {
+    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+    sched::task* task = sched::current();
+
+    ipv4::ipv4_addr dest;
+    uint16_t port = 0;
+    if (inet::parse_sockaddr(kaddr, addrlen, &dest, &port) != OK || port == 0 || dest.is_unspecified()) {
+        return resource::ERR_INVAL;
+    }
+
+    interface* pinned = nullptr;
+    {
+        sync::irq_lock_guard guard(sock->lock);
+        int32_t rc = connect_precondition_locked(sock);
+        if (rc != resource::OK) {
+            return rc;
+        }
+
+        pinned = sock->local.iface;
+    }
+
+    route::route_result route;
+    int32_t rc = pinned ? route::lookup_on(pinned, dest, &route) : route::lookup(dest, &route);
+    if (rc != OK) {
+        return resource::ERR_NETUNREACH;
+    }
+
+    tuple key = {route.source, dest, 0, port};
+    {
+        sync::irq_lock_guard guard(sock->lock);
+        if (sock->bound) {
+            key.local_port = sock->local.port;
+            if (!sock->local.addr.is_unspecified()) {
+                key.local_addr = sock->local.addr;
+            }
+        }
+    }
+
+    if (key.local_port == 0 && take_ephemeral_port(&key.local_port) != OK) {
+        return resource::ERR_ADDRNOTAVAIL;
+    }
+
+    rc::strong_ref<tcp_conn> conn;
+    rc = open_active(key, route.iface, &conn);
+    if (rc != OK) {
+        return rc == ERR_FULL ? resource::ERR_NOBUFS : inet::map_net_error(rc);
+    }
+
+    {
+        sync::irq_lock_guard guard(sock->lock);
+        sock->local = {key.local_addr, key.local_port, pinned, sock->local.reuseaddr};
+        sock->bound = true;
+        sock->conn = conn;
+    }
+
+    {
+        sync::irq_lock_guard guard(conn->lock);
+        conn->owner = obj;
+    }
+
+    if (nonblock) {
+        return resource::ERR_INPROGRESS;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(conn->lock);
+    while ((conn->state == tcp_state::syn_sent || conn->state == tcp_state::syn_rcvd) &&
+           !signals::interrupt_pending(task)) {
+        irq = sync::wait(conn->conn_wq, conn->lock, irq);
+    }
+
+    tcp_state state = conn->state;
+    int32_t error = conn->pending_error;
+    conn->pending_error = resource::OK;
+    sync::spin_unlock_irqrestore(conn->lock, irq);
+
+    if (state == tcp_state::established) {
+        return resource::OK;
+    }
+
+    if (state == tcp_state::closed) {
+        return error != resource::OK ? error : resource::ERR_CONNREFUSED;
+    }
+
+    return resource::ERR_INTR;
+}
+
+__PRIVILEGED_CODE static int32_t socket_getsockopt(resource::resource_object* obj, int32_t level,
+                                                   int32_t optname, void* optval, size_t* optlen) {
+    if (level != inet::SOL_SOCKET || (optname != inet::SO_REUSEADDR && optname != inet::SO_ERROR)) {
+        return resource::ERR_NOPROTOOPT;
+    }
+
+    if (*optlen < sizeof(int32_t)) {
+        return resource::ERR_INVAL;
+    }
+
+    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+    sync::irq_lock_guard guard(sock->lock);
+
+    int32_t value = 0;
+    if (optname == inet::SO_REUSEADDR) {
+        value = sock->local.reuseaddr ? 1 : 0;
+    } else if (sock->conn) {
+        sync::irq_lock_guard conn_guard(sock->conn->lock);
+        value = sock->conn->pending_error;
+        sock->conn->pending_error = resource::OK;
+    }
+
+    string::memcpy(optval, &value, sizeof(value));
+    *optlen = sizeof(value);
+
+    return resource::OK;
+}
+
 __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* obj, int32_t level,
                                                    int32_t optname, const void* optval, size_t optlen) {
     if (level != inet::SOL_SOCKET || optname != inet::SO_REUSEADDR) {
@@ -335,8 +484,20 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
     }
 
     if (conn) {
+        if (pt) {
+            sync::poll_subscribe(*pt, conn->conn_wq);
+        }
+
         sync::irq_lock_guard guard(conn->lock);
-        return conn->state == tcp_state::closed ? sync::POLL_HUP : 0;
+        switch (conn->state) {
+        case tcp_state::closed:
+            return sync::POLL_HUP | (conn->pending_error != resource::OK ? sync::POLL_ERR : 0);
+        case tcp_state::syn_sent:
+        case tcp_state::syn_rcvd:
+            return 0;
+        default:
+            return sync::POLL_OUT;
+        }
     }
 
     return sync::POLL_HUP;
@@ -355,8 +516,10 @@ static const resource::socket_ops g_tcp_socket_ops = {
     .bind = socket_bind,
     .listen = socket_listen,
     .accept = socket_accept,
+    .connect = socket_connect,
     .getname = socket_getname,
     .setsockopt = socket_setsockopt,
+    .getsockopt = socket_getsockopt,
 };
 
 static const resource::resource_ops g_socket_ops = {

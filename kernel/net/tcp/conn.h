@@ -159,11 +159,27 @@ uint32_t timestamp_offset(const tuple& key);
 tcp_conn* alloc_conn(const tuple& key, interface* iface);
 
 /**
+ * @brief Begins an active open (RFC 9293 3.10.1): a connection for `key` on
+ * `iface` enters SYN_SENT, joins the table, sends its SYN, and arms the
+ * retransmission timer.
+ * @return OK with `out` holding the connection, ERR_IN_USE when the key is
+ *         taken, ERR_FULL at capacity, ERR_NO_MEMORY.
+ */
+int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>* out);
+
+/**
  * @brief Ends the connection at once: a reset goes to the peer, the record
  * leaves the table, its timer is disarmed, and every waiter on it is woken
  * (RFC 9293 3.10 ABORT).
  */
 void abort_connection(tcp_conn* conn);
+
+/**
+ * @brief Ends a connection the peer or the network refused, without a reset:
+ * `error` is what the socket will report, the record leaves the table, its
+ * timer is disarmed, and every waiter on it is woken.
+ */
+void fail_connection(tcp_conn* conn, int32_t error);
 
 /**
  * @brief Finds the record for `key`, holding a reference for the caller.

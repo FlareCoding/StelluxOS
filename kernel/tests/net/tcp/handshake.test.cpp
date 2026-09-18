@@ -5,6 +5,7 @@
 #include "net/tcp/conn.h"
 #include "net/tcp/listen.h"
 #include "net/tcp/seq.h"
+#include "resource/resource.h"
 #include "clock/clock.h"
 #include "dynpriv/dynpriv.h"
 
@@ -526,6 +527,183 @@ TEST(tcp_handshake, connection_capacity_keeps_the_request_with_its_timer_running
     rc::strong_ref<tcp_conn> conn = pop_accepted(on.listener);
     ASSERT_TRUE(conn);
     abort_connection(conn.ptr());
+}
+
+// An active open toward the harness peer, under the fake clock
+struct connecting {
+    rc::strong_ref<tcp_conn> conn;
+
+    explicit connecting(linked_peer& lp) {
+        g_fake_now = clock::now_ns();
+        __dbg_test_set_clock(fake_clock);
+        tuple key = {lp.remote.host, lp.remote.addr, lp.remote.host_port, lp.remote.port};
+        open_active(key, &lp.link, &conn);
+    }
+
+    ~connecting() {
+        if (conn) {
+            abort_connection(conn.ptr());
+        }
+
+        __dbg_test_set_clock(nullptr);
+    }
+};
+
+static tcp_options peer_synack_options() {
+    tcp_options opts;
+    opts.mss = 1400;
+    opts.sack_permitted = true;
+    opts.has_timestamps = true;
+    opts.ts_val = 555;
+    opts.window_scale = 3;
+    return opts;
+}
+
+TEST(tcp_handshake, active_open_sends_a_syn_with_every_option) {
+    linked_peer lp;
+    connecting active(lp);
+    ASSERT_TRUE(active.conn);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+
+    const tcp_header* hdr = sent_tcp(lp.link, 0);
+    EXPECT_EQ(hdr->flags, FLAG_SYN);
+    EXPECT_EQ(ntohl(hdr->seq), active.conn->iss);
+    EXPECT_EQ(ntohl(hdr->ack), 0u);
+    EXPECT_EQ(ntohs(hdr->window), RCV_BUF_INITIAL);
+    EXPECT_EQ(ntohs(hdr->src_port), 5000);
+    EXPECT_EQ(ntohs(hdr->dst_port), 40000);
+
+    tcp_options opts = synack_options(lp, 0);
+    EXPECT_EQ(opts.mss, 1460);
+    EXPECT_TRUE(opts.sack_permitted);
+    EXPECT_TRUE(opts.has_timestamps);
+    EXPECT_EQ(opts.window_scale, 5);
+
+    EXPECT_EQ(active.conn->state, tcp_state::syn_sent);
+    EXPECT_EQ(active.conn->snd_una, active.conn->iss);
+    EXPECT_EQ(active.conn->snd_nxt, active.conn->iss + 1);
+    EXPECT_EQ(active.conn->send_timer_kind, timer_kind::rto);
+    rc::strong_ref<record> rec = lookup(active.conn->key);
+    ASSERT_TRUE(rec);
+    EXPECT_EQ(rec->kind, record_kind::connection);
+}
+
+TEST(tcp_handshake, syn_ack_completes_the_active_open_and_is_acknowledged) {
+    linked_peer lp;
+    connecting active(lp);
+    uint32_t iss = active.conn->iss;
+
+    EXPECT_EQ(input(lp.remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1, peer_synack_options())), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+
+    EXPECT_EQ(active.conn->state, tcp_state::established);
+    EXPECT_EQ(active.conn->irs, 7000u);
+    EXPECT_EQ(active.conn->rcv_nxt, 7001u);
+    EXPECT_EQ(active.conn->snd_una, iss + 1);
+    EXPECT_EQ(active.conn->snd_wnd, 65535u);
+    EXPECT_EQ(active.conn->snd_wscale, 3);
+    EXPECT_EQ(active.conn->rcv_wscale, 5);
+    EXPECT_EQ(active.conn->snd_mss, 1400);
+    EXPECT_TRUE(active.conn->sack_ok);
+    EXPECT_TRUE(active.conn->ts_ok);
+    EXPECT_EQ(active.conn->ts_recent, 555u);
+    EXPECT_EQ(active.conn->send_timer_kind, timer_kind::none);
+
+    const tcp_header* ack = sent_tcp(lp.link, 1);
+    EXPECT_EQ(ack->flags, FLAG_ACK);
+    EXPECT_EQ(ntohl(ack->seq), iss + 1);
+    EXPECT_EQ(ntohl(ack->ack), 7001u);
+    EXPECT_EQ(ntohs(ack->window), RCV_BUF_INITIAL >> 5);
+    tcp_options opts;
+    parse_options(ack, &opts);
+    EXPECT_TRUE(opts.has_timestamps);
+    EXPECT_EQ(opts.ts_ecr, 555u);
+    EXPECT_EQ(opts.mss, MSS_NONE);
+}
+
+TEST(tcp_handshake, syn_ack_without_options_leaves_them_off) {
+    linked_peer lp;
+    connecting active(lp);
+
+    EXPECT_EQ(input(lp.remote.segment(FLAG_SYN | FLAG_ACK, 7000, active.conn->iss + 1)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+
+    EXPECT_EQ(active.conn->state, tcp_state::established);
+    EXPECT_FALSE(active.conn->wscale_ok);
+    EXPECT_EQ(active.conn->rcv_wscale, 0);
+    EXPECT_FALSE(active.conn->ts_ok);
+    EXPECT_FALSE(active.conn->sack_ok);
+    EXPECT_EQ(active.conn->snd_mss, DEFAULT_MSS);
+    EXPECT_EQ(ntohs(sent_tcp(lp.link, 1)->window), RCV_BUF_INITIAL);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->data_offset(), MIN_DATA_OFFSET);
+}
+
+TEST(tcp_handshake, syn_ack_with_a_wrong_acknowledgment_is_reset) {
+    linked_peer lp;
+    connecting active(lp);
+    uint32_t iss = active.conn->iss;
+
+    EXPECT_EQ(input(lp.remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 5)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_RST);
+    EXPECT_EQ(sent_seq(lp, 1), iss + 5);
+    EXPECT_EQ(active.conn->state, tcp_state::syn_sent);
+}
+
+TEST(tcp_handshake, reset_refuses_the_connection_only_with_an_acceptable_ack) {
+    linked_peer lp;
+    connecting active(lp);
+    uint32_t iss = active.conn->iss;
+
+    EXPECT_EQ(input(lp.remote.rst(7000)), OK);
+    EXPECT_EQ(active.conn->state, tcp_state::syn_sent);
+
+    EXPECT_EQ(input(lp.remote.segment(FLAG_RST | FLAG_ACK, 0, iss + 1)), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(active.conn->state, tcp_state::closed);
+    EXPECT_EQ(active.conn->pending_error, resource::ERR_CONNREFUSED);
+    EXPECT_FALSE(lookup(active.conn->key));
+}
+
+TEST(tcp_handshake, syn_is_retransmitted_with_backoff_until_the_connection_times_out) {
+    linked_peer lp;
+    connecting active(lp);
+    uint32_t iss = active.conn->iss;
+
+    uint64_t backoff = TIMEOUT_INIT_NS;
+    for (size_t attempt = 1; attempt <= SYN_RETRIES; attempt++) {
+        advance_and_fire(backoff);
+        ASSERT_EQ(lp.link.frames_sent(), attempt + 1);
+        EXPECT_EQ(sent_tcp(lp.link, attempt)->flags, FLAG_SYN);
+        EXPECT_EQ(sent_seq(lp, attempt), iss);
+        backoff *= 2;
+    }
+
+    EXPECT_EQ(active.conn->state, tcp_state::syn_sent);
+    advance_and_fire(backoff);
+    EXPECT_EQ(lp.link.frames_sent(), static_cast<size_t>(SYN_RETRIES) + 1);
+    EXPECT_EQ(active.conn->state, tcp_state::closed);
+    EXPECT_EQ(active.conn->pending_error, resource::ERR_TIMEDOUT);
+    EXPECT_FALSE(lookup(active.conn->key));
+}
+
+TEST(tcp_handshake, simultaneous_open_answers_with_a_syn_ack_and_completes_on_the_ack) {
+    linked_peer lp;
+    connecting active(lp);
+    uint32_t iss = active.conn->iss;
+
+    EXPECT_EQ(input(lp.remote.syn(9000)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(active.conn->state, tcp_state::syn_rcvd);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_SYN | FLAG_ACK);
+    EXPECT_EQ(sent_seq(lp, 1), iss);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 1)->ack), 9001u);
+
+    EXPECT_EQ(input(lp.remote.ack(9001, iss + 1)), OK);
+    EXPECT_EQ(active.conn->state, tcp_state::established);
+    EXPECT_EQ(active.conn->snd_una, iss + 1);
+    EXPECT_EQ(active.conn->send_timer_kind, timer_kind::none);
+    EXPECT_EQ(lp.link.frames_sent(), 2u);
 }
 
 TEST(tcp_handshake, only_a_bare_syn_reaches_the_listener) {

@@ -24,6 +24,11 @@ inline int64_t map_socket_op_error(int32_t rc) {
     case resource::ERR_MSGSIZE:     return syscall::EMSGSIZE;
     case resource::ERR_HOSTUNREACH: return syscall::EHOSTUNREACH;
     case resource::ERR_ADDRNOTAVAIL: return syscall::EADDRNOTAVAIL;
+    case resource::ERR_NETUNREACH:  return syscall::ENETUNREACH;
+    case resource::ERR_INPROGRESS:  return syscall::EINPROGRESS;
+    case resource::ERR_ALREADY:     return syscall::EALREADY;
+    case resource::ERR_TIMEDOUT:    return syscall::ETIMEDOUT;
+    case resource::ERR_NOBUFS:      return syscall::ENOBUFS;
     case resource::ERR_UNSUP:       return syscall::EOPNOTSUPP;
     default:                        return syscall::EIO;
     }

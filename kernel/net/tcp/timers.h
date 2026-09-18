@@ -1,11 +1,23 @@
 #ifndef STELLUX_NET_TCP_TIMERS_H
 #define STELLUX_NET_TCP_TIMERS_H
 
-#include "net/tcp/record.h"
+#include "net/tcp/conn.h"
 #include "timer/timer.h"
 
 namespace net {
 namespace tcp {
+
+/**
+ * @brief Arms the connection's send timer as `kind`, its deadline the initial
+ * timeout doubled once per retransmission and capped. Caller holds the lock.
+ */
+void arm_send_timer_locked(tcp_conn* conn, timer_kind kind);
+
+/**
+ * @brief The send timer's callback: retransmits what the connection's state
+ * still waits for, or gives the connection up once the retries are spent.
+ */
+void on_send_timer(timer::deadline_timer* timer);
 
 /**
  * @brief Schedules `timer` for `deadline_ns`, holding a reference on `rec` for

@@ -161,9 +161,58 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     conn->lock = sync::SPINLOCK_INIT;
     conn->state = tcp_state::closed;
     conn->conn_wq.init();
-    timer::init_deadline_timer(&conn->send_timer, nullptr);
+    timer::init_deadline_timer(&conn->send_timer, on_send_timer);
 
     return conn;
+}
+
+int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>* out) {
+    tcp_conn* conn = alloc_conn(key, iface);
+    if (!conn) {
+        return ERR_NO_MEMORY;
+    }
+
+    conn->state = tcp_state::syn_sent;
+    conn->iss = initial_sequence(key);
+    conn->snd_una = conn->iss;
+    conn->snd_nxt = conn->iss + 1;
+    conn->rcv_wnd = RCV_BUF_INITIAL;
+    conn->rcv_wscale = receive_window_scale();
+    conn->ts_offset = timestamp_offset(key);
+
+    int32_t rc = insert(conn);
+    if (rc != OK) {
+        release_record(conn);
+        return rc;
+    }
+
+    segment_source src;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        src = snapshot_source(conn);
+        arm_send_timer_locked(conn, timer_kind::rto);
+    });
+
+    (void)send_syn(src);
+    *out = rc::strong_ref<tcp_conn>::adopt(conn);
+
+    return OK;
+}
+
+void fail_connection(tcp_conn* conn, int32_t error) {
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        if (conn->state != tcp_state::closed) {
+            conn->state = tcp_state::closed;
+            conn->pending_error = error;
+            conn->send_timer_kind = timer_kind::none;
+        }
+    });
+
+    disarm_timer(conn, &conn->send_timer);
+    (void)remove(conn);
+
+    RUN_ELEVATED(sync::wake_all(conn->conn_wq));
 }
 
 void abort_connection(tcp_conn* conn) {
