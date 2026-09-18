@@ -161,7 +161,8 @@ int32_t remove(record* rec);
 size_t record_count(record_kind kind);
 
 /**
- * @brief True when any record or listener uses `port` as its local port.
+ * @brief True when any record, listener, or bound socket uses `port` as its
+ * local port.
  */
 bool is_local_port_taken(uint16_t port);
 

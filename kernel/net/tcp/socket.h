@@ -1,0 +1,61 @@
+#ifndef STELLUX_NET_TCP_SOCKET_H
+#define STELLUX_NET_TCP_SOCKET_H
+
+#include "net/tcp/listen.h"
+#include "resource/resource.h"
+
+namespace net {
+namespace tcp {
+
+constexpr size_t MAX_SOCKETS = MAX_CONNECTIONS + MAX_LISTENERS;
+
+/**
+ * A stream socket as userland holds it, from creation through bind to the
+ * listener or connection it comes to stand for, each held by reference.
+ * The lock guards every field.
+ */
+struct tcp_socket {
+    endpoint                     local;
+    bool                         bound;
+    rc::strong_ref<tcp_listener> listener;
+    rc::strong_ref<tcp_conn>     conn;
+    sync::spinlock               lock;
+};
+
+/**
+ * @brief Allocates an unbound socket and registers it.
+ * @return The socket, or nullptr when the table is full or memory is exhausted.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE tcp_socket* socket_open();
+
+/**
+ * @brief Unregisters the socket, releasing what it stands for, and frees it.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void socket_close(tcp_socket* sock);
+
+/**
+ * @brief Claims `addr` and `port` for the socket, an ephemeral port when `port`
+ * is zero. The address must be the wildcard or one this host owns.
+ * @return OK, ERR_INVALID when already bound, ERR_NOT_LOCAL for a foreign
+ *         address, ERR_IN_USE when a socket or listener conflicts, ERR_FULL
+ *         when no ephemeral port is free.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t socket_bind(tcp_socket* sock, const ipv4::ipv4_addr& addr, uint16_t port);
+
+/**
+ * @brief True when a bound socket uses `port`.
+ */
+bool is_socket_port(uint16_t port);
+
+/**
+ * @brief The resource operations of a stream socket.
+ */
+const resource::resource_ops* socket_ops();
+
+} // namespace tcp
+} // namespace net
+
+#endif // STELLUX_NET_TCP_SOCKET_H

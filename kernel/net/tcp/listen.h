@@ -14,6 +14,17 @@ constexpr uint8_t  SYNACK_RETRIES = 5;
 struct tcp_listener;
 
 /**
+ * A local endpoint as bind names it: an address or the wildcard, a port, an
+ * optional interface pin, and whether it may share its port.
+ */
+struct endpoint {
+    ipv4::ipv4_addr addr;
+    uint16_t        port;
+    interface*      iface;
+    bool            reuseaddr;
+};
+
+/**
  * A SYN received on a listener, awaiting the ACK that completes the handshake.
  * It holds everything the connection it becomes needs and nothing more, so a
  * flood of SYNs costs request records, not connections.
@@ -42,10 +53,7 @@ struct tcp_request : record {
  * reference from its socket and from every request that points back to it.
  */
 struct tcp_listener : rc::ref_counted<tcp_listener> {
-    ipv4::ipv4_addr local_addr;
-    uint16_t        local_port;
-    interface*      iface;
-    bool            reuseaddr;
+    endpoint local;
 
     uint16_t backlog;
     uint16_t request_count;
@@ -62,18 +70,28 @@ struct tcp_listener : rc::ref_counted<tcp_listener> {
 };
 
 /**
- * @brief Allocates a listener for `local_addr` and `local_port`, unspecified
- * for every address, held by the one reference returned.
+ * @brief True when a segment could match both endpoints: the same port, not
+ * pinned to different interfaces, and the same address or one wildcard without
+ * `reuseaddr` on both.
+ */
+bool endpoints_conflict(const endpoint& a, const endpoint& b);
+
+/**
+ * @brief True when a listener conflicts with `local`.
+ */
+bool listener_conflicts(const endpoint& local);
+
+/**
+ * @brief Allocates a listener on `local`, held by the one reference returned.
  * @return The listener, or nullptr when memory is exhausted.
  */
-tcp_listener* alloc_listener(const ipv4::ipv4_addr& local_addr, uint16_t local_port);
+tcp_listener* alloc_listener(const endpoint& local);
 
 /**
  * @brief Adds `listener` to the listener table, the table taking a reference of
- * its own. A port is shared only between listeners pinned to different
- * interfaces, or between a wildcard and a specific address when both set
- * `reuseaddr`.
- * @return OK, ERR_IN_USE when the port is taken, ERR_FULL when the table is full.
+ * its own.
+ * @return OK, ERR_IN_USE when an existing listener conflicts, ERR_FULL when the
+ *         table is full.
  */
 int32_t listener_insert(tcp_listener* listener);
 

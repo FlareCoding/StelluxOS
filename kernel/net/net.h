@@ -18,6 +18,7 @@ constexpr int32_t ERR_NO_ROUTE  = -8; // no interface can reach the destination
 constexpr int32_t ERR_IN_USE    = -9; // another socket owns the address and port
 constexpr int32_t ERR_NOT_FOUND = -10; // no socket owns the destination port
 constexpr int32_t ERR_ACCESS    = -11; // a broadcast destination the socket has not opted into
+constexpr int32_t ERR_NOT_LOCAL = -12; // an address no interface of this host owns
 
 /**
  * Initialize the network stack and start its daemon/bookkeeping task.

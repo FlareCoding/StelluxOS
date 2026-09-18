@@ -41,6 +41,7 @@ constexpr int64_t EPROTONOSUPPORT  = -93;
 constexpr int64_t EOPNOTSUPP       = -95;
 constexpr int64_t EAFNOSUPPORT     = -97;
 constexpr int64_t EADDRINUSE       = -98;
+constexpr int64_t EADDRNOTAVAIL    = -99;
 constexpr int64_t EISCONN          = -106;
 constexpr int64_t ENOTCONN         = -107;
 constexpr int64_t ETIMEDOUT        = -110;

@@ -2,6 +2,7 @@
 #include "net/byteorder.h"
 #include "net/icmp_socket.h"
 #include "net/udp_socket.h"
+#include "net/tcp/socket.h"
 #include "net/arp.h"
 #include "net/route.h"
 #include "resource/resource.h"
@@ -152,6 +153,7 @@ int32_t map_net_error(int32_t rc) {
     case ERR_DOWN:      return resource::ERR_HOSTUNREACH;
     case ERR_IN_USE:    return resource::ERR_ADDRINUSE;
     case ERR_ACCESS:    return resource::ERR_ACCESS;
+    case ERR_NOT_LOCAL: return resource::ERR_ADDRNOTAVAIL;
     default:            return resource::ERR_IO;
     }
 }
@@ -167,7 +169,10 @@ __PRIVILEGED_CODE int32_t create_socket(uint32_t type, uint32_t protocol,
 
     // A datagram socket is UDP unless ICMP is named, which selects a ping socket
     bool is_udp = protocol == IPPROTO_UDP || protocol == IPPROTO_IP;
-    if (type != SOCK_DGRAM || (!is_udp && protocol != IPPROTO_ICMP)) {
+    bool is_tcp = protocol == IPPROTO_TCP || protocol == IPPROTO_IP;
+    bool is_datagram = type == SOCK_DGRAM && (is_udp || protocol == IPPROTO_ICMP);
+    bool is_stream = type == SOCK_STREAM && is_tcp;
+    if (!is_datagram && !is_stream) {
         return resource::ERR_UNSUP;
     }
 
@@ -179,7 +184,10 @@ __PRIVILEGED_CODE int32_t create_socket(uint32_t type, uint32_t protocol,
     }
 
     obj->type = resource::resource_type::SOCKET;
-    if (is_udp) {
+    if (is_stream) {
+        obj->ops = tcp::socket_ops();
+        obj->impl = tcp::socket_open();
+    } else if (is_udp) {
         obj->ops = udp::socket_ops();
         obj->impl = udp::socket_open();
     } else {

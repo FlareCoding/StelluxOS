@@ -1,6 +1,7 @@
 #include "net/tcp/conn.h"
 #include "net/tcp/listen.h"
 #include "net/tcp/timewait.h"
+#include "net/tcp/socket.h"
 #include "net/net.h"
 #include "common/siphash.h"
 #include "common/hash.h"
@@ -230,7 +231,7 @@ bool is_local_port_taken(uint16_t port) {
         taken = is_record_port_locked(port);
     });
 
-    return taken || is_listener_port(port);
+    return taken || is_listener_port(port) || is_socket_port(port);
 }
 
 int32_t take_ephemeral_port(uint16_t* out) {
@@ -243,7 +244,7 @@ int32_t take_ephemeral_port(uint16_t* out) {
             uint16_t port = g_next_ephemeral_port;
             g_next_ephemeral_port = port == EPHEMERAL_PORT_MAX ? EPHEMERAL_PORT_MIN : port + 1;
 
-            if (!is_record_port_locked(port) && !is_listener_port(port)) {
+            if (!is_record_port_locked(port) && !is_listener_port(port) && !is_socket_port(port)) {
                 *out = port;
                 rc = OK;
                 break;

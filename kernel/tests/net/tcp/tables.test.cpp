@@ -51,11 +51,7 @@ static tcp_request* alloc_request(const tuple& key) {
 
 static tcp_listener* listener_on(const ipv4::ipv4_addr& addr, uint16_t port, interface* iface,
                                  bool reuseaddr) {
-    tcp_listener* listener = alloc_listener(addr, port);
-    listener->iface = iface;
-    listener->reuseaddr = reuseaddr;
-
-    return listener;
+    return alloc_listener(endpoint{addr, port, iface, reuseaddr});
 }
 
 TEST(tcp_tables, empty_table_finds_nothing) {
