@@ -308,17 +308,25 @@ bool is_listener_port(uint16_t port) {
     return taken;
 }
 
+static void retire_request(tcp_request* request) {
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(request->lock);
+        request->timer_armed = false;
+    });
+
+    disarm_timer(request, &request->timer);
+}
+
 void listener_close(tcp_listener* listener) {
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(listener->lock);
+        listener->closed = true;
+    });
+
     (void)listener_remove(listener);
 
     while (rc::strong_ref<record> rec = remove_one_request_of(listener)) {
-        tcp_request* request = static_cast<tcp_request*>(rec.ptr());
-        RUN_ELEVATED({
-            sync::irq_lock_guard guard(request->lock);
-            request->timer_armed = false;
-        });
-
-        disarm_timer(request, &request->timer);
+        retire_request(static_cast<tcp_request*>(rec.ptr()));
     }
 }
 
@@ -330,7 +338,8 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
     bool room = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(listener->lock);
-        if (listener->request_count < listener->backlog && listener->accept_count < listener->backlog) {
+        if (!listener->closed && listener->request_count < listener->backlog &&
+            listener->accept_count < listener->backlog) {
             listener->request_count++;
             room = true;
         }
@@ -361,6 +370,22 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
         fields = synack_fields_locked(request);
         arm_request_timer_locked(request);
     });
+
+    // A close that ran since the first check either found this request in the
+    // table and retired it, or is seen here and the request retires itself.
+    bool closed = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(listener->lock);
+        closed = listener->closed;
+    });
+
+    if (closed) {
+        (void)remove(request);
+        retire_request(request);
+        release_record(request);
+
+        return drop(iface, pkt, OK);
+    }
 
     release_record(request);
     packet::free(pkt);

@@ -59,6 +59,7 @@ struct tcp_request : record {
  */
 struct tcp_listener : rc::ref_counted<tcp_listener> {
     endpoint local;
+    bool     closed;
 
     uint16_t backlog;
     uint16_t request_count;
