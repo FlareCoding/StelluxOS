@@ -83,7 +83,12 @@ static int32_t send_reset(interface* iface, const ipv4::ipv4_header* ip, const t
 }
 
 int32_t init() {
-    return init_tables();
+    int32_t rc = init_tables();
+    if (rc != OK) {
+        return rc;
+    }
+
+    return init_sequence_numbers();
 }
 
 int32_t input(packet* pkt) {

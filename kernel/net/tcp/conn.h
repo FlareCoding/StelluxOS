@@ -18,6 +18,7 @@ constexpr uint64_t TIMEOUT_INIT_NS    = 1000000000ULL; // RFC 6298 2.1, before a
 constexpr uint8_t  SYN_RETRIES        = 6;
 constexpr uint16_t EPHEMERAL_PORT_MIN = 49152;
 constexpr uint16_t EPHEMERAL_PORT_MAX = 65535;
+constexpr uint64_t ISN_TICK_NS        = 4000; // RFC 6528 3, the clock behind M
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -101,6 +102,25 @@ struct tcp_conn : record {
  * @brief Prepares the connection table and draws the secret that hashes tuples.
  */
 int32_t init_tables();
+
+/**
+ * @brief Draws the secrets behind initial sequence numbers and timestamp offsets.
+ */
+int32_t init_sequence_numbers();
+
+/**
+ * @brief The initial sequence number for a new connection on `key` (RFC 6528):
+ * a clock advancing every ISN_TICK_NS plus a keyed hash of the tuple, so the
+ * numbers of one tuple advance in time while another host cannot predict them.
+ */
+uint32_t initial_sequence(const tuple& key);
+
+/**
+ * @brief The offset added to every timestamp a connection on `key` sends, fixed
+ * for the tuple and unpredictable to others (RFC 7323 7), so connections cannot
+ * be correlated through the timestamp clock.
+ */
+uint32_t timestamp_offset(const tuple& key);
 
 /**
  * @brief Allocates a connection for `key` on `iface` in the closed state, held

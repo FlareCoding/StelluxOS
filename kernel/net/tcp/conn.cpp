@@ -15,6 +15,8 @@ namespace net {
 namespace tcp {
 
 static hash::siphash_key g_tuple_secret;
+static hash::siphash_key g_isn_secret;
+static hash::siphash_key g_timestamp_secret;
 
 struct record_key_ops {
     using key_type = tuple;
@@ -83,16 +85,39 @@ void record::ref_destroy(record* self) {
     }
 }
 
-int32_t init_tables() {
-    if (random::fill(&g_tuple_secret, sizeof(g_tuple_secret)) != random::OK) {
-        log::warn("tcp: no hardware random source, hashing tuples with a clock-derived secret");
-        g_tuple_secret.k0 = hash::u64(clock::now_ns());
-        g_tuple_secret.k1 = hash::u64(~clock::now_ns());
+static void draw_secret(hash::siphash_key* secret, const char* purpose) {
+    if (random::fill(secret, sizeof(*secret)) == random::OK) {
+        return;
     }
 
+    log::warn("tcp: no hardware random source, %s secret derived from the clock", purpose);
+    secret->k0 = hash::u64(clock::now_ns());
+    secret->k1 = hash::u64(~clock::now_ns() ^ hash::ptr(secret));
+}
+
+int32_t init_tables() {
+    draw_secret(&g_tuple_secret, "table");
     g_table.init(g_buckets, TABLE_BUCKETS);
 
     return OK;
+}
+
+int32_t init_sequence_numbers() {
+    draw_secret(&g_isn_secret, "sequence number");
+    draw_secret(&g_timestamp_secret, "timestamp");
+
+    return OK;
+}
+
+uint32_t initial_sequence(const tuple& key) {
+    uint32_t clock_part = static_cast<uint32_t>(clock::now_ns() / ISN_TICK_NS);
+    uint32_t tuple_part = static_cast<uint32_t>(hash::siphash(&key, sizeof(key), g_isn_secret));
+
+    return clock_part + tuple_part;
+}
+
+uint32_t timestamp_offset(const tuple& key) {
+    return static_cast<uint32_t>(hash::siphash(&key, sizeof(key), g_timestamp_secret));
 }
 
 tcp_conn* alloc_conn(const tuple& key, interface* iface) {
