@@ -6,6 +6,9 @@
 #include "resource/socket_ops.h"
 #include "sync/spinlock.h"
 #include "sync/poll.h"
+#include "sync/wait_queue.h"
+#include "sched/sched.h"
+#include "signals/signal.h"
 #include "mm/heap.h"
 #include "dynpriv/dynpriv.h"
 #include "common/string.h"
@@ -61,6 +64,10 @@ __PRIVILEGED_CODE void socket_close(tcp_socket* sock) {
 
     if (sock->listener) {
         listener_close(sock->listener.ptr());
+    }
+
+    if (sock->conn) {
+        abort_connection(sock->conn.ptr());
     }
 
     heap::ufree_delete(sock);
@@ -181,14 +188,87 @@ __PRIVILEGED_CODE static int32_t socket_listen(resource::resource_object* obj, i
     return inet::map_net_error(rc == ERR_FULL ? ERR_IN_USE : rc);
 }
 
-__PRIVILEGED_CODE static int32_t socket_getname(resource::resource_object* obj, void* kaddr,
-                                                size_t* addrlen, bool peer) {
-    if (peer) {
-        return resource::ERR_NOTCONN;
+__PRIVILEGED_CODE static int32_t socket_accept(resource::resource_object* obj, resource::resource_object** new_obj,
+                                               void* kaddr, size_t* addrlen, bool nonblock) {
+    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+    sched::task* task = sched::current();
+
+    rc::strong_ref<tcp_listener> listener;
+    {
+        sync::irq_lock_guard guard(sock->lock);
+        listener = sock->listener;
     }
 
+    if (!listener) {
+        return resource::ERR_INVAL;
+    }
+
+    sync::irq_state irq = sync::spin_lock_irqsave(listener->lock);
+    while (listener->accept_queue.empty() && !listener->closed && !nonblock &&
+           !signals::interrupt_pending(task)) {
+        irq = sync::wait(listener->accept_wq, listener->lock, irq);
+    }
+
+    tcp_conn* popped = listener->accept_queue.pop_front();
+    if (popped) {
+        listener->accept_count--;
+    }
+
+    bool closed = listener->closed;
+    sync::spin_unlock_irqrestore(listener->lock, irq);
+
+    if (!popped) {
+        return closed ? resource::ERR_INVAL : (nonblock ? resource::ERR_AGAIN : resource::ERR_INTR);
+    }
+
+    rc::strong_ref<tcp_conn> conn = rc::strong_ref<tcp_conn>::adopt(popped);
+    tcp_socket* child = socket_open();
+    auto* child_obj = child ? heap::kalloc_new<resource::resource_object>() : nullptr;
+    if (!child_obj) {
+        abort_connection(conn.ptr());
+        if (child) {
+            socket_close(child);
+        }
+
+        return resource::ERR_NOMEM;
+    }
+
+    child->local = {conn->key.local_addr, conn->key.local_port, sock->local.iface, false};
+    child->bound = true;
+    child_obj->type = resource::resource_type::SOCKET;
+    child_obj->ops = socket_ops();
+    child_obj->impl = child;
+
+    {
+        sync::irq_lock_guard guard(conn->lock);
+        conn->owner = child_obj;
+    }
+
+    if (kaddr && addrlen &&
+        inet::fill_sockaddr(kaddr, addrlen, conn->key.remote_addr, conn->key.remote_port) != OK) {
+        *addrlen = 0;
+    }
+
+    child->conn = conn;
+    *new_obj = child_obj;
+
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static int32_t socket_getname(resource::resource_object* obj, void* kaddr,
+                                                size_t* addrlen, bool peer) {
     tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
     sync::irq_lock_guard guard(sock->lock);
+
+    if (peer) {
+        if (!sock->conn) {
+            return resource::ERR_NOTCONN;
+        }
+
+        const tuple& key = sock->conn->key;
+        return inet::fill_sockaddr(kaddr, addrlen, key.remote_addr, key.remote_port) == OK
+                   ? resource::OK : resource::ERR_INVAL;
+    }
 
     if (inet::fill_sockaddr(kaddr, addrlen, sock->local.addr, sock->local.port) != OK) {
         return resource::ERR_INVAL;
@@ -217,17 +297,46 @@ __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* ob
     return resource::OK;
 }
 
-__PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object*, void*, size_t, uint32_t) {
-    return resource::ERR_NOTCONN;
+__PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void*, size_t, uint32_t) {
+    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+    sync::irq_lock_guard guard(sock->lock);
+
+    return sock->conn ? resource::ERR_UNSUP : resource::ERR_NOTCONN;
 }
 
-__PRIVILEGED_CODE static ssize_t socket_write(resource::resource_object*, const void*, size_t, uint32_t) {
-    return resource::ERR_NOTCONN;
+__PRIVILEGED_CODE static ssize_t socket_write(resource::resource_object* obj, const void*, size_t, uint32_t) {
+    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+    sync::irq_lock_guard guard(sock->lock);
+
+    return sock->conn ? resource::ERR_UNSUP : resource::ERR_NOTCONN;
 }
 
-__PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sync::poll_table*) {
+__PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sync::poll_table* pt) {
     if (!obj || !obj->impl) {
         return sync::POLL_NVAL;
+    }
+
+    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+    rc::strong_ref<tcp_listener> listener;
+    rc::strong_ref<tcp_conn> conn;
+    {
+        sync::irq_lock_guard guard(sock->lock);
+        listener = sock->listener;
+        conn = sock->conn;
+    }
+
+    if (listener) {
+        if (pt) {
+            sync::poll_subscribe(*pt, listener->accept_wq);
+        }
+
+        sync::irq_lock_guard guard(listener->lock);
+        return listener->accept_queue.empty() ? 0 : sync::POLL_IN;
+    }
+
+    if (conn) {
+        sync::irq_lock_guard guard(conn->lock);
+        return conn->state == tcp_state::closed ? sync::POLL_HUP : 0;
     }
 
     return sync::POLL_HUP;
@@ -245,6 +354,7 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
 static const resource::socket_ops g_tcp_socket_ops = {
     .bind = socket_bind,
     .listen = socket_listen,
+    .accept = socket_accept,
     .getname = socket_getname,
     .setsockopt = socket_setsockopt,
 };

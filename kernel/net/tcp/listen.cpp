@@ -1,10 +1,12 @@
 #include "net/tcp/listen.h"
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
+#include "net/tcp/seq.h"
 #include "net/net.h"
 #include "net/interface.h"
 #include "net/byteorder.h"
 #include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 #include "mm/heap.h"
 #include "dynpriv/dynpriv.h"
 
@@ -19,6 +21,21 @@ struct synack_fields {
     uint32_t    iss;
     uint32_t    irs;
     tcp_options opts;
+};
+
+// What the connection inherits from its request, copied out the same way
+struct negotiated_fields {
+    uint32_t iss;
+    uint32_t irs;
+    uint32_t ts_recent;
+    uint32_t ts_offset;
+    uint16_t peer_mss;
+    uint8_t  snd_wscale;
+    uint8_t  rcv_wscale;
+    bool     wscale_ok;
+    bool     sack_ok;
+    bool     ts_ok;
+    bool     ecn_ok;
 };
 
 static tcp_listener* g_listeners[MAX_LISTENERS];
@@ -328,6 +345,163 @@ void listener_close(tcp_listener* listener) {
     while (rc::strong_ref<record> rec = remove_one_request_of(listener)) {
         retire_request(static_cast<tcp_request*>(rec.ptr()));
     }
+
+    while (rc::strong_ref<tcp_conn> conn = pop_accepted(listener)) {
+        abort_connection(conn.ptr());
+    }
+
+    RUN_ELEVATED(sync::wake_all(listener->accept_wq));
+}
+
+rc::strong_ref<tcp_conn> pop_accepted(tcp_listener* listener) {
+    tcp_conn* conn = nullptr;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(listener->lock);
+        conn = listener->accept_queue.pop_front();
+        if (conn) {
+            listener->accept_count--;
+        }
+    });
+
+    return rc::strong_ref<tcp_conn>::adopt(conn);
+}
+
+// Caller holds the request lock
+static negotiated_fields negotiated_fields_locked(const tcp_request* request) {
+    negotiated_fields fields = {};
+    fields.iss = request->iss;
+    fields.irs = request->irs;
+    fields.ts_recent = request->ts_recent;
+    fields.ts_offset = request->ts_offset;
+    fields.peer_mss = request->peer_mss;
+    fields.snd_wscale = request->snd_wscale;
+    fields.rcv_wscale = request->rcv_wscale;
+    fields.wscale_ok = request->wscale_ok;
+    fields.sack_ok = request->sack_ok;
+    fields.ts_ok = request->ts_ok;
+    fields.ecn_ok = request->ecn_ok;
+
+    return fields;
+}
+
+// RFC 9293 3.10.7.4: the only place a passive connection gets its sequence
+// variables, from the request and the ACK that completed it
+static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, const tcp_header* hdr,
+                              const tcp_options& opts) {
+    conn->state = tcp_state::established;
+    conn->passive = true;
+    conn->iss = fields.iss;
+    conn->irs = fields.irs;
+    conn->snd_una = fields.iss + 1;
+    conn->snd_nxt = fields.iss + 1;
+    conn->snd_wnd = uint32_t{ntohs(hdr->window)} << fields.snd_wscale;
+    conn->snd_wl1 = ntohl(hdr->seq);
+    conn->snd_wl2 = ntohl(hdr->ack);
+    conn->max_snd_wnd = conn->snd_wnd;
+    conn->snd_mss = fields.peer_mss < local_mss(conn->iface) ? fields.peer_mss : local_mss(conn->iface);
+    conn->snd_wscale = fields.snd_wscale;
+    conn->rcv_nxt = fields.irs + 1;
+    conn->rcv_wnd = RCV_BUF_INITIAL;
+    conn->rcv_adv = conn->rcv_nxt + RCV_BUF_INITIAL;
+    conn->rcv_mss = fields.peer_mss;
+    conn->rcv_wscale = fields.rcv_wscale;
+    conn->wscale_ok = fields.wscale_ok;
+    conn->sack_ok = fields.sack_ok;
+    conn->ts_ok = fields.ts_ok;
+    conn->ecn_ok = fields.ecn_ok;
+    conn->ts_recent = fields.ts_ok && opts.has_timestamps ? opts.ts_val : fields.ts_recent;
+    conn->ts_recent_age_ns = now_ns();
+    conn->ts_offset = fields.ts_offset;
+}
+
+static int32_t send_request_ack(const tcp_request* request, const negotiated_fields& fields) {
+    return send_segment(request->iface, request->key, FLAG_ACK, fields.iss + 1, fields.irs + 1,
+                        advertised_window(RCV_BUF_INITIAL), {});
+}
+
+static int32_t promote(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
+    interface* iface = pkt->iface();
+    uint32_t seq = ntohl(hdr->seq);
+    uint32_t ack = ntohl(hdr->ack);
+
+    negotiated_fields fields;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(request->lock);
+        fields = negotiated_fields_locked(request);
+    });
+
+    if (ack != fields.iss + 1) {
+        packet::free(pkt);
+        return send_segment(iface, request->key, FLAG_RST, ack, 0, 0, {});
+    }
+
+    bool paws_reject = fields.ts_ok && opts.has_timestamps && seq_lt(opts.ts_val, fields.ts_recent);
+    if (seq != fields.irs + 1 || paws_reject) {
+        packet::free(pkt);
+        return send_request_ack(request, fields);
+    }
+
+    // The request's timer goes stale before the record can leave the table
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(request->lock);
+        request->timer_armed = false;
+    });
+
+    tcp_listener* listener = request->listener;
+    bool room = false;
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(listener->lock);
+        listener->request_count--;
+
+        if (!listener->closed && listener->accept_count < listener->backlog) {
+            listener->accept_count++;
+            room = true;
+        }
+    });
+
+    tcp_conn* conn = room ? alloc_conn(request->key, iface) : nullptr;
+    if (!conn) {
+        if (room) {
+            RUN_ELEVATED({
+                sync::irq_lock_guard guard(listener->lock);
+                listener->accept_count--;
+            });
+        }
+
+        (void)remove(request);
+        retire_request(request);
+
+        return drop(iface, pkt, room ? ERR_NO_MEMORY : OK);
+    }
+
+    init_from_request(conn, fields, hdr, opts);
+
+    int32_t rc = replace(request, conn);
+    retire_request(request);
+
+    if (rc != OK) {
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(listener->lock);
+            listener->accept_count--;
+        });
+
+        (void)remove(request);
+        release_record(conn);
+        return drop(iface, pkt, rc);
+    }
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(listener->lock);
+        conn->add_ref();
+        listener->accept_queue.push_back(conn);
+        sync::wake_all(listener->accept_wq);
+    });
+
+    release_record(conn);
+    packet::free(pkt);
+
+    return OK;
 }
 
 int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
@@ -393,21 +567,29 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
     return send_synack(fields);
 }
 
-int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options&) {
-    bool retransmitted_syn = (hdr->flags & (FLAG_SYN | FLAG_ACK | FLAG_RST)) == FLAG_SYN;
-    if (!retransmitted_syn) {
+int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
+    if (hdr->flags & FLAG_RST) {
         packet::free(pkt);
         return OK;
     }
 
-    synack_fields fields;
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(request->lock);
-        fields = synack_fields_locked(request);
-    });
+    if ((hdr->flags & (FLAG_SYN | FLAG_ACK)) == FLAG_SYN) {
+        synack_fields fields;
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(request->lock);
+            fields = synack_fields_locked(request);
+        });
+
+        packet::free(pkt);
+        return send_synack(fields);
+    }
+
+    if (hdr->flags & FLAG_ACK) {
+        return promote(request, pkt, hdr, opts);
+    }
 
     packet::free(pkt);
-    return send_synack(fields);
+    return OK;
 }
 
 } // namespace tcp

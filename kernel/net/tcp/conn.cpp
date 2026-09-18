@@ -3,7 +3,10 @@
 #include "net/tcp/timewait.h"
 #include "net/tcp/socket.h"
 #include "net/tcp/wire.h"
+#include "net/tcp/output.h"
+#include "net/tcp/timers.h"
 #include "net/net.h"
+#include "sync/wait_queue.h"
 #include "common/siphash.h"
 #include "common/hash.h"
 #include "random/random.h"
@@ -161,6 +164,32 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     timer::init_deadline_timer(&conn->send_timer, nullptr);
 
     return conn;
+}
+
+void abort_connection(tcp_conn* conn) {
+    bool send = false;
+    uint32_t seq = 0;
+    uint32_t ack = 0;
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        if (conn->state != tcp_state::closed) {
+            send = conn->state != tcp_state::syn_sent;
+            seq = conn->snd_nxt;
+            ack = conn->rcv_nxt;
+            conn->state = tcp_state::closed;
+            conn->send_timer_kind = timer_kind::none;
+        }
+    });
+
+    if (send) {
+        (void)send_segment(conn->iface, conn->key, FLAG_RST | FLAG_ACK, seq, ack, 0, {});
+    }
+
+    disarm_timer(conn, &conn->send_timer);
+    (void)remove(conn);
+
+    RUN_ELEVATED(sync::wake_all(conn->conn_wq));
 }
 
 rc::strong_ref<record> lookup(const tuple& key) {

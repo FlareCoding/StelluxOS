@@ -135,9 +135,18 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
 
 /**
  * @brief Consumes a segment for `request`. A retransmitted SYN is answered with
- * the SYN-ACK again; anything else is dropped until the completing ACK is handled.
+ * the SYN-ACK again, the ACK completing the handshake turns the request into a
+ * connection queued for accept (RFC 9293 3.10.7.4), and a wrong acknowledgment
+ * is reset.
  */
 int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts);
+
+/**
+ * @brief Takes the oldest connection waiting on `listener`, with the reference
+ * the queue held.
+ * @return The connection, or an empty reference when none is waiting.
+ */
+rc::strong_ref<tcp_conn> pop_accepted(tcp_listener* listener);
 
 } // namespace tcp
 } // namespace net

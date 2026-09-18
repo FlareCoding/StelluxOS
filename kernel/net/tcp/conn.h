@@ -159,6 +159,13 @@ uint32_t timestamp_offset(const tuple& key);
 tcp_conn* alloc_conn(const tuple& key, interface* iface);
 
 /**
+ * @brief Ends the connection at once: a reset goes to the peer, the record
+ * leaves the table, its timer is disarmed, and every waiter on it is woken
+ * (RFC 9293 3.10 ABORT).
+ */
+void abort_connection(tcp_conn* conn);
+
+/**
  * @brief Finds the record for `key`, holding a reference for the caller.
  * @return The record, or an empty reference when nothing matches.
  */

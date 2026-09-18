@@ -222,6 +222,160 @@ TEST(tcp_handshake, closing_the_listener_retires_its_requests) {
     __dbg_test_set_clock(nullptr);
 }
 
+static uint32_t sent_seq(const linked_peer& lp, size_t frame) {
+    return ntohl(sent_tcp(lp.link, frame)->seq);
+}
+
+TEST(tcp_handshake, completing_ack_promotes_the_request_to_an_established_connection) {
+    linked_peer lp;
+    listening on(8);
+    EXPECT_EQ(input(lp.remote.segment(FLAG_SYN, 1000, 0, full_syn_options())), OK);
+    uint32_t iss = sent_seq(lp, 0);
+
+    EXPECT_EQ(input(lp.remote.ack(1001, iss + 1)), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(record_count(record_kind::request), 0u);
+    EXPECT_EQ(on.request_count(), 0);
+
+    rc::strong_ref<record> rec = lookup(key_of(lp.remote));
+    ASSERT_TRUE(rec);
+    ASSERT_EQ(rec->kind, record_kind::connection);
+    const tcp_conn* conn = static_cast<const tcp_conn*>(rec.ptr());
+    EXPECT_EQ(conn->state, tcp_state::established);
+    EXPECT_TRUE(conn->passive);
+    EXPECT_EQ(conn->iss, iss);
+    EXPECT_EQ(conn->irs, 1000u);
+    EXPECT_EQ(conn->snd_una, iss + 1);
+    EXPECT_EQ(conn->snd_nxt, iss + 1);
+    EXPECT_EQ(conn->rcv_nxt, 1001u);
+    EXPECT_EQ(conn->snd_wnd, 65535u << 7);
+    EXPECT_EQ(conn->snd_wscale, 7);
+    EXPECT_EQ(conn->rcv_wscale, 5);
+    EXPECT_EQ(conn->snd_mss, 1460);
+    EXPECT_EQ(conn->rcv_wnd, RCV_BUF_INITIAL);
+    EXPECT_TRUE(conn->sack_ok);
+    EXPECT_TRUE(conn->ts_ok);
+    EXPECT_EQ(conn->ts_recent, 777u);
+
+    // A segment for the connection is consumed, never reset
+    EXPECT_EQ(input(lp.remote.ack(1001, iss + 1)), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+
+    rc::strong_ref<tcp_conn> accepted = pop_accepted(on.listener);
+    ASSERT_TRUE(accepted);
+    EXPECT_EQ(static_cast<const record*>(accepted.ptr()), rec.ptr());
+    EXPECT_FALSE(pop_accepted(on.listener));
+    abort_connection(accepted.ptr());
+}
+
+TEST(tcp_handshake, plain_syn_connection_takes_the_default_mss) {
+    linked_peer lp;
+    listening on(8);
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    EXPECT_EQ(input(lp.remote.ack(1001, sent_seq(lp, 0) + 1)), OK);
+
+    rc::strong_ref<tcp_conn> conn = pop_accepted(on.listener);
+    ASSERT_TRUE(conn);
+    EXPECT_EQ(conn->snd_mss, DEFAULT_MSS);
+    EXPECT_EQ(conn->snd_wnd, 65535u);
+    EXPECT_FALSE(conn->wscale_ok);
+    abort_connection(conn.ptr());
+}
+
+TEST(tcp_handshake, ack_with_the_wrong_acknowledgment_is_reset_and_the_request_stays) {
+    linked_peer lp;
+    listening on(8);
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    uint32_t iss = sent_seq(lp, 0);
+
+    EXPECT_EQ(input(lp.remote.ack(1001, iss + 5)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_RST);
+    EXPECT_EQ(sent_seq(lp, 1), iss + 5);
+
+    rc::strong_ref<record> rec = lookup(key_of(lp.remote));
+    ASSERT_TRUE(rec);
+    EXPECT_EQ(rec->kind, record_kind::request);
+    EXPECT_EQ(on.request_count(), 1);
+}
+
+TEST(tcp_handshake, ack_with_the_wrong_sequence_gets_the_handshake_ack_again) {
+    linked_peer lp;
+    listening on(8);
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    uint32_t iss = sent_seq(lp, 0);
+
+    EXPECT_EQ(input(lp.remote.ack(1500, iss + 1)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_ACK);
+    EXPECT_EQ(sent_seq(lp, 1), iss + 1);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 1)->ack), 1001u);
+    EXPECT_EQ(lookup(key_of(lp.remote))->kind, record_kind::request);
+}
+
+TEST(tcp_handshake, paws_rejects_a_completing_ack_with_an_older_timestamp) {
+    linked_peer lp;
+    listening on(8);
+    EXPECT_EQ(input(lp.remote.segment(FLAG_SYN, 1000, 0, full_syn_options())), OK);
+    uint32_t iss = sent_seq(lp, 0);
+
+    tcp_options older;
+    older.has_timestamps = true;
+    older.ts_val = 700;
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, 1001, iss + 1, older)), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_ACK);
+    EXPECT_EQ(lookup(key_of(lp.remote))->kind, record_kind::request);
+
+    tcp_options newer = older;
+    newer.ts_val = 800;
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, 1001, iss + 1, newer)), OK);
+    rc::strong_ref<tcp_conn> conn = pop_accepted(on.listener);
+    ASSERT_TRUE(conn);
+    EXPECT_EQ(conn->ts_recent, 800u);
+    abort_connection(conn.ptr());
+}
+
+TEST(tcp_handshake, accept_hands_out_connections_in_arrival_order) {
+    linked_peer lp;
+    listening on(8);
+    peer second = lp.remote;
+    second.port = 40001;
+
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    EXPECT_EQ(input(second.syn(2000)), OK);
+    EXPECT_EQ(input(lp.remote.ack(1001, sent_seq(lp, 0) + 1)), OK);
+    EXPECT_EQ(input(second.ack(2001, sent_seq(lp, 1) + 1)), OK);
+
+    rc::strong_ref<tcp_conn> first_conn = pop_accepted(on.listener);
+    rc::strong_ref<tcp_conn> second_conn = pop_accepted(on.listener);
+    ASSERT_TRUE(first_conn);
+    ASSERT_TRUE(second_conn);
+    EXPECT_EQ(first_conn->key.remote_port, 40000);
+    EXPECT_EQ(second_conn->key.remote_port, 40001);
+    EXPECT_FALSE(pop_accepted(on.listener));
+
+    abort_connection(first_conn.ptr());
+    abort_connection(second_conn.ptr());
+}
+
+TEST(tcp_handshake, closing_the_listener_resets_connections_nobody_accepted) {
+    linked_peer lp;
+    listening on(8);
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    uint32_t iss = sent_seq(lp, 0);
+    EXPECT_EQ(input(lp.remote.ack(1001, iss + 1)), OK);
+    ASSERT_TRUE(lookup(key_of(lp.remote)));
+
+    listener_close(on.listener);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_RST | FLAG_ACK);
+    EXPECT_EQ(sent_seq(lp, 1), iss + 1);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 1)->ack), 1001u);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+    EXPECT_EQ(record_count(record_kind::connection), 0u);
+}
+
 TEST(tcp_handshake, only_a_bare_syn_reaches_the_listener) {
     linked_peer lp;
     listening on(8);

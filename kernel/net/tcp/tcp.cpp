@@ -98,8 +98,14 @@ int32_t input(packet* pkt) {
 
     tuple key = {ip->dst, ip->src, ntohs(hdr->dst_port), ntohs(hdr->src_port)};
     rc::strong_ref<record> rec = lookup(key);
+
     if (rec && rec->kind == record_kind::request) {
         return request_input(static_cast<tcp_request*>(rec.ptr()), pkt, hdr, opts);
+    }
+
+    if (rec) {
+        packet::free(pkt);
+        return OK;
     }
 
     bool syn_only = (hdr->flags & (FLAG_SYN | FLAG_ACK | FLAG_RST)) == FLAG_SYN;
