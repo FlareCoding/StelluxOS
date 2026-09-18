@@ -334,6 +334,14 @@ static void retire_request(tcp_request* request) {
     disarm_timer(request, &request->timer);
 }
 
+static void rearm_request(tcp_request* request) {
+    retire_request(request);
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(request->lock);
+        arm_request_timer_locked(request);
+    });
+}
+
 void listener_close(tcp_listener* listener) {
     RUN_ELEVATED({
         sync::irq_lock_guard guard(listener->lock);
@@ -441,62 +449,77 @@ static int32_t promote(tcp_request* request, packet* pkt, const tcp_header* hdr,
         return send_request_ack(request, fields);
     }
 
-    // The request's timer goes stale before the record can leave the table
+    tcp_listener* listener = request->listener;
+    bool closed = false;
+    bool full = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(listener->lock);
+        closed = listener->closed;
+        full = listener->accept_count >= listener->backlog;
+    });
+
+    // Nobody will ever accept from a closed listener, so the peer learns it now.
+    // A full queue or a failed allocation keeps the request, and the next ACK
+    // or SYN-ACK retransmission tries again.
+    if (closed) {
+        retire_request(request);
+        discard_request(request);
+        packet::free(pkt);
+        return send_segment(iface, request->key, FLAG_RST, ack, 0, 0, {});
+    }
+
+    if (full) {
+        return drop(iface, pkt, OK);
+    }
+
+    tcp_conn* conn = alloc_conn(request->key, iface);
+    if (!conn) {
+        return drop(iface, pkt, ERR_NO_MEMORY);
+    }
+
+    init_from_request(conn, fields, hdr, opts);
+
+    // The timer must not give the request up while this ACK is claiming it, and
+    // winning the replace is what makes this ACK the one that accounts for it.
     RUN_ELEVATED({
         sync::irq_lock_guard guard(request->lock);
         request->timer_armed = false;
     });
 
-    tcp_listener* listener = request->listener;
-    bool room = false;
-
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(listener->lock);
-        listener->request_count--;
-
-        if (!listener->closed && listener->accept_count < listener->backlog) {
-            listener->accept_count++;
-            room = true;
-        }
-    });
-
-    tcp_conn* conn = room ? alloc_conn(request->key, iface) : nullptr;
-    if (!conn) {
-        if (room) {
-            RUN_ELEVATED({
-                sync::irq_lock_guard guard(listener->lock);
-                listener->accept_count--;
-            });
-        }
-
-        (void)remove(request);
-        retire_request(request);
-
-        return drop(iface, pkt, room ? ERR_NO_MEMORY : OK);
-    }
-
-    init_from_request(conn, fields, hdr, opts);
-
     int32_t rc = replace(request, conn);
-    retire_request(request);
-
-    if (rc != OK) {
-        RUN_ELEVATED({
-            sync::irq_lock_guard guard(listener->lock);
-            listener->accept_count--;
-        });
-
-        (void)remove(request);
+    if (rc == ERR_FULL) {
         release_record(conn);
+        rearm_request(request);
+
         return drop(iface, pkt, rc);
     }
 
+    // Another ACK or a close took the request first; only a peer left with nothing is reset
+    if (rc != OK) {
+        release_record(conn);
+        packet::free(pkt);
+
+        return lookup(request->key) ? OK : send_segment(iface, request->key, FLAG_RST, ack, 0, 0, {});
+    }
+
+    retire_request(request);
+
+    bool queued = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(listener->lock);
-        conn->add_ref();
-        listener->accept_queue.push_back(conn);
-        sync::wake_all(listener->accept_wq);
+        listener->request_count--;
+        if (!listener->closed && listener->accept_count < listener->backlog) {
+            listener->accept_count++;
+            conn->add_ref();
+            listener->accept_queue.push_back(conn);
+            sync::wake_all(listener->accept_wq);
+            queued = true;
+        }
     });
+
+    if (!queued) {
+        abort_connection(conn);
+    }
 
     release_record(conn);
     packet::free(pkt);
@@ -567,10 +590,36 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
     return send_synack(fields);
 }
 
+// RFC 9293 3.10.7.4 with RFC 5961 3.2: a reset at exactly the next expected
+// sequence returns the request to LISTEN, one elsewhere in the window is
+// challenged, one outside it is ignored
+static int32_t request_reset(tcp_request* request, packet* pkt, const tcp_header* hdr) {
+    negotiated_fields fields;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(request->lock);
+        fields = negotiated_fields_locked(request);
+    });
+
+    uint32_t seq = ntohl(hdr->seq);
+    uint32_t rcv_nxt = fields.irs + 1;
+    packet::free(pkt);
+
+    if (seq == rcv_nxt) {
+        retire_request(request);
+        discard_request(request);
+        return OK;
+    }
+
+    if (seq_between(seq, rcv_nxt, rcv_nxt + RCV_BUF_INITIAL - 1)) {
+        return send_request_ack(request, fields);
+    }
+
+    return OK;
+}
+
 int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
     if (hdr->flags & FLAG_RST) {
-        packet::free(pkt);
-        return OK;
+        return request_reset(request, pkt, hdr);
     }
 
     if ((hdr->flags & (FLAG_SYN | FLAG_ACK)) == FLAG_SYN) {

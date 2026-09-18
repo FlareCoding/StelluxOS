@@ -376,6 +376,158 @@ TEST(tcp_handshake, closing_the_listener_resets_connections_nobody_accepted) {
     EXPECT_EQ(record_count(record_kind::connection), 0u);
 }
 
+TEST(tcp_handshake, reset_at_the_expected_sequence_returns_the_request_to_listen) {
+    linked_peer lp;
+    listening on(8);
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    ASSERT_TRUE(lookup(key_of(lp.remote)));
+
+    EXPECT_EQ(input(lp.remote.rst(1001)), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+    EXPECT_EQ(on.request_count(), 0);
+
+    // The slot is free again for the same peer
+    EXPECT_EQ(input(lp.remote.syn(5000)), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_SYN | FLAG_ACK);
+}
+
+TEST(tcp_handshake, reset_elsewhere_in_the_window_is_challenged_and_outside_it_ignored) {
+    linked_peer lp;
+    listening on(8);
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    uint32_t iss = sent_seq(lp, 0);
+
+    EXPECT_EQ(input(lp.remote.rst(1500)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_ACK);
+    EXPECT_EQ(sent_seq(lp, 1), iss + 1);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 1)->ack), 1001u);
+
+    EXPECT_EQ(input(lp.remote.rst(1001 + RCV_BUF_INITIAL)), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(lookup(key_of(lp.remote))->kind, record_kind::request);
+    EXPECT_EQ(on.request_count(), 1);
+}
+
+TEST(tcp_handshake, full_accept_queue_keeps_the_request_until_accept_makes_room) {
+    linked_peer lp;
+    listening on(2);
+    peer second = lp.remote;
+    second.port = 40001;
+    peer third = lp.remote;
+    third.port = 40002;
+
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    EXPECT_EQ(input(second.syn(2000)), OK);
+    EXPECT_EQ(input(lp.remote.ack(1001, sent_seq(lp, 0) + 1)), OK);
+    EXPECT_EQ(input(third.syn(3000)), OK);
+    EXPECT_EQ(input(second.ack(2001, sent_seq(lp, 1) + 1)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 3u);
+
+    // Two connections wait, the third ACK finds no room and the request stays
+    uint32_t third_iss = sent_seq(lp, 2);
+    EXPECT_EQ(input(third.ack(3001, third_iss + 1)), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 3u);
+    EXPECT_EQ(lookup(key_of(third))->kind, record_kind::request);
+    EXPECT_EQ(on.request_count(), 1);
+
+    rc::strong_ref<tcp_conn> first_conn = pop_accepted(on.listener);
+    ASSERT_TRUE(first_conn);
+    EXPECT_EQ(input(third.ack(3001, third_iss + 1)), OK);
+    EXPECT_EQ(lookup(key_of(third))->kind, record_kind::connection);
+    EXPECT_EQ(on.request_count(), 0);
+
+    abort_connection(first_conn.ptr());
+    while (rc::strong_ref<tcp_conn> conn = pop_accepted(on.listener)) {
+        abort_connection(conn.ptr());
+    }
+}
+
+TEST(tcp_handshake, completing_ack_for_a_closed_listener_resets_the_peer) {
+    linked_peer lp;
+    tcp_listener* listener = alloc_listener(endpoint{ipv4::UNSPECIFIED_ADDR, 5000, nullptr, false});
+    listener->backlog = 8;
+    ASSERT_EQ(listener_insert(listener), OK);
+    g_fake_now = clock::now_ns();
+    __dbg_test_set_clock(fake_clock);
+
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    uint32_t iss = sent_seq(lp, 0);
+    rc::strong_ref<record> request = lookup(key_of(lp.remote));
+    ASSERT_TRUE(request);
+
+    // The ACK looked its request up before the socket closed
+    listener_close(listener);
+    packet* ack = lp.remote.ack(1001, iss + 1);
+    const tcp_header* hdr = reinterpret_cast<const tcp_header*>(ack->data());
+    tcp_options opts;
+    parse_options(hdr, &opts);
+    EXPECT_EQ(request_input(static_cast<tcp_request*>(request.ptr()), ack, hdr, opts), OK);
+
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_RST);
+    EXPECT_EQ(sent_seq(lp, 1), iss + 1);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+    EXPECT_EQ(record_count(record_kind::connection), 0u);
+
+    if (listener->release()) {
+        tcp_listener::ref_destroy(listener);
+    }
+
+    __dbg_test_set_clock(nullptr);
+}
+
+TEST(tcp_handshake, connection_capacity_keeps_the_request_with_its_timer_running) {
+    linked_peer lp;
+    listening on(8);
+
+    // Fill the connection table with records of another peer
+    static tcp_conn* filler[MAX_CONNECTIONS];
+    for (size_t i = 0; i < MAX_CONNECTIONS; i++) {
+        tuple key = {lp.remote.host, {{10, 0, 2, 200}}, 6000, static_cast<uint16_t>(40000 + i)};
+        filler[i] = alloc_conn(key, &lp.link);
+        ASSERT_NOT_NULL(filler[i]);
+        ASSERT_EQ(insert(filler[i]), OK);
+    }
+
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    uint32_t iss = sent_seq(lp, 0);
+    EXPECT_EQ(input(lp.remote.ack(1001, iss + 1)), ERR_FULL);
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+
+    rc::strong_ref<record> rec = lookup(key_of(lp.remote));
+    ASSERT_TRUE(rec);
+    EXPECT_EQ(rec->kind, record_kind::request);
+    EXPECT_TRUE(static_cast<const tcp_request*>(rec.ptr())->timer_armed);
+    EXPECT_EQ(on.request_count(), 1);
+
+    // The timer still retransmits, so the peer answers again once there is room
+    advance_and_fire(TIMEOUT_INIT_NS);
+    EXPECT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_SYN | FLAG_ACK);
+
+    EXPECT_EQ(remove(filler[0]), OK);
+    EXPECT_EQ(input(lp.remote.ack(1001, iss + 1)), OK);
+    EXPECT_EQ(lookup(key_of(lp.remote))->kind, record_kind::connection);
+    EXPECT_EQ(on.request_count(), 0);
+
+    for (size_t i = 1; i < MAX_CONNECTIONS; i++) {
+        EXPECT_EQ(remove(filler[i]), OK);
+    }
+
+    for (size_t i = 0; i < MAX_CONNECTIONS; i++) {
+        if (filler[i]->release()) {
+            record::ref_destroy(filler[i]);
+        }
+    }
+
+    rc::strong_ref<tcp_conn> conn = pop_accepted(on.listener);
+    ASSERT_TRUE(conn);
+    abort_connection(conn.ptr());
+}
+
 TEST(tcp_handshake, only_a_bare_syn_reaches_the_listener) {
     linked_peer lp;
     listening on(8);

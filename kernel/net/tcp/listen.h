@@ -136,8 +136,8 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
 /**
  * @brief Consumes a segment for `request`. A retransmitted SYN is answered with
  * the SYN-ACK again, the ACK completing the handshake turns the request into a
- * connection queued for accept (RFC 9293 3.10.7.4), and a wrong acknowledgment
- * is reset.
+ * connection queued for accept, a wrong acknowledgment is reset, and a reset
+ * from the peer returns the request to LISTEN (RFC 9293 3.10.7.4).
  */
 int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts);
 
