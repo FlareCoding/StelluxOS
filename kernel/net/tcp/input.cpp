@@ -44,7 +44,7 @@ bool take_challenge_ack() {
     RUN_ELEVATED({
         sync::irq_lock_guard guard(g_challenges.lock);
         uint64_t now = now_ns();
-        if (now - g_challenges.window_start_ns >= CHALLENGE_ACK_WINDOW_NS) {
+        if (g_challenges.limit == 0 || now - g_challenges.window_start_ns >= CHALLENGE_ACK_WINDOW_NS) {
             uint32_t spread = 0;
             (void)random::fill(&spread, sizeof(spread));
             g_challenges.window_start_ns = now;
@@ -88,17 +88,19 @@ static bool paws_rejects_locked(const tcp_conn* conn, const tcp_options& opts) {
            now_ns() - conn->ts_recent_age_ns < TS_RECENT_MAX_AGE_NS;
 }
 
-// RFC 9293 3.10.7.4 for an acceptable ACK: the send window follows the newest
-// segment (RFC 7323 4.3 for the timestamp). Caller holds the lock.
+// RFC 9293 3.10.7.4 for an acceptable ACK: one below SND.UNA is a duplicate
+// that changes nothing, otherwise the send window follows the newest segment
+// (RFC 7323 4.3 for the timestamp). Caller holds the lock.
 static void take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_options& opts) {
     uint32_t seq = ntohl(hdr->seq);
     uint32_t ack = ntohl(hdr->ack);
+    bool current = seq_geq(ack, conn->snd_una);
 
     if (seq_gt(ack, conn->snd_una)) {
         conn->snd_una = ack;
     }
 
-    if (seq_lt(conn->snd_wl1, seq) || (conn->snd_wl1 == seq && seq_leq(conn->snd_wl2, ack))) {
+    if (current && (seq_lt(conn->snd_wl1, seq) || (conn->snd_wl1 == seq && seq_leq(conn->snd_wl2, ack)))) {
         conn->snd_wnd = uint32_t{ntohs(hdr->window)} << conn->snd_wscale;
         conn->snd_wl1 = seq;
         conn->snd_wl2 = ack;

@@ -183,6 +183,23 @@ TEST(tcp_rfc5961, window_update_follows_the_newest_segment_only) {
     EXPECT_EQ(lp.link.frames_sent(), 1u);
 }
 
+TEST(tcp_rfc5961, an_ack_below_snd_una_changes_nothing) {
+    linked_peer lp;
+    established c(lp);
+    uint32_t snd_una = c.conn->snd_una;
+
+    // Old by acknowledgment yet newest by sequence: neither the window nor its record moves
+    EXPECT_EQ(input(c.segment(FLAG_ACK, c.rcv_nxt(), snd_una - 1, 0)), OK);
+    EXPECT_EQ(c.conn->snd_wnd, 65535u);
+    EXPECT_EQ(c.conn->snd_wl1, PEER_ISS);
+    EXPECT_EQ(c.conn->snd_una, snd_una);
+
+    EXPECT_EQ(input(c.segment(FLAG_ACK, c.rcv_nxt(), snd_una - 1, 65535)), OK);
+    EXPECT_EQ(c.conn->snd_wnd, 65535u);
+    EXPECT_EQ(c.conn->max_snd_wnd, 65535u);
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+}
+
 TEST(tcp_rfc5961, paws_answers_an_old_timestamp_and_records_a_newer_one) {
     linked_peer lp;
     established c(lp);
@@ -205,6 +222,9 @@ TEST(tcp_rfc5961, paws_answers_an_old_timestamp_and_records_a_newer_one) {
 TEST(tcp_rfc5961, challenge_acks_are_limited_per_second_with_a_hidden_limit) {
     linked_peer lp;
     established c(lp);
+
+    // The budget is one for the whole host, so this second starts fresh
+    g_fake_now += CHALLENGE_ACK_WINDOW_NS;
 
     for (size_t i = 0; i < 2 * CHALLENGE_ACK_LIMIT; i++) {
         EXPECT_EQ(input(c.segment(FLAG_RST, c.rcv_nxt() + 500, 0)), OK);
