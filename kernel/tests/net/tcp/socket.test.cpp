@@ -218,3 +218,25 @@ TEST(tcp_socket, connect_completes_and_reports_the_peer) {
     EXPECT_TRUE(name.addr == lp.remote.addr);
     EXPECT_EQ(ntohs(name.port), lp.remote.port);
 }
+
+TEST(tcp_socket, a_reset_from_the_peer_is_reported_once_then_reads_end_and_writes_break) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    peer remote = stream_socket::replying_to(lp, 0);
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1)), OK);
+    ASSERT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_OUT);
+
+    EXPECT_EQ(input(remote.rst(7001)), OK);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_HUP | sync::POLL_ERR);
+
+    uint8_t byte = 0;
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, &byte, 1, 0), resource::ERR_CONNRESET);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, &byte, 1, 0), 0);
+    EXPECT_EQ(sock.obj->ops->write(sock.obj, &byte, 1, 0), resource::ERR_PIPE);
+    EXPECT_EQ(sock.pending_error(), resource::OK);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_HUP);
+}

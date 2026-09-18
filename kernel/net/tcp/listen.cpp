@@ -1,4 +1,5 @@
 #include "net/tcp/listen.h"
+#include "net/tcp/input.h"
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
 #include "net/tcp/seq.h"
@@ -602,7 +603,7 @@ static int32_t request_reset(tcp_request* request, packet* pkt, const tcp_header
         return OK;
     }
 
-    if (seq_between(seq, rcv_nxt, rcv_nxt + RCV_BUF_INITIAL - 1)) {
+    if (seq_between(seq, rcv_nxt, rcv_nxt + RCV_BUF_INITIAL - 1) && take_challenge_ack()) {
         return send_request_ack(request, fields);
     }
 

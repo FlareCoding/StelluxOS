@@ -43,6 +43,7 @@ constexpr int64_t EAFNOSUPPORT     = -97;
 constexpr int64_t EADDRINUSE       = -98;
 constexpr int64_t EADDRNOTAVAIL    = -99;
 constexpr int64_t ENETUNREACH      = -101;
+constexpr int64_t ECONNRESET       = -104;
 constexpr int64_t ENOBUFS          = -105;
 constexpr int64_t EALREADY         = -114;
 constexpr int64_t EINPROGRESS      = -115;

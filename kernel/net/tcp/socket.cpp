@@ -481,18 +481,29 @@ __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* ob
     return resource::OK;
 }
 
-__PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void*, size_t, uint32_t) {
-    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+__PRIVILEGED_CODE static ssize_t closed_stream_result(tcp_socket* sock, ssize_t after_error) {
     sync::irq_lock_guard guard(sock->lock);
+    if (!sock->conn) {
+        return resource::ERR_NOTCONN;
+    }
 
-    return sock->conn ? resource::ERR_UNSUP : resource::ERR_NOTCONN;
+    sync::irq_lock_guard conn_guard(sock->conn->lock);
+    if (sock->conn->state != tcp_state::closed) {
+        return resource::ERR_UNSUP;
+    }
+
+    int32_t error = sock->conn->pending_error;
+    sock->conn->pending_error = resource::OK;
+
+    return error != resource::OK ? error : after_error;
+}
+
+__PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void*, size_t, uint32_t) {
+    return closed_stream_result(static_cast<tcp_socket*>(obj->impl), 0);
 }
 
 __PRIVILEGED_CODE static ssize_t socket_write(resource::resource_object* obj, const void*, size_t, uint32_t) {
-    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
-    sync::irq_lock_guard guard(sock->lock);
-
-    return sock->conn ? resource::ERR_UNSUP : resource::ERR_NOTCONN;
+    return closed_stream_result(static_cast<tcp_socket*>(obj->impl), resource::ERR_PIPE);
 }
 
 __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sync::poll_table* pt) {

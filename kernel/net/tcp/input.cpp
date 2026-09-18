@@ -5,6 +5,7 @@
 #include "net/net.h"
 #include "net/byteorder.h"
 #include "resource/resource.h"
+#include "random/random.h"
 #include "sync/spinlock.h"
 #include "sync/wait_queue.h"
 #include "dynpriv/dynpriv.h"
@@ -19,6 +20,150 @@ enum class handshake_action : uint8_t {
     established  = 3,
     simultaneous = 4,
 };
+
+enum class segment_action : uint8_t {
+    consume   = 0,
+    challenge = 1,
+    reset     = 2,
+};
+
+// The ACKs answered to unacceptable segments this second: the limit is drawn
+// anew each second between half the maximum and the maximum, so a peer cannot
+// learn it by counting
+struct challenge_budget {
+    uint64_t       window_start_ns;
+    uint32_t       sent;
+    uint32_t       limit;
+    sync::spinlock lock;
+};
+
+static challenge_budget g_challenges = {0, 0, 0, sync::SPINLOCK_INIT};
+
+bool take_challenge_ack() {
+    bool allowed = false;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_challenges.lock);
+        uint64_t now = now_ns();
+        if (now - g_challenges.window_start_ns >= CHALLENGE_ACK_WINDOW_NS) {
+            uint32_t spread = 0;
+            (void)random::fill(&spread, sizeof(spread));
+            g_challenges.window_start_ns = now;
+            g_challenges.sent = 0;
+            g_challenges.limit = CHALLENGE_ACK_LIMIT / 2 + spread % (CHALLENGE_ACK_LIMIT / 2 + 1);
+        }
+
+        if (g_challenges.sent < g_challenges.limit) {
+            g_challenges.sent++;
+            allowed = true;
+        }
+    });
+
+    return allowed;
+}
+
+// RFC 9293 3.4: whether the segment's bytes, or its bare position when it has
+// none, fall inside the receive window. Caller holds the lock.
+static bool is_acceptable_locked(const tcp_conn* conn, uint32_t seq, uint32_t seg_len) {
+    uint32_t window_end = conn->rcv_nxt + conn->rcv_wnd;
+
+    if (seg_len == 0) {
+        return conn->rcv_wnd == 0 ? seq == conn->rcv_nxt
+                                  : seq_geq(seq, conn->rcv_nxt) && seq_lt(seq, window_end);
+    }
+
+    if (conn->rcv_wnd == 0) {
+        return false;
+    }
+
+    uint32_t last = seq + seg_len - 1;
+    return (seq_geq(seq, conn->rcv_nxt) && seq_lt(seq, window_end)) ||
+           (seq_geq(last, conn->rcv_nxt) && seq_lt(last, window_end));
+}
+
+// RFC 7323 5.3: a timestamp older than the newest seen rejects the segment,
+// unless nothing was seen for so long that the clock may have wrapped. A
+// reset is exempt, so an old clock cannot make one be ignored.
+static bool paws_rejects_locked(const tcp_conn* conn, const tcp_options& opts) {
+    return conn->ts_ok && opts.has_timestamps && seq_lt(opts.ts_val, conn->ts_recent) &&
+           now_ns() - conn->ts_recent_age_ns < TS_RECENT_MAX_AGE_NS;
+}
+
+// RFC 9293 3.10.7.4 for an acceptable ACK: the send window follows the newest
+// segment (RFC 7323 4.3 for the timestamp). Caller holds the lock.
+static void take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_options& opts) {
+    uint32_t seq = ntohl(hdr->seq);
+    uint32_t ack = ntohl(hdr->ack);
+
+    if (seq_gt(ack, conn->snd_una)) {
+        conn->snd_una = ack;
+    }
+
+    if (seq_lt(conn->snd_wl1, seq) || (conn->snd_wl1 == seq && seq_leq(conn->snd_wl2, ack))) {
+        conn->snd_wnd = uint32_t{ntohs(hdr->window)} << conn->snd_wscale;
+        conn->snd_wl1 = seq;
+        conn->snd_wl2 = ack;
+        if (conn->snd_wnd > conn->max_snd_wnd) {
+            conn->max_snd_wnd = conn->snd_wnd;
+        }
+    }
+
+    if (conn->ts_ok && opts.has_timestamps && seq_leq(seq, conn->rcv_nxt)) {
+        conn->ts_recent = opts.ts_val;
+        conn->ts_recent_age_ns = now_ns();
+    }
+}
+
+// RFC 9293 3.10.7.4 with RFC 5961: acceptability first, then a reset only at
+// the expected sequence, a SYN never obeyed, and an ACK only within the range
+// this host could have sent
+static int32_t established_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
+    uint32_t seq = ntohl(hdr->seq);
+    uint32_t ack = ntohl(hdr->ack);
+    uint32_t seg_len = static_cast<uint32_t>(pkt->length() - hdr->header_len()) +
+                       ((hdr->flags & FLAG_SYN) ? 1 : 0) + ((hdr->flags & FLAG_FIN) ? 1 : 0);
+    segment_action action = segment_action::consume;
+    segment_source src = {};
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        bool is_rst = hdr->flags & FLAG_RST;
+        bool in_window = is_acceptable_locked(conn, seq, seg_len) && (is_rst || !paws_rejects_locked(conn, opts));
+
+        if (conn->state != tcp_state::established) {
+            action = segment_action::consume;
+        } else if (!in_window) {
+            action = (hdr->flags & FLAG_RST) ? segment_action::consume : segment_action::challenge;
+        } else if (hdr->flags & FLAG_RST) {
+            action = seq == conn->rcv_nxt ? segment_action::reset : segment_action::challenge;
+        } else if (hdr->flags & FLAG_SYN) {
+            action = segment_action::challenge;
+        } else if (!(hdr->flags & FLAG_ACK)) {
+            action = segment_action::consume;
+        } else if (!seq_geq(ack, conn->snd_una - conn->max_snd_wnd) || !seq_leq(ack, conn->snd_nxt)) {
+            action = segment_action::challenge;
+        } else {
+            take_ack_locked(conn, hdr, opts);
+        }
+
+        if (action == segment_action::reset) {
+            conn->state = tcp_state::closed;
+            conn->pending_error = resource::ERR_CONNRESET;
+            conn->send_timer_kind = timer_kind::none;
+        }
+
+        src = snapshot_source(conn);
+    });
+
+    packet::free(pkt);
+
+    if (action == segment_action::reset) {
+        retire_connection(conn);
+    } else if (action == segment_action::challenge && take_challenge_ack()) {
+        return send_control(src, FLAG_ACK);
+    }
+
+    return OK;
+}
 
 // Caller holds the lock. RFC 9293 3.10.7.3: what a SYN,
 // alone or with its ACK, tells a connection that sent one.
@@ -147,6 +292,8 @@ int32_t conn_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr, const tcp
         return syn_sent_input(conn, pkt, hdr, opts);
     case tcp_state::syn_rcvd:
         return syn_rcvd_input(conn, pkt, hdr, opts);
+    case tcp_state::established:
+        return established_input(conn, pkt, hdr, opts);
     default:
         packet::free(pkt);
         return OK;

@@ -211,10 +211,12 @@ void fail_connection(tcp_conn* conn, int32_t error) {
         }
     });
 
-    if (!failed) {
-        return;
+    if (failed) {
+        retire_connection(conn);
     }
+}
 
+void retire_connection(tcp_conn* conn) {
     disarm_timer(conn, &conn->send_timer);
     (void)remove(conn);
 
@@ -241,10 +243,7 @@ void abort_connection(tcp_conn* conn) {
         (void)send_segment(conn->iface, conn->key, FLAG_RST | FLAG_ACK, seq, ack, 0, {});
     }
 
-    disarm_timer(conn, &conn->send_timer);
-    (void)remove(conn);
-
-    RUN_ELEVATED(sync::wake_all(conn->conn_wq));
+    retire_connection(conn);
 }
 
 rc::strong_ref<record> lookup(const tuple& key) {
