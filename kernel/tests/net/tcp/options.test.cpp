@@ -14,22 +14,61 @@ struct segment {
     const tcp_header* hdr() const { return reinterpret_cast<const tcp_header*>(bytes); }
 };
 
+static segment segment_from(uint8_t flags, const uint8_t* opts, size_t opts_len) {
+    segment seg = {};
+    tcp_header* hdr = reinterpret_cast<tcp_header*>(seg.bytes);
+    hdr->flags = flags;
+    hdr->set_data_offset(static_cast<uint8_t>((HEADER_LEN + opts_len) / sizeof(uint32_t)));
+    string::memcpy(seg.bytes + HEADER_LEN, opts, opts_len);
+
+    return seg;
+}
+
 template <typename... Byte>
 static segment with_options(uint8_t flags, Byte... bytes) {
     constexpr size_t opts_len = sizeof...(bytes);
     static_assert(opts_len % sizeof(uint32_t) == 0, "options must fill whole words");
 
-    segment seg = {};
-    tcp_header* hdr = reinterpret_cast<tcp_header*>(seg.bytes);
-    hdr->flags = flags;
-    hdr->set_data_offset(static_cast<uint8_t>((HEADER_LEN + opts_len) / sizeof(uint32_t)));
-
     if constexpr (opts_len > 0) {
         const uint8_t opts[] = {static_cast<uint8_t>(bytes)...};
-        string::memcpy(seg.bytes + HEADER_LEN, opts, opts_len);
+        return segment_from(flags, opts, opts_len);
+    } else {
+        return segment_from(flags, nullptr, 0);
+    }
+}
+
+template <typename... Byte>
+static void expect_bytes(const uint8_t* actual, size_t actual_len, Byte... bytes) {
+    const uint8_t expected[] = {static_cast<uint8_t>(bytes)...};
+
+    EXPECT_EQ(actual_len, sizeof(expected));
+    EXPECT_EQ(string::memcmp(actual, expected, sizeof(expected)), 0);
+}
+
+static tcp_options full_syn_options() {
+    tcp_options opts;
+    opts.mss = 1460;
+    opts.sack_permitted = true;
+    opts.has_timestamps = true;
+    opts.ts_val = 12345;
+    opts.ts_ecr = 0;
+    opts.window_scale = 7;
+
+    return opts;
+}
+
+static tcp_options timestamps_with_blocks(uint8_t count) {
+    tcp_options opts;
+    opts.has_timestamps = true;
+    opts.ts_val = 1;
+    opts.ts_ecr = 2;
+    opts.sack_count = count;
+    for (uint8_t i = 0; i < MAX_SACK_BLOCKS; i++) {
+        opts.sack_blocks[i].start = 0x1000u * (2 * i + 1);
+        opts.sack_blocks[i].end = 0x1000u * (2 * i + 2);
     }
 
-    return seg;
+    return opts;
 }
 
 static void expect_absent(const tcp_options& opts) {
@@ -229,4 +268,114 @@ TEST(tcp_options, resets_the_output_before_parsing) {
 
     EXPECT_TRUE(parse_options(seg.hdr(), &opts));
     expect_absent(opts);
+}
+
+TEST(tcp_options, builds_nothing_when_no_option_is_present) {
+    uint8_t out[MAX_OPTIONS_LEN];
+
+    EXPECT_EQ(build_options(out, tcp_options{}), 0u);
+}
+
+TEST(tcp_options, builds_the_full_syn_layout_in_twenty_bytes) {
+    uint8_t out[MAX_OPTIONS_LEN];
+    size_t len = build_options(out, full_syn_options());
+
+    expect_bytes(out, len,
+        OPT_MSS, 4, 0x05, 0xB4,
+        OPT_SACK_PERMITTED, 2,
+        OPT_TIMESTAMPS, 10, 0x00, 0x00, 0x30, 0x39, 0x00, 0x00, 0x00, 0x00,
+        OPT_NOP,
+        OPT_WINDOW_SCALE, 3, 7);
+}
+
+TEST(tcp_options, pads_each_option_to_a_whole_word) {
+    uint8_t out[MAX_OPTIONS_LEN];
+    tcp_options opts;
+
+    opts.mss = 536;
+    expect_bytes(out, build_options(out, opts), OPT_MSS, 4, 0x02, 0x18);
+
+    opts = tcp_options{};
+    opts.window_scale = 3;
+    expect_bytes(out, build_options(out, opts), OPT_NOP, OPT_WINDOW_SCALE, 3, 3);
+
+    opts = tcp_options{};
+    opts.sack_permitted = true;
+    expect_bytes(out, build_options(out, opts), OPT_NOP, OPT_NOP, OPT_SACK_PERMITTED, 2);
+
+    opts = tcp_options{};
+    opts.has_timestamps = true;
+    opts.ts_val = 0x01020304;
+    opts.ts_ecr = 0x05060708;
+    expect_bytes(out, build_options(out, opts),
+        OPT_NOP, OPT_NOP, OPT_TIMESTAMPS, 10, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08);
+}
+
+TEST(tcp_options, builds_timestamps_followed_by_sack_blocks) {
+    uint8_t out[MAX_OPTIONS_LEN];
+    size_t len = build_options(out, timestamps_with_blocks(2));
+
+    expect_bytes(out, len,
+        OPT_NOP, OPT_NOP, OPT_TIMESTAMPS, 10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
+        OPT_NOP, OPT_NOP, OPT_SACK, 18,
+        0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x20, 0x00,
+        0x00, 0x00, 0x30, 0x00, 0x00, 0x00, 0x40, 0x00);
+}
+
+TEST(tcp_options, limits_sack_blocks_to_the_room_left) {
+    uint8_t out[MAX_OPTIONS_LEN];
+
+    size_t len = build_options(out, timestamps_with_blocks(4));
+    EXPECT_EQ(len, MAX_OPTIONS_LEN);
+    EXPECT_EQ(out[15], OPT_SACK_BASE_LEN + 3 * OPT_SACK_BLOCK_LEN);
+
+    tcp_options no_timestamps = timestamps_with_blocks(4);
+    no_timestamps.has_timestamps = false;
+    len = build_options(out, no_timestamps);
+    EXPECT_EQ(len, 2u + OPT_SACK_BASE_LEN + 4 * OPT_SACK_BLOCK_LEN);
+    EXPECT_EQ(out[3], OPT_SACK_BASE_LEN + 4 * OPT_SACK_BLOCK_LEN);
+
+    tcp_options syn_with_blocks = full_syn_options();
+    syn_with_blocks.sack_count = 4;
+    len = build_options(out, syn_with_blocks);
+    EXPECT_EQ(len, MAX_OPTIONS_LEN);
+    EXPECT_EQ(out[23], OPT_SACK_BASE_LEN + 2 * OPT_SACK_BLOCK_LEN);
+
+    tcp_options oversized = timestamps_with_blocks(9);
+    oversized.has_timestamps = false;
+    len = build_options(out, oversized);
+    EXPECT_EQ(out[3], OPT_SACK_BASE_LEN + 4 * OPT_SACK_BLOCK_LEN);
+}
+
+TEST(tcp_options, built_syn_options_parse_back_unchanged) {
+    uint8_t out[MAX_OPTIONS_LEN];
+    size_t len = build_options(out, full_syn_options());
+    segment seg = segment_from(FLAG_SYN, out, len);
+    tcp_options parsed;
+
+    EXPECT_TRUE(parse_options(seg.hdr(), &parsed));
+    EXPECT_EQ(parsed.mss, 1460);
+    EXPECT_TRUE(parsed.sack_permitted);
+    EXPECT_TRUE(parsed.has_timestamps);
+    EXPECT_EQ(parsed.ts_val, 12345u);
+    EXPECT_EQ(parsed.ts_ecr, 0u);
+    EXPECT_EQ(parsed.window_scale, 7);
+    EXPECT_EQ(parsed.sack_count, 0);
+}
+
+TEST(tcp_options, built_sack_blocks_parse_back_unchanged) {
+    uint8_t out[MAX_OPTIONS_LEN];
+    size_t len = build_options(out, timestamps_with_blocks(3));
+    segment seg = segment_from(FLAG_ACK, out, len);
+    tcp_options parsed;
+
+    EXPECT_TRUE(parse_options(seg.hdr(), &parsed));
+    EXPECT_TRUE(parsed.has_timestamps);
+    EXPECT_EQ(parsed.ts_val, 1u);
+    EXPECT_EQ(parsed.ts_ecr, 2u);
+    EXPECT_EQ(parsed.sack_count, 3);
+    for (uint8_t i = 0; i < 3; i++) {
+        EXPECT_EQ(parsed.sack_blocks[i].start, 0x1000u * (2 * i + 1));
+        EXPECT_EQ(parsed.sack_blocks[i].end, 0x1000u * (2 * i + 2));
+    }
 }

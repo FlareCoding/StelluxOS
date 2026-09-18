@@ -24,6 +24,20 @@ static uint32_t read_network_u32(const uint8_t* p) {
     return (uint32_t{p[0]} << 24) | (uint32_t{p[1]} << 16) | (uint32_t{p[2]} << 8) | uint32_t{p[3]};
 }
 
+static uint8_t* write_network_u16(uint8_t* p, uint16_t value) {
+    p[0] = static_cast<uint8_t>(value >> 8);
+    p[1] = static_cast<uint8_t>(value);
+    return p + sizeof(uint16_t);
+}
+
+static uint8_t* write_network_u32(uint8_t* p, uint32_t value) {
+    p[0] = static_cast<uint8_t>(value >> 24);
+    p[1] = static_cast<uint8_t>(value >> 16);
+    p[2] = static_cast<uint8_t>(value >> 8);
+    p[3] = static_cast<uint8_t>(value);
+    return p + sizeof(uint32_t);
+}
+
 static bool is_sack_option_len(uint8_t len) {
     if (len < OPT_SACK_BASE_LEN + OPT_SACK_BLOCK_LEN) {
         return false;
@@ -119,6 +133,63 @@ bool parse_options(const tcp_header* hdr, tcp_options* out) {
     }
 
     return true;
+}
+
+size_t build_options(uint8_t* dst, const tcp_options& opts) {
+    uint8_t* p = dst;
+
+    if (opts.mss != MSS_NONE) {
+        *p++ = OPT_MSS;
+        *p++ = OPT_MSS_LEN;
+        p = write_network_u16(p, opts.mss);
+    }
+
+    // SACK-permitted shares a word with the timestamps header when both are sent
+    if (opts.has_timestamps) {
+        *p++ = opts.sack_permitted ? OPT_SACK_PERMITTED : OPT_NOP;
+        *p++ = opts.sack_permitted ? OPT_SACK_PERMITTED_LEN : OPT_NOP;
+        *p++ = OPT_TIMESTAMPS;
+        *p++ = OPT_TIMESTAMPS_LEN;
+        p = write_network_u32(p, opts.ts_val);
+        p = write_network_u32(p, opts.ts_ecr);
+    } else if (opts.sack_permitted) {
+        *p++ = OPT_NOP;
+        *p++ = OPT_NOP;
+        *p++ = OPT_SACK_PERMITTED;
+        *p++ = OPT_SACK_PERMITTED_LEN;
+    }
+
+    if (opts.window_scale != WINDOW_SCALE_NONE) {
+        *p++ = OPT_NOP;
+        *p++ = OPT_WINDOW_SCALE;
+        *p++ = OPT_WINDOW_SCALE_LEN;
+        *p++ = opts.window_scale;
+    }
+
+    size_t room = MAX_OPTIONS_LEN - static_cast<size_t>(p - dst);
+    size_t blocks = opts.sack_count;
+    if (blocks > MAX_SACK_BLOCKS) {
+        blocks = MAX_SACK_BLOCKS;
+    }
+
+    if (room < OPT_SACK_BASE_LEN + 2 + OPT_SACK_BLOCK_LEN) {
+        blocks = 0;
+    } else if (blocks > (room - OPT_SACK_BASE_LEN - 2) / OPT_SACK_BLOCK_LEN) {
+        blocks = (room - OPT_SACK_BASE_LEN - 2) / OPT_SACK_BLOCK_LEN;
+    }
+
+    if (blocks > 0) {
+        *p++ = OPT_NOP;
+        *p++ = OPT_NOP;
+        *p++ = OPT_SACK;
+        *p++ = static_cast<uint8_t>(OPT_SACK_BASE_LEN + blocks * OPT_SACK_BLOCK_LEN);
+        for (size_t i = 0; i < blocks; i++) {
+            p = write_network_u32(p, opts.sack_blocks[i].start);
+            p = write_network_u32(p, opts.sack_blocks[i].end);
+        }
+    }
+
+    return static_cast<size_t>(p - dst);
 }
 
 uint16_t compute_checksum(const ipv4::ipv4_addr& src, const ipv4::ipv4_addr& dst,
