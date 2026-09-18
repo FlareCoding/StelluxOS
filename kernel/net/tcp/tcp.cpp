@@ -1,10 +1,11 @@
 #include "net/tcp/tcp.h"
 #include "net/tcp/wire.h"
 #include "net/tcp/conn.h"
+#include "net/tcp/listen.h"
+#include "net/tcp/output.h"
 #include "net/net.h"
 #include "net/interface.h"
 #include "net/eth.h"
-#include "net/route.h"
 #include "net/byteorder.h"
 #include "common/logging.h"
 
@@ -38,48 +39,15 @@ static uint32_t segment_len(const tcp_header* hdr, size_t total_len) {
 }
 
 // RFC 9293 3.10.7.1: the reset takes its sequence from the offending segment's
-// acknowledgment, or acknowledges the segment when it carried none.
-static int32_t send_reset(interface* iface, const ipv4::ipv4_header* ip, const tcp_header* offending,
+// acknowledgment, or acknowledges the segment when it carried none
+static int32_t send_reset(interface* iface, const tuple& key, const tcp_header* offending,
                           size_t offending_len) {
-    route::route_result route;
-    int32_t rc = route::lookup_on(iface, ip->src, &route);
-    if (rc != OK) {
-        return rc;
-    }
-
-    route.source = ip->dst;
-
-    packet* pkt = packet::alloc();
-    if (!pkt) {
-        return ERR_NO_MEMORY;
-    }
-
-    tcp_header* hdr = nullptr;
-    if (pkt->reserve(eth::HEADER_LEN + ipv4::HEADER_LEN)) {
-        hdr = reinterpret_cast<tcp_header*>(pkt->put(HEADER_LEN));
-    }
-
-    if (!hdr) {
-        packet::free(pkt);
-        return ERR_TOO_LARGE;
-    }
-
-    *hdr = {};
-    hdr->src_port = offending->dst_port;
-    hdr->dst_port = offending->src_port;
-    hdr->set_data_offset(MIN_DATA_OFFSET);
-
     if (offending->flags & FLAG_ACK) {
-        hdr->seq = offending->ack;
-        hdr->flags = FLAG_RST;
-    } else {
-        hdr->ack = htonl(ntohl(offending->seq) + segment_len(offending, offending_len));
-        hdr->flags = FLAG_RST | FLAG_ACK;
+        return send_segment(iface, key, FLAG_RST, ntohl(offending->ack), 0, 0, {});
     }
 
-    hdr->checksum = htons(compute_checksum(ip->dst, ip->src, hdr, HEADER_LEN));
-
-    return ipv4::output(pkt, ip->src, route, ipv4::PROTO_TCP);
+    uint32_t ack = ntohl(offending->seq) + segment_len(offending, offending_len);
+    return send_segment(iface, key, FLAG_RST | FLAG_ACK, 0, ack, 0, {});
 }
 
 int32_t init() {
@@ -128,13 +96,27 @@ int32_t input(packet* pkt) {
         return drop(iface, pkt, OK);
     }
 
-    // Without a connection to claim it, a segment is handled as in the CLOSED state
+    tuple key = {ip->dst, ip->src, ntohs(hdr->dst_port), ntohs(hdr->src_port)};
+    rc::strong_ref<record> rec = lookup(key);
+    if (rec && rec->kind == record_kind::request) {
+        return request_input(static_cast<tcp_request*>(rec.ptr()), pkt, hdr, opts);
+    }
+
+    bool syn_only = (hdr->flags & (FLAG_SYN | FLAG_ACK | FLAG_RST)) == FLAG_SYN;
+    if (!rec && syn_only) {
+        rc::strong_ref<tcp_listener> listener = listener_lookup(ip->dst, key.local_port, iface);
+        if (listener) {
+            return listen_input(listener.ptr(), pkt, hdr, opts);
+        }
+    }
+
+    // Without a record to claim it, a segment is handled as in the CLOSED state
     if (hdr->flags & FLAG_RST) {
         packet::free(pkt);
         return OK;
     }
 
-    int32_t rc = send_reset(iface, ip, hdr, pkt->length());
+    int32_t rc = send_reset(iface, key, hdr, pkt->length());
     packet::free(pkt);
 
     return rc;

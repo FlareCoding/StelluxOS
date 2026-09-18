@@ -2,6 +2,8 @@
 #define STELLUX_NET_TCP_LISTEN_H
 
 #include "net/tcp/conn.h"
+#include "net/tcp/wire.h"
+#include "net/packet.h"
 
 namespace net {
 namespace tcp {
@@ -33,15 +35,18 @@ struct tcp_request : record {
     uint32_t iss;
     uint32_t irs;
     uint32_t ts_recent;
+    uint32_t ts_offset;
     uint16_t peer_mss;
     uint8_t  snd_wscale;
     uint8_t  rcv_wscale;
+    bool     wscale_ok;
     bool     sack_ok;
     bool     ts_ok;
     bool     ecn_ok;
 
     timer::deadline_timer timer;
-    uint32_t              timer_generation;
+    bool                  timer_armed;
+    uint64_t              timer_deadline_ns;
     uint8_t               retransmits;
 
     tcp_listener* listener;
@@ -113,6 +118,25 @@ rc::strong_ref<tcp_listener> listener_lookup(const ipv4::ipv4_addr& local_addr, 
  * @brief True when a listener uses `port`.
  */
 bool is_listener_port(uint16_t port);
+
+/**
+ * @brief Removes `listener` from the table with every request it still holds,
+ * dropping the table's references.
+ */
+void listener_close(tcp_listener* listener);
+
+/**
+ * @brief Consumes a SYN for `listener`: a request record answers it with a
+ * SYN-ACK and waits for the completing ACK, or the SYN is dropped when the
+ * backlog or the request capacity is full (RFC 9293 3.10.7.2).
+ */
+int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr, const tcp_options& opts);
+
+/**
+ * @brief Consumes a segment for `request`. A retransmitted SYN is answered with
+ * the SYN-ACK again; anything else is dropped until the completing ACK is handled.
+ */
+int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts);
 
 } // namespace tcp
 } // namespace net

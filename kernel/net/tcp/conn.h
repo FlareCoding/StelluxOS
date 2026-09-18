@@ -12,13 +12,20 @@ namespace resource { struct resource_object; }
 namespace net {
 namespace tcp {
 
+struct tcp_listener;
+
 constexpr size_t   MAX_CONNECTIONS    = 256;
 constexpr size_t   TABLE_BUCKETS      = 1024;
 constexpr uint64_t TIMEOUT_INIT_NS    = 1000000000ULL; // RFC 6298 2.1, before any RTT sample
 constexpr uint8_t  SYN_RETRIES        = 6;
 constexpr uint16_t EPHEMERAL_PORT_MIN = 49152;
 constexpr uint16_t EPHEMERAL_PORT_MAX = 65535;
-constexpr uint64_t ISN_TICK_NS        = 4000; // RFC 6528 3, the clock behind M
+constexpr uint64_t ISN_TICK_NS        = 4000;    // RFC 6528 3, the clock behind M
+constexpr uint64_t TIMESTAMP_TICK_NS  = 1000000; // RFC 7323 5.4 allows 1 ms to 1 s
+constexpr uint64_t TIMEOUT_MAX_NS     = 120000000000ULL;
+constexpr uint16_t DEFAULT_MSS        = 536;     // RFC 9293 3.7.1, when the peer sends none
+constexpr size_t   RCV_BUF_INITIAL    = 16 * 1024;
+constexpr size_t   RCV_BUF_MAX        = 1024 * 1024;
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -85,11 +92,12 @@ struct tcp_conn : record {
     uint32_t ts_offset;
 
     // The one timer the handshake and the close use, retransmitting what
-    // snd_una still waits for. `timer_generation` moves on every start and stop
-    // so a callback that lost a race does nothing.
+    // snd_una still waits for. The kind is none while disarmed, and a callback
+    // fires only once the record's own deadline has passed, so one that lost a
+    // race to a cancel or a re-arm does nothing.
     timer::deadline_timer send_timer;
     timer_kind            send_timer_kind;
-    uint32_t              timer_generation;
+    uint64_t              send_timer_deadline_ns;
     uint8_t               retransmits;
 
     resource::resource_object* owner;
@@ -107,6 +115,27 @@ int32_t init_tables();
  * @brief Draws the secrets behind initial sequence numbers and timestamp offsets.
  */
 int32_t init_sequence_numbers();
+
+/**
+ * @brief The clock every TCP deadline and timestamp is taken from.
+ */
+uint64_t now_ns();
+
+/**
+ * @brief For tests only: reads the clock through `fn`, or the real clock when null.
+ */
+void __dbg_test_set_clock(uint64_t (*fn)());
+
+/**
+ * @brief The timestamp a connection with `offset` sends now (RFC 7323 5.4).
+ */
+uint32_t timestamp_value(uint32_t offset);
+
+/**
+ * @brief The window shift this host advertises, the smallest that lets the
+ * largest receive buffer fit a sixteen-bit window (RFC 7323 2.2).
+ */
+uint8_t receive_window_scale();
 
 /**
  * @brief The initial sequence number for a new connection on `key` (RFC 6528):
@@ -159,6 +188,13 @@ int32_t remove(record* rec);
  * @brief Records of `kind` in the table.
  */
 size_t record_count(record_kind kind);
+
+/**
+ * @brief Takes one request of `listener` out of the table, handing the table's
+ * reference to the caller.
+ * @return The request, or an empty reference when none is left.
+ */
+rc::strong_ref<record> remove_one_request_of(const tcp_listener* listener);
 
 /**
  * @brief True when any record, listener, or bound socket uses `port` as its

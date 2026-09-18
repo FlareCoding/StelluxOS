@@ -24,7 +24,8 @@ struct tcp_timewait : record {
     bool     ts_ok;
 
     timer::deadline_timer timer;
-    uint32_t              timer_generation;
+    bool                  timer_armed;
+    uint64_t              timer_deadline_ns;
 };
 
 } // namespace tcp

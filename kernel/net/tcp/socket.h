@@ -7,7 +7,8 @@
 namespace net {
 namespace tcp {
 
-constexpr size_t MAX_SOCKETS = MAX_CONNECTIONS + MAX_LISTENERS;
+constexpr size_t MAX_SOCKETS             = MAX_CONNECTIONS + MAX_LISTENERS;
+constexpr size_t EPHEMERAL_BIND_ATTEMPTS = 8; // ports lost to a racing bind before giving up
 
 /**
  * A stream socket as userland holds it, from creation through bind to the
@@ -44,6 +45,16 @@ __PRIVILEGED_CODE void socket_close(tcp_socket* sock);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t socket_bind(tcp_socket* sock, const ipv4::ipv4_addr& addr, uint16_t port);
+
+/**
+ * @brief Turns the socket into a listener with `backlog` pending connections,
+ * binding an ephemeral port first when it has none. On a socket already
+ * listening only the backlog changes.
+ * @return OK, ERR_INVALID when connected, ERR_IN_USE when a listener
+ *         conflicts, ERR_FULL when no listener slot or ephemeral port is free.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t socket_listen(tcp_socket* sock, uint16_t backlog);
 
 /**
  * @brief True when a bound socket uses `port`.

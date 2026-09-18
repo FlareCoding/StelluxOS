@@ -2,6 +2,7 @@
 #include "net/tcp/listen.h"
 #include "net/tcp/timewait.h"
 #include "net/tcp/socket.h"
+#include "net/tcp/wire.h"
 #include "net/net.h"
 #include "common/siphash.h"
 #include "common/hash.h"
@@ -18,6 +19,7 @@ namespace tcp {
 static hash::siphash_key g_tuple_secret;
 static hash::siphash_key g_isn_secret;
 static hash::siphash_key g_timestamp_secret;
+static uint64_t (*g_clock)() = clock::now_ns;
 
 struct record_key_ops {
     using key_type = tuple;
@@ -111,7 +113,7 @@ int32_t init_sequence_numbers() {
 }
 
 uint32_t initial_sequence(const tuple& key) {
-    uint32_t clock_part = static_cast<uint32_t>(clock::now_ns() / ISN_TICK_NS);
+    uint32_t clock_part = static_cast<uint32_t>(now_ns() / ISN_TICK_NS);
     uint32_t tuple_part = static_cast<uint32_t>(hash::siphash(&key, sizeof(key), g_isn_secret));
 
     return clock_part + tuple_part;
@@ -119,6 +121,29 @@ uint32_t initial_sequence(const tuple& key) {
 
 uint32_t timestamp_offset(const tuple& key) {
     return static_cast<uint32_t>(hash::siphash(&key, sizeof(key), g_timestamp_secret));
+}
+
+uint64_t now_ns() {
+    return g_clock();
+}
+
+void __dbg_test_set_clock(uint64_t (*fn)()) {
+    g_clock = fn ? fn : clock::now_ns;
+}
+
+uint32_t timestamp_value(uint32_t offset) {
+    return static_cast<uint32_t>(now_ns() / TIMESTAMP_TICK_NS) + offset;
+}
+
+uint8_t receive_window_scale() {
+    size_t space = RCV_BUF_MAX;
+    uint8_t scale = 0;
+    while (space > 0xFFFF && scale < MAX_WINDOW_SCALE) {
+        space >>= 1;
+        scale++;
+    }
+
+    return scale;
 }
 
 tcp_conn* alloc_conn(const tuple& key, interface* iface) {
@@ -222,6 +247,26 @@ size_t record_count(record_kind kind) {
     });
 
     return count;
+}
+
+rc::strong_ref<record> remove_one_request_of(const tcp_listener* listener) {
+    record* found = nullptr;
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_table_lock);
+        g_table.for_each([&](record& rec) {
+            if (!found && rec.kind == record_kind::request &&
+                static_cast<tcp_request&>(rec).listener == listener) {
+                found = &rec;
+            }
+        });
+
+        if (found) {
+            g_table.remove(*found);
+            count_of(record_kind::request)--;
+        }
+    });
+
+    return rc::strong_ref<record>::adopt(found);
 }
 
 bool is_local_port_taken(uint16_t port) {

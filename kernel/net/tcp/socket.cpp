@@ -59,7 +59,49 @@ __PRIVILEGED_CODE void socket_close(tcp_socket* sock) {
         }
     }
 
+    if (sock->listener) {
+        listener_close(sock->listener.ptr());
+    }
+
     heap::ufree_delete(sock);
+}
+
+__PRIVILEGED_CODE int32_t socket_listen(tcp_socket* sock, uint16_t backlog) {
+    if (!sock->bound) {
+        int32_t rc = socket_bind(sock, ipv4::UNSPECIFIED_ADDR, 0);
+        if (rc != OK) {
+            return rc;
+        }
+    }
+
+    sync::irq_lock_guard guard(sock->lock);
+    if (sock->conn) {
+        return ERR_INVALID;
+    }
+
+    if (sock->listener) {
+        sync::irq_lock_guard listener_guard(sock->listener->lock);
+        sock->listener->backlog = backlog;
+        return OK;
+    }
+
+    tcp_listener* listener = alloc_listener(sock->local);
+    if (!listener) {
+        return ERR_NO_MEMORY;
+    }
+
+    listener->backlog = backlog;
+    int32_t rc = listener_insert(listener);
+    if (rc != OK) {
+        if (listener->release()) {
+            tcp_listener::ref_destroy(listener);
+        }
+
+        return rc;
+    }
+
+    sock->listener = rc::strong_ref<tcp_listener>::adopt(listener);
+    return OK;
 }
 
 __PRIVILEGED_CODE int32_t socket_bind(tcp_socket* sock, const ipv4::ipv4_addr& addr, uint16_t port) {
@@ -67,31 +109,38 @@ __PRIVILEGED_CODE int32_t socket_bind(tcp_socket* sock, const ipv4::ipv4_addr& a
         return ERR_NOT_LOCAL;
     }
 
-    // The allocator consults the socket table itself, so it runs before the lock
-    endpoint local = {addr, port, nullptr, false};
-    if (port == 0) {
-        int32_t rc = take_ephemeral_port(&local.port);
-        if (rc != OK) {
-            return rc;
+    // The allocator consults the socket table itself, so it runs before the lock,
+    // and the port it picked is checked under the lock like an explicit one
+    for (size_t attempt = 0; attempt < EPHEMERAL_BIND_ATTEMPTS; attempt++) {
+        endpoint local = {addr, port, nullptr, false};
+        if (port == 0) {
+            int32_t rc = take_ephemeral_port(&local.port);
+            if (rc != OK) {
+                return rc;
+            }
+        }
+
+        sync::irq_lock_guard sockets_guard(g_sockets_lock);
+        sync::irq_lock_guard guard(sock->lock);
+        if (sock->bound) {
+            return ERR_INVALID;
+        }
+
+        local.iface = sock->local.iface;
+        local.reuseaddr = sock->local.reuseaddr;
+        bool conflicts = socket_conflicts_locked(sock, local) || listener_conflicts(local);
+        if (!conflicts) {
+            sock->local = local;
+            sock->bound = true;
+            return OK;
+        }
+
+        if (port != 0) {
+            return ERR_IN_USE;
         }
     }
 
-    sync::irq_lock_guard sockets_guard(g_sockets_lock);
-    sync::irq_lock_guard guard(sock->lock);
-    if (sock->bound) {
-        return ERR_INVALID;
-    }
-
-    local.iface = sock->local.iface;
-    local.reuseaddr = sock->local.reuseaddr;
-    if (port != 0 && (socket_conflicts_locked(sock, local) || listener_conflicts(local))) {
-        return ERR_IN_USE;
-    }
-
-    sock->local = local;
-    sock->bound = true;
-
-    return OK;
+    return ERR_FULL;
 }
 
 bool is_socket_port(uint16_t port) {
@@ -120,6 +169,15 @@ __PRIVILEGED_CODE static int32_t socket_bind(resource::resource_object* obj, con
     }
 
     int32_t rc = socket_bind(sock, addr, port);
+    return inet::map_net_error(rc == ERR_FULL ? ERR_IN_USE : rc);
+}
+
+__PRIVILEGED_CODE static int32_t socket_listen(resource::resource_object* obj, int32_t backlog) {
+    tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
+
+    uint16_t depth = backlog < 1 ? 1 : (backlog > MAX_BACKLOG ? MAX_BACKLOG : static_cast<uint16_t>(backlog));
+    int32_t rc = socket_listen(sock, depth);
+    
     return inet::map_net_error(rc == ERR_FULL ? ERR_IN_USE : rc);
 }
 
@@ -186,6 +244,7 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
 
 static const resource::socket_ops g_tcp_socket_ops = {
     .bind = socket_bind,
+    .listen = socket_listen,
     .getname = socket_getname,
     .setsockopt = socket_setsockopt,
 };
