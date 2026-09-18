@@ -6,6 +6,7 @@
 #include "net/eth.h"
 #include "net/icmp.h"
 #include "net/udp.h"
+#include "net/tcp/tcp.h"
 #include "sync/atomic.h"
 #include "common/logging.h"
 
@@ -138,22 +139,16 @@ int32_t input(packet* pkt) {
     pkt->mark_network_header();
     (void)pkt->pull(hdr->header_len());
 
-    const uint8_t* src = hdr->src.bytes;
     switch (hdr->proto) {
     case PROTO_ICMP:
         return icmp::input(pkt);
     case PROTO_UDP:
         return udp::input(pkt);
     case PROTO_TCP:
-        log::info("ipv4: TCP datagram from %u.%u.%u.%u, %lu payload bytes",
-                  src[0], src[1], src[2], src[3], pkt->length());
-        packet::free(pkt);
-        break;
+        return tcp::input(pkt);
     default:
         return drop(iface, pkt, OK);
     }
-
-    return OK;
 }
 
 int32_t output(packet* pkt, const ipv4_addr& dest, const route::route_result& route, uint8_t protocol) {
