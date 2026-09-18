@@ -3,6 +3,7 @@
 
 #include "net/tcp/record.h"
 #include "common/list.h"
+#include "rc/strong_ref.h"
 #include "sync/wait_queue.h"
 #include "timer/timer.h"
 
@@ -11,9 +12,12 @@ namespace resource { struct resource_object; }
 namespace net {
 namespace tcp {
 
-constexpr size_t   MAX_CONNECTIONS  = 256;
-constexpr uint64_t TIMEOUT_INIT_NS  = 1000000000ULL; // RFC 6298 2.1, before any RTT sample
-constexpr uint8_t  SYN_RETRIES      = 6;
+constexpr size_t   MAX_CONNECTIONS    = 256;
+constexpr size_t   TABLE_BUCKETS      = 1024;
+constexpr uint64_t TIMEOUT_INIT_NS    = 1000000000ULL; // RFC 6298 2.1, before any RTT sample
+constexpr uint8_t  SYN_RETRIES        = 6;
+constexpr uint16_t EPHEMERAL_PORT_MIN = 49152;
+constexpr uint16_t EPHEMERAL_PORT_MAX = 65535;
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -92,6 +96,60 @@ struct tcp_conn : record {
     int32_t                    pending_error;
     list::node                 accept_link;
 };
+
+/**
+ * @brief Prepares the connection table and draws the secret that hashes tuples.
+ */
+int32_t init_tables();
+
+/**
+ * @brief Allocates a connection for `key` on `iface` in the closed state, held
+ * by the one reference returned.
+ * @return The connection, or nullptr when memory is exhausted.
+ */
+tcp_conn* alloc_conn(const tuple& key, interface* iface);
+
+/**
+ * @brief Finds the record for `key`, holding a reference for the caller.
+ * @return The record, or an empty reference when nothing matches.
+ */
+rc::strong_ref<record> lookup(const tuple& key);
+
+/**
+ * @brief Inserts `rec` under its key, the table taking a reference of its own.
+ * @return OK, ERR_IN_USE when the key is taken, ERR_FULL when its kind is at capacity.
+ */
+int32_t insert(record* rec);
+
+/**
+ * @brief Puts `fresh` in the table in place of `old`, whose key it must share,
+ * moving the table's reference from one to the other.
+ * @return OK, ERR_NOT_FOUND when `old` is not in the table, ERR_FULL when the
+ *         kind of `fresh` is at capacity.
+ */
+int32_t replace(record* old, record* fresh);
+
+/**
+ * @brief Removes `rec` from the table and drops the table's reference.
+ * @return OK, or ERR_NOT_FOUND when it was not in the table.
+ */
+int32_t remove(record* rec);
+
+/**
+ * @brief Records of `kind` in the table.
+ */
+size_t record_count(record_kind kind);
+
+/**
+ * @brief True when any record or listener uses `port` as its local port.
+ */
+bool is_local_port_taken(uint16_t port);
+
+/**
+ * @brief Hands out a port no endpoint uses, one lap on from the last one given.
+ * @return OK, or ERR_FULL when the whole ephemeral range is in use.
+ */
+int32_t take_ephemeral_port(uint16_t* out);
 
 } // namespace tcp
 } // namespace net

@@ -3,6 +3,7 @@
 #include "net/arp.h"
 #include "net/loopback.h"
 #include "net/netevents.h"
+#include "net/tcp/tcp.h"
 #include "sched/sched.h"
 #include "dynpriv/dynpriv.h"
 #include "common/logging.h"
@@ -25,9 +26,6 @@ static void netstk_daemon_task_start(void*) {
 }
 
 __PRIVILEGED_CODE int32_t init() {
-    // Create the interface table
-    // ...
-
     int32_t rc = init_status_watch();
     if (rc != OK) {
         return rc;
@@ -36,6 +34,12 @@ __PRIVILEGED_CODE int32_t init() {
     rc = arp::init();
     if (rc != OK) {
         log::error("net: arp::init failed: %d", rc);
+        return rc;
+    }
+
+    rc = tcp::init();
+    if (rc != OK) {
+        log::error("net: tcp::init failed: %d", rc);
         return rc;
     }
 

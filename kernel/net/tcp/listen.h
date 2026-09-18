@@ -61,6 +61,41 @@ struct tcp_listener : rc::ref_counted<tcp_listener> {
     static void ref_destroy(tcp_listener* self);
 };
 
+/**
+ * @brief Allocates a listener for `local_addr` and `local_port`, unspecified
+ * for every address, held by the one reference returned.
+ * @return The listener, or nullptr when memory is exhausted.
+ */
+tcp_listener* alloc_listener(const ipv4::ipv4_addr& local_addr, uint16_t local_port);
+
+/**
+ * @brief Adds `listener` to the listener table, the table taking a reference of
+ * its own. A port is shared only between listeners pinned to different
+ * interfaces, or between a wildcard and a specific address when both set
+ * `reuseaddr`.
+ * @return OK, ERR_IN_USE when the port is taken, ERR_FULL when the table is full.
+ */
+int32_t listener_insert(tcp_listener* listener);
+
+/**
+ * @brief Removes `listener` from the table and drops the table's reference.
+ * @return OK, or ERR_NOT_FOUND when it was not in the table.
+ */
+int32_t listener_remove(tcp_listener* listener);
+
+/**
+ * @brief The listener for a SYN to `local_addr` and `port` arriving on `iface`,
+ * an exact address before the wildcard, holding a reference for the caller.
+ * @return The listener, or an empty reference when none listens there.
+ */
+rc::strong_ref<tcp_listener> listener_lookup(const ipv4::ipv4_addr& local_addr, uint16_t port,
+                                             interface* iface);
+
+/**
+ * @brief True when a listener uses `port`.
+ */
+bool is_listener_port(uint16_t port);
+
 } // namespace tcp
 } // namespace net
 

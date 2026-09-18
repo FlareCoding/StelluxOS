@@ -1,5 +1,6 @@
 #include "net/tcp/tcp.h"
 #include "net/tcp/wire.h"
+#include "net/tcp/conn.h"
 #include "net/net.h"
 #include "net/interface.h"
 #include "net/eth.h"
@@ -79,6 +80,10 @@ static int32_t send_reset(interface* iface, const ipv4::ipv4_header* ip, const t
     hdr->checksum = htons(compute_checksum(ip->dst, ip->src, hdr, HEADER_LEN));
 
     return ipv4::output(pkt, ip->src, route, ipv4::PROTO_TCP);
+}
+
+int32_t init() {
+    return init_tables();
 }
 
 int32_t input(packet* pkt) {
