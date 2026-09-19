@@ -5,6 +5,7 @@
 #include "net/tcp/wire.h"
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
+#include "net/tcp/reassembly.h"
 #include "net/tcp/seq.h"
 #include "net/net.h"
 #include "sync/wait_queue.h"
@@ -84,6 +85,7 @@ void record::ref_destroy(record* self) {
         heap::ufree_delete(static_cast<tcp_request*>(self));
         break;
     case record_kind::connection:
+        clear_out_of_order_locked(static_cast<tcp_conn*>(self));
         static_cast<tcp_conn*>(self)->rcv_queue.clear();
         static_cast<tcp_conn*>(self)->snd_queue.clear();
         static_cast<tcp_conn*>(self)->sent.clear();
@@ -143,7 +145,8 @@ uint32_t timestamp_value(uint32_t offset) {
 }
 
 void update_receive_window_locked(tcp_conn* conn) {
-    uint32_t window = static_cast<uint32_t>(conn->rcv_queue.free_space());
+    size_t room = conn->rcv_queue.free_space();
+    uint32_t window = static_cast<uint32_t>(room > conn->ooo_bytes ? room - conn->ooo_bytes : 0);
     window &= ~((1u << conn->rcv_wscale) - 1);
 
     if (seq_lt(conn->rcv_nxt + window, conn->rcv_adv)) {
@@ -166,6 +169,7 @@ void mark_ack_sent_locked(tcp_conn* conn) {
     conn->rcv_adv = conn->rcv_nxt + conn->rcv_wnd;
     conn->ack_pending = false;
     conn->ack_timer_armed = false;
+    conn->dsack_pending = false;
     if (conn->quick_acks > 0) {
         conn->quick_acks--;
     }
@@ -195,6 +199,7 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     conn->state = tcp_state::closed;
     conn->rcv_queue.init(RCV_CHUNKS_INITIAL);
     conn->rx_wq.init();
+    conn->ooo_queue.init();
     conn->snd_queue.init(SND_CHUNKS_INITIAL);
     conn->sent.init(SND_CHUNKS_INITIAL * CHUNK_PAYLOAD / DEFAULT_MSS + SENT_SEGMENT_MARGIN);
     conn->tx_wq.init();

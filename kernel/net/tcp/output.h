@@ -24,6 +24,8 @@ struct segment_source {
     bool       ts_ok;
     uint32_t   ts_offset;
     uint32_t   ts_recent;
+    uint8_t    sack_count;
+    sack_block sack_blocks[MAX_SACK_BLOCKS];
 };
 
 /**

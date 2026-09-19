@@ -4,6 +4,8 @@
 #include "net/tcp/record.h"
 #include "net/tcp/byte_queue.h"
 #include "net/tcp/sent_segment.h"
+#include "net/tcp/wire.h"
+#include "net/packet.h"
 #include "common/list.h"
 #include "rc/strong_ref.h"
 #include "sync/wait_queue.h"
@@ -39,6 +41,7 @@ constexpr uint32_t INITIAL_WINDOW_SEGMENTS = 10; // RFC 6928
 constexpr uint32_t INITIAL_WINDOW_CAP  = 14600;  // RFC 6928
 constexpr uint8_t  DATA_RETRIES       = 15;      // RFC 1122 4.2.3.5 R2
 constexpr size_t   MAX_BURST          = 16;
+constexpr size_t   MAX_OOO_PACKETS    = 64;
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -131,6 +134,13 @@ struct tcp_conn : record {
 
     byte_queue       rcv_queue;
     sync::wait_queue rx_wq; // readers
+
+    list::head<packet, &packet::link> ooo_queue; // Segments ahead of rcv_nxt, by sequence
+    size_t                            ooo_bytes;
+    sack_block                        recent_sacks[MAX_SACK_BLOCKS]; // Newest first
+    uint8_t                           recent_sack_count;
+    sack_block                        dsack;
+    bool                              dsack_pending;
 
     byte_queue       snd_queue;
     sent_segments    sent;

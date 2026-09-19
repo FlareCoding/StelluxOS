@@ -539,8 +539,8 @@ __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, voi
 
         update_window = window_update_owed_locked(conn.ptr());
         if (update_window) {
-            mark_ack_sent_locked(conn.ptr());
             src = snapshot_source(conn.ptr());
+            mark_ack_sent_locked(conn.ptr());
         }
 
         result = static_cast<ssize_t>(copied);

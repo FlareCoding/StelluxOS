@@ -88,8 +88,8 @@ void on_ack_timer(timer::deadline_timer* timer) {
 
             conn->ack_timer_armed = false;
             if (conn->ack_pending && is_synchronized(conn->state)) {
-                mark_ack_sent_locked(conn);
                 src = snapshot_source(conn);
+                mark_ack_sent_locked(conn);
                 send = true;
             }
         }

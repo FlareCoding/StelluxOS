@@ -2,6 +2,7 @@
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
 #include "net/tcp/timewait.h"
+#include "net/tcp/reassembly.h"
 #include "net/tcp/rtt.h"
 #include "net/tcp/info.h"
 #include "net/tcp/seq.h"
@@ -179,45 +180,9 @@ static void take_fin_ack_locked(tcp_conn* conn, uint32_t ack) {
     }
 }
 
-static bool accepts_payload(tcp_state state) {
-    return state == tcp_state::established || state == tcp_state::fin_wait_1 ||
-           state == tcp_state::fin_wait_2;
-}
-
-// Caller holds the lock. RFC 9293 3.10.7.4: payload starting at rcv_nxt
-// is queued, bytes already received are skipped, and anything beyond what
-// the queue can take is left for the peer to send again.
-static size_t take_payload_locked(tcp_conn* conn, uint32_t seq, const uint8_t* payload, size_t len) {
-    if (!accepts_payload(conn->state) || len == 0) {
-        return 0;
-    }
-
-    if (seq_lt(seq, conn->rcv_nxt)) {
-        uint32_t already = conn->rcv_nxt - seq;
-        if (already >= len) {
-            return 0;
-        }
-
-        payload += already;
-        len -= already;
-        seq = conn->rcv_nxt;
-    }
-
-    if (seq != conn->rcv_nxt) {
-        return 0;
-    }
-
-    size_t queued = conn->rcv_queue.append(payload, len);
-    conn->rcv_nxt += static_cast<uint32_t>(queued);
-    update_receive_window_locked(conn);
-
-    return queued;
-}
-
-// Caller holds the lock. RFC 5681 4.2: the ACK a segment earns goes out at
-// once for a FIN, for payload that could not be queued in order, after two
-// full segments, in quick-ack mode, or after an idle period. Otherwise it
-// waits for the ack timer.
+// Caller holds the lock. RFC 5681 4.2: at once for a FIN, for payload out of
+// order or filling a hole, after two full segments, in quick-ack mode, or
+// after an idle period. Otherwise the ack timer.
 static bool acknowledge_now_locked(tcp_conn* conn, size_t queued, size_t payload_len, bool fin_taken) {
     uint64_t now = now_ns();
     bool idle = payload_len > 0 && conn->rcv_last_ns != 0 && now - conn->rcv_last_ns > conn->rto_ns;
@@ -230,7 +195,7 @@ static bool acknowledge_now_locked(tcp_conn* conn, size_t queued, size_t payload
         conn->quick_acks = MAX_QUICKACKS;
     }
 
-    return fin_taken || queued < payload_len || conn->quick_acks > 0 ||
+    return fin_taken || queued != payload_len || conn->quick_acks > 0 ||
            conn->rcv_nxt - conn->rcv_acked >= 2u * conn->rcv_mss;
 }
 
@@ -273,6 +238,7 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
     bool wake_readers = false;
     bool wake_writers = false;
     bool try_send = false;
+    bool packet_taken = false;
     segment_source src = {};
 
     RUN_ELEVATED({
@@ -285,6 +251,11 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
             action = segment_action::consume;
         } else if (!in_window) {
             action = (hdr->flags & FLAG_RST) ? segment_action::consume : segment_action::challenge;
+            
+            if (payload_len > 0 && seq_lt(seq, conn->rcv_nxt)) {
+                uint32_t old_end = seq + static_cast<uint32_t>(payload_len);
+                note_dsack_locked(conn, seq, seq_lt(old_end, conn->rcv_nxt) ? old_end : conn->rcv_nxt);
+            }
         } else if (hdr->flags & FLAG_RST) {
             action = seq == conn->rcv_nxt ? segment_action::reset : segment_action::challenge;
         } else if (hdr->flags & FLAG_SYN) {
@@ -298,13 +269,13 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
             take_fin_ack_locked(conn, ack);
             try_send = unsent_bytes(conn) > 0 || conn->fin_pending;
 
-            const uint8_t* payload = reinterpret_cast<const uint8_t*>(hdr) + hdr->header_len();
-            size_t queued = take_payload_locked(conn, seq, payload, payload_len);
-            bool fin_taken = (hdr->flags & FLAG_FIN) && take_fin_locked(conn, seq + static_cast<uint32_t>(payload_len));
-            wake_readers = queued > 0 || fin_taken;
+            payload_result got = take_payload_locked(conn, pkt, hdr, seq, payload_len);
+            packet_taken = got.packet_taken;
+            bool fin_taken = got.fin_seq != 0 && take_fin_locked(conn, got.fin_seq);
+            wake_readers = got.queued > 0 || fin_taken;
 
-            if (payload_len > 0 || fin_taken) {
-                ack_now = acknowledge_now_locked(conn, queued, payload_len, fin_taken);
+            if (payload_len > 0 || (hdr->flags & FLAG_FIN)) {
+                ack_now = acknowledge_now_locked(conn, got.queued, payload_len, fin_taken);
                 if (!ack_now) {
                     delay_ack_locked(conn);
                 }
@@ -317,21 +288,27 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
             conn->send_timer_kind = timer_kind::none;
         }
 
+        after = conn->state;
+        src = snapshot_source(conn);
         if (ack_now) {
             mark_ack_sent_locked(conn);
         }
-
-        after = conn->state;
-        src = snapshot_source(conn);
     });
 
-    packet::free(pkt);
+    if (!packet_taken) {
+        packet::free(pkt);
+    }
 
     int32_t rc = OK;
     if (ack_now) {
         rc = send_control(src, FLAG_ACK);
     } else if (action == segment_action::challenge && take_challenge_ack()) {
         rc = send_control(src, FLAG_ACK);
+        
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(conn->lock);
+            conn->dsack_pending = false;
+        });
     }
 
     if (wake_readers) {

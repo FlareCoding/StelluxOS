@@ -1,5 +1,6 @@
 #include "net/tcp/output.h"
 #include "net/tcp/info.h"
+#include "net/tcp/reassembly.h"
 #include "net/tcp/timers.h"
 #include "net/tcp/seq.h"
 #include "net/net.h"
@@ -37,6 +38,13 @@ segment_source snapshot_source(const tcp_conn* conn) {
     src.ts_ok = conn->ts_ok;
     src.ts_offset = conn->ts_offset;
     src.ts_recent = conn->ts_recent;
+
+    tcp_options sacks;
+    fill_sack_blocks_locked(conn, &sacks);
+    src.sack_count = sacks.sack_count;
+    for (uint8_t i = 0; i < sacks.sack_count; i++) {
+        src.sack_blocks[i] = sacks.sack_blocks[i];
+    }
 
     return src;
 }
@@ -139,6 +147,11 @@ static tcp_options control_options(const segment_source& src) {
         opts.has_timestamps = true;
         opts.ts_val = timestamp_value(src.ts_offset);
         opts.ts_ecr = src.ts_recent;
+    }
+
+    opts.sack_count = src.sack_count;
+    for (uint8_t i = 0; i < src.sack_count; i++) {
+        opts.sack_blocks[i] = src.sack_blocks[i];
     }
 
     return opts;
