@@ -133,6 +133,31 @@ TEST(tcp_close, an_orphan_in_fin_wait_2_is_reset_when_the_peers_fin_never_comes)
     EXPECT_FALSE(lookup(key_of(lp.remote)));
 }
 
+TEST(tcp_close, a_peer_that_keeps_talking_does_not_stop_the_orphan_wait) {
+    linked_peer lp;
+    closable c(lp);
+
+    close_connection(c.conn.ptr());
+    EXPECT_EQ(input(lp.remote.ack(c.rcv_nxt(), c.fin_seq() + 1)), OK);
+    uint64_t deadline = c.conn->send_timer_deadline_ns;
+    lp.link.clear_frames();
+
+    uint8_t banner[4] = {'S', 'S', 'H', '-'};
+    for (int i = 0; i < 3; i++) {
+        advance_and_fire(FIN_TIMEOUT_NS / 4);
+        EXPECT_EQ(input(lp.remote.segment(FLAG_FIN | FLAG_ACK, c.rcv_nxt(), c.fin_seq() + 1, {}, banner, sizeof(banner))), OK);
+        EXPECT_EQ(input(lp.remote.ack(c.rcv_nxt(), c.fin_seq() + 1)), OK);
+        EXPECT_EQ(c.conn->state, tcp_state::fin_wait_2);
+        EXPECT_EQ(c.conn->send_timer_kind, timer_kind::orphan);
+        EXPECT_EQ(c.conn->send_timer_deadline_ns, deadline);
+    }
+
+    advance_and_fire(FIN_TIMEOUT_NS / 4);
+    expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq() + 1, c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+}
+
 TEST(tcp_close, closing_during_a_simultaneous_open_moves_the_armed_timer_to_the_fin) {
     linked_peer lp;
     closable c(lp);

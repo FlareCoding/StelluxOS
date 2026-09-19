@@ -143,20 +143,21 @@ static void take_fin_ack_locked(tcp_conn* conn, uint32_t ack) {
         return;
     }
 
-    conn->send_timer_kind = timer_kind::none;
     switch (conn->state) {
     case tcp_state::fin_wait_1:
+        conn->send_timer_kind = timer_kind::none;
         conn->state = tcp_state::fin_wait_2;
-
         if (conn->orphaned) {
             arm_orphan_timer_locked(conn);
         }
 
         break;
     case tcp_state::closing:
+        conn->send_timer_kind = timer_kind::none;
         conn->state = tcp_state::time_wait;
         break;
     case tcp_state::last_ack:
+        conn->send_timer_kind = timer_kind::none;
         conn->state = tcp_state::closed;
         break;
     default:
