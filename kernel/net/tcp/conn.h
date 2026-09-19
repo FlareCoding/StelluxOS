@@ -24,6 +24,7 @@ constexpr uint16_t EPHEMERAL_PORT_MAX = 65535;
 constexpr uint64_t ISN_TICK_NS        = 4000;    // RFC 6528 3, the clock behind M
 constexpr uint64_t TIMESTAMP_TICK_NS  = 1000000; // RFC 7323 5.4 allows 1 ms to 1 s
 constexpr uint64_t TIMEOUT_MAX_NS     = 120000000000ULL;
+constexpr uint64_t FIN_TIMEOUT_NS     = 60000000000ULL;
 constexpr uint16_t DEFAULT_MSS        = 536;     // RFC 9293 3.7.1, when the peer sends none
 constexpr uint64_t TS_RECENT_MAX_AGE_NS = 24ULL * 24 * 3600 * 1000000000ULL; // RFC 7323 5.5
 constexpr size_t   RCV_BUF_INITIAL    = 16 * 1024;
@@ -49,8 +50,9 @@ enum class tcp_state : uint8_t {
 };
 
 enum class timer_kind : uint8_t {
-    none = 0,
-    rto  = 1,
+    none   = 0,
+    rto    = 1,
+    orphan = 2,
 };
 
 /**

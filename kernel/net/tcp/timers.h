@@ -14,14 +14,20 @@ namespace tcp {
 void arm_send_timer_locked(tcp_conn* conn, timer_kind kind);
 
 /**
+ * @brief Arms the send timer as the orphan's wait in FIN_WAIT_2 for the peer's
+ * FIN, after which the connection is reset. Caller holds the lock.
+ */
+void arm_orphan_timer_locked(tcp_conn* conn);
+
+/**
  * @brief The send timer's callback: retransmits what the connection's state
  * still waits for, or gives the connection up once the retries are spent.
  */
 void on_send_timer(timer::deadline_timer* timer);
 
 /**
- * @brief Schedules `timer` for `deadline_ns`, holding a reference on `rec` for
- * the timer until its callback finishes or a disarm removes it. The caller
+ * @brief Schedules `timer` for `deadline_ns`, holding one reference on `rec`
+ * for as long as the timer is scheduled, however often it is moved. The caller
  * records the deadline in `rec` so the callback can tell a live arming from a
  * stale one.
  */

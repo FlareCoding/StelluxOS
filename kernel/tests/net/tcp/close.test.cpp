@@ -101,7 +101,7 @@ TEST(tcp_close, close_sends_a_fin_and_enters_fin_wait_1) {
     EXPECT_EQ(c.conn->send_timer_kind, timer_kind::rto);
 }
 
-TEST(tcp_close, the_ack_of_our_fin_moves_to_fin_wait_2_and_stops_the_timer) {
+TEST(tcp_close, the_ack_of_our_fin_moves_to_fin_wait_2_and_starts_the_orphan_wait) {
     linked_peer lp;
     closable c(lp);
 
@@ -109,8 +109,56 @@ TEST(tcp_close, the_ack_of_our_fin_moves_to_fin_wait_2_and_stops_the_timer) {
     EXPECT_EQ(input(lp.remote.ack(c.rcv_nxt(), c.fin_seq() + 1)), OK);
 
     EXPECT_EQ(c.conn->state, tcp_state::fin_wait_2);
-    EXPECT_EQ(c.conn->send_timer_kind, timer_kind::none);
+    EXPECT_EQ(c.conn->send_timer_kind, timer_kind::orphan);
+    EXPECT_EQ(c.conn->send_timer_deadline_ns, g_fake_now + FIN_TIMEOUT_NS);
     EXPECT_EQ(lp.link.frames_sent(), 1u);
+}
+
+TEST(tcp_close, an_orphan_in_fin_wait_2_is_reset_when_the_peers_fin_never_comes) {
+    linked_peer lp;
+    closable c(lp);
+
+    close_connection(c.conn.ptr());
+    EXPECT_EQ(input(lp.remote.ack(c.rcv_nxt(), c.fin_seq() + 1)), OK);
+    lp.link.clear_frames();
+
+    advance_and_fire(FIN_TIMEOUT_NS - 1);
+    EXPECT_EQ(c.conn->state, tcp_state::fin_wait_2);
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+
+    advance_and_fire(1);
+    expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq() + 1, c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+    EXPECT_EQ(c.conn->pending_error, resource::ERR_TIMEDOUT);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+}
+
+TEST(tcp_close, closing_during_a_simultaneous_open_moves_the_armed_timer_to_the_fin) {
+    linked_peer lp;
+    closable c(lp);
+    EXPECT_EQ(input(lp.remote.rst(c.rcv_nxt())), OK);
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+
+    rc::strong_ref<tcp_conn> conn;
+    ASSERT_EQ(open_active(key_of(lp.remote), &lp.link, &conn), OK);
+    EXPECT_EQ(input(lp.remote.syn(PEER_ISS)), OK);
+    EXPECT_EQ(conn->state, tcp_state::syn_rcvd);
+    EXPECT_EQ(conn->send_timer_kind, timer_kind::rto);
+    lp.link.clear_frames();
+
+    close_connection(conn.ptr());
+    expect_segment(lp.link, 0, FLAG_FIN | FLAG_ACK, conn->iss + 1, PEER_ISS + 1);
+    EXPECT_EQ(conn->state, tcp_state::fin_wait_1);
+    EXPECT_TRUE(timer::is_pending(&conn->send_timer));
+
+    advance_and_fire(TIMEOUT_MAX_NS);
+    expect_segment(lp.link, 1, FLAG_FIN | FLAG_ACK, conn->iss + 1, PEER_ISS + 1);
+
+    EXPECT_EQ(input(lp.remote.segment(FLAG_FIN | FLAG_ACK, PEER_ISS + 1, conn->iss + 2)), OK);
+    EXPECT_EQ(conn->state, tcp_state::closed);
+    advance_and_fire(TIMEWAIT_LEN_NS);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+    EXPECT_EQ(conn->ref_count(), 1u);
 }
 
 TEST(tcp_close, the_peers_fin_in_fin_wait_2_is_acked_and_enters_time_wait) {

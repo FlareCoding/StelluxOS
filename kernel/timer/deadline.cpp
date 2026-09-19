@@ -234,15 +234,16 @@ __PRIVILEGED_CODE uint64_t deadline_interrupt(uint64_t now_ns) {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void schedule(deadline_timer* timer, uint64_t deadline_ns) {
+__PRIVILEGED_CODE bool schedule(deadline_timer* timer, uint64_t deadline_ns) {
     if (!timer || !timer->fn) {
-        return;
+        return false;
     }
 
     sync::irq_state irq;
     deadline_cpu_state* owner = &lock_owner(timer, &irq);
 
-    if (has_state(timer, deadline_state::scheduled)) {
+    bool moved = has_state(timer, deadline_state::scheduled);
+    if (moved) {
         owner->tree.remove(*timer);
         set_state(timer, deadline_state::idle);
     }
@@ -268,6 +269,8 @@ __PRIVILEGED_CODE void schedule(deadline_timer* timer, uint64_t deadline_ns) {
     sync::spin_unlock_irqrestore(state.lock, irq);
 
     arch_request_deadline(deadline_ns);
+
+    return moved;
 }
 
 /**

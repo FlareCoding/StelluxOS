@@ -12,6 +12,7 @@ enum class send_action : uint8_t {
     none         = 0,
     retransmit   = 1,
     give_up      = 2,
+    reset        = 3,
 };
 
 static void release(record* rec) {
@@ -22,7 +23,12 @@ static void release(record* rec) {
 
 void arm_timer(record* rec, timer::deadline_timer* timer, uint64_t deadline_ns) {
     rec->add_ref();
-    RUN_ELEVATED(timer::schedule(timer, deadline_ns));
+
+    bool moved = false;
+    RUN_ELEVATED(moved = timer::schedule(timer, deadline_ns));
+    if (moved) {
+        release(rec);
+    }
 }
 
 void disarm_timer(record* rec, timer::deadline_timer* timer) {
@@ -42,6 +48,12 @@ void arm_send_timer_locked(tcp_conn* conn, timer_kind kind) {
     uint64_t backoff = TIMEOUT_INIT_NS << conn->retransmits;
     conn->send_timer_kind = kind;
     conn->send_timer_deadline_ns = now_ns() + (backoff > TIMEOUT_MAX_NS ? TIMEOUT_MAX_NS : backoff);
+    arm_timer(conn, &conn->send_timer, conn->send_timer_deadline_ns);
+}
+
+void arm_orphan_timer_locked(tcp_conn* conn) {
+    conn->send_timer_kind = timer_kind::orphan;
+    conn->send_timer_deadline_ns = now_ns() + FIN_TIMEOUT_NS;
     arm_timer(conn, &conn->send_timer, conn->send_timer_deadline_ns);
 }
 
@@ -80,8 +92,14 @@ void on_send_timer(timer::deadline_timer* timer) {
             }
 
             state = conn->state;
+            timer_kind kind = conn->send_timer_kind;
             conn->send_timer_kind = timer_kind::none;
-            if (conn->retransmits >= retry_limit(state)) {
+            if (kind == timer_kind::orphan) {
+                src = snapshot_source(conn);
+                conn->state = tcp_state::closed;
+                conn->pending_error = resource::ERR_TIMEDOUT;
+                action = send_action::reset;
+            } else if (conn->retransmits >= retry_limit(state)) {
                 conn->state = tcp_state::closed;
                 conn->pending_error = resource::ERR_TIMEDOUT;
                 action = send_action::give_up;
@@ -94,7 +112,10 @@ void on_send_timer(timer::deadline_timer* timer) {
         }
     });
 
-    if (action == send_action::give_up) {
+    if (action == send_action::reset) {
+        (void)send_segment(src.iface, src.key, FLAG_RST | FLAG_ACK, src.snd_nxt, src.rcv_nxt, 0, {});
+        retire_connection(conn);
+    } else if (action == send_action::give_up) {
         retire_connection(conn);
     } else if (action == send_action::retransmit) {
         (void)retransmit(state, src);

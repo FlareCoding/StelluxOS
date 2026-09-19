@@ -121,9 +121,10 @@ __PRIVILEGED_CODE void cancel_sleep(sched::task* task);
  * CPU. A running timer may schedule itself again from its own callback,
  * elevated like every privileged call made lowered, which is how a periodic
  * timer is written.
+ * @return true when a scheduled timer was moved, false when one was started.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void schedule(deadline_timer* timer, uint64_t deadline_ns);
+__PRIVILEGED_CODE bool schedule(deadline_timer* timer, uint64_t deadline_ns);
 
 /**
  * @brief Removes `timer` from the tree holding it. Never waits.

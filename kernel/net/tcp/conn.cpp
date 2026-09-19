@@ -269,6 +269,9 @@ void close_connection(tcp_conn* conn) {
             conn->state = tcp_state::last_ack;
             send = true;
             break;
+        case tcp_state::fin_wait_2:
+            arm_orphan_timer_locked(conn);
+            break;
         default:
             break;
         }

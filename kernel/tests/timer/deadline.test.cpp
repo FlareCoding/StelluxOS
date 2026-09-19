@@ -94,6 +94,27 @@ TEST(deadline_timer, runs_in_deadline_order) {
     EXPECT_FALSE(timer::is_pending(&probes[0].timer));
 }
 
+TEST(deadline_timer, schedule_reports_whether_it_moved_a_scheduled_timer) {
+    probe probes[1];
+    reset(probes, 1, record_run);
+
+    bool moved = true;
+    RUN_ELEVATED(moved = timer::schedule(&probes[0].timer, g_base_ns + 30 * MS));
+    EXPECT_FALSE(moved);
+
+    RUN_ELEVATED(moved = timer::schedule(&probes[0].timer, g_base_ns + 10 * MS));
+    EXPECT_TRUE(moved);
+
+    fire_at(20 * MS);
+    EXPECT_EQ(probes[0].runs, 1u);
+
+    RUN_ELEVATED(moved = timer::schedule(&probes[0].timer, g_base_ns + 40 * MS));
+    EXPECT_FALSE(moved);
+
+    fire_at(50 * MS);
+    EXPECT_EQ(probes[0].runs, 2u);
+}
+
 TEST(deadline_timer, equal_deadlines_run_in_schedule_order) {
     probe probes[3];
     reset(probes, 3, record_run);
