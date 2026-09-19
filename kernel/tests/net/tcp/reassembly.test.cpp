@@ -37,13 +37,13 @@ static const uint8_t* patterned(size_t first, size_t len) {
     return g_payload;
 }
 
-static bool queue_matches_pattern(tcp_conn* conn, size_t len) {
+static bool queue_matches_pattern(tcp_conn* conn, size_t len, size_t first = 0) {
     if (conn->rcv_queue.copy_out(0, g_read, len) != len) {
         return false;
     }
 
     for (size_t i = 0; i < len; i++) {
-        if (g_read[i] != pattern(i)) {
+        if (g_read[i] != pattern(first + i)) {
             return false;
         }
     }
@@ -78,6 +78,25 @@ struct reassembling {
 
     uint32_t first_seq() const { return PEER_ISS + 1; }
     uint32_t snd_nxt() const { return conn->iss + 1; }
+
+    // Shrinks the receive queue to one chunk and advertises exactly that
+    size_t narrow_window() {
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(conn->lock);
+            conn->rcv_queue.set_limit(1);
+            conn->rcv_adv = first_seq();
+            update_receive_window_locked(conn.ptr());
+        });
+        return conn->rcv_wnd;
+    }
+
+    void read_all() {
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(conn->lock);
+            conn->rcv_queue.consume(conn->rcv_queue.size());
+            update_receive_window_locked(conn.ptr());
+        });
+    }
 
     // Stream bytes `first` .. `first + len - 1` at their sequence, returning the frames drawn
     size_t send(size_t first, size_t len, uint8_t flags = FLAG_ACK) {
@@ -265,18 +284,66 @@ TEST(tcp_reassembly, the_queue_is_bounded_in_packets_and_in_bytes) {
 TEST(tcp_reassembly, queued_bytes_never_exceed_the_room_the_receive_queue_has) {
     linked_peer lp;
     reassembling r(lp);
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(r.conn->lock);
-        r.conn->rcv_queue.set_limit(1);
-        r.conn->rcv_adv = r.first_seq();
-        update_receive_window_locked(r.conn.ptr());
-    });
+    r.narrow_window();
 
     EXPECT_EQ(r.send(100, 1000), 1u);
     EXPECT_EQ(r.conn->ooo_bytes, 1000u);
     EXPECT_EQ(r.send(1200, 1400), 1u);
     EXPECT_EQ(r.conn->ooo_bytes, 1000u);
     EXPECT_EQ(r.conn->rcv_wnd, CHUNK_PAYLOAD - 1000);
+}
+
+TEST(tcp_reassembly, bytes_past_the_window_are_dropped_and_so_is_a_fin_behind_them) {
+    linked_peer lp;
+    reassembling r(lp);
+    size_t window = r.narrow_window();
+
+    EXPECT_EQ(r.send(window - 50, 100, FLAG_ACK | FLAG_FIN), 1u);
+    EXPECT_EQ(r.conn->ooo_bytes, 50u);
+    expect_block(r.last_options(), 0, r, window - 50, window);
+
+    EXPECT_EQ(r.send(0, 1000), 1u);
+    EXPECT_EQ(r.send(1000, window - 1050), 1u);
+    EXPECT_EQ(r.conn->rcv_nxt, r.first_seq() + window);
+    EXPECT_EQ(r.conn->state, tcp_state::established);
+    EXPECT_FALSE(r.conn->fin_rcvd);
+    EXPECT_TRUE(queue_matches_pattern(r.conn.ptr(), window));
+
+    r.read_all();
+    EXPECT_EQ(r.send(window, 50, FLAG_ACK | FLAG_FIN), 1u);
+    EXPECT_EQ(r.conn->state, tcp_state::close_wait);
+    EXPECT_EQ(r.conn->rcv_nxt, r.first_seq() + window + 51);
+    EXPECT_TRUE(queue_matches_pattern(r.conn.ptr(), 50, window));
+}
+
+TEST(tcp_reassembly, a_fin_right_behind_the_window_edge_is_kept) {
+    linked_peer lp;
+    reassembling r(lp);
+    size_t window = r.narrow_window();
+
+    EXPECT_EQ(r.send(window - 50, 50, FLAG_ACK | FLAG_FIN), 1u);
+    EXPECT_EQ(r.conn->ooo_bytes, 50u);
+    expect_block(r.last_options(), 0, r, window - 50, window + 1);
+
+    EXPECT_EQ(r.send(0, 1000), 1u);
+    EXPECT_EQ(r.send(1000, window - 1050), 1u);
+    EXPECT_EQ(r.conn->state, tcp_state::close_wait);
+    EXPECT_EQ(r.conn->rcv_nxt, r.first_seq() + window + 1);
+    EXPECT_TRUE(queue_matches_pattern(r.conn.ptr(), window));
+}
+
+TEST(tcp_reassembly, a_fin_ahead_without_payload_is_acknowledged_at_once) {
+    linked_peer lp;
+    reassembling r(lp);
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(r.conn->lock);
+        r.conn->quick_acks = 0;
+    });
+
+    EXPECT_EQ(r.send(100, 0, FLAG_ACK | FLAG_FIN), 1u);
+    EXPECT_EQ(r.last_ack(), r.first_seq());
+    expect_block(r.last_options(), 0, r, 100, 101);
+    EXPECT_FALSE(r.conn->ack_timer_armed);
 }
 
 TEST(tcp_reassembly, without_sack_the_queue_works_and_acks_carry_no_blocks) {

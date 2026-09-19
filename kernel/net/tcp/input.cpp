@@ -183,7 +183,7 @@ static void take_fin_ack_locked(tcp_conn* conn, uint32_t ack) {
 // Caller holds the lock. RFC 5681 4.2: at once for a FIN, for payload out of
 // order or filling a hole, after two full segments, in quick-ack mode, or
 // after an idle period. Otherwise the ack timer.
-static bool acknowledge_now_locked(tcp_conn* conn, size_t queued, size_t payload_len, bool fin_taken) {
+static bool acknowledge_now_locked(tcp_conn* conn, size_t queued, size_t payload_len, bool fin) {
     uint64_t now = now_ns();
     bool idle = payload_len > 0 && conn->rcv_last_ns != 0 && now - conn->rcv_last_ns > conn->rto_ns;
     
@@ -195,7 +195,7 @@ static bool acknowledge_now_locked(tcp_conn* conn, size_t queued, size_t payload
         conn->quick_acks = MAX_QUICKACKS;
     }
 
-    return fin_taken || queued != payload_len || conn->quick_acks > 0 ||
+    return fin || queued != payload_len || conn->quick_acks > 0 ||
            conn->rcv_nxt - conn->rcv_acked >= 2u * conn->rcv_mss;
 }
 
@@ -275,7 +275,7 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
             wake_readers = got.queued > 0 || fin_taken;
 
             if (payload_len > 0 || (hdr->flags & FLAG_FIN)) {
-                ack_now = acknowledge_now_locked(conn, got.queued, payload_len, fin_taken);
+                ack_now = acknowledge_now_locked(conn, got.queued, payload_len, hdr->flags & FLAG_FIN);
                 if (!ack_now) {
                     delay_ack_locked(conn);
                 }

@@ -25,6 +25,10 @@ static bool carries_fin(const packet* pkt) {
     return header_of(pkt)->flags & FLAG_FIN;
 }
 
+static void drop_fin(packet* pkt) {
+    reinterpret_cast<tcp_header*>(pkt->transport_header())->flags &= ~FLAG_FIN;
+}
+
 static bool starts_before(const packet* a, const packet* b) {
     return seq_lt(segment_start(a), segment_start(b));
 }
@@ -239,8 +243,14 @@ payload_result take_payload_locked(tcp_conn* conn, packet* pkt, const tcp_header
     }
 
     uint32_t window_end = conn->rcv_nxt + conn->rcv_wnd;
-    if (seq_gt(end, window_end)) {
-        (void)pkt->trim(pkt->length() - (end - window_end));
+    uint32_t payload_end = seq + static_cast<uint32_t>(payload_len);
+
+    if (seq_gt(payload_end, window_end)) {
+        payload_len -= payload_end - window_end;
+        (void)pkt->trim(hdr->header_len() + payload_len);
+
+        drop_fin(pkt);
+        end = window_end;
     }
 
     if (conn->ooo_queue.size() >= MAX_OOO_PACKETS || conn->ooo_bytes + payload_len > conn->rcv_queue.free_space() ||
