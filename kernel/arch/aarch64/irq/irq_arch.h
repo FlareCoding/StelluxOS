@@ -14,6 +14,7 @@ constexpr uint32_t GICD_IGROUPR    = 0x080;
 constexpr uint32_t GICD_IPRIORITYR = 0x400;
 constexpr uint32_t GICD_ITARGETSR  = 0x800;
 constexpr uint32_t GICD_ICFGR      = 0xC00;
+constexpr uint32_t GICD_SGIR       = 0xF00;
 
 // GICC (CPU Interface) register offsets
 constexpr uint32_t GICC_CTLR       = 0x000;
@@ -24,12 +25,28 @@ constexpr uint32_t GICC_EOIR       = 0x010;
 constexpr uint32_t GIC_SPURIOUS_ID = 1023;
 constexpr uint32_t GIC_INTID_MASK  = 0x3FF;
 
+// GICv2 addresses at most eight CPU interfaces in a target list
+constexpr uint32_t GIC_MAX_CPU_INTERFACES = 8;
+
+// The software-generated interrupt that carries inter-processor messages
+constexpr uint32_t IPI_SGI_INTID = 0;
+
 /**
  * @brief Read GICC_IAR to acknowledge the current interrupt.
- * Returns the interrupt ID. Must be called from the IRQ trap handler.
+ * Returns the raw register value: the INTID in the low ten bits and, for an
+ * SGI, the source CPU above them. The whole value must be written back to
+ * GICC_EOIR unchanged. Must be called from the IRQ trap handler.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t acknowledge();
+
+/**
+ * @brief Raise SGI `intid` on the CPU interfaces named in `cpu_mask`.
+ * @param intid SGI number, 0 to 15.
+ * @param cpu_mask Bitmask of target CPU interfaces (bit 0 = CPU 0, etc.).
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void send_sgi(uint32_t intid, uint8_t cpu_mask);
 
 /**
  * @brief Set target CPU mask for an SPI.

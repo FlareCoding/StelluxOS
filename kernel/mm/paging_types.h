@@ -59,6 +59,7 @@ constexpr int32_t ERR_ALREADY_MAPPED = -2;
 constexpr int32_t ERR_NOT_MAPPED     = -3;
 constexpr int32_t ERR_ALIGNMENT      = -4;
 constexpr int32_t ERR_INVALID_FLAGS  = -5;
+constexpr int32_t ERR_NO_RESOURCE    = -6; // a kernel resource the paging layer depends on ran out
 
 } // namespace paging
 

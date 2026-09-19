@@ -3,8 +3,17 @@
 
 #include "common/types.h"
 #include "smp/smp.h"
+#include "mm/pmm_types.h"
 
 namespace arch {
+
+/**
+ * @brief Physical frames the AP bring-up needs at fixed addresses, kept out
+ * of the allocator for the life of the system. An empty range means none.
+ * x86_64: the real-mode trampoline and its startup data below 1 MB.
+ * AArch64: none, the trampoline page is allocated when the APs are prepared.
+ */
+pmm::phys_range smp_fixed_boot_frames();
 
 /**
  * @brief Enumerate CPUs from the parsed ACPI MADT.
@@ -35,6 +44,33 @@ __PRIVILEGED_CODE int32_t smp_prepare();
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu);
+
+/**
+ * @brief Prepare the interrupt path that `smp_raise_ipi` uses, on the BSP.
+ * x86_64: nothing, the IPI vector is routed by the trap entry.
+ * AArch64: enables the IPI SGI on this CPU interface.
+ * @return smp::ipi::OK on success, negative error code on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_ipi_init();
+
+/**
+ * @brief Per-AP counterpart of `smp_ipi_init`, for state banked per CPU.
+ * @return smp::ipi::OK on success, negative error code on failure.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_ipi_init_ap();
+
+/**
+ * @brief Interrupt `target` on the IPI vector. The caller has already
+ * recorded what the target must do, this only delivers the interrupt.
+ * x86_64: fixed-delivery IPI through the LAPIC ICR to the target's APIC id.
+ * AArch64: software-generated interrupt to the target's CPU interface.
+ * @return smp::ipi::OK, or smp::ipi::ERR_UNREACHABLE when the interrupt
+ *         controller cannot address the target.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_raise_ipi(const smp::cpu_info& target);
 
 } // namespace arch
 

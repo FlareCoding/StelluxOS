@@ -368,39 +368,19 @@ static uint32_t pty_slave_poll(
 // Ops tables
 
 static const resource::resource_ops g_pty_master_ops = {
-    pty_master_read,
-    pty_master_write,
-    pty_master_close,
-    pty_ioctl,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    pty_master_poll,
-    nullptr,
+    .read = pty_master_read,
+    .write = pty_master_write,
+    .close = pty_master_close,
+    .ioctl = pty_ioctl,
+    .poll = pty_master_poll,
 };
 
 static const resource::resource_ops g_pty_slave_ops = {
-    pty_slave_read,
-    pty_slave_write,
-    pty_slave_close,
-    pty_ioctl,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    pty_slave_poll,
-    nullptr,
+    .read = pty_slave_read,
+    .write = pty_slave_write,
+    .close = pty_slave_close,
+    .ioctl = pty_ioctl,
+    .poll = pty_slave_poll,
 };
 
 // Pair creation

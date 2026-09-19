@@ -28,6 +28,7 @@ struct task_exec_core {
     uintptr_t system_stack_top;
     thread_cpu_context cpu_ctx;
     uint32_t  on_cpu; // 1 while context is live and executing on a CPU
+    uint32_t  on_runqueue;
     uint64_t  pt_root; // physical address of top-level page table (CR3 / TTBR1)
     uint64_t  user_pt_root; // physical address of user-space page table (= pt_root on x86 / TTBR0 on aarch64)
     mm::mm_context* mm_ctx; // owning reference to process address-space metadata

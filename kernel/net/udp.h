@@ -1,63 +1,53 @@
 #ifndef STELLUX_NET_UDP_H
 #define STELLUX_NET_UDP_H
 
-#include "common/types.h"
-#include "net/net.h"
+#include "net/ipv4.h"
 
 namespace net {
+namespace udp {
 
-constexpr uint16_t UDP_PORT_EPHEMERAL_MIN = 49152;
-constexpr uint16_t UDP_PORT_EPHEMERAL_MAX = 65535;
+constexpr size_t HEADER_LEN = 8;
 
+// Ports handed to a socket that sends without binding (RFC 6335 dynamic range)
+constexpr uint16_t EPHEMERAL_PORT_MIN = 49152;
+constexpr uint16_t EPHEMERAL_PORT_MAX = 65535;
+
+// A sender that skips the checksum stores zero, and one that computes a zero
+// stores all ones so the two cases stay distinguishable (RFC 768).
+constexpr uint16_t CHECKSUM_NONE     = 0;
+constexpr uint16_t CHECKSUM_ALL_ONES = 0xFFFF;
+
+/**
+ * UDP header (RFC 768). The ports name the sockets at each end, `length`
+ * counts the header and the payload, and `checksum` covers both plus a
+ * pseudo-header of the IPv4 addresses, protocol, and length. A zero checksum
+ * means none was computed, which an IPv4 receiver must accept.
+ * https://www.rfc-editor.org/info/rfc768/
+ */
 struct udp_header {
-    uint16_t src_port;  // network byte order
-    uint16_t dst_port;  // network byte order
-    uint16_t length;    // network byte order (header + payload)
-    uint16_t checksum;  // network byte order (0 = not computed)
+    uint16_t src_port;
+    uint16_t dst_port;
+    uint16_t length;
+    uint16_t checksum;
 } __attribute__((packed));
+static_assert(sizeof(udp_header) == HEADER_LEN);
 
-static_assert(sizeof(udp_header) == 8, "udp_header must be 8 bytes");
-
-struct inet_socket;
-
-/**
- * Process a received UDP packet (after IPv4 header is stripped).
- * Validates header, optionally verifies checksum, and delivers
- * the payload to the matching socket by destination port.
- * @param src_ip Source IP in host byte order.
- * @param dst_ip Destination IP in host byte order (for checksum verification).
+/*
+ * Consumes a datagram whose window starts at the UDP header. A valid datagram
+ * goes to the bound socket, an unclaimed port is answered with ICMP port unreachable.
  */
-void udp_recv(netif* iface, uint32_t src_ip, uint32_t dst_ip,
-              const uint8_t* data, size_t len);
+int32_t input(packet* pkt);
 
-/**
- * Register an inet socket to receive UDP packets on its bound_port.
- * Called when the socket is first assigned a port.
+/*
+ * Consumes a finished payload with headroom, prepends the header for `src_port`
+ * to `dest_port`, fills in the checksum, and hands it to IPv4 for `dest`. With
+ * `iface` set the datagram leaves through that interface, otherwise any. A
+ * broadcast destination is refused unless `broadcast_allowed`.
  */
-void udp_register_socket(inet_socket* sock);
+int32_t output(packet* pkt, interface* iface, const ipv4::ipv4_addr& dest,
+               uint16_t src_port, uint16_t dest_port, bool broadcast_allowed);
 
-/**
- * Unregister an inet socket from UDP delivery.
- * Called during socket close.
- */
-void udp_unregister_socket(inet_socket* sock);
-
-/**
- * Atomically check for binding conflicts and register if none found.
- * Uses POSIX overlap rule: conflict if ports match AND addresses overlap
- * (a == 0 || b == 0 || a == b). All values in host byte order.
- * The caller must have set sock->bound_port and sock->bound_addr before calling.
- * @return true if registered successfully, false if a conflicting binding exists.
- */
-bool udp_try_register(inet_socket* sock);
-
-/**
- * Allocate an ephemeral port number (49152-65535).
- * Thread-safe via atomic counter.
- * @return Port number in host byte order.
- */
-uint16_t udp_alloc_ephemeral_port();
-
+} // namespace udp
 } // namespace net
 
 #endif // STELLUX_NET_UDP_H

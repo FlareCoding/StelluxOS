@@ -28,9 +28,16 @@ namespace paging {
 // Tracks whether paging has been initialized
 __PRIVILEGED_DATA static bool g_initialized = false;
 __PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
+__PRIVILEGED_DATA static pmm::phys_addr_t g_retired_tables = 0;
 
 // TTBR1_EL1 mask to extract physical address (mask off ASID in bits 63:48)
 constexpr uint64_t TTBR_BADDR_MASK = 0x0000FFFFFFFFFFFFULL;
+
+// With the valid bit clear the hardware ignores the rest of a descriptor, so
+// a kept-frame descriptor carries only the output address and this marker.
+constexpr uint64_t DESC_VALID      = 1ULL << 0;
+constexpr uint64_t DESC_KEPT_FRAME = 1ULL << 55;
+constexpr uint64_t DESC_ADDR_MASK  = 0x0000FFFFFFFFF000ULL;
 
 __PRIVILEGED_CODE pmm::phys_addr_t get_kernel_pt_root() {
     // Read TTBR1_EL1 directly - mask off ASID bits (upper 16 bits)
@@ -524,17 +531,54 @@ __PRIVILEGED_CODE static bool is_table_empty(const translation_table_t* table) {
     return true;
 }
 
-// Free a page table page back to PMM if it was dynamically allocated.
-// Bootstrap-allocated pages (PAGE_FLAG_RESERVED) are not freed.
-__PRIVILEGED_CODE static void try_free_table_page(pmm::phys_addr_t phys) {
+// Retire an emptied translation table whose parent entry is already clear.
+// Freeing it now would let a CPU with a cached walk entry reach a reused page.
+// Entry 0 carries the list link, an aligned address reads as invalid.
+// Bootstrap-allocated pages (PAGE_FLAG_RESERVED) are never freed.
+__PRIVILEGED_CODE static void retire_table_page(pmm::phys_addr_t phys) {
     auto* pfd = pmm::get_page_frame(phys);
-    if (pfd && pfd->is_allocated()) {
-        // A reclaimed translation-table page may be reused quickly for unrelated
-        // allocations. Before releasing it to PMM, invalidate all EL1 TLB state
-        // to ensure no CPU retains stale table-walk references to this page.
-        flush_tlb_all();
-        pmm::free_page(phys);
+    if (!pfd || !pfd->is_allocated()) {
+        return;
     }
+
+    auto* link = static_cast<pmm::phys_addr_t*>(phys_to_virt(phys));
+    *link = g_retired_tables;
+    g_retired_tables = phys;
+}
+
+// Free the tables left empty below a cleared entry, lowest level first. A
+// null level was not part of the walk.
+__PRIVILEGED_CODE static void reclaim_empty_tables(
+    table_desc_t* l0_entry, translation_table_t* l1, table_desc_t* l1_entry,
+    translation_table_t* l2, table_desc_t* l2_entry, translation_table_t* l3
+) {
+    if (l3) {
+        if (!is_table_empty(l3)) {
+            return;
+        }
+
+        pmm::phys_addr_t l3_phys = static_cast<pmm::phys_addr_t>(l2_entry->next_table_addr) << 12;
+        l2_entry->value = 0;
+        retire_table_page(l3_phys);
+    }
+
+    if (l2) {
+        if (!is_table_empty(l2)) {
+            return;
+        }
+
+        pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
+        l1_entry->value = 0;
+        retire_table_page(l2_phys);
+    }
+
+    if (!is_table_empty(l1)) {
+        return;
+    }
+
+    pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
+    l0_entry->value = 0;
+    retire_table_page(l1_phys);
 }
 
 __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
@@ -555,11 +599,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
         l1->raw[parts.l1_idx] = 0;
         flush_tlb_page(virt);
-        if (is_table_empty(l1)) {
-            pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
-            l0_entry->value = 0;
-            try_free_table_page(l1_phys);
-        }
+        reclaim_empty_tables(l0_entry, l1, nullptr, nullptr, nullptr, nullptr);
         return OK;
     }
 
@@ -573,16 +613,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
         l2->raw[parts.l2_idx] = 0;
         flush_tlb_page(virt);
-        if (is_table_empty(l2)) {
-            pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
-            l1_entry->value = 0;
-            try_free_table_page(l2_phys);
-            if (is_table_empty(l1)) {
-                pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
-                l0_entry->value = 0;
-                try_free_table_page(l1_phys);
-            }
-        }
+        reclaim_empty_tables(l0_entry, l1, l1_entry, l2, nullptr, nullptr);
         return OK;
     }
 
@@ -598,23 +629,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
 
     page->value = 0;
     flush_tlb_page(virt);
-
-    // Cascade: reclaim empty page tables up the hierarchy
-    if (is_table_empty(l3)) {
-        pmm::phys_addr_t l3_phys = static_cast<pmm::phys_addr_t>(l2_entry->next_table_addr) << 12;
-        l2_entry->value = 0;
-        try_free_table_page(l3_phys);
-        if (is_table_empty(l2)) {
-            pmm::phys_addr_t l2_phys = static_cast<pmm::phys_addr_t>(l1_entry->next_table_addr) << 12;
-            l1_entry->value = 0;
-            try_free_table_page(l2_phys);
-            if (is_table_empty(l1)) {
-                pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
-                l0_entry->value = 0;
-                try_free_table_page(l1_phys);
-            }
-        }
-    }
+    reclaim_empty_tables(l0_entry, l1, l1_entry, l2, l2_entry, l3);
 
     return OK;
 }
@@ -622,6 +637,146 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
 __PRIVILEGED_CODE int32_t unmap_page(virt_addr_t virt, pmm::phys_addr_t root_pt) {
     sync::irq_lock_guard guard(g_pt_lock);
     return unmap_page_nolock(virt, root_pt);
+}
+
+__PRIVILEGED_CODE static uint64_t kept_frame_descriptor(uint64_t descriptor) {
+    return (descriptor & DESC_ADDR_MASK) | DESC_KEPT_FRAME;
+}
+
+__PRIVILEGED_CODE static bool is_kept_frame_descriptor(uint64_t value) {
+    return (value & DESC_VALID) == 0 && (value & DESC_KEPT_FRAME) != 0;
+}
+
+__PRIVILEGED_CODE static int32_t unmap_page_keep_frame_nolock(virt_addr_t virt, pmm::phys_addr_t root_pt) {
+    auto parts = split_virt_addr(virt);
+    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
+
+    table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
+    if (!l0_entry->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l1 = static_cast<translation_table_t*>(
+        phys_to_virt(l0_entry->next_table_addr << 12));
+    if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
+        l1->raw[parts.l1_idx] = kept_frame_descriptor(l1->raw[parts.l1_idx]);
+        flush_tlb_page_local(virt);
+        return OK;
+    }
+
+    table_desc_t* l1_entry = &l1->as_table[parts.l1_idx];
+    if (!l1_entry->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l2 = static_cast<translation_table_t*>(
+        phys_to_virt(l1_entry->next_table_addr << 12));
+    if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
+        l2->raw[parts.l2_idx] = kept_frame_descriptor(l2->raw[parts.l2_idx]);
+        flush_tlb_page_local(virt);
+        return OK;
+    }
+
+    table_desc_t* l2_entry = &l2->as_table[parts.l2_idx];
+    if (!l2_entry->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l3 = static_cast<translation_table_t*>(
+        phys_to_virt(l2_entry->next_table_addr << 12));
+    page_desc_t* page = &l3->as_page[parts.l3_idx];
+    if (!page->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    page->value = kept_frame_descriptor(page->value);
+    flush_tlb_page_local(virt);
+    return OK;
+}
+
+// A kept-frame descriptor is found at the level where the mapping used to
+// live, so the level it sits on also tells the size the mapping covered.
+__PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
+    virt_addr_t virt, pmm::phys_addr_t root_pt, pmm::phys_addr_t* out_phys, size_t* out_size
+) {
+    auto parts = split_virt_addr(virt);
+    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
+
+    table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
+    if (!l0_entry->valid) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l1 = static_cast<translation_table_t*>(
+        phys_to_virt(l0_entry->next_table_addr << 12));
+    if (is_kept_frame_descriptor(l1->raw[parts.l1_idx])) {
+        *out_phys = l1->raw[parts.l1_idx] & DESC_ADDR_MASK;
+        *out_size = PAGE_SIZE_1GB;
+        l1->raw[parts.l1_idx] = 0;
+        reclaim_empty_tables(l0_entry, l1, nullptr, nullptr, nullptr, nullptr);
+        return OK;
+    }
+
+    table_desc_t* l1_entry = &l1->as_table[parts.l1_idx];
+    if (!l1_entry->valid || l1_entry->type == 0) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l2 = static_cast<translation_table_t*>(
+        phys_to_virt(l1_entry->next_table_addr << 12));
+    if (is_kept_frame_descriptor(l2->raw[parts.l2_idx])) {
+        *out_phys = l2->raw[parts.l2_idx] & DESC_ADDR_MASK;
+        *out_size = PAGE_SIZE_2MB;
+        l2->raw[parts.l2_idx] = 0;
+        reclaim_empty_tables(l0_entry, l1, l1_entry, l2, nullptr, nullptr);
+        return OK;
+    }
+
+    table_desc_t* l2_entry = &l2->as_table[parts.l2_idx];
+    if (!l2_entry->valid || l2_entry->type == 0) {
+        return ERR_NOT_MAPPED;
+    }
+
+    translation_table_t* l3 = static_cast<translation_table_t*>(
+        phys_to_virt(l2_entry->next_table_addr << 12));
+    if (!is_kept_frame_descriptor(l3->raw[parts.l3_idx])) {
+        return ERR_NOT_MAPPED;
+    }
+
+    *out_phys = l3->raw[parts.l3_idx] & DESC_ADDR_MASK;
+    *out_size = PAGE_SIZE_4KB;
+    l3->raw[parts.l3_idx] = 0;
+    reclaim_empty_tables(l0_entry, l1, l1_entry, l2, l2_entry, l3);
+    return OK;
+}
+
+__PRIVILEGED_CODE int32_t unmap_page_keep_frame(virt_addr_t virt, pmm::phys_addr_t root_pt) {
+    sync::irq_lock_guard guard(g_pt_lock);
+    return unmap_page_keep_frame_nolock(virt, root_pt);
+}
+
+__PRIVILEGED_CODE int32_t take_kept_frame(virt_addr_t virt, pmm::phys_addr_t root_pt,
+                                              pmm::phys_addr_t* out_phys, size_t* out_size) {
+    sync::irq_lock_guard guard(g_pt_lock);
+    return take_kept_frame_nolock(virt, root_pt, out_phys, out_size);
+}
+
+__PRIVILEGED_CODE retired_tables take_retired_tables() {
+    sync::irq_lock_guard guard(g_pt_lock);
+
+    retired_tables tables;
+    tables.head = g_retired_tables;
+    g_retired_tables = 0;
+
+    return tables;
+}
+
+__PRIVILEGED_CODE void free_retired_tables(retired_tables& tables) {
+    while (tables.head != 0) {
+        pmm::phys_addr_t phys = tables.head;
+        tables.head = *static_cast<pmm::phys_addr_t*>(phys_to_virt(phys));
+        pmm::free_page(phys);
+    }
 }
 
 __PRIVILEGED_CODE static int32_t map_page_nolock(virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags, pmm::phys_addr_t root_pt) {
@@ -864,36 +1019,13 @@ __PRIVILEGED_CODE void flush_tlb_page(virt_addr_t virt) {
 }
 
 __PRIVILEGED_CODE void flush_tlb_range(virt_addr_t start, virt_addr_t end) {
-    sync::irq_lock_guard guard(g_pt_lock);
+    if ((end - start) / PAGE_SIZE_4KB > FULL_FLUSH_PAGE_THRESHOLD) {
+        flush_tlb_all();
+        return;
+    }
 
-    pmm::phys_addr_t root_pt = get_kernel_pt_root();
-    virt_addr_t addr = start;
-
-    while (addr < end) {
-        size_t step = PAGE_SIZE_4KB;
-
-        auto parts = split_virt_addr(addr);
-        translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
-        table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
-
-        if (l0_entry->valid) {
-            translation_table_t* l1 = static_cast<translation_table_t*>(
-                phys_to_virt(l0_entry->next_table_addr << 12));
-
-            if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
-                step = PAGE_SIZE_1GB;
-            } else if (l1->as_table[parts.l1_idx].valid) {
-                translation_table_t* l2 = static_cast<translation_table_t*>(
-                    phys_to_virt(l1->as_table[parts.l1_idx].next_table_addr << 12));
-
-                if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
-                    step = PAGE_SIZE_2MB;
-                }
-            }
-        }
-
+    for (virt_addr_t addr = start; addr < end; addr += PAGE_SIZE_4KB) {
         tlbi_vae1is(addr);
-        addr += step;
     }
 }
 
@@ -907,6 +1039,20 @@ __PRIVILEGED_CODE void flush_tlb_all() {
         "isb"               // Synchronize instruction stream
         ::: "memory"
     );
+}
+
+__PRIVILEGED_CODE void flush_tlb_page_local(virt_addr_t virt) {
+    tlbi_vae1(virt);
+}
+
+__PRIVILEGED_CODE void flush_tlb_range_local(virt_addr_t start, virt_addr_t end) {
+    for (virt_addr_t addr = start; addr < end; addr += PAGE_SIZE_4KB) {
+        tlbi_vae1(addr);
+    }
+}
+
+__PRIVILEGED_CODE void flush_tlb_all_local() {
+    tlbi_vmalle1();
 }
 
 __PRIVILEGED_CODE void dump_mappings() {

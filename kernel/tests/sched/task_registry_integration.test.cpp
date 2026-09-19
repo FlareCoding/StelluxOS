@@ -64,11 +64,12 @@ TEST(task_registry_integration, created_task_appears_in_registry) {
     // Task is CREATED but not enqueued -- should already be in the registry
     EXPECT_TRUE(tid_in_snapshot(tid));
 
-    // Clean up: enqueue and let it finish
+    // Clean up: enqueue, let it finish, and leave no dying task behind
     RUN_ELEVATED({
         sched::enqueue(t);
     });
     ASSERT_TRUE(spin_wait(g_appear_done));
+    ASSERT_TRUE(wait_for_tid_removal(tid));
 }
 
 // --- multiple_tasks_appear ---
@@ -100,7 +101,7 @@ TEST(task_registry_integration, multiple_tasks_appear) {
         EXPECT_TRUE(tid_in_snapshot(tids[i]));
     }
 
-    // Enqueue all so they can run, exit, and be reaped (no leak)
+    // Enqueue all so they can run, exit, and be reaped before the next test counts
     RUN_ELEVATED({
         for (uint32_t i = 0; i < MULTI_COUNT; i++) {
             sched::enqueue(tasks[i]);
@@ -108,6 +109,9 @@ TEST(task_registry_integration, multiple_tasks_appear) {
     });
 
     ASSERT_TRUE(spin_wait_ge(g_multi_done, MULTI_COUNT));
+    for (uint32_t i = 0; i < MULTI_COUNT; i++) {
+        ASSERT_TRUE(wait_for_tid_removal(tids[i]));
+    }
 }
 
 // --- count_increases_on_create ---

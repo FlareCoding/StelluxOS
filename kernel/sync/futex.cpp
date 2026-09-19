@@ -29,16 +29,22 @@ static uint32_t futex_hash(mm::mm_context* mm, uintptr_t addr) {
     return static_cast<uint32_t>(h) & FUTEX_BUCKET_MASK;
 }
 
+__PRIVILEGED_CODE static bool waiter_queued(futex_bucket* bucket, futex_waiter& waiter) {
+    irq_state irq = spin_lock_irqsave(bucket->lock);
+    bool queued = waiter.link.is_linked();
+
+    spin_unlock_irqrestore(bucket->lock, irq);
+    return queued;
+}
+
 __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
                                      uint64_t timeout_ns) {
     sched::task* self = sched::current();
     mm::mm_context* mm = self->exec.mm_ctx;
     if (uaddr & 0x3) return -22; // EINVAL
 
-    // Read the value before taking the bucket lock. copy_from_user
-    // acquires mm_ctx->lock (a sleeping mutex) so it must not be called
-    // under a spinlock. This also faults in the page so the re-read
-    // under the spinlock below is safe.
+    // Read the value before taking the bucket lock, copy_from_user may sleep
+    // to fault the page in and must not run under a spinlock
     uint32_t pre_val;
     if (mm) {
         int32_t rc = mm::uaccess::copy_from_user(
@@ -63,11 +69,21 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
 
     irq_state irq = spin_lock_irqsave(bucket->lock);
 
-    // Re-read the futex word under the bucket lock. The page is already
-    // validated/faulted by the copy_from_user above, so a direct read
-    // is safe here. This atomic check-and-enqueue prevents lost wakeups.
-    uint32_t* word = reinterpret_cast<uint32_t*>(uaddr);
-    uint32_t current_val = atomic_ref<uint32_t>(*word).load_relaxed();
+    // Re-read under the bucket lock so a waker cannot slip between the check
+    // and the enqueue, a page unmapped since the first read reports EFAULT.
+    uint32_t current_val;
+    if (mm) {
+        int32_t rc = mm::uaccess::load_u32_from_user(
+            reinterpret_cast<const uint32_t*>(uaddr), &current_val);
+
+        if (rc != mm::uaccess::OK) {
+            spin_unlock_irqrestore(bucket->lock, irq);
+            return -14; // EFAULT
+        }
+    } else {
+        uint32_t* word = reinterpret_cast<uint32_t*>(uaddr);
+        current_val = atomic_ref<uint32_t>(*word).load_relaxed();
+    }
 
     if (current_val != expected) {
         spin_unlock_irqrestore(bucket->lock, irq);
@@ -77,32 +93,26 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     sched::prepare_to_block_task();
     bucket->waiters.push_back(&waiter);
 
-    if (timeout_ns > 0) {
-        uint64_t deadline = clock::now_ns() + timeout_ns;
+    bool timed = timeout_ns > 0;
+    uint64_t deadline = timed ? clock::now_ns() + timeout_ns : 0;
+    if (timed) {
         timer::schedule_sleep(self, deadline);
     }
 
     spin_unlock_irqrestore(bucket->lock, irq);
 
-    if (sched::block_task_interrupted()) {
-        // Interrupted during futex entry: unwind waiter and timer, don't block.
-        timer::cancel_sleep(self);
-        irq = spin_lock_irqsave(bucket->lock);
-        if (waiter.link.is_linked()) {
-            bucket->waiters.remove(&waiter);
-        }
-        spin_unlock_irqrestore(bucket->lock, irq);
-        sched::cancel_block_task();
-        return -4; // EINTR
+    while (!sched::block_task_interrupted() && waiter_queued(bucket, waiter) &&
+           (!timed || clock::now_ns() < deadline)) {
+        sched::yield();
+        sched::prepare_to_block_task();
     }
 
-    sched::yield();
+    sched::cancel_block_task();
+    if (timed) {
+        timer::cancel_sleep(self);
+    }
 
-    // Cancel any outstanding timer to prevent spurious wakes of future
-    // blocking operations if we were woken by futex_wake before timeout.
-    timer::cancel_sleep(self);
-
-    // Remove self from bucket if still linked (timeout or interrupt wakeup).
+    // Still linked means no wake came for this wait, so a timeout or an interrupt
     bool was_linked = false;
     irq = spin_lock_irqsave(bucket->lock);
     if (waiter.link.is_linked()) {

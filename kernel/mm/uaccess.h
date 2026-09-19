@@ -3,6 +3,10 @@
 
 #include "common/types.h"
 
+namespace mm {
+struct mm_context;
+}
+
 namespace mm::uaccess {
 
 constexpr int32_t OK           = 0;
@@ -13,21 +17,8 @@ constexpr int32_t ERR_NAMETOOLONG = -4;
 constexpr int32_t ERR_RETRY    = -5;
 
 /**
- * @brief Validate that a user range is mapped and has required protections.
- * @param user_ptr User virtual address.
- * @param len Range length in bytes.
- * @param required_prot mm::MM_PROT_READ and/or mm::MM_PROT_WRITE.
- * @return OK on success, negative error on invalid/unmapped/protection fault.
- * @note Privilege: **required**
- */
-__PRIVILEGED_CODE int32_t validate_user_range(
-    const void* user_ptr,
-    size_t len,
-    uint32_t required_prot
-);
-
-/**
- * @brief Copy from user buffer to kernel buffer after validation.
+ * @brief Copy from a user buffer to a kernel buffer. A user page that is
+ * missing or unreadable at the moment of the copy reports ERR_FAULT.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t copy_from_user(
@@ -37,7 +28,20 @@ __PRIVILEGED_CODE int32_t copy_from_user(
 );
 
 /**
- * @brief Copy from kernel buffer to user buffer after validation.
+ * @brief Load one 32-bit aligned word from user memory in a single access,
+ * so a concurrent store by another thread is never observed torn.
+ * @return OK, ERR_INVAL for a misaligned address, ERR_FAULT when the page is
+ * missing or unreadable at the moment of the load.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t load_u32_from_user(
+    const uint32_t* usrc,
+    uint32_t* out
+);
+
+/**
+ * @brief Copy from a kernel buffer to a user buffer. A user page that is
+ * missing or read-only at the moment of the copy reports ERR_FAULT.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t copy_to_user(
@@ -72,6 +76,27 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
     void* udst,
     const void* ksrc,
     size_t len
+);
+
+/**
+ * @brief Resolve a kernel-mode page fault raised by a user copy. A missing
+ * page is faulted in when the context may sleep, otherwise the copy is
+ * resumed at its fixup, where it reports the failure to its caller.
+ * @param mm_ctx Address space of the faulting task.
+ * @param pc Faulting program counter, moved to the fixup on failure.
+ * @param fault_addr Faulting virtual address.
+ * @param pf_flags mm::PF_FLAG_* describing the access.
+ * @param can_sleep Whether interrupts were enabled at the fault.
+ * @return true if execution can resume at *pc, false if the fault was not
+ * raised by a user copy and must be treated as fatal.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool handle_kernel_fault(
+    mm_context* mm_ctx,
+    uintptr_t* pc,
+    uintptr_t fault_addr,
+    uint64_t pf_flags,
+    bool can_sleep
 );
 
 } // namespace mm::uaccess

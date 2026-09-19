@@ -10,7 +10,9 @@ DECLARE_SYSCALL(listen);
 DECLARE_SYSCALL(accept);
 DECLARE_SYSCALL(connect);
 DECLARE_SYSCALL(sendto);
+DECLARE_SYSCALL(sendmsg);
 DECLARE_SYSCALL(recvfrom);
+DECLARE_SYSCALL(recvmsg);
 DECLARE_SYSCALL(setsockopt);
 DECLARE_SYSCALL(getsockopt);
 

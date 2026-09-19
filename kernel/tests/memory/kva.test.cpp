@@ -2,6 +2,7 @@
 
 #include "stlx_unit_test.h"
 #include "mm/kva.h"
+#include "mm/page_quarantine.h"
 #include "mm/paging_types.h"
 #include "common/logging.h"
 
@@ -97,6 +98,36 @@ TEST(kva_test, query_not_found_after_free) {
     kva::allocation queried = {};
     result = kva::query(base, queried);
     EXPECT_EQ(result, kva::ERR_NOT_FOUND);
+}
+
+// A retired range leaves service at once but keeps its address until the
+// quarantine drains: query still finds it, retire and free refuse it, and
+// only the drain makes the address free again. vmreclaimd may drain at any
+// moment, so the retired-state checks apply only while query still finds it.
+TEST(kva_test, retired_range_keeps_its_address_until_drained) {
+    kva::allocation alloc = {};
+    ASSERT_EQ(kva::alloc(
+        PAGE_SIZE, PAGE_SIZE, 0, 0,
+        kva::placement::low, kva::tag::generic, 0, alloc
+    ), kva::OK);
+
+    kva::allocation retired = {};
+    EXPECT_EQ(kva::retire(alloc.base, retired), kva::OK);
+    EXPECT_EQ(retired.base, alloc.base);
+    EXPECT_EQ(retired.size, alloc.size);
+
+    int32_t again = kva::retire(alloc.base, retired);
+    int32_t freed = kva::free(alloc.base);
+
+    kva::allocation queried = {};
+    if (kva::query(alloc.base, queried) == kva::OK && queried.retired) {
+        EXPECT_EQ(again, kva::ERR_DOUBLE_FREE);
+        EXPECT_EQ(freed, kva::ERR_DOUBLE_FREE);
+    }
+
+    // Once drained the address is gone or already serving a new allocation
+    page_quarantine::drain();
+    EXPECT_TRUE(kva::query(alloc.base, queried) != kva::OK || !queried.retired);
 }
 
 TEST(kva_test, alloc_no_overlap) {

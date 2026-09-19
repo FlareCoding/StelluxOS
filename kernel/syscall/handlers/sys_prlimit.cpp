@@ -41,13 +41,16 @@ DEFINE_SYSCALL4(prlimit64, u_pid, u_resource, u_new, u_old) {
     sched::thread_group* group = current->group;
     linux_rlimit64 kold;
 
-    sync::spin_lock(group->lock);
-    kold.rlim_cur = group->rlimits[u_resource].soft;
-    kold.rlim_max = group->rlimits[u_resource].hard;
-    if (u_new != 0) {
-        group->rlimits[u_resource] = { knew.rlim_cur, knew.rlim_max };
+    {
+        sync::irq_lock_guard guard(group->lock);
+
+        kold.rlim_cur = group->rlimits[u_resource].soft;
+        kold.rlim_max = group->rlimits[u_resource].hard;
+
+        if (u_new != 0) {
+            group->rlimits[u_resource] = { knew.rlim_cur, knew.rlim_max };
+        }
     }
-    sync::spin_unlock(group->lock);
 
     if (u_old != 0) {
         int32_t rc = mm::uaccess::copy_to_user(

@@ -1,17 +1,19 @@
 #include "syscall/handlers/sys_shutdown.h"
 
-#include "resource/resource.h"
-#include "net/net.h"
+#include "resource/socket_ops.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+
+constexpr int32_t SHUT_RD   = 0;
+constexpr int32_t SHUT_WR   = 1;
+constexpr int32_t SHUT_RDWR = 2;
 
 DEFINE_SYSCALL2(shutdown, fd, how) {
     sched::task* task = sched::current();
     if (!task) return syscall::EIO;
 
     int32_t how_val = static_cast<int32_t>(how);
-    if (how_val != net::SHUT_RD && how_val != net::SHUT_WR &&
-        how_val != net::SHUT_RDWR) {
+    if (how_val != SHUT_RD && how_val != SHUT_WR && how_val != SHUT_RDWR) {
         return syscall::EINVAL;
     }
 
@@ -25,12 +27,13 @@ DEFINE_SYSCALL2(shutdown, fd, how) {
         return syscall::ENOTSOCK;
     }
 
-    if (!obj->ops || !obj->ops->shutdown) {
+    const resource::socket_ops* sockops = resource::socket_ops_of(obj);
+    if (!sockops || !sockops->shutdown) {
         resource::resource_release(obj);
         return syscall::EOPNOTSUPP;
     }
 
-    int32_t result = obj->ops->shutdown(obj, how_val);
+    int32_t result = sockops->shutdown(obj, how_val);
     resource::resource_release(obj);
 
     if (result == resource::OK) return 0;

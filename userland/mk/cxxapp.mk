@@ -23,6 +23,7 @@ BUILD_DIR := build/$(ARCH)
 BIN_DIR   := $(USERLAND_ROOT)/build/$(ARCH)/bin
 
 APP_LIBS ?=
+LIB_ARCHIVES := $(patsubst %,$(SYSROOT)/lib/lib%.a,stlx $(APP_LIBS))
 
 C_SOURCES   := $(wildcard $(SRC_DIR)/*.c)
 CXX_SOURCES := $(wildcard $(SRC_DIR)/*.cpp)
@@ -33,7 +34,7 @@ TARGET      := $(BIN_DIR)/$(APP_NAME)
 
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS)
+$(TARGET): $(OBJECTS) $(LIB_ARCHIVES)
 	$(UQ)mkdir -p $(dir $@)
 	@echo "[LD]  $(APP_NAME) ($(ARCH))"
 	$(UQ)$(CXX) -nostdlib -fuse-ld=lld --target=$(TARGET_TRIPLE) \

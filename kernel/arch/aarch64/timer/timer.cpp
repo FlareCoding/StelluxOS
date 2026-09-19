@@ -1,13 +1,11 @@
 #include "timer/timer.h"
-#include "sched/task.h"
-#include "sched/sched.h"
+#include "timer/timer_internal.h"
 #include "clock/clock.h"
 #include "hw/hwtimer.h"
 #include "irq/irq.h"
 #include "hw/cpu.h"
 #include "percpu/percpu.h"
 #include "sync/spinlock.h"
-#include "common/list.h"
 #include "common/logging.h"
 
 namespace timer {
@@ -20,7 +18,6 @@ struct timer_cpu_state {
     uint64_t next_tick_ns;
     uint64_t programmed_ns;
     uint32_t tick_interval_ticks;
-    list::head<sched::task, &sched::task::timer_link> sleep_queue;
 };
 
 static DEFINE_PER_CPU(timer_cpu_state, cpu_timer_state);
@@ -87,7 +84,7 @@ __PRIVILEGED_CODE int32_t init(uint32_t hz) {
     state.tick_interval_ticks = static_cast<uint32_t>(g_cnt_freq / hz);
     state.next_tick_ns = clock::now_ns() + state.tick_interval_ns;
     state.programmed_ns = state.next_tick_ns;
-    state.sleep_queue.init();
+    deadline_init_this_cpu();
 
     g_tick_hz = hz;
     hwtimer::write_cntv_tval(state.tick_interval_ticks);
@@ -124,7 +121,7 @@ __PRIVILEGED_CODE int32_t init_ap(uint32_t hz) {
     state.tick_interval_ticks = static_cast<uint32_t>(freq / hz);
     state.next_tick_ns = clock::now_ns() + state.tick_interval_ns;
     state.programmed_ns = state.next_tick_ns;
-    state.sleep_queue.init();
+    deadline_init_this_cpu();
 
     hwtimer::write_cntv_tval(state.tick_interval_ticks);
     hwtimer::write_cntv_ctl(1);
@@ -157,17 +154,6 @@ __PRIVILEGED_CODE bool on_interrupt() {
         return true;
     }
 
-    // Waking raw pointers under the queue lock satisfies the wake pin
-    // contract: a sleeper re-takes this lock in cancel_sleep before it
-    // can exit, and it slept on this CPU, so wake never spins off-CPU
-    while (!state.sleep_queue.empty()) {
-        sched::task* t = state.sleep_queue.front();
-        if (t->timer_deadline > now) break;
-        state.sleep_queue.pop_front();
-        t->timer_deadline = 0;
-        sched::wake(t);
-    }
-
     bool tick_expired = (now >= state.next_tick_ns);
     if (tick_expired) {
         state.next_tick_ns += state.tick_interval_ns;
@@ -177,11 +163,10 @@ __PRIVILEGED_CODE bool on_interrupt() {
     }
 
     uint64_t next_event = state.next_tick_ns;
-    if (!state.sleep_queue.empty()) {
-        uint64_t front_deadline = state.sleep_queue.front()->timer_deadline;
-        if (front_deadline < next_event) {
-            next_event = front_deadline;
-        }
+
+    uint64_t deadline_next = deadline_interrupt(now);
+    if (deadline_next < next_event) {
+        next_event = deadline_next;
     }
 
     state.programmed_ns = next_event;
@@ -195,33 +180,13 @@ __PRIVILEGED_CODE bool on_interrupt() {
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void schedule_sleep(sched::task* t, uint64_t deadline_ns) {
+__PRIVILEGED_CODE void arch_request_deadline(uint64_t deadline_ns) {
     timer_cpu_state& state = this_cpu(cpu_timer_state);
     sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
-
-    t->timer_deadline = deadline_ns;
-    state.sleep_queue.insert_sorted(t,
-        [](sched::task* a, sched::task* b) {
-            return a->timer_deadline < b->timer_deadline;
-        });
 
     if (deadline_ns < state.programmed_ns) {
         state.programmed_ns = deadline_ns;
         program_oneshot(deadline_ns);
-    }
-
-    sync::spin_unlock_irqrestore(state.lock, irq);
-}
-
-__PRIVILEGED_CODE void cancel_sleep(sched::task* t) {
-    uint32_t cpu = sync::atomic_ref<uint32_t>{t->exec.cpu}.load_relaxed();
-    timer_cpu_state& state = per_cpu_on(cpu_timer_state, cpu);
-
-    sync::irq_state irq = sync::spin_lock_irqsave(state.lock);
-
-    if (t->timer_link.is_linked()) {
-        state.sleep_queue.remove(t);
-        t->timer_deadline = 0;
     }
 
     sync::spin_unlock_irqrestore(state.lock, irq);

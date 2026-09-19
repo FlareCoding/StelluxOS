@@ -16,10 +16,13 @@ DEFINE_SYSCALL1(umask, u_mask) {
     sched::thread_group* group = current->group;
     uint32_t new_mask = static_cast<uint32_t>(u_mask) & MODE_BITS;
 
-    sync::spin_lock(group->lock);
-    uint32_t old_mask = group->umask;
-    group->umask = new_mask;
-    sync::spin_unlock(group->lock);
+    uint32_t old_mask;
+    {
+        sync::irq_lock_guard guard(group->lock);
+
+        old_mask = group->umask;
+        group->umask = new_mask;
+    }
 
     return static_cast<int64_t>(old_mask);
 }

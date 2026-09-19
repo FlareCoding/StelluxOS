@@ -19,7 +19,10 @@
 .include "percpu/percpu_asm.inc"
 
 .extern stlx_x86_64_trap_handler
+.extern stlx_finish_task_switch
 .extern current_task_exec
+.extern percpu_offset
+.extern switch_exit_stack
 
 .section .priv.rodata, "a", @progbits
 .p2align 3
@@ -63,6 +66,10 @@ stlx_x86_isr_table:
 .set TF_SS,     0xA8
 .set TF_SIZE,   0xB0
 
+/* Per-CPU exit stack, size must match SWITCH_EXIT_STACK_SIZE in sched/sched.cpp. */
+.set EXIT_STACK_SIZE,   0x400
+.set EXIT_FRAME_OFFSET, (EXIT_STACK_SIZE - (TF_SIZE + 56)) & ~15
+
 /* Task structure offsets (from sched/task_exec_core.h)
  * CRITICAL: These must match the C++ struct layout!
  * struct task_exec_core {
@@ -78,8 +85,9 @@ stlx_x86_isr_table:
 .set TASK_SYS_STACK_OFFSET, 0x10
 
 /* Task flags (must match sched/task_exec_core.h) */
-.set TASK_FLAG_ELEVATED, (1 << 0)
-.set TASK_FLAG_IN_IRQ,   (1 << 6)
+.set TASK_FLAG_ELEVATED,   (1 << 0)
+.set TASK_FLAG_IN_SYSCALL, (1 << 5)
+.set TASK_FLAG_IN_IRQ,     (1 << 6)
 
 /*
  * Per-vector entry stub generator.
@@ -179,15 +187,15 @@ stlx_x86_common_entry:
 .Lstlx_x86_from_kernel:
     /*
      * Check if this is an elevated task that needs stack switch.
-     * Switch only if: ELEVATED=1 AND IN_IRQ=0
-     * (If IN_IRQ=1, we're already on system_stack from a previous interrupt.)
+     * Switch only if: ELEVATED=1 AND IN_IRQ=0 AND IN_SYSCALL=0
+     * (Either flag set means we're already on system_stack.)
      */
     push rax
     push rbx
     
     this_cpu_read rax, current_task_exec
     mov ebx, [rax + TASK_FLAGS_OFFSET]
-    and ebx, (TASK_FLAG_ELEVATED | TASK_FLAG_IN_IRQ)
+    and ebx, (TASK_FLAG_ELEVATED | TASK_FLAG_IN_IRQ | TASK_FLAG_IN_SYSCALL)
     cmp ebx, TASK_FLAG_ELEVATED
     jne .Lstlx_x86_kernel_no_switch
     
@@ -224,12 +232,51 @@ stlx_x86_common_entry:
     pop rax
 
 .Lstlx_x86_call_c:
+    /* Used to track scheduler task switches on the exit path */
+    this_cpu_read r13, current_task_exec
+
     mov rdi, rsp
     mov r12, rsp
     and rsp, -16
     call stlx_x86_64_trap_handler
     mov rsp, r12
 
+    /* Disable interrupts while on the exit stack, iretq restores the task's IF */
+    cli
+
+    /*
+     * A task switch left the next task's frame on the previous task's stack.
+     * Finish on the exit stack so that stack is unused once rsp leaves it.
+     */
+    this_cpu_read rax, current_task_exec
+    cmp rax, r13
+    je .Lstlx_x86_exit_in_place
+
+    this_cpu_read rax, percpu_offset
+    lea rbx, switch_exit_stack
+    add rbx, rax
+    add rbx, EXIT_FRAME_OFFSET
+
+    /* Copy trap_frame using r8/r9/r10, all restored from the copy below. */
+    mov r8, rsp
+    mov r9, rbx
+    mov r10, TF_SIZE / 8
+
+.Lstlx_x86_copy_exit_frame:
+    mov rax, [r8]
+    mov [r9], rax
+    add r8, 8
+    add r9, 8
+    dec r10
+    jnz .Lstlx_x86_copy_exit_frame
+
+    mov rsp, rbx
+
+    /* Nothing reads the previous task's stack past this point */
+    mov rdi, r13
+    call stlx_finish_task_switch
+
+.Lstlx_x86_exit_in_place:
     /* Write back trap_frame to iret frame. */
     lea rsi, [rsp + TF_SIZE]
     mov rax, [rsp + TF_RIP]

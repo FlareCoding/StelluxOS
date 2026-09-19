@@ -8,6 +8,28 @@
 #include <unistd.h>
 #include <time.h>
 
+static void start_dhcpc(void) {
+    int handle = proc_create("/bin/dhcpc", (const char*[]){"-v", NULL});
+    if (handle < 0) {
+        printf("init: dhcpc not available, continuing without network configuration\r\n");
+        return;
+    }
+
+    int log_fd = open("/var/log/dhcpc.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (log_fd >= 0) {
+        proc_set_handle(handle, STDOUT_FILENO, log_fd);
+        proc_set_handle(handle, STDERR_FILENO, log_fd);
+        close(log_fd);
+    }
+
+    if (proc_start(handle) < 0) {
+        printf("init: failed to start dhcpc (errno=%d)\r\n", errno);
+        return;
+    }
+
+    proc_detach(handle);
+}
+
 int main(void) {
     int fd0 = open("/dev/console", O_RDWR);
     if (fd0 < 0) {
@@ -25,6 +47,9 @@ int main(void) {
     setenv("SHELL", "/bin/shell", 1);
     setenv("LANG", "C", 1);
     setenv("PYTHONHOME", "/usr", 1);
+
+    // Start the DHCP client daemon
+    start_dhcpc();
 
     int dm_handle = proc_exec("/bin/stlxdm", NULL);
     if (dm_handle >= 0) {

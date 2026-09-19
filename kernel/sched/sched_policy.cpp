@@ -17,6 +17,11 @@ void round_robin_policy::enqueue(task* t) {
         log::fatal("sched: ready-list double enqueue tid=%u name=%s state=%u cpu=%u on_cpu=%u",
                    t->tid, t->name, t->state.load_relaxed(), t->exec.cpu, t->exec.on_cpu);
     }
+
+    if (t->state.load_relaxed() == TASK_STATE_DEAD) {
+        log::fatal("sched: ready-list enqueue of a dead task tid=%u name=%s cpu=%u",
+                   t->tid, t->name, t->exec.cpu);
+    }
 #endif
 
     m_ready_list.push_back(t);

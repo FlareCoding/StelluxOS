@@ -41,10 +41,17 @@ constexpr int64_t EPROTONOSUPPORT  = -93;
 constexpr int64_t EOPNOTSUPP       = -95;
 constexpr int64_t EAFNOSUPPORT     = -97;
 constexpr int64_t EADDRINUSE       = -98;
+constexpr int64_t EADDRNOTAVAIL    = -99;
+constexpr int64_t ENETUNREACH      = -101;
+constexpr int64_t ECONNRESET       = -104;
+constexpr int64_t ENOBUFS          = -105;
+constexpr int64_t EALREADY         = -114;
+constexpr int64_t EINPROGRESS      = -115;
 constexpr int64_t EISCONN          = -106;
 constexpr int64_t ENOTCONN         = -107;
 constexpr int64_t ETIMEDOUT        = -110;
 constexpr int64_t ECONNREFUSED     = -111;
+constexpr int64_t EHOSTUNREACH     = -113;
 
 // Interrupted restartable wait, resolved at the syscall-return boundary
 // (rewind for re-execution or EINTR) and never visible to userspace.

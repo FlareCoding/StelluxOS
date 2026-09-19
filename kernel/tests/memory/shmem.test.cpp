@@ -6,6 +6,7 @@
 #include "mm/vma.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "mm/page_quarantine.h"
 #include "common/string.h"
 #include "sync/mutex.h"
 
@@ -14,11 +15,13 @@ TEST_SUITE(shmem_test);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t shmem_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     return 0;
 }
 
 static int32_t shmem_after_all() {
+    page_quarantine::drain();
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         return -1;
@@ -33,6 +36,7 @@ BEFORE_ALL(shmem_test, shmem_before_all);
 AFTER_ALL(shmem_test, shmem_after_all);
 
 TEST(shmem_test, create_and_destroy) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
     mm::shmem* s = mm::shmem_create(0);
     ASSERT_NOT_NULL(s);
@@ -40,11 +44,13 @@ TEST(shmem_test, create_and_destroy) {
     EXPECT_EQ(s->m_page_count, static_cast<size_t>(0));
 
     mm::shmem::ref_destroy(s);
+    page_quarantine::drain();
     uint64_t after = pmm::free_page_count();
     EXPECT_EQ(after, before);
 }
 
 TEST(shmem_test, create_with_initial_size) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
     mm::shmem* s = mm::shmem_create(2 * PAGE);
     ASSERT_NOT_NULL(s);
@@ -62,6 +68,7 @@ TEST(shmem_test, create_with_initial_size) {
     EXPECT_EQ(p2, static_cast<pmm::phys_addr_t>(0));
 
     mm::shmem::ref_destroy(s);
+    page_quarantine::drain();
     EXPECT_EQ(pmm::free_page_count(), before);
 }
 
@@ -99,6 +106,7 @@ TEST(shmem_test, read_write_roundtrip) {
 }
 
 TEST(shmem_test, shared_map_two_contexts_same_backing) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
 
     mm::shmem* s = mm::shmem_create(PAGE);
@@ -148,10 +156,12 @@ TEST(shmem_test, shared_map_two_contexts_same_backing) {
     mm::mm_context_release(ctx_b);
     mm::shmem::ref_destroy(s);
 
+    page_quarantine::drain();
     EXPECT_EQ(pmm::free_page_count(), before);
 }
 
 TEST(shmem_test, unmap_shared_does_not_free_pages) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
 
     mm::shmem* s = mm::shmem_create(PAGE);
@@ -178,6 +188,7 @@ TEST(shmem_test, unmap_shared_does_not_free_pages) {
     mm::mm_context_release(ctx);
     mm::shmem::ref_destroy(s);
 
+    page_quarantine::drain();
     EXPECT_EQ(pmm::free_page_count(), before);
 }
 

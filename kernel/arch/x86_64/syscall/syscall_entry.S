@@ -140,6 +140,12 @@ stlx_x86_syscall_entry:
     add rsp, 8
 
     /*
+     * Masked through sysretq or iretq: past pop rsp the exit runs on the user
+     * stack, and past swapgs on the user GS base. Both restore the user RFLAGS.
+     */
+    cli
+
+    /*
      * A staged full-register context (rt_sigreturn of a frame captured
      * outside a syscall) replaces the frame-based return entirely:
      * SYSRET consumes RCX/R11, only IRET can rebuild every register.

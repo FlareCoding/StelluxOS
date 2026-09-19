@@ -1,178 +1,126 @@
 #include "net/route.h"
-#include "net/loopback.h"
-#include "sync/spinlock.h"
-#include "dynpriv/dynpriv.h"
+#include "net/interface.h"
 
 namespace net {
+namespace route {
 
-static route_entry g_route_table[ROUTE_TABLE_SIZE] = {};
-static sync::spinlock g_route_lock = sync::SPINLOCK_INIT;
-
-/**
- * Count the number of set bits in a 32-bit value.
- * Used for comparing prefix lengths (netmask bit count).
- */
-static uint32_t popcount32(uint32_t v) {
-    v = v - ((v >> 1) & 0x55555555);
-    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
-    return (((v + (v >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
-}
-
-__PRIVILEGED_CODE void route_init() {
-    for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
-        g_route_table[i].valid = false;
-    }
-}
-
-int32_t route_add(uint32_t dest, uint32_t netmask, uint32_t gateway,
-                  netif* iface, route_type type, uint16_t metric,
-                  netif* owner) {
-    if (!iface) {
-        return ERR_INVAL;
+static bool is_local_route(const ipv4::ipv4_addr& dest, route_result* out) {
+    interface* lo = find_loopback_interface();
+    if (!lo) {
+        return false;
     }
 
-    // Default owner to iface if not specified
-    if (!owner) {
-        owner = iface;
+    *out = { lo, dest, dest, route_type::local };
+    return true;
+}
+
+// Matches `dest` against what `iface` reaches directly, ignoring its gateway
+static bool match_link(interface* iface, const ipv4::ipv4_addr& dest, route_result* out) {
+    ipv4::ipv4_config conf = iface->ipv4_conf();
+    if (!conf.configured()) {
+        return false;
     }
 
-    int32_t result = ERR_NOMEM;
-
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_route_lock);
-
-        for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
-            if (!g_route_table[i].valid) {
-                g_route_table[i].dest    = dest;
-                g_route_table[i].netmask = netmask;
-                g_route_table[i].gateway = gateway;
-                g_route_table[i].iface   = iface;
-                g_route_table[i].owner   = owner;
-                g_route_table[i].type    = type;
-                g_route_table[i].metric  = metric;
-                g_route_table[i].valid   = true;
-
-                result = OK;
-                break;
-            }
-        }
-    });
-
-    return result;
-}
-
-void route_del_iface(netif* iface) {
-    if (!iface) return;
-
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_route_lock);
-
-        // Match on the owner field, LOCAL routes point at loopback but belong
-        // to the interface whose configure() created them.
-        for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
-            if (g_route_table[i].valid && g_route_table[i].owner == iface) {
-                g_route_table[i].valid = false;
-            }
-        }
-    });
-}
-
-int32_t route_lookup(uint32_t dst_ip, route_result* result) {
-    if (!result) return ERR_INVAL;
-
-    int32_t rc = ERR_NOIF;
-
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_route_lock);
-
-        bool found = false;
-        uint32_t best_prefix_len = 0;
-        uint16_t best_metric = 0xFFFF;
-        uint32_t best_idx = 0;
-
-        for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
-            if (!g_route_table[i].valid) continue;
-
-            // Check if destination matches this route's network
-            if ((dst_ip & g_route_table[i].netmask) != g_route_table[i].dest) {
-                continue;
-            }
-
-            uint32_t prefix_len = popcount32(g_route_table[i].netmask);
-
-            // Prefer longest prefix match, then lowest metric
-            if (!found ||
-                prefix_len > best_prefix_len ||
-                (prefix_len == best_prefix_len &&
-                 g_route_table[i].metric < best_metric)) {
-                best_prefix_len = prefix_len;
-                best_metric = g_route_table[i].metric;
-                best_idx = i;
-                found = true;
-            }
-        }
-
-        if (found) {
-            const auto& best = g_route_table[best_idx];
-            result->iface = best.iface;
-            result->type  = best.type;
-
-            switch (best.type) {
-            case route_type::LOCAL:
-                result->next_hop = dst_ip;
-                break;
-            case route_type::CONNECTED:
-                result->next_hop = dst_ip;
-                break;
-            case route_type::GATEWAY:
-                result->next_hop = best.gateway;
-                break;
-            }
-
-            rc = OK;
-        }
-    });
-
-    return rc;
-}
-
-void route_add_interface_routes(netif* iface) {
-    if (!iface || !iface->configured) return;
-
-    netif* lo = get_loopback_netif();
-
-    // Self-addressed traffic is delivered via loopback. Ownership keeps
-    // teardown correct, and lo's own 127.0.0.0/8 route already covers lo.
-    if (lo && iface != lo) {
-        route_add(iface->ipv4_addr, 0xFFFFFFFF, 0,
-                  lo, route_type::LOCAL, METRIC_LOCAL, iface);
+    if (dest == conf.address) {
+        return is_local_route(dest, out);
     }
 
-    uint32_t subnet = iface->ipv4_addr & iface->ipv4_netmask;
-    route_add(subnet, iface->ipv4_netmask, 0,
-              iface, route_type::CONNECTED, METRIC_CONNECTED);
-
-    // A configured gateway becomes the default route (0.0.0.0/0)
-    if (iface->ipv4_gateway != 0) {
-        route_add(0, 0, iface->ipv4_gateway,
-                  iface, route_type::GATEWAY, METRIC_DEFAULT);
+    // The limited broadcast needs a link to carry it, and loopback has none
+    if ((dest.is_broadcast() && !iface->is_loopback()) || conf.is_subnet_broadcast(dest)) {
+        *out = { iface, dest, conf.address, route_type::broadcast };
+        return true;
     }
+
+    if (!dest.in_same_subnet(conf.address, conf.netmask)) {
+        return false;
+    }
+
+    // Every address on the loopback network is this host
+    if (iface->is_loopback()) {
+        return is_local_route(dest, out);
+    }
+
+    *out = { iface, dest, conf.address, route_type::unicast };
+    return true;
 }
 
-uint32_t route_count() {
-    uint32_t count = 0;
+static bool has_gateway(interface* iface) {
+    ipv4::ipv4_config conf = iface->ipv4_conf();
+    return conf.configured() && !conf.gateway.is_unspecified();
+}
 
-    RUN_ELEVATED({
-        sync::irq_lock_guard guard(g_route_lock);
+static void gateway_route(interface* iface, route_result* out) {
+    ipv4::ipv4_config conf = iface->ipv4_conf();
+    *out = { iface, conf.gateway, conf.address, route_type::unicast };
+}
 
-        for (uint32_t i = 0; i < ROUTE_TABLE_SIZE; i++) {
-            if (g_route_table[i].valid) {
-                count++;
-            }
+interface* default_interface() {
+    size_t count = interface_count();
+    for (size_t i = 0; i < count; i++) {
+        if (has_gateway(interface_at(i))) {
+            return interface_at(i);
         }
-    });
+    }
 
-    return count;
+    return nullptr;
 }
 
+int32_t lookup(const ipv4::ipv4_addr& dest, route_result* out) {
+    if (!out) {
+        return ERR_INVALID;
+    }
+
+    // Every link is tried before any gateway, so an on-link host is never
+    // sent through a router
+    size_t count = interface_count();
+    for (size_t i = 0; i < count; i++) {
+        if (match_link(interface_at(i), dest, out)) {
+            return OK;
+        }
+    }
+
+    interface* via = default_interface();
+    if (!via) {
+        return ERR_NO_ROUTE;
+    }
+
+    gateway_route(via, out);
+    return OK;
+}
+
+int32_t lookup_on(interface* iface, const ipv4::ipv4_addr& dest, route_result* out) {
+    if (!iface || !out) {
+        return ERR_INVALID;
+    }
+
+    // Addresses belonging to this host resolve through the interface
+    // that owns them, regardless of the interface the caller pinned.
+    interface* owner = dest.is_loopback() ? find_loopback_interface() : find_interface_by_address(dest);
+    if (owner || dest.is_loopback()) {
+        return owner && match_link(owner, dest, out) ? OK : ERR_NO_ROUTE;
+    }
+
+    // An unconfigured interface can still broadcast, which is how it asks for an address
+    if (!iface->ipv4_conf().configured()) {
+        if (!dest.is_broadcast()) {
+            return ERR_NO_ROUTE;
+        }
+
+        *out = { iface, dest, ipv4::UNSPECIFIED_ADDR, route_type::broadcast };
+        return OK;
+    }
+
+    if (match_link(iface, dest, out)) {
+        return OK;
+    }
+
+    if (!has_gateway(iface)) {
+        return ERR_NO_ROUTE;
+    }
+
+    gateway_route(iface, out);
+    return OK;
+}
+
+} // namespace route
 } // namespace net

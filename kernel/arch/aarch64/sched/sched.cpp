@@ -18,8 +18,20 @@
 extern "C" char stack_top[];
 extern "C" char sys_stack_top[];
 
+// The exit path needs the whole trap frame (eret itself takes nothing from
+// the stack), then room for the finish_task_switch call.
+constexpr size_t SWITCH_EXIT_FRAME_SIZE = sizeof(aarch64::trap_frame);
+constexpr size_t SWITCH_EXIT_STACK_SIZE = 1024;
+
+static_assert(SWITCH_EXIT_STACK_SIZE >= SWITCH_EXIT_FRAME_SIZE, "exit stack must hold one frame image");
+static_assert(SWITCH_EXIT_STACK_SIZE % 16 == 0, "exit stack must keep 16-byte stack alignment");
+
 DECLARE_PER_CPU(sched::task*, current_task);
 DEFINE_PER_CPU(sched::task_exec_core*, current_task_exec);
+
+// A task switch returns from here rather than from the switched-out task's
+// stack, so that stack is free the moment the stack pointer leaves it.
+DEFINE_PER_CPU_CACHELINE_ALIGNED(uint8_t[SWITCH_EXIT_STACK_SIZE], switch_exit_stack);
 
 namespace sched {
 
@@ -31,6 +43,7 @@ static task_exec_core g_boot_exec = {
     .system_stack_top = 0,
     .cpu_ctx = {},
     .on_cpu = 0,
+    .on_runqueue = 0,
     .pt_root = 0,
     .user_pt_root = 0,
     .mm_ctx = nullptr,
@@ -156,7 +169,7 @@ __PRIVILEGED_CODE void arch_init_clone_cpu_context(task* t) {
 __PRIVILEGED_CODE void arch_post_switch(task* next) {
     if (paging::get_kernel_pt_root() != next->exec.pt_root) {
         paging::set_kernel_pt_root(next->exec.pt_root);
-        paging::flush_tlb_all();
+        paging::flush_tlb_all_local();
     }
     paging::write_ttbr0_el1(next->exec.user_pt_root);
 }
@@ -178,24 +191,12 @@ void yield() {
 __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     task* prev = current();
 
-    // Advance per-CPU sync epoch so stack reclaim can wait for a post-switch TLB-safe point.
-    advance_cpu_tlb_sync_epoch();
-
-    // Publish prior switched-out task as off-CPU before we start a new scheduling decision.
-    finalize_pending_off_cpu();
-
     // The yield fast path skips the syscall boundary, deliver here so a
     // yielding task still sees its handled signals promptly
     aarch64::deliver_async_signal(prev, tf);
 
     save_cpu_context(tf, &prev->exec.cpu_ctx);
     prev->exec.tls_base = cpu::read_tls_base();
-
-    // A blocked waiter resumes after yield to unwind its sleep or wait entry.
-    // Restore that kernel context with IRQs enabled so timer ticks keep flowing.
-    if (prev->state.load_relaxed() == TASK_STATE_BLOCKED) {
-        prev->exec.cpu_ctx.pstate &= ~aarch64::SPSR_IRQ_MASK;
-    }
 
     // A task inside a syscall still owns kernel state such as a linked wait
     // node, so it dies at the syscall exit fatal check instead of here
@@ -207,13 +208,10 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
         }
     }
 
-    task* next = pick_next_and_switch(prev);
+    task* next = pick_next_and_switch(prev, false);
     if (next == prev) {
         return;
     }
-
-    next->exec.cpu = percpu::current_cpu_id();
-    sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
 
     fpu::save(&prev->exec.fpu_ctx);
     fpu::restore(&next->exec.fpu_ctx);
@@ -222,9 +220,6 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
     prepare_trap_return_stacks(tf, next);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
-
-    // Defer prev->on_cpu clear until switch teardown is complete.
-    defer_off_cpu_finalize(prev);
 }
 
 /**
@@ -233,12 +228,6 @@ __PRIVILEGED_CODE void on_yield(aarch64::trap_frame* tf) {
  */
 __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     task* prev = current();
-
-    // Each scheduler trap is a synchronization checkpoint for deferred reclaim logic.
-    advance_cpu_tlb_sync_epoch();
-
-    // Finish prior off-CPU publication before handling this tick's switch.
-    finalize_pending_off_cpu();
 
     record_cpu_tick(prev);
     if (!(prev->exec.flags & TASK_FLAG_PREEMPTIBLE)) {
@@ -262,13 +251,10 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
         }
     }
 
-    task* next = pick_next_and_switch(prev);
+    task* next = pick_next_and_switch(prev, true);
     if (next == prev) {
         return;
     }
-
-    next->exec.cpu = percpu::current_cpu_id();
-    sync::atomic_ref<uint32_t>{next->exec.on_cpu}.store_relaxed(1);
 
     fpu::save(&prev->exec.fpu_ctx);
     fpu::restore(&next->exec.fpu_ctx);
@@ -277,9 +263,6 @@ __PRIVILEGED_CODE void on_tick(aarch64::trap_frame* tf) {
     prepare_trap_return_stacks(tf, next);
     cpu::write_tls_base(next->exec.tls_base);
     arch_post_switch(next);
-
-    // Prevent early off-CPU publication while trap exit still depends on prev context.
-    defer_off_cpu_finalize(prev);
 }
 
 } // namespace sched

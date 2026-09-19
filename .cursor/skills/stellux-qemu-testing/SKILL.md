@@ -56,6 +56,35 @@ OVMF_CODE=$(ls /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd \
 Pass `-monitor unix:/tmp/stlx_mon,server,nowait` and `-display none`, keeping a
 writable copy of the vars firmware at /tmp/stlx_vars.fd.
 
+## Parallel instances and A/B images
+
+- Check `pgrep -fl qemu-system` before starting anything, the owner may be
+  reproducing by hand. A second instance on the same image also fails with
+  `Failed to get "write" lock` unless it passes `-snapshot`, which is always
+  safe because Stellux never writes the disk. Give every instance its own vars
+  copy, gdb port, monitor socket, and drop `hostfwd` or use distinct ports.
+- An experimental kernel does not need a userland rebuild: build only the
+  kernel from a scratch `git archive HEAD` export and inject it with
+  `mcopy -o -i copy.img@@1M kernel.elf ::/kernel.elf`. The
+  stellux-kernel-forensics skill ships this as `scripts/inject_kernel.sh`
+  together with a parallel stress harness and a freeze-at-panic capture.
+
+## Attaching gdb
+
+Add `-gdb tcp::4554` (and `-S` to wait at reset) to any recipe, then:
+
+```bash
+gdb -batch -q -ex 'file build/kernel/x86_64/kernel.elf' -ex 'target remote :4554' \
+    -ex 'info threads' -ex 'thread apply all bt 12'
+```
+
+- Thread N is CPU N-1. On aarch64 use gdb-multiarch or `set architecture aarch64`.
+- gdb reads guest memory through a page-table walk, never through the TLB.
+- Symbols must come from the ELF that is actually in the image.
+- When gdb exits the VM resumes, and only one gdb client can be attached.
+- Monitor commands work from gdb as `monitor <cmd>`. HMP file arguments such as
+  `pmemsave 0 0x80000000 "/tmp/ram.bin"` must be double quoted.
+
 ## Driving the GUI via the monitor socket
 
 All through `printf '<cmd>\n' | nc -U /tmp/stlx_mon`:
@@ -130,3 +159,9 @@ mappings, or protocol state needs this, not just a quiet boot.
   never infer success from a screen of PASS lines.
 - stlxdm autostarts terminals and dropbear, so a serial-shell-launched GUI app
   fails with "failed to create window" until the splash is dismissed.
+- After a kernel panic only the faulting CPU halts. The other CPUs keep running
+  and keep allocating, so state inspected seconds later is not the state at the
+  fault. Freeze the machine with a gdb breakpoint on `panic::on_trap` instead,
+  see the stellux-kernel-forensics skill.
+- macOS ships bash 3.2: `"${ARR[@]}"` on an empty array fails under `set -u`,
+  write `${ARR[@]+"${ARR[@]}"}`.

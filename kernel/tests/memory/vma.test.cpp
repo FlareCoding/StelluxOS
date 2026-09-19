@@ -5,6 +5,7 @@
 #include "mm/vma.h"
 #include "mm/paging.h"
 #include "mm/pmm.h"
+#include "mm/page_quarantine.h"
 #include "sync/mutex.h"
 
 TEST_SUITE(vma_test);
@@ -12,11 +13,13 @@ TEST_SUITE(vma_test);
 static uint64_t g_initial_free_pages = 0;
 
 static int32_t vma_before_all() {
+    page_quarantine::drain();
     g_initial_free_pages = pmm::free_page_count();
     return 0;
 }
 
 static int32_t vma_after_all() {
+    page_quarantine::drain();
     uint64_t final_free = pmm::free_page_count();
     if (final_free != g_initial_free_pages) {
         return -1;
@@ -31,6 +34,7 @@ BEFORE_ALL(vma_test, vma_before_all);
 AFTER_ALL(vma_test, vma_after_all);
 
 TEST(vma_test, create_and_release_context) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
     mm::mm_context* mm_ctx = mm::mm_context_create();
     ASSERT_NOT_NULL(mm_ctx);
@@ -38,6 +42,7 @@ TEST(vma_test, create_and_release_context) {
 
     mm::mm_context_release(mm_ctx);
 
+    page_quarantine::drain();
     uint64_t after = pmm::free_page_count();
     EXPECT_EQ(after, before);
 }
@@ -61,6 +66,7 @@ TEST(vma_test, insert_vma_rejects_overlap) {
 }
 
 TEST(vma_test, mmap_and_munmap_roundtrip) {
+    page_quarantine::drain();
     uint64_t before = pmm::free_page_count();
     mm::mm_context* mm_ctx = mm::mm_context_create();
     ASSERT_NOT_NULL(mm_ctx);
@@ -83,6 +89,7 @@ TEST(vma_test, mmap_and_munmap_roundtrip) {
     EXPECT_EQ(mm::mm_context_vma_count(mm_ctx), static_cast<size_t>(0));
 
     mm::mm_context_release(mm_ctx);
+    page_quarantine::drain();
     uint64_t after = pmm::free_page_count();
     EXPECT_EQ(after, before);
 }

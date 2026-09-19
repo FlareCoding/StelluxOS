@@ -72,4 +72,23 @@ size_t strnlen(const char* s, size_t maxlen) {
     return len;
 }
 
+size_t format_u64(char* out, size_t cap, uint64_t value) {
+    char digits[20];
+    size_t count = 0;
+    do {
+        digits[count++] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    } while (value > 0);
+
+    if (count > cap) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        out[i] = digits[count - 1 - i];
+    }
+
+    return count;
+}
+
 } // namespace string

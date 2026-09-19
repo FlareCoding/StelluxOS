@@ -9,6 +9,11 @@ namespace pmm {
 using phys_addr_t = uint64_t;
 using pfn_t = uint32_t;
 
+struct phys_range {
+    phys_addr_t start;
+    phys_addr_t end; // exclusive
+};
+
 constexpr pfn_t INVALID_PFN = 0xFFFFFFFF;
 
 constexpr uint64_t PAGE_SIZE  = 4096;

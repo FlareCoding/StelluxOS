@@ -17,7 +17,16 @@ __PRIVILEGED_BSS static uintptr_t g_gicc_base_kva;
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE uint32_t acknowledge() {
-    return mmio::read32(g_gicc_va + GICC_IAR) & GIC_INTID_MASK;
+    return mmio::read32(g_gicc_va + GICC_IAR);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void send_sgi(uint32_t intid, uint8_t cpu_mask) {
+    // A zero target list filter delivers to exactly the listed interfaces
+    mmio::write32(g_gicd_va + GICD_SGIR,
+                  (static_cast<uint32_t>(cpu_mask) << 16) | (intid & 0xF));
 }
 
 /**

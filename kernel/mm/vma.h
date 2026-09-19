@@ -161,7 +161,8 @@ __PRIVILEGED_CODE void vma_remove_locked(mm_context* mm_ctx, vma& node);
 
 /**
  * @brief Unmap [start, end) from a user mm_context, freeing physical pages.
- * Iterates page-by-page, pages that aren't mapped are skipped.
+ * Pages that aren't mapped are skipped. The frames are released only after
+ * every CPU has dropped its translation, so the call may block.
  * Used for anonymous/stack mappings the kernel owns.
  * @note Privilege: **required**
  */
@@ -171,6 +172,7 @@ __PRIVILEGED_CODE void unmap_and_free_pages(
 /**
  * @brief Unmap [start, end) from a user mm_context without freeing pages.
  * For shared and device mappings whose physical pages are owned elsewhere.
+ * Returns once no CPU can still translate the range, so it may block.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void unmap_pages_only(
@@ -223,6 +225,7 @@ __PRIVILEGED_CODE int32_t unmap_range_locked(
 /**
  * @brief Apply new protection bits to the existing PTEs for [start, end).
  * Does not change VMA records, caller is responsible for VMA updates.
+ * Returns once every CPU sees the new bits, so the call may block.
  * @return MM_CTX_OK on success, MM_CTX_ERR_NOT_MAPPED if any page is unmapped,
  *         MM_CTX_ERR_MAP_FAILED on PTE-update failure.
  * @note Privilege: **required**

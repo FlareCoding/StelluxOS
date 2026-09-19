@@ -85,21 +85,10 @@ __PRIVILEGED_CODE static uint32_t proc_poll(
 }
 
 static const resource_ops g_proc_ops = {
-    proc_read,
-    proc_write,
-    proc_close,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
-    proc_poll,
-    nullptr,
+    .read = proc_read,
+    .write = proc_write,
+    .close = proc_close,
+    .poll = proc_poll,
 };
 
 __PRIVILEGED_CODE int32_t create_proc_resource(

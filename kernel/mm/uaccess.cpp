@@ -5,88 +5,74 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "sync/mutex.h"
-#include "common/string.h"
+
+namespace {
+
+// Text range of one user access routine and where it resumes after a fault
+struct access_region {
+    const char* begin;
+    const char* end;
+    const char* fixup;
+};
+
+} // namespace
+
+extern "C" size_t stlx_user_copy(void* dst, const void* src, size_t len);
+extern "C" char stlx_user_copy_begin[];
+extern "C" char stlx_user_copy_end[];
+extern "C" char stlx_user_copy_fixup[];
+
+extern "C" size_t stlx_user_load32(const uint32_t* src, uint32_t* out);
+extern "C" char stlx_user_load32_begin[];
+extern "C" char stlx_user_load32_end[];
+extern "C" char stlx_user_load32_fixup[];
+
+static const access_region g_access_regions[] = {
+    { stlx_user_copy_begin, stlx_user_copy_end, stlx_user_copy_fixup },
+    { stlx_user_load32_begin, stlx_user_load32_end, stlx_user_load32_fixup },
+};
 
 namespace mm::uaccess {
+
+// Ring 0 can reach kernel memory through a user pointer, so the bound is
+// checked in software before the hardware sees the access
+static bool user_range_ok(const void* ptr, size_t len) {
+    uintptr_t start = reinterpret_cast<uintptr_t>(ptr);
+    uintptr_t end = start + len - 1;
+    return end >= start && end < USER_STACK_TOP;
+}
+
+static const access_region* find_access_region(uintptr_t pc) {
+    for (const access_region& region : g_access_regions) {
+        if (pc >= reinterpret_cast<uintptr_t>(region.begin) &&
+            pc < reinterpret_cast<uintptr_t>(region.end)) {
+            return &region;
+        }
+    }
+    return nullptr;
+}
 
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE int32_t validate_user_range(
-    const void* user_ptr,
-    size_t len,
-    uint32_t required_prot
+__PRIVILEGED_CODE bool handle_kernel_fault(
+    mm_context* mm_ctx,
+    uintptr_t* pc,
+    uintptr_t fault_addr,
+    uint64_t pf_flags,
+    bool can_sleep
 ) {
-    if (!user_ptr || len == 0) {
-        return ERR_INVAL;
+    const access_region* region = find_access_region(*pc);
+    if (!region || fault_addr >= USER_STACK_TOP) {
+        return false;
     }
 
-    if ((required_prot & ~MM_PROT_MASK) != 0 || required_prot == 0) {
-        return ERR_INVAL;
+    if (can_sleep && mm_ctx && handle_user_pf(mm_ctx, fault_addr, pf_flags)) {
+        return true;
     }
 
-    uintptr_t start = reinterpret_cast<uintptr_t>(user_ptr);
-    uintptr_t end = start + len - 1;
-    if (end < start) {
-        return ERR_INVAL;
-    }
-
-    if (end >= USER_STACK_TOP) {
-        return ERR_FAULT;
-    }
-
-    sched::task* task = sched::current();
-    if (!task || !task->exec.mm_ctx) {
-        return ERR_NO_MMCTX;
-    }
-
-    mm_context* mm_ctx = task->exec.mm_ctx;
-    sync::mutex_lock(mm_ctx->lock);
-
-    uintptr_t cursor = start;
-    while (cursor <= end) {
-        vma* region = vma_find_locked(mm_ctx, cursor);
-        if (!region || cursor < region->start || cursor >= region->end) {
-            sync::mutex_unlock(mm_ctx->lock);
-            return ERR_FAULT;
-        }
-
-        if ((region->prot & required_prot) != required_prot) {
-            sync::mutex_unlock(mm_ctx->lock);
-            return ERR_FAULT;
-        }
-
-        uintptr_t next = region->end;
-        if (next == 0 || next <= cursor) {
-            sync::mutex_unlock(mm_ctx->lock);
-            return ERR_FAULT;
-        }
-
-        if (next > end) {
-            break;
-        }
-
-        cursor = next;
-    }
-
-    sync::mutex_unlock(mm_ctx->lock);
-
-    // Pre-fault any lazy pages in the validated range so that the kernel-mode
-    // memcpy in copy_from_user/copy_to_user doesn't fault on a not-present PTE.
-    uintptr_t end_page = end & ~(pmm::PAGE_SIZE - 1);
-    for (uintptr_t page = start & ~(pmm::PAGE_SIZE - 1);
-         page <= end_page;
-         page += pmm::PAGE_SIZE) {
-        if (paging::get_physical(page, mm_ctx->pt_root) != 0) {
-            continue;
-        }
-
-        if (!handle_user_pf(mm_ctx, page, 0)) {
-            return ERR_FAULT;
-        }
-    }
-
-    return OK;
+    *pc = reinterpret_cast<uintptr_t>(region->fixup);
+    return true;
 }
 
 /**
@@ -105,14 +91,39 @@ __PRIVILEGED_CODE int32_t copy_from_user(
         return OK;
     }
 
-    int32_t rc = validate_user_range(usrc, len, MM_PROT_READ);
-    if (rc != OK) {
-        return rc;
+    if (!user_range_ok(usrc, len)) {
+        return ERR_FAULT;
     }
 
-    string::memcpy(kdst, usrc, len);
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return ERR_NO_MMCTX;
+    }
 
-    return OK;
+    return stlx_user_copy(kdst, usrc, len) == 0 ? OK : ERR_FAULT;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t load_u32_from_user(
+    const uint32_t* usrc,
+    uint32_t* out
+) {
+    if (!usrc || !out || (reinterpret_cast<uintptr_t>(usrc) & 0x3) != 0) {
+        return ERR_INVAL;
+    }
+
+    if (!user_range_ok(usrc, sizeof(uint32_t))) {
+        return ERR_FAULT;
+    }
+
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return ERR_NO_MMCTX;
+    }
+
+    return stlx_user_load32(usrc, out) == 0 ? OK : ERR_FAULT;
 }
 
 /**
@@ -131,14 +142,16 @@ __PRIVILEGED_CODE int32_t copy_to_user(
         return OK;
     }
 
-    int32_t rc = validate_user_range(udst, len, MM_PROT_WRITE);
-    if (rc != OK) {
-        return rc;
+    if (!user_range_ok(udst, len)) {
+        return ERR_FAULT;
     }
 
-    string::memcpy(udst, ksrc, len);
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return ERR_NO_MMCTX;
+    }
 
-    return OK;
+    return stlx_user_copy(udst, ksrc, len) == 0 ? OK : ERR_FAULT;
 }
 
 /**
@@ -153,15 +166,12 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
         return ERR_INVAL;
     }
 
-    uintptr_t start = reinterpret_cast<uintptr_t>(udst);
-    uintptr_t end = start + len - 1;
-    if (end < start) {
-        return ERR_INVAL;
-    }
-
-    if (end >= USER_STACK_TOP) {
+    if (!user_range_ok(udst, len)) {
         return ERR_FAULT;
     }
+
+    uintptr_t start = reinterpret_cast<uintptr_t>(udst);
+    uintptr_t end = start + len - 1;
 
     sched::task* task = sched::current();
     if (!task || !task->exec.mm_ctx) {
@@ -213,10 +223,10 @@ __PRIVILEGED_CODE int32_t copy_to_user_nonblock(
     }
 
     // Copying under the held lock keeps a concurrent unmap out of the range
-    string::memcpy(udst, ksrc, len);
+    size_t left = stlx_user_copy(udst, ksrc, len);
     sync::mutex_unlock(mm_ctx->lock);
 
-    return OK;
+    return left == 0 ? OK : ERR_FAULT;
 }
 
 /**
@@ -231,6 +241,13 @@ __PRIVILEGED_CODE int32_t copy_cstr_from_user(
         return ERR_INVAL;
     }
 
+    sched::task* task = sched::current();
+    if (!task || !task->exec.mm_ctx) {
+        return ERR_NO_MMCTX;
+    }
+
+    // Page-sized chunks keep a string that ends before
+    // an unmapped page from touching that page at all.
     size_t i = 0;
     while (i < cap) {
         uintptr_t addr = reinterpret_cast<uintptr_t>(usrc + i);
@@ -238,17 +255,19 @@ __PRIVILEGED_CODE int32_t copy_cstr_from_user(
         size_t remaining_total = cap - i;
         size_t chunk = remaining_total < remaining_in_page ? remaining_total : remaining_in_page;
 
-        int32_t rc = validate_user_range(usrc + i, chunk, MM_PROT_READ);
-        if (rc != OK) {
-            return rc;
+        if (!user_range_ok(usrc + i, chunk)) {
+            return ERR_FAULT;
         }
 
-        for (size_t j = 0; j < chunk; j++) {
-            char c = usrc[i + j];
-            kdst[i + j] = c;
-            if (c == '\0') {
+        size_t copied = chunk - stlx_user_copy(kdst + i, usrc + i, chunk);
+        for (size_t j = 0; j < copied; j++) {
+            if (kdst[i + j] == '\0') {
                 return OK;
             }
+        }
+
+        if (copied < chunk) {
+            return ERR_FAULT;
         }
 
         i += chunk;

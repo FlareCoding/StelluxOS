@@ -9,25 +9,36 @@ namespace kva {
 
 constexpr size_t PAGE_SIZE = pmm::PAGE_SIZE;
 
-// Internal range node representing a free or used VA region.
+// A retired range was freed but keeps its address, and its place in the used
+// tree, until the owner of the retired batch releases it.
+enum class range_state : uint8_t {
+    free,
+    used,
+    retired,
+};
+
+// Internal range node representing a free, used or retired VA region.
 // 96 bytes on 64-bit. When in the node pool freelist, pool_next is active
 // and the node is not in any tree. Otherwise addr_link is active.
 struct range_node {
-    uintptr_t start;       // reserved base (inclusive)
-    uintptr_t end;         // reserved end (exclusive)
-    uintptr_t usable_base; // start + guard_pre * PAGE_SIZE
-    uint16_t  guard_pre;
-    uint16_t  guard_post;
-    tag       alloc_tag;
-    bool      is_free;
-    uint8_t   pmm_order; // 0=non-contiguous/MMIO, 1-18=contiguous PMM order
+    uintptr_t   start;       // reserved base (inclusive)
+    uintptr_t   end;         // reserved end (exclusive)
+    uintptr_t   usable_base; // start + guard_pre * PAGE_SIZE
+    uint16_t    guard_pre;
+    uint16_t    guard_post;
+    tag         alloc_tag;
+    range_state state;
+    uint8_t     pmm_order; // 0=non-contiguous/MMIO, 1-18=contiguous PMM order
 
     union {
         range_node* pool_next; // when in freelist
         rbt::node   addr_link; // when in free_by_addr or used_by_addr
     };
 
-    rbt::node size_link; // when free, in free_by_size
+    union {
+        rbt::node   size_link;    // when free, in free_by_size
+        range_node* retired_next; // when retired, in the retired list or a batch
+    };
 };
 
 inline size_t range_size(const range_node& n) {

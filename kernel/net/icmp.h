@@ -1,45 +1,85 @@
 #ifndef STELLUX_NET_ICMP_H
 #define STELLUX_NET_ICMP_H
 
-#include "common/types.h"
-#include "net/net.h"
+#include "net/ipv4.h"
 
 namespace net {
+namespace icmp {
 
-constexpr uint8_t ICMP_TYPE_ECHO_REPLY   = 0;
-constexpr uint8_t ICMP_TYPE_ECHO_REQUEST = 8;
+constexpr size_t HEADER_LEN = 8;
 
+constexpr uint8_t TYPE_ECHO_REPLY        = 0;
+constexpr uint8_t TYPE_DEST_UNREACHABLE  = 3;
+constexpr uint8_t TYPE_ECHO_REQUEST      = 8;
+constexpr uint8_t TYPE_TIME_EXCEEDED     = 11;
+constexpr uint8_t TYPE_PARAMETER_PROBLEM = 12;
+
+// Codes for TYPE_DEST_UNREACHABLE
+constexpr uint8_t CODE_NET_UNREACHABLE      = 0;
+constexpr uint8_t CODE_HOST_UNREACHABLE     = 1;
+constexpr uint8_t CODE_PROTOCOL_UNREACHABLE = 2;
+constexpr uint8_t CODE_PORT_UNREACHABLE     = 3;
+constexpr uint8_t CODE_FRAGMENTATION_NEEDED = 4;
+
+// Codes for TYPE_TIME_EXCEEDED
+constexpr uint8_t CODE_TTL_EXCEEDED        = 0;
+constexpr uint8_t CODE_REASSEMBLY_EXCEEDED = 1;
+
+// Error messages carry the offending IP header plus this much of its payload
+constexpr size_t ERROR_PAYLOAD_LEN = 8;
+
+/**
+ * ICMP message header (RFC 792). The last four bytes depend on the type:
+ * identifier and sequence for echo, zero for most errors, the next hop MTU
+ * for fragmentation needed. `checksum` covers the header and the body.
+ * https://www.rfc-editor.org/info/rfc792/
+ */
 struct icmp_header {
     uint8_t  type;
     uint8_t  code;
-    uint16_t checksum;  // network byte order
-    uint16_t id;        // network byte order
-    uint16_t sequence;  // network byte order
+    uint16_t checksum;
+
+    union {
+        struct {
+            uint16_t id;
+            uint16_t seq;
+        } __attribute__((packed)) echo;
+
+        struct {
+            uint16_t unused;
+            uint16_t next_hop_mtu;
+        } __attribute__((packed)) frag;
+
+        uint32_t unused;
+    } __attribute__((packed));
 } __attribute__((packed));
+static_assert(sizeof(icmp_header) == HEADER_LEN);
 
-static_assert(sizeof(icmp_header) == 8, "icmp_header must be 8 bytes");
-
-struct inet_socket;
-
-/**
- * Process a received ICMP packet (after IPv4 header is stripped).
- * Handles echo requests (kernel replies via deferred TX) and delivers
- * all ICMP packets to registered sockets.
+/*
+ * Consumes an ICMP message whose window starts at the header. Echo requests
+ * are answered in place, other messages are logged and freed.
  */
-void icmp_recv(netif* iface, uint32_t src_ip, const uint8_t* data, size_t len);
+int32_t input(packet* pkt);
 
-/**
- * Register an inet socket to receive ICMP packets.
- * Called during ICMP socket creation.
+/*
+ * Consumes a finished ICMP message, fills in its checksum, and hands it to
+ * IPv4 for `dest`.
  */
-void icmp_register_socket(inet_socket* sock);
+int32_t output(packet* pkt, const ipv4::ipv4_addr& dest);
 
-/**
- * Unregister an inet socket from ICMP delivery.
- * Called during ICMP socket close.
+/*
+ * Builds and sends an echo request to `dest` carrying `len` bytes of `payload`.
  */
-void icmp_unregister_socket(inet_socket* sock);
+int32_t send_echo_request(const ipv4::ipv4_addr& dest, uint16_t id, uint16_t seq,
+                          const void* payload, size_t len);
 
+/*
+ * Reports an error about `offending`, window at its IPv4 header, sending that header
+ * and the start of its payload back. Silent unless passed between two single hosts.
+ */
+int32_t send_error(const packet* offending, uint8_t type, uint8_t code);
+
+} // namespace icmp
 } // namespace net
 
 #endif // STELLUX_NET_ICMP_H

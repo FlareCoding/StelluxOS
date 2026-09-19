@@ -13,6 +13,8 @@
 #include "percpu/percpu.h"
 #include "trap/trap.h"
 #include "irq/irq.h"
+#include "irq/irq_arch.h"
+#include "smp/ipi.h"
 #include "sched/sched.h"
 #include "hw/cpu_features.h"
 #include "clock/clock.h"
@@ -176,6 +178,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     trap::load();
     irq::init_ap();
+    smp::ipi::init_ap();
 
     cpu::enable_fp_simd();
 
@@ -215,7 +218,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 
     info->state.store_release(smp::CPU_ONLINE);
 
-    while (true) { cpu::halt(); }
+    sched::run_idle();
 }
 
 /**
@@ -242,6 +245,10 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
     }
 
     return count;
+}
+
+pmm::phys_range smp_fixed_boot_frames() {
+    return {0, 0};
 }
 
 /**
@@ -374,6 +381,45 @@ __PRIVILEGED_CODE int32_t smp_boot_cpu(smp::cpu_info& cpu) {
 
     return cpu.state.load_acquire() == smp::CPU_ONLINE
         ? smp::OK : smp::ERR_BOOT_TIMEOUT;
+}
+
+// SGI enable and group bits are banked per CPU interface, so each CPU sets
+// its own. Group 1 keeps the interrupt out of firmware that owns group 0.
+__PRIVILEGED_CODE static void enable_ipi_sgi() {
+#if defined(STLX_PLATFORM_RPI4)
+    irq::set_group1(irq::IPI_SGI_INTID);
+#endif
+    irq::unmask(irq::IPI_SGI_INTID);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_ipi_init() {
+    enable_ipi_sgi();
+    return smp::ipi::OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_ipi_init_ap() {
+    enable_ipi_sgi();
+    return smp::ipi::OK;
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t smp_raise_ipi(const smp::cpu_info& target) {
+    // The CPU interface number is the first affinity level of the MPIDR
+    uint32_t interface = static_cast<uint32_t>(target.hw_id & 0xFF);
+    if (interface >= irq::GIC_MAX_CPU_INTERFACES) {
+        return smp::ipi::ERR_UNREACHABLE;
+    }
+
+    irq::send_sgi(irq::IPI_SGI_INTID, static_cast<uint8_t>(1u << interface));
+    return smp::ipi::OK;
 }
 
 } // namespace arch

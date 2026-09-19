@@ -43,6 +43,12 @@ int strncmp(const char* s1, const char* s2, size_t n);
  */
 size_t strnlen(const char* s, size_t maxlen);
 
+/**
+ * @brief Write value in decimal without a terminator.
+ * @return The number of characters written, 0 when cap cannot hold them all.
+ */
+size_t format_u64(char* out, size_t cap, uint64_t value);
+
 } // namespace string
 
 #endif // STELLUX_COMMON_STRING_H

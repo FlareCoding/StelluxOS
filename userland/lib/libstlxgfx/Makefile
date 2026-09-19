@@ -22,13 +22,14 @@ all: $(TARGET) install-headers
 $(TARGET): $(OBJECTS)
 	$(UQ)mkdir -p $(dir $@)
 	@echo "[AR]  libstlxgfx.a ($(ARCH))"
+	$(UQ)rm -f $@
 	$(UQ)$(AR) crs $@ $(OBJECTS)
 	$(UQ)mkdir -p $(SYSROOT_LIB)
 	$(UQ)cp $@ $(SYSROOT_LIB)/
 
 install-headers:
 	$(UQ)mkdir -p $(SYSROOT_INC)
-	$(UQ)cp $(INCLUDE_DIR)/stlxgfx/*.h $(SYSROOT_INC)/
+	$(UQ)cp -p $(INCLUDE_DIR)/stlxgfx/*.h $(SYSROOT_INC)/
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(UQ)mkdir -p $(dir $@)
