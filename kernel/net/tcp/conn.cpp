@@ -142,11 +142,23 @@ uint32_t timestamp_value(uint32_t offset) {
 
 void update_receive_window_locked(tcp_conn* conn) {
     uint32_t window = static_cast<uint32_t>(conn->rcv_queue.free_space());
+    window &= ~((1u << conn->rcv_wscale) - 1);
+
     if (seq_lt(conn->rcv_nxt + window, conn->rcv_adv)) {
         window = conn->rcv_adv - conn->rcv_nxt;
     }
 
     conn->rcv_wnd = window;
+}
+
+void mark_ack_sent_locked(tcp_conn* conn) {
+    conn->rcv_acked = conn->rcv_nxt;
+    conn->rcv_adv = conn->rcv_nxt + conn->rcv_wnd;
+    conn->ack_pending = false;
+    conn->ack_timer_armed = false;
+    if (conn->quick_acks > 0) {
+        conn->quick_acks--;
+    }
 }
 
 uint8_t receive_window_scale() {
@@ -174,7 +186,9 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     conn->rcv_queue.init(RCV_CHUNKS_INITIAL);
     conn->rx_wq.init();
     conn->conn_wq.init();
+    conn->quick_acks = MAX_QUICKACKS;
     timer::init_deadline_timer(&conn->send_timer, on_send_timer);
+    timer::init_deadline_timer(&conn->ack_timer, on_ack_timer);
 
     return conn;
 }
@@ -231,6 +245,7 @@ void fail_connection(tcp_conn* conn, int32_t error) {
 
 void retire_connection(tcp_conn* conn) {
     disarm_timer(conn, &conn->send_timer);
+    disarm_timer(conn, &conn->ack_timer);
     (void)remove(conn);
 
     RUN_ELEVATED({
@@ -296,7 +311,10 @@ void close_connection(tcp_conn* conn) {
             conn->fin_sent = true;
             conn->snd_nxt++;
             conn->retransmits = 0;
+
             arm_send_timer_locked(conn, timer_kind::rto);
+            mark_ack_sent_locked(conn);
+
             src = snapshot_source(conn);
         }
     });

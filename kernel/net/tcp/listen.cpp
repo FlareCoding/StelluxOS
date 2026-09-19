@@ -430,6 +430,7 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
     conn->rcv_nxt = fields.irs + 1;
     conn->rcv_wnd = RCV_WND_INITIAL;
     conn->rcv_adv = conn->rcv_nxt + RCV_WND_INITIAL;
+    conn->rcv_acked = conn->rcv_nxt;
     conn->rcv_mss = fields.peer_mss;
     conn->rcv_wscale = fields.rcv_wscale;
     conn->wscale_ok = fields.wscale_ok;

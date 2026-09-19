@@ -26,6 +26,17 @@ void arm_orphan_timer_locked(tcp_conn* conn);
 void on_send_timer(timer::deadline_timer* timer);
 
 /**
+ * @brief Marks an ACK as owed and arms the ack timer for it unless one is
+ * already waiting. Caller holds the lock.
+ */
+void delay_ack_locked(tcp_conn* conn);
+
+/**
+ * @brief The ack timer's callback: sends the owed ACK once the delay is over.
+ */
+void on_ack_timer(timer::deadline_timer* timer);
+
+/**
  * @brief Schedules `timer` for `deadline_ns`, holding one reference on `rec`
  * for as long as the timer is scheduled, however often it is moved. The caller
  * records the deadline in `rec` so the callback can tell a live arming from a

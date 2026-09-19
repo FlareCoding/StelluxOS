@@ -251,6 +251,48 @@ TEST(tcp_socket, read_returns_queued_bytes_then_would_block) {
     abort_connection(sock.impl()->conn.ptr());
 }
 
+TEST(tcp_socket, a_read_that_frees_a_chunk_announces_the_room) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    peer remote = stream_socket::replying_to(lp, 0);
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1)), OK);
+
+    static uint8_t payload[CHUNK_PAYLOAD / 2];
+    size_t segments = RCV_WND_INITIAL / sizeof(payload);
+    for (size_t i = 0; i < segments; i++) {
+        uint32_t seq = 7001 + static_cast<uint32_t>(i * sizeof(payload));
+        EXPECT_EQ(input(remote.segment(FLAG_ACK, seq, iss + 1, {}, payload, sizeof(payload))), OK);
+    }
+
+    tcp_conn* conn = sock.impl()->conn.ptr();
+    EXPECT_EQ(conn->rcv_wnd, 0u);
+    lp.link.clear_frames();
+
+    static uint8_t buf[CHUNK_PAYLOAD / 2];
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), static_cast<ssize_t>(sizeof(buf)));
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+    EXPECT_EQ(conn->rcv_wnd, 0u);
+
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), static_cast<ssize_t>(sizeof(buf)));
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_ACK);
+    EXPECT_EQ(ntohs(sent_tcp(lp.link, 0)->window), CHUNK_PAYLOAD);
+    EXPECT_EQ(conn->rcv_wnd, CHUNK_PAYLOAD);
+
+    lp.link.clear_frames();
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), static_cast<ssize_t>(sizeof(buf)));
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), static_cast<ssize_t>(sizeof(buf)));
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(ntohs(sent_tcp(lp.link, 0)->window), 2 * CHUNK_PAYLOAD);
+
+    abort_connection(conn);
+}
+
 TEST(tcp_socket, read_hands_out_the_bytes_before_the_fin_then_end_of_file) {
     linked_peer lp;
     stream_socket sock;

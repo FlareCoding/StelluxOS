@@ -30,6 +30,8 @@ constexpr uint16_t DEFAULT_MSS        = 536;     // RFC 9293 3.7.1, when the pee
 constexpr uint64_t TS_RECENT_MAX_AGE_NS = 24ULL * 24 * 3600 * 1000000000ULL; // RFC 7323 5.5
 constexpr size_t   RCV_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
 constexpr uint32_t RCV_WND_INITIAL    = RCV_CHUNKS_INITIAL * CHUNK_PAYLOAD; // what an empty queue can take
+constexpr uint64_t DELACK_NS          = 40000000ULL; // RFC 1122 4.2.3.2 allows up to 500 ms
+constexpr uint8_t  MAX_QUICKACKS      = 16;
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -105,6 +107,16 @@ struct tcp_conn : record {
     uint64_t              send_timer_deadline_ns;
     uint8_t               retransmits;
 
+    // Acknowledgment strategy (RFC 5681 4.2): an owed ACK waits on the ack
+    // timer unless a rule below sends it at once
+    timer::deadline_timer ack_timer;
+    bool                  ack_timer_armed;
+    uint64_t              ack_timer_deadline_ns;
+    bool                  ack_pending;
+    uint8_t               quick_acks;   // Immediate ACKs left before delaying begins
+    uint32_t              rcv_acked;    // rcv_nxt as of the last ACK sent
+    uint64_t              rcv_last_ns;  // When payload last arrived
+
     byte_queue       rcv_queue;
     sync::wait_queue rx_wq; // readers
 
@@ -146,10 +158,23 @@ uint32_t timestamp_value(uint32_t offset);
 uint8_t receive_window_scale();
 
 /**
- * @brief Sets `rcv_wnd` to what the receive queue can still take, never moving
- * the advertised right edge left (RFC 9293 3.8.6.2.2). Caller holds the lock.
+ * @brief Sets `rcv_wnd` to what the receive queue can still take, rounded to
+ * the window scale and never moving the advertised right edge left (RFC 9293
+ * 3.8.6.2.2). Caller holds the lock.
  */
 void update_receive_window_locked(tcp_conn* conn);
+
+/**
+ * @brief Records that a segment acknowledging `rcv_nxt` with the current
+ * window is going out, so nothing owed remains. Caller holds the lock.
+ */
+void mark_ack_sent_locked(tcp_conn* conn);
+
+inline bool is_synchronized(tcp_state state) {
+    return state == tcp_state::established || state == tcp_state::fin_wait_1 ||
+           state == tcp_state::fin_wait_2 || state == tcp_state::close_wait ||
+           state == tcp_state::closing || state == tcp_state::last_ack;
+}
 
 /**
  * @brief The initial sequence number for a new connection on `key` (RFC 6528):

@@ -58,6 +58,47 @@ void arm_orphan_timer_locked(tcp_conn* conn) {
     arm_timer(conn, &conn->send_timer, conn->send_timer_deadline_ns);
 }
 
+void delay_ack_locked(tcp_conn* conn) {
+    conn->ack_pending = true;
+    if (conn->ack_timer_armed) {
+        return;
+    }
+
+    conn->ack_timer_armed = true;
+    conn->ack_timer_deadline_ns = now_ns() + DELACK_NS;
+    arm_timer(conn, &conn->ack_timer, conn->ack_timer_deadline_ns);
+}
+
+void on_ack_timer(timer::deadline_timer* timer) {
+    tcp_conn* conn = timer::owner_of<tcp_conn, &tcp_conn::ack_timer>(timer);
+    bool send = false;
+    segment_source src = {};
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        if (conn->ack_timer_armed) {
+            if (now_ns() < conn->ack_timer_deadline_ns) {
+                arm_timer(conn, &conn->ack_timer, conn->ack_timer_deadline_ns);
+                finish_timer_callback(conn);
+                return;
+            }
+
+            conn->ack_timer_armed = false;
+            if (conn->ack_pending && is_synchronized(conn->state)) {
+                mark_ack_sent_locked(conn);
+                src = snapshot_source(conn);
+                send = true;
+            }
+        }
+    });
+
+    if (send) {
+        (void)send_control(src, FLAG_ACK);
+    }
+
+    finish_timer_callback(conn);
+}
+
 static uint8_t retry_limit(tcp_state state) {
     return state == tcp_state::syn_sent || state == tcp_state::syn_rcvd ? SYN_RETRIES : ORPHAN_RETRIES;
 }

@@ -1,5 +1,6 @@
 #include "net/tcp/socket.h"
 #include "net/tcp/conn.h"
+#include "net/tcp/output.h"
 #include "net/net.h"
 #include "net/inet.h"
 #include "net/interface.h"
@@ -487,6 +488,28 @@ __PRIVILEGED_CODE static rc::strong_ref<tcp_conn> connection_of(tcp_socket* sock
     return sock->conn;
 }
 
+// Caller holds the connection lock. RFC 1122 4.2.3.3: after a read frees
+// room, the peer is told on its own only when the window opens from zero or,
+// while the last advertised window was at most half the buffer and has at
+// least doubled by no less than one segment.
+__PRIVILEGED_CODE static bool window_update_owed_locked(tcp_conn* conn) {
+    uint32_t advertised = conn->rcv_adv - conn->rcv_acked;
+    update_receive_window_locked(conn);
+    uint32_t growth = conn->rcv_nxt + conn->rcv_wnd - conn->rcv_adv;
+    if (growth == 0 || !is_synchronized(conn->state)) {
+        return false;
+    }
+
+    if (advertised == 0) {
+        return true;
+    }
+
+    uint32_t half_buffer = static_cast<uint32_t>(conn->rcv_queue.limit() * CHUNK_PAYLOAD / 2);
+    uint32_t threshold = half_buffer < conn->rcv_mss ? half_buffer : conn->rcv_mss;
+
+    return advertised <= half_buffer && growth >= threshold && conn->rcv_wnd >= 2 * advertised;
+}
+
 __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void* kdst, size_t count, uint32_t flags) {
     rc::strong_ref<tcp_conn> conn = connection_of(static_cast<tcp_socket*>(obj->impl));
     if (!conn) {
@@ -507,11 +530,19 @@ __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, voi
     }
 
     ssize_t result;
+    bool update_window = false;
+    segment_source src = {};
+
     if (conn->rcv_queue.size() > 0) {
         size_t copied = conn->rcv_queue.copy_out(0, kdst, count);
         (void)conn->rcv_queue.consume(copied);
 
-        update_receive_window_locked(conn.ptr());
+        update_window = window_update_owed_locked(conn.ptr());
+        if (update_window) {
+            mark_ack_sent_locked(conn.ptr());
+            src = snapshot_source(conn.ptr());
+        }
+
         result = static_cast<ssize_t>(copied);
     } else if (conn->state == tcp_state::closed && conn->pending_error != resource::OK) {
         result = conn->pending_error;
@@ -523,6 +554,10 @@ __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, voi
     }
 
     sync::spin_unlock_irqrestore(conn->lock, irq);
+
+    if (update_window) {
+        (void)send_control(src, FLAG_ACK);
+    }
 
     return result;
 }
