@@ -18,6 +18,7 @@ constexpr size_t   MAX_CONNECTIONS    = 256;
 constexpr size_t   TABLE_BUCKETS      = 1024;
 constexpr uint64_t TIMEOUT_INIT_NS    = 1000000000ULL; // RFC 6298 2.1, before any RTT sample
 constexpr uint8_t  SYN_RETRIES        = 6;
+constexpr uint8_t  ORPHAN_RETRIES     = 8;
 constexpr uint16_t EPHEMERAL_PORT_MIN = 49152;
 constexpr uint16_t EPHEMERAL_PORT_MAX = 65535;
 constexpr uint64_t ISN_TICK_NS        = 4000;    // RFC 6528 3, the clock behind M
@@ -188,6 +189,12 @@ void fail_connection(tcp_conn* conn, int32_t error);
  * disarms its timer, removes it from the table, and wakes every waiter.
  */
 void retire_connection(tcp_conn* conn);
+
+/**
+ * @brief Begins the orderly close (RFC 9293 3.10.4) of a connection whose
+ * socket has let go. One still waiting for its SYN-ACK is abandoned instead.
+ */
+void close_connection(tcp_conn* conn);
 
 /**
  * @brief Finds the record for `key`, holding a reference for the caller.

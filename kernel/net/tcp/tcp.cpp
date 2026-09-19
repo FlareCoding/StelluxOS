@@ -4,6 +4,7 @@
 #include "net/tcp/listen.h"
 #include "net/tcp/input.h"
 #include "net/tcp/output.h"
+#include "net/tcp/timewait.h"
 #include "net/net.h"
 #include "net/interface.h"
 #include "net/eth.h"
@@ -108,13 +109,15 @@ int32_t input(packet* pkt) {
         return conn_input(static_cast<tcp_conn*>(rec.ptr()), pkt, hdr, opts);
     }
 
-    if (rec) {
-        packet::free(pkt);
-        return OK;
+    if (rec && rec->kind == record_kind::timewait) {
+        int32_t rc = timewait_input(static_cast<tcp_timewait*>(rec.ptr()), pkt, hdr, opts);
+        if (rc != TIMEWAIT_REOPEN) {
+            return rc;
+        }
     }
 
     bool syn_only = (hdr->flags & (FLAG_SYN | FLAG_ACK | FLAG_RST)) == FLAG_SYN;
-    if (!rec && syn_only) {
+    if (syn_only) {
         rc::strong_ref<tcp_listener> listener = listener_lookup(ip->dst, key.local_port, iface);
         if (listener) {
             return listen_input(listener.ptr(), pkt, hdr, opts);

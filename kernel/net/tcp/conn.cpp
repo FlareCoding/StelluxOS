@@ -246,6 +246,49 @@ void abort_connection(tcp_conn* conn) {
     retire_connection(conn);
 }
 
+void close_connection(tcp_conn* conn) {
+    bool send = false;
+    bool abandon = false;
+    segment_source src = {};
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        conn->owner = nullptr;
+        conn->orphaned = true;
+
+        switch (conn->state) {
+        case tcp_state::syn_sent:
+            abandon = true;
+            break;
+        case tcp_state::syn_rcvd:
+        case tcp_state::established:
+            conn->state = tcp_state::fin_wait_1;
+            send = true;
+            break;
+        case tcp_state::close_wait:
+            conn->state = tcp_state::last_ack;
+            send = true;
+            break;
+        default:
+            break;
+        }
+
+        if (send) {
+            conn->fin_sent = true;
+            conn->snd_nxt++;
+            conn->retransmits = 0;
+            arm_send_timer_locked(conn, timer_kind::rto);
+            src = snapshot_source(conn);
+        }
+    });
+
+    if (abandon) {
+        abort_connection(conn);
+    } else if (send) {
+        (void)send_fin(src);
+    }
+}
+
 rc::strong_ref<record> lookup(const tuple& key) {
     record* found = nullptr;
     RUN_ELEVATED({

@@ -68,7 +68,7 @@ __PRIVILEGED_CODE void socket_close(tcp_socket* sock) {
     }
 
     if (sock->conn) {
-        abort_connection(sock->conn.ptr());
+        close_connection(sock->conn.ptr());
     }
 
     heap::ufree_delete(sock);
@@ -481,13 +481,19 @@ __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* ob
     return resource::OK;
 }
 
-__PRIVILEGED_CODE static ssize_t closed_stream_result(tcp_socket* sock, ssize_t after_error) {
+// Data-less answers for a stream: the peer's FIN is EOF for a reader, the
+// connection's end reports the error saved for it, otherwise after_error.
+__PRIVILEGED_CODE static ssize_t closed_stream_result(tcp_socket* sock, ssize_t after_error, ssize_t after_fin) {
     sync::irq_lock_guard guard(sock->lock);
     if (!sock->conn) {
         return resource::ERR_NOTCONN;
     }
 
     sync::irq_lock_guard conn_guard(sock->conn->lock);
+    if (sock->conn->state == tcp_state::close_wait) {
+        return after_fin;
+    }
+
     if (sock->conn->state != tcp_state::closed) {
         return resource::ERR_UNSUP;
     }
@@ -499,11 +505,11 @@ __PRIVILEGED_CODE static ssize_t closed_stream_result(tcp_socket* sock, ssize_t 
 }
 
 __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void*, size_t, uint32_t) {
-    return closed_stream_result(static_cast<tcp_socket*>(obj->impl), 0);
+    return closed_stream_result(static_cast<tcp_socket*>(obj->impl), 0, 0);
 }
 
 __PRIVILEGED_CODE static ssize_t socket_write(resource::resource_object* obj, const void*, size_t, uint32_t) {
-    return closed_stream_result(static_cast<tcp_socket*>(obj->impl), resource::ERR_PIPE);
+    return closed_stream_result(static_cast<tcp_socket*>(obj->impl), resource::ERR_PIPE, resource::ERR_UNSUP);
 }
 
 __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sync::poll_table* pt) {
@@ -541,6 +547,8 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
         case tcp_state::syn_sent:
         case tcp_state::syn_rcvd:
             return 0;
+        case tcp_state::close_wait:
+            return sync::POLL_IN | sync::POLL_OUT;
         default:
             return sync::POLL_OUT;
         }

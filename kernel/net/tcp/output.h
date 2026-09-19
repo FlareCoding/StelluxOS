@@ -68,6 +68,12 @@ int32_t send_syn_ack(const segment_source& src);
  */
 int32_t send_control(const segment_source& src, uint8_t flags);
 
+/**
+ * @brief Sends the FIN, which sits one before `snd_nxt` once counted, with
+ * the acknowledgment, window, and timestamps of a control segment.
+ */
+int32_t send_fin(const segment_source& src);
+
 } // namespace tcp
 } // namespace net
 

@@ -103,7 +103,7 @@ int32_t send_syn_ack(const segment_source& src) {
                         window_field(src.rcv_wnd, 0), opts);
 }
 
-int32_t send_control(const segment_source& src, uint8_t flags) {
+static tcp_options control_options(const segment_source& src) {
     tcp_options opts;
     if (src.ts_ok) {
         opts.has_timestamps = true;
@@ -111,8 +111,17 @@ int32_t send_control(const segment_source& src, uint8_t flags) {
         opts.ts_ecr = src.ts_recent;
     }
 
+    return opts;
+}
+
+int32_t send_control(const segment_source& src, uint8_t flags) {
     return send_segment(src.iface, src.key, flags, src.snd_nxt, src.rcv_nxt,
-                        window_field(src.rcv_wnd, src.rcv_wscale), opts);
+                        window_field(src.rcv_wnd, src.rcv_wscale), control_options(src));
+}
+
+int32_t send_fin(const segment_source& src) {
+    return send_segment(src.iface, src.key, FLAG_FIN | FLAG_ACK, src.snd_nxt - 1, src.rcv_nxt,
+                        window_field(src.rcv_wnd, src.rcv_wscale), control_options(src));
 }
 
 } // namespace tcp

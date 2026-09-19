@@ -1,5 +1,6 @@
 #include "net/tcp/timers.h"
 #include "net/tcp/output.h"
+#include "net/net.h"
 #include "resource/resource.h"
 #include "sync/spinlock.h"
 #include "dynpriv/dynpriv.h"
@@ -44,6 +45,25 @@ void arm_send_timer_locked(tcp_conn* conn, timer_kind kind) {
     arm_timer(conn, &conn->send_timer, conn->send_timer_deadline_ns);
 }
 
+static uint8_t retry_limit(tcp_state state) {
+    return state == tcp_state::syn_sent || state == tcp_state::syn_rcvd ? SYN_RETRIES : ORPHAN_RETRIES;
+}
+
+static int32_t retransmit(tcp_state state, const segment_source& src) {
+    switch (state) {
+    case tcp_state::syn_sent:
+        return send_syn(src);
+    case tcp_state::syn_rcvd:
+        return send_syn_ack(src);
+    case tcp_state::fin_wait_1:
+    case tcp_state::closing:
+    case tcp_state::last_ack:
+        return send_fin(src);
+    default:
+        return OK;
+    }
+}
+
 void on_send_timer(timer::deadline_timer* timer) {
     tcp_conn* conn = timer::owner_of<tcp_conn, &tcp_conn::send_timer>(timer);
     send_action action = send_action::none;
@@ -61,7 +81,9 @@ void on_send_timer(timer::deadline_timer* timer) {
 
             state = conn->state;
             conn->send_timer_kind = timer_kind::none;
-            if (conn->retransmits >= SYN_RETRIES) {
+            if (conn->retransmits >= retry_limit(state)) {
+                conn->state = tcp_state::closed;
+                conn->pending_error = resource::ERR_TIMEDOUT;
                 action = send_action::give_up;
             } else {
                 conn->retransmits++;
@@ -73,11 +95,9 @@ void on_send_timer(timer::deadline_timer* timer) {
     });
 
     if (action == send_action::give_up) {
-        fail_connection(conn, resource::ERR_TIMEDOUT);
-    } else if (action == send_action::retransmit && state == tcp_state::syn_sent) {
-        (void)send_syn(src);
-    } else if (action == send_action::retransmit && state == tcp_state::syn_rcvd) {
-        (void)send_syn_ack(src);
+        retire_connection(conn);
+    } else if (action == send_action::retransmit) {
+        (void)retransmit(state, src);
     }
 
     finish_timer_callback(conn);

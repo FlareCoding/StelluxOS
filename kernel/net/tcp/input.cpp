@@ -1,6 +1,7 @@
 #include "net/tcp/input.h"
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
+#include "net/tcp/timewait.h"
 #include "net/tcp/seq.h"
 #include "net/net.h"
 #include "net/byteorder.h"
@@ -118,20 +119,80 @@ static void take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
 // RFC 9293 3.10.7.4 with RFC 5961: acceptability first, then a reset only at
 // the expected sequence, a SYN never obeyed, and an ACK only within the range
 // this host could have sent
-static int32_t established_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
+static bool is_synchronized(tcp_state state) {
+    return state == tcp_state::established || state == tcp_state::fin_wait_1 ||
+           state == tcp_state::fin_wait_2 || state == tcp_state::close_wait ||
+           state == tcp_state::closing || state == tcp_state::last_ack;
+}
+
+// Caller holds the lock. RFC 9293 3.10.7.4: the acknowledgment
+// of our FIN moves the close one state along.
+static void take_fin_ack_locked(tcp_conn* conn, uint32_t ack) {
+    if (!conn->fin_sent || !seq_geq(ack, conn->snd_nxt)) {
+        return;
+    }
+
+    conn->send_timer_kind = timer_kind::none;
+    switch (conn->state) {
+    case tcp_state::fin_wait_1:
+        conn->state = tcp_state::fin_wait_2;
+        break;
+    case tcp_state::closing:
+        conn->state = tcp_state::time_wait;
+        break;
+    case tcp_state::last_ack:
+        conn->state = tcp_state::closed;
+        break;
+    default:
+        break;
+    }
+}
+
+// Caller holds the lock. Only a FIN right at rcv_nxt is counted, one
+// behind payload waits until the payload itself can be received.
+static bool take_fin_locked(tcp_conn* conn, uint32_t seq, size_t payload_len) {
+    if (payload_len != 0 || seq != conn->rcv_nxt) {
+        return false;
+    }
+
+    conn->rcv_nxt++;
+    conn->fin_rcvd = true;
+    switch (conn->state) {
+    case tcp_state::established:
+        conn->state = tcp_state::close_wait;
+        break;
+    case tcp_state::fin_wait_1:
+        conn->state = tcp_state::closing;
+        break;
+    case tcp_state::fin_wait_2:
+        conn->state = tcp_state::time_wait;
+        break;
+    default:
+        break;
+    }
+
+    return true;
+}
+
+static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
     uint32_t seq = ntohl(hdr->seq);
     uint32_t ack = ntohl(hdr->ack);
-    uint32_t seg_len = static_cast<uint32_t>(pkt->length() - hdr->header_len()) +
+    size_t payload_len = pkt->length() - hdr->header_len();
+    uint32_t seg_len = static_cast<uint32_t>(payload_len) +
                        ((hdr->flags & FLAG_SYN) ? 1 : 0) + ((hdr->flags & FLAG_FIN) ? 1 : 0);
     segment_action action = segment_action::consume;
+    tcp_state before = tcp_state::closed;
+    tcp_state after = tcp_state::closed;
+    bool ack_now = false;
     segment_source src = {};
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);
         bool is_rst = hdr->flags & FLAG_RST;
         bool in_window = is_acceptable_locked(conn, seq, seg_len) && (is_rst || !paws_rejects_locked(conn, opts));
+        before = conn->state;
 
-        if (conn->state != tcp_state::established) {
+        if (!is_synchronized(conn->state)) {
             action = segment_action::consume;
         } else if (!in_window) {
             action = (hdr->flags & FLAG_RST) ? segment_action::consume : segment_action::challenge;
@@ -145,6 +206,11 @@ static int32_t established_input(tcp_conn* conn, packet* pkt, const tcp_header* 
             action = segment_action::challenge;
         } else {
             take_ack_locked(conn, hdr, opts);
+            take_fin_ack_locked(conn, ack);
+
+            if (hdr->flags & FLAG_FIN) {
+                ack_now = take_fin_locked(conn, seq, payload_len);
+            }
         }
 
         if (action == segment_action::reset) {
@@ -153,18 +219,28 @@ static int32_t established_input(tcp_conn* conn, packet* pkt, const tcp_header* 
             conn->send_timer_kind = timer_kind::none;
         }
 
+        after = conn->state;
         src = snapshot_source(conn);
     });
 
     packet::free(pkt);
 
-    if (action == segment_action::reset) {
-        retire_connection(conn);
+    int32_t rc = OK;
+    if (ack_now) {
+        rc = send_control(src, FLAG_ACK);
     } else if (action == segment_action::challenge && take_challenge_ack()) {
-        return send_control(src, FLAG_ACK);
+        rc = send_control(src, FLAG_ACK);
     }
 
-    return OK;
+    if (after == tcp_state::time_wait) {
+        enter_time_wait(conn);
+    } else if (after == tcp_state::closed) {
+        retire_connection(conn);
+    } else if (after != before) {
+        RUN_ELEVATED(sync::wake_all(conn->conn_wq));
+    }
+
+    return rc;
 }
 
 // Caller holds the lock. RFC 9293 3.10.7.3: what a SYN,
@@ -295,7 +371,12 @@ int32_t conn_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr, const tcp
     case tcp_state::syn_rcvd:
         return syn_rcvd_input(conn, pkt, hdr, opts);
     case tcp_state::established:
-        return established_input(conn, pkt, hdr, opts);
+    case tcp_state::fin_wait_1:
+    case tcp_state::fin_wait_2:
+    case tcp_state::close_wait:
+    case tcp_state::closing:
+    case tcp_state::last_ack:
+        return synchronized_input(conn, pkt, hdr, opts);
     default:
         packet::free(pkt);
         return OK;
