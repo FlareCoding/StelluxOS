@@ -76,7 +76,7 @@ static synack_fields synack_fields_locked(const tcp_request* request) {
 
 static int32_t send_synack(const synack_fields& fields) {
     return send_segment(fields.iface, fields.key, FLAG_SYN | FLAG_ACK, fields.iss, fields.irs + 1,
-                        window_field(RCV_BUF_INITIAL, 0), fields.opts);
+                        window_field(RCV_WND_INITIAL, 0), fields.opts);
 }
 
 // Caller holds the request lock
@@ -428,8 +428,8 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
     conn->snd_mss = fields.peer_mss < local_mss(conn->iface) ? fields.peer_mss : local_mss(conn->iface);
     conn->snd_wscale = fields.snd_wscale;
     conn->rcv_nxt = fields.irs + 1;
-    conn->rcv_wnd = RCV_BUF_INITIAL;
-    conn->rcv_adv = conn->rcv_nxt + RCV_BUF_INITIAL;
+    conn->rcv_wnd = RCV_WND_INITIAL;
+    conn->rcv_adv = conn->rcv_nxt + RCV_WND_INITIAL;
     conn->rcv_mss = fields.peer_mss;
     conn->rcv_wscale = fields.rcv_wscale;
     conn->wscale_ok = fields.wscale_ok;
@@ -443,7 +443,7 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
 
 static int32_t send_request_ack(const tcp_request* request, const negotiated_fields& fields) {
     return send_segment(request->iface, request->key, FLAG_ACK, fields.iss + 1, fields.irs + 1,
-                        window_field(RCV_BUF_INITIAL, 0), {});
+                        window_field(RCV_WND_INITIAL, 0), {});
 }
 
 static int32_t promote(tcp_request* request, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {
@@ -634,7 +634,7 @@ static int32_t request_reset(tcp_request* request, packet* pkt, const tcp_header
         return OK;
     }
 
-    if (seq_between(seq, rcv_nxt, rcv_nxt + RCV_BUF_INITIAL - 1) && take_challenge_ack()) {
+    if (seq_between(seq, rcv_nxt, rcv_nxt + RCV_WND_INITIAL - 1) && take_challenge_ack()) {
         return send_request_ack(request, fields);
     }
 

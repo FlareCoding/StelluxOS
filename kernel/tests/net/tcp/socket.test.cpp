@@ -7,6 +7,7 @@
 #include "net/net.h"
 #include "net/inet.h"
 #include "resource/socket_ops.h"
+#include "fs/fstypes.h"
 #include "sync/poll.h"
 #include "mm/heap.h"
 
@@ -219,6 +220,76 @@ TEST(tcp_socket, connect_completes_and_reports_the_peer) {
     EXPECT_EQ(ntohs(name.port), lp.remote.port);
 
     abort_connection(sock.impl()->conn.ptr());
+}
+
+TEST(tcp_socket, read_returns_queued_bytes_then_would_block) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    peer remote = stream_socket::replying_to(lp, 0);
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1)), OK);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_OUT);
+
+    uint8_t buf[16] = {};
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), fs::O_NONBLOCK), resource::ERR_AGAIN);
+
+    EXPECT_EQ(input(remote.segment(FLAG_ACK, 7001, iss + 1, {}, "hello", 5)), OK);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_IN | sync::POLL_OUT);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, 2, fs::O_NONBLOCK), 2);
+    EXPECT_EQ(buf[0], 'h');
+    EXPECT_EQ(buf[1], 'e');
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), fs::O_NONBLOCK), 3);
+    EXPECT_EQ(buf[0], 'l');
+    EXPECT_EQ(buf[2], 'o');
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_OUT);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), fs::O_NONBLOCK), resource::ERR_AGAIN);
+    EXPECT_EQ(sock.impl()->conn->rcv_wnd, RCV_WND_INITIAL);
+
+    abort_connection(sock.impl()->conn.ptr());
+}
+
+TEST(tcp_socket, read_hands_out_the_bytes_before_the_fin_then_end_of_file) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    peer remote = stream_socket::replying_to(lp, 0);
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1)), OK);
+    EXPECT_EQ(input(remote.segment(FLAG_ACK | FLAG_FIN, 7001, iss + 1, {}, "bye", 3)), OK);
+
+    uint8_t buf[16] = {};
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_IN | sync::POLL_OUT);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), 3);
+    EXPECT_EQ(buf[2], 'e');
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), 0);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), 0);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_IN | sync::POLL_OUT);
+
+    abort_connection(sock.impl()->conn.ptr());
+}
+
+TEST(tcp_socket, read_hands_out_the_bytes_before_a_reset_then_the_error) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    peer remote = stream_socket::replying_to(lp, 0);
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1)), OK);
+    EXPECT_EQ(input(remote.segment(FLAG_ACK, 7001, iss + 1, {}, "data", 4)), OK);
+    EXPECT_EQ(input(remote.rst(7005)), OK);
+
+    uint8_t buf[16] = {};
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_IN | sync::POLL_HUP | sync::POLL_ERR);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), 4);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), resource::ERR_CONNRESET);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), 0);
 }
 
 TEST(tcp_socket, closing_an_established_socket_sends_a_fin_and_orphans_the_connection) {

@@ -165,10 +165,45 @@ static void take_fin_ack_locked(tcp_conn* conn, uint32_t ack) {
     }
 }
 
+static bool accepts_payload(tcp_state state) {
+    return state == tcp_state::established || state == tcp_state::fin_wait_1 ||
+           state == tcp_state::fin_wait_2;
+}
+
+// Caller holds the lock. RFC 9293 3.10.7.4: payload starting at rcv_nxt
+// is queued, bytes already received are skipped, and anything beyond what
+// the queue can take is left for the peer to send again.
+static size_t take_payload_locked(tcp_conn* conn, uint32_t seq, const uint8_t* payload, size_t len) {
+    if (!accepts_payload(conn->state) || len == 0) {
+        return 0;
+    }
+
+    if (seq_lt(seq, conn->rcv_nxt)) {
+        uint32_t already = conn->rcv_nxt - seq;
+        if (already >= len) {
+            return 0;
+        }
+
+        payload += already;
+        len -= already;
+        seq = conn->rcv_nxt;
+    }
+
+    if (seq != conn->rcv_nxt) {
+        return 0;
+    }
+
+    size_t queued = conn->rcv_queue.append(payload, len);
+    conn->rcv_nxt += static_cast<uint32_t>(queued);
+    update_receive_window_locked(conn);
+
+    return queued;
+}
+
 // Caller holds the lock. Only a FIN right at rcv_nxt is counted, one
-// behind payload waits until the payload itself can be received.
-static bool take_fin_locked(tcp_conn* conn, uint32_t seq, size_t payload_len) {
-    if (payload_len != 0 || seq != conn->rcv_nxt) {
+// behind payload not yet received waits for that payload.
+static bool take_fin_locked(tcp_conn* conn, uint32_t fin_seq) {
+    if (fin_seq != conn->rcv_nxt) {
         return false;
     }
 
@@ -201,6 +236,7 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
     tcp_state before = tcp_state::closed;
     tcp_state after = tcp_state::closed;
     bool ack_now = false;
+    bool wake_readers = false;
     segment_source src = {};
 
     RUN_ELEVATED({
@@ -225,15 +261,21 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
             take_ack_locked(conn, hdr, opts);
             take_fin_ack_locked(conn, ack);
 
-            if (hdr->flags & FLAG_FIN) {
-                ack_now = take_fin_locked(conn, seq, payload_len);
-            }
+            const uint8_t* payload = reinterpret_cast<const uint8_t*>(hdr) + hdr->header_len();
+            size_t queued = take_payload_locked(conn, seq, payload, payload_len);
+            bool fin_taken = (hdr->flags & FLAG_FIN) && take_fin_locked(conn, seq + static_cast<uint32_t>(payload_len));
+            wake_readers = queued > 0 || fin_taken;
+            ack_now = payload_len > 0 || fin_taken;
         }
 
         if (action == segment_action::reset) {
             conn->state = tcp_state::closed;
             conn->pending_error = resource::ERR_CONNRESET;
             conn->send_timer_kind = timer_kind::none;
+        }
+
+        if (ack_now) {
+            conn->rcv_adv = conn->rcv_nxt + conn->rcv_wnd;
         }
 
         after = conn->state;
@@ -247,6 +289,10 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
         rc = send_control(src, FLAG_ACK);
     } else if (action == segment_action::challenge && take_challenge_ack()) {
         rc = send_control(src, FLAG_ACK);
+    }
+
+    if (wake_readers) {
+        RUN_ELEVATED(sync::wake_all(conn->rx_wq));
     }
 
     if (after == tcp_state::time_wait) {
@@ -279,6 +325,7 @@ static void take_peer_syn_locked(tcp_conn* conn, const tcp_header* hdr, const tc
     conn->snd_wl1 = seq;
     conn->snd_wl2 = ntohl(hdr->ack);
     conn->max_snd_wnd = conn->snd_wnd;
+    conn->rcv_adv = conn->rcv_nxt + conn->rcv_wnd;
 }
 
 static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {

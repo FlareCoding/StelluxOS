@@ -89,7 +89,7 @@ TEST(tcp_handshake, syn_is_answered_with_a_synack_carrying_the_negotiated_option
     const tcp_header* hdr = sent_tcp(lp.link, 0);
     EXPECT_EQ(hdr->flags, FLAG_SYN | FLAG_ACK);
     EXPECT_EQ(ntohl(hdr->ack), 1001u);
-    EXPECT_EQ(ntohs(hdr->window), RCV_BUF_INITIAL);
+    EXPECT_EQ(ntohs(hdr->window), RCV_WND_INITIAL);
     EXPECT_EQ(ntohs(hdr->src_port), 5000);
     EXPECT_EQ(ntohs(hdr->dst_port), 40000);
 
@@ -253,7 +253,7 @@ TEST(tcp_handshake, completing_ack_promotes_the_request_to_an_established_connec
     EXPECT_EQ(conn->snd_wscale, 7);
     EXPECT_EQ(conn->rcv_wscale, 5);
     EXPECT_EQ(conn->snd_mss, 1460);
-    EXPECT_EQ(conn->rcv_wnd, RCV_BUF_INITIAL);
+    EXPECT_EQ(conn->rcv_wnd, RCV_WND_INITIAL);
     EXPECT_TRUE(conn->sack_ok);
     EXPECT_TRUE(conn->ts_ok);
     EXPECT_EQ(conn->ts_recent, 777u);
@@ -406,7 +406,7 @@ TEST(tcp_handshake, reset_elsewhere_in_the_window_is_challenged_and_outside_it_i
     EXPECT_EQ(sent_seq(lp, 1), iss + 1);
     EXPECT_EQ(ntohl(sent_tcp(lp.link, 1)->ack), 1001u);
 
-    EXPECT_EQ(input(lp.remote.rst(1001 + RCV_BUF_INITIAL)), OK);
+    EXPECT_EQ(input(lp.remote.rst(1001 + RCV_WND_INITIAL)), OK);
     EXPECT_EQ(lp.link.frames_sent(), 2u);
     EXPECT_EQ(lookup(key_of(lp.remote))->kind, record_kind::request);
     EXPECT_EQ(on.request_count(), 1);
@@ -569,7 +569,7 @@ TEST(tcp_handshake, active_open_sends_a_syn_with_every_option) {
     EXPECT_EQ(hdr->flags, FLAG_SYN);
     EXPECT_EQ(ntohl(hdr->seq), active.conn->iss);
     EXPECT_EQ(ntohl(hdr->ack), 0u);
-    EXPECT_EQ(ntohs(hdr->window), RCV_BUF_INITIAL);
+    EXPECT_EQ(ntohs(hdr->window), RCV_WND_INITIAL);
     EXPECT_EQ(ntohs(hdr->src_port), 5000);
     EXPECT_EQ(ntohs(hdr->dst_port), 40000);
 
@@ -613,7 +613,7 @@ TEST(tcp_handshake, syn_ack_completes_the_active_open_and_is_acknowledged) {
     EXPECT_EQ(ack->flags, FLAG_ACK);
     EXPECT_EQ(ntohl(ack->seq), iss + 1);
     EXPECT_EQ(ntohl(ack->ack), 7001u);
-    EXPECT_EQ(ntohs(ack->window), RCV_BUF_INITIAL >> 5);
+    EXPECT_EQ(ntohs(ack->window), RCV_WND_INITIAL >> 5);
     tcp_options opts;
     parse_options(ack, &opts);
     EXPECT_TRUE(opts.has_timestamps);
@@ -634,7 +634,7 @@ TEST(tcp_handshake, syn_ack_without_options_leaves_them_off) {
     EXPECT_FALSE(active.conn->ts_ok);
     EXPECT_FALSE(active.conn->sack_ok);
     EXPECT_EQ(active.conn->snd_mss, DEFAULT_MSS);
-    EXPECT_EQ(ntohs(sent_tcp(lp.link, 1)->window), RCV_BUF_INITIAL);
+    EXPECT_EQ(ntohs(sent_tcp(lp.link, 1)->window), RCV_WND_INITIAL);
     EXPECT_EQ(sent_tcp(lp.link, 1)->data_offset(), MIN_DATA_OFFSET);
 }
 

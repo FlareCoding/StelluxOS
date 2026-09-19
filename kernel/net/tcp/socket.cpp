@@ -5,6 +5,7 @@
 #include "net/interface.h"
 #include "net/route.h"
 #include "resource/socket_ops.h"
+#include "fs/fstypes.h"
 #include "sync/spinlock.h"
 #include "sync/poll.h"
 #include "sync/wait_queue.h"
@@ -481,35 +482,66 @@ __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* ob
     return resource::OK;
 }
 
-// Data-less answers for a stream: the peer's FIN is EOF for a reader, the
-// connection's end reports the error saved for it, otherwise after_error.
-__PRIVILEGED_CODE static ssize_t closed_stream_result(tcp_socket* sock, ssize_t after_error, ssize_t after_fin) {
+__PRIVILEGED_CODE static rc::strong_ref<tcp_conn> connection_of(tcp_socket* sock) {
     sync::irq_lock_guard guard(sock->lock);
-    if (!sock->conn) {
+    return sock->conn;
+}
+
+__PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void* kdst, size_t count, uint32_t flags) {
+    rc::strong_ref<tcp_conn> conn = connection_of(static_cast<tcp_socket*>(obj->impl));
+    if (!conn) {
         return resource::ERR_NOTCONN;
     }
 
-    sync::irq_lock_guard conn_guard(sock->conn->lock);
-    if (sock->conn->state == tcp_state::close_wait) {
-        return after_fin;
+    sched::task* task = sched::current();
+    if (!task) {
+        return resource::ERR_IO;
     }
 
-    if (sock->conn->state != tcp_state::closed) {
-        return resource::ERR_UNSUP;
+    bool nonblock = (flags & fs::O_NONBLOCK) != 0;
+    sync::irq_state irq = sync::spin_lock_irqsave(conn->lock);
+
+    while (conn->rcv_queue.size() == 0 && !conn->fin_rcvd && conn->state != tcp_state::closed &&
+           !nonblock && !signals::interrupt_pending(task)) {
+        irq = sync::wait(conn->rx_wq, conn->lock, irq);
     }
 
-    int32_t error = sock->conn->pending_error;
-    sock->conn->pending_error = resource::OK;
+    ssize_t result;
+    if (conn->rcv_queue.size() > 0) {
+        size_t copied = conn->rcv_queue.copy_out(0, kdst, count);
+        (void)conn->rcv_queue.consume(copied);
 
-    return error != resource::OK ? error : after_error;
-}
+        update_receive_window_locked(conn.ptr());
+        result = static_cast<ssize_t>(copied);
+    } else if (conn->state == tcp_state::closed && conn->pending_error != resource::OK) {
+        result = conn->pending_error;
+        conn->pending_error = resource::OK;
+    } else if (conn->state == tcp_state::closed || conn->fin_rcvd) {
+        result = 0;
+    } else {
+        result = nonblock ? resource::ERR_AGAIN : resource::ERR_INTR;
+    }
 
-__PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, void*, size_t, uint32_t) {
-    return closed_stream_result(static_cast<tcp_socket*>(obj->impl), 0, 0);
+    sync::spin_unlock_irqrestore(conn->lock, irq);
+
+    return result;
 }
 
 __PRIVILEGED_CODE static ssize_t socket_write(resource::resource_object* obj, const void*, size_t, uint32_t) {
-    return closed_stream_result(static_cast<tcp_socket*>(obj->impl), resource::ERR_PIPE, resource::ERR_UNSUP);
+    rc::strong_ref<tcp_conn> conn = connection_of(static_cast<tcp_socket*>(obj->impl));
+    if (!conn) {
+        return resource::ERR_NOTCONN;
+    }
+
+    sync::irq_lock_guard guard(conn->lock);
+    if (conn->state != tcp_state::closed) {
+        return resource::ERR_UNSUP;
+    }
+
+    int32_t error = conn->pending_error;
+    conn->pending_error = resource::OK;
+
+    return error != resource::OK ? error : resource::ERR_PIPE;
 }
 
 __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sync::poll_table* pt) {
@@ -538,19 +570,19 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
     if (conn) {
         if (pt) {
             sync::poll_subscribe(*pt, conn->conn_wq);
+            sync::poll_subscribe(*pt, conn->rx_wq);
         }
 
         sync::irq_lock_guard guard(conn->lock);
+        uint32_t readable = conn->rcv_queue.size() > 0 || conn->fin_rcvd ? sync::POLL_IN : 0;
         switch (conn->state) {
         case tcp_state::closed:
-            return sync::POLL_HUP | (conn->pending_error != resource::OK ? sync::POLL_ERR : 0);
+            return readable | sync::POLL_HUP | (conn->pending_error != resource::OK ? sync::POLL_ERR : 0);
         case tcp_state::syn_sent:
         case tcp_state::syn_rcvd:
             return 0;
-        case tcp_state::close_wait:
-            return sync::POLL_IN | sync::POLL_OUT;
         default:
-            return sync::POLL_OUT;
+            return readable | sync::POLL_OUT;
         }
     }
 

@@ -106,7 +106,7 @@ TEST(tcp_rfc5961, reset_elsewhere_in_the_window_is_challenged_and_outside_it_ign
     expect_challenge_ack(c, 0);
     EXPECT_EQ(c.conn->state, tcp_state::established);
 
-    EXPECT_EQ(input(c.segment(FLAG_RST, c.rcv_nxt() + RCV_BUF_INITIAL, 0)), OK);
+    EXPECT_EQ(input(c.segment(FLAG_RST, c.rcv_nxt() + RCV_WND_INITIAL, 0)), OK);
     EXPECT_EQ(input(c.segment(FLAG_RST, c.rcv_nxt() - 1, 0)), OK);
     EXPECT_EQ(lp.link.frames_sent(), 1u);
     EXPECT_EQ(c.conn->state, tcp_state::established);
@@ -139,7 +139,7 @@ TEST(tcp_rfc5961, segment_outside_the_window_is_answered_with_an_ack) {
     established c(lp);
 
     EXPECT_EQ(input(c.segment(FLAG_ACK, c.rcv_nxt() - 1000, c.snd_nxt())), OK);
-    EXPECT_EQ(input(c.segment(FLAG_ACK, c.rcv_nxt() + RCV_BUF_INITIAL, c.snd_nxt())), OK);
+    EXPECT_EQ(input(c.segment(FLAG_ACK, c.rcv_nxt() + RCV_WND_INITIAL, c.snd_nxt())), OK);
     ASSERT_EQ(lp.link.frames_sent(), 2u);
     expect_challenge_ack(c, 0);
     expect_challenge_ack(c, 1);

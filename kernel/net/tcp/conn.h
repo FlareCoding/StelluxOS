@@ -2,6 +2,7 @@
 #define STELLUX_NET_TCP_CONN_H
 
 #include "net/tcp/record.h"
+#include "net/tcp/byte_queue.h"
 #include "common/list.h"
 #include "rc/strong_ref.h"
 #include "sync/wait_queue.h"
@@ -27,8 +28,8 @@ constexpr uint64_t TIMEOUT_MAX_NS     = 120000000000ULL;
 constexpr uint64_t FIN_TIMEOUT_NS     = 60000000000ULL;
 constexpr uint16_t DEFAULT_MSS        = 536;     // RFC 9293 3.7.1, when the peer sends none
 constexpr uint64_t TS_RECENT_MAX_AGE_NS = 24ULL * 24 * 3600 * 1000000000ULL; // RFC 7323 5.5
-constexpr size_t   RCV_BUF_INITIAL    = 16 * 1024;
-constexpr size_t   RCV_BUF_MAX        = 1024 * 1024;
+constexpr size_t   RCV_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
+constexpr uint32_t RCV_WND_INITIAL    = RCV_CHUNKS_INITIAL * CHUNK_PAYLOAD; // what an empty queue can take
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -104,6 +105,9 @@ struct tcp_conn : record {
     uint64_t              send_timer_deadline_ns;
     uint8_t               retransmits;
 
+    byte_queue       rcv_queue;
+    sync::wait_queue rx_wq; // readers
+
     resource::resource_object* owner;
     sync::wait_queue           conn_wq; // connect and close waiters
     int32_t                    pending_error;
@@ -140,6 +144,12 @@ uint32_t timestamp_value(uint32_t offset);
  * largest receive buffer fit a sixteen-bit window (RFC 7323 2.2).
  */
 uint8_t receive_window_scale();
+
+/**
+ * @brief Sets `rcv_wnd` to what the receive queue can still take, never moving
+ * the advertised right edge left (RFC 9293 3.8.6.2.2). Caller holds the lock.
+ */
+void update_receive_window_locked(tcp_conn* conn);
 
 /**
  * @brief The initial sequence number for a new connection on `key` (RFC 6528):

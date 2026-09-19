@@ -5,6 +5,7 @@
 #include "net/tcp/wire.h"
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
+#include "net/tcp/seq.h"
 #include "net/net.h"
 #include "sync/wait_queue.h"
 #include "common/siphash.h"
@@ -83,6 +84,7 @@ void record::ref_destroy(record* self) {
         heap::ufree_delete(static_cast<tcp_request*>(self));
         break;
     case record_kind::connection:
+        static_cast<tcp_conn*>(self)->rcv_queue.clear();
         heap::ufree_delete(static_cast<tcp_conn*>(self));
         break;
     case record_kind::timewait:
@@ -138,8 +140,17 @@ uint32_t timestamp_value(uint32_t offset) {
     return static_cast<uint32_t>(now_ns() / TIMESTAMP_TICK_NS) + offset;
 }
 
+void update_receive_window_locked(tcp_conn* conn) {
+    uint32_t window = static_cast<uint32_t>(conn->rcv_queue.free_space());
+    if (seq_lt(conn->rcv_nxt + window, conn->rcv_adv)) {
+        window = conn->rcv_adv - conn->rcv_nxt;
+    }
+
+    conn->rcv_wnd = window;
+}
+
 uint8_t receive_window_scale() {
-    size_t space = RCV_BUF_MAX;
+    size_t space = MAX_BUF;
     uint8_t scale = 0;
     while (space > 0xFFFF && scale < MAX_WINDOW_SCALE) {
         space >>= 1;
@@ -160,6 +171,8 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     conn->iface = iface;
     conn->lock = sync::SPINLOCK_INIT;
     conn->state = tcp_state::closed;
+    conn->rcv_queue.init(RCV_CHUNKS_INITIAL);
+    conn->rx_wq.init();
     conn->conn_wq.init();
     timer::init_deadline_timer(&conn->send_timer, on_send_timer);
 
@@ -176,7 +189,7 @@ int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>
     conn->iss = initial_sequence(key);
     conn->snd_una = conn->iss;
     conn->snd_nxt = conn->iss + 1;
-    conn->rcv_wnd = RCV_BUF_INITIAL;
+    conn->rcv_wnd = RCV_WND_INITIAL;
     conn->rcv_wscale = receive_window_scale();
     conn->ts_offset = timestamp_offset(key);
 
@@ -220,7 +233,10 @@ void retire_connection(tcp_conn* conn) {
     disarm_timer(conn, &conn->send_timer);
     (void)remove(conn);
 
-    RUN_ELEVATED(sync::wake_all(conn->conn_wq));
+    RUN_ELEVATED({
+        sync::wake_all(conn->conn_wq);
+        sync::wake_all(conn->rx_wq);
+    });
 }
 
 void abort_connection(tcp_conn* conn) {

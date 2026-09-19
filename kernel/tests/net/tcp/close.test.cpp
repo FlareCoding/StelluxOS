@@ -145,13 +145,14 @@ TEST(tcp_close, a_peer_that_keeps_talking_does_not_stop_the_orphan_wait) {
     uint8_t banner[4] = {'S', 'S', 'H', '-'};
     for (int i = 0; i < 3; i++) {
         advance_and_fire(FIN_TIMEOUT_NS / 4);
-        EXPECT_EQ(input(lp.remote.segment(FLAG_FIN | FLAG_ACK, c.rcv_nxt(), c.fin_seq() + 1, {}, banner, sizeof(banner))), OK);
+        EXPECT_EQ(input(lp.remote.segment(FLAG_FIN | FLAG_ACK, c.rcv_nxt() + 100, c.fin_seq() + 1, {}, banner, sizeof(banner))), OK);
         EXPECT_EQ(input(lp.remote.ack(c.rcv_nxt(), c.fin_seq() + 1)), OK);
         EXPECT_EQ(c.conn->state, tcp_state::fin_wait_2);
         EXPECT_EQ(c.conn->send_timer_kind, timer_kind::orphan);
         EXPECT_EQ(c.conn->send_timer_deadline_ns, deadline);
     }
 
+    lp.link.clear_frames();
     advance_and_fire(FIN_TIMEOUT_NS / 4);
     expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq() + 1, c.rcv_nxt());
     EXPECT_EQ(c.conn->state, tcp_state::closed);
@@ -261,17 +262,17 @@ TEST(tcp_close, the_peer_closing_first_ends_in_closed_without_time_wait) {
     EXPECT_EQ(record_count(record_kind::timewait), 0u);
 }
 
-TEST(tcp_close, a_fin_behind_payload_waits_for_the_data_path) {
+TEST(tcp_close, a_fin_ahead_of_missing_payload_waits_for_it) {
     linked_peer lp;
     closable c(lp);
 
     uint8_t byte = 'x';
-    EXPECT_EQ(input(lp.remote.segment(FLAG_FIN | FLAG_ACK, c.rcv_nxt(), c.fin_seq(), {}, &byte, 1)), OK);
+    EXPECT_EQ(input(lp.remote.segment(FLAG_FIN | FLAG_ACK, c.rcv_nxt() + 10, c.fin_seq(), {}, &byte, 1)), OK);
 
     EXPECT_EQ(c.conn->state, tcp_state::established);
     EXPECT_FALSE(c.conn->fin_rcvd);
     EXPECT_EQ(c.conn->rcv_nxt, c.rcv_nxt());
-    EXPECT_EQ(lp.link.frames_sent(), 0u);
+    expect_segment(lp.link, 0, FLAG_ACK, c.fin_seq(), c.rcv_nxt());
 }
 
 TEST(tcp_close, the_fin_is_retransmitted_with_backoff_then_given_up) {
