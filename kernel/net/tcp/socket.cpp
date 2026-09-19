@@ -562,21 +562,71 @@ __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, voi
     return result;
 }
 
-__PRIVILEGED_CODE static ssize_t socket_write(resource::resource_object* obj, const void*, size_t, uint32_t) {
+__PRIVILEGED_CODE static int32_t write_refusal_locked(tcp_conn* conn) {
+    if (conn->state == tcp_state::closed) {
+        int32_t error = conn->pending_error;
+        conn->pending_error = resource::OK;
+        return error != resource::OK ? error : resource::ERR_PIPE;
+    }
+
+    if (conn->fin_pending || conn->fin_sent) {
+        return resource::ERR_PIPE;
+    }
+
+    return resource::OK;
+}
+
+__PRIVILEGED_CODE static ssize_t socket_write(resource::resource_object* obj, const void* ksrc, size_t count, uint32_t flags) {
     rc::strong_ref<tcp_conn> conn = connection_of(static_cast<tcp_socket*>(obj->impl));
     if (!conn) {
         return resource::ERR_NOTCONN;
     }
 
-    sync::irq_lock_guard guard(conn->lock);
-    if (conn->state != tcp_state::closed) {
-        return resource::ERR_UNSUP;
+    sched::task* task = sched::current();
+    if (!task) {
+        return resource::ERR_IO;
     }
 
-    int32_t error = conn->pending_error;
-    conn->pending_error = resource::OK;
+    bool nonblock = (flags & fs::O_NONBLOCK) != 0;
+    const uint8_t* bytes = static_cast<const uint8_t*>(ksrc);
+    size_t queued = 0;
+    int32_t refusal = resource::OK;
 
-    return error != resource::OK ? error : resource::ERR_PIPE;
+    sync::irq_state irq = sync::spin_lock_irqsave(conn->lock);
+    while (queued < count) {
+        refusal = write_refusal_locked(conn.ptr());
+        if (refusal != resource::OK) {
+            break;
+        }
+
+        if (is_synchronized(conn->state)) {
+            queued += conn->snd_queue.append(bytes + queued, count - queued);
+            if (queued == count) {
+                break;
+            }
+        }
+
+        if (nonblock) {
+            refusal = resource::ERR_AGAIN;
+            break;
+        }
+
+        if (signals::interrupt_pending(task)) {
+            refusal = resource::ERR_INTR;
+            break;
+        }
+
+        irq = sync::wait(conn->tx_wq, conn->lock, irq);
+    }
+
+    sync::spin_unlock_irqrestore(conn->lock, irq);
+
+    if (queued > 0) {
+        (void)output(conn.ptr());
+        return static_cast<ssize_t>(queued);
+    }
+
+    return refusal;
 }
 
 __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sync::poll_table* pt) {
@@ -606,10 +656,13 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
         if (pt) {
             sync::poll_subscribe(*pt, conn->conn_wq);
             sync::poll_subscribe(*pt, conn->rx_wq);
+            sync::poll_subscribe(*pt, conn->tx_wq);
         }
 
         sync::irq_lock_guard guard(conn->lock);
         uint32_t readable = conn->rcv_queue.size() > 0 || conn->fin_rcvd ? sync::POLL_IN : 0;
+        uint32_t writable = conn->snd_queue.free_space() > 0 && !conn->fin_pending && !conn->fin_sent ? sync::POLL_OUT : 0;
+        
         switch (conn->state) {
         case tcp_state::closed:
             return readable | sync::POLL_HUP | (conn->pending_error != resource::OK ? sync::POLL_ERR : 0);
@@ -617,7 +670,7 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
         case tcp_state::syn_rcvd:
             return 0;
         default:
-            return readable | sync::POLL_OUT;
+            return readable | writable;
         }
     }
 

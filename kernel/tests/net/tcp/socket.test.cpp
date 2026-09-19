@@ -361,26 +361,32 @@ TEST(tcp_socket, closing_an_established_socket_sends_a_fin_and_orphans_the_conne
 TEST(tcp_socket, the_peers_fin_ends_reads_and_polls_readable_until_the_socket_closes) {
     linked_peer lp;
     rc::strong_ref<tcp_conn> conn;
+    uint32_t iss = 0;
     {
         stream_socket sock;
         sock.impl()->local.iface = &lp.link;
 
         EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
         peer remote = stream_socket::replying_to(lp, 0);
-        uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+        iss = ntohl(sent_tcp(lp.link, 0)->seq);
         EXPECT_EQ(input(remote.segment(FLAG_SYN | FLAG_ACK, 7000, iss + 1)), OK);
         EXPECT_EQ(input(remote.segment(FLAG_FIN | FLAG_ACK, 7001, iss + 1)), OK);
 
-        uint8_t byte = 0;
+        uint8_t byte = 'z';
         EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_IN | sync::POLL_OUT);
         EXPECT_EQ(sock.obj->ops->read(sock.obj, &byte, 1, 0), 0);
-        EXPECT_EQ(sock.obj->ops->write(sock.obj, &byte, 1, 0), resource::ERR_UNSUP);
+        lp.link.clear_frames();
+        EXPECT_EQ(sock.obj->ops->write(sock.obj, &byte, 1, 0), 1);
+        ASSERT_EQ(lp.link.frames_sent(), 1u);
+        EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_PSH | FLAG_ACK);
+        EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->seq), iss + 1);
         conn = sock.impl()->conn;
         lp.link.clear_frames();
     }
 
     ASSERT_EQ(lp.link.frames_sent(), 1u);
     EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_FIN | FLAG_ACK);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->seq), iss + 2);
     EXPECT_EQ(conn->state, tcp_state::last_ack);
 
     abort_connection(conn.ptr());

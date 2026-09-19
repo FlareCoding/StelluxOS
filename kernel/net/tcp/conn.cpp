@@ -85,6 +85,8 @@ void record::ref_destroy(record* self) {
         break;
     case record_kind::connection:
         static_cast<tcp_conn*>(self)->rcv_queue.clear();
+        static_cast<tcp_conn*>(self)->snd_queue.clear();
+        static_cast<tcp_conn*>(self)->sent.clear();
         heap::ufree_delete(static_cast<tcp_conn*>(self));
         break;
     case record_kind::timewait:
@@ -151,6 +153,14 @@ void update_receive_window_locked(tcp_conn* conn) {
     conn->rcv_wnd = window;
 }
 
+void configure_send_path_locked(tcp_conn* conn) {
+    uint32_t floor = 2u * conn->snd_mss > INITIAL_WINDOW_CAP ? 2u * conn->snd_mss : INITIAL_WINDOW_CAP;
+    uint32_t window = INITIAL_WINDOW_SEGMENTS * conn->snd_mss;
+    conn->cwnd = window < floor ? window : floor;
+    conn->snd_sml = conn->iss;
+    conn->sent.set_cap(conn->snd_queue.limit() * CHUNK_PAYLOAD / conn->snd_mss + SENT_SEGMENT_MARGIN);
+}
+
 void mark_ack_sent_locked(tcp_conn* conn) {
     conn->rcv_acked = conn->rcv_nxt;
     conn->rcv_adv = conn->rcv_nxt + conn->rcv_wnd;
@@ -185,6 +195,9 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     conn->state = tcp_state::closed;
     conn->rcv_queue.init(RCV_CHUNKS_INITIAL);
     conn->rx_wq.init();
+    conn->snd_queue.init(SND_CHUNKS_INITIAL);
+    conn->sent.init(SND_CHUNKS_INITIAL * CHUNK_PAYLOAD / DEFAULT_MSS + SENT_SEGMENT_MARGIN);
+    conn->tx_wq.init();
     conn->conn_wq.init();
     conn->quick_acks = MAX_QUICKACKS;
     timer::init_deadline_timer(&conn->send_timer, on_send_timer);
@@ -251,6 +264,7 @@ void retire_connection(tcp_conn* conn) {
     RUN_ELEVATED({
         sync::wake_all(conn->conn_wq);
         sync::wake_all(conn->rx_wq);
+        sync::wake_all(conn->tx_wq);
     });
 }
 
@@ -280,7 +294,6 @@ void abort_connection(tcp_conn* conn) {
 void close_connection(tcp_conn* conn) {
     bool send = false;
     bool abandon = false;
-    segment_source src = {};
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);
@@ -308,21 +321,14 @@ void close_connection(tcp_conn* conn) {
         }
 
         if (send) {
-            conn->fin_sent = true;
-            conn->snd_nxt++;
-            conn->retransmits = 0;
-
-            arm_send_timer_locked(conn, timer_kind::rto);
-            mark_ack_sent_locked(conn);
-
-            src = snapshot_source(conn);
+            conn->fin_pending = true;
         }
     });
 
     if (abandon) {
         abort_connection(conn);
     } else if (send) {
-        (void)send_fin(src);
+        (void)output(conn);
     }
 }
 

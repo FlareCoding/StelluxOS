@@ -74,6 +74,23 @@ int32_t send_control(const segment_source& src, uint8_t flags);
  */
 int32_t send_fin(const segment_source& src);
 
+/**
+ * @brief Builds a segment carrying `len` queued bytes from `seq`, PSH when
+ * `push`. Caller holds the lock. nullptr when no packet is free.
+ */
+packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, bool push);
+
+/**
+ * @brief Checksums, counts, and hands a built segment to IPv4. Consumes it.
+ */
+int32_t transmit_segment(packet* pkt, interface* iface, const tuple& key);
+
+/**
+ * @brief Sends what the windows allow now (RFC 9293 3.8.6, RFC 5681 3.1) and
+ * the FIN a close left waiting once the queue is out. Takes the lock itself.
+ */
+int32_t output(tcp_conn* conn);
+
 } // namespace tcp
 } // namespace net
 

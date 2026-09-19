@@ -1,10 +1,14 @@
 #include "net/tcp/output.h"
 #include "net/tcp/info.h"
+#include "net/tcp/timers.h"
+#include "net/tcp/seq.h"
 #include "net/net.h"
 #include "net/eth.h"
 #include "net/interface.h"
 #include "net/route.h"
 #include "net/byteorder.h"
+#include "sync/spinlock.h"
+#include "dynpriv/dynpriv.h"
 #include "common/string.h"
 
 namespace net {
@@ -37,19 +41,11 @@ segment_source snapshot_source(const tcp_conn* conn) {
     return src;
 }
 
-int32_t send_segment(interface* iface, const tuple& key, uint8_t flags, uint32_t seq, uint32_t ack,
-                     uint16_t window, const tcp_options& opts) {
-    route::route_result route;
-    int32_t rc = route::lookup_on(iface, key.remote_addr, &route);
-    if (rc != OK) {
-        return rc;
-    }
-
-    route.source = key.local_addr;
-
+static packet* build_segment(const tuple& key, uint8_t flags, uint32_t seq, uint32_t ack, uint16_t window,
+                             const tcp_options& opts, size_t payload_len, uint8_t** payload) {
     packet* pkt = packet::alloc();
     if (!pkt) {
-        return ERR_NO_MEMORY;
+        return nullptr;
     }
 
     uint8_t options[MAX_OPTIONS_LEN];
@@ -58,12 +54,12 @@ int32_t send_segment(interface* iface, const tuple& key, uint8_t flags, uint32_t
 
     tcp_header* hdr = nullptr;
     if (pkt->reserve(eth::HEADER_LEN + ipv4::HEADER_LEN)) {
-        hdr = reinterpret_cast<tcp_header*>(pkt->put(header_len));
+        hdr = reinterpret_cast<tcp_header*>(pkt->put(header_len + payload_len));
     }
 
     if (!hdr) {
         packet::free(pkt);
-        return ERR_TOO_LARGE;
+        return nullptr;
     }
 
     *hdr = {};
@@ -75,14 +71,42 @@ int32_t send_segment(interface* iface, const tuple& key, uint8_t flags, uint32_t
     hdr->flags = flags;
     hdr->window = htons(window);
     string::memcpy(reinterpret_cast<uint8_t*>(hdr) + HEADER_LEN, options, options_len);
-    hdr->checksum = htons(compute_checksum(key.local_addr, key.remote_addr, hdr, header_len));
+    *payload = reinterpret_cast<uint8_t*>(hdr) + header_len;
+
+    return pkt;
+}
+
+int32_t transmit_segment(packet* pkt, interface* iface, const tuple& key) {
+    route::route_result route;
+    int32_t rc = route::lookup_on(iface, key.remote_addr, &route);
+    if (rc != OK) {
+        packet::free(pkt);
+        return rc;
+    }
+
+    route.source = key.local_addr;
+
+    tcp_header* hdr = reinterpret_cast<tcp_header*>(pkt->data());
+    hdr->checksum = 0;
+    hdr->checksum = htons(compute_checksum(key.local_addr, key.remote_addr, hdr, pkt->length()));
 
     increment(counter::segments_out);
-    if (flags & FLAG_RST) {
+    if (hdr->flags & FLAG_RST) {
         increment(counter::rsts_sent);
     }
 
     return ipv4::output(pkt, key.remote_addr, route, ipv4::PROTO_TCP);
+}
+
+int32_t send_segment(interface* iface, const tuple& key, uint8_t flags, uint32_t seq, uint32_t ack,
+                     uint16_t window, const tcp_options& opts) {
+    uint8_t* payload = nullptr;
+    packet* pkt = build_segment(key, flags, seq, ack, window, opts, 0, &payload);
+    if (!pkt) {
+        return ERR_NO_MEMORY;
+    }
+
+    return transmit_segment(pkt, iface, key);
 }
 
 int32_t send_syn(const segment_source& src) {
@@ -128,6 +152,140 @@ int32_t send_control(const segment_source& src, uint8_t flags) {
 int32_t send_fin(const segment_source& src) {
     return send_segment(src.iface, src.key, FLAG_FIN | FLAG_ACK, src.snd_nxt - 1, src.rcv_nxt,
                         window_field(src.rcv_wnd, src.rcv_wscale), control_options(src));
+}
+
+packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, bool push) {
+    segment_source src = snapshot_source(conn);
+    uint8_t flags = FLAG_ACK | (push ? FLAG_PSH : 0);
+    uint8_t* payload = nullptr;
+    packet* pkt = build_segment(src.key, flags, seq, src.rcv_nxt, window_field(src.rcv_wnd, src.rcv_wscale),
+                                control_options(src), len, &payload);
+    if (!pkt) {
+        return nullptr;
+    }
+
+    (void)conn->snd_queue.copy_out(seq - conn->snd_una, payload, len);
+
+    return pkt;
+}
+
+// Caller holds the lock. RFC 6691: the MSS less the option bytes in use
+static size_t payload_mss(const tcp_conn* conn) {
+    uint8_t scratch[MAX_OPTIONS_LEN];
+    size_t options = build_options(scratch, control_options(snapshot_source(conn)));
+    return conn->snd_mss > options ? conn->snd_mss - options : 1;
+}
+
+static bool may_send_payload(tcp_state state) {
+    return state == tcp_state::established || state == tcp_state::close_wait ||
+           state == tcp_state::fin_wait_1 || state == tcp_state::last_ack;
+}
+
+// Caller holds the lock. Sender SWS avoidance (RFC 9293 3.8.6.2.1), then
+// Nagle with Minshall's modification (RFC 1122 4.2.3.4).
+static bool may_send_partial_locked(const tcp_conn* conn, uint32_t usable) {
+    bool nothing_in_flight = conn->snd_nxt == conn->snd_una;
+    if (nothing_in_flight) {
+        return true;
+    }
+
+    uint32_t sws_floor = conn->max_snd_wnd / 2 < conn->snd_mss ? conn->max_snd_wnd / 2 : conn->snd_mss;
+    if (usable < sws_floor) {
+        return false;
+    }
+
+    bool small_outstanding = seq_gt(conn->snd_sml, conn->snd_una) && seq_leq(conn->snd_sml, conn->snd_nxt);
+    return conn->nodelay || !small_outstanding;
+}
+
+static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
+    size_t count = 0;
+    uint64_t now = now_ns();
+    size_t mss = payload_mss(conn);
+
+    while (count < max) {
+        size_t available = unsent_bytes(conn);
+        if (available == 0) {
+            break;
+        }
+
+        uint32_t in_flight = conn->snd_nxt - conn->snd_una;
+        uint32_t window_end = conn->snd_una + conn->snd_wnd;
+        uint32_t usable = seq_lt(conn->snd_nxt, window_end) ? window_end - conn->snd_nxt : 0;
+        uint32_t cwnd_room = conn->cwnd > in_flight ? conn->cwnd - in_flight : 0;
+        uint32_t allowed = usable < cwnd_room ? usable : cwnd_room;
+        size_t len = available < allowed ? available : allowed;
+        if (len > mss) {
+            len = mss;
+        }
+
+        if (len == 0 || (len < mss && !may_send_partial_locked(conn, usable))) {
+            break;
+        }
+
+        packet* pkt = build_data_segment(conn, conn->snd_nxt, len, len == available);
+        if (!pkt) {
+            break;
+        }
+
+        if (!conn->sent.track(conn->snd_nxt, conn->snd_nxt + static_cast<uint32_t>(len), now)) {
+            packet::free(pkt);
+            break;
+        }
+
+        if (len < mss) {
+            conn->snd_sml = conn->snd_nxt + static_cast<uint32_t>(len);
+        }
+
+        conn->snd_nxt += static_cast<uint32_t>(len);
+        if (conn->send_timer_kind == timer_kind::none) {
+            arm_send_timer_locked(conn, timer_kind::rto);
+        }
+
+        mark_ack_sent_locked(conn);
+        burst[count++] = pkt;
+    }
+
+    if (count < max && conn->fin_pending && !conn->fin_sent && unsent_bytes(conn) == 0) {
+        conn->fin_pending = false;
+        conn->fin_sent = true;
+        conn->snd_nxt++;
+        if (conn->send_timer_kind == timer_kind::none) {
+            conn->retransmits = 0;
+            arm_send_timer_locked(conn, timer_kind::rto);
+        }
+
+        mark_ack_sent_locked(conn);
+        segment_source src = snapshot_source(conn);
+        uint8_t* payload = nullptr;
+        packet* pkt = build_segment(src.key, FLAG_FIN | FLAG_ACK, src.snd_nxt - 1, src.rcv_nxt,
+                                    window_field(src.rcv_wnd, src.rcv_wscale), control_options(src), 0, &payload);
+        if (pkt) {
+            burst[count++] = pkt;
+        }
+    }
+
+    return count;
+}
+
+int32_t output(tcp_conn* conn) {
+    packet* burst[MAX_BURST];
+    size_t count = 0;
+    interface* iface = conn->iface;
+    tuple key = conn->key;
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        if (may_send_payload(conn->state)) {
+            count = build_burst_locked(conn, burst, MAX_BURST);
+        }
+    });
+
+    for (size_t i = 0; i < count; i++) {
+        (void)transmit_segment(burst[i], iface, key);
+    }
+
+    return OK;
 }
 
 } // namespace tcp

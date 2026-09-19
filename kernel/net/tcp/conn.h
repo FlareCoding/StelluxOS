@@ -3,6 +3,7 @@
 
 #include "net/tcp/record.h"
 #include "net/tcp/byte_queue.h"
+#include "net/tcp/sent_segment.h"
 #include "common/list.h"
 #include "rc/strong_ref.h"
 #include "sync/wait_queue.h"
@@ -32,6 +33,12 @@ constexpr size_t   RCV_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
 constexpr uint32_t RCV_WND_INITIAL    = RCV_CHUNKS_INITIAL * CHUNK_PAYLOAD; // what an empty queue can take
 constexpr uint64_t DELACK_NS          = 40000000ULL; // RFC 1122 4.2.3.2 allows up to 500 ms
 constexpr uint8_t  MAX_QUICKACKS      = 16;
+constexpr size_t   SND_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
+constexpr size_t   SENT_SEGMENT_MARGIN = 8;
+constexpr uint32_t INITIAL_WINDOW_SEGMENTS = 10; // RFC 6928
+constexpr uint32_t INITIAL_WINDOW_CAP  = 14600;  // RFC 6928
+constexpr uint8_t  DATA_RETRIES       = 15;      // RFC 1122 4.2.3.5 R2
+constexpr size_t   MAX_BURST          = 16;
 
 /**
  * Connection states of RFC 9293 3.3.2. `listen` belongs to a listener and
@@ -120,6 +127,14 @@ struct tcp_conn : record {
     byte_queue       rcv_queue;
     sync::wait_queue rx_wq; // readers
 
+    byte_queue       snd_queue;
+    sent_segments    sent;
+    sync::wait_queue tx_wq; // writers
+    uint32_t         cwnd;
+    uint32_t         snd_sml; // End of the last partial segment sent
+    bool             nodelay;
+    bool             fin_pending;
+
     resource::resource_object* owner;
     sync::wait_queue           conn_wq; // connect and close waiters
     int32_t                    pending_error;
@@ -169,6 +184,25 @@ void update_receive_window_locked(tcp_conn* conn);
  * window is going out, so nothing owed remains. Caller holds the lock.
  */
 void mark_ack_sent_locked(tcp_conn* conn);
+
+/**
+ * @brief Sets the initial congestion window (RFC 6928) and the record cap
+ * from `snd_mss`. Caller holds the lock.
+ */
+void configure_send_path_locked(tcp_conn* conn);
+
+/**
+ * @brief Queued bytes not yet sent. An unacknowledged SYN or FIN holds a
+ * sequence number, not a byte. Caller holds the lock.
+ */
+inline size_t unsent_bytes(const tcp_conn* conn) {
+    uint32_t in_flight = conn->snd_nxt - conn->snd_una;
+    uint32_t control = (conn->snd_una == conn->iss ? 1u : 0u) +
+                       (conn->fin_sent && conn->snd_una != conn->snd_nxt ? 1u : 0u);
+    in_flight = in_flight > control ? in_flight - control : 0;
+
+    return conn->snd_queue.size() > in_flight ? conn->snd_queue.size() - in_flight : 0;
+}
 
 inline bool is_synchronized(tcp_state state) {
     return state == tcp_state::established || state == tcp_state::fin_wait_1 ||
@@ -229,7 +263,7 @@ void retire_connection(tcp_conn* conn);
 
 /**
  * @brief Begins the orderly close (RFC 9293 3.10.4) of a connection whose
- * socket has let go. One still waiting for its SYN-ACK is abandoned instead.
+ * socket has let go, the FIN following the queued data. SYN_SENT is abandoned.
  */
 void close_connection(tcp_conn* conn);
 

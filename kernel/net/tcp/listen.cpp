@@ -434,6 +434,7 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
     conn->rcv_mss = fields.peer_mss;
     conn->rcv_wscale = fields.rcv_wscale;
     conn->wscale_ok = fields.wscale_ok;
+    configure_send_path_locked(conn);
     conn->sack_ok = fields.sack_ok;
     conn->ts_ok = fields.ts_ok;
     conn->ecn_ok = fields.ecn_ok;

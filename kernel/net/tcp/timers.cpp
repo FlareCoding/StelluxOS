@@ -99,8 +99,30 @@ void on_ack_timer(timer::deadline_timer* timer) {
     finish_timer_callback(conn);
 }
 
-static uint8_t retry_limit(tcp_state state) {
-    return state == tcp_state::syn_sent || state == tcp_state::syn_rcvd ? SYN_RETRIES : ORPHAN_RETRIES;
+// Caller holds the lock. RFC 1122 4.2.3.5
+static uint8_t retry_limit_locked(const tcp_conn* conn) {
+    if (conn->state == tcp_state::syn_sent || conn->state == tcp_state::syn_rcvd) {
+        return SYN_RETRIES;
+    }
+
+    return conn->sent.empty() ? ORPHAN_RETRIES : DATA_RETRIES;
+}
+
+// Caller holds the lock
+static packet* rebuild_oldest_locked(tcp_conn* conn) {
+    sent_segment* oldest = conn->sent.oldest();
+    if (!oldest) {
+        return nullptr;
+    }
+
+    size_t len = oldest->end_seq - oldest->start_seq;
+    packet* pkt = build_data_segment(conn, oldest->start_seq, len, oldest->end_seq == conn->snd_una + conn->snd_queue.size());
+    
+    if (pkt) {
+        conn->sent.mark_retransmitted(oldest, now_ns());
+    }
+
+    return pkt;
 }
 
 static int32_t retransmit(tcp_state state, const segment_source& src) {
@@ -123,6 +145,7 @@ void on_send_timer(timer::deadline_timer* timer) {
     send_action action = send_action::none;
     tcp_state state = tcp_state::closed;
     segment_source src = {};
+    packet* rebuilt = nullptr;
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);
@@ -141,12 +164,14 @@ void on_send_timer(timer::deadline_timer* timer) {
                 conn->state = tcp_state::closed;
                 conn->pending_error = resource::ERR_TIMEDOUT;
                 action = send_action::reset;
-            } else if (conn->retransmits >= retry_limit(state)) {
+            } else if (conn->retransmits >= retry_limit_locked(conn)) {
+                src = snapshot_source(conn);
                 conn->state = tcp_state::closed;
                 conn->pending_error = resource::ERR_TIMEDOUT;
-                action = send_action::give_up;
+                action = conn->sent.empty() ? send_action::give_up : send_action::reset;
             } else {
                 conn->retransmits++;
+                rebuilt = rebuild_oldest_locked(conn);
                 src = snapshot_source(conn);
                 arm_send_timer_locked(conn, timer_kind::rto);
                 action = send_action::retransmit;
@@ -161,7 +186,11 @@ void on_send_timer(timer::deadline_timer* timer) {
         retire_connection(conn);
     } else if (action == send_action::retransmit) {
         increment(counter::retransmits);
-        (void)retransmit(state, src);
+        if (rebuilt) {
+            (void)transmit_segment(rebuilt, src.iface, src.key);
+        } else {
+            (void)retransmit(state, src);
+        }
     }
 
     finish_timer_callback(conn);

@@ -96,10 +96,10 @@ static int run_server(uint16_t port) {
         printf("tcpecho: connection from %s:%u (fd=%d)\r\n",
                ip_str, client_port, client_fd);
 
-        char buf[1024];
+        char buf[1025];
         ssize_t n;
-        while ((n = read(client_fd, buf, sizeof(buf))) > 0) {
-            buf[n < (ssize_t)sizeof(buf) ? n : (ssize_t)sizeof(buf) - 1] = '\0';
+        while ((n = read(client_fd, buf, sizeof(buf) - 1)) > 0) {
+            buf[n] = '\0';
             printf("  recv %zd bytes: \"%s\"\r\n", n, buf);
             write(client_fd, buf, (size_t)n);
         }
