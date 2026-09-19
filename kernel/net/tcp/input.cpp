@@ -418,7 +418,10 @@ static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
         return OK;
     case handshake_action::established:
         disarm_timer(conn, &conn->send_timer);
-        RUN_ELEVATED(sync::wake_all(conn->conn_wq));
+        RUN_ELEVATED({
+            sync::wake_all(conn->conn_wq);
+            sync::wake_all(conn->tx_wq);
+        });
         return send_control(src, FLAG_ACK);
     case handshake_action::simultaneous:
         return send_syn_ack(src);
@@ -461,7 +464,10 @@ static int32_t syn_rcvd_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
         fail_connection(conn, resource::ERR_CONNREFUSED);
     } else if (action == handshake_action::established) {
         disarm_timer(conn, &conn->send_timer);
-        RUN_ELEVATED(sync::wake_all(conn->conn_wq));
+        RUN_ELEVATED({
+            sync::wake_all(conn->conn_wq);
+            sync::wake_all(conn->tx_wq);
+        });
     }
 
     return OK;

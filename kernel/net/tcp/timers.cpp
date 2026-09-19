@@ -116,8 +116,10 @@ static packet* rebuild_oldest_locked(tcp_conn* conn) {
     }
 
     size_t len = oldest->end_seq - oldest->start_seq;
-    packet* pkt = build_data_segment(conn, oldest->start_seq, len, oldest->end_seq == conn->snd_una + conn->snd_queue.size());
-    
+    bool last = oldest->end_seq == conn->snd_una + conn->snd_queue.size();
+    bool carries_fin = conn->fin_sent && oldest->end_seq + 1 == conn->snd_nxt;
+    uint8_t flags = FLAG_ACK | (last ? FLAG_PSH : 0) | (carries_fin ? FLAG_FIN : 0);
+    packet* pkt = build_data_segment(conn, oldest->start_seq, len, flags);
     if (pkt) {
         conn->sent.mark_retransmitted(oldest, now_ns());
     }

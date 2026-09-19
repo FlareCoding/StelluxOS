@@ -4,6 +4,7 @@
 #include "harness.h"
 #include "net/tcp/conn.h"
 #include "net/tcp/output.h"
+#include "net/tcp/timewait.h"
 #include "net/tcp/byte_queue.h"
 #include "resource/resource.h"
 #include "clock/clock.h"
@@ -86,14 +87,19 @@ struct sending {
         return queued;
     }
 
-    // The peer acknowledging stream bytes below `first`, advertising `window`
-    int32_t ack(size_t first, uint16_t window = PEER_WINDOW) {
-        packet* pkt = lp.remote.segment(FLAG_ACK, rcv_nxt(), first_seq() + static_cast<uint32_t>(first));
+    // A peer segment with `flags` at `seq` acknowledging stream bytes below
+    // `first`, advertising `window`
+    int32_t peer_segment(uint8_t flags, uint32_t seq, size_t first, uint16_t window) {
+        packet* pkt = lp.remote.segment(flags, seq, first_seq() + static_cast<uint32_t>(first));
         tcp_header* hdr = reinterpret_cast<tcp_header*>(pkt->data());
         hdr->window = htons(window);
         hdr->checksum = 0;
         hdr->checksum = htons(compute_checksum(lp.remote.addr, lp.remote.host, hdr, pkt->length()));
         return input(pkt);
+    }
+
+    int32_t ack(size_t first, uint16_t window = PEER_WINDOW) {
+        return peer_segment(FLAG_ACK, rcv_nxt(), first, window);
     }
 };
 
@@ -325,15 +331,62 @@ TEST(tcp_send, a_close_lets_the_queued_data_out_before_its_fin) {
     EXPECT_EQ(lp.link.frames_sent(), 0u);
 
     EXPECT_EQ(s.ack(PEER_MSS, 10000), OK);
-    ASSERT_EQ(lp.link.frames_sent(), 2u);
-    expect_data(s, 0, FLAG_PSH | FLAG_ACK, PEER_MSS, 500);
-    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_FIN | FLAG_ACK);
-    EXPECT_EQ(ntohl(sent_tcp(lp.link, 1)->seq), s.first_seq() + 1500);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    expect_data(s, 0, FLAG_FIN | FLAG_PSH | FLAG_ACK, PEER_MSS, 500);
     EXPECT_TRUE(s.conn->fin_sent);
     EXPECT_FALSE(s.conn->fin_pending);
     EXPECT_EQ(s.conn->snd_nxt, s.first_seq() + 1501);
 
+    lp.link.clear_frames();
+    advance_and_fire(TIMEOUT_INIT_NS);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    expect_data(s, 0, FLAG_FIN | FLAG_PSH | FLAG_ACK, PEER_MSS, 500);
+
     EXPECT_EQ(s.ack(1501), OK);
     EXPECT_EQ(s.conn->state, tcp_state::fin_wait_2);
     EXPECT_TRUE(s.conn->sent.empty());
+}
+
+TEST(tcp_send, a_close_sends_held_small_data_at_once_with_the_fin) {
+    linked_peer lp;
+    sending s(lp);
+
+    EXPECT_EQ(s.write(0, 10), 10u);
+    EXPECT_EQ(s.write(10, 10), 10u);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    lp.link.clear_frames();
+
+    close_connection(s.conn.ptr());
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    expect_data(s, 0, FLAG_FIN | FLAG_PSH | FLAG_ACK, 10, 10);
+    EXPECT_TRUE(s.conn->fin_sent);
+    EXPECT_EQ(s.conn->snd_nxt, s.first_seq() + 21);
+}
+
+TEST(tcp_send, the_peers_fin_arriving_before_our_fin_went_out_does_not_strand_it) {
+    linked_peer lp;
+    sending s(lp, 1000);
+
+    EXPECT_EQ(s.write(0, 1500), 1500u);
+    close_connection(s.conn.ptr());
+    ASSERT_EQ(s.conn->state, tcp_state::fin_wait_1);
+    lp.link.clear_frames();
+
+    EXPECT_EQ(s.peer_segment(FLAG_FIN | FLAG_ACK, s.rcv_nxt(), 0, 1000), OK);
+    EXPECT_EQ(s.conn->state, tcp_state::closing);
+    EXPECT_TRUE(s.conn->fin_pending);
+    lp.link.clear_frames();
+
+    EXPECT_EQ(s.peer_segment(FLAG_ACK, s.rcv_nxt() + 1, PEER_MSS, 10000), OK);
+
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_FIN | FLAG_PSH | FLAG_ACK);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->seq), s.first_seq() + PEER_MSS);
+    EXPECT_TRUE(s.conn->fin_sent);
+    EXPECT_EQ(s.conn->send_timer_kind, timer_kind::rto);
+
+    EXPECT_EQ(s.peer_segment(FLAG_ACK, s.rcv_nxt() + 1, 1501, 10000), OK);
+    EXPECT_EQ(s.conn->state, tcp_state::closed);
+    EXPECT_TRUE(lookup(tuple{lp.remote.host, lp.remote.addr, lp.remote.host_port, lp.remote.port}));
+    advance_and_fire(TIMEWAIT_LEN_NS);
 }

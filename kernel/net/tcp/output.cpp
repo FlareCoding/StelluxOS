@@ -154,9 +154,8 @@ int32_t send_fin(const segment_source& src) {
                         window_field(src.rcv_wnd, src.rcv_wscale), control_options(src));
 }
 
-packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, bool push) {
+packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, uint8_t flags) {
     segment_source src = snapshot_source(conn);
-    uint8_t flags = FLAG_ACK | (push ? FLAG_PSH : 0);
     uint8_t* payload = nullptr;
     packet* pkt = build_segment(src.key, flags, seq, src.rcv_nxt, window_field(src.rcv_wnd, src.rcv_wscale),
                                 control_options(src), len, &payload);
@@ -176,9 +175,9 @@ static size_t payload_mss(const tcp_conn* conn) {
     return conn->snd_mss > options ? conn->snd_mss - options : 1;
 }
 
-static bool may_send_payload(tcp_state state) {
+static bool may_send(tcp_state state) {
     return state == tcp_state::established || state == tcp_state::close_wait ||
-           state == tcp_state::fin_wait_1 || state == tcp_state::last_ack;
+           state == tcp_state::fin_wait_1 || state == tcp_state::closing || state == tcp_state::last_ack;
 }
 
 // Caller holds the lock. Sender SWS avoidance (RFC 9293 3.8.6.2.1), then
@@ -219,11 +218,14 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
             len = mss;
         }
 
-        if (len == 0 || (len < mss && !may_send_partial_locked(conn, usable))) {
+        bool last = len == available;
+        bool carries_fin = last && conn->fin_pending && !conn->fin_sent;
+        if (len == 0 || (len < mss && !carries_fin && !may_send_partial_locked(conn, usable))) {
             break;
         }
 
-        packet* pkt = build_data_segment(conn, conn->snd_nxt, len, len == available);
+        uint8_t flags = FLAG_ACK | (last ? FLAG_PSH : 0) | (carries_fin ? FLAG_FIN : 0);
+        packet* pkt = build_data_segment(conn, conn->snd_nxt, len, flags);
         if (!pkt) {
             break;
         }
@@ -238,6 +240,12 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
         }
 
         conn->snd_nxt += static_cast<uint32_t>(len);
+        if (carries_fin) {
+            conn->fin_pending = false;
+            conn->fin_sent = true;
+            conn->snd_nxt++;
+        }
+
         if (conn->send_timer_kind == timer_kind::none) {
             arm_send_timer_locked(conn, timer_kind::rto);
         }
@@ -276,7 +284,7 @@ int32_t output(tcp_conn* conn) {
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);
-        if (may_send_payload(conn->state)) {
+        if (may_send(conn->state)) {
             count = build_burst_locked(conn, burst, MAX_BURST);
         }
     });

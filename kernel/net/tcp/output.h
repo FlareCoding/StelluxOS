@@ -75,10 +75,10 @@ int32_t send_control(const segment_source& src, uint8_t flags);
 int32_t send_fin(const segment_source& src);
 
 /**
- * @brief Builds a segment carrying `len` queued bytes from `seq`, PSH when
- * `push`. Caller holds the lock. nullptr when no packet is free.
+ * @brief Builds a segment carrying `len` queued bytes from `seq` with `flags`.
+ * Caller holds the lock. nullptr when no packet is free.
  */
-packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, bool push);
+packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, uint8_t flags);
 
 /**
  * @brief Checksums, counts, and hands a built segment to IPv4. Consumes it.
