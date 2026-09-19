@@ -2,6 +2,7 @@
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
 #include "net/tcp/timewait.h"
+#include "net/tcp/rtt.h"
 #include "net/tcp/info.h"
 #include "net/tcp/seq.h"
 #include "net/net.h"
@@ -113,9 +114,15 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
         uint32_t advance = ack - conn->snd_una;
         size_t queued = conn->snd_queue.size();
 
-        (void)conn->sent.acknowledge(ack);
+        acknowledged covered = conn->sent.acknowledge(ack);
         freed_room = conn->snd_queue.consume(advance < queued ? advance : queued) > 0;
-        
+
+        uint64_t rtt_ns = covered.rtt_sample_sent_ns != 0 ? now_ns() - covered.rtt_sample_sent_ns
+                                                          : rtt_from_echo_locked(conn, opts.has_timestamps ? opts.ts_ecr : 0);
+        if (rtt_ns != 0) {
+            take_rtt_sample_locked(conn, rtt_ns);
+        }
+
         conn->snd_una = ack;
         conn->retransmits = 0;
 
@@ -213,7 +220,7 @@ static size_t take_payload_locked(tcp_conn* conn, uint32_t seq, const uint8_t* p
 // waits for the ack timer.
 static bool acknowledge_now_locked(tcp_conn* conn, size_t queued, size_t payload_len, bool fin_taken) {
     uint64_t now = now_ns();
-    bool idle = payload_len > 0 && conn->rcv_last_ns != 0 && now - conn->rcv_last_ns > TIMEOUT_INIT_NS;
+    bool idle = payload_len > 0 && conn->rcv_last_ns != 0 && now - conn->rcv_last_ns > conn->rto_ns;
     
     if (payload_len > 0) {
         conn->rcv_last_ns = now;
@@ -372,6 +379,11 @@ static void take_peer_syn_locked(tcp_conn* conn, const tcp_header* hdr, const tc
     conn->rcv_adv = conn->rcv_nxt + conn->rcv_wnd;
     conn->rcv_acked = conn->rcv_nxt;
     configure_send_path_locked(conn);
+
+    uint64_t rtt_ns = rtt_from_echo_locked(conn, opts.has_timestamps ? opts.ts_ecr : 0);
+    if (rtt_ns != 0) {
+        take_rtt_sample_locked(conn, rtt_ns);
+    }
 }
 
 static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr, const tcp_options& opts) {

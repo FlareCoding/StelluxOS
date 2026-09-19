@@ -114,6 +114,11 @@ struct tcp_conn : record {
     uint64_t              send_timer_deadline_ns;
     uint8_t               retransmits;
 
+    // Round-trip estimate (RFC 6298), srtt_us zero until the first sample
+    uint32_t srtt_us;
+    uint32_t rttvar_us;
+    uint64_t rto_ns;
+
     // Acknowledgment strategy (RFC 5681 4.2): an owed ACK waits on the ack
     // timer unless a rule below sends it at once
     timer::deadline_timer ack_timer;

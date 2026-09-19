@@ -3,6 +3,7 @@
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
 #include "net/tcp/info.h"
+#include "net/tcp/rtt.h"
 #include "net/tcp/seq.h"
 #include "net/net.h"
 #include "net/interface.h"
@@ -441,6 +442,11 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
     conn->ts_recent = fields.ts_ok && opts.has_timestamps ? opts.ts_val : fields.ts_recent;
     conn->ts_recent_age_ns = now_ns();
     conn->ts_offset = fields.ts_offset;
+
+    uint64_t rtt_ns = rtt_from_echo_locked(conn, opts.has_timestamps ? opts.ts_ecr : 0);
+    if (rtt_ns != 0) {
+        take_rtt_sample_locked(conn, rtt_ns);
+    }
 }
 
 static int32_t send_request_ack(const tcp_request* request, const negotiated_fields& fields) {

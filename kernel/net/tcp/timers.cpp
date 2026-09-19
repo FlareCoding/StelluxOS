@@ -46,15 +46,17 @@ void finish_timer_callback(record* rec) {
 }
 
 void arm_send_timer_locked(tcp_conn* conn, timer_kind kind) {
-    uint64_t backoff = TIMEOUT_INIT_NS << conn->retransmits;
+    uint64_t backoff = conn->rto_ns << conn->retransmits;
     conn->send_timer_kind = kind;
     conn->send_timer_deadline_ns = now_ns() + (backoff > TIMEOUT_MAX_NS ? TIMEOUT_MAX_NS : backoff);
+    
     arm_timer(conn, &conn->send_timer, conn->send_timer_deadline_ns);
 }
 
 void arm_orphan_timer_locked(tcp_conn* conn) {
     conn->send_timer_kind = timer_kind::orphan;
     conn->send_timer_deadline_ns = now_ns() + FIN_TIMEOUT_NS;
+
     arm_timer(conn, &conn->send_timer, conn->send_timer_deadline_ns);
 }
 
@@ -66,6 +68,7 @@ void delay_ack_locked(tcp_conn* conn) {
 
     conn->ack_timer_armed = true;
     conn->ack_timer_deadline_ns = now_ns() + DELACK_NS;
+    
     arm_timer(conn, &conn->ack_timer, conn->ack_timer_deadline_ns);
 }
 
@@ -188,6 +191,7 @@ void on_send_timer(timer::deadline_timer* timer) {
         retire_connection(conn);
     } else if (action == send_action::retransmit) {
         increment(counter::retransmits);
+
         if (rebuilt) {
             (void)transmit_segment(rebuilt, src.iface, src.key);
         } else {

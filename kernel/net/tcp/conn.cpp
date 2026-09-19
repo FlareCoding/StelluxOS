@@ -200,6 +200,7 @@ tcp_conn* alloc_conn(const tuple& key, interface* iface) {
     conn->tx_wq.init();
     conn->conn_wq.init();
     conn->quick_acks = MAX_QUICKACKS;
+    conn->rto_ns = TIMEOUT_INIT_NS;
     timer::init_deadline_timer(&conn->send_timer, on_send_timer);
     timer::init_deadline_timer(&conn->ack_timer, on_ack_timer);
 
