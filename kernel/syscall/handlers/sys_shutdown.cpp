@@ -4,16 +4,12 @@
 #include "sched/sched.h"
 #include "sched/task.h"
 
-constexpr int32_t SHUT_RD   = 0;
-constexpr int32_t SHUT_WR   = 1;
-constexpr int32_t SHUT_RDWR = 2;
-
 DEFINE_SYSCALL2(shutdown, fd, how) {
     sched::task* task = sched::current();
     if (!task) return syscall::EIO;
 
     int32_t how_val = static_cast<int32_t>(how);
-    if (how_val != SHUT_RD && how_val != SHUT_WR && how_val != SHUT_RDWR) {
+    if (how_val != resource::SHUT_RD && how_val != resource::SHUT_WR && how_val != resource::SHUT_RDWR) {
         return syscall::EINVAL;
     }
 

@@ -297,41 +297,73 @@ void abort_connection(tcp_conn* conn) {
     retire_connection(conn);
 }
 
-void close_connection(tcp_conn* conn) {
+// Caller holds the lock. RFC 9293 3.10.4
+static bool queue_fin_locked(tcp_conn* conn) {
+    switch (conn->state) {
+    case tcp_state::syn_rcvd:
+    case tcp_state::established:
+        conn->state = tcp_state::fin_wait_1;
+        break;
+    case tcp_state::close_wait:
+        conn->state = tcp_state::last_ack;
+        break;
+    default:
+        return false;
+    }
+
+    conn->fin_pending = true;
+
+    return true;
+}
+
+void shutdown_send(tcp_conn* conn) {
     bool send = false;
-    bool abandon = false;
+    RUN_ELEVATED({
+        {
+            sync::irq_lock_guard guard(conn->lock);
+            send = queue_fin_locked(conn);
+        }
+
+        sync::wake_all(conn->tx_wq);
+    });
+
+    if (send) {
+        (void)output(conn);
+    }
+}
+
+void shutdown_receive(tcp_conn* conn) {
+    RUN_ELEVATED({
+        {
+            sync::irq_lock_guard guard(conn->lock);
+            conn->rcv_shutdown = true;
+        }
+
+        sync::wake_all(conn->rx_wq);
+    });
+}
+
+void close_connection(tcp_conn* conn) {
+    bool abort = false;
+    bool send = false;
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);
         conn->owner = nullptr;
         conn->orphaned = true;
+        conn->rcv_shutdown = true;
 
-        switch (conn->state) {
-        case tcp_state::syn_sent:
-            abandon = true;
-            break;
-        case tcp_state::syn_rcvd:
-        case tcp_state::established:
-            conn->state = tcp_state::fin_wait_1;
+        bool unread = conn->rcv_queue.size() > 0 || !conn->ooo_queue.empty();
+        if (conn->state == tcp_state::syn_sent || unread) {
+            abort = true;
+        } else if (queue_fin_locked(conn)) {
             send = true;
-            break;
-        case tcp_state::close_wait:
-            conn->state = tcp_state::last_ack;
-            send = true;
-            break;
-        case tcp_state::fin_wait_2:
+        } else if (conn->state == tcp_state::fin_wait_2) {
             arm_orphan_timer_locked(conn);
-            break;
-        default:
-            break;
-        }
-
-        if (send) {
-            conn->fin_pending = true;
         }
     });
 
-    if (abandon) {
+    if (abort) {
         abort_connection(conn);
     } else if (send) {
         (void)output(conn);

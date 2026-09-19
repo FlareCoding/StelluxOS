@@ -83,6 +83,7 @@ struct tcp_conn : record {
     bool      fin_sent;
     bool      fin_rcvd;
     bool      orphaned;
+    bool      rcv_shutdown;
 
     // Send sequence space (RFC 9293 3.3.1)
     uint32_t snd_una;
@@ -277,8 +278,20 @@ void fail_connection(tcp_conn* conn, int32_t error);
 void retire_connection(tcp_conn* conn);
 
 /**
- * @brief Begins the orderly close (RFC 9293 3.10.4) of a connection whose
- * socket has let go, the FIN following the queued data. SYN_SENT is abandoned.
+ * @brief Queues the FIN behind the pending data (RFC 9293 3.10.4) and wakes
+ * writers, who find EPIPE. Nothing more happens once a FIN is queued.
+ */
+void shutdown_send(tcp_conn* conn);
+
+/**
+ * @brief Ends the receiving side without sending anything: readers wake and
+ * read end-of-file once the queue is out.
+ */
+void shutdown_receive(tcp_conn* conn);
+
+/**
+ * @brief Lets the socket go: a reset when received data would be lost (RFC
+ * 1122 4.2.2.13), otherwise the orderly close, continued as an orphan.
  */
 void close_connection(tcp_conn* conn);
 

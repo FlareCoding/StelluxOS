@@ -29,6 +29,7 @@ enum class segment_action : uint8_t {
     consume   = 0,
     challenge = 1,
     reset     = 2,
+    abort     = 3,
 };
 
 // The ACKs answered to unacceptable segments this second: the limit is drawn
@@ -180,6 +181,14 @@ static void take_fin_ack_locked(tcp_conn* conn, uint32_t ack) {
     }
 }
 
+// Caller holds the lock. RFC 1122 4.2.2.13
+static bool refuses_data_locked(const tcp_conn* conn, uint32_t seq, size_t payload_len) {
+    bool receive_side_gone = conn->rcv_shutdown &&
+                             (conn->state == tcp_state::fin_wait_1 || conn->state == tcp_state::fin_wait_2);
+
+    return receive_side_gone && payload_len > 0 && seq_gt(seq + static_cast<uint32_t>(payload_len), conn->rcv_nxt);
+}
+
 // Caller holds the lock. RFC 5681 4.2: at once for a FIN, for payload out of
 // order or filling a hole, after two full segments, in quick-ack mode, or
 // after an idle period. Otherwise the ack timer.
@@ -208,6 +217,8 @@ static bool take_fin_locked(tcp_conn* conn, uint32_t fin_seq) {
 
     conn->rcv_nxt++;
     conn->fin_rcvd = true;
+    clear_out_of_order_locked(conn);
+
     switch (conn->state) {
     case tcp_state::established:
         conn->state = tcp_state::close_wait;
@@ -267,22 +278,27 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
         } else {
             wake_writers = take_ack_locked(conn, hdr, opts);
             take_fin_ack_locked(conn, ack);
-            try_send = unsent_bytes(conn) > 0 || conn->fin_pending;
 
-            payload_result got = take_payload_locked(conn, pkt, hdr, seq, payload_len);
-            packet_taken = got.packet_taken;
-            bool fin_taken = got.fin_seq != 0 && take_fin_locked(conn, got.fin_seq);
-            wake_readers = got.queued > 0 || fin_taken;
+            if (refuses_data_locked(conn, seq, payload_len)) {
+                action = segment_action::abort;
+            } else {
+                try_send = unsent_bytes(conn) > 0 || conn->fin_pending;
 
-            if (payload_len > 0 || (hdr->flags & FLAG_FIN)) {
-                ack_now = acknowledge_now_locked(conn, got.queued, payload_len, hdr->flags & FLAG_FIN);
-                if (!ack_now) {
-                    delay_ack_locked(conn);
+                payload_result got = take_payload_locked(conn, pkt, hdr, seq, payload_len);
+                packet_taken = got.packet_taken;
+                bool fin_taken = got.fin_seq != 0 && take_fin_locked(conn, got.fin_seq);
+                wake_readers = got.queued > 0 || fin_taken;
+
+                if (payload_len > 0 || (hdr->flags & FLAG_FIN)) {
+                    ack_now = acknowledge_now_locked(conn, got.queued, payload_len, hdr->flags & FLAG_FIN);
+                    if (!ack_now) {
+                        delay_ack_locked(conn);
+                    }
                 }
             }
         }
 
-        if (action == segment_action::reset) {
+        if (action == segment_action::reset || action == segment_action::abort) {
             conn->state = tcp_state::closed;
             conn->pending_error = resource::ERR_CONNRESET;
             conn->send_timer_kind = timer_kind::none;
@@ -300,7 +316,9 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
     }
 
     int32_t rc = OK;
-    if (ack_now) {
+    if (action == segment_action::abort) {
+        rc = send_segment(src.iface, src.key, FLAG_RST | FLAG_ACK, src.snd_nxt, src.rcv_nxt, 0, {});
+    } else if (ack_now) {
         rc = send_control(src, FLAG_ACK);
     } else if (action == segment_action::challenge && take_challenge_ack()) {
         rc = send_control(src, FLAG_ACK);

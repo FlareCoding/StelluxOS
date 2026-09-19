@@ -79,7 +79,6 @@ struct reassembling {
     uint32_t first_seq() const { return PEER_ISS + 1; }
     uint32_t snd_nxt() const { return conn->iss + 1; }
 
-    // Shrinks the receive queue to one chunk and advertises exactly that
     size_t narrow_window() {
         RUN_ELEVATED({
             sync::irq_lock_guard guard(conn->lock);
@@ -330,6 +329,24 @@ TEST(tcp_reassembly, a_fin_right_behind_the_window_edge_is_kept) {
     EXPECT_EQ(r.conn->state, tcp_state::close_wait);
     EXPECT_EQ(r.conn->rcv_nxt, r.first_seq() + window + 1);
     EXPECT_TRUE(queue_matches_pattern(r.conn.ptr(), window));
+}
+
+TEST(tcp_reassembly, taking_the_fin_discards_anything_queued_past_it) {
+    linked_peer lp;
+    reassembling r(lp);
+    size_t budget_before = budget_in_use();
+
+    EXPECT_EQ(r.send(100, 0, FLAG_ACK | FLAG_FIN), 1u);
+    EXPECT_EQ(r.send(120, 30), 1u);
+    EXPECT_EQ(r.conn->ooo_queue.size(), 2u);
+
+    EXPECT_EQ(r.send(0, 100), 1u);
+    EXPECT_EQ(r.conn->state, tcp_state::close_wait);
+    EXPECT_EQ(r.conn->rcv_nxt, r.first_seq() + 101);
+    EXPECT_EQ(r.conn->ooo_queue.size(), 0u);
+    EXPECT_EQ(r.conn->ooo_bytes, 0u);
+    EXPECT_EQ(r.last_options().sack_count, 0);
+    EXPECT_EQ(budget_in_use(), budget_before + CHUNK_SIZE);
 }
 
 TEST(tcp_reassembly, a_fin_ahead_without_payload_is_acknowledged_at_once) {

@@ -205,7 +205,7 @@ TEST(tcp_data, payload_after_the_peers_fin_is_ignored) {
     EXPECT_EQ(r.conn->rcv_queue.size(), 4u);
 }
 
-TEST(tcp_data, payload_keeps_arriving_after_this_host_closed) {
+TEST(tcp_data, payload_arriving_after_this_host_closed_is_refused_with_a_reset) {
     linked_peer lp;
     receiving r(lp);
     close_connection(r.conn.ptr());
@@ -213,14 +213,13 @@ TEST(tcp_data, payload_keeps_arriving_after_this_host_closed) {
     lp.link.clear_frames();
 
     EXPECT_EQ(r.send(0, 7), OK);
-    EXPECT_EQ(r.conn->rcv_queue.size(), 7u);
-    EXPECT_TRUE(queue_matches_pattern(r.conn.ptr(), 0, 7));
 
-    EXPECT_EQ(input(lp.remote.ack(r.first_seq() + 7, r.snd_nxt() + 1)), OK);
-    ASSERT_EQ(r.conn->state, tcp_state::fin_wait_2);
-    EXPECT_EQ(r.send(7, 3), OK);
-    EXPECT_EQ(r.conn->rcv_queue.size(), 10u);
-    EXPECT_TRUE(queue_matches_pattern(r.conn.ptr(), 0, 10));
+    EXPECT_EQ(r.conn->rcv_queue.size(), 0u);
+    EXPECT_EQ(r.conn->state, tcp_state::closed);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_RST | FLAG_ACK);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->seq), r.snd_nxt() + 1);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->ack), r.first_seq());
 }
 
 TEST(tcp_data, the_advertised_right_edge_never_moves_left) {

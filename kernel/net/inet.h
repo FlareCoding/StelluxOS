@@ -26,7 +26,16 @@ constexpr int32_t SOL_SOCKET      = 1;
 constexpr int32_t SO_REUSEADDR    = 2;
 constexpr int32_t SO_ERROR        = 4;
 constexpr int32_t SO_BROADCAST    = 6;
+constexpr int32_t SO_LINGER       = 13;
 constexpr int32_t SO_BINDTODEVICE = 25;
+
+/**
+ * The value of SO_LINGER: whether close waits, and for how many seconds.
+ */
+struct linger {
+    int32_t on;
+    int32_t seconds;
+};
 
 constexpr size_t SOCKADDR_IN_LEN = 16;
 

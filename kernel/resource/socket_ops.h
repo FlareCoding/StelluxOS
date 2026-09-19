@@ -5,6 +5,10 @@
 
 namespace resource {
 
+constexpr int32_t SHUT_RD   = 0;
+constexpr int32_t SHUT_WR   = 1;
+constexpr int32_t SHUT_RDWR = 2;
+
 using sendto_fn = ssize_t (*)(resource_object* obj, const void* ksrc, size_t count,
                               uint32_t flags, const void* kaddr, size_t addrlen);
 using recvfrom_fn = ssize_t (*)(resource_object* obj, void* kdst, size_t count,

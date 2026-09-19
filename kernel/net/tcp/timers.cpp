@@ -108,7 +108,7 @@ static uint8_t retry_limit_locked(const tcp_conn* conn) {
         return SYN_RETRIES;
     }
 
-    return conn->sent.empty() ? ORPHAN_RETRIES : DATA_RETRIES;
+    return conn->orphaned ? ORPHAN_RETRIES : DATA_RETRIES;
 }
 
 // Caller holds the lock

@@ -9,12 +9,18 @@
 #include "resource/socket_ops.h"
 #include "fs/fstypes.h"
 #include "sync/poll.h"
+#include "sched/sched.h"
+#include "clock/clock.h"
 #include "mm/heap.h"
+#include "dynpriv/dynpriv.h"
+#include "helpers.h"
 
 TEST_SUITE(tcp_socket);
 
 using namespace net;
 using namespace net::tcp;
+
+constexpr uint64_t SECOND_NS = 1000000000ULL;
 
 // lo0 owns 127.0.0.1 in every test image, TEST-NET-1 belongs to nobody
 static const ipv4::ipv4_addr g_loopback = {{127, 0, 0, 1}};
@@ -56,6 +62,15 @@ struct stream_socket {
         size_t len = sizeof(value);
         ops()->getsockopt(obj, inet::SOL_SOCKET, inet::SO_ERROR, &value, &len);
         return value;
+    }
+
+    peer establish(linked_peer& lp, uint32_t* iss) const {
+        EXPECT_EQ(connect(lp.remote, true), resource::ERR_INPROGRESS);
+        peer remote = replying_to(lp, 0);
+        *iss = ntohl(sent_tcp(lp.link, 0)->seq);
+        EXPECT_EQ(input(remote.segment(FLAG_SYN | FLAG_ACK, 7000, *iss + 1)), OK);
+        lp.link.clear_frames();
+        return remote;
     }
 };
 
@@ -388,6 +403,198 @@ TEST(tcp_socket, the_peers_fin_ends_reads_and_polls_readable_until_the_socket_cl
     EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_FIN | FLAG_ACK);
     EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->seq), iss + 2);
     EXPECT_EQ(conn->state, tcp_state::last_ack);
+
+    abort_connection(conn.ptr());
+}
+
+TEST(tcp_socket, shutting_down_writes_sends_the_fin_and_later_writes_break) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    uint32_t iss = 0;
+    peer remote = sock.establish(lp, &iss);
+
+    EXPECT_EQ(sock.ops()->shutdown(sock.obj, resource::SHUT_WR), resource::OK);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_FIN | FLAG_ACK);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->seq), iss + 1);
+    EXPECT_EQ(sock.impl()->conn->state, tcp_state::fin_wait_1);
+    EXPECT_FALSE(sock.impl()->conn->orphaned);
+
+    uint8_t byte = 'x';
+    EXPECT_EQ(sock.obj->ops->write(sock.obj, &byte, 1, 0), resource::ERR_PIPE);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), 0u);
+    EXPECT_EQ(sock.ops()->shutdown(sock.obj, resource::SHUT_WR), resource::OK);
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+
+    EXPECT_EQ(input(remote.segment(FLAG_ACK, 7001, iss + 2, {}, "hi", 2)), OK);
+    EXPECT_EQ(sock.impl()->conn->state, tcp_state::fin_wait_2);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_IN);
+    uint8_t buf[4] = {};
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, buf, sizeof(buf), 0), 2);
+    EXPECT_EQ(buf[1], 'i');
+
+    abort_connection(sock.impl()->conn.ptr());
+}
+
+TEST(tcp_socket, shutting_down_reads_ends_them_at_once_and_sends_nothing) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    uint32_t iss = 0;
+    (void)sock.establish(lp, &iss);
+
+    EXPECT_EQ(sock.ops()->shutdown(sock.obj, resource::SHUT_RD), resource::OK);
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+    EXPECT_EQ(sock.impl()->conn->state, tcp_state::established);
+
+    uint8_t byte = 0;
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, &byte, 1, fs::O_NONBLOCK), 0);
+    EXPECT_EQ(sock.obj->ops->read(sock.obj, &byte, 1, 0), 0);
+    EXPECT_EQ(sock.obj->ops->poll(sock.obj, nullptr), sync::POLL_IN | sync::POLL_OUT);
+
+    byte = 'w';
+    EXPECT_EQ(sock.obj->ops->write(sock.obj, &byte, 1, 0), 1);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_PSH | FLAG_ACK);
+
+    abort_connection(sock.impl()->conn.ptr());
+}
+
+TEST(tcp_socket, shutdown_needs_an_established_connection) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    EXPECT_EQ(sock.ops()->shutdown(sock.obj, resource::SHUT_RDWR), resource::ERR_NOTCONN);
+
+    EXPECT_EQ(sock.connect(lp.remote, true), resource::ERR_INPROGRESS);
+    EXPECT_EQ(sock.ops()->shutdown(sock.obj, resource::SHUT_WR), resource::ERR_NOTCONN);
+    EXPECT_EQ(sock.impl()->conn->state, tcp_state::syn_sent);
+
+    abort_connection(sock.impl()->conn.ptr());
+}
+
+TEST(tcp_socket, linger_is_kept_and_read_back) {
+    stream_socket sock;
+
+    inet::linger set = {1, 7};
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_LINGER, &set, sizeof(set)), resource::OK);
+    EXPECT_TRUE(sock.impl()->linger);
+    EXPECT_EQ(sock.impl()->linger_seconds, 7u);
+
+    inet::linger got = {};
+    size_t len = sizeof(got);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_LINGER, &got, &len), resource::OK);
+    EXPECT_EQ(got.on, 1);
+    EXPECT_EQ(got.seconds, 7);
+    EXPECT_EQ(len, sizeof(got));
+
+    len = sizeof(int32_t);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_LINGER, &got, &len), resource::ERR_INVAL);
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_LINGER, &set, sizeof(int32_t)), resource::ERR_INVAL);
+
+    set = {0, 3};
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_LINGER, &set, sizeof(set)), resource::OK);
+    EXPECT_FALSE(sock.impl()->linger);
+}
+
+TEST(tcp_socket, closing_with_a_zero_linger_resets_at_once) {
+    linked_peer lp;
+    rc::strong_ref<tcp_conn> conn;
+    uint32_t iss = 0;
+    {
+        stream_socket sock;
+        sock.impl()->local.iface = &lp.link;
+        (void)sock.establish(lp, &iss);
+
+        inet::linger set = {1, 0};
+        EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_LINGER, &set, sizeof(set)), resource::OK);
+        conn = sock.impl()->conn;
+    }
+
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_RST | FLAG_ACK);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->seq), iss + 1);
+    EXPECT_EQ(conn->state, tcp_state::closed);
+    EXPECT_EQ(record_count(record_kind::connection), 0u);
+}
+
+// The wait runs in its own task: the runner's stack is privileged, and the
+// poll entry the wait leaves on the connection must be reachable lowered
+struct fin_wait_run {
+    tcp_conn*              conn;
+    uint64_t               timeout_ns;
+    uint64_t               elapsed_ns;
+    bool                   acknowledged;
+    sync::atomic<uint32_t> done;
+};
+
+static fin_wait_run g_fin_wait;
+
+static void wait_for_fin_ack(void*) {
+    uint64_t started = clock::now_ns();
+    RUN_ELEVATED(g_fin_wait.acknowledged = wait_fin_acknowledged(g_fin_wait.conn, g_fin_wait.timeout_ns));
+    g_fin_wait.elapsed_ns = clock::now_ns() - started;
+    g_fin_wait.done.store_release(1);
+    sched::exit(0);
+}
+
+static void start_fin_wait(tcp_conn* conn, uint64_t timeout_ns) {
+    g_fin_wait.conn = conn;
+    g_fin_wait.timeout_ns = timeout_ns;
+    g_fin_wait.elapsed_ns = 0;
+    g_fin_wait.acknowledged = false;
+    g_fin_wait.done.store_relaxed(0);
+
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(wait_for_fin_ack, nullptr, "tcp_fin_wait");
+        ASSERT_NOT_NULL(t);
+        sched::enqueue(t);
+    });
+}
+
+TEST(tcp_socket, waiting_for_the_fin_to_be_acknowledged_ends_when_the_ack_arrives) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    uint32_t iss = 0;
+    peer remote = sock.establish(lp, &iss);
+
+    rc::strong_ref<tcp_conn> conn = sock.impl()->conn;
+    close_connection(conn.ptr());
+    EXPECT_EQ(conn->state, tcp_state::fin_wait_1);
+
+    start_fin_wait(conn.ptr(), 5 * SECOND_NS);
+    RUN_ELEVATED(sched::sleep_ms(30));
+    EXPECT_EQ(g_fin_wait.done.load_acquire(), 0u);
+
+    EXPECT_EQ(input(remote.segment(FLAG_ACK, 7001, iss + 2)), OK);
+    EXPECT_TRUE(test_helpers::spin_wait(g_fin_wait.done));
+
+    EXPECT_TRUE(g_fin_wait.acknowledged);
+    EXPECT_EQ(conn->state, tcp_state::fin_wait_2);
+    EXPECT_TRUE(g_fin_wait.elapsed_ns < 5 * SECOND_NS);
+
+    abort_connection(conn.ptr());
+}
+
+TEST(tcp_socket, waiting_for_the_fin_to_be_acknowledged_gives_up_when_the_time_passes) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    uint32_t iss = 0;
+    (void)sock.establish(lp, &iss);
+
+    rc::strong_ref<tcp_conn> conn = sock.impl()->conn;
+    close_connection(conn.ptr());
+
+    start_fin_wait(conn.ptr(), SECOND_NS / 20);
+    EXPECT_TRUE(test_helpers::spin_wait(g_fin_wait.done));
+
+    EXPECT_FALSE(g_fin_wait.acknowledged);
+    EXPECT_TRUE(g_fin_wait.elapsed_ns >= SECOND_NS / 20);
+    EXPECT_EQ(conn->state, tcp_state::fin_wait_1);
 
     abort_connection(conn.ptr());
 }

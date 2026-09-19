@@ -19,6 +19,8 @@ struct tcp_socket {
     endpoint                     local;
     bool                         bound;
     bool                         connecting;
+    bool                         linger;
+    uint32_t                     linger_seconds;
     rc::strong_ref<tcp_listener> listener;
     rc::strong_ref<tcp_conn>     conn;
     sync::spinlock               lock;
@@ -33,9 +35,17 @@ __PRIVILEGED_CODE tcp_socket* socket_open();
 
 /**
  * @brief Unregisters the socket, releasing what it stands for, and frees it.
+ * With SO_LINGER the closing program waits for its FIN to be acknowledged.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void socket_close(tcp_socket* sock);
+
+/**
+ * @brief Blocks the calling task until the connection's FIN is acknowledged,
+ * returning true, or until `timeout_ns` passes or a signal arrives.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool wait_fin_acknowledged(tcp_conn* conn, uint64_t timeout_ns);
 
 /**
  * @brief Claims `addr` and `port` for the socket, an ephemeral port when `port`

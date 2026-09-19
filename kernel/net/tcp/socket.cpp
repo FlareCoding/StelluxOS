@@ -11,13 +11,17 @@
 #include "sync/poll.h"
 #include "sync/wait_queue.h"
 #include "sched/sched.h"
+#include "sched/task.h"
 #include "signals/signal.h"
+#include "clock/clock.h"
 #include "mm/heap.h"
 #include "dynpriv/dynpriv.h"
 #include "common/string.h"
 
 namespace net {
 namespace tcp {
+
+constexpr uint64_t SECOND_NS = 1000000000ULL;
 
 static tcp_socket* g_sockets[MAX_SOCKETS];
 static sync::spinlock g_sockets_lock = sync::SPINLOCK_INIT;
@@ -54,6 +58,48 @@ __PRIVILEGED_CODE tcp_socket* socket_open() {
     return nullptr;
 }
 
+// Only the program that asked is held up, never the kernel reaping its handles
+__PRIVILEGED_CODE static bool closing_task_may_linger() {
+    sched::task* task = sched::current();
+    return task && task->group && task->cleanup_stage.load_acquire() == sched::TASK_CLEANUP_STAGE_ACTIVE;
+}
+
+__PRIVILEGED_CODE static bool fin_acknowledged_locked(const tcp_conn* conn) {
+    return conn->state != tcp_state::fin_wait_1 && conn->state != tcp_state::closing &&
+           conn->state != tcp_state::last_ack;
+}
+
+__PRIVILEGED_CODE bool wait_fin_acknowledged(tcp_conn* conn, uint64_t timeout_ns) {
+    sched::task* task = sched::current();
+    if (!task) {
+        return false;
+    }
+
+    uint64_t deadline_ns = clock::now_ns() + timeout_ns;
+    sync::poll_table pt;
+    pt.init(task);
+    sync::poll_subscribe(pt, conn->conn_wq);
+
+    bool acknowledged = false;
+    while (true) {
+        {
+            sync::irq_lock_guard guard(conn->lock);
+            acknowledged = fin_acknowledged_locked(conn);
+        }
+
+        uint64_t now = clock::now_ns();
+        if (acknowledged || pt.error.load_acquire() || now >= deadline_ns || signals::interrupt_pending(task)) {
+            break;
+        }
+
+        sync::poll_wait(pt, deadline_ns - now);
+    }
+
+    sync::poll_cleanup(pt);
+
+    return acknowledged;
+}
+
 __PRIVILEGED_CODE void socket_close(tcp_socket* sock) {
     {
         sync::irq_lock_guard guard(g_sockets_lock);
@@ -69,8 +115,13 @@ __PRIVILEGED_CODE void socket_close(tcp_socket* sock) {
         listener_close(sock->listener.ptr());
     }
 
-    if (sock->conn) {
+    if (sock->conn && sock->linger && sock->linger_seconds == 0) {
+        abort_connection(sock->conn.ptr());
+    } else if (sock->conn) {
         close_connection(sock->conn.ptr());
+        if (sock->linger && closing_task_may_linger()) {
+            (void)wait_fin_acknowledged(sock->conn.ptr(), sock->linger_seconds * SECOND_NS);
+        }
     }
 
     heap::ufree_delete(sock);
@@ -238,6 +289,8 @@ __PRIVILEGED_CODE static int32_t socket_accept(resource::resource_object* obj, r
 
     child->local = {conn->key.local_addr, conn->key.local_port, sock->local.iface, false};
     child->bound = true;
+    child->linger = sock->linger;
+    child->linger_seconds = sock->linger_seconds;
     child_obj->type = resource::resource_type::SOCKET;
     child_obj->ops = socket_ops();
     child_obj->impl = child;
@@ -437,48 +490,64 @@ __PRIVILEGED_CODE static int32_t socket_connect(resource::resource_object* obj, 
 
 __PRIVILEGED_CODE static int32_t socket_getsockopt(resource::resource_object* obj, int32_t level,
                                                    int32_t optname, void* optval, size_t* optlen) {
-    if (level != inet::SOL_SOCKET || (optname != inet::SO_REUSEADDR && optname != inet::SO_ERROR)) {
+    bool known = optname == inet::SO_REUSEADDR || optname == inet::SO_ERROR || optname == inet::SO_LINGER;
+    if (level != inet::SOL_SOCKET || !known) {
         return resource::ERR_NOPROTOOPT;
     }
 
-    if (*optlen < sizeof(int32_t)) {
+    size_t size = optname == inet::SO_LINGER ? sizeof(inet::linger) : sizeof(int32_t);
+    if (*optlen < size) {
         return resource::ERR_INVAL;
     }
 
     tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
     sync::irq_lock_guard guard(sock->lock);
 
-    int32_t value = 0;
-    if (optname == inet::SO_REUSEADDR) {
-        value = sock->local.reuseaddr ? 1 : 0;
-    } else if (sock->conn) {
-        sync::irq_lock_guard conn_guard(sock->conn->lock);
-        value = sock->conn->pending_error;
-        sock->conn->pending_error = resource::OK;
+    if (optname == inet::SO_LINGER) {
+        inet::linger linger = {sock->linger ? 1 : 0, static_cast<int32_t>(sock->linger_seconds)};
+        string::memcpy(optval, &linger, sizeof(linger));
+    } else {
+        int32_t value = 0;
+        if (optname == inet::SO_REUSEADDR) {
+            value = sock->local.reuseaddr ? 1 : 0;
+        } else if (sock->conn) {
+            sync::irq_lock_guard conn_guard(sock->conn->lock);
+            value = sock->conn->pending_error;
+            sock->conn->pending_error = resource::OK;
+        }
+
+        string::memcpy(optval, &value, sizeof(value));
     }
 
-    string::memcpy(optval, &value, sizeof(value));
-    *optlen = sizeof(value);
+    *optlen = size;
 
     return resource::OK;
 }
 
 __PRIVILEGED_CODE static int32_t socket_setsockopt(resource::resource_object* obj, int32_t level,
                                                    int32_t optname, const void* optval, size_t optlen) {
-    if (level != inet::SOL_SOCKET || optname != inet::SO_REUSEADDR) {
+    if (level != inet::SOL_SOCKET || (optname != inet::SO_REUSEADDR && optname != inet::SO_LINGER)) {
         return resource::ERR_NOPROTOOPT;
     }
 
-    if (optlen < sizeof(int32_t)) {
+    size_t size = optname == inet::SO_LINGER ? sizeof(inet::linger) : sizeof(int32_t);
+    if (optlen < size) {
         return resource::ERR_INVAL;
     }
 
-    int32_t enable = 0;
-    string::memcpy(&enable, optval, sizeof(enable));
-
     tcp_socket* sock = static_cast<tcp_socket*>(obj->impl);
     sync::irq_lock_guard guard(sock->lock);
-    sock->local.reuseaddr = enable != 0;
+
+    if (optname == inet::SO_LINGER) {
+        inet::linger linger;
+        string::memcpy(&linger, optval, sizeof(linger));
+        sock->linger = linger.on != 0;
+        sock->linger_seconds = linger.seconds < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(linger.seconds);
+    } else {
+        int32_t enable = 0;
+        string::memcpy(&enable, optval, sizeof(enable));
+        sock->local.reuseaddr = enable != 0;
+    }
 
     return resource::OK;
 }
@@ -524,8 +593,8 @@ __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, voi
     bool nonblock = (flags & fs::O_NONBLOCK) != 0;
     sync::irq_state irq = sync::spin_lock_irqsave(conn->lock);
 
-    while (conn->rcv_queue.size() == 0 && !conn->fin_rcvd && conn->state != tcp_state::closed &&
-           !nonblock && !signals::interrupt_pending(task)) {
+    while (conn->rcv_queue.size() == 0 && !conn->fin_rcvd && !conn->rcv_shutdown &&
+           conn->state != tcp_state::closed && !nonblock && !signals::interrupt_pending(task)) {
         irq = sync::wait(conn->rx_wq, conn->lock, irq);
     }
 
@@ -547,7 +616,7 @@ __PRIVILEGED_CODE static ssize_t socket_read(resource::resource_object* obj, voi
     } else if (conn->state == tcp_state::closed && conn->pending_error != resource::OK) {
         result = conn->pending_error;
         conn->pending_error = resource::OK;
-    } else if (conn->state == tcp_state::closed || conn->fin_rcvd) {
+    } else if (conn->state == tcp_state::closed || conn->fin_rcvd || conn->rcv_shutdown) {
         result = 0;
     } else {
         result = nonblock ? resource::ERR_AGAIN : resource::ERR_INTR;
@@ -660,7 +729,7 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
         }
 
         sync::irq_lock_guard guard(conn->lock);
-        uint32_t readable = conn->rcv_queue.size() > 0 || conn->fin_rcvd ? sync::POLL_IN : 0;
+        uint32_t readable = conn->rcv_queue.size() > 0 || conn->fin_rcvd || conn->rcv_shutdown ? sync::POLL_IN : 0;
         uint32_t writable = conn->snd_queue.free_space() > 0 && !conn->fin_pending && !conn->fin_sent ? sync::POLL_OUT : 0;
         
         switch (conn->state) {
@@ -675,6 +744,30 @@ __PRIVILEGED_CODE static uint32_t socket_poll(resource::resource_object* obj, sy
     }
 
     return sync::POLL_HUP;
+}
+
+__PRIVILEGED_CODE static int32_t socket_shutdown(resource::resource_object* obj, int32_t how) {
+    rc::strong_ref<tcp_conn> conn = connection_of(static_cast<tcp_socket*>(obj->impl));
+    if (!conn) {
+        return resource::ERR_NOTCONN;
+    }
+
+    {
+        sync::irq_lock_guard guard(conn->lock);
+        if (!is_synchronized(conn->state)) {
+            return resource::ERR_NOTCONN;
+        }
+    }
+
+    if (how == resource::SHUT_RD || how == resource::SHUT_RDWR) {
+        shutdown_receive(conn.ptr());
+    }
+
+    if (how == resource::SHUT_WR || how == resource::SHUT_RDWR) {
+        shutdown_send(conn.ptr());
+    }
+
+    return resource::OK;
 }
 
 __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
@@ -694,6 +787,7 @@ static const resource::socket_ops g_tcp_socket_ops = {
     .getname = socket_getname,
     .setsockopt = socket_setsockopt,
     .getsockopt = socket_getsockopt,
+    .shutdown = socket_shutdown,
 };
 
 static const resource::resource_ops g_socket_ops = {

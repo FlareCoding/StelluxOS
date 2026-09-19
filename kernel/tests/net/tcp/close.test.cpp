@@ -133,7 +133,7 @@ TEST(tcp_close, an_orphan_in_fin_wait_2_is_reset_when_the_peers_fin_never_comes)
     EXPECT_FALSE(lookup(key_of(lp.remote)));
 }
 
-TEST(tcp_close, a_peer_that_keeps_talking_does_not_stop_the_orphan_wait) {
+TEST(tcp_close, a_peer_that_keeps_acking_does_not_stop_the_orphan_wait) {
     linked_peer lp;
     closable c(lp);
 
@@ -142,10 +142,8 @@ TEST(tcp_close, a_peer_that_keeps_talking_does_not_stop_the_orphan_wait) {
     uint64_t deadline = c.conn->send_timer_deadline_ns;
     lp.link.clear_frames();
 
-    uint8_t banner[4] = {'S', 'S', 'H', '-'};
     for (int i = 0; i < 3; i++) {
         advance_and_fire(FIN_TIMEOUT_NS / 4);
-        EXPECT_EQ(input(lp.remote.segment(FLAG_FIN | FLAG_ACK, c.rcv_nxt() + 100, c.fin_seq() + 1, {}, banner, sizeof(banner))), OK);
         EXPECT_EQ(input(lp.remote.ack(c.rcv_nxt(), c.fin_seq() + 1)), OK);
         EXPECT_EQ(c.conn->state, tcp_state::fin_wait_2);
         EXPECT_EQ(c.conn->send_timer_kind, timer_kind::orphan);
@@ -157,6 +155,169 @@ TEST(tcp_close, a_peer_that_keeps_talking_does_not_stop_the_orphan_wait) {
     expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq() + 1, c.rcv_nxt());
     EXPECT_EQ(c.conn->state, tcp_state::closed);
     EXPECT_FALSE(lookup(key_of(lp.remote)));
+}
+
+TEST(tcp_close, data_arriving_at_an_orphan_in_fin_wait_2_is_answered_with_a_reset) {
+    linked_peer lp;
+    closable c(lp);
+
+    close_connection(c.conn.ptr());
+    EXPECT_EQ(input(lp.remote.ack(c.rcv_nxt(), c.fin_seq() + 1)), OK);
+    lp.link.clear_frames();
+
+    uint8_t banner[4] = {'S', 'S', 'H', '-'};
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, c.rcv_nxt(), c.fin_seq() + 1, {}, banner, sizeof(banner))), OK);
+
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+    expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq() + 1, c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+    EXPECT_FALSE(timer::is_pending(&c.conn->send_timer));
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+    EXPECT_EQ(record_count(record_kind::timewait), 0u);
+}
+
+TEST(tcp_close, data_arriving_before_our_fin_is_acknowledged_is_reset_too) {
+    linked_peer lp;
+    closable c(lp);
+
+    close_connection(c.conn.ptr());
+    lp.link.clear_frames();
+
+    uint8_t byte = 'x';
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, c.rcv_nxt(), c.fin_seq(), {}, &byte, 1)), OK);
+
+    expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq() + 1, c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+}
+
+TEST(tcp_close, closing_with_unread_data_resets_instead_of_finishing) {
+    linked_peer lp;
+    closable c(lp);
+
+    uint8_t data[4] = {'l', 'o', 's', 't'};
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, c.rcv_nxt(), c.fin_seq(), {}, data, sizeof(data))), OK);
+    EXPECT_EQ(c.conn->rcv_queue.size(), 4u);
+    lp.link.clear_frames();
+
+    close_connection(c.conn.ptr());
+
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+    expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq(), c.rcv_nxt() + 4);
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+    EXPECT_EQ(record_count(record_kind::timewait), 0u);
+}
+
+TEST(tcp_close, closing_with_a_segment_waiting_ahead_of_a_hole_resets_too) {
+    linked_peer lp;
+    closable c(lp);
+
+    uint8_t data[4] = {'l', 'o', 's', 't'};
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, c.rcv_nxt() + 10, c.fin_seq(), {}, data, sizeof(data))), OK);
+    EXPECT_EQ(c.conn->rcv_queue.size(), 0u);
+    EXPECT_EQ(c.conn->ooo_queue.size(), 1u);
+    lp.link.clear_frames();
+
+    close_connection(c.conn.ptr());
+
+    expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq(), c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+}
+
+TEST(tcp_close, an_orphan_sends_its_queued_data_with_the_fin_behind_it) {
+    linked_peer lp;
+    closable c(lp);
+
+    static uint8_t bytes[100];
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(c.conn->lock);
+        (void)c.conn->snd_queue.append(bytes, sizeof(bytes));
+    });
+
+    close_connection(c.conn.ptr());
+
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+    expect_segment(lp.link, 0, FLAG_FIN | FLAG_PSH | FLAG_ACK, c.fin_seq(), c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::fin_wait_1);
+    EXPECT_TRUE(c.conn->fin_sent);
+    EXPECT_EQ(c.conn->snd_nxt, c.fin_seq() + 101);
+
+    EXPECT_EQ(input(lp.remote.ack(c.rcv_nxt(), c.fin_seq() + 101)), OK);
+    EXPECT_EQ(c.conn->state, tcp_state::fin_wait_2);
+    EXPECT_EQ(c.conn->send_timer_kind, timer_kind::orphan);
+    EXPECT_EQ(c.conn->snd_queue.size(), 0u);
+}
+
+TEST(tcp_close, an_orphans_data_is_given_up_after_the_orphan_retries) {
+    linked_peer lp;
+    closable c(lp);
+
+    static uint8_t bytes[100];
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(c.conn->lock);
+        (void)c.conn->snd_queue.append(bytes, sizeof(bytes));
+    });
+
+    close_connection(c.conn.ptr());
+    lp.link.clear_frames();
+
+    for (size_t i = 0; i < ORPHAN_RETRIES; i++) {
+        advance_and_fire(TIMEOUT_MAX_NS);
+        EXPECT_EQ(lp.link.frames_sent(), i + 1);
+        expect_segment(lp.link, i, FLAG_FIN | FLAG_PSH | FLAG_ACK, c.fin_seq(), c.rcv_nxt());
+        EXPECT_EQ(c.conn->state, tcp_state::fin_wait_1);
+    }
+
+    lp.link.clear_frames();
+    advance_and_fire(TIMEOUT_MAX_NS);
+    expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq() + 101, c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+    EXPECT_EQ(c.conn->pending_error, resource::ERR_TIMEDOUT);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+}
+
+TEST(tcp_close, shutting_down_the_sending_side_keeps_receiving) {
+    linked_peer lp;
+    closable c(lp);
+
+    shutdown_send(c.conn.ptr());
+
+    expect_segment(lp.link, 0, FLAG_FIN | FLAG_ACK, c.fin_seq(), c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::fin_wait_1);
+    EXPECT_FALSE(c.conn->orphaned);
+    EXPECT_FALSE(c.conn->rcv_shutdown);
+    lp.link.clear_frames();
+
+    uint8_t data[4] = {'m', 'o', 'r', 'e'};
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, c.rcv_nxt(), c.fin_seq() + 1, {}, data, sizeof(data))), OK);
+
+    EXPECT_EQ(c.conn->state, tcp_state::fin_wait_2);
+    EXPECT_EQ(c.conn->send_timer_kind, timer_kind::none);
+    EXPECT_EQ(c.conn->rcv_queue.size(), 4u);
+    expect_segment(lp.link, 0, FLAG_ACK, c.fin_seq() + 1, c.rcv_nxt() + 4);
+
+    EXPECT_EQ(input(lp.remote.segment(FLAG_FIN | FLAG_ACK, c.rcv_nxt() + 4, c.fin_seq() + 1)), OK);
+    EXPECT_TRUE(c.timewait());
+}
+
+TEST(tcp_close, shutting_down_the_receiving_side_sends_nothing_and_still_takes_data) {
+    linked_peer lp;
+    closable c(lp);
+
+    shutdown_receive(c.conn.ptr());
+
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+    EXPECT_TRUE(c.conn->rcv_shutdown);
+    EXPECT_EQ(c.conn->state, tcp_state::established);
+
+    uint8_t data[4] = {'l', 'a', 't', 'e'};
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, c.rcv_nxt(), c.fin_seq(), {}, data, sizeof(data))), OK);
+
+    EXPECT_EQ(c.conn->state, tcp_state::established);
+    EXPECT_EQ(c.conn->rcv_queue.size(), 4u);
+    expect_segment(lp.link, 0, FLAG_ACK, c.fin_seq(), c.rcv_nxt() + 4);
 }
 
 TEST(tcp_close, closing_during_a_simultaneous_open_moves_the_armed_timer_to_the_fin) {

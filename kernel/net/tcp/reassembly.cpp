@@ -279,7 +279,6 @@ void clear_out_of_order_locked(tcp_conn* conn) {
     }
 
     conn->recent_sack_count = 0;
-    conn->dsack_pending = false;
 }
 
 void fill_sack_blocks_locked(const tcp_conn* conn, tcp_options* opts) {

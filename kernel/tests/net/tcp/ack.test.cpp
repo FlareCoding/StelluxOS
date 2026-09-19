@@ -187,6 +187,12 @@ TEST(tcp_ack, closing_the_connection_carries_the_owed_ack) {
     EXPECT_EQ(a.send(10), 0u);
     ASSERT_TRUE(a.conn->ack_pending);
 
+    // Read first, or the close is a reset for the unread bytes
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(a.conn->lock);
+        (void)a.conn->rcv_queue.consume(a.conn->rcv_queue.size());
+    });
+
     lp.link.clear_frames();
     close_connection(a.conn.ptr());
     ASSERT_EQ(lp.link.frames_sent(), 1u);
