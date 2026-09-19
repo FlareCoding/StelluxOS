@@ -3,6 +3,7 @@
 #include "net/icmp_socket.h"
 #include "net/udp_socket.h"
 #include "net/tcp/socket.h"
+#include "net/tcp/info.h"
 #include "net/arp.h"
 #include "net/route.h"
 #include "resource/resource.h"
@@ -209,6 +210,7 @@ __PRIVILEGED_CODE int32_t socket_ioctl(resource::resource_object*, uint32_t cmd,
     case SIOCGNETSTATUS: return query_net_status(arg);
     case SIOCGARPTABLE:  return query_arp_table(arg);
     case SIOCSIFCONF:    return set_interface_config(arg);
+    case SIOCGTCPINFO:   return map_net_error(tcp::query_info(arg));
     default:             return resource::ERR_UNSUP;
     }
 }

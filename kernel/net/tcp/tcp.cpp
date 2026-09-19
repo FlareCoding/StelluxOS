@@ -5,6 +5,7 @@
 #include "net/tcp/input.h"
 #include "net/tcp/output.h"
 #include "net/tcp/timewait.h"
+#include "net/tcp/info.h"
 #include "net/net.h"
 #include "net/interface.h"
 #include "net/eth.h"
@@ -77,6 +78,7 @@ int32_t input(packet* pkt) {
     }
 
     pkt->mark_transport_header();
+    increment(counter::segments_in);
 
     const tcp_header* hdr = reinterpret_cast<const tcp_header*>(pkt->data());
     if (!is_header_valid(hdr, pkt->length())) {
@@ -84,12 +86,17 @@ int32_t input(packet* pkt) {
     }
 
     if (!is_checksum_valid(ip->src, ip->dst, hdr, pkt->length())) {
+        increment(counter::checksum_failures);
         return reject(iface, pkt, ERR_INVALID);
     }
 
     tcp_options opts;
     if (!parse_options(hdr, &opts)) {
         return reject(iface, pkt, ERR_INVALID);
+    }
+
+    if (hdr->flags & FLAG_RST) {
+        increment(counter::rsts_received);
     }
 
     // RFC 1122 4.2.3.10: a segment addressed to a broadcast or multicast address is discarded

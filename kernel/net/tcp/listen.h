@@ -121,6 +121,13 @@ rc::strong_ref<tcp_listener> listener_lookup(const ipv4::ipv4_addr& local_addr, 
 bool is_listener_port(uint16_t port);
 
 /**
+ * @brief Fills `out` with up to `max` listeners, each with a reference the
+ * caller drops, and reports in `total` how many exist.
+ * @return The number of listeners written.
+ */
+size_t collect_listeners(tcp_listener** out, size_t max, size_t* total);
+
+/**
  * @brief Removes `listener` from the table with every request it still holds,
  * dropping the table's references.
  */

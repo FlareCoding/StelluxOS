@@ -1,4 +1,5 @@
 #include "net/tcp/output.h"
+#include "net/tcp/info.h"
 #include "net/net.h"
 #include "net/eth.h"
 #include "net/interface.h"
@@ -75,6 +76,11 @@ int32_t send_segment(interface* iface, const tuple& key, uint8_t flags, uint32_t
     hdr->window = htons(window);
     string::memcpy(reinterpret_cast<uint8_t*>(hdr) + HEADER_LEN, options, options_len);
     hdr->checksum = htons(compute_checksum(key.local_addr, key.remote_addr, hdr, header_len));
+
+    increment(counter::segments_out);
+    if (flags & FLAG_RST) {
+        increment(counter::rsts_sent);
+    }
 
     return ipv4::output(pkt, key.remote_addr, route, ipv4::PROTO_TCP);
 }

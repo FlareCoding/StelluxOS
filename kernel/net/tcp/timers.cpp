@@ -1,5 +1,6 @@
 #include "net/tcp/timers.h"
 #include "net/tcp/output.h"
+#include "net/tcp/info.h"
 #include "net/net.h"
 #include "resource/resource.h"
 #include "sync/spinlock.h"
@@ -118,6 +119,7 @@ void on_send_timer(timer::deadline_timer* timer) {
     } else if (action == send_action::give_up) {
         retire_connection(conn);
     } else if (action == send_action::retransmit) {
+        increment(counter::retransmits);
         (void)retransmit(state, src);
     }
 

@@ -47,6 +47,7 @@ static_assert(sizeof(sockaddr_in) == SOCKADDR_IN_LEN);
 constexpr uint32_t SIOCGNETSTATUS = 0x4E01;
 constexpr uint32_t SIOCGARPTABLE  = 0x4E02;
 constexpr uint32_t SIOCSIFCONF    = 0x4E03;
+constexpr uint32_t SIOCGTCPINFO   = 0x4E04; // net/tcp/info.h holds its records
 
 constexpr size_t MAX_IFINFO  = 8;
 constexpr size_t MAX_ARPINFO = 32;
@@ -131,8 +132,8 @@ __PRIVILEGED_CODE int32_t create_socket(uint32_t type, uint32_t protocol,
                                         resource::resource_object** out);
 
 /**
- * @brief Answers the interface and neighbor table queries for any AF_INET socket,
- * writing the result to the user buffer at `arg`.
+ * @brief Answers the interface, neighbor table, and TCP table queries for any
+ * AF_INET socket, writing the result to the user buffer at `arg`.
  * @return OK, ERR_UNSUP for a command no query matches, ERR_INVAL when the
  *         buffer cannot be written.
  * @note Privilege: **required**

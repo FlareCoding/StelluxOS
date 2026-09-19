@@ -2,6 +2,7 @@
 #include "net/tcp/input.h"
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
+#include "net/tcp/info.h"
 #include "net/tcp/seq.h"
 #include "net/net.h"
 #include "net/interface.h"
@@ -160,6 +161,7 @@ static void on_request_timer(timer::deadline_timer* timer) {
     if (fire && give_up) {
         discard_request(request);
     } else if (fire) {
+        increment(counter::retransmits);
         (void)send_synack(fields);
     }
 
@@ -316,6 +318,30 @@ bool is_listener_port(uint16_t port) {
     });
 
     return taken;
+}
+
+size_t collect_listeners(tcp_listener** out, size_t max, size_t* total) {
+    size_t written = 0;
+    *total = 0;
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_listeners_lock);
+
+        for (size_t i = 0; i < MAX_LISTENERS; i++) {
+            if (!g_listeners[i]) {
+                continue;
+            }
+
+            (*total)++;
+
+            if (written < max) {
+                g_listeners[i]->add_ref();
+                out[written++] = g_listeners[i];
+            }
+        }
+    });
+
+    return written;
 }
 
 static void retire_request(tcp_request* request) {
@@ -536,12 +562,15 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
     });
 
     if (!room) {
+        increment(counter::listen_drops);
         return drop(iface, pkt, OK);
     }
 
     tcp_request* request = alloc_request(key, iface, listener);
     if (!request) {
         discard_request_count(listener);
+        increment(counter::listen_drops);
+
         return drop(iface, pkt, ERR_NO_MEMORY);
     }
 
@@ -551,6 +580,8 @@ int32_t listen_input(tcp_listener* listener, packet* pkt, const tcp_header* hdr,
     if (rc != OK) {
         discard_request_count(listener);
         release_record(request);
+        increment(counter::listen_drops);
+
         return drop(iface, pkt, rc);
     }
 
@@ -623,6 +654,8 @@ int32_t request_input(tcp_request* request, packet* pkt, const tcp_header* hdr, 
         });
 
         packet::free(pkt);
+        increment(counter::retransmits);
+
         return send_synack(fields);
     }
 

@@ -378,6 +378,24 @@ size_t record_count(record_kind kind) {
     return count;
 }
 
+size_t collect_records(record** out, size_t max, size_t* total) {
+    size_t written = 0;
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(g_table_lock);
+        *total = g_table.size();
+
+        g_table.for_each([&](record& rec) {
+            if (written < max) {
+                rec.add_ref();
+                out[written++] = &rec;
+            }
+        });
+    });
+
+    return written;
+}
+
 rc::strong_ref<record> remove_one_request_of(const tcp_listener* listener) {
     record* found = nullptr;
     RUN_ELEVATED({

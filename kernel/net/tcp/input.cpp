@@ -2,6 +2,7 @@
 #include "net/tcp/output.h"
 #include "net/tcp/timers.h"
 #include "net/tcp/timewait.h"
+#include "net/tcp/info.h"
 #include "net/tcp/seq.h"
 #include "net/net.h"
 #include "net/byteorder.h"
@@ -59,6 +60,10 @@ bool take_challenge_ack() {
         }
     });
 
+    if (allowed) {
+        increment(counter::challenge_acks);
+    }
+
     return allowed;
 }
 
@@ -85,8 +90,14 @@ static bool is_acceptable_locked(const tcp_conn* conn, uint32_t seq, uint32_t se
 // unless nothing was seen for so long that the clock may have wrapped. A
 // reset is exempt, so an old clock cannot make one be ignored.
 static bool paws_rejects_locked(const tcp_conn* conn, const tcp_options& opts) {
-    return conn->ts_ok && opts.has_timestamps && seq_lt(opts.ts_val, conn->ts_recent) &&
-           now_ns() - conn->ts_recent_age_ns < TS_RECENT_MAX_AGE_NS;
+    bool rejects = conn->ts_ok && opts.has_timestamps && seq_lt(opts.ts_val, conn->ts_recent) &&
+                   now_ns() - conn->ts_recent_age_ns < TS_RECENT_MAX_AGE_NS;
+
+    if (rejects) {
+        increment(counter::paws_drops);
+    }
+
+    return rejects;
 }
 
 // RFC 9293 3.10.7.4 for an acceptable ACK: one below SND.UNA is a duplicate

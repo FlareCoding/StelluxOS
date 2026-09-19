@@ -230,6 +230,13 @@ int32_t remove(record* rec);
 size_t record_count(record_kind kind);
 
 /**
+ * @brief Fills `out` with up to `max` records of every kind, each with a
+ * reference the caller drops, and reports in `total` how many the table held.
+ * @return The number of records written.
+ */
+size_t collect_records(record** out, size_t max, size_t* total);
+
+/**
  * @brief Takes one request of `listener` out of the table, handing the table's
  * reference to the caller.
  * @return The request, or an empty reference when none is left.
