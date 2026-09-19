@@ -387,6 +387,7 @@ static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
                 conn->snd_una = ack;
                 conn->state = tcp_state::established;
                 conn->send_timer_kind = timer_kind::none;
+                conn->retransmits = 0;
                 action = handshake_action::established;
             } else {
                 conn->state = tcp_state::syn_rcvd;
@@ -443,6 +444,7 @@ static int32_t syn_rcvd_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
             conn->max_snd_wnd = conn->snd_wnd;
             conn->state = tcp_state::established;
             conn->send_timer_kind = timer_kind::none;
+            conn->retransmits = 0;
             action = handshake_action::established;
         }
     });

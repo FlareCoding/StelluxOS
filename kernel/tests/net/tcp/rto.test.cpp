@@ -222,6 +222,35 @@ TEST(tcp_rto, the_passive_side_measures_the_handshake_too) {
     __dbg_test_set_clock(nullptr);
 }
 
+TEST(tcp_rto, a_retried_syn_leaves_no_backoff_behind_once_acknowledged) {
+    linked_peer lp;
+    g_fake_now = clock::now_ns();
+    __dbg_test_set_clock(fake_clock);
+
+    rc::strong_ref<tcp_conn> conn;
+    tuple key = {lp.remote.host, lp.remote.addr, lp.remote.host_port, lp.remote.port};
+    open_active(key, &lp.link, &conn);
+    advance_and_fire(TIMEOUT_INIT_NS);
+    advance_and_fire(2 * TIMEOUT_INIT_NS);
+    ASSERT_EQ(conn->retransmits, 2);
+
+    tcp_options opts;
+    opts.mss = PEER_MSS;
+    EXPECT_EQ(input(lp.remote.segment(FLAG_SYN | FLAG_ACK, PEER_ISS, conn->iss + 1, opts)), OK);
+    ASSERT_EQ(conn->state, tcp_state::established);
+    EXPECT_EQ(conn->retransmits, 0);
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        (void)conn->snd_queue.append(g_bytes, 100);
+    });
+    (void)output(conn.ptr());
+    EXPECT_EQ(conn->send_timer_deadline_ns, g_fake_now + conn->rto_ns);
+
+    abort_connection(conn.ptr());
+    __dbg_test_set_clock(nullptr);
+}
+
 TEST(tcp_rto, the_timer_backs_off_from_the_estimate_and_starts_over_on_new_data) {
     linked_peer lp;
     measuring m(lp, false);
