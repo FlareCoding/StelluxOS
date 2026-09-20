@@ -35,6 +35,12 @@ struct segment_source {
 uint16_t local_mss(const interface* iface);
 
 /**
+ * @brief The largest payload sent to a peer announcing `peer_mss` over `iface`,
+ * kept under `cap` when the socket set one.
+ */
+uint16_t send_mss(const interface* iface, uint16_t peer_mss, uint16_t cap);
+
+/**
  * @brief The window field for `window` bytes at shift `wscale`, capped at the
  * sixteen bits the header holds.
  */

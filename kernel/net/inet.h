@@ -20,14 +20,28 @@ constexpr uint32_t IPPROTO_IP   = 0;
 constexpr uint32_t IPPROTO_ICMP = ipv4::PROTO_ICMP;
 constexpr uint32_t IPPROTO_TCP  = ipv4::PROTO_TCP;
 constexpr uint32_t IPPROTO_UDP  = ipv4::PROTO_UDP;
+constexpr uint32_t MSG_OOB      = 0x01;
+constexpr uint32_t MSG_PEEK     = 0x02;
 constexpr uint32_t MSG_DONTWAIT = 0x40;
+constexpr uint32_t MSG_WAITALL  = 0x100;
+constexpr uint32_t MSG_NOSIGNAL = 0x4000;
+constexpr uint32_t MSG_MORE     = 0x8000;
 
 constexpr int32_t SOL_SOCKET      = 1;
 constexpr int32_t SO_REUSEADDR    = 2;
+constexpr int32_t SO_TYPE         = 3;
 constexpr int32_t SO_ERROR        = 4;
 constexpr int32_t SO_BROADCAST    = 6;
 constexpr int32_t SO_LINGER       = 13;
 constexpr int32_t SO_BINDTODEVICE = 25;
+constexpr int32_t SO_ACCEPTCONN   = 30;
+
+constexpr int32_t TCP_NODELAY  = 1;
+constexpr int32_t TCP_MAXSEG   = 2;
+constexpr int32_t TCP_INFO     = 11; // Answers with net/tcp/info.h's tcp_record
+constexpr int32_t TCP_QUICKACK = 12;
+
+constexpr uint32_t FIONREAD = 0x541B;
 
 /**
  * The value of SO_LINGER: whether close waits, and for how many seconds.

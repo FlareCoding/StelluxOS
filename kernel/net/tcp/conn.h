@@ -30,6 +30,7 @@ constexpr uint64_t TIMESTAMP_TICK_NS  = 1000000; // RFC 7323 5.4 allows 1 ms to 
 constexpr uint64_t TIMEOUT_MAX_NS     = 120000000000ULL;
 constexpr uint64_t FIN_TIMEOUT_NS     = 60000000000ULL;
 constexpr uint16_t DEFAULT_MSS        = 536;     // RFC 9293 3.7.1, when the peer sends none
+constexpr uint16_t MIN_MSS            = 88;
 constexpr uint64_t TS_RECENT_MAX_AGE_NS = 24ULL * 24 * 3600 * 1000000000ULL; // RFC 7323 5.5
 constexpr size_t   RCV_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
 constexpr uint32_t RCV_WND_INITIAL    = RCV_CHUNKS_INITIAL * CHUNK_PAYLOAD; // what an empty queue can take
@@ -70,6 +71,15 @@ enum class timer_kind : uint8_t {
 };
 
 /**
+ * The choices a socket makes ahead of any connection, handed to each one it
+ * opens or accepts.
+ */
+struct conn_options {
+    bool     nodelay;
+    uint16_t snd_mss_cap; // Zero for none
+};
+
+/**
  * One connection, the RFC's TCB, grouped the way RFC 9293 groups it. Sequence
  * variables are host order. Everything is guarded by the record lock except
  * the reference count and the wait queues.
@@ -95,6 +105,7 @@ struct tcp_conn : record {
     uint32_t iss;
     uint32_t max_snd_wnd; // Largest window the peer ever advertised (RFC 5961 5.2)
     uint16_t snd_mss;
+    uint16_t snd_mss_cap;
     uint8_t  snd_wscale;
 
     // Receive sequence space
@@ -250,13 +261,22 @@ uint32_t timestamp_offset(const tuple& key);
 tcp_conn* alloc_conn(const tuple& key, interface* iface);
 
 /**
+ * @brief Gives a connection the choices its socket or listener made.
+ */
+inline void apply_options(tcp_conn* conn, const conn_options& options) {
+    conn->nodelay = options.nodelay;
+    conn->snd_mss_cap = options.snd_mss_cap;
+}
+
+/**
  * @brief Begins an active open (RFC 9293 3.10.1): a connection for `key` on
- * `iface` enters SYN_SENT, joins the table, sends its SYN, and arms the
- * retransmission timer.
+ * `iface` with `options` enters SYN_SENT, joins the table, sends its SYN, and
+ * arms the retransmission timer.
  * @return OK with `out` holding the connection, ERR_IN_USE when the key is
  *         taken, ERR_FULL at capacity, ERR_NO_MEMORY.
  */
-int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>* out);
+int32_t open_active(const tuple& key, interface* iface, rc::strong_ref<tcp_conn>* out,
+                    const conn_options& options = {});
 
 /**
  * @brief Ends the connection at once: a reset goes to the peer, the record

@@ -10,13 +10,13 @@ namespace sched { struct task; }
 
 namespace sync {
 
-// Linux-compatible poll event bitmask values.
-constexpr uint32_t POLL_IN   = 0x0001;
-constexpr uint32_t POLL_PRI  = 0x0002;
-constexpr uint32_t POLL_OUT  = 0x0004;
-constexpr uint32_t POLL_ERR  = 0x0008;
-constexpr uint32_t POLL_HUP  = 0x0010;
-constexpr uint32_t POLL_NVAL = 0x0020;
+constexpr uint32_t POLL_IN    = 0x0001;
+constexpr uint32_t POLL_PRI   = 0x0002;
+constexpr uint32_t POLL_OUT   = 0x0004;
+constexpr uint32_t POLL_ERR   = 0x0008;
+constexpr uint32_t POLL_HUP   = 0x0010;
+constexpr uint32_t POLL_NVAL  = 0x0020;
+constexpr uint32_t POLL_RDHUP = 0x2000;
 
 struct wait_queue;
 struct poll_table;

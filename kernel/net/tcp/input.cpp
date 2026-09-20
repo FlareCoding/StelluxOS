@@ -367,7 +367,7 @@ static void take_peer_syn_locked(tcp_conn* conn, const tcp_header* hdr, const tc
     conn->irs = seq;
     conn->rcv_nxt = seq + 1;
     conn->rcv_mss = opts.mss != MSS_NONE ? opts.mss : DEFAULT_MSS;
-    conn->snd_mss = conn->rcv_mss < local_mss(conn->iface) ? conn->rcv_mss : local_mss(conn->iface);
+    conn->snd_mss = send_mss(conn->iface, conn->rcv_mss, conn->snd_mss_cap);
     conn->wscale_ok = opts.window_scale != WINDOW_SCALE_NONE;
     conn->snd_wscale = conn->wscale_ok ? opts.window_scale : 0;
     conn->rcv_wscale = conn->wscale_ok ? conn->rcv_wscale : 0;

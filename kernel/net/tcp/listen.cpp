@@ -426,7 +426,7 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
     conn->snd_wl1 = ntohl(hdr->seq);
     conn->snd_wl2 = ntohl(hdr->ack);
     conn->max_snd_wnd = conn->snd_wnd;
-    conn->snd_mss = fields.peer_mss < local_mss(conn->iface) ? fields.peer_mss : local_mss(conn->iface);
+    conn->snd_mss = send_mss(conn->iface, fields.peer_mss, conn->snd_mss_cap);
     conn->snd_wscale = fields.snd_wscale;
     conn->rcv_nxt = fields.irs + 1;
     conn->rcv_wnd = RCV_WND_INITIAL;
@@ -504,6 +504,7 @@ static int32_t promote(tcp_request* request, packet* pkt, const tcp_header* hdr,
         return drop(iface, pkt, ERR_NO_MEMORY);
     }
 
+    apply_options(conn, request->listener->options);
     init_from_request(conn, fields, hdr, opts);
 
     // The timer must not give the request up while this ACK is claiming it, and

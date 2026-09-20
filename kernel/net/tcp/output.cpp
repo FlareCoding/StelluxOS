@@ -19,6 +19,12 @@ uint16_t local_mss(const interface* iface) {
     return static_cast<uint16_t>(iface->mtu() - ipv4::HEADER_LEN - HEADER_LEN);
 }
 
+uint16_t send_mss(const interface* iface, uint16_t peer_mss, uint16_t cap) {
+    uint16_t mss = peer_mss < local_mss(iface) ? peer_mss : local_mss(iface);
+
+    return cap != 0 && cap < mss ? cap : mss;
+}
+
 uint16_t window_field(uint32_t window, uint8_t wscale) {
     uint32_t scaled = window >> wscale;
     return static_cast<uint16_t>(scaled > 0xFFFF ? 0xFFFF : scaled);

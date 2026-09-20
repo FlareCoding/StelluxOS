@@ -17,6 +17,7 @@ constexpr size_t EPHEMERAL_BIND_ATTEMPTS = 8; // ports lost to a racing bind bef
  */
 struct tcp_socket {
     endpoint                     local;
+    conn_options                 options;
     bool                         bound;
     bool                         connecting;
     bool                         linger;
