@@ -7,6 +7,25 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/stat.h>
+
+struct runtime_dir {
+    const char* path;
+    mode_t      mode;
+};
+
+// Directories services write into at run time
+static const struct runtime_dir RUNTIME_DIRS[] = {
+    {"/etc/dropbear", 0700},
+};
+
+static void create_runtime_dirs(void) {
+    for (size_t i = 0; i < sizeof(RUNTIME_DIRS) / sizeof(RUNTIME_DIRS[0]); i++) {
+        if (mkdir(RUNTIME_DIRS[i].path, RUNTIME_DIRS[i].mode) < 0 && errno != EEXIST) {
+            printf("init: failed to create %s (errno=%d)\r\n", RUNTIME_DIRS[i].path, errno);
+        }
+    }
+}
 
 static void start_dhcpc(void) {
     int handle = proc_create("/bin/dhcpc", (const char*[]){"-v", NULL});
@@ -47,6 +66,8 @@ int main(void) {
     setenv("SHELL", "/bin/shell", 1);
     setenv("LANG", "C", 1);
     setenv("PYTHONHOME", "/usr", 1);
+
+    create_runtime_dirs();
 
     // Start the DHCP client daemon
     start_dhcpc();
