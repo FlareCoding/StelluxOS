@@ -1,14 +1,27 @@
 #include "syscall/handlers/sys_io.h"
 #include "syscall/syscall_table.h"
 #include "resource/resource.h"
+#include "resource/socket_ops.h"
 #include "sched/sched.h"
+#include "sched/task.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 
 using syscall::iovec;
 using syscall::MAX_IOVCNT;
 
-constexpr size_t IO_CHUNK_SIZE = 4096;
+__PRIVILEGED_CODE size_t syscall::io_chunk_size(sched::task* task, resource::handle_t fd) {
+    resource::resource_object* obj = nullptr;
+    if (resource::get_handle_object(task->handles, fd, 0, &obj) != resource::HANDLE_OK) {
+        return IO_CHUNK_SIZE;
+    }
+
+    const resource::socket_ops* ops = resource::socket_ops_of(obj);
+    size_t size = ops && ops->stream ? STREAM_CHUNK_SIZE : IO_CHUNK_SIZE;
+    resource::resource_release(obj);
+
+    return size;
+}
 
 static inline int64_t map_resource_error(int64_t rc) {
     switch (rc) {
@@ -48,7 +61,8 @@ DEFINE_SYSCALL3(readv, fd, iov_ptr, iovcnt) {
 
     int64_t total = 0;
     int64_t err = 0;
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(IO_CHUNK_SIZE));
+    size_t stage = syscall::io_chunk_size(task, static_cast<resource::handle_t>(fd));
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(stage));
     if (!kbuf) {
         heap::kfree(kiovs);
         return syscall::ENOMEM;
@@ -60,7 +74,7 @@ DEFINE_SYSCALL3(readv, fd, iov_ptr, iovcnt) {
         uint8_t* user_ptr = reinterpret_cast<uint8_t*>(kiovs[i].base);
 
         while (remaining > 0) {
-            size_t chunk = remaining > IO_CHUNK_SIZE ? IO_CHUNK_SIZE : remaining;
+            size_t chunk = remaining > stage ? stage : remaining;
             ssize_t n = resource::read(
                 task, static_cast<resource::handle_t>(fd), kbuf, chunk);
             if (n < 0) {
@@ -118,7 +132,8 @@ DEFINE_SYSCALL3(writev, fd, iov_ptr, iovcnt) {
 
     int64_t total = 0;
     int64_t err = 0;
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(IO_CHUNK_SIZE));
+    size_t stage = syscall::io_chunk_size(task, static_cast<resource::handle_t>(fd));
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(stage));
     if (!kbuf) {
         heap::kfree(kiovs);
         return syscall::ENOMEM;
@@ -131,7 +146,7 @@ DEFINE_SYSCALL3(writev, fd, iov_ptr, iovcnt) {
             reinterpret_cast<const uint8_t*>(kiovs[i].base);
 
         while (remaining > 0) {
-            size_t chunk = remaining > IO_CHUNK_SIZE ? IO_CHUNK_SIZE : remaining;
+            size_t chunk = remaining > stage ? stage : remaining;
             copy_rc = mm::uaccess::copy_from_user(kbuf, user_ptr, chunk);
             if (copy_rc != mm::uaccess::OK) {
                 err = syscall::EFAULT;

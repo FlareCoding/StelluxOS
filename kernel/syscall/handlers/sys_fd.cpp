@@ -5,6 +5,7 @@
 #include "resource/providers/shmem_provider.h"
 #include "resource/providers/shm_provider.h"
 #include "syscall/handlers/sys_error_map.h"
+#include "syscall/handlers/sys_io.h"
 #include "sched/sched.h"
 #include "sched/task.h"
 #include "mm/uaccess.h"
@@ -25,7 +26,6 @@ constexpr uint64_t AT_EMPTY_PATH = 0x1000;
 // utimensat tv_nsec values that pick the current time or leave a stamp alone
 constexpr int64_t UTIME_NOW  = 0x3fffffff;
 constexpr int64_t UTIME_OMIT = 0x3ffffffe;
-constexpr size_t IO_CHUNK_SIZE = 4096;
 
 constexpr uint32_t ST_IFDIR  = 0040000;
 constexpr uint32_t ST_IFCHR  = 0020000;
@@ -947,13 +947,14 @@ DEFINE_SYSCALL3(read, fd, buf, count) {
     uint8_t* user_ptr = reinterpret_cast<uint8_t*>(buf);
     int64_t total = 0;
 
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(IO_CHUNK_SIZE));
+    size_t stage = syscall::io_chunk_size(task, static_cast<resource::handle_t>(fd));
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(stage));
     if (!kbuf) {
         return syscall::ENOMEM;
     }
 
     while (remaining > 0) {
-        size_t chunk = remaining > IO_CHUNK_SIZE ? IO_CHUNK_SIZE : remaining;
+        size_t chunk = remaining > stage ? stage : remaining;
         ssize_t n = resource::read(task, static_cast<resource::handle_t>(fd), kbuf, chunk);
         if (n < 0) {
             heap::ufree(kbuf);
@@ -1009,13 +1010,14 @@ DEFINE_SYSCALL3(write, fd, buf, count) {
     const uint8_t* user_ptr = reinterpret_cast<const uint8_t*>(buf);
     int64_t total = 0;
 
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(IO_CHUNK_SIZE));
+    size_t stage = syscall::io_chunk_size(task, static_cast<resource::handle_t>(fd));
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::uzalloc(stage));
     if (!kbuf) {
         return syscall::ENOMEM;
     }
 
     while (remaining > 0) {
-        size_t chunk = remaining > IO_CHUNK_SIZE ? IO_CHUNK_SIZE : remaining;
+        size_t chunk = remaining > stage ? stage : remaining;
         int32_t copy_rc = mm::uaccess::copy_from_user(kbuf, user_ptr, chunk);
         if (copy_rc != mm::uaccess::OK) {
             heap::ufree(kbuf);

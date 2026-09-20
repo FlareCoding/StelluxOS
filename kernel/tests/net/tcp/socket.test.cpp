@@ -711,6 +711,121 @@ TEST(tcp_socket, recv_with_waitall_waits_for_the_whole_count) {
     abort_connection(sock.impl()->conn.ptr());
 }
 
+// A read or write larger than the queue, blocked in an elevated task while the
+// runner plays the peer through the stub link
+struct big_transfer_run {
+    resource::resource_object* obj;
+    bool                       writing;
+    ssize_t                    result;
+    sync::atomic<uint32_t>     done;
+};
+
+constexpr size_t BIG_TRANSFER = SND_CHUNKS_INITIAL * CHUNK_PAYLOAD + 1000;
+
+static big_transfer_run g_big_transfer;
+static uint8_t          g_big_bytes[BIG_TRANSFER];
+
+static void move_big_transfer(void*) {
+    resource::resource_object* obj = g_big_transfer.obj;
+    if (g_big_transfer.writing) {
+        g_big_transfer.result = obj->ops->write(obj, g_big_bytes, sizeof(g_big_bytes), 0);
+    } else {
+        g_big_transfer.result = obj->ops->socket->recvfrom(obj, g_big_bytes, sizeof(g_big_bytes), inet::MSG_WAITALL,
+                                                           nullptr, nullptr);
+    }
+
+    g_big_transfer.done.store_release(1);
+    sched::exit(0);
+}
+
+static void start_big_transfer(resource::resource_object* obj, bool writing) {
+    g_big_transfer.obj = obj;
+    g_big_transfer.writing = writing;
+    g_big_transfer.result = 0;
+    g_big_transfer.done.store_relaxed(0);
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(move_big_transfer, nullptr, "tcp_big_move", sched::TASK_FLAG_ELEVATED);
+        ASSERT_NOT_NULL(t);
+        sched::enqueue(t);
+    });
+}
+
+TEST(tcp_socket, a_write_larger_than_the_queue_sends_what_it_queued_before_waiting_for_room) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    uint32_t iss = 0;
+    peer remote = sock.establish(lp, &iss);
+    tcp_conn* conn = sock.impl()->conn.ptr();
+
+    start_big_transfer(sock.obj, true);
+
+    // Acknowledge everything as it appears until the write returned and its last byte went out
+    uint32_t acked = iss + 1;
+    uint32_t end = iss + 1 + BIG_TRANSFER;
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+
+    while (clock::now_ns() < deadline) {
+        uint32_t snd_nxt = 0;
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(conn->lock);
+            snd_nxt = conn->snd_nxt;
+        });
+
+        if (snd_nxt != acked) {
+            EXPECT_EQ(input(remote.ack(7001, snd_nxt)), OK);
+            acked = snd_nxt;
+        }
+
+        if (g_big_transfer.done.load_acquire() && snd_nxt == end) {
+            break;
+        }
+    }
+
+    EXPECT_TRUE(g_big_transfer.done.load_acquire());
+    EXPECT_EQ(g_big_transfer.result, static_cast<ssize_t>(BIG_TRANSFER));
+    EXPECT_EQ(conn->snd_nxt, end);
+
+    abort_connection(conn);
+}
+
+TEST(tcp_socket, a_waitall_read_larger_than_the_queue_announces_the_room_it_frees_before_waiting) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    uint32_t iss = 0;
+    peer remote = sock.establish(lp, &iss);
+    tcp_conn* conn = sock.impl()->conn.ptr();
+
+    start_big_transfer(sock.obj, false);
+
+    static uint8_t payload[1024];
+    size_t window = RCV_WND_INITIAL;
+    for (size_t sent = 0; sent < window; sent += sizeof(payload)) {
+        size_t len = window - sent < sizeof(payload) ? window - sent : sizeof(payload);
+        EXPECT_EQ(input(remote.segment(FLAG_ACK, 7001 + static_cast<uint32_t>(sent), iss + 1, {}, payload, len)), OK);
+    }
+
+    // The peer may send the rest only once the reader has drained the queue and
+    // this host has advertised the room again
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    bool reopened = false;
+    while (!reopened && clock::now_ns() < deadline) {
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(conn->lock);
+            reopened = conn->rcv_queue.size() == 0 && conn->rcv_adv - conn->rcv_nxt >= BIG_TRANSFER - window;
+        });
+    }
+
+    EXPECT_TRUE(reopened);
+    EXPECT_EQ(input(remote.segment(FLAG_ACK, 7001 + static_cast<uint32_t>(window), iss + 1, {}, payload,
+                                   BIG_TRANSFER - window)), OK);
+    EXPECT_TRUE(test_helpers::spin_wait(g_big_transfer.done));
+    EXPECT_EQ(g_big_transfer.result, static_cast<ssize_t>(BIG_TRANSFER));
+
+    abort_connection(conn);
+}
+
 TEST(tcp_socket, tcp_options_are_kept_and_reach_the_connection) {
     linked_peer lp;
     stream_socket sock;

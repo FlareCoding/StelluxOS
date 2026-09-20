@@ -4,9 +4,14 @@
 #include "helpers.h"
 #include "../net/stub_interface.h"
 #include "syscall/handlers/sys_socket.h"
+#include "syscall/handlers/sys_fd.h"
+#include "syscall/handlers/sys_io.h"
 #include "resource/resource.h"
+#include "resource/socket_ops.h"
 #include "net/inet.h"
 #include "net/udp_socket.h"
+#include "net/tcp/socket.h"
+#include "net/tcp/conn.h"
 #include "net/udp.h"
 #include "net/eth.h"
 #include "net/ipv4.h"
@@ -16,12 +21,20 @@
 #include "fs/fstypes.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "dynpriv/dynpriv.h"
 #include "common/string.h"
 
 using test_helpers::user_space_scope;
+using test_helpers::spin_wait;
 using namespace net;
 
 TEST_SUITE(socket_syscall);
+
+constexpr uint16_t STREAM_PORT  = 50020;
+constexpr size_t   STREAM_BYTES = 40000; // Past two staging rounds and past a 16 KiB queue
+constexpr size_t   STREAM_PAGES = 10;
+
+static const ipv4::ipv4_addr g_loopback = {{127, 0, 0, 1}};
 
 // Offsets of the pieces a message call needs inside one user page
 constexpr size_t MSG_HDR   = 0;
@@ -262,6 +275,265 @@ TEST(socket_syscall, recvmsg_scatters_a_datagram_and_reports_its_source) {
     EXPECT_TRUE(source->addr == g_peer);
 
     EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(fd)), resource::OK);
+}
+
+// Several eager user pages, each reachable from the kernel through its frame
+struct user_region {
+    mm::mm_context* ctx = nullptr;
+    uintptr_t addr = 0;
+    uint8_t* pages[STREAM_PAGES] = {};
+
+    user_region() {
+        ctx = mm::mm_context_create();
+        if (!ctx) {
+            return;
+        }
+
+        uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
+        uint32_t flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS;
+        if (mm::mm_context_map_anonymous(ctx, 0, STREAM_PAGES * pmm::PAGE_SIZE, prot, flags, &addr) != mm::MM_CTX_OK) {
+            addr = 0;
+            return;
+        }
+
+        for (size_t i = 0; i < STREAM_PAGES; i++) {
+            pmm::phys_addr_t phys = paging::get_physical(addr + i * pmm::PAGE_SIZE, ctx->pt_root);
+            pages[i] = phys ? static_cast<uint8_t*>(paging::phys_to_virt(phys)) : nullptr;
+        }
+    }
+
+    ~user_region() {
+        if (ctx) {
+            mm::mm_context_release(ctx);
+        }
+    }
+
+    bool ready() const {
+        for (size_t i = 0; i < STREAM_PAGES; i++) {
+            if (!pages[i]) {
+                return false;
+            }
+        }
+
+        return addr != 0;
+    }
+
+    uint8_t& byte(size_t offset) { return pages[offset / pmm::PAGE_SIZE][offset % pmm::PAGE_SIZE]; }
+};
+
+static uint8_t stream_pattern(size_t index) {
+    return static_cast<uint8_t>(index * 7 + 3);
+}
+
+enum class stream_call : uint8_t {
+    send    = 0,
+    write   = 1,
+    receive = 2,
+};
+
+// The client side runs in an elevated task of its own, since its system calls
+// block and the runner is the idle task, which cannot
+struct stream_client_run {
+    mm::mm_context*        ctx;
+    uintptr_t              buf;
+    uintptr_t              addr;
+    stream_call            call;
+    int64_t                result;
+    sync::atomic<uint32_t> done;
+};
+
+static stream_client_run g_stream_client;
+static uint8_t           g_stream_scratch[16384];
+
+static tcp::tcp_socket* tcp_socket_of(sched::task* task, int64_t h) {
+    resource::resource_object* obj = nullptr;
+    if (resource::get_handle_object(task->handles, static_cast<resource::handle_t>(h),
+                                    resource::RIGHT_READ, &obj) != resource::HANDLE_OK) {
+        return nullptr;
+    }
+
+    auto* sock = static_cast<tcp::tcp_socket*>(obj->impl);
+    resource::resource_release(obj);
+    return sock;
+}
+
+// Connects, moves STREAM_BYTES in one system call, and closes in order so the
+// bytes still queued reach the other end ahead of the FIN
+static void run_stream_client(void*) {
+    stream_client_run& run = g_stream_client;
+    sched::task* self = sched::current();
+    int64_t fd = sys_socket(inet::AF_INET, inet::SOCK_STREAM, 0, 0, 0, 0);
+    run.result = fd;
+
+    if (fd >= 0) {
+        {
+            user_space_scope scope(run.ctx);
+            run.result = sys_connect(static_cast<uint64_t>(fd), run.addr, inet::SOCKADDR_IN_LEN, 0, 0, 0);
+            if (run.result == 0 && run.call == stream_call::send) {
+                run.result = sys_sendto(static_cast<uint64_t>(fd), run.buf, STREAM_BYTES, 0, 0, 0);
+            } else if (run.result == 0 && run.call == stream_call::write) {
+                run.result = sys_write(static_cast<uint64_t>(fd), run.buf, STREAM_BYTES, 0, 0, 0);
+            } else if (run.result == 0) {
+                run.result = sys_recvfrom(static_cast<uint64_t>(fd), run.buf, STREAM_BYTES, inet::MSG_WAITALL, 0, 0);
+            }
+        }
+
+        (void)resource::close(self, static_cast<resource::handle_t>(fd));
+    }
+
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+// Moves STREAM_BYTES through the server's ops without ever blocking the runner
+static bool serve_stream(resource::resource_object* server, bool sending) {
+    const resource::socket_ops* ops = server->ops->socket;
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    size_t moved = 0;
+    bool intact = true;
+
+    while (moved < STREAM_BYTES && clock::now_ns() < deadline) {
+        size_t chunk = STREAM_BYTES - moved < sizeof(g_stream_scratch) ? STREAM_BYTES - moved : sizeof(g_stream_scratch);
+        ssize_t n;
+        if (sending) {
+            for (size_t i = 0; i < chunk; i++) {
+                g_stream_scratch[i] = stream_pattern(moved + i);
+            }
+
+            n = ops->sendto(server, g_stream_scratch, chunk, inet::MSG_DONTWAIT, nullptr, 0);
+        } else {
+            n = ops->recvfrom(server, g_stream_scratch, chunk, inet::MSG_DONTWAIT, nullptr, nullptr);
+            for (ssize_t i = 0; i < n; i++) {
+                intact = intact && g_stream_scratch[i] == stream_pattern(moved + i);
+            }
+        }
+
+        if (n == resource::ERR_AGAIN) {
+            continue;
+        }
+
+        if (n <= 0) {
+            return false;
+        }
+
+        moved += static_cast<size_t>(n);
+    }
+
+    return moved == STREAM_BYTES && intact;
+}
+
+// A listener on the loopback address, its accepted connection polled for and
+// aborted with it, so nothing outlives the case
+struct loopback_listener {
+    sched::task* task;
+    int64_t      fd = -1;
+    int64_t      accepted = -1;
+
+    explicit loopback_listener(sched::task* runner) : task(runner) {
+        fd = sys_socket(inet::AF_INET, inet::SOCK_STREAM | fs::O_NONBLOCK, 0, 0, 0, 0);
+        if (fd < 0) {
+            return;
+        }
+
+        tcp::tcp_socket* sock = tcp_socket_of(task, fd);
+        if (tcp::socket_bind(sock, g_loopback, STREAM_PORT) != OK || tcp::socket_listen(sock, 1) != OK) {
+            (void)resource::close(task, static_cast<resource::handle_t>(fd));
+            fd = -1;
+        }
+    }
+
+    ~loopback_listener() {
+        tcp::tcp_socket* sock = accepted >= 0 ? tcp_socket_of(task, accepted) : nullptr;
+        if (sock && sock->conn) {
+            tcp::abort_connection(sock->conn.ptr());
+        }
+
+        if (accepted >= 0) {
+            (void)resource::close(task, static_cast<resource::handle_t>(accepted));
+        }
+
+        if (fd >= 0) {
+            (void)resource::close(task, static_cast<resource::handle_t>(fd));
+        }
+    }
+
+    resource::resource_object* accept() {
+        uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+        while (accepted < 0 && clock::now_ns() < deadline) {
+            accepted = sys_accept(static_cast<uint64_t>(fd), 0, 0, 0, 0, 0);
+        }
+
+        resource::resource_object* obj = nullptr;
+        if (accepted >= 0) {
+            (void)resource::get_handle_object(task->handles, static_cast<resource::handle_t>(accepted),
+                                              resource::RIGHT_READ, &obj);
+        }
+
+        return obj;
+    }
+};
+
+// The client connects and moves STREAM_BYTES in one system call while the
+// runner serves the other end
+static void run_stream_case(stream_call call) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_region region;
+    ASSERT_TRUE(region.ready());
+    loopback_listener listener(task);
+    ASSERT_TRUE(listener.fd >= 0);
+
+    bool client_sends = call != stream_call::receive;
+    for (size_t i = 0; i < STREAM_BYTES; i++) {
+        region.byte(i) = client_sends ? stream_pattern(i) : 0;
+    }
+
+    inet::sockaddr_in addr = {inet::AF_INET, htons(STREAM_PORT), g_loopback, {}};
+    string::memcpy(&region.byte(STREAM_BYTES), &addr, sizeof(addr));
+
+    g_stream_client.ctx = region.ctx;
+    g_stream_client.buf = region.addr;
+    g_stream_client.addr = region.addr + STREAM_BYTES;
+    g_stream_client.call = call;
+    g_stream_client.result = 0;
+    g_stream_client.done.store_relaxed(0);
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(run_stream_client, nullptr, "stream_client", sched::TASK_FLAG_ELEVATED);
+        ASSERT_NOT_NULL(t);
+        sched::enqueue(t);
+    });
+
+    resource::resource_object* server = listener.accept();
+    EXPECT_TRUE(server != nullptr);
+    EXPECT_TRUE(server && serve_stream(server, !client_sends));
+    EXPECT_TRUE(spin_wait(g_stream_client.done));
+    EXPECT_EQ(g_stream_client.result, static_cast<int64_t>(STREAM_BYTES));
+
+    if (!client_sends) {
+        bool intact = true;
+        for (size_t i = 0; i < STREAM_BYTES; i++) {
+            intact = intact && region.byte(i) == stream_pattern(i);
+        }
+
+        EXPECT_TRUE(intact);
+    }
+
+    if (server) {
+        resource::resource_release(server);
+    }
+}
+
+TEST(socket_syscall, a_stream_send_past_one_staging_round_finishes_in_one_call) {
+    run_stream_case(stream_call::send);
+}
+
+TEST(socket_syscall, a_stream_write_past_one_staging_round_finishes_in_one_call) {
+    run_stream_case(stream_call::write);
+}
+
+TEST(socket_syscall, a_stream_receive_with_waitall_gathers_past_one_staging_round) {
+    run_stream_case(stream_call::receive);
 }
 
 TEST(socket_syscall, sendmsg_refuses_ancillary_data) {

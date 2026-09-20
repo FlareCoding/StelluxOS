@@ -8,6 +8,7 @@
 #include "fs/fstypes.h"
 #include "sched/sched.h"
 #include "sched/task.h"
+#include "sync/poll.h"
 #include "mm/uaccess.h"
 #include "mm/heap.h"
 #include "common/string.h"
@@ -438,20 +439,33 @@ __PRIVILEGED_CODE static int64_t scatter_to_user(const syscall::iovec* iovs, uin
     return 0;
 }
 
+__PRIVILEGED_CODE static int64_t copy_destination(uint64_t dest_addr, uint64_t addrlen, uint8_t* kaddr,
+                                                  size_t* addr_len) {
+    *addr_len = 0;
+    if (dest_addr == 0 || addrlen == 0) {
+        return 0;
+    }
+
+    if (addrlen > SENDTO_MAX_ADDR) {
+        return syscall::EINVAL;
+    }
+
+    *addr_len = static_cast<size_t>(addrlen);
+    if (mm::uaccess::copy_from_user(kaddr, reinterpret_cast<const void*>(dest_addr), *addr_len) != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    return 0;
+}
+
 // Sends kernel-resident data on the socket, to the named destination when there is one
 __PRIVILEGED_CODE static int64_t send_on_socket(const socket_ref& sock, const uint8_t* data, size_t len,
                                                 uint32_t flags, uint64_t dest_addr, uint64_t addrlen) {
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t addr_len = 0;
-    if (dest_addr != 0 && addrlen > 0) {
-        if (addrlen > SENDTO_MAX_ADDR) {
-            return syscall::EINVAL;
-        }
-
-        addr_len = static_cast<size_t>(addrlen);
-        if (mm::uaccess::copy_from_user(kaddr, reinterpret_cast<const void*>(dest_addr), addr_len) != mm::uaccess::OK) {
-            return syscall::EFAULT;
-        }
+    int64_t rc = copy_destination(dest_addr, addrlen, kaddr, &addr_len);
+    if (rc != 0) {
+        return rc;
     }
 
     ssize_t result = sock.ops->sendto(sock.obj, data, len, flags, kaddr, addr_len);
@@ -460,6 +474,55 @@ __PRIVILEGED_CODE static int64_t send_on_socket(const socket_ref& sock, const ui
     }
 
     return result;
+}
+
+__PRIVILEGED_CODE static int64_t send_stream(const socket_ref& sock, const syscall::iovec* iovs, uint64_t iovcnt,
+                                             uint32_t flags, uint64_t dest_addr, uint64_t addrlen) {
+    uint8_t kaddr[SENDTO_MAX_ADDR] = {};
+    size_t addr_len = 0;
+    int64_t err = copy_destination(dest_addr, addrlen, kaddr, &addr_len);
+    if (err != 0) {
+        return err;
+    }
+
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(syscall::STREAM_CHUNK_SIZE));
+    if (!kbuf) {
+        return syscall::ENOMEM;
+    }
+
+    int64_t total = 0;
+    bool done = false;
+    for (uint64_t i = 0; i < iovcnt && !done; i++) {
+        size_t remaining = iovs[i].len;
+        const uint8_t* user_ptr = reinterpret_cast<const uint8_t*>(iovs[i].base);
+
+        while (remaining > 0) {
+            size_t chunk = remaining > syscall::STREAM_CHUNK_SIZE ? syscall::STREAM_CHUNK_SIZE : remaining;
+            if (mm::uaccess::copy_from_user(kbuf, user_ptr, chunk) != mm::uaccess::OK) {
+                err = syscall::EFAULT;
+                done = true;
+                break;
+            }
+
+            ssize_t n = sock.ops->sendto(sock.obj, kbuf, chunk, flags, kaddr, addr_len);
+            if (n < 0) {
+                err = syscall::error_map::map_socket_op_error(static_cast<int32_t>(n));
+                done = true;
+                break;
+            }
+
+            total += n;
+            user_ptr += n;
+            remaining -= static_cast<size_t>(n);
+            if (static_cast<size_t>(n) < chunk) {
+                done = true;
+                break;
+            }
+        }
+    }
+
+    heap::kfree(kbuf);
+    return total > 0 ? total : err;
 }
 
 // A nonblocking descriptor never waits, whatever the call asked for
@@ -477,6 +540,110 @@ __PRIVILEGED_CODE static int64_t receive_on_socket(const socket_ref& sock, uint8
     return result;
 }
 
+// Once a round has delivered bytes, the stream is asked again only while it is
+// readable with no error pending, so an error is left for the next call to report
+__PRIVILEGED_CODE static bool stream_has_more(const socket_ref& sock, uint32_t flags) {
+    if (!sock.obj->ops->poll) {
+        return true;
+    }
+
+    uint32_t ready = sock.obj->ops->poll(sock.obj, nullptr);
+    if (ready & sync::POLL_ERR) {
+        return false;
+    }
+
+    return (ready & sync::POLL_IN) || (flags & net::inet::MSG_WAITALL);
+}
+
+// The first round waits as the caller asked, later ones take only what is queued
+__PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const syscall::iovec* iovs, uint64_t iovcnt,
+                                                uint32_t flags, uint8_t* kaddr, size_t* kaddr_len) {
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(syscall::STREAM_CHUNK_SIZE));
+    if (!kbuf) {
+        return syscall::ENOMEM;
+    }
+
+    if (sock.handle_flags & fs::O_NONBLOCK) {
+        flags |= net::inet::MSG_DONTWAIT;
+    }
+
+    size_t addr_capacity = *kaddr_len;
+    int64_t total = 0;
+    int64_t err = 0;
+    bool done = false;
+    for (uint64_t i = 0; i < iovcnt && !done; i++) {
+        size_t remaining = iovs[i].len;
+        uint8_t* user_ptr = reinterpret_cast<uint8_t*>(iovs[i].base);
+
+        while (remaining > 0) {
+            if (total > 0 && !stream_has_more(sock, flags)) {
+                done = true;
+                break;
+            }
+
+            size_t chunk = remaining > syscall::STREAM_CHUNK_SIZE ? syscall::STREAM_CHUNK_SIZE : remaining;
+            size_t addr_len = addr_capacity;
+            ssize_t n = sock.ops->recvfrom(sock.obj, kbuf, chunk, flags, kaddr, &addr_len);
+            if (n < 0) {
+                if (total == 0) {
+                    err = syscall::error_map::map_socket_op_error(static_cast<int32_t>(n));
+                }
+
+                done = true;
+                break;
+            }
+
+            if (total == 0) {
+                *kaddr_len = addr_len;
+            }
+
+            if (n == 0) {
+                done = true;
+                break;
+            }
+
+            if (mm::uaccess::copy_to_user(user_ptr, kbuf, static_cast<size_t>(n)) != mm::uaccess::OK) {
+                err = syscall::EFAULT;
+                done = true;
+                break;
+            }
+
+            total += n;
+            user_ptr += n;
+            remaining -= static_cast<size_t>(n);
+            if (!(flags & net::inet::MSG_WAITALL)) {
+                flags |= net::inet::MSG_DONTWAIT;
+            }
+
+            if (static_cast<size_t>(n) < chunk) {
+                done = true;
+                break;
+            }
+        }
+    }
+
+    heap::kfree(kbuf);
+    return total > 0 ? total : err;
+}
+
+__PRIVILEGED_CODE static int64_t receive_datagram(const socket_ref& sock, uint64_t buf, size_t len, uint32_t flags,
+                                                  uint8_t* kaddr, size_t* kaddr_len) {
+    size_t staged = len < SENDTO_MAX_BUF ? len : SENDTO_MAX_BUF;
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(staged));
+    if (!kbuf) {
+        return syscall::ENOMEM;
+    }
+
+    int64_t result = receive_on_socket(sock, kbuf, staged, flags, kaddr, kaddr_len);
+    if (result >= 0 &&
+        mm::uaccess::copy_to_user(reinterpret_cast<void*>(buf), kbuf, static_cast<size_t>(result)) != mm::uaccess::OK) {
+        result = syscall::EFAULT;
+    }
+
+    heap::kfree(kbuf);
+    return result;
+}
+
 __PRIVILEGED_CODE static int64_t copy_source_address(uint64_t user_addr, uint32_t user_len,
                                                      const uint8_t* kaddr, size_t kaddr_len) {
     size_t copy_len = kaddr_len < user_len ? kaddr_len : user_len;
@@ -488,13 +655,29 @@ __PRIVILEGED_CODE static int64_t copy_source_address(uint64_t user_addr, uint32_
     return 0;
 }
 
+__PRIVILEGED_CODE static int64_t send_datagram(const socket_ref& sock, uint64_t buf, size_t len, uint32_t flags,
+                                               uint64_t dest_addr, uint64_t addrlen) {
+    if (len > SENDTO_MAX_BUF) {
+        return syscall::EMSGSIZE;
+    }
+
+    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(len));
+    if (!kbuf) {
+        return syscall::ENOMEM;
+    }
+
+    int64_t result = syscall::EFAULT;
+    if (mm::uaccess::copy_from_user(kbuf, reinterpret_cast<const void*>(buf), len) == mm::uaccess::OK) {
+        result = send_on_socket(sock, kbuf, len, flags, dest_addr, addrlen);
+    }
+
+    heap::kfree(kbuf);
+    return result;
+}
+
 DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
     if (buf == 0 || len == 0) {
         return syscall::EINVAL;
-    }
-
-    if (len > SENDTO_MAX_BUF) {
-        return syscall::EMSGSIZE;
     }
 
     sched::task* task = sched::current();
@@ -502,25 +685,20 @@ DEFINE_SYSCALL6(sendto, fd, buf, len, flags, dest_addr, addrlen) {
         return syscall::EIO;
     }
 
-    size_t data_len = static_cast<size_t>(len);
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(data_len));
-    if (!kbuf) {
-        return syscall::ENOMEM;
-    }
-
-    if (mm::uaccess::copy_from_user(kbuf, reinterpret_cast<const void*>(buf), data_len) != mm::uaccess::OK) {
-        heap::kfree(kbuf);
-        return syscall::EFAULT;
-    }
-
     socket_ref sock;
     int64_t result = lookup_socket(task, fd, resource::RIGHT_WRITE, &sock);
-    if (result == 0) {
-        result = send_on_socket(sock, kbuf, data_len, static_cast<uint32_t>(flags), dest_addr, addrlen);
-        resource::resource_release(sock.obj);
+    if (result != 0) {
+        return result;
     }
 
-    heap::kfree(kbuf);
+    if (sock.ops->stream) {
+        syscall::iovec whole = {buf, len};
+        result = send_stream(sock, &whole, 1, static_cast<uint32_t>(flags), dest_addr, addrlen);
+    } else {
+        result = send_datagram(sock, buf, static_cast<size_t>(len), static_cast<uint32_t>(flags), dest_addr, addrlen);
+    }
+
+    resource::resource_release(sock.obj);
     return result;
 }
 
@@ -555,32 +733,30 @@ DEFINE_SYSCALL3(sendmsg, fd, msg, flags) {
         return syscall::EINVAL;
     }
 
-    if (data_len > SENDTO_MAX_BUF) {
-        heap::kfree(iovs);
-        return syscall::EMSGSIZE;
-    }
-
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(data_len));
-    if (!kbuf) {
-        heap::kfree(iovs);
-        return syscall::ENOMEM;
-    }
-
-    result = gather_from_user(iovs, hdr.iovlen, kbuf);
-    heap::kfree(iovs);
+    socket_ref sock;
+    result = lookup_socket(task, fd, resource::RIGHT_WRITE, &sock);
     if (result != 0) {
-        heap::kfree(kbuf);
+        heap::kfree(iovs);
         return result;
     }
 
-    socket_ref sock;
-    result = lookup_socket(task, fd, resource::RIGHT_WRITE, &sock);
-    if (result == 0) {
-        result = send_on_socket(sock, kbuf, data_len, static_cast<uint32_t>(flags), hdr.name, hdr.namelen);
-        resource::resource_release(sock.obj);
+    if (sock.ops->stream) {
+        result = send_stream(sock, iovs, hdr.iovlen, static_cast<uint32_t>(flags), hdr.name, hdr.namelen);
+    } else if (data_len > SENDTO_MAX_BUF) {
+        result = syscall::EMSGSIZE;
+    } else if (uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(data_len))) {
+        result = gather_from_user(iovs, hdr.iovlen, kbuf);
+        if (result == 0) {
+            result = send_on_socket(sock, kbuf, data_len, static_cast<uint32_t>(flags), hdr.name, hdr.namelen);
+        }
+
+        heap::kfree(kbuf);
+    } else {
+        result = syscall::ENOMEM;
     }
 
-    heap::kfree(kbuf);
+    resource::resource_release(sock.obj);
+    heap::kfree(iovs);
     return result;
 }
 
@@ -594,31 +770,22 @@ DEFINE_SYSCALL6(recvfrom, fd, buf, len, flags, src_addr, addrlen) {
         return syscall::EIO;
     }
 
-    size_t data_len = len < SENDTO_MAX_BUF ? static_cast<size_t>(len) : SENDTO_MAX_BUF;
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(data_len));
-    if (!kbuf) {
-        return syscall::ENOMEM;
-    }
-
     socket_ref sock;
     int64_t result = lookup_socket(task, fd, resource::RIGHT_READ, &sock);
     if (result != 0) {
-        heap::kfree(kbuf);
         return result;
     }
 
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t kaddr_len = sizeof(kaddr);
-    result = receive_on_socket(sock, kbuf, data_len, static_cast<uint32_t>(flags), kaddr, &kaddr_len);
-
-    resource::resource_release(sock.obj);
-
-    if (result >= 0 &&
-        mm::uaccess::copy_to_user(reinterpret_cast<void*>(buf), kbuf, static_cast<size_t>(result)) != mm::uaccess::OK) {
-        result = syscall::EFAULT;
+    if (sock.ops->stream) {
+        syscall::iovec whole = {buf, len};
+        result = receive_stream(sock, &whole, 1, static_cast<uint32_t>(flags), kaddr, &kaddr_len);
+    } else {
+        result = receive_datagram(sock, buf, static_cast<size_t>(len), static_cast<uint32_t>(flags), kaddr, &kaddr_len);
     }
 
-    heap::kfree(kbuf);
+    resource::resource_release(sock.obj);
     if (result < 0 || src_addr == 0 || addrlen == 0) {
         return result;
     }
@@ -668,37 +835,33 @@ DEFINE_SYSCALL3(recvmsg, fd, msg, flags) {
         return syscall::EINVAL;
     }
 
-    if (data_len > SENDTO_MAX_BUF) {
-        data_len = SENDTO_MAX_BUF;
-    }
-
-    uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(data_len));
-    if (!kbuf) {
-        heap::kfree(iovs);
-        return syscall::ENOMEM;
-    }
-
     socket_ref sock;
     result = lookup_socket(task, fd, resource::RIGHT_READ, &sock);
     if (result != 0) {
-        heap::kfree(kbuf);
         heap::kfree(iovs);
         return result;
     }
 
     uint8_t kaddr[SENDTO_MAX_ADDR] = {};
     size_t kaddr_len = sizeof(kaddr);
-    result = receive_on_socket(sock, kbuf, data_len, static_cast<uint32_t>(flags), kaddr, &kaddr_len);
-    resource::resource_release(sock.obj);
-
-    if (result >= 0) {
-        int64_t scatter_rc = scatter_to_user(iovs, hdr.iovlen, kbuf, static_cast<size_t>(result));
-        if (scatter_rc != 0) {
-            result = scatter_rc;
+    size_t staged = data_len < SENDTO_MAX_BUF ? data_len : SENDTO_MAX_BUF;
+    if (sock.ops->stream) {
+        result = receive_stream(sock, iovs, hdr.iovlen, static_cast<uint32_t>(flags), kaddr, &kaddr_len);
+    } else if (uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(staged))) {
+        result = receive_on_socket(sock, kbuf, staged, static_cast<uint32_t>(flags), kaddr, &kaddr_len);
+        if (result >= 0) {
+            int64_t scatter_rc = scatter_to_user(iovs, hdr.iovlen, kbuf, static_cast<size_t>(result));
+            if (scatter_rc != 0) {
+                result = scatter_rc;
+            }
         }
+
+        heap::kfree(kbuf);
+    } else {
+        result = syscall::ENOMEM;
     }
 
-    heap::kfree(kbuf);
+    resource::resource_release(sock.obj);
     heap::kfree(iovs);
     if (result < 0) {
         return result;

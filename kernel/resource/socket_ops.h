@@ -28,9 +28,11 @@ using shutdown_fn = int32_t (*)(resource_object* obj, int32_t how);
 /**
  * Operations only sockets have. Every entry is nullable, the syscall layer
  * reports EOPNOTSUPP for a missing one. `getname` returns the local address,
- * or the peer's when `peer` is set.
+ * or the peer's when `peer` is set. `stream` marks a byte stream, whose
+ * requests the syscall layer may hand over in pieces.
  */
 struct socket_ops {
+    bool          stream = false;
     bind_fn       bind = nullptr;
     listen_fn     listen = nullptr;
     accept_fn     accept = nullptr;

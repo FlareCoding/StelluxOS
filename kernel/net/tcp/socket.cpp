@@ -241,7 +241,7 @@ __PRIVILEGED_CODE static int32_t socket_listen(resource::resource_object* obj, i
 
     uint16_t depth = backlog < 1 ? 1 : (backlog > MAX_BACKLOG ? MAX_BACKLOG : static_cast<uint16_t>(backlog));
     int32_t rc = socket_listen(sock, depth);
-    
+
     return inet::map_net_error(rc == ERR_FULL ? ERR_IN_USE : rc);
 }
 
@@ -770,6 +770,18 @@ __PRIVILEGED_CODE static ssize_t receive(tcp_conn* conn, void* kdst, size_t coun
             break;
         }
 
+        // A peer at a closed window sends nothing until the room just freed is announced
+        if (taken > 0 && !peek && window_update_owed_locked(conn)) {
+            segment_source src = snapshot_source(conn);
+            mark_ack_sent_locked(conn);
+
+            sync::spin_unlock_irqrestore(conn->lock, irq);
+            (void)send_control(src, FLAG_ACK);
+
+            irq = sync::spin_lock_irqsave(conn->lock);
+            continue;
+        }
+
         irq = sync::wait(conn->rx_wq, conn->lock, irq);
     }
 
@@ -824,6 +836,7 @@ __PRIVILEGED_CODE static ssize_t transmit(tcp_conn* conn, const void* ksrc, size
     bool nonblock = (msg_flags & inet::MSG_DONTWAIT) != 0;
     const uint8_t* bytes = static_cast<const uint8_t*>(ksrc);
     size_t queued = 0;
+    size_t pushed = 0;
     int32_t refusal = resource::OK;
 
     sync::irq_state irq = sync::spin_lock_irqsave(conn->lock);
@@ -850,13 +863,27 @@ __PRIVILEGED_CODE static ssize_t transmit(tcp_conn* conn, const void* ksrc, size
             break;
         }
 
+        // Room comes only from acknowledgments, so what is queued goes out before the wait
+        if (pushed < queued) {
+            sync::spin_unlock_irqrestore(conn->lock, irq);
+
+            (void)output(conn);
+            pushed = queued;
+
+            irq = sync::spin_lock_irqsave(conn->lock);
+            continue;
+        }
+
         irq = sync::wait(conn->tx_wq, conn->lock, irq);
     }
 
     sync::spin_unlock_irqrestore(conn->lock, irq);
 
-    if (queued > 0) {
+    if (queued > pushed) {
         (void)output(conn);
+    }
+
+    if (queued > 0) {
         return static_cast<ssize_t>(queued);
     }
 
@@ -1040,6 +1067,7 @@ __PRIVILEGED_CODE static void socket_close(resource::resource_object* obj) {
 }
 
 static const resource::socket_ops g_tcp_socket_ops = {
+    .stream = true,
     .bind = socket_bind,
     .listen = socket_listen,
     .accept = socket_accept,
