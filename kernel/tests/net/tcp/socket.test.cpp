@@ -862,6 +862,17 @@ TEST(tcp_socket, tcp_options_are_kept_and_reach_the_connection) {
     EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_MAXSEG, &value, &len), resource::OK);
     EXPECT_EQ(value, 300);
 
+    // Lifting the cap gives the negotiated size back, and a cap above it changes nothing
+    value = 0;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_MAXSEG, &value, sizeof(value)), resource::OK);
+    EXPECT_EQ(conn->snd_mss, DEFAULT_MSS);
+    value = 2000;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_MAXSEG, &value, sizeof(value)), resource::OK);
+    EXPECT_EQ(conn->snd_mss, DEFAULT_MSS);
+    value = 300;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_MAXSEG, &value, sizeof(value)), resource::OK);
+    EXPECT_EQ(conn->snd_mss, 300);
+
     tcp_record record = {};
     size_t record_len = sizeof(record);
     EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_INFO, &record, &record_len), resource::OK);
@@ -906,6 +917,35 @@ TEST(tcp_socket, a_listeners_options_reach_the_connections_it_accepts) {
     tcp_socket* child = static_cast<tcp_socket*>(child_obj->impl);
     EXPECT_TRUE(child->options.nodelay);
     EXPECT_TRUE(child->conn->nodelay);
+
+    abort_connection(child->conn.ptr());
+    child_obj->ops->close(child_obj);
+    heap::kfree_delete(child_obj);
+}
+
+TEST(tcp_socket, an_option_set_after_the_handshake_is_not_claimed_by_a_connection_made_before_it) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+    ASSERT_EQ(socket_bind(sock.impl(), ipv4::UNSPECIFIED_ADDR, lp.remote.host_port), OK);
+    ASSERT_EQ(sock.ops()->listen(sock.obj, 5), resource::OK);
+
+    EXPECT_EQ(input(lp.remote.syn(1000)), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    uint32_t iss = ntohl(sent_tcp(lp.link, 0)->seq);
+    EXPECT_EQ(input(lp.remote.ack(1001, iss + 1)), OK);
+
+    int32_t value = 1;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_NODELAY, &value, sizeof(value)), resource::OK);
+
+    resource::resource_object* child_obj = nullptr;
+    ASSERT_EQ(sock.ops()->accept(sock.obj, &child_obj, nullptr, nullptr, true), resource::OK);
+    tcp_socket* child = static_cast<tcp_socket*>(child_obj->impl);
+    size_t len = sizeof(value);
+    EXPECT_EQ(child_obj->ops->socket->getsockopt(child_obj, inet::IPPROTO_TCP, inet::TCP_NODELAY, &value, &len), resource::OK);
+    EXPECT_EQ(value, 0);
+    EXPECT_FALSE(child->options.nodelay);
+    EXPECT_FALSE(child->conn->nodelay);
 
     abort_connection(child->conn.ptr());
     child_obj->ops->close(child_obj);

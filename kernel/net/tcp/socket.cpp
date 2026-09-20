@@ -292,7 +292,6 @@ __PRIVILEGED_CODE static int32_t socket_accept(resource::resource_object* obj, r
 
     child->local = {conn->key.local_addr, conn->key.local_port, sock->local.iface, false};
     child->bound = true;
-    child->options = sock->options;
     child->linger = sock->linger;
     child->linger_seconds = sock->linger_seconds;
     child_obj->type = resource::resource_type::SOCKET;
@@ -301,6 +300,7 @@ __PRIVILEGED_CODE static int32_t socket_accept(resource::resource_object* obj, r
 
     {
         sync::irq_lock_guard guard(conn->lock);
+        child->options = {conn->nodelay, conn->snd_mss_cap};
         conn->owner = child_obj;
     }
 
@@ -553,6 +553,11 @@ __PRIVILEGED_CODE static int32_t option_value_locked(tcp_socket* sock, int32_t l
 
     switch (optname) {
     case inet::TCP_NODELAY:
+        if (conn) {
+            sync::irq_lock_guard guard(conn->lock);
+            return conn->nodelay ? 1 : 0;
+        }
+
         return sock->options.nodelay ? 1 : 0;
     case inet::TCP_MAXSEG:
         if (conn) {
@@ -620,8 +625,8 @@ __PRIVILEGED_CODE static void set_mss_cap_locked(tcp_socket* sock, uint16_t cap)
     if (sock->conn) {
         sync::irq_lock_guard guard(sock->conn->lock);
         sock->conn->snd_mss_cap = cap;
-        if (cap != 0 && cap < sock->conn->snd_mss) {
-            sock->conn->snd_mss = cap;
+        if (sock->conn->rcv_mss != 0) {
+            sock->conn->snd_mss = send_mss(sock->conn->iface, sock->conn->rcv_mss, cap);
         }
     }
 }
