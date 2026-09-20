@@ -6,9 +6,13 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <poll.h>
 #include <errno.h>
+
+#define SEND_CHUNK 16384
 
 static uint32_t parse_ipv4(const char* str) {
     int field = 0;
@@ -146,6 +150,14 @@ static int run_client(uint32_t dst_ip_host, uint16_t port, const char* msg) {
         return 1;
     }
 
+    struct pollfd pfd = {fd, POLLIN, 0};
+    if (poll(&pfd, 1, 5000) > 0) {
+        int waiting = 0;
+        if (ioctl(fd, FIONREAD, &waiting) == 0) {
+            printf("tcpecho: %d bytes waiting\r\n", waiting);
+        }
+    }
+
     char buf[1024];
     ssize_t nr = read(fd, buf, sizeof(buf) - 1);
     if (nr > 0) {
@@ -161,6 +173,70 @@ static int run_client(uint32_t dst_ip_host, uint16_t port, const char* msg) {
     return 0;
 }
 
+static double elapsed_s(const struct timespec* from, const struct timespec* to) {
+    return (double)(to->tv_sec - from->tv_sec) + (double)(to->tv_nsec - from->tv_nsec) / 1e9;
+}
+
+static int run_send(uint32_t dst_ip_host, uint16_t port, size_t total) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        printf("tcpecho: socket() failed (errno=%d)\r\n", errno);
+        return 1;
+    }
+
+    struct sockaddr_in dst;
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_port = htons(port);
+    dst.sin_addr.s_addr = htonl(dst_ip_host);
+
+    char ip_str[16];
+    format_ip(dst_ip_host, ip_str, sizeof(ip_str));
+    printf("tcpecho: connecting to %s:%u...\r\n", ip_str, port);
+
+    if (connect(fd, (struct sockaddr*)&dst, sizeof(dst)) < 0) {
+        printf("tcpecho: connect() failed (errno=%d)\r\n", errno);
+        close(fd);
+        return 1;
+    }
+
+    static uint8_t chunk[SEND_CHUNK];
+    for (size_t i = 0; i < sizeof(chunk); i++) {
+        chunk[i] = (uint8_t)i;
+    }
+
+    printf("tcpecho: sending %zu bytes\r\n", total);
+    struct timespec t0;
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    size_t sent = 0;
+    while (sent < total) {
+        size_t offset = sent % sizeof(chunk);
+        size_t len = sizeof(chunk) - offset;
+        if (len > total - sent) {
+            len = total - sent;
+        }
+
+        ssize_t n = write(fd, chunk + offset, len);
+        if (n < 0) {
+            printf("tcpecho: write() failed after %zu bytes (errno=%d)\r\n", sent, errno);
+            close(fd);
+            return 1;
+        }
+
+        sent += (size_t)n;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double seconds = elapsed_s(&t0, &t1);
+    printf("tcpecho: sent %zu bytes in %.3f s (%.2f MB/s)\r\n", sent, seconds,
+           seconds > 0 ? (double)sent / seconds / 1e6 : 0.0);
+
+    close(fd);
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -168,6 +244,7 @@ int main(int argc, char* argv[]) {
         printf("Usage:\r\n");
         printf("  tcpecho server <port>\r\n");
         printf("  tcpecho client <ip> <port> [message]\r\n");
+        printf("  tcpecho send <ip> <port> <bytes>\r\n");
         return 1;
     }
 
@@ -201,6 +278,28 @@ int main(int argc, char* argv[]) {
 
         const char* msg = (argc >= 5) ? argv[4] : "hello";
         return run_client(ip, port, msg);
+    }
+
+    if (strcmp(argv[1], "send") == 0) {
+        if (argc < 5) {
+            printf("Usage: tcpecho send <ip> <port> <bytes>\r\n");
+            return 1;
+        }
+
+        uint32_t ip = parse_ipv4(argv[2]);
+        if (ip == 0) {
+            printf("tcpecho: invalid IP address '%s'\r\n", argv[2]);
+            return 1;
+        }
+
+        uint16_t port = (uint16_t)atoi(argv[3]);
+        long bytes = atol(argv[4]);
+        if (port == 0 || bytes <= 0) {
+            printf("tcpecho: invalid port or byte count\r\n");
+            return 1;
+        }
+
+        return run_send(ip, port, (size_t)bytes);
     }
 
     printf("tcpecho: unknown mode '%s'\r\n", argv[1]);
