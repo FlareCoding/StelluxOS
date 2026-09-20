@@ -612,6 +612,99 @@ TEST(socket_syscall, a_receive_that_faults_leaves_the_bytes_queued_for_the_next_
     resource::resource_release(server);
 }
 
+TEST(socket_syscall, a_peek_through_the_system_call_leaves_the_bytes_queued) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_region region;
+    ASSERT_TRUE(region.ready());
+    loopback_listener listener(task);
+    ASSERT_TRUE(listener.fd >= 0);
+    loopback_client client(task);
+    ASSERT_TRUE(client.ready());
+    resource::resource_object* server = listener.accept();
+    ASSERT_NOT_NULL(server);
+
+    for (size_t i = 0; i < 300; i++) {
+        g_stream_scratch[i] = stream_pattern(i);
+    }
+
+    EXPECT_EQ(server->ops->socket->sendto(server, g_stream_scratch, 300, inet::MSG_DONTWAIT, nullptr, 0), 300);
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (client.queued() < 300 && clock::now_ns() < deadline) {
+    }
+    ASSERT_EQ(client.queued(), 300u);
+
+    int64_t peeked = 0;
+    size_t still_queued = 0;
+    int64_t got = 0;
+    {
+        user_space_scope scope(region.ctx);
+        peeked = sys_recvfrom(static_cast<uint64_t>(client.fd), region.addr, 300,
+                              inet::MSG_PEEK | inet::MSG_DONTWAIT, 0, 0);
+        still_queued = client.queued();
+        got = sys_recvfrom(static_cast<uint64_t>(client.fd), region.addr + 1024, 300, inet::MSG_DONTWAIT, 0, 0);
+    }
+
+    EXPECT_EQ(peeked, static_cast<int64_t>(300));
+    EXPECT_EQ(still_queued, 300u);
+    EXPECT_EQ(got, static_cast<int64_t>(300));
+    bool intact = true;
+    for (size_t i = 0; i < 300; i++) {
+        intact = intact && region.byte(i) == stream_pattern(i) && region.byte(1024 + i) == stream_pattern(i);
+    }
+    EXPECT_TRUE(intact);
+
+    resource::resource_release(server);
+}
+
+TEST(socket_syscall, a_discarding_receive_drops_the_bytes_without_writing_the_buffer) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_region region;
+    ASSERT_TRUE(region.ready());
+    loopback_listener listener(task);
+    ASSERT_TRUE(listener.fd >= 0);
+    loopback_client client(task);
+    ASSERT_TRUE(client.ready());
+    resource::resource_object* server = listener.accept();
+    ASSERT_NOT_NULL(server);
+
+    for (size_t i = 0; i < 300; i++) {
+        g_stream_scratch[i] = stream_pattern(i);
+        region.byte(i) = 0xAA;
+    }
+
+    EXPECT_EQ(server->ops->socket->sendto(server, g_stream_scratch, 300, inet::MSG_DONTWAIT, nullptr, 0), 300);
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (client.queued() < 300 && clock::now_ns() < deadline) {
+    }
+    ASSERT_EQ(client.queued(), 300u);
+
+    int64_t dropped = 0;
+    size_t still_queued = 0;
+    int64_t empty = 0;
+    {
+        user_space_scope scope(region.ctx);
+        dropped = sys_recvfrom(static_cast<uint64_t>(client.fd), region.addr, 300,
+                               inet::MSG_TRUNC | inet::MSG_DONTWAIT, 0, 0);
+        still_queued = client.queued();
+        empty = sys_recvfrom(static_cast<uint64_t>(client.fd), region.addr, 300, inet::MSG_DONTWAIT, 0, 0);
+    }
+
+    EXPECT_EQ(dropped, static_cast<int64_t>(300));
+    EXPECT_EQ(still_queued, 0u);
+    EXPECT_EQ(empty, syscall::EAGAIN);
+    bool untouched = true;
+    for (size_t i = 0; i < 300; i++) {
+        untouched = untouched && region.byte(i) == 0xAA;
+    }
+    EXPECT_TRUE(untouched);
+
+    resource::resource_release(server);
+}
+
 // The client connects and moves STREAM_BYTES in one system call while the
 // runner serves the other end
 static void run_stream_case(stream_call call) {

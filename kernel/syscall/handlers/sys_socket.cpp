@@ -560,17 +560,34 @@ __PRIVILEGED_CODE static bool stream_has_more(const socket_ref& sock, uint32_t f
     return (ready & sync::POLL_IN) || (flags & net::inet::MSG_WAITALL);
 }
 
-// Each round peeks, copies to the caller, then discards what was copied, so a
-// fault leaves the bytes queued. The first round waits as the caller asked,
-// later ones take only what is queued unless MSG_WAITALL.
+// A discard stages nothing, the socket drops the bytes itself
+__PRIVILEGED_CODE static int64_t discard_stream(const socket_ref& sock, const syscall::iovec* iovs, uint64_t iovcnt,
+                                                uint32_t flags, uint8_t* kaddr, size_t* kaddr_len) {
+    size_t count = 0;
+    for (uint64_t i = 0; i < iovcnt; i++) {
+        count += iovs[i].len;
+    }
+
+    ssize_t n = sock.ops->recvfrom(sock.obj, nullptr, count, flags, kaddr, kaddr_len);
+    return n < 0 ? syscall::error_map::map_socket_op_error(static_cast<int32_t>(n)) : n;
+}
+
+// Each round peeks, copies to the caller, then discards what was copied unless
+// the caller itself peeked, so a fault leaves the bytes queued. A peek is one
+// round; otherwise later rounds take only what is queued unless MSG_WAITALL.
 __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const syscall::iovec* iovs, uint64_t iovcnt,
                                                 uint32_t flags, uint8_t* kaddr, size_t* kaddr_len) {
+    if (flags & net::inet::MSG_TRUNC) {
+        return discard_stream(sock, iovs, iovcnt, flags, kaddr, kaddr_len);
+    }
+
     uint8_t* kbuf = static_cast<uint8_t*>(heap::kzalloc(syscall::STREAM_CHUNK_SIZE));
     if (!kbuf) {
         return syscall::ENOMEM;
     }
 
-    bool whole = (flags & net::inet::MSG_WAITALL) != 0;
+    bool peek = (flags & net::inet::MSG_PEEK) != 0;
+    bool whole = (flags & net::inet::MSG_WAITALL) != 0 && !peek;
     uint32_t round_flags = (flags & ~net::inet::MSG_WAITALL) | net::inet::MSG_PEEK;
     size_t addr_capacity = *kaddr_len;
     int64_t total = 0;
@@ -616,11 +633,19 @@ __PRIVILEGED_CODE static int64_t receive_stream(const socket_ref& sock, const sy
                 break;
             }
 
-            (void)sock.ops->recvfrom(sock.obj, nullptr, static_cast<size_t>(n),
-                                     net::inet::MSG_TRUNC | net::inet::MSG_DONTWAIT, nullptr, nullptr);
+            if (!peek) {
+                (void)sock.ops->recvfrom(sock.obj, nullptr, static_cast<size_t>(n),
+                                         net::inet::MSG_TRUNC | net::inet::MSG_DONTWAIT, nullptr, nullptr);
+            }
+
             total += n;
             user_ptr += n;
             remaining -= static_cast<size_t>(n);
+            if (peek) {
+                done = true;
+                break;
+            }
+
             if (!whole) {
                 round_flags |= net::inet::MSG_DONTWAIT;
                 if (static_cast<size_t>(n) < chunk) {
