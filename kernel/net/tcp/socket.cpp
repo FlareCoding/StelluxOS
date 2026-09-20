@@ -758,13 +758,21 @@ __PRIVILEGED_CODE static ssize_t receive(tcp_conn* conn, void* kdst, size_t coun
 
     bool nonblock = (msg_flags & inet::MSG_DONTWAIT) != 0;
     bool peek = (msg_flags & inet::MSG_PEEK) != 0;
+    bool discard = (msg_flags & inet::MSG_TRUNC) != 0;
     bool whole = (msg_flags & inet::MSG_WAITALL) != 0;
     uint8_t* dst = static_cast<uint8_t*>(kdst);
     size_t copied = 0;
 
     sync::irq_state irq = sync::spin_lock_irqsave(conn->lock);
     for (;;) {
-        size_t taken = conn->rcv_queue.copy_out(peek ? copied : 0, dst + copied, count - copied);
+        size_t taken;
+        if (discard) {
+            size_t queued = conn->rcv_queue.size();
+            taken = queued < count - copied ? queued : count - copied;
+        } else {
+            taken = conn->rcv_queue.copy_out(peek ? copied : 0, dst + copied, count - copied);
+        }
+
         if (!peek) {
             (void)conn->rcv_queue.consume(taken);
         }

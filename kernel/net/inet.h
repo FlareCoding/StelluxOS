@@ -22,6 +22,7 @@ constexpr uint32_t IPPROTO_TCP  = ipv4::PROTO_TCP;
 constexpr uint32_t IPPROTO_UDP  = ipv4::PROTO_UDP;
 constexpr uint32_t MSG_OOB      = 0x01;
 constexpr uint32_t MSG_PEEK     = 0x02;
+constexpr uint32_t MSG_TRUNC    = 0x20;
 constexpr uint32_t MSG_DONTWAIT = 0x40;
 constexpr uint32_t MSG_WAITALL  = 0x100;
 constexpr uint32_t MSG_NOSIGNAL = 0x4000;

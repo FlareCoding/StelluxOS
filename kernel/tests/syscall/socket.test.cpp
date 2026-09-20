@@ -473,6 +473,145 @@ struct loopback_listener {
     }
 };
 
+// A nonblocking client the runner itself owns, connected over the loopback
+// interface, so its calls may run on the runner as long as none of them waits
+struct loopback_client {
+    sched::task* task;
+    int64_t      fd = -1;
+
+    explicit loopback_client(sched::task* runner) : task(runner) {
+        fd = sys_socket(inet::AF_INET, inet::SOCK_STREAM | fs::O_NONBLOCK, 0, 0, 0, 0);
+        if (fd < 0) {
+            return;
+        }
+
+        resource::resource_object* obj = nullptr;
+        if (resource::get_handle_object(task->handles, static_cast<resource::handle_t>(fd),
+                                        resource::RIGHT_WRITE, &obj) != resource::HANDLE_OK) {
+            return;
+        }
+
+        inet::sockaddr_in addr = {inet::AF_INET, htons(STREAM_PORT), g_loopback, {}};
+        (void)obj->ops->socket->connect(obj, &addr, sizeof(addr), true);
+        resource::resource_release(obj);
+
+        uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+        while (!ready() && clock::now_ns() < deadline) {
+        }
+    }
+
+    ~loopback_client() {
+        tcp::tcp_conn* established = conn();
+        if (established) {
+            tcp::abort_connection(established);
+        }
+
+        if (fd >= 0) {
+            (void)resource::close(task, static_cast<resource::handle_t>(fd));
+        }
+    }
+
+    tcp::tcp_conn* conn() const {
+        tcp::tcp_socket* sock = fd >= 0 ? tcp_socket_of(task, fd) : nullptr;
+        return sock && sock->conn ? sock->conn.ptr() : nullptr;
+    }
+
+    bool ready() const {
+        tcp::tcp_conn* established = conn();
+        if (!established) {
+            return false;
+        }
+
+        bool up = false;
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(established->lock);
+            up = established->state == tcp::tcp_state::established;
+        });
+        return up;
+    }
+
+    size_t queued() const {
+        tcp::tcp_conn* established = conn();
+        size_t bytes = 0;
+        RUN_ELEVATED({
+            sync::irq_lock_guard guard(established->lock);
+            bytes = established->rcv_queue.size();
+        });
+        return bytes;
+    }
+};
+
+TEST(socket_syscall, a_nonblocking_stream_send_returns_what_fit_rather_than_waiting) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_region region;
+    ASSERT_TRUE(region.ready());
+    loopback_listener listener(task);
+    ASSERT_TRUE(listener.fd >= 0);
+    loopback_client client(task);
+    ASSERT_TRUE(client.ready());
+
+    for (size_t i = 0; i < STREAM_BYTES; i++) {
+        region.byte(i) = stream_pattern(i);
+    }
+
+    int64_t sent = 0;
+    int64_t again = 0;
+    {
+        user_space_scope scope(region.ctx);
+        sent = sys_sendto(static_cast<uint64_t>(client.fd), region.addr, STREAM_BYTES, 0, 0, 0);
+        again = sys_sendto(static_cast<uint64_t>(client.fd), region.addr, STREAM_BYTES, 0, 0, 0);
+    }
+
+    EXPECT_EQ(sent, static_cast<int64_t>(tcp::SND_CHUNKS_INITIAL * tcp::CHUNK_PAYLOAD));
+    EXPECT_TRUE(again == syscall::EAGAIN || (again > 0 && again <= static_cast<int64_t>(syscall::STREAM_CHUNK_SIZE)));
+}
+
+TEST(socket_syscall, a_receive_that_faults_leaves_the_bytes_queued_for_the_next_call) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_region region;
+    ASSERT_TRUE(region.ready());
+    loopback_listener listener(task);
+    ASSERT_TRUE(listener.fd >= 0);
+    loopback_client client(task);
+    ASSERT_TRUE(client.ready());
+    resource::resource_object* server = listener.accept();
+    ASSERT_NOT_NULL(server);
+
+    for (size_t i = 0; i < 300; i++) {
+        g_stream_scratch[i] = stream_pattern(i);
+    }
+
+    EXPECT_EQ(server->ops->socket->sendto(server, g_stream_scratch, 300, inet::MSG_DONTWAIT, nullptr, 0), 300);
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (client.queued() < 300 && clock::now_ns() < deadline) {
+    }
+    ASSERT_EQ(client.queued(), 300u);
+
+    // A buffer whose last pages are not mapped: the copy faults after the peek
+    uintptr_t torn = region.addr + STREAM_PAGES * pmm::PAGE_SIZE - 16;
+    int64_t faulted = 0;
+    int64_t got = 0;
+    {
+        user_space_scope scope(region.ctx);
+        faulted = sys_recvfrom(static_cast<uint64_t>(client.fd), torn, 300, inet::MSG_DONTWAIT, 0, 0);
+        got = sys_recvfrom(static_cast<uint64_t>(client.fd), region.addr, 300, inet::MSG_DONTWAIT, 0, 0);
+    }
+
+    EXPECT_EQ(faulted, syscall::EFAULT);
+    EXPECT_EQ(got, static_cast<int64_t>(300));
+    bool intact = true;
+    for (size_t i = 0; i < 300; i++) {
+        intact = intact && region.byte(i) == stream_pattern(i);
+    }
+    EXPECT_TRUE(intact);
+
+    resource::resource_release(server);
+}
+
 // The client connects and moves STREAM_BYTES in one system call while the
 // runner serves the other end
 static void run_stream_case(stream_call call) {
