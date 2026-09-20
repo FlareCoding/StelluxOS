@@ -302,6 +302,25 @@ TEST(tcp_close, shutting_down_the_sending_side_keeps_receiving) {
     EXPECT_TRUE(c.timewait());
 }
 
+TEST(tcp_close, data_after_both_sides_are_shut_down_is_reset_with_the_socket_still_open) {
+    linked_peer lp;
+    closable c(lp);
+
+    shutdown_receive(c.conn.ptr());
+    shutdown_send(c.conn.ptr());
+    EXPECT_EQ(c.conn->state, tcp_state::fin_wait_1);
+    EXPECT_FALSE(c.conn->orphaned);
+    lp.link.clear_frames();
+
+    uint8_t data[4] = {'l', 'a', 't', 'e'};
+    EXPECT_EQ(input(lp.remote.segment(FLAG_ACK, c.rcv_nxt(), c.fin_seq() + 1, {}, data, sizeof(data))), OK);
+
+    expect_segment(lp.link, 0, FLAG_RST | FLAG_ACK, c.fin_seq() + 1, c.rcv_nxt());
+    EXPECT_EQ(c.conn->state, tcp_state::closed);
+    EXPECT_EQ(c.conn->pending_error, resource::ERR_CONNRESET);
+    EXPECT_FALSE(lookup(key_of(lp.remote)));
+}
+
 TEST(tcp_close, shutting_down_the_receiving_side_sends_nothing_and_still_takes_data) {
     linked_peer lp;
     closable c(lp);
