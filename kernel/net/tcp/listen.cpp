@@ -35,6 +35,7 @@ struct negotiated_fields {
     uint16_t peer_mss;
     uint8_t  snd_wscale;
     uint8_t  rcv_wscale;
+    uint8_t  retransmits;
     bool     wscale_ok;
     bool     sack_ok;
     bool     ts_ok;
@@ -404,6 +405,7 @@ static negotiated_fields negotiated_fields_locked(const tcp_request* request) {
     fields.peer_mss = request->peer_mss;
     fields.snd_wscale = request->snd_wscale;
     fields.rcv_wscale = request->rcv_wscale;
+    fields.retransmits = request->retransmits;
     fields.wscale_ok = request->wscale_ok;
     fields.sack_ok = request->sack_ok;
     fields.ts_ok = request->ts_ok;
@@ -435,6 +437,7 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
     conn->rcv_mss = fields.peer_mss;
     conn->rcv_wscale = fields.rcv_wscale;
     conn->wscale_ok = fields.wscale_ok;
+    conn->total_retransmits = fields.retransmits;
     configure_send_path_locked(conn);
     conn->sack_ok = fields.sack_ok;
     conn->ts_ok = fields.ts_ok;

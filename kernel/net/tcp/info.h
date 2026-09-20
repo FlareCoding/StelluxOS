@@ -33,7 +33,8 @@ constexpr uint8_t INFO_FIN_RCVD     = 1u << 5;
 
 /**
  * One table entry as userland sees it, mirrored by stlx/net.h. Addresses and
- * ports are in host byte order, fields a kind does not have are zero.
+ * ports are in host byte order, queues and buffers are in bytes, and fields a
+ * kind does not have are zero.
  */
 struct tcp_record {
     uint8_t  kind;
@@ -57,11 +58,23 @@ struct tcp_record {
     uint16_t requests;
     uint16_t accepted;
     uint8_t  retransmits;
-    uint8_t  pad;
+    uint8_t  backoff;
     uint32_t timer_ms;
     int32_t  error;
+    uint32_t rcv_queued;
+    uint32_t rcv_buf;
+    uint32_t snd_queued;
+    uint32_t snd_buf;
+    uint32_t ooo_bytes;
+    uint32_t cwnd;
+    uint32_t srtt_us;
+    uint32_t rttvar_us;
+    uint32_t rto_ms;
+    uint32_t total_retransmits;
+    uint16_t ooo_packets;
+    uint16_t unacked;
 };
-static_assert(sizeof(tcp_record) == 72);
+static_assert(sizeof(tcp_record) == 116);
 
 /**
  * Stack-wide counts since boot and the current table occupancy, mirrored by

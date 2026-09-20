@@ -81,7 +81,20 @@ static void describe_conn_locked(const tcp_conn* conn, tcp_record* out) {
     out->snd_wscale = conn->snd_wscale;
     out->rcv_wscale = conn->rcv_wscale;
     out->retransmits = conn->retransmits;
+    out->backoff = conn->backoff;
     out->error = conn->pending_error;
+    out->rcv_queued = static_cast<uint32_t>(conn->rcv_queue.size());
+    out->rcv_buf = static_cast<uint32_t>(conn->rcv_queue.limit() * CHUNK_PAYLOAD);
+    out->snd_queued = static_cast<uint32_t>(conn->snd_queue.size());
+    out->snd_buf = static_cast<uint32_t>(conn->snd_queue.limit() * CHUNK_PAYLOAD);
+    out->ooo_bytes = static_cast<uint32_t>(conn->ooo_bytes);
+    out->ooo_packets = static_cast<uint16_t>(conn->ooo_queue.size());
+    out->unacked = static_cast<uint16_t>(conn->sent.count());
+    out->cwnd = conn->cwnd;
+    out->srtt_us = conn->srtt_us;
+    out->rttvar_us = conn->rttvar_us;
+    out->rto_ms = static_cast<uint32_t>(conn->rto_ns / 1000000);
+    out->total_retransmits = conn->total_retransmits;
     out->flags = (conn->ts_ok ? INFO_TIMESTAMPS : 0) | (conn->sack_ok ? INFO_SACK : 0) |
                  (conn->wscale_ok ? INFO_WINDOW_SCALE : 0) | (conn->orphaned ? INFO_ORPHANED : 0) |
                  (conn->fin_sent ? INFO_FIN_SENT : 0) | (conn->fin_rcvd ? INFO_FIN_RCVD : 0);

@@ -6,6 +6,7 @@
 #include "net/tcp/conn.h"
 #include "net/tcp/listen.h"
 #include "net/tcp/timewait.h"
+#include "net/tcp/output.h"
 #include "resource/resource.h"
 #include "clock/clock.h"
 #include "timer/timer.h"
@@ -145,6 +146,75 @@ TEST(tcp_info, an_established_connection_is_described) {
     EXPECT_EQ(entry.timer_kind, INFO_TIMER_NONE);
     EXPECT_EQ(entry.timer_ms, 0u);
     EXPECT_EQ(entry.error, 0);
+    EXPECT_EQ(entry.rcv_queued, 0u);
+    EXPECT_EQ(entry.rcv_buf, RCV_CHUNKS_INITIAL * CHUNK_PAYLOAD);
+    EXPECT_EQ(entry.snd_queued, 0u);
+    EXPECT_EQ(entry.snd_buf, SND_CHUNKS_INITIAL * CHUNK_PAYLOAD);
+    EXPECT_EQ(entry.cwnd, 10u * 1400);
+    EXPECT_EQ(entry.unacked, 0);
+    EXPECT_EQ(entry.rto_ms, c.conn->rto_ns / 1000000);
+    EXPECT_EQ(entry.total_retransmits, 0u);
+    EXPECT_EQ(entry.backoff, 0);
+}
+
+static const uint8_t* bytes_of(size_t len) {
+    static uint8_t buffer[4096];
+    for (size_t i = 0; i < len && i < sizeof(buffer); i++) {
+        buffer[i] = static_cast<uint8_t>(i);
+    }
+
+    return buffer;
+}
+
+static void write_bytes(inspected& c, size_t len) {
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(c.conn->lock);
+        (void)c.conn->snd_queue.append(bytes_of(len), len);
+    });
+    (void)output(c.conn.ptr());
+}
+
+TEST(tcp_info, queues_the_estimate_and_retransmissions_are_described) {
+    linked_peer lp;
+    inspected c(lp);
+    uint32_t first = c.conn->iss + 1;
+
+    write_bytes(c, 3000);
+    input(lp.remote.segment(FLAG_ACK, PEER_ISS + 1, first, {}, bytes_of(500), 500));
+    input(lp.remote.segment(FLAG_ACK, PEER_ISS + 1 + 900, first, {}, bytes_of(200), 200));
+
+    tcp_record entry;
+    describe_record(c.conn.ptr(), &entry);
+    EXPECT_EQ(entry.snd_queued, 3000u);
+    EXPECT_EQ(entry.unacked, 3);
+    EXPECT_EQ(entry.rcv_queued, 500u);
+    EXPECT_EQ(entry.ooo_packets, 1);
+    EXPECT_EQ(entry.ooo_bytes, 200u);
+    EXPECT_EQ(entry.srtt_us, 0u);
+
+    advance_and_fire(30000000);
+    input(lp.remote.ack(PEER_ISS + 1 + 500, first + 1400));
+    describe_record(c.conn.ptr(), &entry);
+    EXPECT_EQ(entry.snd_queued, 1600u);
+    EXPECT_EQ(entry.unacked, 2);
+    EXPECT_EQ(entry.srtt_us, 30000u);
+    EXPECT_EQ(entry.rttvar_us, 15000u);
+    EXPECT_EQ(entry.rto_ms, 200u);
+    EXPECT_EQ(entry.timer_kind, INFO_TIMER_RTO);
+
+    advance_and_fire(c.conn->rto_ns);
+    describe_record(c.conn.ptr(), &entry);
+    EXPECT_EQ(entry.retransmits, 1);
+    EXPECT_EQ(entry.total_retransmits, 1u);
+    EXPECT_EQ(entry.backoff, 1);
+
+    input(lp.remote.ack(PEER_ISS + 1 + 500, first + 3000));
+    describe_record(c.conn.ptr(), &entry);
+    EXPECT_EQ(entry.snd_queued, 0u);
+    EXPECT_EQ(entry.unacked, 0);
+    EXPECT_EQ(entry.retransmits, 0);
+    EXPECT_EQ(entry.total_retransmits, 1u);
+    EXPECT_EQ(entry.backoff, 0);
 }
 
 TEST(tcp_info, a_request_and_a_time_wait_record_are_described_with_their_timers) {

@@ -60,13 +60,17 @@ static void print_record(const struct stlx_tcp_record* r, const struct options* 
     char remote[24];
     format_endpoint(r->local_addr, r->local_port, local, sizeof(local));
     format_endpoint(r->remote_addr, r->remote_port, remote, sizeof(remote));
-    printf("tcp   %-22s %-22s %s\r\n", local, remote, state_name(r->state));
+
+    int listener = r->kind == STLX_TCP_KIND_LISTENER;
+    uint32_t recv_q = listener ? r->accepted : r->rcv_queued;
+    uint32_t send_q = listener ? r->backlog : r->snd_queued;
+    printf("tcp   %6u %6u %-22s %-22s %s\r\n", recv_q, send_q, local, remote, state_name(r->state));
 
     if (!opts->internal) {
         return;
     }
 
-    if (r->kind == STLX_TCP_KIND_LISTENER) {
+    if (listener) {
         printf("      iface %s backlog %u requests %u accepted %u\r\n",
                r->iface[0] ? r->iface : "any", r->backlog, r->requests, r->accepted);
         return;
@@ -74,20 +78,27 @@ static void print_record(const struct stlx_tcp_record* r, const struct options* 
 
     printf("      iface %s snd_una %u snd_nxt %u rcv_nxt %u snd_wnd %u rcv_wnd %u\r\n",
            r->iface, r->snd_una, r->snd_nxt, r->rcv_nxt, r->snd_wnd, r->rcv_wnd);
-    printf("      mss %u wscale %u/%u%s%s%s%s%s retrans %u timer %s %ums",
+    printf("      mss %u wscale %u/%u%s%s%s%s%s retrans %u/%u timer %s %ums",
            r->snd_mss, r->snd_wscale, r->rcv_wscale,
            (r->flags & STLX_TCP_TIMESTAMPS) ? " ts" : "",
            (r->flags & STLX_TCP_SACK) ? " sack" : "",
            (r->flags & STLX_TCP_ORPHANED) ? " orphaned" : "",
            (r->flags & STLX_TCP_FIN_SENT) ? " fin_sent" : "",
            (r->flags & STLX_TCP_FIN_RCVD) ? " fin_rcvd" : "",
-           r->retransmits, timer_name(r->timer_kind), r->timer_ms);
+           r->retransmits, r->total_retransmits, timer_name(r->timer_kind), r->timer_ms);
 
     if (r->error) {
         printf(" error %d", r->error);
     }
 
     printf("\r\n");
+    if (r->kind != STLX_TCP_KIND_CONNECTION) {
+        return;
+    }
+
+    printf("      cwnd %u unacked %u rtt %u.%03u/%u.%03u ms rto %u ms backoff %u rcvbuf %u sndbuf %u ooo %u/%u\r\n",
+           r->cwnd, r->unacked, r->srtt_us / 1000, r->srtt_us % 1000, r->rttvar_us / 1000, r->rttvar_us % 1000,
+           r->rto_ms, r->backoff, r->rcv_buf, r->snd_buf, r->ooo_packets, r->ooo_bytes);
 }
 
 static void print_counters(const struct stlx_tcp_counters* c) {
@@ -118,7 +129,7 @@ static int show(const struct options* opts) {
         return 0;
     }
 
-    printf("Proto %-22s %-22s State\r\n", "Local Address", "Foreign Address");
+    printf("Proto Recv-Q Send-Q %-22s %-22s State\r\n", "Local Address", "Foreign Address");
     for (uint32_t i = 0; i < info.count; i++) {
         if (g_records[i].kind == STLX_TCP_KIND_LISTENER && !opts->all) {
             continue;

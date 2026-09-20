@@ -148,7 +148,8 @@ static inline int stlx_net_set_config(const struct stlx_ifconf* conf) {
 #define STLX_TCP_FIN_RCVD      (1u << 5)
 
 /* One listener, request, connection, or TIME_WAIT entry. Addresses and ports
- * in host byte order, fields a kind does not have are zero. */
+ * in host byte order, queues and buffers in bytes, fields a kind does not
+ * have are zero. */
 struct stlx_tcp_record {
     uint8_t  kind;
     uint8_t  state;
@@ -171,12 +172,24 @@ struct stlx_tcp_record {
     uint16_t requests;
     uint16_t accepted;
     uint8_t  retransmits;
-    uint8_t  _pad;
+    uint8_t  backoff;
     uint32_t timer_ms;
     int32_t  error;
+    uint32_t rcv_queued;
+    uint32_t rcv_buf;
+    uint32_t snd_queued;
+    uint32_t snd_buf;
+    uint32_t ooo_bytes;
+    uint32_t cwnd;
+    uint32_t srtt_us;
+    uint32_t rttvar_us;
+    uint32_t rto_ms;
+    uint32_t total_retransmits;
+    uint16_t ooo_packets;
+    uint16_t unacked;
 };
 
-_Static_assert(sizeof(struct stlx_tcp_record) == 72, "stlx_tcp_record ABI size mismatch");
+_Static_assert(sizeof(struct stlx_tcp_record) == 116, "stlx_tcp_record ABI size mismatch");
 
 struct stlx_tcp_counters {
     uint64_t segments_in;

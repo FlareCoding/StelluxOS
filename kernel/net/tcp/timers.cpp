@@ -212,7 +212,9 @@ void on_send_timer(timer::deadline_timer* timer) {
                 action = send_action::retransmit;
             }
 
-            if (action == send_action::reset || action == send_action::give_up) {
+            if (action == send_action::retransmit) {
+                conn->total_retransmits++;
+            } else if (action == send_action::reset || action == send_action::give_up) {
                 conn->state = tcp_state::closed;
                 conn->pending_error = resource::ERR_TIMEDOUT;
             }

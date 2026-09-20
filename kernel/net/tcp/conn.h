@@ -129,6 +129,7 @@ struct tcp_conn : record {
     uint8_t               retransmits;
     uint8_t               backoff;
     uint8_t               unanswered_probes;
+    uint32_t              total_retransmits;
     uint64_t              peer_acked_ns;
 
     // Round-trip estimate (RFC 6298), srtt_us zero until the first sample
