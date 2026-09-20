@@ -66,6 +66,7 @@ enum class timer_kind : uint8_t {
     none   = 0,
     rto    = 1,
     orphan = 2,
+    probe  = 3,
 };
 
 /**
@@ -109,14 +110,15 @@ struct tcp_conn : record {
     uint64_t ts_recent_age_ns;
     uint32_t ts_offset;
 
-    // The one timer the handshake and the close use, retransmitting what
-    // snd_una still waits for. The kind is none while disarmed, and a callback
-    // fires only once the record's own deadline has passed, so one that lost a
-    // race to a cancel or a re-arm does nothing.
+    // Retransmits what snd_una waits for or probes a closed window. Kind none
+    // means disarmed, and a callback acts only once this deadline has passed
     timer::deadline_timer send_timer;
     timer_kind            send_timer_kind;
     uint64_t              send_timer_deadline_ns;
     uint8_t               retransmits;
+    uint8_t               backoff;
+    uint8_t               unanswered_probes;
+    uint64_t              peer_acked_ns;
 
     // Round-trip estimate (RFC 6298), srtt_us zero until the first sample
     uint32_t srtt_us;

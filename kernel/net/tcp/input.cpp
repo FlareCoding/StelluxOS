@@ -111,6 +111,8 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
     uint32_t ack = ntohl(hdr->ack);
     bool current = seq_geq(ack, conn->snd_una);
     bool freed_room = false;
+    conn->unanswered_probes = 0;
+    conn->peer_acked_ns = now_ns();
 
     if (seq_gt(ack, conn->snd_una)) {
         uint32_t advance = ack - conn->snd_una;
@@ -127,6 +129,7 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
 
         conn->snd_una = ack;
         conn->retransmits = 0;
+        conn->backoff = 0;
 
         if (conn->snd_una == conn->snd_nxt) {
             conn->send_timer_kind = timer_kind::none;
@@ -142,6 +145,11 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
         if (conn->snd_wnd > conn->max_snd_wnd) {
             conn->max_snd_wnd = conn->snd_wnd;
         }
+    }
+
+    if (conn->send_timer_kind == timer_kind::probe && seq_lt(conn->snd_nxt, conn->snd_una + conn->snd_wnd)) {
+        conn->send_timer_kind = timer_kind::none;
+        conn->backoff = 0;
     }
 
     if (conn->ts_ok && opts.has_timestamps && seq_leq(seq, conn->rcv_nxt)) {
@@ -406,6 +414,7 @@ static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
                 conn->state = tcp_state::established;
                 conn->send_timer_kind = timer_kind::none;
                 conn->retransmits = 0;
+                conn->backoff = 0;
                 action = handshake_action::established;
             } else {
                 conn->state = tcp_state::syn_rcvd;
@@ -463,6 +472,7 @@ static int32_t syn_rcvd_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
             conn->state = tcp_state::established;
             conn->send_timer_kind = timer_kind::none;
             conn->retransmits = 0;
+            conn->backoff = 0;
             action = handshake_action::established;
         }
     });

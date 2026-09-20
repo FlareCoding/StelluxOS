@@ -95,6 +95,10 @@ static void describe_conn_locked(const tcp_conn* conn, tcp_record* out) {
         out->timer_kind = INFO_TIMER_ORPHAN;
         out->timer_ms = remaining_ms(conn->send_timer_deadline_ns);
         break;
+    case timer_kind::probe:
+        out->timer_kind = INFO_TIMER_PROBE;
+        out->timer_ms = remaining_ms(conn->send_timer_deadline_ns);
+        break;
     default:
         break;
     }

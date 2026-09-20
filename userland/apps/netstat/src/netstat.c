@@ -39,6 +39,7 @@ static const char* timer_name(uint8_t kind) {
     case STLX_TCP_TIMER_RTO:      return "rto";
     case STLX_TCP_TIMER_ORPHAN:   return "orphan";
     case STLX_TCP_TIMER_TIMEWAIT: return "timewait";
+    case STLX_TCP_TIMER_PROBE:    return "probe";
     default:                      return "none";
     }
 }

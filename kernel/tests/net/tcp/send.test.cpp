@@ -121,6 +121,16 @@ static void expect_data(const sending& s, size_t frame, uint8_t flags, size_t fi
     }
 }
 
+// Frame `frame` is a zero-window probe: no payload, one before snd_una
+static void expect_probe(const sending& s, size_t frame) {
+    ASSERT_TRUE(s.lp.link.frames_sent() > frame);
+    const tcp_header* hdr = sent_tcp(s.lp.link, frame);
+    EXPECT_EQ(hdr->flags, FLAG_ACK);
+    EXPECT_EQ(ntohl(hdr->seq), s.conn->snd_una - 1);
+    EXPECT_EQ(ntohl(hdr->ack), s.rcv_nxt());
+    EXPECT_EQ(s.lp.link.frame_len(frame), eth::HEADER_LEN + ipv4::HEADER_LEN + hdr->header_len());
+}
+
 TEST(tcp_send, a_write_goes_out_as_one_pushed_segment_and_is_acknowledged) {
     linked_peer lp;
     sending s(lp);
@@ -314,6 +324,180 @@ TEST(tcp_send, unacknowledged_data_ends_in_a_reset_after_the_retries) {
     EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_RST | FLAG_ACK);
     EXPECT_EQ(s.conn->state, tcp_state::closed);
     EXPECT_EQ(s.conn->pending_error, resource::ERR_TIMEDOUT);
+}
+
+TEST(tcp_send, a_closed_window_is_probed_after_an_rto_and_then_with_backoff) {
+    linked_peer lp;
+    sending s(lp, 0);
+
+    EXPECT_EQ(s.write(0, 100), 100u);
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+    EXPECT_EQ(s.conn->send_timer_kind, timer_kind::probe);
+    EXPECT_EQ(s.conn->send_timer_deadline_ns, g_fake_now + TIMEOUT_INIT_NS);
+
+    advance_and_fire(TIMEOUT_INIT_NS);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    expect_probe(s, 0);
+    EXPECT_EQ(s.conn->snd_nxt, s.first_seq());
+    EXPECT_EQ(s.conn->unanswered_probes, 1);
+    EXPECT_EQ(s.conn->send_timer_kind, timer_kind::probe);
+    EXPECT_EQ(s.conn->send_timer_deadline_ns, g_fake_now + 2 * TIMEOUT_INIT_NS);
+
+    advance_and_fire(2 * TIMEOUT_INIT_NS);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    expect_probe(s, 1);
+    EXPECT_EQ(s.conn->unanswered_probes, 2);
+    EXPECT_EQ(s.conn->send_timer_deadline_ns, g_fake_now + 4 * TIMEOUT_INIT_NS);
+}
+
+TEST(tcp_send, the_window_opening_ends_the_probes_and_the_data_goes_at_once) {
+    linked_peer lp;
+    sending s(lp, 0);
+
+    EXPECT_EQ(s.write(0, 100), 100u);
+    advance_and_fire(TIMEOUT_INIT_NS);
+    advance_and_fire(2 * TIMEOUT_INIT_NS);
+    EXPECT_EQ(s.conn->backoff, 2);
+    lp.link.clear_frames();
+
+    EXPECT_EQ(s.ack(0, PEER_WINDOW), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    expect_data(s, 0, FLAG_PSH | FLAG_ACK, 0, 100);
+    EXPECT_EQ(s.conn->send_timer_kind, timer_kind::rto);
+    EXPECT_EQ(s.conn->backoff, 0);
+    EXPECT_EQ(s.conn->unanswered_probes, 0);
+    EXPECT_EQ(s.conn->send_timer_deadline_ns, g_fake_now + TIMEOUT_INIT_NS);
+}
+
+TEST(tcp_send, answered_probes_keep_the_connection_open_past_the_retry_limit) {
+    linked_peer lp;
+    sending s(lp, 0);
+
+    EXPECT_EQ(s.write(0, 100), 100u);
+    for (int i = 0; i < DATA_RETRIES + 5; i++) {
+        advance_and_fire(TIMEOUT_MAX_NS);
+        EXPECT_EQ(s.conn->unanswered_probes, 1);
+        EXPECT_EQ(s.ack(0, 0), OK);
+        EXPECT_EQ(s.conn->unanswered_probes, 0);
+        EXPECT_EQ(s.conn->state, tcp_state::established);
+        EXPECT_EQ(s.conn->send_timer_kind, timer_kind::probe);
+    }
+
+    for (int i = 0; i < DATA_RETRIES; i++) {
+        advance_and_fire(TIMEOUT_MAX_NS);
+        EXPECT_EQ(s.conn->state, tcp_state::established);
+    }
+
+    lp.link.clear_frames();
+    advance_and_fire(TIMEOUT_MAX_NS);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_RST | FLAG_ACK);
+    EXPECT_EQ(s.conn->state, tcp_state::closed);
+    EXPECT_EQ(s.conn->pending_error, resource::ERR_TIMEDOUT);
+}
+
+TEST(tcp_send, a_fin_waits_for_window_space_like_data) {
+    linked_peer lp;
+    sending s(lp, 100);
+
+    EXPECT_EQ(s.write(0, 100), 100u);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    lp.link.clear_frames();
+
+    close_connection(s.conn.ptr());
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+    EXPECT_TRUE(s.conn->fin_pending);
+    EXPECT_FALSE(s.conn->fin_sent);
+    EXPECT_EQ(s.conn->send_timer_kind, timer_kind::rto);
+
+    EXPECT_EQ(s.ack(100, 0), OK);
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+    EXPECT_EQ(s.conn->send_timer_kind, timer_kind::probe);
+
+    EXPECT_EQ(s.ack(100, 1), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_FIN | FLAG_ACK);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 0)->seq), s.first_seq() + 100);
+    EXPECT_TRUE(s.conn->fin_sent);
+    EXPECT_EQ(s.conn->send_timer_kind, timer_kind::rto);
+}
+
+TEST(tcp_send, the_fin_does_not_ride_on_data_that_fills_the_window) {
+    linked_peer lp;
+    sending s(lp, 100);
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(s.conn->lock);
+        (void)s.conn->snd_queue.append(patterned(0, 100), 100);
+    });
+
+    close_connection(s.conn.ptr());
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    expect_data(s, 0, FLAG_PSH | FLAG_ACK, 0, 100);
+    EXPECT_TRUE(s.conn->fin_pending);
+    EXPECT_FALSE(s.conn->fin_sent);
+
+    EXPECT_EQ(s.ack(100, 10000), OK);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_tcp(lp.link, 1)->flags, FLAG_FIN | FLAG_ACK);
+    EXPECT_EQ(ntohl(sent_tcp(lp.link, 1)->seq), s.first_seq() + 100);
+    EXPECT_TRUE(s.conn->fin_sent);
+}
+
+TEST(tcp_send, a_window_closing_onto_data_in_flight_keeps_a_live_peer_out_of_the_retry_count) {
+    linked_peer lp;
+    sending s(lp);
+
+    EXPECT_EQ(s.write(0, 2 * PEER_MSS), 2u * PEER_MSS);
+    EXPECT_EQ(s.ack(PEER_MSS, 0), OK);
+    EXPECT_EQ(s.conn->snd_wnd, 0u);
+    EXPECT_EQ(s.conn->send_timer_kind, timer_kind::rto);
+
+    for (int i = 0; i < DATA_RETRIES + 5; i++) {
+        lp.link.clear_frames();
+        advance_and_fire(TIMEOUT_MAX_NS);
+        ASSERT_EQ(lp.link.frames_sent(), 1u);
+        expect_data(s, 0, FLAG_PSH | FLAG_ACK, PEER_MSS, PEER_MSS);
+        EXPECT_EQ(s.conn->retransmits, 0);
+        EXPECT_EQ(s.ack(PEER_MSS, 0), OK);
+        EXPECT_EQ(s.conn->state, tcp_state::established);
+    }
+
+    EXPECT_EQ(s.conn->backoff, 7);
+    EXPECT_EQ(s.conn->send_timer_deadline_ns, g_fake_now + TIMEOUT_MAX_NS);
+
+    advance_and_fire(TIMEOUT_MAX_NS);
+    EXPECT_EQ(s.conn->state, tcp_state::established);
+
+    lp.link.clear_frames();
+    advance_and_fire(TIMEOUT_MAX_NS);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_RST | FLAG_ACK);
+    EXPECT_EQ(s.conn->state, tcp_state::closed);
+    EXPECT_EQ(s.conn->pending_error, resource::ERR_TIMEDOUT);
+}
+
+TEST(tcp_send, an_orphan_facing_a_closed_window_still_gives_up_after_its_retries) {
+    linked_peer lp;
+    sending s(lp);
+
+    EXPECT_EQ(s.write(0, 2 * PEER_MSS), 2u * PEER_MSS);
+    EXPECT_EQ(s.ack(PEER_MSS, 0), OK);
+    close_connection(s.conn.ptr());
+    EXPECT_EQ(s.conn->state, tcp_state::fin_wait_1);
+    EXPECT_FALSE(s.conn->fin_sent);
+
+    for (int i = 0; i < ORPHAN_RETRIES; i++) {
+        advance_and_fire(TIMEOUT_MAX_NS);
+        EXPECT_EQ(s.ack(PEER_MSS, 0), OK);
+        EXPECT_EQ(s.conn->state, tcp_state::fin_wait_1);
+    }
+
+    lp.link.clear_frames();
+    advance_and_fire(TIMEOUT_MAX_NS);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_tcp(lp.link, 0)->flags, FLAG_RST | FLAG_ACK);
+    EXPECT_EQ(s.conn->state, tcp_state::closed);
 }
 
 TEST(tcp_send, a_close_lets_the_queued_data_out_before_its_fin) {

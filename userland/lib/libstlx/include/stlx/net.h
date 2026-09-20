@@ -138,6 +138,7 @@ static inline int stlx_net_set_config(const struct stlx_ifconf* conf) {
 #define STLX_TCP_TIMER_RTO       1
 #define STLX_TCP_TIMER_ORPHAN    2
 #define STLX_TCP_TIMER_TIMEWAIT  3
+#define STLX_TCP_TIMER_PROBE     4
 
 #define STLX_TCP_TIMESTAMPS    (1u << 0)
 #define STLX_TCP_SACK          (1u << 1)

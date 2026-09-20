@@ -15,6 +15,7 @@ struct segment_source {
     interface* iface;
     tuple      key;
     uint32_t   iss;
+    uint32_t   snd_una;
     uint32_t   snd_nxt;
     uint32_t   rcv_nxt;
     uint32_t   rcv_wnd;
@@ -75,6 +76,12 @@ int32_t send_control(const segment_source& src, uint8_t flags);
  * the acknowledgment, window, and timestamps of a control segment.
  */
 int32_t send_fin(const segment_source& src);
+
+/**
+ * @brief Sends the zero-window probe (RFC 9293 3.8.6.1): a segment without
+ * payload one sequence number below `snd_una`, which the peer answers with an ACK.
+ */
+int32_t send_probe(const segment_source& src);
 
 /**
  * @brief Builds a segment carrying `len` queued bytes from `seq` with `flags`.

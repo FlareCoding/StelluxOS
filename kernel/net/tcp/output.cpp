@@ -29,6 +29,7 @@ segment_source snapshot_source(const tcp_conn* conn) {
     src.iface = conn->iface;
     src.key = conn->key;
     src.iss = conn->iss;
+    src.snd_una = conn->snd_una;
     src.snd_nxt = conn->snd_nxt;
     src.rcv_nxt = conn->rcv_nxt;
     src.rcv_wnd = conn->rcv_wnd;
@@ -167,6 +168,11 @@ int32_t send_fin(const segment_source& src) {
                         window_field(src.rcv_wnd, src.rcv_wscale), control_options(src));
 }
 
+int32_t send_probe(const segment_source& src) {
+    return send_segment(src.iface, src.key, FLAG_ACK, src.snd_una - 1, src.rcv_nxt,
+                        window_field(src.rcv_wnd, src.rcv_wscale), control_options(src));
+}
+
 packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, uint8_t flags) {
     segment_source src = snapshot_source(conn);
     uint8_t* payload = nullptr;
@@ -232,7 +238,7 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
         }
 
         bool last = len == available;
-        bool carries_fin = last && conn->fin_pending && !conn->fin_sent;
+        bool carries_fin = last && conn->fin_pending && !conn->fin_sent && usable > len;
         if (len == 0 || (len < mss && !carries_fin && !may_send_partial_locked(conn, usable))) {
             break;
         }
@@ -267,12 +273,14 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
         burst[count++] = pkt;
     }
 
-    if (count < max && conn->fin_pending && !conn->fin_sent && unsent_bytes(conn) == 0) {
+    bool fin_fits = seq_lt(conn->snd_nxt, conn->snd_una + conn->snd_wnd);
+    if (count < max && conn->fin_pending && !conn->fin_sent && unsent_bytes(conn) == 0 && fin_fits) {
         conn->fin_pending = false;
         conn->fin_sent = true;
         conn->snd_nxt++;
         if (conn->send_timer_kind == timer_kind::none) {
             conn->retransmits = 0;
+            conn->backoff = 0;
             arm_send_timer_locked(conn, timer_kind::rto);
         }
 
@@ -284,6 +292,11 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
         if (pkt) {
             burst[count++] = pkt;
         }
+    }
+
+    bool blocked = unsent_bytes(conn) > 0 || (conn->fin_pending && !conn->fin_sent);
+    if (blocked && conn->snd_nxt == conn->snd_una && conn->send_timer_kind == timer_kind::none) {
+        arm_send_timer_locked(conn, timer_kind::probe);
     }
 
     return count;

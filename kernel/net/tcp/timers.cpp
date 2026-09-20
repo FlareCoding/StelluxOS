@@ -1,6 +1,7 @@
 #include "net/tcp/timers.h"
 #include "net/tcp/output.h"
 #include "net/tcp/info.h"
+#include "net/tcp/seq.h"
 #include "net/net.h"
 #include "resource/resource.h"
 #include "sync/spinlock.h"
@@ -14,6 +15,8 @@ enum class send_action : uint8_t {
     retransmit   = 1,
     give_up      = 2,
     reset        = 3,
+    probe        = 4,
+    push         = 5,
 };
 
 static void release(record* rec) {
@@ -45,11 +48,18 @@ void finish_timer_callback(record* rec) {
     release(rec);
 }
 
+// Caller holds the lock. RFC 6298 5.5, stopping once the wait reaches TIMEOUT_MAX_NS
+static void back_off_locked(tcp_conn* conn) {
+    if ((conn->rto_ns << conn->backoff) < TIMEOUT_MAX_NS) {
+        conn->backoff++;
+    }
+}
+
 void arm_send_timer_locked(tcp_conn* conn, timer_kind kind) {
-    uint64_t backoff = conn->rto_ns << conn->retransmits;
+    uint64_t wait = conn->rto_ns << conn->backoff;
     conn->send_timer_kind = kind;
-    conn->send_timer_deadline_ns = now_ns() + (backoff > TIMEOUT_MAX_NS ? TIMEOUT_MAX_NS : backoff);
-    
+    conn->send_timer_deadline_ns = now_ns() + (wait > TIMEOUT_MAX_NS ? TIMEOUT_MAX_NS : wait);
+
     arm_timer(conn, &conn->send_timer, conn->send_timer_deadline_ns);
 }
 
@@ -164,22 +174,47 @@ void on_send_timer(timer::deadline_timer* timer) {
             state = conn->state;
             timer_kind kind = conn->send_timer_kind;
             conn->send_timer_kind = timer_kind::none;
+            src = snapshot_source(conn);
+            bool window_closed = !seq_lt(conn->snd_nxt, conn->snd_una + conn->snd_wnd);
+            bool peer_silent = now_ns() - conn->peer_acked_ns > TIMEOUT_MAX_NS;
+            send_action exhausted = conn->sent.empty() ? send_action::give_up : send_action::reset;
+
             if (kind == timer_kind::orphan) {
-                src = snapshot_source(conn);
-                conn->state = tcp_state::closed;
-                conn->pending_error = resource::ERR_TIMEDOUT;
                 action = send_action::reset;
+            } else if (kind == timer_kind::probe && !window_closed) {
+                action = send_action::push;
+            } else if (kind == timer_kind::probe) {
+                if (conn->unanswered_probes >= retry_limit_locked(conn)) {
+                    action = send_action::reset;
+                } else {
+                    conn->unanswered_probes++;
+                    back_off_locked(conn);
+                    mark_ack_sent_locked(conn);
+                    action = send_action::probe;
+                }
+            } else if (conn->snd_wnd == 0 && !conn->orphaned && is_synchronized(conn->state)) {
+                // RFC 1122 4.2.2.17: into a closed window, retransmissions are probes
+                if (peer_silent) {
+                    action = exhausted;
+                } else {
+                    back_off_locked(conn);
+                    rebuilt = rebuild_oldest_locked(conn);
+                    arm_send_timer_locked(conn, timer_kind::rto);
+                    action = send_action::retransmit;
+                }
             } else if (conn->retransmits >= retry_limit_locked(conn)) {
-                src = snapshot_source(conn);
-                conn->state = tcp_state::closed;
-                conn->pending_error = resource::ERR_TIMEDOUT;
-                action = conn->sent.empty() ? send_action::give_up : send_action::reset;
+                action = exhausted;
             } else {
                 conn->retransmits++;
+                back_off_locked(conn);
                 rebuilt = rebuild_oldest_locked(conn);
-                src = snapshot_source(conn);
                 arm_send_timer_locked(conn, timer_kind::rto);
                 action = send_action::retransmit;
+            }
+
+            if (action == send_action::reset || action == send_action::give_up) {
+                conn->state = tcp_state::closed;
+                conn->pending_error = resource::ERR_TIMEDOUT;
             }
         }
     });
@@ -197,6 +232,12 @@ void on_send_timer(timer::deadline_timer* timer) {
         } else {
             (void)retransmit(state, src);
         }
+    } else if (action == send_action::probe || action == send_action::push) {
+        if (action == send_action::probe) {
+            (void)send_probe(src);
+        }
+
+        (void)output(conn);
     }
 
     finish_timer_callback(conn);

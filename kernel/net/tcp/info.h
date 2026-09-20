@@ -22,6 +22,7 @@ constexpr uint8_t INFO_TIMER_NONE     = 0;
 constexpr uint8_t INFO_TIMER_RTO      = 1;
 constexpr uint8_t INFO_TIMER_ORPHAN   = 2;
 constexpr uint8_t INFO_TIMER_TIMEWAIT = 3;
+constexpr uint8_t INFO_TIMER_PROBE    = 4;
 
 constexpr uint8_t INFO_TIMESTAMPS   = 1u << 0;
 constexpr uint8_t INFO_SACK         = 1u << 1;
