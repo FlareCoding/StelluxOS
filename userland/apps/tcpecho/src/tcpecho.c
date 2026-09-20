@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <time.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
@@ -12,7 +13,8 @@
 #include <poll.h>
 #include <errno.h>
 
-#define SEND_CHUNK 16384
+#define SEND_CHUNK           16384
+#define SEND_IDLE_TIMEOUT_MS 60000
 
 static uint32_t parse_ipv4(const char* str) {
     int field = 0;
@@ -201,40 +203,75 @@ static int run_send(uint32_t dst_ip_host, uint16_t port, size_t total) {
     }
 
     static uint8_t chunk[SEND_CHUNK];
+    static uint8_t discard[SEND_CHUNK];
     for (size_t i = 0; i < sizeof(chunk); i++) {
         chunk[i] = (uint8_t)i;
     }
 
+    fcntl(fd, F_SETFL, O_NONBLOCK);
     printf("tcpecho: sending %zu bytes\r\n", total);
     struct timespec t0;
     struct timespec t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
+    /* Anything the peer sends back is drained, so an echoing peer never
+     * blocks this side and this side never blocks it */
     size_t sent = 0;
-    while (sent < total) {
-        size_t offset = sent % sizeof(chunk);
-        size_t len = sizeof(chunk) - offset;
-        if (len > total - sent) {
-            len = total - sent;
+    size_t received = 0;
+    int eof = 0;
+    while (!eof) {
+        struct pollfd pfd = {fd, POLLIN | (sent < total ? POLLOUT : 0), 0};
+        if (poll(&pfd, 1, SEND_IDLE_TIMEOUT_MS) <= 0) {
+            printf("tcpecho: peer went quiet after %zu bytes sent, %zu received\r\n", sent, received);
+            break;
         }
 
-        ssize_t n = write(fd, chunk + offset, len);
-        if (n < 0) {
-            printf("tcpecho: write() failed after %zu bytes (errno=%d)\r\n", sent, errno);
-            close(fd);
-            return 1;
+        if (pfd.revents & (POLLIN | POLLHUP | POLLERR)) {
+            ssize_t n = read(fd, discard, sizeof(discard));
+            if (n == 0 || (n < 0 && errno != EAGAIN)) {
+                eof = 1;
+                if (n < 0) {
+                    printf("tcpecho: read() failed after %zu bytes sent (errno=%d)\r\n", sent, errno);
+                }
+            } else if (n > 0) {
+                received += (size_t)n;
+            }
         }
 
-        sent += (size_t)n;
+        if (sent < total && (pfd.revents & POLLOUT)) {
+            size_t offset = sent % sizeof(chunk);
+            size_t len = sizeof(chunk) - offset;
+            if (len > total - sent) {
+                len = total - sent;
+            }
+
+            ssize_t n = send(fd, chunk + offset, len, MSG_NOSIGNAL);
+            if (n < 0 && errno != EAGAIN) {
+                printf("tcpecho: send() failed after %zu bytes (errno=%d)\r\n", sent, errno);
+                close(fd);
+                return 1;
+            }
+
+            if (n > 0) {
+                sent += (size_t)n;
+                if (sent == total) {
+                    clock_gettime(CLOCK_MONOTONIC, &t1);
+                    shutdown(fd, SHUT_WR);
+                }
+            }
+        }
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &t1);
+    if (sent < total) {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+    }
+
     double seconds = elapsed_s(&t0, &t1);
-    printf("tcpecho: sent %zu bytes in %.3f s (%.2f MB/s)\r\n", sent, seconds,
-           seconds > 0 ? (double)sent / seconds / 1e6 : 0.0);
+    printf("tcpecho: sent %zu bytes in %.3f s (%.2f MB/s), %zu bytes received back\r\n", sent, seconds,
+           seconds > 0 ? (double)sent / seconds / 1e6 : 0.0, received);
 
     close(fd);
-    return 0;
+    return sent == total ? 0 : 1;
 }
 
 int main(int argc, char* argv[]) {
