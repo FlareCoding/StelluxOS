@@ -10,15 +10,23 @@ namespace paging {
 constexpr size_t FULL_FLUSH_PAGE_THRESHOLD = 32;
 
 /**
- * @brief Get the kernel page table root (reads CR3 on x86_64, TTBR1_EL1 on aarch64).
+ * @brief The root that holds the kernel mappings, whichever root the running
+ * task has loaded. Before init this is the bootloader's root.
  * @return Physical address of the kernel's top-level page table.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE pmm::phys_addr_t get_kernel_pt_root();
 
 /**
- * @brief Set the kernel page table root (writes CR3 on x86_64, TTBR1_EL1 on aarch64).
- * @param root_pt Physical address of the new top-level page table.
+ * @brief The currently loaded page table root (CR3 on x86_64, TTBR1_EL1 on aarch64).
+ * @return Physical address of the loaded top-level page table.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE pmm::phys_addr_t current_pt_root();
+
+/**
+ * @brief Set the kernel page table root.
+ * @param root_pt Physical address of the top-level page table to load.
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void set_kernel_pt_root(pmm::phys_addr_t root_pt);

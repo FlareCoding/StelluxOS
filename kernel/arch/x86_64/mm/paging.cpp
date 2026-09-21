@@ -28,6 +28,7 @@ namespace paging {
 __PRIVILEGED_DATA static bool g_initialized = false;
 __PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
 __PRIVILEGED_DATA static pmm::phys_addr_t g_retired_tables = 0;
+__PRIVILEGED_DATA static pmm::phys_addr_t g_kernel_pt_root = 0;
 
 // With the present bit clear the hardware ignores the rest of an entry, so a
 // kept-frame entry carries its frame address and this software marker.
@@ -36,8 +37,14 @@ constexpr uint64_t ENTRY_KEPT_FRAME = 1ULL << 9;
 constexpr uint64_t ENTRY_ADDR_MASK  = 0x000FFFFFFFFFF000ULL;
 
 __PRIVILEGED_CODE pmm::phys_addr_t get_kernel_pt_root() {
-    // Read CR3 directly - the physical address is in bits 12-51
-    // Since page tables are 4KB aligned, low 12 bits are zero/flags
+    if (g_kernel_pt_root == 0) {
+        return current_pt_root();
+    }
+
+    return g_kernel_pt_root;
+}
+
+__PRIVILEGED_CODE pmm::phys_addr_t current_pt_root() {
     return read_cr3() & ~0xFFFULL;
 }
 
@@ -1157,6 +1164,7 @@ __PRIVILEGED_CODE int32_t init() {
               kern_start, kern_priv_end, total_kernel_pages, total_kernel_pages * 4);
 
     // Switch to new page tables by writing to CR3
+    g_kernel_pt_root = new_root;
     set_kernel_pt_root(new_root);
     flush_tlb_all_local();
 

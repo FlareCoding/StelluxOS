@@ -29,6 +29,7 @@ namespace paging {
 __PRIVILEGED_DATA static bool g_initialized = false;
 __PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
 __PRIVILEGED_DATA static pmm::phys_addr_t g_retired_tables = 0;
+__PRIVILEGED_DATA static pmm::phys_addr_t g_kernel_pt_root = 0;
 
 // TTBR1_EL1 mask to extract physical address (mask off ASID in bits 63:48)
 constexpr uint64_t TTBR_BADDR_MASK = 0x0000FFFFFFFFFFFFULL;
@@ -40,7 +41,14 @@ constexpr uint64_t DESC_KEPT_FRAME = 1ULL << 55;
 constexpr uint64_t DESC_ADDR_MASK  = 0x0000FFFFFFFFF000ULL;
 
 __PRIVILEGED_CODE pmm::phys_addr_t get_kernel_pt_root() {
-    // Read TTBR1_EL1 directly - mask off ASID bits (upper 16 bits)
+    if (g_kernel_pt_root == 0) {
+        return current_pt_root();
+    }
+
+    return g_kernel_pt_root;
+}
+
+__PRIVILEGED_CODE pmm::phys_addr_t current_pt_root() {
     return read_ttbr1_el1() & TTBR_BADDR_MASK;
 }
 
@@ -1268,6 +1276,7 @@ __PRIVILEGED_CODE int32_t init() {
     write_sctlr_el1(sctlr);
 
     // Switch to new page tables
+    g_kernel_pt_root = new_root;
     set_kernel_pt_root(new_root);
     flush_tlb_all();
 

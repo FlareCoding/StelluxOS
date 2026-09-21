@@ -1,26 +1,18 @@
-/* isoprobe: checks from an ordinary user process that the kernel half
- * of the address space is unreachable. Kernel threads run lowered and
- * need those pages user-accessible, so the walk from a user root must
- * deny them at a level above the pages. The unit tests never run at
- * user privilege, which is why this lives in userland and in the live
- * boot check. The probe only reads, a successful write would corrupt
- * the running kernel.
+/* isoprobe: verifies that a user process cannot read the kernel half of
+ * the address space. Kernel unit tests never run at user privilege, so
+ * this is the only check that exercises that boundary.
  */
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <stlx/proc.h>
 
-/* Start of the kernel image on both architectures, see the linker
- * scripts. Its first page is mapped user-readable for lowered kernel
- * threads, so a user process that can walk to it can read it. */
 #define KERNEL_IMAGE_BASE 0xffffffff80000000UL
-
 #define SELF_PATH "/bin/isoprobe"
 #define CHILD_ARG "--probe"
 
-/* A user fault kills the process rather than reaching a handler, so
- * the read runs in a child and the parent judges how it ended. */
+/* A user fault kills the process instead of reaching a signal handler,
+ * so the read runs in a child and the parent judges how it ended */
 static int run_child(void) {
     volatile unsigned long* probe = (volatile unsigned long*)KERNEL_IMAGE_BASE;
     unsigned long value = *probe;
@@ -40,8 +32,7 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    /* proc_create takes the arguments after the program name, the
-     * kernel supplies argv[0] from the path */
+    /* proc_create receives the arguments after argv[0] */
     const char* child_argv[] = { CHILD_ARG, NULL };
     int handle = proc_exec(SELF_PATH, child_argv);
     if (handle < 0) {
