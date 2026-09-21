@@ -167,7 +167,7 @@ __PRIVILEGED_CODE void arch_init_clone_cpu_context(task* t) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void arch_post_switch(task* next) {
-    if (paging::get_kernel_pt_root() != next->exec.pt_root) {
+    if (paging::current_pt_root() != next->exec.pt_root) {
         paging::set_kernel_pt_root(next->exec.pt_root);
         paging::flush_tlb_all_local();
     }
