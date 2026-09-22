@@ -52,26 +52,28 @@ static void spawn_app(const char* path, const char* args) {
     printf("stlxdm: spawned %s\r\n", path);
 }
 
-/* Loads the configured wallpaper and pre-scales it to cover the
- * screen, so compose only ever pays for a plain blit */
-static stlxgfx_surface_t* load_wallpaper(const stlxconf_t& conf,
+/* Builds the screen-sized backdrop: the configured wallpaper center
+ * cropped and scaled to cover the screen, or the flat background
+ * color when there is none or it fails to load. Compose only ever
+ * pays for a plain blit out of it. */
+static stlxgfx_surface_t* build_backdrop(const stlxconf_t& conf,
                                          uint32_t screen_w,
                                          uint32_t screen_h) {
-    if (!conf.wallpaper[0]) {
+    stlxgfx_surface_t* backdrop =
+        stlxgfx_create_surface(screen_w, screen_h, 32, 16, 8, 0);
+    if (!backdrop) {
         return nullptr;
+    }
+    stlxgfx_clear(backdrop, conf.bg_color);
+
+    if (!conf.wallpaper[0]) {
+        return backdrop;
     }
 
     stlxgfx_surface_t* image = stlxgfx_load_image(conf.wallpaper);
     if (!image) {
         printf("stlxdm: failed to load wallpaper %s\r\n", conf.wallpaper);
-        return nullptr;
-    }
-
-    stlxgfx_surface_t* scaled =
-        stlxgfx_create_surface(screen_w, screen_h, 32, 16, 8, 0);
-    if (!scaled) {
-        stlxgfx_destroy_surface(image);
-        return nullptr;
+        return backdrop;
     }
 
     /* Center-crop the source to the screen's aspect ratio, then scale */
@@ -91,11 +93,11 @@ static stlxgfx_surface_t* load_wallpaper(const stlxconf_t& conf,
 
     int32_t crop_x = static_cast<int32_t>((img_w - crop_w) / 2);
     int32_t crop_y = static_cast<int32_t>((img_h - crop_h) / 2);
-    stlxgfx_blit_scaled(scaled, 0, 0, screen_w, screen_h,
+    stlxgfx_blit_scaled(backdrop, 0, 0, screen_w, screen_h,
                         image, crop_x, crop_y, crop_w, crop_h);
     stlxgfx_destroy_surface(image);
 
-    return scaled;
+    return backdrop;
 }
 
 /* Parses a plus-separated chord such as ctrl+alt+t into modifier
@@ -199,28 +201,33 @@ int server::serve() {
     return 0;
 }
 
-/* Builds every config-derived piece into fresh objects: panels,
- * power, the wallpaper, and the hotkey table. Nothing running is
- * touched, so a failure leaves no trace. */
+/* Builds every config-derived piece into fresh objects: the backdrop,
+ * the panels painted into it, power, and the hotkey table. Nothing
+ * running is touched, so a failure leaves no trace. */
 int server::build_conf_state(dm_conf_state& out) {
+    out.backdrop = build_backdrop(*m_conf, m_presenter->width(),
+                                  m_presenter->height());
+    if (!out.backdrop) {
+        return -1;
+    }
+
     out.panels = std::make_unique<dm_panels>();
     out.power = std::make_unique<dm_power>();
 
     if (out.panels->init(m_presenter->width(), m_presenter->height(),
-                         *m_conf) != 0 ||
+                         *m_conf, out.backdrop) != 0 ||
         out.power->init(m_presenter->width(), m_presenter->height(),
                         m_conf->taskbar_height) != 0) {
         out.panels->shutdown();
         out.power->shutdown();
+        stlxgfx_destroy_surface(out.backdrop);
+        out.backdrop = nullptr;
         return -1;
     }
 
     out.panels->on_launch = [](const char* path) {
         spawn_app(path, nullptr);
     };
-
-    out.wallpaper = load_wallpaper(*m_conf, m_presenter->width(),
-                                   m_presenter->height());
 
     /* Exec shortcuts with parseable chords become live hotkeys */
     for (uint32_t i = 0; i < m_conf->shortcut_count; i++) {
@@ -247,13 +254,32 @@ void server::adopt_conf_state(dm_conf_state&& next) {
     if (m_power) {
         m_power->shutdown();
     }
-    stlxgfx_destroy_surface(m_wallpaper);
+    stlxgfx_destroy_surface(m_backdrop);
 
     m_panels = std::move(next.panels);
     m_power = std::move(next.power);
-    m_wallpaper = next.wallpaper;
+    m_backdrop = next.backdrop;
     m_hotkeys = std::move(next.hotkeys);
-    next.wallpaper = nullptr;
+    next.backdrop = nullptr;
+}
+
+void server::perf_wake(uint64_t now_ns) {
+    m_wake_ns = now_ns;
+    m_wake_damage = m_damage.count();
+    m_wake_panels_dirty = m_panels->dirty();
+}
+
+void server::perf_tick(uint64_t now_ns) {
+    /* Damage or panel dirt that appeared during routing is the
+     * desktop's own reaction to this wakeup's input */
+    bool reacted = m_damage.full() || m_damage.count() > m_wake_damage ||
+                   (m_panels->dirty() && !m_wake_panels_dirty);
+    m_perf.settle(reacted);
+
+    perf_snapshot snap;
+    if (m_perf.tick(now_ns, snap)) {
+        m_panels->set_perf(snap);
+    }
 }
 
 void server::reload_config() {
@@ -275,13 +301,14 @@ void server::shutdown() {
     }
     m_clients.clear();
 
-    stlxgfx_destroy_surface(m_wallpaper);
-    m_wallpaper = nullptr;
-    if (m_power) {
-        m_power->shutdown();
-    }
+    /* Panels hold views into the backdrop, so they go first */
     if (m_panels) {
         m_panels->shutdown();
+    }
+    stlxgfx_destroy_surface(m_backdrop);
+    m_backdrop = nullptr;
+    if (m_power) {
+        m_power->shutdown();
     }
 
     if (m_listen_fd >= 0) {

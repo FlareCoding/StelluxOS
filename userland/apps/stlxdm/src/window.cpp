@@ -368,6 +368,12 @@ void server::latch_window(dm_client& c, dm_window& w) {
     bool first_map = !w.mapped;
     bool resized = false;
 
+    /* A commit from a client that received the timed input counts as
+     * its response, whichever of its windows repainted */
+    for (const auto& win : c.windows) {
+        m_perf.answer(win->event_seq);
+    }
+
     if (w.current >= 0) {
         const dm_buffer& ob = w.buffers[static_cast<size_t>(w.current)];
         resized = ob.width != nb.width || ob.height != nb.height;
@@ -498,26 +504,26 @@ void server::compose_rect(stlxgfx_surface_t* back,
         }
 
         const dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
-        damage_list::rect content = { w->x, w->y,
-                                      static_cast<int32_t>(b.width),
-                                      static_cast<int32_t>(b.height) };
-        subtracting = subtract_hole(pieces, content);
+        int32_t bw = static_cast<int32_t>(b.width);
+        int32_t bh = static_cast<int32_t>(b.height);
+
+        /* The bottom corner squares stay exposed, the rounded content
+         * blit blends them over whatever lies beneath */
+        int32_t r = decor::decorated(*w) ? decor::CONTENT_R : 0;
+        if (r > 0 && bh > r && bw > 2 * r) {
+            subtracting = subtract_hole(pieces, { w->x, w->y, bw, bh - r }) &&
+                          subtract_hole(pieces, { w->x + r, w->y + bh - r,
+                                                  bw - 2 * r, r });
+        } else {
+            subtracting = subtract_hole(pieces, { w->x, w->y, bw, bh });
+        }
     }
 
-    /* The background and the panels fill only what stayed exposed */
+    /* The backdrop, panels included, fills only what stayed exposed */
     for (const damage_list::rect& p : pieces) {
-        if (m_wallpaper) {
-            stlxgfx_blit(back, p.x, p.y, m_wallpaper, p.x, p.y,
-                         static_cast<uint32_t>(p.w),
-                         static_cast<uint32_t>(p.h));
-        } else {
-            stlxgfx_fill_rect(back, p.x, p.y,
-                              static_cast<uint32_t>(p.w),
-                              static_cast<uint32_t>(p.h),
-                              m_conf->bg_color);
-        }
-
-        m_panels->compose(back, p);
+        stlxgfx_blit(back, p.x, p.y, m_backdrop, p.x, p.y,
+                     static_cast<uint32_t>(p.w),
+                     static_cast<uint32_t>(p.h));
     }
 
     for (size_t i = 0; i < m_zorder.size(); i++) {
@@ -532,33 +538,11 @@ void server::compose_rect(stlxgfx_surface_t* back,
         st.close_hover = w == m_close_hover;
         st.close_pressed = w == m_close_press;
 
-        dm_buffer& b = w->buffers[static_cast<size_t>(w->current)];
+        /* The frame first, then the content with the frame's rounding
+         * applied at its bottom corners */
         for (const damage_list::rect& p : visible[i]) {
             decor::draw(back, *w, st, p);
-
-            int32_t ix0 = p.x > w->x ? p.x : w->x;
-            int32_t iy0 = p.y > w->y ? p.y : w->y;
-            int32_t ix1 = p.x + p.w < w->x + static_cast<int32_t>(b.width)
-                        ? p.x + p.w : w->x + static_cast<int32_t>(b.width);
-            int32_t iy1 = p.y + p.h < w->y + static_cast<int32_t>(b.height)
-                        ? p.y + p.h : w->y + static_cast<int32_t>(b.height);
-            if (ix0 < ix1 && iy0 < iy1) {
-                stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
-                    reinterpret_cast<uint8_t*>(b.pixels), b.width,
-                    b.height, b.width * 4, 32, 16, 8, 0);
-                if (src) {
-                    stlxgfx_blit(back, ix0, iy0, src,
-                                 ix0 - w->x, iy0 - w->y,
-                                 static_cast<uint32_t>(ix1 - ix0),
-                                 static_cast<uint32_t>(iy1 - iy0));
-                    stlxgfx_destroy_surface(src);
-                }
-            }
-
-            /* The square client blit bleeds over the frame's rounded
-             * bottom corners, so they are re-carved anti-aliased */
-            decor::carve_bottom_corners(back, *w, st, m_wallpaper,
-                                        m_conf->bg_color, p);
+            decor::blit_content(back, *w, p);
         }
     }
 
@@ -678,6 +662,7 @@ void server::compose_tick() {
 
     m_presenter->present(effective);
     stlxgfx_destroy_surface(back);
+    m_perf.note_present(now_ns());
 
     /* This frame's new damage joins the history for older targets */
     m_history[m_history_head] = m_damage;

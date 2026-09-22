@@ -118,6 +118,13 @@ int main() {
             next_ns = clock_ns;
         }
 
+        /* The latency readout refreshes on its own cadence and asks
+         * for nothing once quiet */
+        int64_t perf_ns = srv.perf_timeout_ns(now);
+        if (perf_ns >= 0 && (next_ns < 0 || perf_ns < next_ns)) {
+            next_ns = perf_ns;
+        }
+
         if (srv.compose_pending()) {
             uint64_t deadline = last_compose_ns + COMPOSE_INTERVAL_NS;
             int64_t compose_ns = deadline > now
@@ -144,18 +151,24 @@ int main() {
             continue;
         }
 
+        /* One timestamp serves the repeat timer and marks the arrival
+         * of any input this wakeup delivered */
+        now = now_ns();
+        srv.perf_wake(now);
+
         if (inp.kbd_fd() >= 0 && (fds[kbd_slot].revents & POLLIN)) {
             inp.pump_kbd(srv);
         }
         if (inp.mouse_fd() >= 0 && (fds[mouse_slot].revents & POLLIN)) {
             inp.pump_mouse(srv);
         }
-        inp.pump_repeat(srv, now_ns());
+        inp.pump_repeat(srv, now);
         srv.clock_tick();
 
         srv.pump(fds);
 
         now = now_ns();
+        srv.perf_tick(now);
         if (srv.compose_pending() &&
             now >= last_compose_ns + COMPOSE_INTERVAL_NS) {
             srv.compose_tick();

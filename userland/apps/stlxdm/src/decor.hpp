@@ -17,6 +17,7 @@ namespace decor {
 constexpr int32_t TITLE_H = 32;
 constexpr int32_t BORDER = 2;
 constexpr int32_t CORNER_R = 8;
+constexpr int32_t CONTENT_R = CORNER_R - BORDER;  /* content's bottom corners */
 constexpr int32_t CLOSE_R = 10;
 constexpr int32_t CLOSE_MARGIN = 8;
 
@@ -73,13 +74,10 @@ zone hit(const dm_window& w, int32_t x, int32_t y);
 void draw(stlxgfx_surface_t* back, const dm_window& w,
           const chrome_state& st, const damage_list::rect& clip);
 
-/* Re-carves the rounded bottom corners after the square content blit,
- * restoring the background and the border arc over the bleed. */
-void carve_bottom_corners(stlxgfx_surface_t* back, const dm_window& w,
-                          const chrome_state& st,
-                          const stlxgfx_surface_t* wallpaper,
-                          uint32_t bg_color,
-                          const damage_list::rect& clip);
+/* Blits the displayed buffer into place with the frame's rounded
+ * bottom corners applied, clipped to one compose rect. */
+void blit_content(stlxgfx_surface_t* back, const dm_window& w,
+                  const damage_list::rect& clip);
 
 /* Draws the interactive-resize rubber band. */
 void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r);

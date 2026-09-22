@@ -1,8 +1,8 @@
-/* The compositor's panels on its own toolkit hosts. Band surfaces
- * are retained like window buffers: the toolkit repaints only dirty
- * widgets into them, and compose blits whatever region damage
- * touches. The dock launches the config's pinned apps, and the top
- * bar shows system stats, the clock, and network state.
+/* The compositor's panels on its own toolkit hosts. Each tree paints
+ * straight into the backdrop rows it owns, so the toolkit repaints
+ * only dirty widgets and compose needs no separate panel step. The
+ * dock launches the config's pinned apps, and the top bar shows
+ * system stats, the input latency, the clock, and network state.
  */
 #include "panels.hpp"
 
@@ -41,6 +41,14 @@ constexpr int32_t TIP_REACH = 48;
  * changing network answer every third. */
 constexpr uint64_t STATS_POLL_NS = 1000000000ull;
 constexpr uint64_t NET_POLL_NS = 3000000000ull;
+
+/* Input to paint latency turns amber past the first threshold and red
+ * past the second, in microseconds. Its two readouts sit as a pair. */
+constexpr uint32_t INP_WARN_US = 40000;
+constexpr uint32_t INP_BAD_US = 100000;
+constexpr uint32_t INP_WARN_COLOR = 0xFFFAB387;
+constexpr uint32_t INP_BAD_COLOR = 0xFFF38BA8;
+constexpr int32_t INP_GAP = 12;
 
 /* Letter-glyph fallback colors for pins without an icon file */
 static const uint32_t PIN_ACCENTS[] = {
@@ -158,9 +166,13 @@ private:
 
 } // namespace
 
-static stlxgfx_surface_t* make_band(uint32_t w, int32_t h) {
-    return stlxgfx_create_surface(w, static_cast<uint32_t>(h),
-                                  32, 16, 8, 0);
+/* A view over a run of backdrop rows, so a tree paints in place */
+static stlxgfx_surface_t* row_view(stlxgfx_surface_t* backdrop,
+                                   int32_t y, int32_t h) {
+    return stlxgfx_surface_from_buffer(
+        backdrop->pixels + static_cast<uint32_t>(y) * backdrop->pitch,
+        backdrop->width, static_cast<uint32_t>(h), backdrop->pitch,
+        32, 16, 8, 0);
 }
 
 static uint64_t monotonic_ns() {
@@ -301,7 +313,7 @@ static void update_sys_stats() {
 }
 
 int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
-                    const stlxconf_t& conf) {
+                    const stlxconf_t& conf, stlxgfx_surface_t* backdrop) {
     m_conf = &conf;
     m_width = screen_w;
     m_height = screen_h;
@@ -309,25 +321,29 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
     m_dock_y = static_cast<int32_t>(screen_h) - m_dock_h;
 
     /* One row below the bar carries its accent underline, outside the
-     * toolkit's layout so it never repaints */
-    m_band = make_band(screen_w, BAR_H + 1);
-    m_dock = make_band(screen_w, m_dock_h);
+     * toolkit's layout so it never repaints. The dock's accent top
+     * edge is inside its layout and is restored after each repaint. */
+    m_band = row_view(backdrop, 0, BAR_H + 1);
+    m_dock = row_view(backdrop, m_dock_y, m_dock_h);
     if (!m_band || !m_dock) {
         return -1;
     }
 
     stlxgfx_fill_rect(m_band, 0, BAR_H, screen_w, 1, conf.accent_color);
+    stlxgfx_fill_rect(m_dock, 0, 0, screen_w, 1, conf.accent_color);
 
-    m_tip_font = stlxgfx_font_open(STLXGFX_FONT_PATH, TIP_FONT_PX);
+    m_tip_font = stlxgfx_font_open(STLXGFX_UI_FONT_MEDIUM_PATH, TIP_FONT_PX);
     if (!m_tip_font) {
         return -1;
     }
     stlxgfx_font_metrics_get(m_tip_font, &m_tip_fm);
 
     /* The bar: name and stats left, the clock truly centered between
-     * two equal flex halves, network state right */
+     * two equal flex halves, network state right. Panel fills are
+     * forced opaque, they paint into the backdrop in place. */
+    uint32_t panel_bg = conf.bar_color | 0xFF000000u;
     auto bar = std::make_unique<ui::box>(ui::axis::row);
-    bar->s().background = conf.bar_color;
+    bar->s().background = panel_bg;
     bar->s().padding = ui::edge_insets::xy(10, 0);
     bar->s().align_items = ui::align::center;
 
@@ -345,6 +361,18 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
     m_stats = left->add<ui::label>(g_stats_str);
     m_stats->s().main = ui::length::content();
     m_stats->set_color(conf.accent_color);
+
+    /* The latency percentile and the newest sample read as one group */
+    ui::box* inp = left->add<ui::box>(ui::axis::row);
+    inp->s().main = ui::length::content();
+    inp->s().align_items = ui::align::center;
+    inp->s().gap = INP_GAP;
+    m_inp = inp->add<ui::label>("INP --");
+    m_inp->s().main = ui::length::content();
+    m_inp->set_color(conf.accent_color);
+    m_inp_last = inp->add<ui::label>("last --");
+    m_inp_last->s().main = ui::length::content();
+    m_inp_last->set_color(conf.accent_color);
 
     char text[64];
     format_clock(text, sizeof(text));
@@ -366,10 +394,9 @@ int dm_panels::init(uint32_t screen_w, uint32_t screen_h,
 
     m_host.set_root(std::move(bar));
 
-    /* The dock: the config's pins centered between flex spacers. The
-     * accent top edge is drawn at compose time over the band blit. */
+    /* The dock: the config's pins centered between flex spacers */
     auto dock = std::make_unique<ui::box>(ui::axis::row);
-    dock->s().background = conf.bar_color;
+    dock->s().background = panel_bg;
     dock->s().align_items = ui::align::center;
 
     /* Tiles are one pixel wider than their icons on each side, so the
@@ -426,6 +453,8 @@ void dm_panels::shutdown() {
     m_clock = nullptr;
     m_stats = nullptr;
     m_net = nullptr;
+    m_inp = nullptr;
+    m_inp_last = nullptr;
     m_hover_pin = -1;
     m_drawn_hover_pin = -1;
 
@@ -488,6 +517,7 @@ void dm_panels::flush(damage_list& damage) {
 
         std::vector<ui::rect> out;
         m_dock_host.paint_now(m_dock, out);
+        stlxgfx_fill_rect(m_dock, 0, 0, m_width, 1, m_conf->accent_color);
 
         /* Dock rects translate down to the band's screen position */
         for (const ui::rect& r : out) {
@@ -501,46 +531,6 @@ void dm_panels::flush(damage_list& damage) {
         damage.add(0, m_dock_y - TIP_REACH,
                    static_cast<int32_t>(m_width), TIP_REACH + m_dock_h);
         m_drawn_hover_pin = m_hover_pin;
-    }
-}
-
-void dm_panels::compose(stlxgfx_surface_t* back,
-                        const damage_list::rect& r) {
-    int32_t band_h = BAR_H + 1;
-    if (m_band && r.y < band_h) {
-        int32_t x0 = r.x > 0 ? r.x : 0;
-        int32_t y0 = r.y > 0 ? r.y : 0;
-        int32_t x1 = r.x + r.w < static_cast<int32_t>(m_width)
-                   ? r.x + r.w : static_cast<int32_t>(m_width);
-        int32_t y1 = r.y + r.h < band_h ? r.y + r.h : band_h;
-
-        if (x0 < x1 && y0 < y1) {
-            stlxgfx_blit(back, x0, y0, m_band, x0, y0,
-                         static_cast<uint32_t>(x1 - x0),
-                         static_cast<uint32_t>(y1 - y0));
-        }
-    }
-
-    if (m_dock && r.y + r.h > m_dock_y) {
-        int32_t x0 = r.x > 0 ? r.x : 0;
-        int32_t y0 = r.y > m_dock_y ? r.y : m_dock_y;
-        int32_t x1 = r.x + r.w < static_cast<int32_t>(m_width)
-                   ? r.x + r.w : static_cast<int32_t>(m_width);
-        int32_t y1 = r.y + r.h < m_dock_y + m_dock_h
-                   ? r.y + r.h : m_dock_y + m_dock_h;
-
-        if (x0 < x1 && y0 < y1) {
-            stlxgfx_blit(back, x0, y0, m_dock, x0, y0 - m_dock_y,
-                         static_cast<uint32_t>(x1 - x0),
-                         static_cast<uint32_t>(y1 - y0));
-
-            /* The dock's accent top edge, mirroring the bar's underline */
-            if (y0 == m_dock_y) {
-                stlxgfx_fill_rect(back, x0, m_dock_y,
-                                  static_cast<uint32_t>(x1 - x0), 1,
-                                  m_conf->accent_color);
-            }
-        }
     }
 }
 
@@ -654,4 +644,40 @@ void dm_panels::clock_tick() {
         format_net(net, sizeof(net));
         m_net->set_text(net);
     }
+}
+
+/* Readout color for a latency against the thresholds */
+static uint32_t inp_color(uint32_t us, uint32_t accent) {
+    if (us >= INP_BAD_US) {
+        return INP_BAD_COLOR;
+    }
+    if (us >= INP_WARN_US) {
+        return INP_WARN_COLOR;
+    }
+
+    return accent;
+}
+
+/* One readout: "<label> <ms>ms", or dashes while the window is empty */
+static void set_readout(ui::label* l, const char* label, bool valid,
+                        uint32_t us, uint32_t accent) {
+    char text[32];
+    if (valid) {
+        uint32_t ms = (us + 500) / 1000;
+        snprintf(text, sizeof(text), "%s %ums", label, ms < 1 ? 1 : ms);
+    } else {
+        snprintf(text, sizeof(text), "%s --", label);
+    }
+
+    l->set_color(valid ? inp_color(us, accent) : accent);
+    l->set_text(text);
+}
+
+void dm_panels::set_perf(const perf_snapshot& s) {
+    if (!m_inp) {
+        return;
+    }
+
+    set_readout(m_inp, "INP", s.valid, s.p95_us, m_conf->accent_color);
+    set_readout(m_inp_last, "last", s.valid, s.last_us, m_conf->accent_color);
 }

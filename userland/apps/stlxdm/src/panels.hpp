@@ -2,6 +2,7 @@
 #define STLXDM_PANELS_HPP
 
 #include "damage.hpp"
+#include "perf.hpp"
 
 #include <stlxconf/conf.h>
 #include <stlxgfx/font.h>
@@ -32,14 +33,18 @@ public:
 };
 
 /* The compositor's chrome: a top bar with the product name, system
- * stats, the clock, and network state, and a bottom dock of pinned
- * launchers with hover tooltips. Both are toolkit trees over retained
- * band surfaces in the background layer, colored by the config. */
+ * stats, the input latency readout, the clock, and network state,
+ * and a bottom dock of pinned launchers with hover tooltips. Both are
+ * toolkit trees painted straight into the shared backdrop, so
+ * composing them is the same blit as the wallpaper. */
 class dm_panels {
 public:
     static constexpr int32_t BAR_H = 28;
 
-    int init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf);
+    /* Builds both panels over the backdrop, which must already hold
+     * the wallpaper. The panels own no pixels of their own. */
+    int init(uint32_t screen_w, uint32_t screen_h, const stlxconf_t& conf,
+             stlxgfx_surface_t* backdrop);
     void shutdown();
 
     /* Fired by a dock pin's release, the server spawns the app */
@@ -52,14 +57,10 @@ public:
     int32_t dock_y() const { return m_dock_y; }
     int32_t dock_h() const { return m_dock_h; }
 
-    /* Paints dirty panel subtrees into the retained band surfaces and
-     * adds the changed regions, tooltip transitions included, to the
-     * screen damage list. */
+    /* Paints dirty panel subtrees into the backdrop and adds the
+     * changed regions, tooltip transitions included, to the screen
+     * damage list. */
     void flush(damage_list& damage);
-
-    /* Blits each band's intersection with one compose rect, under the
-     * windows. */
-    void compose(stlxgfx_surface_t* back, const damage_list::rect& r);
 
     /* Draws the hover tooltip above the dock, over the windows. */
     void compose_top(stlxgfx_surface_t* back, const damage_list::rect& r);
@@ -80,6 +81,10 @@ public:
     int64_t clock_timeout_ns(uint64_t now_ns) const;
     void clock_tick();
 
+    /* Feeds the latency readout. Labels only repaint when their text
+     * or color changes. */
+    void set_perf(const perf_snapshot& s);
+
 private:
     void hover_pin(int32_t index, bool entered);
     damage_list::rect pin_icon_rect(int32_t index) const;
@@ -87,6 +92,8 @@ private:
     const stlxconf_t* m_conf = nullptr;
     direct_host m_host;
     direct_host m_dock_host;
+
+    /* Views into the backdrop rows each tree paints */
     stlxgfx_surface_t* m_band = nullptr;
     stlxgfx_surface_t* m_dock = nullptr;
     std::vector<stlxgfx_surface_t*> m_icons;
@@ -99,6 +106,10 @@ private:
     ui::label* m_clock = nullptr;
     ui::label* m_stats = nullptr;
     ui::label* m_net = nullptr;
+
+    /* The input latency readout: the percentile and the newest sample */
+    ui::label* m_inp = nullptr;
+    ui::label* m_inp_last = nullptr;
 
     /* Last query times gating the refresh cadences */
     uint64_t m_stats_query_ns = 0;
