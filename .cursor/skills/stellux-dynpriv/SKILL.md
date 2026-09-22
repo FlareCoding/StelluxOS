@@ -29,9 +29,10 @@ These are verified against the code, rely on them instead of re-deriving:
 - `elevate()` is a real syscall gated by `TASK_FLAG_CAN_ELEVATE`. `lower()` is
   inlined `sysretq` / `eret` and never leaves the current function.
 - Unprivileged heap memory is reachable by lowered kernel threads but not by
-  userland: `create_user_pt_root` copies the kernel half with the USER bit
-  cleared, and x86 permissions AND across levels. aarch64 gets this from the
-  TTBR0 and TTBR1 split.
+  userland: on x86 `create_user_pt_root` copies the kernel half with the USER
+  bit cleared and permissions AND across levels, on aarch64 user tasks load a
+  TTBR1 copy of the kernel root whose top-level entries carry the APTable EL0
+  limit. The TTBR0/TTBR1 split alone denies nothing.
 - `.priv.bss` is a PROGBITS section, so privileged zero-initialized data
   occupies real bytes in the kernel image.
 - `spin_lock` and `spin_unlock` are unprivileged. Only the `irqsave` variants
