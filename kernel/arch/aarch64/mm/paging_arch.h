@@ -84,6 +84,12 @@ namespace ap {
     constexpr uint64_t EL1_RO_EL0_RO   = 0b11;  // Kernel R/O, User R/O
 }
 
+// APTable field values, the permission limit a table descriptor imposes on every level beneath it
+namespace ap_table {
+    constexpr uint64_t NO_LIMIT = 0b00;
+    constexpr uint64_t EL0_NONE = 0b01;
+}
+
 // Shareability (SH) field values
 namespace sh {
     constexpr uint64_t NON_SHAREABLE   = 0b00;
