@@ -5,8 +5,20 @@
 
 #include <stddef.h>
 
+/* The monospace face, for terminals and anything laid out in cells */
 #ifndef STLXGFX_FONT_PATH
 #define STLXGFX_FONT_PATH "/etc/res/fonts/UbuntuMono-Regular.ttf"
+#endif
+
+/* The proportional interface face in the weights the desktop uses */
+#ifndef STLXGFX_UI_FONT_PATH
+#define STLXGFX_UI_FONT_PATH "/etc/res/fonts/Inter-Regular.ttf"
+#endif
+#ifndef STLXGFX_UI_FONT_MEDIUM_PATH
+#define STLXGFX_UI_FONT_MEDIUM_PATH "/etc/res/fonts/Inter-Medium.ttf"
+#endif
+#ifndef STLXGFX_UI_FONT_SEMIBOLD_PATH
+#define STLXGFX_UI_FONT_SEMIBOLD_PATH "/etc/res/fonts/Inter-SemiBold.ttf"
 #endif
 
 #ifdef __cplusplus
