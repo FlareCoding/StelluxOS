@@ -266,16 +266,21 @@ void server::adopt_conf_state(dm_conf_state&& next) {
 void server::perf_wake(uint64_t now_ns) {
     m_wake_ns = now_ns;
     m_wake_damage = m_damage.count();
+    m_wake_damage_full = m_damage.full();
     m_wake_panels_dirty = m_panels->dirty();
 }
 
-void server::perf_tick(uint64_t now_ns) {
-    /* Damage or panel dirt that appeared during routing is the
-     * desktop's own reaction to this wakeup's input */
-    bool reacted = m_damage.full() || m_damage.count() > m_wake_damage ||
+/* Runs right after routing, before the clock or client messages can
+ * dirty anything, so only the desktop's own reaction to this wakeup's
+ * input counts */
+void server::perf_settle() {
+    bool reacted = (m_damage.full() && !m_wake_damage_full) ||
+                   m_damage.count() > m_wake_damage ||
                    (m_panels->dirty() && !m_wake_panels_dirty);
     m_perf.settle(reacted);
+}
 
+void server::perf_tick(uint64_t now_ns) {
     perf_snapshot snap;
     if (m_perf.tick(now_ns, snap)) {
         m_panels->set_perf(snap);
