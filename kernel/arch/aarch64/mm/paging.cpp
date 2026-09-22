@@ -31,6 +31,10 @@ __PRIVILEGED_DATA static sync::spinlock g_pt_lock = sync::SPINLOCK_INIT;
 __PRIVILEGED_DATA static pmm::phys_addr_t g_retired_tables = 0;
 __PRIVILEGED_DATA static pmm::phys_addr_t g_kernel_pt_root = 0;
 
+// A copy of the kernel page table root whose top-level entries deny
+// EL0 access, so user tasks cannot access unprivileged kernel memory.
+__PRIVILEGED_DATA static pmm::phys_addr_t g_restricted_pt_root = 0;
+
 // TTBR1_EL1 mask to extract physical address (mask off ASID in bits 63:48)
 constexpr uint64_t TTBR_BADDR_MASK = 0x0000FFFFFFFFFFFFULL;
 
@@ -352,17 +356,49 @@ __PRIVILEGED_CODE static translation_table_t* get_or_create_table(table_desc_t* 
     return static_cast<translation_table_t*>(phys_to_virt(table_phys));
 }
 
+__PRIVILEGED_CODE static void sync_restricted_l0(uint32_t l0_idx) {
+    if (g_restricted_pt_root == 0) {
+        return;
+    }
+
+    auto* kernel_l0 = static_cast<translation_table_t*>(phys_to_virt(g_kernel_pt_root));
+    auto* restricted_l0 = static_cast<translation_table_t*>(phys_to_virt(g_restricted_pt_root));
+
+    table_desc_t entry = kernel_l0->as_table[l0_idx];
+    if (entry.valid) {
+        entry.ap_table = ap_table::EL0_NONE;
+    }
+
+    restricted_l0->as_table[l0_idx] = entry;
+}
+
+__PRIVILEGED_CODE static translation_table_t* resolve_l1_table(pmm::phys_addr_t root_pt, uint32_t l0_idx, bool create) {
+    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
+    table_desc_t* l0_entry = &l0->as_table[l0_idx];
+
+    if (l0_entry->valid) {
+        return static_cast<translation_table_t*>(phys_to_virt(l0_entry->next_table_addr << 12));
+    }
+
+    if (!create) {
+        return nullptr;
+    }
+
+    translation_table_t* l1 = get_or_create_table(l0_entry);
+    if (root_pt == g_kernel_pt_root) {
+        sync_restricted_l0(l0_idx);
+    }
+
+    return l1;
+}
+
 // Get pointer to page descriptor for a virtual address, creating tables as needed if create=true
 // Returns nullptr if not mapped and create=false
 __PRIVILEGED_CODE static page_desc_t* get_page_desc_ptr(pmm::phys_addr_t root_pt, virt_addr_t virt, bool create) {
     auto parts = split_virt_addr(virt);
-    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
 
     // L0 -> L1
-    table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
-    if (!l0_entry->valid && !create) return nullptr;
-    translation_table_t* l1 = create ? get_or_create_table(l0_entry) :
-        static_cast<translation_table_t*>(phys_to_virt(l0_entry->next_table_addr << 12));
+    translation_table_t* l1 = resolve_l1_table(root_pt, parts.l0_idx, create);
     if (!l1) return nullptr;
 
     // L1 -> L2
@@ -408,11 +444,9 @@ __PRIVILEGED_CODE static int32_t map_page_4kb(pmm::phys_addr_t root_pt, virt_add
 // Map a single 2MB block
 __PRIVILEGED_CODE static int32_t map_block_2mb(pmm::phys_addr_t root_pt, virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags) {
     auto parts = split_virt_addr(virt);
-    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
 
     // L0 -> L1
-    table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
-    translation_table_t* l1 = get_or_create_table(l0_entry);
+    translation_table_t* l1 = resolve_l1_table(root_pt, parts.l0_idx, true);
 
     // Check for 1GB block conflict at L1
     if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
@@ -460,11 +494,9 @@ __PRIVILEGED_CODE static int32_t map_block_2mb(pmm::phys_addr_t root_pt, virt_ad
 // Map a single 1GB block
 __PRIVILEGED_CODE static int32_t map_block_1gb(pmm::phys_addr_t root_pt, virt_addr_t virt, pmm::phys_addr_t phys, page_flags_t flags) {
     auto parts = split_virt_addr(virt);
-    translation_table_t* l0 = static_cast<translation_table_t*>(phys_to_virt(root_pt));
 
     // L0 -> L1
-    table_desc_t* l0_entry = &l0->as_table[parts.l0_idx];
-    translation_table_t* l1 = get_or_create_table(l0_entry);
+    translation_table_t* l1 = resolve_l1_table(root_pt, parts.l0_idx, true);
 
     // Set L1 entry as 1GB block (no L2 or L3 levels)
     block_desc_t* block = &l1->as_block[parts.l1_idx];
@@ -557,6 +589,7 @@ __PRIVILEGED_CODE static void retire_table_page(pmm::phys_addr_t phys) {
 // Free the tables left empty below a cleared entry, lowest level first. A
 // null level was not part of the walk.
 __PRIVILEGED_CODE static void reclaim_empty_tables(
+    pmm::phys_addr_t root_pt, uint32_t l0_idx,
     table_desc_t* l0_entry, translation_table_t* l1, table_desc_t* l1_entry,
     translation_table_t* l2, table_desc_t* l2_entry, translation_table_t* l3
 ) {
@@ -586,6 +619,11 @@ __PRIVILEGED_CODE static void reclaim_empty_tables(
 
     pmm::phys_addr_t l1_phys = static_cast<pmm::phys_addr_t>(l0_entry->next_table_addr) << 12;
     l0_entry->value = 0;
+
+    if (root_pt == g_kernel_pt_root) {
+        sync_restricted_l0(l0_idx);
+    }
+
     retire_table_page(l1_phys);
 }
 
@@ -607,7 +645,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (l1->as_block[parts.l1_idx].valid && l1->as_block[parts.l1_idx].type == 0) {
         l1->raw[parts.l1_idx] = 0;
         flush_tlb_page(virt);
-        reclaim_empty_tables(l0_entry, l1, nullptr, nullptr, nullptr, nullptr);
+        reclaim_empty_tables(root_pt, parts.l0_idx, l0_entry, l1, nullptr, nullptr, nullptr, nullptr);
         return OK;
     }
 
@@ -621,7 +659,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
     if (l2->as_block[parts.l2_idx].valid && l2->as_block[parts.l2_idx].type == 0) {
         l2->raw[parts.l2_idx] = 0;
         flush_tlb_page(virt);
-        reclaim_empty_tables(l0_entry, l1, l1_entry, l2, nullptr, nullptr);
+        reclaim_empty_tables(root_pt, parts.l0_idx, l0_entry, l1, l1_entry, l2, nullptr, nullptr);
         return OK;
     }
 
@@ -637,7 +675,7 @@ __PRIVILEGED_CODE static int32_t unmap_page_nolock(virt_addr_t virt, pmm::phys_a
 
     page->value = 0;
     flush_tlb_page(virt);
-    reclaim_empty_tables(l0_entry, l1, l1_entry, l2, l2_entry, l3);
+    reclaim_empty_tables(root_pt, parts.l0_idx, l0_entry, l1, l1_entry, l2, l2_entry, l3);
 
     return OK;
 }
@@ -721,7 +759,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
         *out_phys = l1->raw[parts.l1_idx] & DESC_ADDR_MASK;
         *out_size = PAGE_SIZE_1GB;
         l1->raw[parts.l1_idx] = 0;
-        reclaim_empty_tables(l0_entry, l1, nullptr, nullptr, nullptr, nullptr);
+        reclaim_empty_tables(root_pt, parts.l0_idx, l0_entry, l1, nullptr, nullptr, nullptr, nullptr);
         return OK;
     }
 
@@ -736,7 +774,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
         *out_phys = l2->raw[parts.l2_idx] & DESC_ADDR_MASK;
         *out_size = PAGE_SIZE_2MB;
         l2->raw[parts.l2_idx] = 0;
-        reclaim_empty_tables(l0_entry, l1, l1_entry, l2, nullptr, nullptr);
+        reclaim_empty_tables(root_pt, parts.l0_idx, l0_entry, l1, l1_entry, l2, nullptr, nullptr);
         return OK;
     }
 
@@ -754,7 +792,7 @@ __PRIVILEGED_CODE static int32_t take_kept_frame_nolock(
     *out_phys = l3->raw[parts.l3_idx] & DESC_ADDR_MASK;
     *out_size = PAGE_SIZE_4KB;
     l3->raw[parts.l3_idx] = 0;
-    reclaim_empty_tables(l0_entry, l1, l1_entry, l2, l2_entry, l3);
+    reclaim_empty_tables(root_pt, parts.l0_idx, l0_entry, l1, l1_entry, l2, l2_entry, l3);
     return OK;
 }
 
@@ -1275,8 +1313,14 @@ __PRIVILEGED_CODE int32_t init() {
 
     write_sctlr_el1(sctlr);
 
-    // Switch to new page tables
     g_kernel_pt_root = new_root;
+    g_restricted_pt_root = alloc_table_page();
+
+    for (uint32_t idx = 0; idx < 512; idx++) {
+        sync_restricted_l0(idx);
+    }
+
+    // Switch to new page tables
     set_kernel_pt_root(new_root);
     flush_tlb_all();
 
