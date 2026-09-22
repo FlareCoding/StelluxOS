@@ -13,10 +13,11 @@ APP_COUNT := $(words $(APP_DIRS))
 all:
 ifeq ($(STLX_QUIET),1)
 	@echo "  Applications:"
-	@idx=0; \
+	@idx=0; anim_pid=; \
+	trap 'kill $$anim_pid 2>/dev/null' EXIT INT TERM; \
 	for app in $(APP_DIRS); do \
 		idx=$$((idx + 1)); \
-		( while true; do \
+		( while kill -0 $$$$ 2>/dev/null; do \
 			printf "\r    %-48s .  " "$$app"; sleep 0.3; \
 			printf "\r    %-48s .. " "$$app"; sleep 0.3; \
 			printf "\r    %-48s ..." "$$app"; sleep 0.3; \
