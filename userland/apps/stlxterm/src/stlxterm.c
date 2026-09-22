@@ -82,18 +82,18 @@ static uint32_t g_cell_w = 8;
 static uint32_t g_cell_h = 16;
 
 /* The grid as it was last painted, diffed against the live grid to
- * find damage. A second span set remembers the previous frame so the
- * other buffer of the pair can be brought up to date. */
+ * find damage. Each buffer of the pair also keeps the spans painted
+ * into the other buffer since it was last painted itself, so it
+ * catches up on exactly the frames it missed and nothing more. */
 static char g_prev_cells[TERM_MAX_ROWS][TERM_MAX_COLS];
 static term_attr_t g_prev_attrs[TERM_MAX_ROWS][TERM_MAX_COLS];
 static int g_prev_valid = 0;
 static int16_t g_span_min[TERM_MAX_ROWS];
 static int16_t g_span_max[TERM_MAX_ROWS];
-static int16_t g_last_min[TERM_MAX_ROWS];
-static int16_t g_last_max[TERM_MAX_ROWS];
+static int16_t g_stale_min[2][TERM_MAX_ROWS];
+static int16_t g_stale_max[2][TERM_MAX_ROWS];
 static int g_last_cur_row = -1;
 static int g_last_cur_col = -1;
-static void* g_last_pixels = NULL;
 static uint32_t g_last_buf_w = 0;
 static uint32_t g_last_buf_h = 0;
 
@@ -102,24 +102,40 @@ static uint32_t g_last_buf_h = 0;
  * image, so span parity cannot ground it. */
 static void* g_grounded[2] = { NULL, NULL };
 
-static int buffer_grounded(void* pixels) {
+static int grounded_index(void* pixels) {
     for (int i = 0; i < 2; i++) {
         if (g_grounded[i] == pixels) {
-            return 1;
+            return i;
         }
     }
 
-    return 0;
+    return -1;
 }
 
 static void ground_buffer(void* pixels) {
-    for (int i = 0; i < 2; i++) {
-        if (g_grounded[i] == pixels) {
-            return;
-        }
+    if (grounded_index(pixels) >= 0) {
+        return;
     }
 
     g_grounded[g_grounded[0] ? 1 : 0] = pixels;
+}
+
+static void stale_clear(int slot) {
+    for (int r = 0; r < TERM_MAX_ROWS; r++) {
+        g_stale_min[slot][r] = TERM_MAX_COLS;
+        g_stale_max[slot][r] = -1;
+    }
+}
+
+/* Adds this frame's spans to what the other buffer still has to repaint */
+static void stale_add(int slot, const int16_t* min, const int16_t* max) {
+    for (int r = 0; r < TERM_MAX_ROWS; r++) {
+        if (max[r] < 0) {
+            continue;
+        }
+        if (g_stale_min[slot][r] > min[r]) g_stale_min[slot][r] = min[r];
+        if (g_stale_max[slot][r] < max[r]) g_stale_max[slot][r] = max[r];
+    }
 }
 
 static void span_mark(int row, int c0, int c1) {
@@ -172,15 +188,20 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
         g_span_max[r] = -1;
     }
 
-    int full = !g_prev_valid ||
-               buf->width != g_last_buf_w || buf->height != g_last_buf_h ||
-               !buffer_grounded(buf->pixels);
+    int resized = buf->width != g_last_buf_w || buf->height != g_last_buf_h;
+    int full = !g_prev_valid || resized || grounded_index(buf->pixels) < 0;
 
     /* A size change replaces the slots, nothing stays grounded */
-    if (buf->width != g_last_buf_w || buf->height != g_last_buf_h) {
+    if (resized) {
         g_grounded[0] = NULL;
         g_grounded[1] = NULL;
+        stale_clear(0);
+        stale_clear(1);
     }
+
+    /* This frame's own changes, which the other buffer will need too */
+    int16_t diff_min[TERM_MAX_ROWS];
+    int16_t diff_max[TERM_MAX_ROWS];
 
     if (!full) {
         for (int r = 0; r < g_term.rows; r++) {
@@ -208,16 +229,18 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
         int cc = g_term.cursor_col < g_term.cols
                ? g_term.cursor_col : g_term.cols - 1;
         span_mark(g_term.cursor_row, cc, cc);
+        memcpy(diff_min, g_span_min, sizeof(diff_min));
+        memcpy(diff_max, g_span_max, sizeof(diff_max));
 
-        /* The other buffer of the pair is one frame behind, so the
-         * previous frame's spans repaint into it as well */
-        if (buf->pixels != g_last_pixels) {
-            for (int r = 0; r < g_term.rows; r++) {
-                if (g_last_max[r] >= 0) {
-                    span_mark(r, g_last_min[r], g_last_max[r]);
-                }
+        /* Whatever went into the other buffer since this one was last
+         * painted repaints here as well, then this buffer is current */
+        int slot = grounded_index(buf->pixels);
+        for (int r = 0; r < g_term.rows; r++) {
+            if (g_stale_max[slot][r] >= 0) {
+                span_mark(r, g_stale_min[slot][r], g_stale_max[slot][r]);
             }
         }
+        stale_clear(slot);
     }
 
     stlxgfx_surface_t* s = stlxgfx_surface_from_buffer(
@@ -290,27 +313,30 @@ static int render_frame(stlxwin_window* win, int cursor_on) {
         stlxwin_commit(win, buf, rects, n_rects, 0);
     }
 
-    /* This frame becomes the reference: grid shadow, span history,
-     * cursor spot, and which buffer of the pair was painted */
+    /* This frame becomes the reference: grid shadow, cursor spot, and
+     * the spans the other buffer of the pair now lacks */
     memcpy(g_prev_cells, g_term.cells, sizeof(g_prev_cells));
     memcpy(g_prev_attrs, g_term.attrs, sizeof(g_prev_attrs));
     g_prev_valid = 1;
-    for (int r = 0; r < TERM_MAX_ROWS; r++) {
-        if (full || overflow) {
-            g_last_min[r] = 0;
-            g_last_max[r] = (int16_t)(g_term.cols - 1);
-        } else {
-            g_last_min[r] = g_span_min[r];
-            g_last_max[r] = g_span_max[r];
+    ground_buffer(buf->pixels);
+
+    int other = 1 - grounded_index(buf->pixels);
+    if (full || overflow) {
+        for (int r = 0; r < g_term.rows; r++) {
+            diff_min[r] = 0;
+            diff_max[r] = (int16_t)(g_term.cols - 1);
+        }
+        for (int r = g_term.rows; r < TERM_MAX_ROWS; r++) {
+            diff_max[r] = -1;
         }
     }
+    stale_add(other, diff_min, diff_max);
+
     g_last_cur_row = drawn_cursor ? g_term.cursor_row : -1;
     g_last_cur_col = g_term.cursor_col < g_term.cols
                    ? g_term.cursor_col : g_term.cols - 1;
-    g_last_pixels = buf->pixels;
     g_last_buf_w = buf->width;
     g_last_buf_h = buf->height;
-    ground_buffer(buf->pixels);
 
     return 0;
 }
