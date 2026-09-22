@@ -228,9 +228,9 @@ __PRIVILEGED_CODE void destroy_user_pt_root(pmm::phys_addr_t root);
  * mappings in its upper half, so CR3 is set to the user page table directly.
  *
  * On aarch64, separate registers handle each half: TTBR1_EL1 for kernel addresses
- * and TTBR0_EL1 for user addresses. TTBR1 should always point to the kernel page
- * table, while TTBR0 is set per-task via user_pt_root. So pt_root stays as the
- * kernel page table root.
+ * and TTBR0_EL1 for user addresses. TTBR0 is set per-task via user_pt_root, and
+ * TTBR1 gets a copy of the kernel page table root whose top-level entries deny EL0
+ * access.
  *
  * @param user_pt_root Physical address of the user page table (from load_elf).
  * @return Physical address to store in task_exec_core::pt_root.
