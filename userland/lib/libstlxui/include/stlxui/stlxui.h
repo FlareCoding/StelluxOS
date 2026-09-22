@@ -15,6 +15,8 @@
  * the parent dies or remove() runs, and nothing here is thread aware.
  */
 
+#include <stlxgfx/font.h>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -93,6 +95,9 @@ struct style {
     color background = 0;             /* 0 is transparent */
 };
 
+/* Typeface weights the desktop ships, each a separate face file */
+enum class weight : uint8_t { regular, medium, semibold };
+
 /**
  * The palette and defaults every widget consults. One process global
  * instance, replaceable as a whole, no per widget cascade.
@@ -110,6 +115,11 @@ struct theme {
     color text_dim = 0xFF585B70;
     uint32_t font_size = 14;
     int32_t control_h = 28;    /* default height of one line controls */
+
+    /* Face files per weight, opened lazily and kept for the process */
+    const char* font_regular = STLXGFX_UI_FONT_PATH;
+    const char* font_medium = STLXGFX_UI_FONT_MEDIUM_PATH;
+    const char* font_semibold = STLXGFX_UI_FONT_SEMIBOLD_PATH;
 
     static const theme& active();
     static void set_active(const theme& t);
@@ -134,20 +144,24 @@ public:
      * @param utf8 Text to draw.
      * @param font_size Face pixel size, 0 uses the theme size.
      * @param c Text color.
+     * @param w Face weight.
      */
     void text(point baseline_origin, std::string_view utf8,
-              uint32_t font_size, color c);
+              uint32_t font_size, color c, weight w = weight::regular);
 
     /**
      * @brief Measures UTF-8 text: advance width and line height.
      * @param utf8 Text to measure.
      * @param font_size Face pixel size, 0 uses the theme size.
+     * @param w Face weight.
      * @return Width and height in pixels.
      */
-    size measure_text(std::string_view utf8, uint32_t font_size) const;
+    size measure_text(std::string_view utf8, uint32_t font_size,
+                      weight w = weight::regular) const;
 
     /** @brief Font ascent in pixels, for baseline placement. */
-    int32_t font_ascent(uint32_t font_size) const;
+    int32_t font_ascent(uint32_t font_size,
+                        weight w = weight::regular) const;
 
     /**
      * @brief Alpha blends an stlxgfx surface at a widget local point.
@@ -298,6 +312,7 @@ public:
     const std::string& text() const { return m_text; }
     void set_color(color c);
     void set_font_size(uint32_t px);
+    void set_weight(weight w);
 
     size measure(size avail) override;
     void paint(painter& p) override;
@@ -306,6 +321,7 @@ private:
     std::string m_text;
     color m_color = 0;          /* 0 uses the theme text color */
     uint32_t m_font_size = 0;   /* 0 uses the theme font size */
+    weight m_weight = weight::regular;
 };
 
 /** A push button firing on_click on release or enter. */

@@ -21,9 +21,10 @@ constexpr int32_t SCROLL_THUMB_MIN = 16;
 
 /* Measurement runs outside a paint pass, and text metrics come from
  * process global state, so a transient painter serves them */
-static size text_metrics(const std::string& text, uint32_t font_size) {
+static size text_metrics(const std::string& text, uint32_t font_size,
+                         weight w = weight::regular) {
     painter p;
-    return p.measure_text(text, font_size);
+    return p.measure_text(text, font_size, w);
 }
 
 void label::set_text(std::string text) {
@@ -53,8 +54,17 @@ void label::set_font_size(uint32_t px) {
     invalidate_layout();
 }
 
+void label::set_weight(weight w) {
+    if (m_weight == w) {
+        return;
+    }
+
+    m_weight = w;
+    invalidate_layout();
+}
+
 size label::measure(size) {
-    size text = text_metrics(m_text, m_font_size);
+    size text = text_metrics(m_text, m_font_size, m_weight);
     const edge_insets& pad = m_style.padding;
 
     return { text.w + pad.left + pad.right,
@@ -64,11 +74,13 @@ size label::measure(size) {
 void label::paint(painter& p) {
     widget::paint(p);
 
-    size text = p.measure_text(m_text, m_font_size);
-    int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(m_font_size);
+    size text = p.measure_text(m_text, m_font_size, m_weight);
+    int32_t baseline = (m_frame.h - text.h) / 2
+                     + p.font_ascent(m_font_size, m_weight);
     color c = m_color != 0 ? m_color : theme::active().text;
 
-    p.text({ m_style.padding.left, baseline }, m_text, m_font_size, c);
+    p.text({ m_style.padding.left, baseline }, m_text, m_font_size, c,
+           m_weight);
 }
 
 void button::set_text(std::string text) {
@@ -90,7 +102,7 @@ void button::set_accent(bool accent) {
 }
 
 size button::measure(size) {
-    size text = text_metrics(m_text, 0);
+    size text = text_metrics(m_text, 0, weight::medium);
 
     return { text.w + 2 * BUTTON_PAD_X, theme::active().control_h };
 }
@@ -114,11 +126,13 @@ void button::paint(painter& p) {
                        BUTTON_RADIUS, bg);
     }
 
-    size text = p.measure_text(m_text, 0);
-    int32_t baseline = (m_frame.h - text.h) / 2 + p.font_ascent(0);
+    size text = p.measure_text(m_text, 0, weight::medium);
+    int32_t baseline = (m_frame.h - text.h) / 2
+                     + p.font_ascent(0, weight::medium);
     color fg = m_accent ? t.window_bg : t.text;
 
-    p.text({ (m_frame.w - text.w) / 2, baseline }, m_text, 0, fg);
+    p.text({ (m_frame.w - text.w) / 2, baseline }, m_text, 0, fg,
+           weight::medium);
 }
 
 bool button::on_pointer_down(const pointer_event&) {

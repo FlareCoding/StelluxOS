@@ -4,33 +4,50 @@
  */
 #include <stlxui/stlxui.h>
 
+#include <stlxgfx/ctx.h>
 #include <stlxgfx/font.h>
 #include <stlxgfx/surface.h>
 
 namespace ui {
 
-/* Faces opened once per pixel size and kept for the process life */
+/* Faces opened once per weight and pixel size, kept for the process */
 struct font_entry {
     uint32_t px = 0;
+    weight w = weight::regular;
     stlxgfx_font* font = nullptr;
 };
 
 static std::vector<font_entry> g_fonts;
 
-static stlxgfx_font* font_for(uint32_t px) {
+static const char* face_path(weight w) {
+    const theme& t = theme::active();
+
+    switch (w) {
+    case weight::medium:   return t.font_medium;
+    case weight::semibold: return t.font_semibold;
+    default:               return t.font_regular;
+    }
+}
+
+static stlxgfx_font* font_for(uint32_t px, weight w) {
     if (px == 0) {
         px = theme::active().font_size;
     }
 
     for (auto& e : g_fonts) {
-        if (e.px == px) {
+        if (e.px == px && e.w == w) {
             return e.font;
         }
     }
 
-    stlxgfx_font* f = stlxgfx_font_open(STLXGFX_FONT_PATH, px);
+    /* A missing weight falls back to the regular face rather than
+     * losing the text entirely */
+    stlxgfx_font* f = stlxgfx_font_open(face_path(w), px);
+    if (!f && w != weight::regular) {
+        f = stlxgfx_font_open(face_path(weight::regular), px);
+    }
     if (f) {
-        g_fonts.push_back({ px, f });
+        g_fonts.push_back({ px, w, f });
     }
 
     return f;
@@ -75,10 +92,18 @@ void painter::fill(const rect& r, color c) {
         return;
     }
 
-    stlxgfx_fill_rect(static_cast<stlxgfx_surface_t*>(m_target),
-                      clipped.x, clipped.y,
-                      static_cast<uint32_t>(clipped.w),
-                      static_cast<uint32_t>(clipped.h), c);
+    /* A translucent color composites over what is already painted */
+    if ((c >> 24) == 0xFF) {
+        stlxgfx_fill_rect(static_cast<stlxgfx_surface_t*>(m_target),
+                          clipped.x, clipped.y,
+                          static_cast<uint32_t>(clipped.w),
+                          static_cast<uint32_t>(clipped.h), c);
+    } else {
+        stlxgfx_fill_rect_blend(static_cast<stlxgfx_surface_t*>(m_target),
+                                clipped.x, clipped.y,
+                                static_cast<uint32_t>(clipped.w),
+                                static_cast<uint32_t>(clipped.h), c);
+    }
 }
 
 void painter::stroke(const rect& r, color c) {
@@ -113,22 +138,22 @@ void painter::line(point a, point b, color c) {
 }
 
 void painter::text(point baseline_origin, std::string_view utf8,
-                   uint32_t font_size, color c) {
+                   uint32_t font_size, color c, weight w) {
     if (!m_target || m_clips.empty() || utf8.empty()) {
         return;
     }
 
-    stlxgfx_font* f = font_for(font_size);
+    stlxgfx_font* f = font_for(font_size, w);
     if (!f) {
         return;
     }
 
     stlxgfx_font_metrics m;
     stlxgfx_font_metrics_get(f, &m);
-    int32_t w = stlxgfx_text_width(f, utf8.data(), utf8.size());
+    int32_t tw = stlxgfx_text_width(f, utf8.data(), utf8.size());
     rect bounds = { baseline_origin.x + m_origin.x - 1,
                     baseline_origin.y + m_origin.y - m.ascent,
-                    w + 2, m.ascent + m.descent };
+                    tw + 2, m.ascent + m.descent };
     rect clipped = intersect(bounds, m_clips.back());
     if (clipped.w <= 0 || clipped.h <= 0) {
         return;
@@ -149,8 +174,8 @@ void painter::text(point baseline_origin, std::string_view utf8,
 }
 
 size painter::measure_text(std::string_view utf8,
-                           uint32_t font_size) const {
-    stlxgfx_font* f = font_for(font_size);
+                           uint32_t font_size, weight w) const {
+    stlxgfx_font* f = font_for(font_size, w);
     if (!f) {
         return { 0, 0 };
     }
@@ -162,8 +187,8 @@ size painter::measure_text(std::string_view utf8,
              m.line_height };
 }
 
-int32_t painter::font_ascent(uint32_t font_size) const {
-    stlxgfx_font* f = font_for(font_size);
+int32_t painter::font_ascent(uint32_t font_size, weight w) const {
+    stlxgfx_font* f = font_for(font_size, w);
     if (!f) {
         return 0;
     }
@@ -229,9 +254,11 @@ void painter::circle(point center, int32_t radius, color c) {
         return;
     }
 
-    stlxgfx_fill_circle(view, center.x + m_origin.x - clipped.x,
-                        center.y + m_origin.y - clipped.y,
-                        static_cast<uint32_t>(radius), c);
+    stlxgfx_ctx_t ctx;
+    stlxgfx_ctx_init(&ctx, view);
+    stlxgfx_ctx_fill_circle(&ctx, center.x + m_origin.x - clipped.x,
+                            center.y + m_origin.y - clipped.y,
+                            static_cast<uint32_t>(radius), c);
     stlxgfx_destroy_surface(view);
 }
 
@@ -247,17 +274,20 @@ void painter::rounded_rect(const rect& r, int32_t radius, color c) {
     }
 
     /* The view keeps rounded fills correct under partial damage, a
-     * repaint of one child re-fills exactly its slice of the panel */
+     * repaint of one child re-fills exactly its slice of the panel.
+     * The ctx path anti-aliases the corners and honors alpha. */
     stlxgfx_surface_t* view = clip_view(m_target, clipped);
     if (!view) {
         return;
     }
 
-    stlxgfx_fill_rounded_rect(view, surf.x - clipped.x,
-                              surf.y - clipped.y,
-                              static_cast<uint32_t>(surf.w),
-                              static_cast<uint32_t>(surf.h),
-                              static_cast<uint32_t>(radius), c);
+    stlxgfx_ctx_t ctx;
+    stlxgfx_ctx_init(&ctx, view);
+    stlxgfx_ctx_fill_rounded_rect(&ctx, surf.x - clipped.x,
+                                  surf.y - clipped.y,
+                                  static_cast<uint32_t>(surf.w),
+                                  static_cast<uint32_t>(surf.h),
+                                  static_cast<uint32_t>(radius), c);
     stlxgfx_destroy_surface(view);
 }
 
