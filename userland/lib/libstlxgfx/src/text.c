@@ -11,9 +11,10 @@
 #undef STB_TRUETYPE_IMPLEMENTATION
 #pragma GCC diagnostic pop
 
-#include <stlxgfx/internal/blend.h>
+#include <stlxgfx/blend.h>
 #include <stlxgfx/internal/text.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,24 @@ typedef struct {
 static atlas_page g_pages[STLXGFX_ATLAS_MAX_PAGES];
 static uint64_t g_use_tick = 0;
 static stlxgfx_text_stats g_stats = { 0, 0, 0 };
+
+/* Coverage is blended in gamma encoded space, which starves the light
+ * on dark text this desktop is made of. Lifting mid coverage by this
+ * exponent approximates a linear light blend, the same correction
+ * text renderers call stem darkening. */
+#define STLXGFX_TEXT_GAMMA 1.45f
+
+static uint8_t g_coverage_lut[256];
+static int g_coverage_lut_ready = 0;
+
+static void coverage_lut_init(void) {
+    for (int i = 0; i < 256; i++) {
+        float lifted = powf((float)i / 255.0f, 1.0f / STLXGFX_TEXT_GAMMA);
+        g_coverage_lut[i] = (uint8_t)(lifted * 255.0f + 0.5f);
+    }
+
+    g_coverage_lut_ready = 1;
+}
 
 static int32_t scale_round(float scale, int v) {
     float s = scale * (float)v;
@@ -362,12 +381,22 @@ const stlxgfx_glyph_slot* stlxgfx_glyph_get(stlxgfx_font* font,
         return NULL;
     }
 
-    stbtt_MakeGlyphBitmap(&font->info,
-                          g_pages[page].pixels
-                              + (uint32_t)gy * STLXGFX_ATLAS_PAGE_W + gx,
-                          w, h, STLXGFX_ATLAS_PAGE_W,
+    uint8_t* bitmap = g_pages[page].pixels
+                    + (uint32_t)gy * STLXGFX_ATLAS_PAGE_W + gx;
+    stbtt_MakeGlyphBitmap(&font->info, bitmap, w, h, STLXGFX_ATLAS_PAGE_W,
                           font->scale, font->scale, glyph);
     g_stats.rasterizations++;
+
+    /* The lift is applied once here, so drawing stays a plain blend */
+    if (!g_coverage_lut_ready) {
+        coverage_lut_init();
+    }
+    for (uint16_t r = 0; r < h; r++) {
+        uint8_t* row = bitmap + (uint32_t)r * STLXGFX_ATLAS_PAGE_W;
+        for (uint16_t c = 0; c < w; c++) {
+            row[c] = g_coverage_lut[row[c]];
+        }
+    }
 
     slot->page = page;
     slot->gen = g_pages[page].gen;

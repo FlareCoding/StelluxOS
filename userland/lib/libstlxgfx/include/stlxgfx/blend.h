@@ -1,5 +1,5 @@
-#ifndef STLXGFX_INTERNAL_BLEND_H
-#define STLXGFX_INTERNAL_BLEND_H
+#ifndef STLXGFX_BLEND_H
+#define STLXGFX_BLEND_H
 
 #include <stdint.h>
 
@@ -16,4 +16,4 @@ static inline uint8_t stlxgfx_blend_channel(uint8_t dst, uint32_t src_premul,
     return (uint8_t)stlxgfx_div255(src_premul + dst * inv_alpha);
 }
 
-#endif /* STLXGFX_INTERNAL_BLEND_H */
+#endif /* STLXGFX_BLEND_H */

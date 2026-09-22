@@ -1,5 +1,5 @@
 #include <stlxgfx/surface.h>
-#include <stlxgfx/internal/blend.h>
+#include <stlxgfx/blend.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
