@@ -185,8 +185,10 @@ public:
 
     /* The input latency readout. The loop hands over the timestamp it
      * already took for the wakeup, the routers stamp the inputs that
-     * may paint, and the tick after routing settles them. */
+     * may paint, settle judges the desktop's own reaction once routing
+     * is done, and the tick runs the refresh. */
     void perf_wake(uint64_t now_ns);
+    void perf_settle();
     int64_t perf_timeout_ns(uint64_t now_ns) const { return m_perf.timeout_ns(now_ns); }
     void perf_tick(uint64_t now_ns);
 
@@ -250,6 +252,7 @@ private:
     perf_monitor m_perf;
     uint64_t m_wake_ns = 0;
     uint32_t m_wake_damage = 0;
+    bool m_wake_damage_full = false;
     bool m_wake_panels_dirty = false;
 
     /* Exec shortcuts parsed from the config's key chords */

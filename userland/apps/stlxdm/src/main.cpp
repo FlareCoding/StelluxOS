@@ -163,6 +163,7 @@ int main() {
             inp.pump_mouse(srv);
         }
         inp.pump_repeat(srv, now);
+        srv.perf_settle();
         srv.clock_tick();
 
         srv.pump(fds);
