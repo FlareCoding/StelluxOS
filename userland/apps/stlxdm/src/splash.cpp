@@ -1,5 +1,5 @@
-/* The boot splash: stars streaming out of a slowly breathing nebula
- * under a pulsing title, until Enter dismisses it.
+/* The boot splash: stars dropping out of warp into a slowly breathing
+ * nebula while the title resolves, until Enter dismisses it.
  */
 #include "splash.hpp"
 #include "presenter.hpp"
@@ -13,21 +13,65 @@
 #include <ctime>
 #include <fcntl.h>
 #include <unistd.h>
+#include <vector>
 
 constexpr uint32_t SPLASH_FPS = 60;
 constexpr uint64_t SPLASH_FRAME_NS = 1000000000ull / SPLASH_FPS;
-constexpr uint32_t SPLASH_BG_COLOR = 0xFF050508;
 constexpr uint32_t SPLASH_STAR_COUNT = 800;
-constexpr uint32_t SPLASH_TITLE_PX = 36;
-constexpr uint32_t SPLASH_HINT_PX = 16;
+constexpr uint32_t SPLASH_TITLE_PX = 46;
+constexpr uint32_t SPLASH_HINT_PX = 15;
+
+/* Text breathes between a dim and a bright shade of starlight */
+constexpr uint32_t SPLASH_TEXT_BRIGHT = 0xFFE9EDF8;
+constexpr uint32_t SPLASH_TEXT_MID = 0xFFB7C0D8;
+constexpr uint32_t SPLASH_TEXT_DIM = 0xFF7F8AA6;
+
+/* The warp-in: stars start fast and settle to cruise while the title
+ * fades up, then the hint follows */
+constexpr float SPLASH_WARP_SPEED = 0.05f;
+constexpr float SPLASH_CRUISE_SPEED = 0.004f;
+constexpr float SPLASH_WARP_S = 1.8f;
+constexpr float SPLASH_TITLE_IN_S = 0.4f;
+constexpr float SPLASH_TITLE_FADE_S = 1.3f;
+constexpr float SPLASH_HINT_IN_S = 1.7f;
+constexpr float SPLASH_HINT_FADE_S = 0.8f;
+
+/* The nebula's two lobes, violet and a fainter ion cyan */
+constexpr float SPLASH_NEBULA_R = 26.0f;
+constexpr float SPLASH_NEBULA_G = 18.0f;
+constexpr float SPLASH_NEBULA_B = 52.0f;
+constexpr float SPLASH_ION_R = 6.0f;
+constexpr float SPLASH_ION_G = 26.0f;
+constexpr float SPLASH_ION_B = 34.0f;
+
+/* The nebula is evaluated per block of this many pixels, in fixed
+ * point with this many fraction bits. Every float op is a helper
+ * call under emulation, so the per block math is integer only. */
+constexpr int32_t NEBULA_BLOCK = 4;
+constexpr int32_t NEBULA_Q = 14;
+constexpr int32_t NEBULA_ONE = 1 << NEBULA_Q;
 
 struct splash_star {
     float x, y, z;
     uint8_t tint;
 };
 
+/* The nebula field is a sum of products of a function of x and a
+ * function of y, so a frame rebuilds one short table per axis and the
+ * block loop only multiplies. The radial falloff is the one term that
+ * does not separate, and it never changes, so it is tabulated once. */
+struct nebula_field {
+    int32_t cols = 0;
+    int32_t rows = 0;
+    std::vector<int16_t> falloff;   /* rows x cols */
+    std::vector<int32_t> sx, s2x, c2x, lx;
+    std::vector<int32_t> cy, c2y, s2y, ly;
+    std::vector<uint32_t> row_colors;
+};
+
 static splash_star g_stars[SPLASH_STAR_COUNT];
 static uint32_t g_rng_state = 0xDEADBEEF;
+static nebula_field g_nebula;
 
 static uint32_t splash_rand() {
     g_rng_state ^= g_rng_state << 13;
@@ -58,39 +102,133 @@ static void splash_update_stars(float speed) {
     }
 }
 
-/* Coarse 4x4 blocks keep the whole screen gradient cheap */
+static int32_t nebula_q(float v) {
+    return static_cast<int32_t>(lrintf(v * static_cast<float>(NEBULA_ONE)));
+}
+
+/* Sizes the tables for the screen and fills the static falloff */
+static void nebula_init(uint32_t w, uint32_t h) {
+    nebula_field& n = g_nebula;
+    n.cols = (static_cast<int32_t>(w) + NEBULA_BLOCK - 1) / NEBULA_BLOCK;
+    n.rows = (static_cast<int32_t>(h) + NEBULA_BLOCK - 1) / NEBULA_BLOCK;
+
+    n.falloff.assign(static_cast<size_t>(n.cols) * static_cast<size_t>(n.rows), 0);
+    for (auto* v : { &n.sx, &n.s2x, &n.c2x, &n.lx }) {
+        v->assign(static_cast<size_t>(n.cols), 0);
+    }
+    for (auto* v : { &n.cy, &n.c2y, &n.s2y, &n.ly }) {
+        v->assign(static_cast<size_t>(n.rows), 0);
+    }
+    n.row_colors.assign(static_cast<size_t>(n.cols), 0);
+
+    float cx = static_cast<float>(w) * 0.5f;
+    float cy = static_cast<float>(h) * 0.5f;
+    for (int32_t by = 0; by < n.rows; by++) {
+        float dy = (static_cast<float>(by * NEBULA_BLOCK) - cy) / cy;
+        for (int32_t bx = 0; bx < n.cols; bx++) {
+            float dx = (static_cast<float>(bx * NEBULA_BLOCK) - cx) / cx;
+            float falloff = 1.0f - sqrtf(dx * dx + dy * dy) * 0.7f;
+            if (falloff < 0.0f) {
+                falloff = 0.0f;
+            }
+
+            n.falloff[static_cast<size_t>(by) * static_cast<size_t>(n.cols)
+                      + static_cast<size_t>(bx)] = static_cast<int16_t>(nebula_q(falloff));
+        }
+    }
+}
+
+/* Two lobes of drifting light: the violet body is sin(a + t) times
+ * cos(b - 0.7t) plus sin(a' + b' + 0.5t), the cyan cast is one more
+ * product, and every term factors by axis. The per frame tables hold
+ * the axis factors, and each block multiplies them. */
 static void splash_draw_nebula(stlxgfx_surface_t* buf, uint32_t w,
                                uint32_t h, uint32_t frame) {
+    nebula_field& n = g_nebula;
     float t = static_cast<float>(frame) * 0.003f;
     float cx = static_cast<float>(w) * 0.5f;
     float cy = static_cast<float>(h) * 0.5f;
 
-    for (int32_t py = 0; py < static_cast<int32_t>(h); py += 4) {
-        for (int32_t px = 0; px < static_cast<int32_t>(w); px += 4) {
-            float dx = (static_cast<float>(px) - cx) / cx;
-            float dy = (static_cast<float>(py) - cy) / cy;
-            float dist = sqrtf(dx * dx + dy * dy);
+    for (int32_t bx = 0; bx < n.cols; bx++) {
+        float dx = (static_cast<float>(bx * NEBULA_BLOCK) - cx) / cx;
+        size_t i = static_cast<size_t>(bx);
+        n.sx[i] = nebula_q(sinf(dx * 2.5f + t));
+        n.s2x[i] = nebula_q(sinf(dx * 1.8f + t * 0.5f));
+        n.c2x[i] = nebula_q(cosf(dx * 1.8f + t * 0.5f));
+        n.lx[i] = nebula_q(sinf(dx * 1.6f - t * 0.6f + 1.2f));
+    }
+    for (int32_t by = 0; by < n.rows; by++) {
+        float dy = (static_cast<float>(by * NEBULA_BLOCK) - cy) / cy;
+        size_t i = static_cast<size_t>(by);
+        n.cy[i] = nebula_q(cosf(dy * 3.0f - t * 0.7f));
+        n.c2y[i] = nebula_q(cosf(dy * 1.8f));
+        n.s2y[i] = nebula_q(sinf(dy * 1.8f));
+        n.ly[i] = nebula_q(cosf(dy * 2.2f + t * 0.4f));
+    }
 
-            float n1 = sinf(dx * 2.5f + t) * cosf(dy * 3.0f - t * 0.7f);
-            float n2 = sinf((dx + dy) * 1.8f + t * 0.5f);
-            float v = (n1 + n2) * 0.5f;
+    /* Channel weights as integers, applied to Q values and shifted
+     * back, matching the float truncation to within one step */
+    const int32_t body_r = static_cast<int32_t>(SPLASH_NEBULA_R);
+    const int32_t body_g = static_cast<int32_t>(SPLASH_NEBULA_G);
+    const int32_t body_b = static_cast<int32_t>(SPLASH_NEBULA_B);
+    const int32_t ion_r = static_cast<int32_t>(SPLASH_ION_R);
+    const int32_t ion_g = static_cast<int32_t>(SPLASH_ION_G);
+    const int32_t ion_b = static_cast<int32_t>(SPLASH_ION_B);
 
-            float falloff = 1.0f - dist * 0.7f;
-            if (falloff < 0.0f) {
-                falloff = 0.0f;
+    for (int32_t by = 0; by < n.rows; by++) {
+        const int16_t* fall = n.falloff.data() + static_cast<size_t>(by) * static_cast<size_t>(n.cols);
+        int32_t cyv = n.cy[static_cast<size_t>(by)];
+        int32_t c2yv = n.c2y[static_cast<size_t>(by)];
+        int32_t s2yv = n.s2y[static_cast<size_t>(by)];
+        int32_t lyv = n.ly[static_cast<size_t>(by)];
+
+        for (int32_t bx = 0; bx < n.cols; bx++) {
+            size_t i = static_cast<size_t>(bx);
+            int32_t f = fall[i];
+
+            int32_t n1 = (n.sx[i] * cyv) >> NEBULA_Q;
+            int32_t n2 = (n.s2x[i] * c2yv + n.c2x[i] * s2yv) >> NEBULA_Q;
+            int32_t v = (((n1 + n2) >> 1) * f) >> NEBULA_Q;
+            if (v < 0) {
+                v = 0;
             }
-            v *= falloff;
-            if (v < 0.0f) {
-                v = 0.0f;
-            }
 
-            uint8_t r = static_cast<uint8_t>(v * 18.0f);
-            uint8_t g = static_cast<uint8_t>(v * 8.0f);
-            uint8_t b = static_cast<uint8_t>(v * 30.0f);
-            uint32_t color = 0xFF000000 | (static_cast<uint32_t>(r) << 16) |
-                             (static_cast<uint32_t>(g) << 8) |
-                             static_cast<uint32_t>(b);
-            stlxgfx_fill_rect(buf, px, py, 4, 4, color);
+            int32_t c = ((n.lx[i] * lyv) >> NEBULA_Q) * f >> NEBULA_Q;
+            if (c < 0) {
+                c = 0;
+            }
+            c >>= 1;
+
+            uint32_t r = static_cast<uint32_t>((v * body_r + c * ion_r) >> NEBULA_Q);
+            uint32_t g = static_cast<uint32_t>((v * body_g + c * ion_g) >> NEBULA_Q);
+            uint32_t b = static_cast<uint32_t>((v * body_b + c * ion_b) >> NEBULA_Q);
+            n.row_colors[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        }
+
+        /* The block row's first scanline is filled once and copied to
+         * the rows below it. Every pixel is covered, so no clear runs. */
+        int32_t y0 = by * NEBULA_BLOCK;
+        int32_t y1 = y0 + NEBULA_BLOCK < static_cast<int32_t>(h) ? y0 + NEBULA_BLOCK
+                                                                  : static_cast<int32_t>(h);
+        uint32_t* first = reinterpret_cast<uint32_t*>(
+            buf->pixels + static_cast<uint32_t>(y0) * buf->pitch);
+        int32_t whole = static_cast<int32_t>(w) / NEBULA_BLOCK;
+        uint32_t* out = first;
+        for (int32_t bx = 0; bx < whole; bx++) {
+            uint32_t color = n.row_colors[static_cast<size_t>(bx)];
+            out[0] = color;
+            out[1] = color;
+            out[2] = color;
+            out[3] = color;
+            out += NEBULA_BLOCK;
+        }
+        for (int32_t x = whole * NEBULA_BLOCK; x < static_cast<int32_t>(w); x++) {
+            first[x] = n.row_colors[static_cast<size_t>(whole)];
+        }
+
+        for (int32_t y = y0 + 1; y < y1; y++) {
+            memcpy(buf->pixels + static_cast<uint32_t>(y) * buf->pitch, first,
+                   static_cast<size_t>(w) * 4);
         }
     }
 }
@@ -178,16 +316,40 @@ static void splash_draw_centered(stlxgfx_surface_t* buf, uint32_t screen_w,
                       strlen(text), color);
 }
 
-static uint32_t splash_pulse_color(uint32_t frame) {
-    float t = static_cast<float>(frame) * (2.0f * 3.14159f)
-            / static_cast<float>(SPLASH_FPS);
-    float pulse = 0.5f + 0.5f * sinf(t * 0.8f);
-    uint8_t lo = 0x90;
-    uint8_t hi = 0xFF;
-    uint8_t val = static_cast<uint8_t>(lo + (hi - lo) * pulse);
+/* Blends two palette colors by t in [0, 1] */
+static uint32_t splash_mix(uint32_t a, uint32_t b, float t) {
+    uint32_t out = 0;
+    for (uint32_t shift = 0; shift < 32; shift += 8) {
+        float ca = static_cast<float>((a >> shift) & 0xFF);
+        float cb = static_cast<float>((b >> shift) & 0xFF);
+        uint32_t v = static_cast<uint32_t>(ca + (cb - ca) * t + 0.5f);
+        out |= (v & 0xFF) << shift;
+    }
 
-    return 0xFF000000 | (static_cast<uint32_t>(val) << 16) |
-           (static_cast<uint32_t>(val) << 8) | static_cast<uint32_t>(val);
+    return out;
+}
+
+/* A slow breath between two palette shades, scaled by a fade alpha */
+static uint32_t splash_pulse_color(float seconds, uint32_t lo, uint32_t hi,
+                                   float alpha) {
+    float pulse = 0.5f + 0.5f * sinf(seconds * 2.0f * 3.14159f * 0.4f);
+    uint32_t color = splash_mix(lo, hi, pulse);
+    uint32_t a = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
+
+    return (a << 24) | (color & 0x00FFFFFFu);
+}
+
+/* Linear ramp from 0 at start to 1 after duration */
+static float splash_ramp(float seconds, float start, float duration) {
+    float t = (seconds - start) / duration;
+    if (t < 0.0f) {
+        return 0.0f;
+    }
+    if (t > 1.0f) {
+        return 1.0f;
+    }
+
+    return t * t * (3.0f - 2.0f * t);
 }
 
 static bool splash_check_enter(int kbd_fd) {
@@ -222,9 +384,9 @@ static uint64_t splash_clock_ns() {
 }
 
 void splash_run(presenter& pres) {
-    stlxgfx_font* title_font = stlxgfx_font_open(STLXGFX_FONT_PATH,
+    stlxgfx_font* title_font = stlxgfx_font_open(STLXGFX_UI_FONT_SEMIBOLD_PATH,
                                                  SPLASH_TITLE_PX);
-    stlxgfx_font* hint_font = stlxgfx_font_open(STLXGFX_FONT_PATH,
+    stlxgfx_font* hint_font = stlxgfx_font_open(STLXGFX_UI_FONT_PATH,
                                                 SPLASH_HINT_PX);
     if (!title_font || !hint_font) {
         stlxgfx_font_close(title_font);
@@ -244,15 +406,18 @@ void splash_run(presenter& pres) {
 
     uint32_t w = pres.width();
     uint32_t h = pres.height();
-    int32_t title_y = static_cast<int32_t>(h / 2) - 30;
-    int32_t hint_y = static_cast<int32_t>(h / 2) + 30;
+    int32_t title_y = static_cast<int32_t>(h / 2) - 40;
+    int32_t hint_y = static_cast<int32_t>(h / 2) + 34;
+    nebula_init(w, h);
 
     damage_list full;
     full.add_full();
 
+    uint64_t start_ns = splash_clock_ns();
     uint32_t frame = 0;
     while (true) {
         uint64_t frame_start = splash_clock_ns();
+        float seconds = static_cast<float>(frame_start - start_ns) / 1e9f;
 
         if (splash_check_enter(kbd_fd)) {
             break;
@@ -266,16 +431,25 @@ void splash_run(presenter& pres) {
             break;
         }
 
-        splash_update_stars(0.004f);
+        /* Warp decays into cruise as the title resolves */
+        float settle = splash_ramp(seconds, 0.0f, SPLASH_WARP_S);
+        float speed = SPLASH_WARP_SPEED
+                    + (SPLASH_CRUISE_SPEED - SPLASH_WARP_SPEED) * settle;
+        splash_update_stars(speed);
 
-        stlxgfx_clear(buf, SPLASH_BG_COLOR);
         splash_draw_nebula(buf, w, h, frame);
         splash_draw_stars(buf, w, h);
+
+        float title_a = splash_ramp(seconds, SPLASH_TITLE_IN_S, SPLASH_TITLE_FADE_S);
+        float hint_a = splash_ramp(seconds, SPLASH_HINT_IN_S, SPLASH_HINT_FADE_S);
         splash_draw_centered(buf, w, title_y, "Stellux 3.0", title_font,
-                             title_fm, splash_pulse_color(frame));
+                             title_fm,
+                             splash_pulse_color(seconds, SPLASH_TEXT_MID,
+                                                SPLASH_TEXT_BRIGHT, title_a));
         splash_draw_centered(buf, w, hint_y, "Press Enter to continue",
                              hint_font, hint_fm,
-                             splash_pulse_color(frame + SPLASH_FPS / 4));
+                             splash_pulse_color(seconds + 0.6f, SPLASH_TEXT_DIM,
+                                                SPLASH_TEXT_MID, hint_a));
 
         pres.present(full);
         stlxgfx_destroy_surface(buf);
