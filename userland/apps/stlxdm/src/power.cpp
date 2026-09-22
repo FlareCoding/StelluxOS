@@ -33,16 +33,16 @@ constexpr int32_t PW_STAR_MARGIN = 34;
 constexpr int32_t PW_STAR_CORE = 6;
 constexpr int32_t PW_STAR_GLOW = 13;
 
-constexpr uint32_t PW_DIM_COLOR = 0xE60A0A12;
-constexpr uint32_t PW_ORB_FILL = 0xFF181826;
-constexpr uint32_t PW_ORB_FILL_HOVER = 0xFF20203A;
-constexpr uint32_t PW_ORB_EDGE = 0xFF45475A;
-constexpr uint32_t PW_LABEL_DIM = 0xFF9399B2;
-constexpr uint32_t PW_LABEL_BRIGHT = 0xFFCDD6F4;
-constexpr uint32_t PW_HINT_COLOR = 0xFF7F849C;
-constexpr uint32_t PW_RESTART_ACCENT = 0xFF89B4FA;
-constexpr uint32_t PW_SHUTDOWN_ACCENT = 0xFFF38BA8;
-constexpr uint32_t PW_STAR_COLOR = 0xFFBAC2DE;
+constexpr uint32_t PW_DIM_COLOR = 0xE6080B14;
+constexpr uint32_t PW_ORB_FILL = 0xFF151B2C;
+constexpr uint32_t PW_ORB_FILL_HOVER = 0xFF1D2438;
+constexpr uint32_t PW_ORB_EDGE = 0xFF283048;
+constexpr uint32_t PW_LABEL_DIM = 0xFFB7C0D8;
+constexpr uint32_t PW_LABEL_BRIGHT = 0xFFE9EDF8;
+constexpr uint32_t PW_HINT_COLOR = 0xFF7F8AA6;
+constexpr uint32_t PW_RESTART_ACCENT = 0xFF5FD7FF;
+constexpr uint32_t PW_SHUTDOWN_ACCENT = 0xFFFF5C8A;
+constexpr uint32_t PW_STAR_COLOR = 0xFFB7C0D8;
 constexpr uint32_t PW_LABEL_FONT = 15;
 constexpr uint32_t PW_HINT_FONT = 12;
 
@@ -357,8 +357,8 @@ int dm_power::init(uint32_t screen_w, uint32_t screen_h,
     m_star_cx = static_cast<int32_t>(screen_w) - PW_STAR_MARGIN;
     m_star_cy = bar_y + static_cast<int32_t>(taskbar_height) / 2;
 
-    g_label_font = stlxgfx_font_open(STLXGFX_FONT_PATH, PW_LABEL_FONT);
-    g_hint_font = stlxgfx_font_open(STLXGFX_FONT_PATH, PW_HINT_FONT);
+    g_label_font = stlxgfx_font_open(STLXGFX_UI_FONT_MEDIUM_PATH, PW_LABEL_FONT);
+    g_hint_font = stlxgfx_font_open(STLXGFX_UI_FONT_PATH, PW_HINT_FONT);
     if (!g_label_font || !g_hint_font) {
         return -1;
     }
