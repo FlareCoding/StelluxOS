@@ -1,9 +1,11 @@
 #include "decor.hpp"
 #include "server.hpp"
 
+#include <stlxgfx/blend.h>
 #include <stlxgfx/ctx.h>
 #include <stlxgfx/font.h>
 
+#include <cmath>
 #include <cstring>
 
 constexpr uint32_t TITLE_BG_FOCUSED   = 0xFF313244;
@@ -22,9 +24,22 @@ constexpr uint32_t CLOSE_FG_HOVER     = 0xFFFFFFFF;
 constexpr uint32_t TITLE_FONT_SIZE    = 13;
 constexpr uint32_t OUTLINE_COLOR      = 0xFF89B4FA;
 
+/* Corner distances run through a table of squared half pixel offsets,
+ * so the content arcs never need a square root per pixel */
+constexpr int32_t SDF_Q_MAX = 2 * decor::CORNER_R;
+constexpr int32_t SDF_LUT_N = 2 * SDF_Q_MAX * SDF_Q_MAX + 1;
+
+/* A rounded rect in pixels, the shape the content corners follow */
+struct ring_geom {
+    int32_t x = 0, y = 0;
+    int32_t w = 0, h = 0;
+    int32_t r = 0;
+};
+
 /* The chrome face at the title size, opened once at startup */
 static stlxgfx_font* g_font = nullptr;
 static stlxgfx_font_metrics g_fm = {};
+static uint16_t g_dist8[SDF_LUT_N];
 
 static const dm_buffer* current_buffer(const dm_window& w) {
     if (w.current < 0) {
@@ -57,15 +72,77 @@ static stlxgfx_surface_t* clip_view(stlxgfx_surface_t* back,
         back->pitch, 32, 16, 8, 0);
 }
 
+static void sdf_table_init() {
+    for (int32_t k = 0; k < SDF_LUT_N; k++) {
+        g_dist8[k] = static_cast<uint16_t>(sqrtf(static_cast<float>(k)) * 4.0f + 0.5f);
+    }
+}
+
+/* Signed distance from a pixel center to the rounded rect edge, in
+ * eighth pixels, negative inside. Far outside saturates. */
+static inline int32_t rrect_dist8(const ring_geom& g, int32_t px, int32_t py) {
+    int32_t ax = 2 * px + 1 - (2 * g.x + g.w);
+    int32_t ay = 2 * py + 1 - (2 * g.y + g.h);
+    if (ax < 0) ax = -ax;
+    if (ay < 0) ay = -ay;
+
+    int32_t qx = ax - (g.w - 2 * g.r);
+    int32_t qy = ay - (g.h - 2 * g.r);
+    int32_t r8 = g.r * 8;
+    if (qx <= 0 && qy <= 0) {
+        return (qx > qy ? qx : qy) * 4 - r8;
+    }
+
+    if (qx < 0) qx = 0;
+    if (qy < 0) qy = 0;
+    int32_t k = qx * qx + qy * qy;
+    if (k >= SDF_LUT_N) {
+        return SDF_Q_MAX * 8;
+    }
+
+    return static_cast<int32_t>(g_dist8[k]) - r8;
+}
+
+/* Edge coverage from a signed eighth pixel distance, 0 to 255 */
+static inline uint32_t dist8_coverage(int32_t d8) {
+    if (d8 <= -4) {
+        return 255;
+    }
+    if (d8 >= 4) {
+        return 0;
+    }
+
+    uint32_t c = static_cast<uint32_t>(4 - d8) * 32;
+    return c > 255 ? 255 : c;
+}
+
+static inline uint32_t blend_px(uint32_t dst, uint32_t color, uint32_t a) {
+    if (a >= 255) {
+        return 0xFF000000u | (color & 0x00FFFFFFu);
+    }
+
+    uint32_t inv = 255 - a;
+    uint32_t r = stlxgfx_blend_channel((dst >> 16) & 0xFF, ((color >> 16) & 0xFF) * a, inv);
+    uint32_t g = stlxgfx_blend_channel((dst >> 8) & 0xFF, ((color >> 8) & 0xFF) * a, inv);
+    uint32_t b = stlxgfx_blend_channel(dst & 0xFF, (color & 0xFF) * a, inv);
+
+    return 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
+static inline uint32_t* back_row(stlxgfx_surface_t* back, int32_t y) {
+    return reinterpret_cast<uint32_t*>(back->pixels + static_cast<uint32_t>(y) * back->pitch);
+}
+
 namespace decor {
 
 int init() {
-    g_font = stlxgfx_font_open(STLXGFX_FONT_PATH, TITLE_FONT_SIZE);
+    g_font = stlxgfx_font_open(STLXGFX_UI_FONT_MEDIUM_PATH, TITLE_FONT_SIZE);
     if (!g_font) {
         return -1;
     }
 
     stlxgfx_font_metrics_get(g_font, &g_fm);
+    sdf_table_init();
     return 0;
 }
 
@@ -260,61 +337,71 @@ void draw(stlxgfx_surface_t* back, const dm_window& w,
     stlxgfx_destroy_surface(view);
 }
 
-void carve_bottom_corners(stlxgfx_surface_t* back, const dm_window& w,
-                          const chrome_state& st,
-                          const stlxgfx_surface_t* wallpaper,
-                          uint32_t bg_color,
-                          const damage_list::rect& clip) {
+void blit_content(stlxgfx_surface_t* back, const dm_window& w,
+                  const damage_list::rect& clip) {
     const dm_buffer* b = current_buffer(w);
-    if (!b || !decorated(w)) {
+    if (!b) {
         return;
     }
 
-    stlxgfx_surface_t* view = clip_view(back, clip);
-    if (!view) {
+    int32_t bw = static_cast<int32_t>(b->width);
+    int32_t bh = static_cast<int32_t>(b->height);
+    int32_t ix0 = clip.x > w.x ? clip.x : w.x;
+    int32_t iy0 = clip.y > w.y ? clip.y : w.y;
+    int32_t ix1 = clip.x + clip.w < w.x + bw ? clip.x + clip.w : w.x + bw;
+    int32_t iy1 = clip.y + clip.h < w.y + bh ? clip.y + clip.h : w.y + bh;
+    if (ix0 >= ix1 || iy0 >= iy1) {
         return;
     }
 
-    /* The arcs anchor on the border ring's outer corners */
-    int32_t left = w.x - BORDER - clip.x;
-    int32_t right = left + static_cast<int32_t>(b->width) + 2 * BORDER;
-    int32_t bottom = w.y - TITLE_H - clip.y
-                   + static_cast<int32_t>(b->height) + TITLE_H + BORDER;
-    uint32_t border = border_color(st);
-    uint32_t inner_r = CORNER_R - BORDER;
+    stlxgfx_surface_t* src = stlxgfx_surface_from_buffer(
+        reinterpret_cast<uint8_t*>(b->pixels), b->width, b->height,
+        b->width * 4, 32, 16, 8, 0);
+    if (!src) {
+        return;
+    }
 
-    stlxgfx_ctx_t ctx;
-    stlxgfx_ctx_init(&ctx, view);
+    /* Rows above the corner zone, and undecorated windows entirely,
+     * are a plain copy */
+    int32_t inner_r = decorated(w) ? CONTENT_R : 0;
+    int32_t zone_top = w.y + bh - inner_r;
+    int32_t plain_end = iy1 < zone_top ? iy1 : zone_top;
+    if (iy0 < plain_end) {
+        stlxgfx_blit(back, ix0, iy0, src, ix0 - w.x, iy0 - w.y,
+                     static_cast<uint32_t>(ix1 - ix0),
+                     static_cast<uint32_t>(plain_end - iy0));
+    }
 
-    /* Restore the background outside the rounded corner, sampling the
-     * wallpaper through a view aligned with this one */
-    if (wallpaper) {
-        stlxgfx_surface_t* wp_view = stlxgfx_surface_from_buffer(
-            wallpaper->pixels
-                + static_cast<uint32_t>(clip.y) * wallpaper->pitch
-                + static_cast<uint32_t>(clip.x) * 4,
-            static_cast<uint32_t>(clip.w), static_cast<uint32_t>(clip.h),
-            wallpaper->pitch, 32, 16, 8, 0);
-        if (wp_view) {
-            stlxgfx_blit_arc_corner(view, left, bottom, CORNER_R, 0,
-                                    1, -1, 1, wp_view);
-            stlxgfx_blit_arc_corner(view, right, bottom, CORNER_R, 0,
-                                    -1, -1, 1, wp_view);
-            stlxgfx_destroy_surface(wp_view);
+    /* The bottom rows copy their middle span and blend the corner
+     * squares by arc coverage, so the frame's rounding shows through */
+    ring_geom content = { w.x, w.y, bw, bh, inner_r };
+    int32_t mid0 = w.x + inner_r;
+    int32_t mid1 = w.x + bw - inner_r;
+    for (int32_t y = iy0 > zone_top ? iy0 : zone_top; y < iy1; y++) {
+        int32_t m0 = ix0 > mid0 ? ix0 : mid0;
+        int32_t m1 = ix1 < mid1 ? ix1 : mid1;
+        if (m0 < m1) {
+            stlxgfx_blit(back, m0, y, src, m0 - w.x, y - w.y,
+                         static_cast<uint32_t>(m1 - m0), 1);
         }
-    } else {
-        stlxgfx_ctx_fill_arc_corner(&ctx, left, bottom, CORNER_R, 0,
-                                    1, -1, 1, bg_color);
-        stlxgfx_ctx_fill_arc_corner(&ctx, right, bottom, CORNER_R, 0,
-                                    -1, -1, 1, bg_color);
+
+        uint32_t* dst_row = back_row(back, y);
+        const uint32_t* src_row = b->pixels + static_cast<uint32_t>(y - w.y) * b->width;
+        for (int32_t x = ix0; x < ix1; x++) {
+            if (x >= mid0 && x < mid1) {
+                x = mid1 - 1;
+                continue;
+            }
+
+            uint32_t a = dist8_coverage(rrect_dist8(content, x, y));
+            if (a == 0) {
+                continue;
+            }
+            dst_row[x] = blend_px(dst_row[x], src_row[x - w.x], a);
+        }
     }
 
-    stlxgfx_ctx_fill_arc_corner(&ctx, left, bottom, CORNER_R, inner_r,
-                                1, -1, 0, border);
-    stlxgfx_ctx_fill_arc_corner(&ctx, right, bottom, CORNER_R, inner_r,
-                                -1, -1, 0, border);
-
-    stlxgfx_destroy_surface(view);
+    stlxgfx_destroy_surface(src);
 }
 
 void draw_outline(stlxgfx_surface_t* back, const damage_list::rect& r) {

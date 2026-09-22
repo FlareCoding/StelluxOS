@@ -5,6 +5,7 @@
 #include "damage.hpp"
 #include "decor.hpp"
 #include "panels.hpp"
+#include "perf.hpp"
 #include "power.hpp"
 #include "presenter.hpp"
 
@@ -29,11 +30,12 @@ struct dm_hotkey {
 };
 
 /* Config-derived state built as a unit and adopted only when every
- * piece came up, so a failed reload keeps the running desktop */
+ * piece came up, so a failed reload keeps the running desktop. The
+ * backdrop is the screen-sized wallpaper with the panels painted in. */
 struct dm_conf_state {
     std::unique_ptr<dm_panels> panels;
     std::unique_ptr<dm_power> power;
-    stlxgfx_surface_t* wallpaper = nullptr;
+    stlxgfx_surface_t* backdrop = nullptr;
     std::vector<dm_hotkey> hotkeys;
 };
 
@@ -85,6 +87,10 @@ struct dm_window {
 
     swp_event_rec ev_batch[DM_EV_BATCH_MAX];
     uint32_t ev_batch_count = 0;
+
+    /* The latency meter's id of the last timed input delivered here,
+     * so this client's next commit can be matched to it */
+    uint32_t event_seq = 0;
 
     /* Damage carried by the pending commit, buffer coordinates.
      * Zero rects means the whole buffer changed. */
@@ -177,6 +183,13 @@ public:
     void route_pointer(int32_t x, int32_t y, uint16_t buttons,
                        uint16_t changed, int16_t wheel);
 
+    /* The input latency readout. The loop hands over the timestamp it
+     * already took for the wakeup, the routers stamp the inputs that
+     * may paint, and the tick after routing settles them. */
+    void perf_wake(uint64_t now_ns);
+    int64_t perf_timeout_ns(uint64_t now_ns) const { return m_perf.timeout_ns(now_ns); }
+    void perf_tick(uint64_t now_ns);
+
 private:
     void accept_one();
     void pump_client(dm_client& c);
@@ -227,8 +240,17 @@ private:
     uint32_t m_window_count = 0;
     damage_list m_damage;
 
-    /* The pre-scaled wallpaper, null when the config names none */
-    stlxgfx_surface_t* m_wallpaper = nullptr;
+    /* The screen-sized backdrop: wallpaper or flat color, with the
+     * panels painted into their rows. Exposed pixels blit from here. */
+    stlxgfx_surface_t* m_backdrop = nullptr;
+
+    /* The desktop's own input to paint latency meter, the arrival time
+     * of whatever input the current wakeup delivered, and the damage
+     * state before routing so the desktop's own reaction stands out */
+    perf_monitor m_perf;
+    uint64_t m_wake_ns = 0;
+    uint32_t m_wake_damage = 0;
+    bool m_wake_panels_dirty = false;
 
     /* Exec shortcuts parsed from the config's key chords */
     std::vector<dm_hotkey> m_hotkeys;
