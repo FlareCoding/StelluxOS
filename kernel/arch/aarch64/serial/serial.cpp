@@ -141,7 +141,6 @@ __PRIVILEGED_CODE void set_rx_callback(rx_callback_t cb) {
 }
 
 __PRIVILEGED_CODE int32_t enable_rx_interrupt() {
-    irq::set_spi_target(PL011_GIC_INTID, 0x01);
 #if defined(STLX_PLATFORM_RPI4)
     irq::set_group1(PL011_GIC_INTID);
     irq::set_level_triggered(PL011_GIC_INTID);

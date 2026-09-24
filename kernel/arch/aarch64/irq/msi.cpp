@@ -89,10 +89,10 @@ __PRIVILEGED_CODE static int32_t msi_init_gicv2m(const acpi::madt_info& madt,
         g_spi_count = msi::MAX_VECTORS;
     }
 
+    // Vectors stay on the boot CPU until msi_compose routes them
     for (uint32_t i = 0; i < g_spi_count; i++) {
         uint32_t intid = g_spi_base + i;
         irq::set_edge_triggered(intid);
-        irq::set_spi_target(intid, 0x01);
         irq::unmask(intid);
     }
 
@@ -145,8 +145,7 @@ __PRIVILEGED_CODE static int32_t msi_init_bcm2711(uint32_t* out_capacity) {
     // Program data match config (32-vector mode)
     mmio::write32(g_brcm_base + BCM_MSI_DATA_CONFIG, BCM_MSI_DATA_CONFIG_VAL);
 
-    // Configure the chained GIC SPI (level-triggered, group1, target CPU 0)
-    irq::set_spi_target(BCM_MSI_SPI_INTID, 0x01);
+    // Configure the chained GIC SPI (level-triggered, group1)
     irq::set_group1(BCM_MSI_SPI_INTID);
     irq::set_level_triggered(BCM_MSI_SPI_INTID);
     irq::unmask(BCM_MSI_SPI_INTID);
@@ -202,13 +201,12 @@ __PRIVILEGED_CODE int32_t msi_compose(uint32_t vector, uint32_t target_cpu,
     }
 
     if (g_backend == msi_backend::GICV2M) {
-        if (target_cpu >= 8) {
+        if (irq::set_spi_target(g_spi_base + vector, target_cpu) != irq::OK) {
             return msi::ERR_INVALID;
         }
+
         out->address = g_frame_phys + V2M_MSI_SETSPI_NS;
         out->data = g_spi_base + vector;
-        irq::set_spi_target(g_spi_base + vector,
-                            static_cast<uint8_t>(1u << target_cpu));
         return msi::OK;
     }
 

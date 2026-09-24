@@ -676,7 +676,6 @@ int32_t bcm_genet_driver::setup_interrupts() {
     RUN_ELEVATED({
 #if defined(__aarch64__)
         irq::set_level_triggered(m_irq[0]);
-        irq::set_spi_target(m_irq[0], 0x01);
         irq::set_group1(m_irq[0]);
 #endif
         irq::unmask(m_irq[0]);
@@ -688,7 +687,6 @@ int32_t bcm_genet_driver::setup_interrupts() {
             if (rc == irq::OK) {
 #if defined(__aarch64__)
                 irq::set_level_triggered(m_irq[1]);
-                irq::set_spi_target(m_irq[1], 0x01);
                 irq::set_group1(m_irq[1]);
 #endif
                 irq::unmask(m_irq[1]);

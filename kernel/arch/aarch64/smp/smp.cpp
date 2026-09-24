@@ -177,7 +177,10 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
     }
 
     trap::load();
-    irq::init_ap();
+    if (irq::init_ap() != irq::OK) {
+        info->state.store_release(smp::CPU_OFFLINE);
+        while (true) { asm volatile("wfi"); }
+    }
     smp::ipi::init_ap();
 
     cpu::enable_fp_simd();
@@ -412,13 +415,10 @@ __PRIVILEGED_CODE int32_t smp_ipi_init_ap() {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t smp_raise_ipi(const smp::cpu_info& target) {
-    // The CPU interface number is the first affinity level of the MPIDR
-    uint32_t interface = static_cast<uint32_t>(target.hw_id & 0xFF);
-    if (interface >= irq::GIC_MAX_CPU_INTERFACES) {
+    if (irq::send_sgi(irq::IPI_SGI_INTID, target.logical_id) != irq::OK) {
         return smp::ipi::ERR_UNREACHABLE;
     }
 
-    irq::send_sgi(irq::IPI_SGI_INTID, static_cast<uint8_t>(1u << interface));
     return smp::ipi::OK;
 }
 
