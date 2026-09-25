@@ -1,8 +1,9 @@
 #include "syscall/handlers/sys_futex.h"
 #include "sync/futex.h"
 #include "mm/uaccess.h"
+#include "clock/clock.h"
 
-// Relative timeout as userland passes it to the futex syscall
+// Timeout from userland, relative for FUTEX_WAIT and absolute for FUTEX_WAIT_BITSET
 struct futex_timespec {
     int64_t tv_sec;
     int64_t tv_nsec;
@@ -14,8 +15,25 @@ constexpr uint64_t FUTEX_OP_WAIT        = 0;
 constexpr uint64_t FUTEX_OP_WAKE        = 1;
 constexpr uint64_t FUTEX_OP_REQUEUE     = 3;
 constexpr uint64_t FUTEX_OP_CMP_REQUEUE = 4;
+constexpr uint64_t FUTEX_OP_WAIT_BITSET = 9;
+constexpr uint64_t FUTEX_OP_WAKE_BITSET = 10;
+constexpr uint64_t FUTEX_CLOCK_REALTIME = 256;
 
 constexpr int64_t NSEC_PER_SEC = 1000000000;
+
+static int64_t read_timespec_ns(uint64_t u_ts, uint64_t* out_ns) {
+    futex_timespec ts;
+    if (mm::uaccess::copy_from_user(&ts, reinterpret_cast<const void*>(u_ts), sizeof(ts)) != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= NSEC_PER_SEC) {
+        return syscall::EINVAL;
+    }
+
+    *out_ns = static_cast<uint64_t>(ts.tv_sec) * NSEC_PER_SEC + static_cast<uint64_t>(ts.tv_nsec);
+    return 0;
+}
 
 // Zero nanoseconds means wait forever in the native layer, so an already
 // expired timeout clamps to one nanosecond. Returns 0 or a negative errno
@@ -25,29 +43,48 @@ static int64_t read_futex_timeout(uint64_t u_timeout, uint64_t* out_ns) {
         return 0;
     }
 
-    futex_timespec ts;
-
-    if (mm::uaccess::copy_from_user(
-            &ts, reinterpret_cast<const void*>(u_timeout),
-            sizeof(ts)) != mm::uaccess::OK) {
-        return syscall::EFAULT;
+    uint64_t ns = 0;
+    int64_t rc = read_timespec_ns(u_timeout, &ns);
+    if (rc != 0) {
+        return rc;
     }
 
-    if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= NSEC_PER_SEC) {
+    *out_ns = (ns == 0) ? 1 : ns;
+    return 0;
+}
+
+// Converts an absolute timeout to a monotonic deadline, realtime running a fixed offset ahead.
+// A time already past becomes one nanosecond, since a zero deadline means none.
+static int64_t read_futex_deadline(uint64_t u_timeout, bool realtime, uint64_t* out_deadline) {
+    if (u_timeout == 0) {
+        *out_deadline = 0;
+        return 0;
+    }
+
+    uint64_t origin = realtime ? clock::boot_realtime_ns() : 0;
+    if (realtime && origin == 0) {
         return syscall::EINVAL;
     }
 
-    uint64_t ns = static_cast<uint64_t>(ts.tv_sec) * NSEC_PER_SEC
-                + static_cast<uint64_t>(ts.tv_nsec);
+    uint64_t ns = 0;
+    int64_t rc = read_timespec_ns(u_timeout, &ns);
+    if (rc != 0) {
+        return rc;
+    }
 
-    *out_ns = (ns == 0) ? 1 : ns;
-
+    *out_deadline = ns > origin ? ns - origin : 1;
     return 0;
 }
 
 DEFINE_SYSCALL6(futex, u_uaddr, u_op, u_val, u_timeout, u_uaddr2, u_val3) {
     uint64_t cmd = u_op & FUTEX_CMD_MASK;
+    bool realtime = (u_op & FUTEX_CLOCK_REALTIME) != 0;
     uintptr_t uaddr = static_cast<uintptr_t>(u_uaddr);
+
+    // Only waits have a timeout for the realtime flag to apply to
+    if (realtime && cmd != FUTEX_OP_WAIT && cmd != FUTEX_OP_WAIT_BITSET) {
+        return syscall::ENOSYS;
+    }
 
     switch (cmd) {
     case FUTEX_OP_WAIT: {
@@ -65,6 +102,21 @@ DEFINE_SYSCALL6(futex, u_uaddr, u_op, u_val, u_timeout, u_uaddr2, u_val3) {
 
     case FUTEX_OP_WAKE:
         return sync::futex_wake(uaddr, static_cast<uint32_t>(u_val));
+
+    case FUTEX_OP_WAIT_BITSET: {
+        uint64_t deadline_ns = 0;
+
+        int64_t rc = read_futex_deadline(u_timeout, realtime, &deadline_ns);
+        if (rc != 0) {
+            return rc;
+        }
+
+        return sync::futex_wait_until(uaddr, static_cast<uint32_t>(u_val), deadline_ns,
+                                      static_cast<uint32_t>(u_val3));
+    }
+
+    case FUTEX_OP_WAKE_BITSET:
+        return sync::futex_wake_bitset(uaddr, static_cast<uint32_t>(u_val), static_cast<uint32_t>(u_val3));
 
     case FUTEX_OP_REQUEUE:
     case FUTEX_OP_CMP_REQUEUE: {
