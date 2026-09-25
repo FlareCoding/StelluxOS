@@ -30,7 +30,8 @@ struct handle_entry {
 // table, the last reference closes all entries when it drops.
 struct handle_table : rc::ref_counted<handle_table> {
     sync::spinlock lock;
-    handle_entry entries[MAX_TASK_HANDLES];
+    handle_entry* entries;
+    uint32_t capacity;
 
     /**
      * @note Privilege: **required**
@@ -43,12 +44,14 @@ constexpr int32_t HANDLE_ERR_INVAL  = -1;
 constexpr int32_t HANDLE_ERR_NOENT  = -2;
 constexpr int32_t HANDLE_ERR_ACCESS = -3;
 constexpr int32_t HANDLE_ERR_NOSPC  = -4;
+constexpr int32_t HANDLE_ERR_NOMEM  = -5;
 
 /**
  * @brief Initialize a task's handle table.
+ * @return HANDLE_OK on success, HANDLE_ERR_NOMEM when allocation fails.
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void init_handle_table(handle_table* table);
+__PRIVILEGED_CODE int32_t init_handle_table(handle_table* table);
 
 /**
  * @brief Install a resource object and return new handle.
@@ -147,8 +150,9 @@ __PRIVILEGED_CODE void copy_handle_table(handle_table* src, handle_table* dst);
 
 /**
  * @brief Whether `table` has a slot numbered `slot`.
+ * @note Privilege: **required**
  */
-bool handle_slot_in_range(const handle_table* table, handle_t slot);
+__PRIVILEGED_CODE bool handle_slot_in_range(const handle_table* table, handle_t slot);
 
 /**
  * @brief Remove handle entry and return held object reference.

@@ -156,7 +156,7 @@ TEST(resource_test, used_handle_slots_never_have_unknown_type) {
     ASSERT_EQ(resource::open(task, "/resource_slot_invariant", fs::O_CREAT | fs::O_RDWR, &h), resource::OK);
 
     bool saw_used = false;
-    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+    for (uint32_t i = 0; i < task->handles->capacity; i++) {
         const resource::handle_entry& entry = task->handles->entries[i];
         if (!entry.used) {
             continue;
@@ -486,9 +486,11 @@ TEST(resource_test, renameat_rejects_bad_user_paths) {
 
 static resource::handle_table* make_handle_table() {
     auto* table = heap::kalloc_new<resource::handle_table>();
-    if (table) {
-        resource::init_handle_table(table);
+    if (table && resource::init_handle_table(table) != resource::HANDLE_OK) {
+        heap::kfree_delete(table);
+        return nullptr;
     }
+
     return table;
 }
 

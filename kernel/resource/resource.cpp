@@ -59,7 +59,11 @@ __PRIVILEGED_CODE int32_t init_task_handles(sched::task* task) {
         return ERR_NOMEM;
     }
 
-    init_handle_table(table);
+    if (init_handle_table(table) != HANDLE_OK) {
+        heap::kfree_delete(table);
+        return ERR_NOMEM;
+    }
+
     task->handles = table;
 
     return OK;
