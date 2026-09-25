@@ -420,3 +420,56 @@ TEST(resource_test, renameat_rejects_bad_user_paths) {
     EXPECT_EQ(sys_renameat(at_fdcwd, kpath, at_fdcwd, kpath, 0, 0), syscall::EFAULT);
     EXPECT_EQ(sys_rename(kpath, kpath, 0, 0, 0, 0), syscall::EFAULT);
 }
+
+static resource::handle_table* make_handle_table() {
+    auto* table = heap::kalloc_new<resource::handle_table>();
+    if (table) {
+        resource::init_handle_table(table);
+    }
+    return table;
+}
+
+// The object in `slot`, or null when the slot is empty. The table keeps its reference.
+static resource::resource_object* object_at(resource::handle_table* table, resource::handle_t slot,
+                                            uint32_t* out_rights = nullptr) {
+    resource::resource_object* obj = nullptr;
+    if (resource::get_handle_object(table, slot, 0, &obj, nullptr, out_rights) != resource::HANDLE_OK) {
+        return nullptr;
+    }
+
+    resource::resource_release(obj);
+    return obj;
+}
+
+TEST(resource_test, standard_handles_keep_their_slots_and_leave_cloexec_behind) {
+    resource::handle_table* parent = make_handle_table();
+    resource::handle_table* child = make_handle_table();
+    ASSERT_NOT_NULL(parent);
+    ASSERT_NOT_NULL(child);
+
+    // Every standard slot plus one beyond them, each holding its own object
+    resource::resource_object* objs[resource::STANDARD_HANDLE_COUNT + 1] = {};
+    for (resource::handle_t slot = 0; slot <= resource::STANDARD_HANDLE_COUNT; slot++) {
+        objs[slot] = heap::kalloc_new<resource::resource_object>();
+        ASSERT_NOT_NULL(objs[slot]);
+        objs[slot]->type = resource::resource_type::FILE;
+        objs[slot]->ops = nullptr;
+        objs[slot]->impl = nullptr;
+        ASSERT_EQ(resource::install_handle_at(parent, slot, objs[slot], objs[slot]->type, resource::RIGHT_READ),
+                  resource::HANDLE_OK);
+        resource::resource_release(objs[slot]);
+    }
+    ASSERT_EQ(resource::set_handle_flags(parent, 0, resource::RESOURCE_HANDLE_CLOEXEC), resource::HANDLE_OK);
+
+    resource::inherit_standard_handles(parent, child);
+
+    uint32_t rights = 0;
+    EXPECT_NULL(object_at(child, 0));
+    EXPECT_EQ(object_at(child, 1, &rights), objs[1]);
+    EXPECT_EQ(rights, resource::RIGHT_READ);
+    EXPECT_EQ(object_at(child, 2), objs[2]);
+    EXPECT_NULL(object_at(child, resource::STANDARD_HANDLE_COUNT));
+
+    resource::handle_table::ref_destroy(child);
+    resource::handle_table::ref_destroy(parent);
+}

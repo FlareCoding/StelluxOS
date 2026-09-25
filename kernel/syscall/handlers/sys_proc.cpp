@@ -183,22 +183,7 @@ DEFINE_SYSCALL3(proc_create, u_path, u_argv, u_envp) {
     }
 
     child->cwd = inherited_cwd;
-
-    for (resource::handle_t fd = 0; fd < 3; fd++) {
-        resource::resource_object* fd_obj = nullptr;
-        int32_t fd_rc = resource::get_handle_object(
-            caller->handles, fd, 0, &fd_obj);
-        if (fd_rc != resource::HANDLE_OK) continue;
-
-        resource::handle_t child_fd = -1;
-        resource::alloc_handle(
-            child->handles, fd_obj,
-            caller->handles->entries[static_cast<uint32_t>(fd)].type,
-            caller->handles->entries[static_cast<uint32_t>(fd)].rights,
-            &child_fd);
-
-        resource::resource_release(fd_obj);
-    }
+    resource::inherit_standard_handles(caller->handles, child->handles);
 
     resource::resource_object* obj = nullptr;
     int32_t pr_rc = resource::proc_provider::create_proc_resource(child, &obj);

@@ -236,6 +236,25 @@ __PRIVILEGED_CODE int32_t install_handle_at(
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE void inherit_standard_handles(handle_table* parent, handle_table* child) {
+    for (handle_t slot = 0; slot < STANDARD_HANDLE_COUNT; slot++) {
+        resource_object* obj = nullptr;
+        uint32_t flags = 0;
+        uint32_t rights = 0;
+        if (get_handle_object(parent, slot, 0, &obj, &flags, &rights) != HANDLE_OK) {
+            continue;
+        }
+
+        if (!(flags & RESOURCE_HANDLE_CLOEXEC)) {
+            (void)install_handle_at(child, slot, obj, obj->type, rights);
+        }
+        resource_release(obj);
+    }
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t remove_handle(
     handle_table* table,
     handle_t handle,

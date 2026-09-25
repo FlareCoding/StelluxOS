@@ -14,6 +14,9 @@ constexpr uint32_t MAX_TASK_HANDLES = 128;
 // Private high bit in handle_entry::flags reserved for FD_CLOEXEC state
 constexpr uint32_t RESOURCE_HANDLE_CLOEXEC = 0x80000000;
 
+// Handles 0 to 2, a program's standard input, output, and error
+constexpr handle_t STANDARD_HANDLE_COUNT = 3;
+
 struct handle_entry {
     bool used;
     uint16_t generation;
@@ -107,6 +110,14 @@ __PRIVILEGED_CODE int32_t install_handle_at(
     resource_type type,
     uint32_t rights
 );
+
+/**
+ * @brief Copy the standard handles of `parent` into the same slots of `child`.
+ * Handles marked close-on-exec stay behind, since the child starting its
+ * program is exactly when they close.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void inherit_standard_handles(handle_table* parent, handle_table* child);
 
 /**
  * @brief Remove handle entry and return held object reference.
