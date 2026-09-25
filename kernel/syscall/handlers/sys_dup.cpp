@@ -5,7 +5,7 @@
 #include "sched/task.h"
 
 // Installs the object behind old_h at slot new_h, replacing any occupant.
-// Per-handle flags carry over with CLOEXEC cleared unless set_cloexec.
+// Status flags carry over, and CLOEXEC is set only when set_cloexec.
 static int64_t dup_to_slot(
     sched::task* task,
     resource::handle_t old_h,
@@ -28,11 +28,10 @@ static int64_t dup_to_slot(
         return syscall::EBADF;
     }
 
-    flags &= ~resource::RESOURCE_HANDLE_CLOEXEC;
+    resource::set_status_flags(task->handles, new_h, flags);
     if (set_cloexec) {
-        flags |= resource::RESOURCE_HANDLE_CLOEXEC;
+        resource::set_handle_flags(task->handles, new_h, resource::RESOURCE_HANDLE_CLOEXEC);
     }
-    resource::set_handle_flags(task->handles, new_h, flags);
 
     return static_cast<int64_t>(new_h);
 }
@@ -65,8 +64,7 @@ DEFINE_SYSCALL1(dup, u_oldfd) {
         return syscall::EBADF;
     }
 
-    resource::set_handle_flags(
-        task->handles, new_h, flags & ~resource::RESOURCE_HANDLE_CLOEXEC);
+    resource::set_status_flags(task->handles, new_h, flags);
 
     return static_cast<int64_t>(new_h);
 }

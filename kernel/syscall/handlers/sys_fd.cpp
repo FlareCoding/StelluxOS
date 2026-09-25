@@ -1372,21 +1372,12 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
             accmode = fs::O_WRONLY;
         }
 
-        return static_cast<int64_t>(
-            accmode | (flags & ~resource::RESOURCE_HANDLE_CLOEXEC));
+        return static_cast<int64_t>(accmode | (flags & fs::STATUS_FLAG_MASK));
     }
 
     if (cmd == F_SETFL) {
-        uint32_t flags = 0;
-        int32_t rc = resource::get_handle_flags(
-            task->handles, static_cast<resource::handle_t>(fd), &flags);
-        if (rc != resource::HANDLE_OK) {
-            return syscall::EBADF;
-        }
-
-        flags = (flags & ~fs::STATUS_FLAG_MASK) | (static_cast<uint32_t>(arg) & fs::STATUS_FLAG_MASK);
-        rc = resource::set_handle_flags(
-            task->handles, static_cast<resource::handle_t>(fd), flags);
+        int32_t rc = resource::set_status_flags(
+            task->handles, static_cast<resource::handle_t>(fd), static_cast<uint32_t>(arg));
         if (rc != resource::HANDLE_OK) {
             return syscall::EBADF;
         }

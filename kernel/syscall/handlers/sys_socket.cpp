@@ -42,13 +42,12 @@ struct socket_ref {
 
 __PRIVILEGED_CODE static void apply_creation_flags(sched::task* task, resource::handle_t h,
                                                    uint64_t creation_flags) {
-    uint32_t flags = (creation_flags & fs::O_NONBLOCK) ? fs::O_NONBLOCK : 0;
-    if (creation_flags & fs::O_CLOEXEC) {
-        flags |= resource::RESOURCE_HANDLE_CLOEXEC;
+    if (creation_flags & fs::O_NONBLOCK) {
+        resource::set_status_flags(task->handles, h, fs::O_NONBLOCK);
     }
 
-    if (flags) {
-        resource::set_handle_flags(task->handles, h, flags);
+    if (creation_flags & fs::O_CLOEXEC) {
+        resource::set_handle_flags(task->handles, h, resource::RESOURCE_HANDLE_CLOEXEC);
     }
 }
 
