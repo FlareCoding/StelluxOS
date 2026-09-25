@@ -513,3 +513,123 @@ TEST(futex, requeued_waiter_times_out_from_the_queue_it_was_moved_to) {
     EXPECT_EQ(g_rqt_rc.load_acquire(), syscall::ETIMEDOUT);
     EXPECT_EQ(wake(g_rqt_dest, 1), 0);
 }
+
+constexpr uint32_t BITSET_A       = 0x1;
+constexpr uint32_t BITSET_B       = 0x2;
+constexpr uint32_t BITSET_NEITHER = 0x4;
+
+static uint32_t g_bs_start = 0;
+static uint32_t g_bs_hold = 0;
+static sync::atomic<uint32_t> g_bs_ready;
+static sync::atomic<uint32_t> g_bs_woken; // Bitsets of the waiters woken so far
+
+static void bitset_waiter_fn(void* arg) {
+    uint32_t bitset = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
+    g_bs_ready.fetch_add_acq_rel(1);
+    RUN_ELEVATED({
+        sync::futex_wait_until(word_addr(g_bs_start), 0, 0, bitset);
+    });
+    g_bs_woken.fetch_or_acq_rel(bitset);
+    sched::exit(0);
+}
+
+static int32_t wake_bitset(uint32_t& word, uint32_t count, uint32_t bitset) {
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        rc = sync::futex_wake_bitset(word_addr(word), count, bitset);
+    });
+    return rc;
+}
+
+static bool start_bitset_waiter(uint32_t bitset) {
+    bool created = false;
+    RUN_ELEVATED({
+        void* arg = reinterpret_cast<void*>(static_cast<uintptr_t>(bitset));
+        sched::task* t = sched::create_kernel_task(bitset_waiter_fn, arg, "ftx_bs");
+        if (t) {
+            sched::enqueue(t);
+            created = true;
+        }
+    });
+    return created;
+}
+
+TEST(futex, bitset_wakes_reach_only_overlapping_waiters) {
+    g_bs_ready.store_relaxed(0);
+    g_bs_woken.store_relaxed(0);
+
+    ASSERT_TRUE(start_bitset_waiter(BITSET_A));
+    ASSERT_TRUE(start_bitset_waiter(BITSET_B));
+    ASSERT_TRUE(spin_wait_ge(g_bs_ready, 2));
+    ASSERT_TRUE(gather_waiters(g_bs_start, g_bs_hold, 2));
+
+    EXPECT_EQ(wake_bitset(g_bs_hold, 2, BITSET_NEITHER), 0);
+    EXPECT_EQ(wake_bitset(g_bs_hold, 2, BITSET_B), 1);
+    ASSERT_TRUE(spin_wait_ge(g_bs_woken, BITSET_B));
+    brief_delay();
+    EXPECT_EQ(g_bs_woken.load_acquire(), BITSET_B);
+
+    EXPECT_EQ(wake(g_bs_hold, 2), 1);
+    ASSERT_TRUE(spin_wait_ge(g_bs_woken, BITSET_A | BITSET_B));
+    EXPECT_EQ(g_bs_woken.load_acquire(), BITSET_A | BITSET_B);
+}
+
+TEST(futex, zero_bitsets_are_refused) {
+    int32_t wait_rc = 0;
+    int32_t wake_rc = 0;
+    RUN_ELEVATED({
+        wait_rc = sync::futex_wait_until(word_addr(g_bs_hold), 0, 0, 0);
+        wake_rc = sync::futex_wake_bitset(word_addr(g_bs_hold), 1, 0);
+    });
+    EXPECT_EQ(wait_rc, syscall::EINVAL);
+    EXPECT_EQ(wake_rc, syscall::EINVAL);
+}
+
+constexpr uint64_t DEADLINE_WAIT_NS   = 50000000ULL; // 50ms
+constexpr uint64_t PASSED_DEADLINE_NS = 1;
+
+static uint32_t g_dl_word = 0;
+static sync::atomic<int32_t> g_dl_rc;
+static sync::atomic<uint64_t> g_dl_elapsed;
+static sync::atomic<uint32_t> g_dl_done;
+
+static void deadline_waiter_fn(void* deadline_passed) {
+    uint64_t start = clock::now_ns();
+    uint64_t deadline = deadline_passed ? PASSED_DEADLINE_NS : start + DEADLINE_WAIT_NS;
+    RUN_ELEVATED({
+        g_dl_rc.store_relaxed(sync::futex_wait_until(word_addr(g_dl_word), 0, deadline, sync::FUTEX_BITSET_ANY));
+    });
+    g_dl_elapsed.store_release(clock::now_ns() - start);
+    g_dl_done.store_release(1);
+    sched::exit(0);
+}
+
+static bool run_deadline_waiter(bool deadline_passed) {
+    g_dl_rc.store_relaxed(0);
+    g_dl_elapsed.store_relaxed(0);
+    g_dl_done.store_relaxed(0);
+
+    bool created = false;
+    RUN_ELEVATED({
+        void* arg = reinterpret_cast<void*>(static_cast<uintptr_t>(deadline_passed));
+        sched::task* t = sched::create_kernel_task(deadline_waiter_fn, arg, "ftx_dl");
+        if (t) {
+            sched::enqueue(t);
+            created = true;
+        }
+    });
+
+    return created && spin_wait(g_dl_done);
+}
+
+TEST(futex, wait_until_times_out_at_its_deadline) {
+    ASSERT_TRUE(run_deadline_waiter(false));
+    EXPECT_EQ(g_dl_rc.load_acquire(), syscall::ETIMEDOUT);
+    EXPECT_GE(g_dl_elapsed.load_acquire(), DEADLINE_WAIT_NS);
+}
+
+TEST(futex, wait_until_a_passed_deadline_times_out_at_once) {
+    ASSERT_TRUE(run_deadline_waiter(true));
+    EXPECT_EQ(g_dl_rc.load_acquire(), syscall::ETIMEDOUT);
+    EXPECT_LT(g_dl_elapsed.load_acquire(), DEADLINE_WAIT_NS);
+}

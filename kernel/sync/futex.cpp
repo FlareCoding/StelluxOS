@@ -39,7 +39,7 @@ static bool word_aligned(uintptr_t addr) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static futex_bucket* lock_waiter_bucket(futex_waiter& waiter, irq_state* out_irq) {
-    for (;;) {
+    while (true) {
         futex_bucket* bucket = atomic_ref<futex_bucket*>(waiter.bucket).load_acquire();
         irq_state irq = spin_lock_irqsave(bucket->lock);
         if (atomic_ref<futex_bucket*>(waiter.bucket).load_relaxed() == bucket) {
@@ -136,9 +136,9 @@ __PRIVILEGED_CODE static void move_waiter(futex_waiter& waiter, futex_bucket* fr
     }
 }
 
-__PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
-                                     uint64_t timeout_ns) {
-    if (!word_aligned(uaddr)) {
+__PRIVILEGED_CODE int32_t futex_wait_until(uintptr_t uaddr, uint32_t expected,
+                                           uint64_t deadline_ns, uint32_t bitset) {
+    if (!word_aligned(uaddr) || bitset == 0) {
         return syscall::EINVAL;
     }
 
@@ -161,6 +161,7 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     waiter.task = self;
     waiter.mm = mm;
     waiter.addr = uaddr;
+    waiter.bitset = bitset;
     waiter.bucket = bucket;
 
     irq_state irq = spin_lock_irqsave(bucket->lock);
@@ -181,16 +182,15 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     sched::prepare_to_block_task();
     bucket->waiters.push_back(&waiter);
 
-    bool timed = timeout_ns > 0;
-    uint64_t deadline = timed ? clock::now_ns() + timeout_ns : 0;
+    bool timed = deadline_ns > 0;
     if (timed) {
-        timer::schedule_sleep(self, deadline);
+        timer::schedule_sleep(self, deadline_ns);
     }
 
     spin_unlock_irqrestore(bucket->lock, irq);
 
     while (!sched::block_task_interrupted() && waiter_queued(waiter) &&
-           (!timed || clock::now_ns() < deadline)) {
+           (!timed || clock::now_ns() < deadline_ns)) {
         sched::yield();
         sched::prepare_to_block_task();
     }
@@ -216,8 +216,18 @@ __PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
     return woken ? 0 : syscall::ETIMEDOUT;
 }
 
+__PRIVILEGED_CODE int32_t futex_wait(uintptr_t uaddr, uint32_t expected,
+                                     uint64_t timeout_ns) {
+    uint64_t deadline = timeout_ns > 0 ? clock::now_ns() + timeout_ns : 0;
+    return futex_wait_until(uaddr, expected, deadline, FUTEX_BITSET_ANY);
+}
+
 __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
-    if (!word_aligned(uaddr)) {
+    return futex_wake_bitset(uaddr, count, FUTEX_BITSET_ANY);
+}
+
+__PRIVILEGED_CODE int32_t futex_wake_bitset(uintptr_t uaddr, uint32_t count, uint32_t bitset) {
+    if (!word_aligned(uaddr) || bitset == 0) {
         return syscall::EINVAL;
     }
 
@@ -232,7 +242,7 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
 
     uint32_t total_woken = 0;
 
-    for (;;) {
+    while (true) {
         rc::strong_ref<sched::task> batch[WAKE_BATCH_SIZE];
         uint32_t n = 0;
         bool done = false;
@@ -244,7 +254,7 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count) {
         while (it != end && n < WAKE_BATCH_SIZE) {
             futex_waiter& w = *it;
             ++it; // advance before removal
-            if (w.mm == mm && w.addr == uaddr && !w.claimed_by) {
+            if (w.mm == mm && w.addr == uaddr && !w.claimed_by && (w.bitset & bitset)) {
                 bucket->waiters.remove(&w);
                 batch[n++] = sched::task_ref(w.task);
                 if (total_woken + n >= count) {
@@ -286,7 +296,7 @@ __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr) {
 
     uint32_t total_woken = 0;
 
-    for (;;) {
+    while (true) {
         rc::strong_ref<sched::task> batch[WAKE_BATCH_SIZE];
         uint32_t n = 0;
 
@@ -325,7 +335,7 @@ __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr) {
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE static void wake_claimed(futex_bucket* bucket, sched::task* claimer) {
-    for (;;) {
+    while (true) {
         rc::strong_ref<sched::task> batch[WAKE_BATCH_SIZE];
         uint32_t n = 0;
 
