@@ -20,6 +20,9 @@ namespace sched {
 
 constexpr size_t TASK_NAME_MAX = 256;
 
+// Timer slack of a task that inherits none from a creating user thread
+constexpr uint64_t DEFAULT_TIMER_SLACK_NS = 50000;
+
 /**
  * Task states and the legal transitions between them:
  *
@@ -85,6 +88,12 @@ struct task : rc::ref_counted<task> {
     // zero there and wakes one futex waiter so pthread_join returns
     uintptr_t      clear_child_tid;
 
+    // Per-thread prctl state. Timer slack is only a hint for coalescing
+    // wakeups, and no-new-privileges can be switched on but never off.
+    uint64_t       timer_slack_ns         = DEFAULT_TIMER_SLACK_NS;
+    uint64_t       default_timer_slack_ns = DEFAULT_TIMER_SLACK_NS;
+    bool           no_new_privs           = false;
+
     // Stacks
     uintptr_t      task_stack_base;
     uintptr_t      sys_stack_base;
@@ -140,6 +149,9 @@ struct thread_group : rc::ref_counted<thread_group> {
 
     // Per-process file creation mask
     uint32_t umask;
+
+    // Whether the process allows a core dump, as PR_SET_DUMPABLE records it
+    bool dumpable = true;
 
     /**
      * @note Privilege: **required**
