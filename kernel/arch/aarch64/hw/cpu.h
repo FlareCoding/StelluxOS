@@ -5,6 +5,11 @@
 
 namespace cpu {
 
+// Affinity fields of MPIDR_EL1: Aff0 to Aff2 in bits 0 to 23, Aff3 in bits 32 to 39
+constexpr uint64_t MPIDR_AFFINITY_MASK = 0xFF00FFFFFFULL;
+constexpr uint32_t MPIDR_AFF_LEVELS    = 4;
+inline constexpr uint32_t MPIDR_AFF_SHIFT[MPIDR_AFF_LEVELS] = {0, 8, 16, 32};
+
 /**
  * @note Privilege: **required**
  */
@@ -67,6 +72,23 @@ __PRIVILEGED_CODE inline uint64_t irq_save() {
  */
 __PRIVILEGED_CODE inline void irq_restore(uint64_t daif) {
     asm volatile("msr daif, %0" :: "r"(daif) : "memory");
+}
+
+/**
+ * @brief Read this CPU's MPIDR_EL1, which carries its affinity address.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE inline uint64_t read_mpidr() {
+    uint64_t mpidr;
+    asm volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+    return mpidr;
+}
+
+/**
+ * @brief Affinity level `level`, 0 to 3, of an MPIDR value.
+ */
+constexpr uint8_t mpidr_affinity(uint64_t mpidr, uint32_t level) {
+    return static_cast<uint8_t>(mpidr >> MPIDR_AFF_SHIFT[level]);
 }
 
 inline uint64_t read_tls_base() {

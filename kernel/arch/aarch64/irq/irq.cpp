@@ -6,6 +6,10 @@
 
 namespace irq {
 
+// The MADT version field arrived with GICv3, so firmware that leaves it at zero
+// describes a GICv2. GICv4 keeps the GICv3 programming model used here.
+constexpr uint8_t GIC_VERSION_3 = 3;
+
 __PRIVILEGED_BSS static const gic_backend* g_gic;
 
 /**
@@ -19,7 +23,7 @@ __PRIVILEGED_CODE int32_t init() {
         return ERR_NO_MADT;
     }
 
-    g_gic = &gicv2_backend();
+    g_gic = madt.gic_version >= GIC_VERSION_3 ? &gicv3_backend() : &gicv2_backend();
     return g_gic->init(madt);
 }
 

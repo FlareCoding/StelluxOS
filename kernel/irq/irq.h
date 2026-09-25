@@ -36,7 +36,7 @@ __PRIVILEGED_CODE int32_t init_ap();
 /**
  * @brief Signal end-of-interrupt.
  * x86_64: writes LAPIC EOI register (parameter ignored).
- * AArch64: writes interrupt ID to GICC_EOIR.
+ * AArch64: completes the acknowledged interrupt at this CPU's GIC interface.
  * @param irq Interrupt number (used by GIC, ignored by LAPIC).
  * @note Privilege: **required**
  */
