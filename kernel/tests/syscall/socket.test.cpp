@@ -24,6 +24,7 @@
 #include "dynpriv/dynpriv.h"
 #include "common/string.h"
 
+using test_helpers::user_page;
 using test_helpers::user_space_scope;
 using test_helpers::spin_wait;
 using namespace net;
@@ -65,41 +66,6 @@ struct user_msghdr {
     uint64_t controllen;
     uint32_t flags;
     uint32_t pad1;
-};
-
-// One eager user page, reachable from the kernel through its frame
-struct user_page {
-    mm::mm_context* ctx = nullptr;
-    uintptr_t addr = 0;
-    uint8_t* bytes = nullptr;
-
-    user_page() {
-        ctx = mm::mm_context_create();
-        if (!ctx) {
-            return;
-        }
-
-        uint32_t prot = mm::MM_PROT_READ | mm::MM_PROT_WRITE;
-        uint32_t flags = mm::MM_MAP_PRIVATE | mm::MM_MAP_ANONYMOUS;
-        if (mm::mm_context_map_anonymous(ctx, 0, pmm::PAGE_SIZE, prot, flags, &addr) != mm::MM_CTX_OK) {
-            addr = 0;
-            return;
-        }
-
-        pmm::phys_addr_t phys = paging::get_physical(addr, ctx->pt_root);
-        bytes = phys ? static_cast<uint8_t*>(paging::phys_to_virt(phys)) : nullptr;
-    }
-
-    ~user_page() {
-        if (ctx) {
-            mm::mm_context_release(ctx);
-        }
-    }
-
-    bool ready() const { return bytes != nullptr; }
-
-    template <typename T>
-    T* at(size_t offset) { return reinterpret_cast<T*>(bytes + offset); }
 };
 
 static uint32_t handle_flags_of(sched::task* task, int64_t h) {
