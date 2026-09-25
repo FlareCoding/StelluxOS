@@ -199,7 +199,7 @@ __PRIVILEGED_CODE int32_t install_handle_at(
         return HANDLE_ERR_INVAL;
     }
 
-    if (slot < 0 || static_cast<uint32_t>(slot) >= MAX_TASK_HANDLES) {
+    if (!handle_slot_in_range(table, slot)) {
         return HANDLE_ERR_INVAL;
     }
 
@@ -250,6 +250,26 @@ __PRIVILEGED_CODE void inherit_standard_handles(handle_table* parent, handle_tab
         }
         resource_release(obj);
     }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void copy_handle_table(handle_table* src, handle_table* dst) {
+    sync::irq_lock_guard guard(src->lock);
+    for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
+        const handle_entry& entry = src->entries[i];
+        if (!entry.used || !entry.obj) {
+            continue;
+        }
+
+        dst->entries[i] = entry;
+        resource_add_ref(entry.obj);
+    }
+}
+
+bool handle_slot_in_range(const handle_table* table, handle_t slot) {
+    return table && slot >= 0 && static_cast<uint32_t>(slot) < MAX_TASK_HANDLES;
 }
 
 /**

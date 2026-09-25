@@ -61,10 +61,9 @@ static bool group_exists(uint32_t group_id) {
 // group_id. Ownership is proven by a PROCESS handle in the caller's table.
 static int64_t regroup_unstarted_child(sched::task* caller, uint32_t pid,
                                        uint32_t group_id) {
-    for (uint32_t slot = 0; slot < resource::MAX_TASK_HANDLES; slot++) {
+    for (resource::handle_t slot = 0; resource::handle_slot_in_range(caller->handles, slot); slot++) {
         resource::resource_object* obj = nullptr;
-        int32_t rc = resource::get_handle_object(
-            caller->handles, static_cast<resource::handle_t>(slot), 0, &obj);
+        int32_t rc = resource::get_handle_object(caller->handles, slot, 0, &obj);
         if (rc != resource::HANDLE_OK) {
             continue;
         }
