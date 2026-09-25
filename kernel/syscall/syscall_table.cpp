@@ -85,6 +85,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::CLONE,           clone);
     REGISTER_SYSCALL(linux_nr::FUTEX,           futex);
     REGISTER_SYSCALL(linux_nr::SCHED_YIELD,     sched_yield);
+    REGISTER_SYSCALL(linux_nr::SCHED_GETAFFINITY, sched_getaffinity);
     REGISTER_SYSCALL(linux_nr::MADVISE,         madvise);
     REGISTER_SYSCALL(linux_nr::NANOSLEEP,       nanosleep);
     REGISTER_SYSCALL(linux_nr::CLOCK_GETTIME,   clock_gettime);

@@ -7,9 +7,15 @@
 #include "resource/resource.h"
 #include "resource/providers/proc_provider.h"
 #include "mm/uaccess.h"
+#include "smp/smp.h"
 
 // Highest value representable as a task id
 constexpr int64_t TASK_ID_LIMIT = 0xFFFFFFFF;
+
+// CPU masks travel as 64-bit words, one bit per CPU
+constexpr uint32_t CPU_MASK_WORD_BITS  = 64;
+constexpr uint32_t CPU_MASK_WORD_BYTES = sizeof(uint64_t);
+constexpr uint32_t CPU_MASK_WORDS      = (MAX_CPUS + CPU_MASK_WORD_BITS - 1) / CPU_MASK_WORD_BITS;
 
 // Clone flag bits recognized by the thread only clone path
 constexpr uint64_t CLONE_VM             = 0x00000100;
@@ -198,6 +204,50 @@ DEFINE_SYSCALL5(clone, u_flags, u_stack, u_ptid, u_tls, u_ctid) {
 DEFINE_SYSCALL0(sched_yield) {
     sched::yield();
     return 0;
+}
+
+// Marks every online CPU in `mask` and returns how many CPUs the mask spans.
+// Without an SMP enumeration the boot CPU is the only one running.
+static uint32_t fill_online_cpu_mask(uint64_t* mask) {
+    uint32_t cpus = smp::cpu_count();
+    if (cpus == 0) {
+        mask[0] = 1;
+        return 1;
+    }
+
+    for (uint32_t cpu = 0; cpu < cpus; cpu++) {
+        const smp::cpu_info* info = smp::get_cpu_info(cpu);
+        if (info && info->state.load_acquire() == smp::CPU_ONLINE) {
+            mask[cpu / CPU_MASK_WORD_BITS] |= 1ULL << (cpu % CPU_MASK_WORD_BITS);
+        }
+    }
+
+    return cpus;
+}
+
+DEFINE_SYSCALL3(sched_getaffinity, u_pid, u_size, u_mask) {
+    // Threads are never pinned, so every thread may run on every online CPU
+    uint64_t mask[CPU_MASK_WORDS] = {};
+    uint32_t cpus = fill_online_cpu_mask(mask);
+    uint32_t mask_bytes = ((cpus + CPU_MASK_WORD_BITS - 1) / CPU_MASK_WORD_BITS) * CPU_MASK_WORD_BYTES;
+
+    // The ABI passes the size as an unsigned int, and it must cover every CPU in whole words
+    uint32_t size = static_cast<uint32_t>(u_size);
+    if (size < mask_bytes || size % CPU_MASK_WORD_BYTES != 0) {
+        return syscall::EINVAL;
+    }
+
+    // Zero names the calling thread, any other value must name a live thread
+    int32_t pid = static_cast<int32_t>(u_pid);
+    if (pid < 0 || (pid != 0 && !sched::task_ref_by_tid(static_cast<uint32_t>(pid)))) {
+        return syscall::ESRCH;
+    }
+
+    if (mm::uaccess::copy_to_user(reinterpret_cast<void*>(u_mask), mask, mask_bytes) != mm::uaccess::OK) {
+        return syscall::EFAULT;
+    }
+
+    return static_cast<int64_t>(mask_bytes);
 }
 
 DEFINE_SYSCALL1(exit, status) {
