@@ -10,7 +10,7 @@
 static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
     if (u_fds == 0) return syscall::EFAULT;
 
-    if (flags & ~static_cast<uint32_t>(fs::O_NONBLOCK)) return syscall::EINVAL;
+    if (flags & ~static_cast<uint32_t>(fs::O_NONBLOCK | fs::O_CLOEXEC)) return syscall::EINVAL;
 
     sched::task* task = sched::current();
     if (!task) return syscall::EIO;
@@ -46,9 +46,14 @@ static int64_t do_pipe2(uint64_t u_fds, uint32_t flags) {
 
     resource::resource_release(write_obj);
 
-    if (flags & fs::O_NONBLOCK) {
-        resource::set_handle_flags(task->handles, h_read, fs::O_NONBLOCK);
-        resource::set_handle_flags(task->handles, h_write, fs::O_NONBLOCK);
+    uint32_t handle_flags = flags & fs::O_NONBLOCK;
+    if (flags & fs::O_CLOEXEC) {
+        handle_flags |= resource::RESOURCE_HANDLE_CLOEXEC;
+    }
+
+    if (handle_flags) {
+        resource::set_handle_flags(task->handles, h_read, handle_flags);
+        resource::set_handle_flags(task->handles, h_write, handle_flags);
     }
 
     int32_t kbuf[2] = {h_read, h_write};
