@@ -1169,6 +1169,14 @@ __PRIVILEGED_CODE task* create_user_task(
         tg->umask = DEFAULT_UMASK;
     }
 
+    // The creating thread's no-new-privileges promise and timer slack carry
+    // over, and its current slack becomes the child's default
+    if (creator && creator->group) {
+        t->no_new_privs = creator->no_new_privs;
+        t->timer_slack_ns = creator->timer_slack_ns;
+        t->default_timer_slack_ns = creator->timer_slack_ns;
+    }
+
     t->group = tg; // task takes ownership of the initial ref (refcount=1)
     t->group_link = {};
 
@@ -1279,6 +1287,10 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
 
     t->sig.pending.store_relaxed(0);
     t->sig.blocked.store_relaxed(creator->sig.blocked.load_acquire());
+
+    t->no_new_privs = creator->no_new_privs;
+    t->timer_slack_ns = creator->timer_slack_ns;
+    t->default_timer_slack_ns = creator->timer_slack_ns;
 
     string::memcpy(t->name, name, string::strnlen(name, TASK_NAME_MAX - 1));
     t->name[string::strnlen(name, TASK_NAME_MAX - 1)] = '\0';
