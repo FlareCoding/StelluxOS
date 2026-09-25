@@ -1,4 +1,6 @@
 #include "line_edit.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,17 +65,34 @@ static void set_line(line_edit_state* s, const char* text) {
     s->cursor_pos = len;
 }
 
+// A terminal left non-blocking would read as end of input, so the mode is cleared
+static ssize_t read_stdin_byte(unsigned char* c) {
+    ssize_t n = read(STDIN_FILENO, c, 1);
+    if (n < 0 && errno == EAGAIN) {
+        int flags = fcntl(STDIN_FILENO, F_GETFL);
+        if (flags >= 0 && fcntl(STDIN_FILENO, F_SETFL, flags & ~O_NONBLOCK) == 0) {
+            n = read(STDIN_FILENO, c, 1);
+        }
+    }
+
+    return n;
+}
+
 static int read_byte(void) {
     unsigned char c;
-    ssize_t n = read(0, &c, 1);
-    if (n <= 0) return -1;
+    if (read_stdin_byte(&c) <= 0) {
+        return -1;
+    }
+
     return c;
 }
 
 static int try_read_byte(void) {
     unsigned char c;
-    ssize_t n = read(0, &c, 1);
-    if (n <= 0) return -1;
+    if (read_stdin_byte(&c) <= 0) {
+        return -1;
+    }
+
     return c;
 }
 
