@@ -46,8 +46,8 @@ public:
     file_node(fs::instance* fs, const char* name);
     ~file_node() override;
 
-    ssize_t read(fs::file* f, void* buf, size_t count) override;
-    ssize_t write(fs::file* f, const void* buf, size_t count) override;
+    ssize_t read(fs::file* f, void* buf, size_t count, uint32_t flags) override;
+    ssize_t write(fs::file* f, const void* buf, size_t count, uint32_t flags) override;
     int64_t seek(fs::file* f, int64_t offset, int whence) override;
     int32_t truncate(size_t size) override;
 

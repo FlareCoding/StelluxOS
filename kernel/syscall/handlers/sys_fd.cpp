@@ -1311,8 +1311,6 @@ constexpr uint64_t F_SETFL = 4;
 
 constexpr int64_t FD_CLOEXEC = 1;
 
-constexpr uint32_t SETFL_MASK = fs::O_NONBLOCK | fs::O_APPEND;
-
 DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
     sched::task* task = sched::current();
     if (!task) {
@@ -1386,7 +1384,7 @@ DEFINE_SYSCALL3(fcntl, fd, cmd, arg) {
             return syscall::EBADF;
         }
 
-        flags = (flags & ~SETFL_MASK) | (static_cast<uint32_t>(arg) & SETFL_MASK);
+        flags = (flags & ~fs::STATUS_FLAG_MASK) | (static_cast<uint32_t>(arg) & fs::STATUS_FLAG_MASK);
         rc = resource::set_handle_flags(
             task->handles, static_cast<resource::handle_t>(fd), flags);
         if (rc != resource::HANDLE_OK) {

@@ -76,7 +76,7 @@ public:
     urandom_node(fs::instance* fs, const char* name)
         : fs::node(fs::node_type::char_device, fs, name) {}
 
-    ssize_t read(fs::file*, void* buf, size_t count) override {
+    ssize_t read(fs::file*, void* buf, size_t count, uint32_t) override {
         int32_t rc = random::fill(buf, count);
         if (rc != OK) {
             return fs::ERR_IO;

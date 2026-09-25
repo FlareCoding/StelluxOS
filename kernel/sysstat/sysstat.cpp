@@ -156,7 +156,7 @@ public:
         return fs::OK;
     }
 
-    ssize_t read(fs::file* f, void* buf, size_t count) override {
+    ssize_t read(fs::file* f, void* buf, size_t count, uint32_t) override {
         if (!f || !buf) {
             return fs::ERR_BADF;
         }

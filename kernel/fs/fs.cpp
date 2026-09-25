@@ -64,8 +64,8 @@ int32_t node::unlink(const char*, size_t)           { return ERR_NOSYS; }
 int32_t node::rmdir(const char*, size_t)            { return ERR_NOSYS; }
 int32_t node::rename(const char*, size_t, node*, const char*, size_t) { return ERR_NOSYS; }
 int32_t node::symlink(const char*, size_t, const char*, node**) { return ERR_NOSYS; }
-ssize_t node::read(file*, void*, size_t)            { return ERR_NOSYS; }
-ssize_t node::write(file*, const void*, size_t)     { return ERR_NOSYS; }
+ssize_t node::read(file*, void*, size_t, uint32_t)  { return ERR_NOSYS; }
+ssize_t node::write(file*, const void*, size_t, uint32_t) { return ERR_NOSYS; }
 int64_t node::seek(file*, int64_t, int)             { return ERR_NOSYS; }
 ssize_t node::readdir(file*, dirent*, size_t)       { return ERR_NOSYS; }
 int32_t node::ioctl(file*, uint32_t, uint64_t)      { return ERR_NOSYS; }
@@ -916,32 +916,44 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
 }
 
 ssize_t read(file* f, void* buf, size_t count) {
-    if (!f || !buf) return ERR_BADF;
+    if (!f || !buf) {
+        return ERR_BADF;
+    }
 
-    if (count == 0) return 0;
+    if (count == 0) {
+        return 0;
+    }
 
     uint32_t mode = f->flags() & ACCESS_MODE_MASK;
-    if (mode == O_WRONLY) return ERR_BADF;
+    if (mode == O_WRONLY) {
+        return ERR_BADF;
+    }
 
     ssize_t result;
     RUN_ELEVATED({
-        result = f->get_node()->read(f, buf, count);
+        result = f->get_node()->read(f, buf, count, f->flags() & STATUS_FLAG_MASK);
     });
 
     return result;
 }
 
 ssize_t write(file* f, const void* buf, size_t count) {
-    if (!f || !buf) return ERR_BADF;
+    if (!f || !buf) {
+        return ERR_BADF;
+    }
 
-    if (count == 0) return 0;
+    if (count == 0) {
+        return 0;
+    }
 
     uint32_t mode = f->flags() & ACCESS_MODE_MASK;
-    if (mode == O_RDONLY) return ERR_BADF;
+    if (mode == O_RDONLY) {
+        return ERR_BADF;
+    }
 
     ssize_t result;
     RUN_ELEVATED({
-        result = f->get_node()->write(f, buf, count);
+        result = f->get_node()->write(f, buf, count, f->flags() & STATUS_FLAG_MASK);
     });
 
     return result;

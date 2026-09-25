@@ -41,8 +41,9 @@ public:
     virtual int32_t symlink(const char* name, size_t len, const char* target, node** out);
 
     // --- I/O ops (file/device nodes override) ---
-    virtual ssize_t read(file* f, void* buf, size_t count);
-    virtual ssize_t write(file* f, const void* buf, size_t count);
+    // `flags` carries the caller's O_NONBLOCK and O_APPEND
+    virtual ssize_t read(file* f, void* buf, size_t count, uint32_t flags);
+    virtual ssize_t write(file* f, const void* buf, size_t count, uint32_t flags);
     virtual int64_t seek(file* f, int64_t offset, int whence);
     virtual ssize_t readdir(file* f, dirent* entries, size_t count);
     virtual int32_t ioctl(file* f, uint32_t cmd, uint64_t arg);
