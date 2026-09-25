@@ -57,6 +57,7 @@ constexpr uint64_t GETPGID          = 155;
 constexpr uint64_t UNAME            = 160;
 constexpr uint64_t GETRUSAGE        = 165;
 constexpr uint64_t UMASK            = 166;
+constexpr uint64_t PRCTL            = 167;
 constexpr uint64_t GETTIMEOFDAY     = 169;
 constexpr uint64_t GETPID           = 172;
 constexpr uint64_t GETUID           = 174;
