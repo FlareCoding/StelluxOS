@@ -45,7 +45,7 @@ __PRIVILEGED_CODE static ssize_t file_read(resource_object* obj, void* kdst, siz
     }
 
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
-    ssize_t rc = fs::read(impl->file, kdst, count);
+    ssize_t rc = fs::read(impl->file, kdst, count, impl->file->flags() & fs::STATUS_FLAG_MASK);
     if (rc < 0) {
         return map_fs_error_to_resource(static_cast<int32_t>(rc));
     }
@@ -60,7 +60,7 @@ __PRIVILEGED_CODE static ssize_t file_write(resource_object* obj, const void* ks
     }
 
     auto* impl = static_cast<file_resource_impl*>(obj->impl);
-    ssize_t rc = fs::write(impl->file, ksrc, count);
+    ssize_t rc = fs::write(impl->file, ksrc, count, impl->file->flags() & fs::STATUS_FLAG_MASK);
     if (rc < 0) {
         return map_fs_error_to_resource(static_cast<int32_t>(rc));
     }

@@ -66,11 +66,11 @@ TEST(input_test, push_and_read_mouse) {
 
 TEST(input_test, nonblock_eagain) {
     int32_t open_err = fs::OK;
-    fs::file* f = fs::open("/dev/input/kbd", fs::O_RDONLY | fs::O_NONBLOCK, &open_err);
+    fs::file* f = fs::open("/dev/input/kbd", fs::O_RDONLY, &open_err);
     ASSERT_NOT_NULL(f);
 
     input::kbd_event out{};
-    ssize_t n = fs::read(f, &out, sizeof(out));
+    ssize_t n = fs::read(f, &out, sizeof(out), fs::O_NONBLOCK);
     EXPECT_EQ(n, static_cast<ssize_t>(fs::ERR_AGAIN));
 
     fs::close(f);
@@ -83,15 +83,15 @@ TEST(input_test, short_buffer_einval) {
     input::push_kbd_event(evt);
 
     int32_t open_err = fs::OK;
-    fs::file* f = fs::open("/dev/input/kbd", fs::O_RDONLY | fs::O_NONBLOCK, &open_err);
+    fs::file* f = fs::open("/dev/input/kbd", fs::O_RDONLY, &open_err);
     ASSERT_NOT_NULL(f);
 
     uint8_t small[4];
-    ssize_t n = fs::read(f, small, sizeof(small));
+    ssize_t n = fs::read(f, small, sizeof(small), fs::O_NONBLOCK);
     EXPECT_EQ(n, static_cast<ssize_t>(fs::ERR_INVAL));
 
     input::kbd_event drain{};
-    fs::read(f, &drain, sizeof(drain));
+    fs::read(f, &drain, sizeof(drain), fs::O_NONBLOCK);
     fs::close(f);
 }
 
@@ -104,12 +104,12 @@ TEST(input_test, overflow_drops) {
     }
 
     int32_t open_err = fs::OK;
-    fs::file* f = fs::open("/dev/input/kbd", fs::O_RDONLY | fs::O_NONBLOCK, &open_err);
+    fs::file* f = fs::open("/dev/input/kbd", fs::O_RDONLY, &open_err);
     ASSERT_NOT_NULL(f);
 
     int count = 0;
     input::kbd_event out{};
-    while (fs::read(f, &out, sizeof(out)) > 0) {
+    while (fs::read(f, &out, sizeof(out), fs::O_NONBLOCK) > 0) {
         count++;
     }
     ASSERT_TRUE(count > 0);
