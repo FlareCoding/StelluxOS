@@ -15,8 +15,10 @@ TEST_SUITE(pipe_syscall);
 
 static uint32_t handle_flags_of(sched::task* task, int32_t h) {
     uint32_t flags = 0;
+    uint32_t status = 0;
     resource::get_handle_flags(task->handles, h, &flags);
-    return flags;
+    resource::get_status_flags(task->handles, h, &status);
+    return flags | status;
 }
 
 // Creates a pipe the way userland does, with the two handles landing in the page

@@ -415,29 +415,53 @@ TEST(resource_test, dup_flag_inheritance_and_dup3_cloexec) {
 
     resource::handle_t f = -1;
     ASSERT_EQ(resource::open(task, "/dup_flags", fs::O_CREAT | fs::O_RDWR, &f), resource::OK);
-    ASSERT_EQ(
-        resource::set_handle_flags(task->handles, f, resource::RESOURCE_HANDLE_CLOEXEC | fs::O_NONBLOCK),
-        resource::HANDLE_OK
-    );
+    ASSERT_EQ(resource::set_handle_flags(task->handles, f, resource::RESOURCE_HANDLE_CLOEXEC), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_status_flags(task->handles, f, fs::O_NONBLOCK), resource::HANDLE_OK);
 
     int64_t d = call_dup(f);
     ASSERT_TRUE(d >= 0);
 
+    auto dh = static_cast<resource::handle_t>(d);
     uint32_t dflags = 0;
-    ASSERT_EQ(resource::get_handle_flags(task->handles, static_cast<resource::handle_t>(d), &dflags), resource::HANDLE_OK);
-    EXPECT_EQ(dflags, static_cast<uint32_t>(fs::O_NONBLOCK));
+    uint32_t dstatus = 0;
+    ASSERT_EQ(resource::get_handle_flags(task->handles, dh, &dflags), resource::HANDLE_OK);
+    ASSERT_EQ(resource::get_status_flags(task->handles, dh, &dstatus), resource::HANDLE_OK);
+    EXPECT_EQ(dflags, 0u);
+    EXPECT_EQ(dstatus, static_cast<uint32_t>(fs::O_NONBLOCK));
 
-    ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(d)), resource::OK);
+    ASSERT_EQ(resource::close(task, dh), resource::OK);
 
-    int64_t t = call_dup3(f, static_cast<resource::handle_t>(d), fs::O_CLOEXEC);
+    int64_t t = call_dup3(f, dh, fs::O_CLOEXEC);
     EXPECT_EQ(t, d);
 
     uint32_t tflags = 0;
-    ASSERT_EQ(resource::get_handle_flags(task->handles, static_cast<resource::handle_t>(t), &tflags), resource::HANDLE_OK);
-    EXPECT_EQ(tflags, static_cast<uint32_t>(fs::O_NONBLOCK | resource::RESOURCE_HANDLE_CLOEXEC));
+    uint32_t tstatus = 0;
+    ASSERT_EQ(resource::get_handle_flags(task->handles, dh, &tflags), resource::HANDLE_OK);
+    ASSERT_EQ(resource::get_status_flags(task->handles, dh, &tstatus), resource::HANDLE_OK);
+    EXPECT_EQ(tflags, resource::RESOURCE_HANDLE_CLOEXEC);
+    EXPECT_EQ(tstatus, static_cast<uint32_t>(fs::O_NONBLOCK));
 
     ASSERT_EQ(resource::close(task, f), resource::OK);
     ASSERT_EQ(resource::close(task, static_cast<resource::handle_t>(t)), resource::OK);
+}
+
+constexpr uint64_t F_GETFL = 3;
+constexpr uint64_t F_SETFL = 4;
+
+static int64_t call_fcntl(resource::handle_t h, uint64_t cmd, uint64_t arg) {
+    return sys_fcntl(static_cast<uint64_t>(h), cmd, arg, 0, 0, 0);
+}
+
+TEST(resource_test, getfl_reports_access_mode_and_status_flags) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::open(task, "/getfl_mode", fs::O_CREAT | fs::O_WRONLY | fs::O_CLOEXEC, &h), resource::OK);
+    ASSERT_EQ(call_fcntl(h, F_SETFL, fs::O_NONBLOCK), 0);
+
+    EXPECT_EQ(call_fcntl(h, F_GETFL, 0), static_cast<int64_t>(fs::O_WRONLY | fs::O_NONBLOCK));
+    EXPECT_EQ(resource::close(task, h), resource::OK);
 }
 
 // Only pre-copy validation is reachable here since kernel-space path

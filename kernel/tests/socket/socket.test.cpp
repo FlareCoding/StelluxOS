@@ -416,7 +416,7 @@ TEST(socket_test, handle_flags_default_zero) {
     EXPECT_EQ(resource::close(task, h), resource::OK);
 }
 
-TEST(socket_test, handle_flags_set_and_get) {
+TEST(socket_test, status_flags_set_and_get) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
 
@@ -428,14 +428,14 @@ TEST(socket_test, handle_flags_set_and_get) {
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h), resource::HANDLE_OK);
     resource::resource_release(obj);
 
-    ASSERT_EQ(resource::set_handle_flags(task->handles, h, fs::O_NONBLOCK), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_status_flags(task->handles, h, fs::O_NONBLOCK), resource::HANDLE_OK);
 
     uint32_t flags = 0;
-    ASSERT_EQ(resource::get_handle_flags(task->handles, h, &flags), resource::HANDLE_OK);
+    ASSERT_EQ(resource::get_status_flags(task->handles, h, &flags), resource::HANDLE_OK);
     EXPECT_BITS_SET(flags, fs::O_NONBLOCK);
 
-    ASSERT_EQ(resource::set_handle_flags(task->handles, h, 0), resource::HANDLE_OK);
-    ASSERT_EQ(resource::get_handle_flags(task->handles, h, &flags), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_status_flags(task->handles, h, 0), resource::HANDLE_OK);
+    ASSERT_EQ(resource::get_status_flags(task->handles, h, &flags), resource::HANDLE_OK);
     EXPECT_EQ(flags, 0u);
 
     EXPECT_EQ(resource::close(task, h), resource::OK);
@@ -451,7 +451,7 @@ TEST(socket_test, handle_flags_invalid_handle) {
     EXPECT_EQ(resource::get_handle_flags(task->handles, 9999, &flags), resource::HANDLE_ERR_NOENT);
 }
 
-TEST(socket_test, handle_flags_cleared_on_close) {
+TEST(socket_test, status_flags_cleared_on_close) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
 
@@ -463,11 +463,11 @@ TEST(socket_test, handle_flags_cleared_on_close) {
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h), resource::HANDLE_OK);
     resource::resource_release(obj);
 
-    ASSERT_EQ(resource::set_handle_flags(task->handles, h, fs::O_NONBLOCK), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_status_flags(task->handles, h, fs::O_NONBLOCK), resource::HANDLE_OK);
     EXPECT_EQ(resource::close(task, h), resource::OK);
 
     uint32_t flags = 0;
-    EXPECT_EQ(resource::get_handle_flags(task->handles, h, &flags), resource::HANDLE_ERR_NOENT);
+    EXPECT_EQ(resource::get_status_flags(task->handles, h, &flags), resource::HANDLE_ERR_NOENT);
 }
 
 // Non-blocking socket read/write via handle flags
@@ -488,7 +488,7 @@ TEST(socket_test, nonblock_socketpair_read_eagain) {
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h1), resource::HANDLE_OK);
     resource::resource_release(obj_b);
 
-    ASSERT_EQ(resource::set_handle_flags(task->handles, h0, fs::O_NONBLOCK), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_status_flags(task->handles, h0, fs::O_NONBLOCK), resource::HANDLE_OK);
 
     char buf[8] = {};
     ssize_t nr = resource::read(task, h0, buf, sizeof(buf));
@@ -514,7 +514,7 @@ TEST(socket_test, nonblock_socketpair_read_with_data) {
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h1), resource::HANDLE_OK);
     resource::resource_release(obj_b);
 
-    ASSERT_EQ(resource::set_handle_flags(task->handles, h1, fs::O_NONBLOCK), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_status_flags(task->handles, h1, fs::O_NONBLOCK), resource::HANDLE_OK);
 
     ASSERT_EQ(resource::write(task, h0, "data", 4), static_cast<ssize_t>(4));
 
@@ -543,7 +543,7 @@ TEST(socket_test, nonblock_socketpair_eof_not_eagain) {
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h1), resource::HANDLE_OK);
     resource::resource_release(obj_b);
 
-    ASSERT_EQ(resource::set_handle_flags(task->handles, h1, fs::O_NONBLOCK), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_status_flags(task->handles, h1, fs::O_NONBLOCK), resource::HANDLE_OK);
     EXPECT_EQ(resource::close(task, h0), resource::OK);
 
     char buf[8] = {};
@@ -670,7 +670,7 @@ TEST(socket_test, get_handle_object_returns_flags) {
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h), resource::HANDLE_OK);
     resource::resource_release(obj);
 
-    ASSERT_EQ(resource::set_handle_flags(task->handles, h, fs::O_NONBLOCK), resource::HANDLE_OK);
+    ASSERT_EQ(resource::set_status_flags(task->handles, h, fs::O_NONBLOCK), resource::HANDLE_OK);
 
     resource::resource_object* out = nullptr;
     uint32_t out_flags = 0;
