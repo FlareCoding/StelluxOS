@@ -10,10 +10,14 @@ namespace mm { struct mm_context; }
 
 namespace sync {
 
+struct futex_bucket;
+
 struct futex_waiter {
     sched::task*    task;
     mm::mm_context* mm;
     uintptr_t       addr;
+    futex_bucket*   bucket;     // Holds the waiter, changed by requeue under both buckets' locks
+    sched::task*    claimed_by; // Task whose requeue wakes this waiter once its locks drop
     list::node      link;
 };
 
@@ -50,6 +54,14 @@ __PRIVILEGED_CODE int32_t futex_wake(uintptr_t uaddr, uint32_t count);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE int32_t futex_wake_all(uintptr_t uaddr);
+
+/**
+ * Wake up to nr_wake threads waiting on uaddr and move up to nr_requeue others to uaddr2.
+ * Returns the number woken or moved, -EAGAIN when *uaddr differs from a non-null expected, -EINVAL, -EFAULT.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE int32_t futex_requeue(uintptr_t uaddr, uintptr_t uaddr2, uint32_t nr_wake,
+                                        uint32_t nr_requeue, const uint32_t* expected);
 
 } // namespace sync
 
