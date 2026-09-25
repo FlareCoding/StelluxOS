@@ -76,6 +76,7 @@ constexpr uint64_t GETEGID          = 108;
 constexpr uint64_t SETPGID          = 109;
 constexpr uint64_t GETPGID          = 121;
 constexpr uint64_t RT_SIGPENDING    = 127;
+constexpr uint64_t PRCTL            = 157;
 constexpr uint64_t ARCH_PRCTL       = 158;
 constexpr uint64_t REBOOT           = 169;
 constexpr uint64_t GETTID           = 186;

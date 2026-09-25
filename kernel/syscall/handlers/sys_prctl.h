@@ -1,0 +1,8 @@
+#ifndef STELLUX_SYSCALL_HANDLERS_SYS_PRCTL_H
+#define STELLUX_SYSCALL_HANDLERS_SYS_PRCTL_H
+
+#include "syscall/syscall_table.h"
+
+DECLARE_SYSCALL(prctl);
+
+#endif // STELLUX_SYSCALL_HANDLERS_SYS_PRCTL_H

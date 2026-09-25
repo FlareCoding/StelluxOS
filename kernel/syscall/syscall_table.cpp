@@ -24,6 +24,7 @@
 #include "syscall/handlers/sys_rusage.h"
 #include "syscall/handlers/sys_prlimit.h"
 #include "syscall/handlers/sys_umask.h"
+#include "syscall/handlers/sys_prctl.h"
 #include "syscall/handlers/sys_futex.h"
 #include "syscall/handlers/sys_power.h"
 
@@ -96,6 +97,7 @@ __PRIVILEGED_CODE void init_syscall_table() {
     REGISTER_SYSCALL(linux_nr::GETRUSAGE,       getrusage);
     REGISTER_SYSCALL(linux_nr::PRLIMIT64,       prlimit64);
     REGISTER_SYSCALL(linux_nr::UMASK,           umask);
+    REGISTER_SYSCALL(linux_nr::PRCTL,           prctl);
     REGISTER_SYSCALL(linux_nr::REBOOT,          reboot);
 
     REGISTER_SYSCALL(linux_nr::SOCKET,      socket);
