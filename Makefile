@@ -61,6 +61,17 @@ GDB_PORT := 4554
 QEMU_MEMORY := 4G
 QEMU_CPU_CORES ?= 4
 
+# AArch64 accelerator. hvf runs natively on Apple Silicon, whose hypervisor offers only
+# a GICv3 and the host CPU. tcg keeps a GICv2, whose GICv2m frame carries Stellux's MSIs.
+ACCEL ?= tcg
+ifeq ($(ACCEL),hvf)
+  QEMU_AARCH64_MACHINE := -machine virt,gic-version=3 -accel hvf -cpu host
+else ifeq ($(ACCEL),tcg)
+  QEMU_AARCH64_MACHINE := -machine virt,gic-version=2 -accel tcg -cpu cortex-a57
+else
+  $(error ACCEL must be tcg or hvf)
+endif
+
 # Verbosity (V=1 for verbose)
 ifeq ($(V),1)
   Q :=
@@ -258,13 +269,12 @@ $(BUILD_DIR)/OVMF_VARS.fd: $(OVMF_VARS)
 	$(Q)cp $< $@
 
 run-qemu-aarch64: $(IMAGE_DIR)/stellux-aarch64.img
-	@echo "Starting QEMU AArch64 (TCG emulation)..."
+	@echo "Starting QEMU AArch64 ($(ACCEL))..."
 	@echo ""
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
 	qemu-system-aarch64 \
-		-machine virt,gic-version=2 \
-		-cpu cortex-a57 \
+		$(QEMU_AARCH64_MACHINE) \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
@@ -305,13 +315,12 @@ run-qemu-x86_64-headless: $(IMAGE_DIR)/stellux-x86_64.img $(BUILD_DIR)/OVMF_VARS
 		-no-shutdown
 
 run-qemu-aarch64-headless: $(IMAGE_DIR)/stellux-aarch64.img
-	@echo "Starting QEMU AArch64 (headless, TCG emulation)..."
+	@echo "Starting QEMU AArch64 (headless, $(ACCEL))..."
 	@echo ""
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
 	qemu-system-aarch64 \
-		-machine virt,gic-version=2 \
-		-cpu cortex-a57 \
+		$(QEMU_AARCH64_MACHINE) \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
@@ -390,8 +399,7 @@ run-qemu-aarch64-debug: $(IMAGE_DIR)/stellux-aarch64.img
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
 	qemu-system-aarch64 \
-		-machine virt,gic-version=2 \
-		-cpu cortex-a57 \
+		$(QEMU_AARCH64_MACHINE) \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
@@ -416,8 +424,7 @@ run-qemu-aarch64-debug-headless: $(IMAGE_DIR)/stellux-aarch64.img
 	@echo "Serial output below. QEMU monitor: Ctrl+A C | Exit: Ctrl+A X"
 	@echo ""
 	qemu-system-aarch64 \
-		-machine virt,gic-version=2 \
-		-cpu cortex-a57 \
+		$(QEMU_AARCH64_MACHINE) \
 		-m $(QEMU_MEMORY) \
 		-smp $(QEMU_CPU_CORES) \
 		-bios $(QEMU_EFI_AARCH64) \
