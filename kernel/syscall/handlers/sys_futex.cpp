@@ -8,8 +8,7 @@ struct futex_timespec {
     int64_t tv_nsec;
 };
 
-// The private flag is meaningless because waiters are already keyed
-// by address space, and requeue degrades to waking every waiter
+// The private flag is meaningless because waiters are already keyed by address space
 constexpr uint64_t FUTEX_CMD_MASK       = 0x7F;
 constexpr uint64_t FUTEX_OP_WAIT        = 0;
 constexpr uint64_t FUTEX_OP_WAKE        = 1;
@@ -47,8 +46,6 @@ static int64_t read_futex_timeout(uint64_t u_timeout, uint64_t* out_ns) {
 }
 
 DEFINE_SYSCALL6(futex, u_uaddr, u_op, u_val, u_timeout, u_uaddr2, u_val3) {
-    (void)u_uaddr2;
-
     uint64_t cmd = u_op & FUTEX_CMD_MASK;
     uintptr_t uaddr = static_cast<uintptr_t>(u_uaddr);
 
@@ -69,24 +66,20 @@ DEFINE_SYSCALL6(futex, u_uaddr, u_op, u_val, u_timeout, u_uaddr2, u_val3) {
     case FUTEX_OP_WAKE:
         return sync::futex_wake(uaddr, static_cast<uint32_t>(u_val));
 
-    case FUTEX_OP_CMP_REQUEUE: {
-        uint32_t cur = 0;
-
-        if (mm::uaccess::copy_from_user(
-                &cur, reinterpret_cast<const void*>(u_uaddr),
-                sizeof(cur)) != mm::uaccess::OK) {
-            return syscall::EFAULT;
-        }
-
-        if (cur != static_cast<uint32_t>(u_val3)) {
-            return syscall::EAGAIN;
-        }
-
-        return sync::futex_wake_all(uaddr);
-    }
-
     case FUTEX_OP_REQUEUE:
-        return sync::futex_wake_all(uaddr);
+    case FUTEX_OP_CMP_REQUEUE: {
+        // The ABI carries the requeue limit in the timeout argument
+        int32_t nr_wake = static_cast<int32_t>(u_val);
+        int32_t nr_requeue = static_cast<int32_t>(u_timeout);
+        if (nr_wake < 0 || nr_requeue < 0) {
+            return syscall::EINVAL;
+        }
+
+        uint32_t expected = static_cast<uint32_t>(u_val3);
+        const uint32_t* compare = cmd == FUTEX_OP_CMP_REQUEUE ? &expected : nullptr;
+        return sync::futex_requeue(uaddr, static_cast<uintptr_t>(u_uaddr2), static_cast<uint32_t>(nr_wake),
+                                   static_cast<uint32_t>(nr_requeue), compare);
+    }
 
     default:
         return syscall::ENOSYS;

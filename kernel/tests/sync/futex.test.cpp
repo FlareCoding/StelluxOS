@@ -7,6 +7,7 @@
 #include "sync/futex.h"
 #include "clock/clock.h"
 #include "dynpriv/dynpriv.h"
+#include "syscall/syscall_table.h"
 
 using test_helpers::spin_wait;
 using test_helpers::spin_wait_ge;
@@ -329,4 +330,186 @@ TEST(futex, different_addresses_independent) {
     });
 
     EXPECT_TRUE(spin_wait(g_ind_woken_b));
+}
+
+static uint32_t g_rq_start = 0;
+static uint32_t g_rq_hold = 0;
+static uint32_t g_rq_dest = 0;
+static sync::atomic<uint32_t> g_rq_ready;
+static sync::atomic<uint32_t> g_rq_woken;
+
+static uintptr_t word_addr(uint32_t& word) {
+    return reinterpret_cast<uintptr_t>(&word);
+}
+
+static int32_t requeue(uint32_t& from, uint32_t& to, uint32_t nr_wake, uint32_t nr_requeue,
+                       const uint32_t* expected = nullptr) {
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        rc = sync::futex_requeue(word_addr(from), word_addr(to), nr_wake, nr_requeue, expected);
+    });
+    return rc;
+}
+
+static int32_t wake(uint32_t& word, uint32_t count) {
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        rc = sync::futex_wake(word_addr(word), count);
+    });
+    return rc;
+}
+
+// Requeues `count` waiters from `start` to `hold`, which proves each is queued before a test acts on it
+static bool gather_waiters(uint32_t& start, uint32_t& hold, uint32_t count) {
+    uint32_t gathered = 0;
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (gathered < count && clock::now_ns() < deadline) {
+        int32_t moved = requeue(start, hold, 0, count - gathered);
+        gathered += moved > 0 ? static_cast<uint32_t>(moved) : 0;
+    }
+
+    return gathered == count;
+}
+
+static void requeue_waiter_fn(void*) {
+    g_rq_ready.fetch_add_acq_rel(1);
+    RUN_ELEVATED({
+        sync::futex_wait(word_addr(g_rq_start), 0, 0);
+    });
+    g_rq_woken.fetch_add_acq_rel(1);
+    sched::exit(0);
+}
+
+static bool park_waiters(uint32_t count) {
+    g_rq_ready.store_relaxed(0);
+    g_rq_woken.store_relaxed(0);
+
+    bool created = true;
+    RUN_ELEVATED({
+        for (uint32_t i = 0; i < count && created; i++) {
+            sched::task* t = sched::create_kernel_task(requeue_waiter_fn, nullptr, "ftx_rq");
+            created = t != nullptr;
+            if (created) {
+                sched::enqueue(t);
+            }
+        }
+    });
+
+    return created && spin_wait_ge(g_rq_ready, count) && gather_waiters(g_rq_start, g_rq_hold, count);
+}
+
+TEST(futex, requeue_moves_waiters_without_waking_them) {
+    ASSERT_TRUE(park_waiters(3));
+
+    EXPECT_EQ(requeue(g_rq_hold, g_rq_dest, 0, 3), 3);
+    EXPECT_EQ(wake(g_rq_hold, 3), 0);
+    brief_delay();
+    EXPECT_EQ(g_rq_woken.load_acquire(), 0u);
+
+    EXPECT_EQ(wake(g_rq_dest, 3), 3);
+    EXPECT_TRUE(spin_wait_ge(g_rq_woken, 3));
+}
+
+TEST(futex, requeue_wakes_the_first_waiters_then_moves_the_next) {
+    ASSERT_TRUE(park_waiters(3));
+
+    EXPECT_EQ(requeue(g_rq_hold, g_rq_dest, 1, 1), 2);
+    ASSERT_TRUE(spin_wait_ge(g_rq_woken, 1));
+    brief_delay();
+    EXPECT_EQ(g_rq_woken.load_acquire(), 1u);
+
+    EXPECT_EQ(wake(g_rq_hold, 3), 1);
+    EXPECT_EQ(wake(g_rq_dest, 3), 1);
+    EXPECT_TRUE(spin_wait_ge(g_rq_woken, 3));
+}
+
+constexpr uint32_t MANY_WAITERS = 20;
+constexpr uint32_t MANY_TO_WAKE = 18; // More than one wake batch holds
+constexpr uint32_t MANY_TO_MOVE = MANY_WAITERS - MANY_TO_WAKE;
+
+TEST(futex, requeue_wakes_more_waiters_than_one_batch_holds) {
+    ASSERT_TRUE(park_waiters(MANY_WAITERS));
+
+    EXPECT_EQ(requeue(g_rq_hold, g_rq_dest, MANY_TO_WAKE, MANY_TO_MOVE), static_cast<int32_t>(MANY_WAITERS));
+    ASSERT_TRUE(spin_wait_ge(g_rq_woken, MANY_TO_WAKE));
+    brief_delay();
+    EXPECT_EQ(g_rq_woken.load_acquire(), MANY_TO_WAKE);
+
+    EXPECT_EQ(wake(g_rq_hold, MANY_WAITERS), 0);
+    EXPECT_EQ(wake(g_rq_dest, MANY_WAITERS), static_cast<int32_t>(MANY_TO_MOVE));
+    EXPECT_TRUE(spin_wait_ge(g_rq_woken, MANY_WAITERS));
+}
+
+TEST(futex, compare_requeue_moves_nothing_once_the_word_changed) {
+    ASSERT_TRUE(park_waiters(1));
+
+    uint32_t stale = 1;
+    EXPECT_EQ(requeue(g_rq_hold, g_rq_dest, 0, 1, &stale), syscall::EAGAIN);
+    EXPECT_EQ(wake(g_rq_dest, 1), 0);
+
+    uint32_t current = 0;
+    EXPECT_EQ(requeue(g_rq_hold, g_rq_dest, 0, 1, &current), 1);
+    EXPECT_EQ(wake(g_rq_dest, 1), 1);
+    EXPECT_TRUE(spin_wait(g_rq_woken));
+}
+
+TEST(futex, requeue_onto_the_same_word_keeps_waiters_queued) {
+    ASSERT_TRUE(park_waiters(2));
+
+    EXPECT_EQ(requeue(g_rq_hold, g_rq_hold, 0, 2), 2);
+    brief_delay();
+    EXPECT_EQ(g_rq_woken.load_acquire(), 0u);
+
+    EXPECT_EQ(wake(g_rq_hold, 2), 2);
+    EXPECT_TRUE(spin_wait_ge(g_rq_woken, 2));
+}
+
+TEST(futex, requeue_rejects_misaligned_words) {
+    uint32_t pair[2] = {};
+    uintptr_t misaligned = reinterpret_cast<uintptr_t>(pair) + 1;
+
+    int32_t rc = 0;
+    RUN_ELEVATED({
+        rc = sync::futex_requeue(misaligned, word_addr(g_rq_dest), 0, 1, nullptr);
+    });
+    EXPECT_EQ(rc, syscall::EINVAL);
+}
+
+constexpr uint64_t REQUEUED_WAIT_TIMEOUT_NS = 500000000ULL; // 500ms
+
+static uint32_t g_rqt_start = 0;
+static uint32_t g_rqt_dest = 0;
+static sync::atomic<uint32_t> g_rqt_ready;
+static sync::atomic<uint32_t> g_rqt_done;
+static sync::atomic<int32_t> g_rqt_rc;
+
+static void requeue_timeout_waiter_fn(void*) {
+    g_rqt_ready.store_release(1);
+    RUN_ELEVATED({
+        g_rqt_rc.store_relaxed(sync::futex_wait(word_addr(g_rqt_start), 0, REQUEUED_WAIT_TIMEOUT_NS));
+    });
+    g_rqt_done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(futex, requeued_waiter_times_out_from_the_queue_it_was_moved_to) {
+    g_rqt_ready.store_relaxed(0);
+    g_rqt_done.store_relaxed(0);
+    g_rqt_rc.store_relaxed(0);
+
+    bool created = false;
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(requeue_timeout_waiter_fn, nullptr, "ftx_rqt");
+        if (t) {
+            sched::enqueue(t);
+            created = true;
+        }
+    });
+    ASSERT_TRUE(created);
+    ASSERT_TRUE(spin_wait(g_rqt_ready));
+    ASSERT_TRUE(gather_waiters(g_rqt_start, g_rqt_dest, 1));
+
+    ASSERT_TRUE(spin_wait(g_rqt_done));
+    EXPECT_EQ(g_rqt_rc.load_acquire(), syscall::ETIMEDOUT);
+    EXPECT_EQ(wake(g_rqt_dest, 1), 0);
 }
