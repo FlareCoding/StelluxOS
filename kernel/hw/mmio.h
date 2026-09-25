@@ -34,6 +34,15 @@ inline uint32_t read32(uintptr_t addr) {
 }
 
 /**
+ * Read 64-bit value from memory-mapped register.
+ */
+inline uint64_t read64(uintptr_t addr) {
+    uint64_t val = *reinterpret_cast<volatile uint64_t*>(addr);
+    barrier::io_read();
+    return val;
+}
+
+/**
  * Write 8-bit value to memory-mapped register.
  */
 inline void write8(uintptr_t addr, uint8_t val) {
@@ -55,6 +64,14 @@ inline void write16(uintptr_t addr, uint16_t val) {
 inline void write32(uintptr_t addr, uint32_t val) {
     barrier::io_write();
     *reinterpret_cast<volatile uint32_t*>(addr) = val;
+}
+
+/**
+ * Write 64-bit value to memory-mapped register.
+ */
+inline void write64(uintptr_t addr, uint64_t val) {
+    barrier::io_write();
+    *reinterpret_cast<volatile uint64_t*>(addr) = val;
 }
 
 } // namespace mmio

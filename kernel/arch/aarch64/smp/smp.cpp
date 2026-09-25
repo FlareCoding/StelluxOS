@@ -31,7 +31,6 @@ extern "C" {
 
 namespace arch {
 
-constexpr uint64_t MPIDR_AFF_MASK = 0xFF00FFFFFFULL;
 constexpr uintptr_t AP_STARTUP_DATA_OFFSET = 0x100;
 constexpr uint32_t AP_STACK_PAGES = 4;
 constexpr uint16_t AP_GUARD_PAGES = 1;
@@ -57,12 +56,6 @@ static_assert(sizeof(ap_startup_data) == 72);
 static pmm::phys_addr_t g_trampoline_phys = 0;
 static ap_startup_data* g_startup_data = nullptr;
 static psci::conduit g_psci_conduit = psci::conduit::HVC;
-
-static inline uint64_t read_mpidr_el1() {
-    uint64_t val;
-    asm volatile("mrs %0, mpidr_el1" : "=r"(val));
-    return val;
-}
 
 /**
  * Clean data cache to Point of Coherency for a memory range.
@@ -230,7 +223,7 @@ extern "C" __PRIVILEGED_CODE void ap_entry(uint64_t logical_id) {
 __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
     const acpi::madt_info& madt = acpi::get_madt_info();
 
-    uint64_t current_mpidr = read_mpidr_el1() & MPIDR_AFF_MASK;
+    uint64_t current_mpidr = cpu::read_mpidr() & cpu::MPIDR_AFFINITY_MASK;
 
     uint32_t count = 0;
     for (uint32_t i = 0; i < madt.cpu_count && count < max; i++) {
@@ -238,7 +231,7 @@ __PRIVILEGED_CODE uint32_t smp_enumerate(smp::cpu_info* cpus, uint32_t max) {
             continue;
         }
 
-        uint64_t entry_mpidr = madt.giccs[i].mpidr & MPIDR_AFF_MASK;
+        uint64_t entry_mpidr = madt.giccs[i].mpidr & cpu::MPIDR_AFFINITY_MASK;
 
         cpus[count].logical_id = count;
         cpus[count].hw_id = madt.giccs[i].mpidr;
