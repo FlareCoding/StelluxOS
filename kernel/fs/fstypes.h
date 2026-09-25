@@ -30,6 +30,9 @@ constexpr uint32_t O_CLOEXEC  = 0x80000;
 
 constexpr uint32_t ACCESS_MODE_MASK = 0x3;
 
+// The file status flags, which F_SETFL may change after open
+constexpr uint32_t STATUS_FLAG_MASK = O_APPEND | O_NONBLOCK;
+
 constexpr int32_t SEEK_SET = 0;
 constexpr int32_t SEEK_CUR = 1;
 constexpr int32_t SEEK_END = 2;

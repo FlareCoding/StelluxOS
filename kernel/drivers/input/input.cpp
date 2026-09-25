@@ -27,13 +27,13 @@ public:
         , m_rb(rb) {
     }
 
-    ssize_t read(fs::file* f, void* buf, size_t count) override {
+    ssize_t read(fs::file*, void* buf, size_t count, uint32_t flags) override {
         constexpr size_t rec_size = sizeof(Event);
         if (count < rec_size || (count % rec_size) != 0) {
             return fs::ERR_INVAL;
         }
 
-        bool nonblock = (f->flags() & fs::O_NONBLOCK) != 0;
+        bool nonblock = (flags & fs::O_NONBLOCK) != 0;
         ssize_t rc = ring_buffer_read(m_rb, static_cast<uint8_t*>(buf),
                                       count, nonblock);
         if (rc == RB_ERR_AGAIN) {

@@ -318,13 +318,17 @@ int32_t file_node::ensure_capacity(uint32_t needed_pages) {
     return fs::OK;
 }
 
-ssize_t file_node::read(fs::file* f, void* buf, size_t count) {
-    if (!f || !buf) return fs::ERR_BADF;
+ssize_t file_node::read(fs::file* f, void* buf, size_t count, uint32_t) {
+    if (!f || !buf) {
+        return fs::ERR_BADF;
+    }
 
     sync::irq_lock_guard guard(m_lock);
 
     int64_t off = f->offset();
-    if (off < 0) return fs::ERR_INVAL;
+    if (off < 0) {
+        return fs::ERR_INVAL;
+    }
 
     size_t offset = static_cast<size_t>(off);
     if (offset >= m_size) {
@@ -362,16 +366,21 @@ ssize_t file_node::read(fs::file* f, void* buf, size_t count) {
     return static_cast<ssize_t>(count);
 }
 
-ssize_t file_node::write(fs::file* f, const void* buf, size_t count) {
-    if (!f || !buf) return fs::ERR_BADF;
+ssize_t file_node::write(fs::file* f, const void* buf, size_t count, uint32_t flags) {
+    if (!f || !buf) {
+        return fs::ERR_BADF;
+    }
 
     sync::irq_lock_guard guard(m_lock);
 
     int64_t off = f->offset();
-    if (f->flags() & fs::O_APPEND) {
+    if (flags & fs::O_APPEND) {
         off = static_cast<int64_t>(m_size);
     }
-    if (off < 0) return fs::ERR_INVAL;
+
+    if (off < 0) {
+        return fs::ERR_INVAL;
+    }
 
     size_t offset = static_cast<size_t>(off);
     size_t end_pos = offset + count;

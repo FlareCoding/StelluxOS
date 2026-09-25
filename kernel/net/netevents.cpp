@@ -26,7 +26,7 @@ public:
 
     int32_t open(fs::file* f, uint32_t flags) override;
     int32_t on_close(fs::file* f) override;
-    ssize_t read(fs::file* f, void* buf, size_t count) override;
+    ssize_t read(fs::file* f, void* buf, size_t count, uint32_t flags) override;
     uint32_t poll(fs::file* f, sync::poll_table* pt) override;
 };
 
@@ -55,7 +55,7 @@ int32_t events_node::on_close(fs::file* f) {
     return fs::OK;
 }
 
-ssize_t events_node::read(fs::file* f, void* buf, size_t count) {
+ssize_t events_node::read(fs::file* f, void* buf, size_t count, uint32_t) {
     watch* w = watch_of(f);
     if (!w || !buf) {
         return fs::ERR_BADF;

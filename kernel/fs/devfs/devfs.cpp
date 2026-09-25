@@ -25,9 +25,9 @@ public:
     devfs_null_node(fs::instance* fs, const char* name)
         : fs::node(fs::node_type::char_device, fs, name) {}
 
-    ssize_t read(fs::file*, void*, size_t) override { return 0; }
+    ssize_t read(fs::file*, void*, size_t, uint32_t) override { return 0; }
 
-    ssize_t write(fs::file*, const void*, size_t count) override {
+    ssize_t write(fs::file*, const void*, size_t count, uint32_t) override {
         return static_cast<ssize_t>(count);
     }
 };
