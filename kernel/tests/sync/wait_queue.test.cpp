@@ -405,3 +405,96 @@ TEST(wait_queue, wake_with_condition_recheck) {
     ASSERT_TRUE(spin_wait_ge(g_recheck_done_count, 2));
     EXPECT_EQ(g_recheck_done_count.load_acquire(), 2u);
 }
+
+static sync::wait_queue g_obs_wq;
+static sync::atomic<uint32_t> g_obs_calls;
+
+static sched::task* count_notification(sync::wait_observer&) {
+    g_obs_calls.fetch_add_acq_rel(1);
+    return nullptr;
+}
+
+TEST(wait_queue, observers_run_on_each_wake_until_detached) {
+    g_obs_wq.init();
+    g_obs_calls.store_relaxed(0);
+
+    sync::wait_observer observer = {};
+    observer.notify = count_notification;
+
+    RUN_ELEVATED({
+        sync::add_observer(g_obs_wq, observer);
+        sync::wake_one(g_obs_wq);
+        sync::wake_all(g_obs_wq);
+        sync::remove_observer(g_obs_wq, observer);
+        sync::wake_one(g_obs_wq);
+    });
+
+    EXPECT_EQ(g_obs_calls.load_acquire(), 2u);
+    EXPECT_TRUE(g_obs_wq.observers.empty());
+}
+
+static sync::wait_queue g_owed_private_wq;
+static sync::wait_queue g_owed_observed_wq;
+static sync::spinlock g_owed_lock;
+static sync::atomic<uint32_t> g_owed_go;
+static sync::atomic<uint32_t> g_owed_waiting;
+static sync::atomic<uint32_t> g_owed_done;
+static sched::task* g_owed_task;
+
+static void owed_waiter_fn(void*) {
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_owed_lock);
+        g_owed_waiting.store_release(1);
+        while (!g_owed_go.load_acquire()) {
+            irq = sync::wait(g_owed_private_wq, g_owed_lock, irq);
+        }
+        sync::spin_unlock_irqrestore(g_owed_lock, irq);
+    });
+    g_owed_done.store_release(1);
+    sched::exit(0);
+}
+
+// Owes the waiter one wake, the first time the observed queue wakes
+static sched::task* owe_waiter(sync::wait_observer&) {
+    sched::task* owed = g_owed_task;
+    g_owed_task = nullptr;
+    return owed;
+}
+
+// The waiter sleeps on a queue nothing wakes, so only the wake its observer owes can finish it
+TEST(wait_queue, observer_returned_task_is_woken) {
+    g_owed_private_wq.init();
+    g_owed_observed_wq.init();
+    g_owed_lock = sync::SPINLOCK_INIT;
+    g_owed_go.store_relaxed(0);
+    g_owed_waiting.store_relaxed(0);
+    g_owed_done.store_relaxed(0);
+
+    rc::strong_ref<sched::task> pin;
+    RUN_ELEVATED({
+        sched::task* t = sched::create_kernel_task(owed_waiter_fn, nullptr, "wq_owed");
+        if (t) {
+            pin = sched::task_ref(t);
+            g_owed_task = t;
+            sched::enqueue(t);
+        }
+    });
+    ASSERT_TRUE(static_cast<bool>(pin));
+    ASSERT_TRUE(spin_wait(g_owed_waiting));
+
+    sync::wait_observer observer = {};
+    observer.notify = owe_waiter;
+
+    // The condition flips under the waiter's lock, so the waiter either sees it or is asleep when the wake lands
+    RUN_ELEVATED({
+        sync::irq_state irq = sync::spin_lock_irqsave(g_owed_lock);
+        g_owed_go.store_release(1);
+        sync::spin_unlock_irqrestore(g_owed_lock, irq);
+
+        sync::add_observer(g_owed_observed_wq, observer);
+        sync::wake_one(g_owed_observed_wq);
+        sync::remove_observer(g_owed_observed_wq, observer);
+    });
+
+    EXPECT_TRUE(spin_wait(g_owed_done));
+}
