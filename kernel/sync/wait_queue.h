@@ -4,15 +4,26 @@
 #include "common/types.h"
 #include "common/list.h"
 #include "sync/spinlock.h"
-#include "sync/poll.h"
 #include "sched/task.h"
 
 namespace sync {
 
+struct wait_observer;
+
+// Runs under the queue's lock on every wake and returns a task to wake once the lock drops, or null.
+// It must not block or wake tasks itself, and must return a task only when it newly owes that task a wake.
+using observer_notify_fn = sched::task* (*)(wait_observer& observer);
+
+// Reacts to a wait queue's wakes without sleeping on the queue
+struct wait_observer {
+    list::node         link;
+    observer_notify_fn notify;
+};
+
 struct wait_queue {
     spinlock lock;
     list::head<sched::task, &sched::task::wait_link> waiters;
-    list::head<poll_entry, &poll_entry::observer_link> observers;
+    list::head<wait_observer, &wait_observer::link> observers;
 
     void init() {
         lock = SPINLOCK_INIT;
@@ -59,6 +70,18 @@ __PRIVILEGED_CODE void wake_one(wait_queue& wq);
  * @note Privilege: **required**
  */
 __PRIVILEGED_CODE void wake_all(wait_queue& wq);
+
+/**
+ * Attach an observer, so later wakes on wq run its notify callback.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void add_observer(wait_queue& wq, wait_observer& observer);
+
+/**
+ * Detach an observer. Once this returns, no wake on wq runs its callback.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void remove_observer(wait_queue& wq, wait_observer& observer);
 
 } // namespace sync
 

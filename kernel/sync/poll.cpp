@@ -9,6 +9,20 @@
 
 namespace sync {
 
+/**
+ * Triggers the entry's table. Only the notify that flips `triggered` owes the table's task a wake.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static sched::task* trigger_table(wait_observer& observer) {
+    poll_table* table = static_cast<poll_entry&>(observer).table;
+    uint32_t idle = 0;
+    if (!table->triggered.cmpxchg_strong_acq_rel(idle, 1)) {
+        return nullptr;
+    }
+
+    return table->task;
+}
+
 __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
     auto* entry = heap::kalloc_new<poll_entry>();
     if (!entry) {
@@ -16,6 +30,7 @@ __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
         return;
     }
 
+    entry->notify = trigger_table;
     entry->table = &pt;
     entry->source = &wq;
 
@@ -23,9 +38,7 @@ __PRIVILEGED_CODE void poll_subscribe(poll_table& pt, wait_queue& wq) {
     pt.entries.push_back(entry);
     spin_unlock_irqrestore(pt.lock, irq);
 
-    irq = spin_lock_irqsave(wq.lock);
-    wq.observers.push_back(entry);
-    spin_unlock_irqrestore(wq.lock, irq);
+    add_observer(wq, *entry);
 }
 
 __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
@@ -67,11 +80,7 @@ __PRIVILEGED_CODE bool poll_wait(poll_table& pt, uint64_t timeout_ns) {
 __PRIVILEGED_CODE void poll_cleanup(poll_table& pt) {
     irq_state pt_irq = spin_lock_irqsave(pt.lock);
     while (poll_entry* entry = pt.entries.pop_front()) {
-        irq_state wq_irq = spin_lock_irqsave(entry->source->lock);
-        if (entry->observer_link.is_linked()) {
-            entry->source->observers.remove(entry);
-        }
-        spin_unlock_irqrestore(entry->source->lock, wq_irq);
+        remove_observer(*entry->source, *entry);
         heap::kfree_delete(entry);
     }
     spin_unlock_irqrestore(pt.lock, pt_irq);

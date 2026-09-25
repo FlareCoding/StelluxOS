@@ -1,22 +1,17 @@
 #include "sync/wait_queue.h"
-#include "sync/poll.h"
 #include "sched/sched.h"
 #include "sched/task_exec_core.h"
 
 namespace sync {
 
-/**
- * Set triggered on all observers and wake their tasks.
- *
- * Whoever flips an observer's triggered flag from 0 to 1 owes it exactly
- * one wake, delivered after wq.lock drops so sched::wake's off-CPU spin
- * never runs under the lock. Already-triggered observers are skipped, an
- * earlier notify owes their wake. A full batch forces a rescan, the flag
- * marks who was already handled.
- */
 constexpr uint32_t OBSERVER_BATCH_SIZE = 16;
 constexpr uint32_t WAITER_BATCH_SIZE   = 16;
 
+/**
+ * Runs each observer's callback and wakes the returned tasks after dropping wq.lock. A full
+ * batch rescans, which is safe since callbacks return a task only when they newly owe a wake.
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE static void notify_observers_and_unlock(
     wait_queue& wq, irq_state irq
 ) {
@@ -26,17 +21,15 @@ __PRIVILEGED_CODE static void notify_observers_and_unlock(
         bool rescan = false;
 
         for (auto& obs : wq.observers) {
-            if (obs.table->triggered.load_acquire()) {
-                continue;
-            }
-
             if (n == OBSERVER_BATCH_SIZE) {
                 rescan = true;
                 break;
             }
 
-            obs.table->triggered.store_release(1);
-            batch[n++] = sched::task_ref(obs.table->task);
+            sched::task* owed = obs.notify(obs);
+            if (owed) {
+                batch[n++] = sched::task_ref(owed);
+            }
         }
 
         spin_unlock_irqrestore(wq.lock, irq);
@@ -141,6 +134,26 @@ __PRIVILEGED_CODE void wake_all(wait_queue& wq) {
 
         if (drained) break;
     }
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void add_observer(wait_queue& wq, wait_observer& observer) {
+    irq_state irq = spin_lock_irqsave(wq.lock);
+    wq.observers.push_back(&observer);
+    spin_unlock_irqrestore(wq.lock, irq);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void remove_observer(wait_queue& wq, wait_observer& observer) {
+    irq_state irq = spin_lock_irqsave(wq.lock);
+    if (observer.link.is_linked()) {
+        wq.observers.remove(&observer);
+    }
+    spin_unlock_irqrestore(wq.lock, irq);
 }
 
 } // namespace sync

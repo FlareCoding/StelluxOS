@@ -5,6 +5,7 @@
 #include "common/list.h"
 #include "sync/atomic.h"
 #include "sync/spinlock.h"
+#include "sync/wait_queue.h"
 
 namespace sched { struct task; }
 
@@ -18,11 +19,10 @@ constexpr uint32_t POLL_HUP   = 0x0010;
 constexpr uint32_t POLL_NVAL  = 0x0020;
 constexpr uint32_t POLL_RDHUP = 0x2000;
 
-struct wait_queue;
 struct poll_table;
 
-struct poll_entry {
-    list::node observer_link;
+// A poll table's subscription to one wait queue, whose wakes trigger the table
+struct poll_entry : wait_observer {
     list::node table_link;
     poll_table* table;
     wait_queue* source;
