@@ -13,7 +13,7 @@ __PRIVILEGED_CODE void handle_table::ref_destroy(handle_table* self) {
         return;
     }
 
-    for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
+    for (uint32_t i = 0; i < self->capacity; i++) {
         resource_object* obj = nullptr;
 
         if (remove_handle(self, static_cast<handle_t>(i), &obj) == HANDLE_OK) {
@@ -21,26 +21,29 @@ __PRIVILEGED_CODE void handle_table::ref_destroy(handle_table* self) {
         }
     }
 
+    heap::kfree(self->entries);
     heap::kfree_delete(self);
 }
 
 /**
  * @note Privilege: **required**
  */
-__PRIVILEGED_CODE void init_handle_table(handle_table* table) {
+__PRIVILEGED_CODE int32_t init_handle_table(handle_table* table) {
     if (!table) {
-        return;
+        return HANDLE_ERR_INVAL;
+    }
+
+    // An all-zero entry is an empty slot
+    auto* entries = static_cast<handle_entry*>(heap::kzalloc(MAX_TASK_HANDLES * sizeof(handle_entry)));
+    if (!entries) {
+        return HANDLE_ERR_NOMEM;
     }
 
     table->lock = sync::SPINLOCK_INIT;
-    for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
-        table->entries[i].used = false;
-        table->entries[i].generation = 0;
-        table->entries[i].flags = 0;
-        table->entries[i].rights = 0;
-        table->entries[i].type = resource_type::UNKNOWN;
-        table->entries[i].obj = nullptr;
-    }
+    table->entries = entries;
+    table->capacity = MAX_TASK_HANDLES;
+
+    return HANDLE_OK;
 }
 
 /**
@@ -67,7 +70,7 @@ __PRIVILEGED_CODE int32_t alloc_handle(
 
     sync::irq_lock_guard guard(table->lock);
 
-    for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
+    for (uint32_t i = 0; i < table->capacity; i++) {
         handle_entry& entry = table->entries[i];
         if (entry.used) {
             continue;
@@ -104,7 +107,7 @@ __PRIVILEGED_CODE int32_t get_handle_object(
         return HANDLE_ERR_INVAL;
     }
 
-    if (handle < 0 || static_cast<uint32_t>(handle) >= MAX_TASK_HANDLES) {
+    if (!handle_slot_in_range(table, handle)) {
         return HANDLE_ERR_NOENT;
     }
 
@@ -298,7 +301,7 @@ __PRIVILEGED_CODE void inherit_standard_handles(handle_table* parent, handle_tab
  */
 __PRIVILEGED_CODE void copy_handle_table(handle_table* src, handle_table* dst) {
     sync::irq_lock_guard guard(src->lock);
-    for (uint32_t i = 0; i < MAX_TASK_HANDLES; i++) {
+    for (uint32_t i = 0; i < src->capacity; i++) {
         const handle_entry& entry = src->entries[i];
         if (!entry.used || !entry.obj) {
             continue;
@@ -309,8 +312,11 @@ __PRIVILEGED_CODE void copy_handle_table(handle_table* src, handle_table* dst) {
     }
 }
 
-bool handle_slot_in_range(const handle_table* table, handle_t slot) {
-    return table && slot >= 0 && static_cast<uint32_t>(slot) < MAX_TASK_HANDLES;
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE bool handle_slot_in_range(const handle_table* table, handle_t slot) {
+    return table && slot >= 0 && static_cast<uint32_t>(slot) < table->capacity;
 }
 
 /**
@@ -325,7 +331,7 @@ __PRIVILEGED_CODE int32_t remove_handle(
         return HANDLE_ERR_INVAL;
     }
 
-    if (handle < 0 || static_cast<uint32_t>(handle) >= MAX_TASK_HANDLES) {
+    if (!handle_slot_in_range(table, handle)) {
         return HANDLE_ERR_NOENT;
     }
 
