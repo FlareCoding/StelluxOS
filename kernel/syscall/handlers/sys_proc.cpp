@@ -380,11 +380,8 @@ DEFINE_SYSCALL2(proc_info, u_handle, u_info_ptr) {
 
 DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     sched::task* caller = sched::current();
-    if (!caller) return syscall::EIO;
-
-    int32_t slot = static_cast<int32_t>(u_slot);
-    if (slot < 0 || static_cast<uint32_t>(slot) >= resource::MAX_TASK_HANDLES) {
-        return syscall::EINVAL;
+    if (!caller) {
+        return syscall::EIO;
     }
 
     resource::resource_object* proc_obj = nullptr;
@@ -424,7 +421,7 @@ DEFINE_SYSCALL3(proc_set_handle, u_proc_handle, u_slot, u_resource_handle) {
     }
 
     rc = resource::install_handle_at(
-        pr->child->handles, static_cast<resource::handle_t>(slot),
+        pr->child->handles, static_cast<resource::handle_t>(u_slot),
         res_obj, res_obj->type, res_rights);
 
     sync::spin_unlock_irqrestore(pr->lock, irq);

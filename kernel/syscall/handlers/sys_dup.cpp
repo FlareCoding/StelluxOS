@@ -79,7 +79,7 @@ DEFINE_SYSCALL2(dup2, u_oldfd, u_newfd) {
 
     auto old_h = static_cast<resource::handle_t>(u_oldfd);
     auto new_h = static_cast<resource::handle_t>(u_newfd);
-    if (new_h < 0 || static_cast<uint32_t>(new_h) >= resource::MAX_TASK_HANDLES) {
+    if (!resource::handle_slot_in_range(task->handles, new_h)) {
         return syscall::EBADF;
     }
 
@@ -110,7 +110,7 @@ DEFINE_SYSCALL3(dup3, u_oldfd, u_newfd, u_flags) {
         return syscall::EINVAL;
     }
 
-    if (new_h < 0 || static_cast<uint32_t>(new_h) >= resource::MAX_TASK_HANDLES) {
+    if (!resource::handle_slot_in_range(task->handles, new_h)) {
         return syscall::EBADF;
     }
 

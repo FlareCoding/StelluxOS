@@ -606,9 +606,10 @@ TEST(socket_test, socket_handle_has_socket_type) {
         resource::RIGHT_READ | resource::RIGHT_WRITE, &h), resource::HANDLE_OK);
     resource::resource_release(obj);
 
-    const resource::handle_entry& entry = task->handles->entries[static_cast<uint32_t>(h)];
-    EXPECT_TRUE(entry.used);
-    EXPECT_EQ(entry.type, resource::resource_type::SOCKET);
+    resource::resource_object* held = nullptr;
+    ASSERT_EQ(resource::get_handle_object(task->handles, h, 0, &held), resource::HANDLE_OK);
+    EXPECT_EQ(held->type, resource::resource_type::SOCKET);
+    resource::resource_release(held);
 
     EXPECT_EQ(resource::close(task, h), resource::OK);
 }

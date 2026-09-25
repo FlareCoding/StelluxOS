@@ -120,6 +120,17 @@ __PRIVILEGED_CODE int32_t install_handle_at(
 __PRIVILEGED_CODE void inherit_standard_handles(handle_table* parent, handle_table* child);
 
 /**
+ * @brief Copy every handle of `src` into the same slot of the empty table `dst`.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE void copy_handle_table(handle_table* src, handle_table* dst);
+
+/**
+ * @brief Whether `table` has a slot numbered `slot`.
+ */
+bool handle_slot_in_range(const handle_table* table, handle_t slot);
+
+/**
  * @brief Remove handle entry and return held object reference.
  * Does not release object, caller owns one reference on success.
  * @note Privilege: **required**

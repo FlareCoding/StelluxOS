@@ -1235,24 +1235,7 @@ __PRIVILEGED_CODE static task* init_user_thread_core(
             return nullptr;
         }
 
-        sync::irq_lock_guard guard(creator->handles->lock);
-
-        for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
-            const auto& src = creator->handles->entries[i];
-            if (!src.used || !src.obj) {
-                continue;
-            }
-
-            auto& dst = t->handles->entries[i];
-            dst.used = true;
-            dst.generation = src.generation;
-            dst.flags = src.flags;
-            dst.rights = src.rights;
-            dst.type = src.type;
-
-            dst.obj = src.obj;
-            resource::resource_add_ref(dst.obj);
-        }
+        resource::copy_handle_table(creator->handles, t->handles);
     }
 
     t->exec.flags = TASK_FLAG_PREEMPTIBLE;
