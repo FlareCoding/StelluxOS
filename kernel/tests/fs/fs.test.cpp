@@ -56,9 +56,9 @@ TEST(fs_test, write_append_mode) {
     fs::write(f, "AAA", 3);
     fs::close(f);
 
-    f = fs::open("/test_append", fs::O_WRONLY | fs::O_APPEND);
+    f = fs::open("/test_append", fs::O_WRONLY);
     ASSERT_NOT_NULL(f);
-    fs::write(f, "BBB", 3);
+    fs::write(f, "BBB", 3, fs::O_APPEND);
     fs::close(f);
 
     f = fs::open("/test_append", fs::O_RDONLY);

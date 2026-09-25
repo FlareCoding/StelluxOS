@@ -915,7 +915,7 @@ file* open_at(node* base_dir, const char* path, uint32_t flags, int32_t* out_err
     return f;
 }
 
-ssize_t read(file* f, void* buf, size_t count) {
+ssize_t read(file* f, void* buf, size_t count, uint32_t flags) {
     if (!f || !buf) {
         return ERR_BADF;
     }
@@ -931,13 +931,13 @@ ssize_t read(file* f, void* buf, size_t count) {
 
     ssize_t result;
     RUN_ELEVATED({
-        result = f->get_node()->read(f, buf, count, f->flags() & STATUS_FLAG_MASK);
+        result = f->get_node()->read(f, buf, count, flags);
     });
 
     return result;
 }
 
-ssize_t write(file* f, const void* buf, size_t count) {
+ssize_t write(file* f, const void* buf, size_t count, uint32_t flags) {
     if (!f || !buf) {
         return ERR_BADF;
     }
@@ -953,7 +953,7 @@ ssize_t write(file* f, const void* buf, size_t count) {
 
     ssize_t result;
     RUN_ELEVATED({
-        result = f->get_node()->write(f, buf, count, f->flags() & STATUS_FLAG_MASK);
+        result = f->get_node()->write(f, buf, count, flags);
     });
 
     return result;

@@ -9,6 +9,7 @@
 #include "mm/heap.h"
 #include "common/string.h"
 #include "fs/fstypes.h"
+#include "drivers/input/input.h"
 
 TEST_SUITE(resource_test);
 
@@ -42,6 +43,44 @@ TEST(resource_test, read_write_roundtrip) {
     ASSERT_EQ(resource::read(task, r, buf, 14), static_cast<ssize_t>(14));
     EXPECT_STREQ(buf, "resource-hello");
     ASSERT_EQ(resource::close(task, r), resource::OK);
+}
+
+TEST(resource_test, open_append_reaches_file_writes) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::open(task, "/resource_append", fs::O_CREAT | fs::O_TRUNC | fs::O_WRONLY, &h), resource::OK);
+    ASSERT_EQ(resource::write(task, h, "AAA", 3), static_cast<ssize_t>(3));
+    ASSERT_EQ(resource::close(task, h), resource::OK);
+
+    ASSERT_EQ(resource::open(task, "/resource_append", fs::O_WRONLY | fs::O_APPEND, &h), resource::OK);
+    ASSERT_EQ(resource::write(task, h, "B", 1), static_cast<ssize_t>(1));
+    ASSERT_EQ(resource::close(task, h), resource::OK);
+
+    char buf[8] = {};
+    ASSERT_EQ(resource::open(task, "/resource_append", fs::O_RDONLY, &h), resource::OK);
+    EXPECT_EQ(resource::read(task, h, buf, sizeof(buf)), static_cast<ssize_t>(4));
+    EXPECT_STREQ(buf, "AAAB");
+    EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
+TEST(resource_test, open_nonblock_reaches_device_reads) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    resource::handle_t h = -1;
+    ASSERT_EQ(resource::open(task, "/dev/input/kbd", fs::O_RDONLY | fs::O_NONBLOCK, &h), resource::OK);
+
+    // Drains any queued events, then must report EAGAIN rather than block
+    input::kbd_event event = {};
+    ssize_t n = 0;
+    do {
+        n = resource::read(task, h, &event, sizeof(event));
+    } while (n > 0);
+
+    EXPECT_EQ(n, static_cast<ssize_t>(resource::ERR_AGAIN));
+    EXPECT_EQ(resource::close(task, h), resource::OK);
 }
 
 TEST(resource_test, independent_offsets_for_separate_opens) {
