@@ -37,6 +37,7 @@ constexpr int64_t EPIPE  = -32;
 constexpr int64_t ENOTSOCK = -88;
 constexpr int64_t EMSGSIZE         = -90;
 constexpr int64_t ENOPROTOOPT      = -92;
+constexpr int64_t EPROTO           = -71;
 constexpr int64_t EPROTONOSUPPORT  = -93;
 constexpr int64_t EOPNOTSUPP       = -95;
 constexpr int64_t EAFNOSUPPORT     = -97;
