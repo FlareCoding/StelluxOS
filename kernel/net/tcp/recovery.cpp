@@ -12,6 +12,12 @@ static void enter_state_locked(tcp_conn* conn, recovery_state state) {
     }
 }
 
+static void notify(tcp_conn* conn, congestion_event which) {
+    if (conn->congestion->event) {
+        conn->congestion->event(conn, which);
+    }
+}
+
 // Caller holds the lock. RFC 6582 3.2 step 1: only once the acknowledgments
 // have passed the point the last recovery was entered at
 static bool may_enter_recovery_locked(const tcp_conn* conn) {
@@ -49,6 +55,47 @@ static void finish_recovery_locked(tcp_conn* conn) {
     enter_state_locked(conn, recovery_state::open);
 }
 
+// Caller holds the lock. RFC 5682 3: the timeout was spurious, nothing was lost
+static void undo_loss_locked(tcp_conn* conn) {
+    conn->cwnd = conn->congestion->undo(conn);
+    conn->ssthresh = conn->prior_ssthresh;
+    conn->sent.clear_lost_marks();
+    conn->frto_step = 0;
+    enter_state_locked(conn, recovery_state::open);
+}
+
+// Caller holds the lock. RFC 5682 2.2 steps 2 and 3 for an acknowledgment
+// that moved SND.UNA: the second one in a row proves the timeout spurious
+static recovery_action take_loss_ack_locked(tcp_conn* conn, uint32_t ack) {
+    if (conn->frto_step == FRTO_SECOND_ACK) {
+        undo_loss_locked(conn);
+        return recovery_action::recovered;
+    }
+
+    if (seq_lt(ack, conn->high_seq)) {
+        if (conn->frto_step == FRTO_FIRST_ACK) {
+            conn->frto_step = unsent_bytes(conn) > 0 ? FRTO_SECOND_ACK : 0;
+        }
+
+        return recovery_action::none;
+    }
+
+    conn->frto_step = 0;
+    enter_state_locked(conn, recovery_state::open);
+    return recovery_action::recovered;
+}
+
+// Caller holds the lock. RFC 5682 2.2 steps 2b and 3b: a duplicate ends the
+// test, and after two new segments went out the window must let one lost
+// segment go again
+static void take_loss_duplicate_locked(tcp_conn* conn) {
+    if (conn->frto_step == FRTO_SECOND_ACK) {
+        conn->cwnd = 3u * conn->snd_mss;
+    }
+
+    conn->frto_step = 0;
+}
+
 bool is_duplicate_ack_locked(const tcp_conn* conn, uint8_t flags, size_t payload_len, uint32_t ack,
                              uint32_t window) {
     return conn->snd_nxt != conn->snd_una && payload_len == 0 && !(flags & (FLAG_SYN | FLAG_FIN)) &&
@@ -71,6 +118,8 @@ recovery_action take_duplicate_ack_locked(tcp_conn* conn) {
 
     if (conn->recovery == recovery_state::recovery) {
         conn->cwnd += conn->snd_mss;
+    } else if (conn->recovery == recovery_state::loss) {
+        take_loss_duplicate_locked(conn);
     }
 
     return recovery_action::none;
@@ -91,9 +140,36 @@ recovery_action take_advancing_ack_locked(tcp_conn* conn, uint32_t ack, uint32_t
 
         finish_recovery_locked(conn);
         return recovery_action::recovered;
+    case recovery_state::loss:
+        return take_loss_ack_locked(conn, ack);
     default:
         return recovery_action::none;
     }
+}
+
+void enter_loss_locked(tcp_conn* conn) {
+    bool first_timeout = conn->recovery != recovery_state::loss;
+    if (first_timeout) {
+        conn->prior_cwnd = conn->cwnd;
+        conn->prior_ssthresh = conn->ssthresh;
+        conn->ssthresh = conn->congestion->ssthresh(conn);
+    }
+
+    conn->frto_step = first_timeout ? FRTO_FIRST_ACK : 0;
+    conn->cwnd = conn->snd_mss;
+    conn->bytes_acked = 0;
+    conn->dupacks = 0;
+    conn->high_seq = conn->snd_nxt;
+    conn->sent.mark_all_lost();
+
+    notify(conn, congestion_event::loss);
+    enter_state_locked(conn, recovery_state::loss);
+}
+
+uint32_t pipe_bytes(const tcp_conn* conn) {
+    uint32_t outstanding = conn->snd_nxt - conn->snd_una;
+    uint32_t lost = static_cast<uint32_t>(conn->sent.lost_bytes());
+    return outstanding > lost ? outstanding - lost : 0;
 }
 
 uint32_t limited_transmit_bytes(const tcp_conn* conn) {

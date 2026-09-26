@@ -55,6 +55,12 @@ public:
 
     sent_segment* oldest() { return m_records.front(); }
     sent_segment* newest() { return m_records.back(); }
+    size_t lost_bytes() const { return m_lost_bytes; }
+
+    /**
+     * @brief The oldest record marked lost and not yet sent again, or nullptr.
+     */
+    sent_segment* oldest_lost();
 
     /**
      * @brief Records a segment sent at `now_ns` covering `start_seq` up to
@@ -65,9 +71,20 @@ public:
     sent_segment* track(uint32_t start_seq, uint32_t end_seq, uint64_t now_ns);
 
     /**
-     * @brief Notes that the record's segment went out again at `now_ns`.
+     * @brief Notes that the record's segment went out again at `now_ns`,
+     * which takes it out of the lost bytes.
      */
     void mark_retransmitted(sent_segment* segment, uint64_t now_ns);
+
+    /**
+     * @brief Marks every record lost, as a retransmission timeout does.
+     */
+    void mark_all_lost();
+
+    /**
+     * @brief Takes the lost mark off every record, as a timeout found spurious does.
+     */
+    void clear_lost_marks();
 
     /**
      * @brief Frees every record `ack_seq` covers whole and trims the one it
@@ -85,6 +102,7 @@ private:
 
     list::head<sent_segment, &sent_segment::link> m_records;
     size_t                                        m_cap;
+    size_t                                        m_lost_bytes;
 };
 
 } // namespace tcp

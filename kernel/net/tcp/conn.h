@@ -175,6 +175,7 @@ struct tcp_conn : record {
     uint64_t              last_data_sent_ns;
     bool                  cwnd_limited;
     uint8_t               dupacks;
+    uint8_t               frto_step;   // RFC 5682 2.2, zero when not in use
     recovery_state        recovery;
     const congestion_ops* congestion;
     alignas(8) uint8_t    congestion_state[CONGESTION_STATE_SIZE];

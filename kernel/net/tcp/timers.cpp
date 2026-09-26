@@ -1,4 +1,5 @@
 #include "net/tcp/timers.h"
+#include "net/tcp/recovery.h"
 #include "net/tcp/output.h"
 #include "net/tcp/info.h"
 #include "net/tcp/seq.h"
@@ -121,6 +122,16 @@ static uint8_t retry_limit_locked(const tcp_conn* conn) {
     return conn->orphaned ? ORPHAN_RETRIES : DATA_RETRIES;
 }
 
+// Caller holds the lock. A timeout with data outstanding is a loss (RFC 5681 3.1)
+static packet* retransmit_oldest_locked(tcp_conn* conn) {
+    if (conn->sent.empty()) {
+        return nullptr;
+    }
+
+    enter_loss_locked(conn);
+    return rebuild_oldest_locked(conn);
+}
+
 static int32_t retransmit(tcp_state state, const segment_source& src) {
     switch (state) {
     case tcp_state::syn_sent:
@@ -179,7 +190,7 @@ void on_send_timer(timer::deadline_timer* timer) {
                     action = exhausted;
                 } else {
                     back_off_locked(conn);
-                    rebuilt = rebuild_oldest_locked(conn);
+                    rebuilt = retransmit_oldest_locked(conn);
                     arm_send_timer_locked(conn, timer_kind::rto);
                     action = send_action::retransmit;
                 }
@@ -188,7 +199,7 @@ void on_send_timer(timer::deadline_timer* timer) {
             } else {
                 conn->retransmits++;
                 back_off_locked(conn);
-                rebuilt = rebuild_oldest_locked(conn);
+                rebuilt = retransmit_oldest_locked(conn);
                 arm_send_timer_locked(conn, timer_kind::rto);
                 action = send_action::retransmit;
             }
