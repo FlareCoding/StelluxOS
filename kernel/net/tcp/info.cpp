@@ -95,6 +95,16 @@ static void describe_conn_locked(const tcp_conn* conn, tcp_record* out) {
     out->rttvar_us = conn->rttvar_us;
     out->rto_ms = static_cast<uint32_t>(conn->rto_ns / 1000000);
     out->total_retransmits = conn->total_retransmits;
+    out->ssthresh = conn->ssthresh;
+    out->soft_error = conn->soft_error;
+    out->path_mtu = conn->path_mtu;
+    out->recovery_state = static_cast<uint8_t>(conn->recovery);
+    out->dupacks = conn->dupacks;
+
+    size_t name_len = string::strnlen(conn->congestion->name, CONGESTION_NAME_MAX - 1);
+    string::memcpy(out->cong_name, conn->congestion->name, name_len);
+
+    out->cong_name[name_len] = '\0';
     out->flags = (conn->ts_ok ? INFO_TIMESTAMPS : 0) | (conn->sack_ok ? INFO_SACK : 0) |
                  (conn->wscale_ok ? INFO_WINDOW_SCALE : 0) | (conn->orphaned ? INFO_ORPHANED : 0) |
                  (conn->fin_sent ? INFO_FIN_SENT : 0) | (conn->fin_rcvd ? INFO_FIN_RCVD : 0);
@@ -136,7 +146,7 @@ void increment(counter which) {
 }
 
 void describe_counters(tcp_counters* out) {
-    *out = {};
+    string::memset(out, 0, sizeof(*out));
     out->segments_in = g_counters[static_cast<size_t>(counter::segments_in)].load_relaxed();
     out->segments_out = g_counters[static_cast<size_t>(counter::segments_out)].load_relaxed();
     out->retransmits = g_counters[static_cast<size_t>(counter::retransmits)].load_relaxed();
@@ -156,7 +166,7 @@ void describe_counters(tcp_counters* out) {
 }
 
 void describe_listener(tcp_listener* listener, tcp_record* out) {
-    *out = {};
+    string::memset(out, 0, sizeof(*out));
     out->kind = INFO_KIND_LISTENER;
     out->state = static_cast<uint8_t>(tcp_state::listen);
     out->local_addr = to_host_order(listener->local.addr);
@@ -172,7 +182,7 @@ void describe_listener(tcp_listener* listener, tcp_record* out) {
 }
 
 void describe_record(record* rec, tcp_record* out) {
-    *out = {};
+    string::memset(out, 0, sizeof(*out));
     describe_tuple(rec->key, out);
     describe_iface(rec->iface, out);
 

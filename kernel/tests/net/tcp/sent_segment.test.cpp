@@ -131,6 +131,30 @@ TEST(tcp_sent_segment, the_cap_and_the_budget_refuse_further_records) {
     EXPECT_EQ(r.s.count(), 3u);
 }
 
+TEST(tcp_sent_segment, the_tails_of_splits_stay_outside_the_cap) {
+    scoped_segments r(2);
+    sent_segment* first = r.s.track(1000, 2000, T0);
+    ASSERT_NOT_NULL(first);
+    ASSERT_NOT_NULL(r.s.track(2000, 3000, T0));
+
+    sent_segment* tail = r.s.split(first, 1500);
+    ASSERT_NOT_NULL(tail);
+    EXPECT_EQ(first->end_seq, 1500u);
+    EXPECT_EQ(tail->start_seq, 1500u);
+    EXPECT_EQ(tail->end_seq, 2000u);
+    EXPECT_EQ(r.s.count(), 3u);
+    EXPECT_EQ(r.s.track(3000, 4000, T0), nullptr);
+
+    EXPECT_EQ(r.s.acknowledge(1500).bytes, 500u);
+    ASSERT_NOT_NULL(r.s.track(3000, 4000, T0));
+    EXPECT_EQ(r.s.count(), 3u);
+
+    EXPECT_EQ(r.s.acknowledge(4000).bytes, 2500u);
+    ASSERT_NOT_NULL(r.s.track(4000, 5000, T0));
+    ASSERT_NOT_NULL(r.s.track(5000, 6000, T0));
+    EXPECT_EQ(r.s.track(6000, 7000, T0), nullptr);
+}
+
 TEST(tcp_sent_segment, sequence_numbers_wrap_past_zero) {
     scoped_segments r(8);
     r.s.track(0xFFFFFF00u, 0xFFFFFFC0u, T0);

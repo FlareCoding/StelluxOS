@@ -156,6 +156,24 @@ TEST(tcp_pmtu, a_full_window_splits_past_the_record_cap) {
     }
 }
 
+TEST(tcp_pmtu, data_written_after_a_window_of_splits_still_goes_out) {
+    linked_peer lp;
+    narrowed n(lp);
+    n.write(10 * PEER_MSS);
+    EXPECT_EQ(n.fragmentation_needed(1492, n.conn->snd_una), OK);
+    EXPECT_EQ(output(n.conn.ptr()), OK);
+    ASSERT_EQ(n.conn->sent.count(), 20u);
+    ASSERT_EQ(n.conn->sent.cap(), 19u);
+    uint32_t mss = 1492 - HEADERS;
+
+    EXPECT_EQ(n.ack(n.conn->snd_una + mss), OK);
+    lp.link.clear_frames();
+    n.write(mss);
+    EXPECT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(n.conn->sent.count(), 20u);
+    EXPECT_EQ(sent_payload_len(lp.link, 0), mss);
+}
+
 TEST(tcp_pmtu, a_narrower_path_is_not_congestion_so_the_window_stays) {
     linked_peer lp;
     narrowed n(lp);

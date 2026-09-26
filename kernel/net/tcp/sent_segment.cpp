@@ -14,11 +14,15 @@ void sent_segments::init(size_t cap) {
     m_records.init();
     m_cap = cap;
     m_lost_bytes = 0;
+    m_split_tails = 0;
 }
 
 void sent_segments::release(sent_segment* segment) {
     if (segment->marks & MARK_LOST) {
         m_lost_bytes -= length_of(segment);
+    }
+    if (segment->marks & MARK_SPLIT_TAIL) {
+        m_split_tails--;
     }
 
     m_records.remove(segment);
@@ -27,7 +31,7 @@ void sent_segments::release(sent_segment* segment) {
 }
 
 sent_segment* sent_segments::track(uint32_t start_seq, uint32_t end_seq, uint64_t now_ns) {
-    if (m_records.size() >= m_cap || !reserve_budget(SENT_SEGMENT_COST)) {
+    if (m_records.size() - m_split_tails >= m_cap || !reserve_budget(SENT_SEGMENT_COST)) {
         return nullptr;
     }
 
@@ -109,8 +113,9 @@ sent_segment* sent_segments::split(sent_segment* segment, uint32_t at_seq) {
     tail->end_seq = segment->end_seq;
     tail->sent_ns = segment->sent_ns;
     tail->retrans = segment->retrans;
-    tail->marks = segment->marks;
+    tail->marks = segment->marks | MARK_SPLIT_TAIL;
     segment->end_seq = at_seq;
+    m_split_tails++;
     m_records.insert_sorted(tail, [](const sent_segment* a, const sent_segment* b) {
         return seq_lt(a->start_seq, b->start_seq);
     });
