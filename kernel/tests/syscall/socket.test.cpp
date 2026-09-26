@@ -4,6 +4,7 @@
 #include "helpers.h"
 #include "../net/stub_interface.h"
 #include "syscall/handlers/sys_socket.h"
+#include "syscall/handlers/sys_error_map.h"
 #include "syscall/handlers/sys_fd.h"
 #include "syscall/handlers/sys_io.h"
 #include "resource/resource.h"
@@ -155,6 +156,10 @@ TEST(socket_syscall, creation_flags_reach_the_new_socket) {
 TEST(socket_syscall, unknown_type_bits_are_still_rejected) {
     int64_t rc = sys_socket(net::inet::AF_INET, net::inet::SOCK_DGRAM | 0x10, 0, 0, 0, 0);
     EXPECT_EQ(rc, syscall::EPROTONOSUPPORT);
+}
+
+TEST(socket_syscall, a_send_on_a_broken_connection_reports_epipe) {
+    EXPECT_EQ(syscall::error_map::map_socket_op_error(resource::ERR_PIPE), syscall::EPIPE);
 }
 
 // --- sendmsg_gathers_the_vector_into_one_datagram ---
