@@ -78,6 +78,29 @@ __PRIVILEGED_CODE void unix_channel::ref_destroy(unix_channel* self) {
     heap::kfree_delete(self);
 }
 
+/**
+ * A channel with a buffer for each direction, or null when memory runs out.
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE static rc::strong_ref<unix_channel> create_channel() {
+    auto chan = rc::make_kref<unix_channel>();
+    if (!chan) {
+        return rc::strong_ref<unix_channel>();
+    }
+
+    chan->buf_a_to_b = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
+    if (!chan->buf_a_to_b) {
+        return rc::strong_ref<unix_channel>();
+    }
+
+    chan->buf_b_to_a = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
+    if (!chan->buf_b_to_a) {
+        return rc::strong_ref<unix_channel>();
+    }
+
+    return chan;
+}
+
 __PRIVILEGED_CODE static ssize_t socket_read(
     resource::resource_object* obj, void* kdst, size_t count, uint32_t flags
 ) {
@@ -309,7 +332,9 @@ __PRIVILEGED_CODE static int32_t unix_accept(
 __PRIVILEGED_CODE static int32_t unix_connect(
     resource::resource_object* obj, const void* kaddr, size_t addrlen, bool
 ) {
-    if (!obj || !obj->impl) return resource::ERR_INVAL;
+    if (!obj || !obj->impl) {
+        return resource::ERR_INVAL;
+    }
 
     auto* client_sock = static_cast<unix_socket*>(obj->impl);
     if (client_sock->state == SOCK_STATE_CONNECTED) {
@@ -322,12 +347,17 @@ __PRIVILEGED_CODE static int32_t unix_connect(
 
     char kpath[UNIX_PATH_MAX];
     int32_t rc = parse_unix_addr(kaddr, addrlen, kpath);
-    if (rc != resource::OK) return rc;
+    if (rc != resource::OK) {
+        return rc;
+    }
 
     fs::node* target_node = nullptr;
     rc = fs::lookup(kpath, &target_node);
     if (rc != fs::OK) {
-        if (rc == fs::ERR_NOENT) return resource::ERR_NOENT;
+        if (rc == fs::ERR_NOENT) {
+            return resource::ERR_NOENT;
+        }
+
         return resource::ERR_CONNREFUSED;
     }
 
@@ -356,20 +386,15 @@ __PRIVILEGED_CODE static int32_t unix_connect(
         return resource::ERR_CONNREFUSED;
     }
 
-    auto chan = rc::make_kref<unix_channel>();
-    if (!chan) return resource::ERR_NOMEM;
-
-    chan->buf_a_to_b = nullptr;
-    chan->buf_b_to_a = nullptr;
-
-    chan->buf_a_to_b = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
-    if (!chan->buf_a_to_b) return resource::ERR_NOMEM;
-
-    chan->buf_b_to_a = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
-    if (!chan->buf_b_to_a) return resource::ERR_NOMEM;
+    auto chan = create_channel();
+    if (!chan) {
+        return resource::ERR_NOMEM;
+    }
 
     auto* server_sock = heap::kalloc_new<unix_socket>();
-    if (!server_sock) return resource::ERR_NOMEM;
+    if (!server_sock) {
+        return resource::ERR_NOMEM;
+    }
 
     server_sock->state = SOCK_STATE_CONNECTED;
     server_sock->lock = sync::SPINLOCK_INIT;
@@ -513,21 +538,8 @@ __PRIVILEGED_CODE int32_t create_socket_pair(
         return resource::ERR_INVAL;
     }
 
-    auto chan = rc::make_kref<unix_channel>();
+    auto chan = create_channel();
     if (!chan) {
-        return resource::ERR_NOMEM;
-    }
-
-    chan->buf_a_to_b = nullptr;
-    chan->buf_b_to_a = nullptr;
-
-    chan->buf_a_to_b = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
-    if (!chan->buf_a_to_b) {
-        return resource::ERR_NOMEM;
-    }
-
-    chan->buf_b_to_a = ring_buffer_create(RING_BUFFER_DEFAULT_CAPACITY);
-    if (!chan->buf_b_to_a) {
         return resource::ERR_NOMEM;
     }
 
