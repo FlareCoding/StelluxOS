@@ -51,6 +51,16 @@ recovery_action take_advancing_ack_locked(tcp_conn* conn, uint32_t ack, uint32_t
 void enter_loss_locked(tcp_conn* conn);
 
 /**
+ * @brief Takes a Fragmentation Needed message about this connection's path
+ * (RFC 1191): the path MTU drops to `next_hop_mtu`, or to the next plateau
+ * below when the router announced none, never under MIN_PATH_MTU. Records too
+ * long for the path are marked lost and the connection enters loss with its
+ * window kept, since nothing was congested. Caller holds the lock.
+ * @return Whether anything is left to send again.
+ */
+bool lower_path_mtu_locked(tcp_conn* conn, uint16_t next_hop_mtu);
+
+/**
  * @brief Bytes believed to be in the network: what is outstanding less what
  * is marked lost (RFC 6675 4, pipe).
  */

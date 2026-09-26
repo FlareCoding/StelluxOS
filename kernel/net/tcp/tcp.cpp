@@ -4,6 +4,7 @@
 #include "net/tcp/listen.h"
 #include "net/tcp/input.h"
 #include "net/tcp/output.h"
+#include "net/tcp/recovery.h"
 #include "net/tcp/timewait.h"
 #include "net/tcp/info.h"
 #include "net/tcp/seq.h"
@@ -93,10 +94,11 @@ static int32_t icmp_error_code(uint8_t type, uint8_t code) {
     }
 }
 
-void icmp_error(uint8_t type, uint8_t code, const ipv4::ipv4_header* inner, const uint8_t* segment,
-                size_t segment_len) {
+void icmp_error(uint8_t type, uint8_t code, uint16_t next_hop_mtu, const ipv4::ipv4_header* inner,
+                const uint8_t* segment, size_t segment_len) {
+    bool fragmentation = type == icmp::TYPE_DEST_UNREACHABLE && code == icmp::CODE_FRAGMENTATION_NEEDED;
     int32_t error = icmp_error_code(type, code);
-    if (error == resource::OK || segment_len < icmp::ERROR_PAYLOAD_LEN) {
+    if ((error == resource::OK && !fragmentation) || segment_len < icmp::ERROR_PAYLOAD_LEN) {
         return;
     }
 
@@ -110,10 +112,13 @@ void icmp_error(uint8_t type, uint8_t code, const ipv4::ipv4_header* inner, cons
     tcp_conn* conn = static_cast<tcp_conn*>(rec.ptr());
     uint32_t seq = ntohl(hdr->seq);
     bool handshake = false;
+    bool resend = false;
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);
         bool outstanding = seq_geq(seq, conn->snd_una) && seq_lt(seq, conn->snd_nxt);
-        if (outstanding) {
+        if (outstanding && fragmentation) {
+            resend = lower_path_mtu_locked(conn, next_hop_mtu);
+        } else if (outstanding) {
             handshake = conn->state == tcp_state::syn_sent || conn->state == tcp_state::syn_rcvd;
             if (is_synchronized(conn->state)) {
                 conn->soft_error = error;
@@ -123,6 +128,8 @@ void icmp_error(uint8_t type, uint8_t code, const ipv4::ipv4_header* inner, cons
 
     if (handshake) {
         fail_connection(conn, error);
+    } else if (resend) {
+        output(conn);
     }
 }
 

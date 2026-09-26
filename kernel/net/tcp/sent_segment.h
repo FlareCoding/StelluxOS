@@ -82,6 +82,21 @@ public:
     void mark_all_lost();
 
     /**
+     * @brief Marks the records longer than `len` lost, as a path that shrank
+     * makes them.
+     * @return The bytes newly marked.
+     */
+    size_t mark_lost_longer_than(size_t len);
+
+    /**
+     * @brief Cuts a record at `at_seq`, the tail becoming a record of its own
+     * with the same marks, so the head can go again on a narrower path.
+     * @return The tail, or nullptr when the cap or the budget refuses, in which
+     *         case the record is left whole.
+     */
+    sent_segment* split(sent_segment* segment, uint32_t at_seq);
+
+    /**
      * @brief Takes the lost mark off every record, as a timeout found spurious does.
      */
     void clear_lost_marks();

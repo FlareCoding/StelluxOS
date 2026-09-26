@@ -36,9 +36,16 @@ uint16_t local_mss(const interface* iface);
 
 /**
  * @brief The largest payload sent to a peer announcing `peer_mss` over `iface`,
- * kept under `cap` when the socket set one.
+ * kept under `cap` when the socket set one and within `path_mtu` when the
+ * path announced one (zero for neither).
  */
-uint16_t send_mss(const interface* iface, uint16_t peer_mss, uint16_t cap);
+uint16_t send_mss(const interface* iface, uint16_t peer_mss, uint16_t cap, uint16_t path_mtu);
+
+/**
+ * @brief The payload one segment carries at the connection's MSS once the
+ * options it would send take their share.
+ */
+size_t payload_mss(const tcp_conn* conn);
 
 /**
  * @brief The window field for `window` bytes at shift `wscale`, capped at the
@@ -97,7 +104,8 @@ packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, uint8
 
 /**
  * @brief Builds a record's segment again from the queue and marks the record
- * retransmitted. Caller holds the lock. nullptr when no packet is free.
+ * retransmitted, first splitting off what no longer fits one segment so the
+ * rest stays lost. Caller holds the lock. nullptr when no packet is free.
  */
 packet* rebuild_locked(tcp_conn* conn, sent_segment* segment);
 

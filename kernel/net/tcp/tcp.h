@@ -22,10 +22,11 @@ int32_t input(packet* pkt);
 /**
  * @brief Takes an ICMP error about a segment this host sent: `inner` is the IP
  * header it carried, `segment` the start of the segment behind it. A handshake
- * fails with the error, a synchronized connection records it (RFC 1122 4.2.3.9).
+ * fails with the error, a synchronized connection records it (RFC 1122 4.2.3.9),
+ * and Fragmentation Needed narrows the path to `next_hop_mtu` (RFC 1191).
  */
-void icmp_error(uint8_t type, uint8_t code, const ipv4::ipv4_header* inner, const uint8_t* segment,
-                size_t segment_len);
+void icmp_error(uint8_t type, uint8_t code, uint16_t next_hop_mtu, const ipv4::ipv4_header* inner,
+                const uint8_t* segment, size_t segment_len);
 
 } // namespace tcp
 } // namespace net

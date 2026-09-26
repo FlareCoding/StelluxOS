@@ -666,7 +666,7 @@ __PRIVILEGED_CODE static void set_mss_cap_locked(tcp_socket* sock, uint16_t cap)
         sync::irq_lock_guard guard(sock->conn->lock);
         sock->conn->snd_mss_cap = cap;
         if (sock->conn->rcv_mss != 0) {
-            sock->conn->snd_mss = send_mss(sock->conn->iface, sock->conn->rcv_mss, cap);
+            sock->conn->snd_mss = send_mss(sock->conn->iface, sock->conn->rcv_mss, cap, sock->conn->path_mtu);
         }
     }
 }

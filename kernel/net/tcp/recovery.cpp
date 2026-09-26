@@ -1,9 +1,15 @@
 #include "net/tcp/recovery.h"
+#include "net/tcp/output.h"
 #include "net/tcp/seq.h"
 #include "net/tcp/wire.h"
+#include "net/interface.h"
 
 namespace net {
 namespace tcp {
+
+static constexpr uint16_t MTU_PLATEAUS[] = { // RFC 1191 7.1
+    65535, 32000, 17914, 8166, 4352, 2002, 1492, 1006, 508, 296, 68
+};
 
 static void enter_state_locked(tcp_conn* conn, recovery_state state) {
     conn->recovery = state;
@@ -148,7 +154,8 @@ recovery_action take_advancing_ack_locked(tcp_conn* conn, uint32_t ack, uint32_t
 }
 
 void enter_loss_locked(tcp_conn* conn) {
-    bool first_timeout = conn->recovery != recovery_state::loss;
+    // The episode began with this timeout unless an earlier one began it
+    bool first_timeout = conn->recovery != recovery_state::loss || conn->retransmits == 1;
     if (first_timeout) {
         conn->prior_cwnd = conn->cwnd;
         conn->prior_ssthresh = conn->ssthresh;
@@ -164,6 +171,41 @@ void enter_loss_locked(tcp_conn* conn) {
 
     notify(conn, congestion_event::loss);
     enter_state_locked(conn, recovery_state::loss);
+}
+
+static uint16_t plateau_below(uint16_t mtu) {
+    for (uint16_t plateau : MTU_PLATEAUS) {
+        if (plateau < mtu) {
+            return plateau;
+        }
+    }
+
+    return MIN_PATH_MTU;
+}
+
+bool lower_path_mtu_locked(tcp_conn* conn, uint16_t next_hop_mtu) {
+    uint16_t current = conn->path_mtu != 0 ? conn->path_mtu : conn->iface->mtu();
+    uint16_t mtu = next_hop_mtu != 0 ? next_hop_mtu : plateau_below(current);
+    if (mtu < MIN_PATH_MTU) {
+        mtu = MIN_PATH_MTU;
+    }
+    if (mtu >= current) {
+        return false;
+    }
+
+    conn->path_mtu = mtu;
+    conn->snd_mss = send_mss(conn->iface, conn->rcv_mss, conn->snd_mss_cap, mtu);
+    if (conn->sent.mark_lost_longer_than(payload_mss(conn)) == 0) {
+        return false;
+    }
+
+    if (conn->recovery != recovery_state::loss) {
+        conn->high_seq = conn->snd_nxt;
+        conn->frto_step = 0;
+        enter_state_locked(conn, recovery_state::loss);
+    }
+
+    return true;
 }
 
 uint32_t pipe_bytes(const tcp_conn* conn) {

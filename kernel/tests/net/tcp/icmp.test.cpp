@@ -128,7 +128,7 @@ TEST(tcp_icmp, an_error_with_nothing_outstanding_or_about_another_port_is_ignore
     EXPECT_EQ(c.conn->state, tcp_state::established);
 }
 
-TEST(tcp_icmp, an_error_that_is_not_about_reachability_is_left_alone) {
+TEST(tcp_icmp, fragmentation_needed_is_about_the_path_and_not_an_error) {
     linked_peer lp;
     informed c(lp);
     c.establish();
