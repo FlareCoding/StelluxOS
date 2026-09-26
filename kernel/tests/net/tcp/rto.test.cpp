@@ -278,13 +278,16 @@ TEST(tcp_rto, a_retried_syn_leaves_no_backoff_behind_once_acknowledged) {
     open_active(key, &lp.link, &conn);
     advance_and_fire(TIMEOUT_INIT_NS);
     advance_and_fire(2 * TIMEOUT_INIT_NS);
-    ASSERT_EQ(conn->retransmits, 2);
+    advance_and_fire(4 * TIMEOUT_INIT_NS);
+    ASSERT_EQ(conn->retransmits, 3);
+    EXPECT_EQ(conn->soft_error, OK);
 
     tcp_options opts;
     opts.mss = PEER_MSS;
     EXPECT_EQ(input(lp.remote.segment(FLAG_SYN | FLAG_ACK, PEER_ISS, conn->iss + 1, opts)), OK);
     ASSERT_EQ(conn->state, tcp_state::established);
     EXPECT_EQ(conn->retransmits, 0);
+    EXPECT_EQ(conn->soft_error, OK);
 
     RUN_ELEVATED({
         sync::irq_lock_guard guard(conn->lock);

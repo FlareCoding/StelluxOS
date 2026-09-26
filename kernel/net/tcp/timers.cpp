@@ -265,7 +265,8 @@ void on_send_timer(timer::deadline_timer* timer) {
                 action = exhausted;
             } else {
                 conn->retransmits++;
-                if (conn->retransmits >= DELIVERY_PROBLEM_RETRIES && conn->soft_error == resource::OK) {
+                bool data_problem = is_synchronized(conn->state) && conn->retransmits >= DELIVERY_PROBLEM_RETRIES;
+                if (data_problem && conn->soft_error == resource::OK) {
                     conn->soft_error = resource::ERR_TIMEDOUT;
                 }
 
