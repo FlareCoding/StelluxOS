@@ -80,6 +80,44 @@ void sent_segments::mark_all_lost() {
     }
 }
 
+size_t sent_segments::mark_lost_longer_than(size_t len) {
+    size_t marked = 0;
+    for (sent_segment& segment : m_records) {
+        if (length_of(&segment) > len && !(segment.marks & MARK_LOST)) {
+            segment.marks |= MARK_LOST;
+            marked += length_of(&segment);
+        }
+    }
+
+    m_lost_bytes += marked;
+    return marked;
+}
+
+sent_segment* sent_segments::split(sent_segment* segment, uint32_t at_seq) {
+    if (m_records.size() >= m_cap || !reserve_budget(SENT_SEGMENT_COST)) {
+        return nullptr;
+    }
+
+    sent_segment* tail = static_cast<sent_segment*>(heap::ualloc(sizeof(sent_segment)));
+    if (!tail) {
+        release_budget(SENT_SEGMENT_COST);
+        return nullptr;
+    }
+
+    tail->link = {};
+    tail->start_seq = at_seq;
+    tail->end_seq = segment->end_seq;
+    tail->sent_ns = segment->sent_ns;
+    tail->retrans = segment->retrans;
+    tail->marks = segment->marks;
+    segment->end_seq = at_seq;
+    m_records.insert_sorted(tail, [](const sent_segment* a, const sent_segment* b) {
+        return seq_lt(a->start_seq, b->start_seq);
+    });
+
+    return tail;
+}
+
 void sent_segments::clear_lost_marks() {
     for (sent_segment& segment : m_records) {
         segment.marks &= ~MARK_LOST;

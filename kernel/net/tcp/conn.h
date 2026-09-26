@@ -32,6 +32,7 @@ constexpr uint64_t TIMEOUT_MAX_NS     = 120000000000ULL;
 constexpr uint64_t FIN_TIMEOUT_NS     = 60000000000ULL;
 constexpr uint16_t DEFAULT_MSS        = 536;     // RFC 9293 3.7.1, when the peer sends none
 constexpr uint16_t MIN_MSS            = 88;
+constexpr uint16_t MIN_PATH_MTU       = 552;     // Floor against the tiny-MTU attack of RFC 5927 7.1
 constexpr uint64_t TS_RECENT_MAX_AGE_NS = 24ULL * 24 * 3600 * 1000000000ULL; // RFC 7323 5.5
 constexpr size_t   RCV_CHUNKS_INITIAL = MIN_BUF / CHUNK_PAYLOAD;
 constexpr uint32_t RCV_WND_INITIAL    = RCV_CHUNKS_INITIAL * CHUNK_PAYLOAD; // what an empty queue can take
@@ -115,6 +116,7 @@ struct tcp_conn : record {
     uint32_t max_snd_wnd; // Largest window the peer ever advertised (RFC 5961 5.2)
     uint16_t snd_mss;
     uint16_t snd_mss_cap;
+    uint16_t path_mtu;    // Zero until an ICMP message lowers it
     uint8_t  snd_wscale;
 
     // Receive sequence space

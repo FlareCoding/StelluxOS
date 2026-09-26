@@ -38,7 +38,8 @@ static void deliver_error(const packet* pkt, const icmp_header* hdr) {
     }
 
     if (inner->proto == ipv4::PROTO_TCP) {
-        tcp::icmp_error(hdr->type, hdr->code, inner, body + inner_len, body_len - inner_len);
+        tcp::icmp_error(hdr->type, hdr->code, ntohs(hdr->frag.next_hop_mtu), inner, body + inner_len,
+                        body_len - inner_len);
     }
 }
 

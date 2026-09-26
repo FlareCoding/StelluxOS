@@ -20,10 +20,14 @@ uint16_t local_mss(const interface* iface) {
     return static_cast<uint16_t>(iface->mtu() - ipv4::HEADER_LEN - HEADER_LEN);
 }
 
-uint16_t send_mss(const interface* iface, uint16_t peer_mss, uint16_t cap) {
+uint16_t send_mss(const interface* iface, uint16_t peer_mss, uint16_t cap, uint16_t path_mtu) {
     uint16_t mss = peer_mss < local_mss(iface) ? peer_mss : local_mss(iface);
+    if (cap != 0 && cap < mss) {
+        mss = cap;
+    }
 
-    return cap != 0 && cap < mss ? cap : mss;
+    uint16_t path_mss = static_cast<uint16_t>(path_mtu - ipv4::HEADER_LEN - HEADER_LEN);
+    return path_mtu != 0 && path_mss < mss ? path_mss : mss;
 }
 
 uint16_t window_field(uint32_t window, uint8_t wscale) {
@@ -194,7 +198,19 @@ packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, uint8
     return pkt;
 }
 
+// Caller holds the lock. RFC 6691: the MSS less the option bytes in use
+size_t payload_mss(const tcp_conn* conn) {
+    uint8_t scratch[MAX_OPTIONS_LEN];
+    size_t options = build_options(scratch, control_options(snapshot_source(conn)));
+    return conn->snd_mss > options ? conn->snd_mss - options : 1;
+}
+
 packet* rebuild_locked(tcp_conn* conn, sent_segment* segment) {
+    size_t mss = payload_mss(conn);
+    if (segment->end_seq - segment->start_seq > mss) {
+        (void)conn->sent.split(segment, segment->start_seq + static_cast<uint32_t>(mss));
+    }
+
     size_t len = segment->end_seq - segment->start_seq;
     bool last = segment->end_seq == conn->snd_una + conn->snd_queue.size();
     bool carries_fin = conn->fin_sent && segment->end_seq + 1 == conn->snd_nxt;
@@ -215,12 +231,6 @@ packet* rebuild_oldest_locked(tcp_conn* conn) {
     return oldest ? rebuild_locked(conn, oldest) : nullptr;
 }
 
-// Caller holds the lock. RFC 6691: the MSS less the option bytes in use
-static size_t payload_mss(const tcp_conn* conn) {
-    uint8_t scratch[MAX_OPTIONS_LEN];
-    size_t options = build_options(scratch, control_options(snapshot_source(conn)));
-    return conn->snd_mss > options ? conn->snd_mss - options : 1;
-}
 
 static bool may_send(tcp_state state) {
     return state == tcp_state::established || state == tcp_state::close_wait ||
