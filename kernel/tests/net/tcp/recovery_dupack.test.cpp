@@ -102,7 +102,21 @@ static uint32_t fake_undo(tcp_conn* conn) { return conn->cwnd; }
 static const congestion_ops RECORDING = {
     .name = "recording", .ssthresh = fake_ssthresh, .grow = fake_grow, .set_state = record_state, .undo = fake_undo};
 
-TEST(tcp_recovery_dupack, the_first_two_duplicates_each_let_one_new_segment_out_and_the_third_does_not) {
+static uint32_t sent_seq(const stub_interface& link, size_t frame) {
+    return ntohl(sent_tcp(link, frame)->seq);
+}
+
+// Three duplicates: two new segments out, then the oldest one again
+static void enter_recovery(reordering& r) {
+    EXPECT_EQ(r.ack(0), OK);
+    EXPECT_EQ(r.ack(0), OK);
+    EXPECT_EQ(r.ack(0), OK);
+    ASSERT_EQ(r.conn->recovery, recovery_state::recovery);
+    ASSERT_EQ(r.in_flight(), 12u * PEER_MSS);
+    r.lp.link.clear_frames();
+}
+
+TEST(tcp_recovery_dupack, the_first_two_duplicates_let_new_segments_out_and_the_third_retransmits_the_oldest) {
     linked_peer lp;
     reordering r(lp);
     ASSERT_EQ(r.in_flight(), 10u * PEER_MSS);
@@ -112,7 +126,7 @@ TEST(tcp_recovery_dupack, the_first_two_duplicates_each_let_one_new_segment_out_
     EXPECT_EQ(r.conn->dupacks, 1);
     EXPECT_EQ(r.conn->recovery, recovery_state::disorder);
     EXPECT_EQ(lp.link.frames_sent(), 1u);
-    EXPECT_EQ(r.in_flight(), 11u * PEER_MSS);
+    EXPECT_EQ(sent_seq(lp.link, 0), r.first_seq() + 10 * PEER_MSS);
     EXPECT_EQ(r.conn->cwnd, 10u * PEER_MSS);
 
     EXPECT_EQ(r.ack(0), OK);
@@ -122,9 +136,93 @@ TEST(tcp_recovery_dupack, the_first_two_duplicates_each_let_one_new_segment_out_
 
     EXPECT_EQ(r.ack(0), OK);
     EXPECT_EQ(r.conn->dupacks, 3);
-    EXPECT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(r.conn->recovery, recovery_state::recovery);
+    ASSERT_EQ(lp.link.frames_sent(), 3u);
+    EXPECT_EQ(sent_seq(lp.link, 2), r.first_seq());
     EXPECT_EQ(r.in_flight(), 12u * PEER_MSS);
-    EXPECT_EQ(r.conn->cwnd, 10u * PEER_MSS);
+    EXPECT_EQ(r.conn->ssthresh, 5u * PEER_MSS);
+    EXPECT_EQ(r.conn->cwnd, 8u * PEER_MSS);
+    EXPECT_EQ(r.conn->prior_cwnd, 10u * PEER_MSS);
+    EXPECT_EQ(r.conn->high_seq, r.first_seq() + 12 * PEER_MSS);
+    EXPECT_EQ(r.conn->total_retransmits, 1u);
+}
+
+TEST(tcp_recovery_dupack, further_duplicates_inflate_the_window_until_new_data_fits) {
+    linked_peer lp;
+    reordering r(lp);
+    enter_recovery(r);
+
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ(r.ack(0), OK);
+    }
+    EXPECT_EQ(r.conn->cwnd, 12u * PEER_MSS);
+    EXPECT_EQ(lp.link.frames_sent(), 0u);
+
+    EXPECT_EQ(r.ack(0), OK);
+    EXPECT_EQ(r.conn->cwnd, 13u * PEER_MSS);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_seq(lp.link, 0), r.first_seq() + 12 * PEER_MSS);
+    EXPECT_EQ(r.in_flight(), 13u * PEER_MSS);
+}
+
+TEST(tcp_recovery_dupack, a_partial_acknowledgment_retransmits_the_next_hole_and_deflates_the_window) {
+    linked_peer lp;
+    reordering r(lp);
+    enter_recovery(r);
+
+    EXPECT_EQ(r.ack(PEER_MSS), OK);
+    EXPECT_EQ(r.conn->recovery, recovery_state::recovery);
+    EXPECT_EQ(r.conn->dupacks, 0);
+    EXPECT_EQ(r.conn->cwnd, 8u * PEER_MSS);
+    ASSERT_EQ(lp.link.frames_sent(), 1u);
+    EXPECT_EQ(sent_seq(lp.link, 0), r.first_seq() + PEER_MSS);
+
+    EXPECT_EQ(r.ack(4 * PEER_MSS), OK);
+    EXPECT_EQ(r.conn->cwnd, 6u * PEER_MSS);
+    ASSERT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(sent_seq(lp.link, 1), r.first_seq() + 4 * PEER_MSS);
+    EXPECT_EQ(r.conn->total_retransmits, 3u);
+}
+
+TEST(tcp_recovery_dupack, a_full_acknowledgment_ends_recovery_with_the_window_settled_on_what_is_in_flight) {
+    linked_peer lp;
+    reordering r(lp);
+    enter_recovery(r);
+
+    EXPECT_EQ(r.ack(12 * PEER_MSS), OK);
+    EXPECT_EQ(r.conn->recovery, recovery_state::open);
+    EXPECT_EQ(r.conn->dupacks, 0);
+    EXPECT_EQ(r.conn->cwnd, 2u * PEER_MSS);
+    EXPECT_EQ(r.conn->ssthresh, 5u * PEER_MSS);
+    EXPECT_TRUE(is_in_slow_start(r.conn.ptr()));
+    EXPECT_EQ(lp.link.frames_sent(), 2u);
+    EXPECT_EQ(r.in_flight(), 2u * PEER_MSS);
+}
+
+TEST(tcp_recovery_dupack, a_second_recovery_needs_acknowledgments_past_where_the_last_one_began) {
+    linked_peer lp;
+    reordering r(lp);
+    enter_recovery(r);
+    EXPECT_EQ(r.ack(12 * PEER_MSS), OK);
+    ASSERT_EQ(r.in_flight(), 2u * PEER_MSS);
+    lp.link.clear_frames();
+
+    EXPECT_EQ(r.ack(12 * PEER_MSS), OK);
+    EXPECT_EQ(r.ack(12 * PEER_MSS), OK);
+    EXPECT_EQ(r.ack(12 * PEER_MSS), OK);
+    EXPECT_EQ(r.conn->dupacks, 3);
+    EXPECT_EQ(r.conn->recovery, recovery_state::disorder);
+    EXPECT_EQ(r.conn->cwnd, 2u * PEER_MSS);
+
+    EXPECT_EQ(r.ack(13 * PEER_MSS), OK);
+    ASSERT_EQ(r.conn->recovery, recovery_state::open);
+    lp.link.clear_frames();
+    EXPECT_EQ(r.ack(13 * PEER_MSS), OK);
+    EXPECT_EQ(r.ack(13 * PEER_MSS), OK);
+    EXPECT_EQ(r.ack(13 * PEER_MSS), OK);
+    EXPECT_EQ(r.conn->recovery, recovery_state::recovery);
+    EXPECT_EQ(r.conn->high_seq, r.conn->snd_nxt);
+    EXPECT_EQ(sent_seq(lp.link, lp.link.frames_sent() - 1), r.first_seq() + 13 * PEER_MSS);
 }
 
 TEST(tcp_recovery_dupack, an_acknowledgment_with_a_changed_window_or_payload_is_not_a_duplicate) {
@@ -184,4 +282,14 @@ TEST(tcp_recovery_dupack, the_algorithm_hears_each_change_of_state) {
     ASSERT_EQ(g_state_count, 2u);
     EXPECT_EQ(g_states[0], recovery_state::disorder);
     EXPECT_EQ(g_states[1], recovery_state::open);
+
+    g_state_count = 0;
+    EXPECT_EQ(r.ack(2 * PEER_MSS), OK);
+    EXPECT_EQ(r.ack(2 * PEER_MSS), OK);
+    EXPECT_EQ(r.ack(2 * PEER_MSS), OK);
+    EXPECT_EQ(r.ack(r.conn->snd_nxt - r.first_seq()), OK);
+    ASSERT_EQ(g_state_count, 3u);
+    EXPECT_EQ(g_states[0], recovery_state::disorder);
+    EXPECT_EQ(g_states[1], recovery_state::recovery);
+    EXPECT_EQ(g_states[2], recovery_state::open);
 }

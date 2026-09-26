@@ -171,6 +171,7 @@ void configure_send_path_locked(tcp_conn* conn) {
     conn->last_data_sent_ns = now_ns();
     conn->cwnd_limited = false;
     conn->recovery = recovery_state::open;
+    conn->high_seq = conn->iss;
     conn->snd_sml = conn->iss;
     conn->sent.set_cap(conn->snd_queue.limit() * CHUNK_PAYLOAD / conn->snd_mss + SENT_SEGMENT_MARGIN);
     if (conn->congestion->init) {

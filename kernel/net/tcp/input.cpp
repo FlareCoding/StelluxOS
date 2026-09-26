@@ -107,18 +107,20 @@ static bool paws_rejects_locked(const tcp_conn* conn, const tcp_options& opts) {
 // RFC 9293 3.10.7.4 for an acceptable ACK: one below SND.UNA is a duplicate
 // that changes nothing, otherwise the send window follows the newest segment
 // (RFC 7323 4.3 for the timestamp). Caller holds the lock.
-static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_options& opts, size_t payload_len) {
+static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_options& opts, size_t payload_len,
+                            packet** retransmission) {
     uint32_t seq = ntohl(hdr->seq);
     uint32_t ack = ntohl(hdr->ack);
     uint32_t window = uint32_t{ntohs(hdr->window)} << conn->snd_wscale;
     bool current = seq_geq(ack, conn->snd_una);
     bool duplicate = is_duplicate_ack_locked(conn, hdr->flags, payload_len, ack, window);
     bool freed_room = false;
+    recovery_action action = recovery_action::none;
     conn->unanswered_probes = 0;
     conn->peer_acked_ns = now_ns();
 
     if (duplicate) {
-        take_duplicate_ack_locked(conn);
+        action = take_duplicate_ack_locked(conn);
     } else if (seq_gt(ack, conn->snd_una)) {
         uint32_t advance = ack - conn->snd_una;
         size_t queued = conn->snd_queue.size();
@@ -135,13 +137,14 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
         conn->snd_una = ack;
         conn->retransmits = 0;
         conn->backoff = 0;
-        leave_disorder_locked(conn);
+        action = take_advancing_ack_locked(conn, ack, covered.bytes);
 
         if (conn->congestion->acked) {
             conn->congestion->acked(conn, covered.bytes, rtt_ns != 0 ? static_cast<int64_t>(rtt_ns / 1000) : -1);
         }
 
-        if (conn->recovery == recovery_state::open && is_cwnd_limited(conn)) {
+        bool may_grow = action != recovery_action::recovered && conn->recovery == recovery_state::open;
+        if (may_grow && is_cwnd_limited(conn)) {
             conn->congestion->grow(conn, covered.bytes);
         }
 
@@ -150,6 +153,10 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
         } else {
             arm_send_timer_locked(conn, timer_kind::rto);
         }
+    }
+
+    if (action == recovery_action::retransmit) {
+        *retransmission = rebuild_oldest_locked(conn);
     }
 
     if (current && (seq_lt(conn->snd_wl1, seq) || (conn->snd_wl1 == seq && seq_leq(conn->snd_wl2, ack)))) {
@@ -272,6 +279,7 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
     bool wake_writers = false;
     bool try_send = false;
     bool packet_taken = false;
+    packet* retransmission = nullptr;
     segment_source src = {};
 
     RUN_ELEVATED({
@@ -298,7 +306,7 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
         } else if (!seq_geq(ack, conn->snd_una - conn->max_snd_wnd) || !seq_leq(ack, conn->snd_nxt)) {
             action = segment_action::challenge;
         } else {
-            wake_writers = take_ack_locked(conn, hdr, opts, payload_len);
+            wake_writers = take_ack_locked(conn, hdr, opts, payload_len, &retransmission);
             take_fin_ack_locked(conn, ack);
 
             if (refuses_data_locked(conn, seq, payload_len)) {
@@ -357,6 +365,11 @@ static int32_t synchronized_input(tcp_conn* conn, packet* pkt, const tcp_header*
 
     if (wake_writers) {
         RUN_ELEVATED(sync::wake_all(conn->tx_wq));
+    }
+
+    if (retransmission) {
+        increment(counter::retransmits);
+        (void)transmit_segment(retransmission, src.iface, src.key);
     }
 
     if (try_send && is_synchronized(after)) {

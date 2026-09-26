@@ -121,25 +121,6 @@ static uint8_t retry_limit_locked(const tcp_conn* conn) {
     return conn->orphaned ? ORPHAN_RETRIES : DATA_RETRIES;
 }
 
-// Caller holds the lock
-static packet* rebuild_oldest_locked(tcp_conn* conn) {
-    sent_segment* oldest = conn->sent.oldest();
-    if (!oldest) {
-        return nullptr;
-    }
-
-    size_t len = oldest->end_seq - oldest->start_seq;
-    bool last = oldest->end_seq == conn->snd_una + conn->snd_queue.size();
-    bool carries_fin = conn->fin_sent && oldest->end_seq + 1 == conn->snd_nxt;
-    uint8_t flags = FLAG_ACK | (last ? FLAG_PSH : 0) | (carries_fin ? FLAG_FIN : 0);
-    packet* pkt = build_data_segment(conn, oldest->start_seq, len, flags);
-    if (pkt) {
-        conn->sent.mark_retransmitted(oldest, now_ns());
-    }
-
-    return pkt;
-}
-
 static int32_t retransmit(tcp_state state, const segment_source& src) {
     switch (state) {
     case tcp_state::syn_sent:
@@ -212,7 +193,7 @@ void on_send_timer(timer::deadline_timer* timer) {
                 action = send_action::retransmit;
             }
 
-            if (action == send_action::retransmit) {
+            if (action == send_action::retransmit && !rebuilt) {
                 conn->total_retransmits++;
             } else if (action == send_action::reset || action == send_action::give_up) {
                 conn->state = tcp_state::closed;
