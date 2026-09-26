@@ -30,8 +30,9 @@ static_assert(sizeof(sent_segment) <= SENT_SEGMENT_COST);
 
 /**
  * What an acknowledgment covered: the bytes it newly acknowledged and the
- * send time of the oldest record it covered whole that was never
- * retransmitted, zero when there is none such (Karn's rule, RFC 6298 3).
+ * send time of the oldest record it covered, zero when any covered record
+ * was retransmitted, since the reply may be to the retransmission and the
+ * records behind it waited for it (Karn's rule, RFC 6298 3).
  */
 struct acknowledged {
     uint32_t bytes;

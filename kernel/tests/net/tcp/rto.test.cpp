@@ -150,6 +150,52 @@ TEST(tcp_rto, a_segment_sent_twice_gives_no_sample_without_timestamps) {
     EXPECT_EQ(m.conn->rto_ns, TIMEOUT_INIT_NS);
 }
 
+TEST(tcp_rto, segments_held_behind_a_retransmitted_head_give_no_sample_without_timestamps) {
+    linked_peer lp;
+    measuring m(lp, false);
+
+    m.write(100);
+    g_fake_now += 100 * MS;
+    EXPECT_EQ(m.ack(100), OK);
+    ASSERT_EQ(m.conn->rto_ns, 300 * MS);
+
+    m.write(2 * PEER_MSS);
+    m.write(PEER_MSS);
+    ASSERT_EQ(m.conn->sent.count(), 3u);
+    advance_and_fire(300 * MS);
+    EXPECT_EQ(m.conn->sent.oldest()->retrans, 1);
+
+    g_fake_now += 5000 * MS;
+    EXPECT_EQ(m.ack(100 + 3 * PEER_MSS), OK);
+    EXPECT_EQ(m.conn->srtt_us, 100000u);
+    EXPECT_EQ(m.conn->rto_ns, 300 * MS);
+    EXPECT_EQ(m.conn->backoff, 0);
+    EXPECT_EQ(m.conn->send_timer_kind, timer_kind::none);
+}
+
+TEST(tcp_rto, the_echo_measures_the_retransmission_not_the_segments_held_behind_it) {
+    linked_peer lp;
+    measuring m(lp, true);
+
+    m.write(100);
+    g_fake_now += 100 * MS;
+    EXPECT_EQ(m.ack(100, sent_ts_val(lp.link, 0)), OK);
+    ASSERT_EQ(m.conn->rto_ns, 300 * MS);
+
+    m.write(2 * PEER_MSS);
+    m.write(PEER_MSS);
+    size_t frames_before = lp.link.frames_sent();
+    advance_and_fire(300 * MS);
+    ASSERT_EQ(lp.link.frames_sent(), frames_before + 1);
+    uint32_t retransmission_ts = sent_ts_val(lp.link, frames_before);
+
+    g_fake_now += 40 * MS;
+    EXPECT_EQ(m.ack(m.conn->snd_nxt - m.first_seq(), retransmission_ts), OK);
+    EXPECT_EQ(m.conn->srtt_us, 92500u);
+    EXPECT_EQ(m.conn->rttvar_us, 52500u);
+    EXPECT_EQ(m.conn->rto_ns, 302500ULL * 1000);
+}
+
 TEST(tcp_rto, a_timestamp_echo_tells_which_transmission_was_acknowledged) {
     linked_peer lp;
     measuring m(lp, true);

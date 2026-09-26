@@ -50,6 +50,7 @@ void sent_segments::mark_retransmitted(sent_segment* segment, uint64_t now_ns) {
 
 acknowledged sent_segments::acknowledge(uint32_t ack_seq) {
     acknowledged result = {};
+    bool covered_retransmission = false;
 
     while (sent_segment* segment = m_records.front()) {
         if (!seq_leq(segment->end_seq, ack_seq)) {
@@ -57,7 +58,9 @@ acknowledged sent_segments::acknowledge(uint32_t ack_seq) {
         }
 
         result.bytes += segment->end_seq - segment->start_seq;
-        if (segment->retrans == 0 && result.rtt_sample_sent_ns == 0) {
+        if (segment->retrans != 0) {
+            covered_retransmission = true;
+        } else if (result.rtt_sample_sent_ns == 0) {
             result.rtt_sample_sent_ns = segment->sent_ns;
         }
 
@@ -68,6 +71,11 @@ acknowledged sent_segments::acknowledge(uint32_t ack_seq) {
     if (partial && seq_lt(partial->start_seq, ack_seq)) {
         result.bytes += ack_seq - partial->start_seq;
         partial->start_seq = ack_seq;
+        covered_retransmission = covered_retransmission || partial->retrans != 0;
+    }
+
+    if (covered_retransmission) {
+        result.rtt_sample_sent_ns = 0;
     }
 
     return result;
