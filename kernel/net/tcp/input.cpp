@@ -116,6 +116,7 @@ static bool take_ack_locked(tcp_conn* conn, const tcp_header* hdr, const tcp_opt
     bool duplicate = is_duplicate_ack_locked(conn, hdr->flags, payload_len, ack, window);
     bool freed_room = false;
     recovery_action action = recovery_action::none;
+    
     conn->unanswered_probes = 0;
     conn->peer_acked_ns = now_ns();
     conn->soft_error = resource::OK;
@@ -445,6 +446,7 @@ static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
                 conn->send_timer_kind = timer_kind::none;
                 conn->retransmits = 0;
                 conn->backoff = 0;
+                conn->soft_error = resource::OK;
                 arm_keepalive_locked(conn);
                 action = handshake_action::established;
             } else {
@@ -504,6 +506,7 @@ static int32_t syn_rcvd_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
             conn->send_timer_kind = timer_kind::none;
             conn->retransmits = 0;
             conn->backoff = 0;
+            conn->soft_error = resource::OK;
             action = handshake_action::established;
         }
     });
