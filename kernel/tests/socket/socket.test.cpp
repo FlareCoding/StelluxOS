@@ -7,6 +7,7 @@
 #include "net/inet.h"
 #include "dynpriv/dynpriv.h"
 #include "common/ring_buffer.h"
+#include "sync/poll.h"
 #include "socket/listener.h"
 #include "resource/resource.h"
 #include "resource/handle_table.h"
@@ -805,4 +806,20 @@ TEST(socket_test, stream_writes_to_a_closed_peer_break_with_or_without_the_signa
     EXPECT_EQ(obj_a->ops->write(obj_a, "x", 1, 0), resource::ERR_PIPE);
 
     resource::resource_release(obj_a);
+}
+
+// Stream polling
+
+constexpr uint32_t STREAM_DOWN = sync::POLL_IN | sync::POLL_RDHUP | sync::POLL_OUT | sync::POLL_HUP;
+
+TEST(socket_test, a_unix_stream_hangs_up_without_an_error_when_its_peer_closes) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    EXPECT_EQ(obj_b->ops->poll(obj_b, nullptr), sync::POLL_OUT);
+
+    resource::resource_release(obj_a);
+    EXPECT_EQ(obj_b->ops->poll(obj_b, nullptr), STREAM_DOWN);
+
+    resource::resource_release(obj_b);
 }
