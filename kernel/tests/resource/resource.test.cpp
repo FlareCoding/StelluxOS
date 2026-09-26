@@ -271,8 +271,8 @@ TEST(resource_test, open_returns_tablefull_when_handle_space_exhausted) {
     sched::task* task = sched::current();
     ASSERT_NOT_NULL(task);
 
-    resource::handle_t handles[resource::MAX_TASK_HANDLES];
-    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+    resource::handle_t handles[resource::DEFAULT_HANDLE_LIMIT];
+    for (uint32_t i = 0; i < resource::DEFAULT_HANDLE_LIMIT; i++) {
         handles[i] = -1;
         ASSERT_EQ(resource::open(task, "/resource_full", fs::O_CREAT | fs::O_RDWR, &handles[i]), resource::OK);
     }
@@ -280,7 +280,7 @@ TEST(resource_test, open_returns_tablefull_when_handle_space_exhausted) {
     resource::handle_t extra = -1;
     EXPECT_EQ(resource::open(task, "/resource_full", fs::O_CREAT | fs::O_RDWR, &extra), resource::ERR_TABLEFULL);
 
-    for (uint32_t i = 0; i < resource::MAX_TASK_HANDLES; i++) {
+    for (uint32_t i = 0; i < resource::DEFAULT_HANDLE_LIMIT; i++) {
         EXPECT_EQ(resource::close(task, handles[i]), resource::OK);
     }
 }
@@ -388,7 +388,7 @@ TEST(resource_test, dup2_same_fd_is_validated_noop) {
     ASSERT_EQ(resource::open(task, "/dup2_same", fs::O_CREAT | fs::O_RDWR, &f), resource::OK);
 
     EXPECT_EQ(call_dup2(f, f), static_cast<int64_t>(f));
-    EXPECT_EQ(call_dup2(f, static_cast<resource::handle_t>(resource::MAX_TASK_HANDLES)), syscall::EBADF);
+    EXPECT_EQ(call_dup2(f, static_cast<resource::handle_t>(resource::DEFAULT_HANDLE_LIMIT)), syscall::EBADF);
 
     ASSERT_EQ(resource::close(task, f), resource::OK);
 
@@ -673,9 +673,9 @@ TEST(resource_test, install_handle_at_grows_the_table_to_reach_the_slot) {
     ASSERT_NOT_NULL(table);
     ASSERT_NOT_NULL(obj);
 
-    auto last = static_cast<resource::handle_t>(resource::MAX_TASK_HANDLES - 1);
+    auto last = static_cast<resource::handle_t>(resource::DEFAULT_HANDLE_LIMIT - 1);
     ASSERT_EQ(resource::install_handle_at(table, last, obj, obj->type, resource::RIGHT_READ), resource::HANDLE_OK);
-    EXPECT_EQ(table->capacity, resource::MAX_TASK_HANDLES);
+    EXPECT_EQ(table->capacity, resource::DEFAULT_HANDLE_LIMIT);
     EXPECT_EQ(object_at(table, last), obj);
     EXPECT_NULL(object_at(table, last - 1));
 
@@ -695,7 +695,7 @@ TEST(resource_test, copy_handle_table_grows_the_copy_to_match) {
     ASSERT_NOT_NULL(dst);
     ASSERT_NOT_NULL(obj);
 
-    auto last = static_cast<resource::handle_t>(resource::MAX_TASK_HANDLES - 1);
+    auto last = static_cast<resource::handle_t>(resource::DEFAULT_HANDLE_LIMIT - 1);
     ASSERT_EQ(resource::install_handle_at(src, last, obj, obj->type, resource::RIGHT_READ), resource::HANDLE_OK);
     resource::resource_release(obj);
 
@@ -724,6 +724,25 @@ TEST(resource_test, alloc_handle_stays_below_its_limit) {
     // A handle already past the limit keeps its slot
     ASSERT_EQ(resource::install_handle_at(table, 5, obj, obj->type, resource::RIGHT_READ), resource::HANDLE_OK);
     EXPECT_EQ(object_at(table, 5), obj);
+
+    resource::resource_release(obj);
+    resource::handle_table::ref_destroy(table);
+}
+
+TEST(resource_test, a_table_grows_past_the_default_limit_when_its_limit_allows) {
+    resource::handle_table* table = make_handle_table();
+    resource::resource_object* obj = make_object();
+    ASSERT_NOT_NULL(table);
+    ASSERT_NOT_NULL(obj);
+
+    uint32_t limit = resource::DEFAULT_HANDLE_LIMIT + 1;
+    resource::handle_t h = -1;
+    for (uint32_t i = 0; i < limit; i++) {
+        ASSERT_EQ(resource::alloc_handle(table, obj, obj->type, resource::RIGHT_READ, &h, limit), resource::HANDLE_OK);
+    }
+
+    EXPECT_EQ(h, static_cast<resource::handle_t>(resource::DEFAULT_HANDLE_LIMIT));
+    EXPECT_EQ(resource::handle_table_capacity(table), 2 * resource::DEFAULT_HANDLE_LIMIT);
 
     resource::resource_release(obj);
     resource::handle_table::ref_destroy(table);

@@ -88,10 +88,21 @@ __PRIVILEGED_CODE int32_t init_task_handles(sched::task* task) {
  */
 __PRIVILEGED_CODE uint32_t handle_limit(sched::task* task) {
     if (!task->group) {
-        return MAX_TASK_HANDLES;
+        return DEFAULT_HANDLE_LIMIT;
     }
 
     sync::irq_lock_guard guard(task->group->lock);
+    return handle_limit_unlocked(task);
+}
+
+/**
+ * @note Privilege: **required**
+ */
+__PRIVILEGED_CODE uint32_t handle_limit_unlocked(sched::task* task) {
+    if (!task->group) {
+        return DEFAULT_HANDLE_LIMIT;
+    }
+
     uint64_t soft = task->group->rlimits[sched::RLIMIT_NOFILE].soft;
     return soft < MAX_TASK_HANDLES ? static_cast<uint32_t>(soft) : MAX_TASK_HANDLES;
 }

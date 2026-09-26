@@ -331,6 +331,14 @@ bool handle_slot_in_range(const handle_table* table, handle_t slot) {
 /**
  * @note Privilege: **required**
  */
+__PRIVILEGED_CODE uint32_t handle_table_capacity(handle_table* table) {
+    sync::irq_lock_guard guard(table->lock);
+    return table->capacity;
+}
+
+/**
+ * @note Privilege: **required**
+ */
 __PRIVILEGED_CODE int32_t remove_handle(
     handle_table* table,
     handle_t handle,

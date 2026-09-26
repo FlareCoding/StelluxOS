@@ -34,7 +34,7 @@ TEST(prlimit_syscall, default_limits_reflect_kernel_constants) {
     sched::init_default_rlimits(limits);
 
     EXPECT_EQ(limits[sched::RLIMIT_NOFILE].soft,
-              static_cast<uint64_t>(resource::MAX_TASK_HANDLES));
+              static_cast<uint64_t>(resource::DEFAULT_HANDLE_LIMIT));
     EXPECT_EQ(limits[sched::RLIMIT_STACK].soft,
               mm::USER_STACK_MAX_PAGES * pmm::PAGE_SIZE);
     EXPECT_EQ(limits[0].soft, sched::RLIM_INFINITY);
