@@ -113,6 +113,73 @@ void on_ack_timer(timer::deadline_timer* timer) {
     finish_timer_callback(conn);
 }
 
+void arm_keepalive_locked(tcp_conn* conn) {
+    if (!conn->keepalive || !is_synchronized(conn->state)) {
+        return;
+    }
+
+    uint64_t now = now_ns();
+    uint64_t idle_end = conn->peer_acked_ns + static_cast<uint64_t>(conn->keepalive_idle_s) * 1000000000ULL;
+    conn->keepalive_armed = true;
+    conn->keepalive_deadline_ns = idle_end > now ? idle_end : now;
+    arm_timer(conn, &conn->keepalive_timer, conn->keepalive_deadline_ns);
+}
+
+// Caller holds the lock
+static void arm_keepalive_after_locked(tcp_conn* conn, uint64_t wait_ns) {
+    conn->keepalive_armed = true;
+    conn->keepalive_deadline_ns = now_ns() + wait_ns;
+    arm_timer(conn, &conn->keepalive_timer, conn->keepalive_deadline_ns);
+}
+
+void on_keepalive_timer(timer::deadline_timer* timer) {
+    tcp_conn* conn = timer::owner_of<tcp_conn, &tcp_conn::keepalive_timer>(timer);
+    send_action action = send_action::none;
+    segment_source src = {};
+
+    RUN_ELEVATED({
+        sync::irq_lock_guard guard(conn->lock);
+        if (conn->keepalive_armed) {
+            if (now_ns() < conn->keepalive_deadline_ns) {
+                arm_timer(conn, &conn->keepalive_timer, conn->keepalive_deadline_ns);
+                finish_timer_callback(conn);
+                return;
+            }
+
+            conn->keepalive_armed = false;
+            uint64_t idle_ns = static_cast<uint64_t>(conn->keepalive_idle_s) * 1000000000ULL;
+            uint64_t interval_ns = static_cast<uint64_t>(conn->keepalive_interval_s) * 1000000000ULL;
+            if (conn->keepalive && is_synchronized(conn->state)) {
+                if (conn->snd_nxt != conn->snd_una) {
+                    arm_keepalive_after_locked(conn, idle_ns);
+                } else if (now_ns() - conn->peer_acked_ns < idle_ns) {
+                    arm_keepalive_locked(conn);
+                } else if (conn->unanswered_probes >= conn->keepalive_probes) {
+                    conn->state = tcp_state::closed;
+                    conn->pending_error = conn->soft_error != resource::OK ? conn->soft_error : resource::ERR_TIMEDOUT;
+                    src = snapshot_source(conn);
+                    action = send_action::reset;
+                } else {
+                    conn->unanswered_probes++;
+                    src = snapshot_source(conn);
+                    mark_ack_sent_locked(conn);
+                    arm_keepalive_after_locked(conn, interval_ns);
+                    action = send_action::probe;
+                }
+            }
+        }
+    });
+
+    if (action == send_action::reset) {
+        (void)send_segment(src.iface, src.key, FLAG_RST | FLAG_ACK, src.snd_nxt, src.rcv_nxt, 0, {});
+        retire_connection(conn);
+    } else if (action == send_action::probe) {
+        (void)send_probe(src);
+    }
+
+    finish_timer_callback(conn);
+}
+
 // Caller holds the lock. RFC 1122 4.2.3.5
 static uint8_t retry_limit_locked(const tcp_conn* conn) {
     if (conn->state == tcp_state::syn_sent || conn->state == tcp_state::syn_rcvd) {

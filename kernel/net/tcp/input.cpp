@@ -445,6 +445,7 @@ static int32_t syn_sent_input(tcp_conn* conn, packet* pkt, const tcp_header* hdr
                 conn->send_timer_kind = timer_kind::none;
                 conn->retransmits = 0;
                 conn->backoff = 0;
+                arm_keepalive_locked(conn);
                 action = handshake_action::established;
             } else {
                 conn->state = tcp_state::syn_rcvd;

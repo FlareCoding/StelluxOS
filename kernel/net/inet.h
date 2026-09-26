@@ -33,12 +33,16 @@ constexpr int32_t SO_REUSEADDR    = 2;
 constexpr int32_t SO_TYPE         = 3;
 constexpr int32_t SO_ERROR        = 4;
 constexpr int32_t SO_BROADCAST    = 6;
+constexpr int32_t SO_KEEPALIVE    = 9;
 constexpr int32_t SO_LINGER       = 13;
 constexpr int32_t SO_BINDTODEVICE = 25;
 constexpr int32_t SO_ACCEPTCONN   = 30;
 
 constexpr int32_t TCP_NODELAY  = 1;
 constexpr int32_t TCP_MAXSEG   = 2;
+constexpr int32_t TCP_KEEPIDLE = 4;
+constexpr int32_t TCP_KEEPINTVL = 5;
+constexpr int32_t TCP_KEEPCNT  = 6;
 constexpr int32_t TCP_INFO     = 11; // Answers with net/tcp/info.h's tcp_record
 constexpr int32_t TCP_QUICKACK = 12;
 

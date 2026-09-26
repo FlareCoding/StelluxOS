@@ -439,6 +439,7 @@ static void init_from_request(tcp_conn* conn, const negotiated_fields& fields, c
     conn->wscale_ok = fields.wscale_ok;
     conn->total_retransmits = fields.retransmits;
     configure_send_path_locked(conn);
+    arm_keepalive_locked(conn);
     conn->sack_ok = fields.sack_ok;
     conn->ts_ok = fields.ts_ok;
     conn->ecn_ok = fields.ecn_ok;

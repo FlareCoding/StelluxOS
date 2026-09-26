@@ -894,6 +894,60 @@ TEST(tcp_socket, tcp_options_are_kept_and_reach_the_connection) {
     abort_connection(conn);
 }
 
+TEST(tcp_socket, keepalive_options_are_kept_bounded_and_reach_the_connection) {
+    linked_peer lp;
+    stream_socket sock;
+    sock.impl()->local.iface = &lp.link;
+
+    int32_t value = 0;
+    size_t len = sizeof(value);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_KEEPALIVE, &value, &len), resource::OK);
+    EXPECT_EQ(value, 0);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPIDLE, &value, &len), resource::OK);
+    EXPECT_EQ(value, KEEPALIVE_IDLE_S);
+
+    value = 0;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPIDLE, &value, sizeof(value)), resource::ERR_INVAL);
+    value = MAX_KEEPALIVE_S + 1;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPINTVL, &value, sizeof(value)), resource::ERR_INVAL);
+    value = MAX_KEEPALIVE_PROBES + 1;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPCNT, &value, sizeof(value)), resource::ERR_INVAL);
+
+    value = 1;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_KEEPALIVE, &value, sizeof(value)), resource::OK);
+    value = 30;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPIDLE, &value, sizeof(value)), resource::OK);
+    value = 5;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPINTVL, &value, sizeof(value)), resource::OK);
+    value = 4;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPCNT, &value, sizeof(value)), resource::OK);
+
+    uint32_t iss = 0;
+    (void)sock.establish(lp, &iss);
+    tcp_conn* conn = sock.impl()->conn.ptr();
+    EXPECT_TRUE(conn->keepalive);
+    EXPECT_TRUE(conn->keepalive_armed);
+    EXPECT_EQ(conn->keepalive_idle_s, 30);
+    EXPECT_EQ(conn->keepalive_interval_s, 5);
+    EXPECT_EQ(conn->keepalive_probes, 4);
+    EXPECT_EQ(conn->keepalive_deadline_ns, conn->peer_acked_ns + 30 * 1000000000ULL);
+
+    value = 20;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPIDLE, &value, sizeof(value)), resource::OK);
+    EXPECT_EQ(conn->keepalive_idle_s, 20);
+    EXPECT_EQ(conn->keepalive_deadline_ns, conn->peer_acked_ns + 20 * 1000000000ULL);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPIDLE, &value, &len), resource::OK);
+    EXPECT_EQ(value, 20);
+
+    value = 0;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_KEEPALIVE, &value, sizeof(value)), resource::OK);
+    EXPECT_FALSE(conn->keepalive);
+    EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_KEEPALIVE, &value, &len), resource::OK);
+    EXPECT_EQ(value, 0);
+
+    abort_connection(conn);
+}
+
 TEST(tcp_socket, a_listeners_options_reach_the_connections_it_accepts) {
     linked_peer lp;
     stream_socket sock;
@@ -903,6 +957,9 @@ TEST(tcp_socket, a_listeners_options_reach_the_connections_it_accepts) {
 
     int32_t value = 1;
     EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_NODELAY, &value, sizeof(value)), resource::OK);
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_KEEPALIVE, &value, sizeof(value)), resource::OK);
+    value = 45;
+    EXPECT_EQ(sock.ops()->setsockopt(sock.obj, inet::IPPROTO_TCP, inet::TCP_KEEPIDLE, &value, sizeof(value)), resource::OK);
     size_t len = sizeof(value);
     EXPECT_EQ(sock.ops()->getsockopt(sock.obj, inet::SOL_SOCKET, inet::SO_ACCEPTCONN, &value, &len), resource::OK);
     EXPECT_EQ(value, 1);
@@ -917,6 +974,10 @@ TEST(tcp_socket, a_listeners_options_reach_the_connections_it_accepts) {
     tcp_socket* child = static_cast<tcp_socket*>(child_obj->impl);
     EXPECT_TRUE(child->options.nodelay);
     EXPECT_TRUE(child->conn->nodelay);
+    EXPECT_TRUE(child->options.keepalive);
+    EXPECT_TRUE(child->conn->keepalive);
+    EXPECT_TRUE(child->conn->keepalive_armed);
+    EXPECT_EQ(child->conn->keepalive_idle_s, 45);
 
     abort_connection(child->conn.ptr());
     child_obj->ops->close(child_obj);
