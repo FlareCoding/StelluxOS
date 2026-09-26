@@ -1,7 +1,11 @@
 #define STLX_TEST_TIER TIER_SCHED
 
 #include "stlx_unit_test.h"
+#include "helpers.h"
 #include "socket/unix_socket.h"
+#include "resource/socket_ops.h"
+#include "net/inet.h"
+#include "dynpriv/dynpriv.h"
 #include "common/ring_buffer.h"
 #include "socket/listener.h"
 #include "resource/resource.h"
@@ -718,4 +722,87 @@ TEST(socket_test, get_handle_object_returns_flags) {
     resource::resource_release(out);
 
     EXPECT_EQ(resource::close(task, h), resource::OK);
+}
+
+// Blocking stream sends
+
+struct blocking_send_run {
+    resource::resource_object* obj;
+    ssize_t result;
+    sync::atomic<uint32_t> done;
+};
+
+static blocking_send_run g_blocking_send;
+static uint8_t g_blocking_send_bytes[4096];
+
+static void run_blocking_send(void*) {
+    blocking_send_run& run = g_blocking_send;
+    run.result = run.obj->ops->socket->sendto(run.obj, g_blocking_send_bytes, sizeof(g_blocking_send_bytes),
+                                              0, nullptr, 0);
+    run.done.store_release(1);
+    sched::exit(0);
+}
+
+TEST(socket_test, a_blocking_stream_send_waits_for_room_and_sends_everything) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    const resource::socket_ops* ops = obj_a->ops->socket;
+
+    // The stream starts full, so the send finds no room at all
+    size_t queued = 0;
+    ssize_t n = 0;
+    while ((n = ops->sendto(obj_a, g_blocking_send_bytes, sizeof(g_blocking_send_bytes), net::inet::MSG_DONTWAIT,
+                            nullptr, 0)) > 0) {
+        queued += static_cast<size_t>(n);
+    }
+    ASSERT_EQ(n, static_cast<ssize_t>(resource::ERR_AGAIN));
+
+    g_blocking_send.obj = obj_a;
+    g_blocking_send.result = 0;
+    g_blocking_send.done.store_relaxed(0);
+    sched::task* sender = nullptr;
+    RUN_ELEVATED({
+        sender = sched::create_kernel_task(run_blocking_send, nullptr, "blocking_send", sched::TASK_FLAG_ELEVATED);
+        if (sender) {
+            sched::enqueue(sender);
+        }
+    });
+    ASSERT_NOT_NULL(sender);
+
+    // Draining in pieces smaller than the send catches a sender that stops at its first room
+    size_t expected = queued + sizeof(g_blocking_send_bytes);
+    size_t drained = 0;
+    uint8_t piece[512];
+    uint64_t deadline = clock::now_ns() + test_helpers::SPIN_TIMEOUT_NS;
+    while (drained < expected && clock::now_ns() < deadline) {
+        ssize_t got = obj_b->ops->read(obj_b, piece, sizeof(piece), fs::O_NONBLOCK);
+        if (got > 0) {
+            drained += static_cast<size_t>(got);
+        }
+    }
+
+    EXPECT_EQ(drained, expected);
+    EXPECT_TRUE(test_helpers::spin_wait(g_blocking_send.done));
+    EXPECT_EQ(g_blocking_send.result, static_cast<ssize_t>(sizeof(g_blocking_send_bytes)));
+
+    // Closing the reader first lets a sender still waiting give up before its socket goes away
+    resource::resource_release(obj_b);
+    (void)test_helpers::spin_wait(g_blocking_send.done);
+    resource::resource_release(obj_a);
+}
+
+// A kernel task cannot receive the signal, so only the results are checked here
+TEST(socket_test, stream_writes_to_a_closed_peer_break_with_or_without_the_signal) {
+    resource::resource_object* obj_a = nullptr;
+    resource::resource_object* obj_b = nullptr;
+    ASSERT_EQ(socket::create_socket_pair(&obj_a, &obj_b), resource::OK);
+    resource::resource_release(obj_b);
+
+    const resource::socket_ops* ops = obj_a->ops->socket;
+    EXPECT_EQ(ops->sendto(obj_a, "x", 1, net::inet::MSG_NOSIGNAL, nullptr, 0), resource::ERR_PIPE);
+    EXPECT_EQ(ops->sendto(obj_a, "x", 1, 0, nullptr, 0), resource::ERR_PIPE);
+    EXPECT_EQ(obj_a->ops->write(obj_a, "x", 1, 0), resource::ERR_PIPE);
+
+    resource::resource_release(obj_a);
 }

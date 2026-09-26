@@ -759,3 +759,168 @@ TEST(socket_syscall, sendmsg_refuses_ancillary_data) {
 
     EXPECT_EQ(resource::close(sched::current(), static_cast<resource::handle_t>(fd)), resource::OK);
 }
+
+// Unix stream sends
+
+constexpr uint64_t AF_UNIX = 1;
+
+// Where the unix stream tests keep a pair's handles and the bytes they send
+constexpr size_t UNIX_PAIR_AT = 1024;
+constexpr size_t UNIX_SEND_AT = 2048;
+constexpr size_t UNIX_SEND_MAX = pmm::PAGE_SIZE - UNIX_SEND_AT;
+
+struct unix_pair {
+    int32_t a;
+    int32_t b;
+};
+
+// A connected pair made the way userland makes one, with both handles landing in the page
+static bool make_unix_pair(user_page& page, unix_pair* out) {
+    int64_t rc = 0;
+    {
+        user_space_scope scope(page.ctx);
+        rc = sys_socketpair(AF_UNIX, inet::SOCK_STREAM, 0, page.addr + UNIX_PAIR_AT, 0, 0);
+    }
+    if (rc != 0) {
+        return false;
+    }
+
+    out->a = page.at<int32_t>(UNIX_PAIR_AT)[0];
+    out->b = page.at<int32_t>(UNIX_PAIR_AT)[1];
+    return true;
+}
+
+static void close_unix_pair(sched::task* task, const unix_pair& pair) {
+    (void)resource::close(task, pair.a);
+    (void)resource::close(task, pair.b);
+}
+
+// Sends `len` bytes from the page, to the address at MSG_NAME when `addrlen` is set
+static int64_t unix_send(user_page& page, int32_t fd, size_t len, uint64_t flags, uint64_t addrlen = 0) {
+    user_space_scope scope(page.ctx);
+    uint64_t addr = addrlen ? page.addr + MSG_NAME : 0;
+    return sys_sendto(static_cast<uint64_t>(fd), page.addr + UNIX_SEND_AT, len, flags, addr, addrlen);
+}
+
+TEST(socket_syscall, a_unix_stream_send_reaches_the_peer) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(UNIX_SEND_AT), "hello", 5);
+    EXPECT_EQ(unix_send(page, pair.a, 5, inet::MSG_NOSIGNAL), 5);
+
+    char buf[8] = {};
+    EXPECT_EQ(resource::read(task, pair.b, buf, sizeof(buf)), static_cast<ssize_t>(5));
+    EXPECT_EQ(string::memcmp(buf, "hello", 5), 0);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_unix_stream_sendmsg_gathers_its_vector) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    string::memcpy(page.at<char>(MSG_BUF_A), "unix", 4);
+    string::memcpy(page.at<char>(MSG_BUF_B), "pair", 4);
+    lay_out_message(page, 0, 4, 4);
+
+    int64_t sent = 0;
+    {
+        user_space_scope scope(page.ctx);
+        sent = sys_sendmsg(static_cast<uint64_t>(pair.a), page.addr + MSG_HDR, 0, 0, 0, 0);
+    }
+    EXPECT_EQ(sent, static_cast<int64_t>(8));
+
+    char buf[16] = {};
+    EXPECT_EQ(resource::read(task, pair.b, buf, sizeof(buf)), static_cast<ssize_t>(8));
+    EXPECT_EQ(string::memcmp(buf, "unixpair", 8), 0);
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_unix_stream_send_refuses_what_a_stream_cannot_carry) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    EXPECT_EQ(unix_send(page, pair.a, 1, 0, 8), syscall::EISCONN);
+    EXPECT_EQ(unix_send(page, pair.a, 1, inet::MSG_OOB), syscall::EOPNOTSUPP);
+
+    int64_t lone = sys_socket(AF_UNIX, inet::SOCK_STREAM, 0, 0, 0, 0);
+    ASSERT_TRUE(lone >= 0);
+    EXPECT_EQ(unix_send(page, static_cast<int32_t>(lone), 1, 0), syscall::ENOTCONN);
+    EXPECT_EQ(unix_send(page, static_cast<int32_t>(lone), 1, 0, 8), syscall::EOPNOTSUPP);
+
+    EXPECT_EQ(resource::close(task, static_cast<resource::handle_t>(lone)), resource::OK);
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_nonblocking_unix_send_stops_when_the_stream_is_full) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    // The send that fills the stream takes only what fits instead of waiting
+    int64_t last = 0;
+    int64_t n = 0;
+    while ((n = unix_send(page, pair.a, UNIX_SEND_MAX, inet::MSG_DONTWAIT)) > 0) {
+        last = n;
+    }
+
+    EXPECT_EQ(n, syscall::EAGAIN);
+    EXPECT_TRUE(last > 0 && last < static_cast<int64_t>(UNIX_SEND_MAX));
+
+    close_unix_pair(task, pair);
+}
+
+TEST(socket_syscall, a_unix_stream_send_to_a_closed_peer_reports_epipe) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    EXPECT_EQ(resource::close(task, pair.b), resource::OK);
+    EXPECT_EQ(unix_send(page, pair.a, 1, inet::MSG_NOSIGNAL), syscall::EPIPE);
+
+    EXPECT_EQ(resource::close(task, pair.a), resource::OK);
+}
+
+TEST(socket_syscall, unix_stream_receive_calls_still_refuse) {
+    sched::task* task = sched::current();
+    ASSERT_NOT_NULL(task);
+
+    user_page page;
+    ASSERT_TRUE(page.ready());
+    unix_pair pair;
+    ASSERT_TRUE(make_unix_pair(page, &pair));
+
+    int64_t rc = 0;
+    {
+        user_space_scope scope(page.ctx);
+        rc = sys_recvfrom(static_cast<uint64_t>(pair.b), page.addr + UNIX_SEND_AT, 16, 0, 0, 0);
+    }
+    EXPECT_EQ(rc, syscall::EOPNOTSUPP);
+
+    close_unix_pair(task, pair);
+}
