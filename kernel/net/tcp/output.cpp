@@ -194,6 +194,27 @@ packet* build_data_segment(const tcp_conn* conn, uint32_t seq, size_t len, uint8
     return pkt;
 }
 
+packet* rebuild_oldest_locked(tcp_conn* conn) {
+    sent_segment* oldest = conn->sent.oldest();
+    if (!oldest) {
+        return nullptr;
+    }
+
+    size_t len = oldest->end_seq - oldest->start_seq;
+    bool last = oldest->end_seq == conn->snd_una + conn->snd_queue.size();
+    bool carries_fin = conn->fin_sent && oldest->end_seq + 1 == conn->snd_nxt;
+
+    uint8_t flags = FLAG_ACK | (last ? FLAG_PSH : 0) | (carries_fin ? FLAG_FIN : 0);
+
+    packet* pkt = build_data_segment(conn, oldest->start_seq, len, flags);
+    if (pkt) {
+        conn->sent.mark_retransmitted(oldest, now_ns());
+        conn->total_retransmits++;
+    }
+
+    return pkt;
+}
+
 // Caller holds the lock. RFC 6691: the MSS less the option bytes in use
 static size_t payload_mss(const tcp_conn* conn) {
     uint8_t scratch[MAX_OPTIONS_LEN];
