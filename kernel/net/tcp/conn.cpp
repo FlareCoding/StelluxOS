@@ -168,6 +168,7 @@ void configure_send_path_locked(tcp_conn* conn) {
     conn->bytes_acked = 0;
     conn->max_in_flight = 0;
     conn->in_flight_window_end = conn->snd_nxt;
+    conn->last_data_sent_ns = now_ns();
     conn->cwnd_limited = false;
     conn->recovery = recovery_state::open;
     conn->snd_sml = conn->iss;

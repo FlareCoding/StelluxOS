@@ -99,6 +99,37 @@ void note_cwnd_usage_locked(tcp_conn* conn, bool cwnd_limited) {
     }
 }
 
+static void notify(tcp_conn* conn, congestion_event which) {
+    if (conn->congestion->event) {
+        conn->congestion->event(conn, which);
+    }
+}
+
+static void restart_window_locked(tcp_conn* conn) {
+    notify(conn, congestion_event::cwnd_restart);
+
+    uint32_t three_quarters = conn->cwnd / 2 + conn->cwnd / 4;
+    bool recovering = conn->recovery == recovery_state::cwr || conn->recovery == recovery_state::recovery;
+    if (!recovering && conn->ssthresh < three_quarters) {
+        conn->ssthresh = three_quarters;
+    }
+
+    uint32_t restart = initial_window(conn->snd_mss);
+    conn->cwnd = restart < conn->cwnd ? restart : conn->cwnd;
+    conn->bytes_acked = 0;
+    conn->max_in_flight = 0;
+    conn->in_flight_window_end = conn->snd_nxt;
+    conn->cwnd_limited = false;
+}
+
+void begin_transmission_locked(tcp_conn* conn, uint64_t now_ns) {
+    if (now_ns - conn->last_data_sent_ns > conn->rto_ns) {
+        restart_window_locked(conn);
+    }
+
+    notify(conn, congestion_event::tx_start);
+}
+
 uint32_t slow_start(tcp_conn* conn, uint32_t acked_bytes) {
     uint32_t step = acked_bytes < 2u * conn->snd_mss ? acked_bytes : 2u * conn->snd_mss;
     uint32_t room = conn->ssthresh - conn->cwnd;

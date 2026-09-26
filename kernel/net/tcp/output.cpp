@@ -233,6 +233,10 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
             break;
         }
 
+        if (conn->snd_nxt == conn->snd_una) {
+            begin_transmission_locked(conn, now);
+        }
+
         uint32_t in_flight = conn->snd_nxt - conn->snd_una;
         uint32_t window_end = conn->snd_una + conn->snd_wnd;
         uint32_t usable = seq_lt(conn->snd_nxt, window_end) ? window_end - conn->snd_nxt : 0;
@@ -265,6 +269,7 @@ static size_t build_burst_locked(tcp_conn* conn, packet** burst, size_t max) {
         }
 
         conn->snd_nxt += static_cast<uint32_t>(len);
+        conn->last_data_sent_ns = now;
         if (carries_fin) {
             conn->fin_pending = false;
             conn->fin_sent = true;

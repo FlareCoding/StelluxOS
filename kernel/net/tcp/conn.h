@@ -172,6 +172,7 @@ struct tcp_conn : record {
     uint32_t              bytes_acked; // RFC 3465, toward the next increase
     uint32_t              max_in_flight;
     uint32_t              in_flight_window_end;
+    uint64_t              last_data_sent_ns;
     bool                  cwnd_limited;
     uint8_t               dupacks;
     recovery_state        recovery;

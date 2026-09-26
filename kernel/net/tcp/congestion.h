@@ -97,6 +97,13 @@ bool is_cwnd_limited(const tcp_conn* conn);
 void note_cwnd_usage_locked(tcp_conn* conn, bool cwnd_limited);
 
 /**
+ * @brief Prepares a send that starts with nothing in flight: after an idle
+ * longer than the RTO, `cwnd` restarts from min(cwnd, IW) (RFC 5681 4.1),
+ * and the algorithm hears tx_start. Caller holds the lock.
+ */
+void begin_transmission_locked(tcp_conn* conn, uint64_t now_ns);
+
+/**
  * @brief Grows `cwnd` by the bytes acknowledged, at most two segments (RFC
  * 3465 2.3) and never past `ssthresh`.
  * @return The bytes left over past `ssthresh`.
