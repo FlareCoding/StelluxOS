@@ -89,7 +89,7 @@ TEST(tcp_sent_segment, a_retransmitted_record_yields_no_rtt_sample) {
     EXPECT_EQ(a.rtt_sample_sent_ns, T0 + MS);
 }
 
-TEST(tcp_sent_segment, the_sample_comes_from_the_oldest_record_covered_that_was_never_retransmitted) {
+TEST(tcp_sent_segment, records_acknowledged_together_with_a_retransmitted_one_yield_no_sample) {
     scoped_segments r(8);
     sent_segment* first = r.s.track(1000, 2000, T0);
     r.s.track(2000, 3000, T0 + MS);
@@ -98,7 +98,19 @@ TEST(tcp_sent_segment, the_sample_comes_from_the_oldest_record_covered_that_was_
 
     acknowledged a = r.s.acknowledge(4000);
     EXPECT_EQ(a.bytes, 3000u);
-    EXPECT_EQ(a.rtt_sample_sent_ns, T0 + MS);
+    EXPECT_EQ(a.rtt_sample_sent_ns, 0u);
+}
+
+TEST(tcp_sent_segment, an_acknowledgment_ending_inside_a_retransmitted_record_yields_no_sample) {
+    scoped_segments r(8);
+    r.s.track(1000, 2000, T0);
+    sent_segment* second = r.s.track(2000, 3000, T0 + MS);
+    r.s.mark_retransmitted(second, T0 + 9 * MS);
+
+    acknowledged a = r.s.acknowledge(2500);
+    EXPECT_EQ(a.bytes, 1500u);
+    EXPECT_EQ(a.rtt_sample_sent_ns, 0u);
+    EXPECT_EQ(r.s.oldest()->start_seq, 2500u);
 }
 
 TEST(tcp_sent_segment, the_cap_and_the_budget_refuse_further_records) {
