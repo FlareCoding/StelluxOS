@@ -12,8 +12,11 @@ struct resource_object;
 // The most slots a table may grow to, and so the ceiling for any descriptor limit
 constexpr uint32_t MAX_TASK_HANDLES = 1u << 20;
 
-// The descriptor limit a process starts with
-constexpr uint32_t DEFAULT_HANDLE_LIMIT = 128;
+// The descriptor limit a process starts with, the most descriptors select() can watch
+constexpr uint32_t DEFAULT_HANDLE_LIMIT = 1024;
+
+// The hard descriptor limit a process starts with
+constexpr uint32_t DEFAULT_HANDLE_HARD_LIMIT = 4096;
 
 // Slots a table starts with, doubling on demand up to MAX_TASK_HANDLES
 constexpr uint32_t INITIAL_TASK_HANDLES = 16;
