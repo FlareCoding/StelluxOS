@@ -85,6 +85,31 @@ static uint32_t fake_ssthresh(tcp_conn*) { return 0; }
 static void fake_grow(tcp_conn*, uint32_t) {}
 static uint32_t fake_undo(tcp_conn* conn) { return conn->cwnd; }
 
+static congestion_event g_events[4];
+static size_t           g_event_count;
+
+static void record_event(tcp_conn*, congestion_event which) {
+    if (g_event_count < 4) {
+        g_events[g_event_count] = which;
+    }
+
+    g_event_count++;
+}
+
+static const congestion_ops RECORDING = {
+    .name = "recording", .ssthresh = fake_ssthresh, .grow = fake_grow, .event = record_event, .undo = fake_undo};
+
+// Grows the window to 16 segments and acknowledges everything, leaving nothing in flight
+static void grow_and_drain(growing& g) {
+    g.write(6 * PEER_MSS);
+    g.write(6 * PEER_MSS);
+    EXPECT_EQ(g.ack(2 * PEER_MSS), OK);
+    EXPECT_EQ(g.ack(4 * PEER_MSS), OK);
+    EXPECT_EQ(g.ack(12 * PEER_MSS), OK);
+    ASSERT_EQ(g.conn->cwnd, 16u * PEER_MSS);
+    ASSERT_EQ(g.conn->snd_nxt, g.conn->snd_una);
+}
+
 TEST(tcp_newreno, the_initial_window_follows_rfc_6928) {
     EXPECT_EQ(initial_window(1460), 14600u);
     EXPECT_EQ(initial_window(536), 5360u);
@@ -194,6 +219,62 @@ TEST(tcp_newreno, congestion_avoidance_adds_one_segment_per_window_acknowledged)
     EXPECT_EQ(g.ack(acked), OK);
     EXPECT_EQ(g.conn->cwnd, 11u * PEER_MSS);
     EXPECT_EQ(g.conn->bytes_acked, 0u);
+}
+
+TEST(tcp_newreno, a_send_after_an_idle_longer_than_the_timeout_restarts_from_the_initial_window) {
+    linked_peer lp;
+    growing g(lp);
+    grow_and_drain(g);
+
+    g_fake_now += g.conn->rto_ns + 1;
+    g.write(PEER_MSS);
+    EXPECT_EQ(g.conn->cwnd, 10u * PEER_MSS);
+    EXPECT_EQ(g.conn->ssthresh, SSTHRESH_INFINITE);
+    EXPECT_EQ(g.conn->snd_nxt - g.first_seq(), 13u * PEER_MSS);
+}
+
+TEST(tcp_newreno, a_pause_within_the_timeout_keeps_the_window) {
+    linked_peer lp;
+    growing g(lp);
+    grow_and_drain(g);
+
+    g_fake_now += g.conn->rto_ns / 2;
+    g.write(PEER_MSS);
+    EXPECT_EQ(g.conn->cwnd, 16u * PEER_MSS);
+}
+
+TEST(tcp_newreno, a_restart_keeps_three_quarters_of_the_window_as_the_threshold) {
+    linked_peer lp;
+    growing g(lp);
+    grow_and_drain(g);
+    g.adjust([](tcp_conn* conn) { conn->ssthresh = 5 * PEER_MSS; });
+
+    g_fake_now += g.conn->rto_ns + 1;
+    g.write(PEER_MSS);
+    EXPECT_EQ(g.conn->cwnd, 10u * PEER_MSS);
+    EXPECT_EQ(g.conn->ssthresh, 12u * PEER_MSS);
+    EXPECT_EQ(g.conn->bytes_acked, 0u);
+}
+
+TEST(tcp_newreno, the_algorithm_hears_the_restart_and_then_the_start_of_transmission) {
+    linked_peer lp;
+    growing g(lp);
+    grow_and_drain(g);
+    g.adjust([](tcp_conn* conn) { conn->congestion = &RECORDING; });
+
+    g_event_count = 0;
+    g_fake_now += g.conn->rto_ns / 2;
+    g.write(PEER_MSS);
+    ASSERT_EQ(g_event_count, 1u);
+    EXPECT_EQ(g_events[0], congestion_event::tx_start);
+
+    EXPECT_EQ(g.ack(13 * PEER_MSS), OK);
+    g_event_count = 0;
+    g_fake_now += g.conn->rto_ns + 1;
+    g.write(PEER_MSS);
+    ASSERT_EQ(g_event_count, 2u);
+    EXPECT_EQ(g_events[0], congestion_event::cwnd_restart);
+    EXPECT_EQ(g_events[1], congestion_event::tx_start);
 }
 
 TEST(tcp_newreno, the_threshold_is_half_the_window_but_at_least_two_segments) {
